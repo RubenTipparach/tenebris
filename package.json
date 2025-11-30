@@ -1,0 +1,27 @@
+{
+  "name": "tenebris",
+  "version": "1.0.0",
+  "description": "A Minecraft-style FPS voxel game built with Three.js",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "keywords": [
+    "game",
+    "threejs",
+    "voxel",
+    "fps",
+    "minecraft"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@types/three": "^0.181.0",
+    "three": "^0.181.2",
+    "typescript": "^5.9.3",
+    "vite": "^6.4.1"
+  }
+}
