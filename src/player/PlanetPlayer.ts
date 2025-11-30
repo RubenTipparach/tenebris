@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { InputManager, InputState } from '../engine/InputManager';
 import { Planet } from '../planet/Planet';
 import { HexBlockType } from '../planet/HexBlock';
+import { PlayerConfig } from '../config/PlayerConfig';
 
 export interface CelestialBody {
   planet: Planet;
@@ -30,23 +31,6 @@ export class PlanetPlayer {
 
   private yaw: number = 0;
   private pitch: number = 0;
-
-  // Movement constants
-  private readonly WALK_SPEED = 8;
-  private readonly SPRINT_SPEED = 14;
-  private readonly JUMP_FORCE = 12;
-  private readonly BASE_GRAVITY = 20;
-  private readonly MOUSE_SENSITIVITY = 0.002;
-  private readonly ROLL_SPEED = 2;
-  private readonly PLAYER_HEIGHT = 1.8;
-  private readonly PLAYER_EYE_HEIGHT = 1.6;
-  private readonly PLAYER_RADIUS = 0.4; // Collision radius for wall detection
-
-  // Jetpack constants
-  private readonly JETPACK_FORCE = 25;
-  private readonly JETPACK_DOWN_FORCE = 30;
-  private readonly SPACE_THRUST = 15;
-  private readonly ORIENTATION_SLERP_SPEED = 2;
 
   private isGrounded: boolean = false;
   private isJetpacking: boolean = false;
@@ -272,7 +256,7 @@ export class PlanetPlayer {
 
   private slerpUpVector(deltaTime: number): void {
     // Smoothly interpolate the up vector toward the target
-    const slerpFactor = Math.min(1, this.ORIENTATION_SLERP_SPEED * deltaTime);
+    const slerpFactor = Math.min(1, PlayerConfig.ORIENTATION_SLERP_SPEED * deltaTime);
 
     // Slerp the up vector
     this.localUp.lerp(this.targetUp, slerpFactor).normalize();
@@ -305,12 +289,12 @@ export class PlanetPlayer {
     if (!this.inputManager.isLocked()) return;
 
     // Yaw - rotate around local up axis
-    const yawDelta = -input.mouseX * this.MOUSE_SENSITIVITY;
+    const yawDelta = -input.mouseX * PlayerConfig.MOUSE_SENSITIVITY;
     const yawQuat = new THREE.Quaternion().setFromAxisAngle(this.localUp, yawDelta);
     this.orientation.premultiply(yawQuat);
 
     // Pitch - rotate around local right axis (positive mouseY = look down)
-    const pitchDelta = input.mouseY * this.MOUSE_SENSITIVITY;
+    const pitchDelta = input.mouseY * PlayerConfig.MOUSE_SENSITIVITY;
     const pitchQuat = new THREE.Quaternion().setFromAxisAngle(this.localRight, pitchDelta);
     this.orientation.premultiply(pitchQuat);
 
@@ -320,8 +304,8 @@ export class PlanetPlayer {
 
   private handleSpaceRoll(input: InputState, deltaTime: number): void {
     let rollAmount = 0;
-    if (input.rollLeft) rollAmount += this.ROLL_SPEED * deltaTime;
-    if (input.rollRight) rollAmount -= this.ROLL_SPEED * deltaTime;
+    if (input.rollLeft) rollAmount += PlayerConfig.ROLL_SPEED * deltaTime;
+    if (input.rollRight) rollAmount -= PlayerConfig.ROLL_SPEED * deltaTime;
 
     if (rollAmount !== 0) {
       // Roll around the forward axis (the direction we're looking)
@@ -354,7 +338,7 @@ export class PlanetPlayer {
 
     if (moveDir.lengthSq() > 0) {
       moveDir.normalize();
-      const speed = input.sprint ? this.SPRINT_SPEED : this.SPACE_THRUST;
+      const speed = input.sprint ? PlayerConfig.SPRINT_SPEED : PlayerConfig.SPACE_THRUST;
       this.velocity.addScaledVector(moveDir, speed * deltaTime);
     }
 
@@ -368,8 +352,8 @@ export class PlanetPlayer {
   private handleMouseLook(input: InputState): void {
     if (!this.inputManager.isLocked()) return;
 
-    this.yaw += input.mouseX * this.MOUSE_SENSITIVITY;
-    this.pitch -= input.mouseY * this.MOUSE_SENSITIVITY;
+    this.yaw += input.mouseX * PlayerConfig.MOUSE_SENSITIVITY;
+    this.pitch -= input.mouseY * PlayerConfig.MOUSE_SENSITIVITY;
     this.pitch = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, this.pitch));
   }
 
@@ -382,7 +366,7 @@ export class PlanetPlayer {
     if (input.left) moveX -= 1;
     if (input.right) moveX += 1;
 
-    if (moveX !== 0 || moveZ !== 0) {
+    if ((moveX !== 0 || moveZ !== 0) && this.currentPlanet) {
       const length = Math.sqrt(moveX * moveX + moveZ * moveZ);
       moveX /= length;
       moveZ /= length;
@@ -397,81 +381,198 @@ export class PlanetPlayer {
         .addScaledVector(this.localForward, -rotatedZ)
         .normalize();
 
-      const speed = input.sprint ? this.SPRINT_SPEED : this.WALK_SPEED;
-      const movement = worldDir.multiplyScalar(speed * deltaTime);
+      const speed = input.sprint ? PlayerConfig.SPRINT_SPEED : PlayerConfig.WALK_SPEED;
+      const movement = worldDir.clone().multiplyScalar(speed * deltaTime);
 
-      // Try to move and check for wall collisions
-      const newPosition = this.position.clone().add(movement);
-
-      // Check if new position would collide with a wall
-      if (!this.checkWallCollision(newPosition)) {
-        this.position.copy(newPosition);
-      }
-      // No surface snapping - let gravity handle falling off ledges
+      // Try to move - use iterative collision resolution
+      this.resolveMovement(movement);
     }
 
     // Handle jumping (only when grounded)
     if (input.jump && this.isGrounded && this.currentPlanet) {
       // Use actual radial direction for jump to ensure straight-up motion
       const jumpDir = this.currentPlanet.getSurfaceNormal(this.position);
-      this.velocity.addScaledVector(jumpDir, this.JUMP_FORCE);
+      this.velocity.addScaledVector(jumpDir, PlayerConfig.JUMP_FORCE);
       this.isGrounded = false;
     }
   }
 
-  // Check if position would collide with a solid block at the player's height
+  // Simple axis-aligned collision resolution (like picotron_raycaster)
+  // Try full movement first, then try each axis independently for sliding
+  private resolveMovement(movement: THREE.Vector3): void {
+    if (!this.currentPlanet) return;
+
+    const newPosition = this.position.clone().add(movement);
+
+    // Try full movement first
+    if (!this.checkCollision(newPosition)) {
+      this.position.copy(newPosition);
+      return;
+    }
+
+    // Collision detected - decompose movement into two orthogonal tangent directions
+    // and try each independently (this is what makes sliding frictionless)
+
+    // Get movement in local tangent space
+    // Use localRight and localForward as our two axes
+    const moveForward = this.localForward.clone().multiplyScalar(movement.dot(this.localForward));
+    const moveRight = this.localRight.clone().multiplyScalar(movement.dot(this.localRight));
+
+    // Try forward/backward movement only
+    const forwardPos = this.position.clone().add(moveForward);
+    if (!this.checkCollision(forwardPos)) {
+      this.position.copy(forwardPos);
+      // Now try adding right movement
+      const finalPos = this.position.clone().add(moveRight);
+      if (!this.checkCollision(finalPos)) {
+        this.position.copy(finalPos);
+      }
+    } else {
+      // Forward blocked, try right/left movement only
+      const rightPos = this.position.clone().add(moveRight);
+      if (!this.checkCollision(rightPos)) {
+        this.position.copy(rightPos);
+      }
+      // If both fail, player doesn't move (wall corner)
+    }
+  }
+
+  // Simple collision check - returns true if position is blocked
+  private checkCollision(newPosition: THREE.Vector3): boolean {
+    if (!this.currentPlanet) return false;
+
+    // Only check step height when grounded - when airborne, we can jump over steps
+    if (this.isGrounded) {
+      if (!this.checkStepHeight(newPosition)) {
+        return true; // Blocked by step (only matters when walking on ground)
+      }
+    }
+
+    // Check wall collision (uses actual capsule position, works for both grounded and airborne)
+    return this.checkWallCollision(newPosition);
+  }
+
+  // Check if step height is valid
+  private checkStepHeight(newPosition: THREE.Vector3): boolean {
+    if (!this.currentPlanet) return true;
+
+    // Get current ground level
+    const currentTile = this.currentPlanet.getTileAtPoint(this.position);
+    let currentGroundDepth = 0;
+    if (currentTile) {
+      for (let d = 0; d < 16; d++) {
+        if (this.currentPlanet.getBlock(currentTile.index, d) !== HexBlockType.AIR) {
+          currentGroundDepth = d;
+          break;
+        }
+      }
+    }
+    const currentGroundRadius = this.currentPlanet.radius - currentGroundDepth;
+
+    // Get ground level at new position
+    const newTile = this.currentPlanet.getTileAtPoint(newPosition);
+    let newGroundDepth = 0;
+    if (newTile) {
+      for (let d = 0; d < 16; d++) {
+        if (this.currentPlanet.getBlock(newTile.index, d) !== HexBlockType.AIR) {
+          newGroundDepth = d;
+          break;
+        }
+      }
+    }
+    const newGroundRadius = this.currentPlanet.radius - newGroundDepth;
+
+    // Check step height
+    const heightDiff = newGroundRadius - currentGroundRadius;
+    return heightDiff <= PlayerConfig.AUTO_STEP_HEIGHT;
+  }
+
+  // Wall collision check - based on player's actual capsule position
+  // Returns true if blocked
   private checkWallCollision(newPosition: THREE.Vector3): boolean {
     if (!this.currentPlanet) return false;
 
-    const playerDist = newPosition.length();
-    const playerDepth = this.currentPlanet.getDepthAtPoint(newPosition);
+    const newTile = this.currentPlanet.getTileAtPoint(newPosition);
+    if (!newTile) return false;
 
-    // Check collision at feet level and chest level
-    const checkDepths = [playerDepth, playerDepth - 1];
+    // Player's actual feet position (radius from planet center)
+    const playerFeetRadius = newPosition.distanceTo(this.currentPlanet.center);
+    const playerHeadRadius = playerFeetRadius + PlayerConfig.PLAYER_HEIGHT;
 
-    for (const depth of checkDepths) {
-      if (depth < 0) continue;
-
-      // Get the tile at the new position
-      const tile = this.currentPlanet.getTileAtPoint(newPosition);
-      if (!tile) continue;
-
-      // Check if there's a solid block at this depth
-      const block = this.currentPlanet.getBlock(tile.index, depth);
-      if (block !== HexBlockType.AIR) {
-        // Calculate the surface radius at this depth
-        const blockOuterRadius = this.currentPlanet.radius - depth;
-        const blockInnerRadius = blockOuterRadius - 1;
-
-        // If player would be inside this block, it's a collision
-        if (playerDist > blockInnerRadius && playerDist < blockOuterRadius + this.PLAYER_RADIUS) {
-          return true;
+    // Check neighboring tiles for walls
+    for (const neighborIndex of newTile.neighbors) {
+      // Find neighbor's ground level (top of solid ground)
+      let neighborGroundDepth = 0;
+      for (let d = 0; d < 16; d++) {
+        if (this.currentPlanet.getBlock(neighborIndex, d) !== HexBlockType.AIR) {
+          neighborGroundDepth = d;
+          break;
         }
       }
+      const neighborGroundRadius = this.currentPlanet.radius - neighborGroundDepth;
 
-      // Also check neighboring tiles for wall collisions
-      for (const neighborIndex of tile.neighbors) {
-        const neighborBlock = this.currentPlanet.getBlock(neighborIndex, depth);
-        if (neighborBlock !== HexBlockType.AIR) {
-          // Get neighbor tile center to check distance
-          const neighborTile = this.currentPlanet.getPolyhedron().tiles[neighborIndex];
-          if (neighborTile) {
-            const neighborCenter = neighborTile.center.clone().normalize().multiplyScalar(playerDist);
-            const distToNeighbor = newPosition.distanceTo(neighborCenter);
+      // A neighbor is a wall if its ground surface is within our capsule's vertical range
+      // i.e., neighbor ground is between our feet and head
+      // If neighbor ground is BELOW our feet, we can walk/jump over it
+      // If neighbor ground is ABOVE our head, it's a ceiling (not handled here)
+      const wallBlocksUs = neighborGroundRadius > playerFeetRadius && neighborGroundRadius <= playerHeadRadius + 0.5;
 
-            // If we're close to a solid neighbor block, check for collision
-            if (distToNeighbor < this.PLAYER_RADIUS + 2) {
-              const blockOuterRadius = this.currentPlanet.radius - depth;
-              if (playerDist < blockOuterRadius + this.PLAYER_RADIUS && playerDist > blockOuterRadius - 1) {
-                return true;
-              }
-            }
-          }
+      if (wallBlocksUs) {
+        const neighborTile = this.currentPlanet.getPolyhedron().tiles[neighborIndex];
+        if (!neighborTile) continue;
+
+        // Check horizontal distance to neighbor
+        const actualUp = this.currentPlanet.getSurfaceNormal(newPosition);
+        const neighborCenter = neighborTile.center.clone().normalize()
+          .multiplyScalar(playerFeetRadius).add(this.currentPlanet.center);
+
+        // Project both positions onto horizontal plane for distance check
+        const toNeighbor = neighborCenter.clone().sub(newPosition);
+        toNeighbor.sub(actualUp.clone().multiplyScalar(toNeighbor.dot(actualUp)));
+        const horizontalDist = toNeighbor.length();
+
+        // Collision if within player radius + tile size
+        if (horizontalDist < PlayerConfig.PLAYER_RADIUS + 1.5) {
+          return true; // Blocked by wall
         }
       }
     }
 
     return false;
+  }
+
+  // Check if position is valid (no collision with terrain at any capsule height)
+  private isPositionValid(position: THREE.Vector3): boolean {
+    if (!this.currentPlanet) return true;
+
+    const actualUp = this.currentPlanet.getSurfaceNormal(position);
+    const playerDist = position.distanceTo(this.currentPlanet.center);
+
+    // Check collision at multiple heights along the capsule
+    const checkOffsets = [0, PlayerConfig.PLAYER_HEIGHT * 0.5, PlayerConfig.PLAYER_HEIGHT - 0.1];
+
+    for (const offset of checkOffsets) {
+      const checkRadius = playerDist + offset;
+      const checkPos = this.currentPlanet.center.clone()
+        .add(actualUp.clone().multiplyScalar(checkRadius));
+
+      const tile = this.currentPlanet.getTileAtPoint(checkPos);
+      if (!tile) continue;
+
+      const depth = Math.floor((this.currentPlanet.radius - checkRadius) / 1);
+      if (depth < 0 || depth >= 16) continue;
+
+      // Check if inside a solid block
+      const block = this.currentPlanet.getBlock(tile.index, depth);
+      if (block !== HexBlockType.AIR) {
+        const blockOuterRadius = this.currentPlanet.radius - depth;
+        if (checkRadius < blockOuterRadius) {
+          return false; // Inside a block
+        }
+      }
+    }
+
+    return true;
   }
 
   private handleJetpack(input: InputState, deltaTime: number): void {
@@ -484,7 +585,7 @@ export class PlanetPlayer {
     if (input.jump && !this.isGrounded) {
       this.isJetpacking = true;
       // Thrust upward (away from planet) using actual radial direction
-      this.velocity.addScaledVector(actualUp, this.JETPACK_FORCE * deltaTime);
+      this.velocity.addScaledVector(actualUp, PlayerConfig.JETPACK_FORCE * deltaTime);
     } else {
       this.isJetpacking = false;
     }
@@ -492,7 +593,7 @@ export class PlanetPlayer {
     // Jetpack down / descend (Ctrl)
     if (input.crouch) {
       // Thrust downward (toward planet)
-      this.velocity.addScaledVector(actualUp, -this.JETPACK_DOWN_FORCE * deltaTime);
+      this.velocity.addScaledVector(actualUp, -PlayerConfig.JETPACK_DOWN_FORCE * deltaTime);
     }
   }
 
@@ -501,8 +602,9 @@ export class PlanetPlayer {
 
     // Get actual up direction from planet (not localUp which may lag behind)
     const actualUp = this.currentPlanet.getSurfaceNormal(this.position);
+    const currentDist = this.position.distanceTo(this.currentPlanet.center);
 
-    // Get the tile at current position first
+    // Get the tile at current position
     const currentTile = this.currentPlanet.getTileAtPoint(this.position);
 
     // Find ground level at current tile
@@ -517,21 +619,20 @@ export class PlanetPlayer {
       }
     }
 
-    // Calculate ground position
+    // Calculate ground position for current tile
     const groundRadius = groundDepth >= 0 ? this.currentPlanet.radius - groundDepth : 0;
-    const targetRadius = groundRadius + this.PLAYER_HEIGHT;
-    const currentDist = this.position.distanceTo(this.currentPlanet.center);
+    const targetRadius = groundRadius + PlayerConfig.PLAYER_HEIGHT;
 
     // Check if currently on ground
     const onGround = groundDepth >= 0 && currentDist <= targetRadius + 0.05;
 
     if (onGround && this.velocity.dot(actualUp) <= 0) {
-      // On the ground - stop vertical movement, allow horizontal
+      // On the ground - stop vertical movement
       this.isGrounded = true;
       // Snap to ground at current horizontal position
       this.position.copy(this.currentPlanet.center).addScaledVector(actualUp, targetRadius);
 
-      // Remove downward velocity component (use actualUp for consistency)
+      // Remove downward velocity component
       const upComponent = this.velocity.dot(actualUp);
       if (upComponent < 0) {
         this.velocity.sub(actualUp.clone().multiplyScalar(upComponent));
@@ -542,7 +643,7 @@ export class PlanetPlayer {
 
       const gravityDir = this.currentPlanet.getGravityDirection(this.position);
       const gravityMultiplier = this.getGravityMultiplier();
-      const effectiveGravity = this.BASE_GRAVITY * gravityMultiplier;
+      const effectiveGravity = PlayerConfig.BASE_GRAVITY * gravityMultiplier;
 
       // Apply gravity (purely radial toward planet center)
       this.velocity.addScaledVector(gravityDir, effectiveGravity * deltaTime);
@@ -557,29 +658,67 @@ export class PlanetPlayer {
       const newPosition = this.position.clone().add(this.velocity.clone().multiplyScalar(deltaTime));
       const newDist = newPosition.distanceTo(this.currentPlanet.center);
 
-      // Check if we would go below ground
-      if (groundDepth >= 0 && newDist <= targetRadius) {
-        // Land on ground - use the NEW position's direction to land where we actually are
-        const landingDir = newPosition.clone().sub(this.currentPlanet.center).normalize();
-        this.position.copy(this.currentPlanet.center).addScaledVector(landingDir, targetRadius);
-
-        // Remove downward velocity
-        const upComponent = this.velocity.dot(landingDir);
-        if (upComponent < 0) {
-          this.velocity.sub(landingDir.clone().multiplyScalar(upComponent));
+      // Get ground at NEW position (might be different tile)
+      const newTile = this.currentPlanet.getTileAtPoint(newPosition);
+      let newGroundDepth = -1;
+      if (newTile) {
+        for (let d = 0; d < 16; d++) {
+          const block = this.currentPlanet.getBlock(newTile.index, d);
+          if (block !== HexBlockType.AIR) {
+            newGroundDepth = d;
+            break;
+          }
         }
+      }
 
-        this.isGrounded = true;
+      const newGroundRadius = newGroundDepth >= 0 ? this.currentPlanet.radius - newGroundDepth : 0;
+      const newTargetRadius = newGroundRadius + PlayerConfig.PLAYER_HEIGHT;
+
+      // Check if this would be stepping UP (blocked by AUTO_STEP_HEIGHT)
+      const heightDiff = newGroundRadius - groundRadius;
+      const wouldStepUp = heightDiff > PlayerConfig.AUTO_STEP_HEIGHT;
+
+      // Check if we would go below ground
+      if (newGroundDepth >= 0 && newDist <= newTargetRadius) {
+        if (wouldStepUp) {
+          // Can't step up - stay at current position, stop horizontal velocity
+          const upComponent = this.velocity.dot(actualUp);
+          if (upComponent < 0) {
+            this.velocity.sub(actualUp.clone().multiplyScalar(upComponent));
+          }
+          // Also remove horizontal velocity toward the step
+          this.velocity.multiplyScalar(0.5);
+        } else {
+          // Land on ground - use the NEW position's direction
+          const landingDir = newPosition.clone().sub(this.currentPlanet.center).normalize();
+          this.position.copy(this.currentPlanet.center).addScaledVector(landingDir, newTargetRadius);
+
+          // Remove downward velocity
+          const upComponent = this.velocity.dot(landingDir);
+          if (upComponent < 0) {
+            this.velocity.sub(landingDir.clone().multiplyScalar(upComponent));
+          }
+
+          this.isGrounded = true;
+        }
       } else {
-        // Continue falling/moving
-        this.position.copy(newPosition);
+        // Continue falling/moving - but check capsule collision
+        if (this.isPositionValid(newPosition)) {
+          this.position.copy(newPosition);
+        } else {
+          // Blocked - stop velocity
+          const upComponent = this.velocity.dot(actualUp);
+          if (upComponent < 0) {
+            this.velocity.sub(actualUp.clone().multiplyScalar(upComponent));
+          }
+        }
       }
     }
   }
 
   private updateCamera(): void {
     const eyePos = this.position.clone();
-    const eyeOffset = this.localUp.clone().multiplyScalar(this.PLAYER_EYE_HEIGHT - this.PLAYER_HEIGHT);
+    const eyeOffset = this.localUp.clone().multiplyScalar(PlayerConfig.PLAYER_EYE_HEIGHT - PlayerConfig.PLAYER_HEIGHT);
     eyePos.add(eyeOffset);
     this.camera.position.copy(eyePos);
 
