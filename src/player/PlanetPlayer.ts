@@ -411,8 +411,10 @@ export class PlanetPlayer {
     }
 
     // Handle jumping (only when grounded)
-    if (input.jump && this.isGrounded) {
-      this.velocity.addScaledVector(this.localUp, this.JUMP_FORCE);
+    if (input.jump && this.isGrounded && this.currentPlanet) {
+      // Use actual radial direction for jump to ensure straight-up motion
+      const jumpDir = this.currentPlanet.getSurfaceNormal(this.position);
+      this.velocity.addScaledVector(jumpDir, this.JUMP_FORCE);
       this.isGrounded = false;
     }
   }
@@ -475,11 +477,14 @@ export class PlanetPlayer {
   private handleJetpack(input: InputState, deltaTime: number): void {
     if (!this.currentPlanet) return;
 
+    // Get actual radial direction for consistent thrust
+    const actualUp = this.currentPlanet.getSurfaceNormal(this.position);
+
     // Jetpack up (Space when not grounded)
     if (input.jump && !this.isGrounded) {
       this.isJetpacking = true;
-      // Thrust upward (away from planet)
-      this.velocity.addScaledVector(this.localUp, this.JETPACK_FORCE * deltaTime);
+      // Thrust upward (away from planet) using actual radial direction
+      this.velocity.addScaledVector(actualUp, this.JETPACK_FORCE * deltaTime);
     } else {
       this.isJetpacking = false;
     }
@@ -487,13 +492,15 @@ export class PlanetPlayer {
     // Jetpack down / descend (Ctrl)
     if (input.crouch) {
       // Thrust downward (toward planet)
-      const gravityDir = this.currentPlanet.getGravityDirection(this.position);
-      this.velocity.addScaledVector(gravityDir, this.JETPACK_DOWN_FORCE * deltaTime);
+      this.velocity.addScaledVector(actualUp, -this.JETPACK_DOWN_FORCE * deltaTime);
     }
   }
 
   private applyGravity(deltaTime: number): void {
     if (!this.currentPlanet) return;
+
+    // Get actual up direction from planet (not localUp which may lag behind)
+    const actualUp = this.currentPlanet.getSurfaceNormal(this.position);
 
     // Get the tile at current position first
     const currentTile = this.currentPlanet.getTileAtPoint(this.position);
@@ -518,16 +525,16 @@ export class PlanetPlayer {
     // Check if currently on ground
     const onGround = groundDepth >= 0 && currentDist <= targetRadius + 0.05;
 
-    if (onGround && this.velocity.dot(this.localUp) <= 0) {
+    if (onGround && this.velocity.dot(actualUp) <= 0) {
       // On the ground - stop vertical movement, allow horizontal
       this.isGrounded = true;
-      const dirFromCenter = this.position.clone().sub(this.currentPlanet.center).normalize();
-      this.position.copy(this.currentPlanet.center).addScaledVector(dirFromCenter, targetRadius);
+      // Snap to ground at current horizontal position
+      this.position.copy(this.currentPlanet.center).addScaledVector(actualUp, targetRadius);
 
-      // Remove downward velocity component
-      const upComponent = this.velocity.dot(this.localUp);
+      // Remove downward velocity component (use actualUp for consistency)
+      const upComponent = this.velocity.dot(actualUp);
       if (upComponent < 0) {
-        this.velocity.sub(this.localUp.clone().multiplyScalar(upComponent));
+        this.velocity.sub(actualUp.clone().multiplyScalar(upComponent));
       }
     } else {
       // In the air - apply gravity and movement
@@ -537,6 +544,7 @@ export class PlanetPlayer {
       const gravityMultiplier = this.getGravityMultiplier();
       const effectiveGravity = this.BASE_GRAVITY * gravityMultiplier;
 
+      // Apply gravity (purely radial toward planet center)
       this.velocity.addScaledVector(gravityDir, effectiveGravity * deltaTime);
 
       // Add some drag when high up to prevent infinite acceleration
@@ -551,14 +559,14 @@ export class PlanetPlayer {
 
       // Check if we would go below ground
       if (groundDepth >= 0 && newDist <= targetRadius) {
-        // Land on ground
-        const dirFromCenter = this.position.clone().sub(this.currentPlanet.center).normalize();
-        this.position.copy(this.currentPlanet.center).addScaledVector(dirFromCenter, targetRadius);
+        // Land on ground - use the NEW position's direction to land where we actually are
+        const landingDir = newPosition.clone().sub(this.currentPlanet.center).normalize();
+        this.position.copy(this.currentPlanet.center).addScaledVector(landingDir, targetRadius);
 
         // Remove downward velocity
-        const upComponent = this.velocity.dot(this.localUp);
+        const upComponent = this.velocity.dot(landingDir);
         if (upComponent < 0) {
-          this.velocity.sub(this.localUp.clone().multiplyScalar(upComponent));
+          this.velocity.sub(landingDir.clone().multiplyScalar(upComponent));
         }
 
         this.isGrounded = true;
