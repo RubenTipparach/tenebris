@@ -15,8 +15,8 @@ export class GameEngine {
   constructor(container: HTMLElement) {
     // Scene setup
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x87CEEB); // Sky blue
-    this.scene.fog = new THREE.Fog(0x87CEEB, 50, 200);
+    this.scene.background = new THREE.Color(0x000011); // Space black
+    // No fog for space/planet view
 
     // Camera setup
     this.camera = new THREE.PerspectiveCamera(
