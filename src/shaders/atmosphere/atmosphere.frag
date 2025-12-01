@@ -1,33 +1,53 @@
 precision highp float;
 
+// Based on GPU Gems 2, Chapter 16: Accurate Atmospheric Scattering
+// https://developer.nvidia.com/gpugems/gpugems2/part-ii-shading-lighting-and-shadows/chapter-16-accurate-atmospheric-scattering
+
 uniform vec3 planetCenter;
-uniform float planetRadius;    // Actual planet surface
-uniform float innerRadius;     // Inner boundary for raymarching (below surface)
-uniform float outerRadius;     // Outer boundary
+uniform float planetRadius;
+uniform float atmosphereRadius;
 uniform vec3 sunDirection;
 uniform vec3 viewerPosition;
-uniform float densityFalloff;
-uniform float scatterStrength;
+
+// Scattering parameters
+uniform float rayleighScale;      // Rayleigh scattering coefficient
+uniform float mieScale;           // Mie scattering coefficient
+uniform float mieG;               // Mie phase asymmetry factor (-0.99 to 0.99)
+uniform float sunIntensity;       // Sun brightness
 
 varying vec3 vWorldPosition;
 varying vec3 vNormal;
 
-#define VIEW_SAMPLES 16
-#define DEPTH_SAMPLES 8
+#define PI 3.14159265359
+#define NUM_SAMPLES 8
+#define NUM_LIGHT_SAMPLES 4
 
-const float pi = 3.14159265359;
-const vec3 sunIntensity = vec3(1.0);
-// Rayleigh scattering coefficients - shorter wavelengths scatter more (blue)
-// Normalized so values are reasonable
-const vec3 scatterCoeffs = vec3(0.1, 0.3, 0.6); // R, G, B - blue scatters most
+// Wavelengths for RGB (in micrometers, then inverted^4 for Rayleigh)
+// 680nm (red), 550nm (green), 440nm (blue)
+const vec3 wavelengthsInv4 = vec3(5.602, 9.473, 19.644); // (1/wavelength)^4 normalized
+
+// Scale height - determines how quickly density falls off
+const float scaleHeight = 0.25; // H0 in the paper (as fraction of atmosphere height)
+
+// Simple hash for dithering to reduce banding
+float hash(vec2 p) {
+  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
 
 // Rayleigh phase function
-float phase(float cosTheta) {
+float rayleighPhase(float cosTheta) {
   return 0.75 * (1.0 + cosTheta * cosTheta);
 }
 
+// Mie phase function (Henyey-Greenstein)
+float miePhase(float cosTheta, float g) {
+  float g2 = g * g;
+  float denom = 1.0 + g2 - 2.0 * g * cosTheta;
+  return (1.0 - g2) / (4.0 * PI * pow(denom, 1.5));
+}
+
 // Ray-sphere intersection
-// Returns (near, far) distances, or (-1, -1) if no intersection
+// Returns vec2(near, far) distances, or vec2(-1) if no hit
 vec2 raySphereIntersect(vec3 ro, vec3 rd, vec3 center, float radius) {
   vec3 oc = ro - center;
   float b = dot(oc, rd);
@@ -37,38 +57,25 @@ vec2 raySphereIntersect(vec3 ro, vec3 rd, vec3 center, float radius) {
   if (disc < 0.0) return vec2(-1.0);
 
   float sqrtDisc = sqrt(disc);
-  float near = -b - sqrtDisc;
-  float far = -b + sqrtDisc;
-
-  return vec2(near, far);
+  return vec2(-b - sqrtDisc, -b + sqrtDisc);
 }
 
-// Atmospheric density at a point
-// Density is highest at planet surface (planetRadius) and falls off with altitude
-float atmosphereDensity(vec3 p) {
-  float altitude = length(p - planetCenter) - planetRadius;
-  float atmosphereHeight = outerRadius - planetRadius;
-
-  // Normalize altitude (0 at surface, 1 at atmosphere edge)
-  float normalizedAlt = max(0.0, altitude) / atmosphereHeight;
-
-  // Exponential falloff - density highest at surface
-  // Below surface (negative altitude), density is clamped to surface density
-  if (altitude < 0.0) {
-    return 1.0; // Maximum density below/at surface
-  }
-
-  return exp(-normalizedAlt * densityFalloff);
+// Get atmospheric density at a given altitude
+// altitude: 0 = planet surface, 1 = atmosphere edge
+float getDensity(float altitude) {
+  return exp(-altitude / scaleHeight);
 }
 
 // Calculate optical depth along a ray segment
 float opticalDepth(vec3 rayOrigin, vec3 rayDir, float rayLength) {
-  float stepSize = rayLength / float(DEPTH_SAMPLES);
+  float stepSize = rayLength / float(NUM_LIGHT_SAMPLES);
   float depth = 0.0;
 
-  for (int i = 0; i < DEPTH_SAMPLES; i++) {
-    vec3 p = rayOrigin + rayDir * (stepSize * (float(i) + 0.5));
-    depth += atmosphereDensity(p) * stepSize;
+  for (int i = 0; i < NUM_LIGHT_SAMPLES; i++) {
+    vec3 samplePos = rayOrigin + rayDir * (stepSize * (float(i) + 0.5));
+    float altitude = (length(samplePos - planetCenter) - planetRadius) / (atmosphereRadius - planetRadius);
+    altitude = clamp(altitude, 0.0, 1.0);
+    depth += getDensity(altitude) * stepSize;
   }
 
   return depth;
@@ -78,92 +85,106 @@ void main() {
   vec3 rayOrigin = viewerPosition;
   vec3 rayDir = normalize(vWorldPosition - viewerPosition);
 
-  // Find intersection with atmosphere (outer sphere)
-  vec2 atmosHit = raySphereIntersect(rayOrigin, rayDir, planetCenter, outerRadius);
+  // Find atmosphere intersection
+  vec2 atmosHit = raySphereIntersect(rayOrigin, rayDir, planetCenter, atmosphereRadius);
 
-  // No atmosphere intersection
   if (atmosHit.y < 0.0) {
     gl_FragColor = vec4(0.0);
     return;
   }
 
-  // Determine ray start and end points within atmosphere
-  float rayStart = max(0.0, atmosHit.x); // Start at camera or atmosphere entry
-  float rayEnd = atmosHit.y;              // End at atmosphere exit
+  // Ray start and end within atmosphere
+  float rayStart = max(0.0, atmosHit.x);
+  float rayEnd = atmosHit.y;
 
-  // Check for planet intersection (inner boundary uses innerRadius which is below surface)
-  vec2 planetHit = raySphereIntersect(rayOrigin, rayDir, planetCenter, innerRadius);
+  // Check for planet intersection
+  vec2 planetHit = raySphereIntersect(rayOrigin, rayDir, planetCenter, planetRadius);
   if (planetHit.x > 0.0) {
-    // Ray hits the inner boundary - stop there
     rayEnd = min(rayEnd, planetHit.x);
   }
 
-  // If ray starts past the end, nothing to render
   if (rayStart >= rayEnd) {
     gl_FragColor = vec4(0.0);
     return;
   }
 
   float rayLength = rayEnd - rayStart;
-  float stepSize = rayLength / float(VIEW_SAMPLES);
+  float stepSize = rayLength / float(NUM_SAMPLES);
 
-  // Sun direction (normalized)
+  // Normalized sun direction
   vec3 sunDir = normalize(sunDirection);
 
-  // Accumulate scattered light
-  vec3 totalScatter = vec3(0.0);
-  float totalOpticalDepth = 0.0;
+  // Dither offset to reduce banding (varies per-pixel)
+  float dither = hash(gl_FragCoord.xy) * 0.5;
 
-  for (int i = 0; i < VIEW_SAMPLES; i++) {
-    // Sample point along view ray
-    vec3 samplePoint = rayOrigin + rayDir * (rayStart + stepSize * (float(i) + 0.5));
-    float sampleAltitude = length(samplePoint - planetCenter);
+  // Accumulate Rayleigh and Mie scattering separately
+  vec3 rayleighSum = vec3(0.0);
+  vec3 mieSum = vec3(0.0);
+  float opticalDepthR = 0.0;
+  float opticalDepthM = 0.0;
 
-    // Skip if below inner boundary
-    if (sampleAltitude < innerRadius) continue;
+  for (int i = 0; i < NUM_SAMPLES; i++) {
+    // Sample point along view ray (with dither offset to reduce banding)
+    vec3 samplePos = rayOrigin + rayDir * (rayStart + stepSize * (float(i) + dither));
+    float height = length(samplePos - planetCenter);
 
-    // Local atmospheric density
-    float localDensity = atmosphereDensity(samplePoint);
+    // Skip if inside planet
+    if (height < planetRadius) continue;
 
-    // Optical depth from camera to this point
-    float viewOpticalDepth = opticalDepth(rayOrigin + rayDir * rayStart, rayDir, stepSize * (float(i) + 0.5));
-    totalOpticalDepth = viewOpticalDepth;
+    // Normalized altitude (0 at surface, 1 at atmosphere edge)
+    float altitude = (height - planetRadius) / (atmosphereRadius - planetRadius);
+    altitude = clamp(altitude, 0.0, 1.0);
 
-    // Check if this point can see the sun (not blocked by planet)
-    vec2 sunPlanetHit = raySphereIntersect(samplePoint, sunDir, planetCenter, planetRadius);
-    bool inShadow = sunPlanetHit.x > 0.0;
+    // Local density
+    float localDensity = getDensity(altitude);
 
-    if (!inShadow) {
-      // Find distance to atmosphere edge in sun direction
-      vec2 sunAtmosHit = raySphereIntersect(samplePoint, sunDir, planetCenter, outerRadius);
-      float sunRayLength = max(0.0, sunAtmosHit.y);
+    // Accumulate optical depth from camera to this point
+    float segmentDepthR = localDensity * stepSize;
+    float segmentDepthM = localDensity * stepSize;
+    opticalDepthR += segmentDepthR;
+    opticalDepthM += segmentDepthM;
 
-      // Optical depth from this point to sun (through atmosphere)
-      float sunOpticalDepth = opticalDepth(samplePoint, sunDir, sunRayLength);
+    // Check if this point can see the sun
+    vec2 sunPlanetHit = raySphereIntersect(samplePos, sunDir, planetCenter, planetRadius);
+    if (sunPlanetHit.x > 0.0) continue; // In shadow
 
-      // Total optical depth (sun to point + point to camera)
-      float totalDepth = sunOpticalDepth + viewOpticalDepth;
+    // Find distance to atmosphere edge toward sun
+    vec2 sunAtmosHit = raySphereIntersect(samplePos, sunDir, planetCenter, atmosphereRadius);
+    float sunRayLength = max(0.0, sunAtmosHit.y);
 
-      // Transmittance - how much light reaches this point and then the camera
-      vec3 transmittance = exp(-totalDepth * scatterCoeffs);
+    // Optical depth from sun to this point
+    float sunOpticalDepth = opticalDepth(samplePos, sunDir, sunRayLength);
 
-      // Phase function based on angle between view and sun
-      float cosAngle = dot(rayDir, sunDir);
-      float phaseValue = phase(cosAngle);
+    // Total attenuation (sun->point->camera)
+    // Rayleigh: wavelength dependent
+    vec3 tauR = rayleighScale * wavelengthsInv4 * (opticalDepthR + sunOpticalDepth);
+    // Mie: wavelength independent
+    vec3 tauM = vec3(mieScale * (opticalDepthM + sunOpticalDepth));
 
-      // Accumulate scattered light
-      totalScatter += transmittance * localDensity * phaseValue * stepSize;
-    }
+    vec3 attenuation = exp(-(tauR + tauM));
+
+    // Accumulate scattering
+    rayleighSum += localDensity * attenuation * stepSize;
+    mieSum += localDensity * attenuation * stepSize;
   }
 
-  // Final scattered light color
-  vec3 scatteredLight = totalScatter * scatterCoeffs * scatterStrength * sunIntensity;
+  // Apply scattering coefficients
+  rayleighSum *= rayleighScale * wavelengthsInv4;
+  mieSum *= mieScale;
 
-  // Clamp to prevent oversaturation
-  scatteredLight = clamp(scatteredLight, 0.0, 1.0);
+  // Phase functions based on angle between view and sun
+  float cosTheta = dot(rayDir, sunDir);
+  float phaseR = rayleighPhase(cosTheta);
+  float phaseM = miePhase(cosTheta, mieG);
 
-  // Output: scattered light with alpha based on intensity
-  float alpha = clamp(length(scatteredLight) * 0.8, 0.0, 0.95);
+  // Final color
+  vec3 color = sunIntensity * (rayleighSum * phaseR + mieSum * phaseM);
 
-  gl_FragColor = vec4(scatteredLight, alpha);
+  // Tone mapping to prevent oversaturation
+  color = 1.0 - exp(-color);
+
+  // Alpha based on scattering intensity
+  float alpha = clamp(length(color) * 1.5, 0.0, 0.95);
+
+  gl_FragColor = vec4(color, alpha);
 }

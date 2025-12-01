@@ -78,10 +78,17 @@ export class HexBlockMeshBuilder {
     waterTexture.repeat.set(PlayerConfig.WATER_UV_TILING, PlayerConfig.WATER_UV_TILING);
     this.textures.set('water', waterTexture);
 
+    // Detailed water - transparent with depth effect
     this.materials.set('water', new THREE.MeshLambertMaterial({
       map: waterTexture,
+      side: THREE.DoubleSide,
       transparent: true,
-      opacity: PlayerConfig.WATER_TRANSPARENCY,
+      opacity: PlayerConfig.WATER_TRANSPARENCY
+    }));
+
+    // LOD water - opaque for distant viewing (no transparency needed from space)
+    this.materials.set('waterLOD', new THREE.MeshLambertMaterial({
+      map: waterTexture,
       side: THREE.DoubleSide
     }));
   }
@@ -114,6 +121,10 @@ export class HexBlockMeshBuilder {
 
   public getWaterMaterial(): THREE.Material {
     return this.materials.get('water')!;
+  }
+
+  public getWaterLODMaterial(): THREE.Material {
+    return this.materials.get('waterLOD')!;
   }
 
   // Create separate geometries for each face type

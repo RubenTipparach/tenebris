@@ -98,10 +98,10 @@ export class GameEngine {
     // Position light far away in sun direction
     directionalLight.position.copy(this.sunDirection.clone().multiplyScalar(500));
     directionalLight.castShadow = true;
-    directionalLight.shadow.mapSize.width = 2048;
-    directionalLight.shadow.mapSize.height = 2048;
+    directionalLight.shadow.mapSize.width = 1024;
+    directionalLight.shadow.mapSize.height = 1024;
     directionalLight.shadow.camera.near = 0.5;
-    directionalLight.shadow.camera.far = 1000;
+    directionalLight.shadow.camera.far = 500;
     directionalLight.shadow.camera.left = -100;
     directionalLight.shadow.camera.right = 100;
     directionalLight.shadow.camera.top = 100;

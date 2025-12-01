@@ -27,12 +27,12 @@ class PlanetGame {
     this.engine = new GameEngine(container);
     this.inputManager = new InputManager();
 
-    // Create Earth with radius 50 and 4 subdivisions
-    this.earth = new Planet(this.engine.scene, 50, 4);
+    // Create Earth with radius 100 and 5 subdivisions (doubled size, +1 subdivision to keep tile size)
+    this.earth = new Planet(this.engine.scene, 100, 5);
 
-    // Create Moon with radius 25, 3 subdivisions, and moon texture
-    // Position the moon at (200, 0, 0) - about 150 units from Earth surface
-    this.moon = new Planet(this.engine.scene, 25, 3, { texturePath: '/textures/moon.png', heightVariation: 0.6 });
+    // Create Moon with radius 50, 4 subdivisions, and moon texture (doubled size)
+    // Position the moon at (400, 0, 0) - about 250 units from Earth surface
+    this.moon = new Planet(this.engine.scene, 50, 4, { texturePath: '/textures/moon.png', heightVariation: 0.6 });
 
     // Player will be initialized after planets
     this.player = null!;
@@ -61,20 +61,19 @@ class PlanetGame {
       await this.moon.initialize();
 
       // Position the moon and update its bounding spheres
-      this.moon.center.set(200, 0, 0);
+      this.moon.center.set(400, 0, 0);
       this.moon.updateBoundingSpheres();
 
-      // Build all meshes initially
-      this.earth.buildAllMeshes();
-      this.moon.buildAllMeshes();
+      // Don't build all meshes upfront - let them build on-demand as player moves
+      // This prevents massive startup lag with 10,000+ tiles
 
       // Initialize player on Earth surface
       this.player = new PlanetPlayer(this.engine.camera, this.inputManager, this.earth);
 
       // Add moon as a second celestial body with weaker gravity
       this.player.addPlanet(this.moon, {
-        gravityFullRadius: 35,    // 100% gravity within 35 units (moon radius 25 + 10)
-        gravityFalloffRadius: 60, // Gravity falls off to 0% at 60 units
+        gravityFullRadius: 70,    // 100% gravity within 70 units (moon radius 50 + 20)
+        gravityFalloffRadius: 120, // Gravity falls off to 0% at 120 units
         gravityStrength: 0.4,     // Moon has 40% of Earth's gravity
       });
 

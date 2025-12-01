@@ -8,21 +8,23 @@ export interface AtmosphereConfig {
   sunDirection: THREE.Vector3;
 }
 
-// Create atmosphere shader - renders a glow effect around the planet
+// Create atmosphere shader - GPU Gems 2 accurate atmospheric scattering
 function createAtmosphereShaderMaterial(config: AtmosphereConfig): THREE.ShaderMaterial {
-  const innerRadius = config.planetRadius * PlayerConfig.ATMOSPHERE_INNER_RADIUS_MULT;
-  const outerRadius = config.planetRadius * PlayerConfig.ATMOSPHERE_OUTER_RADIUS_MULT;
+  const atmosphereRadius = config.planetRadius * PlayerConfig.ATMOSPHERE_RADIUS_MULT;
+  // Effective surface radius accounts for terrain variation (blocks go below planetRadius)
+  const effectiveSurfaceRadius = config.planetRadius - PlayerConfig.ATMOSPHERE_SURFACE_OFFSET;
 
   return new THREE.ShaderMaterial({
     uniforms: {
       planetCenter: { value: new THREE.Vector3(0, 0, 0) },
-      planetRadius: { value: config.planetRadius },  // Actual surface for density calc
-      innerRadius: { value: innerRadius },           // Inner boundary (below surface)
-      outerRadius: { value: outerRadius },           // Outer boundary
+      planetRadius: { value: effectiveSurfaceRadius },  // Use effective surface for ray termination
+      atmosphereRadius: { value: atmosphereRadius },
       sunDirection: { value: config.sunDirection.clone().normalize() },
       viewerPosition: { value: new THREE.Vector3() },
-      densityFalloff: { value: PlayerConfig.ATMOSPHERE_DENSITY_FALLOFF },
-      scatterStrength: { value: PlayerConfig.ATMOSPHERE_SCATTER_STRENGTH },
+      rayleighScale: { value: PlayerConfig.ATMOSPHERE_RAYLEIGH_SCALE },
+      mieScale: { value: PlayerConfig.ATMOSPHERE_MIE_SCALE },
+      mieG: { value: PlayerConfig.ATMOSPHERE_MIE_G },
+      sunIntensity: { value: PlayerConfig.ATMOSPHERE_SUN_INTENSITY },
     },
     vertexShader: atmosphereVert,
     fragmentShader: atmosphereFrag,
@@ -38,9 +40,9 @@ export class Atmosphere {
   private material: THREE.ShaderMaterial;
 
   constructor(config: AtmosphereConfig) {
-    // Create sphere geometry at outer radius
-    const outerRadius = config.planetRadius * PlayerConfig.ATMOSPHERE_OUTER_RADIUS_MULT;
-    const geometry = new THREE.SphereGeometry(outerRadius, 64, 48);
+    // Create sphere geometry at atmosphere radius
+    const atmosphereRadius = config.planetRadius * PlayerConfig.ATMOSPHERE_RADIUS_MULT;
+    const geometry = new THREE.SphereGeometry(atmosphereRadius, 64, 48);
     this.material = createAtmosphereShaderMaterial(config);
     this.mesh = new THREE.Mesh(geometry, this.material);
   }

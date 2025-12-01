@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { GoldbergPolyhedron, HexTile } from './GoldbergPolyhedron';
 import { HexBlockType, HexBlockMeshBuilder } from './HexBlock';
+import { PlayerConfig } from '../config/PlayerConfig';
 
 export interface PlanetConfig {
   texturePath?: string;  // Single texture for all surfaces (like moon)
@@ -29,15 +30,23 @@ export class Planet {
   private projScreenMatrix: THREE.Matrix4 = new THREE.Matrix4();
   private config: PlanetConfig;
 
-  // LOD sphere for distant viewing (Group of hex tiles with textures)
-  private lodSphere: THREE.Object3D | null = null;
+  // LOD system - per-tile LOD meshes that can be hidden when detailed meshes are shown
+  private lodGroup: THREE.Group | null = null;
+  private lodTileMeshes: Map<number, THREE.Mesh> = new Map(); // tileIndex -> LOD mesh
   private isShowingLOD: boolean = false;
-  private readonly LOD_DISTANCE = 80; // Distance at which to switch to simple sphere
+
+  // Boundary walls group (fills gap between detailed terrain and LOD at render distance edge)
+  private boundaryWallsGroup: THREE.Group | null = null;
+  private cachedBoundaryTiles: Set<number> = new Set();
+
+  // Cache for tile range lookups (avoid BFS every frame)
+  private cachedPlayerTileIndex: number = -1;
+  private cachedRenderDistance: number = -1;
+  private cachedNearbyTiles: Set<number> = new Set();
+  private lastVisibleTiles: Set<number> = new Set();
 
   private readonly BLOCK_HEIGHT = 1;
   private readonly MAX_DEPTH = 16;
-  private readonly MIN_RENDER_DISTANCE = 8;  // Minimum tiles to render when on ground
-  private readonly MAX_RENDER_DISTANCE = 50; // Maximum tiles when high altitude
   private readonly DEEP_THRESHOLD = 4; // Depth at which we switch to stone texture
   private readonly SEA_LEVEL: number; // Depth at which water surface sits
 
@@ -59,16 +68,16 @@ export class Planet {
   }
 
   private createLODSphere(): void {
-    // Create a textured LOD sphere using hex tiles with flat surfaces (no elevation)
-    // Each tile gets the appropriate texture based on surface block type
-    const lodGroup = new THREE.Group();
+    // Create per-tile LOD meshes that can be individually hidden
+    // when detailed meshes are shown in that area
+    this.lodGroup = new THREE.Group();
 
-    // Separate geometry batches for each material type
-    const grassData = { positions: [] as number[], normals: [] as number[], uvs: [] as number[], indices: [] as number[], vertexOffset: 0 };
-    const waterData = { positions: [] as number[], normals: [] as number[], uvs: [] as number[], indices: [] as number[], vertexOffset: 0 };
-    const dirtData = { positions: [] as number[], normals: [] as number[], uvs: [] as number[], indices: [] as number[], vertexOffset: 0 };
+    // LOD sphere sits at sea level (water surface height)
+    // This aligns with where water is rendered in detailed view
+    const lodOuterRadius = this.radius - this.SEA_LEVEL * this.BLOCK_HEIGHT;
+    const lodInnerRadius = lodOuterRadius - 0.1;
 
-    for (const [_, column] of this.columns) {
+    for (const [tileIndex, column] of this.columns) {
       // Find surface block type (first non-air block)
       let surfaceBlockType = HexBlockType.GRASS;
       for (let d = 0; d < column.blocks.length; d++) {
@@ -78,12 +87,11 @@ export class Planet {
         }
       }
 
-      // Create flat hex face at planet radius (no elevation variation for LOD)
       const tile = column.tile;
       const { top } = this.meshBuilder.createSeparateGeometries(
         tile,
-        this.radius - 0.1, // Slightly inside to avoid z-fighting
-        this.radius,
+        lodInnerRadius,
+        lodOuterRadius,
         new THREE.Vector3(0, 0, 0),
         true,  // Only top face needed
         false,
@@ -91,50 +99,31 @@ export class Planet {
       );
 
       if (top) {
-        const posAttr = top.getAttribute('position');
-        const normAttr = top.getAttribute('normal');
-        const uvAttr = top.getAttribute('uv');
-        const indexAttr = top.getIndex();
-
-        if (posAttr && normAttr && uvAttr && indexAttr) {
-          // Choose the right batch based on block type
-          if (surfaceBlockType === HexBlockType.WATER) {
-            this.mergeGeometry(waterData, posAttr, normAttr, uvAttr, indexAttr);
-          } else if (surfaceBlockType === HexBlockType.DIRT) {
-            this.mergeGeometry(dirtData, posAttr, normAttr, uvAttr, indexAttr);
-          } else {
-            // GRASS, STONE, or anything else shows as grass on LOD
-            this.mergeGeometry(grassData, posAttr, normAttr, uvAttr, indexAttr);
-          }
+        // Choose material based on block type
+        let material: THREE.Material;
+        if (surfaceBlockType === HexBlockType.WATER) {
+          material = this.meshBuilder.getWaterLODMaterial();
+        } else if (surfaceBlockType === HexBlockType.DIRT) {
+          material = this.meshBuilder.getSideMaterial();
+        } else {
+          material = this.meshBuilder.getTopMaterial();
         }
-        top.dispose();
+
+        const mesh = new THREE.Mesh(top, material);
+        mesh.userData.tileIndex = tileIndex;
+        this.lodGroup.add(mesh);
+        this.lodTileMeshes.set(tileIndex, mesh);
       }
     }
 
-    // Create meshes for each material type
-    if (grassData.positions.length > 0) {
-      const geom = this.createBufferGeometry(grassData);
-      const mesh = new THREE.Mesh(geom, this.meshBuilder.getTopMaterial());
-      lodGroup.add(mesh);
-    }
+    this.lodGroup.position.copy(this.center);
+    this.lodGroup.visible = true; // Always visible as background
+    this.scene.add(this.lodGroup);
 
-    if (waterData.positions.length > 0) {
-      const geom = this.createBufferGeometry(waterData);
-      const mesh = new THREE.Mesh(geom, this.meshBuilder.getWaterMaterial());
-      mesh.renderOrder = 1;
-      lodGroup.add(mesh);
-    }
-
-    if (dirtData.positions.length > 0) {
-      const geom = this.createBufferGeometry(dirtData);
-      const mesh = new THREE.Mesh(geom, this.meshBuilder.getSideMaterial());
-      lodGroup.add(mesh);
-    }
-
-    lodGroup.position.copy(this.center);
-    lodGroup.visible = false;
-    this.scene.add(lodGroup);
-    this.lodSphere = lodGroup;
+    // Create boundary walls group (will be populated dynamically)
+    this.boundaryWallsGroup = new THREE.Group();
+    this.boundaryWallsGroup.position.copy(this.center);
+    this.scene.add(this.boundaryWallsGroup);
   }
 
   private generateTerrain(): void {
@@ -217,9 +206,13 @@ export class Planet {
     for (const column of this.columns.values()) {
       column.boundingSphere.center.copy(column.tile.center).add(this.center);
     }
-    // Also update LOD sphere position
-    if (this.lodSphere) {
-      this.lodSphere.position.copy(this.center);
+    // Also update LOD group position
+    if (this.lodGroup) {
+      this.lodGroup.position.copy(this.center);
+    }
+    // Update boundary walls position
+    if (this.boundaryWallsGroup) {
+      this.boundaryWallsGroup.position.copy(this.center);
     }
   }
 
@@ -314,90 +307,111 @@ export class Planet {
     const distToCenter = playerPosition.distanceTo(this.center);
     const altitude = distToCenter - this.radius;
 
-    // Check if we should show LOD sphere instead of detailed mesh
-    if (altitude > this.LOD_DISTANCE) {
-      // Show LOD sphere, hide detailed meshes
+    // Update LOD group position
+    if (this.lodGroup) {
+      this.lodGroup.position.copy(this.center);
+    }
+
+    // When very far away, only show LOD (all tiles visible, no detailed meshes)
+    if (altitude > PlayerConfig.PLANET_LOD_SWITCH_ALTITUDE) {
       if (!this.isShowingLOD) {
         this.isShowingLOD = true;
-        if (this.lodSphere) {
-          this.lodSphere.visible = true;
+        // Show all LOD tiles
+        for (const lodMesh of this.lodTileMeshes.values()) {
+          lodMesh.visible = true;
         }
-        // Hide all column meshes
-        for (const column of this.columns.values()) {
-          if (column.meshGroup) {
+        // Hide all detailed meshes
+        for (const tileIndex of this.lastVisibleTiles) {
+          const column = this.columns.get(tileIndex);
+          if (column?.meshGroup) {
             column.meshGroup.visible = false;
           }
         }
-      }
-      // Update LOD sphere position in case center changed
-      if (this.lodSphere) {
-        this.lodSphere.position.copy(this.center);
+        this.lastVisibleTiles.clear();
       }
       return;
     }
 
-    // Show detailed meshes, hide LOD sphere
-    if (this.isShowingLOD) {
-      this.isShowingLOD = false;
-      if (this.lodSphere) {
-        this.lodSphere.visible = false;
-      }
-    }
+    // When close, show detailed meshes and hide LOD tiles in detailed area
+    this.isShowingLOD = false;
 
     // Calculate dynamic render distance based on altitude
     const altitudeRatio = Math.min(1, Math.max(0, altitude / 100)); // 0-100 altitude range
-    const renderDistance = Math.floor(
-      this.MIN_RENDER_DISTANCE + altitudeRatio * (this.MAX_RENDER_DISTANCE - this.MIN_RENDER_DISTANCE)
-    );
+    const minDist = PlayerConfig.PLANET_MIN_RENDER_DISTANCE;
+    const maxDist = PlayerConfig.PLANET_MAX_RENDER_DISTANCE;
+    const renderDistance = Math.floor(minDist + altitudeRatio * (maxDist - minDist));
 
     const playerTile = this.polyhedron.getTileAtPoint(playerPosition.clone().sub(this.center));
     if (!playerTile) {
-      // Player is far from planet - show all tiles in frustum
-      for (const [_, column] of this.columns) {
-        const inFrustum = this.frustum.intersectsSphere(column.boundingSphere);
-        if (inFrustum) {
-          if (column.isDirty || !column.meshGroup) {
-            this.buildColumnMesh(column);
-          }
-          if (column.meshGroup) {
-            column.meshGroup.visible = true;
-          }
-        } else if (column.meshGroup) {
-          column.meshGroup.visible = false;
-        }
+      // Player is far from planet - show all LOD tiles
+      for (const lodMesh of this.lodTileMeshes.values()) {
+        lodMesh.visible = true;
       }
       return;
     }
 
-    const nearbyTiles = this.getTilesInRange(playerTile.index, renderDistance);
+    // Only recalculate nearby tiles if player moved to a different tile or render distance changed
+    const playerTileIndex = playerTile.index;
+    if (playerTileIndex !== this.cachedPlayerTileIndex || renderDistance !== this.cachedRenderDistance) {
+      this.cachedPlayerTileIndex = playerTileIndex;
+      this.cachedRenderDistance = renderDistance;
+      this.cachedNearbyTiles = this.getTilesInRange(playerTileIndex, renderDistance);
 
-    for (const [tileIndex, column] of this.columns) {
-      if (nearbyTiles.has(tileIndex)) {
-        const inFrustum = this.frustum.intersectsSphere(column.boundingSphere);
+      // Update LOD visibility: hide LOD tiles in detailed area, show the rest
+      for (const [tileIndex, lodMesh] of this.lodTileMeshes) {
+        lodMesh.visible = !this.cachedNearbyTiles.has(tileIndex);
+      }
 
-        if (inFrustum) {
-          if (column.isDirty || !column.meshGroup) {
-            this.buildColumnMesh(column);
-          }
-          if (column.meshGroup) {
-            column.meshGroup.visible = true;
-          }
-        } else if (column.meshGroup) {
-          column.meshGroup.visible = false;
+      // Rebuild boundary walls at the edge of the render distance
+      this.rebuildBoundaryWalls();
+    }
+
+    // Track which tiles are visible this frame
+    const currentVisibleTiles = new Set<number>();
+
+    // Only iterate through cached nearby tiles (not all columns)
+    for (const tileIndex of this.cachedNearbyTiles) {
+      const column = this.columns.get(tileIndex);
+      if (!column) continue;
+
+      const inFrustum = this.frustum.intersectsSphere(column.boundingSphere);
+
+      if (inFrustum) {
+        if (column.isDirty || !column.meshGroup) {
+          this.buildColumnMesh(column);
+        }
+        if (column.meshGroup) {
+          column.meshGroup.visible = true;
+          currentVisibleTiles.add(tileIndex);
         }
       } else if (column.meshGroup) {
         column.meshGroup.visible = false;
       }
     }
+
+    // Hide tiles that were visible last frame but not this frame
+    for (const tileIndex of this.lastVisibleTiles) {
+      if (!currentVisibleTiles.has(tileIndex)) {
+        const column = this.columns.get(tileIndex);
+        if (column?.meshGroup) {
+          column.meshGroup.visible = false;
+        }
+      }
+    }
+
+    this.lastVisibleTiles = currentVisibleTiles;
   }
 
   private getTilesInRange(centerTileIndex: number, range: number): Set<number> {
     const result = new Set<number>();
     const visited = new Set<number>();
-    const queue: { index: number; distance: number }[] = [{ index: centerTileIndex, distance: 0 }];
 
-    while (queue.length > 0) {
-      const current = queue.shift()!;
+    // Use index-based queue to avoid O(n) shift operations
+    const queue: { index: number; distance: number }[] = [{ index: centerTileIndex, distance: 0 }];
+    let queueStart = 0;
+
+    while (queueStart < queue.length) {
+      const current = queue[queueStart++];
       if (visited.has(current.index)) continue;
       visited.add(current.index);
 
@@ -412,6 +426,119 @@ export class Planet {
       }
     }
     return result;
+  }
+
+  // Build walls at the boundary between detailed terrain and LOD
+  // This fills the gap when terrain is lower than the LOD surface
+  private rebuildBoundaryWalls(): void {
+    if (!this.boundaryWallsGroup) return;
+
+    // Clear existing walls
+    while (this.boundaryWallsGroup.children.length > 0) {
+      const child = this.boundaryWallsGroup.children[0];
+      if (child instanceof THREE.Mesh) {
+        child.geometry.dispose();
+      }
+      this.boundaryWallsGroup.remove(child);
+    }
+
+    // Find boundary tiles (tiles in nearby set that have neighbors outside)
+    const boundaryTiles = new Set<number>();
+    for (const tileIndex of this.cachedNearbyTiles) {
+      const column = this.columns.get(tileIndex);
+      if (!column) continue;
+
+      for (const neighborIndex of column.tile.neighbors) {
+        if (!this.cachedNearbyTiles.has(neighborIndex)) {
+          boundaryTiles.add(tileIndex);
+          break;
+        }
+      }
+    }
+
+    this.cachedBoundaryTiles = boundaryTiles;
+
+    // LOD surface height (at sea level)
+    const lodSurfaceRadius = this.radius - this.SEA_LEVEL * this.BLOCK_HEIGHT;
+
+    // Build wall geometry for each boundary tile
+    const wallData = { positions: [] as number[], normals: [] as number[], uvs: [] as number[], indices: [] as number[], vertexOffset: 0 };
+
+    for (const tileIndex of boundaryTiles) {
+      const column = this.columns.get(tileIndex);
+      if (!column) continue;
+
+      // Find terrain surface depth
+      let surfaceDepth = 0;
+      for (let d = 0; d < column.blocks.length; d++) {
+        if (column.blocks[d] !== HexBlockType.AIR && column.blocks[d] !== HexBlockType.WATER) {
+          surfaceDepth = d;
+          break;
+        }
+      }
+
+      // Terrain surface height
+      const terrainSurfaceRadius = this.radius - surfaceDepth * this.BLOCK_HEIGHT;
+
+      // Only build wall if terrain is below LOD surface (there's a gap to fill)
+      if (terrainSurfaceRadius >= lodSurfaceRadius) continue;
+
+      // Build wall from terrain surface up to LOD surface
+      // For each edge that faces outside the render area
+      for (let i = 0; i < column.tile.neighbors.length; i++) {
+        const neighborIndex = column.tile.neighbors[i];
+        if (this.cachedNearbyTiles.has(neighborIndex)) continue; // Only walls facing outward
+
+        // Get the two vertices of this edge
+        const v1 = column.tile.vertices[i];
+        const v2 = column.tile.vertices[(i + 1) % column.tile.vertices.length];
+
+        // Create wall quad from terrain to LOD surface
+        const v1Inner = v1.clone().normalize().multiplyScalar(terrainSurfaceRadius);
+        const v1Outer = v1.clone().normalize().multiplyScalar(lodSurfaceRadius);
+        const v2Inner = v2.clone().normalize().multiplyScalar(terrainSurfaceRadius);
+        const v2Outer = v2.clone().normalize().multiplyScalar(lodSurfaceRadius);
+
+        // Calculate outward normal (perpendicular to wall, facing away from center)
+        const edgeDir = v2.clone().sub(v1).normalize();
+        const radialDir = column.tile.center.clone().normalize();
+        const wallNormal = edgeDir.clone().cross(radialDir).normalize();
+
+        // Add quad vertices (two triangles)
+        const baseIdx = wallData.vertexOffset;
+
+        // Positions
+        wallData.positions.push(v1Inner.x, v1Inner.y, v1Inner.z);
+        wallData.positions.push(v1Outer.x, v1Outer.y, v1Outer.z);
+        wallData.positions.push(v2Outer.x, v2Outer.y, v2Outer.z);
+        wallData.positions.push(v2Inner.x, v2Inner.y, v2Inner.z);
+
+        // Normals (all same for flat shading)
+        for (let n = 0; n < 4; n++) {
+          wallData.normals.push(wallNormal.x, wallNormal.y, wallNormal.z);
+        }
+
+        // UVs
+        const wallHeight = (lodSurfaceRadius - terrainSurfaceRadius) / this.BLOCK_HEIGHT;
+        wallData.uvs.push(0, 0);
+        wallData.uvs.push(0, wallHeight);
+        wallData.uvs.push(1, wallHeight);
+        wallData.uvs.push(1, 0);
+
+        // Indices (two triangles, wound correctly for outward-facing)
+        wallData.indices.push(baseIdx, baseIdx + 2, baseIdx + 1);
+        wallData.indices.push(baseIdx, baseIdx + 3, baseIdx + 2);
+
+        wallData.vertexOffset += 4;
+      }
+    }
+
+    // Create wall mesh if we have any geometry
+    if (wallData.positions.length > 0) {
+      const geom = this.createBufferGeometry(wallData);
+      const mesh = new THREE.Mesh(geom, this.meshBuilder.getSideMaterial());
+      this.boundaryWallsGroup.add(mesh);
+    }
   }
 
   private buildColumnMesh(column: PlanetColumn): void {
@@ -442,7 +569,10 @@ export class Planet {
       }
     }
 
-    for (let depth = 0; depth < column.blocks.length; depth++) {
+    // Only render blocks near the surface (optimization: skip deep underground blocks)
+    const maxRenderDepth = Math.min(surfaceDepth + 4, column.blocks.length);
+
+    for (let depth = 0; depth < maxRenderDepth; depth++) {
       const blockType = column.blocks[depth];
       if (blockType === HexBlockType.AIR) continue;
 
@@ -450,19 +580,22 @@ export class Planet {
 
       // For water, check if exposed to air; for solid blocks, also check water exposure
       const blockAbove = depth === 0 ? HexBlockType.AIR : column.blocks[depth - 1];
-      const blockBelow = depth === column.blocks.length - 1 ? HexBlockType.AIR : column.blocks[depth + 1];
+      const blockBelow = depth === maxRenderDepth - 1 ? HexBlockType.AIR : column.blocks[depth + 1];
 
       const hasTopExposed = blockAbove === HexBlockType.AIR || (isWater && false) || (!isWater && blockAbove === HexBlockType.WATER);
       const hasBottomExposed = blockBelow === HexBlockType.AIR || (!isWater && blockBelow === HexBlockType.WATER);
-      const hasSideExposed = this.hasExposedSide(column, depth);
 
       // For water, only render top surface (at sea level)
       if (isWater) {
         // Only render water top face if exposed to air above
         if (blockAbove !== HexBlockType.AIR) continue;
-      } else {
-        if (!hasTopExposed && !hasBottomExposed && !hasSideExposed) continue;
       }
+
+      // Calculate hasSideExposed once (expensive operation)
+      const hasSideExposed = !isWater && this.hasExposedSide(column, depth);
+
+      // Skip if nothing is exposed
+      if (!isWater && !hasTopExposed && !hasBottomExposed && !hasSideExposed) continue;
 
       const outerRadius = this.radius - depth * this.BLOCK_HEIGHT;
       const innerRadius = outerRadius - this.BLOCK_HEIGHT;
@@ -481,7 +614,7 @@ export class Planet {
         new THREE.Vector3(0, 0, 0),  // Local origin, not planet center
         isWater ? true : hasTopExposed,  // Water only needs top face
         isWater ? false : hasBottomExposed,
-        isWater ? false : hasSideExposed
+        hasSideExposed
       );
 
       // Add top face to appropriate batch

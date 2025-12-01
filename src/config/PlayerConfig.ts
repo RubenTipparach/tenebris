@@ -58,9 +58,16 @@ export const PlayerConfig = {
   UNDERWATER_FOG_NEAR: 0,          // Fog starts at this distance from camera
   UNDERWATER_FOG_FAR: 10,          // Fog fully opaque at this distance
 
-  // Atmosphere
-  ATMOSPHERE_INNER_RADIUS_MULT: 0.0,  // Inner boundary as multiplier of planet radius (below surface!)
-  ATMOSPHERE_OUTER_RADIUS_MULT: 1.25, // Outer boundary as multiplier of planet radius
-  ATMOSPHERE_DENSITY_FALLOFF: 16.0,    // How quickly density decreases with altitude (lower = thicker)
-  ATMOSPHERE_SCATTER_STRENGTH: 4.0,  // Overall scattering intensity
+  // Atmosphere (GPU Gems 2 style scattering)
+  ATMOSPHERE_RADIUS_MULT: 1.2,        // Atmosphere outer radius as multiplier of planet radius
+  ATMOSPHERE_SURFACE_OFFSET: 10.0,     // Offset for planet surface (accounts for terrain depth variation)
+  ATMOSPHERE_RAYLEIGH_SCALE: 0.0055,  // Rayleigh scattering coefficient (blue sky)
+  ATMOSPHERE_MIE_SCALE: 0.001,        // Mie scattering coefficient (sun glow/haze)
+  ATMOSPHERE_MIE_G: 0.85,             // Mie phase asymmetry (-0.99 to 0.99, positive = forward scatter)
+  ATMOSPHERE_SUN_INTENSITY: 10.0,     // Sun brightness for atmosphere
+
+  // Planet LOD system
+  PLANET_MIN_RENDER_DISTANCE: 6,      // Min tiles to render when on ground
+  PLANET_MAX_RENDER_DISTANCE: 25,     // Max tiles when at high altitude
+  PLANET_LOD_SWITCH_ALTITUDE: 50,     // Altitude above which only LOD is shown
 };
