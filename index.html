@@ -150,6 +150,105 @@
       position: relative;
     }
 
+    /* Settings section in instructions menu */
+    #instructions .settings-section {
+      margin-top: 20px;
+      padding-top: 15px;
+      border-top: 1px solid #444;
+    }
+
+    #instructions .settings-section h3 {
+      color: #4CAF50;
+      margin-bottom: 10px;
+      font-size: 14px;
+    }
+
+    .settings-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin: 8px 0;
+      padding: 8px 12px;
+      background: rgba(255, 255, 255, 0.05);
+      border-radius: 5px;
+    }
+
+    .settings-row label {
+      cursor: pointer;
+      font-size: 13px;
+    }
+
+    .toggle-switch {
+      position: relative;
+      width: 44px;
+      height: 22px;
+      cursor: pointer;
+    }
+
+    .toggle-switch input {
+      position: absolute;
+      opacity: 0;
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      cursor: pointer;
+      z-index: 1;
+    }
+
+    .toggle-slider {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background-color: #555;
+      border-radius: 22px;
+      transition: 0.3s;
+    }
+
+    .toggle-slider:before {
+      position: absolute;
+      content: "";
+      height: 16px;
+      width: 16px;
+      left: 3px;
+      bottom: 3px;
+      background-color: white;
+      border-radius: 50%;
+      transition: 0.3s;
+    }
+
+    .toggle-switch input:checked + .toggle-slider {
+      background-color: #4CAF50;
+    }
+
+    .toggle-switch input:checked + .toggle-slider:before {
+      transform: translateX(22px);
+    }
+
+    /* Start button */
+    #start-button {
+      display: block;
+      margin: 20px auto 0;
+      padding: 12px 30px;
+      background: #4CAF50;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      font-family: 'Courier New', monospace;
+      font-size: 14px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    #start-button:hover {
+      background: #45a049;
+    }
+
+    #start-button:active {
+      background: #3d8b40;
+    }
+
     /* Mining progress bar */
     #mining-progress-container {
       position: fixed;
@@ -204,7 +303,27 @@
     <p><span class="key">Left Click</span> - Break block</p>
     <p><span class="key">Right Click</span> - Place block</p>
     <p><span class="key">1-9</span> - Select hotbar slot</p>
-    <p style="margin-top: 20px; color: #4CAF50;">Click to start</p>
+    <p><span class="key">F3</span> - Toggle profiler</p>
+
+    <div class="settings-section">
+      <h3>SETTINGS</h3>
+      <div class="settings-row">
+        <label for="toggle-atmosphere">Atmosphere</label>
+        <div class="toggle-switch">
+          <input type="checkbox" id="toggle-atmosphere" checked>
+          <span class="toggle-slider"></span>
+        </div>
+      </div>
+      <div class="settings-row">
+        <label for="toggle-clouds">Clouds</label>
+        <div class="toggle-switch">
+          <input type="checkbox" id="toggle-clouds" checked>
+          <span class="toggle-slider"></span>
+        </div>
+      </div>
+    </div>
+
+    <button id="start-button">PLAY</button>
   </div>
 
   <div id="hotbar">

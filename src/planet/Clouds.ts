@@ -228,6 +228,14 @@ export class CloudSystem {
     // Slow rotation around Y axis (in local space)
     this.clouds.rotation.y += deltaTime * 0.002;
   }
+
+  public setVisible(visible: boolean): void {
+    this.clouds.visible = visible;
+  }
+
+  public isVisible(): boolean {
+    return this.clouds.visible;
+  }
 }
 
 // Factory function to create clouds for Earth-like planet

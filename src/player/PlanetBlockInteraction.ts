@@ -154,61 +154,79 @@ export class PlanetBlockInteraction {
     const origin = this.player.getRaycastOrigin();
     const direction = this.player.getForwardVector();
 
+    // First check for trees using THREE.js raycaster
     this.raycaster.set(origin, direction);
     this.raycaster.far = this.MAX_REACH;
 
-    // Get all meshes from planet and trees
-    const meshes: THREE.Object3D[] = [];
+    // Get tree meshes only
+    const treeMeshes: THREE.Object3D[] = [];
     this.scene.traverse((object) => {
-      if (object instanceof THREE.Mesh) {
-        // Block meshes have tileIndex, tree meshes have isTree
-        if (object.userData.tileIndex !== undefined || object.userData.isTree) {
-          meshes.push(object);
-        }
+      if (object instanceof THREE.Mesh && object.userData.isTree) {
+        treeMeshes.push(object);
       }
     });
 
-    const intersects = this.raycaster.intersectObjects(meshes, false);
+    const treeIntersects = this.raycaster.intersectObjects(treeMeshes, false);
 
-    if (intersects.length > 0) {
-      const hit = intersects[0];
-      const hitObject = hit.object as THREE.Mesh;
+    // Use Planet's raycast for terrain blocks (works with batched geometry)
+    const blockHit = this.planet.raycast(origin, direction, this.MAX_REACH);
+
+    // Determine which hit is closer
+    let hitTree = false;
+    let hitBlock = false;
+    let treeHit: THREE.Intersection | null = null;
+
+    if (treeIntersects.length > 0 && blockHit) {
+      // Both hit - pick closer one
+      if (treeIntersects[0].distance < origin.distanceTo(blockHit.point)) {
+        hitTree = true;
+        treeHit = treeIntersects[0];
+      } else {
+        hitBlock = true;
+      }
+    } else if (treeIntersects.length > 0) {
+      hitTree = true;
+      treeHit = treeIntersects[0];
+    } else if (blockHit) {
+      hitBlock = true;
+    }
+
+    if (hitTree && treeHit) {
+      const hitObject = treeHit.object as THREE.Mesh;
 
       if (this.highlightMesh) {
         this.highlightMesh.visible = true;
-        this.highlightMesh.position.copy(hit.point);
+        this.highlightMesh.position.copy(treeHit.point);
       }
 
-      // Check if we hit a tree
-      if (hitObject.userData.isTree) {
-        const treeType = hitObject.userData.treeType as string; // 'trunk' or 'leaves'
+      const treeType = hitObject.userData.treeType as string; // 'trunk' or 'leaves'
 
-        // Handle tree mining (left click held)
-        if (leftClick) {
-          this.handleTreeMining(deltaTime, hitObject, treeType);
-        } else {
-          this.resetMining();
-        }
+      // Handle tree mining (left click held)
+      if (leftClick) {
+        this.handleTreeMining(deltaTime, hitObject, treeType);
       } else {
-        // Hit a block
-        const tileIndex = hitObject.userData.tileIndex as number;
-        // Compute depth from hit point position
-        const depth = this.planet.getDepthAtPoint(hit.point);
-        const blockType = this.planet.getBlock(tileIndex, depth);
+        this.resetMining();
+      }
+    } else if (hitBlock && blockHit) {
+      if (this.highlightMesh) {
+        this.highlightMesh.visible = true;
+        this.highlightMesh.position.copy(blockHit.point);
+      }
 
-        // Handle mining (left click held)
-        if (leftClick && blockType !== HexBlockType.AIR) {
-          this.handleMining(deltaTime, tileIndex, depth, blockType);
-        } else {
-          // Reset mining if not clicking or target changed
-          this.resetMining();
-        }
+      const { tileIndex, depth, blockType } = blockHit;
 
-        // Handle block placing (right click)
-        if (rightClick && this.rightClickCooldown === 0) {
-          this.placeBlock(tileIndex, depth - 1);
-          this.rightClickCooldown = this.CLICK_COOLDOWN;
-        }
+      // Handle mining (left click held) - don't mine water
+      if (leftClick && blockType !== HexBlockType.AIR && blockType !== HexBlockType.WATER) {
+        this.handleMining(deltaTime, tileIndex, depth, blockType);
+      } else {
+        // Reset mining if not clicking or target changed
+        this.resetMining();
+      }
+
+      // Handle block placing (right click)
+      if (rightClick && this.rightClickCooldown === 0) {
+        this.placeBlock(tileIndex, depth - 1);
+        this.rightClickCooldown = this.CLICK_COOLDOWN;
       }
     } else {
       if (this.highlightMesh) {

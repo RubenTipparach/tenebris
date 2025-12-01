@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { GoldbergPolyhedron, HexTile } from './GoldbergPolyhedron';
 import { HexBlockType, HexBlockMeshBuilder } from './HexBlock';
 import { PlayerConfig } from '../config/PlayerConfig';
+import { profiler } from '../engine/Profiler';
 
 export interface PlanetConfig {
   texturePath?: string;  // Single texture for all surfaces (like moon)
@@ -13,9 +14,21 @@ export interface PlanetConfig {
 export interface PlanetColumn {
   tile: HexTile;
   blocks: HexBlockType[];
-  meshGroup: THREE.Group | null;
   isDirty: boolean;
   boundingSphere: THREE.Sphere;
+}
+
+// Geometry data for batching
+interface GeometryData {
+  positions: number[];
+  normals: number[];
+  uvs: number[];
+  indices: number[];
+  vertexOffset: number;
+}
+
+function createEmptyGeometryData(): GeometryData {
+  return { positions: [], normals: [], uvs: [], indices: [], vertexOffset: 0 };
 }
 
 export class Planet {
@@ -30,10 +43,11 @@ export class Planet {
   private projScreenMatrix: THREE.Matrix4 = new THREE.Matrix4();
   private config: PlanetConfig;
 
-  // LOD system - per-tile LOD meshes that can be hidden when detailed meshes are shown
-  private lodGroup: THREE.Group | null = null;
-  private lodTileMeshes: Map<number, THREE.Mesh> = new Map(); // tileIndex -> LOD mesh
-  private isShowingLOD: boolean = false;
+  // LOD system - single batched LOD mesh
+  private lodMesh: THREE.Mesh | null = null;
+  private lodWaterMesh: THREE.Mesh | null = null; // Separate LOD water mesh for visibility control
+  private lodTileVisibility: Map<number, boolean> = new Map(); // Track which LOD tiles should be visible
+  private needsLODRebuild: boolean = false; // Flag to rebuild LOD mesh when terrain changes
 
   // Boundary walls group (fills gap between detailed terrain and LOD at render distance edge)
   private boundaryWallsGroup: THREE.Group | null = null;
@@ -43,7 +57,15 @@ export class Planet {
   private cachedPlayerTileIndex: number = -1;
   private cachedRenderDistance: number = -1;
   private cachedNearbyTiles: Set<number> = new Set();
-  private lastVisibleTiles: Set<number> = new Set();
+  private lastBuiltTiles: Set<number> = new Set(); // Tiles that were built into batched mesh
+
+  // Batched meshes for visible terrain (one mesh per material type = ~5 draw calls total)
+  private batchedMeshGroup: THREE.Group | null = null;
+  private topMesh: THREE.Mesh | null = null;
+  private sideMesh: THREE.Mesh | null = null;
+  private stoneMesh: THREE.Mesh | null = null;
+  private waterMesh: THREE.Mesh | null = null;
+  private needsRebatch: boolean = true; // Flag to rebuild batched geometry
 
   private readonly BLOCK_HEIGHT = 1;
   private readonly MAX_DEPTH = 16;
@@ -55,7 +77,7 @@ export class Planet {
     this.radius = radius;
     this.center = new THREE.Vector3(0, 0, 0);
     this.config = config;
-    this.SEA_LEVEL = config.seaLevel ?? 2; // Default sea level at depth 2 (creates oceans in lower terrain)
+    this.SEA_LEVEL = config.seaLevel ?? 2;
     this.polyhedron = new GoldbergPolyhedron(radius, subdivisions);
     this.meshBuilder = new HexBlockMeshBuilder();
   }
@@ -63,19 +85,54 @@ export class Planet {
   public async initialize(): Promise<void> {
     await this.meshBuilder.loadTextures(this.config.texturePath);
     this.generateTerrain();
-    this.createLODSphere();
+    this.createLODMesh();
+    this.createBatchedMeshGroup();
+
     console.log(`Planet created with ${this.polyhedron.getTileCount()} tiles`);
   }
 
-  private createLODSphere(): void {
-    // Create per-tile LOD meshes that can be individually hidden
-    // when detailed meshes are shown in that area
-    this.lodGroup = new THREE.Group();
+  private createBatchedMeshGroup(): void {
+    this.batchedMeshGroup = new THREE.Group();
+    this.batchedMeshGroup.position.copy(this.center);
+    this.batchedMeshGroup.renderOrder = 0; // Render detailed terrain after LOD (which is -1)
+    this.scene.add(this.batchedMeshGroup);
+  }
 
-    // LOD sphere sits at sea level (water surface height)
-    // This aligns with where water is rendered in detailed view
-    const lodOuterRadius = this.radius - this.SEA_LEVEL * this.BLOCK_HEIGHT;
+  private createLODMesh(): void {
+    this.rebuildLODMesh();
+
+    // Create boundary walls group
+    this.boundaryWallsGroup = new THREE.Group();
+    this.boundaryWallsGroup.position.copy(this.center);
+    this.scene.add(this.boundaryWallsGroup);
+  }
+
+  private rebuildLODMesh(): void {
+    // Remove old LOD mesh if it exists
+    if (this.lodMesh) {
+      const lodGroup = this.lodMesh as unknown as THREE.Group;
+      // Dispose geometries
+      lodGroup.traverse((child) => {
+        if (child instanceof THREE.Mesh && child.geometry) {
+          child.geometry.dispose();
+        }
+      });
+      this.scene.remove(lodGroup);
+      this.lodMesh = null;
+      this.lodWaterMesh = null;
+    }
+
+    // Create a single batched LOD mesh for the entire planet
+    // Offset LOD inward so detailed terrain renders on top (depth buffer handles occlusion)
+    const lodOffset = 0.5; // Larger offset ensures LOD is clearly behind detailed terrain
+    const lodOuterRadius = this.radius - this.SEA_LEVEL * this.BLOCK_HEIGHT - lodOffset;
     const lodInnerRadius = lodOuterRadius - 0.1;
+
+    // Batch all LOD tiles into material groups
+    // Water tiles that are in the detailed render range are excluded to prevent overlap
+    const grassData = createEmptyGeometryData();
+    const dirtData = createEmptyGeometryData();
+    const waterData = createEmptyGeometryData();
 
     for (const [tileIndex, column] of this.columns) {
       // Find surface block type (first non-air block)
@@ -87,49 +144,75 @@ export class Planet {
         }
       }
 
+      // Skip water tiles that are in the detailed render range
+      // This prevents LOD water from showing under detailed water shader
+      if (surfaceBlockType === HexBlockType.WATER && this.cachedNearbyTiles.has(tileIndex)) {
+        continue;
+      }
+
       const tile = column.tile;
       const { top } = this.meshBuilder.createSeparateGeometries(
         tile,
         lodInnerRadius,
         lodOuterRadius,
         new THREE.Vector3(0, 0, 0),
-        true,  // Only top face needed
-        false,
-        false
+        true, false, false
       );
 
       if (top) {
-        // Choose material based on block type
-        let material: THREE.Material;
-        if (surfaceBlockType === HexBlockType.WATER) {
-          material = this.meshBuilder.getWaterLODMaterial();
-        } else if (surfaceBlockType === HexBlockType.DIRT) {
-          material = this.meshBuilder.getSideMaterial();
-        } else {
-          material = this.meshBuilder.getTopMaterial();
-        }
+        const posAttr = top.getAttribute('position');
+        const normAttr = top.getAttribute('normal');
+        const uvAttr = top.getAttribute('uv');
+        const indexAttr = top.getIndex();
 
-        const mesh = new THREE.Mesh(top, material);
-        mesh.userData.tileIndex = tileIndex;
-        this.lodGroup.add(mesh);
-        this.lodTileMeshes.set(tileIndex, mesh);
+        if (posAttr && normAttr && uvAttr && indexAttr) {
+          if (surfaceBlockType === HexBlockType.WATER) {
+            this.mergeGeometry(waterData, posAttr, normAttr, uvAttr, indexAttr);
+          } else if (surfaceBlockType === HexBlockType.DIRT) {
+            this.mergeGeometry(dirtData, posAttr, normAttr, uvAttr, indexAttr);
+          } else {
+            this.mergeGeometry(grassData, posAttr, normAttr, uvAttr, indexAttr);
+          }
+        }
+        top.dispose();
       }
+
+      this.lodTileVisibility.set(tileIndex, true);
     }
 
-    this.lodGroup.position.copy(this.center);
-    this.lodGroup.visible = true; // Always visible as background
-    this.scene.add(this.lodGroup);
+    // Create LOD group with batched meshes (using LOD materials with polygonOffset)
+    const lodGroup = new THREE.Group();
 
-    // Create boundary walls group (will be populated dynamically)
-    this.boundaryWallsGroup = new THREE.Group();
-    this.boundaryWallsGroup.position.copy(this.center);
-    this.scene.add(this.boundaryWallsGroup);
+    if (grassData.positions.length > 0) {
+      const geom = this.createBufferGeometry(grassData);
+      const mesh = new THREE.Mesh(geom, this.meshBuilder.getTopLODMaterial());
+      lodGroup.add(mesh);
+    }
+
+    if (dirtData.positions.length > 0) {
+      const geom = this.createBufferGeometry(dirtData);
+      const mesh = new THREE.Mesh(geom, this.meshBuilder.getSideLODMaterial());
+      lodGroup.add(mesh);
+    }
+
+    if (waterData.positions.length > 0) {
+      const geom = this.createBufferGeometry(waterData);
+      this.lodWaterMesh = new THREE.Mesh(geom, this.meshBuilder.getWaterLODMaterial());
+      this.lodWaterMesh.renderOrder = -2; // Render before detailed water (which is renderOrder 1)
+      lodGroup.add(this.lodWaterMesh);
+    }
+
+    lodGroup.position.copy(this.center);
+    lodGroup.renderOrder = -1; // Render LOD before detailed terrain
+    this.scene.add(lodGroup);
+    this.lodMesh = lodGroup as unknown as THREE.Mesh; // Store as group
+
+    this.needsLODRebuild = false;
   }
 
   private generateTerrain(): void {
-    const hasWater = this.config.hasWater !== false && !this.config.texturePath; // Default true for Earth, false for moon
+    const hasWater = this.config.hasWater !== false && !this.config.texturePath;
 
-    // First pass: generate terrain without water
     for (const tile of this.polyhedron.tiles) {
       const blocks: HexBlockType[] = [];
       const surfaceDepth = this.getHeightVariation(tile.center);
@@ -138,10 +221,7 @@ export class Planet {
         if (depth < surfaceDepth) {
           blocks.push(HexBlockType.AIR);
         } else if (depth === surfaceDepth) {
-          // Use sand texture for underwater surfaces (could add SAND type later)
-          // For now, use GRASS for land, DIRT for underwater
           if (hasWater && surfaceDepth > this.SEA_LEVEL) {
-            // Underwater terrain - use dirt/stone
             blocks.push(HexBlockType.DIRT);
           } else {
             blocks.push(HexBlockType.GRASS);
@@ -161,7 +241,6 @@ export class Planet {
       const column: PlanetColumn = {
         tile,
         blocks,
-        meshGroup: null,
         isDirty: true,
         boundingSphere
       };
@@ -169,17 +248,13 @@ export class Planet {
       this.columns.set(tile.index, column);
     }
 
-    // Second pass: fill water in ocean regions (simple sea level fill)
     if (hasWater) {
       this.fillOceans();
     }
   }
 
-  // Fill water in all tiles where terrain is below sea level
-  // This creates proper oceans that cover large regions
   private fillOceans(): void {
     for (const [_, column] of this.columns) {
-      // Find the surface depth (first non-air block)
       let surfaceDepth = this.MAX_DEPTH;
       for (let d = 0; d < column.blocks.length; d++) {
         if (column.blocks[d] !== HexBlockType.AIR) {
@@ -188,8 +263,6 @@ export class Planet {
         }
       }
 
-      // If surface is below sea level, fill air above it with water
-      // Water fills from sea level down to the terrain surface
       if (surfaceDepth > this.SEA_LEVEL) {
         for (let d = this.SEA_LEVEL; d < surfaceDepth; d++) {
           if (column.blocks[d] === HexBlockType.AIR) {
@@ -201,72 +274,46 @@ export class Planet {
     }
   }
 
-  // Call this after setting the center to update all bounding spheres
   public updateBoundingSpheres(): void {
     for (const column of this.columns.values()) {
       column.boundingSphere.center.copy(column.tile.center).add(this.center);
     }
-    // Also update LOD group position
-    if (this.lodGroup) {
-      this.lodGroup.position.copy(this.center);
+    if (this.lodMesh) {
+      (this.lodMesh as unknown as THREE.Group).position.copy(this.center);
     }
-    // Update boundary walls position
     if (this.boundaryWallsGroup) {
       this.boundaryWallsGroup.position.copy(this.center);
     }
+    if (this.batchedMeshGroup) {
+      this.batchedMeshGroup.position.copy(this.center);
+    }
   }
 
-  // Multi-octave noise for continental/ocean terrain generation
   private getHeightVariation(position: THREE.Vector3): number {
     const variation = this.config.heightVariation ?? 1.0;
-
-    // Normalize position to unit sphere for consistent noise sampling
     const dir = position.clone().normalize();
 
-    // Continental scale noise (large features - continents vs oceans)
-    // Use lower frequency for bigger continent/ocean shapes
     const continentalNoise = this.fractalNoise3D(dir.x, dir.y, dir.z, 1.5, 3);
-
-    // Medium scale noise (coastal features, bays, peninsulas)
     const coastalNoise = this.fractalNoise3D(dir.x, dir.y, dir.z, 4.0, 2);
-
-    // Fine detail noise (local terrain bumps)
     const detailNoise = this.fractalNoise3D(dir.x, dir.y, dir.z, 8.0, 2);
 
-    // Combine noises with different weights
-    // Combined range is approximately -1 to 1
     const combined = continentalNoise * 0.6 + coastalNoise * 0.25 + detailNoise * 0.15;
-
-    // Map combined noise to height:
-    // Noise ranges from ~-1 to ~1, centered around 0
-    // < -0.1 = deep ocean (depths 4-6)
-    // -0.1 to 0.1 = shallow water / coastal (depths 2-3)
-    // > 0.1 = land (depths 0-2)
-    // This gives roughly 45% ocean, 10% coastal, 45% land
 
     let depth: number;
     if (combined < -0.1) {
-      // Deep ocean - terrain below sea level
-      // Map -1 to -0.1 -> depths 4 to 6 (ocean floor)
-      const t = (combined + 1) / 0.9; // 0 to 1 as we go from -1 to -0.1
-      depth = Math.floor(6 - t * 2 * variation); // 6 to 4
+      const t = (combined + 1) / 0.9;
+      depth = Math.floor(6 - t * 2 * variation);
     } else if (combined < 0.1) {
-      // Shallow water / coastal transition
-      // Map -0.1 to 0.1 -> depths 2 to 3
-      const t = (combined + 0.1) / 0.2; // 0 to 1
-      depth = Math.floor(3 - t * variation); // 3 to 2
+      const t = (combined + 0.1) / 0.2;
+      depth = Math.floor(3 - t * variation);
     } else {
-      // Land - above water
-      // Map 0.1 to 1.0 -> depths 0 to 2 (higher noise = lower depth = taller)
-      const t = (combined - 0.1) / 0.9; // 0 to 1 as we go from 0.1 to 1
-      depth = Math.floor(2 - t * 2 * variation); // 2 to 0
+      const t = (combined - 0.1) / 0.9;
+      depth = Math.floor(2 - t * 2 * variation);
     }
 
-    // Clamp depth to valid range
     return Math.max(0, Math.min(this.MAX_DEPTH - 1, depth));
   }
 
-  // Fractal Brownian Motion noise for more natural terrain
   private fractalNoise3D(x: number, y: number, z: number, frequency: number, octaves: number): number {
     let value = 0;
     let amplitude = 1;
@@ -280,133 +327,263 @@ export class Planet {
       freq *= 2;
     }
 
-    return value / totalAmplitude; // Normalize to -1 to 1 range
+    return value / totalAmplitude;
   }
 
-  // Improved 3D noise with smoothing (returns -1 to 1)
   private smoothNoise3D(x: number, y: number, z: number): number {
-    // Use multiple sin waves at different angles for smoother noise
     const n1 = Math.sin(x * 12.9898 + y * 78.233 + z * 37.719);
     const n2 = Math.sin(x * 45.164 + y * 23.456 + z * 89.123);
     const n3 = Math.sin(x * 67.891 + y * 12.345 + z * 56.789);
-
-    // Combine and normalize to -1 to 1
-    const combined = (n1 + n2 + n3) / 3;
-    return combined;
+    return (n1 + n2 + n3) / 3;
   }
 
-
   public update(playerPosition: THREE.Vector3, camera: THREE.Camera): void {
-    this.projScreenMatrix.multiplyMatrices(
-      camera.projectionMatrix,
-      camera.matrixWorldInverse
-    );
+    profiler.begin('Planet.frustum');
+    this.projScreenMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     this.frustum.setFromProjectionMatrix(this.projScreenMatrix);
+    profiler.end('Planet.frustum');
 
-    // Calculate distance from player to planet surface
     const distToCenter = playerPosition.distanceTo(this.center);
     const altitude = distToCenter - this.radius;
 
-    // Update LOD group position
-    if (this.lodGroup) {
-      this.lodGroup.position.copy(this.center);
-    }
-
-    // When very far away, only show LOD (all tiles visible, no detailed meshes)
+    // When very far away, only show LOD (including LOD water)
     if (altitude > PlayerConfig.PLANET_LOD_SWITCH_ALTITUDE) {
-      if (!this.isShowingLOD) {
-        this.isShowingLOD = true;
-        // Show all LOD tiles
-        for (const lodMesh of this.lodTileMeshes.values()) {
-          lodMesh.visible = true;
-        }
-        // Hide all detailed meshes
-        for (const tileIndex of this.lastVisibleTiles) {
-          const column = this.columns.get(tileIndex);
-          if (column?.meshGroup) {
-            column.meshGroup.visible = false;
-          }
-        }
-        this.lastVisibleTiles.clear();
-      }
+      if (this.lodMesh) (this.lodMesh as unknown as THREE.Group).visible = true;
+      if (this.lodWaterMesh) this.lodWaterMesh.visible = true;
+      if (this.batchedMeshGroup) this.batchedMeshGroup.visible = false;
       return;
     }
 
-    // When close, show detailed meshes and hide LOD tiles in detailed area
-    this.isShowingLOD = false;
+    // Show detailed meshes and LOD (LOD is offset inward so depth test handles occlusion)
+    if (this.lodMesh) (this.lodMesh as unknown as THREE.Group).visible = true;
+    if (this.lodWaterMesh) this.lodWaterMesh.visible = true; // Show LOD water for distant tiles
+    if (this.batchedMeshGroup) this.batchedMeshGroup.visible = true;
 
-    // Calculate dynamic render distance based on altitude
-    const altitudeRatio = Math.min(1, Math.max(0, altitude / 100)); // 0-100 altitude range
+    const altitudeRatio = Math.min(1, Math.max(0, altitude / 100));
     const minDist = PlayerConfig.PLANET_MIN_RENDER_DISTANCE;
     const maxDist = PlayerConfig.PLANET_MAX_RENDER_DISTANCE;
     const renderDistance = Math.floor(minDist + altitudeRatio * (maxDist - minDist));
 
+    profiler.begin('Planet.getTile');
     const playerTile = this.polyhedron.getTileAtPoint(playerPosition.clone().sub(this.center));
+    profiler.end('Planet.getTile');
+
     if (!playerTile) {
-      // Player is far from planet - show all LOD tiles
-      for (const lodMesh of this.lodTileMeshes.values()) {
-        lodMesh.visible = true;
-      }
       return;
     }
 
-    // Only recalculate nearby tiles if player moved to a different tile or render distance changed
     const playerTileIndex = playerTile.index;
+
+    // Check if we need to recalculate nearby tiles
     if (playerTileIndex !== this.cachedPlayerTileIndex || renderDistance !== this.cachedRenderDistance) {
+      profiler.begin('Planet.tilesInRange');
       this.cachedPlayerTileIndex = playerTileIndex;
       this.cachedRenderDistance = renderDistance;
       this.cachedNearbyTiles = this.getTilesInRange(playerTileIndex, renderDistance);
+      this.needsRebatch = true;
+      this.needsLODRebuild = true; // Rebuild LOD to exclude water tiles in new nearby range
+      profiler.end('Planet.tilesInRange');
 
-      // Update LOD visibility: hide LOD tiles in detailed area, show the rest
-      for (const [tileIndex, lodMesh] of this.lodTileMeshes) {
-        lodMesh.visible = !this.cachedNearbyTiles.has(tileIndex);
-      }
-
-      // Rebuild boundary walls at the edge of the render distance
+      profiler.begin('Planet.boundaryWalls');
       this.rebuildBoundaryWalls();
+      profiler.end('Planet.boundaryWalls');
     }
 
-    // Track which tiles are visible this frame
-    const currentVisibleTiles = new Set<number>();
+    // Check if any tile in view is dirty
+    for (const tileIndex of this.cachedNearbyTiles) {
+      const column = this.columns.get(tileIndex);
+      if (column?.isDirty) {
+        this.needsRebatch = true;
+        break;
+      }
+    }
 
-    // Only iterate through cached nearby tiles (not all columns)
+    // Rebuild batched geometry if needed
+    if (this.needsRebatch) {
+      profiler.begin('Planet.rebatch');
+      this.rebuildBatchedMeshes();
+      profiler.end('Planet.rebatch');
+    }
+
+    // Rebuild LOD mesh if terrain has changed (mining, etc.)
+    if (this.needsLODRebuild) {
+      profiler.begin('Planet.LODRebuild');
+      this.rebuildLODMesh();
+      profiler.end('Planet.LODRebuild');
+    }
+  }
+
+  private rebuildBatchedMeshes(): void {
+    if (!this.batchedMeshGroup) return;
+
+    // Dispose old meshes
+    while (this.batchedMeshGroup.children.length > 0) {
+      const child = this.batchedMeshGroup.children[0] as THREE.Mesh;
+      if (child.geometry) child.geometry.dispose();
+      this.batchedMeshGroup.remove(child);
+    }
+
+    // Create batched geometry for all visible tiles
+    const topData = createEmptyGeometryData();
+    const sideData = createEmptyGeometryData();
+    const stoneData = createEmptyGeometryData();
+    const waterData = createEmptyGeometryData();
+
     for (const tileIndex of this.cachedNearbyTiles) {
       const column = this.columns.get(tileIndex);
       if (!column) continue;
 
-      const inFrustum = this.frustum.intersectsSphere(column.boundingSphere);
+      // Check frustum culling
+      if (!this.frustum.intersectsSphere(column.boundingSphere)) continue;
 
-      if (inFrustum) {
-        if (column.isDirty || !column.meshGroup) {
-          this.buildColumnMesh(column);
-        }
-        if (column.meshGroup) {
-          column.meshGroup.visible = true;
-          currentVisibleTiles.add(tileIndex);
-        }
-      } else if (column.meshGroup) {
-        column.meshGroup.visible = false;
+      this.buildColumnGeometry(column, topData, sideData, stoneData, waterData);
+      column.isDirty = false;
+    }
+
+    // Create meshes from batched geometry
+    if (topData.positions.length > 0) {
+      const geom = this.createBufferGeometry(topData);
+      this.topMesh = new THREE.Mesh(geom, this.meshBuilder.getTopMaterial());
+      this.batchedMeshGroup.add(this.topMesh);
+    }
+
+    if (sideData.positions.length > 0) {
+      const geom = this.createBufferGeometry(sideData);
+      this.sideMesh = new THREE.Mesh(geom, this.meshBuilder.getSideMaterial());
+      this.batchedMeshGroup.add(this.sideMesh);
+    }
+
+    if (stoneData.positions.length > 0) {
+      const geom = this.createBufferGeometry(stoneData);
+      this.stoneMesh = new THREE.Mesh(geom, this.meshBuilder.getStoneMaterial());
+      this.batchedMeshGroup.add(this.stoneMesh);
+    }
+
+    if (waterData.positions.length > 0) {
+      const geom = this.createBufferGeometry(waterData);
+      this.waterMesh = new THREE.Mesh(geom, this.meshBuilder.getWaterMaterial());
+      this.waterMesh.renderOrder = 1;
+      this.batchedMeshGroup.add(this.waterMesh);
+    }
+
+    this.needsRebatch = false;
+    this.lastBuiltTiles = new Set(this.cachedNearbyTiles);
+  }
+
+  private buildColumnGeometry(
+    column: PlanetColumn,
+    topData: GeometryData,
+    sideData: GeometryData,
+    stoneData: GeometryData,
+    waterData: GeometryData
+  ): void {
+    // Find the first solid block depth (surface level)
+    let surfaceDepth = 0;
+    for (let d = 0; d < column.blocks.length; d++) {
+      if (column.blocks[d] !== HexBlockType.AIR && column.blocks[d] !== HexBlockType.WATER) {
+        surfaceDepth = d;
+        break;
       }
     }
 
-    // Hide tiles that were visible last frame but not this frame
-    for (const tileIndex of this.lastVisibleTiles) {
-      if (!currentVisibleTiles.has(tileIndex)) {
-        const column = this.columns.get(tileIndex);
-        if (column?.meshGroup) {
-          column.meshGroup.visible = false;
+    const maxRenderDepth = Math.min(surfaceDepth + 4, column.blocks.length);
+
+    for (let depth = 0; depth < maxRenderDepth; depth++) {
+      const blockType = column.blocks[depth];
+      if (blockType === HexBlockType.AIR) continue;
+
+      const isWater = blockType === HexBlockType.WATER;
+      const blockAbove = depth === 0 ? HexBlockType.AIR : column.blocks[depth - 1];
+      const blockBelow = depth === maxRenderDepth - 1 ? HexBlockType.AIR : column.blocks[depth + 1];
+
+      const hasTopExposed = blockAbove === HexBlockType.AIR || (!isWater && blockAbove === HexBlockType.WATER);
+      const hasBottomExposed = blockBelow === HexBlockType.AIR || (!isWater && blockBelow === HexBlockType.WATER);
+
+      if (isWater && blockAbove !== HexBlockType.AIR) continue;
+
+      const hasSideExposed = !isWater && this.hasExposedSide(column, depth);
+
+      if (!isWater && !hasTopExposed && !hasBottomExposed && !hasSideExposed) continue;
+
+      let outerRadius = this.radius - depth * this.BLOCK_HEIGHT;
+      let innerRadius = outerRadius - this.BLOCK_HEIGHT;
+
+      if (isWater) {
+        outerRadius -= PlayerConfig.WATER_SURFACE_OFFSET;
+        innerRadius -= PlayerConfig.WATER_SURFACE_OFFSET;
+      }
+
+      if (innerRadius <= 0) continue;
+
+      const depthFromSurface = depth - surfaceDepth;
+      const isDeep = depthFromSurface >= this.DEEP_THRESHOLD;
+
+      const { top, bottom, sides } = this.meshBuilder.createSeparateGeometries(
+        column.tile,
+        innerRadius,
+        outerRadius,
+        new THREE.Vector3(0, 0, 0),
+        isWater ? true : hasTopExposed,
+        isWater ? false : hasBottomExposed,
+        hasSideExposed
+      );
+
+      if (top) {
+        const posAttr = top.getAttribute('position');
+        const normAttr = top.getAttribute('normal');
+        const uvAttr = top.getAttribute('uv');
+        const indexAttr = top.getIndex();
+        if (posAttr && normAttr && uvAttr && indexAttr) {
+          if (isWater) {
+            this.mergeGeometry(waterData, posAttr, normAttr, uvAttr, indexAttr);
+          } else if (isDeep) {
+            this.mergeGeometry(stoneData, posAttr, normAttr, uvAttr, indexAttr);
+          } else {
+            this.mergeGeometry(topData, posAttr, normAttr, uvAttr, indexAttr);
+          }
         }
+        top.dispose();
+      }
+
+      if (bottom && !isWater) {
+        const posAttr = bottom.getAttribute('position');
+        const normAttr = bottom.getAttribute('normal');
+        const uvAttr = bottom.getAttribute('uv');
+        const indexAttr = bottom.getIndex();
+        if (posAttr && normAttr && uvAttr && indexAttr) {
+          this.mergeGeometry(stoneData, posAttr, normAttr, uvAttr, indexAttr);
+        }
+        bottom.dispose();
+      }
+
+      if (sides && !isWater) {
+        const posAttr = sides.getAttribute('position');
+        const normAttr = sides.getAttribute('normal');
+        const uvAttr = sides.getAttribute('uv');
+        const indexAttr = sides.getIndex();
+        if (posAttr && normAttr && uvAttr && indexAttr) {
+          if (isDeep) {
+            this.mergeGeometry(stoneData, posAttr, normAttr, uvAttr, indexAttr);
+          } else {
+            this.mergeGeometry(sideData, posAttr, normAttr, uvAttr, indexAttr);
+          }
+        }
+        sides.dispose();
       }
     }
+  }
 
-    this.lastVisibleTiles = currentVisibleTiles;
+  public updateWaterShader(time: number): void {
+    this.meshBuilder.updateWaterShader(time, this.center);
+  }
+
+  public setSunDirection(dir: THREE.Vector3): void {
+    this.meshBuilder.setSunDirection(dir);
   }
 
   private getTilesInRange(centerTileIndex: number, range: number): Set<number> {
     const result = new Set<number>();
     const visited = new Set<number>();
-
-    // Use index-based queue to avoid O(n) shift operations
     const queue: { index: number; distance: number }[] = [{ index: centerTileIndex, distance: 0 }];
     let queueStart = 0;
 
@@ -428,12 +605,9 @@ export class Planet {
     return result;
   }
 
-  // Build walls at the boundary between detailed terrain and LOD
-  // This fills the gap when terrain is lower than the LOD surface
   private rebuildBoundaryWalls(): void {
     if (!this.boundaryWallsGroup) return;
 
-    // Clear existing walls
     while (this.boundaryWallsGroup.children.length > 0) {
       const child = this.boundaryWallsGroup.children[0];
       if (child instanceof THREE.Mesh) {
@@ -442,7 +616,6 @@ export class Planet {
       this.boundaryWallsGroup.remove(child);
     }
 
-    // Find boundary tiles (tiles in nearby set that have neighbors outside)
     const boundaryTiles = new Set<number>();
     for (const tileIndex of this.cachedNearbyTiles) {
       const column = this.columns.get(tileIndex);
@@ -457,18 +630,13 @@ export class Planet {
     }
 
     this.cachedBoundaryTiles = boundaryTiles;
-
-    // LOD surface height (at sea level)
     const lodSurfaceRadius = this.radius - this.SEA_LEVEL * this.BLOCK_HEIGHT;
-
-    // Build wall geometry for each boundary tile
-    const wallData = { positions: [] as number[], normals: [] as number[], uvs: [] as number[], indices: [] as number[], vertexOffset: 0 };
+    const wallData = createEmptyGeometryData();
 
     for (const tileIndex of boundaryTiles) {
       const column = this.columns.get(tileIndex);
       if (!column) continue;
 
-      // Find terrain surface depth
       let surfaceDepth = 0;
       for (let d = 0; d < column.blocks.length; d++) {
         if (column.blocks[d] !== HexBlockType.AIR && column.blocks[d] !== HexBlockType.WATER) {
@@ -477,55 +645,39 @@ export class Planet {
         }
       }
 
-      // Terrain surface height
       const terrainSurfaceRadius = this.radius - surfaceDepth * this.BLOCK_HEIGHT;
-
-      // Only build wall if terrain is below LOD surface (there's a gap to fill)
       if (terrainSurfaceRadius >= lodSurfaceRadius) continue;
 
-      // Build wall from terrain surface up to LOD surface
-      // For each edge that faces outside the render area
       for (let i = 0; i < column.tile.neighbors.length; i++) {
         const neighborIndex = column.tile.neighbors[i];
-        if (this.cachedNearbyTiles.has(neighborIndex)) continue; // Only walls facing outward
+        if (this.cachedNearbyTiles.has(neighborIndex)) continue;
 
-        // Get the two vertices of this edge
         const v1 = column.tile.vertices[i];
         const v2 = column.tile.vertices[(i + 1) % column.tile.vertices.length];
 
-        // Create wall quad from terrain to LOD surface
         const v1Inner = v1.clone().normalize().multiplyScalar(terrainSurfaceRadius);
         const v1Outer = v1.clone().normalize().multiplyScalar(lodSurfaceRadius);
         const v2Inner = v2.clone().normalize().multiplyScalar(terrainSurfaceRadius);
         const v2Outer = v2.clone().normalize().multiplyScalar(lodSurfaceRadius);
 
-        // Calculate outward normal (perpendicular to wall, facing away from center)
         const edgeDir = v2.clone().sub(v1).normalize();
         const radialDir = column.tile.center.clone().normalize();
         const wallNormal = edgeDir.clone().cross(radialDir).normalize();
 
-        // Add quad vertices (two triangles)
         const baseIdx = wallData.vertexOffset;
 
-        // Positions
         wallData.positions.push(v1Inner.x, v1Inner.y, v1Inner.z);
         wallData.positions.push(v1Outer.x, v1Outer.y, v1Outer.z);
         wallData.positions.push(v2Outer.x, v2Outer.y, v2Outer.z);
         wallData.positions.push(v2Inner.x, v2Inner.y, v2Inner.z);
 
-        // Normals (all same for flat shading)
         for (let n = 0; n < 4; n++) {
           wallData.normals.push(wallNormal.x, wallNormal.y, wallNormal.z);
         }
 
-        // UVs
         const wallHeight = (lodSurfaceRadius - terrainSurfaceRadius) / this.BLOCK_HEIGHT;
-        wallData.uvs.push(0, 0);
-        wallData.uvs.push(0, wallHeight);
-        wallData.uvs.push(1, wallHeight);
-        wallData.uvs.push(1, 0);
+        wallData.uvs.push(0, 0, 0, wallHeight, 1, wallHeight, 1, 0);
 
-        // Indices (two triangles, wound correctly for outward-facing)
         wallData.indices.push(baseIdx, baseIdx + 2, baseIdx + 1);
         wallData.indices.push(baseIdx, baseIdx + 3, baseIdx + 2);
 
@@ -533,7 +685,6 @@ export class Planet {
       }
     }
 
-    // Create wall mesh if we have any geometry
     if (wallData.positions.length > 0) {
       const geom = this.createBufferGeometry(wallData);
       const mesh = new THREE.Mesh(geom, this.meshBuilder.getSideMaterial());
@@ -541,186 +692,8 @@ export class Planet {
     }
   }
 
-  private buildColumnMesh(column: PlanetColumn): void {
-    // Dispose old mesh group
-    if (column.meshGroup) {
-      this.scene.remove(column.meshGroup);
-      column.meshGroup.traverse((child) => {
-        if (child instanceof THREE.Mesh) {
-          child.geometry.dispose();
-        }
-      });
-    }
-
-    // Separate geometry batches for each material type
-    const topData = { positions: [] as number[], normals: [] as number[], uvs: [] as number[], indices: [] as number[], vertexOffset: 0 };
-    const sideData = { positions: [] as number[], normals: [] as number[], uvs: [] as number[], indices: [] as number[], vertexOffset: 0 };
-    const stoneData = { positions: [] as number[], normals: [] as number[], uvs: [] as number[], indices: [] as number[], vertexOffset: 0 };
-    const waterData = { positions: [] as number[], normals: [] as number[], uvs: [] as number[], indices: [] as number[], vertexOffset: 0 };
-
-    const blockDepths: number[] = [];
-
-    // Find the first solid (non-air, non-water) block depth (surface level)
-    let surfaceDepth = 0;
-    for (let d = 0; d < column.blocks.length; d++) {
-      if (column.blocks[d] !== HexBlockType.AIR && column.blocks[d] !== HexBlockType.WATER) {
-        surfaceDepth = d;
-        break;
-      }
-    }
-
-    // Only render blocks near the surface (optimization: skip deep underground blocks)
-    const maxRenderDepth = Math.min(surfaceDepth + 4, column.blocks.length);
-
-    for (let depth = 0; depth < maxRenderDepth; depth++) {
-      const blockType = column.blocks[depth];
-      if (blockType === HexBlockType.AIR) continue;
-
-      const isWater = blockType === HexBlockType.WATER;
-
-      // For water, check if exposed to air; for solid blocks, also check water exposure
-      const blockAbove = depth === 0 ? HexBlockType.AIR : column.blocks[depth - 1];
-      const blockBelow = depth === maxRenderDepth - 1 ? HexBlockType.AIR : column.blocks[depth + 1];
-
-      const hasTopExposed = blockAbove === HexBlockType.AIR || (isWater && false) || (!isWater && blockAbove === HexBlockType.WATER);
-      const hasBottomExposed = blockBelow === HexBlockType.AIR || (!isWater && blockBelow === HexBlockType.WATER);
-
-      // For water, only render top surface (at sea level)
-      if (isWater) {
-        // Only render water top face if exposed to air above
-        if (blockAbove !== HexBlockType.AIR) continue;
-      }
-
-      // Calculate hasSideExposed once (expensive operation)
-      const hasSideExposed = !isWater && this.hasExposedSide(column, depth);
-
-      // Skip if nothing is exposed
-      if (!isWater && !hasTopExposed && !hasBottomExposed && !hasSideExposed) continue;
-
-      const outerRadius = this.radius - depth * this.BLOCK_HEIGHT;
-      const innerRadius = outerRadius - this.BLOCK_HEIGHT;
-      if (innerRadius <= 0) continue;
-
-      // Determine if this is a deep block (uses stone texture for everything)
-      const depthFromSurface = depth - surfaceDepth;
-      const isDeep = depthFromSurface >= this.DEEP_THRESHOLD;
-
-      // Get separate geometries for each face type
-      // Build geometry relative to local origin (0,0,0) since mesh group is positioned at this.center
-      const { top, bottom, sides } = this.meshBuilder.createSeparateGeometries(
-        column.tile,
-        innerRadius,
-        outerRadius,
-        new THREE.Vector3(0, 0, 0),  // Local origin, not planet center
-        isWater ? true : hasTopExposed,  // Water only needs top face
-        isWater ? false : hasBottomExposed,
-        hasSideExposed
-      );
-
-      // Add top face to appropriate batch
-      if (top) {
-        const posAttr = top.getAttribute('position');
-        const normAttr = top.getAttribute('normal');
-        const uvAttr = top.getAttribute('uv');
-        const indexAttr = top.getIndex();
-        if (posAttr && normAttr && uvAttr && indexAttr) {
-          if (isWater) {
-            this.mergeGeometry(waterData, posAttr, normAttr, uvAttr, indexAttr);
-          } else if (isDeep) {
-            this.mergeGeometry(stoneData, posAttr, normAttr, uvAttr, indexAttr);
-          } else {
-            // Top faces always use grass (topData)
-            this.mergeGeometry(topData, posAttr, normAttr, uvAttr, indexAttr);
-          }
-        }
-        top.dispose();
-      }
-
-      // Add bottom face to stone batch (always stone) - skip for water
-      if (bottom && !isWater) {
-        const posAttr = bottom.getAttribute('position');
-        const normAttr = bottom.getAttribute('normal');
-        const uvAttr = bottom.getAttribute('uv');
-        const indexAttr = bottom.getIndex();
-        if (posAttr && normAttr && uvAttr && indexAttr) {
-          this.mergeGeometry(stoneData, posAttr, normAttr, uvAttr, indexAttr);
-        }
-        bottom.dispose();
-      }
-
-      // Add side faces to appropriate batch - skip for water
-      if (sides && !isWater) {
-        const posAttr = sides.getAttribute('position');
-        const normAttr = sides.getAttribute('normal');
-        const uvAttr = sides.getAttribute('uv');
-        const indexAttr = sides.getIndex();
-        if (posAttr && normAttr && uvAttr && indexAttr) {
-          if (isDeep) {
-            this.mergeGeometry(stoneData, posAttr, normAttr, uvAttr, indexAttr);
-          } else {
-            // Side faces use dirt (sideData)
-            this.mergeGeometry(sideData, posAttr, normAttr, uvAttr, indexAttr);
-          }
-        }
-        sides.dispose();
-      }
-
-      blockDepths.push(depth);
-    }
-
-    // Create mesh group
-    const group = new THREE.Group();
-
-    // Create top mesh (grass)
-    if (topData.positions.length > 0) {
-      const geom = this.createBufferGeometry(topData);
-      const mesh = new THREE.Mesh(geom, this.meshBuilder.getTopMaterial());
-      mesh.userData = { tileIndex: column.tile.index, faceType: 'top' };
-      group.add(mesh);
-    }
-
-    // Create side mesh (dirt)
-    if (sideData.positions.length > 0) {
-      const geom = this.createBufferGeometry(sideData);
-      const mesh = new THREE.Mesh(geom, this.meshBuilder.getSideMaterial());
-      mesh.userData = { tileIndex: column.tile.index, faceType: 'side' };
-      group.add(mesh);
-    }
-
-    // Create stone mesh
-    if (stoneData.positions.length > 0) {
-      const geom = this.createBufferGeometry(stoneData);
-      const mesh = new THREE.Mesh(geom, this.meshBuilder.getStoneMaterial());
-      mesh.userData = { tileIndex: column.tile.index, faceType: 'stone' };
-      group.add(mesh);
-    }
-
-    // Create water mesh
-    if (waterData.positions.length > 0) {
-      const geom = this.createBufferGeometry(waterData);
-      const mesh = new THREE.Mesh(geom, this.meshBuilder.getWaterMaterial());
-      mesh.userData = { tileIndex: column.tile.index, faceType: 'water' };
-      mesh.renderOrder = 1; // Render water after opaque objects
-      group.add(mesh);
-    }
-
-    if (group.children.length === 0) {
-      column.meshGroup = null;
-      column.isDirty = false;
-      return;
-    }
-
-    // Position group at planet center (for moons/offset planets)
-    group.position.copy(this.center);
-
-    group.userData = { tileIndex: column.tile.index, blockDepths };
-    column.meshGroup = group;
-    column.isDirty = false;
-    this.scene.add(group);
-  }
-
   private mergeGeometry(
-    data: { positions: number[], normals: number[], uvs: number[], indices: number[], vertexOffset: number },
+    data: GeometryData,
     posAttr: THREE.BufferAttribute | THREE.InterleavedBufferAttribute,
     normAttr: THREE.BufferAttribute | THREE.InterleavedBufferAttribute,
     uvAttr: THREE.BufferAttribute | THREE.InterleavedBufferAttribute,
@@ -739,7 +712,7 @@ export class Planet {
     data.vertexOffset += posAttr.count;
   }
 
-  private createBufferGeometry(data: { positions: number[], normals: number[], uvs: number[], indices: number[] }): THREE.BufferGeometry {
+  private createBufferGeometry(data: GeometryData): THREE.BufferGeometry {
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.Float32BufferAttribute(data.positions, 3));
     geometry.setAttribute('normal', new THREE.Float32BufferAttribute(data.normals, 3));
@@ -758,11 +731,9 @@ export class Planet {
       if (!neighborColumn) continue;
       if (depth < neighborColumn.blocks.length) {
         const neighborBlock = neighborColumn.blocks[depth];
-        // Solid blocks are exposed to air or water
         if (isSolid && (neighborBlock === HexBlockType.AIR || neighborBlock === HexBlockType.WATER)) {
           return true;
         }
-        // Water is exposed only to air (for side rendering if we decide to add it)
         if (blockType === HexBlockType.WATER && neighborBlock === HexBlockType.AIR) {
           return true;
         }
@@ -786,57 +757,46 @@ export class Planet {
     const oldBlockType = column.blocks[depth];
     column.blocks[depth] = blockType;
     column.isDirty = true;
+    this.needsRebatch = true;
+    this.needsLODRebuild = true; // LOD mesh needs to update when terrain changes
 
     for (const neighborIndex of column.tile.neighbors) {
       const neighbor = this.columns.get(neighborIndex);
       if (neighbor) neighbor.isDirty = true;
     }
 
-    // If we removed a solid block, check if water should flow in
     if (this.meshBuilder.isSolid(oldBlockType) && blockType === HexBlockType.AIR) {
       this.simulateWaterFlow(tileIndex, depth);
     }
   }
 
-  // Simulate water flowing into a newly exposed void
   private simulateWaterFlow(tileIndex: number, depth: number): void {
     const column = this.columns.get(tileIndex);
     if (!column) return;
 
-    // Check if any adjacent cell has water that could flow in
     let hasAdjacentWater = false;
-    let minWaterDepth = this.MAX_DEPTH;
 
-    // Check block above (depth - 1) for water falling down
     if (depth > 0 && column.blocks[depth - 1] === HexBlockType.WATER) {
       hasAdjacentWater = true;
-      minWaterDepth = Math.min(minWaterDepth, depth - 1);
     }
 
-    // Check horizontal neighbors at same depth for water flowing in
     for (const neighborIndex of column.tile.neighbors) {
       const neighbor = this.columns.get(neighborIndex);
       if (neighbor && neighbor.blocks[depth] === HexBlockType.WATER) {
         hasAdjacentWater = true;
-        minWaterDepth = Math.min(minWaterDepth, depth);
       }
     }
 
     if (!hasAdjacentWater) return;
 
-    // Water flows in - fill this cell and rebalance the basin
-    // Find connected water basin and redistribute
     this.rebalanceWaterBasin(tileIndex, depth);
   }
 
-  // Rebalance water in a connected basin after a change
   private rebalanceWaterBasin(startTileIndex: number, startDepth: number): void {
-    // Find all connected water and air cells that form a basin
     const visited = new Set<string>();
     const queue: { tileIndex: number, depth: number }[] = [{ tileIndex: startTileIndex, depth: startDepth }];
     const basinCells: { tileIndex: number, depth: number, isWater: boolean }[] = [];
 
-    // First, find all cells connected to water at or above the start depth
     while (queue.length > 0) {
       const { tileIndex, depth } = queue.shift()!;
       const key = `${tileIndex}-${depth}`;
@@ -848,13 +808,10 @@ export class Planet {
       if (!column || depth < 0 || depth >= column.blocks.length) continue;
 
       const blockType = column.blocks[depth];
-
-      // Only process air and water blocks
       if (blockType !== HexBlockType.AIR && blockType !== HexBlockType.WATER) continue;
 
       basinCells.push({ tileIndex, depth, isWater: blockType === HexBlockType.WATER });
 
-      // Check vertical neighbors
       if (depth > 0) {
         const aboveType = column.blocks[depth - 1];
         if (aboveType === HexBlockType.AIR || aboveType === HexBlockType.WATER) {
@@ -868,7 +825,6 @@ export class Planet {
         }
       }
 
-      // Check horizontal neighbors at same depth
       for (const neighborIndex of column.tile.neighbors) {
         const neighbor = this.columns.get(neighborIndex);
         if (neighbor) {
@@ -880,14 +836,11 @@ export class Planet {
       }
     }
 
-    // Count total water blocks
     const totalWater = basinCells.filter(c => c.isWater).length;
     if (totalWater === 0) return;
 
-    // Sort cells by depth (deeper first - water settles at bottom)
     basinCells.sort((a, b) => b.depth - a.depth);
 
-    // Redistribute water to fill from bottom up
     let waterToPlace = totalWater;
     const cellsToFill: { tileIndex: number, depth: number }[] = [];
     const cellsToEmpty: { tileIndex: number, depth: number }[] = [];
@@ -901,13 +854,12 @@ export class Planet {
       }
     }
 
-    // Apply changes
     for (const cell of cellsToFill) {
       const column = this.columns.get(cell.tileIndex);
       if (column && column.blocks[cell.depth] !== HexBlockType.WATER) {
         column.blocks[cell.depth] = HexBlockType.WATER;
         column.isDirty = true;
-        // Mark neighbors dirty too
+        this.needsRebatch = true;
         for (const neighborIndex of column.tile.neighbors) {
           const neighbor = this.columns.get(neighborIndex);
           if (neighbor) neighbor.isDirty = true;
@@ -920,7 +872,7 @@ export class Planet {
       if (column && column.blocks[cell.depth] === HexBlockType.WATER) {
         column.blocks[cell.depth] = HexBlockType.AIR;
         column.isDirty = true;
-        // Mark neighbors dirty too
+        this.needsRebatch = true;
         for (const neighborIndex of column.tile.neighbors) {
           const neighbor = this.columns.get(neighborIndex);
           if (neighbor) neighbor.isDirty = true;
@@ -930,7 +882,6 @@ export class Planet {
   }
 
   public getTileAtPoint(point: THREE.Vector3): HexTile | null {
-    // Convert world position to planet-local position
     return this.polyhedron.getTileAtPoint(point.clone().sub(this.center));
   }
 
@@ -946,7 +897,6 @@ export class Planet {
     for (let depth = 0; depth < column.blocks.length; depth++) {
       if (column.blocks[depth] !== HexBlockType.AIR) {
         const surfaceRadius = this.radius - depth * this.BLOCK_HEIGHT;
-        // Return world position (local + center offset)
         return tile.center.clone().normalize().multiplyScalar(surfaceRadius).add(this.center);
       }
     }
@@ -961,17 +911,13 @@ export class Planet {
     return position.clone().sub(this.center).normalize();
   }
 
-  // Get surface height (distance from center) for a given direction
-  // Returns height of solid ground (skips water)
   public getSurfaceHeightInDirection(direction: THREE.Vector3): number {
-    // Find tile at this direction
     const tile = this.polyhedron.getTileAtPoint(direction.clone().multiplyScalar(this.radius));
     if (!tile) return this.radius;
 
     const column = this.columns.get(tile.index);
     if (!column) return this.radius;
 
-    // Find first solid block (skip air and water)
     for (let depth = 0; depth < column.blocks.length; depth++) {
       const block = column.blocks[depth];
       if (block !== HexBlockType.AIR && block !== HexBlockType.WATER) {
@@ -981,7 +927,6 @@ export class Planet {
     return this.radius;
   }
 
-  // Check if a direction points to underwater terrain (for tree placement filtering)
   public isUnderwaterInDirection(direction: THREE.Vector3): boolean {
     const tile = this.polyhedron.getTileAtPoint(direction.clone().multiplyScalar(this.radius));
     if (!tile) return false;
@@ -989,11 +934,10 @@ export class Planet {
     const column = this.columns.get(tile.index);
     if (!column) return false;
 
-    // Check if there's water at or above the surface
     for (let depth = 0; depth < column.blocks.length; depth++) {
       const block = column.blocks[depth];
       if (block === HexBlockType.WATER) return true;
-      if (block !== HexBlockType.AIR) return false; // Hit solid ground first
+      if (block !== HexBlockType.AIR) return false;
     }
     return false;
   }
@@ -1002,7 +946,6 @@ export class Planet {
     return this.polyhedron;
   }
 
-  // Check if a world position is inside water (below water surface)
   public isInWater(position: THREE.Vector3): boolean {
     const tile = this.getTileAtPoint(position);
     if (!tile) return false;
@@ -1010,7 +953,6 @@ export class Planet {
     const column = this.columns.get(tile.index);
     if (!column) return false;
 
-    // Find the water surface (first water block from top)
     let waterSurfaceDepth = -1;
     for (let d = 0; d < column.blocks.length; d++) {
       if (column.blocks[d] === HexBlockType.WATER) {
@@ -1019,15 +961,12 @@ export class Planet {
       }
     }
 
-    if (waterSurfaceDepth < 0) return false; // No water in this column
+    if (waterSurfaceDepth < 0) return false;
 
-    // Check if player's position is at or below water surface level
     const playerDepth = this.getDepthAtPoint(position);
     return playerDepth >= waterSurfaceDepth;
   }
 
-  // Get depth of water at position (how deep player is submerged)
-  // Returns 0 if not in water, positive value = depth below water surface
   public getWaterDepth(position: THREE.Vector3): number {
     const tile = this.getTileAtPoint(position);
     if (!tile) return 0;
@@ -1037,7 +976,6 @@ export class Planet {
 
     const currentDepth = this.getDepthAtPoint(position);
 
-    // Find the water surface (first water block from top)
     let waterSurfaceDepth = -1;
     for (let d = 0; d < column.blocks.length; d++) {
       if (column.blocks[d] === HexBlockType.WATER) {
@@ -1046,11 +984,9 @@ export class Planet {
       }
     }
 
-    if (waterSurfaceDepth < 0) return 0; // No water in this column
+    if (waterSurfaceDepth < 0) return 0;
 
-    // Check if player is below water surface
     if (currentDepth >= waterSurfaceDepth) {
-      // Return how many blocks deep (higher = deeper)
       return (currentDepth - waterSurfaceDepth + 1) * this.BLOCK_HEIGHT;
     }
 
@@ -1058,10 +994,47 @@ export class Planet {
   }
 
   public buildAllMeshes(): void {
-    for (const column of this.columns.values()) {
-      if (column.isDirty) {
-        this.buildColumnMesh(column);
+    this.needsRebatch = true;
+  }
+
+  // Raycast against planet geometry to find block at ray intersection
+  // Returns { tileIndex, depth, blockType, point } or null if no hit
+  public raycast(origin: THREE.Vector3, direction: THREE.Vector3, maxDistance: number): {
+    tileIndex: number;
+    depth: number;
+    blockType: HexBlockType;
+    point: THREE.Vector3;
+  } | null {
+    // Step along the ray and check for solid blocks
+    const stepSize = 0.2; // Small steps for accuracy
+    const rayDir = direction.clone().normalize();
+    const testPoint = origin.clone();
+
+    for (let dist = 0; dist < maxDistance; dist += stepSize) {
+      testPoint.copy(origin).addScaledVector(rayDir, dist);
+
+      const tile = this.getTileAtPoint(testPoint);
+      if (!tile) continue;
+
+      const depth = this.getDepthAtPoint(testPoint);
+      if (depth < 0 || depth >= this.MAX_DEPTH) continue;
+
+      const blockType = this.getBlock(tile.index, depth);
+      if (blockType !== HexBlockType.AIR) {
+        return {
+          tileIndex: tile.index,
+          depth,
+          blockType,
+          point: testPoint.clone()
+        };
       }
     }
+
+    return null;
+  }
+
+  // Get the batched mesh group for raycasting (used for highlight positioning)
+  public getBatchedMeshGroup(): THREE.Group | null {
+    return this.batchedMeshGroup;
   }
 }

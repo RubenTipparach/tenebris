@@ -6,6 +6,8 @@ import { PlanetBlockInteraction } from './player/PlanetBlockInteraction';
 import { PlanetTreeManager } from './planet/Tree';
 import { Atmosphere, createEarthAtmosphere } from './planet/Atmosphere';
 import { CloudSystem, createEarthClouds } from './planet/Clouds';
+import { PlayerConfig } from './config/PlayerConfig';
+import { profiler } from './engine/Profiler';
 
 class PlanetGame {
   private engine: GameEngine;
@@ -15,9 +17,10 @@ class PlanetGame {
   private player: PlanetPlayer;
   private blockInteraction: PlanetBlockInteraction;
   private treeManager: PlanetTreeManager;
-  private earthAtmosphere: Atmosphere = null!;
+  private earthAtmosphere: Atmosphere | null = null;
   private earthClouds: CloudSystem = null!;
   private isReady: boolean = false;
+  private elapsedTime: number = 0;
 
   constructor() {
     const container = document.getElementById('game-container');
@@ -98,15 +101,23 @@ class PlanetGame {
       // Give block interaction access to tree manager for mining trees
       this.blockInteraction.setTreeManager(this.treeManager);
 
-      // Create atmosphere for Earth
-      this.earthAtmosphere = createEarthAtmosphere(this.earth.radius, this.engine.sunDirection);
-      this.earthAtmosphere.setPosition(this.earth.center);
-      this.engine.scene.add(this.earthAtmosphere.getMesh());
+      // Create atmosphere for Earth (if enabled)
+      if (PlayerConfig.ATMOSPHERE_ENABLED) {
+        this.earthAtmosphere = createEarthAtmosphere(this.earth.radius, this.engine.sunDirection);
+        this.earthAtmosphere.setPosition(this.earth.center);
+        this.engine.scene.add(this.earthAtmosphere.getMesh());
+      }
 
       // Create clouds for Earth
       this.earthClouds = createEarthClouds(this.earth.radius, this.engine.sunDirection);
       this.earthClouds.setPosition(this.earth.center);
       this.engine.scene.add(this.earthClouds.getGroup());
+
+      // Set sun direction for water shader reflections
+      this.earth.setSunDirection(this.engine.sunDirection);
+
+      // Setup settings menu
+      this.setupSettingsMenu();
 
       this.isReady = true;
 
@@ -125,25 +136,65 @@ class PlanetGame {
   private update(deltaTime: number): void {
     if (!this.isReady) return;
 
+    // Track elapsed time for shader animations
+    this.elapsedTime += deltaTime;
+
     // Update player
+    profiler.begin('Player');
     this.player.update(deltaTime);
+    profiler.end('Player');
 
     // Update underwater fog based on player water state
     this.engine.setUnderwater(this.player.getIsInWater());
 
     // Update both planets (rebuild dirty meshes near player) with camera for frustum culling
+    profiler.begin('Earth Update');
     this.earth.update(this.player.position, this.engine.camera);
+    profiler.end('Earth Update');
+
+    profiler.begin('Moon Update');
     this.moon.update(this.player.position, this.engine.camera);
+    profiler.end('Moon Update');
+
+    // Update water shader for animation (only Earth has water)
+    this.earth.updateWaterShader(this.elapsedTime);
 
     // Update atmosphere (needs camera position for fresnel effect)
-    this.earthAtmosphere.updateCameraPosition(this.engine.camera.position);
+    if (this.earthAtmosphere) {
+      this.earthAtmosphere.updateCameraPosition(this.engine.camera.position);
+    }
 
     // Update clouds (slow rotation)
     this.earthClouds.update(deltaTime);
 
     // Update block interaction
+    profiler.begin('Block Interaction');
     const input = this.inputManager.getState();
     this.blockInteraction.update(deltaTime, input.leftClick, input.rightClick);
+    profiler.end('Block Interaction');
+  }
+
+  private setupSettingsMenu(): void {
+    const atmosphereToggle = document.getElementById('toggle-atmosphere') as HTMLInputElement;
+    const cloudsToggle = document.getElementById('toggle-clouds') as HTMLInputElement;
+
+    if (!atmosphereToggle || !cloudsToggle) return;
+
+    // Initialize toggle states
+    atmosphereToggle.checked = this.earthAtmosphere?.isVisible() ?? false;
+    cloudsToggle.checked = this.earthClouds.isVisible();
+
+    // Handle atmosphere toggle
+    atmosphereToggle.addEventListener('change', () => {
+      if (this.earthAtmosphere) {
+        this.earthAtmosphere.setVisible(atmosphereToggle.checked);
+      }
+    });
+
+    // Handle clouds toggle
+    cloudsToggle.addEventListener('change', () => {
+      this.earthClouds.setVisible(cloudsToggle.checked);
+    });
   }
 }
 

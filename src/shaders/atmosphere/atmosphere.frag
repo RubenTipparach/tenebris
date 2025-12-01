@@ -15,12 +15,16 @@ uniform float mieScale;           // Mie scattering coefficient
 uniform float mieG;               // Mie phase asymmetry factor (-0.99 to 0.99)
 uniform float sunIntensity;       // Sun brightness
 
+// Sample counts (configurable via uniforms)
+uniform int numSamples;           // Primary ray samples
+uniform int numLightSamples;      // Light ray samples
+
 varying vec3 vWorldPosition;
 varying vec3 vNormal;
 
 #define PI 3.14159265359
-#define NUM_SAMPLES 8
-#define NUM_LIGHT_SAMPLES 4
+#define MAX_SAMPLES 16
+#define MAX_LIGHT_SAMPLES 8
 
 // Wavelengths for RGB (in micrometers, then inverted^4 for Rayleigh)
 // 680nm (red), 550nm (green), 440nm (blue)
@@ -68,10 +72,11 @@ float getDensity(float altitude) {
 
 // Calculate optical depth along a ray segment
 float opticalDepth(vec3 rayOrigin, vec3 rayDir, float rayLength) {
-  float stepSize = rayLength / float(NUM_LIGHT_SAMPLES);
+  float stepSize = rayLength / float(numLightSamples);
   float depth = 0.0;
 
-  for (int i = 0; i < NUM_LIGHT_SAMPLES; i++) {
+  for (int i = 0; i < MAX_LIGHT_SAMPLES; i++) {
+    if (i >= numLightSamples) break;
     vec3 samplePos = rayOrigin + rayDir * (stepSize * (float(i) + 0.5));
     float altitude = (length(samplePos - planetCenter) - planetRadius) / (atmosphereRadius - planetRadius);
     altitude = clamp(altitude, 0.0, 1.0);
@@ -109,7 +114,7 @@ void main() {
   }
 
   float rayLength = rayEnd - rayStart;
-  float stepSize = rayLength / float(NUM_SAMPLES);
+  float stepSize = rayLength / float(numSamples);
 
   // Normalized sun direction
   vec3 sunDir = normalize(sunDirection);
@@ -123,7 +128,8 @@ void main() {
   float opticalDepthR = 0.0;
   float opticalDepthM = 0.0;
 
-  for (int i = 0; i < NUM_SAMPLES; i++) {
+  for (int i = 0; i < MAX_SAMPLES; i++) {
+    if (i >= numSamples) break;
     // Sample point along view ray (with dither offset to reduce banding)
     vec3 samplePos = rayOrigin + rayDir * (rayStart + stepSize * (float(i) + dither));
     float height = length(samplePos - planetCenter);

@@ -52,6 +52,21 @@ export const PlayerConfig = {
   // Water visuals
   WATER_UV_TILING: 4,              // UV tiling for water texture (higher = more repetition)
   WATER_TRANSPARENCY: 0.7,         // Water transparency (0 = fully transparent, 1 = fully opaque)
+  WATER_SURFACE_OFFSET: 0.1,       // How much lower water sits below surrounding land (units)
+
+  // Water shader (close-up only)
+  WATER_COLOR: "#3399cc",          // Base water color
+  WATER_DEEP_COLOR: "#1a5577",     // Deep water color
+  WATER_WAVE_AMPLITUDE: 0.02,      // Height of wave animation
+  WATER_WAVE_FREQUENCY: 0.5,       // Frequency of waves
+  WATER_FRESNEL_POWER: 3.0,        // Fresnel effect intensity (higher = more reflection at edges)
+  WATER_REFLECTION_STRENGTH: 0.4, // How strong reflections appear
+  WATER_DISTORTION_STRENGTH: 0.02, // UV distortion for ripple effect
+  WATER_SPECULAR_POWER: 64.0,      // Sharpness of sun reflection
+  WATER_SPECULAR_STRENGTH: 1.5,    // Intensity of sun reflection
+  WATER_FOG_NEAR: 0,               // Water fog starts at this distance
+  WATER_FOG_FAR: 10,               // Water fog fully opaque at this distance
+  WATER_DEPTH_FOG_DENSITY: 0.5,    // How quickly water gets murky with depth (higher = faster falloff)
 
   // Underwater fog
   UNDERWATER_FOG_COLOR: "#1c5eac",  // Underwater fog color (hex string)
@@ -59,12 +74,15 @@ export const PlayerConfig = {
   UNDERWATER_FOG_FAR: 10,          // Fog fully opaque at this distance
 
   // Atmosphere (GPU Gems 2 style scattering)
+  ATMOSPHERE_ENABLED: true,           // Toggle atmosphere rendering on/off
   ATMOSPHERE_RADIUS_MULT: 1.2,        // Atmosphere outer radius as multiplier of planet radius
   ATMOSPHERE_SURFACE_OFFSET: 10.0,     // Offset for planet surface (accounts for terrain depth variation)
   ATMOSPHERE_RAYLEIGH_SCALE: 0.0055,  // Rayleigh scattering coefficient (blue sky)
   ATMOSPHERE_MIE_SCALE: 0.001,        // Mie scattering coefficient (sun glow/haze)
   ATMOSPHERE_MIE_G: 0.85,             // Mie phase asymmetry (-0.99 to 0.99, positive = forward scatter)
   ATMOSPHERE_SUN_INTENSITY: 10.0,     // Sun brightness for atmosphere
+  ATMOSPHERE_SAMPLES: 8,              // Number of ray march samples (higher = better quality, slower)
+  ATMOSPHERE_LIGHT_SAMPLES: 4,        // Number of light samples per ray step
 
   // Planet LOD system
   PLANET_MIN_RENDER_DISTANCE: 6,      // Min tiles to render when on ground

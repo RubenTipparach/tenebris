@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { PlayerConfig } from '../config/PlayerConfig';
 import skyboxVert from '../shaders/skybox/skybox.vert';
 import skyboxFrag from '../shaders/skybox/skybox.frag';
+import { profiler } from './Profiler';
 
 // Create starfield shader material for background
 function createStarfieldMaterial(): THREE.ShaderMaterial {
@@ -62,6 +63,19 @@ export class GameEngine {
 
     // Handle window resize
     window.addEventListener('resize', this.onWindowResize.bind(this));
+
+    // Setup profiler
+    profiler.createDisplay();
+    (window as unknown as { __gameRenderer: THREE.WebGLRenderer }).__gameRenderer = this.renderer;
+    (window as unknown as { __gameScene: THREE.Scene }).__gameScene = this.scene;
+
+    // F3 to toggle profiler
+    document.addEventListener('keydown', (e) => {
+      if (e.code === 'F3') {
+        e.preventDefault();
+        profiler.toggle();
+      }
+    });
   }
 
   private setupLighting(): void {
@@ -131,6 +145,8 @@ export class GameEngine {
   private animate = (): void => {
     requestAnimationFrame(this.animate);
 
+    profiler.begin('Frame Total');
+
     const deltaTime = this.clock.getDelta();
 
     // Update FPS counter
@@ -148,9 +164,11 @@ export class GameEngine {
     }
 
     // Call update callbacks
+    profiler.begin('Game Update');
     for (const callback of this.updateCallbacks) {
       callback(deltaTime);
     }
+    profiler.end('Game Update');
 
     // Keep starfield centered on camera so we never hit the edge
     if (this.starfield) {
@@ -158,7 +176,12 @@ export class GameEngine {
     }
 
     // Render
+    profiler.begin('Render');
     this.renderer.render(this.scene, this.camera);
+    profiler.end('Render');
+
+    profiler.end('Frame Total');
+    profiler.updateDisplay();
   };
 
   public getFps(): number {

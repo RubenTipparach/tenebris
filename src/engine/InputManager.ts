@@ -74,12 +74,15 @@ export class InputManager {
       }
     });
 
-    // Click to lock pointer
-    document.addEventListener('click', () => {
-      if (!this.isPointerLocked) {
-        document.body.requestPointerLock();
-      }
-    });
+    // Click start button to lock pointer
+    const startButton = document.getElementById('start-button');
+    if (startButton) {
+      startButton.addEventListener('click', () => {
+        if (!this.isPointerLocked) {
+          document.body.requestPointerLock();
+        }
+      });
+    }
   }
 
   public setPointerLockCallback(callback: (locked: boolean) => void): void {

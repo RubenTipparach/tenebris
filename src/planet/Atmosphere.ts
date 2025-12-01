@@ -25,6 +25,8 @@ function createAtmosphereShaderMaterial(config: AtmosphereConfig): THREE.ShaderM
       mieScale: { value: PlayerConfig.ATMOSPHERE_MIE_SCALE },
       mieG: { value: PlayerConfig.ATMOSPHERE_MIE_G },
       sunIntensity: { value: PlayerConfig.ATMOSPHERE_SUN_INTENSITY },
+      numSamples: { value: PlayerConfig.ATMOSPHERE_SAMPLES },
+      numLightSamples: { value: PlayerConfig.ATMOSPHERE_LIGHT_SAMPLES },
     },
     vertexShader: atmosphereVert,
     fragmentShader: atmosphereFrag,
@@ -62,6 +64,14 @@ export class Atmosphere {
 
   public setSunDirection(sunDirection: THREE.Vector3): void {
     this.material.uniforms.sunDirection.value.copy(sunDirection).normalize();
+  }
+
+  public setVisible(visible: boolean): void {
+    this.mesh.visible = visible;
+  }
+
+  public isVisible(): boolean {
+    return this.mesh.visible;
   }
 }
 

@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { HexTile } from './GoldbergPolyhedron';
 import { PlayerConfig } from '../config/PlayerConfig';
+import waterVert from '../shaders/water/water.vert';
+import waterFrag from '../shaders/water/water.frag';
 
 export enum HexBlockType {
   AIR = 0,
@@ -20,9 +22,27 @@ export class HexBlockMeshBuilder {
   private textureLoader: THREE.TextureLoader;
   private textures: Map<string, THREE.Texture> = new Map();
   private materials: Map<string, THREE.Material> = new Map();
+  private waterShaderMaterial: THREE.ShaderMaterial | null = null;
+  private sunDirection: THREE.Vector3 = new THREE.Vector3(1, 0.5, 0.3).normalize();
 
   constructor() {
     this.textureLoader = new THREE.TextureLoader();
+  }
+
+  // Set sun direction for water reflections
+  public setSunDirection(dir: THREE.Vector3): void {
+    this.sunDirection.copy(dir).normalize();
+    if (this.waterShaderMaterial) {
+      this.waterShaderMaterial.uniforms.sunDirection.value.copy(this.sunDirection);
+    }
+  }
+
+  // Update water shader uniforms each frame
+  public updateWaterShader(time: number, planetCenter: THREE.Vector3): void {
+    if (this.waterShaderMaterial) {
+      this.waterShaderMaterial.uniforms.time.value = time;
+      this.waterShaderMaterial.uniforms.planetCenter.value.copy(planetCenter);
+    }
   }
 
   public async loadTextures(singleTexturePath?: string): Promise<void> {
@@ -70,26 +90,84 @@ export class HexBlockMeshBuilder {
 
     // Water material - load water texture
     const waterTexture = await this.loadTexture('/textures/water.png');
-    waterTexture.magFilter = THREE.NearestFilter;
-    waterTexture.minFilter = THREE.NearestFilter;
+    waterTexture.magFilter = THREE.LinearFilter;
+    waterTexture.minFilter = THREE.LinearMipmapLinearFilter;
     waterTexture.wrapS = THREE.RepeatWrapping;
     waterTexture.wrapT = THREE.RepeatWrapping;
-    // Apply UV tiling from config
-    waterTexture.repeat.set(PlayerConfig.WATER_UV_TILING, PlayerConfig.WATER_UV_TILING);
     this.textures.set('water', waterTexture);
 
-    // Detailed water - transparent with depth effect
-    this.materials.set('water', new THREE.MeshLambertMaterial({
-      map: waterTexture,
-      side: THREE.DoubleSide,
+    // Parse hex colors to THREE.Color
+    const waterColor = new THREE.Color(PlayerConfig.WATER_COLOR);
+    const deepWaterColor = new THREE.Color(PlayerConfig.WATER_DEEP_COLOR);
+    const fogColor = new THREE.Color(PlayerConfig.UNDERWATER_FOG_COLOR);
+
+    // Create water shader material for close-up rendering
+    this.waterShaderMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        time: { value: 0.0 },
+        waterTexture: { value: waterTexture },
+        uvTiling: { value: PlayerConfig.WATER_UV_TILING },
+        waterColor: { value: waterColor },
+        deepWaterColor: { value: deepWaterColor },
+        sunDirection: { value: this.sunDirection.clone() },
+        opacity: { value: PlayerConfig.WATER_TRANSPARENCY },
+        fresnelPower: { value: PlayerConfig.WATER_FRESNEL_POWER },
+        reflectionStrength: { value: PlayerConfig.WATER_REFLECTION_STRENGTH },
+        distortionStrength: { value: PlayerConfig.WATER_DISTORTION_STRENGTH },
+        specularPower: { value: PlayerConfig.WATER_SPECULAR_POWER },
+        specularStrength: { value: PlayerConfig.WATER_SPECULAR_STRENGTH },
+        waveAmplitude: { value: PlayerConfig.WATER_WAVE_AMPLITUDE },
+        waveFrequency: { value: PlayerConfig.WATER_WAVE_FREQUENCY },
+        fogColor: { value: fogColor },
+        fogNear: { value: PlayerConfig.WATER_FOG_NEAR },
+        fogFar: { value: PlayerConfig.WATER_FOG_FAR },
+        depthFogDensity: { value: PlayerConfig.WATER_DEPTH_FOG_DENSITY },
+        planetCenter: { value: new THREE.Vector3(0, 0, 0) }
+      },
+      vertexShader: waterVert,
+      fragmentShader: waterFrag,
       transparent: true,
-      opacity: PlayerConfig.WATER_TRANSPARENCY
+      side: THREE.DoubleSide,
+      depthWrite: false // Prevent z-fighting with terrain
+    });
+
+    // Store shader material as the close-up water material
+    this.materials.set('water', this.waterShaderMaterial);
+
+    // LOD materials - use polygonOffset to push LOD behind detailed terrain in depth buffer
+    // This prevents LOD from showing through detailed terrain for nearby tiles
+    const lodOffsetFactor = 4;
+    const lodOffsetUnits = 4;
+
+    // LOD grass (top)
+    const grassLODTexture = grassTexture.clone();
+    grassLODTexture.needsUpdate = true;
+    this.materials.set('topLOD', new THREE.MeshLambertMaterial({
+      map: grassLODTexture,
+      polygonOffset: true,
+      polygonOffsetFactor: lodOffsetFactor,
+      polygonOffsetUnits: lodOffsetUnits
     }));
 
-    // LOD water - opaque for distant viewing (no transparency needed from space)
+    // LOD dirt (side)
+    const dirtLODTexture = dirtTexture.clone();
+    dirtLODTexture.needsUpdate = true;
+    this.materials.set('sideLOD', new THREE.MeshLambertMaterial({
+      map: dirtLODTexture,
+      polygonOffset: true,
+      polygonOffsetFactor: lodOffsetFactor,
+      polygonOffsetUnits: lodOffsetUnits
+    }));
+
+    // LOD water
+    const waterLODTexture = waterTexture.clone();
+    waterLODTexture.needsUpdate = true;
     this.materials.set('waterLOD', new THREE.MeshLambertMaterial({
-      map: waterTexture,
-      side: THREE.DoubleSide
+      map: waterLODTexture,
+      color: waterColor,
+      polygonOffset: true,
+      polygonOffsetFactor: lodOffsetFactor,
+      polygonOffsetUnits: lodOffsetUnits
     }));
   }
 
@@ -125,6 +203,14 @@ export class HexBlockMeshBuilder {
 
   public getWaterLODMaterial(): THREE.Material {
     return this.materials.get('waterLOD')!;
+  }
+
+  public getTopLODMaterial(): THREE.Material {
+    return this.materials.get('topLOD')!;
+  }
+
+  public getSideLODMaterial(): THREE.Material {
+    return this.materials.get('sideLOD')!;
   }
 
   // Create separate geometries for each face type
