@@ -3,6 +3,9 @@ import { InputManager } from './engine/InputManager';
 import { Planet } from './planet/Planet';
 import { PlanetPlayer } from './player/PlanetPlayer';
 import { PlanetBlockInteraction } from './player/PlanetBlockInteraction';
+import { PlanetTreeManager } from './planet/Tree';
+import { Atmosphere, createEarthAtmosphere } from './planet/Atmosphere';
+import { CloudSystem, createEarthClouds } from './planet/Clouds';
 
 class PlanetGame {
   private engine: GameEngine;
@@ -11,6 +14,9 @@ class PlanetGame {
   private moon: Planet;
   private player: PlanetPlayer;
   private blockInteraction: PlanetBlockInteraction;
+  private treeManager: PlanetTreeManager;
+  private earthAtmosphere: Atmosphere = null!;
+  private earthClouds: CloudSystem = null!;
   private isReady: boolean = false;
 
   constructor() {
@@ -31,6 +37,7 @@ class PlanetGame {
     // Player will be initialized after planets
     this.player = null!;
     this.blockInteraction = null!;
+    this.treeManager = null!;
 
     // Setup pointer lock UI
     this.inputManager.setPointerLockCallback((locked) => {
@@ -64,8 +71,12 @@ class PlanetGame {
       // Initialize player on Earth surface
       this.player = new PlanetPlayer(this.engine.camera, this.inputManager, this.earth);
 
-      // Add moon as a second celestial body (smaller gravity radius)
-      this.player.addPlanet(this.moon, 80);
+      // Add moon as a second celestial body with weaker gravity
+      this.player.addPlanet(this.moon, {
+        gravityFullRadius: 35,    // 100% gravity within 35 units (moon radius 25 + 10)
+        gravityFalloffRadius: 60, // Gravity falls off to 0% at 60 units
+        gravityStrength: 0.4,     // Moon has 40% of Earth's gravity
+      });
 
       // Initialize block interaction (for now, just with Earth)
       this.blockInteraction = new PlanetBlockInteraction(
@@ -73,6 +84,30 @@ class PlanetGame {
         this.player,
         this.engine.scene
       );
+
+      // Initialize tree manager and scatter trees on Earth
+      // Pass sun direction for planet-aware lighting
+      this.treeManager = new PlanetTreeManager(this.engine.scene, this.engine.sunDirection);
+      this.treeManager.scatterTrees(
+        this.earth.center,
+        this.earth.radius,
+        50, // Number of trees
+        (direction) => this.earth.getSurfaceHeightInDirection(direction),
+        (direction) => this.earth.isUnderwaterInDirection(direction) // Skip underwater locations
+      );
+
+      // Give block interaction access to tree manager for mining trees
+      this.blockInteraction.setTreeManager(this.treeManager);
+
+      // Create atmosphere for Earth
+      this.earthAtmosphere = createEarthAtmosphere(this.earth.radius, this.engine.sunDirection);
+      this.earthAtmosphere.setPosition(this.earth.center);
+      this.engine.scene.add(this.earthAtmosphere.getMesh());
+
+      // Create clouds for Earth
+      this.earthClouds = createEarthClouds(this.earth.radius, this.engine.sunDirection);
+      this.earthClouds.setPosition(this.earth.center);
+      this.engine.scene.add(this.earthClouds.getGroup());
 
       this.isReady = true;
 
@@ -94,9 +129,18 @@ class PlanetGame {
     // Update player
     this.player.update(deltaTime);
 
+    // Update underwater fog based on player water state
+    this.engine.setUnderwater(this.player.getIsInWater());
+
     // Update both planets (rebuild dirty meshes near player) with camera for frustum culling
     this.earth.update(this.player.position, this.engine.camera);
     this.moon.update(this.player.position, this.engine.camera);
+
+    // Update atmosphere (needs camera position for fresnel effect)
+    this.earthAtmosphere.updateCameraPosition(this.engine.camera.position);
+
+    // Update clouds (slow rotation)
+    this.earthClouds.update(deltaTime);
 
     // Update block interaction
     const input = this.inputManager.getState();

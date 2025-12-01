@@ -136,11 +136,56 @@
       height: 40px;
       image-rendering: pixelated;
     }
+
+    .hotbar-slot .item-count {
+      position: absolute;
+      bottom: 2px;
+      right: 4px;
+      font-size: 12px;
+      font-weight: bold;
+      text-shadow: 1px 1px 1px black;
+    }
+
+    .hotbar-slot {
+      position: relative;
+    }
+
+    /* Mining progress bar */
+    #mining-progress-container {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, 30px);
+      width: 200px;
+      height: 8px;
+      background: rgba(0, 0, 0, 0.7);
+      border: 1px solid #555;
+      border-radius: 4px;
+      overflow: hidden;
+      z-index: 100;
+      display: none;
+    }
+
+    #mining-progress-bar {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #4CAF50, #8BC34A);
+      transition: width 0.05s linear;
+    }
+
+    #mining-progress-container.active {
+      display: block;
+    }
   </style>
 </head>
 <body>
   <div id="game-container"></div>
   <div id="crosshair"></div>
+
+  <!-- Mining progress bar -->
+  <div id="mining-progress-container">
+    <div id="mining-progress-bar"></div>
+  </div>
 
   <div id="ui-overlay">
     <div id="position">Position: 0, 0, 0</div>
@@ -158,20 +203,20 @@
     <p><span class="key">Mouse</span> - Look around</p>
     <p><span class="key">Left Click</span> - Break block</p>
     <p><span class="key">Right Click</span> - Place block</p>
-    <p><span class="key">1-3</span> - Select block type</p>
+    <p><span class="key">1-9</span> - Select hotbar slot</p>
     <p style="margin-top: 20px; color: #4CAF50;">Click to start</p>
   </div>
 
   <div id="hotbar">
-    <div class="hotbar-slot selected" data-slot="0">
-      <img src="/textures/rocks.png" alt="Rocks">
-    </div>
-    <div class="hotbar-slot" data-slot="1">
-      <img src="/textures/dirt.png" alt="Dirt">
-    </div>
-    <div class="hotbar-slot" data-slot="2">
-      <img src="/textures/grass.png" alt="Grass">
-    </div>
+    <div class="hotbar-slot selected" data-slot="0"><img style="display:none"></div>
+    <div class="hotbar-slot" data-slot="1"><img style="display:none"></div>
+    <div class="hotbar-slot" data-slot="2"><img style="display:none"></div>
+    <div class="hotbar-slot" data-slot="3"><img style="display:none"></div>
+    <div class="hotbar-slot" data-slot="4"><img style="display:none"></div>
+    <div class="hotbar-slot" data-slot="5"><img style="display:none"></div>
+    <div class="hotbar-slot" data-slot="6"><img style="display:none"></div>
+    <div class="hotbar-slot" data-slot="7"><img style="display:none"></div>
+    <div class="hotbar-slot" data-slot="8"><img style="display:none"></div>
   </div>
 
   <!-- Switch between /src/main.ts (flat world) and /src/mainPlanet.ts (spherical planet) -->

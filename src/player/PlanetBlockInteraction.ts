@@ -2,33 +2,116 @@ import * as THREE from 'three';
 import { Planet } from '../planet/Planet';
 import { PlanetPlayer } from './PlanetPlayer';
 import { HexBlockType } from '../planet/HexBlock';
+import { Inventory, ItemType, ITEM_DATA } from './Inventory';
+import { PlanetTreeManager } from '../planet/Tree';
+
+// Map HexBlockType to ItemType
+function blockToItem(blockType: HexBlockType): ItemType {
+  switch (blockType) {
+    case HexBlockType.STONE: return ItemType.STONE;
+    case HexBlockType.DIRT: return ItemType.DIRT;
+    case HexBlockType.GRASS: return ItemType.GRASS;
+    default: return ItemType.NONE;
+  }
+}
+
+// Map ItemType to HexBlockType
+function itemToBlock(itemType: ItemType): HexBlockType {
+  switch (itemType) {
+    case ItemType.STONE: return HexBlockType.STONE;
+    case ItemType.DIRT: return HexBlockType.DIRT;
+    case ItemType.GRASS: return HexBlockType.GRASS;
+    default: return HexBlockType.AIR;
+  }
+}
 
 export class PlanetBlockInteraction {
   private planet: Planet;
   private player: PlanetPlayer;
   private scene: THREE.Scene;
   private raycaster: THREE.Raycaster;
+  private inventory: Inventory;
 
-  private selectedBlockType: HexBlockType = HexBlockType.STONE;
   private highlightMesh: THREE.Mesh | null = null;
+  private treeManager: PlanetTreeManager | null = null;
 
-  private leftClickCooldown: number = 0;
   private rightClickCooldown: number = 0;
   private readonly CLICK_COOLDOWN = 0.25;
   private readonly MAX_REACH = 8;
+
+  // Mining state
+  private miningTarget: { tileIndex: number; depth: number; blockType: HexBlockType } | null = null;
+  private miningTreeTarget: { mesh: THREE.Mesh; treeType: string } | null = null;
+  private miningProgress: number = 0;
+  private miningProgressContainer: HTMLElement | null = null;
+  private miningProgressBar: HTMLElement | null = null;
 
   constructor(planet: Planet, player: PlanetPlayer, scene: THREE.Scene) {
     this.planet = planet;
     this.player = player;
     this.scene = scene;
     this.raycaster = new THREE.Raycaster();
+    this.inventory = new Inventory();
 
     this.createHighlightMesh();
     this.setupBlockSelection();
+    this.setupMiningUI();
+    this.updateHotbarUI();
+  }
+
+  private setupMiningUI(): void {
+    this.miningProgressContainer = document.getElementById('mining-progress-container');
+    this.miningProgressBar = document.getElementById('mining-progress-bar');
+  }
+
+  private updateMiningUI(progress: number): void {
+    if (this.miningProgressContainer && this.miningProgressBar) {
+      if (progress > 0) {
+        this.miningProgressContainer.classList.add('active');
+        this.miningProgressBar.style.width = `${progress * 100}%`;
+      } else {
+        this.miningProgressContainer.classList.remove('active');
+        this.miningProgressBar.style.width = '0%';
+      }
+    }
+  }
+
+  private updateHotbarUI(): void {
+    const hotbar = this.inventory.getHotbar();
+    const slots = document.querySelectorAll('.hotbar-slot');
+
+    slots.forEach((slotEl, index) => {
+      if (index < hotbar.length) {
+        const slot = hotbar[index];
+        const img = slotEl.querySelector('img') as HTMLImageElement;
+        let countEl = slotEl.querySelector('.item-count') as HTMLElement;
+
+        if (slot.itemType !== ItemType.NONE && slot.quantity > 0) {
+          const itemData = ITEM_DATA[slot.itemType];
+          if (img) {
+            img.src = itemData.texture;
+            img.style.display = 'block';
+          }
+
+          // Create or update count element
+          if (!countEl) {
+            countEl = document.createElement('span');
+            countEl.className = 'item-count';
+            slotEl.appendChild(countEl);
+          }
+          countEl.textContent = slot.quantity > 1 ? slot.quantity.toString() : '';
+        } else {
+          if (img) img.style.display = 'none';
+          if (countEl) countEl.textContent = '';
+        }
+
+        // Update selection
+        slotEl.classList.toggle('selected', index === this.inventory.getSelectedSlot());
+      }
+    });
   }
 
   private createHighlightMesh(): void {
-    // Simple highlight sphere for now
     const geometry = new THREE.SphereGeometry(0.5, 8, 8);
     const material = new THREE.MeshBasicMaterial({
       color: 0xffffff,
@@ -43,53 +126,45 @@ export class PlanetBlockInteraction {
 
   private setupBlockSelection(): void {
     document.addEventListener('keydown', (e) => {
-      switch (e.code) {
-        case 'Digit1':
-          this.selectBlock(0);
-          break;
-        case 'Digit2':
-          this.selectBlock(1);
-          break;
-        case 'Digit3':
-          this.selectBlock(2);
-          break;
+      const digit = parseInt(e.key);
+      if (digit >= 1 && digit <= 9) {
+        this.inventory.setSelectedSlot(digit - 1);
+        this.updateHotbarUI();
+        this.updateBlockTypeUI();
       }
     });
   }
 
-  private selectBlock(slot: number): void {
-    const blockTypes = [HexBlockType.STONE, HexBlockType.DIRT, HexBlockType.GRASS];
-    const blockNames = ['Stone', 'Dirt', 'Grass'];
-
-    this.selectedBlockType = blockTypes[slot];
-
-    const slots = document.querySelectorAll('.hotbar-slot');
-    slots.forEach((s, i) => {
-      s.classList.toggle('selected', i === slot);
-    });
-
+  private updateBlockTypeUI(): void {
+    const slot = this.inventory.getSelectedItem();
     const blockTypeElement = document.getElementById('block-type');
     if (blockTypeElement) {
-      blockTypeElement.textContent = `Block: ${blockNames[slot]}`;
+      if (slot.itemType !== ItemType.NONE) {
+        blockTypeElement.textContent = `Block: ${ITEM_DATA[slot.itemType].name}`;
+      } else {
+        blockTypeElement.textContent = 'Block: None';
+      }
     }
   }
 
   public update(deltaTime: number, leftClick: boolean, rightClick: boolean): void {
-    this.leftClickCooldown = Math.max(0, this.leftClickCooldown - deltaTime);
     this.rightClickCooldown = Math.max(0, this.rightClickCooldown - deltaTime);
 
-    // Raycast to find targeted block
+    // Raycast to find targeted block or tree
     const origin = this.player.getRaycastOrigin();
     const direction = this.player.getForwardVector();
 
     this.raycaster.set(origin, direction);
     this.raycaster.far = this.MAX_REACH;
 
-    // Get all meshes from planet
+    // Get all meshes from planet and trees
     const meshes: THREE.Object3D[] = [];
     this.scene.traverse((object) => {
-      if (object instanceof THREE.Mesh && object.userData.tileIndex !== undefined) {
-        meshes.push(object);
+      if (object instanceof THREE.Mesh) {
+        // Block meshes have tileIndex, tree meshes have isTree
+        if (object.userData.tileIndex !== undefined || object.userData.isTree) {
+          meshes.push(object);
+        }
       }
     });
 
@@ -104,36 +179,145 @@ export class PlanetBlockInteraction {
         this.highlightMesh.position.copy(hit.point);
       }
 
-      const tileIndex = hitObject.userData.tileIndex as number;
-      const depth = hitObject.userData.depth as number;
+      // Check if we hit a tree
+      if (hitObject.userData.isTree) {
+        const treeType = hitObject.userData.treeType as string; // 'trunk' or 'leaves'
 
-      // Handle block breaking
-      if (leftClick && this.leftClickCooldown === 0) {
-        this.breakBlock(tileIndex, depth);
-        this.leftClickCooldown = this.CLICK_COOLDOWN;
-      }
+        // Handle tree mining (left click held)
+        if (leftClick) {
+          this.handleTreeMining(deltaTime, hitObject, treeType);
+        } else {
+          this.resetMining();
+        }
+      } else {
+        // Hit a block
+        const tileIndex = hitObject.userData.tileIndex as number;
+        // Compute depth from hit point position
+        const depth = this.planet.getDepthAtPoint(hit.point);
+        const blockType = this.planet.getBlock(tileIndex, depth);
 
-      // Handle block placing
-      if (rightClick && this.rightClickCooldown === 0) {
-        // Place above the hit block
-        this.placeBlock(tileIndex, depth - 1);
-        this.rightClickCooldown = this.CLICK_COOLDOWN;
+        // Handle mining (left click held)
+        if (leftClick && blockType !== HexBlockType.AIR) {
+          this.handleMining(deltaTime, tileIndex, depth, blockType);
+        } else {
+          // Reset mining if not clicking or target changed
+          this.resetMining();
+        }
+
+        // Handle block placing (right click)
+        if (rightClick && this.rightClickCooldown === 0) {
+          this.placeBlock(tileIndex, depth - 1);
+          this.rightClickCooldown = this.CLICK_COOLDOWN;
+        }
       }
-    } else if (this.highlightMesh) {
-      this.highlightMesh.visible = false;
+    } else {
+      if (this.highlightMesh) {
+        this.highlightMesh.visible = false;
+      }
+      this.resetMining();
     }
   }
 
-  private breakBlock(tileIndex: number, depth: number): void {
+  private handleMining(deltaTime: number, tileIndex: number, depth: number, blockType: HexBlockType): void {
+    // Check if target changed
+    if (this.miningTarget === null ||
+        this.miningTarget.tileIndex !== tileIndex ||
+        this.miningTarget.depth !== depth) {
+      // New target, reset progress
+      this.miningTarget = { tileIndex, depth, blockType };
+      this.miningProgress = 0;
+    }
+
+    // Get mining time for this block
+    const itemType = blockToItem(blockType);
+    const mineTime = ITEM_DATA[itemType].mineTime;
+
+    // Increase progress
+    this.miningProgress += deltaTime / mineTime;
+    this.updateMiningUI(this.miningProgress);
+
+    // Check if mining complete
+    if (this.miningProgress >= 1) {
+      this.breakBlock(tileIndex, depth, blockType);
+      this.resetMining();
+    }
+  }
+
+  private handleTreeMining(deltaTime: number, mesh: THREE.Mesh, treeType: string): void {
+    // Check if target changed
+    if (this.miningTreeTarget === null || this.miningTreeTarget.mesh !== mesh) {
+      // New target, reset progress
+      this.miningTreeTarget = { mesh, treeType };
+      this.miningTarget = null;
+      this.miningProgress = 0;
+    }
+
+    // Get mining time based on tree part
+    const itemType = treeType === 'trunk' ? ItemType.WOOD : ItemType.LEAVES;
+    const mineTime = ITEM_DATA[itemType].mineTime;
+
+    // Increase progress
+    this.miningProgress += deltaTime / mineTime;
+    this.updateMiningUI(this.miningProgress);
+
+    // Check if mining complete
+    if (this.miningProgress >= 1) {
+      this.breakTree(mesh, treeType);
+      this.resetMining();
+    }
+  }
+
+  private breakTree(mesh: THREE.Mesh, treeType: string): void {
+    // Add item to inventory
+    const itemType = treeType === 'trunk' ? ItemType.WOOD : ItemType.LEAVES;
+    this.inventory.addItem(itemType, 1);
+    this.updateHotbarUI();
+
+    // Find and remove the tree group
+    if (this.treeManager) {
+      let parent = mesh.parent;
+      while (parent && !(parent instanceof THREE.Group && parent.children.some(c => c.userData.isTree))) {
+        parent = parent.parent;
+      }
+      if (parent instanceof THREE.Group) {
+        this.treeManager.removeTree(parent);
+      }
+    }
+  }
+
+  private resetMining(): void {
+    this.miningTarget = null;
+    this.miningTreeTarget = null;
+    this.miningProgress = 0;
+    this.updateMiningUI(0);
+  }
+
+  private breakBlock(tileIndex: number, depth: number, blockType: HexBlockType): void {
+    // Add item to inventory
+    const itemType = blockToItem(blockType);
+    if (itemType !== ItemType.NONE) {
+      this.inventory.addItem(itemType, 1);
+      this.updateHotbarUI();
+    }
+
+    // Remove block from world
     this.planet.setBlock(tileIndex, depth, HexBlockType.AIR);
   }
 
   private placeBlock(tileIndex: number, depth: number): void {
     if (depth < 0) return;
 
+    const selectedSlot = this.inventory.getSelectedItem();
+    if (selectedSlot.itemType === ItemType.NONE || selectedSlot.quantity === 0) {
+      return; // No item to place
+    }
+
+    const blockType = itemToBlock(selectedSlot.itemType);
+    if (blockType === HexBlockType.AIR) return;
+
     // Check if block would be inside player
     const blockRadius = this.planet.radius - depth;
-    const playerDist = this.player.position.length();
+    const playerDist = this.player.position.distanceTo(this.planet.center);
 
     // Simple check - if player is near this tile and at similar height, don't place
     const playerTile = this.planet.getTileAtPoint(this.player.position);
@@ -143,10 +327,18 @@ export class PlanetBlockInteraction {
       }
     }
 
-    this.planet.setBlock(tileIndex, depth, this.selectedBlockType);
+    // Use item from inventory
+    if (this.inventory.useSelectedItem()) {
+      this.planet.setBlock(tileIndex, depth, blockType);
+      this.updateHotbarUI();
+    }
   }
 
-  public getSelectedBlockType(): HexBlockType {
-    return this.selectedBlockType;
+  public getInventory(): Inventory {
+    return this.inventory;
+  }
+
+  public setTreeManager(treeManager: PlanetTreeManager): void {
+    this.treeManager = treeManager;
   }
 }

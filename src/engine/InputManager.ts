@@ -4,6 +4,7 @@ export interface InputState {
   left: boolean;
   right: boolean;
   jump: boolean;
+  jumpJustPressed: boolean; // True only on the frame jump was pressed
   sprint: boolean;
   crouch: boolean;  // Ctrl - for descending/jetpack down
   rollLeft: boolean;  // Q - roll left in space
@@ -16,6 +17,7 @@ export interface InputState {
 
 export class InputManager {
   private keys: Set<string> = new Set();
+  private keysJustPressed: Set<string> = new Set(); // Keys pressed this frame
   private mouseMovement: { x: number; y: number } = { x: 0, y: 0 };
   private mouseButtons: { left: boolean; right: boolean } = { left: false, right: false };
   private isPointerLocked: boolean = false;
@@ -28,6 +30,9 @@ export class InputManager {
   private setupEventListeners(): void {
     // Keyboard events
     document.addEventListener('keydown', (e) => {
+      if (!this.keys.has(e.code)) {
+        this.keysJustPressed.add(e.code); // Track newly pressed keys
+      }
       this.keys.add(e.code);
     });
 
@@ -88,6 +93,7 @@ export class InputManager {
       left: this.keys.has('KeyA') || this.keys.has('ArrowLeft'),
       right: this.keys.has('KeyD') || this.keys.has('ArrowRight'),
       jump: this.keys.has('Space'),
+      jumpJustPressed: this.keysJustPressed.has('Space'),
       sprint: this.keys.has('ShiftLeft') || this.keys.has('ShiftRight'),
       crouch: this.keys.has('ControlLeft') || this.keys.has('ControlRight'),
       rollLeft: this.keys.has('KeyQ'),
@@ -98,9 +104,10 @@ export class InputManager {
       rightClick: this.mouseButtons.right
     };
 
-    // Reset mouse movement after reading
+    // Reset mouse movement and just-pressed keys after reading
     this.mouseMovement.x = 0;
     this.mouseMovement.y = 0;
+    this.keysJustPressed.clear();
 
     return state;
   }

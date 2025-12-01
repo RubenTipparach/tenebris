@@ -1,11 +1,13 @@
 import * as THREE from 'three';
 import { HexTile } from './GoldbergPolyhedron';
+import { PlayerConfig } from '../config/PlayerConfig';
 
 export enum HexBlockType {
   AIR = 0,
   STONE = 1,
   DIRT = 2,
-  GRASS = 3
+  GRASS = 3,
+  WATER = 4
 }
 
 export enum FaceType {
@@ -65,6 +67,23 @@ export class HexBlockMeshBuilder {
     // Bottom faces and deep blocks use stone
     this.materials.set('bottom', new THREE.MeshLambertMaterial({ map: stoneTexture }));
     this.materials.set('stone', new THREE.MeshLambertMaterial({ map: stoneTexture }));
+
+    // Water material - load water texture
+    const waterTexture = await this.loadTexture('/textures/water.png');
+    waterTexture.magFilter = THREE.NearestFilter;
+    waterTexture.minFilter = THREE.NearestFilter;
+    waterTexture.wrapS = THREE.RepeatWrapping;
+    waterTexture.wrapT = THREE.RepeatWrapping;
+    // Apply UV tiling from config
+    waterTexture.repeat.set(PlayerConfig.WATER_UV_TILING, PlayerConfig.WATER_UV_TILING);
+    this.textures.set('water', waterTexture);
+
+    this.materials.set('water', new THREE.MeshLambertMaterial({
+      map: waterTexture,
+      transparent: true,
+      opacity: PlayerConfig.WATER_TRANSPARENCY,
+      side: THREE.DoubleSide
+    }));
   }
 
   private loadTexture(path: string): Promise<THREE.Texture> {
@@ -91,6 +110,10 @@ export class HexBlockMeshBuilder {
 
   public getStoneMaterial(): THREE.Material {
     return this.materials.get('stone')!;
+  }
+
+  public getWaterMaterial(): THREE.Material {
+    return this.materials.get('water')!;
   }
 
   // Create separate geometries for each face type
@@ -328,6 +351,10 @@ export class HexBlockMeshBuilder {
   }
 
   public isSolid(blockType: HexBlockType): boolean {
-    return blockType !== HexBlockType.AIR;
+    return blockType !== HexBlockType.AIR && blockType !== HexBlockType.WATER;
+  }
+
+  public isLiquid(blockType: HexBlockType): boolean {
+    return blockType === HexBlockType.WATER;
   }
 }

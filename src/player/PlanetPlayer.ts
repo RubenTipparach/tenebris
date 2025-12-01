@@ -6,7 +6,9 @@ import { PlayerConfig } from '../config/PlayerConfig';
 
 export interface CelestialBody {
   planet: Planet;
-  gravityRadius: number;  // Distance at which gravity affects player
+  gravityFullRadius?: number;    // Distance for 100% gravity (defaults to planet.radius * config)
+  gravityFalloffRadius?: number; // Distance where gravity reaches 0% (defaults to planet.radius * config)
+  gravityStrength?: number;      // Gravity multiplier (defaults to 1.0)
 }
 
 export class PlanetPlayer {
@@ -26,19 +28,25 @@ export class PlanetPlayer {
   // Space flight mode - uses quaternion for full 6DOF
   private orientation: THREE.Quaternion = new THREE.Quaternion();
   private isInSpace: boolean = false;
-  private targetUp: THREE.Vector3 = new THREE.Vector3(0, 1, 0);
-  private isTransitioningToGravity: boolean = false;
 
-  private yaw: number = 0;
-  private pitch: number = 0;
+  // Gravity transition - timed roll correction
+  private transitionTimer: number = 0; // Counts down during transition
 
   private isGrounded: boolean = false;
   private isJetpacking: boolean = false;
+  private isInWater: boolean = false;
+  private hasDoubleJumped: boolean = false; // Track if double-jump/jetpack was activated this airborne session
+
+  // Jump drift detection
+  private jumpStartPosition: THREE.Vector3 | null = null;
+  private jumpStartSpherical: { theta: number; phi: number } | null = null;
+  private wasdPressedDuringJump: boolean = false;
+  private jumpDirection: THREE.Vector3 | null = null; // Fixed direction for gravity during jump
 
   constructor(camera: THREE.PerspectiveCamera, inputManager: InputManager, planet: Planet) {
     this.camera = camera;
     this.inputManager = inputManager;
-    this.addPlanet(planet, 120); // Earth with gravity radius of 120
+    this.addPlanet(planet); // Use default gravity config based on planet radius
     this.currentPlanet = planet;
     this.velocity = new THREE.Vector3();
 
@@ -48,8 +56,16 @@ export class PlanetPlayer {
     this.updateOrientationFromLocal();
   }
 
-  public addPlanet(planet: Planet, gravityRadius: number): void {
-    this.planets.push({ planet, gravityRadius });
+  public addPlanet(
+    planet: Planet,
+    options?: { gravityFullRadius?: number; gravityFalloffRadius?: number; gravityStrength?: number }
+  ): void {
+    this.planets.push({
+      planet,
+      gravityFullRadius: options?.gravityFullRadius,
+      gravityFalloffRadius: options?.gravityFalloffRadius,
+      gravityStrength: options?.gravityStrength,
+    });
   }
 
   private updateOrientationFromLocal(): void {
@@ -93,6 +109,67 @@ export class PlanetPlayer {
     return this.position.distanceTo(planet.center) - planet.radius;
   }
 
+  // Convert position to spherical coordinates relative to planet center
+  private positionToSpherical(position: THREE.Vector3, planet: Planet): { theta: number; phi: number; radius: number } {
+    const relative = position.clone().sub(planet.center);
+    const radius = relative.length();
+    const theta = Math.atan2(relative.x, relative.z); // Azimuthal angle (around Y axis)
+    const phi = Math.acos(relative.y / radius); // Polar angle (from Y axis)
+    return { theta, phi, radius };
+  }
+
+  // Check for spherical coordinate drift after landing from a jump
+  private checkJumpDrift(): void {
+    // Only check if we have a valid jump start and WASD was never pressed
+    if (!this.jumpStartPosition || !this.jumpStartSpherical || !this.currentPlanet) {
+      return;
+    }
+
+    if (this.wasdPressedDuringJump) {
+      // WASD was pressed, so any drift is expected - clear tracking
+      this.jumpStartPosition = null;
+      this.jumpStartSpherical = null;
+      this.jumpDirection = null;
+      return;
+    }
+
+    // Calculate landing spherical coordinates
+    const landingSpherical = this.positionToSpherical(this.position, this.currentPlanet);
+
+    // Calculate angular drift in degrees
+    const thetaDrift = (landingSpherical.theta - this.jumpStartSpherical.theta) * (180 / Math.PI);
+    const phiDrift = (landingSpherical.phi - this.jumpStartSpherical.phi) * (180 / Math.PI);
+
+    // Calculate arc distance on the sphere (more intuitive metric)
+    const arcDistance = this.jumpStartPosition.distanceTo(this.position);
+
+    // Only log if there's meaningful drift (threshold: 0.01 degrees or 0.01 units)
+    if (Math.abs(thetaDrift) > 0.01 || Math.abs(phiDrift) > 0.01 || arcDistance > 0.01) {
+      console.log('=== JUMP DRIFT DETECTED ===');
+      console.log('Jump start position:', {
+        x: this.jumpStartPosition.x.toFixed(4),
+        y: this.jumpStartPosition.y.toFixed(4),
+        z: this.jumpStartPosition.z.toFixed(4),
+      });
+      console.log('Landing position:', {
+        x: this.position.x.toFixed(4),
+        y: this.position.y.toFixed(4),
+        z: this.position.z.toFixed(4),
+      });
+      console.log('Spherical drift:', {
+        theta: thetaDrift.toFixed(4) + '°',
+        phi: phiDrift.toFixed(4) + '°',
+      });
+      console.log('Arc distance:', arcDistance.toFixed(4) + ' units');
+      console.log('===========================');
+    }
+
+    // Clear tracking
+    this.jumpStartPosition = null;
+    this.jumpStartSpherical = null;
+    this.jumpDirection = null;
+  }
+
   private getAltitude(): number {
     if (!this.currentPlanet) return Infinity;
     return this.getAltitudeFromPlanet(this.currentPlanet);
@@ -108,21 +185,25 @@ export class PlanetPlayer {
       const distToCenter = this.position.distanceTo(body.planet.center);
       const altitude = distToCenter - body.planet.radius;
 
-      // Check if within gravity radius
-      if (distToCenter < body.gravityRadius) {
-        // Calculate gravity strength based on distance
-        const gravityFalloffStart = body.planet.radius + 20;
-        const gravityFalloffEnd = body.gravityRadius;
+      // Use per-planet gravity radii, or fall back to config defaults (as multipliers of planet radius)
+      const gravityFullRadius = body.gravityFullRadius ?? (body.planet.radius * PlayerConfig.GRAVITY_FULL_RADIUS);
+      const gravityFalloffRadius = body.gravityFalloffRadius ?? (body.planet.radius * PlayerConfig.GRAVITY_FALLOFF_RADIUS);
+      const gravityStrength = body.gravityStrength ?? 1.0;
 
+      // Check if within gravity radius
+      if (distToCenter < gravityFalloffRadius) {
         let gravityMult = 0;
-        if (distToCenter <= gravityFalloffStart) {
+        if (distToCenter <= gravityFullRadius) {
           gravityMult = 1.0;
         } else {
-          const falloffRange = gravityFalloffEnd - gravityFalloffStart;
-          const distInFalloff = distToCenter - gravityFalloffStart;
+          const falloffRange = gravityFalloffRadius - gravityFullRadius;
+          const distInFalloff = distToCenter - gravityFullRadius;
           const falloffProgress = Math.min(1, distInFalloff / falloffRange);
           gravityMult = 1.0 - falloffProgress;
         }
+
+        // Apply per-planet gravity strength
+        gravityMult *= gravityStrength;
 
         if (gravityMult > closestGravity) {
           closestGravity = gravityMult;
@@ -151,20 +232,15 @@ export class PlanetPlayer {
 
     // Transitioning from space to gravity well
     if (wasInSpace && !this.isInSpace && planet) {
-      this.isTransitioningToGravity = true;
+      this.transitionTimer = PlayerConfig.ROLL_SLERP_DURATION;
       this.currentPlanet = planet;
-      // Set target up vector (away from planet)
-      this.targetUp = planet.getSurfaceNormal(this.position);
-
-      // Convert current space look direction to yaw/pitch for planet mode
-      // This preserves where the player is looking during the transition
-      this.convertSpaceOrientationToPlanetYawPitch();
+      // No rotation changes - just start the timed roll slerp
     }
 
     // Transitioning from gravity to space
     if (!wasInSpace && this.isInSpace) {
-      this.isTransitioningToGravity = false;
-      // Keep current orientation, just enable 6DOF
+      this.transitionTimer = 0; // Stop any ongoing transition
+      // No rotation changes - just enable 6DOF controls
       this.updateOrientationFromLocal();
     }
 
@@ -180,13 +256,16 @@ export class PlanetPlayer {
       this.handleSpaceRoll(input, deltaTime);
       // Note: updateLocalFromOrientation is called within each handler
     } else {
-      // Planet mode - traditional FPS controls
-      this.handleMouseLook(input);
-      this.updateLocalOrientation();
+      // Planet mode - mouse look, but up vector must align with gravity
+      this.handleSpaceMouseLook(input, deltaTime);
 
-      // Slerp up vector when transitioning to gravity
-      if (this.isTransitioningToGravity) {
-        this.slerpUpVector(deltaTime);
+      if (this.transitionTimer > 0) {
+        // During transition: slerp roll to level
+        this.transitionTimer -= deltaTime;
+        this.slerpRollToLevel(deltaTime);
+      } else {
+        // After transition or already on planet: force immediate alignment
+        this.alignUpWithGravity();
       }
 
       this.handleMovement(input, deltaTime);
@@ -198,90 +277,81 @@ export class PlanetPlayer {
     this.updateUI();
   }
 
-  // Convert current space orientation (6DOF) to planet yaw/pitch while preserving look direction
-  private convertSpaceOrientationToPlanetYawPitch(): void {
-    // Get current look direction from space mode
-    // In space, camera looks along -localForward
-    const spaceLookDir = this.localForward.clone().negate();
+  // Instantly align camera up with gravity direction, preserving look direction
+  // Called every frame when inside gravity field (after transition is complete)
+  private alignUpWithGravity(): void {
+    if (!this.currentPlanet) return;
 
-    // Get the target up (planet surface normal)
-    const newUp = this.targetUp.clone();
+    // Get planet's "up" at our position (opposite of gravity direction)
+    const planetUp = this.currentPlanet.getSurfaceNormal(this.position);
 
-    // Create a temporary forward that's perpendicular to the new up
-    // Project spaceLookDir onto the plane perpendicular to newUp to get the horizontal component
-    const horizontalLook = spaceLookDir.clone();
-    horizontalLook.sub(newUp.clone().multiplyScalar(horizontalLook.dot(newUp)));
+    // Get our current look direction (camera looks along -localForward)
+    const lookDir = this.localForward.clone().negate();
 
-    let tempForward: THREE.Vector3;
-    if (horizontalLook.lengthSq() > 0.001) {
-      tempForward = horizontalLook.normalize();
-    } else {
-      // Looking straight up or down - pick an arbitrary forward
-      tempForward = new THREE.Vector3(1, 0, 0);
-      tempForward.sub(newUp.clone().multiplyScalar(tempForward.dot(newUp)));
-      if (tempForward.lengthSq() < 0.001) {
-        tempForward.set(0, 0, 1);
-        tempForward.sub(newUp.clone().multiplyScalar(tempForward.dot(newUp)));
-      }
-      tempForward.normalize();
+    // Calculate what the camera's "up" should be to be level with planet
+    // It should be perpendicular to look direction and as close to planetUp as possible
+    const targetCameraUp = planetUp.clone();
+    targetCameraUp.sub(lookDir.clone().multiplyScalar(planetUp.dot(lookDir)));
+
+    if (targetCameraUp.lengthSq() < 0.001) {
+      // Looking straight up or down relative to planet - can't determine roll
+      return;
     }
+    targetCameraUp.normalize();
 
-    // Create right vector
-    const tempRight = new THREE.Vector3().crossVectors(tempForward, newUp).normalize();
-    // Ensure forward is perpendicular
-    tempForward = new THREE.Vector3().crossVectors(newUp, tempRight).normalize();
+    // Set up immediately to target (no slerp)
+    this.localUp.copy(targetCameraUp);
 
-    // Calculate pitch: angle between look direction and horizontal plane
-    const verticalComponent = spaceLookDir.dot(newUp);
-    this.pitch = Math.asin(Math.max(-1, Math.min(1, verticalComponent)));
-    this.pitch = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, this.pitch));
+    // Recompute right to maintain orthogonality (forward stays the same!)
+    this.localRight = new THREE.Vector3().crossVectors(this.localForward, this.localUp).normalize();
+    // Re-orthogonalize up to ensure perfect orthonormal basis
+    this.localUp = new THREE.Vector3().crossVectors(this.localRight, this.localForward).normalize();
 
-    // Calculate yaw: angle between horizontal look direction and localForward
-    // We need to express yaw relative to the new localForward
-    if (horizontalLook.lengthSq() > 0.001) {
-      const normalizedHorizontal = horizontalLook.clone().normalize();
-      // Yaw is the angle from tempForward to horizontalLook, measured around newUp
-      const forwardDot = normalizedHorizontal.dot(tempForward);
-      const rightDot = normalizedHorizontal.dot(tempRight);
-      this.yaw = Math.atan2(rightDot, forwardDot);
-    } else {
-      this.yaw = 0;
-    }
-
-    // Set localForward/localRight to the new basis (will be updated during slerp)
-    this.localForward = tempForward;
-    this.localRight = tempRight;
-    // localUp will be slerped toward targetUp
+    // Update the orientation quaternion from our local axes
+    this.updateOrientationFromLocal();
   }
 
-  private slerpUpVector(deltaTime: number): void {
-    // Smoothly interpolate the up vector toward the target
-    const slerpFactor = Math.min(1, PlayerConfig.ORIENTATION_SLERP_SPEED * deltaTime);
+  // Slerp only the roll component to level the camera relative to planet surface
+  // This preserves look direction but smoothly corrects the "tilt"
+  // Only called during transition period (transitionTimer > 0)
+  private slerpRollToLevel(deltaTime: number): void {
+    if (!this.currentPlanet) return;
 
-    // Slerp the up vector
-    this.localUp.lerp(this.targetUp, slerpFactor).normalize();
+    // Get planet's "up" at our position
+    const planetUp = this.currentPlanet.getSurfaceNormal(this.position);
 
-    // Recompute forward and right to be perpendicular to new up
-    // Project current forward onto plane perpendicular to new up
-    const tempForward = this.localForward.clone();
-    tempForward.sub(this.localUp.clone().multiplyScalar(tempForward.dot(this.localUp)));
+    // Get our current look direction (camera looks along -localForward)
+    const lookDir = this.localForward.clone().negate();
 
-    if (tempForward.lengthSq() > 0.001) {
-      this.localForward = tempForward.normalize();
-    } else {
-      // Forward was parallel to up, pick arbitrary perpendicular
-      this.localForward.set(1, 0, 0);
-      this.localForward.sub(this.localUp.clone().multiplyScalar(this.localForward.dot(this.localUp)));
-      this.localForward.normalize();
+    // Calculate what the camera's "up" should be to be level
+    // It should be perpendicular to look direction and as close to planetUp as possible
+    // targetCameraUp = planetUp - (planetUp . lookDir) * lookDir, then normalize
+    const targetCameraUp = planetUp.clone();
+    targetCameraUp.sub(lookDir.clone().multiplyScalar(planetUp.dot(lookDir)));
+
+    if (targetCameraUp.lengthSq() < 0.001) {
+      // Looking straight up or down relative to planet - no roll correction needed
+      this.transitionTimer = 0;
+      return;
     }
+    targetCameraUp.normalize();
 
+    // Slerp our current up toward the target up
+    const slerpFactor = Math.min(1, PlayerConfig.ROLL_SLERP_SPEED * deltaTime);
+    this.localUp.lerp(targetCameraUp, slerpFactor).normalize();
+
+    // Recompute right to maintain orthogonality (forward stays the same!)
     this.localRight = new THREE.Vector3().crossVectors(this.localForward, this.localUp).normalize();
-    this.localForward = new THREE.Vector3().crossVectors(this.localUp, this.localRight).normalize();
+    // Re-orthogonalize up to ensure perfect orthonormal basis
+    this.localUp = new THREE.Vector3().crossVectors(this.localRight, this.localForward).normalize();
 
-    // Check if we've reached the target
-    const angleDiff = this.localUp.angleTo(this.targetUp);
+    // Update the orientation quaternion from our local axes
+    this.updateOrientationFromLocal();
+
+    // Check if we've reached level - stop early if already aligned
+    const angleDiff = this.localUp.angleTo(targetCameraUp);
     if (angleDiff < 0.01) {
-      this.isTransitioningToGravity = false;
+      this.transitionTimer = 0;
     }
   }
 
@@ -294,7 +364,30 @@ export class PlanetPlayer {
     this.orientation.premultiply(yawQuat);
 
     // Pitch - rotate around local right axis (positive mouseY = look down)
-    const pitchDelta = input.mouseY * PlayerConfig.MOUSE_SENSITIVITY;
+    let pitchDelta = input.mouseY * PlayerConfig.MOUSE_SENSITIVITY;
+
+    // Clamp pitch when inside gravity field (not in space)
+    if (!this.isInSpace && this.currentPlanet) {
+      const planetUp = this.currentPlanet.getSurfaceNormal(this.position);
+      const lookDir = this.localForward.clone().negate(); // Camera looks along -localForward
+
+      // Calculate current pitch angle relative to horizon (planetUp-perpendicular plane)
+      // Pitch = angle between lookDir and horizon plane
+      // sin(pitch) = lookDir . planetUp
+      const currentPitchSin = lookDir.dot(planetUp);
+      const currentPitch = Math.asin(Math.max(-1, Math.min(1, currentPitchSin)));
+
+      // Clamp to ±89.5 degrees (in radians: ±1.5621 rad)
+      const maxPitch = 89.5 * Math.PI / 180;
+      const newPitch = currentPitch + pitchDelta;
+
+      if (newPitch > maxPitch) {
+        pitchDelta = maxPitch - currentPitch;
+      } else if (newPitch < -maxPitch) {
+        pitchDelta = -maxPitch - currentPitch;
+      }
+    }
+
     const pitchQuat = new THREE.Quaternion().setFromAxisAngle(this.localRight, pitchDelta);
     this.orientation.premultiply(pitchQuat);
 
@@ -329,8 +422,8 @@ export class PlanetPlayer {
     if (input.backward) moveDir.sub(lookDir);
 
     // Strafe left/right
-    if (input.left) moveDir.sub(this.localRight);
-    if (input.right) moveDir.add(this.localRight);
+    if (input.left) moveDir.add(this.localRight);
+    if (input.right) moveDir.sub(this.localRight);
 
     // Up/down relative to local up (space/ctrl)
     if (input.jump) moveDir.add(this.localUp);
@@ -349,51 +442,100 @@ export class PlanetPlayer {
     this.position.add(this.velocity.clone().multiplyScalar(deltaTime));
   }
 
-  private handleMouseLook(input: InputState): void {
-    if (!this.inputManager.isLocked()) return;
-
-    this.yaw += input.mouseX * PlayerConfig.MOUSE_SENSITIVITY;
-    this.pitch -= input.mouseY * PlayerConfig.MOUSE_SENSITIVITY;
-    this.pitch = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, this.pitch));
-  }
-
   private handleMovement(input: InputState, deltaTime: number): void {
-    let moveX = 0;
-    let moveZ = 0;
+    if (!this.currentPlanet) return;
 
-    if (input.forward) moveZ -= 1;
-    if (input.backward) moveZ += 1;
-    if (input.left) moveX -= 1;
-    if (input.right) moveX += 1;
+    // Update water state at start of movement so swimming uses current frame's state
+    // Check at eye level for more intuitive "head above water" detection
+    const planetUp = this.currentPlanet.getSurfaceNormal(this.position);
+    const eyePosition = this.position.clone().addScaledVector(planetUp, PlayerConfig.PLAYER_EYE_HEIGHT - PlayerConfig.PLAYER_HEIGHT);
+    this.isInWater = this.currentPlanet.isInWater(eyePosition);
 
-    if ((moveX !== 0 || moveZ !== 0) && this.currentPlanet) {
-      const length = Math.sqrt(moveX * moveX + moveZ * moveZ);
-      moveX /= length;
-      moveZ /= length;
+    const moveDir = new THREE.Vector3();
 
-      const cosYaw = Math.cos(this.yaw);
-      const sinYaw = Math.sin(this.yaw);
-      const rotatedX = moveX * cosYaw - moveZ * sinYaw;
-      const rotatedZ = moveX * sinYaw + moveZ * cosYaw;
+    // Get horizontal movement direction from camera orientation
+    // Project localForward onto tangent plane (perpendicular to planet up)
+    // planetUp already declared above for water detection
 
-      const worldDir = new THREE.Vector3()
-        .addScaledVector(this.localRight, rotatedX)
-        .addScaledVector(this.localForward, -rotatedZ)
-        .normalize();
+    // Get forward direction projected onto tangent plane
+    let tangentForward = this.localForward.clone().negate(); // Camera looks along -localForward
+    tangentForward.sub(planetUp.clone().multiplyScalar(tangentForward.dot(planetUp)));
+    if (tangentForward.lengthSq() > 0.001) {
+      tangentForward.normalize();
+    } else {
+      // Looking straight up/down, use localUp projected onto tangent
+      tangentForward = this.localUp.clone();
+      tangentForward.sub(planetUp.clone().multiplyScalar(tangentForward.dot(planetUp)));
+      tangentForward.normalize();
+    }
 
-      const speed = input.sprint ? PlayerConfig.SPRINT_SPEED : PlayerConfig.WALK_SPEED;
-      const movement = worldDir.clone().multiplyScalar(speed * deltaTime);
+    // Right is perpendicular to forward and planet up
+    const tangentRight = new THREE.Vector3().crossVectors(tangentForward, planetUp).normalize();
+
+    // Build movement direction from input
+    if (input.forward) moveDir.add(tangentForward);
+    if (input.backward) moveDir.sub(tangentForward);
+    if (input.left) moveDir.sub(tangentRight);
+    if (input.right) moveDir.add(tangentRight);
+
+    if (moveDir.lengthSq() > 0) {
+      moveDir.normalize();
+      let speed = input.sprint ? PlayerConfig.SPRINT_SPEED : PlayerConfig.WALK_SPEED * PlayerConfig.WALK_SPEED_MULTIPLIER;
+
+      // Slow down movement in water
+      if (this.isInWater) {
+        speed *= PlayerConfig.WATER_MOVEMENT_MULTIPLIER;
+      }
+
+      const movement = moveDir.clone().multiplyScalar(speed * deltaTime);
 
       // Try to move - use iterative collision resolution
       this.resolveMovement(movement);
     }
 
-    // Handle jumping (only when grounded)
-    if (input.jump && this.isGrounded && this.currentPlanet) {
-      // Use actual radial direction for jump to ensure straight-up motion
-      const jumpDir = this.currentPlanet.getSurfaceNormal(this.position);
-      this.velocity.addScaledVector(jumpDir, PlayerConfig.JUMP_FORCE);
-      this.isGrounded = false;
+    // Handle swimming (space in water)
+    if (input.jump && this.isInWater) {
+      // Swim upward
+      this.velocity.addScaledVector(planetUp, PlayerConfig.WATER_SWIM_FORCE * deltaTime);
+    }
+
+    // Handle jumping - two-stage system:
+    // Stage 1: Regular jump when grounded (uses jumpJustPressed for single press)
+    // Stage 2: Double-jump activates jetpack when airborne (uses jumpJustPressed)
+    if (input.jumpJustPressed && !this.isInWater) {
+      if (this.isGrounded) {
+        // Stage 1: Regular jump from ground
+        const jumpDir = planetUp;
+
+        // Clear any existing horizontal velocity for a clean vertical jump
+        const verticalComponent = this.velocity.dot(planetUp);
+        this.velocity.copy(planetUp).multiplyScalar(verticalComponent);
+
+        // Add jump force
+        this.velocity.addScaledVector(jumpDir, PlayerConfig.JUMP_FORCE);
+        this.isGrounded = false;
+        this.hasDoubleJumped = false; // Reset double-jump flag
+
+        // Track jump start for drift detection and fix gravity direction
+        if (this.currentPlanet) {
+          this.jumpStartPosition = this.position.clone();
+          const spherical = this.positionToSpherical(this.position, this.currentPlanet);
+          this.jumpStartSpherical = { theta: spherical.theta, phi: spherical.phi };
+          this.wasdPressedDuringJump = false;
+          this.jumpDirection = planetUp.clone();
+        }
+      } else if (PlayerConfig.DOUBLE_JUMP_ENABLED && !this.hasDoubleJumped) {
+        // Stage 2: Double-jump while airborne - activates jetpack
+        this.hasDoubleJumped = true;
+        if (PlayerConfig.DOUBLE_JUMP_ACTIVATES_JETPACK) {
+          this.isJetpacking = true;
+        }
+      }
+    }
+
+    // Track if WASD was pressed during jump (invalidates drift detection)
+    if (!this.isGrounded && (input.forward || input.backward || input.left || input.right)) {
+      this.wasdPressedDuringJump = true;
     }
   }
 
@@ -456,12 +598,13 @@ export class PlanetPlayer {
   private checkStepHeight(newPosition: THREE.Vector3): boolean {
     if (!this.currentPlanet) return true;
 
-    // Get current ground level
+    // Get current ground level (solid blocks only - skip air and water)
     const currentTile = this.currentPlanet.getTileAtPoint(this.position);
     let currentGroundDepth = 0;
     if (currentTile) {
       for (let d = 0; d < 16; d++) {
-        if (this.currentPlanet.getBlock(currentTile.index, d) !== HexBlockType.AIR) {
+        const block = this.currentPlanet.getBlock(currentTile.index, d);
+        if (block !== HexBlockType.AIR && block !== HexBlockType.WATER) {
           currentGroundDepth = d;
           break;
         }
@@ -469,12 +612,13 @@ export class PlanetPlayer {
     }
     const currentGroundRadius = this.currentPlanet.radius - currentGroundDepth;
 
-    // Get ground level at new position
+    // Get ground level at new position (solid blocks only)
     const newTile = this.currentPlanet.getTileAtPoint(newPosition);
     let newGroundDepth = 0;
     if (newTile) {
       for (let d = 0; d < 16; d++) {
-        if (this.currentPlanet.getBlock(newTile.index, d) !== HexBlockType.AIR) {
+        const block = this.currentPlanet.getBlock(newTile.index, d);
+        if (block !== HexBlockType.AIR && block !== HexBlockType.WATER) {
           newGroundDepth = d;
           break;
         }
@@ -501,10 +645,11 @@ export class PlanetPlayer {
 
     // Check neighboring tiles for walls
     for (const neighborIndex of newTile.neighbors) {
-      // Find neighbor's ground level (top of solid ground)
+      // Find neighbor's ground level (top of solid ground - skip air and water)
       let neighborGroundDepth = 0;
       for (let d = 0; d < 16; d++) {
-        if (this.currentPlanet.getBlock(neighborIndex, d) !== HexBlockType.AIR) {
+        const block = this.currentPlanet.getBlock(neighborIndex, d);
+        if (block !== HexBlockType.AIR && block !== HexBlockType.WATER) {
           neighborGroundDepth = d;
           break;
         }
@@ -542,6 +687,7 @@ export class PlanetPlayer {
   }
 
   // Check if position is valid (no collision with terrain at any capsule height)
+  // Water blocks are passable - only solid blocks block movement
   private isPositionValid(position: THREE.Vector3): boolean {
     if (!this.currentPlanet) return true;
 
@@ -562,12 +708,12 @@ export class PlanetPlayer {
       const depth = Math.floor((this.currentPlanet.radius - checkRadius) / 1);
       if (depth < 0 || depth >= 16) continue;
 
-      // Check if inside a solid block
+      // Check if inside a solid block (not AIR and not WATER - water is passable)
       const block = this.currentPlanet.getBlock(tile.index, depth);
-      if (block !== HexBlockType.AIR) {
+      if (block !== HexBlockType.AIR && block !== HexBlockType.WATER) {
         const blockOuterRadius = this.currentPlanet.radius - depth;
         if (checkRadius < blockOuterRadius) {
-          return false; // Inside a block
+          return false; // Inside a solid block
         }
       }
     }
@@ -578,22 +724,33 @@ export class PlanetPlayer {
   private handleJetpack(input: InputState, deltaTime: number): void {
     if (!this.currentPlanet) return;
 
-    // Get actual radial direction for consistent thrust
-    const actualUp = this.currentPlanet.getSurfaceNormal(this.position);
+    // No jetpack in water - swimming is handled in handleMovement
+    if (this.isInWater) {
+      this.isJetpacking = false;
+      return;
+    }
 
-    // Jetpack up (Space when not grounded)
-    if (input.jump && !this.isGrounded) {
+    // Use fixed jump direction if available and WASD wasn't pressed during jump,
+    // otherwise use actual radial direction
+    const thrustUp = (this.jumpDirection && !this.wasdPressedDuringJump)
+      ? this.jumpDirection
+      : this.currentPlanet.getSurfaceNormal(this.position);
+
+    // Jetpack only activates after double-jump (hasDoubleJumped = true)
+    // Once activated, holding space continues to thrust upward
+    if (this.hasDoubleJumped && input.jump && !this.isGrounded) {
       this.isJetpacking = true;
-      // Thrust upward (away from planet) using actual radial direction
-      this.velocity.addScaledVector(actualUp, PlayerConfig.JETPACK_FORCE * deltaTime);
-    } else {
+      // Thrust upward using consistent direction to prevent drift
+      this.velocity.addScaledVector(thrustUp, PlayerConfig.JETPACK_FORCE * deltaTime);
+    } else if (!input.jump) {
+      // Only turn off jetpacking when space is released (not when grounded)
       this.isJetpacking = false;
     }
 
-    // Jetpack down / descend (Ctrl)
-    if (input.crouch) {
-      // Thrust downward (toward planet)
-      this.velocity.addScaledVector(actualUp, -PlayerConfig.JETPACK_DOWN_FORCE * deltaTime);
+    // Jetpack down / descend (Ctrl) - only when jetpack is active
+    if (this.hasDoubleJumped && input.crouch) {
+      // Thrust downward (toward planet) - use same direction for consistency
+      this.velocity.addScaledVector(thrustUp, -PlayerConfig.JETPACK_DOWN_FORCE * deltaTime);
     }
   }
 
@@ -604,15 +761,19 @@ export class PlanetPlayer {
     const actualUp = this.currentPlanet.getSurfaceNormal(this.position);
     const currentDist = this.position.distanceTo(this.currentPlanet.center);
 
+    // Water state is already updated in handleMovement for current frame
+    // Don't re-check here to avoid timing issues
+
     // Get the tile at current position
     const currentTile = this.currentPlanet.getTileAtPoint(this.position);
 
-    // Find ground level at current tile
+    // Find ground level at current tile (skip water blocks - they're passable)
     let groundDepth = -1;
     if (currentTile) {
       for (let d = 0; d < 16; d++) {
         const block = this.currentPlanet.getBlock(currentTile.index, d);
-        if (block !== HexBlockType.AIR) {
+        // Ground is solid blocks only (not air, not water)
+        if (block !== HexBlockType.AIR && block !== HexBlockType.WATER) {
           groundDepth = d;
           break;
         }
@@ -623,14 +784,20 @@ export class PlanetPlayer {
     const groundRadius = groundDepth >= 0 ? this.currentPlanet.radius - groundDepth : 0;
     const targetRadius = groundRadius + PlayerConfig.PLAYER_HEIGHT;
 
-    // Check if currently on ground
+    // Check if currently on ground (solid blocks only)
     const onGround = groundDepth >= 0 && currentDist <= targetRadius + 0.05;
 
     if (onGround && this.velocity.dot(actualUp) <= 0) {
       // On the ground - stop vertical movement
       this.isGrounded = true;
-      // Snap to ground at current horizontal position
+      this.hasDoubleJumped = false; // Reset double-jump when landing
+      this.isJetpacking = false;
+
+      // Snap to ground at the correct radial distance (natural landing position)
       this.position.copy(this.currentPlanet.center).addScaledVector(actualUp, targetRadius);
+
+      // Check for jump drift after snapping
+      this.checkJumpDrift();
 
       // Remove downward velocity component
       const upComponent = this.velocity.dot(actualUp);
@@ -638,19 +805,37 @@ export class PlanetPlayer {
         this.velocity.sub(actualUp.clone().multiplyScalar(upComponent));
       }
     } else {
-      // In the air - apply gravity and movement
+      // In the air or water - apply gravity and movement
       this.isGrounded = false;
 
-      const gravityDir = this.currentPlanet.getGravityDirection(this.position);
+      // Use fixed jump direction if available and WASD wasn't pressed
+      // This prevents tangential drift from gravity direction changing as position changes
+      let gravityDir: THREE.Vector3;
+      if (this.jumpDirection && !this.wasdPressedDuringJump) {
+        // Use the fixed direction from when we jumped (negated for gravity)
+        gravityDir = this.jumpDirection.clone().negate();
+      } else {
+        // Normal gravity calculation (for jetpack, WASD movement, etc.)
+        gravityDir = this.currentPlanet.getGravityDirection(this.position);
+      }
+
       const gravityMultiplier = this.getGravityMultiplier();
-      const effectiveGravity = PlayerConfig.BASE_GRAVITY * gravityMultiplier;
+      let effectiveGravity = PlayerConfig.BASE_GRAVITY * gravityMultiplier;
+
+      // Water physics - reduced gravity (sink slowly)
+      if (this.isInWater) {
+        effectiveGravity *= PlayerConfig.WATER_GRAVITY_MULTIPLIER;
+
+        // Apply water drag to slow down movement
+        this.velocity.multiplyScalar(1 - PlayerConfig.WATER_DRAG * deltaTime);
+      }
 
       // Apply gravity (purely radial toward planet center)
       this.velocity.addScaledVector(gravityDir, effectiveGravity * deltaTime);
 
       // Add some drag when high up to prevent infinite acceleration
       const altitude = this.getAltitude();
-      if (altitude > 20) {
+      if (altitude > 20 && !this.isInWater) {
         this.velocity.multiplyScalar(0.99);
       }
 
@@ -659,12 +844,13 @@ export class PlanetPlayer {
       const newDist = newPosition.distanceTo(this.currentPlanet.center);
 
       // Get ground at NEW position (might be different tile)
+      // Skip water blocks - player can sink through water to solid ground
       const newTile = this.currentPlanet.getTileAtPoint(newPosition);
       let newGroundDepth = -1;
       if (newTile) {
         for (let d = 0; d < 16; d++) {
           const block = this.currentPlanet.getBlock(newTile.index, d);
-          if (block !== HexBlockType.AIR) {
+          if (block !== HexBlockType.AIR && block !== HexBlockType.WATER) {
             newGroundDepth = d;
             break;
           }
@@ -689,8 +875,9 @@ export class PlanetPlayer {
           // Also remove horizontal velocity toward the step
           this.velocity.multiplyScalar(0.5);
         } else {
-          // Land on ground - use the NEW position's direction
+          // Land on ground - use natural landing position
           const landingDir = newPosition.clone().sub(this.currentPlanet.center).normalize();
+
           this.position.copy(this.currentPlanet.center).addScaledVector(landingDir, newTargetRadius);
 
           // Remove downward velocity
@@ -699,6 +886,8 @@ export class PlanetPlayer {
             this.velocity.sub(landingDir.clone().multiplyScalar(upComponent));
           }
 
+          // Check for jump drift after snapping
+          this.checkJumpDrift();
           this.isGrounded = true;
         }
       } else {
@@ -722,33 +911,11 @@ export class PlanetPlayer {
     eyePos.add(eyeOffset);
     this.camera.position.copy(eyePos);
 
-    if (this.isInSpace) {
-      // In space mode, camera looks along -localForward (forward is stored as -Z direction)
-      const lookDir = this.localForward.clone().negate();
-      const target = eyePos.clone().add(lookDir);
-      this.camera.up.copy(this.localUp);
-      this.camera.lookAt(target);
-    } else {
-      // Planet mode uses yaw/pitch
-      const cosYaw = Math.cos(this.yaw);
-      const sinYaw = Math.sin(this.yaw);
-      const cosPitch = Math.cos(this.pitch);
-      const sinPitch = Math.sin(this.pitch);
-
-      const forward = new THREE.Vector3()
-        .addScaledVector(this.localForward, cosYaw)
-        .addScaledVector(this.localRight, sinYaw)
-        .normalize();
-
-      const lookDir = new THREE.Vector3()
-        .addScaledVector(forward, cosPitch)
-        .addScaledVector(this.localUp, sinPitch)
-        .normalize();
-
-      const target = eyePos.clone().add(lookDir);
-      this.camera.up.copy(this.localUp);
-      this.camera.lookAt(target);
-    }
+    // Both modes use orientation-based camera (camera looks along -localForward)
+    const lookDir = this.localForward.clone().negate();
+    const target = eyePos.clone().add(lookDir);
+    this.camera.up.copy(this.localUp);
+    this.camera.lookAt(target);
   }
 
   private updateUI(): void {
@@ -759,7 +926,7 @@ export class PlanetPlayer {
       let status = '';
       if (this.isInSpace) {
         status = ' [SPACE FLIGHT]';
-      } else if (this.isTransitioningToGravity) {
+      } else if (this.transitionTimer > 0) {
         status = ' [ENTERING GRAVITY]';
       } else if (this.isJetpacking) {
         status = ' [JETPACK]';
@@ -777,23 +944,15 @@ export class PlanetPlayer {
   }
 
   public getForwardVector(): THREE.Vector3 {
-    const cosYaw = Math.cos(this.yaw);
-    const sinYaw = Math.sin(this.yaw);
-    const cosPitch = Math.cos(this.pitch);
-    const sinPitch = Math.sin(this.pitch);
-
-    const forward = new THREE.Vector3()
-      .addScaledVector(this.localForward, cosYaw)
-      .addScaledVector(this.localRight, sinYaw)
-      .normalize();
-
-    return new THREE.Vector3()
-      .addScaledVector(forward, cosPitch)
-      .addScaledVector(this.localUp, sinPitch)
-      .normalize();
+    // Camera looks along -localForward
+    return this.localForward.clone().negate();
   }
 
   public getRaycastOrigin(): THREE.Vector3 {
     return this.camera.position.clone();
+  }
+
+  public getIsInWater(): boolean {
+    return this.isInWater;
   }
 }
