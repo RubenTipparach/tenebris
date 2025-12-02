@@ -46,54 +46,74 @@ export class HexBlockMeshBuilder {
   }
 
   public async loadTextures(singleTexturePath?: string): Promise<void> {
-    if (singleTexturePath) {
-      // Moon-style: single texture for all surfaces
-      const moonTexture = await this.loadTexture(singleTexturePath);
-      moonTexture.magFilter = THREE.NearestFilter;
-      moonTexture.minFilter = THREE.NearestFilter;
-      moonTexture.wrapS = THREE.RepeatWrapping;
-      moonTexture.wrapT = THREE.RepeatWrapping;
+    // LOD materials - use polygonOffset to push LOD behind detailed terrain in depth buffer
+    // This prevents LOD from showing through detailed terrain for nearby tiles
+    const lodOffsetFactor = 4;
+    const lodOffsetUnits = 4;
 
-      this.textures.set('moon', moonTexture);
-      const moonMaterial = new THREE.MeshLambertMaterial({ map: moonTexture });
-      this.materials.set('top', moonMaterial);
-      this.materials.set('side', moonMaterial);
-      this.materials.set('bottom', moonMaterial);
-      this.materials.set('stone', moonMaterial);
-      return;
-    }
-
-    // Earth-style: different textures for different surfaces
-    const stoneTexture = await this.loadTexture('/textures/rocks.png');
-    const dirtTexture = await this.loadTexture('/textures/dirt.png');
-    const grassTexture = await this.loadTexture('/textures/grass.png');
-
-    [stoneTexture, dirtTexture, grassTexture].forEach(tex => {
+    // Helper to configure texture for pixel art
+    const configureTexture = (tex: THREE.Texture) => {
       tex.magFilter = THREE.NearestFilter;
       tex.minFilter = THREE.NearestFilter;
       tex.wrapS = THREE.RepeatWrapping;
       tex.wrapT = THREE.RepeatWrapping;
-    });
+    };
+
+    // Helper to create LOD material
+    const createLODMaterial = (texture: THREE.Texture, color?: THREE.Color) => {
+      const lodTexture = texture.clone();
+      lodTexture.needsUpdate = true;
+      return new THREE.MeshLambertMaterial({
+        map: lodTexture,
+        color: color,
+        polygonOffset: true,
+        polygonOffsetFactor: lodOffsetFactor,
+        polygonOffsetUnits: lodOffsetUnits
+      });
+    };
+
+    if (singleTexturePath) {
+      // Single texture planet (e.g., moon) - use same texture for all surfaces
+      const texture = await this.loadTexture(singleTexturePath);
+      configureTexture(texture);
+
+      this.textures.set('primary', texture);
+      const material = new THREE.MeshLambertMaterial({ map: texture });
+
+      // All surface types use the same material
+      this.materials.set('top', material);
+      this.materials.set('side', material);
+      this.materials.set('bottom', material);
+      this.materials.set('stone', material);
+
+      // LOD materials - all use same texture
+      const lodMaterial = createLODMaterial(texture);
+      this.materials.set('topLOD', lodMaterial);
+      this.materials.set('sideLOD', lodMaterial);
+      this.materials.set('waterLOD', lodMaterial); // Fallback for planets without water
+      return;
+    }
+
+    // Multi-texture planet (e.g., Earth) - different textures for different surfaces
+    const stoneTexture = await this.loadTexture('/textures/rocks.png');
+    const dirtTexture = await this.loadTexture('/textures/dirt.png');
+    const grassTexture = await this.loadTexture('/textures/grass.png');
+
+    [stoneTexture, dirtTexture, grassTexture].forEach(configureTexture);
 
     this.textures.set('stone', stoneTexture);
     this.textures.set('dirt', dirtTexture);
     this.textures.set('grass', grassTexture);
 
     // Create materials for different face types
-    // Top faces use grass
     this.materials.set('top', new THREE.MeshLambertMaterial({ map: grassTexture }));
-    // Side faces use dirt
     this.materials.set('side', new THREE.MeshLambertMaterial({ map: dirtTexture }));
-    // Bottom faces and deep blocks use stone
     this.materials.set('bottom', new THREE.MeshLambertMaterial({ map: stoneTexture }));
     this.materials.set('stone', new THREE.MeshLambertMaterial({ map: stoneTexture }));
 
     // Water material - load water texture
     const waterTexture = await this.loadTexture('/textures/water.png');
-    waterTexture.magFilter = THREE.LinearFilter;
-    waterTexture.minFilter = THREE.LinearMipmapLinearFilter;
-    waterTexture.wrapS = THREE.RepeatWrapping;
-    waterTexture.wrapT = THREE.RepeatWrapping;
+    configureTexture(waterTexture);
     this.textures.set('water', waterTexture);
 
     // Parse hex colors to THREE.Color
@@ -122,53 +142,25 @@ export class HexBlockMeshBuilder {
         fogNear: { value: PlayerConfig.WATER_FOG_NEAR },
         fogFar: { value: PlayerConfig.WATER_FOG_FAR },
         depthFogDensity: { value: PlayerConfig.WATER_DEPTH_FOG_DENSITY },
-        planetCenter: { value: new THREE.Vector3(0, 0, 0) }
+        planetCenter: { value: new THREE.Vector3(0, 0, 0) },
+        textureStrength: { value: PlayerConfig.WATER_TEXTURE_STRENGTH },
+        scrollSpeed: { value: PlayerConfig.WATER_SCROLL_SPEED },
+        causticStrength: { value: PlayerConfig.WATER_CAUSTIC_STRENGTH },
+        foamStrength: { value: PlayerConfig.WATER_FOAM_STRENGTH }
       },
       vertexShader: waterVert,
       fragmentShader: waterFrag,
       transparent: true,
       side: THREE.DoubleSide,
-      depthWrite: false // Prevent z-fighting with terrain
+      depthWrite: false
     });
 
-    // Store shader material as the close-up water material
     this.materials.set('water', this.waterShaderMaterial);
 
-    // LOD materials - use polygonOffset to push LOD behind detailed terrain in depth buffer
-    // This prevents LOD from showing through detailed terrain for nearby tiles
-    const lodOffsetFactor = 4;
-    const lodOffsetUnits = 4;
-
-    // LOD grass (top)
-    const grassLODTexture = grassTexture.clone();
-    grassLODTexture.needsUpdate = true;
-    this.materials.set('topLOD', new THREE.MeshLambertMaterial({
-      map: grassLODTexture,
-      polygonOffset: true,
-      polygonOffsetFactor: lodOffsetFactor,
-      polygonOffsetUnits: lodOffsetUnits
-    }));
-
-    // LOD dirt (side)
-    const dirtLODTexture = dirtTexture.clone();
-    dirtLODTexture.needsUpdate = true;
-    this.materials.set('sideLOD', new THREE.MeshLambertMaterial({
-      map: dirtLODTexture,
-      polygonOffset: true,
-      polygonOffsetFactor: lodOffsetFactor,
-      polygonOffsetUnits: lodOffsetUnits
-    }));
-
-    // LOD water
-    const waterLODTexture = waterTexture.clone();
-    waterLODTexture.needsUpdate = true;
-    this.materials.set('waterLOD', new THREE.MeshLambertMaterial({
-      map: waterLODTexture,
-      color: waterColor,
-      polygonOffset: true,
-      polygonOffsetFactor: lodOffsetFactor,
-      polygonOffsetUnits: lodOffsetUnits
-    }));
+    // LOD materials
+    this.materials.set('topLOD', createLODMaterial(grassTexture));
+    this.materials.set('sideLOD', createLODMaterial(dirtTexture));
+    this.materials.set('waterLOD', createLODMaterial(waterTexture, waterColor));
   }
 
   private loadTexture(path: string): Promise<THREE.Texture> {

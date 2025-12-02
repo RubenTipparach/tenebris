@@ -20,6 +20,12 @@ uniform float fogNear;
 uniform float fogFar;
 uniform float depthFogDensity;
 
+// Texture vs procedural balance
+uniform float textureStrength;
+uniform float scrollSpeed;
+uniform float causticStrength;
+uniform float foamStrength;
+
 // Depth texture for underwater depth calculation
 uniform sampler2D depthTexture;
 uniform float cameraNear;
@@ -74,15 +80,22 @@ float linearizeDepth(float depth) {
 }
 
 void main() {
-  // Animated UV distortion
-  vec2 distortedUv = vUv * uvTiling;
-  float distort1 = fbm(distortedUv * 3.0 + time * 0.1);
-  float distort2 = fbm(distortedUv * 2.0 - time * 0.15);
-  vec2 distortion = vec2(distort1, distort2) * distortionStrength;
-  vec2 finalUv = distortedUv + distortion;
+  // Animated UV - scroll texture in two directions and blend
+  vec2 baseUv = vUv * uvTiling;
 
-  // Sample water texture with distortion
-  vec4 texColor = texture2D(waterTexture, finalUv);
+  // Two scrolling layers of the water texture (using configurable scroll speed)
+  vec2 scrollUv1 = baseUv + vec2(time * scrollSpeed, time * scrollSpeed * 0.66);
+  vec2 scrollUv2 = baseUv * 1.2 + vec2(-time * scrollSpeed * 0.83, time * scrollSpeed);
+
+  // Sample texture at both positions
+  vec4 texSample1 = texture2D(waterTexture, scrollUv1);
+  vec4 texSample2 = texture2D(waterTexture, scrollUv2);
+
+  // Blend the two samples for animated water
+  vec4 texColor = mix(texSample1, texSample2, 0.5);
+
+  // Use baseUv for other effects
+  vec2 finalUv = baseUv;
 
   // Calculate screen coordinates for depth sampling
   vec2 screenCoord = vScreenPos.xy / vScreenPos.w * 0.5 + 0.5;
@@ -126,29 +139,26 @@ void main() {
   // Depth-based water color (deeper = darker blue)
   vec3 baseWaterColor = mix(waterColor, deepWaterColor, depthFogFactor);
 
-  // Mix texture with base color
-  vec3 texturedWater = mix(baseWaterColor, texColor.rgb * baseWaterColor, 0.3 * (1.0 - depthFogFactor));
+  // Mix texture with base color using configurable texture strength
+  // textureStrength: 0 = pure water color, 1 = pure texture
+  vec3 texturedWater = mix(baseWaterColor, texColor.rgb, textureStrength * (1.0 - depthFogFactor * 0.5));
 
   // Apply depth fog - blend toward fog color based on water depth
-  texturedWater = mix(texturedWater, fogColor, depthFogFactor * 0.8);
+  texturedWater = mix(texturedWater, fogColor, depthFogFactor * 0.6);
 
   // Apply fresnel-based reflection blending (less reflection when looking deep)
   float reflectionAmount = fresnel * reflectionStrength * (1.0 - depthFogFactor * 0.5);
   vec3 finalColor = mix(texturedWater, reflectionColor, reflectionAmount);
 
-  // Add subtle caustic-like patterns (fade with depth)
-  float caustic = fbm(finalUv * 8.0 + time * 0.2) * 0.15;
+  // Add procedural caustic shimmer (configurable strength)
+  float caustic = fbm(finalUv * 6.0 + time * 0.15) * causticStrength;
   finalColor += vec3(caustic) * (1.0 - depthFogFactor);
 
-  // Slight color variation based on waves
-  float waveColor = fbm(vUv * 10.0 + time * 0.05) * 0.1;
-  finalColor += vec3(0.0, waveColor * 0.5, waveColor) * (1.0 - depthFogFactor);
-
-  // Edge foam effect (shallow water)
+  // Edge foam effect (shallow water) with configurable strength
   float shallowFactor = 1.0 - smoothstep(0.0, 0.5, waterDepth);
   vec3 foamColor = vec3(0.9, 0.95, 1.0);
   float foamNoise = fbm(finalUv * 15.0 + time * 0.3);
-  float foam = shallowFactor * smoothstep(0.4, 0.6, foamNoise) * 0.5;
+  float foam = shallowFactor * smoothstep(0.4, 0.6, foamNoise) * foamStrength;
   finalColor = mix(finalColor, foamColor, foam);
 
   // Output with transparency - more opaque when looking into deeper water

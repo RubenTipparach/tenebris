@@ -19,8 +19,6 @@ interface ProfilerSection {
 export class Profiler {
   private static instance: Profiler;
   private sections: Map<string, ProfilerSection> = new Map();
-  private activeSection: string | null = null;
-  private sectionStartTime: number = 0;
   private enabled: boolean = false;
   private sampleWindow: number = 60; // Rolling average over 60 frames
   private displayElement: HTMLElement | null = null;

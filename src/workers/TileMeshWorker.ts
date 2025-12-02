@@ -1,8 +1,6 @@
 // Web Worker for generating tile mesh geometry off the main thread
 // This worker receives tile data and returns raw geometry arrays
 
-import * as THREE from 'three';
-
 export interface TileVertexData {
   index: number;
   center: { x: number; y: number; z: number };
@@ -41,9 +39,6 @@ export interface GeometryArrays {
 
 // Block types (must match HexBlockType enum)
 const AIR = 0;
-const STONE = 1;
-const DIRT = 2;
-const GRASS = 3;
 const WATER = 4;
 
 function isSolid(blockType: number): boolean {
@@ -298,7 +293,7 @@ function mergeGeometry(
 
 // Build complete tile mesh geometry
 function buildTileMesh(request: WorkerTileRequest): WorkerTileResponse {
-  const { tile, blocks, radius, blockHeight, seaLevel, deepThreshold, maxDepth } = request;
+  const { tile, blocks, radius, blockHeight, deepThreshold } = request;
 
   const topData = { positions: [] as number[], normals: [] as number[], uvs: [] as number[], indices: [] as number[], vertexOffset: 0 };
   const sideData = { positions: [] as number[], normals: [] as number[], uvs: [] as number[], indices: [] as number[], vertexOffset: 0 };
@@ -414,40 +409,40 @@ self.onmessage = (e: MessageEvent<WorkerTileRequest>) => {
     const response = buildTileMesh(request);
 
     // Transfer ownership of typed arrays for zero-copy transfer
-    const transferables: ArrayBuffer[] = [];
+    const transferables: Transferable[] = [];
     if (response.topGeometry) {
       transferables.push(
-        response.topGeometry.positions.buffer,
-        response.topGeometry.normals.buffer,
-        response.topGeometry.uvs.buffer,
-        response.topGeometry.indices.buffer
+        response.topGeometry.positions.buffer as ArrayBuffer,
+        response.topGeometry.normals.buffer as ArrayBuffer,
+        response.topGeometry.uvs.buffer as ArrayBuffer,
+        response.topGeometry.indices.buffer as ArrayBuffer
       );
     }
     if (response.sideGeometry) {
       transferables.push(
-        response.sideGeometry.positions.buffer,
-        response.sideGeometry.normals.buffer,
-        response.sideGeometry.uvs.buffer,
-        response.sideGeometry.indices.buffer
+        response.sideGeometry.positions.buffer as ArrayBuffer,
+        response.sideGeometry.normals.buffer as ArrayBuffer,
+        response.sideGeometry.uvs.buffer as ArrayBuffer,
+        response.sideGeometry.indices.buffer as ArrayBuffer
       );
     }
     if (response.stoneGeometry) {
       transferables.push(
-        response.stoneGeometry.positions.buffer,
-        response.stoneGeometry.normals.buffer,
-        response.stoneGeometry.uvs.buffer,
-        response.stoneGeometry.indices.buffer
+        response.stoneGeometry.positions.buffer as ArrayBuffer,
+        response.stoneGeometry.normals.buffer as ArrayBuffer,
+        response.stoneGeometry.uvs.buffer as ArrayBuffer,
+        response.stoneGeometry.indices.buffer as ArrayBuffer
       );
     }
     if (response.waterGeometry) {
       transferables.push(
-        response.waterGeometry.positions.buffer,
-        response.waterGeometry.normals.buffer,
-        response.waterGeometry.uvs.buffer,
-        response.waterGeometry.indices.buffer
+        response.waterGeometry.positions.buffer as ArrayBuffer,
+        response.waterGeometry.normals.buffer as ArrayBuffer,
+        response.waterGeometry.uvs.buffer as ArrayBuffer,
+        response.waterGeometry.indices.buffer as ArrayBuffer
       );
     }
 
-    self.postMessage(response, transferables);
+    (self as unknown as Worker).postMessage(response, transferables);
   }
 };

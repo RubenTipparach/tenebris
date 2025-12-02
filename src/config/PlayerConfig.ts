@@ -60,13 +60,19 @@ export const PlayerConfig = {
   WATER_WAVE_AMPLITUDE: 0.02,      // Height of wave animation
   WATER_WAVE_FREQUENCY: 0.5,       // Frequency of waves
   WATER_FRESNEL_POWER: 3.0,        // Fresnel effect intensity (higher = more reflection at edges)
-  WATER_REFLECTION_STRENGTH: 0.4, // How strong reflections appear
+  WATER_REFLECTION_STRENGTH: 0.4,  // How strong reflections appear
   WATER_DISTORTION_STRENGTH: 0.02, // UV distortion for ripple effect
   WATER_SPECULAR_POWER: 64.0,      // Sharpness of sun reflection
   WATER_SPECULAR_STRENGTH: 1.5,    // Intensity of sun reflection
   WATER_FOG_NEAR: 0,               // Water fog starts at this distance
   WATER_FOG_FAR: 10,               // Water fog fully opaque at this distance
   WATER_DEPTH_FOG_DENSITY: 0.5,    // How quickly water gets murky with depth (higher = faster falloff)
+
+  // Water texture vs procedural balance
+  WATER_TEXTURE_STRENGTH: 0.7,     // How much the texture contributes (0 = none, 1 = full)
+  WATER_SCROLL_SPEED: 0.03,        // Speed of texture scrolling animation
+  WATER_CAUSTIC_STRENGTH: 0.01,    // Strength of procedural caustic shimmer effect
+  WATER_FOAM_STRENGTH: 0.1,        // Strength of foam at shallow edges
 
   // Underwater fog
   UNDERWATER_FOG_COLOR: "#1c5eac",  // Underwater fog color (hex string)
@@ -88,4 +94,7 @@ export const PlayerConfig = {
   PLANET_MIN_RENDER_DISTANCE: 6,      // Min tiles to render when on ground
   PLANET_MAX_RENDER_DISTANCE: 25,     // Max tiles when at high altitude
   PLANET_LOD_SWITCH_ALTITUDE: 50,     // Altitude above which only LOD is shown
+
+  // Terrain generation
+  TERRAIN_SEED: 12345,                // Seed for terrain generation (change for different worlds)
 };

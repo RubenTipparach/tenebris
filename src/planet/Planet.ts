@@ -51,13 +51,11 @@ export class Planet {
 
   // Boundary walls group (fills gap between detailed terrain and LOD at render distance edge)
   private boundaryWallsGroup: THREE.Group | null = null;
-  private cachedBoundaryTiles: Set<number> = new Set();
 
   // Cache for tile range lookups (avoid BFS every frame)
   private cachedPlayerTileIndex: number = -1;
   private cachedRenderDistance: number = -1;
   private cachedNearbyTiles: Set<number> = new Set();
-  private lastBuiltTiles: Set<number> = new Set(); // Tiles that were built into batched mesh
 
   // Batched meshes for visible terrain (one mesh per material type = ~5 draw calls total)
   private batchedMeshGroup: THREE.Group | null = null;
@@ -71,6 +69,7 @@ export class Planet {
   private readonly MAX_DEPTH = 16;
   private readonly DEEP_THRESHOLD = 4; // Depth at which we switch to stone texture
   private readonly SEA_LEVEL: number; // Depth at which water surface sits
+  private readonly seed: number; // Terrain generation seed
 
   constructor(scene: THREE.Scene, radius: number = 50, subdivisions: number = 3, config: PlanetConfig = {}) {
     this.scene = scene;
@@ -78,6 +77,7 @@ export class Planet {
     this.center = new THREE.Vector3(0, 0, 0);
     this.config = config;
     this.SEA_LEVEL = config.seaLevel ?? 2;
+    this.seed = PlayerConfig.TERRAIN_SEED;
     this.polyhedron = new GoldbergPolyhedron(radius, subdivisions);
     this.meshBuilder = new HexBlockMeshBuilder();
   }
@@ -135,6 +135,12 @@ export class Planet {
     const waterData = createEmptyGeometryData();
 
     for (const [tileIndex, column] of this.columns) {
+      // Skip ALL tiles that are in the detailed render range
+      // This prevents LOD from showing through/over detailed terrain
+      if (this.cachedNearbyTiles.has(tileIndex)) {
+        continue;
+      }
+
       // Find surface block type (first non-air block)
       let surfaceBlockType = HexBlockType.GRASS;
       for (let d = 0; d < column.blocks.length; d++) {
@@ -142,12 +148,6 @@ export class Planet {
           surfaceBlockType = column.blocks[d];
           break;
         }
-      }
-
-      // Skip water tiles that are in the detailed render range
-      // This prevents LOD water from showing under detailed water shader
-      if (surfaceBlockType === HexBlockType.WATER && this.cachedNearbyTiles.has(tileIndex)) {
-        continue;
       }
 
       const tile = column.tile;
@@ -331,9 +331,11 @@ export class Planet {
   }
 
   private smoothNoise3D(x: number, y: number, z: number): number {
-    const n1 = Math.sin(x * 12.9898 + y * 78.233 + z * 37.719);
-    const n2 = Math.sin(x * 45.164 + y * 23.456 + z * 89.123);
-    const n3 = Math.sin(x * 67.891 + y * 12.345 + z * 56.789);
+    // Incorporate seed into noise calculation for reproducible terrain
+    const s = this.seed * 0.0001;
+    const n1 = Math.sin(x * 12.9898 + y * 78.233 + z * 37.719 + s);
+    const n2 = Math.sin(x * 45.164 + y * 23.456 + z * 89.123 + s * 1.7);
+    const n3 = Math.sin(x * 67.891 + y * 12.345 + z * 56.789 + s * 2.3);
     return (n1 + n2 + n3) / 3;
   }
 
@@ -348,6 +350,18 @@ export class Planet {
 
     // When very far away, only show LOD (including LOD water)
     if (altitude > PlayerConfig.PLANET_LOD_SWITCH_ALTITUDE) {
+      // Clear cached nearby tiles so LOD water is not culled
+      if (this.cachedNearbyTiles.size > 0) {
+        this.cachedNearbyTiles.clear();
+        this.cachedPlayerTileIndex = -1;
+        this.needsLODRebuild = true;
+      }
+
+      // Rebuild LOD if needed (to include all water tiles)
+      if (this.needsLODRebuild) {
+        this.rebuildLODMesh();
+      }
+
       if (this.lodMesh) (this.lodMesh as unknown as THREE.Group).visible = true;
       if (this.lodWaterMesh) this.lodWaterMesh.visible = true;
       if (this.batchedMeshGroup) this.batchedMeshGroup.visible = false;
@@ -467,7 +481,6 @@ export class Planet {
     }
 
     this.needsRebatch = false;
-    this.lastBuiltTiles = new Set(this.cachedNearbyTiles);
   }
 
   private buildColumnGeometry(
@@ -629,7 +642,6 @@ export class Planet {
       }
     }
 
-    this.cachedBoundaryTiles = boundaryTiles;
     const lodSurfaceRadius = this.radius - this.SEA_LEVEL * this.BLOCK_HEIGHT;
     const wallData = createEmptyGeometryData();
 

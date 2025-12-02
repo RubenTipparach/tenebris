@@ -1,5 +1,5 @@
 // Worker pool for managing tile mesh generation workers
-import type { GeometryArrays, WorkerTileRequest, WorkerTileResponse, TileVertexData } from './TileMeshWorker';
+import type { WorkerTileRequest, WorkerTileResponse, TileVertexData } from './TileMeshWorker';
 
 export interface PendingTileWork {
   tileIndex: number;
