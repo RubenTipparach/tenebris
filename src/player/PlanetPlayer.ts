@@ -891,11 +891,28 @@ export class PlanetPlayer {
           this.isGrounded = true;
         }
       } else {
-        // Continue falling/moving - but check capsule collision
-        if (this.isPositionValid(newPosition)) {
+        // Continue falling/moving - check both capsule collision AND wall collision
+        const positionValid = this.isPositionValid(newPosition);
+        const wallBlocking = this.checkWallCollision(newPosition);
+
+        if (positionValid && !wallBlocking) {
           this.position.copy(newPosition);
+        } else if (wallBlocking) {
+          // Wall collision during falling - try to slide along the wall
+          // Remove velocity component toward the wall (horizontal)
+          const horizontalVel = this.velocity.clone();
+          const upComponent = horizontalVel.dot(actualUp);
+          horizontalVel.sub(actualUp.clone().multiplyScalar(upComponent));
+
+          // Reduce horizontal velocity significantly to prevent sticking
+          this.velocity.sub(horizontalVel.clone().multiplyScalar(0.8));
+
+          // Push player slightly away from wall
+          const pushDir = this.position.clone().sub(this.currentPlanet.center).normalize();
+          const tangentPush = pushDir.clone().multiplyScalar(0.05);
+          this.position.add(tangentPush);
         } else {
-          // Blocked - stop velocity
+          // Blocked by terrain - stop downward velocity
           const upComponent = this.velocity.dot(actualUp);
           if (upComponent < 0) {
             this.velocity.sub(actualUp.clone().multiplyScalar(upComponent));

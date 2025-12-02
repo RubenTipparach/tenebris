@@ -6,7 +6,9 @@
       "Bash(npx tsc:*)",
       "Bash(npm run dev:*)",
       "Bash(dir:*)",
-      "Bash(npm run build:*)"
+      "Bash(npm run build:*)",
+      "Bash(./node_modules/.bin/tsc:*)",
+      "Bash(chmod:*)"
     ],
     "deny": [],
     "ask": []
