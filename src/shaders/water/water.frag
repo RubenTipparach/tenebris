@@ -19,6 +19,7 @@ uniform vec3 fogColor;
 uniform float fogNear;
 uniform float fogFar;
 uniform float depthFogDensity;
+uniform float isUnderwater; // 1.0 if camera is underwater, 0.0 otherwise
 
 // Texture vs procedural balance
 uniform float textureStrength;
@@ -164,6 +165,16 @@ void main() {
   // Output with transparency - more opaque when looking into deeper water
   float finalOpacity = mix(opacity, 0.95, fresnel * 0.5);
   finalOpacity = mix(finalOpacity, 1.0, depthFogFactor * 0.4);
+
+  // When underwater, apply distance-based fog to the water surface
+  if (isUnderwater > 0.5) {
+    // Calculate distance fog factor based on how far the water surface is from camera
+    float distanceFogFactor = smoothstep(fogNear, fogFar, vDepth);
+    // Blend toward fog color based on distance
+    finalColor = mix(finalColor, fogColor, distanceFogFactor);
+    // Make surface more opaque when underwater
+    finalOpacity = mix(finalOpacity, 1.0, distanceFogFactor);
+  }
 
   gl_FragColor = vec4(finalColor, finalOpacity);
 }

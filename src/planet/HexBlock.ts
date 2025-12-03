@@ -38,10 +38,11 @@ export class HexBlockMeshBuilder {
   }
 
   // Update water shader uniforms each frame
-  public updateWaterShader(time: number, planetCenter: THREE.Vector3): void {
+  public updateWaterShader(time: number, planetCenter: THREE.Vector3, isUnderwater: boolean = false): void {
     if (this.waterShaderMaterial) {
       this.waterShaderMaterial.uniforms.time.value = time;
       this.waterShaderMaterial.uniforms.planetCenter.value.copy(planetCenter);
+      this.waterShaderMaterial.uniforms.isUnderwater.value = isUnderwater ? 1.0 : 0.0;
     }
   }
 
@@ -142,9 +143,10 @@ export class HexBlockMeshBuilder {
         waveAmplitude: { value: PlayerConfig.WATER_WAVE_AMPLITUDE },
         waveFrequency: { value: PlayerConfig.WATER_WAVE_FREQUENCY },
         fogColor: { value: fogColor },
-        fogNear: { value: PlayerConfig.WATER_FOG_NEAR },
-        fogFar: { value: PlayerConfig.WATER_FOG_FAR },
+        fogNear: { value: PlayerConfig.UNDERWATER_FOG_NEAR },
+        fogFar: { value: PlayerConfig.UNDERWATER_FOG_FAR },
         depthFogDensity: { value: PlayerConfig.WATER_DEPTH_FOG_DENSITY },
+        isUnderwater: { value: 0.0 },
         planetCenter: { value: new THREE.Vector3(0, 0, 0) },
         textureStrength: { value: PlayerConfig.WATER_TEXTURE_STRENGTH },
         scrollSpeed: { value: PlayerConfig.WATER_SCROLL_SPEED },

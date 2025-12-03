@@ -354,7 +354,8 @@ export class Planet {
 
     // First pass: calculate display radius for each LOD tile
     // Also calculate for detailed tiles so LOD can generate walls at the boundary
-    const tileDisplayRadii = new Map<number, number>();
+    // Store both radius and whether it's water for side wall generation
+    const tileDisplayRadii = new Map<number, { radius: number; isWater: boolean }>();
     for (const [tileIndex, column] of this.columns) {
       let surfaceDepth = 0;
       let surfaceBlockType = HexBlockType.GRASS;
@@ -367,12 +368,13 @@ export class Planet {
       }
 
       let displayRadius: number;
-      if (surfaceBlockType === HexBlockType.WATER) {
+      const isWater = surfaceBlockType === HexBlockType.WATER;
+      if (isWater) {
         displayRadius = waterRadius;
       } else {
         displayRadius = this.radius - surfaceDepth * this.BLOCK_HEIGHT - lodOffset;
       }
-      tileDisplayRadii.set(tileIndex, displayRadius);
+      tileDisplayRadii.set(tileIndex, { radius: displayRadius, isWater });
     }
 
     for (const [tileIndex, column] of this.columns) {
@@ -394,7 +396,8 @@ export class Planet {
       const normal = tile.center.clone().normalize();
 
       // Calculate the display radius based on terrain type
-      const displayRadius = tileDisplayRadii.get(tileIndex) ?? (this.radius - lodOffset);
+      const tileData = tileDisplayRadii.get(tileIndex);
+      const displayRadius = tileData?.radius ?? (this.radius - lodOffset);
 
       // Create simple flat polygon for this tile at the correct height
       const center = normal.clone().multiplyScalar(displayRadius);
@@ -456,11 +459,18 @@ export class Planet {
 
     // Second pass: Generate side walls between LOD tiles at different heights
     // Also generate walls at boundary with detailed terrain tiles
+    // Separate buffers for terrain sides and water sides
     const sidePositions: number[] = [];
     const sideNormals: number[] = [];
     const sideUvs: number[] = [];
     const sideIndices: number[] = [];
     let sideVertexOffset = 0;
+
+    const waterSidePositions: number[] = [];
+    const waterSideNormals: number[] = [];
+    const waterSideUvs: number[] = [];
+    const waterSideIndices: number[] = [];
+    let waterSideVertexOffset = 0;
 
     for (const [tileIndex, column] of this.columns) {
       // Skip tiles that are in the detailed render range
@@ -469,7 +479,9 @@ export class Planet {
       }
 
       const tile = column.tile;
-      const thisRadius = tileDisplayRadii.get(tileIndex) ?? this.radius;
+      const thisTileData = tileDisplayRadii.get(tileIndex);
+      const thisRadius = thisTileData?.radius ?? this.radius;
+      const thisIsWater = thisTileData?.isWater ?? false;
       const numSides = tile.vertices.length;
 
       // Iterate through edges (vertices), matching HexBlock.createSeparateGeometries
@@ -482,7 +494,7 @@ export class Planet {
         const edgeMidDir = v1.clone().add(v2).normalize();
         let neighborRadius: number | undefined;
         let closestDist = Infinity;
-        let neighborIsDetailed = false;
+        let neighborIsWater = false;
 
         for (const nIdx of tile.neighbors) {
           const neighborColumn = this.columns.get(nIdx);
@@ -491,24 +503,18 @@ export class Planet {
           const dist = neighborColumn.tile.center.clone().normalize().distanceToSquared(edgeMidDir);
           if (dist < closestDist) {
             closestDist = dist;
-            // Check if this neighbor is in detailed range
-            if (this.cachedNearbyTiles.has(nIdx)) {
-              neighborIsDetailed = true;
-              // For detailed neighbors, calculate their actual surface radius
-              neighborRadius = tileDisplayRadii.get(nIdx);
-            } else {
-              neighborIsDetailed = false;
-              neighborRadius = tileDisplayRadii.get(nIdx);
-            }
+            const neighborData = tileDisplayRadii.get(nIdx);
+            neighborRadius = neighborData?.radius;
+            neighborIsWater = neighborData?.isWater ?? false;
           }
         }
 
-        // Only generate wall if this tile is higher than neighbor
-        // For boundary with detailed terrain, always generate wall (detailed terrain handles its own sides)
+        // Generate wall if:
+        // 1. This tile is higher than neighbor (terrain or water going down)
+        // 2. This is water and neighbor is terrain (water meeting ocean floor)
         if (neighborRadius === undefined) continue;
-        if (!neighborIsDetailed && thisRadius <= neighborRadius) continue;
-        // For detailed neighbors, only generate if LOD is higher
-        if (neighborIsDetailed && thisRadius <= neighborRadius) continue;
+        const needsWall = thisRadius > neighborRadius || (thisIsWater && !neighborIsWater);
+        if (!needsWall) continue;
 
         // Vertex order matches HexBlock.createSeparateGeometries:
         // innerV1, innerV2, outerV2, outerV1 with indices (0,1,2), (0,2,3)
@@ -517,28 +523,33 @@ export class Planet {
         const outerV2 = v2.clone().normalize().multiplyScalar(thisRadius);
         const outerV1 = v1.clone().normalize().multiplyScalar(thisRadius);
 
-        const baseIdx = sideVertexOffset;
-
-        // Add vertices in same order as HexBlock sides
-        sidePositions.push(
-          innerV1.x, innerV1.y, innerV1.z,
-          innerV2.x, innerV2.y, innerV2.z,
-          outerV2.x, outerV2.y, outerV2.z,
-          outerV1.x, outerV1.y, outerV1.z
-        );
-
         // Calculate side normal (same as HexBlock)
         const edge = outerV2.clone().sub(outerV1).normalize();
         const midPoint = outerV1.clone().add(outerV2).multiplyScalar(0.5);
         const sideNormal = midPoint.clone().normalize();
         sideNormal.sub(edge.clone().multiplyScalar(sideNormal.dot(edge))).normalize();
 
+        // Select appropriate buffer based on whether this is a water tile
+        const positions = thisIsWater ? waterSidePositions : sidePositions;
+        const normals = thisIsWater ? waterSideNormals : sideNormals;
+        const uvs = thisIsWater ? waterSideUvs : sideUvs;
+        const indices = thisIsWater ? waterSideIndices : sideIndices;
+        const baseIdx = thisIsWater ? waterSideVertexOffset : sideVertexOffset;
+
+        // Add vertices in same order as HexBlock sides
+        positions.push(
+          innerV1.x, innerV1.y, innerV1.z,
+          innerV2.x, innerV2.y, innerV2.z,
+          outerV2.x, outerV2.y, outerV2.z,
+          outerV1.x, outerV1.y, outerV1.z
+        );
+
         for (let j = 0; j < 4; j++) {
-          sideNormals.push(sideNormal.x, sideNormal.y, sideNormal.z);
+          normals.push(sideNormal.x, sideNormal.y, sideNormal.z);
         }
 
         // UVs matching HexBlock
-        sideUvs.push(
+        uvs.push(
           0, 0,       // innerV1 (bottom-left)
           1, 0,       // innerV2 (bottom-right)
           1, 0.5,     // outerV2 (top-right)
@@ -546,10 +557,111 @@ export class Planet {
         );
 
         // Same winding as HexBlock: (0,1,2), (0,2,3)
-        sideIndices.push(baseIdx, baseIdx + 1, baseIdx + 2);
-        sideIndices.push(baseIdx, baseIdx + 2, baseIdx + 3);
+        indices.push(baseIdx, baseIdx + 1, baseIdx + 2);
+        indices.push(baseIdx, baseIdx + 2, baseIdx + 3);
 
-        sideVertexOffset += 4;
+        if (thisIsWater) {
+          waterSideVertexOffset += 4;
+        } else {
+          sideVertexOffset += 4;
+        }
+      }
+    }
+
+    // Third pass: Generate water boundary walls at LOD/terrain edge
+    // These walls block the view when underwater at the boundary between detailed terrain and LOD
+    // For each LOD water tile that borders a detailed terrain tile, create a wall on that edge
+    for (const [tileIndex, column] of this.columns) {
+      // Only process LOD tiles (not in detailed range)
+      if (this.cachedNearbyTiles.has(tileIndex)) {
+        continue;
+      }
+
+      const thisTileData = tileDisplayRadii.get(tileIndex);
+      const thisIsWater = thisTileData?.isWater ?? false;
+
+      // Only water tiles need boundary walls
+      if (!thisIsWater) continue;
+
+      const tile = column.tile;
+      const numSides = tile.vertices.length;
+
+      // Check each edge for neighbors in the detailed terrain range
+      for (let i = 0; i < numSides; i++) {
+        const next = (i + 1) % numSides;
+        const v1 = tile.vertices[i];
+        const v2 = tile.vertices[next];
+
+        // Find neighbor across this edge
+        const edgeMidDir = v1.clone().add(v2).normalize();
+        let closestNeighborIdx: number | undefined;
+        let closestDist = Infinity;
+
+        for (const nIdx of tile.neighbors) {
+          const neighborColumn = this.columns.get(nIdx);
+          if (!neighborColumn) continue;
+
+          const dist = neighborColumn.tile.center.clone().normalize().distanceToSquared(edgeMidDir);
+          if (dist < closestDist) {
+            closestDist = dist;
+            closestNeighborIdx = nIdx;
+          }
+        }
+
+        // Only generate wall if this neighbor is in the detailed terrain range
+        if (closestNeighborIdx === undefined) continue;
+        if (!this.cachedNearbyTiles.has(closestNeighborIdx)) continue;
+
+        // Get the neighbor's terrain data to find the ocean floor depth
+        const neighborData = tileDisplayRadii.get(closestNeighborIdx);
+        if (!neighborData) continue;
+
+        // Generate wall from ocean floor (neighbor terrain) up to water surface
+        // Wall goes from neighborRadius (ocean floor) to waterRadius (water surface)
+        const bottomRadius = neighborData.radius;
+        const topRadius = waterRadius;
+
+        // Only create wall if there's actual depth (ocean floor is below water surface)
+        if (bottomRadius >= topRadius) continue;
+
+        // Vertex order matches HexBlock.createSeparateGeometries:
+        // innerV1, innerV2, outerV2, outerV1 with indices (0,1,2), (0,2,3)
+        const innerV1 = v1.clone().normalize().multiplyScalar(bottomRadius);
+        const innerV2 = v2.clone().normalize().multiplyScalar(bottomRadius);
+        const outerV2 = v2.clone().normalize().multiplyScalar(topRadius);
+        const outerV1 = v1.clone().normalize().multiplyScalar(topRadius);
+
+        // Calculate side normal (pointing toward detailed terrain, away from LOD)
+        const edge = outerV2.clone().sub(outerV1).normalize();
+        const midPoint = outerV1.clone().add(outerV2).multiplyScalar(0.5);
+        const sideNormal = midPoint.clone().normalize();
+        sideNormal.sub(edge.clone().multiplyScalar(sideNormal.dot(edge))).normalize();
+
+        const baseIdx = waterSideVertexOffset;
+
+        // Add vertices
+        waterSidePositions.push(
+          innerV1.x, innerV1.y, innerV1.z,
+          innerV2.x, innerV2.y, innerV2.z,
+          outerV2.x, outerV2.y, outerV2.z,
+          outerV1.x, outerV1.y, outerV1.z
+        );
+
+        for (let j = 0; j < 4; j++) {
+          waterSideNormals.push(sideNormal.x, sideNormal.y, sideNormal.z);
+        }
+
+        waterSideUvs.push(
+          0, 0,
+          1, 0,
+          1, 0.5,
+          0, 0.5
+        );
+
+        waterSideIndices.push(baseIdx, baseIdx + 1, baseIdx + 2);
+        waterSideIndices.push(baseIdx, baseIdx + 2, baseIdx + 3);
+
+        waterSideVertexOffset += 4;
       }
     }
 
@@ -595,6 +707,18 @@ export class Planet {
       geom.setAttribute('uv', new THREE.Float32BufferAttribute(sideUvs, 2));
       geom.setIndex(sideIndices);
       const mesh = new THREE.Mesh(geom, this.meshBuilder.getSideLODMaterial());
+      lodGroup.add(mesh);
+    }
+
+    // Add water side walls mesh (prevents see-through effect when underwater)
+    if (waterSidePositions.length > 0) {
+      const geom = new THREE.BufferGeometry();
+      geom.setAttribute('position', new THREE.Float32BufferAttribute(waterSidePositions, 3));
+      geom.setAttribute('normal', new THREE.Float32BufferAttribute(waterSideNormals, 3));
+      geom.setAttribute('uv', new THREE.Float32BufferAttribute(waterSideUvs, 2));
+      geom.setIndex(waterSideIndices);
+      const mesh = new THREE.Mesh(geom, this.meshBuilder.getWaterLODMaterial());
+      mesh.renderOrder = -2;
       lodGroup.add(mesh);
     }
 
@@ -1202,6 +1326,110 @@ export class Planet {
       this.batchedMeshGroup.add(this.waterMesh);
     }
 
+    // Generate water boundary walls at the edge of detailed terrain facing LOD
+    // This prevents seeing through when underwater at the terrain/LOD boundary
+    const waterBoundaryData = createEmptyGeometryData();
+    const waterSurfaceRadius = this.radius - this.SEA_LEVEL * this.BLOCK_HEIGHT - PlayerConfig.WATER_SURFACE_OFFSET;
+
+    for (const tileIndex of this.cachedNearbyTiles) {
+      const column = this.columns.get(tileIndex);
+      if (!column) continue;
+
+      const tile = column.tile;
+
+      // Check each edge to see if neighbor is outside detailed range (in LOD territory)
+      for (let i = 0; i < tile.vertices.length; i++) {
+        const next = (i + 1) % tile.vertices.length;
+        const v1 = tile.vertices[i];
+        const v2 = tile.vertices[next];
+
+        // Find neighbor across this edge
+        const edgeMidDir = v1.clone().add(v2).normalize();
+        let closestNeighborIdx: number | undefined;
+        let closestDist = Infinity;
+
+        for (const nIdx of tile.neighbors) {
+          const neighborColumn = this.columns.get(nIdx);
+          if (!neighborColumn) continue;
+
+          const dist = neighborColumn.tile.center.clone().normalize().distanceToSquared(edgeMidDir);
+          if (dist < closestDist) {
+            closestDist = dist;
+            closestNeighborIdx = nIdx;
+          }
+        }
+
+        // Only generate wall if neighbor is in LOD territory (not in detailed range)
+        if (closestNeighborIdx === undefined) continue;
+        if (this.cachedNearbyTiles.has(closestNeighborIdx)) continue;
+
+        // Find the ocean floor depth at this tile
+        let oceanFloorDepth = this.SEA_LEVEL;
+        for (let d = 0; d < column.blocks.length; d++) {
+          if (column.blocks[d] !== HexBlockType.AIR && column.blocks[d] !== HexBlockType.WATER) {
+            oceanFloorDepth = d;
+            break;
+          }
+        }
+
+        // Only create wall if this tile is underwater (ocean floor is below water surface)
+        if (oceanFloorDepth <= this.SEA_LEVEL) continue;
+
+        const oceanFloorRadius = this.radius - oceanFloorDepth * this.BLOCK_HEIGHT;
+
+        // Wall goes from ocean floor up to water surface
+        const bottomRadius = oceanFloorRadius;
+        const topRadius = waterSurfaceRadius;
+
+        if (bottomRadius >= topRadius) continue;
+
+        // Vertex order: innerV1, innerV2, outerV2, outerV1
+        const innerV1 = v1.clone().normalize().multiplyScalar(bottomRadius);
+        const innerV2 = v2.clone().normalize().multiplyScalar(bottomRadius);
+        const outerV2 = v2.clone().normalize().multiplyScalar(topRadius);
+        const outerV1 = v1.clone().normalize().multiplyScalar(topRadius);
+
+        // Normal pointing outward (toward LOD)
+        const edge = outerV2.clone().sub(outerV1).normalize();
+        const midPoint = outerV1.clone().add(outerV2).multiplyScalar(0.5);
+        const sideNormal = midPoint.clone().normalize();
+        sideNormal.sub(edge.clone().multiplyScalar(sideNormal.dot(edge))).normalize();
+
+        const baseIdx = waterBoundaryData.vertexOffset;
+
+        waterBoundaryData.positions.push(
+          innerV1.x, innerV1.y, innerV1.z,
+          innerV2.x, innerV2.y, innerV2.z,
+          outerV2.x, outerV2.y, outerV2.z,
+          outerV1.x, outerV1.y, outerV1.z
+        );
+
+        for (let j = 0; j < 4; j++) {
+          waterBoundaryData.normals.push(sideNormal.x, sideNormal.y, sideNormal.z);
+        }
+
+        waterBoundaryData.uvs.push(0, 0, 1, 0, 1, 0.5, 0, 0.5);
+
+        waterBoundaryData.indices.push(baseIdx, baseIdx + 1, baseIdx + 2);
+        waterBoundaryData.indices.push(baseIdx, baseIdx + 2, baseIdx + 3);
+
+        waterBoundaryData.vertexOffset += 4;
+      }
+    }
+
+    // Add water boundary walls mesh - solid color matching underwater fog
+    if (waterBoundaryData.positions.length > 0) {
+      const geom = this.createBufferGeometry(waterBoundaryData);
+      const fogColor = new THREE.Color(PlayerConfig.UNDERWATER_FOG_COLOR);
+      const boundaryMaterial = new THREE.MeshBasicMaterial({
+        color: fogColor,
+        side: THREE.DoubleSide
+      });
+      const boundaryMesh = new THREE.Mesh(geom, boundaryMaterial);
+      boundaryMesh.renderOrder = 1;
+      this.batchedMeshGroup.add(boundaryMesh);
+    }
+
     this.needsRebatch = false;
   }
 
@@ -1308,8 +1536,8 @@ export class Planet {
     }
   }
 
-  public updateWaterShader(time: number): void {
-    this.meshBuilder.updateWaterShader(time, this.center);
+  public updateWaterShader(time: number, isUnderwater: boolean = false): void {
+    this.meshBuilder.updateWaterShader(time, this.center, isUnderwater);
   }
 
   public setSunDirection(dir: THREE.Vector3): void {
@@ -1353,85 +1581,6 @@ export class Planet {
     }
 
     // Boundary walls disabled - LOD and detailed terrain should align properly now
-    return;
-
-    const boundaryTiles = new Set<number>();
-    for (const tileIndex of this.cachedNearbyTiles) {
-      const column = this.columns.get(tileIndex);
-      if (!column) continue;
-
-      for (const neighborIndex of column.tile.neighbors) {
-        if (!this.cachedNearbyTiles.has(neighborIndex)) {
-          boundaryTiles.add(tileIndex);
-          break;
-        }
-      }
-    }
-
-    const lodSurfaceRadius = this.radius - this.SEA_LEVEL * this.BLOCK_HEIGHT;
-    const wallData = createEmptyGeometryData();
-
-    for (const tileIndex of boundaryTiles) {
-      const column = this.columns.get(tileIndex);
-      if (!column) continue;
-
-      let surfaceDepth = 0;
-      for (let d = 0; d < column.blocks.length; d++) {
-        if (column.blocks[d] !== HexBlockType.AIR && column.blocks[d] !== HexBlockType.WATER) {
-          surfaceDepth = d;
-          break;
-        }
-      }
-
-      const terrainSurfaceRadius = this.radius - surfaceDepth * this.BLOCK_HEIGHT;
-      if (terrainSurfaceRadius >= lodSurfaceRadius) continue;
-
-      for (let i = 0; i < column.tile.neighbors.length; i++) {
-        const neighborIndex = column.tile.neighbors[i];
-        if (this.cachedNearbyTiles.has(neighborIndex)) continue;
-
-        const v1 = column.tile.vertices[i];
-        const v2 = column.tile.vertices[(i + 1) % column.tile.vertices.length];
-
-        const v1Inner = v1.clone().normalize().multiplyScalar(terrainSurfaceRadius);
-        const v1Outer = v1.clone().normalize().multiplyScalar(lodSurfaceRadius);
-        const v2Inner = v2.clone().normalize().multiplyScalar(terrainSurfaceRadius);
-        const v2Outer = v2.clone().normalize().multiplyScalar(lodSurfaceRadius);
-
-        const baseIdx = wallData.vertexOffset;
-
-        wallData.positions.push(v1Inner.x, v1Inner.y, v1Inner.z);
-        wallData.positions.push(v1Outer.x, v1Outer.y, v1Outer.z);
-        wallData.positions.push(v2Outer.x, v2Outer.y, v2Outer.z);
-        wallData.positions.push(v2Inner.x, v2Inner.y, v2Inner.z);
-
-        // Use radial normals (pointing outward from planet center) for proper day/night lighting
-        // Each vertex gets its own radial normal based on its position
-        const n1Inner = v1Inner.clone().normalize();
-        const n1Outer = v1Outer.clone().normalize();
-        const n2Outer = v2Outer.clone().normalize();
-        const n2Inner = v2Inner.clone().normalize();
-
-        wallData.normals.push(n1Inner.x, n1Inner.y, n1Inner.z);
-        wallData.normals.push(n1Outer.x, n1Outer.y, n1Outer.z);
-        wallData.normals.push(n2Outer.x, n2Outer.y, n2Outer.z);
-        wallData.normals.push(n2Inner.x, n2Inner.y, n2Inner.z);
-
-        const wallHeight = (lodSurfaceRadius - terrainSurfaceRadius) / this.BLOCK_HEIGHT;
-        wallData.uvs.push(0, 0, 0, wallHeight, 1, wallHeight, 1, 0);
-
-        wallData.indices.push(baseIdx, baseIdx + 2, baseIdx + 1);
-        wallData.indices.push(baseIdx, baseIdx + 3, baseIdx + 2);
-
-        wallData.vertexOffset += 4;
-      }
-    }
-
-    if (wallData.positions.length > 0) {
-      const geom = this.createBufferGeometry(wallData);
-      const mesh = new THREE.Mesh(geom, this.meshBuilder.getSideMaterial());
-      this.boundaryWallsGroup.add(mesh);
-    }
   }
 
   private mergeGeometry(

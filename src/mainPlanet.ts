@@ -157,7 +157,8 @@ class PlanetGame {
     profiler.end('Moon Update');
 
     // Update water shader for animation (only Earth has water)
-    this.earth.updateWaterShader(this.elapsedTime);
+    const isUnderwater = this.player.getIsInWater();
+    this.earth.updateWaterShader(this.elapsedTime, isUnderwater);
 
     // Update atmosphere (needs camera position for fresnel effect)
     if (this.earthAtmosphere) {
