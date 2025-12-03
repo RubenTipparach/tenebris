@@ -1421,25 +1421,42 @@ export class Planet {
       const px = posAttr.getX(i);
       const py = posAttr.getY(i);
       const pz = posAttr.getZ(i);
+      const nx = normAttr.getX(i);
+      const ny = normAttr.getY(i);
+      const nz = normAttr.getZ(i);
+
       data.positions.push(px, py, pz);
-      data.normals.push(normAttr.getX(i), normAttr.getY(i), normAttr.getZ(i));
+      data.normals.push(nx, ny, nz);
       data.uvs.push(uvAttr.getX(i), uvAttr.getY(i));
 
-      // Calculate position-based light intensity
-      // This is the dot product of the vertex's radial direction and the sun direction
-      // Gives day/night shading based on position on the planet sphere
+      // Calculate combined lighting intensity from two factors:
+      // 1. Position-based: where on the planet sphere (day/night side)
+      // 2. Normal-based: which direction the face is pointing (Lambert shading)
+
+      // Position-based intensity (day/night)
       const posLen = Math.sqrt(px * px + py * py + pz * pz);
+      let positionIntensity = 1.0;
       if (posLen > 0) {
         const radialX = px / posLen;
         const radialY = py / posLen;
         const radialZ = pz / posLen;
-        const positionIntensity = radialX * sunDirection.x + radialY * sunDirection.y + radialZ * sunDirection.z;
-        // Remap from [-1, 1] to [0.2, 1.0] for softer shadows
-        const intensity = Math.max(0.2, Math.min(1.0, positionIntensity * 0.5 + 0.5));
-        data.colors.push(intensity, intensity, intensity);
-      } else {
-        data.colors.push(1, 1, 1);
+        const posDot = radialX * sunDirection.x + radialY * sunDirection.y + radialZ * sunDirection.z;
+        // Remap from [-1, 1] to [0.15, 1.0] for day/night
+        positionIntensity = Math.max(0.15, posDot * 0.5 + 0.5);
       }
+
+      // Normal-based intensity (Lambert shading - face direction relative to sun)
+      const normalDot = nx * sunDirection.x + ny * sunDirection.y + nz * sunDirection.z;
+      // Faces pointing toward sun get full light, faces pointing away get ambient only
+      // Remap from [-1, 1] to [0.3, 1.0] so shadow sides aren't completely black
+      const normalIntensity = Math.max(0.3, normalDot * 0.5 + 0.5);
+
+      // Combine both factors - multiply them together
+      // This means a face on the night side pointing toward the sun is still dark (position dominates)
+      // And a face on the day side pointing away from sun is darker (normal affects it)
+      const intensity = positionIntensity * normalIntensity;
+
+      data.colors.push(intensity, intensity, intensity);
     }
 
     for (let i = 0; i < indexAttr.count; i++) {
