@@ -106,10 +106,11 @@ export class HexBlockMeshBuilder {
     this.textures.set('grass', grassTexture);
 
     // Create materials for different face types
-    this.materials.set('top', new THREE.MeshLambertMaterial({ map: grassTexture }));
-    this.materials.set('side', new THREE.MeshLambertMaterial({ map: dirtTexture }));
-    this.materials.set('bottom', new THREE.MeshLambertMaterial({ map: stoneTexture }));
-    this.materials.set('stone', new THREE.MeshLambertMaterial({ map: stoneTexture }));
+    // Enable vertexColors to allow position-based light intensity modulation
+    this.materials.set('top', new THREE.MeshLambertMaterial({ map: grassTexture, vertexColors: true }));
+    this.materials.set('side', new THREE.MeshLambertMaterial({ map: dirtTexture, vertexColors: true }));
+    this.materials.set('bottom', new THREE.MeshLambertMaterial({ map: stoneTexture, vertexColors: true }));
+    this.materials.set('stone', new THREE.MeshLambertMaterial({ map: stoneTexture, vertexColors: true }));
 
     // Water material - load water texture
     const waterTexture = await this.loadTexture('/textures/water.png');

@@ -23,12 +23,13 @@ interface GeometryData {
   positions: number[];
   normals: number[];
   uvs: number[];
+  colors: number[];  // Vertex colors for position-based lighting
   indices: number[];
   vertexOffset: number;
 }
 
 function createEmptyGeometryData(): GeometryData {
-  return { positions: [], normals: [], uvs: [], indices: [], vertexOffset: 0 };
+  return { positions: [], normals: [], uvs: [], colors: [], indices: [], vertexOffset: 0 };
 }
 
 export class Planet {
@@ -82,6 +83,13 @@ export class Planet {
   private readonly DEEP_THRESHOLD = 4; // Depth at which we switch to stone texture
   private readonly SEA_LEVEL: number; // Depth at which water surface sits
   private readonly seed: number; // Terrain generation seed
+
+  // Sun direction for position-based lighting (normalized)
+  private sunDirection: THREE.Vector3 = new THREE.Vector3(
+    PlayerConfig.SUN_DIRECTION.x,
+    PlayerConfig.SUN_DIRECTION.y,
+    PlayerConfig.SUN_DIRECTION.z
+  ).normalize();
 
   constructor(scene: THREE.Scene, radius: number = 50, subdivisions: number = 3, config: PlanetConfig = {}) {
     this.scene = scene;
@@ -152,14 +160,21 @@ export class Planet {
       const tileDisplayRadii = new Map<number, { radius: number; isWater: boolean; color: THREE.Color }>();
       const waterRadius = this.radius - this.SEA_LEVEL * this.BLOCK_HEIGHT;
 
+      // Check if this is a single-texture planet (like moon) - use grey for all surfaces
+      const isSingleTexturePlanet = !!this.config.texturePath;
+
       for (const tile of lodPolyhedron.tiles) {
         const surfaceDepth = this.getHeightVariation(tile.center);
         const terrainRadius = this.radius - surfaceDepth * this.BLOCK_HEIGHT;
-        const isWater = surfaceDepth > this.SEA_LEVEL;
+        const isWater = !isSingleTexturePlanet && surfaceDepth > this.SEA_LEVEL;
         const displayRadius = isWater ? waterRadius : terrainRadius;
 
         let color: THREE.Color;
-        if (isWater) {
+        if (isSingleTexturePlanet) {
+          // Single texture planets (like moon) use grey shading based on height
+          const heightFactor = Math.max(0.4, Math.min(1.0, 0.6 + surfaceDepth * 0.02));
+          color = new THREE.Color(heightFactor * 0.7, heightFactor * 0.7, heightFactor * 0.7);
+        } else if (isWater) {
           color = new THREE.Color(0x3399cc);
         } else if (surfaceDepth <= 0) {
           color = new THREE.Color(0x888888);
@@ -203,7 +218,10 @@ export class Planet {
         // (Only for non-water tiles)
         // Iterate through edges (vertices), not neighbors, matching HexBlock.createSeparateGeometries
         if (!tileData.isWater) {
-          const sideColor = new THREE.Color(0x8b7355);
+          // Use grey for single-texture planets (moon), brown for Earth
+          const sideColor = isSingleTexturePlanet
+            ? new THREE.Color(0.5, 0.5, 0.5)
+            : new THREE.Color(0x8b7355);
           const numSides = tile.vertices.length;
 
           for (let i = 0; i < numSides; i++) {
@@ -342,10 +360,9 @@ export class Planet {
     let sideVertexOffset = 0;
 
     // First pass: calculate display radius for each LOD tile
+    // Also calculate for detailed tiles so LOD can generate walls at the boundary
     const tileDisplayRadii = new Map<number, number>();
     for (const [tileIndex, column] of this.columns) {
-      if (this.cachedNearbyTiles.has(tileIndex)) continue;
-
       let surfaceDepth = 0;
       let surfaceBlockType = HexBlockType.GRASS;
       for (let d = 0; d < column.blocks.length; d++) {
@@ -1232,11 +1249,11 @@ export class Planet {
         const indexAttr = top.getIndex();
         if (posAttr && normAttr && uvAttr && indexAttr) {
           if (isWater) {
-            this.mergeGeometry(waterData, posAttr, normAttr, uvAttr, indexAttr);
+            this.mergeGeometry(waterData, posAttr, normAttr, uvAttr, indexAttr, this.sunDirection);
           } else if (isDeep) {
-            this.mergeGeometry(stoneData, posAttr, normAttr, uvAttr, indexAttr);
+            this.mergeGeometry(stoneData, posAttr, normAttr, uvAttr, indexAttr, this.sunDirection);
           } else {
-            this.mergeGeometry(topData, posAttr, normAttr, uvAttr, indexAttr);
+            this.mergeGeometry(topData, posAttr, normAttr, uvAttr, indexAttr, this.sunDirection);
           }
         }
         top.dispose();
@@ -1248,7 +1265,7 @@ export class Planet {
         const uvAttr = bottom.getAttribute('uv');
         const indexAttr = bottom.getIndex();
         if (posAttr && normAttr && uvAttr && indexAttr) {
-          this.mergeGeometry(stoneData, posAttr, normAttr, uvAttr, indexAttr);
+          this.mergeGeometry(stoneData, posAttr, normAttr, uvAttr, indexAttr, this.sunDirection);
         }
         bottom.dispose();
       }
@@ -1260,9 +1277,9 @@ export class Planet {
         const indexAttr = sides.getIndex();
         if (posAttr && normAttr && uvAttr && indexAttr) {
           if (isDeep) {
-            this.mergeGeometry(stoneData, posAttr, normAttr, uvAttr, indexAttr);
+            this.mergeGeometry(stoneData, posAttr, normAttr, uvAttr, indexAttr, this.sunDirection);
           } else {
-            this.mergeGeometry(sideData, posAttr, normAttr, uvAttr, indexAttr);
+            this.mergeGeometry(sideData, posAttr, normAttr, uvAttr, indexAttr, this.sunDirection);
           }
         }
         sides.dispose();
@@ -1397,12 +1414,32 @@ export class Planet {
     posAttr: THREE.BufferAttribute | THREE.InterleavedBufferAttribute,
     normAttr: THREE.BufferAttribute | THREE.InterleavedBufferAttribute,
     uvAttr: THREE.BufferAttribute | THREE.InterleavedBufferAttribute,
-    indexAttr: THREE.BufferAttribute
+    indexAttr: THREE.BufferAttribute,
+    sunDirection: THREE.Vector3
   ): void {
     for (let i = 0; i < posAttr.count; i++) {
-      data.positions.push(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i));
+      const px = posAttr.getX(i);
+      const py = posAttr.getY(i);
+      const pz = posAttr.getZ(i);
+      data.positions.push(px, py, pz);
       data.normals.push(normAttr.getX(i), normAttr.getY(i), normAttr.getZ(i));
       data.uvs.push(uvAttr.getX(i), uvAttr.getY(i));
+
+      // Calculate position-based light intensity
+      // This is the dot product of the vertex's radial direction and the sun direction
+      // Gives day/night shading based on position on the planet sphere
+      const posLen = Math.sqrt(px * px + py * py + pz * pz);
+      if (posLen > 0) {
+        const radialX = px / posLen;
+        const radialY = py / posLen;
+        const radialZ = pz / posLen;
+        const positionIntensity = radialX * sunDirection.x + radialY * sunDirection.y + radialZ * sunDirection.z;
+        // Remap from [-1, 1] to [0.2, 1.0] for softer shadows
+        const intensity = Math.max(0.2, Math.min(1.0, positionIntensity * 0.5 + 0.5));
+        data.colors.push(intensity, intensity, intensity);
+      } else {
+        data.colors.push(1, 1, 1);
+      }
     }
 
     for (let i = 0; i < indexAttr.count; i++) {
@@ -1417,6 +1454,9 @@ export class Planet {
     geometry.setAttribute('position', new THREE.Float32BufferAttribute(data.positions, 3));
     geometry.setAttribute('normal', new THREE.Float32BufferAttribute(data.normals, 3));
     geometry.setAttribute('uv', new THREE.Float32BufferAttribute(data.uvs, 2));
+    if (data.colors.length > 0) {
+      geometry.setAttribute('color', new THREE.Float32BufferAttribute(data.colors, 3));
+    }
     geometry.setIndex(data.indices);
     geometry.computeBoundingSphere();
     return geometry;
