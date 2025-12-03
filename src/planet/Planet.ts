@@ -455,7 +455,7 @@ export class Planet {
     }
 
     // Second pass: Generate side walls between LOD tiles at different heights
-    // Use same approach as distant LOD - find neighbor by edge midpoint
+    // Also generate walls at boundary with detailed terrain tiles
     const sidePositions: number[] = [];
     const sideNormals: number[] = [];
     const sideUvs: number[] = [];
@@ -482,26 +482,33 @@ export class Planet {
         const edgeMidDir = v1.clone().add(v2).normalize();
         let neighborRadius: number | undefined;
         let closestDist = Infinity;
+        let neighborIsDetailed = false;
 
         for (const nIdx of tile.neighbors) {
-          // Skip if neighbor is in detailed range
-          if (this.cachedNearbyTiles.has(nIdx)) continue;
-
-          const nRadius = tileDisplayRadii.get(nIdx);
-          if (nRadius === undefined) continue;
-
           const neighborColumn = this.columns.get(nIdx);
           if (!neighborColumn) continue;
 
           const dist = neighborColumn.tile.center.clone().normalize().distanceToSquared(edgeMidDir);
           if (dist < closestDist) {
             closestDist = dist;
-            neighborRadius = nRadius;
+            // Check if this neighbor is in detailed range
+            if (this.cachedNearbyTiles.has(nIdx)) {
+              neighborIsDetailed = true;
+              // For detailed neighbors, calculate their actual surface radius
+              neighborRadius = tileDisplayRadii.get(nIdx);
+            } else {
+              neighborIsDetailed = false;
+              neighborRadius = tileDisplayRadii.get(nIdx);
+            }
           }
         }
 
         // Only generate wall if this tile is higher than neighbor
-        if (neighborRadius === undefined || thisRadius <= neighborRadius) continue;
+        // For boundary with detailed terrain, always generate wall (detailed terrain handles its own sides)
+        if (neighborRadius === undefined) continue;
+        if (!neighborIsDetailed && thisRadius <= neighborRadius) continue;
+        // For detailed neighbors, only generate if LOD is higher
+        if (neighborIsDetailed && thisRadius <= neighborRadius) continue;
 
         // Vertex order matches HexBlock.createSeparateGeometries:
         // innerV1, innerV2, outerV2, outerV1 with indices (0,1,2), (0,2,3)
