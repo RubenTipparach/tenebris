@@ -37,6 +37,12 @@ export class PlanetPlayer {
   private isInWater: boolean = false;
   private hasDoubleJumped: boolean = false; // Track if double-jump/jetpack was activated this airborne session
 
+  // Stuck detection debug
+  private lastPosition: THREE.Vector3 = new THREE.Vector3();
+  private stuckFrameCount: number = 0;
+  private wasdActiveFrames: number = 0;
+  private lastStuckLogTime: number = 0;
+
   // Jump drift detection
   private jumpStartPosition: THREE.Vector3 | null = null;
   private jumpStartSpherical: { theta: number; phi: number } | null = null;
@@ -271,10 +277,118 @@ export class PlanetPlayer {
       this.handleMovement(input, deltaTime);
       this.handleJetpack(input, deltaTime);
       this.applyGravity(deltaTime);
+
+      // Debug: Check if player is stuck
+      this.checkIfStuck(input);
     }
 
     this.updateCamera();
     this.updateUI();
+  }
+
+  // Debug: Detect if player is stuck and log detailed collision info
+  private checkIfStuck(input: { forward: boolean; backward: boolean; left: boolean; right: boolean }): void {
+    const wasdActive = input.forward || input.backward || input.left || input.right;
+    const moved = this.position.distanceTo(this.lastPosition) > 0.01;
+
+    if (wasdActive) {
+      this.wasdActiveFrames++;
+      if (!moved) {
+        this.stuckFrameCount++;
+      } else {
+        this.stuckFrameCount = 0;
+      }
+
+      // If WASD held for 30+ frames and not moving, we're stuck
+      const now = Date.now();
+      if (this.stuckFrameCount > 30 && this.wasdActiveFrames > 30 && now - this.lastStuckLogTime > 2000) {
+        this.lastStuckLogTime = now;
+        this.logStuckDebugInfo();
+      }
+    } else {
+      this.wasdActiveFrames = 0;
+      this.stuckFrameCount = 0;
+    }
+
+    this.lastPosition.copy(this.position);
+  }
+
+  private logStuckDebugInfo(): void {
+    if (!this.currentPlanet) return;
+
+    console.log('========== STUCK DETECTED ==========');
+
+    const playerFeetRadius = this.position.distanceTo(this.currentPlanet.center);
+    const playerHeadRadius = playerFeetRadius + PlayerConfig.PLAYER_HEIGHT;
+
+    console.log('Player State:');
+    console.log(`  Position: (${this.position.x.toFixed(2)}, ${this.position.y.toFixed(2)}, ${this.position.z.toFixed(2)})`);
+    console.log(`  Feet radius: ${playerFeetRadius.toFixed(2)}`);
+    console.log(`  Head radius: ${playerHeadRadius.toFixed(2)}`);
+    console.log(`  Is in water: ${this.isInWater}`);
+    console.log(`  Is grounded: ${this.isGrounded}`);
+    console.log(`  Velocity: (${this.velocity.x.toFixed(3)}, ${this.velocity.y.toFixed(3)}, ${this.velocity.z.toFixed(3)})`);
+
+    const currentTile = this.currentPlanet.getTileAtPoint(this.position);
+    if (currentTile) {
+      console.log('\nCurrent Tile:');
+      console.log(`  Index: ${currentTile.index}`);
+
+      // Find ground level
+      let groundDepth = -1;
+      for (let d = 0; d < 16; d++) {
+        const block = this.currentPlanet.getBlock(currentTile.index, d);
+        if (block !== HexBlockType.AIR && block !== HexBlockType.WATER) {
+          groundDepth = d;
+          break;
+        }
+      }
+      const groundRadius = groundDepth >= 0 ? this.currentPlanet.radius - groundDepth : 0;
+      console.log(`  Ground depth: ${groundDepth} (radius: ${groundRadius.toFixed(2)})`);
+      const heightAboveGround = playerFeetRadius - groundRadius;
+      console.log(`  Player feet vs ground: ${heightAboveGround.toFixed(2)} (should be ~${PlayerConfig.PLAYER_HEIGHT})`);
+      console.log(`  In air (wall check skipped): ${heightAboveGround > PlayerConfig.PLAYER_HEIGHT + 0.5}`);
+
+      // List all blocks in column
+      console.log('  Blocks:');
+      for (let d = 0; d < 8; d++) {
+        const block = this.currentPlanet.getBlock(currentTile.index, d);
+        const blockName = HexBlockType[block];
+        const blockRadius = this.currentPlanet.radius - d;
+        const inRange = blockRadius > playerFeetRadius && blockRadius < playerHeadRadius ? ' [IN CAPSULE RANGE]' : '';
+        console.log(`    d=${d}: ${blockName} (r=${blockRadius.toFixed(1)})${inRange}`);
+      }
+
+      // Check neighbors
+      console.log('\nNeighbor Tiles:');
+      for (const neighborIndex of currentTile.neighbors) {
+        const neighborTile = this.currentPlanet.getPolyhedron().tiles[neighborIndex];
+        if (!neighborTile) continue;
+
+        // Get neighbor ground level
+        let neighborGroundDepth = -1;
+        for (let d = 0; d < 16; d++) {
+          const block = this.currentPlanet.getBlock(neighborIndex, d);
+          if (block !== HexBlockType.AIR && block !== HexBlockType.WATER) {
+            neighborGroundDepth = d;
+            break;
+          }
+        }
+        const neighborGroundRadius = neighborGroundDepth >= 0 ? this.currentPlanet.radius - neighborGroundDepth : 0;
+        const heightDiff = neighborGroundRadius - groundRadius;
+
+        console.log(`  Neighbor ${neighborIndex}: ground_r=${neighborGroundRadius.toFixed(1)}, heightDiff=${heightDiff.toFixed(1)}`);
+      }
+
+      // Check collision functions
+      console.log('\nCollision Checks:');
+      console.log(`  isPositionValid: ${this.isPositionValid(this.position)}`);
+      console.log(`  checkWallCollision: ${this.checkWallCollision(this.position)}`);
+      console.log(`  checkStepHeight: ${this.checkStepHeight(this.position)}`);
+      console.log(`  checkCollision: ${this.checkCollision(this.position)}`);
+    }
+
+    console.log('====================================');
   }
 
   // Instantly align camera up with gravity direction, preserving look direction
@@ -583,10 +697,17 @@ export class PlanetPlayer {
   private checkCollision(newPosition: THREE.Vector3): boolean {
     if (!this.currentPlanet) return false;
 
-    // Only check step height when grounded - when airborne, we can jump over steps
+    // Only check step height when grounded AND actually changing tiles
+    // This allows free movement within the current tile
     if (this.isGrounded) {
-      if (!this.checkStepHeight(newPosition)) {
-        return true; // Blocked by step (only matters when walking on ground)
+      const currentTile = this.currentPlanet.getTileAtPoint(this.position);
+      const newTile = this.currentPlanet.getTileAtPoint(newPosition);
+
+      // Only check step height if we're moving to a different tile
+      if (currentTile && newTile && currentTile.index !== newTile.index) {
+        if (!this.checkStepHeight(newPosition)) {
+          return true; // Blocked by step (only matters when walking to different tile)
+        }
       }
     }
 
@@ -632,54 +753,33 @@ export class PlanetPlayer {
   }
 
   // Wall collision check - based on player's actual capsule position
-  // Returns true if blocked
+  // Returns true if blocked by a solid wall
+  //
+  // This check is deliberately permissive - it only blocks when the player would
+  // actually be inside a solid block. The step-height check handles terrain traversal.
+  // Walls are for blocking horizontal movement INTO cliff faces, not for standing near cliffs.
   private checkWallCollision(newPosition: THREE.Vector3): boolean {
     if (!this.currentPlanet) return false;
 
     const newTile = this.currentPlanet.getTileAtPoint(newPosition);
     if (!newTile) return false;
 
-    // Player's actual feet position (radius from planet center)
+    // Player's actual position (radius from planet center)
     const playerFeetRadius = newPosition.distanceTo(this.currentPlanet.center);
     const playerHeadRadius = playerFeetRadius + PlayerConfig.PLAYER_HEIGHT;
 
-    // Check neighboring tiles for walls
-    for (const neighborIndex of newTile.neighbors) {
-      // Find neighbor's ground level (top of solid ground - skip air and water)
-      let neighborGroundDepth = 0;
-      for (let d = 0; d < 16; d++) {
-        const block = this.currentPlanet.getBlock(neighborIndex, d);
-        if (block !== HexBlockType.AIR && block !== HexBlockType.WATER) {
-          neighborGroundDepth = d;
-          break;
-        }
-      }
-      const neighborGroundRadius = this.currentPlanet.radius - neighborGroundDepth;
+    // Check if player is inside any solid block at the NEW tile itself
+    // (this catches cases where you'd move into the ground)
+    for (let d = 0; d < 16; d++) {
+      const block = this.currentPlanet.getBlock(newTile.index, d);
+      if (block === HexBlockType.AIR || block === HexBlockType.WATER) continue;
 
-      // A neighbor is a wall if its ground surface is within our capsule's vertical range
-      // i.e., neighbor ground is between our feet and head
-      // If neighbor ground is BELOW our feet, we can walk/jump over it
-      // If neighbor ground is ABOVE our head, it's a ceiling (not handled here)
-      const wallBlocksUs = neighborGroundRadius > playerFeetRadius && neighborGroundRadius <= playerHeadRadius + 0.5;
+      const blockTopRadius = this.currentPlanet.radius - d;
+      const blockBottomRadius = blockTopRadius - 1;
 
-      if (wallBlocksUs) {
-        const neighborTile = this.currentPlanet.getPolyhedron().tiles[neighborIndex];
-        if (!neighborTile) continue;
-
-        // Check horizontal distance to neighbor
-        const actualUp = this.currentPlanet.getSurfaceNormal(newPosition);
-        const neighborCenter = neighborTile.center.clone().normalize()
-          .multiplyScalar(playerFeetRadius).add(this.currentPlanet.center);
-
-        // Project both positions onto horizontal plane for distance check
-        const toNeighbor = neighborCenter.clone().sub(newPosition);
-        toNeighbor.sub(actualUp.clone().multiplyScalar(toNeighbor.dot(actualUp)));
-        const horizontalDist = toNeighbor.length();
-
-        // Collision if within player radius + tile size
-        if (horizontalDist < PlayerConfig.PLAYER_RADIUS + 1.5) {
-          return true; // Blocked by wall
-        }
+      // Check if player body overlaps this solid block
+      if (blockTopRadius > playerFeetRadius && blockBottomRadius < playerHeadRadius) {
+        return true; // Would be inside solid terrain
       }
     }
 
@@ -721,6 +821,34 @@ export class PlanetPlayer {
     return true;
   }
 
+  // Push player out of solid geometry if they somehow got stuck
+  // This is a safety net for edge cases where normal collision detection fails
+  private resolveStuckPosition(actualUp: THREE.Vector3): void {
+    if (!this.currentPlanet) return;
+
+    const tile = this.currentPlanet.getTileAtPoint(this.position);
+    if (!tile) return;
+
+    const playerFeetRadius = this.position.distanceTo(this.currentPlanet.center);
+
+    // Check if player's feet are inside solid ground at current tile
+    for (let d = 0; d < 16; d++) {
+      const block = this.currentPlanet.getBlock(tile.index, d);
+      if (block === HexBlockType.AIR || block === HexBlockType.WATER) continue;
+
+      // Found solid block - check if we're inside it
+      const blockOuterRadius = this.currentPlanet.radius - d;
+
+      if (playerFeetRadius < blockOuterRadius) {
+        // Player is inside this solid block - push them up to stand on top
+        const safeRadius = blockOuterRadius + PlayerConfig.PLAYER_HEIGHT + 0.1;
+        this.position.copy(this.currentPlanet.center).addScaledVector(actualUp, safeRadius);
+        this.velocity.set(0, 0, 0); // Reset velocity when unsticking
+        return;
+      }
+    }
+  }
+
   private handleJetpack(input: InputState, deltaTime: number): void {
     if (!this.currentPlanet) return;
 
@@ -760,6 +888,10 @@ export class PlanetPlayer {
     // Get actual up direction from planet (not localUp which may lag behind)
     const actualUp = this.currentPlanet.getSurfaceNormal(this.position);
     const currentDist = this.position.distanceTo(this.currentPlanet.center);
+
+    // FIRST: Check if player is stuck inside solid geometry and push them out
+    // This handles edge cases where collision detection failed
+    this.resolveStuckPosition(actualUp);
 
     // Water state is already updated in handleMovement for current frame
     // Don't re-check here to avoid timing issues
@@ -896,26 +1028,40 @@ export class PlanetPlayer {
         const wallBlocking = this.checkWallCollision(newPosition);
 
         if (positionValid && !wallBlocking) {
+          // No collision - apply full movement
           this.position.copy(newPosition);
-        } else if (wallBlocking) {
-          // Wall collision during falling - try to slide along the wall
-          // Remove velocity component toward the wall (horizontal)
-          const horizontalVel = this.velocity.clone();
-          const upComponent = horizontalVel.dot(actualUp);
-          horizontalVel.sub(actualUp.clone().multiplyScalar(upComponent));
-
-          // Reduce horizontal velocity significantly to prevent sticking
-          this.velocity.sub(horizontalVel.clone().multiplyScalar(0.8));
-
-          // Push player slightly away from wall
-          const pushDir = this.position.clone().sub(this.currentPlanet.center).normalize();
-          const tangentPush = pushDir.clone().multiplyScalar(0.05);
-          this.position.add(tangentPush);
         } else {
-          // Blocked by terrain - stop downward velocity
-          const upComponent = this.velocity.dot(actualUp);
-          if (upComponent < 0) {
-            this.velocity.sub(actualUp.clone().multiplyScalar(upComponent));
+          // Collision detected - try to slide along obstacles
+          // Decompose velocity into vertical and horizontal components
+          const verticalVel = actualUp.clone().multiplyScalar(this.velocity.dot(actualUp));
+          const horizontalVel = this.velocity.clone().sub(verticalVel);
+
+          // Try vertical movement only
+          const verticalMove = verticalVel.clone().multiplyScalar(deltaTime);
+          const verticalNewPos = this.position.clone().add(verticalMove);
+          const verticalValid = this.isPositionValid(verticalNewPos) && !this.checkWallCollision(verticalNewPos);
+
+          if (verticalValid) {
+            this.position.copy(verticalNewPos);
+          } else {
+            // Vertical blocked - stop vertical velocity
+            const upComponent = this.velocity.dot(actualUp);
+            if (upComponent < 0) {
+              this.velocity.sub(actualUp.clone().multiplyScalar(upComponent));
+            }
+          }
+
+          // Try horizontal movement (sliding along walls)
+          if (horizontalVel.lengthSq() > 0.001) {
+            const horizontalMove = horizontalVel.clone().multiplyScalar(deltaTime);
+            const horizontalNewPos = this.position.clone().add(horizontalMove);
+
+            if (this.isPositionValid(horizontalNewPos) && !this.checkWallCollision(horizontalNewPos)) {
+              this.position.copy(horizontalNewPos);
+            } else {
+              // Horizontal blocked - reduce horizontal velocity
+              this.velocity.sub(horizontalVel.clone().multiplyScalar(0.5));
+            }
           }
         }
       }

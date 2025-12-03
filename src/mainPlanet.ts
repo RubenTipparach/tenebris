@@ -30,12 +30,12 @@ class PlanetGame {
     this.engine = new GameEngine(container);
     this.inputManager = new InputManager();
 
-    // Create Earth with radius 100 and 5 subdivisions (doubled size, +1 subdivision to keep tile size)
-    this.earth = new Planet(this.engine.scene, 100, 5);
+    // Create Earth with configurable subdivisions
+    this.earth = new Planet(this.engine.scene, 100, PlayerConfig.EARTH_SUBDIVISIONS);
 
-    // Create Moon with radius 50, 4 subdivisions, and moon texture (doubled size)
+    // Create Moon with configurable subdivisions and moon texture
     // Position the moon at (400, 0, 0) - about 250 units from Earth surface
-    this.moon = new Planet(this.engine.scene, 50, 4, { texturePath: '/textures/moon.png', heightVariation: 0.6 });
+    this.moon = new Planet(this.engine.scene, 50, PlayerConfig.MOON_SUBDIVISIONS, { texturePath: '/textures/moon.png', heightVariation: 0.6 });
 
     // Player will be initialized after planets
     this.player = null!;

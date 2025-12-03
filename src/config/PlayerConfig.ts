@@ -71,8 +71,8 @@ export const PlayerConfig = {
   // Water texture vs procedural balance
   WATER_TEXTURE_STRENGTH: 0.7,     // How much the texture contributes (0 = none, 1 = full)
   WATER_SCROLL_SPEED: 0.03,        // Speed of texture scrolling animation
-  WATER_CAUSTIC_STRENGTH: 0.01,    // Strength of procedural caustic shimmer effect
-  WATER_FOAM_STRENGTH: 0.1,        // Strength of foam at shallow edges
+  WATER_CAUSTIC_STRENGTH: 0.08,    // Strength of procedural caustic shimmer effect
+  WATER_FOAM_STRENGTH: 0.5,        // Strength of foam at shallow edges
 
   // Underwater fog
   UNDERWATER_FOG_COLOR: "#1c5eac",  // Underwater fog color (hex string)
@@ -82,19 +82,44 @@ export const PlayerConfig = {
   // Atmosphere (GPU Gems 2 style scattering)
   ATMOSPHERE_ENABLED: true,           // Toggle atmosphere rendering on/off
   ATMOSPHERE_RADIUS_MULT: 1.2,        // Atmosphere outer radius as multiplier of planet radius
-  ATMOSPHERE_SURFACE_OFFSET: 10.0,     // Offset for planet surface (accounts for terrain depth variation)
-  ATMOSPHERE_RAYLEIGH_SCALE: 0.0055,  // Rayleigh scattering coefficient (blue sky)
-  ATMOSPHERE_MIE_SCALE: 0.001,        // Mie scattering coefficient (sun glow/haze)
+  ATMOSPHERE_SURFACE_OFFSET: 40.0,     // Offset for planet surface (accounts for terrain depth variation)
+  ATMOSPHERE_RAYLEIGH_SCALE: 0.055,  // Rayleigh scattering coefficient (blue sky)
+  ATMOSPHERE_MIE_SCALE: 0.01,        // Mie scattering coefficient (sun glow/haze)
   ATMOSPHERE_MIE_G: 0.85,             // Mie phase asymmetry (-0.99 to 0.99, positive = forward scatter)
-  ATMOSPHERE_SUN_INTENSITY: 10.0,     // Sun brightness for atmosphere
+  ATMOSPHERE_SUN_INTENSITY: 5.0,     // Sun brightness for atmosphere
   ATMOSPHERE_SAMPLES: 8,              // Number of ray march samples (higher = better quality, slower)
   ATMOSPHERE_LIGHT_SAMPLES: 4,        // Number of light samples per ray step
 
-  // Planet LOD system
-  PLANET_MIN_RENDER_DISTANCE: 6,      // Min tiles to render when on ground
-  PLANET_MAX_RENDER_DISTANCE: 25,     // Max tiles when at high altitude
-  PLANET_LOD_SWITCH_ALTITUDE: 50,     // Altitude above which only LOD is shown
+  // Terrain rendering & streaming
+  TERRAIN_MIN_RENDER_DISTANCE: 16,    // Min tiles to render when on ground
+  TERRAIN_MAX_RENDER_DISTANCE: 24,    // Max tiles when at high altitude
+  TERRAIN_LOD_SWITCH_ALTITUDE: 50,    // Altitude above which only LOD mesh is shown
+  TERRAIN_BUFFER_ZONE: 8,             // Tiles player can move before triggering rebuild
+  TERRAIN_TILES_PER_FRAME: 5,        // Max tiles to process per frame during incremental rebuild
 
   // Terrain generation
   TERRAIN_SEED: 12345,                // Seed for terrain generation (change for different worlds)
+  TERRAIN_MAX_DEPTH: 16,              // Max blocks below sea level (dig depth)
+  TERRAIN_MAX_HEIGHT: 16,             // Max blocks above sea level (mountain peak height)
+  TERRAIN_SEA_LEVEL: 12,              // Sea level depth from top (blocks of air above water)
+
+  // Terrain features (geographic)
+  TERRAIN_CONTINENT_SCALE: 0.8,       // Scale of continental plates (lower = larger continents)
+  TERRAIN_CONTINENT_WEIGHT: 0.7,      // How much plates vs noise affects land/ocean (0-1)
+  TERRAIN_MOUNTAIN_SCALE: 2.5,        // Scale of mountain ridge patterns
+  TERRAIN_MOUNTAIN_HEIGHT: 0.8,       // Mountain peak height multiplier
+  TERRAIN_HILL_SCALE: 5.0,            // Scale of rolling hills
+  TERRAIN_HILL_WEIGHT: 0.15,          // How much hills affect terrain (0-1)
+  TERRAIN_DETAIL_SCALE: 12.0,         // Scale of surface detail noise
+  TERRAIN_DETAIL_WEIGHT: 0.05,        // How much detail affects terrain (0-1)
+  TERRAIN_OCEAN_DEPTH_POWER: 1.3,     // Ocean depth curve (higher = deeper ocean floors)
+
+  // Planet detail levels (subdivisions)
+  EARTH_SUBDIVISIONS: 6,              // Subdivision level for Earth (6 = double density from 5)
+  MOON_SUBDIVISIONS: 5,               // Subdivision level for Moon
+
+  // Distant planet LOD
+  PLANET_LOD_DISTANCE_1: 200,         // Distance for first LOD reduction
+  PLANET_LOD_DISTANCE_2: 500,         // Distance for second LOD reduction
+  PLANET_LOD_DISTANCE_3: 1000,        // Distance for third LOD reduction (lowest detail)
 };
