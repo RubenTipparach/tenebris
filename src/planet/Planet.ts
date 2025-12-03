@@ -348,16 +348,9 @@ export class Planet {
     const waterUvs: number[] = [];
     const waterIndices: number[] = [];
 
-    // Side walls use dirt/side material
-    const sidePositions: number[] = [];
-    const sideNormals: number[] = [];
-    const sideUvs: number[] = [];
-    const sideIndices: number[] = [];
-
     let grassVertexOffset = 0;
     let dirtVertexOffset = 0;
     let waterVertexOffset = 0;
-    let sideVertexOffset = 0;
 
     // First pass: calculate display radius for each LOD tile
     // Also calculate for detailed tiles so LOD can generate walls at the boundary
@@ -458,78 +451,99 @@ export class Planet {
         grassVertexOffset = vertexOffset;
       }
 
-      // Generate side walls for edges where this tile is higher than neighbor
-      // (Only for non-water tiles - water doesn't need walls)
-      // Iterate through edges (vertices), not neighbors, matching HexBlock.createSeparateGeometries
-      if (surfaceBlockType !== HexBlockType.WATER) {
-        const numSides = tile.vertices.length;
-        for (let i = 0; i < numSides; i++) {
-          const next = (i + 1) % numSides;
-          const v1 = tile.vertices[i];
-          const v2 = tile.vertices[next];
+      this.lodTileVisibility.set(tileIndex, true);
+    }
 
-          // Find neighbor across this edge by checking which neighbor is closest to edge midpoint
-          const edgeMidDir = v1.clone().add(v2).normalize();
-          let neighborRadius: number | undefined;
-          let closestDist = Infinity;
+    // Second pass: Generate side walls between LOD tiles at different heights
+    // Use same approach as distant LOD - find neighbor by edge midpoint
+    const sidePositions: number[] = [];
+    const sideNormals: number[] = [];
+    const sideUvs: number[] = [];
+    const sideIndices: number[] = [];
+    let sideVertexOffset = 0;
 
-          for (const nIdx of tile.neighbors) {
-            const nRadius = tileDisplayRadii.get(nIdx);
-            if (nRadius === undefined) continue;
-            const neighborColumn = this.columns.get(nIdx);
-            if (!neighborColumn) continue;
-            const dist = neighborColumn.tile.center.clone().normalize().distanceToSquared(edgeMidDir);
-            if (dist < closestDist) {
-              closestDist = dist;
-              neighborRadius = nRadius;
-            }
-          }
-
-          // Only create wall if neighbor exists in LOD and is lower than us
-          if (neighborRadius !== undefined && neighborRadius < displayRadius) {
-            // Vertex order matches HexBlock.createSeparateGeometries:
-            // innerV1, innerV2, outerV2, outerV1 with indices (0,1,2), (0,2,3)
-            const innerV1 = v1.clone().normalize().multiplyScalar(neighborRadius);
-            const innerV2 = v2.clone().normalize().multiplyScalar(neighborRadius);
-            const outerV2 = v2.clone().normalize().multiplyScalar(displayRadius);
-            const outerV1 = v1.clone().normalize().multiplyScalar(displayRadius);
-
-            const baseIdx = sideVertexOffset;
-
-            // Add vertices in same order as HexBlock sides
-            sidePositions.push(innerV1.x, innerV1.y, innerV1.z);
-            sidePositions.push(innerV2.x, innerV2.y, innerV2.z);
-            sidePositions.push(outerV2.x, outerV2.y, outerV2.z);
-            sidePositions.push(outerV1.x, outerV1.y, outerV1.z);
-
-            // Calculate side normal (same as HexBlock)
-            const edge = outerV2.clone().sub(outerV1).normalize();
-            const midPoint = outerV1.clone().add(outerV2).multiplyScalar(0.5);
-            const sideNormal = midPoint.clone().normalize();
-            sideNormal.sub(edge.clone().multiplyScalar(sideNormal.dot(edge))).normalize();
-
-            sideNormals.push(sideNormal.x, sideNormal.y, sideNormal.z);
-            sideNormals.push(sideNormal.x, sideNormal.y, sideNormal.z);
-            sideNormals.push(sideNormal.x, sideNormal.y, sideNormal.z);
-            sideNormals.push(sideNormal.x, sideNormal.y, sideNormal.z);
-
-            // UVs matching HexBlock sides
-            const wallHeight = (displayRadius - neighborRadius) / this.BLOCK_HEIGHT * 0.5;
-            sideUvs.push(0, 0);
-            sideUvs.push(1, 0);
-            sideUvs.push(1, wallHeight);
-            sideUvs.push(0, wallHeight);
-
-            // Same winding as HexBlock: (0,1,2), (0,2,3)
-            sideIndices.push(baseIdx, baseIdx + 1, baseIdx + 2);
-            sideIndices.push(baseIdx, baseIdx + 2, baseIdx + 3);
-
-            sideVertexOffset += 4;
-          }
-        }
+    for (const [tileIndex, column] of this.columns) {
+      // Skip tiles that are in the detailed render range
+      if (this.cachedNearbyTiles.has(tileIndex)) {
+        continue;
       }
 
-      this.lodTileVisibility.set(tileIndex, true);
+      const tile = column.tile;
+      const thisRadius = tileDisplayRadii.get(tileIndex) ?? this.radius;
+      const numSides = tile.vertices.length;
+
+      // Iterate through edges (vertices), matching HexBlock.createSeparateGeometries
+      for (let i = 0; i < numSides; i++) {
+        const next = (i + 1) % numSides;
+        const v1 = tile.vertices[i];
+        const v2 = tile.vertices[next];
+
+        // Find neighbor across this edge by checking which neighbor is closest to edge midpoint
+        const edgeMidDir = v1.clone().add(v2).normalize();
+        let neighborRadius: number | undefined;
+        let closestDist = Infinity;
+
+        for (const nIdx of tile.neighbors) {
+          // Skip if neighbor is in detailed range
+          if (this.cachedNearbyTiles.has(nIdx)) continue;
+
+          const nRadius = tileDisplayRadii.get(nIdx);
+          if (nRadius === undefined) continue;
+
+          const neighborColumn = this.columns.get(nIdx);
+          if (!neighborColumn) continue;
+
+          const dist = neighborColumn.tile.center.clone().normalize().distanceToSquared(edgeMidDir);
+          if (dist < closestDist) {
+            closestDist = dist;
+            neighborRadius = nRadius;
+          }
+        }
+
+        // Only generate wall if this tile is higher than neighbor
+        if (neighborRadius === undefined || thisRadius <= neighborRadius) continue;
+
+        // Vertex order matches HexBlock.createSeparateGeometries:
+        // innerV1, innerV2, outerV2, outerV1 with indices (0,1,2), (0,2,3)
+        const innerV1 = v1.clone().normalize().multiplyScalar(neighborRadius);
+        const innerV2 = v2.clone().normalize().multiplyScalar(neighborRadius);
+        const outerV2 = v2.clone().normalize().multiplyScalar(thisRadius);
+        const outerV1 = v1.clone().normalize().multiplyScalar(thisRadius);
+
+        const baseIdx = sideVertexOffset;
+
+        // Add vertices in same order as HexBlock sides
+        sidePositions.push(
+          innerV1.x, innerV1.y, innerV1.z,
+          innerV2.x, innerV2.y, innerV2.z,
+          outerV2.x, outerV2.y, outerV2.z,
+          outerV1.x, outerV1.y, outerV1.z
+        );
+
+        // Calculate side normal (same as HexBlock)
+        const edge = outerV2.clone().sub(outerV1).normalize();
+        const midPoint = outerV1.clone().add(outerV2).multiplyScalar(0.5);
+        const sideNormal = midPoint.clone().normalize();
+        sideNormal.sub(edge.clone().multiplyScalar(sideNormal.dot(edge))).normalize();
+
+        for (let j = 0; j < 4; j++) {
+          sideNormals.push(sideNormal.x, sideNormal.y, sideNormal.z);
+        }
+
+        // UVs matching HexBlock
+        sideUvs.push(
+          0, 0,       // innerV1 (bottom-left)
+          1, 0,       // innerV2 (bottom-right)
+          1, 0.5,     // outerV2 (top-right)
+          0, 0.5      // outerV1 (top-left)
+        );
+
+        // Same winding as HexBlock: (0,1,2), (0,2,3)
+        sideIndices.push(baseIdx, baseIdx + 1, baseIdx + 2);
+        sideIndices.push(baseIdx, baseIdx + 2, baseIdx + 3);
+
+        sideVertexOffset += 4;
+      }
     }
 
     // Create LOD group with batched meshes
@@ -566,7 +580,7 @@ export class Planet {
       lodGroup.add(this.lodWaterMesh);
     }
 
-    // Add side walls to fill gaps between tiles at different heights
+    // Add side walls mesh (dirt texture for cliff sides)
     if (sidePositions.length > 0) {
       const geom = new THREE.BufferGeometry();
       geom.setAttribute('position', new THREE.Float32BufferAttribute(sidePositions, 3));
@@ -1322,6 +1336,7 @@ export class Planet {
   private rebuildBoundaryWalls(): void {
     if (!this.boundaryWallsGroup) return;
 
+    // Clear any existing boundary walls
     while (this.boundaryWallsGroup.children.length > 0) {
       const child = this.boundaryWallsGroup.children[0];
       if (child instanceof THREE.Mesh) {
@@ -1329,6 +1344,9 @@ export class Planet {
       }
       this.boundaryWallsGroup.remove(child);
     }
+
+    // Boundary walls disabled - LOD and detailed terrain should align properly now
+    return;
 
     const boundaryTiles = new Set<number>();
     for (const tileIndex of this.cachedNearbyTiles) {
@@ -1429,34 +1447,23 @@ export class Planet {
       data.normals.push(nx, ny, nz);
       data.uvs.push(uvAttr.getX(i), uvAttr.getY(i));
 
-      // Calculate combined lighting intensity from two factors:
-      // 1. Position-based: where on the planet sphere (day/night side)
-      // 2. Normal-based: which direction the face is pointing (Lambert shading)
-
-      // Position-based intensity (day/night)
-      const posLen = Math.sqrt(px * px + py * py + pz * pz);
-      let positionIntensity = 1.0;
-      if (posLen > 0) {
-        const radialX = px / posLen;
-        const radialY = py / posLen;
-        const radialZ = pz / posLen;
-        const posDot = radialX * sunDirection.x + radialY * sunDirection.y + radialZ * sunDirection.z;
-        // Remap from [-1, 1] to [0.15, 1.0] for day/night
-        positionIntensity = Math.max(0.15, posDot * 0.5 + 0.5);
+      // Only bake position-based lighting into vertex colors if enabled
+      if (PlayerConfig.VERTEX_LIGHTING_ENABLED) {
+        // Calculate the tile column's sphere normal (radial direction from planet center)
+        // This represents where on the planet this tile sits, not which way the face points
+        const posLen = Math.sqrt(px * px + py * py + pz * pz);
+        let intensity = 1.0;
+        if (posLen > 0) {
+          const radialX = px / posLen;
+          const radialY = py / posLen;
+          const radialZ = pz / posLen;
+          // Dot product with sun direction gives day/night factor
+          const posDot = radialX * sunDirection.x + radialY * sunDirection.y + radialZ * sunDirection.z;
+          // Remap from [-1, 1] to [0.2, 1.0] for day/night (night side gets 20% ambient)
+          intensity = Math.max(0.2, posDot * 0.5 + 0.5);
+        }
+        data.colors.push(intensity, intensity, intensity);
       }
-
-      // Normal-based intensity (Lambert shading - face direction relative to sun)
-      const normalDot = nx * sunDirection.x + ny * sunDirection.y + nz * sunDirection.z;
-      // Faces pointing toward sun get full light, faces pointing away get ambient only
-      // Remap from [-1, 1] to [0.3, 1.0] so shadow sides aren't completely black
-      const normalIntensity = Math.max(0.3, normalDot * 0.5 + 0.5);
-
-      // Combine both factors - multiply them together
-      // This means a face on the night side pointing toward the sun is still dark (position dominates)
-      // And a face on the day side pointing away from sun is darker (normal affects it)
-      const intensity = positionIntensity * normalIntensity;
-
-      data.colors.push(intensity, intensity, intensity);
     }
 
     for (let i = 0; i < indexAttr.count; i++) {
@@ -1471,6 +1478,7 @@ export class Planet {
     geometry.setAttribute('position', new THREE.Float32BufferAttribute(data.positions, 3));
     geometry.setAttribute('normal', new THREE.Float32BufferAttribute(data.normals, 3));
     geometry.setAttribute('uv', new THREE.Float32BufferAttribute(data.uvs, 2));
+    // Only add vertex colors if they exist (only populated when vertex lighting is enabled)
     if (data.colors.length > 0) {
       geometry.setAttribute('color', new THREE.Float32BufferAttribute(data.colors, 3));
     }

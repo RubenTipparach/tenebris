@@ -78,7 +78,8 @@ export class HexBlockMeshBuilder {
       configureTexture(texture);
 
       this.textures.set('primary', texture);
-      const material = new THREE.MeshLambertMaterial({ map: texture });
+      const useVertexColors = PlayerConfig.VERTEX_LIGHTING_ENABLED;
+      const material = new THREE.MeshLambertMaterial({ map: texture, vertexColors: useVertexColors });
 
       // All surface types use the same material
       this.materials.set('top', material);
@@ -106,11 +107,12 @@ export class HexBlockMeshBuilder {
     this.textures.set('grass', grassTexture);
 
     // Create materials for different face types
-    // Enable vertexColors to allow position-based light intensity modulation
-    this.materials.set('top', new THREE.MeshLambertMaterial({ map: grassTexture, vertexColors: true }));
-    this.materials.set('side', new THREE.MeshLambertMaterial({ map: dirtTexture, vertexColors: true }));
-    this.materials.set('bottom', new THREE.MeshLambertMaterial({ map: stoneTexture, vertexColors: true }));
-    this.materials.set('stone', new THREE.MeshLambertMaterial({ map: stoneTexture, vertexColors: true }));
+    // Enable vertexColors only if vertex lighting is enabled for position-based light intensity modulation
+    const useVertexColors = PlayerConfig.VERTEX_LIGHTING_ENABLED;
+    this.materials.set('top', new THREE.MeshLambertMaterial({ map: grassTexture, vertexColors: useVertexColors }));
+    this.materials.set('side', new THREE.MeshLambertMaterial({ map: dirtTexture, vertexColors: useVertexColors }));
+    this.materials.set('bottom', new THREE.MeshLambertMaterial({ map: stoneTexture, vertexColors: useVertexColors }));
+    this.materials.set('stone', new THREE.MeshLambertMaterial({ map: stoneTexture, vertexColors: useVertexColors }));
 
     // Water material - load water texture
     const waterTexture = await this.loadTexture('/textures/water.png');

@@ -6,6 +6,7 @@ export const PlayerConfig = {
   DIRECTIONAL_LIGHT_INTENSITY: 5.0,   // Sun intensity
   HEMISPHERE_LIGHT_INTENSITY: 0.01,    // Sky/ground color blend
   SUN_DIRECTION: { x: 1, y: 0.5, z: 0.3 }, // Normalized direction TO the sun
+  VERTEX_LIGHTING_ENABLED: false,      // Bake position-based day/night lighting into vertex colors
 
   // Movement
   WALK_SPEED: 4,                  // Base walk speed (reduced from 8)
