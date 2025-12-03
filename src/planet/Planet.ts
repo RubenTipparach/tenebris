@@ -148,30 +148,33 @@ export class Planet {
       const indices: number[] = [];
       let vertexOffset = 0;
 
+      // First pass: calculate display radius for each tile
+      const tileDisplayRadii = new Map<number, { radius: number; isWater: boolean; color: THREE.Color }>();
+      const waterRadius = this.radius - this.SEA_LEVEL * this.BLOCK_HEIGHT;
+
       for (const tile of lodPolyhedron.tiles) {
-        // Sample terrain height at tile center - this gives us the surface depth
         const surfaceDepth = this.getHeightVariation(tile.center);
-
-        // Calculate actual radius based on terrain depth
-        // Lower depth = higher elevation (closer to surface)
         const terrainRadius = this.radius - surfaceDepth * this.BLOCK_HEIGHT;
-
-        // Determine surface type based on depth relative to sea level
         const isWater = surfaceDepth > this.SEA_LEVEL;
-        const waterRadius = this.radius - this.SEA_LEVEL * this.BLOCK_HEIGHT;
-
-        // Use water radius if underwater, otherwise terrain radius
         const displayRadius = isWater ? waterRadius : terrainRadius;
 
-        // Color based on terrain type
         let color: THREE.Color;
         if (isWater) {
-          color = new THREE.Color(0x3399cc); // Water blue
+          color = new THREE.Color(0x3399cc);
         } else if (surfaceDepth <= 0) {
-          color = new THREE.Color(0x888888); // Mountain gray (high elevation)
+          color = new THREE.Color(0x888888);
         } else {
-          color = new THREE.Color(0x4a8c4a); // Grass green
+          color = new THREE.Color(0x4a8c4a);
         }
+
+        tileDisplayRadii.set(tile.index, { radius: displayRadius, isWater, color });
+      }
+
+      // Second pass: create geometry
+      for (const tile of lodPolyhedron.tiles) {
+        const tileData = tileDisplayRadii.get(tile.index)!;
+        const displayRadius = tileData.radius;
+        const color = tileData.color;
 
         // Create tile face
         const center = tile.center.clone().normalize().multiplyScalar(displayRadius);
@@ -194,6 +197,78 @@ export class Planet {
           vertexOffset++;
 
           indices.push(centerIdx, centerIdx + 1 + i, centerIdx + 1 + ((i + 1) % vertices.length));
+        }
+
+        // Generate side walls for edges where this tile is higher than neighbor
+        // (Only for non-water tiles)
+        // Iterate through edges (vertices), not neighbors, matching HexBlock.createSeparateGeometries
+        if (!tileData.isWater) {
+          const sideColor = new THREE.Color(0x8b7355);
+          const numSides = tile.vertices.length;
+
+          for (let i = 0; i < numSides; i++) {
+            const next = (i + 1) % numSides;
+            const v1 = tile.vertices[i];
+            const v2 = tile.vertices[next];
+
+            // Find neighbor across this edge by checking which neighbor is closest to edge midpoint
+            const edgeMidDir = v1.clone().add(v2).normalize();
+            let neighborData: { radius: number; isWater: boolean; color: THREE.Color } | undefined;
+            let closestDist = Infinity;
+
+            for (const nIdx of tile.neighbors) {
+              const nData = tileDisplayRadii.get(nIdx);
+              if (!nData) continue;
+              const neighborTile = lodPolyhedron.tiles[nIdx];
+              if (!neighborTile) continue;
+              const dist = neighborTile.center.clone().normalize().distanceToSquared(edgeMidDir);
+              if (dist < closestDist) {
+                closestDist = dist;
+                neighborData = nData;
+              }
+            }
+
+            if (neighborData && neighborData.radius < displayRadius) {
+              // Vertex order matches HexBlock.createSeparateGeometries:
+              // innerV1, innerV2, outerV2, outerV1 with indices (0,1,2), (0,2,3)
+              const innerV1 = v1.clone().normalize().multiplyScalar(neighborData.radius);
+              const innerV2 = v2.clone().normalize().multiplyScalar(neighborData.radius);
+              const outerV2 = v2.clone().normalize().multiplyScalar(displayRadius);
+              const outerV1 = v1.clone().normalize().multiplyScalar(displayRadius);
+
+              const baseIdx = vertexOffset;
+
+              // Add vertices in same order as HexBlock sides
+              positions.push(innerV1.x, innerV1.y, innerV1.z);
+              positions.push(innerV2.x, innerV2.y, innerV2.z);
+              positions.push(outerV2.x, outerV2.y, outerV2.z);
+              positions.push(outerV1.x, outerV1.y, outerV1.z);
+
+              // Calculate side normal (same as HexBlock)
+              const edge = outerV2.clone().sub(outerV1).normalize();
+              const midPoint = outerV1.clone().add(outerV2).multiplyScalar(0.5);
+              const sideNormal = midPoint.clone().normalize();
+              sideNormal.sub(edge.clone().multiplyScalar(sideNormal.dot(edge))).normalize();
+
+              normals.push(sideNormal.x, sideNormal.y, sideNormal.z);
+              normals.push(sideNormal.x, sideNormal.y, sideNormal.z);
+              normals.push(sideNormal.x, sideNormal.y, sideNormal.z);
+              normals.push(sideNormal.x, sideNormal.y, sideNormal.z);
+
+              uvs.push(0, 0, 1, 0, 1, 0.5, 0, 0.5);
+
+              colors.push(sideColor.r, sideColor.g, sideColor.b);
+              colors.push(sideColor.r, sideColor.g, sideColor.b);
+              colors.push(sideColor.r, sideColor.g, sideColor.b);
+              colors.push(sideColor.r, sideColor.g, sideColor.b);
+
+              // Same winding as HexBlock: (0,1,2), (0,2,3)
+              indices.push(baseIdx, baseIdx + 1, baseIdx + 2);
+              indices.push(baseIdx, baseIdx + 2, baseIdx + 3);
+
+              vertexOffset += 4;
+            }
+          }
         }
       }
 
@@ -255,17 +330,22 @@ export class Planet {
     const waterUvs: number[] = [];
     const waterIndices: number[] = [];
 
+    // Side walls use dirt/side material
+    const sidePositions: number[] = [];
+    const sideNormals: number[] = [];
+    const sideUvs: number[] = [];
+    const sideIndices: number[] = [];
+
     let grassVertexOffset = 0;
     let dirtVertexOffset = 0;
     let waterVertexOffset = 0;
+    let sideVertexOffset = 0;
 
+    // First pass: calculate display radius for each LOD tile
+    const tileDisplayRadii = new Map<number, number>();
     for (const [tileIndex, column] of this.columns) {
-      // Skip tiles that are in the detailed render range
-      if (this.cachedNearbyTiles.has(tileIndex)) {
-        continue;
-      }
+      if (this.cachedNearbyTiles.has(tileIndex)) continue;
 
-      // Find surface depth and block type
       let surfaceDepth = 0;
       let surfaceBlockType = HexBlockType.GRASS;
       for (let d = 0; d < column.blocks.length; d++) {
@@ -276,18 +356,35 @@ export class Planet {
         }
       }
 
+      let displayRadius: number;
+      if (surfaceBlockType === HexBlockType.WATER) {
+        displayRadius = waterRadius;
+      } else {
+        displayRadius = this.radius - surfaceDepth * this.BLOCK_HEIGHT - lodOffset;
+      }
+      tileDisplayRadii.set(tileIndex, displayRadius);
+    }
+
+    for (const [tileIndex, column] of this.columns) {
+      // Skip tiles that are in the detailed render range
+      if (this.cachedNearbyTiles.has(tileIndex)) {
+        continue;
+      }
+
+      // Find surface block type
+      let surfaceBlockType = HexBlockType.GRASS;
+      for (let d = 0; d < column.blocks.length; d++) {
+        if (column.blocks[d] !== HexBlockType.AIR) {
+          surfaceBlockType = column.blocks[d];
+          break;
+        }
+      }
+
       const tile = column.tile;
       const normal = tile.center.clone().normalize();
 
       // Calculate the display radius based on terrain type
-      let displayRadius: number;
-      if (surfaceBlockType === HexBlockType.WATER) {
-        // Water sits at sea level
-        displayRadius = waterRadius;
-      } else {
-        // Land uses actual terrain height
-        displayRadius = this.radius - surfaceDepth * this.BLOCK_HEIGHT - lodOffset;
-      }
+      const displayRadius = tileDisplayRadii.get(tileIndex) ?? (this.radius - lodOffset);
 
       // Create simple flat polygon for this tile at the correct height
       const center = normal.clone().multiplyScalar(displayRadius);
@@ -344,6 +441,77 @@ export class Planet {
         grassVertexOffset = vertexOffset;
       }
 
+      // Generate side walls for edges where this tile is higher than neighbor
+      // (Only for non-water tiles - water doesn't need walls)
+      // Iterate through edges (vertices), not neighbors, matching HexBlock.createSeparateGeometries
+      if (surfaceBlockType !== HexBlockType.WATER) {
+        const numSides = tile.vertices.length;
+        for (let i = 0; i < numSides; i++) {
+          const next = (i + 1) % numSides;
+          const v1 = tile.vertices[i];
+          const v2 = tile.vertices[next];
+
+          // Find neighbor across this edge by checking which neighbor is closest to edge midpoint
+          const edgeMidDir = v1.clone().add(v2).normalize();
+          let neighborRadius: number | undefined;
+          let closestDist = Infinity;
+
+          for (const nIdx of tile.neighbors) {
+            const nRadius = tileDisplayRadii.get(nIdx);
+            if (nRadius === undefined) continue;
+            const neighborColumn = this.columns.get(nIdx);
+            if (!neighborColumn) continue;
+            const dist = neighborColumn.tile.center.clone().normalize().distanceToSquared(edgeMidDir);
+            if (dist < closestDist) {
+              closestDist = dist;
+              neighborRadius = nRadius;
+            }
+          }
+
+          // Only create wall if neighbor exists in LOD and is lower than us
+          if (neighborRadius !== undefined && neighborRadius < displayRadius) {
+            // Vertex order matches HexBlock.createSeparateGeometries:
+            // innerV1, innerV2, outerV2, outerV1 with indices (0,1,2), (0,2,3)
+            const innerV1 = v1.clone().normalize().multiplyScalar(neighborRadius);
+            const innerV2 = v2.clone().normalize().multiplyScalar(neighborRadius);
+            const outerV2 = v2.clone().normalize().multiplyScalar(displayRadius);
+            const outerV1 = v1.clone().normalize().multiplyScalar(displayRadius);
+
+            const baseIdx = sideVertexOffset;
+
+            // Add vertices in same order as HexBlock sides
+            sidePositions.push(innerV1.x, innerV1.y, innerV1.z);
+            sidePositions.push(innerV2.x, innerV2.y, innerV2.z);
+            sidePositions.push(outerV2.x, outerV2.y, outerV2.z);
+            sidePositions.push(outerV1.x, outerV1.y, outerV1.z);
+
+            // Calculate side normal (same as HexBlock)
+            const edge = outerV2.clone().sub(outerV1).normalize();
+            const midPoint = outerV1.clone().add(outerV2).multiplyScalar(0.5);
+            const sideNormal = midPoint.clone().normalize();
+            sideNormal.sub(edge.clone().multiplyScalar(sideNormal.dot(edge))).normalize();
+
+            sideNormals.push(sideNormal.x, sideNormal.y, sideNormal.z);
+            sideNormals.push(sideNormal.x, sideNormal.y, sideNormal.z);
+            sideNormals.push(sideNormal.x, sideNormal.y, sideNormal.z);
+            sideNormals.push(sideNormal.x, sideNormal.y, sideNormal.z);
+
+            // UVs matching HexBlock sides
+            const wallHeight = (displayRadius - neighborRadius) / this.BLOCK_HEIGHT * 0.5;
+            sideUvs.push(0, 0);
+            sideUvs.push(1, 0);
+            sideUvs.push(1, wallHeight);
+            sideUvs.push(0, wallHeight);
+
+            // Same winding as HexBlock: (0,1,2), (0,2,3)
+            sideIndices.push(baseIdx, baseIdx + 1, baseIdx + 2);
+            sideIndices.push(baseIdx, baseIdx + 2, baseIdx + 3);
+
+            sideVertexOffset += 4;
+          }
+        }
+      }
+
       this.lodTileVisibility.set(tileIndex, true);
     }
 
@@ -379,6 +547,17 @@ export class Planet {
       this.lodWaterMesh = new THREE.Mesh(geom, this.meshBuilder.getWaterLODMaterial());
       this.lodWaterMesh.renderOrder = -2;
       lodGroup.add(this.lodWaterMesh);
+    }
+
+    // Add side walls to fill gaps between tiles at different heights
+    if (sidePositions.length > 0) {
+      const geom = new THREE.BufferGeometry();
+      geom.setAttribute('position', new THREE.Float32BufferAttribute(sidePositions, 3));
+      geom.setAttribute('normal', new THREE.Float32BufferAttribute(sideNormals, 3));
+      geom.setAttribute('uv', new THREE.Float32BufferAttribute(sideUvs, 2));
+      geom.setIndex(sideIndices);
+      const mesh = new THREE.Mesh(geom, this.meshBuilder.getSideLODMaterial());
+      lodGroup.add(mesh);
     }
 
     lodGroup.position.copy(this.center);
@@ -1004,15 +1183,15 @@ export class Planet {
       }
     }
 
-    const maxRenderDepth = Math.min(surfaceDepth + 4, column.blocks.length);
-
-    for (let depth = 0; depth < maxRenderDepth; depth++) {
+    // Render all blocks in the column - only skip rendering blocks that have no exposed faces
+    // This allows full depth/height range to be visible
+    for (let depth = 0; depth < column.blocks.length; depth++) {
       const blockType = column.blocks[depth];
       if (blockType === HexBlockType.AIR) continue;
 
       const isWater = blockType === HexBlockType.WATER;
       const blockAbove = depth === 0 ? HexBlockType.AIR : column.blocks[depth - 1];
-      const blockBelow = depth === maxRenderDepth - 1 ? HexBlockType.AIR : column.blocks[depth + 1];
+      const blockBelow = depth >= column.blocks.length - 1 ? HexBlockType.AIR : column.blocks[depth + 1];
 
       const hasTopExposed = blockAbove === HexBlockType.AIR || (!isWater && blockAbove === HexBlockType.WATER);
       const hasBottomExposed = blockBelow === HexBlockType.AIR || (!isWater && blockBelow === HexBlockType.WATER);
@@ -1467,6 +1646,16 @@ export class Planet {
     return this.polyhedron;
   }
 
+  // Get tile by index for building block wireframes
+  public getTileByIndex(index: number): HexTile | null {
+    return this.polyhedron.tiles[index] || null;
+  }
+
+  // Get block height (BLOCK_HEIGHT constant)
+  public getBlockHeight(): number {
+    return this.BLOCK_HEIGHT;
+  }
+
   public isInWater(position: THREE.Vector3): boolean {
     const tile = this.getTileAtPoint(position);
     if (!tile) return false;
@@ -1519,19 +1708,23 @@ export class Planet {
   }
 
   // Raycast against planet geometry to find block at ray intersection
-  // Returns { tileIndex, depth, blockType, point } or null if no hit
-  public raycast(origin: THREE.Vector3, direction: THREE.Vector3, maxDistance: number): {
+  // Returns { tileIndex, depth, blockType, point, normal } or null if no hit
+  // By default ignores water blocks (set includeWater=true to detect water, e.g. for bucket tool)
+  public raycast(origin: THREE.Vector3, direction: THREE.Vector3, maxDistance: number, includeWater: boolean = false): {
     tileIndex: number;
     depth: number;
     blockType: HexBlockType;
     point: THREE.Vector3;
+    normal: THREE.Vector3;
   } | null {
     // Step along the ray and check for solid blocks
     const stepSize = 0.2; // Small steps for accuracy
     const rayDir = direction.clone().normalize();
     const testPoint = origin.clone();
+    let prevPoint = origin.clone();
 
     for (let dist = 0; dist < maxDistance; dist += stepSize) {
+      prevPoint.copy(testPoint);
       testPoint.copy(origin).addScaledVector(rayDir, dist);
 
       const tile = this.getTileAtPoint(testPoint);
@@ -1541,14 +1734,20 @@ export class Planet {
       if (depth < 0 || depth >= this.MAX_DEPTH) continue;
 
       const blockType = this.getBlock(tile.index, depth);
-      if (blockType !== HexBlockType.AIR) {
-        return {
-          tileIndex: tile.index,
-          depth,
-          blockType,
-          point: testPoint.clone()
-        };
-      }
+      // Skip air blocks, and skip water unless includeWater is true
+      if (blockType === HexBlockType.AIR) continue;
+      if (blockType === HexBlockType.WATER && !includeWater) continue;
+
+      // Calculate surface normal (direction from planet center through hit point)
+      const normal = testPoint.clone().sub(this.center).normalize();
+
+      return {
+        tileIndex: tile.index,
+        depth,
+        blockType,
+        point: testPoint.clone(),
+        normal
+      };
     }
 
     return null;

@@ -32,7 +32,8 @@ export class PlanetBlockInteraction {
   private raycaster: THREE.Raycaster;
   private inventory: Inventory;
 
-  private highlightMesh: THREE.Mesh | null = null;
+  // Wireframe for targeted block
+  private blockWireframe: THREE.LineSegments | null = null;
   private treeManager: PlanetTreeManager | null = null;
 
   private rightClickCooldown: number = 0;
@@ -112,16 +113,68 @@ export class PlanetBlockInteraction {
   }
 
   private createHighlightMesh(): void {
-    const geometry = new THREE.SphereGeometry(0.5, 8, 8);
-    const material = new THREE.MeshBasicMaterial({
+    // Create block wireframe (will be rebuilt dynamically based on tile shape)
+    const wireframeMaterial = new THREE.LineBasicMaterial({
       color: 0xffffff,
-      wireframe: true,
       transparent: true,
-      opacity: 0.5
+      opacity: 0.8,
+      depthTest: true,
+      depthWrite: false
     });
-    this.highlightMesh = new THREE.Mesh(geometry, material);
-    this.highlightMesh.visible = false;
-    this.scene.add(this.highlightMesh);
+    // Start with empty geometry - will be updated when targeting a block
+    const wireframeGeometry = new THREE.BufferGeometry();
+    this.blockWireframe = new THREE.LineSegments(wireframeGeometry, wireframeMaterial);
+    this.blockWireframe.visible = false;
+    this.scene.add(this.blockWireframe);
+  }
+
+  // Build wireframe geometry for a hex block at given tile and depth
+  private updateBlockWireframe(tileIndex: number, depth: number): void {
+    const tile = this.planet.getTileByIndex(tileIndex);
+    if (!tile || !this.blockWireframe) return;
+
+    const blockHeight = this.planet.getBlockHeight();
+    const outerRadius = this.planet.radius - depth * blockHeight;
+    const innerRadius = outerRadius - blockHeight;
+
+    const vertices: number[] = [];
+    const numSides = tile.vertices.length;
+
+    // Scale vertices to inner and outer radii
+    const innerVerts: THREE.Vector3[] = [];
+    const outerVerts: THREE.Vector3[] = [];
+
+    for (const v of tile.vertices) {
+      const dir = v.clone().normalize();
+      innerVerts.push(dir.clone().multiplyScalar(innerRadius).add(this.planet.center));
+      outerVerts.push(dir.clone().multiplyScalar(outerRadius).add(this.planet.center));
+    }
+
+    // Top face edges (outer)
+    for (let i = 0; i < numSides; i++) {
+      const next = (i + 1) % numSides;
+      vertices.push(outerVerts[i].x, outerVerts[i].y, outerVerts[i].z);
+      vertices.push(outerVerts[next].x, outerVerts[next].y, outerVerts[next].z);
+    }
+
+    // Bottom face edges (inner)
+    for (let i = 0; i < numSides; i++) {
+      const next = (i + 1) % numSides;
+      vertices.push(innerVerts[i].x, innerVerts[i].y, innerVerts[i].z);
+      vertices.push(innerVerts[next].x, innerVerts[next].y, innerVerts[next].z);
+    }
+
+    // Vertical edges connecting top and bottom
+    for (let i = 0; i < numSides; i++) {
+      vertices.push(outerVerts[i].x, outerVerts[i].y, outerVerts[i].z);
+      vertices.push(innerVerts[i].x, innerVerts[i].y, innerVerts[i].z);
+    }
+
+    // Update geometry
+    this.blockWireframe.geometry.dispose();
+    const newGeometry = new THREE.BufferGeometry();
+    newGeometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+    this.blockWireframe.geometry = newGeometry;
   }
 
   private setupBlockSelection(): void {
@@ -194,9 +247,9 @@ export class PlanetBlockInteraction {
     if (hitTree && treeHit) {
       const hitObject = treeHit.object as THREE.Mesh;
 
-      if (this.highlightMesh) {
-        this.highlightMesh.visible = true;
-        this.highlightMesh.position.copy(treeHit.point);
+      // No wireframe for trees
+      if (this.blockWireframe) {
+        this.blockWireframe.visible = false;
       }
 
       const treeType = hitObject.userData.treeType as string; // 'trunk' or 'leaves'
@@ -208,15 +261,16 @@ export class PlanetBlockInteraction {
         this.resetMining();
       }
     } else if (hitBlock && blockHit) {
-      if (this.highlightMesh) {
-        this.highlightMesh.visible = true;
-        this.highlightMesh.position.copy(blockHit.point);
-      }
-
       const { tileIndex, depth, blockType } = blockHit;
 
-      // Handle mining (left click held) - don't mine water
-      if (leftClick && blockType !== HexBlockType.AIR && blockType !== HexBlockType.WATER) {
+      // Show wireframe around targeted block
+      if (this.blockWireframe) {
+        this.blockWireframe.visible = true;
+        this.updateBlockWireframe(tileIndex, depth);
+      }
+
+      // Handle mining (left click held) - don't mine water (raycast already ignores water by default)
+      if (leftClick && blockType !== HexBlockType.AIR) {
         this.handleMining(deltaTime, tileIndex, depth, blockType);
       } else {
         // Reset mining if not clicking or target changed
@@ -229,8 +283,9 @@ export class PlanetBlockInteraction {
         this.rightClickCooldown = this.CLICK_COOLDOWN;
       }
     } else {
-      if (this.highlightMesh) {
-        this.highlightMesh.visible = false;
+      // Hide wireframe highlight
+      if (this.blockWireframe) {
+        this.blockWireframe.visible = false;
       }
       this.resetMining();
     }
