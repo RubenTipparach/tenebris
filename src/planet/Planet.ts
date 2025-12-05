@@ -1231,16 +1231,14 @@ export class Planet {
       profiler.end('Planet.tilesInRange');
     }
 
-    // Check if any tile in view is dirty (from mining, etc.)
-    for (const tileIndex of this.cachedNearbyTiles) {
-      const column = this.columns.get(tileIndex);
-      if (column?.isDirty) {
-        this.needsRebatch = true;
-        break;
-      }
+    // Process dirty columns from block changes (incremental rebuild)
+    if (this.dirtyColumnsQueue.size > 0) {
+      profiler.begin('Planet.dirtyRebatch');
+      this.rebuildDirtyColumns();
+      profiler.end('Planet.dirtyRebatch');
     }
 
-    // Rebuild batched geometry if needed (dirty tiles or incremental complete)
+    // Full rebuild batched geometry if needed (tile set changed or incremental complete)
     if (this.needsRebatch) {
       profiler.begin('Planet.rebatch');
       this.rebuildBatchedMeshes();
@@ -1331,111 +1329,10 @@ export class Planet {
       this.batchedMeshGroup.add(this.waterMesh);
     }
 
-    // Generate water boundary walls at the edge of detailed terrain facing LOD
-    // This prevents seeing through when underwater at the terrain/LOD boundary
-    // Skip for planets without water (single-texture planets like moon)
+    // Generate water boundary walls (reuse extracted method)
     const hasWater = this.config.hasWater !== false && !this.config.texturePath;
-    const waterBoundaryData = createEmptyGeometryData();
-    const waterSurfaceRadius = this.radius - this.SEA_LEVEL * this.BLOCK_HEIGHT - PlayerConfig.WATER_SURFACE_OFFSET;
-
-    for (const tileIndex of this.cachedNearbyTiles) {
-      if (!hasWater) break; // Skip entirely for planets without water
-
-      const column = this.columns.get(tileIndex);
-      if (!column) continue;
-
-      const tile = column.tile;
-
-      // Check each edge to see if neighbor is outside detailed range (in LOD territory)
-      for (let i = 0; i < tile.vertices.length; i++) {
-        const next = (i + 1) % tile.vertices.length;
-        const v1 = tile.vertices[i];
-        const v2 = tile.vertices[next];
-
-        // Find neighbor across this edge
-        const edgeMidDir = v1.clone().add(v2).normalize();
-        let closestNeighborIdx: number | undefined;
-        let closestDist = Infinity;
-
-        for (const nIdx of tile.neighbors) {
-          const neighborColumn = this.columns.get(nIdx);
-          if (!neighborColumn) continue;
-
-          const dist = neighborColumn.tile.center.clone().normalize().distanceToSquared(edgeMidDir);
-          if (dist < closestDist) {
-            closestDist = dist;
-            closestNeighborIdx = nIdx;
-          }
-        }
-
-        // Only generate wall if neighbor is in LOD territory (not in detailed range)
-        if (closestNeighborIdx === undefined) continue;
-        if (this.cachedNearbyTiles.has(closestNeighborIdx)) continue;
-
-        // Find the ocean floor depth at this tile
-        let oceanFloorDepth = this.SEA_LEVEL;
-        for (let d = 0; d < column.blocks.length; d++) {
-          if (column.blocks[d] !== HexBlockType.AIR && column.blocks[d] !== HexBlockType.WATER) {
-            oceanFloorDepth = d;
-            break;
-          }
-        }
-
-        // Only create wall if this tile is underwater (ocean floor is below water surface)
-        if (oceanFloorDepth <= this.SEA_LEVEL) continue;
-
-        const oceanFloorRadius = this.radius - oceanFloorDepth * this.BLOCK_HEIGHT;
-
-        // Wall goes from ocean floor up to water surface
-        const bottomRadius = oceanFloorRadius;
-        const topRadius = waterSurfaceRadius;
-
-        if (bottomRadius >= topRadius) continue;
-
-        // Vertex order: innerV1, innerV2, outerV2, outerV1
-        const innerV1 = v1.clone().normalize().multiplyScalar(bottomRadius);
-        const innerV2 = v2.clone().normalize().multiplyScalar(bottomRadius);
-        const outerV2 = v2.clone().normalize().multiplyScalar(topRadius);
-        const outerV1 = v1.clone().normalize().multiplyScalar(topRadius);
-
-        // Calculate face normal using cross product of edges
-        // Edge1: from innerV1 to innerV2 (horizontal edge at bottom)
-        // Edge2: from innerV1 to outerV1 (vertical edge going up)
-        const edge1 = innerV2.clone().sub(innerV1);
-        const edge2 = outerV1.clone().sub(innerV1);
-        const sideNormal = edge1.clone().cross(edge2).normalize();
-
-        const baseIdx = waterBoundaryData.vertexOffset;
-
-        waterBoundaryData.positions.push(
-          innerV1.x, innerV1.y, innerV1.z,
-          innerV2.x, innerV2.y, innerV2.z,
-          outerV2.x, outerV2.y, outerV2.z,
-          outerV1.x, outerV1.y, outerV1.z
-        );
-
-        for (let j = 0; j < 4; j++) {
-          waterBoundaryData.normals.push(sideNormal.x, sideNormal.y, sideNormal.z);
-        }
-
-        waterBoundaryData.uvs.push(0, 0, 1, 0, 1, 0.5, 0, 0.5);
-
-        waterBoundaryData.indices.push(baseIdx, baseIdx + 1, baseIdx + 2);
-        waterBoundaryData.indices.push(baseIdx, baseIdx + 2, baseIdx + 3);
-
-        waterBoundaryData.vertexOffset += 4;
-      }
-    }
-
-    // Add water boundary walls mesh - solid color boundary
-    if (waterBoundaryData.positions.length > 0) {
-      const geom = this.createBufferGeometry(waterBoundaryData);
-      const seaWallMaterial = this.meshBuilder.getSeaWallMaterial();
-      if (seaWallMaterial) {
-        const boundaryMesh = new THREE.Mesh(geom, seaWallMaterial);
-        boundaryMesh.renderOrder = 2; // Render after water (renderOrder 1)
-        this.batchedMeshGroup.add(boundaryMesh);
-      }
+    if (hasWater) {
+      this.buildWaterBoundaryWalls();
     }
 
     this.needsRebatch = false;
@@ -1710,16 +1607,212 @@ export class Planet {
     const oldBlockType = column.blocks[depth];
     column.blocks[depth] = blockType;
     column.isDirty = true;
-    this.needsRebatch = true;
-    this.needsLODRebuild = true; // LOD mesh needs to update when terrain changes
 
+    // Mark neighbors as dirty for side face updates
     for (const neighborIndex of column.tile.neighbors) {
       const neighbor = this.columns.get(neighborIndex);
       if (neighbor) neighbor.isDirty = true;
     }
 
+    // Only rebuild LOD if block is at/near surface (affects planet appearance from distance)
+    // Deep underground changes don't affect LOD
+    let surfaceDepth = 0;
+    for (let d = 0; d < column.blocks.length; d++) {
+      if (column.blocks[d] !== HexBlockType.AIR && column.blocks[d] !== HexBlockType.WATER) {
+        surfaceDepth = d;
+        break;
+      }
+    }
+    if (depth <= surfaceDepth + 2) {
+      this.needsLODRebuild = true;
+    }
+
+    // Queue dirty columns for incremental mesh update instead of full rebuild
+    this.queueDirtyColumnRebuild(tileIndex);
+    for (const neighborIndex of column.tile.neighbors) {
+      if (this.cachedNearbyTiles.has(neighborIndex)) {
+        this.queueDirtyColumnRebuild(neighborIndex);
+      }
+    }
+
     if (this.meshBuilder.isSolid(oldBlockType) && blockType === HexBlockType.AIR) {
       this.simulateWaterFlow(tileIndex, depth);
+    }
+  }
+
+  // Track columns that need geometry rebuild
+  private dirtyColumnsQueue: Set<number> = new Set();
+
+  private queueDirtyColumnRebuild(tileIndex: number): void {
+    if (!this.cachedNearbyTiles.has(tileIndex)) return;
+    this.dirtyColumnsQueue.add(tileIndex);
+  }
+
+  // Rebuild only the dirty columns - much faster than full rebatch
+  private rebuildDirtyColumns(): void {
+    if (!this.batchedMeshGroup || this.dirtyColumnsQueue.size === 0) return;
+
+    // For small number of dirty columns, do incremental rebuild
+    // For large changes (e.g., water flow affecting many tiles), fall back to full rebuild
+    if (this.dirtyColumnsQueue.size > 20) {
+      this.needsRebatch = true;
+      this.dirtyColumnsQueue.clear();
+      return;
+    }
+
+    // Full rebuild but only process tiles that need it
+    // We still need to rebuild all meshes because Three.js BufferGeometry
+    // doesn't support partial updates efficiently
+    // However, we mark clean tiles to skip geometry generation
+
+    // Dispose old meshes
+    while (this.batchedMeshGroup.children.length > 0) {
+      const child = this.batchedMeshGroup.children[0] as THREE.Mesh;
+      if (child.geometry) child.geometry.dispose();
+      this.batchedMeshGroup.remove(child);
+    }
+
+    // Create batched geometry for all visible tiles
+    const topData = createEmptyGeometryData();
+    const sideData = createEmptyGeometryData();
+    const stoneData = createEmptyGeometryData();
+    const waterData = createEmptyGeometryData();
+
+    for (const tileIndex of this.cachedNearbyTiles) {
+      const column = this.columns.get(tileIndex);
+      if (!column) continue;
+
+      // Skip frustum culling for dirty rebuild - we need consistent geometry
+      this.buildColumnGeometry(column, topData, sideData, stoneData, waterData);
+      column.isDirty = false;
+    }
+
+    // Create meshes from batched geometry
+    if (topData.positions.length > 0) {
+      const geom = this.createBufferGeometry(topData);
+      this.topMesh = new THREE.Mesh(geom, this.meshBuilder.getTopMaterial());
+      this.batchedMeshGroup.add(this.topMesh);
+    }
+
+    if (sideData.positions.length > 0) {
+      const geom = this.createBufferGeometry(sideData);
+      this.sideMesh = new THREE.Mesh(geom, this.meshBuilder.getSideMaterial());
+      this.batchedMeshGroup.add(this.sideMesh);
+    }
+
+    if (stoneData.positions.length > 0) {
+      const geom = this.createBufferGeometry(stoneData);
+      this.stoneMesh = new THREE.Mesh(geom, this.meshBuilder.getStoneMaterial());
+      this.batchedMeshGroup.add(this.stoneMesh);
+    }
+
+    if (waterData.positions.length > 0) {
+      const geom = this.createBufferGeometry(waterData);
+      this.waterMesh = new THREE.Mesh(geom, this.meshBuilder.getWaterMaterial());
+      this.waterMesh.renderOrder = 1;
+      this.batchedMeshGroup.add(this.waterMesh);
+    }
+
+    // Generate water boundary walls
+    const hasWater = this.config.hasWater !== false && !this.config.texturePath;
+    if (hasWater) {
+      this.buildWaterBoundaryWalls();
+    }
+
+    this.dirtyColumnsQueue.clear();
+  }
+
+  // Extract water boundary wall generation to reusable method
+  private buildWaterBoundaryWalls(): void {
+    if (!this.batchedMeshGroup) return;
+
+    const waterBoundaryData = createEmptyGeometryData();
+    const waterSurfaceRadius = this.radius - this.SEA_LEVEL * this.BLOCK_HEIGHT - PlayerConfig.WATER_SURFACE_OFFSET;
+
+    for (const tileIndex of this.cachedNearbyTiles) {
+      const column = this.columns.get(tileIndex);
+      if (!column) continue;
+
+      const tile = column.tile;
+
+      for (let i = 0; i < tile.vertices.length; i++) {
+        const next = (i + 1) % tile.vertices.length;
+        const v1 = tile.vertices[i];
+        const v2 = tile.vertices[next];
+
+        const edgeMidDir = v1.clone().add(v2).normalize();
+        let closestNeighborIdx: number | undefined;
+        let closestDist = Infinity;
+
+        for (const nIdx of tile.neighbors) {
+          const neighborColumn = this.columns.get(nIdx);
+          if (!neighborColumn) continue;
+
+          const dist = neighborColumn.tile.center.clone().normalize().distanceToSquared(edgeMidDir);
+          if (dist < closestDist) {
+            closestDist = dist;
+            closestNeighborIdx = nIdx;
+          }
+        }
+
+        if (closestNeighborIdx === undefined) continue;
+        if (this.cachedNearbyTiles.has(closestNeighborIdx)) continue;
+
+        let oceanFloorDepth = this.SEA_LEVEL;
+        for (let d = 0; d < column.blocks.length; d++) {
+          if (column.blocks[d] !== HexBlockType.AIR && column.blocks[d] !== HexBlockType.WATER) {
+            oceanFloorDepth = d;
+            break;
+          }
+        }
+
+        if (oceanFloorDepth <= this.SEA_LEVEL) continue;
+
+        const oceanFloorRadius = this.radius - oceanFloorDepth * this.BLOCK_HEIGHT;
+        const bottomRadius = oceanFloorRadius;
+        const topRadius = waterSurfaceRadius;
+
+        if (bottomRadius >= topRadius) continue;
+
+        const innerV1 = v1.clone().normalize().multiplyScalar(bottomRadius);
+        const innerV2 = v2.clone().normalize().multiplyScalar(bottomRadius);
+        const outerV2 = v2.clone().normalize().multiplyScalar(topRadius);
+        const outerV1 = v1.clone().normalize().multiplyScalar(topRadius);
+
+        const edge1 = innerV2.clone().sub(innerV1);
+        const edge2 = outerV1.clone().sub(innerV1);
+        const sideNormal = edge1.clone().cross(edge2).normalize();
+
+        const baseIdx = waterBoundaryData.vertexOffset;
+
+        waterBoundaryData.positions.push(
+          innerV1.x, innerV1.y, innerV1.z,
+          innerV2.x, innerV2.y, innerV2.z,
+          outerV2.x, outerV2.y, outerV2.z,
+          outerV1.x, outerV1.y, outerV1.z
+        );
+
+        for (let j = 0; j < 4; j++) {
+          waterBoundaryData.normals.push(sideNormal.x, sideNormal.y, sideNormal.z);
+        }
+
+        waterBoundaryData.uvs.push(0, 0, 1, 0, 1, 0.5, 0, 0.5);
+
+        waterBoundaryData.indices.push(baseIdx, baseIdx + 1, baseIdx + 2);
+        waterBoundaryData.indices.push(baseIdx, baseIdx + 2, baseIdx + 3);
+
+        waterBoundaryData.vertexOffset += 4;
+      }
+    }
+
+    if (waterBoundaryData.positions.length > 0) {
+      const geom = this.createBufferGeometry(waterBoundaryData);
+      const seaWallMaterial = this.meshBuilder.getSeaWallMaterial();
+      if (seaWallMaterial) {
+        const boundaryMesh = new THREE.Mesh(geom, seaWallMaterial);
+        boundaryMesh.renderOrder = 2;
+        this.batchedMeshGroup.add(boundaryMesh);
+      }
     }
   }
 

@@ -4,6 +4,9 @@ import { Planet } from '../planet/Planet';
 import { HexBlockType } from '../planet/HexBlock';
 import { PlayerConfig } from '../config/PlayerConfig';
 
+// Calculate max terrain depth for collision checks
+const MAX_TERRAIN_DEPTH = PlayerConfig.TERRAIN_SEA_LEVEL + PlayerConfig.TERRAIN_MAX_DEPTH;
+
 export interface CelestialBody {
   planet: Planet;
   gravityFullRadius?: number;    // Distance for 100% gravity (defaults to planet.radius * config)
@@ -343,7 +346,7 @@ export class PlanetPlayer {
 
       // Find ground level
       let groundDepth = -1;
-      for (let d = 0; d < 16; d++) {
+      for (let d = 0; d < MAX_TERRAIN_DEPTH; d++) {
         const block = this.currentPlanet.getBlock(currentTile.index, d);
         if (block !== HexBlockType.AIR && block !== HexBlockType.WATER) {
           groundDepth = d;
@@ -374,7 +377,7 @@ export class PlanetPlayer {
 
         // Get neighbor ground level
         let neighborGroundDepth = -1;
-        for (let d = 0; d < 16; d++) {
+        for (let d = 0; d < MAX_TERRAIN_DEPTH; d++) {
           const block = this.currentPlanet.getBlock(neighborIndex, d);
           if (block !== HexBlockType.AIR && block !== HexBlockType.WATER) {
             neighborGroundDepth = d;
@@ -730,7 +733,7 @@ export class PlanetPlayer {
     const currentTile = this.currentPlanet.getTileAtPoint(this.position);
     let currentGroundDepth = 0;
     if (currentTile) {
-      for (let d = 0; d < 16; d++) {
+      for (let d = 0; d < MAX_TERRAIN_DEPTH; d++) {
         const block = this.currentPlanet.getBlock(currentTile.index, d);
         if (block !== HexBlockType.AIR && block !== HexBlockType.WATER) {
           currentGroundDepth = d;
@@ -744,7 +747,7 @@ export class PlanetPlayer {
     const newTile = this.currentPlanet.getTileAtPoint(newPosition);
     let newGroundDepth = 0;
     if (newTile) {
-      for (let d = 0; d < 16; d++) {
+      for (let d = 0; d < MAX_TERRAIN_DEPTH; d++) {
         const block = this.currentPlanet.getBlock(newTile.index, d);
         if (block !== HexBlockType.AIR && block !== HexBlockType.WATER) {
           newGroundDepth = d;
@@ -777,7 +780,7 @@ export class PlanetPlayer {
 
     // Check if player is inside any solid block at the NEW tile itself
     // (this catches cases where you'd move into the ground)
-    for (let d = 0; d < 16; d++) {
+    for (let d = 0; d < MAX_TERRAIN_DEPTH; d++) {
       const block = this.currentPlanet.getBlock(newTile.index, d);
       if (block === HexBlockType.AIR || block === HexBlockType.WATER) continue;
 
@@ -805,7 +808,7 @@ export class PlanetPlayer {
     const tile = this.currentPlanet.getTileAtPoint(position);
     if (tile) {
       let deepestSolidDepth = -1;
-      for (let d = 0; d < 16; d++) {
+      for (let d = 0; d < MAX_TERRAIN_DEPTH; d++) {
         const block = this.currentPlanet.getBlock(tile.index, d);
         if (block !== HexBlockType.AIR && block !== HexBlockType.WATER) {
           deepestSolidDepth = d;
@@ -833,7 +836,7 @@ export class PlanetPlayer {
       if (!checkTile) continue;
 
       const depth = Math.floor((this.currentPlanet.radius - checkRadius) / 1);
-      if (depth < 0 || depth >= 16) continue;
+      if (depth < 0 || depth >= MAX_TERRAIN_DEPTH) continue;
 
       // Check if inside a solid block (not AIR and not WATER - water is passable)
       const block = this.currentPlanet.getBlock(checkTile.index, depth);
@@ -859,7 +862,7 @@ export class PlanetPlayer {
     const playerFeetRadius = this.position.distanceTo(this.currentPlanet.center);
 
     // Check if player's feet are inside solid ground at current tile
-    for (let d = 0; d < 16; d++) {
+    for (let d = 0; d < MAX_TERRAIN_DEPTH; d++) {
       const block = this.currentPlanet.getBlock(tile.index, d);
       if (block === HexBlockType.AIR || block === HexBlockType.WATER) continue;
 
@@ -938,7 +941,7 @@ export class PlanetPlayer {
     // Find ground level at current tile (skip water blocks - they're passable)
     let groundDepth = -1;
     if (currentTile) {
-      for (let d = 0; d < 16; d++) {
+      for (let d = 0; d < MAX_TERRAIN_DEPTH; d++) {
         const block = this.currentPlanet.getBlock(currentTile.index, d);
         // Ground is solid blocks only (not air, not water)
         if (block !== HexBlockType.AIR && block !== HexBlockType.WATER) {
@@ -1016,7 +1019,7 @@ export class PlanetPlayer {
       const newTile = this.currentPlanet.getTileAtPoint(newPosition);
       let newGroundDepth = -1;
       if (newTile) {
-        for (let d = 0; d < 16; d++) {
+        for (let d = 0; d < MAX_TERRAIN_DEPTH; d++) {
           const block = this.currentPlanet.getBlock(newTile.index, d);
           if (block !== HexBlockType.AIR && block !== HexBlockType.WATER) {
             newGroundDepth = d;
@@ -1138,6 +1141,13 @@ export class PlanetPlayer {
 
       const altText = altitude === Infinity ? '∞' : altitude.toFixed(1);
       posElement.textContent = `Alt: ${altText} | Grav: ${(gravityMultiplier * 100).toFixed(0)}%${status}`;
+    }
+
+    // Update block depth display (top-right corner)
+    const depthElement = document.getElementById('block-depth');
+    if (depthElement && this.currentPlanet) {
+      const depth = this.currentPlanet.getDepthAtPoint(this.position);
+      depthElement.textContent = `Depth: ${depth}`;
     }
   }
 

@@ -43,10 +43,7 @@ export class Inventory {
       this.slots.push({ itemType: ItemType.NONE, quantity: 0 });
     }
 
-    // Start with some items for testing
-    this.addItem(ItemType.STONE, 10);
-    this.addItem(ItemType.DIRT, 10);
-    this.addItem(ItemType.GRASS, 10);
+    // Inventory starts empty - items are obtained by mining
   }
 
   // Add item to inventory, returns amount that couldn't be added

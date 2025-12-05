@@ -72,6 +72,19 @@
       z-index: 100;
     }
 
+    #ui-overlay-right {
+      position: fixed;
+      top: 10px;
+      right: 10px;
+      color: white;
+      font-family: 'Courier New', monospace;
+      font-size: 14px;
+      text-shadow: 1px 1px 2px black;
+      pointer-events: none;
+      z-index: 100;
+      text-align: right;
+    }
+
     #instructions {
       position: fixed;
       top: 50%;
@@ -501,6 +514,10 @@
     <div id="position">Position: 0, 0, 0</div>
     <div id="fps">FPS: 0</div>
     <div id="block-type">Block: Stone</div>
+  </div>
+
+  <div id="ui-overlay-right">
+    <div id="block-depth">Depth: 0</div>
   </div>
 
   <div id="instructions">
