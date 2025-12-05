@@ -350,8 +350,8 @@ export class HexBlockMeshBuilder {
         normals.push(topNormal.x, topNormal.y, topNormal.z);
 
         const toVert = v.clone().sub(outerCenter);
-        const u = 0.5 + toVert.dot(localRight) * 0.1;
-        const vCoord = 0.5 + toVert.dot(localForward) * 0.1;
+        const u = 0.5 + toVert.dot(localRight) * 0.2;
+        const vCoord = 0.5 + toVert.dot(localForward) * 0.2;
         uvs.push(u, vCoord);
       }
 

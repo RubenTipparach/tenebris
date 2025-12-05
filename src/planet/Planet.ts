@@ -24,12 +24,13 @@ interface GeometryData {
   normals: number[];
   uvs: number[];
   colors: number[];  // Vertex colors for position-based lighting
+  skyLight: number[]; // Sky light level (0-1) based on depth from surface
   indices: number[];
   vertexOffset: number;
 }
 
 function createEmptyGeometryData(): GeometryData {
-  return { positions: [], normals: [], uvs: [], colors: [], indices: [], vertexOffset: 0 };
+  return { positions: [], normals: [], uvs: [], colors: [], skyLight: [], indices: [], vertexOffset: 0 };
 }
 
 export class Planet {
@@ -1488,6 +1489,16 @@ export class Planet {
       const depthFromSurface = depth - surfaceDepth;
       const isDeep = depthFromSurface >= this.DEEP_THRESHOLD;
 
+      // Calculate sky light based on depth from surface
+      // Surface blocks get full sky light (1.0), deeper blocks get progressively darker
+      // Sky light drops off exponentially - each block depth reduces light by ~20%
+      const SKY_LIGHT_FALLOFF = 0.8; // Each level deeper multiplies by this
+      const MIN_SKY_LIGHT = 0.05; // Minimum light in deep caves
+      let skyLightLevel = 1.0;
+      if (depthFromSurface > 0) {
+        skyLightLevel = Math.max(MIN_SKY_LIGHT, Math.pow(SKY_LIGHT_FALLOFF, depthFromSurface));
+      }
+
       const { top, bottom, sides } = this.meshBuilder.createSeparateGeometries(
         column.tile,
         innerRadius,
@@ -1505,11 +1516,11 @@ export class Planet {
         const indexAttr = top.getIndex();
         if (posAttr && normAttr && uvAttr && indexAttr) {
           if (isWater) {
-            this.mergeGeometry(waterData, posAttr, normAttr, uvAttr, indexAttr, this.sunDirection);
+            this.mergeGeometry(waterData, posAttr, normAttr, uvAttr, indexAttr, this.sunDirection, 1.0);
           } else if (isDeep) {
-            this.mergeGeometry(stoneData, posAttr, normAttr, uvAttr, indexAttr, this.sunDirection);
+            this.mergeGeometry(stoneData, posAttr, normAttr, uvAttr, indexAttr, this.sunDirection, skyLightLevel);
           } else {
-            this.mergeGeometry(topData, posAttr, normAttr, uvAttr, indexAttr, this.sunDirection);
+            this.mergeGeometry(topData, posAttr, normAttr, uvAttr, indexAttr, this.sunDirection, skyLightLevel);
           }
         }
         top.dispose();
@@ -1521,7 +1532,9 @@ export class Planet {
         const uvAttr = bottom.getAttribute('uv');
         const indexAttr = bottom.getIndex();
         if (posAttr && normAttr && uvAttr && indexAttr) {
-          this.mergeGeometry(stoneData, posAttr, normAttr, uvAttr, indexAttr, this.sunDirection);
+          // Bottom faces are one block deeper, so use next level's sky light
+          const bottomSkyLight = Math.max(MIN_SKY_LIGHT, skyLightLevel * SKY_LIGHT_FALLOFF);
+          this.mergeGeometry(stoneData, posAttr, normAttr, uvAttr, indexAttr, this.sunDirection, bottomSkyLight);
         }
         bottom.dispose();
       }
@@ -1533,9 +1546,9 @@ export class Planet {
         const indexAttr = sides.getIndex();
         if (posAttr && normAttr && uvAttr && indexAttr) {
           if (isDeep) {
-            this.mergeGeometry(stoneData, posAttr, normAttr, uvAttr, indexAttr, this.sunDirection);
+            this.mergeGeometry(stoneData, posAttr, normAttr, uvAttr, indexAttr, this.sunDirection, skyLightLevel);
           } else {
-            this.mergeGeometry(sideData, posAttr, normAttr, uvAttr, indexAttr, this.sunDirection);
+            this.mergeGeometry(sideData, posAttr, normAttr, uvAttr, indexAttr, this.sunDirection, skyLightLevel);
           }
         }
         sides.dispose();
@@ -1602,7 +1615,8 @@ export class Planet {
     normAttr: THREE.BufferAttribute | THREE.InterleavedBufferAttribute,
     uvAttr: THREE.BufferAttribute | THREE.InterleavedBufferAttribute,
     indexAttr: THREE.BufferAttribute,
-    sunDirection: THREE.Vector3
+    sunDirection: THREE.Vector3,
+    skyLightLevel: number = 1.0 // 0-1, how much sky light reaches this block
   ): void {
     for (let i = 0; i < posAttr.count; i++) {
       const px = posAttr.getX(i);
@@ -1615,6 +1629,7 @@ export class Planet {
       data.positions.push(px, py, pz);
       data.normals.push(nx, ny, nz);
       data.uvs.push(uvAttr.getX(i), uvAttr.getY(i));
+      data.skyLight.push(skyLightLevel);
 
       // Only bake position-based lighting into vertex colors if enabled
       if (PlayerConfig.VERTEX_LIGHTING_ENABLED) {
@@ -1650,6 +1665,10 @@ export class Planet {
     // Only add vertex colors if they exist (only populated when vertex lighting is enabled)
     if (data.colors.length > 0) {
       geometry.setAttribute('color', new THREE.Float32BufferAttribute(data.colors, 3));
+    }
+    // Add sky light attribute for depth-based lighting
+    if (data.skyLight.length > 0) {
+      geometry.setAttribute('skyLight', new THREE.Float32BufferAttribute(data.skyLight, 1));
     }
     geometry.setIndex(data.indices);
     geometry.computeBoundingSphere();

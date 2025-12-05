@@ -17,6 +17,7 @@ varying vec3 vNormal;
 varying vec3 vWorldPosition;
 varying vec2 vUv;
 varying float vSunBrightness;
+varying float vSkyLight; // Pre-calculated sky light based on depth from surface
 varying float vWaterDepth; // How far below water surface
 varying float vDistanceFromCamera;
 
@@ -27,12 +28,16 @@ void main() {
   // Standard Lambert diffuse lighting on the mesh face
   float meshDiffuse = max(0.0, dot(vNormal, sunDirection));
 
-  // Combine: directional light is modulated by planet sun brightness
-  // On the dark side of the planet, directional light is reduced/eliminated
-  float directional = meshDiffuse * vSunBrightness * directionalIntensity;
-  float ambient = ambientIntensity;
+  // Directional light: direct sunlight on the face
+  // Requires: face pointing toward sun (meshDiffuse), tile on day side (vSunBrightness), sky visible (vSkyLight)
+  float directional = meshDiffuse * vSunBrightness * directionalIntensity * vSkyLight;
 
-  // Final lighting
+  // Ambient light: flat 50% of directional intensity, not dependent on face normal
+  // This ensures all faces get consistent base lighting regardless of orientation
+  // Only modulated by sky light (caves get darker)
+  float ambient = ambientIntensity * vSkyLight;
+
+  // Final lighting: ambient provides base, directional adds on top
   float lighting = ambient + directional;
   vec3 finalColor = texColor.rgb * lighting;
 

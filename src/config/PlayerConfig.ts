@@ -2,8 +2,8 @@
 
 export const PlayerConfig = {
   // Lighting
-  AMBIENT_LIGHT_INTENSITY: 0.05,      // Base ambient light (space darkness)
-  DIRECTIONAL_LIGHT_INTENSITY: 2.0,   // Sun intensity
+  AMBIENT_LIGHT_INTENSITY: 0.75,      // Base ambient light (space darkness)
+  DIRECTIONAL_LIGHT_INTENSITY: 1.0,   // Sun intensity
   HEMISPHERE_LIGHT_INTENSITY: 0.01,    // Sky/ground color blend
   SUN_DIRECTION: { x: 1, y: 0.5, z: 0.3 }, // Normalized direction TO the sun
   VERTEX_LIGHTING_ENABLED: true,      // Bake position-based day/night lighting into vertex colors
