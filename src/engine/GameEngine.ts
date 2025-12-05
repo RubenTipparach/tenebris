@@ -196,6 +196,7 @@ export class GameEngine {
   private animate = (): void => {
     requestAnimationFrame(this.animate);
 
+    profiler.beginFrame();
     profiler.begin('Frame Total');
 
     const deltaTime = this.clock.getDelta();
@@ -259,6 +260,7 @@ export class GameEngine {
     profiler.end('Render');
 
     profiler.end('Frame Total');
+    profiler.endFrame();
     profiler.updateDisplay();
   };
 

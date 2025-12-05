@@ -220,6 +220,33 @@ export class GoldbergPolyhedron {
     return closestTile;
   }
 
+  // Fast tile lookup using BFS from a hint tile (for spatially coherent queries like raycasting)
+  // Much faster than getTileAtPoint when the target is close to the hint
+  public getTileAtPointFromHint(point: THREE.Vector3, hintTile: HexTile): HexTile {
+    const normalizedPoint = point.clone().normalize().multiplyScalar(this.radius);
+
+    let currentTile = hintTile;
+    let currentDist = currentTile.center.distanceToSquared(normalizedPoint);
+
+    // Greedy walk: keep moving to a closer neighbor until we can't improve
+    let improved = true;
+    while (improved) {
+      improved = false;
+      for (const neighborIdx of currentTile.neighbors) {
+        const neighbor = this.tiles[neighborIdx];
+        const neighborDist = neighbor.center.distanceToSquared(normalizedPoint);
+        if (neighborDist < currentDist) {
+          currentTile = neighbor;
+          currentDist = neighborDist;
+          improved = true;
+          break; // Restart from new tile
+        }
+      }
+    }
+
+    return currentTile;
+  }
+
   public getTileCount(): number {
     return this.tiles.length;
   }

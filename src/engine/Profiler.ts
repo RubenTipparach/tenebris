@@ -25,6 +25,16 @@ export class Profiler {
   private lastUpdateTime: number = 0;
   private updateInterval: number = 200; // Update display every 200ms
 
+  // Spike detection settings
+  private spikeLoggingEnabled: boolean = true;
+  private frameSpikeThresholdMs: number = 50; // Log frame breakdown if total > 50ms
+  private lastFrameStartTime: number = 0;
+  private frameSections: Map<string, number> = new Map(); // Section times for current frame
+
+  // One-time heavy operations (shown separately in F3 display)
+  private oneTimeOperations: { name: string; time: number; timestamp: number }[] = [];
+  private readonly ONE_TIME_DISPLAY_DURATION = 5000; // Show one-time ops for 5 seconds
+
   private constructor() {}
 
   public static getInstance(): Profiler {
@@ -49,10 +59,70 @@ export class Profiler {
     this.setEnabled(!this.enabled);
   }
 
+  public setSpikeLogging(enabled: boolean): void {
+    this.spikeLoggingEnabled = enabled;
+  }
+
+  public setFrameSpikeThreshold(ms: number): void {
+    this.frameSpikeThresholdMs = ms;
+  }
+
+  // Call at the start of each frame
+  public beginFrame(): void {
+    this.lastFrameStartTime = performance.now();
+    this.frameSections.clear();
+  }
+
+  // Call at the end of each frame to check for spikes
+  public endFrame(): void {
+    if (!this.spikeLoggingEnabled) return;
+
+    const frameTime = performance.now() - this.lastFrameStartTime;
+    if (frameTime > this.frameSpikeThresholdMs) {
+      // Sort sections by time descending
+      const sortedSections = Array.from(this.frameSections.entries())
+        .sort((a, b) => b[1] - a[1])
+        .map(([name, time]) => `  ${name}: ${time.toFixed(2)}ms`)
+        .join('\n');
+
+      console.warn(
+        `[FRAME SPIKE] Total: ${frameTime.toFixed(2)}ms (threshold: ${this.frameSpikeThresholdMs}ms)\n` +
+        `Breakdown:\n${sortedSections}`
+      );
+    }
+  }
+
+  // Log a one-time heavy operation (shows in F3 display separately)
+  public logOneTimeOperation(name: string, timeMs: number): void {
+    this.oneTimeOperations.push({
+      name,
+      time: timeMs,
+      timestamp: performance.now()
+    });
+    console.log(`[ONE-TIME] ${name}: ${timeMs.toFixed(2)}ms`);
+  }
+
+  // Helper to measure and log a one-time operation
+  public measureOneTime<T>(name: string, fn: () => T): T {
+    const start = performance.now();
+    const result = fn();
+    const elapsed = performance.now() - start;
+    this.logOneTimeOperation(name, elapsed);
+    return result;
+  }
+
+  // Async version for promises
+  public async measureOneTimeAsync<T>(name: string, fn: () => Promise<T>): Promise<T> {
+    const start = performance.now();
+    const result = await fn();
+    const elapsed = performance.now() - start;
+    this.logOneTimeOperation(name, elapsed);
+    return result;
+  }
+
   // Start timing a section
   public begin(name: string): void {
-    if (!this.enabled) return;
-
+    // Always track for spike detection
     if (!this.sections.has(name)) {
       this.sections.set(name, {
         startTime: 0,
@@ -67,18 +137,26 @@ export class Profiler {
 
   // End timing a section
   public end(name: string): void {
-    if (!this.enabled) return;
-
     const section = this.sections.get(name);
     if (!section || section.startTime === 0) return;
 
     const elapsed = performance.now() - section.startTime;
-    section.samples.push(elapsed);
-    section.callCount++;
 
-    // Keep only the last N samples
-    if (section.samples.length > this.sampleWindow) {
-      section.samples.shift();
+    // Track for spike detection (always)
+    if (this.spikeLoggingEnabled) {
+      const existing = this.frameSections.get(name) ?? 0;
+      this.frameSections.set(name, existing + elapsed);
+    }
+
+    // Track for display (only when enabled)
+    if (this.enabled) {
+      section.samples.push(elapsed);
+      section.callCount++;
+
+      // Keep only the last N samples
+      if (section.samples.length > this.sampleWindow) {
+        section.samples.shift();
+      }
     }
 
     section.startTime = 0;
@@ -244,6 +322,28 @@ export class Profiler {
       html += `<span style="color:#a8f">Visible Meshes: ${visibleMeshCount}</span><br>`;
       html += `<span style="color:#a8f">Groups: ${groupCount}</span><br>`;
       html += `<span style="color:#a8f">Lights: ${lightCount}</span><br>`;
+    }
+
+    // Show recent one-time operations (remove expired ones)
+    const currentTime = performance.now();
+    this.oneTimeOperations = this.oneTimeOperations.filter(
+      op => currentTime - op.timestamp < this.ONE_TIME_DISPLAY_DURATION
+    );
+
+    if (this.oneTimeOperations.length > 0) {
+      html += '<span style="color:#888">─────────────────────────────</span><br>';
+      html += '<b style="color:#f80">Recent One-Time Operations</b><br>';
+
+      for (const op of this.oneTimeOperations) {
+        const age = ((currentTime - op.timestamp) / 1000).toFixed(1);
+        let color = '#f80';
+        if (op.time > 100) color = '#f44';
+        else if (op.time > 50) color = '#ff0';
+
+        html += `<span style="color:${color}">${op.name.padEnd(20)}</span>`;
+        html += `<span style="color:#aaa">${op.time.toFixed(2).padStart(8)}ms</span>`;
+        html += `<span style="color:#666"> (${age}s ago)</span><br>`;
+      }
     }
 
     this.displayElement.innerHTML = html;

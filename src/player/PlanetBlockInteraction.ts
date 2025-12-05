@@ -5,22 +5,22 @@ import { HexBlockType } from '../planet/HexBlock';
 import { Inventory, ItemType, ITEM_DATA } from './Inventory';
 import { PlanetTreeManager } from '../planet/Tree';
 
-// Map HexBlockType to ItemType
+// Map HexBlockType to ItemType (what you get when mining)
 function blockToItem(blockType: HexBlockType): ItemType {
   switch (blockType) {
     case HexBlockType.STONE: return ItemType.STONE;
     case HexBlockType.DIRT: return ItemType.DIRT;
-    case HexBlockType.GRASS: return ItemType.GRASS;
+    case HexBlockType.GRASS: return ItemType.DIRT; // Grass drops dirt, not grass
     default: return ItemType.NONE;
   }
 }
 
-// Map ItemType to HexBlockType
+// Map ItemType to HexBlockType (what block to place)
 function itemToBlock(itemType: ItemType): HexBlockType {
   switch (itemType) {
     case ItemType.STONE: return HexBlockType.STONE;
     case ItemType.DIRT: return HexBlockType.DIRT;
-    case ItemType.GRASS: return HexBlockType.GRASS;
+    case ItemType.GRASS: return HexBlockType.DIRT; // Grass items place as dirt (grass isn't placeable)
     default: return HexBlockType.AIR;
   }
 }
@@ -361,6 +361,12 @@ export class PlanetBlockInteraction {
   }
 
   private breakBlock(tileIndex: number, depth: number, blockType: HexBlockType): void {
+    // Prevent mining the bottom-most block (bedrock layer) to avoid falling through the world
+    const maxDepth = this.planet.getMaxDepth();
+    if (depth >= maxDepth - 1) {
+      return;
+    }
+
     // Add item to inventory
     const itemType = blockToItem(blockType);
     if (itemType !== ItemType.NONE) {

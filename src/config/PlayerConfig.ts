@@ -88,9 +88,9 @@ export const PlayerConfig = {
 
   // Atmosphere (GPU Gems 2 style scattering)
   ATMOSPHERE_ENABLED: true,           // Toggle atmosphere rendering on/off
-  ATMOSPHERE_RADIUS_MULT: 1.2,        // Atmosphere outer radius as multiplier of planet radius
-  ATMOSPHERE_SURFACE_OFFSET: 40.0,     // Offset for planet surface (accounts for terrain depth variation)
-  ATMOSPHERE_RAYLEIGH_SCALE: 0.055,  // Rayleigh scattering coefficient (blue sky)
+  ATMOSPHERE_RADIUS_MULT: 1.1,        // Atmosphere outer radius as multiplier of planet radius
+  ATMOSPHERE_SURFACE_OFFSET: 70.0,     // Offset for planet surface (accounts for terrain depth variation)
+  ATMOSPHERE_RAYLEIGH_SCALE: 0.015,  // Rayleigh scattering coefficient (blue sky)
   ATMOSPHERE_MIE_SCALE: 0.01,        // Mie scattering coefficient (sun glow/haze)
   ATMOSPHERE_MIE_G: 0.85,             // Mie phase asymmetry (-0.99 to 0.99, positive = forward scatter)
   ATMOSPHERE_SUN_INTENSITY: 5.0,     // Sun brightness for atmosphere
@@ -99,9 +99,9 @@ export const PlayerConfig = {
 
   // Terrain rendering & streaming
   TERRAIN_MIN_RENDER_DISTANCE: 12,    // Min tiles to render when on ground
-  TERRAIN_MAX_RENDER_DISTANCE: 24,    // Max tiles when at high altitude
+  TERRAIN_MAX_RENDER_DISTANCE: 12,    // Max tiles when at high altitude
   TERRAIN_LOD_SWITCH_ALTITUDE: 50,    // Altitude above which only LOD mesh is shown
-  TERRAIN_BUFFER_ZONE: 8,             // Tiles player can move before triggering rebuild
+  TERRAIN_BUFFER_ZONE: 6,             // Tiles player can move before triggering rebuild
   TERRAIN_TILES_PER_FRAME: 5,        // Max tiles to process per frame during incremental rebuild
 
   // Terrain generation
@@ -129,4 +129,7 @@ export const PlayerConfig = {
   PLANET_LOD_DISTANCE_1: 200,         // Distance for first LOD reduction
   PLANET_LOD_DISTANCE_2: 500,         // Distance for second LOD reduction
   PLANET_LOD_DISTANCE_3: 1000,        // Distance for third LOD reduction (lowest detail)
+
+  // Profiler spike detection
+  FRAME_SPIKE_THRESHOLD_MS: 30,       // Log frame breakdown if total exceeds this (ms)
 };

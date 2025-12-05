@@ -125,6 +125,9 @@ class PlanetGame {
       // Setup settings menu
       this.setupSettingsMenu();
 
+      // Configure profiler spike detection
+      profiler.setFrameSpikeThreshold(PlayerConfig.FRAME_SPIKE_THRESHOLD_MS);
+
       this.isReady = true;
 
       // Setup game loop

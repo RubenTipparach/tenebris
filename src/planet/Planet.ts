@@ -45,11 +45,15 @@ export class Planet {
   private projScreenMatrix: THREE.Matrix4 = new THREE.Matrix4();
   private config: PlanetConfig;
 
-  // LOD system - single batched LOD mesh (for nearby/on-planet viewing)
-  private lodMesh: THREE.Mesh | null = null;
+  // LOD system - chunked LOD meshes for frustum culling (for nearby/on-planet viewing)
+  private lodChunks: THREE.Group[] = []; // 12 chunks based on icosahedron vertices
+  private lodChunkBounds: THREE.Sphere[] = []; // Bounding spheres for frustum culling
+  private tileToChunk: Map<number, number> = new Map(); // Maps tile index to chunk index
+  private lodMesh: THREE.Group | null = null; // Parent group for all LOD chunks
   private lodWaterMesh: THREE.Mesh | null = null; // Separate LOD water mesh for visibility control
   private lodTileVisibility: Map<number, boolean> = new Map(); // Track which LOD tiles should be visible
   private needsLODRebuild: boolean = false; // Flag to rebuild LOD mesh when terrain changes
+  private readonly LOD_CHUNK_COUNT = 12; // Based on icosahedron vertices
 
   // Distance-based LOD meshes (for viewing from other planets)
   private distantLODMeshes: THREE.Mesh[] = []; // Array of progressively lower-detail meshes
@@ -77,6 +81,31 @@ export class Planet {
   private stoneMesh: THREE.Mesh | null = null;
   private waterMesh: THREE.Mesh | null = null;
   private needsRebatch: boolean = true; // Flag to rebuild batched geometry
+
+  // Web Worker for off-thread geometry building
+  private geometryWorker: Worker | null = null;
+  private lodGeometryWorker: Worker | null = null;
+  private isWorkerBuildActive: boolean = false;
+  private isLODWorkerBuildActive: boolean = false;
+  private isLODRebuildScheduled: boolean = false;
+  private isWaterWallsScheduled: boolean = false;
+  private needsWaterWallsRebuild: boolean = false;
+  // Track the nearbyTiles count that the current LOD mesh was built with
+  // If this is > 0 but cachedNearbyTiles is empty, the LOD mesh has holes and shouldn't be shown alone
+  private currentLODExcludedTileCount: number = 0;
+  private pendingLODExcludedCount: number = 0; // Count being sent to worker
+
+  // Cached camera direction from planet center (for LOD back-face culling)
+  private cachedCameraDir: { x: number; y: number; z: number } = { x: 0, y: 1, z: 0 };
+
+  // Pre-serialized tile data for LOD worker (static, only needs to be built once)
+  private serializedTileData: Record<number, {
+    index: number;
+    vertices: Array<{ x: number; y: number; z: number }>;
+    center: { x: number; y: number; z: number };
+    neighbors: number[];
+  }> | null = null;
+  private serializedTileToChunk: Record<number, number> | null = null;
 
   private readonly BLOCK_HEIGHT = 1;
   private readonly MAX_DEPTH: number; // Total depth (sea level + dig depth)
@@ -113,9 +142,11 @@ export class Planet {
     const waterSurfaceRadius = this.radius - this.SEA_LEVEL * this.BLOCK_HEIGHT - PlayerConfig.WATER_SURFACE_OFFSET;
     this.meshBuilder.setWaterLevel(waterSurfaceRadius);
     this.generateTerrain();
+    this.initializeLODChunks();
     this.createLODMesh();
     this.createDistantLODMeshes();
     this.createBatchedMeshGroup();
+    this.initializeGeometryWorker();
 
     console.log(`Planet created with ${this.polyhedron.getTileCount()} tiles`);
   }
@@ -125,6 +156,474 @@ export class Planet {
     this.batchedMeshGroup.position.copy(this.center);
     this.batchedMeshGroup.renderOrder = 0; // Render detailed terrain after LOD (which is -1)
     this.scene.add(this.batchedMeshGroup);
+  }
+
+  // Initialize LOD chunk system - assigns each tile to one of 12 chunks based on icosahedron vertices
+  private initializeLODChunks(): void {
+    // 12 icosahedron vertices as chunk centers (golden ratio based)
+    const t = (1 + Math.sqrt(5)) / 2;
+    const chunkCenters = [
+      new THREE.Vector3(-1, t, 0).normalize(),
+      new THREE.Vector3(1, t, 0).normalize(),
+      new THREE.Vector3(-1, -t, 0).normalize(),
+      new THREE.Vector3(1, -t, 0).normalize(),
+      new THREE.Vector3(0, -1, t).normalize(),
+      new THREE.Vector3(0, 1, t).normalize(),
+      new THREE.Vector3(0, -1, -t).normalize(),
+      new THREE.Vector3(0, 1, -t).normalize(),
+      new THREE.Vector3(t, 0, -1).normalize(),
+      new THREE.Vector3(t, 0, 1).normalize(),
+      new THREE.Vector3(-t, 0, -1).normalize(),
+      new THREE.Vector3(-t, 0, 1).normalize()
+    ];
+
+    // Assign each tile to nearest chunk center
+    for (const tile of this.polyhedron.tiles) {
+      const tileDir = tile.center.clone().normalize();
+      let closestChunk = 0;
+      let closestDist = Infinity;
+
+      for (let i = 0; i < chunkCenters.length; i++) {
+        const dist = tileDir.distanceToSquared(chunkCenters[i]);
+        if (dist < closestDist) {
+          closestDist = dist;
+          closestChunk = i;
+        }
+      }
+
+      this.tileToChunk.set(tile.index, closestChunk);
+    }
+
+    // Create chunk groups and bounding spheres
+    for (let i = 0; i < this.LOD_CHUNK_COUNT; i++) {
+      const chunkGroup = new THREE.Group();
+      this.lodChunks.push(chunkGroup);
+
+      // Bounding sphere centered on chunk with radius to cover the chunk area
+      // Each chunk covers roughly 1/12 of the sphere, so radius ~= planetRadius * 0.6
+      const boundCenter = chunkCenters[i].clone().multiplyScalar(this.radius).add(this.center);
+      const boundRadius = this.radius * 0.7; // Slightly larger to ensure coverage
+      this.lodChunkBounds.push(new THREE.Sphere(boundCenter, boundRadius));
+    }
+  }
+
+  // Frustum cull LOD chunks - hide chunks that are behind the camera or off-screen
+  private cullLODChunks(): void {
+    if (!this.lodMesh || this.lodChunks.length === 0) return;
+
+    // If LOD mesh has children, cull based on chunk bounds
+    // For now, use the lodChunkBounds to cull individual children
+    for (let i = 0; i < this.lodChunkBounds.length; i++) {
+      const bounds = this.lodChunkBounds[i];
+      const isVisible = this.frustum.intersectsSphere(bounds);
+
+      // Set visibility on chunk group if it exists
+      if (i < this.lodChunks.length) {
+        this.lodChunks[i].visible = isVisible;
+      }
+    }
+  }
+
+  private initializeGeometryWorker(): void {
+    try {
+      this.geometryWorker = new Worker(
+        new URL('../workers/geometryWorker.ts', import.meta.url),
+        { type: 'module' }
+      );
+      this.geometryWorker.onmessage = (e: MessageEvent) => {
+        if (e.data.type === 'geometryResult') {
+          const start = performance.now();
+          this.handleWorkerResult(e.data);
+          const elapsed = performance.now() - start;
+          profiler.logOneTimeOperation('Terrain Mesh Build', elapsed);
+        }
+      };
+      this.geometryWorker.onerror = (error) => {
+        console.error('Geometry worker error:', error);
+        this.geometryWorker = null;
+      };
+    } catch (e) {
+      console.warn('Failed to create geometry worker, falling back to main thread:', e);
+      this.geometryWorker = null;
+    }
+
+    // Initialize LOD geometry worker
+    try {
+      this.lodGeometryWorker = new Worker(
+        new URL('../workers/lodGeometryWorker.ts', import.meta.url),
+        { type: 'module' }
+      );
+      this.lodGeometryWorker.onmessage = (e: MessageEvent) => {
+        if (e.data.type === 'lodGeometryResult') {
+          const start = performance.now();
+          this.handleLODWorkerResult(e.data);
+          const elapsed = performance.now() - start;
+          profiler.logOneTimeOperation('LOD Mesh Build', elapsed);
+        }
+      };
+      this.lodGeometryWorker.onerror = (error) => {
+        console.error('LOD geometry worker error:', error);
+        this.lodGeometryWorker = null;
+      };
+    } catch (e) {
+      console.warn('Failed to create LOD geometry worker, falling back to main thread:', e);
+      this.lodGeometryWorker = null;
+    }
+  }
+
+  private handleWorkerResult(data: {
+    topData: GeometryData;
+    sideData: GeometryData;
+    stoneData: GeometryData;
+    waterData: GeometryData;
+  }): void {
+    if (!this.batchedMeshGroup) return;
+
+    profiler.begin('Planet.workerResult');
+
+    // Create new meshes FIRST (before removing old ones) to avoid holes
+    profiler.begin('Planet.workerResult.createMeshes');
+    const newMeshes: THREE.Mesh[] = [];
+
+    if (data.topData.positions.length > 0) {
+      const geom = this.createBufferGeometry(data.topData);
+      const mesh = new THREE.Mesh(geom, this.meshBuilder.getTopMaterial());
+      newMeshes.push(mesh);
+      this.topMesh = mesh;
+    } else {
+      this.topMesh = null;
+    }
+
+    if (data.sideData.positions.length > 0) {
+      const geom = this.createBufferGeometry(data.sideData);
+      const mesh = new THREE.Mesh(geom, this.meshBuilder.getSideMaterial());
+      newMeshes.push(mesh);
+      this.sideMesh = mesh;
+    } else {
+      this.sideMesh = null;
+    }
+
+    if (data.stoneData.positions.length > 0) {
+      const geom = this.createBufferGeometry(data.stoneData);
+      const mesh = new THREE.Mesh(geom, this.meshBuilder.getStoneMaterial());
+      newMeshes.push(mesh);
+      this.stoneMesh = mesh;
+    } else {
+      this.stoneMesh = null;
+    }
+
+    if (data.waterData.positions.length > 0) {
+      const geom = this.createBufferGeometry(data.waterData);
+      const mesh = new THREE.Mesh(geom, this.meshBuilder.getWaterMaterial());
+      mesh.renderOrder = 1;
+      newMeshes.push(mesh);
+      this.waterMesh = mesh;
+    } else {
+      this.waterMesh = null;
+    }
+    profiler.end('Planet.workerResult.createMeshes');
+
+    // Now atomically swap: remove old meshes and add new ones
+    profiler.begin('Planet.workerResult.swap');
+    const oldMeshes: THREE.Mesh[] = [];
+    while (this.batchedMeshGroup.children.length > 0) {
+      const child = this.batchedMeshGroup.children[0] as THREE.Mesh;
+      this.batchedMeshGroup.remove(child);
+      oldMeshes.push(child);
+    }
+
+    // Add all new meshes
+    for (const mesh of newMeshes) {
+      this.batchedMeshGroup.add(mesh);
+    }
+
+    // Now dispose old geometries (after new ones are visible)
+    for (const mesh of oldMeshes) {
+      if (mesh.geometry) mesh.geometry.dispose();
+    }
+    profiler.end('Planet.workerResult.swap');
+
+    // Schedule water boundary walls rebuild (deferred to avoid frame spike)
+    const hasWater = this.config.hasWater !== false && !this.config.texturePath;
+    if (hasWater) {
+      this.needsWaterWallsRebuild = true;
+    }
+
+    this.isWorkerBuildActive = false;
+    profiler.end('Planet.workerResult');
+    // LOD rebuild will happen in next update() call since isWorkerBuildActive is now false
+  }
+
+  // Per-chunk geometry data from LOD worker
+  private handleLODWorkerResult(data: {
+    chunkGeometries: Array<{
+      grassPositions: number[]; grassNormals: number[]; grassUvs: number[]; grassIndices: number[];
+      dirtPositions: number[]; dirtNormals: number[]; dirtUvs: number[]; dirtIndices: number[];
+      waterPositions: number[]; waterNormals: number[]; waterUvs: number[]; waterIndices: number[];
+      sidePositions: number[]; sideNormals: number[]; sideUvs: number[]; sideIndices: number[];
+      waterSidePositions: number[]; waterSideNormals: number[]; waterSideUvs: number[]; waterSideIndices: number[];
+    }>;
+  }): void {
+    const startTotal = performance.now();
+
+    // Remove old LOD mesh
+    const startDispose = performance.now();
+    if (this.lodMesh) {
+      this.lodMesh.traverse((child) => {
+        if (child instanceof THREE.Mesh && child.geometry) {
+          child.geometry.dispose();
+        }
+      });
+      this.scene.remove(this.lodMesh);
+      this.lodMesh = null;
+      this.lodWaterMesh = null;
+    }
+
+    // Clear chunk groups
+    for (const chunk of this.lodChunks) {
+      while (chunk.children.length > 0) {
+        const child = chunk.children[0];
+        if (child instanceof THREE.Mesh && child.geometry) {
+          child.geometry.dispose();
+        }
+        chunk.remove(child);
+      }
+    }
+    const disposeTime = performance.now() - startDispose;
+
+    // Create LOD parent group
+    const lodGroup = new THREE.Group();
+
+    // Helper to create geometry from typed arrays (avoids copy)
+    const createGeom = (positions: number[], normals: number[], uvs: number[], indices: number[]): THREE.BufferGeometry => {
+      const geom = new THREE.BufferGeometry();
+      // Use Float32Array directly to avoid copying
+      geom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(positions), 3));
+      geom.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(normals), 3));
+      geom.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(uvs), 2));
+      geom.setIndex(indices);
+      return geom;
+    };
+
+    // Create meshes for each chunk
+    const startMeshCreation = performance.now();
+    let meshCount = 0;
+    let totalVertices = 0;
+    for (let i = 0; i < this.LOD_CHUNK_COUNT; i++) {
+      const chunkData = data.chunkGeometries[i];
+      if (!chunkData) continue;
+
+      const chunkGroup = this.lodChunks[i];
+
+      // Grass mesh
+      if (chunkData.grassPositions.length > 0) {
+        const geom = createGeom(chunkData.grassPositions, chunkData.grassNormals, chunkData.grassUvs, chunkData.grassIndices);
+        const mesh = new THREE.Mesh(geom, this.meshBuilder.getTopLODMaterial());
+        chunkGroup.add(mesh);
+        meshCount++;
+        totalVertices += chunkData.grassPositions.length / 3;
+      }
+
+      // Dirt mesh
+      if (chunkData.dirtPositions.length > 0) {
+        const geom = createGeom(chunkData.dirtPositions, chunkData.dirtNormals, chunkData.dirtUvs, chunkData.dirtIndices);
+        const mesh = new THREE.Mesh(geom, this.meshBuilder.getSideLODMaterial());
+        chunkGroup.add(mesh);
+        meshCount++;
+        totalVertices += chunkData.dirtPositions.length / 3;
+      }
+
+      // Water mesh
+      if (chunkData.waterPositions.length > 0) {
+        const geom = createGeom(chunkData.waterPositions, chunkData.waterNormals, chunkData.waterUvs, chunkData.waterIndices);
+        const mesh = new THREE.Mesh(geom, this.meshBuilder.getWaterLODMaterial());
+        mesh.renderOrder = -2;
+        chunkGroup.add(mesh);
+        meshCount++;
+        totalVertices += chunkData.waterPositions.length / 3;
+      }
+
+      // Side walls mesh
+      if (chunkData.sidePositions.length > 0) {
+        const geom = createGeom(chunkData.sidePositions, chunkData.sideNormals, chunkData.sideUvs, chunkData.sideIndices);
+        const mesh = new THREE.Mesh(geom, this.meshBuilder.getSideLODMaterial());
+        chunkGroup.add(mesh);
+        meshCount++;
+        totalVertices += chunkData.sidePositions.length / 3;
+      }
+
+      // Water side walls mesh
+      if (chunkData.waterSidePositions.length > 0) {
+        const geom = createGeom(chunkData.waterSidePositions, chunkData.waterSideNormals, chunkData.waterSideUvs, chunkData.waterSideIndices);
+        const mesh = new THREE.Mesh(geom, this.meshBuilder.getWaterLODMaterial());
+        mesh.renderOrder = -2;
+        chunkGroup.add(mesh);
+        meshCount++;
+        totalVertices += chunkData.waterSidePositions.length / 3;
+      }
+
+      lodGroup.add(chunkGroup);
+    }
+    const meshCreationTime = performance.now() - startMeshCreation;
+
+    const startSceneAdd = performance.now();
+    lodGroup.position.copy(this.center);
+    lodGroup.renderOrder = -1;
+    this.scene.add(lodGroup);
+    this.lodMesh = lodGroup;
+    const sceneAddTime = performance.now() - startSceneAdd;
+
+    const totalTime = performance.now() - startTotal;
+    console.log(`[LOD Build] Total: ${totalTime.toFixed(1)}ms | Dispose: ${disposeTime.toFixed(1)}ms | Create ${meshCount} meshes (${totalVertices} verts): ${meshCreationTime.toFixed(1)}ms | Scene add: ${sceneAddTime.toFixed(1)}ms`);
+
+    this.isLODWorkerBuildActive = false;
+
+    // Track how many tiles this LOD mesh excludes (expects detailed terrain to fill)
+    // This is used to determine if the LOD mesh can be shown alone or needs detailed terrain
+    this.currentLODExcludedTileCount = this.pendingLODExcludedCount;
+
+    // Check if the worker result is stale: if the worker excluded tiles
+    // but now cachedNearbyTiles is empty, those excluded tiles are now unloaded,
+    // causing holes. Trigger a new rebuild with current state.
+    if (this.currentLODExcludedTileCount > 0 && this.cachedNearbyTiles.size === 0) {
+      // Worker excluded tiles that are now unloaded - need fresh rebuild with no exclusions
+      this.needsLODRebuild = true;
+    } else {
+      this.needsLODRebuild = false;
+    }
+  }
+
+  private startWorkerBuild(): void {
+    if (!this.geometryWorker || this.isWorkerBuildActive) return;
+
+    profiler.begin('Planet.workerBuild.serialize');
+
+    // Prepare column data for worker
+    const columns: Array<{
+      tileIndex: number;
+      tile: {
+        index: number;
+        vertices: Array<{ x: number; y: number; z: number }>;
+        center: { x: number; y: number; z: number };
+        neighbors: number[];
+      };
+      blocks: number[];
+    }> = [];
+
+    const neighborBlocks: Record<string, number[]> = {};
+
+    // Collect all tiles and their neighbors' block data
+    for (const tileIndex of this.cachedNearbyTiles) {
+      const column = this.columns.get(tileIndex);
+      if (!column) continue;
+
+      columns.push({
+        tileIndex,
+        tile: {
+          index: column.tile.index,
+          vertices: column.tile.vertices.map(v => ({ x: v.x, y: v.y, z: v.z })),
+          center: { x: column.tile.center.x, y: column.tile.center.y, z: column.tile.center.z },
+          neighbors: column.tile.neighbors
+        },
+        blocks: [...column.blocks]
+      });
+
+      // Add neighbor block data for side face culling
+      for (const neighborIndex of column.tile.neighbors) {
+        if (!neighborBlocks[neighborIndex]) {
+          const neighborColumn = this.columns.get(neighborIndex);
+          if (neighborColumn) {
+            neighborBlocks[neighborIndex] = [...neighborColumn.blocks];
+          }
+        }
+      }
+
+      column.isDirty = false;
+    }
+
+    this.isWorkerBuildActive = true;
+    this.needsRebatch = false;
+    profiler.end('Planet.workerBuild.serialize');
+
+    // Send to worker
+    profiler.begin('Planet.workerBuild.postMessage');
+    this.geometryWorker.postMessage({
+      type: 'buildGeometry',
+      columns,
+      neighborBlocks,
+      config: {
+        radius: this.radius,
+        blockHeight: this.BLOCK_HEIGHT,
+        seaLevel: this.SEA_LEVEL,
+        deepThreshold: this.DEEP_THRESHOLD,
+        waterSurfaceOffset: PlayerConfig.WATER_SURFACE_OFFSET,
+        sunDirection: {
+          x: this.sunDirection.x,
+          y: this.sunDirection.y,
+          z: this.sunDirection.z
+        }
+      }
+    });
+    profiler.end('Planet.workerBuild.postMessage');
+  }
+
+  private startLODWorkerBuild(): void {
+    if (!this.lodGeometryWorker || this.isLODWorkerBuildActive) return;
+
+    profiler.begin('Planet.lodWorkerBuild.serialize');
+
+    // Build static tile data cache once (vertices, centers, neighbors don't change)
+    if (!this.serializedTileData) {
+      this.serializedTileData = {};
+      for (const [tileIndex, column] of this.columns) {
+        this.serializedTileData[tileIndex] = {
+          index: column.tile.index,
+          vertices: column.tile.vertices.map(v => ({ x: v.x, y: v.y, z: v.z })),
+          center: { x: column.tile.center.x, y: column.tile.center.y, z: column.tile.center.z },
+          neighbors: [...column.tile.neighbors]
+        };
+      }
+    }
+
+    // Build tileToChunk cache once
+    if (!this.serializedTileToChunk) {
+      this.serializedTileToChunk = {};
+      for (const [tileIndex, chunkIndex] of this.tileToChunk) {
+        this.serializedTileToChunk[tileIndex] = chunkIndex;
+      }
+    }
+
+    // Only serialize blocks (the dynamic part) - use typed array for speed
+    const blockData: Record<number, number[]> = {};
+    for (const [tileIndex, column] of this.columns) {
+      blockData[tileIndex] = column.blocks;
+    }
+
+    this.isLODWorkerBuildActive = true;
+    // Track the snapshot size so we can detect if it becomes stale when worker finishes
+    this.pendingLODExcludedCount = this.cachedNearbyTiles.size;
+    profiler.end('Planet.lodWorkerBuild.serialize');
+
+    // Send to worker
+    profiler.begin('Planet.lodWorkerBuild.postMessage');
+    this.lodGeometryWorker.postMessage({
+      type: 'buildLODGeometry',
+      tileData: this.serializedTileData,
+      blockData,
+      nearbyTiles: Array.from(this.cachedNearbyTiles),
+      tileToChunk: this.serializedTileToChunk,
+      config: {
+        radius: this.radius,
+        blockHeight: this.BLOCK_HEIGHT,
+        seaLevel: this.SEA_LEVEL,
+        waterSurfaceOffset: PlayerConfig.WATER_SURFACE_OFFSET,
+        lodOffset: 0.3,
+        chunkCount: this.LOD_CHUNK_COUNT,
+        // Camera direction for back-face culling (skip tiles facing away from camera)
+        cameraDir: this.cachedCameraDir
+      }
+    });
+    profiler.end('Planet.lodWorkerBuild.postMessage');
   }
 
   private createLODMesh(): void {
@@ -319,9 +818,19 @@ export class Planet {
   }
 
   private rebuildLODMesh(): void {
-    // Remove old LOD mesh if it exists
+    // Use worker if available
+    if (this.lodGeometryWorker && !this.isLODWorkerBuildActive) {
+      this.startLODWorkerBuild();
+      return;
+    }
+
+    // Fallback to main thread if worker not available or busy
+    profiler.begin('Planet.rebuildLODMesh');
+
+    // Remove old LOD mesh and chunks if they exist
+    profiler.begin('Planet.rebuildLODMesh.cleanup');
     if (this.lodMesh) {
-      const lodGroup = this.lodMesh as unknown as THREE.Group;
+      const lodGroup = this.lodMesh;
       // Dispose geometries
       lodGroup.traverse((child) => {
         if (child instanceof THREE.Mesh && child.geometry) {
@@ -333,34 +842,61 @@ export class Planet {
       this.lodWaterMesh = null;
     }
 
+    // Clear chunk groups
+    for (const chunk of this.lodChunks) {
+      while (chunk.children.length > 0) {
+        const child = chunk.children[0];
+        if (child instanceof THREE.Mesh && child.geometry) {
+          child.geometry.dispose();
+        }
+        chunk.remove(child);
+      }
+    }
+    profiler.end('Planet.rebuildLODMesh.cleanup');
+
     // Offset LOD inward slightly so detailed terrain renders on top
     const lodOffset = 0.3;
     const waterRadius = this.radius - this.SEA_LEVEL * this.BLOCK_HEIGHT - lodOffset;
 
-    // Batch all LOD tiles into material groups with proper heights
-    const grassPositions: number[] = [];
-    const grassNormals: number[] = [];
-    const grassUvs: number[] = [];
-    const grassIndices: number[] = [];
+    // Per-chunk geometry buffers
+    interface ChunkGeometry {
+      grassPositions: number[]; grassNormals: number[]; grassUvs: number[]; grassIndices: number[]; grassVertexOffset: number;
+      dirtPositions: number[]; dirtNormals: number[]; dirtUvs: number[]; dirtIndices: number[]; dirtVertexOffset: number;
+      waterPositions: number[]; waterNormals: number[]; waterUvs: number[]; waterIndices: number[]; waterVertexOffset: number;
+      sidePositions: number[]; sideNormals: number[]; sideUvs: number[]; sideIndices: number[]; sideVertexOffset: number;
+      waterSidePositions: number[]; waterSideNormals: number[]; waterSideUvs: number[]; waterSideIndices: number[]; waterSideVertexOffset: number;
+    }
 
-    const dirtPositions: number[] = [];
-    const dirtNormals: number[] = [];
-    const dirtUvs: number[] = [];
-    const dirtIndices: number[] = [];
+    const chunkGeometries: ChunkGeometry[] = [];
+    for (let i = 0; i < this.LOD_CHUNK_COUNT; i++) {
+      chunkGeometries.push({
+        grassPositions: [], grassNormals: [], grassUvs: [], grassIndices: [], grassVertexOffset: 0,
+        dirtPositions: [], dirtNormals: [], dirtUvs: [], dirtIndices: [], dirtVertexOffset: 0,
+        waterPositions: [], waterNormals: [], waterUvs: [], waterIndices: [], waterVertexOffset: 0,
+        sidePositions: [], sideNormals: [], sideUvs: [], sideIndices: [], sideVertexOffset: 0,
+        waterSidePositions: [], waterSideNormals: [], waterSideUvs: [], waterSideIndices: [], waterSideVertexOffset: 0
+      });
+    }
 
-    const waterPositions: number[] = [];
-    const waterNormals: number[] = [];
-    const waterUvs: number[] = [];
-    const waterIndices: number[] = [];
+    // Pre-compute normalized tile centers and vertices once (avoid redundant normalize calls)
+    // This cache is used across all passes
+    const normalizedTileData = new Map<number, {
+      normalizedCenter: THREE.Vector3;
+      normalizedVertices: THREE.Vector3[];
+    }>();
 
-    let grassVertexOffset = 0;
-    let dirtVertexOffset = 0;
-    let waterVertexOffset = 0;
+    for (const [tileIndex, column] of this.columns) {
+      const tile = column.tile;
+      const normalizedCenter = tile.center.clone().normalize();
+      const normalizedVertices = tile.vertices.map(v => v.clone().normalize());
+      normalizedTileData.set(tileIndex, { normalizedCenter, normalizedVertices });
+    }
 
     // First pass: calculate display radius for each LOD tile
     // Also calculate for detailed tiles so LOD can generate walls at the boundary
     // Store both radius and whether it's water for side wall generation
-    const tileDisplayRadii = new Map<number, { radius: number; isWater: boolean }>();
+    profiler.begin('Planet.rebuildLODMesh.pass1');
+    const tileDisplayRadii = new Map<number, { radius: number; isWater: boolean; surfaceBlockType: HexBlockType }>();
     for (const [tileIndex, column] of this.columns) {
       let surfaceDepth = 0;
       let surfaceBlockType = HexBlockType.GRASS;
@@ -379,59 +915,62 @@ export class Planet {
       } else {
         displayRadius = this.radius - surfaceDepth * this.BLOCK_HEIGHT - lodOffset;
       }
-      tileDisplayRadii.set(tileIndex, { radius: displayRadius, isWater });
+      tileDisplayRadii.set(tileIndex, { radius: displayRadius, isWater, surfaceBlockType });
     }
+    profiler.end('Planet.rebuildLODMesh.pass1');
 
-    for (const [tileIndex, column] of this.columns) {
+    profiler.begin('Planet.rebuildLODMesh.pass2');
+    for (const [tileIndex] of this.columns) {
       // Skip tiles that are in the detailed render range
       if (this.cachedNearbyTiles.has(tileIndex)) {
         continue;
       }
 
-      // Find surface block type
-      let surfaceBlockType = HexBlockType.GRASS;
-      for (let d = 0; d < column.blocks.length; d++) {
-        if (column.blocks[d] !== HexBlockType.AIR) {
-          surfaceBlockType = column.blocks[d];
-          break;
-        }
-      }
-
-      const tile = column.tile;
-      const normal = tile.center.clone().normalize();
-
-      // Calculate the display radius based on terrain type
+      // Get pre-computed tile data (already has surface block type from pass 1)
       const tileData = tileDisplayRadii.get(tileIndex);
-      const displayRadius = tileData?.radius ?? (this.radius - lodOffset);
+      if (!tileData) continue;
+      const surfaceBlockType = tileData.surfaceBlockType;
+      const displayRadius = tileData.radius;
+
+      // Use pre-computed normalized data
+      const normalizedData = normalizedTileData.get(tileIndex);
+      if (!normalizedData) continue;
+
+      const normal = normalizedData.normalizedCenter;
 
       // Create simple flat polygon for this tile at the correct height
+      // Use pre-normalized vertices and just scale them (avoid normalize() calls)
       const center = normal.clone().multiplyScalar(displayRadius);
-      const vertices = tile.vertices.map(v =>
-        v.clone().normalize().multiplyScalar(displayRadius)
+      const vertices = normalizedData.normalizedVertices.map(v =>
+        v.clone().multiplyScalar(displayRadius)
       );
 
-      // Select which buffer to add to
+      // Get the chunk for this tile
+      const chunkIdx = this.tileToChunk.get(tileIndex) ?? 0;
+      const chunk = chunkGeometries[chunkIdx];
+
+      // Select which buffer to add to (per-chunk)
       let positions: number[], normals: number[], uvs: number[], indices: number[];
       let vertexOffset: number;
 
       if (surfaceBlockType === HexBlockType.WATER) {
-        positions = waterPositions;
-        normals = waterNormals;
-        uvs = waterUvs;
-        indices = waterIndices;
-        vertexOffset = waterVertexOffset;
+        positions = chunk.waterPositions;
+        normals = chunk.waterNormals;
+        uvs = chunk.waterUvs;
+        indices = chunk.waterIndices;
+        vertexOffset = chunk.waterVertexOffset;
       } else if (surfaceBlockType === HexBlockType.DIRT) {
-        positions = dirtPositions;
-        normals = dirtNormals;
-        uvs = dirtUvs;
-        indices = dirtIndices;
-        vertexOffset = dirtVertexOffset;
+        positions = chunk.dirtPositions;
+        normals = chunk.dirtNormals;
+        uvs = chunk.dirtUvs;
+        indices = chunk.dirtIndices;
+        vertexOffset = chunk.dirtVertexOffset;
       } else {
-        positions = grassPositions;
-        normals = grassNormals;
-        uvs = grassUvs;
-        indices = grassIndices;
-        vertexOffset = grassVertexOffset;
+        positions = chunk.grassPositions;
+        normals = chunk.grassNormals;
+        uvs = chunk.grassUvs;
+        indices = chunk.grassIndices;
+        vertexOffset = chunk.grassVertexOffset;
       }
 
       // Fan triangulation from center
@@ -450,33 +989,23 @@ export class Planet {
         indices.push(centerIdx, centerIdx + 1 + i, centerIdx + 1 + ((i + 1) % vertices.length));
       }
 
-      // Update the correct offset
+      // Update the correct offset (per-chunk)
       if (surfaceBlockType === HexBlockType.WATER) {
-        waterVertexOffset = vertexOffset;
+        chunk.waterVertexOffset = vertexOffset;
       } else if (surfaceBlockType === HexBlockType.DIRT) {
-        dirtVertexOffset = vertexOffset;
+        chunk.dirtVertexOffset = vertexOffset;
       } else {
-        grassVertexOffset = vertexOffset;
+        chunk.grassVertexOffset = vertexOffset;
       }
 
       this.lodTileVisibility.set(tileIndex, true);
     }
+    profiler.end('Planet.rebuildLODMesh.pass2');
 
     // Second pass: Generate side walls between LOD tiles at different heights
     // Also generate walls at boundary with detailed terrain tiles
-    // Separate buffers for terrain sides and water sides
-    const sidePositions: number[] = [];
-    const sideNormals: number[] = [];
-    const sideUvs: number[] = [];
-    const sideIndices: number[] = [];
-    let sideVertexOffset = 0;
-
-    const waterSidePositions: number[] = [];
-    const waterSideNormals: number[] = [];
-    const waterSideUvs: number[] = [];
-    const waterSideIndices: number[] = [];
-    let waterSideVertexOffset = 0;
-
+    // Now using per-chunk buffers
+    profiler.begin('Planet.rebuildLODMesh.pass3');
     for (const [tileIndex, column] of this.columns) {
       // Skip tiles that are in the detailed render range
       if (this.cachedNearbyTiles.has(tileIndex)) {
@@ -489,23 +1018,47 @@ export class Planet {
       const thisIsWater = thisTileData?.isWater ?? false;
       const numSides = tile.vertices.length;
 
+      // Get pre-computed normalized data
+      const normalizedData = normalizedTileData.get(tileIndex);
+      if (!normalizedData) continue;
+      const normalizedVerts = normalizedData.normalizedVertices;
+
+      // Get the chunk for this tile
+      const chunkIdx = this.tileToChunk.get(tileIndex) ?? 0;
+      const chunk = chunkGeometries[chunkIdx];
+
       // Iterate through edges (vertices), matching HexBlock.createSeparateGeometries
       for (let i = 0; i < numSides; i++) {
         const next = (i + 1) % numSides;
-        const v1 = tile.vertices[i];
-        const v2 = tile.vertices[next];
+        // Use pre-normalized vertices
+        const nv1 = normalizedVerts[i];
+        const nv2 = normalizedVerts[next];
 
         // Find neighbor across this edge by checking which neighbor is closest to edge midpoint
-        const edgeMidDir = v1.clone().add(v2).normalize();
+        // Compute edge mid direction using raw math to avoid object allocation
+        const emx = nv1.x + nv2.x;
+        const emy = nv1.y + nv2.y;
+        const emz = nv1.z + nv2.z;
+        const emLen = Math.sqrt(emx * emx + emy * emy + emz * emz);
+        const edgeMidDirX = emx / emLen;
+        const edgeMidDirY = emy / emLen;
+        const edgeMidDirZ = emz / emLen;
+
         let neighborRadius: number | undefined;
         let closestDist = Infinity;
         let neighborIsWater = false;
 
         for (const nIdx of tile.neighbors) {
-          const neighborColumn = this.columns.get(nIdx);
-          if (!neighborColumn) continue;
+          const neighborNormData = normalizedTileData.get(nIdx);
+          if (!neighborNormData) continue;
 
-          const dist = neighborColumn.tile.center.clone().normalize().distanceToSquared(edgeMidDir);
+          // Use pre-computed normalized center
+          const nc = neighborNormData.normalizedCenter;
+          const dx = nc.x - edgeMidDirX;
+          const dy = nc.y - edgeMidDirY;
+          const dz = nc.z - edgeMidDirZ;
+          const dist = dx * dx + dy * dy + dz * dz;
+
           if (dist < closestDist) {
             closestDist = dist;
             const neighborData = tileDisplayRadii.get(nIdx);
@@ -521,60 +1074,57 @@ export class Planet {
         const needsWall = thisRadius > neighborRadius || (thisIsWater && !neighborIsWater);
         if (!needsWall) continue;
 
-        // Vertex order matches HexBlock.createSeparateGeometries:
-        // innerV1, innerV2, outerV2, outerV1 with indices (0,1,2), (0,2,3)
-        const innerV1 = v1.clone().normalize().multiplyScalar(neighborRadius);
-        const innerV2 = v2.clone().normalize().multiplyScalar(neighborRadius);
-        const outerV2 = v2.clone().normalize().multiplyScalar(thisRadius);
-        const outerV1 = v1.clone().normalize().multiplyScalar(thisRadius);
+        // Vertex positions using pre-normalized vertices (just scale)
+        const innerV1x = nv1.x * neighborRadius, innerV1y = nv1.y * neighborRadius, innerV1z = nv1.z * neighborRadius;
+        const innerV2x = nv2.x * neighborRadius, innerV2y = nv2.y * neighborRadius, innerV2z = nv2.z * neighborRadius;
+        const outerV2x = nv2.x * thisRadius, outerV2y = nv2.y * thisRadius, outerV2z = nv2.z * thisRadius;
+        const outerV1x = nv1.x * thisRadius, outerV1y = nv1.y * thisRadius, outerV1z = nv1.z * thisRadius;
 
-        // Calculate side normal using cross product of quad edges
-        const edge1 = innerV2.clone().sub(innerV1); // horizontal edge
-        const edge2 = outerV1.clone().sub(innerV1); // vertical edge
-        const sideNormal = edge1.clone().cross(edge2).normalize();
+        // Calculate side normal using cross product of quad edges (inlined)
+        const e1x = innerV2x - innerV1x, e1y = innerV2y - innerV1y, e1z = innerV2z - innerV1z;
+        const e2x = outerV1x - innerV1x, e2y = outerV1y - innerV1y, e2z = outerV1z - innerV1z;
+        let snx = e1y * e2z - e1z * e2y;
+        let sny = e1z * e2x - e1x * e2z;
+        let snz = e1x * e2y - e1y * e2x;
+        const snLen = Math.sqrt(snx * snx + sny * sny + snz * snz);
+        if (snLen > 0) { snx /= snLen; sny /= snLen; snz /= snLen; }
 
-        // Select appropriate buffer based on whether this is a water tile
-        const positions = thisIsWater ? waterSidePositions : sidePositions;
-        const normals = thisIsWater ? waterSideNormals : sideNormals;
-        const uvs = thisIsWater ? waterSideUvs : sideUvs;
-        const indices = thisIsWater ? waterSideIndices : sideIndices;
-        const baseIdx = thisIsWater ? waterSideVertexOffset : sideVertexOffset;
+        // Select appropriate buffer based on whether this is a water tile (per-chunk)
+        const positions = thisIsWater ? chunk.waterSidePositions : chunk.sidePositions;
+        const normals = thisIsWater ? chunk.waterSideNormals : chunk.sideNormals;
+        const uvs = thisIsWater ? chunk.waterSideUvs : chunk.sideUvs;
+        const indices = thisIsWater ? chunk.waterSideIndices : chunk.sideIndices;
+        const baseIdx = thisIsWater ? chunk.waterSideVertexOffset : chunk.sideVertexOffset;
 
         // Add vertices in same order as HexBlock sides
         positions.push(
-          innerV1.x, innerV1.y, innerV1.z,
-          innerV2.x, innerV2.y, innerV2.z,
-          outerV2.x, outerV2.y, outerV2.z,
-          outerV1.x, outerV1.y, outerV1.z
+          innerV1x, innerV1y, innerV1z,
+          innerV2x, innerV2y, innerV2z,
+          outerV2x, outerV2y, outerV2z,
+          outerV1x, outerV1y, outerV1z
         );
 
-        for (let j = 0; j < 4; j++) {
-          normals.push(sideNormal.x, sideNormal.y, sideNormal.z);
-        }
+        normals.push(snx, sny, snz, snx, sny, snz, snx, sny, snz, snx, sny, snz);
 
         // UVs matching HexBlock
-        uvs.push(
-          0, 0,       // innerV1 (bottom-left)
-          1, 0,       // innerV2 (bottom-right)
-          1, 0.5,     // outerV2 (top-right)
-          0, 0.5      // outerV1 (top-left)
-        );
+        uvs.push(0, 0, 1, 0, 1, 0.5, 0, 0.5);
 
         // Same winding as HexBlock: (0,1,2), (0,2,3)
-        indices.push(baseIdx, baseIdx + 1, baseIdx + 2);
-        indices.push(baseIdx, baseIdx + 2, baseIdx + 3);
+        indices.push(baseIdx, baseIdx + 1, baseIdx + 2, baseIdx, baseIdx + 2, baseIdx + 3);
 
         if (thisIsWater) {
-          waterSideVertexOffset += 4;
+          chunk.waterSideVertexOffset += 4;
         } else {
-          sideVertexOffset += 4;
+          chunk.sideVertexOffset += 4;
         }
       }
     }
+    profiler.end('Planet.rebuildLODMesh.pass3');
 
     // Third pass: Generate water boundary walls at LOD/terrain edge
     // These walls block the view when underwater at the boundary between detailed terrain and LOD
     // For each LOD water tile that borders a detailed terrain tile, create a wall on that edge
+    profiler.begin('Planet.rebuildLODMesh.pass4');
     for (const [tileIndex, column] of this.columns) {
       // Only process LOD tiles (not in detailed range)
       if (this.cachedNearbyTiles.has(tileIndex)) {
@@ -590,22 +1140,44 @@ export class Planet {
       const tile = column.tile;
       const numSides = tile.vertices.length;
 
+      // Get pre-computed normalized data
+      const normalizedData = normalizedTileData.get(tileIndex);
+      if (!normalizedData) continue;
+      const normalizedVerts = normalizedData.normalizedVertices;
+
+      // Get the chunk for this tile
+      const chunkIdx = this.tileToChunk.get(tileIndex) ?? 0;
+      const chunk = chunkGeometries[chunkIdx];
+
       // Check each edge for neighbors in the detailed terrain range
       for (let i = 0; i < numSides; i++) {
         const next = (i + 1) % numSides;
-        const v1 = tile.vertices[i];
-        const v2 = tile.vertices[next];
+        // Use pre-normalized vertices
+        const nv1 = normalizedVerts[i];
+        const nv2 = normalizedVerts[next];
 
-        // Find neighbor across this edge
-        const edgeMidDir = v1.clone().add(v2).normalize();
+        // Find neighbor across this edge using inlined math
+        const emx = nv1.x + nv2.x;
+        const emy = nv1.y + nv2.y;
+        const emz = nv1.z + nv2.z;
+        const emLen = Math.sqrt(emx * emx + emy * emy + emz * emz);
+        const edgeMidDirX = emx / emLen;
+        const edgeMidDirY = emy / emLen;
+        const edgeMidDirZ = emz / emLen;
+
         let closestNeighborIdx: number | undefined;
         let closestDist = Infinity;
 
         for (const nIdx of tile.neighbors) {
-          const neighborColumn = this.columns.get(nIdx);
-          if (!neighborColumn) continue;
+          const neighborNormData = normalizedTileData.get(nIdx);
+          if (!neighborNormData) continue;
 
-          const dist = neighborColumn.tile.center.clone().normalize().distanceToSquared(edgeMidDir);
+          const nc = neighborNormData.normalizedCenter;
+          const dx = nc.x - edgeMidDirX;
+          const dy = nc.y - edgeMidDirY;
+          const dz = nc.z - edgeMidDirZ;
+          const dist = dx * dx + dy * dy + dz * dz;
+
           if (dist < closestDist) {
             closestDist = dist;
             closestNeighborIdx = nIdx;
@@ -628,109 +1200,127 @@ export class Planet {
         // Only create wall if there's actual depth (ocean floor is below water surface)
         if (bottomRadius >= topRadius) continue;
 
-        // Vertex order matches HexBlock.createSeparateGeometries:
-        // innerV1, innerV2, outerV2, outerV1 with indices (0,1,2), (0,2,3)
-        const innerV1 = v1.clone().normalize().multiplyScalar(bottomRadius);
-        const innerV2 = v2.clone().normalize().multiplyScalar(bottomRadius);
-        const outerV2 = v2.clone().normalize().multiplyScalar(topRadius);
-        const outerV1 = v1.clone().normalize().multiplyScalar(topRadius);
+        // Vertex positions using pre-normalized vertices (just scale)
+        const innerV1x = nv1.x * bottomRadius, innerV1y = nv1.y * bottomRadius, innerV1z = nv1.z * bottomRadius;
+        const innerV2x = nv2.x * bottomRadius, innerV2y = nv2.y * bottomRadius, innerV2z = nv2.z * bottomRadius;
+        const outerV2x = nv2.x * topRadius, outerV2y = nv2.y * topRadius, outerV2z = nv2.z * topRadius;
+        const outerV1x = nv1.x * topRadius, outerV1y = nv1.y * topRadius, outerV1z = nv1.z * topRadius;
 
-        // Calculate side normal using cross product of quad edges
-        const edge1 = innerV2.clone().sub(innerV1); // horizontal edge
-        const edge2 = outerV1.clone().sub(innerV1); // vertical edge
-        const sideNormal = edge1.clone().cross(edge2).normalize();
+        // Calculate side normal using cross product of quad edges (inlined)
+        const e1x = innerV2x - innerV1x, e1y = innerV2y - innerV1y, e1z = innerV2z - innerV1z;
+        const e2x = outerV1x - innerV1x, e2y = outerV1y - innerV1y, e2z = outerV1z - innerV1z;
+        let snx = e1y * e2z - e1z * e2y;
+        let sny = e1z * e2x - e1x * e2z;
+        let snz = e1x * e2y - e1y * e2x;
+        const snLen = Math.sqrt(snx * snx + sny * sny + snz * snz);
+        if (snLen > 0) { snx /= snLen; sny /= snLen; snz /= snLen; }
 
-        const baseIdx = waterSideVertexOffset;
+        const baseIdx = chunk.waterSideVertexOffset;
 
         // Add vertices
-        waterSidePositions.push(
-          innerV1.x, innerV1.y, innerV1.z,
-          innerV2.x, innerV2.y, innerV2.z,
-          outerV2.x, outerV2.y, outerV2.z,
-          outerV1.x, outerV1.y, outerV1.z
+        chunk.waterSidePositions.push(
+          innerV1x, innerV1y, innerV1z,
+          innerV2x, innerV2y, innerV2z,
+          outerV2x, outerV2y, outerV2z,
+          outerV1x, outerV1y, outerV1z
         );
 
-        for (let j = 0; j < 4; j++) {
-          waterSideNormals.push(sideNormal.x, sideNormal.y, sideNormal.z);
-        }
+        chunk.waterSideNormals.push(snx, sny, snz, snx, sny, snz, snx, sny, snz, snx, sny, snz);
 
-        waterSideUvs.push(
-          0, 0,
-          1, 0,
-          1, 0.5,
-          0, 0.5
-        );
+        chunk.waterSideUvs.push(0, 0, 1, 0, 1, 0.5, 0, 0.5);
 
-        waterSideIndices.push(baseIdx, baseIdx + 1, baseIdx + 2);
-        waterSideIndices.push(baseIdx, baseIdx + 2, baseIdx + 3);
+        chunk.waterSideIndices.push(baseIdx, baseIdx + 1, baseIdx + 2, baseIdx, baseIdx + 2, baseIdx + 3);
 
-        waterSideVertexOffset += 4;
+        chunk.waterSideVertexOffset += 4;
       }
     }
+    profiler.end('Planet.rebuildLODMesh.pass4');
 
-    // Create LOD group with batched meshes
+    // Create LOD parent group
+    profiler.begin('Planet.rebuildLODMesh.createMeshes');
     const lodGroup = new THREE.Group();
 
-    if (grassPositions.length > 0) {
-      const geom = new THREE.BufferGeometry();
-      geom.setAttribute('position', new THREE.Float32BufferAttribute(grassPositions, 3));
-      geom.setAttribute('normal', new THREE.Float32BufferAttribute(grassNormals, 3));
-      geom.setAttribute('uv', new THREE.Float32BufferAttribute(grassUvs, 2));
-      geom.setIndex(grassIndices);
-      const mesh = new THREE.Mesh(geom, this.meshBuilder.getTopLODMaterial());
-      lodGroup.add(mesh);
-    }
+    // Create meshes for each chunk and add to chunk groups
+    for (let i = 0; i < this.LOD_CHUNK_COUNT; i++) {
+      const chunk = chunkGeometries[i];
+      const chunkGroup = this.lodChunks[i];
 
-    if (dirtPositions.length > 0) {
-      const geom = new THREE.BufferGeometry();
-      geom.setAttribute('position', new THREE.Float32BufferAttribute(dirtPositions, 3));
-      geom.setAttribute('normal', new THREE.Float32BufferAttribute(dirtNormals, 3));
-      geom.setAttribute('uv', new THREE.Float32BufferAttribute(dirtUvs, 2));
-      geom.setIndex(dirtIndices);
-      const mesh = new THREE.Mesh(geom, this.meshBuilder.getSideLODMaterial());
-      lodGroup.add(mesh);
-    }
+      // Clear existing children
+      while (chunkGroup.children.length > 0) {
+        chunkGroup.remove(chunkGroup.children[0]);
+      }
 
-    if (waterPositions.length > 0) {
-      const geom = new THREE.BufferGeometry();
-      geom.setAttribute('position', new THREE.Float32BufferAttribute(waterPositions, 3));
-      geom.setAttribute('normal', new THREE.Float32BufferAttribute(waterNormals, 3));
-      geom.setAttribute('uv', new THREE.Float32BufferAttribute(waterUvs, 2));
-      geom.setIndex(waterIndices);
-      this.lodWaterMesh = new THREE.Mesh(geom, this.meshBuilder.getWaterLODMaterial());
-      this.lodWaterMesh.renderOrder = -2;
-      lodGroup.add(this.lodWaterMesh);
-    }
+      // Grass mesh
+      if (chunk.grassPositions.length > 0) {
+        const geom = new THREE.BufferGeometry();
+        geom.setAttribute('position', new THREE.Float32BufferAttribute(chunk.grassPositions, 3));
+        geom.setAttribute('normal', new THREE.Float32BufferAttribute(chunk.grassNormals, 3));
+        geom.setAttribute('uv', new THREE.Float32BufferAttribute(chunk.grassUvs, 2));
+        geom.setIndex(chunk.grassIndices);
+        const mesh = new THREE.Mesh(geom, this.meshBuilder.getTopLODMaterial());
+        chunkGroup.add(mesh);
+      }
 
-    // Add side walls mesh (dirt texture for cliff sides)
-    if (sidePositions.length > 0) {
-      const geom = new THREE.BufferGeometry();
-      geom.setAttribute('position', new THREE.Float32BufferAttribute(sidePositions, 3));
-      geom.setAttribute('normal', new THREE.Float32BufferAttribute(sideNormals, 3));
-      geom.setAttribute('uv', new THREE.Float32BufferAttribute(sideUvs, 2));
-      geom.setIndex(sideIndices);
-      const mesh = new THREE.Mesh(geom, this.meshBuilder.getSideLODMaterial());
-      lodGroup.add(mesh);
-    }
+      // Dirt mesh
+      if (chunk.dirtPositions.length > 0) {
+        const geom = new THREE.BufferGeometry();
+        geom.setAttribute('position', new THREE.Float32BufferAttribute(chunk.dirtPositions, 3));
+        geom.setAttribute('normal', new THREE.Float32BufferAttribute(chunk.dirtNormals, 3));
+        geom.setAttribute('uv', new THREE.Float32BufferAttribute(chunk.dirtUvs, 2));
+        geom.setIndex(chunk.dirtIndices);
+        const mesh = new THREE.Mesh(geom, this.meshBuilder.getSideLODMaterial());
+        chunkGroup.add(mesh);
+      }
 
-    // Add water side walls mesh (prevents see-through effect when underwater)
-    if (waterSidePositions.length > 0) {
-      const geom = new THREE.BufferGeometry();
-      geom.setAttribute('position', new THREE.Float32BufferAttribute(waterSidePositions, 3));
-      geom.setAttribute('normal', new THREE.Float32BufferAttribute(waterSideNormals, 3));
-      geom.setAttribute('uv', new THREE.Float32BufferAttribute(waterSideUvs, 2));
-      geom.setIndex(waterSideIndices);
-      const mesh = new THREE.Mesh(geom, this.meshBuilder.getWaterLODMaterial());
-      mesh.renderOrder = -2;
-      lodGroup.add(mesh);
+      // Water mesh
+      if (chunk.waterPositions.length > 0) {
+        const geom = new THREE.BufferGeometry();
+        geom.setAttribute('position', new THREE.Float32BufferAttribute(chunk.waterPositions, 3));
+        geom.setAttribute('normal', new THREE.Float32BufferAttribute(chunk.waterNormals, 3));
+        geom.setAttribute('uv', new THREE.Float32BufferAttribute(chunk.waterUvs, 2));
+        geom.setIndex(chunk.waterIndices);
+        const mesh = new THREE.Mesh(geom, this.meshBuilder.getWaterLODMaterial());
+        mesh.renderOrder = -2;
+        chunkGroup.add(mesh);
+      }
+
+      // Side walls mesh
+      if (chunk.sidePositions.length > 0) {
+        const geom = new THREE.BufferGeometry();
+        geom.setAttribute('position', new THREE.Float32BufferAttribute(chunk.sidePositions, 3));
+        geom.setAttribute('normal', new THREE.Float32BufferAttribute(chunk.sideNormals, 3));
+        geom.setAttribute('uv', new THREE.Float32BufferAttribute(chunk.sideUvs, 2));
+        geom.setIndex(chunk.sideIndices);
+        const mesh = new THREE.Mesh(geom, this.meshBuilder.getSideLODMaterial());
+        chunkGroup.add(mesh);
+      }
+
+      // Water side walls mesh
+      if (chunk.waterSidePositions.length > 0) {
+        const geom = new THREE.BufferGeometry();
+        geom.setAttribute('position', new THREE.Float32BufferAttribute(chunk.waterSidePositions, 3));
+        geom.setAttribute('normal', new THREE.Float32BufferAttribute(chunk.waterSideNormals, 3));
+        geom.setAttribute('uv', new THREE.Float32BufferAttribute(chunk.waterSideUvs, 2));
+        geom.setIndex(chunk.waterSideIndices);
+        const mesh = new THREE.Mesh(geom, this.meshBuilder.getWaterLODMaterial());
+        mesh.renderOrder = -2;
+        chunkGroup.add(mesh);
+      }
+
+      // Add chunk group to LOD parent
+      lodGroup.add(chunkGroup);
     }
 
     lodGroup.position.copy(this.center);
     lodGroup.renderOrder = -1;
     this.scene.add(lodGroup);
-    this.lodMesh = lodGroup as unknown as THREE.Mesh;
+    this.lodMesh = lodGroup;
+    profiler.end('Planet.rebuildLODMesh.createMeshes');
 
+    // Track how many tiles this LOD excludes (main thread path)
+    this.currentLODExcludedTileCount = this.cachedNearbyTiles.size;
     this.needsLODRebuild = false;
+    profiler.end('Planet.rebuildLODMesh');
   }
 
   private generateTerrain(): void {
@@ -815,7 +1405,7 @@ export class Planet {
       column.boundingSphere.center.copy(column.tile.center).add(this.center);
     }
     if (this.lodMesh) {
-      (this.lodMesh as unknown as THREE.Group).position.copy(this.center);
+      this.lodMesh.position.copy(this.center);
     }
     if (this.boundaryWallsGroup) {
       this.boundaryWallsGroup.position.copy(this.center);
@@ -1093,6 +1683,17 @@ export class Planet {
     this.frustum.setFromProjectionMatrix(this.projScreenMatrix);
     profiler.end('Planet.frustum');
 
+    // Cache camera direction from planet center for LOD back-face culling
+    const camX = camera.position.x - this.center.x;
+    const camY = camera.position.y - this.center.y;
+    const camZ = camera.position.z - this.center.z;
+    const camLen = Math.sqrt(camX * camX + camY * camY + camZ * camZ);
+    if (camLen > 0) {
+      this.cachedCameraDir.x = camX / camLen;
+      this.cachedCameraDir.y = camY / camLen;
+      this.cachedCameraDir.z = camZ / camLen;
+    }
+
     const distToCenter = playerPosition.distanceTo(this.center);
     const altitude = distToCenter - this.radius;
 
@@ -1102,7 +1703,7 @@ export class Planet {
     if (distantLODLevel >= 0) {
       // Use distant LOD mesh - hide all other meshes
       this.setDistantLODVisible(distantLODLevel);
-      if (this.lodMesh) (this.lodMesh as unknown as THREE.Group).visible = false;
+      if (this.lodMesh) this.lodMesh.visible = false;
       if (this.lodWaterMesh) this.lodWaterMesh.visible = false;
       if (this.batchedMeshGroup) this.batchedMeshGroup.visible = false;
       if (this.boundaryWallsGroup) this.boundaryWallsGroup.visible = false;
@@ -1123,18 +1724,28 @@ export class Planet {
       }
 
       // Rebuild LOD if needed (to include all water tiles)
-      if (this.needsLODRebuild) {
+      // Only trigger rebuild if not already in progress via worker
+      if (this.needsLODRebuild && !this.isLODWorkerBuildActive) {
         this.rebuildLODMesh();
       }
 
-      if (this.lodMesh) (this.lodMesh as unknown as THREE.Group).visible = true;
+      // Only show LOD alone if it doesn't have holes (wasn't built with excluded tiles)
+      // If currentLODExcludedTileCount > 0, the LOD mesh has holes where detailed terrain
+      // was expected to render. Keep showing both LOD + detailed terrain until rebuild completes.
+      const lodIsComplete = this.currentLODExcludedTileCount === 0;
+      if (this.lodMesh) this.lodMesh.visible = true; // Always show LOD (even with holes, it covers most of planet)
       if (this.lodWaterMesh) this.lodWaterMesh.visible = true;
-      if (this.batchedMeshGroup) this.batchedMeshGroup.visible = false;
+      // Keep detailed terrain visible to fill holes until LOD rebuild completes
+      if (this.batchedMeshGroup) this.batchedMeshGroup.visible = !lodIsComplete;
       return;
     }
 
     // Show detailed meshes and LOD (LOD is offset inward so depth test handles occlusion)
-    if (this.lodMesh) (this.lodMesh as unknown as THREE.Group).visible = true;
+    if (this.lodMesh) {
+      this.lodMesh.visible = true;
+      // Frustum cull LOD chunks
+      this.cullLODChunks();
+    }
     if (this.lodWaterMesh) this.lodWaterMesh.visible = true;
     if (this.batchedMeshGroup) this.batchedMeshGroup.visible = true;
 
@@ -1219,7 +1830,9 @@ export class Planet {
         this.pendingTilesToRemove.push(...tilesToRemove);
         this.isIncrementalRebuildActive = true;
 
-        // Need to rebuild LOD to exclude new nearby tiles
+        // Need to rebuild both batched meshes AND LOD
+        // Batched meshes need new tiles, LOD needs to exclude them
+        this.needsRebatch = true;
         this.needsLODRebuild = true;
 
         // Rebuild boundary walls
@@ -1239,17 +1852,52 @@ export class Planet {
     }
 
     // Full rebuild batched geometry if needed (tile set changed or incremental complete)
-    if (this.needsRebatch) {
-      profiler.begin('Planet.rebatch');
-      this.rebuildBatchedMeshes();
-      profiler.end('Planet.rebatch');
+    // Use worker if available, otherwise fall back to main thread
+    if (this.needsRebatch && !this.isWorkerBuildActive) {
+      if (this.geometryWorker) {
+        profiler.begin('Planet.startWorkerBuild');
+        this.startWorkerBuild();
+        profiler.end('Planet.startWorkerBuild');
+      } else {
+        profiler.begin('Planet.rebatch');
+        this.rebuildBatchedMeshes();
+        profiler.end('Planet.rebatch');
+      }
     }
 
     // Rebuild LOD mesh if terrain has changed
-    if (this.needsLODRebuild) {
-      profiler.begin('Planet.LODRebuild');
-      this.rebuildLODMesh();
-      profiler.end('Planet.LODRebuild');
+    // BUT only if workers aren't actively building - otherwise we'd create holes
+    // by excluding tiles from LOD before detailed terrain is ready
+    // Use requestIdleCallback to avoid frame drops (LOD rebuild is expensive)
+    if (this.needsLODRebuild && !this.isWorkerBuildActive && !this.isLODWorkerBuildActive && !this.isLODRebuildScheduled) {
+      this.isLODRebuildScheduled = true;
+      // Use requestIdleCallback if available, otherwise setTimeout
+      const scheduleRebuild = (window as Window & { requestIdleCallback?: (cb: () => void) => void }).requestIdleCallback || ((cb: () => void) => setTimeout(cb, 0));
+      scheduleRebuild(() => {
+        // Double-check worker isn't active when callback fires
+        if (this.needsLODRebuild && !this.isLODWorkerBuildActive) {
+          profiler.begin('Planet.LODRebuild');
+          this.rebuildLODMesh();
+          profiler.end('Planet.LODRebuild');
+          // Note: needsLODRebuild is set to false in handleLODWorkerResult or at end of rebuildLODMesh
+        }
+        this.isLODRebuildScheduled = false;
+      });
+    }
+
+    // Rebuild water boundary walls (deferred to avoid frame spikes)
+    if (this.needsWaterWallsRebuild && !this.isWorkerBuildActive && !this.isWaterWallsScheduled) {
+      this.isWaterWallsScheduled = true;
+      const scheduleWaterWalls = (window as Window & { requestIdleCallback?: (cb: () => void) => void }).requestIdleCallback || ((cb: () => void) => setTimeout(cb, 0));
+      scheduleWaterWalls(() => {
+        if (this.needsWaterWallsRebuild) {
+          profiler.begin('Planet.waterWalls');
+          this.buildWaterBoundaryWalls();
+          profiler.end('Planet.waterWalls');
+          this.needsWaterWallsRebuild = false;
+        }
+        this.isWaterWallsScheduled = false;
+      });
     }
   }
 
@@ -1329,10 +1977,10 @@ export class Planet {
       this.batchedMeshGroup.add(this.waterMesh);
     }
 
-    // Generate water boundary walls (reuse extracted method)
+    // Schedule water boundary walls rebuild (deferred to avoid frame spike)
     const hasWater = this.config.hasWater !== false && !this.config.texturePath;
     if (hasWater) {
-      this.buildWaterBoundaryWalls();
+      this.needsWaterWallsRebuild = true;
     }
 
     this.needsRebatch = false;
@@ -1713,10 +2361,10 @@ export class Planet {
       this.batchedMeshGroup.add(this.waterMesh);
     }
 
-    // Generate water boundary walls
+    // Schedule water boundary walls rebuild (deferred to avoid frame spike)
     const hasWater = this.config.hasWater !== false && !this.config.texturePath;
     if (hasWater) {
-      this.buildWaterBoundaryWalls();
+      this.needsWaterWallsRebuild = true;
     }
 
     this.dirtyColumnsQueue.clear();
@@ -2010,6 +2658,11 @@ export class Planet {
     return this.BLOCK_HEIGHT;
   }
 
+  // Get max depth (total number of block layers)
+  public getMaxDepth(): number {
+    return this.MAX_DEPTH;
+  }
+
   public isInWater(position: THREE.Vector3): boolean {
     const tile = this.getTileAtPoint(position);
     if (!tile) return false;
@@ -2075,19 +2728,24 @@ export class Planet {
     const stepSize = 0.2; // Small steps for accuracy
     const rayDir = direction.clone().normalize();
     const testPoint = origin.clone();
-    let prevPoint = origin.clone();
+
+    // Get starting tile once (expensive full search)
+    const startTile = this.getTileAtPoint(origin);
+    if (!startTile) return null;
+
+    // Use hint-based fast lookup for subsequent steps
+    let currentTile = startTile;
 
     for (let dist = 0; dist < maxDistance; dist += stepSize) {
-      prevPoint.copy(testPoint);
       testPoint.copy(origin).addScaledVector(rayDir, dist);
 
-      const tile = this.getTileAtPoint(testPoint);
-      if (!tile) continue;
+      // Use fast BFS lookup from previous tile (much faster than full search)
+      currentTile = this.polyhedron.getTileAtPointFromHint(testPoint.clone().sub(this.center), currentTile);
 
       const depth = this.getDepthAtPoint(testPoint);
       if (depth < 0 || depth >= this.MAX_DEPTH) continue;
 
-      const blockType = this.getBlock(tile.index, depth);
+      const blockType = this.getBlock(currentTile.index, depth);
       // Skip air blocks, and skip water unless includeWater is true
       if (blockType === HexBlockType.AIR) continue;
       if (blockType === HexBlockType.WATER && !includeWater) continue;
@@ -2096,7 +2754,7 @@ export class Planet {
       const normal = testPoint.clone().sub(this.center).normalize();
 
       return {
-        tileIndex: tile.index,
+        tileIndex: currentTile.index,
         depth,
         blockType,
         point: testPoint.clone(),
