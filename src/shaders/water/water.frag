@@ -38,6 +38,9 @@ uniform float scrollSpeed;
 uniform float causticStrength;
 uniform float foamStrength;
 
+// Depth fog toggle (disabled on mobile for performance)
+uniform float useDepthFog;
+
 varying vec3 vWorldPosition;
 varying vec3 vNormal;
 varying vec3 vViewDirection;
@@ -102,39 +105,43 @@ void main() {
   // Use baseUv for other effects
   vec2 finalUv = baseUv;
 
-  // Calculate screen coordinates for depth sampling
-  vec2 screenCoord = gl_FragCoord.xy / resolution;
-
-  // Sample scene depth (terrain behind water) - this is z-distance in view space
-  float sceneDepthRaw = texture2D(depthTexture, screenCoord).r;
-  float sceneDepthZ = linearizeDepth(sceneDepthRaw);
-  float waterSurfaceDepthZ = linearizeDepth(gl_FragCoord.z);
-
-  // Convert z-depths to actual world-space distances from camera
-  // For a perspective camera: worldDist = zDepth / cos(angle) = zDepth / dot(viewDir, cameraForward)
-  // But we can simplify: worldDist = zDepth * (1 / cos(angle))
-  // The view direction is normalized, so we need to account for the angle from center
-  // Actually, for each pixel: worldDistance = zDepth / dot(normalize(viewRay), cameraForward)
-  // Since vViewDirection is the direction TO the camera, we use it directly
-  // The ratio between z-depth and world distance is the same for water surface and scene
-  // So: sceneWorldDist / waterWorldDist = sceneDepthZ / waterSurfaceDepthZ
-  // And: waterWorldDist = vDepth (we already have this from vertex shader)
-  // Therefore: sceneWorldDist = vDepth * (sceneDepthZ / waterSurfaceDepthZ)
-
-  float sceneWorldDist = vDepth * (sceneDepthZ / max(waterSurfaceDepthZ, 0.001));
-  float underwaterWorldDist = max(0.0, sceneWorldDist - vDepth);
-
   // Fog factor and color based on whether camera is above or below water
   float depthFogFactor = 0.0;
-  vec3 currentFogColor;
-  if (isUnderwater < 0.5) {
-    // Above water: fog based on distance light travels through water to reach terrain
-    depthFogFactor = clamp((underwaterWorldDist - aboveWaterFogNear) / (aboveWaterFogFar - aboveWaterFogNear), 0.0, 1.0);
-    currentFogColor = aboveWaterFogColor;
-  } else {
-    // Underwater: fog based on distance from camera to water surface
-    depthFogFactor = clamp((vDepth - underwaterFogNear) / (underwaterFogFar - underwaterFogNear), 0.0, 1.0);
-    currentFogColor = underwaterFogColor;
+  vec3 currentFogColor = aboveWaterFogColor;
+
+  // Only calculate depth-based fog if enabled (disabled on mobile for performance)
+  if (useDepthFog > 0.5) {
+    // Calculate screen coordinates for depth sampling
+    vec2 screenCoord = gl_FragCoord.xy / resolution;
+
+    // Sample scene depth (terrain behind water) - this is z-distance in view space
+    float sceneDepthRaw = texture2D(depthTexture, screenCoord).r;
+    float sceneDepthZ = linearizeDepth(sceneDepthRaw);
+    float waterSurfaceDepthZ = linearizeDepth(gl_FragCoord.z);
+
+    // Convert z-depths to actual world-space distances from camera
+    // For a perspective camera: worldDist = zDepth / cos(angle) = zDepth / dot(viewDir, cameraForward)
+    // But we can simplify: worldDist = zDepth * (1 / cos(angle))
+    // The view direction is normalized, so we need to account for the angle from center
+    // Actually, for each pixel: worldDistance = zDepth / dot(normalize(viewRay), cameraForward)
+    // Since vViewDirection is the direction TO the camera, we use it directly
+    // The ratio between z-depth and world distance is the same for water surface and scene
+    // So: sceneWorldDist / waterWorldDist = sceneDepthZ / waterSurfaceDepthZ
+    // And: waterWorldDist = vDepth (we already have this from vertex shader)
+    // Therefore: sceneWorldDist = vDepth * (sceneDepthZ / waterSurfaceDepthZ)
+
+    float sceneWorldDist = vDepth * (sceneDepthZ / max(waterSurfaceDepthZ, 0.001));
+    float underwaterWorldDist = max(0.0, sceneWorldDist - vDepth);
+
+    if (isUnderwater < 0.5) {
+      // Above water: fog based on distance light travels through water to reach terrain
+      depthFogFactor = clamp((underwaterWorldDist - aboveWaterFogNear) / (aboveWaterFogFar - aboveWaterFogNear), 0.0, 1.0);
+      currentFogColor = aboveWaterFogColor;
+    } else {
+      // Underwater: fog based on distance from camera to water surface
+      depthFogFactor = clamp((vDepth - underwaterFogNear) / (underwaterFogFar - underwaterFogNear), 0.0, 1.0);
+      currentFogColor = underwaterFogColor;
+    }
   }
 
   // Fresnel effect - more reflection at grazing angles

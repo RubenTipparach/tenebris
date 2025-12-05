@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { InputManager, InputState } from '../engine/InputManager';
+import { PlayerConfig } from '../config/PlayerConfig';
 
 export class Player {
   public camera: THREE.PerspectiveCamera;
@@ -64,8 +65,9 @@ export class Player {
   private handleMouseLook(input: InputState): void {
     if (!this.inputManager.isLocked()) return;
 
+    const yInvert = PlayerConfig.INVERT_Y_AXIS ? -1 : 1;
     this.yaw -= input.mouseX * this.MOUSE_SENSITIVITY;
-    this.pitch -= input.mouseY * this.MOUSE_SENSITIVITY;
+    this.pitch -= input.mouseY * this.MOUSE_SENSITIVITY * yInvert;
 
     // Clamp pitch to prevent flipping
     this.pitch = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, this.pitch));

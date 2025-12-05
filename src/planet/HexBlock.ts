@@ -226,7 +226,8 @@ export class HexBlockMeshBuilder {
         depthTexture: { value: null },
         cameraNear: { value: 0.1 },
         cameraFar: { value: 2000 },
-        resolution: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) }
+        resolution: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) },
+        useDepthFog: { value: 1.0 } // 1.0 = use depth-based fog, 0.0 = disabled (mobile)
       },
       vertexShader: waterVert,
       fragmentShader: waterFrag,

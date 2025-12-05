@@ -28,6 +28,7 @@ export const PlayerConfig = {
 
   // Camera
   MOUSE_SENSITIVITY: 0.002,
+  INVERT_Y_AXIS: false,        // Invert vertical mouse look (true = pull down to look up)
   ROLL_SPEED: 2, // Roll speed in space (Q/E)
 
   // Gravity transition
@@ -37,7 +38,7 @@ export const PlayerConfig = {
   // Player dimensions
   PLAYER_HEIGHT: 1.8,
   PLAYER_EYE_HEIGHT: 1.6,
-  PLAYER_RADIUS: 0.8, // Collision radius for wall detection (matches picotron)
+  PLAYER_RADIUS: 0.2, // Collision radius for wall detection (matches picotron)
 
   // Jetpack
   JETPACK_FORCE: 25,

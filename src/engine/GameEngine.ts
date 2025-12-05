@@ -3,6 +3,7 @@ import { PlayerConfig } from '../config/PlayerConfig';
 import skyboxVert from '../shaders/skybox/skybox.vert';
 import skyboxFrag from '../shaders/skybox/skybox.frag';
 import { profiler } from './Profiler';
+import { isMobileDevice } from './InputManager';
 
 // Create starfield shader material for background
 function createStarfieldMaterial(): THREE.ShaderMaterial {
@@ -31,13 +32,17 @@ export class GameEngine {
   private isUnderwater: boolean = false;
   private underwaterFog: THREE.Fog | null = null;
 
-  // Depth buffer for underwater fog
+  // Depth buffer for underwater fog (disabled on mobile for performance)
   private depthRenderTarget: THREE.WebGLRenderTarget | null = null;
   private waterMaterials: THREE.ShaderMaterial[] = [];
+  private readonly isMobile: boolean;
 
   private updateCallbacks: ((deltaTime: number) => void)[] = [];
 
   constructor(container: HTMLElement) {
+    // Detect mobile for performance optimizations
+    this.isMobile = isMobileDevice();
+
     // Scene setup
     this.scene = new THREE.Scene();
     // No fog for space/planet view
@@ -59,8 +64,10 @@ export class GameEngine {
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     container.appendChild(this.renderer.domElement);
 
-    // Create depth render target for underwater fog
-    this.createDepthRenderTarget();
+    // Create depth render target for underwater fog (skip on mobile for performance)
+    if (!this.isMobile) {
+      this.createDepthRenderTarget();
+    }
 
     // Clock for delta time
     this.clock = new THREE.Clock();
@@ -179,6 +186,10 @@ export class GameEngine {
       material.uniforms.cameraNear = { value: this.camera.near };
       material.uniforms.cameraFar = { value: this.camera.far };
       material.uniforms.resolution = { value: new THREE.Vector2(window.innerWidth, window.innerHeight) };
+      material.uniforms.useDepthFog = { value: 1.0 };
+    } else {
+      // No depth render target (mobile) - disable depth-based fog
+      material.uniforms.useDepthFog = { value: 0.0 };
     }
   }
 

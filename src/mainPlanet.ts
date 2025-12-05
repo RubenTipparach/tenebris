@@ -188,6 +188,7 @@ class PlanetGame {
     const atmosphereToggle = document.getElementById('toggle-atmosphere') as HTMLInputElement;
     const cloudsToggle = document.getElementById('toggle-clouds') as HTMLInputElement;
     const jetpackToggle = document.getElementById('toggle-jetpack') as HTMLInputElement;
+    const invertYToggle = document.getElementById('toggle-invert-y') as HTMLInputElement;
     const teleportSelect = document.getElementById('teleport-select') as HTMLSelectElement;
 
     // Setup tab switching
@@ -219,6 +220,15 @@ class PlanetGame {
 
       jetpackToggle.addEventListener('change', () => {
         this.player.setJetpackEnabled(jetpackToggle.checked);
+      });
+    }
+
+    // Invert Y axis toggle
+    if (invertYToggle) {
+      invertYToggle.checked = PlayerConfig.INVERT_Y_AXIS;
+
+      invertYToggle.addEventListener('change', () => {
+        PlayerConfig.INVERT_Y_AXIS = invertYToggle.checked;
       });
     }
 
