@@ -208,6 +208,19 @@ export class PlanetTreeManager {
     return null;
   }
 
+  // Get all tree meshes for raycasting (avoids scene traversal)
+  public getTreeMeshes(): THREE.Mesh[] {
+    const meshes: THREE.Mesh[] = [];
+    for (const tree of this.trees) {
+      tree.traverse((child) => {
+        if (child instanceof THREE.Mesh && child.userData.isTree) {
+          meshes.push(child);
+        }
+      });
+    }
+    return meshes;
+  }
+
   // Scatter trees randomly on planet surface
   public scatterTrees(
     planetCenter: THREE.Vector3,

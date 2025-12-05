@@ -211,13 +211,8 @@ export class PlanetBlockInteraction {
     this.raycaster.set(origin, direction);
     this.raycaster.far = this.MAX_REACH;
 
-    // Get tree meshes only
-    const treeMeshes: THREE.Object3D[] = [];
-    this.scene.traverse((object) => {
-      if (object instanceof THREE.Mesh && object.userData.isTree) {
-        treeMeshes.push(object);
-      }
-    });
+    // Get tree meshes from tree manager (avoids expensive scene traversal)
+    const treeMeshes = this.treeManager?.getTreeMeshes() ?? [];
 
     const treeIntersects = this.raycaster.intersectObjects(treeMeshes, false);
 

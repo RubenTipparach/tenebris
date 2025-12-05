@@ -3,10 +3,10 @@
 export const PlayerConfig = {
   // Lighting
   AMBIENT_LIGHT_INTENSITY: 0.05,      // Base ambient light (space darkness)
-  DIRECTIONAL_LIGHT_INTENSITY: 5.0,   // Sun intensity
+  DIRECTIONAL_LIGHT_INTENSITY: 2.0,   // Sun intensity
   HEMISPHERE_LIGHT_INTENSITY: 0.01,    // Sky/ground color blend
   SUN_DIRECTION: { x: 1, y: 0.5, z: 0.3 }, // Normalized direction TO the sun
-  VERTEX_LIGHTING_ENABLED: false,      // Bake position-based day/night lighting into vertex colors
+  VERTEX_LIGHTING_ENABLED: true,      // Bake position-based day/night lighting into vertex colors
 
   // Movement
   WALK_SPEED: 4,                  // Base walk speed (reduced from 8)
@@ -56,29 +56,35 @@ export const PlayerConfig = {
   WATER_SURFACE_OFFSET: 0.1,       // How much lower water sits below surrounding land (units)
 
   // Water shader (close-up only)
-  WATER_COLOR: "#3399cc",          // Base water color
+  WATER_COLOR: "#1a5577",          // Base water color
   WATER_DEEP_COLOR: "#1a5577",     // Deep water color
-  WATER_WAVE_AMPLITUDE: 0.02,      // Height of wave animation
-  WATER_WAVE_FREQUENCY: 0.5,       // Frequency of waves
+  WATER_WAVE_AMPLITUDE: 0.00,      // Height of wave animation
+  WATER_WAVE_FREQUENCY: 0.0,       // Frequency of waves
   WATER_FRESNEL_POWER: 3.0,        // Fresnel effect intensity (higher = more reflection at edges)
-  WATER_REFLECTION_STRENGTH: 0.4,  // How strong reflections appear
-  WATER_DISTORTION_STRENGTH: 0.02, // UV distortion for ripple effect
+  WATER_REFLECTION_STRENGTH: 0.2,  // How strong reflections appear
+  WATER_DISTORTION_STRENGTH: 0.8,  // UV distortion for ripple effect
   WATER_SPECULAR_POWER: 64.0,      // Sharpness of sun reflection
   WATER_SPECULAR_STRENGTH: 1.5,    // Intensity of sun reflection
-  WATER_FOG_NEAR: 0,               // Water fog starts at this distance
-  WATER_FOG_FAR: 10,               // Water fog fully opaque at this distance
-  WATER_DEPTH_FOG_DENSITY: 0.5,    // How quickly water gets murky with depth (higher = faster falloff)
 
   // Water texture vs procedural balance
   WATER_TEXTURE_STRENGTH: 0.7,     // How much the texture contributes (0 = none, 1 = full)
   WATER_SCROLL_SPEED: 0.03,        // Speed of texture scrolling animation
   WATER_CAUSTIC_STRENGTH: 0.08,    // Strength of procedural caustic shimmer effect
-  WATER_FOAM_STRENGTH: 0.5,        // Strength of foam at shallow edges
+  WATER_FOAM_STRENGTH: 0.1,        // Strength of foam at shallow edges
 
-  // Underwater fog
-  UNDERWATER_FOG_COLOR: "#1c5eac",  // Underwater fog color (hex string)
-  UNDERWATER_FOG_NEAR: 0,          // Fog starts at this distance from camera
+  // Underwater fog (when camera is below water surface)
+  UNDERWATER_FOG_COLOR: "#1a5577",  // Fog color when underwater
+  UNDERWATER_FOG_NEAR: 0,          // Fog starts at this distance
   UNDERWATER_FOG_FAR: 10,          // Fog fully opaque at this distance
+  UNDERWATER_TERRAIN_DIMMING: 0.3, // How quickly terrain dims underwater (light absorption)
+
+  // Above water depth fog (looking down through water surface)
+  ABOVE_WATER_FOG_COLOR: "#1a5577", // Fog color for terrain seen through water from above
+  ABOVE_WATER_FOG_NEAR: 0,          // Fog starts at this depth
+  ABOVE_WATER_FOG_FAR: 10,          // Fog fully opaque at this depth
+
+  // Sea wall (boundary wall at edge of detailed terrain when underwater)
+  SEA_WALL_COLOR: "#03172F",        // Color of underwater boundary walls
 
   // Atmosphere (GPU Gems 2 style scattering)
   ATMOSPHERE_ENABLED: true,           // Toggle atmosphere rendering on/off
@@ -92,7 +98,7 @@ export const PlayerConfig = {
   ATMOSPHERE_LIGHT_SAMPLES: 4,        // Number of light samples per ray step
 
   // Terrain rendering & streaming
-  TERRAIN_MIN_RENDER_DISTANCE: 16,    // Min tiles to render when on ground
+  TERRAIN_MIN_RENDER_DISTANCE: 12,    // Min tiles to render when on ground
   TERRAIN_MAX_RENDER_DISTANCE: 24,    // Max tiles when at high altitude
   TERRAIN_LOD_SWITCH_ALTITUDE: 50,    // Altitude above which only LOD mesh is shown
   TERRAIN_BUFFER_ZONE: 8,             // Tiles player can move before triggering rebuild

@@ -249,6 +249,32 @@
       background: #3d8b40;
     }
 
+    /* Teleport dropdown */
+    .teleport-select {
+      padding: 6px 12px;
+      background: #333;
+      color: white;
+      border: 1px solid #555;
+      border-radius: 4px;
+      font-family: 'Courier New', monospace;
+      font-size: 12px;
+      cursor: pointer;
+      outline: none;
+    }
+
+    .teleport-select:hover {
+      border-color: #777;
+    }
+
+    .teleport-select:focus {
+      border-color: #4CAF50;
+    }
+
+    .teleport-select option {
+      background: #333;
+      color: white;
+    }
+
     /* Mining progress bar */
     #mining-progress-container {
       position: fixed;
@@ -505,6 +531,13 @@
           <input type="checkbox" id="toggle-clouds" checked>
           <span class="toggle-slider"></span>
         </div>
+      </div>
+      <div class="settings-row">
+        <label for="teleport-select">Teleport</label>
+        <select id="teleport-select" class="teleport-select">
+          <option value="earth">Earth</option>
+          <option value="moon">Moon</option>
+        </select>
       </div>
     </div>
 

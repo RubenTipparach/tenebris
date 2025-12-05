@@ -228,6 +228,13 @@ export class PlanetPlayer {
   }
 
   public update(deltaTime: number): void {
+    // Skip movement updates when menu is open (pointer not locked)
+    if (!this.inputManager.isLocked()) {
+      // Still update camera position to match player
+      this.updateCamera();
+      return;
+    }
+
     const input = this.inputManager.getState();
 
     // Check gravity and determine flight mode
@@ -697,9 +704,9 @@ export class PlanetPlayer {
   private checkCollision(newPosition: THREE.Vector3): boolean {
     if (!this.currentPlanet) return false;
 
-    // Only check step height when grounded AND actually changing tiles
-    // This allows free movement within the current tile
-    if (this.isGrounded) {
+    // Only check step height when grounded AND actually changing tiles AND not underwater
+    // This allows free movement within the current tile, and swimming over terrain underwater
+    if (this.isGrounded && !this.isInWater) {
       const currentTile = this.currentPlanet.getTileAtPoint(this.position);
       const newTile = this.currentPlanet.getTileAtPoint(newPosition);
 
@@ -794,6 +801,26 @@ export class PlanetPlayer {
     const actualUp = this.currentPlanet.getSurfaceNormal(position);
     const playerDist = position.distanceTo(this.currentPlanet.center);
 
+    // Find the deepest solid block at this position to establish an absolute floor
+    const tile = this.currentPlanet.getTileAtPoint(position);
+    if (tile) {
+      let deepestSolidDepth = -1;
+      for (let d = 0; d < 16; d++) {
+        const block = this.currentPlanet.getBlock(tile.index, d);
+        if (block !== HexBlockType.AIR && block !== HexBlockType.WATER) {
+          deepestSolidDepth = d;
+          // Don't break - we want the DEEPEST solid block, not the first
+        }
+      }
+      // If there's solid ground, ensure player doesn't go below the bottom of it
+      if (deepestSolidDepth >= 0) {
+        const floorRadius = this.currentPlanet.radius - deepestSolidDepth - 1; // Bottom of deepest block
+        if (playerDist < floorRadius) {
+          return false; // Below the absolute floor
+        }
+      }
+    }
+
     // Check collision at multiple heights along the capsule
     const checkOffsets = [0, PlayerConfig.PLAYER_HEIGHT * 0.5, PlayerConfig.PLAYER_HEIGHT - 0.1];
 
@@ -802,14 +829,14 @@ export class PlanetPlayer {
       const checkPos = this.currentPlanet.center.clone()
         .add(actualUp.clone().multiplyScalar(checkRadius));
 
-      const tile = this.currentPlanet.getTileAtPoint(checkPos);
-      if (!tile) continue;
+      const checkTile = this.currentPlanet.getTileAtPoint(checkPos);
+      if (!checkTile) continue;
 
       const depth = Math.floor((this.currentPlanet.radius - checkRadius) / 1);
       if (depth < 0 || depth >= 16) continue;
 
       // Check if inside a solid block (not AIR and not WATER - water is passable)
-      const block = this.currentPlanet.getBlock(tile.index, depth);
+      const block = this.currentPlanet.getBlock(checkTile.index, depth);
       if (block !== HexBlockType.AIR && block !== HexBlockType.WATER) {
         const blockOuterRadius = this.currentPlanet.radius - depth;
         if (checkRadius < blockOuterRadius) {
@@ -843,7 +870,16 @@ export class PlanetPlayer {
         // Player is inside this solid block - push them up to stand on top
         const safeRadius = blockOuterRadius + PlayerConfig.PLAYER_HEIGHT + 0.1;
         this.position.copy(this.currentPlanet.center).addScaledVector(actualUp, safeRadius);
-        this.velocity.set(0, 0, 0); // Reset velocity when unsticking
+        // When underwater, just stop downward velocity rather than all velocity
+        // This allows continued horizontal swimming movement
+        if (this.isInWater) {
+          const upComponent = this.velocity.dot(actualUp);
+          if (upComponent < 0) {
+            this.velocity.sub(actualUp.clone().multiplyScalar(upComponent));
+          }
+        } else {
+          this.velocity.set(0, 0, 0); // Reset velocity when unsticking on land
+        }
         return;
       }
     }
@@ -993,8 +1029,9 @@ export class PlanetPlayer {
       const newTargetRadius = newGroundRadius + PlayerConfig.PLAYER_HEIGHT;
 
       // Check if this would be stepping UP (blocked by AUTO_STEP_HEIGHT)
+      // But when underwater, disable step blocking - player should swim freely over terrain
       const heightDiff = newGroundRadius - groundRadius;
-      const wouldStepUp = heightDiff > PlayerConfig.AUTO_STEP_HEIGHT;
+      const wouldStepUp = !this.isInWater && heightDiff > PlayerConfig.AUTO_STEP_HEIGHT;
 
       // Check if we would go below ground
       if (newGroundDepth >= 0 && newDist <= newTargetRadius) {
@@ -1018,9 +1055,11 @@ export class PlanetPlayer {
             this.velocity.sub(landingDir.clone().multiplyScalar(upComponent));
           }
 
-          // Check for jump drift after snapping
-          this.checkJumpDrift();
-          this.isGrounded = true;
+          // Check for jump drift after snapping (only when not in water)
+          if (!this.isInWater) {
+            this.checkJumpDrift();
+          }
+          this.isGrounded = !this.isInWater; // Don't mark grounded when landing underwater
         }
       } else {
         // Continue falling/moving - check both capsule collision AND wall collision

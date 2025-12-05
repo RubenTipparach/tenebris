@@ -106,6 +106,11 @@ export class Planet {
 
   public async initialize(): Promise<void> {
     await this.meshBuilder.loadTextures(this.config.texturePath);
+    // Set planet center for terrain shader lighting calculations
+    this.meshBuilder.setPlanetCenter(this.center);
+    // Set water level for terrain shader underwater dimming
+    const waterSurfaceRadius = this.radius - this.SEA_LEVEL * this.BLOCK_HEIGHT - PlayerConfig.WATER_SURFACE_OFFSET;
+    this.meshBuilder.setWaterLevel(waterSurfaceRadius);
     this.generateTerrain();
     this.createLODMesh();
     this.createDistantLODMeshes();
@@ -262,11 +267,10 @@ export class Planet {
               positions.push(outerV2.x, outerV2.y, outerV2.z);
               positions.push(outerV1.x, outerV1.y, outerV1.z);
 
-              // Calculate side normal (same as HexBlock)
-              const edge = outerV2.clone().sub(outerV1).normalize();
-              const midPoint = outerV1.clone().add(outerV2).multiplyScalar(0.5);
-              const sideNormal = midPoint.clone().normalize();
-              sideNormal.sub(edge.clone().multiplyScalar(sideNormal.dot(edge))).normalize();
+              // Calculate side normal using cross product of quad edges
+              const edge1 = innerV2.clone().sub(innerV1); // horizontal edge
+              const edge2 = outerV1.clone().sub(innerV1); // vertical edge
+              const sideNormal = edge1.clone().cross(edge2).normalize();
 
               normals.push(sideNormal.x, sideNormal.y, sideNormal.z);
               normals.push(sideNormal.x, sideNormal.y, sideNormal.z);
@@ -523,11 +527,10 @@ export class Planet {
         const outerV2 = v2.clone().normalize().multiplyScalar(thisRadius);
         const outerV1 = v1.clone().normalize().multiplyScalar(thisRadius);
 
-        // Calculate side normal (same as HexBlock)
-        const edge = outerV2.clone().sub(outerV1).normalize();
-        const midPoint = outerV1.clone().add(outerV2).multiplyScalar(0.5);
-        const sideNormal = midPoint.clone().normalize();
-        sideNormal.sub(edge.clone().multiplyScalar(sideNormal.dot(edge))).normalize();
+        // Calculate side normal using cross product of quad edges
+        const edge1 = innerV2.clone().sub(innerV1); // horizontal edge
+        const edge2 = outerV1.clone().sub(innerV1); // vertical edge
+        const sideNormal = edge1.clone().cross(edge2).normalize();
 
         // Select appropriate buffer based on whether this is a water tile
         const positions = thisIsWater ? waterSidePositions : sidePositions;
@@ -631,11 +634,10 @@ export class Planet {
         const outerV2 = v2.clone().normalize().multiplyScalar(topRadius);
         const outerV1 = v1.clone().normalize().multiplyScalar(topRadius);
 
-        // Calculate side normal (pointing toward detailed terrain, away from LOD)
-        const edge = outerV2.clone().sub(outerV1).normalize();
-        const midPoint = outerV1.clone().add(outerV2).multiplyScalar(0.5);
-        const sideNormal = midPoint.clone().normalize();
-        sideNormal.sub(edge.clone().multiplyScalar(sideNormal.dot(edge))).normalize();
+        // Calculate side normal using cross product of quad edges
+        const edge1 = innerV2.clone().sub(innerV1); // horizontal edge
+        const edge2 = outerV1.clone().sub(innerV1); // vertical edge
+        const sideNormal = edge1.clone().cross(edge2).normalize();
 
         const baseIdx = waterSideVertexOffset;
 
@@ -820,6 +822,8 @@ export class Planet {
     if (this.batchedMeshGroup) {
       this.batchedMeshGroup.position.copy(this.center);
     }
+    // Update terrain shader planet center
+    this.meshBuilder.setPlanetCenter(this.center);
     // Update distant LOD mesh positions
     this.updateDistantLODPositions();
   }
@@ -1328,10 +1332,14 @@ export class Planet {
 
     // Generate water boundary walls at the edge of detailed terrain facing LOD
     // This prevents seeing through when underwater at the terrain/LOD boundary
+    // Skip for planets without water (single-texture planets like moon)
+    const hasWater = this.config.hasWater !== false && !this.config.texturePath;
     const waterBoundaryData = createEmptyGeometryData();
     const waterSurfaceRadius = this.radius - this.SEA_LEVEL * this.BLOCK_HEIGHT - PlayerConfig.WATER_SURFACE_OFFSET;
 
     for (const tileIndex of this.cachedNearbyTiles) {
+      if (!hasWater) break; // Skip entirely for planets without water
+
       const column = this.columns.get(tileIndex);
       if (!column) continue;
 
@@ -1389,11 +1397,12 @@ export class Planet {
         const outerV2 = v2.clone().normalize().multiplyScalar(topRadius);
         const outerV1 = v1.clone().normalize().multiplyScalar(topRadius);
 
-        // Normal pointing outward (toward LOD)
-        const edge = outerV2.clone().sub(outerV1).normalize();
-        const midPoint = outerV1.clone().add(outerV2).multiplyScalar(0.5);
-        const sideNormal = midPoint.clone().normalize();
-        sideNormal.sub(edge.clone().multiplyScalar(sideNormal.dot(edge))).normalize();
+        // Calculate face normal using cross product of edges
+        // Edge1: from innerV1 to innerV2 (horizontal edge at bottom)
+        // Edge2: from innerV1 to outerV1 (vertical edge going up)
+        const edge1 = innerV2.clone().sub(innerV1);
+        const edge2 = outerV1.clone().sub(innerV1);
+        const sideNormal = edge1.clone().cross(edge2).normalize();
 
         const baseIdx = waterBoundaryData.vertexOffset;
 
@@ -1417,17 +1426,15 @@ export class Planet {
       }
     }
 
-    // Add water boundary walls mesh - solid color matching underwater fog
+    // Add water boundary walls mesh - solid color boundary
     if (waterBoundaryData.positions.length > 0) {
       const geom = this.createBufferGeometry(waterBoundaryData);
-      const fogColor = new THREE.Color(PlayerConfig.UNDERWATER_FOG_COLOR);
-      const boundaryMaterial = new THREE.MeshBasicMaterial({
-        color: fogColor,
-        side: THREE.DoubleSide
-      });
-      const boundaryMesh = new THREE.Mesh(geom, boundaryMaterial);
-      boundaryMesh.renderOrder = 1;
-      this.batchedMeshGroup.add(boundaryMesh);
+      const seaWallMaterial = this.meshBuilder.getSeaWallMaterial();
+      if (seaWallMaterial) {
+        const boundaryMesh = new THREE.Mesh(geom, seaWallMaterial);
+        boundaryMesh.renderOrder = 2; // Render after water (renderOrder 1)
+        this.batchedMeshGroup.add(boundaryMesh);
+      }
     }
 
     this.needsRebatch = false;
@@ -1538,10 +1545,16 @@ export class Planet {
 
   public updateWaterShader(time: number, isUnderwater: boolean = false): void {
     this.meshBuilder.updateWaterShader(time, this.center, isUnderwater);
+    // Also update terrain shader underwater state for fog
+    this.meshBuilder.setTerrainUnderwater(isUnderwater);
   }
 
   public setSunDirection(dir: THREE.Vector3): void {
     this.meshBuilder.setSunDirection(dir);
+  }
+
+  public getWaterShaderMaterial(): THREE.ShaderMaterial | null {
+    return this.meshBuilder.getWaterShaderMaterial();
   }
 
   private getTilesInRange(centerTileIndex: number, range: number): Set<number> {
@@ -1718,12 +1731,20 @@ export class Planet {
     const queue: { tileIndex: number, depth: number }[] = [{ tileIndex: startTileIndex, depth: startDepth }];
     const basinCells: { tileIndex: number, depth: number, isWater: boolean }[] = [];
 
+    // Limit basin size to prevent freeze when digging into large bodies of water (like ocean)
+    const MAX_BASIN_CELLS = 500;
+
     while (queue.length > 0) {
       const { tileIndex, depth } = queue.shift()!;
       const key = `${tileIndex}-${depth}`;
 
       if (visited.has(key)) continue;
       visited.add(key);
+
+      // Stop if basin is too large - likely connected to ocean
+      if (visited.size > MAX_BASIN_CELLS) {
+        return; // Abort water rebalancing for large bodies of water
+      }
 
       const column = this.columns.get(tileIndex);
       if (!column || depth < 0 || depth >= column.blocks.length) continue;

@@ -9,7 +9,6 @@ varying vec3 vNormal;
 varying vec3 vViewDirection;
 varying vec2 vUv;
 varying float vDepth;
-varying vec4 vScreenPos;
 
 void main() {
   vUv = uv;
@@ -53,10 +52,6 @@ void main() {
   // Depth for fog (distance from camera)
   vDepth = length(cameraPosition - displacedPos);
 
-  // Calculate screen position for depth texture sampling
-  vec4 clipPos = projectionMatrix * viewMatrix * vec4(displacedPos, 1.0);
-  vScreenPos = clipPos;
-
   // Final position
-  gl_Position = clipPos;
+  gl_Position = projectionMatrix * viewMatrix * vec4(displacedPos, 1.0);
 }

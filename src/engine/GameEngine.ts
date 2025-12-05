@@ -31,6 +31,10 @@ export class GameEngine {
   private isUnderwater: boolean = false;
   private underwaterFog: THREE.Fog | null = null;
 
+  // Depth buffer for underwater fog
+  private depthRenderTarget: THREE.WebGLRenderTarget | null = null;
+  private waterMaterials: THREE.ShaderMaterial[] = [];
+
   private updateCallbacks: ((deltaTime: number) => void)[] = [];
 
   constructor(container: HTMLElement) {
@@ -54,6 +58,9 @@ export class GameEngine {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     container.appendChild(this.renderer.domElement);
+
+    // Create depth render target for underwater fog
+    this.createDepthRenderTarget();
 
     // Clock for delta time
     this.clock = new THREE.Clock();
@@ -127,14 +134,58 @@ export class GameEngine {
     this.scene.add(hemisphereLight);
   }
 
+  private createDepthRenderTarget(): void {
+    const pixelRatio = this.renderer.getPixelRatio();
+    const width = Math.floor(window.innerWidth * pixelRatio);
+    const height = Math.floor(window.innerHeight * pixelRatio);
+
+    this.depthRenderTarget = new THREE.WebGLRenderTarget(width, height, {
+      minFilter: THREE.NearestFilter,
+      magFilter: THREE.NearestFilter,
+      type: THREE.FloatType,
+      depthBuffer: true,
+      depthTexture: new THREE.DepthTexture(width, height, THREE.FloatType),
+    });
+  }
+
   private onWindowResize(): void {
     this.camera.aspect = window.innerWidth / window.innerHeight;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(window.innerWidth, window.innerHeight);
+
+    // Recreate depth render target with new size
+    if (this.depthRenderTarget) {
+      this.depthRenderTarget.dispose();
+      this.createDepthRenderTarget();
+      this.updateWaterDepthUniforms();
+    }
   }
 
   public onUpdate(callback: (deltaTime: number) => void): void {
     this.updateCallbacks.push(callback);
+  }
+
+  // Register a water shader material to receive depth texture updates
+  public registerWaterMaterial(material: THREE.ShaderMaterial): void {
+    if (!this.waterMaterials.includes(material)) {
+      this.waterMaterials.push(material);
+      this.updateWaterMaterialUniforms(material);
+    }
+  }
+
+  private updateWaterMaterialUniforms(material: THREE.ShaderMaterial): void {
+    if (this.depthRenderTarget) {
+      material.uniforms.depthTexture = { value: this.depthRenderTarget.depthTexture };
+      material.uniforms.cameraNear = { value: this.camera.near };
+      material.uniforms.cameraFar = { value: this.camera.far };
+      material.uniforms.resolution = { value: new THREE.Vector2(window.innerWidth, window.innerHeight) };
+    }
+  }
+
+  private updateWaterDepthUniforms(): void {
+    for (const material of this.waterMaterials) {
+      this.updateWaterMaterialUniforms(material);
+    }
   }
 
   public start(): void {
@@ -175,8 +226,35 @@ export class GameEngine {
       this.starfield.position.copy(this.camera.position);
     }
 
-    // Render
+    // Render with depth pre-pass for underwater fog
     profiler.begin('Render');
+
+    // Depth pre-pass: render scene to depth buffer (hide water temporarily)
+    if (this.depthRenderTarget && this.waterMaterials.length > 0) {
+      // Hide water meshes during depth pass
+      const waterVisibility: boolean[] = [];
+      this.scene.traverse((obj) => {
+        if (obj instanceof THREE.Mesh && this.waterMaterials.includes(obj.material as THREE.ShaderMaterial)) {
+          waterVisibility.push(obj.visible);
+          obj.visible = false;
+        }
+      });
+
+      // Render to depth target
+      this.renderer.setRenderTarget(this.depthRenderTarget);
+      this.renderer.render(this.scene, this.camera);
+      this.renderer.setRenderTarget(null);
+
+      // Restore water visibility
+      let i = 0;
+      this.scene.traverse((obj) => {
+        if (obj instanceof THREE.Mesh && this.waterMaterials.includes(obj.material as THREE.ShaderMaterial)) {
+          obj.visible = waterVisibility[i++];
+        }
+      });
+    }
+
+    // Main render pass
     this.renderer.render(this.scene, this.camera);
     profiler.end('Render');
 

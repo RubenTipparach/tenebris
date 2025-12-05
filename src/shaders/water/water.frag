@@ -14,12 +14,23 @@ uniform float specularStrength;
 uniform sampler2D waterTexture;
 uniform float uvTiling;
 
-// Depth fog uniforms
-uniform vec3 fogColor;
-uniform float fogNear;
-uniform float fogFar;
-uniform float depthFogDensity;
+// Underwater fog uniforms (when camera is below water)
+uniform vec3 underwaterFogColor;
+uniform float underwaterFogNear;
+uniform float underwaterFogFar;
+
+// Above water fog uniforms (looking down through water surface)
+uniform vec3 aboveWaterFogColor;
+uniform float aboveWaterFogNear;
+uniform float aboveWaterFogFar;
+
 uniform float isUnderwater; // 1.0 if camera is underwater, 0.0 otherwise
+
+// Depth texture for underwater terrain fog (from above)
+uniform sampler2D depthTexture;
+uniform float cameraNear;
+uniform float cameraFar;
+uniform vec2 resolution;
 
 // Texture vs procedural balance
 uniform float textureStrength;
@@ -27,18 +38,17 @@ uniform float scrollSpeed;
 uniform float causticStrength;
 uniform float foamStrength;
 
-// Depth texture for underwater depth calculation
-uniform sampler2D depthTexture;
-uniform float cameraNear;
-uniform float cameraFar;
-uniform vec2 screenSize;
-
 varying vec3 vWorldPosition;
 varying vec3 vNormal;
 varying vec3 vViewDirection;
 varying vec2 vUv;
 varying float vDepth;
-varying vec4 vScreenPos;
+
+// Convert depth buffer value to linear depth
+float linearizeDepth(float depth) {
+  float z = depth * 2.0 - 1.0; // Back to NDC
+  return (2.0 * cameraNear * cameraFar) / (cameraFar + cameraNear - z * (cameraFar - cameraNear));
+}
 
 // Simple hash for pseudo-random
 float hash(vec2 p) {
@@ -74,12 +84,6 @@ float fbm(vec2 p) {
   return value;
 }
 
-// Convert depth buffer value to linear depth
-float linearizeDepth(float depth) {
-  float z = depth * 2.0 - 1.0; // Back to NDC
-  return (2.0 * cameraNear * cameraFar) / (cameraFar + cameraNear - z * (cameraFar - cameraNear));
-}
-
 void main() {
   // Animated UV - scroll texture in two directions and blend
   vec2 baseUv = vUv * uvTiling;
@@ -99,25 +103,39 @@ void main() {
   vec2 finalUv = baseUv;
 
   // Calculate screen coordinates for depth sampling
-  vec2 screenCoord = vScreenPos.xy / vScreenPos.w * 0.5 + 0.5;
+  vec2 screenCoord = gl_FragCoord.xy / resolution;
 
-  // Sample scene depth and calculate water depth
-  float sceneDepth = 1.0; // Default to max depth if no depth texture
-  float waterDepth = 0.0;
+  // Sample scene depth (terrain behind water) - this is z-distance in view space
+  float sceneDepthRaw = texture2D(depthTexture, screenCoord).r;
+  float sceneDepthZ = linearizeDepth(sceneDepthRaw);
+  float waterSurfaceDepthZ = linearizeDepth(gl_FragCoord.z);
 
-  #ifdef USE_DEPTH_TEXTURE
-    float rawDepth = texture2D(depthTexture, screenCoord).r;
-    sceneDepth = linearizeDepth(rawDepth);
-    float waterSurfaceDepth = linearizeDepth(gl_FragCoord.z);
-    waterDepth = max(0.0, sceneDepth - waterSurfaceDepth);
-  #else
-    // Fallback: use camera distance as approximate depth
-    waterDepth = vDepth * 0.1;
-  #endif
+  // Convert z-depths to actual world-space distances from camera
+  // For a perspective camera: worldDist = zDepth / cos(angle) = zDepth / dot(viewDir, cameraForward)
+  // But we can simplify: worldDist = zDepth * (1 / cos(angle))
+  // The view direction is normalized, so we need to account for the angle from center
+  // Actually, for each pixel: worldDistance = zDepth / dot(normalize(viewRay), cameraForward)
+  // Since vViewDirection is the direction TO the camera, we use it directly
+  // The ratio between z-depth and world distance is the same for water surface and scene
+  // So: sceneWorldDist / waterWorldDist = sceneDepthZ / waterSurfaceDepthZ
+  // And: waterWorldDist = vDepth (we already have this from vertex shader)
+  // Therefore: sceneWorldDist = vDepth * (sceneDepthZ / waterSurfaceDepthZ)
 
-  // Depth-based fog factor (how deep we're looking into the water)
-  float depthFogFactor = 1.0 - exp(-waterDepth * depthFogDensity);
-  depthFogFactor = clamp(depthFogFactor, 0.0, 1.0);
+  float sceneWorldDist = vDepth * (sceneDepthZ / max(waterSurfaceDepthZ, 0.001));
+  float underwaterWorldDist = max(0.0, sceneWorldDist - vDepth);
+
+  // Fog factor and color based on whether camera is above or below water
+  float depthFogFactor = 0.0;
+  vec3 currentFogColor;
+  if (isUnderwater < 0.5) {
+    // Above water: fog based on distance light travels through water to reach terrain
+    depthFogFactor = clamp((underwaterWorldDist - aboveWaterFogNear) / (aboveWaterFogFar - aboveWaterFogNear), 0.0, 1.0);
+    currentFogColor = aboveWaterFogColor;
+  } else {
+    // Underwater: fog based on distance from camera to water surface
+    depthFogFactor = clamp((vDepth - underwaterFogNear) / (underwaterFogFar - underwaterFogNear), 0.0, 1.0);
+    currentFogColor = underwaterFogColor;
+  }
 
   // Fresnel effect - more reflection at grazing angles
   float fresnel = pow(1.0 - max(dot(vNormal, vViewDirection), 0.0), fresnelPower);
@@ -137,44 +155,34 @@ void main() {
   // Combine reflection with sky and sun
   vec3 reflectionColor = skyColor + sunColor * specular;
 
-  // Depth-based water color (deeper = darker blue)
-  vec3 baseWaterColor = mix(waterColor, deepWaterColor, depthFogFactor);
+  // Base water color
+  vec3 baseWaterColor = mix(waterColor, deepWaterColor, 0.5);
 
   // Mix texture with base color using configurable texture strength
-  // textureStrength: 0 = pure water color, 1 = pure texture
-  vec3 texturedWater = mix(baseWaterColor, texColor.rgb, textureStrength * (1.0 - depthFogFactor * 0.5));
+  vec3 texturedWater = mix(baseWaterColor, texColor.rgb, textureStrength);
 
-  // Apply depth fog - blend toward fog color based on water depth
-  texturedWater = mix(texturedWater, fogColor, depthFogFactor * 0.6);
-
-  // Apply fresnel-based reflection blending (less reflection when looking deep)
-  float reflectionAmount = fresnel * reflectionStrength * (1.0 - depthFogFactor * 0.5);
+  // Apply fresnel-based reflection blending
+  float reflectionAmount = fresnel * reflectionStrength;
   vec3 finalColor = mix(texturedWater, reflectionColor, reflectionAmount);
 
-  // Add procedural caustic shimmer (configurable strength)
+  // Add procedural caustic shimmer
   float caustic = fbm(finalUv * 6.0 + time * 0.15) * causticStrength;
-  finalColor += vec3(caustic) * (1.0 - depthFogFactor);
+  finalColor += vec3(caustic);
 
-  // Edge foam effect (shallow water) with configurable strength
-  float shallowFactor = 1.0 - smoothstep(0.0, 0.5, waterDepth);
-  vec3 foamColor = vec3(0.9, 0.95, 1.0);
+  // Edge foam effect with configurable strength
   float foamNoise = fbm(finalUv * 15.0 + time * 0.3);
-  float foam = shallowFactor * smoothstep(0.4, 0.6, foamNoise) * foamStrength;
+  float foam = smoothstep(0.4, 0.6, foamNoise) * foamStrength;
+  vec3 foamColor = vec3(0.9, 0.95, 1.0);
   finalColor = mix(finalColor, foamColor, foam);
 
-  // Output with transparency - more opaque when looking into deeper water
+  // Base opacity with fresnel effect
   float finalOpacity = mix(opacity, 0.95, fresnel * 0.5);
-  finalOpacity = mix(finalOpacity, 1.0, depthFogFactor * 0.4);
 
-  // When underwater, apply distance-based fog to the water surface
-  if (isUnderwater > 0.5) {
-    // Calculate distance fog factor based on how far the water surface is from camera
-    float distanceFogFactor = smoothstep(fogNear, fogFar, vDepth);
-    // Blend toward fog color based on distance
-    finalColor = mix(finalColor, fogColor, distanceFogFactor);
-    // Make surface more opaque when underwater
-    finalOpacity = mix(finalOpacity, 1.0, distanceFogFactor);
-  }
+  // Apply fog (each direction uses its own fog color)
+  finalColor = mix(finalColor, currentFogColor, depthFogFactor);
+
+  // Make more opaque as fog increases
+  finalOpacity = mix(finalOpacity, 1.0, depthFogFactor);
 
   gl_FragColor = vec4(finalColor, finalOpacity);
 }

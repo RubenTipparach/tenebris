@@ -3,6 +3,8 @@ import { HexTile } from './GoldbergPolyhedron';
 import { PlayerConfig } from '../config/PlayerConfig';
 import waterVert from '../shaders/water/water.vert';
 import waterFrag from '../shaders/water/water.frag';
+import terrainVert from '../shaders/terrain/terrain.vert';
+import terrainFrag from '../shaders/terrain/terrain.frag';
 
 export enum HexBlockType {
   AIR = 0,
@@ -23,17 +25,30 @@ export class HexBlockMeshBuilder {
   private textures: Map<string, THREE.Texture> = new Map();
   private materials: Map<string, THREE.Material> = new Map();
   private waterShaderMaterial: THREE.ShaderMaterial | null = null;
+  private terrainMaterials: THREE.ShaderMaterial[] = [];
   private sunDirection: THREE.Vector3 = new THREE.Vector3(1, 0.5, 0.3).normalize();
+  private planetCenter: THREE.Vector3 = new THREE.Vector3(0, 0, 0);
 
   constructor() {
     this.textureLoader = new THREE.TextureLoader();
   }
 
-  // Set sun direction for water reflections
+  // Set sun direction for water and terrain shaders
   public setSunDirection(dir: THREE.Vector3): void {
     this.sunDirection.copy(dir).normalize();
     if (this.waterShaderMaterial) {
       this.waterShaderMaterial.uniforms.sunDirection.value.copy(this.sunDirection);
+    }
+    for (const mat of this.terrainMaterials) {
+      mat.uniforms.sunDirection.value.copy(this.sunDirection);
+    }
+  }
+
+  // Set planet center for terrain shader lighting calculations
+  public setPlanetCenter(center: THREE.Vector3): void {
+    this.planetCenter.copy(center);
+    for (const mat of this.terrainMaterials) {
+      mat.uniforms.planetCenter.value.copy(this.planetCenter);
     }
   }
 
@@ -43,6 +58,20 @@ export class HexBlockMeshBuilder {
       this.waterShaderMaterial.uniforms.time.value = time;
       this.waterShaderMaterial.uniforms.planetCenter.value.copy(planetCenter);
       this.waterShaderMaterial.uniforms.isUnderwater.value = isUnderwater ? 1.0 : 0.0;
+    }
+  }
+
+  // Set water level for terrain shader (radius from planet center)
+  public setWaterLevel(waterLevel: number): void {
+    for (const mat of this.terrainMaterials) {
+      mat.uniforms.waterLevel.value = waterLevel;
+    }
+  }
+
+  // Update terrain shader underwater state
+  public setTerrainUnderwater(isUnderwater: boolean): void {
+    for (const mat of this.terrainMaterials) {
+      mat.uniforms.isUnderwater.value = isUnderwater ? 1.0 : 0.0;
     }
   }
 
@@ -107,13 +136,51 @@ export class HexBlockMeshBuilder {
     this.textures.set('dirt', dirtTexture);
     this.textures.set('grass', grassTexture);
 
-    // Create materials for different face types
-    // Enable vertexColors only if vertex lighting is enabled for position-based light intensity modulation
-    const useVertexColors = PlayerConfig.VERTEX_LIGHTING_ENABLED;
-    this.materials.set('top', new THREE.MeshLambertMaterial({ map: grassTexture, vertexColors: useVertexColors }));
-    this.materials.set('side', new THREE.MeshLambertMaterial({ map: dirtTexture, vertexColors: useVertexColors }));
-    this.materials.set('bottom', new THREE.MeshLambertMaterial({ map: stoneTexture, vertexColors: useVertexColors }));
-    this.materials.set('stone', new THREE.MeshLambertMaterial({ map: stoneTexture, vertexColors: useVertexColors }));
+    // Parse underwater fog color for terrain shader
+    const terrainUnderwaterFogColor = new THREE.Color(PlayerConfig.UNDERWATER_FOG_COLOR);
+
+    // Create terrain shader materials for different face types
+    const createTerrainMaterial = (texture: THREE.Texture): THREE.ShaderMaterial => {
+      const mat = new THREE.ShaderMaterial({
+        uniforms: {
+          terrainTexture: { value: texture },
+          sunDirection: { value: this.sunDirection.clone() },
+          planetCenter: { value: this.planetCenter.clone() },
+          ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
+          directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
+          // Underwater uniforms
+          waterLevel: { value: 0.0 }, // Set by Planet based on sea level
+          isUnderwater: { value: 0.0 },
+          underwaterFogColor: { value: terrainUnderwaterFogColor },
+          underwaterFogNear: { value: PlayerConfig.UNDERWATER_FOG_NEAR },
+          underwaterFogFar: { value: PlayerConfig.UNDERWATER_FOG_FAR },
+          underwaterDimming: { value: PlayerConfig.UNDERWATER_TERRAIN_DIMMING ?? 0.3 },
+        },
+        vertexShader: terrainVert,
+        fragmentShader: terrainFrag,
+      });
+      this.terrainMaterials.push(mat);
+      return mat;
+    };
+
+    this.materials.set('top', createTerrainMaterial(grassTexture));
+    this.materials.set('side', createTerrainMaterial(dirtTexture));
+    this.materials.set('bottom', createTerrainMaterial(stoneTexture));
+    this.materials.set('stone', createTerrainMaterial(stoneTexture));
+
+    // Sea wall material - uses terrain shader for consistent fog/lighting
+    const seaWallColor = new THREE.Color(PlayerConfig.SEA_WALL_COLOR);
+    const seaWallCanvas = document.createElement('canvas');
+    seaWallCanvas.width = 1;
+    seaWallCanvas.height = 1;
+    const seaWallCtx = seaWallCanvas.getContext('2d')!;
+    seaWallCtx.fillStyle = `rgb(${Math.floor(seaWallColor.r * 255)}, ${Math.floor(seaWallColor.g * 255)}, ${Math.floor(seaWallColor.b * 255)})`;
+    seaWallCtx.fillRect(0, 0, 1, 1);
+    const seaWallTexture = new THREE.CanvasTexture(seaWallCanvas);
+    seaWallTexture.needsUpdate = true;
+    const seaWallMat = createTerrainMaterial(seaWallTexture);
+    seaWallMat.side = THREE.DoubleSide;
+    this.materials.set('seaWall', seaWallMat);
 
     // Water material - load water texture
     const waterTexture = await this.loadTexture('/textures/water.png');
@@ -123,7 +190,8 @@ export class HexBlockMeshBuilder {
     // Parse hex colors to THREE.Color
     const waterColor = new THREE.Color(PlayerConfig.WATER_COLOR);
     const deepWaterColor = new THREE.Color(PlayerConfig.WATER_DEEP_COLOR);
-    const fogColor = new THREE.Color(PlayerConfig.UNDERWATER_FOG_COLOR);
+    const underwaterFogColor = new THREE.Color(PlayerConfig.UNDERWATER_FOG_COLOR);
+    const aboveWaterFogColor = new THREE.Color(PlayerConfig.ABOVE_WATER_FOG_COLOR);
 
     // Create water shader material for close-up rendering
     this.waterShaderMaterial = new THREE.ShaderMaterial({
@@ -142,16 +210,23 @@ export class HexBlockMeshBuilder {
         specularStrength: { value: PlayerConfig.WATER_SPECULAR_STRENGTH },
         waveAmplitude: { value: PlayerConfig.WATER_WAVE_AMPLITUDE },
         waveFrequency: { value: PlayerConfig.WATER_WAVE_FREQUENCY },
-        fogColor: { value: fogColor },
-        fogNear: { value: PlayerConfig.UNDERWATER_FOG_NEAR },
-        fogFar: { value: PlayerConfig.UNDERWATER_FOG_FAR },
-        depthFogDensity: { value: PlayerConfig.WATER_DEPTH_FOG_DENSITY },
+        underwaterFogColor: { value: underwaterFogColor },
+        underwaterFogNear: { value: PlayerConfig.UNDERWATER_FOG_NEAR },
+        underwaterFogFar: { value: PlayerConfig.UNDERWATER_FOG_FAR },
+        aboveWaterFogColor: { value: aboveWaterFogColor },
+        aboveWaterFogNear: { value: PlayerConfig.ABOVE_WATER_FOG_NEAR },
+        aboveWaterFogFar: { value: PlayerConfig.ABOVE_WATER_FOG_FAR },
         isUnderwater: { value: 0.0 },
         planetCenter: { value: new THREE.Vector3(0, 0, 0) },
         textureStrength: { value: PlayerConfig.WATER_TEXTURE_STRENGTH },
         scrollSpeed: { value: PlayerConfig.WATER_SCROLL_SPEED },
         causticStrength: { value: PlayerConfig.WATER_CAUSTIC_STRENGTH },
-        foamStrength: { value: PlayerConfig.WATER_FOAM_STRENGTH }
+        foamStrength: { value: PlayerConfig.WATER_FOAM_STRENGTH },
+        // Depth texture uniforms (set by GameEngine)
+        depthTexture: { value: null },
+        cameraNear: { value: 0.1 },
+        cameraFar: { value: 2000 },
+        resolution: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) }
       },
       vertexShader: waterVert,
       fragmentShader: waterFrag,
@@ -194,8 +269,16 @@ export class HexBlockMeshBuilder {
     return this.materials.get('stone')!;
   }
 
+  public getSeaWallMaterial(): THREE.Material | null {
+    return this.materials.get('seaWall') ?? null;
+  }
+
   public getWaterMaterial(): THREE.Material {
     return this.materials.get('water')!;
+  }
+
+  public getWaterShaderMaterial(): THREE.ShaderMaterial | null {
+    return this.waterShaderMaterial;
   }
 
   public getWaterLODMaterial(): THREE.Material {
@@ -336,14 +419,12 @@ export class HexBlockMeshBuilder {
         const innerV1 = innerVerts[i];
         const innerV2 = innerVerts[next];
 
-        // Calculate side normal
-        const edge = outerV2.clone().sub(outerV1);
-        edge.normalize();
-
-        const midPoint = outerV1.clone().add(outerV2).multiplyScalar(0.5);
-        const sideNormal = midPoint.clone().sub(planetCenter).normalize();
-        const tangent = edge.clone();
-        sideNormal.sub(tangent.multiplyScalar(sideNormal.dot(tangent))).normalize();
+        // Calculate side normal using cross product of quad edges
+        // Edge1: horizontal edge along the bottom of the quad
+        // Edge2: vertical edge going up from inner to outer
+        const edge1 = innerV2.clone().sub(innerV1);
+        const edge2 = outerV1.clone().sub(innerV1);
+        const sideNormal = edge1.clone().cross(edge2).normalize();
 
         // Four vertices for this side
         positions.push(

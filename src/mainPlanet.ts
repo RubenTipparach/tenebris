@@ -116,6 +116,12 @@ class PlanetGame {
       // Set sun direction for water shader reflections
       this.earth.setSunDirection(this.engine.sunDirection);
 
+      // Register water shader material with engine for depth-based fog
+      const waterMaterial = this.earth.getWaterShaderMaterial();
+      if (waterMaterial) {
+        this.engine.registerWaterMaterial(waterMaterial);
+      }
+
       // Setup settings menu
       this.setupSettingsMenu();
 
@@ -178,6 +184,7 @@ class PlanetGame {
   private setupSettingsMenu(): void {
     const atmosphereToggle = document.getElementById('toggle-atmosphere') as HTMLInputElement;
     const cloudsToggle = document.getElementById('toggle-clouds') as HTMLInputElement;
+    const teleportSelect = document.getElementById('teleport-select') as HTMLSelectElement;
 
     if (!atmosphereToggle || !cloudsToggle) return;
 
@@ -196,6 +203,45 @@ class PlanetGame {
     cloudsToggle.addEventListener('change', () => {
       this.earthClouds.setVisible(cloudsToggle.checked);
     });
+
+    // Handle teleport dropdown
+    if (teleportSelect) {
+      teleportSelect.addEventListener('change', () => {
+        this.teleportToPlanet(teleportSelect.value);
+      });
+    }
+  }
+
+  private teleportToPlanet(planetName: string): void {
+    let planet: Planet;
+
+    switch (planetName) {
+      case 'earth':
+        planet = this.earth;
+        break;
+      case 'moon':
+        planet = this.moon;
+        break;
+      default:
+        console.warn(`Unknown planet: ${planetName}`);
+        return;
+    }
+
+    const surfaceOffset = 5; // Small offset above surface
+    const playerPos = planet.center.clone();
+
+    // Position player on the surface
+    // For Earth, position on top (Y+), for Moon position facing Earth (X-)
+    if (planetName === 'earth') {
+      playerPos.y += planet.radius + surfaceOffset;
+    } else {
+      playerPos.x -= planet.radius + surfaceOffset;
+    }
+
+    this.player.position.copy(playerPos);
+    this.player.velocity.set(0, 0, 0);
+
+    console.log(`Teleported to ${planetName} at position: ${playerPos.x.toFixed(1)}, ${playerPos.y.toFixed(1)}, ${playerPos.z.toFixed(1)}`);
   }
 }
 
