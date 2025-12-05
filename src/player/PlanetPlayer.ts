@@ -64,8 +64,11 @@ export class PlanetPlayer {
 
   private isGrounded: boolean = false;
   private isJetpacking: boolean = false;
-  private isInWater: boolean = false;
+  private isInWater: boolean = false;       // True when eyes are underwater (for fog)
+  private feetInWater: boolean = false;     // True when feet are underwater (for swimming physics)
+  private isFloatingAtSurface: boolean = false; // True when player is floating at water surface (holding jump)
   private hasDoubleJumped: boolean = false; // Track if double-jump/jetpack was activated this airborne session
+  private jetpackEnabled: boolean = true; // Whether jetpack/double-jump is available
 
   // Stuck detection debug
   private lastPosition: THREE.Vector3 = new THREE.Vector3();
@@ -789,12 +792,19 @@ export class PlanetPlayer {
   private handleMovement(input: InputState, deltaTime: number): void {
     if (!this.currentPlanet) return;
 
-    // Update water state at start of movement so swimming uses current frame's state
-    // Check at eye level for more intuitive "head above water" detection
-    // Position is at feet, so add eye height to get eye position
     const planetUp = this.currentPlanet.getSurfaceNormal(this.position);
+
+    // Check water at eye level for fog/visual effects
     const eyePosition = this.position.clone().addScaledVector(planetUp, PlayerConfig.PLAYER_EYE_HEIGHT);
     this.isInWater = this.currentPlanet.isInWater(eyePosition);
+
+    // Check water at configurable height for swimming physics
+    // This determines when swimming kicks in vs normal jumping
+    const swimCheckPos = this.position.clone().addScaledVector(planetUp, PlayerConfig.WATER_BODY_CHECK_HEIGHT);
+    const bodyInWater = this.currentPlanet.isInWater(swimCheckPos);
+
+    // Check if feet are in water - used to allow swimming up even when body check is above water
+    this.feetInWater = this.currentPlanet.isInWater(this.position);
 
     const moveDir = new THREE.Vector3();
 
@@ -827,8 +837,8 @@ export class PlanetPlayer {
       moveDir.normalize();
       let speed = input.sprint ? PlayerConfig.SPRINT_SPEED : PlayerConfig.WALK_SPEED * PlayerConfig.WALK_SPEED_MULTIPLIER;
 
-      // Slow down movement in water
-      if (this.isInWater) {
+      // Slow down movement in water (use bodyInWater for physics)
+      if (bodyInWater) {
         speed *= PlayerConfig.WATER_MOVEMENT_MULTIPLIER;
       }
 
@@ -838,26 +848,63 @@ export class PlanetPlayer {
       this.resolveMovement(movement);
     }
 
-    // Handle swimming (space in water)
-    if (input.jump && this.isInWater) {
-      // Swim upward
-      this.velocity.addScaledVector(planetUp, PlayerConfig.WATER_SWIM_FORCE * deltaTime);
+    // Water states (when feet in water):
+    // 1. Grounded + eyes above water (wading): can jump at AIR speed
+    // 2. Grounded + eyes below water (underwater floor): can jump at WATER speed
+    // 3. Not grounded (swimming): can swim up, float at WATER_SURFACE_FLOAT_HEIGHT
+
+    // Case 3: Swimming (not grounded, feet in water)
+    // Only apply swimming physics if player doesn't have strong upward velocity (from a jump)
+    const upwardVelocity = this.velocity.dot(planetUp);
+    const isJumpingOut = upwardVelocity > PlayerConfig.JUMP_FORCE * 0.5; // Has significant upward momentum
+
+    if (input.jump && this.feetInWater && !this.isGrounded && !isJumpingOut) {
+      const waterSurfaceRadius = this.currentPlanet.getWaterSurfaceRadius(this.position);
+      const playerFeetRadius = this.position.distanceTo(this.currentPlanet.center);
+      const floatTargetRadius = waterSurfaceRadius + PlayerConfig.WATER_SURFACE_FLOAT_HEIGHT;
+      const distanceFromTarget = playerFeetRadius - floatTargetRadius;
+
+      if (waterSurfaceRadius > 0 && distanceFromTarget <= 0.3) {
+        if (distanceFromTarget >= -0.1) {
+          // At float target - float stably
+          this.isFloatingAtSurface = true;
+          const upComponent = this.velocity.dot(planetUp);
+          this.velocity.sub(planetUp.clone().multiplyScalar(upComponent));
+        } else {
+          // Below float target - swim upward
+          this.isFloatingAtSurface = false;
+          this.velocity.addScaledVector(planetUp, PlayerConfig.WATER_SWIM_FORCE * deltaTime);
+        }
+      } else {
+        // Above float target or no water - stop floating
+        this.isFloatingAtSurface = false;
+      }
+    } else {
+      this.isFloatingAtSurface = false;
     }
 
-    // Handle jumping - two-stage system:
-    // Stage 1: Regular jump when grounded (uses jumpJustPressed for single press)
-    // Stage 2: Double-jump activates jetpack when airborne (uses jumpJustPressed)
-    if (input.jumpJustPressed && !this.isInWater) {
+    // Cases 1 & 2: Jumping (grounded)
+    // Case 1: feet in water, grounded, eyes ABOVE water -> jump at AIR speed
+    // Case 2: feet in water, grounded, eyes IN water -> jump at WATER speed
+    if (input.jumpJustPressed) {
       if (this.isGrounded) {
-        // Stage 1: Regular jump from ground
+        // Jump from ground - speed depends on whether eyes are underwater
         const jumpDir = planetUp;
 
-        // Clear any existing horizontal velocity for a clean vertical jump
+        // Clear any existing vertical velocity for a clean jump
         const verticalComponent = this.velocity.dot(planetUp);
         this.velocity.copy(planetUp).multiplyScalar(verticalComponent);
 
+        // Determine jump force: full force when wading (eyes above water), reduced when fully submerged
+        let jumpForce = PlayerConfig.JUMP_FORCE;
+        if (this.feetInWater && this.isInWater) {
+          // Case 2: Underwater jump - much weaker, more like a swim push
+          jumpForce = PlayerConfig.JUMP_FORCE * PlayerConfig.WATER_GRAVITY_MULTIPLIER;
+        }
+        // Case 1: Wading (feet in water but eyes above) uses full JUMP_FORCE
+
         // Add jump force
-        this.velocity.addScaledVector(jumpDir, PlayerConfig.JUMP_FORCE);
+        this.velocity.addScaledVector(jumpDir, jumpForce);
         this.isGrounded = false;
         this.hasDoubleJumped = false; // Reset double-jump flag
         this.didJumpThisFrame = true; // Mark for teleport detection
@@ -870,8 +917,8 @@ export class PlanetPlayer {
           this.wasdPressedDuringJump = false;
           this.jumpDirection = planetUp.clone();
         }
-      } else if (PlayerConfig.DOUBLE_JUMP_ENABLED && !this.hasDoubleJumped) {
-        // Stage 2: Double-jump while airborne - activates jetpack
+      } else if (PlayerConfig.DOUBLE_JUMP_ENABLED && this.jetpackEnabled && !this.hasDoubleJumped && !this.feetInWater) {
+        // Stage 2: Double-jump while airborne - activates jetpack (not when in water - swimming handles that)
         this.hasDoubleJumped = true;
         if (PlayerConfig.DOUBLE_JUMP_ACTIVATES_JETPACK) {
           this.isJetpacking = true;
@@ -1354,9 +1401,9 @@ export class PlanetPlayer {
       ? this.jumpDirection
       : this.currentPlanet.getSurfaceNormal(this.position);
 
-    // Jetpack only activates after double-jump (hasDoubleJumped = true)
+    // Jetpack only activates after double-jump (hasDoubleJumped = true) and if enabled
     // Once activated, holding space continues to thrust upward
-    if (this.hasDoubleJumped && input.jump && !this.isGrounded) {
+    if (this.jetpackEnabled && this.hasDoubleJumped && input.jump && !this.isGrounded) {
       this.isJetpacking = true;
       // Thrust upward using consistent direction to prevent drift
       this.velocity.addScaledVector(thrustUp, PlayerConfig.JETPACK_FORCE * deltaTime);
@@ -1365,8 +1412,8 @@ export class PlanetPlayer {
       this.isJetpacking = false;
     }
 
-    // Jetpack down / descend (Ctrl) - only when jetpack is active
-    if (this.hasDoubleJumped && input.crouch) {
+    // Jetpack down / descend (Ctrl) - only when jetpack is active and enabled
+    if (this.jetpackEnabled && this.hasDoubleJumped && input.crouch) {
       // Thrust downward (toward planet) - use same direction for consistency
       this.velocity.addScaledVector(thrustUp, -PlayerConfig.JETPACK_DOWN_FORCE * deltaTime);
     }
@@ -1440,19 +1487,31 @@ export class PlanetPlayer {
       let effectiveGravity = PlayerConfig.BASE_GRAVITY * gravityMultiplier;
 
       // Water physics - reduced gravity (sink slowly)
-      if (this.isInWater) {
-        effectiveGravity *= PlayerConfig.WATER_GRAVITY_MULTIPLIER;
+      // Apply water physics when:
+      // 1. Eyes are underwater (truly submerged)
+      // 2. OR floating at surface (maintain float even with negative WATER_SURFACE_FLOAT_HEIGHT)
+      if (this.feetInWater && (this.isInWater || this.isFloatingAtSurface)) {
+        // When floating at surface, don't apply gravity at all
+        if (this.isFloatingAtSurface) {
+          effectiveGravity = 0;
+        } else {
+          effectiveGravity *= PlayerConfig.WATER_GRAVITY_MULTIPLIER;
+        }
 
-        // Apply water drag to slow down movement
-        this.velocity.multiplyScalar(1 - PlayerConfig.WATER_DRAG * deltaTime);
+        // Apply water drag to slow down movement (but less when floating)
+        if (!this.isFloatingAtSurface) {
+          this.velocity.multiplyScalar(1 - PlayerConfig.WATER_DRAG * deltaTime);
+        }
       }
 
       // Apply gravity (purely radial toward planet center)
-      this.velocity.addScaledVector(gravityDir, effectiveGravity * deltaTime);
+      if (effectiveGravity > 0) {
+        this.velocity.addScaledVector(gravityDir, effectiveGravity * deltaTime);
+      }
 
       // Add some drag when high up to prevent infinite acceleration
       const altitude = this.getAltitude();
-      if (altitude > 20 && !this.isInWater) {
+      if (altitude > 20 && !this.feetInWater) {
         this.velocity.multiplyScalar(0.99);
       }
 
@@ -1633,5 +1692,13 @@ export class PlanetPlayer {
 
   public getIsInWater(): boolean {
     return this.isInWater;
+  }
+
+  public setJetpackEnabled(enabled: boolean): void {
+    this.jetpackEnabled = enabled;
+    // If disabling jetpack while jetpacking, stop it
+    if (!enabled) {
+      this.isJetpacking = false;
+    }
   }
 }

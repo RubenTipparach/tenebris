@@ -285,6 +285,58 @@
 
     .teleport-select option {
       background: #333;
+    }
+
+    /* Menu tabs */
+    .menu-tabs {
+      display: flex;
+      justify-content: center;
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+
+    .menu-tab {
+      padding: 8px 20px;
+      background: transparent;
+      color: #888;
+      border: 1px solid #555;
+      border-radius: 5px;
+      font-family: 'Courier New', monospace;
+      font-size: 12px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .menu-tab:hover {
+      color: white;
+      border-color: #777;
+    }
+
+    .menu-tab.active {
+      color: #4CAF50;
+      border-color: #4CAF50;
+      background: rgba(76, 175, 80, 0.1);
+    }
+
+    .tab-content {
+      display: none;
+    }
+
+    .tab-content.active {
+      display: block;
+    }
+
+    .controls-grid {
+      text-align: left;
+      max-width: 300px;
+      margin: 0 auto;
+    }
+
+    .controls-grid p {
+      display: flex;
+      justify-content: space-between;
+      padding: 5px 0;
+      border-bottom: 1px solid #333;
       color: white;
     }
 
@@ -522,19 +574,21 @@
 
   <div id="instructions">
     <h1>TENEBRIS</h1>
-    <p><span class="key">WASD</span> - Move</p>
-    <p><span class="key">SPACE</span> - Jump / Jetpack Up</p>
-    <p><span class="key">CTRL</span> - Jetpack Down</p>
-    <p><span class="key">SHIFT</span> - Sprint</p>
-    <p><span class="key">Q/E</span> - Roll (in space)</p>
-    <p><span class="key">Mouse</span> - Look around</p>
-    <p><span class="key">Left Click</span> - Break block</p>
-    <p><span class="key">Right Click</span> - Place block</p>
-    <p><span class="key">1-9</span> - Select hotbar slot</p>
-    <p><span class="key">F3</span> - Toggle profiler</p>
 
-    <div class="settings-section">
-      <h3>SETTINGS</h3>
+    <div class="menu-tabs">
+      <button class="menu-tab active" data-tab="settings">Settings</button>
+      <button class="menu-tab" data-tab="controls">Controls</button>
+    </div>
+
+    <!-- Settings Tab -->
+    <div class="tab-content active" id="tab-settings">
+      <div class="settings-row">
+        <label for="toggle-jetpack">Jetpack Enabled</label>
+        <div class="toggle-switch">
+          <input type="checkbox" id="toggle-jetpack">
+          <span class="toggle-slider"></span>
+        </div>
+      </div>
       <div class="settings-row">
         <label for="toggle-atmosphere">Atmosphere</label>
         <div class="toggle-switch">
@@ -555,6 +609,22 @@
           <option value="earth">Earth</option>
           <option value="moon">Moon</option>
         </select>
+      </div>
+    </div>
+
+    <!-- Controls Tab -->
+    <div class="tab-content" id="tab-controls">
+      <div class="controls-grid">
+        <p><span class="key">WASD</span><span>Move</span></p>
+        <p><span class="key">SPACE</span><span>Jump / Jetpack Up</span></p>
+        <p><span class="key">CTRL</span><span>Jetpack Down</span></p>
+        <p><span class="key">SHIFT</span><span>Sprint</span></p>
+        <p><span class="key">Q/E</span><span>Roll (in space)</span></p>
+        <p><span class="key">Mouse</span><span>Look around</span></p>
+        <p><span class="key">Left Click</span><span>Break block</span></p>
+        <p><span class="key">Right Click</span><span>Place block</span></p>
+        <p><span class="key">1-9</span><span>Select hotbar</span></p>
+        <p><span class="key">F3</span><span>Toggle profiler</span></p>
       </div>
     </div>
 

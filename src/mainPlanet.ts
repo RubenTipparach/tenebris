@@ -187,13 +187,40 @@ class PlanetGame {
   private setupSettingsMenu(): void {
     const atmosphereToggle = document.getElementById('toggle-atmosphere') as HTMLInputElement;
     const cloudsToggle = document.getElementById('toggle-clouds') as HTMLInputElement;
+    const jetpackToggle = document.getElementById('toggle-jetpack') as HTMLInputElement;
     const teleportSelect = document.getElementById('teleport-select') as HTMLSelectElement;
+
+    // Setup tab switching
+    const menuTabs = document.querySelectorAll('.menu-tab');
+    menuTabs.forEach(tab => {
+      tab.addEventListener('click', () => {
+        // Remove active from all tabs and contents
+        menuTabs.forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+
+        // Activate clicked tab and its content
+        tab.classList.add('active');
+        const tabName = tab.getAttribute('data-tab');
+        const content = document.getElementById(`tab-${tabName}`);
+        if (content) content.classList.add('active');
+      });
+    });
 
     if (!atmosphereToggle || !cloudsToggle) return;
 
     // Initialize toggle states
     atmosphereToggle.checked = this.earthAtmosphere?.isVisible() ?? false;
     cloudsToggle.checked = this.earthClouds.isVisible();
+
+    // Jetpack defaults to OFF
+    if (jetpackToggle) {
+      jetpackToggle.checked = false;
+      this.player.setJetpackEnabled(false);
+
+      jetpackToggle.addEventListener('change', () => {
+        this.player.setJetpackEnabled(jetpackToggle.checked);
+      });
+    }
 
     // Handle atmosphere toggle
     atmosphereToggle.addEventListener('change', () => {

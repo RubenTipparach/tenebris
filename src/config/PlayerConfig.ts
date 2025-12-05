@@ -46,9 +46,11 @@ export const PlayerConfig = {
 
   // Water physics
   WATER_GRAVITY_MULTIPLIER: 0.3,   // Gravity is reduced in water (sink slowly)
-  WATER_SWIM_FORCE: 15,            // Force when pressing space to swim up
+  WATER_SWIM_FORCE: 20,            // Force when pressing space to swim up
   WATER_MOVEMENT_MULTIPLIER: 0.5,  // Horizontal movement speed in water
   WATER_DRAG: 3,                   // Drag coefficient in water
+  WATER_SURFACE_FLOAT_HEIGHT: -0.8, // How high above water surface to float when swimming (head clearance)
+  WATER_BODY_CHECK_HEIGHT: 0.50,    // Height above feet to check for swimming (body center for water physics)
 
   // Water visuals
   WATER_UV_TILING: 4,              // UV tiling for water texture (higher = more repetition)

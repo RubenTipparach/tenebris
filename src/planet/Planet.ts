@@ -2715,6 +2715,29 @@ export class Planet {
     return 0;
   }
 
+  // Returns the radius of the water surface at a given position, or -1 if no water
+  public getWaterSurfaceRadius(position: THREE.Vector3): number {
+    const tile = this.getTileAtPoint(position);
+    if (!tile) return -1;
+
+    const column = this.columns.get(tile.index);
+    if (!column) return -1;
+
+    // Find top of water (first water block from top)
+    let waterSurfaceDepth = -1;
+    for (let d = 0; d < column.blocks.length; d++) {
+      if (column.blocks[d] === HexBlockType.WATER) {
+        waterSurfaceDepth = d;
+        break;
+      }
+    }
+
+    if (waterSurfaceDepth < 0) return -1;
+
+    // Water surface is at the top of the water block (radius - depth)
+    return this.radius - waterSurfaceDepth;
+  }
+
   public buildAllMeshes(): void {
     this.needsRebatch = true;
   }
