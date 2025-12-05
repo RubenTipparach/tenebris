@@ -390,15 +390,22 @@ export class PlanetBlockInteraction {
     const blockType = itemToBlock(selectedSlot.itemType);
     if (blockType === HexBlockType.AIR) return;
 
-    // Check if block would be inside player
-    const blockRadius = this.planet.radius - depth;
-    const playerDist = this.player.position.distanceTo(this.planet.center);
-
-    // Simple check - if player is near this tile and at similar height, don't place
+    // Check if block would overlap with player's body
+    // Player position is at FEET level, player occupies from feet to feet + PLAYER_HEIGHT
     const playerTile = this.planet.getTileAtPoint(this.player.position);
     if (playerTile && playerTile.index === tileIndex) {
-      if (Math.abs(playerDist - blockRadius) < 2) {
-        return;
+      // Player is on the same tile - check vertical overlap
+      const playerFeetRadius = this.player.position.distanceTo(this.planet.center);
+      const playerHeadRadius = playerFeetRadius + 1.8; // PLAYER_HEIGHT
+
+      // Block occupies from blockBottomRadius to blockTopRadius
+      const blockTopRadius = this.planet.radius - depth;
+      const blockBottomRadius = blockTopRadius - 1; // Block height is 1
+
+      // Check if block overlaps with player's body (feet to head)
+      // They overlap if: blockTop > playerFeet AND blockBottom < playerHead
+      if (blockTopRadius > playerFeetRadius && blockBottomRadius < playerHeadRadius) {
+        return; // Would place block inside player
       }
     }
 

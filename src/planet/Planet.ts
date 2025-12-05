@@ -2032,7 +2032,9 @@ export class Planet {
       if (innerRadius <= 0) continue;
 
       const depthFromSurface = depth - surfaceDepth;
-      const isDeep = depthFromSurface >= this.DEEP_THRESHOLD;
+      // Use actual block type for texture, not calculated depth - prevents texture changes when mining
+      const useStoneTexture = blockType === HexBlockType.STONE;
+      const useDirtTexture = blockType === HexBlockType.DIRT;
 
       // Calculate sky light based on depth from surface
       // Surface blocks get full sky light (1.0), deeper blocks get progressively darker
@@ -2062,8 +2064,10 @@ export class Planet {
         if (posAttr && normAttr && uvAttr && indexAttr) {
           if (isWater) {
             this.mergeGeometry(waterData, posAttr, normAttr, uvAttr, indexAttr, this.sunDirection, 1.0);
-          } else if (isDeep) {
+          } else if (useStoneTexture) {
             this.mergeGeometry(stoneData, posAttr, normAttr, uvAttr, indexAttr, this.sunDirection, skyLightLevel);
+          } else if (useDirtTexture) {
+            this.mergeGeometry(sideData, posAttr, normAttr, uvAttr, indexAttr, this.sunDirection, skyLightLevel);
           } else {
             this.mergeGeometry(topData, posAttr, normAttr, uvAttr, indexAttr, this.sunDirection, skyLightLevel);
           }
@@ -2090,9 +2094,10 @@ export class Planet {
         const uvAttr = sides.getAttribute('uv');
         const indexAttr = sides.getIndex();
         if (posAttr && normAttr && uvAttr && indexAttr) {
-          if (isDeep) {
+          if (useStoneTexture) {
             this.mergeGeometry(stoneData, posAttr, normAttr, uvAttr, indexAttr, this.sunDirection, skyLightLevel);
           } else {
+            // Dirt and grass both use sideData (dirt texture for sides)
             this.mergeGeometry(sideData, posAttr, normAttr, uvAttr, indexAttr, this.sunDirection, skyLightLevel);
           }
         }

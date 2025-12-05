@@ -360,9 +360,9 @@ function buildColumnGeometry(
     if (innerRadius <= 0) continue;
 
     const depthFromSurface = depth - surfaceDepth;
-    // Use stone texture if: block is explicitly STONE, or it's deep underground (natural stone layer)
-    const useStoneTexture = blockType === HexBlockType.STONE || depthFromSurface >= config.deepThreshold;
-    // Use dirt texture if block is explicitly DIRT (placed by player)
+    // Use the actual block type for texture selection - this ensures blocks don't change
+    // appearance when surface depth changes (e.g., when mining blocks above)
+    const useStoneTexture = blockType === HexBlockType.STONE;
     const useDirtTexture = blockType === HexBlockType.DIRT;
 
     // Calculate sky light
