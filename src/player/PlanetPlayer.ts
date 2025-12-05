@@ -7,6 +7,33 @@ import { PlayerConfig } from '../config/PlayerConfig';
 // Calculate max terrain depth for collision checks
 const MAX_TERRAIN_DEPTH = PlayerConfig.TERRAIN_SEA_LEVEL + PlayerConfig.TERRAIN_MAX_DEPTH;
 
+// Helper: Find the walkable floor (air-to-solid transition) in a tile that's closest to a given radius
+// Returns the depth of the best floor, or -1 if none found
+function findWalkableFloorAtRadius(planet: Planet, tileIndex: number, targetRadius: number): number {
+  let bestDepth = -1;
+  let bestDist = Infinity;
+
+  for (let d = 0; d < MAX_TERRAIN_DEPTH; d++) {
+    const blockAbove = d > 0 ? planet.getBlock(tileIndex, d - 1) : HexBlockType.AIR;
+    const block = planet.getBlock(tileIndex, d);
+
+    const isAbovePassable = blockAbove === HexBlockType.AIR || blockAbove === HexBlockType.WATER;
+    const isCurrentSolid = block !== HexBlockType.AIR && block !== HexBlockType.WATER;
+
+    if (isAbovePassable && isCurrentSolid) {
+      // This is a walkable floor at depth d (radius = planet.radius - d)
+      const floorRadius = planet.radius - d;
+      const dist = Math.abs(floorRadius - targetRadius);
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestDepth = d;
+      }
+    }
+  }
+
+  return bestDepth;
+}
+
 export interface CelestialBody {
   planet: Planet;
   gravityFullRadius?: number;    // Distance for 100% gravity (defaults to planet.radius * config)
@@ -51,6 +78,9 @@ export class PlanetPlayer {
   private jumpStartSpherical: { theta: number; phi: number } | null = null;
   private wasdPressedDuringJump: boolean = false;
   private jumpDirection: THREE.Vector3 | null = null; // Fixed direction for gravity during jump
+
+  // Teleport detection (debug)
+  private didJumpThisFrame: boolean = false;
 
   constructor(camera: THREE.PerspectiveCamera, inputManager: InputManager, planet: Planet) {
     this.camera = camera;
@@ -284,12 +314,50 @@ export class PlanetPlayer {
         this.alignUpWithGravity();
       }
 
+      // Track radius before movement for teleport detection
+      const radiusBefore = this.currentPlanet
+        ? this.position.distanceTo(this.currentPlanet.center)
+        : 0;
+      this.didJumpThisFrame = false;
+
       this.handleMovement(input, deltaTime);
       this.handleJetpack(input, deltaTime);
       this.applyGravity(deltaTime);
 
+      // Debug: Detect unexpected upward teleports while holding W
+      if (this.currentPlanet && input.forward && !this.didJumpThisFrame) {
+        const radiusAfter = this.position.distanceTo(this.currentPlanet.center);
+        const radiusChange = radiusAfter - radiusBefore;
+        // Teleport detection: moved up more than 0.5 units without jumping
+        if (radiusChange > 0.5) {
+          const currentTile = this.currentPlanet.getTileAtPoint(this.position);
+          console.error(`========== UNEXPECTED UPWARD TELEPORT ==========`);
+          console.error(`Radius change: ${radiusBefore.toFixed(2)} -> ${radiusAfter.toFixed(2)} (+${radiusChange.toFixed(2)})`);
+          console.error(`Current tile: ${currentTile?.index}`);
+          console.error(`isGrounded: ${this.isGrounded}, didJumpThisFrame: ${this.didJumpThisFrame}`);
+
+          // Log the tile's block structure
+          if (currentTile) {
+            console.error(`Block column at current tile:`);
+            for (let d = 0; d < 20; d++) {
+              const block = this.currentPlanet.getBlock(currentTile.index, d);
+              const blockRadius = this.currentPlanet.radius - d;
+              let sym = block === 0 ? '.' : block === 4 ? '~' : '#';
+              const marker = Math.abs(blockRadius - radiusAfter) < 1 ? ' <-- PLAYER' : '';
+              console.error(`  d${d} (r${blockRadius}): ${sym}${marker}`);
+            }
+          }
+          console.error(`================================================`);
+        }
+      }
+
       // Debug: Check if player is stuck
       this.checkIfStuck(input);
+
+      // Debug: Shift+X to log cave structure
+      if (input.sprint && this.inputManager.isKeyPressed('KeyX')) {
+        this.logCaveStructure();
+      }
     }
 
     this.updateCamera();
@@ -328,6 +396,7 @@ export class PlanetPlayer {
 
     console.log('========== STUCK DETECTED ==========');
 
+    // Position is at feet level
     const playerFeetRadius = this.position.distanceTo(this.currentPlanet.center);
     const playerHeadRadius = playerFeetRadius + PlayerConfig.PLAYER_HEIGHT;
 
@@ -356,7 +425,7 @@ export class PlanetPlayer {
       const groundRadius = groundDepth >= 0 ? this.currentPlanet.radius - groundDepth : 0;
       console.log(`  Ground depth: ${groundDepth} (radius: ${groundRadius.toFixed(2)})`);
       const heightAboveGround = playerFeetRadius - groundRadius;
-      console.log(`  Player feet vs ground: ${heightAboveGround.toFixed(2)} (should be ~${PlayerConfig.PLAYER_HEIGHT})`);
+      console.log(`  Player feet vs ground: ${heightAboveGround.toFixed(2)} (should be ~0 when grounded)`);
       console.log(`  In air (wall check skipped): ${heightAboveGround > PlayerConfig.PLAYER_HEIGHT + 0.5}`);
 
       // List all blocks in column
@@ -399,6 +468,157 @@ export class PlanetPlayer {
     }
 
     console.log('====================================');
+  }
+
+  // Debug: Log cave structure around player (Shift+X)
+  // Shows tiles in rings around player and depth rows above standing level
+  private lastCaveLogTime: number = 0;
+  private logCaveStructure(): void {
+    // Throttle to once per second
+    const now = Date.now();
+    if (now - this.lastCaveLogTime < 1000) return;
+    this.lastCaveLogTime = now;
+
+    if (!this.currentPlanet) return;
+
+    const currentTile = this.currentPlanet.getTileAtPoint(this.position);
+    if (!currentTile) return;
+
+    // Position is at feet level
+    const playerFeetRadius = this.position.distanceTo(this.currentPlanet.center);
+    const playerHeadRadius = playerFeetRadius + PlayerConfig.PLAYER_HEIGHT;
+
+    // Find ground depth at current tile
+    let groundDepth = -1;
+    for (let d = 0; d < MAX_TERRAIN_DEPTH; d++) {
+      const block = this.currentPlanet.getBlock(currentTile.index, d);
+      if (block !== HexBlockType.AIR && block !== HexBlockType.WATER) {
+        groundDepth = d;
+        break;
+      }
+    }
+
+    console.log('========== CAVE STRUCTURE (Shift+X) ==========');
+    console.log(`Player feet radius: ${playerFeetRadius.toFixed(2)}, head radius: ${playerHeadRadius.toFixed(2)}`);
+    console.log(`Standing on tile ${currentTile.index}, ground depth: ${groundDepth}`);
+    console.log(`Planet radius: ${this.currentPlanet.radius}`);
+    console.log('');
+
+    // Collect tiles: current + rings of neighbors
+    const tileRings = PlayerConfig.DEBUG_CAVE_TILE_RINGS;
+    const depthRows = PlayerConfig.DEBUG_CAVE_DEPTH_ROWS;
+    const tilesToSample: Set<number> = new Set([currentTile.index]);
+    let currentRing: Set<number> = new Set([currentTile.index]);
+
+    for (let ring = 0; ring < tileRings; ring++) {
+      const nextRing: Set<number> = new Set();
+      for (const tileIdx of currentRing) {
+        const tile = this.currentPlanet.getPolyhedron().tiles[tileIdx];
+        if (tile) {
+          for (const neighborIdx of tile.neighbors) {
+            if (!tilesToSample.has(neighborIdx)) {
+              tilesToSample.add(neighborIdx);
+              nextRing.add(neighborIdx);
+            }
+          }
+        }
+      }
+      currentRing = nextRing;
+    }
+
+    // For each tile, show depths from (groundDepth) to (groundDepth - depthRows + 1)
+    // groundDepth is where solid ground starts, depths above it (lower numbers) are air/cave
+    const startDepth = Math.max(0, groundDepth - depthRows + 1);
+    const endDepth = groundDepth + 1; // Include the ground block
+
+    console.log(`Sampling ${tilesToSample.size} tiles, depths ${startDepth} to ${endDepth}`);
+    console.log(`Legend: . = AIR, ~ = WATER, # = SOLID, @ = PLAYER BODY OVERLAP`);
+    console.log('');
+
+    // Build a table: rows = depth, columns = tiles
+    const tileArray = Array.from(tilesToSample);
+    const headerRow = ['Depth/Radius'].concat(tileArray.map(t => `T${t}`));
+    console.log(headerRow.join('\t'));
+
+    for (let d = startDepth; d <= endDepth; d++) {
+      const blockRadius = this.currentPlanet.radius - d;
+      const blockBottomRadius = blockRadius - 1;
+
+      // Check if player body overlaps this depth
+      const playerOverlaps = blockRadius > playerFeetRadius && blockBottomRadius < playerHeadRadius;
+
+      const rowData: string[] = [`d${d} (r${blockRadius.toFixed(0)})`];
+
+      for (const tileIdx of tileArray) {
+        const block = this.currentPlanet.getBlock(tileIdx, d);
+        let symbol = '?';
+        if (block === HexBlockType.AIR) symbol = '.';
+        else if (block === HexBlockType.WATER) symbol = '~';
+        else symbol = '#';
+
+        // Mark if player body would overlap this block
+        if (playerOverlaps && tileIdx === currentTile.index) {
+          symbol = symbol === '.' ? '@' : symbol.toUpperCase();
+        }
+
+        rowData.push(symbol);
+      }
+
+      console.log(rowData.join('\t'));
+    }
+
+    console.log('');
+
+    // Log collision check results for ALL neighbor tiles
+    const currentGroundRadius = this.currentPlanet.radius - groundDepth;
+    console.log(`Current ground depth: ${groundDepth} (r${currentGroundRadius.toFixed(0)})`);
+    console.log('');
+    console.log('Collision checks for neighbor tiles:');
+
+    const polyTile = this.currentPlanet.getPolyhedron().tiles[currentTile.index];
+    if (polyTile) {
+      for (const neighborIdx of polyTile.neighbors) {
+        const neighborTile = this.currentPlanet.getPolyhedron().tiles[neighborIdx];
+        if (!neighborTile) continue;
+
+        // Find walkable floors in this neighbor
+        const walkableFloors: number[] = [];
+        for (let d = 0; d < MAX_TERRAIN_DEPTH - 1; d++) {
+          const blockAbove = d > 0 ? this.currentPlanet.getBlock(neighborIdx, d - 1) : HexBlockType.AIR;
+          const block = this.currentPlanet.getBlock(neighborIdx, d);
+          const isAbovePassable = blockAbove === HexBlockType.AIR || blockAbove === HexBlockType.WATER;
+          const isCurrentSolid = block !== HexBlockType.AIR && block !== HexBlockType.WATER;
+          if (isAbovePassable && isCurrentSolid) {
+            walkableFloors.push(d);
+          }
+        }
+
+        // Create a test position in the center of the neighbor tile
+        const neighborCenter = new THREE.Vector3(
+          neighborTile.center.x,
+          neighborTile.center.y,
+          neighborTile.center.z
+        ).normalize().multiplyScalar(this.currentPlanet.radius);
+
+        const stepOK = this.checkStepHeight(neighborCenter);
+        const headroomBlocked = this.checkHeadroomCollision(neighborCenter);
+        const wallBlocked = this.checkWallCollision(neighborCenter);
+
+        console.log(`  T${neighborIdx}: floors=[${walkableFloors.join(',')}] step=${stepOK} headroom=${headroomBlocked} wall=${wallBlocked}`);
+      }
+    }
+
+    // Also log forward direction tile (might not be immediate neighbor)
+    const forwardDir = this.localForward.clone().negate();
+    const forwardTile = this.currentPlanet.getTileAtPoint(
+      this.position.clone().addScaledVector(forwardDir, 2)
+    );
+    if (forwardTile && forwardTile.index !== currentTile.index) {
+      console.log('');
+      console.log(`Forward tile (looking direction): ${forwardTile.index}`);
+    }
+
+    console.log('==============================================');
   }
 
   // Instantly align camera up with gravity direction, preserving look direction
@@ -571,8 +791,9 @@ export class PlanetPlayer {
 
     // Update water state at start of movement so swimming uses current frame's state
     // Check at eye level for more intuitive "head above water" detection
+    // Position is at feet, so add eye height to get eye position
     const planetUp = this.currentPlanet.getSurfaceNormal(this.position);
-    const eyePosition = this.position.clone().addScaledVector(planetUp, PlayerConfig.PLAYER_EYE_HEIGHT - PlayerConfig.PLAYER_HEIGHT);
+    const eyePosition = this.position.clone().addScaledVector(planetUp, PlayerConfig.PLAYER_EYE_HEIGHT);
     this.isInWater = this.currentPlanet.isInWater(eyePosition);
 
     const moveDir = new THREE.Vector3();
@@ -639,6 +860,7 @@ export class PlanetPlayer {
         this.velocity.addScaledVector(jumpDir, PlayerConfig.JUMP_FORCE);
         this.isGrounded = false;
         this.hasDoubleJumped = false; // Reset double-jump flag
+        this.didJumpThisFrame = true; // Mark for teleport detection
 
         // Track jump start for drift detection and fix gravity direction
         if (this.currentPlanet) {
@@ -707,16 +929,20 @@ export class PlanetPlayer {
   private checkCollision(newPosition: THREE.Vector3): boolean {
     if (!this.currentPlanet) return false;
 
-    // Only check step height when grounded AND actually changing tiles AND not underwater
+    // Only check step height and headroom when grounded AND actually changing tiles AND not underwater
     // This allows free movement within the current tile, and swimming over terrain underwater
     if (this.isGrounded && !this.isInWater) {
       const currentTile = this.currentPlanet.getTileAtPoint(this.position);
       const newTile = this.currentPlanet.getTileAtPoint(newPosition);
 
-      // Only check step height if we're moving to a different tile
+      // Only check step height and headroom if we're moving to a different tile
       if (currentTile && newTile && currentTile.index !== newTile.index) {
         if (!this.checkStepHeight(newPosition)) {
           return true; // Blocked by step (only matters when walking to different tile)
+        }
+        // Check if there's enough headroom (at least 2 blocks) at the target tile
+        if (this.checkHeadroomCollision(newPosition)) {
+          return true; // Blocked by ceiling - not enough headroom to walk there
         }
       }
     }
@@ -725,61 +951,136 @@ export class PlanetPlayer {
     return this.checkWallCollision(newPosition);
   }
 
-  // Check if step height is valid
+  // Check if step height is valid - finds the WALKABLE ground at destination
+  // Returns true if player can step to that ground level
   private checkStepHeight(newPosition: THREE.Vector3): boolean {
     if (!this.currentPlanet) return true;
 
-    // Get current ground level (solid blocks only - skip air and water)
+    // Get current ground level - use player's actual radius to find the floor they're standing on
+    const playerFeetRadius = this.position.distanceTo(this.currentPlanet.center);
     const currentTile = this.currentPlanet.getTileAtPoint(this.position);
-    let currentGroundDepth = 0;
+    let currentGroundDepth = -1;
     if (currentTile) {
-      for (let d = 0; d < MAX_TERRAIN_DEPTH; d++) {
-        const block = this.currentPlanet.getBlock(currentTile.index, d);
-        if (block !== HexBlockType.AIR && block !== HexBlockType.WATER) {
-          currentGroundDepth = d;
-          break;
-        }
-      }
+      currentGroundDepth = findWalkableFloorAtRadius(this.currentPlanet, currentTile.index, playerFeetRadius);
     }
+    if (currentGroundDepth < 0) return true; // No current ground found, allow movement
     const currentGroundRadius = this.currentPlanet.radius - currentGroundDepth;
 
-    // Get ground level at new position (solid blocks only)
+    // Find the WALKABLE ground at destination - scan for air-to-solid transitions
+    // and find the one closest to our current height that we can step to
     const newTile = this.currentPlanet.getTileAtPoint(newPosition);
-    let newGroundDepth = 0;
+    let bestDestGroundDepth = -1;
+    let bestHeightDiff = Infinity;
+
     if (newTile) {
-      for (let d = 0; d < MAX_TERRAIN_DEPTH; d++) {
+      for (let d = 0; d < MAX_TERRAIN_DEPTH - 1; d++) {
+        const blockAbove = d > 0 ? this.currentPlanet.getBlock(newTile.index, d - 1) : HexBlockType.AIR;
         const block = this.currentPlanet.getBlock(newTile.index, d);
-        if (block !== HexBlockType.AIR && block !== HexBlockType.WATER) {
-          newGroundDepth = d;
-          break;
+
+        const isAbovePassable = blockAbove === HexBlockType.AIR || blockAbove === HexBlockType.WATER;
+        const isCurrentSolid = block !== HexBlockType.AIR && block !== HexBlockType.WATER;
+
+        if (isAbovePassable && isCurrentSolid) {
+          const groundRadius = this.currentPlanet.radius - d;
+          const heightDiff = groundRadius - currentGroundRadius;
+
+          // Can we step to this level? (within AUTO_STEP_HEIGHT up, or any amount down)
+          if (heightDiff <= PlayerConfig.AUTO_STEP_HEIGHT) {
+            if (Math.abs(heightDiff) < Math.abs(bestHeightDiff)) {
+              bestDestGroundDepth = d;
+              bestHeightDiff = heightDiff;
+            }
+          }
         }
       }
     }
-    const newGroundRadius = this.currentPlanet.radius - newGroundDepth;
 
-    // Check step height
-    const heightDiff = newGroundRadius - currentGroundRadius;
-    return heightDiff <= PlayerConfig.AUTO_STEP_HEIGHT;
+    // If we found a walkable ground level, the step is valid
+    // If no walkable ground found, block movement
+    return bestDestGroundDepth >= 0;
   }
 
-  // Wall collision check - based on player's actual capsule position
+  // Wall collision check - checks if solid blocks at the destination would block the player
   // Returns true if blocked by a solid wall
   //
-  // This check is deliberately permissive - it only blocks when the player would
-  // actually be inside a solid block. The step-height check handles terrain traversal.
-  // Walls are for blocking horizontal movement INTO cliff faces, not for standing near cliffs.
+  // When grounded, we find the WALKABLE ground level at destination (the ground level closest
+  // to our current height that we could step to). Then we check if there's enough headroom
+  // (at least 2 air blocks) above that ground for the player to fit.
+  //
+  // Note: player.position is at FEET level (bottom of player)
   private checkWallCollision(newPosition: THREE.Vector3): boolean {
     if (!this.currentPlanet) return false;
 
     const newTile = this.currentPlanet.getTileAtPoint(newPosition);
     if (!newTile) return false;
 
-    // Player's actual position (radius from planet center)
-    const playerFeetRadius = newPosition.distanceTo(this.currentPlanet.center);
-    const playerHeadRadius = playerFeetRadius + PlayerConfig.PLAYER_HEIGHT;
+    let playerBottomRadius: number;
+    let playerTopRadius: number;
 
-    // Check if player is inside any solid block at the NEW tile itself
-    // (this catches cases where you'd move into the ground)
+    if (this.isGrounded) {
+      // Get current ground depth - use player's actual radius to find the floor they're on
+      const playerFeetRadius = this.position.distanceTo(this.currentPlanet.center);
+      const currentTile = this.currentPlanet.getTileAtPoint(this.position);
+      let currentGroundDepth = -1;
+      if (currentTile) {
+        currentGroundDepth = findWalkableFloorAtRadius(this.currentPlanet, currentTile.index, playerFeetRadius);
+      }
+      if (currentGroundDepth < 0) {
+        // No current ground found - use actual position
+        playerBottomRadius = newPosition.distanceTo(this.currentPlanet.center);
+        playerTopRadius = playerBottomRadius + PlayerConfig.PLAYER_HEIGHT;
+      } else {
+        const currentGroundRadius = this.currentPlanet.radius - currentGroundDepth;
+
+        // Find the WALKABLE ground at destination - the ground level closest to current
+        // that we can step to (within AUTO_STEP_HEIGHT up, or any amount down)
+        // Scan the destination column for air-to-solid transitions (potential floor surfaces)
+        let bestDestGroundDepth = -1;
+        let bestHeightDiff = Infinity;
+
+        for (let d = 0; d < MAX_TERRAIN_DEPTH - 1; d++) {
+          const blockAbove = d > 0 ? this.currentPlanet.getBlock(newTile.index, d - 1) : HexBlockType.AIR;
+          const block = this.currentPlanet.getBlock(newTile.index, d);
+
+          // This is a walkable surface if: current block is solid AND block above is air/water
+          const isAbovePassable = blockAbove === HexBlockType.AIR || blockAbove === HexBlockType.WATER;
+          const isCurrentSolid = block !== HexBlockType.AIR && block !== HexBlockType.WATER;
+
+          if (isAbovePassable && isCurrentSolid) {
+            // This is a potential floor at depth d
+            const groundRadius = this.currentPlanet.radius - d;
+            const heightDiff = groundRadius - currentGroundRadius;
+
+            // Can we step to this level? (within step height up, or any distance down)
+            if (heightDiff <= PlayerConfig.AUTO_STEP_HEIGHT) {
+              // Pick the closest ground to current level
+              if (Math.abs(heightDiff) < Math.abs(bestHeightDiff)) {
+                bestDestGroundDepth = d;
+                bestHeightDiff = heightDiff;
+              }
+            }
+          }
+        }
+
+        if (bestDestGroundDepth >= 0) {
+          // Calculate player position at destination ground
+          const destGroundRadius = this.currentPlanet.radius - bestDestGroundDepth;
+          playerBottomRadius = destGroundRadius;
+          playerTopRadius = destGroundRadius + PlayerConfig.PLAYER_HEIGHT;
+        } else {
+          // No walkable ground found - use actual position (will likely collide)
+          playerBottomRadius = newPosition.distanceTo(this.currentPlanet.center);
+          playerTopRadius = playerBottomRadius + PlayerConfig.PLAYER_HEIGHT;
+        }
+      }
+    } else {
+      // Airborne - use actual newPosition height
+      playerBottomRadius = newPosition.distanceTo(this.currentPlanet.center);
+      playerTopRadius = playerBottomRadius + PlayerConfig.PLAYER_HEIGHT;
+    }
+
+    // Check if player body would collide with solid blocks at destination
+    // Only check blocks that would actually overlap with the player's body
     for (let d = 0; d < MAX_TERRAIN_DEPTH; d++) {
       const block = this.currentPlanet.getBlock(newTile.index, d);
       if (block === HexBlockType.AIR || block === HexBlockType.WATER) continue;
@@ -788,7 +1089,12 @@ export class PlanetPlayer {
       const blockBottomRadius = blockTopRadius - 1;
 
       // Check if player body overlaps this solid block
-      if (blockTopRadius > playerFeetRadius && blockBottomRadius < playerHeadRadius) {
+      // Player occupies from playerBottomRadius to playerTopRadius
+      // Block occupies from blockBottomRadius to blockTopRadius
+      // They overlap if: blockTop > playerBottom AND blockBottom < playerTop
+      if (blockTopRadius > playerBottomRadius && blockBottomRadius < playerTopRadius) {
+        // Skip the ground block (the one player would stand ON)
+        if (this.isGrounded && blockTopRadius === playerBottomRadius) continue;
         return true; // Would be inside solid terrain
       }
     }
@@ -796,13 +1102,90 @@ export class PlanetPlayer {
     return false;
   }
 
+  // Check if there's enough headroom at the target tile for the player to walk there
+  // Returns true if there's NOT enough headroom (blocked by ceiling)
+  //
+  // This finds the WALKABLE ground level at destination (closest to current height that
+  // we can step to), then checks if player would fit standing there.
+  //
+  // Note: player.position is at FEET level (bottom of player)
+  private checkHeadroomCollision(newPosition: THREE.Vector3): boolean {
+    if (!this.currentPlanet) return false;
+
+    const newTile = this.currentPlanet.getTileAtPoint(newPosition);
+    if (!newTile) return false;
+
+    // Get current ground depth - use player's actual radius to find the floor they're on
+    const playerFeetRadius = this.position.distanceTo(this.currentPlanet.center);
+    const currentTile = this.currentPlanet.getTileAtPoint(this.position);
+    let currentGroundDepth = -1;
+    if (currentTile) {
+      currentGroundDepth = findWalkableFloorAtRadius(this.currentPlanet, currentTile.index, playerFeetRadius);
+    }
+    if (currentGroundDepth < 0) return false; // No current ground, allow movement
+    const currentGroundRadius = this.currentPlanet.radius - currentGroundDepth;
+
+    // Find the WALKABLE ground at destination - scan for air-to-solid transitions
+    let destGroundDepth = -1;
+    let bestHeightDiff = Infinity;
+
+    for (let d = 0; d < MAX_TERRAIN_DEPTH - 1; d++) {
+      const blockAbove = d > 0 ? this.currentPlanet.getBlock(newTile.index, d - 1) : HexBlockType.AIR;
+      const block = this.currentPlanet.getBlock(newTile.index, d);
+
+      const isAbovePassable = blockAbove === HexBlockType.AIR || blockAbove === HexBlockType.WATER;
+      const isCurrentSolid = block !== HexBlockType.AIR && block !== HexBlockType.WATER;
+
+      if (isAbovePassable && isCurrentSolid) {
+        const groundRadius = this.currentPlanet.radius - d;
+        const heightDiff = groundRadius - currentGroundRadius;
+
+        // Can we step to this level?
+        if (heightDiff <= PlayerConfig.AUTO_STEP_HEIGHT) {
+          if (Math.abs(heightDiff) < Math.abs(bestHeightDiff)) {
+            destGroundDepth = d;
+            bestHeightDiff = heightDiff;
+          }
+        }
+      }
+    }
+
+    if (destGroundDepth < 0) return false; // No walkable ground at destination
+
+    // Calculate where player's feet and head would be if standing on destination ground
+    const destGroundRadius = this.currentPlanet.radius - destGroundDepth;
+    const playerFeetAtDest = destGroundRadius;
+    const playerHeadAtDest = destGroundRadius + PlayerConfig.PLAYER_HEIGHT;
+
+    // Check all blocks in the destination tile to see if any would collide with player's body
+    for (let d = 0; d < MAX_TERRAIN_DEPTH; d++) {
+      const block = this.currentPlanet.getBlock(newTile.index, d);
+      if (block === HexBlockType.AIR || block === HexBlockType.WATER) continue;
+
+      const blockTopRadius = this.currentPlanet.radius - d;
+      const blockBottomRadius = blockTopRadius - 1;
+
+      // They overlap if: blockTop > playerFeet AND blockBottom < playerHead
+      if (blockTopRadius > playerFeetAtDest && blockBottomRadius < playerHeadAtDest) {
+        // Skip the ground block itself
+        if (d === destGroundDepth) continue;
+        return true; // Player would collide with ceiling/wall block
+      }
+    }
+
+    return false; // No collision, enough headroom
+  }
+
   // Check if position is valid (no collision with terrain at any capsule height)
   // Water blocks are passable - only solid blocks block movement
+  //
+  // Note: player.position is at FEET level (bottom of player)
   private isPositionValid(position: THREE.Vector3): boolean {
     if (!this.currentPlanet) return true;
 
     const actualUp = this.currentPlanet.getSurfaceNormal(position);
-    const playerDist = position.distanceTo(this.currentPlanet.center);
+    // Position is at feet level (bottom of player)
+    const playerBottomRadius = position.distanceTo(this.currentPlanet.center);
 
     // Find the deepest solid block at this position to establish an absolute floor
     const tile = this.currentPlanet.getTileAtPoint(position);
@@ -815,20 +1198,21 @@ export class PlanetPlayer {
           // Don't break - we want the DEEPEST solid block, not the first
         }
       }
-      // If there's solid ground, ensure player doesn't go below the bottom of it
+      // If there's solid ground, ensure player's feet don't go below the bottom of it
       if (deepestSolidDepth >= 0) {
         const floorRadius = this.currentPlanet.radius - deepestSolidDepth - 1; // Bottom of deepest block
-        if (playerDist < floorRadius) {
-          return false; // Below the absolute floor
+        if (playerBottomRadius < floorRadius) {
+          return false; // Feet below the absolute floor
         }
       }
     }
 
-    // Check collision at multiple heights along the capsule
-    const checkOffsets = [0, PlayerConfig.PLAYER_HEIGHT * 0.5, PlayerConfig.PLAYER_HEIGHT - 0.1];
+    // Check collision at multiple heights along the capsule (from feet to head)
+    // Offsets are POSITIVE since we check from feet (position) up to head
+    const checkOffsets = [0.1, PlayerConfig.PLAYER_HEIGHT * 0.5, PlayerConfig.PLAYER_HEIGHT];
 
     for (const offset of checkOffsets) {
-      const checkRadius = playerDist + offset;
+      const checkRadius = playerBottomRadius + offset;
       const checkPos = this.currentPlanet.center.clone()
         .add(actualUp.clone().multiplyScalar(checkRadius));
 
@@ -853,38 +1237,105 @@ export class PlanetPlayer {
 
   // Push player out of solid geometry if they somehow got stuck
   // This is a safety net for edge cases where normal collision detection fails
+  //
+  // Note: player.position is at FEET level (bottom of player)
   private resolveStuckPosition(actualUp: THREE.Vector3): void {
     if (!this.currentPlanet) return;
 
     const tile = this.currentPlanet.getTileAtPoint(this.position);
     if (!tile) return;
 
-    const playerFeetRadius = this.position.distanceTo(this.currentPlanet.center);
+    // Position is at feet level, head is PLAYER_HEIGHT above
+    const playerBottomRadius = this.position.distanceTo(this.currentPlanet.center);
+    const playerTopRadius = playerBottomRadius + PlayerConfig.PLAYER_HEIGHT;
 
-    // Check if player's feet are inside solid ground at current tile
+    // First, find all WALKABLE floors (air-to-solid transitions) in this tile
+    // These are the valid places the player could stand
+    const walkableFloors: { depth: number; radius: number }[] = [];
+    for (let d = 0; d < MAX_TERRAIN_DEPTH; d++) {
+      const blockAbove = d > 0 ? this.currentPlanet.getBlock(tile.index, d - 1) : HexBlockType.AIR;
+      const block = this.currentPlanet.getBlock(tile.index, d);
+
+      const isAbovePassable = blockAbove === HexBlockType.AIR || blockAbove === HexBlockType.WATER;
+      const isCurrentSolid = block !== HexBlockType.AIR && block !== HexBlockType.WATER;
+
+      if (isAbovePassable && isCurrentSolid) {
+        const floorRadius = this.currentPlanet.radius - d;
+        walkableFloors.push({ depth: d, radius: floorRadius });
+      }
+    }
+
+    if (walkableFloors.length === 0) return; // No walkable surfaces
+
+    // Find the walkable floor closest to player's current feet level
+    let bestFloor = walkableFloors[0];
+    let bestDist = Math.abs(playerBottomRadius - bestFloor.radius);
+    for (const floor of walkableFloors) {
+      const dist = Math.abs(playerBottomRadius - floor.radius);
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestFloor = floor;
+      }
+    }
+
+    // Check if player would fit standing on this floor (enough headroom)
+    const feetAtFloor = bestFloor.radius;
+    const headAtFloor = feetAtFloor + PlayerConfig.PLAYER_HEIGHT;
+
+    // Check if any solid blocks would collide with player body at this floor
+    let floorIsValid = true;
     for (let d = 0; d < MAX_TERRAIN_DEPTH; d++) {
       const block = this.currentPlanet.getBlock(tile.index, d);
       if (block === HexBlockType.AIR || block === HexBlockType.WATER) continue;
 
-      // Found solid block - check if we're inside it
-      const blockOuterRadius = this.currentPlanet.radius - d;
+      const blockTopRadius = this.currentPlanet.radius - d;
+      const blockBottomRadius = blockTopRadius - 1;
 
-      if (playerFeetRadius < blockOuterRadius) {
-        // Player is inside this solid block - push them up to stand on top
-        const safeRadius = blockOuterRadius + PlayerConfig.PLAYER_HEIGHT + 0.1;
-        this.position.copy(this.currentPlanet.center).addScaledVector(actualUp, safeRadius);
-        // When underwater, just stop downward velocity rather than all velocity
-        // This allows continued horizontal swimming movement
-        if (this.isInWater) {
-          const upComponent = this.velocity.dot(actualUp);
-          if (upComponent < 0) {
-            this.velocity.sub(actualUp.clone().multiplyScalar(upComponent));
-          }
-        } else {
-          this.velocity.set(0, 0, 0); // Reset velocity when unsticking on land
-        }
-        return;
+      // Skip the floor block itself
+      if (d === bestFloor.depth) continue;
+
+      // Check overlap with player body standing on this floor
+      if (blockTopRadius > feetAtFloor && blockBottomRadius < headAtFloor) {
+        floorIsValid = false;
+        break;
       }
+    }
+
+    if (!floorIsValid) return; // Can't fit at best floor, don't force a move
+
+    // Now check if player is actually stuck (overlapping solid blocks at current position)
+    let isStuck = false;
+    for (let d = 0; d < MAX_TERRAIN_DEPTH; d++) {
+      const block = this.currentPlanet.getBlock(tile.index, d);
+      if (block === HexBlockType.AIR || block === HexBlockType.WATER) continue;
+
+      const blockTopRadius = this.currentPlanet.radius - d;
+      const blockBottomRadius = blockTopRadius - 1;
+
+      // Player overlaps if: blockTop > playerBottom AND blockBottom < playerTop
+      if (blockTopRadius > playerBottomRadius && blockBottomRadius < playerTopRadius) {
+        // Skip the ground block player is standing on
+        if (Math.abs(blockTopRadius - playerBottomRadius) < 0.2) continue;
+        isStuck = true;
+        break;
+      }
+    }
+
+    if (!isStuck) return; // Not stuck, nothing to do
+
+    // Move player to the best walkable floor
+    const safeRadius = bestFloor.radius + 0.1;
+    this.position.copy(this.currentPlanet.center).addScaledVector(actualUp, safeRadius);
+
+    // When underwater, just stop downward velocity rather than all velocity
+    // This allows continued horizontal swimming movement
+    if (this.isInWater) {
+      const upComponent = this.velocity.dot(actualUp);
+      if (upComponent < 0) {
+        this.velocity.sub(actualUp.clone().multiplyScalar(upComponent));
+      }
+    } else {
+      this.velocity.set(0, 0, 0); // Reset velocity when unsticking on land
     }
   }
 
@@ -938,22 +1389,17 @@ export class PlanetPlayer {
     // Get the tile at current position
     const currentTile = this.currentPlanet.getTileAtPoint(this.position);
 
-    // Find ground level at current tile (skip water blocks - they're passable)
+    // Find ground level at current tile - use player's actual position to find the
+    // walkable floor closest to where they are (handles caves correctly)
     let groundDepth = -1;
     if (currentTile) {
-      for (let d = 0; d < MAX_TERRAIN_DEPTH; d++) {
-        const block = this.currentPlanet.getBlock(currentTile.index, d);
-        // Ground is solid blocks only (not air, not water)
-        if (block !== HexBlockType.AIR && block !== HexBlockType.WATER) {
-          groundDepth = d;
-          break;
-        }
-      }
+      groundDepth = findWalkableFloorAtRadius(this.currentPlanet, currentTile.index, currentDist);
     }
 
     // Calculate ground position for current tile
+    // Player position is at FEET level (bottom of player)
     const groundRadius = groundDepth >= 0 ? this.currentPlanet.radius - groundDepth : 0;
-    const targetRadius = groundRadius + PlayerConfig.PLAYER_HEIGHT;
+    const targetRadius = groundRadius;
 
     // Check if currently on ground (solid blocks only)
     const onGround = groundDepth >= 0 && currentDist <= targetRadius + 0.05;
@@ -1014,22 +1460,38 @@ export class PlanetPlayer {
       const newPosition = this.position.clone().add(this.velocity.clone().multiplyScalar(deltaTime));
       const newDist = newPosition.distanceTo(this.currentPlanet.center);
 
-      // Get ground at NEW position (might be different tile)
-      // Skip water blocks - player can sink through water to solid ground
+      // Get WALKABLE ground at NEW position (might be different tile)
+      // Find the walkable floor closest to current height (same logic as collision checks)
       const newTile = this.currentPlanet.getTileAtPoint(newPosition);
       let newGroundDepth = -1;
+      let bestHeightDiff = Infinity;
+
       if (newTile) {
-        for (let d = 0; d < MAX_TERRAIN_DEPTH; d++) {
+        for (let d = 0; d < MAX_TERRAIN_DEPTH - 1; d++) {
+          const blockAbove = d > 0 ? this.currentPlanet.getBlock(newTile.index, d - 1) : HexBlockType.AIR;
           const block = this.currentPlanet.getBlock(newTile.index, d);
-          if (block !== HexBlockType.AIR && block !== HexBlockType.WATER) {
-            newGroundDepth = d;
-            break;
+
+          // Walkable floor: solid block with air/water above
+          const isAbovePassable = blockAbove === HexBlockType.AIR || blockAbove === HexBlockType.WATER;
+          const isCurrentSolid = block !== HexBlockType.AIR && block !== HexBlockType.WATER;
+
+          if (isAbovePassable && isCurrentSolid) {
+            const floorRadius = this.currentPlanet.radius - d;
+            const heightDiff = floorRadius - groundRadius;
+
+            // Can we step/fall to this level? (within AUTO_STEP_HEIGHT up, or any amount down)
+            if (heightDiff <= PlayerConfig.AUTO_STEP_HEIGHT) {
+              if (Math.abs(heightDiff) < Math.abs(bestHeightDiff)) {
+                newGroundDepth = d;
+                bestHeightDiff = heightDiff;
+              }
+            }
           }
         }
       }
 
       const newGroundRadius = newGroundDepth >= 0 ? this.currentPlanet.radius - newGroundDepth : 0;
-      const newTargetRadius = newGroundRadius + PlayerConfig.PLAYER_HEIGHT;
+      const newTargetRadius = newGroundRadius; // Position is at feet level
 
       // Check if this would be stepping UP (blocked by AUTO_STEP_HEIGHT)
       // But when underwater, disable step blocking - player should swim freely over terrain
@@ -1086,11 +1548,10 @@ export class PlanetPlayer {
           if (verticalValid) {
             this.position.copy(verticalNewPos);
           } else {
-            // Vertical blocked - stop vertical velocity
+            // Vertical blocked - stop vertical velocity (both up and down)
             const upComponent = this.velocity.dot(actualUp);
-            if (upComponent < 0) {
-              this.velocity.sub(actualUp.clone().multiplyScalar(upComponent));
-            }
+            // Remove the vertical component of velocity entirely (ceiling or floor collision)
+            this.velocity.sub(actualUp.clone().multiplyScalar(upComponent));
           }
 
           // Try horizontal movement (sliding along walls)
@@ -1111,8 +1572,14 @@ export class PlanetPlayer {
   }
 
   private updateCamera(): void {
+    // Position is at feet level, so add EYE_HEIGHT to get eye position
+    // Calculate radial direction directly from position (more accurate than potentially stale localUp)
+    const radialUp = this.currentPlanet
+      ? this.position.clone().sub(this.currentPlanet.center).normalize()
+      : this.localUp.clone();
+
     const eyePos = this.position.clone();
-    const eyeOffset = this.localUp.clone().multiplyScalar(PlayerConfig.PLAYER_EYE_HEIGHT - PlayerConfig.PLAYER_HEIGHT);
+    const eyeOffset = radialUp.clone().multiplyScalar(PlayerConfig.PLAYER_EYE_HEIGHT);
     eyePos.add(eyeOffset);
     this.camera.position.copy(eyePos);
 

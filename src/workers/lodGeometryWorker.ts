@@ -78,9 +78,9 @@ interface PrecomputedTileData {
 // Block types (must match HexBlock.ts)
 const HexBlockType = {
   AIR: 0,
-  GRASS: 1,
+  STONE: 1,
   DIRT: 2,
-  STONE: 3,
+  GRASS: 3,
   WATER: 4,
   SAND: 5,
   WOOD: 6,

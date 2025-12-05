@@ -256,7 +256,7 @@ export class PlanetBlockInteraction {
         this.resetMining();
       }
     } else if (hitBlock && blockHit) {
-      const { tileIndex, depth, blockType } = blockHit;
+      const { tileIndex, depth, blockType, prevTileIndex, prevDepth } = blockHit;
 
       // Show wireframe around targeted block
       if (this.blockWireframe) {
@@ -273,8 +273,9 @@ export class PlanetBlockInteraction {
       }
 
       // Handle block placing (right click)
+      // Use the previous air block position for placement (supports horizontal placement)
       if (rightClick && this.rightClickCooldown === 0) {
-        this.placeBlock(tileIndex, depth - 1);
+        this.placeBlock(prevTileIndex, prevDepth);
         this.rightClickCooldown = this.CLICK_COOLDOWN;
       }
     } else {

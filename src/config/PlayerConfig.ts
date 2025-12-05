@@ -132,4 +132,8 @@ export const PlayerConfig = {
 
   // Profiler spike detection
   FRAME_SPIKE_THRESHOLD_MS: 30,       // Log frame breakdown if total exceeds this (ms)
+
+  // Debug: Cave structure logging (Shift+X)
+  DEBUG_CAVE_TILE_RINGS: 1,           // How many rings of neighbor tiles to sample (0 = just current tile)
+  DEBUG_CAVE_DEPTH_ROWS: 6,           // How many depth rows to show (from standing level upward)
 };

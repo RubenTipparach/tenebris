@@ -2715,7 +2715,8 @@ export class Planet {
   }
 
   // Raycast against planet geometry to find block at ray intersection
-  // Returns { tileIndex, depth, blockType, point, normal } or null if no hit
+  // Returns { tileIndex, depth, blockType, point, normal, prevTileIndex, prevDepth } or null if no hit
+  // prevTileIndex/prevDepth indicate the air block we came from (for placement)
   // By default ignores water blocks (set includeWater=true to detect water, e.g. for bucket tool)
   public raycast(origin: THREE.Vector3, direction: THREE.Vector3, maxDistance: number, includeWater: boolean = false): {
     tileIndex: number;
@@ -2723,6 +2724,8 @@ export class Planet {
     blockType: HexBlockType;
     point: THREE.Vector3;
     normal: THREE.Vector3;
+    prevTileIndex: number;  // Tile index of the air block before the hit
+    prevDepth: number;      // Depth of the air block before the hit
   } | null {
     // Step along the ray and check for solid blocks
     const stepSize = 0.2; // Small steps for accuracy
@@ -2735,30 +2738,51 @@ export class Planet {
 
     // Use hint-based fast lookup for subsequent steps
     let currentTile = startTile;
+    let prevTile = startTile;
+    let prevDepth = this.getDepthAtPoint(origin);
 
     for (let dist = 0; dist < maxDistance; dist += stepSize) {
       testPoint.copy(origin).addScaledVector(rayDir, dist);
 
       // Use fast BFS lookup from previous tile (much faster than full search)
-      currentTile = this.polyhedron.getTileAtPointFromHint(testPoint.clone().sub(this.center), currentTile);
+      const newTile = this.polyhedron.getTileAtPointFromHint(testPoint.clone().sub(this.center), currentTile);
 
       const depth = this.getDepthAtPoint(testPoint);
-      if (depth < 0 || depth >= this.MAX_DEPTH) continue;
+      if (depth < 0 || depth >= this.MAX_DEPTH) {
+        // Track previous valid position
+        prevTile = currentTile;
+        prevDepth = depth;
+        currentTile = newTile;
+        continue;
+      }
 
-      const blockType = this.getBlock(currentTile.index, depth);
+      const blockType = this.getBlock(newTile.index, depth);
       // Skip air blocks, and skip water unless includeWater is true
-      if (blockType === HexBlockType.AIR) continue;
-      if (blockType === HexBlockType.WATER && !includeWater) continue;
+      if (blockType === HexBlockType.AIR) {
+        // Track this as the previous air position
+        prevTile = newTile;
+        prevDepth = depth;
+        currentTile = newTile;
+        continue;
+      }
+      if (blockType === HexBlockType.WATER && !includeWater) {
+        prevTile = newTile;
+        prevDepth = depth;
+        currentTile = newTile;
+        continue;
+      }
 
       // Calculate surface normal (direction from planet center through hit point)
       const normal = testPoint.clone().sub(this.center).normalize();
 
       return {
-        tileIndex: currentTile.index,
+        tileIndex: newTile.index,
         depth,
         blockType,
         point: testPoint.clone(),
-        normal
+        normal,
+        prevTileIndex: prevTile.index,
+        prevDepth: prevDepth
       };
     }
 

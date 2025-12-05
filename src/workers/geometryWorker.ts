@@ -83,9 +83,9 @@ interface ColumnData {
 // Block types (must match HexBlock.ts)
 const HexBlockType = {
   AIR: 0,
-  GRASS: 1,
+  STONE: 1,
   DIRT: 2,
-  STONE: 3,
+  GRASS: 3,
   WATER: 4,
   SAND: 5,
   WOOD: 6,
@@ -360,7 +360,10 @@ function buildColumnGeometry(
     if (innerRadius <= 0) continue;
 
     const depthFromSurface = depth - surfaceDepth;
-    const isDeep = depthFromSurface >= config.deepThreshold;
+    // Use stone texture if: block is explicitly STONE, or it's deep underground (natural stone layer)
+    const useStoneTexture = blockType === HexBlockType.STONE || depthFromSurface >= config.deepThreshold;
+    // Use dirt texture if block is explicitly DIRT (placed by player)
+    const useDirtTexture = blockType === HexBlockType.DIRT;
 
     // Calculate sky light
     const SKY_LIGHT_FALLOFF = 0.8;
@@ -376,8 +379,10 @@ function buildColumnGeometry(
       if (topGeom) {
         if (isWater) {
           mergeGeometry(waterData, topGeom.positions, topGeom.normals, topGeom.uvs, topGeom.indices, config.sunDirection, 1.0);
-        } else if (isDeep) {
+        } else if (useStoneTexture) {
           mergeGeometry(stoneData, topGeom.positions, topGeom.normals, topGeom.uvs, topGeom.indices, config.sunDirection, skyLightLevel);
+        } else if (useDirtTexture) {
+          mergeGeometry(sideData, topGeom.positions, topGeom.normals, topGeom.uvs, topGeom.indices, config.sunDirection, skyLightLevel);
         } else {
           mergeGeometry(topData, topGeom.positions, topGeom.normals, topGeom.uvs, topGeom.indices, config.sunDirection, skyLightLevel);
         }
@@ -397,9 +402,10 @@ function buildColumnGeometry(
     if (!isWater && hasSideExposed) {
       const sidesGeom = createFaceGeometry(column.tile, innerRadius, outerRadius, false, false, true);
       if (sidesGeom) {
-        if (isDeep) {
+        if (useStoneTexture) {
           mergeGeometry(stoneData, sidesGeom.positions, sidesGeom.normals, sidesGeom.uvs, sidesGeom.indices, config.sunDirection, skyLightLevel);
         } else {
+          // Dirt and grass both use sideData (dirt texture for sides)
           mergeGeometry(sideData, sidesGeom.positions, sidesGeom.normals, sidesGeom.uvs, sidesGeom.indices, config.sunDirection, skyLightLevel);
         }
       }
