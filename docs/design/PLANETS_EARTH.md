@@ -174,13 +174,15 @@ Earth is the starting planet and the most hospitable world in the solar system. 
 
 | Ore | Depth | Tool Required | Smelts To |
 |-----|-------|---------------|-----------|
-| **Coal** | 5-30 | Stone Pickaxe | Fuel (doesn't smelt) |
-| **Copper** | 10-40 | Stone Pickaxe | Copper Ingot |
-| **Iron** | 20-50 | Bronze Pickaxe | Iron Ingot |
-| **Gold** | 30-50 | Iron Pickaxe | Gold Ingot |
-| **Lithium** | 35-50 | Iron Pickaxe | Lithium (batteries) |
-| **Aluminum** | 15-40 | Stone Pickaxe | Aluminum Ingot |
-| **Cobalt** | 30-50 | Iron Pickaxe | Cobalt Ingot |
+| **Coal** | 15-27 | Stone Pickaxe | Fuel (doesn't smelt) |
+| **Copper** | 12-24 | Stone Pickaxe | Copper Ingot |
+| **Iron** | 6-18 | Bronze Pickaxe | Iron Ingot |
+| **Gold** | 0-8 | Iron Pickaxe | Gold Ingot |
+| **Lithium** | 0-6 | Iron Pickaxe | Lithium (batteries) |
+| **Aluminum** | 10-22 | Stone Pickaxe | Aluminum Ingot |
+| **Cobalt** | 0-8 | Iron Pickaxe | Cobalt Ingot |
+
+*Depth: 0 = bedrock (bottom), 32 = surface*
 
 #### Mineral Textures (Future Implementation)
 
