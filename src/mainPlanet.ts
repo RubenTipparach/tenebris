@@ -111,6 +111,11 @@ class PlanetGame {
       // Give block interaction access to tree manager for mining trees
       this.blockInteraction.setTreeManager(this.treeManager);
 
+      // Setup mobile inventory toggle callback
+      this.inputManager.setInventoryToggleCallback(() => {
+        this.blockInteraction.getCraftingSystem().toggle();
+      });
+
       // Create atmosphere for Earth (if enabled)
       if (PlayerConfig.ATMOSPHERE_ENABLED) {
         this.earthAtmosphere = createEarthAtmosphere(this.earth.radius, this.engine.sunDirection);

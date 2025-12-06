@@ -102,11 +102,20 @@ export class PlanetBlockInteraction {
         img.draggable = false;
       }
 
+      // Desktop drag and drop
       slot.addEventListener('dragstart', (e) => this.handleHotbarDragStart(e, index));
       slot.addEventListener('dragend', () => this.handleHotbarDragEnd());
       slot.addEventListener('dragover', (e) => this.handleHotbarDragOver(e));
       slot.addEventListener('dragleave', (e) => this.handleHotbarDragLeave(e));
       slot.addEventListener('drop', (e) => this.handleHotbarDrop(e, index));
+
+      // Mobile: tap to select slot
+      slot.addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        this.inventory.setSelectedSlot(index);
+        this.updateHotbarUI();
+        this.updateBlockTypeUI();
+      }, { passive: false });
     });
   }
 
@@ -583,6 +592,10 @@ export class PlanetBlockInteraction {
 
   public getInventory(): Inventory {
     return this.inventory;
+  }
+
+  public getCraftingSystem(): CraftingSystem {
+    return this.craftingSystem;
   }
 
   public setTreeManager(treeManager: PlanetTreeManager): void {
