@@ -116,6 +116,19 @@ class PlanetGame {
         this.blockInteraction.getCraftingSystem().toggle();
       });
 
+      // Setup mobile pause callback - shows the main menu
+      this.inputManager.setPauseToggleCallback(() => {
+        const instructions = document.getElementById('instructions');
+        const mobileControls = document.getElementById('mobile-controls');
+        if (instructions) {
+          const isVisible = instructions.style.display !== 'none';
+          instructions.style.display = isVisible ? 'none' : 'block';
+          if (mobileControls) {
+            mobileControls.style.display = isVisible ? 'block' : 'none';
+          }
+        }
+      });
+
       // Create atmosphere for Earth (if enabled)
       if (PlayerConfig.ATMOSPHERE_ENABLED) {
         this.earthAtmosphere = createEarthAtmosphere(this.earth.radius, this.engine.sunDirection);
