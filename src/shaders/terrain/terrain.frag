@@ -32,10 +32,11 @@ void main() {
   // Requires: face pointing toward sun (meshDiffuse), tile on day side (vSunBrightness), sky visible (vSkyLight)
   float directional = meshDiffuse * vSunBrightness * directionalIntensity * vSkyLight;
 
-  // Ambient light: flat 50% of directional intensity, not dependent on face normal
-  // This ensures all faces get consistent base lighting regardless of orientation
-  // Only modulated by sky light (caves get darker)
-  float ambient = ambientIntensity * vSkyLight;
+  // Ambient light: transitions from full intensity on day side to 10% on dark side
+  // vSunBrightness is based on tile position relative to sun (1.0 = day, 0.0 = night)
+  // This creates a gradual day/night transition for ambient lighting
+  float ambientDayNight = mix(0.1, 1.0, vSunBrightness); // 10% at night, 100% at day
+  float ambient = ambientIntensity * ambientDayNight * vSkyLight;
 
   // Final lighting: ambient provides base, directional adds on top
   float lighting = ambient + directional;

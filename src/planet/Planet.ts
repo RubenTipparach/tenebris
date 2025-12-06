@@ -2102,7 +2102,7 @@ export class Planet {
 
       if (isWater && blockAbove !== HexBlockType.AIR) continue;
 
-      const hasSideExposed = !isWater && this.hasExposedSide(column, depth);
+      const hasSideExposed = this.hasExposedSide(column, depth);
 
       if (!isWater && !hasTopExposed && !hasBottomExposed && !hasSideExposed) continue;
 
@@ -2138,7 +2138,7 @@ export class Planet {
         new THREE.Vector3(0, 0, 0),
         isWater ? true : hasTopExposed,
         isWater ? false : hasBottomExposed,
-        hasSideExposed
+        isWater ? false : hasSideExposed  // Water sides handled separately per-edge
       );
 
       if (top) {
@@ -2173,7 +2173,7 @@ export class Planet {
         bottom.dispose();
       }
 
-      if (sides && !isWater) {
+      if (sides) {
         const posAttr = sides.getAttribute('position');
         const normAttr = sides.getAttribute('normal');
         const uvAttr = sides.getAttribute('uv');
@@ -2187,6 +2187,11 @@ export class Planet {
           }
         }
         sides.dispose();
+      }
+
+      // Water side faces - generate per-edge only where neighbor is air
+      if (isWater) {
+        this.buildWaterSideFaces(column, depth, innerRadius, outerRadius, waterData);
       }
     }
   }
@@ -2328,6 +2333,107 @@ export class Planet {
       }
     }
     return false;
+  }
+
+  // Build water side faces only for edges that border air blocks
+  private buildWaterSideFaces(
+    column: PlanetColumn,
+    depth: number,
+    innerRadius: number,
+    outerRadius: number,
+    waterData: GeometryData
+  ): void {
+    const tile = column.tile;
+    const numSides = tile.vertices.length;
+
+    // Scale vertices to inner and outer radii
+    const innerVerts: THREE.Vector3[] = [];
+    const outerVerts: THREE.Vector3[] = [];
+
+    for (const v of tile.vertices) {
+      const dir = v.clone().normalize();
+      innerVerts.push(dir.clone().multiplyScalar(innerRadius));
+      outerVerts.push(dir.clone().multiplyScalar(outerRadius));
+    }
+
+    // For each edge, find the neighbor that shares it
+    // Two tiles share an edge if they both contain the two edge vertices
+    const edgeThreshold = 0.001; // Tolerance for vertex matching
+
+    // Check each edge
+    for (let i = 0; i < numSides; i++) {
+      const next = (i + 1) % numSides;
+      const edgeV1 = tile.vertices[i];
+      const edgeV2 = tile.vertices[next];
+
+      // Find which neighbor shares this edge
+      let neighborIsAir = false;
+      for (const neighborIndex of tile.neighbors) {
+        const neighborColumn = this.columns.get(neighborIndex);
+        if (!neighborColumn) continue;
+
+        const neighborTile = neighborColumn.tile;
+
+        // Check if this neighbor has both edge vertices
+        let hasV1 = false;
+        let hasV2 = false;
+        for (const nv of neighborTile.vertices) {
+          if (nv.distanceTo(edgeV1) < edgeThreshold) hasV1 = true;
+          if (nv.distanceTo(edgeV2) < edgeThreshold) hasV2 = true;
+        }
+
+        if (hasV1 && hasV2) {
+          // This neighbor shares this edge - check if it's air at this depth
+          if (depth < neighborColumn.blocks.length) {
+            neighborIsAir = neighborColumn.blocks[depth] === HexBlockType.AIR;
+          }
+          break;
+        }
+      }
+
+      if (!neighborIsAir) continue;
+
+      const outerV1 = outerVerts[i];
+      const outerV2 = outerVerts[next];
+      const innerV1 = innerVerts[i];
+      const innerV2 = innerVerts[next];
+
+      // Calculate side normal using cross product of quad edges
+      const edge1 = innerV2.clone().sub(innerV1);
+      const edge2 = outerV1.clone().sub(innerV1);
+      const sideNormal = edge1.clone().cross(edge2).normalize();
+
+      const baseIdx = waterData.vertexOffset;
+
+      // Four vertices for this side face
+      waterData.positions.push(
+        innerV1.x, innerV1.y, innerV1.z,
+        innerV2.x, innerV2.y, innerV2.z,
+        outerV2.x, outerV2.y, outerV2.z,
+        outerV1.x, outerV1.y, outerV1.z
+      );
+
+      for (let j = 0; j < 4; j++) {
+        waterData.normals.push(sideNormal.x, sideNormal.y, sideNormal.z);
+      }
+
+      // UVs for side face
+      waterData.uvs.push(0, 0, 1, 0, 1, 1, 0, 1);
+
+      // Sky light (water is always at surface level)
+      waterData.skyLight.push(1.0, 1.0, 1.0, 1.0);
+
+      // Vertex colors (full brightness for water)
+      waterData.colors.push(1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1);
+
+      // Indices for two triangles making the quad
+      waterData.indices.push(
+        baseIdx, baseIdx + 1, baseIdx + 2,
+        baseIdx, baseIdx + 2, baseIdx + 3
+      );
+
+      waterData.vertexOffset += 4;
+    }
   }
 
   public getBlock(tileIndex: number, depth: number): HexBlockType {

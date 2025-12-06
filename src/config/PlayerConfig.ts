@@ -102,7 +102,7 @@ export const PlayerConfig = {
 
   // Terrain rendering & streaming
   TERRAIN_MIN_RENDER_DISTANCE: 16,    // Min tiles to render when on ground
-  TERRAIN_MAX_RENDER_DISTANCE: 16,    // Max tiles when at high altitude
+  TERRAIN_MAX_RENDER_DISTANCE: 24,    // Max tiles when at high altitude
   TERRAIN_LOD_SWITCH_ALTITUDE: 50,    // Altitude above which only LOD mesh is shown
   TERRAIN_BUFFER_ZONE: 12,             // Tiles player can move before triggering rebuild
   TERRAIN_TILES_PER_FRAME: 20,        // Max tiles to process per frame during incremental rebuild

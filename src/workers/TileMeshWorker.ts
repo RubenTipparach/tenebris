@@ -75,7 +75,7 @@ function createSeparateGeometries(
   isTopExposed: boolean,
   isBottomExposed: boolean,
   areSidesExposed: boolean,
-  uvScale: number = 10
+  _uvScale: number = 10
 ): { top: RawGeometry | null; bottom: RawGeometry | null; sides: RawGeometry | null } {
   const numSides = tile.vertices.length;
 
@@ -139,30 +139,16 @@ function createSeparateGeometries(
   let bottomGeom: RawGeometry | null = null;
   let sidesGeom: RawGeometry | null = null;
 
-  // Pre-compute UV coordinates for the tile shape (shared between top and bottom faces)
-  // Project tile vertices onto local 2D plane and find max extent for normalization
-  const tileLocalCoords: { u: number; v: number }[] = [];
-  let maxExtent = 0;
-
+  // Pre-compute regular polygon UVs (same for all hexagons/pentagons regardless of 3D distortion)
+  const uvRadius = 0.5;
+  const tileUVs: { u: number; v: number }[] = [];
   for (let i = 0; i < numSides; i++) {
-    // Use tile vertices for UV calculation (relative to tile center)
-    const toVertX = tile.vertices[i].x - tile.center.x;
-    const toVertY = tile.vertices[i].y - tile.center.y;
-    const toVertZ = tile.vertices[i].z - tile.center.z;
-    const u = toVertX * localRightX + toVertY * localRightY + toVertZ * localRightZ;
-    const v = toVertX * localForwardX + toVertY * localForwardY + toVertZ * localForwardZ;
-    tileLocalCoords.push({ u, v });
-    maxExtent = Math.max(maxExtent, Math.abs(u), Math.abs(v));
+    const angle = (i / numSides) * Math.PI * 2 - Math.PI / 2; // Start from top
+    tileUVs.push({
+      u: 0.5 + Math.cos(angle) * uvRadius,
+      v: 0.5 + Math.sin(angle) * uvRadius
+    });
   }
-
-  // Scale factor: maps max extent to produce desired UV tiling
-  const normalizedScale = maxExtent > 0 ? uvScale / maxExtent : 1;
-
-  // Pre-compute normalized UVs for each vertex
-  const tileUVs = tileLocalCoords.map(coord => ({
-    u: 0.5 + coord.u * normalizedScale,
-    v: 0.5 + coord.v * normalizedScale
-  }));
 
   // Top face
   if (isTopExposed) {

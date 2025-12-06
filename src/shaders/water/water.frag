@@ -46,6 +46,7 @@ varying vec3 vNormal;
 varying vec3 vViewDirection;
 varying vec2 vUv;
 varying float vDepth;
+varying float vSunBrightness; // Day/night based on position relative to sun
 
 // Convert depth buffer value to linear depth
 float linearizeDepth(float depth) {
@@ -185,8 +186,16 @@ void main() {
   // Base opacity with fresnel effect
   float finalOpacity = mix(opacity, 0.95, fresnel * 0.5);
 
+  // Apply day/night dimming based on sun position
+  // Water on the dark side of the planet should be much darker
+  float dayNightFactor = mix(0.1, 1.0, vSunBrightness); // 10% at night, 100% at day
+  finalColor *= dayNightFactor;
+
+  // Also dim specular/reflections on dark side (already calculated, apply reduction)
+  // This prevents bright reflections on the night side
+
   // Apply fog (each direction uses its own fog color)
-  finalColor = mix(finalColor, currentFogColor, depthFogFactor);
+  finalColor = mix(finalColor, currentFogColor * dayNightFactor, depthFogFactor);
 
   // Make more opaque as fog increases
   finalOpacity = mix(finalOpacity, 1.0, depthFogFactor);

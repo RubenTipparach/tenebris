@@ -3,12 +3,14 @@ uniform float time;
 uniform float waveAmplitude;
 uniform float waveFrequency;
 uniform vec3 planetCenter;
+uniform vec3 sunDirection;
 
 varying vec3 vWorldPosition;
 varying vec3 vNormal;
 varying vec3 vViewDirection;
 varying vec2 vUv;
 varying float vDepth;
+varying float vSunBrightness; // Day/night based on position relative to sun
 
 void main() {
   vUv = uv;
@@ -51,6 +53,12 @@ void main() {
 
   // Depth for fog (distance from camera)
   vDepth = length(cameraPosition - displacedPos);
+
+  // Calculate sun brightness based on position on planet (day/night cycle)
+  // radialDir points outward from planet center - dot with sun gives day/night
+  float sunDot = dot(radialDir, sunDirection);
+  // Smooth transition: -0.2 to 0.2 maps to 0 to 1 (terminator zone)
+  vSunBrightness = smoothstep(-0.2, 0.2, sunDot);
 
   // Final position
   gl_Position = projectionMatrix * viewMatrix * vec4(displacedPos, 1.0);

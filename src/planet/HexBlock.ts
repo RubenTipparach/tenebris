@@ -232,7 +232,7 @@ export class HexBlockMeshBuilder {
       vertexShader: waterVert,
       fragmentShader: waterFrag,
       transparent: true,
-      side: THREE.DoubleSide,
+      side: THREE.FrontSide,  // Back-face culling enabled for proper water wall rendering
       depthWrite: false
     });
 
@@ -364,28 +364,16 @@ export class HexBlockMeshBuilder {
     let bottomGeom: THREE.BufferGeometry | null = null;
     let sidesGeom: THREE.BufferGeometry | null = null;
 
-    // Pre-compute UV coordinates for the tile shape (shared between top and bottom faces)
-    // Project tile vertices onto local 2D plane and normalize to 0-1 range
-    const tileLocalCoords: { u: number; v: number }[] = [];
-    let maxExtent = 0;
-
+    // Pre-compute regular polygon UVs (same for all hexagons/pentagons regardless of 3D distortion)
+    const uvRadius = 0.5;
+    const tileUVs: { u: number; v: number }[] = [];
     for (let i = 0; i < numSides; i++) {
-      // Use tile vertices (normalized direction) for UV calculation
-      const toVert = tile.vertices[i].clone().sub(tile.center);
-      const u = toVert.dot(localRight);
-      const v = toVert.dot(localForward);
-      tileLocalCoords.push({ u, v });
-      maxExtent = Math.max(maxExtent, Math.abs(u), Math.abs(v));
+      const angle = (i / numSides) * Math.PI * 2 - Math.PI / 2; // Start from top
+      tileUVs.push({
+        u: 0.5 + Math.cos(angle) * uvRadius,
+        v: 0.5 + Math.sin(angle) * uvRadius
+      });
     }
-
-    // Scale factor: maps max extent to produce desired UV tiling from config
-    const uvScale = maxExtent > 0 ? PlayerConfig.TERRAIN_UV_SCALE / maxExtent : 1;
-
-    // Pre-compute normalized UVs for each vertex
-    const tileUVs = tileLocalCoords.map(coord => ({
-      u: 0.5 + coord.u * uvScale,
-      v: 0.5 + coord.v * uvScale
-    }));
 
     // Top face (outer, facing away from planet) - uses grass texture
     if (isTopExposed) {

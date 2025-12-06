@@ -197,7 +197,7 @@ function createFaceGeometry(
   isTop: boolean,
   isBottom: boolean,
   isSides: boolean,
-  uvScale: number = 10
+  _uvScale: number = 10
 ): { positions: number[]; normals: number[]; uvs: number[]; indices: number[] } | null {
   const numSides = tile.vertices.length;
   const radialDir = vec3Normalize(tile.center);
@@ -230,37 +230,25 @@ function createFaceGeometry(
   const indices: number[] = [];
 
   if (isTop) {
-    // Top face - project vertices onto local 2D plane and normalize UVs
+    // Top face - use regular polygon UVs regardless of 3D distortion
     const topNormal = vec3Clone(radialDir);
 
-    // Pre-compute local coordinates and find max extent for normalization
-    const localCoords: { u: number; v: number }[] = [];
-    let maxExtent = 0;
-
-    for (let i = 0; i < numSides; i++) {
-      const toVert = vec3Sub(tile.vertices[i], tile.center);
-      const u = vec3Dot(toVert, localRight);
-      const vCoord = vec3Dot(toVert, localForward);
-      localCoords.push({ u, v: vCoord });
-      maxExtent = Math.max(maxExtent, Math.abs(u), Math.abs(vCoord));
-    }
-
-    // Scale factor: maps max extent to produce desired UV tiling
-    const normalizedScale =0.5;// maxExtent > 0 ? uvScale / maxExtent : 1;
-
-    // Center vertex
+    // Center vertex at UV center
     positions.push(outerCenter.x, outerCenter.y, outerCenter.z);
     normals.push(topNormal.x, topNormal.y, topNormal.z);
     uvs.push(0.5, 0.5);
 
-    // Edge vertices with normalized UVs
+    // Edge vertices with regular polygon UVs (same for all hexagons/pentagons)
+    const uvRadius = 0.5; // UV radius from center
     for (let i = 0; i < numSides; i++) {
       const v = outerVerts[i];
       positions.push(v.x, v.y, v.z);
       normals.push(topNormal.x, topNormal.y, topNormal.z);
 
-      const u = 0.5 + localCoords[i].u * normalizedScale;
-      const vCoord = 0.5 + localCoords[i].v * normalizedScale;
+      // Generate regular polygon UV based on vertex index
+      const angle = (i / numSides) * Math.PI * 2 - Math.PI / 2; // Start from top
+      const u = 0.5 + Math.cos(angle) * uvRadius;
+      const vCoord = 0.5 + Math.sin(angle) * uvRadius;
       uvs.push(u, vCoord);
     }
 
@@ -269,34 +257,23 @@ function createFaceGeometry(
       indices.push(0, 1 + i, 1 + next);
     }
   } else if (isBottom) {
-    // Bottom face - same normalization approach
+    // Bottom face - use regular polygon UVs
     const bottomNormal = vec3Negate(radialDir);
-
-    // Pre-compute local coordinates and find max extent
-    const localCoords: { u: number; v: number }[] = [];
-    let maxExtent = 0;
-
-    for (let i = 0; i < numSides; i++) {
-      const toVert = vec3Sub(tile.vertices[i], tile.center);
-      const u = vec3Dot(toVert, localRight);
-      const vCoord = vec3Dot(toVert, localForward);
-      localCoords.push({ u, v: vCoord });
-      maxExtent = Math.max(maxExtent, Math.abs(u), Math.abs(vCoord));
-    }
-
-    const normalizedScale = maxExtent > 0 ? uvScale / maxExtent : 1;
 
     positions.push(innerCenter.x, innerCenter.y, innerCenter.z);
     normals.push(bottomNormal.x, bottomNormal.y, bottomNormal.z);
     uvs.push(0.5, 0.5);
 
+    const uvRadius = 0.5;
     for (let i = 0; i < numSides; i++) {
       const v = innerVerts[i];
       positions.push(v.x, v.y, v.z);
       normals.push(bottomNormal.x, bottomNormal.y, bottomNormal.z);
 
-      const u = 0.5 + localCoords[i].u * normalizedScale;
-      const vCoord = 0.5 + localCoords[i].v * normalizedScale;
+      // Generate regular polygon UV based on vertex index
+      const angle = (i / numSides) * Math.PI * 2 - Math.PI / 2;
+      const u = 0.5 + Math.cos(angle) * uvRadius;
+      const vCoord = 0.5 + Math.sin(angle) * uvRadius;
       uvs.push(u, vCoord);
     }
 
