@@ -1,5 +1,7 @@
 # Tenebris
 
+**Play now:** https://heavyphoton.com/tenebris/
+
 ## Current Status
 
 - Fully destructible voxel environment
