@@ -104,7 +104,11 @@ export class TileMeshWorkerPool {
     seaLevel: number,
     deepThreshold: number,
     maxDepth: number,
-    neighborBlocks: Map<number, number[]>
+    neighborBlocks: Map<number, number[]>,
+    sunDirection: { x: number; y: number; z: number },
+    vertexLightingEnabled: boolean,
+    waterSurfaceOffset: number,
+    uvScale: number
   ): Promise<WorkerTileResponse> {
     // Cancel any existing work for this tile
     this.cancelTile(tileIndex);
@@ -124,7 +128,11 @@ export class TileMeshWorkerPool {
         seaLevel,
         deepThreshold,
         maxDepth,
-        neighborBlocks
+        neighborBlocks,
+        sunDirection,
+        vertexLightingEnabled,
+        waterSurfaceOffset,
+        uvScale
       };
 
       this.workQueue.push(request);

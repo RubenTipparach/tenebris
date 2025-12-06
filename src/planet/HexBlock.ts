@@ -89,7 +89,7 @@ export class HexBlockMeshBuilder {
       tex.wrapT = THREE.RepeatWrapping;
     };
 
-    // Helper to create LOD material
+    // Helper to create LOD material (legacy - only used for single-texture planets without terrain shader)
     const createLODMaterial = (texture: THREE.Texture, color?: THREE.Color) => {
       const lodTexture = texture.clone();
       lodTexture.needsUpdate = true;
@@ -117,7 +117,7 @@ export class HexBlockMeshBuilder {
       this.materials.set('bottom', material);
       this.materials.set('stone', material);
 
-      // LOD materials - all use same texture
+      // LOD materials - all use same texture (simple Lambert for single-texture planets)
       const lodMaterial = createLODMaterial(texture);
       this.materials.set('topLOD', lodMaterial);
       this.materials.set('sideLOD', lodMaterial);
@@ -238,9 +238,40 @@ export class HexBlockMeshBuilder {
 
     this.materials.set('water', this.waterShaderMaterial);
 
-    // LOD materials
-    this.materials.set('topLOD', createLODMaterial(grassTexture));
-    this.materials.set('sideLOD', createLODMaterial(dirtTexture));
+    // LOD materials - use terrain shader for consistency with detailed terrain
+    // This gives LOD the same planet-aware lighting and underwater effects
+    const createTerrainLODMaterial = (texture: THREE.Texture): THREE.ShaderMaterial => {
+      const lodTexture = texture.clone();
+      lodTexture.needsUpdate = true;
+      const mat = new THREE.ShaderMaterial({
+        uniforms: {
+          terrainTexture: { value: lodTexture },
+          sunDirection: { value: this.sunDirection.clone() },
+          planetCenter: { value: this.planetCenter.clone() },
+          ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
+          directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
+          // Underwater uniforms
+          waterLevel: { value: 0.0 }, // Set by Planet based on sea level
+          isUnderwater: { value: 0.0 },
+          underwaterFogColor: { value: terrainUnderwaterFogColor },
+          underwaterFogNear: { value: PlayerConfig.UNDERWATER_FOG_NEAR },
+          underwaterFogFar: { value: PlayerConfig.UNDERWATER_FOG_FAR },
+          underwaterDimming: { value: PlayerConfig.UNDERWATER_TERRAIN_DIMMING ?? 0.3 },
+        },
+        vertexShader: terrainVert,
+        fragmentShader: terrainFrag,
+      });
+      // Apply polygon offset to push LOD behind detailed terrain
+      mat.polygonOffset = true;
+      mat.polygonOffsetFactor = lodOffsetFactor;
+      mat.polygonOffsetUnits = lodOffsetUnits;
+      this.terrainMaterials.push(mat);
+      return mat;
+    };
+
+    this.materials.set('topLOD', createTerrainLODMaterial(grassTexture));
+    this.materials.set('sideLOD', createTerrainLODMaterial(dirtTexture));
+    // Water LOD still uses simple material with water color tint (no underwater shader effects needed)
     this.materials.set('waterLOD', createLODMaterial(waterTexture, waterColor));
   }
 
@@ -333,6 +364,29 @@ export class HexBlockMeshBuilder {
     let bottomGeom: THREE.BufferGeometry | null = null;
     let sidesGeom: THREE.BufferGeometry | null = null;
 
+    // Pre-compute UV coordinates for the tile shape (shared between top and bottom faces)
+    // Project tile vertices onto local 2D plane and normalize to 0-1 range
+    const tileLocalCoords: { u: number; v: number }[] = [];
+    let maxExtent = 0;
+
+    for (let i = 0; i < numSides; i++) {
+      // Use tile vertices (normalized direction) for UV calculation
+      const toVert = tile.vertices[i].clone().sub(tile.center);
+      const u = toVert.dot(localRight);
+      const v = toVert.dot(localForward);
+      tileLocalCoords.push({ u, v });
+      maxExtent = Math.max(maxExtent, Math.abs(u), Math.abs(v));
+    }
+
+    // Scale factor: maps max extent to produce desired UV tiling from config
+    const uvScale = maxExtent > 0 ? PlayerConfig.TERRAIN_UV_SCALE / maxExtent : 1;
+
+    // Pre-compute normalized UVs for each vertex
+    const tileUVs = tileLocalCoords.map(coord => ({
+      u: 0.5 + coord.u * uvScale,
+      v: 0.5 + coord.v * uvScale
+    }));
+
     // Top face (outer, facing away from planet) - uses grass texture
     if (isTopExposed) {
       const positions: number[] = [];
@@ -341,19 +395,16 @@ export class HexBlockMeshBuilder {
       const indices: number[] = [];
 
       const topNormal = radialDir.clone();
+
       positions.push(outerCenter.x, outerCenter.y, outerCenter.z);
       normals.push(topNormal.x, topNormal.y, topNormal.z);
-      uvs.push(0.5, 0.5);
+      uvs.push(0.5, 0.5); // Center at (0.5, 0.5)
 
       for (let i = 0; i < numSides; i++) {
-        const v = outerVerts[i];
-        positions.push(v.x, v.y, v.z);
+        const vert = outerVerts[i];
+        positions.push(vert.x, vert.y, vert.z);
         normals.push(topNormal.x, topNormal.y, topNormal.z);
-
-        const toVert = v.clone().sub(outerCenter);
-        const u = 0.5 + toVert.dot(localRight) * 0.2;
-        const vCoord = 0.5 + toVert.dot(localForward) * 0.2;
-        uvs.push(u, vCoord);
+        uvs.push(tileUVs[i].u, tileUVs[i].v);
       }
 
       for (let i = 0; i < numSides; i++) {
@@ -376,19 +427,16 @@ export class HexBlockMeshBuilder {
       const indices: number[] = [];
 
       const bottomNormal = radialDir.clone().negate();
+
       positions.push(innerCenter.x, innerCenter.y, innerCenter.z);
       normals.push(bottomNormal.x, bottomNormal.y, bottomNormal.z);
-      uvs.push(0.5, 0.5);
+      uvs.push(0.5, 0.5); // Center at (0.5, 0.5)
 
       for (let i = 0; i < numSides; i++) {
-        const v = innerVerts[i];
-        positions.push(v.x, v.y, v.z);
+        const vert = innerVerts[i];
+        positions.push(vert.x, vert.y, vert.z);
         normals.push(bottomNormal.x, bottomNormal.y, bottomNormal.z);
-
-        const toVert = v.clone().sub(innerCenter);
-        const u = 0.5 + toVert.dot(localRight) * 0.1;
-        const vCoord = 0.5 + toVert.dot(localForward) * 0.1;
-        uvs.push(u, vCoord);
+        uvs.push(tileUVs[i].u, tileUVs[i].v); // Reuse same UVs
       }
 
       for (let i = 0; i < numSides; i++) {
@@ -444,8 +492,8 @@ export class HexBlockMeshBuilder {
         uvs.push(
           0, 0,       // inner1 (bottom-left)
           1, 0,       // inner2 (bottom-right)
-          1, 0.5,     // outer2 (top-right)
-          0, 0.5      // outer1 (top-left)
+          1, 1,     // outer2 (top-right)
+          0, 1      // outer1 (top-left)
         );
 
         const baseIdx = vertexIndex;

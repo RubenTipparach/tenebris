@@ -7,6 +7,38 @@ import { PlayerConfig } from '../config/PlayerConfig';
 // Calculate max terrain depth for collision checks
 const MAX_TERRAIN_DEPTH = PlayerConfig.TERRAIN_SEA_LEVEL + PlayerConfig.TERRAIN_MAX_DEPTH;
 
+// Per-frame block column cache - stores block types for tiles already queried this frame
+// Key: tileIndex, Value: array of block types indexed by depth
+// This cache is cleared at the start of each update() call
+let blockColumnCache: Map<number, HexBlockType[]> = new Map();
+let blockColumnCachePlanet: Planet | null = null;
+
+// Get block with caching - reduces redundant getBlock() calls per frame
+function getCachedBlock(planet: Planet, tileIndex: number, depth: number): HexBlockType {
+  // Invalidate cache if planet changed
+  if (planet !== blockColumnCachePlanet) {
+    blockColumnCache.clear();
+    blockColumnCachePlanet = planet;
+  }
+
+  let column = blockColumnCache.get(tileIndex);
+  if (!column) {
+    // Cache miss - fetch entire column at once (more efficient than individual calls)
+    column = new Array(MAX_TERRAIN_DEPTH);
+    for (let d = 0; d < MAX_TERRAIN_DEPTH; d++) {
+      column[d] = planet.getBlock(tileIndex, d);
+    }
+    blockColumnCache.set(tileIndex, column);
+  }
+
+  return depth >= 0 && depth < MAX_TERRAIN_DEPTH ? column[depth] : HexBlockType.AIR;
+}
+
+// Clear the block column cache - called at start of each frame
+function clearBlockCache(): void {
+  blockColumnCache.clear();
+}
+
 // Helper: Find the walkable floor (air-to-solid transition) in a tile that's closest to a given radius
 // Returns the depth of the best floor, or -1 if none found
 function findWalkableFloorAtRadius(planet: Planet, tileIndex: number, targetRadius: number): number {
@@ -14,8 +46,8 @@ function findWalkableFloorAtRadius(planet: Planet, tileIndex: number, targetRadi
   let bestDist = Infinity;
 
   for (let d = 0; d < MAX_TERRAIN_DEPTH; d++) {
-    const blockAbove = d > 0 ? planet.getBlock(tileIndex, d - 1) : HexBlockType.AIR;
-    const block = planet.getBlock(tileIndex, d);
+    const blockAbove = d > 0 ? getCachedBlock(planet, tileIndex, d - 1) : HexBlockType.AIR;
+    const block = getCachedBlock(planet, tileIndex, d);
 
     const isAbovePassable = blockAbove === HexBlockType.AIR || blockAbove === HexBlockType.WATER;
     const isCurrentSolid = block !== HexBlockType.AIR && block !== HexBlockType.WATER;
@@ -264,6 +296,9 @@ export class PlanetPlayer {
   }
 
   public update(deltaTime: number): void {
+    // Clear block column cache at start of each frame
+    clearBlockCache();
+
     // Skip movement updates when menu is open (pointer not locked)
     if (!this.inputManager.isLocked()) {
       // Still update camera position to match player
@@ -1053,8 +1088,8 @@ export class PlanetPlayer {
     // Find destination ground level (first air-to-solid transition)
     let destGroundDepth = -1;
     for (let d = 0; d < MAX_TERRAIN_DEPTH - 1; d++) {
-      const blockAbove = d > 0 ? this.currentPlanet.getBlock(newTile.index, d - 1) : HexBlockType.AIR;
-      const block = this.currentPlanet.getBlock(newTile.index, d);
+      const blockAbove = d > 0 ? getCachedBlock(this.currentPlanet, newTile.index, d - 1) : HexBlockType.AIR;
+      const block = getCachedBlock(this.currentPlanet, newTile.index, d);
       const isAbovePassable = blockAbove === HexBlockType.AIR || blockAbove === HexBlockType.WATER;
       const isCurrentSolid = block !== HexBlockType.AIR && block !== HexBlockType.WATER;
       if (isAbovePassable && isCurrentSolid) {
@@ -1129,8 +1164,8 @@ export class PlanetPlayer {
         let bestHeightDiff = Infinity;
 
         for (let d = 0; d < MAX_TERRAIN_DEPTH - 1; d++) {
-          const blockAbove = d > 0 ? this.currentPlanet.getBlock(newTile.index, d - 1) : HexBlockType.AIR;
-          const block = this.currentPlanet.getBlock(newTile.index, d);
+          const blockAbove = d > 0 ? getCachedBlock(this.currentPlanet, newTile.index, d - 1) : HexBlockType.AIR;
+          const block = getCachedBlock(this.currentPlanet, newTile.index, d);
 
           // This is a walkable surface if: current block is solid AND block above is air/water
           const isAbovePassable = blockAbove === HexBlockType.AIR || blockAbove === HexBlockType.WATER;
@@ -1232,8 +1267,8 @@ export class PlanetPlayer {
       // Find the walkable floor of this tile (air-to-solid transition closest to player)
       let tileFloorDepth = -1;
       for (let d = 0; d < MAX_TERRAIN_DEPTH - 1; d++) {
-        const blockAbove = d > 0 ? this.currentPlanet.getBlock(tileIdx, d - 1) : HexBlockType.AIR;
-        const block = this.currentPlanet.getBlock(tileIdx, d);
+        const blockAbove = d > 0 ? getCachedBlock(this.currentPlanet, tileIdx, d - 1) : HexBlockType.AIR;
+        const block = getCachedBlock(this.currentPlanet, tileIdx, d);
         if ((blockAbove === HexBlockType.AIR || blockAbove === HexBlockType.WATER) &&
             block !== HexBlockType.AIR && block !== HexBlockType.WATER) {
           tileFloorDepth = d;
@@ -1264,7 +1299,7 @@ export class PlanetPlayer {
       // Only check blocks that could be WALLS (blocks whose top is above the wall threshold)
       // Blocks at or below the threshold are potential landing spots, not walls
       for (let d = 0; d < MAX_TERRAIN_DEPTH; d++) {
-        const block = this.currentPlanet.getBlock(tileIdx, d);
+        const block = getCachedBlock(this.currentPlanet, tileIdx, d);
         if (block === HexBlockType.AIR || block === HexBlockType.WATER) continue;
 
         const blockTopRadius = this.currentPlanet.radius - d;
@@ -1319,8 +1354,8 @@ export class PlanetPlayer {
     let bestHeightDiff = Infinity;
 
     for (let d = 0; d < MAX_TERRAIN_DEPTH - 1; d++) {
-      const blockAbove = d > 0 ? this.currentPlanet.getBlock(newTile.index, d - 1) : HexBlockType.AIR;
-      const block = this.currentPlanet.getBlock(newTile.index, d);
+      const blockAbove = d > 0 ? getCachedBlock(this.currentPlanet, newTile.index, d - 1) : HexBlockType.AIR;
+      const block = getCachedBlock(this.currentPlanet, newTile.index, d);
 
       const isAbovePassable = blockAbove === HexBlockType.AIR || blockAbove === HexBlockType.WATER;
       const isCurrentSolid = block !== HexBlockType.AIR && block !== HexBlockType.WATER;
@@ -1348,7 +1383,7 @@ export class PlanetPlayer {
 
     // Check all blocks in the destination tile to see if any would collide with player's body
     for (let d = 0; d < MAX_TERRAIN_DEPTH; d++) {
-      const block = this.currentPlanet.getBlock(newTile.index, d);
+      const block = getCachedBlock(this.currentPlanet, newTile.index, d);
       if (block === HexBlockType.AIR || block === HexBlockType.WATER) continue;
 
       const blockTopRadius = this.currentPlanet.radius - d;
@@ -1381,7 +1416,7 @@ export class PlanetPlayer {
     if (tile) {
       let deepestSolidDepth = -1;
       for (let d = 0; d < MAX_TERRAIN_DEPTH; d++) {
-        const block = this.currentPlanet.getBlock(tile.index, d);
+        const block = getCachedBlock(this.currentPlanet, tile.index, d);
         if (block !== HexBlockType.AIR && block !== HexBlockType.WATER) {
           deepestSolidDepth = d;
           // Don't break - we want the DEEPEST solid block, not the first
@@ -1412,7 +1447,7 @@ export class PlanetPlayer {
       if (depth < 0 || depth >= MAX_TERRAIN_DEPTH) continue;
 
       // Check if inside a solid block (not AIR and not WATER - water is passable)
-      const block = this.currentPlanet.getBlock(checkTile.index, depth);
+      const block = getCachedBlock(this.currentPlanet, checkTile.index, depth);
       if (block !== HexBlockType.AIR && block !== HexBlockType.WATER) {
         const blockOuterRadius = this.currentPlanet.radius - depth;
         if (checkRadius < blockOuterRadius) {
@@ -1442,8 +1477,8 @@ export class PlanetPlayer {
     // These are the valid places the player could stand
     const walkableFloors: { depth: number; radius: number }[] = [];
     for (let d = 0; d < MAX_TERRAIN_DEPTH; d++) {
-      const blockAbove = d > 0 ? this.currentPlanet.getBlock(tile.index, d - 1) : HexBlockType.AIR;
-      const block = this.currentPlanet.getBlock(tile.index, d);
+      const blockAbove = d > 0 ? getCachedBlock(this.currentPlanet, tile.index, d - 1) : HexBlockType.AIR;
+      const block = getCachedBlock(this.currentPlanet, tile.index, d);
 
       const isAbovePassable = blockAbove === HexBlockType.AIR || blockAbove === HexBlockType.WATER;
       const isCurrentSolid = block !== HexBlockType.AIR && block !== HexBlockType.WATER;
@@ -1474,7 +1509,7 @@ export class PlanetPlayer {
     // Check if any solid blocks would collide with player body at this floor
     let floorIsValid = true;
     for (let d = 0; d < MAX_TERRAIN_DEPTH; d++) {
-      const block = this.currentPlanet.getBlock(tile.index, d);
+      const block = getCachedBlock(this.currentPlanet, tile.index, d);
       if (block === HexBlockType.AIR || block === HexBlockType.WATER) continue;
 
       const blockTopRadius = this.currentPlanet.radius - d;
@@ -1495,7 +1530,7 @@ export class PlanetPlayer {
     // Now check if player is actually stuck (overlapping solid blocks at current position)
     let isStuck = false;
     for (let d = 0; d < MAX_TERRAIN_DEPTH; d++) {
-      const block = this.currentPlanet.getBlock(tile.index, d);
+      const block = getCachedBlock(this.currentPlanet, tile.index, d);
       if (block === HexBlockType.AIR || block === HexBlockType.WATER) continue;
 
       const blockTopRadius = this.currentPlanet.radius - d;
@@ -1669,8 +1704,8 @@ export class PlanetPlayer {
 
       if (newTile) {
         for (let d = 0; d < MAX_TERRAIN_DEPTH - 1; d++) {
-          const blockAbove = d > 0 ? this.currentPlanet.getBlock(newTile.index, d - 1) : HexBlockType.AIR;
-          const block = this.currentPlanet.getBlock(newTile.index, d);
+          const blockAbove = d > 0 ? getCachedBlock(this.currentPlanet, newTile.index, d - 1) : HexBlockType.AIR;
+          const block = getCachedBlock(this.currentPlanet, newTile.index, d);
 
           // Walkable floor: solid block with air/water above
           const isAbovePassable = blockAbove === HexBlockType.AIR || blockAbove === HexBlockType.WATER;

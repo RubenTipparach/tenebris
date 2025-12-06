@@ -16,11 +16,13 @@ interface ChunkGeometry {
   grassPositions: number[];
   grassNormals: number[];
   grassUvs: number[];
+  grassSkyLight: number[];  // Sky light attribute for terrain shader
   grassIndices: number[];
   grassVertexOffset: number;
   dirtPositions: number[];
   dirtNormals: number[];
   dirtUvs: number[];
+  dirtSkyLight: number[];
   dirtIndices: number[];
   dirtVertexOffset: number;
   waterPositions: number[];
@@ -31,6 +33,7 @@ interface ChunkGeometry {
   sidePositions: number[];
   sideNormals: number[];
   sideUvs: number[];
+  sideSkyLight: number[];
   sideIndices: number[];
   sideVertexOffset: number;
   waterSidePositions: number[];
@@ -42,10 +45,10 @@ interface ChunkGeometry {
 
 function createEmptyChunkGeometry(): ChunkGeometry {
   return {
-    grassPositions: [], grassNormals: [], grassUvs: [], grassIndices: [], grassVertexOffset: 0,
-    dirtPositions: [], dirtNormals: [], dirtUvs: [], dirtIndices: [], dirtVertexOffset: 0,
+    grassPositions: [], grassNormals: [], grassUvs: [], grassSkyLight: [], grassIndices: [], grassVertexOffset: 0,
+    dirtPositions: [], dirtNormals: [], dirtUvs: [], dirtSkyLight: [], dirtIndices: [], dirtVertexOffset: 0,
     waterPositions: [], waterNormals: [], waterUvs: [], waterIndices: [], waterVertexOffset: 0,
-    sidePositions: [], sideNormals: [], sideUvs: [], sideIndices: [], sideVertexOffset: 0,
+    sidePositions: [], sideNormals: [], sideUvs: [], sideSkyLight: [], sideIndices: [], sideVertexOffset: 0,
     waterSidePositions: [], waterSideNormals: [], waterSideUvs: [], waterSideIndices: [], waterSideVertexOffset: 0
   };
 }
@@ -73,6 +76,10 @@ interface PrecomputedTileData {
   edgeMidDirs: Vec3[];
   // Which neighbor is across each edge (index into neighbors array, -1 if none found)
   edgeNeighborIdx: number[];
+  // Pre-computed normalized UVs for each vertex (0-1 range, touching edges)
+  normalizedUVs: { u: number; v: number }[];
+  // Center UV (where the face center maps to in UV space)
+  centerUV: { u: number; v: number };
 }
 
 // Block types (must match HexBlock.ts)
@@ -208,11 +215,69 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
           edgeNeighborIdx.push(closestNeighbor);
         }
 
+        // Pre-compute local coordinate system for UV mapping
+        // Create tangent and bitangent vectors perpendicular to the normal
+        const up: Vec3 = Math.abs(normalizedCenter.y) < 0.9
+          ? { x: 0, y: 1, z: 0 }
+          : { x: 1, y: 0, z: 0 };
+
+        // tangent = cross(up, normal)
+        const tangentX = up.y * normalizedCenter.z - up.z * normalizedCenter.y;
+        const tangentY = up.z * normalizedCenter.x - up.x * normalizedCenter.z;
+        const tangentZ = up.x * normalizedCenter.y - up.y * normalizedCenter.x;
+        const tangentLen = Math.sqrt(tangentX * tangentX + tangentY * tangentY + tangentZ * tangentZ);
+        const tangent: Vec3 = tangentLen > 0
+          ? { x: tangentX / tangentLen, y: tangentY / tangentLen, z: tangentZ / tangentLen }
+          : { x: 1, y: 0, z: 0 };
+
+        // bitangent = cross(normal, tangent)
+        const bitangentX = normalizedCenter.y * tangent.z - normalizedCenter.z * tangent.y;
+        const bitangentY = normalizedCenter.z * tangent.x - normalizedCenter.x * tangent.z;
+        const bitangentZ = normalizedCenter.x * tangent.y - normalizedCenter.y * tangent.x;
+        const bitangent: Vec3 = { x: bitangentX, y: bitangentY, z: bitangentZ };
+
+        // Project vertices onto local 2D plane and find bounding box
+        const localCoords: { u: number; v: number }[] = [];
+        let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
+
+        for (const vert of tile.vertices) {
+          // Vector from center to vertex
+          const toVertX = vert.x - tile.center.x;
+          const toVertY = vert.y - tile.center.y;
+          const toVertZ = vert.z - tile.center.z;
+
+          // Project onto tangent and bitangent
+          const u = toVertX * tangent.x + toVertY * tangent.y + toVertZ * tangent.z;
+          const v = toVertX * bitangent.x + toVertY * bitangent.y + toVertZ * bitangent.z;
+          localCoords.push({ u, v });
+
+          minU = Math.min(minU, u);
+          maxU = Math.max(maxU, u);
+          minV = Math.min(minV, v);
+          maxV = Math.max(maxV, v);
+        }
+
+        // Normalize UVs to 0-1 range
+        const rangeU = maxU - minU;
+        const rangeV = maxV - minV;
+        const normalizedUVs: { u: number; v: number }[] = localCoords.map(coord => ({
+          u: (coord.u - minU) / rangeU,
+          v: (coord.v - minV) / rangeV
+        }));
+
+        // Center UV (the center vertex at (0,0) in local coords maps to this UV)
+        const centerUV = {
+          u: (0 - minU) / rangeU,
+          v: (0 - minV) / rangeV
+        };
+
         cachedPrecomputed.set(tileIndex, {
           normalizedCenter,
           normalizedVertices,
           edgeMidDirs,
-          edgeNeighborIdx
+          edgeNeighborIdx,
+          normalizedUVs,
+          centerUV
         });
       }
     }
@@ -279,32 +344,37 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
       const chunk = chunkGeometries[chunkIdx];
 
       // Select buffer based on surface type
-      let positions: number[], normals: number[], uvs: number[], indices: number[];
+      let positions: number[], normals: number[], uvs: number[], skyLight: number[] | null, indices: number[];
       let vertexOffset: number;
 
       if (surfaceBlockType === HexBlockType.WATER) {
         positions = chunk.waterPositions;
         normals = chunk.waterNormals;
         uvs = chunk.waterUvs;
+        skyLight = null; // Water uses different shader, doesn't need skyLight
         indices = chunk.waterIndices;
         vertexOffset = chunk.waterVertexOffset;
       } else if (surfaceBlockType === HexBlockType.DIRT) {
         positions = chunk.dirtPositions;
         normals = chunk.dirtNormals;
         uvs = chunk.dirtUvs;
+        skyLight = chunk.dirtSkyLight;
         indices = chunk.dirtIndices;
         vertexOffset = chunk.dirtVertexOffset;
       } else {
         positions = chunk.grassPositions;
         normals = chunk.grassNormals;
         uvs = chunk.grassUvs;
+        skyLight = chunk.grassSkyLight;
         indices = chunk.grassIndices;
         vertexOffset = chunk.grassVertexOffset;
       }
 
-      // Use pre-computed normalized center and vertices
+      // Use pre-computed normalized center, vertices, and UVs
       const normal = precomputed.normalizedCenter;
       const normalizedVerts = precomputed.normalizedVertices;
+      const normalizedUVs = precomputed.normalizedUVs;
+      const centerUV = precomputed.centerUV;
 
       // Fan triangulation from center
       const centerIdx = vertexOffset;
@@ -314,14 +384,16 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
         normal.z * displayRadius
       );
       normals.push(normal.x, normal.y, normal.z);
-      uvs.push(0.5, 0.5);
+      uvs.push(centerUV.u, centerUV.v);
+      if (skyLight) skyLight.push(1.0); // LOD terrain is always at surface, full sky exposure
       vertexOffset++;
 
       for (let i = 0; i < normalizedVerts.length; i++) {
         const nv = normalizedVerts[i];
         positions.push(nv.x * displayRadius, nv.y * displayRadius, nv.z * displayRadius);
         normals.push(normal.x, normal.y, normal.z);
-        uvs.push(0, 0);
+        uvs.push(normalizedUVs[i].u, normalizedUVs[i].v);
+        if (skyLight) skyLight.push(1.0);
         vertexOffset++;
 
         indices.push(centerIdx, centerIdx + 1 + i, centerIdx + 1 + ((i + 1) % normalizedVerts.length));
@@ -397,6 +469,7 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
         const positions = thisIsWater ? chunk.waterSidePositions : chunk.sidePositions;
         const normals = thisIsWater ? chunk.waterSideNormals : chunk.sideNormals;
         const uvs = thisIsWater ? chunk.waterSideUvs : chunk.sideUvs;
+        const skyLight = thisIsWater ? null : chunk.sideSkyLight;
         const indices = thisIsWater ? chunk.waterSideIndices : chunk.sideIndices;
         const baseIdx = thisIsWater ? chunk.waterSideVertexOffset : chunk.sideVertexOffset;
 
@@ -409,6 +482,7 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
 
         normals.push(snx, sny, snz, snx, sny, snz, snx, sny, snz, snx, sny, snz);
         uvs.push(0, 0, 1, 0, 1, 0.5, 0, 0.5);
+        if (skyLight) skyLight.push(1.0, 1.0, 1.0, 1.0); // Full sky exposure for LOD
 
         indices.push(baseIdx, baseIdx + 1, baseIdx + 2);
         indices.push(baseIdx, baseIdx + 2, baseIdx + 3);

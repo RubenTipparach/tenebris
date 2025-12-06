@@ -78,13 +78,13 @@ export const PlayerConfig = {
   // Underwater fog (when camera is below water surface)
   UNDERWATER_FOG_COLOR: "#1a5577",  // Fog color when underwater
   UNDERWATER_FOG_NEAR: 0,          // Fog starts at this distance
-  UNDERWATER_FOG_FAR: 10,          // Fog fully opaque at this distance
+  UNDERWATER_FOG_FAR: 5,          // Fog fully opaque at this distance
   UNDERWATER_TERRAIN_DIMMING: 0.3, // How quickly terrain dims underwater (light absorption)
 
   // Above water depth fog (looking down through water surface)
   ABOVE_WATER_FOG_COLOR: "#1a5577", // Fog color for terrain seen through water from above
   ABOVE_WATER_FOG_NEAR: 0,          // Fog starts at this depth
-  ABOVE_WATER_FOG_FAR: 10,          // Fog fully opaque at this depth
+  ABOVE_WATER_FOG_FAR: 5,          // Fog fully opaque at this depth
 
   // Sea wall (boundary wall at edge of detailed terrain when underwater)
   SEA_WALL_COLOR: "#03172F",        // Color of underwater boundary walls
@@ -101,17 +101,18 @@ export const PlayerConfig = {
   ATMOSPHERE_LIGHT_SAMPLES: 4,        // Number of light samples per ray step
 
   // Terrain rendering & streaming
-  TERRAIN_MIN_RENDER_DISTANCE: 12,    // Min tiles to render when on ground
-  TERRAIN_MAX_RENDER_DISTANCE: 12,    // Max tiles when at high altitude
+  TERRAIN_MIN_RENDER_DISTANCE: 16,    // Min tiles to render when on ground
+  TERRAIN_MAX_RENDER_DISTANCE: 16,    // Max tiles when at high altitude
   TERRAIN_LOD_SWITCH_ALTITUDE: 50,    // Altitude above which only LOD mesh is shown
-  TERRAIN_BUFFER_ZONE: 6,             // Tiles player can move before triggering rebuild
-  TERRAIN_TILES_PER_FRAME: 5,        // Max tiles to process per frame during incremental rebuild
+  TERRAIN_BUFFER_ZONE: 12,             // Tiles player can move before triggering rebuild
+  TERRAIN_TILES_PER_FRAME: 20,        // Max tiles to process per frame during incremental rebuild
 
   // Terrain generation
   TERRAIN_SEED: 12345,                // Seed for terrain generation (change for different worlds)
   TERRAIN_MAX_DEPTH: 16,              // Max blocks below sea level (dig depth)
   TERRAIN_MAX_HEIGHT: 16,             // Max blocks above sea level (mountain peak height)
   TERRAIN_SEA_LEVEL: 12,              // Sea level depth from top (blocks of air above water)
+  TERRAIN_UV_SCALE: 1,               // UV texture tiling scale (higher = more texture repetition per tile)
 
   // Terrain features (geographic)
   TERRAIN_CONTINENT_SCALE: 0.8,       // Scale of continental plates (lower = larger continents)

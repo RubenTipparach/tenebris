@@ -100,6 +100,7 @@ interface WorkerConfig {
   deepThreshold: number;
   waterSurfaceOffset: number;
   sunDirection: Vec3;
+  uvScale: number;  // Texture tiling scale
 }
 
 // Message types
@@ -195,7 +196,8 @@ function createFaceGeometry(
   outerRadius: number,
   isTop: boolean,
   isBottom: boolean,
-  isSides: boolean
+  isSides: boolean,
+  uvScale: number = 10
 ): { positions: number[]; normals: number[]; uvs: number[]; indices: number[] } | null {
   const numSides = tile.vertices.length;
   const radialDir = vec3Normalize(tile.center);
@@ -213,7 +215,7 @@ function createFaceGeometry(
   const innerCenter = vec3Scale(radialDir, innerRadius);
   const outerCenter = vec3Scale(radialDir, outerRadius);
 
-  // Create local tangent space
+  // Create local tangent space for UV mapping
   const localUp = vec3Clone(radialDir);
   let localRight = vec3(1, 0, 0);
   if (Math.abs(vec3Dot(localUp, localRight)) > 0.9) {
@@ -228,20 +230,37 @@ function createFaceGeometry(
   const indices: number[] = [];
 
   if (isTop) {
-    // Top face
+    // Top face - project vertices onto local 2D plane and normalize UVs
     const topNormal = vec3Clone(radialDir);
+
+    // Pre-compute local coordinates and find max extent for normalization
+    const localCoords: { u: number; v: number }[] = [];
+    let maxExtent = 0;
+
+    for (let i = 0; i < numSides; i++) {
+      const toVert = vec3Sub(tile.vertices[i], tile.center);
+      const u = vec3Dot(toVert, localRight);
+      const vCoord = vec3Dot(toVert, localForward);
+      localCoords.push({ u, v: vCoord });
+      maxExtent = Math.max(maxExtent, Math.abs(u), Math.abs(vCoord));
+    }
+
+    // Scale factor: maps max extent to produce desired UV tiling
+    const normalizedScale =0.5;// maxExtent > 0 ? uvScale / maxExtent : 1;
+
+    // Center vertex
     positions.push(outerCenter.x, outerCenter.y, outerCenter.z);
     normals.push(topNormal.x, topNormal.y, topNormal.z);
     uvs.push(0.5, 0.5);
 
+    // Edge vertices with normalized UVs
     for (let i = 0; i < numSides; i++) {
       const v = outerVerts[i];
       positions.push(v.x, v.y, v.z);
       normals.push(topNormal.x, topNormal.y, topNormal.z);
 
-      const toVert = vec3Sub(v, outerCenter);
-      const u = 0.5 + vec3Dot(toVert, localRight) * 0.2;
-      const vCoord = 0.5 + vec3Dot(toVert, localForward) * 0.2;
+      const u = 0.5 + localCoords[i].u * normalizedScale;
+      const vCoord = 0.5 + localCoords[i].v * normalizedScale;
       uvs.push(u, vCoord);
     }
 
@@ -250,8 +269,23 @@ function createFaceGeometry(
       indices.push(0, 1 + i, 1 + next);
     }
   } else if (isBottom) {
-    // Bottom face
+    // Bottom face - same normalization approach
     const bottomNormal = vec3Negate(radialDir);
+
+    // Pre-compute local coordinates and find max extent
+    const localCoords: { u: number; v: number }[] = [];
+    let maxExtent = 0;
+
+    for (let i = 0; i < numSides; i++) {
+      const toVert = vec3Sub(tile.vertices[i], tile.center);
+      const u = vec3Dot(toVert, localRight);
+      const vCoord = vec3Dot(toVert, localForward);
+      localCoords.push({ u, v: vCoord });
+      maxExtent = Math.max(maxExtent, Math.abs(u), Math.abs(vCoord));
+    }
+
+    const normalizedScale = maxExtent > 0 ? uvScale / maxExtent : 1;
+
     positions.push(innerCenter.x, innerCenter.y, innerCenter.z);
     normals.push(bottomNormal.x, bottomNormal.y, bottomNormal.z);
     uvs.push(0.5, 0.5);
@@ -261,9 +295,8 @@ function createFaceGeometry(
       positions.push(v.x, v.y, v.z);
       normals.push(bottomNormal.x, bottomNormal.y, bottomNormal.z);
 
-      const toVert = vec3Sub(v, innerCenter);
-      const u = 0.5 + vec3Dot(toVert, localRight) * 0.1;
-      const vCoord = 0.5 + vec3Dot(toVert, localForward) * 0.1;
+      const u = 0.5 + localCoords[i].u * normalizedScale;
+      const vCoord = 0.5 + localCoords[i].v * normalizedScale;
       uvs.push(u, vCoord);
     }
 
@@ -375,7 +408,7 @@ function buildColumnGeometry(
 
     // Create top face
     if (isWater ? true : hasTopExposed) {
-      const topGeom = createFaceGeometry(column.tile, innerRadius, outerRadius, true, false, false);
+      const topGeom = createFaceGeometry(column.tile, innerRadius, outerRadius, true, false, false, config.uvScale);
       if (topGeom) {
         if (isWater) {
           mergeGeometry(waterData, topGeom.positions, topGeom.normals, topGeom.uvs, topGeom.indices, config.sunDirection, 1.0);
@@ -391,7 +424,7 @@ function buildColumnGeometry(
 
     // Create bottom face
     if (!isWater && hasBottomExposed) {
-      const bottomGeom = createFaceGeometry(column.tile, innerRadius, outerRadius, false, true, false);
+      const bottomGeom = createFaceGeometry(column.tile, innerRadius, outerRadius, false, true, false, config.uvScale);
       if (bottomGeom) {
         const bottomSkyLight = Math.max(MIN_SKY_LIGHT, skyLightLevel * SKY_LIGHT_FALLOFF);
         mergeGeometry(stoneData, bottomGeom.positions, bottomGeom.normals, bottomGeom.uvs, bottomGeom.indices, config.sunDirection, bottomSkyLight);
@@ -400,7 +433,7 @@ function buildColumnGeometry(
 
     // Create side faces
     if (!isWater && hasSideExposed) {
-      const sidesGeom = createFaceGeometry(column.tile, innerRadius, outerRadius, false, false, true);
+      const sidesGeom = createFaceGeometry(column.tile, innerRadius, outerRadius, false, false, true, config.uvScale);
       if (sidesGeom) {
         if (useStoneTexture) {
           mergeGeometry(stoneData, sidesGeom.positions, sidesGeom.normals, sidesGeom.uvs, sidesGeom.indices, config.sunDirection, skyLightLevel);

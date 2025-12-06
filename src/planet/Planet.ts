@@ -357,10 +357,10 @@ export class Planet {
   // Per-chunk geometry data from LOD worker
   private handleLODWorkerResult(data: {
     chunkGeometries: Array<{
-      grassPositions: number[]; grassNormals: number[]; grassUvs: number[]; grassIndices: number[];
-      dirtPositions: number[]; dirtNormals: number[]; dirtUvs: number[]; dirtIndices: number[];
+      grassPositions: number[]; grassNormals: number[]; grassUvs: number[]; grassSkyLight: number[]; grassIndices: number[];
+      dirtPositions: number[]; dirtNormals: number[]; dirtUvs: number[]; dirtSkyLight: number[]; dirtIndices: number[];
       waterPositions: number[]; waterNormals: number[]; waterUvs: number[]; waterIndices: number[];
-      sidePositions: number[]; sideNormals: number[]; sideUvs: number[]; sideIndices: number[];
+      sidePositions: number[]; sideNormals: number[]; sideUvs: number[]; sideSkyLight: number[]; sideIndices: number[];
       waterSidePositions: number[]; waterSideNormals: number[]; waterSideUvs: number[]; waterSideIndices: number[];
     }>;
   }): void {
@@ -395,12 +395,15 @@ export class Planet {
     const lodGroup = new THREE.Group();
 
     // Helper to create geometry from typed arrays (avoids copy)
-    const createGeom = (positions: number[], normals: number[], uvs: number[], indices: number[]): THREE.BufferGeometry => {
+    const createGeom = (positions: number[], normals: number[], uvs: number[], indices: number[], skyLight?: number[]): THREE.BufferGeometry => {
       const geom = new THREE.BufferGeometry();
       // Use Float32Array directly to avoid copying
       geom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(positions), 3));
       geom.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(normals), 3));
       geom.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(uvs), 2));
+      if (skyLight && skyLight.length > 0) {
+        geom.setAttribute('skyLight', new THREE.BufferAttribute(new Float32Array(skyLight), 1));
+      }
       geom.setIndex(indices);
       return geom;
     };
@@ -415,25 +418,25 @@ export class Planet {
 
       const chunkGroup = this.lodChunks[i];
 
-      // Grass mesh
+      // Grass mesh (uses terrain shader with skyLight)
       if (chunkData.grassPositions.length > 0) {
-        const geom = createGeom(chunkData.grassPositions, chunkData.grassNormals, chunkData.grassUvs, chunkData.grassIndices);
+        const geom = createGeom(chunkData.grassPositions, chunkData.grassNormals, chunkData.grassUvs, chunkData.grassIndices, chunkData.grassSkyLight);
         const mesh = new THREE.Mesh(geom, this.meshBuilder.getTopLODMaterial());
         chunkGroup.add(mesh);
         meshCount++;
         totalVertices += chunkData.grassPositions.length / 3;
       }
 
-      // Dirt mesh
+      // Dirt mesh (uses terrain shader with skyLight)
       if (chunkData.dirtPositions.length > 0) {
-        const geom = createGeom(chunkData.dirtPositions, chunkData.dirtNormals, chunkData.dirtUvs, chunkData.dirtIndices);
+        const geom = createGeom(chunkData.dirtPositions, chunkData.dirtNormals, chunkData.dirtUvs, chunkData.dirtIndices, chunkData.dirtSkyLight);
         const mesh = new THREE.Mesh(geom, this.meshBuilder.getSideLODMaterial());
         chunkGroup.add(mesh);
         meshCount++;
         totalVertices += chunkData.dirtPositions.length / 3;
       }
 
-      // Water mesh
+      // Water mesh (uses simple material, no skyLight needed)
       if (chunkData.waterPositions.length > 0) {
         const geom = createGeom(chunkData.waterPositions, chunkData.waterNormals, chunkData.waterUvs, chunkData.waterIndices);
         const mesh = new THREE.Mesh(geom, this.meshBuilder.getWaterLODMaterial());
@@ -443,9 +446,9 @@ export class Planet {
         totalVertices += chunkData.waterPositions.length / 3;
       }
 
-      // Side walls mesh
+      // Side walls mesh (uses terrain shader with skyLight)
       if (chunkData.sidePositions.length > 0) {
-        const geom = createGeom(chunkData.sidePositions, chunkData.sideNormals, chunkData.sideUvs, chunkData.sideIndices);
+        const geom = createGeom(chunkData.sidePositions, chunkData.sideNormals, chunkData.sideUvs, chunkData.sideIndices, chunkData.sideSkyLight);
         const mesh = new THREE.Mesh(geom, this.meshBuilder.getSideLODMaterial());
         chunkGroup.add(mesh);
         meshCount++;
@@ -701,18 +704,45 @@ export class Planet {
         const vertices = tile.vertices.map(v => v.clone().normalize().multiplyScalar(displayRadius));
         const normal = center.clone().normalize();
 
+        // Compute normalized UVs for this tile (project onto local 2D plane)
+        const up = Math.abs(normal.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
+        const tangent = new THREE.Vector3().crossVectors(up, normal).normalize();
+        const bitangent = new THREE.Vector3().crossVectors(normal, tangent);
+
+        const localCoords: { u: number; v: number }[] = [];
+        let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
+
+        for (const vert of tile.vertices) {
+          const toVert = vert.clone().sub(tile.center);
+          const u = toVert.dot(tangent);
+          const v = toVert.dot(bitangent);
+          localCoords.push({ u, v });
+          minU = Math.min(minU, u);
+          maxU = Math.max(maxU, u);
+          minV = Math.min(minV, v);
+          maxV = Math.max(maxV, v);
+        }
+
+        const rangeU = maxU - minU;
+        const rangeV = maxV - minV;
+        const tileUVs = localCoords.map(coord => ({
+          u: (coord.u - minU) / rangeU,
+          v: (coord.v - minV) / rangeV
+        }));
+        const centerUV = { u: (0 - minU) / rangeU, v: (0 - minV) / rangeV };
+
         // Fan triangulation from center
         const centerIdx = vertexOffset;
         positions.push(center.x, center.y, center.z);
         normals.push(normal.x, normal.y, normal.z);
-        uvs.push(0.5, 0.5);
+        uvs.push(centerUV.u, centerUV.v);
         colors.push(color.r, color.g, color.b);
         vertexOffset++;
 
         for (let i = 0; i < vertices.length; i++) {
           positions.push(vertices[i].x, vertices[i].y, vertices[i].z);
           normals.push(normal.x, normal.y, normal.z);
-          uvs.push(0, 0);
+          uvs.push(tileUVs[i].u, tileUVs[i].v);
           colors.push(color.r, color.g, color.b);
           vertexOffset++;
 
@@ -860,36 +890,73 @@ export class Planet {
 
     // Per-chunk geometry buffers
     interface ChunkGeometry {
-      grassPositions: number[]; grassNormals: number[]; grassUvs: number[]; grassIndices: number[]; grassVertexOffset: number;
-      dirtPositions: number[]; dirtNormals: number[]; dirtUvs: number[]; dirtIndices: number[]; dirtVertexOffset: number;
+      grassPositions: number[]; grassNormals: number[]; grassUvs: number[]; grassSkyLight: number[]; grassIndices: number[]; grassVertexOffset: number;
+      dirtPositions: number[]; dirtNormals: number[]; dirtUvs: number[]; dirtSkyLight: number[]; dirtIndices: number[]; dirtVertexOffset: number;
       waterPositions: number[]; waterNormals: number[]; waterUvs: number[]; waterIndices: number[]; waterVertexOffset: number;
-      sidePositions: number[]; sideNormals: number[]; sideUvs: number[]; sideIndices: number[]; sideVertexOffset: number;
+      sidePositions: number[]; sideNormals: number[]; sideUvs: number[]; sideSkyLight: number[]; sideIndices: number[]; sideVertexOffset: number;
       waterSidePositions: number[]; waterSideNormals: number[]; waterSideUvs: number[]; waterSideIndices: number[]; waterSideVertexOffset: number;
     }
 
     const chunkGeometries: ChunkGeometry[] = [];
     for (let i = 0; i < this.LOD_CHUNK_COUNT; i++) {
       chunkGeometries.push({
-        grassPositions: [], grassNormals: [], grassUvs: [], grassIndices: [], grassVertexOffset: 0,
-        dirtPositions: [], dirtNormals: [], dirtUvs: [], dirtIndices: [], dirtVertexOffset: 0,
+        grassPositions: [], grassNormals: [], grassUvs: [], grassSkyLight: [], grassIndices: [], grassVertexOffset: 0,
+        dirtPositions: [], dirtNormals: [], dirtUvs: [], dirtSkyLight: [], dirtIndices: [], dirtVertexOffset: 0,
         waterPositions: [], waterNormals: [], waterUvs: [], waterIndices: [], waterVertexOffset: 0,
-        sidePositions: [], sideNormals: [], sideUvs: [], sideIndices: [], sideVertexOffset: 0,
+        sidePositions: [], sideNormals: [], sideUvs: [], sideSkyLight: [], sideIndices: [], sideVertexOffset: 0,
         waterSidePositions: [], waterSideNormals: [], waterSideUvs: [], waterSideIndices: [], waterSideVertexOffset: 0
       });
     }
 
-    // Pre-compute normalized tile centers and vertices once (avoid redundant normalize calls)
+    // Pre-compute normalized tile centers, vertices, and UVs once (avoid redundant normalize calls)
     // This cache is used across all passes
     const normalizedTileData = new Map<number, {
       normalizedCenter: THREE.Vector3;
       normalizedVertices: THREE.Vector3[];
+      normalizedUVs: { u: number; v: number }[];
+      centerUV: { u: number; v: number };
     }>();
 
     for (const [tileIndex, column] of this.columns) {
       const tile = column.tile;
       const normalizedCenter = tile.center.clone().normalize();
       const normalizedVertices = tile.vertices.map(v => v.clone().normalize());
-      normalizedTileData.set(tileIndex, { normalizedCenter, normalizedVertices });
+
+      // Create local tangent space for UV mapping
+      const up = Math.abs(normalizedCenter.y) < 0.9
+        ? new THREE.Vector3(0, 1, 0)
+        : new THREE.Vector3(1, 0, 0);
+      const tangent = new THREE.Vector3().crossVectors(up, normalizedCenter).normalize();
+      const bitangent = new THREE.Vector3().crossVectors(normalizedCenter, tangent);
+
+      // Project vertices onto local 2D plane and find bounding box
+      const localCoords: { u: number; v: number }[] = [];
+      let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
+
+      for (const vert of tile.vertices) {
+        const toVert = vert.clone().sub(tile.center);
+        const u = toVert.dot(tangent);
+        const v = toVert.dot(bitangent);
+        localCoords.push({ u, v });
+        minU = Math.min(minU, u);
+        maxU = Math.max(maxU, u);
+        minV = Math.min(minV, v);
+        maxV = Math.max(maxV, v);
+      }
+
+      // Normalize UVs to 0-1 range
+      const rangeU = maxU - minU;
+      const rangeV = maxV - minV;
+      const normalizedUVs = localCoords.map(coord => ({
+        u: (coord.u - minU) / rangeU,
+        v: (coord.v - minV) / rangeV
+      }));
+      const centerUV = {
+        u: (0 - minU) / rangeU,
+        v: (0 - minV) / rangeV
+      };
+
+      normalizedTileData.set(tileIndex, { normalizedCenter, normalizedVertices, normalizedUVs, centerUV });
     }
 
     // First pass: calculate display radius for each LOD tile
@@ -950,40 +1017,45 @@ export class Planet {
       const chunk = chunkGeometries[chunkIdx];
 
       // Select which buffer to add to (per-chunk)
-      let positions: number[], normals: number[], uvs: number[], indices: number[];
+      let positions: number[], normals: number[], uvs: number[], skyLight: number[] | null, indices: number[];
       let vertexOffset: number;
 
       if (surfaceBlockType === HexBlockType.WATER) {
         positions = chunk.waterPositions;
         normals = chunk.waterNormals;
         uvs = chunk.waterUvs;
+        skyLight = null; // Water uses different shader
         indices = chunk.waterIndices;
         vertexOffset = chunk.waterVertexOffset;
       } else if (surfaceBlockType === HexBlockType.DIRT) {
         positions = chunk.dirtPositions;
         normals = chunk.dirtNormals;
         uvs = chunk.dirtUvs;
+        skyLight = chunk.dirtSkyLight;
         indices = chunk.dirtIndices;
         vertexOffset = chunk.dirtVertexOffset;
       } else {
         positions = chunk.grassPositions;
         normals = chunk.grassNormals;
         uvs = chunk.grassUvs;
+        skyLight = chunk.grassSkyLight;
         indices = chunk.grassIndices;
         vertexOffset = chunk.grassVertexOffset;
       }
 
-      // Fan triangulation from center
+      // Fan triangulation from center using pre-computed UVs
       const centerIdx = vertexOffset;
       positions.push(center.x, center.y, center.z);
       normals.push(normal.x, normal.y, normal.z);
-      uvs.push(0.5, 0.5);
+      uvs.push(normalizedData.centerUV.u, normalizedData.centerUV.v);
+      if (skyLight) skyLight.push(1.0); // LOD is at surface, full sky exposure
       vertexOffset++;
 
       for (let i = 0; i < vertices.length; i++) {
         positions.push(vertices[i].x, vertices[i].y, vertices[i].z);
         normals.push(normal.x, normal.y, normal.z);
-        uvs.push(0, 0);
+        uvs.push(normalizedData.normalizedUVs[i].u, normalizedData.normalizedUVs[i].v);
+        if (skyLight) skyLight.push(1.0);
         vertexOffset++;
 
         indices.push(centerIdx, centerIdx + 1 + i, centerIdx + 1 + ((i + 1) % vertices.length));
@@ -1093,6 +1165,7 @@ export class Planet {
         const positions = thisIsWater ? chunk.waterSidePositions : chunk.sidePositions;
         const normals = thisIsWater ? chunk.waterSideNormals : chunk.sideNormals;
         const uvs = thisIsWater ? chunk.waterSideUvs : chunk.sideUvs;
+        const sideLight = thisIsWater ? null : chunk.sideSkyLight;
         const indices = thisIsWater ? chunk.waterSideIndices : chunk.sideIndices;
         const baseIdx = thisIsWater ? chunk.waterSideVertexOffset : chunk.sideVertexOffset;
 
@@ -1108,6 +1181,9 @@ export class Planet {
 
         // UVs matching HexBlock
         uvs.push(0, 0, 1, 0, 1, 0.5, 0, 0.5);
+
+        // Sky light for terrain shader
+        if (sideLight) sideLight.push(1.0, 1.0, 1.0, 1.0);
 
         // Same winding as HexBlock: (0,1,2), (0,2,3)
         indices.push(baseIdx, baseIdx + 1, baseIdx + 2, baseIdx, baseIdx + 2, baseIdx + 3);
@@ -1250,29 +1326,35 @@ export class Planet {
         chunkGroup.remove(chunkGroup.children[0]);
       }
 
-      // Grass mesh
+      // Grass mesh (uses terrain shader with skyLight)
       if (chunk.grassPositions.length > 0) {
         const geom = new THREE.BufferGeometry();
         geom.setAttribute('position', new THREE.Float32BufferAttribute(chunk.grassPositions, 3));
         geom.setAttribute('normal', new THREE.Float32BufferAttribute(chunk.grassNormals, 3));
         geom.setAttribute('uv', new THREE.Float32BufferAttribute(chunk.grassUvs, 2));
+        if (chunk.grassSkyLight.length > 0) {
+          geom.setAttribute('skyLight', new THREE.Float32BufferAttribute(chunk.grassSkyLight, 1));
+        }
         geom.setIndex(chunk.grassIndices);
         const mesh = new THREE.Mesh(geom, this.meshBuilder.getTopLODMaterial());
         chunkGroup.add(mesh);
       }
 
-      // Dirt mesh
+      // Dirt mesh (uses terrain shader with skyLight)
       if (chunk.dirtPositions.length > 0) {
         const geom = new THREE.BufferGeometry();
         geom.setAttribute('position', new THREE.Float32BufferAttribute(chunk.dirtPositions, 3));
         geom.setAttribute('normal', new THREE.Float32BufferAttribute(chunk.dirtNormals, 3));
         geom.setAttribute('uv', new THREE.Float32BufferAttribute(chunk.dirtUvs, 2));
+        if (chunk.dirtSkyLight.length > 0) {
+          geom.setAttribute('skyLight', new THREE.Float32BufferAttribute(chunk.dirtSkyLight, 1));
+        }
         geom.setIndex(chunk.dirtIndices);
         const mesh = new THREE.Mesh(geom, this.meshBuilder.getSideLODMaterial());
         chunkGroup.add(mesh);
       }
 
-      // Water mesh
+      // Water mesh (uses simple material, no skyLight)
       if (chunk.waterPositions.length > 0) {
         const geom = new THREE.BufferGeometry();
         geom.setAttribute('position', new THREE.Float32BufferAttribute(chunk.waterPositions, 3));
@@ -1284,12 +1366,15 @@ export class Planet {
         chunkGroup.add(mesh);
       }
 
-      // Side walls mesh
+      // Side walls mesh (uses terrain shader with skyLight)
       if (chunk.sidePositions.length > 0) {
         const geom = new THREE.BufferGeometry();
         geom.setAttribute('position', new THREE.Float32BufferAttribute(chunk.sidePositions, 3));
         geom.setAttribute('normal', new THREE.Float32BufferAttribute(chunk.sideNormals, 3));
         geom.setAttribute('uv', new THREE.Float32BufferAttribute(chunk.sideUvs, 2));
+        if (chunk.sideSkyLight.length > 0) {
+          geom.setAttribute('skyLight', new THREE.Float32BufferAttribute(chunk.sideSkyLight, 1));
+        }
         geom.setIndex(chunk.sideIndices);
         const mesh = new THREE.Mesh(geom, this.meshBuilder.getSideLODMaterial());
         chunkGroup.add(mesh);

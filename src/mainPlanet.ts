@@ -80,9 +80,9 @@ class PlanetGame {
         gravityStrength: 0.4,     // Moon has 40% of Earth's gravity
       });
 
-      // Initialize block interaction (for now, just with Earth)
+      // Initialize block interaction with all planets (allows mining/placing on both Earth and Moon)
       this.blockInteraction = new PlanetBlockInteraction(
-        this.earth,
+        [this.earth, this.moon],
         this.player,
         this.engine.scene
       );

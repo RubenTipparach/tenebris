@@ -26,7 +26,7 @@ function itemToBlock(itemType: ItemType): HexBlockType {
 }
 
 export class PlanetBlockInteraction {
-  private planet: Planet;
+  private planets: Planet[];
   private player: PlanetPlayer;
   private scene: THREE.Scene;
   private raycaster: THREE.Raycaster;
@@ -41,14 +41,14 @@ export class PlanetBlockInteraction {
   private readonly MAX_REACH = 8;
 
   // Mining state
-  private miningTarget: { tileIndex: number; depth: number; blockType: HexBlockType } | null = null;
+  private miningTarget: { planet: Planet; tileIndex: number; depth: number; blockType: HexBlockType } | null = null;
   private miningTreeTarget: { mesh: THREE.Mesh; treeType: string } | null = null;
   private miningProgress: number = 0;
   private miningProgressContainer: HTMLElement | null = null;
   private miningProgressBar: HTMLElement | null = null;
 
-  constructor(planet: Planet, player: PlanetPlayer, scene: THREE.Scene) {
-    this.planet = planet;
+  constructor(planets: Planet[], player: PlanetPlayer, scene: THREE.Scene) {
+    this.planets = planets;
     this.player = player;
     this.scene = scene;
     this.raycaster = new THREE.Raycaster();
@@ -129,12 +129,12 @@ export class PlanetBlockInteraction {
   }
 
   // Build wireframe geometry for a hex block at given tile and depth
-  private updateBlockWireframe(tileIndex: number, depth: number): void {
-    const tile = this.planet.getTileByIndex(tileIndex);
+  private updateBlockWireframe(planet: Planet, tileIndex: number, depth: number): void {
+    const tile = planet.getTileByIndex(tileIndex);
     if (!tile || !this.blockWireframe) return;
 
-    const blockHeight = this.planet.getBlockHeight();
-    const outerRadius = this.planet.radius - depth * blockHeight;
+    const blockHeight = planet.getBlockHeight();
+    const outerRadius = planet.radius - depth * blockHeight;
     const innerRadius = outerRadius - blockHeight;
 
     const vertices: number[] = [];
@@ -146,8 +146,8 @@ export class PlanetBlockInteraction {
 
     for (const v of tile.vertices) {
       const dir = v.clone().normalize();
-      innerVerts.push(dir.clone().multiplyScalar(innerRadius).add(this.planet.center));
-      outerVerts.push(dir.clone().multiplyScalar(outerRadius).add(this.planet.center));
+      innerVerts.push(dir.clone().multiplyScalar(innerRadius).add(planet.center));
+      outerVerts.push(dir.clone().multiplyScalar(outerRadius).add(planet.center));
     }
 
     // Top face edges (outer)
@@ -216,17 +216,31 @@ export class PlanetBlockInteraction {
 
     const treeIntersects = this.raycaster.intersectObjects(treeMeshes, false);
 
-    // Use Planet's raycast for terrain blocks (works with batched geometry)
-    const blockHit = this.planet.raycast(origin, direction, this.MAX_REACH);
+    // Raycast against all planets and find the closest hit
+    let closestBlockHit: ReturnType<Planet['raycast']> = null;
+    let closestBlockPlanet: Planet | null = null;
+    let closestBlockDistance = Infinity;
+
+    for (const planet of this.planets) {
+      const blockHit = planet.raycast(origin, direction, this.MAX_REACH);
+      if (blockHit) {
+        const distance = origin.distanceTo(blockHit.point);
+        if (distance < closestBlockDistance) {
+          closestBlockDistance = distance;
+          closestBlockHit = blockHit;
+          closestBlockPlanet = planet;
+        }
+      }
+    }
 
     // Determine which hit is closer
     let hitTree = false;
     let hitBlock = false;
     let treeHit: THREE.Intersection | null = null;
 
-    if (treeIntersects.length > 0 && blockHit) {
+    if (treeIntersects.length > 0 && closestBlockHit) {
       // Both hit - pick closer one
-      if (treeIntersects[0].distance < origin.distanceTo(blockHit.point)) {
+      if (treeIntersects[0].distance < closestBlockDistance) {
         hitTree = true;
         treeHit = treeIntersects[0];
       } else {
@@ -235,7 +249,7 @@ export class PlanetBlockInteraction {
     } else if (treeIntersects.length > 0) {
       hitTree = true;
       treeHit = treeIntersects[0];
-    } else if (blockHit) {
+    } else if (closestBlockHit) {
       hitBlock = true;
     }
 
@@ -255,18 +269,18 @@ export class PlanetBlockInteraction {
       } else {
         this.resetMining();
       }
-    } else if (hitBlock && blockHit) {
-      const { tileIndex, depth, blockType, prevTileIndex, prevDepth } = blockHit;
+    } else if (hitBlock && closestBlockHit && closestBlockPlanet) {
+      const { tileIndex, depth, blockType, prevTileIndex, prevDepth } = closestBlockHit;
 
       // Show wireframe around targeted block
       if (this.blockWireframe) {
         this.blockWireframe.visible = true;
-        this.updateBlockWireframe(tileIndex, depth);
+        this.updateBlockWireframe(closestBlockPlanet, tileIndex, depth);
       }
 
       // Handle mining (left click held) - don't mine water (raycast already ignores water by default)
       if (leftClick && blockType !== HexBlockType.AIR) {
-        this.handleMining(deltaTime, tileIndex, depth, blockType);
+        this.handleMining(deltaTime, closestBlockPlanet, tileIndex, depth, blockType);
       } else {
         // Reset mining if not clicking or target changed
         this.resetMining();
@@ -275,7 +289,7 @@ export class PlanetBlockInteraction {
       // Handle block placing (right click)
       // Use the previous air block position for placement (supports horizontal placement)
       if (rightClick && this.rightClickCooldown === 0) {
-        this.placeBlock(prevTileIndex, prevDepth);
+        this.placeBlock(closestBlockPlanet, prevTileIndex, prevDepth);
         this.rightClickCooldown = this.CLICK_COOLDOWN;
       }
     } else {
@@ -287,13 +301,14 @@ export class PlanetBlockInteraction {
     }
   }
 
-  private handleMining(deltaTime: number, tileIndex: number, depth: number, blockType: HexBlockType): void {
-    // Check if target changed
+  private handleMining(deltaTime: number, planet: Planet, tileIndex: number, depth: number, blockType: HexBlockType): void {
+    // Check if target changed (different planet, tile, or depth)
     if (this.miningTarget === null ||
+        this.miningTarget.planet !== planet ||
         this.miningTarget.tileIndex !== tileIndex ||
         this.miningTarget.depth !== depth) {
       // New target, reset progress
-      this.miningTarget = { tileIndex, depth, blockType };
+      this.miningTarget = { planet, tileIndex, depth, blockType };
       this.miningProgress = 0;
     }
 
@@ -307,7 +322,7 @@ export class PlanetBlockInteraction {
 
     // Check if mining complete
     if (this.miningProgress >= 1) {
-      this.breakBlock(tileIndex, depth, blockType);
+      this.breakBlock(planet, tileIndex, depth, blockType);
       this.resetMining();
     }
   }
@@ -361,9 +376,9 @@ export class PlanetBlockInteraction {
     this.updateMiningUI(0);
   }
 
-  private breakBlock(tileIndex: number, depth: number, blockType: HexBlockType): void {
+  private breakBlock(planet: Planet, tileIndex: number, depth: number, blockType: HexBlockType): void {
     // Prevent mining the bottom-most block (bedrock layer) to avoid falling through the world
-    const maxDepth = this.planet.getMaxDepth();
+    const maxDepth = planet.getMaxDepth();
     if (depth >= maxDepth - 1) {
       return;
     }
@@ -376,10 +391,10 @@ export class PlanetBlockInteraction {
     }
 
     // Remove block from world
-    this.planet.setBlock(tileIndex, depth, HexBlockType.AIR);
+    planet.setBlock(tileIndex, depth, HexBlockType.AIR);
   }
 
-  private placeBlock(tileIndex: number, depth: number): void {
+  private placeBlock(planet: Planet, tileIndex: number, depth: number): void {
     if (depth < 0) return;
 
     const selectedSlot = this.inventory.getSelectedItem();
@@ -392,14 +407,14 @@ export class PlanetBlockInteraction {
 
     // Check if block would overlap with player's body
     // Player position is at FEET level, player occupies from feet to feet + PLAYER_HEIGHT
-    const playerTile = this.planet.getTileAtPoint(this.player.position);
+    const playerTile = planet.getTileAtPoint(this.player.position);
     if (playerTile && playerTile.index === tileIndex) {
       // Player is on the same tile - check vertical overlap
-      const playerFeetRadius = this.player.position.distanceTo(this.planet.center);
+      const playerFeetRadius = this.player.position.distanceTo(planet.center);
       const playerHeadRadius = playerFeetRadius + 1.8; // PLAYER_HEIGHT
 
       // Block occupies from blockBottomRadius to blockTopRadius
-      const blockTopRadius = this.planet.radius - depth;
+      const blockTopRadius = planet.radius - depth;
       const blockBottomRadius = blockTopRadius - 1; // Block height is 1
 
       // Check if block overlaps with player's body (feet to head)
@@ -411,7 +426,7 @@ export class PlanetBlockInteraction {
 
     // Use item from inventory
     if (this.inventory.useSelectedItem()) {
-      this.planet.setBlock(tileIndex, depth, blockType);
+      planet.setBlock(tileIndex, depth, blockType);
       this.updateHotbarUI();
     }
   }

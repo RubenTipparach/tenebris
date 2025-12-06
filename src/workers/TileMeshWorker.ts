@@ -19,6 +19,10 @@ export interface WorkerTileRequest {
   deepThreshold: number;
   maxDepth: number;
   neighborBlocks: Map<number, number[]>;  // neighborIndex -> blocks at same depths
+  sunDirection: { x: number; y: number; z: number };  // For vertex lighting
+  vertexLightingEnabled: boolean;
+  waterSurfaceOffset: number;
+  uvScale: number;  // Texture tiling scale from config
 }
 
 export interface WorkerTileResponse {
@@ -35,14 +39,31 @@ export interface GeometryArrays {
   normals: Float32Array;
   uvs: Float32Array;
   indices: Uint32Array;
+  skyLight: Float32Array;  // Depth-based sky light level per vertex
+  colors?: Float32Array;   // Optional vertex colors for sun lighting
 }
 
 // Block types (must match HexBlockType enum)
 const AIR = 0;
+// const GRASS = 1;  // Unused - kept for reference
+// const STONE = 2;  // Unused - kept for reference
+// const DIRT = 3;   // Unused - kept for reference
 const WATER = 4;
 
 function isSolid(blockType: number): boolean {
   return blockType !== AIR && blockType !== WATER;
+}
+
+// Sky light constants
+const SKY_LIGHT_FALLOFF = 0.8; // Each level deeper multiplies by this
+const MIN_SKY_LIGHT = 0.05; // Minimum light in deep caves
+
+// Lightweight geometry result (before adding lighting)
+interface RawGeometry {
+  positions: number[];
+  normals: number[];
+  uvs: number[];
+  indices: number[];
 }
 
 // Create hex prism geometry for a tile
@@ -53,8 +74,9 @@ function createSeparateGeometries(
   planetCenter: { x: number; y: number; z: number },
   isTopExposed: boolean,
   isBottomExposed: boolean,
-  areSidesExposed: boolean
-): { top: GeometryArrays | null; bottom: GeometryArrays | null; sides: GeometryArrays | null } {
+  areSidesExposed: boolean,
+  uvScale: number = 10
+): { top: RawGeometry | null; bottom: RawGeometry | null; sides: RawGeometry | null } {
   const numSides = tile.vertices.length;
 
   // Calculate radial direction
@@ -113,9 +135,34 @@ function createSeparateGeometries(
   localRightY /= rightLen;
   localRightZ /= rightLen;
 
-  let topGeom: GeometryArrays | null = null;
-  let bottomGeom: GeometryArrays | null = null;
-  let sidesGeom: GeometryArrays | null = null;
+  let topGeom: RawGeometry | null = null;
+  let bottomGeom: RawGeometry | null = null;
+  let sidesGeom: RawGeometry | null = null;
+
+  // Pre-compute UV coordinates for the tile shape (shared between top and bottom faces)
+  // Project tile vertices onto local 2D plane and find max extent for normalization
+  const tileLocalCoords: { u: number; v: number }[] = [];
+  let maxExtent = 0;
+
+  for (let i = 0; i < numSides; i++) {
+    // Use tile vertices for UV calculation (relative to tile center)
+    const toVertX = tile.vertices[i].x - tile.center.x;
+    const toVertY = tile.vertices[i].y - tile.center.y;
+    const toVertZ = tile.vertices[i].z - tile.center.z;
+    const u = toVertX * localRightX + toVertY * localRightY + toVertZ * localRightZ;
+    const v = toVertX * localForwardX + toVertY * localForwardY + toVertZ * localForwardZ;
+    tileLocalCoords.push({ u, v });
+    maxExtent = Math.max(maxExtent, Math.abs(u), Math.abs(v));
+  }
+
+  // Scale factor: maps max extent to produce desired UV tiling
+  const normalizedScale = maxExtent > 0 ? uvScale / maxExtent : 1;
+
+  // Pre-compute normalized UVs for each vertex
+  const tileUVs = tileLocalCoords.map(coord => ({
+    u: 0.5 + coord.u * normalizedScale,
+    v: 0.5 + coord.v * normalizedScale
+  }));
 
   // Top face
   if (isTopExposed) {
@@ -132,13 +179,7 @@ function createSeparateGeometries(
       const v = outerVerts[i];
       positions.push(v.x, v.y, v.z);
       normals.push(radialDir.x, radialDir.y, radialDir.z);
-
-      const toVertX = v.x - outerCenter.x;
-      const toVertY = v.y - outerCenter.y;
-      const toVertZ = v.z - outerCenter.z;
-      const u = 0.5 + (toVertX * localRightX + toVertY * localRightY + toVertZ * localRightZ) * 0.1;
-      const vCoord = 0.5 + (toVertX * localForwardX + toVertY * localForwardY + toVertZ * localForwardZ) * 0.1;
-      uvs.push(u, vCoord);
+      uvs.push(tileUVs[i].u, tileUVs[i].v);
     }
 
     for (let i = 0; i < numSides; i++) {
@@ -146,12 +187,7 @@ function createSeparateGeometries(
       indices.push(0, 1 + i, 1 + next);
     }
 
-    topGeom = {
-      positions: new Float32Array(positions),
-      normals: new Float32Array(normals),
-      uvs: new Float32Array(uvs),
-      indices: new Uint32Array(indices)
-    };
+    topGeom = { positions, normals, uvs, indices };
   }
 
   // Bottom face
@@ -173,13 +209,7 @@ function createSeparateGeometries(
       const v = innerVerts[i];
       positions.push(v.x, v.y, v.z);
       normals.push(bottomNormalX, bottomNormalY, bottomNormalZ);
-
-      const toVertX = v.x - innerCenter.x;
-      const toVertY = v.y - innerCenter.y;
-      const toVertZ = v.z - innerCenter.z;
-      const u = 0.5 + (toVertX * localRightX + toVertY * localRightY + toVertZ * localRightZ) * 0.1;
-      const vCoord = 0.5 + (toVertX * localForwardX + toVertY * localForwardY + toVertZ * localForwardZ) * 0.1;
-      uvs.push(u, vCoord);
+      uvs.push(tileUVs[i].u, tileUVs[i].v);
     }
 
     for (let i = 0; i < numSides; i++) {
@@ -187,12 +217,7 @@ function createSeparateGeometries(
       indices.push(0, 1 + next, 1 + i);
     }
 
-    bottomGeom = {
-      positions: new Float32Array(positions),
-      normals: new Float32Array(normals),
-      uvs: new Float32Array(uvs),
-      indices: new Uint32Array(indices)
-    };
+    bottomGeom = { positions, normals, uvs, indices };
   }
 
   // Side faces
@@ -260,22 +285,20 @@ function createSeparateGeometries(
       vertexIndex += 4;
     }
 
-    sidesGeom = {
-      positions: new Float32Array(positions),
-      normals: new Float32Array(normals),
-      uvs: new Float32Array(uvs),
-      indices: new Uint32Array(indices)
-    };
+    sidesGeom = { positions, normals, uvs, indices };
   }
 
   return { top: topGeom, bottom: bottomGeom, sides: sidesGeom };
 }
 
-// Merge geometry arrays
+// Merge raw geometry arrays into target
 function mergeGeometry(
-  target: { positions: number[]; normals: number[]; uvs: number[]; indices: number[]; vertexOffset: number },
-  source: GeometryArrays
+  target: { positions: number[]; normals: number[]; uvs: number[]; skyLight: number[]; indices: number[]; vertexOffset: number },
+  source: RawGeometry,
+  skyLightLevel: number = 1.0
 ): void {
+  const vertexCount = source.positions.length / 3;
+
   for (let i = 0; i < source.positions.length; i++) {
     target.positions.push(source.positions[i]);
   }
@@ -285,20 +308,24 @@ function mergeGeometry(
   for (let i = 0; i < source.uvs.length; i++) {
     target.uvs.push(source.uvs[i]);
   }
+  // Add sky light for each vertex
+  for (let i = 0; i < vertexCount; i++) {
+    target.skyLight.push(skyLightLevel);
+  }
   for (let i = 0; i < source.indices.length; i++) {
     target.indices.push(source.indices[i] + target.vertexOffset);
   }
-  target.vertexOffset += source.positions.length / 3;
+  target.vertexOffset += vertexCount;
 }
 
 // Build complete tile mesh geometry
 function buildTileMesh(request: WorkerTileRequest): WorkerTileResponse {
-  const { tile, blocks, radius, blockHeight, deepThreshold } = request;
+  const { tile, blocks, radius, blockHeight, deepThreshold, uvScale } = request;
 
-  const topData = { positions: [] as number[], normals: [] as number[], uvs: [] as number[], indices: [] as number[], vertexOffset: 0 };
-  const sideData = { positions: [] as number[], normals: [] as number[], uvs: [] as number[], indices: [] as number[], vertexOffset: 0 };
-  const stoneData = { positions: [] as number[], normals: [] as number[], uvs: [] as number[], indices: [] as number[], vertexOffset: 0 };
-  const waterData = { positions: [] as number[], normals: [] as number[], uvs: [] as number[], indices: [] as number[], vertexOffset: 0 };
+  const topData = { positions: [] as number[], normals: [] as number[], uvs: [] as number[], skyLight: [] as number[], indices: [] as number[], vertexOffset: 0 };
+  const sideData = { positions: [] as number[], normals: [] as number[], uvs: [] as number[], skyLight: [] as number[], indices: [] as number[], vertexOffset: 0 };
+  const stoneData = { positions: [] as number[], normals: [] as number[], uvs: [] as number[], skyLight: [] as number[], indices: [] as number[], vertexOffset: 0 };
+  const waterData = { positions: [] as number[], normals: [] as number[], uvs: [] as number[], skyLight: [] as number[], indices: [] as number[], vertexOffset: 0 };
 
   // Find surface depth
   let surfaceDepth = 0;
@@ -348,6 +375,13 @@ function buildTileMesh(request: WorkerTileRequest): WorkerTileResponse {
     const depthFromSurface = depth - surfaceDepth;
     const isDeep = depthFromSurface >= deepThreshold;
 
+    // Calculate sky light based on depth from surface
+    let skyLightLevel = 1.0;
+    if (depthFromSurface > 0) {
+      skyLightLevel = Math.max(MIN_SKY_LIGHT, Math.pow(SKY_LIGHT_FALLOFF, depthFromSurface));
+    }
+    const bottomSkyLight = Math.max(MIN_SKY_LIGHT, skyLightLevel * SKY_LIGHT_FALLOFF);
+
     const { top, bottom, sides } = createSeparateGeometries(
       tile,
       innerRadius,
@@ -355,39 +389,41 @@ function buildTileMesh(request: WorkerTileRequest): WorkerTileResponse {
       request.planetCenter,
       isWater ? true : hasTopExposed,
       isWater ? false : hasBottomExposed,
-      hasSideExposed
+      hasSideExposed,
+      uvScale
     );
 
     if (top) {
       if (isWater) {
-        mergeGeometry(waterData, top);
+        mergeGeometry(waterData, top, 1.0);
       } else if (isDeep) {
-        mergeGeometry(stoneData, top);
+        mergeGeometry(stoneData, top, skyLightLevel);
       } else {
-        mergeGeometry(topData, top);
+        mergeGeometry(topData, top, skyLightLevel);
       }
     }
 
     if (bottom && !isWater) {
-      mergeGeometry(stoneData, bottom);
+      mergeGeometry(stoneData, bottom, bottomSkyLight);
     }
 
     if (sides && !isWater) {
       if (isDeep) {
-        mergeGeometry(stoneData, sides);
+        mergeGeometry(stoneData, sides, skyLightLevel);
       } else {
-        mergeGeometry(sideData, sides);
+        mergeGeometry(sideData, sides, skyLightLevel);
       }
     }
   }
 
-  const toGeomArrays = (data: { positions: number[]; normals: number[]; uvs: number[]; indices: number[] }): GeometryArrays | null => {
+  const toGeomArrays = (data: { positions: number[]; normals: number[]; uvs: number[]; skyLight: number[]; indices: number[] }): GeometryArrays | null => {
     if (data.positions.length === 0) return null;
     return {
       positions: new Float32Array(data.positions),
       normals: new Float32Array(data.normals),
       uvs: new Float32Array(data.uvs),
-      indices: new Uint32Array(data.indices)
+      indices: new Uint32Array(data.indices),
+      skyLight: new Float32Array(data.skyLight)
     };
   };
 
@@ -415,7 +451,8 @@ self.onmessage = (e: MessageEvent<WorkerTileRequest>) => {
         response.topGeometry.positions.buffer as ArrayBuffer,
         response.topGeometry.normals.buffer as ArrayBuffer,
         response.topGeometry.uvs.buffer as ArrayBuffer,
-        response.topGeometry.indices.buffer as ArrayBuffer
+        response.topGeometry.indices.buffer as ArrayBuffer,
+        response.topGeometry.skyLight.buffer as ArrayBuffer
       );
     }
     if (response.sideGeometry) {
@@ -423,7 +460,8 @@ self.onmessage = (e: MessageEvent<WorkerTileRequest>) => {
         response.sideGeometry.positions.buffer as ArrayBuffer,
         response.sideGeometry.normals.buffer as ArrayBuffer,
         response.sideGeometry.uvs.buffer as ArrayBuffer,
-        response.sideGeometry.indices.buffer as ArrayBuffer
+        response.sideGeometry.indices.buffer as ArrayBuffer,
+        response.sideGeometry.skyLight.buffer as ArrayBuffer
       );
     }
     if (response.stoneGeometry) {
@@ -431,7 +469,8 @@ self.onmessage = (e: MessageEvent<WorkerTileRequest>) => {
         response.stoneGeometry.positions.buffer as ArrayBuffer,
         response.stoneGeometry.normals.buffer as ArrayBuffer,
         response.stoneGeometry.uvs.buffer as ArrayBuffer,
-        response.stoneGeometry.indices.buffer as ArrayBuffer
+        response.stoneGeometry.indices.buffer as ArrayBuffer,
+        response.stoneGeometry.skyLight.buffer as ArrayBuffer
       );
     }
     if (response.waterGeometry) {
@@ -439,7 +478,8 @@ self.onmessage = (e: MessageEvent<WorkerTileRequest>) => {
         response.waterGeometry.positions.buffer as ArrayBuffer,
         response.waterGeometry.normals.buffer as ArrayBuffer,
         response.waterGeometry.uvs.buffer as ArrayBuffer,
-        response.waterGeometry.indices.buffer as ArrayBuffer
+        response.waterGeometry.indices.buffer as ArrayBuffer,
+        response.waterGeometry.skyLight.buffer as ArrayBuffer
       );
     }
 
