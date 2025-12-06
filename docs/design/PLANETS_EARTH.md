@@ -194,16 +194,6 @@ Earth is the starting planet and the most hospitable world in the solar system. 
 |:--------:|:------:|:-------:|
 | ![Aluminum](../../public/textures/minerals/earth/rocks_aluminum.png) | ![Cobalt](../../public/textures/minerals/earth/rocks_cobalt.png) | ![Lithium](../../public/textures/minerals/earth/rocks_lythium.png) |
 
-### Gems (Deep Underground)
-
-| Gem | Depth | Rarity | Use |
-|-----|-------|--------|-----|
-| **Quartz** | 6-14 | Common | Circuits, decoration |
-| **Amethyst** | 4-12 | Uncommon | Decoration, magic? |
-| **Emerald** | 2-8 | Rare | Trading, decoration |
-| **Ruby** | 1-6 | Rare | Lasers, decoration |
-| **Diamond** | 0-4 | Very Rare | Best tools, circuits |
-
 ---
 
 ## Crafted Objects
