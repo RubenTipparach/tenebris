@@ -29,6 +29,7 @@ export class InputManager {
   private isPointerLocked: boolean = false;
   private onPointerLockChange?: (locked: boolean) => void;
   private onInventoryToggle?: () => void;
+  private onPauseToggle?: () => void;
 
   // Mobile touch state
   public readonly isMobile: boolean;
@@ -158,10 +159,11 @@ export class InputManager {
     mobileControls.innerHTML = `
       <!-- Left side controls -->
       <div id="left-controls">
-        <!-- Left action buttons: Break/Place -->
+        <!-- Left action buttons: Break/Place/Pause -->
         <div id="left-buttons">
           <button id="btn-break" class="action-btn attack">BREAK</button>
           <button id="btn-place" class="action-btn">PLACE</button>
+          <button id="btn-pause" class="action-btn pause">| |</button>
         </div>
         <!-- Left joystick for movement (WASD) -->
         <div id="move-joystick" class="joystick-container">
@@ -412,6 +414,17 @@ export class InputManager {
         }
       }, { passive: false });
     }
+
+    // Pause button
+    const btnPause = document.getElementById('btn-pause');
+    if (btnPause) {
+      btnPause.addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        if (this.onPauseToggle) {
+          this.onPauseToggle();
+        }
+      }, { passive: false });
+    }
   }
 
   public setPointerLockCallback(callback: (locked: boolean) => void): void {
@@ -420,6 +433,10 @@ export class InputManager {
 
   public setInventoryToggleCallback(callback: () => void): void {
     this.onInventoryToggle = callback;
+  }
+
+  public setPauseToggleCallback(callback: () => void): void {
+    this.onPauseToggle = callback;
   }
 
   public getState(): InputState {

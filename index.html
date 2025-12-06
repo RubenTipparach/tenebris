@@ -146,6 +146,8 @@
       color: white;
       font-family: 'Courier New', monospace;
       font-size: 12px;
+      touch-action: manipulation;
+      cursor: pointer;
     }
 
     .hotbar-slot.selected {
@@ -484,6 +486,17 @@
 
     .action-btn.inventory:active {
       background: rgba(80, 150, 255, 0.5);
+    }
+
+    .action-btn.pause {
+      background: rgba(150, 150, 150, 0.3);
+      border-color: rgba(180, 180, 180, 0.6);
+      font-size: 12px;
+      font-weight: bold;
+    }
+
+    .action-btn.pause:active {
+      background: rgba(150, 150, 150, 0.5);
     }
 
     /* Landscape mode - horizontal layout with buttons beside joystick */

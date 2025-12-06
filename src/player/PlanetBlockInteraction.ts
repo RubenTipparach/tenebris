@@ -537,8 +537,8 @@ export class PlanetBlockInteraction {
 
   private breakBlock(planet: Planet, tileIndex: number, depth: number, blockType: HexBlockType): void {
     // Prevent mining the bottom-most block (bedrock layer) to avoid falling through the world
-    const maxDepth = planet.getMaxDepth();
-    if (depth >= maxDepth - 1) {
+    // With depth 0 = bedrock, we prevent mining at depth 0
+    if (depth <= 0) {
       return;
     }
 
