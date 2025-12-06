@@ -328,6 +328,13 @@ export class PlanetTreeManager {
     }
   }
 
+  // Set visibility for all trees at once (for LOD/orbit mode transitions)
+  public setAllVisible(visible: boolean): void {
+    for (const tree of this.trees) {
+      tree.visible = visible;
+    }
+  }
+
   public getTrees(): THREE.Group[] {
     return this.trees;
   }

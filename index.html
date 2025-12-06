@@ -718,6 +718,38 @@
       color: white;
     }
 
+    /* Drag and drop styles */
+    .inventory-slot.dragging,
+    .hotbar-slot.dragging {
+      opacity: 0.4;
+      border-color: #4CAF50;
+    }
+
+    .inventory-slot.drag-over,
+    .hotbar-slot.drag-over {
+      border-color: #4CAF50;
+      background: rgba(76, 175, 80, 0.3);
+      box-shadow: 0 0 10px rgba(76, 175, 80, 0.5);
+    }
+
+    .drag-ghost {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+    }
+
+    .drag-ghost .ghost-count {
+      position: absolute;
+      bottom: 2px;
+      right: 4px;
+      font-size: 12px;
+      font-weight: bold;
+      color: white;
+      text-shadow: 1px 1px 1px black;
+      font-family: 'Courier New', monospace;
+    }
+
     .inventory-hint {
       text-align: center;
       font-size: 11px;

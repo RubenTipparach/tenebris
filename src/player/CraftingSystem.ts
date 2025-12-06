@@ -27,6 +27,10 @@ export class CraftingSystem {
   private onCloseCallback: (() => void) | null = null;
   private onUpdateHotbarCallback: (() => void) | null = null;
 
+  // Drag and drop state
+  private draggedSlotIndex: number | null = null;
+  private dragGhost: HTMLElement | null = null;
+
   constructor(inventory: Inventory) {
     this.inventory = inventory;
     this.setupUI();
@@ -76,16 +80,121 @@ export class CraftingSystem {
     const slot = document.createElement('div');
     slot.className = 'inventory-slot';
     slot.dataset.slot = slotIndex.toString();
+    slot.draggable = true;
 
     const img = document.createElement('img');
     img.style.display = 'none';
+    img.draggable = false; // Prevent image from being dragged separately
     slot.appendChild(img);
 
     const count = document.createElement('span');
     count.className = 'slot-count';
     slot.appendChild(count);
 
+    // Drag and drop event handlers
+    slot.addEventListener('dragstart', (e) => this.handleDragStart(e, slotIndex));
+    slot.addEventListener('dragend', () => this.handleDragEnd());
+    slot.addEventListener('dragover', (e) => this.handleDragOver(e));
+    slot.addEventListener('dragleave', (e) => this.handleDragLeave(e));
+    slot.addEventListener('drop', (e) => this.handleDrop(e, slotIndex));
+
     return slot;
+  }
+
+  private handleDragStart(e: DragEvent, slotIndex: number): void {
+    const slotData = this.inventory.getSlot(slotIndex);
+    if (!slotData || slotData.itemType === ItemType.NONE) {
+      e.preventDefault();
+      return;
+    }
+
+    this.draggedSlotIndex = slotIndex;
+
+    // Set drag data
+    e.dataTransfer?.setData('text/plain', slotIndex.toString());
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = 'move';
+    }
+
+    // Create ghost element for drag feedback
+    const target = e.target as HTMLElement;
+    target.classList.add('dragging');
+
+    // Create custom drag image
+    const ghost = document.createElement('div');
+    ghost.className = 'drag-ghost';
+    const itemData = ITEM_DATA[slotData.itemType];
+    ghost.innerHTML = `<img src="${getAssetPath(itemData.texture)}" style="width:40px;height:40px;image-rendering:pixelated;">`;
+    if (slotData.quantity > 1) {
+      ghost.innerHTML += `<span class="ghost-count">${slotData.quantity}</span>`;
+    }
+    document.body.appendChild(ghost);
+    this.dragGhost = ghost;
+
+    // Position ghost off-screen initially (browser will position it during drag)
+    ghost.style.position = 'fixed';
+    ghost.style.top = '-100px';
+    ghost.style.left = '-100px';
+    ghost.style.pointerEvents = 'none';
+    ghost.style.zIndex = '9999';
+    ghost.style.background = 'rgba(0,0,0,0.8)';
+    ghost.style.border = '2px solid #4CAF50';
+    ghost.style.borderRadius = '4px';
+    ghost.style.padding = '4px';
+
+    e.dataTransfer?.setDragImage(ghost, 25, 25);
+  }
+
+  private handleDragEnd(): void {
+    this.draggedSlotIndex = null;
+
+    // Remove dragging class from all slots
+    document.querySelectorAll('.inventory-slot.dragging').forEach(el => {
+      el.classList.remove('dragging');
+    });
+    document.querySelectorAll('.inventory-slot.drag-over').forEach(el => {
+      el.classList.remove('drag-over');
+    });
+
+    // Remove ghost element
+    if (this.dragGhost) {
+      this.dragGhost.remove();
+      this.dragGhost = null;
+    }
+  }
+
+  private handleDragOver(e: DragEvent): void {
+    e.preventDefault();
+    if (e.dataTransfer) {
+      e.dataTransfer.dropEffect = 'move';
+    }
+    const target = e.currentTarget as HTMLElement;
+    target.classList.add('drag-over');
+  }
+
+  private handleDragLeave(e: DragEvent): void {
+    const target = e.currentTarget as HTMLElement;
+    target.classList.remove('drag-over');
+  }
+
+  private handleDrop(e: DragEvent, targetSlotIndex: number): void {
+    e.preventDefault();
+    const target = e.currentTarget as HTMLElement;
+    target.classList.remove('drag-over');
+
+    const sourceSlotIndex = this.draggedSlotIndex;
+    if (sourceSlotIndex === null || sourceSlotIndex === targetSlotIndex) {
+      return;
+    }
+
+    // Swap the slots
+    this.inventory.swapSlots(sourceSlotIndex, targetSlotIndex);
+
+    // Update UI
+    this.updateInventorySlots();
+    if (this.onUpdateHotbarCallback) {
+      this.onUpdateHotbarCallback();
+    }
   }
 
   private setupKeyboardHandler(): void {

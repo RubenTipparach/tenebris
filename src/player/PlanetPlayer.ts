@@ -573,7 +573,7 @@ export class PlanetPlayer {
     const endDepth = groundDepth + 1; // Include the ground block
 
     console.log(`Sampling ${tilesToSample.size} tiles, depths ${startDepth} to ${endDepth}`);
-    console.log(`Legend: . = AIR, ~ = WATER, # = SOLID, @ = PLAYER BODY OVERLAP`);
+    console.log(`Legend: . = AIR, ~ = WATER, S = SAND, G = GRASS, # = SOLID, @ = PLAYER BODY OVERLAP`);
     console.log('');
 
     // Build a table: rows = depth, columns = tiles
@@ -595,6 +595,8 @@ export class PlanetPlayer {
         let symbol = '?';
         if (block === HexBlockType.AIR) symbol = '.';
         else if (block === HexBlockType.WATER) symbol = '~';
+        else if (block === HexBlockType.SAND) symbol = 'S';
+        else if (block === HexBlockType.GRASS) symbol = 'G';
         else symbol = '#';
 
         // Mark if player body would overlap this block

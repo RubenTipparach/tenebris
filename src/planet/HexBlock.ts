@@ -179,13 +179,17 @@ export class HexBlockMeshBuilder {
     const dirtTexture = await this.loadTexture('/textures/dirt.png');
     const grassTexture = await this.loadTexture('/textures/grass.png');
     const dirtGrassTexture = await this.loadTexture('/textures/dirt_grass.png');
+    const woodTexture = await this.loadTexture('/textures/wood.png');
+    const sandTexture = await this.loadTexture('/textures/sand.png');
 
-    [stoneTexture, dirtTexture, grassTexture, dirtGrassTexture].forEach(configureTexture);
+    [stoneTexture, dirtTexture, grassTexture, dirtGrassTexture, woodTexture, sandTexture].forEach(configureTexture);
 
     this.textures.set('stone', stoneTexture);
     this.textures.set('dirt', dirtTexture);
     this.textures.set('grass', grassTexture);
     this.textures.set('dirtGrass', dirtGrassTexture);
+    this.textures.set('wood', woodTexture);
+    this.textures.set('sand', sandTexture);
 
     // Parse underwater fog color for terrain shader
     const terrainUnderwaterFogColor = new THREE.Color(PlayerConfig.UNDERWATER_FOG_COLOR);
@@ -219,6 +223,8 @@ export class HexBlockMeshBuilder {
     this.materials.set('grassSide', createTerrainMaterial(dirtGrassTexture)); // Grass block sides use dirt_grass texture
     this.materials.set('bottom', createTerrainMaterial(stoneTexture));
     this.materials.set('stone', createTerrainMaterial(stoneTexture));
+    this.materials.set('wood', createTerrainMaterial(woodTexture));
+    this.materials.set('sand', createTerrainMaterial(sandTexture));
 
     // Sea wall material - uses terrain shader for consistent fog/lighting
     const seaWallColor = new THREE.Color(PlayerConfig.SEA_WALL_COLOR);
@@ -323,11 +329,13 @@ export class HexBlockMeshBuilder {
 
     this.materials.set('topLOD', createTerrainLODMaterial(grassTexture));
     this.materials.set('sideLOD', createTerrainLODMaterial(dirtTexture));
-    // Water LOD still uses simple material with water color tint (no underwater shader effects needed)
+    this.materials.set('stoneLOD', createTerrainLODMaterial(stoneTexture));
+    this.materials.set('sandLOD', createTerrainLODMaterial(sandTexture));
+    this.materials.set('woodLOD', createTerrainLODMaterial(woodTexture));
+    // Water LOD uses opaque material - no transparency for distant water
     const waterLODMat = createLODMaterial(waterTexture, waterColor);
     waterLODMat.side = THREE.DoubleSide;
-    waterLODMat.transparent = true;
-    waterLODMat.opacity = 0.8;
+    waterLODMat.transparent = false;
     this.materials.set('waterLOD', waterLODMat);
   }
 
@@ -363,6 +371,14 @@ export class HexBlockMeshBuilder {
     return this.materials.get('stone')!;
   }
 
+  public getWoodMaterial(): THREE.Material {
+    return this.materials.get('wood')!;
+  }
+
+  public getSandMaterial(): THREE.Material {
+    return this.materials.get('sand')!;
+  }
+
   public getSeaWallMaterial(): THREE.Material | null {
     return this.materials.get('seaWall') ?? null;
   }
@@ -385,6 +401,18 @@ export class HexBlockMeshBuilder {
 
   public getSideLODMaterial(): THREE.Material {
     return this.materials.get('sideLOD')!;
+  }
+
+  public getStoneLODMaterial(): THREE.Material {
+    return this.materials.get('stoneLOD')!;
+  }
+
+  public getSandLODMaterial(): THREE.Material {
+    return this.materials.get('sandLOD')!;
+  }
+
+  public getWoodLODMaterial(): THREE.Material {
+    return this.materials.get('woodLOD')!;
   }
 
   // Create separate geometries for each face type

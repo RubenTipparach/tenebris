@@ -187,13 +187,26 @@ class PlanetGame {
     // Update clouds (slow rotation)
     this.earthClouds.update(deltaTime);
 
-    // Update tree visibility based on which tiles are visible (including LOD border)
-    this.treeManager.updateVisibility(this.earth.getVisibleTileIndicesWithBorder());
+    // Update tree visibility:
+    // - In orbit view (distant LOD): hide all trees (too far to see detail)
+    // - Otherwise: show all trees (both detailed terrain and LOD terrain are visible)
+    // Note: When on ground, both detailed terrain (near player) and LOD terrain (rest of planet)
+    // are rendered together, so all trees should be visible for consistent appearance.
+    if (this.earth.isInOrbitView()) {
+      this.treeManager.setAllVisible(false);
+    } else {
+      this.treeManager.setAllVisible(true);
+    }
 
-    // Update block interaction
+    // Update block interaction (only when game is active - pointer locked)
     profiler.begin('Block Interaction');
     const input = this.inputManager.getState();
-    this.blockInteraction.update(deltaTime, input.leftClick, input.rightClick);
+    const isGameActive = this.inputManager.isLocked();
+    this.blockInteraction.update(
+      deltaTime,
+      isGameActive && input.leftClick,
+      isGameActive && input.rightClick
+    );
     profiler.end('Block Interaction');
   }
 

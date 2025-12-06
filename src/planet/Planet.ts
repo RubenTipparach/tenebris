@@ -76,11 +76,6 @@ export class Planet {
 
   // Batched meshes for visible terrain (one mesh per material type = ~5 draw calls total)
   private batchedMeshGroup: THREE.Group | null = null;
-  private topMesh: THREE.Mesh | null = null;
-  private sideMesh: THREE.Mesh | null = null;
-  private grassSideMesh: THREE.Mesh | null = null;
-  private stoneMesh: THREE.Mesh | null = null;
-  private waterMesh: THREE.Mesh | null = null;
   private needsRebatch: boolean = true; // Flag to rebuild batched geometry
 
   // Web Worker for off-thread geometry building
@@ -277,6 +272,8 @@ export class Planet {
     sideData: GeometryData;
     grassSideData: GeometryData;
     stoneData: GeometryData;
+    sandData: GeometryData;
+    woodData: GeometryData;
     waterData: GeometryData;
   }): void {
     if (!this.batchedMeshGroup) return;
@@ -287,50 +284,30 @@ export class Planet {
     profiler.begin('Planet.workerResult.createMeshes');
     const newMeshes: THREE.Mesh[] = [];
 
-    if (data.topData.positions.length > 0) {
-      const geom = this.createBufferGeometry(data.topData);
-      const mesh = new THREE.Mesh(geom, this.meshBuilder.getTopMaterial());
-      newMeshes.push(mesh);
-      this.topMesh = mesh;
-    } else {
-      this.topMesh = null;
-    }
+    // Map worker data keys to material config
+    const workerDataMap: Array<{ dataKey: keyof typeof data; materialKey: string; renderOrder?: number }> = [
+      { dataKey: 'topData', materialKey: 'top' },
+      { dataKey: 'sideData', materialKey: 'side' },
+      { dataKey: 'grassSideData', materialKey: 'grassSide' },
+      { dataKey: 'stoneData', materialKey: 'stone' },
+      { dataKey: 'sandData', materialKey: 'sand' },
+      { dataKey: 'woodData', materialKey: 'wood' },
+      { dataKey: 'waterData', materialKey: 'water', renderOrder: 1 },
+    ];
 
-    if (data.sideData.positions.length > 0) {
-      const geom = this.createBufferGeometry(data.sideData);
-      const mesh = new THREE.Mesh(geom, this.meshBuilder.getSideMaterial());
-      newMeshes.push(mesh);
-      this.sideMesh = mesh;
-    } else {
-      this.sideMesh = null;
-    }
-
-    if (data.grassSideData.positions.length > 0) {
-      const geom = this.createBufferGeometry(data.grassSideData);
-      const mesh = new THREE.Mesh(geom, this.meshBuilder.getGrassSideMaterial());
-      newMeshes.push(mesh);
-      this.grassSideMesh = mesh;
-    } else {
-      this.grassSideMesh = null;
-    }
-
-    if (data.stoneData.positions.length > 0) {
-      const geom = this.createBufferGeometry(data.stoneData);
-      const mesh = new THREE.Mesh(geom, this.meshBuilder.getStoneMaterial());
-      newMeshes.push(mesh);
-      this.stoneMesh = mesh;
-    } else {
-      this.stoneMesh = null;
-    }
-
-    if (data.waterData.positions.length > 0) {
-      const geom = this.createBufferGeometry(data.waterData);
-      const mesh = new THREE.Mesh(geom, this.meshBuilder.getWaterMaterial());
-      mesh.renderOrder = 1;
-      newMeshes.push(mesh);
-      this.waterMesh = mesh;
-    } else {
-      this.waterMesh = null;
+    for (const { dataKey, materialKey, renderOrder } of workerDataMap) {
+      const geomData = data[dataKey] as GeometryData;
+      if (geomData.positions.length > 0) {
+        const geom = this.createBufferGeometry(geomData);
+        const materialConfig = this.BLOCK_MATERIALS.find(m => m.key === materialKey);
+        if (materialConfig) {
+          const mesh = new THREE.Mesh(geom, materialConfig.getMaterial());
+          if (renderOrder !== undefined) {
+            mesh.renderOrder = renderOrder;
+          }
+          newMeshes.push(mesh);
+        }
+      }
     }
     profiler.end('Planet.workerResult.createMeshes');
 
@@ -370,6 +347,9 @@ export class Planet {
     chunkGeometries: Array<{
       grassPositions: number[]; grassNormals: number[]; grassUvs: number[]; grassSkyLight: number[]; grassIndices: number[];
       dirtPositions: number[]; dirtNormals: number[]; dirtUvs: number[]; dirtSkyLight: number[]; dirtIndices: number[];
+      stonePositions: number[]; stoneNormals: number[]; stoneUvs: number[]; stoneSkyLight: number[]; stoneIndices: number[];
+      sandPositions: number[]; sandNormals: number[]; sandUvs: number[]; sandSkyLight: number[]; sandIndices: number[];
+      woodPositions: number[]; woodNormals: number[]; woodUvs: number[]; woodSkyLight: number[]; woodIndices: number[];
       waterPositions: number[]; waterNormals: number[]; waterUvs: number[]; waterIndices: number[];
       sidePositions: number[]; sideNormals: number[]; sideUvs: number[]; sideSkyLight: number[]; sideIndices: number[];
       waterSidePositions: number[]; waterSideNormals: number[]; waterSideUvs: number[]; waterSideIndices: number[];
@@ -445,6 +425,33 @@ export class Planet {
         chunkGroup.add(mesh);
         meshCount++;
         totalVertices += chunkData.dirtPositions.length / 3;
+      }
+
+      // Stone mesh (uses stone LOD material)
+      if (chunkData.stonePositions.length > 0) {
+        const geom = createGeom(chunkData.stonePositions, chunkData.stoneNormals, chunkData.stoneUvs, chunkData.stoneIndices, chunkData.stoneSkyLight);
+        const mesh = new THREE.Mesh(geom, this.meshBuilder.getStoneLODMaterial());
+        chunkGroup.add(mesh);
+        meshCount++;
+        totalVertices += chunkData.stonePositions.length / 3;
+      }
+
+      // Sand mesh (uses sand LOD material)
+      if (chunkData.sandPositions.length > 0) {
+        const geom = createGeom(chunkData.sandPositions, chunkData.sandNormals, chunkData.sandUvs, chunkData.sandIndices, chunkData.sandSkyLight);
+        const mesh = new THREE.Mesh(geom, this.meshBuilder.getSandLODMaterial());
+        chunkGroup.add(mesh);
+        meshCount++;
+        totalVertices += chunkData.sandPositions.length / 3;
+      }
+
+      // Wood mesh (uses wood LOD material)
+      if (chunkData.woodPositions.length > 0) {
+        const geom = createGeom(chunkData.woodPositions, chunkData.woodNormals, chunkData.woodUvs, chunkData.woodIndices, chunkData.woodSkyLight);
+        const mesh = new THREE.Mesh(geom, this.meshBuilder.getWoodLODMaterial());
+        chunkGroup.add(mesh);
+        meshCount++;
+        totalVertices += chunkData.woodPositions.length / 3;
       }
 
       // Water mesh (uses simple material, no skyLight needed)
@@ -909,6 +916,9 @@ export class Planet {
     interface ChunkGeometry {
       grassPositions: number[]; grassNormals: number[]; grassUvs: number[]; grassSkyLight: number[]; grassIndices: number[]; grassVertexOffset: number;
       dirtPositions: number[]; dirtNormals: number[]; dirtUvs: number[]; dirtSkyLight: number[]; dirtIndices: number[]; dirtVertexOffset: number;
+      stonePositions: number[]; stoneNormals: number[]; stoneUvs: number[]; stoneSkyLight: number[]; stoneIndices: number[]; stoneVertexOffset: number;
+      sandPositions: number[]; sandNormals: number[]; sandUvs: number[]; sandSkyLight: number[]; sandIndices: number[]; sandVertexOffset: number;
+      woodPositions: number[]; woodNormals: number[]; woodUvs: number[]; woodSkyLight: number[]; woodIndices: number[]; woodVertexOffset: number;
       waterPositions: number[]; waterNormals: number[]; waterUvs: number[]; waterIndices: number[]; waterVertexOffset: number;
       sidePositions: number[]; sideNormals: number[]; sideUvs: number[]; sideSkyLight: number[]; sideIndices: number[]; sideVertexOffset: number;
       waterSidePositions: number[]; waterSideNormals: number[]; waterSideUvs: number[]; waterSideIndices: number[]; waterSideVertexOffset: number;
@@ -919,6 +929,9 @@ export class Planet {
       chunkGeometries.push({
         grassPositions: [], grassNormals: [], grassUvs: [], grassSkyLight: [], grassIndices: [], grassVertexOffset: 0,
         dirtPositions: [], dirtNormals: [], dirtUvs: [], dirtSkyLight: [], dirtIndices: [], dirtVertexOffset: 0,
+        stonePositions: [], stoneNormals: [], stoneUvs: [], stoneSkyLight: [], stoneIndices: [], stoneVertexOffset: 0,
+        sandPositions: [], sandNormals: [], sandUvs: [], sandSkyLight: [], sandIndices: [], sandVertexOffset: 0,
+        woodPositions: [], woodNormals: [], woodUvs: [], woodSkyLight: [], woodIndices: [], woodVertexOffset: 0,
         waterPositions: [], waterNormals: [], waterUvs: [], waterIndices: [], waterVertexOffset: 0,
         sidePositions: [], sideNormals: [], sideUvs: [], sideSkyLight: [], sideIndices: [], sideVertexOffset: 0,
         waterSidePositions: [], waterSideNormals: [], waterSideUvs: [], waterSideIndices: [], waterSideVertexOffset: 0
@@ -1051,7 +1064,29 @@ export class Planet {
         skyLight = chunk.dirtSkyLight;
         indices = chunk.dirtIndices;
         vertexOffset = chunk.dirtVertexOffset;
+      } else if (surfaceBlockType === HexBlockType.STONE) {
+        positions = chunk.stonePositions;
+        normals = chunk.stoneNormals;
+        uvs = chunk.stoneUvs;
+        skyLight = chunk.stoneSkyLight;
+        indices = chunk.stoneIndices;
+        vertexOffset = chunk.stoneVertexOffset;
+      } else if (surfaceBlockType === HexBlockType.SAND) {
+        positions = chunk.sandPositions;
+        normals = chunk.sandNormals;
+        uvs = chunk.sandUvs;
+        skyLight = chunk.sandSkyLight;
+        indices = chunk.sandIndices;
+        vertexOffset = chunk.sandVertexOffset;
+      } else if (surfaceBlockType === HexBlockType.WOOD) {
+        positions = chunk.woodPositions;
+        normals = chunk.woodNormals;
+        uvs = chunk.woodUvs;
+        skyLight = chunk.woodSkyLight;
+        indices = chunk.woodIndices;
+        vertexOffset = chunk.woodVertexOffset;
       } else {
+        // GRASS, LEAVES, or any other type defaults to grass
         positions = chunk.grassPositions;
         normals = chunk.grassNormals;
         uvs = chunk.grassUvs;
@@ -1083,6 +1118,12 @@ export class Planet {
         chunk.waterVertexOffset = vertexOffset;
       } else if (surfaceBlockType === HexBlockType.DIRT) {
         chunk.dirtVertexOffset = vertexOffset;
+      } else if (surfaceBlockType === HexBlockType.STONE) {
+        chunk.stoneVertexOffset = vertexOffset;
+      } else if (surfaceBlockType === HexBlockType.SAND) {
+        chunk.sandVertexOffset = vertexOffset;
+      } else if (surfaceBlockType === HexBlockType.WOOD) {
+        chunk.woodVertexOffset = vertexOffset;
       } else {
         chunk.grassVertexOffset = vertexOffset;
       }
@@ -1371,6 +1412,48 @@ export class Planet {
         chunkGroup.add(mesh);
       }
 
+      // Stone mesh (uses stone LOD material)
+      if (chunk.stonePositions.length > 0) {
+        const geom = new THREE.BufferGeometry();
+        geom.setAttribute('position', new THREE.Float32BufferAttribute(chunk.stonePositions, 3));
+        geom.setAttribute('normal', new THREE.Float32BufferAttribute(chunk.stoneNormals, 3));
+        geom.setAttribute('uv', new THREE.Float32BufferAttribute(chunk.stoneUvs, 2));
+        if (chunk.stoneSkyLight.length > 0) {
+          geom.setAttribute('skyLight', new THREE.Float32BufferAttribute(chunk.stoneSkyLight, 1));
+        }
+        geom.setIndex(chunk.stoneIndices);
+        const mesh = new THREE.Mesh(geom, this.meshBuilder.getStoneLODMaterial());
+        chunkGroup.add(mesh);
+      }
+
+      // Sand mesh (uses sand LOD material)
+      if (chunk.sandPositions.length > 0) {
+        const geom = new THREE.BufferGeometry();
+        geom.setAttribute('position', new THREE.Float32BufferAttribute(chunk.sandPositions, 3));
+        geom.setAttribute('normal', new THREE.Float32BufferAttribute(chunk.sandNormals, 3));
+        geom.setAttribute('uv', new THREE.Float32BufferAttribute(chunk.sandUvs, 2));
+        if (chunk.sandSkyLight.length > 0) {
+          geom.setAttribute('skyLight', new THREE.Float32BufferAttribute(chunk.sandSkyLight, 1));
+        }
+        geom.setIndex(chunk.sandIndices);
+        const mesh = new THREE.Mesh(geom, this.meshBuilder.getSandLODMaterial());
+        chunkGroup.add(mesh);
+      }
+
+      // Wood mesh (uses wood LOD material)
+      if (chunk.woodPositions.length > 0) {
+        const geom = new THREE.BufferGeometry();
+        geom.setAttribute('position', new THREE.Float32BufferAttribute(chunk.woodPositions, 3));
+        geom.setAttribute('normal', new THREE.Float32BufferAttribute(chunk.woodNormals, 3));
+        geom.setAttribute('uv', new THREE.Float32BufferAttribute(chunk.woodUvs, 2));
+        if (chunk.woodSkyLight.length > 0) {
+          geom.setAttribute('skyLight', new THREE.Float32BufferAttribute(chunk.woodSkyLight, 1));
+        }
+        geom.setIndex(chunk.woodIndices);
+        const mesh = new THREE.Mesh(geom, this.meshBuilder.getWoodLODMaterial());
+        chunkGroup.add(mesh);
+      }
+
       // Water mesh (uses simple material, no skyLight)
       if (chunk.waterPositions.length > 0) {
         const geom = new THREE.BufferGeometry();
@@ -1436,23 +1519,53 @@ export class Planet {
       heightMap.set(tile.index, surfaceDepth);
     }
 
-    // Second pass: Create blocks based on height map
+    // Second pass: Identify beach tiles (land tiles adjacent to water tiles)
+    const beachTiles = new Set<number>();
+    if (hasWater) {
+      for (const tile of this.polyhedron.tiles) {
+        const surfaceDepth = heightMap.get(tile.index) ?? this.SEA_LEVEL;
+        // Only land tiles can be beaches (surface at or above sea level)
+        if (surfaceDepth <= this.SEA_LEVEL) {
+          // Check if any neighbor is underwater
+          for (const neighborIndex of tile.neighbors) {
+            const neighborDepth = heightMap.get(neighborIndex) ?? this.SEA_LEVEL;
+            if (neighborDepth > this.SEA_LEVEL) {
+              // This land tile is next to water - it's a beach!
+              beachTiles.add(tile.index);
+              break;
+            }
+          }
+        }
+      }
+      console.log(`[Beach detection] Found ${beachTiles.size} beach tiles out of ${this.polyhedron.tiles.length} total tiles`);
+    }
+
+    // Third pass: Create blocks based on height map
     for (const tile of this.polyhedron.tiles) {
       const blocks: HexBlockType[] = [];
       const surfaceDepth = heightMap.get(tile.index) ?? this.SEA_LEVEL;
+      const isBeach = beachTiles.has(tile.index);
 
       for (let depth = 0; depth < this.MAX_DEPTH; depth++) {
         if (depth < surfaceDepth) {
           blocks.push(HexBlockType.AIR);
         } else if (depth === surfaceDepth) {
-          if (hasWater && surfaceDepth > this.SEA_LEVEL) {
+          if (isBeach) {
+            // Beach tile (land next to water) - sand surface
+            blocks.push(HexBlockType.SAND);
+          } else if (hasWater && surfaceDepth > this.SEA_LEVEL) {
             // Underwater surface
             blocks.push(HexBlockType.DIRT);
           } else {
             blocks.push(HexBlockType.GRASS);
           }
         } else if (depth < surfaceDepth + 3) {
-          blocks.push(HexBlockType.DIRT);
+          // Subsurface layers - sand for beaches, dirt otherwise
+          if (isBeach) {
+            blocks.push(HexBlockType.SAND);
+          } else {
+            blocks.push(HexBlockType.DIRT);
+          }
         } else {
           blocks.push(HexBlockType.STONE);
         }
@@ -2053,6 +2166,21 @@ export class Planet {
     }
   }
 
+  // Block material configuration - add new block types here
+  private readonly BLOCK_MATERIALS: Array<{
+    key: string;
+    getMaterial: () => THREE.Material;
+    renderOrder?: number;
+  }> = [
+    { key: 'top', getMaterial: () => this.meshBuilder.getTopMaterial() },
+    { key: 'side', getMaterial: () => this.meshBuilder.getSideMaterial() },
+    { key: 'grassSide', getMaterial: () => this.meshBuilder.getGrassSideMaterial() },
+    { key: 'stone', getMaterial: () => this.meshBuilder.getStoneMaterial() },
+    { key: 'sand', getMaterial: () => this.meshBuilder.getSandMaterial() },
+    { key: 'wood', getMaterial: () => this.meshBuilder.getWoodMaterial() },
+    { key: 'water', getMaterial: () => this.meshBuilder.getWaterMaterial(), renderOrder: 1 },
+  ];
+
   private rebuildBatchedMeshes(): void {
     if (!this.batchedMeshGroup) return;
 
@@ -2063,12 +2191,11 @@ export class Planet {
       this.batchedMeshGroup.remove(child);
     }
 
-    // Create batched geometry for all visible tiles
-    const topData = createEmptyGeometryData();
-    const sideData = createEmptyGeometryData();
-    const grassSideData = createEmptyGeometryData();
-    const stoneData = createEmptyGeometryData();
-    const waterData = createEmptyGeometryData();
+    // Create geometry data for all block types
+    const geometryData: Record<string, GeometryData> = {};
+    for (const mat of this.BLOCK_MATERIALS) {
+      geometryData[mat.key] = createEmptyGeometryData();
+    }
 
     for (const tileIndex of this.cachedNearbyTiles) {
       const column = this.columns.get(tileIndex);
@@ -2077,40 +2204,21 @@ export class Planet {
       // Check frustum culling
       if (!this.frustum.intersectsSphere(column.boundingSphere)) continue;
 
-      this.buildColumnGeometry(column, topData, sideData, grassSideData, stoneData, waterData);
+      this.buildColumnGeometry(column, geometryData);
       column.isDirty = false;
     }
 
     // Create meshes from batched geometry
-    if (topData.positions.length > 0) {
-      const geom = this.createBufferGeometry(topData);
-      this.topMesh = new THREE.Mesh(geom, this.meshBuilder.getTopMaterial());
-      this.batchedMeshGroup.add(this.topMesh);
-    }
-
-    if (sideData.positions.length > 0) {
-      const geom = this.createBufferGeometry(sideData);
-      this.sideMesh = new THREE.Mesh(geom, this.meshBuilder.getSideMaterial());
-      this.batchedMeshGroup.add(this.sideMesh);
-    }
-
-    if (grassSideData.positions.length > 0) {
-      const geom = this.createBufferGeometry(grassSideData);
-      this.grassSideMesh = new THREE.Mesh(geom, this.meshBuilder.getGrassSideMaterial());
-      this.batchedMeshGroup.add(this.grassSideMesh);
-    }
-
-    if (stoneData.positions.length > 0) {
-      const geom = this.createBufferGeometry(stoneData);
-      this.stoneMesh = new THREE.Mesh(geom, this.meshBuilder.getStoneMaterial());
-      this.batchedMeshGroup.add(this.stoneMesh);
-    }
-
-    if (waterData.positions.length > 0) {
-      const geom = this.createBufferGeometry(waterData);
-      this.waterMesh = new THREE.Mesh(geom, this.meshBuilder.getWaterMaterial());
-      this.waterMesh.renderOrder = 1;
-      this.batchedMeshGroup.add(this.waterMesh);
+    for (const mat of this.BLOCK_MATERIALS) {
+      const data = geometryData[mat.key];
+      if (data.positions.length > 0) {
+        const geom = this.createBufferGeometry(data);
+        const mesh = new THREE.Mesh(geom, mat.getMaterial());
+        if (mat.renderOrder !== undefined) {
+          mesh.renderOrder = mat.renderOrder;
+        }
+        this.batchedMeshGroup.add(mesh);
+      }
     }
 
     // Schedule water boundary walls rebuild (deferred to avoid frame spike)
@@ -2122,13 +2230,45 @@ export class Planet {
     this.needsRebatch = false;
   }
 
+  // Get the material key for a block type's top/bottom face
+  private getBlockTopMaterialKey(blockType: HexBlockType): string {
+    switch (blockType) {
+      case HexBlockType.WATER: return 'water';
+      case HexBlockType.STONE: return 'stone';
+      case HexBlockType.SAND: return 'sand';
+      case HexBlockType.DIRT: return 'side';  // Dirt uses side (dirt) texture
+      case HexBlockType.WOOD: return 'wood';
+      case HexBlockType.GRASS: return 'top';  // Grass top
+      default: return 'top';
+    }
+  }
+
+  // Get the material key for a block type's side face
+  private getBlockSideMaterialKey(blockType: HexBlockType): string {
+    switch (blockType) {
+      case HexBlockType.STONE: return 'stone';
+      case HexBlockType.SAND: return 'sand';
+      case HexBlockType.DIRT: return 'side';
+      case HexBlockType.WOOD: return 'wood';
+      case HexBlockType.GRASS: return 'grassSide';  // Grass sides use dirt_grass texture
+      default: return 'side';
+    }
+  }
+
+  // Get the material key for a block type's bottom face
+  private getBlockBottomMaterialKey(blockType: HexBlockType): string {
+    switch (blockType) {
+      case HexBlockType.STONE: return 'stone';
+      case HexBlockType.SAND: return 'sand';
+      case HexBlockType.WOOD: return 'wood';
+      // Dirt and grass show dirt texture on bottom
+      default: return 'side';
+    }
+  }
+
   private buildColumnGeometry(
     column: PlanetColumn,
-    topData: GeometryData,
-    sideData: GeometryData,
-    grassSideData: GeometryData,
-    stoneData: GeometryData,
-    waterData: GeometryData
+    geometryData: Record<string, GeometryData>
   ): void {
     // Find the first solid block depth (surface level)
     let surfaceDepth = 0;
@@ -2169,15 +2309,10 @@ export class Planet {
       if (innerRadius <= 0) continue;
 
       const depthFromSurface = depth - surfaceDepth;
-      // Use actual block type for texture, not calculated depth - prevents texture changes when mining
-      const useStoneTexture = blockType === HexBlockType.STONE;
-      const useDirtTexture = blockType === HexBlockType.DIRT;
 
       // Calculate sky light based on depth from surface
-      // Surface blocks get full sky light (1.0), deeper blocks get progressively darker
-      // Sky light drops off exponentially - each block depth reduces light by ~20%
-      const SKY_LIGHT_FALLOFF = 0.8; // Each level deeper multiplies by this
-      const MIN_SKY_LIGHT = 0.05; // Minimum light in deep caves
+      const SKY_LIGHT_FALLOFF = 0.8;
+      const MIN_SKY_LIGHT = 0.05;
       let skyLightLevel = 1.0;
       if (depthFromSurface > 0) {
         skyLightLevel = Math.max(MIN_SKY_LIGHT, Math.pow(SKY_LIGHT_FALLOFF, depthFromSurface));
@@ -2190,7 +2325,7 @@ export class Planet {
         new THREE.Vector3(0, 0, 0),
         isWater ? true : hasTopExposed,
         isWater ? false : hasBottomExposed,
-        isWater ? false : hasSideExposed  // Water sides handled separately per-edge
+        isWater ? false : hasSideExposed
       );
 
       if (top) {
@@ -2199,15 +2334,9 @@ export class Planet {
         const uvAttr = top.getAttribute('uv');
         const indexAttr = top.getIndex();
         if (posAttr && normAttr && uvAttr && indexAttr) {
-          if (isWater) {
-            this.mergeGeometry(waterData, posAttr, normAttr, uvAttr, indexAttr, this.sunDirection, 1.0);
-          } else if (useStoneTexture) {
-            this.mergeGeometry(stoneData, posAttr, normAttr, uvAttr, indexAttr, this.sunDirection, skyLightLevel);
-          } else if (useDirtTexture) {
-            this.mergeGeometry(sideData, posAttr, normAttr, uvAttr, indexAttr, this.sunDirection, skyLightLevel);
-          } else {
-            this.mergeGeometry(topData, posAttr, normAttr, uvAttr, indexAttr, this.sunDirection, skyLightLevel);
-          }
+          const key = this.getBlockTopMaterialKey(blockType);
+          const light = isWater ? 1.0 : skyLightLevel;
+          this.mergeGeometry(geometryData[key], posAttr, normAttr, uvAttr, indexAttr, this.sunDirection, light);
         }
         top.dispose();
       }
@@ -2218,14 +2347,9 @@ export class Planet {
         const uvAttr = bottom.getAttribute('uv');
         const indexAttr = bottom.getIndex();
         if (posAttr && normAttr && uvAttr && indexAttr) {
-          // Bottom faces are one block deeper, so use next level's sky light
           const bottomSkyLight = Math.max(MIN_SKY_LIGHT, skyLightLevel * SKY_LIGHT_FALLOFF);
-          if (useStoneTexture) {
-            this.mergeGeometry(stoneData, posAttr, normAttr, uvAttr, indexAttr, this.sunDirection, bottomSkyLight);
-          } else {
-            // Dirt and grass blocks show dirt texture on bottom
-            this.mergeGeometry(sideData, posAttr, normAttr, uvAttr, indexAttr, this.sunDirection, bottomSkyLight);
-          }
+          const key = this.getBlockBottomMaterialKey(blockType);
+          this.mergeGeometry(geometryData[key], posAttr, normAttr, uvAttr, indexAttr, this.sunDirection, bottomSkyLight);
         }
         bottom.dispose();
       }
@@ -2236,22 +2360,15 @@ export class Planet {
         const uvAttr = sides.getAttribute('uv');
         const indexAttr = sides.getIndex();
         if (posAttr && normAttr && uvAttr && indexAttr) {
-          if (useStoneTexture) {
-            this.mergeGeometry(stoneData, posAttr, normAttr, uvAttr, indexAttr, this.sunDirection, skyLightLevel);
-          } else if (useDirtTexture) {
-            // Dirt blocks use dirt texture for sides
-            this.mergeGeometry(sideData, posAttr, normAttr, uvAttr, indexAttr, this.sunDirection, skyLightLevel);
-          } else {
-            // Grass blocks use grass texture for sides
-            this.mergeGeometry(grassSideData, posAttr, normAttr, uvAttr, indexAttr, this.sunDirection, skyLightLevel);
-          }
+          const key = this.getBlockSideMaterialKey(blockType);
+          this.mergeGeometry(geometryData[key], posAttr, normAttr, uvAttr, indexAttr, this.sunDirection, skyLightLevel);
         }
         sides.dispose();
       }
 
       // Water side faces - generate per-edge only where neighbor is air
       if (isWater) {
-        this.buildWaterSideFaces(column, depth, innerRadius, outerRadius, waterData);
+        this.buildWaterSideFaces(column, depth, innerRadius, outerRadius, geometryData['water']);
       }
     }
   }
@@ -2613,52 +2730,32 @@ export class Planet {
       this.batchedMeshGroup.remove(child);
     }
 
-    // Create batched geometry for all visible tiles
-    const topData = createEmptyGeometryData();
-    const sideData = createEmptyGeometryData();
-    const grassSideData = createEmptyGeometryData();
-    const stoneData = createEmptyGeometryData();
-    const waterData = createEmptyGeometryData();
+    // Create geometry data for all block types
+    const geometryData: Record<string, GeometryData> = {};
+    for (const mat of this.BLOCK_MATERIALS) {
+      geometryData[mat.key] = createEmptyGeometryData();
+    }
 
     for (const tileIndex of this.cachedNearbyTiles) {
       const column = this.columns.get(tileIndex);
       if (!column) continue;
 
       // Skip frustum culling for dirty rebuild - we need consistent geometry
-      this.buildColumnGeometry(column, topData, sideData, grassSideData, stoneData, waterData);
+      this.buildColumnGeometry(column, geometryData);
       column.isDirty = false;
     }
 
     // Create meshes from batched geometry
-    if (topData.positions.length > 0) {
-      const geom = this.createBufferGeometry(topData);
-      this.topMesh = new THREE.Mesh(geom, this.meshBuilder.getTopMaterial());
-      this.batchedMeshGroup.add(this.topMesh);
-    }
-
-    if (sideData.positions.length > 0) {
-      const geom = this.createBufferGeometry(sideData);
-      this.sideMesh = new THREE.Mesh(geom, this.meshBuilder.getSideMaterial());
-      this.batchedMeshGroup.add(this.sideMesh);
-    }
-
-    if (grassSideData.positions.length > 0) {
-      const geom = this.createBufferGeometry(grassSideData);
-      this.grassSideMesh = new THREE.Mesh(geom, this.meshBuilder.getGrassSideMaterial());
-      this.batchedMeshGroup.add(this.grassSideMesh);
-    }
-
-    if (stoneData.positions.length > 0) {
-      const geom = this.createBufferGeometry(stoneData);
-      this.stoneMesh = new THREE.Mesh(geom, this.meshBuilder.getStoneMaterial());
-      this.batchedMeshGroup.add(this.stoneMesh);
-    }
-
-    if (waterData.positions.length > 0) {
-      const geom = this.createBufferGeometry(waterData);
-      this.waterMesh = new THREE.Mesh(geom, this.meshBuilder.getWaterMaterial());
-      this.waterMesh.renderOrder = 1;
-      this.batchedMeshGroup.add(this.waterMesh);
+    for (const mat of this.BLOCK_MATERIALS) {
+      const data = geometryData[mat.key];
+      if (data.positions.length > 0) {
+        const geom = this.createBufferGeometry(data);
+        const mesh = new THREE.Mesh(geom, mat.getMaterial());
+        if (mat.renderOrder !== undefined) {
+          mesh.renderOrder = mat.renderOrder;
+        }
+        this.batchedMeshGroup.add(mesh);
+      }
     }
 
     // Schedule water boundary walls rebuild (deferred to avoid frame spike)
@@ -3175,5 +3272,11 @@ export class Planet {
     for (const mesh of this.distantLODMeshes) {
       mesh.position.copy(this.center);
     }
+  }
+
+  // Check if planet is being viewed from orbit (distant LOD mode)
+  // Trees should be hidden when in orbit view
+  public isInOrbitView(): boolean {
+    return this.currentDistantLODLevel >= 0;
   }
 }

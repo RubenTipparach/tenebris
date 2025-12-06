@@ -78,6 +78,8 @@ interface GeometryResultMessage {
   sideData: GeometryData;
   grassSideData: GeometryData;  // Grass block sides use dirt_grass texture
   stoneData: GeometryData;
+  sandData: GeometryData;
+  woodData: GeometryData;
   waterData: GeometryData;
 }
 
@@ -294,6 +296,8 @@ function buildColumnGeometry(
   sideData: GeometryData,
   grassSideData: GeometryData,
   stoneData: GeometryData,
+  sandData: GeometryData,
+  woodData: GeometryData,
   waterData: GeometryData
 ): void {
   // Find surface depth
@@ -336,7 +340,9 @@ function buildColumnGeometry(
     // Use the actual block type for texture selection - this ensures blocks don't change
     // appearance when surface depth changes (e.g., when mining blocks above)
     const useStoneTexture = blockType === HexBlockType.STONE;
+    const useSandTexture = blockType === HexBlockType.SAND;
     const useDirtTexture = blockType === HexBlockType.DIRT;
+    const useWoodTexture = blockType === HexBlockType.WOOD;
 
     // Calculate sky light (constants imported from shared/geometry)
     let skyLightLevel = 1.0;
@@ -352,8 +358,12 @@ function buildColumnGeometry(
           mergeGeometry(waterData, topGeom.positions, topGeom.normals, topGeom.uvs, topGeom.indices, config.sunDirection, 1.0);
         } else if (useStoneTexture) {
           mergeGeometry(stoneData, topGeom.positions, topGeom.normals, topGeom.uvs, topGeom.indices, config.sunDirection, skyLightLevel);
+        } else if (useSandTexture) {
+          mergeGeometry(sandData, topGeom.positions, topGeom.normals, topGeom.uvs, topGeom.indices, config.sunDirection, skyLightLevel);
         } else if (useDirtTexture) {
           mergeGeometry(sideData, topGeom.positions, topGeom.normals, topGeom.uvs, topGeom.indices, config.sunDirection, skyLightLevel);
+        } else if (useWoodTexture) {
+          mergeGeometry(woodData, topGeom.positions, topGeom.normals, topGeom.uvs, topGeom.indices, config.sunDirection, skyLightLevel);
         } else {
           mergeGeometry(topData, topGeom.positions, topGeom.normals, topGeom.uvs, topGeom.indices, config.sunDirection, skyLightLevel);
         }
@@ -367,6 +377,10 @@ function buildColumnGeometry(
         const bottomSkyLight = Math.max(MIN_SKY_LIGHT, skyLightLevel * SKY_LIGHT_FALLOFF);
         if (useStoneTexture) {
           mergeGeometry(stoneData, bottomGeom.positions, bottomGeom.normals, bottomGeom.uvs, bottomGeom.indices, config.sunDirection, bottomSkyLight);
+        } else if (useSandTexture) {
+          mergeGeometry(sandData, bottomGeom.positions, bottomGeom.normals, bottomGeom.uvs, bottomGeom.indices, config.sunDirection, bottomSkyLight);
+        } else if (useWoodTexture) {
+          mergeGeometry(woodData, bottomGeom.positions, bottomGeom.normals, bottomGeom.uvs, bottomGeom.indices, config.sunDirection, bottomSkyLight);
         } else {
           // Dirt and grass blocks show dirt texture on bottom
           mergeGeometry(sideData, bottomGeom.positions, bottomGeom.normals, bottomGeom.uvs, bottomGeom.indices, config.sunDirection, bottomSkyLight);
@@ -380,9 +394,15 @@ function buildColumnGeometry(
       if (sidesGeom) {
         if (useStoneTexture) {
           mergeGeometry(stoneData, sidesGeom.positions, sidesGeom.normals, sidesGeom.uvs, sidesGeom.indices, config.sunDirection, skyLightLevel);
+        } else if (useSandTexture) {
+          // Sand blocks use sand texture on all sides
+          mergeGeometry(sandData, sidesGeom.positions, sidesGeom.normals, sidesGeom.uvs, sidesGeom.indices, config.sunDirection, skyLightLevel);
         } else if (useDirtTexture) {
           // Dirt blocks use sideData (dirt texture)
           mergeGeometry(sideData, sidesGeom.positions, sidesGeom.normals, sidesGeom.uvs, sidesGeom.indices, config.sunDirection, skyLightLevel);
+        } else if (useWoodTexture) {
+          // Wood blocks use wood texture on all sides
+          mergeGeometry(woodData, sidesGeom.positions, sidesGeom.normals, sidesGeom.uvs, sidesGeom.indices, config.sunDirection, skyLightLevel);
         } else {
           // Grass blocks use grassSideData (dirt_grass texture)
           mergeGeometry(grassSideData, sidesGeom.positions, sidesGeom.normals, sidesGeom.uvs, sidesGeom.indices, config.sunDirection, skyLightLevel);
@@ -401,6 +421,8 @@ self.onmessage = (e: MessageEvent<BuildGeometryMessage>) => {
     const sideData = createEmptyGeometryData();
     const grassSideData = createEmptyGeometryData();
     const stoneData = createEmptyGeometryData();
+    const sandData = createEmptyGeometryData();
+    const woodData = createEmptyGeometryData();
     const waterData = createEmptyGeometryData();
 
     // Convert neighborData back to Map (it gets serialized as object)
@@ -409,7 +431,7 @@ self.onmessage = (e: MessageEvent<BuildGeometryMessage>) => {
     );
 
     for (const column of columns) {
-      buildColumnGeometry(column, neighborDataMap, config, topData, sideData, grassSideData, stoneData, waterData);
+      buildColumnGeometry(column, neighborDataMap, config, topData, sideData, grassSideData, stoneData, sandData, woodData, waterData);
 
       // Generate water walls for water blocks
       for (let depth = 0; depth < column.blocks.length; depth++) {
@@ -439,6 +461,8 @@ self.onmessage = (e: MessageEvent<BuildGeometryMessage>) => {
       sideData,
       grassSideData,
       stoneData,
+      sandData,
+      woodData,
       waterData
     };
 
