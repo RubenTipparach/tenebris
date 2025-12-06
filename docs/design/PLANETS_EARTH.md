@@ -181,6 +181,18 @@ Earth is the starting planet and the most hospitable world in the solar system. 
 | **Silver** | 25-45 | Bronze Pickaxe | Silver Ingot |
 | **Gold** | 30-50 | Iron Pickaxe | Gold Ingot |
 | **Lithium** | 35-50 | Iron Pickaxe | Lithium (batteries) |
+| **Aluminum** | 15-40 | Stone Pickaxe | Aluminum Ingot |
+| **Cobalt** | 30-50 | Iron Pickaxe | Cobalt Ingot |
+
+#### Mineral Textures (Future Implementation)
+
+| Coal | Copper | Iron | Gold |
+|:----:|:------:|:----:|:----:|
+| ![Coal](../../public/textures/minerals/earth/rocks_coal.png) | ![Copper](../../public/textures/minerals/earth/rocks_copper.png) | ![Iron](../../public/textures/minerals/earth/rocks_iron.png) | ![Gold](../../public/textures/minerals/earth/rocks_gold.png) |
+
+| Aluminum | Cobalt | Lithium |
+|:--------:|:------:|:-------:|
+| ![Aluminum](../../public/textures/minerals/earth/rocks_aluminum.png) | ![Cobalt](../../public/textures/minerals/earth/rocks_cobalt.png) | ![Lithium](../../public/textures/minerals/earth/rocks_lythium.png) |
 
 ### Gems (Deep Underground)
 
