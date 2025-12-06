@@ -130,12 +130,23 @@ export class Planet {
     this.meshBuilder = new HexBlockMeshBuilder();
   }
 
+  // Convert depth to radius
+  // Depth system: 0 = bedrock (innermost), MAX_DEPTH-1 = sky (outermost)
+  public depthToRadius(depth: number): number {
+    return this.radius - (this.MAX_DEPTH - 1 - depth) * this.BLOCK_HEIGHT;
+  }
+
+  // Get sea level depth in new system (0 = bedrock)
+  public getSeaLevelDepth(): number {
+    return this.MAX_DEPTH - 1 - this.SEA_LEVEL;
+  }
+
   public async initialize(): Promise<void> {
     await this.meshBuilder.loadTextures(this.config.texturePath);
     // Set planet center for terrain shader lighting calculations
     this.meshBuilder.setPlanetCenter(this.center);
     // Set water level for terrain shader underwater dimming
-    const waterSurfaceRadius = this.radius - this.SEA_LEVEL * this.BLOCK_HEIGHT - PlayerConfig.WATER_SURFACE_OFFSET;
+    const waterSurfaceRadius = this.depthToRadius(this.getSeaLevelDepth()) - PlayerConfig.WATER_SURFACE_OFFSET;
     this.meshBuilder.setWaterLevel(waterSurfaceRadius);
     this.generateTerrain();
     this.initializeLODChunks();
@@ -687,15 +698,16 @@ export class Planet {
 
       // First pass: calculate display radius for each tile
       const tileDisplayRadii = new Map<number, { radius: number; isWater: boolean; color: THREE.Color }>();
-      const waterRadius = this.radius - this.SEA_LEVEL * this.BLOCK_HEIGHT;
+      const SEA_LEVEL_DEPTH = this.getSeaLevelDepth();
+      const waterRadius = this.depthToRadius(SEA_LEVEL_DEPTH);
 
       // Check if this is a single-texture planet (like moon) - use grey for all surfaces
       const isSingleTexturePlanet = !!this.config.texturePath;
 
       for (const tile of lodPolyhedron.tiles) {
         const surfaceDepth = this.getHeightVariation(tile.center);
-        const terrainRadius = this.radius - surfaceDepth * this.BLOCK_HEIGHT;
-        const isWater = !isSingleTexturePlanet && surfaceDepth > this.SEA_LEVEL;
+        const terrainRadius = this.depthToRadius(surfaceDepth);
+        const isWater = !isSingleTexturePlanet && surfaceDepth < SEA_LEVEL_DEPTH;
         const displayRadius = isWater ? waterRadius : terrainRadius;
 
         let color: THREE.Color;
@@ -910,7 +922,7 @@ export class Planet {
 
     // Offset LOD inward slightly so detailed terrain renders on top
     const lodOffset = 0.3;
-    const waterRadius = this.radius - this.SEA_LEVEL * this.BLOCK_HEIGHT - lodOffset;
+    const waterRadius = this.depthToRadius(this.getSeaLevelDepth()) - lodOffset;
 
     // Per-chunk geometry buffers
     interface ChunkGeometry {
@@ -995,9 +1007,10 @@ export class Planet {
     profiler.begin('Planet.rebuildLODMesh.pass1');
     const tileDisplayRadii = new Map<number, { radius: number; isWater: boolean; surfaceBlockType: HexBlockType }>();
     for (const [tileIndex, column] of this.columns) {
+      // Find surface depth (topmost non-air block, searching from top down)
       let surfaceDepth = 0;
       let surfaceBlockType = HexBlockType.GRASS;
-      for (let d = 0; d < column.blocks.length; d++) {
+      for (let d = column.blocks.length - 1; d >= 0; d--) {
         if (column.blocks[d] !== HexBlockType.AIR) {
           surfaceDepth = d;
           surfaceBlockType = column.blocks[d];
@@ -1010,7 +1023,7 @@ export class Planet {
       if (isWater) {
         displayRadius = waterRadius;
       } else {
-        displayRadius = this.radius - surfaceDepth * this.BLOCK_HEIGHT - lodOffset;
+        displayRadius = this.depthToRadius(surfaceDepth) - lodOffset;
       }
       tileDisplayRadii.set(tileIndex, { radius: displayRadius, isWater, surfaceBlockType });
     }
@@ -1520,16 +1533,19 @@ export class Planet {
     }
 
     // Second pass: Identify beach tiles (land tiles adjacent to water tiles)
+    // In new depth system: 0 = bedrock, MAX_DEPTH-1 = sky
+    // SEA_LEVEL_DEPTH is where sea level sits (counting from bottom)
+    const SEA_LEVEL_DEPTH = this.MAX_DEPTH - 1 - this.SEA_LEVEL;
     const beachTiles = new Set<number>();
     if (hasWater) {
       for (const tile of this.polyhedron.tiles) {
-        const surfaceDepth = heightMap.get(tile.index) ?? this.SEA_LEVEL;
+        const surfaceDepth = heightMap.get(tile.index) ?? SEA_LEVEL_DEPTH;
         // Only land tiles can be beaches (surface at or above sea level)
-        if (surfaceDepth <= this.SEA_LEVEL) {
+        if (surfaceDepth >= SEA_LEVEL_DEPTH) {
           // Check if any neighbor is underwater
           for (const neighborIndex of tile.neighbors) {
-            const neighborDepth = heightMap.get(neighborIndex) ?? this.SEA_LEVEL;
-            if (neighborDepth > this.SEA_LEVEL) {
+            const neighborDepth = heightMap.get(neighborIndex) ?? SEA_LEVEL_DEPTH;
+            if (neighborDepth < SEA_LEVEL_DEPTH) {
               // This land tile is next to water - it's a beach!
               beachTiles.add(tile.index);
               break;
@@ -1541,32 +1557,36 @@ export class Planet {
     }
 
     // Third pass: Create blocks based on height map
+    // Depth system: 0 = bedrock (bottom), MAX_DEPTH-1 = sky (top)
     for (const tile of this.polyhedron.tiles) {
       const blocks: HexBlockType[] = [];
-      const surfaceDepth = heightMap.get(tile.index) ?? this.SEA_LEVEL;
+      const surfaceDepth = heightMap.get(tile.index) ?? SEA_LEVEL_DEPTH;
       const isBeach = beachTiles.has(tile.index);
 
       for (let depth = 0; depth < this.MAX_DEPTH; depth++) {
-        if (depth < surfaceDepth) {
+        if (depth > surfaceDepth) {
+          // Above surface = air
           blocks.push(HexBlockType.AIR);
         } else if (depth === surfaceDepth) {
+          // Surface block
           if (isBeach) {
             // Beach tile (land next to water) - sand surface
             blocks.push(HexBlockType.SAND);
-          } else if (hasWater && surfaceDepth > this.SEA_LEVEL) {
+          } else if (hasWater && surfaceDepth < SEA_LEVEL_DEPTH) {
             // Underwater surface
             blocks.push(HexBlockType.DIRT);
           } else {
             blocks.push(HexBlockType.GRASS);
           }
-        } else if (depth < surfaceDepth + 3) {
-          // Subsurface layers - sand for beaches, dirt otherwise
+        } else if (depth > surfaceDepth - 3) {
+          // Subsurface layers (just below surface) - sand for beaches, dirt otherwise
           if (isBeach) {
             blocks.push(HexBlockType.SAND);
           } else {
             blocks.push(HexBlockType.DIRT);
           }
         } else {
+          // Deep underground = stone
           blocks.push(HexBlockType.STONE);
         }
       }
@@ -1594,9 +1614,13 @@ export class Planet {
   private fillOceans(): void {
     // Fill all tiles below sea level with water (creates oceans only)
     // No inland lakes for now - will add when we have proper water flow
+    // Depth system: 0 = bedrock, MAX_DEPTH-1 = sky
+    const SEA_LEVEL_DEPTH = this.MAX_DEPTH - 1 - this.SEA_LEVEL;
+
     for (const [_, column] of this.columns) {
-      let surfaceDepth = this.MAX_DEPTH;
-      for (let d = 0; d < column.blocks.length; d++) {
+      // Find surface depth (first non-air block from top)
+      let surfaceDepth = 0;
+      for (let d = column.blocks.length - 1; d >= 0; d--) {
         if (column.blocks[d] !== HexBlockType.AIR) {
           surfaceDepth = d;
           break;
@@ -1604,8 +1628,9 @@ export class Planet {
       }
 
       // Only fill water below sea level (ocean basins)
-      if (surfaceDepth > this.SEA_LEVEL) {
-        for (let d = this.SEA_LEVEL; d < surfaceDepth; d++) {
+      // Surface is below sea level if surfaceDepth < SEA_LEVEL_DEPTH
+      if (surfaceDepth < SEA_LEVEL_DEPTH) {
+        for (let d = surfaceDepth + 1; d <= SEA_LEVEL_DEPTH; d++) {
           if (column.blocks[d] === HexBlockType.AIR) {
             column.blocks[d] = HexBlockType.WATER;
           }
@@ -1729,25 +1754,24 @@ export class Planet {
     height += detailNoise * PlayerConfig.TERRAIN_DETAIL_WEIGHT;
 
     // ============ CONVERT HEIGHT TO DEPTH ============
+    // Depth system: 0 = bedrock (bottom), MAX_DEPTH-1 = sky (top)
     // height > 0 = above sea level (land)
     // height < 0 = below sea level (ocean floor)
 
     // Scale height to block units
-    // Positive height maps to depths 0 to SEA_LEVEL (above water)
-    // Negative height maps to depths SEA_LEVEL to MAX_DEPTH (below water/ocean floor)
+    // SEA_LEVEL_DEPTH is where sea level sits (counting from bottom)
+    const SEA_LEVEL_DEPTH = this.MAX_DEPTH - 1 - this.SEA_LEVEL;
 
     let depth: number;
     if (height >= 0) {
-      // Land: height 0->1+ maps to depth SEA_LEVEL->0 (higher terrain = lower depth)
-      // Use full MAX_HEIGHT range for land
+      // Land: height 0->1+ maps to depth SEA_LEVEL_DEPTH -> MAX_DEPTH-1 (higher terrain = higher depth)
       const landHeight = height * this.MAX_HEIGHT * variation;
-      depth = this.SEA_LEVEL - landHeight;
+      depth = SEA_LEVEL_DEPTH + landHeight;
     } else {
-      // Ocean: height 0->-1 maps to depth SEA_LEVEL->MAX_DEPTH
-      // Use exponential curve for deeper ocean floors
+      // Ocean: height 0->-1 maps to depth SEA_LEVEL_DEPTH -> 0 (deeper ocean = lower depth)
       const oceanFactor = Math.pow(Math.abs(height), PlayerConfig.TERRAIN_OCEAN_DEPTH_POWER);
       const oceanDepth = oceanFactor * PlayerConfig.TERRAIN_MAX_DEPTH * variation;
-      depth = this.SEA_LEVEL + oceanDepth;
+      depth = SEA_LEVEL_DEPTH - oceanDepth;
     }
 
     // Clamp to valid range and return integer depth
@@ -2270,9 +2294,10 @@ export class Planet {
     column: PlanetColumn,
     geometryData: Record<string, GeometryData>
   ): void {
-    // Find the first solid block depth (surface level)
+    // Find the surface depth (topmost solid block, searching from top down)
+    // Depth system: 0 = bedrock, MAX_DEPTH-1 = sky
     let surfaceDepth = 0;
-    for (let d = 0; d < column.blocks.length; d++) {
+    for (let d = column.blocks.length - 1; d >= 0; d--) {
       if (column.blocks[d] !== HexBlockType.AIR && column.blocks[d] !== HexBlockType.WATER) {
         surfaceDepth = d;
         break;
@@ -2286,8 +2311,9 @@ export class Planet {
       if (blockType === HexBlockType.AIR) continue;
 
       const isWater = blockType === HexBlockType.WATER;
-      const blockAbove = depth === 0 ? HexBlockType.AIR : column.blocks[depth - 1];
-      const blockBelow = depth >= column.blocks.length - 1 ? HexBlockType.AIR : column.blocks[depth + 1];
+      // In new system: "above" = higher depth (toward sky), "below" = lower depth (toward bedrock)
+      const blockAbove = depth >= column.blocks.length - 1 ? HexBlockType.AIR : column.blocks[depth + 1];
+      const blockBelow = depth === 0 ? HexBlockType.AIR : column.blocks[depth - 1];
 
       const hasTopExposed = blockAbove === HexBlockType.AIR || (!isWater && blockAbove === HexBlockType.WATER);
       const hasBottomExposed = blockBelow === HexBlockType.AIR || (!isWater && blockBelow === HexBlockType.WATER);
@@ -2298,7 +2324,8 @@ export class Planet {
 
       if (!isWater && !hasTopExposed && !hasBottomExposed && !hasSideExposed) continue;
 
-      let outerRadius = this.radius - depth * this.BLOCK_HEIGHT;
+      // In new system: higher depth = larger radius (closer to surface)
+      let outerRadius = this.depthToRadius(depth);
       let innerRadius = outerRadius - this.BLOCK_HEIGHT;
 
       if (isWater) {
@@ -2308,7 +2335,8 @@ export class Planet {
 
       if (innerRadius <= 0) continue;
 
-      const depthFromSurface = depth - surfaceDepth;
+      // depthFromSurface: positive = below surface, negative = at/above surface
+      const depthFromSurface = surfaceDepth - depth;
 
       // Calculate sky light based on depth from surface
       const SKY_LIGHT_FALLOFF = 0.8;
@@ -2772,7 +2800,7 @@ export class Planet {
     if (!this.batchedMeshGroup) return;
 
     const waterBoundaryData = createEmptyGeometryData();
-    const waterSurfaceRadius = this.radius - this.SEA_LEVEL * this.BLOCK_HEIGHT - PlayerConfig.WATER_SURFACE_OFFSET;
+    const waterSurfaceRadius = this.depthToRadius(this.getSeaLevelDepth()) - PlayerConfig.WATER_SURFACE_OFFSET;
 
     for (const tileIndex of this.cachedNearbyTiles) {
       const column = this.columns.get(tileIndex);
@@ -2867,7 +2895,9 @@ export class Planet {
 
     let hasAdjacentWater = false;
 
-    if (depth > 0 && column.blocks[depth - 1] === HexBlockType.WATER) {
+    // In new depth system: "below" is depth-1 (toward bedrock), "above" is depth+1 (toward sky)
+    // Check if there's water above (water falls down)
+    if (depth < column.blocks.length - 1 && column.blocks[depth + 1] === HexBlockType.WATER) {
       hasAdjacentWater = true;
     }
 
@@ -2911,15 +2941,16 @@ export class Planet {
 
       basinCells.push({ tileIndex, depth, isWater: blockType === HexBlockType.WATER });
 
+      // In new depth system: "below" is depth-1 (toward bedrock), "above" is depth+1 (toward sky)
       if (depth > 0) {
-        const aboveType = column.blocks[depth - 1];
-        if (aboveType === HexBlockType.AIR || aboveType === HexBlockType.WATER) {
+        const belowType = column.blocks[depth - 1];
+        if (belowType === HexBlockType.AIR || belowType === HexBlockType.WATER) {
           queue.push({ tileIndex, depth: depth - 1 });
         }
       }
       if (depth < column.blocks.length - 1) {
-        const belowType = column.blocks[depth + 1];
-        if (belowType === HexBlockType.AIR || belowType === HexBlockType.WATER) {
+        const aboveType = column.blocks[depth + 1];
+        if (aboveType === HexBlockType.AIR || aboveType === HexBlockType.WATER) {
           queue.push({ tileIndex, depth: depth + 1 });
         }
       }
@@ -2938,7 +2969,8 @@ export class Planet {
     const totalWater = basinCells.filter(c => c.isWater).length;
     if (totalWater === 0) return;
 
-    basinCells.sort((a, b) => b.depth - a.depth);
+    // Sort by depth ascending - water settles at lowest depths (toward bedrock)
+    basinCells.sort((a, b) => a.depth - b.depth);
 
     let waterToPlace = totalWater;
     const cellsToFill: { tileIndex: number, depth: number }[] = [];
@@ -2986,17 +3018,21 @@ export class Planet {
   }
 
   public getDepthAtPoint(point: THREE.Vector3): number {
+    // Depth system: 0 = bedrock (innermost), MAX_DEPTH-1 = sky (outermost)
     const distance = point.distanceTo(this.center);
-    return Math.floor((this.radius - distance) / this.BLOCK_HEIGHT);
+    // Convert distance to depth: at planet.radius, depth = MAX_DEPTH-1
+    const depthFromBottom = Math.floor((distance - (this.radius - (this.MAX_DEPTH - 1) * this.BLOCK_HEIGHT)) / this.BLOCK_HEIGHT);
+    return Math.max(0, Math.min(this.MAX_DEPTH - 1, depthFromBottom));
   }
 
   public getSurfacePosition(tile: HexTile): THREE.Vector3 {
     const column = this.columns.get(tile.index);
     if (!column) return tile.center.clone().add(this.center);
 
-    for (let depth = 0; depth < column.blocks.length; depth++) {
-      if (column.blocks[depth] !== HexBlockType.AIR) {
-        const surfaceRadius = this.radius - depth * this.BLOCK_HEIGHT;
+    // Search from top (highest depth) down to find first solid block
+    for (let depth = column.blocks.length - 1; depth >= 0; depth--) {
+      if (column.blocks[depth] !== HexBlockType.AIR && column.blocks[depth] !== HexBlockType.WATER) {
+        const surfaceRadius = this.depthToRadius(depth);
         return tile.center.clone().normalize().multiplyScalar(surfaceRadius).add(this.center);
       }
     }
@@ -3018,10 +3054,11 @@ export class Planet {
     const column = this.columns.get(tile.index);
     if (!column) return this.radius;
 
-    for (let depth = 0; depth < column.blocks.length; depth++) {
+    // Search from top (highest depth) down to find first solid block
+    for (let depth = column.blocks.length - 1; depth >= 0; depth--) {
       const block = column.blocks[depth];
       if (block !== HexBlockType.AIR && block !== HexBlockType.WATER) {
-        return this.radius - depth * this.BLOCK_HEIGHT;
+        return this.depthToRadius(depth);
       }
     }
     return this.radius;
@@ -3096,8 +3133,9 @@ export class Planet {
     const column = this.columns.get(tile.index);
     if (!column) return false;
 
+    // Find water surface (topmost water block, searching from top down)
     let waterSurfaceDepth = -1;
-    for (let d = 0; d < column.blocks.length; d++) {
+    for (let d = column.blocks.length - 1; d >= 0; d--) {
       if (column.blocks[d] === HexBlockType.WATER) {
         waterSurfaceDepth = d;
         break;
@@ -3107,7 +3145,8 @@ export class Planet {
     if (waterSurfaceDepth < 0) return false;
 
     const playerDepth = this.getDepthAtPoint(position);
-    return playerDepth >= waterSurfaceDepth;
+    // Player is in water if their depth is at or below water surface
+    return playerDepth <= waterSurfaceDepth;
   }
 
   public getWaterDepth(position: THREE.Vector3): number {
@@ -3119,8 +3158,9 @@ export class Planet {
 
     const currentDepth = this.getDepthAtPoint(position);
 
+    // Find water surface (topmost water block, searching from top down)
     let waterSurfaceDepth = -1;
-    for (let d = 0; d < column.blocks.length; d++) {
+    for (let d = column.blocks.length - 1; d >= 0; d--) {
       if (column.blocks[d] === HexBlockType.WATER) {
         waterSurfaceDepth = d;
         break;
@@ -3129,8 +3169,9 @@ export class Planet {
 
     if (waterSurfaceDepth < 0) return 0;
 
-    if (currentDepth >= waterSurfaceDepth) {
-      return (currentDepth - waterSurfaceDepth + 1) * this.BLOCK_HEIGHT;
+    // Depth below water surface (lower depth = deeper underwater)
+    if (currentDepth <= waterSurfaceDepth) {
+      return (waterSurfaceDepth - currentDepth + 1) * this.BLOCK_HEIGHT;
     }
 
     return 0;
@@ -3144,9 +3185,9 @@ export class Planet {
     const column = this.columns.get(tile.index);
     if (!column) return -1;
 
-    // Find top of water (first water block from top)
+    // Find water surface (topmost water block, searching from top down)
     let waterSurfaceDepth = -1;
-    for (let d = 0; d < column.blocks.length; d++) {
+    for (let d = column.blocks.length - 1; d >= 0; d--) {
       if (column.blocks[d] === HexBlockType.WATER) {
         waterSurfaceDepth = d;
         break;
@@ -3155,8 +3196,8 @@ export class Planet {
 
     if (waterSurfaceDepth < 0) return -1;
 
-    // Water surface is at the top of the water block (radius - depth)
-    return this.radius - waterSurfaceDepth;
+    // Water surface radius using new depth system
+    return this.depthToRadius(waterSurfaceDepth);
   }
 
   public buildAllMeshes(): void {
