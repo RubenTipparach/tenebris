@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { HexTile } from './GoldbergPolyhedron';
 import { PlayerConfig } from '../config/PlayerConfig';
+import { getAssetPath } from '../utils/assetPath';
 import waterVert from '../shaders/water/water.vert';
 import waterFrag from '../shaders/water/water.frag';
 import terrainVert from '../shaders/terrain/terrain.vert';
@@ -332,8 +333,7 @@ export class HexBlockMeshBuilder {
 
   private loadTexture(path: string): Promise<THREE.Texture> {
     // Prepend base URL for production builds (e.g., GitHub Pages subdirectory)
-    const basePath = import.meta.env.BASE_URL || '/';
-    const fullPath = path.startsWith('/') ? basePath + path.slice(1) : basePath + path;
+    const fullPath = getAssetPath(path);
     return new Promise((resolve, reject) => {
       this.textureLoader.load(fullPath, resolve, undefined, reject);
     });

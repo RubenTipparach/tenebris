@@ -1,6 +1,21 @@
 import * as THREE from 'three';
 import { PlayerConfig } from '../config/PlayerConfig';
 
+// Simple seeded random number generator (LCG algorithm)
+class SeededRandom {
+  private seed: number;
+
+  constructor(seed: number) {
+    this.seed = seed;
+  }
+
+  // Returns a random number between 0 and 1
+  next(): number {
+    this.seed = (this.seed * 1103515245 + 12345) & 0x7fffffff;
+    return this.seed / 0x7fffffff;
+  }
+}
+
 export interface TreeConfig {
   trunkHeight: number;
   trunkRadius: number;
@@ -160,6 +175,7 @@ export class TreeBuilder {
 // Tree manager for a planet
 export class PlanetTreeManager {
   private trees: THREE.Group[] = [];
+  private treesByTile: Map<number, THREE.Group[]> = new Map(); // Trees grouped by tile index
   private treeBuilder: TreeBuilder;
   private scene: THREE.Scene;
 
@@ -169,12 +185,23 @@ export class PlanetTreeManager {
   }
 
   // Place a tree at a specific world position
-  public addTree(worldPosition: THREE.Vector3, planetCenter: THREE.Vector3, config?: Partial<TreeConfig>): THREE.Group {
+  public addTree(worldPosition: THREE.Vector3, planetCenter: THREE.Vector3, config?: Partial<TreeConfig>, tileIndex?: number): THREE.Group {
     // Calculate up direction (away from planet center)
     const upDirection = worldPosition.clone().sub(planetCenter).normalize();
 
     // Create tree
     const tree = this.treeBuilder.createTree(worldPosition, upDirection, config);
+
+    // Store tile index in userData for visibility tracking
+    if (tileIndex !== undefined) {
+      tree.userData.tileIndex = tileIndex;
+
+      // Group trees by tile for efficient visibility updates
+      if (!this.treesByTile.has(tileIndex)) {
+        this.treesByTile.set(tileIndex, []);
+      }
+      this.treesByTile.get(tileIndex)!.push(tree);
+    }
 
     this.trees.push(tree);
     this.scene.add(tree);
@@ -188,6 +215,16 @@ export class PlanetTreeManager {
     if (index >= 0) {
       this.trees.splice(index, 1);
       this.scene.remove(tree);
+
+      // Remove from treesByTile map
+      const tileIndex = tree.userData.tileIndex;
+      if (tileIndex !== undefined && this.treesByTile.has(tileIndex)) {
+        const tileTrees = this.treesByTile.get(tileIndex)!;
+        const tileTreeIndex = tileTrees.indexOf(tree);
+        if (tileTreeIndex >= 0) {
+          tileTrees.splice(tileTreeIndex, 1);
+        }
+      }
 
       // Dispose geometries
       tree.traverse((child) => {
@@ -221,14 +258,17 @@ export class PlanetTreeManager {
     return meshes;
   }
 
-  // Scatter trees randomly on planet surface
+  // Scatter trees randomly on planet surface using seeded random
   public scatterTrees(
     planetCenter: THREE.Vector3,
     _planetRadius: number,
     count: number,
     getSurfaceHeight: (direction: THREE.Vector3) => number,
-    isUnderwater?: (direction: THREE.Vector3) => boolean
+    isUnderwater?: (direction: THREE.Vector3) => boolean,
+    seed: number = PlayerConfig.TERRAIN_SEED,
+    getTileIndex?: (direction: THREE.Vector3) => number | null
   ): void {
+    const rng = new SeededRandom(seed + 54321); // Offset seed slightly for trees
     let placed = 0;
     let attempts = 0;
     const maxAttempts = count * 5; // Avoid infinite loop if most terrain is water
@@ -236,9 +276,9 @@ export class PlanetTreeManager {
     while (placed < count && attempts < maxAttempts) {
       attempts++;
 
-      // Random direction on sphere
-      const theta = Math.random() * Math.PI * 2;
-      const phi = Math.acos(2 * Math.random() - 1);
+      // Random direction on sphere using seeded random
+      const theta = rng.next() * Math.PI * 2;
+      const phi = Math.acos(2 * rng.next() - 1);
 
       const direction = new THREE.Vector3(
         Math.sin(phi) * Math.cos(theta),
@@ -259,19 +299,32 @@ export class PlanetTreeManager {
         direction.clone().multiplyScalar(surfaceHeight + 0.1) // Slightly above surface
       );
 
-      // Randomize tree size with wider variation
-      const sizeVariation = 0.5 + Math.random() * 1.0; // 0.5 to 1.5 (wider range)
-      const heightVariation = 0.6 + Math.random() * 0.9; // 0.6 to 1.5 (independent height variation)
+      // Get tile index for visibility tracking
+      const tileIndex = getTileIndex ? getTileIndex(direction) : undefined;
+
+      // Randomize tree size with wider variation using seeded random
+      const sizeVariation = 0.5 + rng.next() * 1.0; // 0.5 to 1.5 (wider range)
+      const heightVariation = 0.6 + rng.next() * 0.9; // 0.6 to 1.5 (independent height variation)
       const config: Partial<TreeConfig> = {
         trunkHeight: DEFAULT_CONFIG.trunkHeight * sizeVariation * heightVariation,
         trunkRadius: DEFAULT_CONFIG.trunkRadius * sizeVariation,
         leafBaseRadius: DEFAULT_CONFIG.leafBaseRadius * sizeVariation,
-        leafLayers: Math.floor(2 + Math.random() * 4), // 2-5 layers for more variety
-        leafTaper: 0.6 + Math.random() * 0.2, // 0.6 to 0.8 for shape variation
+        leafLayers: Math.floor(2 + rng.next() * 4), // 2-5 layers for more variety
+        leafTaper: 0.6 + rng.next() * 0.2, // 0.6 to 0.8 for shape variation
       };
 
-      this.addTree(treePosition, planetCenter, config);
+      this.addTree(treePosition, planetCenter, config, tileIndex ?? undefined);
       placed++;
+    }
+  }
+
+  // Update tree visibility based on which tiles are visible (near player)
+  public updateVisibility(visibleTileIndices: Set<number>): void {
+    for (const [tileIndex, tileTrees] of this.treesByTile) {
+      const visible = visibleTileIndices.has(tileIndex);
+      for (const tree of tileTrees) {
+        tree.visible = visible;
+      }
     }
   }
 

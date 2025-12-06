@@ -1,4 +1,5 @@
 import { Inventory, ItemType, ITEM_DATA, InventorySlot } from './Inventory';
+import { getAssetPath } from '../utils/assetPath';
 
 // Crafting recipe definition
 export interface CraftingRecipe {
@@ -92,13 +93,14 @@ export class CraftingSystem {
       if (e.key === 'e' || e.key === 'E') {
         if (this.isOpen) {
           this.close();
+          e.preventDefault();
         } else {
           // Only open if game is active (pointer locked)
           if (document.pointerLockElement) {
             this.open();
+            e.preventDefault();
           }
         }
-        e.preventDefault();
       } else if (e.key === 'Escape' && this.isOpen) {
         this.close();
         e.preventDefault();
@@ -166,7 +168,7 @@ export class CraftingSystem {
     if (slot.itemType !== ItemType.NONE && slot.quantity > 0) {
       const itemData = ITEM_DATA[slot.itemType];
       if (img) {
-        img.src = itemData.texture;
+        img.src = getAssetPath(itemData.texture);
         img.style.display = 'block';
       }
       if (countEl) {
@@ -202,7 +204,7 @@ export class CraftingSystem {
     // Input items
     for (const input of recipe.inputs) {
       const inputImg = document.createElement('img');
-      inputImg.src = ITEM_DATA[input.itemType].texture;
+      inputImg.src = getAssetPath(ITEM_DATA[input.itemType].texture);
       inputImg.title = `${input.quantity}x ${ITEM_DATA[input.itemType].name}`;
       recipeEl.appendChild(inputImg);
 
@@ -219,7 +221,7 @@ export class CraftingSystem {
 
     // Output item
     const outputImg = document.createElement('img');
-    outputImg.src = ITEM_DATA[recipe.output.itemType].texture;
+    outputImg.src = getAssetPath(ITEM_DATA[recipe.output.itemType].texture);
     outputImg.title = `${recipe.output.quantity}x ${ITEM_DATA[recipe.output.itemType].name}`;
     recipeEl.appendChild(outputImg);
 

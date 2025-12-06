@@ -5,6 +5,7 @@ import { HexBlockType } from '../planet/HexBlock';
 import { Inventory, ItemType, ITEM_DATA } from './Inventory';
 import { PlanetTreeManager } from '../planet/Tree';
 import { CraftingSystem } from './CraftingSystem';
+import { getAssetPath } from '../utils/assetPath';
 
 // Map HexBlockType to ItemType (what you get when mining)
 function blockToItem(blockType: HexBlockType): ItemType {
@@ -106,7 +107,7 @@ export class PlanetBlockInteraction {
         if (slot.itemType !== ItemType.NONE && slot.quantity > 0) {
           const itemData = ITEM_DATA[slot.itemType];
           if (img) {
-            img.src = itemData.texture;
+            img.src = getAssetPath(itemData.texture);
             img.style.display = 'block';
           }
 
