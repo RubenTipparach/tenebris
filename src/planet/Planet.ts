@@ -590,13 +590,15 @@ export class Planet {
         radius: this.radius,
         blockHeight: this.BLOCK_HEIGHT,
         seaLevel: this.SEA_LEVEL,
+        maxDepth: this.MAX_DEPTH,
         deepThreshold: this.DEEP_THRESHOLD,
         waterSurfaceOffset: PlayerConfig.WATER_SURFACE_OFFSET,
         sunDirection: {
           x: this.sunDirection.x,
           y: this.sunDirection.y,
           z: this.sunDirection.z
-        }
+        },
+        uvScale: PlayerConfig.TERRAIN_UV_SCALE
       }
     });
     profiler.end('Planet.workerBuild.postMessage');
@@ -651,6 +653,7 @@ export class Planet {
         radius: this.radius,
         blockHeight: this.BLOCK_HEIGHT,
         seaLevel: this.SEA_LEVEL,
+        maxDepth: this.MAX_DEPTH,
         waterSurfaceOffset: PlayerConfig.WATER_SURFACE_OFFSET,
         lodOffset: 0.3,
         chunkCount: this.LOD_CHUNK_COUNT,
