@@ -50,6 +50,11 @@ export interface GeometryArrays {
 const AIR = HexBlockType.AIR;
 const WATER = HexBlockType.WATER;
 
+// Helper to convert depth to radius (0 = bedrock, maxDepth-1 = sky)
+function depthToRadius(depth: number, radius: number, maxDepth: number, blockHeight: number): number {
+  return radius - (maxDepth - 1 - depth) * blockHeight;
+}
+
 // Lightweight geometry result (before adding lighting)
 interface RawGeometry {
   positions: number[];
@@ -305,25 +310,25 @@ function buildTileMesh(request: WorkerTileRequest): WorkerTileResponse {
   const stoneData = { positions: [] as number[], normals: [] as number[], uvs: [] as number[], skyLight: [] as number[], indices: [] as number[], vertexOffset: 0 };
   const waterData = { positions: [] as number[], normals: [] as number[], uvs: [] as number[], skyLight: [] as number[], indices: [] as number[], vertexOffset: 0 };
 
-  // Find surface depth
+  // Find surface depth (topmost solid block, searching from top down)
+  // Depth system: 0 = bedrock, maxDepth-1 = sky
   let surfaceDepth = 0;
-  for (let d = 0; d < blocks.length; d++) {
+  for (let d = blocks.length - 1; d >= 0; d--) {
     if (blocks[d] !== AIR && blocks[d] !== WATER) {
       surfaceDepth = d;
       break;
     }
   }
 
-  const maxRenderDepth = Math.min(surfaceDepth + 4, blocks.length);
-
-  for (let depth = 0; depth < maxRenderDepth; depth++) {
+  for (let depth = 0; depth < blocks.length; depth++) {
     const blockType = blocks[depth];
     if (blockType === AIR) continue;
 
     const isWater = blockType === WATER;
 
-    const blockAbove = depth === 0 ? AIR : blocks[depth - 1];
-    const blockBelow = depth === maxRenderDepth - 1 ? AIR : blocks[depth + 1];
+    // In new depth system: "above" = higher depth (toward sky), "below" = lower depth (toward bedrock)
+    const blockAbove = depth >= blocks.length - 1 ? AIR : blocks[depth + 1];
+    const blockBelow = depth === 0 ? AIR : blocks[depth - 1];
 
     const hasTopExposed = blockAbove === AIR || (!isWater && blockAbove === WATER);
     const hasBottomExposed = blockBelow === AIR || (!isWater && blockBelow === WATER);
@@ -346,11 +351,13 @@ function buildTileMesh(request: WorkerTileRequest): WorkerTileResponse {
 
     if (!isWater && !hasTopExposed && !hasBottomExposed && !hasSideExposed) continue;
 
-    const outerRadius = radius - depth * blockHeight;
+    // In new system: higher depth = larger radius
+    const outerRadius = depthToRadius(depth, radius, request.maxDepth, blockHeight);
     const innerRadius = outerRadius - blockHeight;
     if (innerRadius <= 0) continue;
 
-    const depthFromSurface = depth - surfaceDepth;
+    // depthFromSurface: positive = below surface (lower depth)
+    const depthFromSurface = surfaceDepth - depth;
     const isDeep = depthFromSurface >= deepThreshold;
 
     // Calculate sky light based on depth from surface

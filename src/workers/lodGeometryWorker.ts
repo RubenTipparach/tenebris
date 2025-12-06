@@ -120,11 +120,22 @@ interface LODWorkerConfig {
   radius: number;
   blockHeight: number;
   seaLevel: number;
+  maxDepth: number;  // Total depth (for radius calculation)
   waterSurfaceOffset: number;
   lodOffset: number;
   chunkCount: number;
   // Camera direction from planet center for back-face culling
   cameraDir?: Vec3;
+}
+
+// Helper to convert depth to radius (0 = bedrock, maxDepth-1 = sky)
+function depthToRadius(depth: number, config: LODWorkerConfig): number {
+  return config.radius - (config.maxDepth - 1 - depth) * config.blockHeight;
+}
+
+// Get sea level depth in new system (0 = bedrock)
+function getSeaLevelDepth(config: LODWorkerConfig): number {
+  return config.maxDepth - 1 - config.seaLevel;
 }
 
 // Message types
@@ -308,7 +319,8 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
       chunkGeometries.push(createEmptyChunkGeometry());
     }
 
-    const waterRadius = config.radius - config.seaLevel * config.blockHeight - config.lodOffset;
+    const seaLevelDepth = getSeaLevelDepth(config);
+    const waterRadius = depthToRadius(seaLevelDepth, config) - config.lodOffset;
 
     // Combined first pass: calculate display radius AND surface block type for each tile
     // This eliminates redundant block array searches
@@ -320,10 +332,11 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
     const tileInfo = new Map<number, TileInfo>();
 
     for (const [tileIndex, column] of columnsMap) {
+      // Find surface depth (topmost non-air block, searching from top down)
       let surfaceDepth = 0;
       let surfaceBlockType = HexBlockType.GRASS;
       const blocks = column.blocks;
-      for (let d = 0; d < blocks.length; d++) {
+      for (let d = blocks.length - 1; d >= 0; d--) {
         if (blocks[d] !== HexBlockType.AIR) {
           surfaceDepth = d;
           surfaceBlockType = blocks[d];
@@ -334,7 +347,7 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
       const isWater = surfaceBlockType === HexBlockType.WATER;
       const displayRadius = isWater
         ? waterRadius
-        : config.radius - surfaceDepth * config.blockHeight - config.lodOffset;
+        : depthToRadius(surfaceDepth, config) - config.lodOffset;
 
       tileInfo.set(tileIndex, { radius: displayRadius, isWater, surfaceBlockType });
     }

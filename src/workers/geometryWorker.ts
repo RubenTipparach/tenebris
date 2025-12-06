@@ -52,10 +52,16 @@ interface WorkerConfig {
   radius: number;
   blockHeight: number;
   seaLevel: number;
+  maxDepth: number;  // Total depth (for radius calculation)
   deepThreshold: number;
   waterSurfaceOffset: number;
   sunDirection: Vec3;
   uvScale: number;  // Texture tiling scale
+}
+
+// Helper to convert depth to radius (0 = bedrock, maxDepth-1 = sky)
+function depthToRadius(depth: number, config: WorkerConfig): number {
+  return config.radius - (config.maxDepth - 1 - depth) * config.blockHeight;
 }
 
 // Neighbor data includes both blocks and vertices for water wall generation
@@ -300,9 +306,10 @@ function buildColumnGeometry(
   woodData: GeometryData,
   waterData: GeometryData
 ): void {
-  // Find surface depth
+  // Find surface depth (topmost solid block, searching from top down)
+  // Depth system: 0 = bedrock, maxDepth-1 = sky
   let surfaceDepth = 0;
-  for (let d = 0; d < column.blocks.length; d++) {
+  for (let d = column.blocks.length - 1; d >= 0; d--) {
     if (column.blocks[d] !== HexBlockType.AIR && column.blocks[d] !== HexBlockType.WATER) {
       surfaceDepth = d;
       break;
@@ -314,8 +321,9 @@ function buildColumnGeometry(
     if (blockType === HexBlockType.AIR) continue;
 
     const isWater = blockType === HexBlockType.WATER;
-    const blockAbove = depth === 0 ? HexBlockType.AIR : column.blocks[depth - 1];
-    const blockBelow = depth >= column.blocks.length - 1 ? HexBlockType.AIR : column.blocks[depth + 1];
+    // In new depth system: "above" = higher depth (toward sky), "below" = lower depth (toward bedrock)
+    const blockAbove = depth >= column.blocks.length - 1 ? HexBlockType.AIR : column.blocks[depth + 1];
+    const blockBelow = depth === 0 ? HexBlockType.AIR : column.blocks[depth - 1];
 
     const hasTopExposed = blockAbove === HexBlockType.AIR || (!isWater && blockAbove === HexBlockType.WATER);
     const hasBottomExposed = blockBelow === HexBlockType.AIR || (!isWater && blockBelow === HexBlockType.WATER);
@@ -326,7 +334,8 @@ function buildColumnGeometry(
 
     if (!isWater && !hasTopExposed && !hasBottomExposed && !hasSideExposed) continue;
 
-    let outerRadius = config.radius - depth * config.blockHeight;
+    // In new system: higher depth = larger radius (closer to surface)
+    let outerRadius = depthToRadius(depth, config);
     let innerRadius = outerRadius - config.blockHeight;
 
     if (isWater) {
@@ -336,7 +345,8 @@ function buildColumnGeometry(
 
     if (innerRadius <= 0) continue;
 
-    const depthFromSurface = depth - surfaceDepth;
+    // depthFromSurface: positive = below surface (lower depth)
+    const depthFromSurface = surfaceDepth - depth;
     // Use the actual block type for texture selection - this ensures blocks don't change
     // appearance when surface depth changes (e.g., when mining blocks above)
     const useStoneTexture = blockType === HexBlockType.STONE;
@@ -436,10 +446,11 @@ self.onmessage = (e: MessageEvent<BuildGeometryMessage>) => {
       // Generate water walls for water blocks
       for (let depth = 0; depth < column.blocks.length; depth++) {
         if (column.blocks[depth] === HexBlockType.WATER) {
-          const blockAbove = depth === 0 ? HexBlockType.AIR : column.blocks[depth - 1];
+          // In new depth system: "above" = higher depth
+          const blockAbove = depth >= column.blocks.length - 1 ? HexBlockType.AIR : column.blocks[depth + 1];
           if (blockAbove === HexBlockType.AIR) {
             // This is a water surface - generate water walls
-            const outerRadius = config.radius - depth * config.blockHeight - config.waterSurfaceOffset;
+            const outerRadius = depthToRadius(depth, config) - config.waterSurfaceOffset;
             buildWaterWallGeometry(
               column.tile.vertices,
               column.tile.neighbors,
