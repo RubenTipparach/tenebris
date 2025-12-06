@@ -39,6 +39,7 @@ function copyPublicExclude(excludePatterns: string[]): Plugin {
 }
 
 export default defineConfig({
+  base: '/tenebris/',  // GitHub Pages subdirectory
   plugins: [
     glsl(),
     copyPublicExclude(['.aseprite'])
