@@ -176,9 +176,7 @@ Earth is the starting planet and the most hospitable world in the solar system. 
 |-----|-------|---------------|-----------|
 | **Coal** | 5-30 | Stone Pickaxe | Fuel (doesn't smelt) |
 | **Copper** | 10-40 | Stone Pickaxe | Copper Ingot |
-| **Tin** | 10-35 | Stone Pickaxe | Tin Ingot (for bronze) |
 | **Iron** | 20-50 | Bronze Pickaxe | Iron Ingot |
-| **Silver** | 25-45 | Bronze Pickaxe | Silver Ingot |
 | **Gold** | 30-50 | Iron Pickaxe | Gold Ingot |
 | **Lithium** | 35-50 | Iron Pickaxe | Lithium (batteries) |
 | **Aluminum** | 15-40 | Stone Pickaxe | Aluminum Ingot |
