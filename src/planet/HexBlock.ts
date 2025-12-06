@@ -6,13 +6,9 @@ import waterFrag from '../shaders/water/water.frag';
 import terrainVert from '../shaders/terrain/terrain.vert';
 import terrainFrag from '../shaders/terrain/terrain.frag';
 
-export enum HexBlockType {
-  AIR = 0,
-  STONE = 1,
-  DIRT = 2,
-  GRASS = 3,
-  WATER = 4
-}
+// Import and re-export block types from shared module for backward compatibility
+import { HexBlockType, isSolid, isLiquid } from '../shared/blockTypes';
+export { HexBlockType, isSolid, isLiquid };
 
 export enum FaceType {
   TOP = 'top',
@@ -562,11 +558,12 @@ export class HexBlockMeshBuilder {
     return { geometry, faceTypes };
   }
 
+  // Delegate to shared functions for backward compatibility
   public isSolid(blockType: HexBlockType): boolean {
-    return blockType !== HexBlockType.AIR && blockType !== HexBlockType.WATER;
+    return isSolid(blockType);
   }
 
   public isLiquid(blockType: HexBlockType): boolean {
-    return blockType === HexBlockType.WATER;
+    return isLiquid(blockType);
   }
 }

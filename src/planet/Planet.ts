@@ -807,7 +807,10 @@ export class Planet {
               normals.push(sideNormal.x, sideNormal.y, sideNormal.z);
               normals.push(sideNormal.x, sideNormal.y, sideNormal.z);
 
-              uvs.push(0, 0, 1, 0, 1, 0.5, 0, 0.5);
+              uvs.push(0, 0,
+                 1, 0,
+                 1, 1,
+                 0, 1);
 
               colors.push(sideColor.r, sideColor.g, sideColor.b);
               colors.push(sideColor.r, sideColor.g, sideColor.b);
@@ -1180,7 +1183,7 @@ export class Planet {
         normals.push(snx, sny, snz, snx, sny, snz, snx, sny, snz, snx, sny, snz);
 
         // UVs matching HexBlock
-        uvs.push(0, 0, 1, 0, 1, 0.5, 0, 0.5);
+        uvs.push(0, 0, 1, 0, 1, 1, 0, 1);
 
         // Sky light for terrain shader
         if (sideLight) sideLight.push(1.0, 1.0, 1.0, 1.0);
@@ -1498,10 +1501,37 @@ export class Planet {
     if (this.batchedMeshGroup) {
       this.batchedMeshGroup.position.copy(this.center);
     }
+    // Update LOD chunk bounding spheres for frustum culling
+    this.updateLODChunkBounds();
     // Update terrain shader planet center
     this.meshBuilder.setPlanetCenter(this.center);
     // Update distant LOD mesh positions
     this.updateDistantLODPositions();
+  }
+
+  // Update LOD chunk bounding spheres when planet center moves
+  private updateLODChunkBounds(): void {
+    // 12 icosahedron vertices as chunk centers (same as initializeLODChunks)
+    const t = (1 + Math.sqrt(5)) / 2;
+    const chunkCenters = [
+      new THREE.Vector3(-1, t, 0).normalize(),
+      new THREE.Vector3(1, t, 0).normalize(),
+      new THREE.Vector3(-1, -t, 0).normalize(),
+      new THREE.Vector3(1, -t, 0).normalize(),
+      new THREE.Vector3(0, -1, t).normalize(),
+      new THREE.Vector3(0, 1, t).normalize(),
+      new THREE.Vector3(0, -1, -t).normalize(),
+      new THREE.Vector3(0, 1, -t).normalize(),
+      new THREE.Vector3(t, 0, -1).normalize(),
+      new THREE.Vector3(t, 0, 1).normalize(),
+      new THREE.Vector3(-t, 0, -1).normalize(),
+      new THREE.Vector3(-t, 0, 1).normalize()
+    ];
+
+    for (let i = 0; i < this.lodChunkBounds.length; i++) {
+      const boundCenter = chunkCenters[i].clone().multiplyScalar(this.radius).add(this.center);
+      this.lodChunkBounds[i].center.copy(boundCenter);
+    }
   }
 
   private getHeightVariation(position: THREE.Vector3): number {
@@ -2335,29 +2365,17 @@ export class Planet {
     return false;
   }
 
-  // Build water side faces only for edges that border air blocks
+  // Build water side faces that extend from water surface down to exposed air
+  // This creates walls where water meets air gaps in neighboring columns
   private buildWaterSideFaces(
     column: PlanetColumn,
-    depth: number,
-    innerRadius: number,
+    waterSurfaceDepth: number,
+    _innerRadius: number,
     outerRadius: number,
     waterData: GeometryData
   ): void {
     const tile = column.tile;
     const numSides = tile.vertices.length;
-
-    // Scale vertices to inner and outer radii
-    const innerVerts: THREE.Vector3[] = [];
-    const outerVerts: THREE.Vector3[] = [];
-
-    for (const v of tile.vertices) {
-      const dir = v.clone().normalize();
-      innerVerts.push(dir.clone().multiplyScalar(innerRadius));
-      outerVerts.push(dir.clone().multiplyScalar(outerRadius));
-    }
-
-    // For each edge, find the neighbor that shares it
-    // Two tiles share an edge if they both contain the two edge vertices
     const edgeThreshold = 0.001; // Tolerance for vertex matching
 
     // Check each edge
@@ -2367,12 +2385,12 @@ export class Planet {
       const edgeV2 = tile.vertices[next];
 
       // Find which neighbor shares this edge
-      let neighborIsAir = false;
+      let neighborColumn: PlanetColumn | undefined;
       for (const neighborIndex of tile.neighbors) {
-        const neighborColumn = this.columns.get(neighborIndex);
-        if (!neighborColumn) continue;
+        const candidate = this.columns.get(neighborIndex);
+        if (!candidate) continue;
 
-        const neighborTile = neighborColumn.tile;
+        const neighborTile = candidate.tile;
 
         // Check if this neighbor has both edge vertices
         let hasV1 = false;
@@ -2383,34 +2401,60 @@ export class Planet {
         }
 
         if (hasV1 && hasV2) {
-          // This neighbor shares this edge - check if it's air at this depth
-          if (depth < neighborColumn.blocks.length) {
-            neighborIsAir = neighborColumn.blocks[depth] === HexBlockType.AIR;
-          }
+          neighborColumn = candidate;
           break;
         }
       }
 
-      if (!neighborIsAir) continue;
+      if (!neighborColumn) continue;
 
-      const outerV1 = outerVerts[i];
-      const outerV2 = outerVerts[next];
-      const innerV1 = innerVerts[i];
-      const innerV2 = innerVerts[next];
+      // Find the depth range where we need water walls
+      // Only draw water walls where neighbor has AIR - solid blocks draw their own walls
+      // This prevents z-fighting between water walls and terrain walls
+
+      // Check if neighbor has air at water surface level - if not, skip this edge entirely
+      // (the terrain side wall will handle the visual boundary)
+      if (neighborColumn.blocks[waterSurfaceDepth] !== HexBlockType.AIR) continue;
+
+      // Find deepest contiguous air block in neighbor starting from water surface
+      let deepestAirDepth = waterSurfaceDepth;
+      for (let d = waterSurfaceDepth + 1; d < neighborColumn.blocks.length; d++) {
+        if (neighborColumn.blocks[d] === HexBlockType.AIR) {
+          deepestAirDepth = d;
+        } else {
+          // Hit solid or water, stop searching
+          break;
+        }
+      }
+
+      // Calculate wall geometry from water surface down to deepest air
+      const wallTopRadius = outerRadius; // Water surface (already offset)
+      const wallBottomRadius = this.radius - (deepestAirDepth + 1) * this.BLOCK_HEIGHT;
+
+      if (wallBottomRadius >= wallTopRadius) continue; // No wall needed
+
+      // Scale vertices for top and bottom of wall
+      const dir1 = edgeV1.clone().normalize();
+      const dir2 = edgeV2.clone().normalize();
+
+      const topV1 = dir1.clone().multiplyScalar(wallTopRadius);
+      const topV2 = dir2.clone().multiplyScalar(wallTopRadius);
+      const bottomV1 = dir1.clone().multiplyScalar(wallBottomRadius);
+      const bottomV2 = dir2.clone().multiplyScalar(wallBottomRadius);
 
       // Calculate side normal using cross product of quad edges
-      const edge1 = innerV2.clone().sub(innerV1);
-      const edge2 = outerV1.clone().sub(innerV1);
+      const edge1 = bottomV2.clone().sub(bottomV1);
+      const edge2 = topV1.clone().sub(bottomV1);
       const sideNormal = edge1.clone().cross(edge2).normalize();
 
       const baseIdx = waterData.vertexOffset;
 
-      // Four vertices for this side face
+      // Four vertices for this side face (bottom-left, bottom-right, top-right, top-left)
       waterData.positions.push(
-        innerV1.x, innerV1.y, innerV1.z,
-        innerV2.x, innerV2.y, innerV2.z,
-        outerV2.x, outerV2.y, outerV2.z,
-        outerV1.x, outerV1.y, outerV1.z
+        bottomV1.x, bottomV1.y, bottomV1.z,
+        bottomV2.x, bottomV2.y, bottomV2.z,
+        topV2.x, topV2.y, topV2.z,
+        topV1.x, topV1.y, topV1.z
       );
 
       for (let j = 0; j < 4; j++) {
@@ -2420,7 +2464,7 @@ export class Planet {
       // UVs for side face
       waterData.uvs.push(0, 0, 1, 0, 1, 1, 0, 1);
 
-      // Sky light (water is always at surface level)
+      // Sky light (water walls still get surface lighting)
       waterData.skyLight.push(1.0, 1.0, 1.0, 1.0);
 
       // Vertex colors (full brightness for water)
@@ -2754,7 +2798,8 @@ export class Planet {
 
     for (const cell of cellsToFill) {
       const column = this.columns.get(cell.tileIndex);
-      if (column && column.blocks[cell.depth] !== HexBlockType.WATER) {
+      // Only place water in AIR blocks - never overwrite solid blocks (prevents z-fighting)
+      if (column && column.blocks[cell.depth] === HexBlockType.AIR) {
         column.blocks[cell.depth] = HexBlockType.WATER;
         column.isDirty = true;
         this.needsRebatch = true;

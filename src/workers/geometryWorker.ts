@@ -1,54 +1,19 @@
 // Geometry Worker - builds terrain geometry off the main thread
 // Uses plain JavaScript math instead of THREE.js (not available in workers)
 
-// Vector3-like operations using plain objects
-interface Vec3 {
-  x: number;
-  y: number;
-  z: number;
-}
-
-function vec3(x: number, y: number, z: number): Vec3 {
-  return { x, y, z };
-}
-
-function vec3Clone(v: Vec3): Vec3 {
-  return { x: v.x, y: v.y, z: v.z };
-}
-
-function vec3Sub(a: Vec3, b: Vec3): Vec3 {
-  return { x: a.x - b.x, y: a.y - b.y, z: a.z - b.z };
-}
-
-function vec3Scale(v: Vec3, s: number): Vec3 {
-  return { x: v.x * s, y: v.y * s, z: v.z * s };
-}
-
-function vec3Dot(a: Vec3, b: Vec3): number {
-  return a.x * b.x + a.y * b.y + a.z * b.z;
-}
-
-function vec3Cross(a: Vec3, b: Vec3): Vec3 {
-  return {
-    x: a.y * b.z - a.z * b.y,
-    y: a.z * b.x - a.x * b.z,
-    z: a.x * b.y - a.y * b.x
-  };
-}
-
-function vec3Length(v: Vec3): number {
-  return Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
-}
-
-function vec3Normalize(v: Vec3): Vec3 {
-  const len = vec3Length(v);
-  if (len === 0) return { x: 0, y: 0, z: 0 };
-  return { x: v.x / len, y: v.y / len, z: v.z / len };
-}
-
-function vec3Negate(v: Vec3): Vec3 {
-  return { x: -v.x, y: -v.y, z: -v.z };
-}
+import { HexBlockType } from '../shared/blockTypes';
+import {
+  Vec3,
+  vec3,
+  vec3Clone,
+  vec3Sub,
+  vec3Scale,
+  vec3Dot,
+  vec3Cross,
+  vec3Normalize,
+  vec3Negate
+} from '../shared/vec3';
+import { SKY_LIGHT_FALLOFF, MIN_SKY_LIGHT } from '../shared/geometry';
 
 // Geometry data structure (matches Planet.ts)
 interface GeometryData {
@@ -80,17 +45,7 @@ interface ColumnData {
   blocks: number[];  // HexBlockType values
 }
 
-// Block types (must match HexBlock.ts)
-const HexBlockType = {
-  AIR: 0,
-  STONE: 1,
-  DIRT: 2,
-  GRASS: 3,
-  WATER: 4,
-  SAND: 5,
-  WOOD: 6,
-  LEAVES: 7
-};
+// HexBlockType is imported from shared/blockTypes
 
 // Config passed from main thread
 interface WorkerConfig {
@@ -309,7 +264,7 @@ function createFaceGeometry(
         normals.push(sideNormal.x, sideNormal.y, sideNormal.z);
       }
 
-      uvs.push(0, 0, 1, 0, 1, 0.5, 0, 0.5);
+      uvs.push(0, 0, 1, 0, 1, 1, 0, 1);
 
       indices.push(
         vertexIndex, vertexIndex + 1, vertexIndex + 2,
@@ -375,9 +330,7 @@ function buildColumnGeometry(
     const useStoneTexture = blockType === HexBlockType.STONE;
     const useDirtTexture = blockType === HexBlockType.DIRT;
 
-    // Calculate sky light
-    const SKY_LIGHT_FALLOFF = 0.8;
-    const MIN_SKY_LIGHT = 0.05;
+    // Calculate sky light (constants imported from shared/geometry)
     let skyLightLevel = 1.0;
     if (depthFromSurface > 0) {
       skyLightLevel = Math.max(MIN_SKY_LIGHT, Math.pow(SKY_LIGHT_FALLOFF, depthFromSurface));

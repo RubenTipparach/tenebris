@@ -1085,40 +1085,42 @@ export class PlanetPlayer {
     const newTile = this.currentPlanet.getTileAtPoint(newPosition);
     if (!newTile) return true;
 
-    // Find destination ground level (first air-to-solid transition)
-    let destGroundDepth = -1;
+    // Get current ground level
+    const playerFeetRadius = this.position.distanceTo(this.currentPlanet.center);
+    const currentGroundDepth = Math.round(this.currentPlanet.radius - playerFeetRadius);
+    const currentRadius = this.currentPlanet.radius - currentGroundDepth;
+
+    // Find ALL walkable floors at destination, then check if any are reachable
+    // A floor is reachable if it's within AUTO_STEP_HEIGHT above, OR any amount below
+    let foundAnyFloor = false;
+    let hasReachableFloor = false;
+
     for (let d = 0; d < MAX_TERRAIN_DEPTH - 1; d++) {
       const blockAbove = d > 0 ? getCachedBlock(this.currentPlanet, newTile.index, d - 1) : HexBlockType.AIR;
       const block = getCachedBlock(this.currentPlanet, newTile.index, d);
       const isAbovePassable = blockAbove === HexBlockType.AIR || blockAbove === HexBlockType.WATER;
       const isCurrentSolid = block !== HexBlockType.AIR && block !== HexBlockType.WATER;
+
       if (isAbovePassable && isCurrentSolid) {
-        destGroundDepth = d;
-        break;
+        // This is a walkable floor at depth d
+        foundAnyFloor = true;
+        const destRadius = this.currentPlanet.radius - d;
+        const radiusDiff = destRadius - currentRadius;
+
+        // Can step down any amount (gravity handles falling)
+        // Can only step UP within AUTO_STEP_HEIGHT
+        if (radiusDiff <= PlayerConfig.AUTO_STEP_HEIGHT) {
+          hasReachableFloor = true;
+          break; // Found a reachable floor, no need to keep searching
+        }
       }
     }
 
-    // If no ground at destination, player can walk there (will fall)
-    if (destGroundDepth < 0) return true;
+    // If no floors exist at all, player can walk there (will fall into void or water)
+    if (!foundAnyFloor) return true;
 
-    // Get current ground level
-    const playerFeetRadius = this.position.distanceTo(this.currentPlanet.center);
-    const currentGroundDepth = Math.round(this.currentPlanet.radius - playerFeetRadius);
-
-    // Calculate height difference in RADIUS (positive = destination is HIGHER/taller)
-    // destRadius - currentRadius: positive means stepping UP, negative means stepping DOWN
-    const destRadius = this.currentPlanet.radius - destGroundDepth;
-    const currentRadius = this.currentPlanet.radius - currentGroundDepth;
-    const radiusDiff = destRadius - currentRadius;
-
-    // Can step down any amount (gravity handles falling)
-    // Can only step UP within AUTO_STEP_HEIGHT
-    if (radiusDiff > PlayerConfig.AUTO_STEP_HEIGHT) {
-      // Destination is too high - can't step up
-      return false;
-    }
-
-    return true;
+    // If floors exist but none are reachable (all too high), block movement
+    return hasReachableFloor;
   }
 
   // Wall collision check - checks if solid blocks at the destination would block the player

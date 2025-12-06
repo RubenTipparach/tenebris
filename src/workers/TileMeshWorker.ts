@@ -1,6 +1,9 @@
 // Web Worker for generating tile mesh geometry off the main thread
 // This worker receives tile data and returns raw geometry arrays
 
+import { HexBlockType, isSolid } from '../shared/blockTypes';
+import { SKY_LIGHT_FALLOFF, MIN_SKY_LIGHT } from '../shared/geometry';
+
 export interface TileVertexData {
   index: number;
   center: { x: number; y: number; z: number };
@@ -43,20 +46,9 @@ export interface GeometryArrays {
   colors?: Float32Array;   // Optional vertex colors for sun lighting
 }
 
-// Block types (must match HexBlockType enum)
-const AIR = 0;
-// const GRASS = 1;  // Unused - kept for reference
-// const STONE = 2;  // Unused - kept for reference
-// const DIRT = 3;   // Unused - kept for reference
-const WATER = 4;
-
-function isSolid(blockType: number): boolean {
-  return blockType !== AIR && blockType !== WATER;
-}
-
-// Sky light constants
-const SKY_LIGHT_FALLOFF = 0.8; // Each level deeper multiplies by this
-const MIN_SKY_LIGHT = 0.05; // Minimum light in deep caves
+// Use shared block type constants
+const AIR = HexBlockType.AIR;
+const WATER = HexBlockType.WATER;
 
 // Lightweight geometry result (before adding lighting)
 interface RawGeometry {
