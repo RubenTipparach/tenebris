@@ -21,19 +21,9 @@ REM Deploy to heavy-photon-site if configured
 if defined HEAVY_PHOTON_PATH (
     echo Deploying to heavy-photon-site...
 
-    REM Copy index.html to docs/tenebris folder
+    REM Copy entire dist folder contents to docs/tenebris
     if not exist "%HEAVY_PHOTON_PATH%\docs\tenebris" mkdir "%HEAVY_PHOTON_PATH%\docs\tenebris"
-    copy /Y "dist\index.html" "%HEAVY_PHOTON_PATH%\docs\tenebris\index.html"
-
-    REM Copy assets folder to docs/assets
-    if exist "dist\assets" (
-        xcopy /Y /E /I "dist\assets" "%HEAVY_PHOTON_PATH%\docs\assets"
-    )
-
-    REM Copy textures folder to docs/textures
-    if exist "dist\textures" (
-        xcopy /Y /E /I "dist\textures" "%HEAVY_PHOTON_PATH%\docs\textures"
-    )
+    xcopy /Y /E /I "dist\*" "%HEAVY_PHOTON_PATH%\docs\tenebris"
 
     echo.
     echo Deployment complete!

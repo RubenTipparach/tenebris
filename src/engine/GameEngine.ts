@@ -182,10 +182,13 @@ export class GameEngine {
 
   private updateWaterMaterialUniforms(material: THREE.ShaderMaterial): void {
     if (this.depthRenderTarget) {
+      // Resolution must match the actual render target size (with pixel ratio applied)
+      // gl_FragCoord is in actual pixels, so resolution must also be in actual pixels
+      const pixelRatio = this.renderer.getPixelRatio();
       material.uniforms.depthTexture = { value: this.depthRenderTarget.depthTexture };
       material.uniforms.cameraNear = { value: this.camera.near };
       material.uniforms.cameraFar = { value: this.camera.far };
-      material.uniforms.resolution = { value: new THREE.Vector2(window.innerWidth, window.innerHeight) };
+      material.uniforms.resolution = { value: new THREE.Vector2(window.innerWidth * pixelRatio, window.innerHeight * pixelRatio) };
       material.uniforms.useDepthFog = { value: 1.0 };
     } else {
       // No depth render target (mobile) - disable depth-based fog

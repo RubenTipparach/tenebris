@@ -256,7 +256,7 @@ function createSeparateGeometries(
         normals.push(sideNormalX, sideNormalY, sideNormalZ);
       }
 
-      uvs.push(0, 0, 1, 0, 1, 0.5, 0, 0.5);
+      uvs.push(0, 0, 1, 0, 1, 1, 0, 1);
 
       const baseIdx = vertexIndex;
       indices.push(baseIdx, baseIdx + 1, baseIdx + 2, baseIdx, baseIdx + 2, baseIdx + 3);

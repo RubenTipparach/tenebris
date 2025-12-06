@@ -6,6 +6,8 @@ export enum ItemType {
   GRASS = 3,
   WOOD = 4,
   LEAVES = 5,
+  LOG = 6,
+  SAND = 7,
 }
 
 // Item metadata
@@ -23,6 +25,8 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
   [ItemType.GRASS]: { name: 'Grass', stackSize: 64, texture: '/textures/grass.png', mineTime: 0.6 },
   [ItemType.WOOD]: { name: 'Wood', stackSize: 64, texture: '/textures/wood.png', mineTime: 1.0 },
   [ItemType.LEAVES]: { name: 'Leaves', stackSize: 64, texture: '/textures/leaves.png', mineTime: 0.3 },
+  [ItemType.LOG]: { name: 'Log', stackSize: 64, texture: '/textures/icons/logs.png', mineTime: 1.2 },
+  [ItemType.SAND]: { name: 'Sand', stackSize: 64, texture: '/textures/sand.png', mineTime: 0.5 },
 };
 
 // Inventory slot
@@ -155,5 +159,31 @@ export class Inventory {
       return true;
     }
     return false;
+  }
+
+  // Get all slots (for inventory UI)
+  public getAllSlots(): InventorySlot[] {
+    return this.slots;
+  }
+
+  // Swap two slots in the inventory
+  public swapSlots(fromIndex: number, toIndex: number): void {
+    if (fromIndex < 0 || fromIndex >= this.totalSlots ||
+        toIndex < 0 || toIndex >= this.totalSlots ||
+        fromIndex === toIndex) {
+      return;
+    }
+
+    const temp = { ...this.slots[fromIndex] };
+    this.slots[fromIndex] = { ...this.slots[toIndex] };
+    this.slots[toIndex] = temp;
+  }
+
+  // Get a specific slot by index
+  public getSlot(index: number): InventorySlot | null {
+    if (index < 0 || index >= this.totalSlots) {
+      return null;
+    }
+    return this.slots[index];
   }
 }

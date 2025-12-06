@@ -25,6 +25,24 @@ interface ChunkGeometry {
   dirtSkyLight: number[];
   dirtIndices: number[];
   dirtVertexOffset: number;
+  stonePositions: number[];
+  stoneNormals: number[];
+  stoneUvs: number[];
+  stoneSkyLight: number[];
+  stoneIndices: number[];
+  stoneVertexOffset: number;
+  sandPositions: number[];
+  sandNormals: number[];
+  sandUvs: number[];
+  sandSkyLight: number[];
+  sandIndices: number[];
+  sandVertexOffset: number;
+  woodPositions: number[];
+  woodNormals: number[];
+  woodUvs: number[];
+  woodSkyLight: number[];
+  woodIndices: number[];
+  woodVertexOffset: number;
   waterPositions: number[];
   waterNormals: number[];
   waterUvs: number[];
@@ -47,6 +65,9 @@ function createEmptyChunkGeometry(): ChunkGeometry {
   return {
     grassPositions: [], grassNormals: [], grassUvs: [], grassSkyLight: [], grassIndices: [], grassVertexOffset: 0,
     dirtPositions: [], dirtNormals: [], dirtUvs: [], dirtSkyLight: [], dirtIndices: [], dirtVertexOffset: 0,
+    stonePositions: [], stoneNormals: [], stoneUvs: [], stoneSkyLight: [], stoneIndices: [], stoneVertexOffset: 0,
+    sandPositions: [], sandNormals: [], sandUvs: [], sandSkyLight: [], sandIndices: [], sandVertexOffset: 0,
+    woodPositions: [], woodNormals: [], woodUvs: [], woodSkyLight: [], woodIndices: [], woodVertexOffset: 0,
     waterPositions: [], waterNormals: [], waterUvs: [], waterIndices: [], waterVertexOffset: 0,
     sidePositions: [], sideNormals: [], sideUvs: [], sideSkyLight: [], sideIndices: [], sideVertexOffset: 0,
     waterSidePositions: [], waterSideNormals: [], waterSideUvs: [], waterSideIndices: [], waterSideVertexOffset: 0
@@ -361,7 +382,29 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
         skyLight = chunk.dirtSkyLight;
         indices = chunk.dirtIndices;
         vertexOffset = chunk.dirtVertexOffset;
+      } else if (surfaceBlockType === HexBlockType.STONE) {
+        positions = chunk.stonePositions;
+        normals = chunk.stoneNormals;
+        uvs = chunk.stoneUvs;
+        skyLight = chunk.stoneSkyLight;
+        indices = chunk.stoneIndices;
+        vertexOffset = chunk.stoneVertexOffset;
+      } else if (surfaceBlockType === HexBlockType.SAND) {
+        positions = chunk.sandPositions;
+        normals = chunk.sandNormals;
+        uvs = chunk.sandUvs;
+        skyLight = chunk.sandSkyLight;
+        indices = chunk.sandIndices;
+        vertexOffset = chunk.sandVertexOffset;
+      } else if (surfaceBlockType === HexBlockType.WOOD) {
+        positions = chunk.woodPositions;
+        normals = chunk.woodNormals;
+        uvs = chunk.woodUvs;
+        skyLight = chunk.woodSkyLight;
+        indices = chunk.woodIndices;
+        vertexOffset = chunk.woodVertexOffset;
       } else {
+        // GRASS, LEAVES, or any other type defaults to grass
         positions = chunk.grassPositions;
         normals = chunk.grassNormals;
         uvs = chunk.grassUvs;
@@ -404,6 +447,12 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
         chunk.waterVertexOffset = vertexOffset;
       } else if (surfaceBlockType === HexBlockType.DIRT) {
         chunk.dirtVertexOffset = vertexOffset;
+      } else if (surfaceBlockType === HexBlockType.STONE) {
+        chunk.stoneVertexOffset = vertexOffset;
+      } else if (surfaceBlockType === HexBlockType.SAND) {
+        chunk.sandVertexOffset = vertexOffset;
+      } else if (surfaceBlockType === HexBlockType.WOOD) {
+        chunk.woodVertexOffset = vertexOffset;
       } else {
         chunk.grassVertexOffset = vertexOffset;
       }
@@ -440,10 +489,10 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
         if (!neighborInfo) continue;
 
         const neighborRadius = neighborInfo.radius;
-        const neighborIsWater = neighborInfo.isWater;
 
-        const needsWall = thisRadius > neighborRadius || (thisIsWater && !neighborIsWater);
-        if (!needsWall) continue;
+        // Generate wall only when this tile is higher than neighbor
+        // This applies to both solid and water tiles - walls show height differences
+        if (thisRadius <= neighborRadius) continue;
 
         const next = (i + 1) % numSides;
         const nv1 = normalizedVerts[i];
@@ -481,7 +530,7 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
         );
 
         normals.push(snx, sny, snz, snx, sny, snz, snx, sny, snz, snx, sny, snz);
-        uvs.push(0, 0, 1, 0, 1, 0.5, 0, 0.5);
+        uvs.push(0, 0, 1, 0, 1, 1, 0, 1);
         if (skyLight) skyLight.push(1.0, 1.0, 1.0, 1.0); // Full sky exposure for LOD
 
         indices.push(baseIdx, baseIdx + 1, baseIdx + 2);
@@ -558,7 +607,7 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
         );
 
         chunk.waterSideNormals.push(snx, sny, snz, snx, sny, snz, snx, sny, snz, snx, sny, snz);
-        chunk.waterSideUvs.push(0, 0, 1, 0, 1, 0.5, 0, 0.5);
+        chunk.waterSideUvs.push(0, 0, 1, 0, 1, 1, 0, 1);
 
         chunk.waterSideIndices.push(baseIdx, baseIdx + 1, baseIdx + 2);
         chunk.waterSideIndices.push(baseIdx, baseIdx + 2, baseIdx + 3);

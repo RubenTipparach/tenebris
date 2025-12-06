@@ -124,8 +124,11 @@ export class PlanetPlayer {
     this.currentPlanet = planet;
     this.velocity = new THREE.Vector3();
 
-    // Start on the surface of the planet
-    this.position = new THREE.Vector3(0, planet.radius + 5, 0);
+    // Start on the surface of the planet (1m above ground)
+    // Use getSurfaceHeightInDirection to get actual terrain height, not just base radius
+    const spawnDirection = new THREE.Vector3(0, 1, 0);
+    const surfaceHeight = planet.getSurfaceHeightInDirection(spawnDirection);
+    this.position = new THREE.Vector3(0, surfaceHeight + 1, 0);
     this.updateLocalOrientation();
     this.updateOrientationFromLocal();
   }
@@ -570,7 +573,7 @@ export class PlanetPlayer {
     const endDepth = groundDepth + 1; // Include the ground block
 
     console.log(`Sampling ${tilesToSample.size} tiles, depths ${startDepth} to ${endDepth}`);
-    console.log(`Legend: . = AIR, ~ = WATER, # = SOLID, @ = PLAYER BODY OVERLAP`);
+    console.log(`Legend: . = AIR, ~ = WATER, S = SAND, G = GRASS, # = SOLID, @ = PLAYER BODY OVERLAP`);
     console.log('');
 
     // Build a table: rows = depth, columns = tiles
@@ -592,6 +595,8 @@ export class PlanetPlayer {
         let symbol = '?';
         if (block === HexBlockType.AIR) symbol = '.';
         else if (block === HexBlockType.WATER) symbol = '~';
+        else if (block === HexBlockType.SAND) symbol = 'S';
+        else if (block === HexBlockType.GRASS) symbol = 'G';
         else symbol = '#';
 
         // Mark if player body would overlap this block

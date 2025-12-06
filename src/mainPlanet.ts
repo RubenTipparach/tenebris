@@ -1,3 +1,4 @@
+import * as THREE from 'three';
 import { GameEngine } from './engine/GameEngine';
 import { InputManager } from './engine/InputManager';
 import { Planet } from './planet/Planet';
@@ -45,8 +46,15 @@ class PlanetGame {
     // Setup pointer lock UI
     this.inputManager.setPointerLockCallback((locked) => {
       const instructions = document.getElementById('instructions');
+      const inventoryMenu = document.getElementById('inventory-menu');
+      const isInventoryOpen = inventoryMenu?.classList.contains('active');
+
       if (instructions) {
-        instructions.style.display = locked ? 'none' : 'block';
+        // Don't show main menu if inventory is open
+        instructions.style.display = (locked || isInventoryOpen) ? 'none' : 'block';
+        if (!locked && !isInventoryOpen) {
+          console.log('Menu opened');
+        }
       }
       const crosshair = document.getElementById('crosshair');
       if (crosshair) {
@@ -93,9 +101,11 @@ class PlanetGame {
       this.treeManager.scatterTrees(
         this.earth.center,
         this.earth.radius,
-        50, // Number of trees
+        PlayerConfig.TREE_COUNT,
         (direction) => this.earth.getSurfaceHeightInDirection(direction),
-        (direction) => this.earth.isUnderwaterInDirection(direction) // Skip underwater locations
+        (direction) => this.earth.isUnderwaterInDirection(direction), // Skip underwater locations
+        PlayerConfig.TERRAIN_SEED, // Use terrain seed for deterministic placement
+        (direction) => this.earth.getTileIndexInDirection(direction) // For visibility tracking
       );
 
       // Give block interaction access to tree manager for mining trees
@@ -177,10 +187,26 @@ class PlanetGame {
     // Update clouds (slow rotation)
     this.earthClouds.update(deltaTime);
 
-    // Update block interaction
+    // Update tree visibility:
+    // - In orbit view (distant LOD): hide all trees (too far to see detail)
+    // - Otherwise: show all trees (both detailed terrain and LOD terrain are visible)
+    // Note: When on ground, both detailed terrain (near player) and LOD terrain (rest of planet)
+    // are rendered together, so all trees should be visible for consistent appearance.
+    if (this.earth.isInOrbitView()) {
+      this.treeManager.setAllVisible(false);
+    } else {
+      this.treeManager.setAllVisible(true);
+    }
+
+    // Update block interaction (only when game is active - pointer locked)
     profiler.begin('Block Interaction');
     const input = this.inputManager.getState();
-    this.blockInteraction.update(deltaTime, input.leftClick, input.rightClick);
+    const isGameActive = this.inputManager.isLocked();
+    this.blockInteraction.update(
+      deltaTime,
+      isGameActive && input.leftClick,
+      isGameActive && input.rightClick
+    );
     profiler.end('Block Interaction');
   }
 
@@ -267,15 +293,19 @@ class PlanetGame {
         return;
     }
 
-    const surfaceOffset = 5; // Small offset above surface
+    const surfaceOffset = 1; // 1m above surface
     const playerPos = planet.center.clone();
 
-    // Position player on the surface
+    // Position player on the surface using actual terrain height
     // For Earth, position on top (Y+), for Moon position facing Earth (X-)
     if (planetName === 'earth') {
-      playerPos.y += planet.radius + surfaceOffset;
+      const spawnDirection = new THREE.Vector3(0, 1, 0);
+      const surfaceHeight = planet.getSurfaceHeightInDirection(spawnDirection);
+      playerPos.y += surfaceHeight + surfaceOffset;
     } else {
-      playerPos.x -= planet.radius + surfaceOffset;
+      const spawnDirection = new THREE.Vector3(-1, 0, 0);
+      const surfaceHeight = planet.getSurfaceHeightInDirection(spawnDirection);
+      playerPos.x -= surfaceHeight + surfaceOffset;
     }
 
     this.player.position.copy(playerPos);

@@ -1,0 +1,930 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tenebris - Voxel FPS Game</title>
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-0JPCDZD6LT"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+
+  gtag('config', 'G-0JPCDZD6LT');
+</script>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #000;
+    }
+
+    #game-container {
+      width: 100%;
+      height: 100%;
+    }
+
+    canvas {
+      display: block;
+    }
+
+    #crosshair {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 20px;
+      height: 20px;
+      pointer-events: none;
+      z-index: 100;
+    }
+
+    #crosshair::before,
+    #crosshair::after {
+      content: '';
+      position: absolute;
+      background: white;
+      box-shadow: 0 0 2px rgba(0,0,0,0.8);
+    }
+
+    #crosshair::before {
+      width: 2px;
+      height: 100%;
+      left: 50%;
+      transform: translateX(-50%);
+    }
+
+    #crosshair::after {
+      width: 100%;
+      height: 2px;
+      top: 50%;
+      transform: translateY(-50%);
+    }
+
+    #ui-overlay {
+      position: fixed;
+      top: 10px;
+      left: 10px;
+      color: white;
+      font-family: 'Courier New', monospace;
+      font-size: 14px;
+      text-shadow: 1px 1px 2px black;
+      pointer-events: none;
+      z-index: 100;
+    }
+
+    #ui-overlay-right {
+      position: fixed;
+      top: 10px;
+      right: 10px;
+      color: white;
+      font-family: 'Courier New', monospace;
+      font-size: 14px;
+      text-shadow: 1px 1px 2px black;
+      pointer-events: none;
+      z-index: 100;
+      text-align: right;
+    }
+
+    #instructions {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      color: white;
+      font-family: 'Courier New', monospace;
+      text-align: center;
+      background: rgba(0, 0, 0, 0.8);
+      padding: 30px;
+      border-radius: 10px;
+      z-index: 200;
+    }
+
+    #instructions h1 {
+      margin-bottom: 20px;
+      color: #4CAF50;
+    }
+
+    #instructions p {
+      margin: 10px 0;
+      line-height: 1.5;
+    }
+
+    #instructions .key {
+      background: #333;
+      padding: 2px 8px;
+      border-radius: 3px;
+      border: 1px solid #555;
+    }
+
+    #hotbar {
+      position: fixed;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      gap: 5px;
+      z-index: 100;
+    }
+
+    .hotbar-slot {
+      width: 50px;
+      height: 50px;
+      background: rgba(0, 0, 0, 0.6);
+      border: 2px solid #555;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+      font-family: 'Courier New', monospace;
+      font-size: 12px;
+    }
+
+    .hotbar-slot.selected {
+      border-color: #4CAF50;
+      background: rgba(76, 175, 80, 0.3);
+    }
+
+    .hotbar-slot img {
+      width: 40px;
+      height: 40px;
+      image-rendering: pixelated;
+    }
+
+    .hotbar-slot .item-count {
+      position: absolute;
+      bottom: 2px;
+      right: 4px;
+      font-size: 12px;
+      font-weight: bold;
+      text-shadow: 1px 1px 1px black;
+    }
+
+    .hotbar-slot {
+      position: relative;
+    }
+
+    /* Settings section in instructions menu */
+    #instructions .settings-section {
+      margin-top: 20px;
+      padding-top: 15px;
+      border-top: 1px solid #444;
+    }
+
+    #instructions .settings-section h3 {
+      color: #4CAF50;
+      margin-bottom: 10px;
+      font-size: 14px;
+    }
+
+    .settings-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin: 8px 0;
+      padding: 8px 12px;
+      background: rgba(255, 255, 255, 0.05);
+      border-radius: 5px;
+    }
+
+    .settings-row label {
+      cursor: pointer;
+      font-size: 13px;
+    }
+
+    .toggle-switch {
+      position: relative;
+      width: 44px;
+      height: 22px;
+      cursor: pointer;
+    }
+
+    .toggle-switch input {
+      position: absolute;
+      opacity: 0;
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      cursor: pointer;
+      z-index: 1;
+    }
+
+    .toggle-slider {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background-color: #555;
+      border-radius: 22px;
+      transition: 0.3s;
+    }
+
+    .toggle-slider:before {
+      position: absolute;
+      content: "";
+      height: 16px;
+      width: 16px;
+      left: 3px;
+      bottom: 3px;
+      background-color: white;
+      border-radius: 50%;
+      transition: 0.3s;
+    }
+
+    .toggle-switch input:checked + .toggle-slider {
+      background-color: #4CAF50;
+    }
+
+    .toggle-switch input:checked + .toggle-slider:before {
+      transform: translateX(22px);
+    }
+
+    /* Start button */
+    #start-button {
+      display: block;
+      margin: 20px auto 0;
+      padding: 12px 30px;
+      background: #4CAF50;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      font-family: 'Courier New', monospace;
+      font-size: 14px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    #start-button:hover {
+      background: #45a049;
+    }
+
+    #start-button:active {
+      background: #3d8b40;
+    }
+
+    /* Teleport dropdown */
+    .teleport-select {
+      padding: 6px 12px;
+      background: #333;
+      color: white;
+      border: 1px solid #555;
+      border-radius: 4px;
+      font-family: 'Courier New', monospace;
+      font-size: 12px;
+      cursor: pointer;
+      outline: none;
+    }
+
+    .teleport-select:hover {
+      border-color: #777;
+    }
+
+    .teleport-select:focus {
+      border-color: #4CAF50;
+    }
+
+    .teleport-select option {
+      background: #333;
+    }
+
+    /* Menu tabs */
+    .menu-tabs {
+      display: flex;
+      justify-content: center;
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+
+    .menu-tab {
+      padding: 8px 20px;
+      background: transparent;
+      color: #888;
+      border: 1px solid #555;
+      border-radius: 5px;
+      font-family: 'Courier New', monospace;
+      font-size: 12px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .menu-tab:hover {
+      color: white;
+      border-color: #777;
+    }
+
+    .menu-tab.active {
+      color: #4CAF50;
+      border-color: #4CAF50;
+      background: rgba(76, 175, 80, 0.1);
+    }
+
+    .tab-content {
+      display: none;
+    }
+
+    .tab-content.active {
+      display: block;
+    }
+
+    .controls-grid {
+      text-align: left;
+      max-width: 300px;
+      margin: 0 auto;
+    }
+
+    .controls-grid p {
+      display: flex;
+      justify-content: space-between;
+      padding: 5px 0;
+      border-bottom: 1px solid #333;
+      color: white;
+    }
+
+    /* Mining progress bar */
+    #mining-progress-container {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, 30px);
+      width: 200px;
+      height: 8px;
+      background: rgba(0, 0, 0, 0.7);
+      border: 1px solid #555;
+      border-radius: 4px;
+      overflow: hidden;
+      z-index: 100;
+      display: none;
+    }
+
+    #mining-progress-bar {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #4CAF50, #8BC34A);
+      transition: width 0.05s linear;
+    }
+
+    #mining-progress-container.active {
+      display: block;
+    }
+
+    /* Mobile Controls */
+    #mobile-controls {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      z-index: 150;
+    }
+
+    /* Left and right control areas - Portrait mode (default) */
+    #left-controls, #right-controls {
+      position: absolute;
+      bottom: 80px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      pointer-events: auto;
+    }
+
+    #left-controls {
+      left: 20px;
+    }
+
+    #right-controls {
+      right: 20px;
+    }
+
+    /* Joystick styling */
+    .joystick-container {
+      pointer-events: auto;
+      touch-action: none;
+      order: 2; /* Joystick below buttons in portrait */
+    }
+
+    .joystick-base {
+      width: 100px;
+      height: 100px;
+      background: rgba(255, 255, 255, 0.15);
+      border: 3px solid rgba(255, 255, 255, 0.4);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .joystick-thumb {
+      width: 45px;
+      height: 45px;
+      background: rgba(255, 255, 255, 0.5);
+      border: 2px solid rgba(255, 255, 255, 0.8);
+      border-radius: 50%;
+      transition: transform 0.05s ease-out;
+    }
+
+    /* Action buttons - Portrait: horizontal row above joystick */
+    #left-buttons, #right-buttons {
+      display: flex;
+      flex-direction: row;
+      gap: 10px;
+      pointer-events: auto;
+      order: 1; /* Buttons above joystick in portrait */
+    }
+
+    .action-btn {
+      width: 50px;
+      height: 50px;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.2);
+      border: 3px solid rgba(255, 255, 255, 0.5);
+      color: white;
+      font-family: 'Courier New', monospace;
+      font-size: 9px;
+      font-weight: bold;
+      cursor: pointer;
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-shadow: 1px 1px 2px black;
+    }
+
+    .action-btn:active {
+      background: rgba(255, 255, 255, 0.4);
+      transform: scale(0.95);
+    }
+
+    .action-btn.attack {
+      background: rgba(255, 80, 80, 0.3);
+      border-color: rgba(255, 100, 100, 0.6);
+    }
+
+    .action-btn.attack:active {
+      background: rgba(255, 80, 80, 0.5);
+    }
+
+    /* Landscape mode - horizontal layout with buttons beside joystick */
+    @media (orientation: landscape) {
+      #left-controls, #right-controls {
+        bottom: 20px;
+        flex-direction: row;
+        align-items: flex-end;
+        gap: 15px;
+      }
+
+      #left-controls {
+        left: 20px;
+      }
+
+      #right-controls {
+        right: 20px;
+      }
+
+      .joystick-container {
+        order: 0; /* Reset order for landscape */
+      }
+
+      #left-buttons, #right-buttons {
+        flex-direction: column;
+        order: 0; /* Reset order for landscape */
+      }
+
+      /* In landscape: left side = joystick then buttons, right side = buttons then joystick */
+      #left-controls .joystick-container { order: 1; }
+      #left-controls #left-buttons { order: 2; }
+      #right-controls #right-buttons { order: 1; }
+      #right-controls .joystick-container { order: 2; }
+
+      .joystick-base {
+        width: 90px;
+        height: 90px;
+      }
+
+      .joystick-thumb {
+        width: 40px;
+        height: 40px;
+      }
+
+      .action-btn {
+        width: 50px;
+        height: 50px;
+        font-size: 8px;
+      }
+    }
+
+    /* Inventory/Crafting Menu */
+    #inventory-menu {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(30, 30, 30, 0.95);
+      border: 3px solid #555;
+      border-radius: 8px;
+      padding: 20px;
+      z-index: 300;
+      display: none;
+      font-family: 'Courier New', monospace;
+      color: white;
+    }
+
+    #inventory-menu.active {
+      display: block;
+    }
+
+    .inventory-title {
+      text-align: center;
+      font-size: 18px;
+      color: #4CAF50;
+      margin-bottom: 15px;
+    }
+
+    .inventory-container {
+      display: flex;
+      gap: 30px;
+    }
+
+    .crafting-section {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    .crafting-section h3 {
+      font-size: 14px;
+      color: #888;
+      margin-bottom: 10px;
+    }
+
+    .crafting-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 50px);
+      gap: 4px;
+      margin-bottom: 15px;
+    }
+
+    .crafting-arrow {
+      font-size: 24px;
+      color: #888;
+      margin: 10px 0;
+    }
+
+    .crafting-output {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    .inventory-section {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .inventory-section h3 {
+      font-size: 14px;
+      color: #888;
+      margin-bottom: 10px;
+    }
+
+    .inventory-grid {
+      display: grid;
+      grid-template-columns: repeat(9, 50px);
+      gap: 4px;
+    }
+
+    .inventory-slot {
+      width: 50px;
+      height: 50px;
+      background: rgba(0, 0, 0, 0.6);
+      border: 2px solid #444;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      cursor: pointer;
+      transition: border-color 0.1s;
+    }
+
+    .inventory-slot:hover {
+      border-color: #888;
+    }
+
+    .inventory-slot.selected {
+      border-color: #4CAF50;
+      background: rgba(76, 175, 80, 0.2);
+    }
+
+    .inventory-slot img {
+      width: 40px;
+      height: 40px;
+      image-rendering: pixelated;
+    }
+
+    .inventory-slot .slot-count {
+      position: absolute;
+      bottom: 2px;
+      right: 4px;
+      font-size: 12px;
+      font-weight: bold;
+      text-shadow: 1px 1px 1px black;
+    }
+
+    .crafting-recipes {
+      margin-top: 15px;
+      padding-top: 15px;
+      border-top: 1px solid #444;
+    }
+
+    .crafting-recipes h4 {
+      font-size: 12px;
+      color: #888;
+      margin-bottom: 8px;
+    }
+
+    .recipe-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      max-height: 150px;
+      overflow-y: auto;
+    }
+
+    .recipe-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px;
+      background: rgba(0, 0, 0, 0.4);
+      border: 1px solid #333;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: all 0.1s;
+    }
+
+    .recipe-item:hover {
+      background: rgba(76, 175, 80, 0.2);
+      border-color: #4CAF50;
+    }
+
+    .recipe-item.disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .recipe-item.disabled:hover {
+      background: rgba(0, 0, 0, 0.4);
+      border-color: #333;
+    }
+
+    .recipe-item img {
+      width: 32px;
+      height: 32px;
+      image-rendering: pixelated;
+    }
+
+    .recipe-item span {
+      font-size: 12px;
+    }
+
+    .recipe-arrow {
+      color: #888;
+    }
+
+    .close-inventory {
+      position: absolute;
+      top: 10px;
+      right: 15px;
+      font-size: 20px;
+      color: #888;
+      cursor: pointer;
+      transition: color 0.1s;
+    }
+
+    .close-inventory:hover {
+      color: white;
+    }
+
+    /* Drag and drop styles */
+    .inventory-slot.dragging,
+    .hotbar-slot.dragging {
+      opacity: 0.4;
+      border-color: #4CAF50;
+    }
+
+    .inventory-slot.drag-over,
+    .hotbar-slot.drag-over {
+      border-color: #4CAF50;
+      background: rgba(76, 175, 80, 0.3);
+      box-shadow: 0 0 10px rgba(76, 175, 80, 0.5);
+    }
+
+    .drag-ghost {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+    }
+
+    .drag-ghost .ghost-count {
+      position: absolute;
+      bottom: 2px;
+      right: 4px;
+      font-size: 12px;
+      font-weight: bold;
+      color: white;
+      text-shadow: 1px 1px 1px black;
+      font-family: 'Courier New', monospace;
+    }
+
+    .inventory-hint {
+      text-align: center;
+      font-size: 11px;
+      color: #666;
+      margin-top: 10px;
+    }
+
+    /* Mobile-specific adjustments */
+    @media (max-width: 768px), (pointer: coarse) {
+      #hotbar {
+        bottom: 10px;
+        transform: translateX(-50%) scale(0.8);
+      }
+
+      .hotbar-slot {
+        width: 40px;
+        height: 40px;
+      }
+
+      #ui-overlay {
+        font-size: 11px;
+        top: 5px;
+        left: 5px;
+      }
+
+      #instructions {
+        padding: 20px;
+        width: 90%;
+        max-width: 350px;
+      }
+
+      #instructions h1 {
+        font-size: 24px;
+        margin-bottom: 15px;
+      }
+
+      #instructions p {
+        font-size: 11px;
+        margin: 6px 0;
+      }
+    }
+  </style>
+  <script type="module" crossorigin src="/tenebris/assets/index-DnqyH8tp.js"></script>
+</head>
+<body>
+  <div id="game-container"></div>
+  <div id="crosshair"></div>
+
+  <!-- Mining progress bar -->
+  <div id="mining-progress-container">
+    <div id="mining-progress-bar"></div>
+  </div>
+
+  <div id="ui-overlay">
+    <div id="position">Position: 0, 0, 0</div>
+    <div id="fps">FPS: 0</div>
+    <div id="block-type">Block: Stone</div>
+  </div>
+
+  <div id="ui-overlay-right">
+    <div id="block-depth">Depth: 0</div>
+  </div>
+
+  <div id="instructions">
+    <h1>TENEBRIS</h1>
+
+    <div class="menu-tabs">
+      <button class="menu-tab active" data-tab="settings">Settings</button>
+      <button class="menu-tab" data-tab="controls">Controls</button>
+    </div>
+
+    <!-- Settings Tab -->
+    <div class="tab-content active" id="tab-settings">
+      <div class="settings-row">
+        <label for="toggle-jetpack">Jetpack Enabled</label>
+        <div class="toggle-switch">
+          <input type="checkbox" id="toggle-jetpack">
+          <span class="toggle-slider"></span>
+        </div>
+      </div>
+      <div class="settings-row">
+        <label for="toggle-invert-y">Invert Y Axis</label>
+        <div class="toggle-switch">
+          <input type="checkbox" id="toggle-invert-y">
+          <span class="toggle-slider"></span>
+        </div>
+      </div>
+      <div class="settings-row">
+        <label for="toggle-atmosphere">Atmosphere</label>
+        <div class="toggle-switch">
+          <input type="checkbox" id="toggle-atmosphere" checked>
+          <span class="toggle-slider"></span>
+        </div>
+      </div>
+      <div class="settings-row">
+        <label for="toggle-clouds">Clouds</label>
+        <div class="toggle-switch">
+          <input type="checkbox" id="toggle-clouds" checked>
+          <span class="toggle-slider"></span>
+        </div>
+      </div>
+      <div class="settings-row">
+        <label for="teleport-select">Teleport</label>
+        <select id="teleport-select" class="teleport-select">
+          <option value="earth">Earth</option>
+          <option value="moon">Moon</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Controls Tab -->
+    <div class="tab-content" id="tab-controls">
+      <div class="controls-grid">
+        <p><span class="key">WASD</span><span>Move</span></p>
+        <p><span class="key">SPACE</span><span>Jump / Jetpack Up</span></p>
+        <p><span class="key">CTRL</span><span>Jetpack Down</span></p>
+        <p><span class="key">SHIFT</span><span>Sprint</span></p>
+        <p><span class="key">Q/E</span><span>Roll (in space)</span></p>
+        <p><span class="key">Mouse</span><span>Look around</span></p>
+        <p><span class="key">Left Click</span><span>Break block</span></p>
+        <p><span class="key">Right Click</span><span>Place block</span></p>
+        <p><span class="key">1-9</span><span>Select hotbar</span></p>
+        <p><span class="key">E</span><span>Open inventory</span></p>
+        <p><span class="key">F3</span><span>Toggle profiler</span></p>
+      </div>
+    </div>
+
+    <button id="start-button">PLAY</button>
+  </div>
+
+  <div id="hotbar">
+    <div class="hotbar-slot selected" data-slot="0"><img style="display:none"></div>
+    <div class="hotbar-slot" data-slot="1"><img style="display:none"></div>
+    <div class="hotbar-slot" data-slot="2"><img style="display:none"></div>
+    <div class="hotbar-slot" data-slot="3"><img style="display:none"></div>
+    <div class="hotbar-slot" data-slot="4"><img style="display:none"></div>
+    <div class="hotbar-slot" data-slot="5"><img style="display:none"></div>
+    <div class="hotbar-slot" data-slot="6"><img style="display:none"></div>
+    <div class="hotbar-slot" data-slot="7"><img style="display:none"></div>
+    <div class="hotbar-slot" data-slot="8"><img style="display:none"></div>
+  </div>
+
+  <!-- Inventory/Crafting Menu -->
+  <div id="inventory-menu">
+    <span class="close-inventory">&times;</span>
+    <h2 class="inventory-title">Inventory</h2>
+
+    <div class="inventory-container">
+      <!-- Crafting Section -->
+      <div class="crafting-section">
+        <h3>Crafting</h3>
+        <div class="crafting-recipes">
+          <h4>Available Recipes</h4>
+          <div class="recipe-list" id="recipe-list">
+            <!-- Recipes will be dynamically populated -->
+          </div>
+        </div>
+      </div>
+
+      <!-- Inventory Section -->
+      <div class="inventory-section">
+        <h3>Storage</h3>
+        <div class="inventory-grid" id="inventory-grid">
+          <!-- 27 inventory slots (3 rows x 9 columns) -->
+        </div>
+        <h3 style="margin-top: 15px;">Hotbar</h3>
+        <div class="inventory-grid" id="inventory-hotbar">
+          <!-- 9 hotbar slots -->
+        </div>
+      </div>
+    </div>
+
+    <p class="inventory-hint">Press E or ESC to close</p>
+  </div>
+
+  <!-- Switch between /src/main.ts (flat world) and /src/mainPlanet.ts (spherical planet) -->
+</body>
+</html>

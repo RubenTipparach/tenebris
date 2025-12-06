@@ -526,6 +526,237 @@
       }
     }
 
+    /* Inventory/Crafting Menu */
+    #inventory-menu {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(30, 30, 30, 0.95);
+      border: 3px solid #555;
+      border-radius: 8px;
+      padding: 20px;
+      z-index: 300;
+      display: none;
+      font-family: 'Courier New', monospace;
+      color: white;
+    }
+
+    #inventory-menu.active {
+      display: block;
+    }
+
+    .inventory-title {
+      text-align: center;
+      font-size: 18px;
+      color: #4CAF50;
+      margin-bottom: 15px;
+    }
+
+    .inventory-container {
+      display: flex;
+      gap: 30px;
+    }
+
+    .crafting-section {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    .crafting-section h3 {
+      font-size: 14px;
+      color: #888;
+      margin-bottom: 10px;
+    }
+
+    .crafting-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 50px);
+      gap: 4px;
+      margin-bottom: 15px;
+    }
+
+    .crafting-arrow {
+      font-size: 24px;
+      color: #888;
+      margin: 10px 0;
+    }
+
+    .crafting-output {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    .inventory-section {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .inventory-section h3 {
+      font-size: 14px;
+      color: #888;
+      margin-bottom: 10px;
+    }
+
+    .inventory-grid {
+      display: grid;
+      grid-template-columns: repeat(9, 50px);
+      gap: 4px;
+    }
+
+    .inventory-slot {
+      width: 50px;
+      height: 50px;
+      background: rgba(0, 0, 0, 0.6);
+      border: 2px solid #444;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      cursor: pointer;
+      transition: border-color 0.1s;
+    }
+
+    .inventory-slot:hover {
+      border-color: #888;
+    }
+
+    .inventory-slot.selected {
+      border-color: #4CAF50;
+      background: rgba(76, 175, 80, 0.2);
+    }
+
+    .inventory-slot img {
+      width: 40px;
+      height: 40px;
+      image-rendering: pixelated;
+    }
+
+    .inventory-slot .slot-count {
+      position: absolute;
+      bottom: 2px;
+      right: 4px;
+      font-size: 12px;
+      font-weight: bold;
+      text-shadow: 1px 1px 1px black;
+    }
+
+    .crafting-recipes {
+      margin-top: 15px;
+      padding-top: 15px;
+      border-top: 1px solid #444;
+    }
+
+    .crafting-recipes h4 {
+      font-size: 12px;
+      color: #888;
+      margin-bottom: 8px;
+    }
+
+    .recipe-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      max-height: 150px;
+      overflow-y: auto;
+    }
+
+    .recipe-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px;
+      background: rgba(0, 0, 0, 0.4);
+      border: 1px solid #333;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: all 0.1s;
+    }
+
+    .recipe-item:hover {
+      background: rgba(76, 175, 80, 0.2);
+      border-color: #4CAF50;
+    }
+
+    .recipe-item.disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .recipe-item.disabled:hover {
+      background: rgba(0, 0, 0, 0.4);
+      border-color: #333;
+    }
+
+    .recipe-item img {
+      width: 32px;
+      height: 32px;
+      image-rendering: pixelated;
+    }
+
+    .recipe-item span {
+      font-size: 12px;
+    }
+
+    .recipe-arrow {
+      color: #888;
+    }
+
+    .close-inventory {
+      position: absolute;
+      top: 10px;
+      right: 15px;
+      font-size: 20px;
+      color: #888;
+      cursor: pointer;
+      transition: color 0.1s;
+    }
+
+    .close-inventory:hover {
+      color: white;
+    }
+
+    /* Drag and drop styles */
+    .inventory-slot.dragging,
+    .hotbar-slot.dragging {
+      opacity: 0.4;
+      border-color: #4CAF50;
+    }
+
+    .inventory-slot.drag-over,
+    .hotbar-slot.drag-over {
+      border-color: #4CAF50;
+      background: rgba(76, 175, 80, 0.3);
+      box-shadow: 0 0 10px rgba(76, 175, 80, 0.5);
+    }
+
+    .drag-ghost {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+    }
+
+    .drag-ghost .ghost-count {
+      position: absolute;
+      bottom: 2px;
+      right: 4px;
+      font-size: 12px;
+      font-weight: bold;
+      color: white;
+      text-shadow: 1px 1px 1px black;
+      font-family: 'Courier New', monospace;
+    }
+
+    .inventory-hint {
+      text-align: center;
+      font-size: 11px;
+      color: #666;
+      margin-top: 10px;
+    }
+
     /* Mobile-specific adjustments */
     @media (max-width: 768px), (pointer: coarse) {
       #hotbar {
@@ -640,6 +871,7 @@
         <p><span class="key">Left Click</span><span>Break block</span></p>
         <p><span class="key">Right Click</span><span>Place block</span></p>
         <p><span class="key">1-9</span><span>Select hotbar</span></p>
+        <p><span class="key">E</span><span>Open inventory</span></p>
         <p><span class="key">F3</span><span>Toggle profiler</span></p>
       </div>
     </div>
@@ -657,6 +889,39 @@
     <div class="hotbar-slot" data-slot="6"><img style="display:none"></div>
     <div class="hotbar-slot" data-slot="7"><img style="display:none"></div>
     <div class="hotbar-slot" data-slot="8"><img style="display:none"></div>
+  </div>
+
+  <!-- Inventory/Crafting Menu -->
+  <div id="inventory-menu">
+    <span class="close-inventory">&times;</span>
+    <h2 class="inventory-title">Inventory</h2>
+
+    <div class="inventory-container">
+      <!-- Crafting Section -->
+      <div class="crafting-section">
+        <h3>Crafting</h3>
+        <div class="crafting-recipes">
+          <h4>Available Recipes</h4>
+          <div class="recipe-list" id="recipe-list">
+            <!-- Recipes will be dynamically populated -->
+          </div>
+        </div>
+      </div>
+
+      <!-- Inventory Section -->
+      <div class="inventory-section">
+        <h3>Storage</h3>
+        <div class="inventory-grid" id="inventory-grid">
+          <!-- 27 inventory slots (3 rows x 9 columns) -->
+        </div>
+        <h3 style="margin-top: 15px;">Hotbar</h3>
+        <div class="inventory-grid" id="inventory-hotbar">
+          <!-- 9 hotbar slots -->
+        </div>
+      </div>
+    </div>
+
+    <p class="inventory-hint">Press E or ESC to close</p>
   </div>
 
   <!-- Switch between /src/main.ts (flat world) and /src/mainPlanet.ts (spherical planet) -->
