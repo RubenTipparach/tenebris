@@ -3148,8 +3148,9 @@ export class Planet {
     if (waterSurfaceDepth < 0) return false;
 
     const playerDepth = this.getDepthAtPoint(position);
-    // Player is in water if their depth is at or below water surface
-    return playerDepth <= waterSurfaceDepth;
+    // Player is in water if their depth is BELOW water surface (not at surface)
+    // With depth 0 = bedrock, lower depth = deeper underwater
+    return playerDepth < waterSurfaceDepth;
   }
 
   public getWaterDepth(position: THREE.Vector3): number {
@@ -3173,8 +3174,9 @@ export class Planet {
     if (waterSurfaceDepth < 0) return 0;
 
     // Depth below water surface (lower depth = deeper underwater)
-    if (currentDepth <= waterSurfaceDepth) {
-      return (waterSurfaceDepth - currentDepth + 1) * this.BLOCK_HEIGHT;
+    // Only count as underwater if BELOW surface, not at surface
+    if (currentDepth < waterSurfaceDepth) {
+      return (waterSurfaceDepth - currentDepth) * this.BLOCK_HEIGHT;
     }
 
     return 0;
