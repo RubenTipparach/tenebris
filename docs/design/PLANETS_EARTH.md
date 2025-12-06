@@ -174,15 +174,15 @@ Earth is the starting planet and the most hospitable world in the solar system. 
 
 | Ore | Depth | Tool Required | Smelts To |
 |-----|-------|---------------|-----------|
-| **Coal** | 15-27 | Stone Pickaxe | Fuel (doesn't smelt) |
-| **Copper** | 12-24 | Stone Pickaxe | Copper Ingot |
-| **Iron** | 6-18 | Bronze Pickaxe | Iron Ingot |
+| **Coal** | 10-24 | Stone Pickaxe | Fuel (doesn't smelt) |
+| **Copper** | 8-20 | Stone Pickaxe | Copper Ingot |
+| **Iron** | 4-18 | Bronze Pickaxe | Iron Ingot |
 | **Gold** | 0-8 | Iron Pickaxe | Gold Ingot |
 | **Lithium** | 0-6 | Iron Pickaxe | Lithium (batteries) |
-| **Aluminum** | 10-22 | Stone Pickaxe | Aluminum Ingot |
-| **Cobalt** | 0-8 | Iron Pickaxe | Cobalt Ingot |
+| **Aluminum** | 2-14 | Stone Pickaxe | Aluminum Ingot |
+| **Cobalt** | 0-10 | Iron Pickaxe | Cobalt Ingot |
 
-*Depth: 0 = bedrock (bottom), 32 = surface*
+*Depth: 0 = bedrock (bottom), 16 = underground ceiling, surface above*
 
 #### Mineral Textures (Future Implementation)
 
@@ -198,11 +198,11 @@ Earth is the starting planet and the most hospitable world in the solar system. 
 
 | Gem | Depth | Rarity | Use |
 |-----|-------|--------|-----|
-| **Quartz** | 20-40 | Common | Circuits, decoration |
-| **Amethyst** | 30-50 | Uncommon | Decoration, magic? |
-| **Emerald** | 35-50 | Rare | Trading, decoration |
-| **Ruby** | 40-50 | Rare | Lasers, decoration |
-| **Diamond** | 45-50 | Very Rare | Best tools, circuits |
+| **Quartz** | 6-14 | Common | Circuits, decoration |
+| **Amethyst** | 4-12 | Uncommon | Decoration, magic? |
+| **Emerald** | 2-8 | Rare | Trading, decoration |
+| **Ruby** | 1-6 | Rare | Lasers, decoration |
+| **Diamond** | 0-4 | Very Rare | Best tools, circuits |
 
 ---
 
