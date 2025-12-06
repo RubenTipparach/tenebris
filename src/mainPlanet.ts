@@ -46,8 +46,15 @@ class PlanetGame {
     // Setup pointer lock UI
     this.inputManager.setPointerLockCallback((locked) => {
       const instructions = document.getElementById('instructions');
+      const inventoryMenu = document.getElementById('inventory-menu');
+      const isInventoryOpen = inventoryMenu?.classList.contains('active');
+
       if (instructions) {
-        instructions.style.display = locked ? 'none' : 'block';
+        // Don't show main menu if inventory is open
+        instructions.style.display = (locked || isInventoryOpen) ? 'none' : 'block';
+        if (!locked && !isInventoryOpen) {
+          console.log('Menu opened');
+        }
       }
       const crosshair = document.getElementById('crosshair');
       if (crosshair) {
@@ -94,9 +101,11 @@ class PlanetGame {
       this.treeManager.scatterTrees(
         this.earth.center,
         this.earth.radius,
-        200, // Number of trees (quadrupled)
+        PlayerConfig.TREE_COUNT,
         (direction) => this.earth.getSurfaceHeightInDirection(direction),
-        (direction) => this.earth.isUnderwaterInDirection(direction) // Skip underwater locations
+        (direction) => this.earth.isUnderwaterInDirection(direction), // Skip underwater locations
+        PlayerConfig.TERRAIN_SEED, // Use terrain seed for deterministic placement
+        (direction) => this.earth.getTileIndexInDirection(direction) // For visibility tracking
       );
 
       // Give block interaction access to tree manager for mining trees
@@ -177,6 +186,9 @@ class PlanetGame {
 
     // Update clouds (slow rotation)
     this.earthClouds.update(deltaTime);
+
+    // Update tree visibility based on which tiles are visible (including LOD border)
+    this.treeManager.updateVisibility(this.earth.getVisibleTileIndicesWithBorder());
 
     // Update block interaction
     profiler.begin('Block Interaction');

@@ -129,6 +129,13 @@ export const PlayerConfig = {
   EARTH_SUBDIVISIONS: 6,              // Subdivision level for Earth (6 = double density from 5)
   MOON_SUBDIVISIONS: 5,               // Subdivision level for Moon
 
+  // Trees
+  TREE_COUNT: 500,                   // Number of trees to scatter on planet surface
+
+  // Clouds
+  CLOUD_COUNT: 100,                  // Number of cloud patches to generate
+  CLOUD_ROTATION_SPEED: 0.01,        // Cloud rotation speed (radians/sec, 0.01 = full rotation in ~10 min)
+
   // Distant planet LOD
   PLANET_LOD_DISTANCE_1: 200,         // Distance for first LOD reduction
   PLANET_LOD_DISTANCE_2: 500,         // Distance for second LOD reduction

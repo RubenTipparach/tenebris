@@ -110,6 +110,7 @@ export class CraftingSystem {
 
   public open(): void {
     if (this.menuElement) {
+      console.log('Inventory opened');
       this.menuElement.classList.add('active');
       this.isOpen = true;
       document.exitPointerLock();

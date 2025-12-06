@@ -294,9 +294,9 @@ export class PlanetTreeManager {
       // Get surface height at this direction
       const surfaceHeight = getSurfaceHeight(direction);
 
-      // Position tree on surface
+      // Position tree on surface (no offset - tree base sits at ground level)
       const treePosition = planetCenter.clone().add(
-        direction.clone().multiplyScalar(surfaceHeight + 0.1) // Slightly above surface
+        direction.clone().multiplyScalar(surfaceHeight)
       );
 
       // Get tile index for visibility tracking

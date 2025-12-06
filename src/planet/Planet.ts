@@ -2964,6 +2964,34 @@ export class Planet {
     return this.MAX_DEPTH;
   }
 
+  // Get tile index for a direction from planet center (for tree placement)
+  public getTileIndexInDirection(direction: THREE.Vector3): number | null {
+    const tile = this.polyhedron.getTileAtPoint(direction.clone().multiplyScalar(this.radius));
+    return tile ? tile.index : null;
+  }
+
+  // Get the set of currently visible (nearby/detailed) tile indices
+  public getVisibleTileIndices(): Set<number> {
+    return this.cachedNearbyTiles;
+  }
+
+  // Get visible tiles plus their immediate neighbors (for tree visibility on LOD border)
+  public getVisibleTileIndicesWithBorder(): Set<number> {
+    const result = new Set(this.cachedNearbyTiles);
+
+    // Add neighbors of all visible tiles
+    for (const tileIndex of this.cachedNearbyTiles) {
+      const tile = this.polyhedron.tiles[tileIndex];
+      if (tile) {
+        for (const neighborIndex of tile.neighbors) {
+          result.add(neighborIndex);
+        }
+      }
+    }
+
+    return result;
+  }
+
   public isInWater(position: THREE.Vector3): boolean {
     const tile = this.getTileAtPoint(position);
     if (!tile) return false;

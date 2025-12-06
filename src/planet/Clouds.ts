@@ -1,14 +1,17 @@
 import * as THREE from 'three';
 import cloudsVert from '../shaders/clouds/clouds.vert';
 import cloudsFrag from '../shaders/clouds/clouds.frag';
+import { PlayerConfig } from '../config/PlayerConfig';
 
 export interface CloudConfig {
   planetRadius: number;
   cloudHeight: number;      // Height above planet surface
   cloudThickness: number;   // Vertical thickness of cloud layer
-  cloudDensity: number;     // 0-1, how many clouds
+  cloudDensity: number;     // 0-1, how many clouds (legacy, use cloudCount instead)
+  cloudCount?: number;      // Explicit number of cloud patches (overrides cloudDensity if set)
   cloudScale: number;       // Size of individual cloud blobs
   seed: number;             // Random seed for cloud pattern
+  rotationSpeed?: number;   // Speed of cloud rotation (radians per second)
 }
 
 const DEFAULT_CLOUD_CONFIG: CloudConfig = {
@@ -178,7 +181,7 @@ export class CloudSystem {
     const cloudRadius = this.config.planetRadius + this.config.cloudHeight;
 
     // Generate cloud positions distributed around the sphere
-    const numClouds = Math.floor(100 * this.config.cloudDensity);
+    const numClouds = this.config.cloudCount ?? Math.floor(100 * this.config.cloudDensity);
 
     for (let i = 0; i < numClouds; i++) {
       // Random position on sphere using uniform distribution
@@ -223,10 +226,11 @@ export class CloudSystem {
     this.material.uniforms.sunDirection.value.copy(sunDirection).normalize();
   }
 
-  // Optional: animate clouds rotating slowly
+  // Animate clouds rotating slowly around the planet
   public update(deltaTime: number): void {
-    // Slow rotation around Y axis (in local space)
-    this.clouds.rotation.y += deltaTime * 0.002;
+    // Rotation around Y axis (in local space) - default speed gives full rotation in ~10 minutes
+    const speed = this.config.rotationSpeed ?? 0.01;
+    this.clouds.rotation.y += deltaTime * speed;
   }
 
   public setVisible(visible: boolean): void {
@@ -245,7 +249,9 @@ export function createEarthClouds(planetRadius: number, sunDirection: THREE.Vect
     cloudHeight: 4,
     cloudThickness: 1.5,
     cloudDensity: 0.35,
+    cloudCount: PlayerConfig.CLOUD_COUNT,
     cloudScale: 2.5,
     seed: 42,
+    rotationSpeed: PlayerConfig.CLOUD_ROTATION_SPEED,
   }, sunDirection);
 }
