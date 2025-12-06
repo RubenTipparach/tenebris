@@ -331,8 +331,11 @@ export class HexBlockMeshBuilder {
   }
 
   private loadTexture(path: string): Promise<THREE.Texture> {
+    // Prepend base URL for production builds (e.g., GitHub Pages subdirectory)
+    const basePath = import.meta.env.BASE_URL || '/';
+    const fullPath = path.startsWith('/') ? basePath + path.slice(1) : basePath + path;
     return new Promise((resolve, reject) => {
-      this.textureLoader.load(path, resolve, undefined, reject);
+      this.textureLoader.load(fullPath, resolve, undefined, reject);
     });
   }
 
