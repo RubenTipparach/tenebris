@@ -3022,10 +3022,12 @@ export class Planet {
 
   public getDepthAtPoint(point: THREE.Vector3): number {
     // Depth system: 0 = bedrock (innermost), MAX_DEPTH-1 = sky (outermost)
+    // Block at depth d spans from depthToRadius(d) - BLOCK_HEIGHT (bottom) to depthToRadius(d) (top)
+    // A point belongs to the block whose volume contains it
     const distance = point.distanceTo(this.center);
-    // Convert distance to depth: at planet.radius, depth = MAX_DEPTH-1
-    const depthFromBottom = Math.floor((distance - (this.radius - (this.MAX_DEPTH - 1) * this.BLOCK_HEIGHT)) / this.BLOCK_HEIGHT);
-    return Math.max(0, Math.min(this.MAX_DEPTH - 1, depthFromBottom));
+    // Use ceil to ensure points at or just below a block's top surface belong to that block
+    const depth = Math.ceil(this.MAX_DEPTH - 1 - (this.radius - distance) / this.BLOCK_HEIGHT);
+    return Math.max(0, Math.min(this.MAX_DEPTH - 1, depth));
   }
 
   public getSurfacePosition(tile: HexTile): THREE.Vector3 {
