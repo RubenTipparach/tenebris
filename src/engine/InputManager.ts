@@ -157,13 +157,16 @@ export class InputManager {
     const mobileControls = document.createElement('div');
     mobileControls.id = 'mobile-controls';
     mobileControls.innerHTML = `
+      <!-- Top corner buttons -->
+      <button id="btn-pause" class="action-btn pause top-left">| |</button>
+      <button id="btn-inventory" class="action-btn inventory top-right">INV</button>
+
       <!-- Left side controls -->
       <div id="left-controls">
-        <!-- Left action buttons: Break/Place/Pause -->
+        <!-- Left action buttons: Break/Place -->
         <div id="left-buttons">
           <button id="btn-break" class="action-btn attack">BREAK</button>
           <button id="btn-place" class="action-btn">PLACE</button>
-          <button id="btn-pause" class="action-btn pause">| |</button>
         </div>
         <!-- Left joystick for movement (WASD) -->
         <div id="move-joystick" class="joystick-container">
@@ -175,11 +178,10 @@ export class InputManager {
 
       <!-- Right side controls -->
       <div id="right-controls">
-        <!-- Right action buttons: Jump/Down/Inventory -->
+        <!-- Right action buttons: Jump/Down -->
         <div id="right-buttons">
           <button id="btn-jump" class="action-btn">JUMP</button>
           <button id="btn-crouch" class="action-btn">DOWN</button>
-          <button id="btn-inventory" class="action-btn inventory">INV</button>
         </div>
         <!-- Right joystick for looking around -->
         <div id="look-joystick" class="joystick-container">

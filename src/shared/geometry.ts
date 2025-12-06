@@ -264,6 +264,7 @@ export interface WaterWallTileData {
 export interface WaterWallConfig {
   radius: number;
   blockHeight: number;
+  maxDepth: number;
   waterSurfaceOffset: number;
 }
 
@@ -343,8 +344,9 @@ export function buildWaterWallGeometry(
     const wallBottomDepth = Math.min(ownSolidDepth, neighborSolidDepth);
 
     // Calculate wall geometry
+    // Use correct depth formula: depthToRadius(d) = radius - (maxDepth - 1 - d) * blockHeight
     const wallTopRadius = outerRadius;
-    const wallBottomRadius = config.radius - wallBottomDepth * config.blockHeight;
+    const wallBottomRadius = config.radius - (config.maxDepth - 1 - wallBottomDepth) * config.blockHeight;
 
     if (wallBottomRadius >= wallTopRadius) continue;
 
