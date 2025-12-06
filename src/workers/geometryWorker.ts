@@ -13,7 +13,7 @@ import {
   vec3Normalize,
   vec3Negate
 } from '../shared/vec3';
-import { SKY_LIGHT_FALLOFF, MIN_SKY_LIGHT } from '../shared/geometry';
+import { SKY_LIGHT_FALLOFF, MIN_SKY_LIGHT, buildWaterWallGeometry } from '../shared/geometry';
 
 // Geometry data structure (matches Planet.ts)
 interface GeometryData {
@@ -58,11 +58,17 @@ interface WorkerConfig {
   uvScale: number;  // Texture tiling scale
 }
 
+// Neighbor data includes both blocks and vertices for water wall generation
+interface NeighborData {
+  blocks: number[];
+  vertices: Vec3[];
+}
+
 // Message types
 interface BuildGeometryMessage {
   type: 'buildGeometry';
   columns: ColumnData[];
-  neighborBlocks: Map<number, number[]>; // tileIndex -> blocks for neighbor lookup
+  neighborData: Record<string, NeighborData>; // tileIndex -> blocks and vertices for neighbor lookup
   config: WorkerConfig;
 }
 
@@ -70,6 +76,7 @@ interface GeometryResultMessage {
   type: 'geometryResult';
   topData: GeometryData;
   sideData: GeometryData;
+  grassSideData: GeometryData;  // Grass block sides use dirt_grass texture
   stoneData: GeometryData;
   waterData: GeometryData;
 }
@@ -78,16 +85,16 @@ interface GeometryResultMessage {
 function hasExposedSide(
   column: ColumnData,
   depth: number,
-  neighborBlocks: Map<number, number[]>
+  neighborDataMap: Map<number, NeighborData>
 ): boolean {
   const blockType = column.blocks[depth];
   if (blockType === HexBlockType.AIR || blockType === HexBlockType.WATER) return false;
 
   for (const neighborIndex of column.tile.neighbors) {
-    const neighborBlockArray = neighborBlocks.get(neighborIndex);
-    if (!neighborBlockArray) return true; // No neighbor data = edge of loaded area
+    const neighborInfo = neighborDataMap.get(neighborIndex);
+    if (!neighborInfo) return true; // No neighbor data = edge of loaded area
 
-    const neighborBlock = neighborBlockArray[depth];
+    const neighborBlock = neighborInfo.blocks[depth];
     if (neighborBlock === undefined) return true;
     if (neighborBlock === HexBlockType.AIR || neighborBlock === HexBlockType.WATER) {
       return true;
@@ -281,10 +288,11 @@ function createFaceGeometry(
 // Build geometry for a single column
 function buildColumnGeometry(
   column: ColumnData,
-  neighborBlocks: Map<number, number[]>,
+  neighborDataMap: Map<number, NeighborData>,
   config: WorkerConfig,
   topData: GeometryData,
   sideData: GeometryData,
+  grassSideData: GeometryData,
   stoneData: GeometryData,
   waterData: GeometryData
 ): void {
@@ -310,7 +318,7 @@ function buildColumnGeometry(
 
     if (isWater && blockAbove !== HexBlockType.AIR) continue;
 
-    const hasSideExposed = !isWater && hasExposedSide(column, depth, neighborBlocks);
+    const hasSideExposed = !isWater && hasExposedSide(column, depth, neighborDataMap);
 
     if (!isWater && !hasTopExposed && !hasBottomExposed && !hasSideExposed) continue;
 
@@ -357,7 +365,12 @@ function buildColumnGeometry(
       const bottomGeom = createFaceGeometry(column.tile, innerRadius, outerRadius, false, true, false, config.uvScale);
       if (bottomGeom) {
         const bottomSkyLight = Math.max(MIN_SKY_LIGHT, skyLightLevel * SKY_LIGHT_FALLOFF);
-        mergeGeometry(stoneData, bottomGeom.positions, bottomGeom.normals, bottomGeom.uvs, bottomGeom.indices, config.sunDirection, bottomSkyLight);
+        if (useStoneTexture) {
+          mergeGeometry(stoneData, bottomGeom.positions, bottomGeom.normals, bottomGeom.uvs, bottomGeom.indices, config.sunDirection, bottomSkyLight);
+        } else {
+          // Dirt and grass blocks show dirt texture on bottom
+          mergeGeometry(sideData, bottomGeom.positions, bottomGeom.normals, bottomGeom.uvs, bottomGeom.indices, config.sunDirection, bottomSkyLight);
+        }
       }
     }
 
@@ -367,9 +380,12 @@ function buildColumnGeometry(
       if (sidesGeom) {
         if (useStoneTexture) {
           mergeGeometry(stoneData, sidesGeom.positions, sidesGeom.normals, sidesGeom.uvs, sidesGeom.indices, config.sunDirection, skyLightLevel);
-        } else {
-          // Dirt and grass both use sideData (dirt texture for sides)
+        } else if (useDirtTexture) {
+          // Dirt blocks use sideData (dirt texture)
           mergeGeometry(sideData, sidesGeom.positions, sidesGeom.normals, sidesGeom.uvs, sidesGeom.indices, config.sunDirection, skyLightLevel);
+        } else {
+          // Grass blocks use grassSideData (dirt_grass texture)
+          mergeGeometry(grassSideData, sidesGeom.positions, sidesGeom.normals, sidesGeom.uvs, sidesGeom.indices, config.sunDirection, skyLightLevel);
         }
       }
     }
@@ -378,25 +394,50 @@ function buildColumnGeometry(
 
 // Worker message handler
 self.onmessage = (e: MessageEvent<BuildGeometryMessage>) => {
-  const { type, columns, neighborBlocks, config } = e.data;
+  const { type, columns, neighborData, config } = e.data;
 
   if (type === 'buildGeometry') {
     const topData = createEmptyGeometryData();
     const sideData = createEmptyGeometryData();
+    const grassSideData = createEmptyGeometryData();
     const stoneData = createEmptyGeometryData();
     const waterData = createEmptyGeometryData();
 
-    // Convert neighborBlocks back to Map (it gets serialized as object)
-    const neighborBlocksMap = new Map<number, number[]>(Object.entries(neighborBlocks as unknown as Record<string, number[]>).map(([k, v]) => [parseInt(k), v]));
+    // Convert neighborData back to Map (it gets serialized as object)
+    const neighborDataMap = new Map<number, NeighborData>(
+      Object.entries(neighborData as unknown as Record<string, NeighborData>).map(([k, v]) => [parseInt(k), v])
+    );
 
     for (const column of columns) {
-      buildColumnGeometry(column, neighborBlocksMap, config, topData, sideData, stoneData, waterData);
+      buildColumnGeometry(column, neighborDataMap, config, topData, sideData, grassSideData, stoneData, waterData);
+
+      // Generate water walls for water blocks
+      for (let depth = 0; depth < column.blocks.length; depth++) {
+        if (column.blocks[depth] === HexBlockType.WATER) {
+          const blockAbove = depth === 0 ? HexBlockType.AIR : column.blocks[depth - 1];
+          if (blockAbove === HexBlockType.AIR) {
+            // This is a water surface - generate water walls
+            const outerRadius = config.radius - depth * config.blockHeight - config.waterSurfaceOffset;
+            buildWaterWallGeometry(
+              column.tile.vertices,
+              column.tile.neighbors,
+              column.blocks,
+              neighborDataMap,
+              depth,
+              outerRadius,
+              config,
+              waterData
+            );
+          }
+        }
+      }
     }
 
     const result: GeometryResultMessage = {
       type: 'geometryResult',
       topData,
       sideData,
+      grassSideData,
       stoneData,
       waterData
     };

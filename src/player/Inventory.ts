@@ -6,6 +6,7 @@ export enum ItemType {
   GRASS = 3,
   WOOD = 4,
   LEAVES = 5,
+  LOG = 6,
 }
 
 // Item metadata
@@ -23,6 +24,7 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
   [ItemType.GRASS]: { name: 'Grass', stackSize: 64, texture: '/textures/grass.png', mineTime: 0.6 },
   [ItemType.WOOD]: { name: 'Wood', stackSize: 64, texture: '/textures/wood.png', mineTime: 1.0 },
   [ItemType.LEAVES]: { name: 'Leaves', stackSize: 64, texture: '/textures/leaves.png', mineTime: 0.3 },
+  [ItemType.LOG]: { name: 'Log', stackSize: 64, texture: '/textures/icons/logs.png', mineTime: 1.2 },
 };
 
 // Inventory slot
@@ -155,5 +157,10 @@ export class Inventory {
       return true;
     }
     return false;
+  }
+
+  // Get all slots (for inventory UI)
+  public getAllSlots(): InventorySlot[] {
+    return this.slots;
   }
 }

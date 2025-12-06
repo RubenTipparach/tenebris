@@ -78,6 +78,7 @@ export class Planet {
   private batchedMeshGroup: THREE.Group | null = null;
   private topMesh: THREE.Mesh | null = null;
   private sideMesh: THREE.Mesh | null = null;
+  private grassSideMesh: THREE.Mesh | null = null;
   private stoneMesh: THREE.Mesh | null = null;
   private waterMesh: THREE.Mesh | null = null;
   private needsRebatch: boolean = true; // Flag to rebuild batched geometry
@@ -274,6 +275,7 @@ export class Planet {
   private handleWorkerResult(data: {
     topData: GeometryData;
     sideData: GeometryData;
+    grassSideData: GeometryData;
     stoneData: GeometryData;
     waterData: GeometryData;
   }): void {
@@ -301,6 +303,15 @@ export class Planet {
       this.sideMesh = mesh;
     } else {
       this.sideMesh = null;
+    }
+
+    if (data.grassSideData.positions.length > 0) {
+      const geom = this.createBufferGeometry(data.grassSideData);
+      const mesh = new THREE.Mesh(geom, this.meshBuilder.getGrassSideMaterial());
+      newMeshes.push(mesh);
+      this.grassSideMesh = mesh;
+    } else {
+      this.grassSideMesh = null;
     }
 
     if (data.stoneData.positions.length > 0) {
@@ -513,9 +524,9 @@ export class Planet {
       blocks: number[];
     }> = [];
 
-    const neighborBlocks: Record<string, number[]> = {};
+    const neighborData: Record<string, { blocks: number[]; vertices: { x: number; y: number; z: number }[] }> = {};
 
-    // Collect all tiles and their neighbors' block data
+    // Collect all tiles and their neighbors' block data (including vertices for water walls)
     for (const tileIndex of this.cachedNearbyTiles) {
       const column = this.columns.get(tileIndex);
       if (!column) continue;
@@ -531,12 +542,15 @@ export class Planet {
         blocks: [...column.blocks]
       });
 
-      // Add neighbor block data for side face culling
+      // Add neighbor block and vertex data for side face culling and water walls
       for (const neighborIndex of column.tile.neighbors) {
-        if (!neighborBlocks[neighborIndex]) {
+        if (!neighborData[neighborIndex]) {
           const neighborColumn = this.columns.get(neighborIndex);
           if (neighborColumn) {
-            neighborBlocks[neighborIndex] = [...neighborColumn.blocks];
+            neighborData[neighborIndex] = {
+              blocks: [...neighborColumn.blocks],
+              vertices: neighborColumn.tile.vertices.map(v => ({ x: v.x, y: v.y, z: v.z }))
+            };
           }
         }
       }
@@ -553,7 +567,7 @@ export class Planet {
     this.geometryWorker.postMessage({
       type: 'buildGeometry',
       columns,
-      neighborBlocks,
+      neighborData,
       config: {
         radius: this.radius,
         blockHeight: this.BLOCK_HEIGHT,
@@ -1306,7 +1320,7 @@ export class Planet {
 
         chunk.waterSideNormals.push(snx, sny, snz, snx, sny, snz, snx, sny, snz, snx, sny, snz);
 
-        chunk.waterSideUvs.push(0, 0, 1, 0, 1, 0.5, 0, 0.5);
+        chunk.waterSideUvs.push(0, 0, 1, 0, 1, 1, 0, 1);
 
         chunk.waterSideIndices.push(baseIdx, baseIdx + 1, baseIdx + 2, baseIdx, baseIdx + 2, baseIdx + 3);
 
@@ -2052,6 +2066,7 @@ export class Planet {
     // Create batched geometry for all visible tiles
     const topData = createEmptyGeometryData();
     const sideData = createEmptyGeometryData();
+    const grassSideData = createEmptyGeometryData();
     const stoneData = createEmptyGeometryData();
     const waterData = createEmptyGeometryData();
 
@@ -2062,7 +2077,7 @@ export class Planet {
       // Check frustum culling
       if (!this.frustum.intersectsSphere(column.boundingSphere)) continue;
 
-      this.buildColumnGeometry(column, topData, sideData, stoneData, waterData);
+      this.buildColumnGeometry(column, topData, sideData, grassSideData, stoneData, waterData);
       column.isDirty = false;
     }
 
@@ -2077,6 +2092,12 @@ export class Planet {
       const geom = this.createBufferGeometry(sideData);
       this.sideMesh = new THREE.Mesh(geom, this.meshBuilder.getSideMaterial());
       this.batchedMeshGroup.add(this.sideMesh);
+    }
+
+    if (grassSideData.positions.length > 0) {
+      const geom = this.createBufferGeometry(grassSideData);
+      this.grassSideMesh = new THREE.Mesh(geom, this.meshBuilder.getGrassSideMaterial());
+      this.batchedMeshGroup.add(this.grassSideMesh);
     }
 
     if (stoneData.positions.length > 0) {
@@ -2105,6 +2126,7 @@ export class Planet {
     column: PlanetColumn,
     topData: GeometryData,
     sideData: GeometryData,
+    grassSideData: GeometryData,
     stoneData: GeometryData,
     waterData: GeometryData
   ): void {
@@ -2198,7 +2220,12 @@ export class Planet {
         if (posAttr && normAttr && uvAttr && indexAttr) {
           // Bottom faces are one block deeper, so use next level's sky light
           const bottomSkyLight = Math.max(MIN_SKY_LIGHT, skyLightLevel * SKY_LIGHT_FALLOFF);
-          this.mergeGeometry(stoneData, posAttr, normAttr, uvAttr, indexAttr, this.sunDirection, bottomSkyLight);
+          if (useStoneTexture) {
+            this.mergeGeometry(stoneData, posAttr, normAttr, uvAttr, indexAttr, this.sunDirection, bottomSkyLight);
+          } else {
+            // Dirt and grass blocks show dirt texture on bottom
+            this.mergeGeometry(sideData, posAttr, normAttr, uvAttr, indexAttr, this.sunDirection, bottomSkyLight);
+          }
         }
         bottom.dispose();
       }
@@ -2211,9 +2238,12 @@ export class Planet {
         if (posAttr && normAttr && uvAttr && indexAttr) {
           if (useStoneTexture) {
             this.mergeGeometry(stoneData, posAttr, normAttr, uvAttr, indexAttr, this.sunDirection, skyLightLevel);
-          } else {
-            // Dirt and grass both use sideData (dirt texture for sides)
+          } else if (useDirtTexture) {
+            // Dirt blocks use dirt texture for sides
             this.mergeGeometry(sideData, posAttr, normAttr, uvAttr, indexAttr, this.sunDirection, skyLightLevel);
+          } else {
+            // Grass blocks use grass texture for sides
+            this.mergeGeometry(grassSideData, posAttr, normAttr, uvAttr, indexAttr, this.sunDirection, skyLightLevel);
           }
         }
         sides.dispose();
@@ -2416,20 +2446,43 @@ export class Planet {
       // (the terrain side wall will handle the visual boundary)
       if (neighborColumn.blocks[waterSurfaceDepth] !== HexBlockType.AIR) continue;
 
-      // Find deepest contiguous air block in neighbor starting from water surface
-      let deepestAirDepth = waterSurfaceDepth;
-      for (let d = waterSurfaceDepth + 1; d < neighborColumn.blocks.length; d++) {
-        if (neighborColumn.blocks[d] === HexBlockType.AIR) {
-          deepestAirDepth = d;
-        } else {
-          // Hit solid or water, stop searching
+      // Find where this water column has solid blocks below the water
+      // Water wall should NOT extend into depths where we have solid (those draw their own walls)
+      let ownSolidDepth = waterSurfaceDepth + 1;
+      for (let d = waterSurfaceDepth + 1; d < column.blocks.length; d++) {
+        const ownBlock = column.blocks[d];
+        if (ownBlock !== HexBlockType.AIR && ownBlock !== HexBlockType.WATER) {
+          // Found our own solid - water wall stops here
+          ownSolidDepth = d;
           break;
         }
       }
 
-      // Calculate wall geometry from water surface down to deepest air
+      // Find the neighbor's first solid block depth (their surface)
+      // Water wall only needs to extend down to this point - solid blocks draw their own walls below
+      let neighborSolidDepth = waterSurfaceDepth + 1;
+      for (let d = waterSurfaceDepth + 1; d < neighborColumn.blocks.length; d++) {
+        const neighborBlock = neighborColumn.blocks[d];
+        if (neighborBlock !== HexBlockType.AIR && neighborBlock !== HexBlockType.WATER) {
+          // Found solid block - this is where neighbor's terrain starts
+          neighborSolidDepth = d;
+          break;
+        } else if (neighborBlock === HexBlockType.AIR) {
+          // Still air, water wall could cover this depth
+          neighborSolidDepth = d + 1;
+        } else {
+          // Water - stop here, no wall needed into water
+          break;
+        }
+      }
+
+      // Water wall extends to the minimum of own solid depth or neighbor solid depth
+      // This prevents water walls from overlapping with terrain side walls
+      const wallBottomDepth = Math.min(ownSolidDepth, neighborSolidDepth);
+
+      // Calculate wall geometry from water surface down to the limit
       const wallTopRadius = outerRadius; // Water surface (already offset)
-      const wallBottomRadius = this.radius - (deepestAirDepth + 1) * this.BLOCK_HEIGHT;
+      const wallBottomRadius = this.radius - wallBottomDepth * this.BLOCK_HEIGHT;
 
       if (wallBottomRadius >= wallTopRadius) continue; // No wall needed
 
@@ -2563,6 +2616,7 @@ export class Planet {
     // Create batched geometry for all visible tiles
     const topData = createEmptyGeometryData();
     const sideData = createEmptyGeometryData();
+    const grassSideData = createEmptyGeometryData();
     const stoneData = createEmptyGeometryData();
     const waterData = createEmptyGeometryData();
 
@@ -2571,7 +2625,7 @@ export class Planet {
       if (!column) continue;
 
       // Skip frustum culling for dirty rebuild - we need consistent geometry
-      this.buildColumnGeometry(column, topData, sideData, stoneData, waterData);
+      this.buildColumnGeometry(column, topData, sideData, grassSideData, stoneData, waterData);
       column.isDirty = false;
     }
 
@@ -2586,6 +2640,12 @@ export class Planet {
       const geom = this.createBufferGeometry(sideData);
       this.sideMesh = new THREE.Mesh(geom, this.meshBuilder.getSideMaterial());
       this.batchedMeshGroup.add(this.sideMesh);
+    }
+
+    if (grassSideData.positions.length > 0) {
+      const geom = this.createBufferGeometry(grassSideData);
+      this.grassSideMesh = new THREE.Mesh(geom, this.meshBuilder.getGrassSideMaterial());
+      this.batchedMeshGroup.add(this.grassSideMesh);
     }
 
     if (stoneData.positions.length > 0) {
@@ -2684,7 +2744,7 @@ export class Planet {
           waterBoundaryData.normals.push(sideNormal.x, sideNormal.y, sideNormal.z);
         }
 
-        waterBoundaryData.uvs.push(0, 0, 1, 0, 1, 0.5, 0, 0.5);
+        waterBoundaryData.uvs.push(0, 0, 1, 0, 1, 1, 0, 1);
 
         waterBoundaryData.indices.push(baseIdx, baseIdx + 1, baseIdx + 2);
         waterBoundaryData.indices.push(baseIdx, baseIdx + 2, baseIdx + 3);

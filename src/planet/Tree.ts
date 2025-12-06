@@ -259,12 +259,15 @@ export class PlanetTreeManager {
         direction.clone().multiplyScalar(surfaceHeight + 0.1) // Slightly above surface
       );
 
-      // Randomize tree size a bit
-      const sizeVariation = 0.7 + Math.random() * 0.6; // 0.7 to 1.3
+      // Randomize tree size with wider variation
+      const sizeVariation = 0.5 + Math.random() * 1.0; // 0.5 to 1.5 (wider range)
+      const heightVariation = 0.6 + Math.random() * 0.9; // 0.6 to 1.5 (independent height variation)
       const config: Partial<TreeConfig> = {
-        trunkHeight: DEFAULT_CONFIG.trunkHeight * sizeVariation,
+        trunkHeight: DEFAULT_CONFIG.trunkHeight * sizeVariation * heightVariation,
+        trunkRadius: DEFAULT_CONFIG.trunkRadius * sizeVariation,
         leafBaseRadius: DEFAULT_CONFIG.leafBaseRadius * sizeVariation,
-        leafLayers: Math.floor(3 + Math.random() * 2), // 3-4 layers
+        leafLayers: Math.floor(2 + Math.random() * 4), // 2-5 layers for more variety
+        leafTaper: 0.6 + Math.random() * 0.2, // 0.6 to 0.8 for shape variation
       };
 
       this.addTree(treePosition, planetCenter, config);

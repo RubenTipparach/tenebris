@@ -1,3 +1,4 @@
+import * as THREE from 'three';
 import { GameEngine } from './engine/GameEngine';
 import { InputManager } from './engine/InputManager';
 import { Planet } from './planet/Planet';
@@ -93,7 +94,7 @@ class PlanetGame {
       this.treeManager.scatterTrees(
         this.earth.center,
         this.earth.radius,
-        50, // Number of trees
+        200, // Number of trees (quadrupled)
         (direction) => this.earth.getSurfaceHeightInDirection(direction),
         (direction) => this.earth.isUnderwaterInDirection(direction) // Skip underwater locations
       );
@@ -267,15 +268,19 @@ class PlanetGame {
         return;
     }
 
-    const surfaceOffset = 5; // Small offset above surface
+    const surfaceOffset = 1; // 1m above surface
     const playerPos = planet.center.clone();
 
-    // Position player on the surface
+    // Position player on the surface using actual terrain height
     // For Earth, position on top (Y+), for Moon position facing Earth (X-)
     if (planetName === 'earth') {
-      playerPos.y += planet.radius + surfaceOffset;
+      const spawnDirection = new THREE.Vector3(0, 1, 0);
+      const surfaceHeight = planet.getSurfaceHeightInDirection(spawnDirection);
+      playerPos.y += surfaceHeight + surfaceOffset;
     } else {
-      playerPos.x -= planet.radius + surfaceOffset;
+      const spawnDirection = new THREE.Vector3(-1, 0, 0);
+      const surfaceHeight = planet.getSurfaceHeightInDirection(spawnDirection);
+      playerPos.x -= surfaceHeight + surfaceOffset;
     }
 
     this.player.position.copy(playerPos);

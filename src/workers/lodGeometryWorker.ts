@@ -481,7 +481,7 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
         );
 
         normals.push(snx, sny, snz, snx, sny, snz, snx, sny, snz, snx, sny, snz);
-        uvs.push(0, 0, 1, 0, 1, 0.5, 0, 0.5);
+        uvs.push(0, 0, 1, 0, 1, 1, 0, 1);
         if (skyLight) skyLight.push(1.0, 1.0, 1.0, 1.0); // Full sky exposure for LOD
 
         indices.push(baseIdx, baseIdx + 1, baseIdx + 2);
@@ -558,7 +558,7 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
         );
 
         chunk.waterSideNormals.push(snx, sny, snz, snx, sny, snz, snx, sny, snz, snx, sny, snz);
-        chunk.waterSideUvs.push(0, 0, 1, 0, 1, 0.5, 0, 0.5);
+        chunk.waterSideUvs.push(0, 0, 1, 0, 1, 1, 0, 1);
 
         chunk.waterSideIndices.push(baseIdx, baseIdx + 1, baseIdx + 2);
         chunk.waterSideIndices.push(baseIdx, baseIdx + 2, baseIdx + 3);

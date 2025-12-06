@@ -104,8 +104,35 @@ export class HexBlockMeshBuilder {
       configureTexture(texture);
 
       this.textures.set('primary', texture);
-      const useVertexColors = PlayerConfig.VERTEX_LIGHTING_ENABLED;
-      const material = new THREE.MeshLambertMaterial({ map: texture, vertexColors: useVertexColors });
+
+      // Parse underwater fog color for terrain shader (even though moon has no water, shader needs it)
+      const terrainUnderwaterFogColor = new THREE.Color(PlayerConfig.UNDERWATER_FOG_COLOR);
+
+      // Use terrain shader for proper day/night lighting based on sun position
+      const createTerrainMaterial = (tex: THREE.Texture): THREE.ShaderMaterial => {
+        const mat = new THREE.ShaderMaterial({
+          uniforms: {
+            terrainTexture: { value: tex },
+            sunDirection: { value: this.sunDirection.clone() },
+            planetCenter: { value: this.planetCenter.clone() },
+            ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
+            directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
+            // Underwater uniforms (not used for moon but shader requires them)
+            waterLevel: { value: 0.0 },
+            isUnderwater: { value: 0.0 },
+            underwaterFogColor: { value: terrainUnderwaterFogColor },
+            underwaterFogNear: { value: PlayerConfig.UNDERWATER_FOG_NEAR },
+            underwaterFogFar: { value: PlayerConfig.UNDERWATER_FOG_FAR },
+            underwaterDimming: { value: PlayerConfig.UNDERWATER_TERRAIN_DIMMING ?? 0.3 },
+          },
+          vertexShader: terrainVert,
+          fragmentShader: terrainFrag,
+        });
+        this.terrainMaterials.push(mat);
+        return mat;
+      };
+
+      const material = createTerrainMaterial(texture);
 
       // All surface types use the same material
       this.materials.set('top', material);
@@ -113,11 +140,36 @@ export class HexBlockMeshBuilder {
       this.materials.set('bottom', material);
       this.materials.set('stone', material);
 
-      // LOD materials - all use same texture (simple Lambert for single-texture planets)
-      const lodMaterial = createLODMaterial(texture);
+      // LOD materials - use terrain shader for consistent day/night lighting
+      const createTerrainLODMaterial = (tex: THREE.Texture): THREE.ShaderMaterial => {
+        const mat = new THREE.ShaderMaterial({
+          uniforms: {
+            terrainTexture: { value: tex },
+            sunDirection: { value: this.sunDirection.clone() },
+            planetCenter: { value: this.planetCenter.clone() },
+            ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
+            directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
+            waterLevel: { value: 0.0 },
+            isUnderwater: { value: 0.0 },
+            underwaterFogColor: { value: terrainUnderwaterFogColor },
+            underwaterFogNear: { value: PlayerConfig.UNDERWATER_FOG_NEAR },
+            underwaterFogFar: { value: PlayerConfig.UNDERWATER_FOG_FAR },
+            underwaterDimming: { value: PlayerConfig.UNDERWATER_TERRAIN_DIMMING ?? 0.3 },
+          },
+          vertexShader: terrainVert,
+          fragmentShader: terrainFrag,
+          polygonOffset: true,
+          polygonOffsetFactor: lodOffsetFactor,
+          polygonOffsetUnits: lodOffsetUnits
+        });
+        this.terrainMaterials.push(mat);
+        return mat;
+      };
+
+      const lodMaterial = createTerrainLODMaterial(texture);
       this.materials.set('topLOD', lodMaterial);
       this.materials.set('sideLOD', lodMaterial);
-      this.materials.set('waterLOD', lodMaterial); // Fallback for planets without water
+      this.materials.set('waterLOD', createLODMaterial(texture)); // Fallback for planets without water
       return;
     }
 
@@ -125,12 +177,14 @@ export class HexBlockMeshBuilder {
     const stoneTexture = await this.loadTexture('/textures/rocks.png');
     const dirtTexture = await this.loadTexture('/textures/dirt.png');
     const grassTexture = await this.loadTexture('/textures/grass.png');
+    const dirtGrassTexture = await this.loadTexture('/textures/dirt_grass.png');
 
-    [stoneTexture, dirtTexture, grassTexture].forEach(configureTexture);
+    [stoneTexture, dirtTexture, grassTexture, dirtGrassTexture].forEach(configureTexture);
 
     this.textures.set('stone', stoneTexture);
     this.textures.set('dirt', dirtTexture);
     this.textures.set('grass', grassTexture);
+    this.textures.set('dirtGrass', dirtGrassTexture);
 
     // Parse underwater fog color for terrain shader
     const terrainUnderwaterFogColor = new THREE.Color(PlayerConfig.UNDERWATER_FOG_COLOR);
@@ -161,6 +215,7 @@ export class HexBlockMeshBuilder {
 
     this.materials.set('top', createTerrainMaterial(grassTexture));
     this.materials.set('side', createTerrainMaterial(dirtTexture));
+    this.materials.set('grassSide', createTerrainMaterial(dirtGrassTexture)); // Grass block sides use dirt_grass texture
     this.materials.set('bottom', createTerrainMaterial(stoneTexture));
     this.materials.set('stone', createTerrainMaterial(stoneTexture));
 
@@ -228,7 +283,7 @@ export class HexBlockMeshBuilder {
       vertexShader: waterVert,
       fragmentShader: waterFrag,
       transparent: true,
-      side: THREE.FrontSide,  // Back-face culling enabled for proper water wall rendering
+      side: THREE.DoubleSide,  // Render both sides so water surface/walls visible from underwater
       depthWrite: false
     });
 
@@ -268,7 +323,11 @@ export class HexBlockMeshBuilder {
     this.materials.set('topLOD', createTerrainLODMaterial(grassTexture));
     this.materials.set('sideLOD', createTerrainLODMaterial(dirtTexture));
     // Water LOD still uses simple material with water color tint (no underwater shader effects needed)
-    this.materials.set('waterLOD', createLODMaterial(waterTexture, waterColor));
+    const waterLODMat = createLODMaterial(waterTexture, waterColor);
+    waterLODMat.side = THREE.DoubleSide;
+    waterLODMat.transparent = true;
+    waterLODMat.opacity = 0.8;
+    this.materials.set('waterLOD', waterLODMat);
   }
 
   private loadTexture(path: string): Promise<THREE.Texture> {
@@ -287,6 +346,10 @@ export class HexBlockMeshBuilder {
 
   public getSideMaterial(): THREE.Material {
     return this.materials.get('side')!;
+  }
+
+  public getGrassSideMaterial(): THREE.Material {
+    return this.materials.get('grassSide') ?? this.materials.get('top')!;
   }
 
   public getBottomMaterial(): THREE.Material {

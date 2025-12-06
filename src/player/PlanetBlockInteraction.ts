@@ -4,6 +4,7 @@ import { PlanetPlayer } from './PlanetPlayer';
 import { HexBlockType } from '../planet/HexBlock';
 import { Inventory, ItemType, ITEM_DATA } from './Inventory';
 import { PlanetTreeManager } from '../planet/Tree';
+import { CraftingSystem } from './CraftingSystem';
 
 // Map HexBlockType to ItemType (what you get when mining)
 function blockToItem(blockType: HexBlockType): ItemType {
@@ -21,6 +22,7 @@ function itemToBlock(itemType: ItemType): HexBlockType {
     case ItemType.STONE: return HexBlockType.STONE;
     case ItemType.DIRT: return HexBlockType.DIRT;
     case ItemType.GRASS: return HexBlockType.DIRT; // Grass items place as dirt (grass isn't placeable)
+    case ItemType.WOOD: return HexBlockType.WOOD;
     default: return HexBlockType.AIR;
   }
 }
@@ -31,6 +33,7 @@ export class PlanetBlockInteraction {
   private scene: THREE.Scene;
   private raycaster: THREE.Raycaster;
   private inventory: Inventory;
+  private craftingSystem: CraftingSystem;
 
   // Wireframe for targeted block
   private blockWireframe: THREE.LineSegments | null = null;
@@ -53,6 +56,19 @@ export class PlanetBlockInteraction {
     this.scene = scene;
     this.raycaster = new THREE.Raycaster();
     this.inventory = new Inventory();
+
+    // Initialize crafting system with callbacks
+    this.craftingSystem = new CraftingSystem(this.inventory);
+    this.craftingSystem.setOnCloseCallback(() => {
+      // Re-lock pointer when inventory closes
+      const container = document.getElementById('game-container');
+      if (container) {
+        container.requestPointerLock();
+      }
+    });
+    this.craftingSystem.setOnUpdateHotbarCallback(() => {
+      this.updateHotbarUI();
+    });
 
     this.createHighlightMesh();
     this.setupBlockSelection();
@@ -336,8 +352,8 @@ export class PlanetBlockInteraction {
       this.miningProgress = 0;
     }
 
-    // Get mining time based on tree part
-    const itemType = treeType === 'trunk' ? ItemType.WOOD : ItemType.LEAVES;
+    // Get mining time based on tree part (trunks drop logs, leaves drop leaves)
+    const itemType = treeType === 'trunk' ? ItemType.LOG : ItemType.LEAVES;
     const mineTime = ITEM_DATA[itemType].mineTime;
 
     // Increase progress
@@ -352,8 +368,8 @@ export class PlanetBlockInteraction {
   }
 
   private breakTree(mesh: THREE.Mesh, treeType: string): void {
-    // Add item to inventory
-    const itemType = treeType === 'trunk' ? ItemType.WOOD : ItemType.LEAVES;
+    // Add item to inventory (trunks drop logs, leaves drop leaves)
+    const itemType = treeType === 'trunk' ? ItemType.LOG : ItemType.LEAVES;
     this.inventory.addItem(itemType, 1);
     this.updateHotbarUI();
 

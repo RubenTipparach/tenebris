@@ -124,8 +124,11 @@ export class PlanetPlayer {
     this.currentPlanet = planet;
     this.velocity = new THREE.Vector3();
 
-    // Start on the surface of the planet
-    this.position = new THREE.Vector3(0, planet.radius + 5, 0);
+    // Start on the surface of the planet (1m above ground)
+    // Use getSurfaceHeightInDirection to get actual terrain height, not just base radius
+    const spawnDirection = new THREE.Vector3(0, 1, 0);
+    const surfaceHeight = planet.getSurfaceHeightInDirection(spawnDirection);
+    this.position = new THREE.Vector3(0, surfaceHeight + 1, 0);
     this.updateLocalOrientation();
     this.updateOrientationFromLocal();
   }
