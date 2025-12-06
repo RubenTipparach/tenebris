@@ -31,6 +31,10 @@ export class CraftingSystem {
   private draggedSlotIndex: number | null = null;
   private dragGhost: HTMLElement | null = null;
 
+  // Mobile touch drag state
+  private touchDragSlotIndex: number | null = null;
+  private touchDragGhost: HTMLElement | null = null;
+
   constructor(inventory: Inventory) {
     this.inventory = inventory;
     this.setupUI();
@@ -91,14 +95,111 @@ export class CraftingSystem {
     count.className = 'slot-count';
     slot.appendChild(count);
 
-    // Drag and drop event handlers
+    // Desktop drag and drop event handlers
     slot.addEventListener('dragstart', (e) => this.handleDragStart(e, slotIndex));
     slot.addEventListener('dragend', () => this.handleDragEnd());
     slot.addEventListener('dragover', (e) => this.handleDragOver(e));
     slot.addEventListener('dragleave', (e) => this.handleDragLeave(e));
     slot.addEventListener('drop', (e) => this.handleDrop(e, slotIndex));
 
+    // Mobile touch drag handlers
+    slot.addEventListener('touchstart', (e) => this.handleTouchStart(e, slotIndex), { passive: false });
+    slot.addEventListener('touchmove', (e) => this.handleTouchMove(e), { passive: false });
+    slot.addEventListener('touchend', (e) => this.handleTouchEnd(e), { passive: false });
+
     return slot;
+  }
+
+  private handleTouchStart(e: TouchEvent, slotIndex: number): void {
+    const slotData = this.inventory.getSlot(slotIndex);
+    if (!slotData || slotData.itemType === ItemType.NONE) {
+      return;
+    }
+
+    e.preventDefault();
+    this.touchDragSlotIndex = slotIndex;
+
+    const touch = e.touches[0];
+    const target = e.currentTarget as HTMLElement;
+    target.classList.add('dragging');
+
+    // Create touch ghost element
+    const ghost = document.createElement('div');
+    ghost.className = 'drag-ghost';
+    const itemData = ITEM_DATA[slotData.itemType];
+    ghost.innerHTML = `<img src="${getAssetPath(itemData.texture)}" style="width:40px;height:40px;image-rendering:pixelated;">`;
+    if (slotData.quantity > 1) {
+      ghost.innerHTML += `<span class="ghost-count">${slotData.quantity}</span>`;
+    }
+    ghost.style.position = 'fixed';
+    ghost.style.left = `${touch.clientX - 25}px`;
+    ghost.style.top = `${touch.clientY - 25}px`;
+    ghost.style.pointerEvents = 'none';
+    ghost.style.zIndex = '9999';
+    ghost.style.background = 'rgba(0,0,0,0.8)';
+    ghost.style.border = '2px solid #4CAF50';
+    ghost.style.borderRadius = '4px';
+    ghost.style.padding = '4px';
+    document.body.appendChild(ghost);
+    this.touchDragGhost = ghost;
+  }
+
+  private handleTouchMove(e: TouchEvent): void {
+    if (this.touchDragSlotIndex === null || !this.touchDragGhost) return;
+
+    e.preventDefault();
+    const touch = e.touches[0];
+
+    // Move ghost to follow finger
+    this.touchDragGhost.style.left = `${touch.clientX - 25}px`;
+    this.touchDragGhost.style.top = `${touch.clientY - 25}px`;
+
+    // Find slot under touch and highlight it
+    document.querySelectorAll('.inventory-slot.drag-over').forEach(el => {
+      el.classList.remove('drag-over');
+    });
+
+    const elementUnder = document.elementFromPoint(touch.clientX, touch.clientY);
+    const slotUnder = elementUnder?.closest('.inventory-slot') as HTMLElement;
+    if (slotUnder) {
+      slotUnder.classList.add('drag-over');
+    }
+  }
+
+  private handleTouchEnd(e: TouchEvent): void {
+    if (this.touchDragSlotIndex === null) return;
+
+    e.preventDefault();
+    const touch = e.changedTouches[0];
+
+    // Find target slot
+    const elementUnder = document.elementFromPoint(touch.clientX, touch.clientY);
+    const targetSlot = elementUnder?.closest('.inventory-slot') as HTMLElement;
+
+    if (targetSlot) {
+      const targetSlotIndex = parseInt(targetSlot.dataset.slot || '-1');
+      if (targetSlotIndex >= 0 && targetSlotIndex !== this.touchDragSlotIndex) {
+        // Swap slots
+        this.inventory.swapSlots(this.touchDragSlotIndex, targetSlotIndex);
+        this.updateInventorySlots();
+        if (this.onUpdateHotbarCallback) {
+          this.onUpdateHotbarCallback();
+        }
+      }
+    }
+
+    // Cleanup
+    document.querySelectorAll('.inventory-slot.dragging').forEach(el => {
+      el.classList.remove('dragging');
+    });
+    document.querySelectorAll('.inventory-slot.drag-over').forEach(el => {
+      el.classList.remove('drag-over');
+    });
+    if (this.touchDragGhost) {
+      this.touchDragGhost.remove();
+      this.touchDragGhost = null;
+    }
+    this.touchDragSlotIndex = null;
   }
 
   private handleDragStart(e: DragEvent, slotIndex: number): void {
@@ -239,6 +340,14 @@ export class CraftingSystem {
 
   public isMenuOpen(): boolean {
     return this.isOpen;
+  }
+
+  public toggle(): void {
+    if (this.isOpen) {
+      this.close();
+    } else {
+      this.open();
+    }
   }
 
   public setOnCloseCallback(callback: () => void): void {

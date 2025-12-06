@@ -28,6 +28,7 @@ export class InputManager {
   private mouseButtons: { left: boolean; right: boolean } = { left: false, right: false };
   private isPointerLocked: boolean = false;
   private onPointerLockChange?: (locked: boolean) => void;
+  private onInventoryToggle?: () => void;
 
   // Mobile touch state
   public readonly isMobile: boolean;
@@ -172,10 +173,11 @@ export class InputManager {
 
       <!-- Right side controls -->
       <div id="right-controls">
-        <!-- Right action buttons: Jump/Down -->
+        <!-- Right action buttons: Jump/Down/Inventory -->
         <div id="right-buttons">
           <button id="btn-jump" class="action-btn">JUMP</button>
           <button id="btn-crouch" class="action-btn">DOWN</button>
+          <button id="btn-inventory" class="action-btn inventory">INV</button>
         </div>
         <!-- Right joystick for looking around -->
         <div id="look-joystick" class="joystick-container">
@@ -399,10 +401,25 @@ export class InputManager {
         this.touchRightClick = false;
       }, { passive: false });
     }
+
+    // Inventory button
+    const btnInventory = document.getElementById('btn-inventory');
+    if (btnInventory) {
+      btnInventory.addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        if (this.onInventoryToggle) {
+          this.onInventoryToggle();
+        }
+      }, { passive: false });
+    }
   }
 
   public setPointerLockCallback(callback: (locked: boolean) => void): void {
     this.onPointerLockChange = callback;
+  }
+
+  public setInventoryToggleCallback(callback: () => void): void {
+    this.onInventoryToggle = callback;
   }
 
   public getState(): InputState {
