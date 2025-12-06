@@ -271,7 +271,7 @@ export class PlanetBlockInteraction {
     if (!tile || !this.blockWireframe) return;
 
     const blockHeight = planet.getBlockHeight();
-    const outerRadius = planet.radius - depth * blockHeight;
+    const outerRadius = planet.depthToRadius(depth);
     const innerRadius = outerRadius - blockHeight;
 
     const vertices: number[] = [];
@@ -564,7 +564,7 @@ export class PlanetBlockInteraction {
       const playerHeadRadius = playerFeetRadius + 1.8; // PLAYER_HEIGHT
 
       // Block occupies from blockBottomRadius to blockTopRadius
-      const blockTopRadius = planet.radius - depth;
+      const blockTopRadius = planet.depthToRadius(depth);
       const blockBottomRadius = blockTopRadius - 1; // Block height is 1
 
       // Check if block overlaps with player's body (feet to head)

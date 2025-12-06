@@ -174,23 +174,25 @@ Earth is the starting planet and the most hospitable world in the solar system. 
 
 | Ore | Depth | Tool Required | Smelts To |
 |-----|-------|---------------|-----------|
-| **Coal** | 5-30 | Stone Pickaxe | Fuel (doesn't smelt) |
-| **Copper** | 10-40 | Stone Pickaxe | Copper Ingot |
-| **Tin** | 10-35 | Stone Pickaxe | Tin Ingot (for bronze) |
-| **Iron** | 20-50 | Bronze Pickaxe | Iron Ingot |
-| **Silver** | 25-45 | Bronze Pickaxe | Silver Ingot |
-| **Gold** | 30-50 | Iron Pickaxe | Gold Ingot |
-| **Lithium** | 35-50 | Iron Pickaxe | Lithium (batteries) |
+| **Coal** | 12-20 | Stone Pickaxe | Fuel (doesn't smelt) |
+| **Copper** | 10-18 | Stone Pickaxe | Copper Ingot |
+| **Iron** | 4-14 | Bronze Pickaxe | Iron Ingot |
+| **Gold** | 0-6 | Iron Pickaxe | Gold Ingot |
+| **Lithium** | 0-4 | Iron Pickaxe | Lithium (batteries) |
+| **Aluminum** | 2-12 | Stone Pickaxe | Aluminum Ingot |
+| **Cobalt** | 0-8 | Iron Pickaxe | Cobalt Ingot |
 
-### Gems (Deep Underground)
+*Depth: 0 = bedrock (bottom), 16 = sea level, 28 = sky. Underground is 0-16.*
 
-| Gem | Depth | Rarity | Use |
-|-----|-------|--------|-----|
-| **Quartz** | 20-40 | Common | Circuits, decoration |
-| **Amethyst** | 30-50 | Uncommon | Decoration, magic? |
-| **Emerald** | 35-50 | Rare | Trading, decoration |
-| **Ruby** | 40-50 | Rare | Lasers, decoration |
-| **Diamond** | 45-50 | Very Rare | Best tools, circuits |
+#### Mineral Textures (Future Implementation)
+
+| Coal | Copper | Iron | Gold |
+|:----:|:------:|:----:|:----:|
+| ![Coal](../../public/textures/minerals/earth/rocks_coal.png) | ![Copper](../../public/textures/minerals/earth/rocks_copper.png) | ![Iron](../../public/textures/minerals/earth/rocks_iron.png) | ![Gold](../../public/textures/minerals/earth/rocks_gold.png) |
+
+| Aluminum | Cobalt | Lithium |
+|:--------:|:------:|:-------:|
+| ![Aluminum](../../public/textures/minerals/earth/rocks_aluminum.png) | ![Cobalt](../../public/textures/minerals/earth/rocks_cobalt.png) | ![Lithium](../../public/textures/minerals/earth/rocks_lythium.png) |
 
 ---
 
