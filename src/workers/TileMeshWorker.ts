@@ -10,6 +10,13 @@ export interface TileVertexData {
   vertices: { x: number; y: number; z: number }[];
 }
 
+// Torch data for vertex lighting calculation
+export interface TorchData {
+  position: { x: number; y: number; z: number };
+  range: number;
+  intensity: number;
+}
+
 export interface WorkerTileRequest {
   type: 'buildTile';
   tileIndex: number;
@@ -26,6 +33,7 @@ export interface WorkerTileRequest {
   vertexLightingEnabled: boolean;
   waterSurfaceOffset: number;
   uvScale: number;  // Texture tiling scale from config
+  torches?: TorchData[];  // Nearby torches for vertex lighting (optional)
 }
 
 export interface WorkerTileResponse {
@@ -43,6 +51,7 @@ export interface GeometryArrays {
   uvs: Float32Array;
   indices: Uint32Array;
   skyLight: Float32Array;  // Depth-based sky light level per vertex
+  torchLight: Float32Array;  // Baked torch light level per vertex
   colors?: Float32Array;   // Optional vertex colors for sun lighting
 }
 
@@ -274,11 +283,33 @@ function createSeparateGeometries(
   return { top: topGeom, bottom: bottomGeom, sides: sidesGeom };
 }
 
+// Calculate torch light contribution at a point
+function calculateTorchLight(
+  x: number, y: number, z: number,
+  torches: TorchData[]
+): number {
+  let totalLight = 0;
+  for (const torch of torches) {
+    const dx = x - torch.position.x;
+    const dy = y - torch.position.y;
+    const dz = z - torch.position.z;
+    const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+    if (dist < torch.range) {
+      // Quadratic falloff matching the shader formula
+      const attenuation = 1.0 / (1.0 + 2.0 * dist * dist / (torch.range * torch.range));
+      totalLight += attenuation * torch.intensity;
+    }
+  }
+  return Math.min(totalLight, 1.5); // Cap at 1.5 like the shader
+}
+
 // Merge raw geometry arrays into target
 function mergeGeometry(
-  target: { positions: number[]; normals: number[]; uvs: number[]; skyLight: number[]; indices: number[]; vertexOffset: number },
+  target: { positions: number[]; normals: number[]; uvs: number[]; skyLight: number[]; torchLight: number[]; indices: number[]; vertexOffset: number },
   source: RawGeometry,
-  skyLightLevel: number = 1.0
+  skyLightLevel: number = 1.0,
+  torches: TorchData[] = []
 ): void {
   const vertexCount = source.positions.length / 3;
 
@@ -291,9 +322,14 @@ function mergeGeometry(
   for (let i = 0; i < source.uvs.length; i++) {
     target.uvs.push(source.uvs[i]);
   }
-  // Add sky light for each vertex
+  // Add sky light and torch light for each vertex
   for (let i = 0; i < vertexCount; i++) {
     target.skyLight.push(skyLightLevel);
+    // Calculate torch light for this vertex position
+    const px = source.positions[i * 3];
+    const py = source.positions[i * 3 + 1];
+    const pz = source.positions[i * 3 + 2];
+    target.torchLight.push(calculateTorchLight(px, py, pz, torches));
   }
   for (let i = 0; i < source.indices.length; i++) {
     target.indices.push(source.indices[i] + target.vertexOffset);
@@ -303,12 +339,12 @@ function mergeGeometry(
 
 // Build complete tile mesh geometry
 function buildTileMesh(request: WorkerTileRequest): WorkerTileResponse {
-  const { tile, blocks, radius, blockHeight, deepThreshold, uvScale } = request;
+  const { tile, blocks, radius, blockHeight, deepThreshold, uvScale, torches = [] } = request;
 
-  const topData = { positions: [] as number[], normals: [] as number[], uvs: [] as number[], skyLight: [] as number[], indices: [] as number[], vertexOffset: 0 };
-  const sideData = { positions: [] as number[], normals: [] as number[], uvs: [] as number[], skyLight: [] as number[], indices: [] as number[], vertexOffset: 0 };
-  const stoneData = { positions: [] as number[], normals: [] as number[], uvs: [] as number[], skyLight: [] as number[], indices: [] as number[], vertexOffset: 0 };
-  const waterData = { positions: [] as number[], normals: [] as number[], uvs: [] as number[], skyLight: [] as number[], indices: [] as number[], vertexOffset: 0 };
+  const topData = { positions: [] as number[], normals: [] as number[], uvs: [] as number[], skyLight: [] as number[], torchLight: [] as number[], indices: [] as number[], vertexOffset: 0 };
+  const sideData = { positions: [] as number[], normals: [] as number[], uvs: [] as number[], skyLight: [] as number[], torchLight: [] as number[], indices: [] as number[], vertexOffset: 0 };
+  const stoneData = { positions: [] as number[], normals: [] as number[], uvs: [] as number[], skyLight: [] as number[], torchLight: [] as number[], indices: [] as number[], vertexOffset: 0 };
+  const waterData = { positions: [] as number[], normals: [] as number[], uvs: [] as number[], skyLight: [] as number[], torchLight: [] as number[], indices: [] as number[], vertexOffset: 0 };
 
   // Find surface depth (topmost solid block, searching from top down)
   // Depth system: 0 = bedrock, maxDepth-1 = sky
@@ -380,35 +416,36 @@ function buildTileMesh(request: WorkerTileRequest): WorkerTileResponse {
 
     if (top) {
       if (isWater) {
-        mergeGeometry(waterData, top, 1.0);
+        mergeGeometry(waterData, top, 1.0, torches);
       } else if (isDeep) {
-        mergeGeometry(stoneData, top, skyLightLevel);
+        mergeGeometry(stoneData, top, skyLightLevel, torches);
       } else {
-        mergeGeometry(topData, top, skyLightLevel);
+        mergeGeometry(topData, top, skyLightLevel, torches);
       }
     }
 
     if (bottom && !isWater) {
-      mergeGeometry(stoneData, bottom, bottomSkyLight);
+      mergeGeometry(stoneData, bottom, bottomSkyLight, torches);
     }
 
     if (sides && !isWater) {
       if (isDeep) {
-        mergeGeometry(stoneData, sides, skyLightLevel);
+        mergeGeometry(stoneData, sides, skyLightLevel, torches);
       } else {
-        mergeGeometry(sideData, sides, skyLightLevel);
+        mergeGeometry(sideData, sides, skyLightLevel, torches);
       }
     }
   }
 
-  const toGeomArrays = (data: { positions: number[]; normals: number[]; uvs: number[]; skyLight: number[]; indices: number[] }): GeometryArrays | null => {
+  const toGeomArrays = (data: { positions: number[]; normals: number[]; uvs: number[]; skyLight: number[]; torchLight: number[]; indices: number[] }): GeometryArrays | null => {
     if (data.positions.length === 0) return null;
     return {
       positions: new Float32Array(data.positions),
       normals: new Float32Array(data.normals),
       uvs: new Float32Array(data.uvs),
       indices: new Uint32Array(data.indices),
-      skyLight: new Float32Array(data.skyLight)
+      skyLight: new Float32Array(data.skyLight),
+      torchLight: new Float32Array(data.torchLight)
     };
   };
 
@@ -437,7 +474,8 @@ self.onmessage = (e: MessageEvent<WorkerTileRequest>) => {
         response.topGeometry.normals.buffer as ArrayBuffer,
         response.topGeometry.uvs.buffer as ArrayBuffer,
         response.topGeometry.indices.buffer as ArrayBuffer,
-        response.topGeometry.skyLight.buffer as ArrayBuffer
+        response.topGeometry.skyLight.buffer as ArrayBuffer,
+        response.topGeometry.torchLight.buffer as ArrayBuffer
       );
     }
     if (response.sideGeometry) {
@@ -446,7 +484,8 @@ self.onmessage = (e: MessageEvent<WorkerTileRequest>) => {
         response.sideGeometry.normals.buffer as ArrayBuffer,
         response.sideGeometry.uvs.buffer as ArrayBuffer,
         response.sideGeometry.indices.buffer as ArrayBuffer,
-        response.sideGeometry.skyLight.buffer as ArrayBuffer
+        response.sideGeometry.skyLight.buffer as ArrayBuffer,
+        response.sideGeometry.torchLight.buffer as ArrayBuffer
       );
     }
     if (response.stoneGeometry) {
@@ -455,7 +494,8 @@ self.onmessage = (e: MessageEvent<WorkerTileRequest>) => {
         response.stoneGeometry.normals.buffer as ArrayBuffer,
         response.stoneGeometry.uvs.buffer as ArrayBuffer,
         response.stoneGeometry.indices.buffer as ArrayBuffer,
-        response.stoneGeometry.skyLight.buffer as ArrayBuffer
+        response.stoneGeometry.skyLight.buffer as ArrayBuffer,
+        response.stoneGeometry.torchLight.buffer as ArrayBuffer
       );
     }
     if (response.waterGeometry) {
@@ -464,7 +504,8 @@ self.onmessage = (e: MessageEvent<WorkerTileRequest>) => {
         response.waterGeometry.normals.buffer as ArrayBuffer,
         response.waterGeometry.uvs.buffer as ArrayBuffer,
         response.waterGeometry.indices.buffer as ArrayBuffer,
-        response.waterGeometry.skyLight.buffer as ArrayBuffer
+        response.waterGeometry.skyLight.buffer as ArrayBuffer,
+        response.waterGeometry.torchLight.buffer as ArrayBuffer
       );
     }
 

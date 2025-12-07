@@ -237,6 +237,12 @@ class PlanetGame {
       isGameActive ? wheelDelta : 0
     );
     profiler.end('Block Interaction');
+
+    // Update torch data for vertex baking (passed to geometry workers during rebuild)
+    const torchManager = this.blockInteraction.getTorchManager();
+    const torchData = torchManager.getTorchDataForBaking();
+    this.earth.setTorchData(torchData);
+    this.moon.setTorchData(torchData);
   }
 
   private setupSettingsMenu(): void {

@@ -4,9 +4,11 @@ import { PlanetPlayer } from './PlanetPlayer';
 import { HexBlockType } from '../planet/HexBlock';
 import { Inventory, ItemType, ITEM_DATA } from './Inventory';
 import { PlanetTreeManager } from '../planet/Tree';
+import { HeldTorch, TorchManager } from '../planet/Torch';
 import { CraftingSystem } from './CraftingSystem';
 import { getAssetPath } from '../utils/assetPath';
 import { gameStorage } from '../engine/GameStorage';
+import { PlayerConfig } from '../config/PlayerConfig';
 
 // Map HexBlockType to ItemType (what you get when mining)
 function blockToItem(blockType: HexBlockType): ItemType {
@@ -60,6 +62,10 @@ export class PlanetBlockInteraction {
   private blockWireframe: THREE.LineSegments | null = null;
   private treeManager: PlanetTreeManager | null = null;
 
+  // Torch system
+  private heldTorch: HeldTorch | null = null;
+  private torchManager: TorchManager;
+
   private rightClickCooldown: number = 0;
   private readonly CLICK_COOLDOWN = 0.25;
   private readonly MAX_REACH = 8;
@@ -82,6 +88,10 @@ export class PlanetBlockInteraction {
     this.raycaster = new THREE.Raycaster();
     this.inventory = new Inventory();
 
+    // Initialize torch systems
+    this.torchManager = new TorchManager(scene);
+    this.heldTorch = new HeldTorch(player.camera, scene);
+
     // Initialize crafting system with callbacks
     this.craftingSystem = new CraftingSystem(this.inventory);
     this.craftingSystem.setOnCloseCallback(() => {
@@ -93,6 +103,9 @@ export class PlanetBlockInteraction {
     });
     this.craftingSystem.setOnUpdateHotbarCallback(() => {
       this.updateHotbarUI();
+    });
+    this.craftingSystem.setOnSaveCallback(() => {
+      this.saveInventory();
     });
 
     this.createHighlightMesh();
@@ -381,6 +394,19 @@ export class PlanetBlockInteraction {
       this.updateBlockTypeUI();
     }
 
+    // Update held torch visibility based on selected item
+    const selectedItem = this.inventory.getSelectedItem();
+    const holdingTorch = selectedItem.itemType === ItemType.TORCH && selectedItem.quantity > 0;
+    if (this.heldTorch) {
+      this.heldTorch.setVisible(holdingTorch);
+      if (holdingTorch) {
+        this.heldTorch.update(deltaTime);
+      }
+    }
+
+    // Update placed torches (flicker animation)
+    this.torchManager.update(deltaTime);
+
     // Don't process block interaction when inventory menu is open
     if (this.craftingSystem.isMenuOpen()) {
       // Hide wireframe and reset mining when menu is open
@@ -395,14 +421,17 @@ export class PlanetBlockInteraction {
     const origin = this.player.getRaycastOrigin();
     const direction = this.player.getForwardVector();
 
-    // First check for trees using THREE.js raycaster
+    // First check for trees and torches using THREE.js raycaster
     this.raycaster.set(origin, direction);
     this.raycaster.far = this.MAX_REACH;
 
     // Get tree meshes from tree manager (avoids expensive scene traversal)
     const treeMeshes = this.treeManager?.getTreeMeshes() ?? [];
+    // Get torch meshes for picking
+    const torchMeshes = this.torchManager.getTorchMeshes();
 
     const treeIntersects = this.raycaster.intersectObjects(treeMeshes, false);
+    const torchIntersects = this.raycaster.intersectObjects(torchMeshes, false);
 
     // Raycast against all planets and find the closest hit
     let closestBlockHit: ReturnType<Planet['raycast']> = null;
@@ -421,27 +450,42 @@ export class PlanetBlockInteraction {
       }
     }
 
-    // Determine which hit is closer
+    // Determine which hit is closer (tree, torch, or block)
     let hitTree = false;
     let hitBlock = false;
+    let hitTorch = false;
     let treeHit: THREE.Intersection | null = null;
+    let torchHit: THREE.Intersection | null = null;
 
-    if (treeIntersects.length > 0 && closestBlockHit) {
-      // Both hit - pick closer one
-      if (treeIntersects[0].distance < closestBlockDistance) {
-        hitTree = true;
-        treeHit = treeIntersects[0];
-      } else {
-        hitBlock = true;
-      }
-    } else if (treeIntersects.length > 0) {
+    // Find the closest hit among all types
+    const treeDistance = treeIntersects.length > 0 ? treeIntersects[0].distance : Infinity;
+    const torchDistance = torchIntersects.length > 0 ? torchIntersects[0].distance : Infinity;
+    const closestObjectDistance = Math.min(treeDistance, torchDistance);
+
+    if (closestBlockHit && closestBlockDistance < closestObjectDistance) {
+      hitBlock = true;
+    } else if (torchDistance < treeDistance && torchDistance < Infinity) {
+      hitTorch = true;
+      torchHit = torchIntersects[0];
+    } else if (treeDistance < Infinity) {
       hitTree = true;
       treeHit = treeIntersects[0];
     } else if (closestBlockHit) {
       hitBlock = true;
     }
 
-    if (hitTree && treeHit) {
+    if (hitTorch && torchHit) {
+      // No wireframe for torches
+      if (this.blockWireframe) {
+        this.blockWireframe.visible = false;
+      }
+
+      // Handle torch picking (left click - instant removal, gives torch back)
+      if (leftClick) {
+        this.pickupTorch(torchHit.object as THREE.Mesh);
+      }
+      this.resetMining(); // No mining progress for torches
+    } else if (hitTree && treeHit) {
       const hitObject = treeHit.object as THREE.Mesh;
 
       // No wireframe for trees
@@ -540,12 +584,18 @@ export class PlanetBlockInteraction {
   }
 
   private breakTree(mesh: THREE.Mesh, treeType: string): void {
-    // Add item to inventory (trunks drop 4-8 logs, leaves drop 1-3 leaves)
-    const itemType = treeType === 'trunk' ? ItemType.LOG : ItemType.LEAVES;
-    const dropCount = treeType === 'trunk'
-      ? Math.floor(Math.random() * 5) + 4  // 4-8 logs
-      : Math.floor(Math.random() * 3) + 1; // 1-3 leaves
-    this.inventory.addItem(itemType, dropCount);
+    // Add items to inventory
+    if (treeType === 'trunk') {
+      // Trunks drop 4-8 logs AND 4-8 sticks
+      const logCount = Math.floor(Math.random() * 5) + 4;  // 4-8 logs
+      const stickCount = Math.floor(Math.random() * 5) + 4; // 4-8 sticks
+      this.inventory.addItem(ItemType.LOG, logCount);
+      this.inventory.addItem(ItemType.STICK, stickCount);
+    } else {
+      // Leaves drop 1-3 sticks
+      const stickCount = Math.floor(Math.random() * 3) + 1;
+      this.inventory.addItem(ItemType.STICK, stickCount);
+    }
     this.updateHotbarUI();
     this.saveInventory();
 
@@ -601,6 +651,12 @@ export class PlanetBlockInteraction {
       return; // No item to place
     }
 
+    // Handle torch placement separately
+    if (selectedSlot.itemType === ItemType.TORCH) {
+      this.placeTorch(planet, tileIndex, depth);
+      return;
+    }
+
     const blockType = itemToBlock(selectedSlot.itemType);
     if (blockType === HexBlockType.AIR) return;
 
@@ -635,12 +691,83 @@ export class PlanetBlockInteraction {
     }
   }
 
+  private placeTorch(planet: Planet, tileIndex: number, depth: number): void {
+    // Get the world position for the torch
+    const tile = planet.getTileByIndex(tileIndex);
+    if (!tile) return;
+
+    // depth is the air block position - torch should sit on the solid block below it
+    // depthToRadius(d) returns the TOP of block at depth d
+    // So the top of the solid block (depth-1) is depthToRadius(depth-1)
+    // But we can also compute it as depthToRadius(depth) - BLOCK_HEIGHT (bottom of air block)
+    const solidBlockTopRadius = planet.depthToRadius(depth) - planet.getBlockHeight();
+    const tileCenter = tile.center.clone().normalize();
+    const worldPosition = tileCenter.multiplyScalar(solidBlockTopRadius).add(planet.center);
+
+    // Use item from inventory
+    if (this.inventory.useSelectedItem()) {
+      // Place the torch
+      this.torchManager.placeTorch(worldPosition, planet.center, tileIndex);
+      this.updateHotbarUI();
+      this.saveInventory();
+
+      // Save torch placement
+      const planetId = this.getPlanetId(planet);
+      gameStorage.saveTorch(planetId, tileIndex, {
+        x: worldPosition.x,
+        y: worldPosition.y,
+        z: worldPosition.z
+      });
+
+      // Mark nearby tiles dirty for torch light vertex baking
+      planet.markTilesNearTorchDirty(worldPosition, PlayerConfig.TORCH_LIGHT_RANGE);
+    }
+  }
+
+  private pickupTorch(mesh: THREE.Mesh): void {
+    // Find the torch group containing this mesh
+    let parent = mesh.parent;
+    while (parent && !(parent instanceof THREE.Group)) {
+      parent = parent.parent;
+    }
+
+    if (parent instanceof THREE.Group) {
+      // Find the PlacedTorch object by matching the group
+      const placedTorches = this.torchManager.getPlacedTorches();
+      const torch = placedTorches.find(t => t.group === parent);
+
+      if (torch) {
+        // Remove torch from save before removing from scene
+        gameStorage.removeTorch({
+          x: torch.position.x,
+          y: torch.position.y,
+          z: torch.position.z
+        });
+
+        // Mark nearby tiles dirty for torch light vertex baking (on all planets)
+        for (const planet of this.planets) {
+          planet.markTilesNearTorchDirty(torch.position, PlayerConfig.TORCH_LIGHT_RANGE);
+        }
+
+        // Remove the torch and give it back to the player
+        this.torchManager.removeTorch(torch);
+        this.inventory.addItem(ItemType.TORCH, 1);
+        this.updateHotbarUI();
+        this.saveInventory();
+      }
+    }
+  }
+
   public getInventory(): Inventory {
     return this.inventory;
   }
 
   public getCraftingSystem(): CraftingSystem {
     return this.craftingSystem;
+  }
+
+  public getTorchManager(): TorchManager {
+    return this.torchManager;
   }
 
   public setTreeManager(treeManager: PlanetTreeManager): void {
@@ -678,6 +805,23 @@ export class PlanetBlockInteraction {
       }
     }
 
-    console.log(`Loaded save: ${saveData.tileChanges.length} tile changes, inventory restored`);
+    // Load saved torches
+    const savedTorches = gameStorage.getTorches();
+    for (const savedTorch of savedTorches) {
+      // Find which planet this torch belongs to
+      const planet = this.planets.find((_, i) =>
+        (i === 0 ? 'earth' : 'moon') === savedTorch.planetId
+      );
+      if (planet) {
+        const worldPosition = new THREE.Vector3(
+          savedTorch.position.x,
+          savedTorch.position.y,
+          savedTorch.position.z
+        );
+        this.torchManager.placeTorch(worldPosition, planet.center, savedTorch.tileIndex);
+      }
+    }
+
+    console.log(`Loaded save: ${saveData.tileChanges.length} tile changes, ${savedTorches.length} torches, inventory restored`);
   }
 }

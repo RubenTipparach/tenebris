@@ -11,6 +11,12 @@ export interface SavedInventorySlot {
   quantity: number;
 }
 
+export interface SavedTorch {
+  planetId: string;
+  tileIndex: number;
+  position: { x: number; y: number; z: number };
+}
+
 export interface PlayerSaveData {
   position: { x: number; y: number; z: number };
   orientation: { x: number; y: number; z: number; w: number };  // quaternion
@@ -23,6 +29,7 @@ export interface GameSaveData {
   tileChanges: TileChange[];
   inventory: SavedInventorySlot[];
   player: PlayerSaveData;
+  torches: SavedTorch[];
 }
 
 const STORAGE_KEY = 'tenebris_save';
@@ -31,6 +38,7 @@ const SAVE_VERSION = 1;
 export class GameStorage {
   private pendingChanges: Map<string, TileChange> = new Map();
   private inventory: SavedInventorySlot[] = [];
+  private torches: SavedTorch[] = [];
   private playerData: PlayerSaveData | null = null;
   private autoSaveInterval: number | null = null;
   private onPlayerSave: (() => PlayerSaveData) | null = null;
@@ -75,6 +83,29 @@ export class GameStorage {
     this.persistToStorage();
   }
 
+  // Save torch placement
+  public saveTorch(planetId: string, tileIndex: number, position: { x: number; y: number; z: number }): void {
+    this.torches.push({ planetId, tileIndex, position });
+    this.persistToStorage();
+  }
+
+  // Remove a torch from save
+  public removeTorch(position: { x: number; y: number; z: number }): void {
+    // Find and remove torch at this position (with small tolerance)
+    const tolerance = 0.01;
+    this.torches = this.torches.filter(t =>
+      Math.abs(t.position.x - position.x) > tolerance ||
+      Math.abs(t.position.y - position.y) > tolerance ||
+      Math.abs(t.position.z - position.z) > tolerance
+    );
+    this.persistToStorage();
+  }
+
+  // Get all saved torches
+  public getTorches(): SavedTorch[] {
+    return this.torches;
+  }
+
   // Save player position immediately
   public savePlayerPosition(): void {
     if (this.onPlayerSave) {
@@ -105,6 +136,7 @@ export class GameStorage {
       }
 
       this.inventory = data.inventory || [];
+      this.torches = data.torches || [];
       this.playerData = data.player || null;
 
       return data;
@@ -139,6 +171,7 @@ export class GameStorage {
   public clearSave(): void {
     this.pendingChanges.clear();
     this.inventory = [];
+    this.torches = [];
     this.playerData = null;
     localStorage.removeItem(STORAGE_KEY);
   }
@@ -151,6 +184,7 @@ export class GameStorage {
         timestamp: Date.now(),
         tileChanges: Array.from(this.pendingChanges.values()),
         inventory: this.inventory,
+        torches: this.torches,
         player: this.playerData || {
           position: { x: 0, y: 0, z: 0 },
           orientation: { x: 0, y: 0, z: 0, w: 1 },

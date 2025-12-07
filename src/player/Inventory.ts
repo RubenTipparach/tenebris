@@ -16,6 +16,11 @@ export enum ItemType {
   ORE_LITHIUM = 12,
   ORE_ALUMINUM = 13,
   ORE_COBALT = 14,
+  // Non-placeable items
+  STICK = 15,
+  COAL = 16,
+  TORCH = 17,
+  FISHING_ROD = 18,
 }
 
 // Item metadata
@@ -43,6 +48,11 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
   [ItemType.ORE_LITHIUM]: { name: 'Lithium Ore', stackSize: 64, texture: '/textures/minerals/earth/rocks_lythium.png', mineTime: 3.0 },
   [ItemType.ORE_ALUMINUM]: { name: 'Aluminum Ore', stackSize: 64, texture: '/textures/minerals/earth/rocks_aluminum.png', mineTime: 2.0 },
   [ItemType.ORE_COBALT]: { name: 'Cobalt Ore', stackSize: 64, texture: '/textures/minerals/earth/rocks_cobalt.png', mineTime: 2.5 },
+  // Non-placeable items
+  [ItemType.STICK]: { name: 'Stick', stackSize: 64, texture: '/textures/sticks.png', mineTime: 0.3 },
+  [ItemType.COAL]: { name: 'Coal', stackSize: 64, texture: '/textures/coal.png', mineTime: 0.3 },
+  [ItemType.TORCH]: { name: 'Torch', stackSize: 64, texture: '/textures/torch_sprite.png', mineTime: 0.3 },
+  [ItemType.FISHING_ROD]: { name: 'Fishing Rod', stackSize: 1, texture: '/textures/fishing_rod.png', mineTime: 0.3 },
 };
 
 // Inventory slot

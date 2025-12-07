@@ -1,0 +1,1112 @@
+{
+  "version": 1,
+  "timestamp": 1765084722437,
+  "tileChanges": [
+    {
+      "planetId": "earth",
+      "tileIndex": 13488,
+      "depth": 18,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13488,
+      "depth": 19,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13490,
+      "depth": 19,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13564,
+      "depth": 19,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13490,
+      "depth": 20,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13490,
+      "depth": 18,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13490,
+      "depth": 21,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13563,
+      "depth": 19,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13563,
+      "depth": 18,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13563,
+      "depth": 20,
+      "blockType": 2
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13563,
+      "depth": 17,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13490,
+      "depth": 17,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13562,
+      "depth": 17,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13562,
+      "depth": 18,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13563,
+      "depth": 16,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13562,
+      "depth": 16,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13490,
+      "depth": 16,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13488,
+      "depth": 17,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 14584,
+      "depth": 21,
+      "blockType": 2
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13491,
+      "depth": 19,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 14574,
+      "depth": 21,
+      "blockType": 2
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 14573,
+      "depth": 20,
+      "blockType": 2
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 14573,
+      "depth": 19,
+      "blockType": 2
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 14573,
+      "depth": 18,
+      "blockType": 2
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 14574,
+      "depth": 18,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 3391,
+      "depth": 18,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13484,
+      "depth": 17,
+      "blockType": 1
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 3388,
+      "depth": 20,
+      "blockType": 2
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13479,
+      "depth": 20,
+      "blockType": 2
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13479,
+      "depth": 19,
+      "blockType": 2
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13479,
+      "depth": 18,
+      "blockType": 2
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13479,
+      "depth": 17,
+      "blockType": 2
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13483,
+      "depth": 19,
+      "blockType": 2
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13484,
+      "depth": 18,
+      "blockType": 1
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13484,
+      "depth": 19,
+      "blockType": 1
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 12043,
+      "depth": 16,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 12042,
+      "depth": 16,
+      "blockType": 8
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 12037,
+      "depth": 17,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 858,
+      "depth": 17,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 858,
+      "depth": 16,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13564,
+      "depth": 17,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13564,
+      "depth": 16,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13528,
+      "depth": 17,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 3403,
+      "depth": 17,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 3403,
+      "depth": 18,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13528,
+      "depth": 18,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13529,
+      "depth": 18,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 12036,
+      "depth": 16,
+      "blockType": 9
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 765,
+      "depth": 15,
+      "blockType": 2
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13561,
+      "depth": 17,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13528,
+      "depth": 16,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13528,
+      "depth": 15,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13530,
+      "depth": 15,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13530,
+      "depth": 16,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13532,
+      "depth": 15,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13532,
+      "depth": 16,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13532,
+      "depth": 14,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 3399,
+      "depth": 15,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 3399,
+      "depth": 14,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 858,
+      "depth": 18,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 858,
+      "depth": 19,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13564,
+      "depth": 18,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 12053,
+      "depth": 15,
+      "blockType": 2
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 12052,
+      "depth": 15,
+      "blockType": 2
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 12054,
+      "depth": 15,
+      "blockType": 2
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 12039,
+      "depth": 15,
+      "blockType": 1
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 3026,
+      "depth": 15,
+      "blockType": 1
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 12040,
+      "depth": 15,
+      "blockType": 1
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 12038,
+      "depth": 15,
+      "blockType": 1
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 12119,
+      "depth": 15,
+      "blockType": 1
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 12133,
+      "depth": 15,
+      "blockType": 1
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 12120,
+      "depth": 15,
+      "blockType": 1
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 12127,
+      "depth": 15,
+      "blockType": 1
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 12051,
+      "depth": 14,
+      "blockType": 1
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 12050,
+      "depth": 15,
+      "blockType": 1
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 12051,
+      "depth": 15,
+      "blockType": 1
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 12045,
+      "depth": 14,
+      "blockType": 1
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13531,
+      "depth": 14,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13531,
+      "depth": 15,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13507,
+      "depth": 14,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13507,
+      "depth": 15,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13509,
+      "depth": 14,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13509,
+      "depth": 15,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13711,
+      "depth": 15,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13711,
+      "depth": 14,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13521,
+      "depth": 15,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13521,
+      "depth": 14,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13520,
+      "depth": 14,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13520,
+      "depth": 15,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 3400,
+      "depth": 14,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13520,
+      "depth": 13,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 3400,
+      "depth": 13,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 3400,
+      "depth": 12,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13720,
+      "depth": 13,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13720,
+      "depth": 12,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 3400,
+      "depth": 11,
+      "blockType": 1
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13515,
+      "depth": 12,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13515,
+      "depth": 13,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13515,
+      "depth": 11,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13721,
+      "depth": 11,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 221,
+      "depth": 11,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 3025,
+      "depth": 16,
+      "blockType": 13
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 12116,
+      "depth": 16,
+      "blockType": 10
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 3393,
+      "depth": 17,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13503,
+      "depth": 17,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13502,
+      "depth": 17,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 3391,
+      "depth": 17,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 12033,
+      "depth": 15,
+      "blockType": 1
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 3023,
+      "depth": 15,
+      "blockType": 1
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 12055,
+      "depth": 15,
+      "blockType": 1
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 3029,
+      "depth": 15,
+      "blockType": 1
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 12048,
+      "depth": 16,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 12045,
+      "depth": 15,
+      "blockType": 1
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 12044,
+      "depth": 14,
+      "blockType": 1
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 12044,
+      "depth": 15,
+      "blockType": 1
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13207,
+      "depth": 15,
+      "blockType": 1
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13278,
+      "depth": 14,
+      "blockType": 1
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13278,
+      "depth": 15,
+      "blockType": 1
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13278,
+      "depth": 16,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13276,
+      "depth": 16,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13276,
+      "depth": 15,
+      "blockType": 1
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13285,
+      "depth": 15,
+      "blockType": 1
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13277,
+      "depth": 15,
+      "blockType": 1
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13284,
+      "depth": 15,
+      "blockType": 1
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 12125,
+      "depth": 16,
+      "blockType": 1
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 12131,
+      "depth": 16,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 12133,
+      "depth": 16,
+      "blockType": 2
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 12125,
+      "depth": 17,
+      "blockType": 2
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 12131,
+      "depth": 17,
+      "blockType": 2
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 12133,
+      "depth": 17,
+      "blockType": 2
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13212,
+      "depth": 15,
+      "blockType": 9
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13212,
+      "depth": 16,
+      "blockType": 9
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13212,
+      "depth": 17,
+      "blockType": 9
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13212,
+      "depth": 18,
+      "blockType": 9
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13208,
+      "depth": 18,
+      "blockType": 9
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13207,
+      "depth": 18,
+      "blockType": 9
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13241,
+      "depth": 17,
+      "blockType": 13
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13241,
+      "depth": 18,
+      "blockType": 13
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13241,
+      "depth": 16,
+      "blockType": 13
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13241,
+      "depth": 14,
+      "blockType": 8
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13241,
+      "depth": 15,
+      "blockType": 8
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13562,
+      "depth": 24,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13560,
+      "depth": 24,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13524,
+      "depth": 24,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13485,
+      "depth": 24,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 764,
+      "depth": 16,
+      "blockType": 2
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 12041,
+      "depth": 16,
+      "blockType": 2
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13574,
+      "depth": 22,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 13566,
+      "depth": 22,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 862,
+      "depth": 22,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 12068,
+      "depth": 18,
+      "blockType": 0
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 12131,
+      "depth": 15,
+      "blockType": 2
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 3049,
+      "depth": 15,
+      "blockType": 2
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 12132,
+      "depth": 15,
+      "blockType": 2
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 3050,
+      "depth": 15,
+      "blockType": 2
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 3051,
+      "depth": 15,
+      "blockType": 2
+    },
+    {
+      "planetId": "earth",
+      "tileIndex": 12130,
+      "depth": 15,
+      "blockType": 2
+    }
+  ],
+  "inventory": [
+    {
+      "itemType": 6,
+      "quantity": 21
+    },
+    {
+      "itemType": 4,
+      "quantity": 12
+    },
+    {
+      "itemType": 15,
+      "quantity": 8
+    },
+    {
+      "itemType": 8,
+      "quantity": 7
+    },
+    {
+      "itemType": 0,
+      "quantity": 0
+    },
+    {
+      "itemType": 0,
+      "quantity": 0
+    },
+    {
+      "itemType": 0,
+      "quantity": 0
+    },
+    {
+      "itemType": 0,
+      "quantity": 0
+    },
+    {
+      "itemType": 0,
+      "quantity": 0
+    },
+    {
+      "itemType": 0,
+      "quantity": 0
+    },
+    {
+      "itemType": 0,
+      "quantity": 0
+    },
+    {
+      "itemType": 0,
+      "quantity": 0
+    },
+    {
+      "itemType": 0,
+      "quantity": 0
+    },
+    {
+      "itemType": 0,
+      "quantity": 0
+    },
+    {
+      "itemType": 0,
+      "quantity": 0
+    },
+    {
+      "itemType": 0,
+      "quantity": 0
+    },
+    {
+      "itemType": 0,
+      "quantity": 0
+    },
+    {
+      "itemType": 0,
+      "quantity": 0
+    },
+    {
+      "itemType": 0,
+      "quantity": 0
+    },
+    {
+      "itemType": 0,
+      "quantity": 0
+    },
+    {
+      "itemType": 0,
+      "quantity": 0
+    },
+    {
+      "itemType": 0,
+      "quantity": 0
+    },
+    {
+      "itemType": 0,
+      "quantity": 0
+    },
+    {
+      "itemType": 0,
+      "quantity": 0
+    },
+    {
+      "itemType": 0,
+      "quantity": 0
+    },
+    {
+      "itemType": 0,
+      "quantity": 0
+    },
+    {
+      "itemType": 0,
+      "quantity": 0
+    },
+    {
+      "itemType": 0,
+      "quantity": 0
+    },
+    {
+      "itemType": 0,
+      "quantity": 0
+    },
+    {
+      "itemType": 0,
+      "quantity": 0
+    },
+    {
+      "itemType": 0,
+      "quantity": 0
+    },
+    {
+      "itemType": 0,
+      "quantity": 0
+    },
+    {
+      "itemType": 0,
+      "quantity": 0
+    },
+    {
+      "itemType": 0,
+      "quantity": 0
+    },
+    {
+      "itemType": 0,
+      "quantity": 0
+    },
+    {
+      "itemType": 0,
+      "quantity": 0
+    }
+  ],
+  "player": {
+    "position": {
+      "x": -16.35479244710515,
+      "y": 85.042524779886,
+      "z": 15.629771049973476
+    },
+    "orientation": {
+      "x": 0.08472833647166858,
+      "y": 0.7929891979594147,
+      "z": -0.006544307477598611,
+      "w": 0.6032797136967782
+    },
+    "velocity": {
+      "x": 0.03842371477906473,
+      "y": 0.006279641084775313,
+      "z": 0.006038178511753429
+    }
+  }
+}

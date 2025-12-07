@@ -25,12 +25,13 @@ interface GeometryData {
   uvs: number[];
   colors: number[];  // Vertex colors for position-based lighting
   skyLight: number[]; // Sky light level (0-1) based on depth from surface
+  torchLight: number[]; // Torch light level (0-1.5) baked per vertex
   indices: number[];
   vertexOffset: number;
 }
 
 function createEmptyGeometryData(): GeometryData {
-  return { positions: [], normals: [], uvs: [], colors: [], skyLight: [], indices: [], vertexOffset: 0 };
+  return { positions: [], normals: [], uvs: [], colors: [], skyLight: [], torchLight: [], indices: [], vertexOffset: 0 };
 }
 
 export class Planet {
@@ -116,6 +117,9 @@ export class Planet {
     PlayerConfig.SUN_DIRECTION.y,
     PlayerConfig.SUN_DIRECTION.z
   ).normalize();
+
+  // Torch data for vertex baking (passed to geometry worker)
+  private torchData: Array<{ position: { x: number; y: number; z: number }; range: number; intensity: number }> = [];
 
   constructor(scene: THREE.Scene, radius: number = 50, subdivisions: number = 3, config: PlanetConfig = {}) {
     this.scene = scene;
@@ -412,7 +416,7 @@ export class Planet {
     const lodGroup = new THREE.Group();
 
     // Helper to create geometry from typed arrays (avoids copy)
-    const createGeom = (positions: number[], normals: number[], uvs: number[], indices: number[], skyLight?: number[]): THREE.BufferGeometry => {
+    const createGeom = (positions: number[], normals: number[], uvs: number[], indices: number[], skyLight?: number[], torchLight?: number[]): THREE.BufferGeometry => {
       const geom = new THREE.BufferGeometry();
       // Use Float32Array directly to avoid copying
       geom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(positions), 3));
@@ -420,6 +424,14 @@ export class Planet {
       geom.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(uvs), 2));
       if (skyLight && skyLight.length > 0) {
         geom.setAttribute('skyLight', new THREE.BufferAttribute(new Float32Array(skyLight), 1));
+      }
+      // Set torchLight attribute (default to zeros if not provided)
+      const vertexCount = positions.length / 3;
+      if (torchLight && torchLight.length > 0) {
+        geom.setAttribute('torchLight', new THREE.BufferAttribute(new Float32Array(torchLight), 1));
+      } else {
+        // Default to no torch light
+        geom.setAttribute('torchLight', new THREE.BufferAttribute(new Float32Array(vertexCount).fill(0), 1));
       }
       geom.setIndex(indices);
       return geom;
@@ -613,7 +625,8 @@ export class Planet {
           y: this.sunDirection.y,
           z: this.sunDirection.z
         },
-        uvScale: PlayerConfig.TERRAIN_UV_SCALE
+        uvScale: PlayerConfig.TERRAIN_UV_SCALE,
+        torches: this.torchData
       }
     });
     profiler.end('Planet.workerBuild.postMessage');
@@ -1422,77 +1435,58 @@ export class Planet {
         chunkGroup.remove(chunkGroup.children[0]);
       }
 
+      // Helper to create LOD geometry with skyLight and torchLight attributes
+      const createLODGeom = (positions: number[], normals: number[], uvs: number[], indices: number[], skyLight?: number[]): THREE.BufferGeometry => {
+        const geom = new THREE.BufferGeometry();
+        geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+        geom.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+        geom.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+        if (skyLight && skyLight.length > 0) {
+          geom.setAttribute('skyLight', new THREE.Float32BufferAttribute(skyLight, 1));
+        }
+        // LOD terrain has no torch light (too far away for torches to matter)
+        const vertexCount = positions.length / 3;
+        geom.setAttribute('torchLight', new THREE.Float32BufferAttribute(new Float32Array(vertexCount).fill(0), 1));
+        geom.setIndex(indices);
+        return geom;
+      };
+
       // Grass mesh (uses terrain shader with skyLight)
       if (chunk.grassPositions.length > 0) {
-        const geom = new THREE.BufferGeometry();
-        geom.setAttribute('position', new THREE.Float32BufferAttribute(chunk.grassPositions, 3));
-        geom.setAttribute('normal', new THREE.Float32BufferAttribute(chunk.grassNormals, 3));
-        geom.setAttribute('uv', new THREE.Float32BufferAttribute(chunk.grassUvs, 2));
-        if (chunk.grassSkyLight.length > 0) {
-          geom.setAttribute('skyLight', new THREE.Float32BufferAttribute(chunk.grassSkyLight, 1));
-        }
-        geom.setIndex(chunk.grassIndices);
+        const geom = createLODGeom(chunk.grassPositions, chunk.grassNormals, chunk.grassUvs, chunk.grassIndices, chunk.grassSkyLight);
         const mesh = new THREE.Mesh(geom, this.meshBuilder.getTopLODMaterial());
         chunkGroup.add(mesh);
       }
 
       // Dirt mesh (uses terrain shader with skyLight)
       if (chunk.dirtPositions.length > 0) {
-        const geom = new THREE.BufferGeometry();
-        geom.setAttribute('position', new THREE.Float32BufferAttribute(chunk.dirtPositions, 3));
-        geom.setAttribute('normal', new THREE.Float32BufferAttribute(chunk.dirtNormals, 3));
-        geom.setAttribute('uv', new THREE.Float32BufferAttribute(chunk.dirtUvs, 2));
-        if (chunk.dirtSkyLight.length > 0) {
-          geom.setAttribute('skyLight', new THREE.Float32BufferAttribute(chunk.dirtSkyLight, 1));
-        }
-        geom.setIndex(chunk.dirtIndices);
+        const geom = createLODGeom(chunk.dirtPositions, chunk.dirtNormals, chunk.dirtUvs, chunk.dirtIndices, chunk.dirtSkyLight);
         const mesh = new THREE.Mesh(geom, this.meshBuilder.getSideLODMaterial());
         chunkGroup.add(mesh);
       }
 
       // Stone mesh (uses stone LOD material)
       if (chunk.stonePositions.length > 0) {
-        const geom = new THREE.BufferGeometry();
-        geom.setAttribute('position', new THREE.Float32BufferAttribute(chunk.stonePositions, 3));
-        geom.setAttribute('normal', new THREE.Float32BufferAttribute(chunk.stoneNormals, 3));
-        geom.setAttribute('uv', new THREE.Float32BufferAttribute(chunk.stoneUvs, 2));
-        if (chunk.stoneSkyLight.length > 0) {
-          geom.setAttribute('skyLight', new THREE.Float32BufferAttribute(chunk.stoneSkyLight, 1));
-        }
-        geom.setIndex(chunk.stoneIndices);
+        const geom = createLODGeom(chunk.stonePositions, chunk.stoneNormals, chunk.stoneUvs, chunk.stoneIndices, chunk.stoneSkyLight);
         const mesh = new THREE.Mesh(geom, this.meshBuilder.getStoneLODMaterial());
         chunkGroup.add(mesh);
       }
 
       // Sand mesh (uses sand LOD material)
       if (chunk.sandPositions.length > 0) {
-        const geom = new THREE.BufferGeometry();
-        geom.setAttribute('position', new THREE.Float32BufferAttribute(chunk.sandPositions, 3));
-        geom.setAttribute('normal', new THREE.Float32BufferAttribute(chunk.sandNormals, 3));
-        geom.setAttribute('uv', new THREE.Float32BufferAttribute(chunk.sandUvs, 2));
-        if (chunk.sandSkyLight.length > 0) {
-          geom.setAttribute('skyLight', new THREE.Float32BufferAttribute(chunk.sandSkyLight, 1));
-        }
-        geom.setIndex(chunk.sandIndices);
+        const geom = createLODGeom(chunk.sandPositions, chunk.sandNormals, chunk.sandUvs, chunk.sandIndices, chunk.sandSkyLight);
         const mesh = new THREE.Mesh(geom, this.meshBuilder.getSandLODMaterial());
         chunkGroup.add(mesh);
       }
 
       // Wood mesh (uses wood LOD material)
       if (chunk.woodPositions.length > 0) {
-        const geom = new THREE.BufferGeometry();
-        geom.setAttribute('position', new THREE.Float32BufferAttribute(chunk.woodPositions, 3));
-        geom.setAttribute('normal', new THREE.Float32BufferAttribute(chunk.woodNormals, 3));
-        geom.setAttribute('uv', new THREE.Float32BufferAttribute(chunk.woodUvs, 2));
-        if (chunk.woodSkyLight.length > 0) {
-          geom.setAttribute('skyLight', new THREE.Float32BufferAttribute(chunk.woodSkyLight, 1));
-        }
-        geom.setIndex(chunk.woodIndices);
+        const geom = createLODGeom(chunk.woodPositions, chunk.woodNormals, chunk.woodUvs, chunk.woodIndices, chunk.woodSkyLight);
         const mesh = new THREE.Mesh(geom, this.meshBuilder.getWoodLODMaterial());
         chunkGroup.add(mesh);
       }
 
-      // Water mesh (uses simple material, no skyLight)
+      // Water mesh (uses simple material, no skyLight/torchLight)
       if (chunk.waterPositions.length > 0) {
         const geom = new THREE.BufferGeometry();
         geom.setAttribute('position', new THREE.Float32BufferAttribute(chunk.waterPositions, 3));
@@ -1506,14 +1500,7 @@ export class Planet {
 
       // Side walls mesh (uses terrain shader with skyLight)
       if (chunk.sidePositions.length > 0) {
-        const geom = new THREE.BufferGeometry();
-        geom.setAttribute('position', new THREE.Float32BufferAttribute(chunk.sidePositions, 3));
-        geom.setAttribute('normal', new THREE.Float32BufferAttribute(chunk.sideNormals, 3));
-        geom.setAttribute('uv', new THREE.Float32BufferAttribute(chunk.sideUvs, 2));
-        if (chunk.sideSkyLight.length > 0) {
-          geom.setAttribute('skyLight', new THREE.Float32BufferAttribute(chunk.sideSkyLight, 1));
-        }
-        geom.setIndex(chunk.sideIndices);
+        const geom = createLODGeom(chunk.sidePositions, chunk.sideNormals, chunk.sideUvs, chunk.sideIndices, chunk.sideSkyLight);
         const mesh = new THREE.Mesh(geom, this.meshBuilder.getSideLODMaterial());
         chunkGroup.add(mesh);
       }
@@ -2609,6 +2596,31 @@ export class Planet {
     this.meshBuilder.setSunDirection(dir);
   }
 
+  // Set torch data for vertex baking (called before geometry rebuild)
+  public setTorchData(torches: Array<{ position: THREE.Vector3; range: number; intensity: number }>): void {
+    this.torchData = torches.map(t => ({
+      position: { x: t.position.x, y: t.position.y, z: t.position.z },
+      range: t.range,
+      intensity: t.intensity
+    }));
+  }
+
+  // Mark tiles near a torch position as dirty (for torch light baking)
+  // Call this when a torch is placed or removed
+  public markTilesNearTorchDirty(torchPosition: THREE.Vector3, range: number): void {
+    // Find tiles within the torch light range
+    for (const [tileIndex, column] of this.columns) {
+      // Check if tile center is within range of torch
+      const tileWorldCenter = column.tile.center.clone().add(this.center);
+      const distance = tileWorldCenter.distanceTo(torchPosition);
+
+      if (distance < range + 2) { // Add some buffer for block size
+        column.isDirty = true;
+        this.queueDirtyColumnRebuild(tileIndex);
+      }
+    }
+  }
+
   public getWaterShaderMaterial(): THREE.ShaderMaterial | null {
     return this.meshBuilder.getWaterShaderMaterial();
   }
@@ -2712,6 +2724,13 @@ export class Planet {
     // Add sky light attribute for depth-based lighting
     if (data.skyLight.length > 0) {
       geometry.setAttribute('skyLight', new THREE.Float32BufferAttribute(data.skyLight, 1));
+    }
+    // Add torch light attribute from worker (or default to zeros)
+    if (data.torchLight && data.torchLight.length > 0) {
+      geometry.setAttribute('torchLight', new THREE.Float32BufferAttribute(data.torchLight, 1));
+    } else {
+      const vertexCount = data.positions.length / 3;
+      geometry.setAttribute('torchLight', new THREE.Float32BufferAttribute(new Float32Array(vertexCount).fill(0), 1));
     }
     geometry.setIndex(data.indices);
     geometry.computeBoundingSphere();

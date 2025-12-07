@@ -13,11 +13,15 @@ uniform float underwaterFogNear;
 uniform float underwaterFogFar;
 uniform float underwaterDimming; // How much to dim underwater terrain (0-1)
 
+// Torch light color (warm orange)
+const vec3 TORCH_LIGHT_COLOR = vec3(1.0, 0.7, 0.3);
+
 varying vec3 vNormal;
 varying vec3 vWorldPosition;
 varying vec2 vUv;
 varying float vSunBrightness;
 varying float vSkyLight; // Pre-calculated sky light based on depth from surface
+varying float vTorchLight; // Pre-baked torch light from vertex shader
 varying float vWaterDepth; // How far below water surface
 varying float vDistanceFromCamera;
 
@@ -41,6 +45,11 @@ void main() {
   // Final lighting: ambient provides base, directional adds on top
   float lighting = ambient + directional;
   vec3 finalColor = texColor.rgb * lighting;
+
+  // Apply vertex-baked torch light with warm orange color
+  // vTorchLight is pre-calculated per vertex based on nearby torches
+  vec3 torchContribution = texColor.rgb * TORCH_LIGHT_COLOR * vTorchLight;
+  finalColor += torchContribution;
 
   // Apply underwater effects if terrain is below water surface
   if (vWaterDepth > 0.0) {

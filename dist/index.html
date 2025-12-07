@@ -628,23 +628,127 @@
       margin-bottom: 10px;
     }
 
+    .recipe-select {
+      width: 100%;
+      padding: 8px 12px;
+      background: #222;
+      color: white;
+      border: 2px solid #444;
+      border-radius: 4px;
+      font-family: 'Courier New', monospace;
+      font-size: 12px;
+      cursor: pointer;
+      margin-bottom: 15px;
+    }
+
+    .recipe-select:hover {
+      border-color: #666;
+    }
+
+    .recipe-select:focus {
+      border-color: #4CAF50;
+      outline: none;
+    }
+
+    .recipe-select option {
+      background: #222;
+    }
+
     .crafting-grid {
       display: grid;
-      grid-template-columns: repeat(2, 50px);
+      grid-template-columns: repeat(3, 50px);
       gap: 4px;
-      margin-bottom: 15px;
+      margin-bottom: 10px;
+    }
+
+    .crafting-slot {
+      width: 50px;
+      height: 50px;
+      background: rgba(0, 0, 0, 0.6);
+      border: 2px solid #444;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+    }
+
+    .crafting-slot img {
+      width: 40px;
+      height: 40px;
+      image-rendering: pixelated;
+    }
+
+    .crafting-slot .slot-count {
+      position: absolute;
+      bottom: 2px;
+      right: 4px;
+      font-size: 12px;
+      font-weight: bold;
+      text-shadow: 1px 1px 1px black;
+    }
+
+    .crafting-slot.has-item {
+      border-color: #4CAF50;
+    }
+
+    .crafting-slot.missing-item {
+      border-color: #c62828;
+      background: rgba(198, 40, 40, 0.2);
+    }
+
+    .crafting-slot.output-slot {
+      width: 60px;
+      height: 60px;
+      border-width: 3px;
+    }
+
+    .crafting-slot.output-slot img {
+      width: 48px;
+      height: 48px;
     }
 
     .crafting-arrow {
       font-size: 24px;
       color: #888;
-      margin: 10px 0;
+      margin: 5px 0;
     }
 
     .crafting-output {
       display: flex;
       flex-direction: column;
       align-items: center;
+      margin-bottom: 15px;
+    }
+
+    .craft-btn {
+      width: 100%;
+      padding: 10px 20px;
+      background: #333;
+      color: #666;
+      border: 2px solid #444;
+      border-radius: 4px;
+      font-family: 'Courier New', monospace;
+      font-size: 14px;
+      font-weight: bold;
+      cursor: not-allowed;
+      transition: all 0.2s;
+    }
+
+    .craft-btn:enabled {
+      background: #4CAF50;
+      color: white;
+      border-color: #4CAF50;
+      cursor: pointer;
+    }
+
+    .craft-btn:enabled:hover {
+      background: #66BB6A;
+      border-color: #66BB6A;
+    }
+
+    .craft-btn:enabled:active {
+      background: #388E3C;
+      border-color: #388E3C;
     }
 
     .inventory-section {
@@ -701,66 +805,6 @@
       text-shadow: 1px 1px 1px black;
     }
 
-    .crafting-recipes {
-      margin-top: 15px;
-      padding-top: 15px;
-      border-top: 1px solid #444;
-    }
-
-    .crafting-recipes h4 {
-      font-size: 12px;
-      color: #888;
-      margin-bottom: 8px;
-    }
-
-    .recipe-list {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      max-height: 150px;
-      overflow-y: auto;
-    }
-
-    .recipe-item {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      padding: 8px;
-      background: rgba(0, 0, 0, 0.4);
-      border: 1px solid #333;
-      border-radius: 4px;
-      cursor: pointer;
-      transition: all 0.1s;
-    }
-
-    .recipe-item:hover {
-      background: rgba(76, 175, 80, 0.2);
-      border-color: #4CAF50;
-    }
-
-    .recipe-item.disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-    }
-
-    .recipe-item.disabled:hover {
-      background: rgba(0, 0, 0, 0.4);
-      border-color: #333;
-    }
-
-    .recipe-item img {
-      width: 32px;
-      height: 32px;
-      image-rendering: pixelated;
-    }
-
-    .recipe-item span {
-      font-size: 12px;
-    }
-
-    .recipe-arrow {
-      color: #888;
-    }
 
     .close-inventory {
       position: absolute;
@@ -850,7 +894,7 @@
       }
     }
   </style>
-  <script type="module" crossorigin src="/tenebris/assets/index-C0_ElN91.js"></script>
+  <script type="module" crossorigin src="/tenebris/assets/index-BWdp5CJl.js"></script>
 </head>
 <body>
   <div id="game-container"></div>
@@ -963,12 +1007,38 @@
       <!-- Crafting Section -->
       <div class="crafting-section">
         <h3>Crafting</h3>
-        <div class="crafting-recipes">
-          <h4>Available Recipes</h4>
-          <div class="recipe-list" id="recipe-list">
-            <!-- Recipes will be dynamically populated -->
+
+        <!-- Recipe dropdown -->
+        <select id="recipe-select" class="recipe-select">
+          <option value="">-- Select Recipe --</option>
+        </select>
+
+        <!-- Crafting grid (3x3) -->
+        <div class="crafting-grid" id="crafting-grid">
+          <div class="crafting-slot" data-slot="0"><img style="display:none"><span class="slot-count"></span></div>
+          <div class="crafting-slot" data-slot="1"><img style="display:none"><span class="slot-count"></span></div>
+          <div class="crafting-slot" data-slot="2"><img style="display:none"><span class="slot-count"></span></div>
+          <div class="crafting-slot" data-slot="3"><img style="display:none"><span class="slot-count"></span></div>
+          <div class="crafting-slot" data-slot="4"><img style="display:none"><span class="slot-count"></span></div>
+          <div class="crafting-slot" data-slot="5"><img style="display:none"><span class="slot-count"></span></div>
+          <div class="crafting-slot" data-slot="6"><img style="display:none"><span class="slot-count"></span></div>
+          <div class="crafting-slot" data-slot="7"><img style="display:none"><span class="slot-count"></span></div>
+          <div class="crafting-slot" data-slot="8"><img style="display:none"><span class="slot-count"></span></div>
+        </div>
+
+        <!-- Arrow -->
+        <div class="crafting-arrow">▼</div>
+
+        <!-- Output slot -->
+        <div class="crafting-output">
+          <div class="crafting-slot output-slot" id="crafting-output">
+            <img style="display:none">
+            <span class="slot-count"></span>
           </div>
         </div>
+
+        <!-- Craft button -->
+        <button id="craft-btn" class="craft-btn" disabled>Craft</button>
       </div>
 
       <!-- Inventory Section -->

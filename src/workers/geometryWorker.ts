@@ -15,6 +15,13 @@ import {
 } from '../shared/vec3';
 import { SKY_LIGHT_FALLOFF, MIN_SKY_LIGHT, buildWaterWallGeometry } from '../shared/geometry';
 
+// Torch data for vertex lighting calculation
+interface TorchData {
+  position: Vec3;
+  range: number;
+  intensity: number;
+}
+
 // Geometry data structure (matches Planet.ts)
 interface GeometryData {
   positions: number[];
@@ -22,12 +29,13 @@ interface GeometryData {
   uvs: number[];
   colors: number[];
   skyLight: number[];
+  torchLight: number[];  // Baked torch light level per vertex
   indices: number[];
   vertexOffset: number;
 }
 
 function createEmptyGeometryData(): GeometryData {
-  return { positions: [], normals: [], uvs: [], colors: [], skyLight: [], indices: [], vertexOffset: 0 };
+  return { positions: [], normals: [], uvs: [], colors: [], skyLight: [], torchLight: [], indices: [], vertexOffset: 0 };
 }
 
 // Tile data passed from main thread
@@ -57,11 +65,30 @@ interface WorkerConfig {
   waterSurfaceOffset: number;
   sunDirection: Vec3;
   uvScale: number;  // Texture tiling scale
+  torches?: TorchData[];  // Nearby torches for vertex lighting (optional)
 }
 
 // Helper to convert depth to radius (0 = bedrock, maxDepth-1 = sky)
 function depthToRadius(depth: number, config: WorkerConfig): number {
   return config.radius - (config.maxDepth - 1 - depth) * config.blockHeight;
+}
+
+// Calculate torch light contribution at a point
+function calculateTorchLight(x: number, y: number, z: number, torches: TorchData[]): number {
+  let totalLight = 0;
+  for (const torch of torches) {
+    const dx = x - torch.position.x;
+    const dy = y - torch.position.y;
+    const dz = z - torch.position.z;
+    const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+    if (dist < torch.range) {
+      // Quadratic falloff matching the shader formula
+      const attenuation = 1.0 / (1.0 + 2.0 * dist * dist / (torch.range * torch.range));
+      totalLight += attenuation * torch.intensity;
+    }
+  }
+  return Math.min(totalLight, 1.5); // Cap at 1.5 like the shader
 }
 
 // Neighbor data includes both blocks and vertices for water wall generation
@@ -128,7 +155,8 @@ function mergeGeometry(
   uvs: number[],
   indices: number[],
   _sunDirection: Vec3,
-  skyLightLevel: number
+  skyLightLevel: number,
+  torches: TorchData[] = []
 ): void {
   const vertexCount = positions.length / 3;
   const baseIndex = target.vertexOffset;
@@ -156,6 +184,16 @@ function mergeGeometry(
     skyLightToAdd[i] = skyLightLevel;
   }
   target.skyLight.push.apply(target.skyLight, skyLightToAdd);
+
+  // Add torch light - calculate per vertex based on position
+  const torchLightToAdd = new Array(vertexCount);
+  for (let i = 0; i < vertexCount; i++) {
+    const px = positions[i * 3];
+    const py = positions[i * 3 + 1];
+    const pz = positions[i * 3 + 2];
+    torchLightToAdd[i] = calculateTorchLight(px, py, pz, torches);
+  }
+  target.torchLight.push.apply(target.torchLight, torchLightToAdd);
 
   // Add indices with offset - pre-build array
   const indicesToAdd = new Array(indices.length);
@@ -387,14 +425,17 @@ function buildColumnGeometry(
       skyLightLevel = Math.max(MIN_SKY_LIGHT, Math.pow(SKY_LIGHT_FALLOFF, depthFromSurface));
     }
 
+    // Get torches array (default to empty)
+    const torches = config.torches || [];
+
     // Create top face
     if (isWater ? true : hasTopExposed) {
       const topGeom = createFaceGeometry(column.tile, innerRadius, outerRadius, true, false, false, config.uvScale);
       if (topGeom) {
         if (isWater) {
-          mergeGeometry(waterData, topGeom.positions, topGeom.normals, topGeom.uvs, topGeom.indices, config.sunDirection, 1.0);
+          mergeGeometry(waterData, topGeom.positions, topGeom.normals, topGeom.uvs, topGeom.indices, config.sunDirection, 1.0, torches);
         } else {
-          mergeGeometry(blockGeomData, topGeom.positions, topGeom.normals, topGeom.uvs, topGeom.indices, config.sunDirection, skyLightLevel);
+          mergeGeometry(blockGeomData, topGeom.positions, topGeom.normals, topGeom.uvs, topGeom.indices, config.sunDirection, skyLightLevel, torches);
         }
       }
     }
@@ -406,9 +447,9 @@ function buildColumnGeometry(
         const bottomSkyLight = Math.max(MIN_SKY_LIGHT, skyLightLevel * SKY_LIGHT_FALLOFF);
         // Grass blocks show dirt on bottom, everything else shows its own texture
         if (blockType === HexBlockType.GRASS) {
-          mergeGeometry(sideData, bottomGeom.positions, bottomGeom.normals, bottomGeom.uvs, bottomGeom.indices, config.sunDirection, bottomSkyLight);
+          mergeGeometry(sideData, bottomGeom.positions, bottomGeom.normals, bottomGeom.uvs, bottomGeom.indices, config.sunDirection, bottomSkyLight, torches);
         } else {
-          mergeGeometry(blockGeomData, bottomGeom.positions, bottomGeom.normals, bottomGeom.uvs, bottomGeom.indices, config.sunDirection, bottomSkyLight);
+          mergeGeometry(blockGeomData, bottomGeom.positions, bottomGeom.normals, bottomGeom.uvs, bottomGeom.indices, config.sunDirection, bottomSkyLight, torches);
         }
       }
     }
@@ -419,9 +460,9 @@ function buildColumnGeometry(
       if (sidesGeom) {
         // Grass blocks use grassSideData (dirt_grass texture) for sides
         if (blockType === HexBlockType.GRASS) {
-          mergeGeometry(grassSideData, sidesGeom.positions, sidesGeom.normals, sidesGeom.uvs, sidesGeom.indices, config.sunDirection, skyLightLevel);
+          mergeGeometry(grassSideData, sidesGeom.positions, sidesGeom.normals, sidesGeom.uvs, sidesGeom.indices, config.sunDirection, skyLightLevel, torches);
         } else {
-          mergeGeometry(blockGeomData, sidesGeom.positions, sidesGeom.normals, sidesGeom.uvs, sidesGeom.indices, config.sunDirection, skyLightLevel);
+          mergeGeometry(blockGeomData, sidesGeom.positions, sidesGeom.normals, sidesGeom.uvs, sidesGeom.indices, config.sunDirection, skyLightLevel, torches);
         }
       }
     }

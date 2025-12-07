@@ -2,30 +2,77 @@ import { Inventory, ItemType, ITEM_DATA, InventorySlot } from './Inventory';
 import { getAssetPath } from '../utils/assetPath';
 
 // Crafting recipe definition
+// For shaped recipes, use 'slots' to specify which grid positions (0-8 for 3x3)
+// For shapeless recipes, just use 'inputs' (will display in first available slots)
 export interface CraftingRecipe {
-  inputs: { itemType: ItemType; quantity: number }[];
+  inputs: { itemType: ItemType; quantity: number; slot?: number }[];
   output: { itemType: ItemType; quantity: number };
   name: string;
 }
 
 // All crafting recipes in the game
+// Grid layout (3x3):
+//   0 1 2
+//   3 4 5
+//   6 7 8
 export const CRAFTING_RECIPES: CraftingRecipe[] = [
+  // Wood processing
   {
     name: 'Wood Planks',
-    inputs: [{ itemType: ItemType.LOG, quantity: 1 }],
+    inputs: [{ itemType: ItemType.LOG, quantity: 1, slot: 4 }], // Center
     output: { itemType: ItemType.WOOD, quantity: 4 },
+  },
+  {
+    name: 'Sticks',
+    inputs: [
+      { itemType: ItemType.WOOD, quantity: 1, slot: 1 }, // Top center
+      { itemType: ItemType.WOOD, quantity: 1, slot: 4 }, // Center
+    ],
+    output: { itemType: ItemType.STICK, quantity: 4 },
+  },
+  // Coal processing
+  {
+    name: 'Coal',
+    inputs: [{ itemType: ItemType.ORE_COAL, quantity: 1, slot: 4 }], // Center
+    output: { itemType: ItemType.COAL, quantity: 8 },
+  },
+  // Torch crafting (stick with coal on top)
+  {
+    name: 'Torch',
+    inputs: [
+      { itemType: ItemType.COAL, quantity: 1, slot: 1 },  // Top center
+      { itemType: ItemType.STICK, quantity: 1, slot: 4 }, // Center
+    ],
+    output: { itemType: ItemType.TORCH, quantity: 4 },
+  },
+  // Fishing Rod (3 sticks diagonal + 2 string, but for now just 3 sticks vertical)
+  {
+    name: 'Fishing Rod',
+    inputs: [
+      { itemType: ItemType.STICK, quantity: 1, slot: 1 }, // Top center
+      { itemType: ItemType.STICK, quantity: 1, slot: 4 }, // Center
+      { itemType: ItemType.STICK, quantity: 1, slot: 7 }, // Bottom center
+    ],
+    output: { itemType: ItemType.FISHING_ROD, quantity: 1 },
   },
 ];
 
 export class CraftingSystem {
   private inventory: Inventory;
   private menuElement: HTMLElement | null = null;
-  private recipeListElement: HTMLElement | null = null;
+  private recipeSelectElement: HTMLSelectElement | null = null;
+  private craftingGridElement: HTMLElement | null = null;
+  private craftingOutputElement: HTMLElement | null = null;
+  private craftBtnElement: HTMLButtonElement | null = null;
   private inventoryGridElement: HTMLElement | null = null;
   private inventoryHotbarElement: HTMLElement | null = null;
   private isOpen: boolean = false;
   private onCloseCallback: (() => void) | null = null;
   private onUpdateHotbarCallback: (() => void) | null = null;
+  private onSaveCallback: (() => void) | null = null;
+
+  // Currently selected recipe
+  private selectedRecipe: CraftingRecipe | null = null;
 
   // Drag and drop state
   private draggedSlotIndex: number | null = null;
@@ -43,7 +90,10 @@ export class CraftingSystem {
 
   private setupUI(): void {
     this.menuElement = document.getElementById('inventory-menu');
-    this.recipeListElement = document.getElementById('recipe-list');
+    this.recipeSelectElement = document.getElementById('recipe-select') as HTMLSelectElement;
+    this.craftingGridElement = document.getElementById('crafting-grid');
+    this.craftingOutputElement = document.getElementById('crafting-output');
+    this.craftBtnElement = document.getElementById('craft-btn') as HTMLButtonElement;
     this.inventoryGridElement = document.getElementById('inventory-grid');
     this.inventoryHotbarElement = document.getElementById('inventory-hotbar');
 
@@ -56,8 +106,18 @@ export class CraftingSystem {
       closeBtn.addEventListener('click', () => this.close());
     }
 
-    // Populate recipes
-    this.updateRecipeList();
+    // Populate recipe dropdown
+    this.populateRecipeDropdown();
+
+    // Setup recipe selection handler
+    if (this.recipeSelectElement) {
+      this.recipeSelectElement.addEventListener('change', () => this.onRecipeSelect());
+    }
+
+    // Setup craft button handler
+    if (this.craftBtnElement) {
+      this.craftBtnElement.addEventListener('click', () => this.craftSelectedRecipe());
+    }
   }
 
   private createInventorySlots(): void {
@@ -358,9 +418,13 @@ export class CraftingSystem {
     this.onUpdateHotbarCallback = callback;
   }
 
+  public setOnSaveCallback(callback: () => void): void {
+    this.onSaveCallback = callback;
+  }
+
   private updateUI(): void {
     this.updateInventorySlots();
-    this.updateRecipeList();
+    this.updateCraftingGrid();
   }
 
   private updateInventorySlots(): void {
@@ -399,67 +463,138 @@ export class CraftingSystem {
     }
   }
 
-  private updateRecipeList(): void {
-    if (!this.recipeListElement) return;
+  private populateRecipeDropdown(): void {
+    if (!this.recipeSelectElement) return;
 
-    this.recipeListElement.innerHTML = '';
+    // Clear existing options except the placeholder
+    this.recipeSelectElement.innerHTML = '<option value="">-- Select Recipe --</option>';
 
-    for (const recipe of CRAFTING_RECIPES) {
-      const recipeEl = this.createRecipeElement(recipe);
-      this.recipeListElement.appendChild(recipeEl);
+    // Add each recipe as an option
+    for (let i = 0; i < CRAFTING_RECIPES.length; i++) {
+      const recipe = CRAFTING_RECIPES[i];
+      const option = document.createElement('option');
+      option.value = i.toString();
+      option.textContent = recipe.name;
+      this.recipeSelectElement.appendChild(option);
     }
   }
 
-  private createRecipeElement(recipe: CraftingRecipe): HTMLElement {
-    const recipeEl = document.createElement('div');
-    recipeEl.className = 'recipe-item';
+  private onRecipeSelect(): void {
+    if (!this.recipeSelectElement) return;
 
-    // Check if player can craft this recipe
-    const canCraft = this.canCraft(recipe);
-    if (!canCraft) {
-      recipeEl.classList.add('disabled');
+    const selectedIndex = parseInt(this.recipeSelectElement.value);
+    if (isNaN(selectedIndex) || selectedIndex < 0 || selectedIndex >= CRAFTING_RECIPES.length) {
+      this.selectedRecipe = null;
+    } else {
+      this.selectedRecipe = CRAFTING_RECIPES[selectedIndex];
     }
 
-    // Input items
-    for (const input of recipe.inputs) {
-      const inputImg = document.createElement('img');
-      inputImg.src = getAssetPath(ITEM_DATA[input.itemType].texture);
-      inputImg.title = `${input.quantity}x ${ITEM_DATA[input.itemType].name}`;
-      recipeEl.appendChild(inputImg);
+    this.updateCraftingGrid();
+  }
 
-      const inputCount = document.createElement('span');
-      inputCount.textContent = `x${input.quantity}`;
-      recipeEl.appendChild(inputCount);
+  private updateCraftingGrid(): void {
+    // Clear all crafting slots (now 9 slots for 3x3 grid)
+    const craftingSlots = this.craftingGridElement?.querySelectorAll('.crafting-slot');
+    craftingSlots?.forEach((slotEl) => {
+      const img = slotEl.querySelector('img') as HTMLImageElement;
+      const countEl = slotEl.querySelector('.slot-count') as HTMLElement;
+      if (img) img.style.display = 'none';
+      if (countEl) countEl.textContent = '';
+      slotEl.classList.remove('has-item', 'missing-item');
+    });
+
+    // Clear output slot
+    if (this.craftingOutputElement) {
+      const outputImg = this.craftingOutputElement.querySelector('img') as HTMLImageElement;
+      const outputCount = this.craftingOutputElement.querySelector('.slot-count') as HTMLElement;
+      if (outputImg) outputImg.style.display = 'none';
+      if (outputCount) outputCount.textContent = '';
+      this.craftingOutputElement.classList.remove('has-item');
     }
 
-    // Arrow
-    const arrow = document.createElement('span');
-    arrow.className = 'recipe-arrow';
-    arrow.textContent = ' → ';
-    recipeEl.appendChild(arrow);
-
-    // Output item
-    const outputImg = document.createElement('img');
-    outputImg.src = getAssetPath(ITEM_DATA[recipe.output.itemType].texture);
-    outputImg.title = `${recipe.output.quantity}x ${ITEM_DATA[recipe.output.itemType].name}`;
-    recipeEl.appendChild(outputImg);
-
-    const outputCount = document.createElement('span');
-    outputCount.textContent = `x${recipe.output.quantity}`;
-    recipeEl.appendChild(outputCount);
-
-    // Recipe name
-    const nameEl = document.createElement('span');
-    nameEl.textContent = ` (${recipe.name})`;
-    nameEl.style.color = '#888';
-    recipeEl.appendChild(nameEl);
-
-    // Click handler to craft
-    if (canCraft) {
-      recipeEl.addEventListener('click', () => this.craft(recipe));
+    // Disable craft button by default
+    if (this.craftBtnElement) {
+      this.craftBtnElement.disabled = true;
     }
 
-    return recipeEl;
+    // If no recipe selected, we're done
+    if (!this.selectedRecipe) return;
+
+    // Calculate total required for each item type (for recipes that use same item in multiple slots)
+    const requiredItems = new Map<ItemType, number>();
+    for (const input of this.selectedRecipe.inputs) {
+      const current = requiredItems.get(input.itemType) || 0;
+      requiredItems.set(input.itemType, current + input.quantity);
+    }
+
+    // Check if player can craft (has enough of all required items)
+    let canCraft = true;
+    for (const [itemType, quantity] of requiredItems) {
+      if (!this.inventory.hasItem(itemType, quantity)) {
+        canCraft = false;
+        break;
+      }
+    }
+
+    // Populate input slots with recipe requirements using slot positions
+    this.selectedRecipe.inputs.forEach((input, index) => {
+      // Use specified slot position, or fall back to sequential placement
+      const slotIndex = input.slot !== undefined ? input.slot : index;
+      if (slotIndex < 9 && craftingSlots && craftingSlots[slotIndex]) {
+        const slotEl = craftingSlots[slotIndex] as HTMLElement;
+        const img = slotEl.querySelector('img') as HTMLImageElement;
+        const countEl = slotEl.querySelector('.slot-count') as HTMLElement;
+
+        const itemData = ITEM_DATA[input.itemType];
+        if (img) {
+          img.src = getAssetPath(itemData.texture);
+          img.style.display = 'block';
+        }
+        if (countEl) {
+          countEl.textContent = input.quantity > 1 ? input.quantity.toString() : '';
+        }
+
+        // Color based on whether player has enough
+        if (canCraft) {
+          slotEl.classList.add('has-item');
+        } else {
+          // Check if this specific item type is missing
+          const totalNeeded = requiredItems.get(input.itemType) || 0;
+          const hasEnough = this.inventory.hasItem(input.itemType, totalNeeded);
+          if (hasEnough) {
+            slotEl.classList.add('has-item');
+          } else {
+            slotEl.classList.add('missing-item');
+          }
+        }
+      }
+    });
+
+    // Populate output slot
+    if (this.craftingOutputElement) {
+      const outputImg = this.craftingOutputElement.querySelector('img') as HTMLImageElement;
+      const outputCount = this.craftingOutputElement.querySelector('.slot-count') as HTMLElement;
+
+      const outputData = ITEM_DATA[this.selectedRecipe.output.itemType];
+      if (outputImg) {
+        outputImg.src = getAssetPath(outputData.texture);
+        outputImg.style.display = 'block';
+      }
+      if (outputCount) {
+        outputCount.textContent = this.selectedRecipe.output.quantity > 1
+          ? this.selectedRecipe.output.quantity.toString()
+          : '';
+      }
+
+      if (canCraft) {
+        this.craftingOutputElement.classList.add('has-item');
+      }
+    }
+
+    // Enable/disable craft button
+    if (this.craftBtnElement) {
+      this.craftBtnElement.disabled = !canCraft;
+    }
   }
 
   private canCraft(recipe: CraftingRecipe): boolean {
@@ -471,16 +606,16 @@ export class CraftingSystem {
     return true;
   }
 
-  private craft(recipe: CraftingRecipe): void {
-    if (!this.canCraft(recipe)) return;
+  private craftSelectedRecipe(): void {
+    if (!this.selectedRecipe || !this.canCraft(this.selectedRecipe)) return;
 
     // Remove input items
-    for (const input of recipe.inputs) {
+    for (const input of this.selectedRecipe.inputs) {
       this.inventory.removeItem(input.itemType, input.quantity);
     }
 
     // Add output items
-    this.inventory.addItem(recipe.output.itemType, recipe.output.quantity);
+    this.inventory.addItem(this.selectedRecipe.output.itemType, this.selectedRecipe.output.quantity);
 
     // Update UI
     this.updateUI();
@@ -488,6 +623,11 @@ export class CraftingSystem {
     // Update hotbar in main game
     if (this.onUpdateHotbarCallback) {
       this.onUpdateHotbarCallback();
+    }
+
+    // Save inventory after crafting
+    if (this.onSaveCallback) {
+      this.onSaveCallback();
     }
   }
 }
