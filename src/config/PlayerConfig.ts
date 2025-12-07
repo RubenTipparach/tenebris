@@ -146,6 +146,7 @@ export const PlayerConfig = {
   PLANET_LOD_DISTANCE_1: 200,         // Distance for first LOD reduction
   PLANET_LOD_DISTANCE_2: 500,         // Distance for second LOD reduction
   PLANET_LOD_DISTANCE_3: 1000,        // Distance for third LOD reduction (lowest detail)
+  PLANET_DARK_SIDE_AMBIENT: 0.06,     // Ambient light on dark side of planet (0 = pitch black, 1 = same as day)
 
   // Profiler spike detection
   FRAME_SPIKE_THRESHOLD_MS: 30,       // Log frame breakdown if total exceeds this (ms)

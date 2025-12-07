@@ -62,7 +62,6 @@ export class Planet {
   private distantLODMeshes: THREE.Mesh[] = []; // Array of progressively lower-detail meshes
   private distantLODMaterials: THREE.ShaderMaterial[] = []; // Materials for uniform updates
   private currentDistantLODLevel: number = -1; // -1 = use detailed/near LOD, 0-2 = distant LOD levels
-  private shaderTime: number = 0; // Time uniform for shader animations
 
   // Boundary walls group (fills gap between detailed terrain and LOD at render distance edge)
   private boundaryWallsGroup: THREE.Group | null = null;
@@ -896,15 +895,23 @@ export class Planet {
       geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
       geometry.setIndex(indices);
 
-      // Create custom shader material for planet with day/night lighting and city lights
+      // Create custom shader material for planet with day/night lighting and torch lights
+      // Initialize torch position array (up to 32 torches)
+      const torchPositionsArray: THREE.Vector3[] = [];
+      for (let i = 0; i < 32; i++) {
+        torchPositionsArray.push(new THREE.Vector3(0, 0, 0));
+      }
+
       const material = new THREE.ShaderMaterial({
         uniforms: {
           planetCenter: { value: this.center.clone() },
           sunDirection: { value: new THREE.Vector3(1, 0, 0) }, // Updated in update()
           ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
           directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
-          cityLightIntensity: { value: isSingleTexturePlanet ? 0.0 : 0.15 }, // No city lights on moon
-          time: { value: 0 }
+          darkSideAmbient: { value: PlayerConfig.PLANET_DARK_SIDE_AMBIENT },
+          torchPositions: { value: torchPositionsArray },
+          torchCount: { value: 0 },
+          torchLightRadius: { value: 2.0 } // How big torches appear from space
         },
         vertexShader: planetVert,
         fragmentShader: planetFrag,
@@ -2111,13 +2118,6 @@ export class Planet {
     this.frustum.setFromProjectionMatrix(this.projScreenMatrix);
     profiler.end('Planet.frustum');
 
-    // Update shader time for animations (city light twinkling)
-    if (deltaTime !== undefined) {
-      this.shaderTime += deltaTime;
-      for (const material of this.distantLODMaterials) {
-        material.uniforms.time.value = this.shaderTime;
-      }
-    }
 
     const distToCenter = playerPosition.distanceTo(this.center);
     const altitude = distToCenter - this.radius;
@@ -2621,6 +2621,22 @@ export class Planet {
       range: t.range,
       intensity: t.intensity
     }));
+
+    // Update distant LOD materials with torch positions (in world space for the shader)
+    for (const material of this.distantLODMaterials) {
+      const torchPositions = material.uniforms.torchPositions.value as THREE.Vector3[];
+      const count = Math.min(torches.length, 32); // Max 32 torches
+
+      for (let i = 0; i < count; i++) {
+        torchPositions[i].copy(torches[i].position);
+      }
+      // Zero out unused positions
+      for (let i = count; i < 32; i++) {
+        torchPositions[i].set(0, 0, 0);
+      }
+
+      material.uniforms.torchCount.value = count;
+    }
   }
 
   // Mark tiles near a torch position as dirty (for torch light baking)
