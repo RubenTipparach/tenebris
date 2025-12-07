@@ -93,7 +93,8 @@ class Game {
 
     // Update block interaction
     const input = this.inputManager.getState();
-    this.blockInteraction.update(deltaTime, input.leftClick, input.rightClick);
+    const wheelDelta = this.inputManager.getWheelDelta();
+    this.blockInteraction.update(deltaTime, input.leftClick, input.rightClick, wheelDelta);
   }
 }
 

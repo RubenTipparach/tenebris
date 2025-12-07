@@ -266,12 +266,14 @@ export class PlanetTreeManager {
     getSurfaceHeight: (direction: THREE.Vector3) => number,
     isUnderwater?: (direction: THREE.Vector3) => boolean,
     seed: number = PlayerConfig.TERRAIN_SEED,
-    getTileIndex?: (direction: THREE.Vector3) => number | null
+    getTileIndex?: (direction: THREE.Vector3) => number | null,
+    getTileCenter?: (direction: THREE.Vector3) => THREE.Vector3 | null
   ): void {
     const rng = new SeededRandom(seed + 54321); // Offset seed slightly for trees
     let placed = 0;
     let attempts = 0;
     const maxAttempts = count * 5; // Avoid infinite loop if most terrain is water
+    const usedTiles = new Set<number>(); // Track which tiles already have trees
 
     while (placed < count && attempts < maxAttempts) {
       attempts++;
@@ -280,11 +282,27 @@ export class PlanetTreeManager {
       const theta = rng.next() * Math.PI * 2;
       const phi = Math.acos(2 * rng.next() - 1);
 
-      const direction = new THREE.Vector3(
+      let direction = new THREE.Vector3(
         Math.sin(phi) * Math.cos(theta),
         Math.sin(phi) * Math.sin(theta),
         Math.cos(phi)
       ).normalize();
+
+      // Get tile index for visibility tracking and deduplication
+      const tileIndex = getTileIndex ? getTileIndex(direction) : null;
+
+      // Skip if this tile already has a tree
+      if (tileIndex !== null && usedTiles.has(tileIndex)) {
+        continue;
+      }
+
+      // Snap to tile center if available
+      if (getTileCenter) {
+        const tileCenter = getTileCenter(direction);
+        if (tileCenter) {
+          direction = tileCenter.clone().sub(planetCenter).normalize();
+        }
+      }
 
       // Skip underwater locations
       if (isUnderwater && isUnderwater(direction)) {
@@ -299,8 +317,10 @@ export class PlanetTreeManager {
         direction.clone().multiplyScalar(surfaceHeight)
       );
 
-      // Get tile index for visibility tracking
-      const tileIndex = getTileIndex ? getTileIndex(direction) : undefined;
+      // Mark this tile as used
+      if (tileIndex !== null) {
+        usedTiles.add(tileIndex);
+      }
 
       // Randomize tree size with wider variation using seeded random
       const sizeVariation = 0.5 + rng.next() * 1.0; // 0.5 to 1.5 (wider range)

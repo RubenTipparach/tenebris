@@ -87,7 +87,7 @@ export const PlayerConfig = {
   ABOVE_WATER_FOG_FAR: 5,          // Fog fully opaque at this depth
 
   // Sea wall (boundary wall at edge of detailed terrain when underwater)
-  SEA_WALL_COLOR: "#03172F",        // Color of underwater boundary walls
+  SEA_WALL_COLOR: "#03172F",        // Color of underwater boundary walls (matches fog)
 
   // Atmosphere (GPU Gems 2 style scattering)
   ATMOSPHERE_ENABLED: true,           // Toggle atmosphere rendering on/off
@@ -146,5 +146,5 @@ export const PlayerConfig = {
 
   // Debug: Cave structure logging (Shift+X)
   DEBUG_CAVE_TILE_RINGS: 1,           // How many rings of neighbor tiles to sample (0 = just current tile)
-  DEBUG_CAVE_DEPTH_ROWS: 6,           // How many depth rows to show (from standing level upward)
+  DEBUG_CAVE_DEPTH_ROWS: 12,          // How many depth rows to show (centered on player feet)
 };

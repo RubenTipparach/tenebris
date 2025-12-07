@@ -26,6 +26,7 @@ export class InputManager {
   private keysJustPressed: Set<string> = new Set(); // Keys pressed this frame
   private mouseMovement: { x: number; y: number } = { x: 0, y: 0 };
   private mouseButtons: { left: boolean; right: boolean } = { left: false, right: false };
+  private mouseWheelDelta: number = 0; // Accumulated wheel delta
   private isPointerLocked: boolean = false;
   private onPointerLockChange?: (locked: boolean) => void;
   private onInventoryToggle?: () => void;
@@ -92,6 +93,13 @@ export class InputManager {
     document.addEventListener('mouseup', (e) => {
       if (e.button === 0) this.mouseButtons.left = false;
       if (e.button === 2) this.mouseButtons.right = false;
+    });
+
+    // Mouse wheel
+    document.addEventListener('wheel', (e) => {
+      if (this.isPointerLocked) {
+        this.mouseWheelDelta += e.deltaY;
+      }
     });
 
     // Prevent context menu
@@ -476,5 +484,12 @@ export class InputManager {
 
   public isLocked(): boolean {
     return this.isPointerLocked || this.mobileGameActive;
+  }
+
+  // Get mouse wheel delta and reset it
+  public getWheelDelta(): number {
+    const delta = this.mouseWheelDelta;
+    this.mouseWheelDelta = 0;
+    return delta;
   }
 }

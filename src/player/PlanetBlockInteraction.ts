@@ -6,6 +6,7 @@ import { Inventory, ItemType, ITEM_DATA } from './Inventory';
 import { PlanetTreeManager } from '../planet/Tree';
 import { CraftingSystem } from './CraftingSystem';
 import { getAssetPath } from '../utils/assetPath';
+import { gameStorage } from '../engine/GameStorage';
 
 // Map HexBlockType to ItemType (what you get when mining)
 function blockToItem(blockType: HexBlockType): ItemType {
@@ -15,6 +16,14 @@ function blockToItem(blockType: HexBlockType): ItemType {
     case HexBlockType.GRASS: return ItemType.DIRT; // Grass drops dirt, not grass
     case HexBlockType.WOOD: return ItemType.WOOD;
     case HexBlockType.SAND: return ItemType.SAND;
+    // Mineral ores
+    case HexBlockType.ORE_COAL: return ItemType.ORE_COAL;
+    case HexBlockType.ORE_COPPER: return ItemType.ORE_COPPER;
+    case HexBlockType.ORE_IRON: return ItemType.ORE_IRON;
+    case HexBlockType.ORE_GOLD: return ItemType.ORE_GOLD;
+    case HexBlockType.ORE_LITHIUM: return ItemType.ORE_LITHIUM;
+    case HexBlockType.ORE_ALUMINUM: return ItemType.ORE_ALUMINUM;
+    case HexBlockType.ORE_COBALT: return ItemType.ORE_COBALT;
     default: return ItemType.NONE;
   }
 }
@@ -27,6 +36,14 @@ function itemToBlock(itemType: ItemType): HexBlockType {
     case ItemType.GRASS: return HexBlockType.DIRT; // Grass items place as dirt (grass isn't placeable)
     case ItemType.WOOD: return HexBlockType.WOOD;
     case ItemType.SAND: return HexBlockType.SAND;
+    // Mineral ores can be placed back
+    case ItemType.ORE_COAL: return HexBlockType.ORE_COAL;
+    case ItemType.ORE_COPPER: return HexBlockType.ORE_COPPER;
+    case ItemType.ORE_IRON: return HexBlockType.ORE_IRON;
+    case ItemType.ORE_GOLD: return HexBlockType.ORE_GOLD;
+    case ItemType.ORE_LITHIUM: return HexBlockType.ORE_LITHIUM;
+    case ItemType.ORE_ALUMINUM: return HexBlockType.ORE_ALUMINUM;
+    case ItemType.ORE_COBALT: return HexBlockType.ORE_COBALT;
     default: return HexBlockType.AIR;
   }
 }
@@ -346,8 +363,23 @@ export class PlanetBlockInteraction {
     }
   }
 
-  public update(deltaTime: number, leftClick: boolean, rightClick: boolean): void {
+  public update(deltaTime: number, leftClick: boolean, rightClick: boolean, wheelDelta: number = 0): void {
     this.rightClickCooldown = Math.max(0, this.rightClickCooldown - deltaTime);
+
+    // Handle mouse wheel for hotbar scrolling
+    if (wheelDelta !== 0) {
+      const currentSlot = this.inventory.getSelectedSlot();
+      const hotbarSize = 9;
+      // Scroll down (positive delta) = next slot, scroll up (negative delta) = previous slot
+      const direction = wheelDelta > 0 ? 1 : -1;
+      let newSlot = currentSlot + direction;
+      // Wrap around
+      if (newSlot < 0) newSlot = hotbarSize - 1;
+      if (newSlot >= hotbarSize) newSlot = 0;
+      this.inventory.setSelectedSlot(newSlot);
+      this.updateHotbarUI();
+      this.updateBlockTypeUI();
+    }
 
     // Don't process block interaction when inventory menu is open
     if (this.craftingSystem.isMenuOpen()) {
@@ -515,6 +547,7 @@ export class PlanetBlockInteraction {
       : Math.floor(Math.random() * 3) + 1; // 1-3 leaves
     this.inventory.addItem(itemType, dropCount);
     this.updateHotbarUI();
+    this.saveInventory();
 
     // Find and remove the tree group
     if (this.treeManager) {
@@ -547,14 +580,21 @@ export class PlanetBlockInteraction {
     if (itemType !== ItemType.NONE) {
       this.inventory.addItem(itemType, 1);
       this.updateHotbarUI();
+      this.saveInventory();
     }
 
     // Remove block from world
     planet.setBlock(tileIndex, depth, HexBlockType.AIR);
+
+    // Save tile change
+    const planetId = this.getPlanetId(planet);
+    gameStorage.saveTileChange(planetId, tileIndex, depth, HexBlockType.AIR);
   }
 
   private placeBlock(planet: Planet, tileIndex: number, depth: number): void {
-    if (depth < 0) return;
+    // Check bounds - depth must be within valid range (0 to MAX_DEPTH-1)
+    // Depth 27 (MAX_DEPTH-1) is valid, depth 28+ (MAX_DEPTH+) is out of bounds
+    if (depth < 0 || depth >= planet.getMaxDepth()) return;
 
     const selectedSlot = this.inventory.getSelectedItem();
     if (selectedSlot.itemType === ItemType.NONE || selectedSlot.quantity === 0) {
@@ -587,6 +627,11 @@ export class PlanetBlockInteraction {
     if (this.inventory.useSelectedItem()) {
       planet.setBlock(tileIndex, depth, blockType);
       this.updateHotbarUI();
+      this.saveInventory();
+
+      // Save tile change
+      const planetId = this.getPlanetId(planet);
+      gameStorage.saveTileChange(planetId, tileIndex, depth, blockType);
     }
   }
 
@@ -600,5 +645,39 @@ export class PlanetBlockInteraction {
 
   public setTreeManager(treeManager: PlanetTreeManager): void {
     this.treeManager = treeManager;
+  }
+
+  // Get planet ID for saving (identifies which planet)
+  private getPlanetId(planet: Planet): string {
+    const index = this.planets.indexOf(planet);
+    return index === 0 ? 'earth' : 'moon';
+  }
+
+  // Save inventory to local storage
+  private saveInventory(): void {
+    gameStorage.saveInventory(this.inventory.exportForSave());
+  }
+
+  // Load saved data and apply it
+  public loadSavedData(): void {
+    const saveData = gameStorage.load();
+    if (!saveData) return;
+
+    // Load inventory
+    if (saveData.inventory && saveData.inventory.length > 0) {
+      this.inventory.importFromSave(saveData.inventory);
+      this.updateHotbarUI();
+    }
+
+    // Load tile changes for each planet
+    for (const planet of this.planets) {
+      const planetId = this.getPlanetId(planet);
+      const changes = gameStorage.getTileChangesForPlanet(planetId);
+      for (const change of changes) {
+        planet.setBlock(change.tileIndex, change.depth, change.blockType as HexBlockType);
+      }
+    }
+
+    console.log(`Loaded save: ${saveData.tileChanges.length} tile changes, inventory restored`);
   }
 }

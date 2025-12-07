@@ -182,7 +182,18 @@ export class HexBlockMeshBuilder {
     const woodTexture = await this.loadTexture('/textures/wood.png');
     const sandTexture = await this.loadTexture('/textures/sand.png');
 
-    [stoneTexture, dirtTexture, grassTexture, dirtGrassTexture, woodTexture, sandTexture].forEach(configureTexture);
+    // Mineral ore textures
+    const coalTexture = await this.loadTexture('/textures/minerals/earth/rocks_coal.png');
+    const copperTexture = await this.loadTexture('/textures/minerals/earth/rocks_copper.png');
+    const ironTexture = await this.loadTexture('/textures/minerals/earth/rocks_iron.png');
+    const goldTexture = await this.loadTexture('/textures/minerals/earth/rocks_gold.png');
+    const lithiumTexture = await this.loadTexture('/textures/minerals/earth/rocks_lythium.png');
+    const aluminumTexture = await this.loadTexture('/textures/minerals/earth/rocks_aluminum.png');
+    const cobaltTexture = await this.loadTexture('/textures/minerals/earth/rocks_cobalt.png');
+
+    [stoneTexture, dirtTexture, grassTexture, dirtGrassTexture, woodTexture, sandTexture,
+     coalTexture, copperTexture, ironTexture, goldTexture, lithiumTexture, aluminumTexture, cobaltTexture
+    ].forEach(configureTexture);
 
     this.textures.set('stone', stoneTexture);
     this.textures.set('dirt', dirtTexture);
@@ -190,6 +201,14 @@ export class HexBlockMeshBuilder {
     this.textures.set('dirtGrass', dirtGrassTexture);
     this.textures.set('wood', woodTexture);
     this.textures.set('sand', sandTexture);
+    // Mineral ore textures
+    this.textures.set('oreCoal', coalTexture);
+    this.textures.set('oreCopper', copperTexture);
+    this.textures.set('oreIron', ironTexture);
+    this.textures.set('oreGold', goldTexture);
+    this.textures.set('oreLithium', lithiumTexture);
+    this.textures.set('oreAluminum', aluminumTexture);
+    this.textures.set('oreCobalt', cobaltTexture);
 
     // Parse underwater fog color for terrain shader
     const terrainUnderwaterFogColor = new THREE.Color(PlayerConfig.UNDERWATER_FOG_COLOR);
@@ -225,19 +244,22 @@ export class HexBlockMeshBuilder {
     this.materials.set('stone', createTerrainMaterial(stoneTexture));
     this.materials.set('wood', createTerrainMaterial(woodTexture));
     this.materials.set('sand', createTerrainMaterial(sandTexture));
+    // Mineral ore materials
+    this.materials.set('oreCoal', createTerrainMaterial(coalTexture));
+    this.materials.set('oreCopper', createTerrainMaterial(copperTexture));
+    this.materials.set('oreIron', createTerrainMaterial(ironTexture));
+    this.materials.set('oreGold', createTerrainMaterial(goldTexture));
+    this.materials.set('oreLithium', createTerrainMaterial(lithiumTexture));
+    this.materials.set('oreAluminum', createTerrainMaterial(aluminumTexture));
+    this.materials.set('oreCobalt', createTerrainMaterial(cobaltTexture));
 
-    // Sea wall material - uses terrain shader for consistent fog/lighting
+    // Sea wall material - unlit, no fog so it stays exact color
     const seaWallColor = new THREE.Color(PlayerConfig.SEA_WALL_COLOR);
-    const seaWallCanvas = document.createElement('canvas');
-    seaWallCanvas.width = 1;
-    seaWallCanvas.height = 1;
-    const seaWallCtx = seaWallCanvas.getContext('2d')!;
-    seaWallCtx.fillStyle = `rgb(${Math.floor(seaWallColor.r * 255)}, ${Math.floor(seaWallColor.g * 255)}, ${Math.floor(seaWallColor.b * 255)})`;
-    seaWallCtx.fillRect(0, 0, 1, 1);
-    const seaWallTexture = new THREE.CanvasTexture(seaWallCanvas);
-    seaWallTexture.needsUpdate = true;
-    const seaWallMat = createTerrainMaterial(seaWallTexture);
-    seaWallMat.side = THREE.DoubleSide;
+    const seaWallMat = new THREE.MeshBasicMaterial({
+      color: seaWallColor,
+      side: THREE.DoubleSide,
+      fog: false  // Not affected by scene fog - stays exact color
+    });
     this.materials.set('seaWall', seaWallMat);
 
     // Water material - load water texture

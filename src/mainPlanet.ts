@@ -9,6 +9,7 @@ import { Atmosphere, createEarthAtmosphere } from './planet/Atmosphere';
 import { CloudSystem, createEarthClouds } from './planet/Clouds';
 import { PlayerConfig } from './config/PlayerConfig';
 import { profiler } from './engine/Profiler';
+import { gameStorage } from './engine/GameStorage';
 
 class PlanetGame {
   private engine: GameEngine;
@@ -105,7 +106,8 @@ class PlanetGame {
         (direction) => this.earth.getSurfaceHeightInDirection(direction),
         (direction) => this.earth.isUnderwaterInDirection(direction), // Skip underwater locations
         PlayerConfig.TERRAIN_SEED, // Use terrain seed for deterministic placement
-        (direction) => this.earth.getTileIndexInDirection(direction) // For visibility tracking
+        (direction) => this.earth.getTileIndexInDirection(direction), // For visibility tracking
+        (direction) => this.earth.getTileCenterInDirection(direction) // For centering trees on tiles
       );
 
       // Give block interaction access to tree manager for mining trees
@@ -155,6 +157,13 @@ class PlanetGame {
 
       // Configure profiler spike detection
       profiler.setFrameSpikeThreshold(PlayerConfig.FRAME_SPIKE_THRESHOLD_MS);
+
+      // Load saved game data (tiles, inventory, player position)
+      this.loadSavedGame();
+
+      // Setup auto-save for player position (every 5 seconds)
+      gameStorage.setPlayerSaveCallback(() => this.player.exportForSave());
+      gameStorage.startAutoSave(5);
 
       this.isReady = true;
 
@@ -220,10 +229,12 @@ class PlanetGame {
     profiler.begin('Block Interaction');
     const input = this.inputManager.getState();
     const isGameActive = this.inputManager.isLocked();
+    const wheelDelta = this.inputManager.getWheelDelta();
     this.blockInteraction.update(
       deltaTime,
       isGameActive && input.leftClick,
-      isGameActive && input.rightClick
+      isGameActive && input.rightClick,
+      isGameActive ? wheelDelta : 0
     );
     profiler.end('Block Interaction');
   }
@@ -294,6 +305,17 @@ class PlanetGame {
         this.teleportToPlanet(teleportSelect.value);
       });
     }
+
+    // Handle reset game button
+    const resetBtn = document.getElementById('reset-game-btn');
+    if (resetBtn) {
+      resetBtn.addEventListener('click', () => {
+        if (confirm('Are you sure you want to reset your game? This will delete all saved progress.')) {
+          gameStorage.clearSave();
+          window.location.reload();
+        }
+      });
+    }
   }
 
   private teleportToPlanet(planetName: string): void {
@@ -330,6 +352,31 @@ class PlanetGame {
     this.player.velocity.set(0, 0, 0);
 
     console.log(`Teleported to ${planetName} at position: ${playerPos.x.toFixed(1)}, ${playerPos.y.toFixed(1)}, ${playerPos.z.toFixed(1)}`);
+  }
+
+  private loadSavedGame(): void {
+    const saveData = gameStorage.load();
+    if (!saveData) {
+      console.log('No saved game found, starting fresh');
+      return;
+    }
+
+    // Load tile changes and inventory
+    this.blockInteraction.loadSavedData();
+
+    // Load player position and orientation
+    if (saveData.player && saveData.player.position) {
+      // Check if position is valid (not at origin which would be inside the planet)
+      const pos = saveData.player.position;
+      const distFromEarthCenter = Math.sqrt(pos.x * pos.x + pos.y * pos.y + pos.z * pos.z);
+
+      if (distFromEarthCenter > 50) {  // Player should be at least 50 units from center
+        this.player.importFromSave(saveData.player);
+        console.log(`Loaded player position: ${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}, ${pos.z.toFixed(1)}`);
+      }
+    }
+
+    console.log('Game loaded from save');
   }
 }
 

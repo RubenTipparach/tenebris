@@ -87,6 +87,14 @@ interface GeometryResultMessage {
   sandData: GeometryData;
   woodData: GeometryData;
   waterData: GeometryData;
+  // Mineral ore data
+  oreCoalData: GeometryData;
+  oreCopperData: GeometryData;
+  oreIronData: GeometryData;
+  oreGoldData: GeometryData;
+  oreLithiumData: GeometryData;
+  oreAluminumData: GeometryData;
+  oreCobaltData: GeometryData;
 }
 
 // Check if a column has an exposed side at the given depth
@@ -304,7 +312,14 @@ function buildColumnGeometry(
   stoneData: GeometryData,
   sandData: GeometryData,
   woodData: GeometryData,
-  waterData: GeometryData
+  waterData: GeometryData,
+  oreCoalData: GeometryData,
+  oreCopperData: GeometryData,
+  oreIronData: GeometryData,
+  oreGoldData: GeometryData,
+  oreLithiumData: GeometryData,
+  oreAluminumData: GeometryData,
+  oreCobaltData: GeometryData
 ): void {
   // Find surface depth (topmost solid block, searching from top down)
   // Depth system: 0 = bedrock, maxDepth-1 = sky
@@ -347,12 +362,24 @@ function buildColumnGeometry(
 
     // depthFromSurface: positive = below surface (lower depth)
     const depthFromSurface = surfaceDepth - depth;
-    // Use the actual block type for texture selection - this ensures blocks don't change
-    // appearance when surface depth changes (e.g., when mining blocks above)
-    const useStoneTexture = blockType === HexBlockType.STONE;
-    const useSandTexture = blockType === HexBlockType.SAND;
-    const useDirtTexture = blockType === HexBlockType.DIRT;
-    const useWoodTexture = blockType === HexBlockType.WOOD;
+
+    // Get the geometry buffer for this block type
+    // Ore blocks use their specific ore textures, other blocks use their standard textures
+    let blockGeomData: GeometryData;
+    switch (blockType) {
+      case HexBlockType.ORE_COAL: blockGeomData = oreCoalData; break;
+      case HexBlockType.ORE_COPPER: blockGeomData = oreCopperData; break;
+      case HexBlockType.ORE_IRON: blockGeomData = oreIronData; break;
+      case HexBlockType.ORE_GOLD: blockGeomData = oreGoldData; break;
+      case HexBlockType.ORE_LITHIUM: blockGeomData = oreLithiumData; break;
+      case HexBlockType.ORE_ALUMINUM: blockGeomData = oreAluminumData; break;
+      case HexBlockType.ORE_COBALT: blockGeomData = oreCobaltData; break;
+      case HexBlockType.STONE: blockGeomData = stoneData; break;
+      case HexBlockType.SAND: blockGeomData = sandData; break;
+      case HexBlockType.DIRT: blockGeomData = sideData; break;
+      case HexBlockType.WOOD: blockGeomData = woodData; break;
+      default: blockGeomData = topData; break; // Grass and others use top (grass) texture
+    }
 
     // Calculate sky light (constants imported from shared/geometry)
     let skyLightLevel = 1.0;
@@ -366,16 +393,8 @@ function buildColumnGeometry(
       if (topGeom) {
         if (isWater) {
           mergeGeometry(waterData, topGeom.positions, topGeom.normals, topGeom.uvs, topGeom.indices, config.sunDirection, 1.0);
-        } else if (useStoneTexture) {
-          mergeGeometry(stoneData, topGeom.positions, topGeom.normals, topGeom.uvs, topGeom.indices, config.sunDirection, skyLightLevel);
-        } else if (useSandTexture) {
-          mergeGeometry(sandData, topGeom.positions, topGeom.normals, topGeom.uvs, topGeom.indices, config.sunDirection, skyLightLevel);
-        } else if (useDirtTexture) {
-          mergeGeometry(sideData, topGeom.positions, topGeom.normals, topGeom.uvs, topGeom.indices, config.sunDirection, skyLightLevel);
-        } else if (useWoodTexture) {
-          mergeGeometry(woodData, topGeom.positions, topGeom.normals, topGeom.uvs, topGeom.indices, config.sunDirection, skyLightLevel);
         } else {
-          mergeGeometry(topData, topGeom.positions, topGeom.normals, topGeom.uvs, topGeom.indices, config.sunDirection, skyLightLevel);
+          mergeGeometry(blockGeomData, topGeom.positions, topGeom.normals, topGeom.uvs, topGeom.indices, config.sunDirection, skyLightLevel);
         }
       }
     }
@@ -385,15 +404,11 @@ function buildColumnGeometry(
       const bottomGeom = createFaceGeometry(column.tile, innerRadius, outerRadius, false, true, false, config.uvScale);
       if (bottomGeom) {
         const bottomSkyLight = Math.max(MIN_SKY_LIGHT, skyLightLevel * SKY_LIGHT_FALLOFF);
-        if (useStoneTexture) {
-          mergeGeometry(stoneData, bottomGeom.positions, bottomGeom.normals, bottomGeom.uvs, bottomGeom.indices, config.sunDirection, bottomSkyLight);
-        } else if (useSandTexture) {
-          mergeGeometry(sandData, bottomGeom.positions, bottomGeom.normals, bottomGeom.uvs, bottomGeom.indices, config.sunDirection, bottomSkyLight);
-        } else if (useWoodTexture) {
-          mergeGeometry(woodData, bottomGeom.positions, bottomGeom.normals, bottomGeom.uvs, bottomGeom.indices, config.sunDirection, bottomSkyLight);
-        } else {
-          // Dirt and grass blocks show dirt texture on bottom
+        // Grass blocks show dirt on bottom, everything else shows its own texture
+        if (blockType === HexBlockType.GRASS) {
           mergeGeometry(sideData, bottomGeom.positions, bottomGeom.normals, bottomGeom.uvs, bottomGeom.indices, config.sunDirection, bottomSkyLight);
+        } else {
+          mergeGeometry(blockGeomData, bottomGeom.positions, bottomGeom.normals, bottomGeom.uvs, bottomGeom.indices, config.sunDirection, bottomSkyLight);
         }
       }
     }
@@ -402,20 +417,11 @@ function buildColumnGeometry(
     if (!isWater && hasSideExposed) {
       const sidesGeom = createFaceGeometry(column.tile, innerRadius, outerRadius, false, false, true, config.uvScale);
       if (sidesGeom) {
-        if (useStoneTexture) {
-          mergeGeometry(stoneData, sidesGeom.positions, sidesGeom.normals, sidesGeom.uvs, sidesGeom.indices, config.sunDirection, skyLightLevel);
-        } else if (useSandTexture) {
-          // Sand blocks use sand texture on all sides
-          mergeGeometry(sandData, sidesGeom.positions, sidesGeom.normals, sidesGeom.uvs, sidesGeom.indices, config.sunDirection, skyLightLevel);
-        } else if (useDirtTexture) {
-          // Dirt blocks use sideData (dirt texture)
-          mergeGeometry(sideData, sidesGeom.positions, sidesGeom.normals, sidesGeom.uvs, sidesGeom.indices, config.sunDirection, skyLightLevel);
-        } else if (useWoodTexture) {
-          // Wood blocks use wood texture on all sides
-          mergeGeometry(woodData, sidesGeom.positions, sidesGeom.normals, sidesGeom.uvs, sidesGeom.indices, config.sunDirection, skyLightLevel);
-        } else {
-          // Grass blocks use grassSideData (dirt_grass texture)
+        // Grass blocks use grassSideData (dirt_grass texture) for sides
+        if (blockType === HexBlockType.GRASS) {
           mergeGeometry(grassSideData, sidesGeom.positions, sidesGeom.normals, sidesGeom.uvs, sidesGeom.indices, config.sunDirection, skyLightLevel);
+        } else {
+          mergeGeometry(blockGeomData, sidesGeom.positions, sidesGeom.normals, sidesGeom.uvs, sidesGeom.indices, config.sunDirection, skyLightLevel);
         }
       }
     }
@@ -434,6 +440,14 @@ self.onmessage = (e: MessageEvent<BuildGeometryMessage>) => {
     const sandData = createEmptyGeometryData();
     const woodData = createEmptyGeometryData();
     const waterData = createEmptyGeometryData();
+    // Mineral ore geometry data
+    const oreCoalData = createEmptyGeometryData();
+    const oreCopperData = createEmptyGeometryData();
+    const oreIronData = createEmptyGeometryData();
+    const oreGoldData = createEmptyGeometryData();
+    const oreLithiumData = createEmptyGeometryData();
+    const oreAluminumData = createEmptyGeometryData();
+    const oreCobaltData = createEmptyGeometryData();
 
     // Convert neighborData back to Map (it gets serialized as object)
     const neighborDataMap = new Map<number, NeighborData>(
@@ -441,7 +455,11 @@ self.onmessage = (e: MessageEvent<BuildGeometryMessage>) => {
     );
 
     for (const column of columns) {
-      buildColumnGeometry(column, neighborDataMap, config, topData, sideData, grassSideData, stoneData, sandData, woodData, waterData);
+      buildColumnGeometry(
+        column, neighborDataMap, config,
+        topData, sideData, grassSideData, stoneData, sandData, woodData, waterData,
+        oreCoalData, oreCopperData, oreIronData, oreGoldData, oreLithiumData, oreAluminumData, oreCobaltData
+      );
 
       // Generate water walls for water blocks
       for (let depth = 0; depth < column.blocks.length; depth++) {
@@ -474,7 +492,14 @@ self.onmessage = (e: MessageEvent<BuildGeometryMessage>) => {
       stoneData,
       sandData,
       woodData,
-      waterData
+      waterData,
+      oreCoalData,
+      oreCopperData,
+      oreIronData,
+      oreGoldData,
+      oreLithiumData,
+      oreAluminumData,
+      oreCobaltData
     };
 
     // Transfer arrays for better performance

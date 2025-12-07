@@ -249,6 +249,141 @@ export class PlanetPlayer {
     this.jumpDirection = null;
   }
 
+  // Check if player is near a tile edge and might be stuck on a higher neighbor
+  // If so, nudge them toward the center of their current tile
+  private checkEdgeNudge(): void {
+    if (!this.currentPlanet) return;
+
+    const currentTile = this.currentPlanet.getTileAtPoint(this.position);
+    if (!currentTile) return;
+
+    // Get tile center
+    const tileCenter = new THREE.Vector3(
+      currentTile.center.x + this.currentPlanet.center.x,
+      currentTile.center.y + this.currentPlanet.center.y,
+      currentTile.center.z + this.currentPlanet.center.z
+    );
+
+    // Get player's current radius (feet level)
+    const playerRadius = this.position.distanceTo(this.currentPlanet.center);
+
+    // Find the walkable floor closest to player's current height
+    // This is important during falling - we need the floor we're falling toward, not bedrock
+    let currentGroundDepth = -1;
+    let bestHeightDiff = Infinity;
+    for (let d = 0; d < MAX_TERRAIN_DEPTH - 1; d++) {
+      const blockAbove = d < MAX_TERRAIN_DEPTH - 1 ? getCachedBlock(this.currentPlanet, currentTile.index, d + 1) : HexBlockType.AIR;
+      const block = getCachedBlock(this.currentPlanet, currentTile.index, d);
+      const isAbovePassable = blockAbove === HexBlockType.AIR || blockAbove === HexBlockType.WATER;
+      const isCurrentSolid = block !== HexBlockType.AIR && block !== HexBlockType.WATER;
+      if (isAbovePassable && isCurrentSolid) {
+        const floorRadius = this.currentPlanet.depthToRadius(d);
+        const heightDiff = Math.abs(floorRadius - playerRadius);
+        // Find the floor closest to player's current height (but below or at player level)
+        if (floorRadius <= playerRadius + 0.5 && heightDiff < bestHeightDiff) {
+          currentGroundDepth = d;
+          bestHeightDiff = heightDiff;
+        }
+      }
+    }
+
+    if (currentGroundDepth < 0) return;
+    const currentFloorRadius = this.currentPlanet.depthToRadius(currentGroundDepth);
+
+    // Check neighbor tiles for higher floors that might trap the player
+    const neighborIndices = currentTile.neighbors;
+    if (!neighborIndices || neighborIndices.length === 0) return;
+
+    // Get player position projected to surface (tangent plane)
+    const actualUp = this.currentPlanet.getSurfaceNormal(this.position);
+    const playerTangent = this.position.clone().sub(
+      actualUp.clone().multiplyScalar(this.position.dot(actualUp) - tileCenter.dot(actualUp))
+    );
+
+    // Check if any neighbor has a higher floor and player body overlaps with it
+    let needsNudge = false;
+    const nudgeDir = new THREE.Vector3();
+
+    for (const neighborIndex of neighborIndices) {
+      // Get neighbor tile by index
+      const neighborTile = this.currentPlanet.getTileByIndex(neighborIndex);
+      if (!neighborTile) continue;
+
+      // Find neighbor's walkable floor closest to player's height
+      let neighborFloorDepth = -1;
+      let neighborBestHeightDiff = Infinity;
+      for (let d = 0; d < MAX_TERRAIN_DEPTH - 1; d++) {
+        const blockAbove = d < MAX_TERRAIN_DEPTH - 1 ? getCachedBlock(this.currentPlanet, neighborIndex, d + 1) : HexBlockType.AIR;
+        const block = getCachedBlock(this.currentPlanet, neighborIndex, d);
+        const isAbovePassable = blockAbove === HexBlockType.AIR || blockAbove === HexBlockType.WATER;
+        const isCurrentSolid = block !== HexBlockType.AIR && block !== HexBlockType.WATER;
+        if (isAbovePassable && isCurrentSolid) {
+          const floorRadius = this.currentPlanet.depthToRadius(d);
+          const heightDiff = Math.abs(floorRadius - playerRadius);
+          // Find the floor closest to player's current height (but below or at player level)
+          if (floorRadius <= playerRadius + 0.5 && heightDiff < neighborBestHeightDiff) {
+            neighborFloorDepth = d;
+            neighborBestHeightDiff = heightDiff;
+          }
+        }
+      }
+
+      if (neighborFloorDepth < 0) continue;
+
+      const neighborFloorRadius = this.currentPlanet.depthToRadius(neighborFloorDepth);
+
+      // Check if neighbor floor is significantly higher (would block player)
+      const heightDiff = neighborFloorRadius - currentFloorRadius;
+      if (heightDiff <= PlayerConfig.AUTO_STEP_HEIGHT) continue; // Can step up, no problem
+
+      // Calculate distance to neighbor tile center (on surface)
+      const neighborCenter = new THREE.Vector3(
+        neighborTile.center.x + this.currentPlanet.center.x,
+        neighborTile.center.y + this.currentPlanet.center.y,
+        neighborTile.center.z + this.currentPlanet.center.z
+      );
+
+      // Project neighbor center to same surface
+      const neighborTangent = neighborCenter.clone().sub(
+        actualUp.clone().multiplyScalar(neighborCenter.dot(actualUp) - tileCenter.dot(actualUp))
+      );
+
+      // Direction from current tile center to neighbor
+      const toNeighbor = neighborTangent.clone().sub(tileCenter).normalize();
+
+      // How far is player toward this neighbor?
+      const playerFromCenter = playerTangent.clone().sub(tileCenter);
+      const distTowardNeighbor = playerFromCenter.dot(toNeighbor);
+
+      // Approximate tile radius (half the distance between tile centers)
+      const tileRadius = tileCenter.distanceTo(neighborCenter) * 0.45;
+
+      // If player is close to the edge toward this higher neighbor, nudge away
+      if (distTowardNeighbor > tileRadius - PlayerConfig.PLAYER_RADIUS * 2) {
+        needsNudge = true;
+        // Nudge away from this neighbor (toward tile center)
+        nudgeDir.sub(toNeighbor);
+      }
+    }
+
+    if (needsNudge && nudgeDir.lengthSq() > 0.0001) {
+      nudgeDir.normalize();
+
+      // Apply a small nudge toward tile center (tangent to surface)
+      const nudgeStrength = 0.075; // Subtle nudge
+      const nudge = nudgeDir.multiplyScalar(nudgeStrength);
+
+      // Project nudge onto tangent plane
+      const nudgeTangent = nudge.clone().sub(actualUp.clone().multiplyScalar(nudge.dot(actualUp)));
+
+      this.position.add(nudgeTangent);
+
+      // Re-snap to maintain current height (don't change vertical position during falling)
+      const newUp = this.currentPlanet.getSurfaceNormal(this.position);
+      this.position.copy(this.currentPlanet.center).addScaledVector(newUp, playerRadius);
+    }
+  }
+
   private getAltitude(): number {
     if (!this.currentPlanet) return Infinity;
     return this.getAltitudeFromPlanet(this.currentPlanet);
@@ -456,13 +591,21 @@ export class PlanetPlayer {
       console.log('\nCurrent Tile:');
       console.log(`  Index: ${currentTile.index}`);
 
-      // Find ground level
+      // Find walkable floor closest to player's height (air above solid)
       let groundDepth = -1;
-      for (let d = 0; d < MAX_TERRAIN_DEPTH; d++) {
+      let bestHeightDiff = Infinity;
+      for (let d = 0; d < MAX_TERRAIN_DEPTH - 1; d++) {
         const block = this.currentPlanet.getBlock(currentTile.index, d);
-        if (block !== HexBlockType.AIR && block !== HexBlockType.WATER) {
-          groundDepth = d;
-          break;
+        const blockAbove = d < MAX_TERRAIN_DEPTH - 1 ? this.currentPlanet.getBlock(currentTile.index, d + 1) : HexBlockType.AIR;
+        const isCurrentSolid = block !== HexBlockType.AIR && block !== HexBlockType.WATER;
+        const isAbovePassable = blockAbove === HexBlockType.AIR || blockAbove === HexBlockType.WATER;
+        if (isCurrentSolid && isAbovePassable) {
+          const floorRadius = this.currentPlanet.depthToRadius(d);
+          const heightDiff = Math.abs(floorRadius - playerFeetRadius);
+          if (floorRadius <= playerFeetRadius + 0.5 && heightDiff < bestHeightDiff) {
+            groundDepth = d;
+            bestHeightDiff = heightDiff;
+          }
         }
       }
       const groundRadius = groundDepth >= 0 ? this.currentPlanet.depthToRadius(groundDepth) : 0;
@@ -531,19 +674,14 @@ export class PlanetPlayer {
     const playerFeetRadius = this.position.distanceTo(this.currentPlanet.center);
     const playerHeadRadius = playerFeetRadius + PlayerConfig.PLAYER_HEIGHT;
 
-    // Find ground depth at current tile
-    let groundDepth = -1;
-    for (let d = 0; d < MAX_TERRAIN_DEPTH; d++) {
-      const block = this.currentPlanet.getBlock(currentTile.index, d);
-      if (block !== HexBlockType.AIR && block !== HexBlockType.WATER) {
-        groundDepth = d;
-        break;
-      }
-    }
+    // Find the walkable floor closest to player's radius (same logic as physics code)
+    const groundDepth = findWalkableFloorAtRadius(this.currentPlanet, currentTile.index, playerFeetRadius);
+    const groundRadius = groundDepth >= 0 ? this.currentPlanet.depthToRadius(groundDepth) : 0;
 
     console.log('========== Hex STRUCTURE (Shift+X) ==========');
     console.log(`Player feet radius: ${playerFeetRadius.toFixed(2)}, head radius: ${playerHeadRadius.toFixed(2)}`);
-    console.log(`Standing on tile ${currentTile.index}, ground depth: ${groundDepth}`);
+    console.log(`Standing on tile ${currentTile.index}, ground depth: ${groundDepth} (radius: ${groundRadius.toFixed(2)})`);
+    console.log(`isGrounded: ${this.isGrounded}, velocity: (${this.velocity.x.toFixed(2)}, ${this.velocity.y.toFixed(2)}, ${this.velocity.z.toFixed(2)})`);
     console.log(`Planet radius: ${this.currentPlanet.radius}`);
     console.log('');
 
@@ -569,21 +707,34 @@ export class PlanetPlayer {
       currentRing = nextRing;
     }
 
-    // For each tile, show depths from (groundDepth) to (groundDepth - depthRows + 1)
-    // groundDepth is where solid ground starts, depths above it (lower numbers) are air/cave
-    const startDepth = Math.max(0, groundDepth - depthRows + 1);
-    const endDepth = groundDepth + 1; // Include the ground block
+    // Find the depth that corresponds to the player's feet radius
+    // This ensures we show blocks around where the player actually is, not just the detected ground
+    let playerDepth = 0;
+    for (let d = 0; d < MAX_TERRAIN_DEPTH; d++) {
+      const depthRadius = this.currentPlanet.depthToRadius(d);
+      if (depthRadius >= playerFeetRadius) {
+        playerDepth = d;
+        break;
+      }
+    }
+
+    // Show depths centered around player position, with depthRows visible
+    const halfRows = Math.floor(depthRows / 2);
+    const startDepth = Math.max(0, playerDepth - halfRows);
+    const endDepth = Math.min(MAX_TERRAIN_DEPTH - 1, playerDepth + halfRows);
 
     console.log(`Sampling ${tilesToSample.size} tiles, depths ${startDepth} to ${endDepth}`);
     console.log(`Legend: . = AIR, ~ = WATER, S = SAND, G = GRASS, # = SOLID, @ = PLAYER BODY OVERLAP`);
+    console.log('(Higher depths = closer to sky, displayed at top)');
     console.log('');
 
-    // Build a table: rows = depth, columns = tiles
+    // Build a table: rows = depth (from high to low, sky at top), columns = tiles
     const tileArray = Array.from(tilesToSample);
     const headerRow = ['Depth/Radius'].concat(tileArray.map(t => `T${t}`));
     console.log(headerRow.join('\t'));
 
-    for (let d = startDepth; d <= endDepth; d++) {
+    // Loop from high depth to low depth (sky at top, ground at bottom)
+    for (let d = endDepth; d >= startDepth; d--) {
       const blockRadius = this.currentPlanet.depthToRadius(d);
       const blockBottomRadius = blockRadius - 1;
 
@@ -973,13 +1124,14 @@ export class PlanetPlayer {
     // Case 1: feet in water, grounded, eyes ABOVE water -> jump at AIR speed
     // Case 2: feet in water, grounded, eyes IN water -> jump at WATER speed
     if (input.jumpJustPressed) {
+      console.log(`Jump pressed! isGrounded=${this.isGrounded}, feetInWater=${this.feetInWater}`);
       if (this.isGrounded) {
         // Jump from ground - speed depends on whether eyes are underwater
         const jumpDir = planetUp;
 
         // Clear any existing vertical velocity for a clean jump
         const verticalComponent = this.velocity.dot(planetUp);
-        this.velocity.copy(planetUp).multiplyScalar(verticalComponent);
+        this.velocity.sub(planetUp.clone().multiplyScalar(verticalComponent));
 
         // Determine jump force: full force when wading (eyes above water), reduced when fully submerged
         let jumpForce = PlayerConfig.JUMP_FORCE;
@@ -991,6 +1143,7 @@ export class PlanetPlayer {
 
         // Add jump force
         this.velocity.addScaledVector(jumpDir, jumpForce);
+        console.log(`After jump: velocity=(${this.velocity.x.toFixed(2)}, ${this.velocity.y.toFixed(2)}, ${this.velocity.z.toFixed(2)}), jumpForce=${jumpForce}`);
         this.isGrounded = false;
         this.hasDoubleJumped = false; // Reset double-jump flag
         this.didJumpThisFrame = true; // Mark for teleport detection
@@ -1135,8 +1288,11 @@ export class PlanetPlayer {
   // Uses PLAYER_RADIUS to check not just the center tile, but also neighboring tiles
   // that the player's body might overlap with. This prevents camera clipping through walls.
   //
+  // If verticalOnly is true, only checks the current tile (for vertical movement within a shaft)
+  // This allows jumping/falling in narrow spaces surrounded by walls.
+  //
   // Note: player.position is at FEET level (bottom of player)
-  private checkWallCollision(newPosition: THREE.Vector3): boolean {
+  private checkWallCollision(newPosition: THREE.Vector3, verticalOnly: boolean = false): boolean {
     if (!this.currentPlanet) return false;
 
     const newTile = this.currentPlanet.getTileAtPoint(newPosition);
@@ -1216,31 +1372,36 @@ export class PlanetPlayer {
     const surfaceNormal = this.currentPlanet.getSurfaceNormal(newPosition);
 
     // Collect tiles to check: current tile + neighbors within PLAYER_RADIUS
+    // For vertical-only movement (jumping/falling in a shaft), only check the current tile
     const tilesToCheck: number[] = [newTile.index];
 
-    // Check neighboring tiles that might be within player radius
-    // Use the polyhedron to get neighbors
-    const polyTile = this.currentPlanet.getPolyhedron().tiles[newTile.index];
-    if (polyTile) {
-      for (const neighborIdx of polyTile.neighbors) {
-        const neighborTile = this.currentPlanet.getPolyhedron().tiles[neighborIdx];
-        if (neighborTile) {
-          // Calculate distance from player position to neighbor tile center (on the surface)
-          // Project both onto the tangent plane for horizontal distance
-          const neighborCenter = new THREE.Vector3(
-            neighborTile.center.x,
-            neighborTile.center.y,
-            neighborTile.center.z
-          ).add(this.currentPlanet.center);
+    // Only check neighboring tiles if not in vertical-only mode
+    // This allows jumping/falling in narrow shafts surrounded by walls
+    if (!verticalOnly) {
+      // Check neighboring tiles that might be within player radius
+      // Use the polyhedron to get neighbors
+      const polyTile = this.currentPlanet.getPolyhedron().tiles[newTile.index];
+      if (polyTile) {
+        for (const neighborIdx of polyTile.neighbors) {
+          const neighborTile = this.currentPlanet.getPolyhedron().tiles[neighborIdx];
+          if (neighborTile) {
+            // Calculate distance from player position to neighbor tile center (on the surface)
+            // Project both onto the tangent plane for horizontal distance
+            const neighborCenter = new THREE.Vector3(
+              neighborTile.center.x,
+              neighborTile.center.y,
+              neighborTile.center.z
+            ).add(this.currentPlanet.center);
 
-          // Get the horizontal distance (tangent to planet surface)
-          const toNeighbor = neighborCenter.clone().sub(newPosition);
-          const verticalComponent = toNeighbor.dot(surfaceNormal);
-          const horizontalDist = toNeighbor.clone().sub(surfaceNormal.clone().multiplyScalar(verticalComponent)).length();
+            // Get the horizontal distance (tangent to planet surface)
+            const toNeighbor = neighborCenter.clone().sub(newPosition);
+            const verticalComponent = toNeighbor.dot(surfaceNormal);
+            const horizontalDist = toNeighbor.clone().sub(surfaceNormal.clone().multiplyScalar(verticalComponent)).length();
 
-          // If neighbor is within player radius, include it in collision check
-          if (horizontalDist < PlayerConfig.PLAYER_RADIUS + 1.0) { // +1.0 for block size margin
-            tilesToCheck.push(neighborIdx);
+            // If neighbor is within player radius, include it in collision check
+            if (horizontalDist < PlayerConfig.PLAYER_RADIUS + 1.0) { // +1.0 for block size margin
+              tilesToCheck.push(neighborIdx);
+            }
           }
         }
       }
@@ -1416,29 +1577,33 @@ export class PlanetPlayer {
   // Check if position is valid (no collision with terrain at any capsule height)
   // Water blocks are passable - only solid blocks block movement
   //
+  // If verticalOnly is true, only check the tile at the feet position (for vertical movement in shafts)
+  //
   // Note: player.position is at FEET level (bottom of player)
-  private isPositionValid(position: THREE.Vector3): boolean {
+  private isPositionValid(position: THREE.Vector3, verticalOnly: boolean = false): boolean {
     if (!this.currentPlanet) return true;
 
     const actualUp = this.currentPlanet.getSurfaceNormal(position);
     // Position is at feet level (bottom of player)
     const playerBottomRadius = position.distanceTo(this.currentPlanet.center);
 
-    // Find the deepest solid block at this position to establish an absolute floor
+    // Find the SHALLOWEST (lowest depth) solid block to establish the absolute floor
+    // Lower depth = closer to planet core, so first solid block from d=0 is the floor
     const tile = this.currentPlanet.getTileAtPoint(position);
     if (tile) {
-      let deepestSolidDepth = -1;
+      let floorDepth = -1;
       for (let d = 0; d < MAX_TERRAIN_DEPTH; d++) {
         const block = getCachedBlock(this.currentPlanet, tile.index, d);
         if (block !== HexBlockType.AIR && block !== HexBlockType.WATER) {
-          deepestSolidDepth = d;
-          // Don't break - we want the DEEPEST solid block, not the first
+          floorDepth = d;
+          break; // First solid block from bottom is the floor
         }
       }
       // If there's solid ground, ensure player's feet don't go below the bottom of it
-      if (deepestSolidDepth >= 0) {
-        const floorRadius = this.currentPlanet.depthToRadius(deepestSolidDepth) - 1; // Bottom of deepest block
+      if (floorDepth >= 0) {
+        const floorRadius = this.currentPlanet.depthToRadius(floorDepth) - 1; // Bottom of floor block
         if (playerBottomRadius < floorRadius) {
+          console.log(`isPositionValid BLOCKED by floor: feetR=${playerBottomRadius.toFixed(2)}, floorR=${floorRadius.toFixed(2)}, floorD=${floorDepth}`);
           return false; // Feet below the absolute floor
         }
       }
@@ -1448,15 +1613,38 @@ export class PlanetPlayer {
     // Offsets are POSITIVE since we check from feet (position) up to head
     const checkOffsets = [0.1, PlayerConfig.PLAYER_HEIGHT * 0.5, PlayerConfig.PLAYER_HEIGHT];
 
+    // For verticalOnly mode, only check the tile at the feet position
+    // This allows jumping in narrow shafts where neighbor tiles have solid blocks
+    const feetTile = tile;
+
     for (const offset of checkOffsets) {
       const checkRadius = playerBottomRadius + offset;
-      const checkPos = this.currentPlanet.center.clone()
-        .add(actualUp.clone().multiplyScalar(checkRadius));
 
-      const checkTile = this.currentPlanet.getTileAtPoint(checkPos);
-      if (!checkTile) continue;
+      // In verticalOnly mode, use the feet tile for all checks
+      // Otherwise, find the tile at each check position (which may be a neighbor)
+      let checkTile: ReturnType<typeof this.currentPlanet.getTileAtPoint>;
+      let depth: number;
 
-      const depth = this.currentPlanet.getDepthAtPoint(checkPos);
+      if (verticalOnly && feetTile) {
+        // Use feet tile and calculate depth from radius
+        checkTile = feetTile;
+        // Convert radius to depth
+        for (let d = 0; d < MAX_TERRAIN_DEPTH; d++) {
+          const depthRadius = this.currentPlanet.depthToRadius(d);
+          if (checkRadius <= depthRadius) {
+            depth = d;
+            break;
+          }
+        }
+        depth = depth! ?? MAX_TERRAIN_DEPTH - 1;
+      } else {
+        const checkPos = this.currentPlanet.center.clone()
+          .add(actualUp.clone().multiplyScalar(checkRadius));
+        checkTile = this.currentPlanet.getTileAtPoint(checkPos);
+        if (!checkTile) continue;
+        depth = this.currentPlanet.getDepthAtPoint(checkPos);
+      }
+
       if (depth < 0 || depth >= MAX_TERRAIN_DEPTH) continue;
 
       // Check if inside a solid block (not AIR and not WATER - water is passable)
@@ -1464,6 +1652,7 @@ export class PlanetPlayer {
       if (block !== HexBlockType.AIR && block !== HexBlockType.WATER) {
         const blockOuterRadius = this.currentPlanet.depthToRadius(depth);
         if (checkRadius < blockOuterRadius) {
+          console.log(`isPositionValid BLOCKED: offset=${offset.toFixed(2)}, checkR=${checkRadius.toFixed(2)}, depth=${depth}, blockTopR=${blockOuterRadius.toFixed(2)}, block=${block}, tile=${checkTile.index}`);
           return false; // Inside a solid block
         }
       }
@@ -1789,13 +1978,58 @@ export class PlanetPlayer {
           const verticalVel = actualUp.clone().multiplyScalar(this.velocity.dot(actualUp));
           const horizontalVel = this.velocity.clone().sub(verticalVel);
 
-          // Try vertical movement only
+          // Try vertical movement only - use verticalOnly=true to allow movement in narrow shafts
+          // This checks only the current tile's blocks, not neighbor tiles
           const verticalMove = verticalVel.clone().multiplyScalar(deltaTime);
           const verticalNewPos = this.position.clone().add(verticalMove);
-          const verticalValid = this.isPositionValid(verticalNewPos) && !this.checkWallCollision(verticalNewPos);
+
+          // Determine if we're moving up or down
+          const movingUp = this.velocity.dot(actualUp) > 0;
+
+          // For upward movement (jumping), check full body collision (head might hit ceiling)
+          // For downward movement (falling), only check feet position - don't let ceiling block falling
+          let verticalValid: boolean;
+          if (movingUp) {
+            // Jumping up - check if head would hit ceiling (only in current tile column)
+            const posValid = this.isPositionValid(verticalNewPos, true);
+            const wallBlock = this.checkWallCollision(verticalNewPos, true);
+            verticalValid = posValid && !wallBlock;
+            if (!verticalValid) {
+              const newFeetRadius = verticalNewPos.distanceTo(this.currentPlanet.center);
+              const newHeadRadius = newFeetRadius + PlayerConfig.PLAYER_HEIGHT;
+              console.log(`Jump blocked: posValid=${posValid}, wallBlock=${wallBlock}, newFeetR=${newFeetRadius.toFixed(2)}, newHeadR=${newHeadRadius.toFixed(2)}`);
+            }
+          } else {
+            // Falling down - only check if feet would enter solid block
+            // Don't check full body (head) since we're moving away from the ceiling
+            verticalValid = !this.checkWallCollision(verticalNewPos, true);
+
+            // Also check we're not falling into solid ground (feet check only)
+            if (verticalValid) {
+              const tile = this.currentPlanet.getTileAtPoint(verticalNewPos);
+              if (tile) {
+                const feetRadius = verticalNewPos.distanceTo(this.currentPlanet.center);
+                const feetDepth = this.currentPlanet.getDepthAtPoint(verticalNewPos);
+                if (feetDepth >= 0 && feetDepth < MAX_TERRAIN_DEPTH) {
+                  const block = getCachedBlock(this.currentPlanet, tile.index, feetDepth);
+                  if (block !== HexBlockType.AIR && block !== HexBlockType.WATER) {
+                    const blockTop = this.currentPlanet.depthToRadius(feetDepth);
+                    if (feetRadius < blockTop) {
+                      verticalValid = false; // Would fall into solid block
+                    }
+                  }
+                }
+              }
+            }
+          }
 
           if (verticalValid) {
             this.position.copy(verticalNewPos);
+
+            // During falling, check edge nudge each frame to push away from higher neighbors
+            if (!movingUp) {
+              this.checkEdgeNudge();
+            }
           } else {
             // Vertical blocked - stop vertical velocity (both up and down)
             const upComponent = this.velocity.dot(actualUp);
@@ -1890,5 +2124,31 @@ export class PlanetPlayer {
     if (!enabled) {
       this.isJetpacking = false;
     }
+  }
+
+  // Export player state for saving
+  public exportForSave(): {
+    position: { x: number; y: number; z: number };
+    orientation: { x: number; y: number; z: number; w: number };
+    velocity: { x: number; y: number; z: number };
+  } {
+    return {
+      position: { x: this.position.x, y: this.position.y, z: this.position.z },
+      orientation: { x: this.orientation.x, y: this.orientation.y, z: this.orientation.z, w: this.orientation.w },
+      velocity: { x: this.velocity.x, y: this.velocity.y, z: this.velocity.z }
+    };
+  }
+
+  // Import player state from save
+  public importFromSave(data: {
+    position: { x: number; y: number; z: number };
+    orientation: { x: number; y: number; z: number; w: number };
+    velocity: { x: number; y: number; z: number };
+  }): void {
+    this.position.set(data.position.x, data.position.y, data.position.z);
+    this.orientation.set(data.orientation.x, data.orientation.y, data.orientation.z, data.orientation.w);
+    this.velocity.set(data.velocity.x, data.velocity.y, data.velocity.z);
+    // Update local axes from orientation
+    this.updateLocalFromOrientation();
   }
 }

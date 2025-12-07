@@ -9,7 +9,15 @@ export enum HexBlockType {
   WATER = 4,
   SAND = 5,
   WOOD = 6,
-  LEAVES = 7
+  LEAVES = 7,
+  // Mineral ores (underground)
+  ORE_COAL = 8,
+  ORE_COPPER = 9,
+  ORE_IRON = 10,
+  ORE_GOLD = 11,
+  ORE_LITHIUM = 12,
+  ORE_ALUMINUM = 13,
+  ORE_COBALT = 14
 }
 
 export function isSolid(blockType: HexBlockType | number): boolean {

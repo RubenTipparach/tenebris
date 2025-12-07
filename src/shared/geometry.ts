@@ -316,8 +316,10 @@ export function buildWaterWallGeometry(
     if (neighborData.blocks[waterSurfaceDepth] !== HexBlockType.AIR) continue;
 
     // Find where this water column has solid blocks below the water
-    let ownSolidDepth = waterSurfaceDepth + 1;
-    for (let d = waterSurfaceDepth + 1; d < ownBlocks.length; d++) {
+    // Depth system: 0 = bedrock (bottom), higher = toward sky
+    // Solid blocks (ocean floor) are at LOWER depth values than water
+    let ownSolidDepth = 0;
+    for (let d = waterSurfaceDepth - 1; d >= 0; d--) {
       const ownBlock = ownBlocks[d];
       if (ownBlock !== HexBlockType.AIR && ownBlock !== HexBlockType.WATER) {
         ownSolidDepth = d;
@@ -325,23 +327,19 @@ export function buildWaterWallGeometry(
       }
     }
 
-    // Find the neighbor's first solid block depth
-    let neighborSolidDepth = waterSurfaceDepth + 1;
-    for (let d = waterSurfaceDepth + 1; d < neighborData.blocks.length; d++) {
+    // Find the neighbor's first solid block depth (searching downward)
+    let neighborSolidDepth = 0;
+    for (let d = waterSurfaceDepth - 1; d >= 0; d--) {
       const neighborBlock = neighborData.blocks[d];
       if (neighborBlock !== HexBlockType.AIR && neighborBlock !== HexBlockType.WATER) {
         neighborSolidDepth = d;
         break;
-      } else if (neighborBlock === HexBlockType.AIR) {
-        neighborSolidDepth = d + 1;
-      } else {
-        // Water - stop here
-        break;
       }
     }
 
-    // Water wall extends to the minimum of own solid depth or neighbor solid depth
-    const wallBottomDepth = Math.min(ownSolidDepth, neighborSolidDepth);
+    // Water wall extends to the maximum of own solid depth or neighbor solid depth
+    // (higher depth = closer to water surface, so we take max to get the shallowest floor)
+    const wallBottomDepth = Math.max(ownSolidDepth, neighborSolidDepth);
 
     // Calculate wall geometry
     // Use correct depth formula: depthToRadius(d) = radius - (maxDepth - 1 - d) * blockHeight

@@ -67,7 +67,18 @@ export class BlockInteraction {
     }
   }
 
-  public update(deltaTime: number, leftClick: boolean, rightClick: boolean): void {
+  public update(deltaTime: number, leftClick: boolean, rightClick: boolean, wheelDelta: number = 0): void {
+    // Handle mouse wheel for block selection
+    if (wheelDelta !== 0) {
+      const blockTypes = [BlockType.STONE, BlockType.DIRT, BlockType.GRASS];
+      const currentIndex = blockTypes.indexOf(this.selectedBlockType);
+      const direction = wheelDelta > 0 ? 1 : -1;
+      let newIndex = currentIndex + direction;
+      if (newIndex < 0) newIndex = blockTypes.length - 1;
+      if (newIndex >= blockTypes.length) newIndex = 0;
+      this.selectBlock(newIndex);
+    }
+
     // Update cooldowns
     this.leftClickCooldown = Math.max(0, this.leftClickCooldown - deltaTime);
     this.rightClickCooldown = Math.max(0, this.rightClickCooldown - deltaTime);

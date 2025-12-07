@@ -8,6 +8,14 @@ export enum ItemType {
   LEAVES = 5,
   LOG = 6,
   SAND = 7,
+  // Mineral ores
+  ORE_COAL = 8,
+  ORE_COPPER = 9,
+  ORE_IRON = 10,
+  ORE_GOLD = 11,
+  ORE_LITHIUM = 12,
+  ORE_ALUMINUM = 13,
+  ORE_COBALT = 14,
 }
 
 // Item metadata
@@ -27,6 +35,14 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
   [ItemType.LEAVES]: { name: 'Leaves', stackSize: 64, texture: '/textures/leaves.png', mineTime: 0.3 },
   [ItemType.LOG]: { name: 'Log', stackSize: 64, texture: '/textures/icons/logs.png', mineTime: 1.2 },
   [ItemType.SAND]: { name: 'Sand', stackSize: 64, texture: '/textures/sand.png', mineTime: 0.5 },
+  // Mineral ores
+  [ItemType.ORE_COAL]: { name: 'Coal Ore', stackSize: 64, texture: '/textures/minerals/earth/rocks_coal.png', mineTime: 2.0 },
+  [ItemType.ORE_COPPER]: { name: 'Copper Ore', stackSize: 64, texture: '/textures/minerals/earth/rocks_copper.png', mineTime: 2.0 },
+  [ItemType.ORE_IRON]: { name: 'Iron Ore', stackSize: 64, texture: '/textures/minerals/earth/rocks_iron.png', mineTime: 2.5 },
+  [ItemType.ORE_GOLD]: { name: 'Gold Ore', stackSize: 64, texture: '/textures/minerals/earth/rocks_gold.png', mineTime: 3.0 },
+  [ItemType.ORE_LITHIUM]: { name: 'Lithium Ore', stackSize: 64, texture: '/textures/minerals/earth/rocks_lythium.png', mineTime: 3.0 },
+  [ItemType.ORE_ALUMINUM]: { name: 'Aluminum Ore', stackSize: 64, texture: '/textures/minerals/earth/rocks_aluminum.png', mineTime: 2.0 },
+  [ItemType.ORE_COBALT]: { name: 'Cobalt Ore', stackSize: 64, texture: '/textures/minerals/earth/rocks_cobalt.png', mineTime: 2.5 },
 };
 
 // Inventory slot
@@ -185,5 +201,23 @@ export class Inventory {
       return null;
     }
     return this.slots[index];
+  }
+
+  // Export inventory state for saving
+  public exportForSave(): { itemType: number; quantity: number }[] {
+    return this.slots.map(slot => ({
+      itemType: slot.itemType,
+      quantity: slot.quantity
+    }));
+  }
+
+  // Import inventory state from save
+  public importFromSave(data: { itemType: number; quantity: number }[]): void {
+    for (let i = 0; i < Math.min(data.length, this.totalSlots); i++) {
+      this.slots[i] = {
+        itemType: data[i].itemType as ItemType,
+        quantity: data[i].quantity
+      };
+    }
   }
 }

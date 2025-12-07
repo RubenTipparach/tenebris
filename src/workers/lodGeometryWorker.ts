@@ -325,9 +325,10 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
     // Combined first pass: calculate display radius AND surface block type for each tile
     // This eliminates redundant block array searches
     interface TileInfo {
-      radius: number;
-      isWater: boolean;
-      surfaceBlockType: number;
+      radius: number;           // Display radius for LOD rendering
+      isWater: boolean;         // True if surface is water
+      surfaceBlockType: number; // The topmost non-air block type
+      terrainRadius: number;    // Radius of actual solid terrain (for water walls)
     }
     const tileInfo = new Map<number, TileInfo>();
 
@@ -335,12 +336,20 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
       // Find surface depth (topmost non-air block, searching from top down)
       let surfaceDepth = 0;
       let surfaceBlockType = HexBlockType.GRASS;
+      let terrainDepth = 0; // Topmost solid block (ignoring water)
       const blocks = column.blocks;
       for (let d = blocks.length - 1; d >= 0; d--) {
         if (blocks[d] !== HexBlockType.AIR) {
-          surfaceDepth = d;
-          surfaceBlockType = blocks[d];
-          break;
+          if (surfaceBlockType === HexBlockType.GRASS) {
+            // First non-air block found
+            surfaceDepth = d;
+            surfaceBlockType = blocks[d];
+          }
+          if (blocks[d] !== HexBlockType.WATER) {
+            // First solid (non-water) block found
+            terrainDepth = d;
+            break;
+          }
         }
       }
 
@@ -348,8 +357,9 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
       const displayRadius = isWater
         ? waterRadius
         : depthToRadius(surfaceDepth, config) - config.lodOffset;
+      const terrainRadius = depthToRadius(terrainDepth, config) - config.lodOffset;
 
-      tileInfo.set(tileIndex, { radius: displayRadius, isWater, surfaceBlockType });
+      tileInfo.set(tileIndex, { radius: displayRadius, isWater, surfaceBlockType, terrainRadius });
     }
 
     // Back-face culling threshold: skip tiles facing away from camera
@@ -587,7 +597,8 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
         const neighborInfo = tileInfo.get(neighborTileIdx);
         if (!neighborInfo) continue;
 
-        const bottomRadius = neighborInfo.radius;
+        // Use terrainRadius (solid ground) not radius (which could be water surface)
+        const bottomRadius = neighborInfo.terrainRadius;
         const topRadius = waterRadius;
         if (bottomRadius >= topRadius) continue;
 

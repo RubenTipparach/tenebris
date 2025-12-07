@@ -234,3 +234,7 @@ Earth is the starting planet and the most hospitable world in the solar system. 
 | **Thunderstorm** | Lightning strikes, hostile mobs spawn | 1-2 hours |
 | **Fog** | Reduced visibility | 1-3 hours |
 | **Snow** (mountains) | Cold damage without warmth | Seasonal |
+
+
+
+make fireflies for Becca, they come out at  dusk near grassy areas 

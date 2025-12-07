@@ -286,6 +286,13 @@ export class Planet {
     sandData: GeometryData;
     woodData: GeometryData;
     waterData: GeometryData;
+    oreCoalData: GeometryData;
+    oreCopperData: GeometryData;
+    oreIronData: GeometryData;
+    oreGoldData: GeometryData;
+    oreLithiumData: GeometryData;
+    oreAluminumData: GeometryData;
+    oreCobaltData: GeometryData;
   }): void {
     if (!this.batchedMeshGroup) return;
 
@@ -304,6 +311,14 @@ export class Planet {
       { dataKey: 'sandData', materialKey: 'sand' },
       { dataKey: 'woodData', materialKey: 'wood' },
       { dataKey: 'waterData', materialKey: 'water', renderOrder: 1 },
+      // Mineral ores
+      { dataKey: 'oreCoalData', materialKey: 'oreCoal' },
+      { dataKey: 'oreCopperData', materialKey: 'oreCopper' },
+      { dataKey: 'oreIronData', materialKey: 'oreIron' },
+      { dataKey: 'oreGoldData', materialKey: 'oreGold' },
+      { dataKey: 'oreLithiumData', materialKey: 'oreLithium' },
+      { dataKey: 'oreAluminumData', materialKey: 'oreAluminum' },
+      { dataKey: 'oreCobaltData', materialKey: 'oreCobalt' },
     ];
 
     for (const { dataKey, materialKey, renderOrder } of workerDataMap) {
@@ -1008,16 +1023,22 @@ export class Planet {
     // Also calculate for detailed tiles so LOD can generate walls at the boundary
     // Store both radius and whether it's water for side wall generation
     profiler.begin('Planet.rebuildLODMesh.pass1');
-    const tileDisplayRadii = new Map<number, { radius: number; isWater: boolean; surfaceBlockType: HexBlockType }>();
+    const tileDisplayRadii = new Map<number, { radius: number; isWater: boolean; surfaceBlockType: HexBlockType; terrainRadius: number }>();
     for (const [tileIndex, column] of this.columns) {
       // Find surface depth (topmost non-air block, searching from top down)
       let surfaceDepth = 0;
       let surfaceBlockType = HexBlockType.GRASS;
+      let terrainDepth = 0; // Topmost solid block (ignoring water)
       for (let d = column.blocks.length - 1; d >= 0; d--) {
         if (column.blocks[d] !== HexBlockType.AIR) {
-          surfaceDepth = d;
-          surfaceBlockType = column.blocks[d];
-          break;
+          if (surfaceBlockType === HexBlockType.GRASS) {
+            surfaceDepth = d;
+            surfaceBlockType = column.blocks[d];
+          }
+          if (column.blocks[d] !== HexBlockType.WATER) {
+            terrainDepth = d;
+            break;
+          }
         }
       }
 
@@ -1028,7 +1049,8 @@ export class Planet {
       } else {
         displayRadius = this.depthToRadius(surfaceDepth) - lodOffset;
       }
-      tileDisplayRadii.set(tileIndex, { radius: displayRadius, isWater, surfaceBlockType });
+      const terrainRadius = this.depthToRadius(terrainDepth) - lodOffset;
+      tileDisplayRadii.set(tileIndex, { radius: displayRadius, isWater, surfaceBlockType, terrainRadius });
     }
     profiler.end('Planet.rebuildLODMesh.pass1');
 
@@ -1343,8 +1365,8 @@ export class Planet {
         if (!neighborData) continue;
 
         // Generate wall from ocean floor (neighbor terrain) up to water surface
-        // Wall goes from neighborRadius (ocean floor) to waterRadius (water surface)
-        const bottomRadius = neighborData.radius;
+        // Use terrainRadius (solid ground) not radius (which could be water surface)
+        const bottomRadius = neighborData.terrainRadius;
         const topRadius = waterRadius;
 
         // Only create wall if there's actual depth (ocean floor is below water surface)
@@ -1527,6 +1549,9 @@ export class Planet {
   private generateTerrain(): void {
     const hasWater = this.config.hasWater !== false && !this.config.texturePath;
 
+    // Generate ore veins before block assignment
+    this.generateOreVeins();
+
     // First pass: Generate height map with geographic features
     const heightMap = new Map<number, number>();
 
@@ -1589,8 +1614,10 @@ export class Planet {
             blocks.push(HexBlockType.DIRT);
           }
         } else {
-          // Deep underground = stone
-          blocks.push(HexBlockType.STONE);
+          // Deep underground = stone or ore
+          // Use seeded random for deterministic ore placement
+          const oreBlock = this.getOreAtDepth(depth, tile.index);
+          blocks.push(oreBlock);
         }
       }
 
@@ -1612,6 +1639,142 @@ export class Planet {
     if (hasWater) {
       this.fillOceans();
     }
+  }
+
+  // Ore vein configuration - defines each ore type's spawning behavior
+  // Ore depth ranges from PLANETS_EARTH.md:
+  // - Coal: 12-20, Copper: 10-18, Iron: 4-14, Gold: 0-6
+  // - Lithium: 0-4, Aluminum: 2-12, Cobalt: 0-8
+  private readonly ORE_CONFIGS: Array<{
+    type: HexBlockType;
+    minDepth: number;
+    maxDepth: number;
+    veinChance: number;    // Chance for a vein to spawn at valid depth
+    veinSize: number;      // Base size of vein (blocks)
+    spreadFactor: number;  // How much vein spreads to neighbors (0-1)
+  }> = [
+    // Rare ores (deep, small veins)
+    { type: HexBlockType.ORE_LITHIUM, minDepth: 0, maxDepth: 4, veinChance: 0.004, veinSize: 4, spreadFactor: 0.6 },
+    { type: HexBlockType.ORE_GOLD, minDepth: 0, maxDepth: 6, veinChance: 0.006, veinSize: 5, spreadFactor: 0.65 },
+    { type: HexBlockType.ORE_COBALT, minDepth: 0, maxDepth: 8, veinChance: 0.008, veinSize: 6, spreadFactor: 0.7 },
+    // Uncommon ores (medium depth, medium veins)
+    { type: HexBlockType.ORE_IRON, minDepth: 4, maxDepth: 14, veinChance: 0.012, veinSize: 8, spreadFactor: 0.75 },
+    { type: HexBlockType.ORE_ALUMINUM, minDepth: 2, maxDepth: 12, veinChance: 0.010, veinSize: 7, spreadFactor: 0.72 },
+    // Common ores (shallow, large veins)
+    { type: HexBlockType.ORE_COPPER, minDepth: 10, maxDepth: 18, veinChance: 0.015, veinSize: 10, spreadFactor: 0.8 },
+    { type: HexBlockType.ORE_COAL, minDepth: 12, maxDepth: 20, veinChance: 0.018, veinSize: 12, spreadFactor: 0.85 },
+  ];
+
+  // Cache for ore veins - generated once per planet
+  private oreVeinCache: Map<string, HexBlockType> = new Map();
+  private oreVeinsGenerated: boolean = false;
+
+  // Generate all ore veins for the planet (called before block assignment)
+  private generateOreVeins(): void {
+    if (this.oreVeinsGenerated) return;
+
+    // Seeded random number generator
+    const seededRandom = (seed: number): number => {
+      const x = Math.sin(seed) * 43758.5453;
+      return x - Math.floor(x);
+    };
+
+    // Build a quick lookup for tile neighbors (before columns exist)
+    const tileNeighbors = new Map<number, number[]>();
+    for (const tile of this.polyhedron.tiles) {
+      tileNeighbors.set(tile.index, tile.neighbors);
+    }
+
+    // For each ore type, generate vein seed points
+    for (const oreConfig of this.ORE_CONFIGS) {
+      // Use different seed offset for each ore type
+      const oreSeedOffset = oreConfig.type * 31337;
+
+      // Iterate through all tiles to find vein seed points
+      for (const tile of this.polyhedron.tiles) {
+        const tileIndex = tile.index;
+        // Check each valid depth for this ore
+        for (let depth = oreConfig.minDepth; depth <= oreConfig.maxDepth; depth++) {
+          const key = `${tileIndex},${depth}`;
+          if (this.oreVeinCache.has(key)) continue; // Already has ore
+
+          // Check if this position is a vein seed point
+          const seed = PlayerConfig.TERRAIN_SEED + oreSeedOffset + tileIndex * 7919 + depth * 104729;
+          const random = seededRandom(seed);
+
+          if (random < oreConfig.veinChance) {
+            // This is a vein seed point - spread ore from here
+            this.spreadOreVein(tileIndex, depth, oreConfig, seededRandom, seed, tileNeighbors);
+          }
+        }
+      }
+    }
+
+    this.oreVeinsGenerated = true;
+  }
+
+  // Spread ore from a seed point to create a vein
+  private spreadOreVein(
+    seedTileIndex: number,
+    seedDepth: number,
+    config: typeof this.ORE_CONFIGS[0],
+    seededRandom: (seed: number) => number,
+    baseSeed: number,
+    tileNeighbors: Map<number, number[]>
+  ): void {
+    const toVisit: Array<{ tileIndex: number; depth: number; probability: number }> = [];
+    const visited = new Set<string>();
+
+    // Start from seed point
+    toVisit.push({ tileIndex: seedTileIndex, depth: seedDepth, probability: 1.0 });
+
+    let blocksPlaced = 0;
+    const maxBlocks = config.veinSize + Math.floor(seededRandom(baseSeed + 999) * config.veinSize * 0.5);
+
+    while (toVisit.length > 0 && blocksPlaced < maxBlocks) {
+      const current = toVisit.shift()!;
+      const key = `${current.tileIndex},${current.depth}`;
+
+      if (visited.has(key)) continue;
+      visited.add(key);
+
+      // Check if within valid depth range
+      if (current.depth < config.minDepth || current.depth > config.maxDepth) continue;
+
+      // Probability check for this block
+      const placeSeed = baseSeed + current.tileIndex * 13 + current.depth * 17;
+      if (seededRandom(placeSeed) > current.probability) continue;
+
+      // Don't overwrite other ores
+      if (this.oreVeinCache.has(key)) continue;
+
+      // Place ore
+      this.oreVeinCache.set(key, config.type);
+      blocksPlaced++;
+
+      // Calculate reduced probability for neighbors
+      const neighborProb = current.probability * config.spreadFactor;
+      if (neighborProb < 0.1) continue; // Stop spreading if probability too low
+
+      // Spread to vertical neighbors (same tile, adjacent depths)
+      toVisit.push({ tileIndex: current.tileIndex, depth: current.depth - 1, probability: neighborProb });
+      toVisit.push({ tileIndex: current.tileIndex, depth: current.depth + 1, probability: neighborProb });
+
+      // Spread to horizontal neighbors (adjacent tiles, same depth)
+      const neighbors = tileNeighbors.get(current.tileIndex);
+      if (neighbors) {
+        for (const neighborIndex of neighbors) {
+          // Slightly lower probability for horizontal spread
+          toVisit.push({ tileIndex: neighborIndex, depth: current.depth, probability: neighborProb * 0.9 });
+        }
+      }
+    }
+  }
+
+  // Get ore at a specific position (uses cached vein data)
+  private getOreAtDepth(depth: number, tileIndex: number): HexBlockType {
+    const key = `${tileIndex},${depth}`;
+    return this.oreVeinCache.get(key) || HexBlockType.STONE;
   }
 
   private fillOceans(): void {
@@ -2206,6 +2369,14 @@ export class Planet {
     { key: 'sand', getMaterial: () => this.meshBuilder.getSandMaterial() },
     { key: 'wood', getMaterial: () => this.meshBuilder.getWoodMaterial() },
     { key: 'water', getMaterial: () => this.meshBuilder.getWaterMaterial(), renderOrder: 1 },
+    // Mineral ore materials
+    { key: 'oreCoal', getMaterial: () => this.meshBuilder.getMaterial('oreCoal') },
+    { key: 'oreCopper', getMaterial: () => this.meshBuilder.getMaterial('oreCopper') },
+    { key: 'oreIron', getMaterial: () => this.meshBuilder.getMaterial('oreIron') },
+    { key: 'oreGold', getMaterial: () => this.meshBuilder.getMaterial('oreGold') },
+    { key: 'oreLithium', getMaterial: () => this.meshBuilder.getMaterial('oreLithium') },
+    { key: 'oreAluminum', getMaterial: () => this.meshBuilder.getMaterial('oreAluminum') },
+    { key: 'oreCobalt', getMaterial: () => this.meshBuilder.getMaterial('oreCobalt') },
   ];
 
   private rebuildBatchedMeshes(): void {
@@ -2266,6 +2437,14 @@ export class Planet {
       case HexBlockType.DIRT: return 'side';  // Dirt uses side (dirt) texture
       case HexBlockType.WOOD: return 'wood';
       case HexBlockType.GRASS: return 'top';  // Grass top
+      // Mineral ores
+      case HexBlockType.ORE_COAL: return 'oreCoal';
+      case HexBlockType.ORE_COPPER: return 'oreCopper';
+      case HexBlockType.ORE_IRON: return 'oreIron';
+      case HexBlockType.ORE_GOLD: return 'oreGold';
+      case HexBlockType.ORE_LITHIUM: return 'oreLithium';
+      case HexBlockType.ORE_ALUMINUM: return 'oreAluminum';
+      case HexBlockType.ORE_COBALT: return 'oreCobalt';
       default: return 'top';
     }
   }
@@ -2278,6 +2457,14 @@ export class Planet {
       case HexBlockType.DIRT: return 'side';
       case HexBlockType.WOOD: return 'wood';
       case HexBlockType.GRASS: return 'grassSide';  // Grass sides use dirt_grass texture
+      // Mineral ores use same texture on all faces
+      case HexBlockType.ORE_COAL: return 'oreCoal';
+      case HexBlockType.ORE_COPPER: return 'oreCopper';
+      case HexBlockType.ORE_IRON: return 'oreIron';
+      case HexBlockType.ORE_GOLD: return 'oreGold';
+      case HexBlockType.ORE_LITHIUM: return 'oreLithium';
+      case HexBlockType.ORE_ALUMINUM: return 'oreAluminum';
+      case HexBlockType.ORE_COBALT: return 'oreCobalt';
       default: return 'side';
     }
   }
@@ -2288,6 +2475,14 @@ export class Planet {
       case HexBlockType.STONE: return 'stone';
       case HexBlockType.SAND: return 'sand';
       case HexBlockType.WOOD: return 'wood';
+      // Mineral ores use same texture on all faces
+      case HexBlockType.ORE_COAL: return 'oreCoal';
+      case HexBlockType.ORE_COPPER: return 'oreCopper';
+      case HexBlockType.ORE_IRON: return 'oreIron';
+      case HexBlockType.ORE_GOLD: return 'oreGold';
+      case HexBlockType.ORE_LITHIUM: return 'oreLithium';
+      case HexBlockType.ORE_ALUMINUM: return 'oreAluminum';
+      case HexBlockType.ORE_COBALT: return 'oreCobalt';
       // Dirt and grass show dirt texture on bottom
       default: return 'side';
     }
@@ -2595,9 +2790,10 @@ export class Planet {
       if (neighborColumn.blocks[waterSurfaceDepth] !== HexBlockType.AIR) continue;
 
       // Find where this water column has solid blocks below the water
-      // Water wall should NOT extend into depths where we have solid (those draw their own walls)
-      let ownSolidDepth = waterSurfaceDepth + 1;
-      for (let d = waterSurfaceDepth + 1; d < column.blocks.length; d++) {
+      // Depth system: 0 = bedrock (bottom), higher = toward sky
+      // Solid blocks (ocean floor) are at LOWER depth values than water
+      let ownSolidDepth = 0;
+      for (let d = waterSurfaceDepth - 1; d >= 0; d--) {
         const ownBlock = column.blocks[d];
         if (ownBlock !== HexBlockType.AIR && ownBlock !== HexBlockType.WATER) {
           // Found our own solid - water wall stops here
@@ -2606,31 +2802,24 @@ export class Planet {
         }
       }
 
-      // Find the neighbor's first solid block depth (their surface)
-      // Water wall only needs to extend down to this point - solid blocks draw their own walls below
-      let neighborSolidDepth = waterSurfaceDepth + 1;
-      for (let d = waterSurfaceDepth + 1; d < neighborColumn.blocks.length; d++) {
+      // Find the neighbor's first solid block depth (searching downward)
+      let neighborSolidDepth = 0;
+      for (let d = waterSurfaceDepth - 1; d >= 0; d--) {
         const neighborBlock = neighborColumn.blocks[d];
         if (neighborBlock !== HexBlockType.AIR && neighborBlock !== HexBlockType.WATER) {
           // Found solid block - this is where neighbor's terrain starts
           neighborSolidDepth = d;
           break;
-        } else if (neighborBlock === HexBlockType.AIR) {
-          // Still air, water wall could cover this depth
-          neighborSolidDepth = d + 1;
-        } else {
-          // Water - stop here, no wall needed into water
-          break;
         }
       }
 
-      // Water wall extends to the minimum of own solid depth or neighbor solid depth
-      // This prevents water walls from overlapping with terrain side walls
-      const wallBottomDepth = Math.min(ownSolidDepth, neighborSolidDepth);
+      // Water wall extends to the maximum of own solid depth or neighbor solid depth
+      // (higher depth = closer to water surface, so we take max to get the shallowest floor)
+      const wallBottomDepth = Math.max(ownSolidDepth, neighborSolidDepth);
 
       // Calculate wall geometry from water surface down to the limit
       const wallTopRadius = outerRadius; // Water surface (already offset)
-      const wallBottomRadius = this.radius - wallBottomDepth * this.BLOCK_HEIGHT;
+      const wallBottomRadius = this.depthToRadius(wallBottomDepth);
 
       if (wallBottomRadius >= wallTopRadius) continue; // No wall needed
 
@@ -2803,7 +2992,8 @@ export class Planet {
     if (!this.batchedMeshGroup) return;
 
     const waterBoundaryData = createEmptyGeometryData();
-    const waterSurfaceRadius = this.depthToRadius(this.getSeaLevelDepth()) - PlayerConfig.WATER_SURFACE_OFFSET;
+    const seaLevelDepth = this.getSeaLevelDepth();
+    const waterSurfaceRadius = this.depthToRadius(seaLevelDepth) - PlayerConfig.WATER_SURFACE_OFFSET;
 
     for (const tileIndex of this.cachedNearbyTiles) {
       const column = this.columns.get(tileIndex);
@@ -2834,17 +3024,26 @@ export class Planet {
         if (closestNeighborIdx === undefined) continue;
         if (this.cachedNearbyTiles.has(closestNeighborIdx)) continue;
 
-        let oceanFloorDepth = this.SEA_LEVEL;
-        for (let d = 0; d < column.blocks.length; d++) {
-          if (column.blocks[d] !== HexBlockType.AIR && column.blocks[d] !== HexBlockType.WATER) {
+        // Check if this tile has water (find topmost non-air block from sky down)
+        let hasWater = false;
+        let oceanFloorDepth = 0;
+        for (let d = column.blocks.length - 1; d >= 0; d--) {
+          const block = column.blocks[d];
+          if (block === HexBlockType.WATER) {
+            hasWater = true;
+          } else if (block !== HexBlockType.AIR) {
             oceanFloorDepth = d;
             break;
           }
         }
 
-        if (oceanFloorDepth <= this.SEA_LEVEL) continue;
+        // Skip if tile has no water
+        if (!hasWater) continue;
 
-        const oceanFloorRadius = this.radius - oceanFloorDepth * this.BLOCK_HEIGHT;
+        // Skip if ocean floor is at or above sea level (shouldn't happen for water tiles)
+        if (oceanFloorDepth >= seaLevelDepth) continue;
+
+        const oceanFloorRadius = this.depthToRadius(oceanFloorDepth);
         const bottomRadius = oceanFloorRadius;
         const topRadius = waterSurfaceRadius;
 
@@ -3027,7 +3226,7 @@ export class Planet {
     const distance = point.distanceTo(this.center);
     // Use ceil to ensure points at or just below a block's top surface belong to that block
     const depth = Math.ceil(this.MAX_DEPTH - 1 - (this.radius - distance) / this.BLOCK_HEIGHT);
-    return Math.max(0, Math.min(this.MAX_DEPTH - 1, depth));
+    return Math.max(0, Math.min(this.MAX_DEPTH, depth));
   }
 
   public getSurfacePosition(tile: HexTile): THREE.Vector3 {
@@ -3076,10 +3275,12 @@ export class Planet {
     const column = this.columns.get(tile.index);
     if (!column) return false;
 
-    for (let depth = 0; depth < column.blocks.length; depth++) {
+    // Search from top (sky) down to find the surface
+    // Depth system: 0 = bedrock (bottom), MAX_DEPTH-1 = sky (top)
+    for (let depth = column.blocks.length - 1; depth >= 0; depth--) {
       const block = column.blocks[depth];
       if (block === HexBlockType.WATER) return true;
-      if (block !== HexBlockType.AIR) return false;
+      if (block !== HexBlockType.AIR) return false; // Hit solid ground, not underwater
     }
     return false;
   }
@@ -3107,6 +3308,14 @@ export class Planet {
   public getTileIndexInDirection(direction: THREE.Vector3): number | null {
     const tile = this.polyhedron.getTileAtPoint(direction.clone().multiplyScalar(this.radius));
     return tile ? tile.index : null;
+  }
+
+  // Get tile center world position for a direction from planet center (for tree centering)
+  public getTileCenterInDirection(direction: THREE.Vector3): THREE.Vector3 | null {
+    const tile = this.polyhedron.getTileAtPoint(direction.clone().multiplyScalar(this.radius));
+    if (!tile) return null;
+    // Return the tile center in world space (add planet center offset)
+    return tile.center.clone().add(this.center);
   }
 
   // Get the set of currently visible (nearby/detailed) tile indices
@@ -3150,9 +3359,9 @@ export class Planet {
     if (waterSurfaceDepth < 0) return false;
 
     const playerDepth = this.getDepthAtPoint(position);
-    // Player is in water if their depth is BELOW water surface (not at surface)
+    // Player is in water if their depth is AT or BELOW water surface
     // With depth 0 = bedrock, lower depth = deeper underwater
-    return playerDepth < waterSurfaceDepth;
+    return playerDepth <= waterSurfaceDepth;
   }
 
   public getWaterDepth(position: THREE.Vector3): number {
@@ -3176,8 +3385,8 @@ export class Planet {
     if (waterSurfaceDepth < 0) return 0;
 
     // Depth below water surface (lower depth = deeper underwater)
-    // Only count as underwater if BELOW surface, not at surface
-    if (currentDepth < waterSurfaceDepth) {
+    // Count as underwater if AT or BELOW surface
+    if (currentDepth <= waterSurfaceDepth) {
       return (waterSurfaceDepth - currentDepth) * this.BLOCK_HEIGHT;
     }
 
