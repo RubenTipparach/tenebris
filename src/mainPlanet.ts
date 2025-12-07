@@ -210,11 +210,11 @@ class PlanetGame {
     // Update both planets (rebuild dirty meshes near player) with camera for frustum culling
     // This comes AFTER block interaction so torch light changes are immediately baked
     profiler.begin('Earth Update');
-    this.earth.update(this.player.position, this.engine.camera);
+    this.earth.update(this.player.position, this.engine.camera, deltaTime);
     profiler.end('Earth Update');
 
     profiler.begin('Moon Update');
-    this.moon.update(this.player.position, this.engine.camera);
+    this.moon.update(this.player.position, this.engine.camera, deltaTime);
     profiler.end('Moon Update');
 
     // Update water shader for animation (only Earth has water)

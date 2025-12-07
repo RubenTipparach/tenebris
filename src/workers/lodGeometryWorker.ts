@@ -124,8 +124,6 @@ interface LODWorkerConfig {
   waterSurfaceOffset: number;
   lodOffset: number;
   chunkCount: number;
-  // Camera direction from planet center for back-face culling
-  cameraDir?: Vec3;
 }
 
 // Helper to convert depth to radius (0 = bedrock, maxDepth-1 = sky)
@@ -362,24 +360,15 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
       tileInfo.set(tileIndex, { radius: displayRadius, isWater, surfaceBlockType, terrainRadius });
     }
 
-    // Back-face culling threshold: skip tiles facing away from camera
-    // Use -0.2 to include tiles slightly past the horizon (for smooth edges)
-    const cameraDir = config.cameraDir;
-    const CULL_THRESHOLD = -0.2;
+    // NOTE: Do NOT do camera-based back-face culling here - the geometry is built once
+    // but the camera moves after. THREE.js handles per-chunk frustum culling at render time
+    // via cullLODChunks() in Planet.ts
 
     // Second pass: build top faces for LOD tiles (uses cached data)
     for (const [tileIndex] of columnsMap) {
       if (nearbyTilesSet.has(tileIndex)) continue;
 
       const precomputed = cachedPrecomputed.get(tileIndex)!;
-
-      // Back-face culling: skip tiles facing away from camera
-      if (cameraDir) {
-        const nc = precomputed.normalizedCenter;
-        const dot = nc.x * cameraDir.x + nc.y * cameraDir.y + nc.z * cameraDir.z;
-        if (dot < CULL_THRESHOLD) continue;
-      }
-
       const info = tileInfo.get(tileIndex)!
       const displayRadius = info.radius;
       const surfaceBlockType = info.surfaceBlockType;
@@ -486,14 +475,6 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
       if (nearbyTilesSet.has(tileIndex)) continue;
 
       const precomputed = cachedPrecomputed.get(tileIndex)!;
-
-      // Back-face culling: skip tiles facing away from camera
-      if (cameraDir) {
-        const nc = precomputed.normalizedCenter;
-        const dot = nc.x * cameraDir.x + nc.y * cameraDir.y + nc.z * cameraDir.z;
-        if (dot < CULL_THRESHOLD) continue;
-      }
-
       const info = tileInfo.get(tileIndex)!
       const thisRadius = info.radius;
       const thisIsWater = info.isWater;
@@ -572,14 +553,6 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
       if (nearbyTilesSet.has(tileIndex)) continue;
 
       const precomputed = cachedPrecomputed.get(tileIndex)!;
-
-      // Back-face culling: skip tiles facing away from camera
-      if (cameraDir) {
-        const nc = precomputed.normalizedCenter;
-        const dot = nc.x * cameraDir.x + nc.y * cameraDir.y + nc.z * cameraDir.z;
-        if (dot < CULL_THRESHOLD) continue;
-      }
-
       const info = tileInfo.get(tileIndex);
       if (!info || !info.isWater) continue;
       const normalizedVerts = precomputed.normalizedVertices;

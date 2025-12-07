@@ -74,7 +74,6 @@ function depthToRadius(depth: number, config: WorkerConfig): number {
 }
 
 // Calculate torch light contribution at a point
-let torchLightDebugLogged = false;
 function calculateTorchLight(x: number, y: number, z: number, torches: TorchData[]): number {
   let totalLight = 0;
   for (const torch of torches) {
@@ -87,10 +86,6 @@ function calculateTorchLight(x: number, y: number, z: number, torches: TorchData
       // Quadratic falloff matching the shader formula
       const attenuation = 1.0 / (1.0 + 2.0 * dist * dist / (torch.range * torch.range));
       totalLight += attenuation * torch.intensity;
-      if (!torchLightDebugLogged) {
-        console.log(`[GeometryWorker] Torch light hit! vertex=(${x.toFixed(2)},${y.toFixed(2)},${z.toFixed(2)}), dist=${dist.toFixed(2)}, light=${totalLight.toFixed(3)}`);
-        torchLightDebugLogged = true;
-      }
     }
   }
   return Math.min(totalLight, 1.5); // Cap at 1.5 like the shader
@@ -479,14 +474,6 @@ self.onmessage = (e: MessageEvent<BuildGeometryMessage>) => {
   const { type, columns, neighborData, config } = e.data;
 
   if (type === 'buildGeometry') {
-    // Reset debug flag for each build
-    torchLightDebugLogged = false;
-    const torchCount = config.torches?.length || 0;
-    console.log(`[GeometryWorker] Received ${torchCount} torches`);
-    if (torchCount > 0) {
-      const t = config.torches![0];
-      console.log(`[GeometryWorker] First torch: pos=(${t.position.x.toFixed(2)}, ${t.position.y.toFixed(2)}, ${t.position.z.toFixed(2)}), range=${t.range}`);
-    }
     const topData = createEmptyGeometryData();
     const sideData = createEmptyGeometryData();
     const grassSideData = createEmptyGeometryData();

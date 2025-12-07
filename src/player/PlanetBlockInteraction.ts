@@ -841,6 +841,26 @@ export class PlanetBlockInteraction {
       }
     }
 
+    // After loading all torches, update torch data on all planets and trigger geometry rebuild
+    if (savedTorches.length > 0) {
+      const torchData = this.torchManager.getTorchDataForBaking();
+      for (const planet of this.planets) {
+        planet.setTorchData(torchData);
+      }
+
+      // Mark tiles near each torch as dirty so lighting is baked
+      for (const savedTorch of savedTorches) {
+        const worldPosition = new THREE.Vector3(
+          savedTorch.position.x,
+          savedTorch.position.y,
+          savedTorch.position.z
+        );
+        for (const planet of this.planets) {
+          planet.markTilesNearTorchDirty(worldPosition, PlayerConfig.TORCH_LIGHT_RANGE);
+        }
+      }
+    }
+
     console.log(`Loaded save: ${saveData.tileChanges.length} tile changes, ${savedTorches.length} torches, inventory restored`);
   }
 }

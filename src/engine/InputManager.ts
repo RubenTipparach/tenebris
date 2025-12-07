@@ -8,7 +8,7 @@ export interface InputState {
   sprint: boolean;
   crouch: boolean;  // Ctrl - for descending/jetpack down
   rollLeft: boolean;  // Q - roll left in space
-  rollRight: boolean; // E - roll right in space
+  rollRight: boolean; // R - roll right in space
   mouseX: number;
   mouseY: number;
   leftClick: boolean;
@@ -460,7 +460,7 @@ export class InputManager {
       sprint: this.keys.has('ShiftLeft') || this.keys.has('ShiftRight'),
       crouch: this.keys.has('ControlLeft') || this.keys.has('ControlRight') || this.touchCrouch,
       rollLeft: this.keys.has('KeyQ'),
-      rollRight: this.keys.has('KeyE'),
+      rollRight: this.keys.has('KeyR'),
       mouseX: this.mouseMovement.x + this.touchLookMovement.x + this.lookJoystickPosition.x * 5,
       mouseY: this.mouseMovement.y + this.touchLookMovement.y + this.lookJoystickPosition.y * 5,
       leftClick: this.mouseButtons.left || this.touchLeftClick,

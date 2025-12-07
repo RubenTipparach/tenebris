@@ -3,6 +3,8 @@ import { GoldbergPolyhedron, HexTile } from './GoldbergPolyhedron';
 import { HexBlockType, HexBlockMeshBuilder } from './HexBlock';
 import { PlayerConfig } from '../config/PlayerConfig';
 import { profiler } from '../engine/Profiler';
+import planetVert from '../shaders/planet/planet.vert?raw';
+import planetFrag from '../shaders/planet/planet.frag?raw';
 
 export interface PlanetConfig {
   texturePath?: string;  // Single texture for all surfaces (like moon)
@@ -58,7 +60,9 @@ export class Planet {
 
   // Distance-based LOD meshes (for viewing from other planets)
   private distantLODMeshes: THREE.Mesh[] = []; // Array of progressively lower-detail meshes
+  private distantLODMaterials: THREE.ShaderMaterial[] = []; // Materials for uniform updates
   private currentDistantLODLevel: number = -1; // -1 = use detailed/near LOD, 0-2 = distant LOD levels
+  private shaderTime: number = 0; // Time uniform for shader animations
 
   // Boundary walls group (fills gap between detailed terrain and LOD at render distance edge)
   private boundaryWallsGroup: THREE.Group | null = null;
@@ -91,9 +95,6 @@ export class Planet {
   // If this is > 0 but cachedNearbyTiles is empty, the LOD mesh has holes and shouldn't be shown alone
   private currentLODExcludedTileCount: number = 0;
   private pendingLODExcludedCount: number = 0; // Count being sent to worker
-
-  // Cached camera direction from planet center (for LOD back-face culling)
-  private cachedCameraDir: { x: number; y: number; z: number } = { x: 0, y: 1, z: 0 };
 
   // Pre-serialized tile data for LOD worker (static, only needs to be built once)
   private serializedTileData: Record<number, {
@@ -609,7 +610,6 @@ export class Planet {
 
     // Send to worker
     profiler.begin('Planet.workerBuild.postMessage');
-    console.log(`[Planet] Sending ${this.torchData.length} torches to worker`);
     this.geometryWorker.postMessage({
       type: 'buildGeometry',
       columns,
@@ -685,9 +685,7 @@ export class Planet {
         maxDepth: this.MAX_DEPTH,
         waterSurfaceOffset: PlayerConfig.WATER_SURFACE_OFFSET,
         lodOffset: 0.3,
-        chunkCount: this.LOD_CHUNK_COUNT,
-        // Camera direction for back-face culling (skip tiles facing away from camera)
-        cameraDir: this.cachedCameraDir
+        chunkCount: this.LOD_CHUNK_COUNT
       }
     });
     profiler.end('Planet.lodWorkerBuild.postMessage');
@@ -898,9 +896,18 @@ export class Planet {
       geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
       geometry.setIndex(indices);
 
-      // Create material that uses vertex colors
-      const material = new THREE.MeshLambertMaterial({
-        vertexColors: true,
+      // Create custom shader material for planet with day/night lighting and city lights
+      const material = new THREE.ShaderMaterial({
+        uniforms: {
+          planetCenter: { value: this.center.clone() },
+          sunDirection: { value: new THREE.Vector3(1, 0, 0) }, // Updated in update()
+          ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
+          directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
+          cityLightIntensity: { value: isSingleTexturePlanet ? 0.0 : 0.15 }, // No city lights on moon
+          time: { value: 0 }
+        },
+        vertexShader: planetVert,
+        fragmentShader: planetFrag,
         polygonOffset: true,
         polygonOffsetFactor: 1,
         polygonOffsetUnits: 1
@@ -912,6 +919,7 @@ export class Planet {
       mesh.renderOrder = -2; // Render behind everything else
       this.scene.add(mesh);
       this.distantLODMeshes.push(mesh);
+      this.distantLODMaterials.push(material);
     }
   }
 
@@ -2097,21 +2105,18 @@ export class Planet {
     return h ^ (h >> 16);
   }
 
-  public update(playerPosition: THREE.Vector3, camera: THREE.Camera): void {
+  public update(playerPosition: THREE.Vector3, camera: THREE.Camera, deltaTime?: number): void {
     profiler.begin('Planet.frustum');
     this.projScreenMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     this.frustum.setFromProjectionMatrix(this.projScreenMatrix);
     profiler.end('Planet.frustum');
 
-    // Cache camera direction from planet center for LOD back-face culling
-    const camX = camera.position.x - this.center.x;
-    const camY = camera.position.y - this.center.y;
-    const camZ = camera.position.z - this.center.z;
-    const camLen = Math.sqrt(camX * camX + camY * camY + camZ * camZ);
-    if (camLen > 0) {
-      this.cachedCameraDir.x = camX / camLen;
-      this.cachedCameraDir.y = camY / camLen;
-      this.cachedCameraDir.z = camZ / camLen;
+    // Update shader time for animations (city light twinkling)
+    if (deltaTime !== undefined) {
+      this.shaderTime += deltaTime;
+      for (const material of this.distantLODMaterials) {
+        material.uniforms.time.value = this.shaderTime;
+      }
     }
 
     const distToCenter = playerPosition.distanceTo(this.center);
@@ -2387,8 +2392,9 @@ export class Planet {
       const column = this.columns.get(tileIndex);
       if (!column) continue;
 
-      // Check frustum culling
-      if (!this.frustum.intersectsSphere(column.boundingSphere)) continue;
+      // NOTE: Do NOT use frustum culling here - the geometry should include all nearby tiles
+      // THREE.js handles per-object frustum culling at render time. Culling during geometry
+      // build causes holes when the camera rotates.
 
       this.buildColumnGeometry(column, geometryData);
       column.isDirty = false;
@@ -2595,6 +2601,10 @@ export class Planet {
 
   public setSunDirection(dir: THREE.Vector3): void {
     this.meshBuilder.setSunDirection(dir);
+    // Update distant LOD materials with sun direction
+    for (const material of this.distantLODMaterials) {
+      material.uniforms.sunDirection.value.copy(dir);
+    }
   }
 
   // Set torch data for vertex baking (called before geometry rebuild)
@@ -2611,11 +2621,6 @@ export class Planet {
       range: t.range,
       intensity: t.intensity
     }));
-    console.log(`[Planet] setTorchData: ${this.torchData.length} torches, center=(${this.center.x},${this.center.y},${this.center.z})`);
-    if (this.torchData.length > 0) {
-      const t = this.torchData[0];
-      console.log(`[Planet] First torch local pos: (${t.position.x.toFixed(2)}, ${t.position.y.toFixed(2)}, ${t.position.z.toFixed(2)}), range=${t.range}, intensity=${t.intensity}`);
-    }
   }
 
   // Mark tiles near a torch position as dirty (for torch light baking)
@@ -2624,8 +2629,6 @@ export class Planet {
     // Convert torch position to local space for consistent comparison
     const localTorchPos = torchPosition.clone().sub(this.center);
     const torchRadius = localTorchPos.length();
-
-    console.log(`[Planet] markTilesNearTorchDirty: torchPos=(${torchPosition.x.toFixed(2)},${torchPosition.y.toFixed(2)},${torchPosition.z.toFixed(2)}), localPos=(${localTorchPos.x.toFixed(2)},${localTorchPos.y.toFixed(2)},${localTorchPos.z.toFixed(2)}), radius=${torchRadius.toFixed(2)}, range=${range}`);
 
     // Find tiles within the torch light range
     // We check angular distance (tile direction vs torch direction) to handle underground torches
@@ -2648,13 +2651,10 @@ export class Planet {
       }
     }
 
-    console.log(`[Planet] markTilesNearTorchDirty: marked ${tilesMarked} tiles dirty, needsRebatch=${this.needsRebatch}`);
-
     // If any tiles were marked, trigger a full rebuild to ensure torch light is baked
     // This is necessary because a worker build might be in progress with outdated torch data
     if (tilesMarked > 0) {
       this.needsRebatch = true;
-      console.log(`[Planet] Set needsRebatch=true`);
     }
   }
 
@@ -2785,11 +2785,6 @@ export class Planet {
     }
     // Add torch light attribute from worker (or default to zeros)
     if (data.torchLight && data.torchLight.length > 0) {
-      // Check if there's any non-zero torch light
-      const nonZeroCount = data.torchLight.filter(v => v > 0).length;
-      if (nonZeroCount > 0) {
-        console.log(`[Planet] createBufferGeometry: torchLight has ${nonZeroCount} non-zero values out of ${data.torchLight.length}`);
-      }
       geometry.setAttribute('torchLight', new THREE.Float32BufferAttribute(data.torchLight, 1));
     } else {
       const vertexCount = data.positions.length / 3;
