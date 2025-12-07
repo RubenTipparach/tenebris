@@ -23,6 +23,8 @@ class PlanetGame {
   private earthClouds: CloudSystem = null!;
   private isReady: boolean = false;
   private elapsedTime: number = 0;
+  private waterUpdateTimer: number = 0;
+  private readonly WATER_UPDATE_INTERVAL = 5.0; // Update water every 5 seconds
 
   constructor() {
     const container = document.getElementById('game-container');
@@ -228,6 +230,17 @@ class PlanetGame {
 
     // Update clouds (slow rotation)
     this.earthClouds.update(deltaTime);
+
+    // Periodic water flow update (every 5 seconds)
+    this.waterUpdateTimer += deltaTime;
+    if (this.waterUpdateTimer >= this.WATER_UPDATE_INTERVAL) {
+      this.waterUpdateTimer = 0;
+      const nearbyTiles = this.earth.getVisibleTileIndices();
+      const waterFilled = this.earth.updateWaterFlow(nearbyTiles);
+      if (waterFilled > 0) {
+        console.log(`[Water update] Fixed ${waterFilled} water blocks in ${nearbyTiles.size} tiles`);
+      }
+    }
 
     // Update tree visibility:
     // - In orbit view (distant LOD): hide all trees (too far to see detail)

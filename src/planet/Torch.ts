@@ -147,9 +147,10 @@ export class HeldTorch {
 }
 
 // Placed torch in the world
+// Note: No PointLight - real-time lights cause shader recompilation spikes
+// Torch lighting is provided by vertex-baked lighting in the terrain shader
 export interface PlacedTorch {
   group: THREE.Group;
-  light: THREE.PointLight;
   tileIndex: number;
   position: THREE.Vector3;
   flickerOffset: number; // Random offset for flicker variation
@@ -170,6 +171,8 @@ export class TorchManager {
   }
 
   // Place a torch at a world position
+  // Note: No PointLight added - causes shader recompilation spikes (1800ms+)
+  // Torch lighting comes from vertex-baked lighting in terrain shader
   public placeTorch(
     worldPosition: THREE.Vector3,
     planetCenter: THREE.Vector3,
@@ -185,30 +188,16 @@ export class TorchManager {
     torchGroup.quaternion.copy(quaternion);
     torchGroup.position.copy(worldPosition);
 
-    // Create point light at flame position
-    const flameHeight = TorchConfig.HANDLE_HEIGHT + TorchConfig.HEAD_HEIGHT + TorchConfig.FLAME_HEIGHT;
-    const lightPosition = worldPosition.clone().add(upDirection.clone().multiplyScalar(flameHeight));
-
-    const pointLight = new THREE.PointLight(
-      TorchConfig.LIGHT_COLOR,
-      TorchConfig.LIGHT_INTENSITY,
-      TorchConfig.LIGHT_RANGE,
-      TorchConfig.LIGHT_DECAY
-    );
-    pointLight.position.copy(lightPosition);
-
-    // Store torch data
+    // Store torch data (no PointLight - lighting is vertex-baked)
     const torch: PlacedTorch = {
       group: torchGroup,
-      light: pointLight,
       tileIndex,
       position: worldPosition.clone(),
       flickerOffset: Math.random() * Math.PI * 2, // Random phase offset
     };
 
-    // Add to scene
+    // Add mesh to scene (no light)
     this.scene.add(torchGroup);
-    this.scene.add(pointLight);
 
     // Track by tile for visibility culling
     if (!this.torchesByTile.has(tileIndex)) {
@@ -216,9 +205,6 @@ export class TorchManager {
     }
     this.torchesByTile.get(tileIndex)!.push(torch);
     this.placedTorches.push(torch);
-
-    // Bake light into nearby terrain (request rebuild)
-    this.updateTorchLightBaking(torch);
 
     return torch;
   }
@@ -240,9 +226,8 @@ export class TorchManager {
 
       // Remove from scene
       this.scene.remove(torch.group);
-      this.scene.remove(torch.light);
 
-      // Dispose
+      // Dispose geometry and materials
       torch.group.traverse((child) => {
         if (child instanceof THREE.Mesh) {
           child.geometry.dispose();
@@ -251,11 +236,10 @@ export class TorchManager {
           }
         }
       });
-      torch.light.dispose();
     }
   }
 
-  // Update all torches (flicker animation)
+  // Update all torches (flicker animation on flame mesh only - no PointLight)
   public update(deltaTime: number): void {
     this.flickerTime += deltaTime * TorchConfig.FLICKER_SPEED;
 
@@ -265,9 +249,8 @@ export class TorchManager {
       // Flicker with unique phase offset per torch
       const t = this.flickerTime + torch.flickerOffset;
       const flicker = Math.sin(t) * Math.sin(t * 2.3) * Math.sin(t * 0.7);
-      torch.light.intensity = TorchConfig.LIGHT_INTENSITY * (1 + flicker * TorchConfig.FLICKER_AMOUNT);
 
-      // Animate flame
+      // Animate flame mesh (visual effect only - lighting is vertex-baked)
       const flame = torch.group.getObjectByName('flame');
       if (flame) {
         flame.scale.y = 1 + flicker * 0.1;
@@ -283,11 +266,6 @@ export class TorchManager {
       const visible = visibleTileIndices.has(tileIndex);
       for (const torch of tileTorches) {
         torch.group.visible = visible;
-        torch.light.visible = visible;
-        // Also set intensity to 0 when hidden to avoid light leaking
-        if (!visible) {
-          torch.light.intensity = 0;
-        }
       }
     }
   }

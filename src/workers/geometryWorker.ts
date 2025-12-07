@@ -13,7 +13,7 @@ import {
   vec3Normalize,
   vec3Negate
 } from '../shared/vec3';
-import { SKY_LIGHT_FALLOFF, MIN_SKY_LIGHT, buildWaterWallGeometry } from '../shared/geometry';
+import { SKY_LIGHT_FALLOFF, MIN_SKY_LIGHT, buildWaterWallAtDepth } from '../shared/geometry';
 
 // Torch data for vertex lighting calculation
 interface TorchData {
@@ -502,25 +502,19 @@ self.onmessage = (e: MessageEvent<BuildGeometryMessage>) => {
         oreCoalData, oreCopperData, oreIronData, oreGoldData, oreLithiumData, oreAluminumData, oreCobaltData
       );
 
-      // Generate water walls for water blocks
+      // Generate water walls for water blocks adjacent to air in neighbors
       for (let depth = 0; depth < column.blocks.length; depth++) {
         if (column.blocks[depth] === HexBlockType.WATER) {
-          // In new depth system: "above" = higher depth
-          const blockAbove = depth >= column.blocks.length - 1 ? HexBlockType.AIR : column.blocks[depth + 1];
-          if (blockAbove === HexBlockType.AIR) {
-            // This is a water surface - generate water walls
-            const outerRadius = depthToRadius(depth, config) - config.waterSurfaceOffset;
-            buildWaterWallGeometry(
-              column.tile.vertices,
-              column.tile.neighbors,
-              column.blocks,
-              neighborDataMap,
-              depth,
-              outerRadius,
-              config,
-              waterData
-            );
-          }
+          // Generate walls at each depth where water is adjacent to neighbor's air
+          buildWaterWallAtDepth(
+            column.tile.vertices,
+            column.tile.neighbors,
+            column.blocks,
+            neighborDataMap,
+            depth,
+            config,
+            waterData
+          );
         }
       }
     }

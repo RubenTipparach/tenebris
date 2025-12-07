@@ -81,6 +81,10 @@ export class PlanetBlockInteraction {
   private draggedSlotIndex: number | null = null;
   private dragGhost: HTMLElement | null = null;
 
+  // Selection label state
+  private selectionLabelTimeout: number | null = null;
+  private selectionLabelElement: HTMLElement | null = null;
+
   constructor(planets: Planet[], player: PlanetPlayer, scene: THREE.Scene) {
     this.planets = planets;
     this.player = player;
@@ -112,6 +116,7 @@ export class PlanetBlockInteraction {
     this.setupBlockSelection();
     this.setupMiningUI();
     this.setupHotbarDragDrop();
+    this.selectionLabelElement = document.getElementById('hotbar-selection-label');
     this.updateHotbarUI();
   }
 
@@ -145,6 +150,7 @@ export class PlanetBlockInteraction {
         this.inventory.setSelectedSlot(index);
         this.updateHotbarUI();
         this.updateBlockTypeUI();
+        this.showSelectionLabel();
       }, { passive: false });
     });
   }
@@ -262,6 +268,7 @@ export class PlanetBlockInteraction {
         const slot = hotbar[index];
         const img = slotEl.querySelector('img') as HTMLImageElement;
         let countEl = slotEl.querySelector('.item-count') as HTMLElement;
+        let tooltipEl = slotEl.querySelector('.item-tooltip') as HTMLElement;
 
         if (slot.itemType !== ItemType.NONE && slot.quantity > 0) {
           const itemData = ITEM_DATA[slot.itemType];
@@ -277,15 +284,55 @@ export class PlanetBlockInteraction {
             slotEl.appendChild(countEl);
           }
           countEl.textContent = slot.quantity > 1 ? slot.quantity.toString() : '';
+
+          // Create or update tooltip
+          if (!tooltipEl) {
+            tooltipEl = document.createElement('span');
+            tooltipEl.className = 'item-tooltip';
+            slotEl.appendChild(tooltipEl);
+          }
+          tooltipEl.textContent = itemData.name;
         } else {
           if (img) img.style.display = 'none';
           if (countEl) countEl.textContent = '';
+          // Remove tooltip for empty slots
+          if (tooltipEl) tooltipEl.remove();
         }
 
         // Update selection
         slotEl.classList.toggle('selected', index === this.inventory.getSelectedSlot());
       }
     });
+  }
+
+  private showSelectionLabel(): void {
+    const slot = this.inventory.getSelectedItem();
+    if (!this.selectionLabelElement) return;
+
+    // Clear any existing timeout
+    if (this.selectionLabelTimeout !== null) {
+      window.clearTimeout(this.selectionLabelTimeout);
+      this.selectionLabelTimeout = null;
+    }
+
+    // Set the label text
+    if (slot.itemType !== ItemType.NONE && slot.quantity > 0) {
+      const itemData = ITEM_DATA[slot.itemType];
+      this.selectionLabelElement.textContent = itemData.name;
+    } else {
+      this.selectionLabelElement.textContent = 'Empty';
+    }
+
+    // Show the label
+    this.selectionLabelElement.classList.add('visible');
+
+    // Hide after 5 seconds
+    this.selectionLabelTimeout = window.setTimeout(() => {
+      if (this.selectionLabelElement) {
+        this.selectionLabelElement.classList.remove('visible');
+      }
+      this.selectionLabelTimeout = null;
+    }, 5000);
   }
 
   private createHighlightMesh(): void {
@@ -360,6 +407,7 @@ export class PlanetBlockInteraction {
         this.inventory.setSelectedSlot(digit - 1);
         this.updateHotbarUI();
         this.updateBlockTypeUI();
+        this.showSelectionLabel();
       }
     });
   }
@@ -392,6 +440,7 @@ export class PlanetBlockInteraction {
       this.inventory.setSelectedSlot(newSlot);
       this.updateHotbarUI();
       this.updateBlockTypeUI();
+      this.showSelectionLabel();
     }
 
     // Update held torch visibility based on selected item
@@ -633,12 +682,65 @@ export class PlanetBlockInteraction {
       this.saveInventory();
     }
 
-    // Remove block from world
-    planet.setBlock(tileIndex, depth, HexBlockType.AIR);
-
     // Save tile change
     const planetId = this.getPlanetId(planet);
-    gameStorage.saveTileChange(planetId, tileIndex, depth, HexBlockType.AIR);
+
+    // Check if water can flow into this space from above or from neighbors
+    let hasWaterSource = false;
+    const maxDepth = planet.getMaxDepth();
+
+    // First check: search upward in same column for water with clear path
+    for (let d = depth + 1; d < maxDepth; d++) {
+      const blockAtDepth = planet.getBlock(tileIndex, d);
+      if (blockAtDepth === HexBlockType.WATER) {
+        hasWaterSource = true;
+        break;
+      } else if (blockAtDepth !== HexBlockType.AIR) {
+        // Hit solid block before finding water - can't flow from above
+        break;
+      }
+    }
+
+    // Second check: if no water above, check neighboring tiles for water at same depth or above
+    // Water flows horizontally from neighbors if they have water at this depth level
+    if (!hasWaterSource) {
+      const neighbors = planet.getTileNeighbors(tileIndex);
+      for (const neighborIndex of neighbors) {
+        // Check if neighbor has water at the broken block's depth
+        const neighborBlock = planet.getBlock(neighborIndex, depth);
+        if (neighborBlock === HexBlockType.WATER) {
+          hasWaterSource = true;
+          break;
+        }
+        // Also check if neighbor has water directly above (at depth + 1) that could flow over
+        const neighborBlockAbove = planet.getBlock(neighborIndex, depth + 1);
+        if (neighborBlockAbove === HexBlockType.WATER) {
+          hasWaterSource = true;
+          break;
+        }
+      }
+    }
+
+    const newBlockType = hasWaterSource ? HexBlockType.WATER : HexBlockType.AIR;
+
+    // Remove block from world (or fill with water if water above)
+    planet.setBlock(tileIndex, depth, newBlockType);
+    gameStorage.saveTileChange(planetId, tileIndex, depth, newBlockType);
+
+    // If water flowed in, cascade it downward through any air blocks below
+    if (newBlockType === HexBlockType.WATER) {
+      for (let d = depth - 1; d > 0; d--) {
+        const blockBelow = planet.getBlock(tileIndex, d);
+        if (blockBelow === HexBlockType.AIR) {
+          // Air block - water flows down into it
+          planet.setBlock(tileIndex, d, HexBlockType.WATER);
+          gameStorage.saveTileChange(planetId, tileIndex, d, HexBlockType.WATER);
+        } else {
+          // Hit solid ground or another block type, stop cascading
+          break;
+        }
+      }
+    }
   }
 
   private placeBlock(planet: Planet, tileIndex: number, depth: number): void {
@@ -697,17 +799,15 @@ export class PlanetBlockInteraction {
     if (!tile) return;
 
     // depth is the air block position - torch should sit on the solid block below it
-    // depthToRadius(d) returns the TOP of block at depth d
-    // So the top of the solid block (depth-1) is depthToRadius(depth-1)
-    // But we can also compute it as depthToRadius(depth) - BLOCK_HEIGHT (bottom of air block)
     const solidBlockTopRadius = planet.depthToRadius(depth) - planet.getBlockHeight();
     const tileCenter = tile.center.clone().normalize();
     const worldPosition = tileCenter.multiplyScalar(solidBlockTopRadius).add(planet.center);
 
     // Use item from inventory
     if (this.inventory.useSelectedItem()) {
-      // Place the torch
+      // Place the torch mesh (no PointLight - causes shader recompilation spikes)
       this.torchManager.placeTorch(worldPosition, planet.center, tileIndex);
+
       this.updateHotbarUI();
       this.saveInventory();
 
@@ -719,14 +819,12 @@ export class PlanetBlockInteraction {
         z: worldPosition.z
       });
 
-      // Update torch data on all planets BEFORE marking tiles dirty
-      // This ensures the new torch light is included in the geometry rebuild
+      // Update torch data for geometry worker (needed for vertex-baked lighting)
       const torchData = this.torchManager.getTorchDataForBaking();
-      for (const p of this.planets) {
-        p.setTorchData(torchData);
-      }
+      planet.setTorchData(torchData);
 
-      // Mark nearby tiles dirty for torch light vertex baking
+      // Trigger local mesh rebuild for vertex-baked torch lighting
+      // Uses same path as block placement - fast incremental rebuild
       planet.markTilesNearTorchDirty(worldPosition, PlayerConfig.TORCH_LIGHT_RANGE);
     }
   }
@@ -744,6 +842,9 @@ export class PlanetBlockInteraction {
       const torch = placedTorches.find(t => t.group === parent);
 
       if (torch) {
+        // Save position before removing (needed for mesh rebuild)
+        const torchPosition = torch.position.clone();
+
         // Remove torch from save before removing from scene
         gameStorage.removeTorch({
           x: torch.position.x,
@@ -751,28 +852,23 @@ export class PlanetBlockInteraction {
           z: torch.position.z
         });
 
-        // Store torch position before removal
-        const torchPosition = torch.position.clone();
-
-        // Remove the torch first
+        // Remove the torch mesh
         this.torchManager.removeTorch(torch);
-
-        // Update torch data on all planets BEFORE marking tiles dirty
-        // This ensures the removed torch light is excluded from the geometry rebuild
-        const torchData = this.torchManager.getTorchDataForBaking();
-        for (const planet of this.planets) {
-          planet.setTorchData(torchData);
-        }
-
-        // Mark nearby tiles dirty for torch light vertex baking (on all planets)
-        for (const planet of this.planets) {
-          planet.markTilesNearTorchDirty(torchPosition, PlayerConfig.TORCH_LIGHT_RANGE);
-        }
 
         // Give the torch back to the player
         this.inventory.addItem(ItemType.TORCH, 1);
         this.updateHotbarUI();
         this.saveInventory();
+
+        // Update torch data for geometry worker (needed for vertex-baked lighting)
+        const torchData = this.torchManager.getTorchDataForBaking();
+
+        // Trigger local mesh rebuild for vertex-baked lighting update
+        // Uses same path as block placement - fast incremental rebuild
+        for (const planet of this.planets) {
+          planet.setTorchData(torchData);
+          planet.markTilesNearTorchDirty(torchPosition, PlayerConfig.TORCH_LIGHT_RANGE);
+        }
       }
     }
   }

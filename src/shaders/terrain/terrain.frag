@@ -48,10 +48,11 @@ void main() {
 
   // Apply vertex-baked torch light with warm orange color
   // vTorchLight is pre-calculated per vertex based on nearby torches
+  // Calculate torch contribution separately so it's not dimmed by depth
   vec3 torchContribution = texColor.rgb * TORCH_LIGHT_COLOR * vTorchLight;
-  finalColor += torchContribution;
 
   // Apply underwater effects if terrain is below water surface
+  // Apply BEFORE adding torch light so torches override depth dimming
   if (vWaterDepth > 0.0) {
     // Dim the terrain based on water depth (light absorption)
     float depthDimFactor = exp(-vWaterDepth * underwaterDimming);
@@ -61,6 +62,9 @@ void main() {
     float tintFactor = 1.0 - depthDimFactor;
     finalColor = mix(finalColor, underwaterFogColor * depthDimFactor, tintFactor * 0.5);
   }
+
+  // Add torch light AFTER depth dimming so torches illuminate underwater areas
+  finalColor += torchContribution;
 
   // Apply underwater fog when camera is underwater
   if (isUnderwater > 0.5) {

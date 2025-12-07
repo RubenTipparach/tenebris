@@ -447,6 +447,7 @@ export class CraftingSystem {
   private updateSlotElement(slotEl: HTMLElement, slot: InventorySlot): void {
     const img = slotEl.querySelector('img') as HTMLImageElement;
     const countEl = slotEl.querySelector('.slot-count') as HTMLElement;
+    let tooltipEl = slotEl.querySelector('.item-tooltip') as HTMLElement;
 
     if (slot.itemType !== ItemType.NONE && slot.quantity > 0) {
       const itemData = ITEM_DATA[slot.itemType];
@@ -457,9 +458,18 @@ export class CraftingSystem {
       if (countEl) {
         countEl.textContent = slot.quantity > 1 ? slot.quantity.toString() : '';
       }
+      // Create or update tooltip
+      if (!tooltipEl) {
+        tooltipEl = document.createElement('span');
+        tooltipEl.className = 'item-tooltip';
+        slotEl.appendChild(tooltipEl);
+      }
+      tooltipEl.textContent = itemData.name;
     } else {
       if (img) img.style.display = 'none';
       if (countEl) countEl.textContent = '';
+      // Remove tooltip for empty slots
+      if (tooltipEl) tooltipEl.remove();
     }
   }
 

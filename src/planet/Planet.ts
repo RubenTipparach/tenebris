@@ -605,6 +605,11 @@ export class Planet {
 
     this.isWorkerBuildActive = true;
     this.needsRebatch = false;
+
+    // Filter torches to only those that can affect the nearby tiles
+    // This reduces O(vertices × torches) computation in worker
+    const relevantTorches = this.filterRelevantTorches(columns);
+
     profiler.end('Planet.workerBuild.serialize');
 
     // Send to worker
@@ -626,10 +631,51 @@ export class Planet {
           z: this.sunDirection.z
         },
         uvScale: PlayerConfig.TERRAIN_UV_SCALE,
-        torches: this.torchData
+        torches: relevantTorches
       }
     });
     profiler.end('Planet.workerBuild.postMessage');
+  }
+
+  // Filter torches to only those within range of the given columns
+  private filterRelevantTorches(columns: Array<{ tile: { center: { x: number; y: number; z: number } } }>): typeof this.torchData {
+    if (this.torchData.length === 0 || columns.length === 0) {
+      return this.torchData;
+    }
+
+    // Compute bounding sphere center of all columns
+    let cx = 0, cy = 0, cz = 0;
+    for (const col of columns) {
+      cx += col.tile.center.x;
+      cy += col.tile.center.y;
+      cz += col.tile.center.z;
+    }
+    cx /= columns.length;
+    cy /= columns.length;
+    cz /= columns.length;
+
+    // Find max distance from center to any column
+    let maxDistSq = 0;
+    for (const col of columns) {
+      const dx = col.tile.center.x - cx;
+      const dy = col.tile.center.y - cy;
+      const dz = col.tile.center.z - cz;
+      const distSq = dx * dx + dy * dy + dz * dz;
+      if (distSq > maxDistSq) maxDistSq = distSq;
+    }
+    const boundingRadius = Math.sqrt(maxDistSq);
+
+    // Filter torches: include if within boundingRadius + torchRange + buffer
+    const maxTorchRange = PlayerConfig.TORCH_LIGHT_RANGE + 2; // Add buffer for vertex positions
+    const cullRadius = boundingRadius + maxTorchRange;
+    const cullRadiusSq = cullRadius * cullRadius;
+
+    return this.torchData.filter(torch => {
+      const dx = torch.position.x - cx;
+      const dy = torch.position.y - cy;
+      const dz = torch.position.z - cz;
+      return dx * dx + dy * dy + dz * dz <= cullRadiusSq;
+    });
   }
 
   private startLODWorkerBuild(): void {
@@ -1783,31 +1829,128 @@ export class Planet {
 
   private fillOceans(): void {
     // Fill all tiles below sea level with water (creates oceans only)
-    // No inland lakes for now - will add when we have proper water flow
+    // Only fill CONTINUOUS air from sky down to sea level - don't fill enclosed caves
     // Depth system: 0 = bedrock, MAX_DEPTH-1 = sky
     const SEA_LEVEL_DEPTH = this.MAX_DEPTH - 1 - this.SEA_LEVEL;
 
     for (const [_, column] of this.columns) {
-      // Find surface depth (first non-air block from top)
-      let surfaceDepth = 0;
+      // Scan from sky (top) downward, filling air with water until we hit solid or reach sea level
+      // This ensures we only fill open ocean, not enclosed caves
       for (let d = column.blocks.length - 1; d >= 0; d--) {
-        if (column.blocks[d] !== HexBlockType.AIR) {
-          surfaceDepth = d;
+        const block = column.blocks[d];
+
+        if (block === HexBlockType.AIR) {
+          // Air block - fill with water if at or below sea level
+          if (d <= SEA_LEVEL_DEPTH) {
+            column.blocks[d] = HexBlockType.WATER;
+            column.isDirty = true;
+          }
+          // Continue scanning downward (air doesn't stop the scan)
+        } else {
+          // Hit solid block - stop filling this column
+          // Any air below this is a cave, not open ocean
           break;
         }
       }
+    }
 
-      // Only fill water below sea level (ocean basins)
-      // Surface is below sea level if surfaceDepth < SEA_LEVEL_DEPTH
-      if (surfaceDepth < SEA_LEVEL_DEPTH) {
-        for (let d = surfaceDepth + 1; d <= SEA_LEVEL_DEPTH; d++) {
-          if (column.blocks[d] === HexBlockType.AIR) {
+    // After filling oceans, cascade water down through air in each column
+    this.cascadeWaterInColumns();
+  }
+
+  // For each column, if there's water above air, the air should become water
+  // This handles underwater caves where water should flow down through air pockets
+  private cascadeWaterInColumns(): void {
+    let waterFilledCount = 0;
+
+    for (const [_, column] of this.columns) {
+      // Scan from top to bottom - if we see water, any air below should become water
+      // until we hit solid ground
+      let waterAbove = false;
+
+      for (let d = column.blocks.length - 1; d >= 0; d--) {
+        const block = column.blocks[d];
+
+        if (block === HexBlockType.WATER) {
+          waterAbove = true;
+        } else if (block === HexBlockType.AIR) {
+          if (waterAbove) {
+            // Air below water - fill with water
             column.blocks[d] = HexBlockType.WATER;
+            column.isDirty = true;
+            waterFilledCount++;
           }
+          // Air doesn't stop water flow, continue checking below
+        } else {
+          // Hit solid block - reset waterAbove since water can't flow through solid
+          waterAbove = false;
         }
-        column.isDirty = true;
       }
     }
+
+    if (waterFilledCount > 0) {
+      console.log(`[Water cascade] Filled ${waterFilledCount} air blocks below water in columns`);
+    }
+  }
+
+  // Periodic water update - fixes water flow issues in nearby tiles
+  // Call this every few seconds to ensure water properly cascades
+  // Also removes trapped water (water between solid blocks with no sky access)
+  public updateWaterFlow(nearbyTiles: Set<number>): number {
+    let waterChangedCount = 0;
+
+    for (const tileIndex of nearbyTiles) {
+      const column = this.columns.get(tileIndex);
+      if (!column) continue;
+
+      // Two-pass algorithm:
+      // Pass 1: Scan from top to find sky access and remove trapped water
+      // Pass 2: Cascade water down through air below valid water
+
+      // Pass 1: Remove trapped water (water below solid blocks with no sky access)
+      let hasSkyAccess = true; // Start with sky access from the top
+
+      for (let d = column.blocks.length - 1; d >= 0; d--) {
+        const block = column.blocks[d];
+
+        if (block === HexBlockType.WATER) {
+          if (!hasSkyAccess) {
+            // Trapped water - no connection to sky, remove it
+            column.blocks[d] = HexBlockType.AIR;
+            column.isDirty = true;
+            waterChangedCount++;
+          }
+          // Water doesn't block sky access for blocks below (water is transparent)
+        } else if (block === HexBlockType.AIR) {
+          // Air doesn't affect sky access, continue
+        } else {
+          // Hit solid block - blocks below no longer have sky access
+          hasSkyAccess = false;
+        }
+      }
+
+      // Pass 2: Cascade water down through air (fill air below valid water)
+      let waterAbove = false;
+      for (let d = column.blocks.length - 1; d >= 0; d--) {
+        const block = column.blocks[d];
+
+        if (block === HexBlockType.WATER) {
+          waterAbove = true;
+        } else if (block === HexBlockType.AIR) {
+          if (waterAbove) {
+            // Air below water - fill with water
+            column.blocks[d] = HexBlockType.WATER;
+            column.isDirty = true;
+            waterChangedCount++;
+          }
+        } else {
+          // Hit solid block - water can't flow through
+          waterAbove = false;
+        }
+      }
+    }
+
+    return waterChangedCount;
   }
 
   public updateBoundingSpheres(): void {
@@ -2263,6 +2406,7 @@ export class Planet {
 
         // Need to rebuild both batched meshes AND LOD
         // Batched meshes need new tiles, LOD needs to exclude them
+        console.log('[needsRebatch=true] cachedNearbyTiles changed');
         this.needsRebatch = true;
         this.needsLODRebuild = true;
 
@@ -2285,6 +2429,7 @@ export class Planet {
     // Full rebuild batched geometry if needed (tile set changed or incremental complete)
     // Use worker if available, otherwise fall back to main thread
     if (this.needsRebatch && !this.isWorkerBuildActive) {
+      console.log('[startWorkerBuild] needsRebatch was true, starting worker build');
       if (this.geometryWorker) {
         profiler.begin('Planet.startWorkerBuild');
         this.startWorkerBuild();
@@ -2351,6 +2496,7 @@ export class Planet {
     // Check if incremental rebuild is complete
     if (this.pendingTilesToAdd.length === 0 && this.pendingTilesToRemove.length === 0) {
       this.isIncrementalRebuildActive = false;
+      console.log('[needsRebatch=true] incremental rebuild complete');
       this.needsRebatch = true; // Trigger final mesh rebuild
     }
   }
@@ -2647,36 +2793,27 @@ export class Planet {
 
   // Mark tiles near a torch position as dirty (for torch light baking)
   // Call this when a torch is placed or removed
-  public markTilesNearTorchDirty(torchPosition: THREE.Vector3, range: number): void {
-    // Convert torch position to local space for consistent comparison
-    const localTorchPos = torchPosition.clone().sub(this.center);
-    const torchRadius = localTorchPos.length();
+  // Triggers incremental rebuild like block placement (~15-50ms instead of 1200ms full rebuild)
+  public markTilesNearTorchDirty(torchPosition: THREE.Vector3, _range: number): void {
+    // Find the tile at the torch position
+    const torchTile = this.getTileAtPoint(torchPosition);
+    if (!torchTile) return;
 
-    // Find tiles within the torch light range
-    // We check angular distance (tile direction vs torch direction) to handle underground torches
-    let tilesMarked = 0;
-    for (const [tileIndex, column] of this.columns) {
-      // Get tile direction (normalized)
-      const tileDir = column.tile.center.clone().normalize();
+    // Mark torch tile and immediate neighbors dirty (same as block placement)
+    // This triggers a local rebuild for vertex-baked torch lighting
+    const column = this.columns.get(torchTile.index);
+    if (column && this.cachedNearbyTiles.has(torchTile.index)) {
+      column.isDirty = true;
+      this.queueDirtyColumnRebuild(torchTile.index);
 
-      // Scale tile direction to torch's radius for proper distance comparison
-      const tileAtTorchRadius = tileDir.multiplyScalar(torchRadius);
-
-      // Calculate distance in 3D at the same radial distance
-      const distance = tileAtTorchRadius.distanceTo(localTorchPos);
-
-      // Use a generous buffer since torch light can reach across depths
-      if (distance < range + 4) {
-        column.isDirty = true;
-        this.queueDirtyColumnRebuild(tileIndex);
-        tilesMarked++;
+      // Also mark and queue neighbors for proper light falloff
+      for (const neighborIndex of column.tile.neighbors) {
+        const neighbor = this.columns.get(neighborIndex);
+        if (neighbor && this.cachedNearbyTiles.has(neighborIndex)) {
+          neighbor.isDirty = true;
+          this.queueDirtyColumnRebuild(neighborIndex);
+        }
       }
-    }
-
-    // If any tiles were marked, trigger a full rebuild to ensure torch light is baked
-    // This is necessary because a worker build might be in progress with outdated torch data
-    if (tilesMarked > 0) {
-      this.needsRebatch = true;
     }
   }
 
@@ -3025,65 +3162,22 @@ export class Planet {
     this.dirtyColumnsQueue.add(tileIndex);
   }
 
-  // Rebuild only the dirty columns - much faster than full rebatch
+  // Process dirty columns - they will be included in the next worker build
+  // This does NOT trigger an immediate full rebuild to avoid 1000ms+ GPU upload spikes
   private rebuildDirtyColumns(): void {
     if (!this.batchedMeshGroup || this.dirtyColumnsQueue.size === 0) return;
 
-    // For small number of dirty columns, do incremental rebuild
-    // For large changes (e.g., water flow affecting many tiles), fall back to full rebuild
-    if (this.dirtyColumnsQueue.size > 20) {
-      this.needsRebatch = true;
-      this.dirtyColumnsQueue.clear();
+    // Skip if worker is already building - keep dirty queue for next cycle
+    if (this.isWorkerBuildActive) {
       return;
     }
 
-    // Full rebuild but only process tiles that need it
-    // We still need to rebuild all meshes because Three.js BufferGeometry
-    // doesn't support partial updates efficiently
-    // However, we mark clean tiles to skip geometry generation
-
-    // Dispose old meshes
-    while (this.batchedMeshGroup.children.length > 0) {
-      const child = this.batchedMeshGroup.children[0] as THREE.Mesh;
-      if (child.geometry) child.geometry.dispose();
-      this.batchedMeshGroup.remove(child);
+    // Trigger a rebuild to pick up the dirty columns
+    if (this.geometryWorker) {
+      console.log('[needsRebatch=true] rebuildDirtyColumns');
+      this.needsRebatch = true;
+      this.dirtyColumnsQueue.clear();
     }
-
-    // Create geometry data for all block types
-    const geometryData: Record<string, GeometryData> = {};
-    for (const mat of this.BLOCK_MATERIALS) {
-      geometryData[mat.key] = createEmptyGeometryData();
-    }
-
-    for (const tileIndex of this.cachedNearbyTiles) {
-      const column = this.columns.get(tileIndex);
-      if (!column) continue;
-
-      // Skip frustum culling for dirty rebuild - we need consistent geometry
-      this.buildColumnGeometry(column, geometryData);
-      column.isDirty = false;
-    }
-
-    // Create meshes from batched geometry
-    for (const mat of this.BLOCK_MATERIALS) {
-      const data = geometryData[mat.key];
-      if (data.positions.length > 0) {
-        const geom = this.createBufferGeometry(data);
-        const mesh = new THREE.Mesh(geom, mat.getMaterial());
-        if (mat.renderOrder !== undefined) {
-          mesh.renderOrder = mat.renderOrder;
-        }
-        this.batchedMeshGroup.add(mesh);
-      }
-    }
-
-    // Schedule water boundary walls rebuild (deferred to avoid frame spike)
-    const hasWater = this.config.hasWater !== false && !this.config.texturePath;
-    if (hasWater) {
-      this.needsWaterWallsRebuild = true;
-    }
-
-    this.dirtyColumnsQueue.clear();
   }
 
   // Extract water boundary wall generation to reusable method
@@ -3393,6 +3487,12 @@ export class Planet {
     return this.polyhedron.tiles[index] || null;
   }
 
+  // Get neighbor tile indices for a given tile
+  public getTileNeighbors(tileIndex: number): number[] {
+    const tile = this.polyhedron.tiles[tileIndex];
+    return tile ? tile.neighbors : [];
+  }
+
   // Get block height (BLOCK_HEIGHT constant)
   public getBlockHeight(): number {
     return this.BLOCK_HEIGHT;
@@ -3446,21 +3546,15 @@ export class Planet {
     const column = this.columns.get(tile.index);
     if (!column) return false;
 
-    // Find water surface (topmost water block, searching from top down)
-    let waterSurfaceDepth = -1;
-    for (let d = column.blocks.length - 1; d >= 0; d--) {
-      if (column.blocks[d] === HexBlockType.WATER) {
-        waterSurfaceDepth = d;
-        break;
-      }
+    const playerDepth = this.getDepthAtPoint(position);
+
+    // Check if the block at the player's depth is actually water
+    // This properly handles air pockets below water (caves under the ocean)
+    if (playerDepth >= 0 && playerDepth < column.blocks.length) {
+      return column.blocks[playerDepth] === HexBlockType.WATER;
     }
 
-    if (waterSurfaceDepth < 0) return false;
-
-    const playerDepth = this.getDepthAtPoint(position);
-    // Player is in water if their depth is AT or BELOW water surface
-    // With depth 0 = bedrock, lower depth = deeper underwater
-    return playerDepth <= waterSurfaceDepth;
+    return false;
   }
 
   public getWaterDepth(position: THREE.Vector3): number {
@@ -3472,7 +3566,15 @@ export class Planet {
 
     const currentDepth = this.getDepthAtPoint(position);
 
-    // Find water surface (topmost water block, searching from top down)
+    // First check: is the player actually in water at their current depth?
+    // If they're in an air pocket, return 0 (not underwater)
+    if (currentDepth >= 0 && currentDepth < column.blocks.length) {
+      if (column.blocks[currentDepth] !== HexBlockType.WATER) {
+        return 0; // In an air pocket, not underwater
+      }
+    }
+
+    // Find water surface above player (topmost water block, searching from top down)
     let waterSurfaceDepth = -1;
     for (let d = column.blocks.length - 1; d >= 0; d--) {
       if (column.blocks[d] === HexBlockType.WATER) {
@@ -3634,5 +3736,14 @@ export class Planet {
   // Trees should be hidden when in orbit view
   public isInOrbitView(): boolean {
     return this.currentDistantLODLevel >= 0;
+  }
+
+  // Debug helpers to check rebuild state
+  public isIncrementalActive(): boolean {
+    return this.isIncrementalRebuildActive;
+  }
+
+  public getNeedsRebatch(): boolean {
+    return this.needsRebatch;
   }
 }

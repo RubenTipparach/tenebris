@@ -268,6 +268,111 @@ export interface WaterWallConfig {
   waterSurfaceOffset: number;
 }
 
+// Build water wall for a single depth level where this tile has water adjacent to neighbor's air
+// This is called for every water block to create walls where water meets air horizontally
+export function buildWaterWallAtDepth(
+  tileVertices: Vec3[],
+  tileNeighbors: number[],
+  ownBlocks: number[],
+  neighborBlocksMap: Map<number, { blocks: number[]; vertices: Vec3[] }>,
+  depth: number,
+  config: WaterWallConfig,
+  waterData: GeometryData
+): void {
+  // Only process if this tile has water at this depth
+  if (ownBlocks[depth] !== HexBlockType.WATER) return;
+
+  const numSides = tileVertices.length;
+  const edgeThreshold = 0.001;
+
+  // Check each edge
+  for (let i = 0; i < numSides; i++) {
+    const next = (i + 1) % numSides;
+    const edgeV1 = tileVertices[i];
+    const edgeV2 = tileVertices[next];
+
+    // Find which neighbor shares this edge
+    let neighborData: { blocks: number[]; vertices: Vec3[] } | undefined;
+    for (const neighborIndex of tileNeighbors) {
+      const candidate = neighborBlocksMap.get(neighborIndex);
+      if (!candidate) continue;
+
+      // Check if this neighbor has both edge vertices
+      let hasV1 = false;
+      let hasV2 = false;
+      for (const nv of candidate.vertices) {
+        if (vec3Distance(nv, edgeV1) < edgeThreshold) hasV1 = true;
+        if (vec3Distance(nv, edgeV2) < edgeThreshold) hasV2 = true;
+      }
+
+      if (hasV1 && hasV2) {
+        neighborData = candidate;
+        break;
+      }
+    }
+
+    if (!neighborData) continue;
+
+    // Check if neighbor has air at this depth - if not, no wall needed on this edge
+    if (neighborData.blocks[depth] !== HexBlockType.AIR) continue;
+
+    // Check if this is the water surface (no water above) or underwater (water above)
+    const blockAbove = depth < ownBlocks.length - 1 ? ownBlocks[depth + 1] : HexBlockType.AIR;
+    const isWaterSurface = blockAbove !== HexBlockType.WATER;
+
+    // Wall spans one block height
+    // Top of wall: top of this block's space
+    // - If water surface: subtract waterSurfaceOffset (water sits slightly below block top)
+    // - If underwater: use full block top (connects to bottom of block above)
+    const blockTopRadius = config.radius - (config.maxDepth - 1 - depth) * config.blockHeight;
+    const wallTopRadius = isWaterSurface ? blockTopRadius - config.waterSurfaceOffset : blockTopRadius;
+
+    // Bottom of wall: bottom of this block's space
+    const wallBottomRadius = config.radius - (config.maxDepth - depth) * config.blockHeight;
+
+    if (wallBottomRadius >= wallTopRadius) continue;
+
+    // Scale vertices for top and bottom of wall
+    const dir1 = vec3Normalize(edgeV1);
+    const dir2 = vec3Normalize(edgeV2);
+
+    const topV1 = vec3Scale(dir1, wallTopRadius);
+    const topV2 = vec3Scale(dir2, wallTopRadius);
+    const bottomV1 = vec3Scale(dir1, wallBottomRadius);
+    const bottomV2 = vec3Scale(dir2, wallBottomRadius);
+
+    // Calculate side normal
+    const edge1 = vec3Sub(bottomV2, bottomV1);
+    const edge2 = vec3Sub(topV1, bottomV1);
+    const sideNormal = vec3Normalize(vec3Cross(edge1, edge2));
+
+    const baseIdx = waterData.vertexOffset;
+
+    // Four vertices for this side face
+    waterData.positions.push(
+      bottomV1.x, bottomV1.y, bottomV1.z,
+      bottomV2.x, bottomV2.y, bottomV2.z,
+      topV2.x, topV2.y, topV2.z,
+      topV1.x, topV1.y, topV1.z
+    );
+
+    for (let j = 0; j < 4; j++) {
+      waterData.normals.push(sideNormal.x, sideNormal.y, sideNormal.z);
+    }
+
+    waterData.uvs.push(0, 0, 1, 0, 1, 1, 0, 1);
+    waterData.skyLight.push(1.0, 1.0, 1.0, 1.0);
+    waterData.colors.push(1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1);
+
+    waterData.indices.push(
+      baseIdx, baseIdx + 1, baseIdx + 2,
+      baseIdx, baseIdx + 2, baseIdx + 3
+    );
+
+    waterData.vertexOffset += 4;
+  }
+}
+
 // Build water side faces that extend from water surface down to exposed air
 // This creates walls where water meets air gaps in neighboring columns
 // Pure function version for use in workers
