@@ -751,13 +751,25 @@ export class PlanetBlockInteraction {
           z: torch.position.z
         });
 
-        // Mark nearby tiles dirty for torch light vertex baking (on all planets)
+        // Store torch position before removal
+        const torchPosition = torch.position.clone();
+
+        // Remove the torch first
+        this.torchManager.removeTorch(torch);
+
+        // Update torch data on all planets BEFORE marking tiles dirty
+        // This ensures the removed torch light is excluded from the geometry rebuild
+        const torchData = this.torchManager.getTorchDataForBaking();
         for (const planet of this.planets) {
-          planet.markTilesNearTorchDirty(torch.position, PlayerConfig.TORCH_LIGHT_RANGE);
+          planet.setTorchData(torchData);
         }
 
-        // Remove the torch and give it back to the player
-        this.torchManager.removeTorch(torch);
+        // Mark nearby tiles dirty for torch light vertex baking (on all planets)
+        for (const planet of this.planets) {
+          planet.markTilesNearTorchDirty(torchPosition, PlayerConfig.TORCH_LIGHT_RANGE);
+        }
+
+        // Give the torch back to the player
         this.inventory.addItem(ItemType.TORCH, 1);
         this.updateHotbarUI();
         this.saveInventory();

@@ -193,14 +193,22 @@ class PlanetGame {
     // Update underwater fog based on player water state
     this.engine.setUnderwater(this.player.getIsInWater());
 
-    // Update torch data BEFORE planet updates so newly placed torches
-    // have their light baked into geometry immediately when tiles rebuild
-    const torchManager = this.blockInteraction.getTorchManager();
-    const torchData = torchManager.getTorchDataForBaking();
-    this.earth.setTorchData(torchData);
-    this.moon.setTorchData(torchData);
+    // Update block interaction FIRST - this handles torch placement/removal
+    // which marks tiles dirty and updates torch data on planets immediately
+    profiler.begin('Block Interaction');
+    const input = this.inputManager.getState();
+    const isGameActive = this.inputManager.isLocked();
+    const wheelDelta = this.inputManager.getWheelDelta();
+    this.blockInteraction.update(
+      deltaTime,
+      isGameActive && input.leftClick,
+      isGameActive && input.rightClick,
+      isGameActive ? wheelDelta : 0
+    );
+    profiler.end('Block Interaction');
 
     // Update both planets (rebuild dirty meshes near player) with camera for frustum culling
+    // This comes AFTER block interaction so torch light changes are immediately baked
     profiler.begin('Earth Update');
     this.earth.update(this.player.position, this.engine.camera);
     profiler.end('Earth Update');
@@ -231,19 +239,6 @@ class PlanetGame {
     } else {
       this.treeManager.setAllVisible(true);
     }
-
-    // Update block interaction (only when game is active - pointer locked)
-    profiler.begin('Block Interaction');
-    const input = this.inputManager.getState();
-    const isGameActive = this.inputManager.isLocked();
-    const wheelDelta = this.inputManager.getWheelDelta();
-    this.blockInteraction.update(
-      deltaTime,
-      isGameActive && input.leftClick,
-      isGameActive && input.rightClick,
-      isGameActive ? wheelDelta : 0
-    );
-    profiler.end('Block Interaction');
   }
 
   private setupSettingsMenu(): void {
@@ -318,6 +313,8 @@ class PlanetGame {
     if (resetBtn) {
       resetBtn.addEventListener('click', () => {
         if (confirm('Are you sure you want to reset your game? This will delete all saved progress.')) {
+          // Stop auto-save first to prevent race condition
+          gameStorage.stopAutoSave();
           gameStorage.clearSave();
           window.location.reload();
         }

@@ -609,6 +609,7 @@ export class Planet {
 
     // Send to worker
     profiler.begin('Planet.workerBuild.postMessage');
+    console.log(`[Planet] Sending ${this.torchData.length} torches to worker`);
     this.geometryWorker.postMessage({
       type: 'buildGeometry',
       columns,
@@ -2597,27 +2598,63 @@ export class Planet {
   }
 
   // Set torch data for vertex baking (called before geometry rebuild)
+  // Torch positions are converted from world space to local space (relative to planet center)
+  // since geometry vertices are in local space
   public setTorchData(torches: Array<{ position: THREE.Vector3; range: number; intensity: number }>): void {
     this.torchData = torches.map(t => ({
-      position: { x: t.position.x, y: t.position.y, z: t.position.z },
+      // Convert from world space to local space by subtracting planet center
+      position: {
+        x: t.position.x - this.center.x,
+        y: t.position.y - this.center.y,
+        z: t.position.z - this.center.z
+      },
       range: t.range,
       intensity: t.intensity
     }));
+    console.log(`[Planet] setTorchData: ${this.torchData.length} torches, center=(${this.center.x},${this.center.y},${this.center.z})`);
+    if (this.torchData.length > 0) {
+      const t = this.torchData[0];
+      console.log(`[Planet] First torch local pos: (${t.position.x.toFixed(2)}, ${t.position.y.toFixed(2)}, ${t.position.z.toFixed(2)}), range=${t.range}, intensity=${t.intensity}`);
+    }
   }
 
   // Mark tiles near a torch position as dirty (for torch light baking)
   // Call this when a torch is placed or removed
   public markTilesNearTorchDirty(torchPosition: THREE.Vector3, range: number): void {
-    // Find tiles within the torch light range
-    for (const [tileIndex, column] of this.columns) {
-      // Check if tile center is within range of torch
-      const tileWorldCenter = column.tile.center.clone().add(this.center);
-      const distance = tileWorldCenter.distanceTo(torchPosition);
+    // Convert torch position to local space for consistent comparison
+    const localTorchPos = torchPosition.clone().sub(this.center);
+    const torchRadius = localTorchPos.length();
 
-      if (distance < range + 2) { // Add some buffer for block size
+    console.log(`[Planet] markTilesNearTorchDirty: torchPos=(${torchPosition.x.toFixed(2)},${torchPosition.y.toFixed(2)},${torchPosition.z.toFixed(2)}), localPos=(${localTorchPos.x.toFixed(2)},${localTorchPos.y.toFixed(2)},${localTorchPos.z.toFixed(2)}), radius=${torchRadius.toFixed(2)}, range=${range}`);
+
+    // Find tiles within the torch light range
+    // We check angular distance (tile direction vs torch direction) to handle underground torches
+    let tilesMarked = 0;
+    for (const [tileIndex, column] of this.columns) {
+      // Get tile direction (normalized)
+      const tileDir = column.tile.center.clone().normalize();
+
+      // Scale tile direction to torch's radius for proper distance comparison
+      const tileAtTorchRadius = tileDir.multiplyScalar(torchRadius);
+
+      // Calculate distance in 3D at the same radial distance
+      const distance = tileAtTorchRadius.distanceTo(localTorchPos);
+
+      // Use a generous buffer since torch light can reach across depths
+      if (distance < range + 4) {
         column.isDirty = true;
         this.queueDirtyColumnRebuild(tileIndex);
+        tilesMarked++;
       }
+    }
+
+    console.log(`[Planet] markTilesNearTorchDirty: marked ${tilesMarked} tiles dirty, needsRebatch=${this.needsRebatch}`);
+
+    // If any tiles were marked, trigger a full rebuild to ensure torch light is baked
+    // This is necessary because a worker build might be in progress with outdated torch data
+    if (tilesMarked > 0) {
+      this.needsRebatch = true;
+      console.log(`[Planet] Set needsRebatch=true`);
     }
   }
 
@@ -2748,6 +2785,11 @@ export class Planet {
     }
     // Add torch light attribute from worker (or default to zeros)
     if (data.torchLight && data.torchLight.length > 0) {
+      // Check if there's any non-zero torch light
+      const nonZeroCount = data.torchLight.filter(v => v > 0).length;
+      if (nonZeroCount > 0) {
+        console.log(`[Planet] createBufferGeometry: torchLight has ${nonZeroCount} non-zero values out of ${data.torchLight.length}`);
+      }
       geometry.setAttribute('torchLight', new THREE.Float32BufferAttribute(data.torchLight, 1));
     } else {
       const vertexCount = data.positions.length / 3;
