@@ -912,7 +912,7 @@ export class Planet {
           darkSideAmbient: { value: PlayerConfig.PLANET_DARK_SIDE_AMBIENT },
           torchPositions: { value: torchPositionsArray },
           torchCount: { value: 0 },
-          torchLightRadius: { value: 2.0 } // How big torches appear from space
+          torchLightRadius: { value: PlayerConfig.PLANET_TORCH_LIGHT_RADIUS }
         },
         vertexShader: planetVert,
         fragmentShader: planetFrag,

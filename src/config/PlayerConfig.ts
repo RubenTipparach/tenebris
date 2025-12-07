@@ -24,7 +24,7 @@ export const PlayerConfig = {
 
   // Gravity field (as multiplier of planet radius)
   GRAVITY_FULL_RADIUS: 1.4, // 100% gravity within this radius (1.4 = 40% above surface)
-  GRAVITY_FALLOFF_RADIUS: 2.4, // Gravity falls to 0% at this radius (2.4 = 140% above surface)
+  GRAVITY_FALLOFF_RADIUS: 1.8, // Gravity falls to 0% at this radius (2.4 = 140% above surface)
 
   // Camera
   MOUSE_SENSITIVITY: 0.002,
@@ -147,6 +147,7 @@ export const PlayerConfig = {
   PLANET_LOD_DISTANCE_2: 500,         // Distance for second LOD reduction
   PLANET_LOD_DISTANCE_3: 1000,        // Distance for third LOD reduction (lowest detail)
   PLANET_DARK_SIDE_AMBIENT: 0.06,     // Ambient light on dark side of planet (0 = pitch black, 1 = same as day)
+  PLANET_TORCH_LIGHT_RADIUS: 4.0,     // Size of torch glow on distant planet LOD (world units)
 
   // Profiler spike detection
   FRAME_SPIKE_THRESHOLD_MS: 30,       // Log frame breakdown if total exceeds this (ms)
