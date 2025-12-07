@@ -287,18 +287,6 @@ export class TorchManager {
     return Math.min(1, totalLight);
   }
 
-  // Update baked light data for terrain vertices near a torch
-  private updateTorchLightBaking(_torch: PlacedTorch): void {
-    // This would trigger a terrain mesh rebuild for affected tiles
-    // For now, we'll use real-time point lights
-    // Full vertex baking would require:
-    // 1. Finding all tiles within LIGHT_RANGE
-    // 2. Calculating light contribution for each vertex
-    // 3. Storing in torchLightData map
-    // 4. Triggering Planet.markTileDirty() for those tiles
-    // 5. Modifying TileMeshWorker to read torch light data
-  }
-
   // Get all torch light data for terrain baking
   public getTorchLightData(): Map<string, number> {
     return this.torchLightData;
