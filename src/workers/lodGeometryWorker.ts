@@ -11,36 +11,66 @@ interface Vec3 {
 // Note: Vector operations are inlined in hot loops to avoid function call overhead
 // and object allocations. The raw x/y/z math is faster than helper functions.
 
+// Torch data for vertex lighting calculation
+interface TorchData {
+  position: Vec3;
+  range: number;
+  intensity: number;
+}
+
+// Calculate torch light contribution at a point
+function calculateTorchLight(x: number, y: number, z: number, torches: TorchData[]): number {
+  let totalLight = 0;
+  for (const torch of torches) {
+    const dx = x - torch.position.x;
+    const dy = y - torch.position.y;
+    const dz = z - torch.position.z;
+    const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+    if (dist < torch.range) {
+      // Quadratic falloff matching the shader formula
+      const attenuation = 1.0 / (1.0 + 2.0 * dist * dist / (torch.range * torch.range));
+      totalLight += attenuation * torch.intensity;
+    }
+  }
+  return Math.min(totalLight, 1.5); // Cap at 1.5 like the shader
+}
+
 // Per-chunk geometry buffers
 interface ChunkGeometry {
   grassPositions: number[];
   grassNormals: number[];
   grassUvs: number[];
   grassSkyLight: number[];  // Sky light attribute for terrain shader
+  grassTorchLight: number[];  // Torch light attribute for terrain shader
   grassIndices: number[];
   grassVertexOffset: number;
   dirtPositions: number[];
   dirtNormals: number[];
   dirtUvs: number[];
   dirtSkyLight: number[];
+  dirtTorchLight: number[];
   dirtIndices: number[];
   dirtVertexOffset: number;
   stonePositions: number[];
   stoneNormals: number[];
   stoneUvs: number[];
   stoneSkyLight: number[];
+  stoneTorchLight: number[];
   stoneIndices: number[];
   stoneVertexOffset: number;
   sandPositions: number[];
   sandNormals: number[];
   sandUvs: number[];
   sandSkyLight: number[];
+  sandTorchLight: number[];
   sandIndices: number[];
   sandVertexOffset: number;
   woodPositions: number[];
   woodNormals: number[];
   woodUvs: number[];
   woodSkyLight: number[];
+  woodTorchLight: number[];
   woodIndices: number[];
   woodVertexOffset: number;
   waterPositions: number[];
@@ -52,6 +82,7 @@ interface ChunkGeometry {
   sideNormals: number[];
   sideUvs: number[];
   sideSkyLight: number[];
+  sideTorchLight: number[];
   sideIndices: number[];
   sideVertexOffset: number;
   waterSidePositions: number[];
@@ -63,13 +94,13 @@ interface ChunkGeometry {
 
 function createEmptyChunkGeometry(): ChunkGeometry {
   return {
-    grassPositions: [], grassNormals: [], grassUvs: [], grassSkyLight: [], grassIndices: [], grassVertexOffset: 0,
-    dirtPositions: [], dirtNormals: [], dirtUvs: [], dirtSkyLight: [], dirtIndices: [], dirtVertexOffset: 0,
-    stonePositions: [], stoneNormals: [], stoneUvs: [], stoneSkyLight: [], stoneIndices: [], stoneVertexOffset: 0,
-    sandPositions: [], sandNormals: [], sandUvs: [], sandSkyLight: [], sandIndices: [], sandVertexOffset: 0,
-    woodPositions: [], woodNormals: [], woodUvs: [], woodSkyLight: [], woodIndices: [], woodVertexOffset: 0,
+    grassPositions: [], grassNormals: [], grassUvs: [], grassSkyLight: [], grassTorchLight: [], grassIndices: [], grassVertexOffset: 0,
+    dirtPositions: [], dirtNormals: [], dirtUvs: [], dirtSkyLight: [], dirtTorchLight: [], dirtIndices: [], dirtVertexOffset: 0,
+    stonePositions: [], stoneNormals: [], stoneUvs: [], stoneSkyLight: [], stoneTorchLight: [], stoneIndices: [], stoneVertexOffset: 0,
+    sandPositions: [], sandNormals: [], sandUvs: [], sandSkyLight: [], sandTorchLight: [], sandIndices: [], sandVertexOffset: 0,
+    woodPositions: [], woodNormals: [], woodUvs: [], woodSkyLight: [], woodTorchLight: [], woodIndices: [], woodVertexOffset: 0,
     waterPositions: [], waterNormals: [], waterUvs: [], waterIndices: [], waterVertexOffset: 0,
-    sidePositions: [], sideNormals: [], sideUvs: [], sideSkyLight: [], sideIndices: [], sideVertexOffset: 0,
+    sidePositions: [], sideNormals: [], sideUvs: [], sideSkyLight: [], sideTorchLight: [], sideIndices: [], sideVertexOffset: 0,
     waterSidePositions: [], waterSideNormals: [], waterSideUvs: [], waterSideIndices: [], waterSideVertexOffset: 0
   };
 }
@@ -144,6 +175,7 @@ interface BuildLODGeometryMessage {
   nearbyTiles: number[];
   tileToChunk: Record<number, number>;
   config: LODWorkerConfig;
+  torches?: TorchData[];  // Torch positions for vertex lighting
 }
 
 interface LODGeometryResultMessage {
@@ -157,7 +189,7 @@ let cachedTileCount = 0;
 
 // Worker message handler
 self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
-  const { type, tileData, blockData, nearbyTiles, tileToChunk, config } = e.data;
+  const { type, tileData, blockData, nearbyTiles, tileToChunk, config, torches = [] } = e.data;
 
   if (type === 'buildLODGeometry') {
     const nearbyTilesSet = new Set(nearbyTiles);
@@ -377,7 +409,7 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
       const chunk = chunkGeometries[chunkIdx];
 
       // Select buffer based on surface type
-      let positions: number[], normals: number[], uvs: number[], skyLight: number[] | null, indices: number[];
+      let positions: number[], normals: number[], uvs: number[], skyLight: number[] | null, torchLight: number[] | null, indices: number[];
       let vertexOffset: number;
 
       if (surfaceBlockType === HexBlockType.WATER) {
@@ -385,6 +417,7 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
         normals = chunk.waterNormals;
         uvs = chunk.waterUvs;
         skyLight = null; // Water uses different shader, doesn't need skyLight
+        torchLight = null;
         indices = chunk.waterIndices;
         vertexOffset = chunk.waterVertexOffset;
       } else if (surfaceBlockType === HexBlockType.DIRT) {
@@ -392,6 +425,7 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
         normals = chunk.dirtNormals;
         uvs = chunk.dirtUvs;
         skyLight = chunk.dirtSkyLight;
+        torchLight = chunk.dirtTorchLight;
         indices = chunk.dirtIndices;
         vertexOffset = chunk.dirtVertexOffset;
       } else if (surfaceBlockType === HexBlockType.STONE) {
@@ -399,6 +433,7 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
         normals = chunk.stoneNormals;
         uvs = chunk.stoneUvs;
         skyLight = chunk.stoneSkyLight;
+        torchLight = chunk.stoneTorchLight;
         indices = chunk.stoneIndices;
         vertexOffset = chunk.stoneVertexOffset;
       } else if (surfaceBlockType === HexBlockType.SAND) {
@@ -406,6 +441,7 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
         normals = chunk.sandNormals;
         uvs = chunk.sandUvs;
         skyLight = chunk.sandSkyLight;
+        torchLight = chunk.sandTorchLight;
         indices = chunk.sandIndices;
         vertexOffset = chunk.sandVertexOffset;
       } else if (surfaceBlockType === HexBlockType.WOOD) {
@@ -413,6 +449,7 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
         normals = chunk.woodNormals;
         uvs = chunk.woodUvs;
         skyLight = chunk.woodSkyLight;
+        torchLight = chunk.woodTorchLight;
         indices = chunk.woodIndices;
         vertexOffset = chunk.woodVertexOffset;
       } else {
@@ -421,6 +458,7 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
         normals = chunk.grassNormals;
         uvs = chunk.grassUvs;
         skyLight = chunk.grassSkyLight;
+        torchLight = chunk.grassTorchLight;
         indices = chunk.grassIndices;
         vertexOffset = chunk.grassVertexOffset;
       }
@@ -433,22 +471,26 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
 
       // Fan triangulation from center
       const centerIdx = vertexOffset;
-      positions.push(
-        normal.x * displayRadius,
-        normal.y * displayRadius,
-        normal.z * displayRadius
-      );
+      const cx = normal.x * displayRadius;
+      const cy = normal.y * displayRadius;
+      const cz = normal.z * displayRadius;
+      positions.push(cx, cy, cz);
       normals.push(normal.x, normal.y, normal.z);
       uvs.push(centerUV.u, centerUV.v);
       if (skyLight) skyLight.push(1.0); // LOD terrain is always at surface, full sky exposure
+      if (torchLight) torchLight.push(calculateTorchLight(cx, cy, cz, torches));
       vertexOffset++;
 
       for (let i = 0; i < normalizedVerts.length; i++) {
         const nv = normalizedVerts[i];
-        positions.push(nv.x * displayRadius, nv.y * displayRadius, nv.z * displayRadius);
+        const vx = nv.x * displayRadius;
+        const vy = nv.y * displayRadius;
+        const vz = nv.z * displayRadius;
+        positions.push(vx, vy, vz);
         normals.push(normal.x, normal.y, normal.z);
         uvs.push(normalizedUVs[i].u, normalizedUVs[i].v);
         if (skyLight) skyLight.push(1.0);
+        if (torchLight) torchLight.push(calculateTorchLight(vx, vy, vz, torches));
         vertexOffset++;
 
         indices.push(centerIdx, centerIdx + 1 + i, centerIdx + 1 + ((i + 1) % normalizedVerts.length));
@@ -523,6 +565,7 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
         const normals = thisIsWater ? chunk.waterSideNormals : chunk.sideNormals;
         const uvs = thisIsWater ? chunk.waterSideUvs : chunk.sideUvs;
         const skyLight = thisIsWater ? null : chunk.sideSkyLight;
+        const sideTorchLight = thisIsWater ? null : chunk.sideTorchLight;
         const indices = thisIsWater ? chunk.waterSideIndices : chunk.sideIndices;
         const baseIdx = thisIsWater ? chunk.waterSideVertexOffset : chunk.sideVertexOffset;
 
@@ -536,6 +579,14 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
         normals.push(snx, sny, snz, snx, sny, snz, snx, sny, snz, snx, sny, snz);
         uvs.push(0, 0, 1, 0, 1, 1, 0, 1);
         if (skyLight) skyLight.push(1.0, 1.0, 1.0, 1.0); // Full sky exposure for LOD
+        if (sideTorchLight) {
+          sideTorchLight.push(
+            calculateTorchLight(innerV1x, innerV1y, innerV1z, torches),
+            calculateTorchLight(innerV2x, innerV2y, innerV2z, torches),
+            calculateTorchLight(outerV2x, outerV2y, outerV2z, torches),
+            calculateTorchLight(outerV1x, outerV1y, outerV1z, torches)
+          );
+        }
 
         indices.push(baseIdx, baseIdx + 1, baseIdx + 2);
         indices.push(baseIdx, baseIdx + 2, baseIdx + 3);

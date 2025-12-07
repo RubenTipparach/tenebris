@@ -375,13 +375,13 @@ export class Planet {
   // Per-chunk geometry data from LOD worker
   private handleLODWorkerResult(data: {
     chunkGeometries: Array<{
-      grassPositions: number[]; grassNormals: number[]; grassUvs: number[]; grassSkyLight: number[]; grassIndices: number[];
-      dirtPositions: number[]; dirtNormals: number[]; dirtUvs: number[]; dirtSkyLight: number[]; dirtIndices: number[];
-      stonePositions: number[]; stoneNormals: number[]; stoneUvs: number[]; stoneSkyLight: number[]; stoneIndices: number[];
-      sandPositions: number[]; sandNormals: number[]; sandUvs: number[]; sandSkyLight: number[]; sandIndices: number[];
-      woodPositions: number[]; woodNormals: number[]; woodUvs: number[]; woodSkyLight: number[]; woodIndices: number[];
+      grassPositions: number[]; grassNormals: number[]; grassUvs: number[]; grassSkyLight: number[]; grassTorchLight: number[]; grassIndices: number[];
+      dirtPositions: number[]; dirtNormals: number[]; dirtUvs: number[]; dirtSkyLight: number[]; dirtTorchLight: number[]; dirtIndices: number[];
+      stonePositions: number[]; stoneNormals: number[]; stoneUvs: number[]; stoneSkyLight: number[]; stoneTorchLight: number[]; stoneIndices: number[];
+      sandPositions: number[]; sandNormals: number[]; sandUvs: number[]; sandSkyLight: number[]; sandTorchLight: number[]; sandIndices: number[];
+      woodPositions: number[]; woodNormals: number[]; woodUvs: number[]; woodSkyLight: number[]; woodTorchLight: number[]; woodIndices: number[];
       waterPositions: number[]; waterNormals: number[]; waterUvs: number[]; waterIndices: number[];
-      sidePositions: number[]; sideNormals: number[]; sideUvs: number[]; sideSkyLight: number[]; sideIndices: number[];
+      sidePositions: number[]; sideNormals: number[]; sideUvs: number[]; sideSkyLight: number[]; sideTorchLight: number[]; sideIndices: number[];
       waterSidePositions: number[]; waterSideNormals: number[]; waterSideUvs: number[]; waterSideIndices: number[];
     }>;
   }): void {
@@ -447,52 +447,52 @@ export class Planet {
 
       const chunkGroup = this.lodChunks[i];
 
-      // Grass mesh (uses terrain shader with skyLight)
+      // Grass mesh (uses terrain shader with skyLight and torchLight)
       if (chunkData.grassPositions.length > 0) {
-        const geom = createGeom(chunkData.grassPositions, chunkData.grassNormals, chunkData.grassUvs, chunkData.grassIndices, chunkData.grassSkyLight);
+        const geom = createGeom(chunkData.grassPositions, chunkData.grassNormals, chunkData.grassUvs, chunkData.grassIndices, chunkData.grassSkyLight, chunkData.grassTorchLight);
         const mesh = new THREE.Mesh(geom, this.meshBuilder.getTopLODMaterial());
         chunkGroup.add(mesh);
         meshCount++;
         totalVertices += chunkData.grassPositions.length / 3;
       }
 
-      // Dirt mesh (uses terrain shader with skyLight)
+      // Dirt mesh (uses terrain shader with skyLight and torchLight)
       if (chunkData.dirtPositions.length > 0) {
-        const geom = createGeom(chunkData.dirtPositions, chunkData.dirtNormals, chunkData.dirtUvs, chunkData.dirtIndices, chunkData.dirtSkyLight);
+        const geom = createGeom(chunkData.dirtPositions, chunkData.dirtNormals, chunkData.dirtUvs, chunkData.dirtIndices, chunkData.dirtSkyLight, chunkData.dirtTorchLight);
         const mesh = new THREE.Mesh(geom, this.meshBuilder.getSideLODMaterial());
         chunkGroup.add(mesh);
         meshCount++;
         totalVertices += chunkData.dirtPositions.length / 3;
       }
 
-      // Stone mesh (uses stone LOD material)
+      // Stone mesh (uses stone LOD material with torchLight)
       if (chunkData.stonePositions.length > 0) {
-        const geom = createGeom(chunkData.stonePositions, chunkData.stoneNormals, chunkData.stoneUvs, chunkData.stoneIndices, chunkData.stoneSkyLight);
+        const geom = createGeom(chunkData.stonePositions, chunkData.stoneNormals, chunkData.stoneUvs, chunkData.stoneIndices, chunkData.stoneSkyLight, chunkData.stoneTorchLight);
         const mesh = new THREE.Mesh(geom, this.meshBuilder.getStoneLODMaterial());
         chunkGroup.add(mesh);
         meshCount++;
         totalVertices += chunkData.stonePositions.length / 3;
       }
 
-      // Sand mesh (uses sand LOD material)
+      // Sand mesh (uses sand LOD material with torchLight)
       if (chunkData.sandPositions.length > 0) {
-        const geom = createGeom(chunkData.sandPositions, chunkData.sandNormals, chunkData.sandUvs, chunkData.sandIndices, chunkData.sandSkyLight);
+        const geom = createGeom(chunkData.sandPositions, chunkData.sandNormals, chunkData.sandUvs, chunkData.sandIndices, chunkData.sandSkyLight, chunkData.sandTorchLight);
         const mesh = new THREE.Mesh(geom, this.meshBuilder.getSandLODMaterial());
         chunkGroup.add(mesh);
         meshCount++;
         totalVertices += chunkData.sandPositions.length / 3;
       }
 
-      // Wood mesh (uses wood LOD material)
+      // Wood mesh (uses wood LOD material with torchLight)
       if (chunkData.woodPositions.length > 0) {
-        const geom = createGeom(chunkData.woodPositions, chunkData.woodNormals, chunkData.woodUvs, chunkData.woodIndices, chunkData.woodSkyLight);
+        const geom = createGeom(chunkData.woodPositions, chunkData.woodNormals, chunkData.woodUvs, chunkData.woodIndices, chunkData.woodSkyLight, chunkData.woodTorchLight);
         const mesh = new THREE.Mesh(geom, this.meshBuilder.getWoodLODMaterial());
         chunkGroup.add(mesh);
         meshCount++;
         totalVertices += chunkData.woodPositions.length / 3;
       }
 
-      // Water mesh (uses simple material, no skyLight needed)
+      // Water mesh (uses simple material, no skyLight/torchLight needed)
       if (chunkData.waterPositions.length > 0) {
         const geom = createGeom(chunkData.waterPositions, chunkData.waterNormals, chunkData.waterUvs, chunkData.waterIndices);
         const mesh = new THREE.Mesh(geom, this.meshBuilder.getWaterLODMaterial());
@@ -502,9 +502,9 @@ export class Planet {
         totalVertices += chunkData.waterPositions.length / 3;
       }
 
-      // Side walls mesh (uses terrain shader with skyLight)
+      // Side walls mesh (uses terrain shader with skyLight and torchLight)
       if (chunkData.sidePositions.length > 0) {
-        const geom = createGeom(chunkData.sidePositions, chunkData.sideNormals, chunkData.sideUvs, chunkData.sideIndices, chunkData.sideSkyLight);
+        const geom = createGeom(chunkData.sidePositions, chunkData.sideNormals, chunkData.sideUvs, chunkData.sideIndices, chunkData.sideSkyLight, chunkData.sideTorchLight);
         const mesh = new THREE.Mesh(geom, this.meshBuilder.getSideLODMaterial());
         chunkGroup.add(mesh);
         meshCount++;
@@ -685,7 +685,8 @@ export class Planet {
         waterSurfaceOffset: PlayerConfig.WATER_SURFACE_OFFSET,
         lodOffset: 0.3,
         chunkCount: this.LOD_CHUNK_COUNT
-      }
+      },
+      torches: this.torchData
     });
     profiler.end('Planet.lodWorkerBuild.postMessage');
   }
@@ -2117,6 +2118,11 @@ export class Planet {
     this.projScreenMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     this.frustum.setFromProjectionMatrix(this.projScreenMatrix);
     profiler.end('Planet.frustum');
+    const de = deltaTime;
+    if(de && de > 100)
+    {
+      console.log("you got serious issues lol " + deltaTime);
+    }
 
 
     const distToCenter = playerPosition.distanceTo(this.center);
