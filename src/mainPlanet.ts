@@ -193,6 +193,13 @@ class PlanetGame {
     // Update underwater fog based on player water state
     this.engine.setUnderwater(this.player.getIsInWater());
 
+    // Update torch data BEFORE planet updates so newly placed torches
+    // have their light baked into geometry immediately when tiles rebuild
+    const torchManager = this.blockInteraction.getTorchManager();
+    const torchData = torchManager.getTorchDataForBaking();
+    this.earth.setTorchData(torchData);
+    this.moon.setTorchData(torchData);
+
     // Update both planets (rebuild dirty meshes near player) with camera for frustum culling
     profiler.begin('Earth Update');
     this.earth.update(this.player.position, this.engine.camera);
@@ -237,12 +244,6 @@ class PlanetGame {
       isGameActive ? wheelDelta : 0
     );
     profiler.end('Block Interaction');
-
-    // Update torch data for vertex baking (passed to geometry workers during rebuild)
-    const torchManager = this.blockInteraction.getTorchManager();
-    const torchData = torchManager.getTorchDataForBaking();
-    this.earth.setTorchData(torchData);
-    this.moon.setTorchData(torchData);
   }
 
   private setupSettingsMenu(): void {

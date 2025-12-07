@@ -2686,6 +2686,9 @@ export class Planet {
       data.uvs.push(uvAttr.getX(i), uvAttr.getY(i));
       data.skyLight.push(skyLightLevel);
 
+      // Calculate torch light contribution for this vertex
+      data.torchLight.push(this.calculateTorchLightAtPosition(px, py, pz));
+
       // Only bake position-based lighting into vertex colors if enabled
       if (PlayerConfig.VERTEX_LIGHTING_ENABLED) {
         // Calculate the tile column's sphere normal (radial direction from planet center)
@@ -2710,6 +2713,24 @@ export class Planet {
     }
 
     data.vertexOffset += posAttr.count;
+  }
+
+  // Calculate torch light at a world position using stored torch data
+  private calculateTorchLightAtPosition(x: number, y: number, z: number): number {
+    let totalLight = 0;
+    for (const torch of this.torchData) {
+      const dx = x - torch.position.x;
+      const dy = y - torch.position.y;
+      const dz = z - torch.position.z;
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+      if (dist < torch.range) {
+        // Quadratic falloff matching the shader/worker formula
+        const attenuation = 1.0 / (1.0 + 2.0 * dist * dist / (torch.range * torch.range));
+        totalLight += attenuation * torch.intensity;
+      }
+    }
+    return Math.min(totalLight, 1.5); // Cap at 1.5 like the shader
   }
 
   private createBufferGeometry(data: GeometryData): THREE.BufferGeometry {

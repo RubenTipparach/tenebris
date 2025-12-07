@@ -719,6 +719,13 @@ export class PlanetBlockInteraction {
         z: worldPosition.z
       });
 
+      // Update torch data on all planets BEFORE marking tiles dirty
+      // This ensures the new torch light is included in the geometry rebuild
+      const torchData = this.torchManager.getTorchDataForBaking();
+      for (const p of this.planets) {
+        p.setTorchData(torchData);
+      }
+
       // Mark nearby tiles dirty for torch light vertex baking
       planet.markTilesNearTorchDirty(worldPosition, PlayerConfig.TORCH_LIGHT_RANGE);
     }
