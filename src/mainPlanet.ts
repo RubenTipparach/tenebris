@@ -58,6 +58,11 @@ class PlanetGame {
     // Initialize the MenuManager for centralized menu handling
     MenuManager.init();
 
+    // Reset mouse button state when menus close to prevent stuck click state
+    MenuManager.setOnMenuCloseCallback(() => {
+      this.inputManager.resetMouseButtons();
+    });
+
     // Track if ESC was pressed to close pause menu (need to re-lock on keyup)
     let pendingPauseMenuClose = false;
 

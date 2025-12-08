@@ -20,6 +20,7 @@ class MenuManagerSingleton {
   private registeredMenus: Map<string, RegisteredMenu> = new Map();
   private pendingPointerLock = false;
   private initialized = false;
+  private onMenuCloseCallback: (() => void) | null = null;
 
   private constructor() {}
 
@@ -99,6 +100,7 @@ class MenuManagerSingleton {
    * Immediately requests pointer lock since click is a valid user gesture
    */
   public restorePointerLockOnClick(): void {
+    this.triggerMenuCloseCallback();
     // Small delay to ensure menu is fully closed
     setTimeout(() => {
       if (!this.isAnyMenuOpen()) {
@@ -134,6 +136,23 @@ class MenuManagerSingleton {
    */
   public closeMenuViaKeyboard(): void {
     this.schedulePointerLockOnKeyup();
+    this.triggerMenuCloseCallback();
+  }
+
+  /**
+   * Set callback for when any menu closes (used to reset input state)
+   */
+  public setOnMenuCloseCallback(callback: () => void): void {
+    this.onMenuCloseCallback = callback;
+  }
+
+  /**
+   * Trigger the menu close callback
+   */
+  private triggerMenuCloseCallback(): void {
+    if (this.onMenuCloseCallback) {
+      this.onMenuCloseCallback();
+    }
   }
 }
 

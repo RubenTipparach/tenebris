@@ -26,6 +26,7 @@ export interface SavedFurnace {
   fuelAmount: number;
   smeltingItem: number | null;
   smeltingProgress: number;
+  inputCount: number;
   outputItem: number | null;
   outputCount: number;
 }
@@ -43,6 +44,13 @@ export interface SavedGarbagePile {
   tileIndex: number;
   position: { x: number; y: number; z: number };
   slots: SavedInventorySlot[];
+}
+
+// Steam engine data
+export interface SavedSteamEngine {
+  tileIndex: number;
+  position: { x: number; y: number; z: number };
+  rotation: number;
 }
 
 // Player-specific save data
@@ -65,6 +73,7 @@ export interface PlanetSaveData {
   furnaces: SavedFurnace[];
   storageChests: SavedStorageChest[];
   garbagePiles: SavedGarbagePile[];
+  steamEngines: SavedSteamEngine[];
 }
 
 // Legacy combined format (for migration)
@@ -101,6 +110,7 @@ export class GameStorage {
     furnaces: SavedFurnace[];
     storageChests: SavedStorageChest[];
     garbagePiles: SavedGarbagePile[];
+    steamEngines: SavedSteamEngine[];
   }> = new Map();
 
   private autoSaveInterval: number | null = null;
@@ -108,8 +118,8 @@ export class GameStorage {
 
   constructor() {
     // Initialize planet data for earth and moon
-    this.planetData.set('earth', { tileChanges: new Map(), torches: [], furnaces: [], storageChests: [], garbagePiles: [] });
-    this.planetData.set('moon', { tileChanges: new Map(), torches: [], furnaces: [], storageChests: [], garbagePiles: [] });
+    this.planetData.set('earth', { tileChanges: new Map(), torches: [], furnaces: [], storageChests: [], garbagePiles: [], steamEngines: [] });
+    this.planetData.set('moon', { tileChanges: new Map(), torches: [], furnaces: [], storageChests: [], garbagePiles: [], steamEngines: [] });
   }
 
   // Set callback to get current player data
@@ -279,6 +289,36 @@ export class GameStorage {
     return allPiles;
   }
 
+  // Save steam engine placement
+  public saveSteamEngine(planetId: string, tileIndex: number, engineData: Omit<SavedSteamEngine, 'tileIndex'>): void {
+    const planet = this.planetData.get(planetId);
+    if (!planet) return;
+
+    planet.steamEngines = planet.steamEngines.filter(e => e.tileIndex !== tileIndex);
+    planet.steamEngines.push({ tileIndex, ...engineData });
+    this.persistPlanetToStorage(planetId);
+  }
+
+  // Remove a steam engine from save
+  public removeSteamEngine(planetId: string, tileIndex: number): void {
+    const planet = this.planetData.get(planetId);
+    if (!planet) return;
+
+    planet.steamEngines = planet.steamEngines.filter(e => e.tileIndex !== tileIndex);
+    this.persistPlanetToStorage(planetId);
+  }
+
+  // Get all saved steam engines
+  public getSteamEngines(): Array<SavedSteamEngine & { planetId: string }> {
+    const allEngines: Array<SavedSteamEngine & { planetId: string }> = [];
+    for (const [planetId, planet] of this.planetData) {
+      for (const engine of planet.steamEngines) {
+        allEngines.push({ ...engine, planetId });
+      }
+    }
+    return allEngines;
+  }
+
   // Save player position immediately
   public savePlayerPosition(): void {
     if (this.onPlayerSave) {
@@ -383,6 +423,7 @@ export class GameStorage {
       planet.furnaces = data.furnaces || [];
       planet.storageChests = data.storageChests || [];
       planet.garbagePiles = data.garbagePiles || [];
+      planet.steamEngines = data.steamEngines || [];
     } catch (error) {
       console.error(`Failed to load ${planetId} data:`, error);
     }
@@ -450,6 +491,7 @@ export class GameStorage {
             fuelAmount: furnace.fuelAmount,
             smeltingItem: furnace.smeltingItem,
             smeltingProgress: furnace.smeltingProgress,
+            inputCount: (furnace as SavedFurnace).inputCount ?? 0,
             outputItem: furnace.outputItem,
             outputCount: furnace.outputCount
           });
@@ -507,6 +549,7 @@ export class GameStorage {
       planet.furnaces = [];
       planet.storageChests = [];
       planet.garbagePiles = [];
+      planet.steamEngines = [];
     }
 
     // Clear all storage keys
@@ -547,7 +590,8 @@ export class GameStorage {
         torches: planet.torches,
         furnaces: planet.furnaces,
         storageChests: planet.storageChests,
-        garbagePiles: planet.garbagePiles
+        garbagePiles: planet.garbagePiles,
+        steamEngines: planet.steamEngines
       };
 
       const key = planetId === 'earth' ? STORAGE_KEY_EARTH : STORAGE_KEY_MOON;

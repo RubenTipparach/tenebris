@@ -8,6 +8,7 @@ import { HeldTorch, TorchManager } from '../planet/Torch';
 import { FurnaceManager, PlacedFurnace } from '../planet/Furnace';
 import { StorageChestManager, PlacedStorageChest } from '../planet/StorageChest';
 import { GarbagePileManager, PlacedGarbagePile } from '../planet/GarbagePile';
+import { SteamEngineManager, PlacedSteamEngine } from '../planet/SteamEngine';
 import { CraftingSystem } from './CraftingSystem';
 import { FurnaceUI } from './FurnaceUI';
 import { StorageUI } from './StorageUI';
@@ -92,6 +93,10 @@ export class PlanetBlockInteraction {
   private miningStorageTarget: { chest: PlacedStorageChest } | null = null;
   private miningGarbageTarget: { pile: PlacedGarbagePile } | null = null;
 
+  // Steam engine system
+  private steamEngineManager: SteamEngineManager;
+  private miningSteamEngineTarget: { steamEngine: PlacedSteamEngine } | null = null;
+
   private rightClickCooldown: number = 0;
   private readonly CLICK_COOLDOWN = 0.25;
   private readonly MAX_REACH = 8;
@@ -157,6 +162,9 @@ export class PlanetBlockInteraction {
     // Initialize storage systems with planet center and sun direction for lighting
     this.storageChestManager = new StorageChestManager(scene, planetCenter, sunDirection);
     this.garbagePileManager = new GarbagePileManager(scene, planetCenter, sunDirection);
+
+    // Initialize steam engine system
+    this.steamEngineManager = new SteamEngineManager(scene, planetCenter, sunDirection);
     this.storageUI = new StorageUI(this.inventory);
     this.storageUI.setOnCloseCallback(() => {
       // Storage close is handled by inventory menu close
@@ -320,6 +328,28 @@ export class PlanetBlockInteraction {
     e.preventDefault();
     const target = e.currentTarget as HTMLElement;
     target.classList.remove('drag-over');
+
+    // Check for storage drop
+    const dragData = e.dataTransfer?.getData('text/plain');
+    if (dragData && dragData.startsWith('storage:')) {
+      const success = this.storageUI.handleDropToInventory(targetSlotIndex, dragData);
+      if (success) {
+        this.updateHotbarUI();
+        this.craftingSystem.updateInventorySlots();
+      }
+      return;
+    }
+
+    // Check for furnace drop
+    if (dragData && dragData.startsWith('furnace:')) {
+      const sourceSlotType = dragData.substring('furnace:'.length);
+      const success = this.furnaceUI.handleDropToInventory(targetSlotIndex, sourceSlotType);
+      if (success) {
+        this.updateHotbarUI();
+        this.craftingSystem.updateInventorySlots();
+      }
+      return;
+    }
 
     const sourceSlotIndex = this.draggedSlotIndex;
     if (sourceSlotIndex === null || sourceSlotIndex === targetSlotIndex) {
@@ -604,7 +634,7 @@ export class PlanetBlockInteraction {
     // Update furnace smelting progress
     this.furnaceManager.update(deltaTime);
 
-    // Update furnace, storage chest, and garbage pile torch lighting based on nearby torches
+    // Update furnace, storage chest, garbage pile, and steam engine torch lighting based on nearby torches
     const torchData = this.torchManager.getTorchDataForBaking();
     if (torchData.length > 0) {
       const torchPositions = torchData.map(t => t.position);
@@ -613,6 +643,7 @@ export class PlanetBlockInteraction {
       this.furnaceManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
       this.storageChestManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
       this.garbagePileManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
+      this.steamEngineManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
     }
 
     // Don't process block interaction when inventory menu is open
@@ -643,12 +674,15 @@ export class PlanetBlockInteraction {
     // Get storage chest and garbage pile meshes for picking
     const storageChestMeshes = this.storageChestManager.getChestMeshes();
     const garbagePileMeshes = this.garbagePileManager.getPileMeshes();
+    // Get steam engine meshes for picking
+    const steamEngineMeshes = this.steamEngineManager.getSteamEngineMeshes();
 
     const treeIntersects = this.raycaster.intersectObjects(treeMeshes, false);
     const torchIntersects = this.raycaster.intersectObjects(torchMeshes, false);
     const furnaceIntersects = this.raycaster.intersectObjects(furnaceMeshes, false);
     const storageChestIntersects = this.raycaster.intersectObjects(storageChestMeshes, false);
     const garbagePileIntersects = this.raycaster.intersectObjects(garbagePileMeshes, false);
+    const steamEngineIntersects = this.raycaster.intersectObjects(steamEngineMeshes, false);
 
     // Raycast against all planets and find the closest hit
     let closestBlockHit: ReturnType<Planet['raycast']> = null;
@@ -667,18 +701,20 @@ export class PlanetBlockInteraction {
       }
     }
 
-    // Determine which hit is closer (tree, torch, furnace, storage, garbage pile, or block)
+    // Determine which hit is closer (tree, torch, furnace, storage, garbage pile, steam engine, or block)
     let hitTree = false;
     let hitBlock = false;
     let hitTorch = false;
     let hitFurnace = false;
     let hitStorageChest = false;
     let hitGarbagePile = false;
+    let hitSteamEngine = false;
     let treeHit: THREE.Intersection | null = null;
     let torchHit: THREE.Intersection | null = null;
     let furnaceHit: THREE.Intersection | null = null;
     let storageChestHit: THREE.Intersection | null = null;
     let garbagePileHit: THREE.Intersection | null = null;
+    let steamEngineHit: THREE.Intersection | null = null;
 
     // Find the closest hit among all types
     const treeDistance = treeIntersects.length > 0 ? treeIntersects[0].distance : Infinity;
@@ -686,10 +722,14 @@ export class PlanetBlockInteraction {
     const furnaceDistance = furnaceIntersects.length > 0 ? furnaceIntersects[0].distance : Infinity;
     const storageChestDistance = storageChestIntersects.length > 0 ? storageChestIntersects[0].distance : Infinity;
     const garbagePileDistance = garbagePileIntersects.length > 0 ? garbagePileIntersects[0].distance : Infinity;
-    const closestObjectDistance = Math.min(treeDistance, torchDistance, furnaceDistance, storageChestDistance, garbagePileDistance);
+    const steamEngineDistance = steamEngineIntersects.length > 0 ? steamEngineIntersects[0].distance : Infinity;
+    const closestObjectDistance = Math.min(treeDistance, torchDistance, furnaceDistance, storageChestDistance, garbagePileDistance, steamEngineDistance);
 
     if (closestBlockHit && closestBlockDistance < closestObjectDistance) {
       hitBlock = true;
+    } else if (steamEngineDistance <= closestObjectDistance && steamEngineDistance < Infinity) {
+      hitSteamEngine = true;
+      steamEngineHit = steamEngineIntersects[0];
     } else if (storageChestDistance <= closestObjectDistance && storageChestDistance < Infinity) {
       hitStorageChest = true;
       storageChestHit = storageChestIntersects[0];
@@ -709,7 +749,23 @@ export class PlanetBlockInteraction {
       hitBlock = true;
     }
 
-    if (hitStorageChest && storageChestHit) {
+    if (hitSteamEngine && steamEngineHit) {
+      // No wireframe for steam engines
+      if (this.blockWireframe) {
+        this.blockWireframe.visible = false;
+        this.wireframeCache = null;
+      }
+
+      const engineMesh = steamEngineHit.object as THREE.Mesh;
+      const steamEngine = this.steamEngineManager.getSteamEngineByMesh(engineMesh);
+
+      // Handle steam engine interaction (left click to mine - no right click action yet)
+      if (leftClick && steamEngine) {
+        this.handleSteamEngineMining(deltaTime, steamEngine);
+      } else {
+        this.resetMining();
+      }
+    } else if (hitStorageChest && storageChestHit) {
       // No wireframe for storage chests
       if (this.blockWireframe) {
         this.blockWireframe.visible = false;
@@ -1079,6 +1135,50 @@ export class PlanetBlockInteraction {
     }
   }
 
+  private handleSteamEngineMining(deltaTime: number, steamEngine: PlacedSteamEngine): void {
+    // Check if target changed
+    if (this.miningSteamEngineTarget === null || this.miningSteamEngineTarget.steamEngine !== steamEngine) {
+      // New target, reset progress
+      this.miningSteamEngineTarget = { steamEngine };
+      this.miningTarget = null;
+      this.miningTreeTarget = null;
+      this.miningFurnaceTarget = null;
+      this.miningStorageTarget = null;
+      this.miningGarbageTarget = null;
+      this.miningProgress = 0;
+    }
+
+    // Steam engine mining time
+    const mineTime = ITEM_DATA[ItemType.STEAM_ENGINE].mineTime;
+
+    // Increase progress
+    this.miningProgress += deltaTime / mineTime;
+    this.updateMiningUI(this.miningProgress);
+
+    // Check if mining complete
+    if (this.miningProgress >= 1) {
+      this.breakSteamEngine(steamEngine);
+      this.resetMining();
+    }
+  }
+
+  private breakSteamEngine(steamEngine: PlacedSteamEngine): void {
+    // Give the steam engine item back to the player
+    this.inventory.addItem(ItemType.STEAM_ENGINE, 1);
+
+    this.updateHotbarUI();
+    this.saveInventory();
+
+    // Remove steam engine from save
+    for (let i = 0; i < this.planets.length; i++) {
+      const planetId = i === 0 ? 'earth' : 'moon';
+      gameStorage.removeSteamEngine(planetId, steamEngine.tileIndex);
+    }
+
+    // Remove the steam engine from the world
+    this.steamEngineManager.removeSteamEngine(steamEngine);
+  }
+
   private async createGarbagePileWithItems(
     position: THREE.Vector3,
     tileIndex: number,
@@ -1119,6 +1219,7 @@ export class PlanetBlockInteraction {
     this.miningFurnaceTarget = null;
     this.miningStorageTarget = null;
     this.miningGarbageTarget = null;
+    this.miningSteamEngineTarget = null;
     this.miningProgress = 0;
     this.updateMiningUI(0);
   }
@@ -1224,6 +1325,12 @@ export class PlanetBlockInteraction {
     // Handle storage chest placement separately
     if (selectedSlot.itemType === ItemType.STORAGE_CHEST) {
       this.placeStorageChest(planet, tileIndex, depth);
+      return;
+    }
+
+    // Handle steam engine placement separately
+    if (selectedSlot.itemType === ItemType.STEAM_ENGINE) {
+      this.placeSteamEngine(planet, tileIndex, depth);
       return;
     }
 
@@ -1334,6 +1441,7 @@ export class PlanetBlockInteraction {
           fuelAmount: placedFurnace.fuelAmount,
           smeltingItem: placedFurnace.smeltingItem,
           smeltingProgress: placedFurnace.smeltingProgress,
+          inputCount: placedFurnace.inputCount,
           outputItem: placedFurnace.outputItem,
           outputCount: placedFurnace.outputCount
         });
@@ -1379,6 +1487,58 @@ export class PlanetBlockInteraction {
           position: { x: placedChest.position.x, y: placedChest.position.y, z: placedChest.position.z },
           rotation: placedChest.rotation,
           slots: placedChest.slots.map(s => ({ itemType: s.itemType, quantity: s.quantity }))
+        });
+      }
+    }
+  }
+
+  private async placeSteamEngine(planet: Planet, tileIndex: number, depth: number): Promise<void> {
+    // Check if there's already a steam engine at this tile
+    if (this.steamEngineManager.getSteamEngineAtTile(tileIndex)) {
+      return; // Can't place multiple steam engines on same tile
+    }
+
+    // Check if there's already a furnace at this tile
+    if (this.furnaceManager.getFurnaceAtTile(tileIndex)) {
+      return; // Can't place steam engine where furnace exists
+    }
+
+    // Check if there's already a storage chest at this tile
+    if (this.storageChestManager.getChestAtTile(tileIndex)) {
+      return; // Can't place steam engine where chest exists
+    }
+
+    // Check if there's already a garbage pile at this tile
+    if (this.garbagePileManager.getPileAtTile(tileIndex)) {
+      return; // Can't place steam engine where garbage pile exists
+    }
+
+    // Get the world position for the steam engine
+    const tile = planet.getTileByIndex(tileIndex);
+    if (!tile) return;
+
+    // depth is the air block position - steam engine should sit on the solid block below it
+    const solidBlockTopRadius = planet.depthToRadius(depth) - planet.getBlockHeight();
+    const tileCenter = tile.center.clone().normalize();
+    const worldPosition = tileCenter.multiplyScalar(solidBlockTopRadius).add(planet.center);
+
+    // Get player forward direction for steam engine facing
+    const playerForward = this.player.getForwardVector();
+
+    // Use item from inventory
+    if (this.inventory.useSelectedItem()) {
+      // Place the steam engine facing the player
+      const placedSteamEngine = await this.steamEngineManager.placeSteamEngine(worldPosition, planet.center, tileIndex, playerForward);
+
+      this.updateHotbarUI();
+      this.saveInventory();
+
+      // Save steam engine placement to game storage
+      if (placedSteamEngine) {
+        const planetId = this.getPlanetId(planet);
+        gameStorage.saveSteamEngine(planetId, tileIndex, {
+          position: { x: placedSteamEngine.position.x, y: placedSteamEngine.position.y, z: placedSteamEngine.position.z },
+          rotation: placedSteamEngine.rotation
         });
       }
     }
@@ -1479,6 +1639,7 @@ export class PlanetBlockInteraction {
         fuelAmount: furnace.fuelAmount,
         smeltingItem: furnace.smeltingItem,
         smeltingProgress: furnace.smeltingProgress,
+        inputCount: furnace.inputCount,
         outputItem: furnace.outputItem,
         outputCount: furnace.outputCount
       });
@@ -1605,6 +1766,7 @@ export class PlanetBlockInteraction {
             placedFurnace.fuelAmount = savedFurnace.fuelAmount;
             placedFurnace.smeltingItem = savedFurnace.smeltingItem;
             placedFurnace.smeltingProgress = savedFurnace.smeltingProgress;
+            placedFurnace.inputCount = savedFurnace.inputCount ?? 0;
             placedFurnace.outputItem = savedFurnace.outputItem;
             placedFurnace.outputCount = savedFurnace.outputCount;
           }
@@ -1654,6 +1816,23 @@ export class PlanetBlockInteraction {
       }
     }
 
-    console.log(`Loaded save: ${saveData.tileChanges.length} tile changes, ${savedTorches.length} torches, ${savedFurnaces.length} furnaces, ${savedStorageChests.length} chests, ${savedGarbagePiles.length} piles, inventory restored`);
+    // Load saved steam engines
+    const savedSteamEngines = gameStorage.getSteamEngines();
+    for (const savedSteamEngine of savedSteamEngines) {
+      const planet = this.planets.find((_, i) =>
+        (i === 0 ? 'earth' : 'moon') === savedSteamEngine.planetId
+      );
+      if (planet) {
+        const savedPosition = new THREE.Vector3(
+          savedSteamEngine.position.x,
+          savedSteamEngine.position.y,
+          savedSteamEngine.position.z
+        );
+        // Restore the steam engine
+        this.steamEngineManager.restoreSteamEngine(savedPosition, planet.center, savedSteamEngine.tileIndex, savedSteamEngine.rotation);
+      }
+    }
+
+    console.log(`Loaded save: ${saveData.tileChanges.length} tile changes, ${savedTorches.length} torches, ${savedFurnaces.length} furnaces, ${savedStorageChests.length} chests, ${savedGarbagePiles.length} piles, ${savedSteamEngines.length} steam engines, inventory restored`);
   }
 }

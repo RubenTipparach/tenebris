@@ -140,6 +140,9 @@ export class StorageUI {
         color: white;
         text-shadow: 1px 1px 2px black;
         pointer-events: none;
+        background: rgba(0, 0, 0, 0.6);
+        padding: 1px 3px;
+        border-radius: 2px;
       }
 
       .storage-hint {
@@ -349,38 +352,18 @@ export class StorageUI {
   private handleSlotClick(slotIndex: number): void {
     if (!this.currentStorage) return;
 
-    const selectedItem = this.inventory.getSelectedItem();
     const storageSlot = this.currentStorage.slots[slotIndex];
 
-    if (selectedItem.itemType !== ItemType.NONE && selectedItem.quantity > 0) {
-      // Try to add one item from hotbar
-      if (storageSlot.itemType === ItemType.NONE) {
-        storageSlot.itemType = selectedItem.itemType;
-        storageSlot.quantity = 1;
-        this.inventory.removeItem(selectedItem.itemType, 1);
+    // Click on storage slot: take one item from storage to inventory
+    if (storageSlot.itemType !== ItemType.NONE && storageSlot.quantity > 0) {
+      const remaining = this.inventory.addItem(storageSlot.itemType, 1);
+      if (remaining === 0) {
+        storageSlot.quantity--;
+        if (storageSlot.quantity === 0) {
+          storageSlot.itemType = ItemType.NONE;
+        }
         this.updateUI();
         this.notifyChanges();
-      } else if (storageSlot.itemType === selectedItem.itemType) {
-        const itemData = ITEM_DATA[selectedItem.itemType];
-        if (storageSlot.quantity < itemData.stackSize) {
-          storageSlot.quantity++;
-          this.inventory.removeItem(selectedItem.itemType, 1);
-          this.updateUI();
-          this.notifyChanges();
-        }
-      }
-    } else {
-      // Take one item
-      if (storageSlot.itemType !== ItemType.NONE && storageSlot.quantity > 0) {
-        const remaining = this.inventory.addItem(storageSlot.itemType, 1);
-        if (remaining === 0) {
-          storageSlot.quantity--;
-          if (storageSlot.quantity === 0) {
-            storageSlot.itemType = ItemType.NONE;
-          }
-          this.updateUI();
-          this.notifyChanges();
-        }
       }
     }
   }

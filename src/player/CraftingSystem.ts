@@ -86,6 +86,25 @@ export const CRAFTING_RECIPES: CraftingRecipe[] = [
     ],
     output: { itemType: ItemType.STORAGE_CHEST, quantity: 1 },
   },
+  // Steam Engine (iron frame with copper and aluminum core)
+  // III
+  // CAC
+  // III
+  {
+    name: 'Steam Engine',
+    inputs: [
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 0 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 1 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 2 },
+      { itemType: ItemType.INGOT_COPPER, quantity: 1, slot: 3 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 4 },
+      { itemType: ItemType.INGOT_COPPER, quantity: 1, slot: 5 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 6 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 7 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 8 },
+    ],
+    output: { itemType: ItemType.STEAM_ENGINE, quantity: 1 },
+  },
 ];
 
 export class CraftingSystem {
@@ -406,9 +425,9 @@ export class CraftingSystem {
 
     // Check if this is a drop from a storage slot
     if (dragData && dragData.startsWith('storage:')) {
-      const sourceSlotType = dragData.substring('storage:'.length);
       if (this.onStorageDropCallback) {
-        const success = this.onStorageDropCallback(targetSlotIndex, sourceSlotType);
+        // Pass full dragData including 'storage:' prefix as StorageUI expects it
+        const success = this.onStorageDropCallback(targetSlotIndex, dragData);
         if (success) {
           this.updateInventorySlots();
           if (this.onUpdateHotbarCallback) {
@@ -471,9 +490,35 @@ export class CraftingSystem {
     if (this.menuElement) {
       this.menuElement.classList.remove('active');
       this.isOpen = false;
+
+      // Cancel any ongoing drag operation to prevent click events after close
+      this.cancelDrag();
+
       if (this.onCloseCallback) {
         this.onCloseCallback();
       }
+    }
+  }
+
+  private cancelDrag(): void {
+    // Reset desktop drag state
+    this.draggedSlotIndex = null;
+    document.querySelectorAll('.inventory-slot.dragging').forEach(el => {
+      el.classList.remove('dragging');
+    });
+    document.querySelectorAll('.inventory-slot.drag-over').forEach(el => {
+      el.classList.remove('drag-over');
+    });
+    if (this.dragGhost) {
+      this.dragGhost.remove();
+      this.dragGhost = null;
+    }
+
+    // Reset touch drag state
+    this.touchDragSlotIndex = null;
+    if (this.touchDragGhost) {
+      this.touchDragGhost.remove();
+      this.touchDragGhost = null;
     }
   }
 
@@ -519,7 +564,7 @@ export class CraftingSystem {
     this.updateCraftingGrid();
   }
 
-  private updateInventorySlots(): void {
+  public updateInventorySlots(): void {
     const allSlots = this.inventory.getAllSlots();
 
     // Update storage slots
@@ -640,8 +685,10 @@ export class CraftingSystem {
     craftingSlots?.forEach((slotEl) => {
       const img = slotEl.querySelector('img') as HTMLImageElement;
       const countEl = slotEl.querySelector('.slot-count') as HTMLElement;
+      const tooltipEl = slotEl.querySelector('.item-tooltip') as HTMLElement;
       if (img) img.style.display = 'none';
       if (countEl) countEl.textContent = '';
+      if (tooltipEl) tooltipEl.remove();
       slotEl.classList.remove('has-item', 'missing-item');
     });
 
@@ -697,6 +744,15 @@ export class CraftingSystem {
         if (countEl) {
           countEl.textContent = input.quantity > 1 ? input.quantity.toString() : '';
         }
+
+        // Add tooltip showing ingredient name
+        let tooltipEl = slotEl.querySelector('.item-tooltip') as HTMLElement;
+        if (!tooltipEl) {
+          tooltipEl = document.createElement('span');
+          tooltipEl.className = 'item-tooltip';
+          slotEl.appendChild(tooltipEl);
+        }
+        tooltipEl.textContent = itemData.name;
 
         // Color based on whether player has enough
         if (canCraft) {

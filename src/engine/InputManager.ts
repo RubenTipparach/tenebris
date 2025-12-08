@@ -520,4 +520,10 @@ export class InputManager {
     this.mouseWheelDelta = 0;
     return delta;
   }
+
+  // Reset mouse button state (call when closing menus to prevent stuck click state)
+  public resetMouseButtons(): void {
+    this.mouseButtons.left = false;
+    this.mouseButtons.right = false;
+  }
 }

@@ -203,6 +203,9 @@ export class FurnaceUI {
         color: white;
         text-shadow: 1px 1px 2px black;
         pointer-events: none;
+        background: rgba(0, 0, 0, 0.6);
+        padding: 1px 3px;
+        border-radius: 2px;
       }
 
       .furnace-progress-section {
@@ -371,10 +374,10 @@ export class FurnaceUI {
         quantity = this.currentFurnace.outputCount;
       }
     } else if (slotType === this.SLOT_INPUT) {
-      hasItem = this.currentFurnace.smeltingItem !== null;
+      hasItem = this.currentFurnace.smeltingItem !== null && this.currentFurnace.inputCount > 0;
       if (hasItem) {
         itemType = this.currentFurnace.smeltingItem as ItemType;
-        quantity = 1;
+        quantity = this.currentFurnace.inputCount;
       }
     } else if (slotType === this.SLOT_FUEL) {
       hasItem = this.currentFurnace.fuelAmount > 0;
@@ -461,14 +464,21 @@ export class FurnaceUI {
         this.notifyChanges();
       }
     } else if (targetSlotType === this.SLOT_INPUT) {
-      // Only accept smeltable ores, and only if input is empty
+      // Only accept smeltable ores
       const recipe = SMELTING_RECIPES.find(r => r.input === slotData.itemType);
-      if (recipe && this.currentFurnace.smeltingItem === null) {
-        this.currentFurnace.smeltingItem = slotData.itemType;
-        this.currentFurnace.smeltingProgress = 0;
-        this.inventory.removeItem(slotData.itemType, 1);
-        this.updateUI();
-        this.notifyChanges();
+      if (recipe) {
+        // Check if input is empty OR same item type
+        if (this.currentFurnace.smeltingItem === null || this.currentFurnace.smeltingItem === slotData.itemType) {
+          const toTransfer = Math.min(quantity, slotData.quantity);
+          if (this.currentFurnace.smeltingItem === null) {
+            this.currentFurnace.smeltingItem = slotData.itemType;
+            this.currentFurnace.smeltingProgress = 0;
+          }
+          this.currentFurnace.inputCount += toTransfer;
+          this.inventory.removeItem(slotData.itemType, toTransfer);
+          this.updateUI();
+          this.notifyChanges();
+        }
       }
     }
     // Can't drop onto output slot
@@ -550,15 +560,36 @@ export class FurnaceUI {
         }
       }
     } else if (slotType === this.SLOT_INPUT) {
-      // Shift+click input: return smelting item to inventory
-      if (this.currentFurnace.smeltingItem !== null) {
+      // Shift+click input: return all queued items to inventory OR add all held items
+      if (this.currentFurnace.smeltingItem !== null && this.currentFurnace.inputCount > 0) {
         const itemType = this.currentFurnace.smeltingItem as ItemType;
-        const remaining = this.inventory.addItem(itemType, 1);
-        if (remaining === 0) {
-          this.currentFurnace.smeltingItem = null;
-          this.currentFurnace.smeltingProgress = 0;
+        const remaining = this.inventory.addItem(itemType, this.currentFurnace.inputCount);
+        const returned = this.currentFurnace.inputCount - remaining;
+        if (returned > 0) {
+          this.currentFurnace.inputCount -= returned;
+          if (this.currentFurnace.inputCount === 0) {
+            this.currentFurnace.smeltingItem = null;
+            this.currentFurnace.smeltingProgress = 0;
+          }
           this.updateUI();
           this.notifyChanges();
+        }
+      } else {
+        // No items in furnace input - try to add entire stack from selected slot
+        const selectedItem = this.inventory.getSelectedItem();
+        const recipe = SMELTING_RECIPES.find(r => r.input === selectedItem.itemType);
+        if (recipe && selectedItem.quantity > 0) {
+          if (this.currentFurnace.smeltingItem === null || this.currentFurnace.smeltingItem === selectedItem.itemType) {
+            const toTransfer = selectedItem.quantity;
+            if (this.currentFurnace.smeltingItem === null) {
+              this.currentFurnace.smeltingItem = selectedItem.itemType;
+              this.currentFurnace.smeltingProgress = 0;
+            }
+            this.currentFurnace.inputCount += toTransfer;
+            this.inventory.removeItem(selectedItem.itemType, toTransfer);
+            this.updateUI();
+            this.notifyChanges();
+          }
         }
       }
     } else if (slotType === this.SLOT_FUEL) {
@@ -602,10 +633,13 @@ export class FurnaceUI {
     // Check if holding a smeltable ore
     const recipe = SMELTING_RECIPES.find(r => r.input === selectedItem.itemType);
     if (recipe && selectedItem.quantity > 0) {
-      // Only one item can be smelted at a time for now
-      if (this.currentFurnace.smeltingItem === null) {
-        this.currentFurnace.smeltingItem = selectedItem.itemType;
-        this.currentFurnace.smeltingProgress = 0;
+      // Allow adding if empty OR same item type
+      if (this.currentFurnace.smeltingItem === null || this.currentFurnace.smeltingItem === selectedItem.itemType) {
+        if (this.currentFurnace.smeltingItem === null) {
+          this.currentFurnace.smeltingItem = selectedItem.itemType;
+          this.currentFurnace.smeltingProgress = 0;
+        }
+        this.currentFurnace.inputCount++;
         this.inventory.removeItem(selectedItem.itemType, 1);
         this.updateUI();
         this.notifyChanges();
@@ -662,17 +696,23 @@ export class FurnaceUI {
         }
       }
     } else if (sourceSlotType === this.SLOT_INPUT) {
-      if (this.currentFurnace.smeltingItem !== null) {
+      if (this.currentFurnace.smeltingItem !== null && this.currentFurnace.inputCount > 0) {
         const itemType = this.currentFurnace.smeltingItem as ItemType;
         const targetSlot = this.inventory.getSlot(targetSlotIndex);
 
         if (targetSlot && (targetSlot.itemType === ItemType.NONE || targetSlot.itemType === itemType)) {
           const maxStack = 64;
           const currentCount = targetSlot.itemType === itemType ? targetSlot.quantity : 0;
-          if (currentCount < maxStack) {
-            this.inventory.setSlot(targetSlotIndex, itemType, currentCount + 1);
-            this.currentFurnace.smeltingItem = null;
-            this.currentFurnace.smeltingProgress = 0;
+          const spaceAvailable = maxStack - currentCount;
+          const toTransfer = Math.min(this.currentFurnace.inputCount, spaceAvailable);
+
+          if (toTransfer > 0) {
+            this.inventory.setSlot(targetSlotIndex, itemType, currentCount + toTransfer);
+            this.currentFurnace.inputCount -= toTransfer;
+            if (this.currentFurnace.inputCount === 0) {
+              this.currentFurnace.smeltingItem = null;
+              this.currentFurnace.smeltingProgress = 0;
+            }
             this.updateUI();
             this.notifyChanges();
             return true;
@@ -801,13 +841,13 @@ export class FurnaceUI {
       const img = this.inputSlotElement.querySelector('img') as HTMLImageElement;
       const count = this.inputSlotElement.querySelector('.slot-count') as HTMLElement;
 
-      if (furnace.smeltingItem !== null) {
+      if (furnace.smeltingItem !== null && furnace.inputCount > 0) {
         const itemData = ITEM_DATA[furnace.smeltingItem as ItemType];
         if (itemData) {
           img.src = getAssetPath(itemData.texture);
           img.style.display = 'block';
         }
-        count.textContent = '';
+        count.textContent = furnace.inputCount > 1 ? furnace.inputCount.toString() : '';
       } else {
         img.style.display = 'none';
         count.textContent = '';

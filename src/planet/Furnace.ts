@@ -38,6 +38,7 @@ export interface PlacedFurnace {
   fuelAmount: number;  // Current fuel (in coal units, 1 coal = 8 smelt operations)
   smeltingItem: number | null;  // ItemType being smelted
   smeltingProgress: number;  // 0-1 progress of current smelt
+  inputCount: number;  // Number of items queued for smelting (including current)
   outputItem: number | null;  // Completed smelted item waiting to be collected
   outputCount: number;  // Number of output items
 }
@@ -279,6 +280,7 @@ export class FurnaceManager {
       fuelAmount: 0,
       smeltingItem: null,
       smeltingProgress: 0,
+      inputCount: 0,
       outputItem: null,
       outputCount: 0,
     };
@@ -341,6 +343,7 @@ export class FurnaceManager {
       fuelAmount: 0,
       smeltingItem: null,
       smeltingProgress: 0,
+      inputCount: 0,
       outputItem: null,
       outputCount: 0,
     };
@@ -432,12 +435,20 @@ export class FurnaceManager {
             }
             // Consume fuel
             furnace.fuelAmount--;
+            // Decrease input count
+            furnace.inputCount--;
             anySmeltCompleted = true;
           }
 
-          // Reset for next item
-          furnace.smeltingItem = null;
-          furnace.smeltingProgress = 0;
+          // Check if more items in queue
+          if (furnace.inputCount > 0) {
+            // Start smelting next item (same type)
+            furnace.smeltingProgress = 0;
+          } else {
+            // No more items - reset
+            furnace.smeltingItem = null;
+            furnace.smeltingProgress = 0;
+          }
         }
       }
     }
@@ -456,6 +467,7 @@ export class FurnaceManager {
     fuelAmount: number;
     smeltingItem: number | null;
     smeltingProgress: number;
+    inputCount: number;
     outputItem: number | null;
     outputCount: number;
   }> {
@@ -466,6 +478,7 @@ export class FurnaceManager {
       fuelAmount: f.fuelAmount,
       smeltingItem: f.smeltingItem,
       smeltingProgress: f.smeltingProgress,
+      inputCount: f.inputCount,
       outputItem: f.outputItem,
       outputCount: f.outputCount,
     }));

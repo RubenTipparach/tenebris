@@ -33,6 +33,8 @@ export enum ItemType {
   INGOT_ALUMINUM = 25,
   // Storage items
   STORAGE_CHEST = 26,
+  // Technology items (machines)
+  STEAM_ENGINE = 27,
 }
 
 // Item metadata
@@ -79,6 +81,8 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
   [ItemType.INGOT_ALUMINUM]: { name: 'Aluminum Ingot', stackSize: 64, texture: '/textures/minerals/earth/aluminum.png', mineTime: 0.3 },
   // Storage items
   [ItemType.STORAGE_CHEST]: { name: 'Storage Chest', stackSize: 8, texture: '/textures/technology/storage_face.png', mineTime: 1.5 },
+  // Technology items (machines)
+  [ItemType.STEAM_ENGINE]: { name: 'Steam Engine', stackSize: 8, texture: '/textures/technology/steam_engine_face.png', mineTime: 2.5 },
 };
 
 // Inventory slot
