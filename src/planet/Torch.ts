@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { PlayerConfig } from '../config/PlayerConfig';
+import torchVert from '../shaders/torch/torch.vert';
+import torchFrag from '../shaders/torch/torch.frag';
 
 // Torch configuration - uses PlayerConfig for gameplay values
 export const TorchConfig = {
@@ -19,6 +21,31 @@ export const TorchConfig = {
   HELD_OFFSET: new THREE.Vector3(0.25, -0.2, -0.4), // Offset from camera for held torch
   HELD_ROTATION: new THREE.Euler(-0.3, 0.2, 0.1),   // Rotation when held
 };
+
+// Shared torch shader material (all torches share the same material for batching)
+let sharedTorchMaterial: THREE.ShaderMaterial | null = null;
+
+function getSharedTorchMaterial(): THREE.ShaderMaterial {
+  if (!sharedTorchMaterial) {
+    sharedTorchMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        time: { value: 0.0 },
+        flickerAmount: { value: 0.15 },
+      },
+      vertexShader: torchVert,
+      fragmentShader: torchFrag,
+      vertexColors: true,
+    });
+  }
+  return sharedTorchMaterial;
+}
+
+// Update shared material time uniform (called from TorchManager.update)
+export function updateTorchShaderTime(time: number): void {
+  if (sharedTorchMaterial) {
+    sharedTorchMaterial.uniforms.time.value = time;
+  }
+}
 
 // Create torch geometry (procedural - merged into single mesh for fewer draw calls)
 function createTorchGeometry(): THREE.Group {
@@ -59,13 +86,17 @@ function createTorchGeometry(): THREE.Group {
   addVertexColors(headGeom, headColor);
   addVertexColors(flameGeom, flameColor);
 
+  // Add animation weight attribute (0 = static, 1 = animated)
+  // Handle and head don't animate, flame does
+  addAnimWeight(handleGeom, 0.0);
+  addAnimWeight(headGeom, 0.0);
+  addAnimWeight(flameGeom, 1.0);
+
   // Merge all geometries into one
   const mergedGeom = BufferGeometryUtils.mergeGeometries([handleGeom, headGeom, flameGeom]);
 
-  // Single material using vertex colors
-  const material = new THREE.MeshBasicMaterial({
-    vertexColors: true,
-  });
+  // Use shared shader material for batching efficiency
+  const material = getSharedTorchMaterial();
 
   const mesh = new THREE.Mesh(mergedGeom, material);
   mesh.name = 'torchMesh';
@@ -89,6 +120,17 @@ function addVertexColors(geometry: THREE.BufferGeometry, color: THREE.Color): vo
     colors[i * 3 + 2] = color.b;
   }
   geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+}
+
+// Helper to add animation weight attribute to a geometry
+// 0 = no animation (static), 1 = full animation (flame)
+function addAnimWeight(geometry: THREE.BufferGeometry, weight: number): void {
+  const positionCount = geometry.attributes.position.count;
+  const weights = new Float32Array(positionCount);
+  for (let i = 0; i < positionCount; i++) {
+    weights[i] = weight;
+  }
+  geometry.setAttribute('animWeight', new THREE.BufferAttribute(weights, 1));
 }
 
 // Held torch (first-person view)
@@ -138,16 +180,13 @@ export class HeldTorch {
   public update(deltaTime: number): void {
     if (!this.isVisible) return;
 
-    // Flicker effect
+    // Flicker effect for point light
     this.flickerTime += deltaTime * TorchConfig.FLICKER_SPEED;
     const flicker = Math.sin(this.flickerTime) * Math.sin(this.flickerTime * 2.3) * Math.sin(this.flickerTime * 0.7);
     this.pointLight.intensity = this.baseIntensity * (1 + flicker * TorchConfig.FLICKER_AMOUNT);
 
-    // Slight scale animation on entire torch mesh for visual effect
-    const torchMesh = this.torchGroup.getObjectByName('torchMesh');
-    if (torchMesh) {
-      torchMesh.scale.y = 1 + flicker * 0.02;
-    }
+    // Update shader time uniform - flame animation is handled by vertex shader
+    updateTorchShaderTime(this.flickerTime);
   }
 
   public dispose(): void {
@@ -258,23 +297,13 @@ export class TorchManager {
     }
   }
 
-  // Update all torches (flicker animation - no PointLight)
+  // Update all torches (flicker animation via shader - no PointLight)
   public update(deltaTime: number): void {
     this.flickerTime += deltaTime * TorchConfig.FLICKER_SPEED;
 
-    for (const torch of this.placedTorches) {
-      if (!torch.group.visible) continue;
-
-      // Flicker with unique phase offset per torch
-      const t = this.flickerTime + torch.flickerOffset;
-      const flicker = Math.sin(t) * Math.sin(t * 2.3) * Math.sin(t * 0.7);
-
-      // Animate merged torch mesh (visual effect only - lighting is vertex-baked)
-      const torchMesh = torch.group.getObjectByName('torchMesh');
-      if (torchMesh) {
-        torchMesh.scale.y = 1 + flicker * 0.03;
-      }
-    }
+    // Update the shared shader material time uniform
+    // All torches animate together via the shader, no per-torch scale needed
+    updateTorchShaderTime(this.flickerTime);
   }
 
   // Update visibility based on which tiles are rendered

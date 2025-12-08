@@ -182,7 +182,7 @@ export class StorageChestManager {
     const instanceMaterial = this.chestMaterial.clone();
     const mesh = new THREE.Mesh(this.chestGeometry, instanceMaterial);
 
-    // Position above ground
+    // Position the chest slightly above the ground (same as furnace positioning)
     const upDirection = worldPosition.clone().sub(planetCenter).normalize();
     const chestPosition = worldPosition.clone().add(upDirection.multiplyScalar(this.CHEST_SIZE / 2));
     mesh.position.copy(chestPosition);
