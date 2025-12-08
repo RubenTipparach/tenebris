@@ -381,7 +381,6 @@ export class Planet {
     // Register new water mesh after swap
     this.currentWaterMesh = newWaterMesh;
     if (newWaterMesh && this.waterMeshCallback) {
-      console.log('[Planet] Worker created water mesh, registering');
       this.waterMeshCallback(newWaterMesh, true);
     }
 
@@ -2651,11 +2650,9 @@ export class Planet {
     }
 
     // Create meshes from batched geometry
-    const createdMeshes: string[] = [];
     for (const mat of this.BLOCK_MATERIALS) {
       const data = geometryData[mat.key];
       if (data.positions.length > 0) {
-        createdMeshes.push(mat.key);
         const geom = this.createBufferGeometry(data);
         const mesh = new THREE.Mesh(geom, mat.getMaterial());
         if (mat.renderOrder !== undefined) {
@@ -2666,14 +2663,12 @@ export class Planet {
         // Track water mesh for depth pre-pass optimization
         if (mat.key === 'water') {
           this.currentWaterMesh = mesh;
-          console.log('[Planet] Created water mesh, callback:', !!this.waterMeshCallback);
           if (this.waterMeshCallback) {
             this.waterMeshCallback(mesh, true);
           }
         }
       }
     }
-    console.log('[Planet] rebuildBatchedMeshes created:', createdMeshes.join(', '));
 
     // Schedule water boundary walls rebuild (deferred to avoid frame spike)
     const hasWater = this.config.hasWater !== false && !this.config.texturePath;
@@ -2928,10 +2923,8 @@ export class Planet {
   // Set callback for water mesh registration (for depth pre-pass optimization)
   public setWaterMeshCallback(callback: (mesh: THREE.Mesh, isAdd: boolean) => void): void {
     this.waterMeshCallback = callback;
-    console.log('[Planet] setWaterMeshCallback called, currentWaterMesh:', this.currentWaterMesh);
     // Register existing water mesh if any
     if (this.currentWaterMesh) {
-      console.log('[Planet] Registering existing water mesh');
       callback(this.currentWaterMesh, true);
     }
   }
