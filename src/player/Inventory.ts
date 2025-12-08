@@ -31,6 +31,8 @@ export enum ItemType {
   INGOT_IRON = 23,
   INGOT_GOLD = 24,
   INGOT_ALUMINUM = 25,
+  // Storage items
+  STORAGE_CHEST = 26,
 }
 
 // Item metadata
@@ -75,6 +77,8 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
   [ItemType.INGOT_IRON]: { name: 'Iron Ingot', stackSize: 64, texture: '/textures/minerals/earth/iron.png', mineTime: 0.3 },
   [ItemType.INGOT_GOLD]: { name: 'Gold Ingot', stackSize: 64, texture: '/textures/minerals/earth/gold.png', mineTime: 0.3 },
   [ItemType.INGOT_ALUMINUM]: { name: 'Aluminum Ingot', stackSize: 64, texture: '/textures/minerals/earth/aluminum.png', mineTime: 0.3 },
+  // Storage items
+  [ItemType.STORAGE_CHEST]: { name: 'Storage Chest', stackSize: 8, texture: '/textures/technology/storage_face.png', mineTime: 1.5 },
 };
 
 // Inventory slot
@@ -127,6 +131,17 @@ export class Inventory {
     }
 
     return remaining;
+  }
+
+  // Set a specific slot's contents directly
+  public setSlot(slotIndex: number, itemType: ItemType, quantity: number): void {
+    if (slotIndex < 0 || slotIndex >= this.totalSlots) return;
+    this.slots[slotIndex].itemType = itemType;
+    this.slots[slotIndex].quantity = quantity;
+    if (quantity <= 0) {
+      this.slots[slotIndex].itemType = ItemType.NONE;
+      this.slots[slotIndex].quantity = 0;
+    }
   }
 
   // Remove item from inventory, returns amount actually removed

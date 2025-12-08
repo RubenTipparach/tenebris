@@ -11,6 +11,7 @@ import { PlayerConfig } from './config/PlayerConfig';
 import { profiler } from './engine/Profiler';
 import { gameStorage } from './engine/GameStorage';
 import { loadingManager } from './engine/LoadingManager';
+import { MenuManager } from './player/MenuManager';
 
 class PlanetGame {
   private engine: GameEngine;
@@ -35,6 +36,9 @@ class PlanetGame {
     const container = document.getElementById('game-container');
     if (!container) throw new Error('Game container not found');
 
+    // Disable browser context menu on right-click
+    container.addEventListener('contextmenu', (e) => e.preventDefault());
+
     // Initialize core systems
     this.engine = new GameEngine(container);
     this.inputManager = new InputManager();
@@ -51,17 +55,49 @@ class PlanetGame {
     this.blockInteraction = null!;
     this.treeManager = null!;
 
+    // Initialize the MenuManager for centralized menu handling
+    MenuManager.init();
+
+    // Track if ESC was pressed to close pause menu (need to re-lock on keyup)
+    let pendingPauseMenuClose = false;
+
+    // Handle ESC key for pause menu toggle
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        const instructions = document.getElementById('instructions');
+        const isPauseMenuVisible = instructions?.style.display === 'block';
+
+        // Only handle ESC here if no game UI is open (they handle their own ESC via MenuManager)
+        if (!MenuManager.isAnyMenuOpen()) {
+          if (isPauseMenuVisible) {
+            // Pause menu is open - mark for closing on keyup
+            pendingPauseMenuClose = true;
+            e.preventDefault();
+          }
+          // If game is active (pointer locked), browser will auto-exit pointer lock on ESC
+          // which will trigger the pointer lock callback to show pause menu
+        }
+      }
+    });
+
+    // Re-lock pointer on ESC keyup to close pause menu
+    document.addEventListener('keyup', (e) => {
+      if (e.key === 'Escape' && pendingPauseMenuClose) {
+        pendingPauseMenuClose = false;
+        container?.requestPointerLock();
+      }
+    });
+
     // Setup pointer lock UI
     this.inputManager.setPointerLockCallback((locked) => {
       const instructions = document.getElementById('instructions');
-      const inventoryMenu = document.getElementById('inventory-menu');
-      const isInventoryOpen = inventoryMenu?.classList.contains('active');
 
       if (instructions) {
-        // Don't show main menu if inventory is open
-        instructions.style.display = (locked || isInventoryOpen) ? 'none' : 'block';
-        if (!locked && !isInventoryOpen) {
-          console.log('Menu opened');
+        // Don't show pause menu if any game UI is open (they handle their own display via MenuManager)
+        if (!locked && MenuManager.isAnyMenuOpen()) {
+          instructions.style.display = 'none';
+        } else {
+          instructions.style.display = locked ? 'none' : 'block';
         }
       }
       const crosshair = document.getElementById('crosshair');

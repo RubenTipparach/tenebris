@@ -1,6 +1,7 @@
 // Types for saved game data
+
+// Tile change for a planet
 export interface TileChange {
-  planetId: string;  // 'earth' or 'moon'
   tileIndex: number;
   depth: number;
   blockType: number;
@@ -11,14 +12,14 @@ export interface SavedInventorySlot {
   quantity: number;
 }
 
+// Torch data (without planetId - stored per planet)
 export interface SavedTorch {
-  planetId: string;
   tileIndex: number;
   position: { x: number; y: number; z: number };
 }
 
+// Furnace data (without planetId - stored per planet)
 export interface SavedFurnace {
-  planetId: string;
   tileIndex: number;
   position: { x: number; y: number; z: number };
   rotation: number;
@@ -29,40 +30,90 @@ export interface SavedFurnace {
   outputCount: number;
 }
 
+// Storage chest data
+export interface SavedStorageChest {
+  tileIndex: number;
+  position: { x: number; y: number; z: number };
+  rotation: number;
+  slots: SavedInventorySlot[];
+}
+
+// Garbage pile data
+export interface SavedGarbagePile {
+  tileIndex: number;
+  position: { x: number; y: number; z: number };
+  slots: SavedInventorySlot[];
+}
+
+// Player-specific save data
 export interface PlayerSaveData {
+  version: number;
+  timestamp: number;
   position: { x: number; y: number; z: number };
   orientation: { x: number; y: number; z: number; w: number };  // quaternion
   velocity: { x: number; y: number; z: number };
+  inventory: SavedInventorySlot[];
+  // Future: techStatus, techInventory, etc.
 }
 
-export interface GameSaveData {
+// Planet-specific save data
+export interface PlanetSaveData {
   version: number;
   timestamp: number;
   tileChanges: TileChange[];
-  inventory: SavedInventorySlot[];
-  player: PlayerSaveData;
   torches: SavedTorch[];
   furnaces: SavedFurnace[];
+  storageChests: SavedStorageChest[];
+  garbagePiles: SavedGarbagePile[];
 }
 
-const STORAGE_KEY = 'tenebris_save';
-const SAVE_VERSION = 1;
+// Legacy combined format (for migration)
+export interface LegacyGameSaveData {
+  version: number;
+  timestamp: number;
+  tileChanges: Array<TileChange & { planetId: string }>;
+  inventory: SavedInventorySlot[];
+  player: {
+    position: { x: number; y: number; z: number };
+    orientation: { x: number; y: number; z: number; w: number };
+    velocity: { x: number; y: number; z: number };
+  };
+  torches: Array<SavedTorch & { planetId: string }>;
+  furnaces: Array<SavedFurnace & { planetId: string }>;
+}
+
+// Storage keys
+const STORAGE_KEY_PLAYER = 'tenebris_player';
+const STORAGE_KEY_EARTH = 'tenebris_earth';
+const STORAGE_KEY_MOON = 'tenebris_moon';
+const LEGACY_STORAGE_KEY = 'tenebris_save';
+const SAVE_VERSION = 2;
 
 export class GameStorage {
-  private pendingChanges: Map<string, TileChange> = new Map();
-  private inventory: SavedInventorySlot[] = [];
-  private torches: SavedTorch[] = [];
-  private furnaces: SavedFurnace[] = [];
+  // Player data
   private playerData: PlayerSaveData | null = null;
+  private inventory: SavedInventorySlot[] = [];
+
+  // Planet data (keyed by planetId)
+  private planetData: Map<string, {
+    tileChanges: Map<string, TileChange>;
+    torches: SavedTorch[];
+    furnaces: SavedFurnace[];
+    storageChests: SavedStorageChest[];
+    garbagePiles: SavedGarbagePile[];
+  }> = new Map();
+
   private autoSaveInterval: number | null = null;
-  private onPlayerSave: (() => PlayerSaveData) | null = null;
+  private onPlayerSave: (() => { position: { x: number; y: number; z: number }; orientation: { x: number; y: number; z: number; w: number }; velocity: { x: number; y: number; z: number } }) | null = null;
 
   constructor() {
-    // Initialize with empty state
+    // Initialize planet data for earth and moon
+    this.planetData.set('earth', { tileChanges: new Map(), torches: [], furnaces: [], storageChests: [], garbagePiles: [] });
+    this.planetData.set('moon', { tileChanges: new Map(), torches: [], furnaces: [], storageChests: [], garbagePiles: [] });
   }
 
   // Set callback to get current player data
-  public setPlayerSaveCallback(callback: () => PlayerSaveData): void {
+  public setPlayerSaveCallback(callback: () => { position: { x: number; y: number; z: number }; orientation: { x: number; y: number; z: number; w: number }; velocity: { x: number; y: number; z: number } }): void {
     this.onPlayerSave = callback;
   }
 
@@ -86,107 +137,346 @@ export class GameStorage {
 
   // Save a tile change (block placed or broken)
   public saveTileChange(planetId: string, tileIndex: number, depth: number, blockType: number): void {
-    const key = `${planetId}:${tileIndex}:${depth}`;
-    this.pendingChanges.set(key, { planetId, tileIndex, depth, blockType });
-    this.persistToStorage();
+    const planet = this.planetData.get(planetId);
+    if (!planet) return;
+
+    const key = `${tileIndex}:${depth}`;
+    planet.tileChanges.set(key, { tileIndex, depth, blockType });
+    this.persistPlanetToStorage(planetId);
   }
 
   // Save inventory state
   public saveInventory(inventory: SavedInventorySlot[]): void {
     this.inventory = [...inventory];
-    this.persistToStorage();
+    this.persistPlayerToStorage();
   }
 
   // Save torch placement
   public saveTorch(planetId: string, tileIndex: number, position: { x: number; y: number; z: number }): void {
-    this.torches.push({ planetId, tileIndex, position });
-    this.persistToStorage();
+    const planet = this.planetData.get(planetId);
+    if (!planet) return;
+
+    planet.torches.push({ tileIndex, position });
+    this.persistPlanetToStorage(planetId);
   }
 
   // Remove a torch from save
   public removeTorch(position: { x: number; y: number; z: number }): void {
-    // Find and remove torch at this position (with small tolerance)
+    // Find and remove torch at this position from all planets (with small tolerance)
     const tolerance = 0.01;
-    this.torches = this.torches.filter(t =>
-      Math.abs(t.position.x - position.x) > tolerance ||
-      Math.abs(t.position.y - position.y) > tolerance ||
-      Math.abs(t.position.z - position.z) > tolerance
-    );
-    this.persistToStorage();
+    for (const [planetId, planet] of this.planetData) {
+      const originalLength = planet.torches.length;
+      planet.torches = planet.torches.filter(t =>
+        Math.abs(t.position.x - position.x) > tolerance ||
+        Math.abs(t.position.y - position.y) > tolerance ||
+        Math.abs(t.position.z - position.z) > tolerance
+      );
+      if (planet.torches.length !== originalLength) {
+        this.persistPlanetToStorage(planetId);
+      }
+    }
   }
 
-  // Get all saved torches
-  public getTorches(): SavedTorch[] {
-    return this.torches;
+  // Get all saved torches (with planetId for compatibility)
+  public getTorches(): Array<SavedTorch & { planetId: string }> {
+    const allTorches: Array<SavedTorch & { planetId: string }> = [];
+    for (const [planetId, planet] of this.planetData) {
+      for (const torch of planet.torches) {
+        allTorches.push({ ...torch, planetId });
+      }
+    }
+    return allTorches;
   }
 
   // Save furnace placement
-  public saveFurnace(planetId: string, tileIndex: number, furnaceData: Omit<SavedFurnace, 'planetId' | 'tileIndex'>): void {
+  public saveFurnace(planetId: string, tileIndex: number, furnaceData: Omit<SavedFurnace, 'tileIndex'>): void {
+    const planet = this.planetData.get(planetId);
+    if (!planet) return;
+
     // Remove any existing furnace at this tile first
-    this.furnaces = this.furnaces.filter(f => !(f.planetId === planetId && f.tileIndex === tileIndex));
-    this.furnaces.push({ planetId, tileIndex, ...furnaceData });
-    this.persistToStorage();
+    planet.furnaces = planet.furnaces.filter(f => f.tileIndex !== tileIndex);
+    planet.furnaces.push({ tileIndex, ...furnaceData });
+    this.persistPlanetToStorage(planetId);
   }
 
   // Remove a furnace from save
   public removeFurnace(planetId: string, tileIndex: number): void {
-    this.furnaces = this.furnaces.filter(f => !(f.planetId === planetId && f.tileIndex === tileIndex));
-    this.persistToStorage();
+    const planet = this.planetData.get(planetId);
+    if (!planet) return;
+
+    planet.furnaces = planet.furnaces.filter(f => f.tileIndex !== tileIndex);
+    this.persistPlanetToStorage(planetId);
   }
 
-  // Get all saved furnaces
-  public getFurnaces(): SavedFurnace[] {
-    return this.furnaces;
+  // Get all saved furnaces (with planetId for compatibility)
+  public getFurnaces(): Array<SavedFurnace & { planetId: string }> {
+    const allFurnaces: Array<SavedFurnace & { planetId: string }> = [];
+    for (const [planetId, planet] of this.planetData) {
+      for (const furnace of planet.furnaces) {
+        allFurnaces.push({ ...furnace, planetId });
+      }
+    }
+    return allFurnaces;
+  }
+
+  // Save storage chest placement
+  public saveStorageChest(planetId: string, tileIndex: number, chestData: Omit<SavedStorageChest, 'tileIndex'>): void {
+    const planet = this.planetData.get(planetId);
+    if (!planet) return;
+
+    planet.storageChests = planet.storageChests.filter(c => c.tileIndex !== tileIndex);
+    planet.storageChests.push({ tileIndex, ...chestData });
+    this.persistPlanetToStorage(planetId);
+  }
+
+  // Remove a storage chest from save
+  public removeStorageChest(planetId: string, tileIndex: number): void {
+    const planet = this.planetData.get(planetId);
+    if (!planet) return;
+
+    planet.storageChests = planet.storageChests.filter(c => c.tileIndex !== tileIndex);
+    this.persistPlanetToStorage(planetId);
+  }
+
+  // Get all saved storage chests
+  public getStorageChests(): Array<SavedStorageChest & { planetId: string }> {
+    const allChests: Array<SavedStorageChest & { planetId: string }> = [];
+    for (const [planetId, planet] of this.planetData) {
+      for (const chest of planet.storageChests) {
+        allChests.push({ ...chest, planetId });
+      }
+    }
+    return allChests;
+  }
+
+  // Save garbage pile placement
+  public saveGarbagePile(planetId: string, tileIndex: number, pileData: Omit<SavedGarbagePile, 'tileIndex'>): void {
+    const planet = this.planetData.get(planetId);
+    if (!planet) return;
+
+    planet.garbagePiles = planet.garbagePiles.filter(p => p.tileIndex !== tileIndex);
+    planet.garbagePiles.push({ tileIndex, ...pileData });
+    this.persistPlanetToStorage(planetId);
+  }
+
+  // Remove a garbage pile from save
+  public removeGarbagePile(planetId: string, tileIndex: number): void {
+    const planet = this.planetData.get(planetId);
+    if (!planet) return;
+
+    planet.garbagePiles = planet.garbagePiles.filter(p => p.tileIndex !== tileIndex);
+    this.persistPlanetToStorage(planetId);
+  }
+
+  // Get all saved garbage piles
+  public getGarbagePiles(): Array<SavedGarbagePile & { planetId: string }> {
+    const allPiles: Array<SavedGarbagePile & { planetId: string }> = [];
+    for (const [planetId, planet] of this.planetData) {
+      for (const pile of planet.garbagePiles) {
+        allPiles.push({ ...pile, planetId });
+      }
+    }
+    return allPiles;
   }
 
   // Save player position immediately
   public savePlayerPosition(): void {
     if (this.onPlayerSave) {
-      this.playerData = this.onPlayerSave();
-      this.persistToStorage();
+      const posData = this.onPlayerSave();
+      this.playerData = {
+        version: SAVE_VERSION,
+        timestamp: Date.now(),
+        position: posData.position,
+        orientation: posData.orientation,
+        velocity: posData.velocity,
+        inventory: this.inventory
+      };
+      this.persistPlayerToStorage();
     }
   }
 
-  // Load saved game data
-  public load(): GameSaveData | null {
+  // Load all saved game data
+  public load(): LegacyGameSaveData | null {
+    // First try to migrate legacy save if it exists
+    this.migrateLegacySave();
+
+    // Load player data
+    this.loadPlayerData();
+
+    // Load planet data
+    this.loadPlanetData('earth');
+    this.loadPlanetData('moon');
+
+    // Return combined data in legacy format for compatibility
+    if (!this.playerData && this.inventory.length === 0) {
+      // Check if any planet has data
+      let hasData = false;
+      for (const planet of this.planetData.values()) {
+        if (planet.tileChanges.size > 0 || planet.torches.length > 0 || planet.furnaces.length > 0) {
+          hasData = true;
+          break;
+        }
+      }
+      if (!hasData) return null;
+    }
+
+    // Build legacy format for compatibility with existing code
+    const tileChanges: Array<TileChange & { planetId: string }> = [];
+    for (const [planetId, planet] of this.planetData) {
+      for (const change of planet.tileChanges.values()) {
+        tileChanges.push({ ...change, planetId });
+      }
+    }
+
+    return {
+      version: SAVE_VERSION,
+      timestamp: Date.now(),
+      tileChanges,
+      inventory: this.inventory,
+      player: this.playerData ? {
+        position: this.playerData.position,
+        orientation: this.playerData.orientation,
+        velocity: this.playerData.velocity
+      } : {
+        position: { x: 0, y: 0, z: 0 },
+        orientation: { x: 0, y: 0, z: 0, w: 1 },
+        velocity: { x: 0, y: 0, z: 0 }
+      },
+      torches: this.getTorches(),
+      furnaces: this.getFurnaces()
+    };
+  }
+
+  // Load player data from storage
+  private loadPlayerData(): void {
     try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      if (!saved) return null;
+      const saved = localStorage.getItem(STORAGE_KEY_PLAYER);
+      if (!saved) return;
 
-      const data = JSON.parse(saved) as GameSaveData;
-
-      // Version check for future compatibility
-      if (data.version !== SAVE_VERSION) {
-        console.warn(`Save version mismatch: expected ${SAVE_VERSION}, got ${data.version}`);
-        // For now, still try to load it
-      }
-
-      // Restore pending changes map
-      this.pendingChanges.clear();
-      for (const change of data.tileChanges) {
-        const key = `${change.planetId}:${change.tileIndex}:${change.depth}`;
-        this.pendingChanges.set(key, change);
-      }
-
+      const data = JSON.parse(saved) as PlayerSaveData;
+      this.playerData = data;
       this.inventory = data.inventory || [];
-      this.torches = data.torches || [];
-      this.furnaces = data.furnaces || [];
-      this.playerData = data.player || null;
-
-      return data;
     } catch (error) {
-      console.error('Failed to load save data:', error);
-      return null;
+      console.error('Failed to load player data:', error);
+    }
+  }
+
+  // Load planet data from storage
+  private loadPlanetData(planetId: string): void {
+    try {
+      const key = planetId === 'earth' ? STORAGE_KEY_EARTH : STORAGE_KEY_MOON;
+      const saved = localStorage.getItem(key);
+      if (!saved) return;
+
+      const data = JSON.parse(saved) as PlanetSaveData;
+      const planet = this.planetData.get(planetId);
+      if (!planet) return;
+
+      // Restore tile changes
+      planet.tileChanges.clear();
+      for (const change of data.tileChanges) {
+        const changeKey = `${change.tileIndex}:${change.depth}`;
+        planet.tileChanges.set(changeKey, change);
+      }
+
+      planet.torches = data.torches || [];
+      planet.furnaces = data.furnaces || [];
+      planet.storageChests = data.storageChests || [];
+      planet.garbagePiles = data.garbagePiles || [];
+    } catch (error) {
+      console.error(`Failed to load ${planetId} data:`, error);
+    }
+  }
+
+  // Migrate legacy single-file save to new multi-file format
+  private migrateLegacySave(): void {
+    try {
+      const legacySaved = localStorage.getItem(LEGACY_STORAGE_KEY);
+      if (!legacySaved) return;
+
+      // Check if we've already migrated (new files exist)
+      if (localStorage.getItem(STORAGE_KEY_PLAYER) !== null) {
+        // Already migrated, remove legacy file
+        localStorage.removeItem(LEGACY_STORAGE_KEY);
+        return;
+      }
+
+      console.log('Migrating legacy save data to new format...');
+      const legacyData = JSON.parse(legacySaved) as LegacyGameSaveData;
+
+      // Migrate player data
+      this.inventory = legacyData.inventory || [];
+      this.playerData = {
+        version: SAVE_VERSION,
+        timestamp: legacyData.timestamp,
+        position: legacyData.player?.position || { x: 0, y: 0, z: 0 },
+        orientation: legacyData.player?.orientation || { x: 0, y: 0, z: 0, w: 1 },
+        velocity: legacyData.player?.velocity || { x: 0, y: 0, z: 0 },
+        inventory: this.inventory
+      };
+
+      // Migrate tile changes per planet
+      for (const change of legacyData.tileChanges || []) {
+        const planet = this.planetData.get(change.planetId);
+        if (planet) {
+          const key = `${change.tileIndex}:${change.depth}`;
+          planet.tileChanges.set(key, {
+            tileIndex: change.tileIndex,
+            depth: change.depth,
+            blockType: change.blockType
+          });
+        }
+      }
+
+      // Migrate torches per planet
+      for (const torch of legacyData.torches || []) {
+        const planet = this.planetData.get(torch.planetId);
+        if (planet) {
+          planet.torches.push({
+            tileIndex: torch.tileIndex,
+            position: torch.position
+          });
+        }
+      }
+
+      // Migrate furnaces per planet
+      for (const furnace of legacyData.furnaces || []) {
+        const planet = this.planetData.get(furnace.planetId);
+        if (planet) {
+          planet.furnaces.push({
+            tileIndex: furnace.tileIndex,
+            position: furnace.position,
+            rotation: furnace.rotation,
+            fuelAmount: furnace.fuelAmount,
+            smeltingItem: furnace.smeltingItem,
+            smeltingProgress: furnace.smeltingProgress,
+            outputItem: furnace.outputItem,
+            outputCount: furnace.outputCount
+          });
+        }
+      }
+
+      // Save to new format
+      this.persistPlayerToStorage();
+      this.persistPlanetToStorage('earth');
+      this.persistPlanetToStorage('moon');
+
+      // Remove legacy save
+      localStorage.removeItem(LEGACY_STORAGE_KEY);
+      console.log('Migration complete!');
+    } catch (error) {
+      console.error('Failed to migrate legacy save:', error);
     }
   }
 
   // Get all tile changes for a specific planet
-  public getTileChangesForPlanet(planetId: string): TileChange[] {
-    const changes: TileChange[] = [];
-    for (const change of this.pendingChanges.values()) {
-      if (change.planetId === planetId) {
-        changes.push(change);
-      }
+  public getTileChangesForPlanet(planetId: string): Array<TileChange & { planetId: string }> {
+    const planet = this.planetData.get(planetId);
+    if (!planet) return [];
+
+    const changes: Array<TileChange & { planetId: string }> = [];
+    for (const change of planet.tileChanges.values()) {
+      changes.push({ ...change, planetId });
     }
     return changes;
   }
@@ -196,47 +486,83 @@ export class GameStorage {
     return this.inventory;
   }
 
-  // Get saved player data
-  public getPlayerData(): PlayerSaveData | null {
-    return this.playerData;
+  // Get saved player data (legacy format)
+  public getPlayerData(): { position: { x: number; y: number; z: number }; orientation: { x: number; y: number; z: number; w: number }; velocity: { x: number; y: number; z: number } } | null {
+    if (!this.playerData) return null;
+    return {
+      position: this.playerData.position,
+      orientation: this.playerData.orientation,
+      velocity: this.playerData.velocity
+    };
   }
 
   // Clear all saved data
   public clearSave(): void {
-    this.pendingChanges.clear();
-    this.inventory = [];
-    this.torches = [];
-    this.furnaces = [];
+    // Clear in-memory data
     this.playerData = null;
-    localStorage.removeItem(STORAGE_KEY);
+    this.inventory = [];
+    for (const planet of this.planetData.values()) {
+      planet.tileChanges.clear();
+      planet.torches = [];
+      planet.furnaces = [];
+      planet.storageChests = [];
+      planet.garbagePiles = [];
+    }
+
+    // Clear all storage keys
+    localStorage.removeItem(STORAGE_KEY_PLAYER);
+    localStorage.removeItem(STORAGE_KEY_EARTH);
+    localStorage.removeItem(STORAGE_KEY_MOON);
+    localStorage.removeItem(LEGACY_STORAGE_KEY);
   }
 
-  // Persist current state to localStorage
-  private persistToStorage(): void {
+  // Persist player data to localStorage
+  private persistPlayerToStorage(): void {
     try {
-      const data: GameSaveData = {
+      const data: PlayerSaveData = {
         version: SAVE_VERSION,
         timestamp: Date.now(),
-        tileChanges: Array.from(this.pendingChanges.values()),
-        inventory: this.inventory,
-        torches: this.torches,
-        furnaces: this.furnaces,
-        player: this.playerData || {
-          position: { x: 0, y: 0, z: 0 },
-          orientation: { x: 0, y: 0, z: 0, w: 1 },
-          velocity: { x: 0, y: 0, z: 0 }
-        }
+        position: this.playerData?.position || { x: 0, y: 0, z: 0 },
+        orientation: this.playerData?.orientation || { x: 0, y: 0, z: 0, w: 1 },
+        velocity: this.playerData?.velocity || { x: 0, y: 0, z: 0 },
+        inventory: this.inventory
       };
 
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+      localStorage.setItem(STORAGE_KEY_PLAYER, JSON.stringify(data));
     } catch (error) {
-      console.error('Failed to save game data:', error);
+      console.error('Failed to save player data:', error);
+    }
+  }
+
+  // Persist planet data to localStorage
+  private persistPlanetToStorage(planetId: string): void {
+    try {
+      const planet = this.planetData.get(planetId);
+      if (!planet) return;
+
+      const data: PlanetSaveData = {
+        version: SAVE_VERSION,
+        timestamp: Date.now(),
+        tileChanges: Array.from(planet.tileChanges.values()),
+        torches: planet.torches,
+        furnaces: planet.furnaces,
+        storageChests: planet.storageChests,
+        garbagePiles: planet.garbagePiles
+      };
+
+      const key = planetId === 'earth' ? STORAGE_KEY_EARTH : STORAGE_KEY_MOON;
+      localStorage.setItem(key, JSON.stringify(data));
+    } catch (error) {
+      console.error(`Failed to save ${planetId} data:`, error);
     }
   }
 
   // Check if there's any saved data
   public hasSavedData(): boolean {
-    return localStorage.getItem(STORAGE_KEY) !== null;
+    return localStorage.getItem(STORAGE_KEY_PLAYER) !== null ||
+           localStorage.getItem(STORAGE_KEY_EARTH) !== null ||
+           localStorage.getItem(STORAGE_KEY_MOON) !== null ||
+           localStorage.getItem(LEGACY_STORAGE_KEY) !== null;
   }
 }
 

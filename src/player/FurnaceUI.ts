@@ -1,21 +1,7 @@
 import { Inventory, ItemType, ITEM_DATA } from './Inventory';
-import { PlacedFurnace } from '../planet/Furnace';
+import { PlacedFurnace, SMELTING_RECIPES } from '../planet/Furnace';
 import { getAssetPath } from '../utils/assetPath';
-
-// Smelting recipes: ore -> ingot
-export interface SmeltingRecipe {
-  input: ItemType;
-  output: ItemType;
-  outputQuantity: number;
-}
-
-export const SMELTING_RECIPES: SmeltingRecipe[] = [
-  { input: ItemType.ORE_COPPER, output: ItemType.INGOT_COPPER, outputQuantity: 1 },
-  { input: ItemType.ORE_IRON, output: ItemType.INGOT_IRON, outputQuantity: 1 },
-  { input: ItemType.ORE_GOLD, output: ItemType.INGOT_GOLD, outputQuantity: 1 },
-  { input: ItemType.ORE_ALUMINUM, output: ItemType.INGOT_ALUMINUM, outputQuantity: 1 },
-  // Note: Lithium and Cobalt require electrical furnace (not implemented yet)
-];
+import { MenuManager } from './MenuManager';
 
 export class FurnaceUI {
   private inventory: Inventory;
@@ -27,6 +13,7 @@ export class FurnaceUI {
   private updateInterval: number | null = null;
   private onOpenInventoryCallback: (() => void) | null = null;
   private onUpdateHotbarCallback: (() => void) | null = null;
+  private onUpdateInventoryCallback: (() => void) | null = null;
 
   // UI Elements
   private fuelSlotElement: HTMLElement | null = null;
@@ -35,8 +22,7 @@ export class FurnaceUI {
   private progressBarElement: HTMLElement | null = null;
   private fuelBarElement: HTMLElement | null = null;
 
-  // Smelting state
-  private readonly SMELT_TIME = 10; // seconds per item
+  // Fuel constant for UI display and adding fuel
   private readonly FUEL_PER_COAL = 8; // Each coal smelts 8 items
 
   // Slot type identifiers for drag/drop
@@ -48,6 +34,12 @@ export class FurnaceUI {
     this.inventory = inventory;
     this.createUI();
     this.setupKeyboardHandler();
+
+    // Register with MenuManager for centralized menu handling
+    MenuManager.registerMenu('furnace', {
+      isOpen: () => this.isOpen,
+      close: () => this.close(),
+    });
   }
 
   private createUI(): void {
@@ -98,8 +90,8 @@ export class FurnaceUI {
       </div>
 
       <div class="furnace-hint">
-        <p>Click slots to add items from hotbar</p>
-        <p>Lithium/Cobalt need Electrical Furnace</p>
+        <p>Drag items or Shift+Click to transfer</p>
+        <p>Right-click for half stack</p>
       </div>
     `;
 
@@ -200,6 +192,7 @@ export class FurnaceUI {
         width: 40px;
         height: 40px;
         image-rendering: pixelated;
+        pointer-events: none;
       }
 
       .furnace-slot .slot-count {
@@ -209,6 +202,7 @@ export class FurnaceUI {
         font-size: 12px;
         color: white;
         text-shadow: 1px 1px 2px black;
+        pointer-events: none;
       }
 
       .furnace-progress-section {
@@ -296,27 +290,51 @@ export class FurnaceUI {
   private setupSlotInteractions(): void {
     // Fuel slot - accepts coal
     if (this.fuelSlotElement) {
-      this.fuelSlotElement.addEventListener('click', () => this.handleFuelSlotClick());
       this.fuelSlotElement.dataset.furnaceSlot = this.SLOT_FUEL;
-      this.setupDropTarget(this.fuelSlotElement, this.SLOT_FUEL);
+      this.setupFurnaceSlot(this.fuelSlotElement, this.SLOT_FUEL);
     }
 
     // Input slot - accepts smeltable ores
     if (this.inputSlotElement) {
-      this.inputSlotElement.addEventListener('click', () => this.handleInputSlotClick());
       this.inputSlotElement.dataset.furnaceSlot = this.SLOT_INPUT;
-      this.setupDropTarget(this.inputSlotElement, this.SLOT_INPUT);
+      this.setupFurnaceSlot(this.inputSlotElement, this.SLOT_INPUT);
     }
 
-    // Output slot - collect smelted items (drag out only)
+    // Output slot - collect smelted items
     if (this.outputSlotElement) {
-      this.outputSlotElement.addEventListener('click', () => this.handleOutputSlotClick());
       this.outputSlotElement.dataset.furnaceSlot = this.SLOT_OUTPUT;
-      this.setupDragSource(this.outputSlotElement, this.SLOT_OUTPUT);
+      this.setupFurnaceSlot(this.outputSlotElement, this.SLOT_OUTPUT);
     }
   }
 
-  private setupDropTarget(element: HTMLElement, slotType: string): void {
+  private setupFurnaceSlot(element: HTMLElement, slotType: string): void {
+    element.draggable = true;
+
+    // Left click - add one item from selected hotbar slot
+    element.addEventListener('click', (e) => {
+      if (e.shiftKey) {
+        this.handleShiftClick(slotType);
+      } else {
+        this.handleSlotClick(slotType);
+      }
+    });
+
+    // Right click - pick up half or add half
+    element.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      this.handleRightClick(slotType);
+    });
+
+    // Drag start - pick up items from slot
+    element.addEventListener('dragstart', (e) => {
+      this.handleFurnaceDragStart(e, slotType);
+    });
+
+    element.addEventListener('dragend', () => {
+      element.classList.remove('dragging');
+    });
+
+    // Drop target - accept items from inventory
     element.addEventListener('dragover', (e) => {
       e.preventDefault();
       if (e.dataTransfer) {
@@ -332,57 +350,118 @@ export class FurnaceUI {
     element.addEventListener('drop', (e) => {
       e.preventDefault();
       element.classList.remove('drag-over');
-
-      const sourceData = e.dataTransfer?.getData('text/plain');
-      if (!sourceData) return;
-
-      // Check if dropping from inventory slot
-      const sourceSlotIndex = parseInt(sourceData);
-      if (!isNaN(sourceSlotIndex) && sourceSlotIndex >= 0) {
-        this.handleDropFromInventory(sourceSlotIndex, slotType);
-      }
+      this.handleDropOnFurnace(e, slotType);
     });
   }
 
-  private setupDragSource(element: HTMLElement, slotType: string): void {
-    element.draggable = true;
+  private handleFurnaceDragStart(e: DragEvent, slotType: string): void {
+    if (!this.currentFurnace) {
+      e.preventDefault();
+      return;
+    }
 
-    element.addEventListener('dragstart', (e) => {
-      if (!this.currentFurnace) return;
+    let hasItem = false;
+    let itemType: ItemType | null = null;
+    let quantity = 0;
 
-      // Only allow dragging if there's output
-      if (slotType === this.SLOT_OUTPUT && this.currentFurnace.outputItem !== null && this.currentFurnace.outputCount > 0) {
-        e.dataTransfer?.setData('text/plain', `furnace:${slotType}`);
-        if (e.dataTransfer) {
-          e.dataTransfer.effectAllowed = 'move';
-        }
-        element.classList.add('dragging');
-      } else {
-        e.preventDefault();
+    if (slotType === this.SLOT_OUTPUT) {
+      hasItem = this.currentFurnace.outputItem !== null && this.currentFurnace.outputCount > 0;
+      if (hasItem) {
+        itemType = this.currentFurnace.outputItem as ItemType;
+        quantity = this.currentFurnace.outputCount;
       }
-    });
+    } else if (slotType === this.SLOT_INPUT) {
+      hasItem = this.currentFurnace.smeltingItem !== null;
+      if (hasItem) {
+        itemType = this.currentFurnace.smeltingItem as ItemType;
+        quantity = 1;
+      }
+    } else if (slotType === this.SLOT_FUEL) {
+      hasItem = this.currentFurnace.fuelAmount > 0;
+      if (hasItem) {
+        itemType = ItemType.COAL;
+        quantity = Math.ceil(this.currentFurnace.fuelAmount / this.FUEL_PER_COAL);
+      }
+    }
 
-    element.addEventListener('dragend', () => {
-      element.classList.remove('dragging');
-    });
+    if (!hasItem || itemType === null) {
+      e.preventDefault();
+      return;
+    }
+
+    // Set drag data with furnace slot identifier
+    e.dataTransfer?.setData('text/plain', `furnace:${slotType}`);
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = 'move';
+    }
+
+    const target = e.currentTarget as HTMLElement;
+    target.classList.add('dragging');
+
+    // Create drag ghost
+    const ghost = document.createElement('div');
+    ghost.className = 'drag-ghost';
+    const itemData = ITEM_DATA[itemType];
+    ghost.innerHTML = `<img src="${getAssetPath(itemData.texture)}" style="width:40px;height:40px;image-rendering:pixelated;">`;
+    if (quantity > 1) {
+      ghost.innerHTML += `<span class="ghost-count">${quantity}</span>`;
+    }
+    ghost.style.position = 'fixed';
+    ghost.style.top = '-100px';
+    ghost.style.left = '-100px';
+    ghost.style.pointerEvents = 'none';
+    ghost.style.zIndex = '9999';
+    ghost.style.background = 'rgba(0,0,0,0.8)';
+    ghost.style.border = '2px solid #4CAF50';
+    ghost.style.borderRadius = '4px';
+    ghost.style.padding = '4px';
+    document.body.appendChild(ghost);
+
+    e.dataTransfer?.setDragImage(ghost, 25, 25);
+
+    // Clean up ghost after drag
+    setTimeout(() => ghost.remove(), 0);
   }
 
-  private handleDropFromInventory(sourceSlotIndex: number, targetSlotType: string): void {
+  private handleDropOnFurnace(e: DragEvent, targetSlotType: string): void {
+    if (!this.currentFurnace) return;
+
+    const sourceData = e.dataTransfer?.getData('text/plain');
+    if (!sourceData) return;
+
+    // Check if dropping from inventory slot (numeric index)
+    const sourceSlotIndex = parseInt(sourceData);
+    if (!isNaN(sourceSlotIndex) && sourceSlotIndex >= 0) {
+      this.handleDropFromInventory(sourceSlotIndex, targetSlotType, e.shiftKey);
+      return;
+    }
+
+    // Check if dropping from another furnace slot
+    if (sourceData.startsWith('furnace:')) {
+      // Can't drop furnace items onto furnace slots (for now)
+      return;
+    }
+  }
+
+  private handleDropFromInventory(sourceSlotIndex: number, targetSlotType: string, transferAll: boolean = false): void {
     if (!this.currentFurnace) return;
 
     const slotData = this.inventory.getSlot(sourceSlotIndex);
     if (!slotData || slotData.itemType === ItemType.NONE) return;
 
+    const quantity = transferAll ? slotData.quantity : 1;
+
     if (targetSlotType === this.SLOT_FUEL) {
       // Only accept coal for fuel
       if (slotData.itemType === ItemType.COAL) {
-        this.currentFurnace.fuelAmount += this.FUEL_PER_COAL;
-        this.inventory.removeItem(ItemType.COAL, 1);
+        const toTransfer = Math.min(quantity, slotData.quantity);
+        this.currentFurnace.fuelAmount += toTransfer * this.FUEL_PER_COAL;
+        this.inventory.removeItem(ItemType.COAL, toTransfer);
         this.updateUI();
         this.notifyChanges();
       }
     } else if (targetSlotType === this.SLOT_INPUT) {
-      // Only accept smeltable ores
+      // Only accept smeltable ores, and only if input is empty
       const recipe = SMELTING_RECIPES.find(r => r.input === slotData.itemType);
       if (recipe && this.currentFurnace.smeltingItem === null) {
         this.currentFurnace.smeltingItem = slotData.itemType;
@@ -392,11 +471,113 @@ export class FurnaceUI {
         this.notifyChanges();
       }
     }
+    // Can't drop onto output slot
+  }
+
+  private handleSlotClick(slotType: string): void {
+    if (!this.currentFurnace) return;
+
+    if (slotType === this.SLOT_FUEL) {
+      this.handleFuelSlotClick();
+    } else if (slotType === this.SLOT_INPUT) {
+      this.handleInputSlotClick();
+    } else if (slotType === this.SLOT_OUTPUT) {
+      this.handleOutputSlotClick();
+    }
+  }
+
+  private handleRightClick(slotType: string): void {
+    if (!this.currentFurnace) return;
+
+    if (slotType === this.SLOT_OUTPUT) {
+      // Right-click output: pick up half
+      if (this.currentFurnace.outputItem !== null && this.currentFurnace.outputCount > 0) {
+        const itemType = this.currentFurnace.outputItem as ItemType;
+        const halfCount = Math.ceil(this.currentFurnace.outputCount / 2);
+        const remaining = this.inventory.addItem(itemType, halfCount);
+        const actuallyTaken = halfCount - remaining;
+
+        if (actuallyTaken > 0) {
+          this.currentFurnace.outputCount -= actuallyTaken;
+          if (this.currentFurnace.outputCount === 0) {
+            this.currentFurnace.outputItem = null;
+          }
+          this.updateUI();
+          this.notifyChanges();
+        }
+      }
+    } else if (slotType === this.SLOT_FUEL) {
+      // Right-click fuel: add half of held coal
+      const selectedItem = this.inventory.getSelectedItem();
+      if (selectedItem.itemType === ItemType.COAL && selectedItem.quantity > 0) {
+        const halfCount = Math.ceil(selectedItem.quantity / 2);
+        this.currentFurnace.fuelAmount += halfCount * this.FUEL_PER_COAL;
+        this.inventory.removeItem(ItemType.COAL, halfCount);
+        this.updateUI();
+        this.notifyChanges();
+      }
+    } else if (slotType === this.SLOT_INPUT) {
+      // Right-click input: return item to inventory if there's one
+      if (this.currentFurnace.smeltingItem !== null) {
+        const itemType = this.currentFurnace.smeltingItem as ItemType;
+        const remaining = this.inventory.addItem(itemType, 1);
+        if (remaining === 0) {
+          this.currentFurnace.smeltingItem = null;
+          this.currentFurnace.smeltingProgress = 0;
+          this.updateUI();
+          this.notifyChanges();
+        }
+      }
+    }
+  }
+
+  private handleShiftClick(slotType: string): void {
+    if (!this.currentFurnace) return;
+
+    if (slotType === this.SLOT_OUTPUT) {
+      // Shift+click output: move all to inventory
+      if (this.currentFurnace.outputItem !== null && this.currentFurnace.outputCount > 0) {
+        const itemType = this.currentFurnace.outputItem as ItemType;
+        const remaining = this.inventory.addItem(itemType, this.currentFurnace.outputCount);
+
+        if (remaining < this.currentFurnace.outputCount) {
+          this.currentFurnace.outputCount = remaining;
+          if (remaining === 0) {
+            this.currentFurnace.outputItem = null;
+          }
+          this.updateUI();
+          this.notifyChanges();
+        }
+      }
+    } else if (slotType === this.SLOT_INPUT) {
+      // Shift+click input: return smelting item to inventory
+      if (this.currentFurnace.smeltingItem !== null) {
+        const itemType = this.currentFurnace.smeltingItem as ItemType;
+        const remaining = this.inventory.addItem(itemType, 1);
+        if (remaining === 0) {
+          this.currentFurnace.smeltingItem = null;
+          this.currentFurnace.smeltingProgress = 0;
+          this.updateUI();
+          this.notifyChanges();
+        }
+      }
+    } else if (slotType === this.SLOT_FUEL) {
+      // Shift+click fuel: we can't really return fuel as coal (it's converted)
+      // Just add all held coal instead
+      const selectedItem = this.inventory.getSelectedItem();
+      if (selectedItem.itemType === ItemType.COAL && selectedItem.quantity > 0) {
+        this.currentFurnace.fuelAmount += selectedItem.quantity * this.FUEL_PER_COAL;
+        this.inventory.removeItem(ItemType.COAL, selectedItem.quantity);
+        this.updateUI();
+        this.notifyChanges();
+      }
+    }
   }
 
   private notifyChanges(): void {
     if (this.onSaveCallback) this.onSaveCallback();
     if (this.onUpdateHotbarCallback) this.onUpdateHotbarCallback();
+    if (this.onUpdateInventoryCallback) this.onUpdateInventoryCallback();
   }
 
   private handleFuelSlotClick(): void {
@@ -404,9 +585,8 @@ export class FurnaceUI {
 
     const selectedItem = this.inventory.getSelectedItem();
 
-    // If holding coal, add it as fuel
+    // If holding coal, add one as fuel
     if (selectedItem.itemType === ItemType.COAL && selectedItem.quantity > 0) {
-      // Add fuel to furnace
       this.currentFurnace.fuelAmount += this.FUEL_PER_COAL;
       this.inventory.removeItem(ItemType.COAL, 1);
       this.updateUI();
@@ -436,7 +616,7 @@ export class FurnaceUI {
   private handleOutputSlotClick(): void {
     if (!this.currentFurnace) return;
 
-    // Collect completed items
+    // Collect all completed items
     if (this.currentFurnace.outputItem !== null && this.currentFurnace.outputCount > 0) {
       const itemType = this.currentFurnace.outputItem as ItemType;
       const remaining = this.inventory.addItem(itemType, this.currentFurnace.outputCount);
@@ -451,6 +631,58 @@ export class FurnaceUI {
         this.notifyChanges();
       }
     }
+  }
+
+  // Handle drops from furnace to inventory slots (called by CraftingSystem)
+  public handleDropToInventory(targetSlotIndex: number, sourceSlotType: string): boolean {
+    if (!this.currentFurnace) return false;
+
+    if (sourceSlotType === this.SLOT_OUTPUT) {
+      if (this.currentFurnace.outputItem !== null && this.currentFurnace.outputCount > 0) {
+        const itemType = this.currentFurnace.outputItem as ItemType;
+        const targetSlot = this.inventory.getSlot(targetSlotIndex);
+
+        // Check if target slot is empty or has same item type
+        if (targetSlot && (targetSlot.itemType === ItemType.NONE || targetSlot.itemType === itemType)) {
+          const maxStack = 64; // Assuming max stack size
+          const currentCount = targetSlot.itemType === itemType ? targetSlot.quantity : 0;
+          const spaceAvailable = maxStack - currentCount;
+          const toTransfer = Math.min(this.currentFurnace.outputCount, spaceAvailable);
+
+          if (toTransfer > 0) {
+            this.inventory.setSlot(targetSlotIndex, itemType, currentCount + toTransfer);
+            this.currentFurnace.outputCount -= toTransfer;
+            if (this.currentFurnace.outputCount === 0) {
+              this.currentFurnace.outputItem = null;
+            }
+            this.updateUI();
+            this.notifyChanges();
+            return true;
+          }
+        }
+      }
+    } else if (sourceSlotType === this.SLOT_INPUT) {
+      if (this.currentFurnace.smeltingItem !== null) {
+        const itemType = this.currentFurnace.smeltingItem as ItemType;
+        const targetSlot = this.inventory.getSlot(targetSlotIndex);
+
+        if (targetSlot && (targetSlot.itemType === ItemType.NONE || targetSlot.itemType === itemType)) {
+          const maxStack = 64;
+          const currentCount = targetSlot.itemType === itemType ? targetSlot.quantity : 0;
+          if (currentCount < maxStack) {
+            this.inventory.setSlot(targetSlotIndex, itemType, currentCount + 1);
+            this.currentFurnace.smeltingItem = null;
+            this.currentFurnace.smeltingProgress = 0;
+            this.updateUI();
+            this.notifyChanges();
+            return true;
+          }
+        }
+      }
+    }
+    // Can't drag fuel back (it's been converted to fuel units)
+
+    return false;
   }
 
   private setupKeyboardHandler(): void {
@@ -514,6 +746,10 @@ export class FurnaceUI {
     this.onUpdateHotbarCallback = callback;
   }
 
+  public setOnUpdateInventoryCallback(callback: () => void): void {
+    this.onUpdateInventoryCallback = callback;
+  }
+
   public getCurrentFurnace(): PlacedFurnace | null {
     return this.currentFurnace;
   }
@@ -521,34 +757,8 @@ export class FurnaceUI {
   private update(): void {
     if (!this.currentFurnace || !this.isOpen) return;
 
-    const furnace = this.currentFurnace;
-
-    // Process smelting if we have fuel and an item
-    if (furnace.fuelAmount > 0 && furnace.smeltingItem !== null) {
-      // Progress the smelting
-      furnace.smeltingProgress += 0.1 / this.SMELT_TIME; // 100ms intervals
-
-      if (furnace.smeltingProgress >= 1) {
-        // Smelting complete
-        const recipe = SMELTING_RECIPES.find(r => r.input === furnace.smeltingItem);
-        if (recipe) {
-          // Add to output (or create new output)
-          if (furnace.outputItem === null || furnace.outputItem === recipe.output) {
-            furnace.outputItem = recipe.output;
-            furnace.outputCount += recipe.outputQuantity;
-          }
-          // Consume fuel
-          furnace.fuelAmount--;
-        }
-
-        // Reset for next item
-        furnace.smeltingItem = null;
-        furnace.smeltingProgress = 0;
-
-        if (this.onSaveCallback) this.onSaveCallback();
-      }
-    }
-
+    // Smelting logic is handled by FurnaceManager.update() which runs every frame
+    // regardless of whether the UI is open. This method only updates the UI display.
     this.updateUI();
   }
 

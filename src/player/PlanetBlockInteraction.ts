@@ -6,8 +6,11 @@ import { Inventory, ItemType, ITEM_DATA } from './Inventory';
 import { PlanetTreeManager } from '../planet/Tree';
 import { HeldTorch, TorchManager } from '../planet/Torch';
 import { FurnaceManager, PlacedFurnace } from '../planet/Furnace';
+import { StorageChestManager, PlacedStorageChest } from '../planet/StorageChest';
+import { GarbagePileManager, PlacedGarbagePile } from '../planet/GarbagePile';
 import { CraftingSystem } from './CraftingSystem';
 import { FurnaceUI } from './FurnaceUI';
+import { StorageUI } from './StorageUI';
 import { getAssetPath } from '../utils/assetPath';
 import { gameStorage } from '../engine/GameStorage';
 import { PlayerConfig } from '../config/PlayerConfig';
@@ -82,6 +85,13 @@ export class PlanetBlockInteraction {
   private furnaceUI: FurnaceUI;
   private miningFurnaceTarget: { furnace: PlacedFurnace } | null = null;
 
+  // Storage system
+  private storageChestManager: StorageChestManager;
+  private garbagePileManager: GarbagePileManager;
+  private storageUI: StorageUI;
+  private miningStorageTarget: { chest: PlacedStorageChest } | null = null;
+  private miningGarbageTarget: { pile: PlacedGarbagePile } | null = null;
+
   private rightClickCooldown: number = 0;
   private readonly CLICK_COOLDOWN = 0.25;
   private readonly MAX_REACH = 8;
@@ -112,14 +122,26 @@ export class PlanetBlockInteraction {
     this.torchManager = new TorchManager(scene);
     this.heldTorch = new HeldTorch(player.camera, scene);
 
-    // Initialize furnace systems
-    this.furnaceManager = new FurnaceManager(scene);
+    // Initialize furnace systems with planet center and sun direction for lighting
+    const earthPlanet = planets.find(p => p.radius > 50); // Earth has larger radius than moon
+    const planetCenter = earthPlanet?.center || new THREE.Vector3(0, 0, 0);
+    const sunDirection = new THREE.Vector3(
+      PlayerConfig.SUN_DIRECTION.x,
+      PlayerConfig.SUN_DIRECTION.y,
+      PlayerConfig.SUN_DIRECTION.z
+    ).normalize();
+    this.furnaceManager = new FurnaceManager(scene, planetCenter, sunDirection);
+    this.furnaceManager.setOnSmeltCompleteCallback(() => {
+      // Save all furnace states when smelting completes (even when UI is closed)
+      this.saveAllFurnaceStates();
+    });
     this.furnaceUI = new FurnaceUI(this.inventory);
     this.furnaceUI.setOnCloseCallback(() => {
       // Furnace close is now handled by inventory menu close
     });
     this.furnaceUI.setOnSaveCallback(() => {
       this.saveInventory();
+      this.saveAllFurnaceStates();
     });
     this.furnaceUI.setOnOpenInventoryCallback(() => {
       // Open the inventory menu when furnace is interacted with
@@ -128,23 +150,52 @@ export class PlanetBlockInteraction {
     this.furnaceUI.setOnUpdateHotbarCallback(() => {
       this.updateHotbarUI();
     });
+    this.furnaceUI.setOnUpdateInventoryCallback(() => {
+      this.craftingSystem.updateInventorySlotsPublic();
+    });
+
+    // Initialize storage systems with planet center and sun direction for lighting
+    this.storageChestManager = new StorageChestManager(scene, planetCenter, sunDirection);
+    this.garbagePileManager = new GarbagePileManager(scene, planetCenter, sunDirection);
+    this.storageUI = new StorageUI(this.inventory);
+    this.storageUI.setOnCloseCallback(() => {
+      // Storage close is handled by inventory menu close
+    });
+    this.storageUI.setOnSaveCallback(() => {
+      this.saveInventory();
+      this.saveAllStorageStates();
+    });
+    this.storageUI.setOnOpenInventoryCallback(() => {
+      this.craftingSystem.open();
+    });
+    this.storageUI.setOnUpdateHotbarCallback(() => {
+      this.updateHotbarUI();
+    });
+    this.storageUI.setOnUpdateInventoryCallback(() => {
+      this.craftingSystem.updateInventorySlotsPublic();
+    });
 
     // Initialize crafting system with callbacks
     this.craftingSystem = new CraftingSystem(this.inventory);
     this.craftingSystem.setOnCloseCallback(() => {
-      // Close furnace UI when inventory closes
+      // Close furnace UI and storage UI when inventory closes
       this.furnaceUI.close();
-      // Re-lock pointer when inventory closes
-      const container = document.getElementById('game-container');
-      if (container) {
-        container.requestPointerLock();
-      }
+      this.storageUI.close();
+      // Note: We don't request pointer lock here because:
+      // 1. If closed via ESC, browser security prevents requestPointerLock during ESC handling
+      // 2. The pause menu will show and user can click PLAY to resume
     });
     this.craftingSystem.setOnUpdateHotbarCallback(() => {
       this.updateHotbarUI();
     });
     this.craftingSystem.setOnSaveCallback(() => {
       this.saveInventory();
+    });
+    this.craftingSystem.setOnFurnaceDropCallback((targetSlotIndex, sourceSlotType) => {
+      return this.furnaceUI.handleDropToInventory(targetSlotIndex, sourceSlotType);
+    });
+    this.craftingSystem.setOnStorageDropCallback((targetSlotIndex, sourceSlotType) => {
+      return this.storageUI.handleDropToInventory(targetSlotIndex, sourceSlotType);
     });
 
     this.createHighlightMesh();
@@ -553,6 +604,17 @@ export class PlanetBlockInteraction {
     // Update furnace smelting progress
     this.furnaceManager.update(deltaTime);
 
+    // Update furnace, storage chest, and garbage pile torch lighting based on nearby torches
+    const torchData = this.torchManager.getTorchDataForBaking();
+    if (torchData.length > 0) {
+      const torchPositions = torchData.map(t => t.position);
+      const torchRange = torchData[0].range;
+      const torchIntensity = torchData[0].intensity;
+      this.furnaceManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
+      this.storageChestManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
+      this.garbagePileManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
+    }
+
     // Don't process block interaction when inventory menu is open
     if (this.craftingSystem.isMenuOpen()) {
       // Hide wireframe and reset mining when menu is open
@@ -578,10 +640,15 @@ export class PlanetBlockInteraction {
     const torchMeshes = this.torchManager.getTorchMeshes();
     // Get furnace meshes for picking
     const furnaceMeshes = this.furnaceManager.getFurnaceMeshes();
+    // Get storage chest and garbage pile meshes for picking
+    const storageChestMeshes = this.storageChestManager.getChestMeshes();
+    const garbagePileMeshes = this.garbagePileManager.getPileMeshes();
 
     const treeIntersects = this.raycaster.intersectObjects(treeMeshes, false);
     const torchIntersects = this.raycaster.intersectObjects(torchMeshes, false);
     const furnaceIntersects = this.raycaster.intersectObjects(furnaceMeshes, false);
+    const storageChestIntersects = this.raycaster.intersectObjects(storageChestMeshes, false);
+    const garbagePileIntersects = this.raycaster.intersectObjects(garbagePileMeshes, false);
 
     // Raycast against all planets and find the closest hit
     let closestBlockHit: ReturnType<Planet['raycast']> = null;
@@ -600,23 +667,35 @@ export class PlanetBlockInteraction {
       }
     }
 
-    // Determine which hit is closer (tree, torch, furnace, or block)
+    // Determine which hit is closer (tree, torch, furnace, storage, garbage pile, or block)
     let hitTree = false;
     let hitBlock = false;
     let hitTorch = false;
     let hitFurnace = false;
+    let hitStorageChest = false;
+    let hitGarbagePile = false;
     let treeHit: THREE.Intersection | null = null;
     let torchHit: THREE.Intersection | null = null;
     let furnaceHit: THREE.Intersection | null = null;
+    let storageChestHit: THREE.Intersection | null = null;
+    let garbagePileHit: THREE.Intersection | null = null;
 
     // Find the closest hit among all types
     const treeDistance = treeIntersects.length > 0 ? treeIntersects[0].distance : Infinity;
     const torchDistance = torchIntersects.length > 0 ? torchIntersects[0].distance : Infinity;
     const furnaceDistance = furnaceIntersects.length > 0 ? furnaceIntersects[0].distance : Infinity;
-    const closestObjectDistance = Math.min(treeDistance, torchDistance, furnaceDistance);
+    const storageChestDistance = storageChestIntersects.length > 0 ? storageChestIntersects[0].distance : Infinity;
+    const garbagePileDistance = garbagePileIntersects.length > 0 ? garbagePileIntersects[0].distance : Infinity;
+    const closestObjectDistance = Math.min(treeDistance, torchDistance, furnaceDistance, storageChestDistance, garbagePileDistance);
 
     if (closestBlockHit && closestBlockDistance < closestObjectDistance) {
       hitBlock = true;
+    } else if (storageChestDistance <= closestObjectDistance && storageChestDistance < Infinity) {
+      hitStorageChest = true;
+      storageChestHit = storageChestIntersects[0];
+    } else if (garbagePileDistance <= closestObjectDistance && garbagePileDistance < Infinity) {
+      hitGarbagePile = true;
+      garbagePileHit = garbagePileIntersects[0];
     } else if (furnaceDistance <= torchDistance && furnaceDistance <= treeDistance && furnaceDistance < Infinity) {
       hitFurnace = true;
       furnaceHit = furnaceIntersects[0];
@@ -630,7 +709,45 @@ export class PlanetBlockInteraction {
       hitBlock = true;
     }
 
-    if (hitFurnace && furnaceHit) {
+    if (hitStorageChest && storageChestHit) {
+      // No wireframe for storage chests
+      if (this.blockWireframe) {
+        this.blockWireframe.visible = false;
+        this.wireframeCache = null;
+      }
+
+      const chestMesh = storageChestHit.object as THREE.Mesh;
+      const chest = this.storageChestManager.getChestByMesh(chestMesh);
+
+      // Handle storage chest interaction (right click to open, left click to mine)
+      if (rightClick && this.rightClickCooldown === 0 && chest) {
+        this.storageUI.open(chest);
+        this.rightClickCooldown = this.CLICK_COOLDOWN;
+      } else if (leftClick && chest) {
+        this.handleStorageChestMining(deltaTime, chest);
+      } else {
+        this.resetMining();
+      }
+    } else if (hitGarbagePile && garbagePileHit) {
+      // No wireframe for garbage piles
+      if (this.blockWireframe) {
+        this.blockWireframe.visible = false;
+        this.wireframeCache = null;
+      }
+
+      const pileMesh = garbagePileHit.object as THREE.Mesh;
+      const pile = this.garbagePileManager.getPileByMesh(pileMesh);
+
+      // Handle garbage pile interaction (right click to open, left click to mine)
+      if (rightClick && this.rightClickCooldown === 0 && pile) {
+        this.storageUI.open(pile);
+        this.rightClickCooldown = this.CLICK_COOLDOWN;
+      } else if (leftClick && pile) {
+        this.handleGarbagePileMining(deltaTime, pile);
+      } else {
+        this.resetMining();
+      }
+    } else if (hitFurnace && furnaceHit) {
       // No wireframe for furnaces
       if (this.blockWireframe) {
         this.blockWireframe.visible = false;
@@ -843,10 +960,165 @@ export class PlanetBlockInteraction {
     this.furnaceManager.removeFurnace(furnace);
   }
 
+  private handleStorageChestMining(deltaTime: number, chest: PlacedStorageChest): void {
+    // Check if target changed
+    if (this.miningStorageTarget === null || this.miningStorageTarget.chest !== chest) {
+      // New target, reset progress
+      this.miningStorageTarget = { chest };
+      this.miningTarget = null;
+      this.miningTreeTarget = null;
+      this.miningFurnaceTarget = null;
+      this.miningGarbageTarget = null;
+      this.miningProgress = 0;
+    }
+
+    // Storage chest mining time
+    const mineTime = ITEM_DATA[ItemType.STORAGE_CHEST].mineTime;
+
+    // Increase progress
+    this.miningProgress += deltaTime / mineTime;
+    this.updateMiningUI(this.miningProgress);
+
+    // Check if mining complete
+    if (this.miningProgress >= 1) {
+      this.breakStorageChest(chest);
+      this.resetMining();
+    }
+  }
+
+  private breakStorageChest(chest: PlacedStorageChest): void {
+    // Give the storage chest item back to the player
+    this.inventory.addItem(ItemType.STORAGE_CHEST, 1);
+
+    // Also return all items that were in the chest - overflow creates garbage pile
+    const items = this.storageChestManager.getAllItemsFromChest(chest);
+    const overflowItems: { itemType: ItemType; quantity: number }[] = [];
+
+    for (const item of items) {
+      const remaining = this.inventory.addItem(item.itemType, item.quantity);
+      if (remaining > 0) {
+        overflowItems.push({ itemType: item.itemType, quantity: remaining });
+      }
+    }
+
+    this.updateHotbarUI();
+    this.saveInventory();
+
+    // Remove chest from save
+    for (let i = 0; i < this.planets.length; i++) {
+      const planetId = i === 0 ? 'earth' : 'moon';
+      gameStorage.removeStorageChest(planetId, chest.tileIndex);
+    }
+
+    // If there's overflow, create a garbage pile at the same location
+    if (overflowItems.length > 0) {
+      this.createGarbagePileWithItems(chest.position.clone(), chest.tileIndex, overflowItems);
+    }
+
+    // Remove the chest from the world
+    this.storageChestManager.removeChest(chest);
+  }
+
+  private handleGarbagePileMining(deltaTime: number, pile: PlacedGarbagePile): void {
+    // Check if target changed
+    if (this.miningGarbageTarget === null || this.miningGarbageTarget.pile !== pile) {
+      // New target, reset progress
+      this.miningGarbageTarget = { pile };
+      this.miningTarget = null;
+      this.miningTreeTarget = null;
+      this.miningFurnaceTarget = null;
+      this.miningStorageTarget = null;
+      this.miningProgress = 0;
+    }
+
+    // Garbage pile mining time (quick)
+    const mineTime = 0.5;
+
+    // Increase progress
+    this.miningProgress += deltaTime / mineTime;
+    this.updateMiningUI(this.miningProgress);
+
+    // Check if mining complete
+    if (this.miningProgress >= 1) {
+      this.breakGarbagePile(pile);
+      this.resetMining();
+    }
+  }
+
+  private breakGarbagePile(pile: PlacedGarbagePile): void {
+    // Return all items that were in the pile - overflow creates new garbage pile
+    const items = this.garbagePileManager.getAllItemsFromPile(pile);
+    const overflowItems: { itemType: ItemType; quantity: number }[] = [];
+
+    for (const item of items) {
+      const remaining = this.inventory.addItem(item.itemType, item.quantity);
+      if (remaining > 0) {
+        overflowItems.push({ itemType: item.itemType, quantity: remaining });
+      }
+    }
+
+    this.updateHotbarUI();
+    this.saveInventory();
+
+    // Remove pile from save
+    for (let i = 0; i < this.planets.length; i++) {
+      const planetId = i === 0 ? 'earth' : 'moon';
+      gameStorage.removeGarbagePile(planetId, pile.tileIndex);
+    }
+
+    // Store position before removing
+    const pilePosition = pile.position.clone();
+    const pileTileIndex = pile.tileIndex;
+
+    // Remove the pile from the world
+    this.garbagePileManager.removePile(pile);
+
+    // If there's overflow, create a new garbage pile at the same location
+    if (overflowItems.length > 0) {
+      this.createGarbagePileWithItems(pilePosition, pileTileIndex, overflowItems);
+    }
+  }
+
+  private async createGarbagePileWithItems(
+    position: THREE.Vector3,
+    tileIndex: number,
+    items: { itemType: ItemType; quantity: number }[]
+  ): Promise<void> {
+    // Find the planet for this position
+    let targetPlanet: Planet | null = null;
+    for (const planet of this.planets) {
+      const tile = planet.getTileByIndex(tileIndex);
+      if (tile) {
+        targetPlanet = planet;
+        break;
+      }
+    }
+
+    if (!targetPlanet) return;
+
+    // Place the garbage pile
+    const pile = await this.garbagePileManager.placePile(
+      position,
+      targetPlanet.center,
+      tileIndex,
+      items
+    );
+
+    if (pile) {
+      const planetId = this.getPlanetId(targetPlanet);
+      gameStorage.saveGarbagePile(planetId, tileIndex, {
+        position: { x: pile.position.x, y: pile.position.y, z: pile.position.z },
+        slots: pile.slots.map(s => ({ itemType: s.itemType, quantity: s.quantity }))
+      });
+    }
+  }
+
   private resetMining(): void {
     this.miningTarget = null;
     this.miningTreeTarget = null;
     this.miningFurnaceTarget = null;
+    this.miningStorageTarget = null;
+    this.miningGarbageTarget = null;
     this.miningProgress = 0;
     this.updateMiningUI(0);
   }
@@ -946,6 +1218,12 @@ export class PlanetBlockInteraction {
     // Handle furnace placement separately
     if (selectedSlot.itemType === ItemType.FURNACE) {
       this.placeFurnace(planet, tileIndex, depth);
+      return;
+    }
+
+    // Handle storage chest placement separately
+    if (selectedSlot.itemType === ItemType.STORAGE_CHEST) {
+      this.placeStorageChest(planet, tileIndex, depth);
       return;
     }
 
@@ -1063,6 +1341,49 @@ export class PlanetBlockInteraction {
     }
   }
 
+  private async placeStorageChest(planet: Planet, tileIndex: number, depth: number): Promise<void> {
+    // Check if there's already a chest at this tile
+    if (this.storageChestManager.getChestAtTile(tileIndex)) {
+      return; // Can't place multiple chests on same tile
+    }
+
+    // Check if there's already a garbage pile at this tile
+    if (this.garbagePileManager.getPileAtTile(tileIndex)) {
+      return; // Can't place chest where garbage pile exists
+    }
+
+    // Get the world position for the chest
+    const tile = planet.getTileByIndex(tileIndex);
+    if (!tile) return;
+
+    // depth is the air block position - chest should sit on the solid block below it
+    const solidBlockTopRadius = planet.depthToRadius(depth) - planet.getBlockHeight();
+    const tileCenter = tile.center.clone().normalize();
+    const worldPosition = tileCenter.multiplyScalar(solidBlockTopRadius).add(planet.center);
+
+    // Get player forward direction for chest facing
+    const playerForward = this.player.getForwardVector();
+
+    // Use item from inventory
+    if (this.inventory.useSelectedItem()) {
+      // Place the chest facing the player
+      const placedChest = await this.storageChestManager.placeChest(worldPosition, planet.center, tileIndex, playerForward);
+
+      this.updateHotbarUI();
+      this.saveInventory();
+
+      // Save chest placement to game storage
+      if (placedChest) {
+        const planetId = this.getPlanetId(planet);
+        gameStorage.saveStorageChest(planetId, tileIndex, {
+          position: { x: placedChest.position.x, y: placedChest.position.y, z: placedChest.position.z },
+          rotation: placedChest.rotation,
+          slots: placedChest.slots.map(s => ({ itemType: s.itemType, quantity: s.quantity }))
+        });
+      }
+    }
+  }
+
   private pickupTorch(mesh: THREE.Mesh): void {
     // Find the torch group containing this mesh
     let parent = mesh.parent;
@@ -1134,6 +1455,76 @@ export class PlanetBlockInteraction {
   // Save inventory to local storage
   private saveInventory(): void {
     gameStorage.saveInventory(this.inventory.exportForSave());
+  }
+
+  // Save all furnace states to local storage
+  private saveAllFurnaceStates(): void {
+    const furnaces = this.furnaceManager.getPlacedFurnaces();
+    for (const furnace of furnaces) {
+      // Determine which planet this furnace is on (by checking if position is closer to earth or moon center)
+      let planetId = 'earth';
+      for (let i = 0; i < this.planets.length; i++) {
+        const planet = this.planets[i];
+        // Check if furnace tile exists on this planet
+        const tile = planet.getTileByIndex(furnace.tileIndex);
+        if (tile) {
+          planetId = i === 0 ? 'earth' : 'moon';
+          break;
+        }
+      }
+
+      gameStorage.saveFurnace(planetId, furnace.tileIndex, {
+        position: { x: furnace.position.x, y: furnace.position.y, z: furnace.position.z },
+        rotation: furnace.rotation,
+        fuelAmount: furnace.fuelAmount,
+        smeltingItem: furnace.smeltingItem,
+        smeltingProgress: furnace.smeltingProgress,
+        outputItem: furnace.outputItem,
+        outputCount: furnace.outputCount
+      });
+    }
+  }
+
+  // Save all storage chest and garbage pile states to local storage
+  private saveAllStorageStates(): void {
+    // Save storage chests
+    const chests = this.storageChestManager.getPlacedChests();
+    for (const chest of chests) {
+      let planetId = 'earth';
+      for (let i = 0; i < this.planets.length; i++) {
+        const planet = this.planets[i];
+        const tile = planet.getTileByIndex(chest.tileIndex);
+        if (tile) {
+          planetId = i === 0 ? 'earth' : 'moon';
+          break;
+        }
+      }
+
+      gameStorage.saveStorageChest(planetId, chest.tileIndex, {
+        position: { x: chest.position.x, y: chest.position.y, z: chest.position.z },
+        rotation: chest.rotation,
+        slots: chest.slots.map(s => ({ itemType: s.itemType, quantity: s.quantity }))
+      });
+    }
+
+    // Save garbage piles
+    const piles = this.garbagePileManager.getPlacedPiles();
+    for (const pile of piles) {
+      let planetId = 'earth';
+      for (let i = 0; i < this.planets.length; i++) {
+        const planet = this.planets[i];
+        const tile = planet.getTileByIndex(pile.tileIndex);
+        if (tile) {
+          planetId = i === 0 ? 'earth' : 'moon';
+          break;
+        }
+      }
+
+      gameStorage.saveGarbagePile(planetId, pile.tileIndex, {
+        position: { x: pile.position.x, y: pile.position.y, z: pile.position.z },
+        slots: pile.slots.map(s => ({ itemType: s.itemType, quantity: s.quantity }))
+      });
+    }
   }
 
   // Load saved data and apply it
@@ -1221,6 +1612,48 @@ export class PlanetBlockInteraction {
       }
     }
 
-    console.log(`Loaded save: ${saveData.tileChanges.length} tile changes, ${savedTorches.length} torches, ${savedFurnaces.length} furnaces, inventory restored`);
+    // Load saved storage chests
+    const savedStorageChests = gameStorage.getStorageChests();
+    for (const savedChest of savedStorageChests) {
+      const planet = this.planets.find((_, i) =>
+        (i === 0 ? 'earth' : 'moon') === savedChest.planetId
+      );
+      if (planet) {
+        const savedPosition = new THREE.Vector3(
+          savedChest.position.x,
+          savedChest.position.y,
+          savedChest.position.z
+        );
+        // Restore the chest with its slots
+        const slots = savedChest.slots.map(s => ({
+          itemType: s.itemType as ItemType,
+          quantity: s.quantity
+        }));
+        this.storageChestManager.restoreChest(savedPosition, planet.center, savedChest.tileIndex, savedChest.rotation, slots);
+      }
+    }
+
+    // Load saved garbage piles
+    const savedGarbagePiles = gameStorage.getGarbagePiles();
+    for (const savedPile of savedGarbagePiles) {
+      const planet = this.planets.find((_, i) =>
+        (i === 0 ? 'earth' : 'moon') === savedPile.planetId
+      );
+      if (planet) {
+        const savedPosition = new THREE.Vector3(
+          savedPile.position.x,
+          savedPile.position.y,
+          savedPile.position.z
+        );
+        // Restore the pile with its slots
+        const slots = savedPile.slots.map(s => ({
+          itemType: s.itemType as ItemType,
+          quantity: s.quantity
+        }));
+        this.garbagePileManager.restorePile(savedPosition, planet.center, savedPile.tileIndex, slots);
+      }
+    }
+
+    console.log(`Loaded save: ${saveData.tileChanges.length} tile changes, ${savedTorches.length} torches, ${savedFurnaces.length} furnaces, ${savedStorageChests.length} chests, ${savedGarbagePiles.length} piles, inventory restored`);
   }
 }

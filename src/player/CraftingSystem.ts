@@ -1,5 +1,6 @@
 import { Inventory, ItemType, ITEM_DATA, InventorySlot } from './Inventory';
 import { getAssetPath } from '../utils/assetPath';
+import { MenuManager } from './MenuManager';
 
 // Crafting recipe definition
 // For shaped recipes, use 'slots' to specify which grid positions (0-8 for 3x3)
@@ -70,6 +71,21 @@ export const CRAFTING_RECIPES: CraftingRecipe[] = [
     ],
     output: { itemType: ItemType.FURNACE, quantity: 1 },
   },
+  // Storage Chest (8 wood in a ring pattern)
+  {
+    name: 'Storage Chest',
+    inputs: [
+      { itemType: ItemType.WOOD, quantity: 1, slot: 0 },
+      { itemType: ItemType.WOOD, quantity: 1, slot: 1 },
+      { itemType: ItemType.WOOD, quantity: 1, slot: 2 },
+      { itemType: ItemType.WOOD, quantity: 1, slot: 3 },
+      { itemType: ItemType.WOOD, quantity: 1, slot: 5 },
+      { itemType: ItemType.WOOD, quantity: 1, slot: 6 },
+      { itemType: ItemType.WOOD, quantity: 1, slot: 7 },
+      { itemType: ItemType.WOOD, quantity: 1, slot: 8 },
+    ],
+    output: { itemType: ItemType.STORAGE_CHEST, quantity: 1 },
+  },
 ];
 
 export class CraftingSystem {
@@ -97,10 +113,22 @@ export class CraftingSystem {
   private touchDragSlotIndex: number | null = null;
   private touchDragGhost: HTMLElement | null = null;
 
+  // Callback for handling furnace drops
+  private onFurnaceDropCallback: ((targetSlotIndex: number, sourceSlotType: string) => boolean) | null = null;
+
+  // Callback for handling storage drops
+  private onStorageDropCallback: ((targetSlotIndex: number, sourceSlotType: string) => boolean) | null = null;
+
   constructor(inventory: Inventory) {
     this.inventory = inventory;
     this.setupUI();
     this.setupKeyboardHandler();
+
+    // Register with MenuManager for centralized menu handling
+    MenuManager.registerMenu('inventory', {
+      isOpen: () => this.isOpen,
+      close: () => this.close(),
+    });
   }
 
   private setupUI(): void {
@@ -112,14 +140,16 @@ export class CraftingSystem {
     this.inventoryGridElement = document.getElementById('inventory-grid');
     this.inventoryHotbarElement = document.getElementById('inventory-hotbar');
 
+    // Disable browser context menu on inventory
+    if (this.menuElement) {
+      this.menuElement.addEventListener('contextmenu', (e) => e.preventDefault());
+    }
+
     // Create inventory slots
     this.createInventorySlots();
 
-    // Setup close button
-    const closeBtn = this.menuElement?.querySelector('.close-inventory');
-    if (closeBtn) {
-      closeBtn.addEventListener('click', () => this.close());
-    }
+    // Setup close button with pointer lock restoration via MenuManager
+    MenuManager.setupCloseButton('.close-inventory', this.menuElement, () => this.close());
 
     // Populate recipe dropdown
     this.populateRecipeDropdown();
@@ -358,6 +388,38 @@ export class CraftingSystem {
     const target = e.currentTarget as HTMLElement;
     target.classList.remove('drag-over');
 
+    // Check if this is a drop from a furnace slot
+    const dragData = e.dataTransfer?.getData('text/plain');
+    if (dragData && dragData.startsWith('furnace:')) {
+      const sourceSlotType = dragData.substring('furnace:'.length);
+      if (this.onFurnaceDropCallback) {
+        const success = this.onFurnaceDropCallback(targetSlotIndex, sourceSlotType);
+        if (success) {
+          this.updateInventorySlots();
+          if (this.onUpdateHotbarCallback) {
+            this.onUpdateHotbarCallback();
+          }
+        }
+      }
+      return;
+    }
+
+    // Check if this is a drop from a storage slot
+    if (dragData && dragData.startsWith('storage:')) {
+      const sourceSlotType = dragData.substring('storage:'.length);
+      if (this.onStorageDropCallback) {
+        const success = this.onStorageDropCallback(targetSlotIndex, sourceSlotType);
+        if (success) {
+          this.updateInventorySlots();
+          if (this.onUpdateHotbarCallback) {
+            this.onUpdateHotbarCallback();
+          }
+        }
+      }
+      return;
+    }
+
+    // Regular inventory to inventory swap
     const sourceSlotIndex = this.draggedSlotIndex;
     if (sourceSlotIndex === null || sourceSlotIndex === targetSlotIndex) {
       return;
@@ -378,6 +440,7 @@ export class CraftingSystem {
       if (e.key === 'e' || e.key === 'E') {
         if (this.isOpen) {
           this.close();
+          MenuManager.closeMenuViaKeyboard();
           e.preventDefault();
         } else {
           // Only open if game is active (pointer locked)
@@ -388,6 +451,7 @@ export class CraftingSystem {
         }
       } else if (e.key === 'Escape' && this.isOpen) {
         this.close();
+        MenuManager.closeMenuViaKeyboard();
         e.preventDefault();
       }
     });
@@ -398,7 +462,7 @@ export class CraftingSystem {
       console.log('Inventory opened');
       this.menuElement.classList.add('active');
       this.isOpen = true;
-      document.exitPointerLock();
+      MenuManager.openMenu();
       this.updateUI();
     }
   }
@@ -435,6 +499,19 @@ export class CraftingSystem {
 
   public setOnSaveCallback(callback: () => void): void {
     this.onSaveCallback = callback;
+  }
+
+  public setOnFurnaceDropCallback(callback: (targetSlotIndex: number, sourceSlotType: string) => boolean): void {
+    this.onFurnaceDropCallback = callback;
+  }
+
+  public setOnStorageDropCallback(callback: (targetSlotIndex: number, sourceSlotType: string) => boolean): void {
+    this.onStorageDropCallback = callback;
+  }
+
+  // Public method to update inventory slots (called by FurnaceUI)
+  public updateInventorySlotsPublic(): void {
+    this.updateInventorySlots();
   }
 
   private updateUI(): void {

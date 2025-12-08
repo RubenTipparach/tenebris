@@ -1,6 +1,24 @@
 import * as THREE from 'three';
 import { getAssetPath } from '../utils/assetPath';
 import { PlayerConfig } from '../config/PlayerConfig';
+import { ItemType } from '../player/Inventory';
+import techVert from '../shaders/tech/tech.vert';
+import techFrag from '../shaders/tech/tech.frag';
+
+// Smelting recipes: ore -> ingot
+export interface SmeltingRecipe {
+  input: ItemType;
+  output: ItemType;
+  outputQuantity: number;
+}
+
+export const SMELTING_RECIPES: SmeltingRecipe[] = [
+  { input: ItemType.ORE_COPPER, output: ItemType.INGOT_COPPER, outputQuantity: 1 },
+  { input: ItemType.ORE_IRON, output: ItemType.INGOT_IRON, outputQuantity: 1 },
+  { input: ItemType.ORE_GOLD, output: ItemType.INGOT_GOLD, outputQuantity: 1 },
+  { input: ItemType.ORE_ALUMINUM, output: ItemType.INGOT_ALUMINUM, outputQuantity: 1 },
+  // Note: Lithium and Cobalt require electrical furnace (not implemented yet)
+];
 
 // Furnace texture layout (48x32, each face is 16x16):
 // Row 1: Front(0,0) | Side1(16,0) | Side2(32,0)
@@ -30,15 +48,43 @@ export class FurnaceManager {
   private furnaceMeshes: THREE.Mesh[] = [];  // For raycasting
   private textureLoader: THREE.TextureLoader;
   private furnaceGeometry: THREE.BoxGeometry | null = null;
-  private furnaceMaterial: THREE.MeshStandardMaterial | null = null;
+  private furnaceMaterial: THREE.ShaderMaterial | null = null;
+  private onSmeltCompleteCallback: (() => void) | null = null;
+
+  // Planet lighting uniforms
+  private planetCenter: THREE.Vector3;
+  private sunDirection: THREE.Vector3;
 
   // Furnace size (cube sitting on top of hex tile)
   private readonly FURNACE_SIZE = 0.8;
+  private readonly SMELT_TIME = 10; // seconds per item
 
-  constructor(scene: THREE.Scene) {
+  constructor(scene: THREE.Scene, planetCenter?: THREE.Vector3, sunDirection?: THREE.Vector3) {
     this.scene = scene;
     this.textureLoader = new THREE.TextureLoader();
+    this.planetCenter = planetCenter?.clone() || new THREE.Vector3(0, 0, 0);
+    this.sunDirection = sunDirection?.clone() || new THREE.Vector3(1, 0, 0);
     this.initGeometryAndMaterials();
+  }
+
+  // Update sun direction (for day/night cycle)
+  public setSunDirection(direction: THREE.Vector3): void {
+    this.sunDirection.copy(direction);
+    if (this.furnaceMaterial) {
+      this.furnaceMaterial.uniforms.sunDirection.value.copy(direction);
+    }
+  }
+
+  // Update planet center (if planet moves)
+  public setPlanetCenter(center: THREE.Vector3): void {
+    this.planetCenter.copy(center);
+    if (this.furnaceMaterial) {
+      this.furnaceMaterial.uniforms.planetCenter.value.copy(center);
+    }
+  }
+
+  public setOnSmeltCompleteCallback(callback: () => void): void {
+    this.onSmeltCompleteCallback = callback;
   }
 
   private async initGeometryAndMaterials(): Promise<void> {
@@ -75,37 +121,42 @@ export class FurnaceManager {
     // Box faces order in THREE.js: +X, -X, +Y, -Y, +Z, -Z
     // We map: +Z=Front, -Z=Back(Side), +X=Right(Side), -X=Left(Side), +Y=Top, -Y=Bottom
     // BoxGeometry UV vertex order: bottom-left(0), bottom-right(1), top-left(2), top-right(3)
-    const applyFaceUV = (faceIndex: number, uv: { u1: number; v1: number; u2: number; v2: number }, flipHorizontal = false) => {
+    const applyFaceUV = (faceIndex: number, uv: { u1: number; v1: number; u2: number; v2: number }, flipHorizontal = false, flipVertical = false) => {
       const baseIndex = faceIndex * 8;
-      if (flipHorizontal) {
-        // Flip horizontally for sides that need it
-        uvArray[baseIndex + 0] = uv.u2; uvArray[baseIndex + 1] = uv.v1; // bottom-left -> bottom-right UV
-        uvArray[baseIndex + 2] = uv.u1; uvArray[baseIndex + 3] = uv.v1; // bottom-right -> bottom-left UV
-        uvArray[baseIndex + 4] = uv.u2; uvArray[baseIndex + 5] = uv.v2; // top-left -> top-right UV
-        uvArray[baseIndex + 6] = uv.u1; uvArray[baseIndex + 7] = uv.v2; // top-right -> top-left UV
-      } else {
-        uvArray[baseIndex + 0] = uv.u1; uvArray[baseIndex + 1] = uv.v1; // bottom-left
-        uvArray[baseIndex + 2] = uv.u2; uvArray[baseIndex + 3] = uv.v1; // bottom-right
-        uvArray[baseIndex + 4] = uv.u1; uvArray[baseIndex + 5] = uv.v2; // top-left
-        uvArray[baseIndex + 6] = uv.u2; uvArray[baseIndex + 7] = uv.v2; // top-right
-      }
+      // Determine actual UV coords based on flip flags
+      const left = flipHorizontal ? uv.u2 : uv.u1;
+      const right = flipHorizontal ? uv.u1 : uv.u2;
+      const bottom = flipVertical ? uv.v2 : uv.v1;
+      const top = flipVertical ? uv.v1 : uv.v2;
+
+      uvArray[baseIndex + 0] = left;  uvArray[baseIndex + 1] = bottom; // bottom-left
+      uvArray[baseIndex + 2] = right; uvArray[baseIndex + 3] = bottom; // bottom-right
+      uvArray[baseIndex + 4] = left;  uvArray[baseIndex + 5] = top;    // top-left
+      uvArray[baseIndex + 6] = right; uvArray[baseIndex + 7] = top;    // top-right
     };
 
-    // Apply UVs to each face
-    applyFaceUV(0, faceUVs.side, true);   // +X (right side) - flip to correct orientation
-    applyFaceUV(1, faceUVs.side, false);  // -X (left side)
-    applyFaceUV(2, faceUVs.top, false);   // +Y (top)
-    applyFaceUV(3, faceUVs.bottom, false); // -Y (bottom)
-    applyFaceUV(4, faceUVs.front, false); // +Z (front)
-    applyFaceUV(5, faceUVs.side, true);   // -Z (back side) - flip to correct orientation
+    // Apply UVs to each face (flip vertical on side faces to correct Y orientation)
+    applyFaceUV(0, faceUVs.side, true, true);   // +X (right side) - flip H and V
+    applyFaceUV(1, faceUVs.side, false, true);  // -X (left side) - flip V
+    applyFaceUV(2, faceUVs.top, false, false);  // +Y (top)
+    applyFaceUV(3, faceUVs.bottom, false, false); // -Y (bottom)
+    applyFaceUV(4, faceUVs.front, false, true); // +Z (front) - flip V
+    applyFaceUV(5, faceUVs.side, true, true);   // -Z (back side) - flip H and V
 
     uvAttribute.needsUpdate = true;
 
-    // Create material with the texture atlas - use MeshStandardMaterial for torch lighting
-    this.furnaceMaterial = new THREE.MeshStandardMaterial({
-      map: texture,
-      roughness: 0.9,
-      metalness: 0.0,
+    // Create material with custom shader for planet-aware lighting and torch support
+    this.furnaceMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        techTexture: { value: texture },
+        sunDirection: { value: this.sunDirection.clone() },
+        planetCenter: { value: this.planetCenter.clone() },
+        ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
+        directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
+        torchLight: { value: 0.0 },  // Updated per-furnace based on nearby torches
+      },
+      vertexShader: techVert,
+      fragmentShader: techFrag,
     });
   }
 
@@ -155,8 +206,11 @@ export class FurnaceManager {
       return null;
     }
 
-    // Create the furnace mesh
-    const mesh = new THREE.Mesh(this.furnaceGeometry, this.furnaceMaterial);
+    // Clone the material for per-furnace torch lighting
+    const instanceMaterial = this.furnaceMaterial.clone();
+
+    // Create the furnace mesh with its own material instance
+    const mesh = new THREE.Mesh(this.furnaceGeometry, instanceMaterial);
 
     // Position the furnace slightly above the ground
     const upDirection = worldPosition.clone().sub(planetCenter).normalize();
@@ -252,8 +306,11 @@ export class FurnaceManager {
       return null;
     }
 
-    // Create the furnace mesh
-    const mesh = new THREE.Mesh(this.furnaceGeometry, this.furnaceMaterial);
+    // Clone the material for per-furnace torch lighting
+    const instanceMaterial = this.furnaceMaterial.clone();
+
+    // Create the furnace mesh with its own material instance
+    const mesh = new THREE.Mesh(this.furnaceGeometry, instanceMaterial);
 
     // Use exact saved position (no offset - already includes it)
     mesh.position.copy(savedPosition);
@@ -301,6 +358,10 @@ export class FurnaceManager {
     // Remove from scene
     this.scene.remove(furnace.mesh);
     furnace.mesh.geometry.dispose();
+    // Dispose the cloned material
+    if (furnace.mesh.material instanceof THREE.ShaderMaterial) {
+      furnace.mesh.material.dispose();
+    }
 
     // Remove from arrays
     this.furnaces.splice(index, 1);
@@ -326,19 +387,64 @@ export class FurnaceManager {
     return this.furnaces.find(f => f.tileIndex === tileIndex);
   }
 
+  // Update torch lighting for all furnaces based on nearby torch positions
+  public updateTorchLighting(torchPositions: THREE.Vector3[], torchRange: number, torchIntensity: number): void {
+    for (const furnace of this.furnaces) {
+      let totalLight = 0;
+
+      for (const torchPos of torchPositions) {
+        const distance = furnace.position.distanceTo(torchPos);
+        if (distance < torchRange) {
+          // Inverse square falloff with decay (matching terrain)
+          const decay = 2; // Same as TorchConfig.LIGHT_DECAY
+          const attenuation = 1 / (1 + decay * distance * distance / (torchRange * torchRange));
+          totalLight += attenuation * torchIntensity;
+        }
+      }
+
+      // Clamp and apply to material uniform
+      totalLight = Math.min(1.5, totalLight); // Allow slight over-brightness for nearby torches
+      const material = furnace.mesh.material as THREE.ShaderMaterial;
+      if (material.uniforms && material.uniforms.torchLight) {
+        material.uniforms.torchLight.value = totalLight;
+      }
+    }
+  }
+
   public update(deltaTime: number): void {
     // Update smelting progress for all furnaces with fuel and items
+    let anySmeltCompleted = false;
+
     for (const furnace of this.furnaces) {
       if (furnace.fuelAmount > 0 && furnace.smeltingItem !== null) {
-        // Progress the smelting (10 seconds per item)
-        const smeltRate = 1 / 10; // 10 seconds per smelt
+        // Progress the smelting
+        const smeltRate = 1 / this.SMELT_TIME;
         furnace.smeltingProgress += deltaTime * smeltRate;
 
         if (furnace.smeltingProgress >= 1) {
-          // Smelting complete - this will be handled by the UI system
-          furnace.smeltingProgress = 1;
+          // Smelting complete - find recipe and produce output
+          const recipe = SMELTING_RECIPES.find(r => r.input === furnace.smeltingItem);
+          if (recipe) {
+            // Add to output (or create new output)
+            if (furnace.outputItem === null || furnace.outputItem === recipe.output) {
+              furnace.outputItem = recipe.output;
+              furnace.outputCount += recipe.outputQuantity;
+            }
+            // Consume fuel
+            furnace.fuelAmount--;
+            anySmeltCompleted = true;
+          }
+
+          // Reset for next item
+          furnace.smeltingItem = null;
+          furnace.smeltingProgress = 0;
         }
       }
+    }
+
+    // Notify when smelting completes to trigger save
+    if (anySmeltCompleted && this.onSmeltCompleteCallback) {
+      this.onSmeltCompleteCallback();
     }
   }
 
