@@ -127,10 +127,12 @@ export class PlanetPlayer {
     this.velocity = new THREE.Vector3();
 
     // Start on the surface of the planet (1m above ground)
-    // Use getSurfaceHeightInDirection to get actual terrain height, not just base radius
-    const spawnDirection = new THREE.Vector3(0, 1, 0);
-    const surfaceHeight = planet.getSurfaceHeightInDirection(spawnDirection);
-    this.position = new THREE.Vector3(0, surfaceHeight + 1, 0);
+    // Use configured spawn lat/lon from PlayerConfig
+    this.position = planet.getSpawnPositionAtLatLon(
+      PlayerConfig.EARTH_SPAWN_LAT,
+      PlayerConfig.EARTH_SPAWN_LON,
+      1 // 1m above surface
+    );
     this.updateLocalOrientation();
     this.updateOrientationFromLocal();
   }
@@ -683,6 +685,11 @@ export class PlanetPlayer {
     console.log(`Standing on tile ${currentTile.index}, ground depth: ${groundDepth} (radius: ${groundRadius.toFixed(2)})`);
     console.log(`isGrounded: ${this.isGrounded}, velocity: (${this.velocity.x.toFixed(2)}, ${this.velocity.y.toFixed(2)}, ${this.velocity.z.toFixed(2)})`);
     console.log(`Planet radius: ${this.currentPlanet.radius}`);
+
+    // LOD terrain detection
+    const isDetailTerrain = this.currentPlanet.isTileInDetailRange(currentTile.index);
+    const chunkIndex = this.currentPlanet.getTileChunkIndex(currentTile.index);
+    console.log(`Terrain type: ${isDetailTerrain ? 'DETAILED' : 'LOD'} (chunk ${chunkIndex})`);
     console.log('');
 
     // Collect tiles: current + rings of neighbors
@@ -2093,11 +2100,13 @@ export class PlanetPlayer {
       posElement.textContent = `Alt: ${altText} | Grav: ${(gravityMultiplier * 100).toFixed(0)}%${status}`;
     }
 
-    // Update block depth display (top-right corner)
+    // Update coordinates display (top-right corner)
     const depthElement = document.getElementById('block-depth');
     if (depthElement && this.currentPlanet) {
-      const depth = this.currentPlanet.getDepthAtPoint(this.position);
-      depthElement.textContent = `Depth: ${depth}`;
+      const coords = this.currentPlanet.getCoordinatesAtPoint(this.position);
+      const latDir = coords.lat >= 0 ? 'N' : 'S';
+      const lonDir = coords.lon >= 0 ? 'E' : 'W';
+      depthElement.textContent = `${Math.abs(coords.lat).toFixed(1)}°${latDir} ${Math.abs(coords.lon).toFixed(1)}°${lonDir} D:${coords.depth}`;
     }
   }
 

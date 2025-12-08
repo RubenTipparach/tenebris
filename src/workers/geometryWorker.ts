@@ -122,6 +122,16 @@ interface GeometryResultMessage {
   oreLithiumData: GeometryData;
   oreAluminumData: GeometryData;
   oreCobaltData: GeometryData;
+  // Snow biome data
+  snowData: GeometryData;
+  snowSideData: GeometryData;  // Snow block sides use dirt_snow texture
+  dirtSnowData: GeometryData;
+  iceData: GeometryData;
+}
+
+// Check if a block type is transparent (air, water, or ice)
+function isTransparentBlock(blockType: HexBlockType): boolean {
+  return blockType === HexBlockType.AIR || blockType === HexBlockType.WATER || blockType === HexBlockType.ICE;
 }
 
 // Check if a column has an exposed side at the given depth
@@ -139,7 +149,7 @@ function hasExposedSide(
 
     const neighborBlock = neighborInfo.blocks[depth];
     if (neighborBlock === undefined) return true;
-    if (neighborBlock === HexBlockType.AIR || neighborBlock === HexBlockType.WATER) {
+    if (isTransparentBlock(neighborBlock)) {
       return true;
     }
   }
@@ -357,7 +367,11 @@ function buildColumnGeometry(
   oreGoldData: GeometryData,
   oreLithiumData: GeometryData,
   oreAluminumData: GeometryData,
-  oreCobaltData: GeometryData
+  oreCobaltData: GeometryData,
+  snowData: GeometryData,
+  snowSideData: GeometryData,
+  dirtSnowData: GeometryData,
+  iceData: GeometryData
 ): void {
   // Find surface depth (topmost solid block, searching from top down)
   // Depth system: 0 = bedrock, maxDepth-1 = sky
@@ -374,17 +388,26 @@ function buildColumnGeometry(
     if (blockType === HexBlockType.AIR) continue;
 
     const isWater = blockType === HexBlockType.WATER;
+    const isIce = blockType === HexBlockType.ICE;
     // In new depth system: "above" = higher depth (toward sky), "below" = lower depth (toward bedrock)
     const blockAbove = depth >= column.blocks.length - 1 ? HexBlockType.AIR : column.blocks[depth + 1];
     const blockBelow = depth === 0 ? HexBlockType.AIR : column.blocks[depth - 1];
 
-    const hasTopExposed = blockAbove === HexBlockType.AIR || (!isWater && blockAbove === HexBlockType.WATER);
-    const hasBottomExposed = blockBelow === HexBlockType.AIR || (!isWater && blockBelow === HexBlockType.WATER);
+    // For face culling: a face is exposed if adjacent block is AIR, or WATER (for non-water blocks), or ICE (for non-ice blocks)
+    const hasTopExposed = blockAbove === HexBlockType.AIR ||
+      (!isWater && blockAbove === HexBlockType.WATER) ||
+      (!isIce && blockAbove === HexBlockType.ICE);
+    const hasBottomExposed = blockBelow === HexBlockType.AIR ||
+      (!isWater && blockBelow === HexBlockType.WATER) ||
+      (!isIce && blockBelow === HexBlockType.ICE);
 
-    if (isWater && blockAbove !== HexBlockType.AIR) continue;
+    // Water only renders if air is above; Ice renders like a solid block
+    if (isWater && blockAbove !== HexBlockType.AIR && blockAbove !== HexBlockType.ICE) continue;
 
+    // Ice needs to check for exposed sides too (treated like a solid block for rendering)
     const hasSideExposed = !isWater && hasExposedSide(column, depth, neighborDataMap);
 
+    // Skip if no faces are exposed (water handled separately above)
     if (!isWater && !hasTopExposed && !hasBottomExposed && !hasSideExposed) continue;
 
     // In new system: higher depth = larger radius (closer to surface)
@@ -416,6 +439,9 @@ function buildColumnGeometry(
       case HexBlockType.SAND: blockGeomData = sandData; break;
       case HexBlockType.DIRT: blockGeomData = sideData; break;
       case HexBlockType.WOOD: blockGeomData = woodData; break;
+      case HexBlockType.SNOW: blockGeomData = snowData; break;
+      case HexBlockType.DIRT_SNOW: blockGeomData = dirtSnowData; break;
+      case HexBlockType.ICE: blockGeomData = iceData; break;
       default: blockGeomData = topData; break; // Grass and others use top (grass) texture
     }
 
@@ -445,9 +471,11 @@ function buildColumnGeometry(
       const bottomGeom = createFaceGeometry(column.tile, innerRadius, outerRadius, false, true, false, config.uvScale);
       if (bottomGeom) {
         const bottomSkyLight = Math.max(MIN_SKY_LIGHT, skyLightLevel * SKY_LIGHT_FALLOFF);
-        // Grass blocks show dirt on bottom, everything else shows its own texture
+        // Grass and snow blocks show dirt on bottom, everything else shows its own texture
         if (blockType === HexBlockType.GRASS) {
           mergeGeometry(sideData, bottomGeom.positions, bottomGeom.normals, bottomGeom.uvs, bottomGeom.indices, config.sunDirection, bottomSkyLight, torches);
+        } else if (blockType === HexBlockType.SNOW) {
+          mergeGeometry(dirtSnowData, bottomGeom.positions, bottomGeom.normals, bottomGeom.uvs, bottomGeom.indices, config.sunDirection, bottomSkyLight, torches);
         } else {
           mergeGeometry(blockGeomData, bottomGeom.positions, bottomGeom.normals, bottomGeom.uvs, bottomGeom.indices, config.sunDirection, bottomSkyLight, torches);
         }
@@ -459,8 +487,11 @@ function buildColumnGeometry(
       const sidesGeom = createFaceGeometry(column.tile, innerRadius, outerRadius, false, false, true, config.uvScale);
       if (sidesGeom) {
         // Grass blocks use grassSideData (dirt_grass texture) for sides
+        // Snow blocks use snowSideData (dirt_snow texture) for sides
         if (blockType === HexBlockType.GRASS) {
           mergeGeometry(grassSideData, sidesGeom.positions, sidesGeom.normals, sidesGeom.uvs, sidesGeom.indices, config.sunDirection, skyLightLevel, torches);
+        } else if (blockType === HexBlockType.SNOW) {
+          mergeGeometry(snowSideData, sidesGeom.positions, sidesGeom.normals, sidesGeom.uvs, sidesGeom.indices, config.sunDirection, skyLightLevel, torches);
         } else {
           mergeGeometry(blockGeomData, sidesGeom.positions, sidesGeom.normals, sidesGeom.uvs, sidesGeom.indices, config.sunDirection, skyLightLevel, torches);
         }
@@ -489,6 +520,11 @@ self.onmessage = (e: MessageEvent<BuildGeometryMessage>) => {
     const oreLithiumData = createEmptyGeometryData();
     const oreAluminumData = createEmptyGeometryData();
     const oreCobaltData = createEmptyGeometryData();
+    // Snow biome geometry data
+    const snowData = createEmptyGeometryData();
+    const snowSideData = createEmptyGeometryData();
+    const dirtSnowData = createEmptyGeometryData();
+    const iceData = createEmptyGeometryData();
 
     // Convert neighborData back to Map (it gets serialized as object)
     const neighborDataMap = new Map<number, NeighborData>(
@@ -499,7 +535,8 @@ self.onmessage = (e: MessageEvent<BuildGeometryMessage>) => {
       buildColumnGeometry(
         column, neighborDataMap, config,
         topData, sideData, grassSideData, stoneData, sandData, woodData, waterData,
-        oreCoalData, oreCopperData, oreIronData, oreGoldData, oreLithiumData, oreAluminumData, oreCobaltData
+        oreCoalData, oreCopperData, oreIronData, oreGoldData, oreLithiumData, oreAluminumData, oreCobaltData,
+        snowData, snowSideData, dirtSnowData, iceData
       );
 
       // Generate water walls for water blocks adjacent to air in neighbors
@@ -543,7 +580,11 @@ self.onmessage = (e: MessageEvent<BuildGeometryMessage>) => {
       oreGoldData,
       oreLithiumData,
       oreAluminumData,
-      oreCobaltData
+      oreCobaltData,
+      snowData,
+      snowSideData,
+      dirtSnowData,
+      iceData
     };
 
     // Transfer arrays for better performance

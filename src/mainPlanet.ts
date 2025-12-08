@@ -10,6 +10,7 @@ import { CloudSystem, createEarthClouds } from './planet/Clouds';
 import { PlayerConfig } from './config/PlayerConfig';
 import { profiler } from './engine/Profiler';
 import { gameStorage } from './engine/GameStorage';
+import { loadingManager } from './engine/LoadingManager';
 
 class PlanetGame {
   private engine: GameEngine;
@@ -74,18 +75,40 @@ class PlanetGame {
 
   private async init(): Promise<void> {
     try {
+      // Register loading steps
+      loadingManager.registerStep('textures', 1);
+      loadingManager.registerStep('terrain-generation', 2);
+      loadingManager.registerStep('initial-terrain', 3);
+      loadingManager.registerStep('player-setup', 1);
+      loadingManager.registerStep('environment', 1);
+
       // Initialize both planets (loads textures, generates terrain)
+      loadingManager.setStatus('Loading textures...');
       await this.earth.initialize();
       await this.moon.initialize();
+      loadingManager.completeStep('textures');
 
       // Position the moon and update its bounding spheres
+      loadingManager.setStatus('Generating terrain...');
       this.moon.center.set(400, 0, 0);
       this.moon.updateBoundingSpheres();
+      loadingManager.completeStep('terrain-generation');
 
-      // Don't build all meshes upfront - let them build on-demand as player moves
-      // This prevents massive startup lag with 10,000+ tiles
+      // Calculate spawn position before building initial terrain
+      loadingManager.setStatus('Building terrain around spawn...');
+      const spawnPosition = this.earth.getSpawnPositionAtLatLon(
+        PlayerConfig.EARTH_SPAWN_LAT,
+        PlayerConfig.EARTH_SPAWN_LON,
+        1 // 1m above surface
+      );
+
+      // Build initial terrain around spawn point and wait for completion
+      // This ensures terrain is ready before player spawns (no falling through)
+      await this.earth.buildInitialTerrain(spawnPosition);
+      loadingManager.completeStep('initial-terrain');
 
       // Initialize player on Earth surface
+      loadingManager.setStatus('Initializing player...');
       this.player = new PlanetPlayer(this.engine.camera, this.inputManager, this.earth);
 
       // Add moon as a second celestial body with weaker gravity
@@ -118,6 +141,7 @@ class PlanetGame {
 
       // Give block interaction access to tree manager for mining trees
       this.blockInteraction.setTreeManager(this.treeManager);
+      loadingManager.completeStep('player-setup');
 
       // Setup mobile inventory toggle callback
       this.inputManager.setInventoryToggleCallback(() => {
@@ -138,6 +162,7 @@ class PlanetGame {
       });
 
       // Create atmosphere for Earth (if enabled)
+      loadingManager.setStatus('Creating environment...');
       if (PlayerConfig.ATMOSPHERE_ENABLED) {
         this.earthAtmosphere = createEarthAtmosphere(this.earth.radius, this.engine.sunDirection);
         this.earthAtmosphere.setPosition(this.earth.center);
@@ -151,6 +176,7 @@ class PlanetGame {
 
       // Set sun direction for water shader reflections
       this.earth.setSunDirection(this.engine.sunDirection);
+      loadingManager.completeStep('environment');
 
       // Register water shader material with engine for depth-based fog
       const waterMaterial = this.earth.getWaterShaderMaterial();
@@ -187,6 +213,10 @@ class PlanetGame {
 
       // Start the engine
       this.engine.start();
+
+      // Hide loading screen and show game
+      loadingManager.setStatus('Ready!');
+      loadingManager.hideLoadingScreen();
 
       console.log('Planet game started with Earth and Moon!');
     } catch (error) {
@@ -370,17 +400,20 @@ class PlanetGame {
     }
 
     const surfaceOffset = 1; // 1m above surface
-    const playerPos = planet.center.clone();
+    let playerPos: THREE.Vector3;
 
     // Position player on the surface using actual terrain height
-    // For Earth, position on top (Y+), for Moon position facing Earth (X-)
+    // For Earth, use configured spawn lat/lon; for Moon, position facing Earth (X-)
     if (planetName === 'earth') {
-      const spawnDirection = new THREE.Vector3(0, 1, 0);
-      const surfaceHeight = planet.getSurfaceHeightInDirection(spawnDirection);
-      playerPos.y += surfaceHeight + surfaceOffset;
+      playerPos = planet.getSpawnPositionAtLatLon(
+        PlayerConfig.EARTH_SPAWN_LAT,
+        PlayerConfig.EARTH_SPAWN_LON,
+        surfaceOffset
+      );
     } else {
       const spawnDirection = new THREE.Vector3(-1, 0, 0);
       const surfaceHeight = planet.getSurfaceHeightInDirection(spawnDirection);
+      playerPos = planet.center.clone();
       playerPos.x -= surfaceHeight + surfaceOffset;
     }
 

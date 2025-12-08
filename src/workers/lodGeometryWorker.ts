@@ -90,6 +90,21 @@ interface ChunkGeometry {
   waterSideUvs: number[];
   waterSideIndices: number[];
   waterSideVertexOffset: number;
+  // Snow biome buffers
+  snowPositions: number[];
+  snowNormals: number[];
+  snowUvs: number[];
+  snowSkyLight: number[];
+  snowTorchLight: number[];
+  snowIndices: number[];
+  snowVertexOffset: number;
+  icePositions: number[];
+  iceNormals: number[];
+  iceUvs: number[];
+  iceSkyLight: number[];
+  iceTorchLight: number[];
+  iceIndices: number[];
+  iceVertexOffset: number;
 }
 
 function createEmptyChunkGeometry(): ChunkGeometry {
@@ -101,7 +116,9 @@ function createEmptyChunkGeometry(): ChunkGeometry {
     woodPositions: [], woodNormals: [], woodUvs: [], woodSkyLight: [], woodTorchLight: [], woodIndices: [], woodVertexOffset: 0,
     waterPositions: [], waterNormals: [], waterUvs: [], waterIndices: [], waterVertexOffset: 0,
     sidePositions: [], sideNormals: [], sideUvs: [], sideSkyLight: [], sideTorchLight: [], sideIndices: [], sideVertexOffset: 0,
-    waterSidePositions: [], waterSideNormals: [], waterSideUvs: [], waterSideIndices: [], waterSideVertexOffset: 0
+    waterSidePositions: [], waterSideNormals: [], waterSideUvs: [], waterSideIndices: [], waterSideVertexOffset: 0,
+    snowPositions: [], snowNormals: [], snowUvs: [], snowSkyLight: [], snowTorchLight: [], snowIndices: [], snowVertexOffset: 0,
+    icePositions: [], iceNormals: [], iceUvs: [], iceSkyLight: [], iceTorchLight: [], iceIndices: [], iceVertexOffset: 0
   };
 }
 
@@ -143,7 +160,19 @@ const HexBlockType = {
   WATER: 4,
   SAND: 5,
   WOOD: 6,
-  LEAVES: 7
+  LEAVES: 7,
+  // Mineral ores
+  ORE_COAL: 8,
+  ORE_COPPER: 9,
+  ORE_IRON: 10,
+  ORE_GOLD: 11,
+  ORE_LITHIUM: 12,
+  ORE_ALUMINUM: 13,
+  ORE_COBALT: 14,
+  // Snow biome blocks
+  SNOW: 15,
+  DIRT_SNOW: 16,
+  ICE: 17
 };
 
 // Config passed from main thread
@@ -452,6 +481,22 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
         torchLight = chunk.woodTorchLight;
         indices = chunk.woodIndices;
         vertexOffset = chunk.woodVertexOffset;
+      } else if (surfaceBlockType === HexBlockType.SNOW || surfaceBlockType === HexBlockType.DIRT_SNOW) {
+        positions = chunk.snowPositions;
+        normals = chunk.snowNormals;
+        uvs = chunk.snowUvs;
+        skyLight = chunk.snowSkyLight;
+        torchLight = chunk.snowTorchLight;
+        indices = chunk.snowIndices;
+        vertexOffset = chunk.snowVertexOffset;
+      } else if (surfaceBlockType === HexBlockType.ICE) {
+        positions = chunk.icePositions;
+        normals = chunk.iceNormals;
+        uvs = chunk.iceUvs;
+        skyLight = chunk.iceSkyLight;
+        torchLight = chunk.iceTorchLight;
+        indices = chunk.iceIndices;
+        vertexOffset = chunk.iceVertexOffset;
       } else {
         // GRASS, LEAVES, or any other type defaults to grass
         positions = chunk.grassPositions;
@@ -507,6 +552,10 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
         chunk.sandVertexOffset = vertexOffset;
       } else if (surfaceBlockType === HexBlockType.WOOD) {
         chunk.woodVertexOffset = vertexOffset;
+      } else if (surfaceBlockType === HexBlockType.SNOW || surfaceBlockType === HexBlockType.DIRT_SNOW) {
+        chunk.snowVertexOffset = vertexOffset;
+      } else if (surfaceBlockType === HexBlockType.ICE) {
+        chunk.iceVertexOffset = vertexOffset;
       } else {
         chunk.grassVertexOffset = vertexOffset;
       }

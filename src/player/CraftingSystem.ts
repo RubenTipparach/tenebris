@@ -55,6 +55,21 @@ export const CRAFTING_RECIPES: CraftingRecipe[] = [
     ],
     output: { itemType: ItemType.FISHING_ROD, quantity: 1 },
   },
+  // Furnace (8 stones in a ring pattern)
+  {
+    name: 'Furnace',
+    inputs: [
+      { itemType: ItemType.STONE, quantity: 1, slot: 0 },
+      { itemType: ItemType.STONE, quantity: 1, slot: 1 },
+      { itemType: ItemType.STONE, quantity: 1, slot: 2 },
+      { itemType: ItemType.STONE, quantity: 1, slot: 3 },
+      { itemType: ItemType.STONE, quantity: 1, slot: 5 },
+      { itemType: ItemType.STONE, quantity: 1, slot: 6 },
+      { itemType: ItemType.STONE, quantity: 1, slot: 7 },
+      { itemType: ItemType.STONE, quantity: 1, slot: 8 },
+    ],
+    output: { itemType: ItemType.FURNACE, quantity: 1 },
+  },
 ];
 
 export class CraftingSystem {
@@ -454,6 +469,8 @@ export class CraftingSystem {
       if (img) {
         img.src = getAssetPath(itemData.texture);
         img.style.display = 'block';
+        // Apply atlas region styling if present
+        this.applyAtlasRegionStyle(img, itemData);
       }
       if (countEl) {
         countEl.textContent = slot.quantity > 1 ? slot.quantity.toString() : '';
@@ -466,11 +483,49 @@ export class CraftingSystem {
       }
       tooltipEl.textContent = itemData.name;
     } else {
-      if (img) img.style.display = 'none';
+      if (img) {
+        img.style.display = 'none';
+        // Reset atlas region styling
+        this.resetAtlasRegionStyle(img);
+      }
       if (countEl) countEl.textContent = '';
       // Remove tooltip for empty slots
       if (tooltipEl) tooltipEl.remove();
     }
+  }
+
+  // Apply CSS styling to show only a portion of an atlas texture
+  private applyAtlasRegionStyle(img: HTMLImageElement, itemData: typeof ITEM_DATA[ItemType]): void {
+    this.applyAtlasRegionStyleWithSize(img, itemData, 40);
+  }
+
+  private applyAtlasRegionStyleWithSize(img: HTMLImageElement, itemData: typeof ITEM_DATA[ItemType], displaySize: number): void {
+    if (itemData.atlasRegion) {
+      const { x, y, width, height, atlasWidth, atlasHeight } = itemData.atlasRegion;
+      const scaleX = atlasWidth / width;
+      const scaleY = atlasHeight / height;
+      img.style.objectFit = 'none';
+      img.style.objectPosition = `${-x * (displaySize / width)}px ${-y * (displaySize / height)}px`;
+      img.style.width = `${displaySize * scaleX}px`;
+      img.style.height = `${displaySize * scaleY}px`;
+      img.style.transform = `scale(${1 / scaleX}, ${1 / scaleY})`;
+      img.style.transformOrigin = 'top left';
+    } else {
+      this.resetAtlasRegionStyleWithSize(img, displaySize);
+    }
+  }
+
+  private resetAtlasRegionStyle(img: HTMLImageElement): void {
+    this.resetAtlasRegionStyleWithSize(img, 40);
+  }
+
+  private resetAtlasRegionStyleWithSize(img: HTMLImageElement, displaySize: number): void {
+    img.style.objectFit = '';
+    img.style.objectPosition = '';
+    img.style.width = `${displaySize}px`;
+    img.style.height = `${displaySize}px`;
+    img.style.transform = '';
+    img.style.transformOrigin = '';
   }
 
   private populateRecipeDropdown(): void {
@@ -559,6 +614,8 @@ export class CraftingSystem {
         if (img) {
           img.src = getAssetPath(itemData.texture);
           img.style.display = 'block';
+          // Apply atlas region styling if present
+          this.applyAtlasRegionStyle(img, itemData);
         }
         if (countEl) {
           countEl.textContent = input.quantity > 1 ? input.quantity.toString() : '';
@@ -589,6 +646,8 @@ export class CraftingSystem {
       if (outputImg) {
         outputImg.src = getAssetPath(outputData.texture);
         outputImg.style.display = 'block';
+        // Apply atlas region styling if present (use 48px for output slot)
+        this.applyAtlasRegionStyleWithSize(outputImg, outputData, 48);
       }
       if (outputCount) {
         outputCount.textContent = this.selectedRecipe.output.quantity > 1

@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { PlayerConfig } from '../config/PlayerConfig';
 
 // Simple seeded random number generator (LCG algorithm)
@@ -111,6 +112,7 @@ export class TreeBuilder {
   }
 
   // Create a tree mesh at the given position with outward-pointing direction
+  // Optimized: merges all geometries into a single mesh to reduce draw calls
   public createTree(
     position: THREE.Vector3,
     upDirection: THREE.Vector3,
@@ -119,12 +121,15 @@ export class TreeBuilder {
     const cfg = { ...DEFAULT_CONFIG, ...config };
     const tree = new THREE.Group();
 
+    // Collect all geometries with their colors for merging
+    const geometries: THREE.BufferGeometry[] = [];
+    const trunkColor = new THREE.Color(0x8B4513); // Brown
+    const leavesColor = new THREE.Color(0x228B22); // Green
+
     // Create trunk (hexagonal prism)
     const trunkGeom = this.createHexagonalPrism(cfg.trunkRadius, cfg.trunkHeight, 6);
-    const trunk = new THREE.Mesh(trunkGeom, this.trunkMaterial);
-    trunk.userData.isTree = true;
-    trunk.userData.treeType = 'trunk';
-    tree.add(trunk);
+    this.addVertexColors(trunkGeom, trunkColor);
+    geometries.push(trunkGeom);
 
     // Create pine cone leaves (series of cones stacked)
     let currentHeight = cfg.trunkHeight;
@@ -133,15 +138,26 @@ export class TreeBuilder {
     for (let i = 0; i < cfg.leafLayers; i++) {
       const layerHeight = 1.2;
       const coneGeom = new THREE.ConeGeometry(currentRadius, layerHeight, 6);
-
-      const cone = new THREE.Mesh(coneGeom, this.leavesMaterial);
-      cone.position.y = currentHeight + layerHeight / 2;
-      cone.userData.isTree = true;
-      cone.userData.treeType = 'leaves';
-      tree.add(cone);
+      coneGeom.translate(0, currentHeight + layerHeight / 2, 0);
+      this.addVertexColors(coneGeom, leavesColor);
+      geometries.push(coneGeom);
 
       currentHeight += layerHeight * 0.6; // Overlap layers
       currentRadius *= cfg.leafTaper;
+    }
+
+    // Merge all geometries into one
+    const mergedGeom = BufferGeometryUtils.mergeGeometries(geometries);
+
+    // Create merged mesh with custom shader material that uses vertex colors
+    const mergedMaterial = this.createMergedTreeMaterial();
+    const treeMesh = new THREE.Mesh(mergedGeom, mergedMaterial);
+    treeMesh.userData.isTree = true;
+    tree.add(treeMesh);
+
+    // Clean up individual geometries
+    for (const geom of geometries) {
+      geom.dispose();
     }
 
     // Orient tree to point along upDirection
@@ -153,6 +169,63 @@ export class TreeBuilder {
     tree.position.copy(position);
 
     return tree;
+  }
+
+  // Helper to add vertex colors to a geometry
+  private addVertexColors(geometry: THREE.BufferGeometry, color: THREE.Color): void {
+    const positionCount = geometry.attributes.position.count;
+    const colors = new Float32Array(positionCount * 3);
+    for (let i = 0; i < positionCount; i++) {
+      colors[i * 3] = color.r;
+      colors[i * 3 + 1] = color.g;
+      colors[i * 3 + 2] = color.b;
+    }
+    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  }
+
+  // Create merged tree material with vertex colors and planet-aware lighting
+  private createMergedTreeMaterial(): THREE.ShaderMaterial {
+    return new THREE.ShaderMaterial({
+      uniforms: {
+        sunDirection: { value: this.sunDirection.clone().normalize() },
+        ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
+        directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
+      },
+      vertexShader: `
+        attribute vec3 color;
+        varying vec3 vColor;
+        varying vec3 vNormal;
+        varying vec3 vWorldPosition;
+
+        void main() {
+          vColor = color;
+          vNormal = normalize(mat3(modelMatrix) * normal);
+          vec4 worldPos = modelMatrix * vec4(position, 1.0);
+          vWorldPosition = worldPos.xyz;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform vec3 sunDirection;
+        uniform float ambientIntensity;
+        uniform float directionalIntensity;
+
+        varying vec3 vColor;
+        varying vec3 vNormal;
+        varying vec3 vWorldPosition;
+
+        void main() {
+          vec3 surfaceNormal = normalize(vWorldPosition);
+          float planetSunFacing = dot(surfaceNormal, sunDirection);
+          float shadowFactor = smoothstep(-0.1, 0.2, planetSunFacing);
+          float meshDiffuse = max(0.0, dot(vNormal, sunDirection));
+          float directional = meshDiffuse * shadowFactor * directionalIntensity;
+          float ambient = ambientIntensity;
+          vec3 finalColor = vColor * (ambient + directional);
+          gl_FragColor = vec4(finalColor, 1.0);
+        }
+      `,
+    });
   }
 
   // Create a hexagonal prism geometry

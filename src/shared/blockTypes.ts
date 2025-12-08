@@ -17,7 +17,13 @@ export enum HexBlockType {
   ORE_GOLD = 11,
   ORE_LITHIUM = 12,
   ORE_ALUMINUM = 13,
-  ORE_COBALT = 14
+  ORE_COBALT = 14,
+  // Snow biome blocks
+  SNOW = 15,
+  DIRT_SNOW = 16,  // Dirt with snow on top
+  ICE = 17,
+  // Technology blocks
+  FURNACE = 18
 }
 
 export function isSolid(blockType: HexBlockType | number): boolean {
@@ -29,5 +35,9 @@ export function isLiquid(blockType: HexBlockType | number): boolean {
 }
 
 export function isTransparent(blockType: HexBlockType | number): boolean {
-  return blockType === HexBlockType.AIR || blockType === HexBlockType.WATER;
+  return blockType === HexBlockType.AIR || blockType === HexBlockType.WATER || blockType === HexBlockType.ICE;
+}
+
+export function isSemiTransparent(blockType: HexBlockType | number): boolean {
+  return blockType === HexBlockType.ICE;
 }

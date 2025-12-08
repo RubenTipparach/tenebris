@@ -64,6 +64,34 @@ export class InputManager {
   }
 
   private setupEventListeners(): void {
+    // Prevent some browser shortcuts while playing (Ctrl+S, Ctrl+R work, but Ctrl+W cannot be blocked)
+    window.addEventListener('keydown', (e) => {
+      if (this.isPointerLocked || this.mobileGameActive) {
+        // Block Ctrl+S (save), Ctrl+R (reload) - these can be prevented
+        // Note: Ctrl+W CANNOT be blocked by JavaScript - it's protected by browsers
+        if (e.ctrlKey && (e.code === 'KeyS' || e.code === 'KeyR' || e.code === 'KeyN')) {
+          e.preventDefault();
+          e.stopPropagation();
+          return false;
+        }
+      }
+    }, { capture: true });
+
+    // Show confirmation dialog when trying to close/leave the page while playing
+    // This is the only way to give the user a chance to cancel closing the tab
+    window.addEventListener('beforeunload', (e) => {
+      if (this.isPointerLocked || this.mobileGameActive) {
+        // Exit pointer lock so the dialog can be interacted with properly
+        if (document.pointerLockElement) {
+          document.exitPointerLock();
+        }
+        e.preventDefault();
+        // Chrome requires returnValue to be set
+        e.returnValue = 'You have an active game. Are you sure you want to leave?';
+        return e.returnValue;
+      }
+    });
+
     // Keyboard events
     document.addEventListener('keydown', (e) => {
       if (!this.keys.has(e.code)) {

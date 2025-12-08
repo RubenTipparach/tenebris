@@ -4,6 +4,10 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Tenebris - Voxel FPS Game</title>
+  <!-- Game font - Jersey 10 for retro pixel aesthetic -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Jersey+10&display=swap" rel="stylesheet">
 <!-- Google tag (gtag.js) -->
 <script async src="https://www.googletagmanager.com/gtag/js?id=G-0JPCDZD6LT"></script>
 <script>
@@ -14,6 +18,11 @@
   gtag('config', 'G-0JPCDZD6LT');
 </script>
   <style>
+    :root {
+      /* Game font - change this to swap fonts across the entire UI */
+      --game-font: 'Jersey 10', monospace;
+    }
+
     * {
       margin: 0;
       padding: 0;
@@ -100,17 +109,21 @@
       left: 50%;
       transform: translate(-50%, -50%);
       color: white;
-      font-family: 'Courier New', monospace;
+      font-family: var(--game-font);
       text-align: center;
       background: rgba(0, 0, 0, 0.8);
       padding: 30px;
       border-radius: 10px;
       z-index: 200;
+      display: none; /* Hidden during loading, shown after game is ready */
     }
 
     #instructions h1 {
       margin-bottom: 20px;
       color: #4CAF50;
+      font-size: 48px;
+      letter-spacing: 3px;
+      text-shadow: 0 0 10px rgba(76, 175, 80, 0.3);
     }
 
     #instructions p {
@@ -218,9 +231,8 @@
       color: #4CAF50;
       padding: 6px 12px;
       border-radius: 4px;
-      font-size: 14px;
-      font-family: 'Courier New', monospace;
-      font-weight: bold;
+      font-size: 20px;
+      font-family: var(--game-font);
       border: 1px solid #4CAF50;
       z-index: 100;
       opacity: 0;
@@ -257,13 +269,13 @@
 
     .settings-row label {
       cursor: pointer;
-      font-size: 13px;
+      font-size: 26px;
     }
 
     .toggle-switch {
       position: relative;
-      width: 44px;
-      height: 22px;
+      width: 56px;
+      height: 28px;
       cursor: pointer;
     }
 
@@ -284,15 +296,15 @@
       right: 0;
       bottom: 0;
       background-color: #555;
-      border-radius: 22px;
+      border-radius: 28px;
       transition: 0.3s;
     }
 
     .toggle-slider:before {
       position: absolute;
       content: "";
-      height: 16px;
-      width: 16px;
+      height: 22px;
+      width: 22px;
       left: 3px;
       bottom: 3px;
       background-color: white;
@@ -305,7 +317,7 @@
     }
 
     .toggle-switch input:checked + .toggle-slider:before {
-      transform: translateX(22px);
+      transform: translateX(28px);
     }
 
     /* Start button */
@@ -317,8 +329,9 @@
       color: white;
       border: none;
       border-radius: 5px;
-      font-family: 'Courier New', monospace;
-      font-size: 14px;
+      font-family: var(--game-font);
+      font-size: 24px;
+      letter-spacing: 2px;
       cursor: pointer;
       transition: background 0.2s;
     }
@@ -333,13 +346,13 @@
 
     /* Teleport dropdown */
     .teleport-select {
-      padding: 6px 12px;
+      padding: 8px 16px;
       background: #333;
       color: white;
       border: 1px solid #555;
       border-radius: 4px;
-      font-family: 'Courier New', monospace;
-      font-size: 12px;
+      font-family: var(--game-font);
+      font-size: 22px;
       cursor: pointer;
       outline: none;
     }
@@ -358,13 +371,13 @@
 
     /* Reset button */
     .reset-btn {
-      padding: 6px 16px;
+      padding: 8px 20px;
       background: #c62828;
       color: white;
       border: none;
       border-radius: 4px;
-      font-family: 'Courier New', monospace;
-      font-size: 12px;
+      font-family: var(--game-font);
+      font-size: 22px;
       cursor: pointer;
       transition: background 0.2s;
     }
@@ -391,8 +404,8 @@
       color: #888;
       border: 1px solid #555;
       border-radius: 5px;
-      font-family: 'Courier New', monospace;
-      font-size: 12px;
+      font-family: var(--game-font);
+      font-size: 24px;
       cursor: pointer;
       transition: all 0.2s;
     }
@@ -417,17 +430,82 @@
     }
 
     .controls-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px 24px;
       text-align: left;
-      max-width: 300px;
+      max-width: 600px;
       margin: 0 auto;
     }
 
     .controls-grid p {
       display: flex;
       justify-content: space-between;
-      padding: 5px 0;
+      padding: 8px 0;
       border-bottom: 1px solid #333;
       color: white;
+      font-size: 22px;
+    }
+
+    /* Loading screen */
+    #loading-screen {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: #000;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+      transition: opacity 0.5s ease;
+    }
+
+    #loading-screen.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    #loading-title {
+      color: #4CAF50;
+      font-family: var(--game-font);
+      font-size: 72px;
+      margin-bottom: 40px;
+      text-shadow: 0 0 20px rgba(76, 175, 80, 0.5);
+      letter-spacing: 4px;
+    }
+
+    #loading-progress-container {
+      width: 300px;
+      height: 20px;
+      background: rgba(255, 255, 255, 0.1);
+      border: 2px solid #333;
+      border-radius: 10px;
+      overflow: hidden;
+      margin-bottom: 20px;
+    }
+
+    #loading-progress-bar {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #2E7D32, #4CAF50, #66BB6A);
+      transition: width 0.3s ease;
+      box-shadow: 0 0 10px rgba(76, 175, 80, 0.5);
+    }
+
+    #loading-status {
+      color: #888;
+      font-family: var(--game-font);
+      font-size: 20px;
+    }
+
+    #loading-percentage {
+      color: #4CAF50;
+      font-family: var(--game-font);
+      font-size: 24px;
+      margin-top: 10px;
     }
 
     /* Mining progress bar */
@@ -664,9 +742,11 @@
 
     .inventory-title {
       text-align: center;
-      font-size: 18px;
+      font-family: var(--game-font);
+      font-size: 28px;
       color: #4CAF50;
       margin-bottom: 15px;
+      letter-spacing: 2px;
     }
 
     .inventory-container {
@@ -954,6 +1034,16 @@
   </style>
 </head>
 <body>
+  <!-- Loading screen -->
+  <div id="loading-screen">
+    <h1 id="loading-title">TENEBRIS</h1>
+    <div id="loading-progress-container">
+      <div id="loading-progress-bar"></div>
+    </div>
+    <div id="loading-status">Initializing...</div>
+    <div id="loading-percentage">0%</div>
+  </div>
+
   <div id="game-container"></div>
   <div id="crosshair"></div>
 

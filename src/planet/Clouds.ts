@@ -167,6 +167,7 @@ export class CloudSystem {
   private clouds: THREE.Group;
   private material: THREE.ShaderMaterial;
   private config: CloudConfig;
+  private cloudMesh: THREE.Mesh | null = null;
 
   constructor(config: Partial<CloudConfig> = {}, sunDirection: THREE.Vector3) {
     this.config = { ...DEFAULT_CLOUD_CONFIG, ...config };
@@ -182,6 +183,12 @@ export class CloudSystem {
 
     // Generate cloud positions distributed around the sphere
     const numClouds = this.config.cloudCount ?? Math.floor(100 * this.config.cloudDensity);
+
+    // Collect all cloud geometries for batching into a single mesh
+    const allPositions: number[] = [];
+    const allNormals: number[] = [];
+    const allIndices: number[] = [];
+    let indexOffset = 0;
 
     for (let i = 0; i < numClouds; i++) {
       // Random position on sphere using uniform distribution
@@ -208,9 +215,41 @@ export class CloudSystem {
       );
 
       if (geometry) {
-        const mesh = new THREE.Mesh(geometry, this.material);
-        this.clouds.add(mesh);
+        // Extract data from this cloud's geometry
+        const positions = geometry.attributes.position.array as Float32Array;
+        const normals = geometry.attributes.normal.array as Float32Array;
+        const indices = geometry.index!.array as Uint16Array | Uint32Array;
+
+        // Add positions and normals
+        for (let j = 0; j < positions.length; j++) {
+          allPositions.push(positions[j]);
+        }
+        for (let j = 0; j < normals.length; j++) {
+          allNormals.push(normals[j]);
+        }
+
+        // Add indices with offset
+        for (let j = 0; j < indices.length; j++) {
+          allIndices.push(indices[j] + indexOffset);
+        }
+
+        indexOffset += positions.length / 3;
+
+        // Dispose individual geometry
+        geometry.dispose();
       }
+    }
+
+    // Create single batched mesh from all cloud data
+    if (allPositions.length > 0) {
+      const batchedGeometry = new THREE.BufferGeometry();
+      batchedGeometry.setAttribute('position', new THREE.Float32BufferAttribute(allPositions, 3));
+      batchedGeometry.setAttribute('normal', new THREE.Float32BufferAttribute(allNormals, 3));
+      batchedGeometry.setIndex(allIndices);
+      batchedGeometry.computeBoundingSphere();
+
+      this.cloudMesh = new THREE.Mesh(batchedGeometry, this.material);
+      this.clouds.add(this.cloudMesh);
     }
   }
 

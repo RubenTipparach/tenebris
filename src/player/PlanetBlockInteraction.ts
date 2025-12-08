@@ -5,7 +5,9 @@ import { HexBlockType } from '../planet/HexBlock';
 import { Inventory, ItemType, ITEM_DATA } from './Inventory';
 import { PlanetTreeManager } from '../planet/Tree';
 import { HeldTorch, TorchManager } from '../planet/Torch';
+import { FurnaceManager, PlacedFurnace } from '../planet/Furnace';
 import { CraftingSystem } from './CraftingSystem';
+import { FurnaceUI } from './FurnaceUI';
 import { getAssetPath } from '../utils/assetPath';
 import { gameStorage } from '../engine/GameStorage';
 import { PlayerConfig } from '../config/PlayerConfig';
@@ -26,6 +28,10 @@ function blockToItem(blockType: HexBlockType): ItemType {
     case HexBlockType.ORE_LITHIUM: return ItemType.ORE_LITHIUM;
     case HexBlockType.ORE_ALUMINUM: return ItemType.ORE_ALUMINUM;
     case HexBlockType.ORE_COBALT: return ItemType.ORE_COBALT;
+    // Snow biome blocks
+    case HexBlockType.SNOW: return ItemType.SNOW;
+    case HexBlockType.DIRT_SNOW: return ItemType.DIRT; // Dirt with snow drops dirt
+    case HexBlockType.ICE: return ItemType.ICE;
     default: return ItemType.NONE;
   }
 }
@@ -46,6 +52,9 @@ function itemToBlock(itemType: ItemType): HexBlockType {
     case ItemType.ORE_LITHIUM: return HexBlockType.ORE_LITHIUM;
     case ItemType.ORE_ALUMINUM: return HexBlockType.ORE_ALUMINUM;
     case ItemType.ORE_COBALT: return HexBlockType.ORE_COBALT;
+    // Snow biome blocks can be placed
+    case ItemType.SNOW: return HexBlockType.SNOW;
+    case ItemType.ICE: return HexBlockType.ICE;
     default: return HexBlockType.AIR;
   }
 }
@@ -67,6 +76,11 @@ export class PlanetBlockInteraction {
   // Torch system
   private heldTorch: HeldTorch | null = null;
   private torchManager: TorchManager;
+
+  // Furnace system
+  private furnaceManager: FurnaceManager;
+  private furnaceUI: FurnaceUI;
+  private miningFurnaceTarget: { furnace: PlacedFurnace } | null = null;
 
   private rightClickCooldown: number = 0;
   private readonly CLICK_COOLDOWN = 0.25;
@@ -98,9 +112,28 @@ export class PlanetBlockInteraction {
     this.torchManager = new TorchManager(scene);
     this.heldTorch = new HeldTorch(player.camera, scene);
 
+    // Initialize furnace systems
+    this.furnaceManager = new FurnaceManager(scene);
+    this.furnaceUI = new FurnaceUI(this.inventory);
+    this.furnaceUI.setOnCloseCallback(() => {
+      // Furnace close is now handled by inventory menu close
+    });
+    this.furnaceUI.setOnSaveCallback(() => {
+      this.saveInventory();
+    });
+    this.furnaceUI.setOnOpenInventoryCallback(() => {
+      // Open the inventory menu when furnace is interacted with
+      this.craftingSystem.open();
+    });
+    this.furnaceUI.setOnUpdateHotbarCallback(() => {
+      this.updateHotbarUI();
+    });
+
     // Initialize crafting system with callbacks
     this.craftingSystem = new CraftingSystem(this.inventory);
     this.craftingSystem.setOnCloseCallback(() => {
+      // Close furnace UI when inventory closes
+      this.furnaceUI.close();
       // Re-lock pointer when inventory closes
       const container = document.getElementById('game-container');
       if (container) {
@@ -277,6 +310,8 @@ export class PlanetBlockInteraction {
           if (img) {
             img.src = getAssetPath(itemData.texture);
             img.style.display = 'block';
+            // Apply atlas region styling if present
+            this.applyAtlasRegionStyle(img, itemData);
           }
 
           // Create or update count element
@@ -295,7 +330,12 @@ export class PlanetBlockInteraction {
           }
           tooltipEl.textContent = itemData.name;
         } else {
-          if (img) img.style.display = 'none';
+          if (img) {
+            img.style.display = 'none';
+            // Reset atlas region styling
+            img.style.objectFit = '';
+            img.style.objectPosition = '';
+          }
           if (countEl) countEl.textContent = '';
           // Remove tooltip for empty slots
           if (tooltipEl) tooltipEl.remove();
@@ -305,6 +345,34 @@ export class PlanetBlockInteraction {
         slotEl.classList.toggle('selected', index === this.inventory.getSelectedSlot());
       }
     });
+  }
+
+  // Apply CSS styling to show only a portion of an atlas texture
+  private applyAtlasRegionStyle(img: HTMLImageElement, itemData: typeof ITEM_DATA[ItemType]): void {
+    if (itemData.atlasRegion) {
+      const { x, y, width, height, atlasWidth, atlasHeight } = itemData.atlasRegion;
+      // Calculate scale factors to show only the region we want
+      const scaleX = atlasWidth / width;
+      const scaleY = atlasHeight / height;
+      // Object-fit: none prevents scaling, we'll use width/height to scale
+      img.style.objectFit = 'none';
+      // Position to show the correct region (negative offset for crop)
+      img.style.objectPosition = `${-x * (40 / width)}px ${-y * (40 / height)}px`;
+      // Scale the image so the region fills the img element
+      img.style.width = `${40 * scaleX}px`;
+      img.style.height = `${40 * scaleY}px`;
+      // Use transform to scale it back down to fit in the slot
+      img.style.transform = `scale(${1 / scaleX}, ${1 / scaleY})`;
+      img.style.transformOrigin = 'top left';
+    } else {
+      // Reset to default for non-atlas textures
+      img.style.objectFit = '';
+      img.style.objectPosition = '';
+      img.style.width = '40px';
+      img.style.height = '40px';
+      img.style.transform = '';
+      img.style.transformOrigin = '';
+    }
   }
 
   private showSelectionLabel(): void {
@@ -482,6 +550,9 @@ export class PlanetBlockInteraction {
     // Update placed torches (flicker animation)
     this.torchManager.update(deltaTime);
 
+    // Update furnace smelting progress
+    this.furnaceManager.update(deltaTime);
+
     // Don't process block interaction when inventory menu is open
     if (this.craftingSystem.isMenuOpen()) {
       // Hide wireframe and reset mining when menu is open
@@ -505,9 +576,12 @@ export class PlanetBlockInteraction {
     const treeMeshes = this.treeManager?.getTreeMeshes() ?? [];
     // Get torch meshes for picking
     const torchMeshes = this.torchManager.getTorchMeshes();
+    // Get furnace meshes for picking
+    const furnaceMeshes = this.furnaceManager.getFurnaceMeshes();
 
     const treeIntersects = this.raycaster.intersectObjects(treeMeshes, false);
     const torchIntersects = this.raycaster.intersectObjects(torchMeshes, false);
+    const furnaceIntersects = this.raycaster.intersectObjects(furnaceMeshes, false);
 
     // Raycast against all planets and find the closest hit
     let closestBlockHit: ReturnType<Planet['raycast']> = null;
@@ -526,20 +600,26 @@ export class PlanetBlockInteraction {
       }
     }
 
-    // Determine which hit is closer (tree, torch, or block)
+    // Determine which hit is closer (tree, torch, furnace, or block)
     let hitTree = false;
     let hitBlock = false;
     let hitTorch = false;
+    let hitFurnace = false;
     let treeHit: THREE.Intersection | null = null;
     let torchHit: THREE.Intersection | null = null;
+    let furnaceHit: THREE.Intersection | null = null;
 
     // Find the closest hit among all types
     const treeDistance = treeIntersects.length > 0 ? treeIntersects[0].distance : Infinity;
     const torchDistance = torchIntersects.length > 0 ? torchIntersects[0].distance : Infinity;
-    const closestObjectDistance = Math.min(treeDistance, torchDistance);
+    const furnaceDistance = furnaceIntersects.length > 0 ? furnaceIntersects[0].distance : Infinity;
+    const closestObjectDistance = Math.min(treeDistance, torchDistance, furnaceDistance);
 
     if (closestBlockHit && closestBlockDistance < closestObjectDistance) {
       hitBlock = true;
+    } else if (furnaceDistance <= torchDistance && furnaceDistance <= treeDistance && furnaceDistance < Infinity) {
+      hitFurnace = true;
+      furnaceHit = furnaceIntersects[0];
     } else if (torchDistance < treeDistance && torchDistance < Infinity) {
       hitTorch = true;
       torchHit = torchIntersects[0];
@@ -550,7 +630,26 @@ export class PlanetBlockInteraction {
       hitBlock = true;
     }
 
-    if (hitTorch && torchHit) {
+    if (hitFurnace && furnaceHit) {
+      // No wireframe for furnaces
+      if (this.blockWireframe) {
+        this.blockWireframe.visible = false;
+        this.wireframeCache = null;
+      }
+
+      const furnaceMesh = furnaceHit.object as THREE.Mesh;
+      const furnace = this.furnaceManager.getFurnaceByMesh(furnaceMesh);
+
+      // Handle furnace interaction (right click to open, left click to mine)
+      if (rightClick && this.rightClickCooldown === 0 && furnace) {
+        this.furnaceUI.open(furnace);
+        this.rightClickCooldown = this.CLICK_COOLDOWN;
+      } else if (leftClick && furnace) {
+        this.handleFurnaceMining(deltaTime, furnace);
+      } else {
+        this.resetMining();
+      }
+    } else if (hitTorch && torchHit) {
       // No wireframe for torches
       if (this.blockWireframe) {
         this.blockWireframe.visible = false;
@@ -690,9 +789,64 @@ export class PlanetBlockInteraction {
     }
   }
 
+  private handleFurnaceMining(deltaTime: number, furnace: PlacedFurnace): void {
+    // Check if target changed
+    if (this.miningFurnaceTarget === null || this.miningFurnaceTarget.furnace !== furnace) {
+      // New target, reset progress
+      this.miningFurnaceTarget = { furnace };
+      this.miningTarget = null;
+      this.miningTreeTarget = null;
+      this.miningProgress = 0;
+    }
+
+    // Furnace mining time
+    const mineTime = ITEM_DATA[ItemType.FURNACE].mineTime;
+
+    // Increase progress
+    this.miningProgress += deltaTime / mineTime;
+    this.updateMiningUI(this.miningProgress);
+
+    // Check if mining complete
+    if (this.miningProgress >= 1) {
+      this.breakFurnace(furnace);
+      this.resetMining();
+    }
+  }
+
+  private breakFurnace(furnace: PlacedFurnace): void {
+    // Give the furnace item back to the player
+    this.inventory.addItem(ItemType.FURNACE, 1);
+
+    // Also return any items that were in the furnace
+    if (furnace.smeltingItem !== null) {
+      this.inventory.addItem(furnace.smeltingItem as ItemType, 1);
+    }
+    if (furnace.outputItem !== null && furnace.outputCount > 0) {
+      this.inventory.addItem(furnace.outputItem as ItemType, furnace.outputCount);
+    }
+    // Convert fuel back to coal (approximately)
+    if (furnace.fuelAmount > 0) {
+      const coalToReturn = Math.ceil(furnace.fuelAmount / 8); // 8 smelts per coal
+      this.inventory.addItem(ItemType.COAL, coalToReturn);
+    }
+
+    this.updateHotbarUI();
+    this.saveInventory();
+
+    // Remove furnace from save (find which planet it's on)
+    for (let i = 0; i < this.planets.length; i++) {
+      const planetId = i === 0 ? 'earth' : 'moon';
+      gameStorage.removeFurnace(planetId, furnace.tileIndex);
+    }
+
+    // Remove the furnace from the world
+    this.furnaceManager.removeFurnace(furnace);
+  }
+
   private resetMining(): void {
     this.miningTarget = null;
     this.miningTreeTarget = null;
+    this.miningFurnaceTarget = null;
     this.miningProgress = 0;
     this.updateMiningUI(0);
   }
@@ -789,6 +943,12 @@ export class PlanetBlockInteraction {
       return;
     }
 
+    // Handle furnace placement separately
+    if (selectedSlot.itemType === ItemType.FURNACE) {
+      this.placeFurnace(planet, tileIndex, depth);
+      return;
+    }
+
     const blockType = itemToBlock(selectedSlot.itemType);
     if (blockType === HexBlockType.AIR) return;
 
@@ -858,6 +1018,48 @@ export class PlanetBlockInteraction {
       // Trigger local mesh rebuild for vertex-baked torch lighting
       // Uses same path as block placement - fast incremental rebuild
       planet.markTilesNearTorchDirty(worldPosition, PlayerConfig.TORCH_LIGHT_RANGE);
+    }
+  }
+
+  private async placeFurnace(planet: Planet, tileIndex: number, depth: number): Promise<void> {
+    // Check if there's already a furnace at this tile
+    if (this.furnaceManager.getFurnaceAtTile(tileIndex)) {
+      return; // Can't place multiple furnaces on same tile
+    }
+
+    // Get the world position for the furnace
+    const tile = planet.getTileByIndex(tileIndex);
+    if (!tile) return;
+
+    // depth is the air block position - furnace should sit on the solid block below it
+    const solidBlockTopRadius = planet.depthToRadius(depth) - planet.getBlockHeight();
+    const tileCenter = tile.center.clone().normalize();
+    const worldPosition = tileCenter.multiplyScalar(solidBlockTopRadius).add(planet.center);
+
+    // Get player forward direction for furnace facing
+    const playerForward = this.player.getForwardVector();
+
+    // Use item from inventory
+    if (this.inventory.useSelectedItem()) {
+      // Place the furnace facing the player
+      const placedFurnace = await this.furnaceManager.placeFurnace(worldPosition, planet.center, tileIndex, playerForward);
+
+      this.updateHotbarUI();
+      this.saveInventory();
+
+      // Save furnace placement to game storage
+      if (placedFurnace) {
+        const planetId = this.getPlanetId(planet);
+        gameStorage.saveFurnace(planetId, tileIndex, {
+          position: { x: placedFurnace.position.x, y: placedFurnace.position.y, z: placedFurnace.position.z },
+          rotation: placedFurnace.rotation,
+          fuelAmount: placedFurnace.fuelAmount,
+          smeltingItem: placedFurnace.smeltingItem,
+          smeltingProgress: placedFurnace.smeltingProgress,
+          outputItem: placedFurnace.outputItem,
+          outputCount: placedFurnace.outputCount
+        });
+      }
     }
   }
 
@@ -993,6 +1195,32 @@ export class PlanetBlockInteraction {
       }
     }
 
-    console.log(`Loaded save: ${saveData.tileChanges.length} tile changes, ${savedTorches.length} torches, inventory restored`);
+    // Load saved furnaces
+    const savedFurnaces = gameStorage.getFurnaces();
+    for (const savedFurnace of savedFurnaces) {
+      // Find which planet this furnace belongs to
+      const planet = this.planets.find((_, i) =>
+        (i === 0 ? 'earth' : 'moon') === savedFurnace.planetId
+      );
+      if (planet) {
+        const savedPosition = new THREE.Vector3(
+          savedFurnace.position.x,
+          savedFurnace.position.y,
+          savedFurnace.position.z
+        );
+        // Restore the furnace at exact saved position (no offset recalculation)
+        this.furnaceManager.restoreFurnace(savedPosition, planet.center, savedFurnace.tileIndex, savedFurnace.rotation).then(placedFurnace => {
+          if (placedFurnace) {
+            placedFurnace.fuelAmount = savedFurnace.fuelAmount;
+            placedFurnace.smeltingItem = savedFurnace.smeltingItem;
+            placedFurnace.smeltingProgress = savedFurnace.smeltingProgress;
+            placedFurnace.outputItem = savedFurnace.outputItem;
+            placedFurnace.outputCount = savedFurnace.outputCount;
+          }
+        });
+      }
+    }
+
+    console.log(`Loaded save: ${saveData.tileChanges.length} tile changes, ${savedTorches.length} torches, ${savedFurnaces.length} furnaces, inventory restored`);
   }
 }

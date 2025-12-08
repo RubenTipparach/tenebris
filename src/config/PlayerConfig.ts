@@ -106,6 +106,7 @@ export const PlayerConfig = {
   TERRAIN_LOD_SWITCH_ALTITUDE: 50,    // Altitude above which only LOD mesh is shown
   TERRAIN_BUFFER_ZONE: 12,             // Tiles player can move before triggering rebuild
   TERRAIN_TILES_PER_FRAME: 20,        // Max tiles to process per frame during incremental rebuild
+  TERRAIN_LOD_OFFSET: 1.0,            // How far inward LOD terrain sits vs detail terrain (prevents z-fighting/intersection)
 
   // Terrain generation
   TERRAIN_SEED: 12345,                // Seed for terrain generation (change for different worlds)
@@ -113,6 +114,13 @@ export const PlayerConfig = {
   TERRAIN_MAX_HEIGHT: 16,             // Max blocks above sea level (mountain peak height)
   TERRAIN_SEA_LEVEL: 12,              // Sea level depth from top (blocks of air above water)
   TERRAIN_UV_SCALE: 1,               // UV texture tiling scale (higher = more texture repetition per tile)
+
+  // Polar/Snow biome
+  POLAR_THRESHOLD: 0.9,              // How far polar regions extend (0-1, 0.75 = ~41° from poles, lower = more snow)
+
+  // Earth spawn point (lat/lon in degrees)
+  EARTH_SPAWN_LAT: 52.5,             // Latitude for Earth spawn (positive = North)
+  EARTH_SPAWN_LON: 127.0,            // Longitude for Earth spawn (positive = East)
 
   // Terrain features (geographic)
   TERRAIN_CONTINENT_SCALE: 0.8,       // Scale of continental plates (lower = larger continents)
@@ -155,4 +163,8 @@ export const PlayerConfig = {
   // Debug: Cave structure logging (Shift+X)
   DEBUG_CAVE_TILE_RINGS: 1,           // How many rings of neighbor tiles to sample (0 = just current tile)
   DEBUG_CAVE_DEPTH_ROWS: 12,          // How many depth rows to show (centered on player feet)
+
+  // Technology block placement
+  TECH_BLOCK_ROTATION_OFFSET: 0,      // Rotation offset in degrees for technology blocks (furnace, etc.)
+  TECH_BLOCK_HEX_SNAP: false,          // Snap technology blocks to 60-degree hex alignment
 };

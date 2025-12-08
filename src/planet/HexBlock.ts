@@ -6,6 +6,8 @@ import waterVert from '../shaders/water/water.vert';
 import waterFrag from '../shaders/water/water.frag';
 import terrainVert from '../shaders/terrain/terrain.vert';
 import terrainFrag from '../shaders/terrain/terrain.frag';
+import iceVert from '../shaders/ice/ice.vert';
+import iceFrag from '../shaders/ice/ice.frag';
 
 // Import and re-export block types from shared module for backward compatibility
 import { HexBlockType, isSolid, isLiquid } from '../shared/blockTypes';
@@ -191,8 +193,14 @@ export class HexBlockMeshBuilder {
     const aluminumTexture = await this.loadTexture('/textures/minerals/earth/rocks_aluminum.png');
     const cobaltTexture = await this.loadTexture('/textures/minerals/earth/rocks_cobalt.png');
 
+    // Snow biome textures
+    const snowTexture = await this.loadTexture('/textures/snow.png');
+    const dirtSnowTexture = await this.loadTexture('/textures/dirt_snow.png');
+    const iceTexture = await this.loadTexture('/textures/ice.png');
+
     [stoneTexture, dirtTexture, grassTexture, dirtGrassTexture, woodTexture, sandTexture,
-     coalTexture, copperTexture, ironTexture, goldTexture, lithiumTexture, aluminumTexture, cobaltTexture
+     coalTexture, copperTexture, ironTexture, goldTexture, lithiumTexture, aluminumTexture, cobaltTexture,
+     snowTexture, dirtSnowTexture, iceTexture
     ].forEach(configureTexture);
 
     this.textures.set('stone', stoneTexture);
@@ -209,6 +217,10 @@ export class HexBlockMeshBuilder {
     this.textures.set('oreLithium', lithiumTexture);
     this.textures.set('oreAluminum', aluminumTexture);
     this.textures.set('oreCobalt', cobaltTexture);
+    // Snow biome textures
+    this.textures.set('snow', snowTexture);
+    this.textures.set('dirtSnow', dirtSnowTexture);
+    this.textures.set('ice', iceTexture);
 
     // Parse underwater fog color for terrain shader
     const terrainUnderwaterFogColor = new THREE.Color(PlayerConfig.UNDERWATER_FOG_COLOR);
@@ -252,6 +264,38 @@ export class HexBlockMeshBuilder {
     this.materials.set('oreLithium', createTerrainMaterial(lithiumTexture));
     this.materials.set('oreAluminum', createTerrainMaterial(aluminumTexture));
     this.materials.set('oreCobalt', createTerrainMaterial(cobaltTexture));
+    // Snow biome materials - snow and dirt_snow use standard terrain shader
+    this.materials.set('snow', createTerrainMaterial(snowTexture));
+    this.materials.set('dirtSnow', createTerrainMaterial(dirtSnowTexture)); // Dirt with snow on top
+    this.materials.set('snowSide', createTerrainMaterial(dirtSnowTexture)); // Snow block sides use dirt_snow texture
+
+    // Ice material - transparent with specular shininess
+    const iceMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        terrainTexture: { value: iceTexture },
+        sunDirection: { value: this.sunDirection.clone() },
+        planetCenter: { value: this.planetCenter.clone() },
+        ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
+        directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
+        opacity: { value: 0.5 }, // 50% transparent
+        specularPower: { value: 64.0 }, // Sharp specular highlight
+        specularStrength: { value: 0.6 }, // Medium specular intensity
+        // Underwater uniforms
+        waterLevel: { value: 0.0 },
+        isUnderwater: { value: 0.0 },
+        underwaterFogColor: { value: terrainUnderwaterFogColor },
+        underwaterFogNear: { value: PlayerConfig.UNDERWATER_FOG_NEAR },
+        underwaterFogFar: { value: PlayerConfig.UNDERWATER_FOG_FAR },
+        underwaterDimming: { value: PlayerConfig.UNDERWATER_TERRAIN_DIMMING ?? 0.3 },
+      },
+      vertexShader: iceVert,
+      fragmentShader: iceFrag,
+      transparent: true,
+      depthWrite: true, // Ice should write to depth buffer unlike water
+      side: THREE.DoubleSide
+    });
+    this.terrainMaterials.push(iceMaterial);
+    this.materials.set('ice', iceMaterial);
 
     // Sea wall material - unlit, no fog so it stays exact color
     const seaWallColor = new THREE.Color(PlayerConfig.SEA_WALL_COLOR);
@@ -354,6 +398,9 @@ export class HexBlockMeshBuilder {
     this.materials.set('stoneLOD', createTerrainLODMaterial(stoneTexture));
     this.materials.set('sandLOD', createTerrainLODMaterial(sandTexture));
     this.materials.set('woodLOD', createTerrainLODMaterial(woodTexture));
+    // Snow/Ice LOD materials - opaque for distant viewing
+    this.materials.set('snowLOD', createTerrainLODMaterial(snowTexture));
+    this.materials.set('iceLOD', createTerrainLODMaterial(iceTexture)); // Opaque ice for LOD (no transparency)
     // Water LOD uses opaque material - no transparency for distant water
     const waterLODMat = createLODMaterial(waterTexture, waterColor);
     waterLODMat.side = THREE.DoubleSide;
@@ -401,6 +448,22 @@ export class HexBlockMeshBuilder {
     return this.materials.get('sand')!;
   }
 
+  public getSnowMaterial(): THREE.Material {
+    return this.materials.get('snow')!;
+  }
+
+  public getDirtSnowMaterial(): THREE.Material {
+    return this.materials.get('dirtSnow')!;
+  }
+
+  public getSnowSideMaterial(): THREE.Material {
+    return this.materials.get('snowSide') ?? this.materials.get('snow')!;
+  }
+
+  public getIceMaterial(): THREE.Material {
+    return this.materials.get('ice')!;
+  }
+
   public getSeaWallMaterial(): THREE.Material | null {
     return this.materials.get('seaWall') ?? null;
   }
@@ -435,6 +498,14 @@ export class HexBlockMeshBuilder {
 
   public getWoodLODMaterial(): THREE.Material {
     return this.materials.get('woodLOD')!;
+  }
+
+  public getSnowLODMaterial(): THREE.Material {
+    return this.materials.get('snowLOD')!;
+  }
+
+  public getIceLODMaterial(): THREE.Material {
+    return this.materials.get('iceLOD')!;
   }
 
   // Create separate geometries for each face type

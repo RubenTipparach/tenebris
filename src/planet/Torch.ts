@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { PlayerConfig } from '../config/PlayerConfig';
 
 // Torch configuration - uses PlayerConfig for gameplay values
@@ -19,7 +20,7 @@ export const TorchConfig = {
   HELD_ROTATION: new THREE.Euler(-0.3, 0.2, 0.1),   // Rotation when held
 };
 
-// Create torch geometry (procedural - no OBJ loader needed)
+// Create torch geometry (procedural - merged into single mesh for fewer draw calls)
 function createTorchGeometry(): THREE.Group {
   const torch = new THREE.Group();
 
@@ -49,25 +50,45 @@ function createTorchGeometry(): THREE.Group {
   );
   flameGeom.translate(0, TorchConfig.HANDLE_HEIGHT + TorchConfig.HEAD_HEIGHT + TorchConfig.FLAME_HEIGHT / 2, 0);
 
-  // Materials
-  const handleMat = new THREE.MeshBasicMaterial({ color: 0x8B4513 }); // Brown
-  const headMat = new THREE.MeshBasicMaterial({ color: 0x333333 });   // Dark gray
-  const flameMat = new THREE.MeshBasicMaterial({
-    color: TorchConfig.LIGHT_COLOR,
-    transparent: true,
-    opacity: 0.9
+  // Add vertex colors to each geometry before merging
+  const handleColor = new THREE.Color(0x8B4513); // Brown
+  const headColor = new THREE.Color(0x333333);   // Dark gray
+  const flameColor = new THREE.Color(TorchConfig.LIGHT_COLOR);
+
+  addVertexColors(handleGeom, handleColor);
+  addVertexColors(headGeom, headColor);
+  addVertexColors(flameGeom, flameColor);
+
+  // Merge all geometries into one
+  const mergedGeom = BufferGeometryUtils.mergeGeometries([handleGeom, headGeom, flameGeom]);
+
+  // Single material using vertex colors
+  const material = new THREE.MeshBasicMaterial({
+    vertexColors: true,
   });
 
-  const handleMesh = new THREE.Mesh(handleGeom, handleMat);
-  const headMesh = new THREE.Mesh(headGeom, headMat);
-  const flameMesh = new THREE.Mesh(flameGeom, flameMat);
-  flameMesh.name = 'flame';
+  const mesh = new THREE.Mesh(mergedGeom, material);
+  mesh.name = 'torchMesh';
+  torch.add(mesh);
 
-  torch.add(handleMesh);
-  torch.add(headMesh);
-  torch.add(flameMesh);
+  // Clean up individual geometries
+  handleGeom.dispose();
+  headGeom.dispose();
+  flameGeom.dispose();
 
   return torch;
+}
+
+// Helper to add vertex colors to a geometry
+function addVertexColors(geometry: THREE.BufferGeometry, color: THREE.Color): void {
+  const positionCount = geometry.attributes.position.count;
+  const colors = new Float32Array(positionCount * 3);
+  for (let i = 0; i < positionCount; i++) {
+    colors[i * 3] = color.r;
+    colors[i * 3 + 1] = color.g;
+    colors[i * 3 + 2] = color.b;
+  }
+  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 }
 
 // Held torch (first-person view)
@@ -122,12 +143,10 @@ export class HeldTorch {
     const flicker = Math.sin(this.flickerTime) * Math.sin(this.flickerTime * 2.3) * Math.sin(this.flickerTime * 0.7);
     this.pointLight.intensity = this.baseIntensity * (1 + flicker * TorchConfig.FLICKER_AMOUNT);
 
-    // Animate flame mesh scale slightly
-    const flame = this.torchGroup.getObjectByName('flame');
-    if (flame) {
-      flame.scale.y = 1 + flicker * 0.1;
-      flame.scale.x = 1 + Math.sin(this.flickerTime * 1.5) * 0.05;
-      flame.scale.z = 1 + Math.cos(this.flickerTime * 1.3) * 0.05;
+    // Slight scale animation on entire torch mesh for visual effect
+    const torchMesh = this.torchGroup.getObjectByName('torchMesh');
+    if (torchMesh) {
+      torchMesh.scale.y = 1 + flicker * 0.02;
     }
   }
 
@@ -239,7 +258,7 @@ export class TorchManager {
     }
   }
 
-  // Update all torches (flicker animation on flame mesh only - no PointLight)
+  // Update all torches (flicker animation - no PointLight)
   public update(deltaTime: number): void {
     this.flickerTime += deltaTime * TorchConfig.FLICKER_SPEED;
 
@@ -250,12 +269,10 @@ export class TorchManager {
       const t = this.flickerTime + torch.flickerOffset;
       const flicker = Math.sin(t) * Math.sin(t * 2.3) * Math.sin(t * 0.7);
 
-      // Animate flame mesh (visual effect only - lighting is vertex-baked)
-      const flame = torch.group.getObjectByName('flame');
-      if (flame) {
-        flame.scale.y = 1 + flicker * 0.1;
-        flame.scale.x = 1 + Math.sin(t * 1.5) * 0.05;
-        flame.scale.z = 1 + Math.cos(t * 1.3) * 0.05;
+      // Animate merged torch mesh (visual effect only - lighting is vertex-baked)
+      const torchMesh = torch.group.getObjectByName('torchMesh');
+      if (torchMesh) {
+        torchMesh.scale.y = 1 + flicker * 0.03;
       }
     }
   }

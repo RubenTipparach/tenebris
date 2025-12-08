@@ -17,6 +17,18 @@ export interface SavedTorch {
   position: { x: number; y: number; z: number };
 }
 
+export interface SavedFurnace {
+  planetId: string;
+  tileIndex: number;
+  position: { x: number; y: number; z: number };
+  rotation: number;
+  fuelAmount: number;
+  smeltingItem: number | null;
+  smeltingProgress: number;
+  outputItem: number | null;
+  outputCount: number;
+}
+
 export interface PlayerSaveData {
   position: { x: number; y: number; z: number };
   orientation: { x: number; y: number; z: number; w: number };  // quaternion
@@ -30,6 +42,7 @@ export interface GameSaveData {
   inventory: SavedInventorySlot[];
   player: PlayerSaveData;
   torches: SavedTorch[];
+  furnaces: SavedFurnace[];
 }
 
 const STORAGE_KEY = 'tenebris_save';
@@ -39,6 +52,7 @@ export class GameStorage {
   private pendingChanges: Map<string, TileChange> = new Map();
   private inventory: SavedInventorySlot[] = [];
   private torches: SavedTorch[] = [];
+  private furnaces: SavedFurnace[] = [];
   private playerData: PlayerSaveData | null = null;
   private autoSaveInterval: number | null = null;
   private onPlayerSave: (() => PlayerSaveData) | null = null;
@@ -106,6 +120,25 @@ export class GameStorage {
     return this.torches;
   }
 
+  // Save furnace placement
+  public saveFurnace(planetId: string, tileIndex: number, furnaceData: Omit<SavedFurnace, 'planetId' | 'tileIndex'>): void {
+    // Remove any existing furnace at this tile first
+    this.furnaces = this.furnaces.filter(f => !(f.planetId === planetId && f.tileIndex === tileIndex));
+    this.furnaces.push({ planetId, tileIndex, ...furnaceData });
+    this.persistToStorage();
+  }
+
+  // Remove a furnace from save
+  public removeFurnace(planetId: string, tileIndex: number): void {
+    this.furnaces = this.furnaces.filter(f => !(f.planetId === planetId && f.tileIndex === tileIndex));
+    this.persistToStorage();
+  }
+
+  // Get all saved furnaces
+  public getFurnaces(): SavedFurnace[] {
+    return this.furnaces;
+  }
+
   // Save player position immediately
   public savePlayerPosition(): void {
     if (this.onPlayerSave) {
@@ -137,6 +170,7 @@ export class GameStorage {
 
       this.inventory = data.inventory || [];
       this.torches = data.torches || [];
+      this.furnaces = data.furnaces || [];
       this.playerData = data.player || null;
 
       return data;
@@ -172,6 +206,7 @@ export class GameStorage {
     this.pendingChanges.clear();
     this.inventory = [];
     this.torches = [];
+    this.furnaces = [];
     this.playerData = null;
     localStorage.removeItem(STORAGE_KEY);
   }
@@ -185,6 +220,7 @@ export class GameStorage {
         tileChanges: Array.from(this.pendingChanges.values()),
         inventory: this.inventory,
         torches: this.torches,
+        furnaces: this.furnaces,
         player: this.playerData || {
           position: { x: 0, y: 0, z: 0 },
           orientation: { x: 0, y: 0, z: 0, w: 1 },

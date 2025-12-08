@@ -98,6 +98,11 @@ export class Planet {
   private currentLODExcludedTileCount: number = 0;
   private pendingLODExcludedCount: number = 0; // Count being sent to worker
 
+  // Initial terrain build tracking
+  private initialTerrainBuilt: boolean = false;
+  private initialLODBuilt: boolean = false;
+  private initialBuildResolve: (() => void) | null = null;
+
   // Pre-serialized tile data for LOD worker (static, only needs to be built once)
   private serializedTileData: Record<number, {
     index: number;
@@ -304,6 +309,10 @@ export class Planet {
     oreLithiumData: GeometryData;
     oreAluminumData: GeometryData;
     oreCobaltData: GeometryData;
+    snowData: GeometryData;
+    snowSideData: GeometryData;
+    dirtSnowData: GeometryData;
+    iceData: GeometryData;
   }): void {
     if (!this.batchedMeshGroup) return;
 
@@ -330,6 +339,11 @@ export class Planet {
       { dataKey: 'oreLithiumData', materialKey: 'oreLithium' },
       { dataKey: 'oreAluminumData', materialKey: 'oreAluminum' },
       { dataKey: 'oreCobaltData', materialKey: 'oreCobalt' },
+      // Snow biome
+      { dataKey: 'snowData', materialKey: 'snow' },
+      { dataKey: 'snowSideData', materialKey: 'snowSide' },
+      { dataKey: 'dirtSnowData', materialKey: 'dirtSnow' },
+      { dataKey: 'iceData', materialKey: 'ice', renderOrder: 2 }, // Render after water (transparent)
     ];
 
     let newWaterMesh: THREE.Mesh | null = null;
@@ -392,6 +406,12 @@ export class Planet {
 
     this.isWorkerBuildActive = false;
     profiler.end('Planet.workerResult');
+
+    // Mark initial terrain as built
+    if (!this.initialTerrainBuilt) {
+      this.initialTerrainBuilt = true;
+      this.checkInitialBuildComplete();
+    }
     // LOD rebuild will happen in next update() call since isWorkerBuildActive is now false
   }
 
@@ -406,6 +426,8 @@ export class Planet {
       waterPositions: number[]; waterNormals: number[]; waterUvs: number[]; waterIndices: number[];
       sidePositions: number[]; sideNormals: number[]; sideUvs: number[]; sideSkyLight: number[]; sideTorchLight: number[]; sideIndices: number[];
       waterSidePositions: number[]; waterSideNormals: number[]; waterSideUvs: number[]; waterSideIndices: number[];
+      snowPositions: number[]; snowNormals: number[]; snowUvs: number[]; snowSkyLight: number[]; snowTorchLight: number[]; snowIndices: number[];
+      icePositions: number[]; iceNormals: number[]; iceUvs: number[]; iceSkyLight: number[]; iceTorchLight: number[]; iceIndices: number[];
     }>;
   }): void {
     const startTotal = performance.now();
@@ -544,6 +566,24 @@ export class Planet {
         totalVertices += chunkData.waterSidePositions.length / 3;
       }
 
+      // Snow mesh (uses opaque snow LOD material with torchLight)
+      if (chunkData.snowPositions && chunkData.snowPositions.length > 0) {
+        const geom = createGeom(chunkData.snowPositions, chunkData.snowNormals, chunkData.snowUvs, chunkData.snowIndices, chunkData.snowSkyLight, chunkData.snowTorchLight);
+        const mesh = new THREE.Mesh(geom, this.meshBuilder.getSnowLODMaterial());
+        chunkGroup.add(mesh);
+        meshCount++;
+        totalVertices += chunkData.snowPositions.length / 3;
+      }
+
+      // Ice mesh (uses opaque ice LOD material - no transparency for distant LOD)
+      if (chunkData.icePositions && chunkData.icePositions.length > 0) {
+        const geom = createGeom(chunkData.icePositions, chunkData.iceNormals, chunkData.iceUvs, chunkData.iceIndices, chunkData.iceSkyLight, chunkData.iceTorchLight);
+        const mesh = new THREE.Mesh(geom, this.meshBuilder.getIceLODMaterial());
+        chunkGroup.add(mesh);
+        meshCount++;
+        totalVertices += chunkData.icePositions.length / 3;
+      }
+
       lodGroup.add(chunkGroup);
     }
     const meshCreationTime = performance.now() - startMeshCreation;
@@ -573,6 +613,65 @@ export class Planet {
     } else {
       this.needsLODRebuild = false;
     }
+
+    // Mark initial LOD as built
+    if (!this.initialLODBuilt) {
+      this.initialLODBuilt = true;
+      this.checkInitialBuildComplete();
+    }
+  }
+
+  // Check if both initial terrain and LOD are built, resolve the promise if so
+  private checkInitialBuildComplete(): void {
+    if (this.initialTerrainBuilt && this.initialLODBuilt && this.initialBuildResolve) {
+      this.initialBuildResolve();
+      this.initialBuildResolve = null;
+    }
+  }
+
+  // Build initial terrain for the spawn area and wait for completion
+  // This ensures terrain is ready before the player spawns
+  public async buildInitialTerrain(spawnPosition: THREE.Vector3): Promise<void> {
+    // Find the tile at spawn position
+    const spawnTile = this.polyhedron.getTileAtPoint(spawnPosition.clone().sub(this.center));
+    if (!spawnTile) {
+      console.warn('Could not find spawn tile, using default position');
+      return;
+    }
+
+    // Get initial set of nearby tiles around spawn
+    const renderDistance = PlayerConfig.TERRAIN_MIN_RENDER_DISTANCE;
+    const initialTiles = this.getTilesInRange(spawnTile.index, renderDistance);
+
+    // Update cache and trigger build
+    this.cachedNearbyTiles = initialTiles;
+    this.bufferCenterTiles = this.getTilesInRange(spawnTile.index, PlayerConfig.TERRAIN_BUFFER_ZONE);
+    this.cachedRenderDistance = renderDistance;
+    this.needsRebatch = true;
+    this.needsLODRebuild = true;
+
+    // Start worker builds
+    if (this.geometryWorker) {
+      this.startWorkerBuild();
+    }
+    if (this.lodGeometryWorker) {
+      this.startLODWorkerBuild();
+    }
+
+    // Return a promise that resolves when both builds complete
+    return new Promise<void>((resolve) => {
+      // If both are already built (e.g., fallback to main thread), resolve immediately
+      if (this.initialTerrainBuilt && this.initialLODBuilt) {
+        resolve();
+        return;
+      }
+      this.initialBuildResolve = resolve;
+    });
+  }
+
+  // Check if initial terrain build is complete
+  public isInitialTerrainReady(): boolean {
+    return this.initialTerrainBuilt && this.initialLODBuilt;
   }
 
   private startWorkerBuild(): void {
@@ -752,7 +851,7 @@ export class Planet {
         seaLevel: this.SEA_LEVEL,
         maxDepth: this.MAX_DEPTH,
         waterSurfaceOffset: PlayerConfig.WATER_SURFACE_OFFSET,
-        lodOffset: 0.3,
+        lodOffset: PlayerConfig.TERRAIN_LOD_OFFSET,
         chunkCount: this.LOD_CHUNK_COUNT
       },
       torches: this.torchData
@@ -810,15 +909,26 @@ export class Planet {
         const isWater = !isSingleTexturePlanet && surfaceDepth < SEA_LEVEL_DEPTH;
         const displayRadius = isWater ? waterRadius : terrainRadius;
 
+        // Polar biome detection for space-level LOD colors
+        const normalizedY = tile.center.clone().normalize().y;
+        const polarThreshold = PlayerConfig.POLAR_THRESHOLD;
+        const isPolar = Math.abs(normalizedY) > polarThreshold;
+
         let color: THREE.Color;
         if (isSingleTexturePlanet) {
           // Single texture planets (like moon) use grey shading based on height
           const heightFactor = Math.max(0.4, Math.min(1.0, 0.6 + surfaceDepth * 0.02));
           color = new THREE.Color(heightFactor * 0.7, heightFactor * 0.7, heightFactor * 0.7);
+        } else if (isWater && isPolar) {
+          // Polar water = ice (light cyan/white)
+          color = new THREE.Color(0xb8e0f0);
         } else if (isWater) {
           color = new THREE.Color(0x3399cc);
         } else if (surfaceDepth <= 0) {
           color = new THREE.Color(0x888888);
+        } else if (isPolar) {
+          // Polar land = snow (white)
+          color = new THREE.Color(0xf0f0f0);
         } else {
           color = new THREE.Color(0x4a8c4a);
         }
@@ -1089,7 +1199,7 @@ export class Planet {
     profiler.end('Planet.rebuildLODMesh.cleanup');
 
     // Offset LOD inward slightly so detailed terrain renders on top
-    const lodOffset = 0.3;
+    const lodOffset = PlayerConfig.TERRAIN_LOD_OFFSET;
     const waterRadius = this.depthToRadius(this.getSeaLevelDepth()) - lodOffset;
 
     // Per-chunk geometry buffers
@@ -1102,6 +1212,9 @@ export class Planet {
       waterPositions: number[]; waterNormals: number[]; waterUvs: number[]; waterIndices: number[]; waterVertexOffset: number;
       sidePositions: number[]; sideNormals: number[]; sideUvs: number[]; sideSkyLight: number[]; sideTorchLight: number[]; sideIndices: number[]; sideVertexOffset: number;
       waterSidePositions: number[]; waterSideNormals: number[]; waterSideUvs: number[]; waterSideIndices: number[]; waterSideVertexOffset: number;
+      // Snow biome
+      snowPositions: number[]; snowNormals: number[]; snowUvs: number[]; snowSkyLight: number[]; snowTorchLight: number[]; snowIndices: number[]; snowVertexOffset: number;
+      icePositions: number[]; iceNormals: number[]; iceUvs: number[]; iceSkyLight: number[]; iceTorchLight: number[]; iceIndices: number[]; iceVertexOffset: number;
     }
 
     const chunkGeometries: ChunkGeometry[] = [];
@@ -1114,7 +1227,10 @@ export class Planet {
         woodPositions: [], woodNormals: [], woodUvs: [], woodSkyLight: [], woodTorchLight: [], woodIndices: [], woodVertexOffset: 0,
         waterPositions: [], waterNormals: [], waterUvs: [], waterIndices: [], waterVertexOffset: 0,
         sidePositions: [], sideNormals: [], sideUvs: [], sideSkyLight: [], sideTorchLight: [], sideIndices: [], sideVertexOffset: 0,
-        waterSidePositions: [], waterSideNormals: [], waterSideUvs: [], waterSideIndices: [], waterSideVertexOffset: 0
+        waterSidePositions: [], waterSideNormals: [], waterSideUvs: [], waterSideIndices: [], waterSideVertexOffset: 0,
+        // Snow biome
+        snowPositions: [], snowNormals: [], snowUvs: [], snowSkyLight: [], snowTorchLight: [], snowIndices: [], snowVertexOffset: 0,
+        icePositions: [], iceNormals: [], iceUvs: [], iceSkyLight: [], iceTorchLight: [], iceIndices: [], iceVertexOffset: 0
       });
     }
 
@@ -1278,6 +1394,24 @@ export class Planet {
         torchLight = chunk.woodTorchLight;
         indices = chunk.woodIndices;
         vertexOffset = chunk.woodVertexOffset;
+      } else if (surfaceBlockType === HexBlockType.SNOW || surfaceBlockType === HexBlockType.DIRT_SNOW) {
+        // Snow biome uses snow buffer
+        positions = chunk.snowPositions;
+        normals = chunk.snowNormals;
+        uvs = chunk.snowUvs;
+        skyLight = chunk.snowSkyLight;
+        torchLight = chunk.snowTorchLight;
+        indices = chunk.snowIndices;
+        vertexOffset = chunk.snowVertexOffset;
+      } else if (surfaceBlockType === HexBlockType.ICE) {
+        // Ice uses ice buffer (transparent)
+        positions = chunk.icePositions;
+        normals = chunk.iceNormals;
+        uvs = chunk.iceUvs;
+        skyLight = chunk.iceSkyLight;
+        torchLight = chunk.iceTorchLight;
+        indices = chunk.iceIndices;
+        vertexOffset = chunk.iceVertexOffset;
       } else {
         // GRASS, LEAVES, or any other type defaults to grass
         positions = chunk.grassPositions;
@@ -1324,6 +1458,10 @@ export class Planet {
         chunk.sandVertexOffset = vertexOffset;
       } else if (surfaceBlockType === HexBlockType.WOOD) {
         chunk.woodVertexOffset = vertexOffset;
+      } else if (surfaceBlockType === HexBlockType.SNOW || surfaceBlockType === HexBlockType.DIRT_SNOW) {
+        chunk.snowVertexOffset = vertexOffset;
+      } else if (surfaceBlockType === HexBlockType.ICE) {
+        chunk.iceVertexOffset = vertexOffset;
       } else {
         chunk.grassVertexOffset = vertexOffset;
       }
@@ -1645,6 +1783,20 @@ export class Planet {
         chunkGroup.add(mesh);
       }
 
+      // Snow mesh (uses opaque snow LOD material with torchLight)
+      if (chunk.snowPositions.length > 0) {
+        const geom = createLODGeom(chunk.snowPositions, chunk.snowNormals, chunk.snowUvs, chunk.snowIndices, chunk.snowSkyLight, chunk.snowTorchLight);
+        const mesh = new THREE.Mesh(geom, this.meshBuilder.getSnowLODMaterial());
+        chunkGroup.add(mesh);
+      }
+
+      // Ice mesh (uses opaque ice LOD material - no transparency for distant LOD)
+      if (chunk.icePositions.length > 0) {
+        const geom = createLODGeom(chunk.icePositions, chunk.iceNormals, chunk.iceUvs, chunk.iceIndices, chunk.iceSkyLight, chunk.iceTorchLight);
+        const mesh = new THREE.Mesh(geom, this.meshBuilder.getIceLODMaterial());
+        chunkGroup.add(mesh);
+      }
+
       // Water mesh (uses simple material, no skyLight/torchLight)
       if (chunk.waterPositions.length > 0) {
         const geom = new THREE.BufferGeometry();
@@ -1737,26 +1889,37 @@ export class Planet {
       const surfaceDepth = heightMap.get(tile.index) ?? SEA_LEVEL_DEPTH;
       const isBeach = beachTiles.has(tile.index);
 
+      // Polar biome detection based on latitude (y-component of normalized position)
+      // y close to 1 = north pole, y close to -1 = south pole
+      const normalizedY = tile.center.clone().normalize().y;
+      const polarThreshold = PlayerConfig.POLAR_THRESHOLD;
+      const isPolar = Math.abs(normalizedY) > polarThreshold;
+      const isUnderwater = hasWater && surfaceDepth < SEA_LEVEL_DEPTH;
+
       for (let depth = 0; depth < this.MAX_DEPTH; depth++) {
         if (depth > surfaceDepth) {
           // Above surface = air
           blocks.push(HexBlockType.AIR);
         } else if (depth === surfaceDepth) {
-          // Surface block
-          if (isBeach) {
-            // Beach tile (land next to water) - sand surface
+          // Surface block - similar rules to grass (only on exposed surface)
+          if (isBeach && !isPolar) {
+            // Beach tile (land next to water) - sand surface (but not in polar regions)
             blocks.push(HexBlockType.SAND);
-          } else if (hasWater && surfaceDepth < SEA_LEVEL_DEPTH) {
-            // Underwater surface
+          } else if (isUnderwater) {
+            // Underwater surface - always use dirt (even in polar regions)
             blocks.push(HexBlockType.DIRT);
+          } else if (isPolar) {
+            // Polar surface (above water) - snow (like grass, only on top exposed block)
+            blocks.push(HexBlockType.SNOW);
           } else {
             blocks.push(HexBlockType.GRASS);
           }
         } else if (depth > surfaceDepth - 3) {
-          // Subsurface layers (just below surface) - sand for beaches, dirt otherwise
-          if (isBeach) {
+          // Subsurface layers (just below surface) - always dirt (dirt_snow only when exposed)
+          if (isBeach && !isPolar) {
             blocks.push(HexBlockType.SAND);
           } else {
+            // Use regular dirt for subsurface (dirt_snow only appears when top block is removed)
             blocks.push(HexBlockType.DIRT);
           }
         } else {
@@ -1927,9 +2090,18 @@ export class Planet {
     // Fill all tiles below sea level with water (creates oceans only)
     // Only fill CONTINUOUS air from sky down to sea level - don't fill enclosed caves
     // Depth system: 0 = bedrock, MAX_DEPTH-1 = sky
+    // In polar regions, surface water becomes ice with water below
     const SEA_LEVEL_DEPTH = this.MAX_DEPTH - 1 - this.SEA_LEVEL;
+    const polarThreshold = PlayerConfig.POLAR_THRESHOLD;
 
     for (const [_, column] of this.columns) {
+      // Check if this column is in polar region
+      const normalizedY = column.tile.center.clone().normalize().y;
+      const isPolar = Math.abs(normalizedY) > polarThreshold;
+
+      // Track if we've placed the ice surface layer yet (for polar regions)
+      let iceSurfacePlaced = false;
+
       // Scan from sky (top) downward, filling air with water until we hit solid or reach sea level
       // This ensures we only fill open ocean, not enclosed caves
       for (let d = column.blocks.length - 1; d >= 0; d--) {
@@ -1938,7 +2110,14 @@ export class Planet {
         if (block === HexBlockType.AIR) {
           // Air block - fill with water if at or below sea level
           if (d <= SEA_LEVEL_DEPTH) {
-            column.blocks[d] = HexBlockType.WATER;
+            if (isPolar && !iceSurfacePlaced && d === SEA_LEVEL_DEPTH) {
+              // Polar region: place ice at the water surface
+              column.blocks[d] = HexBlockType.ICE;
+              iceSurfacePlaced = true;
+            } else {
+              // Normal water below ice (or non-polar region)
+              column.blocks[d] = HexBlockType.WATER;
+            }
             column.isDirty = true;
           }
           // Continue scanning downward (air doesn't stop the scan)
@@ -2613,6 +2792,11 @@ export class Planet {
     { key: 'oreLithium', getMaterial: () => this.meshBuilder.getMaterial('oreLithium') },
     { key: 'oreAluminum', getMaterial: () => this.meshBuilder.getMaterial('oreAluminum') },
     { key: 'oreCobalt', getMaterial: () => this.meshBuilder.getMaterial('oreCobalt') },
+    // Snow biome materials
+    { key: 'snow', getMaterial: () => this.meshBuilder.getSnowMaterial() },
+    { key: 'snowSide', getMaterial: () => this.meshBuilder.getSnowSideMaterial() },
+    { key: 'dirtSnow', getMaterial: () => this.meshBuilder.getDirtSnowMaterial() },
+    { key: 'ice', getMaterial: () => this.meshBuilder.getIceMaterial(), renderOrder: 2 },
   ];
 
   private rebuildBatchedMeshes(): void {
@@ -2696,6 +2880,10 @@ export class Planet {
       case HexBlockType.ORE_LITHIUM: return 'oreLithium';
       case HexBlockType.ORE_ALUMINUM: return 'oreAluminum';
       case HexBlockType.ORE_COBALT: return 'oreCobalt';
+      // Snow biome
+      case HexBlockType.SNOW: return 'snow';
+      case HexBlockType.DIRT_SNOW: return 'dirtSnow';
+      case HexBlockType.ICE: return 'ice';
       default: return 'top';
     }
   }
@@ -2716,6 +2904,10 @@ export class Planet {
       case HexBlockType.ORE_LITHIUM: return 'oreLithium';
       case HexBlockType.ORE_ALUMINUM: return 'oreAluminum';
       case HexBlockType.ORE_COBALT: return 'oreCobalt';
+      // Snow biome
+      case HexBlockType.SNOW: return 'snowSide';  // Snow sides use dirt_snow texture
+      case HexBlockType.DIRT_SNOW: return 'dirtSnow';
+      case HexBlockType.ICE: return 'ice';
       default: return 'side';
     }
   }
@@ -2734,6 +2926,10 @@ export class Planet {
       case HexBlockType.ORE_LITHIUM: return 'oreLithium';
       case HexBlockType.ORE_ALUMINUM: return 'oreAluminum';
       case HexBlockType.ORE_COBALT: return 'oreCobalt';
+      // Snow biome - snow blocks show dirt_snow on bottom
+      case HexBlockType.SNOW: return 'dirtSnow';
+      case HexBlockType.DIRT_SNOW: return 'dirtSnow';
+      case HexBlockType.ICE: return 'ice';
       // Dirt and grass show dirt texture on bottom
       default: return 'side';
     }
@@ -3530,6 +3726,48 @@ export class Planet {
     return Math.max(0, Math.min(this.MAX_DEPTH, depth));
   }
 
+  // Get planet coordinates (latitude, longitude) from a point in 3D space
+  // Returns: { lat: -90 to 90, lon: -180 to 180, depth: block depth }
+  public getCoordinatesAtPoint(point: THREE.Vector3): { lat: number; lon: number; depth: number } {
+    const depth = this.getDepthAtPoint(point);
+
+    // Get direction from planet center to point
+    const dir = point.clone().sub(this.center).normalize();
+
+    // Latitude: angle from equator plane, based on Y component
+    // Y = 1 -> 90° (north pole), Y = -1 -> -90° (south pole), Y = 0 -> 0° (equator)
+    const lat = Math.asin(dir.y) * (180 / Math.PI);
+
+    // Longitude: angle around Y axis, from X axis
+    // atan2(z, x) gives angle from +X axis, counter-clockwise when viewed from above
+    const lon = Math.atan2(dir.z, dir.x) * (180 / Math.PI);
+
+    return { lat, lon, depth };
+  }
+
+  // Get direction vector from latitude/longitude (in degrees)
+  // lat: -90 (south) to 90 (north), lon: -180 to 180 (west to east)
+  public getDirectionFromLatLon(lat: number, lon: number): THREE.Vector3 {
+    const latRad = lat * (Math.PI / 180);
+    const lonRad = lon * (Math.PI / 180);
+
+    // Convert spherical to cartesian
+    // Y is up (latitude), X-Z plane is the equator (longitude)
+    const y = Math.sin(latRad);
+    const xzScale = Math.cos(latRad);
+    const x = xzScale * Math.cos(lonRad);
+    const z = xzScale * Math.sin(lonRad);
+
+    return new THREE.Vector3(x, y, z).normalize();
+  }
+
+  // Get spawn position at given lat/lon, standing on the terrain surface
+  public getSpawnPositionAtLatLon(lat: number, lon: number, heightAboveSurface: number = 1): THREE.Vector3 {
+    const direction = this.getDirectionFromLatLon(lat, lon);
+    const surfaceHeight = this.getSurfaceHeightInDirection(direction);
+    return this.center.clone().add(direction.multiplyScalar(surfaceHeight + heightAboveSurface));
+  }
+
   public getSurfacePosition(tile: HexTile): THREE.Vector3 {
     const column = this.columns.get(tile.index);
     if (!column) return tile.center.clone().add(this.center);
@@ -3628,6 +3866,16 @@ export class Planet {
   // Get the set of currently visible (nearby/detailed) tile indices
   public getVisibleTileIndices(): Set<number> {
     return this.cachedNearbyTiles;
+  }
+
+  // Check if a tile is in the detailed terrain range (vs LOD)
+  public isTileInDetailRange(tileIndex: number): boolean {
+    return this.cachedNearbyTiles.has(tileIndex);
+  }
+
+  // Get the LOD chunk index for a given tile (for debugging)
+  public getTileChunkIndex(tileIndex: number): number {
+    return this.tileToChunk.get(tileIndex) ?? -1;
   }
 
   // Get visible tiles plus their immediate neighbors (for tree visibility on LOD border)

@@ -21,6 +21,16 @@ export enum ItemType {
   COAL = 16,
   TORCH = 17,
   FISHING_ROD = 18,
+  // Snow biome items
+  SNOW = 19,
+  ICE = 20,
+  // Technology items
+  FURNACE = 21,
+  // Smelted materials (ingots)
+  INGOT_COPPER = 22,
+  INGOT_IRON = 23,
+  INGOT_GOLD = 24,
+  INGOT_ALUMINUM = 25,
 }
 
 // Item metadata
@@ -29,6 +39,8 @@ export interface ItemData {
   stackSize: number;
   texture: string;
   mineTime: number; // Time in seconds to mine this item
+  // Optional: for atlas textures, specify which portion to show (in pixels)
+  atlasRegion?: { x: number; y: number; width: number; height: number; atlasWidth: number; atlasHeight: number };
 }
 
 export const ITEM_DATA: Record<ItemType, ItemData> = {
@@ -53,6 +65,16 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
   [ItemType.COAL]: { name: 'Coal', stackSize: 64, texture: '/textures/coal.png', mineTime: 0.3 },
   [ItemType.TORCH]: { name: 'Torch', stackSize: 64, texture: '/textures/torch_sprite.png', mineTime: 0.3 },
   [ItemType.FISHING_ROD]: { name: 'Fishing Rod', stackSize: 1, texture: '/textures/fishing_rod.png', mineTime: 0.3 },
+  // Snow biome items (same hardness as dirt)
+  [ItemType.SNOW]: { name: 'Snow', stackSize: 64, texture: '/textures/snow.png', mineTime: 0.5 },
+  [ItemType.ICE]: { name: 'Ice', stackSize: 64, texture: '/textures/ice.png', mineTime: 0.5 },
+  // Technology items
+  [ItemType.FURNACE]: { name: 'Furnace', stackSize: 8, texture: '/textures/technology/furnace_face.png', mineTime: 2.0 },
+  // Smelted materials (ingots)
+  [ItemType.INGOT_COPPER]: { name: 'Copper Ingot', stackSize: 64, texture: '/textures/minerals/earth/copper.png', mineTime: 0.3 },
+  [ItemType.INGOT_IRON]: { name: 'Iron Ingot', stackSize: 64, texture: '/textures/minerals/earth/iron.png', mineTime: 0.3 },
+  [ItemType.INGOT_GOLD]: { name: 'Gold Ingot', stackSize: 64, texture: '/textures/minerals/earth/gold.png', mineTime: 0.3 },
+  [ItemType.INGOT_ALUMINUM]: { name: 'Aluminum Ingot', stackSize: 64, texture: '/textures/minerals/earth/aluminum.png', mineTime: 0.3 },
 };
 
 // Inventory slot
