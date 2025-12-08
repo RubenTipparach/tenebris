@@ -852,6 +852,8 @@ export class PlanetBlockInteraction {
       // Update torch data for geometry worker (needed for vertex-baked lighting)
       const torchData = this.torchManager.getTorchDataForBaking();
       planet.setTorchData(torchData);
+      // Also set tiles with torches for LOD vertex lighting (1 per tile, single tile range)
+      planet.setTilesWithTorches(this.torchManager.getTilesWithTorches());
 
       // Trigger local mesh rebuild for vertex-baked torch lighting
       // Uses same path as block placement - fast incremental rebuild
@@ -892,11 +894,13 @@ export class PlanetBlockInteraction {
 
         // Update torch data for geometry worker (needed for vertex-baked lighting)
         const torchData = this.torchManager.getTorchDataForBaking();
+        const tilesWithTorches = this.torchManager.getTilesWithTorches();
 
         // Trigger local mesh rebuild for vertex-baked lighting update
         // Uses same path as block placement - fast incremental rebuild
         for (const planet of this.planets) {
           planet.setTorchData(torchData);
+          planet.setTilesWithTorches(tilesWithTorches);
           planet.markTilesNearTorchDirty(torchPosition, PlayerConfig.TORCH_LIGHT_RANGE);
         }
       }
@@ -970,8 +974,10 @@ export class PlanetBlockInteraction {
     // After loading all torches, update torch data on all planets and trigger geometry rebuild
     if (savedTorches.length > 0) {
       const torchData = this.torchManager.getTorchDataForBaking();
+      const tilesWithTorches = this.torchManager.getTilesWithTorches();
       for (const planet of this.planets) {
         planet.setTorchData(torchData);
+        planet.setTilesWithTorches(tilesWithTorches);
       }
 
       // Mark tiles near each torch as dirty so lighting is baked

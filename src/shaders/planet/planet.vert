@@ -3,14 +3,17 @@ uniform vec3 planetCenter;
 uniform vec3 sunDirection;
 
 attribute vec3 color;
+attribute float torchLight; // Pre-baked torch light per vertex (0-1)
 
 varying vec3 vNormal;
 varying vec3 vWorldPosition;
 varying vec3 vColor;
 varying float vSunFacing;
+varying float vTorchLight;
 
 void main() {
   vColor = color;
+  vTorchLight = torchLight;
 
   // Transform to world space
   vec4 worldPos = modelMatrix * vec4(position, 1.0);

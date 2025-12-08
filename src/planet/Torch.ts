@@ -313,6 +313,23 @@ export class TorchManager {
     });
   }
 
+  // Check if a tile has at least one torch (for LOD vertex lighting)
+  public hasTorchOnTile(tileIndex: number): boolean {
+    const tileTorches = this.torchesByTile.get(tileIndex);
+    return tileTorches !== undefined && tileTorches.length > 0;
+  }
+
+  // Get all tile indices that have torches (for LOD mesh rebuilding)
+  public getTilesWithTorches(): Set<number> {
+    const tiles = new Set<number>();
+    for (const [tileIndex, torches] of this.torchesByTile) {
+      if (torches.length > 0) {
+        tiles.add(tileIndex);
+      }
+    }
+    return tiles;
+  }
+
   // Get the N nearest torch positions to a given point (for shader uniforms)
   // Returns up to maxCount positions, sorted by distance
   public getNearestTorchPositions(playerPosition: THREE.Vector3, maxCount: number = 16): THREE.Vector3[] {

@@ -123,6 +123,8 @@ export class Planet {
 
   // Torch data for vertex baking (passed to geometry worker)
   private torchData: Array<{ position: { x: number; y: number; z: number }; range: number; intensity: number }> = [];
+  // Tiles with torches (for LOD vertex lighting - 1 torch per tile, single tile range)
+  private tilesWithTorches: Set<number> = new Set();
 
   constructor(scene: THREE.Scene, radius: number = 50, subdivisions: number = 3, config: PlanetConfig = {}) {
     this.scene = scene;
@@ -330,6 +332,7 @@ export class Planet {
       { dataKey: 'oreCobaltData', materialKey: 'oreCobalt' },
     ];
 
+    let newWaterMesh: THREE.Mesh | null = null;
     for (const { dataKey, materialKey, renderOrder } of workerDataMap) {
       const geomData = data[dataKey] as GeometryData;
       if (geomData.positions.length > 0) {
@@ -341,10 +344,19 @@ export class Planet {
             mesh.renderOrder = renderOrder;
           }
           newMeshes.push(mesh);
+          // Track water mesh for depth pre-pass optimization
+          if (materialKey === 'water') {
+            newWaterMesh = mesh;
+          }
         }
       }
     }
     profiler.end('Planet.workerResult.createMeshes');
+
+    // Unregister old water mesh before swapping
+    if (this.currentWaterMesh && this.waterMeshCallback) {
+      this.waterMeshCallback(this.currentWaterMesh, false);
+    }
 
     // Now atomically swap: remove old meshes and add new ones
     profiler.begin('Planet.workerResult.swap');
@@ -365,6 +377,13 @@ export class Planet {
       if (mesh.geometry) mesh.geometry.dispose();
     }
     profiler.end('Planet.workerResult.swap');
+
+    // Register new water mesh after swap
+    this.currentWaterMesh = newWaterMesh;
+    if (newWaterMesh && this.waterMeshCallback) {
+      console.log('[Planet] Worker created water mesh, registering');
+      this.waterMeshCallback(newWaterMesh, true);
+    }
 
     // Schedule water boundary walls rebuild (deferred to avoid frame spike)
     const hasWater = this.config.hasWater !== false && !this.config.texturePath;
@@ -774,6 +793,7 @@ export class Planet {
       const normals: number[] = [];
       const uvs: number[] = [];
       const colors: number[] = [];
+      const torchLightArray: number[] = []; // Vertex-baked torch light (1 per tile, single tile range)
       const indices: number[] = [];
       let vertexOffset = 0;
 
@@ -845,12 +865,35 @@ export class Planet {
         }));
         const centerUV = { u: (0 - minU) / rangeU, v: (0 - minV) / rangeV };
 
+        // Check if this LOD tile contains a torch
+        // Calculate the angular radius of this tile (distance from center to vertex)
+        // This ensures torch light only affects the single tile it's on
+        const tileDir = tile.center.clone().normalize();
+        const vertexDir = tile.vertices[0].clone().normalize();
+        const tileAngularRadius = tileDir.angleTo(vertexDir);
+
+        let hasTorch = false;
+        for (const torch of this.torchData) {
+          // Torch position is in local space (relative to planet center)
+          const torchDir = new THREE.Vector3(torch.position.x, torch.position.y, torch.position.z).normalize();
+          const angularDist = torchDir.angleTo(tileDir);
+          // Torch must be within this tile's angular bounds (1 tile range only)
+          if (angularDist < tileAngularRadius) {
+            hasTorch = true;
+            break;
+          }
+        }
+        // Torch light values: center = full brightness (1.0), edges = dim (0.3)
+        const centerTorchValue = hasTorch ? 1.0 : 0.0;
+        const edgeTorchValue = hasTorch ? 0.3 : 0.0;
+
         // Fan triangulation from center
         const centerIdx = vertexOffset;
         positions.push(center.x, center.y, center.z);
         normals.push(normal.x, normal.y, normal.z);
         uvs.push(centerUV.u, centerUV.v);
         colors.push(color.r, color.g, color.b);
+        torchLightArray.push(centerTorchValue); // Full brightness at center
         vertexOffset++;
 
         for (let i = 0; i < vertices.length; i++) {
@@ -858,6 +901,7 @@ export class Planet {
           normals.push(normal.x, normal.y, normal.z);
           uvs.push(tileUVs[i].u, tileUVs[i].v);
           colors.push(color.r, color.g, color.b);
+          torchLightArray.push(edgeTorchValue); // Dimmer at edges
           vertexOffset++;
 
           indices.push(centerIdx, centerIdx + 1 + i, centerIdx + 1 + ((i + 1) % vertices.length));
@@ -931,6 +975,12 @@ export class Planet {
               colors.push(sideColor.r, sideColor.g, sideColor.b);
               colors.push(sideColor.r, sideColor.g, sideColor.b);
 
+              // Torch light for side walls (edge brightness)
+              torchLightArray.push(edgeTorchValue);
+              torchLightArray.push(edgeTorchValue);
+              torchLightArray.push(edgeTorchValue);
+              torchLightArray.push(edgeTorchValue);
+
               // Same winding as HexBlock: (0,1,2), (0,2,3)
               indices.push(baseIdx, baseIdx + 1, baseIdx + 2);
               indices.push(baseIdx, baseIdx + 2, baseIdx + 3);
@@ -945,25 +995,18 @@ export class Planet {
       geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
       geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
       geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+      geometry.setAttribute('torchLight', new THREE.Float32BufferAttribute(torchLightArray, 1));
       geometry.setIndex(indices);
 
-      // Create custom shader material for planet with day/night lighting and torch lights
-      // Initialize torch position array (up to 32 torches)
-      const torchPositionsArray: THREE.Vector3[] = [];
-      for (let i = 0; i < 32; i++) {
-        torchPositionsArray.push(new THREE.Vector3(0, 0, 0));
-      }
-
+      // Create custom shader material for planet with day/night lighting
+      // Torch lighting is vertex-baked (no realtime uniforms)
       const material = new THREE.ShaderMaterial({
         uniforms: {
           planetCenter: { value: this.center.clone() },
           sunDirection: { value: new THREE.Vector3(1, 0, 0) }, // Updated in update()
           ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
           directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
-          darkSideAmbient: { value: PlayerConfig.PLANET_DARK_SIDE_AMBIENT },
-          torchPositions: { value: torchPositionsArray },
-          torchCount: { value: 0 },
-          torchLightRadius: { value: PlayerConfig.PLANET_TORCH_LIGHT_RADIUS }
+          darkSideAmbient: { value: PlayerConfig.PLANET_DARK_SIDE_AMBIENT }
         },
         vertexShader: planetVert,
         fragmentShader: planetFrag,
@@ -979,6 +1022,33 @@ export class Planet {
       this.scene.add(mesh);
       this.distantLODMeshes.push(mesh);
       this.distantLODMaterials.push(material);
+    }
+  }
+
+  // Rebuild distant LOD meshes when torch data changes
+  // This updates the vertex-baked torch lighting for viewing from space
+  private rebuildDistantLODMeshes(): void {
+    // Remember current visibility state
+    const wasVisible = this.currentDistantLODLevel;
+
+    // Dispose old meshes
+    for (const mesh of this.distantLODMeshes) {
+      this.scene.remove(mesh);
+      mesh.geometry.dispose();
+      if (mesh.material instanceof THREE.Material) {
+        mesh.material.dispose();
+      }
+    }
+    this.distantLODMeshes = [];
+    this.distantLODMaterials = [];
+    this.currentDistantLODLevel = -1;
+
+    // Rebuild with updated torch data
+    this.createDistantLODMeshes();
+
+    // Restore visibility if it was active
+    if (wasVisible >= 0) {
+      this.setDistantLODVisible(wasVisible);
     }
   }
 
@@ -1025,26 +1095,26 @@ export class Planet {
 
     // Per-chunk geometry buffers
     interface ChunkGeometry {
-      grassPositions: number[]; grassNormals: number[]; grassUvs: number[]; grassSkyLight: number[]; grassIndices: number[]; grassVertexOffset: number;
-      dirtPositions: number[]; dirtNormals: number[]; dirtUvs: number[]; dirtSkyLight: number[]; dirtIndices: number[]; dirtVertexOffset: number;
-      stonePositions: number[]; stoneNormals: number[]; stoneUvs: number[]; stoneSkyLight: number[]; stoneIndices: number[]; stoneVertexOffset: number;
-      sandPositions: number[]; sandNormals: number[]; sandUvs: number[]; sandSkyLight: number[]; sandIndices: number[]; sandVertexOffset: number;
-      woodPositions: number[]; woodNormals: number[]; woodUvs: number[]; woodSkyLight: number[]; woodIndices: number[]; woodVertexOffset: number;
+      grassPositions: number[]; grassNormals: number[]; grassUvs: number[]; grassSkyLight: number[]; grassTorchLight: number[]; grassIndices: number[]; grassVertexOffset: number;
+      dirtPositions: number[]; dirtNormals: number[]; dirtUvs: number[]; dirtSkyLight: number[]; dirtTorchLight: number[]; dirtIndices: number[]; dirtVertexOffset: number;
+      stonePositions: number[]; stoneNormals: number[]; stoneUvs: number[]; stoneSkyLight: number[]; stoneTorchLight: number[]; stoneIndices: number[]; stoneVertexOffset: number;
+      sandPositions: number[]; sandNormals: number[]; sandUvs: number[]; sandSkyLight: number[]; sandTorchLight: number[]; sandIndices: number[]; sandVertexOffset: number;
+      woodPositions: number[]; woodNormals: number[]; woodUvs: number[]; woodSkyLight: number[]; woodTorchLight: number[]; woodIndices: number[]; woodVertexOffset: number;
       waterPositions: number[]; waterNormals: number[]; waterUvs: number[]; waterIndices: number[]; waterVertexOffset: number;
-      sidePositions: number[]; sideNormals: number[]; sideUvs: number[]; sideSkyLight: number[]; sideIndices: number[]; sideVertexOffset: number;
+      sidePositions: number[]; sideNormals: number[]; sideUvs: number[]; sideSkyLight: number[]; sideTorchLight: number[]; sideIndices: number[]; sideVertexOffset: number;
       waterSidePositions: number[]; waterSideNormals: number[]; waterSideUvs: number[]; waterSideIndices: number[]; waterSideVertexOffset: number;
     }
 
     const chunkGeometries: ChunkGeometry[] = [];
     for (let i = 0; i < this.LOD_CHUNK_COUNT; i++) {
       chunkGeometries.push({
-        grassPositions: [], grassNormals: [], grassUvs: [], grassSkyLight: [], grassIndices: [], grassVertexOffset: 0,
-        dirtPositions: [], dirtNormals: [], dirtUvs: [], dirtSkyLight: [], dirtIndices: [], dirtVertexOffset: 0,
-        stonePositions: [], stoneNormals: [], stoneUvs: [], stoneSkyLight: [], stoneIndices: [], stoneVertexOffset: 0,
-        sandPositions: [], sandNormals: [], sandUvs: [], sandSkyLight: [], sandIndices: [], sandVertexOffset: 0,
-        woodPositions: [], woodNormals: [], woodUvs: [], woodSkyLight: [], woodIndices: [], woodVertexOffset: 0,
+        grassPositions: [], grassNormals: [], grassUvs: [], grassSkyLight: [], grassTorchLight: [], grassIndices: [], grassVertexOffset: 0,
+        dirtPositions: [], dirtNormals: [], dirtUvs: [], dirtSkyLight: [], dirtTorchLight: [], dirtIndices: [], dirtVertexOffset: 0,
+        stonePositions: [], stoneNormals: [], stoneUvs: [], stoneSkyLight: [], stoneTorchLight: [], stoneIndices: [], stoneVertexOffset: 0,
+        sandPositions: [], sandNormals: [], sandUvs: [], sandSkyLight: [], sandTorchLight: [], sandIndices: [], sandVertexOffset: 0,
+        woodPositions: [], woodNormals: [], woodUvs: [], woodSkyLight: [], woodTorchLight: [], woodIndices: [], woodVertexOffset: 0,
         waterPositions: [], waterNormals: [], waterUvs: [], waterIndices: [], waterVertexOffset: 0,
-        sidePositions: [], sideNormals: [], sideUvs: [], sideSkyLight: [], sideIndices: [], sideVertexOffset: 0,
+        sidePositions: [], sideNormals: [], sideUvs: [], sideSkyLight: [], sideTorchLight: [], sideIndices: [], sideVertexOffset: 0,
         waterSidePositions: [], waterSideNormals: [], waterSideUvs: [], waterSideIndices: [], waterSideVertexOffset: 0
       });
     }
@@ -1166,7 +1236,7 @@ export class Planet {
       const chunk = chunkGeometries[chunkIdx];
 
       // Select which buffer to add to (per-chunk)
-      let positions: number[], normals: number[], uvs: number[], skyLight: number[] | null, indices: number[];
+      let positions: number[], normals: number[], uvs: number[], skyLight: number[] | null, torchLight: number[] | null, indices: number[];
       let vertexOffset: number;
 
       if (surfaceBlockType === HexBlockType.WATER) {
@@ -1174,6 +1244,7 @@ export class Planet {
         normals = chunk.waterNormals;
         uvs = chunk.waterUvs;
         skyLight = null; // Water uses different shader
+        torchLight = null;
         indices = chunk.waterIndices;
         vertexOffset = chunk.waterVertexOffset;
       } else if (surfaceBlockType === HexBlockType.DIRT) {
@@ -1181,6 +1252,7 @@ export class Planet {
         normals = chunk.dirtNormals;
         uvs = chunk.dirtUvs;
         skyLight = chunk.dirtSkyLight;
+        torchLight = chunk.dirtTorchLight;
         indices = chunk.dirtIndices;
         vertexOffset = chunk.dirtVertexOffset;
       } else if (surfaceBlockType === HexBlockType.STONE) {
@@ -1188,6 +1260,7 @@ export class Planet {
         normals = chunk.stoneNormals;
         uvs = chunk.stoneUvs;
         skyLight = chunk.stoneSkyLight;
+        torchLight = chunk.stoneTorchLight;
         indices = chunk.stoneIndices;
         vertexOffset = chunk.stoneVertexOffset;
       } else if (surfaceBlockType === HexBlockType.SAND) {
@@ -1195,6 +1268,7 @@ export class Planet {
         normals = chunk.sandNormals;
         uvs = chunk.sandUvs;
         skyLight = chunk.sandSkyLight;
+        torchLight = chunk.sandTorchLight;
         indices = chunk.sandIndices;
         vertexOffset = chunk.sandVertexOffset;
       } else if (surfaceBlockType === HexBlockType.WOOD) {
@@ -1202,6 +1276,7 @@ export class Planet {
         normals = chunk.woodNormals;
         uvs = chunk.woodUvs;
         skyLight = chunk.woodSkyLight;
+        torchLight = chunk.woodTorchLight;
         indices = chunk.woodIndices;
         vertexOffset = chunk.woodVertexOffset;
       } else {
@@ -1210,9 +1285,14 @@ export class Planet {
         normals = chunk.grassNormals;
         uvs = chunk.grassUvs;
         skyLight = chunk.grassSkyLight;
+        torchLight = chunk.grassTorchLight;
         indices = chunk.grassIndices;
         vertexOffset = chunk.grassVertexOffset;
       }
+
+      // Check if this tile has a torch (1 per tile, single tile range for LOD)
+      const hasTorch = this.tilesWithTorches.has(tileIndex);
+      const torchValue = hasTorch ? 1.0 : 0.0;
 
       // Fan triangulation from center using pre-computed UVs
       const centerIdx = vertexOffset;
@@ -1220,6 +1300,7 @@ export class Planet {
       normals.push(normal.x, normal.y, normal.z);
       uvs.push(normalizedData.centerUV.u, normalizedData.centerUV.v);
       if (skyLight) skyLight.push(1.0); // LOD is at surface, full sky exposure
+      if (torchLight) torchLight.push(torchValue);
       vertexOffset++;
 
       for (let i = 0; i < vertices.length; i++) {
@@ -1227,6 +1308,7 @@ export class Planet {
         normals.push(normal.x, normal.y, normal.z);
         uvs.push(normalizedData.normalizedUVs[i].u, normalizedData.normalizedUVs[i].v);
         if (skyLight) skyLight.push(1.0);
+        if (torchLight) torchLight.push(torchValue);
         vertexOffset++;
 
         indices.push(centerIdx, centerIdx + 1 + i, centerIdx + 1 + ((i + 1) % vertices.length));
@@ -1343,8 +1425,12 @@ export class Planet {
         const normals = thisIsWater ? chunk.waterSideNormals : chunk.sideNormals;
         const uvs = thisIsWater ? chunk.waterSideUvs : chunk.sideUvs;
         const sideLight = thisIsWater ? null : chunk.sideSkyLight;
+        const sideTorchLight = thisIsWater ? null : chunk.sideTorchLight;
         const indices = thisIsWater ? chunk.waterSideIndices : chunk.sideIndices;
         const baseIdx = thisIsWater ? chunk.waterSideVertexOffset : chunk.sideVertexOffset;
+
+        // Check if this tile has a torch (for side walls)
+        const sideTorchValue = this.tilesWithTorches.has(tileIndex) ? 1.0 : 0.0;
 
         // Add vertices in same order as HexBlock sides
         positions.push(
@@ -1361,6 +1447,8 @@ export class Planet {
 
         // Sky light for terrain shader
         if (sideLight) sideLight.push(1.0, 1.0, 1.0, 1.0);
+        // Torch light for terrain shader (1 per tile, single tile range)
+        if (sideTorchLight) sideTorchLight.push(sideTorchValue, sideTorchValue, sideTorchValue, sideTorchValue);
 
         // Same winding as HexBlock: (0,1,2), (0,2,3)
         indices.push(baseIdx, baseIdx + 1, baseIdx + 2, baseIdx, baseIdx + 2, baseIdx + 3);
@@ -1504,7 +1592,7 @@ export class Planet {
       }
 
       // Helper to create LOD geometry with skyLight and torchLight attributes
-      const createLODGeom = (positions: number[], normals: number[], uvs: number[], indices: number[], skyLight?: number[]): THREE.BufferGeometry => {
+      const createLODGeom = (positions: number[], normals: number[], uvs: number[], indices: number[], skyLight?: number[], torchLightData?: number[]): THREE.BufferGeometry => {
         const geom = new THREE.BufferGeometry();
         geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
         geom.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
@@ -1512,44 +1600,48 @@ export class Planet {
         if (skyLight && skyLight.length > 0) {
           geom.setAttribute('skyLight', new THREE.Float32BufferAttribute(skyLight, 1));
         }
-        // LOD terrain has no torch light (too far away for torches to matter)
-        const vertexCount = positions.length / 3;
-        geom.setAttribute('torchLight', new THREE.Float32BufferAttribute(new Float32Array(vertexCount).fill(0), 1));
+        // Use provided torch light data (1 per tile, single tile range) or default to 0
+        if (torchLightData && torchLightData.length > 0) {
+          geom.setAttribute('torchLight', new THREE.Float32BufferAttribute(torchLightData, 1));
+        } else {
+          const vertexCount = positions.length / 3;
+          geom.setAttribute('torchLight', new THREE.Float32BufferAttribute(new Float32Array(vertexCount).fill(0), 1));
+        }
         geom.setIndex(indices);
         return geom;
       };
 
-      // Grass mesh (uses terrain shader with skyLight)
+      // Grass mesh (uses terrain shader with skyLight and torchLight)
       if (chunk.grassPositions.length > 0) {
-        const geom = createLODGeom(chunk.grassPositions, chunk.grassNormals, chunk.grassUvs, chunk.grassIndices, chunk.grassSkyLight);
+        const geom = createLODGeom(chunk.grassPositions, chunk.grassNormals, chunk.grassUvs, chunk.grassIndices, chunk.grassSkyLight, chunk.grassTorchLight);
         const mesh = new THREE.Mesh(geom, this.meshBuilder.getTopLODMaterial());
         chunkGroup.add(mesh);
       }
 
-      // Dirt mesh (uses terrain shader with skyLight)
+      // Dirt mesh (uses terrain shader with skyLight and torchLight)
       if (chunk.dirtPositions.length > 0) {
-        const geom = createLODGeom(chunk.dirtPositions, chunk.dirtNormals, chunk.dirtUvs, chunk.dirtIndices, chunk.dirtSkyLight);
+        const geom = createLODGeom(chunk.dirtPositions, chunk.dirtNormals, chunk.dirtUvs, chunk.dirtIndices, chunk.dirtSkyLight, chunk.dirtTorchLight);
         const mesh = new THREE.Mesh(geom, this.meshBuilder.getSideLODMaterial());
         chunkGroup.add(mesh);
       }
 
-      // Stone mesh (uses stone LOD material)
+      // Stone mesh (uses stone LOD material with torchLight)
       if (chunk.stonePositions.length > 0) {
-        const geom = createLODGeom(chunk.stonePositions, chunk.stoneNormals, chunk.stoneUvs, chunk.stoneIndices, chunk.stoneSkyLight);
+        const geom = createLODGeom(chunk.stonePositions, chunk.stoneNormals, chunk.stoneUvs, chunk.stoneIndices, chunk.stoneSkyLight, chunk.stoneTorchLight);
         const mesh = new THREE.Mesh(geom, this.meshBuilder.getStoneLODMaterial());
         chunkGroup.add(mesh);
       }
 
-      // Sand mesh (uses sand LOD material)
+      // Sand mesh (uses sand LOD material with torchLight)
       if (chunk.sandPositions.length > 0) {
-        const geom = createLODGeom(chunk.sandPositions, chunk.sandNormals, chunk.sandUvs, chunk.sandIndices, chunk.sandSkyLight);
+        const geom = createLODGeom(chunk.sandPositions, chunk.sandNormals, chunk.sandUvs, chunk.sandIndices, chunk.sandSkyLight, chunk.sandTorchLight);
         const mesh = new THREE.Mesh(geom, this.meshBuilder.getSandLODMaterial());
         chunkGroup.add(mesh);
       }
 
-      // Wood mesh (uses wood LOD material)
+      // Wood mesh (uses wood LOD material with torchLight)
       if (chunk.woodPositions.length > 0) {
-        const geom = createLODGeom(chunk.woodPositions, chunk.woodNormals, chunk.woodUvs, chunk.woodIndices, chunk.woodSkyLight);
+        const geom = createLODGeom(chunk.woodPositions, chunk.woodNormals, chunk.woodUvs, chunk.woodIndices, chunk.woodSkyLight, chunk.woodTorchLight);
         const mesh = new THREE.Mesh(geom, this.meshBuilder.getWoodLODMaterial());
         chunkGroup.add(mesh);
       }
@@ -1566,9 +1658,9 @@ export class Planet {
         chunkGroup.add(mesh);
       }
 
-      // Side walls mesh (uses terrain shader with skyLight)
+      // Side walls mesh (uses terrain shader with skyLight and torchLight)
       if (chunk.sidePositions.length > 0) {
-        const geom = createLODGeom(chunk.sidePositions, chunk.sideNormals, chunk.sideUvs, chunk.sideIndices, chunk.sideSkyLight);
+        const geom = createLODGeom(chunk.sidePositions, chunk.sideNormals, chunk.sideUvs, chunk.sideIndices, chunk.sideSkyLight, chunk.sideTorchLight);
         const mesh = new THREE.Mesh(geom, this.meshBuilder.getSideLODMaterial());
         chunkGroup.add(mesh);
       }
@@ -2559,9 +2651,11 @@ export class Planet {
     }
 
     // Create meshes from batched geometry
+    const createdMeshes: string[] = [];
     for (const mat of this.BLOCK_MATERIALS) {
       const data = geometryData[mat.key];
       if (data.positions.length > 0) {
+        createdMeshes.push(mat.key);
         const geom = this.createBufferGeometry(data);
         const mesh = new THREE.Mesh(geom, mat.getMaterial());
         if (mat.renderOrder !== undefined) {
@@ -2572,12 +2666,14 @@ export class Planet {
         // Track water mesh for depth pre-pass optimization
         if (mat.key === 'water') {
           this.currentWaterMesh = mesh;
+          console.log('[Planet] Created water mesh, callback:', !!this.waterMeshCallback);
           if (this.waterMeshCallback) {
             this.waterMeshCallback(mesh, true);
           }
         }
       }
     }
+    console.log('[Planet] rebuildBatchedMeshes created:', createdMeshes.join(', '));
 
     // Schedule water boundary walls rebuild (deferred to avoid frame spike)
     const hasWater = this.config.hasWater !== false && !this.config.texturePath;
@@ -2788,21 +2884,15 @@ export class Planet {
       intensity: t.intensity
     }));
 
-    // Update distant LOD materials with torch positions (in world space for the shader)
-    for (const material of this.distantLODMaterials) {
-      const torchPositions = material.uniforms.torchPositions.value as THREE.Vector3[];
-      const count = Math.min(torches.length, 32); // Max 32 torches
+    // Rebuild distant LOD meshes with updated torch lighting
+    // This is called when torches are placed/removed
+    this.rebuildDistantLODMeshes();
+  }
 
-      for (let i = 0; i < count; i++) {
-        torchPositions[i].copy(torches[i].position);
-      }
-      // Zero out unused positions
-      for (let i = count; i < 32; i++) {
-        torchPositions[i].set(0, 0, 0);
-      }
-
-      material.uniforms.torchCount.value = count;
-    }
+  // Set which tiles have torches (for LOD vertex lighting)
+  // Each tile with a torch gets full torch light in LOD mesh (1 per tile, single tile range)
+  public setTilesWithTorches(tiles: Set<number>): void {
+    this.tilesWithTorches = tiles;
   }
 
   // Mark tiles near a torch position as dirty (for torch light baking)
@@ -2838,8 +2928,10 @@ export class Planet {
   // Set callback for water mesh registration (for depth pre-pass optimization)
   public setWaterMeshCallback(callback: (mesh: THREE.Mesh, isAdd: boolean) => void): void {
     this.waterMeshCallback = callback;
+    console.log('[Planet] setWaterMeshCallback called, currentWaterMesh:', this.currentWaterMesh);
     // Register existing water mesh if any
     if (this.currentWaterMesh) {
+      console.log('[Planet] Registering existing water mesh');
       callback(this.currentWaterMesh, true);
     }
   }

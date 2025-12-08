@@ -37,6 +37,7 @@ export class GameEngine {
   private waterMaterials: Set<THREE.ShaderMaterial> = new Set();
   private waterMeshes: Set<THREE.Mesh> = new Set(); // Cached for O(1) visibility toggle
   private readonly isMobile: boolean;
+  private depthPrePassLogged: boolean = false; // One-time log flag
 
   private updateCallbacks: ((deltaTime: number) => void)[] = [];
 
@@ -66,8 +67,12 @@ export class GameEngine {
     container.appendChild(this.renderer.domElement);
 
     // Create depth render target for underwater fog (skip on mobile for performance)
+    console.log('[GameEngine] isMobile:', this.isMobile);
     if (!this.isMobile) {
       this.createDepthRenderTarget();
+      console.log('[GameEngine] Created depth render target:', this.depthRenderTarget);
+    } else {
+      console.log('[GameEngine] Skipping depth render target (mobile)');
     }
 
     // Clock for delta time
@@ -147,12 +152,16 @@ export class GameEngine {
     const width = Math.floor(window.innerWidth * pixelRatio);
     const height = Math.floor(window.innerHeight * pixelRatio);
 
+    // Create depth texture with explicit format (required for proper depth sampling)
+    const depthTexture = new THREE.DepthTexture(width, height);
+    depthTexture.format = THREE.DepthFormat;
+    depthTexture.type = THREE.UnsignedIntType; // More widely supported than FloatType
+
     this.depthRenderTarget = new THREE.WebGLRenderTarget(width, height, {
       minFilter: THREE.NearestFilter,
       magFilter: THREE.NearestFilter,
-      type: THREE.FloatType,
       depthBuffer: true,
-      depthTexture: new THREE.DepthTexture(width, height, THREE.FloatType),
+      depthTexture: depthTexture,
     });
   }
 
@@ -178,6 +187,7 @@ export class GameEngine {
     if (!this.waterMaterials.has(material)) {
       this.waterMaterials.add(material);
       this.updateWaterMaterialUniforms(material);
+      console.log('[GameEngine] Registered water material, depthRenderTarget:', this.depthRenderTarget, 'useDepthFog:', material.uniforms.useDepthFog?.value);
     }
   }
 
@@ -185,6 +195,7 @@ export class GameEngine {
   // Call this when creating water meshes to avoid scene.traverse() every frame
   public registerWaterMesh(mesh: THREE.Mesh): void {
     this.waterMeshes.add(mesh);
+    console.log('[GameEngine] Registered water mesh, total:', this.waterMeshes.size);
   }
 
   // Unregister a water mesh when it's disposed
@@ -259,6 +270,10 @@ export class GameEngine {
     // Depth pre-pass: render scene to depth buffer (hide water temporarily)
     // Uses cached waterMeshes Set for O(1) lookup instead of scene.traverse()
     if (this.depthRenderTarget && this.waterMeshes.size > 0) {
+      if (!this.depthPrePassLogged) {
+        console.log('[GameEngine] Depth pre-pass ACTIVE - depthRenderTarget:', this.depthRenderTarget, 'waterMeshes:', this.waterMeshes.size);
+        this.depthPrePassLogged = true;
+      }
       // Hide water meshes during depth pass - store previous visibility
       const waterVisibility: Map<THREE.Mesh, boolean> = new Map();
       for (const mesh of this.waterMeshes) {
@@ -274,6 +289,11 @@ export class GameEngine {
       // Restore water visibility
       for (const mesh of this.waterMeshes) {
         mesh.visible = waterVisibility.get(mesh) ?? true;
+      }
+    } else if (!this.depthPrePassLogged) {
+      console.log('[GameEngine] Depth pre-pass SKIPPED - depthRenderTarget:', this.depthRenderTarget, 'waterMeshes:', this.waterMeshes.size);
+      if (this.depthRenderTarget || this.waterMeshes.size > 0) {
+        this.depthPrePassLogged = true; // Only log once if partially ready
       }
     }
 
