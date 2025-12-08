@@ -60,6 +60,8 @@ export class PlanetBlockInteraction {
 
   // Wireframe for targeted block
   private blockWireframe: THREE.LineSegments | null = null;
+  private wireframeCache: { tileIndex: number; depth: number } | null = null; // Cache to avoid rebuilding every frame
+  private wireframeVertPool: THREE.Vector3[] = []; // Reusable Vector3 pool for wireframe building
   private treeManager: PlanetTreeManager | null = null;
 
   // Torch system
@@ -352,9 +354,20 @@ export class PlanetBlockInteraction {
   }
 
   // Build wireframe geometry for a hex block at given tile and depth
+  // Optimized: only rebuilds when target changes, reuses Vector3 objects
   private updateBlockWireframe(planet: Planet, tileIndex: number, depth: number): void {
+    // Skip rebuild if target hasn't changed
+    if (this.wireframeCache &&
+        this.wireframeCache.tileIndex === tileIndex &&
+        this.wireframeCache.depth === depth) {
+      return;
+    }
+
     const tile = planet.getTileByIndex(tileIndex);
     if (!tile || !this.blockWireframe) return;
+
+    // Update cache
+    this.wireframeCache = { tileIndex, depth };
 
     const blockHeight = planet.getBlockHeight();
     const outerRadius = planet.depthToRadius(depth);
@@ -363,34 +376,47 @@ export class PlanetBlockInteraction {
     const vertices: number[] = [];
     const numSides = tile.vertices.length;
 
-    // Scale vertices to inner and outer radii
-    const innerVerts: THREE.Vector3[] = [];
-    const outerVerts: THREE.Vector3[] = [];
+    // Ensure we have enough reusable vectors (need 2 * numSides for inner + outer)
+    const neededVectors = numSides * 2;
+    while (this.wireframeVertPool.length < neededVectors) {
+      this.wireframeVertPool.push(new THREE.Vector3());
+    }
 
-    for (const v of tile.vertices) {
-      const dir = v.clone().normalize();
-      innerVerts.push(dir.clone().multiplyScalar(innerRadius).add(planet.center));
-      outerVerts.push(dir.clone().multiplyScalar(outerRadius).add(planet.center));
+    // Reuse vectors for inner and outer vertices
+    for (let i = 0; i < numSides; i++) {
+      const v = tile.vertices[i];
+      // Outer vertex (at index i)
+      const outerVert = this.wireframeVertPool[i];
+      outerVert.set(v.x, v.y, v.z).normalize().multiplyScalar(outerRadius).add(planet.center);
+      // Inner vertex (at index numSides + i)
+      const innerVert = this.wireframeVertPool[numSides + i];
+      innerVert.set(v.x, v.y, v.z).normalize().multiplyScalar(innerRadius).add(planet.center);
     }
 
     // Top face edges (outer)
     for (let i = 0; i < numSides; i++) {
       const next = (i + 1) % numSides;
-      vertices.push(outerVerts[i].x, outerVerts[i].y, outerVerts[i].z);
-      vertices.push(outerVerts[next].x, outerVerts[next].y, outerVerts[next].z);
+      const outerCurrent = this.wireframeVertPool[i];
+      const outerNext = this.wireframeVertPool[next];
+      vertices.push(outerCurrent.x, outerCurrent.y, outerCurrent.z);
+      vertices.push(outerNext.x, outerNext.y, outerNext.z);
     }
 
     // Bottom face edges (inner)
     for (let i = 0; i < numSides; i++) {
       const next = (i + 1) % numSides;
-      vertices.push(innerVerts[i].x, innerVerts[i].y, innerVerts[i].z);
-      vertices.push(innerVerts[next].x, innerVerts[next].y, innerVerts[next].z);
+      const innerCurrent = this.wireframeVertPool[numSides + i];
+      const innerNext = this.wireframeVertPool[numSides + next];
+      vertices.push(innerCurrent.x, innerCurrent.y, innerCurrent.z);
+      vertices.push(innerNext.x, innerNext.y, innerNext.z);
     }
 
     // Vertical edges connecting top and bottom
     for (let i = 0; i < numSides; i++) {
-      vertices.push(outerVerts[i].x, outerVerts[i].y, outerVerts[i].z);
-      vertices.push(innerVerts[i].x, innerVerts[i].y, innerVerts[i].z);
+      const outerVert = this.wireframeVertPool[i];
+      const innerVert = this.wireframeVertPool[numSides + i];
+      vertices.push(outerVert.x, outerVert.y, outerVert.z);
+      vertices.push(innerVert.x, innerVert.y, innerVert.z);
     }
 
     // Update geometry
@@ -461,6 +487,7 @@ export class PlanetBlockInteraction {
       // Hide wireframe and reset mining when menu is open
       if (this.blockWireframe) {
         this.blockWireframe.visible = false;
+        this.wireframeCache = null; // Clear cache so it rebuilds when shown again
       }
       this.resetMining();
       return;
@@ -527,6 +554,7 @@ export class PlanetBlockInteraction {
       // No wireframe for torches
       if (this.blockWireframe) {
         this.blockWireframe.visible = false;
+        this.wireframeCache = null;
       }
 
       // Handle torch picking (left click - instant removal, gives torch back)
@@ -540,6 +568,7 @@ export class PlanetBlockInteraction {
       // No wireframe for trees
       if (this.blockWireframe) {
         this.blockWireframe.visible = false;
+        this.wireframeCache = null;
       }
 
       const treeType = hitObject.userData.treeType as string; // 'trunk' or 'leaves'
@@ -577,6 +606,7 @@ export class PlanetBlockInteraction {
       // Hide wireframe highlight
       if (this.blockWireframe) {
         this.blockWireframe.visible = false;
+        this.wireframeCache = null;
       }
       this.resetMining();
     }

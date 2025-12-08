@@ -34,7 +34,8 @@ export class GameEngine {
 
   // Depth buffer for underwater fog (disabled on mobile for performance)
   private depthRenderTarget: THREE.WebGLRenderTarget | null = null;
-  private waterMaterials: THREE.ShaderMaterial[] = [];
+  private waterMaterials: Set<THREE.ShaderMaterial> = new Set();
+  private waterMeshes: Set<THREE.Mesh> = new Set(); // Cached for O(1) visibility toggle
   private readonly isMobile: boolean;
 
   private updateCallbacks: ((deltaTime: number) => void)[] = [];
@@ -174,10 +175,21 @@ export class GameEngine {
 
   // Register a water shader material to receive depth texture updates
   public registerWaterMaterial(material: THREE.ShaderMaterial): void {
-    if (!this.waterMaterials.includes(material)) {
-      this.waterMaterials.push(material);
+    if (!this.waterMaterials.has(material)) {
+      this.waterMaterials.add(material);
       this.updateWaterMaterialUniforms(material);
     }
+  }
+
+  // Register a water mesh for efficient depth pre-pass visibility toggling
+  // Call this when creating water meshes to avoid scene.traverse() every frame
+  public registerWaterMesh(mesh: THREE.Mesh): void {
+    this.waterMeshes.add(mesh);
+  }
+
+  // Unregister a water mesh when it's disposed
+  public unregisterWaterMesh(mesh: THREE.Mesh): void {
+    this.waterMeshes.delete(mesh);
   }
 
   private updateWaterMaterialUniforms(material: THREE.ShaderMaterial): void {
@@ -245,15 +257,14 @@ export class GameEngine {
     profiler.begin('Render');
 
     // Depth pre-pass: render scene to depth buffer (hide water temporarily)
-    if (this.depthRenderTarget && this.waterMaterials.length > 0) {
-      // Hide water meshes during depth pass
-      const waterVisibility: boolean[] = [];
-      this.scene.traverse((obj) => {
-        if (obj instanceof THREE.Mesh && this.waterMaterials.includes(obj.material as THREE.ShaderMaterial)) {
-          waterVisibility.push(obj.visible);
-          obj.visible = false;
-        }
-      });
+    // Uses cached waterMeshes Set for O(1) lookup instead of scene.traverse()
+    if (this.depthRenderTarget && this.waterMeshes.size > 0) {
+      // Hide water meshes during depth pass - store previous visibility
+      const waterVisibility: Map<THREE.Mesh, boolean> = new Map();
+      for (const mesh of this.waterMeshes) {
+        waterVisibility.set(mesh, mesh.visible);
+        mesh.visible = false;
+      }
 
       // Render to depth target
       this.renderer.setRenderTarget(this.depthRenderTarget);
@@ -261,12 +272,9 @@ export class GameEngine {
       this.renderer.setRenderTarget(null);
 
       // Restore water visibility
-      let i = 0;
-      this.scene.traverse((obj) => {
-        if (obj instanceof THREE.Mesh && this.waterMaterials.includes(obj.material as THREE.ShaderMaterial)) {
-          obj.visible = waterVisibility[i++];
-        }
-      });
+      for (const mesh of this.waterMeshes) {
+        mesh.visible = waterVisibility.get(mesh) ?? true;
+      }
     }
 
     // Main render pass

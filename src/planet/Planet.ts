@@ -51,6 +51,7 @@ export class Planet {
   // LOD system - chunked LOD meshes for frustum culling (for nearby/on-planet viewing)
   private lodChunks: THREE.Group[] = []; // 12 chunks based on icosahedron vertices
   private lodChunkBounds: THREE.Sphere[] = []; // Bounding spheres for frustum culling
+  private lodChunkDirections: THREE.Vector3[] = []; // Cached normalized chunk center directions (icosahedron vertices)
   private tileToChunk: Map<number, number> = new Map(); // Maps tile index to chunk index
   private lodMesh: THREE.Group | null = null; // Parent group for all LOD chunks
   private lodWaterMesh: THREE.Mesh | null = null; // Separate LOD water mesh for visibility control
@@ -81,6 +82,8 @@ export class Planet {
   // Batched meshes for visible terrain (one mesh per material type = ~5 draw calls total)
   private batchedMeshGroup: THREE.Group | null = null;
   private needsRebatch: boolean = true; // Flag to rebuild batched geometry
+  private currentWaterMesh: THREE.Mesh | null = null; // Track current water mesh for unregistration
+  private waterMeshCallback: ((mesh: THREE.Mesh, isAdd: boolean) => void) | null = null; // Callback for water mesh registration
 
   // Web Worker for off-thread geometry building
   private geometryWorker: Worker | null = null;
@@ -172,8 +175,9 @@ export class Planet {
   // Initialize LOD chunk system - assigns each tile to one of 12 chunks based on icosahedron vertices
   private initializeLODChunks(): void {
     // 12 icosahedron vertices as chunk centers (golden ratio based)
+    // Cache these normalized directions for reuse in updateLODChunkBounds
     const t = (1 + Math.sqrt(5)) / 2;
-    const chunkCenters = [
+    this.lodChunkDirections = [
       new THREE.Vector3(-1, t, 0).normalize(),
       new THREE.Vector3(1, t, 0).normalize(),
       new THREE.Vector3(-1, -t, 0).normalize(),
@@ -187,6 +191,7 @@ export class Planet {
       new THREE.Vector3(-t, 0, -1).normalize(),
       new THREE.Vector3(-t, 0, 1).normalize()
     ];
+    const chunkCenters = this.lodChunkDirections;
 
     // Assign each tile to nearest chunk center
     for (const tile of this.polyhedron.tiles) {
@@ -1975,27 +1980,16 @@ export class Planet {
   }
 
   // Update LOD chunk bounding spheres when planet center moves
+  // Optimized: uses cached lodChunkDirections instead of creating new vectors
   private updateLODChunkBounds(): void {
-    // 12 icosahedron vertices as chunk centers (same as initializeLODChunks)
-    const t = (1 + Math.sqrt(5)) / 2;
-    const chunkCenters = [
-      new THREE.Vector3(-1, t, 0).normalize(),
-      new THREE.Vector3(1, t, 0).normalize(),
-      new THREE.Vector3(-1, -t, 0).normalize(),
-      new THREE.Vector3(1, -t, 0).normalize(),
-      new THREE.Vector3(0, -1, t).normalize(),
-      new THREE.Vector3(0, 1, t).normalize(),
-      new THREE.Vector3(0, -1, -t).normalize(),
-      new THREE.Vector3(0, 1, -t).normalize(),
-      new THREE.Vector3(t, 0, -1).normalize(),
-      new THREE.Vector3(t, 0, 1).normalize(),
-      new THREE.Vector3(-t, 0, -1).normalize(),
-      new THREE.Vector3(-t, 0, 1).normalize()
-    ];
-
     for (let i = 0; i < this.lodChunkBounds.length; i++) {
-      const boundCenter = chunkCenters[i].clone().multiplyScalar(this.radius).add(this.center);
-      this.lodChunkBounds[i].center.copy(boundCenter);
+      // Reuse cached direction, compute center in-place
+      const dir = this.lodChunkDirections[i];
+      this.lodChunkBounds[i].center.set(
+        dir.x * this.radius + this.center.x,
+        dir.y * this.radius + this.center.y,
+        dir.z * this.radius + this.center.z
+      );
     }
   }
 
@@ -2256,11 +2250,17 @@ export class Planet {
     return h ^ (h >> 16);
   }
 
-  public update(playerPosition: THREE.Vector3, camera: THREE.Camera, deltaTime?: number): void {
-    profiler.begin('Planet.frustum');
-    this.projScreenMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
-    this.frustum.setFromProjectionMatrix(this.projScreenMatrix);
-    profiler.end('Planet.frustum');
+  // Update planet state. Pass pre-computed frustum to avoid recalculating per planet.
+  public update(playerPosition: THREE.Vector3, camera: THREE.Camera, deltaTime?: number, sharedFrustum?: THREE.Frustum): void {
+    // Use shared frustum if provided, otherwise calculate (backwards compatible)
+    if (sharedFrustum) {
+      this.frustum.copy(sharedFrustum);
+    } else {
+      profiler.begin('Planet.frustum');
+      this.projScreenMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+      this.frustum.setFromProjectionMatrix(this.projScreenMatrix);
+      profiler.end('Planet.frustum');
+    }
     const de = deltaTime;
     if(de && de > 100)
     {
@@ -2527,6 +2527,12 @@ export class Planet {
   private rebuildBatchedMeshes(): void {
     if (!this.batchedMeshGroup) return;
 
+    // Unregister old water mesh before disposing
+    if (this.currentWaterMesh && this.waterMeshCallback) {
+      this.waterMeshCallback(this.currentWaterMesh, false);
+    }
+    this.currentWaterMesh = null;
+
     // Dispose old meshes
     while (this.batchedMeshGroup.children.length > 0) {
       const child = this.batchedMeshGroup.children[0] as THREE.Mesh;
@@ -2562,6 +2568,14 @@ export class Planet {
           mesh.renderOrder = mat.renderOrder;
         }
         this.batchedMeshGroup.add(mesh);
+
+        // Track water mesh for depth pre-pass optimization
+        if (mat.key === 'water') {
+          this.currentWaterMesh = mesh;
+          if (this.waterMeshCallback) {
+            this.waterMeshCallback(mesh, true);
+          }
+        }
       }
     }
 
@@ -2819,6 +2833,15 @@ export class Planet {
 
   public getWaterShaderMaterial(): THREE.ShaderMaterial | null {
     return this.meshBuilder.getWaterShaderMaterial();
+  }
+
+  // Set callback for water mesh registration (for depth pre-pass optimization)
+  public setWaterMeshCallback(callback: (mesh: THREE.Mesh, isAdd: boolean) => void): void {
+    this.waterMeshCallback = callback;
+    // Register existing water mesh if any
+    if (this.currentWaterMesh) {
+      callback(this.currentWaterMesh, true);
+    }
   }
 
   private getTilesInRange(centerTileIndex: number, range: number): Set<number> {

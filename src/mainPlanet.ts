@@ -26,6 +26,10 @@ class PlanetGame {
   private waterUpdateTimer: number = 0;
   private readonly WATER_UPDATE_INTERVAL = 5.0; // Update water every 5 seconds
 
+  // Shared frustum for all planet updates (calculated once per frame)
+  private sharedFrustum: THREE.Frustum = new THREE.Frustum();
+  private projScreenMatrix: THREE.Matrix4 = new THREE.Matrix4();
+
   constructor() {
     const container = document.getElementById('game-container');
     if (!container) throw new Error('Game container not found');
@@ -154,6 +158,15 @@ class PlanetGame {
         this.engine.registerWaterMaterial(waterMaterial);
       }
 
+      // Register water mesh callback for efficient depth pre-pass (avoids scene.traverse per frame)
+      this.earth.setWaterMeshCallback((mesh, isAdd) => {
+        if (isAdd) {
+          this.engine.registerWaterMesh(mesh);
+        } else {
+          this.engine.unregisterWaterMesh(mesh);
+        }
+      });
+
       // Setup settings menu
       this.setupSettingsMenu();
 
@@ -211,12 +224,18 @@ class PlanetGame {
 
     // Update both planets (rebuild dirty meshes near player) with camera for frustum culling
     // This comes AFTER block interaction so torch light changes are immediately baked
+    // Calculate frustum once and share between all planet updates
+    profiler.begin('Frustum Calc');
+    this.projScreenMatrix.multiplyMatrices(this.engine.camera.projectionMatrix, this.engine.camera.matrixWorldInverse);
+    this.sharedFrustum.setFromProjectionMatrix(this.projScreenMatrix);
+    profiler.end('Frustum Calc');
+
     profiler.begin('Earth Update');
-    this.earth.update(this.player.position, this.engine.camera, deltaTime);
+    this.earth.update(this.player.position, this.engine.camera, deltaTime, this.sharedFrustum);
     profiler.end('Earth Update');
 
     profiler.begin('Moon Update');
-    this.moon.update(this.player.position, this.engine.camera, deltaTime);
+    this.moon.update(this.player.position, this.engine.camera, deltaTime, this.sharedFrustum);
     profiler.end('Moon Update');
 
     // Update water shader for animation (only Earth has water)
