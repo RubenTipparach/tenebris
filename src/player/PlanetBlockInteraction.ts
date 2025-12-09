@@ -112,6 +112,8 @@ export class PlanetBlockInteraction {
   private copperPipeUI: CopperPipeUI;
   private steamEngineUI: SteamEngineUI;
   private miningCopperPipeTarget: { pipe: PlacedCopperPipe } | null = null;
+  private pipeConnectionRebuildTimer: number = 0;
+  private readonly PIPE_CONNECTION_REBUILD_INTERVAL = 1.0; // Rebuild connections every 1 second
 
   private rightClickCooldown: number = 0;
   private readonly CLICK_COOLDOWN = 0.25;
@@ -729,6 +731,13 @@ export class PlanetBlockInteraction {
 
     // Update furnace smelting progress
     this.furnaceManager.update(deltaTime);
+
+    // Periodically rebuild copper pipe connections (handles chunk loading/unloading)
+    this.pipeConnectionRebuildTimer += deltaTime;
+    if (this.pipeConnectionRebuildTimer >= this.PIPE_CONNECTION_REBUILD_INTERVAL) {
+      this.pipeConnectionRebuildTimer = 0;
+      this.copperPipeManager.rebuildAllConnections();
+    }
 
     // Update furnace, storage chest, garbage pile, and steam engine torch lighting based on nearby torches
     const torchData = this.torchManager.getTorchDataForBaking();

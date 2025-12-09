@@ -998,28 +998,32 @@ export class PlanetPlayer {
   private handleSpaceMouseLook(input: InputState, _deltaTime: number): void {
     if (!this.inputManager.isLocked()) return;
 
-    // Yaw - rotate around local up axis
-    const yawDelta = -input.mouseX * PlayerConfig.MOUSE_SENSITIVITY;
-    const yawQuat = new THREE.Quaternion().setFromAxisAngle(this.localUp, yawDelta);
-    this.orientation.premultiply(yawQuat);
-
-    // Pitch - rotate around local right axis (positive mouseY = look down, unless inverted)
     const yInvert = PlayerConfig.INVERT_Y_AXIS ? -1 : 1;
     let pitchDelta = input.mouseY * PlayerConfig.MOUSE_SENSITIVITY * yInvert;
+    const yawDelta = -input.mouseX * PlayerConfig.MOUSE_SENSITIVITY;
 
-    // Clamp pitch when inside gravity field (not in space)
+    // On planet surface, use planet-aligned axes to avoid gimbal lock
     if (!this.isInSpace && this.currentPlanet) {
       const planetUp = this.currentPlanet.getSurfaceNormal(this.position);
       const lookDir = this.localForward.clone().negate(); // Camera looks along -localForward
 
-      // Calculate current pitch angle relative to horizon (planetUp-perpendicular plane)
-      // Pitch = angle between lookDir and horizon plane
-      // sin(pitch) = lookDir . planetUp
+      // Calculate horizontal right axis (perpendicular to planetUp and lookDir)
+      // This ensures pitch rotation happens around a horizon-aligned axis
+      // Cross product order: planetUp × lookDir gives right vector (following right-hand rule)
+      let horizonRight = new THREE.Vector3().crossVectors(planetUp, lookDir).normalize();
+
+      // If lookDir is nearly parallel to planetUp (looking straight up/down),
+      // use localRight as fallback
+      if (horizonRight.lengthSq() < 0.001) {
+        horizonRight = this.localRight.clone();
+      }
+
+      // Calculate current pitch angle relative to horizon
       const currentPitchSin = lookDir.dot(planetUp);
       const currentPitch = Math.asin(Math.max(-1, Math.min(1, currentPitchSin)));
 
-      // Clamp to ±89.5 degrees (in radians: ±1.5621 rad)
-      const maxPitch = 89.5 * Math.PI / 180;
+      // Clamp to ±89 degrees to avoid gimbal lock
+      const maxPitch = 89 * Math.PI / 180;
       const newPitch = currentPitch + pitchDelta;
 
       if (newPitch > maxPitch) {
@@ -1027,10 +1031,22 @@ export class PlanetPlayer {
       } else if (newPitch < -maxPitch) {
         pitchDelta = -maxPitch - currentPitch;
       }
-    }
 
-    const pitchQuat = new THREE.Quaternion().setFromAxisAngle(this.localRight, pitchDelta);
-    this.orientation.premultiply(pitchQuat);
+      // Yaw around planet up axis (not local up) to prevent roll accumulation
+      const yawQuat = new THREE.Quaternion().setFromAxisAngle(planetUp, yawDelta);
+      this.orientation.premultiply(yawQuat);
+
+      // Pitch around horizon-aligned right axis
+      const pitchQuat = new THREE.Quaternion().setFromAxisAngle(horizonRight, pitchDelta);
+      this.orientation.premultiply(pitchQuat);
+    } else {
+      // In space, use local axes freely (6DOF)
+      const yawQuat = new THREE.Quaternion().setFromAxisAngle(this.localUp, yawDelta);
+      this.orientation.premultiply(yawQuat);
+
+      const pitchQuat = new THREE.Quaternion().setFromAxisAngle(this.localRight, pitchDelta);
+      this.orientation.premultiply(pitchQuat);
+    }
 
     this.orientation.normalize();
     this.updateLocalFromOrientation();

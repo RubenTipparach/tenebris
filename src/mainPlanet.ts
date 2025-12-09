@@ -170,6 +170,10 @@ class PlanetGame {
       // Pass sun direction for planet-aware lighting
       this.treeManager = new PlanetTreeManager(this.engine.scene, this.engine.sunDirection);
 
+      // Load saved game data early so removed trees are available
+      // (full load happens later but we need planet data now for tree generation)
+      gameStorage.load();
+
       // Get removed trees from storage to skip them during generation
       const removedTreesData = gameStorage.getRemovedTrees('earth');
       const removedTiles = new Set(removedTreesData.map(t => t.tileIndex));
