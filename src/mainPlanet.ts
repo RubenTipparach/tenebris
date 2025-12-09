@@ -169,6 +169,11 @@ class PlanetGame {
       // Initialize tree manager and scatter trees on Earth
       // Pass sun direction for planet-aware lighting
       this.treeManager = new PlanetTreeManager(this.engine.scene, this.engine.sunDirection);
+
+      // Get removed trees from storage to skip them during generation
+      const removedTreesData = gameStorage.getRemovedTrees('earth');
+      const removedTiles = new Set(removedTreesData.map(t => t.tileIndex));
+
       this.treeManager.scatterTrees(
         this.earth.center,
         this.earth.radius,
@@ -177,7 +182,8 @@ class PlanetGame {
         (direction) => this.earth.isUnderwaterInDirection(direction), // Skip underwater locations
         PlayerConfig.TERRAIN_SEED, // Use terrain seed for deterministic placement
         (direction) => this.earth.getTileIndexInDirection(direction), // For visibility tracking
-        (direction) => this.earth.getTileCenterInDirection(direction) // For centering trees on tiles
+        (direction) => this.earth.getTileCenterInDirection(direction), // For centering trees on tiles
+        removedTiles // Skip tiles where trees were previously removed
       );
 
       // Give block interaction access to tree manager for mining trees
@@ -373,13 +379,24 @@ class PlanetGame {
     atmosphereToggle.checked = this.earthAtmosphere?.isVisible() ?? false;
     cloudsToggle.checked = this.earthClouds.isVisible();
 
-    // Jetpack defaults to OFF
+    // Jetpack defaults to OFF (now in Debug tab)
     if (jetpackToggle) {
-      jetpackToggle.checked = false;
-      this.player.setJetpackEnabled(false);
+      jetpackToggle.checked = PlayerConfig.DEBUG_JETPACK_ENABLED;
+      this.player.setJetpackEnabled(PlayerConfig.DEBUG_JETPACK_ENABLED);
 
       jetpackToggle.addEventListener('change', () => {
+        PlayerConfig.DEBUG_JETPACK_ENABLED = jetpackToggle.checked;
         this.player.setJetpackEnabled(jetpackToggle.checked);
+      });
+    }
+
+    // Bypass crafting ingredients toggle (Debug tab)
+    const bypassCraftingToggle = document.getElementById('toggle-bypass-crafting') as HTMLInputElement;
+    if (bypassCraftingToggle) {
+      bypassCraftingToggle.checked = PlayerConfig.DEBUG_BYPASS_CRAFTING_INGREDIENTS;
+
+      bypassCraftingToggle.addEventListener('change', () => {
+        PlayerConfig.DEBUG_BYPASS_CRAFTING_INGREDIENTS = bypassCraftingToggle.checked;
       });
     }
 

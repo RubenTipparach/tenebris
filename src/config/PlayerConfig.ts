@@ -167,4 +167,8 @@ export const PlayerConfig = {
   // Technology block placement
   TECH_BLOCK_ROTATION_OFFSET: 0,      // Rotation offset in degrees for technology blocks (furnace, etc.)
   TECH_BLOCK_HEX_SNAP: false,          // Snap technology blocks to 60-degree hex alignment
+
+  // Debug settings (for development/testing)
+  DEBUG_BYPASS_CRAFTING_INGREDIENTS: false,  // Skip ingredient requirements when crafting
+  DEBUG_JETPACK_ENABLED: false,              // Enable infinite jetpack mode
 };

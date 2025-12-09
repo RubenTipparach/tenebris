@@ -153,6 +153,7 @@ export class TreeBuilder {
     const mergedMaterial = this.createMergedTreeMaterial();
     const treeMesh = new THREE.Mesh(mergedGeom, mergedMaterial);
     treeMesh.userData.isTree = true;
+    treeMesh.userData.treeType = 'trunk'; // Merged tree drops logs like trunk
     tree.add(treeMesh);
 
     // Clean up individual geometries
@@ -340,7 +341,8 @@ export class PlanetTreeManager {
     isUnderwater?: (direction: THREE.Vector3) => boolean,
     seed: number = PlayerConfig.TERRAIN_SEED,
     getTileIndex?: (direction: THREE.Vector3) => number | null,
-    getTileCenter?: (direction: THREE.Vector3) => THREE.Vector3 | null
+    getTileCenter?: (direction: THREE.Vector3) => THREE.Vector3 | null,
+    removedTiles?: Set<number>
   ): void {
     const rng = new SeededRandom(seed + 54321); // Offset seed slightly for trees
     let placed = 0;
@@ -364,8 +366,8 @@ export class PlanetTreeManager {
       // Get tile index for visibility tracking and deduplication
       const tileIndex = getTileIndex ? getTileIndex(direction) : null;
 
-      // Skip if this tile already has a tree
-      if (tileIndex !== null && usedTiles.has(tileIndex)) {
+      // Skip if this tile already has a tree or was previously removed
+      if (tileIndex !== null && (usedTiles.has(tileIndex) || removedTiles?.has(tileIndex))) {
         continue;
       }
 

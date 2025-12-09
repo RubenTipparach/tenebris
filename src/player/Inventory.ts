@@ -35,6 +35,8 @@ export enum ItemType {
   STORAGE_CHEST = 26,
   // Technology items (machines)
   STEAM_ENGINE = 27,
+  HYDRO_GENERATOR = 28,
+  COPPER_PIPE = 29,
 }
 
 // Item metadata
@@ -83,6 +85,8 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
   [ItemType.STORAGE_CHEST]: { name: 'Storage Chest', stackSize: 8, texture: '/textures/technology/storage_face.png', mineTime: 1.5 },
   // Technology items (machines)
   [ItemType.STEAM_ENGINE]: { name: 'Steam Engine', stackSize: 8, texture: '/textures/technology/steam_engine_face.png', mineTime: 2.5 },
+  [ItemType.HYDRO_GENERATOR]: { name: 'Hydro Generator', stackSize: 8, texture: '/textures/technology/hydro_generator_face.png', mineTime: 2.5 },
+  [ItemType.COPPER_PIPE]: { name: 'Copper Pipe', stackSize: 64, texture: '/textures/technology/copper_pipe.png', mineTime: 0.5 },
 };
 
 // Inventory slot

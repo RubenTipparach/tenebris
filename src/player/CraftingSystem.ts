@@ -1,6 +1,7 @@
 import { Inventory, ItemType, ITEM_DATA, InventorySlot } from './Inventory';
 import { getAssetPath } from '../utils/assetPath';
 import { MenuManager } from './MenuManager';
+import { PlayerConfig } from '../config/PlayerConfig';
 
 // Crafting recipe definition
 // For shaped recipes, use 'slots' to specify which grid positions (0-8 for 3x3)
@@ -104,6 +105,33 @@ export const CRAFTING_RECIPES: CraftingRecipe[] = [
       { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 8 },
     ],
     output: { itemType: ItemType.STEAM_ENGINE, quantity: 1 },
+  },
+  // Hydro Generator (iron frame with aluminum core)
+  // III
+  // AAA
+  // III
+  {
+    name: 'Hydro Generator',
+    inputs: [
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 0 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 1 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 2 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 3 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 4 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 5 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 6 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 7 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 8 },
+    ],
+    output: { itemType: ItemType.HYDRO_GENERATOR, quantity: 1 },
+  },
+  // Copper Pipe (1 copper ingot = 4 pipes)
+  {
+    name: 'Copper Pipe',
+    inputs: [
+      { itemType: ItemType.INGOT_COPPER, quantity: 1, slot: 4 }, // Center
+    ],
+    output: { itemType: ItemType.COPPER_PIPE, quantity: 4 },
   },
 ];
 
@@ -716,12 +744,14 @@ export class CraftingSystem {
       requiredItems.set(input.itemType, current + input.quantity);
     }
 
-    // Check if player can craft (has enough of all required items)
+    // Check if player can craft (has enough of all required items, or bypass mode is enabled)
     let canCraft = true;
-    for (const [itemType, quantity] of requiredItems) {
-      if (!this.inventory.hasItem(itemType, quantity)) {
-        canCraft = false;
-        break;
+    if (!PlayerConfig.DEBUG_BYPASS_CRAFTING_INGREDIENTS) {
+      for (const [itemType, quantity] of requiredItems) {
+        if (!this.inventory.hasItem(itemType, quantity)) {
+          canCraft = false;
+          break;
+        }
       }
     }
 
@@ -800,6 +830,11 @@ export class CraftingSystem {
   }
 
   private canCraft(recipe: CraftingRecipe): boolean {
+    // Debug mode: bypass ingredient requirements
+    if (PlayerConfig.DEBUG_BYPASS_CRAFTING_INGREDIENTS) {
+      return true;
+    }
+
     for (const input of recipe.inputs) {
       if (!this.inventory.hasItem(input.itemType, input.quantity)) {
         return false;
@@ -811,9 +846,11 @@ export class CraftingSystem {
   private craftSelectedRecipe(): void {
     if (!this.selectedRecipe || !this.canCraft(this.selectedRecipe)) return;
 
-    // Remove input items
-    for (const input of this.selectedRecipe.inputs) {
-      this.inventory.removeItem(input.itemType, input.quantity);
+    // Remove input items (unless bypass mode is enabled)
+    if (!PlayerConfig.DEBUG_BYPASS_CRAFTING_INGREDIENTS) {
+      for (const input of this.selectedRecipe.inputs) {
+        this.inventory.removeItem(input.itemType, input.quantity);
+      }
     }
 
     // Add output items

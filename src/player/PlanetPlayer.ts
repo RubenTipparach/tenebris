@@ -119,6 +119,15 @@ export class PlanetPlayer {
   // Teleport detection (debug)
   private didJumpThisFrame: boolean = false;
 
+  // Tech block data callback for Shift+X debug (set by PlanetBlockInteraction)
+  private getTechBlockDataCallback: ((tileIndices: number[]) => {
+    torches: { tileIndex: number }[];
+    furnaces: { tileIndex: number }[];
+    steamEngines: { tileIndex: number }[];
+    hydroGenerators: { tileIndex: number }[];
+    copperPipes: { tileIndex: number; depth: number }[];
+  }) | null = null;
+
   constructor(camera: THREE.PerspectiveCamera, inputManager: InputManager, planet: Planet) {
     this.camera = camera;
     this.inputManager = inputManager;
@@ -731,7 +740,7 @@ export class PlanetPlayer {
     const endDepth = Math.min(MAX_TERRAIN_DEPTH - 1, playerDepth + halfRows);
 
     console.log(`Sampling ${tilesToSample.size} tiles, depths ${startDepth} to ${endDepth}`);
-    console.log(`Legend: . = AIR, ~ = WATER, S = SAND, G = GRASS, # = SOLID, @ = PLAYER BODY OVERLAP`);
+    console.log(`Legend: . = AIR, ~ = WATER, S = SAND, G = GRASS, # = SOLID, P = PIPE, @ = PLAYER BODY OVERLAP`);
     console.log('(Higher depths = closer to sky, displayed at top)');
     console.log('');
 
@@ -739,6 +748,16 @@ export class PlanetPlayer {
     const tileArray = Array.from(tilesToSample);
     const headerRow = ['Depth/Radius'].concat(tileArray.map(t => `T${t}`));
     console.log(headerRow.join('\t'));
+
+    // Get tech block data for pipe display in grid
+    const techData = this.getTechBlockDataCallback ? this.getTechBlockDataCallback(tileArray) : null;
+    // Build a lookup map for quick pipe check: "tileIndex-depth" -> true
+    const pipeLocations = new Set<string>();
+    if (techData) {
+      for (const pipe of techData.copperPipes) {
+        pipeLocations.add(`${pipe.tileIndex}-${pipe.depth}`);
+      }
+    }
 
     // Loop from high depth to low depth (sky at top, ground at bottom)
     for (let d = endDepth; d >= startDepth; d--) {
@@ -753,7 +772,11 @@ export class PlanetPlayer {
       for (const tileIdx of tileArray) {
         const block = this.currentPlanet.getBlock(tileIdx, d);
         let symbol = '?';
-        if (block === HexBlockType.AIR) symbol = '.';
+
+        // Check for copper pipe at this location first
+        if (pipeLocations.has(`${tileIdx}-${d}`)) {
+          symbol = 'P';
+        } else if (block === HexBlockType.AIR) symbol = '.';
         else if (block === HexBlockType.WATER) symbol = '~';
         else if (block === HexBlockType.SAND) symbol = 'S';
         else if (block === HexBlockType.GRASS) symbol = 'G';
@@ -771,6 +794,33 @@ export class PlanetPlayer {
     }
 
     console.log('');
+
+    // Log tech blocks in sampled tiles (reuse techData if already fetched)
+    if (techData) {
+      const hasTechBlocks = techData.torches.length > 0 || techData.furnaces.length > 0 ||
+        techData.steamEngines.length > 0 || techData.hydroGenerators.length > 0 ||
+        techData.copperPipes.length > 0;
+
+      if (hasTechBlocks) {
+        console.log('=== Tech Blocks in Area ===');
+        if (techData.torches.length > 0) {
+          console.log(`Torches: ${techData.torches.map(t => `T${t.tileIndex}`).join(', ')}`);
+        }
+        if (techData.furnaces.length > 0) {
+          console.log(`Furnaces: ${techData.furnaces.map(f => `T${f.tileIndex}`).join(', ')}`);
+        }
+        if (techData.steamEngines.length > 0) {
+          console.log(`Steam Engines: ${techData.steamEngines.map(s => `T${s.tileIndex}`).join(', ')}`);
+        }
+        if (techData.hydroGenerators.length > 0) {
+          console.log(`Hydro Generators: ${techData.hydroGenerators.map(h => `T${h.tileIndex}`).join(', ')}`);
+        }
+        if (techData.copperPipes.length > 0) {
+          console.log(`Copper Pipes: ${techData.copperPipes.map(p => `T${p.tileIndex}@d${p.depth}`).join(', ')}`);
+        }
+        console.log('');
+      }
+    }
 
     // Log collision check results for ALL neighbor tiles
     const currentGroundRadius = this.currentPlanet.depthToRadius(groundDepth);
@@ -2133,6 +2183,17 @@ export class PlanetPlayer {
     if (!enabled) {
       this.isJetpacking = false;
     }
+  }
+
+  // Set callback for tech block data (used by Shift+X debug)
+  public setTechBlockDataCallback(callback: (tileIndices: number[]) => {
+    torches: { tileIndex: number }[];
+    furnaces: { tileIndex: number }[];
+    steamEngines: { tileIndex: number }[];
+    hydroGenerators: { tileIndex: number }[];
+    copperPipes: { tileIndex: number; depth: number }[];
+  }): void {
+    this.getTechBlockDataCallback = callback;
   }
 
   // Export player state for saving

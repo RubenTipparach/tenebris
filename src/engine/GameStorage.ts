@@ -53,6 +53,26 @@ export interface SavedSteamEngine {
   rotation: number;
 }
 
+// Hydro generator data
+export interface SavedHydroGenerator {
+  tileIndex: number;
+  position: { x: number; y: number; z: number };
+  rotation: number;
+  waterDepth: number;
+}
+
+// Copper pipe data
+export interface SavedCopperPipe {
+  tileIndex: number;
+  depth: number;
+  position: { x: number; y: number; z: number };
+}
+
+// Removed tree data (trees that have been chopped down)
+export interface SavedRemovedTree {
+  tileIndex: number;
+}
+
 // Player-specific save data
 export interface PlayerSaveData {
   version: number;
@@ -74,6 +94,9 @@ export interface PlanetSaveData {
   storageChests: SavedStorageChest[];
   garbagePiles: SavedGarbagePile[];
   steamEngines: SavedSteamEngine[];
+  hydroGenerators: SavedHydroGenerator[];
+  copperPipes: SavedCopperPipe[];
+  removedTrees: SavedRemovedTree[];
 }
 
 // Legacy combined format (for migration)
@@ -111,6 +134,9 @@ export class GameStorage {
     storageChests: SavedStorageChest[];
     garbagePiles: SavedGarbagePile[];
     steamEngines: SavedSteamEngine[];
+    copperPipes: SavedCopperPipe[];
+    hydroGenerators: SavedHydroGenerator[];
+    removedTrees: SavedRemovedTree[];
   }> = new Map();
 
   private autoSaveInterval: number | null = null;
@@ -118,8 +144,8 @@ export class GameStorage {
 
   constructor() {
     // Initialize planet data for earth and moon
-    this.planetData.set('earth', { tileChanges: new Map(), torches: [], furnaces: [], storageChests: [], garbagePiles: [], steamEngines: [] });
-    this.planetData.set('moon', { tileChanges: new Map(), torches: [], furnaces: [], storageChests: [], garbagePiles: [], steamEngines: [] });
+    this.planetData.set('earth', { tileChanges: new Map(), torches: [], furnaces: [], storageChests: [], garbagePiles: [], steamEngines: [], hydroGenerators: [], copperPipes: [], removedTrees: [] });
+    this.planetData.set('moon', { tileChanges: new Map(), torches: [], furnaces: [], storageChests: [], garbagePiles: [], steamEngines: [], hydroGenerators: [], copperPipes: [], removedTrees: [] });
   }
 
   // Set callback to get current player data
@@ -319,6 +345,85 @@ export class GameStorage {
     return allEngines;
   }
 
+  // Save hydro generator placement
+  public saveHydroGenerator(planetId: string, tileIndex: number, generatorData: Omit<SavedHydroGenerator, 'tileIndex'>): void {
+    const planet = this.planetData.get(planetId);
+    if (!planet) return;
+
+    planet.hydroGenerators = planet.hydroGenerators.filter(g => g.tileIndex !== tileIndex);
+    planet.hydroGenerators.push({ tileIndex, ...generatorData });
+    this.persistPlanetToStorage(planetId);
+  }
+
+  // Remove a hydro generator from save
+  public removeHydroGenerator(planetId: string, tileIndex: number): void {
+    const planet = this.planetData.get(planetId);
+    if (!planet) return;
+
+    planet.hydroGenerators = planet.hydroGenerators.filter(g => g.tileIndex !== tileIndex);
+    this.persistPlanetToStorage(planetId);
+  }
+
+  // Get all saved hydro generators
+  public getHydroGenerators(): Array<SavedHydroGenerator & { planetId: string }> {
+    const allGenerators: Array<SavedHydroGenerator & { planetId: string }> = [];
+    for (const [planetId, planet] of this.planetData) {
+      for (const generator of planet.hydroGenerators) {
+        allGenerators.push({ ...generator, planetId });
+      }
+    }
+    return allGenerators;
+  }
+
+  // Save copper pipe placement
+  public saveCopperPipe(planetId: string, tileIndex: number, depth: number, pipeData: Omit<SavedCopperPipe, 'tileIndex' | 'depth'>): void {
+    const planet = this.planetData.get(planetId);
+    if (!planet) return;
+
+    // Remove existing pipe at same location
+    planet.copperPipes = planet.copperPipes.filter(p => !(p.tileIndex === tileIndex && p.depth === depth));
+    planet.copperPipes.push({ tileIndex, depth, ...pipeData });
+    this.persistPlanetToStorage(planetId);
+  }
+
+  // Remove a copper pipe from save
+  public removeCopperPipe(planetId: string, tileIndex: number, depth: number): void {
+    const planet = this.planetData.get(planetId);
+    if (!planet) return;
+
+    planet.copperPipes = planet.copperPipes.filter(p => !(p.tileIndex === tileIndex && p.depth === depth));
+    this.persistPlanetToStorage(planetId);
+  }
+
+  // Get all saved copper pipes
+  public getCopperPipes(): Array<SavedCopperPipe & { planetId: string }> {
+    const allPipes: Array<SavedCopperPipe & { planetId: string }> = [];
+    for (const [planetId, planet] of this.planetData) {
+      for (const pipe of planet.copperPipes) {
+        allPipes.push({ ...pipe, planetId });
+      }
+    }
+    return allPipes;
+  }
+
+  // Save a removed tree to storage
+  public saveRemovedTree(planetId: string, tileIndex: number): void {
+    const planet = this.planetData.get(planetId);
+    if (!planet) return;
+
+    // Check if already saved
+    if (!planet.removedTrees.some(t => t.tileIndex === tileIndex)) {
+      planet.removedTrees.push({ tileIndex });
+      this.persistPlanetToStorage(planetId);
+    }
+  }
+
+  // Get all removed trees for a planet
+  public getRemovedTrees(planetId: string): SavedRemovedTree[] {
+    const planet = this.planetData.get(planetId);
+    return planet?.removedTrees || [];
+  }
+
   // Save player position immediately
   public savePlayerPosition(): void {
     if (this.onPlayerSave) {
@@ -424,6 +529,9 @@ export class GameStorage {
       planet.storageChests = data.storageChests || [];
       planet.garbagePiles = data.garbagePiles || [];
       planet.steamEngines = data.steamEngines || [];
+      planet.hydroGenerators = data.hydroGenerators || [];
+      planet.copperPipes = data.copperPipes || [];
+      planet.removedTrees = data.removedTrees || [];
     } catch (error) {
       console.error(`Failed to load ${planetId} data:`, error);
     }
@@ -550,6 +658,9 @@ export class GameStorage {
       planet.storageChests = [];
       planet.garbagePiles = [];
       planet.steamEngines = [];
+      planet.hydroGenerators = [];
+      planet.copperPipes = [];
+      planet.removedTrees = [];
     }
 
     // Clear all storage keys
@@ -591,7 +702,10 @@ export class GameStorage {
         furnaces: planet.furnaces,
         storageChests: planet.storageChests,
         garbagePiles: planet.garbagePiles,
-        steamEngines: planet.steamEngines
+        steamEngines: planet.steamEngines,
+        hydroGenerators: planet.hydroGenerators,
+        copperPipes: planet.copperPipes,
+        removedTrees: planet.removedTrees
       };
 
       const key = planetId === 'earth' ? STORAGE_KEY_EARTH : STORAGE_KEY_MOON;

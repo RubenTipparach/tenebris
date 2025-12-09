@@ -9,7 +9,12 @@ import { FurnaceManager, PlacedFurnace } from '../planet/Furnace';
 import { StorageChestManager, PlacedStorageChest } from '../planet/StorageChest';
 import { GarbagePileManager, PlacedGarbagePile } from '../planet/GarbagePile';
 import { SteamEngineManager, PlacedSteamEngine } from '../planet/SteamEngine';
+import { HydroGeneratorManager, PlacedHydroGenerator } from '../planet/HydroGenerator';
+import { CopperPipeManager, PlacedCopperPipe } from '../planet/CopperPipe';
 import { CraftingSystem } from './CraftingSystem';
+import { HydroGeneratorUI } from './HydroGeneratorUI';
+import { SteamEngineUI } from './SteamEngineUI';
+import { CopperPipeUI } from './CopperPipeUI';
 import { FurnaceUI } from './FurnaceUI';
 import { StorageUI } from './StorageUI';
 import { getAssetPath } from '../utils/assetPath';
@@ -97,6 +102,17 @@ export class PlanetBlockInteraction {
   private steamEngineManager: SteamEngineManager;
   private miningSteamEngineTarget: { steamEngine: PlacedSteamEngine } | null = null;
 
+  // Hydro generator system
+  private hydroGeneratorManager: HydroGeneratorManager;
+  private hydroGeneratorUI: HydroGeneratorUI;
+  private miningHydroGeneratorTarget: { hydroGenerator: PlacedHydroGenerator } | null = null;
+
+  // Copper pipe system
+  private copperPipeManager: CopperPipeManager;
+  private copperPipeUI: CopperPipeUI;
+  private steamEngineUI: SteamEngineUI;
+  private miningCopperPipeTarget: { pipe: PlacedCopperPipe } | null = null;
+
   private rightClickCooldown: number = 0;
   private readonly CLICK_COOLDOWN = 0.25;
   private readonly MAX_REACH = 8;
@@ -165,6 +181,61 @@ export class PlanetBlockInteraction {
 
     // Initialize steam engine system
     this.steamEngineManager = new SteamEngineManager(scene, planetCenter, sunDirection);
+
+    // Initialize hydro generator system
+    this.hydroGeneratorManager = new HydroGeneratorManager(scene, planetCenter, sunDirection);
+    this.hydroGeneratorUI = new HydroGeneratorUI();
+    this.hydroGeneratorUI.setOnCloseCallback(() => {
+      // Hydro generator close is handled by inventory menu close
+    });
+    this.hydroGeneratorUI.setOnOpenInventoryCallback(() => {
+      this.craftingSystem.open();
+    });
+
+    // Initialize copper pipe system
+    this.copperPipeManager = new CopperPipeManager(scene, planetCenter, sunDirection);
+    this.copperPipeUI = new CopperPipeUI();
+    this.copperPipeUI.setOnCloseCallback(() => {
+      // Pipe UI close is handled by clicking elsewhere
+    });
+
+    // Initialize steam engine UI
+    this.steamEngineUI = new SteamEngineUI();
+    this.steamEngineUI.setInventory(this.inventory);
+    this.steamEngineUI.setOnCloseCallback(() => {
+      // Steam engine close is handled by inventory menu close
+    });
+    this.steamEngineUI.setOnOpenInventoryCallback(() => {
+      this.craftingSystem.open();
+    });
+    this.steamEngineUI.setSaveCallback(() => {
+      this.saveInventory();
+    });
+    this.steamEngineUI.setUpdateHotbarCallback(() => {
+      this.updateHotbarUI();
+    });
+
+    // Set up pipe connection callbacks
+    this.copperPipeManager.setMachineCallbacks(
+      (tileIndex) => this.hydroGeneratorManager.getHydroGeneratorAtTile(tileIndex),
+      (tileIndex) => this.steamEngineManager.getSteamEngineAtTile(tileIndex),
+      (tileIndex) => this.getNeighborTileIndices(tileIndex)
+    );
+
+    // Set up hydro generator connection callback
+    this.hydroGeneratorUI.setConnectionCallback((hydroTileIndex) => {
+      return this.copperPipeManager.isHydroConnectedToSteam(hydroTileIndex);
+    });
+
+    // Set up steam engine connection callbacks
+    this.steamEngineUI.setConnectionCallbacks(
+      (steamTileIndex) => this.copperPipeManager.getConnectedHydroGenerators(steamTileIndex),
+      (hydroTileIndex) => {
+        const hydro = this.hydroGeneratorManager.getHydroGeneratorAtTile(hydroTileIndex);
+        return hydro?.isActive ? hydro.waterPumpedOut : 0;
+      }
+    );
+
     this.storageUI = new StorageUI(this.inventory);
     this.storageUI.setOnCloseCallback(() => {
       // Storage close is handled by inventory menu close
@@ -186,9 +257,12 @@ export class PlanetBlockInteraction {
     // Initialize crafting system with callbacks
     this.craftingSystem = new CraftingSystem(this.inventory);
     this.craftingSystem.setOnCloseCallback(() => {
-      // Close furnace UI and storage UI when inventory closes
+      // Close all machine UIs when inventory closes
       this.furnaceUI.close();
       this.storageUI.close();
+      this.hydroGeneratorUI.close();
+      this.steamEngineUI.close();
+      this.copperPipeUI.close();
       // Note: We don't request pointer lock here because:
       // 1. If closed via ESC, browser security prevents requestPointerLock during ESC handling
       // 2. The pause menu will show and user can click PLAY to resume
@@ -204,6 +278,28 @@ export class PlanetBlockInteraction {
     });
     this.craftingSystem.setOnStorageDropCallback((targetSlotIndex, sourceSlotType) => {
       return this.storageUI.handleDropToInventory(targetSlotIndex, sourceSlotType);
+    });
+
+    // Set up tech block data callback for Shift+X debug
+    this.player.setTechBlockDataCallback((tileIndices) => {
+      const tileSet = new Set(tileIndices);
+      return {
+        torches: this.torchManager.getPlacedTorches()
+          .filter(t => tileSet.has(t.tileIndex))
+          .map(t => ({ tileIndex: t.tileIndex })),
+        furnaces: this.furnaceManager.getPlacedFurnaces()
+          .filter(f => tileSet.has(f.tileIndex))
+          .map(f => ({ tileIndex: f.tileIndex })),
+        steamEngines: this.steamEngineManager.getPlacedSteamEngines()
+          .filter(s => tileSet.has(s.tileIndex))
+          .map(s => ({ tileIndex: s.tileIndex })),
+        hydroGenerators: this.hydroGeneratorManager.getPlacedHydroGenerators()
+          .filter(h => tileSet.has(h.tileIndex))
+          .map(h => ({ tileIndex: h.tileIndex })),
+        copperPipes: this.copperPipeManager.getPlacedPipes()
+          .filter(p => tileSet.has(p.tileIndex))
+          .map(p => ({ tileIndex: p.tileIndex, depth: p.depth })),
+      };
     });
 
     this.createHighlightMesh();
@@ -644,6 +740,8 @@ export class PlanetBlockInteraction {
       this.storageChestManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
       this.garbagePileManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
       this.steamEngineManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
+      this.hydroGeneratorManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
+      this.copperPipeManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
     }
 
     // Don't process block interaction when inventory menu is open
@@ -676,6 +774,10 @@ export class PlanetBlockInteraction {
     const garbagePileMeshes = this.garbagePileManager.getPileMeshes();
     // Get steam engine meshes for picking
     const steamEngineMeshes = this.steamEngineManager.getSteamEngineMeshes();
+    // Get hydro generator meshes for picking
+    const hydroGeneratorMeshes = this.hydroGeneratorManager.getHydroGeneratorMeshes();
+    // Get copper pipe meshes for picking
+    const copperPipeMeshes = this.copperPipeManager.getPipeMeshes();
 
     const treeIntersects = this.raycaster.intersectObjects(treeMeshes, false);
     const torchIntersects = this.raycaster.intersectObjects(torchMeshes, false);
@@ -683,6 +785,8 @@ export class PlanetBlockInteraction {
     const storageChestIntersects = this.raycaster.intersectObjects(storageChestMeshes, false);
     const garbagePileIntersects = this.raycaster.intersectObjects(garbagePileMeshes, false);
     const steamEngineIntersects = this.raycaster.intersectObjects(steamEngineMeshes, false);
+    const hydroGeneratorIntersects = this.raycaster.intersectObjects(hydroGeneratorMeshes, false);
+    const copperPipeIntersects = this.raycaster.intersectObjects(copperPipeMeshes, false);
 
     // Raycast against all planets and find the closest hit
     let closestBlockHit: ReturnType<Planet['raycast']> = null;
@@ -701,7 +805,7 @@ export class PlanetBlockInteraction {
       }
     }
 
-    // Determine which hit is closer (tree, torch, furnace, storage, garbage pile, steam engine, or block)
+    // Determine which hit is closer (tree, torch, furnace, storage, garbage pile, steam engine, hydro generator, copper pipe, or block)
     let hitTree = false;
     let hitBlock = false;
     let hitTorch = false;
@@ -709,12 +813,16 @@ export class PlanetBlockInteraction {
     let hitStorageChest = false;
     let hitGarbagePile = false;
     let hitSteamEngine = false;
+    let hitHydroGenerator = false;
+    let hitCopperPipe = false;
     let treeHit: THREE.Intersection | null = null;
     let torchHit: THREE.Intersection | null = null;
     let furnaceHit: THREE.Intersection | null = null;
     let storageChestHit: THREE.Intersection | null = null;
     let garbagePileHit: THREE.Intersection | null = null;
     let steamEngineHit: THREE.Intersection | null = null;
+    let hydroGeneratorHit: THREE.Intersection | null = null;
+    let copperPipeHit: THREE.Intersection | null = null;
 
     // Find the closest hit among all types
     const treeDistance = treeIntersects.length > 0 ? treeIntersects[0].distance : Infinity;
@@ -723,10 +831,18 @@ export class PlanetBlockInteraction {
     const storageChestDistance = storageChestIntersects.length > 0 ? storageChestIntersects[0].distance : Infinity;
     const garbagePileDistance = garbagePileIntersects.length > 0 ? garbagePileIntersects[0].distance : Infinity;
     const steamEngineDistance = steamEngineIntersects.length > 0 ? steamEngineIntersects[0].distance : Infinity;
-    const closestObjectDistance = Math.min(treeDistance, torchDistance, furnaceDistance, storageChestDistance, garbagePileDistance, steamEngineDistance);
+    const hydroGeneratorDistance = hydroGeneratorIntersects.length > 0 ? hydroGeneratorIntersects[0].distance : Infinity;
+    const copperPipeDistance = copperPipeIntersects.length > 0 ? copperPipeIntersects[0].distance : Infinity;
+    const closestObjectDistance = Math.min(treeDistance, torchDistance, furnaceDistance, storageChestDistance, garbagePileDistance, steamEngineDistance, hydroGeneratorDistance, copperPipeDistance);
 
     if (closestBlockHit && closestBlockDistance < closestObjectDistance) {
       hitBlock = true;
+    } else if (copperPipeDistance <= closestObjectDistance && copperPipeDistance < Infinity) {
+      hitCopperPipe = true;
+      copperPipeHit = copperPipeIntersects[0];
+    } else if (hydroGeneratorDistance <= closestObjectDistance && hydroGeneratorDistance < Infinity) {
+      hitHydroGenerator = true;
+      hydroGeneratorHit = hydroGeneratorIntersects[0];
     } else if (steamEngineDistance <= closestObjectDistance && steamEngineDistance < Infinity) {
       hitSteamEngine = true;
       steamEngineHit = steamEngineIntersects[0];
@@ -749,7 +865,46 @@ export class PlanetBlockInteraction {
       hitBlock = true;
     }
 
-    if (hitSteamEngine && steamEngineHit) {
+    if (hitCopperPipe && copperPipeHit) {
+      // No wireframe for copper pipes
+      if (this.blockWireframe) {
+        this.blockWireframe.visible = false;
+        this.wireframeCache = null;
+      }
+
+      const pipeMesh = copperPipeHit.object as THREE.Mesh;
+      const pipe = this.copperPipeManager.getPipeByMesh(pipeMesh);
+
+      // Handle copper pipe interaction (right click to view network, left click to mine)
+      if (rightClick && this.rightClickCooldown === 0 && pipe) {
+        const network = this.copperPipeManager.getPipeNetwork(pipe.id);
+        this.copperPipeUI.open(pipe, network);
+        this.rightClickCooldown = this.CLICK_COOLDOWN;
+      } else if (leftClick && pipe) {
+        this.handleCopperPipeMining(deltaTime, pipe);
+      } else {
+        this.resetMining();
+      }
+    } else if (hitHydroGenerator && hydroGeneratorHit) {
+      // No wireframe for hydro generators
+      if (this.blockWireframe) {
+        this.blockWireframe.visible = false;
+        this.wireframeCache = null;
+      }
+
+      const generatorMesh = hydroGeneratorHit.object as THREE.Mesh;
+      const hydroGenerator = this.hydroGeneratorManager.getHydroGeneratorByMesh(generatorMesh);
+
+      // Handle hydro generator interaction (right click to open UI, left click to mine)
+      if (rightClick && this.rightClickCooldown === 0 && hydroGenerator) {
+        this.hydroGeneratorUI.open(hydroGenerator);
+        this.rightClickCooldown = this.CLICK_COOLDOWN;
+      } else if (leftClick && hydroGenerator) {
+        this.handleHydroGeneratorMining(deltaTime, hydroGenerator);
+      } else {
+        this.resetMining();
+      }
+    } else if (hitSteamEngine && steamEngineHit) {
       // No wireframe for steam engines
       if (this.blockWireframe) {
         this.blockWireframe.visible = false;
@@ -957,6 +1112,12 @@ export class PlanetBlockInteraction {
         parent = parent.parent;
       }
       if (parent instanceof THREE.Group) {
+        // Save the removed tree's tile index to persist across sessions
+        const tileIndex = parent.userData.tileIndex;
+        if (tileIndex !== undefined) {
+          // Trees are only on Earth for now
+          gameStorage.saveRemovedTree('earth', tileIndex);
+        }
         this.treeManager.removeTree(parent);
       }
     }
@@ -1179,6 +1340,97 @@ export class PlanetBlockInteraction {
     this.steamEngineManager.removeSteamEngine(steamEngine);
   }
 
+  private handleHydroGeneratorMining(deltaTime: number, hydroGenerator: PlacedHydroGenerator): void {
+    // Check if target changed
+    if (this.miningHydroGeneratorTarget === null || this.miningHydroGeneratorTarget.hydroGenerator !== hydroGenerator) {
+      // New target, reset progress
+      this.miningHydroGeneratorTarget = { hydroGenerator };
+      this.miningTarget = null;
+      this.miningTreeTarget = null;
+      this.miningFurnaceTarget = null;
+      this.miningStorageTarget = null;
+      this.miningGarbageTarget = null;
+      this.miningSteamEngineTarget = null;
+      this.miningProgress = 0;
+    }
+
+    // Hydro generator mining time
+    const mineTime = ITEM_DATA[ItemType.HYDRO_GENERATOR].mineTime;
+
+    // Increase progress
+    this.miningProgress += deltaTime / mineTime;
+    this.updateMiningUI(this.miningProgress);
+
+    // Check if mining complete
+    if (this.miningProgress >= 1) {
+      this.breakHydroGenerator(hydroGenerator);
+      this.resetMining();
+    }
+  }
+
+  private breakHydroGenerator(hydroGenerator: PlacedHydroGenerator): void {
+    // Give the hydro generator item back to the player
+    this.inventory.addItem(ItemType.HYDRO_GENERATOR, 1);
+
+    this.updateHotbarUI();
+    this.saveInventory();
+
+    // Remove hydro generator from save
+    for (let i = 0; i < this.planets.length; i++) {
+      const planetId = i === 0 ? 'earth' : 'moon';
+      gameStorage.removeHydroGenerator(planetId, hydroGenerator.tileIndex);
+    }
+
+    // Remove the hydro generator from the world
+    this.hydroGeneratorManager.removeHydroGenerator(hydroGenerator);
+  }
+
+  private handleCopperPipeMining(deltaTime: number, pipe: PlacedCopperPipe): void {
+    // Check if target changed
+    if (this.miningCopperPipeTarget === null || this.miningCopperPipeTarget.pipe !== pipe) {
+      // New target, reset progress
+      this.miningCopperPipeTarget = { pipe };
+      this.miningTarget = null;
+      this.miningTreeTarget = null;
+      this.miningFurnaceTarget = null;
+      this.miningStorageTarget = null;
+      this.miningGarbageTarget = null;
+      this.miningSteamEngineTarget = null;
+      this.miningHydroGeneratorTarget = null;
+      this.miningProgress = 0;
+    }
+
+    // Copper pipe mining time
+    const mineTime = ITEM_DATA[ItemType.COPPER_PIPE].mineTime;
+
+    // Increase progress
+    this.miningProgress += deltaTime / mineTime;
+    this.updateMiningUI(this.miningProgress);
+
+    // Check if mining complete
+    if (this.miningProgress >= 1) {
+      this.breakCopperPipe(pipe);
+      this.resetMining();
+    }
+  }
+
+  private breakCopperPipe(pipe: PlacedCopperPipe): void {
+    // Give the copper pipe item back to the player
+    this.inventory.addItem(ItemType.COPPER_PIPE, 1);
+
+    this.updateHotbarUI();
+    this.saveInventory();
+
+    // Remove copper pipe from save
+    for (let i = 0; i < this.planets.length; i++) {
+      const planetId = i === 0 ? 'earth' : 'moon';
+      gameStorage.removeCopperPipe(planetId, pipe.tileIndex, pipe.depth);
+    }
+
+    // Remove the copper pipe from the world
+    this.copperPipeManager.removePipe(pipe);
+  }
+
   private async createGarbagePileWithItems(
     position: THREE.Vector3,
     tileIndex: number,
@@ -1220,6 +1472,8 @@ export class PlanetBlockInteraction {
     this.miningStorageTarget = null;
     this.miningGarbageTarget = null;
     this.miningSteamEngineTarget = null;
+    this.miningHydroGeneratorTarget = null;
+    this.miningCopperPipeTarget = null;
     this.miningProgress = 0;
     this.updateMiningUI(0);
   }
@@ -1331,6 +1585,18 @@ export class PlanetBlockInteraction {
     // Handle steam engine placement separately
     if (selectedSlot.itemType === ItemType.STEAM_ENGINE) {
       this.placeSteamEngine(planet, tileIndex, depth);
+      return;
+    }
+
+    // Handle hydro generator placement separately (must be on water)
+    if (selectedSlot.itemType === ItemType.HYDRO_GENERATOR) {
+      this.placeHydroGenerator(planet, tileIndex, depth);
+      return;
+    }
+
+    // Handle copper pipe placement
+    if (selectedSlot.itemType === ItemType.COPPER_PIPE) {
+      this.placeCopperPipe(planet, tileIndex, depth);
       return;
     }
 
@@ -1544,6 +1810,271 @@ export class PlanetBlockInteraction {
     }
   }
 
+  private async placeHydroGenerator(planet: Planet, tileIndex: number, depth: number): Promise<void> {
+    // Check if there's already a hydro generator at this tile
+    if (this.hydroGeneratorManager.getHydroGeneratorAtTile(tileIndex)) {
+      return; // Can't place multiple hydro generators on same tile
+    }
+
+    // Check if there's already other tech blocks at this tile
+    if (this.furnaceManager.getFurnaceAtTile(tileIndex)) {
+      return;
+    }
+    if (this.storageChestManager.getChestAtTile(tileIndex)) {
+      return;
+    }
+    if (this.garbagePileManager.getPileAtTile(tileIndex)) {
+      return;
+    }
+    if (this.steamEngineManager.getSteamEngineAtTile(tileIndex)) {
+      return;
+    }
+
+    // Get the tile
+    const tile = planet.getTileByIndex(tileIndex);
+    if (!tile) return;
+
+    const maxDepth = planet.getMaxDepth();
+
+    // Check what block was clicked - either solid ground underwater, or air above water
+    const clickedBlock = planet.getBlock(tileIndex, depth);
+
+    let waterSurfaceDepth: number;
+    let waterDepthBlocks: number;
+    let solidGroundDepth: number;
+
+    // Case 1: Clicked on solid ground - check if there's water above it
+    if (clickedBlock !== HexBlockType.AIR && clickedBlock !== HexBlockType.WATER) {
+      // Scan upward from clicked solid block to find water column
+      solidGroundDepth = depth;
+      let foundWater = false;
+      let foundSurface = false;
+
+      // Check the block directly above the solid ground
+      for (let d = depth + 1; d < maxDepth; d++) {
+        const blockAbove = planet.getBlock(tileIndex, d);
+        if (blockAbove === HexBlockType.WATER) {
+          foundWater = true;
+        } else if (blockAbove === HexBlockType.AIR) {
+          if (foundWater) {
+            // Found air above water - this is the water surface
+            waterSurfaceDepth = d;
+            foundSurface = true;
+          }
+          break;
+        } else {
+          // Hit something solid other than water before finding surface
+          break;
+        }
+      }
+
+      if (!foundWater || !foundSurface) {
+        return; // No water above or no surface - can't place hydro generator
+      }
+
+      // Calculate water depth from surface down to solid ground
+      waterDepthBlocks = waterSurfaceDepth! - solidGroundDepth - 1;
+      if (waterDepthBlocks <= 0) {
+        return; // No water depth
+      }
+    }
+    // Case 2: Clicked on air above water (original behavior)
+    else if (clickedBlock === HexBlockType.AIR) {
+      const blockBelow = planet.getBlock(tileIndex, depth - 1);
+      if (blockBelow !== HexBlockType.WATER) {
+        return; // Can only place on water
+      }
+
+      waterSurfaceDepth = depth;
+
+      // Calculate water depth - count how many water blocks are below
+      waterDepthBlocks = 0;
+      for (let d = depth - 1; d >= 0; d--) {
+        const block = planet.getBlock(tileIndex, d);
+        if (block === HexBlockType.WATER) {
+          waterDepthBlocks++;
+        } else {
+          solidGroundDepth = d;
+          break; // Hit solid ground
+        }
+      }
+    }
+    // Case 3: Clicked on water block itself
+    else if (clickedBlock === HexBlockType.WATER) {
+      // Find water surface by scanning up
+      waterSurfaceDepth = depth;
+      for (let d = depth + 1; d < maxDepth; d++) {
+        const blockAbove = planet.getBlock(tileIndex, d);
+        if (blockAbove === HexBlockType.AIR) {
+          waterSurfaceDepth = d;
+          break;
+        } else if (blockAbove !== HexBlockType.WATER) {
+          return; // Water is capped by something solid, can't place
+        }
+      }
+
+      // Find solid ground by scanning down
+      waterDepthBlocks = 0;
+      for (let d = waterSurfaceDepth - 1; d >= 0; d--) {
+        const block = planet.getBlock(tileIndex, d);
+        if (block === HexBlockType.WATER) {
+          waterDepthBlocks++;
+        } else {
+          solidGroundDepth = d;
+          break;
+        }
+      }
+
+      if (waterDepthBlocks <= 0) {
+        return; // No water depth
+      }
+    }
+    else {
+      return; // Unknown block type
+    }
+
+    // Position hydro generator at water surface (air block above water)
+    const waterSurfaceRadius = planet.depthToRadius(waterSurfaceDepth!) - planet.getBlockHeight();
+    const tileCenter = tile.center.clone().normalize();
+    const worldPosition = tileCenter.multiplyScalar(waterSurfaceRadius).add(planet.center);
+
+    // Get player forward direction for facing
+    const playerForward = this.player.getForwardVector();
+
+    // Use item from inventory
+    if (this.inventory.useSelectedItem()) {
+      // Place the hydro generator
+      const placedHydroGenerator = await this.hydroGeneratorManager.placeHydroGenerator(
+        worldPosition,
+        planet.center,
+        tileIndex,
+        waterDepthBlocks! * planet.getBlockHeight(), // Convert block count to world units
+        playerForward
+      );
+
+      this.updateHotbarUI();
+      this.saveInventory();
+
+      // Save hydro generator placement to game storage
+      if (placedHydroGenerator) {
+        const planetId = this.getPlanetId(planet);
+        gameStorage.saveHydroGenerator(planetId, tileIndex, {
+          position: { x: placedHydroGenerator.position.x, y: placedHydroGenerator.position.y, z: placedHydroGenerator.position.z },
+          rotation: placedHydroGenerator.rotation,
+          waterDepth: placedHydroGenerator.waterDepth
+        });
+      }
+    }
+  }
+
+  private async placeCopperPipe(planet: Planet, tileIndex: number, depth: number): Promise<void> {
+    // Get the tile
+    const tile = planet.getTileByIndex(tileIndex);
+    if (!tile) return;
+
+    const maxDepth = planet.getMaxDepth();
+    const clickedBlock = planet.getBlock(tileIndex, depth);
+
+    // Determine the actual placement depth - pipes can't be placed underwater
+    // If clicked on water or solid underwater, find water surface
+    let placementDepth = depth;
+    let placementRadius: number;
+
+    // Case 1: Clicked on water - find water surface
+    if (clickedBlock === HexBlockType.WATER) {
+      // Find water surface by scanning up
+      let waterSurfaceDepth = depth;
+      for (let d = depth + 1; d < maxDepth; d++) {
+        const blockAbove = planet.getBlock(tileIndex, d);
+        if (blockAbove === HexBlockType.AIR) {
+          waterSurfaceDepth = d;
+          break;
+        } else if (blockAbove !== HexBlockType.WATER) {
+          return; // Water is capped by something solid, can't place
+        }
+      }
+      placementDepth = waterSurfaceDepth;
+      // Position at water surface (air block above water)
+      placementRadius = planet.depthToRadius(placementDepth) - planet.getBlockHeight();
+    }
+    // Case 2: Clicked on solid block underwater - find water surface above
+    else if (clickedBlock !== HexBlockType.AIR) {
+      // Check if there's water above
+      let foundWater = false;
+      let waterSurfaceDepth = depth;
+      for (let d = depth + 1; d < maxDepth; d++) {
+        const blockAbove = planet.getBlock(tileIndex, d);
+        if (blockAbove === HexBlockType.WATER) {
+          foundWater = true;
+        } else if (blockAbove === HexBlockType.AIR) {
+          if (foundWater) {
+            // Found air above water - this is the water surface
+            waterSurfaceDepth = d;
+          }
+          break;
+        } else {
+          // Hit something solid other than water
+          break;
+        }
+      }
+
+      if (foundWater) {
+        // Place at water surface
+        placementDepth = waterSurfaceDepth;
+        placementRadius = planet.depthToRadius(placementDepth) - planet.getBlockHeight();
+      } else {
+        // No water above - place on top of solid block as normal
+        placementRadius = planet.depthToRadius(depth) - planet.getBlockHeight();
+      }
+    }
+    // Case 3: Clicked on air above water
+    else if (clickedBlock === HexBlockType.AIR) {
+      const blockBelow = planet.getBlock(tileIndex, depth - 1);
+      if (blockBelow === HexBlockType.WATER) {
+        // Clicked on air directly above water - place here
+        placementDepth = depth;
+        placementRadius = planet.depthToRadius(placementDepth) - planet.getBlockHeight();
+      } else {
+        // Air above solid ground - place on the ground
+        placementRadius = planet.depthToRadius(depth) - planet.getBlockHeight();
+      }
+    }
+    else {
+      // Default case
+      placementRadius = planet.depthToRadius(depth) - planet.getBlockHeight();
+    }
+
+    // Check if there's already a pipe at the placement location
+    if (this.copperPipeManager.getPipeAt(tileIndex, placementDepth)) {
+      return;
+    }
+
+    // Get world position for the pipe
+    const tileCenter = tile.center.clone().normalize();
+    const worldPosition = tileCenter.multiplyScalar(placementRadius).add(planet.center);
+
+    // Use item from inventory
+    if (this.inventory.useSelectedItem()) {
+      // Place the pipe
+      const placedPipe = await this.copperPipeManager.placePipe(
+        worldPosition,
+        tileIndex,
+        placementDepth
+      );
+
+      this.updateHotbarUI();
+      this.saveInventory();
+
+      // Save pipe placement to game storage
+      if (placedPipe) {
+        const planetId = this.getPlanetId(planet);
+        gameStorage.saveCopperPipe(planetId, tileIndex, placementDepth, {
+          position: { x: placedPipe.position.x, y: placedPipe.position.y, z: placedPipe.position.z }
+        });
+      }
+    }
+  }
+
   private pickupTorch(mesh: THREE.Mesh): void {
     // Find the torch group containing this mesh
     let parent = mesh.parent;
@@ -1610,6 +2141,19 @@ export class PlanetBlockInteraction {
   private getPlanetId(planet: Planet): string {
     const index = this.planets.indexOf(planet);
     return index === 0 ? 'earth' : 'moon';
+  }
+
+  // Get neighbor tile indices for pipe connection detection
+  private getNeighborTileIndices(tileIndex: number): number[] {
+    // Find which planet has this tile
+    for (const planet of this.planets) {
+      const tile = planet.getTileByIndex(tileIndex);
+      if (tile && tile.neighbors) {
+        // neighbors is already an array of tile indices (numbers)
+        return tile.neighbors as number[];
+      }
+    }
+    return [];
   }
 
   // Save inventory to local storage
@@ -1833,6 +2377,42 @@ export class PlanetBlockInteraction {
       }
     }
 
-    console.log(`Loaded save: ${saveData.tileChanges.length} tile changes, ${savedTorches.length} torches, ${savedFurnaces.length} furnaces, ${savedStorageChests.length} chests, ${savedGarbagePiles.length} piles, ${savedSteamEngines.length} steam engines, inventory restored`);
+    // Load saved hydro generators
+    const savedHydroGenerators = gameStorage.getHydroGenerators();
+    for (const savedHydroGenerator of savedHydroGenerators) {
+      const planet = this.planets.find((_, i) =>
+        (i === 0 ? 'earth' : 'moon') === savedHydroGenerator.planetId
+      );
+      if (planet) {
+        const savedPosition = new THREE.Vector3(
+          savedHydroGenerator.position.x,
+          savedHydroGenerator.position.y,
+          savedHydroGenerator.position.z
+        );
+        // Restore the hydro generator
+        this.hydroGeneratorManager.restoreHydroGenerator(savedPosition, planet.center, savedHydroGenerator.tileIndex, savedHydroGenerator.rotation, savedHydroGenerator.waterDepth);
+      }
+    }
+
+    // Load saved copper pipes
+    const savedCopperPipes = gameStorage.getCopperPipes();
+    for (const savedPipe of savedCopperPipes) {
+      const planet = this.planets.find((_, i) =>
+        (i === 0 ? 'earth' : 'moon') === savedPipe.planetId
+      );
+      if (planet) {
+        const savedPosition = new THREE.Vector3(
+          savedPipe.position.x,
+          savedPipe.position.y,
+          savedPipe.position.z
+        );
+        // Restore the copper pipe (fire and forget - material initialization is handled internally)
+        this.copperPipeManager.restorePipe(savedPosition, savedPipe.tileIndex, savedPipe.depth);
+      }
+    }
+    // Rebuild all pipe connections after loading
+    this.copperPipeManager.rebuildAllConnections();
+
+    console.log(`Loaded save: ${saveData.tileChanges.length} tile changes, ${savedTorches.length} torches, ${savedFurnaces.length} furnaces, ${savedStorageChests.length} chests, ${savedGarbagePiles.length} piles, ${savedSteamEngines.length} steam engines, ${savedHydroGenerators.length} hydro generators, ${savedCopperPipes.length} copper pipes, inventory restored`);
   }
 }
