@@ -201,6 +201,9 @@ export class CraftingSystem {
   // Callback for handling furnace drops
   private onFurnaceDropCallback: ((targetSlotIndex: number, sourceSlotType: string) => boolean) | null = null;
 
+  // Callback for handling electric furnace drops
+  private onElectricFurnaceDropCallback: ((targetSlotIndex: number, sourceSlotType: string) => boolean) | null = null;
+
   // Callback for handling storage drops
   private onStorageDropCallback: ((targetSlotIndex: number, sourceSlotType: string) => boolean) | null = null;
 
@@ -491,6 +494,21 @@ export class CraftingSystem {
       return;
     }
 
+    // Check if this is a drop from an electric furnace slot
+    if (dragData && dragData.startsWith('electric-furnace:')) {
+      const sourceSlotType = dragData.substring('electric-furnace:'.length);
+      if (this.onElectricFurnaceDropCallback) {
+        const success = this.onElectricFurnaceDropCallback(targetSlotIndex, sourceSlotType);
+        if (success) {
+          this.updateInventorySlots();
+          if (this.onUpdateHotbarCallback) {
+            this.onUpdateHotbarCallback();
+          }
+        }
+      }
+      return;
+    }
+
     // Check if this is a drop from a storage slot
     if (dragData && dragData.startsWith('storage:')) {
       if (this.onStorageDropCallback) {
@@ -506,14 +524,14 @@ export class CraftingSystem {
       return;
     }
 
-    // Regular inventory to inventory swap
+    // Regular inventory to inventory merge/swap
     const sourceSlotIndex = this.draggedSlotIndex;
     if (sourceSlotIndex === null || sourceSlotIndex === targetSlotIndex) {
       return;
     }
 
-    // Swap the slots
-    this.inventory.swapSlots(sourceSlotIndex, targetSlotIndex);
+    // Merge or swap the slots (combines same items up to 64, leftovers stay in source)
+    this.inventory.mergeOrSwapSlots(sourceSlotIndex, targetSlotIndex);
 
     // Update UI
     this.updateInventorySlots();
@@ -616,6 +634,10 @@ export class CraftingSystem {
 
   public setOnFurnaceDropCallback(callback: (targetSlotIndex: number, sourceSlotType: string) => boolean): void {
     this.onFurnaceDropCallback = callback;
+  }
+
+  public setOnElectricFurnaceDropCallback(callback: (targetSlotIndex: number, sourceSlotType: string) => boolean): void {
+    this.onElectricFurnaceDropCallback = callback;
   }
 
   public setOnStorageDropCallback(callback: (targetSlotIndex: number, sourceSlotType: string) => boolean): void {
@@ -747,9 +769,10 @@ export class CraftingSystem {
       border-radius: 4px;
       cursor: pointer;
       min-height: 40px;
+      min-width: 180px;
     `;
     this.dropdownSelected.innerHTML = `
-      <span style="color: #888;">-- Select Recipe --</span>
+      <span style="color: #888;">Select Recipe</span>
       <span style="margin-left: auto;">▼</span>
     `;
     this.dropdownSelected.addEventListener('click', (e) => {
@@ -764,9 +787,10 @@ export class CraftingSystem {
       position: absolute;
       top: 100%;
       left: 0;
-      right: 0;
+      min-width: 200px;
       max-height: 300px;
       overflow-y: auto;
+      overflow-x: hidden;
       background: #2a2a2a;
       border: 2px solid #444;
       border-top: none;
@@ -803,7 +827,7 @@ export class CraftingSystem {
       cursor: pointer;
       color: #888;
     `;
-    placeholder.innerHTML = '<span>-- Select Recipe --</span>';
+    placeholder.innerHTML = '<span>Select Recipe</span>';
     placeholder.addEventListener('click', () => this.selectRecipe(-1));
     placeholder.addEventListener('mouseenter', () => placeholder.style.background = '#3a3a3a');
     placeholder.addEventListener('mouseleave', () => placeholder.style.background = '');
@@ -883,7 +907,7 @@ export class CraftingSystem {
       this.selectedRecipe = null;
       if (this.dropdownSelected) {
         this.dropdownSelected.innerHTML = `
-          <span style="color: #888;">-- Select Recipe --</span>
+          <span style="color: #888;">Select Recipe</span>
           <span style="margin-left: auto;">▼</span>
         `;
       }

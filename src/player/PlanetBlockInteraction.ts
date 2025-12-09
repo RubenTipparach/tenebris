@@ -325,6 +325,9 @@ export class PlanetBlockInteraction {
     this.craftingSystem.setOnFurnaceDropCallback((targetSlotIndex, sourceSlotType) => {
       return this.furnaceUI.handleDropToInventory(targetSlotIndex, sourceSlotType);
     });
+    this.craftingSystem.setOnElectricFurnaceDropCallback((targetSlotIndex, sourceSlotType) => {
+      return this.electricFurnaceUI.handleDropToInventory(targetSlotIndex, sourceSlotType);
+    });
     this.craftingSystem.setOnStorageDropCallback((targetSlotIndex, sourceSlotType) => {
       return this.storageUI.handleDropToInventory(targetSlotIndex, sourceSlotType);
     });

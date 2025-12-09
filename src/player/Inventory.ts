@@ -260,6 +260,52 @@ export class Inventory {
     this.slots[toIndex] = temp;
   }
 
+  // Merge or swap slots - if same item type, combine up to max stack (64), leftovers stay in source
+  // If different types, just swap
+  public mergeOrSwapSlots(fromIndex: number, toIndex: number): void {
+    if (fromIndex < 0 || fromIndex >= this.totalSlots ||
+        toIndex < 0 || toIndex >= this.totalSlots ||
+        fromIndex === toIndex) {
+      return;
+    }
+
+    const fromSlot = this.slots[fromIndex];
+    const toSlot = this.slots[toIndex];
+    const maxStack = 64;
+
+    // If target is empty, just move the item
+    if (toSlot.itemType === ItemType.NONE) {
+      this.slots[toIndex] = { ...fromSlot };
+      this.slots[fromIndex] = { itemType: ItemType.NONE, quantity: 0 };
+      return;
+    }
+
+    // If source is empty, nothing to do
+    if (fromSlot.itemType === ItemType.NONE) {
+      return;
+    }
+
+    // If same item type, merge stacks
+    if (fromSlot.itemType === toSlot.itemType) {
+      const totalQuantity = fromSlot.quantity + toSlot.quantity;
+      if (totalQuantity <= maxStack) {
+        // All items fit in target slot
+        this.slots[toIndex].quantity = totalQuantity;
+        this.slots[fromIndex] = { itemType: ItemType.NONE, quantity: 0 };
+      } else {
+        // Target slot fills up, leftovers stay in source
+        this.slots[toIndex].quantity = maxStack;
+        this.slots[fromIndex].quantity = totalQuantity - maxStack;
+      }
+      return;
+    }
+
+    // Different item types - just swap
+    const temp = { ...fromSlot };
+    this.slots[fromIndex] = { ...toSlot };
+    this.slots[toIndex] = temp;
+  }
+
   // Get a specific slot by index
   public getSlot(index: number): InventorySlot | null {
     if (index < 0 || index >= this.totalSlots) {

@@ -403,26 +403,30 @@ export class ElectricFurnaceUI {
     }
   }
 
-  private handleDropFromInventory(sourceSlotIndex: number, targetSlotType: string, transferAll: boolean = false): void {
+  private handleDropFromInventory(sourceSlotIndex: number, targetSlotType: string, _transferAll: boolean = false): void {
     if (!this.currentFurnace) return;
 
     const slotData = this.inventory.getSlot(sourceSlotIndex);
     if (!slotData || slotData.itemType === ItemType.NONE) return;
 
-    const quantity = transferAll ? slotData.quantity : 1;
+    // Always transfer entire stack on drag-and-drop
+    const quantity = slotData.quantity;
 
     if (targetSlotType === this.SLOT_INPUT) {
       // Only accept smeltable ores (electric furnace recipes)
       const recipe = ELECTRIC_SMELTING_RECIPES.find(r => r.input === slotData.itemType);
       if (recipe) {
+        // Check if output slot has a different item type (would cause conflict)
+        if (this.currentFurnace.outputItem !== null && this.currentFurnace.outputItem !== recipe.output) {
+          return; // Can't smelt - output slot has different item type
+        }
         if (this.currentFurnace.smeltingItem === null || this.currentFurnace.smeltingItem === slotData.itemType) {
-          const toTransfer = Math.min(quantity, slotData.quantity);
           if (this.currentFurnace.smeltingItem === null) {
             this.currentFurnace.smeltingItem = slotData.itemType;
             this.currentFurnace.smeltingProgress = 0;
           }
-          this.currentFurnace.inputCount += toTransfer;
-          this.inventory.removeItem(slotData.itemType, toTransfer);
+          this.currentFurnace.inputCount += quantity;
+          this.inventory.removeItem(slotData.itemType, quantity);
           this.updateUI();
           this.notifyChanges();
         }
@@ -539,13 +543,19 @@ export class ElectricFurnaceUI {
     const selectedItem = this.inventory.getSelectedItem();
     const recipe = ELECTRIC_SMELTING_RECIPES.find(r => r.input === selectedItem.itemType);
     if (recipe && selectedItem.quantity > 0) {
+      // Check if output slot has a different item type (would cause conflict)
+      if (this.currentFurnace.outputItem !== null && this.currentFurnace.outputItem !== recipe.output) {
+        return; // Can't smelt - output slot has different item type
+      }
       if (this.currentFurnace.smeltingItem === null || this.currentFurnace.smeltingItem === selectedItem.itemType) {
         if (this.currentFurnace.smeltingItem === null) {
           this.currentFurnace.smeltingItem = selectedItem.itemType;
           this.currentFurnace.smeltingProgress = 0;
         }
-        this.currentFurnace.inputCount++;
-        this.inventory.removeItem(selectedItem.itemType, 1);
+        // Transfer entire stack
+        const toTransfer = selectedItem.quantity;
+        this.currentFurnace.inputCount += toTransfer;
+        this.inventory.removeItem(selectedItem.itemType, toTransfer);
         this.updateUI();
         this.notifyChanges();
       }
