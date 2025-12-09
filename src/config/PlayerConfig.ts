@@ -33,7 +33,7 @@ export const PlayerConfig = {
 
   // Gravity transition
   ROLL_SLERP_DURATION: 3, // Seconds to slerp roll when entering gravity
-  ROLL_SLERP_SPEED: 2, // How fast roll corrects during transition
+  ROLL_SLERP_SPEED: 0.8, // How fast roll corrects during transition (lower = slower/smoother)
 
   // Player dimensions
   PLAYER_HEIGHT: 1.8,

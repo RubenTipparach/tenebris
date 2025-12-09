@@ -4,6 +4,46 @@ import { Planet } from '../planet/Planet';
 import { HexBlockType } from '../planet/HexBlock';
 import { PlayerConfig } from '../config/PlayerConfig';
 
+// Simple toast notification system
+function showToast(message: string, duration: number = 3000): void {
+  // Remove existing toast if any
+  const existing = document.getElementById('transition-toast');
+  if (existing) existing.remove();
+
+  const toast = document.createElement('div');
+  toast.id = 'transition-toast';
+  toast.textContent = message;
+  toast.style.cssText = `
+    position: fixed;
+    top: 80px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(0, 0, 0, 0.85);
+    color: #4CAF50;
+    padding: 12px 24px;
+    border-radius: 8px;
+    font-family: 'Jersey 10', monospace;
+    font-size: 24px;
+    border: 2px solid #4CAF50;
+    z-index: 1000;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+  `;
+  document.body.appendChild(toast);
+
+  // Fade in
+  requestAnimationFrame(() => {
+    toast.style.opacity = '1';
+  });
+
+  // Fade out and remove
+  setTimeout(() => {
+    toast.style.opacity = '0';
+    setTimeout(() => toast.remove(), 300);
+  }, duration);
+}
+
 // Calculate max terrain depth for collision checks
 const MAX_TERRAIN_DEPTH = PlayerConfig.TERRAIN_SEA_LEVEL + PlayerConfig.TERRAIN_MAX_DEPTH;
 
@@ -92,6 +132,12 @@ export class PlanetPlayer {
   // Space flight mode - uses quaternion for full 6DOF
   private orientation: THREE.Quaternion = new THREE.Quaternion();
   private isInSpace: boolean = false;
+
+  // Surface camera angles (stable tracking to avoid gimbal lock issues)
+  private surfacePitch: number = 0;
+  private surfaceYaw: number = 0;
+  // Horizontal look direction in world space (for yaw persistence as player walks)
+  private surfaceForward: THREE.Vector3 = new THREE.Vector3(0, 0, -1);
 
   // Gravity transition - timed roll correction
   private transitionTimer: number = 0; // Counts down during transition
@@ -465,18 +511,33 @@ export class PlanetPlayer {
     const wasInSpace = this.isInSpace;
     this.isInSpace = gravityMultiplier === 0;
 
+    // Helper to log rotation values
+    const logRotation = (label: string) => {
+      const euler = new THREE.Euler().setFromQuaternion(this.orientation, 'YXZ');
+      const pitchDeg = (euler.x * 180 / Math.PI).toFixed(1);
+      const yawDeg = (euler.y * 180 / Math.PI).toFixed(1);
+      const rollDeg = (euler.z * 180 / Math.PI).toFixed(1);
+      console.log(`[${label}] pitch: ${pitchDeg}° yaw: ${yawDeg}° roll: ${rollDeg}° | surfacePitch: ${(this.surfacePitch * 180 / Math.PI).toFixed(1)}°`);
+    };
+
     // Transitioning from space to gravity well
     if (wasInSpace && !this.isInSpace && planet) {
+      logRotation('ENTERING ATMOSPHERE - BEFORE');
+      showToast('Entering Atmosphere', 3000);
       this.transitionTimer = PlayerConfig.ROLL_SLERP_DURATION;
       this.currentPlanet = planet;
       // No rotation changes - just start the timed roll slerp
+      logRotation('ENTERING ATMOSPHERE - AFTER');
     }
 
     // Transitioning from gravity to space
     if (!wasInSpace && this.isInSpace) {
+      logRotation('ENTERING SPACE - BEFORE');
+      showToast('Entering Space', 3000);
       this.transitionTimer = 0; // Stop any ongoing transition
       // No rotation changes - just enable 6DOF controls
       this.updateOrientationFromLocal();
+      logRotation('ENTERING SPACE - AFTER');
     }
 
     // Update current planet reference
@@ -491,17 +552,31 @@ export class PlanetPlayer {
       this.handleSpaceRoll(input, deltaTime);
       // Note: updateLocalFromOrientation is called within each handler
     } else {
-      // Planet mode - mouse look, but up vector must align with gravity
-      this.handleSpaceMouseLook(input, deltaTime);
-
       if (this.transitionTimer > 0) {
-        // During transition: slerp roll to level
-        this.transitionTimer -= deltaTime;
+        // During transition from space: slerp roll to level while allowing mouse look
+        // Use space-style mouse look (modifies orientation directly) instead of
+        // planet-style (which rebuilds from surfaceForward/surfacePitch)
+        this.handleTransitionMouseLook(input, deltaTime);
         this.slerpRollToLevel(deltaTime);
+
+        const euler = new THREE.Euler().setFromQuaternion(this.orientation, 'YXZ');
+        const rollDeg = (euler.z * 180 / Math.PI).toFixed(1);
+        const pitchDeg = (euler.x * 180 / Math.PI).toFixed(1);
+        console.log(`[TRANSITIONING] timer: ${this.transitionTimer.toFixed(2)}s | roll: ${rollDeg}° pitch: ${pitchDeg}°`);
+
+        this.transitionTimer -= deltaTime;
+
+        // When transition ends, sync surfaceForward from current orientation
+        if (this.transitionTimer <= 0) {
+          this.syncSurfaceStateFromOrientation();
+          console.log('[TRANSITION COMPLETE] Synced surfaceForward from orientation');
+        }
       } else {
-        // After transition or already on planet: force immediate alignment
-        this.alignUpWithGravity();
+        // Planet mode - mouse look handles gravity alignment via pitch/yaw
+        this.handleSpaceMouseLook(input, deltaTime);
       }
+      // Note: alignUpWithGravity is NOT called here because handleSpaceMouseLook
+      // already handles gravity alignment through the pitch/yaw system
 
       // Track radius before movement for teleport detection
       const radiusBefore = this.currentPlanet
@@ -690,6 +765,28 @@ export class PlanetPlayer {
     const groundRadius = groundDepth >= 0 ? this.currentPlanet.depthToRadius(groundDepth) : 0;
 
     console.log('========== Hex STRUCTURE (Shift+X) ==========');
+
+    // Camera pitch/yaw info
+    const planetUp = this.currentPlanet.getSurfaceNormal(this.position);
+    const lookDir = this.localForward.clone().negate(); // Camera looks along -localForward
+    const pitchSin = lookDir.dot(planetUp);
+    const pitchRad = Math.asin(Math.max(-1, Math.min(1, pitchSin)));
+    const pitchDeg = pitchRad * 180 / Math.PI;
+
+    // Calculate yaw (horizontal angle relative to some reference)
+    // Project lookDir onto horizontal plane
+    const horizontalLook = lookDir.clone().sub(planetUp.clone().multiplyScalar(pitchSin)).normalize();
+    // Use localRight as reference for yaw calculation
+    const yawRad = Math.atan2(horizontalLook.dot(this.localRight), -horizontalLook.dot(this.localForward.clone().sub(planetUp.clone().multiplyScalar(this.localForward.dot(planetUp))).normalize()));
+    const yawDeg = yawRad * 180 / Math.PI;
+
+    console.log(`Camera pitch: ${pitchDeg.toFixed(2)}° (max: ±89°), yaw: ${yawDeg.toFixed(2)}°`);
+    console.log(`lookDir: (${lookDir.x.toFixed(3)}, ${lookDir.y.toFixed(3)}, ${lookDir.z.toFixed(3)})`);
+    console.log(`planetUp: (${planetUp.x.toFixed(3)}, ${planetUp.y.toFixed(3)}, ${planetUp.z.toFixed(3)})`);
+    console.log(`localUp: (${this.localUp.x.toFixed(3)}, ${this.localUp.y.toFixed(3)}, ${this.localUp.z.toFixed(3)})`);
+    console.log(`localUp·planetUp: ${this.localUp.dot(planetUp).toFixed(3)} (should be ~1.0)`);
+    console.log('');
+
     console.log(`Player feet radius: ${playerFeetRadius.toFixed(2)}, head radius: ${playerHeadRadius.toFixed(2)}`);
     console.log(`Standing on tile ${currentTile.index}, ground depth: ${groundDepth} (radius: ${groundRadius.toFixed(2)})`);
     console.log(`isGrounded: ${this.isGrounded}, velocity: (${this.velocity.x.toFixed(2)}, ${this.velocity.y.toFixed(2)}, ${this.velocity.z.toFixed(2)})`);
@@ -988,11 +1085,57 @@ export class PlanetPlayer {
     // Update the orientation quaternion from our local axes
     this.updateOrientationFromLocal();
 
-    // Check if we've reached level - stop early if already aligned
-    const angleDiff = this.localUp.angleTo(targetCameraUp);
-    if (angleDiff < 0.01) {
-      this.transitionTimer = 0;
+    // Note: We no longer exit early - let the full transition timer run
+    // This ensures smooth, predictable transition duration
+  }
+
+  // Mouse look during transition - uses space-style direct orientation modification
+  // This allows smooth slerping while still letting the player look around
+  private handleTransitionMouseLook(input: InputState, _deltaTime: number): void {
+    if (!this.inputManager.isLocked()) return;
+
+    const yInvert = PlayerConfig.INVERT_Y_AXIS ? -1 : 1;
+    const pitchDelta = input.mouseY * PlayerConfig.MOUSE_SENSITIVITY * yInvert;
+    const yawDelta = -input.mouseX * PlayerConfig.MOUSE_SENSITIVITY;
+
+    // Apply yaw around planet up (not local up, to be consistent with gravity)
+    if (this.currentPlanet) {
+      const planetUp = this.currentPlanet.getSurfaceNormal(this.position);
+      const yawQuat = new THREE.Quaternion().setFromAxisAngle(planetUp, yawDelta);
+      this.orientation.premultiply(yawQuat);
     }
+
+    // Apply pitch around local right
+    const pitchQuat = new THREE.Quaternion().setFromAxisAngle(this.localRight, pitchDelta);
+    this.orientation.premultiply(pitchQuat);
+
+    // Update local axes from orientation
+    this.updateLocalFromOrientation();
+  }
+
+  // Sync surfaceForward and surfacePitch from current orientation
+  // Called when transition ends to ensure smooth handoff to planet controls
+  private syncSurfaceStateFromOrientation(): void {
+    if (!this.currentPlanet) return;
+
+    const planetUp = this.currentPlanet.getSurfaceNormal(this.position);
+
+    // Get current camera forward
+    const camForward = new THREE.Vector3(0, 0, -1).applyQuaternion(this.orientation);
+
+    // Project onto horizon plane to get surfaceForward
+    this.surfaceForward.copy(camForward);
+    this.surfaceForward.sub(planetUp.clone().multiplyScalar(camForward.dot(planetUp)));
+    if (this.surfaceForward.lengthSq() < 0.001) {
+      // Looking straight up/down - use localForward as fallback
+      this.surfaceForward.copy(this.localForward).negate();
+      this.surfaceForward.sub(planetUp.clone().multiplyScalar(this.surfaceForward.dot(planetUp)));
+    }
+    this.surfaceForward.normalize();
+
+    // Calculate surfacePitch from camera forward's angle with horizon
+    const pitchAngle = Math.asin(Math.max(-1, Math.min(1, camForward.dot(planetUp))));
+    this.surfacePitch = pitchAngle;
   }
 
   private handleSpaceMouseLook(input: InputState, _deltaTime: number): void {
@@ -1005,40 +1148,51 @@ export class PlanetPlayer {
     // On planet surface, use planet-aligned axes to avoid gimbal lock
     if (!this.isInSpace && this.currentPlanet) {
       const planetUp = this.currentPlanet.getSurfaceNormal(this.position);
-      const lookDir = this.localForward.clone().negate(); // Camera looks along -localForward
 
-      // Calculate horizontal right axis (perpendicular to planetUp and lookDir)
-      // This ensures pitch rotation happens around a horizon-aligned axis
-      // Cross product order: planetUp × lookDir gives right vector (following right-hand rule)
-      let horizonRight = new THREE.Vector3().crossVectors(planetUp, lookDir).normalize();
+      // Use stored pitch angle (avoids gimbal lock issues)
+      const maxPitch = 89.9 * Math.PI / 180;
 
-      // If lookDir is nearly parallel to planetUp (looking straight up/down),
-      // use localRight as fallback
-      if (horizonRight.lengthSq() < 0.001) {
-        horizonRight = this.localRight.clone();
+      // Update stored pitch
+      this.surfacePitch = (this.surfacePitch || 0) + pitchDelta;
+      this.surfacePitch = Math.max(-maxPitch, Math.min(maxPitch, this.surfacePitch));
+
+      // Project stored forward direction onto current tangent plane
+      // This keeps the look direction consistent as the player walks around the planet
+      let horizonForward = this.surfaceForward.clone();
+      horizonForward.sub(planetUp.clone().multiplyScalar(horizonForward.dot(planetUp)));
+      if (horizonForward.lengthSq() < 0.001) {
+        // Forward is aligned with up, use fallback
+        horizonForward = new THREE.Vector3(0, 0, -1);
+        horizonForward.sub(planetUp.clone().multiplyScalar(horizonForward.dot(planetUp)));
+        if (horizonForward.lengthSq() < 0.001) {
+          horizonForward = new THREE.Vector3(1, 0, 0);
+          horizonForward.sub(planetUp.clone().multiplyScalar(horizonForward.dot(planetUp)));
+        }
+      }
+      horizonForward.normalize();
+
+      // Apply yaw delta to rotate the horizontal forward direction
+      if (yawDelta !== 0) {
+        const yawQuat = new THREE.Quaternion().setFromAxisAngle(planetUp, yawDelta);
+        horizonForward.applyQuaternion(yawQuat);
       }
 
-      // Calculate current pitch angle relative to horizon
-      const currentPitchSin = lookDir.dot(planetUp);
-      const currentPitch = Math.asin(Math.max(-1, Math.min(1, currentPitchSin)));
+      // Store the updated horizontal forward direction for next frame
+      this.surfaceForward.copy(horizonForward);
 
-      // Clamp to ±89 degrees to avoid gimbal lock
-      const maxPitch = 89 * Math.PI / 180;
-      const newPitch = currentPitch + pitchDelta;
+      // Compute right vector as cross(planetUp, horizonForward)
+      const right = new THREE.Vector3().crossVectors(planetUp, horizonForward).normalize();
 
-      if (newPitch > maxPitch) {
-        pitchDelta = maxPitch - currentPitch;
-      } else if (newPitch < -maxPitch) {
-        pitchDelta = -maxPitch - currentPitch;
-      }
+      // Apply pitch to get the final look direction
+      const pitchQuat = new THREE.Quaternion().setFromAxisAngle(right, -this.surfacePitch);
+      const forward = horizonForward.clone().applyQuaternion(pitchQuat);
+      const up = planetUp.clone().applyQuaternion(pitchQuat);
 
-      // Yaw around planet up axis (not local up) to prevent roll accumulation
-      const yawQuat = new THREE.Quaternion().setFromAxisAngle(planetUp, yawDelta);
-      this.orientation.premultiply(yawQuat);
-
-      // Pitch around horizon-aligned right axis
-      const pitchQuat = new THREE.Quaternion().setFromAxisAngle(horizonRight, pitchDelta);
-      this.orientation.premultiply(pitchQuat);
+      // Build camera orientation using lookAt-style matrix
+      const eye = new THREE.Vector3(0, 0, 0);
+      const target = forward.clone();
+      const camMatrix = new THREE.Matrix4().lookAt(eye, target, up);
+      this.orientation.setFromRotationMatrix(camMatrix);
     } else {
       // In space, use local axes freely (6DOF)
       const yawQuat = new THREE.Quaternion().setFromAxisAngle(this.localUp, yawDelta);
