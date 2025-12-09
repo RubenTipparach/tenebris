@@ -37,6 +37,11 @@ export enum ItemType {
   STEAM_ENGINE = 27,
   HYDRO_GENERATOR = 28,
   COPPER_PIPE = 29,
+  ELECTRIC_FURNACE = 30,
+  CABLE = 31,
+  // Smelted materials (advanced ingots - require electric furnace)
+  INGOT_LITHIUM = 32,
+  INGOT_COBALT = 33,
 }
 
 // Item metadata
@@ -87,6 +92,11 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
   [ItemType.STEAM_ENGINE]: { name: 'Steam Engine', stackSize: 8, texture: '/textures/technology/steam_engine_face.png', mineTime: 2.5 },
   [ItemType.HYDRO_GENERATOR]: { name: 'Hydro Generator', stackSize: 8, texture: '/textures/technology/hydro_generator_face.png', mineTime: 2.5 },
   [ItemType.COPPER_PIPE]: { name: 'Copper Pipe', stackSize: 64, texture: '/textures/technology/copper_pipe.png', mineTime: 0.5 },
+  [ItemType.ELECTRIC_FURNACE]: { name: 'Electric Furnace', stackSize: 8, texture: '/textures/technology/electric_furnace_face.png', mineTime: 2.5 },
+  [ItemType.CABLE]: { name: 'Cable', stackSize: 64, texture: '/textures/technology/cable.png', mineTime: 0.5 },
+  // Advanced ingots (require electric furnace)
+  [ItemType.INGOT_LITHIUM]: { name: 'Lithium Ingot', stackSize: 64, texture: '/textures/minerals/earth/lythium.png', mineTime: 0.3 },
+  [ItemType.INGOT_COBALT]: { name: 'Cobalt Ingot', stackSize: 64, texture: '/textures/minerals/earth/cobalt.png', mineTime: 0.3 },
 };
 
 // Inventory slot

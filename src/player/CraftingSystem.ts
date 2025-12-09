@@ -133,6 +133,38 @@ export const CRAFTING_RECIPES: CraftingRecipe[] = [
     ],
     output: { itemType: ItemType.COPPER_PIPE, quantity: 4 },
   },
+  // Cable (3 copper ingots in a row = 8 cables)
+  // ---
+  // CCC
+  // ---
+  {
+    name: 'Cable',
+    inputs: [
+      { itemType: ItemType.INGOT_COPPER, quantity: 1, slot: 3 }, // Middle left
+      { itemType: ItemType.INGOT_COPPER, quantity: 1, slot: 4 }, // Middle center
+      { itemType: ItemType.INGOT_COPPER, quantity: 1, slot: 5 }, // Middle right
+    ],
+    output: { itemType: ItemType.CABLE, quantity: 8 },
+  },
+  // Electric Furnace (iron frame with aluminum sides and copper center)
+  // III
+  // ACA
+  // III
+  {
+    name: 'Electric Furnace',
+    inputs: [
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 0 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 1 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 2 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 3 },
+      { itemType: ItemType.INGOT_COPPER, quantity: 1, slot: 4 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 5 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 6 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 7 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 8 },
+    ],
+    output: { itemType: ItemType.ELECTRIC_FURNACE, quantity: 1 },
+  },
 ];
 
 export class CraftingSystem {
@@ -148,6 +180,12 @@ export class CraftingSystem {
   private onCloseCallback: (() => void) | null = null;
   private onUpdateHotbarCallback: (() => void) | null = null;
   private onSaveCallback: (() => void) | null = null;
+
+  // Custom dropdown elements
+  private customDropdown: HTMLElement | null = null;
+  private dropdownSelected: HTMLElement | null = null;
+  private dropdownList: HTMLElement | null = null;
+  private isDropdownOpen: boolean = false;
 
   // Currently selected recipe
   private selectedRecipe: CraftingRecipe | null = null;
@@ -198,18 +236,20 @@ export class CraftingSystem {
     // Setup close button with pointer lock restoration via MenuManager
     MenuManager.setupCloseButton('.close-inventory', this.menuElement, () => this.close());
 
-    // Populate recipe dropdown
-    this.populateRecipeDropdown();
-
-    // Setup recipe selection handler
-    if (this.recipeSelectElement) {
-      this.recipeSelectElement.addEventListener('change', () => this.onRecipeSelect());
-    }
+    // Create custom dropdown with thumbnails (replaces native select)
+    this.createCustomDropdown();
 
     // Setup craft button handler
     if (this.craftBtnElement) {
       this.craftBtnElement.addEventListener('click', () => this.craftSelectedRecipe());
     }
+
+    // Close dropdown when clicking outside
+    document.addEventListener('click', (e) => {
+      if (this.customDropdown && !this.customDropdown.contains(e.target as Node)) {
+        this.closeDropdown();
+      }
+    });
   }
 
   private createInventorySlots(): void {
@@ -678,32 +718,189 @@ export class CraftingSystem {
     img.style.transformOrigin = '';
   }
 
-  private populateRecipeDropdown(): void {
-    if (!this.recipeSelectElement) return;
+  private createCustomDropdown(): void {
+    // Hide the native select element
+    if (this.recipeSelectElement) {
+      this.recipeSelectElement.style.display = 'none';
+    }
 
-    // Clear existing options except the placeholder
-    this.recipeSelectElement.innerHTML = '<option value="">-- Select Recipe --</option>';
+    // Create custom dropdown container
+    this.customDropdown = document.createElement('div');
+    this.customDropdown.className = 'custom-recipe-dropdown';
+    this.customDropdown.style.cssText = `
+      position: relative;
+      width: 100%;
+      font-family: inherit;
+      user-select: none;
+    `;
 
-    // Add each recipe as an option
-    for (let i = 0; i < CRAFTING_RECIPES.length; i++) {
-      const recipe = CRAFTING_RECIPES[i];
-      const option = document.createElement('option');
-      option.value = i.toString();
-      option.textContent = recipe.name;
-      this.recipeSelectElement.appendChild(option);
+    // Create the selected item display
+    this.dropdownSelected = document.createElement('div');
+    this.dropdownSelected.className = 'dropdown-selected';
+    this.dropdownSelected.style.cssText = `
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      background: #2a2a2a;
+      border: 2px solid #444;
+      border-radius: 4px;
+      cursor: pointer;
+      min-height: 40px;
+    `;
+    this.dropdownSelected.innerHTML = `
+      <span style="color: #888;">-- Select Recipe --</span>
+      <span style="margin-left: auto;">▼</span>
+    `;
+    this.dropdownSelected.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.toggleDropdown();
+    });
+
+    // Create the dropdown list
+    this.dropdownList = document.createElement('div');
+    this.dropdownList.className = 'dropdown-list';
+    this.dropdownList.style.cssText = `
+      position: absolute;
+      top: 100%;
+      left: 0;
+      right: 0;
+      max-height: 300px;
+      overflow-y: auto;
+      background: #2a2a2a;
+      border: 2px solid #444;
+      border-top: none;
+      border-radius: 0 0 4px 4px;
+      z-index: 1000;
+      display: none;
+    `;
+
+    // Populate the dropdown list
+    this.populateDropdownList();
+
+    this.customDropdown.appendChild(this.dropdownSelected);
+    this.customDropdown.appendChild(this.dropdownList);
+
+    // Insert after the native select
+    if (this.recipeSelectElement && this.recipeSelectElement.parentNode) {
+      this.recipeSelectElement.parentNode.insertBefore(this.customDropdown, this.recipeSelectElement.nextSibling);
     }
   }
 
-  private onRecipeSelect(): void {
-    if (!this.recipeSelectElement) return;
+  private populateDropdownList(): void {
+    if (!this.dropdownList) return;
 
-    const selectedIndex = parseInt(this.recipeSelectElement.value);
-    if (isNaN(selectedIndex) || selectedIndex < 0 || selectedIndex >= CRAFTING_RECIPES.length) {
-      this.selectedRecipe = null;
+    this.dropdownList.innerHTML = '';
+
+    // Add placeholder option
+    const placeholder = document.createElement('div');
+    placeholder.className = 'dropdown-item';
+    placeholder.style.cssText = `
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      cursor: pointer;
+      color: #888;
+    `;
+    placeholder.innerHTML = '<span>-- Select Recipe --</span>';
+    placeholder.addEventListener('click', () => this.selectRecipe(-1));
+    placeholder.addEventListener('mouseenter', () => placeholder.style.background = '#3a3a3a');
+    placeholder.addEventListener('mouseleave', () => placeholder.style.background = '');
+    this.dropdownList.appendChild(placeholder);
+
+    // Add each recipe
+    for (let i = 0; i < CRAFTING_RECIPES.length; i++) {
+      const recipe = CRAFTING_RECIPES[i];
+      const itemData = ITEM_DATA[recipe.output.itemType];
+
+      const item = document.createElement('div');
+      item.className = 'dropdown-item';
+      item.style.cssText = `
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 12px;
+        cursor: pointer;
+      `;
+
+      const img = document.createElement('img');
+      img.src = getAssetPath(itemData.texture);
+      img.style.cssText = `
+        width: 24px;
+        height: 24px;
+        image-rendering: pixelated;
+      `;
+
+      const name = document.createElement('span');
+      name.textContent = recipe.name;
+      name.style.color = '#fff';
+
+      const quantity = document.createElement('span');
+      quantity.textContent = `x${recipe.output.quantity}`;
+      quantity.style.cssText = `
+        margin-left: auto;
+        color: #888;
+        font-size: 12px;
+      `;
+
+      item.appendChild(img);
+      item.appendChild(name);
+      item.appendChild(quantity);
+
+      item.addEventListener('click', () => this.selectRecipe(i));
+      item.addEventListener('mouseenter', () => item.style.background = '#3a3a3a');
+      item.addEventListener('mouseleave', () => item.style.background = '');
+
+      this.dropdownList.appendChild(item);
+    }
+  }
+
+  private toggleDropdown(): void {
+    if (this.isDropdownOpen) {
+      this.closeDropdown();
     } else {
-      this.selectedRecipe = CRAFTING_RECIPES[selectedIndex];
+      this.openDropdown();
+    }
+  }
+
+  private openDropdown(): void {
+    if (this.dropdownList) {
+      this.dropdownList.style.display = 'block';
+      this.isDropdownOpen = true;
+    }
+  }
+
+  private closeDropdown(): void {
+    if (this.dropdownList) {
+      this.dropdownList.style.display = 'none';
+      this.isDropdownOpen = false;
+    }
+  }
+
+  private selectRecipe(index: number): void {
+    if (index < 0 || index >= CRAFTING_RECIPES.length) {
+      this.selectedRecipe = null;
+      if (this.dropdownSelected) {
+        this.dropdownSelected.innerHTML = `
+          <span style="color: #888;">-- Select Recipe --</span>
+          <span style="margin-left: auto;">▼</span>
+        `;
+      }
+    } else {
+      this.selectedRecipe = CRAFTING_RECIPES[index];
+      const itemData = ITEM_DATA[this.selectedRecipe.output.itemType];
+
+      if (this.dropdownSelected) {
+        this.dropdownSelected.innerHTML = `
+          <img src="${getAssetPath(itemData.texture)}" style="width: 24px; height: 24px; image-rendering: pixelated;">
+          <span style="color: #fff;">${this.selectedRecipe.name}</span>
+          <span style="margin-left: auto;">▼</span>
+        `;
+      }
     }
 
+    this.closeDropdown();
     this.updateCraftingGrid();
   }
 

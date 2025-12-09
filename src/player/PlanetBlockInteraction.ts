@@ -11,11 +11,14 @@ import { GarbagePileManager, PlacedGarbagePile } from '../planet/GarbagePile';
 import { SteamEngineManager, PlacedSteamEngine } from '../planet/SteamEngine';
 import { HydroGeneratorManager, PlacedHydroGenerator } from '../planet/HydroGenerator';
 import { CopperPipeManager, PlacedCopperPipe } from '../planet/CopperPipe';
+import { CableNodeManager, PlacedCable } from '../planet/CableNode';
+import { ElectricFurnaceManager, PlacedElectricFurnace } from '../planet/ElectricFurnace';
 import { CraftingSystem } from './CraftingSystem';
 import { HydroGeneratorUI } from './HydroGeneratorUI';
 import { SteamEngineUI } from './SteamEngineUI';
 import { CopperPipeUI } from './CopperPipeUI';
 import { FurnaceUI } from './FurnaceUI';
+import { ElectricFurnaceUI } from './ElectricFurnaceUI';
 import { StorageUI } from './StorageUI';
 import { getAssetPath } from '../utils/assetPath';
 import { gameStorage } from '../engine/GameStorage';
@@ -115,6 +118,16 @@ export class PlanetBlockInteraction {
   private miningCopperPipeTarget: { pipe: PlacedCopperPipe } | null = null;
   private pipeConnectionRebuildTimer: number = 0;
   private readonly PIPE_CONNECTION_REBUILD_INTERVAL = 1.0; // Rebuild connections every 1 second
+
+  // Cable node system (for power connections)
+  private cableNodeManager: CableNodeManager;
+  private miningCableTarget: { cable: PlacedCable } | null = null;
+  private cableConnectionRebuildTimer: number = 0;
+
+  // Electric furnace system
+  private electricFurnaceManager: ElectricFurnaceManager;
+  private electricFurnaceUI: ElectricFurnaceUI;
+  private miningElectricFurnaceTarget: { furnace: PlacedElectricFurnace } | null = null;
 
   private rightClickCooldown: number = 0;
   private readonly CLICK_COOLDOWN = 0.25;
@@ -226,6 +239,37 @@ export class PlanetBlockInteraction {
       (tileIndex) => this.getNeighborTileIndices(tileIndex)
     );
 
+    // Initialize cable node system (for power connections)
+    this.cableNodeManager = new CableNodeManager(scene, planetCenter, sunDirection);
+    this.cableNodeManager.setMachineCallbacks(
+      (tileIndex) => this.steamEngineManager.getSteamEngineAtTile(tileIndex),
+      (tileIndex) => this.electricFurnaceManager.getElectricFurnaceAtTile(tileIndex),
+      (tileIndex) => this.getNeighborTileIndices(tileIndex)
+    );
+
+    // Initialize electric furnace system
+    this.electricFurnaceManager = new ElectricFurnaceManager(scene, planetCenter, sunDirection);
+    this.electricFurnaceManager.setOnSmeltCompleteCallback(() => {
+      this.saveAllElectricFurnaceStates();
+    });
+    this.electricFurnaceUI = new ElectricFurnaceUI(this.inventory);
+    this.electricFurnaceUI.setOnCloseCallback(() => {
+      // Electric furnace close is handled by inventory menu close
+    });
+    this.electricFurnaceUI.setOnSaveCallback(() => {
+      this.saveInventory();
+      this.saveAllElectricFurnaceStates();
+    });
+    this.electricFurnaceUI.setOnOpenInventoryCallback(() => {
+      this.craftingSystem.open();
+    });
+    this.electricFurnaceUI.setOnUpdateHotbarCallback(() => {
+      this.updateHotbarUI();
+    });
+    this.electricFurnaceUI.setOnUpdateInventoryCallback(() => {
+      this.craftingSystem.updateInventorySlotsPublic();
+    });
+
     // Set up hydro generator connection callback
     this.hydroGeneratorUI.setConnectionCallback((hydroTileIndex) => {
       return this.copperPipeManager.isHydroConnectedToSteam(hydroTileIndex);
@@ -263,6 +307,7 @@ export class PlanetBlockInteraction {
     this.craftingSystem.setOnCloseCallback(() => {
       // Close all machine UIs when inventory closes
       this.furnaceUI.close();
+      this.electricFurnaceUI.close();
       this.storageUI.close();
       this.hydroGeneratorUI.close();
       this.steamEngineUI.close();
@@ -759,6 +804,9 @@ export class PlanetBlockInteraction {
     // Update furnace smelting progress
     this.furnaceManager.update(deltaTime);
 
+    // Update electric furnace smelting progress
+    this.electricFurnaceManager.update(deltaTime);
+
     // Update steam engine particles and sync running state from UI
     this.updateSteamEngineParticles(deltaTime);
 
@@ -769,6 +817,14 @@ export class PlanetBlockInteraction {
       this.copperPipeManager.rebuildAllConnections();
     }
 
+    // Periodically rebuild cable connections and update electric furnace power status
+    this.cableConnectionRebuildTimer += deltaTime;
+    if (this.cableConnectionRebuildTimer >= this.PIPE_CONNECTION_REBUILD_INTERVAL) {
+      this.cableConnectionRebuildTimer = 0;
+      this.cableNodeManager.rebuildAllConnections();
+      this.updateElectricFurnacePowerStatus();
+    }
+
     // Update furnace, storage chest, garbage pile, and steam engine torch lighting based on nearby torches
     const torchData = this.torchManager.getTorchDataForBaking();
     if (torchData.length > 0) {
@@ -776,11 +832,13 @@ export class PlanetBlockInteraction {
       const torchRange = torchData[0].range;
       const torchIntensity = torchData[0].intensity;
       this.furnaceManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
+      this.electricFurnaceManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
       this.storageChestManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
       this.garbagePileManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
       this.steamEngineManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
       this.hydroGeneratorManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
       this.copperPipeManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
+      this.cableNodeManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
     }
 
     // Don't process block interaction when inventory menu is open
@@ -817,6 +875,10 @@ export class PlanetBlockInteraction {
     const hydroGeneratorMeshes = this.hydroGeneratorManager.getHydroGeneratorMeshes();
     // Get copper pipe meshes for picking
     const copperPipeMeshes = this.copperPipeManager.getPipeMeshes();
+    // Get cable meshes for picking
+    const cableMeshes = this.cableNodeManager.getCableMeshes();
+    // Get electric furnace meshes for picking
+    const electricFurnaceMeshes = this.electricFurnaceManager.getElectricFurnaceMeshes();
 
     const treeIntersects = this.raycaster.intersectObjects(treeMeshes, false);
     const torchIntersects = this.raycaster.intersectObjects(torchMeshes, false);
@@ -826,6 +888,8 @@ export class PlanetBlockInteraction {
     const steamEngineIntersects = this.raycaster.intersectObjects(steamEngineMeshes, false);
     const hydroGeneratorIntersects = this.raycaster.intersectObjects(hydroGeneratorMeshes, false);
     const copperPipeIntersects = this.raycaster.intersectObjects(copperPipeMeshes, false);
+    const cableIntersects = this.raycaster.intersectObjects(cableMeshes, false);
+    const electricFurnaceIntersects = this.raycaster.intersectObjects(electricFurnaceMeshes, false);
 
     // Raycast against all planets and find the closest hit
     let closestBlockHit: ReturnType<Planet['raycast']> = null;
@@ -854,6 +918,8 @@ export class PlanetBlockInteraction {
     let hitSteamEngine = false;
     let hitHydroGenerator = false;
     let hitCopperPipe = false;
+    let hitCable = false;
+    let hitElectricFurnace = false;
     let treeHit: THREE.Intersection | null = null;
     let torchHit: THREE.Intersection | null = null;
     let furnaceHit: THREE.Intersection | null = null;
@@ -862,6 +928,8 @@ export class PlanetBlockInteraction {
     let steamEngineHit: THREE.Intersection | null = null;
     let hydroGeneratorHit: THREE.Intersection | null = null;
     let copperPipeHit: THREE.Intersection | null = null;
+    let cableHit: THREE.Intersection | null = null;
+    let electricFurnaceHit: THREE.Intersection | null = null;
 
     // Find the closest hit among all types
     const treeDistance = treeIntersects.length > 0 ? treeIntersects[0].distance : Infinity;
@@ -872,10 +940,18 @@ export class PlanetBlockInteraction {
     const steamEngineDistance = steamEngineIntersects.length > 0 ? steamEngineIntersects[0].distance : Infinity;
     const hydroGeneratorDistance = hydroGeneratorIntersects.length > 0 ? hydroGeneratorIntersects[0].distance : Infinity;
     const copperPipeDistance = copperPipeIntersects.length > 0 ? copperPipeIntersects[0].distance : Infinity;
-    const closestObjectDistance = Math.min(treeDistance, torchDistance, furnaceDistance, storageChestDistance, garbagePileDistance, steamEngineDistance, hydroGeneratorDistance, copperPipeDistance);
+    const cableDistance = cableIntersects.length > 0 ? cableIntersects[0].distance : Infinity;
+    const electricFurnaceDistance = electricFurnaceIntersects.length > 0 ? electricFurnaceIntersects[0].distance : Infinity;
+    const closestObjectDistance = Math.min(treeDistance, torchDistance, furnaceDistance, storageChestDistance, garbagePileDistance, steamEngineDistance, hydroGeneratorDistance, copperPipeDistance, cableDistance, electricFurnaceDistance);
 
     if (closestBlockHit && closestBlockDistance < closestObjectDistance) {
       hitBlock = true;
+    } else if (cableDistance <= closestObjectDistance && cableDistance < Infinity) {
+      hitCable = true;
+      cableHit = cableIntersects[0];
+    } else if (electricFurnaceDistance <= closestObjectDistance && electricFurnaceDistance < Infinity) {
+      hitElectricFurnace = true;
+      electricFurnaceHit = electricFurnaceIntersects[0];
     } else if (copperPipeDistance <= closestObjectDistance && copperPipeDistance < Infinity) {
       hitCopperPipe = true;
       copperPipeHit = copperPipeIntersects[0];
@@ -904,7 +980,42 @@ export class PlanetBlockInteraction {
       hitBlock = true;
     }
 
-    if (hitCopperPipe && copperPipeHit) {
+    if (hitCable && cableHit) {
+      // No wireframe for cables
+      if (this.blockWireframe) {
+        this.blockWireframe.visible = false;
+        this.wireframeCache = null;
+      }
+
+      const cableMesh = cableHit.object as THREE.Mesh;
+      const cable = this.cableNodeManager.getCableByMesh(cableMesh);
+
+      // Handle cable interaction (left click to mine - cables don't have UI)
+      if (leftClick && cable) {
+        this.handleCableMining(deltaTime, cable);
+      } else {
+        this.resetMining();
+      }
+    } else if (hitElectricFurnace && electricFurnaceHit) {
+      // No wireframe for electric furnaces
+      if (this.blockWireframe) {
+        this.blockWireframe.visible = false;
+        this.wireframeCache = null;
+      }
+
+      const furnaceMesh = electricFurnaceHit.object as THREE.Mesh;
+      const electricFurnace = this.electricFurnaceManager.getElectricFurnaceByMesh(furnaceMesh);
+
+      // Handle electric furnace interaction (right click to open UI, left click to mine)
+      if (rightClick && this.rightClickCooldown === 0 && electricFurnace) {
+        this.electricFurnaceUI.open(electricFurnace);
+        this.rightClickCooldown = this.CLICK_COOLDOWN;
+      } else if (leftClick && electricFurnace) {
+        this.handleElectricFurnaceMining(deltaTime, electricFurnace);
+      } else {
+        this.resetMining();
+      }
+    } else if (hitCopperPipe && copperPipeHit) {
       // No wireframe for copper pipes
       if (this.blockWireframe) {
         this.blockWireframe.visible = false;
@@ -1483,6 +1594,121 @@ export class PlanetBlockInteraction {
     this.copperPipeManager.removePipe(pipe);
   }
 
+  private handleCableMining(deltaTime: number, cable: PlacedCable): void {
+    // Check if target changed
+    if (this.miningCableTarget === null || this.miningCableTarget.cable !== cable) {
+      // New target, reset progress
+      this.miningCableTarget = { cable };
+      this.miningTarget = null;
+      this.miningTreeTarget = null;
+      this.miningFurnaceTarget = null;
+      this.miningStorageTarget = null;
+      this.miningGarbageTarget = null;
+      this.miningSteamEngineTarget = null;
+      this.miningHydroGeneratorTarget = null;
+      this.miningCopperPipeTarget = null;
+      this.miningElectricFurnaceTarget = null;
+      this.miningProgress = 0;
+    }
+
+    // Cable mining time
+    const mineTime = ITEM_DATA[ItemType.CABLE].mineTime;
+
+    // Increase progress
+    this.miningProgress += deltaTime / mineTime;
+    this.updateMiningUI(this.miningProgress);
+
+    // Check if mining complete
+    if (this.miningProgress >= 1) {
+      this.breakCable(cable);
+      this.resetMining();
+    }
+  }
+
+  private breakCable(cable: PlacedCable): void {
+    // Give the cable item back to the player
+    this.inventory.addItem(ItemType.CABLE, 1);
+
+    this.updateHotbarUI();
+    this.saveInventory();
+
+    // Remove cable from save
+    for (let i = 0; i < this.planets.length; i++) {
+      const planetId = i === 0 ? 'earth' : 'moon';
+      gameStorage.removeCable(planetId, cable.tileIndex, cable.depth);
+    }
+
+    // Remove the cable from the world
+    this.cableNodeManager.removeCable(cable);
+  }
+
+  private handleElectricFurnaceMining(deltaTime: number, furnace: PlacedElectricFurnace): void {
+    // Check if target changed
+    if (this.miningElectricFurnaceTarget === null || this.miningElectricFurnaceTarget.furnace !== furnace) {
+      // New target, reset progress
+      this.miningElectricFurnaceTarget = { furnace };
+      this.miningTarget = null;
+      this.miningTreeTarget = null;
+      this.miningFurnaceTarget = null;
+      this.miningStorageTarget = null;
+      this.miningGarbageTarget = null;
+      this.miningSteamEngineTarget = null;
+      this.miningHydroGeneratorTarget = null;
+      this.miningCopperPipeTarget = null;
+      this.miningCableTarget = null;
+      this.miningProgress = 0;
+    }
+
+    // Electric furnace mining time
+    const mineTime = ITEM_DATA[ItemType.ELECTRIC_FURNACE].mineTime;
+
+    // Increase progress
+    this.miningProgress += deltaTime / mineTime;
+    this.updateMiningUI(this.miningProgress);
+
+    // Check if mining complete
+    if (this.miningProgress >= 1) {
+      this.breakElectricFurnace(furnace);
+      this.resetMining();
+    }
+  }
+
+  private breakElectricFurnace(furnace: PlacedElectricFurnace): void {
+    // Give the electric furnace item back to the player
+    this.inventory.addItem(ItemType.ELECTRIC_FURNACE, 1);
+
+    // If there are items in the furnace, drop them as a garbage pile or add to inventory
+    const droppedItems: { itemType: ItemType; quantity: number }[] = [];
+
+    if (furnace.smeltingItem !== null && furnace.inputCount > 0) {
+      droppedItems.push({ itemType: furnace.smeltingItem, quantity: furnace.inputCount });
+    }
+    if (furnace.outputItem !== null && furnace.outputCount > 0) {
+      droppedItems.push({ itemType: furnace.outputItem, quantity: furnace.outputCount });
+    }
+
+    // Try to add items to inventory first
+    for (const item of droppedItems) {
+      const remaining = this.inventory.addItem(item.itemType, item.quantity);
+      if (remaining > 0) {
+        // Create garbage pile with remaining items
+        this.createGarbagePileWithItems(furnace.position, furnace.tileIndex, [{ itemType: item.itemType, quantity: remaining }]);
+      }
+    }
+
+    this.updateHotbarUI();
+    this.saveInventory();
+
+    // Remove electric furnace from save
+    for (let i = 0; i < this.planets.length; i++) {
+      const planetId = i === 0 ? 'earth' : 'moon';
+      gameStorage.removeElectricFurnace(planetId, furnace.tileIndex);
+    }
+
+    // Remove the electric furnace from the world
+    this.electricFurnaceManager.removeElectricFurnace(furnace);
+  }
+
   private async createGarbagePileWithItems(
     position: THREE.Vector3,
     tileIndex: number,
@@ -1526,6 +1752,8 @@ export class PlanetBlockInteraction {
     this.miningSteamEngineTarget = null;
     this.miningHydroGeneratorTarget = null;
     this.miningCopperPipeTarget = null;
+    this.miningCableTarget = null;
+    this.miningElectricFurnaceTarget = null;
     this.miningProgress = 0;
     this.updateMiningUI(0);
   }
@@ -1649,6 +1877,18 @@ export class PlanetBlockInteraction {
     // Handle copper pipe placement
     if (selectedSlot.itemType === ItemType.COPPER_PIPE) {
       this.placeCopperPipe(planet, tileIndex, depth);
+      return;
+    }
+
+    // Handle cable placement
+    if (selectedSlot.itemType === ItemType.CABLE) {
+      this.placeCable(planet, tileIndex, depth);
+      return;
+    }
+
+    // Handle electric furnace placement
+    if (selectedSlot.itemType === ItemType.ELECTRIC_FURNACE) {
+      this.placeElectricFurnace(planet, tileIndex, depth);
       return;
     }
 
@@ -2135,6 +2375,120 @@ export class PlanetBlockInteraction {
     }
   }
 
+  private async placeCable(planet: Planet, tileIndex: number, depth: number): Promise<void> {
+    // Get the tile
+    const tile = planet.getTileByIndex(tileIndex);
+    if (!tile) return;
+
+    const maxDepth = planet.getMaxDepth();
+    const clickedBlock = planet.getBlock(tileIndex, depth);
+
+    // Cables work similar to pipes - can be placed on surfaces
+    let placementDepth = depth;
+    let placementRadius: number;
+
+    // If clicked on water - find water surface
+    if (clickedBlock === HexBlockType.WATER) {
+      let waterSurfaceDepth = depth;
+      for (let d = depth + 1; d < maxDepth; d++) {
+        const blockAbove = planet.getBlock(tileIndex, d);
+        if (blockAbove === HexBlockType.AIR) {
+          waterSurfaceDepth = d;
+          break;
+        } else if (blockAbove !== HexBlockType.WATER) {
+          return; // Water is capped by something solid, can't place
+        }
+      }
+      placementDepth = waterSurfaceDepth;
+      placementRadius = planet.depthToRadius(placementDepth) - planet.getBlockHeight();
+    }
+    // Clicked on solid block - place on top
+    else if (clickedBlock !== HexBlockType.AIR) {
+      placementRadius = planet.depthToRadius(depth) - planet.getBlockHeight();
+    }
+    // Clicked on air
+    else {
+      placementRadius = planet.depthToRadius(depth) - planet.getBlockHeight();
+    }
+
+    // Check if there's already a cable at the placement location
+    if (this.cableNodeManager.getCableAt(tileIndex, placementDepth)) {
+      return;
+    }
+
+    // Get world position for the cable
+    const tileCenter = tile.center.clone().normalize();
+    const worldPosition = tileCenter.multiplyScalar(placementRadius).add(planet.center);
+
+    // Use item from inventory
+    if (this.inventory.useSelectedItem()) {
+      // Place the cable
+      const placedCable = await this.cableNodeManager.placeCable(
+        worldPosition,
+        tileIndex,
+        placementDepth
+      );
+
+      this.updateHotbarUI();
+      this.saveInventory();
+
+      // Save cable placement to game storage
+      if (placedCable) {
+        const planetId = this.getPlanetId(planet);
+        gameStorage.saveCable(planetId, tileIndex, placementDepth, {
+          position: { x: placedCable.position.x, y: placedCable.position.y, z: placedCable.position.z }
+        });
+      }
+    }
+  }
+
+  private async placeElectricFurnace(planet: Planet, tileIndex: number, depth: number): Promise<void> {
+    // Check if there's already an electric furnace at this tile
+    if (this.electricFurnaceManager.getElectricFurnaceAtTile(tileIndex)) {
+      return; // Can't place multiple electric furnaces on same tile
+    }
+
+    // Also check for regular furnace
+    if (this.furnaceManager.getFurnaceAtTile(tileIndex)) {
+      return; // Can't place where regular furnace exists
+    }
+
+    // Get the world position for the furnace
+    const tile = planet.getTileByIndex(tileIndex);
+    if (!tile) return;
+
+    // depth is the air block position - furnace should sit on the solid block below it
+    const solidBlockTopRadius = planet.depthToRadius(depth) - planet.getBlockHeight();
+    const tileCenter = tile.center.clone().normalize();
+    const worldPosition = tileCenter.multiplyScalar(solidBlockTopRadius).add(planet.center);
+
+    // Get player forward direction for furnace facing
+    const playerForward = this.player.getForwardVector();
+
+    // Use item from inventory
+    if (this.inventory.useSelectedItem()) {
+      // Place the electric furnace facing the player
+      const placedFurnace = await this.electricFurnaceManager.placeElectricFurnace(worldPosition, planet.center, tileIndex, playerForward);
+
+      this.updateHotbarUI();
+      this.saveInventory();
+
+      // Save electric furnace placement to game storage
+      if (placedFurnace) {
+        const planetId = this.getPlanetId(planet);
+        gameStorage.saveElectricFurnace(planetId, tileIndex, {
+          position: { x: placedFurnace.position.x, y: placedFurnace.position.y, z: placedFurnace.position.z },
+          rotation: placedFurnace.rotation,
+          smeltingItem: placedFurnace.smeltingItem,
+          smeltingProgress: placedFurnace.smeltingProgress,
+          inputCount: placedFurnace.inputCount,
+          outputItem: placedFurnace.outputItem,
+          outputCount: placedFurnace.outputCount
+        });
+      }
+    }
+  }
+
   private pickupTorch(mesh: THREE.Mesh): void {
     // Find the torch group containing this mesh
     let parent = mesh.parent;
@@ -2274,6 +2628,55 @@ export class PlanetBlockInteraction {
         outputItem: furnace.outputItem,
         outputCount: furnace.outputCount
       });
+    }
+  }
+
+  // Save all electric furnace states to local storage
+  private saveAllElectricFurnaceStates(): void {
+    const furnaces = this.electricFurnaceManager.getPlacedElectricFurnaces();
+    for (const furnace of furnaces) {
+      let planetId = 'earth';
+      for (let i = 0; i < this.planets.length; i++) {
+        const planet = this.planets[i];
+        const tile = planet.getTileByIndex(furnace.tileIndex);
+        if (tile) {
+          planetId = i === 0 ? 'earth' : 'moon';
+          break;
+        }
+      }
+
+      gameStorage.saveElectricFurnace(planetId, furnace.tileIndex, {
+        position: { x: furnace.position.x, y: furnace.position.y, z: furnace.position.z },
+        rotation: furnace.rotation,
+        smeltingItem: furnace.smeltingItem,
+        smeltingProgress: furnace.smeltingProgress,
+        inputCount: furnace.inputCount,
+        outputItem: furnace.outputItem,
+        outputCount: furnace.outputCount
+      });
+    }
+  }
+
+  // Update power status for all electric furnaces based on cable connections to running steam engines
+  private updateElectricFurnacePowerStatus(): void {
+    const electricFurnaces = this.electricFurnaceManager.getPlacedElectricFurnaces();
+
+    for (const furnace of electricFurnaces) {
+      // Check if this furnace is connected to a running steam engine via cables
+      const isPowered = this.cableNodeManager.isElectricFurnaceConnectedToRunningSteamEngine(
+        furnace.tileIndex,
+        (steamTileIndex) => {
+          // Check if steam engine at this tile is running
+          const engine = this.steamEngineManager.getSteamEngineAtTile(steamTileIndex);
+          if (!engine) return false;
+          // Get the running state from the UI
+          const state = this.steamEngineUI.getEngineState(steamTileIndex);
+          return state?.isRunning ?? false;
+        }
+      );
+
+      // Update furnace power status
+      this.electricFurnaceManager.setFurnacePowered(furnace.tileIndex, isPowered);
     }
   }
 
@@ -2509,7 +2912,51 @@ export class PlanetBlockInteraction {
     // Rebuild all pipe connections after loading
     this.copperPipeManager.rebuildAllConnections();
 
-    console.log(`Loaded save: ${saveData.tileChanges.length} tile changes, ${savedTorches.length} torches, ${savedFurnaces.length} furnaces, ${savedStorageChests.length} chests, ${savedGarbagePiles.length} piles, ${savedSteamEngines.length} steam engines, ${savedHydroGenerators.length} hydro generators, ${savedCopperPipes.length} copper pipes, inventory restored`);
+    // Load saved cables
+    const savedCables = gameStorage.getCables();
+    for (const savedCable of savedCables) {
+      const planet = this.planets.find((_, i) =>
+        (i === 0 ? 'earth' : 'moon') === savedCable.planetId
+      );
+      if (planet) {
+        const savedPosition = new THREE.Vector3(
+          savedCable.position.x,
+          savedCable.position.y,
+          savedCable.position.z
+        );
+        // Restore the cable
+        this.cableNodeManager.restoreCable(savedPosition, savedCable.tileIndex, savedCable.depth);
+      }
+    }
+    // Rebuild all cable connections after loading
+    this.cableNodeManager.rebuildAllConnections();
+
+    // Load saved electric furnaces
+    const savedElectricFurnaces = gameStorage.getElectricFurnaces();
+    for (const savedFurnace of savedElectricFurnaces) {
+      const planet = this.planets.find((_, i) =>
+        (i === 0 ? 'earth' : 'moon') === savedFurnace.planetId
+      );
+      if (planet) {
+        const savedPosition = new THREE.Vector3(
+          savedFurnace.position.x,
+          savedFurnace.position.y,
+          savedFurnace.position.z
+        );
+        // Restore the electric furnace
+        this.electricFurnaceManager.restoreElectricFurnace(savedPosition, planet.center, savedFurnace.tileIndex, savedFurnace.rotation).then(placedFurnace => {
+          if (placedFurnace) {
+            placedFurnace.smeltingItem = savedFurnace.smeltingItem;
+            placedFurnace.smeltingProgress = savedFurnace.smeltingProgress;
+            placedFurnace.inputCount = savedFurnace.inputCount;
+            placedFurnace.outputItem = savedFurnace.outputItem;
+            placedFurnace.outputCount = savedFurnace.outputCount;
+          }
+        });
+      }
+    }
+
+    console.log(`Loaded save: ${saveData.tileChanges.length} tile changes, ${savedTorches.length} torches, ${savedFurnaces.length} furnaces, ${savedElectricFurnaces.length} electric furnaces, ${savedStorageChests.length} chests, ${savedGarbagePiles.length} piles, ${savedSteamEngines.length} steam engines, ${savedHydroGenerators.length} hydro generators, ${savedCopperPipes.length} copper pipes, ${savedCables.length} cables, inventory restored`);
   }
 
   /**
@@ -2641,6 +3088,60 @@ export class PlanetBlockInteraction {
             },
             openUI: () => {
               this.copperPipeUI.openPipe(pipe, network);
+            }
+          };
+        });
+      }
+    });
+
+    // Register Electric Furnaces
+    TechBlockRegistry.registerManager({
+      type: 'Electric Furnace',
+      getBlocks: (): TechBlockInfo[] => {
+        return this.electricFurnaceManager.getPlacedElectricFurnaces().map((furnace: PlacedElectricFurnace) => ({
+          type: 'Electric Furnace',
+          id: `electric-furnace-${furnace.tileIndex}`,
+          tileIndex: furnace.tileIndex,
+          position: { x: furnace.position.x, y: furnace.position.y, z: furnace.position.z },
+          getStatus: () => {
+            if (furnace.smeltingItem !== null && furnace.isPowered) {
+              return `Smelting ${Math.round(furnace.smeltingProgress * 100)}%`;
+            } else if (furnace.smeltingItem !== null && !furnace.isPowered) {
+              return 'No Power';
+            } else if (furnace.outputCount > 0) {
+              return `Output: ${furnace.outputCount}`;
+            }
+            return furnace.isPowered ? 'Powered' : 'No Power';
+          },
+          openUI: () => {
+            this.electricFurnaceUI.open(furnace);
+            this.craftingSystem.open();
+          }
+        }));
+      }
+    });
+
+    // Register Cables
+    TechBlockRegistry.registerManager({
+      type: 'Cable',
+      getBlocks: (): TechBlockInfo[] => {
+        return this.cableNodeManager.getPlacedCables().map((cable: PlacedCable) => {
+          const network = this.cableNodeManager.getCableNetwork(cable.id);
+          return {
+            type: 'Cable',
+            id: `cable-${cable.tileIndex}-${cable.depth}`,
+            tileIndex: cable.tileIndex,
+            position: { x: cable.position.x, y: cable.position.y, z: cable.position.z },
+            getStatus: () => {
+              if (!network) return 'Disconnected';
+              const hasSteam = network.connectedSteamEngines.length > 0;
+              const hasFurnace = network.connectedElectricFurnaces.length > 0;
+              if (hasSteam && hasFurnace) return 'Network Active';
+              if (hasSteam || hasFurnace) return 'Partial';
+              return `${network.cables.length} cables`;
+            },
+            openUI: () => {
+              // Cables don't have a dedicated UI
             }
           };
         });
