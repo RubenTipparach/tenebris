@@ -3,12 +3,28 @@ import { getAssetPath } from '../utils/assetPath';
 import { PlayerConfig } from '../config/PlayerConfig';
 import techVert from '../shaders/tech/tech.vert';
 import techFrag from '../shaders/tech/tech.frag';
+import steamVert from '../shaders/steam/steam.vert';
+import steamFrag from '../shaders/steam/steam.frag';
+
+// Steam particle data
+interface SteamParticle {
+  position: THREE.Vector3;
+  velocity: THREE.Vector3;
+  life: number;      // 0-1, 0 = just spawned, 1 = dead
+  seed: number;      // Random value for variation
+}
 
 export interface PlacedSteamEngine {
   mesh: THREE.Mesh;
   position: THREE.Vector3;
   tileIndex: number;
   rotation: number;
+  // Steam particle system
+  steamParticles: SteamParticle[];
+  steamMesh: THREE.Points | null;
+  steamGeometry: THREE.BufferGeometry | null;
+  isRunning: boolean;
+  spawnAccumulator: number; // Accumulates time for even particle spawning
 }
 
 export class SteamEngineManager {
@@ -18,6 +34,7 @@ export class SteamEngineManager {
   private textureLoader: THREE.TextureLoader;
   private steamEngineGeometry: THREE.BoxGeometry | null = null;
   private steamEngineMaterial: THREE.ShaderMaterial | null = null;
+  private steamParticleMaterial: THREE.ShaderMaterial | null = null;
 
   // Planet lighting uniforms
   private planetCenter: THREE.Vector3;
@@ -25,6 +42,13 @@ export class SteamEngineManager {
 
   // Steam engine is a cube (same dimensions as furnace/chest)
   private readonly STEAM_ENGINE_SIZE = 0.8;
+
+  // Steam particle settings
+  private readonly MAX_PARTICLES_PER_ENGINE = 30;
+  private readonly PARTICLE_SPAWN_RATE = 8; // particles per second when running
+  private readonly PARTICLE_LIFETIME = 1.5; // seconds
+  private readonly PARTICLE_SPEED = 0.8; // units per second upward
+  private readonly PARTICLE_SPREAD = 0.15; // horizontal spread
 
   constructor(scene: THREE.Scene, planetCenter?: THREE.Vector3, sunDirection?: THREE.Vector3) {
     this.scene = scene;
@@ -118,6 +142,21 @@ export class SteamEngineManager {
       },
       vertexShader: techVert,
       fragmentShader: techFrag,
+    });
+
+    // Create material for steam particles
+    // Use normal blending with depth test but no depth write for proper layering
+    this.steamParticleMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        time: { value: 0 },
+        particleSize: { value: 12.0 },
+      },
+      vertexShader: steamVert,
+      fragmentShader: steamFrag,
+      transparent: true,
+      depthWrite: false,
+      depthTest: true,
+      blending: THREE.NormalBlending,
     });
   }
 
@@ -222,7 +261,15 @@ export class SteamEngineManager {
       position: steamEnginePosition.clone(),
       tileIndex,
       rotation: facingAngle,
+      steamParticles: [],
+      steamMesh: null,
+      steamGeometry: null,
+      isRunning: false,
+      spawnAccumulator: 0,
     };
+
+    // Create particle system for this engine
+    this.createSteamParticleSystem(steamEngine, planetCenter);
 
     this.steamEngines.push(steamEngine);
     this.steamEngineMeshes.push(mesh);
@@ -266,7 +313,15 @@ export class SteamEngineManager {
       position: savedPosition.clone(),
       tileIndex,
       rotation,
+      steamParticles: [],
+      steamMesh: null,
+      steamGeometry: null,
+      isRunning: false,
+      spawnAccumulator: 0,
     };
+
+    // Create particle system for this engine
+    this.createSteamParticleSystem(steamEngine, planetCenter);
 
     this.steamEngines.push(steamEngine);
     this.steamEngineMeshes.push(mesh);
@@ -277,6 +332,14 @@ export class SteamEngineManager {
   public removeSteamEngine(steamEngine: PlacedSteamEngine): void {
     const index = this.steamEngines.indexOf(steamEngine);
     if (index === -1) return;
+
+    // Clean up particle system
+    if (steamEngine.steamMesh) {
+      this.scene.remove(steamEngine.steamMesh);
+    }
+    if (steamEngine.steamGeometry) {
+      steamEngine.steamGeometry.dispose();
+    }
 
     this.scene.remove(steamEngine.mesh);
     steamEngine.mesh.geometry.dispose();
@@ -336,5 +399,165 @@ export class SteamEngineManager {
       tileIndex: s.tileIndex,
       rotation: s.rotation,
     }));
+  }
+
+  /**
+   * Create the particle system geometry and mesh for a steam engine
+   */
+  private createSteamParticleSystem(steamEngine: PlacedSteamEngine, planetCenter: THREE.Vector3): void {
+    if (!this.steamParticleMaterial) return;
+
+    // Create buffer geometry with space for max particles
+    const geometry = new THREE.BufferGeometry();
+
+    // Position attribute (3 floats per particle)
+    const positions = new Float32Array(this.MAX_PARTICLES_PER_ENGINE * 3);
+    // Life attribute (1 float per particle)
+    const lives = new Float32Array(this.MAX_PARTICLES_PER_ENGINE);
+    // Seed attribute (1 float per particle)
+    const seeds = new Float32Array(this.MAX_PARTICLES_PER_ENGINE);
+    // Velocity attribute (3 floats per particle) - not used in shader but stored for CPU sim
+    const velocities = new Float32Array(this.MAX_PARTICLES_PER_ENGINE * 3);
+
+    // Initialize all particles as dead (life = 1)
+    for (let i = 0; i < this.MAX_PARTICLES_PER_ENGINE; i++) {
+      lives[i] = 1.0;
+      seeds[i] = Math.random();
+    }
+
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute('particleLife', new THREE.BufferAttribute(lives, 1));
+    geometry.setAttribute('particleSeed', new THREE.BufferAttribute(seeds, 1));
+    geometry.setAttribute('particleVelocity', new THREE.BufferAttribute(velocities, 3));
+
+    // Create the Points mesh with cloned material
+    const material = this.steamParticleMaterial.clone();
+    const points = new THREE.Points(geometry, material);
+
+    // Position the particle system at the top of the steam engine
+    const upDirection = steamEngine.position.clone().sub(planetCenter).normalize();
+    const emitterPos = steamEngine.position.clone().add(upDirection.clone().multiplyScalar(this.STEAM_ENGINE_SIZE / 2 + 0.1));
+    points.position.copy(emitterPos);
+
+    // Orient so that local Y aligns with surface normal (up direction)
+    const alignQuaternion = new THREE.Quaternion();
+    alignQuaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), upDirection);
+    points.quaternion.copy(alignQuaternion);
+
+    // Set render order to draw after most transparent objects (like water)
+    points.renderOrder = 100;
+
+    // Store the up direction for particle movement
+    points.userData.upDirection = upDirection;
+    points.userData.emitterPosition = emitterPos.clone();
+
+    this.scene.add(points);
+
+    steamEngine.steamGeometry = geometry;
+    steamEngine.steamMesh = points;
+  }
+
+  /**
+   * Set whether a steam engine is running (producing steam)
+   */
+  public setEngineRunning(tileIndex: number, isRunning: boolean): void {
+    const engine = this.getSteamEngineAtTile(tileIndex);
+    if (engine) {
+      engine.isRunning = isRunning;
+    }
+  }
+
+  /**
+   * Update all steam particle systems
+   */
+  public update(deltaTime: number): void {
+    // Cap delta time to prevent large jumps after pause (max ~2 frames at 60fps)
+    const cappedDelta = Math.min(deltaTime, 0.05);
+    const time = performance.now() / 1000;
+
+    for (const engine of this.steamEngines) {
+      if (!engine.steamMesh || !engine.steamGeometry) continue;
+
+      const geometry = engine.steamGeometry;
+      const positions = geometry.attributes.position.array as Float32Array;
+      const lives = geometry.attributes.particleLife.array as Float32Array;
+      const seeds = geometry.attributes.particleSeed.array as Float32Array;
+
+      // Count active particles and find dead slots
+      let activeCount = 0;
+      const deadSlots: number[] = [];
+
+      for (let i = 0; i < this.MAX_PARTICLES_PER_ENGINE; i++) {
+        if (lives[i] < 1.0) {
+          // Update living particle
+          lives[i] += cappedDelta / this.PARTICLE_LIFETIME;
+
+          if (lives[i] >= 1.0) {
+            // Particle died
+            lives[i] = 1.0;
+            deadSlots.push(i);
+          } else {
+            // Move particle upward (in local space, up is Y)
+            const speed = this.PARTICLE_SPEED * cappedDelta;
+            positions[i * 3 + 1] += speed; // Y is up in local space
+
+            // Add some horizontal drift
+            const drift = Math.sin(time * 2 + seeds[i] * 10) * 0.02 * cappedDelta;
+            positions[i * 3] += drift;
+            positions[i * 3 + 2] += Math.cos(time * 2 + seeds[i] * 10) * 0.02 * cappedDelta;
+
+            activeCount++;
+          }
+        } else {
+          deadSlots.push(i);
+        }
+      }
+
+      // Spawn new particles if engine is running, using accumulator for even distribution
+      if (engine.isRunning && deadSlots.length > 0) {
+        // Accumulate time, but cap it to prevent burst spawning after pause
+        // Cap at 2 spawn intervals worth to allow at most 2 particles per frame
+        const spawnInterval = 1.0 / this.PARTICLE_SPAWN_RATE;
+        const maxAccumulator = spawnInterval * 2;
+        engine.spawnAccumulator = Math.min(engine.spawnAccumulator + cappedDelta, maxAccumulator);
+
+        let spawned = 0;
+        const maxSpawnPerFrame = 2; // Never spawn more than 2 particles per frame
+
+        // Spawn one particle at a time until we've caught up
+        while (engine.spawnAccumulator >= spawnInterval && spawned < deadSlots.length && spawned < maxSpawnPerFrame) {
+          engine.spawnAccumulator -= spawnInterval;
+
+          const slot = deadSlots[spawned];
+
+          // Spawn at origin with random spread (local space)
+          const spreadX = (Math.random() - 0.5) * this.PARTICLE_SPREAD * 2;
+          const spreadZ = (Math.random() - 0.5) * this.PARTICLE_SPREAD * 2;
+
+          positions[slot * 3] = spreadX;
+          positions[slot * 3 + 1] = 0; // Start at emitter height
+          positions[slot * 3 + 2] = spreadZ;
+
+          lives[slot] = 0.0; // Just spawned
+          seeds[slot] = Math.random();
+
+          spawned++;
+        }
+      } else if (!engine.isRunning) {
+        // Reset accumulator when not running
+        engine.spawnAccumulator = 0;
+      }
+
+      // Mark attributes as needing update
+      geometry.attributes.position.needsUpdate = true;
+      geometry.attributes.particleLife.needsUpdate = true;
+      geometry.attributes.particleSeed.needsUpdate = true;
+
+      // Update material time uniform
+      const material = engine.steamMesh.material as THREE.ShaderMaterial;
+      if (material.uniforms.time) {
+        material.uniforms.time.value = time;
+      }
+    }
   }
 }

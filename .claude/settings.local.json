@@ -10,7 +10,8 @@
       "Bash(./node_modules/.bin/tsc:*)",
       "Bash(chmod:*)",
       "Bash(cd:*)",
-      "Bash(cat:*)"
+      "Bash(cat:*)",
+      "Bash(ls:*)"
     ],
     "deny": [],
     "ask": []

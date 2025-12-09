@@ -587,4 +587,38 @@ export class SteamEngineUI {
   public restoreState(tileIndex: number, state: SteamEngineState): void {
     this.engineStates.set(tileIndex, state);
   }
+
+  /**
+   * Update all steam engine states independently of UI being open.
+   * Called from game loop to keep engines running when not viewing their menu.
+   */
+  public updateAllEngines(steamEngineTileIndices: number[]): void {
+    if (!this.getConnectedHydroGenerators || !this.getHydroGeneratorWaterOutput) return;
+
+    for (const tileIndex of steamEngineTileIndices) {
+      // Ensure state exists
+      if (!this.engineStates.has(tileIndex)) {
+        this.engineStates.set(tileIndex, {
+          hasFuel: false,
+          fuelAmount: 0,
+          isRunning: false,
+          waterInput: 0,
+          steamOutput: 0,
+        });
+      }
+
+      const state = this.engineStates.get(tileIndex)!;
+
+      // Calculate water input from connected hydro generators
+      let totalWaterInput = 0;
+      const connectedHydros = this.getConnectedHydroGenerators(tileIndex);
+      for (const hydroTile of connectedHydros) {
+        totalWaterInput += this.getHydroGeneratorWaterOutput(hydroTile);
+      }
+
+      state.waterInput = totalWaterInput;
+      state.isRunning = state.hasFuel && state.fuelAmount > 0 && totalWaterInput > 0;
+      state.steamOutput = state.isRunning ? totalWaterInput * 0.8 : 0;
+    }
+  }
 }

@@ -20,6 +20,7 @@ import { StorageUI } from './StorageUI';
 import { getAssetPath } from '../utils/assetPath';
 import { gameStorage } from '../engine/GameStorage';
 import { PlayerConfig } from '../config/PlayerConfig';
+import { TechBlockRegistry, TechBlockInfo } from '../engine/TechBlockRegistry';
 
 // Map HexBlockType to ItemType (what you get when mining)
 function blockToItem(blockType: HexBlockType): ItemType {
@@ -212,6 +213,7 @@ export class PlanetBlockInteraction {
     });
     this.steamEngineUI.setSaveCallback(() => {
       this.saveInventory();
+      this.saveSteamEngineStates();
     });
     this.steamEngineUI.setUpdateHotbarCallback(() => {
       this.updateHotbarUI();
@@ -303,6 +305,9 @@ export class PlanetBlockInteraction {
           .map(p => ({ tileIndex: p.tileIndex, depth: p.depth })),
       };
     });
+
+    // Register tech blocks with the registry for F3 debug menu
+    this.registerTechBlocksWithRegistry();
 
     this.createHighlightMesh();
     this.setupBlockSelection();
@@ -697,6 +702,28 @@ export class PlanetBlockInteraction {
     }
   }
 
+  /**
+   * Update steam engine states and particles
+   */
+  private updateSteamEngineParticles(deltaTime: number): void {
+    // Get all steam engine tile indices
+    const steamEngines = this.steamEngineManager.getPlacedSteamEngines();
+    const tileIndices = steamEngines.map(e => e.tileIndex);
+
+    // Update all engine states (water connections, running state) independently of UI
+    this.steamEngineUI.updateAllEngines(tileIndices);
+
+    // Sync running state from UI to 3D particle system for each engine
+    for (const engine of steamEngines) {
+      const state = this.steamEngineUI.getEngineState(engine.tileIndex);
+      const isRunning = state?.isRunning ?? false;
+      this.steamEngineManager.setEngineRunning(engine.tileIndex, isRunning);
+    }
+
+    // Update particle simulation
+    this.steamEngineManager.update(deltaTime);
+  }
+
   public update(deltaTime: number, leftClick: boolean, rightClick: boolean, wheelDelta: number = 0): void {
     this.rightClickCooldown = Math.max(0, this.rightClickCooldown - deltaTime);
 
@@ -731,6 +758,9 @@ export class PlanetBlockInteraction {
 
     // Update furnace smelting progress
     this.furnaceManager.update(deltaTime);
+
+    // Update steam engine particles and sync running state from UI
+    this.updateSteamEngineParticles(deltaTime);
 
     // Periodically rebuild copper pipe connections (handles chunk loading/unloading)
     this.pipeConnectionRebuildTimer += deltaTime;
@@ -887,7 +917,7 @@ export class PlanetBlockInteraction {
       // Handle copper pipe interaction (right click to view network, left click to mine)
       if (rightClick && this.rightClickCooldown === 0 && pipe) {
         const network = this.copperPipeManager.getPipeNetwork(pipe.id);
-        this.copperPipeUI.open(pipe, network);
+        this.copperPipeUI.openPipe(pipe, network);
         this.rightClickCooldown = this.CLICK_COOLDOWN;
       } else if (leftClick && pipe) {
         this.handleCopperPipeMining(deltaTime, pipe);
@@ -923,8 +953,11 @@ export class PlanetBlockInteraction {
       const engineMesh = steamEngineHit.object as THREE.Mesh;
       const steamEngine = this.steamEngineManager.getSteamEngineByMesh(engineMesh);
 
-      // Handle steam engine interaction (left click to mine - no right click action yet)
-      if (leftClick && steamEngine) {
+      // Handle steam engine interaction (right click to open UI, left click to mine)
+      if (rightClick && this.rightClickCooldown === 0 && steamEngine) {
+        this.steamEngineUI.open(steamEngine);
+        this.rightClickCooldown = this.CLICK_COOLDOWN;
+      } else if (leftClick && steamEngine) {
         this.handleSteamEngineMining(deltaTime, steamEngine);
       } else {
         this.resetMining();
@@ -1339,14 +1372,19 @@ export class PlanetBlockInteraction {
     this.updateHotbarUI();
     this.saveInventory();
 
+    const tileIndex = steamEngine.tileIndex;
+
     // Remove steam engine from save
     for (let i = 0; i < this.planets.length; i++) {
       const planetId = i === 0 ? 'earth' : 'moon';
-      gameStorage.removeSteamEngine(planetId, steamEngine.tileIndex);
+      gameStorage.removeSteamEngine(planetId, tileIndex);
     }
 
     // Remove the steam engine from the world
     this.steamEngineManager.removeSteamEngine(steamEngine);
+
+    // Update nearby pipes to remove connection to this steam engine
+    this.copperPipeManager.updatePipesNearTile(tileIndex);
   }
 
   private handleHydroGeneratorMining(deltaTime: number, hydroGenerator: PlacedHydroGenerator): void {
@@ -1384,14 +1422,19 @@ export class PlanetBlockInteraction {
     this.updateHotbarUI();
     this.saveInventory();
 
+    const tileIndex = hydroGenerator.tileIndex;
+
     // Remove hydro generator from save
     for (let i = 0; i < this.planets.length; i++) {
       const planetId = i === 0 ? 'earth' : 'moon';
-      gameStorage.removeHydroGenerator(planetId, hydroGenerator.tileIndex);
+      gameStorage.removeHydroGenerator(planetId, tileIndex);
     }
 
     // Remove the hydro generator from the world
     this.hydroGeneratorManager.removeHydroGenerator(hydroGenerator);
+
+    // Update nearby pipes to remove connection to this hydro generator
+    this.copperPipeManager.updatePipesNearTile(tileIndex);
   }
 
   private handleCopperPipeMining(deltaTime: number, pipe: PlacedCopperPipe): void {
@@ -1813,8 +1856,13 @@ export class PlanetBlockInteraction {
         const planetId = this.getPlanetId(planet);
         gameStorage.saveSteamEngine(planetId, tileIndex, {
           position: { x: placedSteamEngine.position.x, y: placedSteamEngine.position.y, z: placedSteamEngine.position.z },
-          rotation: placedSteamEngine.rotation
+          rotation: placedSteamEngine.rotation,
+          hasFuel: false,
+          fuelAmount: 0,
         });
+
+        // Update nearby pipes to show connection to this steam engine
+        this.copperPipeManager.updatePipesNearTile(tileIndex);
       }
     }
   }
@@ -1972,6 +2020,9 @@ export class PlanetBlockInteraction {
           rotation: placedHydroGenerator.rotation,
           waterDepth: placedHydroGenerator.waterDepth
         });
+
+        // Update nearby pipes to show connection to this hydro generator
+        this.copperPipeManager.updatePipesNearTile(tileIndex);
       }
     }
   }
@@ -2168,6 +2219,33 @@ export class PlanetBlockInteraction {
   // Save inventory to local storage
   private saveInventory(): void {
     gameStorage.saveInventory(this.inventory.exportForSave());
+  }
+
+  // Save all steam engine states (fuel) to local storage
+  private saveSteamEngineStates(): void {
+    const steamEngines = this.steamEngineManager.getPlacedSteamEngines();
+    for (const engine of steamEngines) {
+      // Determine which planet this engine is on
+      let planetId = 'earth';
+      for (let i = 0; i < this.planets.length; i++) {
+        const planet = this.planets[i];
+        const tile = planet.getTileByIndex(engine.tileIndex);
+        if (tile) {
+          planetId = i === 0 ? 'earth' : 'moon';
+          break;
+        }
+      }
+
+      // Get fuel state from UI
+      const state = this.steamEngineUI.getEngineState(engine.tileIndex);
+
+      gameStorage.saveSteamEngine(planetId, engine.tileIndex, {
+        position: { x: engine.position.x, y: engine.position.y, z: engine.position.z },
+        rotation: engine.rotation,
+        hasFuel: state?.hasFuel ?? false,
+        fuelAmount: state?.fuelAmount ?? 0,
+      });
+    }
   }
 
   // Save all furnace states to local storage
@@ -2383,6 +2461,15 @@ export class PlanetBlockInteraction {
         );
         // Restore the steam engine
         this.steamEngineManager.restoreSteamEngine(savedPosition, planet.center, savedSteamEngine.tileIndex, savedSteamEngine.rotation);
+
+        // Restore fuel state to UI
+        this.steamEngineUI.restoreState(savedSteamEngine.tileIndex, {
+          hasFuel: savedSteamEngine.hasFuel ?? false,
+          fuelAmount: savedSteamEngine.fuelAmount ?? 0,
+          isRunning: false,
+          waterInput: 0,
+          steamOutput: 0,
+        });
       }
     }
 
@@ -2423,5 +2510,141 @@ export class PlanetBlockInteraction {
     this.copperPipeManager.rebuildAllConnections();
 
     console.log(`Loaded save: ${saveData.tileChanges.length} tile changes, ${savedTorches.length} torches, ${savedFurnaces.length} furnaces, ${savedStorageChests.length} chests, ${savedGarbagePiles.length} piles, ${savedSteamEngines.length} steam engines, ${savedHydroGenerators.length} hydro generators, ${savedCopperPipes.length} copper pipes, inventory restored`);
+  }
+
+  /**
+   * Register all tech block managers with the TechBlockRegistry for F3 debug menu
+   */
+  private registerTechBlocksWithRegistry(): void {
+    // Register Furnaces
+    TechBlockRegistry.registerManager({
+      type: 'Furnace',
+      getBlocks: (): TechBlockInfo[] => {
+        return this.furnaceManager.getPlacedFurnaces().map((furnace: PlacedFurnace) => ({
+          type: 'Furnace',
+          id: `furnace-${furnace.tileIndex}`,
+          tileIndex: furnace.tileIndex,
+          position: { x: furnace.position.x, y: furnace.position.y, z: furnace.position.z },
+          getStatus: () => {
+            if (furnace.smeltingItem !== null && furnace.fuelAmount > 0) {
+              return `Smelting ${Math.round(furnace.smeltingProgress * 100)}%`;
+            } else if (furnace.smeltingItem !== null && furnace.fuelAmount === 0) {
+              return 'No Fuel';
+            } else if (furnace.outputCount > 0) {
+              return `Output: ${furnace.outputCount}`;
+            }
+            return 'Idle';
+          },
+          openUI: () => {
+            this.furnaceUI.open(furnace);
+            this.craftingSystem.open();
+          }
+        }));
+      }
+    });
+
+    // Register Steam Engines
+    TechBlockRegistry.registerManager({
+      type: 'Steam Engine',
+      getBlocks: (): TechBlockInfo[] => {
+        return this.steamEngineManager.getPlacedSteamEngines().map((engine: PlacedSteamEngine) => {
+          const state = this.steamEngineUI.getEngineState(engine.tileIndex);
+          return {
+            type: 'Steam Engine',
+            id: `steam-engine-${engine.tileIndex}`,
+            tileIndex: engine.tileIndex,
+            position: { x: engine.position.x, y: engine.position.y, z: engine.position.z },
+            getStatus: () => {
+              if (state?.isRunning) {
+                return `Running (${state.steamOutput.toFixed(1)} steam/s)`;
+              } else if (state?.hasFuel && state.waterInput === 0) {
+                return 'No Water';
+              } else if (!state?.hasFuel) {
+                return 'No Fuel';
+              }
+              return 'Idle';
+            },
+            openUI: () => {
+              this.steamEngineUI.open(engine);
+              this.craftingSystem.open();
+            }
+          };
+        });
+      }
+    });
+
+    // Register Hydro Generators
+    TechBlockRegistry.registerManager({
+      type: 'Hydro Generator',
+      getBlocks: (): TechBlockInfo[] => {
+        return this.hydroGeneratorManager.getPlacedHydroGenerators().map((hydro: PlacedHydroGenerator) => ({
+          type: 'Hydro Generator',
+          id: `hydro-generator-${hydro.tileIndex}`,
+          tileIndex: hydro.tileIndex,
+          position: { x: hydro.position.x, y: hydro.position.y, z: hydro.position.z },
+          getStatus: () => {
+            if (hydro.isActive) {
+              return `Active (${hydro.waterPumpedOut.toFixed(1)} water/s)`;
+            }
+            return 'Inactive';
+          },
+          openUI: () => {
+            this.hydroGeneratorUI.open(hydro);
+            this.craftingSystem.open();
+          }
+        }));
+      }
+    });
+
+    // Register Storage Chests
+    TechBlockRegistry.registerManager({
+      type: 'Storage Chest',
+      getBlocks: (): TechBlockInfo[] => {
+        return this.storageChestManager.getPlacedChests().map((chest: PlacedStorageChest) => {
+          const usedSlots = chest.slots.filter(s => s.itemType !== ItemType.NONE).length;
+          return {
+            type: 'Storage Chest',
+            id: `storage-chest-${chest.tileIndex}`,
+            tileIndex: chest.tileIndex,
+            position: { x: chest.position.x, y: chest.position.y, z: chest.position.z },
+            getStatus: () => {
+              if (usedSlots === 0) return 'Empty';
+              return `${usedSlots}/27 slots`;
+            },
+            openUI: () => {
+              this.storageUI.open(chest);
+              this.craftingSystem.open();
+            }
+          };
+        });
+      }
+    });
+
+    // Register Copper Pipes
+    TechBlockRegistry.registerManager({
+      type: 'Copper Pipe',
+      getBlocks: (): TechBlockInfo[] => {
+        return this.copperPipeManager.getPlacedPipes().map((pipe: PlacedCopperPipe) => {
+          const network = this.copperPipeManager.getPipeNetwork(pipe.id);
+          return {
+            type: 'Copper Pipe',
+            id: `copper-pipe-${pipe.tileIndex}-${pipe.depth}`,
+            tileIndex: pipe.tileIndex,
+            position: { x: pipe.position.x, y: pipe.position.y, z: pipe.position.z },
+            getStatus: () => {
+              if (!network) return 'Disconnected';
+              const hasHydro = network.connectedHydroGenerators.length > 0;
+              const hasSteam = network.connectedSteamEngines.length > 0;
+              if (hasHydro && hasSteam) return 'Network Active';
+              if (hasHydro || hasSteam) return 'Partial';
+              return `${network.pipes.length} pipes`;
+            },
+            openUI: () => {
+              this.copperPipeUI.openPipe(pipe, network);
+            }
+          };
+        });
+      }
+    });
   }
 }

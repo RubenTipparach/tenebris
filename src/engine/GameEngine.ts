@@ -4,6 +4,7 @@ import skyboxVert from '../shaders/skybox/skybox.vert';
 import skyboxFrag from '../shaders/skybox/skybox.frag';
 import { profiler } from './Profiler';
 import { isMobileDevice } from './InputManager';
+import { getTechBlocksMenu } from '../player/TechBlocksMenu';
 
 // Create starfield shader material for background
 function createStarfieldMaterial(): THREE.ShaderMaterial {
@@ -89,6 +90,11 @@ export class GameEngine {
       if (e.code === 'F3') {
         e.preventDefault();
         profiler.toggle();
+      }
+      // F2 to toggle tech blocks menu
+      if (e.code === 'F2') {
+        e.preventDefault();
+        getTechBlocksMenu().toggle();
       }
     });
   }

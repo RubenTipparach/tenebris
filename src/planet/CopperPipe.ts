@@ -242,6 +242,22 @@ export class CopperPipeManager {
             pipe.connectorMeshes.push(connector);
           }
         }
+      } else if (conn.type === 'hydro-generator') {
+        // Create connector to hydro generator (water pump)
+        const hydro = this.getHydroGeneratorAtTile?.(conn.tileIndex);
+        if (hydro) {
+          const connector = this.createConnectorMesh(pipe.position, hydro.position);
+          this.scene.add(connector);
+          pipe.connectorMeshes.push(connector);
+        }
+      } else if (conn.type === 'steam-engine') {
+        // Create connector to steam engine
+        const steam = this.getSteamEngineAtTile?.(conn.tileIndex);
+        if (steam) {
+          const connector = this.createConnectorMesh(pipe.position, steam.position);
+          this.scene.add(connector);
+          pipe.connectorMeshes.push(connector);
+        }
       }
     }
 
@@ -270,11 +286,28 @@ export class CopperPipeManager {
     pipe.connectorMeshes = [];
 
     // Create connectors to adjacent pipes (only where this pipe's ID < neighbor's ID)
+    // and to all connected machines (hydro generators and steam engines)
     for (const conn of pipe.connections) {
       if (conn.type === 'pipe') {
         const neighborPipe = this.pipes.get(conn.pipeId);
         if (neighborPipe && pipe.id < neighborPipe.id) {
           const connector = this.createConnectorMesh(pipe.position, neighborPipe.position);
+          this.scene.add(connector);
+          pipe.connectorMeshes.push(connector);
+        }
+      } else if (conn.type === 'hydro-generator') {
+        // Create connector to hydro generator (water pump)
+        const hydro = this.getHydroGeneratorAtTile?.(conn.tileIndex);
+        if (hydro) {
+          const connector = this.createConnectorMesh(pipe.position, hydro.position);
+          this.scene.add(connector);
+          pipe.connectorMeshes.push(connector);
+        }
+      } else if (conn.type === 'steam-engine') {
+        // Create connector to steam engine
+        const steam = this.getSteamEngineAtTile?.(conn.tileIndex);
+        if (steam) {
+          const connector = this.createConnectorMesh(pipe.position, steam.position);
           this.scene.add(connector);
           pipe.connectorMeshes.push(connector);
         }
@@ -588,6 +621,28 @@ export class CopperPipeManager {
     for (const pipe of this.pipes.values()) {
       this.rebuildConnectorsForPipe(pipe);
     }
+    this.rebuildNetworks();
+  }
+
+  // Call when a machine (steam engine or hydro generator) is placed or removed
+  // This updates any nearby pipes to show/hide their connection to the machine
+  public updatePipesNearTile(tileIndex: number): void {
+    if (!this.getNeighborTiles) return;
+
+    // Get neighbor tiles that might have pipes connected to this machine
+    const neighborTiles = this.getNeighborTiles(tileIndex);
+    const tilesToCheck = [tileIndex, ...neighborTiles];
+
+    // Find all pipes that might be affected
+    for (const pipe of this.pipes.values()) {
+      if (tilesToCheck.includes(pipe.tileIndex)) {
+        // Update this pipe's connections and visual connectors
+        this.updatePipeConnections(pipe);
+        this.rebuildConnectorsForPipe(pipe);
+      }
+    }
+
+    // Rebuild networks to update machine connectivity
     this.rebuildNetworks();
   }
 

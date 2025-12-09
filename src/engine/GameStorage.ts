@@ -51,6 +51,9 @@ export interface SavedSteamEngine {
   tileIndex: number;
   position: { x: number; y: number; z: number };
   rotation: number;
+  // Fuel state
+  hasFuel: boolean;
+  fuelAmount: number;
 }
 
 // Hydro generator data

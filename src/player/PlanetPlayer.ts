@@ -135,7 +135,6 @@ export class PlanetPlayer {
 
   // Surface camera angles (stable tracking to avoid gimbal lock issues)
   private surfacePitch: number = 0;
-  private surfaceYaw: number = 0;
   // Horizontal look direction in world space (for yaw persistence as player walks)
   private surfaceForward: THREE.Vector3 = new THREE.Vector3(0, 0, -1);
 
@@ -1012,40 +1011,6 @@ export class PlanetPlayer {
     }
 
     console.log('==============================================');
-  }
-
-  // Instantly align camera up with gravity direction, preserving look direction
-  // Called every frame when inside gravity field (after transition is complete)
-  private alignUpWithGravity(): void {
-    if (!this.currentPlanet) return;
-
-    // Get planet's "up" at our position (opposite of gravity direction)
-    const planetUp = this.currentPlanet.getSurfaceNormal(this.position);
-
-    // Get our current look direction (camera looks along -localForward)
-    const lookDir = this.localForward.clone().negate();
-
-    // Calculate what the camera's "up" should be to be level with planet
-    // It should be perpendicular to look direction and as close to planetUp as possible
-    const targetCameraUp = planetUp.clone();
-    targetCameraUp.sub(lookDir.clone().multiplyScalar(planetUp.dot(lookDir)));
-
-    if (targetCameraUp.lengthSq() < 0.001) {
-      // Looking straight up or down relative to planet - can't determine roll
-      return;
-    }
-    targetCameraUp.normalize();
-
-    // Set up immediately to target (no slerp)
-    this.localUp.copy(targetCameraUp);
-
-    // Recompute right to maintain orthogonality (forward stays the same!)
-    this.localRight = new THREE.Vector3().crossVectors(this.localForward, this.localUp).normalize();
-    // Re-orthogonalize up to ensure perfect orthonormal basis
-    this.localUp = new THREE.Vector3().crossVectors(this.localRight, this.localForward).normalize();
-
-    // Update the orientation quaternion from our local axes
-    this.updateOrientationFromLocal();
   }
 
   // Slerp only the roll component to level the camera relative to planet surface
