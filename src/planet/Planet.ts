@@ -3712,8 +3712,32 @@ export class Planet {
     }
   }
 
+  // Cache for fast tile lookup - stores the last queried tile for spatial coherence
+  private lastQueriedTile: HexTile | null = null;
+
   public getTileAtPoint(point: THREE.Vector3): HexTile | null {
     return this.polyhedron.getTileAtPoint(point.clone().sub(this.center));
+  }
+
+  // Fast tile lookup using cached hint - O(1) for nearby points instead of O(n)
+  // Use this for player position queries where the player moves continuously
+  public getTileAtPointFast(point: THREE.Vector3): HexTile | null {
+    const localPoint = point.clone().sub(this.center);
+
+    // If we have a cached tile, use it as a hint for fast BFS lookup
+    if (this.lastQueriedTile) {
+      this.lastQueriedTile = this.polyhedron.getTileAtPointFromHint(localPoint, this.lastQueriedTile);
+      return this.lastQueriedTile;
+    }
+
+    // First query - do full scan and cache the result
+    this.lastQueriedTile = this.polyhedron.getTileAtPoint(localPoint);
+    return this.lastQueriedTile;
+  }
+
+  // Reset the tile cache hint (call when teleporting or switching planets)
+  public resetTileCache(): void {
+    this.lastQueriedTile = null;
   }
 
   public getDepthAtPoint(point: THREE.Vector3): number {

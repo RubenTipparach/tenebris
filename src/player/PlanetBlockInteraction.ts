@@ -13,12 +13,14 @@ import { HydroGeneratorManager, PlacedHydroGenerator } from '../planet/HydroGene
 import { CopperPipeManager, PlacedCopperPipe } from '../planet/CopperPipe';
 import { CableNodeManager, PlacedCable } from '../planet/CableNode';
 import { ElectricFurnaceManager, PlacedElectricFurnace } from '../planet/ElectricFurnace';
+import { ElectronicsWorkbenchManager, PlacedElectronicsWorkbench } from '../planet/ElectronicsWorkbench';
 import { CraftingSystem } from './CraftingSystem';
 import { HydroGeneratorUI } from './HydroGeneratorUI';
 import { SteamEngineUI } from './SteamEngineUI';
 import { CopperPipeUI } from './CopperPipeUI';
 import { FurnaceUI } from './FurnaceUI';
 import { ElectricFurnaceUI } from './ElectricFurnaceUI';
+import { ElectronicsWorkbenchUI } from './ElectronicsWorkbenchUI';
 import { StorageUI } from './StorageUI';
 import { getAssetPath } from '../utils/assetPath';
 import { gameStorage } from '../engine/GameStorage';
@@ -128,6 +130,11 @@ export class PlanetBlockInteraction {
   private electricFurnaceManager: ElectricFurnaceManager;
   private electricFurnaceUI: ElectricFurnaceUI;
   private miningElectricFurnaceTarget: { furnace: PlacedElectricFurnace } | null = null;
+
+  // Electronics workbench system
+  private electronicsWorkbenchManager: ElectronicsWorkbenchManager;
+  private electronicsWorkbenchUI: ElectronicsWorkbenchUI;
+  private miningElectronicsWorkbenchTarget: { workbench: PlacedElectronicsWorkbench } | null = null;
 
   private rightClickCooldown: number = 0;
   private readonly CLICK_COOLDOWN = 0.25;
@@ -241,11 +248,7 @@ export class PlanetBlockInteraction {
 
     // Initialize cable node system (for power connections)
     this.cableNodeManager = new CableNodeManager(scene, planetCenter, sunDirection);
-    this.cableNodeManager.setMachineCallbacks(
-      (tileIndex) => this.steamEngineManager.getSteamEngineAtTile(tileIndex),
-      (tileIndex) => this.electricFurnaceManager.getElectricFurnaceAtTile(tileIndex),
-      (tileIndex) => this.getNeighborTileIndices(tileIndex)
-    );
+    // Machine callbacks are set after all managers are initialized (see below)
 
     // Initialize electric furnace system
     this.electricFurnaceManager = new ElectricFurnaceManager(scene, planetCenter, sunDirection);
@@ -269,6 +272,40 @@ export class PlanetBlockInteraction {
     this.electricFurnaceUI.setOnUpdateInventoryCallback(() => {
       this.craftingSystem.updateInventorySlotsPublic();
     });
+
+    // Initialize electronics workbench system
+    this.electronicsWorkbenchManager = new ElectronicsWorkbenchManager(scene, planetCenter, sunDirection);
+    this.electronicsWorkbenchUI = new ElectronicsWorkbenchUI(this.inventory);
+    this.electronicsWorkbenchUI.setOnCloseCallback(() => {
+      // Electronics workbench close is handled by inventory menu close
+    });
+    this.electronicsWorkbenchUI.setOnOpenInventoryCallback(() => {
+      this.craftingSystem.open();
+    });
+    this.electronicsWorkbenchUI.setOnUpdateHotbarCallback(() => {
+      this.updateHotbarUI();
+    });
+    this.electronicsWorkbenchUI.setOnUpdateInventoryCallback(() => {
+      this.craftingSystem.updateInventorySlotsPublic();
+    });
+    this.electronicsWorkbenchUI.setIsPoweredCallback((tileIndex) => {
+      // Check if workbench is connected to a running power source via cables
+      return this.cableNodeManager.isElectricFurnaceConnectedToRunningSteamEngine(
+        tileIndex,
+        (steamTileIndex) => {
+          const engine = this.steamEngineManager.getSteamEngineAtTile(steamTileIndex);
+          return engine?.isRunning ?? false;
+        }
+      );
+    });
+
+    // Set up cable node machine callbacks (now that all managers are initialized)
+    this.cableNodeManager.setMachineCallbacks(
+      (tileIndex) => this.steamEngineManager.getSteamEngineAtTile(tileIndex),
+      (tileIndex) => this.electricFurnaceManager.getElectricFurnaceAtTile(tileIndex),
+      (tileIndex) => this.electronicsWorkbenchManager.getElectronicsWorkbenchAtTile(tileIndex),
+      (tileIndex) => this.getNeighborTileIndices(tileIndex)
+    );
 
     // Set up hydro generator connection callback
     this.hydroGeneratorUI.setConnectionCallback((hydroTileIndex) => {
@@ -308,6 +345,7 @@ export class PlanetBlockInteraction {
       // Close all machine UIs when inventory closes
       this.furnaceUI.close();
       this.electricFurnaceUI.close();
+      this.electronicsWorkbenchUI.close();
       this.storageUI.close();
       this.hydroGeneratorUI.close();
       this.steamEngineUI.close();
@@ -342,6 +380,15 @@ export class PlanetBlockInteraction {
         furnaces: this.furnaceManager.getPlacedFurnaces()
           .filter(f => tileSet.has(f.tileIndex))
           .map(f => ({ tileIndex: f.tileIndex })),
+        electricFurnaces: this.electricFurnaceManager.getPlacedElectricFurnaces()
+          .filter(f => tileSet.has(f.tileIndex))
+          .map(f => ({ tileIndex: f.tileIndex })),
+        electronicsWorkbenches: this.electronicsWorkbenchManager.getPlacedElectronicsWorkbenches()
+          .filter(w => tileSet.has(w.tileIndex))
+          .map(w => ({ tileIndex: w.tileIndex })),
+        storageChests: this.storageChestManager.getPlacedChests()
+          .filter(c => tileSet.has(c.tileIndex))
+          .map(c => ({ tileIndex: c.tileIndex })),
         steamEngines: this.steamEngineManager.getPlacedSteamEngines()
           .filter(s => tileSet.has(s.tileIndex))
           .map(s => ({ tileIndex: s.tileIndex })),
@@ -351,6 +398,9 @@ export class PlanetBlockInteraction {
         copperPipes: this.copperPipeManager.getPlacedPipes()
           .filter(p => tileSet.has(p.tileIndex))
           .map(p => ({ tileIndex: p.tileIndex, depth: p.depth })),
+        cables: this.cableNodeManager.getPlacedCables()
+          .filter(c => tileSet.has(c.tileIndex))
+          .map(c => ({ tileIndex: c.tileIndex, depth: c.depth })),
       };
     });
 
@@ -836,6 +886,7 @@ export class PlanetBlockInteraction {
       const torchIntensity = torchData[0].intensity;
       this.furnaceManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
       this.electricFurnaceManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
+      this.electronicsWorkbenchManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
       this.storageChestManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
       this.garbagePileManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
       this.steamEngineManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
@@ -882,6 +933,8 @@ export class PlanetBlockInteraction {
     const cableMeshes = this.cableNodeManager.getCableMeshes();
     // Get electric furnace meshes for picking
     const electricFurnaceMeshes = this.electricFurnaceManager.getElectricFurnaceMeshes();
+    // Get electronics workbench meshes for picking
+    const electronicsWorkbenchMeshes = this.electronicsWorkbenchManager.getElectronicsWorkbenchMeshes();
 
     const treeIntersects = this.raycaster.intersectObjects(treeMeshes, false);
     const torchIntersects = this.raycaster.intersectObjects(torchMeshes, false);
@@ -893,6 +946,7 @@ export class PlanetBlockInteraction {
     const copperPipeIntersects = this.raycaster.intersectObjects(copperPipeMeshes, false);
     const cableIntersects = this.raycaster.intersectObjects(cableMeshes, false);
     const electricFurnaceIntersects = this.raycaster.intersectObjects(electricFurnaceMeshes, false);
+    const electronicsWorkbenchIntersects = this.raycaster.intersectObjects(electronicsWorkbenchMeshes, false);
 
     // Raycast against all planets and find the closest hit
     let closestBlockHit: ReturnType<Planet['raycast']> = null;
@@ -923,6 +977,7 @@ export class PlanetBlockInteraction {
     let hitCopperPipe = false;
     let hitCable = false;
     let hitElectricFurnace = false;
+    let hitElectronicsWorkbench = false;
     let treeHit: THREE.Intersection | null = null;
     let torchHit: THREE.Intersection | null = null;
     let furnaceHit: THREE.Intersection | null = null;
@@ -933,6 +988,7 @@ export class PlanetBlockInteraction {
     let copperPipeHit: THREE.Intersection | null = null;
     let cableHit: THREE.Intersection | null = null;
     let electricFurnaceHit: THREE.Intersection | null = null;
+    let electronicsWorkbenchHit: THREE.Intersection | null = null;
 
     // Find the closest hit among all types
     const treeDistance = treeIntersects.length > 0 ? treeIntersects[0].distance : Infinity;
@@ -945,7 +1001,8 @@ export class PlanetBlockInteraction {
     const copperPipeDistance = copperPipeIntersects.length > 0 ? copperPipeIntersects[0].distance : Infinity;
     const cableDistance = cableIntersects.length > 0 ? cableIntersects[0].distance : Infinity;
     const electricFurnaceDistance = electricFurnaceIntersects.length > 0 ? electricFurnaceIntersects[0].distance : Infinity;
-    const closestObjectDistance = Math.min(treeDistance, torchDistance, furnaceDistance, storageChestDistance, garbagePileDistance, steamEngineDistance, hydroGeneratorDistance, copperPipeDistance, cableDistance, electricFurnaceDistance);
+    const electronicsWorkbenchDistance = electronicsWorkbenchIntersects.length > 0 ? electronicsWorkbenchIntersects[0].distance : Infinity;
+    const closestObjectDistance = Math.min(treeDistance, torchDistance, furnaceDistance, storageChestDistance, garbagePileDistance, steamEngineDistance, hydroGeneratorDistance, copperPipeDistance, cableDistance, electricFurnaceDistance, electronicsWorkbenchDistance);
 
     if (closestBlockHit && closestBlockDistance < closestObjectDistance) {
       hitBlock = true;
@@ -955,6 +1012,9 @@ export class PlanetBlockInteraction {
     } else if (electricFurnaceDistance <= closestObjectDistance && electricFurnaceDistance < Infinity) {
       hitElectricFurnace = true;
       electricFurnaceHit = electricFurnaceIntersects[0];
+    } else if (electronicsWorkbenchDistance <= closestObjectDistance && electronicsWorkbenchDistance < Infinity) {
+      hitElectronicsWorkbench = true;
+      electronicsWorkbenchHit = electronicsWorkbenchIntersects[0];
     } else if (copperPipeDistance <= closestObjectDistance && copperPipeDistance < Infinity) {
       hitCopperPipe = true;
       copperPipeHit = copperPipeIntersects[0];
@@ -993,8 +1053,24 @@ export class PlanetBlockInteraction {
       const cableMesh = cableHit.object as THREE.Mesh;
       const cable = this.cableNodeManager.getCableByMesh(cableMesh);
 
-      // Handle cable interaction (left click to mine - cables don't have UI)
-      if (leftClick && cable) {
+      // Handle cable interaction
+      // If holding a cable, right-click stacks vertically
+      const selectedSlot = this.inventory.getSelectedItem();
+      if (rightClick && this.rightClickCooldown === 0 && cable) {
+        if (selectedSlot.itemType === ItemType.CABLE && selectedSlot.quantity > 0) {
+          // Stack cable vertically - find the planet and place above the existing cable
+          for (const planet of this.planets) {
+            const tile = planet.getTileByIndex(cable.tileIndex);
+            if (tile) {
+              // Place at depth + 1 (above the existing cable)
+              this.placeCable(planet, cable.tileIndex, cable.depth + 1);
+              break;
+            }
+          }
+          this.rightClickCooldown = this.CLICK_COOLDOWN;
+        }
+        // No UI for cables when not holding cable item
+      } else if (leftClick && cable) {
         this.handleCableMining(deltaTime, cable);
       } else {
         this.resetMining();
@@ -1018,6 +1094,25 @@ export class PlanetBlockInteraction {
       } else {
         this.resetMining();
       }
+    } else if (hitElectronicsWorkbench && electronicsWorkbenchHit) {
+      // No wireframe for electronics workbenches
+      if (this.blockWireframe) {
+        this.blockWireframe.visible = false;
+        this.wireframeCache = null;
+      }
+
+      const workbenchMesh = electronicsWorkbenchHit.object as THREE.Mesh;
+      const electronicsWorkbench = this.electronicsWorkbenchManager.getElectronicsWorkbenchByMesh(workbenchMesh);
+
+      // Handle electronics workbench interaction (right click to open UI, left click to mine)
+      if (rightClick && this.rightClickCooldown === 0 && electronicsWorkbench) {
+        this.electronicsWorkbenchUI.open(electronicsWorkbench);
+        this.rightClickCooldown = this.CLICK_COOLDOWN;
+      } else if (leftClick && electronicsWorkbench) {
+        this.handleElectronicsWorkbenchMining(deltaTime, electronicsWorkbench);
+      } else {
+        this.resetMining();
+      }
     } else if (hitCopperPipe && copperPipeHit) {
       // No wireframe for copper pipes
       if (this.blockWireframe) {
@@ -1028,11 +1123,27 @@ export class PlanetBlockInteraction {
       const pipeMesh = copperPipeHit.object as THREE.Mesh;
       const pipe = this.copperPipeManager.getPipeByMesh(pipeMesh);
 
-      // Handle copper pipe interaction (right click to view network, left click to mine)
+      // Handle copper pipe interaction
+      // If holding a copper pipe, right-click stacks vertically instead of opening UI
+      const selectedSlot = this.inventory.getSelectedItem();
       if (rightClick && this.rightClickCooldown === 0 && pipe) {
-        const network = this.copperPipeManager.getPipeNetwork(pipe.id);
-        this.copperPipeUI.openPipe(pipe, network);
-        this.rightClickCooldown = this.CLICK_COOLDOWN;
+        if (selectedSlot.itemType === ItemType.COPPER_PIPE && selectedSlot.quantity > 0) {
+          // Stack pipe vertically - find the planet and place above the existing pipe
+          for (const planet of this.planets) {
+            const tile = planet.getTileByIndex(pipe.tileIndex);
+            if (tile) {
+              // Place at depth + 1 (above the existing pipe)
+              this.placeCopperPipe(planet, pipe.tileIndex, pipe.depth + 1);
+              break;
+            }
+          }
+          this.rightClickCooldown = this.CLICK_COOLDOWN;
+        } else {
+          // Open UI when not holding pipe
+          const network = this.copperPipeManager.getPipeNetwork(pipe.id);
+          this.copperPipeUI.openPipe(pipe, network);
+          this.rightClickCooldown = this.CLICK_COOLDOWN;
+        }
       } else if (leftClick && pipe) {
         this.handleCopperPipeMining(deltaTime, pipe);
       } else {
@@ -1676,6 +1787,54 @@ export class PlanetBlockInteraction {
     }
   }
 
+  private handleElectronicsWorkbenchMining(deltaTime: number, workbench: PlacedElectronicsWorkbench): void {
+    // Check if target changed
+    if (this.miningElectronicsWorkbenchTarget === null || this.miningElectronicsWorkbenchTarget.workbench !== workbench) {
+      // New target, reset progress
+      this.miningElectronicsWorkbenchTarget = { workbench };
+      this.miningTarget = null;
+      this.miningTreeTarget = null;
+      this.miningFurnaceTarget = null;
+      this.miningStorageTarget = null;
+      this.miningGarbageTarget = null;
+      this.miningSteamEngineTarget = null;
+      this.miningHydroGeneratorTarget = null;
+      this.miningCopperPipeTarget = null;
+      this.miningCableTarget = null;
+      this.miningElectricFurnaceTarget = null;
+      this.miningProgress = 0;
+    }
+
+    // Electronics workbench mining time
+    const mineTime = ITEM_DATA[ItemType.ELECTRONICS_WORKBENCH].mineTime;
+
+    // Increase progress
+    this.miningProgress += deltaTime / mineTime;
+    this.updateMiningUI(this.miningProgress);
+
+    // Check if mining complete
+    if (this.miningProgress >= 1) {
+      this.breakElectronicsWorkbench(workbench);
+      this.resetMining();
+    }
+  }
+
+  private breakElectronicsWorkbench(workbench: PlacedElectronicsWorkbench): void {
+    // Give the electronics workbench item back to the player
+    this.inventory.addItem(ItemType.ELECTRONICS_WORKBENCH, 1);
+    this.updateHotbarUI();
+    this.saveInventory();
+
+    // Remove electronics workbench from save
+    for (let i = 0; i < this.planets.length; i++) {
+      const planetId = i === 0 ? 'earth' : 'moon';
+      gameStorage.removeElectronicsWorkbench(planetId, workbench.tileIndex);
+    }
+
+    // Remove the electronics workbench from the world
+    this.electronicsWorkbenchManager.removeElectronicsWorkbench(workbench);
+  }
+
   private breakElectricFurnace(furnace: PlacedElectricFurnace): void {
     // Give the electric furnace item back to the player
     this.inventory.addItem(ItemType.ELECTRIC_FURNACE, 1);
@@ -1757,6 +1916,7 @@ export class PlanetBlockInteraction {
     this.miningCopperPipeTarget = null;
     this.miningCableTarget = null;
     this.miningElectricFurnaceTarget = null;
+    this.miningElectronicsWorkbenchTarget = null;
     this.miningProgress = 0;
     this.updateMiningUI(0);
   }
@@ -1892,6 +2052,12 @@ export class PlanetBlockInteraction {
     // Handle electric furnace placement
     if (selectedSlot.itemType === ItemType.ELECTRIC_FURNACE) {
       this.placeElectricFurnace(planet, tileIndex, depth);
+      return;
+    }
+
+    // Handle electronics workbench placement
+    if (selectedSlot.itemType === ItemType.ELECTRONICS_WORKBENCH) {
+      this.placeElectronicsWorkbench(planet, tileIndex, depth);
       return;
     }
 
@@ -2488,6 +2654,57 @@ export class PlanetBlockInteraction {
           outputItem: placedFurnace.outputItem,
           outputCount: placedFurnace.outputCount
         });
+
+        // Rebuild cable connections so nearby cables can connect to this furnace
+        this.cableNodeManager.rebuildAllConnections();
+      }
+    }
+  }
+
+  private async placeElectronicsWorkbench(planet: Planet, tileIndex: number, depth: number): Promise<void> {
+    // Check if there's already an electronics workbench at this tile
+    if (this.electronicsWorkbenchManager.getElectronicsWorkbenchAtTile(tileIndex)) {
+      return; // Can't place multiple workbenches on same tile
+    }
+
+    // Check for other tech blocks at this tile
+    if (this.furnaceManager.getFurnaceAtTile(tileIndex) ||
+        this.electricFurnaceManager.getElectricFurnaceAtTile(tileIndex) ||
+        this.steamEngineManager.getSteamEngineAtTile(tileIndex) ||
+        this.storageChestManager.getChestAtTile(tileIndex)) {
+      return; // Can't place where other tech block exists
+    }
+
+    // Get the world position for the workbench
+    const tile = planet.getTileByIndex(tileIndex);
+    if (!tile) return;
+
+    // depth is the air block position - workbench should sit on the solid block below it
+    const solidBlockTopRadius = planet.depthToRadius(depth) - planet.getBlockHeight();
+    const tileCenter = tile.center.clone().normalize();
+    const worldPosition = tileCenter.multiplyScalar(solidBlockTopRadius).add(planet.center);
+
+    // Get player forward direction for workbench facing
+    const playerForward = this.player.getForwardVector();
+
+    // Use item from inventory
+    if (this.inventory.useSelectedItem()) {
+      // Place the electronics workbench facing the player
+      const placedWorkbench = await this.electronicsWorkbenchManager.placeElectronicsWorkbench(worldPosition, planet.center, tileIndex, playerForward);
+
+      this.updateHotbarUI();
+      this.saveInventory();
+
+      // Save electronics workbench placement to game storage
+      if (placedWorkbench) {
+        const planetId = this.getPlanetId(planet);
+        gameStorage.saveElectronicsWorkbench(planetId, tileIndex, {
+          position: { x: placedWorkbench.position.x, y: placedWorkbench.position.y, z: placedWorkbench.position.z },
+          rotation: placedWorkbench.rotation
+        });
+
+        // Rebuild cable connections so nearby cables can connect to this workbench
+        this.cableNodeManager.rebuildAllConnections();
       }
     }
   }
@@ -2931,8 +3148,7 @@ export class PlanetBlockInteraction {
         this.cableNodeManager.restoreCable(savedPosition, savedCable.tileIndex, savedCable.depth);
       }
     }
-    // Rebuild all cable connections after loading
-    this.cableNodeManager.rebuildAllConnections();
+    // NOTE: rebuildAllConnections is called AFTER all machines are loaded (see below)
 
     // Load saved electric furnaces
     const savedElectricFurnaces = gameStorage.getElectricFurnaces();
@@ -2959,7 +3175,24 @@ export class PlanetBlockInteraction {
       }
     }
 
-    console.log(`Loaded save: ${saveData.tileChanges.length} tile changes, ${savedTorches.length} torches, ${savedFurnaces.length} furnaces, ${savedElectricFurnaces.length} electric furnaces, ${savedStorageChests.length} chests, ${savedGarbagePiles.length} piles, ${savedSteamEngines.length} steam engines, ${savedHydroGenerators.length} hydro generators, ${savedCopperPipes.length} copper pipes, ${savedCables.length} cables, inventory restored`);
+    // Load saved electronics workbenches
+    const savedElectronicsWorkbenches = gameStorage.getElectronicsWorkbenches();
+    for (const savedWorkbench of savedElectronicsWorkbenches) {
+      const planet = this.planets.find((_, i) =>
+        (i === 0 ? 'earth' : 'moon') === savedWorkbench.planetId
+      );
+      if (planet) {
+        const savedPosition = new THREE.Vector3(
+          savedWorkbench.position.x,
+          savedWorkbench.position.y,
+          savedWorkbench.position.z
+        );
+        // Restore the electronics workbench
+        this.electronicsWorkbenchManager.restoreElectronicsWorkbench(savedPosition, planet.center, savedWorkbench.tileIndex, savedWorkbench.rotation);
+      }
+    }
+
+    console.log(`Loaded save: ${saveData.tileChanges.length} tile changes, ${savedTorches.length} torches, ${savedFurnaces.length} furnaces, ${savedElectricFurnaces.length} electric furnaces, ${savedElectronicsWorkbenches.length} electronics workbenches, ${savedStorageChests.length} chests, ${savedGarbagePiles.length} piles, ${savedSteamEngines.length} steam engines, ${savedHydroGenerators.length} hydro generators, ${savedCopperPipes.length} copper pipes, ${savedCables.length} cables, inventory restored`);
   }
 
   /**
@@ -3118,6 +3351,33 @@ export class PlanetBlockInteraction {
           },
           openUI: () => {
             this.electricFurnaceUI.open(furnace);
+            this.craftingSystem.open();
+          }
+        }));
+      }
+    });
+
+    // Register Electronics Workbenches
+    TechBlockRegistry.registerManager({
+      type: 'Electronics Workbench',
+      getBlocks: (): TechBlockInfo[] => {
+        return this.electronicsWorkbenchManager.getPlacedElectronicsWorkbenches().map((workbench: PlacedElectronicsWorkbench) => ({
+          type: 'Electronics Workbench',
+          id: `electronics-workbench-${workbench.tileIndex}`,
+          tileIndex: workbench.tileIndex,
+          position: { x: workbench.position.x, y: workbench.position.y, z: workbench.position.z },
+          getStatus: () => {
+            const isPowered = this.cableNodeManager.isElectricFurnaceConnectedToRunningSteamEngine(
+              workbench.tileIndex,
+              (steamTileIndex) => {
+                const engine = this.steamEngineManager.getSteamEngineAtTile(steamTileIndex);
+                return engine?.isRunning ?? false;
+              }
+            );
+            return isPowered ? 'Powered' : 'No Power';
+          },
+          openUI: () => {
+            this.electronicsWorkbenchUI.open(workbench);
             this.craftingSystem.open();
           }
         }));

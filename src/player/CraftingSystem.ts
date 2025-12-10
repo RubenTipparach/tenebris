@@ -165,6 +165,25 @@ export const CRAFTING_RECIPES: CraftingRecipe[] = [
     ],
     output: { itemType: ItemType.ELECTRIC_FURNACE, quantity: 1 },
   },
+  // Electronics Workbench (aluminum frame with copper sides and cobalt center)
+  // AAA
+  // CCoC
+  // AAA
+  {
+    name: 'Electronics Workbench',
+    inputs: [
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 0 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 1 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 2 },
+      { itemType: ItemType.INGOT_COPPER, quantity: 1, slot: 3 },
+      { itemType: ItemType.INGOT_COBALT, quantity: 1, slot: 4 },
+      { itemType: ItemType.INGOT_COPPER, quantity: 1, slot: 5 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 6 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 7 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 8 },
+    ],
+    output: { itemType: ItemType.ELECTRONICS_WORKBENCH, quantity: 1 },
+  },
 ];
 
 export class CraftingSystem {

@@ -90,6 +90,13 @@ export interface SavedElectricFurnace {
   outputCount: number;
 }
 
+// Electronics workbench data
+export interface SavedElectronicsWorkbench {
+  tileIndex: number;
+  position: { x: number; y: number; z: number };
+  rotation: number;
+}
+
 // Removed tree data (trees that have been chopped down)
 export interface SavedRemovedTree {
   tileIndex: number;
@@ -114,6 +121,7 @@ export interface PlanetSaveData {
   torches: SavedTorch[];
   furnaces: SavedFurnace[];
   electricFurnaces: SavedElectricFurnace[];
+  electronicsWorkbenches: SavedElectronicsWorkbench[];
   storageChests: SavedStorageChest[];
   garbagePiles: SavedGarbagePile[];
   steamEngines: SavedSteamEngine[];
@@ -156,6 +164,7 @@ export class GameStorage {
     torches: SavedTorch[];
     furnaces: SavedFurnace[];
     electricFurnaces: SavedElectricFurnace[];
+    electronicsWorkbenches: SavedElectronicsWorkbench[];
     storageChests: SavedStorageChest[];
     garbagePiles: SavedGarbagePile[];
     steamEngines: SavedSteamEngine[];
@@ -170,8 +179,8 @@ export class GameStorage {
 
   constructor() {
     // Initialize planet data for earth and moon
-    this.planetData.set('earth', { tileChanges: new Map(), torches: [], furnaces: [], electricFurnaces: [], storageChests: [], garbagePiles: [], steamEngines: [], hydroGenerators: [], copperPipes: [], cables: [], removedTrees: [] });
-    this.planetData.set('moon', { tileChanges: new Map(), torches: [], furnaces: [], electricFurnaces: [], storageChests: [], garbagePiles: [], steamEngines: [], hydroGenerators: [], copperPipes: [], cables: [], removedTrees: [] });
+    this.planetData.set('earth', { tileChanges: new Map(), torches: [], furnaces: [], electricFurnaces: [], electronicsWorkbenches: [], storageChests: [], garbagePiles: [], steamEngines: [], hydroGenerators: [], copperPipes: [], cables: [], removedTrees: [] });
+    this.planetData.set('moon', { tileChanges: new Map(), torches: [], furnaces: [], electricFurnaces: [], electronicsWorkbenches: [], storageChests: [], garbagePiles: [], steamEngines: [], hydroGenerators: [], copperPipes: [], cables: [], removedTrees: [] });
   }
 
   // Set callback to get current player data
@@ -309,6 +318,36 @@ export class GameStorage {
       }
     }
     return allFurnaces;
+  }
+
+  // Save electronics workbench placement
+  public saveElectronicsWorkbench(planetId: string, tileIndex: number, workbenchData: Omit<SavedElectronicsWorkbench, 'tileIndex'>): void {
+    const planet = this.planetData.get(planetId);
+    if (!planet) return;
+
+    planet.electronicsWorkbenches = planet.electronicsWorkbenches.filter(w => w.tileIndex !== tileIndex);
+    planet.electronicsWorkbenches.push({ tileIndex, ...workbenchData });
+    this.persistPlanetToStorage(planetId);
+  }
+
+  // Remove an electronics workbench from save
+  public removeElectronicsWorkbench(planetId: string, tileIndex: number): void {
+    const planet = this.planetData.get(planetId);
+    if (!planet) return;
+
+    planet.electronicsWorkbenches = planet.electronicsWorkbenches.filter(w => w.tileIndex !== tileIndex);
+    this.persistPlanetToStorage(planetId);
+  }
+
+  // Get all saved electronics workbenches
+  public getElectronicsWorkbenches(): Array<SavedElectronicsWorkbench & { planetId: string }> {
+    const allWorkbenches: Array<SavedElectronicsWorkbench & { planetId: string }> = [];
+    for (const [planetId, planet] of this.planetData) {
+      for (const workbench of planet.electronicsWorkbenches) {
+        allWorkbenches.push({ ...workbench, planetId });
+      }
+    }
+    return allWorkbenches;
   }
 
   // Save storage chest placement
@@ -613,6 +652,7 @@ export class GameStorage {
       planet.torches = data.torches || [];
       planet.furnaces = data.furnaces || [];
       planet.electricFurnaces = data.electricFurnaces || [];
+      planet.electronicsWorkbenches = data.electronicsWorkbenches || [];
       planet.storageChests = data.storageChests || [];
       planet.garbagePiles = data.garbagePiles || [];
       planet.steamEngines = data.steamEngines || [];
@@ -744,6 +784,7 @@ export class GameStorage {
       planet.torches = [];
       planet.furnaces = [];
       planet.electricFurnaces = [];
+      planet.electronicsWorkbenches = [];
       planet.storageChests = [];
       planet.garbagePiles = [];
       planet.steamEngines = [];
@@ -791,6 +832,7 @@ export class GameStorage {
         torches: planet.torches,
         furnaces: planet.furnaces,
         electricFurnaces: planet.electricFurnaces,
+        electronicsWorkbenches: planet.electronicsWorkbenches,
         storageChests: planet.storageChests,
         garbagePiles: planet.garbagePiles,
         steamEngines: planet.steamEngines,

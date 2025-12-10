@@ -5,12 +5,14 @@ import techVert from '../shaders/tech/tech.vert';
 import techFrag from '../shaders/tech/tech.frag';
 import { PlacedSteamEngine } from './SteamEngine';
 import { PlacedElectricFurnace } from './ElectricFurnace';
+import { PlacedElectronicsWorkbench } from './ElectronicsWorkbench';
 
 // Cable connection types
 export type CableConnectionTarget =
   | { type: 'cable'; cableId: string }
   | { type: 'steam-engine'; tileIndex: number }
-  | { type: 'electric-furnace'; tileIndex: number };
+  | { type: 'electric-furnace'; tileIndex: number }
+  | { type: 'electronics-workbench'; tileIndex: number };
 
 export interface PlacedCable {
   id: string;
@@ -30,6 +32,7 @@ export interface CableNetwork {
   cables: string[]; // Cable IDs in this network
   connectedSteamEngines: number[]; // Tile indices
   connectedElectricFurnaces: number[]; // Tile indices
+  connectedElectronicsWorkbenches: number[]; // Tile indices
 }
 
 export class CableNodeManager {
@@ -50,6 +53,7 @@ export class CableNodeManager {
   // Callbacks for getting machine positions
   private getSteamEngineAtTile: ((tileIndex: number) => PlacedSteamEngine | undefined) | null = null;
   private getElectricFurnaceAtTile: ((tileIndex: number) => PlacedElectricFurnace | undefined) | null = null;
+  private getElectronicsWorkbenchAtTile: ((tileIndex: number) => PlacedElectronicsWorkbench | undefined) | null = null;
   private getNeighborTiles: ((tileIndex: number) => number[]) | null = null;
 
   constructor(scene: THREE.Scene, planetCenter?: THREE.Vector3, sunDirection?: THREE.Vector3) {
@@ -63,10 +67,12 @@ export class CableNodeManager {
   public setMachineCallbacks(
     getSteamEngineAtTile: (tileIndex: number) => PlacedSteamEngine | undefined,
     getElectricFurnaceAtTile: (tileIndex: number) => PlacedElectricFurnace | undefined,
+    getElectronicsWorkbenchAtTile: (tileIndex: number) => PlacedElectronicsWorkbench | undefined,
     getNeighborTiles: (tileIndex: number) => number[]
   ): void {
     this.getSteamEngineAtTile = getSteamEngineAtTile;
     this.getElectricFurnaceAtTile = getElectricFurnaceAtTile;
+    this.getElectronicsWorkbenchAtTile = getElectronicsWorkbenchAtTile;
     this.getNeighborTiles = getNeighborTiles;
   }
 
@@ -142,6 +148,52 @@ export class CableNodeManager {
     const length = direction.length();
 
     const geometry = new THREE.BoxGeometry(this.CONNECTOR_SIZE, this.CONNECTOR_SIZE, length);
+
+    // Tile the texture along the length of the cable
+    // BoxGeometry UV layout: right, left, top, bottom, front, back faces
+    // We want to tile the texture based on length for the side faces (right, left, top, bottom)
+    const tileRepeatLength = length / this.CONNECTOR_SIZE * 0.5;  // Tile based on length
+    const uvAttribute = geometry.getAttribute('uv');
+    const uvArray = uvAttribute.array as Float32Array;
+
+    // BoxGeometry has 24 vertices (4 per face, 6 faces)
+    // Face order: +X (right), -X (left), +Y (top), -Y (bottom), +Z (front), -Z (back)
+    // Each face has 4 vertices with 2 UV coords each = 8 floats per face
+    // Unrolled for easier debugging - handle each face explicitly
+
+    // Face 0 (+X right): indices 0-7
+    for (let i = 0; i < 4; i++) { 
+      const u = uvArray[i * 2];
+      const v = uvArray[i * 2 + 1];
+      uvArray[i * 2] = u * tileRepeatLength;
+      uvArray[i * 2 + 1] = v;
+    }
+
+    // Face 1 (-X left): indices 8-15
+    for (let i = 0; i < 4; i++) {
+      const u = uvArray[8 + i * 2];
+      const v = uvArray[8 + i * 2 + 1];
+      uvArray[8 + i * 2] = u* tileRepeatLength;
+      uvArray[8 + i * 2 + 1] = (1 - v);
+    }
+
+    // Face 2 (+Y top): indices 16-23
+    for (let i = 0; i < 4; i++) {
+      const u = uvArray[16 + i * 2];
+      const v = uvArray[16 + i * 2 + 1];
+      uvArray[16 + i * 2] = v * tileRepeatLength;
+      uvArray[16 + i * 2 + 1] = u;
+    }
+
+    // Face 3 (-Y bottom): indices 24-31
+    for (let i = 0; i < 4; i++) {
+      const u = uvArray[24 + i * 2];
+      const v = uvArray[24 + i * 2 + 1];
+      uvArray[24 + i * 2] = (1 - v) * tileRepeatLength;
+      uvArray[24 + i * 2 + 1] = u;
+    }
+    uvAttribute.needsUpdate = true;
+
     const material = this.cableMaterial!.clone();
     const mesh = new THREE.Mesh(geometry, material);
 
@@ -252,6 +304,13 @@ export class CableNodeManager {
           this.scene.add(connector);
           cable.connectorMeshes.push(connector);
         }
+      } else if (conn.type === 'electronics-workbench') {
+        const workbench = this.getElectronicsWorkbenchAtTile?.(conn.tileIndex);
+        if (workbench) {
+          const connector = this.createConnectorMesh(cable.position, workbench.position);
+          this.scene.add(connector);
+          cable.connectorMeshes.push(connector);
+        }
       }
     }
 
@@ -300,6 +359,13 @@ export class CableNodeManager {
           this.scene.add(connector);
           cable.connectorMeshes.push(connector);
         }
+      } else if (conn.type === 'electronics-workbench') {
+        const workbench = this.getElectronicsWorkbenchAtTile?.(conn.tileIndex);
+        if (workbench) {
+          const connector = this.createConnectorMesh(cable.position, workbench.position);
+          this.scene.add(connector);
+          cable.connectorMeshes.push(connector);
+        }
       }
     }
   }
@@ -326,6 +392,31 @@ export class CableNodeManager {
           neighborCable.connections.push({ type: 'cable', cableId: cable.id });
         }
       }
+    }
+
+    // Check for vertical cable connections (same tile, different depths)
+    const aboveCableId = this.generateCableId(cable.tileIndex, cable.depth + 1);
+    const aboveCable = this.cables.get(aboveCableId);
+    if (aboveCable) {
+      cable.connections.push({ type: 'cable', cableId: aboveCableId });
+      // Also add reverse connection
+      if (!aboveCable.connections.find(c => c.type === 'cable' && c.cableId === cable.id)) {
+        aboveCable.connections.push({ type: 'cable', cableId: cable.id });
+      }
+    }
+
+    const belowCableId = this.generateCableId(cable.tileIndex, cable.depth - 1);
+    const belowCable = this.cables.get(belowCableId);
+    if (belowCable) {
+      cable.connections.push({ type: 'cable', cableId: belowCableId });
+      // Also add reverse connection
+      if (!belowCable.connections.find(c => c.type === 'cable' && c.cableId === cable.id)) {
+        belowCable.connections.push({ type: 'cable', cableId: cable.id });
+      }
+    }
+
+    // Check neighbor tiles for machines (steam engine, electric furnace, electronics workbench)
+    for (const neighborTile of neighborTiles) {
 
       // Check for steam engine
       if (this.getSteamEngineAtTile) {
@@ -340,6 +431,14 @@ export class CableNodeManager {
         const furnace = this.getElectricFurnaceAtTile(neighborTile);
         if (furnace) {
           cable.connections.push({ type: 'electric-furnace', tileIndex: neighborTile });
+        }
+      }
+
+      // Check for electronics workbench
+      if (this.getElectronicsWorkbenchAtTile) {
+        const workbench = this.getElectronicsWorkbenchAtTile(neighborTile);
+        if (workbench) {
+          cable.connections.push({ type: 'electronics-workbench', tileIndex: neighborTile });
         }
       }
     }
@@ -358,6 +457,13 @@ export class CableNodeManager {
         cable.connections.push({ type: 'electric-furnace', tileIndex: cable.tileIndex });
       }
     }
+
+    if (this.getElectronicsWorkbenchAtTile) {
+      const workbench = this.getElectronicsWorkbenchAtTile(cable.tileIndex);
+      if (workbench) {
+        cable.connections.push({ type: 'electronics-workbench', tileIndex: cable.tileIndex });
+      }
+    }
   }
 
   // Rebuild all cable networks using flood fill
@@ -373,6 +479,7 @@ export class CableNodeManager {
         cables: [],
         connectedSteamEngines: [],
         connectedElectricFurnaces: [],
+        connectedElectronicsWorkbenches: [],
       };
 
       // Flood fill to find all connected cables
@@ -400,6 +507,10 @@ export class CableNodeManager {
           } else if (conn.type === 'electric-furnace') {
             if (!network.connectedElectricFurnaces.includes(conn.tileIndex)) {
               network.connectedElectricFurnaces.push(conn.tileIndex);
+            }
+          } else if (conn.type === 'electronics-workbench') {
+            if (!network.connectedElectronicsWorkbenches.includes(conn.tileIndex)) {
+              network.connectedElectronicsWorkbenches.push(conn.tileIndex);
             }
           }
         }
@@ -430,10 +541,11 @@ export class CableNodeManager {
     return [];
   }
 
-  // Get the steam engine(s) connected to an electric furnace
-  public getConnectedSteamEngines(furnaceTileIndex: number): number[] {
+  // Get the steam engine(s) connected to an electric furnace or electronics workbench
+  public getConnectedSteamEngines(tileIndex: number): number[] {
     for (const network of this.networks.values()) {
-      if (network.connectedElectricFurnaces.includes(furnaceTileIndex)) {
+      if (network.connectedElectricFurnaces.includes(tileIndex) ||
+          network.connectedElectronicsWorkbenches.includes(tileIndex)) {
         return network.connectedSteamEngines;
       }
     }

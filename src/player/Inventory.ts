@@ -42,6 +42,12 @@ export enum ItemType {
   // Smelted materials (advanced ingots - require electric furnace)
   INGOT_LITHIUM = 32,
   INGOT_COBALT = 33,
+  // Advanced technology items
+  ELECTRONICS_WORKBENCH = 34,
+  // Electronic components (crafted at Electronics Workbench)
+  CPU_CHIP = 35,
+  RAM_MODULE = 36,
+  MOTHERBOARD = 37,
 }
 
 // Item metadata
@@ -97,6 +103,12 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
   // Advanced ingots (require electric furnace)
   [ItemType.INGOT_LITHIUM]: { name: 'Lithium Ingot', stackSize: 64, texture: '/textures/minerals/earth/lythium.png', mineTime: 0.3 },
   [ItemType.INGOT_COBALT]: { name: 'Cobalt Ingot', stackSize: 64, texture: '/textures/minerals/earth/cobalt.png', mineTime: 0.3 },
+  // Advanced technology items
+  [ItemType.ELECTRONICS_WORKBENCH]: { name: 'Electronics Workbench', stackSize: 8, texture: '/textures/technology/electronics_workbench_face.png', mineTime: 2.5 },
+  // Electronic components
+  [ItemType.CPU_CHIP]: { name: 'CPU Chip', stackSize: 64, texture: '/textures/technology/cpu_chip.png', mineTime: 0.3 },
+  [ItemType.RAM_MODULE]: { name: 'RAM Module', stackSize: 64, texture: '/textures/technology/ram_module.png', mineTime: 0.3 },
+  [ItemType.MOTHERBOARD]: { name: 'Motherboard', stackSize: 64, texture: '/textures/technology/motherboard.png', mineTime: 0.3 },
 };
 
 // Inventory slot

@@ -168,9 +168,13 @@ export class PlanetPlayer {
   private getTechBlockDataCallback: ((tileIndices: number[]) => {
     torches: { tileIndex: number }[];
     furnaces: { tileIndex: number }[];
+    electricFurnaces: { tileIndex: number }[];
+    electronicsWorkbenches: { tileIndex: number }[];
+    storageChests: { tileIndex: number }[];
     steamEngines: { tileIndex: number }[];
     hydroGenerators: { tileIndex: number }[];
     copperPipes: { tileIndex: number; depth: number }[];
+    cables: { tileIndex: number; depth: number }[];
   }) | null = null;
 
   constructor(camera: THREE.PerspectiveCamera, inputManager: InputManager, planet: Planet) {
@@ -310,7 +314,7 @@ export class PlanetPlayer {
   private checkEdgeNudge(): void {
     if (!this.currentPlanet) return;
 
-    const currentTile = this.currentPlanet.getTileAtPoint(this.position);
+    const currentTile = this.currentPlanet.getTileAtPointFast(this.position);
     if (!currentTile) return;
 
     // Get tile center
@@ -593,7 +597,7 @@ export class PlanetPlayer {
         const radiusChange = radiusAfter - radiusBefore;
         // Teleport detection: moved up more than 0.5 units without jumping
         if (radiusChange > 0.5) {
-          const currentTile = this.currentPlanet.getTileAtPoint(this.position);
+          const currentTile = this.currentPlanet.getTileAtPointFast(this.position);
           console.error(`========== UNEXPECTED UPWARD TELEPORT ==========`);
           console.error(`Radius change: ${radiusBefore.toFixed(2)} -> ${radiusAfter.toFixed(2)} (+${radiusChange.toFixed(2)})`);
           console.error(`Current tile: ${currentTile?.index}`);
@@ -671,7 +675,7 @@ export class PlanetPlayer {
     console.log(`  Is grounded: ${this.isGrounded}`);
     console.log(`  Velocity: (${this.velocity.x.toFixed(3)}, ${this.velocity.y.toFixed(3)}, ${this.velocity.z.toFixed(3)})`);
 
-    const currentTile = this.currentPlanet.getTileAtPoint(this.position);
+    const currentTile = this.currentPlanet.getTileAtPointFast(this.position);
     if (currentTile) {
       console.log('\nCurrent Tile:');
       console.log(`  Index: ${currentTile.index}`);
@@ -752,7 +756,7 @@ export class PlanetPlayer {
 
     if (!this.currentPlanet) return;
 
-    const currentTile = this.currentPlanet.getTileAtPoint(this.position);
+    const currentTile = this.currentPlanet.getTileAtPointFast(this.position);
     if (!currentTile) return;
 
     // Position is at feet level
@@ -836,7 +840,7 @@ export class PlanetPlayer {
     const endDepth = Math.min(MAX_TERRAIN_DEPTH - 1, playerDepth + halfRows);
 
     console.log(`Sampling ${tilesToSample.size} tiles, depths ${startDepth} to ${endDepth}`);
-    console.log(`Legend: . = AIR, ~ = WATER, S = SAND, G = GRASS, # = SOLID, P = PIPE, @ = PLAYER BODY OVERLAP`);
+    console.log(`Legend: . = AIR, ~ = WATER, S = SAND, G = GRASS, # = SOLID, P = PIPE, C = CABLE, @ = PLAYER BODY OVERLAP`);
     console.log('(Higher depths = closer to sky, displayed at top)');
     console.log('');
 
@@ -845,13 +849,17 @@ export class PlanetPlayer {
     const headerRow = ['Depth/Radius'].concat(tileArray.map(t => `T${t}`));
     console.log(headerRow.join('\t'));
 
-    // Get tech block data for pipe display in grid
+    // Get tech block data for pipe/cable display in grid
     const techData = this.getTechBlockDataCallback ? this.getTechBlockDataCallback(tileArray) : null;
-    // Build a lookup map for quick pipe check: "tileIndex-depth" -> true
+    // Build lookup maps for quick checks: "tileIndex-depth" -> true
     const pipeLocations = new Set<string>();
+    const cableLocations = new Set<string>();
     if (techData) {
       for (const pipe of techData.copperPipes) {
         pipeLocations.add(`${pipe.tileIndex}-${pipe.depth}`);
+      }
+      for (const cable of techData.cables) {
+        cableLocations.add(`${cable.tileIndex}-${cable.depth}`);
       }
     }
 
@@ -869,9 +877,11 @@ export class PlanetPlayer {
         const block = this.currentPlanet.getBlock(tileIdx, d);
         let symbol = '?';
 
-        // Check for copper pipe at this location first
+        // Check for copper pipe or cable at this location first
         if (pipeLocations.has(`${tileIdx}-${d}`)) {
           symbol = 'P';
+        } else if (cableLocations.has(`${tileIdx}-${d}`)) {
+          symbol = 'C';
         } else if (block === HexBlockType.AIR) symbol = '.';
         else if (block === HexBlockType.WATER) symbol = '~';
         else if (block === HexBlockType.SAND) symbol = 'S';
@@ -894,8 +904,10 @@ export class PlanetPlayer {
     // Log tech blocks in sampled tiles (reuse techData if already fetched)
     if (techData) {
       const hasTechBlocks = techData.torches.length > 0 || techData.furnaces.length > 0 ||
-        techData.steamEngines.length > 0 || techData.hydroGenerators.length > 0 ||
-        techData.copperPipes.length > 0;
+        techData.electricFurnaces.length > 0 || techData.electronicsWorkbenches.length > 0 ||
+        techData.storageChests.length > 0 || techData.steamEngines.length > 0 ||
+        techData.hydroGenerators.length > 0 || techData.copperPipes.length > 0 ||
+        techData.cables.length > 0;
 
       if (hasTechBlocks) {
         console.log('=== Tech Blocks in Area ===');
@@ -905,6 +917,15 @@ export class PlanetPlayer {
         if (techData.furnaces.length > 0) {
           console.log(`Furnaces: ${techData.furnaces.map(f => `T${f.tileIndex}`).join(', ')}`);
         }
+        if (techData.electricFurnaces.length > 0) {
+          console.log(`Electric Furnaces: ${techData.electricFurnaces.map(f => `T${f.tileIndex}`).join(', ')}`);
+        }
+        if (techData.electronicsWorkbenches.length > 0) {
+          console.log(`Electronics Workbenches: ${techData.electronicsWorkbenches.map(w => `T${w.tileIndex}`).join(', ')}`);
+        }
+        if (techData.storageChests.length > 0) {
+          console.log(`Storage Chests: ${techData.storageChests.map(c => `T${c.tileIndex}`).join(', ')}`);
+        }
         if (techData.steamEngines.length > 0) {
           console.log(`Steam Engines: ${techData.steamEngines.map(s => `T${s.tileIndex}`).join(', ')}`);
         }
@@ -913,6 +934,32 @@ export class PlanetPlayer {
         }
         if (techData.copperPipes.length > 0) {
           console.log(`Copper Pipes: ${techData.copperPipes.map(p => `T${p.tileIndex}@d${p.depth}`).join(', ')}`);
+        }
+        if (techData.cables.length > 0) {
+          console.log(`Cables: ${techData.cables.map(c => `T${c.tileIndex}@d${c.depth}`).join(', ')}`);
+        }
+
+        // Show cable connection details for debugging
+        const cableTiles = new Set(techData.cables.map(c => c.tileIndex));
+        const powerConsumers = [
+          ...techData.electricFurnaces.map(f => ({ type: 'E-Furnace', tileIndex: f.tileIndex })),
+          ...techData.electronicsWorkbenches.map(w => ({ type: 'E-Workbench', tileIndex: w.tileIndex })),
+        ];
+        if (powerConsumers.length > 0 && techData.cables.length > 0) {
+          console.log('--- Cable Connections ---');
+          for (const consumer of powerConsumers) {
+            const consumerTile = this.currentPlanet.getPolyhedron().tiles[consumer.tileIndex];
+            if (consumerTile) {
+              const neighbors = consumerTile.neighbors;
+              const connectedCables = neighbors.filter(n => cableTiles.has(n));
+              const sameTileCable = cableTiles.has(consumer.tileIndex);
+              if (sameTileCable || connectedCables.length > 0) {
+                console.log(`  ${consumer.type} T${consumer.tileIndex}: connected via ${sameTileCable ? 'same tile' : ''} ${connectedCables.map(n => `T${n}`).join(', ')}`);
+              } else {
+                console.log(`  ${consumer.type} T${consumer.tileIndex}: NOT CONNECTED (neighbors: ${neighbors.slice(0, 6).map(n => `T${n}`).join(', ')})`);
+              }
+            }
+          }
         }
         console.log('');
       }
@@ -1410,8 +1457,8 @@ export class PlanetPlayer {
     // Only check step height and headroom when grounded AND actually changing tiles AND not underwater
     // This allows free movement within the current tile, and swimming over terrain underwater
     if (this.isGrounded && !this.isInWater) {
-      const currentTile = this.currentPlanet.getTileAtPoint(this.position);
-      const newTile = this.currentPlanet.getTileAtPoint(newPosition);
+      const currentTile = this.currentPlanet.getTileAtPointFast(this.position);
+      const newTile = this.currentPlanet.getTileAtPointFast(newPosition);
 
       // Only check step height and headroom if we're moving to a different tile
       if (currentTile && newTile && currentTile.index !== newTile.index) {
@@ -1434,7 +1481,7 @@ export class PlanetPlayer {
   private checkStepHeight(newPosition: THREE.Vector3): boolean {
     if (!this.currentPlanet) return true;
 
-    const newTile = this.currentPlanet.getTileAtPoint(newPosition);
+    const newTile = this.currentPlanet.getTileAtPointFast(newPosition);
     if (!newTile) return true;
 
     // Get current ground level using correct depth calculation
@@ -1487,12 +1534,12 @@ export class PlanetPlayer {
   private checkWallCollision(newPosition: THREE.Vector3, verticalOnly: boolean = false): boolean {
     if (!this.currentPlanet) return false;
 
-    const newTile = this.currentPlanet.getTileAtPoint(newPosition);
+    const newTile = this.currentPlanet.getTileAtPointFast(newPosition);
     if (!newTile) return false;
 
     // Get the tile the player is currently standing on - we'll exclude it from wall checks
     // This prevents the ground we're standing on from blocking movement to adjacent tiles
-    const standingTile = this.currentPlanet.getTileAtPoint(this.position);
+    const standingTile = this.currentPlanet.getTileAtPointFast(this.position);
     const standingTileIndex = standingTile ? standingTile.index : -1;
 
     let playerBottomRadius: number;
@@ -1501,7 +1548,7 @@ export class PlanetPlayer {
     if (this.isGrounded) {
       // Get current ground depth - use player's actual radius to find the floor they're on
       const playerFeetRadius = this.position.distanceTo(this.currentPlanet.center);
-      const currentTile = this.currentPlanet.getTileAtPoint(this.position);
+      const currentTile = this.currentPlanet.getTileAtPointFast(this.position);
       let currentGroundDepth = -1;
       if (currentTile) {
         currentGroundDepth = findWalkableFloorAtRadius(this.currentPlanet, currentTile.index, playerFeetRadius);
@@ -1702,12 +1749,12 @@ export class PlanetPlayer {
   private checkHeadroomCollision(newPosition: THREE.Vector3): boolean {
     if (!this.currentPlanet) return false;
 
-    const newTile = this.currentPlanet.getTileAtPoint(newPosition);
+    const newTile = this.currentPlanet.getTileAtPointFast(newPosition);
     if (!newTile) return false;
 
     // Get current ground depth - use player's actual radius to find the floor they're on
     const playerFeetRadius = this.position.distanceTo(this.currentPlanet.center);
-    const currentTile = this.currentPlanet.getTileAtPoint(this.position);
+    const currentTile = this.currentPlanet.getTileAtPointFast(this.position);
     let currentGroundDepth = -1;
     if (currentTile) {
       currentGroundDepth = findWalkableFloorAtRadius(this.currentPlanet, currentTile.index, playerFeetRadius);
@@ -1860,7 +1907,7 @@ export class PlanetPlayer {
   private resolveStuckPosition(actualUp: THREE.Vector3): void {
     if (!this.currentPlanet) return;
 
-    const tile = this.currentPlanet.getTileAtPoint(this.position);
+    const tile = this.currentPlanet.getTileAtPointFast(this.position);
     if (!tile) return;
 
     // Position is at feet level, head is PLAYER_HEIGHT above
@@ -2005,7 +2052,7 @@ export class PlanetPlayer {
     // Don't re-check here to avoid timing issues
 
     // Get the tile at current position
-    const currentTile = this.currentPlanet.getTileAtPoint(this.position);
+    const currentTile = this.currentPlanet.getTileAtPointFast(this.position);
 
     // Find ground level at current tile - use player's actual position to find the
     // walkable floor closest to where they are (handles caves correctly)
@@ -2092,7 +2139,7 @@ export class PlanetPlayer {
 
       // Get WALKABLE ground at NEW position (might be different tile)
       // Find the walkable floor closest to current height (same logic as collision checks)
-      const newTile = this.currentPlanet.getTileAtPoint(newPosition);
+      const newTile = this.currentPlanet.getTileAtPointFast(newPosition);
       let newGroundDepth = -1;
       let bestHeightDiff = Infinity;
 
@@ -2324,9 +2371,13 @@ export class PlanetPlayer {
   public setTechBlockDataCallback(callback: (tileIndices: number[]) => {
     torches: { tileIndex: number }[];
     furnaces: { tileIndex: number }[];
+    electricFurnaces: { tileIndex: number }[];
+    electronicsWorkbenches: { tileIndex: number }[];
+    storageChests: { tileIndex: number }[];
     steamEngines: { tileIndex: number }[];
     hydroGenerators: { tileIndex: number }[];
     copperPipes: { tileIndex: number; depth: number }[];
+    cables: { tileIndex: number; depth: number }[];
   }): void {
     this.getTechBlockDataCallback = callback;
   }

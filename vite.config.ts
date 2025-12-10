@@ -46,7 +46,8 @@ export default defineConfig({
   ],
   server: {
     port: 3000,
-    open: true
+    open: true,
+    host: true  // Expose to network (0.0.0.0)
   },
   build: {
     outDir: 'dist',

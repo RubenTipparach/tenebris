@@ -43,9 +43,9 @@ export class CopperPipeManager {
   private planetCenter: THREE.Vector3;
   private sunDirection: THREE.Vector3;
 
-  // Pipe dimensions (1/4 size of tech block = 0.8/4 = 0.2)
-  private readonly PIPE_SIZE = 0.2;
-  private readonly CONNECTOR_SIZE = 0.08; // Thin connector between pipes
+  // Pipe dimensions (increased by 50%)
+  private readonly PIPE_SIZE = 0.3;
+  private readonly CONNECTOR_SIZE = 0.12; // Thin connector between pipes
 
   // Callbacks for getting machine positions
   private getHydroGeneratorAtTile: ((tileIndex: number) => PlacedHydroGenerator | undefined) | null = null;
@@ -143,6 +143,45 @@ export class CopperPipeManager {
 
     // Create thin box for connector (oriented along the connection)
     const geometry = new THREE.BoxGeometry(this.CONNECTOR_SIZE, this.CONNECTOR_SIZE, length);
+
+    // Tile the texture along the length of the pipe
+    const tileRepeatLength = length / this.CONNECTOR_SIZE * 0.5;
+    const uvAttribute = geometry.getAttribute('uv');
+    const uvArray = uvAttribute.array as Float32Array;
+
+    // Face 0 (+X right): indices 0-7
+    for (let i = 0; i < 4; i++) {
+      const u = uvArray[i * 2];
+      const v = uvArray[i * 2 + 1];
+      uvArray[i * 2] = u * tileRepeatLength;
+      uvArray[i * 2 + 1] = v;
+    }
+
+    // Face 1 (-X left): indices 8-15
+    for (let i = 0; i < 4; i++) {
+      const u = uvArray[8 + i * 2];
+      const v = uvArray[8 + i * 2 + 1];
+      uvArray[8 + i * 2] = u * tileRepeatLength;
+      uvArray[8 + i * 2 + 1] = (1 - v);
+    }
+
+    // Face 2 (+Y top): indices 16-23
+    for (let i = 0; i < 4; i++) {
+      const u = uvArray[16 + i * 2];
+      const v = uvArray[16 + i * 2 + 1];
+      uvArray[16 + i * 2] = v * tileRepeatLength;
+      uvArray[16 + i * 2 + 1] = u;
+    }
+
+    // Face 3 (-Y bottom): indices 24-31
+    for (let i = 0; i < 4; i++) {
+      const u = uvArray[24 + i * 2];
+      const v = uvArray[24 + i * 2 + 1];
+      uvArray[24 + i * 2] = (1 - v) * tileRepeatLength;
+      uvArray[24 + i * 2 + 1] = u;
+    }
+    uvAttribute.needsUpdate = true;
+
     const material = this.pipeMaterial!.clone();
     const mesh = new THREE.Mesh(geometry, material);
 
