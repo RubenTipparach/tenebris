@@ -648,6 +648,30 @@ export class CableNodeManager {
     return false;
   }
 
+  // Get connected computers for a 3D printer
+  public getConnectedComputers(printerTileIndex: number): number[] {
+    for (const network of this.networks.values()) {
+      if (network.connectedPrinters3D.includes(printerTileIndex)) {
+        return network.connectedComputers;
+      }
+    }
+    return [];
+  }
+
+  // Check if a 3D printer is connected to a powered computer
+  public isPrinterConnectedToPoweredComputer(
+    printerTileIndex: number,
+    isComputerPowered: (computerTileIndex: number) => boolean
+  ): boolean {
+    const connectedComputers = this.getConnectedComputers(printerTileIndex);
+    for (const computerTileIndex of connectedComputers) {
+      if (isComputerPowered(computerTileIndex)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   // Get network info for a specific cable
   public getCableNetwork(cableId: string): CableNetwork | null {
     for (const network of this.networks.values()) {

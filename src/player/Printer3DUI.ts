@@ -3,27 +3,24 @@ import { MenuManager } from './MenuManager';
 import { Inventory, ItemType, ITEM_DATA } from './Inventory';
 import { getAssetPath } from '../utils/assetPath';
 
-// 3D Printer recipe definition
+// 3D Printer recipe definition (single input resource)
 export interface PrinterRecipe {
-  inputs: { itemType: ItemType; quantity: number }[];
+  input: { itemType: ItemType; quantity: number };
   output: ItemType;
   outputQuantity: number;
   printTime: number; // in seconds
 }
 
-// Available recipes for the 3D printer
+// Available recipes for the 3D printer (single resource input)
 export const PRINTER_RECIPES: PrinterRecipe[] = [
-  // Example recipes - electronic components that can be 3D printed
+  // Copper pipe from copper ingot
   {
-    inputs: [
-      { itemType: ItemType.INGOT_COPPER, quantity: 2 },
-      { itemType: ItemType.INGOT_IRON, quantity: 1 },
-    ],
+    input: { itemType: ItemType.INGOT_COPPER, quantity: 2 },
     output: ItemType.COPPER_PIPE,
     outputQuantity: 2,
     printTime: 10,
   },
-  // Add more recipes as needed
+  // Add more single-input recipes as needed
 ];
 
 export class Printer3DUI {
@@ -35,11 +32,14 @@ export class Printer3DUI {
   private onUpdateHotbarCallback: (() => void) | null = null;
   private onUpdateInventoryCallback: (() => void) | null = null;
   private isPowered: boolean = false;
+  private isConnectedToComputer: boolean = false;
   private inventory: Inventory | null = null;
   private onItemCrafted: ((itemType: ItemType, quantity: number) => void) | null = null;
 
-  // Power check callback
+  // Power check callback (for steam engine power)
   private isPoweredCallback: ((tileIndex: number) => boolean) | null = null;
+  // Computer connection check callback
+  private isConnectedToComputerCallback: ((tileIndex: number) => boolean) | null = null;
 
   // UI elements
   private recipeListElement: HTMLElement | null = null;
@@ -47,6 +47,7 @@ export class Printer3DUI {
   private progressTextElement: HTMLElement | null = null;
   private statusElement: HTMLElement | null = null;
   private powerStatusElement: HTMLElement | null = null;
+  private computerStatusElement: HTMLElement | null = null;
   private collectBtn: HTMLButtonElement | null = null;
 
   constructor(inventory: Inventory) {
@@ -70,6 +71,10 @@ export class Printer3DUI {
     this.isPoweredCallback = callback;
   }
 
+  public setIsConnectedToComputerCallback(callback: (tileIndex: number) => boolean): void {
+    this.isConnectedToComputerCallback = callback;
+  }
+
   public setOnItemCrafted(callback: (itemType: ItemType, quantity: number) => void): void {
     this.onItemCrafted = callback;
   }
@@ -80,6 +85,11 @@ export class Printer3DUI {
     this.printerSectionElement.className = 'printer3d-section';
     this.printerSectionElement.innerHTML = `
       <h3>3D Printer</h3>
+
+      <div class="printer3d-connection-status" id="printer3d-computer-status">
+        <span class="connection-icon">💻</span>
+        <span class="connection-text">No Computer</span>
+      </div>
 
       <div class="printer3d-power-status" id="printer3d-power-status">
         <span class="power-icon">⚡</span>
@@ -129,6 +139,7 @@ export class Printer3DUI {
     this.progressTextElement = document.getElementById('printer3d-progress-text');
     this.statusElement = document.getElementById('printer3d-status-value');
     this.powerStatusElement = document.getElementById('printer3d-power-status');
+    this.computerStatusElement = document.getElementById('printer3d-computer-status');
     this.collectBtn = document.getElementById('printer3d-collect-btn') as HTMLButtonElement;
 
     // Setup collect button
@@ -158,6 +169,39 @@ export class Printer3DUI {
         margin-bottom: 10px;
         font-family: 'Courier New', monospace;
         text-shadow: 0 0 5px rgba(0, 170, 255, 0.3);
+      }
+
+      .printer3d-connection-status {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 16px;
+        border-radius: 4px;
+        margin-bottom: 8px;
+        background: rgba(255, 0, 0, 0.2);
+        border: 1px solid #ff4444;
+      }
+
+      .printer3d-connection-status.connected {
+        background: rgba(0, 170, 255, 0.2);
+        border: 1px solid #00aaff;
+      }
+
+      .printer3d-connection-status .connection-icon {
+        font-size: 18px;
+      }
+
+      .printer3d-connection-status.connected .connection-icon {
+        color: #00aaff;
+      }
+
+      .printer3d-connection-status .connection-text {
+        font-size: 12px;
+        color: #888;
+      }
+
+      .printer3d-connection-status.connected .connection-text {
+        color: #00aaff;
       }
 
       .printer3d-power-status {
@@ -439,9 +483,16 @@ export class Printer3DUI {
     this.currentPrinter = printer;
     this.isOpen = true;
 
-    // Check power status
-    if (this.isPoweredCallback) {
+    // Check computer connection status
+    if (this.isConnectedToComputerCallback) {
+      this.isConnectedToComputer = this.isConnectedToComputerCallback(printer.tileIndex);
+    }
+
+    // Check power status (computer needs to be powered for printer to work)
+    if (this.isPoweredCallback && this.isConnectedToComputer) {
       this.isPowered = this.isPoweredCallback(printer.tileIndex);
+    } else {
+      this.isPowered = false;
     }
 
     if (this.printerSectionElement) {
@@ -460,6 +511,7 @@ export class Printer3DUI {
     this.isOpen = false;
     this.currentPrinter = null;
     this.isPowered = false;
+    this.isConnectedToComputer = false;
 
     if (this.printerSectionElement) {
       this.printerSectionElement.style.display = 'none';
@@ -515,6 +567,17 @@ export class Printer3DUI {
   private updateUI(): void {
     if (!this.printerSectionElement) return;
 
+    // Update computer connection status
+    if (this.computerStatusElement) {
+      if (this.isConnectedToComputer) {
+        this.computerStatusElement.classList.add('connected');
+        this.computerStatusElement.querySelector('.connection-text')!.textContent = 'Computer Connected';
+      } else {
+        this.computerStatusElement.classList.remove('connected');
+        this.computerStatusElement.querySelector('.connection-text')!.textContent = 'No Computer';
+      }
+    }
+
     // Update power status
     if (this.powerStatusElement) {
       if (this.isPowered) {
@@ -529,7 +592,10 @@ export class Printer3DUI {
     // Update status and progress
     const job = this.currentPrinter?.currentJob;
     if (this.statusElement) {
-      if (!this.isPowered) {
+      if (!this.isConnectedToComputer) {
+        this.statusElement.textContent = 'No Computer';
+        this.statusElement.className = 'status-value';
+      } else if (!this.isPowered) {
         this.statusElement.textContent = 'No Power';
         this.statusElement.className = 'status-value';
       } else if (job) {
@@ -581,13 +647,14 @@ export class Printer3DUI {
     if (!this.recipeListElement || !this.inventory) return;
 
     this.recipeListElement.innerHTML = '';
+    const canOperate = this.isConnectedToComputer && this.isPowered;
 
     for (const recipe of PRINTER_RECIPES) {
       const canCraft = this.canCraftRecipe(recipe);
       const isPrinting = this.currentPrinter?.currentJob !== null;
 
       const recipeEl = document.createElement('div');
-      recipeEl.className = `recipe-item${(!canCraft || isPrinting || !this.isPowered) ? ' disabled' : ''}`;
+      recipeEl.className = `recipe-item${(!canCraft || isPrinting || !canOperate) ? ' disabled' : ''}`;
 
       // Output section
       const outputData = ITEM_DATA[recipe.output];
@@ -599,23 +666,22 @@ export class Printer3DUI {
         </div>
       `;
 
-      // Inputs section
-      let inputsHtml = '<div class="recipe-inputs">';
-      for (const input of recipe.inputs) {
-        const inputData = ITEM_DATA[input.itemType];
-        const hasItem = this.inventory.hasItem(input.itemType, input.quantity);
-        inputsHtml += `
+      // Input section (single input)
+      const inputData = ITEM_DATA[recipe.input.itemType];
+      const hasItem = this.inventory.hasItem(recipe.input.itemType, recipe.input.quantity);
+      const inputHtml = `
+        <div class="recipe-inputs">
           <div class="recipe-input ${hasItem ? 'has-item' : 'missing-item'}">
             <img src="${getAssetPath(inputData?.texture || '')}" alt="${inputData?.name || 'Unknown'}">
-            <span class="recipe-input-qty">${input.quantity}</span>
+            <span class="recipe-input-qty">${recipe.input.quantity}</span>
           </div>
-        `;
-      }
-      inputsHtml += `<span class="recipe-time">${recipe.printTime}s</span></div>`;
+          <span class="recipe-time">${recipe.printTime}s</span>
+        </div>
+      `;
 
-      recipeEl.innerHTML = outputHtml + inputsHtml;
+      recipeEl.innerHTML = outputHtml + inputHtml;
 
-      if (canCraft && !isPrinting && this.isPowered) {
+      if (canCraft && !isPrinting && canOperate) {
         recipeEl.addEventListener('click', () => this.startPrint(recipe));
       }
 
@@ -625,23 +691,16 @@ export class Printer3DUI {
 
   private canCraftRecipe(recipe: PrinterRecipe): boolean {
     if (!this.inventory) return false;
-
-    for (const input of recipe.inputs) {
-      if (!this.inventory.hasItem(input.itemType, input.quantity)) {
-        return false;
-      }
-    }
-    return true;
+    return this.inventory.hasItem(recipe.input.itemType, recipe.input.quantity);
   }
 
   private startPrint(recipe: PrinterRecipe): void {
-    if (!this.currentPrinter || !this.inventory || !this.isPowered) return;
+    if (!this.currentPrinter || !this.inventory) return;
+    if (!this.isConnectedToComputer || !this.isPowered) return;
     if (this.currentPrinter.currentJob !== null) return;
 
-    // Use ingredients
-    for (const input of recipe.inputs) {
-      this.inventory.removeItem(input.itemType, input.quantity);
-    }
+    // Use ingredient (single input)
+    this.inventory.removeItem(recipe.input.itemType, recipe.input.quantity);
 
     // Start print job
     this.currentPrinter.currentJob = {

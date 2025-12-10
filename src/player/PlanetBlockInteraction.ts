@@ -354,13 +354,25 @@ export class PlanetBlockInteraction {
       this.craftingSystem.open();
     });
     this.printer3DUI.setIsPoweredCallback((tileIndex) => {
-      return this.cableNodeManager.isElectricFurnaceConnectedToRunningSteamEngine(
+      // Printer gets power through connected computer's power
+      return this.cableNodeManager.isPrinterConnectedToPoweredComputer(
         tileIndex,
-        (steamTileIndex) => {
-          const engine = this.steamEngineManager.getSteamEngineAtTile(steamTileIndex);
-          return engine?.isRunning ?? false;
+        (computerTileIndex) => {
+          // Computer is powered if connected to a running steam engine
+          return this.cableNodeManager.isElectricFurnaceConnectedToRunningSteamEngine(
+            computerTileIndex,
+            (steamTileIndex) => {
+              const engine = this.steamEngineManager.getSteamEngineAtTile(steamTileIndex);
+              return engine?.isRunning ?? false;
+            }
+          );
         }
       );
+    });
+    this.printer3DUI.setIsConnectedToComputerCallback((tileIndex) => {
+      // Check if printer is connected to any computer
+      const connectedComputers = this.cableNodeManager.getConnectedComputers(tileIndex);
+      return connectedComputers.length > 0;
     });
 
     // Set up cable node machine callbacks (now that all managers are initialized)
