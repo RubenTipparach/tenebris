@@ -171,4 +171,5 @@ export const PlayerConfig = {
   // Debug settings (for development/testing)
   DEBUG_BYPASS_CRAFTING_INGREDIENTS: false,  // Skip ingredient requirements when crafting
   DEBUG_JETPACK_ENABLED: false,              // Enable infinite jetpack mode
+  DEBUG_JUMP_LOGGING: false,                 // Log detailed position/velocity for 5 seconds after each jump
 };

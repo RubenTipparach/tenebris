@@ -161,6 +161,10 @@ export class PlanetPlayer {
   private wasdPressedDuringJump: boolean = false;
   private jumpDirection: THREE.Vector3 | null = null; // Fixed direction for gravity during jump
 
+  // Debug: Position logging after jump
+  private jumpDebugTimer: number = 0;
+  private jumpDebugStartPos: THREE.Vector3 | null = null;
+
   // Teleport detection (debug)
   private didJumpThisFrame: boolean = false;
 
@@ -624,6 +628,30 @@ export class PlanetPlayer {
       // Debug: Shift+X to log cave structure
       if (input.sprint && this.inputManager.isKeyPressed('KeyX')) {
         this.logCaveStructure();
+      }
+
+      // Debug: Log position for 5 seconds after jump
+      if (this.jumpDebugTimer > 0 && this.currentPlanet) {
+        this.jumpDebugTimer -= deltaTime;
+        const spherical = this.positionToSpherical(this.position, this.currentPlanet);
+        const elapsed = (5.0 - this.jumpDebugTimer).toFixed(3);
+
+        // Calculate drift from start position
+        let driftInfo = '';
+        if (this.jumpDebugStartPos) {
+          const drift = this.position.distanceTo(this.jumpDebugStartPos);
+          const startSpherical = this.positionToSpherical(this.jumpDebugStartPos, this.currentPlanet);
+          const thetaDrift = ((spherical.theta - startSpherical.theta) * 180 / Math.PI).toFixed(4);
+          const phiDrift = ((spherical.phi - startSpherical.phi) * 180 / Math.PI).toFixed(4);
+          driftInfo = ` | drift=${drift.toFixed(4)} (θ:${thetaDrift}° φ:${phiDrift}°)`;
+        }
+
+        console.log(`[${elapsed}s] pos=(${this.position.x.toFixed(4)}, ${this.position.y.toFixed(4)}, ${this.position.z.toFixed(4)}) | θ=${(spherical.theta * 180 / Math.PI).toFixed(4)}° φ=${(spherical.phi * 180 / Math.PI).toFixed(4)}° r=${spherical.radius.toFixed(4)} | grounded=${this.isGrounded} vel=(${this.velocity.x.toFixed(3)}, ${this.velocity.y.toFixed(3)}, ${this.velocity.z.toFixed(3)})${driftInfo}`);
+
+        if (this.jumpDebugTimer <= 0) {
+          console.log('=== JUMP DEBUG END ===');
+          this.jumpDebugStartPos = null;
+        }
       }
     }
 
@@ -1380,9 +1408,27 @@ export class PlanetPlayer {
         }
         // Case 1: Wading (feet in water but eyes above) uses full JUMP_FORCE
 
+        // Check if player had significant horizontal velocity BEFORE adding jump force
+        // This determines if drift is expected (walking momentum) or a bug
+        // Must be done before adding jump force to avoid false positives
+        let hadHorizontalVelocity = false;
+        if (this.currentPlanet) {
+          const preJumpUp = this.currentPlanet.getSurfaceNormal(this.position);
+          const horizontalVel = this.velocity.clone();
+          const vertComponent = preJumpUp.clone().multiplyScalar(this.velocity.dot(preJumpUp));
+          horizontalVel.sub(vertComponent);
+          const horizSpeed = horizontalVel.length();
+          hadHorizontalVelocity = horizSpeed > 0.5; // threshold for "moving"
+          if (PlayerConfig.DEBUG_JUMP_LOGGING) {
+            console.log(`Pre-jump: horizontalVel=${horizSpeed.toFixed(3)}, hadHorizontalVelocity=${hadHorizontalVelocity}, isGrounded=${this.isGrounded}`);
+          }
+        }
+
         // Add jump force
         this.velocity.addScaledVector(jumpDir, jumpForce);
-        console.log(`After jump: velocity=(${this.velocity.x.toFixed(2)}, ${this.velocity.y.toFixed(2)}, ${this.velocity.z.toFixed(2)}), jumpForce=${jumpForce}`);
+        if (PlayerConfig.DEBUG_JUMP_LOGGING) {
+          console.log(`After jump: velocity=(${this.velocity.x.toFixed(2)}, ${this.velocity.y.toFixed(2)}, ${this.velocity.z.toFixed(2)}), jumpForce=${jumpForce}`);
+        }
         this.isGrounded = false;
         this.hasDoubleJumped = false; // Reset double-jump flag
         this.didJumpThisFrame = true; // Mark for teleport detection
@@ -1392,8 +1438,21 @@ export class PlanetPlayer {
           this.jumpStartPosition = this.position.clone();
           const spherical = this.positionToSpherical(this.position, this.currentPlanet);
           this.jumpStartSpherical = { theta: spherical.theta, phi: spherical.phi };
-          this.wasdPressedDuringJump = false;
-          this.jumpDirection = planetUp.clone();
+
+          // Use the pre-calculated horizontal velocity check
+          this.wasdPressedDuringJump = hadHorizontalVelocity;
+
+          // Store the UP direction at jump start - use fresh calculation from current position
+          this.jumpDirection = this.currentPlanet.getSurfaceNormal(this.position);
+
+          // Start debug position logging for 5 seconds (if enabled)
+          if (PlayerConfig.DEBUG_JUMP_LOGGING) {
+            this.jumpDebugTimer = 5.0;
+            this.jumpDebugStartPos = this.position.clone();
+            console.log('=== JUMP DEBUG START ===');
+            console.log(`Start pos: x=${this.position.x.toFixed(4)}, y=${this.position.y.toFixed(4)}, z=${this.position.z.toFixed(4)}`);
+            console.log(`Start spherical: theta=${(spherical.theta * 180 / Math.PI).toFixed(4)}°, phi=${(spherical.phi * 180 / Math.PI).toFixed(4)}°, radius=${spherical.radius.toFixed(4)}`);
+          }
         }
       } else if (PlayerConfig.DOUBLE_JUMP_ENABLED && this.jetpackEnabled && !this.hasDoubleJumped && !this.feetInWater) {
         // Stage 2: Double-jump while airborne - activates jetpack (not when in water - swimming handles that)
@@ -1933,11 +1992,25 @@ export class PlanetPlayer {
     if (walkableFloors.length === 0) return; // No walkable surfaces
 
     // Find the walkable floor closest to player's current feet level
+    // IMPORTANT: Prefer floors BELOW the player (that they can fall to) over floors ABOVE
+    // This prevents teleporting players upward when they walk onto a tile with multiple floors
     let bestFloor = walkableFloors[0];
     let bestDist = Math.abs(playerBottomRadius - bestFloor.radius);
+    let bestIsBelow = bestFloor.radius <= playerBottomRadius;
+
     for (const floor of walkableFloors) {
       const dist = Math.abs(playerBottomRadius - floor.radius);
-      if (dist < bestDist) {
+      const isBelow = floor.radius <= playerBottomRadius;
+
+      // Prefer floors below the player over floors above
+      // Only switch to a floor above if there are no floors below
+      if (isBelow && !bestIsBelow) {
+        // This floor is below and best is above - always prefer below
+        bestFloor = floor;
+        bestDist = dist;
+        bestIsBelow = true;
+      } else if (isBelow === bestIsBelow && dist < bestDist) {
+        // Same category (both above or both below) - pick closer one
         bestDist = dist;
         bestFloor = floor;
       }
@@ -2075,17 +2148,20 @@ export class PlanetPlayer {
       this.hasDoubleJumped = false; // Reset double-jump when landing
       this.isJetpacking = false;
 
-      // Snap to ground at the correct radial distance (natural landing position)
-      this.position.copy(this.currentPlanet.center).addScaledVector(actualUp, targetRadius);
+      // Snap to ground at the correct radial distance
+      // Use jump direction if available and WASD wasn't pressed (pure vertical jump)
+      // This prevents drift from the landing position being slightly different from jump start
+      const snapDirection = (this.jumpDirection && !this.wasdPressedDuringJump)
+        ? this.jumpDirection
+        : actualUp;
+      this.position.copy(this.currentPlanet.center).addScaledVector(snapDirection, targetRadius);
 
       // Check for jump drift after snapping
       this.checkJumpDrift();
 
-      // Remove downward velocity component
-      const upComponent = this.velocity.dot(actualUp);
-      if (upComponent < 0) {
-        this.velocity.sub(actualUp.clone().multiplyScalar(upComponent));
-      }
+      // Clear all velocity when landing on ground
+      // This prevents residual horizontal velocity from causing drift after landing
+      this.velocity.set(0, 0, 0);
     } else {
       // In the air or water - apply gravity and movement
       this.isGrounded = false;
