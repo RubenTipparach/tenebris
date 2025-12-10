@@ -106,9 +106,9 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
   // Advanced technology items
   [ItemType.ELECTRONICS_WORKBENCH]: { name: 'Electronics Workbench', stackSize: 8, texture: '/textures/technology/electronics_workbench_face.png', mineTime: 2.5 },
   // Electronic components
-  [ItemType.CPU_CHIP]: { name: 'CPU Chip', stackSize: 64, texture: '/textures/technology/cpu_chip.png', mineTime: 0.3 },
+  [ItemType.CPU_CHIP]: { name: 'CPU Chip', stackSize: 64, texture: '/textures/technology/micro_chip.png', mineTime: 0.3 },
   [ItemType.RAM_MODULE]: { name: 'RAM Module', stackSize: 64, texture: '/textures/technology/ram_module.png', mineTime: 0.3 },
-  [ItemType.MOTHERBOARD]: { name: 'Motherboard', stackSize: 64, texture: '/textures/technology/motherboard.png', mineTime: 0.3 },
+  [ItemType.MOTHERBOARD]: { name: 'Motherboard', stackSize: 64, texture: '/textures/technology/mother_board.png', mineTime: 0.3 },
 };
 
 // Inventory slot

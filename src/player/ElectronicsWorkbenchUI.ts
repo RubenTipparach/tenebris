@@ -15,21 +15,21 @@ export interface ElectronicsRecipe {
 //   0 1 2
 //   3 4 5
 //   6 7 8
-// Legend: S = Silicon (Stone), C = Copper Ingot, G = Gold Ingot, o = Cobalt Ingot
+// Legend: S = Sand, C = Copper Ingot, G = Gold Ingot, Co = Cobalt Ingot
 export const ELECTRONICS_RECIPES: ElectronicsRecipe[] = [
   // CPU Chip: SSS / CoGC / SSS
   {
     name: 'CPU Chip',
     inputs: [
-      { itemType: ItemType.STONE, quantity: 1, slot: 0 },
-      { itemType: ItemType.STONE, quantity: 1, slot: 1 },
-      { itemType: ItemType.STONE, quantity: 1, slot: 2 },
-      { itemType: ItemType.INGOT_COPPER, quantity: 1, slot: 3 },
-      { itemType: ItemType.INGOT_COBALT, quantity: 1, slot: 4 },
-      { itemType: ItemType.INGOT_GOLD, quantity: 1, slot: 5 },
-      { itemType: ItemType.INGOT_COPPER, quantity: 1, slot: 6 },
-      { itemType: ItemType.STONE, quantity: 1, slot: 7 },
-      { itemType: ItemType.STONE, quantity: 1, slot: 8 },
+      { itemType: ItemType.SAND, quantity: 1, slot: 0 },
+      { itemType: ItemType.SAND, quantity: 1, slot: 1 },
+      { itemType: ItemType.SAND, quantity: 1, slot: 2 },
+      { itemType: ItemType.INGOT_COBALT, quantity: 1, slot: 3 },
+      { itemType: ItemType.INGOT_GOLD, quantity: 1, slot: 4 },
+      { itemType: ItemType.INGOT_COPPER, quantity: 1, slot: 5 },
+      { itemType: ItemType.SAND, quantity: 1, slot: 6 },
+      { itemType: ItemType.SAND, quantity: 1, slot: 7 },
+      { itemType: ItemType.SAND, quantity: 1, slot: 8 },
     ],
     output: { itemType: ItemType.CPU_CHIP, quantity: 1 },
   },
@@ -37,9 +37,9 @@ export const ELECTRONICS_RECIPES: ElectronicsRecipe[] = [
   {
     name: 'RAM Module',
     inputs: [
-      { itemType: ItemType.STONE, quantity: 1, slot: 0 },
-      { itemType: ItemType.STONE, quantity: 1, slot: 1 },
-      { itemType: ItemType.STONE, quantity: 1, slot: 2 },
+      { itemType: ItemType.SAND, quantity: 1, slot: 0 },
+      { itemType: ItemType.SAND, quantity: 1, slot: 1 },
+      { itemType: ItemType.SAND, quantity: 1, slot: 2 },
       { itemType: ItemType.INGOT_COPPER, quantity: 1, slot: 3 },
       { itemType: ItemType.INGOT_COPPER, quantity: 1, slot: 4 },
       { itemType: ItemType.INGOT_COPPER, quantity: 1, slot: 5 },
@@ -50,15 +50,15 @@ export const ELECTRONICS_RECIPES: ElectronicsRecipe[] = [
   {
     name: 'Motherboard',
     inputs: [
-      { itemType: ItemType.STONE, quantity: 1, slot: 0 },
-      { itemType: ItemType.STONE, quantity: 1, slot: 1 },
-      { itemType: ItemType.STONE, quantity: 1, slot: 2 },
-      { itemType: ItemType.STONE, quantity: 1, slot: 3 },
+      { itemType: ItemType.SAND, quantity: 1, slot: 0 },
+      { itemType: ItemType.SAND, quantity: 1, slot: 1 },
+      { itemType: ItemType.SAND, quantity: 1, slot: 2 },
+      { itemType: ItemType.SAND, quantity: 1, slot: 3 },
       { itemType: ItemType.INGOT_GOLD, quantity: 1, slot: 4 },
-      { itemType: ItemType.STONE, quantity: 1, slot: 5 },
-      { itemType: ItemType.STONE, quantity: 1, slot: 6 },
-      { itemType: ItemType.STONE, quantity: 1, slot: 7 },
-      { itemType: ItemType.STONE, quantity: 1, slot: 8 },
+      { itemType: ItemType.SAND, quantity: 1, slot: 5 },
+      { itemType: ItemType.SAND, quantity: 1, slot: 6 },
+      { itemType: ItemType.SAND, quantity: 1, slot: 7 },
+      { itemType: ItemType.SAND, quantity: 1, slot: 8 },
     ],
     output: { itemType: ItemType.MOTHERBOARD, quantity: 1 },
   },
@@ -80,6 +80,11 @@ export class ElectronicsWorkbenchUI {
   private outputSlotElement: HTMLElement | null = null;
   private powerStatusElement: HTMLElement | null = null;
   private isPowered: boolean = false;
+
+  // Recipe selection
+  private recipeDropdown: HTMLSelectElement | null = null;
+  private craftButton: HTMLButtonElement | null = null;
+  private selectedRecipeIndex: number = -1;
 
   // Power check callback
   private isPoweredCallback: ((tileIndex: number) => boolean) | null = null;
@@ -140,16 +145,20 @@ export class ElectronicsWorkbenchUI {
         </div>
       </div>
 
-      <div class="electronics-recipe-list">
-        <div class="recipe-label">Recipes:</div>
-        <div class="recipe-items">
-          ${ELECTRONICS_RECIPES.map(r => `<span class="recipe-item">${r.name}</span>`).join('')}
+      <div class="electronics-recipe-controls">
+        <div class="recipe-select-row">
+          <label for="electronics-recipe-select">Recipe:</label>
+          <select id="electronics-recipe-select" class="electronics-recipe-select">
+            <option value="-1">-- Select Recipe --</option>
+            ${ELECTRONICS_RECIPES.map((r, i) => `<option value="${i}">${r.name}</option>`).join('')}
+          </select>
         </div>
+        <button id="electronics-craft-btn" class="electronics-craft-btn" disabled>Craft</button>
       </div>
 
       <div class="electronics-hint">
+        <p>Select a recipe and click Craft</p>
         <p>Requires power from Steam Engine or Hydro Generator</p>
-        <p>Connect via cables to power</p>
       </div>
     `;
 
@@ -170,8 +179,11 @@ export class ElectronicsWorkbenchUI {
     }
     this.outputSlotElement = document.getElementById('electronics-output-slot');
     this.powerStatusElement = document.getElementById('electronics-power-status');
+    this.recipeDropdown = document.getElementById('electronics-recipe-select') as HTMLSelectElement;
+    this.craftButton = document.getElementById('electronics-craft-btn') as HTMLButtonElement;
 
     this.setupSlotInteractions();
+    this.setupRecipeControls();
     this.addStyles();
   }
 
@@ -238,17 +250,17 @@ export class ElectronicsWorkbenchUI {
 
       .electronics-crafting-grid {
         display: grid;
-        grid-template-columns: repeat(3, 48px);
-        grid-template-rows: repeat(3, 48px);
-        gap: 4px;
+        grid-template-columns: repeat(3, 96px);
+        grid-template-rows: repeat(3, 96px);
+        gap: 6px;
       }
 
       .electronics-slot {
-        width: 48px;
-        height: 48px;
+        width: 96px;
+        height: 96px;
         background: rgba(60, 50, 40, 0.9);
         border: 2px solid #5C4033;
-        border-radius: 4px;
+        border-radius: 6px;
         display: flex;
         align-items: center;
         justify-content: center;
@@ -262,16 +274,16 @@ export class ElectronicsWorkbenchUI {
       }
 
       .electronics-slot img {
-        max-width: 40px;
-        max-height: 40px;
+        max-width: 80px;
+        max-height: 80px;
         image-rendering: pixelated;
       }
 
       .electronics-slot .slot-count {
         position: absolute;
-        bottom: 2px;
-        right: 4px;
-        font-size: 12px;
+        bottom: 4px;
+        right: 6px;
+        font-size: 14px;
         color: white;
         text-shadow: 1px 1px 1px black;
         font-weight: bold;
@@ -341,6 +353,82 @@ export class ElectronicsWorkbenchUI {
       .electronics-hint p {
         margin: 2px 0;
       }
+
+      .electronics-recipe-controls {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 10px;
+        margin: 15px 0;
+        padding: 10px;
+        background: rgba(50, 40, 35, 0.8);
+        border-radius: 4px;
+      }
+
+      .recipe-select-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .recipe-select-row label {
+        font-size: 13px;
+        color: #B8A080;
+      }
+
+      .electronics-recipe-select {
+        padding: 6px 10px;
+        font-size: 13px;
+        background: rgba(60, 50, 40, 0.9);
+        border: 2px solid #5C4033;
+        border-radius: 4px;
+        color: #E0D0C0;
+        cursor: pointer;
+        min-width: 150px;
+      }
+
+      .electronics-recipe-select:hover {
+        border-color: #8B7355;
+      }
+
+      .electronics-recipe-select:focus {
+        outline: none;
+        border-color: #FFD700;
+      }
+
+      .electronics-recipe-select:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      .electronics-craft-btn {
+        padding: 8px 24px;
+        font-size: 14px;
+        font-weight: bold;
+        background: linear-gradient(180deg, #5C8A5C 0%, #3D5C3D 100%);
+        border: 2px solid #7CB97C;
+        border-radius: 4px;
+        color: #FFFFFF;
+        cursor: pointer;
+        text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.5);
+        transition: all 0.2s;
+      }
+
+      .electronics-craft-btn:hover:not(:disabled) {
+        background: linear-gradient(180deg, #6CA06C 0%, #4D6C4D 100%);
+        border-color: #90EE90;
+      }
+
+      .electronics-craft-btn:active:not(:disabled) {
+        transform: translateY(1px);
+      }
+
+      .electronics-craft-btn:disabled {
+        background: linear-gradient(180deg, #5C5C5C 0%, #3D3D3D 100%);
+        border-color: #666;
+        color: #999;
+        cursor: not-allowed;
+      }
     `;
     document.head.appendChild(style);
   }
@@ -367,6 +455,60 @@ export class ElectronicsWorkbenchUI {
     if (this.outputSlotElement) {
       this.outputSlotElement.addEventListener('click', () => this.handleOutputClick());
     }
+  }
+
+  private setupRecipeControls(): void {
+    if (this.recipeDropdown) {
+      this.recipeDropdown.addEventListener('change', () => {
+        this.selectedRecipeIndex = parseInt(this.recipeDropdown!.value, 10);
+        this.updateUI();
+      });
+    }
+
+    if (this.craftButton) {
+      this.craftButton.addEventListener('click', () => {
+        this.handleCraftButtonClick();
+      });
+    }
+  }
+
+  private handleCraftButtonClick(): void {
+    if (!this.isPowered || this.selectedRecipeIndex < 0) return;
+
+    const recipe = ELECTRONICS_RECIPES[this.selectedRecipeIndex];
+    if (!recipe) return;
+
+    // Check if we have all ingredients in inventory
+    if (!this.canCraftRecipe(recipe)) return;
+
+    // Remove ingredients from inventory
+    for (const input of recipe.inputs) {
+      this.inventory.removeItem(input.itemType, input.quantity);
+    }
+
+    // Give output
+    this.inventory.addItem(recipe.output.itemType, recipe.output.quantity);
+
+    this.updateUI();
+    this.notifyChanges();
+  }
+
+  private canCraftRecipe(recipe: ElectronicsRecipe): boolean {
+    // Group inputs by item type to check total quantities needed
+    const requiredItems = new Map<ItemType, number>();
+    for (const input of recipe.inputs) {
+      const current = requiredItems.get(input.itemType) || 0;
+      requiredItems.set(input.itemType, current + input.quantity);
+    }
+
+    // Check if inventory has enough of each item
+    for (const [itemType, quantity] of requiredItems) {
+      if (this.inventory.getItemCount(itemType) < quantity) {
+        return false;
+      }
+    }
+
+    return true;
   }
 
   private handleCraftingSlotClick(slotIndex: number): void {
@@ -585,19 +727,33 @@ export class ElectronicsWorkbenchUI {
       }
     }
 
-    // Update crafting slots
+    // Get selected recipe for preview
+    const selectedRecipe = this.selectedRecipeIndex >= 0 ? ELECTRONICS_RECIPES[this.selectedRecipeIndex] : null;
+
+    // Build a map of recipe slot requirements for preview
+    const recipeSlotMap = new Map<number, { itemType: ItemType; quantity: number }>();
+    if (selectedRecipe) {
+      for (const input of selectedRecipe.inputs) {
+        recipeSlotMap.set(input.slot, { itemType: input.itemType, quantity: input.quantity });
+      }
+    }
+
+    // Update crafting slots - show recipe preview
     this.craftingSlotElements.forEach((el, index) => {
-      const slot = this.craftingSlots[index];
       const img = el.querySelector('img') as HTMLImageElement;
       const countEl = el.querySelector('.slot-count') as HTMLElement;
 
-      if (slot.itemType !== ItemType.NONE && slot.quantity > 0) {
-        const itemData = ITEM_DATA[slot.itemType];
+      // Show recipe ingredient preview in this slot
+      const recipeSlot = recipeSlotMap.get(index);
+      if (recipeSlot && this.isPowered) {
+        const itemData = ITEM_DATA[recipeSlot.itemType];
         img.src = getAssetPath(itemData.texture);
         img.style.display = 'block';
-        countEl.textContent = slot.quantity > 1 ? slot.quantity.toString() : '';
+        img.style.opacity = '0.7'; // Slightly dimmed to show it's a preview
+        countEl.textContent = recipeSlot.quantity > 1 ? recipeSlot.quantity.toString() : '';
       } else {
         img.style.display = 'none';
+        img.style.opacity = '1';
         countEl.textContent = '';
       }
 
@@ -605,23 +761,32 @@ export class ElectronicsWorkbenchUI {
       el.style.opacity = this.isPowered ? '1' : '0.5';
     });
 
-    // Update output slot
+    // Update output slot - show preview of selected recipe output
     if (this.outputSlotElement) {
-      const matchedRecipe = this.isPowered ? this.findMatchingRecipe() : null;
       const img = this.outputSlotElement.querySelector('img') as HTMLImageElement;
       const countEl = this.outputSlotElement.querySelector('.slot-count') as HTMLElement;
 
-      if (matchedRecipe) {
-        const itemData = ITEM_DATA[matchedRecipe.output.itemType];
+      if (selectedRecipe && this.isPowered) {
+        const itemData = ITEM_DATA[selectedRecipe.output.itemType];
         img.src = getAssetPath(itemData.texture);
         img.style.display = 'block';
-        countEl.textContent = matchedRecipe.output.quantity > 1 ? matchedRecipe.output.quantity.toString() : '';
+        countEl.textContent = selectedRecipe.output.quantity > 1 ? selectedRecipe.output.quantity.toString() : '';
       } else {
         img.style.display = 'none';
         countEl.textContent = '';
       }
 
       this.outputSlotElement.style.opacity = this.isPowered ? '1' : '0.5';
+    }
+
+    // Update recipe dropdown and craft button
+    if (this.recipeDropdown) {
+      this.recipeDropdown.disabled = !this.isPowered;
+    }
+
+    if (this.craftButton) {
+      const canCraft = this.isPowered && selectedRecipe && this.canCraftRecipe(selectedRecipe);
+      this.craftButton.disabled = !canCraft;
     }
   }
 }
