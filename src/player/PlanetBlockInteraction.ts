@@ -14,6 +14,8 @@ import { CopperPipeManager, PlacedCopperPipe } from '../planet/CopperPipe';
 import { CableNodeManager, PlacedCable } from '../planet/CableNode';
 import { ElectricFurnaceManager, PlacedElectricFurnace } from '../planet/ElectricFurnace';
 import { ElectronicsWorkbenchManager, PlacedElectronicsWorkbench } from '../planet/ElectronicsWorkbench';
+import { ComputerManager, PlacedComputer } from '../planet/Computer';
+import { Printer3DManager, PlacedPrinter3D } from '../planet/Printer3D';
 import { CraftingSystem } from './CraftingSystem';
 import { HydroGeneratorUI } from './HydroGeneratorUI';
 import { SteamEngineUI } from './SteamEngineUI';
@@ -21,6 +23,8 @@ import { CopperPipeUI } from './CopperPipeUI';
 import { FurnaceUI } from './FurnaceUI';
 import { ElectricFurnaceUI } from './ElectricFurnaceUI';
 import { ElectronicsWorkbenchUI } from './ElectronicsWorkbenchUI';
+import { ComputerUI } from './ComputerUI';
+import { Printer3DUI } from './Printer3DUI';
 import { StorageUI } from './StorageUI';
 import { getAssetPath } from '../utils/assetPath';
 import { gameStorage } from '../engine/GameStorage';
@@ -47,6 +51,11 @@ function blockToItem(blockType: HexBlockType): ItemType {
     case HexBlockType.SNOW: return ItemType.SNOW;
     case HexBlockType.DIRT_SNOW: return ItemType.DIRT; // Dirt with snow drops dirt
     case HexBlockType.ICE: return ItemType.ICE;
+    // Glass
+    case HexBlockType.GLASS: return ItemType.GLASS;
+    // Advanced technology blocks
+    case HexBlockType.COMPUTER: return ItemType.COMPUTER;
+    case HexBlockType.PRINTER_3D: return ItemType.PRINTER_3D;
     default: return ItemType.NONE;
   }
 }
@@ -70,6 +79,8 @@ function itemToBlock(itemType: ItemType): HexBlockType {
     // Snow biome blocks can be placed
     case ItemType.SNOW: return HexBlockType.SNOW;
     case ItemType.ICE: return HexBlockType.ICE;
+    // Glass can be placed
+    case ItemType.GLASS: return HexBlockType.GLASS;
     default: return HexBlockType.AIR;
   }
 }
@@ -135,6 +146,16 @@ export class PlanetBlockInteraction {
   private electronicsWorkbenchManager: ElectronicsWorkbenchManager;
   private electronicsWorkbenchUI: ElectronicsWorkbenchUI;
   private miningElectronicsWorkbenchTarget: { workbench: PlacedElectronicsWorkbench } | null = null;
+
+  // Computer system
+  private computerManager: ComputerManager;
+  private computerUI: ComputerUI;
+  private miningComputerTarget: { computer: PlacedComputer } | null = null;
+
+  // 3D Printer system
+  private printer3DManager: Printer3DManager;
+  private printer3DUI: Printer3DUI;
+  private miningPrinter3DTarget: { printer: PlacedPrinter3D } | null = null;
 
   private rightClickCooldown: number = 0;
   private readonly CLICK_COOLDOWN = 0.25;
@@ -299,11 +320,56 @@ export class PlanetBlockInteraction {
       );
     });
 
+    // Initialize computer system
+    this.computerManager = new ComputerManager(scene, planetCenter, sunDirection);
+    this.computerUI = new ComputerUI();
+    this.computerUI.setOnCloseCallback(() => {
+      // Computer close callback
+    });
+    this.computerUI.setOnOpenInventoryCallback(() => {
+      this.craftingSystem.open();
+    });
+    this.computerUI.setIsPoweredCallback((tileIndex) => {
+      return this.cableNodeManager.isElectricFurnaceConnectedToRunningSteamEngine(
+        tileIndex,
+        (steamTileIndex) => {
+          const engine = this.steamEngineManager.getSteamEngineAtTile(steamTileIndex);
+          return engine?.isRunning ?? false;
+        }
+      );
+    });
+
+    // Initialize 3D printer system
+    this.printer3DManager = new Printer3DManager(scene, planetCenter, sunDirection);
+    this.printer3DUI = new Printer3DUI(this.inventory);
+    this.printer3DUI.setOnItemCrafted((itemType, quantity) => {
+      this.inventory.addItem(itemType, quantity);
+      this.updateHotbarUI();
+      this.saveInventory();
+    });
+    this.printer3DUI.setOnCloseCallback(() => {
+      // 3D Printer close callback
+    });
+    this.printer3DUI.setOnOpenInventoryCallback(() => {
+      this.craftingSystem.open();
+    });
+    this.printer3DUI.setIsPoweredCallback((tileIndex) => {
+      return this.cableNodeManager.isElectricFurnaceConnectedToRunningSteamEngine(
+        tileIndex,
+        (steamTileIndex) => {
+          const engine = this.steamEngineManager.getSteamEngineAtTile(steamTileIndex);
+          return engine?.isRunning ?? false;
+        }
+      );
+    });
+
     // Set up cable node machine callbacks (now that all managers are initialized)
     this.cableNodeManager.setMachineCallbacks(
       (tileIndex) => this.steamEngineManager.getSteamEngineAtTile(tileIndex),
       (tileIndex) => this.electricFurnaceManager.getElectricFurnaceAtTile(tileIndex),
       (tileIndex) => this.electronicsWorkbenchManager.getElectronicsWorkbenchAtTile(tileIndex),
+      (tileIndex) => this.computerManager.getComputerAtTile(tileIndex),
+      (tileIndex) => this.printer3DManager.getPrinter3DAtTile(tileIndex),
       (tileIndex) => this.getNeighborTileIndices(tileIndex)
     );
 
@@ -350,6 +416,8 @@ export class PlanetBlockInteraction {
       this.hydroGeneratorUI.close();
       this.steamEngineUI.close();
       this.copperPipeUI.close();
+      this.computerUI.close();
+      this.printer3DUI.close();
       // Note: We don't request pointer lock here because:
       // 1. If closed via ESC, browser security prevents requestPointerLock during ESC handling
       // 2. The pause menu will show and user can click PLAY to resume
@@ -935,6 +1003,10 @@ export class PlanetBlockInteraction {
     const electricFurnaceMeshes = this.electricFurnaceManager.getElectricFurnaceMeshes();
     // Get electronics workbench meshes for picking
     const electronicsWorkbenchMeshes = this.electronicsWorkbenchManager.getElectronicsWorkbenchMeshes();
+    // Get computer meshes for picking
+    const computerMeshes = this.computerManager.getComputerMeshes();
+    // Get 3D printer meshes for picking
+    const printer3DMeshes = this.printer3DManager.getPrinter3DMeshes();
 
     const treeIntersects = this.raycaster.intersectObjects(treeMeshes, false);
     const torchIntersects = this.raycaster.intersectObjects(torchMeshes, false);
@@ -947,6 +1019,8 @@ export class PlanetBlockInteraction {
     const cableIntersects = this.raycaster.intersectObjects(cableMeshes, false);
     const electricFurnaceIntersects = this.raycaster.intersectObjects(electricFurnaceMeshes, false);
     const electronicsWorkbenchIntersects = this.raycaster.intersectObjects(electronicsWorkbenchMeshes, false);
+    const computerIntersects = this.raycaster.intersectObjects(computerMeshes, false);
+    const printer3DIntersects = this.raycaster.intersectObjects(printer3DMeshes, false);
 
     // Raycast against all planets and find the closest hit
     let closestBlockHit: ReturnType<Planet['raycast']> = null;
@@ -978,6 +1052,8 @@ export class PlanetBlockInteraction {
     let hitCable = false;
     let hitElectricFurnace = false;
     let hitElectronicsWorkbench = false;
+    let hitComputer = false;
+    let hitPrinter3D = false;
     let treeHit: THREE.Intersection | null = null;
     let torchHit: THREE.Intersection | null = null;
     let furnaceHit: THREE.Intersection | null = null;
@@ -989,6 +1065,8 @@ export class PlanetBlockInteraction {
     let cableHit: THREE.Intersection | null = null;
     let electricFurnaceHit: THREE.Intersection | null = null;
     let electronicsWorkbenchHit: THREE.Intersection | null = null;
+    let computerHit: THREE.Intersection | null = null;
+    let printer3DHit: THREE.Intersection | null = null;
 
     // Find the closest hit among all types
     const treeDistance = treeIntersects.length > 0 ? treeIntersects[0].distance : Infinity;
@@ -1002,7 +1080,9 @@ export class PlanetBlockInteraction {
     const cableDistance = cableIntersects.length > 0 ? cableIntersects[0].distance : Infinity;
     const electricFurnaceDistance = electricFurnaceIntersects.length > 0 ? electricFurnaceIntersects[0].distance : Infinity;
     const electronicsWorkbenchDistance = electronicsWorkbenchIntersects.length > 0 ? electronicsWorkbenchIntersects[0].distance : Infinity;
-    const closestObjectDistance = Math.min(treeDistance, torchDistance, furnaceDistance, storageChestDistance, garbagePileDistance, steamEngineDistance, hydroGeneratorDistance, copperPipeDistance, cableDistance, electricFurnaceDistance, electronicsWorkbenchDistance);
+    const computerDistance = computerIntersects.length > 0 ? computerIntersects[0].distance : Infinity;
+    const printer3DDistance = printer3DIntersects.length > 0 ? printer3DIntersects[0].distance : Infinity;
+    const closestObjectDistance = Math.min(treeDistance, torchDistance, furnaceDistance, storageChestDistance, garbagePileDistance, steamEngineDistance, hydroGeneratorDistance, copperPipeDistance, cableDistance, electricFurnaceDistance, electronicsWorkbenchDistance, computerDistance, printer3DDistance);
 
     if (closestBlockHit && closestBlockDistance < closestObjectDistance) {
       hitBlock = true;
@@ -1015,6 +1095,12 @@ export class PlanetBlockInteraction {
     } else if (electronicsWorkbenchDistance <= closestObjectDistance && electronicsWorkbenchDistance < Infinity) {
       hitElectronicsWorkbench = true;
       electronicsWorkbenchHit = electronicsWorkbenchIntersects[0];
+    } else if (computerDistance <= closestObjectDistance && computerDistance < Infinity) {
+      hitComputer = true;
+      computerHit = computerIntersects[0];
+    } else if (printer3DDistance <= closestObjectDistance && printer3DDistance < Infinity) {
+      hitPrinter3D = true;
+      printer3DHit = printer3DIntersects[0];
     } else if (copperPipeDistance <= closestObjectDistance && copperPipeDistance < Infinity) {
       hitCopperPipe = true;
       copperPipeHit = copperPipeIntersects[0];
@@ -1110,6 +1196,53 @@ export class PlanetBlockInteraction {
         this.rightClickCooldown = this.CLICK_COOLDOWN;
       } else if (leftClick && electronicsWorkbench) {
         this.handleElectronicsWorkbenchMining(deltaTime, electronicsWorkbench);
+      } else {
+        this.resetMining();
+      }
+    } else if (hitComputer && computerHit) {
+      // No wireframe for computers
+      if (this.blockWireframe) {
+        this.blockWireframe.visible = false;
+        this.wireframeCache = null;
+      }
+
+      const computerMesh = computerHit.object as THREE.Mesh;
+      const computer = this.computerManager.getComputerByMesh(computerMesh);
+
+      // Handle computer interaction (right click to open UI, left click to mine)
+      if (rightClick && this.rightClickCooldown === 0 && computer) {
+        this.computerUI.open(computer);
+        this.rightClickCooldown = this.CLICK_COOLDOWN;
+      } else if (leftClick && computer) {
+        this.handleComputerMining(deltaTime, computer);
+      } else {
+        this.resetMining();
+      }
+    } else if (hitPrinter3D && printer3DHit) {
+      // No wireframe for 3D printers
+      if (this.blockWireframe) {
+        this.blockWireframe.visible = false;
+        this.wireframeCache = null;
+      }
+
+      const printerMesh = printer3DHit.object as THREE.Mesh;
+      const printer = this.printer3DManager.getPrinter3DByMesh(printerMesh);
+
+      // Handle 3D printer interaction (right click to open UI, left click to mine)
+      if (rightClick && this.rightClickCooldown === 0 && printer) {
+        // Check if printer is powered via cable connection
+        const isPowered = this.cableNodeManager.isElectricFurnaceConnectedToRunningSteamEngine(
+          printer.tileIndex,
+          (steamTileIndex) => {
+            const engine = this.steamEngineManager.getSteamEngineAtTile(steamTileIndex);
+            return engine?.isRunning ?? false;
+          }
+        );
+        printer.isPowered = isPowered;
+        this.printer3DUI.open(printer);
+        this.rightClickCooldown = this.CLICK_COOLDOWN;
+      } else if (leftClick && printer) {
+        this.handlePrinter3DMining(deltaTime, printer);
       } else {
         this.resetMining();
       }
@@ -1835,6 +1968,105 @@ export class PlanetBlockInteraction {
     this.electronicsWorkbenchManager.removeElectronicsWorkbench(workbench);
   }
 
+  private handleComputerMining(deltaTime: number, computer: PlacedComputer): void {
+    // Check if target changed
+    if (this.miningComputerTarget === null || this.miningComputerTarget.computer !== computer) {
+      // New target, reset progress
+      this.miningComputerTarget = { computer };
+      this.miningTarget = null;
+      this.miningTreeTarget = null;
+      this.miningFurnaceTarget = null;
+      this.miningStorageTarget = null;
+      this.miningGarbageTarget = null;
+      this.miningSteamEngineTarget = null;
+      this.miningHydroGeneratorTarget = null;
+      this.miningCopperPipeTarget = null;
+      this.miningCableTarget = null;
+      this.miningElectricFurnaceTarget = null;
+      this.miningElectronicsWorkbenchTarget = null;
+      this.miningProgress = 0;
+    }
+
+    // Computer mining time
+    const mineTime = ITEM_DATA[ItemType.COMPUTER].mineTime;
+
+    // Increase progress
+    this.miningProgress += deltaTime / mineTime;
+    this.updateMiningUI(this.miningProgress);
+
+    // Check if mining complete
+    if (this.miningProgress >= 1) {
+      this.breakComputer(computer);
+      this.resetMining();
+    }
+  }
+
+  private breakComputer(computer: PlacedComputer): void {
+    // Give the computer item back to the player
+    this.inventory.addItem(ItemType.COMPUTER, 1);
+    this.updateHotbarUI();
+    this.saveInventory();
+
+    // Remove computer from save
+    for (let i = 0; i < this.planets.length; i++) {
+      const planetId = i === 0 ? 'earth' : 'moon';
+      gameStorage.removeComputer(planetId, computer.tileIndex);
+    }
+
+    // Remove the computer from the world
+    this.computerManager.removeComputer(computer);
+  }
+
+  private handlePrinter3DMining(deltaTime: number, printer: PlacedPrinter3D): void {
+    // Check if target changed
+    if (this.miningPrinter3DTarget === null || this.miningPrinter3DTarget.printer !== printer) {
+      // New target, reset progress
+      this.miningPrinter3DTarget = { printer };
+      this.miningTarget = null;
+      this.miningTreeTarget = null;
+      this.miningFurnaceTarget = null;
+      this.miningStorageTarget = null;
+      this.miningGarbageTarget = null;
+      this.miningSteamEngineTarget = null;
+      this.miningHydroGeneratorTarget = null;
+      this.miningCopperPipeTarget = null;
+      this.miningCableTarget = null;
+      this.miningElectricFurnaceTarget = null;
+      this.miningElectronicsWorkbenchTarget = null;
+      this.miningComputerTarget = null;
+      this.miningProgress = 0;
+    }
+
+    // 3D Printer mining time
+    const mineTime = ITEM_DATA[ItemType.PRINTER_3D].mineTime;
+
+    // Increase progress
+    this.miningProgress += deltaTime / mineTime;
+    this.updateMiningUI(this.miningProgress);
+
+    // Check if mining complete
+    if (this.miningProgress >= 1) {
+      this.breakPrinter3D(printer);
+      this.resetMining();
+    }
+  }
+
+  private breakPrinter3D(printer: PlacedPrinter3D): void {
+    // Give the 3D printer item back to the player
+    this.inventory.addItem(ItemType.PRINTER_3D, 1);
+    this.updateHotbarUI();
+    this.saveInventory();
+
+    // Remove 3D printer from save
+    for (let i = 0; i < this.planets.length; i++) {
+      const planetId = i === 0 ? 'earth' : 'moon';
+      gameStorage.removePrinter3D(planetId, printer.tileIndex);
+    }
+
+    // Remove the 3D printer from the world
+    this.printer3DManager.removePrinter3D(printer);
+  }
+
   private breakElectricFurnace(furnace: PlacedElectricFurnace): void {
     // Give the electric furnace item back to the player
     this.inventory.addItem(ItemType.ELECTRIC_FURNACE, 1);
@@ -1917,6 +2149,8 @@ export class PlanetBlockInteraction {
     this.miningCableTarget = null;
     this.miningElectricFurnaceTarget = null;
     this.miningElectronicsWorkbenchTarget = null;
+    this.miningComputerTarget = null;
+    this.miningPrinter3DTarget = null;
     this.miningProgress = 0;
     this.updateMiningUI(0);
   }
@@ -2058,6 +2292,18 @@ export class PlanetBlockInteraction {
     // Handle electronics workbench placement
     if (selectedSlot.itemType === ItemType.ELECTRONICS_WORKBENCH) {
       this.placeElectronicsWorkbench(planet, tileIndex, depth);
+      return;
+    }
+
+    // Handle computer placement
+    if (selectedSlot.itemType === ItemType.COMPUTER) {
+      this.placeComputer(planet, tileIndex, depth);
+      return;
+    }
+
+    // Handle 3D printer placement
+    if (selectedSlot.itemType === ItemType.PRINTER_3D) {
+      this.placePrinter3D(planet, tileIndex, depth);
       return;
     }
 
@@ -2709,6 +2955,108 @@ export class PlanetBlockInteraction {
     }
   }
 
+  private async placeComputer(planet: Planet, tileIndex: number, depth: number): Promise<void> {
+    // Check if there's already a computer at this tile
+    if (this.computerManager.getComputerAtTile(tileIndex)) {
+      return; // Can't place multiple computers on same tile
+    }
+
+    // Check if there's any other technology block at this tile
+    if (this.furnaceManager.getFurnaceAtTile(tileIndex) ||
+        this.electricFurnaceManager.getElectricFurnaceAtTile(tileIndex) ||
+        this.electronicsWorkbenchManager.getElectronicsWorkbenchAtTile(tileIndex) ||
+        this.steamEngineManager.getSteamEngineAtTile(tileIndex) ||
+        this.storageChestManager.getChestAtTile(tileIndex)) {
+      return; // Can't place where other tech block exists
+    }
+
+    // Get the world position for the computer
+    const tile = planet.getTileByIndex(tileIndex);
+    if (!tile) return;
+
+    // depth is the air block position - computer should sit on the solid block below it
+    const solidBlockTopRadius = planet.depthToRadius(depth) - planet.getBlockHeight();
+    const tileCenter = tile.center.clone().normalize();
+    const worldPosition = tileCenter.multiplyScalar(solidBlockTopRadius).add(planet.center);
+
+    // Get player forward direction for computer facing
+    const playerForward = this.player.getForwardVector();
+
+    // Use item from inventory
+    if (this.inventory.useSelectedItem()) {
+      // Place the computer facing the player
+      const placedComputer = await this.computerManager.placeComputer(worldPosition, planet.center, tileIndex, playerForward);
+
+      this.updateHotbarUI();
+      this.saveInventory();
+
+      // Save computer placement to game storage
+      if (placedComputer) {
+        const planetId = this.getPlanetId(planet);
+        gameStorage.saveComputer(planetId, tileIndex, {
+          position: { x: placedComputer.position.x, y: placedComputer.position.y, z: placedComputer.position.z },
+          rotation: placedComputer.rotation,
+          isPowered: placedComputer.isPowered
+        });
+
+        // Rebuild cable connections so nearby cables can connect to this computer
+        this.cableNodeManager.rebuildAllConnections();
+      }
+    }
+  }
+
+  private async placePrinter3D(planet: Planet, tileIndex: number, depth: number): Promise<void> {
+    // Check if there's already a 3D printer at this tile
+    if (this.printer3DManager.getPrinter3DAtTile(tileIndex)) {
+      return; // Can't place multiple printers on same tile
+    }
+
+    // Check if there's any other technology block at this tile
+    if (this.furnaceManager.getFurnaceAtTile(tileIndex) ||
+        this.electricFurnaceManager.getElectricFurnaceAtTile(tileIndex) ||
+        this.electronicsWorkbenchManager.getElectronicsWorkbenchAtTile(tileIndex) ||
+        this.computerManager.getComputerAtTile(tileIndex) ||
+        this.steamEngineManager.getSteamEngineAtTile(tileIndex) ||
+        this.storageChestManager.getChestAtTile(tileIndex)) {
+      return; // Can't place where other tech block exists
+    }
+
+    // Get the world position for the 3D printer
+    const tile = planet.getTileByIndex(tileIndex);
+    if (!tile) return;
+
+    // depth is the air block position - printer should sit on the solid block below it
+    const solidBlockTopRadius = planet.depthToRadius(depth) - planet.getBlockHeight();
+    const tileCenter = tile.center.clone().normalize();
+    const worldPosition = tileCenter.multiplyScalar(solidBlockTopRadius).add(planet.center);
+
+    // Get player forward direction for printer facing
+    const playerForward = this.player.getForwardVector();
+
+    // Use item from inventory
+    if (this.inventory.useSelectedItem()) {
+      // Place the 3D printer facing the player
+      const placedPrinter = await this.printer3DManager.placePrinter3D(worldPosition, planet.center, tileIndex, playerForward);
+
+      this.updateHotbarUI();
+      this.saveInventory();
+
+      // Save 3D printer placement to game storage
+      if (placedPrinter) {
+        const planetId = this.getPlanetId(planet);
+        gameStorage.savePrinter3D(planetId, tileIndex, {
+          position: { x: placedPrinter.position.x, y: placedPrinter.position.y, z: placedPrinter.position.z },
+          rotation: placedPrinter.rotation,
+          isPowered: placedPrinter.isPowered,
+          currentJob: placedPrinter.currentJob
+        });
+
+        // Rebuild cable connections so nearby cables can connect to this printer
+        this.cableNodeManager.rebuildAllConnections();
+      }
+    }
+  }
+
   private pickupTorch(mesh: THREE.Mesh): void {
     // Find the torch group containing this mesh
     let parent = mesh.parent;
@@ -3192,7 +3540,47 @@ export class PlanetBlockInteraction {
       }
     }
 
-    console.log(`Loaded save: ${saveData.tileChanges.length} tile changes, ${savedTorches.length} torches, ${savedFurnaces.length} furnaces, ${savedElectricFurnaces.length} electric furnaces, ${savedElectronicsWorkbenches.length} electronics workbenches, ${savedStorageChests.length} chests, ${savedGarbagePiles.length} piles, ${savedSteamEngines.length} steam engines, ${savedHydroGenerators.length} hydro generators, ${savedCopperPipes.length} copper pipes, ${savedCables.length} cables, inventory restored`);
+    // Load saved computers
+    const savedComputers = gameStorage.getComputers();
+    for (const savedComputer of savedComputers) {
+      const planet = this.planets.find((_, i) =>
+        (i === 0 ? 'earth' : 'moon') === savedComputer.planetId
+      );
+      if (planet) {
+        const savedPosition = new THREE.Vector3(
+          savedComputer.position.x,
+          savedComputer.position.y,
+          savedComputer.position.z
+        );
+        // Restore the computer
+        this.computerManager.restoreComputer(savedPosition, planet.center, savedComputer.tileIndex, savedComputer.rotation, savedComputer.isPowered);
+      }
+    }
+
+    // Load saved 3D printers
+    const savedPrinters3D = gameStorage.getPrinters3D();
+    for (const savedPrinter of savedPrinters3D) {
+      const planet = this.planets.find((_, i) =>
+        (i === 0 ? 'earth' : 'moon') === savedPrinter.planetId
+      );
+      if (planet) {
+        const savedPosition = new THREE.Vector3(
+          savedPrinter.position.x,
+          savedPrinter.position.y,
+          savedPrinter.position.z
+        );
+        // Restore the 3D printer with its job state
+        const currentJob = savedPrinter.currentJob ? {
+          itemType: savedPrinter.currentJob.itemType as ItemType,
+          progress: savedPrinter.currentJob.progress,
+          totalTime: savedPrinter.currentJob.totalTime,
+          startTime: savedPrinter.currentJob.startTime
+        } : null;
+        this.printer3DManager.restorePrinter3D(savedPosition, planet.center, savedPrinter.tileIndex, savedPrinter.rotation, savedPrinter.isPowered, currentJob);
+      }
+    }
+
+    console.log(`Loaded save: ${saveData.tileChanges.length} tile changes, ${savedTorches.length} torches, ${savedFurnaces.length} furnaces, ${savedElectricFurnaces.length} electric furnaces, ${savedElectronicsWorkbenches.length} electronics workbenches, ${savedComputers.length} computers, ${savedStorageChests.length} chests, ${savedGarbagePiles.length} piles, ${savedSteamEngines.length} steam engines, ${savedHydroGenerators.length} hydro generators, ${savedCopperPipes.length} copper pipes, ${savedCables.length} cables, inventory restored`);
   }
 
   /**
@@ -3379,6 +3767,71 @@ export class PlanetBlockInteraction {
           openUI: () => {
             this.electronicsWorkbenchUI.open(workbench);
             this.craftingSystem.open();
+          }
+        }));
+      }
+    });
+
+    // Register Computers
+    TechBlockRegistry.registerManager({
+      type: 'Computer',
+      getBlocks: (): TechBlockInfo[] => {
+        return this.computerManager.getAllComputers().map((computer: PlacedComputer) => ({
+          type: 'Computer',
+          id: `computer-${computer.tileIndex}`,
+          tileIndex: computer.tileIndex,
+          position: { x: computer.position.x, y: computer.position.y, z: computer.position.z },
+          getStatus: () => {
+            const isPowered = this.cableNodeManager.isElectricFurnaceConnectedToRunningSteamEngine(
+              computer.tileIndex,
+              (steamTileIndex) => {
+                const engine = this.steamEngineManager.getSteamEngineAtTile(steamTileIndex);
+                return engine?.isRunning ?? false;
+              }
+            );
+            return isPowered ? 'Powered' : 'No Power';
+          },
+          openUI: () => {
+            this.computerUI.open(computer);
+          }
+        }));
+      }
+    });
+
+    // Register 3D Printers
+    TechBlockRegistry.registerManager({
+      type: '3D Printer',
+      getBlocks: (): TechBlockInfo[] => {
+        return this.printer3DManager.getAllPrinters().map((printer: PlacedPrinter3D) => ({
+          type: '3D Printer',
+          id: `printer3d-${printer.tileIndex}`,
+          tileIndex: printer.tileIndex,
+          position: { x: printer.position.x, y: printer.position.y, z: printer.position.z },
+          getStatus: () => {
+            const isPowered = this.cableNodeManager.isElectricFurnaceConnectedToRunningSteamEngine(
+              printer.tileIndex,
+              (steamTileIndex) => {
+                const engine = this.steamEngineManager.getSteamEngineAtTile(steamTileIndex);
+                return engine?.isRunning ?? false;
+              }
+            );
+            if (!isPowered) return 'No Power';
+            if (printer.currentJob) {
+              const progress = Math.round(printer.currentJob.progress * 100);
+              return progress >= 100 ? 'Complete' : `Printing ${progress}%`;
+            }
+            return 'Idle';
+          },
+          openUI: () => {
+            const isPowered = this.cableNodeManager.isElectricFurnaceConnectedToRunningSteamEngine(
+              printer.tileIndex,
+              (steamTileIndex) => {
+                const engine = this.steamEngineManager.getSteamEngineAtTile(steamTileIndex);
+                return engine?.isRunning ?? false;
+              }
+            );
+            printer.isPowered = isPowered;
+            this.printer3DUI.open(printer);
           }
         }));
       }

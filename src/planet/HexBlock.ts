@@ -8,6 +8,8 @@ import terrainVert from '../shaders/terrain/terrain.vert';
 import terrainFrag from '../shaders/terrain/terrain.frag';
 import iceVert from '../shaders/ice/ice.vert';
 import iceFrag from '../shaders/ice/ice.frag';
+import glassVert from '../shaders/glass/glass.vert';
+import glassFrag from '../shaders/glass/glass.frag';
 
 // Import and re-export block types from shared module for backward compatibility
 import { HexBlockType, isSolid, isLiquid } from '../shared/blockTypes';
@@ -198,9 +200,12 @@ export class HexBlockMeshBuilder {
     const dirtSnowTexture = await this.loadTexture('/textures/dirt_snow.png');
     const iceTexture = await this.loadTexture('/textures/ice.png');
 
+    // Glass texture
+    const glassTexture = await this.loadTexture('/textures/glass.png');
+
     [stoneTexture, dirtTexture, grassTexture, dirtGrassTexture, woodTexture, sandTexture,
      coalTexture, copperTexture, ironTexture, goldTexture, lithiumTexture, aluminumTexture, cobaltTexture,
-     snowTexture, dirtSnowTexture, iceTexture
+     snowTexture, dirtSnowTexture, iceTexture, glassTexture
     ].forEach(configureTexture);
 
     this.textures.set('stone', stoneTexture);
@@ -221,6 +226,8 @@ export class HexBlockMeshBuilder {
     this.textures.set('snow', snowTexture);
     this.textures.set('dirtSnow', dirtSnowTexture);
     this.textures.set('ice', iceTexture);
+    // Glass texture
+    this.textures.set('glass', glassTexture);
 
     // Parse underwater fog color for terrain shader
     const terrainUnderwaterFogColor = new THREE.Color(PlayerConfig.UNDERWATER_FOG_COLOR);
@@ -296,6 +303,33 @@ export class HexBlockMeshBuilder {
     });
     this.terrainMaterials.push(iceMaterial);
     this.materials.set('ice', iceMaterial);
+
+    // Glass material - uses texture alpha for transparency with specular shininess
+    const glassMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        terrainTexture: { value: glassTexture },
+        sunDirection: { value: this.sunDirection.clone() },
+        planetCenter: { value: this.planetCenter.clone() },
+        ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
+        directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
+        specularPower: { value: 128.0 }, // Sharper specular highlight for glass
+        specularStrength: { value: 0.8 }, // Stronger specular intensity
+        // Underwater uniforms
+        waterLevel: { value: 0.0 },
+        isUnderwater: { value: 0.0 },
+        underwaterFogColor: { value: terrainUnderwaterFogColor },
+        underwaterFogNear: { value: PlayerConfig.UNDERWATER_FOG_NEAR },
+        underwaterFogFar: { value: PlayerConfig.UNDERWATER_FOG_FAR },
+        underwaterDimming: { value: PlayerConfig.UNDERWATER_TERRAIN_DIMMING ?? 0.3 },
+      },
+      vertexShader: glassVert,
+      fragmentShader: glassFrag,
+      transparent: true,
+      depthWrite: true,
+      side: THREE.DoubleSide
+    });
+    this.terrainMaterials.push(glassMaterial);
+    this.materials.set('glass', glassMaterial);
 
     // Sea wall material - unlit, no fog so it stays exact color
     const seaWallColor = new THREE.Color(PlayerConfig.SEA_WALL_COLOR);
@@ -398,9 +432,10 @@ export class HexBlockMeshBuilder {
     this.materials.set('stoneLOD', createTerrainLODMaterial(stoneTexture));
     this.materials.set('sandLOD', createTerrainLODMaterial(sandTexture));
     this.materials.set('woodLOD', createTerrainLODMaterial(woodTexture));
-    // Snow/Ice LOD materials - opaque for distant viewing
+    // Snow/Ice/Glass LOD materials - opaque for distant viewing
     this.materials.set('snowLOD', createTerrainLODMaterial(snowTexture));
     this.materials.set('iceLOD', createTerrainLODMaterial(iceTexture)); // Opaque ice for LOD (no transparency)
+    this.materials.set('glassLOD', createTerrainLODMaterial(glassTexture)); // Opaque glass for LOD
     // Water LOD uses opaque material - no transparency for distant water
     const waterLODMat = createLODMaterial(waterTexture, waterColor);
     waterLODMat.side = THREE.DoubleSide;
@@ -464,6 +499,10 @@ export class HexBlockMeshBuilder {
     return this.materials.get('ice')!;
   }
 
+  public getGlassMaterial(): THREE.Material {
+    return this.materials.get('glass')!;
+  }
+
   public getSeaWallMaterial(): THREE.Material | null {
     return this.materials.get('seaWall') ?? null;
   }
@@ -506,6 +545,10 @@ export class HexBlockMeshBuilder {
 
   public getIceLODMaterial(): THREE.Material {
     return this.materials.get('iceLOD')!;
+  }
+
+  public getGlassLODMaterial(): THREE.Material {
+    return this.materials.get('glassLOD')!;
   }
 
   // Create separate geometries for each face type

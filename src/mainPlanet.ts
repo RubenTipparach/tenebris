@@ -12,6 +12,7 @@ import { profiler } from './engine/Profiler';
 import { gameStorage } from './engine/GameStorage';
 import { loadingManager } from './engine/LoadingManager';
 import { MenuManager } from './player/MenuManager';
+import { initScreenshotHandler } from './utils/screenshot';
 
 class PlanetGame {
   private engine: GameEngine;
@@ -57,6 +58,9 @@ class PlanetGame {
 
     // Initialize the MenuManager for centralized menu handling
     MenuManager.init();
+
+    // Initialize screenshot handler (Shift+P)
+    initScreenshotHandler();
 
     // Reset mouse button state when menus close to prevent stuck click state
     MenuManager.setOnMenuCloseCallback(() => {

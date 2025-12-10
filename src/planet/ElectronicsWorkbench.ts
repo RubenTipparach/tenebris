@@ -86,12 +86,12 @@ export class ElectronicsWorkbenchManager {
       uvArray[baseIndex + 6] = right; uvArray[baseIndex + 7] = top;
     };
 
-    applyFaceUV(0, faceUVs.side, true, true);   // +X
-    applyFaceUV(1, faceUVs.side, false, true);  // -X
-    applyFaceUV(2, faceUVs.top, false, false);  // +Y
-    applyFaceUV(3, faceUVs.bottom, false, false); // -Y
-    applyFaceUV(4, faceUVs.front, false, true); // +Z
-    applyFaceUV(5, faceUVs.side, true, true);   // -Z
+    applyFaceUV(0, faceUVs.right, true, true);  // +X (right side)
+    applyFaceUV(1, faceUVs.left, false, true);  // -X (left side)
+    applyFaceUV(2, faceUVs.top, false, false);  // +Y (top)
+    applyFaceUV(3, faceUVs.bottom, false, false); // -Y (bottom)
+    applyFaceUV(4, faceUVs.front, false, true); // +Z (front)
+    applyFaceUV(5, faceUVs.back, true, true);   // -Z (back)
 
     uvAttribute.needsUpdate = true;
 
@@ -111,11 +111,15 @@ export class ElectronicsWorkbenchManager {
 
   private calculateFaceUVs(): {
     front: { u1: number; v1: number; u2: number; v2: number };
-    side: { u1: number; v1: number; u2: number; v2: number };
+    left: { u1: number; v1: number; u2: number; v2: number };
+    right: { u1: number; v1: number; u2: number; v2: number };
+    back: { u1: number; v1: number; u2: number; v2: number };
     top: { u1: number; v1: number; u2: number; v2: number };
     bottom: { u1: number; v1: number; u2: number; v2: number };
   } {
-    // Same texture layout as other tech blocks (48x32)
+    // Texture atlas layout (48x32, 3x2 grid of 16x16 cells):
+    // Row 1: Front, Left, Right
+    // Row 2: Back, Top, Bottom
     const texWidth = 48;
     const texHeight = 32;
     const cellSize = 16;
@@ -128,10 +132,12 @@ export class ElectronicsWorkbenchManager {
     });
 
     return {
-      front: uv(0, 0, cellSize, cellSize),
-      side: uv(cellSize, 0, cellSize, cellSize),
-      top: uv(cellSize, cellSize, cellSize, cellSize),
-      bottom: uv(cellSize * 2, cellSize, cellSize, cellSize),
+      front: uv(0, 0, cellSize, cellSize),              // Row 1, Col 0
+      left: uv(cellSize, 0, cellSize, cellSize),        // Row 1, Col 1
+      right: uv(cellSize * 2, 0, cellSize, cellSize),   // Row 1, Col 2
+      back: uv(0, cellSize, cellSize, cellSize),        // Row 2, Col 0
+      top: uv(cellSize, cellSize, cellSize, cellSize),  // Row 2, Col 1
+      bottom: uv(cellSize * 2, cellSize, cellSize, cellSize), // Row 2, Col 2
     };
   }
 

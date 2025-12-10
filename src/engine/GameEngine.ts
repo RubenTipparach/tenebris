@@ -58,8 +58,8 @@ export class GameEngine {
     );
     this.camera.position.set(0, 20, 0);
 
-    // Renderer setup
-    this.renderer = new THREE.WebGLRenderer({ antialias: true });
+    // Renderer setup (preserveDrawingBuffer enables screenshots)
+    this.renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.shadowMap.enabled = true;

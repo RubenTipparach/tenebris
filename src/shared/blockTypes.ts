@@ -23,7 +23,12 @@ export enum HexBlockType {
   DIRT_SNOW = 16,  // Dirt with snow on top
   ICE = 17,
   // Technology blocks
-  FURNACE = 18
+  FURNACE = 18,
+  // Glass (transparent like ice)
+  GLASS = 19,
+  // Advanced technology blocks
+  COMPUTER = 20,
+  PRINTER_3D = 21
 }
 
 export function isSolid(blockType: HexBlockType | number): boolean {
@@ -35,9 +40,9 @@ export function isLiquid(blockType: HexBlockType | number): boolean {
 }
 
 export function isTransparent(blockType: HexBlockType | number): boolean {
-  return blockType === HexBlockType.AIR || blockType === HexBlockType.WATER || blockType === HexBlockType.ICE;
+  return blockType === HexBlockType.AIR || blockType === HexBlockType.WATER || blockType === HexBlockType.ICE || blockType === HexBlockType.GLASS;
 }
 
 export function isSemiTransparent(blockType: HexBlockType | number): boolean {
-  return blockType === HexBlockType.ICE;
+  return blockType === HexBlockType.ICE || blockType === HexBlockType.GLASS;
 }

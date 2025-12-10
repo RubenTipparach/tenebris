@@ -48,6 +48,14 @@ export enum ItemType {
   CPU_CHIP = 35,
   RAM_MODULE = 36,
   MOTHERBOARD = 37,
+  // Glass (crafted from sand)
+  GLASS = 38,
+  // Advanced electronics components
+  POWER_SUPPLY = 39,
+  PRINT_NOZZLE = 40,
+  // Advanced technology blocks
+  COMPUTER = 41,
+  PRINTER_3D = 42,
 }
 
 // Item metadata
@@ -109,6 +117,14 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
   [ItemType.CPU_CHIP]: { name: 'CPU Chip', stackSize: 64, texture: '/textures/technology/micro_chip.png', mineTime: 0.3 },
   [ItemType.RAM_MODULE]: { name: 'RAM Module', stackSize: 64, texture: '/textures/technology/ram_module.png', mineTime: 0.3 },
   [ItemType.MOTHERBOARD]: { name: 'Motherboard', stackSize: 64, texture: '/textures/technology/mother_board.png', mineTime: 0.3 },
+  // Glass (crafted, uses ice shader for transparency)
+  [ItemType.GLASS]: { name: 'Glass', stackSize: 64, texture: '/textures/glass.png', mineTime: 0.3 },
+  // Advanced electronics components
+  [ItemType.POWER_SUPPLY]: { name: 'Power Supply', stackSize: 64, texture: '/textures/technology/power_supply.png', mineTime: 0.3 },
+  [ItemType.PRINT_NOZZLE]: { name: 'Print Nozzle', stackSize: 64, texture: '/textures/technology/print_nozzle.png', mineTime: 0.3 },
+  // Advanced technology blocks
+  [ItemType.COMPUTER]: { name: 'Computer', stackSize: 8, texture: '/textures/technology/computer_face.png', mineTime: 2.5 },
+  [ItemType.PRINTER_3D]: { name: '3D Printer', stackSize: 8, texture: '/textures/technology/3d_printer_face.png', mineTime: 2.5 },
 };
 
 // Inventory slot

@@ -2,6 +2,7 @@ import { Inventory, ItemType, ITEM_DATA, InventorySlot } from './Inventory';
 import { PlacedElectronicsWorkbench } from '../planet/ElectronicsWorkbench';
 import { getAssetPath } from '../utils/assetPath';
 import { MenuManager } from './MenuManager';
+import { PlayerConfig } from '../config/PlayerConfig';
 
 // Electronics crafting recipe definition
 export interface ElectronicsRecipe {
@@ -61,6 +62,65 @@ export const ELECTRONICS_RECIPES: ElectronicsRecipe[] = [
       { itemType: ItemType.SAND, quantity: 1, slot: 8 },
     ],
     output: { itemType: ItemType.MOTHERBOARD, quantity: 1 },
+  },
+  // Power Supply: AAA / Co-Li-Co / AAA
+  {
+    name: 'Power Supply',
+    inputs: [
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 0 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 1 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 2 },
+      { itemType: ItemType.INGOT_COBALT, quantity: 1, slot: 3 },
+      { itemType: ItemType.INGOT_LITHIUM, quantity: 1, slot: 4 },
+      { itemType: ItemType.INGOT_COBALT, quantity: 1, slot: 5 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 6 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 7 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 8 },
+    ],
+    output: { itemType: ItemType.POWER_SUPPLY, quantity: 1 },
+  },
+  // Computer: Glass-Glass-Glass / CPU-RAM(x4)-Motherboard / A-PowerSupply-A
+  {
+    name: 'Computer',
+    inputs: [
+      { itemType: ItemType.GLASS, quantity: 1, slot: 0 },
+      { itemType: ItemType.GLASS, quantity: 1, slot: 1 },
+      { itemType: ItemType.GLASS, quantity: 1, slot: 2 },
+      { itemType: ItemType.CPU_CHIP, quantity: 1, slot: 3 },
+      { itemType: ItemType.RAM_MODULE, quantity: 4, slot: 4 },
+      { itemType: ItemType.MOTHERBOARD, quantity: 1, slot: 5 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 6 },
+      { itemType: ItemType.POWER_SUPPLY, quantity: 1, slot: 7 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 8 },
+    ],
+    output: { itemType: ItemType.COMPUTER, quantity: 1 },
+  },
+  // Print Nozzle: Iron-Iron-Iron / -Copper- / ---
+  {
+    name: 'Print Nozzle',
+    inputs: [
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 0 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 1 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 2 },
+      { itemType: ItemType.INGOT_COPPER, quantity: 1, slot: 4 },
+    ],
+    output: { itemType: ItemType.PRINT_NOZZLE, quantity: 1 },
+  },
+  // 3D Printer: A-A-A / A-PrintNozzle-A / CPU-Motherboard-PowerSupply
+  {
+    name: '3D Printer',
+    inputs: [
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 0 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 1 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 2 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 3 },
+      { itemType: ItemType.PRINT_NOZZLE, quantity: 1, slot: 4 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 5 },
+      { itemType: ItemType.CPU_CHIP, quantity: 1, slot: 6 },
+      { itemType: ItemType.MOTHERBOARD, quantity: 1, slot: 7 },
+      { itemType: ItemType.POWER_SUPPLY, quantity: 1, slot: 8 },
+    ],
+    output: { itemType: ItemType.PRINTER_3D, quantity: 1 },
   },
 ];
 
@@ -250,14 +310,14 @@ export class ElectronicsWorkbenchUI {
 
       .electronics-crafting-grid {
         display: grid;
-        grid-template-columns: repeat(3, 96px);
-        grid-template-rows: repeat(3, 96px);
-        gap: 6px;
+        grid-template-columns: repeat(3, 48px);
+        grid-template-rows: repeat(3, 48px);
+        gap: 3px;
       }
 
       .electronics-slot {
-        width: 96px;
-        height: 96px;
+        width: 48px;
+        height: 48px;
         background: rgba(60, 50, 40, 0.9);
         border: 2px solid #5C4033;
         border-radius: 6px;
@@ -274,9 +334,10 @@ export class ElectronicsWorkbenchUI {
       }
 
       .electronics-slot img {
-        max-width: 80px;
-        max-height: 80px;
+        max-width: 32px;
+        max-height: 32px;
         image-rendering: pixelated;
+        transform: scale(2);
       }
 
       .electronics-slot .slot-count {
@@ -429,6 +490,39 @@ export class ElectronicsWorkbenchUI {
         color: #999;
         cursor: not-allowed;
       }
+
+      /* Resource availability indicators */
+      .electronics-slot.has-item {
+        border-color: #4CAF50;
+      }
+
+      .electronics-slot.missing-item {
+        border-color: #c62828;
+        background: rgba(198, 40, 40, 0.2);
+      }
+
+      /* Item tooltip on hover */
+      .electronics-slot .item-tooltip {
+        position: absolute;
+        bottom: 100%;
+        left: 50%;
+        transform: translateX(-50%);
+        background: rgba(0, 0, 0, 0.9);
+        color: #fff;
+        padding: 4px 8px;
+        border-radius: 4px;
+        font-size: 12px;
+        white-space: nowrap;
+        pointer-events: none;
+        opacity: 0;
+        transition: opacity 0.2s;
+        z-index: 400;
+        margin-bottom: 4px;
+      }
+
+      .electronics-slot:hover .item-tooltip {
+        opacity: 1;
+      }
     `;
     document.head.appendChild(style);
   }
@@ -481,9 +575,11 @@ export class ElectronicsWorkbenchUI {
     // Check if we have all ingredients in inventory
     if (!this.canCraftRecipe(recipe)) return;
 
-    // Remove ingredients from inventory
-    for (const input of recipe.inputs) {
-      this.inventory.removeItem(input.itemType, input.quantity);
+    // Remove ingredients from inventory (unless bypass mode is enabled)
+    if (!PlayerConfig.DEBUG_BYPASS_CRAFTING_INGREDIENTS) {
+      for (const input of recipe.inputs) {
+        this.inventory.removeItem(input.itemType, input.quantity);
+      }
     }
 
     // Give output
@@ -494,6 +590,11 @@ export class ElectronicsWorkbenchUI {
   }
 
   private canCraftRecipe(recipe: ElectronicsRecipe): boolean {
+    // Debug mode: bypass ingredient requirements
+    if (PlayerConfig.DEBUG_BYPASS_CRAFTING_INGREDIENTS) {
+      return true;
+    }
+
     // Group inputs by item type to check total quantities needed
     const requiredItems = new Map<ItemType, number>();
     for (const input of recipe.inputs) {
@@ -738,10 +839,24 @@ export class ElectronicsWorkbenchUI {
       }
     }
 
+    // Calculate total required for each item type
+    const requiredItems = new Map<ItemType, number>();
+    if (selectedRecipe) {
+      for (const input of selectedRecipe.inputs) {
+        const current = requiredItems.get(input.itemType) || 0;
+        requiredItems.set(input.itemType, current + input.quantity);
+      }
+    }
+
     // Update crafting slots - show recipe preview
     this.craftingSlotElements.forEach((el, index) => {
       const img = el.querySelector('img') as HTMLImageElement;
       const countEl = el.querySelector('.slot-count') as HTMLElement;
+      let tooltipEl = el.querySelector('.item-tooltip') as HTMLElement;
+
+      // Clear previous state
+      el.classList.remove('has-item', 'missing-item');
+      if (tooltipEl) tooltipEl.remove();
 
       // Show recipe ingredient preview in this slot
       const recipeSlot = recipeSlotMap.get(index);
@@ -751,6 +866,21 @@ export class ElectronicsWorkbenchUI {
         img.style.display = 'block';
         img.style.opacity = '0.7'; // Slightly dimmed to show it's a preview
         countEl.textContent = recipeSlot.quantity > 1 ? recipeSlot.quantity.toString() : '';
+
+        // Add tooltip showing ingredient name
+        tooltipEl = document.createElement('span');
+        tooltipEl.className = 'item-tooltip';
+        tooltipEl.textContent = itemData.name;
+        el.appendChild(tooltipEl);
+
+        // Check if player has enough of this item and apply has-item or missing-item
+        const totalNeeded = requiredItems.get(recipeSlot.itemType) || 0;
+        const hasEnough = PlayerConfig.DEBUG_BYPASS_CRAFTING_INGREDIENTS || this.inventory.hasItem(recipeSlot.itemType, totalNeeded);
+        if (hasEnough) {
+          el.classList.add('has-item');
+        } else {
+          el.classList.add('missing-item');
+        }
       } else {
         img.style.display = 'none';
         img.style.opacity = '1';
@@ -765,12 +895,22 @@ export class ElectronicsWorkbenchUI {
     if (this.outputSlotElement) {
       const img = this.outputSlotElement.querySelector('img') as HTMLImageElement;
       const countEl = this.outputSlotElement.querySelector('.slot-count') as HTMLElement;
+      let outputTooltipEl = this.outputSlotElement.querySelector('.item-tooltip') as HTMLElement;
+
+      // Clear previous tooltip
+      if (outputTooltipEl) outputTooltipEl.remove();
 
       if (selectedRecipe && this.isPowered) {
         const itemData = ITEM_DATA[selectedRecipe.output.itemType];
         img.src = getAssetPath(itemData.texture);
         img.style.display = 'block';
         countEl.textContent = selectedRecipe.output.quantity > 1 ? selectedRecipe.output.quantity.toString() : '';
+
+        // Add tooltip showing output item name
+        outputTooltipEl = document.createElement('span');
+        outputTooltipEl.className = 'item-tooltip';
+        outputTooltipEl.textContent = itemData.name;
+        this.outputSlotElement.appendChild(outputTooltipEl);
       } else {
         img.style.display = 'none';
         countEl.textContent = '';

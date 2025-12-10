@@ -184,6 +184,25 @@ export const CRAFTING_RECIPES: CraftingRecipe[] = [
     ],
     output: { itemType: ItemType.ELECTRONICS_WORKBENCH, quantity: 1 },
   },
+  // Glass (9 sand = 8 glass)
+  // SSS
+  // SSS
+  // SSS
+  {
+    name: 'Glass',
+    inputs: [
+      { itemType: ItemType.SAND, quantity: 1, slot: 0 },
+      { itemType: ItemType.SAND, quantity: 1, slot: 1 },
+      { itemType: ItemType.SAND, quantity: 1, slot: 2 },
+      { itemType: ItemType.SAND, quantity: 1, slot: 3 },
+      { itemType: ItemType.SAND, quantity: 1, slot: 4 },
+      { itemType: ItemType.SAND, quantity: 1, slot: 5 },
+      { itemType: ItemType.SAND, quantity: 1, slot: 6 },
+      { itemType: ItemType.SAND, quantity: 1, slot: 7 },
+      { itemType: ItemType.SAND, quantity: 1, slot: 8 },
+    ],
+    output: { itemType: ItemType.GLASS, quantity: 8 },
+  },
 ];
 
 export class CraftingSystem {

@@ -97,6 +97,29 @@ export interface SavedElectronicsWorkbench {
   rotation: number;
 }
 
+// Computer data
+export interface SavedComputer {
+  tileIndex: number;
+  position: { x: number; y: number; z: number };
+  rotation: number;
+  isPowered: boolean;
+}
+
+// 3D Printer data
+export interface SavedPrinter3D {
+  tileIndex: number;
+  position: { x: number; y: number; z: number };
+  rotation: number;
+  isPowered: boolean;
+  currentJob: {
+    itemType: number;
+    progress: number;
+    totalTime: number;
+    startTime: number;
+    outputQuantity?: number;
+  } | null;
+}
+
 // Removed tree data (trees that have been chopped down)
 export interface SavedRemovedTree {
   tileIndex: number;
@@ -122,6 +145,8 @@ export interface PlanetSaveData {
   furnaces: SavedFurnace[];
   electricFurnaces: SavedElectricFurnace[];
   electronicsWorkbenches: SavedElectronicsWorkbench[];
+  computers: SavedComputer[];
+  printers3D: SavedPrinter3D[];
   storageChests: SavedStorageChest[];
   garbagePiles: SavedGarbagePile[];
   steamEngines: SavedSteamEngine[];
@@ -165,6 +190,8 @@ export class GameStorage {
     furnaces: SavedFurnace[];
     electricFurnaces: SavedElectricFurnace[];
     electronicsWorkbenches: SavedElectronicsWorkbench[];
+    computers: SavedComputer[];
+    printers3D: SavedPrinter3D[];
     storageChests: SavedStorageChest[];
     garbagePiles: SavedGarbagePile[];
     steamEngines: SavedSteamEngine[];
@@ -179,8 +206,8 @@ export class GameStorage {
 
   constructor() {
     // Initialize planet data for earth and moon
-    this.planetData.set('earth', { tileChanges: new Map(), torches: [], furnaces: [], electricFurnaces: [], electronicsWorkbenches: [], storageChests: [], garbagePiles: [], steamEngines: [], hydroGenerators: [], copperPipes: [], cables: [], removedTrees: [] });
-    this.planetData.set('moon', { tileChanges: new Map(), torches: [], furnaces: [], electricFurnaces: [], electronicsWorkbenches: [], storageChests: [], garbagePiles: [], steamEngines: [], hydroGenerators: [], copperPipes: [], cables: [], removedTrees: [] });
+    this.planetData.set('earth', { tileChanges: new Map(), torches: [], furnaces: [], electricFurnaces: [], electronicsWorkbenches: [], computers: [], printers3D: [], storageChests: [], garbagePiles: [], steamEngines: [], hydroGenerators: [], copperPipes: [], cables: [], removedTrees: [] });
+    this.planetData.set('moon', { tileChanges: new Map(), torches: [], furnaces: [], electricFurnaces: [], electronicsWorkbenches: [], computers: [], printers3D: [], storageChests: [], garbagePiles: [], steamEngines: [], hydroGenerators: [], copperPipes: [], cables: [], removedTrees: [] });
   }
 
   // Set callback to get current player data
@@ -348,6 +375,66 @@ export class GameStorage {
       }
     }
     return allWorkbenches;
+  }
+
+  // Save computer placement
+  public saveComputer(planetId: string, tileIndex: number, computerData: Omit<SavedComputer, 'tileIndex'>): void {
+    const planet = this.planetData.get(planetId);
+    if (!planet) return;
+
+    planet.computers = planet.computers.filter(c => c.tileIndex !== tileIndex);
+    planet.computers.push({ tileIndex, ...computerData });
+    this.persistPlanetToStorage(planetId);
+  }
+
+  // Remove a computer from save
+  public removeComputer(planetId: string, tileIndex: number): void {
+    const planet = this.planetData.get(planetId);
+    if (!planet) return;
+
+    planet.computers = planet.computers.filter(c => c.tileIndex !== tileIndex);
+    this.persistPlanetToStorage(planetId);
+  }
+
+  // Get all saved computers
+  public getComputers(): Array<SavedComputer & { planetId: string }> {
+    const allComputers: Array<SavedComputer & { planetId: string }> = [];
+    for (const [planetId, planet] of this.planetData) {
+      for (const computer of planet.computers) {
+        allComputers.push({ ...computer, planetId });
+      }
+    }
+    return allComputers;
+  }
+
+  // Save 3D printer placement
+  public savePrinter3D(planetId: string, tileIndex: number, printerData: Omit<SavedPrinter3D, 'tileIndex'>): void {
+    const planet = this.planetData.get(planetId);
+    if (!planet) return;
+
+    planet.printers3D = planet.printers3D.filter(p => p.tileIndex !== tileIndex);
+    planet.printers3D.push({ tileIndex, ...printerData });
+    this.persistPlanetToStorage(planetId);
+  }
+
+  // Remove a 3D printer from save
+  public removePrinter3D(planetId: string, tileIndex: number): void {
+    const planet = this.planetData.get(planetId);
+    if (!planet) return;
+
+    planet.printers3D = planet.printers3D.filter(p => p.tileIndex !== tileIndex);
+    this.persistPlanetToStorage(planetId);
+  }
+
+  // Get all saved 3D printers
+  public getPrinters3D(): Array<SavedPrinter3D & { planetId: string }> {
+    const allPrinters: Array<SavedPrinter3D & { planetId: string }> = [];
+    for (const [planetId, planet] of this.planetData) {
+      for (const printer of planet.printers3D) {
+        allPrinters.push({ ...printer, planetId });
+      }
+    }
+    return allPrinters;
   }
 
   // Save storage chest placement
@@ -653,6 +740,8 @@ export class GameStorage {
       planet.furnaces = data.furnaces || [];
       planet.electricFurnaces = data.electricFurnaces || [];
       planet.electronicsWorkbenches = data.electronicsWorkbenches || [];
+      planet.computers = data.computers || [];
+      planet.printers3D = data.printers3D || [];
       planet.storageChests = data.storageChests || [];
       planet.garbagePiles = data.garbagePiles || [];
       planet.steamEngines = data.steamEngines || [];
@@ -833,6 +922,8 @@ export class GameStorage {
         furnaces: planet.furnaces,
         electricFurnaces: planet.electricFurnaces,
         electronicsWorkbenches: planet.electronicsWorkbenches,
+        computers: planet.computers,
+        printers3D: planet.printers3D,
         storageChests: planet.storageChests,
         garbagePiles: planet.garbagePiles,
         steamEngines: planet.steamEngines,

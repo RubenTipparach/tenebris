@@ -6,13 +6,17 @@ import techFrag from '../shaders/tech/tech.frag';
 import { PlacedSteamEngine } from './SteamEngine';
 import { PlacedElectricFurnace } from './ElectricFurnace';
 import { PlacedElectronicsWorkbench } from './ElectronicsWorkbench';
+import { PlacedComputer } from './Computer';
+import { PlacedPrinter3D } from './Printer3D';
 
 // Cable connection types
 export type CableConnectionTarget =
   | { type: 'cable'; cableId: string }
   | { type: 'steam-engine'; tileIndex: number }
   | { type: 'electric-furnace'; tileIndex: number }
-  | { type: 'electronics-workbench'; tileIndex: number };
+  | { type: 'electronics-workbench'; tileIndex: number }
+  | { type: 'computer'; tileIndex: number }
+  | { type: 'printer-3d'; tileIndex: number };
 
 export interface PlacedCable {
   id: string;
@@ -33,6 +37,8 @@ export interface CableNetwork {
   connectedSteamEngines: number[]; // Tile indices
   connectedElectricFurnaces: number[]; // Tile indices
   connectedElectronicsWorkbenches: number[]; // Tile indices
+  connectedComputers: number[]; // Tile indices
+  connectedPrinters3D: number[]; // Tile indices
 }
 
 export class CableNodeManager {
@@ -54,6 +60,8 @@ export class CableNodeManager {
   private getSteamEngineAtTile: ((tileIndex: number) => PlacedSteamEngine | undefined) | null = null;
   private getElectricFurnaceAtTile: ((tileIndex: number) => PlacedElectricFurnace | undefined) | null = null;
   private getElectronicsWorkbenchAtTile: ((tileIndex: number) => PlacedElectronicsWorkbench | undefined) | null = null;
+  private getComputerAtTile: ((tileIndex: number) => PlacedComputer | undefined) | null = null;
+  private getPrinter3DAtTile: ((tileIndex: number) => PlacedPrinter3D | undefined) | null = null;
   private getNeighborTiles: ((tileIndex: number) => number[]) | null = null;
 
   constructor(scene: THREE.Scene, planetCenter?: THREE.Vector3, sunDirection?: THREE.Vector3) {
@@ -68,11 +76,15 @@ export class CableNodeManager {
     getSteamEngineAtTile: (tileIndex: number) => PlacedSteamEngine | undefined,
     getElectricFurnaceAtTile: (tileIndex: number) => PlacedElectricFurnace | undefined,
     getElectronicsWorkbenchAtTile: (tileIndex: number) => PlacedElectronicsWorkbench | undefined,
+    getComputerAtTile: (tileIndex: number) => PlacedComputer | undefined,
+    getPrinter3DAtTile: (tileIndex: number) => PlacedPrinter3D | undefined,
     getNeighborTiles: (tileIndex: number) => number[]
   ): void {
     this.getSteamEngineAtTile = getSteamEngineAtTile;
     this.getElectricFurnaceAtTile = getElectricFurnaceAtTile;
     this.getElectronicsWorkbenchAtTile = getElectronicsWorkbenchAtTile;
+    this.getComputerAtTile = getComputerAtTile;
+    this.getPrinter3DAtTile = getPrinter3DAtTile;
     this.getNeighborTiles = getNeighborTiles;
   }
 
@@ -311,6 +323,20 @@ export class CableNodeManager {
           this.scene.add(connector);
           cable.connectorMeshes.push(connector);
         }
+      } else if (conn.type === 'computer') {
+        const computer = this.getComputerAtTile?.(conn.tileIndex);
+        if (computer) {
+          const connector = this.createConnectorMesh(cable.position, computer.position);
+          this.scene.add(connector);
+          cable.connectorMeshes.push(connector);
+        }
+      } else if (conn.type === 'printer-3d') {
+        const printer = this.getPrinter3DAtTile?.(conn.tileIndex);
+        if (printer) {
+          const connector = this.createConnectorMesh(cable.position, printer.position);
+          this.scene.add(connector);
+          cable.connectorMeshes.push(connector);
+        }
       }
     }
 
@@ -363,6 +389,20 @@ export class CableNodeManager {
         const workbench = this.getElectronicsWorkbenchAtTile?.(conn.tileIndex);
         if (workbench) {
           const connector = this.createConnectorMesh(cable.position, workbench.position);
+          this.scene.add(connector);
+          cable.connectorMeshes.push(connector);
+        }
+      } else if (conn.type === 'computer') {
+        const computer = this.getComputerAtTile?.(conn.tileIndex);
+        if (computer) {
+          const connector = this.createConnectorMesh(cable.position, computer.position);
+          this.scene.add(connector);
+          cable.connectorMeshes.push(connector);
+        }
+      } else if (conn.type === 'printer-3d') {
+        const printer = this.getPrinter3DAtTile?.(conn.tileIndex);
+        if (printer) {
+          const connector = this.createConnectorMesh(cable.position, printer.position);
           this.scene.add(connector);
           cable.connectorMeshes.push(connector);
         }
@@ -441,6 +481,22 @@ export class CableNodeManager {
           cable.connections.push({ type: 'electronics-workbench', tileIndex: neighborTile });
         }
       }
+
+      // Check for computer
+      if (this.getComputerAtTile) {
+        const computer = this.getComputerAtTile(neighborTile);
+        if (computer) {
+          cable.connections.push({ type: 'computer', tileIndex: neighborTile });
+        }
+      }
+
+      // Check for 3D printer
+      if (this.getPrinter3DAtTile) {
+        const printer = this.getPrinter3DAtTile(neighborTile);
+        if (printer) {
+          cable.connections.push({ type: 'printer-3d', tileIndex: neighborTile });
+        }
+      }
     }
 
     // Also check the same tile for machines
@@ -464,6 +520,20 @@ export class CableNodeManager {
         cable.connections.push({ type: 'electronics-workbench', tileIndex: cable.tileIndex });
       }
     }
+
+    if (this.getComputerAtTile) {
+      const computer = this.getComputerAtTile(cable.tileIndex);
+      if (computer) {
+        cable.connections.push({ type: 'computer', tileIndex: cable.tileIndex });
+      }
+    }
+
+    if (this.getPrinter3DAtTile) {
+      const printer = this.getPrinter3DAtTile(cable.tileIndex);
+      if (printer) {
+        cable.connections.push({ type: 'printer-3d', tileIndex: cable.tileIndex });
+      }
+    }
   }
 
   // Rebuild all cable networks using flood fill
@@ -480,6 +550,8 @@ export class CableNodeManager {
         connectedSteamEngines: [],
         connectedElectricFurnaces: [],
         connectedElectronicsWorkbenches: [],
+        connectedComputers: [],
+        connectedPrinters3D: [],
       };
 
       // Flood fill to find all connected cables
@@ -512,6 +584,14 @@ export class CableNodeManager {
             if (!network.connectedElectronicsWorkbenches.includes(conn.tileIndex)) {
               network.connectedElectronicsWorkbenches.push(conn.tileIndex);
             }
+          } else if (conn.type === 'computer') {
+            if (!network.connectedComputers.includes(conn.tileIndex)) {
+              network.connectedComputers.push(conn.tileIndex);
+            }
+          } else if (conn.type === 'printer-3d') {
+            if (!network.connectedPrinters3D.includes(conn.tileIndex)) {
+              network.connectedPrinters3D.push(conn.tileIndex);
+            }
           }
         }
       }
@@ -541,11 +621,13 @@ export class CableNodeManager {
     return [];
   }
 
-  // Get the steam engine(s) connected to an electric furnace or electronics workbench
+  // Get the steam engine(s) connected to an electric furnace, electronics workbench, computer, or 3D printer
   public getConnectedSteamEngines(tileIndex: number): number[] {
     for (const network of this.networks.values()) {
       if (network.connectedElectricFurnaces.includes(tileIndex) ||
-          network.connectedElectronicsWorkbenches.includes(tileIndex)) {
+          network.connectedElectronicsWorkbenches.includes(tileIndex) ||
+          network.connectedComputers.includes(tileIndex) ||
+          network.connectedPrinters3D.includes(tileIndex)) {
         return network.connectedSteamEngines;
       }
     }

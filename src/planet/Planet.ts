@@ -313,6 +313,7 @@ export class Planet {
     snowSideData: GeometryData;
     dirtSnowData: GeometryData;
     iceData: GeometryData;
+    glassData: GeometryData;
   }): void {
     if (!this.batchedMeshGroup) return;
 
@@ -344,6 +345,7 @@ export class Planet {
       { dataKey: 'snowSideData', materialKey: 'snowSide' },
       { dataKey: 'dirtSnowData', materialKey: 'dirtSnow' },
       { dataKey: 'iceData', materialKey: 'ice', renderOrder: 2 }, // Render after water (transparent)
+      { dataKey: 'glassData', materialKey: 'glass', renderOrder: 3 }, // Render after ice (transparent)
     ];
 
     let newWaterMesh: THREE.Mesh | null = null;
@@ -1403,8 +1405,8 @@ export class Planet {
         torchLight = chunk.snowTorchLight;
         indices = chunk.snowIndices;
         vertexOffset = chunk.snowVertexOffset;
-      } else if (surfaceBlockType === HexBlockType.ICE) {
-        // Ice uses ice buffer (transparent)
+      } else if (surfaceBlockType === HexBlockType.ICE || surfaceBlockType === HexBlockType.GLASS) {
+        // Ice/Glass uses ice buffer (transparent)
         positions = chunk.icePositions;
         normals = chunk.iceNormals;
         uvs = chunk.iceUvs;
@@ -1460,7 +1462,7 @@ export class Planet {
         chunk.woodVertexOffset = vertexOffset;
       } else if (surfaceBlockType === HexBlockType.SNOW || surfaceBlockType === HexBlockType.DIRT_SNOW) {
         chunk.snowVertexOffset = vertexOffset;
-      } else if (surfaceBlockType === HexBlockType.ICE) {
+      } else if (surfaceBlockType === HexBlockType.ICE || surfaceBlockType === HexBlockType.GLASS) {
         chunk.iceVertexOffset = vertexOffset;
       } else {
         chunk.grassVertexOffset = vertexOffset;
@@ -2797,6 +2799,7 @@ export class Planet {
     { key: 'snowSide', getMaterial: () => this.meshBuilder.getSnowSideMaterial() },
     { key: 'dirtSnow', getMaterial: () => this.meshBuilder.getDirtSnowMaterial() },
     { key: 'ice', getMaterial: () => this.meshBuilder.getIceMaterial(), renderOrder: 2 },
+    { key: 'glass', getMaterial: () => this.meshBuilder.getGlassMaterial(), renderOrder: 3 },
   ];
 
   private rebuildBatchedMeshes(): void {
@@ -2884,6 +2887,7 @@ export class Planet {
       case HexBlockType.SNOW: return 'snow';
       case HexBlockType.DIRT_SNOW: return 'dirtSnow';
       case HexBlockType.ICE: return 'ice';
+      case HexBlockType.GLASS: return 'glass';
       default: return 'top';
     }
   }
@@ -2908,6 +2912,7 @@ export class Planet {
       case HexBlockType.SNOW: return 'snowSide';  // Snow sides use dirt_snow texture
       case HexBlockType.DIRT_SNOW: return 'dirtSnow';
       case HexBlockType.ICE: return 'ice';
+      case HexBlockType.GLASS: return 'glass';
       default: return 'side';
     }
   }
@@ -2930,6 +2935,7 @@ export class Planet {
       case HexBlockType.SNOW: return 'dirtSnow';
       case HexBlockType.DIRT_SNOW: return 'dirtSnow';
       case HexBlockType.ICE: return 'ice';
+      case HexBlockType.GLASS: return 'glass';
       // Dirt and grass show dirt texture on bottom
       default: return 'side';
     }

@@ -172,7 +172,14 @@ const HexBlockType = {
   // Snow biome blocks
   SNOW: 15,
   DIRT_SNOW: 16,
-  ICE: 17
+  ICE: 17,
+  // Technology blocks
+  FURNACE: 18,
+  // Glass
+  GLASS: 19,
+  // Advanced technology blocks
+  COMPUTER: 20,
+  PRINTER_3D: 21
 };
 
 // Config passed from main thread
@@ -489,7 +496,7 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
         torchLight = chunk.snowTorchLight;
         indices = chunk.snowIndices;
         vertexOffset = chunk.snowVertexOffset;
-      } else if (surfaceBlockType === HexBlockType.ICE) {
+      } else if (surfaceBlockType === HexBlockType.ICE || surfaceBlockType === HexBlockType.GLASS) {
         positions = chunk.icePositions;
         normals = chunk.iceNormals;
         uvs = chunk.iceUvs;
@@ -554,7 +561,7 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
         chunk.woodVertexOffset = vertexOffset;
       } else if (surfaceBlockType === HexBlockType.SNOW || surfaceBlockType === HexBlockType.DIRT_SNOW) {
         chunk.snowVertexOffset = vertexOffset;
-      } else if (surfaceBlockType === HexBlockType.ICE) {
+      } else if (surfaceBlockType === HexBlockType.ICE || surfaceBlockType === HexBlockType.GLASS) {
         chunk.iceVertexOffset = vertexOffset;
       } else {
         chunk.grassVertexOffset = vertexOffset;
