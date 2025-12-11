@@ -19,8 +19,16 @@ void main() {
   // Sample the texture
   vec4 texColor = texture2D(techTexture, vUv);
 
+  // Alpha test - discard transparent pixels
+  if (texColor.a < 0.5) {
+    discard;
+  }
+
+  // Flip normal for back faces (needed for double-sided rendering)
+  vec3 normal = gl_FrontFacing ? vNormal : -vNormal;
+
   // Standard Lambert diffuse lighting on the mesh face
-  float meshDiffuse = max(0.0, dot(vNormal, sunDirection));
+  float meshDiffuse = max(0.0, dot(normal, sunDirection));
 
   // Directional light: direct sunlight on the face
   // Tech blocks are always on surface, so skyLight = 1.0

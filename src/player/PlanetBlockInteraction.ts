@@ -402,6 +402,20 @@ export class PlanetBlockInteraction {
       }
       return result;
     });
+    this.launchPadUI.setOnAddRocketEngineCallback((pad) => {
+      const result = this.launchPadManager.addRocketEngine(pad);
+      if (result) {
+        this.saveLaunchPadStates();
+      }
+      return result;
+    });
+    this.launchPadUI.setOnRemoveRocketEngineCallback((pad) => {
+      const result = this.launchPadManager.removeRocketEngine(pad);
+      if (result) {
+        this.saveLaunchPadStates();
+      }
+      return result;
+    });
 
     // Set up cable node machine callbacks (now that all managers are initialized)
     this.cableNodeManager.setMachineCallbacks(
@@ -1316,8 +1330,9 @@ export class PlanetBlockInteraction {
         hitObject = hitObject.parent as THREE.Object3D;
       }
 
-      // Handle launch pad interaction (right click opens tower UI, left click mines)
+      // Handle launch pad interaction (right click opens UI, left click mines)
       if (rightClick && this.rightClickCooldown === 0 && launchPad) {
+        // Open launch pad UI
         this.launchPadUI.open(launchPad);
         this.rightClickCooldown = this.CLICK_COOLDOWN;
       } else if (leftClick && launchPad) {
@@ -2178,6 +2193,135 @@ export class PlanetBlockInteraction {
     if (this.miningProgress >= 1) {
       this.breakLaunchPad(launchPad);
       this.resetMining();
+    }
+  }
+
+  /**
+   * Try to place a launch tower on a 3-wide launch pad arrangement
+   * Layout (hex grid):
+   *  X X X
+   * X0 X1 X2 X3  <- tower at X2 position (end of 3-pad line)
+   *  X X X
+   *
+   * Pattern: Need 3 adjacent pads in a line (X0-X1-X2)
+   * Tower goes on X2 (the end pad, not the middle)
+   */
+  private tryPlaceLaunchTower(clickedPad: PlacedLaunchPad): void {
+    // Get all launch pads
+    const allPads = this.launchPadManager.getLaunchPads();
+
+    // Find which planet this pad is on
+    let planet: Planet | null = null;
+    for (const p of this.planets) {
+      const tile = p.getTileByIndex(clickedPad.centerTileIndex);
+      if (tile) {
+        planet = p;
+        break;
+      }
+    }
+
+    if (!planet) {
+      console.log('Cannot place tower: planet not found');
+      return;
+    }
+
+    // Get all pad center tile indices for quick lookup
+    const padCenterTiles = new Set(allPads.map(p => p.centerTileIndex));
+    const padByTileIndex = new Map(allPads.map(p => [p.centerTileIndex, p]));
+
+    // Find a valid 3-pad line where the clicked pad is part of it
+    // We need to find X0-X1-X2 where tower goes on X2
+    let towerPad: PlacedLaunchPad | null = null;
+
+    const clickedTile = planet.getTileByIndex(clickedPad.centerTileIndex);
+    if (!clickedTile) return;
+
+    // For each neighbor direction, check if we can form a 3-pad line
+    for (const neighborIdx of clickedTile.neighbors) {
+      if (!padCenterTiles.has(neighborIdx)) continue;
+
+      const neighborTile = planet.getTileByIndex(neighborIdx);
+      if (!neighborTile) continue;
+
+      // Check if there's a third pad continuing in the same direction
+      // We need to find a neighbor of neighborTile that:
+      // 1. Is not the clicked pad
+      // 2. Is a launch pad
+      // 3. Forms a line (i.e., the clicked pad and third pad are on opposite sides of neighbor)
+
+      for (const thirdIdx of neighborTile.neighbors) {
+        if (thirdIdx === clickedPad.centerTileIndex) continue;
+        if (!padCenterTiles.has(thirdIdx)) continue;
+
+        // Check if clickedPad and thirdPad are roughly opposite each other relative to neighborPad
+        // They should NOT be neighbors of each other (that would make a triangle, not a line)
+        const thirdTile = planet.getTileByIndex(thirdIdx);
+        if (!thirdTile) continue;
+
+        // If clickedPad is a neighbor of thirdPad, they form a triangle not a line
+        if (thirdTile.neighbors.includes(clickedPad.centerTileIndex)) continue;
+
+        // Found a valid line: clickedPad - neighborPad - thirdPad
+        // Determine which end is X2 (where tower goes)
+        // The tower goes on the END of the line (X2), which could be either clickedPad or thirdPad
+        // For simplicity, if user clicks any pad in a valid line, place tower on the "end" that is the clicked pad
+        // OR the end furthest from X0
+
+        // Actually, let's determine the line direction and pick X2 consistently
+        // X2 is the END pad. If clicked pad has only 1 pad neighbor in this line, it's an end (X0 or X2)
+        // If clicked pad has 2 pad neighbors in this line, it's the middle (X1)
+
+        // Check if there's another pad adjacent to clicked that continues the line the other way
+        let clickedIsMiddle = false;
+        for (const otherNeighborIdx of clickedTile.neighbors) {
+          if (otherNeighborIdx === neighborIdx) continue;
+          if (!padCenterTiles.has(otherNeighborIdx)) continue;
+
+          const otherNeighborTile = planet.getTileByIndex(otherNeighborIdx);
+          if (!otherNeighborTile) continue;
+
+          // Check if this forms an opposite direction (not adjacent to neighborIdx's other neighbors in the line)
+          if (!neighborTile.neighbors.includes(otherNeighborIdx)) {
+            // clickedPad is the middle, with pads on both sides
+            clickedIsMiddle = true;
+            break;
+          }
+        }
+
+        if (clickedIsMiddle) {
+          // Clicked pad is X1 (middle), tower goes on one of the ends
+          // Use thirdPad as X2 (the end away from the direction we came from)
+          towerPad = padByTileIndex.get(thirdIdx) || null;
+        } else {
+          // Clicked pad is an end (X0 or X2)
+          // If clicked pad is X0, then neighborPad is X1, thirdPad is X2 -> tower on thirdPad
+          // If clicked pad is X2, then thirdPad would be X0 -> tower on clickedPad
+          // We need to determine which end is which...
+
+          // For simplicity: tower always goes on the END that is NOT X0
+          // Let's say X2 is the pad that, when you follow the line, is at the end
+          // Since we found: clickedPad - neighborPad - thirdPad
+          // And clickedPad is an end, thirdPad is the other end
+          // Tower goes on thirdPad (making it X2)
+          towerPad = padByTileIndex.get(thirdIdx) || null;
+        }
+
+        if (towerPad) break;
+      }
+
+      if (towerPad) break;
+    }
+
+    if (!towerPad) {
+      console.log('Cannot place tower: need 3 adjacent launch pads in a line');
+      return;
+    }
+
+    // Add segment to the tower pad (X2 position)
+    if (this.launchPadManager.addSegment(towerPad)) {
+      this.inventory.useSelectedItem();
+      this.updateHotbarUI();
+      this.saveLaunchPadStates();
     }
   }
 

@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { getAssetPath } from '../utils/assetPath';
 import { HexTile } from './GoldbergPolyhedron';
 import { PlayerConfig } from '../config/PlayerConfig';
@@ -12,12 +13,15 @@ export interface PlacedLaunchPad {
   centerTileIndex: number;  // The center hex of the 7-hex cluster
   surroundingTileIndices: number[];  // The 6 surrounding hexes
   rotation: number;
-  // Tower segments (left column in UI, max 8)
+  // Tower segments (right column in UI, max 8)
   segmentCount: number;
   segmentMeshes: THREE.Mesh[];
-  // Rocket blocks (right column in UI, max = segmentCount)
+  // Rocket blocks (left column in UI, max = segmentCount)
   rocketBlocks: number;
   rocketMeshes: THREE.Mesh[];
+  // Rocket engine (placed at bottom of rocket)
+  hasRocketEngine: boolean;
+  rocketEngineMesh: THREE.Group | null;
 }
 
 // Validation result for launch pad placement
@@ -40,6 +44,10 @@ export class LaunchPadManager {
   private segmentGeometry: THREE.BoxGeometry | null = null;
   private segmentMaterial: THREE.ShaderMaterial | null = null;
 
+  // Rocket engine model and material
+  private rocketEngineGeometry: THREE.BufferGeometry | null = null;
+  private rocketEngineMaterial: THREE.ShaderMaterial | null = null;
+
   // Planet lighting uniforms
   private planetCenter: THREE.Vector3;
   private sunDirection: THREE.Vector3;
@@ -48,8 +56,9 @@ export class LaunchPadManager {
   private readonly BASE_RADIUS = 1.0;  // Radius of hexagonal base
   private readonly BASE_HEIGHT = 0.25; // 1/4 of normal block height (which is 1)
   private readonly SEGMENT_SIZE = 2.0;  // Segment tower piece
-  private readonly SEGMENT_HEIGHT = 1.0;  // Height per segment
+  private readonly SEGMENT_HEIGHT = 2.0;  // Height per segment
   private readonly MAX_SEGMENTS = 8;
+  private readonly ENGINE_SCALE = 1.5;  // Scale for the rocket engine model
 
   constructor(scene: THREE.Scene, planetCenter?: THREE.Vector3, sunDirection?: THREE.Vector3) {
     this.scene = scene;
@@ -111,7 +120,7 @@ export class LaunchPadManager {
     // Cell 1 (0,0): Top/Bottom, Cell 2 (16,0): Sides
     this.applyHexBaseUVs(this.baseGeometry);
 
-    // Create base material with transparency support
+    // Create base material with transparency support and double-sided rendering
     this.baseMaterial = new THREE.ShaderMaterial({
       uniforms: {
         techTexture: { value: baseTexture },
@@ -126,6 +135,7 @@ export class LaunchPadManager {
       transparent: true,
       depthWrite: true,
       alphaTest: 0.01,
+      side: THREE.DoubleSide,
     });
 
     // Load segment texture
@@ -154,7 +164,7 @@ export class LaunchPadManager {
     // Cell 1 (0,0): Sides (front/back/left/right), Cell 2 (32,0): Top/Bottom (face)
     this.applySegmentUVs(this.segmentGeometry);
 
-    // Create segment material with transparency support
+    // Create segment material with transparency and double-sided rendering
     this.segmentMaterial = new THREE.ShaderMaterial({
       uniforms: {
         techTexture: { value: segmentTexture },
@@ -168,8 +178,69 @@ export class LaunchPadManager {
       fragmentShader: techFrag,
       transparent: true,
       depthWrite: true,
-      alphaTest: 0.01,
+      alphaTest: 0.5,
+      side: THREE.DoubleSide,
     });
+
+    // Load rocket engine model and texture
+    await this.loadRocketEngineModel();
+  }
+
+  private async loadRocketEngineModel(): Promise<void> {
+    // Load the rocket engine texture
+    const engineTexture = await new Promise<THREE.Texture>((resolve, reject) => {
+      this.textureLoader.load(
+        getAssetPath('/textures/rocket_parts/medium_engine.png'),
+        resolve,
+        undefined,
+        reject
+      );
+    });
+
+    engineTexture.magFilter = THREE.NearestFilter;
+    engineTexture.minFilter = THREE.NearestFilter;
+    engineTexture.wrapS = THREE.ClampToEdgeWrapping;
+    engineTexture.wrapT = THREE.ClampToEdgeWrapping;
+
+    // Create engine material with the tech shader
+    this.rocketEngineMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        techTexture: { value: engineTexture },
+        sunDirection: { value: this.sunDirection.clone() },
+        planetCenter: { value: this.planetCenter.clone() },
+        ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
+        directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
+        torchLight: { value: 0.0 },
+      },
+      vertexShader: techVert,
+      fragmentShader: techFrag,
+      transparent: true,
+      depthWrite: true,
+      alphaTest: 0.5,
+      side: THREE.DoubleSide,
+    });
+
+    // Load the OBJ model
+    const objLoader = new OBJLoader();
+    try {
+      const obj = await new Promise<THREE.Group>((resolve, reject) => {
+        objLoader.load(
+          getAssetPath('/models/medium_rocket_nozzlel.obj'),
+          resolve,
+          undefined,
+          reject
+        );
+      });
+
+      // Extract geometry from the loaded model
+      obj.traverse((child) => {
+        if (child instanceof THREE.Mesh && child.geometry) {
+          this.rocketEngineGeometry = child.geometry.clone();
+        }
+      });
+    } catch (error) {
+      console.error('Failed to load rocket engine model:', error);
+    }
   }
 
   /**
@@ -358,17 +429,16 @@ export class LaunchPadManager {
     const centerU = 0.5 * (cellSize / texWidth);
     const centerV = 0.5;
 
-    // Top face (outer, facing away from planet) - same winding as HexBlock
-    const topNormal = radialDir.clone();
-
+    // Top face (outer, facing away from planet) - per-vertex normals for spherical shading
     positions.push(outerCenter.x, outerCenter.y, outerCenter.z);
-    normals.push(topNormal.x, topNormal.y, topNormal.z);
+    normals.push(radialDir.x, radialDir.y, radialDir.z);
     uvs.push(centerU, centerV);
 
     for (let i = 0; i < numSides; i++) {
       const vert = outerVerts[i];
+      const vertNormal = vert.clone().sub(planetCenter).normalize();
       positions.push(vert.x, vert.y, vert.z);
-      normals.push(topNormal.x, topNormal.y, topNormal.z);
+      normals.push(vertNormal.x, vertNormal.y, vertNormal.z);
       uvs.push(tileUVs[i].u, tileUVs[i].v);
     }
 
@@ -378,18 +448,19 @@ export class LaunchPadManager {
       indices.push(0, 1 + i, 1 + next);
     }
 
-    // Bottom face (inner, facing toward planet)
-    const bottomNormal = radialDir.clone().negate();
+    // Bottom face (inner, facing toward planet) - per-vertex normals for spherical shading
     const bottomCenterIdx = positions.length / 3;
+    const bottomCenterNormal = radialDir.clone().negate();
 
     positions.push(innerCenter.x, innerCenter.y, innerCenter.z);
-    normals.push(bottomNormal.x, bottomNormal.y, bottomNormal.z);
+    normals.push(bottomCenterNormal.x, bottomCenterNormal.y, bottomCenterNormal.z);
     uvs.push(centerU, centerV);
 
     for (let i = 0; i < numSides; i++) {
       const vert = innerVerts[i];
+      const vertNormal = vert.clone().sub(planetCenter).normalize().negate();
       positions.push(vert.x, vert.y, vert.z);
-      normals.push(bottomNormal.x, bottomNormal.y, bottomNormal.z);
+      normals.push(vertNormal.x, vertNormal.y, vertNormal.z);
       uvs.push(tileUVs[i].u, tileUVs[i].v);
     }
 
@@ -552,7 +623,9 @@ export class LaunchPadManager {
       segmentCount: 0,
       segmentMeshes: [],
       rocketBlocks: 0,
-      rocketMeshes: []
+      rocketMeshes: [],
+      hasRocketEngine: false,
+      rocketEngineMesh: null,
     };
 
     this.launchPads.push(placedPad);
@@ -619,7 +692,9 @@ export class LaunchPadManager {
       segmentCount: 0,
       segmentMeshes: [],
       rocketBlocks: 0,
-      rocketMeshes: []
+      rocketMeshes: [],
+      hasRocketEngine: false,
+      rocketEngineMesh: null,
     };
 
     this.launchPads.push(placedPad);
@@ -650,11 +725,21 @@ export class LaunchPadManager {
 
     const segmentMesh = new THREE.Mesh(this.segmentGeometry, this.segmentMaterial);
 
-    // Position segment on top of previous segments
-    // Segments stack vertically in local space (Y is up after orientation)
-    // Base top is at BASE_HEIGHT, segment center is at BASE_HEIGHT + (count + 0.5) * SEGMENT_HEIGHT
-    const yOffset = this.BASE_HEIGHT + (launchPad.segmentCount + 0.5) * this.SEGMENT_HEIGHT;
-    segmentMesh.position.y = yOffset;
+    // Position segment in world space along the radial direction from planet center
+    // The pad's position is at the top of the pad surface
+    const radialDir = launchPad.position.clone().sub(this.planetCenter).normalize();
+
+    // Stack segments radially outward from the pad position
+    // Each segment is SEGMENT_HEIGHT tall, centered at offset from pad top
+    const heightOffset = (launchPad.segmentCount + 0.5) * this.SEGMENT_HEIGHT;
+    const segmentPos = launchPad.position.clone().add(radialDir.clone().multiplyScalar(heightOffset));
+    segmentMesh.position.copy(segmentPos);
+
+    // Orient the segment so its local Y axis points along the radial direction
+    // Create a quaternion to rotate from (0,1,0) to radialDir
+    const up = new THREE.Vector3(0, 1, 0);
+    const quaternion = new THREE.Quaternion().setFromUnitVectors(up, radialDir);
+    segmentMesh.quaternion.copy(quaternion);
 
     launchPad.mesh.add(segmentMesh);
     launchPad.segmentMeshes.push(segmentMesh);
@@ -686,6 +771,81 @@ export class LaunchPadManager {
     }
 
     return false;
+  }
+
+  /**
+   * Add rocket engine to the launch pad (placed in front of the tower)
+   */
+  public addRocketEngine(launchPad: PlacedLaunchPad): boolean {
+    // Can't add engine if already has one
+    if (launchPad.hasRocketEngine) {
+      return false;
+    }
+
+    // Need at least 1 segment to place engine
+    if (launchPad.segmentCount < 1) {
+      return false;
+    }
+
+    if (!this.rocketEngineGeometry || !this.rocketEngineMaterial) {
+      console.error('Rocket engine geometry or material not loaded');
+      return false;
+    }
+
+    // Create engine mesh
+    const engineMesh = new THREE.Mesh(this.rocketEngineGeometry, this.rocketEngineMaterial);
+    const engineGroup = new THREE.Group();
+    engineGroup.add(engineMesh);
+
+    // Position the engine in front of the tower base
+    const radialDir = launchPad.position.clone().sub(this.planetCenter).normalize();
+
+    // Place engine at the base height, offset forward from the tower
+    const engineHeight = this.SEGMENT_HEIGHT * 0.5; // Half a segment up from base
+    const forwardOffset = this.SEGMENT_SIZE * 1.2; // In front of the tower
+
+    // Calculate the "forward" direction (perpendicular to radial, arbitrary but consistent)
+    const worldUp = new THREE.Vector3(0, 1, 0);
+    let forwardDir = new THREE.Vector3().crossVectors(worldUp, radialDir).normalize();
+    if (forwardDir.length() < 0.1) {
+      // If radial is parallel to world up, use a different reference
+      forwardDir = new THREE.Vector3().crossVectors(new THREE.Vector3(1, 0, 0), radialDir).normalize();
+    }
+
+    const enginePos = launchPad.position.clone()
+      .add(radialDir.clone().multiplyScalar(engineHeight))
+      .add(forwardDir.clone().multiplyScalar(forwardOffset));
+
+    engineGroup.position.copy(enginePos);
+
+    // Orient the engine: Y axis along radial, rotated to face outward
+    const up = new THREE.Vector3(0, 1, 0);
+    const quaternion = new THREE.Quaternion().setFromUnitVectors(up, radialDir);
+    engineGroup.quaternion.copy(quaternion);
+
+    // Scale the engine
+    engineGroup.scale.setScalar(this.ENGINE_SCALE);
+
+    launchPad.mesh.add(engineGroup);
+    launchPad.hasRocketEngine = true;
+    launchPad.rocketEngineMesh = engineGroup;
+
+    return true;
+  }
+
+  /**
+   * Remove rocket engine from the launch pad
+   */
+  public removeRocketEngine(launchPad: PlacedLaunchPad): boolean {
+    if (!launchPad.hasRocketEngine || !launchPad.rocketEngineMesh) {
+      return false;
+    }
+
+    launchPad.mesh.remove(launchPad.rocketEngineMesh);
+    launchPad.hasRocketEngine = false;
+    launchPad.rocketEngineMesh = null;
+
+    return true;
   }
 
   /**

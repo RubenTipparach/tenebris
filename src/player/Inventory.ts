@@ -59,6 +59,8 @@ export enum ItemType {
   // Launch pad components
   LAUNCH_PAD_BLOCK = 43,
   LAUNCH_PAD_SEGMENT = 44,
+  // Rocket parts
+  ROCKET_ENGINE = 45,
 }
 
 // Item metadata
@@ -131,6 +133,8 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
   // Launch pad components
   [ItemType.LAUNCH_PAD_BLOCK]: { name: 'Launch Pad Block', stackSize: 8, texture: '/textures/technology/launch_pad_face.png', mineTime: 2.5 },
   [ItemType.LAUNCH_PAD_SEGMENT]: { name: 'Launch Pad Segment', stackSize: 8, texture: '/textures/technology/launch_tower_face.png', mineTime: 3.0 },
+  // Rocket parts
+  [ItemType.ROCKET_ENGINE]: { name: 'Rocket Engine', stackSize: 8, texture: '/textures/rocket_parts/medium_engine_face.png', mineTime: 3.0 },
 };
 
 // Inventory slot

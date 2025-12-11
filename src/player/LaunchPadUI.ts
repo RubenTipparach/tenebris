@@ -8,8 +8,8 @@ import { getAssetPath } from '../utils/assetPath';
  *
  * Layout:
  * - Two vertical columns of 8 slots each
- * - Left column: Launch pad segments (tower height)
- * - Right column: Rocket blocks (must match segment height)
+ * - Left column: Rocket blocks (must match segment height)
+ * - Right column: Launch pad segments (tower height) - bottom slot is permanent base
  * - "Board Rocket" button when rocket is fully assembled
  */
 export class LaunchPadUI {
@@ -25,10 +25,13 @@ export class LaunchPadUI {
   private onUpdateInventoryCallback: (() => void) | null = null;
   private onAddSegmentCallback: ((pad: PlacedLaunchPad) => boolean) | null = null;
   private onRemoveSegmentCallback: ((pad: PlacedLaunchPad) => boolean) | null = null;
+  private onAddRocketEngineCallback: ((pad: PlacedLaunchPad) => boolean) | null = null;
+  private onRemoveRocketEngineCallback: ((pad: PlacedLaunchPad) => boolean) | null = null;
 
   // UI elements
   private segmentSlots: HTMLElement[] = [];
   private rocketSlots: HTMLElement[] = [];
+  private engineSlot: HTMLElement | null = null;
   private boardRocketBtn: HTMLButtonElement | null = null;
   private statusElement: HTMLElement | null = null;
 
@@ -59,22 +62,31 @@ export class LaunchPadUI {
     this.onRemoveSegmentCallback = callback;
   }
 
+  public setOnAddRocketEngineCallback(callback: (pad: PlacedLaunchPad) => boolean): void {
+    this.onAddRocketEngineCallback = callback;
+  }
+
+  public setOnRemoveRocketEngineCallback(callback: (pad: PlacedLaunchPad) => boolean): void {
+    this.onRemoveRocketEngineCallback = callback;
+  }
+
   private createUI(): void {
     this.launchPadSectionElement = document.createElement('div');
     this.launchPadSectionElement.id = 'launchpad-section';
     this.launchPadSectionElement.className = 'launchpad-section';
 
     // Create slot rows (8 rows, 2 columns)
+    // Left column: Rocket parts, Right column: Tower segments
     let slotsHtml = '';
     for (let i = this.MAX_HEIGHT - 1; i >= 0; i--) {
       slotsHtml += `
         <div class="launchpad-slot-row">
+          <div class="launchpad-slot rocket-slot" id="launchpad-rocket-${i}" data-slot="${i}" data-type="rocket">
+            <img style="display:none;">
+          </div>
           <div class="launchpad-slot segment-slot" id="launchpad-segment-${i}" data-slot="${i}" data-type="segment">
             <img style="display:none;">
             <span class="slot-number">${i + 1}</span>
-          </div>
-          <div class="launchpad-slot rocket-slot" id="launchpad-rocket-${i}" data-slot="${i}" data-type="rocket">
-            <img style="display:none;">
           </div>
         </div>
       `;
@@ -89,11 +101,18 @@ export class LaunchPadUI {
 
       <div class="launchpad-columns">
         <div class="launchpad-column-header">
-          <span class="column-label">Segments</span>
           <span class="column-label">Rocket</span>
+          <span class="column-label">Tower</span>
         </div>
         <div class="launchpad-slots">
           ${slotsHtml}
+        </div>
+      </div>
+
+      <div class="launchpad-engine-section">
+        <span class="engine-label">Engine:</span>
+        <div class="launchpad-slot engine-slot" id="launchpad-engine" data-type="engine">
+          <img style="display:none;">
         </div>
       </div>
 
@@ -102,8 +121,7 @@ export class LaunchPadUI {
       </div>
 
       <div class="launchpad-hint">
-        <p>Click segment slots to add/remove tower</p>
-        <p>Rocket can only be as tall as the tower</p>
+        <p>Drag engine from inventory to engine slot</p>
         <p>Press E or ESC to close</p>
       </div>
     `;
@@ -129,6 +147,7 @@ export class LaunchPadUI {
 
     this.boardRocketBtn = document.getElementById('launchpad-board-btn') as HTMLButtonElement;
     this.statusElement = document.getElementById('launchpad-status');
+    this.engineSlot = document.getElementById('launchpad-engine');
 
     // Setup interactions
     this.setupSlotInteractions();
@@ -138,16 +157,140 @@ export class LaunchPadUI {
   }
 
   private setupSlotInteractions(): void {
-    // Segment slots - click to add/remove segments
+    // Segment slots - click to add/remove segments, drag-and-drop support
     for (let i = 0; i < this.MAX_HEIGHT; i++) {
       const slot = this.segmentSlots[i];
       if (slot) {
         slot.addEventListener('click', () => this.handleSegmentSlotClick(i));
+        // Drag-and-drop for adding segments from inventory
+        slot.addEventListener('dragover', (e) => this.handleDragOver(e, i));
+        slot.addEventListener('dragleave', (e) => this.handleDragLeave(e));
+        slot.addEventListener('drop', (e) => this.handleSegmentDrop(e, i));
       }
 
       const rocketSlot = this.rocketSlots[i];
       if (rocketSlot) {
         rocketSlot.addEventListener('click', () => this.handleRocketSlotClick(i));
+      }
+    }
+
+    // Engine slot - drag-and-drop support
+    if (this.engineSlot) {
+      this.engineSlot.addEventListener('click', () => this.handleEngineSlotClick());
+      this.engineSlot.addEventListener('dragover', (e) => this.handleEngineDragOver(e));
+      this.engineSlot.addEventListener('dragleave', (e) => this.handleDragLeave(e));
+      this.engineSlot.addEventListener('drop', (e) => this.handleEngineDrop(e));
+    }
+  }
+
+  private handleDragOver(e: DragEvent, slotIndex: number): void {
+    if (!this.currentLaunchPad) return;
+
+    // Only allow drop on the next available slot
+    const currentHeight = this.currentLaunchPad.segmentCount;
+    if (slotIndex !== currentHeight || currentHeight >= this.MAX_HEIGHT) return;
+
+    e.preventDefault();
+    if (e.dataTransfer) {
+      e.dataTransfer.dropEffect = 'move';
+    }
+    const target = e.currentTarget as HTMLElement;
+    target.classList.add('drag-over');
+  }
+
+  private handleDragLeave(e: DragEvent): void {
+    const target = e.currentTarget as HTMLElement;
+    target.classList.remove('drag-over');
+  }
+
+  private handleSegmentDrop(e: DragEvent, slotIndex: number): void {
+    e.preventDefault();
+    const target = e.currentTarget as HTMLElement;
+    target.classList.remove('drag-over');
+
+    if (!this.currentLaunchPad || !this.inventory) return;
+
+    // Only allow drop on the next available slot
+    const currentHeight = this.currentLaunchPad.segmentCount;
+    if (slotIndex !== currentHeight || currentHeight >= this.MAX_HEIGHT) return;
+
+    // Get drag data - it should be an inventory slot index
+    const dragData = e.dataTransfer?.getData('text/plain');
+    if (!dragData) return;
+
+    // Parse the slot index from drag data (inventory slots are just numbers)
+    const sourceSlotIndex = parseInt(dragData, 10);
+    if (isNaN(sourceSlotIndex)) return;
+
+    // Check if the source slot has a launch pad segment
+    const sourceSlot = this.inventory.getSlot(sourceSlotIndex);
+    if (!sourceSlot || sourceSlot.itemType !== ItemType.LAUNCH_PAD_SEGMENT || sourceSlot.quantity <= 0) {
+      return;
+    }
+
+    // Add the segment
+    if (this.onAddSegmentCallback && this.onAddSegmentCallback(this.currentLaunchPad)) {
+      this.inventory.removeItem(ItemType.LAUNCH_PAD_SEGMENT, 1);
+      this.updateUI();
+      this.notifyChanges();
+    }
+  }
+
+  private handleEngineDragOver(e: DragEvent): void {
+    if (!this.currentLaunchPad) return;
+
+    // Only allow drop if no engine yet and has at least 1 segment
+    if (this.currentLaunchPad.hasRocketEngine || this.currentLaunchPad.segmentCount < 1) return;
+
+    e.preventDefault();
+    if (e.dataTransfer) {
+      e.dataTransfer.dropEffect = 'move';
+    }
+    const target = e.currentTarget as HTMLElement;
+    target.classList.add('drag-over');
+  }
+
+  private handleEngineDrop(e: DragEvent): void {
+    e.preventDefault();
+    const target = e.currentTarget as HTMLElement;
+    target.classList.remove('drag-over');
+
+    if (!this.currentLaunchPad || !this.inventory) return;
+
+    // Only allow drop if no engine yet and has at least 1 segment
+    if (this.currentLaunchPad.hasRocketEngine || this.currentLaunchPad.segmentCount < 1) return;
+
+    // Get drag data - it should be an inventory slot index
+    const dragData = e.dataTransfer?.getData('text/plain');
+    if (!dragData) return;
+
+    // Parse the slot index from drag data (inventory slots are just numbers)
+    const sourceSlotIndex = parseInt(dragData, 10);
+    if (isNaN(sourceSlotIndex)) return;
+
+    // Check if the source slot has a rocket engine
+    const sourceSlot = this.inventory.getSlot(sourceSlotIndex);
+    if (!sourceSlot || sourceSlot.itemType !== ItemType.ROCKET_ENGINE || sourceSlot.quantity <= 0) {
+      return;
+    }
+
+    // Add the engine
+    if (this.onAddRocketEngineCallback && this.onAddRocketEngineCallback(this.currentLaunchPad)) {
+      this.inventory.removeItem(ItemType.ROCKET_ENGINE, 1);
+      this.updateUI();
+      this.notifyChanges();
+    }
+  }
+
+  private handleEngineSlotClick(): void {
+    if (!this.currentLaunchPad || !this.inventory) return;
+
+    // If engine is placed, clicking removes it
+    if (this.currentLaunchPad.hasRocketEngine) {
+      if (this.onRemoveRocketEngineCallback && this.onRemoveRocketEngineCallback(this.currentLaunchPad)) {
+        this.inventory.addItem(ItemType.ROCKET_ENGINE, 1);
+        this.updateUI();
+        this.notifyChanges();
       }
     }
   }
@@ -166,6 +309,9 @@ export class LaunchPadUI {
     if (slotIndex < currentHeight) {
       // Clicking on existing segment - try to remove it (only if it's the top one)
       if (slotIndex === currentHeight - 1) {
+        // Cannot remove slot 0 - it's the tower base
+        if (slotIndex === 0) return;
+
         // Can only remove if no rocket at this height
         if (this.currentLaunchPad.rocketBlocks <= slotIndex) {
           if (this.onRemoveSegmentCallback && this.onRemoveSegmentCallback(this.currentLaunchPad)) {
@@ -322,6 +468,39 @@ export class LaunchPadUI {
       .launchpad-slot:hover {
         border-color: #555;
         background: #252525;
+      }
+
+      .launchpad-slot.drag-over {
+        border-color: #88ff88;
+        background: #2a4a2a;
+        box-shadow: 0 0 8px rgba(100, 255, 100, 0.4);
+      }
+
+      .launchpad-engine-section {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 10px;
+        padding: 8px;
+        background: #0a0a0a;
+        border: 2px solid #333;
+        border-radius: 8px;
+      }
+
+      .launchpad-engine-section .engine-label {
+        font-size: 12px;
+        color: #888;
+        font-family: 'Courier New', monospace;
+      }
+
+      .launchpad-slot.engine-slot {
+        width: 48px;
+        height: 48px;
+      }
+
+      .launchpad-slot.engine-slot.filled {
+        background: linear-gradient(180deg, #4a3a2a 0%, #3a2a1a 100%);
+        border-color: #AA6644;
       }
 
       .launchpad-slot.filled {
@@ -556,6 +735,28 @@ export class LaunchPadUI {
         // Unavailable (above segment height or above current rocket + 1)
         slot.classList.remove('filled');
         slot.classList.add('disabled');
+        if (img) img.style.display = 'none';
+      }
+    }
+
+    // Update engine slot
+    if (this.engineSlot) {
+      const img = this.engineSlot.querySelector('img') as HTMLImageElement;
+      if (this.currentLaunchPad.hasRocketEngine) {
+        this.engineSlot.classList.add('filled');
+        this.engineSlot.classList.remove('disabled');
+        if (img) {
+          img.src = getAssetPath(ITEM_DATA[ItemType.ROCKET_ENGINE].texture);
+          img.style.display = 'block';
+        }
+      } else if (segmentCount > 0) {
+        // Can place engine (has at least 1 segment)
+        this.engineSlot.classList.remove('filled', 'disabled');
+        if (img) img.style.display = 'none';
+      } else {
+        // Can't place engine yet (no segments)
+        this.engineSlot.classList.remove('filled');
+        this.engineSlot.classList.add('disabled');
         if (img) img.style.display = 'none';
       }
     }

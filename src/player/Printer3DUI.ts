@@ -2,6 +2,7 @@ import { PlacedPrinter3D } from '../planet/Printer3D';
 import { MenuManager } from './MenuManager';
 import { Inventory, ItemType, ITEM_DATA } from './Inventory';
 import { getAssetPath } from '../utils/assetPath';
+import { PlayerConfig } from '../config/PlayerConfig';
 
 // 3D Printer recipe definition (supports both single and multi-input)
 export interface PrinterRecipe {
@@ -58,6 +59,25 @@ export const PRINTER_RECIPES: PrinterRecipe[] = [
     output: ItemType.LAUNCH_PAD_SEGMENT,
     outputQuantity: 1,
     printTime: 45,
+  },
+  // Rocket Engine: 10x Aluminum + 3x Cobalt + 1x Gold
+  // Layout: A2 A2 A2 / Co A2 Co / A2 Go Co (quantities allow more than 9 slots worth)
+  {
+    name: 'Rocket Engine',
+    inputs: [
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 2, slot: 0 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 2, slot: 1 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 2, slot: 2 },
+      { itemType: ItemType.INGOT_COBALT, quantity: 1, slot: 3 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 2, slot: 4 },
+      { itemType: ItemType.INGOT_COBALT, quantity: 1, slot: 5 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 2, slot: 6 },
+      { itemType: ItemType.INGOT_GOLD, quantity: 1, slot: 7 },
+      { itemType: ItemType.INGOT_COBALT, quantity: 1, slot: 8 },
+    ],
+    output: ItemType.ROCKET_ENGINE,
+    outputQuantity: 1,
+    printTime: 60,
   },
 ];
 
@@ -819,6 +839,11 @@ export class Printer3DUI {
   }
 
   private canCraftRecipe(recipe: PrinterRecipe): boolean {
+    // Debug mode: bypass ingredient requirements
+    if (PlayerConfig.DEBUG_BYPASS_CRAFTING_INGREDIENTS) {
+      return true;
+    }
+
     if (!this.inventory) return false;
 
     const requiredItems = this.getRequiredItems(recipe);
@@ -848,21 +873,25 @@ export class Printer3DUI {
     const requiredItems = this.getRequiredItems(recipe);
     console.log('[Printer3DUI] Required items:', Array.from(requiredItems.entries()));
 
-    // Check if we have all items
-    for (const [itemType, quantity] of requiredItems) {
-      const hasItem = this.inventory.hasItem(itemType, quantity);
-      console.log(`[Printer3DUI] Checking ${ItemType[itemType]}: need ${quantity}, has: ${hasItem}`);
-      if (!hasItem) {
-        console.log('[Printer3DUI] Missing item, aborting');
-        return;
+    // Check if we have all items (unless bypass mode is enabled)
+    if (!PlayerConfig.DEBUG_BYPASS_CRAFTING_INGREDIENTS) {
+      for (const [itemType, quantity] of requiredItems) {
+        const hasItem = this.inventory.hasItem(itemType, quantity);
+        console.log(`[Printer3DUI] Checking ${ItemType[itemType]}: need ${quantity}, has: ${hasItem}`);
+        if (!hasItem) {
+          console.log('[Printer3DUI] Missing item, aborting');
+          return;
+        }
       }
-    }
 
-    // Remove items from inventory
-    console.log('[Printer3DUI] Removing items from inventory...');
-    for (const [itemType, quantity] of requiredItems) {
-      this.inventory.removeItem(itemType, quantity);
-      console.log(`[Printer3DUI] Removed ${quantity}x ${ItemType[itemType]}`);
+      // Remove items from inventory
+      console.log('[Printer3DUI] Removing items from inventory...');
+      for (const [itemType, quantity] of requiredItems) {
+        this.inventory.removeItem(itemType, quantity);
+        console.log(`[Printer3DUI] Removed ${quantity}x ${ItemType[itemType]}`);
+      }
+    } else {
+      console.log('[Printer3DUI] Bypass mode enabled, skipping ingredient check/removal');
     }
 
     // Add to queue
