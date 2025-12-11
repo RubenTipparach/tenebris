@@ -95,7 +95,7 @@ export class LaunchPadManager {
     // Configure for pixel art
     baseTexture.magFilter = THREE.NearestFilter;
     baseTexture.minFilter = THREE.NearestFilter;
-    baseTexture.wrapS = THREE.ClampToEdgeWrapping;
+    baseTexture.wrapS = THREE.MirroredRepeatWrapping;
     baseTexture.wrapT = THREE.ClampToEdgeWrapping;
 
     // Create base geometry (hexagonal platform - CylinderGeometry with 6 radial segments)
@@ -430,12 +430,12 @@ export class LaunchPadManager {
         normals.push(sideNormal.x, sideNormal.y, sideNormal.z);
       }
 
-      // Side UVs mapped to second cell
+      // Side UVs mapped to second cell, tiled 2x horizontally
       uvs.push(
-        sideU1, 0,   // inner1 (bottom-left)
-        sideU2, 0,   // inner2 (bottom-right)
-        sideU2, 1,   // outer2 (top-right)
-        sideU1, 1    // outer1 (top-left)
+        sideU1, 0,                           // inner1 (bottom-left)
+        sideU1 + 2 * (sideU2 - sideU1), 0,   // inner2 (bottom-right) - 2x tile
+        sideU1 + 2 * (sideU2 - sideU1), 1,   // outer2 (top-right) - 2x tile
+        sideU1, 1                            // outer1 (top-left)
       );
 
       // Same index order as HexBlock
@@ -465,7 +465,7 @@ export class LaunchPadManager {
   public validatePlacement(
     centerTile: HexTile,
     allTiles: HexTile[],
-    existingLaunchPads: PlacedLaunchPad[]
+    _existingLaunchPads: PlacedLaunchPad[]
   ): LaunchPadPlacementResult {
     // Rule 1 & 2: Must be a hexagon (6 neighbors) to have a proper 7-hex cluster
     if (centerTile.isPentagon || centerTile.neighbors.length !== 6) {
@@ -488,42 +488,6 @@ export class LaunchPadManager {
         canPlace: false,
         reason: 'Launch pad requires 6 surrounding tiles'
       };
-    }
-
-    // Rule 3 & 4: Check for existing launch pads
-    const allAffectedTiles = new Set<number>([centerTile.index, ...centerTile.neighbors]);
-
-    for (const existingPad of existingLaunchPads) {
-      // Check if any of our tiles overlap with existing pad's tiles
-      const existingTiles = new Set<number>([
-        existingPad.centerTileIndex,
-        ...existingPad.surroundingTileIndices
-      ]);
-
-      for (const tileIdx of allAffectedTiles) {
-        if (existingTiles.has(tileIdx)) {
-          return {
-            canPlace: false,
-            reason: 'Cannot place launch pad adjacent to or on top of another launch pad'
-          };
-        }
-      }
-
-      // Also check if any of our tiles' neighbors touch the existing pad
-      // This ensures no adjacent launch pads
-      for (const tileIdx of allAffectedTiles) {
-        const tile = allTiles[tileIdx];
-        if (tile) {
-          for (const neighborIdx of tile.neighbors) {
-            if (existingTiles.has(neighborIdx)) {
-              return {
-                canPlace: false,
-                reason: 'Launch pads cannot be placed adjacent to each other'
-              };
-            }
-          }
-        }
-      }
     }
 
     return {

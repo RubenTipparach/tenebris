@@ -3223,25 +3223,6 @@ export class PlanetBlockInteraction {
       return;
     }
 
-    // Check for existing launch pads (no overlap allowed, but adjacency is fine)
-    const existingPads = this.launchPadManager.getLaunchPads();
-    const allAffectedTiles = new Set<number>([tileIndex, ...tile.neighbors]);
-
-    for (const existingPad of existingPads) {
-      const existingTiles = new Set<number>([
-        existingPad.centerTileIndex,
-        ...existingPad.surroundingTileIndices
-      ]);
-
-      // Check if any tiles overlap
-      for (const tileIdx of allAffectedTiles) {
-        if (existingTiles.has(tileIdx)) {
-          console.log('Cannot place launch pad: overlaps with existing launch pad');
-          return;
-        }
-      }
-    }
-
     // Launch pads can be placed anywhere - no tech block distance restrictions
     // (those restrictions apply to launch tower segments, not the base pad)
 
