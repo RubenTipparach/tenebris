@@ -374,7 +374,8 @@ export class PlanetBlockInteraction {
     });
 
     // Initialize launch pad system
-    this.launchPadManager = new LaunchPadManager(scene, planetCenter, sunDirection);
+    const planetRadius = earthPlanet?.radius || 100;
+    this.launchPadManager = new LaunchPadManager(scene, planetCenter, sunDirection, planetRadius);
     this.launchPadUI = new LaunchPadUI(this.inventory);
     this.launchPadUI.setOnCloseCallback(() => {
       // Launch pad close callback
@@ -415,6 +416,21 @@ export class PlanetBlockInteraction {
         this.saveLaunchPadStates();
       }
       return result;
+    });
+    // New generic rocket part callbacks
+    this.launchPadUI.setOnAddRocketPartCallback(async (pad, itemType) => {
+      const result = await this.launchPadManager.addRocketPart(pad, itemType);
+      if (result) {
+        this.saveLaunchPadStates();
+      }
+      return result;
+    });
+    this.launchPadUI.setOnRemoveRocketPartCallback((pad) => {
+      const removedPart = this.launchPadManager.removeRocketPart(pad);
+      if (removedPart) {
+        this.saveLaunchPadStates();
+      }
+      return removedPart;
     });
 
     // Set up cable node machine callbacks (now that all managers are initialized)
@@ -491,6 +507,9 @@ export class PlanetBlockInteraction {
     });
     this.craftingSystem.setOnStorageDropCallback((targetSlotIndex, sourceSlotType) => {
       return this.storageUI.handleDropToInventory(targetSlotIndex, sourceSlotType);
+    });
+    this.craftingSystem.setOnPrinter3DDropCallback((targetSlotIndex, sourceSlotIndex) => {
+      return this.handlePrinter3DDropToInventory(targetSlotIndex, sourceSlotIndex);
     });
 
     // Set up tech block data callback for Shift+X debug
@@ -675,6 +694,19 @@ export class PlanetBlockInteraction {
       return;
     }
 
+    // Check for 3D printer drop
+    if (dragData && dragData.startsWith('printer3d:output:')) {
+      const sourceSlotIndex = parseInt(dragData.substring('printer3d:output:'.length));
+      if (!isNaN(sourceSlotIndex)) {
+        const success = this.handlePrinter3DDropToInventory(targetSlotIndex, sourceSlotIndex);
+        if (success) {
+          this.updateHotbarUI();
+          this.craftingSystem.updateInventorySlots();
+        }
+      }
+      return;
+    }
+
     const sourceSlotIndex = this.draggedSlotIndex;
     if (sourceSlotIndex === null || sourceSlotIndex === targetSlotIndex) {
       return;
@@ -685,6 +717,57 @@ export class PlanetBlockInteraction {
 
     // Update UI
     this.updateHotbarUI();
+  }
+
+  /**
+   * Handle dropping an item from 3D printer output to inventory
+   */
+  private handlePrinter3DDropToInventory(targetSlotIndex: number, sourceSlotIndex: number): boolean {
+    const outputSlot = this.printer3DUI.getOutputSlot(sourceSlotIndex);
+    if (!outputSlot || outputSlot.itemType === null || outputSlot.quantity <= 0) {
+      return false;
+    }
+
+    const targetSlot = this.inventory.getSlot(targetSlotIndex);
+    if (!targetSlot) {
+      return false;
+    }
+
+    // Check if target slot is empty or has same item type with room
+    if (targetSlot.itemType === ItemType.NONE) {
+      // Empty slot - move all items
+      this.inventory.setSlot(targetSlotIndex, outputSlot.itemType, outputSlot.quantity);
+      this.printer3DUI.clearOutputSlot(sourceSlotIndex);
+      this.saveInventory();
+      return true;
+    } else if (targetSlot.itemType === outputSlot.itemType) {
+      // Same item type - try to stack
+      const itemData = ITEM_DATA[outputSlot.itemType];
+      const maxStack = itemData?.stackSize || 64;
+      const spaceAvailable = maxStack - targetSlot.quantity;
+
+      if (spaceAvailable > 0) {
+        const amountToMove = Math.min(spaceAvailable, outputSlot.quantity);
+        this.inventory.setSlot(targetSlotIndex, targetSlot.itemType, targetSlot.quantity + amountToMove);
+
+        if (amountToMove >= outputSlot.quantity) {
+          // All items moved
+          this.printer3DUI.clearOutputSlot(sourceSlotIndex);
+        } else {
+          // Partial move - update output slot with remaining
+          // Note: We need to update the printer's output directly
+          const printer = this.printer3DUI.getCurrentPrinter();
+          if (printer) {
+            printer.outputInventory[sourceSlotIndex].quantity = outputSlot.quantity - amountToMove;
+            this.printer3DUI.updateProgress(); // Refresh UI
+          }
+        }
+        this.saveInventory();
+        return true;
+      }
+    }
+
+    return false;
   }
 
   private updateMiningUI(progress: number): void {
@@ -2196,135 +2279,6 @@ export class PlanetBlockInteraction {
     }
   }
 
-  /**
-   * Try to place a launch tower on a 3-wide launch pad arrangement
-   * Layout (hex grid):
-   *  X X X
-   * X0 X1 X2 X3  <- tower at X2 position (end of 3-pad line)
-   *  X X X
-   *
-   * Pattern: Need 3 adjacent pads in a line (X0-X1-X2)
-   * Tower goes on X2 (the end pad, not the middle)
-   */
-  private tryPlaceLaunchTower(clickedPad: PlacedLaunchPad): void {
-    // Get all launch pads
-    const allPads = this.launchPadManager.getLaunchPads();
-
-    // Find which planet this pad is on
-    let planet: Planet | null = null;
-    for (const p of this.planets) {
-      const tile = p.getTileByIndex(clickedPad.centerTileIndex);
-      if (tile) {
-        planet = p;
-        break;
-      }
-    }
-
-    if (!planet) {
-      console.log('Cannot place tower: planet not found');
-      return;
-    }
-
-    // Get all pad center tile indices for quick lookup
-    const padCenterTiles = new Set(allPads.map(p => p.centerTileIndex));
-    const padByTileIndex = new Map(allPads.map(p => [p.centerTileIndex, p]));
-
-    // Find a valid 3-pad line where the clicked pad is part of it
-    // We need to find X0-X1-X2 where tower goes on X2
-    let towerPad: PlacedLaunchPad | null = null;
-
-    const clickedTile = planet.getTileByIndex(clickedPad.centerTileIndex);
-    if (!clickedTile) return;
-
-    // For each neighbor direction, check if we can form a 3-pad line
-    for (const neighborIdx of clickedTile.neighbors) {
-      if (!padCenterTiles.has(neighborIdx)) continue;
-
-      const neighborTile = planet.getTileByIndex(neighborIdx);
-      if (!neighborTile) continue;
-
-      // Check if there's a third pad continuing in the same direction
-      // We need to find a neighbor of neighborTile that:
-      // 1. Is not the clicked pad
-      // 2. Is a launch pad
-      // 3. Forms a line (i.e., the clicked pad and third pad are on opposite sides of neighbor)
-
-      for (const thirdIdx of neighborTile.neighbors) {
-        if (thirdIdx === clickedPad.centerTileIndex) continue;
-        if (!padCenterTiles.has(thirdIdx)) continue;
-
-        // Check if clickedPad and thirdPad are roughly opposite each other relative to neighborPad
-        // They should NOT be neighbors of each other (that would make a triangle, not a line)
-        const thirdTile = planet.getTileByIndex(thirdIdx);
-        if (!thirdTile) continue;
-
-        // If clickedPad is a neighbor of thirdPad, they form a triangle not a line
-        if (thirdTile.neighbors.includes(clickedPad.centerTileIndex)) continue;
-
-        // Found a valid line: clickedPad - neighborPad - thirdPad
-        // Determine which end is X2 (where tower goes)
-        // The tower goes on the END of the line (X2), which could be either clickedPad or thirdPad
-        // For simplicity, if user clicks any pad in a valid line, place tower on the "end" that is the clicked pad
-        // OR the end furthest from X0
-
-        // Actually, let's determine the line direction and pick X2 consistently
-        // X2 is the END pad. If clicked pad has only 1 pad neighbor in this line, it's an end (X0 or X2)
-        // If clicked pad has 2 pad neighbors in this line, it's the middle (X1)
-
-        // Check if there's another pad adjacent to clicked that continues the line the other way
-        let clickedIsMiddle = false;
-        for (const otherNeighborIdx of clickedTile.neighbors) {
-          if (otherNeighborIdx === neighborIdx) continue;
-          if (!padCenterTiles.has(otherNeighborIdx)) continue;
-
-          const otherNeighborTile = planet.getTileByIndex(otherNeighborIdx);
-          if (!otherNeighborTile) continue;
-
-          // Check if this forms an opposite direction (not adjacent to neighborIdx's other neighbors in the line)
-          if (!neighborTile.neighbors.includes(otherNeighborIdx)) {
-            // clickedPad is the middle, with pads on both sides
-            clickedIsMiddle = true;
-            break;
-          }
-        }
-
-        if (clickedIsMiddle) {
-          // Clicked pad is X1 (middle), tower goes on one of the ends
-          // Use thirdPad as X2 (the end away from the direction we came from)
-          towerPad = padByTileIndex.get(thirdIdx) || null;
-        } else {
-          // Clicked pad is an end (X0 or X2)
-          // If clicked pad is X0, then neighborPad is X1, thirdPad is X2 -> tower on thirdPad
-          // If clicked pad is X2, then thirdPad would be X0 -> tower on clickedPad
-          // We need to determine which end is which...
-
-          // For simplicity: tower always goes on the END that is NOT X0
-          // Let's say X2 is the pad that, when you follow the line, is at the end
-          // Since we found: clickedPad - neighborPad - thirdPad
-          // And clickedPad is an end, thirdPad is the other end
-          // Tower goes on thirdPad (making it X2)
-          towerPad = padByTileIndex.get(thirdIdx) || null;
-        }
-
-        if (towerPad) break;
-      }
-
-      if (towerPad) break;
-    }
-
-    if (!towerPad) {
-      console.log('Cannot place tower: need 3 adjacent launch pads in a line');
-      return;
-    }
-
-    // Add segment to the tower pad (X2 position)
-    if (this.launchPadManager.addSegment(towerPad)) {
-      this.inventory.useSelectedItem();
-      this.updateHotbarUI();
-      this.saveLaunchPadStates();
-    }
-  }
-
   private breakLaunchPad(launchPad: PlacedLaunchPad): void {
     // Give the launch pad block back to the player
     this.inventory.addItem(ItemType.LAUNCH_PAD_BLOCK, 1);
@@ -3387,6 +3341,12 @@ export class PlanetBlockInteraction {
     const originalTileVertices = tile.vertices.map(v => v.clone());
     const originalTileCenter = tile.center.clone();
 
+    // Calculate world positions for surrounding tile centers
+    const surroundingTileCenters = surroundingTiles.map(t => {
+      const tCenter = t!.center.clone().normalize();
+      return tCenter.multiplyScalar(outerRadius).add(planet.center);
+    });
+
     // Use item from inventory
     if (this.inventory.useSelectedItem()) {
       // Place the launch pad with world-space geometry matching terrain
@@ -3395,6 +3355,7 @@ export class PlanetBlockInteraction {
         planet.center,
         tileIndex,
         tile.neighbors,
+        surroundingTileCenters,
         originalTileVertices,
         originalTileCenter,
         innerRadius,
@@ -3412,7 +3373,11 @@ export class PlanetBlockInteraction {
           position: { x: placedPad.position.x, y: placedPad.position.y, z: placedPad.position.z },
           rotation: placedPad.rotation,
           segmentCount: placedPad.segmentCount,
-          rocketBlocks: placedPad.rocketBlocks
+          rocketBlocks: placedPad.rocketBlocks,
+          rocketParts: placedPad.rocketParts.map(part => ({
+            itemType: part.itemType,
+            heightIndex: part.heightIndex
+          }))
         });
       }
     }
@@ -3551,7 +3516,11 @@ export class PlanetBlockInteraction {
         position: { x: pad.position.x, y: pad.position.y, z: pad.position.z },
         rotation: pad.rotation,
         segmentCount: pad.segmentCount,
-        rocketBlocks: pad.rocketBlocks
+        rocketBlocks: pad.rocketBlocks,
+        rocketParts: pad.rocketParts.map(part => ({
+          itemType: part.itemType,
+          heightIndex: part.heightIndex
+        }))
       });
     }
   }
@@ -4074,19 +4043,31 @@ export class PlanetBlockInteraction {
         const outerRadius = distFromCenter;
         const innerRadius = outerRadius - launchPadHeight;
 
+        // Calculate surrounding tile centers for the tower position
+        const surroundingTileCenters: THREE.Vector3[] = [];
+        for (const neighborIdx of savedPad.surroundingTileIndices) {
+          const neighborTile = planet.getTileByIndex(neighborIdx);
+          if (neighborTile) {
+            const neighborCenter = neighborTile.center.clone().normalize();
+            surroundingTileCenters.push(neighborCenter.multiplyScalar(outerRadius).add(planet.center));
+          }
+        }
+
         // Restore the launch pad with proper tile geometry
         this.launchPadManager.restoreLaunchPad(
           savedPosition,
           planet.center,
           savedPad.centerTileIndex,
           savedPad.surroundingTileIndices,
+          surroundingTileCenters,
           savedPad.rotation,
           savedPad.segmentCount,
           savedPad.rocketBlocks,
           tile.vertices.map(v => v.clone()),
           tile.center.clone(),
           innerRadius,
-          outerRadius
+          outerRadius,
+          savedPad.rocketParts
         );
       }
     }

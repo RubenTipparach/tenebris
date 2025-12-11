@@ -802,16 +802,35 @@ export class Printer3DUI {
       const slot = this.currentPrinter.outputInventory[i];
       const slotEl = document.createElement('div');
       slotEl.className = `output-slot${slot.itemType !== null ? ' has-item' : ''}`;
+      slotEl.dataset.outputSlot = i.toString();
 
       if (slot.itemType !== null && slot.quantity > 0) {
         const itemData = ITEM_DATA[slot.itemType];
-        slotEl.innerHTML = `
-          <img src="${getAssetPath(itemData?.texture || '')}" alt="${itemData?.name || 'Unknown'}">
-          <span class="slot-quantity">${slot.quantity}</span>
-        `;
+        const img = document.createElement('img');
+        img.src = getAssetPath(itemData?.texture || '');
+        img.alt = itemData?.name || 'Unknown';
+        img.draggable = false; // Prevent image from being dragged separately
+        slotEl.appendChild(img);
 
-        // Use mousedown instead of click because the game's input system consumes mouseup
-        slotEl.addEventListener('mousedown', (e) => {
+        const quantitySpan = document.createElement('span');
+        quantitySpan.className = 'slot-quantity';
+        quantitySpan.textContent = slot.quantity.toString();
+        slotEl.appendChild(quantitySpan);
+
+        // Enable drag for output slots with items
+        slotEl.draggable = true;
+
+        // Drag start - set data for inventory drop handler
+        slotEl.addEventListener('dragstart', (e) => {
+          this.handleOutputDragStart(e, i);
+        });
+
+        slotEl.addEventListener('dragend', () => {
+          slotEl.classList.remove('dragging');
+        });
+
+        // Click to collect (fallback)
+        slotEl.addEventListener('click', (e) => {
           e.preventDefault();
           e.stopPropagation();
           this.collectFromSlot(i);
@@ -820,6 +839,76 @@ export class Printer3DUI {
 
       this.outputSlotsElement.appendChild(slotEl);
     }
+  }
+
+  private handleOutputDragStart(e: DragEvent, slotIndex: number): void {
+    if (!this.currentPrinter) {
+      e.preventDefault();
+      return;
+    }
+
+    const slot = this.currentPrinter.outputInventory[slotIndex];
+    if (slot.itemType === null || slot.quantity <= 0) {
+      e.preventDefault();
+      return;
+    }
+
+    // Set drag data with printer3d identifier
+    e.dataTransfer?.setData('text/plain', `printer3d:output:${slotIndex}`);
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = 'move';
+    }
+
+    const target = e.currentTarget as HTMLElement;
+    target.classList.add('dragging');
+
+    // Create drag ghost
+    const ghost = document.createElement('div');
+    ghost.className = 'drag-ghost';
+    const itemData = ITEM_DATA[slot.itemType];
+    ghost.innerHTML = `<img src="${getAssetPath(itemData?.texture || '')}" style="width:40px;height:40px;image-rendering:pixelated;">`;
+    if (slot.quantity > 1) {
+      ghost.innerHTML += `<span class="ghost-count">${slot.quantity}</span>`;
+    }
+    ghost.style.position = 'fixed';
+    ghost.style.top = '-100px';
+    ghost.style.left = '-100px';
+    ghost.style.pointerEvents = 'none';
+    ghost.style.zIndex = '9999';
+    ghost.style.background = 'rgba(0,0,0,0.8)';
+    ghost.style.border = '2px solid #4CAF50';
+    ghost.style.borderRadius = '4px';
+    ghost.style.padding = '4px';
+    document.body.appendChild(ghost);
+
+    e.dataTransfer?.setDragImage(ghost, 25, 25);
+
+    // Clean up ghost after drag
+    setTimeout(() => ghost.remove(), 0);
+  }
+
+  /**
+   * Get output slot data for drag-drop handling
+   */
+  public getOutputSlot(slotIndex: number): { itemType: ItemType | null; quantity: number } | null {
+    if (!this.currentPrinter || slotIndex < 0 || slotIndex >= 6) {
+      return null;
+    }
+    return this.currentPrinter.outputInventory[slotIndex];
+  }
+
+  /**
+   * Clear an output slot after successful drag-drop to inventory
+   */
+  public clearOutputSlot(slotIndex: number): void {
+    if (!this.currentPrinter || slotIndex < 0 || slotIndex >= 6) {
+      return;
+    }
+    const slot = this.currentPrinter.outputInventory[slotIndex];
+    slot.itemType = null;
+    slot.quantity = 0;
+    this.updateUI();
+    this.notifyChanges();
   }
 
   // Helper to get required items grouped by type

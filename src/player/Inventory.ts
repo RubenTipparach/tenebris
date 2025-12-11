@@ -61,6 +61,32 @@ export enum ItemType {
   LAUNCH_PAD_SEGMENT = 44,
   // Rocket parts
   ROCKET_ENGINE = 45,
+  FUEL_TANK = 46,
+  COMMAND_MODULE = 47,
+}
+
+// Rocket part type for items that can be placed on the launch tower
+export enum RocketPartType {
+  ENGINE = 'engine',
+  FUEL_TANK = 'fuel_tank',
+  CAPSULE = 'capsule',
+  // Add more types as needed
+}
+
+// Engine requirements for rocket validation
+export interface EngineRequirements {
+  minFuelTanks: number;       // Minimum fuel tanks required
+  requiresCommandModule: boolean;  // Whether a command module is required
+}
+
+// Rocket part metadata for 3D model loading
+export interface RocketPartData {
+  partType: RocketPartType;
+  modelPath: string;     // Path to OBJ model
+  texturePath: string;   // Path to texture for the model
+  heightUnits: number;   // How many segment heights this part takes
+  // Optional: engine-specific requirements
+  engineRequirements?: EngineRequirements;
 }
 
 // Item metadata
@@ -71,6 +97,8 @@ export interface ItemData {
   mineTime: number; // Time in seconds to mine this item
   // Optional: for atlas textures, specify which portion to show (in pixels)
   atlasRegion?: { x: number; y: number; width: number; height: number; atlasWidth: number; atlasHeight: number };
+  // Optional: rocket part data for items that go on the launch tower
+  rocketPart?: RocketPartData;
 }
 
 export const ITEM_DATA: Record<ItemType, ItemData> = {
@@ -134,7 +162,46 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
   [ItemType.LAUNCH_PAD_BLOCK]: { name: 'Launch Pad Block', stackSize: 8, texture: '/textures/technology/launch_pad_face.png', mineTime: 2.5 },
   [ItemType.LAUNCH_PAD_SEGMENT]: { name: 'Launch Pad Segment', stackSize: 8, texture: '/textures/technology/launch_tower_face.png', mineTime: 3.0 },
   // Rocket parts
-  [ItemType.ROCKET_ENGINE]: { name: 'Rocket Engine', stackSize: 8, texture: '/textures/rocket_parts/medium_engine_face.png', mineTime: 3.0 },
+  [ItemType.ROCKET_ENGINE]: {
+    name: 'Rocket Engine',
+    stackSize: 8,
+    texture: '/textures/rocket_parts/medium_engine_face.png',
+    mineTime: 3.0,
+    rocketPart: {
+      partType: RocketPartType.ENGINE,
+      modelPath: '/models/medium_rocket_nozzlel.obj',
+      texturePath: '/textures/rocket_parts/medium_engine.png',
+      heightUnits: 1,
+      engineRequirements: {
+        minFuelTanks: 1,
+        requiresCommandModule: true,
+      },
+    },
+  },
+  [ItemType.FUEL_TANK]: {
+    name: 'Fuel Tank',
+    stackSize: 8,
+    texture: '/textures/rocket_parts/fuel_tank_face.png',
+    mineTime: 3.0,
+    rocketPart: {
+      partType: RocketPartType.FUEL_TANK,
+      modelPath: '/models/fuel_tank.obj',
+      texturePath: '/textures/rocket_parts/fuel_tank.png',
+      heightUnits: 2,
+    },
+  },
+  [ItemType.COMMAND_MODULE]: {
+    name: 'Command Module',
+    stackSize: 8,
+    texture: '/textures/rocket_parts/command_module_face.png',
+    mineTime: 3.0,
+    rocketPart: {
+      partType: RocketPartType.CAPSULE,
+      modelPath: '/models/command_module.obj',
+      texturePath: '/textures/rocket_parts/command_module.png',
+      heightUnits: 1,
+    },
+  },
 };
 
 // Inventory slot

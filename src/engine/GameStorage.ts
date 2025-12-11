@@ -136,6 +136,12 @@ export interface SavedRemovedTree {
   tileIndex: number;
 }
 
+// Saved rocket part data
+export interface SavedRocketPart {
+  itemType: number;
+  heightIndex: number;
+}
+
 // Launch pad data
 export interface SavedLaunchPad {
   centerTileIndex: number;
@@ -144,6 +150,7 @@ export interface SavedLaunchPad {
   rotation: number;
   segmentCount: number;
   rocketBlocks: number;
+  rocketParts?: SavedRocketPart[];  // New: saved rocket parts stack
 }
 
 // Player-specific save data

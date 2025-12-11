@@ -3,23 +3,55 @@ import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { getAssetPath } from '../utils/assetPath';
 import { HexTile } from './GoldbergPolyhedron';
 import { PlayerConfig } from '../config/PlayerConfig';
+import { ItemType, ITEM_DATA, RocketPartType } from '../player/Inventory';
+import { RocketPart } from './RocketPart';
 import techVert from '../shaders/tech/tech.vert';
 import techFrag from '../shaders/tech/tech.frag';
+import rocketPartVert from '../shaders/rocketPart/rocketPart.vert';
+import rocketPartFrag from '../shaders/rocketPart/rocketPart.frag';
+
+// Legacy interface for backwards compatibility
+export interface PlacedRocketPart {
+  itemType: ItemType;
+  partType: RocketPartType;
+  mesh: THREE.Group;
+  heightIndex: number;  // Which slot in the rocket stack (0 = bottom)
+}
+
+// Launch pad shape requirements:
+// The 10-hex stadium shape:
+//  P P      <- 2 hexes (top row)
+// P R P     <- 3 hexes (rocket row - R = rocket parts position)
+// P L P     <- 3 hexes (tower row - L = launch tower complex position)
+//  P P      <- 2 hexes (bottom row)
+// Total: 10 hexes
 
 // Launch Pad placement data
 export interface PlacedLaunchPad {
   mesh: THREE.Group;  // Group containing base + segments
-  position: THREE.Vector3;
-  centerTileIndex: number;  // The center hex of the 7-hex cluster
-  surroundingTileIndices: number[];  // The 6 surrounding hexes
+  position: THREE.Vector3;  // Center of the launch pad (rocket tile position)
+  // Tile tracking for 10-hex pattern
+  allTileIndices: number[];  // All 10 tile indices in the pattern
+  allTileCenters: THREE.Vector3[];  // World positions of all 10 hex centers
+  placedTiles: Set<number>;  // Which tiles have launch pad blocks placed (subset of allTileIndices)
+  rocketTileIndex: number;  // The center tile where rocket parts sit (R position)
+  towerTileIndex: number;  // The center tile where launch tower complex sits (L position)
+  towerTileCenter: THREE.Vector3;  // World position of tower tile center
+  isComplete: boolean;  // True when all 10 tiles have blocks placed
+  // Legacy fields for backwards compatibility
+  centerTileIndex: number;  // For backwards compat - same as rocketTileIndex
+  surroundingTileIndices: number[];  // For backwards compat
+  surroundingTileCenters: THREE.Vector3[];  // For backwards compat
   rotation: number;
   // Tower segments (right column in UI, max 8)
   segmentCount: number;
   segmentMeshes: THREE.Mesh[];
-  // Rocket blocks (left column in UI, max = segmentCount)
+  // Rocket blocks (left column in UI, max = segmentCount) - DEPRECATED, use rocketParts
   rocketBlocks: number;
   rocketMeshes: THREE.Mesh[];
-  // Rocket engine (placed at bottom of rocket)
+  // Rocket parts stack (uses RocketPart class)
+  rocketParts: RocketPart[];
+  // Legacy support - computed from rocketParts
   hasRocketEngine: boolean;
   rocketEngineMesh: THREE.Group | null;
 }
@@ -44,13 +76,18 @@ export class LaunchPadManager {
   private segmentGeometry: THREE.BoxGeometry | null = null;
   private segmentMaterial: THREE.ShaderMaterial | null = null;
 
-  // Rocket engine model and material
+  // Rocket engine model and material (legacy, kept for backwards compatibility)
   private rocketEngineGeometry: THREE.BufferGeometry | null = null;
   private rocketEngineMaterial: THREE.ShaderMaterial | null = null;
+
+  // Cache for rocket part models and materials (keyed by ItemType)
+  private rocketPartCache: Map<ItemType, { geometry: THREE.BufferGeometry; material: THREE.ShaderMaterial }> = new Map();
 
   // Planet lighting uniforms
   private planetCenter: THREE.Vector3;
   private sunDirection: THREE.Vector3;
+  private planetRadius: number;
+  private atmosphereHeight: number;
 
   // Size constants
   private readonly BASE_RADIUS = 1.0;  // Radius of hexagonal base
@@ -58,13 +95,15 @@ export class LaunchPadManager {
   private readonly SEGMENT_SIZE = 2.0;  // Segment tower piece
   private readonly SEGMENT_HEIGHT = 2.0;  // Height per segment
   private readonly MAX_SEGMENTS = 8;
-  private readonly ENGINE_SCALE = 1.5;  // Scale for the rocket engine model
+  private readonly ROCKET_PART_SCALE = 1.0;  // Scale for rocket part models
 
-  constructor(scene: THREE.Scene, planetCenter?: THREE.Vector3, sunDirection?: THREE.Vector3) {
+  constructor(scene: THREE.Scene, planetCenter?: THREE.Vector3, sunDirection?: THREE.Vector3, planetRadius?: number) {
     this.scene = scene;
     this.textureLoader = new THREE.TextureLoader();
     this.planetCenter = planetCenter?.clone() || new THREE.Vector3(0, 0, 0);
     this.sunDirection = sunDirection?.clone() || new THREE.Vector3(1, 0, 0);
+    this.planetRadius = planetRadius || 50;
+    this.atmosphereHeight = this.planetRadius * 0.1;
     this.initGeometryAndMaterials();
   }
 
@@ -77,6 +116,25 @@ export class LaunchPadManager {
     if (this.segmentMaterial) {
       this.segmentMaterial.uniforms.sunDirection.value.copy(direction);
     }
+    // Update rocket part materials in cache
+    for (const cached of this.rocketPartCache.values()) {
+      if (cached.material.uniforms.sunDirection) {
+        cached.material.uniforms.sunDirection.value.copy(direction);
+      }
+    }
+    // Update all placed rocket parts (cloned materials)
+    for (const launchPad of this.launchPads) {
+      for (const rocketPart of launchPad.rocketParts) {
+        rocketPart.mesh.traverse((child) => {
+          if (child instanceof THREE.Mesh) {
+            const material = child.material as THREE.ShaderMaterial;
+            if (material.uniforms && material.uniforms.sunDirection) {
+              material.uniforms.sunDirection.value.copy(direction);
+            }
+          }
+        });
+      }
+    }
   }
 
   // Update planet center
@@ -87,6 +145,25 @@ export class LaunchPadManager {
     }
     if (this.segmentMaterial) {
       this.segmentMaterial.uniforms.planetCenter.value.copy(center);
+    }
+    // Update rocket part materials in cache
+    for (const cached of this.rocketPartCache.values()) {
+      if (cached.material.uniforms.planetCenter) {
+        cached.material.uniforms.planetCenter.value.copy(center);
+      }
+    }
+    // Update all placed rocket parts (cloned materials)
+    for (const launchPad of this.launchPads) {
+      for (const rocketPart of launchPad.rocketParts) {
+        rocketPart.mesh.traverse((child) => {
+          if (child instanceof THREE.Mesh) {
+            const material = child.material as THREE.ShaderMaterial;
+            if (material.uniforms && material.uniforms.planetCenter) {
+              material.uniforms.planetCenter.value.copy(center);
+            }
+          }
+        });
+      }
     }
   }
 
@@ -577,6 +654,7 @@ export class LaunchPadManager {
     planetCenter: THREE.Vector3,
     centerTileIndex: number,
     surroundingTileIndices: number[],
+    surroundingTileCenters: THREE.Vector3[],
     tileVertices?: THREE.Vector3[],
     tileCenter?: THREE.Vector3,
     innerRadius?: number,
@@ -614,16 +692,33 @@ export class LaunchPadManager {
     this.scene.add(group);
 
     // Create the placed launch pad data
+    // For now, use the center tile as rocket position and first surrounding as tower
+    // TODO: Proper 10-hex pattern detection will be implemented
+    const towerCenter = surroundingTileCenters.length > 0
+      ? surroundingTileCenters[0].clone()
+      : worldPosition.clone();
+
     const placedPad: PlacedLaunchPad = {
       mesh: group,
       position: worldPosition.clone(),
+      // New 10-hex pattern fields
+      allTileIndices: [centerTileIndex, ...surroundingTileIndices],
+      allTileCenters: [worldPosition.clone(), ...surroundingTileCenters.map(c => c.clone())],
+      placedTiles: new Set([centerTileIndex]),  // Start with just the center tile placed
+      rocketTileIndex: centerTileIndex,
+      towerTileIndex: surroundingTileIndices[0] ?? centerTileIndex,
+      towerTileCenter: towerCenter,
+      isComplete: false,  // Not complete until all 10 tiles placed
+      // Legacy fields
       centerTileIndex,
       surroundingTileIndices: [...surroundingTileIndices],
+      surroundingTileCenters: surroundingTileCenters.map(c => c.clone()),
       rotation: 0,
       segmentCount: 0,
       segmentMeshes: [],
       rocketBlocks: 0,
       rocketMeshes: [],
+      rocketParts: [],
       hasRocketEngine: false,
       rocketEngineMesh: null,
     };
@@ -643,13 +738,15 @@ export class LaunchPadManager {
     planetCenter: THREE.Vector3,
     centerTileIndex: number,
     surroundingTileIndices: number[],
+    surroundingTileCenters: THREE.Vector3[],
     rotation: number,
     segmentCount: number,
     rocketBlocks: number,
     tileVertices?: THREE.Vector3[],
     tileCenter?: THREE.Vector3,
     innerRadius?: number,
-    outerRadius?: number
+    outerRadius?: number,
+    savedRocketParts?: { itemType: ItemType; heightIndex: number }[]
   ): Promise<PlacedLaunchPad | null> {
     if (!this.baseMaterial) {
       await this.initGeometryAndMaterials();
@@ -683,16 +780,31 @@ export class LaunchPadManager {
     this.scene.add(group);
 
     // Create the placed launch pad data
+    const towerCenter = surroundingTileCenters.length > 0
+      ? surroundingTileCenters[0].clone()
+      : worldPosition.clone();
+
     const placedPad: PlacedLaunchPad = {
       mesh: group,
       position: worldPosition.clone(),
+      // New 10-hex pattern fields
+      allTileIndices: [centerTileIndex, ...surroundingTileIndices],
+      allTileCenters: [worldPosition.clone(), ...surroundingTileCenters.map(c => c.clone())],
+      placedTiles: new Set([centerTileIndex, ...surroundingTileIndices]),  // Assume all placed when restoring
+      rocketTileIndex: centerTileIndex,
+      towerTileIndex: surroundingTileIndices[0] ?? centerTileIndex,
+      towerTileCenter: towerCenter,
+      isComplete: true,  // Assume complete when restoring
+      // Legacy fields
       centerTileIndex,
       surroundingTileIndices: [...surroundingTileIndices],
+      surroundingTileCenters: surroundingTileCenters.map(c => c.clone()),
       rotation,
       segmentCount: 0,
       segmentMeshes: [],
       rocketBlocks: 0,
       rocketMeshes: [],
+      rocketParts: [],
       hasRocketEngine: false,
       rocketEngineMesh: null,
     };
@@ -707,6 +819,15 @@ export class LaunchPadManager {
 
     // Add saved rocket blocks
     placedPad.rocketBlocks = rocketBlocks;
+
+    // Restore saved rocket parts
+    if (savedRocketParts && savedRocketParts.length > 0) {
+      // Sort by heightIndex to ensure correct stacking order
+      const sortedParts = [...savedRocketParts].sort((a, b) => a.heightIndex - b.heightIndex);
+      for (const part of sortedParts) {
+        await this.addRocketPart(placedPad, part.itemType);
+      }
+    }
 
     return placedPad;
   }
@@ -725,20 +846,24 @@ export class LaunchPadManager {
 
     const segmentMesh = new THREE.Mesh(this.segmentGeometry, this.segmentMaterial);
 
-    // Position segment in world space along the radial direction from planet center
-    // The pad's position is at the top of the pad surface
-    const radialDir = launchPad.position.clone().sub(this.planetCenter).normalize();
+    // Use the tower tile center position
+    const towerBasePos = launchPad.towerTileCenter.clone();
 
-    // Stack segments radially outward from the pad position
+    // Stack segments radially outward from the tower tile position
     // Each segment is SEGMENT_HEIGHT tall, centered at offset from pad top
+    const towerRadialDir = towerBasePos.clone().sub(this.planetCenter).normalize();
     const heightOffset = (launchPad.segmentCount + 0.5) * this.SEGMENT_HEIGHT;
-    const segmentPos = launchPad.position.clone().add(radialDir.clone().multiplyScalar(heightOffset));
+    const segmentPos = towerBasePos.clone()
+      .add(towerRadialDir.clone().multiplyScalar(heightOffset));
     segmentMesh.position.copy(segmentPos);
 
-    // Orient the segment so its local Y axis points along the radial direction
-    // Create a quaternion to rotate from (0,1,0) to radialDir
+    // Log tower base position info
+    const towerDistFromCenter = towerBasePos.distanceTo(this.planetCenter);
+    console.log(`[Tower Segment ${launchPad.segmentCount}] baseDistFromCenter: ${towerDistFromCenter.toFixed(3)}, heightOffset: ${heightOffset.toFixed(3)}, finalDist: ${segmentPos.distanceTo(this.planetCenter).toFixed(3)}`);
+
+    // Orient the segment so its local Y axis points along the tower's radial direction
     const up = new THREE.Vector3(0, 1, 0);
-    const quaternion = new THREE.Quaternion().setFromUnitVectors(up, radialDir);
+    const quaternion = new THREE.Quaternion().setFromUnitVectors(up, towerRadialDir);
     segmentMesh.quaternion.copy(quaternion);
 
     launchPad.mesh.add(segmentMesh);
@@ -774,7 +899,222 @@ export class LaunchPadManager {
   }
 
   /**
-   * Add rocket engine to the launch pad (placed in front of the tower)
+   * Load rocket part model and material for a given item type
+   * Caches the result for reuse
+   */
+  private async loadRocketPartAssets(itemType: ItemType): Promise<{ geometry: THREE.BufferGeometry; material: THREE.ShaderMaterial } | null> {
+    // Check cache first
+    const cached = this.rocketPartCache.get(itemType);
+    if (cached) {
+      return cached;
+    }
+
+    const itemData = ITEM_DATA[itemType];
+    if (!itemData.rocketPart) {
+      console.error(`Item ${itemType} is not a rocket part`);
+      return null;
+    }
+
+    const partData = itemData.rocketPart;
+
+    try {
+      // Load texture
+      const texture = await new Promise<THREE.Texture>((resolve, reject) => {
+        this.textureLoader.load(
+          getAssetPath(partData.texturePath),
+          resolve,
+          undefined,
+          reject
+        );
+      });
+
+      texture.magFilter = THREE.NearestFilter;
+      texture.minFilter = THREE.NearestFilter;
+      texture.wrapS = THREE.ClampToEdgeWrapping;
+      texture.wrapT = THREE.ClampToEdgeWrapping;
+
+      // Create material with rocket part shader (adaptive lighting based on gravity well)
+      const material = new THREE.ShaderMaterial({
+        uniforms: {
+          techTexture: { value: texture },
+          sunDirection: { value: this.sunDirection.clone() },
+          planetCenter: { value: this.planetCenter.clone() },
+          planetRadius: { value: this.planetRadius },
+          atmosphereHeight: { value: this.atmosphereHeight },
+          ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
+          directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
+          torchLight: { value: 0.0 },
+        },
+        vertexShader: rocketPartVert,
+        fragmentShader: rocketPartFrag,
+        transparent: true,
+        depthWrite: true,
+        alphaTest: 0.5,
+        side: THREE.DoubleSide,
+      });
+
+      // Load OBJ model
+      const objLoader = new OBJLoader();
+      const obj = await new Promise<THREE.Group>((resolve, reject) => {
+        objLoader.load(
+          getAssetPath(partData.modelPath),
+          resolve,
+          undefined,
+          reject
+        );
+      });
+
+      // Extract geometry from the loaded model
+      let geometry: THREE.BufferGeometry | null = null;
+      obj.traverse((child) => {
+        if (child instanceof THREE.Mesh && child.geometry) {
+          geometry = child.geometry.clone();
+        }
+      });
+
+      if (!geometry) {
+        console.error(`No geometry found in model for ${itemType}`);
+        return null;
+      }
+
+      // Cache the result
+      const result = { geometry, material };
+      this.rocketPartCache.set(itemType, result);
+
+      return result;
+    } catch (error) {
+      console.error(`Failed to load rocket part assets for ${itemType}:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Add a rocket part to the launch pad stack
+   * Parts are positioned in front of the tower, stacked vertically
+   */
+  public async addRocketPart(launchPad: PlacedLaunchPad, itemType: ItemType): Promise<boolean> {
+    const itemData = ITEM_DATA[itemType];
+    if (!itemData.rocketPart) {
+      console.error(`Item ${itemType} is not a rocket part`);
+      return false;
+    }
+
+    // Need at least 1 segment to place parts
+    if (launchPad.segmentCount < 1) {
+      return false;
+    }
+
+    // Load or get cached assets
+    const assets = await this.loadRocketPartAssets(itemType);
+    if (!assets) {
+      return false;
+    }
+
+    // Create mesh with cloned material so each part has independent uniforms
+    const clonedMaterial = assets.material.clone();
+    const partMesh = new THREE.Mesh(assets.geometry, clonedMaterial);
+    const partGroup = new THREE.Group();
+    partGroup.add(partMesh);
+
+    // Calculate position: stack parts vertically above the rocket tile
+    // The rocket tile and tower tile may be at different elevations on the planet surface
+    // We want the rocket to sit at the SAME surface level as the tower
+    const rocketRadialDir = launchPad.position.clone().sub(this.planetCenter).normalize();
+
+    // Get the surface level from the tower tile (same as where tower segments start)
+    const towerSurfaceDistance = launchPad.towerTileCenter.distanceTo(this.planetCenter);
+
+    // Calculate height based on existing parts
+    let heightOffset = 0;
+    for (const existingPart of launchPad.rocketParts) {
+      const existingData = ITEM_DATA[existingPart.itemType];
+      if (existingData.rocketPart) {
+        heightOffset += existingData.rocketPart.heightUnits * this.SEGMENT_HEIGHT;
+      }
+    }
+
+    // Position at the calculated height, starting from tower's surface level
+    // Height starts at same level as tower segments (0.5 * SEGMENT_HEIGHT for first segment center)
+    const partHeight = heightOffset + (itemData.rocketPart.heightUnits * this.SEGMENT_HEIGHT * 0.5);
+
+    // Orient the part first: Y axis along radial direction (from rocket tile)
+    const up = new THREE.Vector3(0, 1, 0);
+    const quaternion = new THREE.Quaternion().setFromUnitVectors(up, rocketRadialDir);
+
+    // Get position offset from config
+    const offsetX = PlayerConfig.ROCKET_STACK_OFFSET_X;
+    const offsetY = PlayerConfig.ROCKET_STACK_OFFSET_Y;
+    const offsetZ = PlayerConfig.ROCKET_STACK_OFFSET_Z;
+
+    // Create local offset vectors based on orientation
+    // X = sideways (tangent), Y = up/down (radial), Z = forward/back
+    const localX = new THREE.Vector3(1, 0, 0).applyQuaternion(quaternion);  // sideways
+    const localZ = new THREE.Vector3(0, 0, 1).applyQuaternion(quaternion);  // forward/back
+
+    // Position: place at tower surface level + part height, along the rocket tile's radial direction
+    // This positions the rocket above the rocket tile but at the tower's surface elevation
+    const partPos = this.planetCenter.clone()
+      .add(rocketRadialDir.clone().multiplyScalar(towerSurfaceDistance + partHeight + offsetY))
+      .add(localX.clone().multiplyScalar(offsetX))
+      .add(localZ.clone().multiplyScalar(offsetZ));
+
+    // Log rocket part position info
+    const rocketTileDistFromCenter = launchPad.position.distanceTo(this.planetCenter);
+    console.log(`[Rocket Part ${launchPad.rocketParts.length}] rocketTileDist: ${rocketTileDistFromCenter.toFixed(3)}, towerSurfaceDist: ${towerSurfaceDistance.toFixed(3)}, partHeight: ${partHeight.toFixed(3)}, finalDist: ${partPos.distanceTo(this.planetCenter).toFixed(3)}`);
+
+    partGroup.position.copy(partPos);
+    partGroup.quaternion.copy(quaternion);
+
+    // Scale the part
+    partGroup.scale.setScalar(this.ROCKET_PART_SCALE);
+
+    // Add to launch pad
+    launchPad.mesh.add(partGroup);
+
+    const rocketPart = new RocketPart(
+      itemType,
+      itemData.rocketPart.partType,
+      partGroup,
+      clonedMaterial,
+      launchPad.rocketParts.length
+    );
+
+    launchPad.rocketParts.push(rocketPart);
+
+    // Update legacy hasRocketEngine flag for backwards compatibility
+    if (itemData.rocketPart.partType === RocketPartType.ENGINE) {
+      launchPad.hasRocketEngine = true;
+      launchPad.rocketEngineMesh = partGroup;
+    }
+
+    return true;
+  }
+
+  /**
+   * Remove the top rocket part from the launch pad stack
+   */
+  public removeRocketPart(launchPad: PlacedLaunchPad): PlacedRocketPart | null {
+    if (launchPad.rocketParts.length === 0) {
+      return null;
+    }
+
+    const removedPart = launchPad.rocketParts.pop()!;
+    launchPad.mesh.remove(removedPart.mesh);
+
+    // Update legacy flags
+    const hasEngine = launchPad.rocketParts.some(
+      p => ITEM_DATA[p.itemType].rocketPart?.partType === RocketPartType.ENGINE
+    );
+    launchPad.hasRocketEngine = hasEngine;
+    if (!hasEngine) {
+      launchPad.rocketEngineMesh = null;
+    }
+
+    return removedPart;
+  }
+
+  /**
+   * Add rocket engine to the launch pad (legacy method, uses addRocketPart internally)
    */
   public addRocketEngine(launchPad: PlacedLaunchPad): boolean {
     // Can't add engine if already has one
@@ -787,46 +1127,47 @@ export class LaunchPadManager {
       return false;
     }
 
+    // Use the legacy pre-loaded geometry/material for backwards compatibility
     if (!this.rocketEngineGeometry || !this.rocketEngineMaterial) {
       console.error('Rocket engine geometry or material not loaded');
       return false;
     }
 
-    // Create engine mesh
+    // Create engine mesh using legacy assets
     const engineMesh = new THREE.Mesh(this.rocketEngineGeometry, this.rocketEngineMaterial);
     const engineGroup = new THREE.Group();
     engineGroup.add(engineMesh);
 
-    // Position the engine in front of the tower base
+    // Position the engine centered on the launch pad
     const radialDir = launchPad.position.clone().sub(this.planetCenter).normalize();
 
-    // Place engine at the base height, offset forward from the tower
-    const engineHeight = this.SEGMENT_HEIGHT * 0.5; // Half a segment up from base
-    const forwardOffset = this.SEGMENT_SIZE * 1.2; // In front of the tower
-
-    // Calculate the "forward" direction (perpendicular to radial, arbitrary but consistent)
-    const worldUp = new THREE.Vector3(0, 1, 0);
-    let forwardDir = new THREE.Vector3().crossVectors(worldUp, radialDir).normalize();
-    if (forwardDir.length() < 0.1) {
-      // If radial is parallel to world up, use a different reference
-      forwardDir = new THREE.Vector3().crossVectors(new THREE.Vector3(1, 0, 0), radialDir).normalize();
-    }
+    // Place engine at the base height, centered on the pad
+    const engineHeight = this.SEGMENT_HEIGHT * 0.5;
 
     const enginePos = launchPad.position.clone()
-      .add(radialDir.clone().multiplyScalar(engineHeight))
-      .add(forwardDir.clone().multiplyScalar(forwardOffset));
+      .add(radialDir.clone().multiplyScalar(engineHeight));
 
     engineGroup.position.copy(enginePos);
 
-    // Orient the engine: Y axis along radial, rotated to face outward
     const up = new THREE.Vector3(0, 1, 0);
     const quaternion = new THREE.Quaternion().setFromUnitVectors(up, radialDir);
     engineGroup.quaternion.copy(quaternion);
 
-    // Scale the engine
-    engineGroup.scale.setScalar(this.ENGINE_SCALE);
+    engineGroup.scale.setScalar(this.ROCKET_PART_SCALE);
 
     launchPad.mesh.add(engineGroup);
+
+    // Add to rocketParts array for new system
+    const rocketPart = new RocketPart(
+      ItemType.ROCKET_ENGINE,
+      RocketPartType.ENGINE,
+      engineGroup,
+      this.rocketEngineMaterial,
+      launchPad.rocketParts.length
+    );
+    launchPad.rocketParts.push(rocketPart);
+
+    // Legacy flags
     launchPad.hasRocketEngine = true;
     launchPad.rocketEngineMesh = engineGroup;
 
@@ -834,11 +1175,20 @@ export class LaunchPadManager {
   }
 
   /**
-   * Remove rocket engine from the launch pad
+   * Remove rocket engine from the launch pad (legacy method)
    */
   public removeRocketEngine(launchPad: PlacedLaunchPad): boolean {
     if (!launchPad.hasRocketEngine || !launchPad.rocketEngineMesh) {
       return false;
+    }
+
+    // Find and remove the engine from rocketParts
+    const engineIndex = launchPad.rocketParts.findIndex(
+      p => p.partType === RocketPartType.ENGINE
+    );
+
+    if (engineIndex >= 0) {
+      launchPad.rocketParts.splice(engineIndex, 1);
     }
 
     launchPad.mesh.remove(launchPad.rocketEngineMesh);
@@ -846,6 +1196,13 @@ export class LaunchPadManager {
     launchPad.rocketEngineMesh = null;
 
     return true;
+  }
+
+  /**
+   * Get the list of rocket parts on a launch pad
+   */
+  public getRocketParts(launchPad: PlacedLaunchPad): PlacedRocketPart[] {
+    return [...launchPad.rocketParts];
   }
 
   /**
@@ -861,6 +1218,55 @@ export class LaunchPadManager {
       }
     }
     return null;
+  }
+
+  /**
+   * Mark a tile as having a launch pad block placed on it
+   * This updates the placedTiles set and checks for completion
+   * @returns true if this completes the launch pad
+   */
+  public markTileAsPlaced(launchPad: PlacedLaunchPad, tileIndex: number): boolean {
+    // Check if this tile is part of the launch pad's pattern
+    if (!launchPad.allTileIndices.includes(tileIndex)) {
+      return false;
+    }
+
+    // Mark the tile as placed
+    launchPad.placedTiles.add(tileIndex);
+
+    // Check for completion (all tiles in pattern have blocks)
+    const wasComplete = launchPad.isComplete;
+    launchPad.isComplete = launchPad.placedTiles.size >= launchPad.allTileIndices.length;
+
+    // Return true if this action completed the launch pad
+    return !wasComplete && launchPad.isComplete;
+  }
+
+  /**
+   * Remove a tile from the placed tiles set
+   * @returns true if this made the launch pad incomplete
+   */
+  public markTileAsRemoved(launchPad: PlacedLaunchPad, tileIndex: number): boolean {
+    const wasComplete = launchPad.isComplete;
+    launchPad.placedTiles.delete(tileIndex);
+    launchPad.isComplete = launchPad.placedTiles.size >= launchPad.allTileIndices.length;
+
+    // Return true if this action made the launch pad incomplete
+    return wasComplete && !launchPad.isComplete;
+  }
+
+  /**
+   * Get the count of tiles that still need launch pad blocks
+   */
+  public getRemainingTileCount(launchPad: PlacedLaunchPad): number {
+    return launchPad.allTileIndices.length - launchPad.placedTiles.size;
+  }
+
+  /**
+   * Get the indices of tiles that still need launch pad blocks
+   */
+  public getMissingTileIndices(launchPad: PlacedLaunchPad): number[] {
+    return launchPad.allTileIndices.filter(idx => !launchPad.placedTiles.has(idx));
   }
 
   /**
@@ -947,6 +1353,35 @@ export class LaunchPadManager {
         if (material.uniforms && material.uniforms.torchLight) {
           material.uniforms.torchLight.value = totalLight;
         }
+      }
+
+      // Update rocket part meshes - each part calculates its own light based on its position
+      for (const rocketPart of launchPad.rocketParts) {
+        // Get the rocket part's world position
+        const partPosition = new THREE.Vector3();
+        rocketPart.mesh.getWorldPosition(partPosition);
+
+        // Calculate light for this specific part
+        let partLight = 0;
+        for (const torchPos of torchPositions) {
+          const distance = partPosition.distanceTo(torchPos);
+          if (distance < torchRange) {
+            const decay = 2;
+            const attenuation = 1 / (1 + decay * distance * distance / (torchRange * torchRange));
+            partLight += attenuation * torchIntensity;
+          }
+        }
+        partLight = Math.min(1.5, partLight);
+
+        // Rocket part mesh is a Group containing the actual mesh
+        rocketPart.mesh.traverse((child) => {
+          if (child instanceof THREE.Mesh) {
+            const material = child.material as THREE.ShaderMaterial;
+            if (material.uniforms && material.uniforms.torchLight) {
+              material.uniforms.torchLight.value = partLight;
+            }
+          }
+        });
       }
     }
   }

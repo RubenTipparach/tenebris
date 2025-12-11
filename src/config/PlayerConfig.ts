@@ -168,6 +168,12 @@ export const PlayerConfig = {
   TECH_BLOCK_ROTATION_OFFSET: 0,      // Rotation offset in degrees for technology blocks (furnace, etc.)
   TECH_BLOCK_HEX_SNAP: false,          // Snap technology blocks to 60-degree hex alignment
 
+  // Rocket part stack position offset (relative to launch pad center)
+  // X = sideways, Y = up/down from base, Z = forward/back
+  ROCKET_STACK_OFFSET_X: -1,           // Sideways offset
+  ROCKET_STACK_OFFSET_Y: -1,           // Vertical offset (added to calculated stack height)
+  ROCKET_STACK_OFFSET_Z: -1,           // Forward/back offset
+
   // Debug settings (for development/testing)
   DEBUG_BYPASS_CRAFTING_INGREDIENTS: false,  // Skip ingredient requirements when crafting
   DEBUG_JETPACK_ENABLED: false,              // Enable infinite jetpack mode

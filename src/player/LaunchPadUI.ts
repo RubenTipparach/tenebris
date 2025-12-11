@@ -1,7 +1,13 @@
-import { PlacedLaunchPad } from '../planet/LaunchPad';
+import { PlacedLaunchPad, PlacedRocketPart } from '../planet/LaunchPad';
 import { MenuManager } from './MenuManager';
-import { Inventory, ItemType, ITEM_DATA } from './Inventory';
+import { Inventory, ItemType, ITEM_DATA, RocketPartType } from './Inventory';
 import { getAssetPath } from '../utils/assetPath';
+
+// Rocket validation result
+export interface RocketValidationResult {
+  isValid: boolean;
+  errors: string[];
+}
 
 /**
  * LaunchPadUI - UI for managing launch pad segments and rockets
@@ -25,8 +31,12 @@ export class LaunchPadUI {
   private onUpdateInventoryCallback: (() => void) | null = null;
   private onAddSegmentCallback: ((pad: PlacedLaunchPad) => boolean) | null = null;
   private onRemoveSegmentCallback: ((pad: PlacedLaunchPad) => boolean) | null = null;
+  // Legacy callbacks for rocket engine (still used for backwards compatibility)
   private onAddRocketEngineCallback: ((pad: PlacedLaunchPad) => boolean) | null = null;
   private onRemoveRocketEngineCallback: ((pad: PlacedLaunchPad) => boolean) | null = null;
+  // New generic rocket part callbacks
+  private onAddRocketPartCallback: ((pad: PlacedLaunchPad, itemType: ItemType) => Promise<boolean>) | null = null;
+  private onRemoveRocketPartCallback: ((pad: PlacedLaunchPad) => PlacedRocketPart | null) | null = null;
 
   // UI elements
   private segmentSlots: HTMLElement[] = [];
@@ -34,6 +44,7 @@ export class LaunchPadUI {
   private engineSlot: HTMLElement | null = null;
   private boardRocketBtn: HTMLButtonElement | null = null;
   private statusElement: HTMLElement | null = null;
+  private validationMessageElement: HTMLElement | null = null;
 
   private readonly MAX_HEIGHT = 8;
 
@@ -70,6 +81,14 @@ export class LaunchPadUI {
     this.onRemoveRocketEngineCallback = callback;
   }
 
+  public setOnAddRocketPartCallback(callback: (pad: PlacedLaunchPad, itemType: ItemType) => Promise<boolean>): void {
+    this.onAddRocketPartCallback = callback;
+  }
+
+  public setOnRemoveRocketPartCallback(callback: (pad: PlacedLaunchPad) => PlacedRocketPart | null): void {
+    this.onRemoveRocketPartCallback = callback;
+  }
+
   private createUI(): void {
     this.launchPadSectionElement = document.createElement('div');
     this.launchPadSectionElement.id = 'launchpad-section';
@@ -95,6 +114,37 @@ export class LaunchPadUI {
     this.launchPadSectionElement.innerHTML = `
       <h3>Launch Pad</h3>
 
+      <div class="launchpad-completion" id="launchpad-completion" style="display: none;">
+        <div class="completion-status">
+          <span class="completion-label">Platform Status:</span>
+          <span class="completion-value" id="completion-value">Incomplete</span>
+        </div>
+        <div class="completion-diagram" id="completion-diagram">
+          <!-- 10-hex stadium diagram -->
+          <div class="hex-row top-row">
+            <div class="hex-cell" data-pos="0"></div>
+            <div class="hex-cell" data-pos="1"></div>
+          </div>
+          <div class="hex-row middle-row">
+            <div class="hex-cell" data-pos="2"></div>
+            <div class="hex-cell rocket-cell" data-pos="3">R</div>
+            <div class="hex-cell" data-pos="4"></div>
+          </div>
+          <div class="hex-row middle-row">
+            <div class="hex-cell" data-pos="5"></div>
+            <div class="hex-cell tower-cell" data-pos="6">T</div>
+            <div class="hex-cell" data-pos="7"></div>
+          </div>
+          <div class="hex-row bottom-row">
+            <div class="hex-cell" data-pos="8"></div>
+            <div class="hex-cell" data-pos="9"></div>
+          </div>
+        </div>
+        <div class="completion-hint" id="completion-hint">
+          Place launch pad blocks on all 10 hexes
+        </div>
+      </div>
+
       <div class="launchpad-status" id="launchpad-status">
         <span class="status-text">Tower Height: 0/8</span>
       </div>
@@ -116,12 +166,16 @@ export class LaunchPadUI {
         </div>
       </div>
 
+      <div class="launchpad-validation" id="launchpad-validation">
+        <div class="validation-message"></div>
+      </div>
+
       <div class="launchpad-controls">
         <button class="launchpad-btn" id="launchpad-board-btn" disabled>Board Rocket</button>
       </div>
 
       <div class="launchpad-hint">
-        <p>Drag engine from inventory to engine slot</p>
+        <p>Drag rocket parts from inventory to rocket slots</p>
         <p>Press E or ESC to close</p>
       </div>
     `;
@@ -148,6 +202,7 @@ export class LaunchPadUI {
     this.boardRocketBtn = document.getElementById('launchpad-board-btn') as HTMLButtonElement;
     this.statusElement = document.getElementById('launchpad-status');
     this.engineSlot = document.getElementById('launchpad-engine');
+    this.validationMessageElement = document.getElementById('launchpad-validation');
 
     // Setup interactions
     this.setupSlotInteractions();
@@ -168,13 +223,17 @@ export class LaunchPadUI {
         slot.addEventListener('drop', (e) => this.handleSegmentDrop(e, i));
       }
 
+      // Rocket slots - drag-and-drop for rocket parts
       const rocketSlot = this.rocketSlots[i];
       if (rocketSlot) {
         rocketSlot.addEventListener('click', () => this.handleRocketSlotClick(i));
+        rocketSlot.addEventListener('dragover', (e) => this.handleRocketSlotDragOver(e, i));
+        rocketSlot.addEventListener('dragleave', (e) => this.handleDragLeave(e));
+        rocketSlot.addEventListener('drop', (e) => this.handleRocketSlotDrop(e, i));
       }
     }
 
-    // Engine slot - drag-and-drop support
+    // Engine slot - drag-and-drop support (legacy, can also use rocket slots now)
     if (this.engineSlot) {
       this.engineSlot.addEventListener('click', () => this.handleEngineSlotClick());
       this.engineSlot.addEventListener('dragover', (e) => this.handleEngineDragOver(e));
@@ -237,10 +296,34 @@ export class LaunchPadUI {
   }
 
   private handleEngineDragOver(e: DragEvent): void {
-    if (!this.currentLaunchPad) return;
+    if (!this.currentLaunchPad || !this.inventory) return;
 
-    // Only allow drop if no engine yet and has at least 1 segment
-    if (this.currentLaunchPad.hasRocketEngine || this.currentLaunchPad.segmentCount < 1) return;
+    // Need at least 1 segment to place parts
+    if (this.currentLaunchPad.segmentCount < 1) return;
+
+    // Get drag data to check if it's a rocket part
+    const dragData = e.dataTransfer?.getData('text/plain');
+    if (!dragData) {
+      // During dragover, we can't always access drag data due to browser security
+      // So we'll be permissive and allow the dragover, checking properly on drop
+      e.preventDefault();
+      if (e.dataTransfer) {
+        e.dataTransfer.dropEffect = 'move';
+      }
+      const target = e.currentTarget as HTMLElement;
+      target.classList.add('drag-over');
+      return;
+    }
+
+    const sourceSlotIndex = parseInt(dragData, 10);
+    if (isNaN(sourceSlotIndex)) return;
+
+    const sourceSlot = this.inventory.getSlot(sourceSlotIndex);
+    if (!sourceSlot || sourceSlot.quantity <= 0) return;
+
+    // Check if the item is a rocket part
+    const itemData = ITEM_DATA[sourceSlot.itemType];
+    if (!itemData.rocketPart) return;
 
     e.preventDefault();
     if (e.dataTransfer) {
@@ -250,15 +333,15 @@ export class LaunchPadUI {
     target.classList.add('drag-over');
   }
 
-  private handleEngineDrop(e: DragEvent): void {
+  private async handleEngineDrop(e: DragEvent): Promise<void> {
     e.preventDefault();
     const target = e.currentTarget as HTMLElement;
     target.classList.remove('drag-over');
 
     if (!this.currentLaunchPad || !this.inventory) return;
 
-    // Only allow drop if no engine yet and has at least 1 segment
-    if (this.currentLaunchPad.hasRocketEngine || this.currentLaunchPad.segmentCount < 1) return;
+    // Need at least 1 segment to place parts
+    if (this.currentLaunchPad.segmentCount < 1) return;
 
     // Get drag data - it should be an inventory slot index
     const dragData = e.dataTransfer?.getData('text/plain');
@@ -268,29 +351,53 @@ export class LaunchPadUI {
     const sourceSlotIndex = parseInt(dragData, 10);
     if (isNaN(sourceSlotIndex)) return;
 
-    // Check if the source slot has a rocket engine
+    // Check if the source slot has a rocket part
     const sourceSlot = this.inventory.getSlot(sourceSlotIndex);
-    if (!sourceSlot || sourceSlot.itemType !== ItemType.ROCKET_ENGINE || sourceSlot.quantity <= 0) {
+    if (!sourceSlot || sourceSlot.quantity <= 0) return;
+
+    const itemData = ITEM_DATA[sourceSlot.itemType];
+    if (!itemData.rocketPart) {
+      console.log('Item is not a rocket part:', sourceSlot.itemType);
       return;
     }
 
-    // Add the engine
-    if (this.onAddRocketEngineCallback && this.onAddRocketEngineCallback(this.currentLaunchPad)) {
-      this.inventory.removeItem(ItemType.ROCKET_ENGINE, 1);
-      this.updateUI();
-      this.notifyChanges();
+    // Try to add the part using the new callback
+    if (this.onAddRocketPartCallback) {
+      const success = await this.onAddRocketPartCallback(this.currentLaunchPad, sourceSlot.itemType);
+      if (success) {
+        this.inventory.removeItem(sourceSlot.itemType, 1);
+        this.updateUI();
+        this.notifyChanges();
+      }
+    } else if (sourceSlot.itemType === ItemType.ROCKET_ENGINE && this.onAddRocketEngineCallback) {
+      // Legacy fallback for rocket engine
+      if (this.onAddRocketEngineCallback(this.currentLaunchPad)) {
+        this.inventory.removeItem(ItemType.ROCKET_ENGINE, 1);
+        this.updateUI();
+        this.notifyChanges();
+      }
     }
   }
 
   private handleEngineSlotClick(): void {
     if (!this.currentLaunchPad || !this.inventory) return;
 
-    // If engine is placed, clicking removes it
-    if (this.currentLaunchPad.hasRocketEngine) {
-      if (this.onRemoveRocketEngineCallback && this.onRemoveRocketEngineCallback(this.currentLaunchPad)) {
-        this.inventory.addItem(ItemType.ROCKET_ENGINE, 1);
-        this.updateUI();
-        this.notifyChanges();
+    // If there are rocket parts, clicking removes the top one
+    if (this.currentLaunchPad.rocketParts.length > 0) {
+      if (this.onRemoveRocketPartCallback) {
+        const removedPart = this.onRemoveRocketPartCallback(this.currentLaunchPad);
+        if (removedPart) {
+          this.inventory.addItem(removedPart.itemType, 1);
+          this.updateUI();
+          this.notifyChanges();
+        }
+      } else if (this.currentLaunchPad.hasRocketEngine && this.onRemoveRocketEngineCallback) {
+        // Legacy fallback
+        if (this.onRemoveRocketEngineCallback(this.currentLaunchPad)) {
+          this.inventory.addItem(ItemType.ROCKET_ENGINE, 1);
+          this.updateUI();
+          this.notifyChanges();
+        }
       }
     }
   }
@@ -340,39 +447,190 @@ export class LaunchPadUI {
   private handleRocketSlotClick(slotIndex: number): void {
     if (!this.currentLaunchPad || !this.inventory) return;
 
-    const maxRocketHeight = this.currentLaunchPad.segmentCount;
-    const currentRocketHeight = this.currentLaunchPad.rocketBlocks;
+    // Check if there's a rocket part at this slot index
+    const partAtSlot = this.currentLaunchPad.rocketParts.find(p => p.heightIndex === slotIndex);
 
-    // Can only place/remove rocket blocks up to segment height
-    if (slotIndex >= maxRocketHeight) return;
+    if (partAtSlot) {
+      // Clicking on existing rocket part - remove it if it's the top one
+      const topPart = this.currentLaunchPad.rocketParts[this.currentLaunchPad.rocketParts.length - 1];
+      if (topPart && topPart.heightIndex === slotIndex) {
+        if (this.onRemoveRocketPartCallback) {
+          const removedPart = this.onRemoveRocketPartCallback(this.currentLaunchPad);
+          if (removedPart) {
+            this.inventory.addItem(removedPart.itemType, 1);
+            this.updateUI();
+            this.notifyChanges();
+          }
+        }
+      }
+    }
+    // For empty slots, we now use drag-drop instead of click to add
+  }
 
-    if (slotIndex < currentRocketHeight) {
-      // Clicking on existing rocket block - remove if it's the top
-      if (slotIndex === currentRocketHeight - 1) {
-        this.currentLaunchPad.rocketBlocks--;
-        // Return rocket block to inventory (we'll need a ROCKET_BLOCK item type later)
-        // For now, just decrement
+  private handleRocketSlotDragOver(e: DragEvent, slotIndex: number): void {
+    if (!this.currentLaunchPad || !this.inventory) return;
+
+    // Need at least 1 segment to place parts
+    if (this.currentLaunchPad.segmentCount < 1) return;
+
+    // Check if this slot is the next valid slot for rocket parts
+    const currentPartCount = this.currentLaunchPad.rocketParts.length;
+    const nextSlotIndex = currentPartCount; // Parts stack from 0 upward
+
+    // Can only place at the next available slot index
+    if (slotIndex !== nextSlotIndex) return;
+
+    // Can't place above tower height
+    if (slotIndex >= this.currentLaunchPad.segmentCount) return;
+
+    e.preventDefault();
+    if (e.dataTransfer) {
+      e.dataTransfer.dropEffect = 'move';
+    }
+    const target = e.currentTarget as HTMLElement;
+    target.classList.add('drag-over');
+  }
+
+  private async handleRocketSlotDrop(e: DragEvent, slotIndex: number): Promise<void> {
+    e.preventDefault();
+    const target = e.currentTarget as HTMLElement;
+    target.classList.remove('drag-over');
+
+    if (!this.currentLaunchPad || !this.inventory) return;
+
+    // Need at least 1 segment to place parts
+    if (this.currentLaunchPad.segmentCount < 1) return;
+
+    // Check if this slot is the next valid slot for rocket parts
+    const currentPartCount = this.currentLaunchPad.rocketParts.length;
+    const nextSlotIndex = currentPartCount;
+
+    if (slotIndex !== nextSlotIndex) return;
+    if (slotIndex >= this.currentLaunchPad.segmentCount) return;
+
+    // Get drag data - it should be an inventory slot index
+    const dragData = e.dataTransfer?.getData('text/plain');
+    if (!dragData) return;
+
+    // Parse the slot index from drag data
+    const sourceSlotIndex = parseInt(dragData, 10);
+    if (isNaN(sourceSlotIndex)) return;
+
+    // Check if the source slot has a rocket part
+    const sourceSlot = this.inventory.getSlot(sourceSlotIndex);
+    if (!sourceSlot || sourceSlot.quantity <= 0) return;
+
+    const itemData = ITEM_DATA[sourceSlot.itemType];
+    if (!itemData.rocketPart) {
+      console.log('Item is not a rocket part:', sourceSlot.itemType);
+      return;
+    }
+
+    // Try to add the part using the callback
+    if (this.onAddRocketPartCallback) {
+      const success = await this.onAddRocketPartCallback(this.currentLaunchPad, sourceSlot.itemType);
+      if (success) {
+        this.inventory.removeItem(sourceSlot.itemType, 1);
         this.updateUI();
         this.notifyChanges();
       }
-    } else if (slotIndex === currentRocketHeight) {
-      // Clicking on next empty slot - try to add rocket block
-      // For now, rocket blocks are free (will need ROCKET_BLOCK item later)
-      this.currentLaunchPad.rocketBlocks++;
-      this.updateUI();
-      this.notifyChanges();
     }
+  }
+
+  /**
+   * Validate the rocket configuration
+   * Returns validation result with any errors
+   */
+  private validateRocket(launchPad: PlacedLaunchPad): RocketValidationResult {
+    const errors: string[] = [];
+    const parts = launchPad.rocketParts;
+
+    if (parts.length === 0) {
+      errors.push('No rocket parts installed');
+      return { isValid: false, errors };
+    }
+
+    // Count parts by type
+    const engines: PlacedRocketPart[] = [];
+    const fuelTanks: PlacedRocketPart[] = [];
+    const commandModules: PlacedRocketPart[] = [];
+
+    for (const part of parts) {
+      const partData = ITEM_DATA[part.itemType].rocketPart;
+      if (!partData) continue;
+
+      switch (partData.partType) {
+        case RocketPartType.ENGINE:
+          engines.push(part);
+          break;
+        case RocketPartType.FUEL_TANK:
+          fuelTanks.push(part);
+          break;
+        case RocketPartType.CAPSULE:
+          commandModules.push(part);
+          break;
+      }
+    }
+
+    // Check basic requirements
+    if (engines.length === 0) {
+      errors.push('Missing: Engine required');
+    }
+
+    if (fuelTanks.length === 0) {
+      errors.push('Missing: Fuel Tank required');
+    }
+
+    if (commandModules.length === 0) {
+      errors.push('Missing: Command Module required');
+    }
+
+    // Check that engine is at the bottom of the stack (height index 0)
+    if (engines.length > 0) {
+      const bottomPart = parts[0];
+      const bottomPartData = ITEM_DATA[bottomPart.itemType].rocketPart;
+      if (!bottomPartData || bottomPartData.partType !== RocketPartType.ENGINE) {
+        errors.push('Engine must be at the bottom of the stack');
+      }
+    }
+
+    // Check engine-specific requirements
+    for (const engine of engines) {
+      const engineData = ITEM_DATA[engine.itemType].rocketPart;
+      if (engineData?.engineRequirements) {
+        const reqs = engineData.engineRequirements;
+
+        if (fuelTanks.length < reqs.minFuelTanks) {
+          errors.push(`${ITEM_DATA[engine.itemType].name} requires at least ${reqs.minFuelTanks} fuel tank(s)`);
+        }
+
+        if (reqs.requiresCommandModule && commandModules.length === 0) {
+          errors.push(`${ITEM_DATA[engine.itemType].name} requires a Command Module`);
+        }
+      }
+    }
+
+    return {
+      isValid: errors.length === 0,
+      errors
+    };
   }
 
   private handleBoardRocket(): void {
     if (!this.currentLaunchPad) return;
 
-    // Check if rocket is fully assembled
-    if (this.currentLaunchPad.segmentCount > 0 &&
-        this.currentLaunchPad.rocketBlocks === this.currentLaunchPad.segmentCount) {
-      // TODO: Implement rocket boarding/launch sequence
-      console.log('Boarding rocket! (Not yet implemented)');
+    // Validate the rocket configuration
+    const validation = this.validateRocket(this.currentLaunchPad);
+
+    if (!validation.isValid) {
+      // Show validation errors (they're already displayed in the UI)
+      console.log('Cannot board rocket:', validation.errors);
+      return;
     }
+
+    // Rocket is valid - proceed with boarding
+    console.log('Boarding rocket! (Launch sequence not yet implemented)');
+    // TODO: Implement rocket boarding/launch sequence
   }
 
   private addStyles(): void {
@@ -593,6 +851,157 @@ export class LaunchPadUI {
         color: #666;
         margin: 3px 0;
       }
+
+      .launchpad-validation {
+        width: 100%;
+        padding: 8px;
+        margin-bottom: 10px;
+        border-radius: 4px;
+        background: rgba(40, 40, 40, 0.8);
+        border: 1px solid #444;
+      }
+
+      .launchpad-validation.valid {
+        background: rgba(40, 80, 40, 0.8);
+        border-color: #4a8a4a;
+      }
+
+      .launchpad-validation.invalid {
+        background: rgba(80, 40, 40, 0.8);
+        border-color: #8a4a4a;
+      }
+
+      .launchpad-validation .validation-message {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        font-size: 11px;
+        font-family: 'Courier New', monospace;
+      }
+
+      .launchpad-validation .validation-message .valid {
+        color: #88ff88;
+        text-align: center;
+      }
+
+      .launchpad-validation .validation-message .error {
+        color: #ff8888;
+      }
+
+      .launchpad-validation .validation-message .hint {
+        color: #888;
+        text-align: center;
+        font-style: italic;
+      }
+
+      /* Launch pad completion diagram styles */
+      .launchpad-completion {
+        background: rgba(60, 40, 20, 0.4);
+        border: 2px solid #664422;
+        border-radius: 8px;
+        padding: 10px;
+        margin-bottom: 10px;
+        text-align: center;
+      }
+
+      .launchpad-completion.complete {
+        background: rgba(40, 80, 40, 0.4);
+        border-color: #448844;
+      }
+
+      .completion-status {
+        display: flex;
+        justify-content: center;
+        gap: 8px;
+        margin-bottom: 10px;
+      }
+
+      .completion-label {
+        font-size: 12px;
+        color: #888;
+        font-family: 'Courier New', monospace;
+      }
+
+      .completion-value {
+        font-size: 12px;
+        font-family: 'Courier New', monospace;
+        font-weight: bold;
+      }
+
+      .completion-value.incomplete {
+        color: #ff8866;
+      }
+
+      .completion-value.complete {
+        color: #88ff88;
+      }
+
+      .completion-diagram {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 2px;
+        margin-bottom: 8px;
+      }
+
+      .hex-row {
+        display: flex;
+        gap: 2px;
+      }
+
+      .hex-row.top-row,
+      .hex-row.bottom-row {
+        margin-left: 11px;
+      }
+
+      .hex-cell {
+        width: 20px;
+        height: 20px;
+        background: #333;
+        border: 2px solid #555;
+        border-radius: 4px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 10px;
+        font-family: 'Courier New', monospace;
+        color: #666;
+        transition: all 0.2s;
+      }
+
+      .hex-cell.placed {
+        background: #4a6a4a;
+        border-color: #6a8a6a;
+        color: #aaffaa;
+      }
+
+      .hex-cell.missing {
+        background: #6a4a4a;
+        border-color: #8a6a6a;
+        animation: pulse-missing 1s infinite;
+      }
+
+      @keyframes pulse-missing {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.6; }
+      }
+
+      .hex-cell.rocket-cell {
+        color: #ffaa66;
+        font-weight: bold;
+      }
+
+      .hex-cell.tower-cell {
+        color: #66aaff;
+        font-weight: bold;
+      }
+
+      .completion-hint {
+        font-size: 10px;
+        color: #888;
+        font-family: 'Courier New', monospace;
+        font-style: italic;
+      }
     `;
     document.head.appendChild(style);
   }
@@ -670,11 +1079,90 @@ export class LaunchPadUI {
     }
   }
 
+  /**
+   * Update the completion diagram showing which hexes have been placed
+   */
+  private updateCompletionDiagram(): void {
+    if (!this.launchPadSectionElement || !this.currentLaunchPad) return;
+
+    const completionSection = document.getElementById('launchpad-completion');
+    const completionValue = document.getElementById('completion-value');
+    const completionHint = document.getElementById('completion-hint');
+    const diagram = document.getElementById('completion-diagram');
+
+    if (!completionSection) return;
+
+    // Always show the completion section
+    completionSection.style.display = 'block';
+
+    const isComplete = this.currentLaunchPad.isComplete;
+    const placedCount = this.currentLaunchPad.placedTiles.size;
+    const totalCount = this.currentLaunchPad.allTileIndices.length;
+
+    // Update status text
+    if (completionValue) {
+      if (isComplete) {
+        completionValue.textContent = 'Complete';
+        completionValue.classList.remove('incomplete');
+        completionValue.classList.add('complete');
+      } else {
+        completionValue.textContent = `${placedCount}/${totalCount} hexes`;
+        completionValue.classList.add('incomplete');
+        completionValue.classList.remove('complete');
+      }
+    }
+
+    // Update completion section class
+    if (isComplete) {
+      completionSection.classList.add('complete');
+    } else {
+      completionSection.classList.remove('complete');
+    }
+
+    // Update hint text
+    if (completionHint) {
+      if (isComplete) {
+        completionHint.textContent = 'Platform ready for construction';
+      } else {
+        const remaining = totalCount - placedCount;
+        completionHint.textContent = `Place ${remaining} more launch pad block${remaining !== 1 ? 's' : ''}`;
+      }
+    }
+
+    // Update diagram cells
+    // The diagram positions map to allTileIndices:
+    // Position 0-1: top row (2 hexes)
+    // Position 2-4: middle row with rocket (3 hexes), pos 3 = rocket
+    // Position 5-7: middle row with tower (3 hexes), pos 6 = tower
+    // Position 8-9: bottom row (2 hexes)
+    if (diagram) {
+      const cells = diagram.querySelectorAll('.hex-cell');
+      cells.forEach((cell, posIndex) => {
+        // Map diagram position to tile index in allTileIndices
+        // The mapping depends on how allTileIndices is constructed
+        // For now, assume they match in order (this may need adjustment)
+        const tileIndex = this.currentLaunchPad!.allTileIndices[posIndex];
+
+        // Check if this tile has a block placed
+        const isPlaced = this.currentLaunchPad!.placedTiles.has(tileIndex);
+
+        cell.classList.remove('placed', 'missing');
+        if (isPlaced) {
+          cell.classList.add('placed');
+        } else {
+          cell.classList.add('missing');
+        }
+      });
+    }
+  }
+
   private updateUI(): void {
     if (!this.launchPadSectionElement || !this.currentLaunchPad) return;
 
     const segmentCount = this.currentLaunchPad.segmentCount;
-    const rocketCount = this.currentLaunchPad.rocketBlocks;
+
+    // Update completion status and diagram
+    this.updateCompletionDiagram();
 
     // Update status
     if (this.statusElement) {
@@ -711,61 +1199,108 @@ export class LaunchPadUI {
       }
     }
 
-    // Update rocket slots
+    // Update rocket slots based on rocketParts array
+    const rocketParts = this.currentLaunchPad.rocketParts;
+    const partCount = rocketParts.length;
+
     for (let i = 0; i < this.MAX_HEIGHT; i++) {
       const slot = this.rocketSlots[i];
       if (!slot) continue;
 
       const img = slot.querySelector('img') as HTMLImageElement;
 
-      if (i < rocketCount) {
-        // Filled rocket slot
+      // Check if there's a rocket part at this height index
+      const partAtSlot = rocketParts.find(p => p.heightIndex === i);
+
+      if (partAtSlot) {
+        // Filled rocket slot with a part
         slot.classList.add('filled');
         slot.classList.remove('disabled');
         if (img) {
-          // TODO: Use proper rocket block texture
-          img.src = getAssetPath('/textures/technology/launch_pad_segment.png');
+          const partItemData = ITEM_DATA[partAtSlot.itemType];
+          img.src = getAssetPath(partItemData.texture);
           img.style.display = 'block';
         }
-      } else if (i < segmentCount && i === rocketCount) {
-        // Available rocket slot (within segment height)
+      } else if (i < segmentCount && i === partCount) {
+        // Available rocket slot (within segment height, next slot to fill)
         slot.classList.remove('filled', 'disabled');
         if (img) img.style.display = 'none';
       } else {
-        // Unavailable (above segment height or above current rocket + 1)
+        // Unavailable (above segment height or not the next slot)
         slot.classList.remove('filled');
         slot.classList.add('disabled');
         if (img) img.style.display = 'none';
       }
     }
 
-    // Update engine slot
+    // Update engine/rocket parts slot
     if (this.engineSlot) {
       const img = this.engineSlot.querySelector('img') as HTMLImageElement;
-      if (this.currentLaunchPad.hasRocketEngine) {
+      const rocketParts = this.currentLaunchPad.rocketParts;
+
+      if (rocketParts.length > 0) {
+        // Show the top rocket part
+        const topPart = rocketParts[rocketParts.length - 1];
+        const partItemData = ITEM_DATA[topPart.itemType];
         this.engineSlot.classList.add('filled');
         this.engineSlot.classList.remove('disabled');
         if (img) {
-          img.src = getAssetPath(ITEM_DATA[ItemType.ROCKET_ENGINE].texture);
+          img.src = getAssetPath(partItemData.texture);
           img.style.display = 'block';
         }
+        // Update tooltip/label to show parts count
+        const label = this.launchPadSectionElement?.querySelector('.engine-label');
+        if (label) {
+          label.textContent = `Parts: ${rocketParts.length}`;
+        }
       } else if (segmentCount > 0) {
-        // Can place engine (has at least 1 segment)
+        // Can place parts (has at least 1 segment)
         this.engineSlot.classList.remove('filled', 'disabled');
         if (img) img.style.display = 'none';
+        const label = this.launchPadSectionElement?.querySelector('.engine-label');
+        if (label) {
+          label.textContent = 'Parts:';
+        }
       } else {
-        // Can't place engine yet (no segments)
+        // Can't place parts yet (no segments)
         this.engineSlot.classList.remove('filled');
         this.engineSlot.classList.add('disabled');
         if (img) img.style.display = 'none';
+        const label = this.launchPadSectionElement?.querySelector('.engine-label');
+        if (label) {
+          label.textContent = 'Parts:';
+        }
       }
     }
 
-    // Update board button
+    // Validate rocket and update UI
+    const validation = this.validateRocket(this.currentLaunchPad);
+
+    // Update validation message
+    if (this.validationMessageElement) {
+      const messageEl = this.validationMessageElement.querySelector('.validation-message');
+      if (messageEl) {
+        if (validation.isValid) {
+          messageEl.innerHTML = '<span class="valid">Rocket ready for launch!</span>';
+          this.validationMessageElement.classList.add('valid');
+          this.validationMessageElement.classList.remove('invalid');
+        } else if (partCount > 0) {
+          // Only show errors if they have at least one part
+          messageEl.innerHTML = validation.errors.map(e => `<span class="error">${e}</span>`).join('');
+          this.validationMessageElement.classList.add('invalid');
+          this.validationMessageElement.classList.remove('valid');
+        } else {
+          // No parts yet, show hint
+          messageEl.innerHTML = '<span class="hint">Add rocket parts to build your rocket</span>';
+          this.validationMessageElement.classList.remove('valid', 'invalid');
+        }
+      }
+    }
+
+    // Update board button - only enable when rocket is valid
     if (this.boardRocketBtn) {
-      const isReady = segmentCount > 0 && rocketCount === segmentCount;
-      this.boardRocketBtn.disabled = !isReady;
-      if (isReady) {
+      this.boardRocketBtn.disabled = !validation.isValid;
+      if (validation.isValid) {
         this.boardRocketBtn.classList.add('ready');
       } else {
         this.boardRocketBtn.classList.remove('ready');

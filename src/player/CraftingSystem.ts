@@ -245,6 +245,9 @@ export class CraftingSystem {
   // Callback for handling storage drops
   private onStorageDropCallback: ((targetSlotIndex: number, sourceSlotType: string) => boolean) | null = null;
 
+  // Callback for handling 3D printer drops
+  private onPrinter3DDropCallback: ((targetSlotIndex: number, sourceSlotIndex: number) => boolean) | null = null;
+
   constructor(inventory: Inventory) {
     this.inventory = inventory;
     this.setupUI();
@@ -562,6 +565,21 @@ export class CraftingSystem {
       return;
     }
 
+    // Check if this is a drop from a 3D printer output slot
+    if (dragData && dragData.startsWith('printer3d:output:')) {
+      const sourceSlotIndex = parseInt(dragData.substring('printer3d:output:'.length));
+      if (!isNaN(sourceSlotIndex) && this.onPrinter3DDropCallback) {
+        const success = this.onPrinter3DDropCallback(targetSlotIndex, sourceSlotIndex);
+        if (success) {
+          this.updateInventorySlots();
+          if (this.onUpdateHotbarCallback) {
+            this.onUpdateHotbarCallback();
+          }
+        }
+      }
+      return;
+    }
+
     // Regular inventory to inventory merge/swap
     const sourceSlotIndex = this.draggedSlotIndex;
     if (sourceSlotIndex === null || sourceSlotIndex === targetSlotIndex) {
@@ -680,6 +698,10 @@ export class CraftingSystem {
 
   public setOnStorageDropCallback(callback: (targetSlotIndex: number, sourceSlotType: string) => boolean): void {
     this.onStorageDropCallback = callback;
+  }
+
+  public setOnPrinter3DDropCallback(callback: (targetSlotIndex: number, sourceSlotIndex: number) => boolean): void {
+    this.onPrinter3DDropCallback = callback;
   }
 
   // Public method to update inventory slots (called by FurnaceUI)
