@@ -10,6 +10,23 @@ export interface PrintJob {
   progress: number;  // 0 to 1
   totalTime: number; // in seconds
   startTime: number; // timestamp
+  outputQuantity: number; // how many items this job produces
+  ingredients: Map<ItemType, number>; // ingredients used for refund on cancel
+}
+
+// Queued item waiting to be printed
+export interface QueuedPrintJob {
+  itemType: ItemType;
+  totalTime: number;
+  outputQuantity: number;
+  // Store the ingredients used so we can refund on cancel
+  ingredients: Map<ItemType, number>;
+}
+
+// Output inventory slot
+export interface PrinterOutputSlot {
+  itemType: ItemType | null;
+  quantity: number;
 }
 
 export interface PlacedPrinter3D {
@@ -19,6 +36,10 @@ export interface PlacedPrinter3D {
   rotation: number;
   isPowered: boolean;
   currentJob: PrintJob | null;
+  // Print queue (items waiting to be printed)
+  printQueue: QueuedPrintJob[];
+  // Output inventory (2x3 = 6 slots)
+  outputInventory: PrinterOutputSlot[];
 }
 
 export class Printer3DManager {
@@ -222,6 +243,8 @@ export class Printer3DManager {
       rotation: facingAngle,
       isPowered: false,
       currentJob: null,
+      printQueue: [],
+      outputInventory: this.createEmptyOutputInventory(),
     };
 
     this.printers.push(printer);
@@ -230,13 +253,24 @@ export class Printer3DManager {
     return printer;
   }
 
+  // Create empty 2x3 output inventory
+  private createEmptyOutputInventory(): PrinterOutputSlot[] {
+    const slots: PrinterOutputSlot[] = [];
+    for (let i = 0; i < 6; i++) {
+      slots.push({ itemType: null, quantity: 0 });
+    }
+    return slots;
+  }
+
   public async restorePrinter3D(
     savedPosition: THREE.Vector3,
     planetCenter: THREE.Vector3,
     tileIndex: number,
     rotation: number,
     isPowered: boolean = false,
-    currentJob: PrintJob | null = null
+    currentJob: PrintJob | null = null,
+    printQueue: QueuedPrintJob[] = [],
+    outputInventory: PrinterOutputSlot[] | null = null
   ): Promise<PlacedPrinter3D | null> {
     if (!this.printerGeometry || !this.printerMaterial) {
       await this.initGeometryAndMaterials();
@@ -273,6 +307,8 @@ export class Printer3DManager {
       rotation,
       isPowered,
       currentJob,
+      printQueue: printQueue,
+      outputInventory: outputInventory || this.createEmptyOutputInventory(),
     };
 
     this.printers.push(printer);
@@ -321,29 +357,136 @@ export class Printer3DManager {
     printer.isPowered = isPowered;
   }
 
-  public startPrintJob(printer: PlacedPrinter3D, itemType: ItemType, totalTime: number): boolean {
-    if (printer.currentJob !== null) {
-      return false; // Already printing
-    }
-    if (!printer.isPowered) {
-      return false; // No power
-    }
-    printer.currentJob = {
+  // Add a job to the print queue
+  public queuePrintJob(
+    printer: PlacedPrinter3D,
+    itemType: ItemType,
+    totalTime: number,
+    outputQuantity: number,
+    ingredients: Map<ItemType, number>
+  ): boolean {
+    printer.printQueue.push({
       itemType,
-      progress: 0,
       totalTime,
-      startTime: Date.now()
-    };
+      outputQuantity,
+      ingredients,
+    });
     return true;
+  }
+
+  // Cancel a queued job and return its ingredients
+  public cancelQueuedJob(printer: PlacedPrinter3D, queueIndex: number): QueuedPrintJob | null {
+    if (queueIndex < 0 || queueIndex >= printer.printQueue.length) {
+      return null;
+    }
+    const job = printer.printQueue.splice(queueIndex, 1)[0];
+    return job;
+  }
+
+  // Try to add completed item to output inventory
+  private addToOutputInventory(printer: PlacedPrinter3D, itemType: ItemType, quantity: number): boolean {
+    // First try to stack with existing items of same type
+    for (const slot of printer.outputInventory) {
+      if (slot.itemType === itemType && slot.quantity < 64) {
+        const canAdd = Math.min(quantity, 64 - slot.quantity);
+        slot.quantity += canAdd;
+        quantity -= canAdd;
+        if (quantity <= 0) return true;
+      }
+    }
+
+    // Then try empty slots
+    for (const slot of printer.outputInventory) {
+      if (slot.itemType === null) {
+        const canAdd = Math.min(quantity, 64);
+        slot.itemType = itemType;
+        slot.quantity = canAdd;
+        quantity -= canAdd;
+        if (quantity <= 0) return true;
+      }
+    }
+
+    // Output inventory is full
+    return quantity <= 0;
+  }
+
+  // Check if output inventory has space for an item
+  public hasOutputSpace(printer: PlacedPrinter3D, itemType: ItemType, quantity: number): boolean {
+    let remaining = quantity;
+
+    // Check existing stacks
+    for (const slot of printer.outputInventory) {
+      if (slot.itemType === itemType && slot.quantity < 64) {
+        remaining -= (64 - slot.quantity);
+        if (remaining <= 0) return true;
+      }
+    }
+
+    // Check empty slots
+    for (const slot of printer.outputInventory) {
+      if (slot.itemType === null) {
+        remaining -= 64;
+        if (remaining <= 0) return true;
+      }
+    }
+
+    return remaining <= 0;
+  }
+
+  // Take item from output inventory
+  public takeFromOutput(printer: PlacedPrinter3D, slotIndex: number, quantity: number): { itemType: ItemType; quantity: number } | null {
+    if (slotIndex < 0 || slotIndex >= printer.outputInventory.length) {
+      return null;
+    }
+
+    const slot = printer.outputInventory[slotIndex];
+    if (slot.itemType === null || slot.quantity <= 0) {
+      return null;
+    }
+
+    const takeAmount = Math.min(quantity, slot.quantity);
+    const result = { itemType: slot.itemType, quantity: takeAmount };
+
+    slot.quantity -= takeAmount;
+    if (slot.quantity <= 0) {
+      slot.itemType = null;
+      slot.quantity = 0;
+    }
+
+    return result;
   }
 
   public updatePrintJobs(deltaTime: number): void {
     for (const printer of this.printers) {
-      if (printer.currentJob && printer.isPowered) {
+      // If no current job but queue has items, start next job
+      if (!printer.currentJob && printer.printQueue.length > 0) {
+        const nextJob = printer.printQueue[0];
+        // Check if output has space before starting
+        if (this.hasOutputSpace(printer, nextJob.itemType, nextJob.outputQuantity)) {
+          printer.printQueue.shift(); // Remove from queue
+          printer.currentJob = {
+            itemType: nextJob.itemType,
+            progress: 0,
+            totalTime: nextJob.totalTime,
+            startTime: Date.now(),
+            outputQuantity: nextJob.outputQuantity,
+            ingredients: nextJob.ingredients,
+          };
+        }
+      }
+
+      // Process current job (no power requirement anymore)
+      if (printer.currentJob) {
         printer.currentJob.progress += deltaTime / printer.currentJob.totalTime;
         if (printer.currentJob.progress >= 1) {
           printer.currentJob.progress = 1;
-          // Job completed - UI will handle giving item to player
+          // Job completed - add to output inventory
+          this.addToOutputInventory(
+            printer,
+            printer.currentJob.itemType,
+            printer.currentJob.outputQuantity
+          );
+          printer.currentJob = null;
         }
       }
     }
@@ -362,6 +505,30 @@ export class Printer3DManager {
       return itemType;
     }
     return null;
+  }
+
+  // Update torch lighting for all printers based on nearby torch positions
+  public updateTorchLighting(torchPositions: THREE.Vector3[], torchRange: number, torchIntensity: number): void {
+    for (const printer of this.printers) {
+      let totalLight = 0;
+
+      for (const torchPos of torchPositions) {
+        const distance = printer.position.distanceTo(torchPos);
+        if (distance < torchRange) {
+          // Inverse square falloff with decay (matching terrain)
+          const decay = 2; // Same as TorchConfig.LIGHT_DECAY
+          const attenuation = 1 / (1 + decay * distance * distance / (torchRange * torchRange));
+          totalLight += attenuation * torchIntensity;
+        }
+      }
+
+      // Clamp and apply to material uniform
+      totalLight = Math.min(1.5, totalLight);
+      const material = printer.mesh.material as THREE.ShaderMaterial;
+      if (material.uniforms && material.uniforms.torchLight) {
+        material.uniforms.torchLight.value = totalLight;
+      }
+    }
   }
 
   public dispose(): void {

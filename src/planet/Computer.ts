@@ -309,6 +309,30 @@ export class ComputerManager {
     computer.isPowered = isPowered;
   }
 
+  // Update torch lighting for all computers based on nearby torch positions
+  public updateTorchLighting(torchPositions: THREE.Vector3[], torchRange: number, torchIntensity: number): void {
+    for (const computer of this.computers) {
+      let totalLight = 0;
+
+      for (const torchPos of torchPositions) {
+        const distance = computer.position.distanceTo(torchPos);
+        if (distance < torchRange) {
+          // Inverse square falloff with decay (matching terrain)
+          const decay = 2; // Same as TorchConfig.LIGHT_DECAY
+          const attenuation = 1 / (1 + decay * distance * distance / (torchRange * torchRange));
+          totalLight += attenuation * torchIntensity;
+        }
+      }
+
+      // Clamp and apply to material uniform
+      totalLight = Math.min(1.5, totalLight);
+      const material = computer.mesh.material as THREE.ShaderMaterial;
+      if (material.uniforms && material.uniforms.torchLight) {
+        material.uniforms.torchLight.value = totalLight;
+      }
+    }
+  }
+
   public dispose(): void {
     for (const computer of this.computers) {
       this.scene.remove(computer.mesh);

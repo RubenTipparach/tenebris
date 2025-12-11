@@ -56,6 +56,9 @@ export enum ItemType {
   // Advanced technology blocks
   COMPUTER = 41,
   PRINTER_3D = 42,
+  // Launch pad components
+  LAUNCH_PAD_BLOCK = 43,
+  LAUNCH_PAD_SEGMENT = 44,
 }
 
 // Item metadata
@@ -125,6 +128,9 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
   // Advanced technology blocks
   [ItemType.COMPUTER]: { name: 'Computer', stackSize: 8, texture: '/textures/technology/computer_face.png', mineTime: 2.5 },
   [ItemType.PRINTER_3D]: { name: '3D Printer', stackSize: 8, texture: '/textures/technology/3d_printer_face.png', mineTime: 2.5 },
+  // Launch pad components
+  [ItemType.LAUNCH_PAD_BLOCK]: { name: 'Launch Pad Block', stackSize: 8, texture: '/textures/technology/launch_pad_face.png', mineTime: 2.5 },
+  [ItemType.LAUNCH_PAD_SEGMENT]: { name: 'Launch Pad Segment', stackSize: 8, texture: '/textures/technology/launch_tower_face.png', mineTime: 3.0 },
 };
 
 // Inventory slot

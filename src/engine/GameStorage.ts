@@ -117,12 +117,33 @@ export interface SavedPrinter3D {
     totalTime: number;
     startTime: number;
     outputQuantity?: number;
+    ingredients?: Record<string, number>;
   } | null;
+  printQueue?: {
+    itemType: number;
+    totalTime: number;
+    outputQuantity: number;
+    ingredients: Record<string, number>;
+  }[];
+  outputInventory?: {
+    itemType: number | null;
+    quantity: number;
+  }[];
 }
 
 // Removed tree data (trees that have been chopped down)
 export interface SavedRemovedTree {
   tileIndex: number;
+}
+
+// Launch pad data
+export interface SavedLaunchPad {
+  centerTileIndex: number;
+  surroundingTileIndices: number[];
+  position: { x: number; y: number; z: number };
+  rotation: number;
+  segmentCount: number;
+  rocketBlocks: number;
 }
 
 // Player-specific save data
@@ -154,6 +175,7 @@ export interface PlanetSaveData {
   copperPipes: SavedCopperPipe[];
   cables: SavedCable[];
   removedTrees: SavedRemovedTree[];
+  launchPads: SavedLaunchPad[];
 }
 
 // Legacy combined format (for migration)
@@ -199,6 +221,7 @@ export class GameStorage {
     cables: SavedCable[];
     hydroGenerators: SavedHydroGenerator[];
     removedTrees: SavedRemovedTree[];
+    launchPads: SavedLaunchPad[];
   }> = new Map();
 
   private autoSaveInterval: number | null = null;
@@ -206,8 +229,8 @@ export class GameStorage {
 
   constructor() {
     // Initialize planet data for earth and moon
-    this.planetData.set('earth', { tileChanges: new Map(), torches: [], furnaces: [], electricFurnaces: [], electronicsWorkbenches: [], computers: [], printers3D: [], storageChests: [], garbagePiles: [], steamEngines: [], hydroGenerators: [], copperPipes: [], cables: [], removedTrees: [] });
-    this.planetData.set('moon', { tileChanges: new Map(), torches: [], furnaces: [], electricFurnaces: [], electronicsWorkbenches: [], computers: [], printers3D: [], storageChests: [], garbagePiles: [], steamEngines: [], hydroGenerators: [], copperPipes: [], cables: [], removedTrees: [] });
+    this.planetData.set('earth', { tileChanges: new Map(), torches: [], furnaces: [], electricFurnaces: [], electronicsWorkbenches: [], computers: [], printers3D: [], storageChests: [], garbagePiles: [], steamEngines: [], hydroGenerators: [], copperPipes: [], cables: [], removedTrees: [], launchPads: [] });
+    this.planetData.set('moon', { tileChanges: new Map(), torches: [], furnaces: [], electricFurnaces: [], electronicsWorkbenches: [], computers: [], printers3D: [], storageChests: [], garbagePiles: [], steamEngines: [], hydroGenerators: [], copperPipes: [], cables: [], removedTrees: [], launchPads: [] });
   }
 
   // Set callback to get current player data
@@ -435,6 +458,36 @@ export class GameStorage {
       }
     }
     return allPrinters;
+  }
+
+  // Save launch pad placement
+  public saveLaunchPad(planetId: string, centerTileIndex: number, launchPadData: Omit<SavedLaunchPad, 'centerTileIndex'>): void {
+    const planet = this.planetData.get(planetId);
+    if (!planet) return;
+
+    planet.launchPads = planet.launchPads.filter(p => p.centerTileIndex !== centerTileIndex);
+    planet.launchPads.push({ centerTileIndex, ...launchPadData });
+    this.persistPlanetToStorage(planetId);
+  }
+
+  // Remove a launch pad from save
+  public removeLaunchPad(planetId: string, centerTileIndex: number): void {
+    const planet = this.planetData.get(planetId);
+    if (!planet) return;
+
+    planet.launchPads = planet.launchPads.filter(p => p.centerTileIndex !== centerTileIndex);
+    this.persistPlanetToStorage(planetId);
+  }
+
+  // Get all saved launch pads
+  public getLaunchPads(): Array<SavedLaunchPad & { planetId: string }> {
+    const allLaunchPads: Array<SavedLaunchPad & { planetId: string }> = [];
+    for (const [planetId, planet] of this.planetData) {
+      for (const launchPad of planet.launchPads) {
+        allLaunchPads.push({ ...launchPad, planetId });
+      }
+    }
+    return allLaunchPads;
   }
 
   // Save storage chest placement
@@ -749,6 +802,7 @@ export class GameStorage {
       planet.copperPipes = data.copperPipes || [];
       planet.cables = data.cables || [];
       planet.removedTrees = data.removedTrees || [];
+      planet.launchPads = data.launchPads || [];
     } catch (error) {
       console.error(`Failed to load ${planetId} data:`, error);
     }
@@ -881,6 +935,7 @@ export class GameStorage {
       planet.copperPipes = [];
       planet.cables = [];
       planet.removedTrees = [];
+      planet.launchPads = [];
     }
 
     // Clear all storage keys
@@ -930,7 +985,8 @@ export class GameStorage {
         hydroGenerators: planet.hydroGenerators,
         copperPipes: planet.copperPipes,
         cables: planet.cables,
-        removedTrees: planet.removedTrees
+        removedTrees: planet.removedTrees,
+        launchPads: planet.launchPads
       };
 
       const key = planetId === 'earth' ? STORAGE_KEY_EARTH : STORAGE_KEY_MOON;

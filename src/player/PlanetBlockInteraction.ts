@@ -16,6 +16,7 @@ import { ElectricFurnaceManager, PlacedElectricFurnace } from '../planet/Electri
 import { ElectronicsWorkbenchManager, PlacedElectronicsWorkbench } from '../planet/ElectronicsWorkbench';
 import { ComputerManager, PlacedComputer } from '../planet/Computer';
 import { Printer3DManager, PlacedPrinter3D } from '../planet/Printer3D';
+import { LaunchPadManager, PlacedLaunchPad } from '../planet/LaunchPad';
 import { CraftingSystem } from './CraftingSystem';
 import { HydroGeneratorUI } from './HydroGeneratorUI';
 import { SteamEngineUI } from './SteamEngineUI';
@@ -25,6 +26,7 @@ import { ElectricFurnaceUI } from './ElectricFurnaceUI';
 import { ElectronicsWorkbenchUI } from './ElectronicsWorkbenchUI';
 import { ComputerUI } from './ComputerUI';
 import { Printer3DUI } from './Printer3DUI';
+import { LaunchPadUI } from './LaunchPadUI';
 import { StorageUI } from './StorageUI';
 import { getAssetPath } from '../utils/assetPath';
 import { gameStorage } from '../engine/GameStorage';
@@ -156,6 +158,11 @@ export class PlanetBlockInteraction {
   private printer3DManager: Printer3DManager;
   private printer3DUI: Printer3DUI;
   private miningPrinter3DTarget: { printer: PlacedPrinter3D } | null = null;
+
+  // Launch pad system
+  private launchPadManager: LaunchPadManager;
+  private launchPadUI: LaunchPadUI;
+  private miningLaunchPadTarget: { launchPad: PlacedLaunchPad } | null = null;
 
   private rightClickCooldown: number = 0;
   private readonly CLICK_COOLDOWN = 0.25;
@@ -347,32 +354,53 @@ export class PlanetBlockInteraction {
       this.updateHotbarUI();
       this.saveInventory();
     });
+    this.printer3DUI.setOnRefundItems((ingredients) => {
+      // Refund items when canceling a queued print job
+      for (const [itemType, quantity] of ingredients) {
+        this.inventory.addItem(itemType, quantity);
+      }
+      this.updateHotbarUI();
+      this.saveInventory();
+    });
+    this.printer3DUI.setOnSaveCallback(() => {
+      this.saveInventory();
+      this.saveAllPrinter3DStates();
+    });
     this.printer3DUI.setOnCloseCallback(() => {
       // 3D Printer close callback
     });
     this.printer3DUI.setOnOpenInventoryCallback(() => {
       this.craftingSystem.open();
     });
-    this.printer3DUI.setIsPoweredCallback((tileIndex) => {
-      // Printer gets power through connected computer's power
-      return this.cableNodeManager.isPrinterConnectedToPoweredComputer(
-        tileIndex,
-        (computerTileIndex) => {
-          // Computer is powered if connected to a running steam engine
-          return this.cableNodeManager.isElectricFurnaceConnectedToRunningSteamEngine(
-            computerTileIndex,
-            (steamTileIndex) => {
-              const engine = this.steamEngineManager.getSteamEngineAtTile(steamTileIndex);
-              return engine?.isRunning ?? false;
-            }
-          );
-        }
-      );
+
+    // Initialize launch pad system
+    this.launchPadManager = new LaunchPadManager(scene, planetCenter, sunDirection);
+    this.launchPadUI = new LaunchPadUI(this.inventory);
+    this.launchPadUI.setOnCloseCallback(() => {
+      // Launch pad close callback
     });
-    this.printer3DUI.setIsConnectedToComputerCallback((tileIndex) => {
-      // Check if printer is connected to any computer
-      const connectedComputers = this.cableNodeManager.getConnectedComputers(tileIndex);
-      return connectedComputers.length > 0;
+    this.launchPadUI.setOnOpenInventoryCallback(() => {
+      this.craftingSystem.open();
+    });
+    this.launchPadUI.setOnUpdateHotbarCallback(() => {
+      this.updateHotbarUI();
+    });
+    this.launchPadUI.setOnUpdateInventoryCallback(() => {
+      this.craftingSystem.updateInventorySlotsPublic();
+    });
+    this.launchPadUI.setOnAddSegmentCallback((pad) => {
+      const result = this.launchPadManager.addSegment(pad);
+      if (result) {
+        this.saveLaunchPadStates();
+      }
+      return result;
+    });
+    this.launchPadUI.setOnRemoveSegmentCallback((pad) => {
+      const result = this.launchPadManager.removeSegment(pad);
+      if (result) {
+        this.saveLaunchPadStates();
+      }
+      return result;
     });
 
     // Set up cable node machine callbacks (now that all managers are initialized)
@@ -430,6 +458,7 @@ export class PlanetBlockInteraction {
       this.copperPipeUI.close();
       this.computerUI.close();
       this.printer3DUI.close();
+      this.launchPadUI.close();
       // Note: We don't request pointer lock here because:
       // 1. If closed via ESC, browser security prevents requestPointerLock during ESC handling
       // 2. The pause menu will show and user can click PLAY to resume
@@ -940,6 +969,12 @@ export class PlanetBlockInteraction {
     // Update electric furnace smelting progress
     this.electricFurnaceManager.update(deltaTime);
 
+    // Update 3D printer print jobs and refresh UI progress
+    this.printer3DManager.updatePrintJobs(deltaTime);
+    if (this.printer3DUI.isMenuOpen()) {
+      this.printer3DUI.updateProgress();
+    }
+
     // Update steam engine particles and sync running state from UI
     this.updateSteamEngineParticles(deltaTime);
 
@@ -973,6 +1008,9 @@ export class PlanetBlockInteraction {
       this.hydroGeneratorManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
       this.copperPipeManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
       this.cableNodeManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
+      this.computerManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
+      this.printer3DManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
+      this.launchPadManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
     }
 
     // Don't process block interaction when inventory menu is open
@@ -1019,6 +1057,8 @@ export class PlanetBlockInteraction {
     const computerMeshes = this.computerManager.getComputerMeshes();
     // Get 3D printer meshes for picking
     const printer3DMeshes = this.printer3DManager.getPrinter3DMeshes();
+    // Get launch pad meshes for picking
+    const launchPadMeshes = this.launchPadManager.getMeshes();
 
     const treeIntersects = this.raycaster.intersectObjects(treeMeshes, false);
     const torchIntersects = this.raycaster.intersectObjects(torchMeshes, false);
@@ -1033,6 +1073,7 @@ export class PlanetBlockInteraction {
     const electronicsWorkbenchIntersects = this.raycaster.intersectObjects(electronicsWorkbenchMeshes, false);
     const computerIntersects = this.raycaster.intersectObjects(computerMeshes, false);
     const printer3DIntersects = this.raycaster.intersectObjects(printer3DMeshes, false);
+    const launchPadIntersects = this.raycaster.intersectObjects(launchPadMeshes, true);
 
     // Raycast against all planets and find the closest hit
     let closestBlockHit: ReturnType<Planet['raycast']> = null;
@@ -1066,6 +1107,7 @@ export class PlanetBlockInteraction {
     let hitElectronicsWorkbench = false;
     let hitComputer = false;
     let hitPrinter3D = false;
+    let hitLaunchPad = false;
     let treeHit: THREE.Intersection | null = null;
     let torchHit: THREE.Intersection | null = null;
     let furnaceHit: THREE.Intersection | null = null;
@@ -1079,6 +1121,7 @@ export class PlanetBlockInteraction {
     let electronicsWorkbenchHit: THREE.Intersection | null = null;
     let computerHit: THREE.Intersection | null = null;
     let printer3DHit: THREE.Intersection | null = null;
+    let launchPadHit: THREE.Intersection | null = null;
 
     // Find the closest hit among all types
     const treeDistance = treeIntersects.length > 0 ? treeIntersects[0].distance : Infinity;
@@ -1094,7 +1137,8 @@ export class PlanetBlockInteraction {
     const electronicsWorkbenchDistance = electronicsWorkbenchIntersects.length > 0 ? electronicsWorkbenchIntersects[0].distance : Infinity;
     const computerDistance = computerIntersects.length > 0 ? computerIntersects[0].distance : Infinity;
     const printer3DDistance = printer3DIntersects.length > 0 ? printer3DIntersects[0].distance : Infinity;
-    const closestObjectDistance = Math.min(treeDistance, torchDistance, furnaceDistance, storageChestDistance, garbagePileDistance, steamEngineDistance, hydroGeneratorDistance, copperPipeDistance, cableDistance, electricFurnaceDistance, electronicsWorkbenchDistance, computerDistance, printer3DDistance);
+    const launchPadDistance = launchPadIntersects.length > 0 ? launchPadIntersects[0].distance : Infinity;
+    const closestObjectDistance = Math.min(treeDistance, torchDistance, furnaceDistance, storageChestDistance, garbagePileDistance, steamEngineDistance, hydroGeneratorDistance, copperPipeDistance, cableDistance, electricFurnaceDistance, electronicsWorkbenchDistance, computerDistance, printer3DDistance, launchPadDistance);
 
     if (closestBlockHit && closestBlockDistance < closestObjectDistance) {
       hitBlock = true;
@@ -1113,6 +1157,9 @@ export class PlanetBlockInteraction {
     } else if (printer3DDistance <= closestObjectDistance && printer3DDistance < Infinity) {
       hitPrinter3D = true;
       printer3DHit = printer3DIntersects[0];
+    } else if (launchPadDistance <= closestObjectDistance && launchPadDistance < Infinity) {
+      hitLaunchPad = true;
+      launchPadHit = launchPadIntersects[0];
     } else if (copperPipeDistance <= closestObjectDistance && copperPipeDistance < Infinity) {
       hitCopperPipe = true;
       copperPipeHit = copperPipeIntersects[0];
@@ -1242,19 +1289,39 @@ export class PlanetBlockInteraction {
 
       // Handle 3D printer interaction (right click to open UI, left click to mine)
       if (rightClick && this.rightClickCooldown === 0 && printer) {
-        // Check if printer is powered via cable connection
-        const isPowered = this.cableNodeManager.isElectricFurnaceConnectedToRunningSteamEngine(
-          printer.tileIndex,
-          (steamTileIndex) => {
-            const engine = this.steamEngineManager.getSteamEngineAtTile(steamTileIndex);
-            return engine?.isRunning ?? false;
-          }
-        );
-        printer.isPowered = isPowered;
         this.printer3DUI.open(printer);
         this.rightClickCooldown = this.CLICK_COOLDOWN;
       } else if (leftClick && printer) {
         this.handlePrinter3DMining(deltaTime, printer);
+      } else {
+        this.resetMining();
+      }
+    } else if (hitLaunchPad && launchPadHit) {
+      // No wireframe for launch pads
+      if (this.blockWireframe) {
+        this.blockWireframe.visible = false;
+        this.wireframeCache = null;
+      }
+
+      // Find the launch pad from the hit mesh (need to traverse up to find the group)
+      let launchPad: PlacedLaunchPad | null = null;
+      let hitObject = launchPadHit.object;
+      while (hitObject && !launchPad) {
+        for (const pad of this.launchPadManager.getLaunchPads()) {
+          if (pad.mesh === hitObject || pad.mesh.children.includes(hitObject as THREE.Mesh)) {
+            launchPad = pad;
+            break;
+          }
+        }
+        hitObject = hitObject.parent as THREE.Object3D;
+      }
+
+      // Handle launch pad interaction (right click opens tower UI, left click mines)
+      if (rightClick && this.rightClickCooldown === 0 && launchPad) {
+        this.launchPadUI.open(launchPad);
+        this.rightClickCooldown = this.CLICK_COOLDOWN;
+      } else if (leftClick && launchPad) {
+        this.handleLaunchPadMining(deltaTime, launchPad);
       } else {
         this.resetMining();
       }
@@ -2079,6 +2146,63 @@ export class PlanetBlockInteraction {
     this.printer3DManager.removePrinter3D(printer);
   }
 
+  private handleLaunchPadMining(deltaTime: number, launchPad: PlacedLaunchPad): void {
+    // Check if target changed
+    if (this.miningLaunchPadTarget === null || this.miningLaunchPadTarget.launchPad !== launchPad) {
+      // New target, reset progress
+      this.miningLaunchPadTarget = { launchPad };
+      this.miningTarget = null;
+      this.miningTreeTarget = null;
+      this.miningFurnaceTarget = null;
+      this.miningStorageTarget = null;
+      this.miningGarbageTarget = null;
+      this.miningSteamEngineTarget = null;
+      this.miningHydroGeneratorTarget = null;
+      this.miningCopperPipeTarget = null;
+      this.miningCableTarget = null;
+      this.miningElectricFurnaceTarget = null;
+      this.miningElectronicsWorkbenchTarget = null;
+      this.miningComputerTarget = null;
+      this.miningPrinter3DTarget = null;
+      this.miningProgress = 0;
+    }
+
+    // Launch pad mining time
+    const mineTime = ITEM_DATA[ItemType.LAUNCH_PAD_BLOCK].mineTime;
+
+    // Increase progress
+    this.miningProgress += deltaTime / mineTime;
+    this.updateMiningUI(this.miningProgress);
+
+    // Check if mining complete
+    if (this.miningProgress >= 1) {
+      this.breakLaunchPad(launchPad);
+      this.resetMining();
+    }
+  }
+
+  private breakLaunchPad(launchPad: PlacedLaunchPad): void {
+    // Give the launch pad block back to the player
+    this.inventory.addItem(ItemType.LAUNCH_PAD_BLOCK, 1);
+
+    // Return any segments that were added
+    if (launchPad.segmentCount > 0) {
+      this.inventory.addItem(ItemType.LAUNCH_PAD_SEGMENT, launchPad.segmentCount);
+    }
+
+    this.updateHotbarUI();
+    this.saveInventory();
+
+    // Remove launch pad from save
+    for (let i = 0; i < this.planets.length; i++) {
+      const planetId = i === 0 ? 'earth' : 'moon';
+      gameStorage.removeLaunchPad(planetId, launchPad.centerTileIndex);
+    }
+
+    // Remove the launch pad from the world
+    this.launchPadManager.removeLaunchPad(launchPad);
+  }
+
   private breakElectricFurnace(furnace: PlacedElectricFurnace): void {
     // Give the electric furnace item back to the player
     this.inventory.addItem(ItemType.ELECTRIC_FURNACE, 1);
@@ -2163,6 +2287,7 @@ export class PlanetBlockInteraction {
     this.miningElectronicsWorkbenchTarget = null;
     this.miningComputerTarget = null;
     this.miningPrinter3DTarget = null;
+    this.miningLaunchPadTarget = null;
     this.miningProgress = 0;
     this.updateMiningUI(0);
   }
@@ -2316,6 +2441,12 @@ export class PlanetBlockInteraction {
     // Handle 3D printer placement
     if (selectedSlot.itemType === ItemType.PRINTER_3D) {
       this.placePrinter3D(planet, tileIndex, depth);
+      return;
+    }
+
+    // Handle launch pad block placement
+    if (selectedSlot.itemType === ItemType.LAUNCH_PAD_BLOCK) {
+      this.placeLaunchPad(planet, tileIndex, depth);
       return;
     }
 
@@ -3060,11 +3191,104 @@ export class PlanetBlockInteraction {
           position: { x: placedPrinter.position.x, y: placedPrinter.position.y, z: placedPrinter.position.z },
           rotation: placedPrinter.rotation,
           isPowered: placedPrinter.isPowered,
-          currentJob: placedPrinter.currentJob
+          currentJob: null, // New printer has no job
+          printQueue: [],
+          outputInventory: placedPrinter.outputInventory.map(slot => ({
+            itemType: slot.itemType,
+            quantity: slot.quantity
+          }))
         });
 
         // Rebuild cable connections so nearby cables can connect to this printer
         this.cableNodeManager.rebuildAllConnections();
+      }
+    }
+  }
+
+  private async placeLaunchPad(planet: Planet, tileIndex: number, depth: number): Promise<void> {
+    // Get the tile to check for valid placement
+    const tile = planet.getTileByIndex(tileIndex);
+    if (!tile) return;
+
+    // Validate placement - launch pad needs 6 neighbors (hexagon, not pentagon)
+    if (tile.isPentagon || tile.neighbors.length !== 6) {
+      console.log('Cannot place launch pad: must be placed on a hexagonal tile with 6 neighbors');
+      return;
+    }
+
+    // Get all surrounding tiles
+    const surroundingTiles = tile.neighbors.map(idx => planet.getTileByIndex(idx)).filter(t => t !== null);
+    if (surroundingTiles.length !== 6) {
+      console.log('Cannot place launch pad: requires 6 surrounding tiles');
+      return;
+    }
+
+    // Check for existing launch pads (no overlap allowed, but adjacency is fine)
+    const existingPads = this.launchPadManager.getLaunchPads();
+    const allAffectedTiles = new Set<number>([tileIndex, ...tile.neighbors]);
+
+    for (const existingPad of existingPads) {
+      const existingTiles = new Set<number>([
+        existingPad.centerTileIndex,
+        ...existingPad.surroundingTileIndices
+      ]);
+
+      // Check if any tiles overlap
+      for (const tileIdx of allAffectedTiles) {
+        if (existingTiles.has(tileIdx)) {
+          console.log('Cannot place launch pad: overlaps with existing launch pad');
+          return;
+        }
+      }
+    }
+
+    // Launch pads can be placed anywhere - no tech block distance restrictions
+    // (those restrictions apply to launch tower segments, not the base pad)
+
+    // depth is the air block position - launch pad should sit on the solid block below it
+    // Launch pad is 1/4 block height (BASE_HEIGHT = 0.25), so it sits on top of the solid block
+    const blockHeight = planet.getBlockHeight();
+    const solidBlockTopRadius = planet.depthToRadius(depth) - blockHeight;
+    const launchPadHeight = blockHeight * 0.25; // 1/4 of block height
+
+    // Inner radius = top of solid block, outer radius = top of launch pad
+    const innerRadius = solidBlockTopRadius;
+    const outerRadius = solidBlockTopRadius + launchPadHeight;
+
+    const tileCenter = tile.center.clone().normalize();
+    const worldPosition = tileCenter.clone().multiplyScalar(outerRadius).add(planet.center);
+
+    // Pass original tile data for terrain-conforming geometry
+    const originalTileVertices = tile.vertices.map(v => v.clone());
+    const originalTileCenter = tile.center.clone();
+
+    // Use item from inventory
+    if (this.inventory.useSelectedItem()) {
+      // Place the launch pad with world-space geometry matching terrain
+      const placedPad = await this.launchPadManager.placeLaunchPad(
+        worldPosition,
+        planet.center,
+        tileIndex,
+        tile.neighbors,
+        originalTileVertices,
+        originalTileCenter,
+        innerRadius,
+        outerRadius
+      );
+
+      this.updateHotbarUI();
+      this.saveInventory();
+
+      // Save launch pad placement to game storage
+      if (placedPad) {
+        const planetId = this.getPlanetId(planet);
+        gameStorage.saveLaunchPad(planetId, tileIndex, {
+          surroundingTileIndices: placedPad.surroundingTileIndices,
+          position: { x: placedPad.position.x, y: placedPad.position.y, z: placedPad.position.z },
+          rotation: placedPad.rotation,
+          segmentCount: placedPad.segmentCount,
+          rocketBlocks: placedPad.rocketBlocks
+        });
       }
     }
   }
@@ -3178,6 +3402,31 @@ export class PlanetBlockInteraction {
         rotation: engine.rotation,
         hasFuel: state?.hasFuel ?? false,
         fuelAmount: state?.fuelAmount ?? 0,
+      });
+    }
+  }
+
+  // Save all launch pad states to local storage
+  private saveLaunchPadStates(): void {
+    const launchPads = this.launchPadManager.getLaunchPads();
+    for (const pad of launchPads) {
+      // Determine which planet this launch pad is on
+      let planetId = 'earth';
+      for (let i = 0; i < this.planets.length; i++) {
+        const planet = this.planets[i];
+        const tile = planet.getTileByIndex(pad.centerTileIndex);
+        if (tile) {
+          planetId = i === 0 ? 'earth' : 'moon';
+          break;
+        }
+      }
+
+      gameStorage.saveLaunchPad(planetId, pad.centerTileIndex, {
+        surroundingTileIndices: pad.surroundingTileIndices,
+        position: { x: pad.position.x, y: pad.position.y, z: pad.position.z },
+        rotation: pad.rotation,
+        segmentCount: pad.segmentCount,
+        rocketBlocks: pad.rocketBlocks
       });
     }
   }
@@ -3298,6 +3547,55 @@ export class PlanetBlockInteraction {
       gameStorage.saveGarbagePile(planetId, pile.tileIndex, {
         position: { x: pile.position.x, y: pile.position.y, z: pile.position.z },
         slots: pile.slots.map(s => ({ itemType: s.itemType, quantity: s.quantity }))
+      });
+    }
+  }
+
+  // Save all 3D printer states to local storage
+  private saveAllPrinter3DStates(): void {
+    const printers = this.printer3DManager.getAllPrinters();
+    for (const printer of printers) {
+      let planetId = 'earth';
+      for (let i = 0; i < this.planets.length; i++) {
+        const planet = this.planets[i];
+        const tile = planet.getTileByIndex(printer.tileIndex);
+        if (tile) {
+          planetId = i === 0 ? 'earth' : 'moon';
+          break;
+        }
+      }
+
+      // Convert Map ingredients to Record for JSON serialization
+      const serializeIngredients = (ingredients: Map<ItemType, number>): Record<string, number> => {
+        const obj: Record<string, number> = {};
+        for (const [key, value] of ingredients) {
+          obj[key.toString()] = value;
+        }
+        return obj;
+      };
+
+      gameStorage.savePrinter3D(planetId, printer.tileIndex, {
+        position: { x: printer.position.x, y: printer.position.y, z: printer.position.z },
+        rotation: printer.rotation,
+        isPowered: printer.isPowered,
+        currentJob: printer.currentJob ? {
+          itemType: printer.currentJob.itemType,
+          progress: printer.currentJob.progress,
+          totalTime: printer.currentJob.totalTime,
+          startTime: printer.currentJob.startTime,
+          outputQuantity: printer.currentJob.outputQuantity,
+          ingredients: serializeIngredients(printer.currentJob.ingredients)
+        } : null,
+        printQueue: printer.printQueue.map(job => ({
+          itemType: job.itemType,
+          totalTime: job.totalTime,
+          outputQuantity: job.outputQuantity,
+          ingredients: serializeIngredients(job.ingredients)
+        })),
+        outputInventory: printer.outputInventory.map(slot => ({
+          itemType: slot.itemType,
+          quantity: slot.quantity
+        }))
       });
     }
   }
@@ -3581,18 +3879,94 @@ export class PlanetBlockInteraction {
           savedPrinter.position.y,
           savedPrinter.position.z
         );
+
+        // Helper to deserialize ingredients from Record to Map
+        const deserializeIngredients = (obj?: Record<string, number>): Map<ItemType, number> => {
+          if (!obj) return new Map<ItemType, number>();
+          return new Map<ItemType, number>(Object.entries(obj).map(([k, v]) => [parseInt(k) as ItemType, v]));
+        };
+
         // Restore the 3D printer with its job state
-        const currentJob = savedPrinter.currentJob ? {
-          itemType: savedPrinter.currentJob.itemType as ItemType,
-          progress: savedPrinter.currentJob.progress,
-          totalTime: savedPrinter.currentJob.totalTime,
-          startTime: savedPrinter.currentJob.startTime
+        const savedJob = savedPrinter.currentJob as { itemType: number; progress: number; totalTime: number; startTime: number; outputQuantity?: number; ingredients?: Record<string, number> } | null;
+        const currentJob = savedJob ? {
+          itemType: savedJob.itemType as ItemType,
+          progress: savedJob.progress,
+          totalTime: savedJob.totalTime,
+          startTime: savedJob.startTime,
+          outputQuantity: savedJob.outputQuantity || 1,
+          ingredients: deserializeIngredients(savedJob.ingredients)
         } : null;
-        this.printer3DManager.restorePrinter3D(savedPosition, planet.center, savedPrinter.tileIndex, savedPrinter.rotation, savedPrinter.isPowered, currentJob);
+
+        // Restore print queue
+        const printQueue = savedPrinter.printQueue?.map(job => ({
+          itemType: job.itemType as ItemType,
+          totalTime: job.totalTime,
+          outputQuantity: job.outputQuantity,
+          ingredients: deserializeIngredients(job.ingredients)
+        })) || [];
+
+        // Restore output inventory
+        const outputInventory = savedPrinter.outputInventory?.map(slot => ({
+          itemType: slot.itemType as ItemType | null,
+          quantity: slot.quantity
+        })) || null;
+
+        this.printer3DManager.restorePrinter3D(
+          savedPosition,
+          planet.center,
+          savedPrinter.tileIndex,
+          savedPrinter.rotation,
+          savedPrinter.isPowered,
+          currentJob,
+          printQueue,
+          outputInventory
+        );
       }
     }
 
-    console.log(`Loaded save: ${saveData.tileChanges.length} tile changes, ${savedTorches.length} torches, ${savedFurnaces.length} furnaces, ${savedElectricFurnaces.length} electric furnaces, ${savedElectronicsWorkbenches.length} electronics workbenches, ${savedComputers.length} computers, ${savedStorageChests.length} chests, ${savedGarbagePiles.length} piles, ${savedSteamEngines.length} steam engines, ${savedHydroGenerators.length} hydro generators, ${savedCopperPipes.length} copper pipes, ${savedCables.length} cables, inventory restored`);
+    // Load saved launch pads
+    const savedLaunchPads = gameStorage.getLaunchPads();
+    for (const savedPad of savedLaunchPads) {
+      const planet = this.planets.find((_, i) =>
+        (i === 0 ? 'earth' : 'moon') === savedPad.planetId
+      );
+      if (planet) {
+        // Get the tile data to generate proper world-space geometry
+        const tile = planet.getTileByIndex(savedPad.centerTileIndex);
+        if (!tile) continue;
+
+        const savedPosition = new THREE.Vector3(
+          savedPad.position.x,
+          savedPad.position.y,
+          savedPad.position.z
+        );
+
+        // Calculate radii for world-space geometry (same as placeLaunchPad)
+        // The saved position is at outerRadius, so we calculate from there
+        const distFromCenter = savedPosition.distanceTo(planet.center);
+        const blockHeight = planet.getBlockHeight();
+        const launchPadHeight = blockHeight * 0.25;
+        const outerRadius = distFromCenter;
+        const innerRadius = outerRadius - launchPadHeight;
+
+        // Restore the launch pad with proper tile geometry
+        this.launchPadManager.restoreLaunchPad(
+          savedPosition,
+          planet.center,
+          savedPad.centerTileIndex,
+          savedPad.surroundingTileIndices,
+          savedPad.rotation,
+          savedPad.segmentCount,
+          savedPad.rocketBlocks,
+          tile.vertices.map(v => v.clone()),
+          tile.center.clone(),
+          innerRadius,
+          outerRadius
+        );
+      }
+    }
+
+    console.log(`Loaded save: ${saveData.tileChanges.length} tile changes, ${savedTorches.length} torches, ${savedFurnaces.length} furnaces, ${savedElectricFurnaces.length} electric furnaces, ${savedElectronicsWorkbenches.length} electronics workbenches, ${savedComputers.length} computers, ${savedStorageChests.length} chests, ${savedGarbagePiles.length} piles, ${savedSteamEngines.length} steam engines, ${savedHydroGenerators.length} hydro generators, ${savedCopperPipes.length} copper pipes, ${savedCables.length} cables, ${savedLaunchPads.length} launch pads, inventory restored`);
   }
 
   /**
@@ -3835,14 +4209,6 @@ export class PlanetBlockInteraction {
             return 'Idle';
           },
           openUI: () => {
-            const isPowered = this.cableNodeManager.isElectricFurnaceConnectedToRunningSteamEngine(
-              printer.tileIndex,
-              (steamTileIndex) => {
-                const engine = this.steamEngineManager.getSteamEngineAtTile(steamTileIndex);
-                return engine?.isRunning ?? false;
-              }
-            );
-            printer.isPowered = isPowered;
             this.printer3DUI.open(printer);
           }
         }));

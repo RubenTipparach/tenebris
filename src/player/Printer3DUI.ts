@@ -1,26 +1,64 @@
-import { PlacedPrinter3D, PrintJob } from '../planet/Printer3D';
+import { PlacedPrinter3D } from '../planet/Printer3D';
 import { MenuManager } from './MenuManager';
 import { Inventory, ItemType, ITEM_DATA } from './Inventory';
 import { getAssetPath } from '../utils/assetPath';
 
-// 3D Printer recipe definition (single input resource)
+// 3D Printer recipe definition (supports both single and multi-input)
 export interface PrinterRecipe {
-  input: { itemType: ItemType; quantity: number };
+  // Legacy single input (for backwards compatibility)
+  input?: { itemType: ItemType; quantity: number };
+  // Multi-input grid (3x3 like Electronics Workbench)
+  inputs?: { itemType: ItemType; quantity: number; slot: number }[];
   output: ItemType;
   outputQuantity: number;
   printTime: number; // in seconds
+  name: string;
 }
 
-// Available recipes for the 3D printer (single resource input)
+// Grid layout (3x3):
+//   0 1 2
+//   3 4 5
+//   6 7 8
+// Legend: St = Stone, I = Iron Ingot
+
+// Available recipes for the 3D printer
 export const PRINTER_RECIPES: PrinterRecipe[] = [
-  // Copper pipe from copper ingot
+  // Launch Pad Block (Hexagonal base): St St St / I I I / St St St
   {
-    input: { itemType: ItemType.INGOT_COPPER, quantity: 2 },
-    output: ItemType.COPPER_PIPE,
-    outputQuantity: 2,
-    printTime: 10,
+    name: 'Launch Pad Block',
+    inputs: [
+      { itemType: ItemType.STONE, quantity: 1, slot: 0 },
+      { itemType: ItemType.STONE, quantity: 1, slot: 1 },
+      { itemType: ItemType.STONE, quantity: 1, slot: 2 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 3 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 4 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 5 },
+      { itemType: ItemType.STONE, quantity: 1, slot: 6 },
+      { itemType: ItemType.STONE, quantity: 1, slot: 7 },
+      { itemType: ItemType.STONE, quantity: 1, slot: 8 },
+    ],
+    output: ItemType.LAUNCH_PAD_BLOCK,
+    outputQuantity: 7,
+    printTime: 30,
   },
-  // Add more single-input recipes as needed
+  // Launch Pad Segment (Square tower): I I I / I I I / I I I
+  {
+    name: 'Launch Pad Segment',
+    inputs: [
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 0 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 1 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 2 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 3 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 4 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 5 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 6 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 7 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 8 },
+    ],
+    output: ItemType.LAUNCH_PAD_SEGMENT,
+    outputQuantity: 1,
+    printTime: 45,
+  },
 ];
 
 export class Printer3DUI {
@@ -31,24 +69,19 @@ export class Printer3DUI {
   private onOpenInventoryCallback: (() => void) | null = null;
   private onUpdateHotbarCallback: (() => void) | null = null;
   private onUpdateInventoryCallback: (() => void) | null = null;
-  private isPowered: boolean = false;
-  private isConnectedToComputer: boolean = false;
   private inventory: Inventory | null = null;
   private onItemCrafted: ((itemType: ItemType, quantity: number) => void) | null = null;
-
-  // Power check callback (for steam engine power)
-  private isPoweredCallback: ((tileIndex: number) => boolean) | null = null;
-  // Computer connection check callback
-  private isConnectedToComputerCallback: ((tileIndex: number) => boolean) | null = null;
+  private onRefundItems: ((ingredients: Map<ItemType, number>) => void) | null = null;
+  private onSaveCallback: (() => void) | null = null;
 
   // UI elements
   private recipeListElement: HTMLElement | null = null;
+  private queueListElement: HTMLElement | null = null;
+  private outputSlotsElement: HTMLElement | null = null;
   private progressBarElement: HTMLElement | null = null;
   private progressTextElement: HTMLElement | null = null;
   private statusElement: HTMLElement | null = null;
-  private powerStatusElement: HTMLElement | null = null;
-  private computerStatusElement: HTMLElement | null = null;
-  private collectBtn: HTMLButtonElement | null = null;
+  private cancelCurrentBtn: HTMLButtonElement | null = null;
 
   constructor(inventory: Inventory) {
     this.inventory = inventory;
@@ -67,16 +100,16 @@ export class Printer3DUI {
     this.inventory = inventory;
   }
 
-  public setIsPoweredCallback(callback: (tileIndex: number) => boolean): void {
-    this.isPoweredCallback = callback;
-  }
-
-  public setIsConnectedToComputerCallback(callback: (tileIndex: number) => boolean): void {
-    this.isConnectedToComputerCallback = callback;
-  }
-
   public setOnItemCrafted(callback: (itemType: ItemType, quantity: number) => void): void {
     this.onItemCrafted = callback;
+  }
+
+  public setOnRefundItems(callback: (ingredients: Map<ItemType, number>) => void): void {
+    this.onRefundItems = callback;
+  }
+
+  public setOnSaveCallback(callback: () => void): void {
+    this.onSaveCallback = callback;
   }
 
   private createUI(): void {
@@ -85,16 +118,6 @@ export class Printer3DUI {
     this.printerSectionElement.className = 'printer3d-section';
     this.printerSectionElement.innerHTML = `
       <h3>3D Printer</h3>
-
-      <div class="printer3d-connection-status" id="printer3d-computer-status">
-        <span class="connection-icon">💻</span>
-        <span class="connection-text">No Computer</span>
-      </div>
-
-      <div class="printer3d-power-status" id="printer3d-power-status">
-        <span class="power-icon">⚡</span>
-        <span class="power-text">No Power</span>
-      </div>
 
       <div class="printer3d-status">
         <div class="status-label">Status:</div>
@@ -106,6 +129,7 @@ export class Printer3DUI {
           <div class="progress-fill" id="printer3d-progress-fill"></div>
         </div>
         <div class="progress-text" id="printer3d-progress-text">0%</div>
+        <button class="cancel-current-btn" id="printer3d-cancel-current" style="display: none;">Cancel</button>
       </div>
 
       <div class="printer3d-recipes">
@@ -113,14 +137,38 @@ export class Printer3DUI {
         <div class="recipes-list" id="printer3d-recipes-list"></div>
       </div>
 
-      <div class="printer3d-controls">
-        <button class="printer3d-btn" id="printer3d-collect-btn" disabled>Collect</button>
+      <div class="printer3d-queue">
+        <div class="queue-header">Print Queue:</div>
+        <div class="queue-list" id="printer3d-queue-list"></div>
+      </div>
+
+      <div class="printer3d-output">
+        <div class="output-header">Output:</div>
+        <div class="output-slots" id="printer3d-output-slots"></div>
       </div>
 
       <div class="printer3d-hint">
         <p>Press E or ESC to close</p>
       </div>
     `;
+
+    // Get references from the element directly (before adding to DOM)
+    this.recipeListElement = this.printerSectionElement.querySelector('#printer3d-recipes-list');
+    this.queueListElement = this.printerSectionElement.querySelector('#printer3d-queue-list');
+    this.outputSlotsElement = this.printerSectionElement.querySelector('#printer3d-output-slots');
+    this.progressBarElement = this.printerSectionElement.querySelector('#printer3d-progress-fill');
+    this.progressTextElement = this.printerSectionElement.querySelector('#printer3d-progress-text');
+    this.statusElement = this.printerSectionElement.querySelector('#printer3d-status-value');
+    this.cancelCurrentBtn = this.printerSectionElement.querySelector('#printer3d-cancel-current');
+
+    // Set up cancel current job button
+    if (this.cancelCurrentBtn) {
+      this.cancelCurrentBtn.addEventListener('click', () => {
+        this.cancelCurrentJob();
+      });
+    }
+
+    this.printerSectionElement.style.display = 'none';
 
     // Insert into inventory container
     const inventoryContainer = document.querySelector('.inventory-container');
@@ -132,22 +180,6 @@ export class Printer3DUI {
         inventoryContainer.appendChild(this.printerSectionElement);
       }
     }
-
-    // Get references
-    this.recipeListElement = document.getElementById('printer3d-recipes-list');
-    this.progressBarElement = document.getElementById('printer3d-progress-fill');
-    this.progressTextElement = document.getElementById('printer3d-progress-text');
-    this.statusElement = document.getElementById('printer3d-status-value');
-    this.powerStatusElement = document.getElementById('printer3d-power-status');
-    this.computerStatusElement = document.getElementById('printer3d-computer-status');
-    this.collectBtn = document.getElementById('printer3d-collect-btn') as HTMLButtonElement;
-
-    // Setup collect button
-    if (this.collectBtn) {
-      this.collectBtn.addEventListener('click', () => this.collectItem());
-    }
-
-    this.printerSectionElement.style.display = 'none';
   }
 
   private addStyles(): void {
@@ -161,6 +193,9 @@ export class Printer3DUI {
         border-left: 1px solid #444;
         margin-left: 15px;
         min-width: 280px;
+        pointer-events: auto;
+        position: relative;
+        z-index: 50;
       }
 
       .printer3d-section h3 {
@@ -169,72 +204,6 @@ export class Printer3DUI {
         margin-bottom: 10px;
         font-family: 'Courier New', monospace;
         text-shadow: 0 0 5px rgba(0, 170, 255, 0.3);
-      }
-
-      .printer3d-connection-status {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        padding: 8px 16px;
-        border-radius: 4px;
-        margin-bottom: 8px;
-        background: rgba(255, 0, 0, 0.2);
-        border: 1px solid #ff4444;
-      }
-
-      .printer3d-connection-status.connected {
-        background: rgba(0, 170, 255, 0.2);
-        border: 1px solid #00aaff;
-      }
-
-      .printer3d-connection-status .connection-icon {
-        font-size: 18px;
-      }
-
-      .printer3d-connection-status.connected .connection-icon {
-        color: #00aaff;
-      }
-
-      .printer3d-connection-status .connection-text {
-        font-size: 12px;
-        color: #888;
-      }
-
-      .printer3d-connection-status.connected .connection-text {
-        color: #00aaff;
-      }
-
-      .printer3d-power-status {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        padding: 8px 16px;
-        border-radius: 4px;
-        margin-bottom: 15px;
-        background: rgba(255, 0, 0, 0.2);
-        border: 1px solid #ff4444;
-      }
-
-      .printer3d-power-status.powered {
-        background: rgba(0, 255, 0, 0.2);
-        border: 1px solid #44ff44;
-      }
-
-      .printer3d-power-status .power-icon {
-        font-size: 18px;
-      }
-
-      .printer3d-power-status.powered .power-icon {
-        color: #44ff44;
-      }
-
-      .printer3d-power-status .power-text {
-        font-size: 12px;
-        color: #888;
-      }
-
-      .printer3d-power-status.powered .power-text {
-        color: #44ff44;
       }
 
       .printer3d-status {
@@ -266,10 +235,6 @@ export class Printer3DUI {
         color: #FFAA00;
       }
 
-      .printer3d-status .status-value.complete {
-        color: #00FF00;
-      }
-
       .printer3d-progress-container {
         display: flex;
         align-items: center;
@@ -295,10 +260,6 @@ export class Printer3DUI {
         transition: width 0.1s ease;
       }
 
-      .printer3d-progress-container .progress-fill.complete {
-        background: linear-gradient(90deg, #00FF00, #44FF44);
-      }
-
       .printer3d-progress-container .progress-text {
         color: #00AAFF;
         font-family: 'Courier New', monospace;
@@ -307,12 +268,29 @@ export class Printer3DUI {
         text-align: right;
       }
 
+      .printer3d-progress-container .cancel-current-btn {
+        background: #442222;
+        border: 1px solid #663333;
+        border-radius: 4px;
+        color: #FF6666;
+        padding: 4px 10px;
+        font-size: 11px;
+        cursor: pointer;
+        font-family: 'Courier New', monospace;
+        margin-left: 8px;
+      }
+
+      .printer3d-progress-container .cancel-current-btn:hover {
+        background: #553333;
+        border-color: #884444;
+      }
+
       .printer3d-recipes {
         background: #0a0a0a;
         border: 2px solid #333;
         border-radius: 8px;
         padding: 10px;
-        max-height: 150px;
+        max-height: 120px;
         overflow-y: auto;
         width: 100%;
         box-sizing: border-box;
@@ -338,6 +316,9 @@ export class Printer3DUI {
         margin-bottom: 4px;
         cursor: pointer;
         transition: background 0.2s;
+        pointer-events: auto;
+        position: relative;
+        z-index: 100;
       }
 
       .printer3d-recipes .recipe-item:hover {
@@ -416,43 +397,138 @@ export class Printer3DUI {
         font-size: 9px;
       }
 
-      .printer3d-controls {
-        display: flex;
-        justify-content: center;
-        gap: 10px;
+      .printer3d-queue {
+        background: #0a0a0a;
+        border: 2px solid #333;
+        border-radius: 8px;
+        padding: 10px;
+        max-height: 100px;
+        overflow-y: auto;
+        width: 100%;
+        box-sizing: border-box;
         margin-bottom: 10px;
       }
 
-      .printer3d-btn {
-        background: linear-gradient(180deg, #444 0%, #333 100%);
-        border: 2px solid #555;
-        border-radius: 6px;
+      .printer3d-queue .queue-header {
+        color: #888;
+        font-family: 'Courier New', monospace;
+        font-size: 11px;
+        margin-bottom: 8px;
+        padding-bottom: 5px;
+        border-bottom: 1px solid #333;
+      }
+
+      .printer3d-queue .queue-item {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 4px 6px;
+        background: #1a1a1a;
+        border-radius: 4px;
+        margin-bottom: 3px;
+      }
+
+      .printer3d-queue .queue-item-info {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .printer3d-queue .queue-item img {
+        width: 18px;
+        height: 18px;
+        image-rendering: pixelated;
+      }
+
+      .printer3d-queue .queue-item-name {
         color: #DDD;
-        padding: 8px 20px;
-        font-size: 12px;
+        font-family: 'Courier New', monospace;
+        font-size: 10px;
+      }
+
+      .printer3d-queue .queue-cancel-btn {
+        background: #442222;
+        border: 1px solid #663333;
+        border-radius: 3px;
+        color: #FF6666;
+        padding: 2px 6px;
+        font-size: 9px;
         cursor: pointer;
-        transition: all 0.2s;
         font-family: 'Courier New', monospace;
       }
 
-      .printer3d-btn:hover:not(:disabled) {
-        background: linear-gradient(180deg, #555 0%, #444 100%);
-        border-color: #666;
+      .printer3d-queue .queue-cancel-btn:hover {
+        background: #553333;
       }
 
-      .printer3d-btn:active:not(:disabled) {
-        transform: translateY(1px);
+      .printer3d-queue .queue-empty {
+        color: #555;
+        font-family: 'Courier New', monospace;
+        font-size: 10px;
+        text-align: center;
+        padding: 8px;
       }
 
-      .printer3d-btn:disabled {
-        opacity: 0.5;
-        cursor: not-allowed;
+      .printer3d-output {
+        background: #0a0a0a;
+        border: 2px solid #333;
+        border-radius: 8px;
+        padding: 10px;
+        width: 100%;
+        box-sizing: border-box;
+        margin-bottom: 10px;
       }
 
-      .printer3d-btn.collect-ready {
-        background: linear-gradient(180deg, #2a5a2a 0%, #1a4a1a 100%);
-        border-color: #3a6a3a;
-        color: #44FF44;
+      .printer3d-output .output-header {
+        color: #888;
+        font-family: 'Courier New', monospace;
+        font-size: 11px;
+        margin-bottom: 8px;
+        padding-bottom: 5px;
+        border-bottom: 1px solid #333;
+      }
+
+      .printer3d-output .output-slots {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 4px;
+      }
+
+      .printer3d-output .output-slot {
+        width: 36px;
+        height: 36px;
+        background: #1a1a1a;
+        border: 2px solid #333;
+        border-radius: 4px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        position: relative;
+        cursor: pointer;
+      }
+
+      .printer3d-output .output-slot:hover {
+        border-color: #555;
+      }
+
+      .printer3d-output .output-slot.has-item {
+        border-color: #444;
+      }
+
+      .printer3d-output .output-slot img {
+        width: 28px;
+        height: 28px;
+        image-rendering: pixelated;
+      }
+
+      .printer3d-output .output-slot .slot-quantity {
+        position: absolute;
+        bottom: 1px;
+        right: 3px;
+        color: #FFF;
+        font-family: 'Courier New', monospace;
+        font-size: 10px;
+        text-shadow: 1px 1px 1px #000;
       }
 
       .printer3d-hint {
@@ -480,23 +556,15 @@ export class Printer3DUI {
   }
 
   public open(printer: PlacedPrinter3D): void {
+    console.log('[Printer3DUI] open() called, printer:', printer?.tileIndex);
     this.currentPrinter = printer;
     this.isOpen = true;
 
-    // Check computer connection status
-    if (this.isConnectedToComputerCallback) {
-      this.isConnectedToComputer = this.isConnectedToComputerCallback(printer.tileIndex);
-    }
-
-    // Check power status (computer needs to be powered for printer to work)
-    if (this.isPoweredCallback && this.isConnectedToComputer) {
-      this.isPowered = this.isPoweredCallback(printer.tileIndex);
-    } else {
-      this.isPowered = false;
-    }
-
     if (this.printerSectionElement) {
       this.printerSectionElement.style.display = 'flex';
+      console.log('[Printer3DUI] printerSectionElement displayed');
+    } else {
+      console.log('[Printer3DUI] ERROR: printerSectionElement is null!');
     }
 
     // Open the full inventory menu
@@ -505,13 +573,12 @@ export class Printer3DUI {
     }
 
     this.updateUI();
+    console.log('[Printer3DUI] open() complete, queue length:', printer?.printQueue?.length);
   }
 
   public close(): void {
     this.isOpen = false;
     this.currentPrinter = null;
-    this.isPowered = false;
-    this.isConnectedToComputer = false;
 
     if (this.printerSectionElement) {
       this.printerSectionElement.style.display = 'none';
@@ -546,11 +613,6 @@ export class Printer3DUI {
     this.onUpdateInventoryCallback = callback;
   }
 
-  public setPowered(isPowered: boolean): void {
-    this.isPowered = isPowered;
-    this.updateUI();
-  }
-
   public updateProgress(): void {
     this.updateUI();
   }
@@ -562,51 +624,24 @@ export class Printer3DUI {
     if (this.onUpdateInventoryCallback) {
       this.onUpdateInventoryCallback();
     }
+    if (this.onSaveCallback) {
+      this.onSaveCallback();
+    }
   }
 
   private updateUI(): void {
     if (!this.printerSectionElement) return;
 
-    // Update computer connection status
-    if (this.computerStatusElement) {
-      if (this.isConnectedToComputer) {
-        this.computerStatusElement.classList.add('connected');
-        this.computerStatusElement.querySelector('.connection-text')!.textContent = 'Computer Connected';
-      } else {
-        this.computerStatusElement.classList.remove('connected');
-        this.computerStatusElement.querySelector('.connection-text')!.textContent = 'No Computer';
-      }
-    }
-
-    // Update power status
-    if (this.powerStatusElement) {
-      if (this.isPowered) {
-        this.powerStatusElement.classList.add('powered');
-        this.powerStatusElement.querySelector('.power-text')!.textContent = 'Powered';
-      } else {
-        this.powerStatusElement.classList.remove('powered');
-        this.powerStatusElement.querySelector('.power-text')!.textContent = 'No Power';
-      }
-    }
-
     // Update status and progress
     const job = this.currentPrinter?.currentJob;
     if (this.statusElement) {
-      if (!this.isConnectedToComputer) {
-        this.statusElement.textContent = 'No Computer';
+      if (job) {
+        const itemName = ITEM_DATA[job.itemType]?.name || 'Unknown';
+        this.statusElement.textContent = `Printing: ${itemName}`;
+        this.statusElement.className = 'status-value printing';
+      } else if (this.currentPrinter?.printQueue.length) {
+        this.statusElement.textContent = 'Queue Ready';
         this.statusElement.className = 'status-value';
-      } else if (!this.isPowered) {
-        this.statusElement.textContent = 'No Power';
-        this.statusElement.className = 'status-value';
-      } else if (job) {
-        if (job.progress >= 1) {
-          this.statusElement.textContent = 'Complete!';
-          this.statusElement.className = 'status-value complete';
-        } else {
-          const itemName = ITEM_DATA[job.itemType]?.name || 'Unknown';
-          this.statusElement.textContent = `Printing: ${itemName}`;
-          this.statusElement.className = 'status-value printing';
-        }
       } else {
         this.statusElement.textContent = 'Idle';
         this.statusElement.className = 'status-value';
@@ -617,122 +652,284 @@ export class Printer3DUI {
     const progress = job ? Math.min(job.progress * 100, 100) : 0;
     if (this.progressBarElement) {
       this.progressBarElement.style.width = `${progress}%`;
-      if (progress >= 100) {
-        this.progressBarElement.classList.add('complete');
-      } else {
-        this.progressBarElement.classList.remove('complete');
-      }
     }
 
     if (this.progressTextElement) {
       this.progressTextElement.textContent = `${Math.round(progress)}%`;
     }
 
-    // Update collect button
-    if (this.collectBtn) {
-      if (job && job.progress >= 1) {
-        this.collectBtn.disabled = false;
-        this.collectBtn.classList.add('collect-ready');
-      } else {
-        this.collectBtn.disabled = true;
-        this.collectBtn.classList.remove('collect-ready');
-      }
+    // Show/hide cancel current job button
+    if (this.cancelCurrentBtn) {
+      this.cancelCurrentBtn.style.display = job ? 'block' : 'none';
     }
 
     // Update recipe list
     this.updateRecipeList();
+
+    // Update queue list
+    this.updateQueueList();
+
+    // Update output slots
+    this.updateOutputSlots();
   }
 
   private updateRecipeList(): void {
     if (!this.recipeListElement || !this.inventory) return;
 
     this.recipeListElement.innerHTML = '';
-    const canOperate = this.isConnectedToComputer && this.isPowered;
 
     for (const recipe of PRINTER_RECIPES) {
       const canCraft = this.canCraftRecipe(recipe);
-      const isPrinting = this.currentPrinter?.currentJob !== null;
 
       const recipeEl = document.createElement('div');
-      recipeEl.className = `recipe-item${(!canCraft || isPrinting || !canOperate) ? ' disabled' : ''}`;
+      recipeEl.className = `recipe-item${!canCraft ? ' disabled' : ''}`;
 
       // Output section
       const outputData = ITEM_DATA[recipe.output];
       const outputHtml = `
         <div class="recipe-output">
           <img src="${getAssetPath(outputData?.texture || '')}" alt="${outputData?.name || 'Unknown'}">
-          <span class="recipe-output-name">${outputData?.name || 'Unknown'}</span>
+          <span class="recipe-output-name">${recipe.name}</span>
           <span class="recipe-output-qty">x${recipe.outputQuantity}</span>
         </div>
       `;
 
-      // Input section (single input)
-      const inputData = ITEM_DATA[recipe.input.itemType];
-      const hasItem = this.inventory.hasItem(recipe.input.itemType, recipe.input.quantity);
-      const inputHtml = `
-        <div class="recipe-inputs">
+      // Input section - handle both single and multi-input recipes
+      let inputHtml = '<div class="recipe-inputs">';
+
+      if (recipe.inputs) {
+        // Multi-input recipe - group by item type and show totals
+        const requiredItems = this.getRequiredItems(recipe);
+        for (const [itemType, quantity] of requiredItems) {
+          const inputData = ITEM_DATA[itemType];
+          const hasItem = this.inventory.hasItem(itemType, quantity);
+          inputHtml += `
+            <div class="recipe-input ${hasItem ? 'has-item' : 'missing-item'}">
+              <img src="${getAssetPath(inputData?.texture || '')}" alt="${inputData?.name || 'Unknown'}">
+              <span class="recipe-input-qty">${quantity}</span>
+            </div>
+          `;
+        }
+      } else if (recipe.input) {
+        // Single input recipe (legacy)
+        const inputData = ITEM_DATA[recipe.input.itemType];
+        const hasItem = this.inventory.hasItem(recipe.input.itemType, recipe.input.quantity);
+        inputHtml += `
           <div class="recipe-input ${hasItem ? 'has-item' : 'missing-item'}">
             <img src="${getAssetPath(inputData?.texture || '')}" alt="${inputData?.name || 'Unknown'}">
             <span class="recipe-input-qty">${recipe.input.quantity}</span>
           </div>
-          <span class="recipe-time">${recipe.printTime}s</span>
-        </div>
-      `;
+        `;
+      }
+
+      inputHtml += `<span class="recipe-time">${recipe.printTime}s</span></div>`;
 
       recipeEl.innerHTML = outputHtml + inputHtml;
 
-      if (canCraft && !isPrinting && canOperate) {
-        recipeEl.addEventListener('click', () => this.startPrint(recipe));
+      if (canCraft) {
+        recipeEl.style.cursor = 'pointer';
+        // Use mousedown instead of click because the game's input system consumes mouseup
+        recipeEl.addEventListener('mousedown', (e) => {
+          console.log('[Printer3DUI] Recipe mousedown:', recipe.name);
+          e.preventDefault();
+          e.stopPropagation();
+          this.queueRecipe(recipe);
+        });
       }
 
       this.recipeListElement.appendChild(recipeEl);
     }
   }
 
-  private canCraftRecipe(recipe: PrinterRecipe): boolean {
-    if (!this.inventory) return false;
-    return this.inventory.hasItem(recipe.input.itemType, recipe.input.quantity);
+  private updateQueueList(): void {
+    if (!this.queueListElement || !this.currentPrinter) return;
+
+    this.queueListElement.innerHTML = '';
+
+    if (this.currentPrinter.printQueue.length === 0) {
+      this.queueListElement.innerHTML = '<div class="queue-empty">Queue is empty</div>';
+      return;
+    }
+
+    this.currentPrinter.printQueue.forEach((queuedJob, index) => {
+      const itemData = ITEM_DATA[queuedJob.itemType];
+      const queueEl = document.createElement('div');
+      queueEl.className = 'queue-item';
+      queueEl.innerHTML = `
+        <div class="queue-item-info">
+          <img src="${getAssetPath(itemData?.texture || '')}" alt="${itemData?.name || 'Unknown'}">
+          <span class="queue-item-name">${itemData?.name || 'Unknown'} x${queuedJob.outputQuantity}</span>
+        </div>
+        <button class="queue-cancel-btn">Cancel</button>
+      `;
+
+      const cancelBtn = queueEl.querySelector('.queue-cancel-btn');
+      cancelBtn?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.cancelQueuedItem(index);
+      });
+
+      this.queueListElement!.appendChild(queueEl);
+    });
   }
 
-  private startPrint(recipe: PrinterRecipe): void {
-    if (!this.currentPrinter || !this.inventory) return;
-    if (!this.isConnectedToComputer || !this.isPowered) return;
-    if (this.currentPrinter.currentJob !== null) return;
+  private updateOutputSlots(): void {
+    if (!this.outputSlotsElement || !this.currentPrinter) return;
 
-    // Use ingredient (single input)
-    this.inventory.removeItem(recipe.input.itemType, recipe.input.quantity);
+    this.outputSlotsElement.innerHTML = '';
 
-    // Start print job
-    this.currentPrinter.currentJob = {
+    for (let i = 0; i < 6; i++) {
+      const slot = this.currentPrinter.outputInventory[i];
+      const slotEl = document.createElement('div');
+      slotEl.className = `output-slot${slot.itemType !== null ? ' has-item' : ''}`;
+
+      if (slot.itemType !== null && slot.quantity > 0) {
+        const itemData = ITEM_DATA[slot.itemType];
+        slotEl.innerHTML = `
+          <img src="${getAssetPath(itemData?.texture || '')}" alt="${itemData?.name || 'Unknown'}">
+          <span class="slot-quantity">${slot.quantity}</span>
+        `;
+
+        // Use mousedown instead of click because the game's input system consumes mouseup
+        slotEl.addEventListener('mousedown', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          this.collectFromSlot(i);
+        });
+      }
+
+      this.outputSlotsElement.appendChild(slotEl);
+    }
+  }
+
+  // Helper to get required items grouped by type
+  private getRequiredItems(recipe: PrinterRecipe): Map<ItemType, number> {
+    const requiredItems = new Map<ItemType, number>();
+
+    if (recipe.inputs) {
+      for (const input of recipe.inputs) {
+        const current = requiredItems.get(input.itemType) || 0;
+        requiredItems.set(input.itemType, current + input.quantity);
+      }
+    } else if (recipe.input) {
+      requiredItems.set(recipe.input.itemType, recipe.input.quantity);
+    }
+
+    return requiredItems;
+  }
+
+  private canCraftRecipe(recipe: PrinterRecipe): boolean {
+    if (!this.inventory) return false;
+
+    const requiredItems = this.getRequiredItems(recipe);
+
+    for (const [itemType, quantity] of requiredItems) {
+      if (!this.inventory.hasItem(itemType, quantity)) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  private queueRecipe(recipe: PrinterRecipe): void {
+    console.log('[Printer3DUI] queueRecipe called for:', recipe.name);
+
+    if (!this.currentPrinter) {
+      console.log('[Printer3DUI] No current printer');
+      return;
+    }
+    if (!this.inventory) {
+      console.log('[Printer3DUI] No inventory');
+      return;
+    }
+
+    // Get required items
+    const requiredItems = this.getRequiredItems(recipe);
+    console.log('[Printer3DUI] Required items:', Array.from(requiredItems.entries()));
+
+    // Check if we have all items
+    for (const [itemType, quantity] of requiredItems) {
+      const hasItem = this.inventory.hasItem(itemType, quantity);
+      console.log(`[Printer3DUI] Checking ${ItemType[itemType]}: need ${quantity}, has: ${hasItem}`);
+      if (!hasItem) {
+        console.log('[Printer3DUI] Missing item, aborting');
+        return;
+      }
+    }
+
+    // Remove items from inventory
+    console.log('[Printer3DUI] Removing items from inventory...');
+    for (const [itemType, quantity] of requiredItems) {
+      this.inventory.removeItem(itemType, quantity);
+      console.log(`[Printer3DUI] Removed ${quantity}x ${ItemType[itemType]}`);
+    }
+
+    // Add to queue
+    this.currentPrinter.printQueue.push({
       itemType: recipe.output,
-      progress: 0,
       totalTime: recipe.printTime,
-      startTime: Date.now()
-    };
-
-    // Store output quantity in a property for collection
-    (this.currentPrinter.currentJob as PrintJob & { outputQuantity?: number }).outputQuantity = recipe.outputQuantity;
+      outputQuantity: recipe.outputQuantity,
+      ingredients: new Map(requiredItems),
+    });
+    console.log('[Printer3DUI] Added to queue, queue length:', this.currentPrinter.printQueue.length);
 
     this.updateUI();
     this.notifyChanges();
   }
 
-  private collectItem(): void {
-    if (!this.currentPrinter || !this.currentPrinter.currentJob) return;
-    if (this.currentPrinter.currentJob.progress < 1) return;
+  private cancelQueuedItem(queueIndex: number): void {
+    if (!this.currentPrinter) return;
 
-    const job = this.currentPrinter.currentJob as PrintJob & { outputQuantity?: number };
-    const outputQuantity = job.outputQuantity || 1;
+    const queuedJob = this.currentPrinter.printQueue[queueIndex];
+    if (!queuedJob) return;
+
+    // Remove from queue
+    this.currentPrinter.printQueue.splice(queueIndex, 1);
+
+    // Refund items
+    if (this.onRefundItems) {
+      this.onRefundItems(queuedJob.ingredients);
+    }
+
+    this.updateUI();
+    this.notifyChanges();
+  }
+
+  private cancelCurrentJob(): void {
+    if (!this.currentPrinter || !this.currentPrinter.currentJob) return;
+
+    const job = this.currentPrinter.currentJob;
+
+    // Cancel the current job
+    this.currentPrinter.currentJob = null;
+
+    // Refund ingredients
+    if (this.onRefundItems && job.ingredients) {
+      this.onRefundItems(job.ingredients);
+    }
+
+    this.updateUI();
+    this.notifyChanges();
+  }
+
+  private collectFromSlot(slotIndex: number): void {
+    if (!this.currentPrinter) return;
+
+    const slot = this.currentPrinter.outputInventory[slotIndex];
+    if (slot.itemType === null || slot.quantity <= 0) return;
 
     // Give item to player
     if (this.onItemCrafted) {
-      this.onItemCrafted(job.itemType, outputQuantity);
+      this.onItemCrafted(slot.itemType, slot.quantity);
     }
 
-    // Clear job
-    this.currentPrinter.currentJob = null;
+    // Clear slot
+    slot.itemType = null;
+    slot.quantity = 0;
 
     this.updateUI();
     this.notifyChanges();
   }
+
 }
