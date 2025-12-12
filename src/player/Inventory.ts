@@ -63,6 +63,7 @@ export enum ItemType {
   ROCKET_ENGINE = 45,
   FUEL_TANK = 46,
   COMMAND_MODULE = 47,
+  MEDIUM_FUEL_TANK = 48,
 }
 
 // Rocket part type for items that can be placed on the launch tower
@@ -85,6 +86,7 @@ export interface RocketPartData {
   modelPath: string;     // Path to OBJ model
   texturePath: string;   // Path to texture for the model
   heightUnits: number;   // How many segment heights this part takes
+  modelYOffset?: number; // Per-part vertical offset to correct model origin differences (default: 0)
   // Optional: engine-specific requirements
   engineRequirements?: EngineRequirements;
 }
@@ -178,18 +180,7 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
       },
     },
   },
-  [ItemType.FUEL_TANK]: {
-    name: 'Fuel Tank',
-    stackSize: 8,
-    texture: '/textures/rocket_parts/fuel_tank_face.png',
-    mineTime: 3.0,
-    rocketPart: {
-      partType: RocketPartType.FUEL_TANK,
-      modelPath: '/models/fuel_tank.obj',
-      texturePath: '/textures/rocket_parts/fuel_tank.png',
-      heightUnits: 2,
-    },
-  },
+
   [ItemType.COMMAND_MODULE]: {
     name: 'Command Module',
     stackSize: 8,
@@ -200,6 +191,19 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
       modelPath: '/models/command_module.obj',
       texturePath: '/textures/rocket_parts/command_module.png',
       heightUnits: 1,
+    },
+  },
+  [ItemType.MEDIUM_FUEL_TANK]: {
+    name: 'Medium Fuel Tank',
+    stackSize: 8,
+    texture: '/textures/rocket_parts/medium_fuel_tank_face.png',
+    mineTime: 3.0,
+    rocketPart: {
+      partType: RocketPartType.FUEL_TANK,
+      modelPath: '/models/medium_fuel_tank.obj',
+      texturePath: '/textures/rocket_parts/medium_fuel_tank.png',
+      heightUnits: 1,
+      modelYOffset: 0, // the unit height change to one no longer requires this offset (for now lol)
     },
   },
 };

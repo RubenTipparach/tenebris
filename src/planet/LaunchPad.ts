@@ -7,6 +7,8 @@ import { ItemType, ITEM_DATA, RocketPartType } from '../player/Inventory';
 import { RocketPart } from './RocketPart';
 import techVert from '../shaders/tech/tech.vert';
 import techFrag from '../shaders/tech/tech.frag';
+import launchPadVert from '../shaders/launchPad/launchPad.vert';
+import launchPadFrag from '../shaders/launchPad/launchPad.frag';
 import rocketPartVert from '../shaders/rocketPart/rocketPart.vert';
 import rocketPartFrag from '../shaders/rocketPart/rocketPart.frag';
 
@@ -123,18 +125,30 @@ export class LaunchPadManager {
       }
     }
     // Update all placed rocket parts (cloned materials)
+    // Calculate sun brightness from the launch pad position and apply to ALL parts
+    // This ensures consistent vertex lighting across the entire rocket stack
     for (const launchPad of this.launchPads) {
+      if (launchPad.rocketParts.length === 0) continue;
+
+      // Always use launch pad position for consistent lighting across all parts
+      const lightingPosition = launchPad.position;
+      const surfaceDir = lightingPosition.clone().sub(this.planetCenter).normalize();
+      const sunFacing = surfaceDir.dot(direction);
+      // smoothstep(-0.1, 0.3, sunFacing) - same as shader
+      const sunBrightness = this.smoothstep(-0.1, 0.3, sunFacing);
+
+      // Apply the same sun brightness to ALL parts
       for (const rocketPart of launchPad.rocketParts) {
-        rocketPart.mesh.traverse((child) => {
-          if (child instanceof THREE.Mesh) {
-            const material = child.material as THREE.ShaderMaterial;
-            if (material.uniforms && material.uniforms.sunDirection) {
-              material.uniforms.sunDirection.value.copy(direction);
-            }
-          }
-        });
+        rocketPart.setSunDirection(direction);
+        rocketPart.setSunBrightness(sunBrightness);
       }
     }
+  }
+
+  // Helper function to match GLSL smoothstep
+  private smoothstep(edge0: number, edge1: number, x: number): number {
+    const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
+    return t * t * (3 - 2 * t);
   }
 
   // Update planet center
@@ -198,6 +212,7 @@ export class LaunchPadManager {
     this.applyHexBaseUVs(this.baseGeometry);
 
     // Create base material with transparency support and double-sided rendering
+    // Uses launchPad shader for world-space geometry (like terrain)
     this.baseMaterial = new THREE.ShaderMaterial({
       uniforms: {
         techTexture: { value: baseTexture },
@@ -207,8 +222,8 @@ export class LaunchPadManager {
         directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
         torchLight: { value: 0.0 },
       },
-      vertexShader: techVert,
-      fragmentShader: techFrag,
+      vertexShader: launchPadVert,
+      fragmentShader: launchPadFrag,
       transparent: true,
       depthWrite: true,
       alphaTest: 0.01,
@@ -944,6 +959,7 @@ export class LaunchPadManager {
           ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
           directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
           torchLight: { value: 0.0 },
+          sunBrightness: { value: 1.0 }, // Pre-calculated sun brightness for consistent lighting
         },
         vertexShader: rocketPartVert,
         fragmentShader: rocketPartFrag,
@@ -1012,6 +1028,15 @@ export class LaunchPadManager {
 
     // Create mesh with cloned material so each part has independent uniforms
     const clonedMaterial = assets.material.clone();
+
+    // Calculate sun brightness from the launch pad position for consistent lighting
+    // Always use launchPad.position as the reference - this ensures ALL parts get identical lighting
+    const lightingPosition = launchPad.position.clone();
+    const surfaceDir = lightingPosition.clone().sub(this.planetCenter).normalize();
+    const sunFacing = surfaceDir.dot(this.sunDirection);
+    const sunBrightness = this.smoothstep(-0.1, 0.3, sunFacing);
+    clonedMaterial.uniforms.sunBrightness.value = sunBrightness;
+
     const partMesh = new THREE.Mesh(assets.geometry, clonedMaterial);
     const partGroup = new THREE.Group();
     partGroup.add(partMesh);
@@ -1025,17 +1050,22 @@ export class LaunchPadManager {
     const towerSurfaceDistance = launchPad.towerTileCenter.distanceTo(this.planetCenter);
 
     // Calculate height based on existing parts
-    let heightOffset = 0;
+    // Each part's height is based on where the BOTTOM of the part should be
+    let bottomHeight = 0;
     for (const existingPart of launchPad.rocketParts) {
       const existingData = ITEM_DATA[existingPart.itemType];
       if (existingData.rocketPart) {
-        heightOffset += existingData.rocketPart.heightUnits * this.SEGMENT_HEIGHT;
+        bottomHeight += existingData.rocketPart.heightUnits * this.SEGMENT_HEIGHT;
       }
     }
 
-    // Position at the calculated height, starting from tower's surface level
-    // Height starts at same level as tower segments (0.5 * SEGMENT_HEIGHT for first segment center)
-    const partHeight = heightOffset + (itemData.rocketPart.heightUnits * this.SEGMENT_HEIGHT * 0.5);
+    // Position the part so its bottom is at bottomHeight
+    // Model origin is assumed to be at the center, so we add half the part's height
+    // to position the center correctly (bottom at bottomHeight means center at bottomHeight + halfHeight)
+    const partHalfHeight = (itemData.rocketPart.heightUnits * this.SEGMENT_HEIGHT) / 2;
+    // Apply per-part model offset to correct for different model origins
+    const modelYOffset = itemData.rocketPart.modelYOffset ?? 0;
+    const partHeight = bottomHeight + partHalfHeight + modelYOffset;
 
     // Orient the part first: Y axis along radial direction (from rocket tile)
     const up = new THREE.Vector3(0, 1, 0);
@@ -1355,33 +1385,22 @@ export class LaunchPadManager {
         }
       }
 
-      // Update rocket part meshes - each part calculates its own light based on its position
-      for (const rocketPart of launchPad.rocketParts) {
-        // Get the rocket part's world position
-        const partPosition = new THREE.Vector3();
-        rocketPart.mesh.getWorldPosition(partPosition);
-
-        // Calculate light for this specific part
-        let partLight = 0;
-        for (const torchPos of torchPositions) {
-          const distance = partPosition.distanceTo(torchPos);
-          if (distance < torchRange) {
-            const decay = 2;
-            const attenuation = 1 / (1 + decay * distance * distance / (torchRange * torchRange));
-            partLight += attenuation * torchIntensity;
-          }
+      // Update rocket part meshes - use launch pad position for consistent lighting across all parts
+      // (same approach as sunBrightness - all parts inherit from a single reference point)
+      let rocketPartLight = 0;
+      for (const torchPos of torchPositions) {
+        const distance = launchPad.position.distanceTo(torchPos);
+        if (distance < torchRange) {
+          const decay = 2;
+          const attenuation = 1 / (1 + decay * distance * distance / (torchRange * torchRange));
+          rocketPartLight += attenuation * torchIntensity;
         }
-        partLight = Math.min(1.5, partLight);
+      }
+      rocketPartLight = Math.min(1.5, rocketPartLight);
 
-        // Rocket part mesh is a Group containing the actual mesh
-        rocketPart.mesh.traverse((child) => {
-          if (child instanceof THREE.Mesh) {
-            const material = child.material as THREE.ShaderMaterial;
-            if (material.uniforms && material.uniforms.torchLight) {
-              material.uniforms.torchLight.value = partLight;
-            }
-          }
-        });
+      // Apply the same torch light to ALL rocket parts
+      for (const rocketPart of launchPad.rocketParts) {
+        rocketPart.setTorchLight(rocketPartLight);
       }
     }
   }

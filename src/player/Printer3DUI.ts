@@ -79,6 +79,50 @@ export const PRINTER_RECIPES: PrinterRecipe[] = [
     outputQuantity: 1,
     printTime: 60,
   },
+  // Medium Fuel Tank: 10x Aluminum + 1x Cobalt
+  // Layout: A1 A1 A1 / A1 Co A1 / A1 A1 A2
+  {
+    name: 'Medium Fuel Tank',
+    inputs: [
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 0 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 1 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 2 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 3 },
+      { itemType: ItemType.INGOT_COBALT, quantity: 1, slot: 4 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 5 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 6 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 7 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 2, slot: 8 },
+    ],
+    output: ItemType.MEDIUM_FUEL_TANK,
+    outputQuantity: 1,
+    printTime: 45,
+  },
+  // Command Module: 5x Aluminum + 2x Gold + 2x Cobalt + 2x Copper + 4x RAM + 1x CPU + 1x Motherboard + 1x Power Supply
+  // Layout: Al+Go Co+Cu Al+Go / RAM CPU RAM / Al+Co MB+PS Al+Cu
+  {
+    name: 'Command Module',
+    inputs: [
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 0 },
+      { itemType: ItemType.INGOT_GOLD, quantity: 1, slot: 0 },
+      { itemType: ItemType.INGOT_COBALT, quantity: 1, slot: 1 },
+      { itemType: ItemType.INGOT_COPPER, quantity: 1, slot: 1 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 2 },
+      { itemType: ItemType.INGOT_GOLD, quantity: 1, slot: 2 },
+      { itemType: ItemType.RAM_MODULE, quantity: 2, slot: 3 },
+      { itemType: ItemType.CPU_CHIP, quantity: 1, slot: 4 },
+      { itemType: ItemType.RAM_MODULE, quantity: 2, slot: 5 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 6 },
+      { itemType: ItemType.INGOT_COBALT, quantity: 1, slot: 6 },
+      { itemType: ItemType.MOTHERBOARD, quantity: 1, slot: 7 },
+      { itemType: ItemType.POWER_SUPPLY, quantity: 1, slot: 7 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 2, slot: 8 },
+      { itemType: ItemType.INGOT_COPPER, quantity: 1, slot: 8 },
+    ],
+    output: ItemType.COMMAND_MODULE,
+    outputQuantity: 1,
+    printTime: 50,
+  },
 ];
 
 export class Printer3DUI {

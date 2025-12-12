@@ -1,9 +1,10 @@
-// Rocket part vertex shader with adaptive lighting
-// Handles planet surface, nearby lights, and high-altitude standard lighting
+// Rocket part vertex shader with planet-aware lighting
+// Uses shared sunBrightness from JavaScript for consistent lighting across the whole rocket stack
 uniform vec3 planetCenter;
 uniform vec3 sunDirection;
 uniform float planetRadius;
 uniform float atmosphereHeight; // Height above surface where atmosphere ends
+uniform float sunBrightness; // Pre-calculated sun brightness from launch pad position (0-1)
 
 varying vec3 vNormal;
 varying vec3 vWorldPosition;
@@ -19,8 +20,9 @@ void main() {
   vec4 worldPos = modelMatrix * vec4(position, 1.0);
   vWorldPosition = worldPos.xyz;
 
-  // Transform normal to world space
-  vNormal = normalize(normalMatrix * normal);
+  // For world-space geometry, normals are already in world space
+  // Don't use normalMatrix - the geometry is created with correct world-space normals
+  vNormal = normalize(normal);
 
   // Calculate distance from planet center and altitude
   float distFromCenter = length(worldPos.xyz - planetCenter);
@@ -30,14 +32,9 @@ void main() {
   // Smooth transition over the atmosphere height
   vGravityWellStrength = 1.0 - smoothstep(0.0, atmosphereHeight, vAltitude);
 
-  // Calculate surface direction (from planet center)
-  vec3 surfaceDir = normalize(worldPos.xyz - planetCenter);
-
-  // Compute sun brightness based on angle between surface and sun
-  float sunFacing = dot(surfaceDir, sunDirection);
-
-  // Smooth transition at terminator (day/night boundary)
-  vSunBrightness = smoothstep(-0.1, 0.3, sunFacing);
+  // Use the pre-calculated sun brightness from JavaScript
+  // This ensures the entire rocket stack has consistent lighting
+  vSunBrightness = sunBrightness;
 
   gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
 }

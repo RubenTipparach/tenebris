@@ -55,6 +55,15 @@ export class RocketPart {
   }
 
   /**
+   * Update the sun brightness uniform (pre-calculated from launch pad position)
+   */
+  public setSunBrightness(value: number): void {
+    if (this.material.uniforms && this.material.uniforms.sunBrightness) {
+      this.material.uniforms.sunBrightness.value = value;
+    }
+  }
+
+  /**
    * Update the planet center uniform
    */
   public setPlanetCenter(center: THREE.Vector3): void {
