@@ -180,6 +180,19 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
       },
     },
   },
+  // Deprecated: Use MEDIUM_FUEL_TANK instead
+  [ItemType.FUEL_TANK]: {
+    name: 'Fuel Tank (Legacy)',
+    stackSize: 8,
+    texture: '/textures/rocket_parts/medium_fuel_tank_face.png',
+    mineTime: 3.0,
+    rocketPart: {
+      partType: RocketPartType.FUEL_TANK,
+      modelPath: '/models/medium_fuel_tank.obj',
+      texturePath: '/textures/rocket_parts/medium_fuel_tank.png',
+      heightUnits: 1,
+    },
+  },
 
   [ItemType.COMMAND_MODULE]: {
     name: 'Command Module',

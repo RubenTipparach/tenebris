@@ -455,7 +455,6 @@ export class LaunchPadUI {
 
   // Track if we're currently dragging a rocket part out
   private draggingRocketPart: boolean = false;
-  private draggingFromSlot: number = -1;
 
   /**
    * Handle starting a drag from a rocket slot (drag-out)
@@ -492,7 +491,6 @@ export class LaunchPadUI {
     }
 
     this.draggingRocketPart = true;
-    this.draggingFromSlot = slotIndex;
     console.log(`Started dragging rocket part from slot ${slotIndex}`);
   }
 
@@ -503,7 +501,6 @@ export class LaunchPadUI {
   private handleRocketSlotDragEnd(e: DragEvent, _slotIndex: number): void {
     if (!this.draggingRocketPart || !this.currentLaunchPad || !this.inventory) {
       this.draggingRocketPart = false;
-      this.draggingFromSlot = -1;
       return;
     }
 
@@ -523,7 +520,6 @@ export class LaunchPadUI {
     }
 
     this.draggingRocketPart = false;
-    this.draggingFromSlot = -1;
   }
 
   /**
@@ -1444,7 +1440,7 @@ export class LaunchPadUI {
           messageEl.innerHTML = '<span class="valid">Rocket ready for launch!</span>';
           this.validationMessageElement.classList.add('valid');
           this.validationMessageElement.classList.remove('invalid');
-        } else if (partCount > 0) {
+        } else if (rocketParts.length > 0) {
           // Only show errors if they have at least one part
           messageEl.innerHTML = validation.errors.map(e => `<span class="error">${e}</span>`).join('');
           this.validationMessageElement.classList.add('invalid');
