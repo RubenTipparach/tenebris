@@ -129,6 +129,8 @@ interface GeometryResultMessage {
   iceData: GeometryData;
   // Glass data
   glassData: GeometryData;
+  // Moon terrain data
+  moonRockData: GeometryData;
 }
 
 // Check if a block type is transparent (air, water, ice, or glass)
@@ -374,7 +376,8 @@ function buildColumnGeometry(
   snowSideData: GeometryData,
   dirtSnowData: GeometryData,
   iceData: GeometryData,
-  glassData: GeometryData
+  glassData: GeometryData,
+  moonRockData: GeometryData
 ): void {
   // Find surface depth (topmost solid block, searching from top down)
   // Depth system: 0 = bedrock, maxDepth-1 = sky
@@ -447,6 +450,7 @@ function buildColumnGeometry(
       case HexBlockType.DIRT_SNOW: blockGeomData = dirtSnowData; break;
       case HexBlockType.ICE: blockGeomData = iceData; break;
       case HexBlockType.GLASS: blockGeomData = glassData; break;
+      case HexBlockType.MOON_ROCK: blockGeomData = moonRockData; break;
       default: blockGeomData = topData; break; // Grass and others use top (grass) texture
     }
 
@@ -532,6 +536,8 @@ self.onmessage = (e: MessageEvent<BuildGeometryMessage>) => {
     const iceData = createEmptyGeometryData();
     // Glass geometry data
     const glassData = createEmptyGeometryData();
+    // Moon terrain geometry data
+    const moonRockData = createEmptyGeometryData();
 
     // Convert neighborData back to Map (it gets serialized as object)
     const neighborDataMap = new Map<number, NeighborData>(
@@ -543,7 +549,7 @@ self.onmessage = (e: MessageEvent<BuildGeometryMessage>) => {
         column, neighborDataMap, config,
         topData, sideData, grassSideData, stoneData, sandData, woodData, waterData,
         oreCoalData, oreCopperData, oreIronData, oreGoldData, oreLithiumData, oreAluminumData, oreCobaltData,
-        snowData, snowSideData, dirtSnowData, iceData, glassData
+        snowData, snowSideData, dirtSnowData, iceData, glassData, moonRockData
       );
 
       // Generate water walls for water blocks adjacent to air in neighbors
@@ -592,7 +598,8 @@ self.onmessage = (e: MessageEvent<BuildGeometryMessage>) => {
       snowSideData,
       dirtSnowData,
       iceData,
-      glassData
+      glassData,
+      moonRockData
     };
 
     // Transfer arrays for better performance

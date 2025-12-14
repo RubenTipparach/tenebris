@@ -28,7 +28,9 @@ export enum HexBlockType {
   GLASS = 19,
   // Advanced technology blocks
   COMPUTER = 20,
-  PRINTER_3D = 21
+  PRINTER_3D = 21,
+  // Moon terrain block
+  MOON_ROCK = 22
 }
 
 export function isSolid(blockType: HexBlockType | number): boolean {

@@ -314,6 +314,7 @@ export class Planet {
     dirtSnowData: GeometryData;
     iceData: GeometryData;
     glassData: GeometryData;
+    moonRockData: GeometryData;
   }): void {
     if (!this.batchedMeshGroup) return;
 
@@ -346,6 +347,8 @@ export class Planet {
       { dataKey: 'dirtSnowData', materialKey: 'dirtSnow' },
       { dataKey: 'iceData', materialKey: 'ice', renderOrder: 2 }, // Render after water (transparent)
       { dataKey: 'glassData', materialKey: 'glass', renderOrder: 3 }, // Render after ice (transparent)
+      // Moon terrain
+      { dataKey: 'moonRockData', materialKey: 'moonRock' },
     ];
 
     let newWaterMesh: THREE.Mesh | null = null;
@@ -430,6 +433,8 @@ export class Planet {
       waterSidePositions: number[]; waterSideNormals: number[]; waterSideUvs: number[]; waterSideIndices: number[];
       snowPositions: number[]; snowNormals: number[]; snowUvs: number[]; snowSkyLight: number[]; snowTorchLight: number[]; snowIndices: number[];
       icePositions: number[]; iceNormals: number[]; iceUvs: number[]; iceSkyLight: number[]; iceTorchLight: number[]; iceIndices: number[];
+      moonRockPositions: number[]; moonRockNormals: number[]; moonRockUvs: number[]; moonRockSkyLight: number[]; moonRockTorchLight: number[]; moonRockIndices: number[];
+      moonRockSidePositions: number[]; moonRockSideNormals: number[]; moonRockSideUvs: number[]; moonRockSideSkyLight: number[]; moonRockSideTorchLight: number[]; moonRockSideIndices: number[];
     }>;
   }): void {
     const startTotal = performance.now();
@@ -584,6 +589,24 @@ export class Planet {
         chunkGroup.add(mesh);
         meshCount++;
         totalVertices += chunkData.icePositions.length / 3;
+      }
+
+      // Moon rock mesh (uses moon rock LOD material)
+      if (chunkData.moonRockPositions && chunkData.moonRockPositions.length > 0) {
+        const geom = createGeom(chunkData.moonRockPositions, chunkData.moonRockNormals, chunkData.moonRockUvs, chunkData.moonRockIndices, chunkData.moonRockSkyLight, chunkData.moonRockTorchLight);
+        const mesh = new THREE.Mesh(geom, this.meshBuilder.getMoonRockLODMaterial());
+        chunkGroup.add(mesh);
+        meshCount++;
+        totalVertices += chunkData.moonRockPositions.length / 3;
+      }
+
+      // Moon rock side walls mesh (uses moon rock LOD material)
+      if (chunkData.moonRockSidePositions && chunkData.moonRockSidePositions.length > 0) {
+        const geom = createGeom(chunkData.moonRockSidePositions, chunkData.moonRockSideNormals, chunkData.moonRockSideUvs, chunkData.moonRockSideIndices, chunkData.moonRockSideSkyLight, chunkData.moonRockSideTorchLight);
+        const mesh = new THREE.Mesh(geom, this.meshBuilder.getMoonRockLODMaterial());
+        chunkGroup.add(mesh);
+        meshCount++;
+        totalVertices += chunkData.moonRockSidePositions.length / 3;
       }
 
       lodGroup.add(chunkGroup);
@@ -1217,6 +1240,10 @@ export class Planet {
       // Snow biome
       snowPositions: number[]; snowNormals: number[]; snowUvs: number[]; snowSkyLight: number[]; snowTorchLight: number[]; snowIndices: number[]; snowVertexOffset: number;
       icePositions: number[]; iceNormals: number[]; iceUvs: number[]; iceSkyLight: number[]; iceTorchLight: number[]; iceIndices: number[]; iceVertexOffset: number;
+      // Moon terrain
+      moonRockPositions: number[]; moonRockNormals: number[]; moonRockUvs: number[]; moonRockSkyLight: number[]; moonRockTorchLight: number[]; moonRockIndices: number[]; moonRockVertexOffset: number;
+      // Moon terrain side walls
+      moonRockSidePositions: number[]; moonRockSideNormals: number[]; moonRockSideUvs: number[]; moonRockSideSkyLight: number[]; moonRockSideTorchLight: number[]; moonRockSideIndices: number[]; moonRockSideVertexOffset: number;
     }
 
     const chunkGeometries: ChunkGeometry[] = [];
@@ -1232,7 +1259,11 @@ export class Planet {
         waterSidePositions: [], waterSideNormals: [], waterSideUvs: [], waterSideIndices: [], waterSideVertexOffset: 0,
         // Snow biome
         snowPositions: [], snowNormals: [], snowUvs: [], snowSkyLight: [], snowTorchLight: [], snowIndices: [], snowVertexOffset: 0,
-        icePositions: [], iceNormals: [], iceUvs: [], iceSkyLight: [], iceTorchLight: [], iceIndices: [], iceVertexOffset: 0
+        icePositions: [], iceNormals: [], iceUvs: [], iceSkyLight: [], iceTorchLight: [], iceIndices: [], iceVertexOffset: 0,
+        // Moon terrain
+        moonRockPositions: [], moonRockNormals: [], moonRockUvs: [], moonRockSkyLight: [], moonRockTorchLight: [], moonRockIndices: [], moonRockVertexOffset: 0,
+        // Moon terrain side walls
+        moonRockSidePositions: [], moonRockSideNormals: [], moonRockSideUvs: [], moonRockSideSkyLight: [], moonRockSideTorchLight: [], moonRockSideIndices: [], moonRockSideVertexOffset: 0
       });
     }
 
@@ -1414,6 +1445,15 @@ export class Planet {
         torchLight = chunk.iceTorchLight;
         indices = chunk.iceIndices;
         vertexOffset = chunk.iceVertexOffset;
+      } else if (surfaceBlockType === HexBlockType.MOON_ROCK) {
+        // Moon terrain uses moon rock buffer
+        positions = chunk.moonRockPositions;
+        normals = chunk.moonRockNormals;
+        uvs = chunk.moonRockUvs;
+        skyLight = chunk.moonRockSkyLight;
+        torchLight = chunk.moonRockTorchLight;
+        indices = chunk.moonRockIndices;
+        vertexOffset = chunk.moonRockVertexOffset;
       } else {
         // GRASS, LEAVES, or any other type defaults to grass
         positions = chunk.grassPositions;
@@ -1464,6 +1504,8 @@ export class Planet {
         chunk.snowVertexOffset = vertexOffset;
       } else if (surfaceBlockType === HexBlockType.ICE || surfaceBlockType === HexBlockType.GLASS) {
         chunk.iceVertexOffset = vertexOffset;
+      } else if (surfaceBlockType === HexBlockType.MOON_ROCK) {
+        chunk.moonRockVertexOffset = vertexOffset;
       } else {
         chunk.grassVertexOffset = vertexOffset;
       }
@@ -1486,6 +1528,7 @@ export class Planet {
       const thisTileData = tileDisplayRadii.get(tileIndex);
       const thisRadius = thisTileData?.radius ?? this.radius;
       const thisIsWater = thisTileData?.isWater ?? false;
+      const thisIsMoonRock = thisTileData?.surfaceBlockType === HexBlockType.MOON_ROCK;
       const numSides = tile.vertices.length;
 
       // Get pre-computed normalized data
@@ -1559,14 +1602,40 @@ export class Planet {
         const snLen = Math.sqrt(snx * snx + sny * sny + snz * snz);
         if (snLen > 0) { snx /= snLen; sny /= snLen; snz /= snLen; }
 
-        // Select appropriate buffer based on whether this is a water tile (per-chunk)
-        const positions = thisIsWater ? chunk.waterSidePositions : chunk.sidePositions;
-        const normals = thisIsWater ? chunk.waterSideNormals : chunk.sideNormals;
-        const uvs = thisIsWater ? chunk.waterSideUvs : chunk.sideUvs;
-        const sideLight = thisIsWater ? null : chunk.sideSkyLight;
-        const sideTorchLight = thisIsWater ? null : chunk.sideTorchLight;
-        const indices = thisIsWater ? chunk.waterSideIndices : chunk.sideIndices;
-        const baseIdx = thisIsWater ? chunk.waterSideVertexOffset : chunk.sideVertexOffset;
+        // Select appropriate buffer based on tile type (per-chunk)
+        let positions: number[];
+        let normals: number[];
+        let uvs: number[];
+        let sideLight: number[] | null;
+        let sideTorchLight: number[] | null;
+        let indices: number[];
+        let baseIdx: number;
+
+        if (thisIsWater) {
+          positions = chunk.waterSidePositions;
+          normals = chunk.waterSideNormals;
+          uvs = chunk.waterSideUvs;
+          sideLight = null;
+          sideTorchLight = null;
+          indices = chunk.waterSideIndices;
+          baseIdx = chunk.waterSideVertexOffset;
+        } else if (thisIsMoonRock) {
+          positions = chunk.moonRockSidePositions;
+          normals = chunk.moonRockSideNormals;
+          uvs = chunk.moonRockSideUvs;
+          sideLight = chunk.moonRockSideSkyLight;
+          sideTorchLight = chunk.moonRockSideTorchLight;
+          indices = chunk.moonRockSideIndices;
+          baseIdx = chunk.moonRockSideVertexOffset;
+        } else {
+          positions = chunk.sidePositions;
+          normals = chunk.sideNormals;
+          uvs = chunk.sideUvs;
+          sideLight = chunk.sideSkyLight;
+          sideTorchLight = chunk.sideTorchLight;
+          indices = chunk.sideIndices;
+          baseIdx = chunk.sideVertexOffset;
+        }
 
         // Check if this tile has a torch (for side walls)
         const sideTorchValue = this.tilesWithTorches.has(tileIndex) ? 1.0 : 0.0;
@@ -1594,6 +1663,8 @@ export class Planet {
 
         if (thisIsWater) {
           chunk.waterSideVertexOffset += 4;
+        } else if (thisIsMoonRock) {
+          chunk.moonRockSideVertexOffset += 4;
         } else {
           chunk.sideVertexOffset += 4;
         }
@@ -1799,6 +1870,13 @@ export class Planet {
         chunkGroup.add(mesh);
       }
 
+      // Moon rock mesh (uses moon rock LOD material)
+      if (chunk.moonRockPositions.length > 0) {
+        const geom = createLODGeom(chunk.moonRockPositions, chunk.moonRockNormals, chunk.moonRockUvs, chunk.moonRockIndices, chunk.moonRockSkyLight, chunk.moonRockTorchLight);
+        const mesh = new THREE.Mesh(geom, this.meshBuilder.getMoonRockLODMaterial());
+        chunkGroup.add(mesh);
+      }
+
       // Water mesh (uses simple material, no skyLight/torchLight)
       if (chunk.waterPositions.length > 0) {
         const geom = new THREE.BufferGeometry();
@@ -1827,6 +1905,13 @@ export class Planet {
         geom.setIndex(chunk.waterSideIndices);
         const mesh = new THREE.Mesh(geom, this.meshBuilder.getWaterLODMaterial());
         mesh.renderOrder = -2;
+        chunkGroup.add(mesh);
+      }
+
+      // Moon rock side walls mesh (uses moon rock LOD material)
+      if (chunk.moonRockSidePositions.length > 0) {
+        const geom = createLODGeom(chunk.moonRockSidePositions, chunk.moonRockSideNormals, chunk.moonRockSideUvs, chunk.moonRockSideIndices, chunk.moonRockSideSkyLight, chunk.moonRockSideTorchLight);
+        const mesh = new THREE.Mesh(geom, this.meshBuilder.getMoonRockLODMaterial());
         chunkGroup.add(mesh);
       }
 
@@ -1886,6 +1971,9 @@ export class Planet {
 
     // Third pass: Create blocks based on height map
     // Depth system: 0 = bedrock (bottom), MAX_DEPTH-1 = sky (top)
+    // Single-texture planets (like Moon) use MOON_ROCK for all native terrain
+    const isSingleTexturePlanet = !!this.config.texturePath;
+
     for (const tile of this.polyhedron.tiles) {
       const blocks: HexBlockType[] = [];
       const surfaceDepth = heightMap.get(tile.index) ?? SEA_LEVEL_DEPTH;
@@ -1903,6 +1991,9 @@ export class Planet {
         if (depth > surfaceDepth) {
           // Above surface = air
           blocks.push(HexBlockType.AIR);
+        } else if (isSingleTexturePlanet) {
+          // Single-texture planet (Moon): all solid blocks are MOON_ROCK
+          blocks.push(HexBlockType.MOON_ROCK);
         } else if (depth === surfaceDepth) {
           // Surface block - similar rules to grass (only on exposed surface)
           if (isBeach && !isPolar) {
@@ -2802,6 +2893,8 @@ export class Planet {
     { key: 'dirtSnow', getMaterial: () => this.meshBuilder.getDirtSnowMaterial() },
     { key: 'ice', getMaterial: () => this.meshBuilder.getIceMaterial(), renderOrder: 2 },
     { key: 'glass', getMaterial: () => this.meshBuilder.getGlassMaterial(), renderOrder: 3 },
+    // Moon terrain
+    { key: 'moonRock', getMaterial: () => this.meshBuilder.getMoonRockMaterial() },
   ];
 
   private rebuildBatchedMeshes(): void {
@@ -2890,6 +2983,8 @@ export class Planet {
       case HexBlockType.DIRT_SNOW: return 'dirtSnow';
       case HexBlockType.ICE: return 'ice';
       case HexBlockType.GLASS: return 'glass';
+      // Moon terrain
+      case HexBlockType.MOON_ROCK: return 'moonRock';
       default: return 'top';
     }
   }
@@ -2915,6 +3010,8 @@ export class Planet {
       case HexBlockType.DIRT_SNOW: return 'dirtSnow';
       case HexBlockType.ICE: return 'ice';
       case HexBlockType.GLASS: return 'glass';
+      // Moon terrain
+      case HexBlockType.MOON_ROCK: return 'moonRock';
       default: return 'side';
     }
   }
@@ -2938,6 +3035,8 @@ export class Planet {
       case HexBlockType.DIRT_SNOW: return 'dirtSnow';
       case HexBlockType.ICE: return 'ice';
       case HexBlockType.GLASS: return 'glass';
+      // Moon terrain
+      case HexBlockType.MOON_ROCK: return 'moonRock';
       // Dirt and grass show dirt texture on bottom
       default: return 'side';
     }

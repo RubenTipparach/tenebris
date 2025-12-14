@@ -60,7 +60,7 @@ export const SOUND_DEFINITIONS: Record<string, SoundConfig> = {
     falloffDistance: 20,
   },
   footstep_stone: {
-    path: '/sfx/stone01.ogg',
+    path: '/sfx/03_Step_grass_03.wav',
     volume: 0.4,
     category: SoundCategory.FOOTSTEPS,
     poolSize: 4,
@@ -68,7 +68,7 @@ export const SOUND_DEFINITIONS: Record<string, SoundConfig> = {
     falloffDistance: 20,
   },
   footstep_rock: {
-    path: '/sfx/08_Step_rock_02.wav',
+    path: '/sfx/03_Step_grass_03.wav',
     volume: 0.4,
     category: SoundCategory.FOOTSTEPS,
     poolSize: 4,
@@ -76,7 +76,7 @@ export const SOUND_DEFINITIONS: Record<string, SoundConfig> = {
     falloffDistance: 20,
   },
   footstep_wood: {
-    path: '/sfx/12_Step_wood_03.wav',
+    path: '/sfx/03_Step_grass_03.wav',
     volume: 0.4,
     category: SoundCategory.FOOTSTEPS,
     poolSize: 4,
@@ -84,7 +84,7 @@ export const SOUND_DEFINITIONS: Record<string, SoundConfig> = {
     falloffDistance: 20,
   },
   footstep_water: {
-    path: '/sfx/splash-621.mp3',
+    path: '/sfx/14_Step_water_02.wav',
     volume: 0.4,
     category: SoundCategory.FOOTSTEPS,
     poolSize: 4,
@@ -156,7 +156,7 @@ export const SOUND_DEFINITIONS: Record<string, SoundConfig> = {
   // === MINING ===
   mining_hit: {
     path: '/sfx/61_Hit_03.wav',
-    volume: 1.0,
+    volume: 0.1,
     category: SoundCategory.MINING,
     poolSize: 3,
     spatial: true,

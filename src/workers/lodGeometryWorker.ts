@@ -105,6 +105,22 @@ interface ChunkGeometry {
   iceTorchLight: number[];
   iceIndices: number[];
   iceVertexOffset: number;
+  // Moon terrain buffers
+  moonRockPositions: number[];
+  moonRockNormals: number[];
+  moonRockUvs: number[];
+  moonRockSkyLight: number[];
+  moonRockTorchLight: number[];
+  moonRockIndices: number[];
+  moonRockVertexOffset: number;
+  // Moon terrain side buffers (for side walls)
+  moonRockSidePositions: number[];
+  moonRockSideNormals: number[];
+  moonRockSideUvs: number[];
+  moonRockSideSkyLight: number[];
+  moonRockSideTorchLight: number[];
+  moonRockSideIndices: number[];
+  moonRockSideVertexOffset: number;
 }
 
 function createEmptyChunkGeometry(): ChunkGeometry {
@@ -118,7 +134,9 @@ function createEmptyChunkGeometry(): ChunkGeometry {
     sidePositions: [], sideNormals: [], sideUvs: [], sideSkyLight: [], sideTorchLight: [], sideIndices: [], sideVertexOffset: 0,
     waterSidePositions: [], waterSideNormals: [], waterSideUvs: [], waterSideIndices: [], waterSideVertexOffset: 0,
     snowPositions: [], snowNormals: [], snowUvs: [], snowSkyLight: [], snowTorchLight: [], snowIndices: [], snowVertexOffset: 0,
-    icePositions: [], iceNormals: [], iceUvs: [], iceSkyLight: [], iceTorchLight: [], iceIndices: [], iceVertexOffset: 0
+    icePositions: [], iceNormals: [], iceUvs: [], iceSkyLight: [], iceTorchLight: [], iceIndices: [], iceVertexOffset: 0,
+    moonRockPositions: [], moonRockNormals: [], moonRockUvs: [], moonRockSkyLight: [], moonRockTorchLight: [], moonRockIndices: [], moonRockVertexOffset: 0,
+    moonRockSidePositions: [], moonRockSideNormals: [], moonRockSideUvs: [], moonRockSideSkyLight: [], moonRockSideTorchLight: [], moonRockSideIndices: [], moonRockSideVertexOffset: 0
   };
 }
 
@@ -179,7 +197,9 @@ const HexBlockType = {
   GLASS: 19,
   // Advanced technology blocks
   COMPUTER: 20,
-  PRINTER_3D: 21
+  PRINTER_3D: 21,
+  // Moon terrain
+  MOON_ROCK: 22
 };
 
 // Config passed from main thread
@@ -504,6 +524,14 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
         torchLight = chunk.iceTorchLight;
         indices = chunk.iceIndices;
         vertexOffset = chunk.iceVertexOffset;
+      } else if (surfaceBlockType === HexBlockType.MOON_ROCK) {
+        positions = chunk.moonRockPositions;
+        normals = chunk.moonRockNormals;
+        uvs = chunk.moonRockUvs;
+        skyLight = chunk.moonRockSkyLight;
+        torchLight = chunk.moonRockTorchLight;
+        indices = chunk.moonRockIndices;
+        vertexOffset = chunk.moonRockVertexOffset;
       } else {
         // GRASS, LEAVES, or any other type defaults to grass
         positions = chunk.grassPositions;
@@ -563,6 +591,8 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
         chunk.snowVertexOffset = vertexOffset;
       } else if (surfaceBlockType === HexBlockType.ICE || surfaceBlockType === HexBlockType.GLASS) {
         chunk.iceVertexOffset = vertexOffset;
+      } else if (surfaceBlockType === HexBlockType.MOON_ROCK) {
+        chunk.moonRockVertexOffset = vertexOffset;
       } else {
         chunk.grassVertexOffset = vertexOffset;
       }
@@ -576,6 +606,7 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
       const info = tileInfo.get(tileIndex)!
       const thisRadius = info.radius;
       const thisIsWater = info.isWater;
+      const thisIsMoonRock = info.surfaceBlockType === HexBlockType.MOON_ROCK;
       const normalizedVerts = precomputed.normalizedVertices;
       const edgeNeighborIdx = precomputed.edgeNeighborIdx;
       const numSides = normalizedVerts.length;
@@ -617,13 +648,33 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
         const sny = crossLen > 0 ? crossY / crossLen : 0;
         const snz = crossLen > 0 ? crossZ / crossLen : 0;
 
-        const positions = thisIsWater ? chunk.waterSidePositions : chunk.sidePositions;
-        const normals = thisIsWater ? chunk.waterSideNormals : chunk.sideNormals;
-        const uvs = thisIsWater ? chunk.waterSideUvs : chunk.sideUvs;
-        const skyLight = thisIsWater ? null : chunk.sideSkyLight;
-        const sideTorchLight = thisIsWater ? null : chunk.sideTorchLight;
-        const indices = thisIsWater ? chunk.waterSideIndices : chunk.sideIndices;
-        const baseIdx = thisIsWater ? chunk.waterSideVertexOffset : chunk.sideVertexOffset;
+        // Select buffers based on block type: water, moon rock, or default (dirt)
+        let positions: number[], normals: number[], uvs: number[], skyLight: number[] | null, sideTorchLight: number[] | null, indices: number[], baseIdx: number;
+        if (thisIsWater) {
+          positions = chunk.waterSidePositions;
+          normals = chunk.waterSideNormals;
+          uvs = chunk.waterSideUvs;
+          skyLight = null;
+          sideTorchLight = null;
+          indices = chunk.waterSideIndices;
+          baseIdx = chunk.waterSideVertexOffset;
+        } else if (thisIsMoonRock) {
+          positions = chunk.moonRockSidePositions;
+          normals = chunk.moonRockSideNormals;
+          uvs = chunk.moonRockSideUvs;
+          skyLight = chunk.moonRockSideSkyLight;
+          sideTorchLight = chunk.moonRockSideTorchLight;
+          indices = chunk.moonRockSideIndices;
+          baseIdx = chunk.moonRockSideVertexOffset;
+        } else {
+          positions = chunk.sidePositions;
+          normals = chunk.sideNormals;
+          uvs = chunk.sideUvs;
+          skyLight = chunk.sideSkyLight;
+          sideTorchLight = chunk.sideTorchLight;
+          indices = chunk.sideIndices;
+          baseIdx = chunk.sideVertexOffset;
+        }
 
         positions.push(
           innerV1x, innerV1y, innerV1z,
@@ -649,6 +700,8 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
 
         if (thisIsWater) {
           chunk.waterSideVertexOffset += 4;
+        } else if (thisIsMoonRock) {
+          chunk.moonRockSideVertexOffset += 4;
         } else {
           chunk.sideVertexOffset += 4;
         }

@@ -103,79 +103,14 @@ export class HexBlockMeshBuilder {
       });
     };
 
+    // Store the single texture path for moonRock material creation below
+    let moonTexture: THREE.Texture | null = null;
     if (singleTexturePath) {
-      // Single texture planet (e.g., moon) - use same texture for all surfaces
-      const texture = await this.loadTexture(singleTexturePath);
-      configureTexture(texture);
-
-      this.textures.set('primary', texture);
-
-      // Parse underwater fog color for terrain shader (even though moon has no water, shader needs it)
-      const terrainUnderwaterFogColor = new THREE.Color(PlayerConfig.UNDERWATER_FOG_COLOR);
-
-      // Use terrain shader for proper day/night lighting based on sun position
-      const createTerrainMaterial = (tex: THREE.Texture): THREE.ShaderMaterial => {
-        const mat = new THREE.ShaderMaterial({
-          uniforms: {
-            terrainTexture: { value: tex },
-            sunDirection: { value: this.sunDirection.clone() },
-            planetCenter: { value: this.planetCenter.clone() },
-            ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
-            directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
-            // Underwater uniforms (not used for moon but shader requires them)
-            waterLevel: { value: 0.0 },
-            isUnderwater: { value: 0.0 },
-            underwaterFogColor: { value: terrainUnderwaterFogColor },
-            underwaterFogNear: { value: PlayerConfig.UNDERWATER_FOG_NEAR },
-            underwaterFogFar: { value: PlayerConfig.UNDERWATER_FOG_FAR },
-            underwaterDimming: { value: PlayerConfig.UNDERWATER_TERRAIN_DIMMING ?? 0.3 },
-          },
-          vertexShader: terrainVert,
-          fragmentShader: terrainFrag,
-        });
-        this.terrainMaterials.push(mat);
-        return mat;
-      };
-
-      const material = createTerrainMaterial(texture);
-
-      // All surface types use the same material
-      this.materials.set('top', material);
-      this.materials.set('side', material);
-      this.materials.set('bottom', material);
-      this.materials.set('stone', material);
-
-      // LOD materials - use terrain shader for consistent day/night lighting
-      const createTerrainLODMaterial = (tex: THREE.Texture): THREE.ShaderMaterial => {
-        const mat = new THREE.ShaderMaterial({
-          uniforms: {
-            terrainTexture: { value: tex },
-            sunDirection: { value: this.sunDirection.clone() },
-            planetCenter: { value: this.planetCenter.clone() },
-            ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
-            directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
-            waterLevel: { value: 0.0 },
-            isUnderwater: { value: 0.0 },
-            underwaterFogColor: { value: terrainUnderwaterFogColor },
-            underwaterFogNear: { value: PlayerConfig.UNDERWATER_FOG_NEAR },
-            underwaterFogFar: { value: PlayerConfig.UNDERWATER_FOG_FAR },
-            underwaterDimming: { value: PlayerConfig.UNDERWATER_TERRAIN_DIMMING ?? 0.3 },
-          },
-          vertexShader: terrainVert,
-          fragmentShader: terrainFrag,
-          polygonOffset: true,
-          polygonOffsetFactor: lodOffsetFactor,
-          polygonOffsetUnits: lodOffsetUnits
-        });
-        this.terrainMaterials.push(mat);
-        return mat;
-      };
-
-      const lodMaterial = createTerrainLODMaterial(texture);
-      this.materials.set('topLOD', lodMaterial);
-      this.materials.set('sideLOD', lodMaterial);
-      this.materials.set('waterLOD', createLODMaterial(texture)); // Fallback for planets without water
-      return;
+      // Single texture planet (e.g., moon) - load the native terrain texture
+      moonTexture = await this.loadTexture(singleTexturePath);
+      configureTexture(moonTexture);
+      this.textures.set('primary', moonTexture);
+      this.textures.set('moonRock', moonTexture);
     }
 
     // Multi-texture planet (e.g., Earth) - different textures for different surfaces
@@ -271,6 +206,12 @@ export class HexBlockMeshBuilder {
     this.materials.set('oreLithium', createTerrainMaterial(lithiumTexture));
     this.materials.set('oreAluminum', createTerrainMaterial(aluminumTexture));
     this.materials.set('oreCobalt', createTerrainMaterial(cobaltTexture));
+    // Moon rock material (uses moon texture if loaded, else stone)
+    if (moonTexture) {
+      this.materials.set('moonRock', createTerrainMaterial(moonTexture));
+    } else {
+      this.materials.set('moonRock', createTerrainMaterial(stoneTexture)); // Fallback
+    }
     // Snow biome materials - snow and dirt_snow use standard terrain shader
     this.materials.set('snow', createTerrainMaterial(snowTexture));
     this.materials.set('dirtSnow', createTerrainMaterial(dirtSnowTexture)); // Dirt with snow on top
@@ -436,6 +377,12 @@ export class HexBlockMeshBuilder {
     this.materials.set('snowLOD', createTerrainLODMaterial(snowTexture));
     this.materials.set('iceLOD', createTerrainLODMaterial(iceTexture)); // Opaque ice for LOD (no transparency)
     this.materials.set('glassLOD', createTerrainLODMaterial(glassTexture)); // Opaque glass for LOD
+    // Moon rock LOD (uses moon texture if loaded, else stone)
+    if (moonTexture) {
+      this.materials.set('moonRockLOD', createTerrainLODMaterial(moonTexture));
+    } else {
+      this.materials.set('moonRockLOD', createTerrainLODMaterial(stoneTexture));
+    }
     // Water LOD uses opaque material - no transparency for distant water
     const waterLODMat = createLODMaterial(waterTexture, waterColor);
     waterLODMat.side = THREE.DoubleSide;
@@ -503,6 +450,10 @@ export class HexBlockMeshBuilder {
     return this.materials.get('glass')!;
   }
 
+  public getMoonRockMaterial(): THREE.Material {
+    return this.materials.get('moonRock')!;
+  }
+
   public getSeaWallMaterial(): THREE.Material | null {
     return this.materials.get('seaWall') ?? null;
   }
@@ -549,6 +500,10 @@ export class HexBlockMeshBuilder {
 
   public getGlassLODMaterial(): THREE.Material {
     return this.materials.get('glassLOD')!;
+  }
+
+  public getMoonRockLODMaterial(): THREE.Material {
+    return this.materials.get('moonRockLOD')!;
   }
 
   // Create separate geometries for each face type
