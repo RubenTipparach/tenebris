@@ -8,6 +8,7 @@ import { PlanetTreeManager } from './planet/Tree';
 import { Atmosphere, createEarthAtmosphere } from './planet/Atmosphere';
 import { CloudSystem, createEarthClouds } from './planet/Clouds';
 import { PlayerConfig } from './config/PlayerConfig';
+import { SOLAR_SYSTEM, getBodyConfig, getGravityRadii } from './config/SolarSystemConfig';
 import { profiler } from './engine/Profiler';
 import { gameStorage } from './engine/GameStorage';
 import { loadingManager } from './engine/LoadingManager';
@@ -15,12 +16,14 @@ import { MenuManager } from './player/MenuManager';
 import { initScreenshotHandler } from './utils/screenshot';
 import { RocketFlightManager } from './rocket';
 import { AudioManager } from './engine/AudioManager';
+import { MusicManager } from './engine/MusicManager';
 
 class PlanetGame {
   private engine: GameEngine;
   private inputManager: InputManager;
-  private earth: Planet;
-  private moon: Planet;
+  private planets: Map<string, Planet> = new Map();
+  private earth: Planet; // Quick reference to starting planet
+  private moon: Planet;  // Quick reference for backwards compatibility
   private player: PlanetPlayer;
   private blockInteraction: PlanetBlockInteraction;
   private treeManager: PlanetTreeManager;
@@ -58,12 +61,29 @@ class PlanetGame {
     this.engine = new GameEngine(container);
     this.inputManager = new InputManager();
 
-    // Create Earth with configurable subdivisions
-    this.earth = new Planet(this.engine.scene, 100, PlayerConfig.EARTH_SUBDIVISIONS);
+    // Create planets from solar system config
+    for (const bodyConfig of SOLAR_SYSTEM.bodies) {
+      // Skip non-landable bodies like the sun for now
+      if (!bodyConfig.landable) continue;
 
-    // Create Moon with configurable subdivisions and moon texture
-    // Position the moon at (400, 0, 0) - about 250 units from Earth surface
-    this.moon = new Planet(this.engine.scene, 50, PlayerConfig.MOON_SUBDIVISIONS, { texturePath: '/textures/moon.png', heightVariation: 0.6 });
+      const planet = new Planet(
+        this.engine.scene,
+        bodyConfig.radius,
+        bodyConfig.subdivisions,
+        {
+          texturePath: bodyConfig.visual.texturePath,
+          heightVariation: bodyConfig.visual.heightVariation,
+          hasWater: bodyConfig.terrain.hasWater,
+          seaLevel: bodyConfig.terrain.seaLevel,
+          tileset: bodyConfig.tileset,
+        }
+      );
+      this.planets.set(bodyConfig.id, planet);
+    }
+
+    // Set up quick references for backwards compatibility
+    this.earth = this.planets.get('earth')!;
+    this.moon = this.planets.get('moon')!;
 
     // Player will be initialized after planets
     this.player = null!;
@@ -119,26 +139,49 @@ class PlanetGame {
       // Initialize audio system
       loadingManager.setStatus('Loading audio...');
       await AudioManager.init();
+
+      // Initialize music system with saved state
+      const savedMusicState = gameStorage.getMusicState();
+      await MusicManager.init(savedMusicState ? {
+        lastPlayTime: savedMusicState.lastPlayTime,
+        enabled: savedMusicState.enabled,
+      } : undefined);
+
+      // Set up music persistence callback
+      MusicManager.setPersistCallback((state) => {
+        gameStorage.saveMusicState({
+          lastPlayTime: state.lastPlayTime,
+          enabled: state.enabled,
+        });
+      });
+
       loadingManager.completeStep('audio');
 
-      // Initialize both planets (loads textures, generates terrain)
+      // Initialize all planets (loads textures, generates terrain)
       loadingManager.setStatus('Loading textures...');
-      await this.earth.initialize();
-      await this.moon.initialize();
+      for (const planet of this.planets.values()) {
+        await planet.initialize();
+      }
       loadingManager.completeStep('textures');
 
-      // Position the moon and update its bounding spheres
+      // Position planets according to solar system config
       loadingManager.setStatus('Generating terrain...');
-      this.moon.center.set(400, 0, 0);
-      this.moon.updateBoundingSpheres();
+      for (const bodyConfig of SOLAR_SYSTEM.bodies) {
+        const planet = this.planets.get(bodyConfig.id);
+        if (planet) {
+          planet.center.set(bodyConfig.position.x, bodyConfig.position.y, bodyConfig.position.z);
+          planet.updateBoundingSpheres();
+        }
+      }
       loadingManager.completeStep('terrain-generation');
 
       // Calculate spawn position before building initial terrain
       loadingManager.setStatus('Building terrain around spawn...');
+      const earthConfig = getBodyConfig('earth')!;
       const spawnPosition = this.earth.getSpawnPositionAtLatLon(
-        PlayerConfig.EARTH_SPAWN_LAT,
-        PlayerConfig.EARTH_SPAWN_LON,
-        1 // 1m above surface
+        earthConfig.spawn?.latitude ?? 0,
+        earthConfig.spawn?.longitude ?? 0,
+        earthConfig.spawn?.altitudeAboveSurface ?? 3
       );
 
       // Build initial terrain around spawn point and wait for completion
@@ -150,16 +193,27 @@ class PlanetGame {
       loadingManager.setStatus('Initializing player...');
       this.player = new PlanetPlayer(this.engine.camera, this.inputManager, this.earth);
 
-      // Add moon as a second celestial body with weaker gravity
-      this.player.addPlanet(this.moon, {
-        gravityFullRadius: 70,    // 100% gravity within 70 units (moon radius 50 + 20)
-        gravityFalloffRadius: 120, // Gravity falls off to 0% at 120 units
-        gravityStrength: 0.4,     // Moon has 40% of Earth's gravity
-      });
+      // Add all other planets as celestial bodies with gravity from config
+      for (const bodyConfig of SOLAR_SYSTEM.bodies) {
+        // Skip the starting body (Earth) - it's already the primary planet
+        if (bodyConfig.id === SOLAR_SYSTEM.startingBody) continue;
+        // Skip non-landable bodies
+        if (!bodyConfig.landable) continue;
 
-      // Initialize block interaction with all planets (allows mining/placing on both Earth and Moon)
+        const planet = this.planets.get(bodyConfig.id);
+        if (planet) {
+          const gravityRadii = getGravityRadii(bodyConfig);
+          this.player.addPlanet(planet, {
+            gravityFullRadius: gravityRadii.fullRadius,
+            gravityFalloffRadius: gravityRadii.falloffRadius,
+            gravityStrength: bodyConfig.gravity.strength,
+          });
+        }
+      }
+
+      // Initialize block interaction with all planets
       this.blockInteraction = new PlanetBlockInteraction(
-        [this.earth, this.moon],
+        Array.from(this.planets.values()),
         this.player,
         this.engine.scene
       );
@@ -198,21 +252,21 @@ class PlanetGame {
         this.inputManager
       );
 
-      // Register planets for gravity calculations (with terrain height callbacks)
-      this.rocketFlightManager.addPlanet(
-        'Earth',
-        this.earth.center,
-        this.earth.radius,
-        1.0,
-        (direction) => this.earth.getSurfaceHeightInDirection(direction)
-      );
-      this.rocketFlightManager.addPlanet(
-        'Moon',
-        this.moon.center,
-        this.moon.radius,
-        0.4,
-        (direction) => this.moon.getSurfaceHeightInDirection(direction)
-      );
+      // Register all landable planets for rocket gravity calculations
+      for (const bodyConfig of SOLAR_SYSTEM.bodies) {
+        if (!bodyConfig.landable) continue;
+
+        const planet = this.planets.get(bodyConfig.id);
+        if (planet) {
+          this.rocketFlightManager.addPlanet(
+            bodyConfig.name,
+            planet.center,
+            planet.radius,
+            bodyConfig.gravity.strength,
+            (direction) => planet.getSurfaceHeightInDirection(direction)
+          );
+        }
+      }
 
       // Set up close all menus callback for boarding rocket
       this.blockInteraction.getLaunchPadUI().setOnCloseAllMenusCallback(() => {
@@ -386,6 +440,9 @@ class PlanetGame {
       cameraForward,
       this.engine.camera.up
     );
+
+    // Update music system (checks if time to play new song)
+    MusicManager.update();
 
     // Check if in rocket flight mode
     const inFlightMode = this.rocketFlightManager?.isInFlight() ?? false;
@@ -583,6 +640,24 @@ class PlanetGame {
     cloudsToggle.addEventListener('change', () => {
       this.earthClouds.setVisible(cloudsToggle.checked);
     });
+
+    // Handle music toggle
+    const musicToggle = document.getElementById('toggle-music') as HTMLInputElement;
+    if (musicToggle) {
+      musicToggle.checked = MusicManager.isEnabled();
+
+      musicToggle.addEventListener('change', () => {
+        MusicManager.setEnabled(musicToggle.checked);
+      });
+    }
+
+    // Handle play music button
+    const playMusicBtn = document.getElementById('play-music-btn');
+    if (playMusicBtn) {
+      playMusicBtn.addEventListener('click', () => {
+        MusicManager.playRandomSong();
+      });
+    }
 
     // Handle teleport dropdown
     if (teleportSelect) {

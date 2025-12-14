@@ -64,6 +64,8 @@ export enum ItemType {
   FUEL_TANK = 46,
   COMMAND_MODULE = 47,
   MEDIUM_FUEL_TANK = 48,
+  // Moon terrain
+  MOON_ROCK = 49,
 }
 
 // Rocket part type for items that can be placed on the launch tower
@@ -219,6 +221,8 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
       modelYOffset: 0, // the unit height change to one no longer requires this offset (for now lol)
     },
   },
+  // Moon terrain (same mining time as stone)
+  [ItemType.MOON_ROCK]: { name: 'Moon Rock', stackSize: 64, texture: '/textures/moon.png', mineTime: 1.5 },
 };
 
 // Inventory slot

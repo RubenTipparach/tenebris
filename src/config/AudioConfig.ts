@@ -290,3 +290,48 @@ export const AUDIO_SETTINGS = {
     [SoundCategory.UI]: 0.5,
   } as Record<SoundCategory, number>,
 };
+
+// =============================================================================
+// MUSIC CONFIGURATION
+// =============================================================================
+
+/**
+ * Music track configuration
+ */
+export interface MusicTrackConfig {
+  path: string;
+  volume: number; // 0-1, track-specific volume multiplier
+  name: string;   // Display name for UI
+}
+
+/**
+ * Background music tracks
+ * Add new tracks here - they will automatically be available for random playback
+ */
+export const MUSIC_TRACKS: Record<string, MusicTrackConfig> = {
+  confrontation: {
+    path: '/music/Confrontation.mp3',
+    volume: 0.4,
+    name: 'Penelope M. - Confrontation',
+  },
+  deep_end: {
+    path: '/music/Subarachnoid Space - Deep End.mp3',
+    volume: 0.4,
+    name: 'Subarachnoid Space - Deep End',
+  },
+};
+
+/**
+ * Music system settings
+ */
+export const MUSIC_SETTINGS = {
+  // Time between songs (in seconds)
+  MIN_DELAY_SECONDS: 500,  // Minimum 500 seconds (~8 minutes)
+  MAX_DELAY_SECONDS: 600,  // Maximum 600 seconds (~10 minutes)
+
+  // Default music volume (0-1)
+  DEFAULT_VOLUME: 0.5,
+
+  // Fade out duration when stopping a track (seconds)
+  FADE_OUT_DURATION: 0.5,
+};

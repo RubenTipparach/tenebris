@@ -60,6 +60,8 @@ function blockToItem(blockType: HexBlockType): ItemType {
     // Advanced technology blocks
     case HexBlockType.COMPUTER: return ItemType.COMPUTER;
     case HexBlockType.PRINTER_3D: return ItemType.PRINTER_3D;
+    // Moon terrain
+    case HexBlockType.MOON_ROCK: return ItemType.MOON_ROCK;
     default: return ItemType.NONE;
   }
 }
@@ -85,6 +87,8 @@ function itemToBlock(itemType: ItemType): HexBlockType {
     case ItemType.ICE: return HexBlockType.ICE;
     // Glass can be placed
     case ItemType.GLASS: return HexBlockType.GLASS;
+    // Moon terrain can be placed
+    case ItemType.MOON_ROCK: return HexBlockType.MOON_ROCK;
     default: return HexBlockType.AIR;
   }
 }

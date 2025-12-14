@@ -417,6 +417,32 @@
       background: #b71c1c;
     }
 
+    /* Play music button */
+    .play-music-btn {
+      padding: 8px 20px;
+      background: #4a9eff;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      font-family: var(--game-font);
+      font-size: 22px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    .play-music-btn:hover {
+      background: #6ab4ff;
+    }
+
+    .play-music-btn:active {
+      background: #2a7edf;
+    }
+
+    .play-music-btn:disabled {
+      background: #555;
+      cursor: not-allowed;
+    }
+
     /* Menu tabs */
     .menu-tabs {
       display: flex;
@@ -1066,7 +1092,7 @@
       }
     }
   </style>
-  <script type="module" crossorigin src="/tenebris/assets/index-CgwX39l1.js"></script>
+  <script type="module" crossorigin src="/tenebris/assets/index-mwxS1xVD.js"></script>
 </head>
 <body>
   <!-- Loading screen -->
@@ -1129,6 +1155,17 @@
           <input type="checkbox" id="toggle-clouds" checked>
           <span class="toggle-slider"></span>
         </div>
+      </div>
+      <div class="settings-row">
+        <label for="toggle-music">Background Music</label>
+        <div class="toggle-switch">
+          <input type="checkbox" id="toggle-music" checked>
+          <span class="toggle-slider"></span>
+        </div>
+      </div>
+      <div class="settings-row">
+        <label>Play Random Song</label>
+        <button id="play-music-btn" class="play-music-btn">Play</button>
       </div>
       <div class="settings-row">
         <label for="teleport-select">Teleport</label>

@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { GoldbergPolyhedron, HexTile } from './GoldbergPolyhedron';
 import { HexBlockType, HexBlockMeshBuilder } from './HexBlock';
 import { PlayerConfig } from '../config/PlayerConfig';
+import { TilesetConfig } from '../config/SolarSystemConfig';
 import { profiler } from '../engine/Profiler';
 import planetVert from '../shaders/planet/planet.vert?raw';
 import planetFrag from '../shaders/planet/planet.frag?raw';
@@ -11,6 +12,7 @@ export interface PlanetConfig {
   heightVariation?: number;  // 0-1, how much terrain varies (default 1.0)
   hasWater?: boolean;  // Whether to generate water at sea level (default true for Earth)
   seaLevel?: number;   // Depth at which water appears (default 1, meaning radius - 1)
+  tileset?: TilesetConfig;  // Tileset configuration for block textures
 }
 
 export interface PlanetColumn {
@@ -156,7 +158,7 @@ export class Planet {
   }
 
   public async initialize(): Promise<void> {
-    await this.meshBuilder.loadTextures(this.config.texturePath);
+    await this.meshBuilder.loadTextures(this.config.texturePath, this.config.tileset);
     // Set planet center for terrain shader lighting calculations
     this.meshBuilder.setPlanetCenter(this.center);
     // Set water level for terrain shader underwater dimming

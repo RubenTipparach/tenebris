@@ -153,6 +153,12 @@ export interface SavedLaunchPad {
   rocketParts?: SavedRocketPart[];  // New: saved rocket parts stack
 }
 
+// Music state for persistence
+export interface MusicSaveData {
+  lastPlayTime: number;  // Timestamp when a song was last played
+  enabled: boolean;      // Whether music is enabled
+}
+
 // Player-specific save data
 export interface PlayerSaveData {
   version: number;
@@ -161,6 +167,7 @@ export interface PlayerSaveData {
   orientation: { x: number; y: number; z: number; w: number };  // quaternion
   velocity: { x: number; y: number; z: number };
   inventory: SavedInventorySlot[];
+  music?: MusicSaveData;  // Music player state
   // Future: techStatus, techInventory, etc.
 }
 
@@ -961,13 +968,38 @@ export class GameStorage {
         position: this.playerData?.position || { x: 0, y: 0, z: 0 },
         orientation: this.playerData?.orientation || { x: 0, y: 0, z: 0, w: 1 },
         velocity: this.playerData?.velocity || { x: 0, y: 0, z: 0 },
-        inventory: this.inventory
+        inventory: this.inventory,
+        music: this.playerData?.music
       };
 
       localStorage.setItem(STORAGE_KEY_PLAYER, JSON.stringify(data));
     } catch (error) {
       console.error('Failed to save player data:', error);
     }
+  }
+
+  // Get music state from save data
+  public getMusicState(): MusicSaveData | null {
+    return this.playerData?.music || null;
+  }
+
+  // Save music state
+  public saveMusicState(music: MusicSaveData): void {
+    if (!this.playerData) {
+      // Create minimal player data if none exists
+      this.playerData = {
+        version: SAVE_VERSION,
+        timestamp: Date.now(),
+        position: { x: 0, y: 0, z: 0 },
+        orientation: { x: 0, y: 0, z: 0, w: 1 },
+        velocity: { x: 0, y: 0, z: 0 },
+        inventory: [],
+        music
+      };
+    } else {
+      this.playerData.music = music;
+    }
+    this.persistPlayerToStorage();
   }
 
   // Persist planet data to localStorage

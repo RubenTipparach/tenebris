@@ -126,9 +126,10 @@ export class InputManager {
     // Mouse wheel
     document.addEventListener('wheel', (e) => {
       if (this.isPointerLocked) {
+        e.preventDefault(); // Prevent page scroll when playing
         this.mouseWheelDelta += e.deltaY;
       }
-    });
+    }, { passive: false });
 
     // Prevent context menu
     document.addEventListener('contextmenu', (e) => {

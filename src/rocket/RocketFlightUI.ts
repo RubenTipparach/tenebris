@@ -132,7 +132,7 @@ export class RocketFlightUI {
       </div>
 
       <div class="flight-ui-hints">
-        <span>WASD: Rotate | Q/E: Roll | Arrows: Strafe | Z/X: Throttle | Space: Thrust</span>
+        <span>WASD: Rotate | Q/E: Roll | Arrows: Strafe | Space: Thrust | C: Descend | Z/X: Throttle</span>
       </div>
 
       <div class="crash-overlay" id="crash-overlay" style="display: none;">
@@ -198,7 +198,8 @@ export class RocketFlightUI {
 
     if (this.respawnBtn) {
       this.respawnBtn.addEventListener('click', () => {
-        if (this.onRespawnCallback) this.onRespawnCallback();
+        // Reload the page to restore rocket on launch pad from last save
+        window.location.reload();
       });
     }
   }

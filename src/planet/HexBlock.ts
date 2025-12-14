@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { HexTile } from './GoldbergPolyhedron';
 import { PlayerConfig } from '../config/PlayerConfig';
+import { TilesetConfig, EARTH_TILESET } from '../config/SolarSystemConfig';
 import { getAssetPath } from '../utils/assetPath';
 import waterVert from '../shaders/water/water.vert';
 import waterFrag from '../shaders/water/water.frag';
@@ -76,7 +77,10 @@ export class HexBlockMeshBuilder {
     }
   }
 
-  public async loadTextures(singleTexturePath?: string): Promise<void> {
+  public async loadTextures(singleTexturePath?: string, tileset?: TilesetConfig): Promise<void> {
+    // Use provided tileset or default to Earth tileset
+    const ts = tileset || EARTH_TILESET;
+
     // LOD materials - use polygonOffset to push LOD behind detailed terrain in depth buffer
     // This prevents LOD from showing through detailed terrain for nearby tiles
     const lodOffsetFactor = 4;
@@ -113,30 +117,30 @@ export class HexBlockMeshBuilder {
       this.textures.set('moonRock', moonTexture);
     }
 
-    // Multi-texture planet (e.g., Earth) - different textures for different surfaces
-    const stoneTexture = await this.loadTexture('/textures/rocks.png');
-    const dirtTexture = await this.loadTexture('/textures/dirt.png');
-    const grassTexture = await this.loadTexture('/textures/grass.png');
-    const dirtGrassTexture = await this.loadTexture('/textures/dirt_grass.png');
-    const woodTexture = await this.loadTexture('/textures/wood.png');
-    const sandTexture = await this.loadTexture('/textures/sand.png');
+    // Load textures from tileset config
+    const stoneTexture = await this.loadTexture(ts.stone);
+    const dirtTexture = await this.loadTexture(ts.dirt);
+    const grassTexture = await this.loadTexture(ts.grass);
+    const dirtGrassTexture = await this.loadTexture(ts.dirtGrass);
+    const woodTexture = await this.loadTexture(ts.wood);
+    const sandTexture = await this.loadTexture(ts.sand);
 
-    // Mineral ore textures
-    const coalTexture = await this.loadTexture('/textures/minerals/earth/rocks_coal.png');
-    const copperTexture = await this.loadTexture('/textures/minerals/earth/rocks_copper.png');
-    const ironTexture = await this.loadTexture('/textures/minerals/earth/rocks_iron.png');
-    const goldTexture = await this.loadTexture('/textures/minerals/earth/rocks_gold.png');
-    const lithiumTexture = await this.loadTexture('/textures/minerals/earth/rocks_lythium.png');
-    const aluminumTexture = await this.loadTexture('/textures/minerals/earth/rocks_aluminum.png');
-    const cobaltTexture = await this.loadTexture('/textures/minerals/earth/rocks_cobalt.png');
+    // Mineral ore textures from tileset minerals path
+    const coalTexture = await this.loadTexture(`${ts.mineralsPath}/rocks_coal.png`);
+    const copperTexture = await this.loadTexture(`${ts.mineralsPath}/rocks_copper.png`);
+    const ironTexture = await this.loadTexture(`${ts.mineralsPath}/rocks_iron.png`);
+    const goldTexture = await this.loadTexture(`${ts.mineralsPath}/rocks_gold.png`);
+    const lithiumTexture = await this.loadTexture(`${ts.mineralsPath}/rocks_lythium.png`);
+    const aluminumTexture = await this.loadTexture(`${ts.mineralsPath}/rocks_aluminum.png`);
+    const cobaltTexture = await this.loadTexture(`${ts.mineralsPath}/rocks_cobalt.png`);
 
-    // Snow biome textures
-    const snowTexture = await this.loadTexture('/textures/snow.png');
-    const dirtSnowTexture = await this.loadTexture('/textures/dirt_snow.png');
-    const iceTexture = await this.loadTexture('/textures/ice.png');
+    // Snow biome textures from tileset
+    const snowTexture = await this.loadTexture(ts.snow);
+    const dirtSnowTexture = await this.loadTexture(ts.dirtSnow);
+    const iceTexture = await this.loadTexture(ts.ice);
 
-    // Glass texture
-    const glassTexture = await this.loadTexture('/textures/glass.png');
+    // Glass texture from tileset
+    const glassTexture = await this.loadTexture(ts.glass);
 
     [stoneTexture, dirtTexture, grassTexture, dirtGrassTexture, woodTexture, sandTexture,
      coalTexture, copperTexture, ironTexture, goldTexture, lithiumTexture, aluminumTexture, cobaltTexture,
@@ -281,8 +285,8 @@ export class HexBlockMeshBuilder {
     });
     this.materials.set('seaWall', seaWallMat);
 
-    // Water material - load water texture
-    const waterTexture = await this.loadTexture('/textures/water.png');
+    // Water material - load water texture from tileset
+    const waterTexture = await this.loadTexture(ts.water);
     configureTexture(waterTexture);
     this.textures.set('water', waterTexture);
 

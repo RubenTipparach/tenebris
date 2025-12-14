@@ -318,6 +318,8 @@ export class RocketController {
     if (input.strafeBackward) {
       thrusterDirections.push(this.getLocalForward().clone()); // Fire forward to move backward
     }
+    // Note: strafeUp (Space) is handled by main thrust, not side thrusters
+    // strafeDown (C) is handled separately below with particles at top of rocket
 
     // Find dead particles for spawning
     const deadSlots: number[] = [];
@@ -386,6 +388,51 @@ export class RocketController {
       }
 
       this.sideThrusterSpawnAccum = Math.min(this.sideThrusterSpawnAccum, spawnInterval * 2);
+    }
+
+    // Handle descent thrusters separately (particles spawn at top of rocket)
+    if (input.strafeDown && deadSlots.length > 0) {
+      // Calculate total rocket height
+      let totalHeightUnits = 0;
+      for (const part of this.parts) {
+        totalHeightUnits += part.getHeightUnits();
+      }
+      const rocketTopHeight = totalHeightUnits * 2 + 1; // Each part is 2 units tall, +1 for above top
+
+      // Spawn particles at top of rocket
+      const topSpawnInterval = 1.0 / 80; // 80 particles per second
+      this.sideThrusterSpawnAccum += cappedDelta;
+
+      let spawned = 0;
+      const maxSpawn = Math.min(4, deadSlots.length);
+
+      while (this.sideThrusterSpawnAccum >= topSpawnInterval && spawned < maxSpawn) {
+        this.sideThrusterSpawnAccum -= topSpawnInterval;
+
+        const slot = deadSlots[spawned];
+
+        // Spawn at top of rocket
+        const topOffset = new THREE.Vector3(
+          PlayerConfig.ROCKET_STACK_OFFSET_X + (Math.random() - 0.5) * 0.4,
+          PlayerConfig.ROCKET_STACK_OFFSET_Y + rocketTopHeight,
+          PlayerConfig.ROCKET_STACK_OFFSET_Z + (Math.random() - 0.5) * 0.4
+        );
+        const spawnPos = topOffset.applyQuaternion(this.orientation).add(this.position);
+
+        positions[slot * 3] = spawnPos.x;
+        positions[slot * 3 + 1] = spawnPos.y;
+        positions[slot * 3 + 2] = spawnPos.z;
+
+        // Velocity fires upward (away from rocket top)
+        const upDir = this.getLocalUp();
+        const speed = 8 + Math.random() * 4;
+        this.sideThrusterVelocities[slot].copy(upDir).multiplyScalar(speed);
+
+        this.sideThrusterLives[slot] = 0.0;
+        sizes[slot] = 0.4;
+
+        spawned++;
+      }
     }
 
     this.sideThrusterGeometry.attributes.position.needsUpdate = true;

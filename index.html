@@ -417,6 +417,32 @@
       background: #b71c1c;
     }
 
+    /* Play music button */
+    .play-music-btn {
+      padding: 8px 20px;
+      background: #4a9eff;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      font-family: var(--game-font);
+      font-size: 22px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    .play-music-btn:hover {
+      background: #6ab4ff;
+    }
+
+    .play-music-btn:active {
+      background: #2a7edf;
+    }
+
+    .play-music-btn:disabled {
+      background: #555;
+      cursor: not-allowed;
+    }
+
     /* Menu tabs */
     .menu-tabs {
       display: flex;
@@ -1103,6 +1129,7 @@
     <div class="menu-tabs">
       <button class="menu-tab active" data-tab="settings">Settings</button>
       <button class="menu-tab" data-tab="controls">Controls</button>
+      <button class="menu-tab" data-tab="flight">Space Flight</button>
       <button class="menu-tab" data-tab="debug">Debug</button>
     </div>
 
@@ -1128,6 +1155,17 @@
           <input type="checkbox" id="toggle-clouds" checked>
           <span class="toggle-slider"></span>
         </div>
+      </div>
+      <div class="settings-row">
+        <label for="toggle-music">Background Music</label>
+        <div class="toggle-switch">
+          <input type="checkbox" id="toggle-music" checked>
+          <span class="toggle-slider"></span>
+        </div>
+      </div>
+      <div class="settings-row">
+        <label>Play Random Song</label>
+        <button id="play-music-btn" class="play-music-btn">Play</button>
       </div>
       <div class="settings-row">
         <label for="teleport-select">Teleport</label>
@@ -1156,6 +1194,19 @@
         <p><span class="key">1-9</span><span>Select hotbar</span></p>
         <p><span class="key">E</span><span>Open inventory</span></p>
         <p><span class="key">F3</span><span>Toggle profiler</span></p>
+      </div>
+    </div>
+
+    <!-- Space Flight Tab -->
+    <div class="tab-content" id="tab-flight">
+      <div class="controls-grid">
+        <p><span class="key">WASD</span><span>Rotate (Pitch/Yaw)</span></p>
+        <p><span class="key">Q/E</span><span>Roll</span></p>
+        <p><span class="key">Arrows</span><span>Strafe</span></p>
+        <p><span class="key">Z/X</span><span>Throttle Up/Down</span></p>
+        <p><span class="key">SPACE</span><span>Thrust</span></p>
+        <p><span class="key">C</span><span>Descend</span></p>
+        <p><span class="key">V</span><span>Exit Rocket</span></p>
       </div>
     </div>
 
