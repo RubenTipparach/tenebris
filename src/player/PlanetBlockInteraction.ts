@@ -432,6 +432,8 @@ export class PlanetBlockInteraction {
       }
       return removedPart;
     });
+    // Board rocket callback - will be set by external system (mainPlanet.ts)
+    // this.launchPadUI.setOnBoardRocketCallback() is set externally
 
     // Set up cable node machine callbacks (now that all managers are initialized)
     this.cableNodeManager.setMachineCallbacks(
@@ -3439,6 +3441,14 @@ export class PlanetBlockInteraction {
 
   public getTorchManager(): TorchManager {
     return this.torchManager;
+  }
+
+  public getLaunchPadUI(): LaunchPadUI {
+    return this.launchPadUI;
+  }
+
+  public getLaunchPadManager(): LaunchPadManager {
+    return this.launchPadManager;
   }
 
   public setTreeManager(treeManager: PlanetTreeManager): void {

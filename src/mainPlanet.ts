@@ -13,6 +13,7 @@ import { gameStorage } from './engine/GameStorage';
 import { loadingManager } from './engine/LoadingManager';
 import { MenuManager } from './player/MenuManager';
 import { initScreenshotHandler } from './utils/screenshot';
+import { RocketFlightManager } from './rocket';
 
 class PlanetGame {
   private engine: GameEngine;
@@ -29,11 +30,23 @@ class PlanetGame {
   private waterUpdateTimer: number = 0;
   private readonly WATER_UPDATE_INTERVAL = 5.0; // Update water every 5 seconds
 
+  // Rocket flight system
+  private rocketFlightManager: RocketFlightManager | null = null;
+
   // Shared frustum for all planet updates (calculated once per frame)
   private sharedFrustum: THREE.Frustum = new THREE.Frustum();
   private projScreenMatrix: THREE.Matrix4 = new THREE.Matrix4();
 
   constructor() {
+    // Prevent browser from closing tab - shows confirmation dialog
+    // Note: User must interact with page first for this to work (Chrome security)
+    window.addEventListener('beforeunload', (e) => {
+      e.preventDefault();
+      // Chrome requires returnValue to be set
+      e.returnValue = '';
+      return '';
+    });
+
     const container = document.getElementById('game-container');
     if (!container) throw new Error('Game container not found');
 
@@ -196,6 +209,84 @@ class PlanetGame {
 
       // Give block interaction access to tree manager for mining trees
       this.blockInteraction.setTreeManager(this.treeManager);
+
+      // Initialize rocket flight system
+      this.rocketFlightManager = new RocketFlightManager(
+        this.engine.scene,
+        this.engine.camera,
+        this.inputManager
+      );
+
+      // Register planets for gravity calculations
+      this.rocketFlightManager.addPlanet('Earth', this.earth.center, this.earth.radius, 1.0);
+      this.rocketFlightManager.addPlanet('Moon', this.moon.center, this.moon.radius, 0.4);
+
+      // Set up close all menus callback for boarding rocket
+      this.blockInteraction.getLaunchPadUI().setOnCloseAllMenusCallback(() => {
+        // Close the crafting/inventory system completely
+        this.blockInteraction.getCraftingSystem().close();
+      });
+
+      // Set up board rocket callback
+      this.blockInteraction.getLaunchPadUI().setOnBoardRocketCallback((launchPad) => {
+        console.log('Board rocket callback triggered!');
+
+        // Hide player and disable controls
+        this.player.setEnabled(false);
+
+        // Enter flight mode
+        if (this.rocketFlightManager?.enterFlightMode(launchPad)) {
+          // Hide crosshair while in rocket
+          const crosshair = document.getElementById('crosshair');
+          if (crosshair) crosshair.style.display = 'none';
+
+          // Hide hotbar while in rocket
+          const hotbar = document.getElementById('hotbar');
+          if (hotbar) hotbar.style.display = 'none';
+        } else {
+          // Failed to enter flight mode, re-enable player
+          this.player.setEnabled(true);
+        }
+      });
+
+      // Set up exit flight callback
+      this.rocketFlightManager.setOnExitFlightCallback(() => {
+        // Re-enable player controls
+        this.player.setEnabled(true);
+
+        // Show crosshair
+        const crosshair = document.getElementById('crosshair');
+        if (crosshair) crosshair.style.display = 'block';
+
+        // Show hotbar
+        const hotbar = document.getElementById('hotbar');
+        if (hotbar) hotbar.style.display = 'flex';
+
+        // Re-lock pointer
+        const container = document.getElementById('game-container');
+        if (container) container.requestPointerLock();
+      });
+
+      // Set up respawn callback for when player crashes and respawns
+      this.rocketFlightManager.setOnRespawnCallback((respawnPosition) => {
+        // Move player to respawn position (last boarded position)
+        this.player.position.copy(respawnPosition);
+      });
+
+      // Set up board rocket callback for boarding landed rockets
+      this.rocketFlightManager.setOnBoardRocketCallback(() => {
+        // Hide player and disable controls
+        this.player.setEnabled(false);
+
+        // Hide crosshair while in rocket
+        const crosshair = document.getElementById('crosshair');
+        if (crosshair) crosshair.style.display = 'none';
+
+        // Hide hotbar while in rocket
+        const hotbar = document.getElementById('hotbar');
+        if (hotbar) hotbar.style.display = 'none';
+      });
+
       loadingManager.completeStep('player-setup');
 
       // Setup mobile inventory toggle callback
@@ -285,27 +376,46 @@ class PlanetGame {
     // Track elapsed time for shader animations
     this.elapsedTime += deltaTime;
 
-    // Update player
-    profiler.begin('Player');
-    this.player.update(deltaTime);
-    profiler.end('Player');
+    // Check if in rocket flight mode
+    const inFlightMode = this.rocketFlightManager?.isInFlight() ?? false;
 
-    // Update underwater fog based on player water state
-    this.engine.setUnderwater(this.player.getIsInWater());
+    if (inFlightMode) {
+      // Update rocket flight system
+      // Mouse/scroll handling is done internally by RocketFlightManager
+      profiler.begin('Rocket Flight');
+      this.rocketFlightManager?.update(deltaTime);
+      profiler.end('Rocket Flight');
+    } else {
+      // Normal player mode
+      // Update player
+      profiler.begin('Player');
+      this.player.update(deltaTime);
+      profiler.end('Player');
 
-    // Update block interaction FIRST - this handles torch placement/removal
-    // which marks tiles dirty and updates torch data on planets immediately
-    profiler.begin('Block Interaction');
-    const input = this.inputManager.getState();
-    const isGameActive = this.inputManager.isLocked();
-    const wheelDelta = this.inputManager.getWheelDelta();
-    this.blockInteraction.update(
-      deltaTime,
-      isGameActive && input.leftClick,
-      isGameActive && input.rightClick,
-      isGameActive ? wheelDelta : 0
-    );
-    profiler.end('Block Interaction');
+      // Update underwater fog based on player water state
+      this.engine.setUnderwater(this.player.getIsInWater());
+
+      // Check for landed rocket interaction (before block interaction)
+      const input = this.inputManager.getState();
+      const isGameActive = this.inputManager.isLocked();
+      let handledRocketInteraction = false;
+
+      if (isGameActive && input.rightClick && this.rocketFlightManager) {
+        handledRocketInteraction = this.checkLandedRocketInteraction();
+      }
+
+      // Update block interaction FIRST - this handles torch placement/removal
+      // which marks tiles dirty and updates torch data on planets immediately
+      profiler.begin('Block Interaction');
+      const wheelDelta = this.inputManager.getWheelDelta();
+      this.blockInteraction.update(
+        deltaTime,
+        isGameActive && input.leftClick,
+        isGameActive && input.rightClick && !handledRocketInteraction,
+        isGameActive ? wheelDelta : 0
+      );
+      profiler.end('Block Interaction');
+    }
 
     // Update both planets (rebuild dirty meshes near player) with camera for frustum culling
     // This comes AFTER block interaction so torch light changes are immediately baked
@@ -356,6 +466,35 @@ class PlanetGame {
     } else {
       this.treeManager.setAllVisible(true);
     }
+  }
+
+  /**
+   * Check if player is looking at and can interact with a landed rocket
+   * Returns true if interaction was handled
+   */
+  private checkLandedRocketInteraction(): boolean {
+    if (!this.rocketFlightManager) return false;
+
+    const landedRocketManager = this.rocketFlightManager.getLandedRocketManager();
+    const landedRockets = landedRocketManager.getAllLandedRockets();
+
+    if (landedRockets.length === 0) return false;
+
+    // Create raycaster from camera
+    const raycaster = new THREE.Raycaster();
+    raycaster.setFromCamera(new THREE.Vector2(0, 0), this.engine.camera);
+
+    // Check for intersection with landed rockets
+    const maxReach = 8; // Same as block interaction reach
+    const result = landedRocketManager.raycast(raycaster, maxReach);
+
+    if (result) {
+      // Player is looking at a landed rocket - open the UI
+      this.rocketFlightManager.openLandedRocketUI(result.rocket);
+      return true;
+    }
+
+    return false;
   }
 
   private setupSettingsMenu(): void {

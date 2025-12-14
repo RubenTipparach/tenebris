@@ -148,6 +148,7 @@ export class PlanetPlayer {
   private isFloatingAtSurface: boolean = false; // True when player is floating at water surface (holding jump)
   private hasDoubleJumped: boolean = false; // Track if double-jump/jetpack was activated this airborne session
   private jetpackEnabled: boolean = true; // Whether jetpack/double-jump is available
+  private isEnabled: boolean = true; // Whether player updates are enabled (disabled during rocket flight)
 
   // Stuck detection debug
   private lastPosition: THREE.Vector3 = new THREE.Vector3();
@@ -502,6 +503,11 @@ export class PlanetPlayer {
   public update(deltaTime: number): void {
     // Clear block column cache at start of each frame
     clearBlockCache();
+
+    // Skip if player is disabled (e.g., in rocket flight mode)
+    if (!this.isEnabled) {
+      return;
+    }
 
     // Skip movement updates when menu is open (pointer not locked)
     if (!this.inputManager.isLocked()) {
@@ -2441,6 +2447,19 @@ export class PlanetPlayer {
     if (!enabled) {
       this.isJetpacking = false;
     }
+  }
+
+  public setEnabled(enabled: boolean): void {
+    this.isEnabled = enabled;
+    if (!enabled) {
+      // Stop any ongoing actions
+      this.isJetpacking = false;
+      this.velocity.set(0, 0, 0);
+    }
+  }
+
+  public getEnabled(): boolean {
+    return this.isEnabled;
   }
 
   // Set callback for tech block data (used by Shift+X debug)

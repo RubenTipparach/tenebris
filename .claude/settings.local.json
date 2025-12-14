@@ -11,7 +11,11 @@
       "Bash(chmod:*)",
       "Bash(cd:*)",
       "Bash(cat:*)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Bash(npx vite:*)",
+      "Bash(powershell:*)",
+      "Bash(du:*)",
+      "Bash(unzip:*)"
     ],
     "deny": [],
     "ask": []

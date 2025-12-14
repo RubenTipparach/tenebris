@@ -30,6 +30,8 @@ export const PlayerConfig = {
   MOUSE_SENSITIVITY: 0.002,
   INVERT_Y_AXIS: false,        // Invert vertical mouse look (true = pull down to look up)
   ROLL_SPEED: 2, // Roll speed in space (Q/E)
+  CAMERA_NEAR: 0.1,            // Near clipping plane
+  CAMERA_FAR: 20000,           // Far clipping plane (10x increased for space travel)
 
   // Gravity transition
   ROLL_SLERP_DURATION: 3, // Seconds to slerp roll when entering gravity

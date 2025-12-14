@@ -37,6 +37,10 @@ export class LaunchPadUI {
   // New generic rocket part callbacks
   private onAddRocketPartCallback: ((pad: PlacedLaunchPad, itemType: ItemType) => Promise<boolean>) | null = null;
   private onRemoveRocketPartCallback: ((pad: PlacedLaunchPad) => PlacedRocketPart | null) | null = null;
+  // Board rocket callback
+  private onBoardRocketCallback: ((pad: PlacedLaunchPad) => void) | null = null;
+  // Close all menus callback (for boarding rocket - needs to close inventory too)
+  private onCloseAllMenusCallback: (() => void) | null = null;
 
   // UI elements
   private segmentSlots: HTMLElement[] = [];
@@ -89,6 +93,14 @@ export class LaunchPadUI {
     this.onRemoveRocketPartCallback = callback;
   }
 
+  public setOnBoardRocketCallback(callback: (pad: PlacedLaunchPad) => void): void {
+    this.onBoardRocketCallback = callback;
+  }
+
+  public setOnCloseAllMenusCallback(callback: () => void): void {
+    this.onCloseAllMenusCallback = callback;
+  }
+
   private createUI(): void {
     this.launchPadSectionElement = document.createElement('div');
     this.launchPadSectionElement.id = 'launchpad-section';
@@ -113,37 +125,6 @@ export class LaunchPadUI {
 
     this.launchPadSectionElement.innerHTML = `
       <h3>Launch Pad</h3>
-
-      <div class="launchpad-completion" id="launchpad-completion" style="display: none;">
-        <div class="completion-status">
-          <span class="completion-label">Platform Status:</span>
-          <span class="completion-value" id="completion-value">Incomplete</span>
-        </div>
-        <div class="completion-diagram" id="completion-diagram">
-          <!-- 10-hex stadium diagram -->
-          <div class="hex-row top-row">
-            <div class="hex-cell" data-pos="0"></div>
-            <div class="hex-cell" data-pos="1"></div>
-          </div>
-          <div class="hex-row middle-row">
-            <div class="hex-cell" data-pos="2"></div>
-            <div class="hex-cell rocket-cell" data-pos="3">R</div>
-            <div class="hex-cell" data-pos="4"></div>
-          </div>
-          <div class="hex-row middle-row">
-            <div class="hex-cell" data-pos="5"></div>
-            <div class="hex-cell tower-cell" data-pos="6">T</div>
-            <div class="hex-cell" data-pos="7"></div>
-          </div>
-          <div class="hex-row bottom-row">
-            <div class="hex-cell" data-pos="8"></div>
-            <div class="hex-cell" data-pos="9"></div>
-          </div>
-        </div>
-        <div class="completion-hint" id="completion-hint">
-          Place launch pad blocks on all 10 hexes
-        </div>
-      </div>
 
       <div class="launchpad-status" id="launchpad-status">
         <span class="status-text">Tower Height: 0/8</span>
@@ -745,8 +726,23 @@ export class LaunchPadUI {
     }
 
     // Rocket is valid - proceed with boarding
-    console.log('Boarding rocket! (Launch sequence not yet implemented)');
-    // TODO: Implement rocket boarding/launch sequence
+    console.log('Boarding rocket!');
+
+    // Save reference before closing (close() sets currentLaunchPad to null)
+    const launchPadRef = this.currentLaunchPad;
+
+    // Close ALL menus (including inventory/crafting) before boarding
+    if (this.onCloseAllMenusCallback) {
+      this.onCloseAllMenusCallback();
+    } else {
+      // Fallback: just close this UI
+      this.close();
+    }
+
+    // Trigger the board rocket callback
+    if (this.onBoardRocketCallback && launchPadRef) {
+      this.onBoardRocketCallback(launchPadRef);
+    }
   }
 
   private addStyles(): void {
@@ -1010,114 +1006,6 @@ export class LaunchPadUI {
         font-style: italic;
       }
 
-      /* Launch pad completion diagram styles */
-      .launchpad-completion {
-        background: rgba(60, 40, 20, 0.4);
-        border: 2px solid #664422;
-        border-radius: 8px;
-        padding: 10px;
-        margin-bottom: 10px;
-        text-align: center;
-      }
-
-      .launchpad-completion.complete {
-        background: rgba(40, 80, 40, 0.4);
-        border-color: #448844;
-      }
-
-      .completion-status {
-        display: flex;
-        justify-content: center;
-        gap: 8px;
-        margin-bottom: 10px;
-      }
-
-      .completion-label {
-        font-size: 12px;
-        color: #888;
-        font-family: 'Courier New', monospace;
-      }
-
-      .completion-value {
-        font-size: 12px;
-        font-family: 'Courier New', monospace;
-        font-weight: bold;
-      }
-
-      .completion-value.incomplete {
-        color: #ff8866;
-      }
-
-      .completion-value.complete {
-        color: #88ff88;
-      }
-
-      .completion-diagram {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 2px;
-        margin-bottom: 8px;
-      }
-
-      .hex-row {
-        display: flex;
-        gap: 2px;
-      }
-
-      .hex-row.top-row,
-      .hex-row.bottom-row {
-        margin-left: 11px;
-      }
-
-      .hex-cell {
-        width: 20px;
-        height: 20px;
-        background: #333;
-        border: 2px solid #555;
-        border-radius: 4px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 10px;
-        font-family: 'Courier New', monospace;
-        color: #666;
-        transition: all 0.2s;
-      }
-
-      .hex-cell.placed {
-        background: #4a6a4a;
-        border-color: #6a8a6a;
-        color: #aaffaa;
-      }
-
-      .hex-cell.missing {
-        background: #6a4a4a;
-        border-color: #8a6a6a;
-        animation: pulse-missing 1s infinite;
-      }
-
-      @keyframes pulse-missing {
-        0%, 100% { opacity: 1; }
-        50% { opacity: 0.6; }
-      }
-
-      .hex-cell.rocket-cell {
-        color: #ffaa66;
-        font-weight: bold;
-      }
-
-      .hex-cell.tower-cell {
-        color: #66aaff;
-        font-weight: bold;
-      }
-
-      .completion-hint {
-        font-size: 10px;
-        color: #888;
-        font-family: 'Courier New', monospace;
-        font-style: italic;
-      }
     `;
     document.head.appendChild(style);
   }
@@ -1195,90 +1083,10 @@ export class LaunchPadUI {
     }
   }
 
-  /**
-   * Update the completion diagram showing which hexes have been placed
-   */
-  private updateCompletionDiagram(): void {
-    if (!this.launchPadSectionElement || !this.currentLaunchPad) return;
-
-    const completionSection = document.getElementById('launchpad-completion');
-    const completionValue = document.getElementById('completion-value');
-    const completionHint = document.getElementById('completion-hint');
-    const diagram = document.getElementById('completion-diagram');
-
-    if (!completionSection) return;
-
-    // Always show the completion section
-    completionSection.style.display = 'block';
-
-    const isComplete = this.currentLaunchPad.isComplete;
-    const placedCount = this.currentLaunchPad.placedTiles.size;
-    const totalCount = this.currentLaunchPad.allTileIndices.length;
-
-    // Update status text
-    if (completionValue) {
-      if (isComplete) {
-        completionValue.textContent = 'Complete';
-        completionValue.classList.remove('incomplete');
-        completionValue.classList.add('complete');
-      } else {
-        completionValue.textContent = `${placedCount}/${totalCount} hexes`;
-        completionValue.classList.add('incomplete');
-        completionValue.classList.remove('complete');
-      }
-    }
-
-    // Update completion section class
-    if (isComplete) {
-      completionSection.classList.add('complete');
-    } else {
-      completionSection.classList.remove('complete');
-    }
-
-    // Update hint text
-    if (completionHint) {
-      if (isComplete) {
-        completionHint.textContent = 'Platform ready for construction';
-      } else {
-        const remaining = totalCount - placedCount;
-        completionHint.textContent = `Place ${remaining} more launch pad block${remaining !== 1 ? 's' : ''}`;
-      }
-    }
-
-    // Update diagram cells
-    // The diagram positions map to allTileIndices:
-    // Position 0-1: top row (2 hexes)
-    // Position 2-4: middle row with rocket (3 hexes), pos 3 = rocket
-    // Position 5-7: middle row with tower (3 hexes), pos 6 = tower
-    // Position 8-9: bottom row (2 hexes)
-    if (diagram) {
-      const cells = diagram.querySelectorAll('.hex-cell');
-      cells.forEach((cell, posIndex) => {
-        // Map diagram position to tile index in allTileIndices
-        // The mapping depends on how allTileIndices is constructed
-        // For now, assume they match in order (this may need adjustment)
-        const tileIndex = this.currentLaunchPad!.allTileIndices[posIndex];
-
-        // Check if this tile has a block placed
-        const isPlaced = this.currentLaunchPad!.placedTiles.has(tileIndex);
-
-        cell.classList.remove('placed', 'missing');
-        if (isPlaced) {
-          cell.classList.add('placed');
-        } else {
-          cell.classList.add('missing');
-        }
-      });
-    }
-  }
-
   private updateUI(): void {
     if (!this.launchPadSectionElement || !this.currentLaunchPad) return;
 
     const segmentCount = this.currentLaunchPad.segmentCount;
-
-    // Update completion status and diagram
-    this.updateCompletionDiagram();
 
     // Update status
     if (this.statusElement) {

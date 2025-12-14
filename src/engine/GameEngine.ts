@@ -15,6 +15,8 @@ function createStarfieldMaterial(): THREE.ShaderMaterial {
     vertexShader: skyboxVert,
     fragmentShader: skyboxFrag,
     side: THREE.BackSide, // Render inside of sphere
+    depthWrite: false,    // Don't write to depth buffer (always behind everything)
+    depthTest: false,     // Don't test depth (always draw)
   });
 }
 
@@ -49,12 +51,12 @@ export class GameEngine {
     this.scene = new THREE.Scene();
     // No fog for space/planet view
 
-    // Camera setup (far plane extended for starfield visibility)
+    // Camera setup (clipping planes from config)
     this.camera = new THREE.PerspectiveCamera(
       75,
       window.innerWidth / window.innerHeight,
-      0.1,
-      2000
+      PlayerConfig.CAMERA_NEAR,
+      PlayerConfig.CAMERA_FAR
     );
     this.camera.position.set(0, 20, 0);
 
@@ -107,10 +109,12 @@ export class GameEngine {
       PlayerConfig.SUN_DIRECTION.z
     ).normalize();
 
-    // Create starfield background sphere (follows camera to never hit edge)
-    const starfieldGeometry = new THREE.SphereGeometry(900, 64, 64);
+    // Create starfield background sphere (follows camera, always renders first/behind everything)
+    const starfieldGeometry = new THREE.SphereGeometry(100, 64, 64); // Small radius since it follows camera
     const starfieldMaterial = createStarfieldMaterial();
     this.starfield = new THREE.Mesh(starfieldGeometry, starfieldMaterial);
+    this.starfield.renderOrder = -1000; // Render first (behind everything)
+    this.starfield.frustumCulled = false; // Never cull the starfield
     this.scene.add(this.starfield);
 
     // Create sun sphere in the sky (radius 60 for prominent appearance)
