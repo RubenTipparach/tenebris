@@ -21,7 +21,7 @@ export const ROCKET_CONFIG = {
   COMMAND_MODULE: {
     mass: 200,                    // kg (always dry)
     hasParachute: true,
-    parachuteDeployAltitude: 500, // meters above surface
+    parachuteDeployAltitude: 50, // meters above surface
     maxSurvivableImpact: 10,      // m/s
   },
 
@@ -29,7 +29,7 @@ export const ROCKET_CONFIG = {
   PHYSICS: {
     dragCoefficient: 0.5,         // Atmospheric drag
     angularDamping: 0.95,         // Rotation slowdown per frame
-    linearDamping: 0.985,          // Linear slowdown in space (noticeable drag to prevent infinite drift)
+    linearDamping: 0.99,          // Linear slowdown in space (noticeable drag to prevent infinite drift)
     gravityConstant: 9.81,        // m/s^2 for TWR/delta-V calculations
   },
 
@@ -47,6 +47,7 @@ export const ROCKET_CONFIG = {
     yawSpeed: 1.0,                // rad/s
     rollSpeed: 1.5,               // rad/s
     strafeForce: 5000,            // N (only in gravity well)
+    strafeFuelConsumption: 2,     // Fuel units per second when strafing
     throttleStep: 0.1,            // Per shift/ctrl press
     throttleHoldRate: 0.5,        // Throttle change per second when holding
   },
@@ -109,11 +110,12 @@ export const ROCKET_INPUTS = {
   ROLL_LEFT: 'KeyQ',              // Q - roll left
   ROLL_RIGHT: 'KeyE',             // E - roll right
 
-  // Strafe thrusters (arrow keys)
+  // Strafe thrusters (arrow keys + C for descent)
   STRAFE_FORWARD: 'ArrowUp',      // Up arrow - strafe forward
   STRAFE_BACKWARD: 'ArrowDown',   // Down arrow - strafe backward
   STRAFE_LEFT: 'ArrowLeft',       // Left arrow - strafe left
   STRAFE_RIGHT: 'ArrowRight',     // Right arrow - strafe right
+  STRAFE_DOWN: 'KeyC',            // C - descend (strafe down relative to rocket)
 
   // Throttle
   THROTTLE_UP: 'KeyX',            // X - increase throttle

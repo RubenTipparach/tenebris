@@ -6,6 +6,7 @@ import { RocketExhaust } from './RocketExhaust';
 import { RocketPart } from '../planet/RocketPart';
 import { ITEM_DATA, RocketPartType } from '../player/Inventory';
 import { PlayerConfig } from '../config/PlayerConfig';
+import { AudioManager } from '../engine/AudioManager';
 
 /**
  * Planet data needed for gravity calculations
@@ -15,6 +16,7 @@ export interface PlanetGravitySource {
   radius: number;
   gravityStrength: number;  // Multiplier (1.0 = Earth-like)
   name: string;
+  getSurfaceHeight?: (direction: THREE.Vector3) => number;  // Optional callback for actual terrain height
 }
 
 /**
@@ -39,11 +41,13 @@ export interface RocketInputState {
   yawRight: boolean;      // D
   rollLeft: boolean;      // Q
   rollRight: boolean;     // E
-  // Strafe thrusters (Arrow keys)
+  // Strafe thrusters (Arrow keys + C for descent)
   strafeForward: boolean;   // Up arrow
   strafeBackward: boolean;  // Down arrow
   strafeLeft: boolean;      // Left arrow
   strafeRight: boolean;     // Right arrow
+  strafeUp: boolean;        // Space (when not thrusting)
+  strafeDown: boolean;      // C - descend
   // Throttle
   throttleUp: boolean;    // X
   throttleDown: boolean;  // Z
@@ -124,6 +128,10 @@ export class RocketController {
   // Crash state
   private crashTime: number = 0;
   private explosionParticles: THREE.Points | null = null;
+
+  // Track if rocket has ever launched (left initial position)
+  // Used to determine if rocket should persist when exiting
+  private hasLaunched: boolean = false;
 
   constructor(scene: THREE.Scene) {
     this.scene = scene;
@@ -572,7 +580,15 @@ export class RocketController {
    */
   public getAltitude(): number {
     if (!this.closestPlanet) return Infinity;
-    return this.position.distanceTo(this.closestPlanet.center) - this.closestPlanet.radius;
+
+    // Get actual terrain height if callback is available, otherwise use base radius
+    const direction = this.position.clone().sub(this.closestPlanet.center).normalize();
+    let surfaceRadius = this.closestPlanet.radius;
+    if (this.closestPlanet.getSurfaceHeight) {
+      surfaceRadius = this.closestPlanet.getSurfaceHeight(direction);
+    }
+
+    return this.position.distanceTo(this.closestPlanet.center) - surfaceRadius;
   }
 
   /**
@@ -668,6 +684,20 @@ export class RocketController {
     this.rocketExhaust.setThrottle(this.throttle);
     this.rocketExhaust.update(deltaTime);
 
+    // Update rocket engine sound
+    if (exhaustActive) {
+      // Start or update engine loop
+      // Pitch varies from 0.8 (low throttle) to 1.2 (full throttle)
+      AudioManager.playLoop('rocket_engine', 'rocket_engine', {
+        position: this.position.clone(),
+        volume: 0.3 + this.throttle * 0.7, // Scale volume with throttle
+        playbackRate: 0.8 + this.throttle * 0.4, // Scale pitch with throttle
+      });
+    } else {
+      // Stop engine loop
+      AudioManager.stopLoop('rocket_engine');
+    }
+
     // Update side thruster particles (for strafe visual effects)
     this.updateSideThrusters(deltaTime, input);
 
@@ -708,17 +738,22 @@ export class RocketController {
       if (input.rollLeft) this.applyTorque(this.getLocalForward(), -cfg.rollSpeed * deltaTime);
       if (input.rollRight) this.applyTorque(this.getLocalForward(), cfg.rollSpeed * deltaTime);
 
-      // Strafe thrusters (Arrow keys - always available)
+      // Strafe thrusters (Arrow keys + C for descent - always available)
       const strafeDir = new THREE.Vector3();
       if (input.strafeLeft) strafeDir.add(this.getLocalRight().multiplyScalar(-1));
       if (input.strafeRight) strafeDir.add(this.getLocalRight());
       if (input.strafeForward) strafeDir.add(this.getLocalForward());
       if (input.strafeBackward) strafeDir.add(this.getLocalForward().multiplyScalar(-1));
+      if (input.strafeUp) strafeDir.add(this.getLocalUp());
+      if (input.strafeDown) strafeDir.add(this.getLocalUp().multiplyScalar(-1));
 
-      if (strafeDir.lengthSq() > 0) {
+      if (strafeDir.lengthSq() > 0 && this.currentFuel > 0) {
         strafeDir.normalize();
         const strafeForce = strafeDir.multiplyScalar(cfg.strafeForce);
         this.applyForce(strafeForce, deltaTime);
+        // Consume fuel for strafe thrusters
+        const strafeFuelUsed = cfg.strafeFuelConsumption * deltaTime;
+        this.currentFuel = Math.max(0, this.currentFuel - strafeFuelUsed);
       }
     }
 
@@ -781,6 +816,32 @@ export class RocketController {
 
     // === POSITION UPDATE ===
     this.position.addScaledVector(this.velocity, deltaTime);
+
+    // === GROUND COLLISION ===
+    // Prevent rocket from clipping through the planet surface
+    if (this.closestPlanet) {
+      const surfaceNormal = this.position.clone().sub(this.closestPlanet.center).normalize();
+      const distFromCenter = this.position.distanceTo(this.closestPlanet.center);
+
+      // Get actual terrain height if callback is available, otherwise use base radius
+      let surfaceRadius = this.closestPlanet.radius;
+      if (this.closestPlanet.getSurfaceHeight) {
+        surfaceRadius = this.closestPlanet.getSurfaceHeight(surfaceNormal);
+      }
+
+      const minDistance = surfaceRadius + ROCKET_CONFIG.THRESHOLDS.groundedCheckDistance;
+
+      if (distFromCenter < minDistance) {
+        // Rocket is below or at surface - push it back up
+        this.position.copy(this.closestPlanet.center).addScaledVector(surfaceNormal, minDistance);
+
+        // Kill velocity component going into the surface
+        const verticalVelocity = this.velocity.dot(surfaceNormal);
+        if (verticalVelocity < 0) {
+          this.velocity.addScaledVector(surfaceNormal, -verticalVelocity);
+        }
+      }
+    }
   }
 
   /**
@@ -812,6 +873,7 @@ export class RocketController {
           const twr = this.getThrustToWeightRatio();
           if (twr > 1.0) {
             this.stateMachine.transitionTo(RocketState.LAUNCHING);
+            this.hasLaunched = true;
           }
         }
         break;
@@ -861,6 +923,7 @@ export class RocketController {
           const twr = this.getThrustToWeightRatio();
           if (twr > 1.0) {
             this.stateMachine.transitionTo(RocketState.LAUNCHING);
+            this.hasLaunched = true;
           }
         }
         break;
@@ -929,6 +992,12 @@ export class RocketController {
     this.stateMachine.transitionTo(RocketState.CRASHED);
     this.crashTime = performance.now();
     console.log('ROCKET EXPLODED!');
+
+    // Play explosion sound
+    AudioManager.play('explosion', { position: this.position.clone() });
+
+    // Stop rocket engine sound if playing
+    AudioManager.stopLoop('rocket_engine');
 
     // Stop all motion
     this.velocity.set(0, 0, 0);
@@ -1137,6 +1206,14 @@ export class RocketController {
     return this.stateMachine.getState();
   }
 
+  /**
+   * Check if the rocket has ever launched (left its initial position)
+   * Used to determine if rocket should persist when player exits
+   */
+  public getHasLaunched(): boolean {
+    return this.hasLaunched;
+  }
+
   public getStateMachine(): RocketStateMachine {
     return this.stateMachine;
   }
@@ -1208,6 +1285,9 @@ export class RocketController {
    * Clean up resources
    */
   public dispose(): void {
+    // Stop engine sound
+    AudioManager.stopLoop('rocket_engine');
+
     // Remove pivot from scene
     if (this.pivot.parent) {
       this.pivot.parent.remove(this.pivot);
@@ -1242,6 +1322,9 @@ export class RocketController {
    * Keeps the pivot and parts intact but cleans up particle systems, camera, etc.
    */
   public disposeNonVisual(): void {
+    // Stop engine sound
+    AudioManager.stopLoop('rocket_engine');
+
     // Dispose exhaust
     this.rocketExhaust.dispose();
 
@@ -1303,6 +1386,9 @@ export class RocketController {
 
     // Re-initialize exhaust particle system
     this.initializeExhaust();
+
+    // Mark as launched since this rocket was previously flying and landed
+    this.hasLaunched = true;
 
     console.log(`Rocket re-initialized from landed state: ${this.parts.length} parts, ${fuelPercent.toFixed(1)}% fuel`);
   }

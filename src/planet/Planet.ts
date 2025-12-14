@@ -1893,9 +1893,10 @@ export class Planet {
 
       // Polar biome detection based on latitude (y-component of normalized position)
       // y close to 1 = north pole, y close to -1 = south pole
+      // Only Earth-like planets have polar ice caps (not single-texture planets like Moon)
       const normalizedY = tile.center.clone().normalize().y;
       const polarThreshold = PlayerConfig.POLAR_THRESHOLD;
-      const isPolar = Math.abs(normalizedY) > polarThreshold;
+      const isPolar = !this.config.texturePath && Math.abs(normalizedY) > polarThreshold;
       const isUnderwater = hasWater && surfaceDepth < SEA_LEVEL_DEPTH;
 
       for (let depth = 0; depth < this.MAX_DEPTH; depth++) {
@@ -2092,14 +2093,15 @@ export class Planet {
     // Fill all tiles below sea level with water (creates oceans only)
     // Only fill CONTINUOUS air from sky down to sea level - don't fill enclosed caves
     // Depth system: 0 = bedrock, MAX_DEPTH-1 = sky
-    // In polar regions, surface water becomes ice with water below
+    // In polar regions, surface water becomes ice with water below (only for Earth-like planets)
     const SEA_LEVEL_DEPTH = this.MAX_DEPTH - 1 - this.SEA_LEVEL;
     const polarThreshold = PlayerConfig.POLAR_THRESHOLD;
+    const hasPolarIce = !this.config.texturePath; // Only Earth-like planets have polar ice
 
     for (const [_, column] of this.columns) {
-      // Check if this column is in polar region
+      // Check if this column is in polar region (only for planets with polar biomes)
       const normalizedY = column.tile.center.clone().normalize().y;
-      const isPolar = Math.abs(normalizedY) > polarThreshold;
+      const isPolar = hasPolarIce && Math.abs(normalizedY) > polarThreshold;
 
       // Track if we've placed the ice surface layer yet (for polar regions)
       let iceSurfacePlaced = false;

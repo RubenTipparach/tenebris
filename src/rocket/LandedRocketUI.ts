@@ -294,7 +294,13 @@ export class LandedRocketUI {
     if (!this.currentRocket) return;
 
     const rocket = this.currentRocket;
-    this.close();
+
+    // Close UI without triggering the close callback (which would request pointer lock)
+    // since boarding the rocket will handle pointer lock itself
+    this.isOpen = false;
+    this.container.style.display = 'none';
+    this.currentRocket = null;
+    MenuManager.unregisterMenu('landed-rocket-ui');
 
     if (this.onBoardCallback) {
       this.onBoardCallback(rocket);

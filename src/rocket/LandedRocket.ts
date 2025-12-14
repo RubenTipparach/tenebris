@@ -153,23 +153,16 @@ export class LandedRocketManager {
     let closest: { rocket: LandedRocket; point: THREE.Vector3; distance: number } | null = null;
 
     for (const rocket of this.landedRockets.values()) {
-      // First do a bounding sphere check
-      const rocketSphere = new THREE.Sphere(rocket.position, rocket.boundingRadius);
-      const ray = raycaster.ray;
-
-      const intersectPoint = new THREE.Vector3();
-      if (ray.intersectSphere(rocketSphere, intersectPoint)) {
-        const distance = raycaster.ray.origin.distanceTo(intersectPoint);
-        if (distance <= maxDistance && (!closest || distance < closest.distance)) {
-          // Do a more accurate check against the pivot's children
-          const intersects = raycaster.intersectObject(rocket.pivot, true);
-          if (intersects.length > 0 && intersects[0].distance <= maxDistance) {
-            closest = {
-              rocket,
-              point: intersects[0].point,
-              distance: intersects[0].distance,
-            };
-          }
+      // Skip the bounding sphere pre-check and directly raycast against the pivot
+      // This ensures all parts are checked regardless of bounding sphere accuracy
+      const intersects = raycaster.intersectObject(rocket.pivot, true);
+      if (intersects.length > 0 && intersects[0].distance <= maxDistance) {
+        if (!closest || intersects[0].distance < closest.distance) {
+          closest = {
+            rocket,
+            point: intersects[0].point,
+            distance: intersects[0].distance,
+          };
         }
       }
     }

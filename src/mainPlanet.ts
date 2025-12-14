@@ -14,6 +14,7 @@ import { loadingManager } from './engine/LoadingManager';
 import { MenuManager } from './player/MenuManager';
 import { initScreenshotHandler } from './utils/screenshot';
 import { RocketFlightManager } from './rocket';
+import { AudioManager } from './engine/AudioManager';
 
 class PlanetGame {
   private engine: GameEngine;
@@ -80,35 +81,9 @@ class PlanetGame {
       this.inputManager.resetMouseButtons();
     });
 
-    // Track if ESC was pressed to close pause menu (need to re-lock on keyup)
-    let pendingPauseMenuClose = false;
-
-    // Handle ESC key for pause menu toggle
-    document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') {
-        const instructions = document.getElementById('instructions');
-        const isPauseMenuVisible = instructions?.style.display === 'block';
-
-        // Only handle ESC here if no game UI is open (they handle their own ESC via MenuManager)
-        if (!MenuManager.isAnyMenuOpen()) {
-          if (isPauseMenuVisible) {
-            // Pause menu is open - mark for closing on keyup
-            pendingPauseMenuClose = true;
-            e.preventDefault();
-          }
-          // If game is active (pointer locked), browser will auto-exit pointer lock on ESC
-          // which will trigger the pointer lock callback to show pause menu
-        }
-      }
-    });
-
-    // Re-lock pointer on ESC keyup to close pause menu
-    document.addEventListener('keyup', (e) => {
-      if (e.key === 'Escape' && pendingPauseMenuClose) {
-        pendingPauseMenuClose = false;
-        container?.requestPointerLock();
-      }
-    });
+    // Note: ESC key is handled natively by the browser to exit pointer lock.
+    // When pointer lock exits, the callback shows the pause menu.
+    // To close pause menu, user clicks PLAY button or X button (avoids SecurityError race condition).
 
     // Setup pointer lock UI
     this.inputManager.setPointerLockCallback((locked) => {
@@ -139,6 +114,12 @@ class PlanetGame {
       loadingManager.registerStep('initial-terrain', 3);
       loadingManager.registerStep('player-setup', 1);
       loadingManager.registerStep('environment', 1);
+      loadingManager.registerStep('audio', 1);
+
+      // Initialize audio system
+      loadingManager.setStatus('Loading audio...');
+      await AudioManager.init();
+      loadingManager.completeStep('audio');
 
       // Initialize both planets (loads textures, generates terrain)
       loadingManager.setStatus('Loading textures...');
@@ -217,9 +198,21 @@ class PlanetGame {
         this.inputManager
       );
 
-      // Register planets for gravity calculations
-      this.rocketFlightManager.addPlanet('Earth', this.earth.center, this.earth.radius, 1.0);
-      this.rocketFlightManager.addPlanet('Moon', this.moon.center, this.moon.radius, 0.4);
+      // Register planets for gravity calculations (with terrain height callbacks)
+      this.rocketFlightManager.addPlanet(
+        'Earth',
+        this.earth.center,
+        this.earth.radius,
+        1.0,
+        (direction) => this.earth.getSurfaceHeightInDirection(direction)
+      );
+      this.rocketFlightManager.addPlanet(
+        'Moon',
+        this.moon.center,
+        this.moon.radius,
+        0.4,
+        (direction) => this.moon.getSurfaceHeightInDirection(direction)
+      );
 
       // Set up close all menus callback for boarding rocket
       this.blockInteraction.getLaunchPadUI().setOnCloseAllMenusCallback(() => {
@@ -250,7 +243,16 @@ class PlanetGame {
       });
 
       // Set up exit flight callback
-      this.rocketFlightManager.setOnExitFlightCallback(() => {
+      this.rocketFlightManager.setOnExitFlightCallback((exitPosition) => {
+        // If we landed somewhere (not at launch pad), move player to rocket position
+        if (exitPosition) {
+          // Position player slightly above the rocket position, on the surface
+          const surfaceNormal = exitPosition.clone().normalize();
+          const playerSpawnPos = exitPosition.clone().addScaledVector(surfaceNormal, 3); // 3 units above rocket base
+          this.player.position.copy(playerSpawnPos);
+          console.log('Player spawned at landed rocket position:', playerSpawnPos);
+        }
+
         // Re-enable player controls
         this.player.setEnabled(true);
 
@@ -376,6 +378,15 @@ class PlanetGame {
     // Track elapsed time for shader animations
     this.elapsedTime += deltaTime;
 
+    // Update audio listener position from camera
+    const cameraForward = new THREE.Vector3();
+    this.engine.camera.getWorldDirection(cameraForward);
+    AudioManager.setListenerPosition(
+      this.engine.camera.position,
+      cameraForward,
+      this.engine.camera.up
+    );
+
     // Check if in rocket flight mode
     const inFlightMode = this.rocketFlightManager?.isInFlight() ?? false;
 
@@ -425,12 +436,17 @@ class PlanetGame {
     this.sharedFrustum.setFromProjectionMatrix(this.projScreenMatrix);
     profiler.end('Frustum Calc');
 
+    // Use rocket position for LOD when in flight mode, otherwise use player position
+    const lodPosition = inFlightMode && this.rocketFlightManager?.getRocketController()
+      ? this.rocketFlightManager.getRocketController()!.getPosition()
+      : this.player.position;
+
     profiler.begin('Earth Update');
-    this.earth.update(this.player.position, this.engine.camera, deltaTime, this.sharedFrustum);
+    this.earth.update(lodPosition, this.engine.camera, deltaTime, this.sharedFrustum);
     profiler.end('Earth Update');
 
     profiler.begin('Moon Update');
-    this.moon.update(this.player.position, this.engine.camera, deltaTime, this.sharedFrustum);
+    this.moon.update(lodPosition, this.engine.camera, deltaTime, this.sharedFrustum);
     profiler.end('Moon Update');
 
     // Update water shader for animation (only Earth has water)
@@ -489,7 +505,7 @@ class PlanetGame {
     const result = landedRocketManager.raycast(raycaster, maxReach);
 
     if (result) {
-      // Player is looking at a landed rocket - open the UI
+      // Player is looking at a landed rocket - open the boarding UI
       this.rocketFlightManager.openLandedRocketUI(result.rocket);
       return true;
     }
@@ -585,6 +601,15 @@ class PlanetGame {
           gameStorage.clearSave();
           window.location.reload();
         }
+      });
+    }
+
+    // Handle pause menu close button
+    const pauseCloseBtn = document.getElementById('pause-close-btn');
+    const container = document.getElementById('game-container');
+    if (pauseCloseBtn && container) {
+      pauseCloseBtn.addEventListener('click', () => {
+        container.requestPointerLock();
       });
     }
   }

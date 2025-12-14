@@ -29,7 +29,7 @@ export class RocketFlightManager {
   private planets: PlanetGravitySource[] = [];
 
   // Callbacks
-  private onExitFlightCallback: (() => void) | null = null;
+  private onExitFlightCallback: ((exitPosition: THREE.Vector3 | null) => void) | null = null;
   private onRespawnCallback: ((position: THREE.Vector3) => void) | null = null;
   private onBoardRocketCallback: (() => void) | null = null;
 
@@ -45,6 +45,8 @@ export class RocketFlightManager {
     strafeBackward: false,
     strafeLeft: false,
     strafeRight: false,
+    strafeUp: false,
+    strafeDown: false,
     throttleUp: false,
     throttleDown: false,
     thrustToggle: false,
@@ -111,13 +113,21 @@ export class RocketFlightManager {
 
   /**
    * Register a planet for gravity calculations
+   * @param getSurfaceHeight Optional callback to get actual terrain height at a direction
    */
-  public addPlanet(name: string, center: THREE.Vector3, radius: number, gravityStrength: number = 1.0): void {
+  public addPlanet(
+    name: string,
+    center: THREE.Vector3,
+    radius: number,
+    gravityStrength: number = 1.0,
+    getSurfaceHeight?: (direction: THREE.Vector3) => number
+  ): void {
     this.planets.push({
       name,
       center: center.clone(),
       radius,
       gravityStrength,
+      getSurfaceHeight,
     });
     // Also update landed rocket manager
     this.landedRocketManager.setPlanets(this.planets);
@@ -126,7 +136,7 @@ export class RocketFlightManager {
   /**
    * Set callback for when flight mode ends
    */
-  public setOnExitFlightCallback(callback: () => void): void {
+  public setOnExitFlightCallback(callback: (exitPosition: THREE.Vector3 | null) => void): void {
     this.onExitFlightCallback = callback;
   }
 
@@ -163,9 +173,9 @@ export class RocketFlightManager {
       this.onRespawnCallback(respawnPosition);
     }
 
-    // Also call exit callback
+    // Also call exit callback (null position since crash = respawn at original location)
     if (this.onExitFlightCallback) {
-      this.onExitFlightCallback();
+      this.onExitFlightCallback(null);
     }
   }
 
@@ -224,7 +234,8 @@ export class RocketFlightManager {
 
   /**
    * Exit flight mode - returns player to normal play
-   * If rocket is in LANDED state, it persists in the world
+   * If rocket has launched (left initial position), it persists in the world
+   * If rocket never launched (still at launch pad), it returns to docked state
    */
   public exitFlightMode(): void {
     if (!this.isInFlightMode || !this.rocketController) {
@@ -238,8 +249,11 @@ export class RocketFlightManager {
       return;
     }
 
-    const currentState = this.rocketController.getState();
-    const isLanded = currentState === RocketState.LANDED;
+    // Check if rocket has ever launched - if so, it should persist
+    const hasLaunched = this.rocketController.getHasLaunched();
+
+    // Get rocket position BEFORE exiting (for player spawn)
+    const rocketPosition = hasLaunched ? this.rocketController.getPosition().clone() : null;
 
     // Exit the rocket
     this.rocketController.exit();
@@ -247,8 +261,9 @@ export class RocketFlightManager {
     // Hide flight UI
     this.flightUI.hide();
 
-    if (isLanded) {
-      // Persist the landed rocket instead of disposing
+    if (hasLaunched) {
+      // Persist the rocket - it has left its original launch pad
+      // Player can explore the world and re-board later
       this.landedRocketManager.createLandedRocket(
         this.rocketController.getPivot(),
         this.rocketController.getParts(),
@@ -263,16 +278,16 @@ export class RocketFlightManager {
       this.rocketController.disposeNonVisual();
       console.log('Rocket persisted in world as landed rocket');
     } else {
-      // Clean up rocket controller completely (BOARDED_GROUNDED at launch pad)
+      // Never launched - clean up completely (rocket stays on launch pad as DOCKED)
       this.rocketController.dispose();
     }
 
     this.rocketController = null;
     this.isInFlightMode = false;
 
-    // Call exit callback
+    // Call exit callback with position (null if exiting at launch pad, position if landed elsewhere)
     if (this.onExitFlightCallback) {
-      this.onExitFlightCallback();
+      this.onExitFlightCallback(rocketPosition);
     }
 
     console.log('Exited flight mode');
@@ -341,9 +356,10 @@ export class RocketFlightManager {
    * Open the landed rocket UI for a specific rocket
    */
   public openLandedRocketUI(rocket: LandedRocket): void {
-    // Exit pointer lock to show cursor
-    document.exitPointerLock();
+    // Open UI first (registers with MenuManager) to prevent pause menu from showing
     this.landedRocketUI.open(rocket);
+    // Then exit pointer lock to show cursor
+    document.exitPointerLock();
   }
 
   /**
@@ -418,6 +434,11 @@ export class RocketFlightManager {
       if (e.code === ROCKET_INPUTS.THRUST_TOGGLE) {
         this.inputState.thrustToggle = true;
       }
+
+      // Handle exit key - call exitFlightMode directly
+      if (e.code === ROCKET_INPUTS.EXIT_ROCKET) {
+        this.exitFlightMode();
+      }
     });
 
     document.addEventListener('keyup', (e) => {
@@ -482,11 +503,12 @@ export class RocketFlightManager {
     this.inputState.yawRight = this.keysPressed.has(ROCKET_INPUTS.YAW_RIGHT);
     this.inputState.rollLeft = this.keysPressed.has(ROCKET_INPUTS.ROLL_LEFT);
     this.inputState.rollRight = this.keysPressed.has(ROCKET_INPUTS.ROLL_RIGHT);
-    // Strafe thrusters (Arrow keys)
+    // Strafe thrusters (Arrow keys + C for descent)
     this.inputState.strafeForward = this.keysPressed.has(ROCKET_INPUTS.STRAFE_FORWARD);
     this.inputState.strafeBackward = this.keysPressed.has(ROCKET_INPUTS.STRAFE_BACKWARD);
     this.inputState.strafeLeft = this.keysPressed.has(ROCKET_INPUTS.STRAFE_LEFT);
     this.inputState.strafeRight = this.keysPressed.has(ROCKET_INPUTS.STRAFE_RIGHT);
+    this.inputState.strafeDown = this.keysPressed.has(ROCKET_INPUTS.STRAFE_DOWN);
     // Throttle
     this.inputState.throttleUp = this.keysPressed.has(ROCKET_INPUTS.THROTTLE_UP);
     this.inputState.throttleDown = this.keysPressed.has(ROCKET_INPUTS.THROTTLE_DOWN);

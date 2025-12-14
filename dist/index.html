@@ -126,6 +126,21 @@
       text-shadow: 0 0 10px rgba(76, 175, 80, 0.3);
     }
 
+    #instructions .close-menu {
+      position: absolute;
+      top: 15px;
+      right: 20px;
+      font-size: 28px;
+      color: #888;
+      cursor: pointer;
+      transition: color 0.2s;
+      line-height: 1;
+    }
+
+    #instructions .close-menu:hover {
+      color: #ff4a4a;
+    }
+
     #instructions p {
       margin: 10px 0;
       line-height: 1.5;
@@ -1051,7 +1066,7 @@
       }
     }
   </style>
-  <script type="module" crossorigin src="/tenebris/assets/index-62tTRGjz.js"></script>
+  <script type="module" crossorigin src="/tenebris/assets/index-CMl0GwrL.js"></script>
 </head>
 <body>
   <!-- Loading screen -->
@@ -1083,6 +1098,7 @@
   </div>
 
   <div id="instructions">
+    <span id="pause-close-btn" class="close-menu">&times;</span>
     <h1>TENEBRIS</h1>
 
     <div class="menu-tabs">

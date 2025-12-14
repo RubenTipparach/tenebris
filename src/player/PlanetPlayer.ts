@@ -3,6 +3,13 @@ import { InputManager, InputState } from '../engine/InputManager';
 import { Planet } from '../planet/Planet';
 import { HexBlockType } from '../planet/HexBlock';
 import { PlayerConfig } from '../config/PlayerConfig';
+import { AudioManager } from '../engine/AudioManager';
+import {
+  AUDIO_SETTINGS,
+  SurfaceType,
+  BLOCK_TO_SURFACE,
+  SURFACE_TO_SOUND,
+} from '../config/AudioConfig';
 
 // Simple toast notification system
 function showToast(message: string, duration: number = 3000): void {
@@ -181,6 +188,13 @@ export class PlanetPlayer {
     copperPipes: { tileIndex: number; depth: number }[];
     cables: { tileIndex: number; depth: number }[];
   }) | null = null;
+
+  // Audio state
+  private lastFootstepTime: number = 0;
+  private lastSwimSoundTime: number = 0;
+  private lastDiveSoundTime: number = 0;
+  private wasGrounded: boolean = true; // Track for landing detection
+  private wasInWater: boolean = false; // Track for water entry detection
 
   constructor(camera: THREE.PerspectiveCamera, inputManager: InputManager, planet: Planet) {
     this.camera = camera;
@@ -454,6 +468,53 @@ export class PlanetPlayer {
     return this.getAltitudeFromPlanet(this.currentPlanet);
   }
 
+  // Get the surface type under the player for footstep sounds
+  private getSurfaceTypeUnderPlayer(): SurfaceType {
+    if (!this.currentPlanet) return SurfaceType.STONE;
+
+    const currentTile = this.currentPlanet.getTileAtPointFast(this.position);
+    if (!currentTile) return SurfaceType.STONE;
+
+    const currentDist = this.position.distanceTo(this.currentPlanet.center);
+    const groundDepth = findWalkableFloorAtRadius(this.currentPlanet, currentTile.index, currentDist);
+
+    if (groundDepth < 0) return SurfaceType.STONE;
+
+    const blockType = this.currentPlanet.getBlock(currentTile.index, groundDepth);
+    return BLOCK_TO_SURFACE[blockType] ?? SurfaceType.STONE;
+  }
+
+  // Play footstep sound based on surface and movement speed
+  private playFootstepSound(isSprinting: boolean): void {
+    const now = performance.now() / 1000;
+    const interval = isSprinting
+      ? AUDIO_SETTINGS.FOOTSTEP_INTERVAL_SPRINT
+      : AUDIO_SETTINGS.FOOTSTEP_INTERVAL_WALK;
+
+    if (now - this.lastFootstepTime < interval) return;
+
+    this.lastFootstepTime = now;
+    const surfaceType = this.getSurfaceTypeUnderPlayer();
+    const soundId = SURFACE_TO_SOUND[surfaceType];
+
+    AudioManager.playWithVariation(soundId, {
+      position: this.position.clone(),
+    });
+  }
+
+  // Play swim sound when moving underwater
+  private playSwimSound(): void {
+    const now = performance.now() / 1000;
+    const interval = AUDIO_SETTINGS.FOOTSTEP_INTERVAL_WALK * 1.5; // Slower interval for swimming
+
+    if (now - this.lastSwimSoundTime < interval) return;
+
+    this.lastSwimSoundTime = now;
+    AudioManager.playWithVariation('swim', {
+      position: this.position.clone(),
+    });
+  }
+
   // Find the closest planet and calculate gravity influence
   private findClosestPlanetAndGravity(): { planet: Planet | null; gravityMultiplier: number; altitude: number } {
     let closestPlanet: Planet | null = null;
@@ -663,6 +724,10 @@ export class PlanetPlayer {
 
     this.updateCamera();
     this.updateUI();
+
+    // Update audio state tracking for next frame
+    this.wasGrounded = this.isGrounded;
+    this.wasInWater = this.feetInWater;
   }
 
   // Debug: Detect if player is stuck and log detailed collision info
@@ -1316,6 +1381,13 @@ export class PlanetPlayer {
     // Check if feet are in water - used to allow swimming up even when body check is above water
     this.feetInWater = this.currentPlanet.isInWater(this.position);
 
+    // Play water entry sound when entering water from above (not when already underwater)
+    const now = performance.now() / 1000;
+    if (this.feetInWater && !this.wasInWater && !this.isInWater && now - this.lastDiveSoundTime > 1.0) {
+      AudioManager.play('dive', { position: this.position.clone() });
+      this.lastDiveSoundTime = now;
+    }
+
     const moveDir = new THREE.Vector3();
 
     // Get horizontal movement direction from camera orientation
@@ -1356,6 +1428,17 @@ export class PlanetPlayer {
 
       // Try to move - use iterative collision resolution
       this.resolveMovement(movement);
+
+      // Play footstep sounds when grounded and moving (not in water)
+      if (this.isGrounded && !bodyInWater) {
+        this.playFootstepSound(input.sprint);
+      } else if (this.feetInWater && this.isGrounded && !this.isInWater) {
+        // Play water footstep sounds when wading (feet in water but eyes above)
+        this.playFootstepSound(input.sprint);
+      } else if (this.isInWater) {
+        // Play swim sounds when moving underwater (eyes submerged)
+        this.playSwimSound();
+      }
     }
 
     // Water states (when feet in water):
@@ -1438,6 +1521,9 @@ export class PlanetPlayer {
         this.isGrounded = false;
         this.hasDoubleJumped = false; // Reset double-jump flag
         this.didJumpThisFrame = true; // Mark for teleport detection
+
+        // Play jump sound
+        AudioManager.play('jump', { position: this.position.clone() });
 
         // Track jump start for drift detection and fix gravity direction
         if (this.currentPlanet) {
@@ -2150,9 +2236,15 @@ export class PlanetPlayer {
 
     if (onGround && this.velocity.dot(actualUp) <= 0) {
       // On the ground - stop vertical movement
+      const wasAirborne = !this.wasGrounded;
       this.isGrounded = true;
       this.hasDoubleJumped = false; // Reset double-jump when landing
       this.isJetpacking = false;
+
+      // Play landing sound when landing from air
+      if (wasAirborne) {
+        AudioManager.play('landing', { position: this.position.clone() });
+      }
 
       // Snap to ground at the correct radial distance
       // Use jump direction if available and WASD wasn't pressed (pure vertical jump)

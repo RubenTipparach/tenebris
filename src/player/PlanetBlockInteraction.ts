@@ -32,6 +32,8 @@ import { getAssetPath } from '../utils/assetPath';
 import { gameStorage } from '../engine/GameStorage';
 import { PlayerConfig } from '../config/PlayerConfig';
 import { TechBlockRegistry, TechBlockInfo } from '../engine/TechBlockRegistry';
+import { AudioManager } from '../engine/AudioManager';
+import { AUDIO_SETTINGS } from '../config/AudioConfig';
 
 // Map HexBlockType to ItemType (what you get when mining)
 function blockToItem(blockType: HexBlockType): ItemType {
@@ -174,6 +176,7 @@ export class PlanetBlockInteraction {
   private miningProgress: number = 0;
   private miningProgressContainer: HTMLElement | null = null;
   private miningProgressBar: HTMLElement | null = null;
+  private lastMiningSoundTime: number = 0;
 
   // Drag and drop state for hotbar
   private draggedSlotIndex: number | null = null;
@@ -1637,6 +1640,9 @@ export class PlanetBlockInteraction {
     this.miningProgress += deltaTime / mineTime;
     this.updateMiningUI(this.miningProgress);
 
+    // Play mining hit sound
+    this.playMiningSound(this.player.position);
+
     // Check if mining complete
     if (this.miningProgress >= 1) {
       this.breakBlock(planet, tileIndex, depth, blockType);
@@ -1660,6 +1666,9 @@ export class PlanetBlockInteraction {
     // Increase progress
     this.miningProgress += deltaTime / mineTime;
     this.updateMiningUI(this.miningProgress);
+
+    // Play mining hit sound
+    this.playMiningSound(this.player.position);
 
     // Check if mining complete
     if (this.miningProgress >= 1) {
@@ -1719,6 +1728,9 @@ export class PlanetBlockInteraction {
     this.miningProgress += deltaTime / mineTime;
     this.updateMiningUI(this.miningProgress);
 
+    // Play mining hit sound
+    this.playMiningSound(this.player.position);
+
     // Check if mining complete
     if (this.miningProgress >= 1) {
       this.breakFurnace(furnace);
@@ -1774,6 +1786,9 @@ export class PlanetBlockInteraction {
     // Increase progress
     this.miningProgress += deltaTime / mineTime;
     this.updateMiningUI(this.miningProgress);
+
+    // Play mining hit sound
+    this.playMiningSound(this.player.position);
 
     // Check if mining complete
     if (this.miningProgress >= 1) {
@@ -2371,6 +2386,15 @@ export class PlanetBlockInteraction {
         slots: pile.slots.map(s => ({ itemType: s.itemType, quantity: s.quantity }))
       });
     }
+  }
+
+  // Play mining hit sound at regular intervals during mining
+  private playMiningSound(position: THREE.Vector3): void {
+    const now = performance.now() / 1000;
+    if (now - this.lastMiningSoundTime < AUDIO_SETTINGS.MINING_SOUND_INTERVAL) return;
+
+    this.lastMiningSoundTime = now;
+    AudioManager.playWithVariation('mining_hit', { position: position.clone() });
   }
 
   private resetMining(): void {
