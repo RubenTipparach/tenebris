@@ -289,9 +289,9 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
       id: 'sun',
       name: 'Sun',
       type: CelestialBodyType.STAR,
-      radius: 400,
+      radius: 500,
       subdivisions: 4,
-      position: { x: -4000, y: 500, z: -1000 },
+      position: { x: 1000, y: 0, z: 4000},
       visual: {
         heightVariation: 0,
         terrainStyle: TerrainStyle.VOLCANIC,

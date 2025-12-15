@@ -31,6 +31,7 @@ export class GameEngine {
   private lastFpsUpdate: number = 0;
   private currentFps: number = 0;
   private sunMesh: THREE.Mesh | null = null;
+  private directionalLight: THREE.DirectionalLight | null = null;
   private starfield: THREE.Mesh | null = null;
   private isUnderwater: boolean = false;
   private underwaterFog: THREE.Fog | null = null;
@@ -133,23 +134,48 @@ export class GameEngine {
     this.scene.add(ambientLight);
 
     // Directional light (sun)
-    const directionalLight = new THREE.DirectionalLight(0xffffff, PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY);
+    this.directionalLight = new THREE.DirectionalLight(0xffffff, PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY);
     // Position light far away in sun direction
-    directionalLight.position.copy(this.sunDirection.clone().multiplyScalar(500));
-    directionalLight.castShadow = true;
-    directionalLight.shadow.mapSize.width = 1024;
-    directionalLight.shadow.mapSize.height = 1024;
-    directionalLight.shadow.camera.near = 0.5;
-    directionalLight.shadow.camera.far = 500;
-    directionalLight.shadow.camera.left = -100;
-    directionalLight.shadow.camera.right = 100;
-    directionalLight.shadow.camera.top = 100;
-    directionalLight.shadow.camera.bottom = -100;
-    this.scene.add(directionalLight);
+    this.directionalLight.position.copy(this.sunDirection.clone().multiplyScalar(500));
+    this.directionalLight.castShadow = true;
+    this.directionalLight.shadow.mapSize.width = 1024;
+    this.directionalLight.shadow.mapSize.height = 1024;
+    this.directionalLight.shadow.camera.near = 0.5;
+    this.directionalLight.shadow.camera.far = 500;
+    this.directionalLight.shadow.camera.left = -100;
+    this.directionalLight.shadow.camera.right = 100;
+    this.directionalLight.shadow.camera.top = 100;
+    this.directionalLight.shadow.camera.bottom = -100;
+    this.scene.add(this.directionalLight);
 
     // Hemisphere light for subtle sky/ground color blend
     const hemisphereLight = new THREE.HemisphereLight(0x87CEEB, 0x222222, PlayerConfig.HEMISPHERE_LIGHT_INTENSITY);
     this.scene.add(hemisphereLight);
+  }
+
+  /**
+   * Set the actual sun world position and radius (from solar system config).
+   * Updates sun mesh position/scale and directional light position.
+   * @param position The sun's world position
+   * @param radius Optional radius to scale the sun mesh (default keeps existing size)
+   */
+  public setSunPosition(position: THREE.Vector3, radius?: number): void {
+    // Update sun mesh to actual position
+    if (this.sunMesh) {
+      this.sunMesh.position.copy(position);
+
+      // Scale the sun mesh if radius is provided
+      // The sun geometry was created with radius 60, so we scale relative to that
+      if (radius !== undefined) {
+        const scale = radius / 60;
+        this.sunMesh.scale.setScalar(scale);
+      }
+    }
+
+    // Update directional light position (for shadows, etc.)
+    if (this.directionalLight) {
+      this.directionalLight.position.copy(position);
+    }
   }
 
   private createDepthRenderTarget(): void {

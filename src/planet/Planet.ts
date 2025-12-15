@@ -1152,7 +1152,7 @@ export class Planet {
       const material = new THREE.ShaderMaterial({
         uniforms: {
           planetCenter: { value: this.center.clone() },
-          sunDirection: { value: new THREE.Vector3(1, 0, 0) }, // Updated in update()
+          sunDirection: { value: this.sunDirection.clone() }, // Uses stored sun direction
           ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
           directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
           darkSideAmbient: { value: PlayerConfig.PLANET_DARK_SIDE_AMBIENT }
@@ -3177,10 +3177,13 @@ export class Planet {
   }
 
   public setSunDirection(dir: THREE.Vector3): void {
+    // Store the sun direction for use when rebuilding LOD meshes
+    this.sunDirection.copy(dir);
     this.meshBuilder.setSunDirection(dir);
     // Update distant LOD materials with sun direction
     for (const material of this.distantLODMaterials) {
       material.uniforms.sunDirection.value.copy(dir);
+      material.uniformsNeedUpdate = true; // Force Three.js to upload new uniform values to GPU
     }
   }
 
@@ -4233,6 +4236,12 @@ export class Planet {
   public updateDistantLODPositions(): void {
     for (const mesh of this.distantLODMeshes) {
       mesh.position.copy(this.center);
+    }
+    // Also update the planetCenter uniform in LOD materials
+    // This is critical for correct day/night lighting calculations
+    for (const material of this.distantLODMaterials) {
+      material.uniforms.planetCenter.value.copy(this.center);
+      material.uniformsNeedUpdate = true; // Force Three.js to upload new uniform values to GPU
     }
   }
 

@@ -13,12 +13,16 @@
 -placing moon rock on earth just turns to normal rock
 
 - addressing performance issues
+
 -terrain LOD height is not matching actual terrain height.
 
 -- see water_bugs.md lol
 
 - need wiki
 
+- sequoia planet:
+ - mushrroms are z fighting
+ - planet LOD height should be unique to each planet. sequoia is 2x size of earth, so LOD kicks in way too soon....
 ---
 
 ## Fixed Bugs

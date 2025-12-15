@@ -108,7 +108,7 @@ export const PlayerConfig = {
   TERRAIN_LOD_SWITCH_ALTITUDE: 50,    // Altitude above which only LOD mesh is shown
   TERRAIN_BUFFER_ZONE: 12,             // Tiles player can move before triggering rebuild
   TERRAIN_TILES_PER_FRAME: 20,        // Max tiles to process per frame during incremental rebuild
-  TERRAIN_LOD_OFFSET: 1.0,            // How far inward LOD terrain sits vs detail terrain (prevents z-fighting/intersection)
+  TERRAIN_LOD_OFFSET: 0,              // LOD terrain height offset (0 = match actual terrain, polygonOffset handles z-fighting)
 
   // Terrain generation
   TERRAIN_SEED: 12345,                // Seed for terrain generation (change for different worlds)

@@ -220,10 +220,35 @@ export class Profiler {
       max-height: 80vh;
       overflow-y: auto;
       display: none;
-      pointer-events: none;
+      pointer-events: auto;
     `;
 
     document.body.appendChild(this.displayElement);
+
+    // Add copy button styles
+    const style = document.createElement('style');
+    style.textContent = `
+      #profiler-copy-btn {
+        background: #333;
+        color: #0f0;
+        border: 1px solid #0f0;
+        padding: 4px 8px;
+        font-family: 'Courier New', monospace;
+        font-size: 10px;
+        cursor: pointer;
+        border-radius: 3px;
+        margin-top: 8px;
+      }
+      #profiler-copy-btn:hover {
+        background: #0f0;
+        color: #000;
+      }
+      #profiler-copy-btn.copied {
+        background: #080;
+        border-color: #080;
+      }
+    `;
+    document.head.appendChild(style);
   }
 
   // Update the display
@@ -346,7 +371,112 @@ export class Profiler {
       }
     }
 
+    // Add copy button
+    html += '<span style="color:#888">─────────────────────────────</span><br>';
+    html += '<button id="profiler-copy-btn">Copy to Clipboard</button>';
+
     this.displayElement.innerHTML = html;
+
+    // Attach click handler to copy button
+    const copyBtn = document.getElementById('profiler-copy-btn');
+    if (copyBtn) {
+      copyBtn.onclick = () => this.copyToClipboard();
+    }
+  }
+
+  // Generate plain text version of profiler data for clipboard
+  private generatePlainText(): string {
+    const metrics = this.getMetrics();
+    const lines: string[] = [];
+    const timestamp = new Date().toISOString();
+
+    lines.push(`=== TENEBRIS PROFILER DATA ===`);
+    lines.push(`Timestamp: ${timestamp}`);
+    lines.push('');
+
+    // Metrics
+    const totalSection = metrics.find(m => m.name === 'Frame Total');
+    const totalTime = totalSection?.avgTime ?? 0;
+
+    lines.push('--- TIMING METRICS ---');
+    for (const m of metrics) {
+      const percent = totalTime > 0 ? (m.avgTime / totalTime * 100).toFixed(0) : '0';
+      lines.push(`${m.name.padEnd(22)} avg: ${m.avgTime.toFixed(2).padStart(6)}ms  max: ${m.maxTime.toFixed(2).padStart(6)}ms  ${percent.padStart(3)}%`);
+    }
+
+    // GPU stats
+    const renderer = (window as unknown as { __gameRenderer?: THREE.WebGLRenderer }).__gameRenderer;
+    const scene = (window as unknown as { __gameScene?: THREE.Scene }).__gameScene;
+
+    if (renderer?.info) {
+      lines.push('');
+      lines.push('--- GPU STATS ---');
+      lines.push(`Draw Calls: ${renderer.info.render.calls}`);
+      lines.push(`Triangles: ${renderer.info.render.triangles.toLocaleString()}`);
+      lines.push(`Geometries: ${renderer.info.memory.geometries}`);
+      lines.push(`Textures: ${renderer.info.memory.textures}`);
+      if (renderer.info.programs) {
+        lines.push(`Shader Programs: ${renderer.info.programs.length}`);
+      }
+    }
+
+    // Scene stats
+    if (scene) {
+      let meshCount = 0;
+      let visibleMeshCount = 0;
+      let groupCount = 0;
+      let lightCount = 0;
+
+      scene.traverse((obj) => {
+        if ((obj as THREE.Mesh).isMesh) {
+          meshCount++;
+          if (obj.visible) visibleMeshCount++;
+        }
+        if ((obj as THREE.Group).isGroup) groupCount++;
+        if ((obj as THREE.Light).isLight) lightCount++;
+      });
+
+      lines.push('');
+      lines.push('--- SCENE STATS ---');
+      lines.push(`Total Meshes: ${meshCount}`);
+      lines.push(`Visible Meshes: ${visibleMeshCount}`);
+      lines.push(`Groups: ${groupCount}`);
+      lines.push(`Lights: ${lightCount}`);
+    }
+
+    // One-time operations
+    if (this.oneTimeOperations.length > 0) {
+      const currentTime = performance.now();
+      lines.push('');
+      lines.push('--- RECENT OPERATIONS ---');
+      for (const op of this.oneTimeOperations) {
+        const age = ((currentTime - op.timestamp) / 1000).toFixed(1);
+        lines.push(`${op.name.padEnd(22)} ${op.time.toFixed(2).padStart(8)}ms  (${age}s ago)`);
+      }
+    }
+
+    lines.push('');
+    lines.push('=== END PROFILER DATA ===');
+
+    return lines.join('\n');
+  }
+
+  // Copy profiler data to clipboard
+  private copyToClipboard(): void {
+    const text = this.generatePlainText();
+    navigator.clipboard.writeText(text).then(() => {
+      const btn = document.getElementById('profiler-copy-btn');
+      if (btn) {
+        btn.textContent = 'Copied!';
+        btn.classList.add('copied');
+        setTimeout(() => {
+          btn.textContent = 'Copy to Clipboard';
+          btn.classList.remove('copied');
+        }, 2000);
+      }
+    }).catch(err => {
+      console.error('Failed to copy profiler data:', err);
+    });
   }
 
   // Reset all metrics

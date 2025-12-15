@@ -77,20 +77,6 @@ export class InputManager {
       }
     }, { capture: true });
 
-    // Show confirmation dialog when trying to close/leave the page while playing
-    // This is the only way to give the user a chance to cancel closing the tab
-    window.addEventListener('beforeunload', (e) => {
-      if (this.isPointerLocked || this.mobileGameActive) {
-        // Exit pointer lock so the dialog can be interacted with properly
-        if (document.pointerLockElement) {
-          document.exitPointerLock();
-        }
-        e.preventDefault();
-        // Chrome requires returnValue to be set
-        e.returnValue = 'You have an active game. Are you sure you want to leave?';
-        return e.returnValue;
-      }
-    });
 
     // Keyboard events
     document.addEventListener('keydown', (e) => {

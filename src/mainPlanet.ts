@@ -18,6 +18,14 @@ import { RocketFlightManager } from './rocket';
 import { AudioManager } from './engine/AudioManager';
 import { MusicManager } from './engine/MusicManager';
 
+/**
+ * Calculate the sun direction for a given planet position.
+ * Returns a normalized vector pointing FROM the planet center TO the sun.
+ */
+function calculateSunDirectionForPlanet(planetCenter: THREE.Vector3, sunPosition: THREE.Vector3): THREE.Vector3 {
+  return sunPosition.clone().sub(planetCenter).normalize();
+}
+
 class PlanetGame {
   private engine: GameEngine;
   private inputManager: InputManager;
@@ -44,16 +52,10 @@ class PlanetGame {
   private sharedFrustum: THREE.Frustum = new THREE.Frustum();
   private projScreenMatrix: THREE.Matrix4 = new THREE.Matrix4();
 
-  constructor() {
-    // Prevent browser from closing tab - shows confirmation dialog
-    // Note: User must interact with page first for this to work (Chrome security)
-    window.addEventListener('beforeunload', (e) => {
-      e.preventDefault();
-      // Chrome requires returnValue to be set
-      e.returnValue = '';
-      return '';
-    });
+  // Sun position from solar system config (for per-planet lighting calculation)
+  private sunPosition: THREE.Vector3 = new THREE.Vector3();
 
+  constructor() {
     const container = document.getElementById('game-container');
     if (!container) throw new Error('Game container not found');
 
@@ -162,9 +164,15 @@ class PlanetGame {
       }
       loadingManager.completeStep('textures');
 
-      // Position planets according to solar system config
+      // Position planets according to solar system config and get sun position
       loadingManager.setStatus('Generating terrain...');
       for (const bodyConfig of SOLAR_SYSTEM.bodies) {
+        // Store sun position for lighting calculations
+        if (bodyConfig.id === 'sun') {
+          this.sunPosition.set(bodyConfig.position.x, bodyConfig.position.y, bodyConfig.position.z);
+          // Update the GameEngine's sun mesh and directional light to actual position and size
+          this.engine.setSunPosition(this.sunPosition, bodyConfig.radius);
+        }
         const planet = this.planets.get(bodyConfig.id);
         if (planet) {
           planet.center.set(bodyConfig.position.x, bodyConfig.position.y, bodyConfig.position.z);
@@ -217,8 +225,9 @@ class PlanetGame {
       );
 
       // Initialize tree manager and scatter trees on Earth
-      // Pass sun direction for planet-aware lighting
-      this.treeManager = new PlanetTreeManager(this.engine.scene, this.engine.sunDirection);
+      // Pass sun direction calculated from Earth's position to the sun
+      const earthSunDirForTrees = calculateSunDirectionForPlanet(this.earth.center, this.sunPosition);
+      this.treeManager = new PlanetTreeManager(this.engine.scene, earthSunDirForTrees);
 
       // Load saved game data early so removed trees are available
       // (full load happens later but we need planet data now for tree generation)
@@ -376,16 +385,20 @@ class PlanetGame {
         }
       });
 
+      // Calculate sun direction for each planet
+      const earthSunDir = calculateSunDirectionForPlanet(this.earth.center, this.sunPosition);
+      const sequoiaSunDir = calculateSunDirectionForPlanet(this.sequoia.center, this.sunPosition);
+
       // Create atmosphere for Earth (if enabled)
       loadingManager.setStatus('Creating environment...');
       if (PlayerConfig.ATMOSPHERE_ENABLED) {
-        this.earthAtmosphere = createEarthAtmosphere(this.earth.radius, this.engine.sunDirection);
+        this.earthAtmosphere = createEarthAtmosphere(this.earth.radius, earthSunDir);
         this.earthAtmosphere.setPosition(this.earth.center);
         this.engine.scene.add(this.earthAtmosphere.getMesh());
       }
 
       // Create clouds for Earth
-      this.earthClouds = createEarthClouds(this.earth.radius, this.engine.sunDirection);
+      this.earthClouds = createEarthClouds(this.earth.radius, earthSunDir);
       this.earthClouds.setPosition(this.earth.center);
       this.engine.scene.add(this.earthClouds.getGroup());
 
@@ -394,7 +407,7 @@ class PlanetGame {
       if (sequoiaConfig.hasAtmosphere && PlayerConfig.ATMOSPHERE_ENABLED) {
         this.sequoiaAtmosphere = createAtmosphere(
           this.sequoia.radius,
-          this.engine.sunDirection,
+          sequoiaSunDir,
           sequoiaConfig.visual.atmosphereTint
         );
         this.sequoiaAtmosphere.setPosition(this.sequoia.center);
@@ -402,7 +415,7 @@ class PlanetGame {
       }
 
       // Scatter mushroom trees on Sequoia
-      this.mushroomTreeManager = new MushroomTreeManager(this.engine.scene, this.engine.sunDirection);
+      this.mushroomTreeManager = new MushroomTreeManager(this.engine.scene, sequoiaSunDir);
       const removedSequoiaTrees = gameStorage.getRemovedTrees('sequoia');
       const removedSequoiaTiles = new Set(removedSequoiaTrees.map(t => t.tileIndex));
       this.mushroomTreeManager.scatterTrees(
@@ -417,9 +430,12 @@ class PlanetGame {
         removedSequoiaTiles
       );
 
-      // Set sun direction for water shader reflections
-      this.earth.setSunDirection(this.engine.sunDirection);
-      this.sequoia.setSunDirection(this.engine.sunDirection);
+      // Set sun direction for each planet based on sun position
+      // Each planet calculates its own sun direction from its center to the sun
+      for (const planet of this.planets.values()) {
+        const sunDir = calculateSunDirectionForPlanet(planet.center, this.sunPosition);
+        planet.setSunDirection(sunDir);
+      }
       loadingManager.completeStep('environment');
 
       // Register water shader material with engine for depth-based fog
