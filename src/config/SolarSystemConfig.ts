@@ -26,6 +26,32 @@ export enum TerrainStyle {
 }
 
 /**
+ * Colors used for LOD rendering when planet is viewed from space
+ * All colors are hex strings (e.g., '#4a8c4a')
+ */
+export interface LodColorsConfig {
+  /** Color for land/grass tiles */
+  land: string;
+  /** Color for water tiles */
+  water: string;
+  /** Color for polar ice (frozen water) */
+  ice: string;
+  /** Color for snow-covered land */
+  snow: string;
+  /** Color for rock/stone below sea level */
+  rock: string;
+}
+
+/** Default Earth-like LOD colors */
+export const DEFAULT_LOD_COLORS: LodColorsConfig = {
+  land: '#4a8c4a',   // Green grass
+  water: '#3399cc',  // Ocean blue
+  ice: '#b8e0f0',    // Polar ice (light cyan)
+  snow: '#f0f0f0',   // Snow white
+  rock: '#888888',   // Grey rock
+};
+
+/**
  * Configuration for a celestial body's visual appearance
  */
 export interface VisualConfig {
@@ -43,6 +69,8 @@ export interface VisualConfig {
   emissiveColor?: string;
   /** Atmosphere color tint (multiplied with scattering result). Default white = no tint */
   atmosphereTint?: string;
+  /** Colors for LOD tiles when viewed from space. Uses DEFAULT_LOD_COLORS if not specified */
+  lodColors?: Partial<LodColorsConfig>;
 }
 
 /**
@@ -372,6 +400,13 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
         terrainStyle: TerrainStyle.EARTH_LIKE,  // Same biome logic as Earth
         distantColor: '#558844',  // Greenish when viewed from distance
         atmosphereTint: '#ffaa88',  // Reddish atmosphere tint
+        lodColors: {
+          land: '#7b6640',   // Olive-green alien vegetation
+          water: '#2a6655', // Greenish alien water (matches waterColor)
+          ice: '#a8d8c8',   // Greenish-tinted ice
+          snow: '#e8f0e8',  // Slightly green-tinted snow
+          rock: '#7a7a6a',  // Brownish-grey rock
+        },
       },
       gravity: {
         strength: 1.0,  // Same as Earth despite larger size

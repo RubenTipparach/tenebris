@@ -84,6 +84,42 @@ function flattenAll(): Plugin {
         // Remove assets/ prefix for workers
         content = content.replace(/assets\//g, '');
 
+        // Handle dynamic path construction for mineralsPath and basePath configs
+        // These get concatenated at runtime like: `${mineralsPath}/rocks_coal.png`
+        // We need to rewrite the base path AND the concatenation pattern
+
+        // Rewrite mineralsPath values to flat prefix format
+        // "/textures/minerals/earth" -> "textures_minerals_earth" (no trailing slash)
+        content = content.replace(
+          /mineralsPath:\s*["']\/textures\/minerals\/earth["']/g,
+          'mineralsPath:"textures_minerals_earth"'
+        );
+
+        // Rewrite basePath values to flat prefix format
+        // "/textures/planet_seq" -> "textures_planet_seq"
+        content = content.replace(
+          /basePath:\s*["']\/textures\/planet_seq["']/g,
+          'basePath:"textures_planet_seq"'
+        );
+        content = content.replace(
+          /basePath:\s*["']\/textures["']/g,
+          'basePath:"textures"'
+        );
+
+        // Now fix the concatenation pattern: `${path}/filename.png` becomes `${path}_filename.png`
+        // This handles template literals like `${ts.mineralsPath}/rocks_coal.png`
+        // After the above rewrites, mineralsPath is "textures_minerals_earth"
+        // So `${mineralsPath}/rocks_coal.png` should become `${mineralsPath}_rocks_coal.png`
+        // We replace the pattern: }/ with }_  (inside template literals for paths)
+        content = content.replace(
+          /(\$\{[^}]+mineralsPath\})\/rocks_/g,
+          '$1_rocks_'
+        );
+        content = content.replace(
+          /(\$\{[^}]+basePath\})\/planet_seq_/g,
+          '$1_planet_seq_'
+        );
+
         // Rewrite all texture/model paths from subdirectories to flat names
         // The source code uses paths like "/textures/rocks.png" passed to loadTexture()
         // These need to be rewritten to flat names like "textures_rocks.png"

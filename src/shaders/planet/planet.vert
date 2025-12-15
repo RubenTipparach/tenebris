@@ -13,7 +13,8 @@ varying float vTorchLight;
 
 void main() {
   vColor = color;
-  vTorchLight = torchLight;
+  // Clamp torchLight to valid range - protects against invalid attribute values
+  vTorchLight = clamp(torchLight, 0.0, 1.0);
 
   // Transform to world space
   vec4 worldPos = modelMatrix * vec4(position, 1.0);

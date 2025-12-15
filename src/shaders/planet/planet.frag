@@ -35,7 +35,8 @@ void main() {
   vec3 finalColor = vColor * lighting;
 
   // Add vertex-baked torch light (visible on dark side, fades on day side)
-  if (vTorchLight > 0.0) {
+  // Use threshold > 0.01 to avoid floating point precision issues
+  if (vTorchLight > 0.01) {
     // Night factor - torch light is more visible in darkness
     float nightFactor = smoothstep(0.5, 0.0, dayFactor);
     finalColor += vColor * TORCH_LIGHT_COLOR * vTorchLight * nightFactor;

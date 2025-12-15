@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { GoldbergPolyhedron, HexTile } from './GoldbergPolyhedron';
 import { HexBlockType, HexBlockMeshBuilder } from './HexBlock';
 import { PlayerConfig } from '../config/PlayerConfig';
-import { TilesetConfig } from '../config/SolarSystemConfig';
+import { TilesetConfig, LodColorsConfig, DEFAULT_LOD_COLORS } from '../config/SolarSystemConfig';
 import { profiler } from '../engine/Profiler';
 import planetVert from '../shaders/planet/planet.vert?raw';
 import planetFrag from '../shaders/planet/planet.frag?raw';
@@ -15,6 +15,7 @@ export interface PlanetConfig {
   tileset?: TilesetConfig;  // Tileset configuration for block textures
   waterColor?: string;      // Water color override (hex string)
   waterDeepColor?: string;  // Deep water color override (hex string)
+  lodColors?: Partial<LodColorsConfig>;  // Colors for LOD tiles when viewed from space
 }
 
 export interface PlanetColumn {
@@ -936,6 +937,12 @@ export class Planet {
       // Check if this is a single-texture planet (like moon) - use grey for all surfaces
       const isSingleTexturePlanet = !!this.config.texturePath;
 
+      // Get LOD colors from config, falling back to defaults
+      const lodColors: LodColorsConfig = {
+        ...DEFAULT_LOD_COLORS,
+        ...this.config.lodColors,
+      };
+
       for (const tile of lodPolyhedron.tiles) {
         const surfaceDepth = this.getHeightVariation(tile.center);
         const terrainRadius = this.depthToRadius(surfaceDepth);
@@ -953,17 +960,17 @@ export class Planet {
           const heightFactor = Math.max(0.4, Math.min(1.0, 0.6 + surfaceDepth * 0.02));
           color = new THREE.Color(heightFactor * 0.7, heightFactor * 0.7, heightFactor * 0.7);
         } else if (isWater && isPolar) {
-          // Polar water = ice (light cyan/white)
-          color = new THREE.Color(0xb8e0f0);
+          // Polar water = ice
+          color = new THREE.Color(lodColors.ice);
         } else if (isWater) {
-          color = new THREE.Color(0x3399cc);
+          color = new THREE.Color(lodColors.water);
         } else if (surfaceDepth <= 0) {
-          color = new THREE.Color(0x888888);
+          color = new THREE.Color(lodColors.rock);
         } else if (isPolar) {
-          // Polar land = snow (white)
-          color = new THREE.Color(0xf0f0f0);
+          // Polar land = snow
+          color = new THREE.Color(lodColors.snow);
         } else {
-          color = new THREE.Color(0x4a8c4a);
+          color = new THREE.Color(lodColors.land);
         }
 
         tileDisplayRadii.set(tile.index, { radius: displayRadius, isWater, color });
@@ -1156,6 +1163,8 @@ export class Planet {
         polygonOffsetFactor: 1,
         polygonOffsetUnits: 1
       });
+      // Set default attribute value for torchLight to prevent undefined behavior
+      (material.defaultAttributeValues as Record<string, unknown>)['torchLight'] = 0;
 
       const mesh = new THREE.Mesh(geometry, material);
       mesh.position.copy(this.center);

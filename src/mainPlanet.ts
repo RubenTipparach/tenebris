@@ -81,6 +81,7 @@ class PlanetGame {
           tileset: bodyConfig.tileset,
           waterColor: bodyConfig.terrain.waterColor,
           waterDeepColor: bodyConfig.terrain.waterDeepColor,
+          lodColors: bodyConfig.visual.lodColors,
         }
       );
       this.planets.set(bodyConfig.id, planet);
