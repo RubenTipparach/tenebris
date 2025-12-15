@@ -15,7 +15,15 @@
       "Bash(npx vite:*)",
       "Bash(powershell:*)",
       "Bash(du:*)",
-      "Bash(unzip:*)"
+      "Bash(unzip:*)",
+      "Bash(for f in textures/planet_seq/planet_seq_dirt.png textures/planet_seq/planet_seq_grass.png textures/planet_seq/planet_seq_grass_dirt.png textures/planet_seq/planet_seq_sand.png textures/planet_seq/planet_seq_side.png textures/planet_seq/planet_seq_snow.png textures/planet_seq/planet_seq_snow_dirt.png)",
+      "Bash(do if [ -f \"$f\" ])",
+      "Bash(then echo \"OK: $f\")",
+      "Bash(else echo \"MISSING: $f\")",
+      "Bash(fi)",
+      "Bash(done)",
+      "Bash(for f in textures/minerals/earth/rocks_coal.png textures/minerals/earth/rocks_copper.png textures/minerals/earth/rocks_iron.png textures/minerals/earth/rocks_gold.png textures/minerals/earth/rocks_lythium.png textures/minerals/earth/rocks_aluminum.png textures/minerals/earth/rocks_cobalt.png)",
+      "Bash(grep:*)"
     ],
     "deny": [],
     "ask": []

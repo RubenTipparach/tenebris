@@ -77,9 +77,16 @@ export class HexBlockMeshBuilder {
     }
   }
 
-  public async loadTextures(singleTexturePath?: string, tileset?: TilesetConfig): Promise<void> {
+  public async loadTextures(
+    singleTexturePath?: string,
+    tileset?: TilesetConfig,
+    waterColors?: { color?: string; deepColor?: string }
+  ): Promise<void> {
     // Use provided tileset or default to Earth tileset
     const ts = tileset || EARTH_TILESET;
+    // Use provided water colors or defaults from PlayerConfig
+    const waterColor = waterColors?.color || PlayerConfig.WATER_COLOR;
+    const waterDeepColor = waterColors?.deepColor || PlayerConfig.WATER_DEEP_COLOR;
 
     // LOD materials - use polygonOffset to push LOD behind detailed terrain in depth buffer
     // This prevents LOD from showing through detailed terrain for nearby tiles
@@ -290,11 +297,11 @@ export class HexBlockMeshBuilder {
     configureTexture(waterTexture);
     this.textures.set('water', waterTexture);
 
-    // Parse hex colors to THREE.Color
-    const waterColor = new THREE.Color(PlayerConfig.WATER_COLOR);
-    const deepWaterColor = new THREE.Color(PlayerConfig.WATER_DEEP_COLOR);
-    const underwaterFogColor = new THREE.Color(PlayerConfig.UNDERWATER_FOG_COLOR);
-    const aboveWaterFogColor = new THREE.Color(PlayerConfig.ABOVE_WATER_FOG_COLOR);
+    // Parse hex colors to THREE.Color (using overrides or defaults)
+    const waterColorVec = new THREE.Color(waterColor);
+    const deepWaterColorVec = new THREE.Color(waterDeepColor);
+    const underwaterFogColor = new THREE.Color(waterColor);  // Match water color for fog
+    const aboveWaterFogColor = new THREE.Color(waterColor);  // Match water color for fog
 
     // Create water shader material for close-up rendering
     this.waterShaderMaterial = new THREE.ShaderMaterial({
@@ -302,8 +309,8 @@ export class HexBlockMeshBuilder {
         time: { value: 0.0 },
         waterTexture: { value: waterTexture },
         uvTiling: { value: PlayerConfig.WATER_UV_TILING },
-        waterColor: { value: waterColor },
-        deepWaterColor: { value: deepWaterColor },
+        waterColor: { value: waterColorVec },
+        deepWaterColor: { value: deepWaterColorVec },
         sunDirection: { value: this.sunDirection.clone() },
         opacity: { value: PlayerConfig.WATER_TRANSPARENCY },
         fresnelPower: { value: PlayerConfig.WATER_FRESNEL_POWER },
@@ -388,7 +395,7 @@ export class HexBlockMeshBuilder {
       this.materials.set('moonRockLOD', createTerrainLODMaterial(stoneTexture));
     }
     // Water LOD uses opaque material - no transparency for distant water
-    const waterLODMat = createLODMaterial(waterTexture, waterColor);
+    const waterLODMat = createLODMaterial(waterTexture, new THREE.Color(waterColor));
     waterLODMat.side = THREE.DoubleSide;
     waterLODMat.transparent = false;
     this.materials.set('waterLOD', waterLODMat);
@@ -398,7 +405,15 @@ export class HexBlockMeshBuilder {
     // Prepend base URL for production builds (e.g., GitHub Pages subdirectory)
     const fullPath = getAssetPath(path);
     return new Promise((resolve, reject) => {
-      this.textureLoader.load(fullPath, resolve, undefined, reject);
+      this.textureLoader.load(
+        fullPath,
+        resolve,
+        undefined,
+        (error) => {
+          console.error(`[HexBlock] Failed to load texture: ${fullPath} (original: ${path})`);
+          reject(error);
+        }
+      );
     });
   }
 

@@ -40,7 +40,6 @@ export class RocketFlightUI {
   private onFuelCallback: (() => void) | null = null;
   private onLaunchCallback: (() => void) | null = null;
   private onExitCallback: (() => void) | null = null;
-  private onRespawnCallback: (() => void) | null = null;
 
   constructor() {
     this.createUI();
@@ -204,8 +203,11 @@ export class RocketFlightUI {
     }
   }
 
-  public setOnRespawnCallback(callback: () => void): void {
-    this.onRespawnCallback = callback;
+  // Note: Respawn callback is kept for API compatibility but not used
+  // since respawn now triggers a page reload
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  public setOnRespawnCallback(_callback: () => void): void {
+    // No-op: respawn now reloads the page instead of using a callback
   }
 
   private addStyles(): void {

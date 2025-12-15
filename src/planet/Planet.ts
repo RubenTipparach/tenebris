@@ -13,6 +13,8 @@ export interface PlanetConfig {
   hasWater?: boolean;  // Whether to generate water at sea level (default true for Earth)
   seaLevel?: number;   // Depth at which water appears (default 1, meaning radius - 1)
   tileset?: TilesetConfig;  // Tileset configuration for block textures
+  waterColor?: string;      // Water color override (hex string)
+  waterDeepColor?: string;  // Deep water color override (hex string)
 }
 
 export interface PlanetColumn {
@@ -158,7 +160,11 @@ export class Planet {
   }
 
   public async initialize(): Promise<void> {
-    await this.meshBuilder.loadTextures(this.config.texturePath, this.config.tileset);
+    const waterColors = this.config.waterColor || this.config.waterDeepColor ? {
+      color: this.config.waterColor,
+      deepColor: this.config.waterDeepColor,
+    } : undefined;
+    await this.meshBuilder.loadTextures(this.config.texturePath, this.config.tileset, waterColors);
     // Set planet center for terrain shader lighting calculations
     this.meshBuilder.setPlanetCenter(this.center);
     // Set water level for terrain shader underwater dimming

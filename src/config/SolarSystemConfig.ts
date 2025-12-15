@@ -41,6 +41,8 @@ export interface VisualConfig {
   emissive?: boolean;
   /** Emissive color for stars */
   emissiveColor?: string;
+  /** Atmosphere color tint (multiplied with scattering result). Default white = no tint */
+  atmosphereTint?: string;
 }
 
 /**
@@ -69,6 +71,10 @@ export interface TerrainConfig {
   maxHeight?: number;
   /** Terrain seed override (uses global seed if not set) */
   seed?: number;
+  /** Water color override (hex string, defaults to PlayerConfig.WATER_COLOR) */
+  waterColor?: string;
+  /** Deep water color override (hex string, defaults to PlayerConfig.WATER_DEEP_COLOR) */
+  waterDeepColor?: string;
 }
 
 /**
@@ -142,7 +148,26 @@ export const MOON_TILESET: TilesetConfig = {
   ice: '/textures/moon.png',
   water: '/textures/water.png',
   glass: '/textures/glass.png',
-  mineralsPath: '/textures/minerals/moon',
+  mineralsPath: '/textures/minerals/earth',  // Reuse Earth minerals (moon folder doesn't exist)
+};
+
+/**
+ * Sequoia tileset - alien planet with unique terrain textures
+ */
+export const SEQUOIA_TILESET: TilesetConfig = {
+  basePath: '/textures/planet_seq',
+  stone: '/textures/rocks.png',  // Reuse Earth rocks
+  dirt: '/textures/planet_seq/planet_seq_dirt.png',
+  grass: '/textures/planet_seq/planet_seq_grass.png',
+  dirtGrass: '/textures/planet_seq/planet_seq_grass_dirt.png',
+  sand: '/textures/planet_seq/planet_seq_sand.png',
+  wood: '/textures/planet_seq/planet_seq_side.png',
+  snow: '/textures/planet_seq/planet_seq_snow.png',
+  dirtSnow: '/textures/planet_seq/planet_seq_snow_dirt.png',
+  ice: '/textures/planet_seq/planet_seq_snow.png',  // Reuse snow as ice
+  water: '/textures/water.png',  // Reuse Earth water texture
+  glass: '/textures/glass.png',  // Reuse Earth glass
+  mineralsPath: '/textures/minerals/earth',  // Reuse Earth minerals for now
 };
 
 /**
@@ -330,6 +355,43 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
       },
       landable: true,
       hasAtmosphere: false,
+    },
+
+    // =========================================================================
+    // SEQUOIA (Alien Planet)
+    // =========================================================================
+    {
+      id: 'sequoia',
+      name: 'Sequoia',
+      type: CelestialBodyType.PLANET,
+      radius: 200,  // 2x Earth's radius
+      subdivisions: 7,
+      position: { x: 800, y: 100, z: 400 },
+      visual: {
+        heightVariation: 1.0,
+        terrainStyle: TerrainStyle.EARTH_LIKE,  // Same biome logic as Earth
+        distantColor: '#558844',  // Greenish when viewed from distance
+        atmosphereTint: '#ffaa88',  // Reddish atmosphere tint
+      },
+      gravity: {
+        strength: 1.0,  // Same as Earth despite larger size
+        fullRadiusMultiplier: 1.2,
+        falloffRadiusMultiplier: 1.5,
+      },
+      terrain: {
+        hasWater: true,
+        seaLevel: 12,
+        waterColor: '#2a6655',      // Greenish water
+        waterDeepColor: '#1a4433',  // Darker greenish deep water
+      },
+      tileset: SEQUOIA_TILESET,
+      spawn: {
+        latitude: 30,
+        longitude: 45,
+        altitudeAboveSurface: 3,
+      },
+      landable: true,
+      hasAtmosphere: true,
     },
 
     // =========================================================================

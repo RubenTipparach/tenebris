@@ -474,6 +474,17 @@
       background: rgba(76, 175, 80, 0.1);
     }
 
+    .menu-tab.wiki-link {
+      text-decoration: none;
+      color: #00AAFF;
+      border-color: #00AAFF;
+    }
+
+    .menu-tab.wiki-link:hover {
+      background: rgba(0, 170, 255, 0.1);
+      color: #00CCFF;
+    }
+
     .tab-content {
       display: none;
     }
@@ -1092,7 +1103,7 @@
       }
     }
   </style>
-  <script type="module" crossorigin src="/tenebris/assets/index-mwxS1xVD.js"></script>
+  <script type="module" crossorigin src="/tenebris/assets/index-DFutKNmb.js"></script>
 </head>
 <body>
   <!-- Loading screen -->
@@ -1130,6 +1141,8 @@
     <div class="menu-tabs">
       <button class="menu-tab active" data-tab="settings">Settings</button>
       <button class="menu-tab" data-tab="controls">Controls</button>
+      <button class="menu-tab" data-tab="flight">Space Flight</button>
+      <a class="menu-tab wiki-link" href="wiki.html" target="_blank">Wiki &#x2197;</a>
       <button class="menu-tab" data-tab="debug">Debug</button>
     </div>
 
@@ -1172,6 +1185,7 @@
         <select id="teleport-select" class="teleport-select">
           <option value="earth">Earth</option>
           <option value="moon">Moon</option>
+          <option value="sequoia">Sequoia</option>
         </select>
       </div>
       <div class="settings-row">
@@ -1194,6 +1208,19 @@
         <p><span class="key">1-9</span><span>Select hotbar</span></p>
         <p><span class="key">E</span><span>Open inventory</span></p>
         <p><span class="key">F3</span><span>Toggle profiler</span></p>
+      </div>
+    </div>
+
+    <!-- Space Flight Tab -->
+    <div class="tab-content" id="tab-flight">
+      <div class="controls-grid">
+        <p><span class="key">WASD</span><span>Rotate (Pitch/Yaw)</span></p>
+        <p><span class="key">Q/E</span><span>Roll</span></p>
+        <p><span class="key">Arrows</span><span>Strafe</span></p>
+        <p><span class="key">Z/X</span><span>Throttle Up/Down</span></p>
+        <p><span class="key">SPACE</span><span>Thrust</span></p>
+        <p><span class="key">C</span><span>Descend</span></p>
+        <p><span class="key">V</span><span>Exit Rocket</span></p>
       </div>
     </div>
 

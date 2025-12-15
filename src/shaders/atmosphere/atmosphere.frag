@@ -19,6 +19,9 @@ uniform float sunIntensity;       // Sun brightness
 uniform int numSamples;           // Primary ray samples
 uniform int numLightSamples;      // Light ray samples
 
+// Color tint (default white = no tint)
+uniform vec3 atmosphereTint;
+
 varying vec3 vWorldPosition;
 varying vec3 vNormal;
 
@@ -185,6 +188,9 @@ void main() {
 
   // Final color
   vec3 color = sunIntensity * (rayleighSum * phaseR + mieSum * phaseM);
+
+  // Apply atmosphere tint (multiply to shift color)
+  color *= atmosphereTint;
 
   // Tone mapping to prevent oversaturation
   color = 1.0 - exp(-color);

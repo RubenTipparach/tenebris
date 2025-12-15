@@ -6,6 +6,7 @@ import { PlayerConfig } from '../config/PlayerConfig';
 export interface AtmosphereConfig {
   planetRadius: number;     // Actual planet surface radius
   sunDirection: THREE.Vector3;
+  tint?: string;            // Optional color tint (hex string, e.g., '#ffaa88')
 }
 
 // Create atmosphere shader - GPU Gems 2 accurate atmospheric scattering
@@ -13,6 +14,8 @@ function createAtmosphereShaderMaterial(config: AtmosphereConfig): THREE.ShaderM
   const atmosphereRadius = config.planetRadius * PlayerConfig.ATMOSPHERE_RADIUS_MULT;
   // Effective surface radius accounts for terrain variation (blocks go below planetRadius)
   const effectiveSurfaceRadius = config.planetRadius - PlayerConfig.ATMOSPHERE_SURFACE_OFFSET;
+  // Parse tint color (default white = no tint)
+  const tintColor = new THREE.Color(config.tint || '#ffffff');
 
   return new THREE.ShaderMaterial({
     uniforms: {
@@ -27,6 +30,7 @@ function createAtmosphereShaderMaterial(config: AtmosphereConfig): THREE.ShaderM
       sunIntensity: { value: PlayerConfig.ATMOSPHERE_SUN_INTENSITY },
       numSamples: { value: PlayerConfig.ATMOSPHERE_SAMPLES },
       numLightSamples: { value: PlayerConfig.ATMOSPHERE_LIGHT_SAMPLES },
+      atmosphereTint: { value: tintColor },
     },
     vertexShader: atmosphereVert,
     fragmentShader: atmosphereFrag,
@@ -80,5 +84,14 @@ export function createEarthAtmosphere(planetRadius: number, sunDirection: THREE.
   return new Atmosphere({
     planetRadius: planetRadius,
     sunDirection: sunDirection,
+  });
+}
+
+// Factory function to create atmosphere with optional tint
+export function createAtmosphere(planetRadius: number, sunDirection: THREE.Vector3, tint?: string): Atmosphere {
+  return new Atmosphere({
+    planetRadius: planetRadius,
+    sunDirection: sunDirection,
+    tint: tint,
   });
 }

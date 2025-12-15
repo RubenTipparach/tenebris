@@ -14,13 +14,13 @@ export interface ElectricSmeltingRecipe {
 
 export const ELECTRIC_SMELTING_RECIPES: ElectricSmeltingRecipe[] = [
   // Advanced ores that require electric furnace
-  { input: ItemType.ORE_LITHIUM, output: ItemType.INGOT_LITHIUM, outputQuantity: 1 },
-  { input: ItemType.ORE_COBALT, output: ItemType.INGOT_COBALT, outputQuantity: 1 },
-  // Can also smelt all other ores (5x faster than regular furnace, no fuel needed)
-  { input: ItemType.ORE_COPPER, output: ItemType.INGOT_COPPER, outputQuantity: 1 },
-  { input: ItemType.ORE_IRON, output: ItemType.INGOT_IRON, outputQuantity: 1 },
-  { input: ItemType.ORE_GOLD, output: ItemType.INGOT_GOLD, outputQuantity: 1 },
-  { input: ItemType.ORE_ALUMINUM, output: ItemType.INGOT_ALUMINUM, outputQuantity: 1 },
+  { input: ItemType.ORE_LITHIUM, output: ItemType.INGOT_LITHIUM, outputQuantity: 2 },
+  { input: ItemType.ORE_COBALT, output: ItemType.INGOT_COBALT, outputQuantity: 2 },
+  // Can also smelt all other ores (5x faster than regular furnace, no fuel needed, double yield)
+  { input: ItemType.ORE_COPPER, output: ItemType.INGOT_COPPER, outputQuantity: 2 },
+  { input: ItemType.ORE_IRON, output: ItemType.INGOT_IRON, outputQuantity: 2 },
+  { input: ItemType.ORE_GOLD, output: ItemType.INGOT_GOLD, outputQuantity: 2 },
+  { input: ItemType.ORE_ALUMINUM, output: ItemType.INGOT_ALUMINUM, outputQuantity: 2 },
 ];
 
 export interface PlacedElectricFurnace {

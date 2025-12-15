@@ -146,12 +146,14 @@ export class Printer3DUI {
   private progressTextElement: HTMLElement | null = null;
   private statusElement: HTMLElement | null = null;
   private cancelCurrentBtn: HTMLButtonElement | null = null;
+  private tooltipElement: HTMLElement | null = null;
 
   constructor(inventory: Inventory) {
     this.inventory = inventory;
     this.createUI();
     this.addStyles();
     this.setupKeyboardHandler();
+    this.createTooltip();
 
     // Register with menu manager
     MenuManager.registerMenu('printer3d', {
@@ -604,6 +606,77 @@ export class Printer3DUI {
         color: #666;
         margin: 4px 0;
       }
+
+      /* Tooltip styles for recipe items */
+      .printer3d-tooltip {
+        position: fixed;
+        background: rgba(10, 10, 15, 0.95);
+        border: 2px solid #444;
+        border-radius: 6px;
+        padding: 8px 12px;
+        color: #ddd;
+        font-family: 'Courier New', monospace;
+        font-size: 12px;
+        z-index: 10000;
+        pointer-events: none;
+        max-width: 250px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+      }
+
+      .printer3d-tooltip .tooltip-title {
+        color: #00AAFF;
+        font-weight: bold;
+        margin-bottom: 4px;
+        font-size: 13px;
+      }
+
+      .printer3d-tooltip .tooltip-desc {
+        color: #aaa;
+        font-size: 11px;
+        line-height: 1.4;
+      }
+
+      .printer3d-tooltip .tooltip-ingredients {
+        margin-top: 6px;
+        padding-top: 6px;
+        border-top: 1px solid #333;
+      }
+
+      .printer3d-tooltip .tooltip-ingredients-title {
+        color: #888;
+        font-size: 10px;
+        margin-bottom: 4px;
+      }
+
+      .printer3d-tooltip .tooltip-ingredient {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin: 2px 0;
+      }
+
+      .printer3d-tooltip .tooltip-ingredient img {
+        width: 16px;
+        height: 16px;
+        image-rendering: pixelated;
+      }
+
+      .printer3d-tooltip .tooltip-ingredient span {
+        color: #bbb;
+        font-size: 11px;
+      }
+
+      .printer3d-tooltip .tooltip-time {
+        margin-top: 6px;
+        color: #666;
+        font-size: 10px;
+      }
+
+      .printer3d-recipes .recipe-item:hover .recipe-output img,
+      .printer3d-recipes .recipe-item:hover .recipe-input img {
+        transform: scale(1.1);
+        transition: transform 0.1s;
+      }
     `;
     document.head.appendChild(style);
   }
@@ -617,6 +690,60 @@ export class Printer3DUI {
         this.close();
       }
     });
+  }
+
+  private createTooltip(): void {
+    this.tooltipElement = document.createElement('div');
+    this.tooltipElement.className = 'printer3d-tooltip';
+    this.tooltipElement.style.display = 'none';
+    document.body.appendChild(this.tooltipElement);
+  }
+
+  private showTooltip(recipe: PrinterRecipe, event: MouseEvent): void {
+    if (!this.tooltipElement) return;
+
+    // Build tooltip content
+    const outputData = ITEM_DATA[recipe.output];
+    const requiredItems = this.getRequiredItems(recipe);
+
+    let ingredientsHtml = '';
+    for (const [itemType, quantity] of requiredItems) {
+      const itemData = ITEM_DATA[itemType];
+      ingredientsHtml += `
+        <div class="tooltip-ingredient">
+          <img src="${getAssetPath(itemData?.texture || '')}" alt="${itemData?.name || 'Unknown'}">
+          <span>${quantity}x ${itemData?.name || 'Unknown'}</span>
+        </div>
+      `;
+    }
+
+    this.tooltipElement.innerHTML = `
+      <div class="tooltip-title">${recipe.name}</div>
+      <div class="tooltip-desc">Creates ${recipe.outputQuantity}x ${outputData?.name || 'Unknown'}</div>
+      <div class="tooltip-ingredients">
+        <div class="tooltip-ingredients-title">Required Materials:</div>
+        ${ingredientsHtml}
+      </div>
+      <div class="tooltip-time">Print Time: ${recipe.printTime}s</div>
+    `;
+
+    // Position tooltip near cursor
+    const x = event.clientX + 15;
+    const y = event.clientY + 10;
+
+    // Keep tooltip on screen (using estimated tooltip size)
+    const maxX = window.innerWidth - 260;
+    const maxY = window.innerHeight - 200;
+
+    this.tooltipElement.style.left = `${Math.min(x, maxX)}px`;
+    this.tooltipElement.style.top = `${Math.min(y, maxY)}px`;
+    this.tooltipElement.style.display = 'block';
+  }
+
+  private hideTooltip(): void {
+    if (this.tooltipElement) {
+      this.tooltipElement.style.display = 'none';
+    }
   }
 
   public open(printer: PlacedPrinter3D): void {
@@ -643,6 +770,9 @@ export class Printer3DUI {
   public close(): void {
     this.isOpen = false;
     this.currentPrinter = null;
+
+    // Hide tooltip when closing UI
+    this.hideTooltip();
 
     if (this.printerSectionElement) {
       this.printerSectionElement.style.display = 'none';
@@ -740,6 +870,9 @@ export class Printer3DUI {
   private updateRecipeList(): void {
     if (!this.recipeListElement || !this.inventory) return;
 
+    // Hide tooltip when rebuilding recipe list (prevents stuck tooltips)
+    this.hideTooltip();
+
     this.recipeListElement.innerHTML = '';
 
     for (const recipe of PRINTER_RECIPES) {
@@ -790,6 +923,19 @@ export class Printer3DUI {
 
       recipeEl.innerHTML = outputHtml + inputHtml;
 
+      // Add hover tooltip events
+      recipeEl.addEventListener('mouseenter', (e) => {
+        this.showTooltip(recipe, e as MouseEvent);
+      });
+
+      recipeEl.addEventListener('mousemove', (e) => {
+        this.showTooltip(recipe, e as MouseEvent);
+      });
+
+      recipeEl.addEventListener('mouseleave', () => {
+        this.hideTooltip();
+      });
+
       if (canCraft) {
         recipeEl.style.cursor = 'pointer';
         // Use mousedown instead of click because the game's input system consumes mouseup
@@ -797,6 +943,7 @@ export class Printer3DUI {
           console.log('[Printer3DUI] Recipe mousedown:', recipe.name);
           e.preventDefault();
           e.stopPropagation();
+          this.hideTooltip(); // Hide tooltip when clicking
           this.queueRecipe(recipe);
         });
       }

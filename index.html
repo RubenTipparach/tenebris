@@ -474,6 +474,17 @@
       background: rgba(76, 175, 80, 0.1);
     }
 
+    .menu-tab.wiki-link {
+      text-decoration: none;
+      color: #00AAFF;
+      border-color: #00AAFF;
+    }
+
+    .menu-tab.wiki-link:hover {
+      background: rgba(0, 170, 255, 0.1);
+      color: #00CCFF;
+    }
+
     .tab-content {
       display: none;
     }
@@ -1130,6 +1141,7 @@
       <button class="menu-tab active" data-tab="settings">Settings</button>
       <button class="menu-tab" data-tab="controls">Controls</button>
       <button class="menu-tab" data-tab="flight">Space Flight</button>
+      <a class="menu-tab wiki-link" href="wiki.html" target="_blank">Wiki &#x2197;</a>
       <button class="menu-tab" data-tab="debug">Debug</button>
     </div>
 
@@ -1172,6 +1184,7 @@
         <select id="teleport-select" class="teleport-select">
           <option value="earth">Earth</option>
           <option value="moon">Moon</option>
+          <option value="sequoia">Sequoia</option>
         </select>
       </div>
       <div class="settings-row">

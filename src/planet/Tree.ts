@@ -438,3 +438,326 @@ export class PlanetTreeManager {
     return this.treeBuilder;
   }
 }
+
+// ============================================================================
+// MUSHROOM TREE BUILDER - For alien planets like Sequoia
+// ============================================================================
+
+export interface MushroomTreeConfig {
+  stemHeight: number;       // Height of mushroom stem
+  stemRadius: number;       // Radius of stem
+  capRadius: number;        // Radius of mushroom cap
+  capHeight: number;        // Height/thickness of cap
+  capTaper: number;         // 0 = flat disc, 1 = pointed cone
+}
+
+const DEFAULT_MUSHROOM_CONFIG: MushroomTreeConfig = {
+  stemHeight: 4,
+  stemRadius: 0.4,
+  capRadius: 3,
+  capHeight: 1.5,
+  capTaper: 0.3,  // Slightly domed
+};
+
+export class MushroomTreeBuilder {
+  private sunDirection: THREE.Vector3;
+
+  constructor(sunDirection?: THREE.Vector3) {
+    this.sunDirection = sunDirection?.clone().normalize() ?? new THREE.Vector3(
+      PlayerConfig.SUN_DIRECTION.x,
+      PlayerConfig.SUN_DIRECTION.y,
+      PlayerConfig.SUN_DIRECTION.z
+    ).normalize();
+  }
+
+  // Create a mushroom tree mesh at the given position with outward-pointing direction
+  public createTree(
+    position: THREE.Vector3,
+    upDirection: THREE.Vector3,
+    config: Partial<MushroomTreeConfig> = {}
+  ): THREE.Group {
+    const cfg = { ...DEFAULT_MUSHROOM_CONFIG, ...config };
+    const tree = new THREE.Group();
+
+    // Collect geometries for merging
+    const geometries: THREE.BufferGeometry[] = [];
+    const stemColor = new THREE.Color(0x8B7355);  // Grey-brown stem
+    const capColor = new THREE.Color(0x654321);   // Brown cap
+
+    // Create stem (hexagonal prism)
+    const stemGeom = this.createHexagonalPrism(cfg.stemRadius, cfg.stemHeight, 6);
+    this.addVertexColors(stemGeom, stemColor);
+    geometries.push(stemGeom);
+
+    // Create mushroom cap (flattened cone or dome)
+    // Use ConeGeometry for the mushroom shape
+    const capGeom = new THREE.ConeGeometry(cfg.capRadius, cfg.capHeight, 8, 1, false);
+    // Position cap on top of stem
+    capGeom.translate(0, cfg.stemHeight + cfg.capHeight / 2, 0);
+    this.addVertexColors(capGeom, capColor);
+    geometries.push(capGeom);
+
+    // Add cap underside (disc at bottom of cap for visual completeness)
+    const undersideGeom = new THREE.CircleGeometry(cfg.capRadius * 0.9, 8);
+    undersideGeom.rotateX(Math.PI / 2);  // Make it horizontal, facing down
+    undersideGeom.translate(0, cfg.stemHeight, 0);
+    const undersideColor = new THREE.Color(0x4a3520);  // Darker underside
+    this.addVertexColors(undersideGeom, undersideColor);
+    geometries.push(undersideGeom);
+
+    // Merge all geometries into one
+    const mergedGeom = BufferGeometryUtils.mergeGeometries(geometries);
+
+    // Create merged mesh with custom shader material
+    const mergedMaterial = this.createMergedMushroomMaterial();
+    const treeMesh = new THREE.Mesh(mergedGeom, mergedMaterial);
+    treeMesh.userData.isTree = true;
+    treeMesh.userData.treeType = 'mushroom';
+    tree.add(treeMesh);
+
+    // Clean up individual geometries
+    for (const geom of geometries) {
+      geom.dispose();
+    }
+
+    // Orient mushroom to point along upDirection
+    const defaultUp = new THREE.Vector3(0, 1, 0);
+    const quaternion = new THREE.Quaternion().setFromUnitVectors(defaultUp, upDirection.clone().normalize());
+    tree.quaternion.copy(quaternion);
+
+    // Position the mushroom
+    tree.position.copy(position);
+
+    return tree;
+  }
+
+  // Helper to add vertex colors to a geometry
+  private addVertexColors(geometry: THREE.BufferGeometry, color: THREE.Color): void {
+    const positionCount = geometry.attributes.position.count;
+    const colors = new Float32Array(positionCount * 3);
+    for (let i = 0; i < positionCount; i++) {
+      colors[i * 3] = color.r;
+      colors[i * 3 + 1] = color.g;
+      colors[i * 3 + 2] = color.b;
+    }
+    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  }
+
+  // Create merged mushroom material with vertex colors and planet-aware lighting
+  private createMergedMushroomMaterial(): THREE.ShaderMaterial {
+    return new THREE.ShaderMaterial({
+      uniforms: {
+        sunDirection: { value: this.sunDirection.clone().normalize() },
+        ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
+        directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
+      },
+      vertexShader: `
+        attribute vec3 color;
+        varying vec3 vColor;
+        varying vec3 vNormal;
+        varying vec3 vWorldPosition;
+
+        void main() {
+          vColor = color;
+          vNormal = normalize(mat3(modelMatrix) * normal);
+          vec4 worldPos = modelMatrix * vec4(position, 1.0);
+          vWorldPosition = worldPos.xyz;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform vec3 sunDirection;
+        uniform float ambientIntensity;
+        uniform float directionalIntensity;
+
+        varying vec3 vColor;
+        varying vec3 vNormal;
+        varying vec3 vWorldPosition;
+
+        void main() {
+          vec3 surfaceNormal = normalize(vWorldPosition);
+          float planetSunFacing = dot(surfaceNormal, sunDirection);
+          float shadowFactor = smoothstep(-0.1, 0.2, planetSunFacing);
+          float meshDiffuse = max(0.0, dot(vNormal, sunDirection));
+          float directional = meshDiffuse * shadowFactor * directionalIntensity;
+          float ambient = ambientIntensity;
+          vec3 finalColor = vColor * (ambient + directional);
+          gl_FragColor = vec4(finalColor, 1.0);
+        }
+      `,
+      side: THREE.DoubleSide,  // Render both sides for the cap underside
+    });
+  }
+
+  // Create a hexagonal prism geometry
+  private createHexagonalPrism(radius: number, height: number, segments: number): THREE.BufferGeometry {
+    const geometry = new THREE.CylinderGeometry(radius, radius, height, segments);
+    geometry.translate(0, height / 2, 0);
+    return geometry;
+  }
+}
+
+// Mushroom tree manager - extends PlanetTreeManager pattern
+export class MushroomTreeManager {
+  private trees: THREE.Group[] = [];
+  private treesByTile: Map<number, THREE.Group[]> = new Map();
+  private treeBuilder: MushroomTreeBuilder;
+  private scene: THREE.Scene;
+
+  constructor(scene: THREE.Scene, sunDirection?: THREE.Vector3) {
+    this.scene = scene;
+    this.treeBuilder = new MushroomTreeBuilder(sunDirection);
+  }
+
+  // Place a mushroom at a specific world position
+  public addTree(worldPosition: THREE.Vector3, planetCenter: THREE.Vector3, config?: Partial<MushroomTreeConfig>, tileIndex?: number): THREE.Group {
+    const upDirection = worldPosition.clone().sub(planetCenter).normalize();
+    const tree = this.treeBuilder.createTree(worldPosition, upDirection, config);
+
+    if (tileIndex !== undefined) {
+      tree.userData.tileIndex = tileIndex;
+      if (!this.treesByTile.has(tileIndex)) {
+        this.treesByTile.set(tileIndex, []);
+      }
+      this.treesByTile.get(tileIndex)!.push(tree);
+    }
+
+    this.trees.push(tree);
+    this.scene.add(tree);
+    return tree;
+  }
+
+  // Remove a mushroom tree
+  public removeTree(tree: THREE.Group): void {
+    const index = this.trees.indexOf(tree);
+    if (index >= 0) {
+      this.trees.splice(index, 1);
+      this.scene.remove(tree);
+
+      const tileIndex = tree.userData.tileIndex;
+      if (tileIndex !== undefined && this.treesByTile.has(tileIndex)) {
+        const tileTrees = this.treesByTile.get(tileIndex)!;
+        const tileTreeIndex = tileTrees.indexOf(tree);
+        if (tileTreeIndex >= 0) {
+          tileTrees.splice(tileTreeIndex, 1);
+        }
+      }
+
+      tree.traverse((child) => {
+        if (child instanceof THREE.Mesh) {
+          child.geometry.dispose();
+        }
+      });
+    }
+  }
+
+  // Get tree at position (for mining)
+  public getTreeAtPosition(position: THREE.Vector3, maxDistance: number = 1): THREE.Group | null {
+    for (const tree of this.trees) {
+      if (tree.position.distanceTo(position) < maxDistance) {
+        return tree;
+      }
+    }
+    return null;
+  }
+
+  // Get all tree meshes for raycasting
+  public getTreeMeshes(): THREE.Mesh[] {
+    const meshes: THREE.Mesh[] = [];
+    for (const tree of this.trees) {
+      tree.traverse((child) => {
+        if (child instanceof THREE.Mesh && child.userData.isTree) {
+          meshes.push(child);
+        }
+      });
+    }
+    return meshes;
+  }
+
+  // Scatter mushroom trees randomly on planet surface
+  public scatterTrees(
+    planetCenter: THREE.Vector3,
+    _planetRadius: number,
+    count: number,
+    getSurfaceHeight: (direction: THREE.Vector3) => number,
+    isUnderwater?: (direction: THREE.Vector3) => boolean,
+    seed: number = PlayerConfig.TERRAIN_SEED,
+    getTileIndex?: (direction: THREE.Vector3) => number | null,
+    _getTileCenter?: (direction: THREE.Vector3) => THREE.Vector3 | null,
+    removedTreeTiles?: Set<number>
+  ): void {
+    const rng = new SeededRandom(seed + 98765);  // Different offset from regular trees
+
+    let placed = 0;
+    let attempts = 0;
+    const maxAttempts = count * 10;
+
+    while (placed < count && attempts < maxAttempts) {
+      attempts++;
+
+      // Generate random direction on sphere using seeded random
+      const theta = rng.next() * Math.PI * 2;
+      const phi = Math.acos(2 * rng.next() - 1);
+      const direction = new THREE.Vector3(
+        Math.sin(phi) * Math.cos(theta),
+        Math.cos(phi),
+        Math.sin(phi) * Math.sin(theta)
+      ).normalize();
+
+      // Skip if underwater
+      if (isUnderwater && isUnderwater(direction)) {
+        continue;
+      }
+
+      // Get tile index and skip if tree was removed from this tile
+      const tileIndex = getTileIndex ? getTileIndex(direction) : null;
+      if (tileIndex !== null && removedTreeTiles?.has(tileIndex)) {
+        continue;
+      }
+
+      // Get surface height and place mushroom slightly above
+      const surfaceHeight = getSurfaceHeight(direction);
+      const treePosition = direction.clone().multiplyScalar(surfaceHeight + 0.1);
+      treePosition.add(planetCenter);
+
+      // Randomize mushroom size
+      const sizeVariation = 0.6 + rng.next() * 0.8;  // 0.6 to 1.4
+      const heightVariation = 0.7 + rng.next() * 0.6;  // 0.7 to 1.3
+      const config: Partial<MushroomTreeConfig> = {
+        stemHeight: DEFAULT_MUSHROOM_CONFIG.stemHeight * sizeVariation * heightVariation,
+        stemRadius: DEFAULT_MUSHROOM_CONFIG.stemRadius * sizeVariation,
+        capRadius: DEFAULT_MUSHROOM_CONFIG.capRadius * sizeVariation,
+        capHeight: DEFAULT_MUSHROOM_CONFIG.capHeight * sizeVariation,
+        capTaper: 0.2 + rng.next() * 0.3,  // 0.2 to 0.5 for shape variation
+      };
+
+      this.addTree(treePosition, planetCenter, config, tileIndex ?? undefined);
+      placed++;
+    }
+  }
+
+  // Update visibility based on visible tiles
+  public updateVisibility(visibleTileIndices: Set<number>): void {
+    for (const [tileIndex, tileTrees] of this.treesByTile) {
+      const visible = visibleTileIndices.has(tileIndex);
+      for (const tree of tileTrees) {
+        tree.visible = visible;
+      }
+    }
+  }
+
+  // Set visibility for all trees at once
+  public setAllVisible(visible: boolean): void {
+    for (const tree of this.trees) {
+      tree.visible = visible;
+    }
+  }
+
+  public getTrees(): THREE.Group[] {
+    return this.trees;
+  }
+
+  public getTreeBuilder(): MushroomTreeBuilder {
+    return this.treeBuilder;
+  }
+}

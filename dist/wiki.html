@@ -1,0 +1,1401 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tenebris Wiki</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Jersey+10&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --game-font: 'Jersey 10', monospace;
+      --bg-dark: #0a0a0f;
+      --bg-card: #1a1a25;
+      --border-color: #333;
+      --text-primary: #ddd;
+      --text-secondary: #888;
+      --accent-blue: #00AAFF;
+      --accent-green: #44FF44;
+      --accent-yellow: #FFD700;
+      --accent-orange: #FF8800;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      background: var(--bg-dark);
+      color: var(--text-primary);
+      font-family: 'Courier New', monospace;
+      line-height: 1.6;
+      min-height: 100vh;
+    }
+
+    .wiki-header {
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+      border-bottom: 2px solid var(--border-color);
+      padding: 20px;
+      text-align: center;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+
+    .wiki-header h1 {
+      font-family: var(--game-font);
+      font-size: 48px;
+      color: var(--accent-blue);
+      text-shadow: 2px 2px 4px rgba(0, 170, 255, 0.3);
+      margin-bottom: 10px;
+    }
+
+    .wiki-header p {
+      color: var(--text-secondary);
+      font-size: 14px;
+    }
+
+    .wiki-layout {
+      display: flex;
+      max-width: 1400px;
+      margin: 0 auto;
+      min-height: calc(100vh - 120px);
+    }
+
+    .wiki-sidebar {
+      width: 220px;
+      background: var(--bg-card);
+      border-right: 1px solid var(--border-color);
+      padding: 20px 0;
+      position: sticky;
+      top: 120px;
+      height: fit-content;
+      max-height: calc(100vh - 140px);
+      overflow-y: auto;
+    }
+
+    .wiki-sidebar a {
+      display: block;
+      padding: 12px 20px;
+      color: var(--text-primary);
+      text-decoration: none;
+      border-left: 3px solid transparent;
+      transition: all 0.2s;
+    }
+
+    .wiki-sidebar a:hover {
+      background: rgba(0, 170, 255, 0.1);
+      border-left-color: var(--accent-blue);
+      color: var(--accent-blue);
+    }
+
+    .wiki-sidebar a.active {
+      background: rgba(0, 170, 255, 0.15);
+      border-left-color: var(--accent-blue);
+      color: var(--accent-blue);
+    }
+
+    .wiki-main {
+      flex: 1;
+      padding: 30px 40px;
+      max-width: 1100px;
+    }
+
+    .wiki-section {
+      display: none;
+      animation: fadeIn 0.3s ease;
+    }
+
+    .wiki-section.active {
+      display: block;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    h2 {
+      font-family: var(--game-font);
+      font-size: 36px;
+      color: var(--accent-blue);
+      margin-bottom: 20px;
+      padding-bottom: 10px;
+      border-bottom: 2px solid var(--border-color);
+    }
+
+    h3 {
+      font-size: 20px;
+      color: var(--accent-green);
+      margin: 25px 0 15px;
+    }
+
+    h4 {
+      font-size: 16px;
+      color: var(--accent-yellow);
+      margin: 20px 0 10px;
+    }
+
+    p {
+      margin-bottom: 15px;
+      color: var(--text-primary);
+    }
+
+    ul, ol {
+      margin: 10px 0 20px 25px;
+    }
+
+    li {
+      margin: 8px 0;
+    }
+
+    strong {
+      color: var(--accent-blue);
+    }
+
+    /* Recipe Cards */
+    .recipes-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: 15px;
+      margin: 20px 0;
+    }
+
+    .recipe-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 15px;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+
+    .recipe-card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(0, 170, 255, 0.2);
+      border-color: var(--accent-blue);
+    }
+
+    .recipe-title {
+      font-weight: bold;
+      color: var(--accent-blue);
+      margin-bottom: 10px;
+      font-size: 14px;
+    }
+
+    .recipe-io {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .recipe-input-list, .recipe-output-list {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    /* Clickable item images */
+    .item-img {
+      width: 28px;
+      height: 28px;
+      image-rendering: pixelated;
+      background: rgba(0,0,0,0.3);
+      border-radius: 4px;
+      padding: 2px;
+      cursor: pointer;
+      transition: transform 0.15s, box-shadow 0.15s;
+      position: relative;
+    }
+
+    .item-img:hover {
+      transform: scale(1.2);
+      box-shadow: 0 0 8px var(--accent-blue);
+      z-index: 10;
+    }
+
+    .item-img[data-link]:hover {
+      cursor: pointer;
+    }
+
+    .recipe-arrow {
+      color: var(--accent-yellow);
+      font-size: 20px;
+      font-weight: bold;
+    }
+
+    .recipe-time {
+      color: var(--text-secondary);
+      font-size: 11px;
+      margin-top: 8px;
+    }
+
+    /* Larger output images for crafting results */
+    .item-img.output-img {
+      width: 40px;
+      height: 40px;
+      border: 2px solid var(--accent-green);
+      box-shadow: 0 0 8px rgba(68, 255, 68, 0.3);
+    }
+
+    .output-label {
+      color: var(--accent-green);
+      font-size: 11px;
+      font-weight: bold;
+      margin-left: 4px;
+    }
+
+    .recipe-output-list {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+      background: rgba(68, 255, 68, 0.05);
+      padding: 4px 8px;
+      border-radius: 6px;
+    }
+
+    /* Item Tooltip */
+    .item-tooltip {
+      position: fixed;
+      background: rgba(10, 10, 20, 0.95);
+      border: 2px solid var(--accent-blue);
+      border-radius: 8px;
+      padding: 10px 14px;
+      color: var(--text-primary);
+      font-size: 12px;
+      z-index: 1000;
+      pointer-events: none;
+      max-width: 280px;
+      box-shadow: 0 4px 16px rgba(0, 170, 255, 0.3);
+      display: none;
+    }
+
+    .item-tooltip .tooltip-name {
+      color: var(--accent-blue);
+      font-weight: bold;
+      font-size: 14px;
+      margin-bottom: 6px;
+    }
+
+    .item-tooltip .tooltip-desc {
+      color: var(--text-secondary);
+      font-size: 11px;
+      line-height: 1.5;
+    }
+
+    .item-tooltip .tooltip-link {
+      color: var(--accent-green);
+      font-size: 10px;
+      margin-top: 6px;
+      font-style: italic;
+    }
+
+    /* Power System Diagram */
+    .power-diagram {
+      background: var(--bg-card);
+      border: 2px solid var(--border-color);
+      border-radius: 12px;
+      padding: 30px;
+      margin: 25px 0;
+    }
+
+    .power-chain {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 15px;
+      flex-wrap: wrap;
+      margin: 20px 0;
+    }
+
+    .power-block {
+      background: rgba(0, 170, 255, 0.1);
+      border: 2px solid var(--accent-blue);
+      border-radius: 10px;
+      padding: 15px 20px;
+      text-align: center;
+      min-width: 140px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .power-block:hover {
+      background: rgba(0, 170, 255, 0.2);
+      transform: translateY(-2px);
+    }
+
+    .power-block img {
+      width: 48px;
+      height: 48px;
+      image-rendering: pixelated;
+      margin-bottom: 8px;
+    }
+
+    .power-block .block-name {
+      font-weight: bold;
+      color: var(--accent-blue);
+      font-size: 12px;
+    }
+
+    .power-block .block-desc {
+      color: var(--text-secondary);
+      font-size: 10px;
+      margin-top: 4px;
+    }
+
+    .power-connector {
+      font-size: 24px;
+      color: var(--accent-yellow);
+    }
+
+    /* Appliance List */
+    .appliance-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+      gap: 15px;
+      margin: 20px 0;
+    }
+
+    .appliance-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 15px;
+      display: flex;
+      align-items: center;
+      gap: 15px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .appliance-card:hover {
+      border-color: var(--accent-blue);
+      transform: translateY(-2px);
+    }
+
+    .appliance-card img {
+      width: 48px;
+      height: 48px;
+      image-rendering: pixelated;
+    }
+
+    .appliance-info h4 {
+      color: var(--accent-blue);
+      margin: 0 0 5px 0;
+      font-size: 14px;
+    }
+
+    .appliance-info p {
+      color: var(--text-secondary);
+      font-size: 11px;
+      margin: 0;
+    }
+
+    .power-required {
+      display: inline-block;
+      background: var(--accent-orange);
+      color: #000;
+      font-size: 10px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      margin-top: 5px;
+    }
+
+    /* Item showcase row */
+    .item-row {
+      display: flex;
+      gap: 20px;
+      flex-wrap: wrap;
+      margin: 15px 0;
+    }
+
+    .item-showcase {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: var(--bg-card);
+      padding: 10px 15px;
+      border-radius: 8px;
+      border: 1px solid var(--border-color);
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .item-showcase:hover {
+      border-color: var(--accent-blue);
+      transform: translateY(-2px);
+    }
+
+    .item-showcase img {
+      width: 40px;
+      height: 40px;
+      image-rendering: pixelated;
+    }
+
+    .item-showcase span {
+      color: var(--text-primary);
+      font-size: 13px;
+    }
+
+    /* Controls table */
+    .controls-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 15px 0;
+    }
+
+    .controls-table th, .controls-table td {
+      padding: 10px 15px;
+      text-align: left;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .controls-table th {
+      background: var(--bg-card);
+      color: var(--accent-blue);
+    }
+
+    .controls-table td:first-child {
+      color: var(--accent-yellow);
+      font-weight: bold;
+      width: 120px;
+    }
+
+    /* Info box */
+    .info-box {
+      background: rgba(0, 170, 255, 0.1);
+      border-left: 4px solid var(--accent-blue);
+      padding: 15px 20px;
+      margin: 20px 0;
+      border-radius: 0 8px 8px 0;
+    }
+
+    .info-box.warning {
+      background: rgba(255, 136, 0, 0.1);
+      border-left-color: var(--accent-orange);
+    }
+
+    .info-box.success {
+      background: rgba(68, 255, 68, 0.1);
+      border-left-color: var(--accent-green);
+    }
+
+    /* Steps list */
+    .steps-list {
+      counter-reset: step;
+      list-style: none;
+      margin-left: 0;
+    }
+
+    .steps-list li {
+      counter-increment: step;
+      padding: 15px 15px 15px 50px;
+      background: var(--bg-card);
+      border-radius: 8px;
+      margin: 10px 0;
+      position: relative;
+    }
+
+    .steps-list li::before {
+      content: counter(step);
+      position: absolute;
+      left: 15px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 24px;
+      height: 24px;
+      background: var(--accent-blue);
+      color: #000;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: bold;
+      font-size: 12px;
+    }
+
+    /* Inline item links with hover icons */
+    .item-link {
+      color: var(--accent-blue);
+      cursor: pointer;
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 6px;
+      background: rgba(0, 170, 255, 0.1);
+      border-radius: 4px;
+      transition: all 0.2s;
+      text-decoration: none;
+    }
+
+    .item-link:hover {
+      background: rgba(0, 170, 255, 0.25);
+      color: #00CCFF;
+    }
+
+    .item-link .inline-icon {
+      width: 18px;
+      height: 18px;
+      image-rendering: pixelated;
+      vertical-align: middle;
+    }
+  </style>
+</head>
+<body>
+  <div class="wiki-header">
+    <h1>TENEBRIS WIKI</h1>
+    <p>Your complete guide to surviving and thriving in space</p>
+  </div>
+
+  <!-- Item Tooltip (shared) -->
+  <div class="item-tooltip" id="item-tooltip">
+    <div class="tooltip-name"></div>
+    <div class="tooltip-desc"></div>
+    <div class="tooltip-link"></div>
+  </div>
+
+  <div class="wiki-layout">
+    <nav class="wiki-sidebar">
+      <a href="#getting-started" class="active" data-section="getting-started">Getting Started</a>
+      <a href="#power-generation" data-section="power-generation">Power Generation</a>
+      <a href="#building-rockets" data-section="building-rockets">Building Rockets</a>
+      <a href="#crafting" data-section="crafting">Crafting Recipes</a>
+      <a href="#smelting" data-section="smelting">Smelting</a>
+      <a href="#electronics" data-section="electronics">Electronics</a>
+      <a href="#3d-printing" data-section="3d-printing">3D Printing</a>
+    </nav>
+
+    <main class="wiki-main">
+      <!-- Getting Started -->
+      <section class="wiki-section active" id="getting-started">
+        <h2>Getting Started</h2>
+        <p>Welcome to Tenebris! Your ultimate goal is to build a rocket and explore the solar system. Here's everything you need to know to get started.</p>
+
+        <h3>Basic Controls</h3>
+        <table class="controls-table">
+          <tr><th>Key</th><th>Action</th></tr>
+          <tr><td>WASD</td><td>Move around</td></tr>
+          <tr><td>Space</td><td>Jump / Jetpack up (when enabled)</td></tr>
+          <tr><td>Left Click</td><td>Break blocks / Attack</td></tr>
+          <tr><td>Right Click</td><td>Place blocks / Interact</td></tr>
+          <tr><td>E</td><td>Open inventory and crafting menu</td></tr>
+          <tr><td>Escape</td><td>Pause menu</td></tr>
+          <tr><td>1-6</td><td>Select hotbar slot</td></tr>
+          <tr><td>Scroll</td><td>Cycle hotbar slots</td></tr>
+        </table>
+
+        <h3>First Steps</h3>
+        <ol class="steps-list">
+          <li>Punch trees to collect <span class="item-link" data-name="Wood Log" data-desc="Harvested from trees. Craft into planks." data-link="crafting"><img src="textures/icons/logs.png" class="inline-icon">Wood Logs</span></li>
+          <li>Open inventory (E) and craft logs into <span class="item-link" data-name="Wood Planks" data-desc="Crafted from logs. Used for building and crafting." data-link="crafting"><img src="textures/wood.png" class="inline-icon">Wood Planks</span></li>
+          <li>Craft planks into <span class="item-link" data-name="Stick" data-desc="Crafted from wood planks. Used in tool and torch recipes." data-link="crafting"><img src="textures/sticks.png" class="inline-icon">Sticks</span></li>
+          <li>Mine <span class="item-link" data-name="Stone" data-desc="Mined from underground. Basic building block."><img src="textures/rocks.png" class="inline-icon">Stone</span> and <span class="item-link" data-name="Coal" data-desc="Mined from coal ore. Used as fuel and for crafting torches."><img src="textures/coal.png" class="inline-icon">Coal</span> from the ground</li>
+          <li>Build a <span class="item-link" data-name="Furnace" data-desc="Smelts ores into ingots using coal as fuel." data-link="smelting"><img src="textures/technology/furnace_face.png" class="inline-icon">Furnace</span> (8 stone) to smelt ores</li>
+          <li>Mine <span class="item-link" data-name="Copper Ore" data-desc="Found underground. Smelt to get copper ingots." data-link="smelting"><img src="textures/minerals/earth/rocks_copper.png" class="inline-icon">copper</span>, <span class="item-link" data-name="Iron Ore" data-desc="Found underground. Essential for machines and tools." data-link="smelting"><img src="textures/minerals/earth/rocks_iron.png" class="inline-icon">iron</span>, and other ores</li>
+          <li>Progress through the tech tree to build machines</li>
+          <li>Set up <span class="item-link" data-name="Power Generation" data-desc="Required for advanced machines like Electric Furnace, 3D Printer." data-link="power-generation"><img src="textures/technology/steam_engine_face.png" class="inline-icon">power generation</span> for advanced machines</li>
+          <li>Build rocket parts with the <span class="item-link" data-name="3D Printer" data-desc="Prints rocket parts and launch infrastructure. Requires power." data-link="3d-printing"><img src="textures/technology/3d_printer_face.png" class="inline-icon">3D Printer</span></li>
+          <li>Construct your <span class="item-link" data-name="Rocket" data-desc="Your ticket to space! Build on a launch pad." data-link="building-rockets"><img src="textures/rocket_parts/command_module.png" class="inline-icon">rocket</span> and launch into space!</li>
+        </ol>
+
+        <div class="info-box">
+          <strong>Tip:</strong> <span class="item-link" data-name="Torch" data-desc="Provides light. Place on surfaces to illuminate dark areas." data-link="crafting"><img src="textures/torch_sprite.png" class="inline-icon">Torches</span> provide light in dark areas. Craft them with 1 <span class="item-link" data-name="Coal" data-desc="Fuel source."><img src="textures/coal.png" class="inline-icon">Coal</span> + 1 <span class="item-link" data-name="Stick" data-desc="Crafted from planks." data-link="crafting"><img src="textures/sticks.png" class="inline-icon">Stick</span> = 4 Torches.
+        </div>
+      </section>
+
+      <!-- Power Generation -->
+      <section class="wiki-section" id="power-generation">
+        <h2>Power Generation</h2>
+        <p>Many advanced machines require electrical power to operate. You must set up a complete power generation system to use them.</p>
+
+        <h3>Power System Overview</h3>
+        <div class="power-diagram">
+          <h4 style="text-align: center; margin-bottom: 20px;">Complete Power Chain</h4>
+          <div class="power-chain">
+            <div class="power-block" data-link="crafting" data-item="hydro-generator">
+              <img src="textures/technology/hydro_generator_face.png" alt="Hydro Generator" class="item-img" data-name="Hydro Generator" data-desc="Generates steam when placed on top of water. Connect to Steam Engine via copper pipes.">
+              <div class="block-name">Hydro Generator</div>
+              <div class="block-desc">Place on water</div>
+            </div>
+            <div class="power-connector">&#8594;</div>
+            <div class="power-block" style="border-color: var(--accent-orange);" data-link="crafting" data-item="copper-pipe">
+              <img src="textures/technology/copper_pipe.png" alt="Copper Pipe" class="item-img" data-name="Copper Pipe" data-desc="Transfers steam from Hydro Generator to Steam Engine. Craft from copper ingots.">
+              <div class="block-name">Copper Pipes</div>
+              <div class="block-desc">Transfers steam</div>
+            </div>
+            <div class="power-connector">&#8594;</div>
+            <div class="power-block" data-link="crafting" data-item="steam-engine">
+              <img src="textures/technology/steam_engine_face.png" alt="Steam Engine" class="item-img" data-name="Steam Engine" data-desc="Converts steam into electricity when fueled with coal. Connect appliances via cables.">
+              <div class="block-name">Steam Engine</div>
+              <div class="block-desc">Needs coal fuel</div>
+            </div>
+            <div class="power-connector">&#8594;</div>
+            <div class="power-block" style="border-color: var(--accent-yellow);" data-link="crafting" data-item="cable">
+              <img src="textures/technology/cable.png" alt="Cable" class="item-img" data-name="Cable" data-desc="Carries electricity from Steam Engine to powered machines. Craft from copper ingots.">
+              <div class="block-name">Cables</div>
+              <div class="block-desc">Carries electricity</div>
+            </div>
+            <div class="power-connector">&#8594;</div>
+            <div class="power-block" style="border-color: var(--accent-green);" data-link="3d-printing">
+              <img src="textures/technology/3d_printer_face.png" alt="Appliances" class="item-img" data-name="3D Printer" data-desc="Prints rocket parts and launch infrastructure. Requires power to operate.">
+              <div class="block-name">Appliances</div>
+              <div class="block-desc">Now powered!</div>
+            </div>
+          </div>
+        </div>
+
+        <h3>Setting Up Power (Step by Step)</h3>
+        <ol class="steps-list">
+          <li><strong>Place Hydro Generator on Water</strong> - The hydro generator must be placed on top of water to function. Find a lake or ocean and place it on the water's surface.</li>
+          <li><strong>Connect Copper Pipes</strong> - Run copper pipes from the hydro generator to your steam engine. Pipes carry steam from the water source.</li>
+          <li><strong>Place Steam Engine</strong> - Position your steam engine near your base. Connect it to the pipes from the hydro generator.</li>
+          <li><strong>Fuel the Steam Engine</strong> - Right-click the steam engine and add coal as fuel. The engine will consume coal to generate electricity.</li>
+          <li><strong>Run Cables to Appliances</strong> - Use cables to connect the steam engine to your powered machines. Cables can be placed on any surface.</li>
+        </ol>
+
+        <div class="info-box warning">
+          <strong>Important:</strong> All four conditions must be met for power to flow:
+          <ul style="margin-top: 10px;">
+            <li>Hydro Generator is placed on top of water</li>
+            <li>Copper pipes connect hydro generator to steam engine</li>
+            <li>Steam Engine has coal fuel</li>
+            <li>Cables connect steam engine to appliances</li>
+          </ul>
+        </div>
+
+        <h3>Machines That Require Power</h3>
+        <p>The following machines will only function when connected to a powered steam engine via cables:</p>
+
+        <div class="appliance-grid">
+          <div class="appliance-card" data-link="smelting">
+            <img src="textures/technology/electric_furnace_face.png" alt="Electric Furnace" class="item-img" data-name="Electric Furnace" data-desc="Smelts ores 5x faster with 2x yield. Required for Lithium and Cobalt smelting.">
+            <div class="appliance-info">
+              <h4>Electric Furnace</h4>
+              <p>Smelts ores 5x faster with 2x yield. Required for Lithium and Cobalt.</p>
+              <span class="power-required">POWER REQUIRED</span>
+            </div>
+          </div>
+          <div class="appliance-card" data-link="3d-printing">
+            <img src="textures/technology/3d_printer_face.png" alt="3D Printer" class="item-img" data-name="3D Printer" data-desc="Prints rocket parts and launch pad components. Essential for space travel.">
+            <div class="appliance-info">
+              <h4>3D Printer</h4>
+              <p>Prints rocket parts and launch pad components.</p>
+              <span class="power-required">POWER REQUIRED</span>
+            </div>
+          </div>
+          <div class="appliance-card" data-link="electronics">
+            <img src="textures/technology/electronics_workbench_face.png" alt="Electronics Workbench" class="item-img" data-name="Electronics Workbench" data-desc="Crafts advanced electronic components like CPUs, RAM modules, and motherboards.">
+            <div class="appliance-info">
+              <h4>Electronics Workbench</h4>
+              <p>Crafts CPUs, RAM, motherboards and other electronics.</p>
+              <span class="power-required">POWER REQUIRED</span>
+            </div>
+          </div>
+          <div class="appliance-card" data-link="electronics">
+            <img src="textures/technology/computer_face.png" alt="Computer" class="item-img" data-name="Computer" data-desc="Advanced computing device for automation and control systems.">
+            <div class="appliance-info">
+              <h4>Computer</h4>
+              <p>Advanced computing and automation.</p>
+              <span class="power-required">POWER REQUIRED</span>
+            </div>
+          </div>
+        </div>
+
+        <h3>Power Components Crafting</h3>
+        <div class="recipes-grid">
+          <div class="recipe-card">
+            <div class="recipe-title">Hydro Generator</div>
+            <div class="recipe-io">
+              <span class="recipe-input-list">
+                <img src="textures/minerals/earth/iron.png" class="item-img" data-name="Iron Ingot" data-desc="Smelted from iron ore. Used in many crafting recipes." data-link="smelting">6
+                <img src="textures/minerals/earth/aluminum.png" class="item-img" data-name="Aluminum Ingot" data-desc="Smelted from aluminum ore. Lightweight metal for advanced crafting." data-link="smelting">3
+              </span>
+              <span class="recipe-arrow">&#8594;</span>
+              <span class="recipe-output-list">
+                <img src="textures/technology/hydro_generator_face.png" class="item-img" data-name="Hydro Generator" data-desc="Generates steam when placed in water. Connect to Steam Engine via copper pipes.">1
+              </span>
+            </div>
+          </div>
+          <div class="recipe-card">
+            <div class="recipe-title">Steam Engine</div>
+            <div class="recipe-io">
+              <span class="recipe-input-list">
+                <img src="textures/minerals/earth/iron.png" class="item-img" data-name="Iron Ingot" data-desc="Smelted from iron ore. Used in many crafting recipes." data-link="smelting">6
+                <img src="textures/minerals/earth/copper.png" class="item-img" data-name="Copper Ingot" data-desc="Smelted from copper ore. Used for wiring and pipes." data-link="smelting">2
+                <img src="textures/minerals/earth/aluminum.png" class="item-img" data-name="Aluminum Ingot" data-desc="Smelted from aluminum ore. Lightweight metal for advanced crafting." data-link="smelting">1
+              </span>
+              <span class="recipe-arrow">&#8594;</span>
+              <span class="recipe-output-list">
+                <img src="textures/technology/steam_engine_face.png" class="item-img" data-name="Steam Engine" data-desc="Converts steam into electricity when fueled with coal.">1
+              </span>
+            </div>
+          </div>
+          <div class="recipe-card">
+            <div class="recipe-title">Copper Pipe</div>
+            <div class="recipe-io">
+              <span class="recipe-input-list">
+                <img src="textures/minerals/earth/copper.png" class="item-img" data-name="Copper Ingot" data-desc="Smelted from copper ore. Used for wiring and pipes." data-link="smelting">1
+              </span>
+              <span class="recipe-arrow">&#8594;</span>
+              <span class="recipe-output-list">
+                <img src="textures/technology/copper_pipe.png" class="item-img" data-name="Copper Pipe" data-desc="Transfers steam between hydro generator and steam engine.">4
+              </span>
+            </div>
+          </div>
+          <div class="recipe-card">
+            <div class="recipe-title">Cable</div>
+            <div class="recipe-io">
+              <span class="recipe-input-list">
+                <img src="textures/minerals/earth/copper.png" class="item-img" data-name="Copper Ingot" data-desc="Smelted from copper ore. Used for wiring and pipes." data-link="smelting">3
+              </span>
+              <span class="recipe-arrow">&#8594;</span>
+              <span class="recipe-output-list">
+                <img src="textures/technology/cable.png" class="item-img" data-name="Cable" data-desc="Carries electricity from Steam Engine to powered machines.">8
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div class="info-box success">
+          <strong>Pro Tip:</strong> Build your steam engine and powered machines on land near the water's edge. This minimizes the number of pipes you need while keeping your base dry!
+        </div>
+      </section>
+
+      <!-- Building Rockets -->
+      <section class="wiki-section" id="building-rockets">
+        <h2>Building Rockets</h2>
+        <p>To launch into space, you need to build a complete rocket on a launch pad. All rocket parts are created using the 3D Printer.</p>
+
+        <h3>Required Components</h3>
+        <div class="item-row">
+          <div class="item-showcase" data-link="3d-printing">
+            <img src="textures/technology/launch_pad_face.png" alt="Launch Pad" class="item-img" data-name="Launch Pad Block" data-desc="Forms the base for rocket launch. Arrange 7 blocks in a hexagonal pattern.">
+            <span>Launch Pad (7 blocks)</span>
+          </div>
+          <div class="item-showcase" data-link="3d-printing">
+            <img src="textures/technology/launch_tower_face.png" alt="Launch Tower" class="item-img" data-name="Launch Tower Segment" data-desc="Provides structural support for the rocket. Place adjacent to launch pad.">
+            <span>Launch Tower (1 segment)</span>
+          </div>
+        </div>
+        <div class="item-row">
+          <div class="item-showcase" data-link="3d-printing">
+            <img src="textures/rocket_parts/medium_engine.png" alt="Rocket Engine" class="item-img" data-name="Rocket Engine" data-desc="Provides thrust for liftoff. Place on center of launch pad.">
+            <span>Rocket Engine</span>
+          </div>
+          <div class="item-showcase" data-link="3d-printing">
+            <img src="textures/rocket_parts/medium_fuel_tank.png" alt="Fuel Tank" class="item-img" data-name="Medium Fuel Tank" data-desc="Stores rocket fuel. Stack multiple for longer journeys.">
+            <span>Fuel Tank(s)</span>
+          </div>
+          <div class="item-showcase" data-link="3d-printing">
+            <img src="textures/rocket_parts/command_module.png" alt="Command Module" class="item-img" data-name="Command Module" data-desc="Player cockpit with flight controls. Place on top of fuel tanks.">
+            <span>Command Module</span>
+          </div>
+        </div>
+
+        <h3>Assembly Order</h3>
+        <ol class="steps-list">
+          <li>Build a hexagonal launch pad (7 blocks in flower pattern - 1 center + 6 surrounding)</li>
+          <li>Place launch tower segment adjacent to the pad</li>
+          <li>Place the rocket engine on the center pad block</li>
+          <li>Stack fuel tanks on top of the engine (more tanks = more fuel)</li>
+          <li>Place command module on top of the stack</li>
+          <li>Right-click the rocket to board and launch!</li>
+        </ol>
+
+        <h3>Flight Controls</h3>
+        <table class="controls-table">
+          <tr><th>Key</th><th>Action</th></tr>
+          <tr><td>WASD</td><td>Rotate (Pitch/Yaw)</td></tr>
+          <tr><td>Q / E</td><td>Roll left/right</td></tr>
+          <tr><td>Arrows</td><td>Strafe in any direction</td></tr>
+          <tr><td>Space</td><td>Main thrust (go up)</td></tr>
+          <tr><td>C</td><td>Descend (fire top thrusters)</td></tr>
+          <tr><td>Z / X</td><td>Decrease/Increase throttle</td></tr>
+          <tr><td>V</td><td>Exit rocket (when landed)</td></tr>
+        </table>
+
+        <div class="info-box">
+          <strong>Landing:</strong> To land safely, approach the surface slowly using C to descend. Touch down gently to avoid damage!
+        </div>
+      </section>
+
+      <!-- Crafting -->
+      <section class="wiki-section" id="crafting">
+        <h2>Crafting Recipes</h2>
+        <p>Open your inventory (E) to access the crafting grid. Place items in the grid to craft.</p>
+
+        <h3>Basic Materials</h3>
+        <div class="recipes-grid">
+          <div class="recipe-card">
+            <div class="recipe-title">Wood Planks</div>
+            <div class="recipe-io">
+              <span class="recipe-input-list"><img src="textures/icons/logs.png" class="item-img" data-name="Log" data-desc="Harvested from trees. Basic building material.">1</span>
+              <span class="recipe-arrow">&#8594;</span>
+              <span class="recipe-output-list"><img src="textures/wood.png" class="item-img" data-name="Wood Planks" data-desc="Crafted from logs. Used for building and crafting.">4</span>
+            </div>
+          </div>
+          <div class="recipe-card">
+            <div class="recipe-title">Sticks</div>
+            <div class="recipe-io">
+              <span class="recipe-input-list"><img src="textures/wood.png" class="item-img" data-name="Wood Planks" data-desc="Crafted from logs. Used for building and crafting.">2</span>
+              <span class="recipe-arrow">&#8594;</span>
+              <span class="recipe-output-list"><img src="textures/sticks.png" class="item-img" data-name="Stick" data-desc="Crafted from wood planks. Used in tool and torch recipes.">4</span>
+            </div>
+          </div>
+          <div class="recipe-card">
+            <div class="recipe-title">Torch</div>
+            <div class="recipe-io">
+              <span class="recipe-input-list">
+                <img src="textures/coal.png" class="item-img" data-name="Coal" data-desc="Mined from coal ore. Used as fuel and for crafting torches.">1
+                <img src="textures/sticks.png" class="item-img" data-name="Stick" data-desc="Crafted from wood planks. Used in tool and torch recipes.">1
+              </span>
+              <span class="recipe-arrow">&#8594;</span>
+              <span class="recipe-output-list"><img src="textures/torch_sprite.png" class="item-img" data-name="Torch" data-desc="Provides light. Place on surfaces to illuminate dark areas.">4</span>
+            </div>
+          </div>
+          <div class="recipe-card">
+            <div class="recipe-title">Glass</div>
+            <div class="recipe-io">
+              <span class="recipe-input-list"><img src="textures/sand.png" class="item-img" data-name="Sand" data-desc="Found on beaches. Used to craft glass.">9</span>
+              <span class="recipe-arrow">&#8594;</span>
+              <span class="recipe-output-list"><img src="textures/glass.png" class="item-img" data-name="Glass" data-desc="Transparent building material. Used in electronics.">8</span>
+            </div>
+          </div>
+        </div>
+
+        <h3>Machines & Storage</h3>
+        <div class="recipes-grid">
+          <div class="recipe-card">
+            <div class="recipe-title">Furnace</div>
+            <div class="recipe-io">
+              <span class="recipe-input-list"><img src="textures/rocks.png" class="item-img" data-name="Stone" data-desc="Mined from underground. Basic building block.">8</span>
+              <span class="recipe-arrow">&#8594;</span>
+              <span class="recipe-output-list">
+                <img src="textures/technology/furnace_face.png" class="item-img output-img" data-name="Furnace" data-desc="Smelts ores into ingots using coal as fuel." data-link="smelting">
+                <span class="output-label">Furnace</span>
+              </span>
+            </div>
+          </div>
+          <div class="recipe-card">
+            <div class="recipe-title">Storage Chest</div>
+            <div class="recipe-io">
+              <span class="recipe-input-list"><img src="textures/wood.png" class="item-img" data-name="Wood Planks" data-desc="Crafted from logs. Used for building and crafting.">8</span>
+              <span class="recipe-arrow">&#8594;</span>
+              <span class="recipe-output-list">
+                <img src="textures/technology/storage_face.png" class="item-img output-img" data-name="Storage Chest" data-desc="Stores items. Right-click to open inventory.">
+                <span class="output-label">Storage</span>
+              </span>
+            </div>
+          </div>
+          <div class="recipe-card">
+            <div class="recipe-title">Electric Furnace</div>
+            <div class="recipe-io">
+              <span class="recipe-input-list">
+                <img src="textures/minerals/earth/iron.png" class="item-img" data-name="Iron Ingot" data-desc="Smelted from iron ore." data-link="smelting">6
+                <img src="textures/minerals/earth/aluminum.png" class="item-img" data-name="Aluminum Ingot" data-desc="Smelted from aluminum ore." data-link="smelting">2
+                <img src="textures/minerals/earth/copper.png" class="item-img" data-name="Copper Ingot" data-desc="Smelted from copper ore." data-link="smelting">1
+              </span>
+              <span class="recipe-arrow">&#8594;</span>
+              <span class="recipe-output-list">
+                <img src="textures/technology/electric_furnace_face.png" class="item-img output-img" data-name="Electric Furnace" data-desc="5x faster smelting with 2x yield. Requires power." data-link="smelting">
+                <span class="output-label">Electric Furnace</span>
+              </span>
+            </div>
+          </div>
+          <div class="recipe-card">
+            <div class="recipe-title">Electronics Workbench</div>
+            <div class="recipe-io">
+              <span class="recipe-input-list">
+                <img src="textures/minerals/earth/aluminum.png" class="item-img" data-name="Aluminum Ingot" data-desc="Smelted from aluminum ore." data-link="smelting">6
+                <img src="textures/minerals/earth/copper.png" class="item-img" data-name="Copper Ingot" data-desc="Smelted from copper ore." data-link="smelting">2
+                <img src="textures/minerals/earth/cobalt.png" class="item-img" data-name="Cobalt Ingot" data-desc="Smelted from cobalt ore in Electric Furnace." data-link="smelting">1
+              </span>
+              <span class="recipe-arrow">&#8594;</span>
+              <span class="recipe-output-list">
+                <img src="textures/technology/electronics_workbench_face.png" class="item-img output-img" data-name="Electronics Workbench" data-desc="Crafts CPUs, RAM, motherboards. Requires power." data-link="electronics">
+                <span class="output-label">Electronics Workbench</span>
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <h3>Power & Connectivity</h3>
+        <div class="recipes-grid">
+          <div class="recipe-card">
+            <div class="recipe-title">Copper Pipe</div>
+            <div class="recipe-io">
+              <span class="recipe-input-list"><img src="textures/minerals/earth/copper.png" class="item-img" data-name="Copper Ingot" data-desc="Smelted from copper ore." data-link="smelting">1</span>
+              <span class="recipe-arrow">&#8594;</span>
+              <span class="recipe-output-list">
+                <img src="textures/technology/copper_pipe.png" class="item-img output-img" data-name="Copper Pipe" data-desc="Transfers steam for power generation." data-link="power-generation">
+                <span class="output-label">x4 Pipe</span>
+              </span>
+            </div>
+          </div>
+          <div class="recipe-card">
+            <div class="recipe-title">Cable</div>
+            <div class="recipe-io">
+              <span class="recipe-input-list"><img src="textures/minerals/earth/copper.png" class="item-img" data-name="Copper Ingot" data-desc="Smelted from copper ore." data-link="smelting">3</span>
+              <span class="recipe-arrow">&#8594;</span>
+              <span class="recipe-output-list">
+                <img src="textures/technology/cable.png" class="item-img output-img" data-name="Cable" data-desc="Carries electricity to machines." data-link="power-generation">
+                <span class="output-label">x8 Cable</span>
+              </span>
+            </div>
+          </div>
+          <div class="recipe-card">
+            <div class="recipe-title">Steam Engine</div>
+            <div class="recipe-io">
+              <span class="recipe-input-list">
+                <img src="textures/minerals/earth/iron.png" class="item-img" data-name="Iron Ingot" data-desc="Smelted from iron ore." data-link="smelting">6
+                <img src="textures/minerals/earth/copper.png" class="item-img" data-name="Copper Ingot" data-desc="Smelted from copper ore." data-link="smelting">2
+                <img src="textures/minerals/earth/aluminum.png" class="item-img" data-name="Aluminum Ingot" data-desc="Smelted from aluminum ore." data-link="smelting">1
+              </span>
+              <span class="recipe-arrow">&#8594;</span>
+              <span class="recipe-output-list">
+                <img src="textures/technology/steam_engine_face.png" class="item-img output-img" data-name="Steam Engine" data-desc="Generates electricity when fueled." data-link="power-generation">
+                <span class="output-label">Steam Engine</span>
+              </span>
+            </div>
+          </div>
+          <div class="recipe-card">
+            <div class="recipe-title">Hydro Generator</div>
+            <div class="recipe-io">
+              <span class="recipe-input-list">
+                <img src="textures/minerals/earth/iron.png" class="item-img" data-name="Iron Ingot" data-desc="Smelted from iron ore." data-link="smelting">6
+                <img src="textures/minerals/earth/aluminum.png" class="item-img" data-name="Aluminum Ingot" data-desc="Smelted from aluminum ore." data-link="smelting">3
+              </span>
+              <span class="recipe-arrow">&#8594;</span>
+              <span class="recipe-output-list">
+                <img src="textures/technology/hydro_generator_face.png" class="item-img output-img" data-name="Hydro Generator" data-desc="Produces steam when in water." data-link="power-generation">
+                <span class="output-label">Hydro Generator</span>
+              </span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Smelting -->
+      <section class="wiki-section" id="smelting">
+        <h2>Smelting</h2>
+        <p>Turn raw ores into usable ingots using furnaces.</p>
+
+        <h3>Furnace (Coal-Powered)</h3>
+        <p>The basic furnace uses coal as fuel. Place ore in the input slot and coal in the fuel slot.</p>
+        <div class="recipes-grid">
+          <div class="recipe-card">
+            <div class="recipe-title">Copper Ingot</div>
+            <div class="recipe-io">
+              <span class="recipe-input-list"><img src="textures/minerals/earth/rocks_copper.png" class="item-img" data-name="Copper Ore" data-desc="Found underground. Smelt to get copper ingots.">1</span>
+              <span class="recipe-arrow">&#8594;</span>
+              <span class="recipe-output-list"><img src="textures/minerals/earth/copper.png" class="item-img" data-name="Copper Ingot" data-desc="Used for wiring, pipes, and electronics.">1</span>
+            </div>
+            <div class="recipe-time">10 seconds</div>
+          </div>
+          <div class="recipe-card">
+            <div class="recipe-title">Iron Ingot</div>
+            <div class="recipe-io">
+              <span class="recipe-input-list"><img src="textures/minerals/earth/rocks_iron.png" class="item-img" data-name="Iron Ore" data-desc="Found underground. Essential for machines and tools.">1</span>
+              <span class="recipe-arrow">&#8594;</span>
+              <span class="recipe-output-list"><img src="textures/minerals/earth/iron.png" class="item-img" data-name="Iron Ingot" data-desc="Strong metal used in many recipes.">1</span>
+            </div>
+            <div class="recipe-time">10 seconds</div>
+          </div>
+          <div class="recipe-card">
+            <div class="recipe-title">Gold Ingot</div>
+            <div class="recipe-io">
+              <span class="recipe-input-list"><img src="textures/minerals/earth/rocks_gold.png" class="item-img" data-name="Gold Ore" data-desc="Rare ore found deep underground.">1</span>
+              <span class="recipe-arrow">&#8594;</span>
+              <span class="recipe-output-list"><img src="textures/minerals/earth/gold.png" class="item-img" data-name="Gold Ingot" data-desc="Precious metal for electronics and circuits.">1</span>
+            </div>
+            <div class="recipe-time">10 seconds</div>
+          </div>
+          <div class="recipe-card">
+            <div class="recipe-title">Aluminum Ingot</div>
+            <div class="recipe-io">
+              <span class="recipe-input-list"><img src="textures/minerals/earth/rocks_aluminum.png" class="item-img" data-name="Aluminum Ore" data-desc="Lightweight ore found underground.">1</span>
+              <span class="recipe-arrow">&#8594;</span>
+              <span class="recipe-output-list"><img src="textures/minerals/earth/aluminum.png" class="item-img" data-name="Aluminum Ingot" data-desc="Lightweight metal for rockets and machines.">1</span>
+            </div>
+            <div class="recipe-time">10 seconds</div>
+          </div>
+        </div>
+
+        <h3>Electric Furnace (Requires Power)</h3>
+        <div class="info-box success">
+          <strong>Benefits:</strong> The electric furnace is 5x faster (2 seconds) and produces <strong>2x ingots</strong> per ore! It also unlocks Lithium and Cobalt smelting.
+        </div>
+        <div class="recipes-grid">
+          <div class="recipe-card">
+            <div class="recipe-title">Any Basic Ore (2x Yield)</div>
+            <div class="recipe-io">
+              <span class="recipe-input-list"><img src="textures/minerals/earth/rocks_iron.png" class="item-img" data-name="Any Ore" data-desc="Copper, Iron, Gold, or Aluminum ore.">1</span>
+              <span class="recipe-arrow">&#8594;</span>
+              <span class="recipe-output-list"><img src="textures/minerals/earth/iron.png" class="item-img" data-name="Ingot" data-desc="Double yield compared to regular furnace!">2</span>
+            </div>
+            <div class="recipe-time">2 seconds (5x faster!)</div>
+          </div>
+          <div class="recipe-card">
+            <div class="recipe-title">Lithium Ingot</div>
+            <div class="recipe-io">
+              <span class="recipe-input-list"><img src="textures/minerals/earth/rocks_lythium.png" class="item-img" data-name="Lithium Ore" data-desc="Rare ore. Only smeltable in Electric Furnace.">1</span>
+              <span class="recipe-arrow">&#8594;</span>
+              <span class="recipe-output-list"><img src="textures/minerals/earth/lythium.png" class="item-img" data-name="Lithium Ingot" data-desc="Used in power supplies and batteries." data-link="electronics">2</span>
+            </div>
+            <div class="recipe-time">2 seconds</div>
+          </div>
+          <div class="recipe-card">
+            <div class="recipe-title">Cobalt Ingot</div>
+            <div class="recipe-io">
+              <span class="recipe-input-list"><img src="textures/minerals/earth/rocks_cobalt.png" class="item-img" data-name="Cobalt Ore" data-desc="Rare ore. Only smeltable in Electric Furnace.">1</span>
+              <span class="recipe-arrow">&#8594;</span>
+              <span class="recipe-output-list"><img src="textures/minerals/earth/cobalt.png" class="item-img" data-name="Cobalt Ingot" data-desc="High-strength metal for rockets and electronics." data-link="electronics">2</span>
+            </div>
+            <div class="recipe-time">2 seconds</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Electronics -->
+      <section class="wiki-section" id="electronics">
+        <h2>Electronics Workbench</h2>
+        <p>The Electronics Workbench crafts advanced components needed for the 3D Printer and Command Module. <strong>Requires power to operate.</strong></p>
+
+        <div class="recipes-grid">
+          <div class="recipe-card">
+            <div class="recipe-title">CPU Chip</div>
+            <div class="recipe-io">
+              <span class="recipe-input-list">
+                <img src="textures/sand.png" class="item-img" data-name="Sand" data-desc="Found on beaches. Silicon source for chips.">6
+                <img src="textures/minerals/earth/cobalt.png" class="item-img" data-name="Cobalt Ingot" data-desc="Smelted in Electric Furnace." data-link="smelting">1
+                <img src="textures/minerals/earth/gold.png" class="item-img" data-name="Gold Ingot" data-desc="Conductive metal for circuits." data-link="smelting">1
+                <img src="textures/minerals/earth/copper.png" class="item-img" data-name="Copper Ingot" data-desc="Used for wiring." data-link="smelting">1
+              </span>
+              <span class="recipe-arrow">&#8594;</span>
+              <span class="recipe-output-list">
+                <img src="textures/technology/micro_chip.png" class="item-img output-img" data-name="CPU Chip" data-desc="Processing unit for computers and printers.">
+                <span class="output-label">CPU Chip</span>
+              </span>
+            </div>
+          </div>
+          <div class="recipe-card">
+            <div class="recipe-title">RAM Module</div>
+            <div class="recipe-io">
+              <span class="recipe-input-list">
+                <img src="textures/sand.png" class="item-img" data-name="Sand" data-desc="Silicon source for memory chips.">3
+                <img src="textures/minerals/earth/copper.png" class="item-img" data-name="Copper Ingot" data-desc="Used for wiring." data-link="smelting">3
+              </span>
+              <span class="recipe-arrow">&#8594;</span>
+              <span class="recipe-output-list">
+                <img src="textures/technology/ram_module.png" class="item-img output-img" data-name="RAM Module" data-desc="Memory for computers and command modules.">
+                <span class="output-label">RAM Module</span>
+              </span>
+            </div>
+          </div>
+          <div class="recipe-card">
+            <div class="recipe-title">Motherboard</div>
+            <div class="recipe-io">
+              <span class="recipe-input-list">
+                <img src="textures/sand.png" class="item-img" data-name="Sand" data-desc="Silicon for circuit boards.">8
+                <img src="textures/minerals/earth/gold.png" class="item-img" data-name="Gold Ingot" data-desc="Conductive traces." data-link="smelting">1
+              </span>
+              <span class="recipe-arrow">&#8594;</span>
+              <span class="recipe-output-list">
+                <img src="textures/technology/mother_board.png" class="item-img output-img" data-name="Motherboard" data-desc="Main circuit board for computers.">
+                <span class="output-label">Motherboard</span>
+              </span>
+            </div>
+          </div>
+          <div class="recipe-card">
+            <div class="recipe-title">Power Supply</div>
+            <div class="recipe-io">
+              <span class="recipe-input-list">
+                <img src="textures/minerals/earth/aluminum.png" class="item-img" data-name="Aluminum Ingot" data-desc="Housing material." data-link="smelting">6
+                <img src="textures/minerals/earth/cobalt.png" class="item-img" data-name="Cobalt Ingot" data-desc="High-performance metal." data-link="smelting">2
+                <img src="textures/minerals/earth/lythium.png" class="item-img" data-name="Lithium Ingot" data-desc="Battery component." data-link="smelting">1
+              </span>
+              <span class="recipe-arrow">&#8594;</span>
+              <span class="recipe-output-list">
+                <img src="textures/technology/power_supply.png" class="item-img output-img" data-name="Power Supply" data-desc="Provides stable power for electronics.">
+                <span class="output-label">Power Supply</span>
+              </span>
+            </div>
+          </div>
+          <div class="recipe-card">
+            <div class="recipe-title">Print Nozzle</div>
+            <div class="recipe-io">
+              <span class="recipe-input-list">
+                <img src="textures/minerals/earth/iron.png" class="item-img" data-name="Iron Ingot" data-desc="Durable metal." data-link="smelting">3
+                <img src="textures/minerals/earth/copper.png" class="item-img" data-name="Copper Ingot" data-desc="Heat conductive." data-link="smelting">1
+              </span>
+              <span class="recipe-arrow">&#8594;</span>
+              <span class="recipe-output-list">
+                <img src="textures/technology/print_nozzle.png" class="item-img output-img" data-name="Print Nozzle" data-desc="Precision nozzle for 3D printer.">
+                <span class="output-label">Print Nozzle</span>
+              </span>
+            </div>
+          </div>
+          <div class="recipe-card">
+            <div class="recipe-title">Computer</div>
+            <div class="recipe-io">
+              <span class="recipe-input-list">
+                <img src="textures/glass.png" class="item-img" data-name="Glass" data-desc="For display screen.">3
+                <img src="textures/technology/micro_chip.png" class="item-img" data-name="CPU Chip" data-desc="Processing unit.">1
+                <img src="textures/technology/ram_module.png" class="item-img" data-name="RAM Module" data-desc="Memory.">4
+                <img src="textures/technology/mother_board.png" class="item-img" data-name="Motherboard" data-desc="Main board.">1
+                <img src="textures/technology/power_supply.png" class="item-img" data-name="Power Supply" data-desc="Power unit.">1
+                <img src="textures/minerals/earth/aluminum.png" class="item-img" data-name="Aluminum" data-desc="Case material." data-link="smelting">2
+              </span>
+              <span class="recipe-arrow">&#8594;</span>
+              <span class="recipe-output-list">
+                <img src="textures/technology/computer_face.png" class="item-img output-img" data-name="Computer" data-desc="Advanced computing device. Requires power.">
+                <span class="output-label">Computer</span>
+              </span>
+            </div>
+          </div>
+          <div class="recipe-card">
+            <div class="recipe-title">3D Printer</div>
+            <div class="recipe-io">
+              <span class="recipe-input-list">
+                <img src="textures/minerals/earth/aluminum.png" class="item-img" data-name="Aluminum" data-desc="Frame material." data-link="smelting">6
+                <img src="textures/technology/print_nozzle.png" class="item-img" data-name="Print Nozzle" data-desc="Precision nozzle.">1
+                <img src="textures/technology/micro_chip.png" class="item-img" data-name="CPU Chip" data-desc="Controller.">1
+                <img src="textures/technology/mother_board.png" class="item-img" data-name="Motherboard" data-desc="Control board.">1
+                <img src="textures/technology/power_supply.png" class="item-img" data-name="Power Supply" data-desc="Power unit.">1
+              </span>
+              <span class="recipe-arrow">&#8594;</span>
+              <span class="recipe-output-list">
+                <img src="textures/technology/3d_printer_face.png" class="item-img output-img" data-name="3D Printer" data-desc="Prints rocket parts. Requires power." data-link="3d-printing">
+                <span class="output-label">3D Printer</span>
+              </span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 3D Printing -->
+      <section class="wiki-section" id="3d-printing">
+        <h2>3D Printer</h2>
+        <p>The 3D Printer creates rocket parts and launch pad components. <strong>Requires power connection to operate.</strong></p>
+
+        <div class="info-box warning">
+          <strong>Remember:</strong> The 3D Printer must be connected to a powered Steam Engine via cables to function!
+        </div>
+
+        <h3>Launch Infrastructure</h3>
+        <div class="recipes-grid">
+          <div class="recipe-card">
+            <div class="recipe-title">Launch Pad Block</div>
+            <div class="recipe-io">
+              <span class="recipe-input-list">
+                <img src="textures/rocks.png" class="item-img" data-name="Stone" data-desc="Foundation material.">6
+                <img src="textures/minerals/earth/iron.png" class="item-img" data-name="Iron Ingot" data-desc="Structural support." data-link="smelting">3
+              </span>
+              <span class="recipe-arrow">&#8594;</span>
+              <span class="recipe-output-list">
+                <img src="textures/technology/launch_pad_face.png" class="item-img output-img" data-name="Launch Pad Block" data-desc="Arrange 7 in hexagonal pattern for rocket base." data-link="building-rockets">
+                <span class="output-label">x7 Launch Pad</span>
+              </span>
+            </div>
+            <div class="recipe-time">Print Time: 30s</div>
+          </div>
+          <div class="recipe-card">
+            <div class="recipe-title">Launch Tower Segment</div>
+            <div class="recipe-io">
+              <span class="recipe-input-list">
+                <img src="textures/minerals/earth/iron.png" class="item-img" data-name="Iron Ingot" data-desc="Structural support." data-link="smelting">9
+              </span>
+              <span class="recipe-arrow">&#8594;</span>
+              <span class="recipe-output-list">
+                <img src="textures/technology/launch_tower_face.png" class="item-img output-img" data-name="Launch Tower Segment" data-desc="Support structure adjacent to launch pad." data-link="building-rockets">
+                <span class="output-label">Launch Tower</span>
+              </span>
+            </div>
+            <div class="recipe-time">Print Time: 45s</div>
+          </div>
+        </div>
+
+        <h3>Rocket Parts</h3>
+        <div class="recipes-grid">
+          <div class="recipe-card">
+            <div class="recipe-title">Rocket Engine</div>
+            <div class="recipe-io">
+              <span class="recipe-input-list">
+                <img src="textures/minerals/earth/aluminum.png" class="item-img" data-name="Aluminum" data-desc="Lightweight casing." data-link="smelting">12
+                <img src="textures/minerals/earth/cobalt.png" class="item-img" data-name="Cobalt" data-desc="Heat-resistant." data-link="smelting">3
+                <img src="textures/minerals/earth/gold.png" class="item-img" data-name="Gold" data-desc="Ignition system." data-link="smelting">1
+              </span>
+              <span class="recipe-arrow">&#8594;</span>
+              <span class="recipe-output-list">
+                <img src="textures/rocket_parts/medium_engine.png" class="item-img output-img" data-name="Rocket Engine" data-desc="Provides thrust. Place on center of launch pad." data-link="building-rockets">
+                <span class="output-label">Rocket Engine</span>
+              </span>
+            </div>
+            <div class="recipe-time">Print Time: 60s</div>
+          </div>
+          <div class="recipe-card">
+            <div class="recipe-title">Medium Fuel Tank</div>
+            <div class="recipe-io">
+              <span class="recipe-input-list">
+                <img src="textures/minerals/earth/aluminum.png" class="item-img" data-name="Aluminum" data-desc="Tank material." data-link="smelting">10
+                <img src="textures/minerals/earth/cobalt.png" class="item-img" data-name="Cobalt" data-desc="Structural integrity." data-link="smelting">1
+              </span>
+              <span class="recipe-arrow">&#8594;</span>
+              <span class="recipe-output-list">
+                <img src="textures/rocket_parts/medium_fuel_tank.png" class="item-img output-img" data-name="Medium Fuel Tank" data-desc="Stores fuel. Stack multiple for longer trips." data-link="building-rockets">
+                <span class="output-label">Fuel Tank</span>
+              </span>
+            </div>
+            <div class="recipe-time">Print Time: 45s</div>
+          </div>
+          <div class="recipe-card">
+            <div class="recipe-title">Command Module</div>
+            <div class="recipe-io">
+              <span class="recipe-input-list">
+                <img src="textures/minerals/earth/aluminum.png" class="item-img" data-name="Al" data-desc="Outer shell." data-link="smelting">5
+                <img src="textures/minerals/earth/gold.png" class="item-img" data-name="Au" data-desc="Electronics." data-link="smelting">2
+                <img src="textures/minerals/earth/cobalt.png" class="item-img" data-name="Co" data-desc="Structure." data-link="smelting">2
+                <img src="textures/minerals/earth/copper.png" class="item-img" data-name="Cu" data-desc="Wiring." data-link="smelting">2
+                <img src="textures/technology/ram_module.png" class="item-img" data-name="RAM" data-desc="Navigation computer memory.">4
+                <img src="textures/technology/micro_chip.png" class="item-img" data-name="CPU" data-desc="Flight computer.">1
+                <img src="textures/technology/mother_board.png" class="item-img" data-name="MB" data-desc="Control systems.">1
+                <img src="textures/technology/power_supply.png" class="item-img" data-name="PSU" data-desc="Life support power.">1
+              </span>
+              <span class="recipe-arrow">&#8594;</span>
+              <span class="recipe-output-list">
+                <img src="textures/rocket_parts/command_module.png" class="item-img output-img" data-name="Command Module" data-desc="Player cockpit. Place on top of rocket." data-link="building-rockets">
+                <span class="output-label">Command Module</span>
+              </span>
+            </div>
+            <div class="recipe-time">Print Time: 50s</div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    // Item data for tooltips
+    const tooltip = document.getElementById('item-tooltip');
+
+    // Show tooltip on hover
+    document.querySelectorAll('.item-img').forEach(img => {
+      img.addEventListener('mouseenter', (e) => {
+        const name = img.getAttribute('data-name');
+        const desc = img.getAttribute('data-desc');
+        const link = img.getAttribute('data-link');
+
+        if (name) {
+          tooltip.querySelector('.tooltip-name').textContent = name;
+          tooltip.querySelector('.tooltip-desc').textContent = desc || '';
+          tooltip.querySelector('.tooltip-link').textContent = link ? 'Click to learn more' : '';
+          tooltip.style.display = 'block';
+        }
+      });
+
+      img.addEventListener('mousemove', (e) => {
+        const x = e.clientX + 15;
+        const y = e.clientY + 10;
+        const maxX = window.innerWidth - 300;
+        const maxY = window.innerHeight - 150;
+        tooltip.style.left = Math.min(x, maxX) + 'px';
+        tooltip.style.top = Math.min(y, maxY) + 'px';
+      });
+
+      img.addEventListener('mouseleave', () => {
+        tooltip.style.display = 'none';
+      });
+
+      // Click to navigate
+      img.addEventListener('click', () => {
+        const link = img.getAttribute('data-link');
+        if (link) {
+          navigateToSection(link);
+        }
+      });
+    });
+
+    // Also make showcase items and appliance cards clickable
+    document.querySelectorAll('.item-showcase, .appliance-card, .power-block').forEach(el => {
+      el.addEventListener('click', () => {
+        const link = el.getAttribute('data-link');
+        if (link) {
+          navigateToSection(link);
+        }
+      });
+    });
+
+    // Handle inline item links (with icons in text)
+    document.querySelectorAll('.item-link').forEach(link => {
+      link.addEventListener('mouseenter', (e) => {
+        const name = link.getAttribute('data-name');
+        const desc = link.getAttribute('data-desc');
+        const navLink = link.getAttribute('data-link');
+
+        if (name) {
+          tooltip.querySelector('.tooltip-name').textContent = name;
+          tooltip.querySelector('.tooltip-desc').textContent = desc || '';
+          tooltip.querySelector('.tooltip-link').textContent = navLink ? 'Click to learn more' : '';
+          tooltip.style.display = 'block';
+        }
+      });
+
+      link.addEventListener('mousemove', (e) => {
+        const x = e.clientX + 15;
+        const y = e.clientY + 10;
+        const maxX = window.innerWidth - 300;
+        const maxY = window.innerHeight - 150;
+        tooltip.style.left = Math.min(x, maxX) + 'px';
+        tooltip.style.top = Math.min(y, maxY) + 'px';
+      });
+
+      link.addEventListener('mouseleave', () => {
+        tooltip.style.display = 'none';
+      });
+
+      link.addEventListener('click', () => {
+        const navLink = link.getAttribute('data-link');
+        if (navLink) {
+          navigateToSection(navLink);
+        }
+      });
+    });
+
+    function navigateToSection(sectionId) {
+      // Update sidebar
+      document.querySelectorAll('.wiki-sidebar a').forEach(a => a.classList.remove('active'));
+      const navLink = document.querySelector(`.wiki-sidebar a[data-section="${sectionId}"]`);
+      if (navLink) navLink.classList.add('active');
+
+      // Update content
+      document.querySelectorAll('.wiki-section').forEach(s => s.classList.remove('active'));
+      const section = document.getElementById(sectionId);
+      if (section) {
+        section.classList.add('active');
+        section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    }
+
+    // Navigation handling
+    document.querySelectorAll('.wiki-sidebar a').forEach(link => {
+      link.addEventListener('click', (e) => {
+        e.preventDefault();
+        const sectionId = link.getAttribute('data-section');
+        navigateToSection(sectionId);
+      });
+    });
+
+    // Handle hash navigation
+    if (window.location.hash) {
+      const sectionId = window.location.hash.substring(1);
+      navigateToSection(sectionId);
+    }
+  </script>
+</body>
+</html>

@@ -7,8 +7,17 @@
 
 - why is my ocean dry under the generated ice?
 - water refuses to spawn under anything. this is a critical bug.
+- more bugs: wiring for stuff doesnt work if one of the connections go nowhere. should not be like this, if a block contains in valid connection and a valid connection, it should still function
+-rocket despawning when boarding unboarding and rocket is still on landing pad. I think when the player first fires the thruster, this should decouple the rocket from landing pad permanently, so landing pad will no longer register it has a rocket, and the rocket will become completely independent.
+
+-placing moon rock on earth just turns to normal rock
+
+- addressing performance issues
+-terrain LOD height is not matching actual terrain height.
 
 -- see water_bugs.md lol
+
+- need wiki
 
 ---
 

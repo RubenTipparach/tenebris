@@ -4,8 +4,8 @@ import { InputManager } from './engine/InputManager';
 import { Planet } from './planet/Planet';
 import { PlanetPlayer } from './player/PlanetPlayer';
 import { PlanetBlockInteraction } from './player/PlanetBlockInteraction';
-import { PlanetTreeManager } from './planet/Tree';
-import { Atmosphere, createEarthAtmosphere } from './planet/Atmosphere';
+import { PlanetTreeManager, MushroomTreeManager } from './planet/Tree';
+import { Atmosphere, createEarthAtmosphere, createAtmosphere } from './planet/Atmosphere';
 import { CloudSystem, createEarthClouds } from './planet/Clouds';
 import { PlayerConfig } from './config/PlayerConfig';
 import { SOLAR_SYSTEM, getBodyConfig, getGravityRadii } from './config/SolarSystemConfig';
@@ -24,11 +24,14 @@ class PlanetGame {
   private planets: Map<string, Planet> = new Map();
   private earth: Planet; // Quick reference to starting planet
   private moon: Planet;  // Quick reference for backwards compatibility
+  private sequoia: Planet; // Quick reference to Sequoia
   private player: PlanetPlayer;
   private blockInteraction: PlanetBlockInteraction;
   private treeManager: PlanetTreeManager;
+  private mushroomTreeManager: MushroomTreeManager | null = null;
   private earthAtmosphere: Atmosphere | null = null;
   private earthClouds: CloudSystem = null!;
+  private sequoiaAtmosphere: Atmosphere | null = null;
   private isReady: boolean = false;
   private elapsedTime: number = 0;
   private waterUpdateTimer: number = 0;
@@ -76,6 +79,8 @@ class PlanetGame {
           hasWater: bodyConfig.terrain.hasWater,
           seaLevel: bodyConfig.terrain.seaLevel,
           tileset: bodyConfig.tileset,
+          waterColor: bodyConfig.terrain.waterColor,
+          waterDeepColor: bodyConfig.terrain.waterDeepColor,
         }
       );
       this.planets.set(bodyConfig.id, planet);
@@ -84,6 +89,11 @@ class PlanetGame {
     // Set up quick references for backwards compatibility
     this.earth = this.planets.get('earth')!;
     this.moon = this.planets.get('moon')!;
+    const sequoiaPlanet = this.planets.get('sequoia');
+    if (!sequoiaPlanet) {
+      throw new Error('Sequoia planet not found in planets map. Check SolarSystemConfig.');
+    }
+    this.sequoia = sequoiaPlanet;
 
     // Player will be initialized after planets
     this.player = null!;
@@ -140,20 +150,7 @@ class PlanetGame {
       loadingManager.setStatus('Loading audio...');
       await AudioManager.init();
 
-      // Initialize music system with saved state
-      const savedMusicState = gameStorage.getMusicState();
-      await MusicManager.init(savedMusicState ? {
-        lastPlayTime: savedMusicState.lastPlayTime,
-        enabled: savedMusicState.enabled,
-      } : undefined);
-
-      // Set up music persistence callback
-      MusicManager.setPersistCallback((state) => {
-        gameStorage.saveMusicState({
-          lastPlayTime: state.lastPlayTime,
-          enabled: state.enabled,
-        });
-      });
+      // Note: Music manager will be initialized after gameStorage.load() so saved state is available
 
       loadingManager.completeStep('audio');
 
@@ -225,6 +222,21 @@ class PlanetGame {
       // Load saved game data early so removed trees are available
       // (full load happens later but we need planet data now for tree generation)
       gameStorage.load();
+
+      // Initialize music system with saved state (must be after gameStorage.load())
+      const savedMusicState = gameStorage.getMusicState();
+      await MusicManager.init(savedMusicState ? {
+        lastPlayTime: savedMusicState.lastPlayTime,
+        enabled: savedMusicState.enabled,
+      } : undefined);
+
+      // Set up music persistence callback
+      MusicManager.setPersistCallback((state) => {
+        gameStorage.saveMusicState({
+          lastPlayTime: state.lastPlayTime,
+          enabled: state.enabled,
+        });
+      });
 
       // Get removed trees from storage to skip them during generation
       const removedTreesData = gameStorage.getRemovedTrees('earth');
@@ -376,8 +388,37 @@ class PlanetGame {
       this.earthClouds.setPosition(this.earth.center);
       this.engine.scene.add(this.earthClouds.getGroup());
 
+      // Create atmosphere for Sequoia (with reddish tint)
+      const sequoiaConfig = getBodyConfig('sequoia')!;
+      if (sequoiaConfig.hasAtmosphere && PlayerConfig.ATMOSPHERE_ENABLED) {
+        this.sequoiaAtmosphere = createAtmosphere(
+          this.sequoia.radius,
+          this.engine.sunDirection,
+          sequoiaConfig.visual.atmosphereTint
+        );
+        this.sequoiaAtmosphere.setPosition(this.sequoia.center);
+        this.engine.scene.add(this.sequoiaAtmosphere.getMesh());
+      }
+
+      // Scatter mushroom trees on Sequoia
+      this.mushroomTreeManager = new MushroomTreeManager(this.engine.scene, this.engine.sunDirection);
+      const removedSequoiaTrees = gameStorage.getRemovedTrees('sequoia');
+      const removedSequoiaTiles = new Set(removedSequoiaTrees.map(t => t.tileIndex));
+      this.mushroomTreeManager.scatterTrees(
+        this.sequoia.center,
+        this.sequoia.radius,
+        PlayerConfig.TREE_COUNT * 2,  // More trees since Sequoia is 2x larger
+        (direction) => this.sequoia.getSurfaceHeightInDirection(direction),
+        (direction) => this.sequoia.isUnderwaterInDirection(direction),
+        PlayerConfig.TERRAIN_SEED + 100,  // Different seed for variety
+        (direction) => this.sequoia.getTileIndexInDirection(direction),
+        (direction) => this.sequoia.getTileCenterInDirection(direction),
+        removedSequoiaTiles
+      );
+
       // Set sun direction for water shader reflections
       this.earth.setSunDirection(this.engine.sunDirection);
+      this.sequoia.setSunDirection(this.engine.sunDirection);
       loadingManager.completeStep('environment');
 
       // Register water shader material with engine for depth-based fog
@@ -506,13 +547,21 @@ class PlanetGame {
     this.moon.update(lodPosition, this.engine.camera, deltaTime, this.sharedFrustum);
     profiler.end('Moon Update');
 
-    // Update water shader for animation (only Earth has water)
+    profiler.begin('Sequoia Update');
+    this.sequoia.update(lodPosition, this.engine.camera, deltaTime, this.sharedFrustum);
+    profiler.end('Sequoia Update');
+
+    // Update water shader for animation (Earth and Sequoia have water)
     const isUnderwater = this.player.getIsInWater();
     this.earth.updateWaterShader(this.elapsedTime, isUnderwater);
+    this.sequoia.updateWaterShader(this.elapsedTime, isUnderwater);
 
-    // Update atmosphere (needs camera position for fresnel effect)
+    // Update atmospheres (need camera position for fresnel effect)
     if (this.earthAtmosphere) {
       this.earthAtmosphere.updateCameraPosition(this.engine.camera.position);
+    }
+    if (this.sequoiaAtmosphere) {
+      this.sequoiaAtmosphere.updateCameraPosition(this.engine.camera.position);
     }
 
     // Update clouds (slow rotation)
@@ -538,6 +587,15 @@ class PlanetGame {
       this.treeManager.setAllVisible(false);
     } else {
       this.treeManager.setAllVisible(true);
+    }
+
+    // Same visibility handling for Sequoia's mushroom trees
+    if (this.mushroomTreeManager) {
+      if (this.sequoia.isInOrbitView()) {
+        this.mushroomTreeManager.setAllVisible(false);
+      } else {
+        this.mushroomTreeManager.setAllVisible(true);
+      }
     }
   }
 
@@ -699,6 +757,9 @@ class PlanetGame {
       case 'moon':
         planet = this.moon;
         break;
+      case 'sequoia':
+        planet = this.sequoia;
+        break;
       default:
         console.warn(`Unknown planet: ${planetName}`);
         return;
@@ -708,14 +769,16 @@ class PlanetGame {
     let playerPos: THREE.Vector3;
 
     // Position player on the surface using actual terrain height
-    // For Earth, use configured spawn lat/lon; for Moon, position facing Earth (X-)
-    if (planetName === 'earth') {
+    // Use spawn config if available, otherwise default positioning
+    const bodyConfig = getBodyConfig(planetName);
+    if (bodyConfig?.spawn) {
       playerPos = planet.getSpawnPositionAtLatLon(
-        PlayerConfig.EARTH_SPAWN_LAT,
-        PlayerConfig.EARTH_SPAWN_LON,
+        bodyConfig.spawn.latitude,
+        bodyConfig.spawn.longitude,
         surfaceOffset
       );
     } else {
+      // Fallback: position facing toward origin (X-)
       const spawnDirection = new THREE.Vector3(-1, 0, 0);
       const surfaceHeight = planet.getSurfaceHeightInDirection(spawnDirection);
       playerPos = planet.center.clone();

@@ -113,6 +113,11 @@ function flattenAll(): Plugin {
       if (existsSync(indexPath)) {
         let html = readFileSync(indexPath, 'utf-8');
         html = html.replace(/assets\//g, '');
+        // Rewrite wiki link to external URL for itch.io build
+        html = html.replace(
+          /href="wiki\.html"/g,
+          'href="https://heavyphoton.com/tenebris/wiki.html"'
+        );
         writeFileSync(indexPath, html);
       }
     }
