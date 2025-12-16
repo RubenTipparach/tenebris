@@ -211,7 +211,12 @@ interface LODWorkerConfig {
   waterSurfaceOffset: number;
   lodOffset: number;
   chunkCount: number;
+  sideWallThreshold?: number; // Minimum height difference to generate side walls (default: 0.5)
 }
+
+// Minimum height difference threshold to generate side walls
+// Prevents generating micro-walls between tiles at similar heights
+const DEFAULT_SIDE_WALL_THRESHOLD = 0.5; // Half a block height
 
 // Helper to convert depth to radius (0 = bedrock, maxDepth-1 = sky)
 function depthToRadius(depth: number, config: LODWorkerConfig): number {
@@ -245,10 +250,11 @@ let cachedTileCount = 0;
 
 // Worker message handler
 self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
-  const { type, tileData, blockData, nearbyTiles, tileToChunk, config, torches = [] } = e.data;
+  // NOTE: nearbyTiles is now unused - we build complete LOD for ALL tiles.
+  // Kept in interface for backward compatibility, but ignored.
+  const { type, tileData, blockData, tileToChunk, config, torches = [] } = e.data;
 
   if (type === 'buildLODGeometry') {
-    const nearbyTilesSet = new Set(nearbyTiles);
     const tileToChunkMap = new Map(Object.entries(tileToChunk).map(([k, v]) => [parseInt(k), v]));
 
     // Reconstruct columns from separate tile and block data
@@ -406,7 +412,8 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
     }
 
     const seaLevelDepth = getSeaLevelDepth(config);
-    const waterRadius = depthToRadius(seaLevelDepth, config) - config.lodOffset;
+    // Use waterSurfaceOffset (not lodOffset) so LOD water matches detailed water surface height
+    const waterRadius = depthToRadius(seaLevelDepth, config) - config.waterSurfaceOffset;
 
     // Combined first pass: calculate display radius AND surface block type for each tile
     // This eliminates redundant block array searches
@@ -453,9 +460,9 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
     // via cullLODChunks() in Planet.ts
 
     // Second pass: build top faces for LOD tiles (uses cached data)
+    // NOTE: We build ALL tiles now - no exclusions. Per-tile visibility toggling
+    // handles showing/hiding LOD vs detailed terrain at runtime.
     for (const [tileIndex] of columnsMap) {
-      if (nearbyTilesSet.has(tileIndex)) continue;
-
       const precomputed = cachedPrecomputed.get(tileIndex)!;
       const info = tileInfo.get(tileIndex)!
       const displayRadius = info.radius;
@@ -599,9 +606,10 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
     }
 
     // Third pass: generate side walls (uses cached edge-neighbor mapping)
-    for (const [tileIndex] of columnsMap) {
-      if (nearbyTilesSet.has(tileIndex)) continue;
+    // Use threshold to avoid generating micro-walls between tiles at similar heights
+    const sideWallThreshold = config.sideWallThreshold ?? DEFAULT_SIDE_WALL_THRESHOLD;
 
+    for (const [tileIndex] of columnsMap) {
       const precomputed = cachedPrecomputed.get(tileIndex)!;
       const info = tileInfo.get(tileIndex)!
       const thisRadius = info.radius;
@@ -623,9 +631,10 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
 
         const neighborRadius = neighborInfo.radius;
 
-        // Generate wall only when this tile is higher than neighbor
+        // Generate wall only when this tile is significantly higher than neighbor
         // This applies to both solid and water tiles - walls show height differences
-        if (thisRadius <= neighborRadius) continue;
+        // Use threshold to avoid generating micro-walls between similar height tiles
+        if (thisRadius <= neighborRadius + sideWallThreshold) continue;
 
         const next = (i + 1) % numSides;
         const nv1 = normalizedVerts[i];
@@ -708,70 +717,9 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
       }
     }
 
-    // Fourth pass: water boundary walls at LOD/terrain edge
-    for (const [tileIndex] of columnsMap) {
-      if (nearbyTilesSet.has(tileIndex)) continue;
-
-      const precomputed = cachedPrecomputed.get(tileIndex)!;
-      const info = tileInfo.get(tileIndex);
-      if (!info || !info.isWater) continue;
-      const normalizedVerts = precomputed.normalizedVertices;
-      const edgeNeighborIdx = precomputed.edgeNeighborIdx;
-      const numSides = normalizedVerts.length;
-
-      const chunkIdx = tileToChunkMap.get(tileIndex) ?? 0;
-      const chunk = chunkGeometries[chunkIdx];
-
-      for (let i = 0; i < numSides; i++) {
-        const neighborTileIdx = edgeNeighborIdx[i];
-        if (neighborTileIdx < 0) continue;
-        if (!nearbyTilesSet.has(neighborTileIdx)) continue;
-
-        const neighborInfo = tileInfo.get(neighborTileIdx);
-        if (!neighborInfo) continue;
-
-        // Use terrainRadius (solid ground) not radius (which could be water surface)
-        const bottomRadius = neighborInfo.terrainRadius;
-        const topRadius = waterRadius;
-        if (bottomRadius >= topRadius) continue;
-
-        const next = (i + 1) % numSides;
-        const nv1 = normalizedVerts[i];
-        const nv2 = normalizedVerts[next];
-
-        const innerV1x = nv1.x * bottomRadius, innerV1y = nv1.y * bottomRadius, innerV1z = nv1.z * bottomRadius;
-        const innerV2x = nv2.x * bottomRadius, innerV2y = nv2.y * bottomRadius, innerV2z = nv2.z * bottomRadius;
-        const outerV1x = nv1.x * topRadius, outerV1y = nv1.y * topRadius, outerV1z = nv1.z * topRadius;
-        const outerV2x = nv2.x * topRadius, outerV2y = nv2.y * topRadius, outerV2z = nv2.z * topRadius;
-
-        const edge1x = innerV2x - innerV1x, edge1y = innerV2y - innerV1y, edge1z = innerV2z - innerV1z;
-        const edge2x = outerV1x - innerV1x, edge2y = outerV1y - innerV1y, edge2z = outerV1z - innerV1z;
-        const crossX = edge1y * edge2z - edge1z * edge2y;
-        const crossY = edge1z * edge2x - edge1x * edge2z;
-        const crossZ = edge1x * edge2y - edge1y * edge2x;
-        const crossLen = Math.sqrt(crossX * crossX + crossY * crossY + crossZ * crossZ);
-        const snx = crossLen > 0 ? crossX / crossLen : 0;
-        const sny = crossLen > 0 ? crossY / crossLen : 0;
-        const snz = crossLen > 0 ? crossZ / crossLen : 0;
-
-        const baseIdx = chunk.waterSideVertexOffset;
-
-        chunk.waterSidePositions.push(
-          innerV1x, innerV1y, innerV1z,
-          innerV2x, innerV2y, innerV2z,
-          outerV2x, outerV2y, outerV2z,
-          outerV1x, outerV1y, outerV1z
-        );
-
-        chunk.waterSideNormals.push(snx, sny, snz, snx, sny, snz, snx, sny, snz, snx, sny, snz);
-        chunk.waterSideUvs.push(0, 0, 1, 0, 1, 1, 0, 1);
-
-        chunk.waterSideIndices.push(baseIdx, baseIdx + 1, baseIdx + 2);
-        chunk.waterSideIndices.push(baseIdx, baseIdx + 2, baseIdx + 3);
-
-        chunk.waterSideVertexOffset += 4;
-      }
-    }
+    // NOTE: Fourth pass (water boundary walls at LOD/terrain edge) removed.
+    // Since we now build complete LOD for ALL tiles (no exclusions), there's no
+    // LOD/terrain boundary anymore - just per-tile visibility swapping at runtime.
 
     const result: LODGeometryResultMessage = {
       type: 'lodGeometryResult',

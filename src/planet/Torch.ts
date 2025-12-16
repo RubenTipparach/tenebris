@@ -239,6 +239,9 @@ export class TorchManager {
     // Create torch mesh
     const torchGroup = createTorchGeometry();
 
+    // Mark group as torch for raycasting identification
+    torchGroup.userData.isTorch = true;
+
     // Orient torch to point away from planet center (upward on surface)
     const upDirection = worldPosition.clone().sub(planetCenter).normalize();
     const defaultUp = new THREE.Vector3(0, 1, 0);

@@ -256,6 +256,12 @@ export interface CelestialBodyConfig {
   landable: boolean;
   /** Whether this body has an atmosphere (affects re-entry, sound, etc.) */
   hasAtmosphere: boolean;
+  /** Override for LOD switch altitude (altitude above surface where detailed terrain becomes LOD only).
+   *  If not set, calculated as: PlayerConfig.TERRAIN_LOD_SWITCH_ALTITUDE * (radius / 100) */
+  lodSwitchAltitude?: number;
+  /** Override for detail terrain render distance (number of tiles from player to render at full detail).
+   *  If not set, uses PlayerConfig.TERRAIN_MIN_RENDER_DISTANCE (default 16) */
+  detailRenderDistance?: number;
 }
 
 /**
@@ -427,6 +433,9 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
       },
       landable: true,
       hasAtmosphere: true,
+      // is it really using this? seems like even 400 is not enough lol
+      lodSwitchAltitude: 400,  // Higher LOD switch for larger planet (2x radius = need higher altitude)
+      detailRenderDistance: 20,  // Fewer detail tiles for larger planet (reduces geometry load)
     },
 
     // =========================================================================

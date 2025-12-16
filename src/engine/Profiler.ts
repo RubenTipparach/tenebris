@@ -1,5 +1,6 @@
 // Performance profiler for measuring game loop timing
 import * as THREE from 'three';
+import { showToast } from '../utils/toast';
 
 export interface ProfilerMetrics {
   name: string;
@@ -22,6 +23,8 @@ export class Profiler {
   private enabled: boolean = false;
   private sampleWindow: number = 60; // Rolling average over 60 frames
   private displayElement: HTMLElement | null = null;
+  private statsContainer: HTMLElement | null = null; // Inner container for dynamic stats (doesn't include button)
+  private copyButton: HTMLButtonElement | null = null; // Persistent copy button
   private lastUpdateTime: number = 0;
   private updateInterval: number = 200; // Update display every 200ms
 
@@ -223,6 +226,22 @@ export class Profiler {
       pointer-events: auto;
     `;
 
+    // Create inner stats container (this gets updated, not the whole display)
+    this.statsContainer = document.createElement('div');
+    this.statsContainer.id = 'profiler-stats';
+    this.displayElement.appendChild(this.statsContainer);
+
+    // Create persistent copy button (doesn't get replaced on updates)
+    const buttonContainer = document.createElement('div');
+    buttonContainer.innerHTML = '<span style="color:#888">─────────────────────────────</span>';
+    this.copyButton = document.createElement('button');
+    this.copyButton.id = 'profiler-copy-btn';
+    this.copyButton.textContent = 'Copy to Clipboard';
+    this.copyButton.onclick = () => this.copyToClipboard();
+    buttonContainer.appendChild(document.createElement('br'));
+    buttonContainer.appendChild(this.copyButton);
+    this.displayElement.appendChild(buttonContainer);
+
     document.body.appendChild(this.displayElement);
 
     // Add copy button styles
@@ -253,7 +272,7 @@ export class Profiler {
 
   // Update the display
   public updateDisplay(): void {
-    if (!this.enabled || !this.displayElement) return;
+    if (!this.enabled || !this.statsContainer) return;
 
     const now = performance.now();
     if (now - this.lastUpdateTime < this.updateInterval) return;
@@ -261,7 +280,7 @@ export class Profiler {
 
     const metrics = this.getMetrics();
     if (metrics.length === 0) {
-      this.displayElement.innerHTML = '<b>PROFILER</b><br>No data yet...';
+      this.statsContainer.innerHTML = '<b>PROFILER</b><br>No data yet...';
       return;
     }
 
@@ -332,10 +351,20 @@ export class Profiler {
       let groupCount = 0;
       let lightCount = 0;
 
+      // Helper to check if object is truly visible (all ancestors visible too)
+      const isActuallyVisible = (obj: THREE.Object3D): boolean => {
+        let current: THREE.Object3D | null = obj;
+        while (current) {
+          if (!current.visible) return false;
+          current = current.parent;
+        }
+        return true;
+      };
+
       scene.traverse((obj) => {
         if ((obj as THREE.Mesh).isMesh) {
           meshCount++;
-          if (obj.visible) visibleMeshCount++;
+          if (isActuallyVisible(obj)) visibleMeshCount++;
         }
         if ((obj as THREE.Group).isGroup) groupCount++;
         if ((obj as THREE.Light).isLight) lightCount++;
@@ -371,17 +400,8 @@ export class Profiler {
       }
     }
 
-    // Add copy button
-    html += '<span style="color:#888">─────────────────────────────</span><br>';
-    html += '<button id="profiler-copy-btn">Copy to Clipboard</button>';
-
-    this.displayElement.innerHTML = html;
-
-    // Attach click handler to copy button
-    const copyBtn = document.getElementById('profiler-copy-btn');
-    if (copyBtn) {
-      copyBtn.onclick = () => this.copyToClipboard();
-    }
+    // Update only the stats container, leaving the copy button untouched
+    this.statsContainer.innerHTML = html;
   }
 
   // Generate plain text version of profiler data for clipboard
@@ -427,10 +447,20 @@ export class Profiler {
       let groupCount = 0;
       let lightCount = 0;
 
+      // Helper to check if object is truly visible (all ancestors visible too)
+      const isActuallyVisible = (obj: THREE.Object3D): boolean => {
+        let current: THREE.Object3D | null = obj;
+        while (current) {
+          if (!current.visible) return false;
+          current = current.parent;
+        }
+        return true;
+      };
+
       scene.traverse((obj) => {
         if ((obj as THREE.Mesh).isMesh) {
           meshCount++;
-          if (obj.visible) visibleMeshCount++;
+          if (isActuallyVisible(obj)) visibleMeshCount++;
         }
         if ((obj as THREE.Group).isGroup) groupCount++;
         if ((obj as THREE.Light).isLight) lightCount++;
@@ -465,17 +495,20 @@ export class Profiler {
   private copyToClipboard(): void {
     const text = this.generatePlainText();
     navigator.clipboard.writeText(text).then(() => {
-      const btn = document.getElementById('profiler-copy-btn');
-      if (btn) {
-        btn.textContent = 'Copied!';
-        btn.classList.add('copied');
+      showToast('Profiler data copied to clipboard!', { duration: 2000 });
+      if (this.copyButton) {
+        this.copyButton.textContent = 'Copied!';
+        this.copyButton.classList.add('copied');
         setTimeout(() => {
-          btn.textContent = 'Copy to Clipboard';
-          btn.classList.remove('copied');
+          if (this.copyButton) {
+            this.copyButton.textContent = 'Copy to Clipboard';
+            this.copyButton.classList.remove('copied');
+          }
         }, 2000);
       }
     }).catch(err => {
       console.error('Failed to copy profiler data:', err);
+      showToast('Failed to copy - try again', { duration: 2000 });
     });
   }
 

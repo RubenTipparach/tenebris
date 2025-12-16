@@ -279,6 +279,34 @@ class MeshPool {
 
 ## Phase 6: Planet Sequoia Specific
 
+### 6.0 Planet-Specific LOD Switch Altitude
+**Problem**: `TERRAIN_LOD_SWITCH_ALTITUDE` is a fixed value (50 units) that doesn't scale with planet size. Sequoia is 2x the size of Earth, so LOD kicks in way too soon - player sees low-detail terrain while still relatively close to the surface.
+
+**Files**: `PlayerConfig.ts`, `Planet.ts`
+
+**Solution**:
+- Make LOD switch altitude proportional to planet radius
+- Store per-planet LOD switch altitude in config or calculate dynamically
+
+```typescript
+// In Planet.ts or passed from config
+public getLODSwitchAltitude(): number {
+  // Scale LOD switch altitude with planet radius
+  // Base: 50 units for radius 100 planet
+  const baseAltitude = PlayerConfig.TERRAIN_LOD_SWITCH_ALTITUDE;
+  const baseRadius = 100; // Earth's radius
+  return baseAltitude * (this.radius / baseRadius);
+}
+
+// In update loop, use planet-specific value:
+const lodSwitchAltitude = this.currentPlanet.getLODSwitchAltitude();
+if (altitude > lodSwitchAltitude) {
+  // Switch to LOD-only mode
+}
+```
+
+**Alternative**: Add `lodSwitchAltitude` to `CelestialBodyConfig` for per-planet control.
+
 ### 6.1 Adaptive Render Distance
 **Problem**: Fixed render distance doesn't scale for different planet sizes.
 
@@ -312,15 +340,18 @@ const adaptedRenderDistance = Math.floor(baseRenderDistance * scaleFactor);
 
 ## Implementation Priority
 
-### Immediate (This Week)
-1. **Add copy button to F3 menu** - Easy, helps debugging
-2. **Side wall threshold** - Simple change, big impact
-3. **Progressive buffer uploads** - Reduces lag spikes
+### Immediate (This Week) ✅ DONE
+1. **Add copy button to F3 menu** - ✅ Implemented in Profiler.ts
+2. **Side wall threshold** - ✅ Implemented in lodGeometryWorker.ts (0.5 block threshold)
+3. **Progressive buffer uploads** - ✅ Implemented in Planet.ts (4 meshes per frame)
+4. **Planet-specific LOD switch altitude** - ✅ Implemented in Planet.ts (scales with radius)
+
+### Deferred
+- **Increase LOD chunk count** - Requires icosahedron subdivision for >12 chunks (architectural work)
 
 ### Short Term (Next 2 Weeks)
-4. **Increase LOD chunk count** - Configuration change
-5. **Per-chunk LOD replacement** - Architectural improvement
-6. **Transferable ArrayBuffers** - Worker optimization
+1. **Per-chunk LOD replacement** - Architectural improvement
+2. **Transferable ArrayBuffers** - Worker optimization
 
 ### Medium Term (Next Month)
 7. **Worker pool for parallel building**

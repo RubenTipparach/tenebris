@@ -105,6 +105,16 @@ interface BuildGeometryMessage {
   config: WorkerConfig;
 }
 
+// New chunk-aware build message
+interface BuildChunkGeometryMessage {
+  type: 'buildChunkGeometry';
+  columns: ColumnData[];
+  neighborData: Record<string, NeighborData>;
+  tileToChunk: Record<number, number>;  // Tile index -> chunk index mapping
+  chunksToRebuild: number[];  // Which chunks are being rebuilt
+  config: WorkerConfig;
+}
+
 interface GeometryResultMessage {
   type: 'geometryResult';
   topData: GeometryData;
@@ -131,6 +141,61 @@ interface GeometryResultMessage {
   glassData: GeometryData;
   // Moon terrain data
   moonRockData: GeometryData;
+}
+
+// Per-chunk geometry data for chunk rebuilds
+interface ChunkGeometryData {
+  topData: GeometryData;
+  sideData: GeometryData;
+  grassSideData: GeometryData;
+  stoneData: GeometryData;
+  sandData: GeometryData;
+  woodData: GeometryData;
+  waterData: GeometryData;
+  oreCoalData: GeometryData;
+  oreCopperData: GeometryData;
+  oreIronData: GeometryData;
+  oreGoldData: GeometryData;
+  oreLithiumData: GeometryData;
+  oreAluminumData: GeometryData;
+  oreCobaltData: GeometryData;
+  snowData: GeometryData;
+  snowSideData: GeometryData;
+  dirtSnowData: GeometryData;
+  iceData: GeometryData;
+  glassData: GeometryData;
+  moonRockData: GeometryData;
+}
+
+interface ChunkGeometryResultMessage {
+  type: 'chunkGeometryResult';
+  chunkGeometries: Record<number, ChunkGeometryData>;  // chunk index -> geometry
+  chunksRebuilt: number[];  // Which chunks were rebuilt
+}
+
+function createEmptyChunkGeometryData(): ChunkGeometryData {
+  return {
+    topData: createEmptyGeometryData(),
+    sideData: createEmptyGeometryData(),
+    grassSideData: createEmptyGeometryData(),
+    stoneData: createEmptyGeometryData(),
+    sandData: createEmptyGeometryData(),
+    woodData: createEmptyGeometryData(),
+    waterData: createEmptyGeometryData(),
+    oreCoalData: createEmptyGeometryData(),
+    oreCopperData: createEmptyGeometryData(),
+    oreIronData: createEmptyGeometryData(),
+    oreGoldData: createEmptyGeometryData(),
+    oreLithiumData: createEmptyGeometryData(),
+    oreAluminumData: createEmptyGeometryData(),
+    oreCobaltData: createEmptyGeometryData(),
+    snowData: createEmptyGeometryData(),
+    snowSideData: createEmptyGeometryData(),
+    dirtSnowData: createEmptyGeometryData(),
+    iceData: createEmptyGeometryData(),
+    glassData: createEmptyGeometryData(),
+    moonRockData: createEmptyGeometryData()
+  };
 }
 
 // Check if a block type is transparent (air, water, ice, or glass)
@@ -510,7 +575,7 @@ function buildColumnGeometry(
 }
 
 // Worker message handler
-self.onmessage = (e: MessageEvent<BuildGeometryMessage>) => {
+self.onmessage = (e: MessageEvent<BuildGeometryMessage | BuildChunkGeometryMessage>) => {
   const { type, columns, neighborData, config } = e.data;
 
   if (type === 'buildGeometry') {
@@ -603,6 +668,63 @@ self.onmessage = (e: MessageEvent<BuildGeometryMessage>) => {
     };
 
     // Transfer arrays for better performance
+    self.postMessage(result);
+  } else if (type === 'buildChunkGeometry') {
+    // Per-chunk geometry build - only rebuild specified chunks
+    const chunkData = e.data as BuildChunkGeometryMessage;
+    const tileToChunkMap = new Map(
+      Object.entries(chunkData.tileToChunk).map(([k, v]) => [parseInt(k), v])
+    );
+
+    // Convert neighborData back to Map
+    const neighborDataMap = new Map<number, NeighborData>(
+      Object.entries(neighborData as unknown as Record<string, NeighborData>).map(([k, v]) => [parseInt(k), v])
+    );
+
+    // Create geometry data for each chunk being rebuilt
+    const chunkGeometries: Record<number, ChunkGeometryData> = {};
+    for (const chunkIndex of chunkData.chunksToRebuild) {
+      chunkGeometries[chunkIndex] = createEmptyChunkGeometryData();
+    }
+
+    // Build geometry, routing each column to its chunk's buffers
+    for (const column of columns) {
+      const chunkIndex = tileToChunkMap.get(column.tileIndex);
+      if (chunkIndex === undefined || !chunkGeometries[chunkIndex]) continue;
+
+      const chunk = chunkGeometries[chunkIndex];
+      buildColumnGeometry(
+        column, neighborDataMap, config,
+        chunk.topData, chunk.sideData, chunk.grassSideData,
+        chunk.stoneData, chunk.sandData, chunk.woodData, chunk.waterData,
+        chunk.oreCoalData, chunk.oreCopperData, chunk.oreIronData,
+        chunk.oreGoldData, chunk.oreLithiumData, chunk.oreAluminumData, chunk.oreCobaltData,
+        chunk.snowData, chunk.snowSideData, chunk.dirtSnowData,
+        chunk.iceData, chunk.glassData, chunk.moonRockData
+      );
+
+      // Generate water walls for water blocks
+      for (let depth = 0; depth < column.blocks.length; depth++) {
+        if (column.blocks[depth] === HexBlockType.WATER) {
+          buildWaterWallAtDepth(
+            column.tile.vertices,
+            column.tile.neighbors,
+            column.blocks,
+            neighborDataMap,
+            depth,
+            config,
+            chunk.waterData
+          );
+        }
+      }
+    }
+
+    const result: ChunkGeometryResultMessage = {
+      type: 'chunkGeometryResult',
+      chunkGeometries,
+      chunksRebuilt: chunkData.chunksToRebuild
+    };
+
     self.postMessage(result);
   }
 };

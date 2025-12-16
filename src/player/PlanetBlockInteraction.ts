@@ -1134,52 +1134,88 @@ export class PlanetBlockInteraction {
     const origin = this.player.getRaycastOrigin();
     const direction = this.player.getForwardVector();
 
-    // First check for trees and torches using THREE.js raycaster
+    // Set up raycaster once for all object tests
     this.raycaster.set(origin, direction);
     this.raycaster.far = this.MAX_REACH;
 
-    // Get tree meshes from tree manager (avoids expensive scene traversal)
+    // OPTIMIZATION: Combine all interactable meshes into a single raycast
+    // Each manager's meshes have userData identifying their type
+    const allInteractableMeshes: THREE.Object3D[] = [];
+
+    // Add all mesh types to combined array (managers set userData.interactableType on their meshes)
     const treeMeshes = this.treeManager?.getTreeMeshes() ?? [];
-    // Get torch meshes for picking
     const torchMeshes = this.torchManager.getTorchMeshes();
-    // Get furnace meshes for picking
     const furnaceMeshes = this.furnaceManager.getFurnaceMeshes();
-    // Get storage chest and garbage pile meshes for picking
     const storageChestMeshes = this.storageChestManager.getChestMeshes();
     const garbagePileMeshes = this.garbagePileManager.getPileMeshes();
-    // Get steam engine meshes for picking
     const steamEngineMeshes = this.steamEngineManager.getSteamEngineMeshes();
-    // Get hydro generator meshes for picking
     const hydroGeneratorMeshes = this.hydroGeneratorManager.getHydroGeneratorMeshes();
-    // Get copper pipe meshes for picking
     const copperPipeMeshes = this.copperPipeManager.getPipeMeshes();
-    // Get cable meshes for picking
     const cableMeshes = this.cableNodeManager.getCableMeshes();
-    // Get electric furnace meshes for picking
     const electricFurnaceMeshes = this.electricFurnaceManager.getElectricFurnaceMeshes();
-    // Get electronics workbench meshes for picking
     const electronicsWorkbenchMeshes = this.electronicsWorkbenchManager.getElectronicsWorkbenchMeshes();
-    // Get computer meshes for picking
     const computerMeshes = this.computerManager.getComputerMeshes();
-    // Get 3D printer meshes for picking
     const printer3DMeshes = this.printer3DManager.getPrinter3DMeshes();
-    // Get launch pad meshes for picking
     const launchPadMeshes = this.launchPadManager.getMeshes();
 
-    const treeIntersects = this.raycaster.intersectObjects(treeMeshes, false);
-    const torchIntersects = this.raycaster.intersectObjects(torchMeshes, false);
-    const furnaceIntersects = this.raycaster.intersectObjects(furnaceMeshes, false);
-    const storageChestIntersects = this.raycaster.intersectObjects(storageChestMeshes, false);
-    const garbagePileIntersects = this.raycaster.intersectObjects(garbagePileMeshes, false);
-    const steamEngineIntersects = this.raycaster.intersectObjects(steamEngineMeshes, false);
-    const hydroGeneratorIntersects = this.raycaster.intersectObjects(hydroGeneratorMeshes, false);
-    const copperPipeIntersects = this.raycaster.intersectObjects(copperPipeMeshes, false);
-    const cableIntersects = this.raycaster.intersectObjects(cableMeshes, false);
-    const electricFurnaceIntersects = this.raycaster.intersectObjects(electricFurnaceMeshes, false);
-    const electronicsWorkbenchIntersects = this.raycaster.intersectObjects(electronicsWorkbenchMeshes, false);
-    const computerIntersects = this.raycaster.intersectObjects(computerMeshes, false);
-    const printer3DIntersects = this.raycaster.intersectObjects(printer3DMeshes, false);
-    const launchPadIntersects = this.raycaster.intersectObjects(launchPadMeshes, true);
+    // Combine all meshes - push to avoid creating intermediate arrays
+    for (const m of treeMeshes) allInteractableMeshes.push(m);
+    for (const m of torchMeshes) allInteractableMeshes.push(m);
+    for (const m of furnaceMeshes) allInteractableMeshes.push(m);
+    for (const m of storageChestMeshes) allInteractableMeshes.push(m);
+    for (const m of garbagePileMeshes) allInteractableMeshes.push(m);
+    for (const m of steamEngineMeshes) allInteractableMeshes.push(m);
+    for (const m of hydroGeneratorMeshes) allInteractableMeshes.push(m);
+    for (const m of copperPipeMeshes) allInteractableMeshes.push(m);
+    for (const m of cableMeshes) allInteractableMeshes.push(m);
+    for (const m of electricFurnaceMeshes) allInteractableMeshes.push(m);
+    for (const m of electronicsWorkbenchMeshes) allInteractableMeshes.push(m);
+    for (const m of computerMeshes) allInteractableMeshes.push(m);
+    for (const m of printer3DMeshes) allInteractableMeshes.push(m);
+    for (const m of launchPadMeshes) allInteractableMeshes.push(m);
+
+    // Single raycast for all interactable objects (sorted by distance automatically)
+    const allIntersects = this.raycaster.intersectObjects(allInteractableMeshes, true);
+
+    // Extract per-type intersections from combined result using userData
+    const treeIntersects: THREE.Intersection[] = [];
+    const torchIntersects: THREE.Intersection[] = [];
+    const furnaceIntersects: THREE.Intersection[] = [];
+    const storageChestIntersects: THREE.Intersection[] = [];
+    const garbagePileIntersects: THREE.Intersection[] = [];
+    const steamEngineIntersects: THREE.Intersection[] = [];
+    const hydroGeneratorIntersects: THREE.Intersection[] = [];
+    const copperPipeIntersects: THREE.Intersection[] = [];
+    const cableIntersects: THREE.Intersection[] = [];
+    const electricFurnaceIntersects: THREE.Intersection[] = [];
+    const electronicsWorkbenchIntersects: THREE.Intersection[] = [];
+    const computerIntersects: THREE.Intersection[] = [];
+    const printer3DIntersects: THREE.Intersection[] = [];
+    const launchPadIntersects: THREE.Intersection[] = [];
+
+    for (const hit of allIntersects) {
+      const obj = hit.object;
+      // Check userData on object or parent chain for type identification
+      let checkObj: THREE.Object3D | null = obj;
+      while (checkObj) {
+        const data = checkObj.userData;
+        if (data.isTree) { treeIntersects.push(hit); break; }
+        if (data.isTorch) { torchIntersects.push(hit); break; }
+        if (data.furnaceId !== undefined) { furnaceIntersects.push(hit); break; }
+        if (data.isStorageChest) { storageChestIntersects.push(hit); break; }
+        if (data.isGarbagePile) { garbagePileIntersects.push(hit); break; }
+        if (data.isSteamEngine) { steamEngineIntersects.push(hit); break; }
+        if (data.isHydroGenerator) { hydroGeneratorIntersects.push(hit); break; }
+        if (data.isCopperPipe) { copperPipeIntersects.push(hit); break; }
+        if (data.isCable) { cableIntersects.push(hit); break; }
+        if (data.isElectricFurnace) { electricFurnaceIntersects.push(hit); break; }
+        if (data.isElectronicsWorkbench) { electronicsWorkbenchIntersects.push(hit); break; }
+        if (data.isComputer) { computerIntersects.push(hit); break; }
+        if (data.is3DPrinter) { printer3DIntersects.push(hit); break; }
+        if (data.isLaunchPad) { launchPadIntersects.push(hit); break; }
+        checkObj = checkObj.parent;
+      }
+    }
 
     // Raycast against all planets and find the closest hit
     let closestBlockHit: ReturnType<Planet['raycast']> = null;

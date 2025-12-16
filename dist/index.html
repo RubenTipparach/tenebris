@@ -573,6 +573,60 @@
       margin-top: 10px;
     }
 
+    /* Planet preparation overlay */
+    #planet-prep-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.9);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 999;
+      transition: opacity 0.3s ease;
+    }
+
+    #planet-prep-overlay.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    #planet-prep-title {
+      color: #4CAF50;
+      font-family: var(--game-font);
+      font-size: 32px;
+      margin-bottom: 30px;
+      text-shadow: -2px 2px 0px rgba(0, 0, 0, 0.8);
+    }
+
+    #planet-prep-progress-container {
+      width: 300px;
+      height: 16px;
+      background: rgba(255, 255, 255, 0.1);
+      border: 2px solid #333;
+      border-radius: 8px;
+      overflow: hidden;
+      margin-bottom: 15px;
+    }
+
+    #planet-prep-progress-bar {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #2E7D32, #4CAF50, #66BB6A);
+      transition: width 0.3s ease;
+      box-shadow: 0 0 10px rgba(76, 175, 80, 0.5);
+    }
+
+    #planet-prep-status {
+      color: #888;
+      font-family: var(--game-font);
+      font-size: 16px;
+      text-shadow: -1px 1px 0px rgba(0, 0, 0, 0.8);
+    }
+
     /* Mining progress bar */
     #mining-progress-container {
       position: fixed;
@@ -1103,7 +1157,7 @@
       }
     }
   </style>
-  <script type="module" crossorigin src="/tenebris/assets/index-RBh-QB6m.js"></script>
+  <script type="module" crossorigin src="/tenebris/assets/index-BboujE1M.js"></script>
 </head>
 <body>
   <!-- Loading screen -->
@@ -1114,6 +1168,15 @@
     </div>
     <div id="loading-status">Initializing...</div>
     <div id="loading-percentage">0%</div>
+  </div>
+
+  <!-- Planet preparation overlay (shown during teleport to unready planet) -->
+  <div id="planet-prep-overlay" class="hidden">
+    <div id="planet-prep-title">Preparing Planet</div>
+    <div id="planet-prep-progress-container">
+      <div id="planet-prep-progress-bar"></div>
+    </div>
+    <div id="planet-prep-status">Generating terrain...</div>
   </div>
 
   <div id="game-container"></div>
@@ -1172,7 +1235,7 @@
       <div class="settings-row">
         <label for="toggle-music">Background Music</label>
         <div class="toggle-switch">
-          <input type="checkbox" id="toggle-music" checked>
+          <input type="checkbox" id="toggle-music">
           <span class="toggle-slider"></span>
         </div>
       </div>

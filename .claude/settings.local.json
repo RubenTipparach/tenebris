@@ -25,7 +25,9 @@
       "Bash(for f in textures/minerals/earth/rocks_coal.png textures/minerals/earth/rocks_copper.png textures/minerals/earth/rocks_iron.png textures/minerals/earth/rocks_gold.png textures/minerals/earth/rocks_lythium.png textures/minerals/earth/rocks_aluminum.png textures/minerals/earth/rocks_cobalt.png)",
       "Bash(grep:*)",
       "Bash(npm run build:itch:*)",
-      "Bash(powershell.exe -NoProfile -NonInteractive -Command \"Get-ChildItem -Path src/shaders -Recurse -Filter *.vert | % { (Get-Content $_.FullName -Raw) -replace [char]13 | Set-Content $_.FullName -NoNewline }\")"
+      "Bash(powershell.exe -NoProfile -NonInteractive -Command \"Get-ChildItem -Path src/shaders -Recurse -Filter *.vert | % { (Get-Content $_.FullName -Raw) -replace [char]13 | Set-Content $_.FullName -NoNewline }\")",
+      "Bash(find:*)",
+      "Bash(git -C \"c:\\Users\\santi\\repos\\tenebris\" diff 66d65bb HEAD -- src/planet/Planet.ts)"
     ],
     "deny": [],
     "ask": []

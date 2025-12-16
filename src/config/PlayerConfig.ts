@@ -103,9 +103,10 @@ export const PlayerConfig = {
   ATMOSPHERE_LIGHT_SAMPLES: 4,        // Number of light samples per ray step
 
   // Terrain rendering & streaming
+  LOD_CHUNK_COUNT: 32,                  // Number of LOD chunks (12 icosahedron vertices + 20 face centers)
   TERRAIN_MIN_RENDER_DISTANCE: 16,    // Min tiles to render when on ground
   TERRAIN_MAX_RENDER_DISTANCE: 24,    // Max tiles when at high altitude
-  TERRAIN_LOD_SWITCH_ALTITUDE: 50,    // Altitude above which only LOD mesh is shown
+  TERRAIN_LOD_SWITCH_ALTITUDE: 50,    // Base altitude above which only LOD mesh is shown (can be overridden per-planet in SolarSystemConfig)
   TERRAIN_BUFFER_ZONE: 12,             // Tiles player can move before triggering rebuild
   TERRAIN_TILES_PER_FRAME: 20,        // Max tiles to process per frame during incremental rebuild
   TERRAIN_LOD_OFFSET: 0,              // LOD terrain height offset (0 = match actual terrain, polygonOffset handles z-fighting)

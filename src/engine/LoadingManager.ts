@@ -42,6 +42,22 @@ class LoadingManagerImpl {
     }
   }
 
+  // Update partial progress within a step (0-1 range)
+  // This allows smoother progress bar updates during long operations
+  setStepProgress(name: string, progress: number): void {
+    const step = this.steps.get(name);
+    if (!step || step.completed) return;
+
+    // Calculate partial weight contribution (progress is 0-1)
+    const partialWeight = step.weight * Math.min(1, Math.max(0, progress));
+
+    // Temporarily adjust completed weight for display
+    const baseWeight = this.completedWeight;
+    this.completedWeight = baseWeight + partialWeight;
+    this.notifyProgress();
+    this.completedWeight = baseWeight; // Reset to actual completed weight
+  }
+
   // Update the current status message
   setStatus(status: string): void {
     this.currentStatus = status;

@@ -17,6 +17,7 @@ import { initScreenshotHandler } from './utils/screenshot';
 import { RocketFlightManager } from './rocket';
 import { AudioManager } from './engine/AudioManager';
 import { MusicManager } from './engine/MusicManager';
+import { showToast } from './utils/toast';
 
 /**
  * Calculate the sun direction for a given planet position.
@@ -55,6 +56,9 @@ class PlanetGame {
   // Sun position from solar system config (for per-planet lighting calculation)
   private sunPosition: THREE.Vector3 = new THREE.Vector3();
 
+  // Track if Sequoia trees have been scattered (happens when terrain is ready)
+  private sequoiaTreesScattered: boolean = false;
+
   constructor() {
     const container = document.getElementById('game-container');
     if (!container) throw new Error('Game container not found');
@@ -71,11 +75,16 @@ class PlanetGame {
       // Skip non-landable bodies like the sun for now
       if (!bodyConfig.landable) continue;
 
+      // Spawn planet (Earth) gets detailed terrain immediately
+      // Other planets only get LOD initially, detailed terrain when approached
+      const isSpawnPlanet = bodyConfig.id === SOLAR_SYSTEM.startingBody;
+
       const planet = new Planet(
         this.engine.scene,
         bodyConfig.radius,
         bodyConfig.subdivisions,
         {
+          name: bodyConfig.id,
           texturePath: bodyConfig.visual.texturePath,
           heightVariation: bodyConfig.visual.heightVariation,
           hasWater: bodyConfig.terrain.hasWater,
@@ -84,6 +93,7 @@ class PlanetGame {
           waterColor: bodyConfig.terrain.waterColor,
           waterDeepColor: bodyConfig.terrain.waterDeepColor,
           lodColors: bodyConfig.visual.lodColors,
+          isSpawnPlanet,
         }
       );
       this.planets.set(bodyConfig.id, planet);
@@ -141,45 +151,39 @@ class PlanetGame {
 
   private async init(): Promise<void> {
     try {
-      // Register loading steps
-      loadingManager.registerStep('textures', 1);
-      loadingManager.registerStep('terrain-generation', 2);
+      // Register loading steps - focus on spawn planet, defer others
+      loadingManager.registerStep('audio', 1);
+      loadingManager.registerStep('spawn-planet', 3);  // Earth - main loading focus
       loadingManager.registerStep('initial-terrain', 3);
       loadingManager.registerStep('player-setup', 1);
       loadingManager.registerStep('environment', 1);
-      loadingManager.registerStep('audio', 1);
 
       // Initialize audio system
       loadingManager.setStatus('Loading audio...');
       await AudioManager.init();
-
-      // Note: Music manager will be initialized after gameStorage.load() so saved state is available
-
       loadingManager.completeStep('audio');
 
-      // Initialize all planets (loads textures, generates terrain)
-      loadingManager.setStatus('Loading textures...');
-      for (const planet of this.planets.values()) {
-        await planet.initialize();
-      }
-      loadingManager.completeStep('textures');
-
-      // Position planets according to solar system config and get sun position
-      loadingManager.setStatus('Generating terrain...');
+      // Position planets according to solar system config and get sun position FIRST
+      // (needed before planet initialization for lighting calculations)
       for (const bodyConfig of SOLAR_SYSTEM.bodies) {
-        // Store sun position for lighting calculations
         if (bodyConfig.id === 'sun') {
           this.sunPosition.set(bodyConfig.position.x, bodyConfig.position.y, bodyConfig.position.z);
-          // Update the GameEngine's sun mesh and directional light to actual position and size
           this.engine.setSunPosition(this.sunPosition, bodyConfig.radius);
         }
         const planet = this.planets.get(bodyConfig.id);
         if (planet) {
           planet.center.set(bodyConfig.position.x, bodyConfig.position.y, bodyConfig.position.z);
-          planet.updateBoundingSpheres();
         }
       }
-      loadingManager.completeStep('terrain-generation');
+
+      // Initialize ONLY the spawn planet (Earth) first - this is what matters for loading screen
+      loadingManager.setStatus('Loading Earth textures...');
+      loadingManager.setStepProgress('spawn-planet', 0.1);
+      await this.earth.initialize();
+      loadingManager.setStatus('Earth terrain generated');
+      loadingManager.setStepProgress('spawn-planet', 0.6);
+      this.earth.updateBoundingSpheres();
+      loadingManager.completeStep('spawn-planet');
 
       // Calculate spawn position before building initial terrain
       loadingManager.setStatus('Building terrain around spawn...');
@@ -385,9 +389,8 @@ class PlanetGame {
         }
       });
 
-      // Calculate sun direction for each planet
+      // Calculate sun direction for Earth
       const earthSunDir = calculateSunDirectionForPlanet(this.earth.center, this.sunPosition);
-      const sequoiaSunDir = calculateSunDirectionForPlanet(this.sequoia.center, this.sunPosition);
 
       // Create atmosphere for Earth (if enabled)
       loadingManager.setStatus('Creating environment...');
@@ -402,40 +405,8 @@ class PlanetGame {
       this.earthClouds.setPosition(this.earth.center);
       this.engine.scene.add(this.earthClouds.getGroup());
 
-      // Create atmosphere for Sequoia (with reddish tint)
-      const sequoiaConfig = getBodyConfig('sequoia')!;
-      if (sequoiaConfig.hasAtmosphere && PlayerConfig.ATMOSPHERE_ENABLED) {
-        this.sequoiaAtmosphere = createAtmosphere(
-          this.sequoia.radius,
-          sequoiaSunDir,
-          sequoiaConfig.visual.atmosphereTint
-        );
-        this.sequoiaAtmosphere.setPosition(this.sequoia.center);
-        this.engine.scene.add(this.sequoiaAtmosphere.getMesh());
-      }
-
-      // Scatter mushroom trees on Sequoia
-      this.mushroomTreeManager = new MushroomTreeManager(this.engine.scene, sequoiaSunDir);
-      const removedSequoiaTrees = gameStorage.getRemovedTrees('sequoia');
-      const removedSequoiaTiles = new Set(removedSequoiaTrees.map(t => t.tileIndex));
-      this.mushroomTreeManager.scatterTrees(
-        this.sequoia.center,
-        this.sequoia.radius,
-        PlayerConfig.TREE_COUNT * 2,  // More trees since Sequoia is 2x larger
-        (direction) => this.sequoia.getSurfaceHeightInDirection(direction),
-        (direction) => this.sequoia.isUnderwaterInDirection(direction),
-        PlayerConfig.TERRAIN_SEED + 100,  // Different seed for variety
-        (direction) => this.sequoia.getTileIndexInDirection(direction),
-        (direction) => this.sequoia.getTileCenterInDirection(direction),
-        removedSequoiaTiles
-      );
-
-      // Set sun direction for each planet based on sun position
-      // Each planet calculates its own sun direction from its center to the sun
-      for (const planet of this.planets.values()) {
-        const sunDir = calculateSunDirectionForPlanet(planet.center, this.sunPosition);
-        planet.setSunDirection(sunDir);
-      }
+      // Set sun direction for Earth (other planets done in deferred init after they're loaded)
+      this.earth.setSunDirection(earthSunDir);
       loadingManager.completeStep('environment');
 
       // Register water shader material with engine for depth-based fog
@@ -455,6 +426,9 @@ class PlanetGame {
 
       // Setup settings menu
       this.setupSettingsMenu();
+
+      // Setup debug key handlers
+      this.setupDebugKeys();
 
       // Configure profiler spike detection
       profiler.setFrameSpikeThreshold(PlayerConfig.FRAME_SPIKE_THRESHOLD_MS);
@@ -478,10 +452,86 @@ class PlanetGame {
       loadingManager.setStatus('Ready!');
       loadingManager.hideLoadingScreen();
 
-      console.log('Planet game started with Earth and Moon!');
+      console.log('Planet game started with Earth!');
+
+      // Load other planets in background (Moon, Sequoia) after game is playable
+      // This happens async while player is already exploring Earth
+      this.initializeDeferredPlanets();
+
     } catch (error) {
       console.error('Failed to initialize game:', error);
     }
+  }
+
+  // Helper to yield to main thread between heavy operations
+  private yieldToMainThread(): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, 0));
+  }
+
+  // Initialize planets other than the spawn planet in the background
+  // This runs after the loading screen is hidden so player can start playing immediately
+  // Uses setTimeout to yield to main thread between heavy operations
+  private async initializeDeferredPlanets(): Promise<void> {
+    console.log('[Deferred] Starting background planet initialization...');
+    const startTime = performance.now();
+
+    // Initialize Moon (smaller, faster)
+    if (this.moon) {
+      console.log('[Deferred] Initializing Moon...');
+      await this.yieldToMainThread();
+      await this.moon.initialize();
+      await this.yieldToMainThread();
+      this.moon.updateBoundingSpheres();
+      const moonSunDir = calculateSunDirectionForPlanet(this.moon.center, this.sunPosition);
+      this.moon.setSunDirection(moonSunDir);
+      console.log('[Deferred] Moon initialized');
+    }
+
+    // Yield before starting Sequoia (let a few frames render)
+    await this.yieldToMainThread();
+
+    // Initialize Sequoia (larger planet, takes longer)
+    if (this.sequoia) {
+      console.log('[Deferred] Initializing Sequoia...');
+      await this.yieldToMainThread();
+      await this.sequoia.initialize();
+      await this.yieldToMainThread();
+      this.sequoia.updateBoundingSpheres();
+
+      // Set up Sequoia-specific things that depend on initialization
+      const sequoiaSunDir = calculateSunDirectionForPlanet(this.sequoia.center, this.sunPosition);
+      this.sequoia.setSunDirection(sequoiaSunDir);
+
+      await this.yieldToMainThread();
+
+      // Create atmosphere for Sequoia (with reddish tint)
+      const sequoiaConfig = getBodyConfig('sequoia')!;
+      if (sequoiaConfig.hasAtmosphere && PlayerConfig.ATMOSPHERE_ENABLED) {
+        this.sequoiaAtmosphere = createAtmosphere(
+          this.sequoia.radius,
+          sequoiaSunDir,
+          sequoiaConfig.visual.atmosphereTint
+        );
+        this.sequoiaAtmosphere.setPosition(this.sequoia.center);
+        this.engine.scene.add(this.sequoiaAtmosphere.getMesh());
+      }
+
+      // NOTE: Mushroom trees require terrain data which is generated on-demand when approaching
+      // Trees will be scattered in the update loop after terrain is ready
+      // (see scatterSequoiaTreesOnce() called when detailed terrain becomes available)
+
+      // Register LOD transition callback for atmosphere entry feedback
+      this.sequoia.setLODTransitionCallback((enteringDetailedTerrain) => {
+        if (enteringDetailedTerrain) {
+          showToast('Entering Sequoia atmosphere...', { duration: 3000 });
+        }
+      });
+
+      console.log('[Deferred] Sequoia initialized with atmosphere (trees on approach)');
+    }
+
+    const elapsed = performance.now() - startTime;
+    console.log(`[Deferred] All planets initialized in ${elapsed.toFixed(0)}ms`);
   }
 
   private update(deltaTime: number): void {
@@ -560,18 +610,30 @@ class PlanetGame {
     this.earth.update(lodPosition, this.engine.camera, deltaTime, this.sharedFrustum);
     profiler.end('Earth Update');
 
-    profiler.begin('Moon Update');
-    this.moon.update(lodPosition, this.engine.camera, deltaTime, this.sharedFrustum);
-    profiler.end('Moon Update');
+    // Only update Moon and Sequoia if they've been initialized (deferred loading)
+    if (this.moon.isInitialTerrainReady()) {
+      profiler.begin('Moon Update');
+      this.moon.update(lodPosition, this.engine.camera, deltaTime, this.sharedFrustum);
+      profiler.end('Moon Update');
+    }
 
-    profiler.begin('Sequoia Update');
-    this.sequoia.update(lodPosition, this.engine.camera, deltaTime, this.sharedFrustum);
-    profiler.end('Sequoia Update');
+    if (this.sequoia.isInitialTerrainReady()) {
+      profiler.begin('Sequoia Update');
+      this.sequoia.update(lodPosition, this.engine.camera, deltaTime, this.sharedFrustum);
+      profiler.end('Sequoia Update');
+
+      // Scatter Sequoia trees once terrain is ready (deferred from initialization)
+      if (!this.sequoiaTreesScattered && this.sequoia.isDetailedTerrainEnabled()) {
+        this.scatterSequoiaTreesOnce();
+      }
+    }
 
     // Update water shader for animation (Earth and Sequoia have water)
     const isUnderwater = this.player.getIsInWater();
     this.earth.updateWaterShader(this.elapsedTime, isUnderwater);
-    this.sequoia.updateWaterShader(this.elapsedTime, isUnderwater);
+    if (this.sequoia.isInitialTerrainReady()) {
+      this.sequoia.updateWaterShader(this.elapsedTime, isUnderwater);
+    }
 
     // Update atmospheres (need camera position for fresnel effect)
     if (this.earthAtmosphere) {
@@ -595,23 +657,22 @@ class PlanetGame {
       }
     }
 
-    // Update tree visibility:
-    // - In orbit view (distant LOD): hide all trees (too far to see detail)
-    // - Otherwise: show all trees (both detailed terrain and LOD terrain are visible)
-    // Note: When on ground, both detailed terrain (near player) and LOD terrain (rest of planet)
-    // are rendered together, so all trees should be visible for consistent appearance.
+    // Update tree visibility based on visible tiles/chunks
+    // Trees are culled to match LOD chunk visibility - only show trees on visible terrain
     if (this.earth.isInOrbitView()) {
       this.treeManager.setAllVisible(false);
     } else {
-      this.treeManager.setAllVisible(true);
+      const visibleTiles = this.earth.getVisibleTilesForTrees();
+      this.treeManager.updateVisibility(visibleTiles);
     }
 
-    // Same visibility handling for Sequoia's mushroom trees
-    if (this.mushroomTreeManager) {
+    // Same visibility handling for Sequoia's mushroom trees (only if Sequoia is initialized)
+    if (this.mushroomTreeManager && this.sequoia.isInitialTerrainReady()) {
       if (this.sequoia.isInOrbitView()) {
         this.mushroomTreeManager.setAllVisible(false);
       } else {
-        this.mushroomTreeManager.setAllVisible(true);
+        const visibleTiles = this.sequoia.getVisibleTilesForTrees();
+        this.mushroomTreeManager.updateVisibility(visibleTiles);
       }
     }
   }
@@ -643,6 +704,58 @@ class PlanetGame {
     }
 
     return false;
+  }
+
+  // Scatter mushroom trees on Sequoia - called once when terrain becomes ready
+  private scatterSequoiaTreesOnce(): void {
+    if (this.sequoiaTreesScattered) return;
+    this.sequoiaTreesScattered = true;
+
+    console.log('[Deferred] Scattering Sequoia mushroom trees...');
+    const sequoiaSunDir = calculateSunDirectionForPlanet(this.sequoia.center, this.sunPosition);
+
+    this.mushroomTreeManager = new MushroomTreeManager(this.engine.scene, sequoiaSunDir);
+    const removedSequoiaTrees = gameStorage.getRemovedTrees('sequoia');
+    const removedSequoiaTiles = new Set(removedSequoiaTrees.map(t => t.tileIndex));
+    this.mushroomTreeManager.scatterTrees(
+      this.sequoia.center,
+      this.sequoia.radius,
+      PlayerConfig.TREE_COUNT * 2,  // More trees since Sequoia is 2x larger
+      (direction) => this.sequoia.getSurfaceHeightInDirection(direction),
+      (direction) => this.sequoia.isUnderwaterInDirection(direction),
+      PlayerConfig.TERRAIN_SEED + 100,  // Different seed for variety
+      (direction) => this.sequoia.getTileIndexInDirection(direction),
+      (direction) => this.sequoia.getTileCenterInDirection(direction),
+      removedSequoiaTiles
+    );
+    console.log('[Deferred] Sequoia mushroom trees scattered');
+  }
+
+  // Setup debug keyboard shortcuts
+  private setupDebugKeys(): void {
+    document.addEventListener('keydown', (e) => {
+      // F4 to toggle detailed terrain visibility on the closest planet
+      // This hides the detailed terrain so you can see the LOD underneath
+      if (e.code === 'F4') {
+        e.preventDefault();
+        // Find the closest planet to the player
+        const playerPos = this.player.position;
+        let closestPlanet: Planet | null = null;
+        let closestDist = Infinity;
+
+        for (const planet of this.planets.values()) {
+          const dist = playerPos.distanceTo(planet.center);
+          if (dist < closestDist) {
+            closestDist = dist;
+            closestPlanet = planet;
+          }
+        }
+
+        if (closestPlanet) {
+          closestPlanet.toggleDetailedTerrainVisibility();
+        }
+      }
+    });
   }
 
   private setupSettingsMenu(): void {
@@ -764,7 +877,50 @@ class PlanetGame {
     }
   }
 
-  private teleportToPlanet(planetName: string): void {
+  /**
+   * Prepare a planet for teleportation by ensuring terrain is generated and ready.
+   * Shows a loading overlay with progress bar during preparation.
+   */
+  private async preparePlanetForTeleport(planet: Planet, planetName: string): Promise<void> {
+    const overlay = document.getElementById('planet-prep-overlay');
+    const titleEl = document.getElementById('planet-prep-title');
+    const statusEl = document.getElementById('planet-prep-status');
+    const progressBar = document.getElementById('planet-prep-progress-bar');
+
+    // Show overlay
+    if (overlay) overlay.classList.remove('hidden');
+    if (titleEl) titleEl.textContent = `Preparing ${planetName.charAt(0).toUpperCase() + planetName.slice(1)}`;
+    if (progressBar) progressBar.style.width = '0%';
+
+    // Step 1: Generate terrain data if not done (0-50%)
+    if (!planet.isDetailedTerrainEnabled()) {
+      if (statusEl) statusEl.textContent = 'Generating terrain...';
+      if (progressBar) progressBar.style.width = '25%';
+      await planet.enableDetailedTerrain();
+    }
+    if (progressBar) progressBar.style.width = '50%';
+
+    // Step 2: Build initial terrain mesh around spawn (50-100%)
+    if (!planet.isInitialTerrainReady()) {
+      if (statusEl) statusEl.textContent = 'Building terrain mesh...';
+      const bodyConfig = getBodyConfig(planetName);
+      const spawnPos = planet.getSpawnPositionAtLatLon(
+        bodyConfig?.spawn?.latitude ?? 0,
+        bodyConfig?.spawn?.longitude ?? 0,
+        1
+      );
+      await planet.buildInitialTerrain(spawnPos);
+    }
+    if (progressBar) progressBar.style.width = '100%';
+
+    // Brief delay to show completion before hiding
+    await new Promise(resolve => setTimeout(resolve, 200));
+
+    // Hide overlay
+    if (overlay) overlay.classList.add('hidden');
+  }
+
+  private async teleportToPlanet(planetName: string): Promise<void> {
     let planet: Planet;
 
     switch (planetName) {
@@ -780,6 +936,11 @@ class PlanetGame {
       default:
         console.warn(`Unknown planet: ${planetName}`);
         return;
+    }
+
+    // Ensure planet is ready before teleporting
+    if (!planet.isInitialTerrainReady()) {
+      await this.preparePlanetForTeleport(planet, planetName);
     }
 
     const surfaceOffset = 1; // 1m above surface
