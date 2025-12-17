@@ -94,6 +94,10 @@ class PlanetGame {
           waterDeepColor: bodyConfig.terrain.waterDeepColor,
           lodColors: bodyConfig.visual.lodColors,
           isSpawnPlanet,
+          intermediateLODAltitude: bodyConfig.intermediateLODAltitude,
+          highLODAltitude: bodyConfig.highLODAltitude,
+          distantLODAltitude: bodyConfig.distantLODAltitude,
+          detailRenderDistance: bodyConfig.detailRenderDistance,
         }
       );
       this.planets.set(bodyConfig.id, planet);

@@ -106,7 +106,8 @@ export const PlayerConfig = {
   LOD_CHUNK_COUNT: 32,                  // Number of LOD chunks (12 icosahedron vertices + 20 face centers)
   TERRAIN_MIN_RENDER_DISTANCE: 16,    // Min tiles to render when on ground
   TERRAIN_MAX_RENDER_DISTANCE: 24,    // Max tiles when at high altitude
-  TERRAIN_LOD_SWITCH_ALTITUDE: 50,    // Base altitude above which only LOD mesh is shown (can be overridden per-planet in SolarSystemConfig)
+  TERRAIN_INTERMEDIATE_BLOCK_STEP: 4, // Sample every Nth block for height in intermediate LOD
+  TERRAIN_INTERMEDIATE_WALL_THRESHOLD: 2, // Min height diff for walls in intermediate LOD
   TERRAIN_BUFFER_ZONE: 12,             // Tiles player can move before triggering rebuild
   TERRAIN_TILES_PER_FRAME: 20,        // Max tiles to process per frame during incremental rebuild
   TERRAIN_LOD_OFFSET: 0,              // LOD terrain height offset (0 = match actual terrain, polygonOffset handles z-fighting)
@@ -153,10 +154,7 @@ export const PlayerConfig = {
   CLOUD_COUNT: 100,                  // Number of cloud patches to generate
   CLOUD_ROTATION_SPEED: 0.01,        // Cloud rotation speed (radians/sec, 0.01 = full rotation in ~10 min)
 
-  // Distant planet LOD
-  PLANET_LOD_DISTANCE_1: 200,         // Distance for first LOD reduction
-  PLANET_LOD_DISTANCE_2: 500,         // Distance for second LOD reduction
-  PLANET_LOD_DISTANCE_3: 1000,        // Distance for third LOD reduction (lowest detail)
+  // Planet rendering
   PLANET_DARK_SIDE_AMBIENT: 0.06,     // Ambient light on dark side of planet (0 = pitch black, 1 = same as day)
   PLANET_TORCH_LIGHT_RADIUS: 4.0,     // Size of torch glow on distant planet LOD (world units)
 

@@ -17,7 +17,9 @@ export interface PlanetConfig {
   waterColor?: string;      // Water color override (hex string)
   waterDeepColor?: string;  // Deep water color override (hex string)
   lodColors?: Partial<LodColorsConfig>;  // Colors for LOD tiles when viewed from space
-  lodSwitchAltitude?: number;  // Override for LOD switch altitude (default: scales with radius)
+  intermediateLODAltitude?: number;  // Altitude where INTERMEDIATE LOD activates
+  highLODAltitude?: number;  // Altitude where HIGH (chunked) LOD activates
+  distantLODAltitude?: number;  // Altitude where DISTANT LOD activates
   detailRenderDistance?: number;  // Override for detail terrain render distance (tiles from player)
   isSpawnPlanet?: boolean;  // If true, generate detailed terrain immediately. If false, only LOD until approached.
 }
@@ -169,6 +171,12 @@ export class Planet {
   // LOD transition tracking - detects when player crosses lodSwitchAltitude
   private wasAboveLODThreshold: boolean = true;
   private onLODTransitionCallback: ((enteringDetailedTerrain: boolean) => void) | null = null;
+  private lastLODLevel: number | undefined = undefined;  // For debug logging only
+
+  // Intermediate LOD system - simplified terrain between chunked LOD and detailed terrain
+  private intermediateLODMesh: THREE.Group | null = null;
+  private isIntermediateLODBuilt: boolean = false;
+  private isIntermediateLODWorkerActive: boolean = false;
 
   // Pre-serialized tile data for LOD worker (static, only needs to be built once)
   private serializedTileData: Record<number, {
@@ -204,6 +212,10 @@ export class Planet {
     this.radius = radius;
     this.center = new THREE.Vector3(0, 0, 0);
     this.config = config;
+
+    // Debug: log LOD config values
+    console.log(`[Planet ${config.name}] Config LOD values: intermediate=${config.intermediateLODAltitude}, high=${config.highLODAltitude}, distant=${config.distantLODAltitude}`);
+
     this.SEA_LEVEL = config.seaLevel ?? PlayerConfig.TERRAIN_SEA_LEVEL;
     this.MAX_DEPTH = this.SEA_LEVEL + PlayerConfig.TERRAIN_MAX_DEPTH;
     this.MAX_HEIGHT = PlayerConfig.TERRAIN_MAX_HEIGHT;
@@ -223,17 +235,31 @@ export class Planet {
     return this.MAX_DEPTH - 1 - this.SEA_LEVEL;
   }
 
-  // Get planet-specific LOD switch altitude
-  // Can be overridden per-planet in config, otherwise scales with radius
-  public getLODSwitchAltitude(): number {
-    // Use config override if available
-    if (this.config.lodSwitchAltitude !== undefined) {
-      return this.config.lodSwitchAltitude;
+  // Get altitude where HIGH (chunked) LOD activates
+  public getHighLODAltitude(): number {
+    if (this.config.highLODAltitude !== undefined) {
+      return this.config.highLODAltitude;
     }
-    // Default: scale with planet radius (base 50 for radius 100)
-    const baseAltitude = PlayerConfig.TERRAIN_LOD_SWITCH_ALTITUDE;
-    const baseRadius = 100; // Earth's radius as baseline
-    return baseAltitude * (this.radius / baseRadius);
+    // Default: 50% of planet radius (e.g., Earth radius 100 -> altitude 50)
+    return this.radius * 0.5;
+  }
+
+  // Get altitude where INTERMEDIATE LOD activates
+  public getIntermediateLODAltitude(): number {
+    if (this.config.intermediateLODAltitude !== undefined) {
+      return this.config.intermediateLODAltitude;
+    }
+    // Default: 25% of planet radius (e.g., Earth radius 100 -> altitude 25)
+    return this.radius * 0.25;
+  }
+
+  // Get altitude where DISTANT LOD activates
+  public getDistantLODAltitude(): number {
+    if (this.config.distantLODAltitude !== undefined) {
+      return this.config.distantLODAltitude;
+    }
+    // Default: 2x the planet radius (so for Earth radius 100, distant LOD at altitude 200)
+    return this.radius * 2;
   }
 
   // Terrain generation worker
@@ -267,8 +293,9 @@ export class Planet {
       // Full terrain will be generated on-demand when player approaches
       this.detailedTerrainEnabled = false;
       this.initializeLODChunks();
-      // Skip createLODMesh() - no terrain data to build from
-      // createDistantLODMeshes() uses getHeightVariation() which is just noise
+      // Create fallback HIGH LOD mesh using noise (no terrain data yet)
+      // This ensures smooth transition when descending from distant LOD
+      this.createLODMesh();
       // Mark as "ready" for distant viewing (no detailed terrain yet)
       this.initialTerrainBuilt = true;
       this.initialLODBuilt = true;
@@ -737,6 +764,11 @@ export class Planet {
   private cullLODChunks(): void {
     if (!this.lodMesh || this.lodChunks.length === 0) return;
 
+    // Find the chunk containing the camera position - always hide it to prevent LOD from
+    // showing at ground level (even before detailed terrain is generated at that location)
+    const cameraTile = this.getTileAtPointFast(this.cachedCameraPosition);
+    const cameraChunkIndex = cameraTile ? this.getTileChunkIndex(cameraTile.index) : -1;
+
     // Direction from planet center to camera (the direction chunks should face to be visible)
     const planetToCamera = new THREE.Vector3()
       .subVectors(this.cachedCameraPosition, this.center)
@@ -794,7 +826,16 @@ export class Planet {
         continue;
       }
 
-      // Third check: hide LOD chunk if ANY of its tiles have detailed geometry
+      // Third check: always hide the chunk the camera is in
+      // This prevents LOD from showing at ground level even before detailed terrain is generated
+      if (i === cameraChunkIndex) {
+        if (i < this.lodChunks.length) {
+          this.lodChunks[i].visible = false;
+        }
+        continue;
+      }
+
+      // Fourth check: hide LOD chunk if ANY of its tiles have detailed geometry
       // This prevents z-fighting/overdraw where both LOD and detailed terrain exist
       const detailedCount = this.chunkDetailedTileCount.get(i) ?? 0;
       if (detailedCount > 0) {
@@ -1212,6 +1253,29 @@ export class Planet {
       moonRockSidePositions: number[]; moonRockSideNormals: number[]; moonRockSideUvs: number[]; moonRockSideSkyLight: number[]; moonRockSideTorchLight: number[]; moonRockSideIndices: number[];
     }>;
   }): void {
+    // Check if worker result has any actual geometry
+    let hasAnyGeometry = false;
+    for (const chunk of data.chunkGeometries) {
+      if (chunk.grassPositions.length > 0 || chunk.dirtPositions.length > 0 ||
+          chunk.stonePositions.length > 0 || chunk.sandPositions.length > 0 ||
+          chunk.snowPositions.length > 0 || chunk.icePositions.length > 0 ||
+          chunk.moonRockPositions.length > 0 || chunk.waterPositions.length > 0) {
+        hasAnyGeometry = true;
+        break;
+      }
+    }
+
+    // If worker returned no geometry, keep the fallback mesh (don't replace with empty chunks)
+    if (!hasAnyGeometry) {
+      console.log(`[${this.config.name}] LOD worker returned no geometry, keeping fallback HIGH LOD`);
+      this.isLODWorkerBuildActive = false;
+      // If we don't have a fallback mesh yet, create one
+      if (!this.isHighLODReady()) {
+        this.createFallbackHighLODMesh();
+      }
+      return;
+    }
+
     // Remove old LOD mesh
     if (this.lodMesh) {
       this.lodMesh.traverse((child) => {
@@ -1808,9 +1872,9 @@ export class Planet {
   // These sample actual terrain heights to match the generated planet
   private createDistantLODMeshes(): void {
     // Create 3 levels of distant LOD with decreasing subdivision
-    // Level 0: subdivision - 2 (used at PLANET_LOD_DISTANCE_1)
-    // Level 1: subdivision - 3 (used at PLANET_LOD_DISTANCE_2)
-    // Level 2: subdivision - 4 (used at PLANET_LOD_DISTANCE_3, lowest detail)
+    // Level 0: subdivision - 2 (used at distantLODAltitude)
+    // Level 1: subdivision - 3 (used at distantLODAltitude * 2.5)
+    // Level 2: subdivision - 4 (used at distantLODAltitude * 5, lowest detail)
     const baseSub = this.polyhedron.subdivisions;
     const lodLevels = [
       Math.max(1, baseSub - 2),
@@ -2078,7 +2142,265 @@ export class Planet {
     }
   }
 
+  // Create a fallback HIGH LOD mesh when terrain data isn't available yet
+  // Uses same approach as distant LOD but with higher subdivision (2x distant LOD level 0)
+  // This ensures smooth visual transition when descending from space
+  private createFallbackHighLODMesh(): void {
+    // Use subdivision that's 2x the highest detail distant LOD (which is baseSub - 2)
+    // So fallback high LOD = baseSub - 1 (one level below full detail)
+    const baseSub = this.polyhedron.subdivisions;
+    const fallbackSub = Math.max(2, baseSub - 1);
+    const fallbackPolyhedron = new GoldbergPolyhedron(this.radius, fallbackSub);
+
+    // Create geometry similar to distant LOD
+    const geometry = new THREE.BufferGeometry();
+    const positions: number[] = [];
+    const normals: number[] = [];
+    const uvs: number[] = [];
+    const colors: number[] = [];
+    const torchLightArray: number[] = [];
+    const indices: number[] = [];
+    let vertexOffset = 0;
+
+    // Calculate tile radii and colors
+    const tileDisplayRadii = new Map<number, { radius: number; isWater: boolean; color: THREE.Color }>();
+    const SEA_LEVEL_DEPTH = this.getSeaLevelDepth();
+    const waterRadius = this.depthToRadius(SEA_LEVEL_DEPTH);
+    const isSingleTexturePlanet = !!this.config.texturePath;
+
+    // Get LOD colors from config, falling back to defaults
+    const lodColors: LodColorsConfig = {
+      ...DEFAULT_LOD_COLORS,
+      ...this.config.lodColors,
+    };
+
+    for (const tile of fallbackPolyhedron.tiles) {
+      const surfaceDepth = this.getHeightVariation(tile.center);
+      const terrainRadius = this.depthToRadius(surfaceDepth);
+      const isWater = !isSingleTexturePlanet && surfaceDepth < SEA_LEVEL_DEPTH;
+      const displayRadius = isWater ? waterRadius : terrainRadius;
+
+      // Polar biome detection
+      const normalizedY = tile.center.clone().normalize().y;
+      const polarThreshold = PlayerConfig.POLAR_THRESHOLD;
+      const isPolar = Math.abs(normalizedY) > polarThreshold;
+
+      let color: THREE.Color;
+      if (isSingleTexturePlanet) {
+        const heightFactor = Math.max(0.4, Math.min(1.0, 0.6 + surfaceDepth * 0.02));
+        color = new THREE.Color(heightFactor * 0.7, heightFactor * 0.7, heightFactor * 0.7);
+      } else if (isWater && isPolar) {
+        color = new THREE.Color(lodColors.ice);
+      } else if (isWater) {
+        color = new THREE.Color(lodColors.water);
+      } else if (surfaceDepth <= 0) {
+        color = new THREE.Color(lodColors.rock);
+      } else if (isPolar) {
+        color = new THREE.Color(lodColors.snow);
+      } else {
+        color = new THREE.Color(lodColors.land);
+      }
+
+      tileDisplayRadii.set(tile.index, { radius: displayRadius, isWater, color });
+    }
+
+    // Generate geometry for each tile
+    for (const tile of fallbackPolyhedron.tiles) {
+      const tileData = tileDisplayRadii.get(tile.index)!;
+      const displayRadius = tileData.radius;
+      const color = tileData.color;
+
+      const center = tile.center.clone().normalize().multiplyScalar(displayRadius);
+      const vertices = tile.vertices.map(v => v.clone().normalize().multiplyScalar(displayRadius));
+      const normal = center.clone().normalize();
+
+      // Compute UVs
+      const up = Math.abs(normal.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
+      const tangent = new THREE.Vector3().crossVectors(up, normal).normalize();
+      const bitangent = new THREE.Vector3().crossVectors(normal, tangent);
+
+      const localCoords: { u: number; v: number }[] = [];
+      let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
+
+      for (const vert of tile.vertices) {
+        const toVert = vert.clone().sub(tile.center);
+        const u = toVert.dot(tangent);
+        const v = toVert.dot(bitangent);
+        localCoords.push({ u, v });
+        minU = Math.min(minU, u); maxU = Math.max(maxU, u);
+        minV = Math.min(minV, v); maxV = Math.max(maxV, v);
+      }
+
+      const rangeU = maxU - minU;
+      const rangeV = maxV - minV;
+      const tileUVs = localCoords.map(coord => ({
+        u: (coord.u - minU) / rangeU,
+        v: (coord.v - minV) / rangeV
+      }));
+      const centerUV = { u: (0 - minU) / rangeU, v: (0 - minV) / rangeV };
+
+      // Fan triangulation from center
+      const centerIdx = vertexOffset;
+      positions.push(center.x, center.y, center.z);
+      normals.push(normal.x, normal.y, normal.z);
+      uvs.push(centerUV.u, centerUV.v);
+      colors.push(color.r, color.g, color.b);
+      torchLightArray.push(0);
+      vertexOffset++;
+
+      for (let i = 0; i < vertices.length; i++) {
+        positions.push(vertices[i].x, vertices[i].y, vertices[i].z);
+        normals.push(normal.x, normal.y, normal.z);
+        uvs.push(tileUVs[i].u, tileUVs[i].v);
+        colors.push(color.r, color.g, color.b);
+        torchLightArray.push(0);
+        vertexOffset++;
+
+        indices.push(centerIdx, centerIdx + 1 + i, centerIdx + 1 + ((i + 1) % vertices.length));
+      }
+
+      // Generate side walls for edges where this tile is higher than neighbor
+      // (Only for non-water tiles)
+      if (!tileData.isWater) {
+        const sideColor = isSingleTexturePlanet
+          ? new THREE.Color(0.5, 0.5, 0.5)
+          : new THREE.Color(0x8b7355);
+        const numSides = tile.vertices.length;
+
+        for (let i = 0; i < numSides; i++) {
+          const next = (i + 1) % numSides;
+          const v1 = tile.vertices[i];
+          const v2 = tile.vertices[next];
+
+          // Find neighbor across this edge by checking which neighbor is closest to edge midpoint
+          const edgeMidDir = v1.clone().add(v2).normalize();
+          let neighborData: { radius: number; isWater: boolean; color: THREE.Color } | undefined;
+          let closestDist = Infinity;
+
+          for (const nIdx of tile.neighbors) {
+            const nData = tileDisplayRadii.get(nIdx);
+            if (!nData) continue;
+            const nTile = fallbackPolyhedron.tiles[nIdx];
+            if (!nTile) continue;
+            const dist = nTile.center.clone().normalize().distanceToSquared(edgeMidDir);
+            if (dist < closestDist) {
+              closestDist = dist;
+              neighborData = nData;
+            }
+          }
+
+          // Only create wall if neighbor is lower than this tile
+          if (neighborData && neighborData.radius < displayRadius) {
+            // Vertex order matches HexBlock.createSeparateGeometries:
+            // innerV1, innerV2, outerV2, outerV1 with indices (0,1,2), (0,2,3)
+            const innerV1 = v1.clone().normalize().multiplyScalar(neighborData.radius);
+            const innerV2 = v2.clone().normalize().multiplyScalar(neighborData.radius);
+            const outerV2 = v2.clone().normalize().multiplyScalar(displayRadius);
+            const outerV1 = v1.clone().normalize().multiplyScalar(displayRadius);
+
+            const baseIdx = vertexOffset;
+
+            // Add vertices in same order as HexBlock sides
+            positions.push(innerV1.x, innerV1.y, innerV1.z);
+            positions.push(innerV2.x, innerV2.y, innerV2.z);
+            positions.push(outerV2.x, outerV2.y, outerV2.z);
+            positions.push(outerV1.x, outerV1.y, outerV1.z);
+
+            // Calculate side normal using cross product of quad edges
+            const edge1 = innerV2.clone().sub(innerV1); // horizontal edge
+            const edge2 = outerV1.clone().sub(innerV1); // vertical edge
+            const sideNormal = edge1.clone().cross(edge2).normalize();
+
+            normals.push(sideNormal.x, sideNormal.y, sideNormal.z);
+            normals.push(sideNormal.x, sideNormal.y, sideNormal.z);
+            normals.push(sideNormal.x, sideNormal.y, sideNormal.z);
+            normals.push(sideNormal.x, sideNormal.y, sideNormal.z);
+
+            uvs.push(0, 0, 1, 0, 1, 1, 0, 1);
+
+            colors.push(sideColor.r, sideColor.g, sideColor.b);
+            colors.push(sideColor.r, sideColor.g, sideColor.b);
+            colors.push(sideColor.r, sideColor.g, sideColor.b);
+            colors.push(sideColor.r, sideColor.g, sideColor.b);
+
+            torchLightArray.push(0, 0, 0, 0);
+
+            // Same winding as HexBlock: (0,1,2), (0,2,3)
+            indices.push(baseIdx, baseIdx + 1, baseIdx + 2);
+            indices.push(baseIdx, baseIdx + 2, baseIdx + 3);
+
+            vertexOffset += 4;
+          }
+        }
+      }
+    }
+
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+    geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+    geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+    geometry.setAttribute('torchLight', new THREE.Float32BufferAttribute(torchLightArray, 1));
+    geometry.setIndex(indices);
+
+    // Create material matching distant LOD exactly - same shaders, uniforms, and settings
+    const material = new THREE.ShaderMaterial({
+      uniforms: {
+        planetCenter: { value: this.center.clone() },
+        sunDirection: { value: this.sunDirection.clone() }, // Use actual sun direction
+        ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
+        directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
+        darkSideAmbient: { value: PlayerConfig.PLANET_DARK_SIDE_AMBIENT }
+      },
+      vertexShader: planetVert,
+      fragmentShader: planetFrag,
+      polygonOffset: true,
+      polygonOffsetFactor: 1,
+      polygonOffsetUnits: 1
+    });
+    // Set default attribute value for torchLight to prevent undefined behavior
+    (material.defaultAttributeValues as Record<string, unknown>)['torchLight'] = 0;
+
+    // Create mesh and add to group
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.renderOrder = -1;
+
+    const lodGroup = new THREE.Group();
+    lodGroup.add(mesh);
+    lodGroup.position.copy(this.center);
+    this.scene.add(lodGroup);
+
+    // Clean up old lodMesh if it exists
+    if (this.lodMesh) {
+      this.scene.remove(this.lodMesh);
+      this.lodMesh.traverse((child) => {
+        if (child instanceof THREE.Mesh) {
+          child.geometry.dispose();
+          if (Array.isArray(child.material)) {
+            child.material.forEach(m => m.dispose());
+          } else {
+            child.material.dispose();
+          }
+        }
+      });
+    }
+
+    this.lodMesh = lodGroup;
+    console.log(`[${this.config.name}] Created fallback HIGH LOD mesh (subdivision ${fallbackSub})`);
+  }
+
   private rebuildLODMesh(): void {
+    // If no terrain data available yet, create fallback HIGH LOD using noise
+    if (this.columns.size === 0) {
+      this.createFallbackHighLODMesh();
+      return;
+    }
+
+    // If lodMesh doesn't exist yet, create fallback first so there's always something visible
+    // The proper LOD mesh will replace it when the worker completes
+    if (!this.lodMesh || this.lodMesh.children.length === 0) {
+      this.createFallbackHighLODMesh();
+    }
+
     // Use worker if available
     if (this.lodGeometryWorker && !this.isLODWorkerBuildActive) {
       this.startLODWorkerBuild();
@@ -2819,6 +3141,331 @@ export class Planet {
     profiler.end('Planet.rebuildLODMesh');
   }
 
+  /**
+   * Build intermediate LOD mesh - simplified terrain between chunked LOD and detailed terrain.
+   * Uses stepped height sampling (every Nth block) for reduced geometry while maintaining
+   * terrain silhouette visibility at medium distances.
+   */
+  private buildIntermediateLOD(): void {
+    if (this.isIntermediateLODWorkerActive || this.isIntermediateLODBuilt) {
+      return;
+    }
+
+    this.isIntermediateLODWorkerActive = true;
+    console.log(`[Intermediate LOD] Building for ${this.config.name || 'planet'}...`);
+
+    // For now, create a simple stepped version of the terrain
+    // This samples height at lower resolution to create a simplified mesh
+    const blockStep = PlayerConfig.TERRAIN_INTERMEDIATE_BLOCK_STEP;
+    const wallThreshold = PlayerConfig.TERRAIN_INTERMEDIATE_WALL_THRESHOLD;
+
+    // Create a group to hold intermediate LOD meshes
+    const intermediateGroup = new THREE.Group();
+    intermediateGroup.name = 'intermediateLOD';
+
+    // Build geometry per chunk for better culling
+    const materials = this.getMaterials();
+
+    // Collect geometry data per material type
+    const geometryData: Map<string, {
+      positions: number[];
+      normals: number[];
+      uvs: number[];
+      indices: number[];
+    }> = new Map();
+
+    // Initialize geometry arrays for each material (including water)
+    for (const matName of ['grass', 'dirt', 'stone', 'sand', 'snow', 'moonRock', 'water']) {
+      geometryData.set(matName, {
+        positions: [],
+        normals: [],
+        uvs: [],
+        indices: []
+      });
+    }
+
+    // Get sea level for water detection
+    const SEA_LEVEL_DEPTH = this.getSeaLevelDepth();
+    const waterRadius = this.depthToRadius(SEA_LEVEL_DEPTH);
+    const hasWater = this.config.hasWater !== false && !this.config.texturePath;
+
+    // Process tiles in chunks
+    for (const tile of this.polyhedron.tiles) {
+      const column = this.columns.get(tile.index);
+      if (!column) continue;
+      const blocks = column.blocks;
+
+      // Get surface height by sampling at step intervals
+      let maxSurfaceHeight = 0;
+      for (let depth = this.MAX_DEPTH - 1; depth >= 0; depth -= blockStep) {
+        const block = blocks[Math.min(depth, this.MAX_DEPTH - 1)];
+        if (block !== HexBlockType.AIR && block !== HexBlockType.WATER) {
+          maxSurfaceHeight = depth;
+          break;
+        }
+      }
+
+      // Determine if this tile is underwater
+      const isUnderwater = hasWater && maxSurfaceHeight < SEA_LEVEL_DEPTH;
+
+      // Get the surface block type
+      const surfaceBlock = blocks[maxSurfaceHeight] || HexBlockType.STONE;
+      const matName = isUnderwater ? 'water' : this.getBlockMaterialName(surfaceBlock);
+      const data = geometryData.get(matName);
+      if (!data) continue;
+
+      // Create a single top face for this tile at the sampled height
+      // Use depthToRadius for consistent height calculation with distant LOD
+      // For underwater tiles, use water surface level (same as distant LOD)
+      const surfaceRadius = isUnderwater ? waterRadius : this.depthToRadius(maxSurfaceHeight);
+
+      // Build simplified top face
+      const tileCenter = tile.center.clone().normalize().multiplyScalar(surfaceRadius);
+      const tileNormal = tile.center.clone().normalize();
+
+      const baseIndex = data.positions.length / 3;
+
+      // Create hex vertices for top face
+      for (let i = 0; i < tile.vertices.length; i++) {
+        const vertex = tile.vertices[i].clone().normalize().multiplyScalar(surfaceRadius);
+        data.positions.push(vertex.x, vertex.y, vertex.z);
+        data.normals.push(tileNormal.x, tileNormal.y, tileNormal.z);
+        data.uvs.push(0.5 + (vertex.x - tileCenter.x) * 0.1, 0.5 + (vertex.z - tileCenter.z) * 0.1);
+      }
+
+      // Add center vertex
+      data.positions.push(tileCenter.x, tileCenter.y, tileCenter.z);
+      data.normals.push(tileNormal.x, tileNormal.y, tileNormal.z);
+      data.uvs.push(0.5, 0.5);
+
+      const centerIndex = baseIndex + tile.vertices.length;
+
+      // Create triangles (fan from center)
+      for (let i = 0; i < tile.vertices.length; i++) {
+        const nextI = (i + 1) % tile.vertices.length;
+        data.indices.push(centerIndex, baseIndex + i, baseIndex + nextI);
+      }
+
+      // Add walls for significant height differences with neighbors
+      // Iterate through edges (like main LOD does) and find neighbor across each edge
+      const numSides = tile.vertices.length;
+      for (let i = 0; i < numSides; i++) {
+        const next = (i + 1) % numSides;
+        const v1 = tile.vertices[i].clone().normalize();
+        const v2 = tile.vertices[next].clone().normalize();
+
+        // Find neighbor across this edge by checking which neighbor is closest to edge midpoint
+        const edgeMidDir = v1.clone().add(v2).normalize();
+        let closestNeighborIndex: number | undefined;
+        let closestDist = Infinity;
+
+        for (const nIdx of tile.neighbors) {
+          const neighborTile = this.polyhedron.tiles[nIdx];
+          if (!neighborTile) continue;
+          const neighborDir = neighborTile.center.clone().normalize();
+          const dist = edgeMidDir.distanceToSquared(neighborDir);
+          if (dist < closestDist) {
+            closestDist = dist;
+            closestNeighborIndex = nIdx;
+          }
+        }
+
+        if (closestNeighborIndex === undefined) continue;
+
+        const neighborColumn = this.columns.get(closestNeighborIndex);
+        if (!neighborColumn) continue;
+        const neighborBlocks = neighborColumn.blocks;
+
+        // Get neighbor surface height
+        let neighborSurfaceHeight = 0;
+        for (let depth = this.MAX_DEPTH - 1; depth >= 0; depth -= blockStep) {
+          const block = neighborBlocks[Math.min(depth, this.MAX_DEPTH - 1)];
+          if (block !== HexBlockType.AIR && block !== HexBlockType.WATER) {
+            neighborSurfaceHeight = depth;
+            break;
+          }
+        }
+
+        const heightDiff = maxSurfaceHeight - neighborSurfaceHeight;
+        if (heightDiff >= wallThreshold) {
+          const topHeight = surfaceRadius;
+          const bottomHeight = this.depthToRadius(neighborSurfaceHeight);
+
+          const wallBaseIndex = data.positions.length / 3;
+
+          // Wall quad vertices - same order as main LOD:
+          // innerV1, innerV2, outerV2, outerV1 (neighbor radius, then this tile radius)
+          const innerV1 = v1.clone().multiplyScalar(bottomHeight);
+          const innerV2 = v2.clone().multiplyScalar(bottomHeight);
+          const outerV2 = v2.clone().multiplyScalar(topHeight);
+          const outerV1 = v1.clone().multiplyScalar(topHeight);
+
+          data.positions.push(
+            innerV1.x, innerV1.y, innerV1.z,
+            innerV2.x, innerV2.y, innerV2.z,
+            outerV2.x, outerV2.y, outerV2.z,
+            outerV1.x, outerV1.y, outerV1.z
+          );
+
+          // Calculate side normal using cross product of quad edges (same as main LOD)
+          const e1 = innerV2.clone().sub(innerV1); // horizontal edge
+          const e2 = outerV1.clone().sub(innerV1); // vertical edge
+          const wallNormal = e1.clone().cross(e2).normalize();
+
+          for (let k = 0; k < 4; k++) {
+            data.normals.push(wallNormal.x, wallNormal.y, wallNormal.z);
+          }
+
+          const wallHeight = (topHeight - bottomHeight) / this.BLOCK_HEIGHT;
+          data.uvs.push(0, 0, 1, 0, 1, wallHeight, 0, wallHeight);
+
+          // Two triangles for quad - same winding as HexBlock: (0,1,2), (0,2,3)
+          data.indices.push(
+            wallBaseIndex, wallBaseIndex + 1, wallBaseIndex + 2,
+            wallBaseIndex, wallBaseIndex + 2, wallBaseIndex + 3
+          );
+        }
+      }
+    }
+
+    // Create meshes from collected geometry
+    for (const [matName, data] of geometryData.entries()) {
+      if (data.indices.length === 0) continue;
+
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.Float32BufferAttribute(data.positions, 3));
+      geometry.setAttribute('normal', new THREE.Float32BufferAttribute(data.normals, 3));
+      geometry.setAttribute('uv', new THREE.Float32BufferAttribute(data.uvs, 2));
+      geometry.setIndex(data.indices);
+
+      const material = materials.get(matName);
+      if (material) {
+        const mesh = new THREE.Mesh(geometry, material);
+        mesh.name = `intermediateLOD_${matName}`;
+        mesh.frustumCulled = false; // Handle culling manually
+        intermediateGroup.add(mesh);
+      }
+    }
+
+    // Position at planet center and add to scene
+    intermediateGroup.position.copy(this.center);
+    intermediateGroup.visible = false; // Start hidden, visibility controlled by updatePlayerPosition
+    this.scene.add(intermediateGroup);
+    this.intermediateLODMesh = intermediateGroup;
+    this.isIntermediateLODBuilt = true;
+    this.isIntermediateLODWorkerActive = false;
+
+    console.log(`[Intermediate LOD] Built ${intermediateGroup.children.length} meshes for ${this.config.name || 'planet'}`);
+  }
+
+  /**
+   * Get material name for a block type (for intermediate LOD)
+   */
+  private getBlockMaterialName(block: HexBlockType): string {
+    switch (block) {
+      case HexBlockType.GRASS:
+        return 'grass';
+      case HexBlockType.DIRT:
+        return 'dirt';
+      case HexBlockType.STONE:
+        return 'stone';
+      case HexBlockType.SAND:
+        return 'sand';
+      case HexBlockType.SNOW:
+        return 'snow';
+      case HexBlockType.MOON_ROCK:
+        return 'moonRock';
+      default:
+        return 'stone';
+    }
+  }
+
+  /**
+   * Create a planet shader material with a base color
+   * Uses the same shader as terrain for consistent lighting across LOD levels
+   */
+  private createPlanetShaderMaterial(color: THREE.Color): THREE.ShaderMaterial {
+    const material = new THREE.ShaderMaterial({
+      uniforms: {
+        planetCenter: { value: this.center.clone() },
+        sunDirection: { value: this.sunDirection.clone() },
+        ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
+        directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
+        darkSideAmbient: { value: PlayerConfig.PLANET_DARK_SIDE_AMBIENT },
+        baseColor: { value: color }
+      },
+      vertexShader: `
+        varying vec3 vNormal;
+        varying vec3 vWorldPosition;
+        varying vec3 vColor;
+        uniform vec3 baseColor;
+
+        void main() {
+          vNormal = normalize(normalMatrix * normal);
+          vec4 worldPos = modelMatrix * vec4(position, 1.0);
+          vWorldPosition = worldPos.xyz;
+          vColor = baseColor;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform vec3 planetCenter;
+        uniform vec3 sunDirection;
+        uniform float ambientIntensity;
+        uniform float directionalIntensity;
+        uniform float darkSideAmbient;
+
+        varying vec3 vNormal;
+        varying vec3 vWorldPosition;
+        varying vec3 vColor;
+
+        void main() {
+          // Calculate direction from planet center to fragment
+          vec3 toFragment = normalize(vWorldPosition - planetCenter);
+
+          // Day/night based on sun direction relative to planet surface
+          float sunDot = dot(toFragment, sunDirection);
+          float dayFactor = smoothstep(-0.2, 0.3, sunDot);
+
+          // Lighting calculation
+          float diffuse = max(0.0, dot(vNormal, sunDirection));
+          float directional = diffuse * directionalIntensity * dayFactor;
+          float ambient = mix(darkSideAmbient, ambientIntensity, dayFactor);
+
+          vec3 finalColor = vColor * (ambient + directional);
+          gl_FragColor = vec4(finalColor, 1.0);
+        }
+      `
+    });
+    return material;
+  }
+
+  /**
+   * Get all terrain materials (for intermediate LOD mesh creation)
+   * Uses planet's lodColors config for consistent appearance
+   * Uses planet shader for consistent lighting across LOD levels
+   */
+  private getMaterials(): Map<string, THREE.Material> {
+    const materials = new Map<string, THREE.Material>();
+
+    // Use planet's lodColors config (same as distant LOD)
+    const lodColors: LodColorsConfig = {
+      ...DEFAULT_LOD_COLORS,
+      ...this.config.lodColors,
+    };
+
+    // Create materials using the planet's color palette with planet shader
+    materials.set('grass', this.createPlanetShaderMaterial(new THREE.Color(lodColors.land)));
+    materials.set('dirt', this.createPlanetShaderMaterial(new THREE.Color(lodColors.land).multiplyScalar(0.7)));
+    materials.set('stone', this.createPlanetShaderMaterial(new THREE.Color(lodColors.rock)));
+    materials.set('sand', this.createPlanetShaderMaterial(new THREE.Color(lodColors.land).lerp(new THREE.Color(0xc2b280), 0.5)));
+    materials.set('snow', this.createPlanetShaderMaterial(new THREE.Color(lodColors.snow)));
+    materials.set('moonRock', this.createPlanetShaderMaterial(new THREE.Color(lodColors.rock)));
+    materials.set('water', this.createPlanetShaderMaterial(new THREE.Color(lodColors.water)));
+
+    return materials;
+  }
+
   private generateTerrain(): void {
     const hasWater = this.config.hasWater !== false && !this.config.texturePath;
 
@@ -3540,8 +4187,8 @@ export class Planet {
     const distToCenter = playerPosition.distanceTo(this.center);
     const altitude = distToCenter - this.radius;
 
-    // Detect LOD transition (crossing lodSwitchAltitude threshold)
-    const isAboveLODThreshold = altitude > this.getLODSwitchAltitude();
+    // Detect LOD transition (crossing high LOD altitude threshold)
+    const isAboveLODThreshold = altitude > this.getHighLODAltitude();
     if (this.wasAboveLODThreshold !== isAboveLODThreshold) {
       this.wasAboveLODThreshold = isAboveLODThreshold;
       // Fire callback: true = entering detailed terrain, false = leaving
@@ -3550,6 +4197,61 @@ export class Planet {
 
     // Check for distant LOD (viewing from another planet)
     const distantLODLevel = this.getDistantLODLevel(distToCenter);
+
+    // Track LOD level changes even when using distant LOD
+    const highLODAlt = this.getHighLODAltitude();
+    const intermediateLODAlt = this.getIntermediateLODAltitude();
+    let currentLODLevel = 0;
+    if (distantLODLevel >= 0) {
+      currentLODLevel = 3; // Distant LOD
+    } else if (altitude > highLODAlt) {
+      currentLODLevel = 2;
+    } else if (altitude > intermediateLODAlt) {
+      currentLODLevel = 1;
+    }
+
+    // Use proper readiness checks (verify actual geometry exists)
+    const highLODReady = this.isHighLODReady();
+    const intermediateReady = this.isIntermediateLODReady();
+    const distantLODReady = this.isDistantLODReady();
+
+    // Log only when LOD level changes
+    if (this.lastLODLevel !== currentLODLevel) {
+      const levelNames = ['DETAILED', 'INTERMEDIATE', 'HIGH (chunked)', 'DISTANT'];
+      const distantLODAlt = this.getDistantLODAltitude();
+
+      // Determine direction (moving up = ascending, higher LOD level number)
+      const previousLevel = this.lastLODLevel ?? 0;
+      const direction = currentLODLevel > previousLevel ? 'ASCENDING' : 'DESCENDING';
+
+      // Determine fallback logic based on target LOD
+      let fallbackInfo = '';
+      if (currentLODLevel === 2) {
+        // Transitioning to HIGH
+        if (highLODReady) {
+          fallbackInfo = 'will use HIGH (ready)';
+        } else {
+          fallbackInfo = 'FALLBACK to DISTANT (high not ready)';
+        }
+      } else if (currentLODLevel === 1) {
+        // Transitioning to INTERMEDIATE
+        if (intermediateReady) {
+          fallbackInfo = 'will use INTERMEDIATE (ready)';
+        } else if (highLODReady) {
+          fallbackInfo = 'FALLBACK to HIGH (intermediate not ready)';
+        } else {
+          fallbackInfo = 'FALLBACK to DISTANT (neither ready)';
+        }
+      } else if (currentLODLevel === 0) {
+        fallbackInfo = 'will use DETAILED terrain';
+      } else if (currentLODLevel === 3) {
+        fallbackInfo = 'will use DISTANT LOD';
+      }
+
+      console.log(`[${this.config.name}] LOD switch: ${levelNames[previousLevel]} -> ${levelNames[currentLODLevel]} (${direction}) | altitude: ${altitude.toFixed(1)}, thresholds: intermediate=${intermediateLODAlt}, high=${highLODAlt}, distant=${distantLODAlt}`);
+      console.log(`  Ready: high=${highLODReady}, intermediate=${intermediateReady}, distant=${distantLODReady} | ${fallbackInfo}`);
+      this.lastLODLevel = currentLODLevel;
+    }
 
     if (distantLODLevel >= 0) {
       // Use distant LOD mesh - hide all other meshes
@@ -3560,28 +4262,92 @@ export class Planet {
       if (this.boundaryWallsGroup) this.boundaryWallsGroup.visible = false;
       return;
     } else {
-      // Hide all distant LOD meshes
-      this.setDistantLODVisible(-1);
-      if (this.boundaryWallsGroup) this.boundaryWallsGroup.visible = true;
+      // Only hide distant LOD if lodMesh (chunked LOD) is ready
+      // This prevents the planet from disappearing when descending from space
+      // before terrain generation has had time to create the LOD mesh
+      const wasInDistantLOD = this.currentDistantLODLevel >= 0;
+
+      if (highLODReady || !wasInDistantLOD) {
+        // Safe to hide distant LOD - either HIGH LOD is ready, or we were never in distant LOD
+        this.setDistantLODVisible(-1);
+        if (this.boundaryWallsGroup) this.boundaryWallsGroup.visible = true;
+      } else {
+        // Keep distant LOD visible as fallback until HIGH LOD is ready
+        // Use highest detail distant LOD (level 0) as transitional fallback
+        this.setDistantLODVisible(0);
+        if (this.boundaryWallsGroup) this.boundaryWallsGroup.visible = false;
+        // Continue processing to trigger terrain generation, but don't show other LODs yet
+      }
     }
 
-    // When far away but on this planet, only show LOD (including LOD water)
-    // Use planet-specific LOD switch altitude (larger planets = higher switch altitude)
-    if (altitude > this.getLODSwitchAltitude()) {
+    // Three-level LOD system:
+    // 1. High altitude (> highLODAltitude): Chunked LOD only
+    // 2. Medium altitude (> intermediateLODAltitude): Intermediate LOD
+    // 3. Low altitude: Detailed terrain
+
+    if (altitude > highLODAlt) {
+      // HIGH ALTITUDE: Show only chunked LOD (no detailed terrain needed)
       // Clear cached nearby tiles when going to orbit view
       if (this.cachedNearbyTiles.size > 0) {
+        console.log(`  Clearing ${this.cachedNearbyTiles.size} cached nearby tiles, triggering LOD rebuild`);
         this.cachedNearbyTiles.clear();
         this.bufferCenterTiles.clear();
         // Clear detailed tile tracking so all LOD chunks become visible
         this.tilesWithDetailedGeometry.clear();
         this.chunkDetailedTileCount.clear();
+        // Trigger LOD rebuild since tiles were previously excluded from LOD
+        // The LOD mesh needs to be rebuilt to include all tiles now
+        this.createLODMesh();
       }
 
-      // Show only LOD (no detailed terrain needed at high altitude)
-      // LOD is complete for all tiles, no holes ever
-      if (this.lodMesh) this.lodMesh.visible = true;
-      if (this.lodWaterMesh) this.lodWaterMesh.visible = true;
-      if (this.batchedMeshGroup) this.batchedMeshGroup.visible = false;
+      if (highLODReady) {
+        // Show only HIGH LOD (no detailed terrain needed at high altitude)
+        this.lodMesh!.visible = true;
+        if (this.lodWaterMesh) this.lodWaterMesh.visible = true;
+        if (this.intermediateLODMesh) this.intermediateLODMesh.visible = false;
+        if (this.batchedMeshGroup) this.batchedMeshGroup.visible = false;
+        this.setDistantLODVisible(-1); // Hide distant LOD
+      } else {
+        // HIGH LOD not ready - use distant LOD level 0 as fallback
+        this.setDistantLODVisible(0);
+        if (this.lodMesh) this.lodMesh.visible = false;
+        if (this.lodWaterMesh) this.lodWaterMesh.visible = false;
+        if (this.intermediateLODMesh) this.intermediateLODMesh.visible = false;
+        if (this.batchedMeshGroup) this.batchedMeshGroup.visible = false;
+      }
+
+      return;
+    } else if (altitude > intermediateLODAlt) {
+      // MEDIUM ALTITUDE: Show intermediate LOD (simplified terrain geometry)
+      // Build intermediate LOD if not yet built
+      if (!this.isIntermediateLODBuilt && !this.isIntermediateLODWorkerActive) {
+        this.buildIntermediateLOD();
+      }
+
+      // Show intermediate LOD if available, otherwise fall back to HIGH LOD or distant LOD
+      // Use proper readiness checks (verify actual geometry exists)
+      if (intermediateReady) {
+        // INTERMEDIATE LOD is ready - use it
+        if (this.lodMesh) this.lodMesh.visible = false;
+        if (this.lodWaterMesh) this.lodWaterMesh.visible = false;
+        if (this.intermediateLODMesh) this.intermediateLODMesh.visible = true;
+        if (this.batchedMeshGroup) this.batchedMeshGroup.visible = false;
+        this.setDistantLODVisible(-1);
+      } else if (highLODReady) {
+        // Fallback to HIGH LOD while intermediate builds
+        if (this.lodMesh) this.lodMesh.visible = true;
+        if (this.lodWaterMesh) this.lodWaterMesh.visible = true;
+        if (this.intermediateLODMesh) this.intermediateLODMesh.visible = false;
+        if (this.batchedMeshGroup) this.batchedMeshGroup.visible = false;
+        this.setDistantLODVisible(-1);
+      } else {
+        // Neither intermediate nor HIGH LOD ready - use distant LOD level 0 as fallback
+        this.setDistantLODVisible(0);
+        if (this.lodMesh) this.lodMesh.visible = false;
+        if (this.lodWaterMesh) this.lodWaterMesh.visible = false;
+        if (this.intermediateLODMesh) this.intermediateLODMesh.visible = false;
+        if (this.batchedMeshGroup) this.batchedMeshGroup.visible = false;
+      }
       return;
     }
 
@@ -3602,15 +4368,20 @@ export class Planet {
     if (!this.detailedTerrainEnabled) {
       if (this.lodMesh) this.lodMesh.visible = true;
       if (this.lodWaterMesh) this.lodWaterMesh.visible = true;
+      if (this.intermediateLODMesh) this.intermediateLODMesh.visible = false;
       if (this.batchedMeshGroup) this.batchedMeshGroup.visible = false;
       return;
     }
 
-    // Show detailed meshes and LOD
+    // LOW ALTITUDE (DETAILED zone): Show detailed terrain
+    // Only show chunk-based HIGH LOD (which can be culled per-chunk) for distant areas
+    // The fallback HIGH LOD is a single mesh that can't be culled, so hide it entirely
     // Note: cullLODChunks() is called AFTER tile tracking is updated (see end of function)
     // Debug: F4 toggle can hide detailed terrain to see LOD only
-    if (this.lodMesh) this.lodMesh.visible = true;
-    if (this.lodWaterMesh) this.lodWaterMesh.visible = true;
+    const hasChunkBasedLOD = this.lodChunks.some(chunk => chunk.children.length > 0);
+    if (this.lodMesh) this.lodMesh.visible = hasChunkBasedLOD; // Only show if chunk-based (cullable)
+    if (this.lodWaterMesh) this.lodWaterMesh.visible = hasChunkBasedLOD;
+    if (this.intermediateLODMesh) this.intermediateLODMesh.visible = false;
     if (this.batchedMeshGroup) this.batchedMeshGroup.visible = !this.debugDetailedHidden;
 
     const altitudeRatio = Math.min(1, Math.max(0, altitude / 100));
@@ -4921,10 +5692,19 @@ export class Planet {
 
   public getSurfaceHeightInDirection(direction: THREE.Vector3): number {
     const tile = this.polyhedron.getTileAtPoint(direction.clone().multiplyScalar(this.radius));
-    if (!tile) return this.radius;
+    if (!tile) {
+      // No tile found - use noise-based height estimation
+      const surfaceDepth = this.getHeightVariation(direction);
+      return this.depthToRadius(surfaceDepth);
+    }
 
     const column = this.columns.get(tile.index);
-    if (!column) return this.radius;
+    if (!column) {
+      // Column not generated yet - use noise-based height estimation
+      // This matches the terrain generation logic so trees/objects will be grounded
+      const surfaceDepth = this.getHeightVariation(tile.center);
+      return this.depthToRadius(surfaceDepth);
+    }
 
     // Search from top (highest depth) down to find first solid block
     for (let depth = column.blocks.length - 1; depth >= 0; depth--) {
@@ -4933,7 +5713,10 @@ export class Planet {
         return this.depthToRadius(depth);
       }
     }
-    return this.radius;
+
+    // No solid blocks found - use noise-based height
+    const surfaceDepth = this.getHeightVariation(tile.center);
+    return this.depthToRadius(surfaceDepth);
   }
 
   public isUnderwaterInDirection(direction: THREE.Vector3): boolean {
@@ -5209,11 +5992,19 @@ export class Planet {
   // Determine which distant LOD level to use based on distance from planet center
   // Returns -1 if player is close enough to use detailed LOD, 0-2 for distant LOD levels
   private getDistantLODLevel(distToCenter: number): number {
-    if (distToCenter >= PlayerConfig.PLANET_LOD_DISTANCE_3) {
+    const baseDistantAlt = this.getDistantLODAltitude();
+
+    // Distant LOD distances are altitude-based (added to radius)
+    // This ensures distant LOD only activates when truly far from the planet surface
+    const dist1 = this.radius + baseDistantAlt;
+    const dist2 = this.radius + baseDistantAlt * 2.5;  // Scale levels 2 and 3 from base
+    const dist3 = this.radius + baseDistantAlt * 5;
+
+    if (distToCenter >= dist3) {
       return 2; // Lowest detail
-    } else if (distToCenter >= PlayerConfig.PLANET_LOD_DISTANCE_2) {
+    } else if (distToCenter >= dist2) {
       return 1; // Medium detail
-    } else if (distToCenter >= PlayerConfig.PLANET_LOD_DISTANCE_1) {
+    } else if (distToCenter >= dist1) {
       return 0; // Higher detail (but still simplified)
     }
     return -1; // Use normal detailed LOD
@@ -5228,6 +6019,50 @@ export class Planet {
       this.distantLODMeshes[i].visible = (i === level);
     }
     this.currentDistantLODLevel = level;
+  }
+
+  // Check if HIGH LOD (chunked) mesh is ready with actual geometry
+  private isHighLODReady(): boolean {
+    if (!this.lodMesh || this.lodMesh.children.length === 0) return false;
+    // Check if any child has actual vertices
+    for (const child of this.lodMesh.children) {
+      if (child instanceof THREE.Mesh && child.geometry) {
+        const pos = child.geometry.getAttribute('position');
+        if (pos && pos.count > 0) return true;
+      }
+    }
+    return false;
+  }
+
+  // Check if INTERMEDIATE LOD mesh is ready with actual geometry
+  // IMPORTANT: Intermediate LOD requires full planet terrain coverage because it's built
+  // from terrain data. For non-spawn planets with partial terrain, intermediate LOD would
+  // show scattered hexagons (only where terrain exists), so we require full coverage.
+  private isIntermediateLODReady(): boolean {
+    if (!this.intermediateLODMesh || !this.isIntermediateLODBuilt) return false;
+    if (this.intermediateLODMesh.children.length === 0) return false;
+
+    // Check if we have full planet terrain coverage (all tiles have terrain data)
+    // Without this, intermediate LOD would show holes where terrain wasn't generated
+    const totalTiles = this.polyhedron.tiles.length;
+    if (this.columns.size < totalTiles) {
+      // Partial terrain coverage - intermediate LOD would have holes
+      return false;
+    }
+
+    // Check if any child has actual vertices
+    for (const child of this.intermediateLODMesh.children) {
+      if (child instanceof THREE.Mesh && child.geometry) {
+        const pos = child.geometry.getAttribute('position');
+        if (pos && pos.count > 0) return true;
+      }
+    }
+    return false;
+  }
+
+  // Check if DISTANT LOD meshes are ready (these should always be ready)
+  private isDistantLODReady(): boolean {
+    return this.distantLODMeshes.length > 0;
   }
 
   // Update distant LOD mesh positions when planet center moves

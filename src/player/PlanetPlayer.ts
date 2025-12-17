@@ -636,7 +636,7 @@ export class PlanetPlayer {
         const euler = new THREE.Euler().setFromQuaternion(this.orientation, 'YXZ');
         const rollDeg = (euler.z * 180 / Math.PI).toFixed(1);
         const pitchDeg = (euler.x * 180 / Math.PI).toFixed(1);
-        console.log(`[TRANSITIONING] timer: ${this.transitionTimer.toFixed(2)}s | roll: ${rollDeg}° pitch: ${pitchDeg}°`);
+        //console.log(`[TRANSITIONING] timer: ${this.transitionTimer.toFixed(2)}s | roll: ${rollDeg}° pitch: ${pitchDeg}°`);
 
         this.transitionTimer -= deltaTime;
 
@@ -882,11 +882,19 @@ export class PlanetPlayer {
     const yawRad = Math.atan2(horizontalLook.dot(this.localRight), -horizontalLook.dot(this.localForward.clone().sub(planetUp.clone().multiplyScalar(this.localForward.dot(planetUp))).normalize()));
     const yawDeg = yawRad * 180 / Math.PI;
 
-    console.log(`Camera pitch: ${pitchDeg.toFixed(2)}° (max: ±89°), yaw: ${yawDeg.toFixed(2)}°`);
+    // Calculate surface-relative roll (how tilted is the camera horizon relative to planet surface)
+    // Roll = 0 when localRight is perpendicular to planetUp
+    const rightDotUp = this.localRight.dot(planetUp);
+    const surfaceRollRad = Math.asin(Math.max(-1, Math.min(1, rightDotUp)));
+    const surfaceRollDeg = surfaceRollRad * 180 / Math.PI;
+
+    console.log(`Camera pitch: ${pitchDeg.toFixed(2)}° yaw: ${yawDeg.toFixed(2)}° surface roll: ${surfaceRollDeg.toFixed(2)}°`);
     console.log(`lookDir: (${lookDir.x.toFixed(3)}, ${lookDir.y.toFixed(3)}, ${lookDir.z.toFixed(3)})`);
     console.log(`planetUp: (${planetUp.x.toFixed(3)}, ${planetUp.y.toFixed(3)}, ${planetUp.z.toFixed(3)})`);
-    console.log(`localUp: (${this.localUp.x.toFixed(3)}, ${this.localUp.y.toFixed(3)}, ${this.localUp.z.toFixed(3)})`);
-    console.log(`localUp·planetUp: ${this.localUp.dot(planetUp).toFixed(3)} (should be ~1.0)`);
+    console.log(`localUp (camera): (${this.localUp.x.toFixed(3)}, ${this.localUp.y.toFixed(3)}, ${this.localUp.z.toFixed(3)})`);
+    console.log(`localRight: (${this.localRight.x.toFixed(3)}, ${this.localRight.y.toFixed(3)}, ${this.localRight.z.toFixed(3)})`);
+    const alignment = this.localUp.dot(planetUp);
+    console.log(`localUp·planetUp: ${alignment.toFixed(3)} (1.0 = level), localRight·planetUp: ${rightDotUp.toFixed(3)} (0 = no roll)`);
     console.log('');
 
     console.log(`Player feet radius: ${playerFeetRadius.toFixed(2)}, head radius: ${playerHeadRadius.toFixed(2)}`);
@@ -1162,39 +1170,42 @@ export class PlanetPlayer {
   // Slerp only the roll component to level the camera relative to planet surface
   // This preserves look direction but smoothly corrects the "tilt"
   // Only called during transition period (transitionTimer > 0)
+  // Uses quaternion slerp for stable, drift-free interpolation
   private slerpRollToLevel(deltaTime: number): void {
     if (!this.currentPlanet) return;
 
     // Get planet's "up" at our position
     const planetUp = this.currentPlanet.getSurfaceNormal(this.position);
 
-    // Get our current look direction (camera looks along -localForward)
-    const lookDir = this.localForward.clone().negate();
+    // Get our current forward direction
+    const currentForward = this.localForward.clone();
 
-    // Calculate what the camera's "up" should be to be level
-    // It should be perpendicular to look direction and as close to planetUp as possible
-    // targetCameraUp = planetUp - (planetUp . lookDir) * lookDir, then normalize
-    const targetCameraUp = planetUp.clone();
-    targetCameraUp.sub(lookDir.clone().multiplyScalar(planetUp.dot(lookDir)));
+    // Build target quaternion that aligns up with planetUp while preserving forward as much as possible
+    // First compute what "right" should be (perpendicular to forward and planetUp)
+    const targetRight = new THREE.Vector3().crossVectors(currentForward, planetUp);
 
-    if (targetCameraUp.lengthSq() < 0.001) {
+    if (targetRight.lengthSq() < 0.001) {
       // Looking straight up or down relative to planet - no roll correction needed
       this.transitionTimer = 0;
       return;
     }
-    targetCameraUp.normalize();
+    targetRight.normalize();
 
-    // Slerp our current up toward the target up
+    // Compute corrected forward (may differ slightly if forward wasn't perpendicular to planetUp)
+    const correctedForward = new THREE.Vector3().crossVectors(planetUp, targetRight).normalize();
+
+    // Build target rotation matrix from orthonormal basis
+    // Note: Matrix4.makeBasis expects (right, up, -forward) for camera convention
+    const targetMatrix = new THREE.Matrix4();
+    targetMatrix.makeBasis(targetRight, planetUp, correctedForward.clone().negate());
+    const targetQuat = new THREE.Quaternion().setFromRotationMatrix(targetMatrix);
+
+    // Slerp current orientation toward target orientation
     const slerpFactor = Math.min(1, PlayerConfig.ROLL_SLERP_SPEED * deltaTime);
-    this.localUp.lerp(targetCameraUp, slerpFactor).normalize();
+    this.orientation.slerp(targetQuat, slerpFactor);
 
-    // Recompute right to maintain orthogonality (forward stays the same!)
-    this.localRight = new THREE.Vector3().crossVectors(this.localForward, this.localUp).normalize();
-    // Re-orthogonalize up to ensure perfect orthonormal basis
-    this.localUp = new THREE.Vector3().crossVectors(this.localRight, this.localForward).normalize();
-
-    // Update the orientation quaternion from our local axes
-    this.updateOrientationFromLocal();
+    // Extract local vectors from the interpolated orientation
+    this.updateLocalFromOrientation();
 
     // Note: We no longer exit early - let the full transition timer run
     // This ensures smooth, predictable transition duration
@@ -1297,12 +1308,12 @@ export class PlanetPlayer {
       // Apply pitch to get the final look direction
       const pitchQuat = new THREE.Quaternion().setFromAxisAngle(right, -this.surfacePitch);
       const forward = horizonForward.clone().applyQuaternion(pitchQuat);
-      const up = planetUp.clone().applyQuaternion(pitchQuat);
 
       // Build camera orientation using lookAt-style matrix
+      // Keep up = planetUp (don't tilt with pitch) so camera stays level with ground
       const eye = new THREE.Vector3(0, 0, 0);
       const target = forward.clone();
-      const camMatrix = new THREE.Matrix4().lookAt(eye, target, up);
+      const camMatrix = new THREE.Matrix4().lookAt(eye, target, planetUp);
       this.orientation.setFromRotationMatrix(camMatrix);
     } else {
       // In space, use local axes freely (6DOF)
@@ -2469,20 +2480,23 @@ export class PlanetPlayer {
 
   private updateCamera(): void {
     // Position is at feet level, so add EYE_HEIGHT to get eye position
-    // Calculate radial direction directly from position (more accurate than potentially stale localUp)
-    const radialUp = this.currentPlanet
+    // Calculate radial direction directly from position (planet surface normal)
+    const planetUp = this.currentPlanet
       ? this.position.clone().sub(this.currentPlanet.center).normalize()
       : this.localUp.clone();
 
     const eyePos = this.position.clone();
-    const eyeOffset = radialUp.clone().multiplyScalar(PlayerConfig.PLAYER_EYE_HEIGHT);
+    const eyeOffset = planetUp.clone().multiplyScalar(PlayerConfig.PLAYER_EYE_HEIGHT);
     eyePos.add(eyeOffset);
     this.camera.position.copy(eyePos);
 
-    // Both modes use orientation-based camera (camera looks along -localForward)
+    // Use orientation-based look direction (consistent with movement)
     const lookDir = this.localForward.clone().negate();
     const target = eyePos.clone().add(lookDir);
-    this.camera.up.copy(this.localUp);
+
+    // On planet, force camera.up to be the planet surface normal (keeps horizon level)
+    // In space, use localUp for 6DOF
+    this.camera.up.copy(this.isInSpace ? this.localUp : planetUp);
     this.camera.lookAt(target);
   }
 

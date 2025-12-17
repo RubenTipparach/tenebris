@@ -147,6 +147,7 @@ export class Printer3DUI {
   private statusElement: HTMLElement | null = null;
   private cancelCurrentBtn: HTMLButtonElement | null = null;
   private tooltipElement: HTMLElement | null = null;
+  private isDragging: boolean = false;
 
   constructor(inventory: Inventory) {
     this.inventory = inventory;
@@ -571,6 +572,9 @@ export class Printer3DUI {
         justify-content: center;
         position: relative;
         cursor: pointer;
+        user-select: none;
+        -webkit-user-select: none;
+        -moz-user-select: none;
       }
 
       .printer3d-output .output-slot:hover {
@@ -579,12 +583,25 @@ export class Printer3DUI {
 
       .printer3d-output .output-slot.has-item {
         border-color: #444;
+        cursor: grab;
+      }
+
+      .printer3d-output .output-slot.has-item:active {
+        cursor: grabbing;
+      }
+
+      .printer3d-output .output-slot.dragging {
+        opacity: 0.4;
+        border-color: #4CAF50;
       }
 
       .printer3d-output .output-slot img {
         width: 28px;
         height: 28px;
         image-rendering: pixelated;
+        pointer-events: none;
+        user-select: none;
+        -webkit-user-drag: none;
       }
 
       .printer3d-output .output-slot .slot-quantity {
@@ -987,6 +1004,9 @@ export class Printer3DUI {
   private updateOutputSlots(): void {
     if (!this.outputSlotsElement || !this.currentPrinter) return;
 
+    // Don't rebuild DOM while dragging - it would destroy the dragged element
+    if (this.isDragging) return;
+
     this.outputSlotsElement.innerHTML = '';
 
     for (let i = 0; i < 6; i++) {
@@ -995,38 +1015,63 @@ export class Printer3DUI {
       slotEl.className = `output-slot${slot.itemType !== null ? ' has-item' : ''}`;
       slotEl.dataset.outputSlot = i.toString();
 
+      // Always set draggable true and attach listeners (like inventory/storage slots)
+      // The dragstart handler will preventDefault if empty
+      slotEl.draggable = true;
+
+      const img = document.createElement('img');
+      img.style.display = 'none';
+      img.draggable = false; // Prevent image from being dragged separately
+      slotEl.appendChild(img);
+
+      const quantitySpan = document.createElement('span');
+      quantitySpan.className = 'slot-quantity';
+      quantitySpan.style.display = 'none';
+      slotEl.appendChild(quantitySpan);
+
       if (slot.itemType !== null && slot.quantity > 0) {
         const itemData = ITEM_DATA[slot.itemType];
-        const img = document.createElement('img');
         img.src = getAssetPath(itemData?.texture || '');
         img.alt = itemData?.name || 'Unknown';
-        img.draggable = false; // Prevent image from being dragged separately
-        slotEl.appendChild(img);
+        img.style.display = '';
 
-        const quantitySpan = document.createElement('span');
-        quantitySpan.className = 'slot-quantity';
         quantitySpan.textContent = slot.quantity.toString();
-        slotEl.appendChild(quantitySpan);
-
-        // Enable drag for output slots with items
-        slotEl.draggable = true;
-
-        // Drag start - set data for inventory drop handler
-        slotEl.addEventListener('dragstart', (e) => {
-          this.handleOutputDragStart(e, i);
-        });
-
-        slotEl.addEventListener('dragend', () => {
-          slotEl.classList.remove('dragging');
-        });
-
-        // Click to collect (fallback)
-        slotEl.addEventListener('click', (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          this.collectFromSlot(i);
-        });
+        quantitySpan.style.display = '';
       }
+
+      // CRITICAL: Set isDragging on mousedown to prevent DOM rebuild before dragstart fires
+      // This fixes Firefox drag-and-drop where the element was destroyed before dragstart could fire
+      slotEl.addEventListener('mousedown', (e) => {
+        if (e.button === 0 && slot.itemType !== null && slot.quantity > 0) {
+          this.isDragging = true;
+        }
+      });
+
+      // Clear isDragging on mouseup if drag didn't complete
+      slotEl.addEventListener('mouseup', () => {
+        setTimeout(() => {
+          if (this.isDragging) {
+            this.isDragging = false;
+          }
+        }, 100);
+      });
+
+      slotEl.addEventListener('dragstart', (e) => {
+        this.handleOutputDragStart(e, i);
+      });
+
+      slotEl.addEventListener('dragend', () => {
+        slotEl.classList.remove('dragging');
+        this.isDragging = false;
+        this.updateOutputSlots();
+      });
+
+      // Click to collect (fallback)
+      slotEl.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this.collectFromSlot(i);
+      });
 
       this.outputSlotsElement.appendChild(slotEl);
     }
@@ -1041,6 +1086,7 @@ export class Printer3DUI {
     const slot = this.currentPrinter.outputInventory[slotIndex];
     if (slot.itemType === null || slot.quantity <= 0) {
       e.preventDefault();
+      this.isDragging = false;
       return;
     }
 
@@ -1050,31 +1096,19 @@ export class Printer3DUI {
       e.dataTransfer.effectAllowed = 'move';
     }
 
-    const target = e.currentTarget as HTMLElement;
-    target.classList.add('dragging');
+    (e.currentTarget as HTMLElement).classList.add('dragging');
 
     // Create drag ghost
     const ghost = document.createElement('div');
     ghost.className = 'drag-ghost';
     const itemData = ITEM_DATA[slot.itemType];
-    ghost.innerHTML = `<img src="${getAssetPath(itemData?.texture || '')}" style="width:40px;height:40px;image-rendering:pixelated;">`;
+    ghost.innerHTML = `<img src="${getAssetPath(itemData?.texture || '')}" style="width:32px;height:32px;image-rendering:pixelated;">`;
     if (slot.quantity > 1) {
       ghost.innerHTML += `<span class="ghost-count">${slot.quantity}</span>`;
     }
-    ghost.style.position = 'fixed';
-    ghost.style.top = '-100px';
-    ghost.style.left = '-100px';
-    ghost.style.pointerEvents = 'none';
-    ghost.style.zIndex = '9999';
-    ghost.style.background = 'rgba(0,0,0,0.8)';
-    ghost.style.border = '2px solid #4CAF50';
-    ghost.style.borderRadius = '4px';
-    ghost.style.padding = '4px';
+    ghost.style.cssText = 'position:fixed;top:-100px;left:-100px;pointer-events:none;z-index:9999;background:rgba(0,0,0,0.8);border:2px solid #4CAF50;border-radius:4px;padding:4px;';
     document.body.appendChild(ghost);
-
-    e.dataTransfer?.setDragImage(ghost, 25, 25);
-
-    // Clean up ghost after drag
+    e.dataTransfer?.setDragImage(ghost, 20, 20);
     setTimeout(() => ghost.remove(), 0);
   }
 

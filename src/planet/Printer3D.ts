@@ -231,7 +231,7 @@ export class Printer3DManager {
 
     mesh.quaternion.copy(rotateY).multiply(alignQuaternion);
 
-    mesh.userData.isPrinter3D = true;
+    mesh.userData.is3DPrinter = true;
     mesh.userData.tileIndex = tileIndex;
 
     this.scene.add(mesh);
@@ -295,7 +295,7 @@ export class Printer3DManager {
 
     mesh.quaternion.copy(rotateY).multiply(alignQuaternion);
 
-    mesh.userData.isPrinter3D = true;
+    mesh.userData.is3DPrinter = true;
     mesh.userData.tileIndex = tileIndex;
 
     this.scene.add(mesh);

@@ -637,9 +637,10 @@ export class MushroomTreeBuilder {
     geometries.push(capGeom);
 
     // Add cap underside (disc at bottom of cap for visual completeness)
+    // Offset slightly above stem top to prevent z-fighting with stem
     const undersideGeom = new THREE.CircleGeometry(cfg.capRadius * 0.9, 8);
     undersideGeom.rotateX(Math.PI / 2);  // Make it horizontal, facing down
-    undersideGeom.translate(0, cfg.stemHeight, 0);
+    undersideGeom.translate(0, cfg.stemHeight + 0.05, 0);  // Small offset to avoid z-fighting
     const undersideColor = new THREE.Color(0x4a3520);  // Darker underside
     this.addVertexColors(undersideGeom, undersideColor);
     geometries.push(undersideGeom);
@@ -725,6 +726,9 @@ export class MushroomTreeBuilder {
         }
       `,
       side: THREE.DoubleSide,  // Render both sides for the cap underside
+      polygonOffset: true,
+      polygonOffsetFactor: 1,
+      polygonOffsetUnits: 1,
     });
   }
 
@@ -1022,6 +1026,9 @@ export class MushroomTreeManager {
           }
         `,
         side: THREE.DoubleSide,  // For mushroom cap underside
+        polygonOffset: true,
+        polygonOffsetFactor: 1,
+        polygonOffsetUnits: 1,
       });
     }
 

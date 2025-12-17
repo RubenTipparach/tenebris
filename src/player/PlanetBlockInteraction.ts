@@ -681,8 +681,9 @@ export class PlanetBlockInteraction {
     const target = e.currentTarget as HTMLElement;
     target.classList.remove('drag-over');
 
-    // Check for storage drop
     const dragData = e.dataTransfer?.getData('text/plain');
+
+    // Check for storage drop
     if (dragData && dragData.startsWith('storage:')) {
       const success = this.storageUI.handleDropToInventory(targetSlotIndex, dragData);
       if (success) {
