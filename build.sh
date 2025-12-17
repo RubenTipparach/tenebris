@@ -26,8 +26,23 @@ case "${1:-build}" in
   build)
     echo "Building Tenebris..."
     npm run build
+
+    if [ $? -ne 0 ]; then
+        echo "Build failed!"
+        exit 1
+    fi
+
     echo ""
     echo "Build complete! Output is in the 'dist' folder."
+
+    # Auto-deploy to heavy-photon-site if it exists
+    if [ -d "$HEAVY_PHOTON_PATH" ]; then
+        echo ""
+        echo "Deploying to heavy-photon-site..."
+        mkdir -p "$HEAVY_PHOTON_PATH/docs/tenebris"
+        cp -r dist/* "$HEAVY_PHOTON_PATH/docs/tenebris/"
+        echo "Deployment complete!"
+    fi
     ;;
   preview)
     echo "Previewing production build..."

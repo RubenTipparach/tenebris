@@ -4,4 +4,4 @@
 
 # Path to heavy-photon-site repository
 # Default is parent directory, override if needed
-HEAVY_PHOTON_PATH="../heavy-photon-site"
+HEAVY_PHOTON_PATH="../heavyphoton"
