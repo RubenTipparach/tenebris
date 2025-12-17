@@ -115,6 +115,8 @@ export class Planet {
   private pendingChunkWorkerTiles: Set<number> = new Set(); // Tiles being built in current chunk build
   private chunksBeingRebuilt: number[] = []; // Which chunks are currently being rebuilt
   private hasTransitionedToChunkMeshes: boolean = false; // Track if we've switched from flat to per-chunk meshes
+  // Chunks that were rebuilt via immediate (synchronous) edit - these should NOT be overwritten by stale worker results
+  private freshlyEditedChunks: Set<number> = new Set();
 
   // Progressive buffer upload system - spreads GPU buffer uploads across frames to reduce lag spikes
   private pendingMeshUploads: Array<{ mesh: THREE.Mesh; isWater: boolean; chunkIndex?: number }> = [];
@@ -1132,9 +1134,17 @@ export class Planet {
       const chunkData = data.chunkGeometries[chunkIndex];
       if (!chunkData) continue;
 
+      // Skip chunks that were rebuilt via immediate edit - worker result is stale
+      if (this.freshlyEditedChunks.has(chunkIndex)) {
+        console.log(`[handleChunkWorkerResult] Skipping chunk ${chunkIndex} - was freshly edited, worker result is stale`);
+        this.freshlyEditedChunks.delete(chunkIndex); // Clear after skipping
+        continue;
+      }
+
       // Remove old chunk group if exists
       const oldChunkGroup = this.chunkDetailMeshes.get(chunkIndex);
       if (oldChunkGroup) {
+        console.log(`[handleChunkWorkerResult] Removing old chunk ${chunkIndex} with ${oldChunkGroup.children.length} meshes`);
         // Unregister water mesh if this chunk had one
         const oldWaterMesh = this.chunkDetailWaterMeshes.get(chunkIndex);
         if (oldWaterMesh && this.waterMeshCallback) {
@@ -1149,6 +1159,8 @@ export class Planet {
             child.geometry.dispose();
           }
         });
+      } else {
+        console.log(`[handleChunkWorkerResult] No old chunk ${chunkIndex} to remove (first build for this chunk)`);
       }
 
       // Create new chunk group
@@ -1182,6 +1194,43 @@ export class Planet {
       // Add chunk group to scene
       this.batchedMeshGroup.add(chunkGroup);
       this.chunkDetailMeshes.set(chunkIndex, chunkGroup);
+
+      // Count total vertices in this chunk
+      let totalVerts = 0;
+      chunkGroup.traverse((child) => {
+        if (child instanceof THREE.Mesh && child.geometry) {
+          const pos = child.geometry.getAttribute('position');
+          if (pos) totalVerts += pos.count;
+        }
+      });
+      console.log(`[handleChunkWorkerResult] Chunk ${chunkIndex}: ${chunkGroup.children.length} meshes, ${totalVerts} vertices, batchedMeshGroup.children: ${this.batchedMeshGroup.children.length}`);
+    }
+
+    // VERIFY: Check if the last edited tile was included in this rebuild (BEFORE clearing pendingChunkWorkerTiles)
+    if (this.lastEditedTile) {
+      const editedTileIndex = this.lastEditedTile.tileIndex;
+      const editedChunk = this.tileToChunk.get(editedTileIndex);
+      const wasRebuilt = this.chunksBeingRebuilt.includes(editedChunk!);
+
+      // Check if tile was in the tiles sent to worker
+      const wasInTilesRebuilt = this.pendingChunkWorkerTiles.has(editedTileIndex);
+
+      // Verify the block data is still correct
+      const column = this.columns.get(editedTileIndex);
+      const currentBlock = column ? column.blocks[this.lastEditedTile.depth] : null;
+      const expectedBlock = this.lastEditedTile.newBlock;
+
+      if (!wasRebuilt) {
+        console.error(`🔴 ERROR: Edited tile ${editedTileIndex} (chunk ${editedChunk}) was NOT in rebuilt chunks: ${this.chunksBeingRebuilt.join(', ')}`);
+      } else if (!wasInTilesRebuilt) {
+        console.error(`🔴 ERROR: Edited tile ${editedTileIndex} was NOT sent to worker! (chunk ${editedChunk} was rebuilt but tile wasn't in pendingChunkWorkerTiles, size=${this.pendingChunkWorkerTiles.size})`);
+      } else if (currentBlock !== expectedBlock) {
+        console.error(`🔴 ERROR: Block data mismatch! Tile ${editedTileIndex} depth ${this.lastEditedTile.depth}: expected ${HexBlockType[expectedBlock]}, got ${currentBlock !== null ? HexBlockType[currentBlock] : 'null'}`);
+      } else {
+        console.log(`✅ Edited tile ${editedTileIndex} (chunk ${editedChunk}) was correctly rebuilt with block ${HexBlockType[expectedBlock]}`);
+      }
+
+      this.lastEditedTile = null; // Clear after verification
     }
 
     // Mark tiles as having detailed geometry
@@ -1195,9 +1244,9 @@ export class Planet {
         }
       }
     }
-    this.pendingChunkWorkerTiles.clear();
 
     console.log(`[handleChunkWorkerResult] Rebuilt ${this.chunksBeingRebuilt.length} chunk(s)`);
+    this.pendingChunkWorkerTiles.clear();
     this.chunksBeingRebuilt = [];
 
     this.isChunkWorkerBuildActive = false;
@@ -1686,7 +1735,7 @@ export class Planet {
     if (chunksToRebuild.size === 0) return;
 
     const chunks = Array.from(chunksToRebuild);
-    console.log(`[startChunkWorkerBuild] Rebuilding ${chunks.length} chunk(s): ${chunks.join(', ')}`);
+    console.log(`[startChunkWorkerBuild] Rebuilding ${chunks.length} chunk(s): ${chunks.join(', ')}, cachedNearbyTiles size: ${this.cachedNearbyTiles.size}`);
 
     profiler.begin('Planet.chunkWorkerBuild.serialize');
 
@@ -1703,6 +1752,8 @@ export class Planet {
         }
       }
     }
+
+    console.log(`[startChunkWorkerBuild] tilesToRebuild: ${tilesToRebuild.size} tiles: ${Array.from(tilesToRebuild).slice(0, 10).join(', ')}${tilesToRebuild.size > 10 ? '...' : ''}`);
 
     if (tilesToRebuild.size === 0) {
       profiler.end('Planet.chunkWorkerBuild.serialize');
@@ -5257,6 +5308,9 @@ export class Planet {
     return column.blocks[depth];
   }
 
+  // Track last edited tile for debugging
+  private lastEditedTile: { tileIndex: number; depth: number; oldBlock: HexBlockType; newBlock: HexBlockType } | null = null;
+
   public setBlock(tileIndex: number, depth: number, blockType: HexBlockType): void {
     const column = this.columns.get(tileIndex);
     if (!column || depth < 0 || depth >= column.blocks.length) return;
@@ -5271,15 +5325,16 @@ export class Planet {
       if (neighbor) neighbor.isDirty = true;
     }
 
-    // Queue dirty columns for incremental mesh update instead of full rebuild
-    // NOTE: LOD is no longer rebuilt when blocks change - it's built once at init
-    // For block changes to appear in LOD, we'd need per-tile LOD mesh updates (future improvement)
-    this.queueDirtyColumnRebuild(tileIndex);
+    // IMMEDIATE synchronous rebuild for edited tile and neighbors
+    // This bypasses the worker for instant visual feedback
+    // Include edited tile AND all neighbors (regardless of cachedNearbyTiles - if we're editing, we can see it)
+    const tilesToRebuild = new Set<number>([tileIndex]);
     for (const neighborIndex of column.tile.neighbors) {
-      if (this.cachedNearbyTiles.has(neighborIndex)) {
-        this.queueDirtyColumnRebuild(neighborIndex);
-      }
+      tilesToRebuild.add(neighborIndex);
     }
+
+    console.log(`[Planet] setBlock called: tile=${tileIndex}, depth=${depth}, block=${blockType}, tilesToRebuild=${tilesToRebuild.size}, inCache=${this.cachedNearbyTiles.has(tileIndex)}`);
+    this.rebuildTilesImmediate(tilesToRebuild);
 
     if (this.meshBuilder.isSolid(oldBlockType) && blockType === HexBlockType.AIR) {
       this.simulateWaterFlow(tileIndex, depth);
@@ -5289,16 +5344,142 @@ export class Planet {
   // Track columns that need geometry rebuild
   private dirtyColumnsQueue: Set<number> = new Set();
 
-  private queueDirtyColumnRebuild(tileIndex: number): void {
-    if (!this.cachedNearbyTiles.has(tileIndex)) {
-      console.log(`[queueDirtyColumnRebuild] Tile ${tileIndex} not in cachedNearbyTiles (size: ${this.cachedNearbyTiles.size})`);
+  /**
+   * Immediately rebuild geometry for specific tiles (synchronous, no worker)
+   * Used for block edits to provide instant visual feedback
+   */
+  private rebuildTilesImmediate(tilesToRebuild: Set<number>): void {
+    if (!this.batchedMeshGroup || tilesToRebuild.size === 0) {
+      console.log(`[Planet] rebuildTilesImmediate: early exit - batchedMeshGroup=${!!this.batchedMeshGroup}, tilesToRebuild=${tilesToRebuild.size}`);
       return;
     }
-    console.log(`[queueDirtyColumnRebuild] Queuing tile ${tileIndex} for rebuild`);
-    this.dirtyColumnsQueue.add(tileIndex);
+
+    // Group tiles by chunk
+    const chunkTiles = new Map<number, Set<number>>();
+    for (const tileIndex of tilesToRebuild) {
+      const chunkIndex = this.tileToChunk.get(tileIndex);
+      if (chunkIndex === undefined) {
+        console.log(`[Planet] rebuildTilesImmediate: tile ${tileIndex} has no chunk mapping`);
+        continue;
+      }
+      if (!chunkTiles.has(chunkIndex)) {
+        chunkTiles.set(chunkIndex, new Set());
+      }
+      chunkTiles.get(chunkIndex)!.add(tileIndex);
+    }
+
+    console.log(`[Planet] rebuildTilesImmediate: ${chunkTiles.size} chunks to rebuild`);
+
+    // Rebuild each affected chunk
+    for (const [chunkIndex, editedTilesInChunk] of chunkTiles) {
+      // Get ALL tiles in this chunk that are in render distance OR being edited
+      const chunkAllTiles = this.chunkToTiles.get(chunkIndex);
+      if (!chunkAllTiles) {
+        console.log(`[Planet] rebuildTilesImmediate: chunk ${chunkIndex} has no tile list`);
+        continue;
+      }
+
+      // Include tiles that are either in cache OR being edited
+      const visibleChunkTiles = chunkAllTiles.filter(t =>
+        this.cachedNearbyTiles.has(t) || editedTilesInChunk.has(t)
+      );
+      if (visibleChunkTiles.length === 0) {
+        console.log(`[Planet] rebuildTilesImmediate: chunk ${chunkIndex} has no visible tiles`);
+        continue;
+      }
+
+      console.log(`[Planet] rebuildTilesImmediate: rebuilding chunk ${chunkIndex} with ${visibleChunkTiles.length} tiles`);
+
+      // Build geometry for all visible tiles in this chunk
+      const geometryData: Record<string, GeometryData> = {};
+      for (const mat of this.BLOCK_MATERIALS) {
+        geometryData[mat.key] = createEmptyGeometryData();
+      }
+
+      for (const tileIndex of visibleChunkTiles) {
+        const column = this.columns.get(tileIndex);
+        if (!column) continue;
+        this.buildColumnGeometry(column, geometryData);
+        column.isDirty = false;
+      }
+
+      // Remove old chunk mesh
+      const oldChunkGroup = this.chunkDetailMeshes.get(chunkIndex);
+      if (oldChunkGroup) {
+        // Unregister water mesh if this chunk had one
+        const oldWaterMesh = this.chunkDetailWaterMeshes.get(chunkIndex);
+        if (oldWaterMesh && this.waterMeshCallback) {
+          this.waterMeshCallback(oldWaterMesh, false);
+        }
+        this.chunkDetailWaterMeshes.delete(chunkIndex);
+
+        // Remove from parent and dispose
+        this.batchedMeshGroup.remove(oldChunkGroup);
+        oldChunkGroup.traverse((child) => {
+          if (child instanceof THREE.Mesh && child.geometry) {
+            child.geometry.dispose();
+          }
+        });
+      }
+
+      // Create new chunk group with rebuilt geometry
+      const chunkGroup = new THREE.Group();
+      chunkGroup.name = `detailChunk_${chunkIndex}`;
+
+      for (const mat of this.BLOCK_MATERIALS) {
+        const data = geometryData[mat.key];
+        if (data.positions.length > 0) {
+          const geom = this.createBufferGeometry(data);
+          const mesh = new THREE.Mesh(geom, mat.getMaterial());
+          if (mat.renderOrder !== undefined) {
+            mesh.renderOrder = mat.renderOrder;
+          }
+          chunkGroup.add(mesh);
+
+          // Track water mesh for this chunk
+          if (mat.key === 'water') {
+            this.chunkDetailWaterMeshes.set(chunkIndex, mesh);
+            if (this.waterMeshCallback) {
+              this.waterMeshCallback(mesh, true);
+            }
+          }
+        }
+      }
+
+      // Add to scene
+      this.batchedMeshGroup.add(chunkGroup);
+      this.chunkDetailMeshes.set(chunkIndex, chunkGroup);
+
+      // Mark tiles as having detailed geometry
+      for (const tileIndex of visibleChunkTiles) {
+        if (!this.tilesWithDetailedGeometry.has(tileIndex)) {
+          this.tilesWithDetailedGeometry.add(tileIndex);
+          const count = this.chunkDetailedTileCount.get(chunkIndex) ?? 0;
+          this.chunkDetailedTileCount.set(chunkIndex, count + 1);
+        }
+        // Remove from dirty queues to prevent worker from overriding our immediate rebuild
+        this.dirtyColumnsQueue.delete(tileIndex);
+      }
+
+      // Remove chunk from dirty set - we just rebuilt it
+      this.dirtyChunks.delete(chunkIndex);
+
+      // Mark as freshly edited so worker results don't override this
+      this.freshlyEditedChunks.add(chunkIndex);
+
+      console.log(`[Planet] rebuildTilesImmediate: chunk ${chunkIndex} rebuilt and marked as freshly edited`);
+    }
+  }
+
+  private queueDirtyColumnRebuild(tileIndex: number): void {
+    if (!this.cachedNearbyTiles.has(tileIndex)) {
+      return;
+    }
 
     // Also mark the chunk as dirty for per-chunk rebuilds
     const chunkIndex = this.tileToChunk.get(tileIndex);
+    this.dirtyColumnsQueue.add(tileIndex);
+
     if (chunkIndex !== undefined) {
       this.dirtyChunks.add(chunkIndex);
     }
@@ -5312,11 +5493,6 @@ export class Planet {
   private rebuildDirtyColumns(): void {
     if (!this.batchedMeshGroup || this.dirtyColumnsQueue.size === 0) return;
 
-    // Skip if any worker is already building - dirty columns will be picked up in next rebuild
-    if (this.isWorkerBuildActive || this.isChunkWorkerBuildActive) {
-      return;
-    }
-
     // If already scheduled, the timer will fire and trigger the rebuild
     if (this.dirtyRebuildDebounceTimer !== null) {
       return;
@@ -5325,7 +5501,20 @@ export class Planet {
     // Schedule a rebuild after debounce period (allows batching rapid changes)
     this.dirtyRebuildDebounceTimer = window.setTimeout(() => {
       this.dirtyRebuildDebounceTimer = null;
-      if (!this.isWorkerBuildActive && !this.isChunkWorkerBuildActive && this.dirtyColumnsQueue.size > 0) {
+
+      // If worker is busy, reschedule for later
+      if (this.isWorkerBuildActive || this.isChunkWorkerBuildActive) {
+        if (this.dirtyColumnsQueue.size > 0) {
+          // Reschedule rebuild attempt
+          this.dirtyRebuildDebounceTimer = window.setTimeout(() => {
+            this.dirtyRebuildDebounceTimer = null;
+            this.rebuildDirtyColumns();
+          }, this.DIRTY_REBUILD_DEBOUNCE_MS);
+        }
+        return;
+      }
+
+      if (this.dirtyColumnsQueue.size > 0) {
         // First time: do full chunk rebuild to transition from flat meshes to per-chunk meshes
         // Subsequent times: only rebuild dirty chunks
         if (!this.hasTransitionedToChunkMeshes) {
