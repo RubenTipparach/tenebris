@@ -633,11 +633,6 @@ export class PlanetPlayer {
         this.handleTransitionMouseLook(input, deltaTime);
         this.slerpRollToLevel(deltaTime);
 
-        const euler = new THREE.Euler().setFromQuaternion(this.orientation, 'YXZ');
-        const rollDeg = (euler.z * 180 / Math.PI).toFixed(1);
-        const pitchDeg = (euler.x * 180 / Math.PI).toFixed(1);
-        //console.log(`[TRANSITIONING] timer: ${this.transitionTimer.toFixed(2)}s | roll: ${rollDeg}° pitch: ${pitchDeg}°`);
-
         this.transitionTimer -= deltaTime;
 
         // When transition ends, sync surfaceForward from current orientation
