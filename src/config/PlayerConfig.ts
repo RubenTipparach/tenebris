@@ -111,6 +111,7 @@ export const PlayerConfig = {
   TERRAIN_BUFFER_ZONE: 12,             // Tiles player can move before triggering rebuild
   TERRAIN_TILES_PER_FRAME: 20,        // Max tiles to process per frame during incremental rebuild
   TERRAIN_LOD_OFFSET: 0,              // LOD terrain height offset (0 = match actual terrain, polygonOffset handles z-fighting)
+  IMMEDIATE_REBUILD_DISTANCE: 12,     // Chunks within this tile distance use immediate CPU rebuild (no worker delay)
 
   // Terrain generation
   TERRAIN_SEED: 12345,                // Seed for terrain generation (change for different worlds)
