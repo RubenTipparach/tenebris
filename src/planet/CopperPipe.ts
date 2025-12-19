@@ -107,6 +107,7 @@ export class CopperPipeManager {
         ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
         directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
         torchLight: { value: 0.0 },
+        skyLight: { value: 1.0 },
       },
       vertexShader: techVert,
       fragmentShader: techFrag,
@@ -391,6 +392,27 @@ export class CopperPipeManager {
         if (steam) {
           pipe.connections.push({ type: 'steam-engine', tileIndex: neighborTile });
         }
+      }
+    }
+
+    // Check for vertical pipe connections (same tile, different depths)
+    const abovePipeId = this.generatePipeId(pipe.tileIndex, pipe.depth + 1);
+    const abovePipe = this.pipes.get(abovePipeId);
+    if (abovePipe) {
+      pipe.connections.push({ type: 'pipe', pipeId: abovePipeId });
+      // Also add reverse connection
+      if (!abovePipe.connections.find(c => c.type === 'pipe' && c.pipeId === pipe.id)) {
+        abovePipe.connections.push({ type: 'pipe', pipeId: pipe.id });
+      }
+    }
+
+    const belowPipeId = this.generatePipeId(pipe.tileIndex, pipe.depth - 1);
+    const belowPipe = this.pipes.get(belowPipeId);
+    if (belowPipe) {
+      pipe.connections.push({ type: 'pipe', pipeId: belowPipeId });
+      // Also add reverse connection
+      if (!belowPipe.connections.find(c => c.type === 'pipe' && c.pipeId === pipe.id)) {
+        belowPipe.connections.push({ type: 'pipe', pipeId: pipe.id });
       }
     }
 

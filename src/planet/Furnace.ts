@@ -266,6 +266,7 @@ export class FurnaceManager {
 
     // Mark for raycasting
     mesh.userData.isFurnace = true;
+    mesh.userData.furnaceId = tileIndex;  // Used by interaction raycast check
     mesh.userData.tileIndex = tileIndex;
 
     // Add to scene
@@ -329,6 +330,7 @@ export class FurnaceManager {
 
     // Mark for raycasting
     mesh.userData.isFurnace = true;
+    mesh.userData.furnaceId = tileIndex;  // Used by interaction raycast check
     mesh.userData.tileIndex = tileIndex;
 
     // Add to scene

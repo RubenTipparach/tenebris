@@ -125,6 +125,7 @@ export class CableNodeManager {
         ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
         directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
         torchLight: { value: 0.0 },
+        skyLight: { value: 1.0 },
       },
       vertexShader: techVert,
       fragmentShader: techFrag,

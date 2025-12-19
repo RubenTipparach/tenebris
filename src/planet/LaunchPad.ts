@@ -686,6 +686,8 @@ export class LaunchPadManager {
 
     // Create the launch pad group (at origin since geometry is in world space)
     const group = new THREE.Group();
+    group.userData.isLaunchPad = true;
+    group.userData.centerTileIndex = centerTileIndex;
 
     // Create base geometry from tile data in world space (like terrain blocks)
     let baseGeometry: THREE.BufferGeometry;
@@ -774,6 +776,8 @@ export class LaunchPadManager {
 
     // Create the launch pad group (at origin since geometry is in world space)
     const group = new THREE.Group();
+    group.userData.isLaunchPad = true;
+    group.userData.centerTileIndex = centerTileIndex;
 
     // Create base geometry from tile data in world space (like terrain blocks)
     let baseGeometry: THREE.BufferGeometry;
