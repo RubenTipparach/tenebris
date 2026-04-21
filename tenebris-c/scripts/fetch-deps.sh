@@ -4,6 +4,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+mkdir -p "$ROOT/third_party"
 cd "$ROOT/third_party"
 
 SOKOL_COMMIT="master"
