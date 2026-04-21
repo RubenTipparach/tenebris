@@ -1,0 +1,26 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 20, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "web",
+      "displayName": "WebAssembly (Emscripten)",
+      "description": "Shipping target — requires emsdk activated in env",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-web",
+      "toolchainFile": "$env{EMSDK}/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "native",
+      "displayName": "Native (dev + server host)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-native",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "web",    "configurePreset": "web" },
+    { "name": "native", "configurePreset": "native" }
+  ]
+}

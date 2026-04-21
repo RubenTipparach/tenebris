@@ -1,12 +1,16 @@
-# Simple workflow for deploying static content to GitHub Pages
-name: Deploy static content to Pages
+# Continuous build + deploy for Tenebris.
+#
+# - Runs on every push to any branch and every pull_request (continuous builds).
+# - Deploy-to-Pages step only runs for pushes to `main`. Branch pushes and PRs
+#   still compile + upload the artifact so reviewers can download and smoke-test
+#   the WASM build from any commit.
+name: Build and deploy
 
 on:
-  # Runs on pushes targeting the default branch
   push:
-    branches: ["main"]
-
-  # Allows you to run this workflow manually from the Actions tab on any branch
+    branches: ['**']
+  pull_request:
+    branches: ['**']
   workflow_dispatch:
     inputs:
       branch:
@@ -14,45 +18,79 @@ on:
         required: false
         default: ''
 
-# Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
 permissions:
   contents: read
   pages: write
   id-token: write
 
-# Allow only one concurrent deployment, skipping runs queued between the run in-progress and latest queued.
-# However, do NOT cancel in-progress runs as we want to allow these production deployments to complete.
 concurrency:
-  group: "pages"
+  group: "pages-${{ github.ref }}"
   cancel-in-progress: false
 
 jobs:
-  # Build and deploy job
-  deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+  build:
     runs-on: ubuntu-latest
+    outputs:
+      has_wasm: ${{ steps.check.outputs.has_wasm }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.branch || github.ref }}
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: 'npm'
-      - name: Install dependencies
+
+      - name: Setup Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.64
+          actions-cache-folder: 'emsdk-cache'
+
+      - name: Setup Ninja
+        uses: seanmiddleditch/gha-setup-ninja@v4
+
+      - name: Install node dependencies
         run: npm ci
-      - name: Build
-        run: npm run build
-      - name: Setup Pages
-        uses: actions/configure-pages@v5
-      - name: Upload artifact
+
+      - name: Build JS + WASM + landing
+        run: npm run build:all
+
+      - name: Verify dist layout
+        id: check
+        run: |
+          set -e
+          test -f dist/index.html       || { echo "missing dist/index.html"; exit 1; }
+          test -f dist/js/index.html    || { echo "missing dist/js/index.html"; exit 1; }
+          test -f dist/wasm/index.html  || { echo "missing dist/wasm/index.html"; exit 1; }
+          echo "has_wasm=true" >> "$GITHUB_OUTPUT"
+
+      - name: Upload build artifact (always)
+        uses: actions/upload-artifact@v4
+        with:
+          name: tenebris-dist-${{ github.sha }}
+          path: dist
+          retention-days: 14
+
+      - name: Upload pages artifact
+        if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
         uses: actions/upload-pages-artifact@v3
         with:
           path: 'dist'
+
+  deploy:
+    needs: build
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4

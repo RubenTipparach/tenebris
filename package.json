@@ -7,6 +7,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "build:wasm": "bash scripts/build-wasm.sh",
+    "build:landing": "bash scripts/build-landing.sh",
+    "build:all": "npm run build && npm run build:wasm && npm run build:landing",
     "build:itch": "tsc && vite build --config vite.config.itch.ts",
     "preview": "vite preview"
   },

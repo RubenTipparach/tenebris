@@ -38,8 +38,11 @@ function copyPublicExclude(excludePatterns: string[]): Plugin {
   };
 }
 
+// The TS/Three.js build is the "Stable" variant in the dual-build chooser.
+// It now lives under /tenebris/js/ so the WASM preview can ship next to it
+// at /tenebris/wasm/, with a landing page at /tenebris/ letting UAT pick.
 export default defineConfig({
-  base: '/tenebris/',  // GitHub Pages subdirectory
+  base: '/tenebris/js/',
   plugins: [
     glsl(),
     copyPublicExclude(['.aseprite'])
@@ -47,12 +50,13 @@ export default defineConfig({
   server: {
     port: 3000,
     open: true,
-    host: true  // Expose to network (0.0.0.0)
+    host: true
   },
   build: {
-    outDir: 'dist',
+    outDir: 'dist/js',
     sourcemap: true,
-    copyPublicDir: false  // Disable default public dir copy, use our plugin instead
+    emptyOutDir: true,
+    copyPublicDir: false
   },
   publicDir: 'public'
 });

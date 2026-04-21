@@ -1,0 +1,12 @@
+build-*/
+third_party/sokol/
+third_party/stb/
+third_party/HandmadeMath/
+*.o
+*.obj
+*.a
+*.lib
+*.wasm
+*.wasm.map
+.cache/
+compile_commands.json
