@@ -27,5 +27,6 @@ typedef struct {
 } phys_input_t;
 
 void phys_step(world_t* w, phys_body_t* body, phys_input_t in, float yaw, float dt);
+void phys_init_body(phys_body_t* body, vec3_t spawn);
 
 #endif

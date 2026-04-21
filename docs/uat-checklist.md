@@ -16,16 +16,12 @@ Legend: ✅ pass · ❌ fail · ⬜ not yet implemented · 🚫 out of scope
 
 ---
 
-## Tier 0 — Hello triangle
+## Tier 0 — Hello triangle (subsumed into Tier 1)
 
-| Behavior | JS | WASM |
-|---|:-:|:-:|
-| Page loads in Chrome latest | 🚫 | ⬜ |
-| Page loads in Firefox latest | 🚫 | ⬜ |
-| Canvas fills viewport and resizes cleanly | 🚫 | ⬜ |
-| Hello-world shape renders (triangle) | 🚫 | ⬜ |
-| FPS overlay reads a plausible number | 🚫 | ⬜ |
-| No console errors in first 10 s | 🚫 | ⬜ |
+Tier 0 was the walking-skeleton milestone. Its acceptance checks have
+been rolled into Tier 1 since we jumped straight to a creative-mode
+build without shipping a dedicated triangle release. See Tier 1 below
+for the live matrix.
 
 ## Tier 1 — Creative Mode MVP
 

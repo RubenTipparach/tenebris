@@ -4,6 +4,7 @@
 #include "core/blocks.h"
 #include "core/math.h"
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 /*
@@ -31,6 +32,11 @@ block_t  world_get_block(const world_t* w, int32_t x, int32_t y, int32_t z);
 void     world_set_block(world_t* w, int32_t x, int32_t y, int32_t z, block_t b);
 chunk_t* world_get_chunk(world_t* w, int32_t cx, int32_t cz);
 chunk_t* world_ensure_chunk(world_t* w, int32_t cx, int32_t cz);
+bool     world_remove_chunk(world_t* w, int32_t cx, int32_t cz);
+size_t   world_chunk_count(const world_t* w);
+chunk_t* world_chunk_at(const world_t* w, size_t i);
+bool     world_is_block_solid(const world_t* w, int32_t x, int32_t y, int32_t z);
+int32_t  world_height_at(const world_t* w, int32_t x, int32_t z);
 
 /*
  * Commands — the single mutation pathway. Tier 1: client calls directly.

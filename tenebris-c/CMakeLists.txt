@@ -45,10 +45,12 @@ target_include_directories(tenebris_third_party INTERFACE
 # ---------------------------------------------------------------------------
 set(TENEBRIS_CLIENT_SOURCES
     src/client/main_web.c
-    # src/client/renderer.c   # split later in Tier 1
-    # src/client/input.c
-    # src/client/mesher.c
-    # src/client/player_ctrl.c
+    src/client/renderer.c
+    src/client/mesher.c
+    src/client/input.c
+    src/client/player_ctrl.c
+    src/client/interact.c
+    src/client/gfx_math.c
 )
 
 if (EMSCRIPTEN)
@@ -63,11 +65,24 @@ if (EMSCRIPTEN)
         "-sSTACK_SIZE=1mb"
         "-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap']"
         "--shell-file=${CMAKE_SOURCE_DIR}/web/shell.html"
+        "--preload-file" "${CMAKE_SOURCE_DIR}/assets@/assets"
     )
     target_link_options(tenebris PRIVATE ${EMCC_LINK_FLAGS})
     set_target_properties(tenebris PROPERTIES SUFFIX ".html")
 
-    # Copy assets next to the build output
+    # Populate assets/ from the parent project's public/textures when the
+    # C project is built standalone (no scripts/build-wasm.sh in the loop).
+    # Individual files so CMake re-runs if any texture changes.
+    set(TENEBRIS_PUBLIC_TEXTURES "${CMAKE_SOURCE_DIR}/../public/textures")
+    if (EXISTS "${TENEBRIS_PUBLIC_TEXTURES}/rocks.png")
+        file(MAKE_DIRECTORY "${CMAKE_SOURCE_DIR}/assets/textures")
+        configure_file("${TENEBRIS_PUBLIC_TEXTURES}/rocks.png"      "${CMAKE_SOURCE_DIR}/assets/textures/stone.png"      COPYONLY)
+        configure_file("${TENEBRIS_PUBLIC_TEXTURES}/dirt.png"       "${CMAKE_SOURCE_DIR}/assets/textures/dirt.png"       COPYONLY)
+        configure_file("${TENEBRIS_PUBLIC_TEXTURES}/grass.png"      "${CMAKE_SOURCE_DIR}/assets/textures/grass_top.png"  COPYONLY)
+        configure_file("${TENEBRIS_PUBLIC_TEXTURES}/dirt_grass.png" "${CMAKE_SOURCE_DIR}/assets/textures/grass_side.png" COPYONLY)
+    endif()
+
+    # Copy assets next to the build output.
     add_custom_command(TARGET tenebris POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory
                 ${CMAKE_SOURCE_DIR}/assets
