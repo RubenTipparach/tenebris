@@ -36,6 +36,7 @@ target_compile_options(tenebris_core PRIVATE
 add_library(tenebris_third_party INTERFACE)
 target_include_directories(tenebris_third_party INTERFACE
     third_party/sokol
+    third_party/sokol/util   # sokol_debugtext.h, sokol_gl.h
     third_party/stb
     third_party/HandmadeMath
 )

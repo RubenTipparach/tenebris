@@ -158,7 +158,7 @@ static void bake_atlas(void) {
     R.atlas_img = sg_make_image(&(sg_image_desc){
         .width = W, .height = H,
         .pixel_format = SG_PIXELFORMAT_RGBA8,
-        .data.subimage[0][0] = { .ptr = atlas, .size = (size_t)(W * H * 4) },
+        .data.mip_levels[0] = { .ptr = atlas, .size = (size_t)(W * H * 4) },
         .label = "atlas",
     });
 
@@ -222,11 +222,11 @@ void renderer_init(void) {
             .layout = SG_UNIFORMLAYOUT_STD140,
             .glsl_uniforms[0] = { .glsl_name = "u_ambient", .type = SG_UNIFORMTYPE_FLOAT3 },
         },
-        .images[0]    = { .stage = SG_SHADERSTAGE_FRAGMENT, .image_type = SG_IMAGETYPE_2D,
-                          .sample_type = SG_IMAGESAMPLETYPE_FLOAT },
-        .samplers[0]  = { .stage = SG_SHADERSTAGE_FRAGMENT, .sampler_type = SG_SAMPLERTYPE_FILTERING },
-        .image_sampler_pairs[0] = { .stage = SG_SHADERSTAGE_FRAGMENT,
-                                    .image_slot = 0, .sampler_slot = 0, .glsl_name = "u_tex" },
+        .textures[0] = { .stage = SG_SHADERSTAGE_FRAGMENT, .image_type = SG_IMAGETYPE_2D,
+                         .sample_type = SG_IMAGESAMPLETYPE_FLOAT },
+        .samplers[0] = { .stage = SG_SHADERSTAGE_FRAGMENT, .sampler_type = SG_SAMPLERTYPE_FILTERING },
+        .texture_sampler_pairs[0] = { .stage = SG_SHADERSTAGE_FRAGMENT,
+                                      .texture_slot = 0, .sampler_slot = 0, .glsl_name = "u_tex" },
         .label = "world-shader",
     });
 
@@ -409,7 +409,7 @@ void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world, int render_ra
         sg_bindings b = {
             .vertex_buffers[0] = g->vbuf,
             .index_buffer      = g->ibuf,
-            .images[0]         = R.atlas_img,
+            .textures[0]       = R.atlas_img,
             .samplers[0]       = R.atlas_smp,
         };
         sg_apply_bindings(&b);
