@@ -320,6 +320,81 @@ the `core / client / server` split from day one**. Concretely:
 This is the cheapest time to enforce the split. Getting it right in
 Tier 1 saves a massive rewrite at Tier 5.
 
+### Build pipeline + UAT landing page
+
+The WASM port must ship alongside the existing TS/Three.js build so we
+can UAT parity in production. **We do not replace the JS build during
+Tier 1.** Both builds coexist; a landing page lets testers pick which
+one they want to launch.
+
+#### Changes to the existing build
+
+- **Keep `npm run build`** (Vite + TS) exactly as-is. It continues to
+  emit the existing game into `dist/` under a new subpath.
+- **Move the current JS build output** from `dist/` root to
+  `dist/js/`. Update `base` in `vite.config.ts` from `/tenebris/` to
+  `/tenebris/js/` so asset URLs resolve inside the subpath.
+- **Add `npm run build:wasm`** that invokes
+  `cmake --preset=web --build` and copies `tenebris.html +
+  tenebris.wasm + tenebris.js + assets` into `dist/wasm/`.
+- **Add `npm run build:all`** that runs both in sequence, then copies
+  the new landing-page `index.html` (see below) into `dist/`.
+- **Comment out itch deploy** in `itch-build.sh` and `itch-build.bat`
+  — leave the files in place with a `# DISABLED during WASM port. Re-enable
+  when WASM reaches Tier 2+.` header. Do not delete; we want to re-enable
+  cleanly once WASM is itch-ready.
+  - If `build.sh build` currently auto-deploys to `heavy-photon-site`,
+    that behavior stays — but it now copies `dist/` which contains the
+    landing page + both builds.
+
+#### GitHub Pages landing page (the "fork")
+
+A new top-level `dist/index.html` served at `heavyphoton.com/tenebris/`.
+Minimal static HTML, no framework. Two big buttons / cards:
+
+- **▶ Play (Stable)** → `./js/index.html` — the TypeScript build.
+- **🧪 Play (WASM Preview)** → `./wasm/index.html` — the C/Sokol build.
+
+UX requirements:
+
+- Warn on the WASM card that it is a work-in-progress UAT preview and
+  feature-incomplete (list Tier 1 scope bullets: creative mode only,
+  flat world, no planets, no crafting, etc.).
+- Remember last choice in `localStorage` and auto-redirect after a
+  3-second countdown on repeat visits (with a "cancel" link).
+- Query-string override: `?build=js` or `?build=wasm` skips the chooser
+  entirely — gives UAT testers a single link they can share for either
+  build.
+- Share a common header so both builds render inside the same visual
+  shell (font, favicon, analytics snippet if we keep it).
+
+#### UAT workflow
+
+- A test matrix lives in `docs/uat-checklist.md` (new file,
+  created alongside Tier 1 scope). Each row is a creative-mode
+  behavior (move, jump, break block, place block, chunk streaming,
+  save/load once Tier 2 is in, etc.). Each column is "JS" / "WASM" —
+  testers tick both.
+- A divergence in any row blocks the tier gate. Either the WASM build
+  fixes the behavior or the row is explicitly excluded from Tier 1
+  scope (with justification).
+- Both builds share the same seed and chunk-gen function in their
+  respective languages during Tier 1. The long-term goal is a single
+  deterministic chunk-gen in `core/` that the JS build links against
+  via a small WASM shim — **but that is a Tier 2 nicety, not a Tier 1
+  requirement.** In Tier 1 it's acceptable to eyeball parity rather
+  than byte-match it.
+
+#### CI changes
+
+- `.github/workflows/static.yml` extended:
+  - Setup Emscripten (`mymindstorm/setup-emsdk` action) in addition to
+    Node.
+  - Run `npm run build:all` instead of `npm run build`.
+  - Fail the job if either `dist/js/index.html` or
+    `dist/wasm/index.html` is missing.
+- Deploy step unchanged — still uploads `dist/` to GitHub Pages.
+
 ### Acceptance criteria
 
 - [ ] Walk around a 4-chunk-radius flat voxel world at 60 FPS on a
@@ -332,10 +407,19 @@ Tier 1 saves a massive rewrite at Tier 5.
 - [ ] WASM size < 1 MB compressed.
 - [ ] `core/` compiles as a standalone static lib with **zero** sokol
       or emcc symbols referenced.
+- [ ] `npm run build:all` produces `dist/index.html`, `dist/js/**`,
+      and `dist/wasm/**` with zero errors.
+- [ ] Visiting `heavyphoton.com/tenebris/` shows the chooser; both
+      buttons route to working builds.
+- [ ] `?build=wasm` and `?build=js` query overrides work.
+- [ ] Itch deploy script is commented out and documented as such.
+- [ ] `docs/uat-checklist.md` exists with at least the Tier 1 row set
+      and is linked from the chooser page.
 
 ### Estimated effort
 
-~3–5 weeks of focused work.
+~3–5 weeks of focused work. Add ~3 days for the build-pipeline split
+and landing page (mostly CI + path plumbing, not new code).
 
 ---
 
