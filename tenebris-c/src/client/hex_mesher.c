@@ -16,12 +16,30 @@ static const float HEX_VX[6][2] = {
     {  HEX_SQRT3 * 0.5f * HEX_RADIUS, -HEX_RADIUS * 0.5f },   /* 330 deg */
 };
 
-/* Neighbor offsets for flat-edge hex neighbors. Even/odd rows differ. */
+/* Neighbor offsets for flat-edge hex neighbors, ordered to match the
+ * edge traversal below. Edge e connects HEX_VX[e] to HEX_VX[e+1 mod 6];
+ * its midpoint sits at angle 60° + 60° e, so the neighbor directions
+ * are NE, NW, W, SW, SE, E (60, 120, 180, 240, 300, 0 degrees).
+ *
+ * Earlier revisions ordered these starting at East and caused side
+ * faces to disappear where two adjacent columns had different heights
+ * — neighbor-N was being asked about neighbor-(N-1)'s block.
+ */
 static const int HEX_NEIGHBOR_EVEN[6][2] = {
-    { +1,  0}, { 0, +1}, {-1, +1}, {-1,  0}, {-1, -1}, { 0, -1},
+    /*  NE */ { 0, +1},
+    /*  NW */ {-1, +1},
+    /*  W  */ {-1,  0},
+    /*  SW */ {-1, -1},
+    /*  SE */ { 0, -1},
+    /*  E  */ {+1,  0},
 };
 static const int HEX_NEIGHBOR_ODD[6][2] = {
-    { +1,  0}, {+1, +1}, { 0, +1}, {-1,  0}, { 0, -1}, {+1, -1},
+    /*  NE */ {+1, +1},
+    /*  NW */ { 0, +1},
+    /*  W  */ {-1,  0},
+    /*  SW */ { 0, -1},
+    /*  SE */ {+1, -1},
+    /*  E  */ {+1,  0},
 };
 
 /* ----------------------------------------------------------------------- */

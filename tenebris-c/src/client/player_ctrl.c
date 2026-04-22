@@ -106,13 +106,15 @@ dvec3_t player_world_pos(const player_ctrl_t* p) { return p->position; }
 void player_update(player_ctrl_t* p, hex_pool_t* pool, float dt) {
     const input_state_t* in = input_state();
 
-    /* Look: mouse drag + right-thumb virtual stick. Stick is analog so
-     * scales by dt; mouse_dx is already integer pixel delta so uses its
-     * own sensitivity. */
-    p->yaw   -= in->mouse_dx * MOUSE_SENS;
+    /* Look: mouse drag + right-thumb virtual stick. Yaw is +right in
+     * compute_look's tangent math (fwd rotates toward basis.right as
+     * yaw grows), so right-moving input adds to yaw. Pitch stays
+     * inverted for mouse (screen-Y down is look-up) but matches stick
+     * direction on the right thumb. */
+    p->yaw   += in->mouse_dx * MOUSE_SENS;
     p->pitch -= in->mouse_dy * MOUSE_SENS;
     if (in->look_stick_active) {
-        p->yaw   -= in->look_stick_x * LOOK_STICK_SENS * dt;
+        p->yaw   += in->look_stick_x * LOOK_STICK_SENS * dt;
         p->pitch += in->look_stick_y * LOOK_STICK_SENS * dt;
     }
     if (p->pitch >  PITCH_LIMIT) p->pitch =  PITCH_LIMIT;
