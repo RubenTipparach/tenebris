@@ -240,186 +240,153 @@ code."
 
 ---
 
-## 4. Tier 1 — Creative Mode MVP
+## 4. Tier 1 — Hex-Sphere MVP (revised)
 
-This is the first tier that looks like a game. Port of `src/main.ts` +
-`src/world/*` + `src/player/Player.ts` + `src/player/Physics.ts` +
-`src/player/BlockInteraction.ts`. **Everything else in `src/` is out of
-scope for this tier.** No planets, no rockets, no crafting, no inventory
-UI, no menus, no music.
+> **Reset note**: an earlier draft of this tier ported `src/main.ts` (a
+> flat cube demo). That demo is broken in the reference repo and isn't
+> what the game actually is. The real Tenebris is **hex prisms wrapped
+> on a Goldberg/icosphere planet** with LOD streaming. This revised tier
+> ports that architecture from day one, modeled after the author's
+> existing C/Sokol port (Caelum) — see §10 for the architectural lessons
+> taken from it.
+
+The Tier 1 goal is now: **stand on a Goldberg-style hex planet, see the
+horizon curve, walk around at 60 FPS at the equivalent of 700 km of
+playable surface.** No break/place yet — that moves to Tier 2 once the
+streaming pipeline is proven. No planets-plural, no rockets, no
+crafting.
 
 ### Scope
 
-- Flat infinite-ish voxel world. 16 × 64 × 16 chunks (match TS).
-- 4 block types: AIR, STONE, DIRT, GRASS (match `src/world/Block.ts`).
-- Single texture atlas (3 textures packed: wall, floor, ceiling).
-- Deterministic terrain gen from seeded hash noise (port
-  `Chunk.getTerrainHeight` exactly — it needs to match on server too).
-- FPS controller: WASD, mouse look, jump, sprint, gravity.
-- AABB player-vs-world collision.
-- DDA voxel raycast for block targeting.
-- Left-click breaks, right-click places the currently selected block
-  (hotkey 1–4 cycles block type).
-- Wireframe outline on targeted block.
-- Skybox (solid color or gradient — no stars yet).
-- One sun (directional light) + ambient — baked in the shader, no
-  dynamic shadows.
-- Chunk mesher runs **on main thread** in Tier 1. Worker offload is Tier 3.
-- Greedy meshing is out of scope; use naive face-culling like the TS
-  `Chunk.buildMesh`. Optimization comes later.
+- **Two coexisting worlds**, recombined every frame:
+  1. **Icosphere LOD tree** for everything beyond a ~500 m bubble around
+     the camera. 20 root faces (icosahedron), distance-split with
+     hysteresis, max depth ~14. Output: cheap colored triangle patches.
+  2. **Hex-prism chunks** inside the bubble. 32 × 32 columns × 256
+     vertical layers, byte-per-voxel, max ~512 alive. The LOD tree
+     suppresses its own patches inside this bubble so we never
+     double-draw.
+- **Floating origin**: world recentered when camera drifts > N meters so
+  GPU vertex math stays near zero. Player position kept in
+  double-precision world coords; render coords are floats relative to
+  the floating origin.
+- **Shared tangent frame** for the hex bubble, anchored at the camera's
+  ground projection. Re-anchored only on origin shift, so chunks don't
+  regenerate from small player movements.
+- **Texture atlas**: 11 tiles in a 1×11 strip — water / sand / dirt /
+  grass / stone / ice / snow / dirt_grass / dirt_snow / torch / moon.
+  Per-block top/side/bottom mapping (Minecraft convention).
+- **Mesher**: naive face-cull. Per-column `min_solid` / `max_solid`
+  caches so the inner loop only walks layers that contain solid voxels.
+  48-byte hex vertex (`pos[3]` + `normal[3]` + `uv[2]` + `color[3]` +
+  `sky_light` + `torch_light`).
+- **Sky-light BFS** baked into the vertex `sky_light` field — top-down
+  column fill → cross-chunk seed → flood-fill with the Minecraft
+  "downward at MAX stays MAX" rule.
+- **Job system** with a synchronous Emscripten backend (matches Caelum's
+  approach — pthreads on web bring more pain than gain). The
+  `job_submit` interface is in place from Tier 1 so a Tier 3 native
+  pthread backend or wasm-workers backend drops in without touching
+  callers.
+- **Spherical surface walking**: capsule physics in the local tangent
+  frame. Gravity points along `-up_radial`. Movement keys are mapped
+  through the tangent basis so "forward" is along the surface, not
+  through the planet.
+- **Shader pipeline**: `sokol-shdc` cross-compiles `shaders/*.glsl` to
+  GLSL300es / HLSL5 / Metal / WGSL. No more inline GLSL strings.
+- **WASM size budget**: < 2 MB compressed (was < 1 MB; bumped because
+  sokol-shdc-baked shaders + the LOD tree code + sky-light BFS add real
+  weight).
 
-### TS → C translation map
+### Out of scope for Tier 1
+
+- Break / place blocks (Tier 2).
+- Rocket flight, multi-planet hopping (Tier 3).
+- Crafting, inventory, tech blocks (Tier 4).
+- Trees / flora (Tier 4).
+- Real threading on web (job system has the seam; native gets pthreads
+  in Tier 3).
+- Persistence / save format (Tier 2).
+
+### TS → C translation map (revised)
 
 | TS file | C destination | Notes |
 |---|---|---|
-| `src/world/Block.ts` | `core/blocks.c/h` | Enum + `is_solid()` + texture IDs. No materials — atlas UVs baked into mesher. |
-| `src/world/Chunk.ts` | `core/world.c/h` + `client/mesher.c` | Split storage (core) from meshing (client). |
-| `src/world/World.ts` | `core/world.c/h` | Hashmap of `(cx,cz) → chunk*`. `world_raycast()` in core. |
-| `src/engine/GameEngine.ts` | `client/main_web.c` + `client/renderer.c` | sokol_app lifecycle. Kill most of the TS content — starfield, water depth, underwater fog all deferred. |
-| `src/engine/InputManager.ts` | `client/input.c` | sokol_app event → `InputState` struct. Pointer-lock uses `sapp_lock_mouse`. |
-| `src/player/Player.ts` | `client/player_ctrl.c` (movement) + `core/physics.c` (AABB) | Client owns camera; physics tick is in core so the server can run the same function. |
-| `src/player/Physics.ts` | `core/physics.c/h` | `physics_resolve_aabb()` + `physics_check_ground()`. Shared. |
-| `src/player/BlockInteraction.ts` | `client/interact.c` | Raycast + place/break. In SP mode mutates world directly; in MP it sends a `PlaceBlock` / `BreakBlock` command over the wire (Tier 5). |
-| `src/main.ts` | `client/main_web.c` | Boot sequence. |
+| `src/planet/GoldbergPolyhedron.ts` + `src/planet/Planet.ts` | `core/icosphere.c/h` + `core/planet.c/h` | Subdivision math + LOD tree |
+| `src/planet/HexBlock.ts` + `src/planet/ChunkGeometryBuilder.ts` | `core/hex_chunk.c/h` (storage) + `client/hex_mesher.c/h` (geometry) | Split data from drawing |
+| `src/workers/lodGeometryWorker.ts` | `client/lod_mesher.c/h` | Triangle patch builder |
+| `src/workers/geometryWorker.ts` + `src/workers/TileMeshWorker.ts` | `client/hex_mesher.c/h` | Face-cull + sky-light BFS |
+| `src/workers/TileMeshWorkerPool.ts` | `core/job_system.c/h` | Synchronous on web, pthreads native |
+| `src/player/PlanetPlayer.ts` | `client/player_ctrl.c` (driver) + `core/physics.c` (capsule on tangent plane) | Spherical surface FPS |
+| `src/engine/GameEngine.ts` (planet bits) | `client/main_web.c` + `client/renderer.c` | Two-pipeline frame loop |
+| `src/mainPlanet.ts` (boot only) | `client/main_web.c` | Glue |
 
-### Rendering plan
+### Multiplayer readiness
 
-- One mesh per chunk, one draw call per chunk.
-- Vertex format: `vec3 pos; vec3 normal; vec2 uv; uint8 block_type;`
-  packed into ~24 bytes.
-- Single pipeline, single shader (`shaders/voxel.glsl`), single texture
-  atlas binding. No per-material branching — block type selects UV
-  offset into the atlas in the vertex shader.
-- Dirty chunks are remeshed on the main thread at end of frame, capped
-  at N per frame (e.g. 2) to avoid hitches.
-- View-frustum cull chunks by AABB before drawing.
-
-### Multiplayer readiness in Tier 1 (IMPORTANT)
-
-Even though Tier 1 ships single-player, every new file **must respect
-the `core / client / server` split from day one**. Concretely:
-
-- `core/world.c` never calls into sokol, never touches the GPU, never
-  calls `printf` with anything other than `SOKOL_LOG`.
-- Player block-edit actions go through a **command struct**, even in SP:
-  ```c
-  typedef struct {
-      uint32_t tick;
-      uint8_t  kind;   // BREAK_BLOCK / PLACE_BLOCK
-      int32_t  x, y, z;
-      uint8_t  block;
-  } world_cmd_t;
-  void world_apply_cmd(world_t* w, const world_cmd_t* c);
-  ```
-  In Tier 1 the client calls `world_apply_cmd` locally. In Tier 5 the
-  client sends it over WebSocket and the server calls it. **No gameplay
-  logic lives in the renderer path.**
-- Chunk generation takes `(cx, cz, seed)` and is pure. Given the same
-  seed, server and client produce the same chunk byte-for-byte.
-
-This is the cheapest time to enforce the split. Getting it right in
-Tier 1 saves a massive rewrite at Tier 5.
+Same rules as the original Tier 1 plan — `core/` stays sokol-free,
+deterministic, and arena-allocator-friendly. World mutations still go
+through `world_cmd_t` once break/place lands in Tier 2. Chunk gen
+remains pure of `(seed, body_id, face_idx, depth, ...)` so server +
+client agree byte-for-byte.
 
 ### Build pipeline + UAT landing page
 
-The WASM port must ship alongside the existing TS/Three.js build so we
-can UAT parity in production. **We do not replace the JS build during
-Tier 1.** Both builds coexist; a landing page lets testers pick which
-one they want to launch.
+Unchanged from the original Tier 1 — `dist/index.html` chooser, `dist/js/`
++ `dist/wasm/`, query overrides, `docs/uat-checklist.md` JS-vs-WASM
+parity matrix. The UAT rows themselves change to reflect the hex-sphere
+behaviors (walk on a curved surface, see the horizon, LOD transitions
+are seamless, etc.) instead of the cube-world rows.
 
-#### Changes to the existing build
+### Caelum lessons applied (the §10 reference)
 
-- **Keep `npm run build`** (Vite + TS) exactly as-is. It continues to
-  emit the existing game into `dist/` under a new subpath.
-- **Move the current JS build output** from `dist/` root to
-  `dist/js/`. Update `base` in `vite.config.ts` from `/tenebris/` to
-  `/tenebris/js/` so asset URLs resolve inside the subpath.
-- **Add `npm run build:wasm`** that invokes
-  `cmake --preset=web --build` and copies `tenebris.html +
-  tenebris.wasm + tenebris.js + assets` into `dist/wasm/`.
-- **Add `npm run build:all`** that runs both in sequence, then copies
-  the new landing-page `index.html` (see below) into `dist/`.
-- **Comment out itch deploy** in `itch-build.sh` and `itch-build.bat`
-  — leave the files in place with a `# DISABLED during WASM port. Re-enable
-  when WASM reaches Tier 2+.` header. Do not delete; we want to re-enable
-  cleanly once WASM is itch-ready.
-  - If `build.sh build` currently auto-deploys to `heavy-photon-site`,
-    that behavior stays — but it now copies `dist/` which contains the
-    landing page + both builds.
+These are the architectural decisions copied verbatim from the deep
+read of the author's existing Caelum port. **No code is lifted** —
+Caelum has no LICENSE file as of this writing — but the design ideas
+make the difference between "a slow toy planet" and "700 km blazing
+playable surface."
 
-#### GitHub Pages landing page (the "fork")
-
-A new top-level `dist/index.html` served at `heavyphoton.com/tenebris/`.
-Minimal static HTML, no framework. Two big buttons / cards:
-
-- **▶ Play (Stable)** → `./js/index.html` — the TypeScript build.
-- **🧪 Play (WASM Preview)** → `./wasm/index.html` — the C/Sokol build.
-
-UX requirements:
-
-- Warn on the WASM card that it is a work-in-progress UAT preview and
-  feature-incomplete (list Tier 1 scope bullets: creative mode only,
-  flat world, no planets, no crafting, etc.).
-- Remember last choice in `localStorage` and auto-redirect after a
-  3-second countdown on repeat visits (with a "cancel" link).
-- Query-string override: `?build=js` or `?build=wasm` skips the chooser
-  entirely — gives UAT testers a single link they can share for either
-  build.
-- Share a common header so both builds render inside the same visual
-  shell (font, favicon, analytics snippet if we keep it).
-
-#### UAT workflow
-
-- A test matrix lives in `docs/uat-checklist.md` (new file,
-  created alongside Tier 1 scope). Each row is a creative-mode
-  behavior (move, jump, break block, place block, chunk streaming,
-  save/load once Tier 2 is in, etc.). Each column is "JS" / "WASM" —
-  testers tick both.
-- A divergence in any row blocks the tier gate. Either the WASM build
-  fixes the behavior or the row is explicitly excluded from Tier 1
-  scope (with justification).
-- Both builds share the same seed and chunk-gen function in their
-  respective languages during Tier 1. The long-term goal is a single
-  deterministic chunk-gen in `core/` that the JS build links against
-  via a small WASM shim — **but that is a Tier 2 nicety, not a Tier 1
-  requirement.** In Tier 1 it's acceptable to eyeball parity rather
-  than byte-match it.
-
-#### CI changes
-
-- `.github/workflows/static.yml` extended:
-  - Setup Emscripten (`mymindstorm/setup-emsdk` action) in addition to
-    Node.
-  - Run `npm run build:all` instead of `npm run build`.
-  - Fail the job if either `dist/js/index.html` or
-    `dist/wasm/index.html` is missing.
-- Deploy step unchanged — still uploads `dist/` to GitHub Pages.
+1. **The LOD tree and the hex bubble are two separate systems**,
+   stitched at a ~500 m suppression radius. Never try to do "hex tiles
+   at low LOD" — that's the slow path. Far away → triangles. Close →
+   hex prisms. No middle ground.
+2. **Floating origin in double-precision world coords.** Translate the
+   whole render frame by `-origin` before submitting vertices in
+   single-precision. Re-anchor only when the player drifts.
+3. **Per-column solid caches** in chunks (`min_solid`, `max_solid`,
+   `height_m`). The mesher's hot loop iterates `[min_solid, max_solid]`
+   per column instead of `[0, 256]`.
+4. **Hysteresis on LOD split/merge** (split at `arc * factor`, merge at
+   `arc * factor * 2`) prevents thrash at boundary distances.
+5. **Synchronous job system on web.** Caelum measured this and chose
+   it over pthreads. We follow.
+6. **`sokol-shdc`** for shaders. Inline GLSL was a Tier-0 shortcut.
+7. **One job pool, one ring buffer queue, condvars for native, sync
+   dispatch for web.** Don't over-engineer the threading layer.
 
 ### Acceptance criteria
 
-- [ ] Walk around a 4-chunk-radius flat voxel world at 60 FPS on a
-      mid-range laptop in Chrome.
-- [ ] Break and place blocks with immediate visual feedback.
-- [ ] Hotkeys 1–4 select block type.
-- [ ] Jumping + gravity feels right (port constants from
-      `src/player/Player.ts`).
-- [ ] No hitches > 16 ms from chunk generation or meshing.
-- [ ] WASM size < 1 MB compressed.
-- [ ] `core/` compiles as a standalone static lib with **zero** sokol
-      or emcc symbols referenced.
-- [ ] `npm run build:all` produces `dist/index.html`, `dist/js/**`,
-      and `dist/wasm/**` with zero errors.
-- [ ] Visiting `heavyphoton.com/tenebris/` shows the chooser; both
-      buttons route to working builds.
-- [ ] `?build=wasm` and `?build=js` query overrides work.
-- [ ] Itch deploy script is commented out and documented as such.
-- [ ] `docs/uat-checklist.md` exists with at least the Tier 1 row set
-      and is linked from the chooser page.
+- [ ] Spawn on a hex planet, see the horizon curve, walk around at
+      60 FPS sustained on reference hardware (Chrome on a mid laptop).
+- [ ] LOD transitions are visually seamless — no popping at the
+      bubble boundary, no gaps, no Z-fighting where LOD meets hex.
+- [ ] Walking 1 km doesn't drop below 50 FPS at any point (proves
+      streaming + origin shifting work).
+- [ ] WASM size < 2 MB compressed.
+- [ ] `core/` compiles standalone, no sokol symbols, no `printf`.
+- [ ] Hex tile generated at planet `(face=0, depth=13, tile=0)` is
+      identical between two clients with the same seed (determinism
+      check, scriptable in CI).
+- [ ] `npm run build:all` produces `dist/index.html` chooser + js +
+      wasm builds.
+- [ ] UAT checklist updated with the new hex-sphere row set.
 
 ### Estimated effort
 
-~3–5 weeks of focused work. Add ~3 days for the build-pipeline split
-and landing page (mostly CI + path plumbing, not new code).
+~6–10 weeks. This was the old Tier 3 estimate; we've collapsed it into
+Tier 1. Tier 2 (creative-mode polish) and Tier 4 (gameplay) push out
+correspondingly. Net schedule impact vs. the old plan: roughly +0
+weeks because we delete the cube Tier 1 entirely and recover most of
+Tier 3.
 
 ---
 
