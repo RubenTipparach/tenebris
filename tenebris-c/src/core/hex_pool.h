@@ -80,4 +80,31 @@ dvec3_t hex_pool_voxel_world(const hex_pool_t* p, const hex_chunk_t* c,
 /* World-space position of a chunk's tangent-plane (0,0,0) corner. */
 dvec3_t hex_pool_chunk_origin_world(const hex_pool_t* p, const hex_chunk_t* c);
 
+/* Convert a world-space position to hex pool coords. Returns false if
+ * the point is outside the active pool's XY range or the target chunk
+ * is pending/inactive. Layer is clamped to [0, HEX_LAYERS). */
+bool hex_pool_world_to_coords(const hex_pool_t* p, dvec3_t world,
+                              int32_t* out_cx, int32_t* out_cy,
+                              int* out_col, int* out_row, int* out_layer);
+
+/* Simple fixed-step raycast through the hex pool. Returns the first
+ * solid voxel hit plus the adjacent empty cell (place target). */
+typedef struct {
+    bool     has_hit;
+    int32_t  hit_cx, hit_cy;
+    int      hit_col, hit_row, hit_layer;
+    int32_t  place_cx, place_cy;
+    int      place_col, place_row, place_layer;
+    double   distance;
+} hex_ray_hit_t;
+
+hex_ray_hit_t hex_pool_raycast(const hex_pool_t* p, dvec3_t origin,
+                               dvec3_t dir_unit, double max_dist);
+
+/* Write a block at (cx, cy, col, row, layer). Rebuilds the target
+ * chunk's min/max-solid caches, marks it dirty. Returns false if the
+ * chunk isn't active. */
+bool hex_pool_set_voxel(hex_pool_t* p, int32_t cx, int32_t cy,
+                        int col, int row, int layer, uint8_t block);
+
 #endif

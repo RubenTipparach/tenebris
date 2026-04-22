@@ -12,3 +12,4 @@
 #include "sokol_log.h"
 #include "sokol_time.h"
 #include "sokol_debugtext.h"
+#include "sokol_gl.h"      /* immediate-mode 2D HUD for the mobile overlay */

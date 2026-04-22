@@ -1,5 +1,6 @@
 #include "client/player_ctrl.h"
 #include "client/input.h"
+#include "core/blocks.h"
 #include "core/hex_chunk.h"
 #include <math.h>
 
@@ -82,7 +83,7 @@ void player_init(player_ctrl_t* p, const body_config_t* body) {
     p->body = body;
     p->yaw = 0.0f;
     p->pitch = 0.0f;
-    p->selected_block = 1;
+    p->selected_block = BLOCK_STONE;  /* sane default for right-click placement */
     p->grounded = false;
     p->fly_mode = false;
     p->vy = 0.0f;

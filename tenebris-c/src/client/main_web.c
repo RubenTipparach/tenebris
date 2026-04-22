@@ -20,6 +20,8 @@
 #include "client/input.h"
 #include "client/player_ctrl.h"
 #include "client/renderer.h"
+#include "client/interact.h"
+#include "client/mobile_ui.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -32,6 +34,7 @@ static struct {
     lod_tree_t*   lod;
     hex_pool_t    hex_pool;
     player_ctrl_t player;
+    interact_state_t interact;
     dvec3_t       floating_origin;
     uint64_t      last_time;
     uint32_t      tick;
@@ -54,6 +57,7 @@ static void init(void) {
     input_init();
     job_system_init(LOD_NUM_WORKERS);
     renderer_init();
+    mobile_ui_init();
 
     G.body = planet_get(BODY_TENEBRIS);
     G.lod  = lod_tree_create(G.body);
@@ -113,7 +117,11 @@ static void update_overlay(float dt) {
         sdtx_printf("\n[click to lock mouse]\n");
         sdtx_color3b(0xff, 0xff, 0xff);
     }
-    sdtx_printf("\nWASD walks  SPACE jumps  SHIFT sprints  F fly  mouse looks\n");
+    if (G.interact.hit.has_hit) {
+        sdtx_printf("target: %.1fm  block=%d\n", G.interact.hit.distance, G.player.selected_block);
+    }
+    sdtx_printf("\nWASD walks  SPACE jumps  SHIFT sprints  F fly\n");
+    sdtx_printf("LMB breaks  RMB places  (or tap on-screen buttons)\n");
 }
 
 /* --------------------------------------------------------------------- */
@@ -125,6 +133,7 @@ static void frame(void) {
     G.tick++;
 
     player_update(&G.player, &G.hex_pool, dt);
+    interact_update(&G.interact, &G.hex_pool, &G.player);
 
     /* Recenter floating origin if the player drifts > 1 km from it. */
     dvec3_t player_pos = player_world_pos(&G.player);
@@ -163,6 +172,11 @@ static void frame(void) {
     update_overlay(dt);
     sdtx_draw();
 
+    /* Mobile overlay (virtual joystick + buttons). Registers its own
+     * hit rects with input.c so touches on the next frame classify
+     * correctly. Always drawn; unobtrusive on desktop. */
+    mobile_ui_draw();
+
     renderer_end_frame();
 }
 
@@ -176,6 +190,7 @@ static void event(const sapp_event* e) {
 }
 
 static void cleanup(void) {
+    mobile_ui_shutdown();
     renderer_shutdown();
     hex_pool_shutdown(&G.hex_pool);
     lod_tree_destroy(G.lod);  G.lod = NULL;

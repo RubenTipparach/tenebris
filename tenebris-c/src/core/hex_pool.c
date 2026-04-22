@@ -184,3 +184,128 @@ const hex_chunk_t* hex_pool_chunk_by_coord(const hex_pool_t* p, int32_t cx, int3
     const hex_chunk_t* c = &p->chunks[idx];
     return c->active ? c : NULL;
 }
+
+/* ----------------------------------------------------------------------- */
+
+bool hex_pool_world_to_coords(const hex_pool_t* p, dvec3_t world,
+                              int32_t* out_cx, int32_t* out_cy,
+                              int* out_col, int* out_row, int* out_layer) {
+    dvec3_t delta = dvec3_sub(world, p->anchor_world);
+    double tx = dvec3_dot(delta, p->basis.right);
+    double ty = dvec3_dot(delta, p->basis.fwd);
+    double tu = dvec3_dot(delta, p->basis.up);   /* radial offset */
+
+    int32_t cx = (int32_t)floor(tx / (double)HEX_CHUNK_WIDTH_M);
+    int32_t cy = (int32_t)floor(ty / (double)HEX_CHUNK_DEPTH_M);
+
+    double lx = tx - (double)cx * (double)HEX_CHUNK_WIDTH_M;
+    double ly = ty - (double)cy * (double)HEX_CHUNK_DEPTH_M;
+    int row = (int)floor(ly / (double)HEX_DY + 0.5);
+    if (row < 0) row = 0; else if (row >= HEX_ROWS) row = HEX_ROWS - 1;
+    double odd_off = (row & 1) ? (HEX_DX * 0.5) : 0.0;
+    int col = (int)floor((lx - odd_off) / (double)HEX_DX + 0.5);
+    if (col < 0) col = 0; else if (col >= HEX_COLS) col = HEX_COLS - 1;
+
+    int layer = (int)floor(tu / (double)HEX_HEIGHT) + HEX_BASE_PADDING;
+    if (layer < 0) layer = 0;
+    if (layer >= HEX_LAYERS) layer = HEX_LAYERS - 1;
+
+    const hex_chunk_t* c = hex_pool_chunk_by_coord(p, cx, cy);
+    if (!c || c->pending_fill) return false;
+
+    *out_cx = cx; *out_cy = cy;
+    *out_col = col; *out_row = row; *out_layer = layer;
+    return true;
+}
+
+/* Fixed-step DDA on a hex grid is awkward (hex-cell Voronoi boundaries
+ * aren't axis-aligned), so Tier 1 uses a small-step sample. Step size is
+ * a third of HEX_RADIUS so we don't miss single-voxel walls. Good enough
+ * for the short (<20 m) interaction raycast; a proper hex DDA is Tier 2.
+ */
+#define RAYCAST_STEP (HEX_RADIUS * 0.33f)
+
+hex_ray_hit_t hex_pool_raycast(const hex_pool_t* p, dvec3_t origin,
+                               dvec3_t dir_unit, double max_dist) {
+    hex_ray_hit_t h = (hex_ray_hit_t){ .has_hit = false };
+    int32_t prev_cx = 0, prev_cy = 0;
+    int prev_col = 0, prev_row = 0, prev_layer = 0;
+    bool prev_valid = false;
+
+    for (double d = 0.0; d <= max_dist; d += (double)RAYCAST_STEP) {
+        dvec3_t cur = dvec3_add(origin, dvec3_scale(dir_unit, d));
+        int32_t cx, cy; int col, row, layer;
+        if (!hex_pool_world_to_coords(p, cur, &cx, &cy, &col, &row, &layer)) continue;
+
+        const hex_chunk_t* c = hex_pool_chunk_by_coord(p, cx, cy);
+        if (!c || c->pending_fill) { prev_valid = false; continue; }
+
+        block_t b = (block_t)c->voxels[HEX_VOXEL_INDEX(col, row, layer)];
+        if (block_is_solid(b)) {
+            if (!prev_valid) return h;   /* started inside solid — ignore */
+            h.has_hit     = true;
+            h.hit_cx      = cx; h.hit_cy = cy;
+            h.hit_col     = col; h.hit_row = row; h.hit_layer = layer;
+            h.place_cx    = prev_cx; h.place_cy = prev_cy;
+            h.place_col   = prev_col; h.place_row = prev_row; h.place_layer = prev_layer;
+            h.distance    = d;
+            return h;
+        }
+        prev_cx = cx; prev_cy = cy;
+        prev_col = col; prev_row = row; prev_layer = layer;
+        prev_valid = true;
+    }
+    return h;
+}
+
+/* ----------------------------------------------------------------------- */
+
+static void rebuild_chunk_caches_at(hex_chunk_t* c, int col, int row) {
+    int mn = HEX_LAYERS, mx = -1;
+    for (int layer = 0; layer < HEX_LAYERS; ++layer) {
+        uint8_t b = c->voxels[HEX_VOXEL_INDEX(col, row, layer)];
+        if (b == BLOCK_AIR) continue;
+        if (layer < mn) mn = layer;
+        if (layer > mx) mx = layer;
+    }
+    int idx = col * HEX_ROWS + row;
+    c->col_min_solid[idx] = (int16_t)mn;
+    c->col_max_solid[idx] = (int16_t)mx;
+}
+
+bool hex_pool_set_voxel(hex_pool_t* p, int32_t cx, int32_t cy,
+                        int col, int row, int layer, uint8_t block) {
+    const int ix = cx + HEX_POOL_RADIUS;
+    const int iy = cy + HEX_POOL_RADIUS;
+    if (ix < 0 || ix >= HEX_POOL_SIDE || iy < 0 || iy >= HEX_POOL_SIDE) return false;
+    int idx = p->chunk_lookup[ix][iy];
+    if (idx < 0) return false;
+    hex_chunk_t* c = &p->chunks[idx];
+    if (!c->active || c->pending_fill) return false;
+    if (col < 0 || col >= HEX_COLS || row < 0 || row >= HEX_ROWS) return false;
+    if (layer < 0 || layer >= HEX_LAYERS) return false;
+
+    c->voxels[HEX_VOXEL_INDEX(col, row, layer)] = block;
+    rebuild_chunk_caches_at(c, col, row);
+    c->dirty = true;
+
+    /* Mark neighbor chunks dirty so seam faces redraw if the edit was
+     * on an edge cell. */
+    if (col == 0) {
+        const hex_chunk_t* nb = hex_pool_chunk_by_coord(p, cx - 1, cy);
+        if (nb) ((hex_chunk_t*)nb)->dirty = true;
+    }
+    if (col == HEX_COLS - 1) {
+        const hex_chunk_t* nb = hex_pool_chunk_by_coord(p, cx + 1, cy);
+        if (nb) ((hex_chunk_t*)nb)->dirty = true;
+    }
+    if (row == 0) {
+        const hex_chunk_t* nb = hex_pool_chunk_by_coord(p, cx, cy - 1);
+        if (nb) ((hex_chunk_t*)nb)->dirty = true;
+    }
+    if (row == HEX_ROWS - 1) {
+        const hex_chunk_t* nb = hex_pool_chunk_by_coord(p, cx, cy + 1);
+        if (nb) ((hex_chunk_t*)nb)->dirty = true;
+    }
+    return true;
+}
