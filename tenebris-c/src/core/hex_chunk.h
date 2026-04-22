@@ -37,6 +37,7 @@ typedef struct {
 
     bool     active;
     bool     dirty;            /* needs remesh */
+    bool     pending_fill;     /* needs terrain generation */
 } hex_chunk_t;
 
 void hex_chunk_init(hex_chunk_t* c);

@@ -71,7 +71,11 @@ static void block_color(block_t b, float out[3]) {
 
 /* Look up a block across potential chunk boundaries. Returns AIR when
  * the neighbor is out of the active pool (don't draw faces toward
- * unknown territory — avoids flashing chunk seams during streaming). */
+ * unknown territory - avoids flashing chunk seams during streaming).
+ *
+ * O(1) per call via hex_pool_chunk_by_coord; called ~6x per exposed
+ * voxel face so the linear scan this replaced was the mesher's worst
+ * hot spot at 81 active chunks. */
 static block_t sample_neighbor(const hex_pool_t* pool, int32_t cx, int32_t cy,
                                int ncol, int nrow, int nlayer) {
     if (nlayer < 0 || nlayer >= HEX_LAYERS) return BLOCK_AIR;
@@ -81,14 +85,9 @@ static block_t sample_neighbor(const hex_pool_t* pool, int32_t cx, int32_t cy,
     while (nrow < 0)         { nrow += HEX_ROWS; cy -= 1; }
     while (nrow >= HEX_ROWS) { nrow -= HEX_ROWS; cy += 1; }
 
-    for (int i = 0; i < HEX_POOL_COUNT; ++i) {
-        const hex_chunk_t* c = hex_pool_chunk_at(pool, i);
-        if (!c || !c->active) continue;
-        if (c->cx == cx && c->cy == cy) {
-            return (block_t)c->voxels[HEX_VOXEL_INDEX(ncol, nrow, nlayer)];
-        }
-    }
-    return BLOCK_AIR;
+    const hex_chunk_t* c = hex_pool_chunk_by_coord(pool, cx, cy);
+    if (!c || c->pending_fill) return BLOCK_AIR;
+    return (block_t)c->voxels[HEX_VOXEL_INDEX(ncol, nrow, nlayer)];
 }
 
 /* ----------------------------------------------------------------------- */

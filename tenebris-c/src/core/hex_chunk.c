@@ -20,7 +20,8 @@ void hex_chunk_activate(hex_chunk_t* c, int32_t cx, int32_t cy) {
         c->col_max_solid[i] = -1;
     }
     c->active = true;
-    c->dirty = true;
+    c->dirty = false;           /* no mesh yet; dirty is set after fill */
+    c->pending_fill = true;
 }
 
 void hex_chunk_deactivate(hex_chunk_t* c) {

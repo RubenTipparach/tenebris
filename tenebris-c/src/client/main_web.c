@@ -90,9 +90,16 @@ static void update_overlay(float dt) {
     sdtx_printf("alt: %.1f m  lon: %.2f  lat: %.2f\n",
                 alt, G.player.orbit_lon, G.player.orbit_lat);
     sdtx_printf("LOD nodes visible: %d\n", lod_tree_visible_count(G.lod));
-    sdtx_printf("hex chunks active: %d  remeshed: %zu\n",
+    const int pending = hex_pool_pending_count(&G.hex_pool);
+    sdtx_printf("hex chunks: %d active  %d loading  %zu remeshed/frame\n",
                 hex_pool_active_count(&G.hex_pool),
+                pending,
                 renderer_hex_remeshes_this_frame());
+    if (pending > 0) {
+        sdtx_color3b(0xf0, 0xc0, 0x50);
+        sdtx_printf("loading terrain...\n");
+        sdtx_color3b(0xff, 0xff, 0xff);
+    }
     sdtx_printf("tris: LOD=%zu  hex=%zu  total=%zu\n",
                 renderer_triangles_drawn_this_frame() - renderer_hex_triangles_drawn_this_frame(),
                 renderer_hex_triangles_drawn_this_frame(),
@@ -125,9 +132,12 @@ static void frame(void) {
     /* Update hex chunk bubble (may re-anchor + regen chunks). */
     hex_pool_update(&G.hex_pool, player_pos);
 
-    /* LOD: subdivide, then hide nodes inside the hex bubble. */
+    /* LOD: tell it where the bubble is so it skips subdividing inside,
+     * then run the split/merge pass. The bubble exclusion happens both
+     * at the split gate (no deeper CPU work inside bubble) and at the
+     * visibility collection (hide any leaves whose center is inside). */
+    lod_tree_set_bubble(G.lod, G.hex_pool.anchor_world, BUBBLE_RADIUS_M);
     lod_tree_update(G.lod, player_pos);
-    lod_tree_apply_suppression(G.lod, G.hex_pool.anchor_world, BUBBLE_RADIUS_M);
 
     input_consume();
 

@@ -43,6 +43,12 @@ typedef struct lod_tree_s lod_tree_t;
 lod_tree_t* lod_tree_create(const body_config_t* body);
 void        lod_tree_destroy(lod_tree_t* t);
 
+/* Configure the hex-bubble exclusion zone. Nodes whose center lies
+ * within `bubble_radius_m` of `bubble_center_world` are marked
+ * suppressed (hidden at draw time) AND excluded from subdivision
+ * (subtree never spawns). Set bubble_radius_m = 0 to disable. */
+void lod_tree_set_bubble(lod_tree_t* t, dvec3_t bubble_center_world, double bubble_radius_m);
+
 /* Update split/merge state given the camera position (planet-space,
  * double precision). Returns the count of visible nodes. */
 int  lod_tree_update(lod_tree_t* t, dvec3_t camera_world);
@@ -50,10 +56,5 @@ int  lod_tree_update(lod_tree_t* t, dvec3_t camera_world);
 /* Iterate visible nodes (post-update). Caller does not own the pointer. */
 int  lod_tree_visible_count(const lod_tree_t* t);
 const lod_node_t* lod_tree_node(const lod_tree_t* t, int visible_index);
-
-/* Suppress all nodes whose center lies within `bubble_radius` meters of
- * `bubble_center`. Called per-frame so the hex bubble does not get
- * over-drawn by the LOD tree. */
-void lod_tree_apply_suppression(lod_tree_t* t, dvec3_t bubble_center, double bubble_radius_m);
 
 #endif

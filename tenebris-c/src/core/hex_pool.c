@@ -9,6 +9,9 @@ void hex_pool_init(hex_pool_t* p, const body_config_t* body) {
     memset(p, 0, sizeof(*p));
     p->body = body;
     for (int i = 0; i < HEX_POOL_COUNT; ++i) hex_chunk_init(&p->chunks[i]);
+    for (int i = 0; i < HEX_POOL_SIDE; ++i)
+        for (int j = 0; j < HEX_POOL_SIDE; ++j)
+            p->chunk_lookup[i][j] = -1;
 }
 
 void hex_pool_shutdown(hex_pool_t* p) {
@@ -105,25 +108,60 @@ static void anchor_at(hex_pool_t* p, dvec3_t player_world) {
     p->basis        = phys_tangent_basis(p->anchor_dir);
     p->anchored     = true;
 
-    /* (Re)activate the grid centered at the new anchor. */
+    /* (Re)activate the grid centered at the new anchor. Chunks are
+     * marked pending_fill — actual terrain generation is streamed
+     * across subsequent hex_pool_update calls (HEX_POOL_FILL_BUDGET
+     * per frame). */
     int idx = 0;
     for (int dy = -HEX_POOL_RADIUS; dy <= HEX_POOL_RADIUS; ++dy) {
         for (int dx = -HEX_POOL_RADIUS; dx <= HEX_POOL_RADIUS; ++dx) {
-            hex_chunk_t* c = &p->chunks[idx++];
+            hex_chunk_t* c = &p->chunks[idx];
             hex_chunk_deactivate(c);
             hex_chunk_activate(c, dx, dy);
-            fill_chunk(p, c);
+            p->chunk_lookup[dx + HEX_POOL_RADIUS][dy + HEX_POOL_RADIUS] = idx;
+            idx++;
         }
     }
 }
 
+/* Pick the pending chunk whose center is closest to the player and
+ * fill it; do this up to HEX_POOL_FILL_BUDGET times per call. */
+static void process_pending_fills(hex_pool_t* p, dvec3_t player_world) {
+    for (int n = 0; n < HEX_POOL_FILL_BUDGET; ++n) {
+        int best = -1;
+        double best_d2 = 1e300;
+        for (int i = 0; i < HEX_POOL_COUNT; ++i) {
+            hex_chunk_t* c = &p->chunks[i];
+            if (!c->active || !c->pending_fill) continue;
+            dvec3_t co = hex_pool_chunk_origin_world(p, c);
+            dvec3_t d  = dvec3_sub(co, player_world);
+            double d2  = dvec3_dot(d, d);
+            if (d2 < best_d2) { best_d2 = d2; best = i; }
+        }
+        if (best < 0) return;
+        hex_chunk_t* c = &p->chunks[best];
+        fill_chunk(p, c);
+        c->pending_fill = false;
+    }
+}
+
 void hex_pool_update(hex_pool_t* p, dvec3_t player_world) {
-    if (!p->anchored) { anchor_at(p, player_world); return; }
+    if (!p->anchored) {
+        anchor_at(p, player_world);
+        process_pending_fills(p, player_world);
+        return;
+    }
     dvec3_t drift = dvec3_sub(player_world, p->anchor_world);
-    /* Project drift onto the tangent plane. Radial drift shouldn't
-     * trigger a re-anchor on its own. */
     double drift_t = dvec3_length(drift);
     if (drift_t > (double)HEX_POOL_REANCHOR_M) anchor_at(p, player_world);
+    process_pending_fills(p, player_world);
+}
+
+int hex_pool_pending_count(const hex_pool_t* p) {
+    int n = 0;
+    for (int i = 0; i < HEX_POOL_COUNT; ++i)
+        if (p->chunks[i].active && p->chunks[i].pending_fill) ++n;
+    return n;
 }
 
 int hex_pool_active_count(const hex_pool_t* p) {
@@ -135,4 +173,14 @@ int hex_pool_active_count(const hex_pool_t* p) {
 const hex_chunk_t* hex_pool_chunk_at(const hex_pool_t* p, int index) {
     if (index < 0 || index >= HEX_POOL_COUNT) return NULL;
     return &p->chunks[index];
+}
+
+const hex_chunk_t* hex_pool_chunk_by_coord(const hex_pool_t* p, int32_t cx, int32_t cy) {
+    const int ix = cx + HEX_POOL_RADIUS;
+    const int iy = cy + HEX_POOL_RADIUS;
+    if (ix < 0 || ix >= HEX_POOL_SIDE || iy < 0 || iy >= HEX_POOL_SIDE) return NULL;
+    int idx = p->chunk_lookup[ix][iy];
+    if (idx < 0) return NULL;
+    const hex_chunk_t* c = &p->chunks[idx];
+    return c->active ? c : NULL;
 }

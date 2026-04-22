@@ -46,6 +46,13 @@ struct lod_tree_s {
     int         visible[MAX_NODES];
     int         visible_count;
     float       depth_arc[LOD_MAX_DEPTH + 1];   /* angular radius per depth */
+
+    /* Hex-bubble exclusion zone. Nodes whose world-space center lies
+     * within bubble_radius_m of bubble_center_world are excluded from
+     * both visibility and subdivision. */
+    dvec3_t     bubble_center;
+    double      bubble_radius_m;
+    bool        has_bubble;
 };
 
 /* ----------------------------------------------------------------------- */
@@ -168,10 +175,18 @@ static double node_arc_m(const lod_tree_t* t, const lod_node_t* n) {
     return (double)n->angular_radius * t->body->radius_m;
 }
 
+static bool node_inside_bubble(const lod_tree_t* t, const lod_node_t* n) {
+    if (!t->has_bubble) return false;
+    dvec3_t node_world = dvec3_scale(n->center, t->body->radius_m);
+    dvec3_t delta = dvec3_sub(node_world, t->bubble_center);
+    return dvec3_length(delta) < t->bubble_radius_m;
+}
+
 /* Recursive top-down update. Decides split/merge for this node, then
  * recurses into survivors. The hysteresis band (split at arc*factor,
  * merge at arc*factor*MERGE_HYSTERESIS) prevents thrashing at the
- * boundary. */
+ * boundary. Inside the hex bubble: never split, and eagerly merge so
+ * the subtree doesn't squat on the node budget while it's hidden. */
 static void update_node(lod_tree_t* t, lod_node_handle h, dvec3_t camera) {
     if (h < 0) return;
     lod_node_t* n = &t->nodes[h];
@@ -181,9 +196,11 @@ static void update_node(lod_tree_t* t, lod_node_handle h, dvec3_t camera) {
     const double split_d = arc * (double)LOD_SPLIT_FACTOR;
     const double merge_d = split_d * (double)MERGE_HYSTERESIS;
 
+    const bool in_bubble = node_inside_bubble(t, n);
     const bool is_leaf = (n->children[0] < 0);
 
     if (is_leaf) {
+        if (in_bubble) return;
         /* Consider splitting. Don't split below configured max depth. */
         if (n->depth < t->body->max_lod_depth && dist < split_d) {
             split_node(t, h);
@@ -192,15 +209,16 @@ static void update_node(lod_tree_t* t, lod_node_handle h, dvec3_t camera) {
         return;
     }
 
-    /* Non-leaf: consider merging only if all children are still leaves.
-     * Merging a node with deeper descendants would cascade-drop a lot
-     * of GPU data in one frame; we prefer to let the tree settle. */
+    /* Non-leaf: merge if hidden by bubble (frees the subtree) or if far
+     * enough away that we've crossed the hysteresis threshold. */
+    if (in_bubble && children_all_leaves(t, n)) {
+        merge_node(t, h);
+        return;
+    }
     if (children_all_leaves(t, n) && dist > merge_d) {
         merge_node(t, h);
         return;
     }
-
-    /* Otherwise recurse. */
     for (int i = 0; i < 4; ++i) update_node(t, n->children[i], camera);
 }
 
@@ -240,6 +258,12 @@ void lod_tree_destroy(lod_tree_t* t) { free(t); }
 
 /* ----------------------------------------------------------------------- */
 
+void lod_tree_set_bubble(lod_tree_t* t, dvec3_t bubble_center_world, double bubble_radius_m) {
+    t->bubble_center   = bubble_center_world;
+    t->bubble_radius_m = bubble_radius_m;
+    t->has_bubble      = (bubble_radius_m > 0.0);
+}
+
 int lod_tree_update(lod_tree_t* t, dvec3_t camera_world) {
     /* Walk from each root face, split/merge as appropriate. */
     for (int i = 0; i < MAX_NODES; ++i) {
@@ -248,16 +272,17 @@ int lod_tree_update(lod_tree_t* t, dvec3_t camera_world) {
         update_node(t, (lod_node_handle)i, camera_world);
     }
 
-    /* Collect visible leaves. */
+    /* Collect visible leaves. Suppress nodes inside the hex bubble. */
     t->visible_count = 0;
     for (int i = 0; i < MAX_NODES && t->visible_count < MAX_NODES; ++i) {
         if (!t->used[i]) continue;
         lod_node_t* n = &t->nodes[i];
-        if (n->suppressed) continue;
         /* Leaf = no children. */
         bool is_leaf = true;
         for (int k = 0; k < 4; ++k) if (n->children[k] >= 0) { is_leaf = false; break; }
         if (!is_leaf) continue;
+        if (node_inside_bubble(t, n)) { n->suppressed = true; continue; }
+        n->suppressed = false;
         t->visible[t->visible_count++] = i;
     }
     return t->visible_count;
@@ -268,16 +293,4 @@ int lod_tree_visible_count(const lod_tree_t* t) { return t->visible_count; }
 const lod_node_t* lod_tree_node(const lod_tree_t* t, int visible_index) {
     if (visible_index < 0 || visible_index >= t->visible_count) return NULL;
     return &t->nodes[t->visible[visible_index]];
-}
-
-void lod_tree_apply_suppression(lod_tree_t* t, dvec3_t bubble_center, double bubble_radius_m) {
-    if (!t->body) return;
-    const double arc_limit = bubble_radius_m / t->body->radius_m;
-    const double cos_limit = cos(arc_limit);
-    dvec3_t bn = dvec3_normalize(bubble_center);
-    for (int i = 0; i < MAX_NODES; ++i) {
-        if (!t->used[i]) continue;
-        lod_node_t* n = &t->nodes[i];
-        n->suppressed = (dvec3_dot(n->center, bn) > cos_limit);
-    }
 }

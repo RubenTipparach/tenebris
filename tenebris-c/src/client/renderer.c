@@ -13,7 +13,10 @@
 /* ----------------------------------------------------------------------- */
 
 #define MAX_LOD_TRIANGLES  32768
-#define HEX_REMESH_BUDGET  2
+/* Upload budget matches Caelum: enough to keep the hex bubble visually
+ * complete within a few frames after a re-anchor, small enough that no
+ * single frame uploads more than ~1.5 MB of vertex data. */
+#define HEX_REMESH_BUDGET  8
 
 /* LOD vertex format — pos + color, 24 bytes. */
 typedef struct {
