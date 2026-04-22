@@ -1,25 +1,20 @@
 #ifndef TENEBRIS_CLIENT_INTERACT_H
 #define TENEBRIS_CLIENT_INTERACT_H
 
-#include "core/world.h"
+#include "core/hex_pool.h"
 #include "client/player_ctrl.h"
-#include <stdbool.h>
 
-#define INTERACT_MAX_DIST 8.0f
+#define INTERACT_MAX_DIST 8.0
 
 typedef struct {
-    bool            has_target;
-    world_ray_hit_t hit;
+    hex_ray_hit_t hit;   /* most recent raycast — used for outline */
 } interact_state_t;
 
-/*
- * Consumes edge-triggered click input and emits world_cmd_t through
- * world_apply_cmd. Even in single-player, going through world_cmd_t
- * keeps the code path identical to the MP wire handler (Tier 5).
- */
+/* Consume edge-triggered click / tap input and apply break/place through
+ * hex_pool_set_voxel. Tier 2-ish: break/place arrived with mobile
+ * controls ahead of schedule because the touch UI needed them. */
 void interact_update(interact_state_t* s,
-                     world_t* w,
-                     const player_ctrl_t* p,
-                     uint32_t tick);
+                     hex_pool_t* pool,
+                     const player_ctrl_t* player);
 
 #endif

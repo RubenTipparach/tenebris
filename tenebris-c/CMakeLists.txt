@@ -19,8 +19,12 @@ set(TENEBRIS_CORE_SOURCES
     src/core/physics.c
     src/core/proto.c
     src/core/rng.c
-    src/core/world.c
-    src/core/chunkgen.c
+    src/core/planet.c
+    src/core/planet_gen.c
+    src/core/icosphere.c
+    src/core/hex_chunk.c
+    src/core/hex_pool.c
+    src/core/job_system.c
 )
 
 add_library(tenebris_core STATIC ${TENEBRIS_CORE_SOURCES})
@@ -48,10 +52,11 @@ set(TENEBRIS_CLIENT_SOURCES
     src/client/sokol_impl.c
     src/client/main_web.c
     src/client/renderer.c
-    src/client/mesher.c
+    src/client/hex_mesher.c
     src/client/input.c
     src/client/player_ctrl.c
     src/client/interact.c
+    src/client/mobile_ui.c
     src/client/gfx_math.c
 )
 

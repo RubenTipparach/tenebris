@@ -1,9 +1,8 @@
 # Continuous build + deploy for Tenebris.
 #
-# - Runs on every push to any branch and every pull_request (continuous builds).
-# - Deploy-to-Pages step only runs for pushes to `main`. Branch pushes and PRs
-#   still compile + upload the artifact so reviewers can download and smoke-test
-#   the WASM build from any commit.
+# Every push to every branch builds AND deploys to GitHub Pages. Single-
+# dev / fast-iteration mode — whoever pushed last wins the live site.
+# Tighten to a branch allowlist later if the project grows contributors.
 name: Build and deploy
 
 on:
@@ -23,8 +22,10 @@ permissions:
   pages: write
   id-token: write
 
+# One deploy at a time across the whole repo, not per-ref, so a newer
+# push cleanly supersedes an older in-flight deploy.
 concurrency:
-  group: "pages-${{ github.ref }}"
+  group: "pages"
   cancel-in-progress: false
 
 jobs:
@@ -76,14 +77,12 @@ jobs:
           retention-days: 14
 
       - name: Upload pages artifact
-        if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
         uses: actions/upload-pages-artifact@v3
         with:
           path: 'dist'
 
   deploy:
     needs: build
-    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
