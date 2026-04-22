@@ -60,15 +60,16 @@ static void init(void) {
     hex_pool_init(&G.hex_pool, G.body);
     player_init(&G.player, G.body);
 
-    /* Tier 1 first-light: spawn low enough that the hex bubble is
-     * immediately in frame. Orbit camera around the planet; use SPACE/
-     * CTRL to change altitude if you want to see the LOD-only view. */
-    G.player.altitude_m = 30.0;
-
     dvec3_t start = player_world_pos(&G.player);
     G.floating_origin = start;
     G.last_time = stm_now();
     G.smoothed_fps = 60.0f;
+
+    /* Prime the hex pool so there's terrain under the player on frame 1.
+     * The first fill budget flush covers all 81 chunks synchronously
+     * here - one-time cost at startup, not a per-frame hitch. */
+    hex_pool_update(&G.hex_pool, start);
+    for (int i = 0; i < HEX_POOL_COUNT; ++i) hex_pool_update(&G.hex_pool, start);
 }
 
 /* --------------------------------------------------------------------- */
@@ -87,8 +88,10 @@ static void update_overlay(float dt) {
     double r = sqrt(pos.x*pos.x + pos.y*pos.y + pos.z*pos.z);
     double alt = r - G.body->radius_m;
     sdtx_printf("planet: %s  radius: %.1f km\n", G.body->name, G.body->radius_m * 1e-3);
-    sdtx_printf("alt: %.1f m  lon: %.2f  lat: %.2f\n",
-                alt, G.player.orbit_lon, G.player.orbit_lat);
+    sdtx_printf("alt: %.1f m  yaw: %.2f  pitch: %.2f\n", alt, G.player.yaw, G.player.pitch);
+    sdtx_printf("grounded: %s  fly: %s\n",
+                G.player.grounded ? "yes" : "no",
+                G.player.fly_mode ? "on" : "off");
     sdtx_printf("LOD nodes visible: %d\n", lod_tree_visible_count(G.lod));
     const int pending = hex_pool_pending_count(&G.hex_pool);
     sdtx_printf("hex chunks: %d active  %d loading  %zu remeshed/frame\n",
@@ -110,7 +113,7 @@ static void update_overlay(float dt) {
         sdtx_printf("\n[click to lock mouse]\n");
         sdtx_color3b(0xff, 0xff, 0xff);
     }
-    sdtx_printf("\nWASD orbits  SPACE/CTRL altitude  mouse looks\n");
+    sdtx_printf("\nWASD walks  SPACE jumps  SHIFT sprints  F fly  mouse looks\n");
 }
 
 /* --------------------------------------------------------------------- */
@@ -121,7 +124,7 @@ static void frame(void) {
     if (dt > 0.1f) dt = 0.1f;
     G.tick++;
 
-    player_update(&G.player, NULL, dt);
+    player_update(&G.player, &G.hex_pool, dt);
 
     /* Recenter floating origin if the player drifts > 1 km from it. */
     dvec3_t player_pos = player_world_pos(&G.player);
