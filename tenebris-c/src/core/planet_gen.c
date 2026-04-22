@@ -3,47 +3,129 @@
 #include <math.h>
 
 /*
- * Biome-aware planet sampler. Tier 1 port matches the flavor (if not the
- * exact math) of the Tenebris JS planet: water below sea level, sandy
- * beaches at the shoreline, grass at normal elevation, stone on peaks,
- * snow at high altitude or polar latitudes, ice on polar seas.
+ * Surface generator. Direct port of src/workers/terrainGenerationWorker.ts
+ * — same four layers (continental / mountain / hill / detail), same
+ * octave counts, same weights. The underlying primitive is value noise
+ * (our rng.c) instead of simplex because we haven't ported simplex yet;
+ * the octave stack gives a similar visual feel at our tuning.
  *
- * Deterministic — same (seed, unit_dir) always yields the same sample,
- * on both server and client, so world gen stays MP-ready.
+ * The JS constants are tuned for a 100 m planet where half the surface
+ * is visible at once. Our planet is ~3 km, so the per-unit-sphere scale
+ * is cranked up proportionally and the land-height amplitudes converted
+ * from "blocks" to "meters".
  */
 
-/* Surface altitude (relative to body->radius_m) is two-octave 3D value
- * noise sampled on the unit sphere. Amplitudes tuned for a ~3 km planet:
- * ~90 m peak-to-trough is plenty of relief at that scale. */
-#define TERRAIN_BASE_SCALE     2.5f
-#define TERRAIN_DETAIL_SCALE   8.0f
-#define TERRAIN_BASE_AMP      45.0f
-#define TERRAIN_DETAIL_AMP    14.0f
+/* JS values multiplied by SCALE_MULT = 15 so the bubble sees similar
+ * within-view variation to JS walking mode. */
+#define SCALE_MULT            15.0f
+#define CONTINENT_SCALE       (0.8f  * SCALE_MULT)
+#define MOUNTAIN_SCALE        (2.5f  * SCALE_MULT)
+#define HILL_SCALE            (5.0f  * SCALE_MULT)
+#define DETAIL_SCALE          (12.0f * SCALE_MULT)
+
+#define CONTINENT_WEIGHT      0.7f
+#define MOUNTAIN_HEIGHT       0.8f
+#define HILL_WEIGHT           0.15f
+#define DETAIL_WEIGHT         0.05f
+#define OCEAN_DEPTH_POWER     1.3f
+
+/* Amplitudes in meters. Bumped slightly over JS so coastlines aren't
+ * cliff-walls of ±1 block. */
+#define MAX_LAND_HEIGHT       32.0f
+#define MAX_OCEAN_DEPTH       18.0f
+#define LAND_BIAS             0.15f   /* push continent noise toward land */
+
+/* Biome thresholds. */
+#define SEA_LEVEL             0.0f
+#define BEACH_BAND            2.0f
+#define SNOW_ELEV            22.0f
+#define STONE_ELEV           28.0f
+#define POLAR_LATITUDE        0.72f
+#define COLD_LATITUDE         0.60f
+
+/* ----------------------------------------------------------------------- */
+/* fBm and ridge noise. Ports of fractalSimplex3D / ridgeSimplex3D from
+ * terrainGenerationWorker.ts. Seed is stirred per-octave so octaves
+ * don't correlate. */
+
+static float fractal3d(uint64_t seed, float x, float y, float z,
+                       float period, int octaves,
+                       float persistence, float lacunarity) {
+    float value = 0.0f, max_value = 0.0f;
+    float amplitude = 1.0f, frequency = period;
+    for (int i = 0; i < octaves; ++i) {
+        float n = noise3d_seed(seed + (uint64_t)i * 1117ULL,
+                               x * frequency, y * frequency, z * frequency);
+        n = n * 2.0f - 1.0f;       /* [0,1] -> [-1,1] */
+        value     += n * amplitude;
+        max_value += amplitude;
+        amplitude *= persistence;
+        frequency *= lacunarity;
+    }
+    return value / max_value;
+}
+
+static float ridge3d(uint64_t seed, float x, float y, float z,
+                     float period, int octaves,
+                     float persistence, float lacunarity) {
+    float value = 0.0f, max_value = 0.0f;
+    float amplitude = 1.0f, frequency = period;
+    for (int i = 0; i < octaves; ++i) {
+        float n = noise3d_seed(seed + (uint64_t)i * 1117ULL,
+                               x * frequency, y * frequency, z * frequency);
+        n = n * 2.0f - 1.0f;
+        float ridge = 1.0f - (float)fabs(n);
+        value     += ridge * ridge * amplitude;
+        max_value += amplitude;
+        amplitude *= persistence;
+        frequency *= lacunarity;
+    }
+    return value / max_value;
+}
+
+/* ----------------------------------------------------------------------- */
 
 float planet_surface_altitude(const body_config_t* body, dvec3_t unit_dir) {
     const float x = (float)unit_dir.x;
     const float y = (float)unit_dir.y;
     const float z = (float)unit_dir.z;
-    const float n1 = noise3d_seed(body->seed,
-                                  x * TERRAIN_BASE_SCALE,
-                                  y * TERRAIN_BASE_SCALE,
-                                  z * TERRAIN_BASE_SCALE);
-    const float n2 = noise3d_seed(body->seed ^ 0xA5A5A5A5ULL,
-                                  x * TERRAIN_DETAIL_SCALE,
-                                  y * TERRAIN_DETAIL_SCALE,
-                                  z * TERRAIN_DETAIL_SCALE);
-    const float s1 = n1 * 2.0f - 1.0f;
-    const float s2 = n2 * 2.0f - 1.0f;
-    return s1 * TERRAIN_BASE_AMP + s2 * TERRAIN_DETAIL_AMP;
+
+    /* Continental base — six octaves. sign(n) * |n|^0.8 pushes values
+     * toward the extremes so the land/ocean mask has crisp boundaries. */
+    float continent = fractal3d(body->seed, x, y, z,
+                                CONTINENT_SCALE, 6, 0.5f, 2.0f);
+    continent += LAND_BIAS;
+    float continent_value = (continent >= 0.0f ? 1.0f : -1.0f)
+                            * (float)pow((double)fabs(continent), 0.8);
+
+    /* Mountain ridges on top of land. */
+    float mountain_noise = ridge3d(body->seed, x, y, z,
+                                   MOUNTAIN_SCALE, 4, 0.5f, 2.2f);
+    float land_factor = (continent_value > 0.0f ? continent_value : 0.0f);
+    float mountain_height = mountain_noise * land_factor * MOUNTAIN_HEIGHT;
+
+    /* Hills + detail. Hills are dampened outside land. */
+    float hill_noise   = fractal3d(body->seed, x, y, z,
+                                   HILL_SCALE,   3, 0.5f, 2.0f);
+    float detail_noise = fractal3d(body->seed, x, y, z,
+                                   DETAIL_SCALE, 2, 0.5f, 2.0f);
+
+    float height = continent_value * CONTINENT_WEIGHT;
+    height += mountain_height;
+    height += hill_noise * HILL_WEIGHT * (land_factor > 0.1f ? 1.0f : 0.3f);
+    height += detail_noise * DETAIL_WEIGHT;
+
+    /* Convert normalized height in [-1, +1] to meters. Use a power curve
+     * on the ocean side so sea floors get naturally deeper offshore. */
+    if (height >= 0.0f) {
+        return height * MAX_LAND_HEIGHT;
+    } else {
+        float ocean_factor = (float)pow((double)fabs(height), (double)OCEAN_DEPTH_POWER);
+        return -ocean_factor * MAX_OCEAN_DEPTH;
+    }
 }
 
-/* Biome tunables. */
-#define SEA_LEVEL        0.0f
-#define BEACH_BAND       2.0f
-#define SNOW_ELEV       25.0f
-#define STONE_ELEV      35.0f
-#define POLAR_LATITUDE   0.72f
-#define COLD_LATITUDE    0.60f
+/* ----------------------------------------------------------------------- */
 
 column_profile_t planet_profile(const body_config_t* body, dvec3_t unit_dir) {
     column_profile_t p;
@@ -58,7 +140,7 @@ column_profile_t planet_profile(const body_config_t* body, dvec3_t unit_dir) {
 block_t planet_sample_with_profile(const column_profile_t* prof, float altitude_m) {
     const float surface = prof->surface_m;
 
-    /* AIR above the ground, unless we're in the water column. */
+    /* Air/water above the ground. */
     if (altitude_m > surface) {
         if (altitude_m < SEA_LEVEL) {
             return prof->polar ? BLOCK_ICE : BLOCK_WATER;
@@ -66,7 +148,7 @@ block_t planet_sample_with_profile(const column_profile_t* prof, float altitude_
         return BLOCK_AIR;
     }
 
-    /* Top voxel of the column — the "biome" decision layer. */
+    /* Top voxel — biome decision layer. */
     if (altitude_m > surface - 1.0f) {
         if (surface > SEA_LEVEL - BEACH_BAND && surface < SEA_LEVEL + BEACH_BAND) {
             return BLOCK_SAND;

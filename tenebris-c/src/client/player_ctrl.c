@@ -4,11 +4,17 @@
 #include "core/hex_chunk.h"
 #include <math.h>
 
-#define MOUSE_SENS    0.002f
-#define WALK_SPEED    8.0f
+#define MOUSE_SENS       0.002f
+/* Right-stick look sensitivity. Units: radians per second at stick=1.0.
+ * 2.4 rad/s ≈ full 360° in 2.6 s at max deflection — fast enough to
+ * react, slow enough to aim. */
+#define LOOK_STICK_SENS  2.4f
+#define WALK_SPEED       8.0f
 #define SPRINT_SPEED 14.0f
 #define FLY_SPEED    40.0f
-#define JUMP_VEL      6.0f
+#define JUMP_VEL      8.0f
+#define JETPACK_ACCEL 42.0f            /* continuous thrust when jump held mid-air */
+#define JETPACK_MAX_VY 14.0f           /* terminal upward velocity */
 #define PITCH_LIMIT   1.55334f
 
 /* ----------------------------------------------------------------------- */
@@ -100,9 +106,15 @@ dvec3_t player_world_pos(const player_ctrl_t* p) { return p->position; }
 void player_update(player_ctrl_t* p, hex_pool_t* pool, float dt) {
     const input_state_t* in = input_state();
 
-    /* Mouse look. */
+    /* Look: mouse drag + right-thumb virtual stick. Stick is analog so
+     * scales by dt; mouse_dx is already integer pixel delta so uses its
+     * own sensitivity. */
     p->yaw   -= in->mouse_dx * MOUSE_SENS;
     p->pitch -= in->mouse_dy * MOUSE_SENS;
+    if (in->look_stick_active) {
+        p->yaw   -= in->look_stick_x * LOOK_STICK_SENS * dt;
+        p->pitch += in->look_stick_y * LOOK_STICK_SENS * dt;
+    }
     if (p->pitch >  PITCH_LIMIT) p->pitch =  PITCH_LIMIT;
     if (p->pitch < -PITCH_LIMIT) p->pitch = -PITCH_LIMIT;
 
@@ -128,8 +140,14 @@ void player_update(player_ctrl_t* p, hex_pool_t* pool, float dt) {
         p->vy = 0.0f;
     } else {
         if (in->phys.jump && p->grounded) {
+            /* Tap-to-jump impulse. */
             p->vy = JUMP_VEL;
             p->grounded = false;
+        } else if (in->phys.jump && !p->grounded) {
+            /* Held mid-air = jetpack. Apply thrust, cap upward velocity
+             * so you don't rocket off the planet. */
+            p->vy += JETPACK_ACCEL * dt;
+            if (p->vy > JETPACK_MAX_VY) p->vy = JETPACK_MAX_VY;
         }
         p->vy -= gravity * dt;
         tangent_basis_t b = phys_tangent_basis(p->position);
