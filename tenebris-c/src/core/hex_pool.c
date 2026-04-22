@@ -70,9 +70,14 @@ static void fill_chunk(hex_pool_t* p, hex_chunk_t* c) {
             const double total_y = (double)c->cy * (double)HEX_CHUNK_DEPTH_M + (double)ly;
             dvec3_t total_tan = dvec3_add(dvec3_scale(p->basis.right, total_x),
                                           dvec3_scale(p->basis.fwd,   total_y));
-            dvec3_t col_dir   = dvec3_normalize(dvec3_add(p->anchor_world, total_tan));
+            dvec3_t col_dir = dvec3_normalize(dvec3_add(p->anchor_world, total_tan));
 
-            const float surface_m = planet_surface_altitude(p->body, col_dir);
+            /* One noise lookup per column → cheap biome profile for the
+             * whole layer stack. Water layers count as "solid" for the
+             * min/max-solid caches so the mesher sees them; the mesher
+             * and block_is_solid disagree intentionally (water is
+             * visible but walkable-through). */
+            const column_profile_t prof = planet_profile(p->body, col_dir);
 
             int col_idx = col * HEX_ROWS + row;
             int min_s = HEX_LAYERS;
@@ -80,13 +85,8 @@ static void fill_chunk(hex_pool_t* p, hex_chunk_t* c) {
 
             for (int layer = 0; layer < HEX_LAYERS; ++layer) {
                 const float altitude_m = (float)(layer - HEX_BASE_PADDING) * HEX_HEIGHT;
-                block_t b;
-                if (layer < HEX_BEDROCK)              b = BLOCK_STONE;
-                else if (altitude_m > surface_m)      b = BLOCK_AIR;
-                else if (altitude_m > surface_m - 1)  b = BLOCK_GRASS;
-                else if (altitude_m > surface_m - 4)  b = BLOCK_DIRT;
-                else                                   b = BLOCK_STONE;
-
+                block_t b = (layer < HEX_BEDROCK) ? BLOCK_STONE
+                          : planet_sample_with_profile(&prof, altitude_m);
                 c->voxels[HEX_VOXEL_INDEX(col, row, layer)] = (uint8_t)b;
                 if (b != BLOCK_AIR) {
                     if (layer < min_s) min_s = layer;

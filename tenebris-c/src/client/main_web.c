@@ -27,7 +27,10 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-#define BUBBLE_RADIUS_M 500.0
+/* Smaller bubble on the small Tenebris planet: 200 m is plenty of
+ * playable area at ~3 km radius and keeps the LOD tree doing most of
+ * the work for the far side. */
+#define BUBBLE_RADIUS_M 200.0
 
 static struct {
     const body_config_t* body;
