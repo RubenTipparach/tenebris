@@ -210,6 +210,13 @@ void renderer_init(void) {
      * (scripts/build-wasm.sh copies them from public/textures). Tiles
      * are laid out in a single row, indexed by block_t value. */
     {
+        /* stb_image defaults to top-down pixel order (row 0 = image top).
+         * Our side-face UVs have v=0 at the world-bottom of a column, so
+         * without a flip the grass/snow (authored at the top of each PNG)
+         * would sample at the bottom of side faces and look upside-down.
+         * Three.js does the same flip via texture.flipY = true. */
+        stbi_set_flip_vertically_on_load(1);
+
         const int tile_px = 16;
         const int W = tile_px * HEX_ATLAS_TILES;
         const int H = tile_px;
