@@ -9,9 +9,10 @@
  *   - core/physics AABB vs voxels (shared with server)
  *   - renderer.c:  sokol_gfx draw calls
  *   - interact.c:  break/place through world_cmd_t (same code path as MP)
+ *
+ * Sokol single-header impls live in client/sokol_impl.c - do NOT
+ * re-define SOKOL_IMPL here.
  */
-
-#define SOKOL_IMPL
 #include "sokol_gfx.h"
 #include "sokol_app.h"
 #include "sokol_glue.h"
@@ -176,6 +177,6 @@ sapp_desc sokol_main(int argc, char* argv[]) {
         .window_title = "Tenebris (WASM Preview)",
         .icon.sokol_default = true,
         .logger.func  = slog_func,
-        .html5_canvas_selector = "#canvas",
+        .html5.canvas_selector = "#canvas",
     };
 }

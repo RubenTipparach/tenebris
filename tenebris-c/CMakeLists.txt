@@ -45,6 +45,7 @@ target_include_directories(tenebris_third_party INTERFACE
 # client build — different shape depending on target
 # ---------------------------------------------------------------------------
 set(TENEBRIS_CLIENT_SOURCES
+    src/client/sokol_impl.c
     src/client/main_web.c
     src/client/renderer.c
     src/client/mesher.c
