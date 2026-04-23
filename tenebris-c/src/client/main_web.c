@@ -29,11 +29,14 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-/* Streaming budget: tiles generated per frame. Each tile gen is one
- * four-octave noise evaluation + 16 block classification calls, so 16
- * tiles/frame ≈ 64 noise calls + 256 block decisions — fast. */
-#define GEN_TILES_PER_FRAME  16
-#define SUBDIVISIONS          3
+/* Streaming budget: tiles generated per frame. Bumped up because
+ * subdivisions=6 means 40,962 tiles total — at 16/frame load would
+ * take 42 s, at 512/frame it's ~80 frames (1.3 s). Each tile gen is
+ * only a handful of noise evals so 512/frame is well inside budget. */
+#define GEN_TILES_PER_FRAME  512
+/* Match Tenebris JS Earth. Tile count by subs: 0→12, 1→42, 2→162,
+ * 3→642, 4→2562, 5→10242, 6→40962. */
+#define SUBDIVISIONS          6
 
 static struct {
     const body_config_t* body;

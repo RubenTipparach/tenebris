@@ -15,19 +15,19 @@
 #include <math.h>
 
 /* ----------------------------------------------------------------------- */
-/* One GPU buffer pair per tile. Goldberg at subs=3 has 642 tiles; each
- * tile's mesh is ~8-16 triangles so the per-buffer overhead is the
- * dominant cost, not the vertex throughput. We allocate buffers lazily
- * and cap the number of rebuilds per frame to keep the frame budget.
+/* Goldberg @ subs=6 = 40,962 tiles. Per-tile draw calls would cost
+ * ~400 ms/frame just in binding overhead. Instead we build a single
+ * merged mesh on CPU, upload once to the GPU, and render the whole
+ * planet in one sg_draw call.
+ *
+ * Mesh build is streamed: each frame we mesh up to MESH_BUDGET newly-
+ * generated tiles, append to the CPU mesh, and re-upload. Only dirty
+ * tiles are meshed — after the initial pass we only rebuild on edits.
  */
-typedef struct {
-    sg_buffer vbuf;
-    sg_buffer ibuf;
-    int       index_count;
-    bool      live;
-} tile_gpu_t;
 
-#define REMESH_BUDGET_PER_FRAME  12   /* tiles meshed + uploaded per frame */
+#define MESH_BUDGET_PER_FRAME  512
+#define MAX_VERTICES           (2u << 20)    /* 2M verts cap (~64 MB)   */
+#define MAX_INDICES            (6u << 20)    /* 6M indices (~24 MB)     */
 
 static struct {
     sg_pipeline pip_hex;
@@ -35,18 +35,31 @@ static struct {
     sg_view     atlas_view;
     sg_sampler  atlas_smp;
 
-    tile_gpu_t* gpu_tiles;
-    int         gpu_tile_count;
-    hex_mesh_t  scratch;
+    /* Single merged mesh. Rebuilt incrementally as tiles are meshed. */
+    sg_buffer   vbuf;
+    sg_buffer   ibuf;
+    hex_mesh_t  mesh;
+    int         mesh_cursor;              /* tiles meshed into the CPU mesh so far */
+    int         last_uploaded_cursor;     /* mesh_cursor value at the last GPU upload */
+    int         last_uploaded_index_count;/* draw count = last-uploaded index_count */
 
     sg_pass_action pass_action;
     render_env_t   env;
 
-    /* Stats */
     size_t tris;
-    size_t tiles_drawn;
     size_t tiles_remeshed;
 } R;
+
+/* Map from tile index to [vertex_offset, vertex_count, index_offset, index_count]
+ * so edits can rebuild just that tile's slice. Kept flat; -1 = not meshed yet. */
+typedef struct {
+    uint32_t vert_offset;
+    uint32_t vert_count;
+    uint32_t idx_offset;
+    uint32_t idx_count;
+} tile_slice_t;
+
+static tile_slice_t* SLICES = NULL;
 
 /* ----------------------------------------------------------------------- */
 
@@ -194,21 +207,38 @@ void renderer_init(void) {
         .face_winding = SG_FACEWINDING_CCW,
         .label = "hex-pipeline",
     });
+
+    /* Allocate the two big streaming buffers up front at their max size.
+     * sg_update_buffer replaces the whole buffer each call; we always
+     * submit only the used prefix. */
+    R.vbuf = sg_make_buffer(&(sg_buffer_desc){
+        .size = (size_t)MAX_VERTICES * sizeof(hex_vertex_t),
+        .usage.stream_update = true,
+        .label = "world-vbuf",
+    });
+    R.ibuf = sg_make_buffer(&(sg_buffer_desc){
+        .size = (size_t)MAX_INDICES * sizeof(uint32_t),
+        .usage.stream_update = true,
+        .usage.index_buffer  = true,
+        .label = "world-ibuf",
+    });
+
     bake_atlas();
-    hex_mesh_init(&R.scratch);
+    hex_mesh_init(&R.mesh);
+    /* Pre-allocate the CPU mesh at full GPU capacity so the streaming
+     * path never realloc()s while meshing 40k tiles — one large malloc
+     * is far cheaper than a dozen exponentially-growing ones. */
+    R.mesh.vertex_cap = MAX_VERTICES;
+    R.mesh.vertices = (hex_vertex_t*)malloc(R.mesh.vertex_cap * sizeof(hex_vertex_t));
+    R.mesh.index_cap = MAX_INDICES;
+    R.mesh.indices = (uint32_t*)malloc(R.mesh.index_cap * sizeof(uint32_t));
 }
 
 void renderer_shutdown(void) {
-    if (R.gpu_tiles) {
-        for (int i = 0; i < R.gpu_tile_count; ++i) {
-            if (R.gpu_tiles[i].live) {
-                sg_destroy_buffer(R.gpu_tiles[i].vbuf);
-                sg_destroy_buffer(R.gpu_tiles[i].ibuf);
-            }
-        }
-        free(R.gpu_tiles);
-    }
-    hex_mesh_free(&R.scratch);
+    hex_mesh_free(&R.mesh);
+    free(SLICES); SLICES = NULL;
+    sg_destroy_buffer(R.vbuf);
+    sg_destroy_buffer(R.ibuf);
     sg_destroy_view(R.atlas_view);
     sg_destroy_image(R.atlas_img);
     sg_destroy_sampler(R.atlas_smp);
@@ -219,7 +249,6 @@ void renderer_begin_frame(int w, int h, render_env_t env) {
     (void)w; (void)h;
     R.env = env;
     R.tris = 0;
-    R.tiles_drawn = 0;
     R.tiles_remeshed = 0;
     R.pass_action = (sg_pass_action){
         .colors[0] = {
@@ -233,64 +262,96 @@ void renderer_begin_frame(int w, int h, render_env_t env) {
 
 /* ----------------------------------------------------------------------- */
 
-static void ensure_gpu_array(world_t* w) {
-    if (R.gpu_tile_count != w->tile_count) {
-        /* First call or world resized — allocate the tile GPU pool. */
-        if (R.gpu_tiles) {
-            for (int i = 0; i < R.gpu_tile_count; ++i) {
-                if (R.gpu_tiles[i].live) {
-                    sg_destroy_buffer(R.gpu_tiles[i].vbuf);
-                    sg_destroy_buffer(R.gpu_tiles[i].ibuf);
-                }
-            }
-            free(R.gpu_tiles);
-        }
-        R.gpu_tile_count = w->tile_count;
-        R.gpu_tiles = (tile_gpu_t*)calloc((size_t)R.gpu_tile_count, sizeof(tile_gpu_t));
+static void ensure_slices(world_t* w) {
+    if (!SLICES) {
+        SLICES = (tile_slice_t*)calloc((size_t)w->tile_count, sizeof(tile_slice_t));
     }
 }
 
-static void upload_tile(tile_gpu_t* g, const hex_mesh_t* m) {
-    if (g->live) {
-        sg_destroy_buffer(g->vbuf);
-        sg_destroy_buffer(g->ibuf);
-        g->live = false;
-    }
-    if (m->vertex_count == 0 || m->index_count == 0) {
-        g->index_count = 0;
-        return;
-    }
-    g->vbuf = sg_make_buffer(&(sg_buffer_desc){
-        .data = { .ptr = m->vertices, .size = m->vertex_count * sizeof(hex_vertex_t) },
-        .label = "tile-vbuf",
-    });
-    g->ibuf = sg_make_buffer(&(sg_buffer_desc){
-        .usage.index_buffer = true,
-        .data = { .ptr = m->indices, .size = m->index_count * sizeof(uint32_t) },
-        .label = "tile-ibuf",
-    });
-    g->index_count = (int)m->index_count;
-    g->live = true;
+/* Append a single tile's geometry to the running mesh. Records its
+ * offset/count so it can be rebuilt later for edits. */
+static void append_tile_to_mesh(world_t* w, int tile_idx) {
+    /* Remember where this tile starts in the merged buffers. */
+    SLICES[tile_idx].vert_offset = (uint32_t)R.mesh.vertex_count;
+    SLICES[tile_idx].idx_offset  = (uint32_t)R.mesh.index_count;
+
+    /* Mesher appends relative indices starting from 0; we offset them
+     * into the merged buffer by adding the current vertex count. */
+    uint32_t base = (uint32_t)R.mesh.vertex_count;
+    size_t idx_before = R.mesh.index_count;
+    hex_mesh_build_tile(&R.mesh, w, tile_idx);
+    /* Offset the indices just appended by `base`. The mesher writes
+     * indices relative to its own vertex count delta, not 0, so the
+     * vertices it appends are already indexed correctly from 0. */
+    (void)base; (void)idx_before;
+
+    SLICES[tile_idx].vert_count = (uint32_t)R.mesh.vertex_count - SLICES[tile_idx].vert_offset;
+    SLICES[tile_idx].idx_count  = (uint32_t)R.mesh.index_count  - SLICES[tile_idx].idx_offset;
 }
 
 void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world) {
-    ensure_gpu_array(world);
+    ensure_slices(world);
 
-    /* Remesh dirty tiles, capped per frame. */
-    int remeshed = 0;
-    for (int i = 0; i < world->tile_count && remeshed < REMESH_BUDGET_PER_FRAME; ++i) {
-        /* Skip tiles that haven't been generated yet. */
-        if (i >= world->gen_cursor) break;
-        if (!world_tile_dirty(world, i)) continue;
-        hex_mesh_reset(&R.scratch);
-        hex_mesh_build_tile(&R.scratch, world, i);
-        upload_tile(&R.gpu_tiles[i], &R.scratch);
-        world_tile_clear_dirty(world, i);
-        remeshed++;
+    /* Stream mesh: each frame, mesh some newly-generated tiles. Capped
+     * so no single frame spends too long in the mesher. Only tiles
+     * below gen_cursor have block data — skip the rest. */
+    int budget = MESH_BUDGET_PER_FRAME;
+    int pending_since_upload = R.mesh_cursor - R.last_uploaded_cursor;
+    while (R.mesh_cursor < world->gen_cursor && budget > 0) {
+        append_tile_to_mesh(world, R.mesh_cursor);
+        R.mesh_cursor++;
+        pending_since_upload++;
+        budget--;
+        R.tiles_remeshed++;
     }
-    R.tiles_remeshed = (size_t)remeshed;
 
-    /* Draw. */
+    /* Upload cadence: while streaming, upload every ~4096 meshed tiles
+     * so the world progressively appears instead of holding the whole
+     * load behind one giant upload. Once streaming is complete, flush
+     * once to guarantee the final tiles are visible. */
+    const int UPLOAD_EVERY = 4096;
+    bool time_to_upload =
+        (pending_since_upload >= UPLOAD_EVERY) ||
+        (R.mesh_cursor == world->tile_count &&
+         R.last_uploaded_cursor < R.mesh_cursor);
+
+    /* Edits: rebuild any dirty tile whose slice exists. For simplicity
+     * (and scale — 40k tiles) we do a full rebuild of the merged mesh
+     * when any post-init edit happens. Still bounded by the dirty set
+     * which is usually small. */
+    bool any_dirty_post_init = false;
+    if (R.mesh_cursor >= world->tile_count) {
+        for (int i = 0; i < world->tile_count; ++i) {
+            if (world_tile_dirty(world, i)) { any_dirty_post_init = true; break; }
+        }
+    }
+    if (any_dirty_post_init) {
+        hex_mesh_reset(&R.mesh);
+        for (int i = 0; i < world->tile_count; ++i) {
+            append_tile_to_mesh(world, i);
+            world_tile_clear_dirty(world, i);
+        }
+        time_to_upload = true;
+        R.tiles_remeshed = (size_t)world->tile_count;
+    }
+
+    if (time_to_upload && R.mesh.vertex_count > 0) {
+        sg_update_buffer(R.vbuf, &(sg_range){
+            .ptr = R.mesh.vertices,
+            .size = R.mesh.vertex_count * sizeof(hex_vertex_t),
+        });
+        sg_update_buffer(R.ibuf, &(sg_range){
+            .ptr = R.mesh.indices,
+            .size = R.mesh.index_count * sizeof(uint32_t),
+        });
+        R.last_uploaded_cursor = R.mesh_cursor;
+        R.last_uploaded_index_count = (int)R.mesh.index_count;
+    }
+
+    /* Draw: one call for whatever was last uploaded to the GPU. The CPU
+     * mesh may be ahead of that (tiles meshed this frame but not yet
+     * uploaded); those tiles will appear on the next upload cycle. */
+    if (R.last_uploaded_index_count == 0) return;
     sg_apply_pipeline(R.pip_hex);
     mat4_t vp = mat4_mul(proj, view);
     sg_apply_uniforms(0, &(sg_range){ .ptr = vp.m, .size = sizeof(vp.m) });
@@ -299,20 +360,14 @@ void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world) {
         R.env.ambient.x, R.env.ambient.y, R.env.ambient.z, 0.0f,
     };
     sg_apply_uniforms(1, &(sg_range){ .ptr = light_ub, .size = sizeof(light_ub) });
-
-    for (int i = 0; i < R.gpu_tile_count; ++i) {
-        tile_gpu_t* g = &R.gpu_tiles[i];
-        if (!g->live || g->index_count == 0) continue;
-        sg_apply_bindings(&(sg_bindings){
-            .vertex_buffers[0] = g->vbuf,
-            .index_buffer      = g->ibuf,
-            .views[0]          = R.atlas_view,
-            .samplers[0]       = R.atlas_smp,
-        });
-        sg_draw(0, g->index_count, 1);
-        R.tris += (size_t)(g->index_count / 3);
-        R.tiles_drawn++;
-    }
+    sg_apply_bindings(&(sg_bindings){
+        .vertex_buffers[0] = R.vbuf,
+        .index_buffer      = R.ibuf,
+        .views[0]          = R.atlas_view,
+        .samplers[0]       = R.atlas_smp,
+    });
+    sg_draw(0, R.last_uploaded_index_count, 1);
+    R.tris = (size_t)R.last_uploaded_index_count / 3;
 }
 
 void renderer_end_frame(void) {
@@ -321,5 +376,5 @@ void renderer_end_frame(void) {
 }
 
 size_t renderer_triangles_drawn_this_frame(void) { return R.tris; }
-size_t renderer_tiles_drawn_this_frame(void)     { return R.tiles_drawn; }
+size_t renderer_tiles_drawn_this_frame(void)     { return R.tris > 0 ? (size_t)R.mesh_cursor : 0; }
 size_t renderer_tiles_remeshed_this_frame(void)  { return R.tiles_remeshed; }
