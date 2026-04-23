@@ -21,9 +21,8 @@ set(TENEBRIS_CORE_SOURCES
     src/core/rng.c
     src/core/planet.c
     src/core/planet_gen.c
-    src/core/icosphere.c
-    src/core/hex_chunk.c
-    src/core/hex_pool.c
+    src/core/goldberg.c
+    src/core/world.c
     src/core/job_system.c
 )
 
@@ -79,14 +78,16 @@ if (EMSCRIPTEN)
 
     # Populate assets/ from the parent project's public/textures when the
     # C project is built standalone (no scripts/build-wasm.sh in the loop).
-    # Individual files so CMake re-runs if any texture changes.
+    # Filenames must match the bake_atlas block in renderer.c.
     set(TENEBRIS_PUBLIC_TEXTURES "${CMAKE_SOURCE_DIR}/../public/textures")
     if (EXISTS "${TENEBRIS_PUBLIC_TEXTURES}/rocks.png")
         file(MAKE_DIRECTORY "${CMAKE_SOURCE_DIR}/assets/textures")
-        configure_file("${TENEBRIS_PUBLIC_TEXTURES}/rocks.png"      "${CMAKE_SOURCE_DIR}/assets/textures/stone.png"      COPYONLY)
-        configure_file("${TENEBRIS_PUBLIC_TEXTURES}/dirt.png"       "${CMAKE_SOURCE_DIR}/assets/textures/dirt.png"       COPYONLY)
-        configure_file("${TENEBRIS_PUBLIC_TEXTURES}/grass.png"      "${CMAKE_SOURCE_DIR}/assets/textures/grass_top.png"  COPYONLY)
-        configure_file("${TENEBRIS_PUBLIC_TEXTURES}/dirt_grass.png" "${CMAKE_SOURCE_DIR}/assets/textures/grass_side.png" COPYONLY)
+        foreach(name water sand dirt grass rocks ice snow dirt_grass dirt_snow torch moon)
+            if (EXISTS "${TENEBRIS_PUBLIC_TEXTURES}/${name}.png")
+                configure_file("${TENEBRIS_PUBLIC_TEXTURES}/${name}.png"
+                               "${CMAKE_SOURCE_DIR}/assets/textures/${name}.png" COPYONLY)
+            endif()
+        endforeach()
     endif()
 
     # Copy assets next to the build output.

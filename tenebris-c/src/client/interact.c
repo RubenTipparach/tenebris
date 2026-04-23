@@ -3,9 +3,8 @@
 #include "core/blocks.h"
 #include <math.h>
 
-/* Compute the look direction in world space at the player's position.
- * Mirrors player_ctrl's compute_look, intentionally duplicated here to
- * avoid exposing an internal helper in the header. */
+/* ----------------------------------------------------------------------- */
+
 static dvec3_t player_look_dir(const player_ctrl_t* p) {
     tangent_basis_t b = phys_tangent_basis(p->position);
     double cy = cos((double)p->yaw),   sy = sin((double)p->yaw);
@@ -15,26 +14,69 @@ static dvec3_t player_look_dir(const player_ctrl_t* p) {
     return dvec3_normalize(look);
 }
 
-void interact_update(interact_state_t* s, hex_pool_t* pool, const player_ctrl_t* player) {
-    /* Ray from eye along look direction. */
-    tangent_basis_t b = phys_tangent_basis(player->position);
-    dvec3_t eye = dvec3_add(player->position, dvec3_scale(b.up, 1.6));
-    dvec3_t dir = player_look_dir(player);
+/* Convert a world position to (tile, depth). tile lookup uses the
+ * player's last-known tile as a hint for speed. */
+static bool world_to_tile_depth(const world_t* w, dvec3_t pos, int hint,
+                                int* out_tile, int* out_depth) {
+    dvec3_t dir = dvec3_normalize(pos);
+    int tile = goldberg_find_tile(w->grid, dir, hint);
+    if (tile < 0) return false;
+    double r = dvec3_length(pos);
+    /* Invert world_depth_to_radius_m: r = body_r - (SEA_LEVEL_IDX - d)
+     * with block height = 1m. So depth = (r - body_r) + SEA_LEVEL_IDX. */
+    const int SEA_LEVEL_IDX = 12;
+    int depth = (int)floor(r - w->body->radius_m) + SEA_LEVEL_IDX;
+    if (depth < 0 || depth >= WORLD_MAX_DEPTH) return false;
+    *out_tile  = tile;
+    *out_depth = depth;
+    return true;
+}
 
-    s->hit = hex_pool_raycast(pool, eye, dir, INTERACT_MAX_DIST);
+/* ----------------------------------------------------------------------- */
+
+void interact_update(interact_state_t* s, world_t* w, const player_ctrl_t* p) {
+    s->has_target = false;
+
+    /* Eye position + look dir. */
+    tangent_basis_t b = phys_tangent_basis(p->position);
+    dvec3_t eye = dvec3_add(p->position, dvec3_scale(b.up, 1.6));
+    dvec3_t dir = player_look_dir(p);
+
+    /* Fixed-step raycast: sample every ~0.25 m up to INTERACT_MAX_DIST.
+     * At block height = 1 m this is dense enough to never skip a cell. */
+    const double step_m = 0.25;
+    int prev_tile = -1, prev_depth = -1;
+    bool prev_valid = false;
+    int hint = p->last_tile;
+
+    for (double d = 0.0; d <= INTERACT_MAX_DIST; d += step_m) {
+        dvec3_t cur = dvec3_add(eye, dvec3_scale(dir, d));
+        int tile, depth;
+        if (!world_to_tile_depth(w, cur, hint, &tile, &depth)) continue;
+        hint = tile;
+        block_t blk = world_get(w, tile, depth);
+        if (block_is_solid(blk)) {
+            s->has_target   = true;
+            s->hit_tile     = tile;
+            s->hit_depth    = depth;
+            s->place_tile   = prev_valid ? prev_tile  : tile;
+            s->place_depth  = prev_valid ? prev_depth : depth + 1;
+            s->distance     = d;
+            break;
+        }
+        prev_tile = tile;
+        prev_depth = depth;
+        prev_valid = true;
+    }
+
+    if (!s->has_target) return;
 
     const input_state_t* in = input_state();
-    if (!s->hit.has_hit) return;
-
     if (in->left_click) {
-        hex_pool_set_voxel(pool,
-            s->hit.hit_cx, s->hit.hit_cy,
-            s->hit.hit_col, s->hit.hit_row, s->hit.hit_layer,
-            BLOCK_AIR);
+        world_set(w, s->hit_tile, s->hit_depth, BLOCK_AIR);
     } else if (in->right_click) {
-        hex_pool_set_voxel(pool,
-            s->hit.place_cx, s->hit.place_cy,
-            s->hit.place_col, s->hit.place_row, s->hit.place_layer,
-            (uint8_t)player->selected_block);
+        if (s->place_depth >= 0 && s->place_depth < WORLD_MAX_DEPTH) {
+            world_set(w, s->place_tile, s->place_depth, (block_t)p->selected_block);
+        }
     }
 }

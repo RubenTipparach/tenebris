@@ -20,4 +20,17 @@ float planet_surface_altitude(const body_config_t* body, dvec3_t unit_dir);
  * altitude_m = 0 is the body's base radius (equal to radius_m). */
 block_t planet_sample(const body_config_t* body, dvec3_t unit_dir, float altitude_m);
 
+/* Precomputed per-column biome info. Build once per column in the
+ * fill loop, then call planet_sample_with_profile for each layer —
+ * avoids repeating the surface-noise lookup per voxel. */
+typedef struct {
+    float surface_m;
+    float latitude;   /* |unit_dir.y| */
+    float snow_line;
+    bool  polar;
+} column_profile_t;
+
+column_profile_t planet_profile(const body_config_t* body, dvec3_t unit_dir);
+block_t          planet_sample_with_profile(const column_profile_t* prof, float altitude_m);
+
 #endif

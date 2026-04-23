@@ -10,11 +10,13 @@
 
 /* ----------------------------------------------------------------------- */
 
-#define BTN_RADIUS     44.0f
-#define BTN_MARGIN     24.0f
-#define BTN_GAP        20.0f
-#define STICK_RADIUS   72.0f
-#define STICK_KNOB_R   28.0f
+/* All dimensions halved from the first pass so both joysticks + three
+ * buttons can share the bottom half of the screen without crowding. */
+#define BTN_RADIUS     22.0f
+#define BTN_MARGIN     14.0f
+#define BTN_GAP        10.0f
+#define STICK_RADIUS   38.0f
+#define STICK_KNOB_R   15.0f
 
 void mobile_ui_init(void) {
     sgl_setup(&(sgl_desc_t){ .logger.func = slog_func });
@@ -116,26 +118,27 @@ void mobile_ui_draw(void) {
     const float h = sapp_heightf();
     if (w <= 0.0f || h <= 0.0f) return;
 
-    /* Button positions, bottom-right corner. Order (from right to left):
-     *   BREAK (left-click equivalent, red-ish)
-     *   PLACE (right-click equivalent, green-ish)
-     * and above them:
-     *   JUMP  (centered above the other two). */
-    const float by = h - BTN_MARGIN - BTN_RADIUS;
-    const float bx_break = w - BTN_MARGIN - BTN_RADIUS;
-    const float bx_place = bx_break - (BTN_RADIUS * 2.0f + BTN_GAP);
-    const float jy = by - (BTN_RADIUS * 2.0f + BTN_GAP);
-    const float jx = (bx_break + bx_place) * 0.5f;
+    /* Two sticks at bottom corners. */
+    const float left_sx  = BTN_MARGIN + STICK_RADIUS;
+    const float left_sy  = h - BTN_MARGIN - STICK_RADIUS;
+    const float right_sx = w - BTN_MARGIN - STICK_RADIUS;
+    const float right_sy = h - BTN_MARGIN - STICK_RADIUS;
 
-    /* Joystick base: bottom-left corner, slightly inset. */
-    const float sx = BTN_MARGIN + STICK_RADIUS;
-    const float sy = h - BTN_MARGIN - STICK_RADIUS;
+    /* Buttons stacked vertically to the left of the right stick. The
+     * right thumb can hop between the look stick and the buttons
+     * without crossing the screen. Order (top to bottom):
+     *   BREAK / PLACE / JUMP — jump at the bottom, closest to the
+     *   stick so your thumb rests there. */
+    const float bx = right_sx - STICK_RADIUS - BTN_GAP - BTN_RADIUS;
+    const float j_y = right_sy + STICK_RADIUS - BTN_RADIUS;            /* bottom-aligned */
+    const float p_y = j_y - (BTN_RADIUS * 2.0f + BTN_GAP);
+    const float b_y = p_y - (BTN_RADIUS * 2.0f + BTN_GAP);
 
     /* Report hit rects back to input.c so touches can be classified. */
     input_register_mobile_buttons(
-        bx_break, by, BTN_RADIUS,
-        bx_place, by, BTN_RADIUS,
-        jx, jy, BTN_RADIUS);
+        bx, b_y, BTN_RADIUS,
+        bx, p_y, BTN_RADIUS,
+        bx, j_y, BTN_RADIUS);
 
     /* Orthographic projection: (0,0) top-left to (w,h) bottom-right. */
     sgl_defaults();
@@ -161,33 +164,47 @@ void mobile_ui_draw(void) {
     }
     sgl_load_pipeline(pip_alpha);
 
-    /* ---- virtual joystick ---- */
-    draw_circle_fan(sx, sy, STICK_RADIUS,       48, 0.2f, 0.2f, 0.25f, 0.40f);
-    draw_ring      (sx, sy, STICK_RADIUS - 3.0f, STICK_RADIUS, 48, 0.95f, 0.95f, 1.0f, 0.55f);
-
     const input_state_t* in = input_state();
-    float kx = sx, ky = sy;
-    if (in->stick_active) {
-        kx += in->stick_x * (STICK_RADIUS - STICK_KNOB_R);
-        ky -= in->stick_y * (STICK_RADIUS - STICK_KNOB_R);   /* screen Y grows down */
+
+    /* ---- left stick (movement) ---- */
+    draw_circle_fan(left_sx, left_sy, STICK_RADIUS,       32, 0.20f, 0.20f, 0.25f, 0.40f);
+    draw_ring      (left_sx, left_sy, STICK_RADIUS - 2.0f, STICK_RADIUS, 32, 0.95f, 0.95f, 1.0f, 0.55f);
+    {
+        float kx = left_sx, ky = left_sy;
+        if (in->stick_active) {
+            kx += in->stick_x * (STICK_RADIUS - STICK_KNOB_R);
+            ky -= in->stick_y * (STICK_RADIUS - STICK_KNOB_R);
+        }
+        draw_circle_fan(kx, ky, STICK_KNOB_R, 24, 0.95f, 0.95f, 1.0f, 0.85f);
     }
-    draw_circle_fan(kx, ky, STICK_KNOB_R, 32, 0.95f, 0.95f, 1.0f, 0.85f);
 
-    /* ---- three round buttons ---- */
-    /* Break (red tint) */
-    draw_circle_fan(bx_break, by, BTN_RADIUS, 48, 0.50f, 0.15f, 0.15f, 0.50f);
-    draw_ring      (bx_break, by, BTN_RADIUS - 3.0f, BTN_RADIUS, 48, 1.0f, 0.55f, 0.55f, 0.75f);
-    draw_glyph('B', bx_break, by, 28.0f, 1.0f, 0.9f, 0.9f);
+    /* ---- right stick (look) ---- */
+    draw_circle_fan(right_sx, right_sy, STICK_RADIUS,       32, 0.20f, 0.25f, 0.20f, 0.40f);
+    draw_ring      (right_sx, right_sy, STICK_RADIUS - 2.0f, STICK_RADIUS, 32, 0.85f, 1.00f, 0.90f, 0.55f);
+    {
+        float kx = right_sx, ky = right_sy;
+        if (in->look_stick_active) {
+            kx += in->look_stick_x * (STICK_RADIUS - STICK_KNOB_R);
+            ky -= in->look_stick_y * (STICK_RADIUS - STICK_KNOB_R);
+        }
+        draw_circle_fan(kx, ky, STICK_KNOB_R, 24, 0.85f, 1.00f, 0.90f, 0.85f);
+    }
 
-    /* Place (green tint) */
-    draw_circle_fan(bx_place, by, BTN_RADIUS, 48, 0.15f, 0.45f, 0.20f, 0.50f);
-    draw_ring      (bx_place, by, BTN_RADIUS - 3.0f, BTN_RADIUS, 48, 0.65f, 1.0f, 0.70f, 0.75f);
-    draw_glyph('P', bx_place, by, 28.0f, 0.9f, 1.0f, 0.9f);
+    /* ---- three round buttons, stacked vertically left of the right stick ---- */
+    /* Break (red) */
+    draw_circle_fan(bx, b_y, BTN_RADIUS,        32, 0.50f, 0.15f, 0.15f, 0.50f);
+    draw_ring      (bx, b_y, BTN_RADIUS - 2.0f, BTN_RADIUS, 32, 1.00f, 0.55f, 0.55f, 0.75f);
+    draw_glyph('B', bx, b_y, 16.0f, 1.0f, 0.9f, 0.9f);
 
-    /* Jump (neutral / yellow) */
-    draw_circle_fan(jx, jy, BTN_RADIUS, 48, 0.40f, 0.40f, 0.15f, 0.50f);
-    draw_ring      (jx, jy, BTN_RADIUS - 3.0f, BTN_RADIUS, 48, 1.0f, 0.95f, 0.55f, 0.75f);
-    draw_glyph('J', jx, jy, 28.0f, 1.0f, 1.0f, 0.9f);
+    /* Place (green) */
+    draw_circle_fan(bx, p_y, BTN_RADIUS,        32, 0.15f, 0.45f, 0.20f, 0.50f);
+    draw_ring      (bx, p_y, BTN_RADIUS - 2.0f, BTN_RADIUS, 32, 0.65f, 1.00f, 0.70f, 0.75f);
+    draw_glyph('P', bx, p_y, 16.0f, 0.9f, 1.0f, 0.9f);
+
+    /* Jump / jetpack (yellow) — closest to the stick so hold-to-fly is easy */
+    draw_circle_fan(bx, j_y, BTN_RADIUS,        32, 0.40f, 0.40f, 0.15f, 0.50f);
+    draw_ring      (bx, j_y, BTN_RADIUS - 2.0f, BTN_RADIUS, 32, 1.00f, 0.95f, 0.55f, 0.75f);
+    draw_glyph('J', bx, j_y, 16.0f, 1.0f, 1.0f, 0.9f);
 
     sgl_draw();
 }

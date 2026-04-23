@@ -1,25 +1,23 @@
 #ifndef TENEBRIS_CLIENT_HEX_MESHER_H
 #define TENEBRIS_CLIENT_HEX_MESHER_H
 
-#include "core/hex_pool.h"
 #include "core/math.h"
+#include "core/world.h"
 #include <stddef.h>
 #include <stdint.h>
 
 /*
- * Naive face-cull hex mesher. Tier 1 first-light: output is a colored
- * triangle soup in the floating-origin frame. Atlas textures + sky-light
- * BFS arrive in subsequent commits.
+ * Per-tile hex/pent prism mesher. Output is a triangle soup in planet-
+ * world coordinates (single precision — planet is small enough that a
+ * floating origin isn't needed yet). Atlas UVs + shaded in the hex
+ * shader.
  *
- * Vertex format is 32 bytes for now (pos + normal + color). The 48-byte
- * format from conversion.md §4 expands to include uv + sky_light +
- * torch_light once the hex pipeline grows a texture atlas.
+ * Vertex layout: 32 bytes (pos + normal + uv).
  */
 typedef struct {
     float pos[3];
     float normal[3];
-    float color[3];
-    uint8_t _pad[4];    /* keep 32-byte stride, room for future sky/torch */
+    float uv[2];
 } hex_vertex_t;
 
 typedef struct {
@@ -35,12 +33,13 @@ void hex_mesh_init(hex_mesh_t* m);
 void hex_mesh_reset(hex_mesh_t* m);
 void hex_mesh_free(hex_mesh_t* m);
 
-/* Build geometry for one chunk. World-space positions are emitted in
- * floating-origin coordinates (caller passes the origin). Neighbor
- * lookups pull from the pool for cross-chunk face culling. */
-void hex_mesh_build_chunk(hex_mesh_t* out,
-                          const hex_pool_t* pool,
-                          const hex_chunk_t* chunk,
-                          dvec3_t floating_origin);
+/* Build the geometry for a single tile. Emits top/bottom caps at the
+ * column's solid/air boundary and side faces where the neighbor tile
+ * has a shorter solid column. */
+void hex_mesh_build_tile(hex_mesh_t* out, const world_t* w, int tile_idx);
+
+/* Atlas column count (must match the runtime bake in renderer.c). */
+#define HEX_ATLAS_TILES   12
+#define HEX_ATLAS_U_STEP  (1.0f / (float)HEX_ATLAS_TILES)
 
 #endif

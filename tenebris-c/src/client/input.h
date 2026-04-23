@@ -20,10 +20,15 @@ typedef struct {
     bool  hotbar[10];
     bool  pointer_locked;
 
-    /* Virtual stick analog position in [-1, 1]. Mapped into phys.forward/
-     * backward/left/right at thresholds for Tier 1. */
+    /* Virtual movement stick (left thumb). Analog in [-1, 1]; mapped
+     * into phys.forward/backward/left/right at a 0.3 deadzone. */
     float stick_x, stick_y;
     bool  stick_active;
+
+    /* Virtual look stick (right thumb). Continuous — consumers multiply
+     * by dt and sensitivity and add to mouse_dx/dy. */
+    float look_stick_x, look_stick_y;
+    bool  look_stick_active;
 
     /* Mobile UI button hitboxes (pixels). Updated from renderer each
      * frame so input.c can test touch-down against them. */

@@ -1,8 +1,10 @@
 /*
- * Tenebris - Tier 1 (hex-sphere) entry point.
+ * Tenebris - Goldberg-sphere entry point.
  *
- * Sub-milestone 2: LOD icosphere + 5x5 hex chunk bubble rendering
- * with per-block colored quads and sun/ambient lighting.
+ * Whole planet = one Goldberg polyhedron, ~642 hex/pentagon tiles at
+ * subdivisions=3. Streamed tile terrain gen across frames so the first
+ * visible frame draws an empty planet and each subsequent frame fills
+ * in a few more tiles until world_gen_complete is true.
  */
 
 #include "sokol_gfx.h"
@@ -12,10 +14,10 @@
 #include "sokol_time.h"
 #include "sokol_debugtext.h"
 
-#include "core/icosphere.h"
 #include "core/planet.h"
+#include "core/planet_gen.h"
+#include "core/world.h"
 #include "core/job_system.h"
-#include "core/hex_pool.h"
 #include "client/gfx_math.h"
 #include "client/input.h"
 #include "client/player_ctrl.h"
@@ -27,18 +29,23 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-#define BUBBLE_RADIUS_M 500.0
+/* Streaming budget: tiles generated per frame. Bumped up because
+ * subdivisions=6 means 40,962 tiles total — at 16/frame load would
+ * take 42 s, at 512/frame it's ~80 frames (1.3 s). Each tile gen is
+ * only a handful of noise evals so 512/frame is well inside budget. */
+#define GEN_TILES_PER_FRAME  512
+/* Match Tenebris JS Earth. Tile count by subs: 0→12, 1→42, 2→162,
+ * 3→642, 4→2562, 5→10242, 6→40962. */
+#define SUBDIVISIONS          6
 
 static struct {
     const body_config_t* body;
-    lod_tree_t*   lod;
-    hex_pool_t    hex_pool;
-    player_ctrl_t player;
+    world_t*         world;
+    player_ctrl_t    player;
     interact_state_t interact;
-    dvec3_t       floating_origin;
-    uint64_t      last_time;
-    uint32_t      tick;
-    float         smoothed_fps;
+    uint64_t         last_time;
+    uint32_t         tick;
+    float            smoothed_fps;
 } G;
 
 /* --------------------------------------------------------------------- */
@@ -55,25 +62,25 @@ static void init(void) {
     });
 
     input_init();
-    job_system_init(LOD_NUM_WORKERS);
+    job_system_init(0);
     renderer_init();
     mobile_ui_init();
 
-    G.body = planet_get(BODY_TENEBRIS);
-    G.lod  = lod_tree_create(G.body);
-    hex_pool_init(&G.hex_pool, G.body);
+    G.body  = planet_get(BODY_TENEBRIS);
+    G.world = world_create(G.body, SUBDIVISIONS);
     player_init(&G.player, G.body);
 
-    dvec3_t start = player_world_pos(&G.player);
-    G.floating_origin = start;
+    /* Spawn above the surface at (1, 0, 0). Surface altitude sampled
+     * directly so we don't depend on any tile being generated yet. */
+    {
+        dvec3_t dir = dvec3_make(1, 0, 0);
+        float surface_m = planet_surface_altitude(G.body, dir);
+        if (surface_m < 0.5f) surface_m = 0.5f;
+        G.player.position = dvec3_scale(dir, G.body->radius_m + (double)surface_m + 8.0);
+    }
+
     G.last_time = stm_now();
     G.smoothed_fps = 60.0f;
-
-    /* Prime the hex pool so there's terrain under the player on frame 1.
-     * The first fill budget flush covers all 81 chunks synchronously
-     * here - one-time cost at startup, not a per-frame hitch. */
-    hex_pool_update(&G.hex_pool, start);
-    for (int i = 0; i < HEX_POOL_COUNT; ++i) hex_pool_update(&G.hex_pool, start);
 }
 
 /* --------------------------------------------------------------------- */
@@ -85,43 +92,38 @@ static void update_overlay(float dt) {
     sdtx_canvas(sapp_widthf() * 0.5f, sapp_heightf() * 0.5f);
     sdtx_origin(1.0f, 1.0f);
     sdtx_color3b(0xff, 0xff, 0xff);
-    sdtx_printf("Tenebris WASM Preview (Tier 1: hex-sphere, sub-milestone 2)\n");
+    sdtx_printf("Tenebris WASM Preview (Goldberg %d tiles)\n",
+                goldberg_tile_count(G.world->grid));
     sdtx_printf("FPS: %.1f\n", G.smoothed_fps);
 
     dvec3_t pos = player_world_pos(&G.player);
     double r = sqrt(pos.x*pos.x + pos.y*pos.y + pos.z*pos.z);
     double alt = r - G.body->radius_m;
-    sdtx_printf("planet: %s  radius: %.1f km\n", G.body->name, G.body->radius_m * 1e-3);
-    sdtx_printf("alt: %.1f m  yaw: %.2f  pitch: %.2f\n", alt, G.player.yaw, G.player.pitch);
-    sdtx_printf("grounded: %s  fly: %s\n",
-                G.player.grounded ? "yes" : "no",
-                G.player.fly_mode ? "on" : "off");
-    sdtx_printf("LOD nodes visible: %d\n", lod_tree_visible_count(G.lod));
-    const int pending = hex_pool_pending_count(&G.hex_pool);
-    sdtx_printf("hex chunks: %d active  %d loading  %zu remeshed/frame\n",
-                hex_pool_active_count(&G.hex_pool),
-                pending,
-                renderer_hex_remeshes_this_frame());
-    if (pending > 0) {
+    sdtx_printf("planet: %s  radius: %.1f m\n", G.body->name, G.body->radius_m);
+    sdtx_printf("alt: %.1f m  tile: %d\n", alt, G.player.last_tile);
+    sdtx_printf("yaw: %.2f  pitch: %.2f  fly:%s  grounded:%s\n",
+                G.player.yaw, G.player.pitch,
+                G.player.fly_mode ? "on" : "off",
+                G.player.grounded ? "yes" : "no");
+    sdtx_printf("tris: %zu  tiles drawn: %zu  remeshed/f: %zu\n",
+                renderer_triangles_drawn_this_frame(),
+                renderer_tiles_drawn_this_frame(),
+                renderer_tiles_remeshed_this_frame());
+
+    if (!world_gen_complete(G.world)) {
         sdtx_color3b(0xf0, 0xc0, 0x50);
-        sdtx_printf("loading terrain...\n");
+        sdtx_printf("loading world... %d%%\n", world_gen_progress_pct(G.world));
         sdtx_color3b(0xff, 0xff, 0xff);
     }
-    sdtx_printf("tris: LOD=%zu  hex=%zu  total=%zu\n",
-                renderer_triangles_drawn_this_frame() - renderer_hex_triangles_drawn_this_frame(),
-                renderer_hex_triangles_drawn_this_frame(),
-                renderer_triangles_drawn_this_frame());
-
-    if (!input_state()->pointer_locked) {
+    if (G.interact.has_target) {
+        sdtx_printf("target: tile=%d depth=%d dist=%.1fm\n",
+                    G.interact.hit_tile, G.interact.hit_depth, G.interact.distance);
+    }
+    if (!input_state()->pointer_locked && !input_state()->touch_active) {
         sdtx_color3b(0xf0, 0xc0, 0x50);
         sdtx_printf("\n[click to lock mouse]\n");
         sdtx_color3b(0xff, 0xff, 0xff);
     }
-    if (G.interact.hit.has_hit) {
-        sdtx_printf("target: %.1fm  block=%d\n", G.interact.hit.distance, G.player.selected_block);
-    }
-    sdtx_printf("\nWASD walks  SPACE jumps  SHIFT sprints  F fly\n");
-    sdtx_printf("LMB breaks  RMB places  (or tap on-screen buttons)\n");
 }
 
 /* --------------------------------------------------------------------- */
@@ -132,49 +134,31 @@ static void frame(void) {
     if (dt > 0.1f) dt = 0.1f;
     G.tick++;
 
-    player_update(&G.player, &G.hex_pool, dt);
-    interact_update(&G.interact, &G.hex_pool, &G.player);
-
-    /* Recenter floating origin if the player drifts > 1 km from it. */
-    dvec3_t player_pos = player_world_pos(&G.player);
-    if (dvec3_length(dvec3_sub(player_pos, G.floating_origin)) > 1000.0) {
-        G.floating_origin = player_pos;
+    /* Stream a few tiles of terrain per frame. */
+    if (!world_gen_complete(G.world)) {
+        world_stream_gen(G.world, GEN_TILES_PER_FRAME);
     }
 
-    /* Update hex chunk bubble (may re-anchor + regen chunks). */
-    hex_pool_update(&G.hex_pool, player_pos);
-
-    /* LOD: tell it where the bubble is so it skips subdividing inside,
-     * then run the split/merge pass. The bubble exclusion happens both
-     * at the split gate (no deeper CPU work inside bubble) and at the
-     * visibility collection (hide any leaves whose center is inside). */
-    lod_tree_set_bubble(G.lod, G.hex_pool.anchor_world, BUBBLE_RADIUS_M);
-    lod_tree_update(G.lod, player_pos);
-
+    player_update(&G.player, G.world, dt);
+    interact_update(&G.interact, G.world, &G.player);
     input_consume();
 
-    /* Camera. */
     const float aspect = sapp_widthf() / sapp_heightf();
-    mat4_t view = player_view(&G.player, G.floating_origin);
-    const float zfar = (float)(G.body->radius_m * 4.0);
-    mat4_t proj = mat4_perspective(60.0f * (3.14159265f / 180.0f), aspect, 0.5f, zfar);
+    mat4_t view = player_view(&G.player);
+    const float zfar = (float)(G.body->radius_m * 6.0);
+    mat4_t proj = mat4_perspective(60.0f * (3.14159265f / 180.0f), aspect, 0.3f, zfar);
 
     render_env_t env = {
         .sun_dir    = { 0.5f, 0.9f, 0.3f },
         .sky_top    = { 0.02f, 0.04f, 0.10f },
         .sky_bottom = { 0.05f, 0.08f, 0.15f },
-        .ambient    = { 0.30f, 0.30f, 0.35f },
+        .ambient    = { 0.35f, 0.35f, 0.40f },
     };
     renderer_begin_frame(sapp_width(), sapp_height(), env);
-    renderer_draw_lod_tree(view, proj, G.lod, G.floating_origin, G.body->radius_m);
-    renderer_draw_hex_pool(view, proj, &G.hex_pool, G.floating_origin);
+    renderer_draw_world(view, proj, G.world);
 
     update_overlay(dt);
     sdtx_draw();
-
-    /* Mobile overlay (virtual joystick + buttons). Registers its own
-     * hit rects with input.c so touches on the next frame classify
-     * correctly. Always drawn; unobtrusive on desktop. */
     mobile_ui_draw();
 
     renderer_end_frame();
@@ -192,8 +176,7 @@ static void event(const sapp_event* e) {
 static void cleanup(void) {
     mobile_ui_shutdown();
     renderer_shutdown();
-    hex_pool_shutdown(&G.hex_pool);
-    lod_tree_destroy(G.lod);  G.lod = NULL;
+    world_destroy(G.world);  G.world = NULL;
     job_system_shutdown();
     sdtx_shutdown();
     sg_shutdown();

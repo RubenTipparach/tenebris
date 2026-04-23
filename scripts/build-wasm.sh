@@ -23,13 +23,16 @@ fi
 # truth — tenebris-c/assets/ is a generated staging directory.
 echo "==> staging assets from public/ into tenebris-c/assets/"
 mkdir -p "$C_ROOT/assets/textures"
-# Tier 1 block palette maps to the same PNGs used by the planet game. The
-# original TS flat-world demo referenced wall/floor/ceiling names that
-# don't exist in the repo, so we use the real asset set instead.
-cp -f "$ROOT/public/textures/rocks.png"      "$C_ROOT/assets/textures/stone.png"
-cp -f "$ROOT/public/textures/dirt.png"       "$C_ROOT/assets/textures/dirt.png"
-cp -f "$ROOT/public/textures/grass.png"      "$C_ROOT/assets/textures/grass_top.png"
-cp -f "$ROOT/public/textures/dirt_grass.png" "$C_ROOT/assets/textures/grass_side.png"
+# Tier 1 atlas: one 16x16 tile per block type, single-row strip. Filenames
+# must match the paths hard-coded in renderer.c's bake_atlas block.
+for f in water sand dirt grass rocks ice snow dirt_grass dirt_snow torch moon; do
+  src="$ROOT/public/textures/${f}.png"
+  if [ -f "$src" ]; then
+    cp -f "$src" "$C_ROOT/assets/textures/${f}.png"
+  else
+    echo "warning: $src missing — atlas tile will be empty" >&2
+  fi
+done
 
 echo "==> configuring (cmake --preset=web)"
 cmake --preset=web -S "$C_ROOT"
