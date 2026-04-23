@@ -24,6 +24,15 @@ void renderer_begin_frame(int w, int h, render_env_t env);
  * uniform; `camera_world` is used by the water fresnel term. */
 void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world,
                          vec3_t camera_world, float dt_seconds);
+
+/* Register a celestial body as a static (non-streaming) decorative
+ * world — moons, asteroids, anything the player can't land on. The
+ * world must already be fully generated (world_gen_complete == true).
+ * Meshes it once at registration time and uploads to a dedicated
+ * buffer pair. Drawn each frame at body->position by renderer_draw_moons. */
+void renderer_register_moon(world_t* w);
+void renderer_draw_moons(mat4_t view, mat4_t proj);
+int  renderer_moon_count(void);
 void renderer_end_frame(void);
 
 size_t renderer_triangles_drawn_this_frame(void);

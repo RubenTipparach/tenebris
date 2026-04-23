@@ -131,15 +131,26 @@ float planet_surface_altitude(const body_config_t* body, dvec3_t unit_dir) {
 column_profile_t planet_profile(const body_config_t* body, dvec3_t unit_dir) {
     column_profile_t p;
     p.surface_m = planet_surface_altitude(body, unit_dir);
+    /* Moons get a flatter surface — scale the amplitude down so they
+     * look distinctly less dramatic than Tenebris. */
+    if (body->barren) p.surface_m *= 0.3f;
     p.latitude  = (float)fabs(unit_dir.y);
     p.polar     = p.latitude > POLAR_LATITUDE;
     const bool cold = p.latitude > COLD_LATITUDE;
     p.snow_line = cold ? (SNOW_ELEV * 0.5f) : SNOW_ELEV;
+    p.barren    = body->barren;
     return p;
 }
 
 block_t planet_sample_with_profile(const column_profile_t* prof, float altitude_m) {
     const float surface = prof->surface_m;
+
+    /* Barren (moon-like) bodies: skip water + grass biomes entirely
+     * and render as moon rock. Tier 2 can add craters. */
+    if (prof->barren) {
+        if (altitude_m > surface) return BLOCK_AIR;
+        return BLOCK_MOON;
+    }
 
     /* Air/water above the ground. */
     if (altitude_m > surface) {

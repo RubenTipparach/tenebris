@@ -25,9 +25,10 @@ block_t planet_sample(const body_config_t* body, dvec3_t unit_dir, float altitud
  * avoids repeating the surface-noise lookup per voxel. */
 typedef struct {
     float surface_m;
-    float latitude;   /* |unit_dir.y| */
+    float latitude;
     float snow_line;
     bool  polar;
+    bool  barren;     /* moon-like: skip grass/sand/water biomes */
 } column_profile_t;
 
 column_profile_t planet_profile(const body_config_t* body, dvec3_t unit_dir);

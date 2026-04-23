@@ -29,18 +29,17 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-/* Streaming budget: tiles generated per frame. Bumped up because
- * subdivisions=6 means 40,962 tiles total — at 16/frame load would
- * take 42 s, at 512/frame it's ~80 frames (1.3 s). Each tile gen is
- * only a handful of noise evals so 512/frame is well inside budget. */
+/* Streaming budget: tiles generated per frame. Tenebris is subs=6 =
+ * 40962 tiles total — at 512/frame it's ~80 frames (~1.3 s) to fully
+ * populate. Each tile gen is a handful of noise evals, well inside the
+ * 16 ms frame budget. Moon subdivisions are pulled from body config. */
 #define GEN_TILES_PER_FRAME  512
-/* Match Tenebris JS Earth. Tile count by subs: 0→12, 1→42, 2→162,
- * 3→642, 4→2562, 5→10242, 6→40962. */
-#define SUBDIVISIONS          6
 
 static struct {
     const body_config_t* body;
     world_t*         world;
+    world_t*         moons[8];
+    int              moon_count;
     player_ctrl_t    player;
     interact_state_t interact;
     uint64_t         last_time;
@@ -67,8 +66,20 @@ static void init(void) {
     mobile_ui_init();
 
     G.body  = planet_get(BODY_TENEBRIS);
-    G.world = world_create(G.body, SUBDIVISIONS);
+    G.world = world_create(G.body, G.body->subdivisions);
     player_init(&G.player, G.body);
+
+    /* Build and register moons. Each is small (subs=4 = 2562 tiles)
+     * so we generate + mesh + upload synchronously — under 100 ms per
+     * moon at init, invisible at boot. */
+    for (int id = BODY_LUNA; id <= BODY_SELENE; ++id) {
+        const body_config_t* b = planet_get((body_id_t)id);
+        if (!b) continue;
+        world_t* moon = world_create(b, b->subdivisions);
+        while (!world_gen_complete(moon)) world_stream_gen(moon, moon->tile_count);
+        renderer_register_moon(moon);
+        G.moons[G.moon_count++] = moon;
+    }
 
     /* Spawn above the surface at (1, 0, 0). Surface altitude sampled
      * directly so we don't depend on any tile being generated yet. */
@@ -92,8 +103,9 @@ static void update_overlay(float dt) {
     sdtx_canvas(sapp_widthf() * 0.5f, sapp_heightf() * 0.5f);
     sdtx_origin(1.0f, 1.0f);
     sdtx_color3b(0xff, 0xff, 0xff);
-    sdtx_printf("Tenebris WASM Preview (Goldberg %d tiles)\n",
-                goldberg_tile_count(G.world->grid));
+    sdtx_printf("Tenebris WASM Preview (Goldberg %d tiles, %d moons)\n",
+                goldberg_tile_count(G.world->grid),
+                renderer_moon_count());
     sdtx_printf("FPS: %.1f\n", G.smoothed_fps);
 
     dvec3_t pos = player_world_pos(&G.player);
@@ -165,6 +177,7 @@ static void frame(void) {
 
     renderer_begin_frame(sapp_width(), sapp_height(), env);
     renderer_draw_world(view, proj, G.world, cam_world, dt);
+    renderer_draw_moons(view, proj);
 
     update_overlay(dt);
     sdtx_draw();
@@ -185,6 +198,8 @@ static void event(const sapp_event* e) {
 static void cleanup(void) {
     mobile_ui_shutdown();
     renderer_shutdown();
+    for (int i = 0; i < G.moon_count; ++i) world_destroy(G.moons[i]);
+    G.moon_count = 0;
     world_destroy(G.world);  G.world = NULL;
     job_system_shutdown();
     sdtx_shutdown();

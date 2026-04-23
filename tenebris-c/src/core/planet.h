@@ -1,6 +1,7 @@
 #ifndef TENEBRIS_CORE_PLANET_H
 #define TENEBRIS_CORE_PLANET_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 /*
@@ -15,16 +16,24 @@
 
 typedef enum {
     BODY_TENEBRIS = 0,
+    BODY_LUNA,         /* close moon, rocky */
+    BODY_SELENE,       /* smaller moon, icy */
     BODY_COUNT
 } body_id_t;
 
 typedef struct {
-    body_id_t id;
+    body_id_t   id;
     const char* name;
-    double     radius_m;          /* surface radius in meters */
-    uint64_t   seed;
-    int        max_lod_depth;     /* 0..LOD_MAX_DEPTH; smaller bodies use less */
-    float      gravity_g;         /* multiplier of Earth gravity */
+    double      radius_m;         /* surface radius in meters */
+    uint64_t    seed;
+    int         max_lod_depth;    /* unused in current pipeline */
+    int         subdivisions;     /* Goldberg depth */
+    float       gravity_g;        /* multiplier of Earth gravity */
+    /* World-space origin offset from the solar system center. Tenebris
+     * sits at (0, 0, 0); moons orbit nearby in world space. */
+    double      pos_x, pos_y, pos_z;
+    bool        has_water;
+    bool        barren;           /* moon look: no grass/sand, just rock */
 } body_config_t;
 
 const body_config_t* planet_get(body_id_t id);

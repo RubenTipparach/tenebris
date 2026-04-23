@@ -60,6 +60,17 @@ static struct {
 
     size_t tris;
     size_t tiles_remeshed;
+
+    /* Static moons. Pre-meshed at registration time, fixed in world
+     * space. Drawn after the main world each frame. */
+    struct {
+        const world_t* world;
+        sg_buffer      vbuf;
+        sg_buffer      ibuf;
+        int            index_count;
+        vec3_t         position;   /* world-space offset */
+    } moons[4];
+    int moon_count;
 } R;
 
 /* Map from tile index to [vertex_offset, vertex_count, index_offset, index_count]
@@ -378,6 +389,10 @@ void renderer_shutdown(void) {
     hex_mesh_free(&R.mesh);
     hex_mesh_free(&R.water_mesh);
     free(SLICES); SLICES = NULL;
+    for (int i = 0; i < R.moon_count; ++i) {
+        sg_destroy_buffer(R.moons[i].vbuf);
+        sg_destroy_buffer(R.moons[i].ibuf);
+    }
     sg_destroy_buffer(R.vbuf);
     sg_destroy_buffer(R.ibuf);
     sg_destroy_buffer(R.water_vbuf);
@@ -388,6 +403,81 @@ void renderer_shutdown(void) {
     sg_destroy_pipeline(R.pip_hex);
     sg_destroy_pipeline(R.pip_water);
 }
+
+/* ----------------------------------------------------------------------- */
+/* Moon registration — one-shot mesh + upload at registration time. */
+
+void renderer_register_moon(world_t* w) {
+    if (R.moon_count >= (int)(sizeof(R.moons) / sizeof(R.moons[0]))) return;
+    if (!w || !w->body) return;
+
+    /* Build the full merged mesh for this moon into a scratch instance.
+     * Moon tile counts are small (≤2562) so this runs in a few ms at
+     * init; no streaming is needed. */
+    hex_mesh_t m;
+    hex_mesh_init(&m);
+    /* Reasonable upper bound: 64 verts per tile is conservative for a
+     * mostly-flat moon. */
+    m.vertex_cap = (size_t)w->tile_count * 64u;
+    m.vertices = (hex_vertex_t*)malloc(m.vertex_cap * sizeof(hex_vertex_t));
+    m.index_cap = (size_t)w->tile_count * 128u;
+    m.indices = (uint32_t*)malloc(m.index_cap * sizeof(uint32_t));
+
+    for (int i = 0; i < w->tile_count; ++i) {
+        hex_mesh_build_tile(&m, w, i);
+    }
+
+    int slot = R.moon_count++;
+    R.moons[slot].world = w;
+    R.moons[slot].index_count = (int)m.index_count;
+    R.moons[slot].position = (vec3_t){
+        (float)w->body->pos_x, (float)w->body->pos_y, (float)w->body->pos_z
+    };
+    R.moons[slot].vbuf = sg_make_buffer(&(sg_buffer_desc){
+        .data = { .ptr = m.vertices, .size = m.vertex_count * sizeof(hex_vertex_t) },
+        .label = "moon-vbuf",
+    });
+    R.moons[slot].ibuf = sg_make_buffer(&(sg_buffer_desc){
+        .usage.index_buffer = true,
+        .data = { .ptr = m.indices, .size = m.index_count * sizeof(uint32_t) },
+        .label = "moon-ibuf",
+    });
+
+    hex_mesh_free(&m);
+}
+
+int renderer_moon_count(void) { return R.moon_count; }
+
+void renderer_draw_moons(mat4_t view, mat4_t proj) {
+    if (R.moon_count == 0) return;
+    sg_apply_pipeline(R.pip_hex);
+
+    mat4_t vp_base = mat4_mul(proj, view);
+    float light_ub[8] = {
+        R.env.sun_dir.x, R.env.sun_dir.y, R.env.sun_dir.z, 0.0f,
+        R.env.ambient.x, R.env.ambient.y, R.env.ambient.z, 0.0f,
+    };
+
+    for (int i = 0; i < R.moon_count; ++i) {
+        /* MVP = vp * translate(moon_position). Moon verts are in their
+         * own body-local frame so adding the world offset here places
+         * them correctly. */
+        mat4_t model = mat4_translate(R.moons[i].position);
+        mat4_t mvp   = mat4_mul(vp_base, model);
+        sg_apply_uniforms(0, &(sg_range){ .ptr = mvp.m, .size = sizeof(mvp.m) });
+        sg_apply_uniforms(1, &(sg_range){ .ptr = light_ub, .size = sizeof(light_ub) });
+        sg_apply_bindings(&(sg_bindings){
+            .vertex_buffers[0] = R.moons[i].vbuf,
+            .index_buffer      = R.moons[i].ibuf,
+            .views[0]          = R.atlas_view,
+            .samplers[0]       = R.atlas_smp,
+        });
+        sg_draw(0, R.moons[i].index_count, 1);
+        R.tris += (size_t)R.moons[i].index_count / 3;
+    }
+}
+
+/* ----------------------------------------------------------------------- */
 
 void renderer_begin_frame(int w, int h, render_env_t env) {
     (void)w; (void)h;
