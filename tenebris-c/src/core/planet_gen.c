@@ -15,13 +15,12 @@
  * from "blocks" to "meters".
  */
 
-/* JS values multiplied by SCALE_MULT = 15 so the bubble sees similar
- * within-view variation to JS walking mode. */
-#define SCALE_MULT            15.0f
-#define CONTINENT_SCALE       (0.8f  * SCALE_MULT)
-#define MOUNTAIN_SCALE        (2.5f  * SCALE_MULT)
-#define HILL_SCALE            (5.0f  * SCALE_MULT)
-#define DETAIL_SCALE          (12.0f * SCALE_MULT)
+/* Scale values are JS literals since we're now matching Tenebris JS
+ * planet proportions (radius ~= 150 m with one full Goldberg mesh). */
+#define CONTINENT_SCALE       0.8f
+#define MOUNTAIN_SCALE        2.5f
+#define HILL_SCALE            5.0f
+#define DETAIL_SCALE         12.0f
 
 #define CONTINENT_WEIGHT      0.7f
 #define MOUNTAIN_HEIGHT       0.8f
@@ -29,19 +28,18 @@
 #define DETAIL_WEIGHT         0.05f
 #define OCEAN_DEPTH_POWER     1.3f
 
-/* Amplitudes in meters. Bumped slightly over JS so coastlines aren't
- * cliff-walls of ±1 block. */
-#define MAX_LAND_HEIGHT       32.0f
-#define MAX_OCEAN_DEPTH       18.0f
-#define LAND_BIAS             0.15f   /* push continent noise toward land */
+/* Heights in voxel blocks (1 m each). Matches JS MAX_HEIGHT / MAX_DEPTH. */
+#define MAX_LAND_HEIGHT       4.0f
+#define MAX_OCEAN_DEPTH       4.0f
+#define LAND_BIAS             0.20f
 
-/* Biome thresholds. */
+/* Biome thresholds in meters (altitude relative to body surface). */
 #define SEA_LEVEL             0.0f
-#define BEACH_BAND            2.0f
-#define SNOW_ELEV            22.0f
-#define STONE_ELEV           28.0f
-#define POLAR_LATITUDE        0.72f
-#define COLD_LATITUDE         0.60f
+#define BEACH_BAND            1.0f
+#define SNOW_ELEV             3.0f
+#define STONE_ELEV            3.8f
+#define POLAR_LATITUDE        0.78f
+#define COLD_LATITUDE         0.65f
 
 /* ----------------------------------------------------------------------- */
 /* fBm and ridge noise. Ports of fractalSimplex3D / ridgeSimplex3D from

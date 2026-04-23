@@ -21,9 +21,8 @@ set(TENEBRIS_CORE_SOURCES
     src/core/rng.c
     src/core/planet.c
     src/core/planet_gen.c
-    src/core/icosphere.c
-    src/core/hex_chunk.c
-    src/core/hex_pool.c
+    src/core/goldberg.c
+    src/core/world.c
     src/core/job_system.c
 )
 
