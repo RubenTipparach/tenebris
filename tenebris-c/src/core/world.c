@@ -5,7 +5,9 @@
 #include <math.h>
 
 #define BLOCK_HEIGHT  1.0
-#define SEA_LEVEL_IDX 12     /* depth index where water surface sits (matches JS) */
+/* Sea level sits at depth 12. Layers 0-12 are underwater / bedrock,
+ * layers 12-31 are above-water (up to 20 m of mountain relief). */
+#define SEA_LEVEL_IDX 12
 
 world_t* world_create(const body_config_t* body, int subdivisions) {
     world_t* w = (world_t*)calloc(1, sizeof(world_t));

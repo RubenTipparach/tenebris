@@ -28,16 +28,19 @@
 #define DETAIL_WEIGHT         0.05f
 #define OCEAN_DEPTH_POWER     1.3f
 
-/* Heights in voxel blocks (1 m each). Matches JS MAX_HEIGHT / MAX_DEPTH. */
-#define MAX_LAND_HEIGHT       4.0f
-#define MAX_OCEAN_DEPTH       4.0f
+/* Heights in voxel blocks (1 m each). Amplitudes cranked so the planet
+ * has real mountains + deep water — the old ±4 m range was too subtle
+ * to read at 2.9 m tile scale. Total column is 32 blocks so we have
+ * plenty of room before clipping. */
+#define MAX_LAND_HEIGHT      18.0f    /* up to 18 m of mountain above sea */
+#define MAX_OCEAN_DEPTH      10.0f    /* trenches down to 10 m below sea */
 #define LAND_BIAS             0.20f
 
 /* Biome thresholds in meters (altitude relative to body surface). */
 #define SEA_LEVEL             0.0f
-#define BEACH_BAND            1.0f
-#define SNOW_ELEV             3.0f
-#define STONE_ELEV            3.8f
+#define BEACH_BAND            1.5f
+#define SNOW_ELEV            11.0f
+#define STONE_ELEV           15.0f
 #define POLAR_LATITUDE        0.78f
 #define COLD_LATITUDE         0.65f
 

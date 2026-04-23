@@ -17,7 +17,10 @@
  * whole world voxel store is 642 * 16 ≈ 10 KB. Trivial.
  */
 
-#define WORLD_MAX_DEPTH   16      /* blocks per column, JS matches this */
+#define WORLD_MAX_DEPTH   32      /* blocks per column — doubled over the
+                                   * previous 16 to give room for proper
+                                   * mountains (up to 20m above sea) and
+                                   * ocean trenches below. */
 
 typedef struct world_s {
     const body_config_t* body;

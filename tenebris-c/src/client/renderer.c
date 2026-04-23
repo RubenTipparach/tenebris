@@ -26,22 +26,34 @@
  */
 
 #define MESH_BUDGET_PER_FRAME  512
-#define MAX_VERTICES           (2u << 20)    /* 2M verts cap (~64 MB)   */
-#define MAX_INDICES            (6u << 20)    /* 6M indices (~24 MB)     */
+/* Taller columns (WORLD_MAX_DEPTH=32) mean more side quads on
+ * feature-boundary tiles, so the buffer cap is doubled. */
+#define MAX_VERTICES           (4u << 20)    /* 4M verts cap (~128 MB) */
+#define MAX_INDICES            (12u << 20)   /* 12M indices (~48 MB)   */
 
 static struct {
     sg_pipeline pip_hex;
+    sg_pipeline pip_water;     /* translucent, wave-animated cap layer */
     sg_image    atlas_img;
     sg_view     atlas_view;
     sg_sampler  atlas_smp;
 
-    /* Single merged mesh. Rebuilt incrementally as tiles are meshed. */
+    /* Opaque merged mesh. */
     sg_buffer   vbuf;
     sg_buffer   ibuf;
     hex_mesh_t  mesh;
-    int         mesh_cursor;              /* tiles meshed into the CPU mesh so far */
-    int         last_uploaded_cursor;     /* mesh_cursor value at the last GPU upload */
-    int         last_uploaded_index_count;/* draw count = last-uploaded index_count */
+
+    /* Water merged mesh (separate draw, blended on top of opaque). */
+    sg_buffer   water_vbuf;
+    sg_buffer   water_ibuf;
+    hex_mesh_t  water_mesh;
+
+    int         mesh_cursor;                 /* tiles meshed into CPU mesh so far */
+    int         last_uploaded_cursor;        /* mesh_cursor value at the last GPU upload */
+    int         last_uploaded_index_count;   /* opaque draw count */
+    int         last_uploaded_water_idx_count;
+
+    float       time_seconds;                /* for water wave animation */
 
     sg_pass_action pass_action;
     render_env_t   env;
@@ -91,6 +103,55 @@ static const char* FS_HEX =
     "void main() {\n"
     "  vec4 tex = texture(u_atlas, v_uv);\n"
     "  frag_color = vec4(tex.rgb * v_light, tex.a);\n"
+    "}\n";
+
+/* Water shader: wavy vertex displacement along the tile normal (radial
+ * up) and scrolling atlas UVs, with alpha blend in the fragment for a
+ * subtle fresnel-ish brightening at grazing angles. Matches the "look"
+ * of the JS water shader without porting the full Three.js program. */
+static const char* VS_WATER =
+    "#version 300 es\n"
+    "layout(location=0) in vec3 a_pos;\n"
+    "layout(location=1) in vec3 a_normal;\n"
+    "layout(location=2) in vec2 a_uv;\n"
+    "uniform mat4 u_vp;\n"
+    "uniform float u_time;\n"
+    "out vec2 v_uv;\n"
+    "out vec3 v_normal;\n"
+    "out vec3 v_wpos;\n"
+    "void main() {\n"
+    "  vec3 n = normalize(a_normal);\n"
+    /* Two crossed sine waves in tile-local space produce gentle swells
+     * without any heavy math. Displacement scale is tiny (~8 cm) so
+     * water doesn't clip through the shore. */
+    "  float wave = sin(u_time * 1.3 + a_pos.x * 2.0) * 0.04\n"
+    "             + sin(u_time * 0.9 + a_pos.z * 2.3) * 0.04;\n"
+    "  vec3 p = a_pos + n * wave;\n"
+    "  gl_Position = u_vp * vec4(p, 1.0);\n"
+    "  v_uv = a_uv + vec2(u_time * 0.02, u_time * 0.015);\n"
+    "  v_normal = n;\n"
+    "  v_wpos = p;\n"
+    "}\n";
+
+static const char* FS_WATER =
+    "#version 300 es\n"
+    "precision highp float;\n"
+    "in vec2 v_uv;\n"
+    "in vec3 v_normal;\n"
+    "in vec3 v_wpos;\n"
+    "uniform sampler2D u_atlas;\n"
+    "uniform vec3 u_camera_pos;\n"
+    "out vec4 frag_color;\n"
+    "void main() {\n"
+    "  vec4 tex = texture(u_atlas, v_uv);\n"
+    "  vec3 view = normalize(u_camera_pos - v_wpos);\n"
+    /* Simple fresnel term: water is more transparent when looked at
+     * straight down, more reflective/opaque at grazing angles. */
+    "  float f = 1.0 - max(dot(view, normalize(v_normal)), 0.0);\n"
+    "  f = pow(f, 3.0);\n"
+    "  vec3 rgb = mix(tex.rgb, vec3(0.92, 0.96, 1.0), f * 0.5);\n"
+    "  float alpha = mix(0.55, 0.9, f);\n"
+    "  frag_color = vec4(rgb, alpha);\n"
     "}\n";
 
 /* ----------------------------------------------------------------------- */
@@ -208,6 +269,66 @@ void renderer_init(void) {
         .label = "hex-pipeline",
     });
 
+    /* Water pipeline — blends on top of opaque terrain. Depth test is
+     * kept so underwater terrain doesn't clip through the surface, but
+     * depth writes are disabled so overlapping water caps (e.g. at tile
+     * seams after the wave displacement) don't punch holes in one
+     * another. */
+    sg_shader shd_water = sg_make_shader(&(sg_shader_desc){
+        .vertex_func.source   = VS_WATER,
+        .fragment_func.source = FS_WATER,
+        .attrs = {
+            [0].glsl_name = "a_pos",
+            [1].glsl_name = "a_normal",
+            [2].glsl_name = "a_uv",
+        },
+        .uniform_blocks[0] = {
+            .stage = SG_SHADERSTAGE_VERTEX,
+            .size  = 20 * sizeof(float),
+            .layout = SG_UNIFORMLAYOUT_STD140,
+            .glsl_uniforms[0] = { .glsl_name = "u_vp",   .type = SG_UNIFORMTYPE_MAT4 },
+            .glsl_uniforms[1] = { .glsl_name = "u_time", .type = SG_UNIFORMTYPE_FLOAT },
+        },
+        .uniform_blocks[1] = {
+            .stage = SG_SHADERSTAGE_FRAGMENT,
+            .size  = 4 * sizeof(float),
+            .layout = SG_UNIFORMLAYOUT_STD140,
+            .glsl_uniforms[0] = { .glsl_name = "u_camera_pos", .type = SG_UNIFORMTYPE_FLOAT3 },
+        },
+        .views[0].texture = { .stage = SG_SHADERSTAGE_FRAGMENT,
+                              .image_type = SG_IMAGETYPE_2D,
+                              .sample_type = SG_IMAGESAMPLETYPE_FLOAT },
+        .samplers[0] = { .stage = SG_SHADERSTAGE_FRAGMENT,
+                         .sampler_type = SG_SAMPLERTYPE_FILTERING },
+        .texture_sampler_pairs[0] = { .stage = SG_SHADERSTAGE_FRAGMENT,
+                                      .view_slot = 0, .sampler_slot = 0,
+                                      .glsl_name = "u_atlas" },
+        .label = "water-shader",
+    });
+    R.pip_water = sg_make_pipeline(&(sg_pipeline_desc){
+        .shader = shd_water,
+        .layout = {
+            .attrs = {
+                [0] = { .format = SG_VERTEXFORMAT_FLOAT3 },
+                [1] = { .format = SG_VERTEXFORMAT_FLOAT3 },
+                [2] = { .format = SG_VERTEXFORMAT_FLOAT2 },
+            },
+            .buffers[0].stride = sizeof(hex_vertex_t),
+        },
+        .index_type = SG_INDEXTYPE_UINT32,
+        .depth = { .write_enabled = false, .compare = SG_COMPAREFUNC_LESS_EQUAL },
+        .cull_mode = SG_CULLMODE_BACK,
+        .face_winding = SG_FACEWINDING_CCW,
+        .colors[0].blend = {
+            .enabled = true,
+            .src_factor_rgb = SG_BLENDFACTOR_SRC_ALPHA,
+            .dst_factor_rgb = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+            .src_factor_alpha = SG_BLENDFACTOR_ONE,
+            .dst_factor_alpha = SG_BLENDFACTOR_ONE,
+        },
+        .label = "water-pipeline",
+    });
+
     /* Allocate the two big streaming buffers up front at their max size.
      * sg_update_buffer replaces the whole buffer each call; we always
      * submit only the used prefix. */
@@ -223,26 +344,49 @@ void renderer_init(void) {
         .label = "world-ibuf",
     });
 
+    /* Water: one cap per ocean tile, so at most tile_count = 40962
+     * caps. Budget 512 K verts / 1.5 M indices — well clear. */
+    const size_t WATER_VCAP = 512u << 10;
+    const size_t WATER_ICAP = (512u << 10) * 3;
+    R.water_vbuf = sg_make_buffer(&(sg_buffer_desc){
+        .size = WATER_VCAP * sizeof(hex_vertex_t),
+        .usage.stream_update = true,
+        .label = "water-vbuf",
+    });
+    R.water_ibuf = sg_make_buffer(&(sg_buffer_desc){
+        .size = WATER_ICAP * sizeof(uint32_t),
+        .usage.stream_update = true,
+        .usage.index_buffer  = true,
+        .label = "water-ibuf",
+    });
+
     bake_atlas();
     hex_mesh_init(&R.mesh);
-    /* Pre-allocate the CPU mesh at full GPU capacity so the streaming
-     * path never realloc()s while meshing 40k tiles — one large malloc
-     * is far cheaper than a dozen exponentially-growing ones. */
+    hex_mesh_init(&R.water_mesh);
+    /* Pre-allocate both CPU meshes so streaming doesn't realloc. */
     R.mesh.vertex_cap = MAX_VERTICES;
     R.mesh.vertices = (hex_vertex_t*)malloc(R.mesh.vertex_cap * sizeof(hex_vertex_t));
     R.mesh.index_cap = MAX_INDICES;
     R.mesh.indices = (uint32_t*)malloc(R.mesh.index_cap * sizeof(uint32_t));
+    R.water_mesh.vertex_cap = WATER_VCAP;
+    R.water_mesh.vertices = (hex_vertex_t*)malloc(R.water_mesh.vertex_cap * sizeof(hex_vertex_t));
+    R.water_mesh.index_cap = WATER_ICAP;
+    R.water_mesh.indices = (uint32_t*)malloc(R.water_mesh.index_cap * sizeof(uint32_t));
 }
 
 void renderer_shutdown(void) {
     hex_mesh_free(&R.mesh);
+    hex_mesh_free(&R.water_mesh);
     free(SLICES); SLICES = NULL;
     sg_destroy_buffer(R.vbuf);
     sg_destroy_buffer(R.ibuf);
+    sg_destroy_buffer(R.water_vbuf);
+    sg_destroy_buffer(R.water_ibuf);
     sg_destroy_view(R.atlas_view);
     sg_destroy_image(R.atlas_img);
     sg_destroy_sampler(R.atlas_smp);
     sg_destroy_pipeline(R.pip_hex);
+    sg_destroy_pipeline(R.pip_water);
 }
 
 void renderer_begin_frame(int w, int h, render_env_t env) {
@@ -289,16 +433,20 @@ static void append_tile_to_mesh(world_t* w, int tile_idx) {
     SLICES[tile_idx].idx_count  = (uint32_t)R.mesh.index_count  - SLICES[tile_idx].idx_offset;
 }
 
-void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world) {
+void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world,
+                         vec3_t camera_world, float dt_seconds) {
     ensure_slices(world);
+    R.time_seconds += dt_seconds;
 
     /* Stream mesh: each frame, mesh some newly-generated tiles. Capped
      * so no single frame spends too long in the mesher. Only tiles
-     * below gen_cursor have block data — skip the rest. */
+     * below gen_cursor have block data — skip the rest. Builds both
+     * opaque terrain and the water cap in one pass. */
     int budget = MESH_BUDGET_PER_FRAME;
     int pending_since_upload = R.mesh_cursor - R.last_uploaded_cursor;
     while (R.mesh_cursor < world->gen_cursor && budget > 0) {
         append_tile_to_mesh(world, R.mesh_cursor);
+        hex_mesh_build_water(&R.water_mesh, world, R.mesh_cursor);
         R.mesh_cursor++;
         pending_since_upload++;
         budget--;
@@ -327,8 +475,10 @@ void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world) {
     }
     if (any_dirty_post_init) {
         hex_mesh_reset(&R.mesh);
+        hex_mesh_reset(&R.water_mesh);
         for (int i = 0; i < world->tile_count; ++i) {
             append_tile_to_mesh(world, i);
+            hex_mesh_build_water(&R.water_mesh, world, i);
             world_tile_clear_dirty(world, i);
         }
         time_to_upload = true;
@@ -346,6 +496,19 @@ void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world) {
         });
         R.last_uploaded_cursor = R.mesh_cursor;
         R.last_uploaded_index_count = (int)R.mesh.index_count;
+        if (R.water_mesh.vertex_count > 0) {
+            sg_update_buffer(R.water_vbuf, &(sg_range){
+                .ptr = R.water_mesh.vertices,
+                .size = R.water_mesh.vertex_count * sizeof(hex_vertex_t),
+            });
+            sg_update_buffer(R.water_ibuf, &(sg_range){
+                .ptr = R.water_mesh.indices,
+                .size = R.water_mesh.index_count * sizeof(uint32_t),
+            });
+            R.last_uploaded_water_idx_count = (int)R.water_mesh.index_count;
+        } else {
+            R.last_uploaded_water_idx_count = 0;
+        }
     }
 
     /* Draw: one call for whatever was last uploaded to the GPU. The CPU
@@ -368,6 +531,28 @@ void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world) {
     });
     sg_draw(0, R.last_uploaded_index_count, 1);
     R.tris = (size_t)R.last_uploaded_index_count / 3;
+
+    /* Water pass — blended on top of the opaque terrain. u_vp + u_time
+     * share the same uniform block (std140 packs mat4 at 64 bytes, float
+     * at offset 64 with pad, total 80 bytes = 20 floats). */
+    if (R.last_uploaded_water_idx_count > 0) {
+        sg_apply_pipeline(R.pip_water);
+        float ub_v[20];
+        memcpy(ub_v, vp.m, sizeof(vp.m));
+        ub_v[16] = R.time_seconds;
+        ub_v[17] = 0.0f; ub_v[18] = 0.0f; ub_v[19] = 0.0f;
+        sg_apply_uniforms(0, &(sg_range){ .ptr = ub_v, .size = sizeof(ub_v) });
+        float cam_ub[4] = { camera_world.x, camera_world.y, camera_world.z, 0.0f };
+        sg_apply_uniforms(1, &(sg_range){ .ptr = cam_ub, .size = sizeof(cam_ub) });
+        sg_apply_bindings(&(sg_bindings){
+            .vertex_buffers[0] = R.water_vbuf,
+            .index_buffer      = R.water_ibuf,
+            .views[0]          = R.atlas_view,
+            .samplers[0]       = R.atlas_smp,
+        });
+        sg_draw(0, R.last_uploaded_water_idx_count, 1);
+        R.tris += (size_t)R.last_uploaded_water_idx_count / 3;
+    }
 }
 
 void renderer_end_frame(void) {

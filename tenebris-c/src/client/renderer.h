@@ -19,10 +19,11 @@ void renderer_shutdown(void);
 
 void renderer_begin_frame(int w, int h, render_env_t env);
 
-/* Build/update per-tile meshes (dirty tiles only, capped per frame) and
- * draw them all. Goldberg tile count is bounded (~642 at subs=3) so we
- * can keep one GPU buffer per tile without breaking a sweat. */
-void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world);
+/* Draw the planet: opaque terrain in one merged pass, then water caps
+ * in a blended pass. `dt_seconds` advances the water-wave time
+ * uniform; `camera_world` is used by the water fresnel term. */
+void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world,
+                         vec3_t camera_world, float dt_seconds);
 void renderer_end_frame(void);
 
 size_t renderer_triangles_drawn_this_frame(void);
