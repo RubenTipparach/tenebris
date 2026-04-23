@@ -116,53 +116,80 @@ static const char* FS_HEX =
     "  frag_color = vec4(tex.rgb * v_light, tex.a);\n"
     "}\n";
 
-/* Water shader: wavy vertex displacement along the tile normal (radial
- * up) and scrolling atlas UVs, with alpha blend in the fragment for a
- * subtle fresnel-ish brightening at grazing angles. Matches the "look"
- * of the JS water shader without porting the full Three.js program. */
+/* Fully procedural water shader — no texture sampling. Gerstner-style
+ * ripple normals + Schlick fresnel + sky reflection + sun specular,
+ * blended over a depth-aware base color. Inspired by fire-face.com's
+ * WebGL water; trimmed to a single pass that fits inside the existing
+ * pipeline. */
 static const char* VS_WATER =
     "#version 300 es\n"
     "layout(location=0) in vec3 a_pos;\n"
     "layout(location=1) in vec3 a_normal;\n"
-    "layout(location=2) in vec2 a_uv;\n"
+    "layout(location=2) in vec2 a_uv;\n"      /* unused but keeps vertex layout compatible */
     "uniform mat4 u_vp;\n"
     "uniform float u_time;\n"
-    "out vec2 v_uv;\n"
-    "out vec3 v_normal;\n"
     "out vec3 v_wpos;\n"
+    "out vec3 v_normal;\n"
     "void main() {\n"
     "  vec3 n = normalize(a_normal);\n"
-    /* Two crossed sine waves in tile-local space produce gentle swells
-     * without any heavy math. Displacement scale is tiny (~8 cm) so
-     * water doesn't clip through the shore. */
-    "  float wave = sin(u_time * 1.3 + a_pos.x * 2.0) * 0.04\n"
-    "             + sin(u_time * 0.9 + a_pos.z * 2.3) * 0.04;\n"
-    "  vec3 p = a_pos + n * wave;\n"
+    /* Two orthogonal swell waves displace the surface along the tile
+     * normal (radially outward from the planet). Small amplitude keeps
+     * water from clipping through beaches. */
+    "  float swell = sin(u_time * 0.9 + a_pos.x * 1.8 + a_pos.z * 1.1) * 0.06\n"
+    "              + sin(u_time * 1.3 + a_pos.z * 2.1 - a_pos.x * 0.7) * 0.04;\n"
+    "  vec3 p = a_pos + n * swell;\n"
     "  gl_Position = u_vp * vec4(p, 1.0);\n"
-    "  v_uv = a_uv + vec2(u_time * 0.02, u_time * 0.015);\n"
-    "  v_normal = n;\n"
     "  v_wpos = p;\n"
+    "  v_normal = n;\n"
     "}\n";
 
 static const char* FS_WATER =
     "#version 300 es\n"
     "precision highp float;\n"
-    "in vec2 v_uv;\n"
-    "in vec3 v_normal;\n"
     "in vec3 v_wpos;\n"
-    "uniform sampler2D u_atlas;\n"
+    "in vec3 v_normal;\n"
     "uniform vec3 u_camera_pos;\n"
+    "uniform vec3 u_sun_dir;\n"
+    "uniform float u_time;\n"
     "out vec4 frag_color;\n"
+    /* Perturb the surface normal with two moving sine patterns.
+     * Cheap and gives a convincing rippled look without a noise
+     * texture. Frequencies tuned so ripples read at ~1-2 m. */
+    "vec3 ripple(vec3 n, vec3 p, float t) {\n"
+    "  float dx = cos(p.x * 3.1 + t * 1.7) * 0.12\n"
+    "           + cos(p.z * 2.3 - t * 0.9) * 0.08;\n"
+    "  float dz = cos(p.z * 2.8 + t * 1.3) * 0.12\n"
+    "           + cos(p.x * 2.1 - t * 1.1) * 0.08;\n"
+    "  return normalize(n + vec3(dx, 0.0, dz));\n"
+    "}\n"
     "void main() {\n"
-    "  vec4 tex = texture(u_atlas, v_uv);\n"
+    "  vec3 n = ripple(normalize(v_normal), v_wpos, u_time);\n"
     "  vec3 view = normalize(u_camera_pos - v_wpos);\n"
-    /* Simple fresnel term: water is more transparent when looked at
-     * straight down, more reflective/opaque at grazing angles. */
-    "  float f = 1.0 - max(dot(view, normalize(v_normal)), 0.0);\n"
-    "  f = pow(f, 3.0);\n"
-    "  vec3 rgb = mix(tex.rgb, vec3(0.92, 0.96, 1.0), f * 0.5);\n"
-    "  float alpha = mix(0.55, 0.9, f);\n"
-    "  frag_color = vec4(rgb, alpha);\n"
+    "  vec3 sun  = normalize(u_sun_dir);\n"
+
+    /* Schlick fresnel for water (F0 ~0.02). More reflective at grazing. */
+    "  float vdn = max(dot(view, n), 0.0);\n"
+    "  float f = 0.02 + 0.98 * pow(1.0 - vdn, 5.0);\n"
+
+    /* Depth-aware base color: looks shallower looking straight down,\n"
+     * deep/dark at grazing. */
+    "  vec3 water_shallow = vec3(0.25, 0.62, 0.78);\n"
+    "  vec3 water_deep    = vec3(0.04, 0.14, 0.28);\n"
+    "  vec3 base = mix(water_deep, water_shallow, vdn);\n"
+
+    /* Sky reflection — simple blue gradient along the view-up angle. */
+    "  float up_dot = clamp(dot(reflect(-view, n), vec3(0.0, 1.0, 0.0)), 0.0, 1.0);\n"
+    "  vec3 sky = mix(vec3(0.60, 0.78, 0.95), vec3(0.25, 0.45, 0.75), 1.0 - up_dot);\n"
+
+    /* Blinn-Phong sun specular. Tight exponent → sharp glint only at\n"
+     * the sun's reflected direction. */
+    "  vec3 h = normalize(view + sun);\n"
+    "  float spec = pow(max(dot(n, h), 0.0), 90.0);\n"
+    "  vec3 sun_highlight = vec3(1.4, 1.3, 1.05) * spec;\n"
+
+    "  vec3 color = mix(base, sky, f) + sun_highlight;\n"
+    "  float alpha = mix(0.55, 0.95, f);\n"
+    "  frag_color = vec4(color, alpha);\n"
     "}\n";
 
 /* ----------------------------------------------------------------------- */
@@ -291,29 +318,24 @@ void renderer_init(void) {
         .attrs = {
             [0].glsl_name = "a_pos",
             [1].glsl_name = "a_normal",
-            [2].glsl_name = "a_uv",
+            [2].glsl_name = "a_uv",    /* declared for layout parity with the
+                                         * shared vbuf; unused by the shader */
         },
         .uniform_blocks[0] = {
             .stage = SG_SHADERSTAGE_VERTEX,
-            .size  = 20 * sizeof(float),
+            .size  = 20 * sizeof(float),   /* mat4(16) + float(1) + 3 pad */
             .layout = SG_UNIFORMLAYOUT_STD140,
             .glsl_uniforms[0] = { .glsl_name = "u_vp",   .type = SG_UNIFORMTYPE_MAT4 },
             .glsl_uniforms[1] = { .glsl_name = "u_time", .type = SG_UNIFORMTYPE_FLOAT },
         },
         .uniform_blocks[1] = {
             .stage = SG_SHADERSTAGE_FRAGMENT,
-            .size  = 4 * sizeof(float),
+            .size  = 12 * sizeof(float),   /* vec3 + pad + vec3 + pad + float + pad */
             .layout = SG_UNIFORMLAYOUT_STD140,
             .glsl_uniforms[0] = { .glsl_name = "u_camera_pos", .type = SG_UNIFORMTYPE_FLOAT3 },
+            .glsl_uniforms[1] = { .glsl_name = "u_sun_dir",    .type = SG_UNIFORMTYPE_FLOAT3 },
+            .glsl_uniforms[2] = { .glsl_name = "u_time",       .type = SG_UNIFORMTYPE_FLOAT },
         },
-        .views[0].texture = { .stage = SG_SHADERSTAGE_FRAGMENT,
-                              .image_type = SG_IMAGETYPE_2D,
-                              .sample_type = SG_IMAGESAMPLETYPE_FLOAT },
-        .samplers[0] = { .stage = SG_SHADERSTAGE_FRAGMENT,
-                         .sampler_type = SG_SAMPLERTYPE_FILTERING },
-        .texture_sampler_pairs[0] = { .stage = SG_SHADERSTAGE_FRAGMENT,
-                                      .view_slot = 0, .sampler_slot = 0,
-                                      .glsl_name = "u_atlas" },
         .label = "water-shader",
     });
     R.pip_water = sg_make_pipeline(&(sg_pipeline_desc){
@@ -622,23 +644,28 @@ void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world,
     sg_draw(0, R.last_uploaded_index_count, 1);
     R.tris = (size_t)R.last_uploaded_index_count / 3;
 
-    /* Water pass — blended on top of the opaque terrain. u_vp + u_time
-     * share the same uniform block (std140 packs mat4 at 64 bytes, float
-     * at offset 64 with pad, total 80 bytes = 20 floats). */
+    /* Water pass — blended on top of the opaque terrain. Procedural
+     * shader; no atlas binding. */
     if (R.last_uploaded_water_idx_count > 0) {
         sg_apply_pipeline(R.pip_water);
+        /* Vertex UB: mat4 u_vp (0..63), float u_time (64..67), 3-float pad. */
         float ub_v[20];
         memcpy(ub_v, vp.m, sizeof(vp.m));
         ub_v[16] = R.time_seconds;
         ub_v[17] = 0.0f; ub_v[18] = 0.0f; ub_v[19] = 0.0f;
         sg_apply_uniforms(0, &(sg_range){ .ptr = ub_v, .size = sizeof(ub_v) });
-        float cam_ub[4] = { camera_world.x, camera_world.y, camera_world.z, 0.0f };
-        sg_apply_uniforms(1, &(sg_range){ .ptr = cam_ub, .size = sizeof(cam_ub) });
+
+        /* Fragment UB: vec3 u_camera_pos + pad + vec3 u_sun_dir + pad +
+         * float u_time + 3-float pad (std140 → 48 bytes / 12 floats). */
+        float ub_f[12] = { 0 };
+        ub_f[0] = camera_world.x;  ub_f[1] = camera_world.y;  ub_f[2] = camera_world.z;
+        ub_f[4] = R.env.sun_dir.x; ub_f[5] = R.env.sun_dir.y; ub_f[6] = R.env.sun_dir.z;
+        ub_f[8] = R.time_seconds;
+        sg_apply_uniforms(1, &(sg_range){ .ptr = ub_f, .size = sizeof(ub_f) });
+
         sg_apply_bindings(&(sg_bindings){
             .vertex_buffers[0] = R.water_vbuf,
             .index_buffer      = R.water_ibuf,
-            .views[0]          = R.atlas_view,
-            .samplers[0]       = R.atlas_smp,
         });
         sg_draw(0, R.last_uploaded_water_idx_count, 1);
         R.tris += (size_t)R.last_uploaded_water_idx_count / 3;

@@ -36,13 +36,15 @@
 #define MAX_OCEAN_DEPTH      10.0f    /* trenches down to 10 m below sea */
 #define LAND_BIAS             0.20f
 
-/* Biome thresholds in meters (altitude relative to body surface). */
+/* Biome thresholds in meters (altitude relative to body surface).
+ * Polar thresholds match JS PlayerConfig.POLAR_THRESHOLD = 0.9 so the
+ * ice caps are tight polar-only bands rather than big cold hemispheres. */
 #define SEA_LEVEL             0.0f
 #define BEACH_BAND            1.5f
 #define SNOW_ELEV            11.0f
 #define STONE_ELEV           15.0f
-#define POLAR_LATITUDE        0.78f
-#define COLD_LATITUDE         0.65f
+#define POLAR_LATITUDE        0.90f
+#define COLD_LATITUDE         0.75f
 
 /* ----------------------------------------------------------------------- */
 /* fBm and ridge noise. Ports of fractalSimplex3D / ridgeSimplex3D from

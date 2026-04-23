@@ -122,12 +122,18 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
         tangent_basis_t b = phys_tangent_basis(p->position);
         p->position = dvec3_add(p->position, dvec3_scale(b.up, (double)p->vy * (double)dt));
 
-        /* Ground snap based on the current tile's top solid block. */
+        /* Ground snap: only engage when falling or stationary. The old
+         * logic ran "if (r < ground) snap up" unconditionally, which
+         * made the jetpack teleport — while rising laterally over
+         * varying terrain, last_tile's ground radius frequently jumped
+         * above the player's current radius and yanked them up to the
+         * new tile's top. Gating on vy <= 0 keeps the snap behaviour
+         * for landings and knee-height clipping, but lets the jetpack
+         * fly freely over tall features. */
         double gr = ground_radius_under(w, p->last_tile);
         if (gr > -1e8) {
             double r = dvec3_length(p->position);
-            if (r < gr) {
-                /* Snap up to the ground surface. */
+            if (r < gr && p->vy <= 0.0f) {
                 p->position = dvec3_scale(dvec3_normalize(p->position), gr);
                 p->vy = 0.0f;
                 p->grounded = true;
@@ -138,7 +144,6 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
                 p->grounded = false;
             }
         } else {
-            /* Tile not yet generated — don't fall. */
             p->grounded = false;
             p->vy = 0.0f;
         }
