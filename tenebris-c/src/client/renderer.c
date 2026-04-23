@@ -16,10 +16,11 @@
 /* ----------------------------------------------------------------------- */
 
 #define MAX_LOD_TRIANGLES  32768
-/* Upload budget matches Caelum: enough to keep the hex bubble visually
- * complete within a few frames after a re-anchor, small enough that no
- * single frame uploads more than ~1.5 MB of vertex data. */
-#define HEX_REMESH_BUDGET  8
+/* One chunk remeshed per frame. Mesh build + GPU upload is the hot path
+ * on mid-range mobile; a higher budget overwhelms the frame and causes
+ * visible stutter. Dirty chunks that don't make the cut this frame wait
+ * for the next — visible as a brief "pop-in" rather than a hitch. */
+#define HEX_REMESH_BUDGET  1
 
 /* LOD vertex format — pos + color, 24 bytes. */
 typedef struct {

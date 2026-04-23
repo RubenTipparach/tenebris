@@ -14,6 +14,7 @@
 
 #include "core/icosphere.h"
 #include "core/planet.h"
+#include "core/planet_gen.h"
 #include "core/job_system.h"
 #include "core/hex_pool.h"
 #include "client/gfx_math.h"
@@ -67,16 +68,31 @@ static void init(void) {
     hex_pool_init(&G.hex_pool, G.body);
     player_init(&G.player, G.body);
 
+    /* Spawn 10 m above whatever the procedural surface altitude happens
+     * to be at the initial direction. Pure noise lookup — doesn't need
+     * any chunks to be filled first. Keeps the player from falling
+     * through an unloaded column while streaming catches up. */
+    {
+        dvec3_t dir = dvec3_normalize(player_world_pos(&G.player));
+        float surface = planet_surface_altitude(G.body, dir);
+        if (surface < 0.5f) surface = 0.5f;   /* stay above sea level */
+        G.player.position = dvec3_scale(dir, G.body->radius_m + (double)surface + 10.0);
+    }
+
     dvec3_t start = player_world_pos(&G.player);
     G.floating_origin = start;
     G.last_time = stm_now();
     G.smoothed_fps = 60.0f;
 
-    /* Prime the hex pool so there's terrain under the player on frame 1.
-     * The first fill budget flush covers all 81 chunks synchronously
-     * here - one-time cost at startup, not a per-frame hitch. */
+    /* Anchor the hex pool + kick off streaming. We intentionally do NOT
+     * drain all pending fills here — the previous version flushed all 81
+     * chunks in one synchronous loop, costing hundreds of milliseconds at
+     * startup and triggering the "MASSIVE lag spike" on first-load. The
+     * pool's FILL_BUDGET + REMESH_BUDGET spread the work across frames so
+     * the page comes up immediately with a progress indicator while
+     * terrain streams in. Player stays in fly mode if they fall through
+     * the unloaded spawn column. */
     hex_pool_update(&G.hex_pool, start);
-    for (int i = 0; i < HEX_POOL_COUNT; ++i) hex_pool_update(&G.hex_pool, start);
 }
 
 /* --------------------------------------------------------------------- */

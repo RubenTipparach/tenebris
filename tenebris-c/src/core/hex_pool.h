@@ -38,9 +38,10 @@
 #define HEX_POOL_REANCHOR_M    100.0f    /* re-anchor if drift exceeds this */
 
 /* Streaming budget: fill at most this many pending chunks per frame so
- * a re-anchor doesn't hitch. 81 chunks / 8 per frame = ~10 frames of
- * perceived load, which at 60 FPS is ~170 ms. */
-#define HEX_POOL_FILL_BUDGET   8
+ * a re-anchor doesn't hitch. Tuned low to stay under the 16 ms frame
+ * budget on mid-range mobile — the mesher is the expensive half of the
+ * pipeline, so filling faster than we can mesh just fills a queue. */
+#define HEX_POOL_FILL_BUDGET   2
 
 typedef struct {
     const body_config_t* body;
