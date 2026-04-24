@@ -34,6 +34,7 @@
 static struct {
     sg_pipeline pip_hex;
     sg_pipeline pip_water;     /* translucent, wave-animated cap layer */
+    sg_pipeline pip_sky;       /* fullscreen starfield + sun disc       */
     sg_image    atlas_img;
     sg_view     atlas_view;
     sg_sampler  atlas_smp;
@@ -115,6 +116,63 @@ static const char* FS_HEX =
     "void main() {\n"
     "  vec4 tex = texture(u_atlas, v_uv);\n"
     "  frag_color = vec4(tex.rgb * v_light, tex.a);\n"
+    "}\n";
+
+/* Starfield + sun skybox. Fullscreen triangle via gl_VertexID (no
+ * vbuf needed). Vertex shader reconstructs the world-space view
+ * direction by unprojecting the far-plane clip coordinates. Fragment
+ * samples a 3D hash over the direction for procedural stars, and
+ * renders the sun disc + soft glow from `dot(dir, sun)`. */
+static const char* VS_SKY =
+    "#version 300 es\n"
+    "out vec3 v_world_dir;\n"
+    "uniform mat4 u_inv_vp;\n"
+    "void main() {\n"
+    /* Three-vertex fullscreen triangle: (-1,-1), (+3,-1), (-1,+3). */
+    "  vec2 pos = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);\n"
+    "  pos = pos * 2.0 - 1.0;\n"
+    /* z = 1.0 puts us at the far plane so world geometry in front of\n"
+     * it still wins the depth test when we keep depth writes off. */
+    "  gl_Position = vec4(pos, 1.0, 1.0);\n"
+    "  vec4 w = u_inv_vp * vec4(pos, 1.0, 1.0);\n"
+    "  v_world_dir = w.xyz / w.w;\n"
+    "}\n";
+
+static const char* FS_SKY =
+    "#version 300 es\n"
+    "precision highp float;\n"
+    "in vec3 v_world_dir;\n"
+    "uniform vec3 u_sun_dir;\n"
+    "uniform vec3 u_sun_color;\n"
+    "out vec4 frag_color;\n"
+    "float h31(vec3 p) {\n"
+    "  p = fract(p * vec3(443.897, 441.423, 437.195));\n"
+    "  p += dot(p, p.yzx + 19.19);\n"
+    "  return fract((p.x + p.y) * p.z);\n"
+    "}\n"
+    "void main() {\n"
+    "  vec3 d = normalize(v_world_dir);\n"
+    /* Star field: quantise direction into cells, hash each cell, take
+     * only the brightest few percent. Two octaves for mixed sizes. */
+    "  vec3  c1 = floor(d * 180.0);\n"
+    "  float r1 = h31(c1);\n"
+    "  float star = smoothstep(0.9965, 1.0, r1);\n"
+    "  vec3  c2 = floor(d * 420.0 + vec3(17.0, 53.0, 91.0));\n"
+    "  float r2 = h31(c2);\n"
+    "  star = max(star, smoothstep(0.9985, 1.0, r2) * 0.6);\n"
+
+    /* Sun disc + soft glow. Tight threshold on dot(dir, sun). */
+    "  float sd = dot(d, normalize(u_sun_dir));\n"
+    "  float disc = smoothstep(0.9996, 0.9999, sd);\n"
+    "  float glow = smoothstep(0.95, 0.9996, sd) * 0.25;\n"
+
+    /* Space background: near-black with a faint subtle tint so the
+     * eye doesn't strain. */
+    "  vec3 bg = vec3(0.01, 0.015, 0.035);\n"
+    "  vec3 col = bg + vec3(star) * 0.9\n"
+    "           + u_sun_color * disc\n"
+    "           + u_sun_color * glow;\n"
+    "  frag_color = vec4(col, 1.0);\n"
     "}\n";
 
 /* Procedural water shader. Uses 3D value-noise fBm so the pattern is
@@ -455,6 +513,34 @@ void renderer_init(void) {
         .label = "water-ibuf",
     });
 
+    /* Skybox pipeline — fullscreen triangle via gl_VertexID, no vbuf
+     * bound. No depth write (so world geometry lands on top) and no
+     * cull (the triangle is in clip-space). */
+    sg_shader shd_sky = sg_make_shader(&(sg_shader_desc){
+        .vertex_func.source   = VS_SKY,
+        .fragment_func.source = FS_SKY,
+        .uniform_blocks[0] = {
+            .stage = SG_SHADERSTAGE_VERTEX,
+            .size  = 16 * sizeof(float),
+            .layout = SG_UNIFORMLAYOUT_STD140,
+            .glsl_uniforms[0] = { .glsl_name = "u_inv_vp", .type = SG_UNIFORMTYPE_MAT4 },
+        },
+        .uniform_blocks[1] = {
+            .stage = SG_SHADERSTAGE_FRAGMENT,
+            .size  = 8 * sizeof(float),
+            .layout = SG_UNIFORMLAYOUT_STD140,
+            .glsl_uniforms[0] = { .glsl_name = "u_sun_dir",   .type = SG_UNIFORMTYPE_FLOAT3 },
+            .glsl_uniforms[1] = { .glsl_name = "u_sun_color", .type = SG_UNIFORMTYPE_FLOAT3 },
+        },
+        .label = "sky-shader",
+    });
+    R.pip_sky = sg_make_pipeline(&(sg_pipeline_desc){
+        .shader = shd_sky,
+        .depth = { .write_enabled = false, .compare = SG_COMPAREFUNC_LESS_EQUAL },
+        .cull_mode = SG_CULLMODE_NONE,
+        .label = "sky-pipeline",
+    });
+
     bake_atlas();
     hex_mesh_init(&R.mesh);
     hex_mesh_init(&R.water_mesh);
@@ -486,6 +572,58 @@ void renderer_shutdown(void) {
     sg_destroy_sampler(R.atlas_smp);
     sg_destroy_pipeline(R.pip_hex);
     sg_destroy_pipeline(R.pip_water);
+    sg_destroy_pipeline(R.pip_sky);
+}
+
+/* ----------------------------------------------------------------------- */
+/* Invert a mat4. Generic inverse would be heavy; we use the fact that
+ * the view-projection is a stack of translate + rotate + perspective
+ * and just call Cramer's rule inline. Only used once per frame. */
+
+static mat4_t mat4_inverse(mat4_t m) {
+    /* Standard 4x4 inverse via cofactor expansion. Column-major like
+     * our mat4_t.m[16]. Works as long as the matrix is invertible —
+     * the view-projection always is. */
+    const float* a = m.m;
+    mat4_t o = {{0}};
+    float* b = o.m;
+    b[0]  =  a[5]*a[10]*a[15] - a[5]*a[11]*a[14] - a[9]*a[6]*a[15] + a[9]*a[7]*a[14] + a[13]*a[6]*a[11] - a[13]*a[7]*a[10];
+    b[4]  = -a[4]*a[10]*a[15] + a[4]*a[11]*a[14] + a[8]*a[6]*a[15] - a[8]*a[7]*a[14] - a[12]*a[6]*a[11] + a[12]*a[7]*a[10];
+    b[8]  =  a[4]*a[9]*a[15]  - a[4]*a[11]*a[13] - a[8]*a[5]*a[15] + a[8]*a[7]*a[13] + a[12]*a[5]*a[11] - a[12]*a[7]*a[9];
+    b[12] = -a[4]*a[9]*a[14]  + a[4]*a[10]*a[13] + a[8]*a[5]*a[14] - a[8]*a[6]*a[13] - a[12]*a[5]*a[10] + a[12]*a[6]*a[9];
+    b[1]  = -a[1]*a[10]*a[15] + a[1]*a[11]*a[14] + a[9]*a[2]*a[15] - a[9]*a[3]*a[14] - a[13]*a[2]*a[11] + a[13]*a[3]*a[10];
+    b[5]  =  a[0]*a[10]*a[15] - a[0]*a[11]*a[14] - a[8]*a[2]*a[15] + a[8]*a[3]*a[14] + a[12]*a[2]*a[11] - a[12]*a[3]*a[10];
+    b[9]  = -a[0]*a[9]*a[15]  + a[0]*a[11]*a[13] + a[8]*a[1]*a[15] - a[8]*a[3]*a[13] - a[12]*a[1]*a[11] + a[12]*a[3]*a[9];
+    b[13] =  a[0]*a[9]*a[14]  - a[0]*a[10]*a[13] - a[8]*a[1]*a[14] + a[8]*a[2]*a[13] + a[12]*a[1]*a[10] - a[12]*a[2]*a[9];
+    b[2]  =  a[1]*a[6]*a[15]  - a[1]*a[7]*a[14]  - a[5]*a[2]*a[15] + a[5]*a[3]*a[14] + a[13]*a[2]*a[7]  - a[13]*a[3]*a[6];
+    b[6]  = -a[0]*a[6]*a[15]  + a[0]*a[7]*a[14]  + a[4]*a[2]*a[15] - a[4]*a[3]*a[14] - a[12]*a[2]*a[7]  + a[12]*a[3]*a[6];
+    b[10] =  a[0]*a[5]*a[15]  - a[0]*a[7]*a[13]  - a[4]*a[1]*a[15] + a[4]*a[3]*a[13] + a[12]*a[1]*a[7]  - a[12]*a[3]*a[5];
+    b[14] = -a[0]*a[5]*a[14]  + a[0]*a[6]*a[13]  + a[4]*a[1]*a[14] - a[4]*a[2]*a[13] - a[12]*a[1]*a[6]  + a[12]*a[2]*a[5];
+    b[3]  = -a[1]*a[6]*a[11]  + a[1]*a[7]*a[10]  + a[5]*a[2]*a[11] - a[5]*a[3]*a[10] - a[9]*a[2]*a[7]   + a[9]*a[3]*a[6];
+    b[7]  =  a[0]*a[6]*a[11]  - a[0]*a[7]*a[10]  - a[4]*a[2]*a[11] + a[4]*a[3]*a[10] + a[8]*a[2]*a[7]   - a[8]*a[3]*a[6];
+    b[11] = -a[0]*a[5]*a[11]  + a[0]*a[7]*a[9]   + a[4]*a[1]*a[11] - a[4]*a[3]*a[9]  - a[8]*a[1]*a[7]   + a[8]*a[3]*a[5];
+    b[15] =  a[0]*a[5]*a[10]  - a[0]*a[6]*a[9]   - a[4]*a[1]*a[10] + a[4]*a[2]*a[9]  + a[8]*a[1]*a[6]   - a[8]*a[2]*a[5];
+    float det = a[0]*b[0] + a[1]*b[4] + a[2]*b[8] + a[3]*b[12];
+    if (det == 0.0f) return mat4_identity();
+    float inv_det = 1.0f / det;
+    for (int i = 0; i < 16; ++i) b[i] *= inv_det;
+    return o;
+}
+
+void renderer_draw_skybox(mat4_t view, mat4_t proj) {
+    mat4_t vp = mat4_mul(proj, view);
+    mat4_t inv_vp = mat4_inverse(vp);
+    sg_apply_pipeline(R.pip_sky);
+    sg_apply_uniforms(0, &(sg_range){ .ptr = inv_vp.m, .size = sizeof(inv_vp.m) });
+    float sun_ub[8] = {
+        R.env.sun_dir.x, R.env.sun_dir.y, R.env.sun_dir.z, 0.0f,
+        /* Warm sun color. Slightly clipping white for the hot disc. */
+        1.40f, 1.25f, 0.90f, 0.0f,
+    };
+    sg_apply_uniforms(1, &(sg_range){ .ptr = sun_ub, .size = sizeof(sun_ub) });
+    /* No bindings needed — fullscreen triangle generated from gl_VertexID. */
+    sg_apply_bindings(&(sg_bindings){ 0 });
+    sg_draw(0, 3, 1);
 }
 
 /* ----------------------------------------------------------------------- */
@@ -532,20 +670,64 @@ void renderer_register_moon(world_t* w) {
 
 int renderer_moon_count(void) { return R.moon_count; }
 
+/* Extract 6 frustum planes from a view-projection matrix (column
+ * major). Each plane is ax + by + cz + d >= 0 for "inside". Gribb/
+ * Hartmann — row differences of the VP. */
+typedef struct { float a, b, c, d; } frustum_plane_t;
+
+static void extract_frustum(mat4_t vp, frustum_plane_t p[6]) {
+    const float* m = vp.m;
+    /* Left:   row3 + row0 */
+    p[0] = (frustum_plane_t){ m[3] + m[0], m[7] + m[4], m[11] + m[8],  m[15] + m[12] };
+    /* Right:  row3 - row0 */
+    p[1] = (frustum_plane_t){ m[3] - m[0], m[7] - m[4], m[11] - m[8],  m[15] - m[12] };
+    /* Bottom: row3 + row1 */
+    p[2] = (frustum_plane_t){ m[3] + m[1], m[7] + m[5], m[11] + m[9],  m[15] + m[13] };
+    /* Top:    row3 - row1 */
+    p[3] = (frustum_plane_t){ m[3] - m[1], m[7] - m[5], m[11] - m[9],  m[15] - m[13] };
+    /* Near:   row3 + row2 */
+    p[4] = (frustum_plane_t){ m[3] + m[2], m[7] + m[6], m[11] + m[10], m[15] + m[14] };
+    /* Far:    row3 - row2 */
+    p[5] = (frustum_plane_t){ m[3] - m[2], m[7] - m[6], m[11] - m[10], m[15] - m[14] };
+    /* Normalise so radius comparison is in world units. */
+    for (int i = 0; i < 6; ++i) {
+        float inv = 1.0f / sqrtf(p[i].a * p[i].a + p[i].b * p[i].b + p[i].c * p[i].c);
+        p[i].a *= inv; p[i].b *= inv; p[i].c *= inv; p[i].d *= inv;
+    }
+}
+
+static bool sphere_visible(const frustum_plane_t p[6], vec3_t c, float r) {
+    for (int i = 0; i < 6; ++i) {
+        float dist = p[i].a * c.x + p[i].b * c.y + p[i].c * c.z + p[i].d;
+        if (dist < -r) return false;
+    }
+    return true;
+}
+
 void renderer_draw_moons(mat4_t view, mat4_t proj) {
     if (R.moon_count == 0) return;
-    sg_apply_pipeline(R.pip_hex);
 
     mat4_t vp_base = mat4_mul(proj, view);
+    frustum_plane_t frustum[6];
+    extract_frustum(vp_base, frustum);
+
+    sg_apply_pipeline(R.pip_hex);
     float light_ub[8] = {
         R.env.sun_dir.x, R.env.sun_dir.y, R.env.sun_dir.z, 0.0f,
         R.env.ambient.x, R.env.ambient.y, R.env.ambient.z, 0.0f,
     };
 
+    int drawn = 0, culled = 0;
     for (int i = 0; i < R.moon_count; ++i) {
-        /* MVP = vp * translate(moon_position). Moon verts are in their
-         * own body-local frame so adding the world offset here places
-         * them correctly. */
+        /* Use the body's radius as the bounding-sphere radius — every
+         * tile vertex is within radius of the body center. */
+        float radius = (float)R.moons[i].world->body->radius_m;
+        if (!sphere_visible(frustum, R.moons[i].position, radius)) {
+            culled++;
+            continue;
+        }
+        drawn++;
+
         mat4_t model = mat4_translate(R.moons[i].position);
         mat4_t mvp   = mat4_mul(vp_base, model);
         sg_apply_uniforms(0, &(sg_range){ .ptr = mvp.m, .size = sizeof(mvp.m) });
@@ -559,6 +741,7 @@ void renderer_draw_moons(mat4_t view, mat4_t proj) {
         sg_draw(0, R.moons[i].index_count, 1);
         R.tris += (size_t)R.moons[i].index_count / 3;
     }
+    (void)drawn; (void)culled;
 }
 
 /* ----------------------------------------------------------------------- */

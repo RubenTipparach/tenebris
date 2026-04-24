@@ -116,12 +116,15 @@ void player_init(player_ctrl_t* p, const body_config_t* body) {
     p->pitch = 0.0f;
     p->selected_block = BLOCK_STONE;
     p->grounded = false;
-    p->fly_mode = true;
+    p->fly_mode = false;       /* start on the ground, gravity on */
     p->vy = 0.0f;
     p->last_tile = -1;
     p->basis_ready = false;
-    /* Spawn 10 m above body's prime meridian (body.pos + radial * (r+10)). */
-    const double r0 = body->radius_m + 10.0;
+    /* Spawn ~2 m above body's prime meridian surface, which lets the
+     * first-frame ground snap pull the player down to the actual
+     * surface height. Assumes the spawn tile is generated — main_web
+     * drains world gen at init so this is safe. */
+    const double r0 = body->radius_m + 2.0;
     p->position = dvec3_make(body->pos_x + r0, body->pos_y, body->pos_z);
 }
 

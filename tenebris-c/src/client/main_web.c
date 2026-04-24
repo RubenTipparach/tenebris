@@ -72,6 +72,14 @@ static void init(void) {
     G.world = world_create(G.body, G.body->subdivisions);
     player_init(&G.player, G.body);
 
+    /* Drain Tenebris gen synchronously at init so the spawn tile has
+     * terrain the moment the first frame lands. Rendering still streams
+     * mesh uploads so there's no 40 MB upload hitch — gen itself is
+     * fast (~200 ms for 40 k tiles of noise). */
+    while (!world_gen_complete(G.world)) {
+        world_stream_gen(G.world, G.world->tile_count);
+    }
+
     /* Build and register every non-main body — moons, neighbouring
      * planets, the asteroid belt. Each is fully generated + meshed
      * synchronously at boot. Asteroids have subs=3 (642 tiles → tiny
@@ -187,6 +195,9 @@ static void frame(void) {
     vec3_t cam_world = dvec3_to_vec3(cam_world_d);
 
     renderer_begin_frame(sapp_width(), sapp_height(), env);
+    /* Skybox first — fullscreen stars + sun, no depth write so the
+     * rest of the scene paints over it. */
+    renderer_draw_skybox(view, proj);
     renderer_draw_world(view, proj, G.world, cam_world, dt);
     renderer_draw_moons(view, proj);
 

@@ -19,6 +19,12 @@ void renderer_shutdown(void);
 
 void renderer_begin_frame(int w, int h, render_env_t env);
 
+/* Procedural skybox: fullscreen pass that draws stars + the sun disc.
+ * Must run first in the frame (before any world geometry) and doesn't
+ * write depth, so later opaque passes paint on top. Pass the world
+ * sun direction in `env.sun_dir`. */
+void renderer_draw_skybox(mat4_t view, mat4_t proj);
+
 /* Draw the planet: opaque terrain in one merged pass, then water caps
  * in a blended pass. `dt_seconds` advances the water-wave time
  * uniform; `camera_world` is used by the water fresnel term. */
