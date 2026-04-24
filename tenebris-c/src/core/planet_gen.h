@@ -30,6 +30,7 @@ typedef struct {
     bool  polar;
     bool  barren;     /* moon-like: skip grass/sand/water biomes */
     bool  icy;        /* all snow + ice surface, no grass / sand / dirt */
+    bool  sequoia;    /* emit SEQ_* tileset variants instead of defaults */
 } column_profile_t;
 
 column_profile_t planet_profile(const body_config_t* body, dvec3_t unit_dir);

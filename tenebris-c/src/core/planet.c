@@ -35,6 +35,7 @@ static const body_config_t BODIES[BODY_COUNT] = {
         .subdivisions = 6, .gravity_g = 1.1f,
         .pos_x = -850.0, .pos_y = 120.0, .pos_z = -700.0,
         .has_water = true,
+        .tileset = TILESET_SEQUOIA,
     },
     [BODY_VERDANT] = {
         .id = BODY_VERDANT, .name = "Verdant",

@@ -89,6 +89,13 @@ if (EMSCRIPTEN)
                                "${CMAKE_SOURCE_DIR}/assets/textures/${name}.png" COPYONLY)
             endif()
         endforeach()
+        file(MAKE_DIRECTORY "${CMAKE_SOURCE_DIR}/assets/textures/planet_seq")
+        foreach(name planet_seq_grass planet_seq_dirt planet_seq_grass_dirt planet_seq_sand planet_seq_snow planet_seq_snow_dirt)
+            if (EXISTS "${TENEBRIS_PUBLIC_TEXTURES}/planet_seq/${name}.png")
+                configure_file("${TENEBRIS_PUBLIC_TEXTURES}/planet_seq/${name}.png"
+                               "${CMAKE_SOURCE_DIR}/assets/textures/planet_seq/${name}.png" COPYONLY)
+            endif()
+        endforeach()
     endif()
 
     # Copy assets next to the build output.

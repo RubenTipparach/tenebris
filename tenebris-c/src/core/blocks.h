@@ -24,6 +24,17 @@ typedef enum {
     BLOCK_TORCH      = 10,
     BLOCK_MOON       = 11,
 
+    /* Sequoia-tileset variants — a distinct palette for the sister
+     * earth-like planet. Stored as their own block_t values so the
+     * mesher needs no per-body branching; the biome classifier picks
+     * the right variants for bodies with tileset == TILESET_SEQUOIA. */
+    BLOCK_SEQ_GRASS      = 12,
+    BLOCK_SEQ_DIRT       = 13,
+    BLOCK_SEQ_DIRT_GRASS = 14,   /* side face of Sequoia grass column */
+    BLOCK_SEQ_SAND       = 15,
+    BLOCK_SEQ_SNOW       = 16,
+    BLOCK_SEQ_DIRT_SNOW  = 17,   /* side face of Sequoia snow column */
+
     BLOCK_COUNT
 } block_t;
 

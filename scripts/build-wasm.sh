@@ -23,6 +23,7 @@ fi
 # truth — tenebris-c/assets/ is a generated staging directory.
 echo "==> staging assets from public/ into tenebris-c/assets/"
 mkdir -p "$C_ROOT/assets/textures"
+mkdir -p "$C_ROOT/assets/textures/planet_seq"
 # Tier 1 atlas: one 16x16 tile per block type, single-row strip. Filenames
 # must match the paths hard-coded in renderer.c's bake_atlas block.
 for f in water sand dirt grass rocks ice snow dirt_grass dirt_snow torch moon; do
@@ -31,6 +32,15 @@ for f in water sand dirt grass rocks ice snow dirt_grass dirt_snow torch moon; d
     cp -f "$src" "$C_ROOT/assets/textures/${f}.png"
   else
     echo "warning: $src missing — atlas tile will be empty" >&2
+  fi
+done
+# Sequoia tileset variants — columns 12-17 in the atlas.
+for f in planet_seq_grass planet_seq_dirt planet_seq_grass_dirt planet_seq_sand planet_seq_snow planet_seq_snow_dirt; do
+  src="$ROOT/public/textures/planet_seq/${f}.png"
+  if [ -f "$src" ]; then
+    cp -f "$src" "$C_ROOT/assets/textures/planet_seq/${f}.png"
+  else
+    echo "warning: $src missing — Sequoia tile will be empty" >&2
   fi
 done
 

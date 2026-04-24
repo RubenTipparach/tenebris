@@ -38,15 +38,24 @@ static dvec3_t rotate_between(dvec3_t a, dvec3_t b, dvec3_t v) {
                      dvec3_scale(k, kdotv * (1.0 - c)));
 }
 
+/* Offset from the player's current body center (for surface-normal
+ * math). Matches JS PlanetPlayer.updateLocalOrientation, which derives
+ * localUp from the surface normal of the planet the player is on. */
+static dvec3_t player_local_pos(const player_ctrl_t* p) {
+    dvec3_t c = dvec3_make(p->body->pos_x, p->body->pos_y, p->body->pos_z);
+    return dvec3_sub(p->position, c);
+}
+
 /* Re-align the player's persistent tangent basis to the current
- * radial up. Carry fwd/right across by parallel transport so the
- * basis stays continuous as the player traverses the sphere — no
- * reference-axis singularities like the polar flip
- * phys_tangent_basis has when |up.y| crosses 0.9. */
+ * radial up (the surface normal of p->body at the player's position).
+ * Carry fwd/right across by parallel transport so the basis stays
+ * continuous as the player traverses the sphere.
+ * basis_ready = false forces a cold rebuild — used on init + teleport. */
 static void sync_basis(player_ctrl_t* p) {
-    dvec3_t new_up = dvec3_normalize(p->position);
+    dvec3_t local = player_local_pos(p);
+    dvec3_t new_up = dvec3_normalize(local);
     if (!p->basis_ready) {
-        p->basis = phys_tangent_basis(p->position);
+        p->basis = phys_tangent_basis(local);
         p->basis_ready = true;
         return;
     }
@@ -54,7 +63,6 @@ static void sync_basis(player_ctrl_t* p) {
     p->basis.fwd   = rotate_between(old_up, new_up, p->basis.fwd);
     p->basis.right = rotate_between(old_up, new_up, p->basis.right);
     p->basis.up    = new_up;
-    /* Re-orthonormalize to clean up float drift. */
     p->basis.right = dvec3_normalize(dvec3_cross(p->basis.fwd, p->basis.up));
     p->basis.fwd   = dvec3_normalize(dvec3_cross(p->basis.up,  p->basis.right));
 }
@@ -112,9 +120,9 @@ void player_init(player_ctrl_t* p, const body_config_t* body) {
     p->vy = 0.0f;
     p->last_tile = -1;
     p->basis_ready = false;
-    /* Spawn 10 m above what will become the surface at (1,0,0). */
+    /* Spawn 10 m above body's prime meridian (body.pos + radial * (r+10)). */
     const double r0 = body->radius_m + 10.0;
-    p->position = dvec3_make(r0, 0, 0);
+    p->position = dvec3_make(body->pos_x + r0, body->pos_y, body->pos_z);
 }
 
 dvec3_t player_world_pos(const player_ctrl_t* p) { return p->position; }
@@ -147,9 +155,15 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
     dvec3_t wish = walk_wish(p, &in->phys);
     p->position = dvec3_add(p->position, dvec3_scale(wish, (double)speed * (double)dt));
 
-    /* Track the tile we're over for raycast / edit queries. */
-    dvec3_t dir = dvec3_normalize(p->position);
-    p->last_tile = goldberg_find_tile(w->grid, dir, p->last_tile);
+    /* Track the tile we're over (Tenebris only — it's the only body
+     * whose world_t is wired through the physics path right now). */
+    const bool on_tenebris = (p->body->id == BODY_TENEBRIS);
+    if (on_tenebris) {
+        dvec3_t local_dir = dvec3_normalize(player_local_pos(p));
+        p->last_tile = goldberg_find_tile(w->grid, local_dir, p->last_tile);
+    } else {
+        p->last_tile = -1;
+    }
 
     const float gravity = 25.0f * p->body->gravity_g;
     if (p->fly_mode) {
@@ -173,30 +187,38 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
         p->position = dvec3_add(p->position,
             dvec3_scale(p->basis.up, (double)p->vy * (double)dt));
 
-        /* Ground snap: only engage when falling or stationary. The old
-         * logic ran "if (r < ground) snap up" unconditionally, which
-         * made the jetpack teleport — while rising laterally over
-         * varying terrain, last_tile's ground radius frequently jumped
-         * above the player's current radius and yanked them up to the
-         * new tile's top. Gating on vy <= 0 keeps the snap behaviour
-         * for landings and knee-height clipping, but lets the jetpack
-         * fly freely over tall features. */
-        double gr = ground_radius_under(w, p->last_tile);
-        if (gr > -1e8) {
-            double r = dvec3_length(p->position);
-            if (r < gr && p->vy <= 0.0f) {
-                p->position = dvec3_scale(dvec3_normalize(p->position), gr);
-                p->vy = 0.0f;
-                p->grounded = true;
-            } else if (fabs(r - gr) < 0.05 && p->vy <= 0.0f) {
-                p->grounded = true;
-                p->vy = 0.0f;
+        /* Ground snap: only engage when falling or stationary, and only
+         * when we're over Tenebris (the only body with voxel data in
+         * `w`). Off-body physics just lets the player float — teleport
+         * forces fly mode precisely so this doesn't matter visually. */
+        if (on_tenebris) {
+            double gr = ground_radius_under(w, p->last_tile);
+            if (gr > -1e8) {
+                dvec3_t local = player_local_pos(p);
+                double  r     = dvec3_length(local);
+                if (r < gr && p->vy <= 0.0f) {
+                    /* Snap: scale the local (body-relative) position to
+                     * the ground radius and re-offset back to world. */
+                    dvec3_t snapped_local = dvec3_scale(dvec3_normalize(local), gr);
+                    p->position = dvec3_add(
+                        dvec3_make(p->body->pos_x, p->body->pos_y, p->body->pos_z),
+                        snapped_local);
+                    p->vy = 0.0f;
+                    p->grounded = true;
+                } else if (fabs(r - gr) < 0.05 && p->vy <= 0.0f) {
+                    p->grounded = true;
+                    p->vy = 0.0f;
+                } else {
+                    p->grounded = false;
+                }
             } else {
                 p->grounded = false;
+                p->vy = 0.0f;
             }
         } else {
+            /* On a non-Tenebris body, no snap. Player relies on fly
+             * mode until we wire per-body world_t through physics. */
             p->grounded = false;
-            p->vy = 0.0f;
         }
     }
 
@@ -207,27 +229,33 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
 
 void player_teleport_to(player_ctrl_t* p, const body_config_t* body) {
     if (!body) return;
-    /* Spawn at body center + (radius + 15 m) along (1, 0, 0). Simple and
-     * predictable — the menu names each body so the player can tell. */
+    /* Switch gravity/surface-normal anchor to the destination body.
+     * All subsequent sync_basis and gravity math reads p->body, so
+     * "up" becomes the surface normal of the visited body instead of
+     * staying stuck to Tenebris's. */
+    p->body = body;
+    /* Spawn at body center + (radius + 15 m) along (1, 0, 0). */
     dvec3_t center = dvec3_make(body->pos_x, body->pos_y, body->pos_z);
     dvec3_t offset = dvec3_make(body->radius_m + 15.0, 0.0, 0.0);
     p->position = dvec3_add(center, offset);
     p->vy = 0.0f;
     p->grounded = false;
-    /* Force fly mode on via the canonical input state, otherwise
-     * player_update would read it back as false next frame. */
+    /* Force fly mode on so the player can orbit the new body; they
+     * can press F to land. */
     p->fly_mode = true;
     input_set_fly_mode(true);
-    /* Rebuild the tangent basis next frame instead of trying to
-     * parallel-transport across the huge jump. */
+    /* Rebuild the tangent basis next frame — the huge jump means
+     * parallel transport from the old up would be meaningless. */
     p->basis_ready = false;
-    /* Invalidate the tile-under-player hint. */
     p->last_tile = -1;
 }
 
 mat4_t player_view(const player_ctrl_t* p) {
     dvec3_t look, up;
     compute_look(p, &look, &up);
+    /* Eye sits EYE_HEIGHT along the body's surface normal — so the
+     * camera's up stays aligned with the local "horizon level" of the
+     * body the player is on, matching JS PlanetPlayer.updateCamera. */
     dvec3_t eye = dvec3_add(p->position, dvec3_scale(p->basis.up, (double)EYE_HEIGHT));
     dvec3_t target = dvec3_add(eye, look);
     vec3_t eye_f = dvec3_to_vec3(eye);

@@ -142,6 +142,7 @@ column_profile_t planet_profile(const body_config_t* body, dvec3_t unit_dir) {
     p.snow_line = cold ? (SNOW_ELEV * 0.5f) : SNOW_ELEV;
     p.barren    = body->barren;
     p.icy       = body->icy;
+    p.sequoia   = (body->tileset == TILESET_SEQUOIA);
     return p;
 }
 
@@ -170,20 +171,22 @@ block_t planet_sample_with_profile(const column_profile_t* prof, float altitude_
         return BLOCK_AIR;
     }
 
-    /* Top voxel — biome decision layer. */
+    /* Top voxel — biome decision layer. TILESET_SEQUOIA bodies emit
+     * the SEQ_* variants so they pick different atlas columns. */
     if (altitude_m > surface - 1.0f) {
         if (surface > SEA_LEVEL - BEACH_BAND && surface < SEA_LEVEL + BEACH_BAND) {
-            return BLOCK_SAND;
+            return prof->sequoia ? BLOCK_SEQ_SAND : BLOCK_SAND;
         }
         if (surface < SEA_LEVEL) {
-            return (surface > SEA_LEVEL - 4.0f) ? BLOCK_SAND : BLOCK_STONE;
+            if (surface > SEA_LEVEL - 4.0f) return prof->sequoia ? BLOCK_SEQ_SAND : BLOCK_SAND;
+            return BLOCK_STONE;
         }
         if (surface > STONE_ELEV) return BLOCK_STONE;
-        if (surface > prof->snow_line || prof->polar) return BLOCK_SNOW;
-        return BLOCK_GRASS;
+        if (surface > prof->snow_line || prof->polar) return prof->sequoia ? BLOCK_SEQ_SNOW : BLOCK_SNOW;
+        return prof->sequoia ? BLOCK_SEQ_GRASS : BLOCK_GRASS;
     }
 
-    if (altitude_m > surface - 4.0f) return BLOCK_DIRT;
+    if (altitude_m > surface - 4.0f) return prof->sequoia ? BLOCK_SEQ_DIRT : BLOCK_DIRT;
     return BLOCK_STONE;
 }
 

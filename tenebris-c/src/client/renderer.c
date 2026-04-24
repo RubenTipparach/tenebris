@@ -255,6 +255,7 @@ static void bake_atlas(void) {
     unsigned char* atlas = (unsigned char*)calloc((size_t)(W * H * 4), 1);
 
     const char* paths[HEX_ATLAS_TILES] = {
+        /* Columns 0-11 — default (Earth / Tenebris) tileset. */
         NULL,
         "assets/textures/water.png",
         "assets/textures/sand.png",
@@ -267,6 +268,14 @@ static void bake_atlas(void) {
         "assets/textures/dirt_snow.png",
         "assets/textures/torch.png",
         "assets/textures/moon.png",
+        /* Columns 12-17 — Sequoia tileset variants. Must match the
+         * BLOCK_SEQ_* indices in core/blocks.h. */
+        "assets/textures/planet_seq/planet_seq_grass.png",       /* 12 SEQ_GRASS */
+        "assets/textures/planet_seq/planet_seq_dirt.png",        /* 13 SEQ_DIRT */
+        "assets/textures/planet_seq/planet_seq_grass_dirt.png",  /* 14 SEQ_DIRT_GRASS */
+        "assets/textures/planet_seq/planet_seq_sand.png",        /* 15 SEQ_SAND */
+        "assets/textures/planet_seq/planet_seq_snow.png",        /* 16 SEQ_SNOW */
+        "assets/textures/planet_seq/planet_seq_snow_dirt.png",   /* 17 SEQ_DIRT_SNOW */
     };
     for (int col = 0; col < HEX_ATLAS_TILES; ++col) {
         if (!paths[col]) continue;

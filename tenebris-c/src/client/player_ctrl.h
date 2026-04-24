@@ -18,14 +18,15 @@ typedef struct {
     bool        fly_mode;
     int         last_tile;
 
-    /* Parallel-transported tangent frame at the player's position.
-     * We can't derive a continuous basis from position alone (hairy-
-     * ball theorem — any fixed reference axis has a singularity
-     * somewhere); instead we carry the basis across frames and rotate
-     * it by the minimal rotation from the old up to the new up. */
+    /* Parallel-transported tangent frame, anchored to the *current*
+     * body — up is the surface normal of `body`, not of the world
+     * origin. Teleporting to another body re-anchors the basis. */
     tangent_basis_t basis;
     bool            basis_ready;
 
+    /* Body we're orbiting / standing on. Gravity pulls toward its
+     * center, surface normal comes from (position - body.pos). Swapped
+     * by player_teleport_to; defaults to Tenebris at player_init. */
     const body_config_t* body;
 } player_ctrl_t;
 

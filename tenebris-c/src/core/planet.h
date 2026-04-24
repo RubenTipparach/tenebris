@@ -46,6 +46,11 @@ typedef enum {
     BODY_COUNT
 } body_id_t;
 
+typedef enum {
+    TILESET_EARTH = 0,    /* default — grass / dirt / sand / stone / ice / snow */
+    TILESET_SEQUOIA,      /* planet_seq_*.png variants (green tall grass look) */
+} tileset_t;
+
 typedef struct {
     body_id_t   id;
     const char* name;
@@ -59,6 +64,7 @@ typedef struct {
     bool        barren;           /* moon-rock everywhere */
     bool        icy;              /* snow / ice everywhere */
     bool        is_asteroid;      /* skipped from the teleport menu */
+    tileset_t   tileset;          /* which palette to sample (earth / sequoia) */
 } body_config_t;
 
 const body_config_t* planet_get(body_id_t id);
