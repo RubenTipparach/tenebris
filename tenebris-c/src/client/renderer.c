@@ -116,27 +116,31 @@ static const char* FS_HEX =
     "  frag_color = vec4(tex.rgb * v_light, tex.a);\n"
     "}\n";
 
-/* Fully procedural water shader — no texture sampling. Gerstner-style
- * ripple normals + Schlick fresnel + sky reflection + sun specular,
- * blended over a depth-aware base color. Inspired by fire-face.com's
- * WebGL water; trimmed to a single pass that fits inside the existing
- * pipeline. */
+/* Fully procedural water shader — no texture sampling. Sum of four
+ * directional sine waves with analytic gradients; the gradient becomes
+ * the tangent-plane normal perturbation so lighting matches the actual
+ * wave shape (the key trick from the fire-face / Gerstner approach).
+ * Schlick fresnel + reflect()-driven sky gradient + Blinn-Phong sun
+ * glint, plus foam where wave crests peak or the surface steepens.
+ */
 static const char* VS_WATER =
     "#version 300 es\n"
     "layout(location=0) in vec3 a_pos;\n"
     "layout(location=1) in vec3 a_normal;\n"
-    "layout(location=2) in vec2 a_uv;\n"      /* unused but keeps vertex layout compatible */
+    "layout(location=2) in vec2 a_uv;\n"       /* unused; keeps vbuf layout compatible */
     "uniform mat4 u_vp;\n"
     "uniform float u_time;\n"
     "out vec3 v_wpos;\n"
     "out vec3 v_normal;\n"
     "void main() {\n"
     "  vec3 n = normalize(a_normal);\n"
-    /* Two orthogonal swell waves displace the surface along the tile
-     * normal (radially outward from the planet). Small amplitude keeps
-     * water from clipping through beaches. */
-    "  float swell = sin(u_time * 0.9 + a_pos.x * 1.8 + a_pos.z * 1.1) * 0.06\n"
-    "              + sin(u_time * 1.3 + a_pos.z * 2.1 - a_pos.x * 0.7) * 0.04;\n"
+    /* Three-octave swell — the vertex displacement. Keeps amplitude
+     * small so water doesn't clip through shorelines. */
+    "  float t = u_time;\n"
+    "  float swell = 0.0;\n"
+    "  swell += sin(t * 0.9 + a_pos.x * 1.4 + a_pos.z * 0.6) * 0.08;\n"
+    "  swell += sin(t * 1.3 - a_pos.x * 0.7 + a_pos.z * 1.2) * 0.06;\n"
+    "  swell += sin(t * 1.7 + a_pos.x * 2.3 - a_pos.z * 1.9) * 0.03;\n"
     "  vec3 p = a_pos + n * swell;\n"
     "  gl_Position = u_vp * vec4(p, 1.0);\n"
     "  v_wpos = p;\n"
@@ -152,43 +156,76 @@ static const char* FS_WATER =
     "uniform vec3 u_sun_dir;\n"
     "uniform float u_time;\n"
     "out vec4 frag_color;\n"
-    /* Perturb the surface normal with two moving sine patterns.
-     * Cheap and gives a convincing rippled look without a noise
-     * texture. Frequencies tuned so ripples read at ~1-2 m. */
-    "vec3 ripple(vec3 n, vec3 p, float t) {\n"
-    "  float dx = cos(p.x * 3.1 + t * 1.7) * 0.12\n"
-    "           + cos(p.z * 2.3 - t * 0.9) * 0.08;\n"
-    "  float dz = cos(p.z * 2.8 + t * 1.3) * 0.12\n"
-    "           + cos(p.x * 2.1 - t * 1.1) * 0.08;\n"
-    "  return normalize(n + vec3(dx, 0.0, dz));\n"
+    /* Sample a 4-octave wave field. Returns scalar height and world-\n"
+     * space gradient so lighting can derive the surface normal without\n"
+     * any numerical derivative tricks. Each wave is a plane sine\n"
+     * progressing along a world-space direction — cheap and globally\n"
+     * consistent (same ripples everywhere on the sphere). */
+    "void wave(vec3 p, float t, out float h, out vec3 grad) {\n"
+    "  h = 0.0; grad = vec3(0.0);\n"
+    "  vec3 d1 = vec3(1.0,  0.0,  0.3) * 2.4;\n"
+    "  float q1 = dot(p, d1) + t * 1.6;\n"
+    "  h    += sin(q1) * 0.10;\n"
+    "  grad += d1 * cos(q1) * 0.10;\n"
+    "  vec3 d2 = vec3(-0.4, 0.0,  1.0) * 3.1;\n"
+    "  float q2 = dot(p, d2) + t * 2.0;\n"
+    "  h    += sin(q2) * 0.08;\n"
+    "  grad += d2 * cos(q2) * 0.08;\n"
+    "  vec3 d3 = vec3(0.7,  0.0, -0.9) * 4.8;\n"
+    "  float q3 = dot(p, d3) + t * 2.8;\n"
+    "  h    += sin(q3) * 0.04;\n"
+    "  grad += d3 * cos(q3) * 0.04;\n"
+    "  vec3 d4 = vec3(-0.9, 0.0, -0.3) * 6.2;\n"
+    "  float q4 = dot(p, d4) + t * 3.5;\n"
+    "  h    += sin(q4) * 0.025;\n"
+    "  grad += d4 * cos(q4) * 0.025;\n"
     "}\n"
     "void main() {\n"
-    "  vec3 n = ripple(normalize(v_normal), v_wpos, u_time);\n"
+    "  vec3 radial = normalize(v_normal);\n"
+
+    "  float h; vec3 grad;\n"
+    "  wave(v_wpos, u_time, h, grad);\n"
+
+    /* Project world-space gradient onto the tangent plane. The\n"
+     * tangent-plane gradient is what tilts the surface normal. */
+    "  vec3 t_grad = grad - radial * dot(grad, radial);\n"
+    "  vec3 n = normalize(radial - t_grad);\n"
+
     "  vec3 view = normalize(u_camera_pos - v_wpos);\n"
     "  vec3 sun  = normalize(u_sun_dir);\n"
 
-    /* Schlick fresnel for water (F0 ~0.02). More reflective at grazing. */
+    /* Schlick fresnel for water (F0 ≈ 0.02). More reflection at grazing. */
     "  float vdn = max(dot(view, n), 0.0);\n"
-    "  float f = 0.02 + 0.98 * pow(1.0 - vdn, 5.0);\n"
+    "  float f   = 0.02 + 0.98 * pow(1.0 - vdn, 5.0);\n"
 
-    /* Depth-aware base color: looks shallower looking straight down,\n"
-     * deep/dark at grazing. */
-    "  vec3 water_shallow = vec3(0.25, 0.62, 0.78);\n"
-    "  vec3 water_deep    = vec3(0.04, 0.14, 0.28);\n"
-    "  vec3 base = mix(water_deep, water_shallow, vdn);\n"
+    /* Depth-aware base: looks shallow straight down, deep at grazing. */
+    "  vec3 shallow = vec3(0.28, 0.68, 0.82);\n"
+    "  vec3 deep    = vec3(0.02, 0.10, 0.22);\n"
+    "  vec3 base    = mix(deep, shallow, vdn);\n"
 
-    /* Sky reflection — simple blue gradient along the view-up angle. */
-    "  float up_dot = clamp(dot(reflect(-view, n), vec3(0.0, 1.0, 0.0)), 0.0, 1.0);\n"
-    "  vec3 sky = mix(vec3(0.60, 0.78, 0.95), vec3(0.25, 0.45, 0.75), 1.0 - up_dot);\n"
+    /* Sky reflection via reflect(). Mix horizon (warm light) up to\n"
+     * zenith (deeper blue) by how much the reflected ray points up. */
+    "  vec3 refl   = reflect(-view, n);\n"
+    "  float up_f  = clamp(dot(refl, radial), 0.0, 1.0);\n"
+    "  vec3 sky    = mix(vec3(0.85, 0.92, 0.98), vec3(0.35, 0.55, 0.85), up_f);\n"
 
-    /* Blinn-Phong sun specular. Tight exponent → sharp glint only at\n"
-     * the sun's reflected direction. */
-    "  vec3 h = normalize(view + sun);\n"
-    "  float spec = pow(max(dot(n, h), 0.0), 90.0);\n"
-    "  vec3 sun_highlight = vec3(1.4, 1.3, 1.05) * spec;\n"
+    /* Blinn-Phong sun specular. Tight exponent = a sharp glint only at\n"
+     * the reflected-sun direction. */
+    "  vec3  halfv = normalize(view + sun);\n"
+    "  float spec  = pow(max(dot(n, halfv), 0.0), 140.0);\n"
+    "  vec3  sun_highlight = vec3(1.35, 1.25, 1.10) * spec * 2.0;\n"
+
+    /* Foam: where wave height peaks AND/OR the tangent-plane slope\n"
+     * gets steep (whitecaps on cusps). smoothstep gates the bands so\n"
+     * foam doesn't appear everywhere. */
+    "  float steepness = length(t_grad);\n"
+    "  float crest     = smoothstep(0.08, 0.14, h);\n"
+    "  float slope_f   = smoothstep(0.50, 1.00, steepness);\n"
+    "  float foam      = max(crest * 0.65, slope_f * 0.45);\n"
 
     "  vec3 color = mix(base, sky, f) + sun_highlight;\n"
-    "  float alpha = mix(0.55, 0.95, f);\n"
+    "  color = mix(color, vec3(0.95, 0.97, 1.0), foam * 0.6);\n"
+    "  float alpha = mix(0.70, 0.97, f);\n"
     "  frag_color = vec4(color, alpha);\n"
     "}\n";
 
