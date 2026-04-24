@@ -14,7 +14,22 @@ typedef enum {
     TOUCH_BREAK,
     TOUCH_PLACE,
     TOUCH_JUMP,
+    /* Teleport-menu buttons. Edge-triggered — the caller checks
+     * for a true value once and is expected to reset it via
+     * input_consume_menu_event. */
+    TOUCH_TP,
+    TOUCH_MENU_UP,
+    TOUCH_MENU_DOWN,
+    TOUCH_MENU_OK,
+    TOUCH_MENU_CLOSE,
 } touch_role_t;
+
+/* One-shot edge flags set by touch-down on a menu button, consumed by
+ * main_web / teleport_menu. */
+typedef struct {
+    bool tp_tapped;
+    bool menu_up, menu_down, menu_ok, menu_close;
+} menu_events_t;
 
 typedef struct {
     uintptr_t id;
@@ -27,10 +42,8 @@ typedef struct {
 static struct {
     input_state_t pub;
     touch_t touches[MAX_TOUCHES];
-    /* Jump stays true for exactly one frame when tapped (edge-trigger
-     * from a virtual button), independent of whether the touch is still
-     * held. Cleared by input_consume. */
     bool jump_edge;
+    menu_events_t menu;
 } S;
 
 /* ----------------------------------------------------------------------- */
@@ -63,6 +76,7 @@ static void set_key(sapp_keycode k, bool down) {
 void input_init(void) { memset(&S, 0, sizeof(S)); }
 
 const input_state_t* input_state(void) { return &S.pub; }
+input_state_t*       input_state_mut(void) { return &S.pub; }
 
 void input_consume(void) {
     S.pub.mouse_dx = 0;
@@ -80,6 +94,12 @@ void input_consume(void) {
 void input_set_fly_mode(bool on) {
     S.pub.phys.fly_mode = on;
 }
+
+bool input_consume_tp_tap(void)     { bool v = S.menu.tp_tapped;  S.menu.tp_tapped  = false; return v; }
+bool input_consume_menu_up(void)    { bool v = S.menu.menu_up;    S.menu.menu_up    = false; return v; }
+bool input_consume_menu_down(void)  { bool v = S.menu.menu_down;  S.menu.menu_down  = false; return v; }
+bool input_consume_menu_ok(void)    { bool v = S.menu.menu_ok;    S.menu.menu_ok    = false; return v; }
+bool input_consume_menu_close(void) { bool v = S.menu.menu_close; S.menu.menu_close = false; return v; }
 
 void input_register_mobile_buttons(float bx, float by, float br,
                                    float px, float py, float pr,
@@ -106,10 +126,19 @@ static bool in_circle(float x, float y, float cx, float cy, float r) {
 }
 
 static touch_role_t classify_touch(float x, float y) {
-    /* Button circles win over stick zones. */
+    /* Menu buttons (only active while the menu is open, i.e. r > 0) win
+     * over everything else so a tap on them doesn't leak to the stick
+     * or the main-HUD buttons underneath. */
+    if (S.pub.btn_menu_close_r > 0.0f && in_circle(x, y, S.pub.btn_menu_close_cx, S.pub.btn_menu_close_cy, S.pub.btn_menu_close_r)) return TOUCH_MENU_CLOSE;
+    if (S.pub.btn_menu_up_r    > 0.0f && in_circle(x, y, S.pub.btn_menu_up_cx,    S.pub.btn_menu_up_cy,    S.pub.btn_menu_up_r))    return TOUCH_MENU_UP;
+    if (S.pub.btn_menu_down_r  > 0.0f && in_circle(x, y, S.pub.btn_menu_down_cx,  S.pub.btn_menu_down_cy,  S.pub.btn_menu_down_r))  return TOUCH_MENU_DOWN;
+    if (S.pub.btn_menu_ok_r    > 0.0f && in_circle(x, y, S.pub.btn_menu_ok_cx,    S.pub.btn_menu_ok_cy,    S.pub.btn_menu_ok_r))    return TOUCH_MENU_OK;
+
+    /* Main HUD buttons. */
     if (S.pub.btn_break_r > 0.0f && in_circle(x, y, S.pub.btn_break_cx, S.pub.btn_break_cy, S.pub.btn_break_r)) return TOUCH_BREAK;
     if (S.pub.btn_place_r > 0.0f && in_circle(x, y, S.pub.btn_place_cx, S.pub.btn_place_cy, S.pub.btn_place_r)) return TOUCH_PLACE;
     if (S.pub.btn_jump_r  > 0.0f && in_circle(x, y, S.pub.btn_jump_cx,  S.pub.btn_jump_cy,  S.pub.btn_jump_r))  return TOUCH_JUMP;
+    if (S.pub.btn_tp_r    > 0.0f && in_circle(x, y, S.pub.btn_tp_cx,    S.pub.btn_tp_cy,    S.pub.btn_tp_r))    return TOUCH_TP;
 
     const float w = sapp_widthf();
     const float h = sapp_heightf();
@@ -198,6 +227,11 @@ static void handle_touches_began(const sapp_event* e) {
             case TOUCH_BREAK: S.pub.left_click  = true;  break;
             case TOUCH_PLACE: S.pub.right_click = true;  break;
             case TOUCH_JUMP:  S.jump_edge = true; S.pub.phys.jump = true; break;
+            case TOUCH_TP:          S.menu.tp_tapped = true; break;
+            case TOUCH_MENU_UP:     S.menu.menu_up    = true; break;
+            case TOUCH_MENU_DOWN:   S.menu.menu_down  = true; break;
+            case TOUCH_MENU_OK:     S.menu.menu_ok    = true; break;
+            case TOUCH_MENU_CLOSE:  S.menu.menu_close = true; break;
             default: break;
         }
     }

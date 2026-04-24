@@ -66,6 +66,7 @@ static void init(void) {
     renderer_init();
     mobile_ui_init();
     teleport_menu_init();
+    teleport_menu_set_player(&G.player);
 
     G.body  = planet_get(BODY_TENEBRIS);
     G.world = world_create(G.body, G.body->subdivisions);
@@ -156,6 +157,12 @@ static void frame(void) {
     if (!world_gen_complete(G.world)) {
         world_stream_gen(G.world, GEN_TILES_PER_FRAME);
     }
+
+    /* Poll touch-button edge events before consuming input — the
+     * teleport menu's mobile nav buttons live in input.c and this is
+     * the only place to drive them. Also swallows any body-selection
+     * click before movement/interact reads the input state. */
+    teleport_menu_poll_touches();
 
     player_update(&G.player, G.world, dt);
     interact_update(&G.interact, G.world, &G.player);

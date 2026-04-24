@@ -31,10 +31,17 @@ typedef struct {
     bool  look_stick_active;
 
     /* Mobile UI button hitboxes (pixels). Updated from renderer each
-     * frame so input.c can test touch-down against them. */
+     * frame so input.c can test touch-down against them. Any button
+     * whose radius is 0 is inactive for this frame. */
     float btn_break_cx, btn_break_cy, btn_break_r;
     float btn_place_cx, btn_place_cy, btn_place_r;
     float btn_jump_cx,  btn_jump_cy,  btn_jump_r;
+    float btn_tp_cx,    btn_tp_cy,    btn_tp_r;      /* opens teleport menu */
+    /* Menu-nav buttons — only active while the teleport menu is open. */
+    float btn_menu_up_cx,    btn_menu_up_cy,    btn_menu_up_r;
+    float btn_menu_down_cx,  btn_menu_down_cy,  btn_menu_down_r;
+    float btn_menu_ok_cx,    btn_menu_ok_cy,    btn_menu_ok_r;
+    float btn_menu_close_cx, btn_menu_close_cy, btn_menu_close_r;
 
     /* True while we have any touch input going; renderer uses this to
      * decide whether to draw the mobile overlay. */
@@ -52,8 +59,21 @@ void input_register_mobile_buttons(float break_cx, float break_cy, float r,
                                    float place_cx, float place_cy, float pr,
                                    float jump_cx,  float jump_cy,  float jr);
 
-/* Force the canonical fly-mode state. Useful for teleport, which puts
- * the player far from any gravity-anchored body and wants fly on. */
+/* Mutable state accessor so UI modules (mobile_ui, teleport_menu) can
+ * publish their own button hitboxes directly into input.c's
+ * classification table without needing a setter per field. Callers
+ * write to btn_*_{cx,cy,r}; a radius of 0 deactivates that button. */
+input_state_t* input_state_mut(void);
+
 void input_set_fly_mode(bool on);
+
+/* Edge-triggered touch-button events for the teleport menu. Each
+ * returns true at most once per tap. Called by the event router /
+ * teleport_menu each frame to react to touches. */
+bool input_consume_tp_tap(void);
+bool input_consume_menu_up(void);
+bool input_consume_menu_down(void);
+bool input_consume_menu_ok(void);
+bool input_consume_menu_close(void);
 
 #endif
