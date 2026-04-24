@@ -37,7 +37,11 @@ void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world,
  * Meshes it once at registration time and uploads to a dedicated
  * buffer pair. Drawn each frame at body->position by renderer_draw_moons. */
 void renderer_register_moon(world_t* w);
-void renderer_draw_moons(mat4_t view, mat4_t proj);
+/* Draw each registered body. `camera_world` is used to compute angular
+ * screen size — bodies that subtend less than ~20% of the viewport
+ * swap to a flat-shaded 20-face icosphere instead of their detailed
+ * Goldberg mesh. */
+void renderer_draw_moons(mat4_t view, mat4_t proj, vec3_t camera_world);
 int  renderer_moon_count(void);
 void renderer_end_frame(void);
 

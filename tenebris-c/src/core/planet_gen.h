@@ -31,6 +31,9 @@ typedef struct {
     bool  barren;     /* moon-like: skip grass/sand/water biomes */
     bool  icy;        /* all snow + ice surface, no grass / sand / dirt */
     bool  sequoia;    /* emit SEQ_* tileset variants instead of defaults */
+    bool  crag;       /* emit CRAG_ROCK for barren fills */
+    bool  frost;      /* emit FROST_ICE + colder snow */
+    bool  asteroid;   /* emit ASTEROID_ROCK for barren fills */
 } column_profile_t;
 
 column_profile_t planet_profile(const body_config_t* body, dvec3_t unit_dir);

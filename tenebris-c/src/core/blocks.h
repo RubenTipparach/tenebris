@@ -35,6 +35,14 @@ typedef enum {
     BLOCK_SEQ_SNOW       = 16,
     BLOCK_SEQ_DIRT_SNOW  = 17,   /* side face of Sequoia snow column */
 
+    /* Runtime-tinted variants — generated at atlas bake time by
+     * multiplying the source PNG per channel. Gives differentiated
+     * looks for Crag (red), Frostbite (deep blue), asteroids (dark
+     * gray) without needing new source art. */
+    BLOCK_CRAG_ROCK      = 18,   /* rusty Mars-like rock  */
+    BLOCK_FROST_ICE      = 19,   /* deeper glacial blue   */
+    BLOCK_ASTEROID_ROCK  = 20,   /* dim gray carbonaceous */
+
     BLOCK_COUNT
 } block_t;
 

@@ -143,24 +143,30 @@ column_profile_t planet_profile(const body_config_t* body, dvec3_t unit_dir) {
     p.barren    = body->barren;
     p.icy       = body->icy;
     p.sequoia   = (body->tileset == TILESET_SEQUOIA);
+    p.crag      = (body->tileset == TILESET_CRAG);
+    p.frost     = (body->tileset == TILESET_FROST);
+    p.asteroid  = (body->tileset == TILESET_ASTEROID);
     return p;
 }
 
 block_t planet_sample_with_profile(const column_profile_t* prof, float altitude_m) {
     const float surface = prof->surface_m;
 
-    /* Barren (moon-like) bodies: moon rock everywhere under the surface. */
+    /* Barren (moon-like) bodies. Tileset chooses the surface tint so
+     * the three kinds of barren body don't all look like Luna. */
     if (prof->barren) {
         if (altitude_m > surface) return BLOCK_AIR;
+        if (prof->crag)     return BLOCK_CRAG_ROCK;
+        if (prof->asteroid) return BLOCK_ASTEROID_ROCK;
         return BLOCK_MOON;
     }
 
-    /* Icy bodies: snow crust on top, ice below. Perma-frozen oceans
-     * give them a distinct blue-white look. */
+    /* Icy bodies: snow crust on top, ice below. Frostbite swaps the
+     * ice layer to a deeper glacial tint via TILESET_FROST. */
     if (prof->icy) {
         if (altitude_m > surface) return BLOCK_AIR;
         if (altitude_m > surface - 1.0f) return BLOCK_SNOW;
-        return BLOCK_ICE;
+        return prof->frost ? BLOCK_FROST_ICE : BLOCK_ICE;
     }
 
     /* Air/water above the ground. */

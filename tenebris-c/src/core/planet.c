@@ -59,6 +59,7 @@ static const body_config_t BODIES[BODY_COUNT] = {
         .subdivisions = 5, .gravity_g = 0.6f,
         .pos_x = 780.0, .pos_y = -220.0, .pos_z = -900.0,
         .barren = true,
+        .tileset = TILESET_CRAG,
     },
     [BODY_QUARTZ] = {
         .id = BODY_QUARTZ, .name = "Quartz",
@@ -75,6 +76,7 @@ static const body_config_t BODIES[BODY_COUNT] = {
         .subdivisions = 5, .gravity_g = 0.8f,
         .pos_x = -240.0, .pos_y = -850.0, .pos_z = 1300.0,
         .icy = true,
+        .tileset = TILESET_FROST,
     },
     [BODY_RIME] = {
         .id = BODY_RIME, .name = "Rime",
@@ -94,6 +96,7 @@ static const body_config_t BODIES[BODY_COUNT] = {
         .subdivisions = 3, .gravity_g = 0.05f,
         .pos_x = 1500.0, .pos_y = 40.0, .pos_z = 0.0,
         .barren = true, .is_asteroid = true,
+        .tileset = TILESET_ASTEROID,
     },
     [BODY_ASTEROID_1] = {
         .id = BODY_ASTEROID_1, .name = "Asteroid B",
@@ -101,6 +104,7 @@ static const body_config_t BODIES[BODY_COUNT] = {
         .subdivisions = 3, .gravity_g = 0.05f,
         .pos_x = 1180.0, .pos_y = -30.0, .pos_z = 900.0,
         .barren = true, .is_asteroid = true,
+        .tileset = TILESET_ASTEROID,
     },
     [BODY_ASTEROID_2] = {
         .id = BODY_ASTEROID_2, .name = "Asteroid C",
@@ -108,6 +112,7 @@ static const body_config_t BODIES[BODY_COUNT] = {
         .subdivisions = 3, .gravity_g = 0.05f,
         .pos_x = 500.0, .pos_y = 20.0, .pos_z = 1400.0,
         .barren = true, .is_asteroid = true,
+        .tileset = TILESET_ASTEROID,
     },
     [BODY_ASTEROID_3] = {
         .id = BODY_ASTEROID_3, .name = "Asteroid D",
@@ -115,6 +120,7 @@ static const body_config_t BODIES[BODY_COUNT] = {
         .subdivisions = 3, .gravity_g = 0.05f,
         .pos_x = -400.0, .pos_y = 80.0, .pos_z = 1450.0,
         .barren = true, .is_asteroid = true,
+        .tileset = TILESET_ASTEROID,
     },
     [BODY_ASTEROID_4] = {
         .id = BODY_ASTEROID_4, .name = "Asteroid E",
@@ -122,6 +128,7 @@ static const body_config_t BODIES[BODY_COUNT] = {
         .subdivisions = 3, .gravity_g = 0.05f,
         .pos_x = -1200.0, .pos_y = -10.0, .pos_z = 800.0,
         .barren = true, .is_asteroid = true,
+        .tileset = TILESET_ASTEROID,
     },
     [BODY_ASTEROID_5] = {
         .id = BODY_ASTEROID_5, .name = "Asteroid F",
@@ -129,6 +136,7 @@ static const body_config_t BODIES[BODY_COUNT] = {
         .subdivisions = 3, .gravity_g = 0.05f,
         .pos_x = -1500.0, .pos_y = 60.0, .pos_z = -150.0,
         .barren = true, .is_asteroid = true,
+        .tileset = TILESET_ASTEROID,
     },
     [BODY_ASTEROID_6] = {
         .id = BODY_ASTEROID_6, .name = "Asteroid G",
@@ -136,6 +144,7 @@ static const body_config_t BODIES[BODY_COUNT] = {
         .subdivisions = 3, .gravity_g = 0.05f,
         .pos_x = -1100.0, .pos_y = -90.0, .pos_z = -1000.0,
         .barren = true, .is_asteroid = true,
+        .tileset = TILESET_ASTEROID,
     },
     [BODY_ASTEROID_7] = {
         .id = BODY_ASTEROID_7, .name = "Asteroid H",
@@ -143,6 +152,7 @@ static const body_config_t BODIES[BODY_COUNT] = {
         .subdivisions = 3, .gravity_g = 0.05f,
         .pos_x = -200.0, .pos_y = 50.0, .pos_z = -1500.0,
         .barren = true, .is_asteroid = true,
+        .tileset = TILESET_ASTEROID,
     },
     [BODY_ASTEROID_8] = {
         .id = BODY_ASTEROID_8, .name = "Asteroid I",
@@ -150,6 +160,7 @@ static const body_config_t BODIES[BODY_COUNT] = {
         .subdivisions = 3, .gravity_g = 0.05f,
         .pos_x = 650.0, .pos_y = -40.0, .pos_z = -1350.0,
         .barren = true, .is_asteroid = true,
+        .tileset = TILESET_ASTEROID,
     },
     [BODY_ASTEROID_9] = {
         .id = BODY_ASTEROID_9, .name = "Asteroid J",
@@ -157,6 +168,7 @@ static const body_config_t BODIES[BODY_COUNT] = {
         .subdivisions = 3, .gravity_g = 0.05f,
         .pos_x = 1300.0, .pos_y = 100.0, .pos_z = -700.0,
         .barren = true, .is_asteroid = true,
+        .tileset = TILESET_ASTEROID,
     },
 };
 

@@ -49,6 +49,9 @@ typedef enum {
 typedef enum {
     TILESET_EARTH = 0,    /* default — grass / dirt / sand / stone / ice / snow */
     TILESET_SEQUOIA,      /* planet_seq_*.png variants (green tall grass look) */
+    TILESET_CRAG,         /* rusty red barren rock  (tinted moon.png) */
+    TILESET_FROST,        /* deep glacial ice blue  (tinted ice.png)  */
+    TILESET_ASTEROID,     /* dim gray carbonaceous  (tinted rocks.png) */
 } tileset_t;
 
 typedef struct {

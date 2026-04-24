@@ -199,7 +199,7 @@ static void frame(void) {
      * rest of the scene paints over it. */
     renderer_draw_skybox(view, proj);
     renderer_draw_world(view, proj, G.world, cam_world, dt);
-    renderer_draw_moons(view, proj);
+    renderer_draw_moons(view, proj, cam_world);
 
     update_overlay(dt);
     teleport_menu_draw();
