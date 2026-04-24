@@ -29,6 +29,7 @@ typedef struct {
     float snow_line;
     bool  polar;
     bool  barren;     /* moon-like: skip grass/sand/water biomes */
+    bool  icy;        /* all snow + ice surface, no grass / sand / dirt */
 } column_profile_t;
 
 column_profile_t planet_profile(const body_config_t* body, dvec3_t unit_dir);

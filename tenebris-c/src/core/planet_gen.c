@@ -133,25 +133,33 @@ float planet_surface_altitude(const body_config_t* body, dvec3_t unit_dir) {
 column_profile_t planet_profile(const body_config_t* body, dvec3_t unit_dir) {
     column_profile_t p;
     p.surface_m = planet_surface_altitude(body, unit_dir);
-    /* Moons get a flatter surface — scale the amplitude down so they
-     * look distinctly less dramatic than Tenebris. */
+    /* Moons + asteroids look flatter — scale the amplitude so they're
+     * visibly different from main planets. Icy worlds keep full height. */
     if (body->barren) p.surface_m *= 0.3f;
     p.latitude  = (float)fabs(unit_dir.y);
     p.polar     = p.latitude > POLAR_LATITUDE;
     const bool cold = p.latitude > COLD_LATITUDE;
     p.snow_line = cold ? (SNOW_ELEV * 0.5f) : SNOW_ELEV;
     p.barren    = body->barren;
+    p.icy       = body->icy;
     return p;
 }
 
 block_t planet_sample_with_profile(const column_profile_t* prof, float altitude_m) {
     const float surface = prof->surface_m;
 
-    /* Barren (moon-like) bodies: skip water + grass biomes entirely
-     * and render as moon rock. Tier 2 can add craters. */
+    /* Barren (moon-like) bodies: moon rock everywhere under the surface. */
     if (prof->barren) {
         if (altitude_m > surface) return BLOCK_AIR;
         return BLOCK_MOON;
+    }
+
+    /* Icy bodies: snow crust on top, ice below. Perma-frozen oceans
+     * give them a distinct blue-white look. */
+    if (prof->icy) {
+        if (altitude_m > surface) return BLOCK_AIR;
+        if (altitude_m > surface - 1.0f) return BLOCK_SNOW;
+        return BLOCK_ICE;
     }
 
     /* Air/water above the ground. */

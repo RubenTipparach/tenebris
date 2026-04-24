@@ -52,4 +52,8 @@ void input_register_mobile_buttons(float break_cx, float break_cy, float r,
                                    float place_cx, float place_cy, float pr,
                                    float jump_cx,  float jump_cy,  float jr);
 
+/* Force the canonical fly-mode state. Useful for teleport, which puts
+ * the player far from any gravity-anchored body and wants fly on. */
+void input_set_fly_mode(bool on);
+
 #endif

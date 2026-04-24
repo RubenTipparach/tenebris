@@ -77,6 +77,10 @@ void input_consume(void) {
      * it when TOUCHES_ENDED fires for the jump button. */
 }
 
+void input_set_fly_mode(bool on) {
+    S.pub.phys.fly_mode = on;
+}
+
 void input_register_mobile_buttons(float bx, float by, float br,
                                    float px, float py, float pr,
                                    float jx, float jy, float jr) {

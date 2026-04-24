@@ -24,6 +24,7 @@
 #include "client/renderer.h"
 #include "client/interact.h"
 #include "client/mobile_ui.h"
+#include "client/teleport_menu.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -38,7 +39,7 @@
 static struct {
     const body_config_t* body;
     world_t*         world;
-    world_t*         moons[8];
+    world_t*         moons[32];
     int              moon_count;
     player_ctrl_t    player;
     interact_state_t interact;
@@ -64,21 +65,26 @@ static void init(void) {
     job_system_init(0);
     renderer_init();
     mobile_ui_init();
+    teleport_menu_init();
 
     G.body  = planet_get(BODY_TENEBRIS);
     G.world = world_create(G.body, G.body->subdivisions);
     player_init(&G.player, G.body);
 
-    /* Build and register moons. Each is small (subs=4 = 2562 tiles)
-     * so we generate + mesh + upload synchronously — under 100 ms per
-     * moon at init, invisible at boot. */
-    for (int id = BODY_LUNA; id <= BODY_SELENE; ++id) {
+    /* Build and register every non-main body — moons, neighbouring
+     * planets, the asteroid belt. Each is fully generated + meshed
+     * synchronously at boot. Asteroids have subs=3 (642 tiles → tiny
+     * mesh), moons have subs=3–4, sister planets up to subs=6 —
+     * total init cost ~700 ms but it's a one-off. */
+    for (int id = BODY_LUNA; id < BODY_COUNT; ++id) {
         const body_config_t* b = planet_get((body_id_t)id);
         if (!b) continue;
-        world_t* moon = world_create(b, b->subdivisions);
-        while (!world_gen_complete(moon)) world_stream_gen(moon, moon->tile_count);
-        renderer_register_moon(moon);
-        G.moons[G.moon_count++] = moon;
+        world_t* body_world = world_create(b, b->subdivisions);
+        while (!world_gen_complete(body_world)) world_stream_gen(body_world, body_world->tile_count);
+        renderer_register_moon(body_world);
+        if (G.moon_count < (int)(sizeof(G.moons) / sizeof(G.moons[0]))) {
+            G.moons[G.moon_count++] = body_world;
+        }
     }
 
     /* Spawn above the surface at (1, 0, 0). Surface altitude sampled
@@ -178,6 +184,7 @@ static void frame(void) {
     renderer_draw_moons(view, proj);
 
     update_overlay(dt);
+    teleport_menu_draw();
     sdtx_draw();
     mobile_ui_draw();
 
@@ -187,6 +194,9 @@ static void frame(void) {
 /* --------------------------------------------------------------------- */
 
 static void event(const sapp_event* e) {
+    /* Teleport menu gets first crack — it intercepts T/M/arrows/enter
+     * when open so those keys don't also reach the movement layer. */
+    if (teleport_menu_event(e, &G.player)) return;
     input_event(e);
     if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_ESCAPE) {
         sapp_lock_mouse(false);
@@ -194,6 +204,7 @@ static void event(const sapp_event* e) {
 }
 
 static void cleanup(void) {
+    teleport_menu_shutdown();
     mobile_ui_shutdown();
     renderer_shutdown();
     for (int i = 0; i < G.moon_count; ++i) world_destroy(G.moons[i]);

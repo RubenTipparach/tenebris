@@ -205,6 +205,26 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
     sync_basis(p);
 }
 
+void player_teleport_to(player_ctrl_t* p, const body_config_t* body) {
+    if (!body) return;
+    /* Spawn at body center + (radius + 15 m) along (1, 0, 0). Simple and
+     * predictable — the menu names each body so the player can tell. */
+    dvec3_t center = dvec3_make(body->pos_x, body->pos_y, body->pos_z);
+    dvec3_t offset = dvec3_make(body->radius_m + 15.0, 0.0, 0.0);
+    p->position = dvec3_add(center, offset);
+    p->vy = 0.0f;
+    p->grounded = false;
+    /* Force fly mode on via the canonical input state, otherwise
+     * player_update would read it back as false next frame. */
+    p->fly_mode = true;
+    input_set_fly_mode(true);
+    /* Rebuild the tangent basis next frame instead of trying to
+     * parallel-transport across the huge jump. */
+    p->basis_ready = false;
+    /* Invalidate the tile-under-player hint. */
+    p->last_tile = -1;
+}
+
 mat4_t player_view(const player_ctrl_t* p) {
     dvec3_t look, up;
     compute_look(p, &look, &up);

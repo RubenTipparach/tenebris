@@ -5,47 +5,62 @@
 #include <stdint.h>
 
 /*
- * Static configuration for a celestial body. Tier 1 ships exactly one
- * planet ("tenebris" itself, ~700 km radius — matches the Caelum
- * reference). Multi-planet support is Tier 3.
- *
- * Kept in core/ because both the chunk generator and the LOD tree need
- * the body's radius + seed, and they have to agree on both byte-for-byte
- * across server and client.
+ * Solar system. Tenebris is the main landable planet; everything else
+ * renders as a decorative celestial body (pre-meshed at boot) visible
+ * in the sky. The teleport menu lets the player snap to any of them.
  */
 
 typedef enum {
+    /* Main planet — the one the player's physics is anchored to. */
     BODY_TENEBRIS = 0,
-    BODY_LUNA,         /* close moon, rocky */
-    BODY_SELENE,       /* smaller moon, icy */
+
+    /* Tenebris's moons */
+    BODY_LUNA,
+    BODY_SELENE,
+
+    /* Earth-like sister planet + its moons */
+    BODY_SEQUOIA,
+    BODY_VERDANT,
+    BODY_SPROUT,
+
+    /* Barren rocky planet + moon */
+    BODY_CRAG,
+    BODY_QUARTZ,
+
+    /* Icy outer planet + moon */
+    BODY_FROSTBITE,
+    BODY_RIME,
+
+    /* Asteroid belt */
+    BODY_ASTEROID_0,
+    BODY_ASTEROID_1,
+    BODY_ASTEROID_2,
+    BODY_ASTEROID_3,
+    BODY_ASTEROID_4,
+    BODY_ASTEROID_5,
+    BODY_ASTEROID_6,
+    BODY_ASTEROID_7,
+    BODY_ASTEROID_8,
+    BODY_ASTEROID_9,
+
     BODY_COUNT
 } body_id_t;
 
 typedef struct {
     body_id_t   id;
     const char* name;
-    double      radius_m;         /* surface radius in meters */
+    double      radius_m;
     uint64_t    seed;
-    int         max_lod_depth;    /* unused in current pipeline */
+    int         max_lod_depth;    /* legacy, unused in the merged-mesh pipeline */
     int         subdivisions;     /* Goldberg depth */
-    float       gravity_g;        /* multiplier of Earth gravity */
-    /* World-space origin offset from the solar system center. Tenebris
-     * sits at (0, 0, 0); moons orbit nearby in world space. */
+    float       gravity_g;
     double      pos_x, pos_y, pos_z;
     bool        has_water;
-    bool        barren;           /* moon look: no grass/sand, just rock */
+    bool        barren;           /* moon-rock everywhere */
+    bool        icy;              /* snow / ice everywhere */
+    bool        is_asteroid;      /* skipped from the teleport menu */
 } body_config_t;
 
 const body_config_t* planet_get(body_id_t id);
-
-/* Default per-body LOD parameters. Tier 1 is single planet so no body
- * argument is needed; we expose the constants for the LOD tree to read. */
-#define LOD_ROOT_COUNT     20         /* icosahedron faces */
-#define LOD_CHILDREN       4          /* aperture-4 subdivision per node */
-#define LOD_MAX_DEPTH      14
-#define LOD_MAX_NODES      16384      /* hard ceiling on simultaneous patches */
-#define LOD_NUM_WORKERS    4          /* matches Caelum's job-pool size */
-#define LOD_MAX_UPLOAD     64         /* GPU uploads per frame */
-#define LOD_SPLIT_FACTOR   4.0f       /* matches Caelum's config.yaml */
 
 #endif

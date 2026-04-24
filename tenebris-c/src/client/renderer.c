@@ -61,15 +61,16 @@ static struct {
     size_t tris;
     size_t tiles_remeshed;
 
-    /* Static moons. Pre-meshed at registration time, fixed in world
-     * space. Drawn after the main world each frame. */
+    /* Static celestial bodies (moons + asteroids). Pre-meshed at
+     * registration time, fixed in world space. 32 slots is enough for
+     * our 6 moons + 10 asteroids with room for a few more. */
     struct {
         const world_t* world;
         sg_buffer      vbuf;
         sg_buffer      ibuf;
         int            index_count;
-        vec3_t         position;   /* world-space offset */
-    } moons[4];
+        vec3_t         position;
+    } moons[32];
     int moon_count;
 } R;
 
