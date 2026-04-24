@@ -15,21 +15,67 @@
 
 /* ----------------------------------------------------------------------- */
 
+/* Rotate v by the shortest rotation aligning unit a with unit b.
+ * Rodrigues: v' = v c + (k × v) s + k (k·v)(1 - c),  k = normalize(a×b).
+ * Identity when a ≈ b; 180° around an arbitrary perpendicular when
+ * a ≈ -b. */
+static dvec3_t rotate_between(dvec3_t a, dvec3_t b, dvec3_t v) {
+    double d = dvec3_dot(a, b);
+    if (d >  0.99999999) return v;
+    if (d < -0.99999999) {
+        dvec3_t ref = (fabs(a.x) < 0.9) ? dvec3_make(1, 0, 0) : dvec3_make(0, 1, 0);
+        dvec3_t k = dvec3_normalize(dvec3_cross(a, ref));
+        double  kv = dvec3_dot(k, v);
+        return dvec3_sub(dvec3_scale(k, 2.0 * kv), v);
+    }
+    dvec3_t k = dvec3_normalize(dvec3_cross(a, b));
+    double angle = acos(d);
+    double c = cos(angle), s = sin(angle);
+    dvec3_t cross = dvec3_cross(k, v);
+    double  kdotv = dvec3_dot(k, v);
+    return dvec3_add(dvec3_add(dvec3_scale(v, c),
+                                dvec3_scale(cross, s)),
+                     dvec3_scale(k, kdotv * (1.0 - c)));
+}
+
+/* Re-align the player's persistent tangent basis to the current
+ * radial up. Carry fwd/right across by parallel transport so the
+ * basis stays continuous as the player traverses the sphere — no
+ * reference-axis singularities like the polar flip
+ * phys_tangent_basis has when |up.y| crosses 0.9. */
+static void sync_basis(player_ctrl_t* p) {
+    dvec3_t new_up = dvec3_normalize(p->position);
+    if (!p->basis_ready) {
+        p->basis = phys_tangent_basis(p->position);
+        p->basis_ready = true;
+        return;
+    }
+    dvec3_t old_up = p->basis.up;
+    p->basis.fwd   = rotate_between(old_up, new_up, p->basis.fwd);
+    p->basis.right = rotate_between(old_up, new_up, p->basis.right);
+    p->basis.up    = new_up;
+    /* Re-orthonormalize to clean up float drift. */
+    p->basis.right = dvec3_normalize(dvec3_cross(p->basis.fwd, p->basis.up));
+    p->basis.fwd   = dvec3_normalize(dvec3_cross(p->basis.up,  p->basis.right));
+}
+
+/* ----------------------------------------------------------------------- */
+
 static void compute_look(const player_ctrl_t* p, dvec3_t* out_look, dvec3_t* out_up) {
-    tangent_basis_t b = phys_tangent_basis(p->position);
+    const tangent_basis_t* b = &p->basis;
     double cy = cos((double)p->yaw),   sy = sin((double)p->yaw);
     double cp = cos((double)p->pitch), sp = sin((double)p->pitch);
-    dvec3_t fwd = dvec3_add(dvec3_scale(b.fwd, cy), dvec3_scale(b.right, sy));
-    dvec3_t look = dvec3_add(dvec3_scale(fwd, cp), dvec3_scale(b.up, sp));
+    dvec3_t fwd = dvec3_add(dvec3_scale(b->fwd, cy), dvec3_scale(b->right, sy));
+    dvec3_t look = dvec3_add(dvec3_scale(fwd, cp), dvec3_scale(b->up, sp));
     *out_look = dvec3_normalize(look);
-    *out_up   = b.up;
+    *out_up   = b->up;
 }
 
 static dvec3_t walk_wish(const player_ctrl_t* p, const phys_input_t* in) {
-    tangent_basis_t b = phys_tangent_basis(p->position);
+    const tangent_basis_t* b = &p->basis;
     double cy = cos((double)p->yaw), sy = sin((double)p->yaw);
-    dvec3_t fwd   = dvec3_add(dvec3_scale(b.fwd, cy),  dvec3_scale(b.right, sy));
-    dvec3_t right = dvec3_add(dvec3_scale(b.fwd, -sy), dvec3_scale(b.right, cy));
+    dvec3_t fwd   = dvec3_add(dvec3_scale(b->fwd, cy),  dvec3_scale(b->right, sy));
+    dvec3_t right = dvec3_add(dvec3_scale(b->fwd, -sy), dvec3_scale(b->right, cy));
     dvec3_t wish = (dvec3_t){0, 0, 0};
     if (in->forward)  wish = dvec3_add(wish, fwd);
     if (in->backward) wish = dvec3_sub(wish, fwd);
@@ -62,10 +108,10 @@ void player_init(player_ctrl_t* p, const body_config_t* body) {
     p->pitch = 0.0f;
     p->selected_block = BLOCK_STONE;
     p->grounded = false;
-    p->fly_mode = true;       /* start in fly mode so ungenerated terrain
-                                 doesn't drop the player off the edge */
+    p->fly_mode = true;
     p->vy = 0.0f;
     p->last_tile = -1;
+    p->basis_ready = false;
     /* Spawn 10 m above what will become the surface at (1,0,0). */
     const double r0 = body->radius_m + 10.0;
     p->position = dvec3_make(r0, 0, 0);
@@ -77,6 +123,11 @@ dvec3_t player_world_pos(const player_ctrl_t* p) { return p->position; }
 
 void player_update(player_ctrl_t* p, world_t* w, float dt) {
     const input_state_t* in = input_state();
+
+    /* Parallel-transport the tangent basis to the current position
+     * before any movement. Subsequent sync_basis calls below handle
+     * position changes from walking + gravity. */
+    sync_basis(p);
 
     /* Mouse / look-stick. Yaw is +right (fwd rotates toward basis.right). */
     p->yaw   += in->mouse_dx * MOUSE_SENS;
@@ -105,8 +156,8 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
         float fy = 0.0f;
         if (in->phys.fly_up)   fy += 1.0f;
         if (in->phys.fly_down) fy -= 1.0f;
-        tangent_basis_t b = phys_tangent_basis(p->position);
-        p->position = dvec3_add(p->position, dvec3_scale(b.up, (double)fy * (double)speed * (double)dt));
+        p->position = dvec3_add(p->position,
+            dvec3_scale(p->basis.up, (double)fy * (double)speed * (double)dt));
         p->vy = 0.0f;
         p->grounded = false;
     } else {
@@ -119,8 +170,8 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
         }
         p->vy -= gravity * dt;
 
-        tangent_basis_t b = phys_tangent_basis(p->position);
-        p->position = dvec3_add(p->position, dvec3_scale(b.up, (double)p->vy * (double)dt));
+        p->position = dvec3_add(p->position,
+            dvec3_scale(p->basis.up, (double)p->vy * (double)dt));
 
         /* Ground snap: only engage when falling or stationary. The old
          * logic ran "if (r < ground) snap up" unconditionally, which
@@ -148,13 +199,16 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
             p->vy = 0.0f;
         }
     }
+
+    /* Parallel-transport basis to the post-movement position so the
+     * view + next frame see the updated frame. */
+    sync_basis(p);
 }
 
 mat4_t player_view(const player_ctrl_t* p) {
     dvec3_t look, up;
     compute_look(p, &look, &up);
-    tangent_basis_t b = phys_tangent_basis(p->position);
-    dvec3_t eye = dvec3_add(p->position, dvec3_scale(b.up, (double)EYE_HEIGHT));
+    dvec3_t eye = dvec3_add(p->position, dvec3_scale(p->basis.up, (double)EYE_HEIGHT));
     dvec3_t target = dvec3_add(eye, look);
     vec3_t eye_f = dvec3_to_vec3(eye);
     vec3_t tgt_f = dvec3_to_vec3(target);

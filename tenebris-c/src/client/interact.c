@@ -5,12 +5,16 @@
 
 /* ----------------------------------------------------------------------- */
 
+/* Use the player's parallel-transported basis (same one as
+ * player_view), not a fresh phys_tangent_basis. The latter has a
+ * discontinuity near |up.y| = 0.9 that was jerking the raycast and
+ * crosshair in the same pattern that made the camera flip. */
 static dvec3_t player_look_dir(const player_ctrl_t* p) {
-    tangent_basis_t b = phys_tangent_basis(p->position);
+    const tangent_basis_t* b = &p->basis;
     double cy = cos((double)p->yaw),   sy = sin((double)p->yaw);
     double cp = cos((double)p->pitch), sp = sin((double)p->pitch);
-    dvec3_t fwd = dvec3_add(dvec3_scale(b.fwd, cy), dvec3_scale(b.right, sy));
-    dvec3_t look = dvec3_add(dvec3_scale(fwd, cp), dvec3_scale(b.up, sp));
+    dvec3_t fwd = dvec3_add(dvec3_scale(b->fwd, cy), dvec3_scale(b->right, sy));
+    dvec3_t look = dvec3_add(dvec3_scale(fwd, cp), dvec3_scale(b->up, sp));
     return dvec3_normalize(look);
 }
 
@@ -37,9 +41,8 @@ static bool world_to_tile_depth(const world_t* w, dvec3_t pos, int hint,
 void interact_update(interact_state_t* s, world_t* w, const player_ctrl_t* p) {
     s->has_target = false;
 
-    /* Eye position + look dir. */
-    tangent_basis_t b = phys_tangent_basis(p->position);
-    dvec3_t eye = dvec3_add(p->position, dvec3_scale(b.up, 1.6));
+    /* Eye position from the player's carried basis. */
+    dvec3_t eye = dvec3_add(p->position, dvec3_scale(p->basis.up, 1.6));
     dvec3_t dir = player_look_dir(p);
 
     /* Fixed-step raycast: sample every ~0.25 m up to INTERACT_MAX_DIST.

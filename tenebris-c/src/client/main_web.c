@@ -166,13 +166,11 @@ static void frame(void) {
         .sky_bottom = { 0.05f, 0.08f, 0.15f },
         .ambient    = { 0.35f, 0.35f, 0.40f },
     };
-    /* Camera position in world space — eye = player_position + radial_up *
-     * EYE_HEIGHT. Single precision is fine at 150 m planet scale. */
-    dvec3_t cam_world_d;
-    {
-        tangent_basis_t b = phys_tangent_basis(G.player.position);
-        cam_world_d = dvec3_add(G.player.position, dvec3_scale(b.up, 1.6));
-    }
+    /* Camera world pos for the water-shader fresnel. Uses the player's
+     * parallel-transported basis so it stays continuous when the old
+     * phys_tangent_basis reference axis would flip. */
+    dvec3_t cam_world_d = dvec3_add(G.player.position,
+                                    dvec3_scale(G.player.basis.up, 1.6));
     vec3_t cam_world = dvec3_to_vec3(cam_world_d);
 
     renderer_begin_frame(sapp_width(), sapp_height(), env);

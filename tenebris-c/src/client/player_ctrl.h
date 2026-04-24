@@ -16,7 +16,16 @@ typedef struct {
     uint8_t     selected_block;
     bool        grounded;
     bool        fly_mode;
-    int         last_tile;     /* hint for goldberg_find_tile */
+    int         last_tile;
+
+    /* Parallel-transported tangent frame at the player's position.
+     * We can't derive a continuous basis from position alone (hairy-
+     * ball theorem — any fixed reference axis has a singularity
+     * somewhere); instead we carry the basis across frames and rotate
+     * it by the minimal rotation from the old up to the new up. */
+    tangent_basis_t basis;
+    bool            basis_ready;
+
     const body_config_t* body;
 } player_ctrl_t;
 
