@@ -16,7 +16,12 @@ typedef struct {
     phys_input_t phys;
     float mouse_dx, mouse_dy;       /* consumed per-frame */
     float wheel_dy;
+    /* Edge-triggered (true for one frame on press), cleared each frame
+     * by input_consume. */
     bool  left_click, right_click, middle_click;
+    /* Stays true for as long as the button / break-touch is held.
+     * Cleared on release or focus-loss; NOT cleared by input_consume. */
+    bool  left_held, right_held;
     bool  hotbar[10];
     bool  pointer_locked;
 
@@ -75,5 +80,8 @@ bool input_consume_menu_up(void);
 bool input_consume_menu_down(void);
 bool input_consume_menu_ok(void);
 bool input_consume_menu_close(void);
+
+/* G-key edge for survival-mode toggle. */
+bool input_consume_survival_toggle(void);
 
 #endif

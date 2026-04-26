@@ -43,6 +43,7 @@ static struct {
     input_state_t pub;
     touch_t touches[MAX_TOUCHES];
     bool jump_edge;
+    bool survival_toggle_edge;
     menu_events_t menu;
 } S;
 
@@ -61,6 +62,7 @@ static void set_key(sapp_keycode k, bool down) {
         case SAPP_KEYCODE_RIGHT_CONTROL:
         case SAPP_KEYCODE_C:           S.pub.phys.fly_down = down; break;
         case SAPP_KEYCODE_F:           if (down) S.pub.phys.fly_mode = !S.pub.phys.fly_mode; break;
+        case SAPP_KEYCODE_G:           if (down) S.survival_toggle_edge = true; break;
         case SAPP_KEYCODE_1: case SAPP_KEYCODE_2: case SAPP_KEYCODE_3:
         case SAPP_KEYCODE_4: case SAPP_KEYCODE_5: case SAPP_KEYCODE_6:
         case SAPP_KEYCODE_7: case SAPP_KEYCODE_8: case SAPP_KEYCODE_9:
@@ -100,6 +102,12 @@ bool input_consume_menu_up(void)    { bool v = S.menu.menu_up;    S.menu.menu_up
 bool input_consume_menu_down(void)  { bool v = S.menu.menu_down;  S.menu.menu_down  = false; return v; }
 bool input_consume_menu_ok(void)    { bool v = S.menu.menu_ok;    S.menu.menu_ok    = false; return v; }
 bool input_consume_menu_close(void) { bool v = S.menu.menu_close; S.menu.menu_close = false; return v; }
+
+bool input_consume_survival_toggle(void) {
+    bool v = S.survival_toggle_edge;
+    S.survival_toggle_edge = false;
+    return v;
+}
 
 void input_register_mobile_buttons(float bx, float by, float br,
                                    float px, float py, float pr,
@@ -224,8 +232,8 @@ static void handle_touches_began(const sapp_event* e) {
         switch (t->role) {
             case TOUCH_STICK:      update_stick_from_touch(t);      break;
             case TOUCH_LOOK_STICK: update_look_stick_from_touch(t); break;
-            case TOUCH_BREAK: S.pub.left_click  = true;  break;
-            case TOUCH_PLACE: S.pub.right_click = true;  break;
+            case TOUCH_BREAK: S.pub.left_click  = true;  S.pub.left_held  = true; break;
+            case TOUCH_PLACE: S.pub.right_click = true;  S.pub.right_held = true; break;
             case TOUCH_JUMP:  S.jump_edge = true; S.pub.phys.jump = true; break;
             case TOUCH_TP:          S.menu.tp_tapped = true; break;
             case TOUCH_MENU_UP:     S.menu.menu_up    = true; break;
@@ -269,6 +277,8 @@ static void handle_touches_ended(const sapp_event* e) {
         if (t->role == TOUCH_STICK)      clear_stick();
         if (t->role == TOUCH_LOOK_STICK) clear_look_stick();
         if (t->role == TOUCH_JUMP)       S.pub.phys.jump = false;
+        if (t->role == TOUCH_BREAK)      S.pub.left_held  = false;
+        if (t->role == TOUCH_PLACE)      S.pub.right_held = false;
         t->active = false;
         t->role = TOUCH_NONE;
     }
@@ -293,11 +303,14 @@ void input_event(const sapp_event* e) {
             break;
 
         case SAPP_EVENTTYPE_MOUSE_DOWN:
-            /* Don't auto-lock on mobile (there's no mouse). */
             if (!S.pub.pointer_locked && !S.pub.touch_active) sapp_lock_mouse(true);
-            if (e->mouse_button == SAPP_MOUSEBUTTON_LEFT)   S.pub.left_click   = true;
-            if (e->mouse_button == SAPP_MOUSEBUTTON_RIGHT)  S.pub.right_click  = true;
-            if (e->mouse_button == SAPP_MOUSEBUTTON_MIDDLE) S.pub.middle_click = true;
+            if (e->mouse_button == SAPP_MOUSEBUTTON_LEFT)   { S.pub.left_click   = true; S.pub.left_held  = true; }
+            if (e->mouse_button == SAPP_MOUSEBUTTON_RIGHT)  { S.pub.right_click  = true; S.pub.right_held = true; }
+            if (e->mouse_button == SAPP_MOUSEBUTTON_MIDDLE)   S.pub.middle_click = true;
+            break;
+        case SAPP_EVENTTYPE_MOUSE_UP:
+            if (e->mouse_button == SAPP_MOUSEBUTTON_LEFT)   S.pub.left_held  = false;
+            if (e->mouse_button == SAPP_MOUSEBUTTON_RIGHT)  S.pub.right_held = false;
             break;
 
         case SAPP_EVENTTYPE_MOUSE_SCROLL:
@@ -311,6 +324,8 @@ void input_event(const sapp_event* e) {
 
         case SAPP_EVENTTYPE_UNFOCUSED:
             memset(&S.pub.phys, 0, sizeof(S.pub.phys));
+            S.pub.left_held = false;
+            S.pub.right_held = false;
             clear_stick();
             clear_look_stick();
             break;

@@ -5,6 +5,7 @@
 #include "core/planet.h"
 #include "core/world.h"
 #include "client/gfx_math.h"
+#include "client/inventory.h"
 
 #define EYE_HEIGHT 1.6f
 
@@ -13,10 +14,15 @@ typedef struct {
     float       vy;
     float       yaw;
     float       pitch;
-    uint8_t     selected_block;
     bool        grounded;
     bool        fly_mode;
     int         last_tile;
+
+    /* Hotbar inventory. selected_block is the type the right-click
+     * place will use; survival_mode gates whether breaking accumulates
+     * pickups + costs time, or is instantaneous + free (creative). */
+    inventory_t inventory;
+    bool        survival_mode;
 
     /* Parallel-transported tangent frame, anchored to the *current*
      * body — up is the surface normal of `body`, not of the world

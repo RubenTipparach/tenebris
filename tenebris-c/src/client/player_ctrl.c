@@ -114,16 +114,16 @@ void player_init(player_ctrl_t* p, const body_config_t* body) {
     p->body = body;
     p->yaw = 0.0f;
     p->pitch = 0.0f;
-    p->selected_block = BLOCK_STONE;
     p->grounded = false;
     p->fly_mode = false;       /* start on the ground, gravity on */
     p->vy = 0.0f;
     p->last_tile = -1;
     p->basis_ready = false;
-    /* Spawn ~2 m above body's prime meridian surface, which lets the
-     * first-frame ground snap pull the player down to the actual
-     * surface height. Assumes the spawn tile is generated — main_web
-     * drains world gen at init so this is safe. */
+    /* Default to creative — the menu / a key toggle will switch to
+     * survival, which calls inventory_init_empty + sets survival_mode. */
+    p->survival_mode = false;
+    inventory_init_creative(&p->inventory);
+    /* Spawn ~2 m above body's prime meridian surface. */
     const double r0 = body->radius_m + 2.0;
     p->position = dvec3_make(body->pos_x + r0, body->pos_y, body->pos_z);
 }
@@ -151,6 +151,11 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
     if (p->pitch < -PITCH_LIMIT) p->pitch = -PITCH_LIMIT;
 
     p->fly_mode = in->phys.fly_mode;
+
+    /* Hotbar 1..9 picks an inventory slot. Edge-triggered by input.c. */
+    for (int i = 0; i < INV_HOTBAR_SLOTS; ++i) {
+        if (in->hotbar[i]) inventory_select(&p->inventory, i);
+    }
 
     /* Movement. */
     float speed = in->phys.sprint ? SPRINT_SPEED : WALK_SPEED;

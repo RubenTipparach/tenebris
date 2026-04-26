@@ -25,6 +25,7 @@
 #include "client/interact.h"
 #include "client/mobile_ui.h"
 #include "client/teleport_menu.h"
+#include "client/inventory.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -146,6 +147,61 @@ static void update_overlay(float dt) {
         sdtx_printf("target: tile=%d depth=%d dist=%.1fm\n",
                     G.interact.hit_tile, G.interact.hit_depth, G.interact.distance);
     }
+
+    /* Mode + hotbar. */
+    if (G.player.survival_mode) sdtx_color3b(0xff, 0x90, 0x70);
+    else                         sdtx_color3b(0x90, 0xc0, 0xff);
+    sdtx_printf("MODE: %s   [G to toggle]\n",
+                G.player.survival_mode ? "SURVIVAL" : "CREATIVE");
+    sdtx_color3b(0xff, 0xff, 0xff);
+
+    /* Mining progress bar (survival only). */
+    if (G.player.survival_mode && G.interact.mining_progress_s > 0.0f) {
+        float pct = G.interact.mining_progress_s / MINING_TIME_S;
+        if (pct > 1.0f) pct = 1.0f;
+        char bar[21];
+        int filled = (int)(pct * 20.0f);
+        for (int i = 0; i < 20; ++i) bar[i] = (i < filled) ? '#' : '-';
+        bar[20] = 0;
+        sdtx_color3b(0xf0, 0xa0, 0x40);
+        sdtx_printf("mining: [%s] %d%%\n", bar, (int)(pct * 100));
+        sdtx_color3b(0xff, 0xff, 0xff);
+    }
+
+    /* Hotbar — one line, selected slot wrapped in '>...<'. */
+    {
+        const inventory_t* inv = &G.player.inventory;
+        sdtx_printf("\nhotbar: ");
+        for (int i = 0; i < INV_HOTBAR_SLOTS; ++i) {
+            const inv_slot_t* s = &inv->slots[i];
+            if (i == inv->selected) sdtx_color3b(0xff, 0xe0, 0x40);
+            else                     sdtx_color3b(0xb0, 0xb0, 0xc0);
+            const char* name = "----";
+            switch (s->type) {
+                case BLOCK_AIR:    name = "----"; break;
+                case BLOCK_STONE:  name = "STON"; break;
+                case BLOCK_DIRT:   name = "DIRT"; break;
+                case BLOCK_GRASS:  name = "GRSS"; break;
+                case BLOCK_SAND:   name = "SAND"; break;
+                case BLOCK_WATER:  name = "WATR"; break;
+                case BLOCK_ICE:    name = "ICE "; break;
+                case BLOCK_SNOW:   name = "SNOW"; break;
+                case BLOCK_WOOD:   name = "WOOD"; break;
+                case BLOCK_LEAVES: name = "LEAF"; break;
+                default:           name = "BLK "; break;
+            }
+            if (s->type == BLOCK_AIR) {
+                sdtx_printf(" %d:----", i + 1);
+            } else if (s->count > 9000) {
+                sdtx_printf(" %d:%s*", i + 1, name);   /* * == effectively infinite */
+            } else {
+                sdtx_printf(" %d:%s%d", i + 1, name, s->count);
+            }
+        }
+        sdtx_color3b(0xff, 0xff, 0xff);
+        sdtx_printf("\n");
+    }
+
     if (!input_state()->pointer_locked && !input_state()->touch_active) {
         sdtx_color3b(0xf0, 0xc0, 0x50);
         sdtx_printf("\n[click to lock mouse]\n");
@@ -172,8 +228,18 @@ static void frame(void) {
      * click before movement/interact reads the input state. */
     teleport_menu_poll_touches();
 
+    /* G-key toggles survival mode. Switching modes resets inventory
+     * to the appropriate starter state so creative-bonanza items
+     * don't persist into a fresh survival run, and so a survival
+     * stockpile doesn't leak back into a creative session. */
+    if (input_consume_survival_toggle()) {
+        G.player.survival_mode = !G.player.survival_mode;
+        if (G.player.survival_mode) inventory_init_empty(&G.player.inventory);
+        else                        inventory_init_creative(&G.player.inventory);
+    }
+
     player_update(&G.player, G.world, dt);
-    interact_update(&G.interact, G.world, &G.player);
+    interact_update(&G.interact, G.world, &G.player, dt);
     input_consume();
 
     const float aspect = sapp_widthf() / sapp_heightf();

@@ -38,15 +38,14 @@ static bool world_to_tile_depth(const world_t* w, dvec3_t pos, int hint,
 
 /* ----------------------------------------------------------------------- */
 
-void interact_update(interact_state_t* s, world_t* w, const player_ctrl_t* p) {
+void interact_update(interact_state_t* s, world_t* w, player_ctrl_t* p, float dt) {
     s->has_target = false;
 
     /* Eye position from the player's carried basis. */
     dvec3_t eye = dvec3_add(p->position, dvec3_scale(p->basis.up, 1.6));
     dvec3_t dir = player_look_dir(p);
 
-    /* Fixed-step raycast: sample every ~0.25 m up to INTERACT_MAX_DIST.
-     * At block height = 1 m this is dense enough to never skip a cell. */
+    /* Fixed-step raycast. */
     const double step_m = 0.25;
     int prev_tile = -1, prev_depth = -1;
     bool prev_valid = false;
@@ -59,31 +58,72 @@ void interact_update(interact_state_t* s, world_t* w, const player_ctrl_t* p) {
         hint = tile;
         block_t blk = world_get(w, tile, depth);
         if (block_is_solid(blk)) {
-            s->has_target   = true;
-            s->hit_tile     = tile;
-            s->hit_depth    = depth;
-            s->place_tile   = prev_valid ? prev_tile  : tile;
-            s->place_depth  = prev_valid ? prev_depth : depth + 1;
-            s->distance     = d;
+            s->has_target  = true;
+            s->hit_tile    = tile;
+            s->hit_depth   = depth;
+            s->place_tile  = prev_valid ? prev_tile  : tile;
+            s->place_depth = prev_valid ? prev_depth : depth + 1;
+            s->distance    = d;
             break;
         }
-        prev_tile = tile;
-        prev_depth = depth;
-        prev_valid = true;
+        prev_tile = tile; prev_depth = depth; prev_valid = true;
+    }
+
+    /* Reset mining timer if the target moved or we released LMB. */
+    const input_state_t* in = input_state();
+    /* Note: input.c marks left_click as edge-triggered (true on the
+     * frame of touch-down/click-down). For survival we want a "held"
+     * signal — input_state.phys doesn't have that for mouse, so we
+     * approximate by the click-down edge re-arming each frame the
+     * raycast is on the same block. Held detection comes from input
+     * flags later if we add a dedicated mouse-held bit; for now the
+     * timer holds across frames as long as the target tile/depth
+     * doesn't change. */
+    const bool target_changed =
+        !s->has_target ||
+         s->hit_tile  != s->mining_tile ||
+         s->hit_depth != s->mining_depth;
+    if (target_changed) {
+        s->mining_progress_s = 0.0f;
+        s->mining_tile  = s->has_target ? s->hit_tile  : -1;
+        s->mining_depth = s->has_target ? s->hit_depth : -1;
     }
 
     if (!s->has_target) return;
 
-    const input_state_t* in = input_state();
-    if (in->left_click) {
-        /* Bedrock is permanent — left-click does nothing on it. */
-        block_t target = world_get(w, s->hit_tile, s->hit_depth);
-        if (!block_is_unbreakable(target)) {
+    block_t target_block = world_get(w, s->hit_tile, s->hit_depth);
+
+    /* SURVIVAL: hold LMB on a block to mine it over MINING_TIME_S. The
+     * mouse-held flag keeps the timer running across frames; releasing
+     * resets progress so partial breaks don't carry to the next swing. */
+    if (block_is_unbreakable(target_block)) {
+        s->mining_progress_s = 0.0f;
+    } else if (p->survival_mode) {
+        if (in->left_held) {
+            s->mining_progress_s += dt;
+            if (s->mining_progress_s >= MINING_TIME_S) {
+                world_set(w, s->hit_tile, s->hit_depth, BLOCK_AIR);
+                inventory_add(&p->inventory, target_block);
+                s->mining_progress_s = 0.0f;
+            }
+        } else {
+            s->mining_progress_s = 0.0f;
+        }
+    } else {
+        /* Creative: instant break on the click edge, no inventory. */
+        if (in->left_click) {
             world_set(w, s->hit_tile, s->hit_depth, BLOCK_AIR);
         }
-    } else if (in->right_click) {
-        if (s->place_depth >= 0 && s->place_depth < WORLD_MAX_DEPTH) {
-            world_set(w, s->place_tile, s->place_depth, (block_t)p->selected_block);
+        s->mining_progress_s = 0.0f;
+    }
+
+    if (in->right_click) {
+        if (s->place_depth >= 0 && s->place_depth < WORLD_MAX_DEPTH &&
+            inventory_can_place(&p->inventory))
+        {
+            block_t to_place = inventory_selected(&p->inventory);
+            world_set(w, s->place_tile, s->place_depth, to_place);
+            inventory_consume(&p->inventory);
         }
     }
 }

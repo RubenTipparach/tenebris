@@ -55,6 +55,7 @@ set(TENEBRIS_CLIENT_SOURCES
     src/client/input.c
     src/client/player_ctrl.c
     src/client/interact.c
+    src/client/inventory.c
     src/client/mobile_ui.c
     src/client/teleport_menu.c
     src/client/gfx_math.c
