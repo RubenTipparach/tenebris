@@ -26,7 +26,7 @@ mkdir -p "$C_ROOT/assets/textures"
 mkdir -p "$C_ROOT/assets/textures/planet_seq"
 # Tier 1 atlas: one 16x16 tile per block type, single-row strip. Filenames
 # must match the paths hard-coded in renderer.c's bake_atlas block.
-for f in water sand dirt grass rocks ice snow dirt_grass dirt_snow torch moon; do
+for f in water sand dirt grass rocks ice snow dirt_grass dirt_snow torch moon wood; do
   src="$ROOT/public/textures/${f}.png"
   if [ -f "$src" ]; then
     cp -f "$src" "$C_ROOT/assets/textures/${f}.png"

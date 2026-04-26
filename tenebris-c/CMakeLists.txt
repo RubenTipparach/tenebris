@@ -83,7 +83,7 @@ if (EMSCRIPTEN)
     set(TENEBRIS_PUBLIC_TEXTURES "${CMAKE_SOURCE_DIR}/../public/textures")
     if (EXISTS "${TENEBRIS_PUBLIC_TEXTURES}/rocks.png")
         file(MAKE_DIRECTORY "${CMAKE_SOURCE_DIR}/assets/textures")
-        foreach(name water sand dirt grass rocks ice snow dirt_grass dirt_snow torch moon)
+        foreach(name water sand dirt grass rocks ice snow dirt_grass dirt_snow torch moon wood)
             if (EXISTS "${TENEBRIS_PUBLIC_TEXTURES}/${name}.png")
                 configure_file("${TENEBRIS_PUBLIC_TEXTURES}/${name}.png"
                                "${CMAKE_SOURCE_DIR}/assets/textures/${name}.png" COPYONLY)

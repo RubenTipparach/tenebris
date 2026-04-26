@@ -5,8 +5,18 @@ bool block_is_solid(block_t b) {
 }
 
 bool block_is_transparent(block_t b) {
-    return b == BLOCK_AIR || b == BLOCK_WATER || b == BLOCK_ICE;
+    /* Leaves count as transparent so trunk-side faces inside the canopy
+     * still draw. (Leaves don't actually have alpha — this just gates
+     * face culling so the trunk + leaf interior is visible.) */
+    return b == BLOCK_AIR
+        || b == BLOCK_WATER
+        || b == BLOCK_ICE
+        || b == BLOCK_LEAVES;
 }
+
+/* Bedrock cannot be broken by interact_update. Exposed so input/edit
+ * paths can early-out. */
+bool block_is_unbreakable(block_t b) { return b == BLOCK_BEDROCK; }
 
 uint8_t block_face_tile(block_t b, face_cap_t cap) {
     if (b == BLOCK_GRASS) {

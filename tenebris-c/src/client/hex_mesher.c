@@ -201,9 +201,13 @@ void hex_mesh_build_tile(hex_mesh_t* out, const world_t* w, int tile_idx) {
     /* ---- top cap: the voxel at `top` is the surface ---- */
     emit_cap(out, t, w, top, top_block, true);
 
-    /* ---- bottom cap: needed if we have a visible underside. For Tier 1
-     * we always emit so digging exposes it cleanly. */
-    emit_cap(out, t, w, bot, bot_block, false);
+    /* ---- bottom cap: deliberately NOT emitted. The deepest layer is
+     * always BLOCK_BEDROCK and the only thing that would see its
+     * underside is somebody flying inside the planet shell — drawing
+     * it would also expose the hollow interior of every tile column,
+     * which the user definitely doesn't want. Bedrock keeps players
+     * from digging through to the void; the missing cap keeps the
+     * void from being visible if they look up while standing on it. */
 
     /* ---- side faces: one quad per edge per exposed depth ---- */
     const int n = t->num_verts;

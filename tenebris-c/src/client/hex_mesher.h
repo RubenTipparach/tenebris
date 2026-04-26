@@ -43,8 +43,9 @@ void hex_mesh_build_tile(hex_mesh_t* out, const world_t* w, int tile_idx);
 void hex_mesh_build_water(hex_mesh_t* out, const world_t* w, int tile_idx);
 
 /* Atlas column count (must match the runtime bake in renderer.c).
- * 12 default + 6 Sequoia + 3 runtime-tinted variants = 21 total. */
-#define HEX_ATLAS_TILES   21
+ * 12 default + 6 Sequoia + 3 tinted variants + wood + leaves + bedrock
+ * = 24 total. */
+#define HEX_ATLAS_TILES   24
 #define HEX_ATLAS_U_STEP  (1.0f / (float)HEX_ATLAS_TILES)
 
 #endif

@@ -17,10 +17,21 @@
  * whole world voxel store is 642 * 16 ≈ 10 KB. Trivial.
  */
 
-#define WORLD_MAX_DEPTH   32      /* blocks per column — doubled over the
-                                   * previous 16 to give room for proper
-                                   * mountains (up to 20m above sea) and
-                                   * ocean trenches below. */
+/* Planet shell:
+ *   layer 0       = BEDROCK (impassable floor; renderer skips its
+ *                   inner-facing bottom cap so the hollow shell isn't
+ *                   visible from the outside).
+ *   layers 1..63  = below sea level — soil + stone + ocean column
+ *                   filled with water above the seafloor.
+ *   layer  64     = sea-level surface (SEA_LEVEL_IDX in world.c).
+ *   layers 65..127= above sea level — terrain peaks and player build
+ *                   space (~64 m of headroom over the tallest mountain
+ *                   for stacking blocks).
+ *
+ * 128 byte/column × 40 962 tiles = 5.0 MB of voxel state, well within
+ * the WASM heap limit.
+ */
+#define WORLD_MAX_DEPTH   128
 
 typedef struct world_s {
     const body_config_t* body;

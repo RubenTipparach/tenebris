@@ -370,9 +370,13 @@ static void bake_atlas(void) {
         "assets/textures/moon.png",   /* 18 CRAG_ROCK  */
         "assets/textures/ice.png",    /* 19 FROST_ICE  */
         "assets/textures/rocks.png",  /* 20 ASTEROID_ROCK */
+        /* Vegetation + planet core. */
+        "assets/textures/wood.png",   /* 21 WOOD     */
+        "assets/textures/grass.png",  /* 22 LEAVES   — tinted darker green */
+        "assets/textures/rocks.png",  /* 23 BEDROCK  — tinted near-black   */
     };
     /* Per-channel multiplier applied to each loaded tile before it goes
-     * into the atlas. {1, 1, 1} = untinted (columns 0-17). */
+     * into the atlas. {1, 1, 1} = untinted. */
     static const float tints[HEX_ATLAS_TILES][3] = {
         [0]  = {1, 1, 1}, [1]  = {1, 1, 1}, [2]  = {1, 1, 1}, [3]  = {1, 1, 1},
         [4]  = {1, 1, 1}, [5]  = {1, 1, 1}, [6]  = {1, 1, 1}, [7]  = {1, 1, 1},
@@ -382,6 +386,9 @@ static void bake_atlas(void) {
         [18] = {1.30f, 0.55f, 0.35f},  /* CRAG_ROCK     — Mars-red rust */
         [19] = {0.55f, 0.80f, 1.25f},  /* FROST_ICE     — glacial blue  */
         [20] = {0.70f, 0.68f, 0.65f},  /* ASTEROID_ROCK — dim gray       */
+        [21] = {1.00f, 1.00f, 1.00f},  /* WOOD     — passthrough       */
+        [22] = {0.65f, 1.05f, 0.50f},  /* LEAVES   — saturated green   */
+        [23] = {0.30f, 0.30f, 0.32f},  /* BEDROCK  — near-black slate  */
     };
     for (int col = 0; col < HEX_ATLAS_TILES; ++col) {
         if (!paths[col]) continue;

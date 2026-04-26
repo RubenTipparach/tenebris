@@ -76,7 +76,11 @@ void interact_update(interact_state_t* s, world_t* w, const player_ctrl_t* p) {
 
     const input_state_t* in = input_state();
     if (in->left_click) {
-        world_set(w, s->hit_tile, s->hit_depth, BLOCK_AIR);
+        /* Bedrock is permanent — left-click does nothing on it. */
+        block_t target = world_get(w, s->hit_tile, s->hit_depth);
+        if (!block_is_unbreakable(target)) {
+            world_set(w, s->hit_tile, s->hit_depth, BLOCK_AIR);
+        }
     } else if (in->right_click) {
         if (s->place_depth >= 0 && s->place_depth < WORLD_MAX_DEPTH) {
             world_set(w, s->place_tile, s->place_depth, (block_t)p->selected_block);

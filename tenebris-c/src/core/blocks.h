@@ -43,11 +43,17 @@ typedef enum {
     BLOCK_FROST_ICE      = 19,   /* deeper glacial blue   */
     BLOCK_ASTEROID_ROCK  = 20,   /* dim gray carbonaceous */
 
+    /* Vegetation + planetary core. */
+    BLOCK_WOOD           = 21,
+    BLOCK_LEAVES         = 22,   /* tinted grass — pulled darker green at bake */
+    BLOCK_BEDROCK        = 23,   /* impassable layer-0 floor (tinted very dark) */
+
     BLOCK_COUNT
 } block_t;
 
 bool block_is_solid(block_t b);
 bool block_is_transparent(block_t b);
+bool block_is_unbreakable(block_t b);
 
 /* Face classification for atlas tile selection. */
 typedef enum {
