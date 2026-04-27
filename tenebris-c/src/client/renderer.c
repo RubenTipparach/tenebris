@@ -767,7 +767,16 @@ static mat4_t mat4_inverse(mat4_t m) {
 }
 
 void renderer_draw_skybox(mat4_t view, mat4_t proj) {
-    mat4_t vp = mat4_mul(proj, view);
+    /* Strip the translation from `view` so the reconstructed world
+     * direction is purely rotational — otherwise stars and the sun
+     * disc parallax with the camera as if they were at finite
+     * distance. The skybox should be rendered as a backdrop in
+     * camera space, infinitely far away. */
+    mat4_t view_rot = view;
+    view_rot.m[12] = 0.0f;
+    view_rot.m[13] = 0.0f;
+    view_rot.m[14] = 0.0f;
+    mat4_t vp = mat4_mul(proj, view_rot);
     mat4_t inv_vp = mat4_inverse(vp);
     sg_apply_pipeline(R.pip_sky);
     sg_apply_uniforms(0, &(sg_range){ .ptr = inv_vp.m, .size = sizeof(inv_vp.m) });
