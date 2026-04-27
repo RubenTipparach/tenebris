@@ -69,7 +69,7 @@ static int column_top_solid(const world_t* w, int tile) {
  * unchanged). Wood trunks come out skinny; leaf voxels get a stable
  * hash-driven variable width so the canopy isn't perfectly stamped. */
 static float block_hex_width(block_t b, int tile_idx, int depth) {
-    if (b == BLOCK_WOOD) return 0.40f;
+    if (b == BLOCK_WOOD) return 0.20f;
     if (b == BLOCK_LEAVES) {
         uint32_t h = (uint32_t)tile_idx * 0xDEADBEEFu
                    + (uint32_t)depth   * 0xBADF00Du
