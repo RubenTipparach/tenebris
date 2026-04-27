@@ -247,8 +247,21 @@ static void frame(void) {
     const float zfar = (float)(G.body->radius_m * 6.0);
     mat4_t proj = mat4_perspective(60.0f * (3.14159265f / 180.0f), aspect, 0.3f, zfar);
 
+    /* Sun lives along the canonical sky-light direction at a far
+     * fixed position. Our solar system fits inside ~1500 m of the
+     * origin, so 8000 m out keeps per-planet parallax of the sun
+     * direction down to a few degrees — close enough that lighting
+     * still matches the skybox disc. */
+    const float SUN_DIST   = 8000.0f;
+    const float SUN_RADIUS = 240.0f;
+    vec3_t sun_dir = vec3_normalize((vec3_t){ 0.5f, 0.9f, 0.3f });
+    vec3_t sun_pos = (vec3_t){
+        sun_dir.x * SUN_DIST, sun_dir.y * SUN_DIST, sun_dir.z * SUN_DIST,
+    };
     render_env_t env = {
-        .sun_dir    = { 0.5f, 0.9f, 0.3f },
+        .sun_dir    = sun_dir,
+        .sun_pos    = sun_pos,
+        .sun_radius = SUN_RADIUS,
         .sky_top    = { 0.02f, 0.04f, 0.10f },
         .sky_bottom = { 0.05f, 0.08f, 0.15f },
         .ambient    = { 0.35f, 0.35f, 0.40f },
@@ -261,11 +274,17 @@ static void frame(void) {
     vec3_t cam_world = dvec3_to_vec3(cam_world_d);
 
     renderer_begin_frame(sapp_width(), sapp_height(), env);
-    /* Skybox first — fullscreen stars + sun, no depth write so the
-     * rest of the scene paints over it. */
+    /* Skybox first — fullscreen stars + sun-disc backdrop, no depth
+     * write so the rest of the scene paints over it. */
     renderer_draw_skybox(view, proj);
+    /* Sun sphere — emissive body at env.sun_pos, depth-write so
+     * later opaques occlude it. */
+    renderer_draw_sun(view, proj);
     renderer_draw_world(view, proj, G.world, cam_world, dt);
     renderer_draw_moons(view, proj, cam_world);
+    /* Atmospheric scattering shells — drawn last so they composite
+     * additively over the fully-painted scene (planet + water + moons). */
+    renderer_draw_atmospheres(view, proj, cam_world, G.world);
 
     update_overlay(dt);
     teleport_menu_draw();

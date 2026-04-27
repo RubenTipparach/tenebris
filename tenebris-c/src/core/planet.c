@@ -10,6 +10,7 @@ static const body_config_t BODIES[BODY_COUNT] = {
         .subdivisions = 6, .gravity_g = 1.0f,
         .pos_x = 0.0, .pos_y = 0.0, .pos_z = 0.0,
         .has_water = true,
+        .has_atmosphere = true, .atmosphere_tint = { 1.00f, 1.00f, 1.00f },
     },
 
     /* ---- Tenebris moons ---- */
@@ -36,6 +37,9 @@ static const body_config_t BODIES[BODY_COUNT] = {
         .pos_x = -850.0, .pos_y = 120.0, .pos_z = -700.0,
         .has_water = true,
         .tileset = TILESET_SEQUOIA,
+        /* Reddish atmosphere (#ffaa88) — matches the JS Sequoia tint
+         * so the sister planet reads as warm-tinted alien-Earth. */
+        .has_atmosphere = true, .atmosphere_tint = { 1.00f, 0.667f, 0.533f },
     },
     [BODY_VERDANT] = {
         .id = BODY_VERDANT, .name = "Verdant",

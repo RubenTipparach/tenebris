@@ -8,7 +8,10 @@
 #include <stdint.h>
 
 typedef struct {
-    vec3_t sun_dir;
+    vec3_t sun_dir;        /* normalised direction from system origin to sun */
+    vec3_t sun_pos;        /* world-space sun position (for lighting per body
+                            * + atmosphere ray-marching reference)            */
+    float  sun_radius;     /* sun sphere radius in world units                */
     vec3_t sky_top;
     vec3_t sky_bottom;
     vec3_t ambient;
@@ -24,6 +27,20 @@ void renderer_begin_frame(int w, int h, render_env_t env);
  * write depth, so later opaque passes paint on top. Pass the world
  * sun direction in `env.sun_dir`. */
 void renderer_draw_skybox(mat4_t view, mat4_t proj);
+
+/* Emissive sun sphere at env.sun_pos. Drawn after the skybox but
+ * before any opaque world geometry; writes depth so atmospheres /
+ * planets correctly occlude it when in front. */
+void renderer_draw_sun(mat4_t view, mat4_t proj);
+
+/* Per-body atmospheric scattering shell. Iterates every body that
+ * has has_atmosphere=true (Tenebris + Sequoia today) and draws an
+ * inverted sphere of radius * 1.1 with additive blending and a
+ * GPU-Gems-2 ray-marched scattering shader. Must run after all
+ * opaque + water passes so it composites on top, but should not
+ * write depth. */
+void renderer_draw_atmospheres(mat4_t view, mat4_t proj, vec3_t camera_world,
+                               world_t* active_world);
 
 /* Draw the planet: opaque terrain in one merged pass, then water caps
  * in a blended pass. `dt_seconds` advances the water-wave time

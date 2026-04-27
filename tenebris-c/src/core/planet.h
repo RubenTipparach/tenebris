@@ -68,6 +68,8 @@ typedef struct {
     bool        icy;              /* snow / ice everywhere */
     bool        is_asteroid;      /* skipped from the teleport menu */
     tileset_t   tileset;          /* which palette to sample (earth / sequoia) */
+    bool        has_atmosphere;   /* render an atmospheric scattering shell */
+    float       atmosphere_tint[3]; /* RGB multiplier applied to scattered colour */
 } body_config_t;
 
 const body_config_t* planet_get(body_id_t id);
