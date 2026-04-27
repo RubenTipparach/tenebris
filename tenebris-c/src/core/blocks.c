@@ -18,6 +18,14 @@ bool block_is_transparent(block_t b) {
  * paths can early-out. */
 bool block_is_unbreakable(block_t b) { return b == BLOCK_BEDROCK; }
 
+bool block_covers_face(block_t b) {
+    if (b == BLOCK_AIR || b == BLOCK_WATER || b == BLOCK_ICE) return false;
+    /* Wood and leaves are partial-width — they don't fully cover the
+     * face of an adjacent voxel, so neighbors must still draw. */
+    if (b == BLOCK_WOOD || b == BLOCK_LEAVES) return false;
+    return true;
+}
+
 uint8_t block_face_tile(block_t b, face_cap_t cap) {
     if (b == BLOCK_GRASS) {
         if (cap == FACE_CAP_TOP)    return (uint8_t)BLOCK_GRASS;

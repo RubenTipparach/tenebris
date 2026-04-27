@@ -55,6 +55,13 @@ bool block_is_solid(block_t b);
 bool block_is_transparent(block_t b);
 bool block_is_unbreakable(block_t b);
 
+/* True only when this block fully covers the face of an adjacent
+ * voxel — i.e. air/water/ice/leaves don't cover (transparent), and
+ * wood/leaves don't cover (partial width). Used by the mesher to
+ * decide when to emit a face: if the neighbour does NOT cover,
+ * this voxel's face is visible. */
+bool block_covers_face(block_t b);
+
 /* Face classification for atlas tile selection. */
 typedef enum {
     FACE_CAP_TOP    = 0,
