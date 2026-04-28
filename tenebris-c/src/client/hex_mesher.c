@@ -186,7 +186,7 @@ static void emit_side_quad(hex_mesh_t* out,
  * whose terrain top sits below sea level. Tile surface stays opaque
  * (sand/stone); water is a separate translucent pass on top. */
 
-#define SEA_LEVEL_DEPTH  12   /* must match world.c's SEA_LEVEL_IDX */
+#define SEA_LEVEL_DEPTH  64   /* must match world.c's SEA_LEVEL_IDX */
 
 void hex_mesh_build_water(hex_mesh_t* out, const world_t* w, int tile_idx) {
     const goldberg_tile_t* t = goldberg_tile(w->grid, tile_idx);

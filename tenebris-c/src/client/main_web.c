@@ -262,6 +262,19 @@ static void frame(void) {
     vec3_t sun_pos = (vec3_t){
         sun_dir.x * SUN_DIST, sun_dir.y * SUN_DIST, sun_dir.z * SUN_DIST,
     };
+    /* Atmosphere is anchored to whatever body the player is currently
+     * standing on (player_teleport_to updates p->body, so the sky
+     * follows the player when they jump between planets). Earth-likes
+     * (has_water) get a 25 %-thick scattering shell so the sky reads
+     * as proper blue at low altitude and fades to space at high alt;
+     * barren / icy / asteroid bodies get strength=0 and fall back to
+     * the starfield-only path inside the same shader. */
+    const body_config_t* active_body = G.player.body ? G.player.body : G.body;
+    const bool has_atmo = active_body->has_water;
+    const float planet_r = (float)active_body->radius_m;
+    /* Atmosphere thickness scales with planet radius — same proportional
+     * look across Tenebris (150 m → 187.5 m) and Sequoia (180 m). */
+    const float atmo_r   = planet_r * 1.25f;
     render_env_t env = {
         .sun_dir    = sun_dir,
         .sun_pos    = sun_pos,
@@ -269,6 +282,14 @@ static void frame(void) {
         .sky_top    = { 0.02f, 0.04f, 0.10f },
         .sky_bottom = { 0.05f, 0.08f, 0.15f },
         .ambient    = { 0.35f, 0.35f, 0.40f },
+        .atmo_planet_center = {
+            (float)active_body->pos_x,
+            (float)active_body->pos_y,
+            (float)active_body->pos_z,
+        },
+        .atmo_planet_radius = planet_r,
+        .atmo_radius        = atmo_r,
+        .atmo_strength      = has_atmo ? 1.0f : 0.0f,
     };
     /* Camera world pos for the water-shader fresnel. Uses the player's
      * parallel-transported basis so it stays continuous when the old
@@ -276,6 +297,7 @@ static void frame(void) {
     dvec3_t cam_world_d = dvec3_add(G.player.position,
                                     dvec3_scale(G.player.basis.up, 1.6));
     vec3_t cam_world = dvec3_to_vec3(cam_world_d);
+    env.camera_world = cam_world;
 
     renderer_begin_frame(sapp_width(), sapp_height(), env);
     /* Skybox first — fullscreen stars + sun-disc backdrop, no depth

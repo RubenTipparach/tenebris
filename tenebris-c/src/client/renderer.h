@@ -14,6 +14,19 @@ typedef struct {
     vec3_t sky_top;
     vec3_t sky_bottom;
     vec3_t ambient;
+
+    /* Bruneton-style atmospheric scattering (precomputed_atmospheric_
+     * scattering / GPUGems2 ch.16). When `atmo_strength` > 0 the skybox
+     * pass ray-marches Rayleigh + Mie inscattering through a spherical
+     * shell centred at `atmo_planet_center` (world space) with radius
+     * `atmo_radius` over a planet of radius `atmo_planet_radius`.
+     * `atmo_strength` 0..1 cross-fades between starfield-only space
+     * (moons / asteroids) and full atmosphere (Tenebris, Sequoia). */
+    vec3_t atmo_planet_center;
+    float  atmo_planet_radius;
+    float  atmo_radius;
+    float  atmo_strength;
+    vec3_t camera_world;     /* used as ray-march origin for the sky pass */
 } render_env_t;
 
 void renderer_init(void);
@@ -55,5 +68,9 @@ void renderer_end_frame(void);
 size_t renderer_triangles_drawn_this_frame(void);
 size_t renderer_tiles_drawn_this_frame(void);
 size_t renderer_tiles_remeshed_this_frame(void);
+/* Chunked-mesh diagnostics for the HUD. `out_chunks` = total chunk
+ * count (configured at compile time), `out_tiles_meshed` = number of
+ * tiles that have been routed into a chunk so far. */
+void   renderer_chunk_count(int* out_chunks, int* out_tiles_meshed);
 
 #endif
