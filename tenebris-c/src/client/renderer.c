@@ -25,7 +25,11 @@
  * tiles are meshed — after the initial pass we only rebuild on edits.
  */
 
-#define MESH_BUDGET_PER_FRAME  512
+/* 2048 tiles/frame finishes Tenebris (40 962 tiles) in ~20 frames
+ * (~330 ms) — a single beat of "loading…" rather than the previous
+ * 1.3 s wait. WASM single-threaded mesh time stays under the 16 ms
+ * frame budget at this rate. */
+#define MESH_BUDGET_PER_FRAME  2048
 /* Per-chunk vertex / index caps. With WORLD_MAX_DEPTH=128 a full mountain
  * column emits 6+ side quads per layer, so a single chunk of ~1300 tiles
  * stays well under 256 K vertices. We over-allocate moderately so the
@@ -83,7 +87,11 @@ static struct {
     mesh_chunk_t chunks[CHUNK_COUNT];
     int*         tile_to_chunk;          /* tile_idx -> chunk index, NULL until init */
     int          tile_to_chunk_count;    /* size of tile_to_chunk array */
-    int          mesh_cursor;            /* global tile cursor — feeds chunks in order */
+    /* Streaming order: tiles are meshed in this order rather than 0..N
+     * so the chunk under the player's feet pops in first. Built once
+     * from the spawn camera direction. */
+    int*         stream_order;
+    int          mesh_cursor;            /* index into stream_order — feeds chunks */
 
     float       time_seconds;            /* for water wave animation */
 
@@ -975,6 +983,7 @@ void renderer_shutdown(void) {
         if (c->water_ibuf.id)  sg_destroy_buffer(c->water_ibuf);
     }
     free(R.tile_to_chunk); R.tile_to_chunk = NULL;
+    free(R.stream_order);  R.stream_order  = NULL;
     for (int i = 0; i < R.moon_count; ++i) {
         sg_destroy_buffer(R.moons[i].vbuf);
         sg_destroy_buffer(R.moons[i].ibuf);
@@ -1345,6 +1354,49 @@ static int classify_tile(dvec3_t center) {
     return best_i;
 }
 
+/* Build a streaming order that visits tiles in descending dot product
+ * with `player_dir` — i.e. nearest-to-camera first. Goldberg tile
+ * indices are arbitrary (vertex order from the icosahedron subdivision)
+ * so without this sort the chunk under the player loads at random
+ * intervals during the streaming pass. With it, the immediate area is
+ * meshed in the first few frames. */
+static dvec3_t  STREAM_REF_DIR;
+static dvec3_t* STREAM_TILE_CENTERS = NULL;
+static int stream_compare(const void* a, const void* b) {
+    int ia = *(const int*)a;
+    int ib = *(const int*)b;
+    double da = dvec3_dot(STREAM_TILE_CENTERS[ia], STREAM_REF_DIR);
+    double db = dvec3_dot(STREAM_TILE_CENTERS[ib], STREAM_REF_DIR);
+    if (da > db) return -1;
+    if (da < db) return 1;
+    return 0;
+}
+
+static void build_stream_order(world_t* w, vec3_t camera_world) {
+    if (R.stream_order) return;
+    R.stream_order = (int*)malloc((size_t)w->tile_count * sizeof(int));
+    /* Reference direction = the camera's outward-radial on the planet.
+     * For Tenebris (origin) this is just normalize(camera_world); for
+     * a non-origin body the player's local-up does the same thing,
+     * but we render Tenebris as the active world so this is fine. */
+    dvec3_t ref = dvec3_make((double)camera_world.x,
+                             (double)camera_world.y,
+                             (double)camera_world.z);
+    double rl = dvec3_length(ref);
+    STREAM_REF_DIR = (rl > 0.0) ? dvec3_scale(ref, 1.0 / rl)
+                                : dvec3_make(1, 0, 0);
+    /* Snapshot tile centres for the comparator — qsort doesn't pass a
+     * context pointer in C99. */
+    STREAM_TILE_CENTERS = (dvec3_t*)malloc((size_t)w->tile_count * sizeof(dvec3_t));
+    for (int i = 0; i < w->tile_count; ++i) {
+        const goldberg_tile_t* t = goldberg_tile(w->grid, i);
+        STREAM_TILE_CENTERS[i] = t->center;
+        R.stream_order[i] = i;
+    }
+    qsort(R.stream_order, (size_t)w->tile_count, sizeof(int), stream_compare);
+    free(STREAM_TILE_CENTERS); STREAM_TILE_CENTERS = NULL;
+}
+
 /* Allocate per-chunk CPU/GPU buffers + classify every tile into its
  * chunk. Idempotent — no-op once built for this world. */
 static void ensure_chunks(world_t* w) {
@@ -1444,16 +1496,20 @@ static void chunk_upload(mesh_chunk_t* c) {
 void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world,
                          vec3_t camera_world, float dt_seconds) {
     ensure_chunks(world);
+    build_stream_order(world, camera_world);
     R.time_seconds += dt_seconds;
 
     /* Stream mesh: each frame, mesh some newly-generated tiles into
-     * their owning chunk. Capped per frame so a single frame doesn't
-     * spend too long in the mesher. Only tiles below gen_cursor have
-     * block data. Builds both opaque terrain and the water cap. */
+     * their owning chunk in player-proximity order so the area under
+     * the player's feet pops in first. Capped per frame so a single
+     * frame doesn't spend too long in the mesher. Only tiles below
+     * gen_cursor have block data. Builds both opaque terrain and
+     * the water cap. */
     int budget = MESH_BUDGET_PER_FRAME;
     bool any_chunk_grew[CHUNK_COUNT] = { 0 };
-    while (R.mesh_cursor < world->gen_cursor && budget > 0) {
-        int idx = R.mesh_cursor;
+    while (R.mesh_cursor < world->tile_count && budget > 0) {
+        int idx = R.stream_order[R.mesh_cursor];
+        if (idx >= world->gen_cursor) break;     /* not yet generated */
         int ci  = R.tile_to_chunk[idx];
         mesh_chunk_t* c = &R.chunks[ci];
         hex_mesh_build_tile(&c->mesh, world, idx);

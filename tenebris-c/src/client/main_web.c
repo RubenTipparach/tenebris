@@ -272,9 +272,14 @@ static void frame(void) {
     const body_config_t* active_body = G.player.body ? G.player.body : G.body;
     const bool has_atmo = active_body->has_water;
     const float planet_r = (float)active_body->radius_m;
-    /* Atmosphere thickness scales with planet radius — same proportional
-     * look across Tenebris (150 m → 187.5 m) and Sequoia (180 m). */
-    const float atmo_r   = planet_r * 1.25f;
+    /* Atmosphere thickness scales with planet radius. 1.6× = a 60 %
+     * shell on top of the planet — Tenebris (150 m → 240 m) and
+     * Sequoia (180 m → 288 m) both end up with ~90–110 m of breathable
+     * sky, enough that the scattering term reads as a proper blue sky
+     * at low altitude and fades to space well before the camera leaves
+     * orbit. Smaller shells (1.25×) gave a too-thin band of blue
+     * pinned right at the horizon. */
+    const float atmo_r   = planet_r * 1.6f;
     render_env_t env = {
         .sun_dir    = sun_dir,
         .sun_pos    = sun_pos,

@@ -194,8 +194,13 @@ void hex_mesh_build_water(hex_mesh_t* out, const world_t* w, int tile_idx) {
     int top = column_top_solid(w, tile_idx);
     if (top < 0 || top >= SEA_LEVEL_DEPTH) return;
 
-    /* Water caps span the whole tile — width 1.0. */
-    emit_cap(out, t, w, SEA_LEVEL_DEPTH, BLOCK_WATER, true, 1.0f);
+    /* Water caps span the whole tile — width 1.0. emit_cap renders
+     * the TOP face of layer N at radius(N+1), so to land the water
+     * surface exactly at sea level (= radius(SEA_LEVEL_DEPTH)) we
+     * pass depth = SEA_LEVEL_DEPTH - 1. Otherwise the cap floats
+     * 1 m above the shoreline (visible "wobble" between the sand
+     * top and the water surface). */
+    emit_cap(out, t, w, SEA_LEVEL_DEPTH - 1, BLOCK_WATER, true, 1.0f);
 }
 
 /* ----------------------------------------------------------------------- */
