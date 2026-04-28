@@ -1135,13 +1135,19 @@ void renderer_draw_sun(mat4_t view, mat4_t proj) {
 static void draw_one_atmosphere(mat4_t vp, vec3_t camera_world,
                                 vec3_t center, float planet_radius,
                                 const float tint[3]) {
-    /* Surface offset: terrain heights add ~MAX_LAND_HEIGHT (40) on
-     * top of the sphere of `radius_m`, so the "effective surface"
-     * for atmosphere math sits a bit inside `radius_m`. */
-    const float SURFACE_OFFSET = 4.0f;
-    float effective_radius = planet_radius - SURFACE_OFFSET;
+    /* Tenebris-scale geometry: voxel terrain extends from
+     * (radius_m - 64) up to (radius_m + 63) — sea level sits at
+     * radius_m and peaks reach roughly radius_m + 40. The shell
+     * MUST sit above max terrain or the visible mesh punches
+     * through the atmosphere geometry; a 60 m gap gives plenty
+     * of headroom. The "effective surface" used by the scattering
+     * math is pushed down to ~70% of nominal radius (matching the
+     * JS ATMOSPHERE_SURFACE_OFFSET pattern) so the shader's
+     * integration shell is thick enough to produce visible glow.
+     * For a 150 m Tenebris that's a 105 m thick math shell. */
+    float atmosphere_radius = planet_radius + 60.0f;
+    float effective_radius  = planet_radius * 0.70f;
     if (effective_radius < 1.0f) effective_radius = 1.0f;
-    float atmosphere_radius = planet_radius * 1.10f;
 
     /* Cull when totally outside the atmosphere shell — saves a
      * full-sphere ray-march per off-screen body. */
