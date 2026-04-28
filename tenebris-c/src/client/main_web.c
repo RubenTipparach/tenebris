@@ -244,7 +244,11 @@ static void frame(void) {
 
     const float aspect = sapp_widthf() / sapp_heightf();
     mat4_t view = player_view(&G.player);
-    const float zfar = (float)(G.body->radius_m * 6.0);
+    /* zfar = 20 km — covers the sun (8 km) + far asteroids (~3 km) +
+     * atmosphere shells with margin. Linear-z precision at 20 km with
+     * a 0.3 m near plane is poor but adequate for now; the planned
+     * log-z change in plan.md fixes that. */
+    const float zfar = 20000.0f;
     mat4_t proj = mat4_perspective(60.0f * (3.14159265f / 180.0f), aspect, 0.3f, zfar);
 
     /* Sun lives along the canonical sky-light direction at a far

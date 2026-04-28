@@ -955,17 +955,32 @@ void renderer_init(void) {
         },
         .uniform_blocks[1] = {
             .stage = SG_SHADERSTAGE_FRAGMENT,
-            /* sokol std140: every member padded to 16 bytes (vec4)
-             * regardless of type — same pattern used by the water FS
-             * and distant-LOD blocks. 10 members * 4 floats = 40. */
-            .size  = 40 * sizeof(float),
+            /* sokol std140 packing: each vec3 has alignment 16 + size 12,
+             * each float has alignment 4 + size 4. Group all vec3s first
+             * so each gets its own 16-byte slot (no scalar tail-packing
+             * surprises), then scalars pack tightly into a single 16-byte
+             * tail. Layout (bytes):
+             *   vec3 planet_center    @  0..11   pad 12..15
+             *   vec3 sun_dir          @ 16..27   pad 28..31
+             *   vec3 viewer_pos       @ 32..43   pad 44..47
+             *   vec3 atmosphere_tint  @ 48..59   pad 60..63 (3 of which
+             *                                                  hold the
+             *                                                  next float)
+             *   float planet_radius      @ 60     (in atmosphere_tint's pad)
+             *   float atmosphere_radius  @ 64
+             *   float rayleigh_scale     @ 68
+             *   float mie_scale          @ 72
+             *   float mie_g              @ 76
+             *   float sun_intensity      @ 80
+             *   pad to 96 (16-byte aligned). */
+            .size  = 96,
             .layout = SG_UNIFORMLAYOUT_STD140,
             .glsl_uniforms[0] = { .glsl_name = "u_planet_center",     .type = SG_UNIFORMTYPE_FLOAT3 },
-            .glsl_uniforms[1] = { .glsl_name = "u_planet_radius",     .type = SG_UNIFORMTYPE_FLOAT },
-            .glsl_uniforms[2] = { .glsl_name = "u_atmosphere_radius", .type = SG_UNIFORMTYPE_FLOAT },
-            .glsl_uniforms[3] = { .glsl_name = "u_sun_dir",           .type = SG_UNIFORMTYPE_FLOAT3 },
-            .glsl_uniforms[4] = { .glsl_name = "u_viewer_pos",        .type = SG_UNIFORMTYPE_FLOAT3 },
-            .glsl_uniforms[5] = { .glsl_name = "u_atmosphere_tint",   .type = SG_UNIFORMTYPE_FLOAT3 },
+            .glsl_uniforms[1] = { .glsl_name = "u_sun_dir",           .type = SG_UNIFORMTYPE_FLOAT3 },
+            .glsl_uniforms[2] = { .glsl_name = "u_viewer_pos",        .type = SG_UNIFORMTYPE_FLOAT3 },
+            .glsl_uniforms[3] = { .glsl_name = "u_atmosphere_tint",   .type = SG_UNIFORMTYPE_FLOAT3 },
+            .glsl_uniforms[4] = { .glsl_name = "u_planet_radius",     .type = SG_UNIFORMTYPE_FLOAT },
+            .glsl_uniforms[5] = { .glsl_name = "u_atmosphere_radius", .type = SG_UNIFORMTYPE_FLOAT },
             .glsl_uniforms[6] = { .glsl_name = "u_rayleigh_scale",    .type = SG_UNIFORMTYPE_FLOAT },
             .glsl_uniforms[7] = { .glsl_name = "u_mie_scale",         .type = SG_UNIFORMTYPE_FLOAT },
             .glsl_uniforms[8] = { .glsl_name = "u_mie_g",             .type = SG_UNIFORMTYPE_FLOAT },
@@ -1183,18 +1198,25 @@ static void draw_one_atmosphere(mat4_t vp, vec3_t camera_world,
         sun_dir = R.env.sun_dir;
     }
 
-    /* FS uniforms — 10 members, each padded to 16 bytes (vec4). */
-    float ub_f[40] = { 0 };
-    ub_f[0]  = center.x; ub_f[1]  = center.y; ub_f[2]  = center.z;       /* u_planet_center */
-    ub_f[4]  = effective_radius;                                          /* u_planet_radius */
-    ub_f[8]  = atmosphere_radius;                                         /* u_atmosphere_radius */
-    ub_f[12] = sun_dir.x; ub_f[13] = sun_dir.y; ub_f[14] = sun_dir.z;     /* u_sun_dir */
-    ub_f[16] = camera_world.x; ub_f[17] = camera_world.y; ub_f[18] = camera_world.z; /* u_viewer_pos */
-    ub_f[20] = tint[0]; ub_f[21] = tint[1]; ub_f[22] = tint[2];           /* u_atmosphere_tint */
-    ub_f[24] = 0.015f;     /* u_rayleigh_scale — JS PlayerConfig default */
-    ub_f[28] = 0.010f;     /* u_mie_scale */
-    ub_f[32] = 0.85f;      /* u_mie_g — Henyey-Greenstein forward bias */
-    ub_f[36] = 5.0f;       /* u_sun_intensity */
+    /* FS uniforms — 96-byte std140 block. Offsets must match sokol's
+     * computed layout (see uniform_blocks[1] declaration). */
+    float ub_f[24] = { 0 };
+    /* vec3 u_planet_center @ float[0..2] */
+    ub_f[0]  = center.x; ub_f[1]  = center.y; ub_f[2]  = center.z;
+    /* vec3 u_sun_dir @ float[4..6] */
+    ub_f[4]  = sun_dir.x; ub_f[5]  = sun_dir.y; ub_f[6]  = sun_dir.z;
+    /* vec3 u_viewer_pos @ float[8..10] */
+    ub_f[8]  = camera_world.x; ub_f[9]  = camera_world.y; ub_f[10] = camera_world.z;
+    /* vec3 u_atmosphere_tint @ float[12..14] */
+    ub_f[12] = tint[0]; ub_f[13] = tint[1]; ub_f[14] = tint[2];
+    /* Scalars pack into the trailing space. planet_radius lives in
+     * atmosphere_tint's 4-byte pad slot at offset 60 (= float[15]). */
+    ub_f[15] = effective_radius;     /* u_planet_radius     @ byte 60 */
+    ub_f[16] = atmosphere_radius;    /* u_atmosphere_radius @ byte 64 */
+    ub_f[17] = 0.015f;               /* u_rayleigh_scale    @ byte 68 */
+    ub_f[18] = 0.010f;               /* u_mie_scale         @ byte 72 */
+    ub_f[19] = 0.85f;                /* u_mie_g             @ byte 76 */
+    ub_f[20] = 5.0f;                 /* u_sun_intensity     @ byte 80 */
     sg_apply_uniforms(1, &(sg_range){ .ptr = ub_f, .size = sizeof(ub_f) });
 
     sg_apply_bindings(&(sg_bindings){
