@@ -401,16 +401,24 @@ static const char* FS_SKY =
     "  vec3 sky = sun_irr * (inscatter_R * beta_R * phase_R\n"
     "                       + inscatter_M * beta_M * phase_M);\n"
 
-    /* Transmittance of the full view segment — used to dim the\n"
-     * background (stars + sun disc + space tint) as the atmosphere\n"
-     * thickens. */
-    "  vec3 view_tau = beta_R * od_view_R + beta_M * 1.1 * od_view_M;\n"
-    "  vec3 view_T   = exp(-view_tau);\n"
+    /* Background attenuation. Earlier versions multiplied `space_col`
+     * by the per-pixel transmittance derived from the same N_VIEW
+     * samples — but the discrete sum shifts step-wise as the camera
+     * translates between samples, so stars visibly flickered. Use a
+     * smooth analytical surrogate instead: density at the camera
+     * altitude × a fixed effective slab thickness. Result depends
+     * continuously on camera position, so stars hold still as the
+     * player walks. */
+    "  float h_cam = length(ro - u_planet_center) - Rg;\n"
+    "  float h_norm = clamp(h_cam / H, 0.0, 1.0);\n"
+    "  float density_cam = exp(-h_norm * 4.0);\n"
+    "  vec3  bg_tau = (beta_R + beta_M * 1.1) * density_cam * H * 1.5;\n"
+    "  vec3  bg_T   = exp(-bg_tau);\n"
 
     /* Blend the analytical sky over the space backdrop. strength<1\n"
      * smoothly fades to pure space so airless bodies share the\n"
      * shader without a branch. */
-    "  vec3 col = mix(space_col, space_col * view_T + sky, strength);\n"
+    "  vec3 col = mix(space_col, space_col * bg_T + sky, strength);\n"
     "  frag_color = vec4(col, 1.0);\n"
     "}\n";
 
