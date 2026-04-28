@@ -5,7 +5,25 @@ bool block_is_solid(block_t b) {
 }
 
 bool block_is_transparent(block_t b) {
-    return b == BLOCK_AIR || b == BLOCK_WATER || b == BLOCK_ICE;
+    /* Leaves count as transparent so trunk-side faces inside the canopy
+     * still draw. (Leaves don't actually have alpha — this just gates
+     * face culling so the trunk + leaf interior is visible.) */
+    return b == BLOCK_AIR
+        || b == BLOCK_WATER
+        || b == BLOCK_ICE
+        || b == BLOCK_LEAVES;
+}
+
+/* Bedrock cannot be broken by interact_update. Exposed so input/edit
+ * paths can early-out. */
+bool block_is_unbreakable(block_t b) { return b == BLOCK_BEDROCK; }
+
+bool block_covers_face(block_t b) {
+    if (b == BLOCK_AIR || b == BLOCK_WATER || b == BLOCK_ICE) return false;
+    /* Wood and leaves are partial-width — they don't fully cover the
+     * face of an adjacent voxel, so neighbors must still draw. */
+    if (b == BLOCK_WOOD || b == BLOCK_LEAVES) return false;
+    return true;
 }
 
 uint8_t block_face_tile(block_t b, face_cap_t cap) {
@@ -18,6 +36,18 @@ uint8_t block_face_tile(block_t b, face_cap_t cap) {
         if (cap == FACE_CAP_TOP)    return (uint8_t)BLOCK_SNOW;
         if (cap == FACE_CAP_BOTTOM) return (uint8_t)BLOCK_DIRT;
         return (uint8_t)BLOCK_DIRT_SNOW;
+    }
+    /* Sequoia tileset: uses distinct atlas columns so Sequoia's grass /
+     * snow / sand look noticeably different from Tenebris's. */
+    if (b == BLOCK_SEQ_GRASS) {
+        if (cap == FACE_CAP_TOP)    return (uint8_t)BLOCK_SEQ_GRASS;
+        if (cap == FACE_CAP_BOTTOM) return (uint8_t)BLOCK_SEQ_DIRT;
+        return (uint8_t)BLOCK_SEQ_DIRT_GRASS;
+    }
+    if (b == BLOCK_SEQ_SNOW) {
+        if (cap == FACE_CAP_TOP)    return (uint8_t)BLOCK_SEQ_SNOW;
+        if (cap == FACE_CAP_BOTTOM) return (uint8_t)BLOCK_SEQ_DIRT;
+        return (uint8_t)BLOCK_SEQ_DIRT_SNOW;
     }
     return (uint8_t)b;
 }

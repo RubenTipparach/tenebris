@@ -1,5 +1,6 @@
 #include "client/mobile_ui.h"
 #include "client/input.h"
+#include "client/teleport_menu.h"
 
 #include "sokol_gfx.h"   /* sokol_gl uses sg_* types — must come first */
 #include "sokol_app.h"
@@ -107,8 +108,45 @@ static void draw_glyph(char ch, float cx, float cy, float size, float r, float g
             draw_segment(left + 2, bot, (left + right) * 0.5f, bot - 4, thick, r, g, b, 1.0f);
             break;
         }
+        case 'T': {
+            draw_segment(left, top, right, top, thick, r, g, b, 1.0f);
+            draw_segment((left + right) * 0.5f, top, (left + right) * 0.5f, bot, thick, r, g, b, 1.0f);
+            break;
+        }
+        case 'X': {
+            draw_segment(left, top, right, bot, thick, r, g, b, 1.0f);
+            draw_segment(left, bot, right, top, thick, r, g, b, 1.0f);
+            break;
+        }
+        case '^': {
+            draw_segment(left, mid_y, (left + right) * 0.5f, top, thick, r, g, b, 1.0f);
+            draw_segment((left + right) * 0.5f, top, right, mid_y, thick, r, g, b, 1.0f);
+            break;
+        }
+        case 'v': {
+            draw_segment(left, mid_y, (left + right) * 0.5f, bot, thick, r, g, b, 1.0f);
+            draw_segment((left + right) * 0.5f, bot, right, mid_y, thick, r, g, b, 1.0f);
+            break;
+        }
+        case 'O': {
+            /* Simple checkmark "OK": a tick. */
+            draw_segment(left, mid_y, left + size * 0.25f, bot - 2, thick, r, g, b, 1.0f);
+            draw_segment(left + size * 0.25f, bot - 2, right, top, thick, r, g, b, 1.0f);
+            break;
+        }
         default: break;
     }
+}
+
+/* Public so teleport_menu can draw its own buttons using the same
+ * primitives (matches the look of the other HUD buttons). */
+void mobile_ui_draw_button(float cx, float cy, float r,
+                           float fill_r, float fill_g, float fill_b, float fill_a,
+                           float ring_r, float ring_g, float ring_b, float ring_a,
+                           char glyph) {
+    draw_circle_fan(cx, cy, r, 32, fill_r, fill_g, fill_b, fill_a);
+    draw_ring      (cx, cy, r - 2.0f, r, 32, ring_r, ring_g, ring_b, ring_a);
+    draw_glyph(glyph, cx, cy, 16.0f, 1.0f, 1.0f, 1.0f);
 }
 
 /* ----------------------------------------------------------------------- */
@@ -127,18 +165,26 @@ void mobile_ui_draw(void) {
     /* Buttons stacked vertically to the left of the right stick. The
      * right thumb can hop between the look stick and the buttons
      * without crossing the screen. Order (top to bottom):
-     *   BREAK / PLACE / JUMP — jump at the bottom, closest to the
+     *   TP / BREAK / PLACE / JUMP — jump at the bottom, closest to the
      *   stick so your thumb rests there. */
     const float bx = right_sx - STICK_RADIUS - BTN_GAP - BTN_RADIUS;
     const float j_y = right_sy + STICK_RADIUS - BTN_RADIUS;            /* bottom-aligned */
     const float p_y = j_y - (BTN_RADIUS * 2.0f + BTN_GAP);
     const float b_y = p_y - (BTN_RADIUS * 2.0f + BTN_GAP);
+    const float tp_y = b_y - (BTN_RADIUS * 2.0f + BTN_GAP);
 
-    /* Report hit rects back to input.c so touches can be classified. */
+    /* Report hit rects to input.c. TP is its own button in the main
+     * HUD; menu-nav buttons are registered by teleport_menu when open. */
     input_register_mobile_buttons(
         bx, b_y, BTN_RADIUS,
         bx, p_y, BTN_RADIUS,
         bx, j_y, BTN_RADIUS);
+    {
+        input_state_t* in = input_state_mut();
+        in->btn_tp_cx = bx;
+        in->btn_tp_cy = tp_y;
+        in->btn_tp_r  = BTN_RADIUS;
+    }
 
     /* Orthographic projection: (0,0) top-left to (w,h) bottom-right. */
     sgl_defaults();
@@ -205,6 +251,18 @@ void mobile_ui_draw(void) {
     draw_circle_fan(bx, j_y, BTN_RADIUS,        32, 0.40f, 0.40f, 0.15f, 0.50f);
     draw_ring      (bx, j_y, BTN_RADIUS - 2.0f, BTN_RADIUS, 32, 1.00f, 0.95f, 0.55f, 0.75f);
     draw_glyph('J', bx, j_y, 16.0f, 1.0f, 1.0f, 0.9f);
+
+    /* Teleport (purple) — top of the stack, out of the way of the
+     * combat-relevant buttons. */
+    draw_circle_fan(bx, tp_y, BTN_RADIUS,        32, 0.35f, 0.20f, 0.50f, 0.50f);
+    draw_ring      (bx, tp_y, BTN_RADIUS - 2.0f, BTN_RADIUS, 32, 0.85f, 0.60f, 1.00f, 0.75f);
+    /* Use 'P' for teleport — we don't have a T glyph and it reads as
+     * "portal" well enough. */
+    draw_glyph('T', bx, tp_y, 16.0f, 1.0f, 0.95f, 1.0f);
+
+    /* Teleport-menu nav buttons piggyback on this state block so they
+     * share the same orthographic pipeline + blend. */
+    teleport_menu_draw_mobile_buttons();
 
     sgl_draw();
 }

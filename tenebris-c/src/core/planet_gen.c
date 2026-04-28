@@ -28,18 +28,21 @@
 #define DETAIL_WEIGHT         0.05f
 #define OCEAN_DEPTH_POWER     1.3f
 
-/* Heights in voxel blocks (1 m each). Matches JS MAX_HEIGHT / MAX_DEPTH. */
-#define MAX_LAND_HEIGHT       4.0f
-#define MAX_OCEAN_DEPTH       4.0f
+/* Heights in voxel blocks (1 m each). With WORLD_MAX_DEPTH = 128 and
+ * SEA_LEVEL_IDX = 64, the column has 64 layers below sea (soil + ocean)
+ * and 64 layers above. Tunables fit within those budgets. */
+#define MAX_LAND_HEIGHT      40.0f    /* tallest peak — 40 m above sea  */
+#define MAX_OCEAN_DEPTH      24.0f    /* deepest trench — 24 m below sea */
 #define LAND_BIAS             0.20f
 
-/* Biome thresholds in meters (altitude relative to body surface). */
+/* Biome thresholds (meters relative to body surface). Snow/stone bands
+ * scaled up to match the bigger height range. */
 #define SEA_LEVEL             0.0f
-#define BEACH_BAND            1.0f
-#define SNOW_ELEV             3.0f
-#define STONE_ELEV            3.8f
-#define POLAR_LATITUDE        0.78f
-#define COLD_LATITUDE         0.65f
+#define BEACH_BAND            2.0f
+#define SNOW_ELEV            22.0f
+#define STONE_ELEV           32.0f
+#define POLAR_LATITUDE        0.90f
+#define COLD_LATITUDE         0.75f
 
 /* ----------------------------------------------------------------------- */
 /* fBm and ridge noise. Ports of fractalSimplex3D / ridgeSimplex3D from
@@ -128,15 +131,41 @@ float planet_surface_altitude(const body_config_t* body, dvec3_t unit_dir) {
 column_profile_t planet_profile(const body_config_t* body, dvec3_t unit_dir) {
     column_profile_t p;
     p.surface_m = planet_surface_altitude(body, unit_dir);
+    /* Moons + asteroids look flatter — scale the amplitude so they're
+     * visibly different from main planets. Icy worlds keep full height. */
+    if (body->barren) p.surface_m *= 0.3f;
     p.latitude  = (float)fabs(unit_dir.y);
     p.polar     = p.latitude > POLAR_LATITUDE;
     const bool cold = p.latitude > COLD_LATITUDE;
     p.snow_line = cold ? (SNOW_ELEV * 0.5f) : SNOW_ELEV;
+    p.barren    = body->barren;
+    p.icy       = body->icy;
+    p.sequoia   = (body->tileset == TILESET_SEQUOIA);
+    p.crag      = (body->tileset == TILESET_CRAG);
+    p.frost     = (body->tileset == TILESET_FROST);
+    p.asteroid  = (body->tileset == TILESET_ASTEROID);
     return p;
 }
 
 block_t planet_sample_with_profile(const column_profile_t* prof, float altitude_m) {
     const float surface = prof->surface_m;
+
+    /* Barren (moon-like) bodies. Tileset chooses the surface tint so
+     * the three kinds of barren body don't all look like Luna. */
+    if (prof->barren) {
+        if (altitude_m > surface) return BLOCK_AIR;
+        if (prof->crag)     return BLOCK_CRAG_ROCK;
+        if (prof->asteroid) return BLOCK_ASTEROID_ROCK;
+        return BLOCK_MOON;
+    }
+
+    /* Icy bodies: snow crust on top, ice below. Frostbite swaps the
+     * ice layer to a deeper glacial tint via TILESET_FROST. */
+    if (prof->icy) {
+        if (altitude_m > surface) return BLOCK_AIR;
+        if (altitude_m > surface - 1.0f) return BLOCK_SNOW;
+        return prof->frost ? BLOCK_FROST_ICE : BLOCK_ICE;
+    }
 
     /* Air/water above the ground. */
     if (altitude_m > surface) {
@@ -146,20 +175,22 @@ block_t planet_sample_with_profile(const column_profile_t* prof, float altitude_
         return BLOCK_AIR;
     }
 
-    /* Top voxel — biome decision layer. */
+    /* Top voxel — biome decision layer. TILESET_SEQUOIA bodies emit
+     * the SEQ_* variants so they pick different atlas columns. */
     if (altitude_m > surface - 1.0f) {
         if (surface > SEA_LEVEL - BEACH_BAND && surface < SEA_LEVEL + BEACH_BAND) {
-            return BLOCK_SAND;
+            return prof->sequoia ? BLOCK_SEQ_SAND : BLOCK_SAND;
         }
         if (surface < SEA_LEVEL) {
-            return (surface > SEA_LEVEL - 4.0f) ? BLOCK_SAND : BLOCK_STONE;
+            if (surface > SEA_LEVEL - 4.0f) return prof->sequoia ? BLOCK_SEQ_SAND : BLOCK_SAND;
+            return BLOCK_STONE;
         }
         if (surface > STONE_ELEV) return BLOCK_STONE;
-        if (surface > prof->snow_line || prof->polar) return BLOCK_SNOW;
-        return BLOCK_GRASS;
+        if (surface > prof->snow_line || prof->polar) return prof->sequoia ? BLOCK_SEQ_SNOW : BLOCK_SNOW;
+        return prof->sequoia ? BLOCK_SEQ_GRASS : BLOCK_GRASS;
     }
 
-    if (altitude_m > surface - 4.0f) return BLOCK_DIRT;
+    if (altitude_m > surface - 4.0f) return prof->sequoia ? BLOCK_SEQ_DIRT : BLOCK_DIRT;
     return BLOCK_STONE;
 }
 

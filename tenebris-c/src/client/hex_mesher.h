@@ -33,13 +33,19 @@ void hex_mesh_init(hex_mesh_t* m);
 void hex_mesh_reset(hex_mesh_t* m);
 void hex_mesh_free(hex_mesh_t* m);
 
-/* Build the geometry for a single tile. Emits top/bottom caps at the
- * column's solid/air boundary and side faces where the neighbor tile
- * has a shorter solid column. */
+/* Build the opaque geometry for a single tile: top/bottom caps of the
+ * solid column and any side faces where a neighbor is shorter. */
 void hex_mesh_build_tile(hex_mesh_t* out, const world_t* w, int tile_idx);
 
-/* Atlas column count (must match the runtime bake in renderer.c). */
-#define HEX_ATLAS_TILES   12
+/* Emit ONE hex/pent water cap at sea level if the tile has a water
+ * column (surface below sea). The water shader animates this cap with
+ * sin-based waves and alpha-blends it. */
+void hex_mesh_build_water(hex_mesh_t* out, const world_t* w, int tile_idx);
+
+/* Atlas column count (must match the runtime bake in renderer.c).
+ * 12 default + 6 Sequoia + 3 tinted variants + wood + leaves + bedrock
+ * = 24 total. */
+#define HEX_ATLAS_TILES   24
 #define HEX_ATLAS_U_STEP  (1.0f / (float)HEX_ATLAS_TILES)
 
 #endif

@@ -19,4 +19,11 @@ void mobile_ui_shutdown(void);
  * before sg_end_pass). Submits orthographic 2D geometry via sokol_gl. */
 void mobile_ui_draw(void);
 
+/* Primitive shared with teleport_menu so all HUD buttons look the
+ * same (same ring, same glyph style). Supported glyphs: BPJTXOxv^. */
+void mobile_ui_draw_button(float cx, float cy, float r,
+                           float fill_r, float fill_g, float fill_b, float fill_a,
+                           float ring_r, float ring_g, float ring_b, float ring_a,
+                           char glyph);
+
 #endif

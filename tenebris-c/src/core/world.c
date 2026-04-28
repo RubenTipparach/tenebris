@@ -5,7 +5,10 @@
 #include <math.h>
 
 #define BLOCK_HEIGHT  1.0
-#define SEA_LEVEL_IDX 12     /* depth index where water surface sits (matches JS) */
+/* Sea level sits at layer 64 in a 128-deep shell — layers 0..63 are
+ * solid planet (bedrock + stone + seabed + water column); 64..127 are
+ * usable build space + mountains above sea. */
+#define SEA_LEVEL_IDX 64
 
 world_t* world_create(const body_config_t* body, int subdivisions) {
     world_t* w = (world_t*)calloc(1, sizeof(world_t));
@@ -31,6 +34,17 @@ void world_destroy(world_t* w) {
 /* Terrain generation. Each tile becomes a column with layers 0..MAX-1
  * filled according to the JS-derived heightmap + biome classifier. */
 
+/* Cheap deterministic 32-bit hash for tile-keyed RNG (tree scatter).
+ * Same constants we use elsewhere; just consolidated here so the gen
+ * pass doesn't pull in rng.h's float wrapper. */
+static uint32_t tile_hash(uint64_t seed, int32_t tile_idx, uint32_t salt) {
+    uint32_t h = (uint32_t)tile_idx * 374761393u + salt * 668265263u
+               + (uint32_t)(seed & 0xFFFFFFFFu)
+               + (uint32_t)(seed >> 32) * 1376312589u;
+    h = (h ^ (h >> 13)) * 1274126177u;
+    return h ^ (h >> 16);
+}
+
 static void gen_tile(world_t* w, int tile_idx) {
     const goldberg_tile_t* t = goldberg_tile(w->grid, tile_idx);
     if (!t) return;
@@ -38,11 +52,9 @@ static void gen_tile(world_t* w, int tile_idx) {
     /* Per-column biome profile + surface height (meters above base). */
     const column_profile_t prof = planet_profile(w->body, t->center);
 
-    /* Map meters -> block depth. SEA_LEVEL_IDX corresponds to altitude 0,
-     * higher altitudes are larger depth indices. Clamp to the voxel
-     * column. */
+    /* Map meters -> block depth. */
     int surface_idx = (int)floor((double)prof.surface_m / BLOCK_HEIGHT) + SEA_LEVEL_IDX;
-    if (surface_idx < 1) surface_idx = 1;
+    if (surface_idx < 2)                   surface_idx = 2;
     if (surface_idx > WORLD_MAX_DEPTH - 1) surface_idx = WORLD_MAX_DEPTH - 1;
 
     uint8_t* column = &w->blocks[tile_idx * WORLD_MAX_DEPTH];
@@ -51,9 +63,47 @@ static void gen_tile(world_t* w, int tile_idx) {
         block_t b = planet_sample_with_profile(&prof, altitude_m);
         column[d] = (uint8_t)b;
     }
-    /* Always at least one bedrock layer to keep the column from looking
-     * floating. */
-    column[0] = (uint8_t)BLOCK_STONE;
+    /* Bedrock floor — never overwrite, never mineable, and the renderer
+     * skips its bottom cap so we don't see the inside of the planet. */
+    column[0] = (uint8_t)BLOCK_BEDROCK;
+
+    /* ---- Tree scatter ----------------------------------------------
+     * Plant a small tree on grass-topped land tiles with low slope.
+     * Hex-based: trunk = 4 wood blocks stacked above the surface, top
+     * 2 layers = leaves block. Probability per qualifying tile ~5 %,
+     * gated by a deterministic per-tile + per-body hash so the layout
+     * is identical for the same seed. Tropical / Sequoia / barren /
+     * icy bodies skip trees entirely. */
+    /* Eligibility: dry land between the shoreline (above SEA_LEVEL+1 m)
+     * and the alpine snow line (below ~22 m). Mirrors planet_gen.c's
+     * thresholds without re-exposing them as a header constant. */
+    if (!prof.barren && !prof.icy &&
+        prof.surface_m > 1.0f && prof.surface_m < 22.0f)
+    {
+        block_t top = (block_t)column[surface_idx];
+        const bool is_grass = (top == BLOCK_GRASS) || (top == BLOCK_SEQ_GRASS);
+        if (is_grass) {
+            uint32_t h = tile_hash(w->body->seed, tile_idx, 0xA1B2C3D4u);
+            /* ~5% of qualifying tiles get a tree. */
+            if ((h & 0xFFu) < 13) {
+                /* Vary trunk height 3..5 by a separate hash bit. */
+                int trunk = 3 + ((int)(h >> 8) & 1);
+                int trunk_top = surface_idx + trunk;
+                int leaf_lo  = trunk_top - 1;
+                int leaf_hi  = trunk_top + 2;
+                if (leaf_hi >= WORLD_MAX_DEPTH) leaf_hi = WORLD_MAX_DEPTH - 1;
+                /* Trunk: stack BLOCK_WOOD above the grass top. */
+                for (int d = surface_idx + 1; d <= trunk_top && d < WORLD_MAX_DEPTH; ++d) {
+                    column[d] = (uint8_t)BLOCK_WOOD;
+                }
+                /* Leafy crown spread vertically over the trunk top. */
+                for (int d = leaf_lo; d <= leaf_hi; ++d) {
+                    if (d <= surface_idx) continue;
+                    if (column[d] == BLOCK_AIR) column[d] = (uint8_t)BLOCK_LEAVES;
+                }
+            }
+        }
+    }
 
     /* Mark this tile dirty so the renderer builds its geometry. */
     w->dirty[tile_idx >> 3] |= (uint8_t)(1 << (tile_idx & 7));

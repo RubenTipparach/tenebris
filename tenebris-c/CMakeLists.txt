@@ -55,7 +55,9 @@ set(TENEBRIS_CLIENT_SOURCES
     src/client/input.c
     src/client/player_ctrl.c
     src/client/interact.c
+    src/client/inventory.c
     src/client/mobile_ui.c
+    src/client/teleport_menu.c
     src/client/gfx_math.c
 )
 
@@ -82,10 +84,17 @@ if (EMSCRIPTEN)
     set(TENEBRIS_PUBLIC_TEXTURES "${CMAKE_SOURCE_DIR}/../public/textures")
     if (EXISTS "${TENEBRIS_PUBLIC_TEXTURES}/rocks.png")
         file(MAKE_DIRECTORY "${CMAKE_SOURCE_DIR}/assets/textures")
-        foreach(name water sand dirt grass rocks ice snow dirt_grass dirt_snow torch moon)
+        foreach(name water sand dirt grass rocks ice snow dirt_grass dirt_snow torch moon wood)
             if (EXISTS "${TENEBRIS_PUBLIC_TEXTURES}/${name}.png")
                 configure_file("${TENEBRIS_PUBLIC_TEXTURES}/${name}.png"
                                "${CMAKE_SOURCE_DIR}/assets/textures/${name}.png" COPYONLY)
+            endif()
+        endforeach()
+        file(MAKE_DIRECTORY "${CMAKE_SOURCE_DIR}/assets/textures/planet_seq")
+        foreach(name planet_seq_grass planet_seq_dirt planet_seq_grass_dirt planet_seq_sand planet_seq_snow planet_seq_snow_dirt)
+            if (EXISTS "${TENEBRIS_PUBLIC_TEXTURES}/planet_seq/${name}.png")
+                configure_file("${TENEBRIS_PUBLIC_TEXTURES}/planet_seq/${name}.png"
+                               "${CMAKE_SOURCE_DIR}/assets/textures/planet_seq/${name}.png" COPYONLY)
             endif()
         endforeach()
     endif()

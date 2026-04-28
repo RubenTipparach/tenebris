@@ -64,28 +64,52 @@ static int column_top_solid(const world_t* w, int tile) {
     return -1;
 }
 
+/* Per-voxel hex-prism width factor along the tangent plane. 1.0 = full
+ * tile; smaller shrinks the hex inward toward its center (radial extent
+ * unchanged). Wood trunks come out skinny; leaf voxels get a stable
+ * hash-driven variable width so the canopy isn't perfectly stamped. */
+static float block_hex_width(block_t b, int tile_idx, int depth) {
+    if (b == BLOCK_WOOD) return 0.20f;
+    if (b == BLOCK_LEAVES) {
+        uint32_t h = (uint32_t)tile_idx * 0xDEADBEEFu
+                   + (uint32_t)depth   * 0xBADF00Du
+                   + 0x12345678u;
+        h ^= h >> 13;
+        return 0.65f + ((float)(h & 0xFFu) / 255.0f) * 0.35f;
+    }
+    return 1.00f;
+}
+
+/* Linearly interpolate corner k toward t->center by `width`. At our
+ * planet scale the curvature inside a 3 m tile is sub-millimetre, so
+ * we don't bother re-projecting onto the unit sphere. */
+static dvec3_t shrink_corner(const goldberg_tile_t* t, int k, float width) {
+    dvec3_t offset = dvec3_sub(t->verts[k], t->center);
+    return dvec3_add(t->center, dvec3_scale(offset, (double)width));
+}
+
 /* ----------------------------------------------------------------------- */
 /* Cap emission: top or bottom of the column at a given depth.
- * is_top chooses outward vs inward normal + radius.
+ * `width` shrinks the hex inward (1.0 = full tile, 0.4 = trunk).
  */
 static void emit_cap(hex_mesh_t* out,
                      const goldberg_tile_t* t,
                      const world_t* w,
                      int depth,
                      block_t block,
-                     bool is_top) {
+                     bool is_top,
+                     float width) {
     const int n = t->num_verts;
     reserve(out, (size_t)(n + 1), (size_t)n * 3);
     uint32_t center_idx = (uint32_t)out->vertex_count;
 
-    double r_top = world_depth_to_radius_m(w, depth + 1);  /* top surface of this voxel */
-    double r_bot = world_depth_to_radius_m(w, depth);      /* bottom surface */
+    double r_top = world_depth_to_radius_m(w, depth + 1);
+    double r_bot = world_depth_to_radius_m(w, depth);
     double r = is_top ? r_top : r_bot;
 
     dvec3_t normal = is_top ? t->center : dvec3_scale(t->center, -1.0);
     dvec3_t center_pos = dvec3_scale(t->center, r);
 
-    /* Atlas column for this face. */
     face_cap_t cap = is_top ? FACE_CAP_TOP : FACE_CAP_BOTTOM;
     float u0 = (float)block_face_tile(block, cap) * HEX_ATLAS_U_STEP;
     float uc = u0 + HEX_ATLAS_U_STEP * 0.5f;
@@ -94,8 +118,8 @@ static void emit_cap(hex_mesh_t* out,
     push_vertex(out, center_pos, normal, uc, vc);
 
     for (int k = 0; k < n; ++k) {
-        dvec3_t corner = dvec3_scale(t->verts[k], r);
-        /* Regular-polygon UV in the atlas tile's cell. */
+        dvec3_t corner_dir = shrink_corner(t, k, width);
+        dvec3_t corner     = dvec3_scale(corner_dir, r);
         double angle = (double)k / (double)n * 6.2831853 - 1.5707963;
         float u = uc + (float)cos(angle) * HEX_ATLAS_U_STEP * 0.5f;
         float v = vc + (float)sin(angle) * 0.5f;
@@ -109,7 +133,6 @@ static void emit_cap(hex_mesh_t* out,
             out->indices[out->index_count++] = center_idx + 1 + (uint32_t)k;
             out->indices[out->index_count++] = center_idx + 1 + (uint32_t)next;
         } else {
-            /* Reverse winding for the bottom cap. */
             out->indices[out->index_count++] = center_idx;
             out->indices[out->index_count++] = center_idx + 1 + (uint32_t)next;
             out->indices[out->index_count++] = center_idx + 1 + (uint32_t)k;
@@ -118,13 +141,18 @@ static void emit_cap(hex_mesh_t* out,
 }
 
 /* Side quad between inner and outer radius across two adjacent corners.
- * One quad per tile edge per exposed depth. */
+ * One quad per tile edge per exposed depth. `width` shrinks the corners
+ * inward toward t->center so partial-width blocks (trunks) get a
+ * narrower side face. */
 static void emit_side_quad(hex_mesh_t* out,
-                           dvec3_t corner_a,
-                           dvec3_t corner_b,
+                           const goldberg_tile_t* t,
+                           int k_a, int k_b,
                            double r_bot,
                            double r_top,
-                           block_t block) {
+                           block_t block,
+                           float width) {
+    dvec3_t corner_a = shrink_corner(t, k_a, width);
+    dvec3_t corner_b = shrink_corner(t, k_b, width);
     dvec3_t inner_a = dvec3_scale(corner_a, r_bot);
     dvec3_t inner_b = dvec3_scale(corner_b, r_bot);
     dvec3_t outer_a = dvec3_scale(corner_a, r_top);
@@ -153,15 +181,21 @@ static void emit_side_quad(hex_mesh_t* out,
     out->indices[out->index_count++] = base + 3;
 }
 
-/* True if any neighbor of this tile has a transparent block at the
- * given depth (or no neighbor info). Mirrors JS hasExposedSide. */
-static bool any_neighbor_transparent_at(const world_t* w, const goldberg_tile_t* t, int depth) {
-    for (int i = 0; i < t->num_neighbors; ++i) {
-        int nb = t->neighbors[i];
-        block_t b = world_get(w, nb, depth);
-        if (block_is_transparent(b)) return true;
-    }
-    return false;
+/* ----------------------------------------------------------------------- */
+/* Water cap — one hexagon/pentagon drawn at sea level above any tile
+ * whose terrain top sits below sea level. Tile surface stays opaque
+ * (sand/stone); water is a separate translucent pass on top. */
+
+#define SEA_LEVEL_DEPTH  12   /* must match world.c's SEA_LEVEL_IDX */
+
+void hex_mesh_build_water(hex_mesh_t* out, const world_t* w, int tile_idx) {
+    const goldberg_tile_t* t = goldberg_tile(w->grid, tile_idx);
+    if (!t) return;
+    int top = column_top_solid(w, tile_idx);
+    if (top < 0 || top >= SEA_LEVEL_DEPTH) return;
+
+    /* Water caps span the whole tile — width 1.0. */
+    emit_cap(out, t, w, SEA_LEVEL_DEPTH, BLOCK_WATER, true, 1.0f);
 }
 
 /* ----------------------------------------------------------------------- */
@@ -170,34 +204,51 @@ void hex_mesh_build_tile(hex_mesh_t* out, const world_t* w, int tile_idx) {
     const goldberg_tile_t* t = goldberg_tile(w->grid, tile_idx);
     if (!t) return;
 
-    int top = column_top_solid(w, tile_idx);
-    if (top < 0) return;           /* empty column (shouldn't happen given bedrock) */
-    int bot = 0;                   /* bedrock sits at depth 0 */
-
-    block_t top_block = (block_t)w->blocks[tile_idx * WORLD_MAX_DEPTH + top];
-    block_t bot_block = (block_t)w->blocks[tile_idx * WORLD_MAX_DEPTH + bot];
-
-    /* ---- top cap: the voxel at `top` is the surface ---- */
-    emit_cap(out, t, w, top, top_block, true);
-
-    /* ---- bottom cap: needed if we have a visible underside. For Tier 1
-     * we always emit so digging exposes it cleanly. */
-    emit_cap(out, t, w, bot, bot_block, false);
-
-    /* ---- side faces: one quad per edge per exposed depth ---- */
     const int n = t->num_verts;
-    for (int d = bot; d <= top; ++d) {
-        uint8_t b_id = w->blocks[tile_idx * WORLD_MAX_DEPTH + d];
-        if (!block_is_solid((block_t)b_id)) continue;
-        if (!any_neighbor_transparent_at(w, t, d)) continue;
+    const uint8_t* col = &w->blocks[tile_idx * WORLD_MAX_DEPTH];
+
+    /* Iterate every solid voxel. For each, emit:
+     *   - a top cap if the voxel above doesn't fully cover this face
+     *     (covers air / water / ice / leaves, and crucially WOOD too —
+     *     so the grass under a tree trunk still gets its top drawn)
+     *   - a bottom cap when the block below doesn't cover (used by
+     *     leaf canopies — air below the lowest leaves) — but never at
+     *     d=0, where bedrock must hide the planet's hollow interior
+     *   - side quads when any neighbor at the same depth doesn't cover
+     *
+     * Width comes from block_hex_width: 1.0 default, 0.4 for wood
+     * trunks, 0.65–1.0 hash-driven for leaves so the canopy isn't
+     * uniformly stamped. */
+    for (int d = 0; d < WORLD_MAX_DEPTH; ++d) {
+        block_t b = (block_t)col[d];
+        if (!block_is_solid(b)) continue;
+
+        float width = block_hex_width(b, tile_idx, d);
+
+        block_t above = (d + 1 < WORLD_MAX_DEPTH) ? (block_t)col[d + 1] : BLOCK_AIR;
+        if (!block_covers_face(above)) {
+            emit_cap(out, t, w, d, b, true, width);
+        }
+
+        if (d > 0) {
+            block_t below = (block_t)col[d - 1];
+            if (!block_covers_face(below)) {
+                emit_cap(out, t, w, d, b, false, width);
+            }
+        }
+
+        bool any_exposed = false;
+        for (int i = 0; i < t->num_neighbors; ++i) {
+            block_t nb = world_get(w, t->neighbors[i], d);
+            if (!block_covers_face(nb)) { any_exposed = true; break; }
+        }
+        if (!any_exposed) continue;
 
         double r_bot = world_depth_to_radius_m(w, d);
         double r_top = world_depth_to_radius_m(w, d + 1);
-
         for (int k = 0; k < n; ++k) {
             int next = (k + 1) % n;
-            emit_side_quad(out, t->verts[k], t->verts[next],
-                           r_bot, r_top, (block_t)b_id);
+            emit_side_quad(out, t, k, next, r_bot, r_top, b, width);
         }
     }
 }
