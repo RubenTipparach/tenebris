@@ -244,10 +244,10 @@ static void frame(void) {
 
     const float aspect = sapp_widthf() / sapp_heightf();
     mat4_t view = player_view(&G.player);
-    /* zfar = 20 km — covers the sun (8 km) + far asteroids (~3 km) +
-     * atmosphere shells with margin. Linear-z precision at 20 km with
-     * a 0.3 m near plane is poor but adequate for now; the planned
-     * log-z change in plan.md fixes that. */
+    /* zfar = 20 km — covers the sun (8 km) + far asteroids (~3 km)
+     * with margin. Linear-z precision at 20 km with a 0.3 m near
+     * plane is poor but adequate for now; the planned log-z change
+     * in plan.md fixes that. */
     const float zfar = 20000.0f;
     mat4_t proj = mat4_perspective(60.0f * (3.14159265f / 180.0f), aspect, 0.3f, zfar);
 
@@ -286,9 +286,6 @@ static void frame(void) {
     renderer_draw_sun(view, proj);
     renderer_draw_world(view, proj, G.world, cam_world, dt);
     renderer_draw_moons(view, proj, cam_world);
-    /* Atmospheric scattering shells — drawn last so they composite
-     * additively over the fully-painted scene (planet + water + moons). */
-    renderer_draw_atmospheres(view, proj, cam_world, G.world);
 
     update_overlay(dt);
     teleport_menu_draw();

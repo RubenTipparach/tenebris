@@ -71,20 +71,17 @@ space is the model translate, and that translate becomes
 * `client/renderer.h`:
   * Change `render_env_t.sun_pos` from `vec3_t` to `dvec3_t sun_pos_world`.
   * Add `dvec3_t origin` parameter to `renderer_begin_frame`.
-  * Drop the `vec3_t camera_world` parameters from `renderer_draw_world`,
-    `renderer_draw_moons`, `renderer_draw_atmospheres` — instead, the
-    renderer recovers `camera_local` from `R.origin` + the active
-    player position passed into `begin_frame` (or a separate
-    `renderer_set_camera` call).
+  * Drop the `vec3_t camera_world` parameters from `renderer_draw_world`
+    and `renderer_draw_moons` — instead, the renderer recovers
+    `camera_local` from `R.origin` + the active player position
+    passed into `begin_frame` (or a separate `renderer_set_camera`
+    call).
 * `client/renderer.c`:
   * Store `R.origin` (`dvec3_t`) per-frame.
   * Change `R.moons[i].position` from `vec3_t` to `dvec3_t world_pos`
     so subtraction stays in double precision.
   * Per-draw: `vec3_t local = dvec3_to_vec3f(dvec3_sub(world_pos, R.origin))`.
   * Sun draw: `vec3_t sun_local = dvec3_to_vec3f(dvec3_sub(env.sun_pos_world, origin))`.
-  * Atmosphere draw: pass `planet_center_local` instead of the world
-    centre to the shader uniform; viewer_pos is also already in local
-    space (`= camera_local`).
 * `client/player_ctrl.h/c`:
   * `player_view(p, origin)` — builds the look-at matrix with eye =
     `dvec3_to_vec3f(p->position − origin)`. Existing call sites pass
@@ -129,7 +126,7 @@ void main() {
 ```
 
 Optionally in fragment shader (only when triangles span large depth
-ranges — flat skybox / sun sphere / atmosphere shell):
+ranges — flat skybox / sun sphere):
 
 ```glsl
 in float v_log_z;
@@ -141,18 +138,16 @@ void main() {
 
 The fragment-depth write costs us early-z, so we only enable it on
 shaders that need it. Voxel terrain triangles are tiny (≤ 3 m) and
-don't need it; the sun sphere (480 m diameter) and atmosphere shell
-(~120 m thick) do.
+don't need it; the sun sphere (480 m diameter) does.
 
 ### Files to change
 
 * All vertex shaders in `client/renderer.c`:
   `VS_HEX`, `VS_WATER`, `VS_DISTANT`, `VS_SKY` (probably skip — full-
-  screen tri sets z=1 anyway), `VS_SUN`, `VS_ATMOSPHERE`. Add
-  `u_log_z_coef` uniform + the three-line log-z block.
-* Fragment shaders that need accurate per-pixel depth:
-  `FS_SUN`, `FS_ATMOSPHERE`. Add `v_log_z` varying + `gl_FragDepth`
-  write.
+  screen tri sets z=1 anyway), `VS_SUN`. Add `u_log_z_coef` uniform +
+  the three-line log-z block.
+* Fragment shaders that need accurate per-pixel depth: `FS_SUN`. Add
+  `v_log_z` varying + `gl_FragDepth` write.
 * Each shader's `sg_shader_desc.uniform_blocks[0]`: add
   `u_log_z_coef` (FLOAT, 1 entry, 4 bytes — but std140 padding makes
   it 16). Bump `size` accordingly.
@@ -168,8 +163,8 @@ don't need it; the sun sphere (480 m diameter) and atmosphere shell
   from 0.05 m to 10 km. Small objects up close and the sun in the
   distance both get adequate precision.
 * **Fragment-depth write cost**: ~5 % perf hit on early-z-bound
-  shaders. We only pay it on the sun + atmosphere passes, not on
-  the 40k-tile terrain pass.
+  shaders. We only pay it on the sun pass, not on the 40k-tile
+  terrain pass.
 * **Reverse-Z would be better** (no `gl_FragDepth` needed for any
   shader, plus better precision), but it requires `EXT_clip_control`
   which isn't in WebGL2 — out of scope.

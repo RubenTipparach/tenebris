@@ -37,13 +37,10 @@ static struct {
     sg_pipeline pip_sky;       /* fullscreen starfield + sun disc       */
     sg_pipeline pip_distant;   /* flat-shaded unit icosphere (far LOD)  */
     sg_pipeline pip_sun;       /* emissive sun sphere                   */
-    sg_pipeline pip_atmosphere; /* additive scattering shell            */
     sg_buffer   distant_vbuf;
     sg_buffer   distant_ibuf;
     int         distant_index_count;
-    /* Shared smooth UV sphere — used by both the sun (front-face,
-     * emissive) and per-planet atmospheres (back-face, additive
-     * scattering). Position-only vertices. */
+    /* Smooth UV sphere — used by the sun (front-face emissive). */
     sg_buffer   uvsphere_vbuf;
     sg_buffer   uvsphere_ibuf;
     int         uvsphere_index_count;
@@ -189,133 +186,6 @@ static const char* FS_SUN =
     "  float halo = pow(clamp(r, 0.0, 1.0), 8.0);\n"
     "  vec3 col = u_color * (core + halo * 0.4);\n"
     "  frag_color = vec4(col, 1.0);\n"
-    "}\n";
-
-/* Atmospheric scattering — port of src/shaders/atmosphere/atmosphere.frag
- * from the JS Tenebris source. GPU Gems 2 Chapter 16: ray-march from
- * camera through the atmosphere shell, integrating Rayleigh
- * (wavelength^-4) and Mie (Henyey-Greenstein) scattering. The mesh
- * is an inverted sphere of radius * 1.1 — backface culled so it
- * also draws when the camera is inside, since ray-sphere intersection
- * in the fragment shader covers both inside and outside cases. */
-static const char* VS_ATMOSPHERE =
-    "#version 300 es\n"
-    "layout(location=0) in vec3 a_pos;\n"
-    "uniform mat4 u_mvp;\n"
-    "uniform mat4 u_model;\n"
-    "out vec3 v_world_pos;\n"
-    "void main() {\n"
-    "  vec4 wp = u_model * vec4(a_pos, 1.0);\n"
-    "  v_world_pos = wp.xyz;\n"
-    "  gl_Position = u_mvp * vec4(a_pos, 1.0);\n"
-    "}\n";
-
-static const char* FS_ATMOSPHERE =
-    "#version 300 es\n"
-    "precision highp float;\n"
-    "in vec3 v_world_pos;\n"
-    "uniform vec3  u_planet_center;\n"
-    "uniform float u_planet_radius;\n"
-    "uniform float u_atmosphere_radius;\n"
-    "uniform vec3  u_sun_dir;\n"
-    "uniform vec3  u_viewer_pos;\n"
-    "uniform vec3  u_atmosphere_tint;\n"
-    "uniform float u_rayleigh_scale;\n"
-    "uniform float u_mie_scale;\n"
-    "uniform float u_mie_g;\n"
-    "uniform float u_sun_intensity;\n"
-    "out vec4 frag_color;\n"
-    "const float PI = 3.14159265359;\n"
-    "const int   MAX_SAMPLES = 8;\n"
-    "const int   MAX_LIGHT_SAMPLES = 4;\n"
-    /* Inverse-fourth-power wavelength weights for Rayleigh — blue
-     * scatters ~3.5x more than red. */
-    "const vec3  WAVELENGTHS_INV4 = vec3(5.602, 9.473, 19.644);\n"
-    "const float SCALE_HEIGHT = 0.25;\n"
-    "float h21(vec2 p) {\n"
-    "  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);\n"
-    "}\n"
-    "float rayleigh_phase(float ct) { return 0.75 * (1.0 + ct * ct); }\n"
-    "float mie_phase(float ct, float g) {\n"
-    "  float g2 = g * g;\n"
-    "  float d = 1.0 + g2 - 2.0 * g * ct;\n"
-    "  return (1.0 - g2) / (4.0 * PI * pow(d, 1.5));\n"
-    "}\n"
-    "vec2 ray_sphere(vec3 ro, vec3 rd, vec3 c, float r) {\n"
-    "  vec3 oc = ro - c;\n"
-    "  float b = dot(oc, rd);\n"
-    "  float k = dot(oc, oc) - r * r;\n"
-    "  float disc = b * b - k;\n"
-    "  if (disc < 0.0) return vec2(-1.0);\n"
-    "  float s = sqrt(disc);\n"
-    "  return vec2(-b - s, -b + s);\n"
-    "}\n"
-    "float density_at(vec3 p) {\n"
-    "  float h = (length(p - u_planet_center) - u_planet_radius)\n"
-    "          / (u_atmosphere_radius - u_planet_radius);\n"
-    "  return exp(-clamp(h, 0.0, 1.0) / SCALE_HEIGHT);\n"
-    "}\n"
-    "float optical_depth(vec3 ro, vec3 rd, float len) {\n"
-    "  float ds = len / float(MAX_LIGHT_SAMPLES);\n"
-    "  float d = 0.0;\n"
-    "  for (int i = 0; i < MAX_LIGHT_SAMPLES; ++i) {\n"
-    "    vec3 p = ro + rd * (ds * (float(i) + 0.5));\n"
-    "    d += density_at(p) * ds;\n"
-    "  }\n"
-    "  return d;\n"
-    "}\n"
-    "void main() {\n"
-    /* DEBUG: paint the shell magenta so we can see whether the\n"
-     * pipeline + geometry are even rasterising. If you see a\n"
-     * magenta sphere around the planet, the geometry path works\n"
-     * and the bug is below this line. If you see nothing, the\n"
-     * pipeline / cull / depth state is wrong. Revert once we know. */
-    "  frag_color = vec4(0.6, 0.1, 0.6, 0.6);\n"
-    "  return;\n"
-    "  vec3 ro = u_viewer_pos;\n"
-    "  vec3 rd = normalize(v_world_pos - u_viewer_pos);\n"
-    "  vec2 atmos = ray_sphere(ro, rd, u_planet_center, u_atmosphere_radius);\n"
-    "  if (atmos.y < 0.0) { frag_color = vec4(0.0); return; }\n"
-    "  float t0 = max(0.0, atmos.x);\n"
-    "  float t1 = atmos.y;\n"
-    "  vec2 planet = ray_sphere(ro, rd, u_planet_center, u_planet_radius);\n"
-    "  if (planet.x > 0.0) t1 = min(t1, planet.x);\n"
-    "  if (t0 >= t1) { frag_color = vec4(0.0); return; }\n"
-    "  float ray_len = t1 - t0;\n"
-    "  float ds = ray_len / float(MAX_SAMPLES);\n"
-    "  vec3 sun = normalize(u_sun_dir);\n"
-    "  float dither = h21(gl_FragCoord.xy) * 0.5;\n"
-    "  vec3  rsum = vec3(0.0);\n"
-    "  vec3  msum = vec3(0.0);\n"
-    "  float od_r = 0.0;\n"
-    "  float od_m = 0.0;\n"
-    "  for (int i = 0; i < MAX_SAMPLES; ++i) {\n"
-    "    vec3 p = ro + rd * (t0 + ds * (float(i) + dither));\n"
-    "    float h = length(p - u_planet_center);\n"
-    "    if (h < u_planet_radius) continue;\n"
-    "    float d = density_at(p);\n"
-    "    od_r += d * ds;\n"
-    "    od_m += d * ds;\n"
-    "    vec2 sun_planet = ray_sphere(p, sun, u_planet_center, u_planet_radius);\n"
-    "    if (sun_planet.x > 0.0) continue;\n"
-    "    vec2 sun_atmos = ray_sphere(p, sun, u_planet_center, u_atmosphere_radius);\n"
-    "    float sun_len = max(0.0, sun_atmos.y);\n"
-    "    float sun_od  = optical_depth(p, sun, sun_len);\n"
-    "    vec3 tau_r = u_rayleigh_scale * WAVELENGTHS_INV4 * (od_r + sun_od);\n"
-    "    vec3 tau_m = vec3(u_mie_scale * (od_m + sun_od));\n"
-    "    vec3 atten = exp(-(tau_r + tau_m));\n"
-    "    rsum += d * atten * ds;\n"
-    "    msum += d * atten * ds;\n"
-    "  }\n"
-    "  rsum *= u_rayleigh_scale * WAVELENGTHS_INV4;\n"
-    "  msum *= u_mie_scale;\n"
-    "  float ct = dot(rd, sun);\n"
-    "  vec3 col = u_sun_intensity *\n"
-    "             (rsum * rayleigh_phase(ct) + msum * mie_phase(ct, u_mie_g));\n"
-    "  col *= u_atmosphere_tint;\n"
-    "  col = 1.0 - exp(-col);\n"
-    "  float a = clamp(length(col) * 1.5, 0.0, 0.95);\n"
-    "  frag_color = vec4(col, a);\n"
     "}\n";
 
 /* Starfield + sun skybox. Fullscreen triangle via gl_VertexID (no
@@ -946,80 +816,6 @@ void renderer_init(void) {
         .label = "sun-pipeline",
     });
 
-    /* Atmosphere pipeline — back-face culled (so the camera sees the
-     * inside of the inverted shell), additive blend, no depth write,
-     * alpha test off. Single uniform block packs everything. */
-    sg_shader shd_atmosphere = sg_make_shader(&(sg_shader_desc){
-        .vertex_func.source   = VS_ATMOSPHERE,
-        .fragment_func.source = FS_ATMOSPHERE,
-        .attrs = { [0].glsl_name = "a_pos" },
-        .uniform_blocks[0] = {
-            .stage = SG_SHADERSTAGE_VERTEX,
-            .size  = 32 * sizeof(float),    /* mat4 mvp + mat4 model */
-            .layout = SG_UNIFORMLAYOUT_STD140,
-            .glsl_uniforms[0] = { .glsl_name = "u_mvp",   .type = SG_UNIFORMTYPE_MAT4 },
-            .glsl_uniforms[1] = { .glsl_name = "u_model", .type = SG_UNIFORMTYPE_MAT4 },
-        },
-        .uniform_blocks[1] = {
-            .stage = SG_SHADERSTAGE_FRAGMENT,
-            /* sokol std140 packing: each vec3 has alignment 16 + size 12,
-             * each float has alignment 4 + size 4. Group all vec3s first
-             * so each gets its own 16-byte slot (no scalar tail-packing
-             * surprises), then scalars pack tightly into a single 16-byte
-             * tail. Layout (bytes):
-             *   vec3 planet_center    @  0..11   pad 12..15
-             *   vec3 sun_dir          @ 16..27   pad 28..31
-             *   vec3 viewer_pos       @ 32..43   pad 44..47
-             *   vec3 atmosphere_tint  @ 48..59   pad 60..63 (3 of which
-             *                                                  hold the
-             *                                                  next float)
-             *   float planet_radius      @ 60     (in atmosphere_tint's pad)
-             *   float atmosphere_radius  @ 64
-             *   float rayleigh_scale     @ 68
-             *   float mie_scale          @ 72
-             *   float mie_g              @ 76
-             *   float sun_intensity      @ 80
-             *   pad to 96 (16-byte aligned). */
-            .size  = 96,
-            .layout = SG_UNIFORMLAYOUT_STD140,
-            .glsl_uniforms[0] = { .glsl_name = "u_planet_center",     .type = SG_UNIFORMTYPE_FLOAT3 },
-            .glsl_uniforms[1] = { .glsl_name = "u_sun_dir",           .type = SG_UNIFORMTYPE_FLOAT3 },
-            .glsl_uniforms[2] = { .glsl_name = "u_viewer_pos",        .type = SG_UNIFORMTYPE_FLOAT3 },
-            .glsl_uniforms[3] = { .glsl_name = "u_atmosphere_tint",   .type = SG_UNIFORMTYPE_FLOAT3 },
-            .glsl_uniforms[4] = { .glsl_name = "u_planet_radius",     .type = SG_UNIFORMTYPE_FLOAT },
-            .glsl_uniforms[5] = { .glsl_name = "u_atmosphere_radius", .type = SG_UNIFORMTYPE_FLOAT },
-            .glsl_uniforms[6] = { .glsl_name = "u_rayleigh_scale",    .type = SG_UNIFORMTYPE_FLOAT },
-            .glsl_uniforms[7] = { .glsl_name = "u_mie_scale",         .type = SG_UNIFORMTYPE_FLOAT },
-            .glsl_uniforms[8] = { .glsl_name = "u_mie_g",             .type = SG_UNIFORMTYPE_FLOAT },
-            .glsl_uniforms[9] = { .glsl_name = "u_sun_intensity",     .type = SG_UNIFORMTYPE_FLOAT },
-        },
-        .label = "atmosphere-shader",
-    });
-    R.pip_atmosphere = sg_make_pipeline(&(sg_pipeline_desc){
-        .shader = shd_atmosphere,
-        .layout = {
-            .attrs = { [0] = { .format = SG_VERTEXFORMAT_FLOAT3 } },
-            .buffers[0].stride = 3 * sizeof(float),
-        },
-        .index_type = SG_INDEXTYPE_UINT32,
-        .depth = { .write_enabled = false, .compare = SG_COMPAREFUNC_LESS_EQUAL },
-        .colors[0].blend = {
-            .enabled       = true,
-            .src_factor_rgb   = SG_BLENDFACTOR_ONE,
-            .dst_factor_rgb   = SG_BLENDFACTOR_ONE,
-            .op_rgb           = SG_BLENDOP_ADD,
-            .src_factor_alpha = SG_BLENDFACTOR_ONE,
-            .dst_factor_alpha = SG_BLENDFACTOR_ONE,
-            .op_alpha         = SG_BLENDOP_ADD,
-        },
-        /* Back-face cull: vertex winding is CCW from outside, so to
-         * see the inside of the shell from a camera at any position
-         * (inside or outside), cull the FRONT faces. */
-        .cull_mode = SG_CULLMODE_FRONT,
-        .face_winding = SG_FACEWINDING_CCW,
-        .label = "atmosphere-pipeline",
-    });
-
     bake_atlas();
     hex_mesh_init(&R.mesh);
     hex_mesh_init(&R.water_mesh);
@@ -1056,7 +852,6 @@ void renderer_shutdown(void) {
     sg_destroy_buffer(R.distant_vbuf);
     sg_destroy_buffer(R.distant_ibuf);
     sg_destroy_pipeline(R.pip_sun);
-    sg_destroy_pipeline(R.pip_atmosphere);
     sg_destroy_buffer(R.uvsphere_vbuf);
     sg_destroy_buffer(R.uvsphere_ibuf);
 }
@@ -1146,121 +941,6 @@ void renderer_draw_sun(mat4_t view, mat4_t proj) {
     });
     sg_draw(0, R.uvsphere_index_count, 1);
     R.tris += (size_t)R.uvsphere_index_count / 3;
-}
-
-/* ----------------------------------------------------------------------- */
-/* Atmospheric scattering — one inverted UV sphere per body whose
- * config has has_atmosphere=true. Reads u_planet_center/_radius and
- * the per-body tint; the GPU Gems 2 ray-march in FS_ATMOSPHERE does
- * the rest. Render order: after world+water+moons, additive on top. */
-
-static void draw_one_atmosphere(mat4_t vp, vec3_t camera_world,
-                                vec3_t center, float planet_radius,
-                                const float tint[3]) {
-    /* Tenebris-scale geometry: voxel terrain extends from
-     * (radius_m - 64) up to (radius_m + 63) — sea level sits at
-     * radius_m and peaks reach roughly radius_m + 40. The shell
-     * MUST sit above max terrain or the visible mesh punches
-     * through the atmosphere geometry; a 60 m gap gives plenty
-     * of headroom. The "effective surface" used by the scattering
-     * math is pushed down to ~70% of nominal radius (matching the
-     * JS ATMOSPHERE_SURFACE_OFFSET pattern) so the shader's
-     * integration shell is thick enough to produce visible glow.
-     * For a 150 m Tenebris that's a 105 m thick math shell. */
-    float atmosphere_radius = planet_radius + 60.0f;
-    float effective_radius  = planet_radius * 0.70f;
-    if (effective_radius < 1.0f) effective_radius = 1.0f;
-
-    /* Cull when totally outside the atmosphere shell — saves a
-     * full-sphere ray-march per off-screen body. */
-    {
-        vec3_t d = vec3_sub(camera_world, center);
-        float dist = vec3_length(d);
-        /* Inside = always render. Outside but within view = render.
-         * Far away with a tiny on-screen size = skip via the
-         * radius/distance ratio (matches the moon LOD threshold). */
-        if (dist > atmosphere_radius * 200.0f) return;
-    }
-
-    mat4_t scale = mat4_identity();
-    scale.m[0] = scale.m[5] = scale.m[10] = atmosphere_radius;
-    mat4_t trans = mat4_translate(center);
-    mat4_t model = mat4_mul(trans, scale);
-    mat4_t mvp = mat4_mul(vp, model);
-
-    /* VS uniforms: mvp + model. */
-    float ub_v[32];
-    memcpy(ub_v,      mvp.m,   sizeof(mvp.m));
-    memcpy(ub_v + 16, model.m, sizeof(model.m));
-    sg_apply_uniforms(0, &(sg_range){ .ptr = ub_v, .size = sizeof(ub_v) });
-
-    /* Sun direction is per-body — toward the sun from the planet's
-     * centre so atmospheric scattering reddens at the terminator on
-     * each body independently. */
-    vec3_t sun_dir = vec3_sub(R.env.sun_pos, center);
-    float sd_len = vec3_length(sun_dir);
-    if (sd_len > 0.0f) {
-        sun_dir.x /= sd_len; sun_dir.y /= sd_len; sun_dir.z /= sd_len;
-    } else {
-        sun_dir = R.env.sun_dir;
-    }
-
-    /* FS uniforms — 96-byte std140 block. Offsets must match sokol's
-     * computed layout (see uniform_blocks[1] declaration). */
-    float ub_f[24] = { 0 };
-    /* vec3 u_planet_center @ float[0..2] */
-    ub_f[0]  = center.x; ub_f[1]  = center.y; ub_f[2]  = center.z;
-    /* vec3 u_sun_dir @ float[4..6] */
-    ub_f[4]  = sun_dir.x; ub_f[5]  = sun_dir.y; ub_f[6]  = sun_dir.z;
-    /* vec3 u_viewer_pos @ float[8..10] */
-    ub_f[8]  = camera_world.x; ub_f[9]  = camera_world.y; ub_f[10] = camera_world.z;
-    /* vec3 u_atmosphere_tint @ float[12..14] */
-    ub_f[12] = tint[0]; ub_f[13] = tint[1]; ub_f[14] = tint[2];
-    /* Scalars pack into the trailing space. planet_radius lives in
-     * atmosphere_tint's 4-byte pad slot at offset 60 (= float[15]). */
-    ub_f[15] = effective_radius;     /* u_planet_radius     @ byte 60 */
-    ub_f[16] = atmosphere_radius;    /* u_atmosphere_radius @ byte 64 */
-    ub_f[17] = 0.015f;               /* u_rayleigh_scale    @ byte 68 */
-    ub_f[18] = 0.010f;               /* u_mie_scale         @ byte 72 */
-    ub_f[19] = 0.85f;                /* u_mie_g             @ byte 76 */
-    ub_f[20] = 5.0f;                 /* u_sun_intensity     @ byte 80 */
-    sg_apply_uniforms(1, &(sg_range){ .ptr = ub_f, .size = sizeof(ub_f) });
-
-    sg_apply_bindings(&(sg_bindings){
-        .vertex_buffers[0] = R.uvsphere_vbuf,
-        .index_buffer      = R.uvsphere_ibuf,
-    });
-    sg_draw(0, R.uvsphere_index_count, 1);
-    R.tris += (size_t)R.uvsphere_index_count / 3;
-}
-
-void renderer_draw_atmospheres(mat4_t view, mat4_t proj, vec3_t camera_world,
-                               world_t* active_world) {
-    mat4_t vp = mat4_mul(proj, view);
-    sg_apply_pipeline(R.pip_atmosphere);
-
-    /* Active body — Tenebris (or whichever planet the player teleported
-     * to). It lives at the world origin in our setup but we still
-     * read body->pos_* for correctness if that ever changes. */
-    if (active_world && active_world->body && active_world->body->has_atmosphere) {
-        vec3_t c = (vec3_t){
-            (float)active_world->body->pos_x,
-            (float)active_world->body->pos_y,
-            (float)active_world->body->pos_z,
-        };
-        draw_one_atmosphere(vp, camera_world, c,
-                            (float)active_world->body->radius_m,
-                            active_world->body->atmosphere_tint);
-    }
-
-    /* Registered moons / sister planets — Sequoia is the only other
-     * has_atmosphere body today, but the loop is body-agnostic. */
-    for (int i = 0; i < R.moon_count; ++i) {
-        const body_config_t* b = R.moons[i].world->body;
-        if (!b || !b->has_atmosphere) continue;
-        draw_one_atmosphere(vp, camera_world, R.moons[i].position,
-                            (float)b->radius_m, b->atmosphere_tint);
-    }
 }
 
 /* ----------------------------------------------------------------------- */
