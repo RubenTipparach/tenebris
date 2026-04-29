@@ -52,9 +52,23 @@ static struct {
 /* --------------------------------------------------------------------- */
 
 static void init(void) {
+    /* Bump sokol's buffer pool way above the default 128 — the
+     * chunked-terrain renderer creates 4 buffers per chunk × 32
+     * chunks × ~20 bodies = 2560 base buffers, plus extra slots
+     * consumed each time chunk_upload's regrow_buffer destroys and
+     * re-creates a buffer (sokol marks the old slot for delayed
+     * release). Default pool exhaustion was the cause of "massive
+     * chunks of the world missing on Tenebris" — once the pool
+     * filled, sg_make_buffer returned invalid IDs, sg_update_buffer
+     * silently no-op'd on them, and entire chunks rendered nothing.
+     *
+     * 4 K buffer slots gives ~50 % headroom over the worst-case
+     * sustained allocation count. Image / pipeline / shader pools
+     * stay at default — we're not creating those en masse. */
     sg_setup(&(sg_desc){
         .environment = sglue_environment(),
         .logger.func = slog_func,
+        .buffer_pool_size = 4096,
     });
     stm_setup();
     sdtx_setup(&(sdtx_desc_t){
