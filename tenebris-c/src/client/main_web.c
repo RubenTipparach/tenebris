@@ -80,18 +80,24 @@ static void init(void) {
     while (!world_gen_complete(G.world)) {
         world_stream_gen(G.world, G.world->tile_count);
     }
+    /* Register Tenebris first so it becomes the active body — gets
+     * streaming + edit handling. Anything registered after will be
+     * one-shot meshed at register time, which is what we want for
+     * non-active moons / asteroids. */
+    renderer_register_world(G.world);
 
     /* Build and register every non-main body — moons, neighbouring
-     * planets, the asteroid belt. Each is fully generated + meshed
-     * synchronously at boot. Asteroids have subs=3 (642 tiles → tiny
-     * mesh), moons have subs=3–4, sister planets up to subs=6 —
-     * total init cost ~700 ms but it's a one-off. */
+     * planets, the asteroid belt. Each is fully generated + chunked
+     * synchronously at boot, so block edits on any of them go through
+     * the same dirty-rebuild path the active body uses. Asteroids
+     * have subs=3 (642 tiles), moons subs=3–4, sister planets up to
+     * subs=6 — total init cost ~700 ms but it's a one-off. */
     for (int id = BODY_LUNA; id < BODY_COUNT; ++id) {
         const body_config_t* b = planet_get((body_id_t)id);
         if (!b) continue;
         world_t* body_world = world_create(b, b->subdivisions);
         while (!world_gen_complete(body_world)) world_stream_gen(body_world, body_world->tile_count);
-        renderer_register_moon(body_world);
+        renderer_register_world(body_world);
         if (G.moon_count < (int)(sizeof(G.moons) / sizeof(G.moons[0]))) {
             G.moons[G.moon_count++] = body_world;
         }

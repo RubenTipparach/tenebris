@@ -30,14 +30,22 @@
  * 1.3 s wait. WASM single-threaded mesh time stays under the 16 ms
  * frame budget at this rate. */
 #define MESH_BUDGET_PER_FRAME  2048
-/* Per-chunk vertex / index caps. With WORLD_MAX_DEPTH=128 a full mountain
- * column emits 6+ side quads per layer, so a single chunk of ~1300 tiles
- * stays well under 256 K vertices. We over-allocate moderately so the
- * GPU buffer never has to grow. */
-#define MAX_VERTICES           (256u << 10)  /* 256 K verts / chunk (~8 MB)  */
-#define MAX_INDICES            (768u << 10)  /* 768 K idx  / chunk (~3 MB)   */
-#define WATER_VERTICES         (32u  << 10)  /* 32 K verts / chunk           */
-#define WATER_INDICES          (96u  << 10)  /* 96 K idx   / chunk           */
+/* Per-chunk vertex / index caps. WORLD_MAX_DEPTH=128 means a single
+ * mountain column can emit ~30 verts × ~30 exposed layers = ~900 verts
+ * for one tile. With 1300 tiles per chunk a hill-heavy region can
+ * easily breach the previous 256 K cap → silent sg_update_buffer
+ * failure → the chunk's GPU buffer keeps stale contents (or none),
+ * which is exactly the "terrain under my feet doesn't render" bug:
+ * the chunk under the player overflowed.
+ *
+ * Now we start with smaller initial caps (32 K verts ≈ 25 verts/tile
+ * average) and grow dynamically — chunk_upload_dynamic destroys and
+ * re-creates the GPU buffer at 2× when the CPU mesh outgrows it. So
+ * memory tracks actual content rather than worst-case. */
+#define INIT_VERTICES         (32u  << 10)
+#define INIT_INDICES          (96u  << 10)
+#define INIT_WATER_VERTICES   (8u   << 10)
+#define INIT_WATER_INDICES    (24u  << 10)
 
 /* Number of mesh chunks the planet is split into. Anchors are the 12
  * icosahedron vertices + 20 face centres → 32 well-spread sphere points.
@@ -51,12 +59,19 @@
 #define CHUNK_COUNT  32
 
 /* Per-chunk mesh state. Each chunk owns its own GPU buffer pair so a
- * dirty chunk can be re-uploaded in isolation. */
+ * dirty chunk can be re-uploaded in isolation. The *_capacity fields
+ * track the *current* GPU buffer sizes (in element slots) so we can
+ * detect when the CPU mesh has outgrown them and re-create the GPU
+ * buffer at a larger size. */
 typedef struct {
     sg_buffer  vbuf;
     sg_buffer  ibuf;
     sg_buffer  water_vbuf;
     sg_buffer  water_ibuf;
+    int        vbuf_capacity;       /* hex_vertex_t slots */
+    int        ibuf_capacity;       /* uint32_t slots     */
+    int        water_vbuf_capacity;
+    int        water_ibuf_capacity;
     hex_mesh_t mesh;
     hex_mesh_t water_mesh;
     int        last_uploaded_index_count;
@@ -64,6 +79,35 @@ typedef struct {
     bool       dirty;          /* tiles inside this chunk need rebuild */
     bool       streamed;       /* all owned tiles have been meshed once */
 } mesh_chunk_t;
+
+/* A whole celestial body (Tenebris, a moon, an asteroid, …). Every
+ * body shares the same 32-chunk layout — that's the unification the
+ * "all planets must follow the same chunking rules to optimize block
+ * voxel modification" requirement asks for. Block edits dirty only
+ * the affected chunk(s) regardless of which body the player is on.
+ *
+ * Difference between active and inactive bodies:
+ *   active   = streams in proximity-sorted batches over many frames,
+ *              respects edit dirties.
+ *   inactive = fully meshed in one shot at register time (these bodies
+ *              are typically far away and aren't being edited every
+ *              frame; if the player teleports they become active).
+ *
+ * Either way the rendering path is identical — N chunked draw calls
+ * with a model translate to body world_pos. */
+typedef struct {
+    world_t*     world;
+    mesh_chunk_t chunks[CHUNK_COUNT];
+    int*         tile_to_chunk;          /* tile_idx -> chunk index */
+    int*         stream_order;           /* for active bodies only  */
+    int          mesh_cursor;            /* index into stream_order */
+    bool         streamed_complete;
+    bool         is_active;              /* receives streaming + edit handling */
+    bool         has_water;              /* draw the water cap pass */
+    vec3_t       world_pos;              /* model-translate origin (body centre) */
+    float        radius_m;
+    vec3_t       distant_color;          /* fallback for far-LOD icosphere */
+} chunked_body_t;
 
 static struct {
     sg_pipeline pip_hex;
@@ -82,16 +126,15 @@ static struct {
     sg_view     atlas_view;
     sg_sampler  atlas_smp;
 
-    /* Per-chunk world meshes. CHUNKS[i] owns a slice of tiles assigned
-     * by tile_to_chunk[]. */
-    mesh_chunk_t chunks[CHUNK_COUNT];
-    int*         tile_to_chunk;          /* tile_idx -> chunk index, NULL until init */
-    int          tile_to_chunk_count;    /* size of tile_to_chunk array */
-    /* Streaming order: tiles are meshed in this order rather than 0..N
-     * so the chunk under the player's feet pops in first. Built once
-     * from the spawn camera direction. */
-    int*         stream_order;
-    int          mesh_cursor;            /* index into stream_order — feeds chunks */
+    /* All celestial bodies — Tenebris, every moon, every asteroid.
+     * The active body (the one whose world_t backs the player's
+     * physics + edits) gets streaming + dirty-rebuild treatment;
+     * everyone else is one-shot meshed at register time. The first
+     * registered body is the active one by default; can be re-routed
+     * via renderer_set_active_world. */
+    chunked_body_t bodies[32];
+    int            body_count;
+    int            active_body_idx;      /* -1 until something is registered */
 
     float       time_seconds;            /* for water wave animation */
 
@@ -100,20 +143,17 @@ static struct {
 
     size_t tris;
     size_t tiles_remeshed;
-
-    /* Static celestial bodies (moons + asteroids). Pre-meshed at
-     * registration time, fixed in world space. 32 slots is enough for
-     * our 6 moons + 10 asteroids with room for a few more. */
-    struct {
-        const world_t* world;
-        sg_buffer      vbuf;
-        sg_buffer      ibuf;
-        int            index_count;
-        vec3_t         position;
-        vec3_t         distant_color;   /* flat colour for the far-LOD sphere */
-    } moons[32];
-    int moon_count;
 } R;
+
+/* Forward declarations — body_alloc_chunks / body_full_mesh /
+ * chunk_upload sit far below in the file but are called from
+ * renderer_register_world / renderer_set_active_world which are
+ * declared earlier in the public API order. */
+static void body_alloc_chunks(chunked_body_t* body);
+static void body_full_mesh(chunked_body_t* body);
+static void body_chunk_rebuild_full(chunked_body_t* body, int chunk_idx);
+static void body_build_stream_order(chunked_body_t* body, vec3_t ref);
+static void chunk_upload(mesh_chunk_t* c);
 
 /* ----------------------------------------------------------------------- */
 
@@ -655,6 +695,7 @@ static void bake_atlas(void) {
 
 void renderer_init(void) {
     memset(&R, 0, sizeof(R));
+    R.active_body_idx = -1;     /* no body registered yet */
 
     sg_shader shd = sg_make_shader(&(sg_shader_desc){
         .vertex_func.source   = VS_HEX,
@@ -759,11 +800,8 @@ void renderer_init(void) {
         .label = "water-pipeline",
     });
 
-    /* Per-chunk GPU buffers are allocated lazily once the world is known
-     * (renderer_init runs before world_create). For now just zero them. */
-    for (int i = 0; i < CHUNK_COUNT; ++i) {
-        memset(&R.chunks[i], 0, sizeof(R.chunks[i]));
-    }
+    /* Per-body chunk storage is allocated lazily by renderer_register_world
+     * once we know the body's tile_count + radius. Nothing to do here. */
 
     /* Skybox pipeline — fullscreen triangle via gl_VertexID, no vbuf
      * bound. No depth write (so world geometry lands on top) and no
@@ -981,21 +1019,22 @@ void renderer_init(void) {
 }
 
 void renderer_shutdown(void) {
-    for (int i = 0; i < CHUNK_COUNT; ++i) {
-        mesh_chunk_t* c = &R.chunks[i];
-        if (c->mesh.vertices)       hex_mesh_free(&c->mesh);
-        if (c->water_mesh.vertices) hex_mesh_free(&c->water_mesh);
-        if (c->vbuf.id)        sg_destroy_buffer(c->vbuf);
-        if (c->ibuf.id)        sg_destroy_buffer(c->ibuf);
-        if (c->water_vbuf.id)  sg_destroy_buffer(c->water_vbuf);
-        if (c->water_ibuf.id)  sg_destroy_buffer(c->water_ibuf);
+    for (int bi = 0; bi < R.body_count; ++bi) {
+        chunked_body_t* body = &R.bodies[bi];
+        for (int i = 0; i < CHUNK_COUNT; ++i) {
+            mesh_chunk_t* c = &body->chunks[i];
+            if (c->mesh.vertices)       hex_mesh_free(&c->mesh);
+            if (c->water_mesh.vertices) hex_mesh_free(&c->water_mesh);
+            if (c->vbuf.id)        sg_destroy_buffer(c->vbuf);
+            if (c->ibuf.id)        sg_destroy_buffer(c->ibuf);
+            if (c->water_vbuf.id)  sg_destroy_buffer(c->water_vbuf);
+            if (c->water_ibuf.id)  sg_destroy_buffer(c->water_ibuf);
+        }
+        free(body->tile_to_chunk); body->tile_to_chunk = NULL;
+        free(body->stream_order);  body->stream_order  = NULL;
     }
-    free(R.tile_to_chunk); R.tile_to_chunk = NULL;
-    free(R.stream_order);  R.stream_order  = NULL;
-    for (int i = 0; i < R.moon_count; ++i) {
-        sg_destroy_buffer(R.moons[i].vbuf);
-        sg_destroy_buffer(R.moons[i].ibuf);
-    }
+    R.body_count = 0;
+    R.active_body_idx = -1;
     sg_destroy_view(R.atlas_view);
     sg_destroy_image(R.atlas_img);
     sg_destroy_sampler(R.atlas_smp);
@@ -1110,63 +1149,89 @@ void renderer_draw_sun(mat4_t view, mat4_t proj) {
 }
 
 /* ----------------------------------------------------------------------- */
-/* Moon registration — one-shot mesh + upload at registration time. */
+/* Body registration. Every celestial body (Tenebris and every moon /
+ * asteroid) is stored as a chunked_body_t with the same 32-chunk
+ * layout. The first body registered becomes the active one — it
+ * receives streaming + edit handling. Subsequent registrations are
+ * fully meshed in one shot at register time. The active body can be
+ * switched at runtime via renderer_set_active_world (e.g. on player
+ * teleport). */
 
-void renderer_register_moon(world_t* w) {
-    if (R.moon_count >= (int)(sizeof(R.moons) / sizeof(R.moons[0]))) return;
-    if (!w || !w->body) return;
-
-    /* Build the full merged mesh for this moon into a scratch instance.
-     * Moon tile counts are small (≤2562) so this runs in a few ms at
-     * init; no streaming is needed. */
-    hex_mesh_t m;
-    hex_mesh_init(&m);
-    /* Reasonable upper bound: 64 verts per tile is conservative for a
-     * mostly-flat moon. */
-    m.vertex_cap = (size_t)w->tile_count * 64u;
-    m.vertices = (hex_vertex_t*)malloc(m.vertex_cap * sizeof(hex_vertex_t));
-    m.index_cap = (size_t)w->tile_count * 128u;
-    m.indices = (uint32_t*)malloc(m.index_cap * sizeof(uint32_t));
-
-    for (int i = 0; i < w->tile_count; ++i) {
-        hex_mesh_build_tile(&m, w, i);
-    }
-
-    int slot = R.moon_count++;
-    R.moons[slot].world = w;
-    R.moons[slot].index_count = (int)m.index_count;
-    R.moons[slot].position = (vec3_t){
-        (float)w->body->pos_x, (float)w->body->pos_y, (float)w->body->pos_z
-    };
-    /* Flat color for the distant-LOD sphere — derived from tileset +
-     * body flags so each kind reads differently when pixel-sized. */
+static vec3_t body_distant_color(const body_config_t* b) {
     vec3_t c;
-    switch (w->body->tileset) {
+    switch (b->tileset) {
         case TILESET_SEQUOIA:  c = (vec3_t){ 0.35f, 0.70f, 0.25f }; break;
         case TILESET_CRAG:     c = (vec3_t){ 0.70f, 0.30f, 0.18f }; break;
         case TILESET_FROST:    c = (vec3_t){ 0.55f, 0.75f, 0.95f }; break;
         case TILESET_ASTEROID: c = (vec3_t){ 0.35f, 0.32f, 0.30f }; break;
         default:
-            if (w->body->icy)    c = (vec3_t){ 0.80f, 0.90f, 1.00f };
-            else if (w->body->barren) c = (vec3_t){ 0.55f, 0.55f, 0.55f };
-            else                 c = (vec3_t){ 0.30f, 0.45f, 0.60f };
+            if (b->icy)         c = (vec3_t){ 0.80f, 0.90f, 1.00f };
+            else if (b->barren) c = (vec3_t){ 0.55f, 0.55f, 0.55f };
+            else                c = (vec3_t){ 0.30f, 0.45f, 0.60f };
             break;
     }
-    R.moons[slot].distant_color = c;
-    R.moons[slot].vbuf = sg_make_buffer(&(sg_buffer_desc){
-        .data = { .ptr = m.vertices, .size = m.vertex_count * sizeof(hex_vertex_t) },
-        .label = "moon-vbuf",
-    });
-    R.moons[slot].ibuf = sg_make_buffer(&(sg_buffer_desc){
-        .usage.index_buffer = true,
-        .data = { .ptr = m.indices, .size = m.index_count * sizeof(uint32_t) },
-        .label = "moon-ibuf",
-    });
-
-    hex_mesh_free(&m);
+    return c;
 }
 
-int renderer_moon_count(void) { return R.moon_count; }
+void renderer_register_world(world_t* w) {
+    if (R.body_count >= (int)(sizeof(R.bodies) / sizeof(R.bodies[0]))) return;
+    if (!w || !w->body) return;
+
+    int slot = R.body_count++;
+    chunked_body_t* body = &R.bodies[slot];
+    memset(body, 0, sizeof(*body));
+    body->world          = w;
+    body->world_pos      = (vec3_t){
+        (float)w->body->pos_x, (float)w->body->pos_y, (float)w->body->pos_z
+    };
+    body->radius_m       = (float)w->body->radius_m;
+    body->has_water      = w->body->has_water;
+    body->distant_color  = body_distant_color(w->body);
+    body->mesh_cursor    = 0;
+
+    body_alloc_chunks(body);
+
+    /* First registered body is active by default — streaming, dirty-
+     * rebuild path. Anything registered after gets fully meshed now
+     * (one-shot) since we can't predict when/if the player will visit. */
+    if (R.active_body_idx < 0) {
+        R.active_body_idx = slot;
+        body->is_active   = true;
+        /* Stream order is built lazily on the first draw call once we
+         * know where the camera spawned. */
+    } else {
+        body->is_active = false;
+        body_full_mesh(body);
+        /* Upload all chunks of this newly-meshed body once. */
+        for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
+            chunk_upload(&body->chunks[ci]);
+        }
+    }
+}
+
+/* Backwards-compat shim — main_web.c still calls renderer_register_moon
+ * for non-Tenebris bodies. Same behavior as renderer_register_world. */
+void renderer_register_moon(world_t* w) { renderer_register_world(w); }
+
+int renderer_moon_count(void) {
+    /* "moon count" historically meant non-active bodies. */
+    if (R.body_count == 0) return 0;
+    return R.body_count - 1;   /* minus the active body */
+}
+
+void renderer_set_active_world(world_t* w) {
+    /* Find the body for this world and mark it active. The previously-
+     * active body keeps its mesh and just stops receiving streaming /
+     * edit handling; if needed it'll get re-meshed on next reactivation. */
+    for (int i = 0; i < R.body_count; ++i) {
+        if (R.bodies[i].world == w) {
+            if (R.active_body_idx >= 0) R.bodies[R.active_body_idx].is_active = false;
+            R.active_body_idx = i;
+            R.bodies[i].is_active = true;
+            return;
+        }
+    }
+}
 
 /* Extract 6 frustum planes from a view-projection matrix (column
  * major). Each plane is ax + by + cz + d >= 0 for "inside". Gribb/
@@ -1210,91 +1275,47 @@ static mat4_t mat4_scale_uniform(float s) {
 }
 
 void renderer_draw_moons(mat4_t view, mat4_t proj, vec3_t camera_world) {
-    if (R.moon_count == 0) return;
+    if (R.body_count == 0) return;
 
     mat4_t vp_base = mat4_mul(proj, view);
     frustum_plane_t frustum[6];
     extract_frustum(vp_base, frustum);
 
-    float light_ub[8] = {
-        R.env.sun_dir.x, R.env.sun_dir.y, R.env.sun_dir.z, 0.0f,
-        R.env.ambient.x, R.env.ambient.y, R.env.ambient.z, 0.0f,
-    };
-
-    /* Two passes: detailed bodies first (shared pip_hex + atlas),
-     * distant-LOD bodies after (pip_distant, per-body color). Keeps
-     * the pipeline binding count to one swap regardless of body count. */
-    int detailed_idx[64], detailed_count = 0;
-    int distant_idx[64],  distant_count  = 0;
-
-    /* 20% of viewport ~= radius/distance < 0.1 for a 60deg FOV. Using
-     * 0.12 as the cutoff so we don't swap to LOD exactly at the
-     * visual boundary — there's a hysteresis margin in practice
-     * because the player moves continuously. */
+    /* renderer_draw_world already drew detailed (close-enough) bodies
+     * via their chunked meshes. This pass picks up bodies that are
+     * far away enough to swap to a single flat-shaded icosphere — the
+     * 0.12 angular-size threshold matches the cull check there. */
     const float LOD_RATIO = 0.12f;
 
-    for (int i = 0; i < R.moon_count; ++i) {
-        float radius = (float)R.moons[i].world->body->radius_m;
-        if (!sphere_visible(frustum, R.moons[i].position, radius)) continue;
-
-        /* angular_size ~= r / distance; distant threshold is r/d < LOD_RATIO. */
-        vec3_t delta = vec3_sub(R.moons[i].position, camera_world);
+    sg_apply_pipeline(R.pip_distant);
+    sg_apply_bindings(&(sg_bindings){
+        .vertex_buffers[0] = R.distant_vbuf,
+        .index_buffer      = R.distant_ibuf,
+    });
+    for (int bi = 0; bi < R.body_count; ++bi) {
+        chunked_body_t* body = &R.bodies[bi];
+        if (!sphere_visible(frustum, body->world_pos, body->radius_m)) continue;
+        vec3_t delta = vec3_sub(body->world_pos, camera_world);
         float  dist  = vec3_length(delta);
         if (dist < 1.0f) dist = 1.0f;
-        const bool distant = (radius / dist) < LOD_RATIO;
-        if (distant) {
-            if (distant_count  < (int)(sizeof(distant_idx)  / sizeof(distant_idx[0])))  distant_idx[distant_count++]   = i;
-        } else {
-            if (detailed_count < (int)(sizeof(detailed_idx) / sizeof(detailed_idx[0]))) detailed_idx[detailed_count++] = i;
-        }
-    }
+        const bool distant = (body->radius_m / dist) < LOD_RATIO;
+        if (!distant) continue;     /* close ones drew their chunks already */
 
-    /* ---- Detailed pass (atlas-textured merged Goldberg mesh). ---- */
-    if (detailed_count > 0) {
-        sg_apply_pipeline(R.pip_hex);
-        for (int j = 0; j < detailed_count; ++j) {
-            int i = detailed_idx[j];
-            mat4_t model = mat4_translate(R.moons[i].position);
-            mat4_t mvp   = mat4_mul(vp_base, model);
-            sg_apply_uniforms(0, &(sg_range){ .ptr = mvp.m, .size = sizeof(mvp.m) });
-            sg_apply_uniforms(1, &(sg_range){ .ptr = light_ub, .size = sizeof(light_ub) });
-            sg_apply_bindings(&(sg_bindings){
-                .vertex_buffers[0] = R.moons[i].vbuf,
-                .index_buffer      = R.moons[i].ibuf,
-                .views[0]          = R.atlas_view,
-                .samplers[0]       = R.atlas_smp,
-            });
-            sg_draw(0, R.moons[i].index_count, 1);
-            R.tris += (size_t)R.moons[i].index_count / 3;
-        }
-    }
-
-    /* ---- Distant pass (flat-shaded icosphere). ---- */
-    if (distant_count > 0) {
-        sg_apply_pipeline(R.pip_distant);
-        sg_apply_bindings(&(sg_bindings){
-            .vertex_buffers[0] = R.distant_vbuf,
-            .index_buffer      = R.distant_ibuf,
-        });
-        for (int j = 0; j < distant_count; ++j) {
-            int i = distant_idx[j];
-            float radius = (float)R.moons[i].world->body->radius_m;
-            mat4_t model = mat4_mul(mat4_translate(R.moons[i].position),
-                                    mat4_scale_uniform(radius));
-            mat4_t mvp = mat4_mul(vp_base, model);
-            /* Packed std140 uniform block: mat4 + 3x (vec3+pad). */
-            float ub[16 + 12];
-            memcpy(ub, mvp.m, sizeof(mvp.m));
-            ub[16] = R.moons[i].distant_color.x;
-            ub[17] = R.moons[i].distant_color.y;
-            ub[18] = R.moons[i].distant_color.z;
-            ub[19] = 0.0f;
-            ub[20] = R.env.sun_dir.x; ub[21] = R.env.sun_dir.y; ub[22] = R.env.sun_dir.z; ub[23] = 0.0f;
-            ub[24] = R.env.ambient.x; ub[25] = R.env.ambient.y; ub[26] = R.env.ambient.z; ub[27] = 0.0f;
-            sg_apply_uniforms(0, &(sg_range){ .ptr = ub, .size = sizeof(ub) });
-            sg_draw(0, R.distant_index_count, 1);
-            R.tris += (size_t)R.distant_index_count / 3;
-        }
+        mat4_t model = mat4_mul(mat4_translate(body->world_pos),
+                                mat4_scale_uniform(body->radius_m));
+        mat4_t mvp = mat4_mul(vp_base, model);
+        /* Packed std140 uniform block: mat4 + 3x (vec3+pad). */
+        float ub[16 + 12];
+        memcpy(ub, mvp.m, sizeof(mvp.m));
+        ub[16] = body->distant_color.x;
+        ub[17] = body->distant_color.y;
+        ub[18] = body->distant_color.z;
+        ub[19] = 0.0f;
+        ub[20] = R.env.sun_dir.x; ub[21] = R.env.sun_dir.y; ub[22] = R.env.sun_dir.z; ub[23] = 0.0f;
+        ub[24] = R.env.ambient.x; ub[25] = R.env.ambient.y; ub[26] = R.env.ambient.z; ub[27] = 0.0f;
+        sg_apply_uniforms(0, &(sg_range){ .ptr = ub, .size = sizeof(ub) });
+        sg_draw(0, R.distant_index_count, 1);
+        R.tris += (size_t)R.distant_index_count / 3;
     }
 }
 
@@ -1380,95 +1401,116 @@ static int stream_compare(const void* a, const void* b) {
     return 0;
 }
 
-static void build_stream_order(world_t* w, vec3_t camera_world) {
-    if (R.stream_order) return;
-    R.stream_order = (int*)malloc((size_t)w->tile_count * sizeof(int));
-    /* Reference direction = the camera's outward-radial on the planet.
-     * For Tenebris (origin) this is just normalize(camera_world); for
-     * a non-origin body the player's local-up does the same thing,
-     * but we render Tenebris as the active world so this is fine. */
-    dvec3_t ref = dvec3_make((double)camera_world.x,
-                             (double)camera_world.y,
-                             (double)camera_world.z);
-    double rl = dvec3_length(ref);
-    STREAM_REF_DIR = (rl > 0.0) ? dvec3_scale(ref, 1.0 / rl)
+/* Allocate per-chunk CPU/GPU buffers for a body + classify every tile
+ * into its chunk. Idempotent — repeated calls no-op. */
+static void body_alloc_chunks(chunked_body_t* body) {
+    if (body->tile_to_chunk) return;
+    if (!CHUNK_ANCHORS_BUILT) build_chunk_anchors();
+
+    world_t* w = body->world;
+    body->tile_to_chunk = (int*)malloc((size_t)w->tile_count * sizeof(int));
+    for (int i = 0; i < w->tile_count; ++i) {
+        const goldberg_tile_t* t = goldberg_tile(w->grid, i);
+        body->tile_to_chunk[i] = classify_tile(t->center);
+    }
+
+    char label[48];
+    for (int i = 0; i < CHUNK_COUNT; ++i) {
+        mesh_chunk_t* c = &body->chunks[i];
+        hex_mesh_init(&c->mesh);
+        hex_mesh_init(&c->water_mesh);
+        c->mesh.vertex_cap = INIT_VERTICES;
+        c->mesh.vertices = (hex_vertex_t*)malloc(c->mesh.vertex_cap * sizeof(hex_vertex_t));
+        c->mesh.index_cap = INIT_INDICES;
+        c->mesh.indices = (uint32_t*)malloc(c->mesh.index_cap * sizeof(uint32_t));
+        c->water_mesh.vertex_cap = INIT_WATER_VERTICES;
+        c->water_mesh.vertices = (hex_vertex_t*)malloc(c->water_mesh.vertex_cap * sizeof(hex_vertex_t));
+        c->water_mesh.index_cap = INIT_WATER_INDICES;
+        c->water_mesh.indices = (uint32_t*)malloc(c->water_mesh.index_cap * sizeof(uint32_t));
+
+        c->vbuf_capacity        = INIT_VERTICES;
+        c->ibuf_capacity        = INIT_INDICES;
+        c->water_vbuf_capacity  = INIT_WATER_VERTICES;
+        c->water_ibuf_capacity  = INIT_WATER_INDICES;
+
+        snprintf(label, sizeof(label), "%s-vbuf-%d", w->body->name, i);
+        c->vbuf = sg_make_buffer(&(sg_buffer_desc){
+            .size = (size_t)c->vbuf_capacity * sizeof(hex_vertex_t),
+            .usage.stream_update = true,
+            .label = label,
+        });
+        snprintf(label, sizeof(label), "%s-ibuf-%d", w->body->name, i);
+        c->ibuf = sg_make_buffer(&(sg_buffer_desc){
+            .size = (size_t)c->ibuf_capacity * sizeof(uint32_t),
+            .usage.stream_update = true,
+            .usage.index_buffer  = true,
+            .label = label,
+        });
+        snprintf(label, sizeof(label), "%s-water-vbuf-%d", w->body->name, i);
+        c->water_vbuf = sg_make_buffer(&(sg_buffer_desc){
+            .size = (size_t)c->water_vbuf_capacity * sizeof(hex_vertex_t),
+            .usage.stream_update = true,
+            .label = label,
+        });
+        snprintf(label, sizeof(label), "%s-water-ibuf-%d", w->body->name, i);
+        c->water_ibuf = sg_make_buffer(&(sg_buffer_desc){
+            .size = (size_t)c->water_ibuf_capacity * sizeof(uint32_t),
+            .usage.stream_update = true,
+            .usage.index_buffer  = true,
+            .label = label,
+        });
+    }
+}
+
+/* Sort body->stream_order by descending dot(tile.center, ref_dir).
+ * Once built, the order is fixed for the lifetime of the body — even
+ * if the player wanders, the loading-priority direction was correct
+ * at the moment streaming began, which is when it matters. */
+static void body_build_stream_order(chunked_body_t* body, vec3_t ref) {
+    if (body->stream_order) return;
+    world_t* w = body->world;
+    body->stream_order = (int*)malloc((size_t)w->tile_count * sizeof(int));
+    dvec3_t r = dvec3_make((double)ref.x, (double)ref.y, (double)ref.z);
+    double rl = dvec3_length(r);
+    STREAM_REF_DIR = (rl > 0.0) ? dvec3_scale(r, 1.0 / rl)
                                 : dvec3_make(1, 0, 0);
-    /* Snapshot tile centres for the comparator — qsort doesn't pass a
-     * context pointer in C99. */
     STREAM_TILE_CENTERS = (dvec3_t*)malloc((size_t)w->tile_count * sizeof(dvec3_t));
     for (int i = 0; i < w->tile_count; ++i) {
         const goldberg_tile_t* t = goldberg_tile(w->grid, i);
         STREAM_TILE_CENTERS[i] = t->center;
-        R.stream_order[i] = i;
+        body->stream_order[i] = i;
     }
-    qsort(R.stream_order, (size_t)w->tile_count, sizeof(int), stream_compare);
+    qsort(body->stream_order, (size_t)w->tile_count, sizeof(int), stream_compare);
     free(STREAM_TILE_CENTERS); STREAM_TILE_CENTERS = NULL;
 }
 
-/* Allocate per-chunk CPU/GPU buffers + classify every tile into its
- * chunk. Idempotent — no-op once built for this world. */
-static void ensure_chunks(world_t* w) {
-    if (R.tile_to_chunk && R.tile_to_chunk_count == w->tile_count) return;
-    if (!CHUNK_ANCHORS_BUILT) build_chunk_anchors();
-
-    free(R.tile_to_chunk);
-    R.tile_to_chunk = (int*)malloc((size_t)w->tile_count * sizeof(int));
-    R.tile_to_chunk_count = w->tile_count;
-    for (int i = 0; i < w->tile_count; ++i) {
-        const goldberg_tile_t* t = goldberg_tile(w->grid, i);
-        R.tile_to_chunk[i] = classify_tile(t->center);
-    }
-
-    char label[32];
-    for (int i = 0; i < CHUNK_COUNT; ++i) {
-        mesh_chunk_t* c = &R.chunks[i];
-        if (c->mesh.vertices) continue;   /* already initialised */
-        hex_mesh_init(&c->mesh);
-        hex_mesh_init(&c->water_mesh);
-        c->mesh.vertex_cap = MAX_VERTICES;
-        c->mesh.vertices = (hex_vertex_t*)malloc(c->mesh.vertex_cap * sizeof(hex_vertex_t));
-        c->mesh.index_cap = MAX_INDICES;
-        c->mesh.indices = (uint32_t*)malloc(c->mesh.index_cap * sizeof(uint32_t));
-        c->water_mesh.vertex_cap = WATER_VERTICES;
-        c->water_mesh.vertices = (hex_vertex_t*)malloc(c->water_mesh.vertex_cap * sizeof(hex_vertex_t));
-        c->water_mesh.index_cap = WATER_INDICES;
-        c->water_mesh.indices = (uint32_t*)malloc(c->water_mesh.index_cap * sizeof(uint32_t));
-
-        snprintf(label, sizeof(label), "world-vbuf-%d", i);
-        c->vbuf = sg_make_buffer(&(sg_buffer_desc){
-            .size = (size_t)MAX_VERTICES * sizeof(hex_vertex_t),
-            .usage.stream_update = true,
-            .label = label,
-        });
-        snprintf(label, sizeof(label), "world-ibuf-%d", i);
-        c->ibuf = sg_make_buffer(&(sg_buffer_desc){
-            .size = (size_t)MAX_INDICES * sizeof(uint32_t),
-            .usage.stream_update = true,
-            .usage.index_buffer  = true,
-            .label = label,
-        });
-        snprintf(label, sizeof(label), "water-vbuf-%d", i);
-        c->water_vbuf = sg_make_buffer(&(sg_buffer_desc){
-            .size = (size_t)WATER_VERTICES * sizeof(hex_vertex_t),
-            .usage.stream_update = true,
-            .label = label,
-        });
-        snprintf(label, sizeof(label), "water-ibuf-%d", i);
-        c->water_ibuf = sg_make_buffer(&(sg_buffer_desc){
-            .size = (size_t)WATER_INDICES * sizeof(uint32_t),
-            .usage.stream_update = true,
-            .usage.index_buffer  = true,
-            .label = label,
-        });
-    }
+/* Recreate one of a chunk's GPU buffers at a larger size. Sokol stream-
+ * update buffers are immutable in size, so we destroy and rebuild —
+ * each grow doubles capacity until it fits, so the cost amortises to
+ * O(1) per uploaded vertex. */
+static sg_buffer regrow_buffer(sg_buffer old, int* capacity, int needed,
+                               size_t element_size, bool index_buf,
+                               const char* label) {
+    int new_cap = *capacity;
+    while (new_cap < needed) new_cap *= 2;
+    if (old.id) sg_destroy_buffer(old);
+    sg_buffer b = sg_make_buffer(&(sg_buffer_desc){
+        .size = (size_t)new_cap * element_size,
+        .usage.stream_update = true,
+        .usage.index_buffer  = index_buf,
+        .label = label,
+    });
+    *capacity = new_cap;
+    return b;
 }
 
-static void chunk_rebuild_full(world_t* w, int chunk_idx) {
-    mesh_chunk_t* c = &R.chunks[chunk_idx];
+static void body_chunk_rebuild_full(chunked_body_t* body, int chunk_idx) {
+    world_t* w = body->world;
+    mesh_chunk_t* c = &body->chunks[chunk_idx];
     hex_mesh_reset(&c->mesh);
     hex_mesh_reset(&c->water_mesh);
     for (int i = 0; i < w->tile_count; ++i) {
-        if (R.tile_to_chunk[i] != chunk_idx) continue;
+        if (body->tile_to_chunk[i] != chunk_idx) continue;
         if (i >= w->gen_cursor) continue;        /* not yet generated */
         hex_mesh_build_tile(&c->mesh, w, i);
         hex_mesh_build_water(&c->water_mesh, w, i);
@@ -1476,7 +1518,60 @@ static void chunk_rebuild_full(world_t* w, int chunk_idx) {
     }
 }
 
+/* One-shot mesh of every tile in a body into its chunks. Used for
+ * non-active bodies at register time — they're already fully gen'd
+ * in main_web.c's init loop, so we can mesh them in one pass without
+ * a streaming budget. */
+static void body_full_mesh(chunked_body_t* body) {
+    world_t* w = body->world;
+    for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
+        mesh_chunk_t* c = &body->chunks[ci];
+        hex_mesh_reset(&c->mesh);
+        hex_mesh_reset(&c->water_mesh);
+    }
+    for (int i = 0; i < w->tile_count; ++i) {
+        if (i >= w->gen_cursor) continue;
+        int ci = body->tile_to_chunk[i];
+        mesh_chunk_t* c = &body->chunks[ci];
+        hex_mesh_build_tile(&c->mesh, w, i);
+        if (body->has_water) hex_mesh_build_water(&c->water_mesh, w, i);
+        world_tile_clear_dirty(w, i);
+    }
+    body->streamed_complete = true;
+    body->mesh_cursor = w->tile_count;
+}
+
 static void chunk_upload(mesh_chunk_t* c) {
+    /* Grow GPU buffers if the CPU mesh outgrew them. Without this the
+     * sg_update_buffer calls below silently fail when size > buffer
+     * capacity, and the chunk renders garbage / nothing — which was
+     * the "terrain under my feet doesn't render" bug for chunks
+     * covering mountain regions. */
+    if ((int)c->mesh.vertex_count > c->vbuf_capacity) {
+        c->vbuf = regrow_buffer(c->vbuf, &c->vbuf_capacity,
+                                (int)c->mesh.vertex_count,
+                                sizeof(hex_vertex_t), false,
+                                "world-vbuf-grow");
+    }
+    if ((int)c->mesh.index_count > c->ibuf_capacity) {
+        c->ibuf = regrow_buffer(c->ibuf, &c->ibuf_capacity,
+                                (int)c->mesh.index_count,
+                                sizeof(uint32_t), true,
+                                "world-ibuf-grow");
+    }
+    if ((int)c->water_mesh.vertex_count > c->water_vbuf_capacity) {
+        c->water_vbuf = regrow_buffer(c->water_vbuf, &c->water_vbuf_capacity,
+                                      (int)c->water_mesh.vertex_count,
+                                      sizeof(hex_vertex_t), false,
+                                      "water-vbuf-grow");
+    }
+    if ((int)c->water_mesh.index_count > c->water_ibuf_capacity) {
+        c->water_ibuf = regrow_buffer(c->water_ibuf, &c->water_ibuf_capacity,
+                                      (int)c->water_mesh.index_count,
+                                      sizeof(uint32_t), true,
+                                      "water-ibuf-grow");
+    }
+
     if (c->mesh.vertex_count > 0) {
         sg_update_buffer(c->vbuf, &(sg_range){
             .ptr  = c->mesh.vertices,
@@ -1501,76 +1596,62 @@ static void chunk_upload(mesh_chunk_t* c) {
     c->last_uploaded_water_idx_count = (int)c->water_mesh.index_count;
 }
 
-void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world,
-                         vec3_t camera_world, float dt_seconds) {
-    ensure_chunks(world);
-    build_stream_order(world, camera_world);
-    R.time_seconds += dt_seconds;
+/* Stream + edit handling for the active body. Up to MESH_BUDGET_PER_FRAME
+ * tiles are appended to their chunk in proximity-sorted order; any
+ * chunk holding a tile dirtied by world_set is fully rebuilt. Returns
+ * which chunks need re-uploading via the `out_grew` array. */
+static void body_stream_step(chunked_body_t* body, vec3_t ref_dir,
+                             bool out_grew[CHUNK_COUNT]) {
+    if (!body->stream_order) body_build_stream_order(body, ref_dir);
 
-    /* Stream mesh: each frame, mesh some newly-generated tiles into
-     * their owning chunk in player-proximity order so the area under
-     * the player's feet pops in first. Capped per frame so a single
-     * frame doesn't spend too long in the mesher. Only tiles below
-     * gen_cursor have block data. Builds both opaque terrain and
-     * the water cap. */
+    world_t* world = body->world;
     int budget = MESH_BUDGET_PER_FRAME;
-    bool any_chunk_grew[CHUNK_COUNT] = { 0 };
-    while (R.mesh_cursor < world->tile_count && budget > 0) {
-        int idx = R.stream_order[R.mesh_cursor];
-        if (idx >= world->gen_cursor) break;     /* not yet generated */
-        int ci  = R.tile_to_chunk[idx];
-        mesh_chunk_t* c = &R.chunks[ci];
+    while (body->mesh_cursor < world->tile_count && budget > 0) {
+        int idx = body->stream_order[body->mesh_cursor];
+        if (idx >= world->gen_cursor) break;
+        int ci  = body->tile_to_chunk[idx];
+        mesh_chunk_t* c = &body->chunks[ci];
         hex_mesh_build_tile(&c->mesh, world, idx);
-        hex_mesh_build_water(&c->water_mesh, world, idx);
-        /* Clear the dirty bit set by gen_tile() so the post-stream
-         * rebuild loop only fires on real player edits, not every tile
-         * that gen marked as needing first-time meshing. */
+        if (body->has_water) hex_mesh_build_water(&c->water_mesh, world, idx);
         world_tile_clear_dirty(world, idx);
-        any_chunk_grew[ci] = true;
-        R.mesh_cursor++;
+        out_grew[ci] = true;
+        body->mesh_cursor++;
         budget--;
         R.tiles_remeshed++;
     }
+    if (body->mesh_cursor >= world->tile_count) body->streamed_complete = true;
 
-    /* Edits: any tile dirtied since last frame marks its chunk for
-     * full rebuild. world_set already dirties the edited tile and its
-     * neighbours so seam faces are fixed up; with chunked meshing
-     * we additionally have to dirty the chunks of any cross-chunk
-     * neighbours that touch the edit. */
-    if (R.mesh_cursor >= world->tile_count) {
+    /* Edit handling: any post-stream dirty bit triggers a full rebuild
+     * of that tile's chunk. world_set already dirties the edited tile
+     * and its hex neighbours so cross-chunk seams fix up correctly. */
+    if (body->streamed_complete) {
         for (int i = 0; i < world->tile_count; ++i) {
             if (!world_tile_dirty(world, i)) continue;
-            R.chunks[R.tile_to_chunk[i]].dirty = true;
+            body->chunks[body->tile_to_chunk[i]].dirty = true;
             world_tile_clear_dirty(world, i);
         }
         for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
-            if (!R.chunks[ci].dirty) continue;
-            chunk_rebuild_full(world, ci);
-            R.chunks[ci].dirty = false;
-            any_chunk_grew[ci] = true;
+            if (!body->chunks[ci].dirty) continue;
+            body_chunk_rebuild_full(body, ci);
+            body->chunks[ci].dirty = false;
+            out_grew[ci] = true;
         }
     }
+}
 
-    /* Upload changed chunks. While streaming, upload roughly every 16
-     * tiles per chunk to spread GPU traffic; on edits, upload the
-     * affected chunks immediately. */
+/* Draw a body's chunked terrain at its world position with the
+ * supplied vp. Caller has already applied pip_hex + the sun/ambient
+ * uniform block; this just sets the per-body model matrix uniform
+ * and issues the chunk draws. */
+static void body_draw_chunks(chunked_body_t* body, mat4_t vp) {
+    /* Translate to body origin. For Tenebris this is identity (body
+     * sits at world origin); for the moons it shifts the chunked
+     * mesh out to its pos_x/y/z. */
+    mat4_t model = mat4_translate(body->world_pos);
+    mat4_t mvp   = mat4_mul(vp, model);
+    sg_apply_uniforms(0, &(sg_range){ .ptr = mvp.m, .size = sizeof(mvp.m) });
     for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
-        if (any_chunk_grew[ci]) chunk_upload(&R.chunks[ci]);
-    }
-
-    /* Draw: one call per chunk. Pipeline / atlas binding stays the
-     * same across chunks so this is just N vbuf/ibuf swaps. */
-    sg_apply_pipeline(R.pip_hex);
-    mat4_t vp = mat4_mul(proj, view);
-    sg_apply_uniforms(0, &(sg_range){ .ptr = vp.m, .size = sizeof(vp.m) });
-    float light_ub[8] = {
-        R.env.sun_dir.x, R.env.sun_dir.y, R.env.sun_dir.z, 0.0f,
-        R.env.ambient.x, R.env.ambient.y, R.env.ambient.z, 0.0f,
-    };
-    sg_apply_uniforms(1, &(sg_range){ .ptr = light_ub, .size = sizeof(light_ub) });
-    R.tris = 0;
-    for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
-        mesh_chunk_t* c = &R.chunks[ci];
+        mesh_chunk_t* c = &body->chunks[ci];
         if (c->last_uploaded_index_count <= 0) continue;
         sg_apply_bindings(&(sg_bindings){
             .vertex_buffers[0] = c->vbuf,
@@ -1581,37 +1662,124 @@ void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world,
         sg_draw(0, c->last_uploaded_index_count, 1);
         R.tris += (size_t)c->last_uploaded_index_count / 3;
     }
+}
 
-    /* Water pass — blended on top of the opaque terrain. Procedural
-     * shader; no atlas binding. Same N draws. */
-    bool any_water = false;
+static void body_draw_water(chunked_body_t* body, mat4_t vp,
+                            vec3_t camera_world) {
+    if (!body->has_water) return;
+    bool any = false;
     for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
-        if (R.chunks[ci].last_uploaded_water_idx_count > 0) { any_water = true; break; }
+        if (body->chunks[ci].last_uploaded_water_idx_count > 0) { any = true; break; }
     }
-    if (any_water) {
-        sg_apply_pipeline(R.pip_water);
-        float ub_v[20];
-        memcpy(ub_v, vp.m, sizeof(vp.m));
-        ub_v[16] = R.time_seconds;
-        ub_v[17] = 0.0f; ub_v[18] = 0.0f; ub_v[19] = 0.0f;
-        sg_apply_uniforms(0, &(sg_range){ .ptr = ub_v, .size = sizeof(ub_v) });
+    if (!any) return;
 
-        float ub_f[12] = { 0 };
-        ub_f[0] = camera_world.x;  ub_f[1] = camera_world.y;  ub_f[2] = camera_world.z;
-        ub_f[4] = R.env.sun_dir.x; ub_f[5] = R.env.sun_dir.y; ub_f[6] = R.env.sun_dir.z;
-        ub_f[8] = R.time_seconds;
-        sg_apply_uniforms(1, &(sg_range){ .ptr = ub_f, .size = sizeof(ub_f) });
+    mat4_t model = mat4_translate(body->world_pos);
+    mat4_t mvp   = mat4_mul(vp, model);
 
+    float ub_v[20];
+    memcpy(ub_v, mvp.m, sizeof(mvp.m));
+    ub_v[16] = R.time_seconds;
+    ub_v[17] = 0.0f; ub_v[18] = 0.0f; ub_v[19] = 0.0f;
+    sg_apply_uniforms(0, &(sg_range){ .ptr = ub_v, .size = sizeof(ub_v) });
+
+    float ub_f[12] = { 0 };
+    ub_f[0] = camera_world.x;  ub_f[1] = camera_world.y;  ub_f[2] = camera_world.z;
+    ub_f[4] = R.env.sun_dir.x; ub_f[5] = R.env.sun_dir.y; ub_f[6] = R.env.sun_dir.z;
+    ub_f[8] = R.time_seconds;
+    sg_apply_uniforms(1, &(sg_range){ .ptr = ub_f, .size = sizeof(ub_f) });
+
+    for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
+        mesh_chunk_t* c = &body->chunks[ci];
+        if (c->last_uploaded_water_idx_count <= 0) continue;
+        sg_apply_bindings(&(sg_bindings){
+            .vertex_buffers[0] = c->water_vbuf,
+            .index_buffer      = c->water_ibuf,
+        });
+        sg_draw(0, c->last_uploaded_water_idx_count, 1);
+        R.tris += (size_t)c->last_uploaded_water_idx_count / 3;
+    }
+}
+
+void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world,
+                         vec3_t camera_world, float dt_seconds) {
+    R.time_seconds += dt_seconds;
+    R.tris = 0;
+
+    /* Auto-discover the active body if main_web hasn't pre-registered
+     * it: register the world it's calling us with, and mark active. */
+    bool found = false;
+    for (int i = 0; i < R.body_count; ++i) {
+        if (R.bodies[i].world == world) { found = true; break; }
+    }
+    if (!found) {
+        renderer_register_world(world);
+    }
+    /* The body whose world matches the world arg is the one streaming/
+     * editing. If it's not the current active body, switch. */
+    int target_active = -1;
+    for (int i = 0; i < R.body_count; ++i) {
+        if (R.bodies[i].world == world) { target_active = i; break; }
+    }
+    if (target_active >= 0 && target_active != R.active_body_idx) {
+        if (R.active_body_idx >= 0) R.bodies[R.active_body_idx].is_active = false;
+        R.active_body_idx = target_active;
+        R.bodies[target_active].is_active = true;
+    }
+
+    /* Stream + edit-handle the active body. */
+    bool grew[CHUNK_COUNT] = { 0 };
+    if (R.active_body_idx >= 0) {
+        chunked_body_t* active = &R.bodies[R.active_body_idx];
+        /* Reference direction for stream-order = camera relative to the
+         * active body's centre (so it works for non-origin bodies too). */
+        vec3_t cam_local = vec3_sub(camera_world, active->world_pos);
+        body_stream_step(active, cam_local, grew);
         for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
-            mesh_chunk_t* c = &R.chunks[ci];
-            if (c->last_uploaded_water_idx_count <= 0) continue;
-            sg_apply_bindings(&(sg_bindings){
-                .vertex_buffers[0] = c->water_vbuf,
-                .index_buffer      = c->water_ibuf,
-            });
-            sg_draw(0, c->last_uploaded_water_idx_count, 1);
-            R.tris += (size_t)c->last_uploaded_water_idx_count / 3;
+            if (grew[ci]) chunk_upload(&active->chunks[ci]);
         }
+    }
+
+    /* Draw all bodies' chunked terrain. The active body usually gets
+     * drawn first because its world position is at or near the camera;
+     * draw order doesn't matter for opaque depth-tested geometry. */
+    sg_apply_pipeline(R.pip_hex);
+    mat4_t vp = mat4_mul(proj, view);
+    float light_ub[8] = {
+        R.env.sun_dir.x, R.env.sun_dir.y, R.env.sun_dir.z, 0.0f,
+        R.env.ambient.x, R.env.ambient.y, R.env.ambient.z, 0.0f,
+    };
+    sg_apply_uniforms(1, &(sg_range){ .ptr = light_ub, .size = sizeof(light_ub) });
+
+    /* Frustum + LOD culling — far bodies drop to a single icosphere
+     * draw via renderer_draw_moons. Detailed (chunked) draws happen
+     * here for any body that's both visible and close enough. */
+    frustum_plane_t frustum[6];
+    extract_frustum(vp, frustum);
+    const float LOD_RATIO = 0.12f;
+
+    for (int bi = 0; bi < R.body_count; ++bi) {
+        chunked_body_t* body = &R.bodies[bi];
+        if (!sphere_visible(frustum, body->world_pos, body->radius_m)) continue;
+        vec3_t delta = vec3_sub(body->world_pos, camera_world);
+        float  dist  = vec3_length(delta);
+        if (dist < 1.0f) dist = 1.0f;
+        const bool distant = (body->radius_m / dist) < LOD_RATIO;
+        if (distant) continue;     /* drawn as icosphere by renderer_draw_moons */
+        body_draw_chunks(body, vp);
+    }
+
+    /* Water pass — blended on top of the opaque terrain. */
+    sg_apply_pipeline(R.pip_water);
+    for (int bi = 0; bi < R.body_count; ++bi) {
+        chunked_body_t* body = &R.bodies[bi];
+        if (!body->has_water) continue;
+        if (!sphere_visible(frustum, body->world_pos, body->radius_m * 1.05f)) continue;
+        vec3_t delta = vec3_sub(body->world_pos, camera_world);
+        float  dist  = vec3_length(delta);
+        if (dist < 1.0f) dist = 1.0f;
+        const bool distant = (body->radius_m / dist) < LOD_RATIO;
+        if (distant) continue;
+        body_draw_water(body, vp, camera_world);
     }
 }
 
@@ -1621,10 +1789,16 @@ void renderer_end_frame(void) {
 }
 
 size_t renderer_triangles_drawn_this_frame(void) { return R.tris; }
-size_t renderer_tiles_drawn_this_frame(void)     { return R.tris > 0 ? (size_t)R.mesh_cursor : 0; }
+size_t renderer_tiles_drawn_this_frame(void)     {
+    if (R.active_body_idx < 0) return 0;
+    return (size_t)R.bodies[R.active_body_idx].mesh_cursor;
+}
 size_t renderer_tiles_remeshed_this_frame(void)  { return R.tiles_remeshed; }
 
 void renderer_chunk_count(int* out_chunks, int* out_tiles_meshed) {
     if (out_chunks) *out_chunks = CHUNK_COUNT;
-    if (out_tiles_meshed) *out_tiles_meshed = R.mesh_cursor;
+    if (out_tiles_meshed) {
+        *out_tiles_meshed = (R.active_body_idx >= 0)
+            ? R.bodies[R.active_body_idx].mesh_cursor : 0;
+    }
 }
