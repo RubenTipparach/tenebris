@@ -105,6 +105,13 @@ typedef struct {
     bool         streamed_complete;
     bool         is_active;              /* receives streaming + edit handling */
     bool         has_water;              /* draw the water cap pass */
+    /* Lazy-load state. Inactive bodies skip GPU buffer allocation +
+     * meshing at register time and only do the work when the player
+     * gets within LOD-detail range. The icosphere distant LOD covers
+     * everything farther away, so the moon belt doesn't burn buffer
+     * slots until you're actually flying near a body. */
+    bool         chunks_allocated;       /* GPU buffers exist        */
+    bool         meshed;                 /* chunks have content + uploaded */
     vec3_t       world_pos;              /* model-translate origin (body centre) */
     float        radius_m;
     vec3_t       distant_color;          /* fallback for far-LOD icosphere */
@@ -1188,45 +1195,55 @@ void renderer_register_world(world_t* w) {
     body->distant_color  = body_distant_color(w->body);
     body->mesh_cursor    = 0;
 
-    body_alloc_chunks(body);
+    if (R.active_body_idx < 0) {
+        /* First-registered body is the active one — full detail at
+         * boot, since the player spawns on it. */
+        R.active_body_idx = slot;
+        body->is_active   = true;
+        body_alloc_chunks(body);
+        body_full_mesh(body);
+        for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
+            chunk_upload(&body->chunks[ci]);
+        }
+        body->chunks_allocated = true;
+        body->meshed           = true;
+        printf("[renderer] register %s (active): %d tiles, full mesh now\n",
+               w->body->name, w->tile_count);
+    } else {
+        /* Inactive — deferred. The body draws as a flat-shaded
+         * icosphere via renderer_draw_moons until the player flies
+         * close enough that the angular size crosses the LOD cutoff;
+         * at that moment renderer_draw_world demand-loads the chunked
+         * mesh. Saves ~50 MB and ~128 buffer slots per moon we
+         * haven't visited. */
+        body->is_active        = false;
+        body->chunks_allocated = false;
+        body->meshed           = false;
+        printf("[renderer] register %s (deferred): %d tiles, meshes on approach\n",
+               w->body->name, w->tile_count);
+    }
+    fflush(stdout);
+}
 
-    /* Brute-force full mesh at register time — for every body, active
-     * or not. The user's priority is "EVERYTHING on the planet that
-     * we're on to be rendered"; per-frame streaming was hiding bugs
-     * where some chunks never made it through the budget pipeline.
-     * Worst case (Tenebris, 40 K tiles) this hitches ~700 ms at boot
-     * but it's deterministic — every chunk is meshed, every chunk is
-     * uploaded, every chunk is rendered. The first registered body
-     * still becomes the active one for edit handling. */
+/* Demand-load the chunked terrain for a body — called the first frame
+ * a previously-distant body's angular size exceeds the LOD cutoff.
+ * Allocates GPU buffers, runs body_full_mesh, uploads every chunk.
+ * Cost is proportional to the body's tile_count: ~50 ms for a small
+ * moon, ~700 ms for a sister-planet-sized body. After this returns
+ * the body renders the same way the active body does. */
+static void body_load_detail(chunked_body_t* body) {
+    if (body->meshed) return;
+    if (!body->chunks_allocated) {
+        body_alloc_chunks(body);
+        body->chunks_allocated = true;
+    }
     body_full_mesh(body);
     for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
         chunk_upload(&body->chunks[ci]);
     }
-
-    if (R.active_body_idx < 0) {
-        R.active_body_idx = slot;
-        body->is_active   = true;
-    } else {
-        body->is_active = false;
-    }
-
-    /* Diagnostic dump of chunk fill so the browser console shows that
-     * every chunk landed something. The renderer will also flag any
-     * "missing" chunks per-frame from now on. */
-    int min_tc = INT_MAX, max_tc = 0, total_tc = 0;
-    int tile_counts[CHUNK_COUNT] = { 0 };
-    for (int i = 0; i < w->tile_count; ++i) tile_counts[body->tile_to_chunk[i]]++;
-    int empty_chunks = 0;
-    for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
-        if (tile_counts[ci] == 0) empty_chunks++;
-        if (tile_counts[ci] < min_tc) min_tc = tile_counts[ci];
-        if (tile_counts[ci] > max_tc) max_tc = tile_counts[ci];
-        total_tc += tile_counts[ci];
-    }
-    printf("[renderer] register %s: %d tiles → %d chunks "
-           "(min=%d max=%d empty=%d), active=%d\n",
-           w->body->name, total_tc, CHUNK_COUNT,
-           min_tc, max_tc, empty_chunks, body->is_active);
+    body->meshed = true;
+    printf("[renderer] loaded detail for %s (%d tiles)\n",
+           body->world->body->name, body->world->tile_count);
     fflush(stdout);
 }
 
@@ -1756,8 +1773,14 @@ void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world,
         vec3_t delta = vec3_sub(body->world_pos, camera_world);
         float  dist  = vec3_length(delta);
         if (dist < 1.0f) dist = 1.0f;
+        /* Demand-load detail when the body crosses into LOD range —
+         * a tiny hysteresis (LOD_RATIO * 0.9) so we mesh slightly
+         * before the icosphere→chunks visual swap, hiding the buffer
+         * upload cost behind the LOD transition. Until then, the
+         * body draws as the distant icosphere via renderer_draw_moons. */
         const bool distant = (body->radius_m / dist) < LOD_RATIO;
-        if (distant) continue;     /* drawn as icosphere by renderer_draw_moons */
+        if (distant) continue;
+        if (!body->meshed) body_load_detail(body);
         body_draw_chunks(body, vp);
     }
 
