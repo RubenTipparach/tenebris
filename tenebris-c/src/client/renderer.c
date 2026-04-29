@@ -13,6 +13,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <stdio.h>
+#include <limits.h>
 
 /* ----------------------------------------------------------------------- */
 /* Goldberg @ subs=6 = 40,962 tiles. Per-tile draw calls would cost
@@ -99,8 +101,7 @@ typedef struct {
     world_t*     world;
     mesh_chunk_t chunks[CHUNK_COUNT];
     int*         tile_to_chunk;          /* tile_idx -> chunk index */
-    int*         stream_order;           /* for active bodies only  */
-    int          mesh_cursor;            /* index into stream_order */
+    int          mesh_cursor;            /* tiles meshed so far     */
     bool         streamed_complete;
     bool         is_active;              /* receives streaming + edit handling */
     bool         has_water;              /* draw the water cap pass */
@@ -152,7 +153,6 @@ static struct {
 static void body_alloc_chunks(chunked_body_t* body);
 static void body_full_mesh(chunked_body_t* body);
 static void body_chunk_rebuild_full(chunked_body_t* body, int chunk_idx);
-static void body_build_stream_order(chunked_body_t* body, vec3_t ref);
 static void chunk_upload(mesh_chunk_t* c);
 
 /* ----------------------------------------------------------------------- */
@@ -1031,7 +1031,6 @@ void renderer_shutdown(void) {
             if (c->water_ibuf.id)  sg_destroy_buffer(c->water_ibuf);
         }
         free(body->tile_to_chunk); body->tile_to_chunk = NULL;
-        free(body->stream_order);  body->stream_order  = NULL;
     }
     R.body_count = 0;
     R.active_body_idx = -1;
@@ -1191,22 +1190,44 @@ void renderer_register_world(world_t* w) {
 
     body_alloc_chunks(body);
 
-    /* First registered body is active by default — streaming, dirty-
-     * rebuild path. Anything registered after gets fully meshed now
-     * (one-shot) since we can't predict when/if the player will visit. */
+    /* Brute-force full mesh at register time — for every body, active
+     * or not. The user's priority is "EVERYTHING on the planet that
+     * we're on to be rendered"; per-frame streaming was hiding bugs
+     * where some chunks never made it through the budget pipeline.
+     * Worst case (Tenebris, 40 K tiles) this hitches ~700 ms at boot
+     * but it's deterministic — every chunk is meshed, every chunk is
+     * uploaded, every chunk is rendered. The first registered body
+     * still becomes the active one for edit handling. */
+    body_full_mesh(body);
+    for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
+        chunk_upload(&body->chunks[ci]);
+    }
+
     if (R.active_body_idx < 0) {
         R.active_body_idx = slot;
         body->is_active   = true;
-        /* Stream order is built lazily on the first draw call once we
-         * know where the camera spawned. */
     } else {
         body->is_active = false;
-        body_full_mesh(body);
-        /* Upload all chunks of this newly-meshed body once. */
-        for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
-            chunk_upload(&body->chunks[ci]);
-        }
     }
+
+    /* Diagnostic dump of chunk fill so the browser console shows that
+     * every chunk landed something. The renderer will also flag any
+     * "missing" chunks per-frame from now on. */
+    int min_tc = INT_MAX, max_tc = 0, total_tc = 0;
+    int tile_counts[CHUNK_COUNT] = { 0 };
+    for (int i = 0; i < w->tile_count; ++i) tile_counts[body->tile_to_chunk[i]]++;
+    int empty_chunks = 0;
+    for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
+        if (tile_counts[ci] == 0) empty_chunks++;
+        if (tile_counts[ci] < min_tc) min_tc = tile_counts[ci];
+        if (tile_counts[ci] > max_tc) max_tc = tile_counts[ci];
+        total_tc += tile_counts[ci];
+    }
+    printf("[renderer] register %s: %d tiles → %d chunks "
+           "(min=%d max=%d empty=%d), active=%d\n",
+           w->body->name, total_tc, CHUNK_COUNT,
+           min_tc, max_tc, empty_chunks, body->is_active);
+    fflush(stdout);
 }
 
 /* Backwards-compat shim — main_web.c still calls renderer_register_moon
@@ -1383,24 +1404,6 @@ static int classify_tile(dvec3_t center) {
     return best_i;
 }
 
-/* Build a streaming order that visits tiles in descending dot product
- * with `player_dir` — i.e. nearest-to-camera first. Goldberg tile
- * indices are arbitrary (vertex order from the icosahedron subdivision)
- * so without this sort the chunk under the player loads at random
- * intervals during the streaming pass. With it, the immediate area is
- * meshed in the first few frames. */
-static dvec3_t  STREAM_REF_DIR;
-static dvec3_t* STREAM_TILE_CENTERS = NULL;
-static int stream_compare(const void* a, const void* b) {
-    int ia = *(const int*)a;
-    int ib = *(const int*)b;
-    double da = dvec3_dot(STREAM_TILE_CENTERS[ia], STREAM_REF_DIR);
-    double db = dvec3_dot(STREAM_TILE_CENTERS[ib], STREAM_REF_DIR);
-    if (da > db) return -1;
-    if (da < db) return 1;
-    return 0;
-}
-
 /* Allocate per-chunk CPU/GPU buffers for a body + classify every tile
  * into its chunk. Idempotent — repeated calls no-op. */
 static void body_alloc_chunks(chunked_body_t* body) {
@@ -1460,28 +1463,6 @@ static void body_alloc_chunks(chunked_body_t* body) {
             .label = label,
         });
     }
-}
-
-/* Sort body->stream_order by descending dot(tile.center, ref_dir).
- * Once built, the order is fixed for the lifetime of the body — even
- * if the player wanders, the loading-priority direction was correct
- * at the moment streaming began, which is when it matters. */
-static void body_build_stream_order(chunked_body_t* body, vec3_t ref) {
-    if (body->stream_order) return;
-    world_t* w = body->world;
-    body->stream_order = (int*)malloc((size_t)w->tile_count * sizeof(int));
-    dvec3_t r = dvec3_make((double)ref.x, (double)ref.y, (double)ref.z);
-    double rl = dvec3_length(r);
-    STREAM_REF_DIR = (rl > 0.0) ? dvec3_scale(r, 1.0 / rl)
-                                : dvec3_make(1, 0, 0);
-    STREAM_TILE_CENTERS = (dvec3_t*)malloc((size_t)w->tile_count * sizeof(dvec3_t));
-    for (int i = 0; i < w->tile_count; ++i) {
-        const goldberg_tile_t* t = goldberg_tile(w->grid, i);
-        STREAM_TILE_CENTERS[i] = t->center;
-        body->stream_order[i] = i;
-    }
-    qsort(body->stream_order, (size_t)w->tile_count, sizeof(int), stream_compare);
-    free(STREAM_TILE_CENTERS); STREAM_TILE_CENTERS = NULL;
 }
 
 /* Recreate one of a chunk's GPU buffers at a larger size. Sokol stream-
@@ -1596,49 +1577,6 @@ static void chunk_upload(mesh_chunk_t* c) {
     c->last_uploaded_water_idx_count = (int)c->water_mesh.index_count;
 }
 
-/* Stream + edit handling for the active body. Up to MESH_BUDGET_PER_FRAME
- * tiles are appended to their chunk in proximity-sorted order; any
- * chunk holding a tile dirtied by world_set is fully rebuilt. Returns
- * which chunks need re-uploading via the `out_grew` array. */
-static void body_stream_step(chunked_body_t* body, vec3_t ref_dir,
-                             bool out_grew[CHUNK_COUNT]) {
-    if (!body->stream_order) body_build_stream_order(body, ref_dir);
-
-    world_t* world = body->world;
-    int budget = MESH_BUDGET_PER_FRAME;
-    while (body->mesh_cursor < world->tile_count && budget > 0) {
-        int idx = body->stream_order[body->mesh_cursor];
-        if (idx >= world->gen_cursor) break;
-        int ci  = body->tile_to_chunk[idx];
-        mesh_chunk_t* c = &body->chunks[ci];
-        hex_mesh_build_tile(&c->mesh, world, idx);
-        if (body->has_water) hex_mesh_build_water(&c->water_mesh, world, idx);
-        world_tile_clear_dirty(world, idx);
-        out_grew[ci] = true;
-        body->mesh_cursor++;
-        budget--;
-        R.tiles_remeshed++;
-    }
-    if (body->mesh_cursor >= world->tile_count) body->streamed_complete = true;
-
-    /* Edit handling: any post-stream dirty bit triggers a full rebuild
-     * of that tile's chunk. world_set already dirties the edited tile
-     * and its hex neighbours so cross-chunk seams fix up correctly. */
-    if (body->streamed_complete) {
-        for (int i = 0; i < world->tile_count; ++i) {
-            if (!world_tile_dirty(world, i)) continue;
-            body->chunks[body->tile_to_chunk[i]].dirty = true;
-            world_tile_clear_dirty(world, i);
-        }
-        for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
-            if (!body->chunks[ci].dirty) continue;
-            body_chunk_rebuild_full(body, ci);
-            body->chunks[ci].dirty = false;
-            out_grew[ci] = true;
-        }
-    }
-}
-
 /* Draw a body's chunked terrain at its world position with the
  * supplied vp. Caller has already applied pip_hex + the sun/ambient
  * uniform block; this just sets the per-body model matrix uniform
@@ -1714,8 +1652,8 @@ void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world,
     if (!found) {
         renderer_register_world(world);
     }
-    /* The body whose world matches the world arg is the one streaming/
-     * editing. If it's not the current active body, switch. */
+    /* The body whose world matches the world arg is the one editing.
+     * If it's not the current active body, switch. */
     int target_active = -1;
     for (int i = 0; i < R.body_count; ++i) {
         if (R.bodies[i].world == world) { target_active = i; break; }
@@ -1726,17 +1664,72 @@ void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world,
         R.bodies[target_active].is_active = true;
     }
 
-    /* Stream + edit-handle the active body. */
-    bool grew[CHUNK_COUNT] = { 0 };
-    if (R.active_body_idx >= 0) {
-        chunked_body_t* active = &R.bodies[R.active_body_idx];
-        /* Reference direction for stream-order = camera relative to the
-         * active body's centre (so it works for non-origin bodies too). */
-        vec3_t cam_local = vec3_sub(camera_world, active->world_pos);
-        body_stream_step(active, cam_local, grew);
-        for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
-            if (grew[ci]) chunk_upload(&active->chunks[ci]);
+    /* Edit handling — every body, not just active. world_set on any
+     * world (Tenebris or a moon under teleport) marks that body's
+     * tiles dirty; we rebuild and re-upload the affected chunks. */
+    bool any_grew = false;
+    for (int bi = 0; bi < R.body_count; ++bi) {
+        chunked_body_t* body = &R.bodies[bi];
+        bool body_grew[CHUNK_COUNT] = { 0 };
+        for (int i = 0; i < body->world->tile_count; ++i) {
+            if (!world_tile_dirty(body->world, i)) continue;
+            body->chunks[body->tile_to_chunk[i]].dirty = true;
+            world_tile_clear_dirty(body->world, i);
         }
+        for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
+            if (!body->chunks[ci].dirty) continue;
+            body_chunk_rebuild_full(body, ci);
+            body->chunks[ci].dirty = false;
+            body_grew[ci] = true;
+            any_grew = true;
+        }
+        for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
+            if (body_grew[ci]) chunk_upload(&body->chunks[ci]);
+        }
+    }
+    (void)any_grew;
+
+    /* Periodic diagnostic — every ~2 s flag any chunks on the active
+     * body that have last_uploaded_index_count == 0, with their
+     * distance from the player. Helps narrow down "this chunk under
+     * me isn't loading" reports. */
+    static double s_log_accum = 0.0;
+    s_log_accum += (double)dt_seconds;
+    if (s_log_accum > 2.0 && R.active_body_idx >= 0) {
+        s_log_accum = 0.0;
+        chunked_body_t* active = &R.bodies[R.active_body_idx];
+        int missing = 0;
+        for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
+            mesh_chunk_t* c = &active->chunks[ci];
+            if (c->last_uploaded_index_count > 0) continue;
+            ++missing;
+            vec3_t anchor_local = (vec3_t){
+                (float)CHUNK_ANCHORS[ci].x * active->radius_m,
+                (float)CHUNK_ANCHORS[ci].y * active->radius_m,
+                (float)CHUNK_ANCHORS[ci].z * active->radius_m,
+            };
+            vec3_t anchor_world = vec3_add(anchor_local, active->world_pos);
+            vec3_t delta = vec3_sub(anchor_world, camera_world);
+            float dist = vec3_length(delta);
+            int tile_count = 0;
+            for (int i = 0; i < active->world->tile_count; ++i) {
+                if (active->tile_to_chunk[i] == ci) ++tile_count;
+            }
+            printf("[renderer] MISSING chunk %d on %s: %d tiles, dist=%.1fm, idx_count=%d\n",
+                   ci, active->world->body->name, tile_count, dist,
+                   c->last_uploaded_index_count);
+        }
+        if (missing == 0) {
+            /* Once-per-2s heartbeat so we can confirm the diagnostic is
+             * still running and chunks are still loaded. */
+            int total_idx = 0;
+            for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
+                total_idx += R.bodies[R.active_body_idx].chunks[ci].last_uploaded_index_count;
+            }
+            printf("[renderer] all %d chunks loaded on %s (%d total indices)\n",
+                   CHUNK_COUNT, active->world->body->name, total_idx);
+        }
+        fflush(stdout);
     }
 
     /* Draw all bodies' chunked terrain. The active body usually gets
