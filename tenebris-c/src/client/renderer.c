@@ -226,11 +226,12 @@ static const char* FS_DISTANT =
     "void main() { frag_color = vec4(v_color, 1.0); }\n";
 
 /* Emissive sun. Uniformly bright disc with a soft fresnel-ish rim
- * so the silhouette glows slightly without bloom. The skybox shader
- * also draws a sun disc in pure direction-space — when the sphere
- * body is in front of the camera, this pipeline writes depth so the
- * sphere wins; when it's behind / outside the depth range, the
- * skybox disc is the visible sun. */
+ * so the silhouette glows slightly without bloom. This is the only
+ * sun in the scene — the previous procedural sun disc / glow drawn
+ * inside the skybox shader was removed so we don't render two suns
+ * at slightly different positions / sizes. The skybox now draws only
+ * stars + atmospheric scattering; this physical sphere fills in the
+ * sun itself. */
 static const char* VS_SUN =
     "#version 300 es\n"
     "layout(location=0) in vec3 a_pos;\n"
@@ -261,38 +262,40 @@ static const char* FS_SUN =
 
 /* Atmospheric scattering skybox.
  *
- * Implements the analytical Rayleigh + Mie ray-march from Bruneton 2008
- * (Precomputed Atmospheric Scattering) and O'Neil 2005 (GPU Gems 2 ch.16).
- * For runtime cost we stay in the analytical regime and skip the
- * precomputed transmittance LUT — the inner sun loop is short enough at
- * planet-scale (< 250 m radius) to afford it per-fragment.
+ * Direct port of the sister Caelum project's atmosphere.glsl
+ * (https://github.com/RubenTipparach/Caelum/blob/master/shaders/atmosphere.glsl).
+ * The previous in-tree shader had subtle math bugs: the ray-sphere
+ * "no hit" sentinel returned vec2(1, -1), which the t-clipping logic
+ * later interpreted as a planet hit at t=1, collapsing the
+ * integration ray to almost zero length whenever the view didn't
+ * actually hit the planet. End result: bright atmosphere only when
+ * looking at terrain, dark sky everywhere else. Caelum returns
+ * vec2(-1) on miss and the whole thing is straightforward — we use
+ * its math verbatim.
  *
- * Steps for each fragment:
- *   1. Reconstruct world-space view direction from inverted VP.
- *   2. Intersect that ray with the atmosphere shell + planet sphere.
- *   3. Ray-march N samples along the segment inside the atmosphere.
- *   4. At each sample, march toward the sun to accumulate the optical
- *      depth the sunlight has travelled through, and add the local
- *      Rayleigh + Mie inscatter weighted by the combined transmittance.
- *   5. Apply the Rayleigh / Henyey-Greenstein-like Mie phase function
- *      based on cos(view, sun).
- *   6. Blend in stars + the sun disc behind the atmosphere so they
- *      fade out smoothly when scattering brightens the sky (daytime
- *      washout) and pop back in on the night side / above the
- *      atmosphere.
+ * Per-fragment work:
+ *   1. Reconstruct world-space view direction from inverse-VP.
+ *   2. Translate camera into planet-local space (planet at origin).
+ *   3. Intersect view ray with atmosphere shell + planet sphere.
+ *   4. Ray-march N samples along the in-atmosphere segment.
+ *   5. At each sample, march toward the sun to compute the
+ *      sunlight-side optical depth (with planet-shadow check).
+ *   6. Accumulate Rayleigh + Mie inscatter, weighted by combined
+ *      transmittance and phase functions.
+ *   7. Apply sunset warm-tint + horizon-glow approximations.
+ *   8. HDR → LDR via 1 - exp(-color), then composite over the
+ *      starfield backdrop.
  *
- * `u_atmo_strength` cross-fades the whole atmosphere term to zero on
- * airless bodies (moons, asteroids) so the same shader handles both. */
+ * Stars stay in this shader. The procedural sun disc + glow used to
+ * be drawn here too — it's been removed so the only sun in the
+ * scene is the physical UV sphere drawn by renderer_draw_sun. */
 static const char* VS_SKY =
     "#version 300 es\n"
     "out vec3 v_world_dir;\n"
     "uniform mat4 u_inv_vp;\n"
     "void main() {\n"
-    /* Three-vertex fullscreen triangle: (-1,-1), (+3,-1), (-1,+3). */
     "  vec2 pos = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);\n"
     "  pos = pos * 2.0 - 1.0;\n"
-    /* z = 1.0 puts us at the far plane so world geometry in front of\n"
-     * it still wins the depth test when we keep depth writes off. */
     "  gl_Position = vec4(pos, 1.0, 1.0);\n"
     "  vec4 w = u_inv_vp * vec4(pos, 1.0, 1.0);\n"
     "  v_world_dir = w.xyz / w.w;\n"
@@ -306,182 +309,182 @@ static const char* FS_SKY =
     "uniform vec3  u_sun_color;\n"
     "uniform vec3  u_planet_center;\n"
     "uniform vec3  u_camera_pos;\n"
-    "uniform vec4  u_atmo_params;\n"   /* x=planet_r, y=atmo_r, z=strength, w=unused */
+    "uniform vec4  u_atmo_params;\n"   /* x=Rg, y=Ra, z=strength, w=unused */
     "out vec4 frag_color;\n"
 
+    "#define PI 3.14159265359\n"
+    "#define NUM_SAMPLES 12\n"
+    "#define NUM_LIGHT_SAMPLES 4\n"
+
+    /* Star hash. */
     "float h31(vec3 p) {\n"
     "  p = fract(p * vec3(443.897, 441.423, 437.195));\n"
     "  p += dot(p, p.yzx + 19.19);\n"
     "  return fract((p.x + p.y) * p.z);\n"
     "}\n"
 
-    /* Ray-sphere intersect. Returns vec2(t_near, t_far); t_near<0 means\n"
-     * we're inside; t_far<0 means full miss. */
-    "vec2 ray_sphere(vec3 ro, vec3 rd, vec3 c, float r) {\n"
-    "  vec3 oc = ro - c;\n"
-    "  float b = dot(oc, rd);\n"
-    "  float k = dot(oc, oc) - r * r;\n"
-    "  float disc = b * b - k;\n"
-    "  if (disc < 0.0) return vec2(1.0, -1.0);\n"
+    /* Caelum's ray-sphere — sphere at origin, returns vec2(-1) on miss
+     * so a downstream `if (hit.x > 0.0) ...` works correctly. The
+     * previous shader's vec2(1, -1) sentinel was the source of the
+     * "atmosphere only at low elevations" bug. */
+    "vec2 raySphereIntersect(vec3 ro, vec3 rd, float radius) {\n"
+    "  float b = dot(ro, rd);\n"
+    "  float c = dot(ro, ro) - radius * radius;\n"
+    "  float disc = b * b - c;\n"
+    "  if (disc < 0.0) return vec2(-1.0);\n"
     "  float s = sqrt(disc);\n"
     "  return vec2(-b - s, -b + s);\n"
+    "}\n"
+
+    /* Caelum constants — wavelengths-inv-4 (red, green, blue) and a
+     * sun intensity that lands the tone-mapped sky in a usable range. */
+    "const vec3  WAVELENGTHS_INV4 = vec3(5.602, 9.473, 19.644);\n"
+    "const float SCALE_HEIGHT     = 0.25;\n"
+    "const float RAYLEIGH_SCALE   = 1.0;\n"
+    "const float MIE_SCALE        = 0.05;\n"
+    "const float MIE_G            = 0.76;\n"
+    "const float SUN_INTENSITY    = 30.0;\n"
+
+    "float density(float altitude) {\n"
+    "  return exp(-altitude / SCALE_HEIGHT);\n"
+    "}\n"
+
+    /* Optical depth from a sun-side sample point through the
+     * remaining atmosphere — small inner loop, normalised by\n"
+     * thickness so values stay scale-independent. */
+    "float opticalDepth(vec3 ro, vec3 rd, float rayLen, float Rg, float thickness) {\n"
+    "  float step = rayLen / float(NUM_LIGHT_SAMPLES);\n"
+    "  float ns = step / thickness;\n"
+    "  float depth = 0.0;\n"
+    "  for (int i = 0; i < NUM_LIGHT_SAMPLES; ++i) {\n"
+    "    vec3  p = ro + rd * (step * (float(i) + 0.5));\n"
+    "    float a = clamp((length(p) - Rg) / thickness, 0.0, 1.0);\n"
+    "    depth += density(a) * ns;\n"
+    "  }\n"
+    "  return depth;\n"
     "}\n"
 
     "void main() {\n"
     "  vec3 d = normalize(v_world_dir);\n"
 
-    /* Procedural stars — same hash scheme as before but kept dim
-     * inside the atmosphere so they don't show through daylight. */
+    /* Stars (kept) + space backdrop. No sun disc or sun glow here —\n"
+     * the physical sun sphere is the one drawn next pass. */
     "  vec3  c1 = floor(d * 180.0);\n"
     "  float r1 = h31(c1);\n"
     "  float star = smoothstep(0.9965, 1.0, r1);\n"
     "  vec3  c2 = floor(d * 420.0 + vec3(17.0, 53.0, 91.0));\n"
     "  float r2 = h31(c2);\n"
     "  star = max(star, smoothstep(0.9985, 1.0, r2) * 0.6);\n"
-
-    /* Sun disc + glow (rendered behind the scattering — gets washed
-     * by atmosphere transmittance the same as stars). */
-    "  vec3 sun_n = normalize(u_sun_dir);\n"
-    "  float sd = dot(d, sun_n);\n"
-    "  float disc = smoothstep(0.9996, 0.9999, sd);\n"
-    "  float glow = smoothstep(0.95, 0.9996, sd) * 0.25;\n"
-
     "  vec3 bg = vec3(0.01, 0.015, 0.035);\n"
-    "  vec3 space_col = bg + vec3(star) * 0.9\n"
-    "                  + u_sun_color * disc\n"
-    "                  + u_sun_color * glow;\n"
+    "  vec3 space_col = bg + vec3(star) * 0.9;\n"
 
-    /* Atmosphere term (skipped entirely when strength is 0). */
     "  float strength = u_atmo_params.z;\n"
     "  if (strength <= 0.001) {\n"
     "    frag_color = vec4(space_col, 1.0);\n"
     "    return;\n"
     "  }\n"
 
-    /* Caelum-style atmospheric scattering — direct port of the
-     * Tenebris-sister project Caelum's atmosphere.glsl. Two big
-     * changes vs the previous Bruneton form that was making the sky
-     * read as a thin horizon band:
-     *
-     *  1. Altitude is normalised to [0..1] across (Rg .. Ra), and the
-     *     ray-march step is also normalised by atmosphere thickness.
-     *     Result is scale-independent — same look at Tenebris's 90 m
-     *     shell as it would be at Earth's 60 km.
-     *  2. Wavelength-dependent (1/λ⁴) coefficients applied at the
-     *     end with a single sun-intensity multiplier, then HDR tone
-     *     mapped via 1 - exp(-color). Without tone mapping the
-     *     analytical scattering is hard to dial in — values either
-     *     disappear into black or saturate to white. */
     "  float Rg = u_atmo_params.x;\n"
     "  float Ra = u_atmo_params.y;\n"
     "  float thickness = max(Ra - Rg, 0.001);\n"
-    "  vec3  ro = u_camera_pos - u_planet_center;\n"
 
-    /* Ray vs atmosphere shell + planet sphere. */
-    "  vec2 atmo_t   = ray_sphere(ro, d, vec3(0.0), Ra);\n"
-    "  if (atmo_t.y < 0.0) {\n"
-    "    frag_color = vec4(space_col, 1.0);\n"
-    "    return;\n"
-    "  }\n"
-    "  vec2  planet_t = ray_sphere(ro, d, vec3(0.0), Rg);\n"
-    "  float t0 = max(0.0, atmo_t.x);\n"
-    "  float t1 = atmo_t.y;\n"
-    "  if (planet_t.x > 0.0 && planet_t.x < t1) t1 = planet_t.x;\n"
-    "  if (t1 <= t0) {\n"
+    /* Translate to planet-local space — Caelum's ray_sphere assumes
+     * the sphere sits at origin. */
+    "  vec3 ro = u_camera_pos - u_planet_center;\n"
+
+    "  vec2 atmoHit = raySphereIntersect(ro, d, Ra);\n"
+    "  if (atmoHit.y < 0.0) {\n"
     "    frag_color = vec4(space_col, 1.0);\n"
     "    return;\n"
     "  }\n"
 
-    /* Caelum constants — wavelengths-inv-4 weights the rayleigh\n"
-     * coefficient by 1/λ⁴ in (R, G, B), so blue scatters most. */
-    "  const vec3  wavelengthsInv4 = vec3(5.602, 9.473, 19.644);\n"
-    "  const float scaleHeight  = 0.25;\n"
-    "  const float rayleighScale = 1.0;\n"
-    "  const float mieScale      = 0.05;\n"
-    "  const float mieG          = 0.76;\n"
-    "  const float sunIntensity  = 30.0;\n"
-    "  const int   N_VIEW        = 12;\n"
-    "  const int   N_LIGHT       = 4;\n"
+    "  float rayStart = max(0.0, atmoHit.x);\n"
+    "  float rayEnd   = atmoHit.y;\n"
 
-    "  float rayLen   = t1 - t0;\n"
-    "  float stepSize = rayLen / float(N_VIEW);\n"
+    /* Planet occlusion — clip the ray at the surface. With Caelum's
+     * vec2(-1) miss sentinel, planetHit.x > 0 only when there's an
+     * actual hit, so this conditional is safe. */
+    "  vec2 planetHit = raySphereIntersect(ro, d, Rg);\n"
+    "  if (planetHit.x > 0.0) {\n"
+    "    rayEnd = min(rayEnd, planetHit.x);\n"
+    "  }\n"
+
+    "  if (rayStart >= rayEnd) {\n"
+    "    frag_color = vec4(space_col, 1.0);\n"
+    "    return;\n"
+    "  }\n"
+
+    "  float rayLen   = rayEnd - rayStart;\n"
+    "  float stepSize = rayLen / float(NUM_SAMPLES);\n"
     "  float normStep = stepSize / thickness;\n"
     "  float dither   = h31(vec3(gl_FragCoord.xy, 0.5)) * 0.5;\n"
+
+    "  vec3 sunDir = normalize(u_sun_dir);\n"
 
     "  vec3  rSum = vec3(0.0);\n"
     "  vec3  mSum = vec3(0.0);\n"
     "  float odR  = 0.0;\n"
     "  float odM  = 0.0;\n"
 
-    "  for (int i = 0; i < N_VIEW; ++i) {\n"
-    "    vec3  p = ro + d * (t0 + stepSize * (float(i) + dither));\n"
+    "  for (int i = 0; i < NUM_SAMPLES; ++i) {\n"
+    "    vec3  p = ro + d * (rayStart + stepSize * (float(i) + dither));\n"
     "    float h = length(p);\n"
     "    if (h < Rg) continue;\n"
     "    float altitude = clamp((h - Rg) / thickness, 0.0, 1.0);\n"
-    "    float density  = exp(-altitude / scaleHeight);\n"
-    "    float seg_d    = density * normStep;\n"
-    "    odR += seg_d;\n"
-    "    odM += seg_d;\n"
+    "    float dens = density(altitude);\n"
+    "    float seg  = dens * normStep;\n"
+    "    odR += seg;\n"
+    "    odM += seg;\n"
 
-    /* Sun ray from sample point — skip if planet shadows it. */
-    "    vec2 sun_planet = ray_sphere(p, sun_n, vec3(0.0), Rg);\n"
-    "    if (sun_planet.x > 0.0) continue;\n"
-    "    vec2 sun_atmo   = ray_sphere(p, sun_n, vec3(0.0), Ra);\n"
-    "    float sunLen = max(0.0, sun_atmo.y);\n"
-    "    float sunStep = sunLen / float(N_LIGHT);\n"
-    "    float sunNorm = sunStep / thickness;\n"
-    "    float sunOd = 0.0;\n"
-    "    for (int j = 0; j < N_LIGHT; ++j) {\n"
-    "      vec3 q = p + sun_n * (sunStep * (float(j) + 0.5));\n"
-    "      float hq = length(q);\n"
-    "      float aq = clamp((hq - Rg) / thickness, 0.0, 1.0);\n"
-    "      sunOd += exp(-aq / scaleHeight) * sunNorm;\n"
-    "    }\n"
+    /* Planet shadow check — if the sun sits behind the planet from
+     * this sample's POV, skip it. */
+    "    vec2 sunPlanet = raySphereIntersect(p, sunDir, Rg);\n"
+    "    if (sunPlanet.x > 0.0) continue;\n"
+    "    vec2 sunAtmo   = raySphereIntersect(p, sunDir, Ra);\n"
+    "    float sunLen   = max(0.0, sunAtmo.y);\n"
+    "    float sunOd    = opticalDepth(p, sunDir, sunLen, Rg, thickness);\n"
 
-    "    vec3 tauR = rayleighScale * wavelengthsInv4 * (odR + sunOd);\n"
-    "    vec3 tauM = vec3(mieScale * (odM + sunOd));\n"
+    "    vec3 tauR = RAYLEIGH_SCALE * WAVELENGTHS_INV4 * (odR + sunOd);\n"
+    "    vec3 tauM = vec3(MIE_SCALE * (odM + sunOd));\n"
     "    vec3 atten = exp(-(tauR + tauM));\n"
-    "    rSum += density * atten * normStep;\n"
-    "    mSum += density * atten * normStep;\n"
+    "    rSum += dens * atten * normStep;\n"
+    "    mSum += dens * atten * normStep;\n"
     "  }\n"
 
-    "  rSum *= rayleighScale * wavelengthsInv4;\n"
-    "  mSum *= mieScale;\n"
+    "  rSum *= RAYLEIGH_SCALE * WAVELENGTHS_INV4;\n"
+    "  mSum *= MIE_SCALE;\n"
 
-    /* Phase functions. */
-    "  float cosTheta = sd;\n"
+    "  float cosTheta = dot(d, sunDir);\n"
     "  float phaseR   = 0.75 * (1.0 + cosTheta * cosTheta);\n"
-    "  float gg       = mieG * mieG;\n"
+    "  float gg       = MIE_G * MIE_G;\n"
     "  float phaseM   = (1.0 - gg) /\n"
-    "                   (4.0 * 3.14159265 *\n"
-    "                    pow(max(1.0 + gg - 2.0 * mieG * cosTheta, 0.0001), 1.5));\n"
+    "                   (4.0 * PI *\n"
+    "                    pow(max(1.0 + gg - 2.0 * MIE_G * cosTheta, 0.0001), 1.5));\n"
 
-    "  vec3 sky = sunIntensity * (rSum * phaseR + mSum * phaseM);\n"
+    "  vec3 sky = SUN_INTENSITY * (rSum * phaseR + mSum * phaseM);\n"
 
-    /* Sunset warmth — when the sun is near the camera's horizon the\n"
-     * long atmospheric path scatters away blue, leaving warm tones.\n"
-     * The numerical integration tends to under-shoot this at the\n"
-     * step counts we afford on mobile, so layer it analytically. */
-    "  vec3 ro_norm = normalize(ro);\n"
-    "  float sun_height = dot(sun_n, ro_norm);\n"
-    "  float sunset = smoothstep(0.3, -0.05, sun_height);\n"
-    "  float view_sun = max(0.0, cosTheta);\n"
+    /* Sunset warmth — analytical multipliers; numerical integration
+     * tends to under-shoot these at the step counts we afford. */
+    "  vec3  ro_norm    = normalize(ro);\n"
+    "  float sun_height = dot(sunDir, ro_norm);\n"
+    "  float sunset     = smoothstep(0.3, -0.05, sun_height);\n"
+    "  float view_sun   = max(0.0, cosTheta);\n"
     "  sky *= mix(vec3(1.0), vec3(1.3, 1.0, 0.6), sunset * 0.5);\n"
-    "  sky += vec3(1.0, 0.65, 0.25) * pow(view_sun, 3.0) * sunset * sunIntensity * 0.12;\n"
+    "  sky += vec3(1.0, 0.65, 0.25) * pow(view_sun, 3.0) * sunset * SUN_INTENSITY * 0.12;\n"
     "  float horizon = 1.0 - abs(dot(d, ro_norm));\n"
     "  horizon = pow(horizon, 3.0);\n"
-    "  sky += vec3(0.8, 0.4, 0.15) * horizon * sunset * sunIntensity * 0.04;\n"
+    "  sky += vec3(0.8, 0.4, 0.15) * horizon * sunset * SUN_INTENSITY * 0.04;\n"
 
-    /* HDR -> LDR tone mapping (Caelum approach). */
+    /* HDR -> LDR. */
     "  sky = 1.0 - exp(-sky);\n"
 
-    /* Background attenuation — analytical, depends only on camera\n"
-     * altitude so stars don't flicker as the player walks. */
+    /* Smooth analytical attenuation of the starfield based on the
+     * camera altitude. Doesn't depend on the per-fragment ray-march
+     * sample positions, so it's stable as the camera moves. */
     "  float h_norm = clamp((length(ro) - Rg) / thickness, 0.0, 1.0);\n"
-    "  float density_cam = exp(-h_norm / scaleHeight);\n"
-    "  float bg_atten = clamp(1.0 - density_cam * 0.85, 0.05, 1.0);\n"
+    "  float dens_cam = density(h_norm);\n"
+    "  float bg_atten = clamp(1.0 - dens_cam * 0.85, 0.05, 1.0);\n"
 
-    /* Final composite: stars dimmed by atmosphere, sky added on top. */
     "  vec3 col = mix(space_col, space_col * bg_atten + sky, strength);\n"
     "  frag_color = vec4(col, 1.0);\n"
     "}\n";
@@ -830,8 +833,10 @@ void renderer_init(void) {
     /* Skybox pipeline — fullscreen triangle via gl_VertexID, no vbuf
      * bound. No depth write (so world geometry lands on top) and no
      * cull (the triangle is in clip-space). The fragment shader does
-     * Bruneton-style ray-marched atmospheric scattering plus a
-     * starfield + sun disc for airless / behind-the-atmosphere views. */
+     * Caelum-port atmospheric scattering plus a procedural starfield;
+     * the sun itself is drawn separately as a physical sphere via
+     * renderer_draw_sun (no procedural disc here, that gave a
+     * doubled sun). */
     sg_shader shd_sky = sg_make_shader(&(sg_shader_desc){
         .vertex_func.source   = VS_SKY,
         .fragment_func.source = FS_SKY,
