@@ -1681,12 +1681,20 @@ void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world,
         R.bodies[target_active].is_active = true;
     }
 
-    /* Edit handling — every body, not just active. world_set on any
-     * world (Tenebris or a moon under teleport) marks that body's
-     * tiles dirty; we rebuild and re-upload the affected chunks. */
+    /* Edit handling — every meshed body. world_set on any world
+     * (Tenebris or a moon under teleport) marks that body's tiles
+     * dirty; we rebuild and re-upload the affected chunks.
+     *
+     * Bodies that haven't been demand-loaded yet have tile_to_chunk
+     * == NULL — skip them. Their dirty bits are still set from
+     * gen_tile (cleared by body_full_mesh once it runs), but we
+     * can't act on them until allocation, and we don't need to:
+     * body_load_detail will mesh from scratch when the body comes
+     * into LOD range. */
     bool any_grew = false;
     for (int bi = 0; bi < R.body_count; ++bi) {
         chunked_body_t* body = &R.bodies[bi];
+        if (!body->meshed || !body->tile_to_chunk) continue;
         bool body_grew[CHUNK_COUNT] = { 0 };
         for (int i = 0; i < body->world->tile_count; ++i) {
             if (!world_tile_dirty(body->world, i)) continue;

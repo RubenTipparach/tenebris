@@ -30,6 +30,55 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+
+/* On-screen error overlay — captures sokol_gfx / sokol_app log lines
+ * (panic/error/warning) into a small ring buffer and displays the
+ * most recent ones at the top of the screen. Hooked up via the
+ * sg_setup().logger.func callback below. The motivation is mobile
+ * debugging: there's no JS console accessible on iOS Safari without
+ * remote-debug tooling, so any error has to be visible in-app or
+ * we fly blind. */
+#define ERR_LOG_LINES   12
+#define ERR_LOG_LINE_LEN 128
+static struct {
+    char     lines[ERR_LOG_LINES][ERR_LOG_LINE_LEN];
+    uint32_t total;          /* total messages received (>= ring size) */
+} g_err;
+
+static void on_screen_log(const char* tag, uint32_t level, uint32_t item,
+                          const char* msg, uint32_t line,
+                          const char* file, void* user) {
+    /* level: 0 = panic, 1 = error, 2 = warning, 3 = info. We only
+     * grab the alarming ones — info-level logs would flood. */
+    if (level <= 2 && msg) {
+        int slot = (int)(g_err.total % ERR_LOG_LINES);
+        const char* lvl = (level == 0) ? "PANIC"
+                        : (level == 1) ? "ERROR"
+                                       : "WARN";
+        snprintf(g_err.lines[slot], ERR_LOG_LINE_LEN,
+                 "%s[%s id=%u]: %.80s",
+                 lvl, tag ? tag : "?", (unsigned)item, msg);
+        g_err.total++;
+    }
+    /* Forward to the default sokol logger so the JS console / native
+     * stderr still gets every message for post-mortem grepping. */
+    slog_func(tag, level, item, msg, line, file, user);
+}
+
+static void draw_error_overlay(void) {
+    if (g_err.total == 0) return;
+    sdtx_color3b(255, 80, 80);
+    sdtx_printf("\n=== sokol log: %u msgs ===\n", g_err.total);
+    int show = (g_err.total < ERR_LOG_LINES) ? (int)g_err.total : ERR_LOG_LINES;
+    int start = (int)g_err.total - show;
+    for (int i = 0; i < show; ++i) {
+        int slot = (start + i) % ERR_LOG_LINES;
+        sdtx_printf("%s\n", g_err.lines[slot]);
+    }
+    sdtx_color3b(255, 255, 255);
+}
 
 /* Streaming budget: tiles generated per frame. Tenebris is subs=6 =
  * 40962 tiles total — at 512/frame it's ~80 frames (~1.3 s) to fully
@@ -67,13 +116,13 @@ static void init(void) {
      * stay at default — we're not creating those en masse. */
     sg_setup(&(sg_desc){
         .environment = sglue_environment(),
-        .logger.func = slog_func,
+        .logger.func = on_screen_log,
         .buffer_pool_size = 4096,
     });
     stm_setup();
     sdtx_setup(&(sdtx_desc_t){
         .fonts[0] = sdtx_font_oric(),
-        .logger.func = slog_func,
+        .logger.func = on_screen_log,
     });
 
     input_init();
@@ -336,6 +385,7 @@ static void frame(void) {
 
     update_overlay(dt);
     teleport_menu_draw();
+    draw_error_overlay();
     sdtx_draw();
     mobile_ui_draw();
 
