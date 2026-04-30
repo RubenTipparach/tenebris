@@ -353,119 +353,131 @@ static const char* FS_SKY =
     "    return;\n"
     "  }\n"
 
-    "  float Rg = u_atmo_params.x;\n"   /* planet radius */
-    "  float Ra = u_atmo_params.y;\n"   /* atmosphere radius */
-    "  float H  = max(Ra - Rg, 0.001);\n"
+    /* Caelum-style atmospheric scattering — direct port of the
+     * Tenebris-sister project Caelum's atmosphere.glsl. Two big
+     * changes vs the previous Bruneton form that was making the sky
+     * read as a thin horizon band:
+     *
+     *  1. Altitude is normalised to [0..1] across (Rg .. Ra), and the
+     *     ray-march step is also normalised by atmosphere thickness.
+     *     Result is scale-independent — same look at Tenebris's 90 m
+     *     shell as it would be at Earth's 60 km.
+     *  2. Wavelength-dependent (1/λ⁴) coefficients applied at the
+     *     end with a single sun-intensity multiplier, then HDR tone
+     *     mapped via 1 - exp(-color). Without tone mapping the
+     *     analytical scattering is hard to dial in — values either
+     *     disappear into black or saturate to white. */
+    "  float Rg = u_atmo_params.x;\n"
+    "  float Ra = u_atmo_params.y;\n"
+    "  float thickness = max(Ra - Rg, 0.001);\n"
+    "  vec3  ro = u_camera_pos - u_planet_center;\n"
 
-    /* Bruneton's standard scale heights (Earth-tuned). We rescale to\n"
-     * the local atmosphere thickness H so the same look applies at\n"
-     * Tenebris's 30 m shell as on a notional Earth. */
-    "  float H_R = 0.250 * H;\n"        /* Rayleigh scale height */
-    "  float H_M = 0.040 * H;\n"        /* Mie scale height       */
-
-    /* Wavelength-tuned Rayleigh extinction (same constants Bruneton\n"
-     * uses for the precomputed tables) and grey Mie. Magnitudes are\n"
-     * scaled by 1/H so the integrated optical depth lands in a\n"
-     * useful range at our small planet scale. */
-    "  vec3  beta_R = vec3(5.8e-3, 13.5e-3, 33.1e-3) * (50.0 / H);\n"
-    "  vec3  beta_M = vec3(4.0e-3) * (50.0 / H);\n"
-
-    /* Phase functions. Rayleigh = 3/16π·(1+μ²); Mie = Henyey-Greenstein\n"
-     * with g=0.76, the standard daytime Mie asymmetry. */
-    "  float mu = sd;\n"
-    "  float phase_R = 0.0596831 * (1.0 + mu * mu);\n"
-    "  float g  = 0.76;\n"
-    "  float gg = g * g;\n"
-    "  float phase_M = (3.0 / (8.0 * 3.14159265)) * ((1.0 - gg) * (1.0 + mu * mu))\n"
-    "                / ((2.0 + gg) * pow(1.0 + gg - 2.0 * g * mu, 1.5));\n"
-
-    "  vec3 ro = u_camera_pos;\n"
-    "  vec2 atmo_t = ray_sphere(ro, d, u_planet_center, Ra);\n"
+    /* Ray vs atmosphere shell + planet sphere. */
+    "  vec2 atmo_t   = ray_sphere(ro, d, vec3(0.0), Ra);\n"
     "  if (atmo_t.y < 0.0) {\n"
-    /* No atmosphere along this ray — pure space. */
     "    frag_color = vec4(space_col, 1.0);\n"
     "    return;\n"
     "  }\n"
-
-    "  vec2  planet_t = ray_sphere(ro, d, u_planet_center, Rg);\n"
+    "  vec2  planet_t = ray_sphere(ro, d, vec3(0.0), Rg);\n"
     "  float t0 = max(0.0, atmo_t.x);\n"
     "  float t1 = atmo_t.y;\n"
-    /* If the ray hits the planet first, terminate the integration\n"
-     * there — those pixels will be covered by terrain anyway, but a\n"
-     * correct horizon needs the segment to clip. */
     "  if (planet_t.x > 0.0 && planet_t.x < t1) t1 = planet_t.x;\n"
     "  if (t1 <= t0) {\n"
     "    frag_color = vec4(space_col, 1.0);\n"
     "    return;\n"
     "  }\n"
 
-    /* View ray-march. 12 outer + 4 inner samples is enough for a\n"
-     * smooth gradient at the planet scales we run; bumping these up\n"
-     * removes banding at the cost of fragment shader time. */
-    "  const int N_VIEW = 12;\n"
-    "  const int N_LIGHT = 4;\n"
-    "  float seg = (t1 - t0) / float(N_VIEW);\n"
-    "  vec3  inscatter_R = vec3(0.0);\n"
-    "  vec3  inscatter_M = vec3(0.0);\n"
-    "  float od_view_R = 0.0;\n"
-    "  float od_view_M = 0.0;\n"
-    "  for (int i = 0; i < N_VIEW; ++i) {\n"
-    "    vec3  p = ro + d * (t0 + (float(i) + 0.5) * seg);\n"
-    "    float h = length(p - u_planet_center) - Rg;\n"
-    "    if (h < 0.0) h = 0.0;\n"
-    "    float dr = exp(-h / H_R) * seg;\n"
-    "    float dm = exp(-h / H_M) * seg;\n"
-    "    od_view_R += dr;\n"
-    "    od_view_M += dm;\n"
+    /* Caelum constants — wavelengths-inv-4 weights the rayleigh\n"
+     * coefficient by 1/λ⁴ in (R, G, B), so blue scatters most. */
+    "  const vec3  wavelengthsInv4 = vec3(5.602, 9.473, 19.644);\n"
+    "  const float scaleHeight  = 0.25;\n"
+    "  const float rayleighScale = 1.0;\n"
+    "  const float mieScale      = 0.05;\n"
+    "  const float mieG          = 0.76;\n"
+    "  const float sunIntensity  = 30.0;\n"
+    "  const int   N_VIEW        = 12;\n"
+    "  const int   N_LIGHT       = 4;\n"
 
-    /* March from sample toward the sun to compute light-path optical\n"
-     * depth. If we tunnel into the planet, the sun is occluded → drop\n"
-     * this sample by setting a huge optical depth. */
-    "    vec2  light_t = ray_sphere(p, sun_n, u_planet_center, Ra);\n"
-    "    vec2  occ_t   = ray_sphere(p, sun_n, u_planet_center, Rg);\n"
-    "    bool  occluded = (occ_t.x > 0.0);\n"
-    "    if (!occluded) {\n"
-    "      float lseg = light_t.y / float(N_LIGHT);\n"
-    "      float od_light_R = 0.0;\n"
-    "      float od_light_M = 0.0;\n"
-    "      for (int j = 0; j < N_LIGHT; ++j) {\n"
-    "        vec3 q = p + sun_n * (float(j) + 0.5) * lseg;\n"
-    "        float hl = length(q - u_planet_center) - Rg;\n"
-    "        if (hl < 0.0) hl = 0.0;\n"
-    "        od_light_R += exp(-hl / H_R) * lseg;\n"
-    "        od_light_M += exp(-hl / H_M) * lseg;\n"
-    "      }\n"
-    "      vec3 tau = beta_R * (od_view_R + od_light_R)\n"
-    "               + beta_M * 1.1 * (od_view_M + od_light_M);\n"
-    "      vec3 atten = exp(-tau);\n"
-    "      inscatter_R += atten * dr;\n"
-    "      inscatter_M += atten * dm;\n"
+    "  float rayLen   = t1 - t0;\n"
+    "  float stepSize = rayLen / float(N_VIEW);\n"
+    "  float normStep = stepSize / thickness;\n"
+    "  float dither   = h31(vec3(gl_FragCoord.xy, 0.5)) * 0.5;\n"
+
+    "  vec3  rSum = vec3(0.0);\n"
+    "  vec3  mSum = vec3(0.0);\n"
+    "  float odR  = 0.0;\n"
+    "  float odM  = 0.0;\n"
+
+    "  for (int i = 0; i < N_VIEW; ++i) {\n"
+    "    vec3  p = ro + d * (t0 + stepSize * (float(i) + dither));\n"
+    "    float h = length(p);\n"
+    "    if (h < Rg) continue;\n"
+    "    float altitude = clamp((h - Rg) / thickness, 0.0, 1.0);\n"
+    "    float density  = exp(-altitude / scaleHeight);\n"
+    "    float seg_d    = density * normStep;\n"
+    "    odR += seg_d;\n"
+    "    odM += seg_d;\n"
+
+    /* Sun ray from sample point — skip if planet shadows it. */
+    "    vec2 sun_planet = ray_sphere(p, sun_n, vec3(0.0), Rg);\n"
+    "    if (sun_planet.x > 0.0) continue;\n"
+    "    vec2 sun_atmo   = ray_sphere(p, sun_n, vec3(0.0), Ra);\n"
+    "    float sunLen = max(0.0, sun_atmo.y);\n"
+    "    float sunStep = sunLen / float(N_LIGHT);\n"
+    "    float sunNorm = sunStep / thickness;\n"
+    "    float sunOd = 0.0;\n"
+    "    for (int j = 0; j < N_LIGHT; ++j) {\n"
+    "      vec3 q = p + sun_n * (sunStep * (float(j) + 0.5));\n"
+    "      float hq = length(q);\n"
+    "      float aq = clamp((hq - Rg) / thickness, 0.0, 1.0);\n"
+    "      sunOd += exp(-aq / scaleHeight) * sunNorm;\n"
     "    }\n"
+
+    "    vec3 tauR = rayleighScale * wavelengthsInv4 * (odR + sunOd);\n"
+    "    vec3 tauM = vec3(mieScale * (odM + sunOd));\n"
+    "    vec3 atten = exp(-(tauR + tauM));\n"
+    "    rSum += density * atten * normStep;\n"
+    "    mSum += density * atten * normStep;\n"
     "  }\n"
 
-    /* Sky colour = sun radiance × (β·phase·∫density·T). */
-    "  vec3 sun_irr = u_sun_color * 22.0;\n"   /* Bruneton's reference irradiance */
-    "  vec3 sky = sun_irr * (inscatter_R * beta_R * phase_R\n"
-    "                       + inscatter_M * beta_M * phase_M);\n"
+    "  rSum *= rayleighScale * wavelengthsInv4;\n"
+    "  mSum *= mieScale;\n"
 
-    /* Background attenuation. Earlier versions multiplied `space_col`
-     * by the per-pixel transmittance derived from the same N_VIEW
-     * samples — but the discrete sum shifts step-wise as the camera
-     * translates between samples, so stars visibly flickered. Use a
-     * smooth analytical surrogate instead: density at the camera
-     * altitude × a fixed effective slab thickness. Result depends
-     * continuously on camera position, so stars hold still as the
-     * player walks. */
-    "  float h_cam = length(ro - u_planet_center) - Rg;\n"
-    "  float h_norm = clamp(h_cam / H, 0.0, 1.0);\n"
-    "  float density_cam = exp(-h_norm * 4.0);\n"
-    "  vec3  bg_tau = (beta_R + beta_M * 1.1) * density_cam * H * 1.5;\n"
-    "  vec3  bg_T   = exp(-bg_tau);\n"
+    /* Phase functions. */
+    "  float cosTheta = sd;\n"
+    "  float phaseR   = 0.75 * (1.0 + cosTheta * cosTheta);\n"
+    "  float gg       = mieG * mieG;\n"
+    "  float phaseM   = (1.0 - gg) /\n"
+    "                   (4.0 * 3.14159265 *\n"
+    "                    pow(max(1.0 + gg - 2.0 * mieG * cosTheta, 0.0001), 1.5));\n"
 
-    /* Blend the analytical sky over the space backdrop. strength<1\n"
-     * smoothly fades to pure space so airless bodies share the\n"
-     * shader without a branch. */
-    "  vec3 col = mix(space_col, space_col * bg_T + sky, strength);\n"
+    "  vec3 sky = sunIntensity * (rSum * phaseR + mSum * phaseM);\n"
+
+    /* Sunset warmth — when the sun is near the camera's horizon the\n"
+     * long atmospheric path scatters away blue, leaving warm tones.\n"
+     * The numerical integration tends to under-shoot this at the\n"
+     * step counts we afford on mobile, so layer it analytically. */
+    "  vec3 ro_norm = normalize(ro);\n"
+    "  float sun_height = dot(sun_n, ro_norm);\n"
+    "  float sunset = smoothstep(0.3, -0.05, sun_height);\n"
+    "  float view_sun = max(0.0, cosTheta);\n"
+    "  sky *= mix(vec3(1.0), vec3(1.3, 1.0, 0.6), sunset * 0.5);\n"
+    "  sky += vec3(1.0, 0.65, 0.25) * pow(view_sun, 3.0) * sunset * sunIntensity * 0.12;\n"
+    "  float horizon = 1.0 - abs(dot(d, ro_norm));\n"
+    "  horizon = pow(horizon, 3.0);\n"
+    "  sky += vec3(0.8, 0.4, 0.15) * horizon * sunset * sunIntensity * 0.04;\n"
+
+    /* HDR -> LDR tone mapping (Caelum approach). */
+    "  sky = 1.0 - exp(-sky);\n"
+
+    /* Background attenuation — analytical, depends only on camera\n"
+     * altitude so stars don't flicker as the player walks. */
+    "  float h_norm = clamp((length(ro) - Rg) / thickness, 0.0, 1.0);\n"
+    "  float density_cam = exp(-h_norm / scaleHeight);\n"
+    "  float bg_atten = clamp(1.0 - density_cam * 0.85, 0.05, 1.0);\n"
+
+    /* Final composite: stars dimmed by atmosphere, sky added on top. */
+    "  vec3 col = mix(space_col, space_col * bg_atten + sky, strength);\n"
     "  frag_color = vec4(col, 1.0);\n"
     "}\n";
 
@@ -1332,7 +1344,10 @@ void renderer_draw_moons(mat4_t view, mat4_t proj, vec3_t camera_world) {
     });
     for (int bi = 0; bi < R.body_count; ++bi) {
         chunked_body_t* body = &R.bodies[bi];
-        if (!sphere_visible(frustum, body->world_pos, body->radius_m)) continue;
+        /* The active body is always drawn detailed in renderer_draw_world;
+         * never as an icosphere here. */
+        if (bi == R.active_body_idx) continue;
+        if (!sphere_visible(frustum, body->world_pos, body->radius_m * 1.5f)) continue;
         vec3_t delta = vec3_sub(body->world_pos, camera_world);
         float  dist  = vec3_length(delta);
         if (dist < 1.0f) dist = 1.0f;
@@ -1777,31 +1792,49 @@ void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world,
 
     for (int bi = 0; bi < R.body_count; ++bi) {
         chunked_body_t* body = &R.bodies[bi];
-        if (!sphere_visible(frustum, body->world_pos, body->radius_m)) continue;
+        const bool is_active = (bi == R.active_body_idx);
+
+        /* Frustum culling — at body granularity. We DON'T cull the
+         * active body: its bounding sphere is mostly behind the
+         * camera whenever the player stands on the surface and looks
+         * toward the horizon (the sphere centre is r ≈ planet_radius
+         * metres behind the near plane), so sphere_visible would
+         * erroneously cut all of Tenebris. The active body is also
+         * the one the player can be touching mountains on, so we
+         * explicitly want every chunk drawn — the user's request:
+         * "DONOT cull chunks that I am standing on or that are
+         * adjacent to the ones im on". For non-active bodies we
+         * still run the cull, but with a 1.5× radius pad to keep
+         * tall mountains and the atmosphere shell inside the
+         * conservative bounds. */
+        if (!is_active &&
+            !sphere_visible(frustum, body->world_pos, body->radius_m * 1.5f))
+            continue;
         vec3_t delta = vec3_sub(body->world_pos, camera_world);
         float  dist  = vec3_length(delta);
         if (dist < 1.0f) dist = 1.0f;
-        /* Demand-load detail when the body crosses into LOD range —
-         * a tiny hysteresis (LOD_RATIO * 0.9) so we mesh slightly
-         * before the icosphere→chunks visual swap, hiding the buffer
-         * upload cost behind the LOD transition. Until then, the
-         * body draws as the distant icosphere via renderer_draw_moons. */
-        const bool distant = (body->radius_m / dist) < LOD_RATIO;
+        /* The active body is by definition close enough to count as
+         * detailed. For others, swap to the icosphere LOD when small. */
+        const bool distant = !is_active && (body->radius_m / dist) < LOD_RATIO;
         if (distant) continue;
         if (!body->meshed) body_load_detail(body);
         body_draw_chunks(body, vp);
     }
 
-    /* Water pass — blended on top of the opaque terrain. */
+    /* Water pass — blended on top of the opaque terrain. Same
+     * "active body bypasses cull" rule as the opaque pass. */
     sg_apply_pipeline(R.pip_water);
     for (int bi = 0; bi < R.body_count; ++bi) {
         chunked_body_t* body = &R.bodies[bi];
         if (!body->has_water) continue;
-        if (!sphere_visible(frustum, body->world_pos, body->radius_m * 1.05f)) continue;
+        const bool is_active = (bi == R.active_body_idx);
+        if (!is_active &&
+            !sphere_visible(frustum, body->world_pos, body->radius_m * 1.5f))
+            continue;
         vec3_t delta = vec3_sub(body->world_pos, camera_world);
         float  dist  = vec3_length(delta);
         if (dist < 1.0f) dist = 1.0f;
-        const bool distant = (body->radius_m / dist) < LOD_RATIO;
+        const bool distant = !is_active && (body->radius_m / dist) < LOD_RATIO;
         if (distant) continue;
         body_draw_water(body, vp, camera_world);
     }
