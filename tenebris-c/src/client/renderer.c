@@ -310,6 +310,7 @@ static const char* FS_SKY =
     "uniform vec3  u_planet_center;\n"
     "uniform vec3  u_camera_pos;\n"
     "uniform vec4  u_atmo_params;\n"   /* x=Rg, y=Ra, z=strength, w=unused */
+    "uniform vec4  u_atmo_tuning;\n"   /* x=rayleigh, y=mie, z=sun_intensity, w=sunset */
     "out vec4 frag_color;\n"
 
     "#define PI 3.14159265359\n"
@@ -336,14 +337,14 @@ static const char* FS_SKY =
     "  return vec2(-b - s, -b + s);\n"
     "}\n"
 
-    /* Caelum constants — wavelengths-inv-4 (red, green, blue) and a
-     * sun intensity that lands the tone-mapped sky in a usable range. */
+    /* Wavelength-inv-4 (red, green, blue) — physical constant; the
+     * (1/λ⁴) Rayleigh weighting that makes blue scatter more than
+     * red. The other knobs (u_atmo_tuning.x, u_atmo_tuning.y, u_atmo_tuning.z,
+     * sunset_strength) come from u_atmo_tuning per body so each
+     * planet can dial in its own sky look without a recompile. */
     "const vec3  WAVELENGTHS_INV4 = vec3(5.602, 9.473, 19.644);\n"
     "const float SCALE_HEIGHT     = 0.25;\n"
-    "const float RAYLEIGH_SCALE   = 1.0;\n"
-    "const float MIE_SCALE        = 0.05;\n"
     "const float MIE_G            = 0.76;\n"
-    "const float SUN_INTENSITY    = 30.0;\n"
 
     "float density(float altitude) {\n"
     "  return exp(-altitude / SCALE_HEIGHT);\n"
@@ -444,15 +445,15 @@ static const char* FS_SKY =
     "    float sunLen   = max(0.0, sunAtmo.y);\n"
     "    float sunOd    = opticalDepth(p, sunDir, sunLen, Rg, thickness);\n"
 
-    "    vec3 tauR = RAYLEIGH_SCALE * WAVELENGTHS_INV4 * (odR + sunOd);\n"
-    "    vec3 tauM = vec3(MIE_SCALE * (odM + sunOd));\n"
+    "    vec3 tauR = u_atmo_tuning.x * WAVELENGTHS_INV4 * (odR + sunOd);\n"
+    "    vec3 tauM = vec3(u_atmo_tuning.y * (odM + sunOd));\n"
     "    vec3 atten = exp(-(tauR + tauM));\n"
     "    rSum += dens * atten * normStep;\n"
     "    mSum += dens * atten * normStep;\n"
     "  }\n"
 
-    "  rSum *= RAYLEIGH_SCALE * WAVELENGTHS_INV4;\n"
-    "  mSum *= MIE_SCALE;\n"
+    "  rSum *= u_atmo_tuning.x * WAVELENGTHS_INV4;\n"
+    "  mSum *= u_atmo_tuning.y;\n"
 
     "  float cosTheta = dot(d, sunDir);\n"
     "  float phaseR   = 0.75 * (1.0 + cosTheta * cosTheta);\n"
@@ -461,7 +462,7 @@ static const char* FS_SKY =
     "                   (4.0 * PI *\n"
     "                    pow(max(1.0 + gg - 2.0 * MIE_G * cosTheta, 0.0001), 1.5));\n"
 
-    "  vec3 sky = SUN_INTENSITY * (rSum * phaseR + mSum * phaseM);\n"
+    "  vec3 sky = u_atmo_tuning.z * (rSum * phaseR + mSum * phaseM);\n"
 
     /* Sunset warmth — analytical multipliers; numerical integration
      * tends to under-shoot these at the step counts we afford. */
@@ -469,11 +470,16 @@ static const char* FS_SKY =
     "  float sun_height = dot(sunDir, ro_norm);\n"
     "  float sunset     = smoothstep(0.3, -0.05, sun_height);\n"
     "  float view_sun   = max(0.0, cosTheta);\n"
-    "  sky *= mix(vec3(1.0), vec3(1.3, 1.0, 0.6), sunset * 0.5);\n"
-    "  sky += vec3(1.0, 0.65, 0.25) * pow(view_sun, 3.0) * sunset * SUN_INTENSITY * 0.12;\n"
+    /* Sunset warmth scaled by u_atmo_tuning.w (sunset_strength). At
+     * 1.0 you get the full Caelum orange-on-horizon look; 0.0 strips
+     * all warm-tint and the sky stays Rayleigh-blue all the way to
+     * the horizon. Tenebris currently uses 0.3 — present but subtle. */
+    "  float ws = u_atmo_tuning.w;\n"
+    "  sky *= mix(vec3(1.0), vec3(1.3, 1.0, 0.6), sunset * 0.5 * ws);\n"
+    "  sky += vec3(1.0, 0.65, 0.25) * pow(view_sun, 3.0) * sunset * u_atmo_tuning.z * 0.12 * ws;\n"
     "  float horizon = 1.0 - abs(dot(d, ro_norm));\n"
     "  horizon = pow(horizon, 3.0);\n"
-    "  sky += vec3(0.8, 0.4, 0.15) * horizon * sunset * SUN_INTENSITY * 0.04;\n"
+    "  sky += vec3(0.8, 0.4, 0.15) * horizon * sunset * u_atmo_tuning.z * 0.04 * ws;\n"
 
     /* HDR -> LDR. */
     "  sky = 1.0 - exp(-sky);\n"
@@ -848,14 +854,15 @@ void renderer_init(void) {
         },
         .uniform_blocks[1] = {
             .stage = SG_SHADERSTAGE_FRAGMENT,
-            /* std140: 5 vec4 slots = 20 floats. */
-            .size  = 20 * sizeof(float),
+            /* std140: 6 vec4 slots = 24 floats. */
+            .size  = 24 * sizeof(float),
             .layout = SG_UNIFORMLAYOUT_STD140,
             .glsl_uniforms[0] = { .glsl_name = "u_sun_dir",       .type = SG_UNIFORMTYPE_FLOAT3 },
             .glsl_uniforms[1] = { .glsl_name = "u_sun_color",     .type = SG_UNIFORMTYPE_FLOAT3 },
             .glsl_uniforms[2] = { .glsl_name = "u_planet_center", .type = SG_UNIFORMTYPE_FLOAT3 },
             .glsl_uniforms[3] = { .glsl_name = "u_camera_pos",    .type = SG_UNIFORMTYPE_FLOAT3 },
             .glsl_uniforms[4] = { .glsl_name = "u_atmo_params",   .type = SG_UNIFORMTYPE_FLOAT4 },
+            .glsl_uniforms[5] = { .glsl_name = "u_atmo_tuning",   .type = SG_UNIFORMTYPE_FLOAT4 },
         },
         .label = "sky-shader",
     });
@@ -1128,8 +1135,9 @@ void renderer_draw_skybox(mat4_t view, mat4_t proj) {
     mat4_t inv_vp = mat4_inverse(vp);
     sg_apply_pipeline(R.pip_sky);
     sg_apply_uniforms(0, &(sg_range){ .ptr = inv_vp.m, .size = sizeof(inv_vp.m) });
-    /* std140 frag UB: vec3+pad, vec3+pad, vec3+pad, vec3+pad, vec4. */
-    float ub[20] = { 0 };
+    /* std140 frag UB: vec3+pad, vec3+pad, vec3+pad, vec3+pad, vec4,
+     * vec4 = 6 vec4 slots = 24 floats. */
+    float ub[24] = { 0 };
     ub[0]  = R.env.sun_dir.x; ub[1]  = R.env.sun_dir.y; ub[2]  = R.env.sun_dir.z;
     /* Warm sun color. Slightly clipping white for the hot disc. */
     ub[4]  = 1.40f;           ub[5]  = 1.25f;           ub[6]  = 0.90f;
@@ -1143,6 +1151,11 @@ void renderer_draw_skybox(mat4_t view, mat4_t proj) {
     ub[17] = R.env.atmo_radius;
     ub[18] = R.env.atmo_strength;
     ub[19] = 0.0f;
+    /* Per-body scattering tuning. */
+    ub[20] = R.env.atmo_rayleigh_scale;
+    ub[21] = R.env.atmo_mie_scale;
+    ub[22] = R.env.atmo_sun_intensity;
+    ub[23] = R.env.atmo_sunset_strength;
     sg_apply_uniforms(1, &(sg_range){ .ptr = ub, .size = sizeof(ub) });
     /* No bindings needed — fullscreen triangle generated from gl_VertexID. */
     sg_apply_bindings(&(sg_bindings){ 0 });

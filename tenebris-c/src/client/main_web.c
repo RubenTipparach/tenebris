@@ -343,21 +343,30 @@ static void frame(void) {
     };
     /* Atmosphere is anchored to whatever body the player is currently
      * standing on (player_teleport_to updates p->body, so the sky
-     * follows the player when they jump between planets). Earth-likes
-     * (has_water) get a 25 %-thick scattering shell so the sky reads
-     * as proper blue at low altitude and fades to space at high alt;
-     * barren / icy / asteroid bodies get strength=0 and fall back to
-     * the starfield-only path inside the same shader. */
+     * follows the player when they jump between planets). Per-body
+     * tuning lives in body_config_t.atmo_*; any zeroed field falls
+     * back to a sensible default so a planet just has to set
+     * .has_water=true to get the default look.
+     *
+     * Defaults below were tuned for Tenebris's "more blue, less
+     * yellow/orange" target — atmosphere shell is 1.3× the planet
+     * radius (down from 2× — visibly thinner without losing the
+     * analytical scattering signal) and sunset_strength is 0.3 so
+     * the warm horizon tint is present but subtle. */
     const body_config_t* active_body = G.player.body ? G.player.body : G.body;
     const bool has_atmo = active_body->has_water;
     const float planet_r = (float)active_body->radius_m;
-    /* Atmosphere thickness scales with planet radius. 2× → atmosphere
-     * shell radius is double the planet radius (Tenebris 150 m → 300 m,
-     * 150 m of breathable sky overhead). The previous 1.6× was reading
-     * as a thin band right at the horizon; doubling the shell gives
-     * the ray-march enough optical depth at every view direction for
-     * the analytical scattering to land. */
-    const float atmo_r   = planet_r * 2.0f;
+    const float radius_mult     = active_body->atmo_radius_mult     > 0.0f
+                                ? active_body->atmo_radius_mult     : 1.3f;
+    const float rayleigh        = active_body->atmo_rayleigh_scale  > 0.0f
+                                ? active_body->atmo_rayleigh_scale  : 1.0f;
+    const float mie             = active_body->atmo_mie_scale       > 0.0f
+                                ? active_body->atmo_mie_scale       : 0.05f;
+    const float sun_int         = active_body->atmo_sun_intensity   > 0.0f
+                                ? active_body->atmo_sun_intensity   : 30.0f;
+    const float sunset          = active_body->atmo_sunset_strength > 0.0f
+                                ? active_body->atmo_sunset_strength : 0.3f;
+    const float atmo_r = planet_r * radius_mult;
     render_env_t env = {
         .sun_dir    = sun_dir,
         .sun_pos    = sun_pos,
@@ -370,9 +379,13 @@ static void frame(void) {
             (float)active_body->pos_y,
             (float)active_body->pos_z,
         },
-        .atmo_planet_radius = planet_r,
-        .atmo_radius        = atmo_r,
-        .atmo_strength      = has_atmo ? 1.0f : 0.0f,
+        .atmo_planet_radius   = planet_r,
+        .atmo_radius          = atmo_r,
+        .atmo_strength        = has_atmo ? 1.0f : 0.0f,
+        .atmo_rayleigh_scale  = rayleigh,
+        .atmo_mie_scale       = mie,
+        .atmo_sun_intensity   = sun_int,
+        .atmo_sunset_strength = sunset,
     };
     /* Camera world pos for the water-shader fresnel. Uses the player's
      * parallel-transported basis so it stays continuous when the old
