@@ -223,6 +223,16 @@ static void update_overlay(float dt) {
     sdtx_printf("MODE: %s   [G to toggle]\n",
                 G.player.survival_mode ? "SURVIVAL" : "CREATIVE");
     sdtx_color3b(0xff, 0xff, 0xff);
+    /* Debug terrain visibility — bright cyan when hidden so it's
+     * obvious the toggle is on. Tap top-right corner on touch
+     * devices, press H on desktop. */
+    if (!renderer_terrain_visible()) {
+        sdtx_color3b(0x55, 0xff, 0xff);
+        sdtx_printf("TERRAIN HIDDEN  [H or top-right tap]\n");
+        sdtx_color3b(0xff, 0xff, 0xff);
+    } else {
+        sdtx_printf("[H] hide terrain\n");
+    }
 
     /* Mining progress bar (survival only). */
     if (G.player.survival_mode && G.interact.mining_progress_s > 0.0f) {
@@ -341,14 +351,13 @@ static void frame(void) {
     const body_config_t* active_body = G.player.body ? G.player.body : G.body;
     const bool has_atmo = active_body->has_water;
     const float planet_r = (float)active_body->radius_m;
-    /* Atmosphere thickness scales with planet radius. 1.6× = a 60 %
-     * shell on top of the planet — Tenebris (150 m → 240 m) and
-     * Sequoia (180 m → 288 m) both end up with ~90–110 m of breathable
-     * sky, enough that the scattering term reads as a proper blue sky
-     * at low altitude and fades to space well before the camera leaves
-     * orbit. Smaller shells (1.25×) gave a too-thin band of blue
-     * pinned right at the horizon. */
-    const float atmo_r   = planet_r * 1.6f;
+    /* Atmosphere thickness scales with planet radius. 2× → atmosphere
+     * shell radius is double the planet radius (Tenebris 150 m → 300 m,
+     * 150 m of breathable sky overhead). The previous 1.6× was reading
+     * as a thin band right at the horizon; doubling the shell gives
+     * the ray-march enough optical depth at every view direction for
+     * the analytical scattering to land. */
+    const float atmo_r   = planet_r * 2.0f;
     render_env_t env = {
         .sun_dir    = sun_dir,
         .sun_pos    = sun_pos,
@@ -398,6 +407,24 @@ static void event(const sapp_event* e) {
     /* Teleport menu gets first crack — it intercepts T/M/arrows/enter
      * when open so those keys don't also reach the movement layer. */
     if (teleport_menu_event(e, &G.player)) return;
+    /* Debug toggle — H on desktop, tap top-right ~96 px corner on
+     * touch devices. Hides the chunked planet terrain so the
+     * atmosphere / sky / distant LOD passes can be verified in
+     * isolation. State lives in the renderer; we just flip it here. */
+    if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_H) {
+        renderer_set_terrain_visible(!renderer_terrain_visible());
+        return;
+    }
+    if (e->type == SAPP_EVENTTYPE_TOUCHES_BEGAN && e->num_touches > 0) {
+        const float w = sapp_widthf();
+        const float corner = 96.0f;   /* px hit-box edge length */
+        float tx = e->touches[0].pos_x;
+        float ty = e->touches[0].pos_y;
+        if (tx > w - corner && ty < corner) {
+            renderer_set_terrain_visible(!renderer_terrain_visible());
+            return;
+        }
+    }
     input_event(e);
     if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_ESCAPE) {
         sapp_lock_mouse(false);

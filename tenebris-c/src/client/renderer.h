@@ -65,6 +65,13 @@ void renderer_register_moon(world_t* w);
  * old active body keeps its mesh data; only streaming / edit handling
  * moves to the new world. */
 void renderer_set_active_world(world_t* w);
+
+/* Debug toggle — when terrain is hidden, the chunked-terrain draw
+ * passes are skipped (atmosphere + sky still render, distant body
+ * icospheres still render). Useful for verifying the atmosphere
+ * shader on its own without geometry obscuring the view. */
+void renderer_set_terrain_visible(bool visible);
+bool renderer_terrain_visible(void);
 /* Draw each registered body. `camera_world` is used to compute angular
  * screen size — bodies that subtend less than ~20% of the viewport
  * swap to a flat-shaded 20-face icosphere instead of their detailed

@@ -162,6 +162,11 @@ static void body_full_mesh(chunked_body_t* body);
 static void body_chunk_rebuild_full(chunked_body_t* body, int chunk_idx);
 static void chunk_upload(mesh_chunk_t* c);
 
+/* Debug toggle — flipped by the public renderer_set_terrain_visible
+ * API. Defined up here because renderer_draw_world (much further
+ * down) reads it. Defaults to true so terrain shows on first frame. */
+static bool R_TERRAIN_VISIBLE = true;
+
 /* ----------------------------------------------------------------------- */
 
 static const char* VS_HEX =
@@ -1775,8 +1780,13 @@ void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world,
     /* Draw all bodies' chunked terrain. The active body usually gets
      * drawn first because its world position is at or near the camera;
      * draw order doesn't matter for opaque depth-tested geometry. */
-    sg_apply_pipeline(R.pip_hex);
     mat4_t vp = mat4_mul(proj, view);
+    /* Skip every chunk draw when the debug toggle is off. Buffers
+     * stay populated; flipping the toggle back on shows everything
+     * the next frame. The atmosphere + sky / sun / distant-LOD passes
+     * still run so we can verify those in isolation. */
+    if (R_TERRAIN_VISIBLE) {
+    sg_apply_pipeline(R.pip_hex);
     float light_ub[8] = {
         R.env.sun_dir.x, R.env.sun_dir.y, R.env.sun_dir.z, 0.0f,
         R.env.ambient.x, R.env.ambient.y, R.env.ambient.z, 0.0f,
@@ -1838,6 +1848,7 @@ void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world,
         if (distant) continue;
         body_draw_water(body, vp, camera_world);
     }
+    }   /* end of if (R_TERRAIN_VISIBLE) */
 }
 
 void renderer_end_frame(void) {
@@ -1859,3 +1870,10 @@ void renderer_chunk_count(int* out_chunks, int* out_tiles_meshed) {
             ? R.bodies[R.active_body_idx].mesh_cursor : 0;
     }
 }
+
+/* Debug: hide/show the chunked terrain draws. Chunks themselves and
+ * their GPU buffers stay live — flipping the toggle back on shows
+ * everything immediately without re-meshing. The static is declared
+ * up near the forward-decl block so renderer_draw_world can read it. */
+void renderer_set_terrain_visible(bool v) { R_TERRAIN_VISIBLE = v; }
+bool renderer_terrain_visible(void)        { return R_TERRAIN_VISIBLE; }
