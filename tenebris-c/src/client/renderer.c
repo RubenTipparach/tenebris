@@ -311,6 +311,11 @@ static const char* FS_SKY =
     "uniform vec3  u_camera_pos;\n"
     "uniform vec4  u_atmo_params;\n"   /* x=Rg, y=Ra, z=strength, w=unused */
     "uniform vec4  u_atmo_tuning;\n"   /* x=rayleigh, y=mie, z=sun_intensity, w=sunset */
+    "uniform vec4  u_atmo_phys;\n"     /* xyz=wavelengths_inv4, w=scale_height          */
+    "uniform vec4  u_atmo_mie;\n"      /* x=mie_g, yzw=unused                           */
+    "uniform vec4  u_sunset_tint;\n"   /* xyz=multiplicative warm tint, w=unused        */
+    "uniform vec4  u_sunset_glow;\n"   /* xyz=sun-direction glow rgb, w=unused          */
+    "uniform vec4  u_sunset_horiz;\n"  /* xyz=horizon-band rgb, w=unused                */
     "out vec4 frag_color;\n"
 
     "#define PI 3.14159265359\n"
@@ -337,17 +342,12 @@ static const char* FS_SKY =
     "  return vec2(-b - s, -b + s);\n"
     "}\n"
 
-    /* Wavelength-inv-4 (red, green, blue) — physical constant; the
-     * (1/λ⁴) Rayleigh weighting that makes blue scatter more than
-     * red. The other knobs (u_atmo_tuning.x, u_atmo_tuning.y, u_atmo_tuning.z,
-     * sunset_strength) come from u_atmo_tuning per body so each
-     * planet can dial in its own sky look without a recompile. */
-    "const vec3  WAVELENGTHS_INV4 = vec3(5.602, 9.473, 19.644);\n"
-    "const float SCALE_HEIGHT     = 0.25;\n"
-    "const float MIE_G            = 0.76;\n"
+    /* All scattering knobs are uniforms — see u_atmo_phys for
+     * wavelengths-inv-4 and scale-height, u_atmo_mie.x for the Mie
+     * asymmetry, u_atmo_tuning for the four primary scales. */
 
     "float density(float altitude) {\n"
-    "  return exp(-altitude / SCALE_HEIGHT);\n"
+    "  return exp(-altitude / u_atmo_phys.w);\n"
     "}\n"
 
     /* Optical depth from a sun-side sample point through the
@@ -445,22 +445,22 @@ static const char* FS_SKY =
     "    float sunLen   = max(0.0, sunAtmo.y);\n"
     "    float sunOd    = opticalDepth(p, sunDir, sunLen, Rg, thickness);\n"
 
-    "    vec3 tauR = u_atmo_tuning.x * WAVELENGTHS_INV4 * (odR + sunOd);\n"
+    "    vec3 tauR = u_atmo_tuning.x * u_atmo_phys.xyz * (odR + sunOd);\n"
     "    vec3 tauM = vec3(u_atmo_tuning.y * (odM + sunOd));\n"
     "    vec3 atten = exp(-(tauR + tauM));\n"
     "    rSum += dens * atten * normStep;\n"
     "    mSum += dens * atten * normStep;\n"
     "  }\n"
 
-    "  rSum *= u_atmo_tuning.x * WAVELENGTHS_INV4;\n"
+    "  rSum *= u_atmo_tuning.x * u_atmo_phys.xyz;\n"
     "  mSum *= u_atmo_tuning.y;\n"
 
     "  float cosTheta = dot(d, sunDir);\n"
     "  float phaseR   = 0.75 * (1.0 + cosTheta * cosTheta);\n"
-    "  float gg       = MIE_G * MIE_G;\n"
+    "  float gg       = u_atmo_mie.x * u_atmo_mie.x;\n"
     "  float phaseM   = (1.0 - gg) /\n"
     "                   (4.0 * PI *\n"
-    "                    pow(max(1.0 + gg - 2.0 * MIE_G * cosTheta, 0.0001), 1.5));\n"
+    "                    pow(max(1.0 + gg - 2.0 * u_atmo_mie.x * cosTheta, 0.0001), 1.5));\n"
 
     "  vec3 sky = u_atmo_tuning.z * (rSum * phaseR + mSum * phaseM);\n"
 
@@ -475,11 +475,11 @@ static const char* FS_SKY =
      * all warm-tint and the sky stays Rayleigh-blue all the way to
      * the horizon. Tenebris currently uses 0.3 — present but subtle. */
     "  float ws = u_atmo_tuning.w;\n"
-    "  sky *= mix(vec3(1.0), vec3(1.3, 1.0, 0.6), sunset * 0.5 * ws);\n"
-    "  sky += vec3(1.0, 0.65, 0.25) * pow(view_sun, 3.0) * sunset * u_atmo_tuning.z * 0.12 * ws;\n"
+    "  sky *= mix(vec3(1.0), u_sunset_tint.xyz, sunset * 0.5 * ws);\n"
+    "  sky += u_sunset_glow.xyz * pow(view_sun, 3.0) * sunset * u_atmo_tuning.z * 0.12 * ws;\n"
     "  float horizon = 1.0 - abs(dot(d, ro_norm));\n"
     "  horizon = pow(horizon, 3.0);\n"
-    "  sky += vec3(0.8, 0.4, 0.15) * horizon * sunset * u_atmo_tuning.z * 0.04 * ws;\n"
+    "  sky += u_sunset_horiz.xyz * horizon * sunset * u_atmo_tuning.z * 0.04 * ws;\n"
 
     /* HDR -> LDR. */
     "  sky = 1.0 - exp(-sky);\n"
@@ -854,15 +854,20 @@ void renderer_init(void) {
         },
         .uniform_blocks[1] = {
             .stage = SG_SHADERSTAGE_FRAGMENT,
-            /* std140: 6 vec4 slots = 24 floats. */
-            .size  = 24 * sizeof(float),
+            /* std140: 11 vec4 slots = 44 floats. */
+            .size  = 44 * sizeof(float),
             .layout = SG_UNIFORMLAYOUT_STD140,
-            .glsl_uniforms[0] = { .glsl_name = "u_sun_dir",       .type = SG_UNIFORMTYPE_FLOAT3 },
-            .glsl_uniforms[1] = { .glsl_name = "u_sun_color",     .type = SG_UNIFORMTYPE_FLOAT3 },
-            .glsl_uniforms[2] = { .glsl_name = "u_planet_center", .type = SG_UNIFORMTYPE_FLOAT3 },
-            .glsl_uniforms[3] = { .glsl_name = "u_camera_pos",    .type = SG_UNIFORMTYPE_FLOAT3 },
-            .glsl_uniforms[4] = { .glsl_name = "u_atmo_params",   .type = SG_UNIFORMTYPE_FLOAT4 },
-            .glsl_uniforms[5] = { .glsl_name = "u_atmo_tuning",   .type = SG_UNIFORMTYPE_FLOAT4 },
+            .glsl_uniforms[0]  = { .glsl_name = "u_sun_dir",       .type = SG_UNIFORMTYPE_FLOAT3 },
+            .glsl_uniforms[1]  = { .glsl_name = "u_sun_color",     .type = SG_UNIFORMTYPE_FLOAT3 },
+            .glsl_uniforms[2]  = { .glsl_name = "u_planet_center", .type = SG_UNIFORMTYPE_FLOAT3 },
+            .glsl_uniforms[3]  = { .glsl_name = "u_camera_pos",    .type = SG_UNIFORMTYPE_FLOAT3 },
+            .glsl_uniforms[4]  = { .glsl_name = "u_atmo_params",   .type = SG_UNIFORMTYPE_FLOAT4 },
+            .glsl_uniforms[5]  = { .glsl_name = "u_atmo_tuning",   .type = SG_UNIFORMTYPE_FLOAT4 },
+            .glsl_uniforms[6]  = { .glsl_name = "u_atmo_phys",     .type = SG_UNIFORMTYPE_FLOAT4 },
+            .glsl_uniforms[7]  = { .glsl_name = "u_atmo_mie",      .type = SG_UNIFORMTYPE_FLOAT4 },
+            .glsl_uniforms[8]  = { .glsl_name = "u_sunset_tint",   .type = SG_UNIFORMTYPE_FLOAT4 },
+            .glsl_uniforms[9]  = { .glsl_name = "u_sunset_glow",   .type = SG_UNIFORMTYPE_FLOAT4 },
+            .glsl_uniforms[10] = { .glsl_name = "u_sunset_horiz",  .type = SG_UNIFORMTYPE_FLOAT4 },
         },
         .label = "sky-shader",
     });
@@ -1135,11 +1140,21 @@ void renderer_draw_skybox(mat4_t view, mat4_t proj) {
     mat4_t inv_vp = mat4_inverse(vp);
     sg_apply_pipeline(R.pip_sky);
     sg_apply_uniforms(0, &(sg_range){ .ptr = inv_vp.m, .size = sizeof(inv_vp.m) });
-    /* std140 frag UB: vec3+pad, vec3+pad, vec3+pad, vec3+pad, vec4,
-     * vec4 = 6 vec4 slots = 24 floats. */
-    float ub[24] = { 0 };
+    /* std140 frag UB: 11 vec4 slots = 44 floats.
+     *   [0..3]   u_sun_dir       (vec3 + pad)
+     *   [4..7]   u_sun_color     (vec3 + pad)
+     *   [8..11]  u_planet_center (vec3 + pad)
+     *   [12..15] u_camera_pos    (vec3 + pad)
+     *   [16..19] u_atmo_params   (vec4)
+     *   [20..23] u_atmo_tuning   (vec4)
+     *   [24..27] u_atmo_phys     (vec3 wavelengths + scale_height)
+     *   [28..31] u_atmo_mie      (vec4: x = mie_g, rest unused)
+     *   [32..35] u_sunset_tint   (vec3 + pad)
+     *   [36..39] u_sunset_glow   (vec3 + pad)
+     *   [40..43] u_sunset_horiz  (vec3 + pad)
+     */
+    float ub[44] = { 0 };
     ub[0]  = R.env.sun_dir.x; ub[1]  = R.env.sun_dir.y; ub[2]  = R.env.sun_dir.z;
-    /* Warm sun color. Slightly clipping white for the hot disc. */
     ub[4]  = 1.40f;           ub[5]  = 1.25f;           ub[6]  = 0.90f;
     ub[8]  = R.env.atmo_planet_center.x;
     ub[9]  = R.env.atmo_planet_center.y;
@@ -1151,11 +1166,24 @@ void renderer_draw_skybox(mat4_t view, mat4_t proj) {
     ub[17] = R.env.atmo_radius;
     ub[18] = R.env.atmo_strength;
     ub[19] = 0.0f;
-    /* Per-body scattering tuning. */
     ub[20] = R.env.atmo_rayleigh_scale;
     ub[21] = R.env.atmo_mie_scale;
     ub[22] = R.env.atmo_sun_intensity;
     ub[23] = R.env.atmo_sunset_strength;
+    ub[24] = R.env.atmo_wavelengths.x;
+    ub[25] = R.env.atmo_wavelengths.y;
+    ub[26] = R.env.atmo_wavelengths.z;
+    ub[27] = R.env.atmo_scale_height;
+    ub[28] = R.env.atmo_mie_g;
+    ub[32] = R.env.atmo_sunset_tint.x;
+    ub[33] = R.env.atmo_sunset_tint.y;
+    ub[34] = R.env.atmo_sunset_tint.z;
+    ub[36] = R.env.atmo_sunset_glow.x;
+    ub[37] = R.env.atmo_sunset_glow.y;
+    ub[38] = R.env.atmo_sunset_glow.z;
+    ub[40] = R.env.atmo_sunset_horizon.x;
+    ub[41] = R.env.atmo_sunset_horizon.y;
+    ub[42] = R.env.atmo_sunset_horizon.z;
     sg_apply_uniforms(1, &(sg_range){ .ptr = ub, .size = sizeof(ub) });
     /* No bindings needed — fullscreen triangle generated from gl_VertexID. */
     sg_apply_bindings(&(sg_bindings){ 0 });

@@ -28,12 +28,18 @@ typedef struct {
     float  atmo_strength;
     /* Per-body scattering tuning — comes straight from body_config.
      * Lets us make Tenebris bluer, Sequoia greener, etc., without
-     * recompiling the shader. All four are passed verbatim to the
-     * fragment shader as uniform floats. */
+     * recompiling the shader. All values are passed verbatim to the
+     * fragment shader as uniform floats / vec3s. */
     float  atmo_rayleigh_scale;
     float  atmo_mie_scale;
     float  atmo_sun_intensity;
     float  atmo_sunset_strength;
+    vec3_t atmo_wavelengths;     /* (1/λ⁴) RGB ratios for Rayleigh   */
+    float  atmo_mie_g;           /* Mie phase asymmetry (-1..1)      */
+    float  atmo_scale_height;    /* density falloff (normalised)     */
+    vec3_t atmo_sunset_tint;     /* sky multiplier near horizon      */
+    vec3_t atmo_sunset_glow;     /* sun-direction glow at sunset     */
+    vec3_t atmo_sunset_horizon;  /* horizon-band tint at sunset      */
     vec3_t camera_world;     /* used as ray-march origin for the sky pass */
 } render_env_t;
 

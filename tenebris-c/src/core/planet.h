@@ -4,6 +4,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "core/math.h"
+
 /*
  * Solar system. Tenebris is the main landable planet; everything else
  * renders as a decorative celestial body (pre-meshed at boot) visible
@@ -81,6 +83,20 @@ typedef struct {
     float       atmo_sunset_strength; /* warm-tint multiplier near horizon,
                                         0 → 0.3 (blue-leaning); set to 1.0 for
                                         the original strong orange sunset look. */
+    /* Physical constants — usually leave these zero. Override only
+     * when modelling a non-Earthlike planet. */
+    vec3_t      atmo_wavelengths;     /* (1/λ⁴) RGB ratios, 0 → (5.602, 9.473, 19.644) */
+    float       atmo_mie_g;           /* Mie asymmetry (-1..1), 0 → 0.76          */
+    float       atmo_scale_height;    /* density falloff in normalised height,
+                                        0 → 0.25 (Earth-tuned)                    */
+    /* Sunset tint colours — three vec3s that the warm-horizon pass
+     * applies multiplicatively, additively as a sun-direction glow,
+     * and additively as a horizon band respectively. Zero → defaults
+     * tuned for an Earth/Tenebris orange-fade. Override for e.g.
+     * Mars-like red sunsets or alien chemistry. */
+    vec3_t      atmo_sunset_tint;     /* sky multiplier at sunset, 0 → (1.3, 1.0, 0.6)   */
+    vec3_t      atmo_sunset_glow;     /* sun-direction glow, 0 → (1.0, 0.65, 0.25)       */
+    vec3_t      atmo_sunset_horizon;  /* horizon-band tint, 0 → (0.8, 0.4, 0.15)         */
 } body_config_t;
 
 const body_config_t* planet_get(body_id_t id);

@@ -366,6 +366,37 @@ static void frame(void) {
                                 ? active_body->atmo_sun_intensity   : 30.0f;
     const float sunset          = active_body->atmo_sunset_strength > 0.0f
                                 ? active_body->atmo_sunset_strength : 0.3f;
+    const float scale_h         = active_body->atmo_scale_height    > 0.0f
+                                ? active_body->atmo_scale_height    : 0.25f;
+    const float mie_g           = active_body->atmo_mie_g           > 0.0f
+                                ? active_body->atmo_mie_g           : 0.76f;
+    /* vec3 zero-test: x+y+z > 0 means at least one channel was set
+     * by the body config. Otherwise fall back to the Earth-tuned
+     * defaults (matched to the original Caelum constants). */
+    const bool has_wavelengths      = (active_body->atmo_wavelengths.x +
+                                       active_body->atmo_wavelengths.y +
+                                       active_body->atmo_wavelengths.z) > 0.0f;
+    const vec3_t wavelengths        = has_wavelengths
+                                    ? active_body->atmo_wavelengths
+                                    : (vec3_t){ 5.602f, 9.473f, 19.644f };
+    const bool has_sunset_tint      = (active_body->atmo_sunset_tint.x +
+                                       active_body->atmo_sunset_tint.y +
+                                       active_body->atmo_sunset_tint.z) > 0.0f;
+    const vec3_t sunset_tint        = has_sunset_tint
+                                    ? active_body->atmo_sunset_tint
+                                    : (vec3_t){ 1.30f, 1.00f, 0.60f };
+    const bool has_sunset_glow      = (active_body->atmo_sunset_glow.x +
+                                       active_body->atmo_sunset_glow.y +
+                                       active_body->atmo_sunset_glow.z) > 0.0f;
+    const vec3_t sunset_glow        = has_sunset_glow
+                                    ? active_body->atmo_sunset_glow
+                                    : (vec3_t){ 1.00f, 0.65f, 0.25f };
+    const bool has_sunset_horizon   = (active_body->atmo_sunset_horizon.x +
+                                       active_body->atmo_sunset_horizon.y +
+                                       active_body->atmo_sunset_horizon.z) > 0.0f;
+    const vec3_t sunset_horizon     = has_sunset_horizon
+                                    ? active_body->atmo_sunset_horizon
+                                    : (vec3_t){ 0.80f, 0.40f, 0.15f };
     const float atmo_r = planet_r * radius_mult;
     render_env_t env = {
         .sun_dir    = sun_dir,
@@ -386,6 +417,12 @@ static void frame(void) {
         .atmo_mie_scale       = mie,
         .atmo_sun_intensity   = sun_int,
         .atmo_sunset_strength = sunset,
+        .atmo_wavelengths     = wavelengths,
+        .atmo_mie_g           = mie_g,
+        .atmo_scale_height    = scale_h,
+        .atmo_sunset_tint     = sunset_tint,
+        .atmo_sunset_glow     = sunset_glow,
+        .atmo_sunset_horizon  = sunset_horizon,
     };
     /* Camera world pos for the water-shader fresnel. Uses the player's
      * parallel-transported basis so it stays continuous when the old
