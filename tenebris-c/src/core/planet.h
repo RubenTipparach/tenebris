@@ -101,4 +101,25 @@ typedef struct {
 
 const body_config_t* planet_get(body_id_t id);
 
+/* Atmosphere-only patch struct — same fields as body_config_t.atmo_*
+ * (matches one-for-one). Pass to planet_set_atmosphere() at boot
+ * with values from the YAML config to override the in-tree defaults
+ * without recompiling. Zero-valued fields are skipped (so an empty
+ * patch is a no-op), letting the YAML express partial overrides. */
+typedef struct {
+    float  radius_mult;
+    float  rayleigh_scale;
+    float  mie_scale;
+    float  sun_intensity;
+    float  sunset_strength;
+    float  scale_height;
+    float  mie_g;
+    vec3_t wavelengths;
+    vec3_t sunset_tint;
+    vec3_t sunset_glow;
+    vec3_t sunset_horizon;
+} body_atmo_t;
+
+void planet_set_atmosphere(body_id_t id, const body_atmo_t* patch);
+
 #endif

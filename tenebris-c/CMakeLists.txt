@@ -24,6 +24,7 @@ set(TENEBRIS_CORE_SOURCES
     src/core/goldberg.c
     src/core/world.c
     src/core/job_system.c
+    src/core/config.c
 )
 
 add_library(tenebris_core STATIC ${TENEBRIS_CORE_SOURCES})

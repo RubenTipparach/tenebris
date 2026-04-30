@@ -18,6 +18,7 @@
 #include "core/planet_gen.h"
 #include "core/world.h"
 #include "core/job_system.h"
+#include "core/config.h"
 #include "client/gfx_math.h"
 #include "client/input.h"
 #include "client/player_ctrl.h"
@@ -131,6 +132,13 @@ static void init(void) {
     mobile_ui_init();
     teleport_menu_init();
     teleport_menu_set_player(&G.player);
+
+    /* Load atmosphere overrides from YAML before creating any
+     * worlds — planet_set_atmosphere mutates BODIES[] and the
+     * renderer reads body->atmo_* on every frame, so applying the
+     * patch up-front means the very first frame already uses the
+     * tuned values. */
+    config_load_atmosphere("assets/config/atmosphere.yaml");
 
     G.body  = planet_get(BODY_TENEBRIS);
     G.world = world_create(G.body, G.body->subdivisions);
