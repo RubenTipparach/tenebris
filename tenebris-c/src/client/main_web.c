@@ -139,6 +139,27 @@ static void init(void) {
      * patch up-front means the very first frame already uses the
      * tuned values. */
     config_load_atmosphere("assets/config/atmosphere.yaml");
+    /* One-shot dump of Tenebris's effective atmosphere values so we
+     * can sanity-check that the YAML actually landed (vs. defaults
+     * from main_web.c being silently used). Comment out once the
+     * config loop is settled. */
+    {
+        const body_config_t* tb = planet_get(BODY_TENEBRIS);
+        printf("[atmo] %s effective: rad_mult=%.3f rayleigh=%.3f mie=%.3f "
+               "sun_int=%.2f sunset=%.3f scale_h=%.3f mie_g=%.3f\n"
+               "[atmo]   wavelengths=(%.3f, %.3f, %.3f)\n"
+               "[atmo]   sunset_tint=(%.3f, %.3f, %.3f) glow=(%.3f, %.3f, %.3f) "
+               "horizon=(%.3f, %.3f, %.3f)\n",
+               tb->name,
+               tb->atmo_radius_mult, tb->atmo_rayleigh_scale, tb->atmo_mie_scale,
+               tb->atmo_sun_intensity, tb->atmo_sunset_strength,
+               tb->atmo_scale_height, tb->atmo_mie_g,
+               tb->atmo_wavelengths.x, tb->atmo_wavelengths.y, tb->atmo_wavelengths.z,
+               tb->atmo_sunset_tint.x, tb->atmo_sunset_tint.y, tb->atmo_sunset_tint.z,
+               tb->atmo_sunset_glow.x, tb->atmo_sunset_glow.y, tb->atmo_sunset_glow.z,
+               tb->atmo_sunset_horizon.x, tb->atmo_sunset_horizon.y, tb->atmo_sunset_horizon.z);
+        fflush(stdout);
+    }
 
     G.body  = planet_get(BODY_TENEBRIS);
     G.world = world_create(G.body, G.body->subdivisions);
