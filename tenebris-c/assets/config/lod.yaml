@@ -1,0 +1,17 @@
+# Level-of-detail tuning for the renderer.
+#
+# Currently only covers the distant-body icosphere — the cheap mesh
+# the renderer swaps in for any body whose angular size on screen
+# drops below the close-LOD threshold. Loaded at boot by
+# config_load_lod(); fields default per core/config.c if omitted.
+#
+# Fields:
+#   distant_subdivisions  int  icosphere subdivision levels for far-LOD
+#                              bodies. 0 = 20 tris, 1 = 80, 2 = 320
+#                              (= 16× the base icosa), 3 = 1280.
+#                              Higher = rounder distant-body silhouette
+#                              and a finer-grained terrain-colour mosaic
+#                              at the cost of mesh build time + memory.
+
+lod:
+  distant_subdivisions: 2

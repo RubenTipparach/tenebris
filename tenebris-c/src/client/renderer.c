@@ -2,6 +2,7 @@
 #include "client/hex_mesher.h"
 #include "core/blocks.h"
 #include "core/config.h"
+#include "core/goldberg.h"
 
 #include "sokol_gfx.h"
 #include "sokol_app.h"
@@ -115,18 +116,29 @@ typedef struct {
     bool         meshed;                 /* chunks have content + uploaded */
     vec3_t       world_pos;              /* model-translate origin (body centre) */
     float        radius_m;
-    vec3_t       distant_color;          /* fallback for far-LOD icosphere */
+    vec3_t       distant_color;          /* fallback when terrain colour sample misses */
+    /* Per-body distant LOD: subdivided icosphere with vertex colours
+     * sampled from this body's terrain at register time. Replaces the
+     * shared 20-tri flat-shaded sphere — that one looked identical for
+     * every body so a green sister-planet and a red Mars-like one
+     * showed up as the same featureless coloured ball. */
+    sg_buffer    distant_vbuf;
+    sg_buffer    distant_ibuf;
+    int          distant_index_count;
 } chunked_body_t;
 
 static struct {
     sg_pipeline pip_hex;
     sg_pipeline pip_water;     /* translucent, wave-animated cap layer */
     sg_pipeline pip_sky;       /* fullscreen atmosphere + starfield     */
-    sg_pipeline pip_distant;   /* flat-shaded unit icosphere (far LOD)  */
+    sg_pipeline pip_distant;   /* subdivided icosphere w/ vertex colours (far LOD) */
     sg_pipeline pip_sun;       /* emissive sun sphere                   */
-    sg_buffer   distant_vbuf;
-    sg_buffer   distant_ibuf;
-    int         distant_index_count;
+    /* Average RGB of each atlas column, computed once at bake_atlas
+     * time. Indexed by the atlas-column number returned by
+     * block_face_tile(block, FACE_CAP_TOP) — gives a colour summary
+     * of every block's top face that the distant LOD samples per
+     * vertex to colour the body to roughly match its surface. */
+    vec3_t      atlas_col_avg[HEX_ATLAS_TILES];
     /* Smooth UV sphere — used by the sun (front-face emissive). */
     sg_buffer   uvsphere_vbuf;
     sg_buffer   uvsphere_ibuf;
@@ -200,23 +212,26 @@ static const char* FS_HEX =
     "  frag_color = vec4(tex.rgb * v_light, tex.a);\n"
     "}\n";
 
-/* Distant-body pipeline — a flat-shaded 20-face icosphere scaled to
+/* Distant-body pipeline — a per-body subdivided icosphere scaled to
  * the body's radius, used when the body subtends less than ~20 % of
- * the viewport. No atlas sampling, no wave effects — a single solid
- * colour driven by tileset + body flags. */
+ * the viewport. The mesh is built once at register time with smooth
+ * radial normals and per-vertex colours sampled from the body's own
+ * topmost-block atlas tile, so a distant Sequoia shows mottled green,
+ * Crag rusty red, etc., instead of every body looking like the same
+ * featureless solid sphere. Lighting is per-vertex Lambert. */
 static const char* VS_DISTANT =
     "#version 300 es\n"
     "layout(location=0) in vec3 a_pos;\n"
     "layout(location=1) in vec3 a_normal;\n"
+    "layout(location=2) in vec3 a_color;\n"
     "uniform mat4 u_mvp;\n"
-    "uniform vec3 u_color;\n"
     "uniform vec3 u_sun_dir;\n"
     "uniform vec3 u_ambient;\n"
     "out vec3 v_color;\n"
     "void main() {\n"
     "  gl_Position = u_mvp * vec4(a_pos, 1.0);\n"
     "  float ndl = max(dot(normalize(a_normal), normalize(u_sun_dir)), 0.0);\n"
-    "  v_color = u_color * (u_ambient + vec3(ndl));\n"
+    "  v_color = a_color * (u_ambient + vec3(ndl));\n"
     "}\n";
 
 static const char* FS_DISTANT =
@@ -809,6 +824,34 @@ static void bake_atlas(void) {
         }
         stbi_image_free(pix);
     }
+    /* Per-column average colour, used by the distant-LOD mesh
+     * builder to paint each icosphere vertex with the colour of the
+     * block whose tile sits under it. Walks the column's already-
+     * tinted pixels so the averaged result matches what the surface
+     * actually renders. */
+    for (int col = 0; col < HEX_ATLAS_TILES; ++col) {
+        double sr = 0, sg = 0, sb = 0;
+        int n = 0;
+        for (int y = 0; y < tile_px; ++y) {
+            for (int x = 0; x < tile_px; ++x) {
+                int idx = (y * W + col * tile_px + x) * 4;
+                if (atlas[idx + 3] < 8) continue;  /* skip near-transparent */
+                sr += atlas[idx + 0];
+                sg += atlas[idx + 1];
+                sb += atlas[idx + 2];
+                ++n;
+            }
+        }
+        if (n > 0) {
+            R.atlas_col_avg[col] = (vec3_t){
+                (float)(sr / (double)n / 255.0),
+                (float)(sg / (double)n / 255.0),
+                (float)(sb / (double)n / 255.0),
+            };
+        } else {
+            R.atlas_col_avg[col] = (vec3_t){ 0.5f, 0.5f, 0.5f };
+        }
+    }
     R.atlas_img = sg_make_image(&(sg_image_desc){
         .width = W, .height = H,
         .pixel_format = SG_PIXELFORMAT_RGBA8,
@@ -1000,25 +1043,25 @@ void renderer_init(void) {
         .label = "sky-pipeline",
     });
 
-    /* Distant-LOD pipeline + shared unit icosphere mesh. 20 flat
-     * triangles with per-face normals (duplicated vertices so each
-     * face has its own normal = face normal). Vertex = pos+normal,
-     * 24 bytes. */
+    /* Distant-LOD pipeline. The mesh itself is per-body and gets
+     * built at register time (build_distant_mesh_for_body); each
+     * vertex carries a colour sampled from the body's terrain so
+     * different planets show different colours from far away. */
     sg_shader shd_distant = sg_make_shader(&(sg_shader_desc){
         .vertex_func.source   = VS_DISTANT,
         .fragment_func.source = FS_DISTANT,
         .attrs = {
             [0].glsl_name = "a_pos",
             [1].glsl_name = "a_normal",
+            [2].glsl_name = "a_color",
         },
         .uniform_blocks[0] = {
             .stage = SG_SHADERSTAGE_VERTEX,
-            .size  = (16 + 4 + 4 + 4) * sizeof(float),   /* mat4 + 3 vec3+pad */
+            .size  = (16 + 4 + 4) * sizeof(float),   /* mat4 + 2 vec3+pad */
             .layout = SG_UNIFORMLAYOUT_STD140,
             .glsl_uniforms[0] = { .glsl_name = "u_mvp",     .type = SG_UNIFORMTYPE_MAT4 },
-            .glsl_uniforms[1] = { .glsl_name = "u_color",   .type = SG_UNIFORMTYPE_FLOAT3 },
-            .glsl_uniforms[2] = { .glsl_name = "u_sun_dir", .type = SG_UNIFORMTYPE_FLOAT3 },
-            .glsl_uniforms[3] = { .glsl_name = "u_ambient", .type = SG_UNIFORMTYPE_FLOAT3 },
+            .glsl_uniforms[1] = { .glsl_name = "u_sun_dir", .type = SG_UNIFORMTYPE_FLOAT3 },
+            .glsl_uniforms[2] = { .glsl_name = "u_ambient", .type = SG_UNIFORMTYPE_FLOAT3 },
         },
         .label = "distant-shader",
     });
@@ -1026,10 +1069,11 @@ void renderer_init(void) {
         .shader = shd_distant,
         .layout = {
             .attrs = {
-                [0] = { .format = SG_VERTEXFORMAT_FLOAT3 },
-                [1] = { .format = SG_VERTEXFORMAT_FLOAT3 },
+                [0] = { .format = SG_VERTEXFORMAT_FLOAT3 },   /* pos    */
+                [1] = { .format = SG_VERTEXFORMAT_FLOAT3 },   /* normal */
+                [2] = { .format = SG_VERTEXFORMAT_FLOAT3 },   /* color  */
             },
-            .buffers[0].stride = 6 * sizeof(float),
+            .buffers[0].stride = 9 * sizeof(float),
         },
         .index_type = SG_INDEXTYPE_UINT32,
         .depth = { .write_enabled = true, .compare = SG_COMPAREFUNC_LESS_EQUAL },
@@ -1037,60 +1081,6 @@ void renderer_init(void) {
         .face_winding = SG_FACEWINDING_CCW,
         .label = "distant-pipeline",
     });
-    {
-        /* Unit icosahedron: 12 vertices, 20 faces. We duplicate each
-         * vertex per face so the shader gets flat face normals. */
-        const double t = (1.0 + sqrt(5.0)) / 2.0;
-        const double n = 1.0 / sqrt(1.0 + t * t);
-        const double T = t * n;
-        const float v[12][3] = {
-            {(float)-n, (float)T, 0}, {(float)n, (float)T, 0},
-            {(float)-n, (float)-T, 0}, {(float)n, (float)-T, 0},
-            {0, (float)-n, (float)T}, {0, (float)n, (float)T},
-            {0, (float)-n, (float)-T}, {0, (float)n, (float)-T},
-            {(float)T, 0, (float)-n}, {(float)T, 0, (float)n},
-            {(float)-T, 0, (float)-n}, {(float)-T, 0, (float)n},
-        };
-        static const int F[20][3] = {
-            {0,11,5},{0,5,1},{0,1,7},{0,7,10},{0,10,11},
-            {1,5,9},{5,11,4},{11,10,2},{10,7,6},{7,1,8},
-            {3,9,4},{3,4,2},{3,2,6},{3,6,8},{3,8,9},
-            {4,9,5},{2,4,11},{6,2,10},{8,6,7},{9,8,1},
-        };
-        float verts[20 * 3 * 6];
-        uint32_t indices[20 * 3];
-        for (int fi = 0; fi < 20; ++fi) {
-            const float* a = v[F[fi][0]];
-            const float* b = v[F[fi][1]];
-            const float* c = v[F[fi][2]];
-            float e1[3] = { b[0]-a[0], b[1]-a[1], b[2]-a[2] };
-            float e2[3] = { c[0]-a[0], c[1]-a[1], c[2]-a[2] };
-            float nrm[3] = {
-                e1[1]*e2[2] - e1[2]*e2[1],
-                e1[2]*e2[0] - e1[0]*e2[2],
-                e1[0]*e2[1] - e1[1]*e2[0],
-            };
-            float len = sqrtf(nrm[0]*nrm[0] + nrm[1]*nrm[1] + nrm[2]*nrm[2]);
-            nrm[0] /= len; nrm[1] /= len; nrm[2] /= len;
-            for (int k = 0; k < 3; ++k) {
-                const float* vp = (k == 0) ? a : (k == 1 ? b : c);
-                float* vw = &verts[(fi * 3 + k) * 6];
-                vw[0] = vp[0]; vw[1] = vp[1]; vw[2] = vp[2];
-                vw[3] = nrm[0]; vw[4] = nrm[1]; vw[5] = nrm[2];
-                indices[fi * 3 + k] = (uint32_t)(fi * 3 + k);
-            }
-        }
-        R.distant_vbuf = sg_make_buffer(&(sg_buffer_desc){
-            .data = { .ptr = verts, .size = sizeof(verts) },
-            .label = "distant-vbuf",
-        });
-        R.distant_ibuf = sg_make_buffer(&(sg_buffer_desc){
-            .usage.index_buffer = true,
-            .data = { .ptr = indices, .size = sizeof(indices) },
-            .label = "distant-ibuf",
-        });
-        R.distant_index_count = 60;
-    }
 
     /* Smooth UV sphere — shared by sun + atmosphere shells. 32 lon
      * x 16 lat = 1056 verts, ~3000 tris. Position-only vertices;
@@ -1193,6 +1183,8 @@ void renderer_shutdown(void) {
             if (c->water_vbuf.id)  sg_destroy_buffer(c->water_vbuf);
             if (c->water_ibuf.id)  sg_destroy_buffer(c->water_ibuf);
         }
+        if (body->distant_vbuf.id) sg_destroy_buffer(body->distant_vbuf);
+        if (body->distant_ibuf.id) sg_destroy_buffer(body->distant_ibuf);
         free(body->tile_to_chunk); body->tile_to_chunk = NULL;
     }
     R.body_count = 0;
@@ -1204,8 +1196,6 @@ void renderer_shutdown(void) {
     sg_destroy_pipeline(R.pip_water);
     sg_destroy_pipeline(R.pip_sky);
     sg_destroy_pipeline(R.pip_distant);
-    sg_destroy_buffer(R.distant_vbuf);
-    sg_destroy_buffer(R.distant_ibuf);
     sg_destroy_pipeline(R.pip_sun);
     sg_destroy_buffer(R.uvsphere_vbuf);
     sg_destroy_buffer(R.uvsphere_ibuf);
@@ -1374,6 +1364,142 @@ void renderer_draw_sun(mat4_t view, mat4_t proj) {
  * switched at runtime via renderer_set_active_world (e.g. on player
  * teleport). */
 
+/* ----------------------------------------------------------------------- */
+/* Distant-body icosphere builder. Generates a unit icosphere
+ * subdivided to config_lod()->distant_subdivisions levels (each
+ * subdivision splits every triangle into four, so level 2 = 320 tris
+ * = 16× the base detail). Vertex normals are radial (the unit
+ * direction itself), so shading is smooth across faces. Each vertex
+ * also gets a colour sampled from the body's own world: find the
+ * Goldberg tile under that direction, walk down to the topmost solid
+ * block, look up its top-face atlas tile in R.atlas_col_avg. If the
+ * tile isn't generated yet we fall back to the per-tileset
+ * distant_color so the body never goes black mid-stream. */
+
+#define DISTANT_MAX_VERTS  1024   /* SUBDIV=3 needs 642 unique verts */
+#define DISTANT_MAX_TRIS   1280   /* SUBDIV=3 needs 1280 tris        */
+
+typedef struct { uint32_t a, b, mid; } edge_mid_t;
+
+static uint32_t midpoint_lookup(edge_mid_t* edges, int* nedges,
+                                 float (*verts)[3], int* nverts,
+                                 uint32_t a, uint32_t b) {
+    uint32_t lo = a < b ? a : b;
+    uint32_t hi = a < b ? b : a;
+    for (int i = 0; i < *nedges; ++i) {
+        if (edges[i].a == lo && edges[i].b == hi) return edges[i].mid;
+    }
+    /* New midpoint — average and re-project to unit sphere. */
+    float mx = (verts[a][0] + verts[b][0]) * 0.5f;
+    float my = (verts[a][1] + verts[b][1]) * 0.5f;
+    float mz = (verts[a][2] + verts[b][2]) * 0.5f;
+    float L  = sqrtf(mx*mx + my*my + mz*mz);
+    if (L > 0.0f) { mx /= L; my /= L; mz /= L; }
+    uint32_t idx = (uint32_t)(*nverts);
+    verts[idx][0] = mx;
+    verts[idx][1] = my;
+    verts[idx][2] = mz;
+    ++*nverts;
+    edges[*nedges] = (edge_mid_t){ lo, hi, idx };
+    ++*nedges;
+    return idx;
+}
+
+static vec3_t sample_body_top_color(const chunked_body_t* body, const float dir[3]) {
+    const world_t* w = body->world;
+    if (!w) return body->distant_color;
+    dvec3_t d = dvec3_make(dir[0], dir[1], dir[2]);
+    int tile = goldberg_find_tile(w->grid, d, -1);
+    if (tile < 0 || tile >= w->tile_count || tile >= w->gen_cursor) {
+        return body->distant_color;
+    }
+    block_t top = BLOCK_AIR;
+    for (int dep = WORLD_MAX_DEPTH - 1; dep >= 0; --dep) {
+        block_t b = (block_t)w->blocks[tile * WORLD_MAX_DEPTH + dep];
+        if (block_is_solid(b)) { top = b; break; }
+    }
+    if (top == BLOCK_AIR) return body->distant_color;
+    int col = (int)block_face_tile(top, FACE_CAP_TOP);
+    if (col < 0 || col >= HEX_ATLAS_TILES) return body->distant_color;
+    return R.atlas_col_avg[col];
+}
+
+static void build_distant_mesh_for_body(chunked_body_t* body) {
+    const int levels = config_lod()->distant_subdivisions;
+
+    /* Base unit icosahedron. */
+    const double tau = (1.0 + sqrt(5.0)) / 2.0;
+    const double inv = 1.0 / sqrt(1.0 + tau * tau);
+    const float  N   = (float)inv;
+    const float  T   = (float)(tau * inv);
+    static const int base_tris[20][3] = {
+        {0,11,5},{0,5,1},{0,1,7},{0,7,10},{0,10,11},
+        {1,5,9},{5,11,4},{11,10,2},{10,7,6},{7,1,8},
+        {3,9,4},{3,4,2},{3,2,6},{3,6,8},{3,8,9},
+        {4,9,5},{2,4,11},{6,2,10},{8,6,7},{9,8,1},
+    };
+    float verts[DISTANT_MAX_VERTS][3] = {
+        {-N, T, 0}, { N, T, 0}, {-N,-T, 0}, { N,-T, 0},
+        { 0,-N, T}, { 0, N, T}, { 0,-N,-T}, { 0, N,-T},
+        { T, 0,-N}, { T, 0, N}, {-T, 0,-N}, {-T, 0, N},
+    };
+    int nv = 12;
+    uint32_t tris[DISTANT_MAX_TRIS][3];
+    for (int i = 0; i < 20; ++i) {
+        tris[i][0] = (uint32_t)base_tris[i][0];
+        tris[i][1] = (uint32_t)base_tris[i][1];
+        tris[i][2] = (uint32_t)base_tris[i][2];
+    }
+    int nt = 20;
+
+    /* Subdivide. Each pass splits every tri into 4 by inserting edge
+     * midpoints (deduped via the edge cache so adjacent tris share
+     * the new vertex). */
+    for (int lvl = 0; lvl < levels; ++lvl) {
+        edge_mid_t edges[DISTANT_MAX_TRIS * 3]; int ne = 0;
+        uint32_t new_tris[DISTANT_MAX_TRIS][3]; int new_nt = 0;
+        for (int t = 0; t < nt; ++t) {
+            uint32_t a = tris[t][0], b = tris[t][1], c = tris[t][2];
+            uint32_t mab = midpoint_lookup(edges, &ne, verts, &nv, a, b);
+            uint32_t mbc = midpoint_lookup(edges, &ne, verts, &nv, b, c);
+            uint32_t mca = midpoint_lookup(edges, &ne, verts, &nv, c, a);
+            new_tris[new_nt  ][0] = a;   new_tris[new_nt  ][1] = mab; new_tris[new_nt  ][2] = mca; ++new_nt;
+            new_tris[new_nt  ][0] = b;   new_tris[new_nt  ][1] = mbc; new_tris[new_nt  ][2] = mab; ++new_nt;
+            new_tris[new_nt  ][0] = c;   new_tris[new_nt  ][1] = mca; new_tris[new_nt  ][2] = mbc; ++new_nt;
+            new_tris[new_nt  ][0] = mab; new_tris[new_nt  ][1] = mbc; new_tris[new_nt  ][2] = mca; ++new_nt;
+        }
+        memcpy(tris, new_tris, (size_t)new_nt * sizeof(uint32_t) * 3);
+        nt = new_nt;
+    }
+
+    /* Pack: pos (3) + normal (3, radial) + colour (3, sampled). */
+    static float vbuf[DISTANT_MAX_VERTS * 9];
+    for (int i = 0; i < nv; ++i) {
+        const float* p = verts[i];
+        vbuf[i*9 + 0] = p[0]; vbuf[i*9 + 1] = p[1]; vbuf[i*9 + 2] = p[2];
+        vbuf[i*9 + 3] = p[0]; vbuf[i*9 + 4] = p[1]; vbuf[i*9 + 5] = p[2];
+        vec3_t col = sample_body_top_color(body, p);
+        vbuf[i*9 + 6] = col.x; vbuf[i*9 + 7] = col.y; vbuf[i*9 + 8] = col.z;
+    }
+    static uint32_t ibuf[DISTANT_MAX_TRIS * 3];
+    for (int i = 0; i < nt; ++i) {
+        ibuf[i*3 + 0] = tris[i][0];
+        ibuf[i*3 + 1] = tris[i][1];
+        ibuf[i*3 + 2] = tris[i][2];
+    }
+
+    body->distant_vbuf = sg_make_buffer(&(sg_buffer_desc){
+        .data = { .ptr = vbuf, .size = (size_t)nv * 9 * sizeof(float) },
+        .label = "body-distant-vbuf",
+    });
+    body->distant_ibuf = sg_make_buffer(&(sg_buffer_desc){
+        .usage.index_buffer = true,
+        .data = { .ptr = ibuf, .size = (size_t)nt * 3 * sizeof(uint32_t) },
+        .label = "body-distant-ibuf",
+    });
+    body->distant_index_count = nt * 3;
+}
+
 static vec3_t body_distant_color(const body_config_t* b) {
     vec3_t c;
     switch (b->tileset) {
@@ -1405,6 +1531,12 @@ void renderer_register_world(world_t* w) {
     body->has_water      = w->body->has_water;
     body->distant_color  = body_distant_color(w->body);
     body->mesh_cursor    = 0;
+    /* Build the far-LOD icosphere now while the world is fully
+     * generated — main_web.c drains world_stream_gen before calling
+     * us, so every tile's topmost block is available to sample for
+     * vertex colours. The mesh is small (≤ 1280 tris) so the cost
+     * is negligible at register time. */
+    build_distant_mesh_for_body(body);
 
     if (R.active_body_idx < 0) {
         /* First-registered body is the active one — full detail at
@@ -1537,15 +1669,12 @@ void renderer_draw_moons(mat4_t view, mat4_t proj, vec3_t camera_world) {
     const float LOD_RATIO = 0.12f;
 
     sg_apply_pipeline(R.pip_distant);
-    sg_apply_bindings(&(sg_bindings){
-        .vertex_buffers[0] = R.distant_vbuf,
-        .index_buffer      = R.distant_ibuf,
-    });
     for (int bi = 0; bi < R.body_count; ++bi) {
         chunked_body_t* body = &R.bodies[bi];
         /* The active body is always drawn detailed in renderer_draw_world;
          * never as an icosphere here. */
         if (bi == R.active_body_idx) continue;
+        if (body->distant_index_count <= 0) continue;
         if (!sphere_visible(frustum, body->world_pos, body->radius_m * 1.5f)) continue;
         vec3_t delta = vec3_sub(body->world_pos, camera_world);
         float  dist  = vec3_length(delta);
@@ -1556,18 +1685,19 @@ void renderer_draw_moons(mat4_t view, mat4_t proj, vec3_t camera_world) {
         mat4_t model = mat4_mul(mat4_translate(body->world_pos),
                                 mat4_scale_uniform(body->radius_m));
         mat4_t mvp = mat4_mul(vp_base, model);
-        /* Packed std140 uniform block: mat4 + 3x (vec3+pad). */
-        float ub[16 + 12];
+        sg_apply_bindings(&(sg_bindings){
+            .vertex_buffers[0] = body->distant_vbuf,
+            .index_buffer      = body->distant_ibuf,
+        });
+        /* Packed std140 uniform block: mat4 + 2x (vec3+pad). Per-vertex
+         * colour replaces the old u_color uniform. */
+        float ub[16 + 8];
         memcpy(ub, mvp.m, sizeof(mvp.m));
-        ub[16] = body->distant_color.x;
-        ub[17] = body->distant_color.y;
-        ub[18] = body->distant_color.z;
-        ub[19] = 0.0f;
-        ub[20] = R.env.sun_dir.x; ub[21] = R.env.sun_dir.y; ub[22] = R.env.sun_dir.z; ub[23] = 0.0f;
-        ub[24] = R.env.ambient.x; ub[25] = R.env.ambient.y; ub[26] = R.env.ambient.z; ub[27] = 0.0f;
+        ub[16] = R.env.sun_dir.x; ub[17] = R.env.sun_dir.y; ub[18] = R.env.sun_dir.z; ub[19] = 0.0f;
+        ub[20] = R.env.ambient.x; ub[21] = R.env.ambient.y; ub[22] = R.env.ambient.z; ub[23] = 0.0f;
         sg_apply_uniforms(0, &(sg_range){ .ptr = ub, .size = sizeof(ub) });
-        sg_draw(0, R.distant_index_count, 1);
-        R.tris += (size_t)R.distant_index_count / 3;
+        sg_draw(0, body->distant_index_count, 1);
+        R.tris += (size_t)body->distant_index_count / 3;
     }
 }
 

@@ -22,6 +22,7 @@
  */
 int config_load_atmosphere(const char* path);
 int config_load_skybox(const char* path);
+int config_load_lod(const char* path);
 
 /*
  * Global skybox tuning — read by renderer_draw_skybox each frame and
@@ -71,5 +72,20 @@ typedef struct {
  * config_load_skybox() runs and overrides fields from YAML. The
  * pointer is stable for the program lifetime. */
 const skybox_config_t* config_skybox(void);
+
+/*
+ * Level-of-detail tuning — currently just covers the distant-body
+ * icosphere (the one drawn instead of the full chunked terrain when
+ * a body subtends less than the LOD-cutoff fraction of the screen).
+ */
+typedef struct {
+    /* Icosphere subdivision levels. 0 = the bare 20-tri icosa, 1 =
+     * 80 tris, 2 = 320 tris (= 16× the base detail), 3 = 1280 tris.
+     * Each step quadruples triangle count and roughly halves the
+     * angular size of visible facets. */
+    int distant_subdivisions;
+} lod_config_t;
+
+const lod_config_t* config_lod(void);
 
 #endif

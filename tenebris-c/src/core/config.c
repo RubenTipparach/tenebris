@@ -208,6 +208,85 @@ int config_load_skybox(const char* path) {
 }
 
 /* ------------------------------------------------------------------------ */
+/* LOD config — compiled-in defaults overridable via lod.yaml. */
+
+static lod_config_t S_LOD = {
+    .distant_subdivisions = 2,
+};
+
+const lod_config_t* config_lod(void) { return &S_LOD; }
+
+int config_load_lod(const char* path) {
+    size_t fsize = 0;
+    char* buf = slurp_file(path, &fsize);
+    if (!buf) {
+        printf("[config] %s not found, using compiled-in lod defaults\n",
+               path);
+        fflush(stdout);
+        return -1;
+    }
+
+    int line_no = 0;
+    int parse_errors = 0;
+    char* p = buf;
+    char* line_start = buf;
+    while (1) {
+        if (*p == '\n' || *p == '\0') {
+            char saved = *p;
+            *p = '\0';
+            ++line_no;
+            char* line = trim_strip(line_start);
+            if (*line == '\0') {
+                /* skip */
+            } else {
+                char* colon = strchr(line, ':');
+                if (!colon) {
+                    printf("[config] %s:%d: missing ':' in '%s'\n",
+                           path, line_no, line);
+                    parse_errors++;
+                } else {
+                    *colon = '\0';
+                    char* key = line;
+                    char* val = trim_strip(colon + 1);
+                    size_t kn = strlen(key);
+                    while (kn > 0 && isspace((unsigned char)key[kn - 1])) key[--kn] = '\0';
+
+                    if (*val == '\0') {
+                        /* "lod:" header — single-section file, ignored */
+                    } else {
+                        if (strcmp(key, "distant_subdivisions") == 0) {
+                            int n = (int)strtol(val, NULL, 10);
+                            if (n < 0) n = 0;
+                            if (n > 3) n = 3;   /* cap so the upper-bound
+                                                 * vertex/index buffers in
+                                                 * renderer.c stay sized */
+                            S_LOD.distant_subdivisions = n;
+                        } else {
+                            printf("[config] %s:%d: unknown key '%s'\n",
+                                   path, line_no, key);
+                        }
+                    }
+                }
+            }
+            *p = saved;
+            if (saved == '\0') break;
+            line_start = p + 1;
+        }
+        ++p;
+    }
+
+    free(buf);
+    if (parse_errors > 0) {
+        printf("[config] %s loaded with %d parse error(s)\n",
+               path, parse_errors);
+        return -2;
+    }
+    printf("[config] loaded %s\n", path);
+    fflush(stdout);
+    return 0;
+}
+
+/* ------------------------------------------------------------------------ */
 
 int config_load_atmosphere(const char* path) {
     size_t fsize = 0;
