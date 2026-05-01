@@ -108,6 +108,32 @@ static double ground_radius_under(const world_t* w, int tile) {
     return -1e9;
 }
 
+/* Max step-up the player can take horizontally without jumping. Walking
+ * onto a column whose top exceeds (current feet radius + STEP_HEIGHT)
+ * is treated as a vertical wall and blocked. Matches the Minecraft
+ * "auto-step-up half a block" feel; tall walls require jump/jetpack. */
+#define STEP_HEIGHT 0.6
+
+/* Try to apply `delta` to `pos` along the body's tangent plane. If the
+ * tile under the candidate position is a wall (its column top sits
+ * more than STEP_HEIGHT above the player's current feet), the move is
+ * rejected and `pos` is returned unchanged so the player slides along
+ * the wall instead of teleporting up onto it. */
+static dvec3_t try_horizontal_step(const world_t* w,
+                                    const player_ctrl_t* p,
+                                    dvec3_t pos,
+                                    dvec3_t delta) {
+    dvec3_t center    = dvec3_make(p->body->pos_x, p->body->pos_y, p->body->pos_z);
+    dvec3_t candidate = dvec3_add(pos, delta);
+    dvec3_t cand_loc  = dvec3_sub(candidate, center);
+    int     cand_tile = goldberg_find_tile(w->grid, dvec3_normalize(cand_loc), p->last_tile);
+    double  cand_gr   = ground_radius_under(w, cand_tile);
+    if (cand_gr <= -1e8) return candidate;  /* ungenerated — don't block */
+    double feet_r = dvec3_length(dvec3_sub(pos, center));
+    if (cand_gr - feet_r > STEP_HEIGHT) return pos;  /* wall — slide */
+    return candidate;
+}
+
 /* ----------------------------------------------------------------------- */
 
 void player_init(player_ctrl_t* p, const body_config_t* body) {
@@ -161,11 +187,30 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
     float speed = in->phys.sprint ? SPRINT_SPEED : WALK_SPEED;
     if (p->fly_mode) speed = FLY_SPEED;
     dvec3_t wish = walk_wish(p, &in->phys);
-    p->position = dvec3_add(p->position, dvec3_scale(wish, (double)speed * (double)dt));
+
+    const bool on_tenebris = (p->body->id == BODY_TENEBRIS);
+    if (p->fly_mode || !on_tenebris) {
+        p->position = dvec3_add(p->position, dvec3_scale(wish, (double)speed * (double)dt));
+    } else {
+        /* Quake-style axis-separated wall collision: walk-fwd and strafe
+         * sub-moves are tested independently so a wall blocks only the
+         * component that hits it, leaving the perpendicular slide
+         * intact. Replaces the old "walk into a column, get teleported
+         * to the top of it" snap which yanked the camera up over
+         * vertical faces. */
+        const tangent_basis_t* b = &p->basis;
+        double cy = cos((double)p->yaw), sy = sin((double)p->yaw);
+        dvec3_t walk_fwd = dvec3_add(dvec3_scale(b->fwd,  cy), dvec3_scale(b->right, sy));
+        dvec3_t strafe   = dvec3_add(dvec3_scale(b->fwd, -sy), dvec3_scale(b->right, cy));
+        double s = (double)speed * (double)dt;
+        double walk_amt   = dvec3_dot(wish, walk_fwd) * s;
+        double strafe_amt = dvec3_dot(wish, strafe)   * s;
+        p->position = try_horizontal_step(w, p, p->position, dvec3_scale(walk_fwd, walk_amt));
+        p->position = try_horizontal_step(w, p, p->position, dvec3_scale(strafe,   strafe_amt));
+    }
 
     /* Track the tile we're over (Tenebris only — it's the only body
      * whose world_t is wired through the physics path right now). */
-    const bool on_tenebris = (p->body->id == BODY_TENEBRIS);
     if (on_tenebris) {
         dvec3_t local_dir = dvec3_normalize(player_local_pos(p));
         p->last_tile = goldberg_find_tile(w->grid, local_dir, p->last_tile);
@@ -190,7 +235,13 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
             p->vy += JETPACK_ACCEL * dt;
             if (p->vy > JETPACK_MAX_VY) p->vy = JETPACK_MAX_VY;
         }
-        p->vy -= gravity * dt;
+        /* Gravity is supported by the floor when grounded — without
+         * this gate, vy drains by `g*dt` every frame and the snap below
+         * yanks the eye back up by a few mm, producing a per-frame
+         * vertical bobble that reads as camera jitter. */
+        if (!p->grounded) {
+            p->vy -= gravity * dt;
+        }
 
         p->position = dvec3_add(p->position,
             dvec3_scale(p->basis.up, (double)p->vy * (double)dt));
