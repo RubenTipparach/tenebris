@@ -50,6 +50,29 @@ relevant struct in `core/`, (2) extend the YAML schema doc-comment,
 (3) extend the parser's switch in `core/config.c`, (4) plumb through
 to the consumer (renderer / sim / whatever).
 
+## No magic numbers in code
+
+Unless a value is a true mathematical or protocol constant that will
+never need to change (π, the speed of light, the on-disk header magic
+of a fixed file format), **do not hard-code numeric literals in
+C/GLSL**. Every "designer-tweakable" or "feels-right-after-iteration"
+number — colours, sizes, thresholds, falloff curves, density layers,
+phase asymmetries, drift speeds, intensities — belongs in a YAML file
+under `tenebris-c/assets/config/` and reaches the consumer via a
+`config_*()` getter.
+
+If you find yourself writing `* 0.85` or `vec3(0.55, 0.18, 0.38)` in
+a shader or sim path, stop. Add a field to the relevant
+`*_config_t`, extend the YAML schema and parser, and read it as a
+uniform / value at runtime instead. The four-step checklist above is
+the same one you'd follow for any new tunable.
+
+The only exception is values that are part of an algorithm's
+*identity* — e.g., the magic constants inside a hash function
+(`0.1031`, `443.897`) where the specific number doesn't have a
+semantic meaning, it just makes the hash work. Those stay inline,
+because exposing them would invite breakage rather than tuning.
+
 ## Static game asset guidelines
 
 These rules apply to every asset Claude generates, hand-edits, or asks

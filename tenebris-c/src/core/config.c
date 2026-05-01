@@ -97,6 +97,118 @@ static int find_body_by_key(const char* key) {
     return -1;
 }
 
+/* ------------------------------------------------------------------------ */
+/* Skybox config — single global struct seeded with the values that
+ * used to be hardcoded in the FS_SKY shader, optionally overridden
+ * by assets/config/skybox.yaml. */
+
+static skybox_config_t S_SKY = {
+    .star_densities             = { 100.0f, 200.0f, 300.0f },
+    .star_intensities           = { 1.0f,   0.8f,   0.6f   },
+    .star_sharpness             = 0.02f,
+    .star_brightness_threshold  = 0.7f,
+    .star_color                 = { 1.0f, 0.98f, 0.95f },
+
+    .nebula_warm_color          = { 0.55f, 0.18f, 0.38f },
+    .nebula_cool_color          = { 0.10f, 0.20f, 0.50f },
+    .nebula_intensity           = 0.20f,
+    .nebula_drift_speed         = 0.005f,
+    .nebula_scale1              = 1.4f,
+    .nebula_scale2              = 3.1f,
+    .nebula_cloud_lo            = 0.45f,
+    .nebula_cloud_hi            = 0.78f,
+    .nebula_warm_blend_lo       = 0.3f,
+    .nebula_warm_blend_hi       = 0.8f,
+
+    .space_color                = { 0.005f, 0.007f, 0.018f },
+};
+
+const skybox_config_t* config_skybox(void) { return &S_SKY; }
+
+int config_load_skybox(const char* path) {
+    size_t fsize = 0;
+    char* buf = slurp_file(path, &fsize);
+    if (!buf) {
+        printf("[config] %s not found, using compiled-in skybox defaults\n",
+               path);
+        fflush(stdout);
+        return -1;
+    }
+
+    int line_no = 0;
+    int parse_errors = 0;
+    char* p = buf;
+    char* line_start = buf;
+    while (1) {
+        if (*p == '\n' || *p == '\0') {
+            char saved = *p;
+            *p = '\0';
+            ++line_no;
+            char* line = trim_strip(line_start);
+            if (*line == '\0') {
+                /* skip blank / comment-only line */
+            } else {
+                char* colon = strchr(line, ':');
+                if (!colon) {
+                    printf("[config] %s:%d: missing ':' in '%s'\n",
+                           path, line_no, line);
+                    parse_errors++;
+                } else {
+                    *colon = '\0';
+                    char* key = line;
+                    char* val = trim_strip(colon + 1);
+                    size_t kn = strlen(key);
+                    while (kn > 0 && isspace((unsigned char)key[kn - 1])) key[--kn] = '\0';
+
+                    if (*val == '\0') {
+                        /* Section header: skybox.yaml has a single
+                         * top-level "skybox:" wrapper purely so the
+                         * file shape matches atmosphere.yaml; we don't
+                         * actually key on it. */
+                    } else {
+                        if      (strcmp(key, "star_densities"           ) == 0) { if (!parse_vec3(val, &S_SKY.star_densities))     parse_errors++; }
+                        else if (strcmp(key, "star_intensities"         ) == 0) { if (!parse_vec3(val, &S_SKY.star_intensities))   parse_errors++; }
+                        else if (strcmp(key, "star_sharpness"           ) == 0) S_SKY.star_sharpness            = (float)strtod(val, NULL);
+                        else if (strcmp(key, "star_brightness_threshold") == 0) S_SKY.star_brightness_threshold = (float)strtod(val, NULL);
+                        else if (strcmp(key, "star_color"               ) == 0) { if (!parse_vec3(val, &S_SKY.star_color))         parse_errors++; }
+                        else if (strcmp(key, "nebula_warm_color"        ) == 0) { if (!parse_vec3(val, &S_SKY.nebula_warm_color))  parse_errors++; }
+                        else if (strcmp(key, "nebula_cool_color"        ) == 0) { if (!parse_vec3(val, &S_SKY.nebula_cool_color))  parse_errors++; }
+                        else if (strcmp(key, "nebula_intensity"         ) == 0) S_SKY.nebula_intensity        = (float)strtod(val, NULL);
+                        else if (strcmp(key, "nebula_drift_speed"       ) == 0) S_SKY.nebula_drift_speed      = (float)strtod(val, NULL);
+                        else if (strcmp(key, "nebula_scale1"            ) == 0) S_SKY.nebula_scale1           = (float)strtod(val, NULL);
+                        else if (strcmp(key, "nebula_scale2"            ) == 0) S_SKY.nebula_scale2           = (float)strtod(val, NULL);
+                        else if (strcmp(key, "nebula_cloud_lo"          ) == 0) S_SKY.nebula_cloud_lo         = (float)strtod(val, NULL);
+                        else if (strcmp(key, "nebula_cloud_hi"          ) == 0) S_SKY.nebula_cloud_hi         = (float)strtod(val, NULL);
+                        else if (strcmp(key, "nebula_warm_blend_lo"     ) == 0) S_SKY.nebula_warm_blend_lo    = (float)strtod(val, NULL);
+                        else if (strcmp(key, "nebula_warm_blend_hi"     ) == 0) S_SKY.nebula_warm_blend_hi    = (float)strtod(val, NULL);
+                        else if (strcmp(key, "space_color"              ) == 0) { if (!parse_vec3(val, &S_SKY.space_color))        parse_errors++; }
+                        else {
+                            printf("[config] %s:%d: unknown key '%s'\n",
+                                   path, line_no, key);
+                        }
+                    }
+                }
+            }
+            *p = saved;
+            if (saved == '\0') break;
+            line_start = p + 1;
+        }
+        ++p;
+    }
+
+    free(buf);
+    if (parse_errors > 0) {
+        printf("[config] %s loaded with %d parse error(s)\n",
+               path, parse_errors);
+        return -2;
+    }
+    printf("[config] loaded %s\n", path);
+    fflush(stdout);
+    return 0;
+}
+
+/* ------------------------------------------------------------------------ */
+
 int config_load_atmosphere(const char* path) {
     size_t fsize = 0;
     char* buf = slurp_file(path, &fsize);

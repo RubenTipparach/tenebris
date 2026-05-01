@@ -1,6 +1,7 @@
 #include "client/renderer.h"
 #include "client/hex_mesher.h"
 #include "core/blocks.h"
+#include "core/config.h"
 
 #include "sokol_gfx.h"
 #include "sokol_app.h"
@@ -324,6 +325,16 @@ static const char* FS_SKY =
     "uniform vec3  u_cam_up;\n"
     "uniform vec3  u_cam_fwd;\n"
     "uniform vec4  u_sky_params;\n"    /* x=tan(fovY/2), y=aspect, z=time, w=unused    */
+    /* Skybox tuning, loaded from assets/config/skybox.yaml. See
+     * skybox_config_t in core/config.h for the field meanings. */
+    "uniform vec4  u_star_densities;\n"   /* xyz=3 layer densities, w=sharpness         */
+    "uniform vec4  u_star_intensities;\n" /* xyz=3 layer weights,  w=brightness threshold */
+    "uniform vec3  u_star_color;\n"
+    "uniform vec3  u_nebula_warm;\n"
+    "uniform vec3  u_nebula_cool;\n"
+    "uniform vec4  u_nebula_params;\n"    /* x=intensity, y=drift, z=scale1, w=scale2  */
+    "uniform vec4  u_nebula_smoothstep;\n"/* xy=cloud (lo,hi), zw=warm-blend (lo,hi)   */
+    "uniform vec3  u_space_color;\n"
     "out vec4 frag_color;\n"
 
     "#define PI 3.14159265359\n"
@@ -382,9 +393,9 @@ static const char* FS_SKY =
     "float starfield_layer(vec3 dir, float density) {\n"
     "  float cid;\n"
     "  float d2 = voronoi_star(dir, density, cid);\n"
-    "  float star = 1.0 - smoothstep(0.0, 0.02, d2);\n"
+    "  float star = 1.0 - smoothstep(0.0, u_star_densities.w, d2);\n"
     "  float br   = fract(cid * 123.456);\n"
-    "  return star * br * step(0.7, br);\n"
+    "  return star * br * step(u_star_intensities.w, br);\n"
     "}\n"
 
     /* Cheap 5-octave value-noise fbm for nebula clouds. */
@@ -454,22 +465,24 @@ static const char* FS_SKY =
     "                   + v_ndc.y * t       * u_cam_up);\n"
 
     /* Three-layer Voronoi starfield + soft nebula. No sun disc here —
-     * the physical sun sphere is drawn in the pass after this. */
+     * the physical sun sphere is drawn in the pass after this. All
+     * tuning lives in u_star_* / u_nebula_* / u_space_color uniforms,
+     * sourced from assets/config/skybox.yaml. */
     "  float stars = 0.0;\n"
-    "  stars += starfield_layer(d, 100.0) * 1.0;\n"
-    "  stars += starfield_layer(d, 200.0) * 0.8;\n"
-    "  stars += starfield_layer(d, 300.0) * 0.6;\n"
-    "  vec3 starColor = vec3(1.0, 0.98, 0.95) * stars;\n"
+    "  stars += starfield_layer(d, u_star_densities.x) * u_star_intensities.x;\n"
+    "  stars += starfield_layer(d, u_star_densities.y) * u_star_intensities.y;\n"
+    "  stars += starfield_layer(d, u_star_densities.z) * u_star_intensities.z;\n"
+    "  vec3 starColor = u_star_color * stars;\n"
 
-    "  float drift = u_sky_params.z * 0.005;\n"
-    "  float n  = fbm5(d * 1.4 + vec3(drift, 0.0, drift * 0.7));\n"
-    "  float n2 = fbm5(d * 3.1 + vec3(7.3, 2.1, 9.9));\n"
-    "  float cloud = smoothstep(0.45, 0.78, n);\n"
-    "  vec3 warm = vec3(0.55, 0.18, 0.38);\n"
-    "  vec3 cool = vec3(0.10, 0.20, 0.50);\n"
-    "  vec3 nebula = mix(cool, warm, smoothstep(0.3, 0.8, n2)) * cloud * 0.20;\n"
+    "  float drift = u_sky_params.z * u_nebula_params.y;\n"
+    "  float n  = fbm5(d * u_nebula_params.z + vec3(drift, 0.0, drift * 0.7));\n"
+    "  float n2 = fbm5(d * u_nebula_params.w + vec3(7.3, 2.1, 9.9));\n"
+    "  float cloud = smoothstep(u_nebula_smoothstep.x, u_nebula_smoothstep.y, n);\n"
+    "  vec3 nebula = mix(u_nebula_cool, u_nebula_warm,\n"
+    "                    smoothstep(u_nebula_smoothstep.z, u_nebula_smoothstep.w, n2))\n"
+    "                * cloud * u_nebula_params.x;\n"
 
-    "  vec3 space_col = vec3(0.005, 0.007, 0.018) + nebula + starColor;\n"
+    "  vec3 space_col = u_space_color + nebula + starColor;\n"
 
     "  float strength = u_atmo_params.z;\n"
     "  if (strength <= 0.001) {\n"
@@ -938,6 +951,11 @@ void renderer_init(void) {
     sg_shader shd_sky = sg_make_shader(&(sg_shader_desc){
         .vertex_func.source   = VS_SKY,
         .fragment_func.source = FS_SKY,
+        /* Sokol caps glsl_uniforms at 16 entries per block, so the
+         * scene-state uniforms (atmo + camera basis) live in block 0
+         * and the YAML-driven sky tuning (stars + nebula + backdrop)
+         * lives in block 1. The split is purely a sokol limitation —
+         * both blocks are bound at the same draw. */
         .uniform_blocks[0] = {
             .stage = SG_SHADERSTAGE_FRAGMENT,
             /* std140: 15 vec4 slots = 60 floats. */
@@ -958,6 +976,20 @@ void renderer_init(void) {
             .glsl_uniforms[12] = { .glsl_name = "u_cam_up",        .type = SG_UNIFORMTYPE_FLOAT3 },
             .glsl_uniforms[13] = { .glsl_name = "u_cam_fwd",       .type = SG_UNIFORMTYPE_FLOAT3 },
             .glsl_uniforms[14] = { .glsl_name = "u_sky_params",    .type = SG_UNIFORMTYPE_FLOAT4 },
+        },
+        .uniform_blocks[1] = {
+            .stage = SG_SHADERSTAGE_FRAGMENT,
+            /* std140: 8 vec4 slots = 32 floats. */
+            .size  = 32 * sizeof(float),
+            .layout = SG_UNIFORMLAYOUT_STD140,
+            .glsl_uniforms[0]  = { .glsl_name = "u_star_densities",     .type = SG_UNIFORMTYPE_FLOAT4 },
+            .glsl_uniforms[1]  = { .glsl_name = "u_star_intensities",   .type = SG_UNIFORMTYPE_FLOAT4 },
+            .glsl_uniforms[2]  = { .glsl_name = "u_star_color",         .type = SG_UNIFORMTYPE_FLOAT3 },
+            .glsl_uniforms[3]  = { .glsl_name = "u_nebula_warm",        .type = SG_UNIFORMTYPE_FLOAT3 },
+            .glsl_uniforms[4]  = { .glsl_name = "u_nebula_cool",        .type = SG_UNIFORMTYPE_FLOAT3 },
+            .glsl_uniforms[5]  = { .glsl_name = "u_nebula_params",      .type = SG_UNIFORMTYPE_FLOAT4 },
+            .glsl_uniforms[6]  = { .glsl_name = "u_nebula_smoothstep",  .type = SG_UNIFORMTYPE_FLOAT4 },
+            .glsl_uniforms[7]  = { .glsl_name = "u_space_color",        .type = SG_UNIFORMTYPE_FLOAT3 },
         },
         .label = "sky-shader",
     });
@@ -1197,22 +1229,22 @@ void renderer_draw_skybox(mat4_t view, mat4_t proj) {
      * only on camera rotation — they hold still even if the eye
      * jitters by sub-mm amounts each frame. */
     sg_apply_pipeline(R.pip_sky);
-    /* std140 frag UB: 15 vec4 slots = 60 floats.
-     *   [0..3]   u_sun_dir       (vec3 + pad)
-     *   [4..7]   u_sun_color     (vec3 + pad)
-     *   [8..11]  u_planet_center (vec3 + pad)
-     *   [12..15] u_camera_pos    (vec3 + pad)
-     *   [16..19] u_atmo_params   (vec4)
-     *   [20..23] u_atmo_tuning   (vec4)
-     *   [24..27] u_atmo_phys     (vec3 wavelengths + scale_height)
-     *   [28..31] u_atmo_mie      (vec4: x = mie_g, rest unused)
-     *   [32..35] u_sunset_tint   (vec3 + pad)
-     *   [36..39] u_sunset_glow   (vec3 + pad)
-     *   [40..43] u_sunset_horiz  (vec3 + pad)
-     *   [44..47] u_cam_right     (vec3 + pad)
-     *   [48..51] u_cam_up        (vec3 + pad)
-     *   [52..55] u_cam_fwd       (vec3 + pad)
-     *   [56..59] u_sky_params    (vec4: tan(fovY/2), aspect, time, _)
+    /* Block 0 — std140, 15 vec4 slots = 60 floats (scene state).
+     *   [0..3]   u_sun_dir            (vec3 + pad)
+     *   [4..7]   u_sun_color          (vec3 + pad)
+     *   [8..11]  u_planet_center      (vec3 + pad)
+     *   [12..15] u_camera_pos         (vec3 + pad)
+     *   [16..19] u_atmo_params        (vec4)
+     *   [20..23] u_atmo_tuning        (vec4)
+     *   [24..27] u_atmo_phys          (vec3 wavelengths + scale_height)
+     *   [28..31] u_atmo_mie           (vec4: x = mie_g, rest unused)
+     *   [32..35] u_sunset_tint        (vec3 + pad)
+     *   [36..39] u_sunset_glow        (vec3 + pad)
+     *   [40..43] u_sunset_horiz       (vec3 + pad)
+     *   [44..47] u_cam_right          (vec3 + pad)
+     *   [48..51] u_cam_up             (vec3 + pad)
+     *   [52..55] u_cam_fwd            (vec3 + pad)
+     *   [56..59] u_sky_params         (vec4: tan(fovY/2), aspect, time, _)
      */
     float ub[60] = { 0 };
     ub[0]  = R.env.sun_dir.x; ub[1]  = R.env.sun_dir.y; ub[2]  = R.env.sun_dir.z;
@@ -1258,6 +1290,49 @@ void renderer_draw_skybox(mat4_t view, mat4_t proj) {
     ub[58] = R.time_seconds;
     ub[59] = 0.0f;
     sg_apply_uniforms(0, &(sg_range){ .ptr = ub, .size = sizeof(ub) });
+
+    /* Block 1 — std140, 8 vec4 slots = 32 floats (skybox tuning from
+     * assets/config/skybox.yaml).
+     *   [0..3]   u_star_densities     (vec4: d1, d2, d3, sharpness)
+     *   [4..7]   u_star_intensities   (vec4: i1, i2, i3, threshold)
+     *   [8..11]  u_star_color         (vec3 + pad)
+     *   [12..15] u_nebula_warm        (vec3 + pad)
+     *   [16..19] u_nebula_cool        (vec3 + pad)
+     *   [20..23] u_nebula_params      (vec4: intensity, drift, scale1, scale2)
+     *   [24..27] u_nebula_smoothstep  (vec4: cloud_lo, cloud_hi, warm_lo, warm_hi)
+     *   [28..31] u_space_color        (vec3 + pad)
+     */
+    const skybox_config_t* sky = config_skybox();
+    float sb[32] = { 0 };
+    sb[0]  = sky->star_densities.x;
+    sb[1]  = sky->star_densities.y;
+    sb[2]  = sky->star_densities.z;
+    sb[3]  = sky->star_sharpness;
+    sb[4]  = sky->star_intensities.x;
+    sb[5]  = sky->star_intensities.y;
+    sb[6]  = sky->star_intensities.z;
+    sb[7]  = sky->star_brightness_threshold;
+    sb[8]  = sky->star_color.x;
+    sb[9]  = sky->star_color.y;
+    sb[10] = sky->star_color.z;
+    sb[12] = sky->nebula_warm_color.x;
+    sb[13] = sky->nebula_warm_color.y;
+    sb[14] = sky->nebula_warm_color.z;
+    sb[16] = sky->nebula_cool_color.x;
+    sb[17] = sky->nebula_cool_color.y;
+    sb[18] = sky->nebula_cool_color.z;
+    sb[20] = sky->nebula_intensity;
+    sb[21] = sky->nebula_drift_speed;
+    sb[22] = sky->nebula_scale1;
+    sb[23] = sky->nebula_scale2;
+    sb[24] = sky->nebula_cloud_lo;
+    sb[25] = sky->nebula_cloud_hi;
+    sb[26] = sky->nebula_warm_blend_lo;
+    sb[27] = sky->nebula_warm_blend_hi;
+    sb[28] = sky->space_color.x;
+    sb[29] = sky->space_color.y;
+    sb[30] = sky->space_color.z;
+    sg_apply_uniforms(1, &(sg_range){ .ptr = sb, .size = sizeof(sb) });
     /* No bindings needed — fullscreen triangle generated from gl_VertexID. */
     sg_apply_bindings(&(sg_bindings){ 0 });
     sg_draw(0, 3, 1);
