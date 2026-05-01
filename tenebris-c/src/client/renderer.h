@@ -14,6 +14,33 @@ typedef struct {
     vec3_t sky_top;
     vec3_t sky_bottom;
     vec3_t ambient;
+
+    /* Bruneton-style atmospheric scattering (precomputed_atmospheric_
+     * scattering / GPUGems2 ch.16). When `atmo_strength` > 0 the skybox
+     * pass ray-marches Rayleigh + Mie inscattering through a spherical
+     * shell centred at `atmo_planet_center` (world space) with radius
+     * `atmo_radius` over a planet of radius `atmo_planet_radius`.
+     * `atmo_strength` 0..1 cross-fades between starfield-only space
+     * (moons / asteroids) and full atmosphere (Tenebris, Sequoia). */
+    vec3_t atmo_planet_center;
+    float  atmo_planet_radius;
+    float  atmo_radius;
+    float  atmo_strength;
+    /* Per-body scattering tuning — comes straight from body_config.
+     * Lets us make Tenebris bluer, Sequoia greener, etc., without
+     * recompiling the shader. All values are passed verbatim to the
+     * fragment shader as uniform floats / vec3s. */
+    float  atmo_rayleigh_scale;
+    float  atmo_mie_scale;
+    float  atmo_sun_intensity;
+    float  atmo_sunset_strength;
+    vec3_t atmo_wavelengths;     /* (1/λ⁴) RGB ratios for Rayleigh   */
+    float  atmo_mie_g;           /* Mie phase asymmetry (-1..1)      */
+    float  atmo_scale_height;    /* density falloff (normalised)     */
+    vec3_t atmo_sunset_tint;     /* sky multiplier near horizon      */
+    vec3_t atmo_sunset_glow;     /* sun-direction glow at sunset     */
+    vec3_t atmo_sunset_horizon;  /* horizon-band tint at sunset      */
+    vec3_t camera_world;     /* used as ray-march origin for the sky pass */
 } render_env_t;
 
 void renderer_init(void);
@@ -38,12 +65,27 @@ void renderer_draw_sun(mat4_t view, mat4_t proj);
 void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world,
                          vec3_t camera_world, float dt_seconds);
 
-/* Register a celestial body as a static (non-streaming) decorative
- * world — moons, asteroids, anything the player can't land on. The
- * world must already be fully generated (world_gen_complete == true).
- * Meshes it once at registration time and uploads to a dedicated
- * buffer pair. Drawn each frame at body->position by renderer_draw_moons. */
+/* Register a celestial body for chunked rendering. Every body —
+ * Tenebris, moons, asteroids — uses the same 32-chunk layout, so block
+ * edits on any of them only touch the affected chunk(s) (same fast
+ * path on every world). The first body registered becomes the active
+ * one (streaming + edit-driven rebuild); subsequent registrations are
+ * fully meshed in one shot at register time. The world must already
+ * be world_gen_complete. */
+void renderer_register_world(world_t* w);
+/* Backwards-compat alias for renderer_register_world. */
 void renderer_register_moon(world_t* w);
+/* Switch which body is currently active (player teleporting). The
+ * old active body keeps its mesh data; only streaming / edit handling
+ * moves to the new world. */
+void renderer_set_active_world(world_t* w);
+
+/* Debug toggle — when terrain is hidden, the chunked-terrain draw
+ * passes are skipped (atmosphere + sky still render, distant body
+ * icospheres still render). Useful for verifying the atmosphere
+ * shader on its own without geometry obscuring the view. */
+void renderer_set_terrain_visible(bool visible);
+bool renderer_terrain_visible(void);
 /* Draw each registered body. `camera_world` is used to compute angular
  * screen size — bodies that subtend less than ~20% of the viewport
  * swap to a flat-shaded 20-face icosphere instead of their detailed
@@ -55,5 +97,9 @@ void renderer_end_frame(void);
 size_t renderer_triangles_drawn_this_frame(void);
 size_t renderer_tiles_drawn_this_frame(void);
 size_t renderer_tiles_remeshed_this_frame(void);
+/* Chunked-mesh diagnostics for the HUD. `out_chunks` = total chunk
+ * count (configured at compile time), `out_tiles_meshed` = number of
+ * tiles that have been routed into a chunk so far. */
+void   renderer_chunk_count(int* out_chunks, int* out_tiles_meshed);
 
 #endif

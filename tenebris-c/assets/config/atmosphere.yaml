@@ -1,0 +1,52 @@
+# Per-body atmosphere config.
+#
+# Loaded at boot by config_load_atmosphere() and applied to each
+# matching body_config_t before the renderer reads it. Any field
+# omitted falls back to the renderer default in main_web.c — set only
+# what you want to override per planet.
+#
+# Sections are matched case-insensitively against body names (the
+# `name` field in planet.c). Spaces in body names ("Asteroid A") get
+# folded to underscores for the YAML key.
+#
+# Fields:
+#   radius_mult       float  shell radius / planet radius
+#   rayleigh_scale    float  main blue-sky knob, 1.0 = Earth
+#   mie_scale         float  haze / forward sun-glow strength
+#   sun_intensity     float  overall sky brightness multiplier
+#   sunset_strength   float  warm-tint multiplier near horizon (0..1)
+#   scale_height      float  density falloff in normalised altitude
+#   mie_g             float  Mie phase asymmetry (-1..1)
+#   wavelengths       vec3   (1/λ⁴) RGB ratios, RGB
+#   sunset_tint       vec3   sky multiplier near horizon
+#   sunset_glow       vec3   sun-direction glow at sunset
+#   sunset_horizon    vec3   horizon-band tint at sunset
+
+tenebris:
+  radius_mult: 1.3
+  # Sky brightness — halved from the previous Caelum-default of 30.
+  # The earlier value was clipping the tone-mapped output toward
+  # white over most of the visible sky; 15 lands the daytime blue
+  # in a more reasonable mid-tone.
+  sun_intensity: 15.0
+  # Slightly less aggressive Rayleigh so the blue is rich without
+  # saturating to white near the zenith.
+  rayleigh_scale: 0.7
+  mie_scale: 0.04
+  sunset_strength: 0.25
+  scale_height: 0.25
+  mie_g: 0.76
+  wavelengths: [5.602, 9.473, 19.644]
+  sunset_tint: [1.3, 1.0, 0.6]
+  sunset_glow: [1.0, 0.65, 0.25]
+  sunset_horizon: [0.8, 0.4, 0.15]
+
+# Sequoia — sister Earth-like, slightly greener tint.
+sequoia:
+  sun_intensity: 15.0
+  rayleigh_scale: 0.8
+  sunset_tint: [1.1, 1.3, 0.7]
+  sunset_glow: [0.9, 1.0, 0.45]
+
+# Add other has_water=true bodies here. Bodies without atmosphere
+# (moons, asteroids, icy planets) ignore this file entirely.

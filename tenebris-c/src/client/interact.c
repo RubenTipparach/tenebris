@@ -27,8 +27,11 @@ static bool world_to_tile_depth(const world_t* w, dvec3_t pos, int hint,
     if (tile < 0) return false;
     double r = dvec3_length(pos);
     /* Invert world_depth_to_radius_m: r = body_r - (SEA_LEVEL_IDX - d)
-     * with block height = 1m. So depth = (r - body_r) + SEA_LEVEL_IDX. */
-    const int SEA_LEVEL_IDX = 12;
+     * with block height = 1m. So depth = (r - body_r) + SEA_LEVEL_IDX.
+     * Must match world.c's SEA_LEVEL_IDX (64). With the wrong value (12),
+     * mining/placing modified a block 52 layers below where the player
+     * was looking, so terrain seemed not to react to clicks. */
+    const int SEA_LEVEL_IDX = 64;
     int depth = (int)floor(r - w->body->radius_m) + SEA_LEVEL_IDX;
     if (depth < 0 || depth >= WORLD_MAX_DEPTH) return false;
     *out_tile  = tile;

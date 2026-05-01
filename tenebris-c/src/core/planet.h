@@ -4,6 +4,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "core/math.h"
+
 /*
  * Solar system. Tenebris is the main landable planet; everything else
  * renders as a decorative celestial body (pre-meshed at boot) visible
@@ -68,8 +70,56 @@ typedef struct {
     bool        icy;              /* snow / ice everywhere */
     bool        is_asteroid;      /* skipped from the teleport menu */
     tileset_t   tileset;          /* which palette to sample (earth / sequoia) */
+
+    /* ---- Atmosphere tuning (only used when has_water is true; the
+     * renderer treats has_water as the "has atmosphere" predicate
+     * since both Tenebris and Sequoia happen to be Earth-likes). All
+     * fields default to zero meaning "use renderer default" — leave
+     * a body's atmo_* zeroed and you get the default sky look. */
+    float       atmo_radius_mult;     /* shell radius / planet radius; 0 → 1.3   */
+    float       atmo_rayleigh_scale;  /* main blue-sky knob, 0 → 1.0              */
+    float       atmo_mie_scale;       /* haze / sun glow, 0 → 0.05                */
+    float       atmo_sun_intensity;   /* overall sky brightness, 0 → 30           */
+    float       atmo_sunset_strength; /* warm-tint multiplier near horizon,
+                                        0 → 0.3 (blue-leaning); set to 1.0 for
+                                        the original strong orange sunset look. */
+    /* Physical constants — usually leave these zero. Override only
+     * when modelling a non-Earthlike planet. */
+    vec3_t      atmo_wavelengths;     /* (1/λ⁴) RGB ratios, 0 → (5.602, 9.473, 19.644) */
+    float       atmo_mie_g;           /* Mie asymmetry (-1..1), 0 → 0.76          */
+    float       atmo_scale_height;    /* density falloff in normalised height,
+                                        0 → 0.25 (Earth-tuned)                    */
+    /* Sunset tint colours — three vec3s that the warm-horizon pass
+     * applies multiplicatively, additively as a sun-direction glow,
+     * and additively as a horizon band respectively. Zero → defaults
+     * tuned for an Earth/Tenebris orange-fade. Override for e.g.
+     * Mars-like red sunsets or alien chemistry. */
+    vec3_t      atmo_sunset_tint;     /* sky multiplier at sunset, 0 → (1.3, 1.0, 0.6)   */
+    vec3_t      atmo_sunset_glow;     /* sun-direction glow, 0 → (1.0, 0.65, 0.25)       */
+    vec3_t      atmo_sunset_horizon;  /* horizon-band tint, 0 → (0.8, 0.4, 0.15)         */
 } body_config_t;
 
 const body_config_t* planet_get(body_id_t id);
+
+/* Atmosphere-only patch struct — same fields as body_config_t.atmo_*
+ * (matches one-for-one). Pass to planet_set_atmosphere() at boot
+ * with values from the YAML config to override the in-tree defaults
+ * without recompiling. Zero-valued fields are skipped (so an empty
+ * patch is a no-op), letting the YAML express partial overrides. */
+typedef struct {
+    float  radius_mult;
+    float  rayleigh_scale;
+    float  mie_scale;
+    float  sun_intensity;
+    float  sunset_strength;
+    float  scale_height;
+    float  mie_g;
+    vec3_t wavelengths;
+    vec3_t sunset_tint;
+    vec3_t sunset_glow;
+    vec3_t sunset_horizon;
+} body_atmo_t;
+
+void planet_set_atmosphere(body_id_t id, const body_atmo_t* patch);
 
 #endif

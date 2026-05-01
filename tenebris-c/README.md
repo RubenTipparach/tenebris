@@ -50,3 +50,22 @@ assets/     runtime assets (textures, audio) copied from ../public
 third_party/  vendored single-header libs (populated by fetch-deps.sh)
 web/        HTML shell template for emcc
 ```
+
+## References / further reading
+
+Inspirations and techniques to draw from when revisiting renderer
+subsystems. These are *not* dependencies — the current code mostly
+implements simplified analytical variants.
+
+- **Atmospheric scattering** —
+  [Bruneton 2008, *Precomputed Atmospheric Scattering*](https://ebruneton.github.io/precomputed_atmospheric_scattering/)
+  for the canonical Rayleigh + Mie precomputed-LUT approach;
+  [GPU Gems 2 ch.16, *Accurate Atmospheric Scattering*](https://developer.nvidia.com/gpugems/gpugems2/part-ii-shading-lighting-and-shadows/chapter-16-accurate-atmospheric-scattering)
+  for the analytical per-pixel form the sky shader currently uses.
+- **Water rendering** —
+  [Fire-Face *Water Shading*](https://fire-face.com/personal/water/)
+  for fresnel-blended reflection / refraction with screen-space
+  reflections, foam masks, and depth-derived shoreline blending. The
+  current `VS_WATER`/`FS_WATER` only does an analytical 3-octave fBm
+  swell with a fresnel mix; the techniques on Fire-Face's page are
+  what to reach for when we add a render-target reflection probe.

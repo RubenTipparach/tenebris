@@ -2,7 +2,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-static const body_config_t BODIES[BODY_COUNT] = {
+static body_config_t BODIES[BODY_COUNT] = {
     /* ---- main planet ---- */
     [BODY_TENEBRIS] = {
         .id = BODY_TENEBRIS, .name = "Tenebris",
@@ -175,4 +175,28 @@ static const body_config_t BODIES[BODY_COUNT] = {
 const body_config_t* planet_get(body_id_t id) {
     if (id < 0 || id >= BODY_COUNT) return NULL;
     return &BODIES[id];
+}
+
+/* Apply a YAML-loaded atmosphere patch on top of a body's compiled-in
+ * defaults. Each field is only assigned when the patch's value is
+ * non-zero, so an empty patch is a no-op and a YAML file can express
+ * partial overrides (e.g. "Sequoia: just bump rayleigh_scale to 1.2"). */
+void planet_set_atmosphere(body_id_t id, const body_atmo_t* p) {
+    if (id < 0 || id >= BODY_COUNT || !p) return;
+    body_config_t* b = &BODIES[id];
+    if (p->radius_mult     > 0.0f) b->atmo_radius_mult     = p->radius_mult;
+    if (p->rayleigh_scale  > 0.0f) b->atmo_rayleigh_scale  = p->rayleigh_scale;
+    if (p->mie_scale       > 0.0f) b->atmo_mie_scale       = p->mie_scale;
+    if (p->sun_intensity   > 0.0f) b->atmo_sun_intensity   = p->sun_intensity;
+    if (p->sunset_strength > 0.0f) b->atmo_sunset_strength = p->sunset_strength;
+    if (p->scale_height    > 0.0f) b->atmo_scale_height    = p->scale_height;
+    if (p->mie_g           > 0.0f) b->atmo_mie_g           = p->mie_g;
+    if (p->wavelengths.x + p->wavelengths.y + p->wavelengths.z > 0.0f)
+        b->atmo_wavelengths = p->wavelengths;
+    if (p->sunset_tint.x + p->sunset_tint.y + p->sunset_tint.z > 0.0f)
+        b->atmo_sunset_tint = p->sunset_tint;
+    if (p->sunset_glow.x + p->sunset_glow.y + p->sunset_glow.z > 0.0f)
+        b->atmo_sunset_glow = p->sunset_glow;
+    if (p->sunset_horizon.x + p->sunset_horizon.y + p->sunset_horizon.z > 0.0f)
+        b->atmo_sunset_horizon = p->sunset_horizon;
 }
