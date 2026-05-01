@@ -211,7 +211,10 @@ int config_load_skybox(const char* path) {
 /* LOD config — compiled-in defaults overridable via lod.yaml. */
 
 static lod_config_t S_LOD = {
-    .distant_subdivisions = 2,
+    .distant_subdivisions   = 2,
+    .distant_shade_floor    = 0.65f,
+    .distant_shade_ceiling  = 1.20f,
+    .distant_shade_range_m  = 50.0f,
 };
 
 const lod_config_t* config_lod(void) { return &S_LOD; }
@@ -261,6 +264,12 @@ int config_load_lod(const char* path) {
                                                  * vertex/index buffers in
                                                  * renderer.c stay sized */
                             S_LOD.distant_subdivisions = n;
+                        } else if (strcmp(key, "distant_shade_floor"  ) == 0) {
+                            S_LOD.distant_shade_floor   = (float)strtod(val, NULL);
+                        } else if (strcmp(key, "distant_shade_ceiling") == 0) {
+                            S_LOD.distant_shade_ceiling = (float)strtod(val, NULL);
+                        } else if (strcmp(key, "distant_shade_range_m") == 0) {
+                            S_LOD.distant_shade_range_m = (float)strtod(val, NULL);
                         } else {
                             printf("[config] %s:%d: unknown key '%s'\n",
                                    path, line_no, key);

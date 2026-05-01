@@ -83,7 +83,19 @@ typedef struct {
      * 80 tris, 2 = 320 tris (= 16× the base detail), 3 = 1280 tris.
      * Each step quadruples triangle count and roughly halves the
      * angular size of visible facets. */
-    int distant_subdivisions;
+    int   distant_subdivisions;
+    /* Per-vertex height shading: each icosphere vertex's colour is
+     * multiplied by a shade computed from the topmost-solid-block
+     * altitude under it (sea-level baseline = body->radius_m). The
+     * topmost depth IS the terrain-noise output, so this puts the
+     * actual elevation pattern straight into the distant LOD —
+     * lowlands darken, highlands lighten, ocean basins look bluer
+     * than coastal grass even when both sample to similar block
+     * tiles. distant_shade_range_m is the altitude in metres at
+     * which the shade hits its ceiling (and -range hits floor). */
+    float distant_shade_floor;
+    float distant_shade_ceiling;
+    float distant_shade_range_m;
 } lod_config_t;
 
 const lod_config_t* config_lod(void);

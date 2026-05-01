@@ -1414,14 +1414,33 @@ static vec3_t sample_body_top_color(const chunked_body_t* body, const float dir[
         return body->distant_color;
     }
     block_t top = BLOCK_AIR;
+    int     d_top = -1;
     for (int dep = WORLD_MAX_DEPTH - 1; dep >= 0; --dep) {
         block_t b = (block_t)w->blocks[tile * WORLD_MAX_DEPTH + dep];
-        if (block_is_solid(b)) { top = b; break; }
+        if (block_is_solid(b)) { top = b; d_top = dep; break; }
     }
     if (top == BLOCK_AIR) return body->distant_color;
     int col = (int)block_face_tile(top, FACE_CAP_TOP);
     if (col < 0 || col >= HEX_ATLAS_TILES) return body->distant_color;
-    return R.atlas_col_avg[col];
+    vec3_t base = R.atlas_col_avg[col];
+
+    /* Height shade — the topmost-block depth is the planet-gen noise
+     * output, so multiplying the base biome colour by an altitude-
+     * driven shade carries the actual elevation pattern (not just the
+     * biome boundaries) onto the distant LOD. Lowlands darken,
+     * highlands lighten, ocean basins read distinctly bluer than
+     * coastal grass even when both sample to similar atlas tiles. */
+    const lod_config_t* L = config_lod();
+    double altitude_m = world_depth_to_radius_m(w, d_top + 1)
+                      - w->body->radius_m;
+    float t = (float)(altitude_m / (double)L->distant_shade_range_m);
+    if (t < -1.0f) t = -1.0f;
+    if (t >  1.0f) t =  1.0f;
+    float shade = L->distant_shade_floor
+                + (L->distant_shade_ceiling - L->distant_shade_floor)
+                  * (t * 0.5f + 0.5f);
+    base.x *= shade; base.y *= shade; base.z *= shade;
+    return base;
 }
 
 static void build_distant_mesh_for_body(chunked_body_t* body) {
