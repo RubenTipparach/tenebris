@@ -683,9 +683,18 @@ static const char* FS_WATER =
      * primitive whose grid alignment was visible across the cap. */
     "float gn_fade(float t) { return t * t * t * (t * (t * 6.0 - 15.0) + 10.0); }\n"
     /* Hash uses uint to keep wrap-around well-defined under GLSL ES
-     * 300 (signed overflow is UB; unsigned is modulo-2^32). */
+     * 300 (signed overflow is UB; unsigned is modulo-2^32). The
+     * incoming cell coords are biased by 2^30 before the uint cast —
+     * negative-int-to-uint is INDETERMINATE per the spec, so the bias
+     * keeps the operand in well-defined territory. The bias only
+     * relabels the hash space, output stats are unchanged. Domain is
+     * |x| < 2^30 which is comfortably outside any planet-scale
+     * coordinate. */
     "uint gn_hash(int x, int y, int z) {\n"
-    "  uint h = uint(x) * 374761393u ^ uint(y) * 668265263u ^ uint(z) * 1274126177u;\n"
+    "  uint ux = uint(x + 0x40000000);\n"
+    "  uint uy = uint(y + 0x40000000);\n"
+    "  uint uz = uint(z + 0x40000000);\n"
+    "  uint h = ux * 374761393u ^ uy * 668265263u ^ uz * 1274126177u;\n"
     "  h = (h ^ (h >> 13u)) * 1103515245u;\n"
     "  return h ^ (h >> 16u);\n"
     "}\n"
