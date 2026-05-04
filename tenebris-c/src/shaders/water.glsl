@@ -25,7 +25,9 @@
 
 @vs water_vs
 
-uniform vs_params {
+// Uniform-block bindings must be unique within a program (not per
+// stage). Vertex block claims slot 0; fragment block claims slot 1.
+layout(binding=0) uniform vs_params {
     mat4 u_vp;     // view-projection (premultiplied with model so a_pos is in body-local space)
     float u_time;  // pre-scaled "subjective" time — see water_time_scale in renderer.c
 };
@@ -59,7 +61,7 @@ void main() {
 
 @fs water_fs
 
-uniform fs_params {
+layout(binding=1) uniform fs_params {
     vec3 u_camera_pos;
     vec3 u_sun_dir;
     float u_time;
