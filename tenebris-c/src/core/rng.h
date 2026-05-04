@@ -21,4 +21,12 @@ float noise3d(float x, float y, float z);
  * produce different worlds. */
 float noise3d_seed(uint64_t seed, float x, float y, float z);
 
+/* 3D gradient (Perlin) noise — quintic fade + integer-hash gradient
+ * lookup. Returns symmetric output in [-1, +1] (no remap needed at the
+ * caller). Direct port of rts-engine Noise3D.Sample. Replaces
+ * noise3d_seed in terrain generation: gradient noise has continuous
+ * first derivatives so fBm stacks come out smooth instead of the
+ * grid-aligned lumps value noise produces. */
+float gnoise3d_seed(uint64_t seed, float x, float y, float z);
+
 #endif
