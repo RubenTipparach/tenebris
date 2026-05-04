@@ -1970,7 +1970,7 @@ static void body_draw_water(chunked_body_t* body, mat4_t vp,
      * the shader are fixed; this multiplier is the only animation
      * knob exposed from C. Higher = faster ripples. Will move to
      * water.yaml in Phase C alongside the other tunables. */
-    const float water_time_scale = 5.0f;
+    const float water_time_scale = 1.5f;
     const float t_scaled = R.time_seconds * water_time_scale;
 
     /* sokol-shdc emits std140-laid-out structs + slot constants —
