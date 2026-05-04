@@ -20,10 +20,17 @@ in vec3 a_normal;
 in vec2 a_uv;     // unused; declared for shared-vbuf layout parity
 
 out vec3 v_wpos;
-out vec3 v_normal;
 
 void main() {
-    vec3 n = normalize(a_normal);
+    // Radial from the planet centre, NOT the per-tile flat normal in
+    // a_normal. Adjacent Goldberg tiles each carry their own
+    // t->center as their flat normal, so using a_normal makes the
+    // vertex swell push neighbour tiles in slightly different
+    // directions — visible grid-pattern seams at every tile
+    // boundary. normalize(a_pos) is identical for any vertex at the
+    // same world position, so the cap stays watertight across
+    // boundaries.
+    vec3 n = normalize(a_pos);
 
     // Three-octave directional swell. Max combined amplitude 0.36 m
     // — well inside the 0.50 m cap drop in hex_mesher.c so wave
@@ -37,7 +44,6 @@ void main() {
     vec3 p = a_pos + n * swell;
     gl_Position = u_vp * vec4(p, 1.0);
     v_wpos = p;
-    v_normal = n;
 }
 @end
 
@@ -51,7 +57,6 @@ layout(binding=1) uniform fs_params {
 };
 
 in vec3 v_wpos;
-in vec3 v_normal;
 out vec4 frag_color;
 
 // Cheap 3D hash. No textures, no large constants — Dave_Hoskins-
@@ -91,7 +96,10 @@ float fbm3(vec3 p, float t) {
 }
 
 void main() {
-    vec3 radial = normalize(v_normal);
+    // Same trick as the VS: derive the radial from world-space
+    // position, not from a per-tile-flat varying. Keeps lighting
+    // continuous across tile boundaries.
+    vec3 radial = normalize(v_wpos);
 
     // Scalar height + 3-sample finite-difference world-space
     // gradient. Epsilon ~8 cm — small enough to stay inside the
