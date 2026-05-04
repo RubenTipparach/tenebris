@@ -9,6 +9,12 @@ if (NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
 endif()
 
+# sokol-shdc shader cross-compiler integration. Defines
+# add_sokol_shader(target path/to/shader.glsl) which attaches the
+# generated header to `target` and exposes its directory on the
+# include path. The binary itself is fetched by scripts/fetch-deps.sh.
+include(cmake/sokol-shdc.cmake)
+
 # ---------------------------------------------------------------------------
 # core library — shared between client and server. MUST NOT depend on sokol.
 # Enforced by the test in tools/check-core-deps.cmake (invoked in CI).
