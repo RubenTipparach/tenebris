@@ -1973,13 +1973,18 @@ static void body_draw_water(chunked_body_t* body, mat4_t vp,
     const float water_time_scale = 5.0f;
     const float t_scaled = R.time_seconds * water_time_scale;
 
-    /* Diagnostic shader has only one uniform block (vs_params with
-     * mvp + time). camera_world / sun_dir aren't used right now —
-     * they come back when the fragment-side gets restored. */
-    (void)camera_world;
+    /* sokol-shdc emits std140-laid-out structs + slot constants —
+     * no manual offset math, no _pad_NN by hand. */
     vs_params_t vs_params = { .u_time = t_scaled };
     memcpy(vs_params.u_vp, mvp.m, sizeof(vs_params.u_vp));
     sg_apply_uniforms(UB_vs_params, &SG_RANGE(vs_params));
+
+    fs_params_t fs_params = {
+        .u_camera_pos = { camera_world.x, camera_world.y, camera_world.z },
+        .u_sun_dir    = { R.env.sun_dir.x, R.env.sun_dir.y, R.env.sun_dir.z },
+        .u_time       = t_scaled,
+    };
+    sg_apply_uniforms(UB_fs_params, &SG_RANGE(fs_params));
 
     for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
         mesh_chunk_t* c = &body->chunks[ci];
