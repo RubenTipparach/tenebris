@@ -1810,6 +1810,30 @@ void renderer_begin_frame(int w, int h, render_env_t env) {
     R.env = env;
     R.tris = 0;
     R.tiles_remeshed = 0;
+
+    /* Phase A.2 — prove the attachment-based pass machinery works
+     * by opening + immediately ending an empty offscreen pass before
+     * the swapchain pass. Nothing renders into the offscreen target;
+     * its contents are discarded. If this commit deploys without
+     * errors we've confirmed sokol can drive the offscreen path on
+     * this codebase, and the next step (A.2 follow-up) can move
+     * real draws into the pass body. */
+    sg_begin_pass(&(sg_pass){
+        .action = {
+            .colors[0] = {
+                .load_action = SG_LOADACTION_CLEAR,
+                .clear_value = { 0.0f, 0.0f, 0.0f, 1.0f },
+            },
+            .depth = { .load_action = SG_LOADACTION_CLEAR, .clear_value = 1.0f },
+        },
+        .attachments = {
+            .colors[0]     = R.offscreen_color_att,
+            .depth_stencil = R.offscreen_depth_att,
+        },
+        .label = "offscreen-pass-empty",
+    });
+    sg_end_pass();
+
     R.pass_action = (sg_pass_action){
         .colors[0] = {
             .load_action = SG_LOADACTION_CLEAR,
