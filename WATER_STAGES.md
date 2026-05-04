@@ -68,6 +68,24 @@ Per frame:
   type passed directly into `sg_begin_pass.attachments.colors[0]`
   / `.depth_stencil`.
 
+## Architecture cleanup — sokol-shdc shader pipeline
+
+In-flight in commits `2c276fd` and `ad5cb8c`. Replaces the inline
+GLSL string literals in `renderer.c` with `.glsl` source files
+cross-compiled at build time by `sokol-shdc`. Single source compiles
+to GLSL ES (WebGL2), MSL (macOS), HLSL (Windows), WGSL (when we
+flip to the WebGPU backend). Generates `sg_shader_desc` reflection
+so we stop hand-writing `glsl_uniforms[]` tables and doing manual
+std140 offset math — the class of bug that broke earlier commits
+(green / red water).
+
+| Step | Plan |
+|------|------|
+| done | Build infra: `cmake/sokol-shdc.cmake`, `add_sokol_shader()` function, `fetch-deps.sh` downloads the binary, `build-wasm.sh` triggers the fetch when missing. |
+| done | First shader migrated to `.glsl`: `tenebris-c/src/shaders/water.glsl`. Uniform blocks (`vs_params`, `fs_params`) instead of loose uniforms. |
+| next | Replace the inline-string water shader + manual `sg_shader_desc` + `ub_v[]/ub_f[]` upload in `renderer.c` with `water_shader_desc(sg_query_backend())` + `water_vs_params_t / water_fs_params_t` struct uploads. |
+| later | Migrate the rest opportunistically — terrain (FS_HEX), distant body, sun, skybox/atmosphere. No urgency on these; they're stable. |
+
 ## Pending — Phase A: offscreen FBO infrastructure
 
 Stand up colour + depth render targets, route the opaque-scene
