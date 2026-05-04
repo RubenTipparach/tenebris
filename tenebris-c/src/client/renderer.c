@@ -615,23 +615,16 @@ static const char* FS_SKY =
     "  frag_color = vec4(col, 1.0);\n"
     "}\n";
 
-/* Procedural water shader.
+/* Procedural water shader. Uses 3D value-noise fBm so the pattern is
+ * ISOTROPIC around the sphere — directional sum-of-sines (the earlier
+ * version) gave visible axis-aligned stripes that rotated per tile on
+ * curved surfaces. With 3D noise the waves look the same regardless
+ * of what direction the water cap's normal points in.
  *
- * Surface = fBm of 3D gradient (Perlin) noise — ported from the same
- * Noise3D used by terrain (core/rng.c::gnoise3d_seed, originally from
- * rts-engine PlanetMesh.cs). Value noise gave visible axis-aligned
- * grid stripes on the cap because each cell boundary was a sharp
- * derivative discontinuity; gradient noise is C¹-continuous so the
- * surface flows isotropically with no preferred direction.
- *
- * Normal comes from a three-sample finite-difference gradient of the
- * scalar height, projected onto the tangent plane. Lighting, Fresnel,
- * reflection and specular all react to the real surface slope. Cheap
- * fake-refraction shifts the deep base colour by the same gradient so
- * the water shimmers without a real backbuffer sample. Distance fog
- * fades the colour toward u_water_fog so far-out water reads as a
- * murky horizon line instead of an over-bright mirror. All visual
- * knobs live in assets/config/water.yaml — see water_config_t.
+ * Surface normal comes from a three-sample finite-difference gradient
+ * of the height field, projected onto the tangent plane. Lighting,
+ * Fresnel, reflection and specular all react to the real surface
+ * slope. Foam at wave crests + steep slopes.
  */
 static const char* VS_WATER =
     "#version 300 es\n"
@@ -640,21 +633,17 @@ static const char* VS_WATER =
     "layout(location=2) in vec2 a_uv;\n"       /* unused; keeps vbuf layout compatible */
     "uniform mat4 u_vp;\n"
     "uniform float u_time;\n"
-    "uniform float u_swell_amp;\n"
     "out vec3 v_wpos;\n"
     "out vec3 v_normal;\n"
     "void main() {\n"
     "  vec3 n = normalize(a_normal);\n"
-    /* Three-octave directional swell. Amplitudes are scaled by the
-     * config knob so the cap drop in hex_mesher.c::hex_mesh_build_water
-     * can be tuned alongside it — drop has to exceed max swell or
-     * crests poke above neighbour sand. */
+    /* Three-octave swell — the vertex displacement. Keeps amplitude
+     * small so water doesn't clip through shorelines. */
     "  float t = u_time;\n"
-    "  float A = u_swell_amp;\n"
     "  float swell = 0.0;\n"
-    "  swell += sin(t * 0.9 + a_pos.x * 1.4 + a_pos.z * 0.6) * A;\n"
-    "  swell += sin(t * 1.3 - a_pos.x * 0.7 + a_pos.z * 1.2) * A * 0.75;\n"
-    "  swell += sin(t * 1.7 + a_pos.x * 2.3 - a_pos.z * 1.9) * A * 0.4;\n"
+    "  swell += sin(t * 0.9 + a_pos.x * 1.4 + a_pos.z * 0.6) * 0.08;\n"
+    "  swell += sin(t * 1.3 - a_pos.x * 0.7 + a_pos.z * 1.2) * 0.06;\n"
+    "  swell += sin(t * 1.7 + a_pos.x * 2.3 - a_pos.z * 1.9) * 0.03;\n"
     "  vec3 p = a_pos + n * swell;\n"
     "  gl_Position = u_vp * vec4(p, 1.0);\n"
     "  v_wpos = p;\n"
@@ -664,93 +653,53 @@ static const char* VS_WATER =
 static const char* FS_WATER =
     "#version 300 es\n"
     "precision highp float;\n"
-    /* highp int/uint is REQUIRED for the gradient-noise hash — GLSL ES
-     * fragment shaders default to mediump for integer types, which
-     * guarantees only 16 bits, so the 32-bit hash multiplications get
-     * silently truncated and the noise field collapses into nonsense
-     * (the symptom was a uniform-green cap with no animation). */
-    "precision highp int;\n"
     "in vec3 v_wpos;\n"
     "in vec3 v_normal;\n"
-    "uniform vec3  u_camera_pos;\n"
-    "uniform vec3  u_sun_dir;\n"
+    "uniform vec3 u_camera_pos;\n"
+    "uniform vec3 u_sun_dir;\n"
     "uniform float u_time;\n"
-    /* Tunables loaded from assets/config/water.yaml. See
-     * water_config_t in core/config.h. Packed into vec4s so std140
-     * keeps the cross-driver layout stable. */
-    "uniform vec4  u_water_params;\n"   /* x=shine, y=shine_power, z=foam_threshold, w=fog_distance_m */
-    "uniform vec4  u_water_params2;\n"  /* x=opacity_low, y=opacity_high, z=refraction_amount, w=unused */
-    "uniform vec3  u_water_fog;\n"
     "out vec4 frag_color;\n"
 
-    /* Direct port of core/rng.c::gnoise3d_seed (and rts-engine
-     * Noise3D.Sample) into GLSL. Quintic fade, integer-hash gradient
-     * lookup, output in [-1, +1]. Replaces the previous value-noise
-     * primitive whose grid alignment was visible across the cap. */
-    "float gn_fade(float t) { return t * t * t * (t * (t * 6.0 - 15.0) + 10.0); }\n"
-    /* Hash uses uint to keep wrap-around well-defined under GLSL ES
-     * 300 (signed overflow is UB; unsigned is modulo-2^32). The
-     * incoming cell coords are biased by 2^30 before the uint cast —
-     * negative-int-to-uint is INDETERMINATE per the spec, so the bias
-     * keeps the operand in well-defined territory. The bias only
-     * relabels the hash space, output stats are unchanged. Domain is
-     * |x| < 2^30 which is comfortably outside any planet-scale
-     * coordinate. */
-    "uint gn_hash(int x, int y, int z) {\n"
-    "  uint ux = uint(x + 0x40000000);\n"
-    "  uint uy = uint(y + 0x40000000);\n"
-    "  uint uz = uint(z + 0x40000000);\n"
-    "  uint h = ux * 374761393u ^ uy * 668265263u ^ uz * 1274126177u;\n"
-    "  h = (h ^ (h >> 13u)) * 1103515245u;\n"
-    "  return h ^ (h >> 16u);\n"
-    "}\n"
-    "float gn_grad(uint hash, float x, float y, float z) {\n"
-    "  uint h = hash & 15u;\n"
-    "  float u = (h < 8u)  ? x : y;\n"
-    "  float v = (h < 4u)  ? y : ((h == 12u || h == 14u) ? x : z);\n"
-    "  return ((h & 1u) != 0u ? -u : u) + ((h & 2u) != 0u ? -v : v);\n"
-    "}\n"
-    "float gnoise3(vec3 p) {\n"
-    "  int ix = int(floor(p.x));\n"
-    "  int iy = int(floor(p.y));\n"
-    "  int iz = int(floor(p.z));\n"
-    "  float fx = p.x - float(ix);\n"
-    "  float fy = p.y - float(iy);\n"
-    "  float fz = p.z - float(iz);\n"
-    "  float u = gn_fade(fx);\n"
-    "  float v = gn_fade(fy);\n"
-    "  float w = gn_fade(fz);\n"
-    "  float g000 = gn_grad(gn_hash(ix,   iy,   iz  ), fx,       fy,       fz);\n"
-    "  float g100 = gn_grad(gn_hash(ix+1, iy,   iz  ), fx-1.0,   fy,       fz);\n"
-    "  float g010 = gn_grad(gn_hash(ix,   iy+1, iz  ), fx,       fy-1.0,   fz);\n"
-    "  float g110 = gn_grad(gn_hash(ix+1, iy+1, iz  ), fx-1.0,   fy-1.0,   fz);\n"
-    "  float g001 = gn_grad(gn_hash(ix,   iy,   iz+1), fx,       fy,       fz-1.0);\n"
-    "  float g101 = gn_grad(gn_hash(ix+1, iy,   iz+1), fx-1.0,   fy,       fz-1.0);\n"
-    "  float g011 = gn_grad(gn_hash(ix,   iy+1, iz+1), fx,       fy-1.0,   fz-1.0);\n"
-    "  float g111 = gn_grad(gn_hash(ix+1, iy+1, iz+1), fx-1.0,   fy-1.0,   fz-1.0);\n"
-    "  float a = mix(mix(g000, g100, u), mix(g010, g110, u), v);\n"
-    "  float b = mix(mix(g001, g101, u), mix(g011, g111, u), v);\n"
-    "  return mix(a, b, w);\n"
+    /* Cheap 3D hash. No textures, no large constants — a Dave_Hoskins-\n"
+     * style scramble is good enough for interactive water. */
+    "float h31(vec3 p) {\n"
+    "  p = fract(p * vec3(443.897, 441.423, 437.195));\n"
+    "  p += dot(p, p.yzx + 19.19);\n"
+    "  return fract((p.x + p.y) * p.z);\n"
     "}\n"
 
-    /* Three-octave fBm with per-octave time advection along different
+    /* Trilinear value noise, smoothstep interpolant, [-1, 1]. */
+    "float vnoise3(vec3 p) {\n"
+    "  vec3 i = floor(p);\n"
+    "  vec3 f = fract(p);\n"
+    "  f = f * f * (3.0 - 2.0 * f);\n"
+    "  float c000 = h31(i);                    float c100 = h31(i + vec3(1,0,0));\n"
+    "  float c010 = h31(i + vec3(0,1,0));      float c110 = h31(i + vec3(1,1,0));\n"
+    "  float c001 = h31(i + vec3(0,0,1));      float c101 = h31(i + vec3(1,0,1));\n"
+    "  float c011 = h31(i + vec3(0,1,1));      float c111 = h31(i + vec3(1,1,1));\n"
+    "  float mx0  = mix(mix(c000, c100, f.x), mix(c010, c110, f.x), f.y);\n"
+    "  float mx1  = mix(mix(c001, c101, f.x), mix(c011, c111, f.x), f.y);\n"
+    "  return mix(mx0, mx1, f.z) * 2.0 - 1.0;\n"
+    "}\n"
+
+    /* Three-octave fBm with per-octave time advection along different\n"
      * directions so the surface doesn't look like a single flow. */
     "float fbm3(vec3 p, float t) {\n"
     "  float h = 0.0;\n"
     "  vec3 q = p * 0.9 + vec3(t * 0.35, t * 0.18, -t * 0.42);\n"
-    "  h += gnoise3(q) * 0.50;\n"
+    "  h += vnoise3(q) * 0.50;\n"
     "  q = q * 2.1 + vec3(-t * 0.22, t * 0.33, t * 0.17);\n"
-    "  h += gnoise3(q) * 0.28;\n"
+    "  h += vnoise3(q) * 0.28;\n"
     "  q = q * 2.3 + vec3(t * 0.19, -t * 0.27, t * 0.11);\n"
-    "  h += gnoise3(q) * 0.15;\n"
+    "  h += vnoise3(q) * 0.15;\n"
     "  return h;\n"
     "}\n"
 
     "void main() {\n"
     "  vec3 radial = normalize(v_normal);\n"
 
-    /* Scalar height + 3-sample finite-difference world-space gradient.
-     * Epsilon is ~8 cm at water scale, small enough to stay inside the
+    /* Scalar height + 3-sample finite-difference world-space gradient.\n"
+     * Epsilon is ~8 cm at water scale, small enough to stay inside the\n"
      * smallest noise cell and big enough to dodge numeric noise. */
     "  float h0 = fbm3(v_wpos, u_time);\n"
     "  float e  = 0.08;\n"
@@ -771,40 +720,26 @@ static const char* FS_WATER =
 
     "  vec3 shallow = vec3(0.28, 0.68, 0.82);\n"
     "  vec3 deep    = vec3(0.02, 0.10, 0.22);\n"
-    /* Cheap fake-refraction: nudge the deep base colour by the
-     * tangent-plane gradient. Without a backbuffer sample we can't
-     * really refract, but coupling the colour to the same surface
-     * derivative the lighting uses gives a believable shimmer. */
-    "  vec3 refraction_shift = t_grad * u_water_params2.z;\n"
-    "  vec3 base = mix(deep, shallow, vdn) + refraction_shift;\n"
+    "  vec3 base    = mix(deep, shallow, vdn);\n"
 
     "  vec3 refl   = reflect(-view, n);\n"
     "  float up_f  = clamp(dot(refl, radial), 0.0, 1.0);\n"
     "  vec3 sky    = mix(vec3(0.85, 0.92, 0.98), vec3(0.35, 0.55, 0.85), up_f);\n"
 
     "  vec3  halfv = normalize(view + sun);\n"
-    "  float spec  = pow(max(dot(n, halfv), 0.0), u_water_params.y);\n"
-    "  vec3  sun_highlight = vec3(1.35, 1.25, 1.10) * spec * u_water_params.x;\n"
+    "  float spec  = pow(max(dot(n, halfv), 0.0), 140.0);\n"
+    "  vec3  sun_highlight = vec3(1.35, 1.25, 1.10) * spec * 2.0;\n"
 
-    /* Foam — only at clear crests, threshold raised from the value-
-     * noise era so the cap isn't blanketed in white. Slope foam is
-     * scaled down too. */
+    /* Foam from wave crest + slope. Height fBm now goes ~[-1, 1]; tune\n"
+     * the smoothstep bands accordingly. */
     "  float steepness = length(t_grad);\n"
-    "  float foam_lo   = u_water_params.z;\n"
-    "  float crest     = smoothstep(foam_lo, foam_lo + 0.25, h0);\n"
-    "  float slope_f   = smoothstep(0.80, 1.60, steepness);\n"
-    "  float foam      = max(crest * 0.45, slope_f * 0.30);\n"
+    "  float crest     = smoothstep(0.35, 0.60, h0);\n"
+    "  float slope_f   = smoothstep(0.50, 1.20, steepness);\n"
+    "  float foam      = max(crest * 0.55, slope_f * 0.45);\n"
 
     "  vec3 color = mix(base, sky, f) + sun_highlight;\n"
-    "  color = mix(color, vec3(0.95, 0.97, 1.0), foam * 0.5);\n"
-
-    /* Distance fog — fade water toward u_water_fog over fog_distance
-     * metres. Stops the horizon strip from reading as bright sky. */
-    "  float dist = length(u_camera_pos - v_wpos);\n"
-    "  float fog  = clamp(dist / u_water_params.w, 0.0, 1.0);\n"
-    "  color = mix(color, u_water_fog, fog);\n"
-
-    "  float alpha = mix(u_water_params2.x, u_water_params2.y, f);\n"
+    "  color = mix(color, vec3(0.95, 0.97, 1.0), foam * 0.6);\n"
+    "  float alpha = mix(0.70, 0.97, f);\n"
     "  frag_color = vec4(color, alpha);\n"
     "}\n";
 
@@ -1007,26 +942,18 @@ void renderer_init(void) {
         },
         .uniform_blocks[0] = {
             .stage = SG_SHADERSTAGE_VERTEX,
-            /* sokol pads each loose uniform to a vec4 slot — even
-             * scalars — so this block is mat4(16) + float(4) + float(4)
-             * = 24 floats. The first float lives at slot 16, the
-             * second at slot 20, mirroring the upload at body_draw_water. */
-            .size  = 24 * sizeof(float),
+            .size  = 20 * sizeof(float),   /* mat4(16) + float(1) + 3 pad */
             .layout = SG_UNIFORMLAYOUT_STD140,
-            .glsl_uniforms[0] = { .glsl_name = "u_vp",        .type = SG_UNIFORMTYPE_MAT4  },
-            .glsl_uniforms[1] = { .glsl_name = "u_time",      .type = SG_UNIFORMTYPE_FLOAT },
-            .glsl_uniforms[2] = { .glsl_name = "u_swell_amp", .type = SG_UNIFORMTYPE_FLOAT },
+            .glsl_uniforms[0] = { .glsl_name = "u_vp",   .type = SG_UNIFORMTYPE_MAT4 },
+            .glsl_uniforms[1] = { .glsl_name = "u_time", .type = SG_UNIFORMTYPE_FLOAT },
         },
         .uniform_blocks[1] = {
             .stage = SG_SHADERSTAGE_FRAGMENT,
-            .size  = 24 * sizeof(float),
+            .size  = 12 * sizeof(float),   /* vec3 + pad + vec3 + pad + float + pad */
             .layout = SG_UNIFORMLAYOUT_STD140,
-            .glsl_uniforms[0] = { .glsl_name = "u_camera_pos",    .type = SG_UNIFORMTYPE_FLOAT3 },
-            .glsl_uniforms[1] = { .glsl_name = "u_sun_dir",       .type = SG_UNIFORMTYPE_FLOAT3 },
-            .glsl_uniforms[2] = { .glsl_name = "u_time",          .type = SG_UNIFORMTYPE_FLOAT },
-            .glsl_uniforms[3] = { .glsl_name = "u_water_params",  .type = SG_UNIFORMTYPE_FLOAT4 },
-            .glsl_uniforms[4] = { .glsl_name = "u_water_params2", .type = SG_UNIFORMTYPE_FLOAT4 },
-            .glsl_uniforms[5] = { .glsl_name = "u_water_fog",     .type = SG_UNIFORMTYPE_FLOAT3 },
+            .glsl_uniforms[0] = { .glsl_name = "u_camera_pos", .type = SG_UNIFORMTYPE_FLOAT3 },
+            .glsl_uniforms[1] = { .glsl_name = "u_sun_dir",    .type = SG_UNIFORMTYPE_FLOAT3 },
+            .glsl_uniforms[2] = { .glsl_name = "u_time",       .type = SG_UNIFORMTYPE_FLOAT },
         },
         .label = "water-shader",
     });
@@ -2067,41 +1994,16 @@ static void body_draw_water(chunked_body_t* body, mat4_t vp,
     mat4_t model = mat4_translate(body->world_pos);
     mat4_t mvp   = mat4_mul(vp, model);
 
-    const water_config_t* water = config_water();
-
-    /* Vertex block (sokol vec4-slot loose-uniform packing, 24 floats):
-     *   [0..15]  u_vp        (mat4)
-     *   [16]     u_time      + [17..19] pad
-     *   [20]     u_swell_amp + [21..23] pad
-     */
-    float ub_v[24] = { 0 };
+    float ub_v[20];
     memcpy(ub_v, mvp.m, sizeof(mvp.m));
     ub_v[16] = R.time_seconds;
-    ub_v[20] = water->swell_amplitude;
+    ub_v[17] = 0.0f; ub_v[18] = 0.0f; ub_v[19] = 0.0f;
     sg_apply_uniforms(0, &(sg_range){ .ptr = ub_v, .size = sizeof(ub_v) });
 
-    /* Layout (std140, 24 floats):
-     *   [0..2]   u_camera_pos    + [3]  pad
-     *   [4..6]   u_sun_dir       + [7]  pad
-     *   [8]      u_time          + [9..11] pad
-     *   [12..15] u_water_params  (shine, shine_power, foam_threshold, fog_distance)
-     *   [16..19] u_water_params2 (opacity_low, opacity_high, refraction_amount, _)
-     *   [20..22] u_water_fog     + [23] pad
-     */
-    float ub_f[24] = { 0 };
+    float ub_f[12] = { 0 };
     ub_f[0] = camera_world.x;  ub_f[1] = camera_world.y;  ub_f[2] = camera_world.z;
     ub_f[4] = R.env.sun_dir.x; ub_f[5] = R.env.sun_dir.y; ub_f[6] = R.env.sun_dir.z;
-    ub_f[8]  = R.time_seconds;
-    ub_f[12] = water->shine;
-    ub_f[13] = water->shine_power;
-    ub_f[14] = water->foam_threshold;
-    ub_f[15] = water->fog_distance_m;
-    ub_f[16] = water->opacity_low;
-    ub_f[17] = water->opacity_high;
-    ub_f[18] = water->refraction_amount;
-    ub_f[20] = water->fog_color.x;
-    ub_f[21] = water->fog_color.y;
-    ub_f[22] = water->fog_color.z;
+    ub_f[8] = R.time_seconds;
     sg_apply_uniforms(1, &(sg_range){ .ptr = ub_f, .size = sizeof(ub_f) });
 
     for (int ci = 0; ci < CHUNK_COUNT; ++ci) {

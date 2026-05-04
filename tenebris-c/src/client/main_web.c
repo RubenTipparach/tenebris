@@ -141,7 +141,6 @@ static void init(void) {
     config_load_atmosphere("assets/config/atmosphere.yaml");
     config_load_skybox("assets/config/skybox.yaml");
     config_load_lod("assets/config/lod.yaml");
-    config_load_water("assets/config/water.yaml");
     /* One-shot dump of Tenebris's effective atmosphere values so we
      * can sanity-check that the YAML actually landed (vs. defaults
      * from main_web.c being silently used). Comment out once the
