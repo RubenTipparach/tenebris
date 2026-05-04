@@ -1001,7 +1001,11 @@ void renderer_init(void) {
         },
         .uniform_blocks[0] = {
             .stage = SG_SHADERSTAGE_VERTEX,
-            .size  = 20 * sizeof(float),   /* mat4(16) + float(1) + float(1) + 2 pad */
+            /* sokol pads each loose uniform to a vec4 slot — even
+             * scalars — so this block is mat4(16) + float(4) + float(4)
+             * = 24 floats. The first float lives at slot 16, the
+             * second at slot 20, mirroring the upload at body_draw_water. */
+            .size  = 24 * sizeof(float),
             .layout = SG_UNIFORMLAYOUT_STD140,
             .glsl_uniforms[0] = { .glsl_name = "u_vp",        .type = SG_UNIFORMTYPE_MAT4  },
             .glsl_uniforms[1] = { .glsl_name = "u_time",      .type = SG_UNIFORMTYPE_FLOAT },
@@ -2059,10 +2063,15 @@ static void body_draw_water(chunked_body_t* body, mat4_t vp,
 
     const water_config_t* water = config_water();
 
-    float ub_v[20] = { 0 };
+    /* Vertex block (sokol vec4-slot loose-uniform packing, 24 floats):
+     *   [0..15]  u_vp        (mat4)
+     *   [16]     u_time      + [17..19] pad
+     *   [20]     u_swell_amp + [21..23] pad
+     */
+    float ub_v[24] = { 0 };
     memcpy(ub_v, mvp.m, sizeof(mvp.m));
     ub_v[16] = R.time_seconds;
-    ub_v[17] = water->swell_amplitude;
+    ub_v[20] = water->swell_amplitude;
     sg_apply_uniforms(0, &(sg_range){ .ptr = ub_v, .size = sizeof(ub_v) });
 
     /* Layout (std140, 24 floats):
