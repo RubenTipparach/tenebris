@@ -1,5 +1,6 @@
 #include "client/hex_mesher.h"
 #include "core/blocks.h"
+#include "core/config.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -91,6 +92,10 @@ static dvec3_t shrink_corner(const goldberg_tile_t* t, int k, float width) {
 /* ----------------------------------------------------------------------- */
 /* Cap emission: top or bottom of the column at a given depth.
  * `width` shrinks the hex inward (1.0 = full tile, 0.4 = trunk).
+ * `r_offset_m` shifts the cap radius by this amount in metres
+ * (negative = inward / lower). Currently used by the water cap to drop
+ * its surface below sea level so wave displacement can't spill over
+ * neighbour sand tiles.
  */
 static void emit_cap(hex_mesh_t* out,
                      const goldberg_tile_t* t,
@@ -98,14 +103,15 @@ static void emit_cap(hex_mesh_t* out,
                      int depth,
                      block_t block,
                      bool is_top,
-                     float width) {
+                     float width,
+                     float r_offset_m) {
     const int n = t->num_verts;
     reserve(out, (size_t)(n + 1), (size_t)n * 3);
     uint32_t center_idx = (uint32_t)out->vertex_count;
 
     double r_top = world_depth_to_radius_m(w, depth + 1);
     double r_bot = world_depth_to_radius_m(w, depth);
-    double r = is_top ? r_top : r_bot;
+    double r = (is_top ? r_top : r_bot) + (double)r_offset_m;
 
     dvec3_t normal = is_top ? t->center : dvec3_scale(t->center, -1.0);
     dvec3_t center_pos = dvec3_scale(t->center, r);
@@ -200,7 +206,12 @@ void hex_mesh_build_water(hex_mesh_t* out, const world_t* w, int tile_idx) {
      * pass depth = SEA_LEVEL_DEPTH - 1. Otherwise the cap floats
      * 1 m above the shoreline (visible "wobble" between the sand
      * top and the water surface). */
-    emit_cap(out, t, w, SEA_LEVEL_DEPTH - 1, BLOCK_WATER, true, 1.0f);
+    /* Drop the cap below sea level by config_water()->depth_offset_m
+     * so the vertex-shader swell can never push a crest above the
+     * neighbour beach tiles (sand at the shoreline tops out exactly at
+     * sea level — coplanar with the un-offset water cap). */
+    const float drop = -config_water()->depth_offset_m;
+    emit_cap(out, t, w, SEA_LEVEL_DEPTH - 1, BLOCK_WATER, true, 1.0f, drop);
 }
 
 /* ----------------------------------------------------------------------- */
@@ -232,13 +243,13 @@ void hex_mesh_build_tile(hex_mesh_t* out, const world_t* w, int tile_idx) {
 
         block_t above = (d + 1 < WORLD_MAX_DEPTH) ? (block_t)col[d + 1] : BLOCK_AIR;
         if (!block_covers_face(above)) {
-            emit_cap(out, t, w, d, b, true, width);
+            emit_cap(out, t, w, d, b, true, width, 0.0f);
         }
 
         if (d > 0) {
             block_t below = (block_t)col[d - 1];
             if (!block_covers_face(below)) {
-                emit_cap(out, t, w, d, b, false, width);
+                emit_cap(out, t, w, d, b, false, width, 0.0f);
             }
         }
 

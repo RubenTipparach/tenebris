@@ -23,6 +23,7 @@
 int config_load_atmosphere(const char* path);
 int config_load_skybox(const char* path);
 int config_load_lod(const char* path);
+int config_load_water(const char* path);
 
 /*
  * Global skybox tuning — read by renderer_draw_skybox each frame and
@@ -99,5 +100,40 @@ typedef struct {
 } lod_config_t;
 
 const lod_config_t* config_lod(void);
+
+/*
+ * Water surface tuning. Read per frame by the water shader uniform
+ * upload (renderer.c::body_draw_water) and once at mesh-build time by
+ * hex_mesh_build_water for the cap height drop.
+ */
+typedef struct {
+    /* Vertical drop of the water cap below the nominal sea-level
+     * radius, in metres. Has to exceed the max positive swell so wave
+     * crests never poke above neighbour sand tiles (which sit AT sea
+     * level on the beach band). */
+    float depth_offset_m;
+    /* Per-octave swell amplitude scale used by the vertex shader's
+     * three-sine wave displacement. */
+    float swell_amplitude;
+    /* Specular highlight strength + exponent. Lower shine = less
+     * glossy / matte water. */
+    float shine;
+    float shine_power;
+    /* Fresnel-driven alpha range (low = grazing, high = head-on). */
+    float opacity_low;
+    float opacity_high;
+    /* Distance fog: water colour fades to fog_color over this many
+     * metres of camera distance. */
+    float fog_distance_m;
+    vec3_t fog_color;
+    /* Cheap refraction fake — multiplier on the surface-gradient-
+     * driven colour shift applied to the deep base colour. */
+    float refraction_amount;
+    /* Smoothstep lower edge for crest foam on the noise height
+     * field. Higher = sparser foam. */
+    float foam_threshold;
+} water_config_t;
+
+const water_config_t* config_water(void);
 
 #endif
