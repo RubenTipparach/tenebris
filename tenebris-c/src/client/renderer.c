@@ -739,7 +739,7 @@ static const char* FS_WATER =
 
     "  vec3 color = mix(base, sky, f) + sun_highlight;\n"
     "  color = mix(color, vec3(0.95, 0.97, 1.0), foam * 0.6);\n"
-    "  float alpha = mix(0.70, 0.97, f);\n"
+    "  float alpha = mix(0.45, 0.80, f);\n"
     "  frag_color = vec4(color, alpha);\n"
     "}\n";
 
