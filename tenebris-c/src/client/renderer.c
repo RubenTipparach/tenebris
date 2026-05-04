@@ -657,13 +657,16 @@ static const char* VS_WATER =
     "out vec3 v_normal;\n"
     "void main() {\n"
     "  vec3 n = normalize(a_normal);\n"
-    /* Three-octave swell — the vertex displacement. Keeps amplitude
-     * small so water doesn't clip through shorelines. */
+    /* Three-octave directional swell. Amplitudes 0.18 / 0.12 / 0.06
+     * give a max combined displacement of 0.36 m — well under the
+     * 0.50 m cap drop in hex_mesher.c, so crests still can't reach
+     * coplanar beach sand. Temporal rates 1.35 / 1.95 / 2.55 give a
+     * visible bob without flickering. */
     "  float t = u_time;\n"
     "  float swell = 0.0;\n"
-    "  swell += sin(t * 0.9 + a_pos.x * 1.4 + a_pos.z * 0.6) * 0.08;\n"
-    "  swell += sin(t * 1.3 - a_pos.x * 0.7 + a_pos.z * 1.2) * 0.06;\n"
-    "  swell += sin(t * 1.7 + a_pos.x * 2.3 - a_pos.z * 1.9) * 0.03;\n"
+    "  swell += sin(t * 1.35 + a_pos.x * 1.4 + a_pos.z * 0.6) * 0.18;\n"
+    "  swell += sin(t * 1.95 - a_pos.x * 0.7 + a_pos.z * 1.2) * 0.12;\n"
+    "  swell += sin(t * 2.55 + a_pos.x * 2.3 - a_pos.z * 1.9) * 0.06;\n"
     "  vec3 p = a_pos + n * swell;\n"
     "  gl_Position = u_vp * vec4(p, 1.0);\n"
     "  v_wpos = p;\n"
