@@ -728,7 +728,7 @@ static const char* FS_WATER =
 
     "  vec3  halfv = normalize(view + sun);\n"
     "  float spec  = pow(max(dot(n, halfv), 0.0), 140.0);\n"
-    "  vec3  sun_highlight = vec3(1.35, 1.25, 1.10) * spec * 2.0;\n"
+    "  vec3  sun_highlight = vec3(1.35, 1.25, 1.10) * spec * 0.6;\n"
 
     /* Foam from wave crest + slope. Height fBm now goes ~[-1, 1]; tune\n"
      * the smoothstep bands accordingly. */
