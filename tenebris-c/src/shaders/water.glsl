@@ -56,29 +56,61 @@ layout(binding=1) uniform fs_params {
     float u_time;
 };
 
+precision highp int;
+
 in vec3 v_wpos;
 out vec4 frag_color;
 
-// Cheap 3D hash. No textures, no large constants — Dave_Hoskins-
-// style scramble is enough for interactive water.
-float h31(vec3 p) {
-    p = fract(p * vec3(443.897, 441.423, 437.195));
-    p += dot(p, p.yzx + 19.19);
-    return fract((p.x + p.y) * p.z);
+// 3D gradient (Perlin) noise — quintic fade, integer-hash gradient
+// lookup, output in [-1, +1]. Replaces value noise to kill the
+// axis-aligned cell boundaries that showed up as a visible grid
+// across the cap surface. Same primitive used by the terrain fix in
+// core/rng.c::gnoise3d_seed.
+//
+// Hash uses uint to keep wrap-around well-defined under GLSL ES 300
+// (signed overflow is UB; unsigned is modulo-2^32). The cell coords
+// are biased by 2^30 before the uint cast — negative-int-to-uint is
+// indeterminate per the spec, so the bias keeps the operand in
+// well-defined territory. The bias only relabels the hash space.
+float gn_fade(float t) { return t * t * t * (t * (t * 6.0 - 15.0) + 10.0); }
+
+uint gn_hash(int x, int y, int z) {
+    uint ux = uint(x + 0x40000000);
+    uint uy = uint(y + 0x40000000);
+    uint uz = uint(z + 0x40000000);
+    uint h = ux * 374761393u ^ uy * 668265263u ^ uz * 1274126177u;
+    h = (h ^ (h >> 13u)) * 1103515245u;
+    return h ^ (h >> 16u);
 }
 
-// Trilinear value noise, smoothstep interpolant, output in [-1, 1].
-float vnoise3(vec3 p) {
-    vec3 i = floor(p);
-    vec3 f = fract(p);
-    f = f * f * (3.0 - 2.0 * f);
-    float c000 = h31(i);                 float c100 = h31(i + vec3(1, 0, 0));
-    float c010 = h31(i + vec3(0, 1, 0)); float c110 = h31(i + vec3(1, 1, 0));
-    float c001 = h31(i + vec3(0, 0, 1)); float c101 = h31(i + vec3(1, 0, 1));
-    float c011 = h31(i + vec3(0, 1, 1)); float c111 = h31(i + vec3(1, 1, 1));
-    float mx0  = mix(mix(c000, c100, f.x), mix(c010, c110, f.x), f.y);
-    float mx1  = mix(mix(c001, c101, f.x), mix(c011, c111, f.x), f.y);
-    return mix(mx0, mx1, f.z) * 2.0 - 1.0;
+float gn_grad(uint hash, float x, float y, float z) {
+    uint h = hash & 15u;
+    float u = (h < 8u)  ? x : y;
+    float v = (h < 4u)  ? y : ((h == 12u || h == 14u) ? x : z);
+    return ((h & 1u) != 0u ? -u : u) + ((h & 2u) != 0u ? -v : v);
+}
+
+float gnoise3(vec3 p) {
+    int ix = int(floor(p.x));
+    int iy = int(floor(p.y));
+    int iz = int(floor(p.z));
+    float fx = p.x - float(ix);
+    float fy = p.y - float(iy);
+    float fz = p.z - float(iz);
+    float u = gn_fade(fx);
+    float v = gn_fade(fy);
+    float w = gn_fade(fz);
+    float g000 = gn_grad(gn_hash(ix,   iy,   iz  ), fx,       fy,       fz);
+    float g100 = gn_grad(gn_hash(ix+1, iy,   iz  ), fx-1.0,   fy,       fz);
+    float g010 = gn_grad(gn_hash(ix,   iy+1, iz  ), fx,       fy-1.0,   fz);
+    float g110 = gn_grad(gn_hash(ix+1, iy+1, iz  ), fx-1.0,   fy-1.0,   fz);
+    float g001 = gn_grad(gn_hash(ix,   iy,   iz+1), fx,       fy,       fz-1.0);
+    float g101 = gn_grad(gn_hash(ix+1, iy,   iz+1), fx-1.0,   fy,       fz-1.0);
+    float g011 = gn_grad(gn_hash(ix,   iy+1, iz+1), fx,       fy-1.0,   fz-1.0);
+    float g111 = gn_grad(gn_hash(ix+1, iy+1, iz+1), fx-1.0,   fy-1.0,   fz-1.0);
+    float a = mix(mix(g000, g100, u), mix(g010, g110, u), v);
+    float b = mix(mix(g001, g101, u), mix(g011, g111, u), v);
+    return mix(a, b, w);
 }
 
 // Three-octave fBm with per-octave time advection along different
@@ -87,11 +119,11 @@ float vnoise3(vec3 p) {
 float fbm3(vec3 p, float t) {
     float h = 0.0;
     vec3 q = p * 0.9 + vec3(t * 0.35, t * 0.18, -t * 0.42);
-    h += vnoise3(q) * 0.50;
+    h += gnoise3(q) * 0.50;
     q = q * 2.1 + vec3(-t * 0.22, t * 0.33, t * 0.17);
-    h += vnoise3(q) * 0.28;
+    h += gnoise3(q) * 0.28;
     q = q * 2.3 + vec3(t * 0.19, -t * 0.27, t * 0.11);
-    h += vnoise3(q) * 0.15;
+    h += gnoise3(q) * 0.15;
     return h;
 }
 
