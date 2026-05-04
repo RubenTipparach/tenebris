@@ -139,6 +139,8 @@ static void init(void) {
      * patch up-front means the very first frame already uses the
      * tuned values. */
     config_load_atmosphere("assets/config/atmosphere.yaml");
+    config_load_skybox("assets/config/skybox.yaml");
+    config_load_lod("assets/config/lod.yaml");
     /* One-shot dump of Tenebris's effective atmosphere values so we
      * can sanity-check that the YAML actually landed (vs. defaults
      * from main_web.c being silently used). Comment out once the
