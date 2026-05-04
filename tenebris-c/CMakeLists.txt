@@ -73,6 +73,12 @@ if (EMSCRIPTEN)
     target_link_libraries(tenebris PRIVATE tenebris_core tenebris_third_party)
     target_compile_definitions(tenebris PRIVATE CLIENT_BUILD SOKOL_GLES3)
 
+    # Shaders compiled by sokol-shdc into <name>.glsl.h next to the
+    # build artefacts. renderer.c #includes the generated header and
+    # uses <name>_shader_desc(sg_query_backend()) instead of inlining
+    # GLSL strings.
+    add_sokol_shader(tenebris src/shaders/water.glsl)
+
     set(EMCC_LINK_FLAGS
         "-sUSE_WEBGL2=1"
         "-sFULL_ES3=1"
@@ -117,6 +123,8 @@ else()
     add_executable(tenebris ${TENEBRIS_CLIENT_SOURCES})
     target_link_libraries(tenebris PRIVATE tenebris_core tenebris_third_party)
     target_compile_definitions(tenebris PRIVATE CLIENT_BUILD)
+
+    add_sokol_shader(tenebris src/shaders/water.glsl)
 
     if (APPLE)
         target_compile_definitions(tenebris PRIVATE SOKOL_METAL)
