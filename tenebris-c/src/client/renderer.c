@@ -657,16 +657,16 @@ static const char* VS_WATER =
     "out vec3 v_normal;\n"
     "void main() {\n"
     "  vec3 n = normalize(a_normal);\n"
-    /* Three-octave directional swell. Amplitudes 0.18 / 0.12 / 0.06
-     * give a max combined displacement of 0.36 m — well under the
-     * 0.50 m cap drop in hex_mesher.c, so crests still can't reach
-     * coplanar beach sand. Temporal rates 1.35 / 1.95 / 2.55 give a
-     * visible bob without flickering. */
+    /* Three-octave directional swell. All spatial frequencies and
+     * amplitudes are baked in here — the only animation knob exposed
+     * outside the shader is the time-scale we apply to R.time_seconds
+     * before upload (see body_draw_water). Max combined amplitude
+     * 0.36 m, well inside the 0.50 m cap drop. */
     "  float t = u_time;\n"
     "  float swell = 0.0;\n"
-    "  swell += sin(t * 1.35 + a_pos.x * 1.4 + a_pos.z * 0.6) * 0.18;\n"
-    "  swell += sin(t * 1.95 - a_pos.x * 0.7 + a_pos.z * 1.2) * 0.12;\n"
-    "  swell += sin(t * 2.55 + a_pos.x * 2.3 - a_pos.z * 1.9) * 0.06;\n"
+    "  swell += sin(t * 0.9 + a_pos.x * 1.4 + a_pos.z * 0.6) * 0.18;\n"
+    "  swell += sin(t * 1.3 - a_pos.x * 0.7 + a_pos.z * 1.2) * 0.12;\n"
+    "  swell += sin(t * 1.7 + a_pos.x * 2.3 - a_pos.z * 1.9) * 0.06;\n"
     "  vec3 p = a_pos + n * swell;\n"
     "  gl_Position = u_vp * vec4(p, 1.0);\n"
     "  v_wpos = p;\n"
@@ -2104,16 +2104,24 @@ static void body_draw_water(chunked_body_t* body, mat4_t vp,
     mat4_t model = mat4_translate(body->world_pos);
     mat4_t mvp   = mat4_mul(vp, model);
 
+    /* The water shader treats u_time as a phase already scaled to
+     * "subjective" time. Spatial frequencies and amplitudes inside
+     * the shader are fixed; this multiplier is the only animation
+     * knob exposed from C. Higher = faster ripples. Will move to
+     * water.yaml in Phase C alongside the other tunables. */
+    const float water_time_scale = 5.0f;
+    const float t_scaled = R.time_seconds * water_time_scale;
+
     float ub_v[20];
     memcpy(ub_v, mvp.m, sizeof(mvp.m));
-    ub_v[16] = R.time_seconds;
+    ub_v[16] = t_scaled;
     ub_v[17] = 0.0f; ub_v[18] = 0.0f; ub_v[19] = 0.0f;
     sg_apply_uniforms(0, &(sg_range){ .ptr = ub_v, .size = sizeof(ub_v) });
 
     float ub_f[12] = { 0 };
     ub_f[0] = camera_world.x;  ub_f[1] = camera_world.y;  ub_f[2] = camera_world.z;
     ub_f[4] = R.env.sun_dir.x; ub_f[5] = R.env.sun_dir.y; ub_f[6] = R.env.sun_dir.z;
-    ub_f[8] = R.time_seconds;
+    ub_f[8] = t_scaled;
     sg_apply_uniforms(1, &(sg_range){ .ptr = ub_f, .size = sizeof(ub_f) });
 
     for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
