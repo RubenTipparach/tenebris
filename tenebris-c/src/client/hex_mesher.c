@@ -205,7 +205,7 @@ void hex_mesh_build_water(hex_mesh_t* out, const world_t* w, int tile_idx) {
      * offset has to exceed the swell amplitude or we're back to
      * spillover. Tuned conservatively for the current shader's
      * 0.08 + 0.06 + 0.03 = 0.17 m max swell. */
-    #define WATER_DEPTH_OFFSET_M 0.30f
+    #define WATER_DEPTH_OFFSET_M 0.50f
 
     /* Water caps span the whole tile — width 1.0. emit_cap renders
      * the TOP face of layer N at radius(N+1), so to land the water
