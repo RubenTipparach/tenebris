@@ -147,6 +147,26 @@ static struct {
     sg_view     atlas_view;
     sg_sampler  atlas_smp;
 
+    /* Phase A scaffolding for FBO-based water (see WATER_STAGES.md).
+     * Offscreen colour + depth render targets sized to the swapchain.
+     * Created lazily in renderer_begin_frame once the window size is
+     * known, recreated when the size changes (sokol attachments have
+     * no in-place resize), destroyed at shutdown.
+     *
+     * sokol post-2024 attachment model: each render-target image is
+     * paired with an sg_view of the matching attachment type
+     * (.color_attachment / .depth_stencil_attachment); a separate
+     * texture-view of the colour image lets later passes sample it
+     * as a 2D texture. Nothing renders into or samples these yet —
+     * A.1 only proves the create / destroy path compiles. */
+    sg_image  offscreen_color;
+    sg_image  offscreen_depth;
+    sg_view   offscreen_color_att;  /* color_attachment view of offscreen_color */
+    sg_view   offscreen_depth_att;  /* depth_stencil_attachment view of offscreen_depth */
+    sg_view   offscreen_color_tex;  /* texture view of offscreen_color (sampled in B.1) */
+    int       offscreen_w;
+    int       offscreen_h;
+
     /* All celestial bodies — Tenebris, every moon, every asteroid.
      * The active body (the one whose world_t backs the player's
      * physics + edits) gets streaming + dirty-rebuild treatment;
@@ -1192,6 +1212,11 @@ void renderer_shutdown(void) {
     sg_destroy_view(R.atlas_view);
     sg_destroy_image(R.atlas_img);
     sg_destroy_sampler(R.atlas_smp);
+    if (R.offscreen_color_tex.id) sg_destroy_view(R.offscreen_color_tex);
+    if (R.offscreen_color_att.id) sg_destroy_view(R.offscreen_color_att);
+    if (R.offscreen_depth_att.id) sg_destroy_view(R.offscreen_depth_att);
+    if (R.offscreen_color.id)     sg_destroy_image(R.offscreen_color);
+    if (R.offscreen_depth.id)     sg_destroy_image(R.offscreen_depth);
     sg_destroy_pipeline(R.pip_hex);
     sg_destroy_pipeline(R.pip_water);
     sg_destroy_pipeline(R.pip_sky);
@@ -1722,8 +1747,66 @@ void renderer_draw_moons(mat4_t view, mat4_t proj, vec3_t camera_world) {
 
 /* ----------------------------------------------------------------------- */
 
+/* Phase A.1 — make sure the offscreen colour + depth attachments
+ * (and the texture view of the colour image) exist at the requested
+ * size. No-op when they're already correct. Destroys + recreates on
+ * size change. Called from renderer_begin_frame so the targets
+ * follow the live swapchain dimensions. Targets aren't bound or
+ * sampled by anything yet — Phase A.2 will route the opaque pass
+ * into them and B.1 will have the water shader sample them.
+ *
+ * sokol API: sg_image_desc.usage carries .color_attachment /
+ * .depth_stencil_attachment booleans (this version of sokol does NOT
+ * have render_attachment / sg_attachments_desc — those are an older
+ * naming the codebase doesn't use). Each image is paired with an
+ * sg_view of matching .color_attachment / .depth_stencil_attachment
+ * type, and the colour image gets a third .texture-type view for
+ * later sampling. Reference: floooh/sokol header doc-comment lines
+ * ~585–720. */
+static void ensure_offscreen_targets(int w, int h) {
+    if (w <= 0 || h <= 0) return;
+    if (R.offscreen_color.id != 0 &&
+        R.offscreen_w == w && R.offscreen_h == h) {
+        return;
+    }
+    if (R.offscreen_color_tex.id) sg_destroy_view(R.offscreen_color_tex);
+    if (R.offscreen_color_att.id) sg_destroy_view(R.offscreen_color_att);
+    if (R.offscreen_depth_att.id) sg_destroy_view(R.offscreen_depth_att);
+    if (R.offscreen_color.id)     sg_destroy_image(R.offscreen_color);
+    if (R.offscreen_depth.id)     sg_destroy_image(R.offscreen_depth);
+
+    R.offscreen_color = sg_make_image(&(sg_image_desc){
+        .usage = { .color_attachment = true },
+        .width = w, .height = h,
+        .pixel_format = SG_PIXELFORMAT_RGBA8,
+        .sample_count = 1,
+        .label = "offscreen-color",
+    });
+    R.offscreen_depth = sg_make_image(&(sg_image_desc){
+        .usage = { .depth_stencil_attachment = true },
+        .width = w, .height = h,
+        .pixel_format = SG_PIXELFORMAT_DEPTH,
+        .sample_count = 1,
+        .label = "offscreen-depth",
+    });
+    R.offscreen_color_att = sg_make_view(&(sg_view_desc){
+        .color_attachment.image = R.offscreen_color,
+        .label = "offscreen-color-att",
+    });
+    R.offscreen_depth_att = sg_make_view(&(sg_view_desc){
+        .depth_stencil_attachment.image = R.offscreen_depth,
+        .label = "offscreen-depth-att",
+    });
+    R.offscreen_color_tex = sg_make_view(&(sg_view_desc){
+        .texture.image = R.offscreen_color,
+        .label = "offscreen-color-tex",
+    });
+    R.offscreen_w = w;
+    R.offscreen_h = h;
+}
+
 void renderer_begin_frame(int w, int h, render_env_t env) {
-    (void)w; (void)h;
+    ensure_offscreen_targets(w, h);
     R.env = env;
     R.tris = 0;
     R.tiles_remeshed = 0;
