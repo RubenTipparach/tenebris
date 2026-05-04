@@ -664,6 +664,12 @@ static const char* VS_WATER =
 static const char* FS_WATER =
     "#version 300 es\n"
     "precision highp float;\n"
+    /* highp int/uint is REQUIRED for the gradient-noise hash — GLSL ES
+     * fragment shaders default to mediump for integer types, which
+     * guarantees only 16 bits, so the 32-bit hash multiplications get
+     * silently truncated and the noise field collapses into nonsense
+     * (the symptom was a uniform-green cap with no animation). */
+    "precision highp int;\n"
     "in vec3 v_wpos;\n"
     "in vec3 v_normal;\n"
     "uniform vec3  u_camera_pos;\n"
