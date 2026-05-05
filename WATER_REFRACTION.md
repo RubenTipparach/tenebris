@@ -180,7 +180,7 @@ medium and call the terrain noise function at each step.
 
 | Step | Plan |
 |------|------|
-| R0   | Restore the offscreen-target scaffolding (`sg_image` colour + depth, `sg_view` colour-attach + depth-attach + colour-as-texture). Swapchain pass unchanged — this commit changes nothing visible. |
+| R0   | ~~Restore the offscreen-target scaffolding~~ — already in place. The original `Phase A.1` scaffolding (lazy-create on resize, three `sg_view` objects on top of `sg_image` colour + depth) survived the reset since I only reverted the routing commits, not the scaffolding underneath. `ensure_offscreen_targets()` runs every frame from `renderer_begin_frame`; the targets just aren't bound to anything yet. |
 | R1   | Render the opaque scene (sky / sun / terrain / moons) to the offscreen attachments. Add a fullscreen-quad composite blit at the start of the swapchain pass. Result should look identical. |
 | R2   | Add the ray-march post-process pipeline + shader (separate `.glsl` file driven by sokol-shdc). For now, the shader just blits the offscreen colour through with no water effect — verifies the binding chain. |
 | R3   | First refraction step: in the post-process shader, ray-sphere-intersect against the water shell. Where the ray enters water, perturb the colour-sample UV by the (analytic) surface normal. Refraction shimmer appears. The existing water cap mesh stays drawn on top so we can A/B them visually. |
