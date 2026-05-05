@@ -464,15 +464,24 @@ static void frame(void) {
     env.camera_world = cam_world;
 
     renderer_begin_frame(sapp_width(), sapp_height(), env);
-    /* Skybox first — fullscreen stars + sun-disc backdrop, no depth
-     * write so the rest of the scene paints over it. */
+    /* Phase A.2 — every opaque draw below this line goes into the
+     * offscreen colour + depth attachments, not directly to the
+     * swapchain. compose_to_swapchain ends the offscreen pass and
+     * blits the result onto the screen so water can sample the
+     * underwater scene as a texture. */
     renderer_draw_skybox(view, proj);
-    /* Sun sphere — emissive body at env.sun_pos, depth-write so
-     * later opaques occlude it. */
     renderer_draw_sun(view, proj);
     renderer_draw_world(view, proj, G.world, cam_world, dt);
     renderer_draw_moons(view, proj, cam_world);
 
+    /* Hand off to the swapchain pass. */
+    renderer_compose_to_swapchain();
+
+    /* Water draws on top of the composited scene so the cap shader
+     * can sample offscreen colour + depth (Phase B). */
+    renderer_draw_water(view, proj, cam_world);
+
+    /* UI overlays still on top of everything. */
     update_overlay(dt);
     teleport_menu_draw();
     draw_error_overlay();

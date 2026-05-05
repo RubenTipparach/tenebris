@@ -14,6 +14,7 @@
  * header exposes <name>_shader_desc(), <name>_<block>_t structs,
  * ATTR_<name>_<attr>, and UB_<block> slot constants. */
 #include "water.glsl.h"
+#include "composite.glsl.h"
 #include "sokol_glue.h"
 #include "sokol_log.h"
 
@@ -138,6 +139,8 @@ typedef struct {
 static struct {
     sg_pipeline pip_hex;
     sg_pipeline pip_water;     /* translucent, wave-animated cap layer */
+    sg_pipeline pip_composite; /* fullscreen blit of offscreen colour to swapchain */
+    sg_sampler  smp_offscreen; /* linear-clamp sampler for the composite + water passes */
     sg_pipeline pip_sky;       /* fullscreen atmosphere + starfield     */
     sg_pipeline pip_distant;   /* subdivided icosphere w/ vertex colours (far LOD) */
     sg_pipeline pip_sun;       /* emissive sun sphere                   */
@@ -865,6 +868,27 @@ void renderer_init(void) {
         .label = "water-pipeline",
     });
 
+    /* Composite blit pipeline — Phase A.3. Draws a single fullscreen
+     * triangle (gl_VertexIndex-based, no vbuf), samples the offscreen
+     * colour image via R.offscreen_color_tex, writes to swapchain.
+     * No depth, no blend — fully replaces whatever was on the
+     * swapchain target before. */
+    sg_shader shd_composite = sg_make_shader(composite_shader_desc(sg_query_backend()));
+    R.pip_composite = sg_make_pipeline(&(sg_pipeline_desc){
+        .shader = shd_composite,
+        .index_type = SG_INDEXTYPE_NONE,
+        .cull_mode = SG_CULLMODE_NONE,
+        .depth = { .write_enabled = false, .compare = SG_COMPAREFUNC_ALWAYS },
+        .label = "composite-pipeline",
+    });
+    R.smp_offscreen = sg_make_sampler(&(sg_sampler_desc){
+        .min_filter = SG_FILTER_LINEAR,
+        .mag_filter = SG_FILTER_LINEAR,
+        .wrap_u = SG_WRAP_CLAMP_TO_EDGE,
+        .wrap_v = SG_WRAP_CLAMP_TO_EDGE,
+        .label = "offscreen-sampler",
+    });
+
     /* Per-body chunk storage is allocated lazily by renderer_register_world
      * once we know the body's tile_count + radius. Nothing to do here. */
 
@@ -1083,6 +1107,8 @@ void renderer_shutdown(void) {
     if (R.offscreen_depth.id)     sg_destroy_image(R.offscreen_depth);
     sg_destroy_pipeline(R.pip_hex);
     sg_destroy_pipeline(R.pip_water);
+    sg_destroy_pipeline(R.pip_composite);
+    sg_destroy_sampler(R.smp_offscreen);
     sg_destroy_pipeline(R.pip_sky);
     sg_destroy_pipeline(R.pip_distant);
     sg_destroy_pipeline(R.pip_sun);
@@ -1675,29 +1701,11 @@ void renderer_begin_frame(int w, int h, render_env_t env) {
     R.tris = 0;
     R.tiles_remeshed = 0;
 
-    /* Phase A.2 — prove the attachment-based pass machinery works
-     * by opening + immediately ending an empty offscreen pass before
-     * the swapchain pass. Nothing renders into the offscreen target;
-     * its contents are discarded. If this commit deploys without
-     * errors we've confirmed sokol can drive the offscreen path on
-     * this codebase, and the next step (A.2 follow-up) can move
-     * real draws into the pass body. */
-    sg_begin_pass(&(sg_pass){
-        .action = {
-            .colors[0] = {
-                .load_action = SG_LOADACTION_CLEAR,
-                .clear_value = { 0.0f, 0.0f, 0.0f, 1.0f },
-            },
-            .depth = { .load_action = SG_LOADACTION_CLEAR, .clear_value = 1.0f },
-        },
-        .attachments = {
-            .colors[0]     = R.offscreen_color_att,
-            .depth_stencil = R.offscreen_depth_att,
-        },
-        .label = "offscreen-pass-empty",
-    });
-    sg_end_pass();
-
+    /* Phase A.2 — opaque scene now goes into the offscreen colour +
+     * depth attachments instead of straight to the swapchain. The
+     * subsequent compose_to_swapchain call ends this pass and starts
+     * a swapchain pass that blits the offscreen colour onto the
+     * screen, then water + UI draw on top of that. */
     R.pass_action = (sg_pass_action){
         .colors[0] = {
             .load_action = SG_LOADACTION_CLEAR,
@@ -1705,7 +1713,36 @@ void renderer_begin_frame(int w, int h, render_env_t env) {
         },
         .depth = { .load_action = SG_LOADACTION_CLEAR, .clear_value = 1.0f },
     };
-    sg_begin_pass(&(sg_pass){ .action = R.pass_action, .swapchain = sglue_swapchain() });
+    sg_begin_pass(&(sg_pass){
+        .action = R.pass_action,
+        .attachments = {
+            .colors[0]     = R.offscreen_color_att,
+            .depth_stencil = R.offscreen_depth_att,
+        },
+        .label = "offscreen-scene",
+    });
+}
+
+void renderer_compose_to_swapchain(void) {
+    /* End the offscreen pass + start the swapchain pass. Composite
+     * draws a single fullscreen triangle that samples the offscreen
+     * colour image and writes it to the swapchain. */
+    sg_end_pass();
+
+    sg_begin_pass(&(sg_pass){
+        .action = {
+            .colors[0] = { .load_action = SG_LOADACTION_DONTCARE },
+            .depth     = { .load_action = SG_LOADACTION_CLEAR, .clear_value = 1.0f },
+        },
+        .swapchain = sglue_swapchain(),
+        .label = "swapchain-composite",
+    });
+    sg_apply_pipeline(R.pip_composite);
+    sg_apply_bindings(&(sg_bindings){
+        .views[VIEW_scene_color] = R.offscreen_color_tex,
+        .samplers[SMP_scene_smp] = R.smp_offscreen,
+    });
+    sg_draw(0, 3, 1);
 }
 
 /* ----------------------------------------------------------------------- */
@@ -2154,8 +2191,20 @@ void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world,
         body_draw_chunks(body, vp);
     }
 
-    /* Water pass — blended on top of the opaque terrain. Same
-     * "active body bypasses cull" rule as the opaque pass. */
+    /* Water no longer drawn here — moved to renderer_draw_water,
+     * which runs in the swapchain pass after compose_to_swapchain so
+     * the water shader can sample the offscreen colour + depth. */
+    }   /* end of if (R_TERRAIN_VISIBLE) */
+}
+
+void renderer_draw_water(mat4_t view, mat4_t proj, vec3_t camera_world) {
+    if (!R_TERRAIN_VISIBLE) return;
+
+    mat4_t vp = mat4_mul(proj, view);
+    frustum_plane_t frustum[6];
+    extract_frustum(vp, frustum);
+    const float LOD_RATIO = 0.12f;
+
     sg_apply_pipeline(R.pip_water);
     for (int bi = 0; bi < R.body_count; ++bi) {
         chunked_body_t* body = &R.bodies[bi];
@@ -2171,7 +2220,6 @@ void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world,
         if (distant) continue;
         body_draw_water(body, vp, camera_world);
     }
-    }   /* end of if (R_TERRAIN_VISIBLE) */
 }
 
 void renderer_end_frame(void) {

@@ -59,11 +59,28 @@ void renderer_draw_skybox(mat4_t view, mat4_t proj);
  * planets correctly occlude it when in front. */
 void renderer_draw_sun(mat4_t view, mat4_t proj);
 
-/* Draw the planet: opaque terrain in one merged pass, then water caps
- * in a blended pass. `dt_seconds` advances the water-wave time
- * uniform; `camera_world` is used by the water fresnel term. */
+/* Draw the active body's opaque terrain. Water caps used to be
+ * drawn here too — now they happen in renderer_draw_water on the
+ * swapchain pass after the offscreen scene has been composited, so
+ * the water shader can sample the underwater colour + depth.
+ * `dt_seconds` still advances the water-wave time accumulator. */
 void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world,
                          vec3_t camera_world, float dt_seconds);
+
+/* Phase A.3 transition. Ends the offscreen pass that begin_frame
+ * opened, opens the swapchain pass, and draws a fullscreen-quad
+ * composite that blits the offscreen colour onto the swapchain.
+ * Must be called exactly once per frame, after every opaque draw
+ * (skybox, sun, terrain, moons) and before water + UI. */
+void renderer_compose_to_swapchain(void);
+
+/* Water cap pass. Draws every has_water body's translucent water
+ * mesh. Called after renderer_compose_to_swapchain so the cap
+ * shader can sample the offscreen scene texture for refraction +
+ * depth-thickness extinction (Phase B). `view`/`proj` rebuild the
+ * MVP per body; `camera_world` feeds the Fresnel + view-direction
+ * lighting. */
+void renderer_draw_water(mat4_t view, mat4_t proj, vec3_t camera_world);
 
 /* Register a celestial body for chunked rendering. Every body —
  * Tenebris, moons, asteroids — uses the same 32-chunk layout, so block
