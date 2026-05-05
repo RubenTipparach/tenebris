@@ -464,24 +464,27 @@ static void frame(void) {
     env.camera_world = cam_world;
 
     renderer_begin_frame(sapp_width(), sapp_height(), env);
-    /* Phase A.2 — every opaque draw below this line goes into the
-     * offscreen colour + depth attachments, not directly to the
-     * swapchain. compose_to_swapchain ends the offscreen pass and
-     * blits the result onto the screen so water can sample the
-     * underwater scene as a texture. */
+    /* Every draw below this line goes into the offscreen colour +
+     * depth attachments, not directly to the swapchain.
+     * compose_to_swapchain blits the result onto the screen.
+     *
+     * Water draws inside the offscreen pass too — it has to share
+     * the depth buffer with the terrain or it won't be occluded by
+     * land sitting in front of it. The eventual post-process water
+     * (Lague-style fullscreen pass — see WATER_REFRACTION.md R3+)
+     * will move out of this pass and replace the water cap mesh
+     * entirely; until then water stays here. */
     renderer_draw_skybox(view, proj);
     renderer_draw_sun(view, proj);
     renderer_draw_world(view, proj, G.world, cam_world, dt);
     renderer_draw_moons(view, proj, cam_world);
-
-    /* Hand off to the swapchain pass. */
-    renderer_compose_to_swapchain();
-
-    /* Water draws on top of the composited scene so the cap shader
-     * can sample offscreen colour + depth (Phase B). */
     renderer_draw_water(view, proj, cam_world);
 
-    /* UI overlays still on top of everything. */
+    /* Hand off to the swapchain pass — blits the offscreen colour
+     * (terrain + water already composited there) onto the swapchain. */
+    renderer_compose_to_swapchain();
+
+    /* UI overlays go on the swapchain on top of the composited scene. */
     update_overlay(dt);
     teleport_menu_draw();
     draw_error_overlay();
