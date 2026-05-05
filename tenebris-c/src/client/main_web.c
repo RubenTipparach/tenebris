@@ -264,6 +264,13 @@ static void update_overlay(float dt) {
     } else {
         sdtx_printf("[H] hide terrain\n");
     }
+    if (!renderer_water_visible()) {
+        sdtx_color3b(0x55, 0xff, 0xff);
+        sdtx_printf("WATER HIDDEN    [J or top-left tap]\n");
+        sdtx_color3b(0xff, 0xff, 0xff);
+    } else {
+        sdtx_printf("[J] hide water\n");
+    }
 
     /* Mining progress bar (survival only). */
     if (G.player.survival_mode && G.interact.mining_progress_s > 0.0f) {
@@ -508,6 +515,10 @@ static void event(const sapp_event* e) {
         renderer_set_terrain_visible(!renderer_terrain_visible());
         return;
     }
+    if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_J) {
+        renderer_set_water_visible(!renderer_water_visible());
+        return;
+    }
     if (e->type == SAPP_EVENTTYPE_TOUCHES_BEGAN && e->num_touches > 0) {
         const float w = sapp_widthf();
         const float corner = 96.0f;   /* px hit-box edge length */
@@ -515,6 +526,10 @@ static void event(const sapp_event* e) {
         float ty = e->touches[0].pos_y;
         if (tx > w - corner && ty < corner) {
             renderer_set_terrain_visible(!renderer_terrain_visible());
+            return;
+        }
+        if (tx < corner && ty < corner) {
+            renderer_set_water_visible(!renderer_water_visible());
             return;
         }
     }

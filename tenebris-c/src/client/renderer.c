@@ -211,6 +211,13 @@ static void chunk_upload(mesh_chunk_t* c);
  * down) reads it. Defaults to true so terrain shows on first frame. */
 static bool R_TERRAIN_VISIBLE = true;
 
+/* Same idea for water. Useful for isolating "is the thing I'm
+ * seeing the water cap or something else?" debugging questions —
+ * e.g. confirming whether the thin band on the planet horizon is
+ * the far-side cap (it is) or leftover atmosphere geometry (no
+ * such thing). */
+static bool R_WATER_VISIBLE = true;
+
 /* ----------------------------------------------------------------------- */
 
 static const char* VS_HEX =
@@ -2199,6 +2206,7 @@ void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world,
 
 void renderer_draw_water(mat4_t view, mat4_t proj, vec3_t camera_world) {
     if (!R_TERRAIN_VISIBLE) return;
+    if (!R_WATER_VISIBLE)   return;
 
     mat4_t vp = mat4_mul(proj, view);
     frustum_plane_t frustum[6];
@@ -2248,3 +2256,5 @@ void renderer_chunk_count(int* out_chunks, int* out_tiles_meshed) {
  * up near the forward-decl block so renderer_draw_world can read it. */
 void renderer_set_terrain_visible(bool v) { R_TERRAIN_VISIBLE = v; }
 bool renderer_terrain_visible(void)        { return R_TERRAIN_VISIBLE; }
+void renderer_set_water_visible(bool v)   { R_WATER_VISIBLE = v;   }
+bool renderer_water_visible(void)          { return R_WATER_VISIBLE; }
