@@ -9,6 +9,12 @@ if (NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
 endif()
 
+# sokol-shdc shader cross-compiler integration. Defines
+# add_sokol_shader(target path/to/shader.glsl) which attaches the
+# generated header to `target` and exposes its directory on the
+# include path. The binary itself is fetched by scripts/fetch-deps.sh.
+include(cmake/sokol-shdc.cmake)
+
 # ---------------------------------------------------------------------------
 # core library — shared between client and server. MUST NOT depend on sokol.
 # Enforced by the test in tools/check-core-deps.cmake (invoked in CI).
@@ -67,6 +73,12 @@ if (EMSCRIPTEN)
     target_link_libraries(tenebris PRIVATE tenebris_core tenebris_third_party)
     target_compile_definitions(tenebris PRIVATE CLIENT_BUILD SOKOL_GLES3)
 
+    # Shaders compiled by sokol-shdc into <name>.glsl.h next to the
+    # build artefacts. renderer.c #includes the generated header and
+    # uses <name>_shader_desc(sg_query_backend()) instead of inlining
+    # GLSL strings.
+    add_sokol_shader(tenebris src/shaders/water.glsl)
+
     set(EMCC_LINK_FLAGS
         "-sUSE_WEBGL2=1"
         "-sFULL_ES3=1"
@@ -111,6 +123,8 @@ else()
     add_executable(tenebris ${TENEBRIS_CLIENT_SOURCES})
     target_link_libraries(tenebris PRIVATE tenebris_core tenebris_third_party)
     target_compile_definitions(tenebris PRIVATE CLIENT_BUILD)
+
+    add_sokol_shader(tenebris src/shaders/water.glsl)
 
     if (APPLE)
         target_compile_definitions(tenebris PRIVATE SOKOL_METAL)

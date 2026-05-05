@@ -6,6 +6,14 @@
 
 #include "sokol_gfx.h"
 #include "sokol_app.h"
+
+/* sokol-shdc-generated descriptors for shaders authored under
+ * src/shaders/. The cmake/sokol-shdc.cmake module runs the cross-
+ * compiler at build time and drops the generated headers into
+ * ${CMAKE_BINARY_DIR}/generated/ which is on the include path. Each
+ * header exposes <name>_shader_desc(), <name>_<block>_t structs,
+ * ATTR_<name>_<attr>, and UB_<block> slot constants. */
+#include "water.glsl.h"
 #include "sokol_glue.h"
 #include "sokol_log.h"
 
@@ -146,6 +154,26 @@ static struct {
     sg_image    atlas_img;
     sg_view     atlas_view;
     sg_sampler  atlas_smp;
+
+    /* Phase A scaffolding for FBO-based water (see WATER_STAGES.md).
+     * Offscreen colour + depth render targets sized to the swapchain.
+     * Created lazily in renderer_begin_frame once the window size is
+     * known, recreated when the size changes (sokol attachments have
+     * no in-place resize), destroyed at shutdown.
+     *
+     * sokol post-2024 attachment model: each render-target image is
+     * paired with an sg_view of the matching attachment type
+     * (.color_attachment / .depth_stencil_attachment); a separate
+     * texture-view of the colour image lets later passes sample it
+     * as a 2D texture. Nothing renders into or samples these yet —
+     * A.1 only proves the create / destroy path compiles. */
+    sg_image  offscreen_color;
+    sg_image  offscreen_depth;
+    sg_view   offscreen_color_att;  /* color_attachment view of offscreen_color */
+    sg_view   offscreen_depth_att;  /* depth_stencil_attachment view of offscreen_depth */
+    sg_view   offscreen_color_tex;  /* texture view of offscreen_color (sampled in B.1) */
+    int       offscreen_w;
+    int       offscreen_h;
 
     /* All celestial bodies — Tenebris, every moon, every asteroid.
      * The active body (the one whose world_t backs the player's
@@ -615,133 +643,11 @@ static const char* FS_SKY =
     "  frag_color = vec4(col, 1.0);\n"
     "}\n";
 
-/* Procedural water shader. Uses 3D value-noise fBm so the pattern is
- * ISOTROPIC around the sphere — directional sum-of-sines (the earlier
- * version) gave visible axis-aligned stripes that rotated per tile on
- * curved surfaces. With 3D noise the waves look the same regardless
- * of what direction the water cap's normal points in.
- *
- * Surface normal comes from a three-sample finite-difference gradient
- * of the height field, projected onto the tangent plane. Lighting,
- * Fresnel, reflection and specular all react to the real surface
- * slope. Foam at wave crests + steep slopes.
- */
-static const char* VS_WATER =
-    "#version 300 es\n"
-    "layout(location=0) in vec3 a_pos;\n"
-    "layout(location=1) in vec3 a_normal;\n"
-    "layout(location=2) in vec2 a_uv;\n"       /* unused; keeps vbuf layout compatible */
-    "uniform mat4 u_vp;\n"
-    "uniform float u_time;\n"
-    "out vec3 v_wpos;\n"
-    "out vec3 v_normal;\n"
-    "void main() {\n"
-    "  vec3 n = normalize(a_normal);\n"
-    /* Three-octave swell — the vertex displacement. Keeps amplitude
-     * small so water doesn't clip through shorelines. */
-    "  float t = u_time;\n"
-    "  float swell = 0.0;\n"
-    "  swell += sin(t * 0.9 + a_pos.x * 1.4 + a_pos.z * 0.6) * 0.08;\n"
-    "  swell += sin(t * 1.3 - a_pos.x * 0.7 + a_pos.z * 1.2) * 0.06;\n"
-    "  swell += sin(t * 1.7 + a_pos.x * 2.3 - a_pos.z * 1.9) * 0.03;\n"
-    "  vec3 p = a_pos + n * swell;\n"
-    "  gl_Position = u_vp * vec4(p, 1.0);\n"
-    "  v_wpos = p;\n"
-    "  v_normal = n;\n"
-    "}\n";
-
-static const char* FS_WATER =
-    "#version 300 es\n"
-    "precision highp float;\n"
-    "in vec3 v_wpos;\n"
-    "in vec3 v_normal;\n"
-    "uniform vec3 u_camera_pos;\n"
-    "uniform vec3 u_sun_dir;\n"
-    "uniform float u_time;\n"
-    "out vec4 frag_color;\n"
-
-    /* Cheap 3D hash. No textures, no large constants — a Dave_Hoskins-\n"
-     * style scramble is good enough for interactive water. */
-    "float h31(vec3 p) {\n"
-    "  p = fract(p * vec3(443.897, 441.423, 437.195));\n"
-    "  p += dot(p, p.yzx + 19.19);\n"
-    "  return fract((p.x + p.y) * p.z);\n"
-    "}\n"
-
-    /* Trilinear value noise, smoothstep interpolant, [-1, 1]. */
-    "float vnoise3(vec3 p) {\n"
-    "  vec3 i = floor(p);\n"
-    "  vec3 f = fract(p);\n"
-    "  f = f * f * (3.0 - 2.0 * f);\n"
-    "  float c000 = h31(i);                    float c100 = h31(i + vec3(1,0,0));\n"
-    "  float c010 = h31(i + vec3(0,1,0));      float c110 = h31(i + vec3(1,1,0));\n"
-    "  float c001 = h31(i + vec3(0,0,1));      float c101 = h31(i + vec3(1,0,1));\n"
-    "  float c011 = h31(i + vec3(0,1,1));      float c111 = h31(i + vec3(1,1,1));\n"
-    "  float mx0  = mix(mix(c000, c100, f.x), mix(c010, c110, f.x), f.y);\n"
-    "  float mx1  = mix(mix(c001, c101, f.x), mix(c011, c111, f.x), f.y);\n"
-    "  return mix(mx0, mx1, f.z) * 2.0 - 1.0;\n"
-    "}\n"
-
-    /* Three-octave fBm with per-octave time advection along different\n"
-     * directions so the surface doesn't look like a single flow. */
-    "float fbm3(vec3 p, float t) {\n"
-    "  float h = 0.0;\n"
-    "  vec3 q = p * 0.9 + vec3(t * 0.35, t * 0.18, -t * 0.42);\n"
-    "  h += vnoise3(q) * 0.50;\n"
-    "  q = q * 2.1 + vec3(-t * 0.22, t * 0.33, t * 0.17);\n"
-    "  h += vnoise3(q) * 0.28;\n"
-    "  q = q * 2.3 + vec3(t * 0.19, -t * 0.27, t * 0.11);\n"
-    "  h += vnoise3(q) * 0.15;\n"
-    "  return h;\n"
-    "}\n"
-
-    "void main() {\n"
-    "  vec3 radial = normalize(v_normal);\n"
-
-    /* Scalar height + 3-sample finite-difference world-space gradient.\n"
-     * Epsilon is ~8 cm at water scale, small enough to stay inside the\n"
-     * smallest noise cell and big enough to dodge numeric noise. */
-    "  float h0 = fbm3(v_wpos, u_time);\n"
-    "  float e  = 0.08;\n"
-    "  vec3 grad = vec3(\n"
-    "    fbm3(v_wpos + vec3(e,0,0), u_time) - h0,\n"
-    "    fbm3(v_wpos + vec3(0,e,0), u_time) - h0,\n"
-    "    fbm3(v_wpos + vec3(0,0,e), u_time) - h0) / e;\n"
-
-    /* Tangent-plane gradient tilts the radial normal. */
-    "  vec3 t_grad = grad - radial * dot(grad, radial);\n"
-    "  vec3 n = normalize(radial - t_grad * 0.65);\n"
-
-    "  vec3 view = normalize(u_camera_pos - v_wpos);\n"
-    "  vec3 sun  = normalize(u_sun_dir);\n"
-
-    "  float vdn = max(dot(view, n), 0.0);\n"
-    "  float f   = 0.02 + 0.98 * pow(1.0 - vdn, 5.0);\n"
-
-    "  vec3 shallow = vec3(0.28, 0.68, 0.82);\n"
-    "  vec3 deep    = vec3(0.02, 0.10, 0.22);\n"
-    "  vec3 base    = mix(deep, shallow, vdn);\n"
-
-    "  vec3 refl   = reflect(-view, n);\n"
-    "  float up_f  = clamp(dot(refl, radial), 0.0, 1.0);\n"
-    "  vec3 sky    = mix(vec3(0.85, 0.92, 0.98), vec3(0.35, 0.55, 0.85), up_f);\n"
-
-    "  vec3  halfv = normalize(view + sun);\n"
-    "  float spec  = pow(max(dot(n, halfv), 0.0), 140.0);\n"
-    "  vec3  sun_highlight = vec3(1.35, 1.25, 1.10) * spec * 2.0;\n"
-
-    /* Foam from wave crest + slope. Height fBm now goes ~[-1, 1]; tune\n"
-     * the smoothstep bands accordingly. */
-    "  float steepness = length(t_grad);\n"
-    "  float crest     = smoothstep(0.35, 0.60, h0);\n"
-    "  float slope_f   = smoothstep(0.50, 1.20, steepness);\n"
-    "  float foam      = max(crest * 0.55, slope_f * 0.45);\n"
-
-    "  vec3 color = mix(base, sky, f) + sun_highlight;\n"
-    "  color = mix(color, vec3(0.95, 0.97, 1.0), foam * 0.6);\n"
-    "  float alpha = mix(0.70, 0.97, f);\n"
-    "  frag_color = vec4(color, alpha);\n"
-    "}\n";
+/* Water shader source lives in tenebris-c/src/shaders/water.glsl,
+ * cross-compiled at build time by sokol-shdc into water.glsl.h
+ * (#included up top). The runtime side just calls
+ * water_shader_desc(sg_query_backend()) and uploads vs_params_t /
+ * fs_params_t structs — no manual std140 padding. */
 
 /* ----------------------------------------------------------------------- */
 
@@ -931,39 +837,17 @@ void renderer_init(void) {
      * depth writes are disabled so overlapping water caps (e.g. at tile
      * seams after the wave displacement) don't punch holes in one
      * another. */
-    sg_shader shd_water = sg_make_shader(&(sg_shader_desc){
-        .vertex_func.source   = VS_WATER,
-        .fragment_func.source = FS_WATER,
-        .attrs = {
-            [0].glsl_name = "a_pos",
-            [1].glsl_name = "a_normal",
-            [2].glsl_name = "a_uv",    /* declared for layout parity with the
-                                         * shared vbuf; unused by the shader */
-        },
-        .uniform_blocks[0] = {
-            .stage = SG_SHADERSTAGE_VERTEX,
-            .size  = 20 * sizeof(float),   /* mat4(16) + float(1) + 3 pad */
-            .layout = SG_UNIFORMLAYOUT_STD140,
-            .glsl_uniforms[0] = { .glsl_name = "u_vp",   .type = SG_UNIFORMTYPE_MAT4 },
-            .glsl_uniforms[1] = { .glsl_name = "u_time", .type = SG_UNIFORMTYPE_FLOAT },
-        },
-        .uniform_blocks[1] = {
-            .stage = SG_SHADERSTAGE_FRAGMENT,
-            .size  = 12 * sizeof(float),   /* vec3 + pad + vec3 + pad + float + pad */
-            .layout = SG_UNIFORMLAYOUT_STD140,
-            .glsl_uniforms[0] = { .glsl_name = "u_camera_pos", .type = SG_UNIFORMTYPE_FLOAT3 },
-            .glsl_uniforms[1] = { .glsl_name = "u_sun_dir",    .type = SG_UNIFORMTYPE_FLOAT3 },
-            .glsl_uniforms[2] = { .glsl_name = "u_time",       .type = SG_UNIFORMTYPE_FLOAT },
-        },
-        .label = "water-shader",
-    });
+    /* Shader descriptor + uniform-block layouts are generated by
+     * sokol-shdc from src/shaders/water.glsl. Attribute slots come
+     * from the same generated header (ATTR_water_a_*). */
+    sg_shader shd_water = sg_make_shader(water_shader_desc(sg_query_backend()));
     R.pip_water = sg_make_pipeline(&(sg_pipeline_desc){
         .shader = shd_water,
         .layout = {
             .attrs = {
-                [0] = { .format = SG_VERTEXFORMAT_FLOAT3 },
-                [1] = { .format = SG_VERTEXFORMAT_FLOAT3 },
-                [2] = { .format = SG_VERTEXFORMAT_FLOAT2 },
+                [ATTR_water_a_pos]    = { .format = SG_VERTEXFORMAT_FLOAT3 },
+                [ATTR_water_a_normal] = { .format = SG_VERTEXFORMAT_FLOAT3 },
+                [ATTR_water_a_uv]     = { .format = SG_VERTEXFORMAT_FLOAT2 },
             },
             .buffers[0].stride = sizeof(hex_vertex_t),
         },
@@ -1192,6 +1076,11 @@ void renderer_shutdown(void) {
     sg_destroy_view(R.atlas_view);
     sg_destroy_image(R.atlas_img);
     sg_destroy_sampler(R.atlas_smp);
+    if (R.offscreen_color_tex.id) sg_destroy_view(R.offscreen_color_tex);
+    if (R.offscreen_color_att.id) sg_destroy_view(R.offscreen_color_att);
+    if (R.offscreen_depth_att.id) sg_destroy_view(R.offscreen_depth_att);
+    if (R.offscreen_color.id)     sg_destroy_image(R.offscreen_color);
+    if (R.offscreen_depth.id)     sg_destroy_image(R.offscreen_depth);
     sg_destroy_pipeline(R.pip_hex);
     sg_destroy_pipeline(R.pip_water);
     sg_destroy_pipeline(R.pip_sky);
@@ -1722,11 +1611,93 @@ void renderer_draw_moons(mat4_t view, mat4_t proj, vec3_t camera_world) {
 
 /* ----------------------------------------------------------------------- */
 
+/* Phase A.1 — make sure the offscreen colour + depth attachments
+ * (and the texture view of the colour image) exist at the requested
+ * size. No-op when they're already correct. Destroys + recreates on
+ * size change. Called from renderer_begin_frame so the targets
+ * follow the live swapchain dimensions. Targets aren't bound or
+ * sampled by anything yet — Phase A.2 will route the opaque pass
+ * into them and B.1 will have the water shader sample them.
+ *
+ * sokol API: sg_image_desc.usage carries .color_attachment /
+ * .depth_stencil_attachment booleans (this version of sokol does NOT
+ * have render_attachment / sg_attachments_desc — those are an older
+ * naming the codebase doesn't use). Each image is paired with an
+ * sg_view of matching .color_attachment / .depth_stencil_attachment
+ * type, and the colour image gets a third .texture-type view for
+ * later sampling. Reference: floooh/sokol header doc-comment lines
+ * ~585–720. */
+static void ensure_offscreen_targets(int w, int h) {
+    if (w <= 0 || h <= 0) return;
+    if (R.offscreen_color.id != 0 &&
+        R.offscreen_w == w && R.offscreen_h == h) {
+        return;
+    }
+    if (R.offscreen_color_tex.id) sg_destroy_view(R.offscreen_color_tex);
+    if (R.offscreen_color_att.id) sg_destroy_view(R.offscreen_color_att);
+    if (R.offscreen_depth_att.id) sg_destroy_view(R.offscreen_depth_att);
+    if (R.offscreen_color.id)     sg_destroy_image(R.offscreen_color);
+    if (R.offscreen_depth.id)     sg_destroy_image(R.offscreen_depth);
+
+    R.offscreen_color = sg_make_image(&(sg_image_desc){
+        .usage = { .color_attachment = true },
+        .width = w, .height = h,
+        .pixel_format = SG_PIXELFORMAT_RGBA8,
+        .sample_count = 1,
+        .label = "offscreen-color",
+    });
+    R.offscreen_depth = sg_make_image(&(sg_image_desc){
+        .usage = { .depth_stencil_attachment = true },
+        .width = w, .height = h,
+        .pixel_format = SG_PIXELFORMAT_DEPTH,
+        .sample_count = 1,
+        .label = "offscreen-depth",
+    });
+    R.offscreen_color_att = sg_make_view(&(sg_view_desc){
+        .color_attachment.image = R.offscreen_color,
+        .label = "offscreen-color-att",
+    });
+    R.offscreen_depth_att = sg_make_view(&(sg_view_desc){
+        .depth_stencil_attachment.image = R.offscreen_depth,
+        .label = "offscreen-depth-att",
+    });
+    R.offscreen_color_tex = sg_make_view(&(sg_view_desc){
+        .texture.image = R.offscreen_color,
+        .label = "offscreen-color-tex",
+    });
+    R.offscreen_w = w;
+    R.offscreen_h = h;
+}
+
 void renderer_begin_frame(int w, int h, render_env_t env) {
-    (void)w; (void)h;
+    ensure_offscreen_targets(w, h);
     R.env = env;
     R.tris = 0;
     R.tiles_remeshed = 0;
+
+    /* Phase A.2 — prove the attachment-based pass machinery works
+     * by opening + immediately ending an empty offscreen pass before
+     * the swapchain pass. Nothing renders into the offscreen target;
+     * its contents are discarded. If this commit deploys without
+     * errors we've confirmed sokol can drive the offscreen path on
+     * this codebase, and the next step (A.2 follow-up) can move
+     * real draws into the pass body. */
+    sg_begin_pass(&(sg_pass){
+        .action = {
+            .colors[0] = {
+                .load_action = SG_LOADACTION_CLEAR,
+                .clear_value = { 0.0f, 0.0f, 0.0f, 1.0f },
+            },
+            .depth = { .load_action = SG_LOADACTION_CLEAR, .clear_value = 1.0f },
+        },
+        .attachments = {
+            .colors[0]     = R.offscreen_color_att,
+            .depth_stencil = R.offscreen_depth_att,
+        },
+        .label = "offscreen-pass-empty",
+    });
+    sg_end_pass();
+
     R.pass_action = (sg_pass_action){
         .colors[0] = {
             .load_action = SG_LOADACTION_CLEAR,
@@ -1994,17 +1965,26 @@ static void body_draw_water(chunked_body_t* body, mat4_t vp,
     mat4_t model = mat4_translate(body->world_pos);
     mat4_t mvp   = mat4_mul(vp, model);
 
-    float ub_v[20];
-    memcpy(ub_v, mvp.m, sizeof(mvp.m));
-    ub_v[16] = R.time_seconds;
-    ub_v[17] = 0.0f; ub_v[18] = 0.0f; ub_v[19] = 0.0f;
-    sg_apply_uniforms(0, &(sg_range){ .ptr = ub_v, .size = sizeof(ub_v) });
+    /* The water shader treats u_time as a phase already scaled to
+     * "subjective" time. Spatial frequencies and amplitudes inside
+     * the shader are fixed; this multiplier is the only animation
+     * knob exposed from C. Higher = faster ripples. Will move to
+     * water.yaml in Phase C alongside the other tunables. */
+    const float water_time_scale = 0.75f;
+    const float t_scaled = R.time_seconds * water_time_scale;
 
-    float ub_f[12] = { 0 };
-    ub_f[0] = camera_world.x;  ub_f[1] = camera_world.y;  ub_f[2] = camera_world.z;
-    ub_f[4] = R.env.sun_dir.x; ub_f[5] = R.env.sun_dir.y; ub_f[6] = R.env.sun_dir.z;
-    ub_f[8] = R.time_seconds;
-    sg_apply_uniforms(1, &(sg_range){ .ptr = ub_f, .size = sizeof(ub_f) });
+    /* sokol-shdc emits std140-laid-out structs + slot constants —
+     * no manual offset math, no _pad_NN by hand. */
+    vs_params_t vs_params = { .u_time = t_scaled };
+    memcpy(vs_params.u_vp, mvp.m, sizeof(vs_params.u_vp));
+    sg_apply_uniforms(UB_vs_params, &SG_RANGE(vs_params));
+
+    fs_params_t fs_params = {
+        .u_camera_pos = { camera_world.x, camera_world.y, camera_world.z },
+        .u_sun_dir    = { R.env.sun_dir.x, R.env.sun_dir.y, R.env.sun_dir.z },
+        .u_time       = t_scaled,
+    };
+    sg_apply_uniforms(UB_fs_params, &SG_RANGE(fs_params));
 
     for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
         mesh_chunk_t* c = &body->chunks[ci];

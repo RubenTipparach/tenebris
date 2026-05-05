@@ -45,9 +45,15 @@
 #define COLD_LATITUDE         0.75f
 
 /* ----------------------------------------------------------------------- */
-/* fBm and ridge noise. Ports of fractalSimplex3D / ridgeSimplex3D from
- * terrainGenerationWorker.ts. Seed is stirred per-octave so octaves
- * don't correlate. */
+/* fBm and ridge noise. Octave structure is the same as the JS reference
+ * (terrainGenerationWorker.ts), but the underlying primitive is now 3D
+ * gradient (Perlin) noise — see gnoise3d_seed in core/rng.c, ported
+ * from rts-engine PlanetMesh.cs. Gradient noise has continuous first
+ * derivatives, so multi-octave stacks come out as smoothly varying
+ * land/sea masks instead of the grid-aligned, axis-blocky output value
+ * noise produced. Seed is stirred per-octave so octaves don't
+ * correlate. gnoise3d_seed already returns [-1, +1], so the
+ * `n * 2 - 1` remap the previous (value-noise) version needed is gone. */
 
 static float fractal3d(uint64_t seed, float x, float y, float z,
                        float period, int octaves,
@@ -55,9 +61,8 @@ static float fractal3d(uint64_t seed, float x, float y, float z,
     float value = 0.0f, max_value = 0.0f;
     float amplitude = 1.0f, frequency = period;
     for (int i = 0; i < octaves; ++i) {
-        float n = noise3d_seed(seed + (uint64_t)i * 1117ULL,
-                               x * frequency, y * frequency, z * frequency);
-        n = n * 2.0f - 1.0f;       /* [0,1] -> [-1,1] */
+        float n = gnoise3d_seed(seed + (uint64_t)i * 1117ULL,
+                                x * frequency, y * frequency, z * frequency);
         value     += n * amplitude;
         max_value += amplitude;
         amplitude *= persistence;
@@ -72,9 +77,8 @@ static float ridge3d(uint64_t seed, float x, float y, float z,
     float value = 0.0f, max_value = 0.0f;
     float amplitude = 1.0f, frequency = period;
     for (int i = 0; i < octaves; ++i) {
-        float n = noise3d_seed(seed + (uint64_t)i * 1117ULL,
-                               x * frequency, y * frequency, z * frequency);
-        n = n * 2.0f - 1.0f;
+        float n = gnoise3d_seed(seed + (uint64_t)i * 1117ULL,
+                                x * frequency, y * frequency, z * frequency);
         float ridge = 1.0f - (float)fabs(n);
         value     += ridge * ridge * amplitude;
         max_value += amplitude;

@@ -68,3 +68,59 @@ float noise3d_seed(uint64_t seed, float x, float y, float z) {
     const float kz = (float)(((seed >> 32) & 0xFFFF) * 1e-4 + 1.0);
     return noise3d(x * kx, y * ky, z * kz);
 }
+
+/* ---------- 3D gradient (Perlin) noise ---------------------------- */
+/* Port of Noise3D.Sample / Hash / Grad / Fade from the rts-engine
+ * reference (src/RtsEngine.Game/PlanetMesh.cs). Output is in
+ * [-1, +1] so the existing `n * 2 - 1` remap inside fractal3d/ridge3d
+ * is dropped. */
+
+static float gnoise_fade(float t) {
+    return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
+}
+
+static int32_t gnoise_hash(int32_t x, int32_t y, int32_t z, int32_t seed) {
+    int32_t h = seed ^ (x * 374761393) ^ (y * 668265263) ^ (z * 1274126177);
+    h = (h ^ (int32_t)((uint32_t)h >> 13)) * 1103515245;
+    h ^= (int32_t)((uint32_t)h >> 16);
+    return h;
+}
+
+static float gnoise_grad(int32_t hash, float x, float y, float z) {
+    int h = (int)(hash & 15);
+    float u = (h < 8) ? x : y;
+    float v = (h < 4) ? y : ((h == 12 || h == 14) ? x : z);
+    return ((h & 1) ? -u : u) + ((h & 2) ? -v : v);
+}
+
+float gnoise3d_seed(uint64_t seed, float x, float y, float z) {
+    /* Fold the 64-bit seed into the 32-bit hash space. The two halves
+     * are XORed so flipping any bit of `seed` perturbs the entire grid,
+     * not just one octant. */
+    int32_t s = (int32_t)((uint32_t)(seed & 0xFFFFFFFFu)
+                        ^ (uint32_t)((seed >> 32) & 0xFFFFFFFFu));
+
+    int32_t ix = (int32_t)floorf(x);
+    int32_t iy = (int32_t)floorf(y);
+    int32_t iz = (int32_t)floorf(z);
+    float fx = x - (float)ix;
+    float fy = y - (float)iy;
+    float fz = z - (float)iz;
+
+    float u = gnoise_fade(fx);
+    float v = gnoise_fade(fy);
+    float w = gnoise_fade(fz);
+
+    float g000 = gnoise_grad(gnoise_hash(ix,     iy,     iz,     s), fx,        fy,        fz       );
+    float g100 = gnoise_grad(gnoise_hash(ix + 1, iy,     iz,     s), fx - 1.0f, fy,        fz       );
+    float g010 = gnoise_grad(gnoise_hash(ix,     iy + 1, iz,     s), fx,        fy - 1.0f, fz       );
+    float g110 = gnoise_grad(gnoise_hash(ix + 1, iy + 1, iz,     s), fx - 1.0f, fy - 1.0f, fz       );
+    float g001 = gnoise_grad(gnoise_hash(ix,     iy,     iz + 1, s), fx,        fy,        fz - 1.0f);
+    float g101 = gnoise_grad(gnoise_hash(ix + 1, iy,     iz + 1, s), fx - 1.0f, fy,        fz - 1.0f);
+    float g011 = gnoise_grad(gnoise_hash(ix,     iy + 1, iz + 1, s), fx,        fy - 1.0f, fz - 1.0f);
+    float g111 = gnoise_grad(gnoise_hash(ix + 1, iy + 1, iz + 1, s), fx - 1.0f, fy - 1.0f, fz - 1.0f);
+
+    float a = lerp_f(lerp_f(g000, g100, u), lerp_f(g010, g110, u), v);
+    float b = lerp_f(lerp_f(g001, g101, u), lerp_f(g011, g111, u), v);
+    return lerp_f(a, b, w);
+}

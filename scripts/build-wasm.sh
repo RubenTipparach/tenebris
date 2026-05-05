@@ -12,9 +12,13 @@ if [ -z "${EMSDK:-}" ]; then
   echo "         Activate with:  source \$EMSDK_DIR/emsdk_env.sh"     >&2
 fi
 
-# Vendor deps on first run.
-if [ ! -d "$C_ROOT/third_party/sokol" ]; then
-  echo "==> fetching third-party headers"
+# Vendor deps on first run, OR whenever any required tool is missing.
+# fetch-deps.sh is idempotent — cheap to skip-call when nothing needs
+# updating, but we have to invoke it whenever the sokol headers OR the
+# sokol-shdc binary are missing.
+if [ ! -d "$C_ROOT/third_party/sokol" ] \
+   || [ ! -x "$C_ROOT/third_party/sokol-tools-bin/sokol-shdc" ]; then
+  echo "==> fetching third-party headers + tools"
   "$C_ROOT/scripts/fetch-deps.sh"
 fi
 
