@@ -8,190 +8,241 @@ deliberately rather than drift into rework.
 
 ## What "refraction" actually means here
 
-The visual goal: look down through the water cap and see the
-underwater terrain (sand / rock / plants), distorted by the ripples
-on the surface, with progressively-bluer-and-darker colour as the
-view ray traverses more water (depth fog / extinction).
+The visual goal: look down through the water and see the underwater
+terrain (sand / rock / plants), distorted by the ripples on the
+surface, with progressively-bluer-and-darker colour as the view ray
+traverses more water (depth fog / extinction).
 
 Two physical effects fold together:
 
 1. **Refraction proper** — the view ray bends when it crosses the
-   water surface. Mathematically it's `refract(view, normal, eta)`.
-   The visual symptom is that an underwater pixel appears at a
+   water surface. Mathematically `refract(view, normal, eta)`. The
+   visual symptom is that an underwater pixel appears at a
    slightly-shifted screen location compared to where it was when
    drawn.
 2. **Volumetric absorption** — Beer–Lambert extinction along the
-   path through the water (`exp(-d * sigma)` per RGB channel, with
-   sigma higher for red than blue → water's characteristic
-   blue-green palette as depth increases).
+   path through the water (`exp(-d * sigma)` per RGB channel,
+   higher sigma for red than blue → water's blue-green palette as
+   depth increases).
 
 Both need access to "what's underneath the water at this fragment"
-plus "how far away that thing is", which means *some* kind of
-texture / depth lookup.
+plus "how far away that thing is".
 
-## Techniques surveyed
+## Chosen approach: Sebastian Lague-style post-process water
 
-### 1. Screen-space refraction with offscreen colour buffer (the canonical approach)
+Sebastian Lague's "Coding Adventure: Atmosphere / Solar System"
+treats water (and atmosphere) not as a mesh but as a **screen-space
+post-processing pass** that runs over the entire framebuffer after
+the opaque scene has been drawn. The architecture:
 
-Render the opaque scene into an FBO with a colour attachment, then
-the water shader samples it at `gl_FragCoord.xy / screen_size +
-perturbation`. The perturbation is driven by the water surface
-gradient or refracted ray.
+1. Render the opaque scene (terrain, moons, sky, sun) to an
+   offscreen colour + depth FBO.
+2. Composite-blit the offscreen colour to the swapchain (we need
+   to see the scene under the water).
+3. Run a fullscreen post-process pass:
+   - For each pixel, reconstruct the world-space view ray from
+     `gl_FragCoord` + the inverse view-projection.
+   - Intersect that ray with the water sphere shell (the
+     `body.radius_m + sea_level` sphere).
+   - If the ray enters the water:
+     - Compute exit point: closer of (sphere far side) or
+       (linearised scene depth).
+     - Thickness = exit – entry.
+     - Sample the offscreen colour at a UV perturbed by the
+       surface normal (= `refract(view, surface_normal, 1/1.33)`
+       projected back to screen). That's the refraction.
+     - Multiply by `exp(-thickness * sigma)`. That's the
+       depth fog.
+     - Add specular highlight at the entry point.
+   - Else: pass-through the swapchain colour.
 
-- **Pros**: physically plausible, every modern engine uses some
-  variant of this, simple math, automatically picks up dynamic
-  underwater objects (fish, plants, etc.).
-- **Cons**: requires an extra render pass and extra texture memory.
-  Pixels above the waterline that happen to land inside a water
-  fragment will leak in unless we also use a clip plane.
-- **Status in this codebase**: we just reverted the FBO infra that
-  enables this (`Phase A.2/3/4` from the previous PR). The
-  architecture was right; the routing had a bug we didn't track
-  down before reverting.
+Why this beats the mesh-based water cap we have now:
 
-### 2. Screen-space refraction + depth-thickness extinction
+- **No tile-grid problem.** The water "surface" is the analytical
+  sphere shell + a noise displacement, not a triangulated hex
+  mesh. The visual seams we kept fighting in the previous PR are
+  literally gone — there are no tile boundaries to seam.
+- **Geometrically correct refraction at any view angle.** Oblique
+  views through deep water look right because the thickness comes
+  from the actual ray length, not a vertical-only depth.
+- **Smooth shoreline.** Thickness goes to zero naturally where the
+  scene depth meets the water sphere; the alpha feather is just
+  `smoothstep(0, ~0.5 m, thickness)`.
+- **One pass, not three.** No reflection FBO, no clip-plane
+  re-rendering of the underwater half. Just one offscreen scene
+  pass + one composite + one post-process water pass.
 
-Extension of #1: also sample a depth attachment, linearise it,
-subtract the water-surface depth, and use the difference as the
-"thickness" in `exp(-thickness * sigma)`. Multiplies the refracted
-colour by the absorption tint.
+The cost vs. the mesh approach: an offscreen colour + depth FBO
+(same scaffolding the previous PR set up + reverted), plus a
+fullscreen ray-march of ~4 sphere intersections + a few texture
+samples per pixel. Cheap on modern GPUs; well within budget on
+WebGL2.
 
-- **Pros**: gives us proper depth fog without faking it. Shoreline
-  feathering (transparent at zero thickness) is one extra
-  `smoothstep` on top.
-- **Cons**: same as #1 plus depth-linearisation math (need
-  near/far from the projection matrix as a uniform).
-- **Status**: same as #1. Depends on the offscreen depth attachment
-  being live.
+## Migration shape
 
-### 3. Clip-plane reflection + refraction (ThinMatrix tutorial style)
+The existing water cap mesh + shader doesn't have to disappear in
+the same commit that lands Lague-style water. Plan keeps the cap
+drawing through R3 so we can A/B them, then removes it once the
+post-process version looks better.
 
-Render the scene three times:
-- once normally to the swapchain
-- once with the camera mirrored across the water plane and a
-  clip plane keeping only above-water content → reflection FBO
-- once with a clip plane keeping only below-water content →
-  refraction FBO
+## Other techniques surveyed (kept for context, not chosen)
 
-Water shader samples both reflection and refraction FBOs, blends
-by Fresnel.
+### 1. Mesh + screen-space refraction with offscreen FBO
 
-- **Pros**: clean separation of what's above/below the water
-  surface; reflections of clouds/sun are accurate.
-- **Cons**: triples geometry draws for the affected planet.
-  Goldberg-sphere planets with 40 k tiles + a 32-chunk per-body
-  layout already push our draw-call budget; tripling it is a real
-  cost.
+The "every modern engine does this" answer. Render the opaque
+scene to an FBO, water cap shader samples
+`gl_FragCoord.xy / screen_size + perturbation`. We attempted this
+in the previous PR and reverted because it landed too many
+architectural changes in one commit.
+
+- **Pros**: physically plausible, well-documented.
+- **Cons**: doesn't fix the tile-grid problem; the water cap mesh
+  is still triangulated and seams will leak through.
+
+### 2. Mesh + screen-space refraction + depth-thickness extinction
+
+Extension of #1: also sample a depth attachment for thickness.
+
+- **Pros / cons**: same as #1.
+
+### 3. Clip-plane reflection + refraction (ThinMatrix tutorial)
+
+Render the scene three times: above-water reflection, below-water
+refraction, normal swapchain. Clip planes hide the wrong half each
+time.
+
+- **Pros**: clean separation; reflections of clouds/sun are
+  geometrically correct.
+- **Cons**: triples geometry draws for the affected planet. Our
+  draw-call budget already pushes back on a 40 k-tile Goldberg
+  body × 32 chunks; tripling is a real cost.
 
 ### 4. Cube-map refraction
 
-Pre-render a cube map from the water body's centre, sample with
-the refracted ray direction.
+Pre-render a cubemap from the water body's centre, sample with the
+refracted ray direction.
 
 - **Pros**: cheapest by far at runtime — single texture lookup.
-- **Cons**: refraction is wrong at close range (cubemap centred at
-  body centre, not at the water sample point), doesn't update with
-  dynamic objects.
+- **Cons**: cubemap centred on body centre, not the water sample
+  point — close-range refraction is misaligned. Static; doesn't
+  update with dynamic objects.
 
 ### 5. Framebuffer-fetch refraction (`EXT_shader_framebuffer_fetch`)
 
-Read the current swapchain pixel directly inside the water shader,
-distort by the surface normal.
+Read the current swapchain pixel directly inside the water
+shader, distort by surface normal.
 
 - **Pros**: zero extra passes.
-- **Cons**: WebGL extension support is spotty — Apple GPUs ship it
-  via `WEBGL_shader_pixel_local_storage` / Metal, but Chrome on
-  Windows and Firefox generally don't. Not portable.
+- **Cons**: WebGL extension support is spotty — Apple GPUs ship
+  it, Chrome on Windows / Firefox generally don't. Not portable.
 
 ### 6. Fake refraction (no underwater sampling)
 
 Don't actually refract anything — just perturb the water shader's
-own computed colour by the surface gradient. Adds a shimmer that
+own computed colour by the surface gradient. Adds shimmer that
 looks vaguely refraction-like.
 
 - **Pros**: zero infrastructure. Pure shader change.
-- **Cons**: doesn't actually show the underwater terrain through
-  the water. The visual win is small.
+- **Cons**: doesn't actually show the underwater terrain.
 
-### 7. Parallax refraction
+### 7. Parallax / ray-march through water
 
-Ray-step through the water medium inside the fragment shader,
-sampling the depth attachment at each step until we hit something.
+Ray-step through the water medium inside the fragment shader.
 
 - **Pros**: highest quality.
-- **Cons**: many texture samples per pixel, prohibitively expensive
-  for full-screen water at planet scale.
+- **Cons**: many texture samples per pixel; expensive at full
+  screen.
 
-## Recommendation
+### 8. Direct procedural seafloor lookup (no FBO)
 
-**#1 + #2 (screen-space refraction with depth-thickness
-extinction)** is the only technique that delivers both the
-"refracted underwater terrain" effect and physically-correct depth
-fog at acceptable cost. It's what every modern realtime engine
-does. The previous attempt failed at the FBO routing stage, not
-the technique stage.
+For procedural worlds: each water fragment samples the same
+terrain noise function used to generate the planet, gets the
+seafloor altitude + biome colour, applies Beer–Lambert against
+that.
 
-This time, the right way to land it:
+- **Pros**: zero infrastructure, fits the procedural-world spirit
+  of the project.
+- **Cons**: doesn't actually sample what would be visible at
+  oblique angles — only "vertical depth" works correctly. Refraction
+  is approximate.
+
+### 9. Procedural ray-march
+
+Same as #8 but ray-march the view direction through the water
+medium and call the terrain noise function at each step.
+
+- **Pros**: no FBO, geometrically correct.
+- **Cons**: 4–16 noise samples per fragment per ray-march; the
+  noise function on the C side is significantly more expensive
+  than a single texture lookup.
+
+## Plan
 
 | Step | Plan |
 |------|------|
-| R0   | Restore the offscreen-target scaffolding (`sg_image` colour + depth, three `sg_view` objects — colour-attach, depth-attach, colour-as-texture). Keeps the swapchain pass exactly as it is, so this commit changes nothing visible. |
-| R1   | Bind `R.offscreen_color_tex` + a sampler to the water pipeline as a debug pass-through: water shader samples the texture but blends 0 % of it into the output. Verifies binding compiles and gives us a place to land the actual sample. |
-| R2   | Render the opaque scene to the offscreen colour + depth, AS WELL AS to the swapchain. (Two passes, wasteful, but isolates the refraction work from the composite-blit work.) Confirm offscreen image populates correctly via a debug fullscreen quad that draws it to the corner of the screen. |
-| R3   | Replace the water shader's `mix(deep, shallow, vdn)` base colour with a sample of `R.offscreen_color_tex` at perturbed UV. Refraction appears. |
-| R4   | Linearise the offscreen depth, compute thickness, apply Beer–Lambert. Real depth fog appears. |
+| R0   | Restore the offscreen-target scaffolding (`sg_image` colour + depth, `sg_view` colour-attach + depth-attach + colour-as-texture). Swapchain pass unchanged — this commit changes nothing visible. |
+| R1   | Render the opaque scene (sky / sun / terrain / moons) to the offscreen attachments. Add a fullscreen-quad composite blit at the start of the swapchain pass. Result should look identical. |
+| R2   | Add the ray-march post-process pipeline + shader (separate `.glsl` file driven by sokol-shdc). For now, the shader just blits the offscreen colour through with no water effect — verifies the binding chain. |
+| R3   | First refraction step: in the post-process shader, ray-sphere-intersect against the water shell. Where the ray enters water, perturb the colour-sample UV by the (analytic) surface normal. Refraction shimmer appears. The existing water cap mesh stays drawn on top so we can A/B them visually. |
+| R4   | Add depth-thickness extinction. Sample the offscreen depth, linearise, compute thickness from the ray-sphere geometry vs. scene depth. Apply Beer–Lambert. Real depth fog appears. |
 | R5   | Soften shoreline alpha by `smoothstep(0, ~0.5 m, thickness)`. |
-| R6   | Eventually collapse the duplicate scene render (R2 ran the scene twice for safety). The opaque pass ONLY goes to offscreen, swapchain gets a composite-blit — same as the reverted Phase A but with the offscreen path proven to work first. |
-
-This sequence trades extra GPU work in R2 for a much shorter
-debugging path: each step is independently visible / verifiable,
-and the "wasteful" duplicate scene render in R2 is removed in R6
-once everything else is settled.
+| R6   | Add Lague-style surface noise: sample fbm at the entry point to displace the surface normal used by R3, so refraction shimmer animates. |
+| R7   | Remove the legacy water cap mesh + its draw call. Post-process water is the only water renderer. Tile-grid problem permanently gone. |
 
 ### Things to avoid (lessons from the reverted PR)
 
-- Never combine offscreen-routing AND new shader sampling in the
-  same commit. R6 changes the routing; R3 / R4 add the sampling —
-  separate commits.
-- Always sokol-shdc the new shader before pushing. The
-  uniform-block packing footguns we hit before are gone, but a
-  syntax slip in `.glsl` can still slip through if we don't
-  cross-compile locally first.
+- Never combine offscreen-routing changes AND new shader sampling
+  in the same commit. Each step above is independently visible /
+  verifiable.
+- Always sokol-shdc the new shader before pushing — cross-compile
+  locally first.
 - `gl_VertexIndex`, not `gl_VertexID`, in sokol-shdc-authored
   fullscreen-tri shaders.
 - `precision highp int;` for any fragment shader doing
-  bitwise / hash math — mediump int silently truncates to 16 bits
-  and that broke the gradient-noise port in earlier commits.
-- Sokol-shdc uniform blocks need explicit `layout(binding=N)`
-  (Vulkan-style GLSL) — bind 0 / 1 / ... within the program scope
-  (not per stage).
+  bitwise / hash math.
+- Sokol-shdc uniform blocks need explicit `layout(binding=N)`.
 
 ## References
 
+### The chosen approach
+- Sebastian Lague — Coding Adventure: Atmosphere (architecture is
+  identical, swap "atmosphere" for "water"):
+  https://www.youtube.com/watch?v=DxfEbulyFcY
+- Sebastian Lague — Coding Adventure: Solar System (water on
+  planets specifically): https://www.youtube.com/watch?v=lctXaT9pxA0
+- Sebastian Lague's source: https://github.com/SebLague/Solar-System
+- Iñigo Quilez — analytic ray-sphere intersection + thickness:
+  https://iquilezles.org/articles/intersectors/
+
+### Generic
 - WebGL2 Fundamentals — Render to Texture:
   https://webgl2fundamentals.org/webgl/lessons/webgl-render-to-texture.html
-- LearnOpenGL — Framebuffers (depth-linearisation formula at end):
+- LearnOpenGL — Framebuffers + depth linearisation:
   https://learnopengl.com/Advanced-OpenGL/Framebuffers
-- LearnOpenGL — SSR (relevant for the colour-sampling step):
-  https://learnopengl.com/PBR/Theory
 - Sokol offscreen sample (post-2024 attachment-view API):
   https://github.com/floooh/sokol-samples/blob/master/sapp/offscreen-sapp.c
 - Sokol header doc-comment for the offscreen pattern: lines
-  ~585–720 of `sokol_gfx.h` (`floooh/sokol`).
-- Fire-face water article — render-to-texture refraction; we add
-  our own depth attachment for fog/extinction:
+  ~585–720 of `sokol_gfx.h`.
+
+### Mesh-based alternatives (not chosen, kept for context)
+- Fire-face water (mesh + FBO):
   https://fire-face.com/personal/water/
-- ThinMatrix water tutorial series (canonical clip-plane
-  architecture, useful as a contrast to #1).
-- Three.js `MeshTransmissionMaterial.js` — modern web reference
-  for the visual target:
+- ThinMatrix water tutorial (clip-plane mesh):
+  https://www.youtube.com/playlist?list=PLRIWtICgwaX23jiqVByUs0bqhnalNTNZh
+- Three.js `MeshTransmissionMaterial.js`:
   https://github.com/mrdoob/three.js/blob/dev/examples/jsm/materials/MeshTransmissionMaterial.js
+- Shadertoy "Seascape" (Alexander Alekseev) — single-shader
+  surface noise + refraction reference:
+  https://www.shadertoy.com/view/Ms2SD1
+- Shadertoy "Oceanic" (TDM) — proper underwater extinction:
+  https://www.shadertoy.com/view/4sXGRM
 
 ## State of this branch
 
-Branched off `claude/fix-planet-terrain-teG9x` at commit `620458e`
-(the gradient-noise water shader, which was the merged head). No
-code changes yet — just this planning doc.
+Branched off `main` at the same commit as PR #16's merge head
+(gradient-noise water shader). No code changes yet — just this
+planning doc.
 
 Next commit lands R0 (offscreen-target scaffolding) once we agree
 the plan is sound.
+
