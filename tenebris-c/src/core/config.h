@@ -143,6 +143,38 @@ typedef struct {
     /* Blinn-Phong specular exponent. Higher = tighter / smaller
      * highlight, lower = broader / softer. */
     float  specular_power;
+    /* Warm tint multiplied into the sun-highlight (independent of
+     * specular_intensity). Raise above 1.0 in any channel to push
+     * the glint colour over white. */
+    vec3_t sun_tint;
+
+    /* Wave-crest + slope foam — the bright flecks scattered across
+     * the wave surface. Two smoothstep ranges (one on fbm height,
+     * one on surface gradient magnitude) feed into a max() blend
+     * with per-source weights. The combined result tints the water
+     * toward foam_color at strength foam_intensity.
+     *
+     * Tip: if open water is too busy with white flecks, raise the
+     * crest_lo threshold (e.g. 0.35 -> 0.55) so only the tallest
+     * peaks paint foam, and/or drop foam_intensity. */
+    float  foam_crest_lo;       /* smoothstep on fbm height [-1, +1] */
+    float  foam_crest_hi;
+    float  foam_crest_weight;
+    float  foam_slope_lo;       /* smoothstep on |tangent gradient|  */
+    float  foam_slope_hi;
+    float  foam_slope_weight;
+    float  foam_intensity;      /* final mix strength toward foam_color */
+    vec3_t foam_color;
+
+    /* Shoreline foam tint (separate from wave-crest foam). White-
+     * wash band already gated by shore_foam_dist_m thickness. */
+    vec3_t shore_foam_color;
+
+    /* Sky reflection palette. The water reflects the upper
+     * hemisphere via reflect(view, n) and blends between these two
+     * tones based on the reflected ray's vertical component. */
+    vec3_t sky_horizon_color;   /* bright tone where the reflected ray skims horizontal */
+    vec3_t sky_zenith_color;    /* darker tone where the reflected ray points straight up */
 } water_config_t;
 
 const water_config_t* config_water(void);

@@ -37,6 +37,33 @@
 #   specular_power      float  Blinn-Phong specular exponent.
 #                              Higher = tighter / smaller highlight,
 #                              lower = broader / softer.
+#   sun_tint            vec3   warm tint of the sun-highlight,
+#                              multiplied with specular_intensity.
+#                              >1.0 in any channel pushes brighter
+#                              than white.
+#
+#   --- Wave-crest + slope foam (the bright flecks across the wave
+#   surface). Two smoothstep ranges feed a max() blend with per-
+#   source weights; the combined mass tints toward foam_color at
+#   foam_intensity. Raise foam_crest_lo to ~0.55 if open water has
+#   too many flecks.
+#   foam_crest_lo       float  smoothstep lo on fbm height [-1, +1]
+#   foam_crest_hi       float  smoothstep hi
+#   foam_crest_weight   float  weight in max(crest, slope) blend
+#   foam_slope_lo       float  smoothstep lo on |tangent gradient|
+#   foam_slope_hi       float  smoothstep hi
+#   foam_slope_weight   float
+#   foam_intensity      float  final mix strength toward foam_color
+#   foam_color          vec3
+#
+#   shore_foam_color    vec3   tint for the thickness-driven foam
+#                              wash at the shoreline.
+#
+#   --- Sky reflection. Water reflects the upper hemisphere via
+#   reflect(view, n); the result blends between two tones based on
+#   the reflected ray's vertical component.
+#   sky_horizon_color   vec3   bright tone, reflected ray ~horizontal
+#   sky_zenith_color    vec3   darker tone, reflected ray ~vertical
 
 water:
   time_scale:         0.75
@@ -48,3 +75,18 @@ water:
   shore_foam_dist_m:  0.80
   specular_intensity: 0.60
   specular_power:     140.0
+  sun_tint:           [1.35, 1.25, 1.10]
+
+  foam_crest_lo:      0.35
+  foam_crest_hi:      0.60
+  foam_crest_weight:  0.55
+  foam_slope_lo:      0.50
+  foam_slope_hi:      1.20
+  foam_slope_weight:  0.45
+  foam_intensity:     0.60
+  foam_color:         [0.95, 0.97, 1.00]
+
+  shore_foam_color:   [0.98, 0.99, 1.00]
+
+  sky_horizon_color:  [0.85, 0.92, 0.98]
+  sky_zenith_color:   [0.35, 0.55, 0.85]

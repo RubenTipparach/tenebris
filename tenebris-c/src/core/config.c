@@ -311,6 +311,18 @@ static water_config_t S_WATER = {
     .shore_foam_dist_m  = 0.80f,
     .specular_intensity = 0.60f,
     .specular_power     = 140.0f,
+    .sun_tint           = { 1.35f, 1.25f, 1.10f },
+    .foam_crest_lo      = 0.35f,
+    .foam_crest_hi      = 0.60f,
+    .foam_crest_weight  = 0.55f,
+    .foam_slope_lo      = 0.50f,
+    .foam_slope_hi      = 1.20f,
+    .foam_slope_weight  = 0.45f,
+    .foam_intensity     = 0.60f,
+    .foam_color         = { 0.95f, 0.97f, 1.00f },
+    .shore_foam_color   = { 0.98f, 0.99f, 1.00f },
+    .sky_horizon_color  = { 0.85f, 0.92f, 0.98f },
+    .sky_zenith_color   = { 0.35f, 0.55f, 0.85f },
 };
 
 const water_config_t* config_water(void) { return &S_WATER; }
@@ -370,6 +382,30 @@ int config_load_water(const char* path) {
                         S_WATER.specular_intensity = (float)strtod(val, NULL);
                     } else if (strcmp(key, "specular_power"    ) == 0) {
                         S_WATER.specular_power    = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "sun_tint"          ) == 0) {
+                        if (!parse_vec3(val, &S_WATER.sun_tint)) parse_errors++;
+                    } else if (strcmp(key, "foam_crest_lo"     ) == 0) {
+                        S_WATER.foam_crest_lo     = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "foam_crest_hi"     ) == 0) {
+                        S_WATER.foam_crest_hi     = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "foam_crest_weight" ) == 0) {
+                        S_WATER.foam_crest_weight = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "foam_slope_lo"     ) == 0) {
+                        S_WATER.foam_slope_lo     = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "foam_slope_hi"     ) == 0) {
+                        S_WATER.foam_slope_hi     = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "foam_slope_weight" ) == 0) {
+                        S_WATER.foam_slope_weight = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "foam_intensity"    ) == 0) {
+                        S_WATER.foam_intensity    = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "foam_color"        ) == 0) {
+                        if (!parse_vec3(val, &S_WATER.foam_color)) parse_errors++;
+                    } else if (strcmp(key, "shore_foam_color"  ) == 0) {
+                        if (!parse_vec3(val, &S_WATER.shore_foam_color)) parse_errors++;
+                    } else if (strcmp(key, "sky_horizon_color" ) == 0) {
+                        if (!parse_vec3(val, &S_WATER.sky_horizon_color)) parse_errors++;
+                    } else if (strcmp(key, "sky_zenith_color"  ) == 0) {
+                        if (!parse_vec3(val, &S_WATER.sky_zenith_color)) parse_errors++;
                     } else {
                         printf("[config] %s:%d: unknown key '%s'\n",
                                path, line_no, key);

@@ -63,6 +63,13 @@ layout(binding=1) uniform fs_params {
     float u_shore_foam_dist; // smoothstep upper edge for shoreline foam (m)
     float u_spec_intensity;  // sun-highlight strength multiplier
     float u_spec_power;      // Blinn-Phong exponent
+    vec3  u_sun_tint;        // warm tint multiplied with the sun highlight
+    vec4  u_foam_crest;      // x=lo, y=hi, z=weight, w=overall foam_intensity
+    vec4  u_foam_slope;      // x=lo, y=hi, z=weight, w=unused
+    vec3  u_foam_color;      // wave-crest + slope foam tint
+    vec3  u_shore_foam_color;
+    vec3  u_sky_horizon;     // reflected-ray-skimming-horizontal sky tint
+    vec3  u_sky_zenith;      // reflected-ray-up sky tint
 };
 
 // water_scene_color / water_scene_depth are texture views of the
@@ -216,16 +223,16 @@ void main() {
 
     vec3 refl   = reflect(-view, n);
     float up_f  = clamp(dot(refl, radial), 0.0, 1.0);
-    vec3 sky    = mix(vec3(0.85, 0.92, 0.98), vec3(0.35, 0.55, 0.85), up_f);
+    vec3 sky    = mix(u_sky_horizon, u_sky_zenith, up_f);
 
     vec3  halfv = normalize(view + sun);
     float spec  = pow(max(dot(n, halfv), 0.0), u_spec_power);
-    vec3  sun_highlight = vec3(1.35, 1.25, 1.10) * spec * u_spec_intensity;
+    vec3  sun_highlight = u_sun_tint * spec * u_spec_intensity;
 
     float steepness = length(t_grad);
-    float crest     = smoothstep(0.35, 0.60, h0);
-    float slope_f   = smoothstep(0.50, 1.20, steepness);
-    float foam      = max(crest * 0.55, slope_f * 0.45);
+    float crest     = smoothstep(u_foam_crest.x, u_foam_crest.y, h0);
+    float slope_f   = smoothstep(u_foam_slope.x, u_foam_slope.y, steepness);
+    float foam      = max(crest * u_foam_crest.z, slope_f * u_foam_slope.z);
 
     // Shoreline foam — thickness-driven white wash where the water
     // meets the seabed. 1 at thickness=0 (cap edge), 0 by
@@ -238,8 +245,8 @@ void main() {
     shore_foam *= 0.6 + 0.4 * smoothstep(-0.4, 0.4, h0);
 
     vec3 color = mix(base, sky, f) + sun_highlight;
-    color = mix(color, vec3(0.95, 0.97, 1.0), foam * 0.6);
-    color = mix(color, vec3(0.98, 0.99, 1.0), shore_foam);
+    color = mix(color, u_foam_color,       foam * u_foam_crest.w);
+    color = mix(color, u_shore_foam_color, shore_foam);
 
     // Alpha: Fresnel-driven base, plus a thickness-driven smoothstep
     // that feathers the cap edge into the beach. At thickness 0 (the

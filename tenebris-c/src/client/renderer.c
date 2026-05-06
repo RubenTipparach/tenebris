@@ -1722,6 +1722,16 @@ static void body_draw_water(chunked_body_t* body, mat4_t vp,
         .u_shore_foam_dist = W->shore_foam_dist_m,
         .u_spec_intensity  = W->specular_intensity,
         .u_spec_power      = W->specular_power,
+        .u_sun_tint        = { W->sun_tint.x, W->sun_tint.y, W->sun_tint.z },
+        /* Pack the four foam scalars into vec4s so std140 keeps them
+         * tightly aligned. crest.w doubles as the overall mix
+         * intensity; slope.w is unused (kept aligned). */
+        .u_foam_crest      = { W->foam_crest_lo, W->foam_crest_hi, W->foam_crest_weight, W->foam_intensity },
+        .u_foam_slope      = { W->foam_slope_lo, W->foam_slope_hi, W->foam_slope_weight, 0.0f },
+        .u_foam_color      = { W->foam_color.x, W->foam_color.y, W->foam_color.z },
+        .u_shore_foam_color= { W->shore_foam_color.x, W->shore_foam_color.y, W->shore_foam_color.z },
+        .u_sky_horizon     = { W->sky_horizon_color.x, W->sky_horizon_color.y, W->sky_horizon_color.z },
+        .u_sky_zenith      = { W->sky_zenith_color.x, W->sky_zenith_color.y, W->sky_zenith_color.z },
     };
     sg_apply_uniforms(UB_fs_params, &SG_RANGE(fs_params));
 
