@@ -1715,6 +1715,17 @@ static void body_draw_water(chunked_body_t* body, mat4_t vp,
         /* Refraction: surface tangent gradient → screen UV offset.
          * 0.04 = noticeable shimmer without warping the view too much. */
         .u_refract_amount = 0.04f,
+        /* Projection near/far for depth linearisation — must match
+         * the perspective set up in main_web.c (mat4_perspective
+         * 0.3, 20000). Beer-Lambert sigma per channel: red goes
+         * faster than blue so deep water reads cyan/blue. Tuned for
+         * our 30 m max water depth — at 5 m, red has dropped to
+         * ~30 %, blue still ~80 %. u_deep_color is the saturation
+         * tint where the ray has fully attenuated. */
+        .u_near           = 0.3f,
+        .u_far            = 20000.0f,
+        .u_absorption     = { 0.30f, 0.10f, 0.05f },
+        .u_deep_color     = { 0.02f, 0.10f, 0.22f },
     };
     sg_apply_uniforms(UB_fs_params, &SG_RANGE(fs_params));
 

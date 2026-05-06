@@ -55,6 +55,10 @@ layout(binding=1) uniform fs_params {
     vec3 u_sun_dir;
     float u_time;
     float u_refract_amount;  // surface-gradient → screen UV perturbation scale
+    float u_near;            // projection near plane (m)
+    float u_far;             // projection far plane (m)
+    vec3 u_absorption;       // Beer-Lambert sigma per RGB channel (1/m)
+    vec3 u_deep_color;       // saturation colour where the ray has fully attenuated
 };
 
 // water_scene_color / water_scene_depth are texture views of the
@@ -181,17 +185,30 @@ void main() {
                             vec2(0.0), vec2(1.0));
     vec3 refracted = texture(sampler2D(water_scene_color, water_scene_smp), refract_uv).rgb;
 
+    // Beer-Lambert depth-thickness extinction. Linearise both the
+    // water-surface depth and the sampled scene depth into camera-z
+    // (metres), use their difference as the thickness of water the
+    // view ray traverses. Per-channel exp(-thickness * sigma) gives
+    // water its characteristic red-absorbed / blue-preserved tint as
+    // depth grows.
+    float zw = (2.0 * u_near * u_far) /
+               (u_far + u_near - (2.0 * gl_FragCoord.z - 1.0) * (u_far - u_near));
+    float zs = (2.0 * u_near * u_far) /
+               (u_far + u_near - (2.0 * scene_z         - 1.0) * (u_far - u_near));
+    float thickness = max(0.0, zs - zw);
+    vec3  attenuation = exp(-thickness * u_absorption);
+
     vec3 view = normalize(u_camera_pos - v_wpos);
     vec3 sun  = normalize(u_sun_dir);
 
     float vdn = max(dot(view, n), 0.0);
     float f   = 0.02 + 0.98 * pow(1.0 - vdn, 5.0);
 
-    // The refracted scene becomes the base — what you'd see *through*
-    // the water. Tinted toward water-blue so the underwater terrain
-    // reads as submerged rather than just smeared.
-    vec3 water_tint = vec3(0.45, 0.75, 0.95);
-    vec3 base = refracted * water_tint;
+    // Mix between the refracted scene (visible through shallow
+    // water) and the deep-water saturation tint (where the ray has
+    // attenuated to zero). attenuation is a per-channel lerp factor:
+    // high → see-through, low → deep colour.
+    vec3 base = mix(u_deep_color, refracted, attenuation);
 
     vec3 refl   = reflect(-view, n);
     float up_f  = clamp(dot(refl, radial), 0.0, 1.0);
