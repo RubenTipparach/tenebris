@@ -158,12 +158,14 @@ void main() {
     vec2 screen_size = vec2(textureSize(sampler2D(water_scene_color, water_scene_smp), 0));
     vec2 screen_uv   = gl_FragCoord.xy / screen_size;
 
-    // Manual depth occlusion. The water pipeline uses depth.compare =
-    // ALWAYS so the swapchain depth buffer doesn't kill us; instead
-    // we sample the offscreen scene depth here and discard fragments
-    // that are behind the opaque scene at the same screen pixel.
-    float scene_z = texture(sampler2D(water_scene_depth, water_scene_smp), screen_uv).r;
-    if (gl_FragCoord.z > scene_z) discard;
+    // Manual depth occlusion via offscreen scene_depth. Disabled for
+    // now — WebGL2 may need a separate NEAREST sampler for depth
+    // textures, and we need to verify water draws AT ALL before
+    // re-enabling. Without the discard, water will draw on top of
+    // terrain (no occlusion), which is visually wrong but useful as
+    // a diagnostic that the pipeline is otherwise live.
+    // float scene_z = texture(sampler2D(water_scene_depth, water_scene_smp), screen_uv).r;
+    // if (gl_FragCoord.z > scene_z) discard;
 
     // Refraction: perturb the colour-sample UV by the surface
     // tangent-plane gradient. Magnitude scales with u_refract_amount
