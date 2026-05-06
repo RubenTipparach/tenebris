@@ -128,9 +128,14 @@ void main() {
     float wet = smoothstep(band_m, -band_m, pixel_alt);
 
     // Meniscus band: 1 at the waterline, falls to 0 at |alt| = band.
-    // Drives both the heavy sin smear and the 7-tap vertical blur
-    // below.
-    float meniscus = 1.0 - smoothstep(0.0, band_m, abs(pixel_alt));
+    // ONLY fires when the camera itself is within the band — outside
+    // of that the smear has nothing to hide (camera fully above /
+    // below has a clean transition through the cap), and stacking
+    // the smear + blur on the cap from a distance reads as a wide
+    // shimmery stripe across the whole sea instead of a tight wet-
+    // lens line at the actual waterline.
+    float cam_in_band = 1.0 - smoothstep(band_m, band_m * 2.0, abs(camera_alt));
+    float meniscus    = (1.0 - smoothstep(0.0, band_m, abs(pixel_alt))) * cam_in_band;
 
     // Underwater shimmer (gentle, applies wherever wet > 0) PLUS
     // the heavy meniscus smear (applies inside the band on either
