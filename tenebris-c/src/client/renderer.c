@@ -549,8 +549,20 @@ static const char* FS_SKY =
     "    return;\n"
     "  }\n"
 
-    "  float Rg = u_atmo_params.x;\n"
+    /* Two radii used to be the same uniform (u_atmo_params.x):
+     *   - Rp = planet clip — terminates the ray-march at the ground
+     *          and blocks sun rays for the planet-shadow check.
+     *   - Rg = atmosphere density lower bound — samples below this
+     *          contribute zero density.
+     * Coupling them forced "lift the atmosphere" and "lift the
+     * ground clip" to move together, producing a void band between
+     * actual ground and the new clip when the lower bound was
+     * raised. Splitting them: u_atmo_params.x stays the ground (Rp);
+     * u_atmo_params.w is the new density lower bound (Rg). When .w
+     * is 0 we fall back to Rp so existing behaviour is unchanged. */
+    "  float Rp = u_atmo_params.x;\n"
     "  float Ra = u_atmo_params.y;\n"
+    "  float Rg = (u_atmo_params.w > 0.0) ? u_atmo_params.w : Rp;\n"
     "  float thickness = max(Ra - Rg, 0.001);\n"
 
     /* Translate to planet-local space — Caelum's ray_sphere assumes
@@ -566,10 +578,12 @@ static const char* FS_SKY =
     "  float rayStart = max(0.0, atmoHit.x);\n"
     "  float rayEnd   = atmoHit.y;\n"
 
-    /* Planet occlusion — clip the ray at the surface. With Caelum's
-     * vec2(-1) miss sentinel, planetHit.x > 0 only when there's an
-     * actual hit, so this conditional is safe. */
-    "  vec2 planetHit = raySphereIntersect(ro, d, Rg);\n"
+    /* Planet occlusion — clip the ray at the actual ground (Rp), NOT
+     * at Rg. Using Rp here is what kills the void-band at the inner
+     * shell boundary: the ray-march now extends all the way down to
+     * the surface, and samples in [Rp, Rg] just contribute no
+     * density (skipped below). */
+    "  vec2 planetHit = raySphereIntersect(ro, d, Rp);\n"
     "  if (planetHit.x > 0.0) {\n"
     "    rayEnd = min(rayEnd, planetHit.x);\n"
     "  }\n"
@@ -603,7 +617,7 @@ static const char* FS_SKY =
 
     /* Planet shadow check — if the sun sits behind the planet from
      * this sample's POV, skip it. */
-    "    vec2 sunPlanet = raySphereIntersect(p, sunDir, Rg);\n"
+    "    vec2 sunPlanet = raySphereIntersect(p, sunDir, Rp);\n"
     "    if (sunPlanet.x > 0.0) continue;\n"
     "    vec2 sunAtmo   = raySphereIntersect(p, sunDir, Ra);\n"
     "    float sunLen   = max(0.0, sunAtmo.y);\n"
@@ -1174,10 +1188,10 @@ void renderer_draw_skybox(mat4_t view, mat4_t proj) {
     ub[12] = R.env.camera_world.x;
     ub[13] = R.env.camera_world.y;
     ub[14] = R.env.camera_world.z;
-    ub[16] = R.env.atmo_planet_radius;
-    ub[17] = R.env.atmo_radius;
-    ub[18] = R.env.atmo_strength;
-    ub[19] = 0.0f;
+    ub[16] = R.env.atmo_planet_radius;       /* x = Rp (planet-clip)        */
+    ub[17] = R.env.atmo_radius;              /* y = Ra (outer shell)        */
+    ub[18] = R.env.atmo_strength;            /* z = strength                */
+    ub[19] = R.env.atmo_lower_radius;        /* w = Rg (density lower bound)*/
     ub[20] = R.env.atmo_rayleigh_scale;
     ub[21] = R.env.atmo_mie_scale;
     ub[22] = R.env.atmo_sun_intensity;

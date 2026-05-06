@@ -23,8 +23,9 @@ typedef struct {
      * `atmo_strength` 0..1 cross-fades between starfield-only space
      * (moons / asteroids) and full atmosphere (Tenebris, Sequoia). */
     vec3_t atmo_planet_center;
-    float  atmo_planet_radius;
-    float  atmo_radius;
+    float  atmo_planet_radius;     /* Rp — actual planet ground (planet-clip) */
+    float  atmo_radius;            /* Ra — outer atmosphere shell             */
+    float  atmo_lower_radius;      /* Rg — density lower bound; 0 → use Rp    */
     float  atmo_strength;
     /* Per-body scattering tuning — comes straight from body_config.
      * Lets us make Tenebris bluer, Sequoia greener, etc., without

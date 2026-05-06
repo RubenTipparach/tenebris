@@ -462,8 +462,9 @@ static void frame(void) {
             (float)active_body->pos_y,
             (float)active_body->pos_z,
         },
-        .atmo_planet_radius   = atmo_lower,
-        .atmo_radius          = atmo_r,
+        .atmo_planet_radius   = planet_r,    /* Rp — actual ground (planet-clip) */
+        .atmo_lower_radius    = atmo_lower,  /* Rg — density lower bound         */
+        .atmo_radius          = atmo_r,      /* Ra — outer shell                 */
         .atmo_strength        = has_atmo ? 1.0f : 0.0f,
         .atmo_rayleigh_scale  = rayleigh,
         .atmo_mie_scale       = mie,
