@@ -556,13 +556,11 @@ void renderer_init(void) {
         .depth = { .write_enabled = false, .compare = SG_COMPAREFUNC_ALWAYS },
         .cull_mode = SG_CULLMODE_BACK,
         .face_winding = SG_FACEWINDING_CCW,
-        .colors[0].blend = {
-            .enabled = true,
-            .src_factor_rgb = SG_BLENDFACTOR_SRC_ALPHA,
-            .dst_factor_rgb = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
-            .src_factor_alpha = SG_BLENDFACTOR_ONE,
-            .dst_factor_alpha = SG_BLENDFACTOR_ONE,
-        },
+        /* Water shader outputs alpha = 1.0 (opaque). Shoreline fade
+         * is done in-shader by mixing toward the unrefracted compose
+         * sample, not via alpha-blend, so we don't double-count the
+         * underwater scene. Blend stays disabled. */
+        .colors[0].blend = { .enabled = false },
         .label = "water-pipeline",
     });
 

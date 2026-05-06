@@ -245,21 +245,24 @@ void main() {
     shore_foam *= 0.6 + 0.4 * smoothstep(-0.4, 0.4, h0);
 
     vec3 color = mix(base, sky, f) + sun_highlight;
-    color = mix(color, u_foam_color,       foam * u_foam_crest.w);
+    color = mix(color, u_foam_color, foam * u_foam_crest.w);
+
+    // Shoreline: instead of fading alpha (which would re-expose the
+    // already-composited offscreen-colour underneath and double-count
+    // the underwater scene), sample the offscreen colour at the
+    // unrefracted UV and mix the water colour toward it. End result
+    // matches an alpha-fade visually, but the water output is fully
+    // opaque so the GPU isn't blending the cap against a duplicate
+    // copy of the same underwater scene the shader already refracted.
+    vec3 unrefracted = texture(sampler2D(water_scene_color, water_scene_smp), screen_uv).rgb;
+    float shore_fade = 1.0 - smoothstep(0.0, u_shoreline_fade, thickness);
+    color = mix(color, unrefracted, shore_fade);
+
+    // Foam goes on top last so it stays visible inside the shore-
+    // fade region too.
     color = mix(color, u_shore_foam_color, shore_foam);
 
-    // Alpha: Fresnel-driven base, plus a thickness-driven smoothstep
-    // that feathers the cap edge into the beach. At thickness 0 (the
-    // exact pixel where cap mesh meets sand) alpha goes to zero so
-    // the hard cap-edge silhouette dissolves; by u_shoreline_fade m
-    // of water the cap is fully opaque again. shore_foam wins on
-    // alpha so the foam wash stays visible right up to the cap edge
-    // even though the rest of the water is feathering out there.
-    float fresnel_alpha  = mix(0.85, 0.95, f);
-    float shoreline_fade = smoothstep(0.0, u_shoreline_fade, thickness);
-    float alpha = max(fresnel_alpha * shoreline_fade, shore_foam);
-
-    frag_color = vec4(color, alpha);
+    frag_color = vec4(color, 1.0);
 }
 @end
 
