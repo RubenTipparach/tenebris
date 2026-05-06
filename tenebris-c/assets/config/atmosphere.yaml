@@ -30,7 +30,10 @@
 #   sunset_horizon    vec3   horizon-band tint at sunset
 
 tenebris:
-  radius_mult: 1.3
+  # Outer shell at 1.6 × planet radius — taller atmosphere column
+  # so ground-level views have more sky overhead and orbital views
+  # show a thicker atmosphere ring.
+  radius_mult: 1.6
   # Sink the planet-clip sphere 10 % below the actual ground so the
   # atmosphere ray-march continues a bit past the visible horizon —
   # softens the harsh dark band where atmosphere meets the planet
