@@ -323,6 +323,28 @@ void main() {
     // where on the cap the fragment lives.
     color += sun_highlight;
 
+    // ---- DEBUG: shore-dist heatmap ----
+    // Replaces the final water colour with a heatmap of v_shore_dist
+    // so we can see whether the per-vertex attribute is actually
+    // making it through. Remove once the foam reads correctly.
+    //   v_shore_dist == 0     → solid red    (right at shore)
+    //   0 < v < foam_dist     → red→yellow gradient (in foam band)
+    //   foam_dist < v < 5×    → yellow→green (just past foam)
+    //   v > 5× foam_dist      → solid blue (open water)
+    {
+        float d = v_shore_dist;
+        float fd = max(u_shore_foam_dist, 0.0001);
+        vec3 dbg;
+        if (d < fd) {
+            dbg = mix(vec3(1.0, 0.0, 0.0), vec3(1.0, 1.0, 0.0), d / fd);
+        } else if (d < fd * 5.0) {
+            dbg = mix(vec3(1.0, 1.0, 0.0), vec3(0.0, 1.0, 0.0), (d - fd) / (fd * 4.0));
+        } else {
+            dbg = vec3(0.0, 0.2, 1.0);
+        }
+        color = dbg;
+    }
+
     frag_color = vec4(color, 1.0);
 }
 @end
