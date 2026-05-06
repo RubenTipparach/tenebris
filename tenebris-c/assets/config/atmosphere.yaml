@@ -31,25 +31,20 @@
 
 tenebris:
   radius_mult: 1.3
-  # FS_SKY now takes a separate planet-clip radius (always = ground)
-  # and a density-lower-bound (this knob × planet_r). >1.0 thins the
-  # shell from the bottom without producing a void band — the ground
-  # clip stays put, samples between ground and the lifted lower bound
-  # just contribute zero density. 1.05 = atmosphere starts 5 % above
-  # the surface; the rim halo is correspondingly thinner.
-  lower_radius_mult: 1.05
-  # Sky brightness — halved from the previous Caelum-default of 30.
-  # The earlier value was clipping the tone-mapped output toward
-  # white over most of the visible sky; 15 lands the daytime blue
-  # in a more reasonable mid-tone.
-  sun_intensity: 15.0
-  # Slightly less aggressive Rayleigh so the blue is rich without
-  # saturating to white near the zenith.
-  rayleigh_scale: 0.7
-  mie_scale: 0.04
+  # Aligned with Caelum's stated 'Tenebris default (scale-independent
+  # with normalized steps)' values from src/atmosphere.c. Our shader
+  # is now a faithful Caelum port (atmosphere.glsl), so the same
+  # coefficients should produce the same look.
+  sun_intensity: 5.0
+  rayleigh_scale: 0.015
+  mie_scale: 0.01
+  mie_g: 0.85
   sunset_strength: 0.25
   scale_height: 0.25
-  mie_g: 0.76
+  # Wavelengths + sunset vec3s are baked as literals in the new
+  # Caelum-style atmosphere.glsl shader and ignored by the renderer
+  # — kept here for back-compat in case we re-introduce per-body
+  # tinting later.
   wavelengths: [5.602, 9.473, 19.644]
   sunset_tint: [1.3, 1.0, 0.6]
   sunset_glow: [1.0, 0.65, 0.25]
