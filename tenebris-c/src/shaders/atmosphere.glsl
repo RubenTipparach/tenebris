@@ -196,7 +196,20 @@ void main() {
 
     color = 1.0 - exp(-color);
 
-    float alpha = clamp(length(color) * 1.5, 0.0, 0.95);
+    // Alpha controls how the atmosphere blends over the starfield
+    // beneath. Two cases:
+    //   * Planet body: when the ray hits the planet sphere, force
+    //     alpha=1 so the silhouette reads as a solid dark body
+    //     instead of showing the starfield through it. Real terrain
+    //     still draws on top via depth-test; this only matters for
+    //     the area inside the silhouette where terrain doesn't cover
+    //     (orbital views, debug mode, distant bodies pre-mesh).
+    //   * Atmosphere ring / sky: brightness-driven alpha so the
+    //     rim glows opaque while the dim back-of-shell fades away.
+    bool hit_planet = (planetHit.x > 0.0);
+    float alpha = hit_planet
+        ? 1.0
+        : clamp(length(color) * 1.5, 0.0, 0.95);
 
     frag_color = vec4(color, alpha);
 }

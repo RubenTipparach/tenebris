@@ -446,10 +446,15 @@ static void frame(void) {
                                     : (vec3_t){ 0.80f, 0.40f, 0.15f };
     /* atmo_lower is what the shader receives as Rg (atmosphere
      * lower bound + planet-clip sphere). Default 1.0× planet_r =
-     * atmosphere starts at the ground; >1.0 thins the shell from
-     * the bottom; <1.0 sinks the boundary below the surface. */
-    const float atmo_lower = planet_r * lower_mult;
-    const float atmo_r     = planet_r * radius_mult;
+     * Caelum-style shader uses a single pRadius for both planet-
+     * clip and density lower bound. lower_mult < 1.0 sinks the
+     * imaginary clip sphere BELOW the actual ground, which lets the
+     * atmosphere ray-march continue past the visible horizon and
+     * softens the harsh dark band that otherwise appears just below
+     * the limb. Real terrain still occludes via depth test, so this
+     * only matters in the area beyond the visible terrain horizon. */
+    const float clip_radius = planet_r * lower_mult;
+    const float atmo_r      = planet_r * radius_mult;
     render_env_t env = {
         .sun_dir    = sun_dir,
         .sun_pos    = sun_pos,
@@ -462,9 +467,8 @@ static void frame(void) {
             (float)active_body->pos_y,
             (float)active_body->pos_z,
         },
-        .atmo_planet_radius   = planet_r,    /* Rp — actual ground (planet-clip) */
-        .atmo_lower_radius    = atmo_lower,  /* Rg — density lower bound         */
-        .atmo_radius          = atmo_r,      /* Ra — outer shell                 */
+        .atmo_planet_radius   = clip_radius, /* Rp — atmosphere lower / planet-clip */
+        .atmo_radius          = atmo_r,      /* Ra — outer shell                    */
         .atmo_strength        = has_atmo ? 1.0f : 0.0f,
         .atmo_rayleigh_scale  = rayleigh,
         .atmo_mie_scale       = mie,

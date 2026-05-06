@@ -31,6 +31,13 @@
 
 tenebris:
   radius_mult: 1.3
+  # Sink the planet-clip sphere 10 % below the actual ground so the
+  # atmosphere ray-march continues a bit past the visible horizon —
+  # softens the harsh dark band where atmosphere meets the planet
+  # silhouette in orbital views. Real terrain still occludes via
+  # depth test so this only affects the band BEYOND the visible
+  # terrain horizon.
+  lower_radius_mult: 0.9
   # Aligned with Caelum's stated 'Tenebris default (scale-independent
   # with normalized steps)' values from src/atmosphere.c. Our shader
   # is now a faithful Caelum port (atmosphere.glsl), so the same
