@@ -136,6 +136,13 @@ typedef struct {
      * Usually slightly wider than shoreline_fade so the foam keeps
      * body inside the alpha-feathered region. */
     float  shore_foam_dist_m;
+    /* Sun-highlight specular. Multiplied with the warm-white sun
+     * tint to make the surface glint. Higher = brighter glints,
+     * lower = matte. */
+    float  specular_intensity;
+    /* Blinn-Phong specular exponent. Higher = tighter / smaller
+     * highlight, lower = broader / softer. */
+    float  specular_power;
 } water_config_t;
 
 const water_config_t* config_water(void);

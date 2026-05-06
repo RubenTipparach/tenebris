@@ -61,6 +61,8 @@ layout(binding=1) uniform fs_params {
     vec3 u_deep_color;       // saturation colour where the ray has fully attenuated
     float u_shoreline_fade;  // smoothstep upper edge for thickness-driven alpha (m)
     float u_shore_foam_dist; // smoothstep upper edge for shoreline foam (m)
+    float u_spec_intensity;  // sun-highlight strength multiplier
+    float u_spec_power;      // Blinn-Phong exponent
 };
 
 // water_scene_color / water_scene_depth are texture views of the
@@ -217,8 +219,8 @@ void main() {
     vec3 sky    = mix(vec3(0.85, 0.92, 0.98), vec3(0.35, 0.55, 0.85), up_f);
 
     vec3  halfv = normalize(view + sun);
-    float spec  = pow(max(dot(n, halfv), 0.0), 140.0);
-    vec3  sun_highlight = vec3(1.35, 1.25, 1.10) * spec * 0.6;
+    float spec  = pow(max(dot(n, halfv), 0.0), u_spec_power);
+    vec3  sun_highlight = vec3(1.35, 1.25, 1.10) * spec * u_spec_intensity;
 
     float steepness = length(t_grad);
     float crest     = smoothstep(0.35, 0.60, h0);

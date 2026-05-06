@@ -1720,6 +1720,8 @@ static void body_draw_water(chunked_body_t* body, mat4_t vp,
         .u_deep_color      = { W->deep_color.x, W->deep_color.y, W->deep_color.z },
         .u_shoreline_fade  = W->shoreline_fade_m,
         .u_shore_foam_dist = W->shore_foam_dist_m,
+        .u_spec_intensity  = W->specular_intensity,
+        .u_spec_power      = W->specular_power,
     };
     sg_apply_uniforms(UB_fs_params, &SG_RANGE(fs_params));
 

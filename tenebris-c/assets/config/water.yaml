@@ -31,12 +31,20 @@
 #                              Usually slightly wider than
 #                              shoreline_fade so the foam keeps body
 #                              in the alpha-feathered region.
+#   specular_intensity  float  sun-highlight strength multiplier.
+#                              Higher = brighter glints / glossier;
+#                              lower = matte.
+#   specular_power      float  Blinn-Phong specular exponent.
+#                              Higher = tighter / smaller highlight,
+#                              lower = broader / softer.
 
 water:
-  time_scale:        0.75
-  depth_offset_m:    0.50
-  refract_amount:    0.04
-  absorption:        [0.60, 0.20, 0.10]
-  deep_color:        [0.02, 0.10, 0.22]
-  shoreline_fade_m:  0.50
-  shore_foam_dist_m: 0.80
+  time_scale:         0.75
+  depth_offset_m:     0.50
+  refract_amount:     0.04
+  absorption:         [0.60, 0.20, 0.10]
+  deep_color:         [0.02, 0.10, 0.22]
+  shoreline_fade_m:   0.50
+  shore_foam_dist_m:  0.80
+  specular_intensity: 0.60
+  specular_power:     140.0

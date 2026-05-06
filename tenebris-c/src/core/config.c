@@ -309,6 +309,8 @@ static water_config_t S_WATER = {
     .deep_color         = { 0.02f, 0.10f, 0.22f },
     .shoreline_fade_m   = 0.50f,
     .shore_foam_dist_m  = 0.80f,
+    .specular_intensity = 0.60f,
+    .specular_power     = 140.0f,
 };
 
 const water_config_t* config_water(void) { return &S_WATER; }
@@ -364,6 +366,10 @@ int config_load_water(const char* path) {
                         S_WATER.shoreline_fade_m  = (float)strtod(val, NULL);
                     } else if (strcmp(key, "shore_foam_dist_m" ) == 0) {
                         S_WATER.shore_foam_dist_m = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "specular_intensity") == 0) {
+                        S_WATER.specular_intensity = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "specular_power"    ) == 0) {
+                        S_WATER.specular_power    = (float)strtod(val, NULL);
                     } else {
                         printf("[config] %s:%d: unknown key '%s'\n",
                                path, line_no, key);
