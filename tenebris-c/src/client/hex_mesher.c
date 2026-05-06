@@ -1,5 +1,6 @@
 #include "client/hex_mesher.h"
 #include "core/blocks.h"
+#include "core/config.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -198,23 +199,20 @@ void hex_mesh_build_water(hex_mesh_t* out, const world_t* w, int tile_idx) {
     int top = column_top_solid(w, tile_idx);
     if (top < 0 || top >= SEA_LEVEL_DEPTH) return;
 
-    /* Drop the water cap WATER_DEPTH_OFFSET_M below the un-offset
-     * sea-level radius so the vertex shader's wave swell can't push
-     * crests above neighbour beach sand (which sits exactly at sea
-     * level on the shoreline — coplanar with the un-offset cap). The
-     * offset has to exceed the swell amplitude or we're back to
-     * spillover. Tuned conservatively for the current shader's
-     * 0.08 + 0.06 + 0.03 = 0.17 m max swell. */
-    #define WATER_DEPTH_OFFSET_M 0.50f
-
-    /* Water caps span the whole tile — width 1.0. emit_cap renders
-     * the TOP face of layer N at radius(N+1), so to land the water
-     * surface exactly at sea level (= radius(SEA_LEVEL_DEPTH)) we
-     * pass depth = SEA_LEVEL_DEPTH - 1. Otherwise the cap floats
-     * 1 m above the shoreline (visible "wobble" between the sand
-     * top and the water surface). */
+    /* Drop the water cap below the un-offset sea-level radius so the
+     * vertex shader's wave swell can't push crests above neighbour
+     * beach sand (which sits exactly at sea level on the shoreline —
+     * coplanar with the un-offset cap). The offset has to exceed the
+     * swell amplitude or we're back to spillover. Sourced from
+     * water.yaml so designers can tune from the YAML alongside the
+     * other water knobs.
+     *
+     * emit_cap renders the TOP face of layer N at radius(N+1), so to
+     * land the water surface at sea level (= radius(SEA_LEVEL_DEPTH))
+     * we pass depth = SEA_LEVEL_DEPTH - 1. */
+    const float depth_off = config_water()->depth_offset_m;
     emit_cap(out, t, w, SEA_LEVEL_DEPTH - 1, BLOCK_WATER, true, 1.0f,
-             -WATER_DEPTH_OFFSET_M);
+             -depth_off);
 }
 
 /* ----------------------------------------------------------------------- */

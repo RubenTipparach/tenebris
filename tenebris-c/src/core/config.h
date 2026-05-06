@@ -23,6 +23,7 @@
 int config_load_atmosphere(const char* path);
 int config_load_skybox(const char* path);
 int config_load_lod(const char* path);
+int config_load_water(const char* path);
 
 /*
  * Global skybox tuning — read by renderer_draw_skybox each frame and
@@ -99,5 +100,44 @@ typedef struct {
 } lod_config_t;
 
 const lod_config_t* config_lod(void);
+
+/*
+ * Water surface + refraction tuning. All knobs the cap shader and
+ * mesh-build code consume — every literal that used to live as a
+ * C #define or hardcoded fs_params struct field is now sourced
+ * from this struct so designers can tune without recompiling.
+ */
+typedef struct {
+    /* Animation: subjective-time multiplier on R.time_seconds.
+     * Higher = faster ripples / swell. */
+    float  time_scale;
+    /* Geometry: vertical drop of the cap below sea level so the
+     * vertex-shader swell can't push crests above neighbour beach
+     * sand. Read by hex_mesher.c at mesh-build time, not per-frame. */
+    float  depth_offset_m;
+    /* Refraction: scalar applied to the surface tangent gradient
+     * before it perturbs the screen UV used for the offscreen-colour
+     * sample. 0.0 = no refraction, ~0.04 = noticeable shimmer. */
+    float  refract_amount;
+    /* Beer-Lambert per-channel extinction (1/m). Higher = water
+     * gets dark/saturated faster with depth. Real ocean has red
+     * absorbed ~6× more than blue. */
+    vec3_t absorption;
+    /* Saturation colour where the view ray has fully attenuated —
+     * the limit colour of deep water. */
+    vec3_t deep_color;
+    /* Alpha smoothstep upper edge in metres. At thickness 0 the cap
+     * goes fully transparent; by this much water it's back to the
+     * Fresnel-driven alpha. Hides the hex-mesh silhouette where the
+     * cap meets the seabed. */
+    float  shoreline_fade_m;
+    /* Shoreline foam smoothstep upper edge. White-wash band peaks
+     * at thickness 0 and fades to nothing by this much water.
+     * Usually slightly wider than shoreline_fade so the foam keeps
+     * body inside the alpha-feathered region. */
+    float  shore_foam_dist_m;
+} water_config_t;
+
+const water_config_t* config_water(void);
 
 #endif

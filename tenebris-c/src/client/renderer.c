@@ -1694,13 +1694,14 @@ static void body_draw_water(chunked_body_t* body, mat4_t vp,
     mat4_t model = mat4_translate(body->world_pos);
     mat4_t mvp   = mat4_mul(vp, model);
 
-    /* The water shader treats u_time as a phase already scaled to
-     * "subjective" time. Spatial frequencies and amplitudes inside
-     * the shader are fixed; this multiplier is the only animation
-     * knob exposed from C. Higher = faster ripples. Will move to
-     * water.yaml in Phase C alongside the other tunables. */
-    const float water_time_scale = 0.75f;
-    const float t_scaled = R.time_seconds * water_time_scale;
+    /* All water knobs come from assets/config/water.yaml — see
+     * core/config.h water_config_t for field meanings. The shader
+     * just reads them as uniforms. Projection near/far still come
+     * from main_web.c's mat4_perspective call (kept hardcoded here
+     * because they're a renderer-pipeline detail, not a tuning
+     * knob). */
+    const water_config_t* W = config_water();
+    const float t_scaled = R.time_seconds * W->time_scale;
 
     /* sokol-shdc emits std140-laid-out structs + slot constants —
      * no manual offset math, no _pad_NN by hand. */
@@ -1709,33 +1710,16 @@ static void body_draw_water(chunked_body_t* body, mat4_t vp,
     sg_apply_uniforms(UB_vs_params, &SG_RANGE(vs_params));
 
     fs_params_t fs_params = {
-        .u_camera_pos     = { camera_world.x, camera_world.y, camera_world.z },
-        .u_sun_dir        = { R.env.sun_dir.x, R.env.sun_dir.y, R.env.sun_dir.z },
-        .u_time           = t_scaled,
-        /* Refraction: surface tangent gradient → screen UV offset.
-         * 0.04 = noticeable shimmer without warping the view too much. */
-        .u_refract_amount = 0.04f,
-        /* Projection near/far for depth linearisation — must match
-         * the perspective set up in main_web.c (mat4_perspective
-         * 0.3, 20000). Beer-Lambert sigma per channel: red goes
-         * faster than blue so deep water reads cyan/blue. Tuned for
-         * our 30 m max water depth — at 5 m, red has dropped to
-         * ~30 %, blue still ~80 %. u_deep_color is the saturation
-         * tint where the ray has fully attenuated. */
-        .u_near           = 0.3f,
-        .u_far            = 20000.0f,
-        .u_absorption     = { 0.60f, 0.20f, 0.10f },
-        .u_deep_color     = { 0.02f, 0.10f, 0.22f },
-        /* Shoreline alpha smoothstep: fully transparent at the
-         * cap-edge thickness=0 pixel, fully opaque by 0.5 m of
-         * water. Hides the hard hex-cap silhouette where the cap
-         * meets sand. */
-        .u_shoreline_fade = 0.5f,
-        /* White-wash foam band where the cap meets the seabed.
-         * Wider than the alpha-fade so the foam has visible
-         * thickness even after the cap behind it has feathered
-         * away. */
-        .u_shore_foam_dist = 0.8f,
+        .u_camera_pos      = { camera_world.x, camera_world.y, camera_world.z },
+        .u_sun_dir         = { R.env.sun_dir.x, R.env.sun_dir.y, R.env.sun_dir.z },
+        .u_time            = t_scaled,
+        .u_refract_amount  = W->refract_amount,
+        .u_near            = 0.3f,
+        .u_far             = 20000.0f,
+        .u_absorption      = { W->absorption.x, W->absorption.y, W->absorption.z },
+        .u_deep_color      = { W->deep_color.x, W->deep_color.y, W->deep_color.z },
+        .u_shoreline_fade  = W->shoreline_fade_m,
+        .u_shore_foam_dist = W->shore_foam_dist_m,
     };
     sg_apply_uniforms(UB_fs_params, &SG_RANGE(fs_params));
 

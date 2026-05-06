@@ -296,6 +296,99 @@ int config_load_lod(const char* path) {
 }
 
 /* ------------------------------------------------------------------------ */
+/* Water config — compiled-in defaults overridable via water.yaml.
+ * Defaults match the inline literals body_draw_water + hex_mesher
+ * had before the YAML extraction; the YAML override is a pure
+ * tuning surface, not a behaviour change. */
+
+static water_config_t S_WATER = {
+    .time_scale         = 0.75f,
+    .depth_offset_m     = 0.50f,
+    .refract_amount     = 0.04f,
+    .absorption         = { 0.60f, 0.20f, 0.10f },
+    .deep_color         = { 0.02f, 0.10f, 0.22f },
+    .shoreline_fade_m   = 0.50f,
+    .shore_foam_dist_m  = 0.80f,
+};
+
+const water_config_t* config_water(void) { return &S_WATER; }
+
+int config_load_water(const char* path) {
+    size_t fsize = 0;
+    char* buf = slurp_file(path, &fsize);
+    if (!buf) {
+        printf("[config] %s not found, using compiled-in water defaults\n",
+               path);
+        fflush(stdout);
+        return -1;
+    }
+
+    int line_no = 0;
+    int parse_errors = 0;
+    char* p = buf;
+    char* line_start = buf;
+    while (1) {
+        if (*p == '\n' || *p == '\0') {
+            char saved = *p;
+            *p = '\0';
+            ++line_no;
+            char* line = trim_strip(line_start);
+            if (*line == '\0') {
+                /* skip */
+            } else {
+                char* colon = strchr(line, ':');
+                if (!colon) {
+                    printf("[config] %s:%d: missing ':' in '%s'\n",
+                           path, line_no, line);
+                    parse_errors++;
+                } else {
+                    *colon = '\0';
+                    char* key = line;
+                    char* val = trim_strip(colon + 1);
+                    size_t kn = strlen(key);
+                    while (kn > 0 && isspace((unsigned char)key[kn - 1])) key[--kn] = '\0';
+
+                    if (*val == '\0') {
+                        /* "water:" header — single-section file, ignored */
+                    } else if (strcmp(key, "time_scale"        ) == 0) {
+                        S_WATER.time_scale        = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "depth_offset_m"    ) == 0) {
+                        S_WATER.depth_offset_m    = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "refract_amount"    ) == 0) {
+                        S_WATER.refract_amount    = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "absorption"        ) == 0) {
+                        if (!parse_vec3(val, &S_WATER.absorption)) parse_errors++;
+                    } else if (strcmp(key, "deep_color"        ) == 0) {
+                        if (!parse_vec3(val, &S_WATER.deep_color)) parse_errors++;
+                    } else if (strcmp(key, "shoreline_fade_m"  ) == 0) {
+                        S_WATER.shoreline_fade_m  = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "shore_foam_dist_m" ) == 0) {
+                        S_WATER.shore_foam_dist_m = (float)strtod(val, NULL);
+                    } else {
+                        printf("[config] %s:%d: unknown key '%s'\n",
+                               path, line_no, key);
+                    }
+                }
+            }
+            *p = saved;
+            if (saved == '\0') break;
+            line_start = p + 1;
+        }
+        ++p;
+    }
+
+    free(buf);
+    if (parse_errors > 0) {
+        printf("[config] %s loaded with %d parse error(s)\n",
+               path, parse_errors);
+        return -2;
+    }
+    printf("[config] loaded %s\n", path);
+    fflush(stdout);
+    return 0;
+}
+
+/* ------------------------------------------------------------------------ */
 
 int config_load_atmosphere(const char* path) {
     size_t fsize = 0;

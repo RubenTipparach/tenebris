@@ -1,0 +1,42 @@
+# Water surface + refraction tuning.
+#
+# Loaded at boot by config_load_water() and applied to body_draw_water
+# every frame + read once at mesh-build time by hex_mesher.c for the
+# cap depth offset. Single global config — the same knobs apply to
+# every has_water body.
+#
+# Fields:
+#   time_scale          float  multiplier on R.time_seconds before it
+#                              reaches u_time. Higher = faster ripples.
+#   depth_offset_m      float  vertical drop of the cap below sea
+#                              level (metres). Has to exceed the max
+#                              swell or wave crests poke above sand.
+#   refract_amount      float  surface gradient → screen UV
+#                              perturbation scale. 0 = no refraction,
+#                              ~0.04 = noticeable shimmer without
+#                              warping the view.
+#   absorption          vec3   Beer-Lambert sigma per RGB channel
+#                              (1/m). Higher = water saturates
+#                              faster. Real ocean has red ~6× blue.
+#   deep_color          vec3   saturation tint where view ray has
+#                              fully attenuated. Limit colour of
+#                              deep water.
+#   shoreline_fade_m    float  alpha smoothstep upper edge (m).
+#                              At thickness 0 the cap goes
+#                              transparent, by this much water it's
+#                              back to the Fresnel-driven alpha.
+#                              Hides the hex-mesh edge at the beach.
+#   shore_foam_dist_m   float  shoreline foam smoothstep upper edge.
+#                              White-wash band peaks at thickness 0.
+#                              Usually slightly wider than
+#                              shoreline_fade so the foam keeps body
+#                              in the alpha-feathered region.
+
+water:
+  time_scale:        0.75
+  depth_offset_m:    0.50
+  refract_amount:    0.04
+  absorption:        [0.60, 0.20, 0.10]
+  deep_color:        [0.02, 0.10, 0.22]
+  shoreline_fade_m:  0.50
+  shore_foam_dist_m: 0.80
