@@ -171,14 +171,19 @@ void main() {
     // the strip's screen-pixel height (≈ pitch_threshold * screen_h
     // / vertical_fov).
     //
-    // Tuned for a ~10-20 px tall band on a 60° vertical FOV / 1080p
-    // screen: full strength under 0.17° (sin ≈ 0.003), faded by
-    // 1.7° (sin ≈ 0.030).
+    // Strip thickness in screen pixels:
+    //
+    //   pixels ≈ pitch_threshold * screen_height / (vertical_fov_rad)
+    //
+    // For 1080p / 60° FOV (= 1.047 rad): a pitch_proxy threshold of
+    // 0.005 gives ≈ 5 px, 0.001 gives ≈ 1 px. The earlier 0.030
+    // threshold gave ~30 px which still read as a wide band when
+    // stacked with the 7-tap blur.
     vec3  cam_up         = normalize(v_camera_pos - pcen);
     vec3  view_norm      = normalize(v_view_dir);
     float pitch_proxy    = abs(dot(view_norm, cam_up));
     float cam_at_surface = 1.0 - smoothstep(0.05, 0.15, abs(camera_alt));
-    float pitch_band     = 1.0 - smoothstep(0.003, 0.030, pitch_proxy);
+    float pitch_band     = 1.0 - smoothstep(0.0, 0.005, pitch_proxy);
     float meniscus       = cam_at_surface * pitch_band;
 
     // Underwater shimmer (gentle, applies wherever wet > 0) PLUS
@@ -213,7 +218,9 @@ void main() {
     if (meniscus > 0.0) {
         vec3  acc       = color;
         float weight    = 1.0;
-        float blur_amt  = 0.012 * meniscus;       // screen-uv units
+        float blur_amt  = 0.004 * meniscus;       // screen-uv units (kept tight so the
+                                                  // visual blur extent doesn't spread the
+                                                  // pitch-gated strip into a wider band)
         for (int i = 1; i <= 3; ++i) {
             float dy = float(i) * blur_amt / 3.0;
             vec2 a = clamp(vec2(sample_uv.x, sample_uv.y - dy), vec2(0.0), vec2(1.0));
