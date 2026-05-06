@@ -353,7 +353,8 @@ int config_load_atmosphere(const char* path) {
                         }
                     } else if (active_body >= 0) {
                         /* Field assignment. */
-                        if      (strcmp(key, "radius_mult"     ) == 0) patch.radius_mult     = (float)strtod(val, NULL);
+                        if      (strcmp(key, "radius_mult"       ) == 0) patch.radius_mult       = (float)strtod(val, NULL);
+                        else if (strcmp(key, "lower_radius_mult" ) == 0) patch.lower_radius_mult = (float)strtod(val, NULL);
                         else if (strcmp(key, "rayleigh_scale"  ) == 0) patch.rayleigh_scale  = (float)strtod(val, NULL);
                         else if (strcmp(key, "mie_scale"       ) == 0) patch.mie_scale       = (float)strtod(val, NULL);
                         else if (strcmp(key, "sun_intensity"   ) == 0) patch.sun_intensity   = (float)strtod(val, NULL);

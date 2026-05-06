@@ -403,6 +403,8 @@ static void frame(void) {
     const float planet_r = (float)active_body->radius_m;
     const float radius_mult     = active_body->atmo_radius_mult     > 0.0f
                                 ? active_body->atmo_radius_mult     : 1.3f;
+    const float lower_mult      = active_body->atmo_lower_radius_mult > 0.0f
+                                ? active_body->atmo_lower_radius_mult : 1.0f;
     const float rayleigh        = active_body->atmo_rayleigh_scale  > 0.0f
                                 ? active_body->atmo_rayleigh_scale  : 1.0f;
     const float mie             = active_body->atmo_mie_scale       > 0.0f
@@ -442,7 +444,12 @@ static void frame(void) {
     const vec3_t sunset_horizon     = has_sunset_horizon
                                     ? active_body->atmo_sunset_horizon
                                     : (vec3_t){ 0.80f, 0.40f, 0.15f };
-    const float atmo_r = planet_r * radius_mult;
+    /* atmo_lower is what the shader receives as Rg (atmosphere
+     * lower bound + planet-clip sphere). Default 1.0× planet_r =
+     * atmosphere starts at the ground; >1.0 thins the shell from
+     * the bottom; <1.0 sinks the boundary below the surface. */
+    const float atmo_lower = planet_r * lower_mult;
+    const float atmo_r     = planet_r * radius_mult;
     render_env_t env = {
         .sun_dir    = sun_dir,
         .sun_pos    = sun_pos,
@@ -455,7 +462,7 @@ static void frame(void) {
             (float)active_body->pos_y,
             (float)active_body->pos_z,
         },
-        .atmo_planet_radius   = planet_r,
+        .atmo_planet_radius   = atmo_lower,
         .atmo_radius          = atmo_r,
         .atmo_strength        = has_atmo ? 1.0f : 0.0f,
         .atmo_rayleigh_scale  = rayleigh,
