@@ -229,6 +229,54 @@ void main() {
                             vec2(0.0), vec2(1.0));
     vec3 refracted = texture(sampler2D(water_scene_color, water_scene_smp), refract_uv).rgb;
 
+    // ---- Back face = camera underwater looking up at the cap ----
+    //
+    // Snell's window: light from the world above can only enter the
+    // water through a cone of half-angle ~48.6° (water-to-air
+    // critical angle, n_water ≈ 1.33). Inside the cone the surface
+    // looks like a refracted window onto the sky; outside, total
+    // internal reflection — the rest of the underside reads as
+    // dark deep-water tint.
+    //
+    // We rely on the cull-mode = NONE on the water pipeline plus
+    // gl_FrontFacing to detect the underside. The cap geometry's
+    // normal points outward from the planet, so any fragment seen
+    // from inside the planet (camera radius < cap radius) is back-
+    // facing.
+    //
+    // The offscreen scene_color at screen_uv already holds whatever
+    // was rendered in that pixel direction without water — sky +
+    // atmosphere + any above-water terrain peeking over the
+    // shoreline — so sampling it at the same perturbed UV gives the
+    // refracted-sky look. The ripple t_grad already perturbs the
+    // sample, matching the above-water refraction so the surface
+    // looks like the same water from both sides.
+    if (!gl_FrontFacing) {
+        vec3  view_to_frag = normalize(v_wpos - u_camera_pos);
+        float cos_theta    = dot(view_to_frag, n);
+
+        // cos(critical) = sqrt(1 - 1/n²); n=1.33 → ≈ 0.659.
+        // Soft transition over ~10° so the Snell-window rim
+        // doesn't read as a hard ring under the wave normals.
+        float snell = smoothstep(0.55, 0.75, cos_theta);
+
+        vec3 above_through_surface = refracted;
+        vec3 tir_tint              = u_deep_color;
+        vec3 below_color           = mix(tir_tint, above_through_surface, snell);
+
+        // Optional sun glint surviving the underside — sells the
+        // surface as glassy water rather than a flat plane. Scaled
+        // by snell so it only fires inside the window.
+        vec3 view  = -view_to_frag;
+        vec3 sun   = normalize(u_sun_dir);
+        vec3 halfv = normalize(view + sun);
+        float spec = pow(max(dot(n, halfv), 0.0), u_spec_power) * snell;
+        below_color += u_sun_tint * spec * u_spec_intensity * 0.5;
+
+        frag_color = vec4(below_color, 1.0);
+        return;
+    }
+
     // Beer-Lambert depth-thickness extinction. Linearise both the
     // water-surface depth and the sampled scene depth into camera-z
     // (metres), use their difference as the thickness of water the

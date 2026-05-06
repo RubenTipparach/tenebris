@@ -233,10 +233,12 @@ typedef struct {
     /* Underwater post-process. Drives the composite-pass fog +
      * sin-perturbation distortion when the camera (or any individual
      * pixel) sits below the sea-level radius. Per-pixel masked so a
-     * half-submerged camera only fogs the wet side of the screen. */
-    vec3_t underwater_fog_color;
-    float  underwater_fog_near;
-    float  underwater_fog_far;
+     * half-submerged camera only fogs the wet side of the screen.
+     *
+     * The fog itself reuses absorption + deep_color above (Beer-
+     * Lambert per-channel, exactly like the water cap's above-water
+     * tint) so the view from underwater matches the view from above
+     * — same water, same look. Only the shimmer is independent. */
     float  underwater_distortion;
 } water_config_t;
 

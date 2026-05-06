@@ -173,14 +173,14 @@ water:
   # level; per-pixel masked so a half-submerged camera leaves dry-side
   # pixels untouched).
   #
-  # underwater_fog_color   vec3   tint mixed in for fully-fogged pixels.
-  # underwater_fog_near    float  metres of view-distance where fog starts ramping in.
-  # underwater_fog_far     float  metres where fog hits full opacity.
+  # The fog itself reuses the same Beer-Lambert formula the water cap
+  # uses when looking down through water from above (absorption +
+  # deep_color above), so above-water and below-water views read as
+  # the same body of water. Only the screen-space distortion has its
+  # own knob — it has no above-water analogue.
+  #
   # underwater_distortion  float  amplitude (in screen-UV units) of the
   #                               sin-perturbation applied to the scene
   #                               sample on underwater pixels. ~0.005
   #                               is a subtle shimmer; 0.0 disables it.
-  underwater_fog_color:    [0.10, 0.33, 0.47]
-  underwater_fog_near:     0.0
-  underwater_fog_far:      18.0
   underwater_distortion:   0.006

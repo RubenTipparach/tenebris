@@ -1359,10 +1359,9 @@ void renderer_compose_to_swapchain(mat4_t view, mat4_t proj) {
     }
 
     composite_fs_params_t fs = {
-        .fog_color     = { W->underwater_fog_color.x,
-                           W->underwater_fog_color.y,
-                           W->underwater_fog_color.z, 0.0f },
-        .fog_params    = { W->underwater_fog_near, W->underwater_fog_far, 0.3f, 20000.0f },
+        .deep_color    = { W->deep_color.x,  W->deep_color.y,  W->deep_color.z,  0.0f },
+        .absorption    = { W->absorption.x,  W->absorption.y,  W->absorption.z,  0.0f },
+        .near_far      = { 0.3f, 20000.0f, 0.0f, 0.0f },
         .planet_params = { body_center.x, body_center.y, body_center.z, sea_radius },
         .fx_params     = { W->underwater_distortion,
                            R.time_seconds,

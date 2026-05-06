@@ -333,9 +333,6 @@ static water_config_t S_WATER = {
     .ripple_scale       = 1.0f,
     .ripple_speed       = 1.0f,
     .wave_steepness     = 0.65f,
-    .underwater_fog_color = { 0.10f, 0.33f, 0.47f },
-    .underwater_fog_near  = 0.0f,
-    .underwater_fog_far   = 18.0f,
     .underwater_distortion = 0.006f,
 };
 
@@ -440,12 +437,6 @@ int config_load_water(const char* path) {
                         S_WATER.ripple_speed      = (float)strtod(val, NULL);
                     } else if (strcmp(key, "wave_steepness"    ) == 0) {
                         S_WATER.wave_steepness    = (float)strtod(val, NULL);
-                    } else if (strcmp(key, "underwater_fog_color") == 0) {
-                        if (!parse_vec3(val, &S_WATER.underwater_fog_color)) parse_errors++;
-                    } else if (strcmp(key, "underwater_fog_near") == 0) {
-                        S_WATER.underwater_fog_near = (float)strtod(val, NULL);
-                    } else if (strcmp(key, "underwater_fog_far") == 0) {
-                        S_WATER.underwater_fog_far  = (float)strtod(val, NULL);
                     } else if (strcmp(key, "underwater_distortion") == 0) {
                         S_WATER.underwater_distortion = (float)strtod(val, NULL);
                     } else {
