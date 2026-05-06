@@ -2,14 +2,22 @@
 // offscreen-pass colour attachment and writes it to the swapchain so
 // the underwater scene shows up under the water cap.
 //
-// Doubles as the underwater post-process: any pixel that reconstructs
-// to a world position below the active body's sea-level radius gets
-// faded toward the water's deep-colour tint via the same Beer-Lambert
-// per-channel attenuation the water cap uses for the above-water view
-// (so above-water and below-water views read as the same body of
-// water). A small sin-wave shimmer is overlaid on the screen sample
-// for a "looking through ripples" feel. Per-pixel masked, so a half-
-// submerged camera leaves the dry side of the screen alone.
+// Doubles as the underwater post-process. Per pixel:
+//
+//   1. Reconstruct world position from the offscreen depth + camera
+//      basis. Compare its radial distance to the active body's sea-
+//      level radius — that's the signed altitude of the pixel.
+//   2. Smoothly fade between "above water" (untouched) and "below
+//      water" (Beer-Lambert toward deep_color) using a smoothstep
+//      across a meniscus band centred on altitude=0. No more hard
+//      boolean — half-submerged camera gets a soft transition.
+//   3. Inside the meniscus band (|alt| < band_m) apply a much
+//      heavier sin-wave smear + a 7-tap vertical blur on the colour
+//      sample. Hides the otherwise-clean camera-clip waterline
+//      with a wet-looking refracted band, in the spirit of a GoPro
+//      half-dome shot.
+//   4. Outside the band, the regular gentle underwater shimmer
+//      still applies on the wet side only.
 
 @vs composite_vs
 
@@ -51,7 +59,7 @@ void main() {
 layout(binding=1) uniform composite_fs_params {
     vec4  deep_color;     // xyz = water deep tint (matches water cap's u_deep_color)
     vec4  absorption;     // xyz = Beer-Lambert per-channel sigma (1/m)
-    vec4  near_far;       // x = near plane, y = far plane, zw unused
+    vec4  near_far;       // x = near plane, y = far plane, z = meniscus_band_m, w = camera_alt
     vec4  planet_params;  // xyz = body centre,           w = sea-level radius
     vec4  fx_params;      // x = distortion strength (UV units), y = time, z = camera_underwater [0|1], w = unused
 };
@@ -78,65 +86,106 @@ void main() {
     vec3  sigma       = absorption.xyz;
     float near        = near_far.x;
     float far         = near_far.y;
+    float band_m      = max(near_far.z, 0.0001);
+    float camera_alt  = near_far.w;
     vec3  pcen        = planet_params.xyz;
     float sea_radius  = planet_params.w;
     float dist_amt    = fx_params.x;
     float t           = fx_params.y;
-    bool  cam_under   = fx_params.z > 0.5;
 
-    // Depth at the un-distorted uv so the underwater mask is computed
-    // against the correct geometry (we'll perturb the uv only when
-    // sampling colour, below).
+    // Depth at the un-distorted uv so the pixel-altitude test is
+    // computed against the correct geometry.
     float scene_z_ndc = texture(sampler2D(scene_depth, scene_depth_smp), v_uv).r;
     bool  is_sky      = scene_z_ndc >= 0.99999;
 
-    // Reconstruct the world position of the pixel, when it isn't sky.
-    // v_view_dir is parameterised so its forward component = 1, so
-    // multiplying by the linearised camera-z gives the right world
-    // foreshortening (off-axis pixels travel further per metre of z).
+    // Reconstruct the world position of the pixel + signed altitude
+    // relative to sea level. v_view_dir is parameterised so its
+    // forward component = 1, so multiplying by linearised camera-z
+    // gives the right world foreshortening.
+    //
+    // Sky pixels have no recoverable position. Fall back to the
+    // camera's altitude — that way a fully-submerged camera fogs
+    // the void to deep_color, a half-submerged camera treats the
+    // sky pixel as on the same side of the line as the camera, and
+    // the meniscus smear still kicks in at the same screen rows
+    // where reconstructable pixels are crossing zero.
     vec3  pixel_world = v_camera_pos;
     float view_dist   = far;
-    bool  pixel_under = false;
-    if (!is_sky) {
+    float pixel_alt;
+    if (is_sky) {
+        pixel_alt = camera_alt;
+    } else {
         float lin_z = linearize_z(scene_z_ndc, near, far);
         pixel_world = v_camera_pos + v_view_dir * lin_z;
         view_dist   = length(pixel_world - v_camera_pos);
-        float radial = length(pixel_world - pcen);
-        pixel_under = radial < sea_radius;
-    } else {
-        // Sky pixels have no recoverable world position. They count
-        // as underwater only if the camera itself is below sea level
-        // — we're looking up through the water at an "infinite" sky
-        // direction. View distance is treated as the far plane so
-        // Beer-Lambert saturates and the pixel washes fully toward
-        // deep_color (matches the water cap's deep-water look at
-        // long thicknesses).
-        pixel_under = cam_under;
+        pixel_alt   = length(pixel_world - pcen) - sea_radius;
     }
 
-    // Underwater shimmer: sin-wave perturbation on the screen UV
-    // before sampling the offscreen colour. Two phase-shifted waves
-    // per axis avoid laminar drift and read as wobbly water rather
-    // than a flat sweep.
+    // Soft underwater mask: smoothstep from above (alt = +band) to
+    // below (alt = -band) so the fog opacity ramps across the
+    // meniscus instead of slamming on at altitude = 0. Outside the
+    // band the mask saturates to 0 above / 1 below as expected.
+    float wet = smoothstep(band_m, -band_m, pixel_alt);
+
+    // Meniscus band: 1 at the waterline, falls to 0 at |alt| = band.
+    // Drives both the heavy sin smear and the 7-tap vertical blur
+    // below.
+    float meniscus = 1.0 - smoothstep(0.0, band_m, abs(pixel_alt));
+
+    // Underwater shimmer (gentle, applies wherever wet > 0) PLUS
+    // the heavy meniscus smear (applies inside the band on either
+    // side of the line). The two stack — the band gets both — so
+    // the trans-medium region reads as a chaotic refracted strip.
     vec2 sample_uv = v_uv;
-    if (pixel_under && dist_amt > 0.0) {
-        vec2 d = vec2(
+    if (wet > 0.0 && dist_amt > 0.0) {
+        vec2 d_calm = vec2(
             sin(t * 1.3 + v_uv.y * 32.0) + 0.5 * sin(t * 0.7 + v_uv.x * 47.0),
             cos(t * 0.9 + v_uv.x * 28.0) + 0.5 * cos(t * 1.6 + v_uv.y * 41.0)
         ) * dist_amt;
-        sample_uv = clamp(v_uv + d, vec2(0.0), vec2(1.0));
+        sample_uv += d_calm * wet;
     }
+    if (meniscus > 0.0) {
+        // Heavier smear at the waterline: ~8x the calm distortion
+        // amplitude at peak meniscus. Read as wet-lens refraction.
+        vec2 d_smear = vec2(
+            sin(t * 2.1 + v_uv.y * 60.0) + 0.7 * sin(t * 1.3 + v_uv.x * 80.0),
+            cos(t * 1.7 + v_uv.x * 50.0) + 0.7 * cos(t * 2.4 + v_uv.y * 70.0)
+        ) * dist_amt * meniscus * 8.0;
+        sample_uv += d_smear;
+    }
+    sample_uv = clamp(sample_uv, vec2(0.0), vec2(1.0));
+
     vec3 color = texture(sampler2D(scene_color, scene_smp), sample_uv).rgb;
+
+    // 7-tap vertical blur in the meniscus band. Mimics the soft
+    // out-of-focus refraction strip a GoPro dome shows at the
+    // waterline. Falls off with meniscus so it costs nothing
+    // outside the band and disappears smoothly.
+    if (meniscus > 0.0) {
+        vec3  acc       = color;
+        float weight    = 1.0;
+        float blur_amt  = 0.012 * meniscus;       // screen-uv units
+        for (int i = 1; i <= 3; ++i) {
+            float dy = float(i) * blur_amt / 3.0;
+            vec2 a = clamp(vec2(sample_uv.x, sample_uv.y - dy), vec2(0.0), vec2(1.0));
+            vec2 b = clamp(vec2(sample_uv.x, sample_uv.y + dy), vec2(0.0), vec2(1.0));
+            acc += texture(sampler2D(scene_color, scene_smp), a).rgb;
+            acc += texture(sampler2D(scene_color, scene_smp), b).rgb;
+            weight += 2.0;
+        }
+        vec3 blurred = acc / weight;
+        color = mix(color, blurred, meniscus);
+    }
 
     // Beer-Lambert per-channel attenuation, matching the water cap's
     // above-water formula (see water.glsl: `mix(deep_color, refracted,
-    // attenuation)`). Same water, same look — the only thing that
-    // changes when the camera ducks under is the rendering path that
-    // computes it.
-    if (pixel_under) {
-        vec3 attenuation = exp(-view_dist * sigma);
-        color = mix(deep, color, attenuation);
-    }
+    // attenuation)`). Applied with the soft `wet` weight so above-
+    // water pixels stay untouched, below-water pixels get the full
+    // fog tint, and meniscus pixels get a partial mix that makes the
+    // transition feel like a gradient rather than a step.
+    vec3 attenuation = exp(-view_dist * sigma);
+    vec3 fogged      = mix(deep, color, attenuation);
+    color = mix(color, fogged, wet);
 
     frag_color = vec4(color, 1.0);
 }
