@@ -57,12 +57,19 @@ layout(binding=1) uniform fs_params {
     float u_refract_amount;  // surface-gradient → screen UV perturbation scale
 };
 
-// water_scene_color / water_scene_depth are texture views of the offscreen colour
-// + depth attachments rendered before the water draw. Sampled at
-// gl_FragCoord-derived UV for screen-space refraction.
+// water_scene_color / water_scene_depth are texture views of the
+// offscreen colour + depth attachments rendered before the water
+// draw. Sampled at gl_FragCoord-derived UV for screen-space
+// refraction + manual depth-discard.
+//
+// Two samplers — colour gets LINEAR for smooth refraction, depth
+// gets NEAREST because WebGL2 disallows linear-filtered depth-as-
+// sampler2D and silently returns zero on most drivers (which
+// caused the universal discard that made water invisible).
 layout(binding=0) uniform texture2D water_scene_color;
 layout(binding=1) uniform texture2D water_scene_depth;
 layout(binding=0) uniform sampler   water_scene_smp;
+layout(binding=1) uniform sampler   water_scene_depth_smp;
 
 precision highp int;
 
@@ -158,14 +165,14 @@ void main() {
     vec2 screen_size = vec2(textureSize(sampler2D(water_scene_color, water_scene_smp), 0));
     vec2 screen_uv   = gl_FragCoord.xy / screen_size;
 
-    // Manual depth occlusion via offscreen scene_depth. Disabled for
-    // now — WebGL2 may need a separate NEAREST sampler for depth
-    // textures, and we need to verify water draws AT ALL before
-    // re-enabling. Without the discard, water will draw on top of
-    // terrain (no occlusion), which is visually wrong but useful as
-    // a diagnostic that the pipeline is otherwise live.
-    // float scene_z = texture(sampler2D(water_scene_depth, water_scene_smp), screen_uv).r;
-    // if (gl_FragCoord.z > scene_z) discard;
+    // Manual depth occlusion. Pipeline has HW depth-test disabled
+    // (compare = ALWAYS) because the swapchain depth buffer doesn't
+    // hold the offscreen scene's depth; we read it directly from the
+    // offscreen depth texture and discard fragments behind opaque
+    // geometry. Uses the NEAREST sampler (water_scene_depth_smp) —
+    // see header comment.
+    float scene_z = texture(sampler2D(water_scene_depth, water_scene_depth_smp), screen_uv).r;
+    if (gl_FragCoord.z > scene_z) discard;
 
     // Refraction: perturb the colour-sample UV by the surface
     // tangent-plane gradient. Magnitude scales with u_refract_amount

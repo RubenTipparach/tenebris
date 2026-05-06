@@ -142,7 +142,8 @@ static struct {
     sg_pipeline pip_hex;
     sg_pipeline pip_water;     /* translucent, wave-animated cap layer */
     sg_pipeline pip_composite; /* fullscreen blit of offscreen colour to swapchain */
-    sg_sampler  smp_offscreen; /* linear-clamp sampler for the composite + water passes */
+    sg_sampler  smp_offscreen;       /* linear-clamp sampler for offscreen colour sampling */
+    sg_sampler  smp_offscreen_depth; /* nearest-clamp sampler for offscreen depth (WebGL2 disallows linear-filtered depth) */
     sg_pipeline pip_starfield;     /* fullscreen stars + nebula              */
     sg_pipeline pip_atmosphere;    /* fullscreen alpha-blended scattering    */
     sg_buffer   fullscreen_tri_vbuf; /* 3-vert vec2 vbuf used by atmosphere  */
@@ -585,6 +586,16 @@ void renderer_init(void) {
         .wrap_v = SG_WRAP_CLAMP_TO_EDGE,
         .label = "offscreen-sampler",
     });
+    /* Depth needs a separate sampler — WebGL2 disallows linear
+     * filtering on depth textures sampled as regular sampler2D
+     * (results are undefined / silently zero on most drivers). */
+    R.smp_offscreen_depth = sg_make_sampler(&(sg_sampler_desc){
+        .min_filter = SG_FILTER_NEAREST,
+        .mag_filter = SG_FILTER_NEAREST,
+        .wrap_u = SG_WRAP_CLAMP_TO_EDGE,
+        .wrap_v = SG_WRAP_CLAMP_TO_EDGE,
+        .label = "offscreen-depth-sampler",
+    });
 
     /* Per-body chunk storage is allocated lazily by renderer_register_world
      * once we know the body's tile_count + radius. Nothing to do here. */
@@ -801,6 +812,7 @@ void renderer_shutdown(void) {
     sg_destroy_pipeline(R.pip_water);
     sg_destroy_pipeline(R.pip_composite);
     sg_destroy_sampler(R.smp_offscreen);
+    sg_destroy_sampler(R.smp_offscreen_depth);
     sg_destroy_pipeline(R.pip_starfield);
     sg_destroy_pipeline(R.pip_atmosphere);
     sg_destroy_buffer(R.fullscreen_tri_vbuf);
@@ -1712,13 +1724,14 @@ static void body_draw_water(chunked_body_t* body, mat4_t vp,
         sg_apply_bindings(&(sg_bindings){
             .vertex_buffers[0] = c->water_vbuf,
             .index_buffer      = c->water_ibuf,
-            /* Offscreen colour view — same image the compose blit
-             * sampled. The depth view (water_scene_depth) is unused
-             * while the manual depth-discard is commented out in the
-             * shader, so sokol-shdc dropped that binding from the
-             * generated header; will be re-added when discard returns. */
-            .views[VIEW_water_scene_color] = R.offscreen_color_tex,
-            .samplers[SMP_water_scene_smp] = R.smp_offscreen,
+            /* Offscreen colour + depth views (same images the
+             * compose blit + scene render populated). Two samplers:
+             * LINEAR for colour (smooth refraction), NEAREST for
+             * depth (WebGL2 disallows linear depth sampling). */
+            .views[VIEW_water_scene_color]    = R.offscreen_color_tex,
+            .views[VIEW_water_scene_depth]    = R.offscreen_depth_tex,
+            .samplers[SMP_water_scene_smp]       = R.smp_offscreen,
+            .samplers[SMP_water_scene_depth_smp] = R.smp_offscreen_depth,
         });
         sg_draw(0, c->last_uploaded_water_idx_count, 1);
         R.tris += (size_t)c->last_uploaded_water_idx_count / 3;
