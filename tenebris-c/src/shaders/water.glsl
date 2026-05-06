@@ -247,19 +247,11 @@ void main() {
     vec3 color = mix(base, sky, f) + sun_highlight;
     color = mix(color, u_foam_color, foam * u_foam_crest.w);
 
-    // Shoreline: instead of fading alpha (which would re-expose the
-    // already-composited offscreen-colour underneath and double-count
-    // the underwater scene), sample the offscreen colour at the
-    // unrefracted UV and mix the water colour toward it. End result
-    // matches an alpha-fade visually, but the water output is fully
-    // opaque so the GPU isn't blending the cap against a duplicate
-    // copy of the same underwater scene the shader already refracted.
-    vec3 unrefracted = texture(sampler2D(water_scene_color, water_scene_smp), screen_uv).rgb;
-    float shore_fade = 1.0 - smoothstep(0.0, u_shoreline_fade, thickness);
-    color = mix(color, unrefracted, shore_fade);
-
-    // Foam goes on top last so it stays visible inside the shore-
-    // fade region too.
+    // Shoreline foam covers the cap-edge silhouette: at thickness ~0
+    // shore_foam is 1.0, so this mix replaces the cap pixel with the
+    // foam tint (no underlying terrain visible). Past
+    // u_shore_foam_dist the foam fades away and we see the
+    // refracted+attenuated water colour from above.
     color = mix(color, u_shore_foam_color, shore_foam);
 
     frag_color = vec4(color, 1.0);
