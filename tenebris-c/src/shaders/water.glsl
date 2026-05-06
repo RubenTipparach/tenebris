@@ -98,7 +98,6 @@ layout(binding=1) uniform fs_params {
     float u_ripple_speed;    // multiplier on the time advection inside fbm
     float u_wave_steepness;  // normal-perturbation factor (was hard-coded 0.65)
     float u_debug_shore_heatmap; // 0 = normal water, 1 = paint v_shore_dist as a heatmap
-    float u_sea_radius;      // body-local sea-level radius (length(u_camera_pos) - this = camera altitude)
 };
 
 // water_scene_color / water_scene_depth are texture views of the
@@ -185,55 +184,6 @@ float fbm3(vec3 p, float t) {
     q = q * 2.3 + vec3(t * 0.19, -t * 0.27, t * 0.11);
     h += gnoise3(q) * 0.15;
     return h;
-}
-
-// Lens-water meniscus, applied as a POST-PROCESS blend on top of the
-// regular cap shading (foam, fresnel, sun glint stay intact). The
-// gate is purely angular: cap fragments whose view ray is roughly
-// horizontal in the local cam-up frame are at the cap silhouette
-// horizon — that's the screen row where the lens crosses the water
-// surface. Combined with a tight camera-altitude gate so the smear
-// only fires when the camera is actually clipping.
-//
-// The line follows the wave-displaced cap surface naturally because
-// the cap geometry IS what's being rendered — every cap fragment's
-// pitch_proxy is computed against the wave-displaced v_wpos, so
-// crests and troughs shift the line up and down per-fragment as a
-// poly line.
-vec3 apply_meniscus(vec3 base, vec2 screen_uv) {
-    float camera_alt   = length(u_camera_pos) - u_sea_radius;
-    float cam_at_surf  = 1.0 - smoothstep(0.05, 0.20, abs(camera_alt));
-    if (cam_at_surf <= 0.0) return base;
-
-    vec3  cam_up       = normalize(u_camera_pos);
-    vec3  view_to_frag = normalize(v_wpos - u_camera_pos);
-    float pitch_proxy  = abs(dot(view_to_frag, cam_up));
-    float pitch_band   = 1.0 - smoothstep(0.0, 0.005, pitch_proxy);
-    float meniscus     = cam_at_surf * pitch_band;
-    if (meniscus <= 0.0) return base;
-
-    // Heavy sin smear on the screen UV — read as wet-lens refraction.
-    vec2 d = vec2(
-        sin(u_time * 2.1 + screen_uv.y * 60.0) + 0.7 * sin(u_time * 1.3 + screen_uv.x * 80.0),
-        cos(u_time * 1.7 + screen_uv.x * 50.0) + 0.7 * cos(u_time * 2.4 + screen_uv.y * 70.0)
-    ) * 0.012 * meniscus;
-    vec2 smear_uv = clamp(screen_uv + d, vec2(0.001), vec2(0.999));
-
-    // 5-tap vertical blur for the soft out-of-focus look at the
-    // lens-water boundary.
-    vec3  acc    = texture(sampler2D(water_scene_color, water_scene_smp), smear_uv).rgb;
-    float weight = 1.0;
-    for (int i = 1; i <= 2; ++i) {
-        float dy = float(i) * 0.0025;
-        vec2 a = clamp(vec2(smear_uv.x, smear_uv.y - dy), vec2(0.0), vec2(1.0));
-        vec2 b = clamp(vec2(smear_uv.x, smear_uv.y + dy), vec2(0.0), vec2(1.0));
-        acc += texture(sampler2D(water_scene_color, water_scene_smp), a).rgb;
-        acc += texture(sampler2D(water_scene_color, water_scene_smp), b).rgb;
-        weight += 2.0;
-    }
-    vec3 smeared = acc / weight;
-
-    return mix(base, smeared, meniscus);
 }
 
 void main() {
@@ -341,8 +291,6 @@ void main() {
         below_color += u_sun_tint * spec * u_spec_intensity * 0.5
                      * dot(attenuation, vec3(1.0/3.0));
 
-        below_color = apply_meniscus(below_color, screen_uv);
-
         frag_color = vec4(below_color, 1.0);
         return;
     }
@@ -446,8 +394,6 @@ void main() {
     // is a true additive scaler whose visual impact is independent of
     // where on the cap the fragment lives.
     color += sun_highlight;
-
-    color = apply_meniscus(color, screen_uv);
 
     // Debug heatmap: when u_debug_shore_heatmap is on, override the
     // final water colour with a gradient mapped from v_shore_dist

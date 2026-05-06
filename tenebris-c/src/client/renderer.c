@@ -1349,22 +1349,21 @@ void renderer_compose_to_swapchain(mat4_t view, mat4_t proj) {
     const water_config_t* W = config_water();
     vec3_t  body_center  = (vec3_t){ 0, 0, 0 };
     float   sea_radius   = 0.0f;
-    float   camera_alt   = 1.0e6f;          /* huge if no body active → no FX at all */
     bool    cam_under    = false;
     if (R.active_body_idx >= 0) {
         chunked_body_t* ab = &R.bodies[R.active_body_idx];
         body_center = ab->world_pos;
         sea_radius  = ab->radius_m + W->height_offset_m - W->depth_offset_m;
         vec3_t to_cam   = vec3_sub(R.env.camera_world, body_center);
-        float  cam_r    = vec3_length(to_cam);
-        camera_alt      = cam_r - sea_radius;       /* signed; negative = underwater */
-        cam_under       = camera_alt < 0.0f;
+        cam_under       = vec3_length(to_cam) < sea_radius;
     }
 
     composite_fs_params_t fs = {
         .deep_color    = { W->deep_color.x,  W->deep_color.y,  W->deep_color.z,  0.0f },
         .absorption    = { W->absorption.x,  W->absorption.y,  W->absorption.z,  0.0f },
-        .near_far      = { 0.3f, 20000.0f, W->meniscus_band_m, camera_alt },
+        /* near_far.z is the wet-fade altitude window (a small softness
+         * on the above/below transition; not a meniscus band). */
+        .near_far      = { 0.3f, 20000.0f, 0.05f, 0.0f },
         .planet_params = { body_center.x, body_center.y, body_center.z, sea_radius },
         .fx_params     = { W->underwater_distortion,
                            R.time_seconds,
@@ -1691,12 +1690,6 @@ static void body_draw_water(chunked_body_t* body, mat4_t vp,
         .u_ripple_speed    = W->ripple_speed,
         .u_wave_steepness  = W->wave_steepness,
         .u_debug_shore_heatmap = R_DEBUG_SHORE_HEATMAP ? 1.0f : 0.0f,
-        /* Body-local sea-level radius — same value hex_mesher.c uses
-         * to position the cap top. The cap shader subtracts this
-         * from length(u_camera_pos) to get a signed camera altitude,
-         * which gates the meniscus smear so it only fires when the
-         * lens is straddling the water surface. */
-        .u_sea_radius      = (float)body->radius_m + W->height_offset_m - W->depth_offset_m,
     };
     sg_apply_uniforms(UB_fs_params, &SG_RANGE(fs_params));
 

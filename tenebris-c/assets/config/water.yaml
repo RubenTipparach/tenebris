@@ -183,11 +183,4 @@ water:
   #                               sin-perturbation applied to the scene
   #                               sample on underwater pixels. ~0.005
   #                               is a subtle shimmer; 0.0 disables it.
-  # meniscus_band_m        float  band of |altitude| in metres around
-  #                               sea level where the composite pass
-  #                               applies a heavy refracted-blur smear
-  #                               to hide the camera-clip waterline
-  #                               (the GoPro-dome "wet line" look).
-  #                               0.0 disables the smear entirely.
   underwater_distortion:   0.006
-  meniscus_band_m:         0.30

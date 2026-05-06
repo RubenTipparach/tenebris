@@ -9,15 +9,10 @@
 //      level radius — that's the signed altitude of the pixel.
 //   2. Smoothly fade between "above water" (untouched) and "below
 //      water" (Beer-Lambert toward deep_color) using a smoothstep
-//      across a meniscus band centred on altitude=0. No more hard
-//      boolean — half-submerged camera gets a soft transition.
-//   3. Inside the meniscus band (|alt| < band_m) apply a much
-//      heavier sin-wave smear + a 7-tap vertical blur on the colour
-//      sample. Hides the otherwise-clean camera-clip waterline
-//      with a wet-looking refracted band, in the spirit of a GoPro
-//      half-dome shot.
-//   4. Outside the band, the regular gentle underwater shimmer
-//      still applies on the wet side only.
+//      across a thin altitude window so the half-submerged camera
+//      still gets a soft transition rather than a hard boolean.
+//   3. Apply a gentle sin-wave shimmer to wet pixels' UV before
+//      sampling the offscreen colour.
 
 @vs composite_vs
 
@@ -59,7 +54,7 @@ void main() {
 layout(binding=1) uniform composite_fs_params {
     vec4  deep_color;     // xyz = water deep tint (matches water cap's u_deep_color)
     vec4  absorption;     // xyz = Beer-Lambert per-channel sigma (1/m)
-    vec4  near_far;       // x = near plane, y = far plane, z = meniscus_band_m, w = camera_alt
+    vec4  near_far;       // x = near plane, y = far plane, z = wet_fade_band (m), w = unused
     vec4  planet_params;  // xyz = body centre,           w = sea-level radius
     vec4  fx_params;      // x = distortion strength (UV units), y = time, z = camera_underwater [0|1], w = unused
 };
@@ -87,7 +82,6 @@ void main() {
     float near        = near_far.x;
     float far         = near_far.y;
     float band_m      = max(near_far.z, 0.0001);
-    float camera_alt  = near_far.w;
     vec3  pcen        = planet_params.xyz;
     float sea_radius  = planet_params.w;
     float dist_amt    = fx_params.x;
@@ -103,17 +97,15 @@ void main() {
     // forward component = 1, so multiplying by linearised camera-z
     // gives the right world foreshortening.
     //
-    // Sky pixels have no recoverable position. Fall back to the
-    // camera's altitude — that way a fully-submerged camera fogs
-    // the void to deep_color, a half-submerged camera treats the
-    // sky pixel as on the same side of the line as the camera, and
-    // the meniscus smear still kicks in at the same screen rows
-    // where reconstructable pixels are crossing zero.
+    // Sky pixels have no recoverable position. Fall back to using
+    // the fx_params.z flag (camera_underwater) so a fully-submerged
+    // camera still fogs the void toward deep_color, while a half-
+    // submerged camera leaves the dry side untouched.
     vec3  pixel_world = v_camera_pos;
     float view_dist   = far;
     float pixel_alt;
     if (is_sky) {
-        pixel_alt = camera_alt;
+        pixel_alt = (fx_params.z > 0.5) ? -band_m : band_m;
     } else {
         float lin_z = linearize_z(scene_z_ndc, near, far);
         pixel_world = v_camera_pos + v_view_dir * lin_z;
@@ -122,18 +114,10 @@ void main() {
     }
 
     // Soft underwater mask: smoothstep from above (alt = +band) to
-    // below (alt = -band) so the fog opacity ramps across the
-    // meniscus instead of slamming on at altitude = 0. Outside the
-    // band the mask saturates to 0 above / 1 below as expected.
+    // below (alt = -band) so the fog opacity ramps across a thin
+    // altitude window rather than slamming on at altitude = 0. The
+    // half-submerged camera still gets a soft transition.
     float wet = smoothstep(band_m, -band_m, pixel_alt);
-
-    // The lens-water meniscus smear/blur lives in water.glsl now,
-    // gated on cap-fragment distance to camera (uses the cap's own
-    // wave-displaced geometry as the "depth buffer of water" — the
-    // line traces the poly-line contour of where the cap is closest
-    // to the lens, naturally following swell crests + troughs). The
-    // composite pass is back to just fog + the gentle underwater
-    // shimmer it does for any wet pixel.
 
     // Underwater shimmer — gentle sin perturbation on the screen UV
     // for wet pixels. Below-water pixels read as wobbly water; above-

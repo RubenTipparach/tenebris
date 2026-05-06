@@ -240,12 +240,6 @@ typedef struct {
      * tint) so the view from underwater matches the view from above
      * — same water, same look. Only the shimmer is independent. */
     float  underwater_distortion;
-    /* Meniscus smear band: half-width (m) of altitude above + below
-     * sea level where the composite pass applies a heavy refracted-
-     * blur effect, hiding the camera-clip waterline. Inspired by the
-     * blurry refraction band a GoPro dome shows when half-submerged.
-     * 0.0 disables the smear; ~0.3 m is a good starting point. */
-    float  meniscus_band_m;
 } water_config_t;
 
 const water_config_t* config_water(void);
