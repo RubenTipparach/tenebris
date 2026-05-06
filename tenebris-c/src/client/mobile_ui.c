@@ -1,6 +1,7 @@
 #include "client/mobile_ui.h"
 #include "client/input.h"
 #include "client/teleport_menu.h"
+#include "client/renderer.h"
 
 #include "sokol_gfx.h"   /* sokol_gl uses sg_* types — must come first */
 #include "sokol_app.h"
@@ -111,6 +112,18 @@ static void draw_glyph(char ch, float cx, float cy, float size, float r, float g
         case 'T': {
             draw_segment(left, top, right, top, thick, r, g, b, 1.0f);
             draw_segment((left + right) * 0.5f, top, (left + right) * 0.5f, bot, thick, r, g, b, 1.0f);
+            break;
+        }
+        case 'H': {
+            draw_segment(left,  top, left,  bot, thick, r, g, b, 1.0f);
+            draw_segment(right, top, right, bot, thick, r, g, b, 1.0f);
+            draw_segment(left,  mid_y, right, mid_y, thick, r, g, b, 1.0f);
+            break;
+        }
+        case 'K': {
+            draw_segment(left,  top, left, bot, thick, r, g, b, 1.0f);
+            draw_segment(left,  mid_y, right, top, thick, r, g, b, 1.0f);
+            draw_segment(left,  mid_y, right, bot, thick, r, g, b, 1.0f);
             break;
         }
         case 'X': {
@@ -259,6 +272,56 @@ void mobile_ui_draw(void) {
     /* Use 'P' for teleport — we don't have a T glyph and it reads as
      * "portal" well enough. */
     draw_glyph('T', bx, tp_y, 16.0f, 1.0f, 0.95f, 1.0f);
+
+    /* Top-corner debug toggle buttons. Top-right = terrain (H),
+     * top-left = water (J). Tinted dim red when the layer is hidden
+     * so the disabled state is unmissable on phone. Hit-test for
+     * these lives in main_web.c's event handler (96 px corner
+     * rectangle) — generous on purpose so a fat thumb still lands
+     * even though the button itself is BTN_RADIUS = 22 px. */
+    {
+        const float cx_r = w - BTN_MARGIN - BTN_RADIUS;
+        const float cy_t = BTN_MARGIN + BTN_RADIUS;
+        const float cx_l = BTN_MARGIN + BTN_RADIUS;
+        const bool terrain_on = renderer_terrain_visible();
+        const bool water_on   = renderer_water_visible();
+
+        /* Terrain (top-right) — slate when on, dim red when hidden. */
+        if (terrain_on) {
+            draw_circle_fan(cx_r, cy_t, BTN_RADIUS,        32, 0.20f, 0.25f, 0.35f, 0.55f);
+            draw_ring      (cx_r, cy_t, BTN_RADIUS - 2.0f, BTN_RADIUS, 32, 0.85f, 0.90f, 1.00f, 0.80f);
+            draw_glyph     ('H', cx_r, cy_t, 16.0f, 0.95f, 0.97f, 1.00f);
+        } else {
+            draw_circle_fan(cx_r, cy_t, BTN_RADIUS,        32, 0.45f, 0.10f, 0.10f, 0.65f);
+            draw_ring      (cx_r, cy_t, BTN_RADIUS - 2.0f, BTN_RADIUS, 32, 1.00f, 0.45f, 0.45f, 0.85f);
+            draw_glyph     ('H', cx_r, cy_t, 16.0f, 1.00f, 0.85f, 0.85f);
+        }
+
+        /* Water (top-left) — teal when on, dim red when hidden. */
+        if (water_on) {
+            draw_circle_fan(cx_l, cy_t, BTN_RADIUS,        32, 0.10f, 0.30f, 0.40f, 0.55f);
+            draw_ring      (cx_l, cy_t, BTN_RADIUS - 2.0f, BTN_RADIUS, 32, 0.55f, 0.90f, 1.00f, 0.80f);
+            draw_glyph     ('J', cx_l, cy_t, 16.0f, 0.85f, 0.97f, 1.00f);
+        } else {
+            draw_circle_fan(cx_l, cy_t, BTN_RADIUS,        32, 0.45f, 0.10f, 0.10f, 0.65f);
+            draw_ring      (cx_l, cy_t, BTN_RADIUS - 2.0f, BTN_RADIUS, 32, 1.00f, 0.45f, 0.45f, 0.85f);
+            draw_glyph     ('J', cx_l, cy_t, 16.0f, 1.00f, 0.85f, 0.85f);
+        }
+
+        /* Sky / atmosphere (top-middle) — orange when on, dim red
+         * when hidden. Sits between the H and J buttons. */
+        const float cx_m = w * 0.5f;
+        const bool  sky_on = renderer_skybox_visible();
+        if (sky_on) {
+            draw_circle_fan(cx_m, cy_t, BTN_RADIUS,        32, 0.40f, 0.25f, 0.10f, 0.55f);
+            draw_ring      (cx_m, cy_t, BTN_RADIUS - 2.0f, BTN_RADIUS, 32, 1.00f, 0.85f, 0.55f, 0.80f);
+            draw_glyph     ('K', cx_m, cy_t, 16.0f, 1.00f, 0.95f, 0.85f);
+        } else {
+            draw_circle_fan(cx_m, cy_t, BTN_RADIUS,        32, 0.45f, 0.10f, 0.10f, 0.65f);
+            draw_ring      (cx_m, cy_t, BTN_RADIUS - 2.0f, BTN_RADIUS, 32, 1.00f, 0.45f, 0.45f, 0.85f);
+            draw_glyph     ('K', cx_m, cy_t, 16.0f, 1.00f, 0.85f, 0.85f);
+        }
+    }
 
     /* Teleport-menu nav buttons piggyback on this state block so they
      * share the same orthographic pipeline + blend. */

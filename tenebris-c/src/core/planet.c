@@ -184,8 +184,9 @@ const body_config_t* planet_get(body_id_t id) {
 void planet_set_atmosphere(body_id_t id, const body_atmo_t* p) {
     if (id < 0 || id >= BODY_COUNT || !p) return;
     body_config_t* b = &BODIES[id];
-    if (p->radius_mult     > 0.0f) b->atmo_radius_mult     = p->radius_mult;
-    if (p->rayleigh_scale  > 0.0f) b->atmo_rayleigh_scale  = p->rayleigh_scale;
+    if (p->radius_mult       > 0.0f) b->atmo_radius_mult       = p->radius_mult;
+    if (p->lower_radius_mult > 0.0f) b->atmo_lower_radius_mult = p->lower_radius_mult;
+    if (p->rayleigh_scale    > 0.0f) b->atmo_rayleigh_scale    = p->rayleigh_scale;
     if (p->mie_scale       > 0.0f) b->atmo_mie_scale       = p->mie_scale;
     if (p->sun_intensity   > 0.0f) b->atmo_sun_intensity   = p->sun_intensity;
     if (p->sunset_strength > 0.0f) b->atmo_sunset_strength = p->sunset_strength;

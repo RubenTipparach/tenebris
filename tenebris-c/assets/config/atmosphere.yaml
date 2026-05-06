@@ -10,7 +10,14 @@
 # folded to underscores for the YAML key.
 #
 # Fields:
-#   radius_mult       float  shell radius / planet radius
+#   radius_mult         float  outer shell radius / planet radius
+#   lower_radius_mult   float  atmosphere lower bound / planet radius
+#                              (1.0 = atmosphere starts at the ground;
+#                              >1.0 lifts the bottom up, thinning the
+#                              shell; <1.0 sinks it under the surface.
+#                              Also moves the planet-clip sphere used
+#                              by the ray-march, so this is the knob
+#                              for "how prominent is the limb halo".)
 #   rayleigh_scale    float  main blue-sky knob, 1.0 = Earth
 #   mie_scale         float  haze / forward sun-glow strength
 #   sun_intensity     float  overall sky brightness multiplier
@@ -23,19 +30,31 @@
 #   sunset_horizon    vec3   horizon-band tint at sunset
 
 tenebris:
-  radius_mult: 1.3
-  # Sky brightness — halved from the previous Caelum-default of 30.
-  # The earlier value was clipping the tone-mapped output toward
-  # white over most of the visible sky; 15 lands the daytime blue
-  # in a more reasonable mid-tone.
-  sun_intensity: 15.0
-  # Slightly less aggressive Rayleigh so the blue is rich without
-  # saturating to white near the zenith.
-  rayleigh_scale: 0.7
-  mie_scale: 0.04
+  # Outer shell at 1.6 × planet radius — taller atmosphere column
+  # so ground-level views have more sky overhead and orbital views
+  # show a thicker atmosphere ring.
+  radius_mult: 1.6
+  # Sink the planet-clip sphere 10 % below the actual ground so the
+  # atmosphere ray-march continues a bit past the visible horizon —
+  # softens the harsh dark band where atmosphere meets the planet
+  # silhouette in orbital views. Real terrain still occludes via
+  # depth test so this only affects the band BEYOND the visible
+  # terrain horizon.
+  lower_radius_mult: 0.9
+  # Aligned with Caelum's stated 'Tenebris default (scale-independent
+  # with normalized steps)' values from src/atmosphere.c. Our shader
+  # is now a faithful Caelum port (atmosphere.glsl), so the same
+  # coefficients should produce the same look.
+  sun_intensity: 5.0
+  rayleigh_scale: 0.015
+  mie_scale: 0.01
+  mie_g: 0.85
   sunset_strength: 0.25
   scale_height: 0.25
-  mie_g: 0.76
+  # Wavelengths + sunset vec3s are baked as literals in the new
+  # Caelum-style atmosphere.glsl shader and ignored by the renderer
+  # — kept here for back-compat in case we re-introduce per-body
+  # tinting later.
   wavelengths: [5.602, 9.473, 19.644]
   sunset_tint: [1.3, 1.0, 0.6]
   sunset_glow: [1.0, 0.65, 0.25]

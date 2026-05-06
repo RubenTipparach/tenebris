@@ -54,7 +54,26 @@ layout(binding=1) uniform fs_params {
     vec3 u_camera_pos;
     vec3 u_sun_dir;
     float u_time;
+    float u_refract_amount;  // surface-gradient → screen UV perturbation scale
+    float u_near;            // projection near plane (m)
+    float u_far;             // projection far plane (m)
+    vec3 u_absorption;       // Beer-Lambert sigma per RGB channel (1/m)
+    vec3 u_deep_color;       // saturation colour where the ray has fully attenuated
 };
+
+// water_scene_color / water_scene_depth are texture views of the
+// offscreen colour + depth attachments rendered before the water
+// draw. Sampled at gl_FragCoord-derived UV for screen-space
+// refraction + manual depth-discard.
+//
+// Two samplers — colour gets LINEAR for smooth refraction, depth
+// gets NEAREST because WebGL2 disallows linear-filtered depth-as-
+// sampler2D and silently returns zero on most drivers (which
+// caused the universal discard that made water invisible).
+layout(binding=0) uniform texture2D water_scene_color;
+layout(binding=1) uniform texture2D water_scene_depth;
+layout(binding=0) uniform sampler   water_scene_smp;
+layout(binding=1) uniform sampler   water_scene_depth_smp;
 
 precision highp int;
 
@@ -128,9 +147,8 @@ float fbm3(vec3 p, float t) {
 }
 
 void main() {
-    // Same trick as the VS: derive the radial from world-space
-    // position, not from a per-tile-flat varying. Keeps lighting
-    // continuous across tile boundaries.
+    // Radial from world-space position keeps lighting continuous
+    // across tile boundaries.
     vec3 radial = normalize(v_wpos);
 
     // Scalar height + 3-sample finite-difference world-space
@@ -143,9 +161,42 @@ void main() {
         fbm3(v_wpos + vec3(0, e, 0), u_time) - h0,
         fbm3(v_wpos + vec3(0, 0, e), u_time) - h0) / e;
 
-    // Tangent-plane gradient tilts the radial normal.
     vec3 t_grad = grad - radial * dot(grad, radial);
     vec3 n = normalize(radial - t_grad * 0.65);
+
+    // Screen-space UV: gl_FragCoord.xy is in pixels; texture size
+    // gives us the divisor without needing a uniform.
+    vec2 screen_size = vec2(textureSize(sampler2D(water_scene_color, water_scene_smp), 0));
+    vec2 screen_uv   = gl_FragCoord.xy / screen_size;
+
+    // Manual depth occlusion. Pipeline has HW depth-test disabled
+    // (compare = ALWAYS) because the swapchain depth buffer doesn't
+    // hold the offscreen scene's depth; we read it directly from the
+    // offscreen depth texture and discard fragments behind opaque
+    // geometry. Uses the NEAREST sampler (water_scene_depth_smp) —
+    // see header comment.
+    float scene_z = texture(sampler2D(water_scene_depth, water_scene_depth_smp), screen_uv).r;
+    if (gl_FragCoord.z > scene_z) discard;
+
+    // Refraction: perturb the colour-sample UV by the surface
+    // tangent-plane gradient. Magnitude scales with u_refract_amount
+    // so the C side can dial it without a shader rebuild.
+    vec2 refract_uv = clamp(screen_uv + t_grad.xy * u_refract_amount,
+                            vec2(0.0), vec2(1.0));
+    vec3 refracted = texture(sampler2D(water_scene_color, water_scene_smp), refract_uv).rgb;
+
+    // Beer-Lambert depth-thickness extinction. Linearise both the
+    // water-surface depth and the sampled scene depth into camera-z
+    // (metres), use their difference as the thickness of water the
+    // view ray traverses. Per-channel exp(-thickness * sigma) gives
+    // water its characteristic red-absorbed / blue-preserved tint as
+    // depth grows.
+    float zw = (2.0 * u_near * u_far) /
+               (u_far + u_near - (2.0 * gl_FragCoord.z - 1.0) * (u_far - u_near));
+    float zs = (2.0 * u_near * u_far) /
+               (u_far + u_near - (2.0 * scene_z         - 1.0) * (u_far - u_near));
+    float thickness = max(0.0, zs - zw);
+    vec3  attenuation = exp(-thickness * u_absorption);
 
     vec3 view = normalize(u_camera_pos - v_wpos);
     vec3 sun  = normalize(u_sun_dir);
@@ -153,9 +204,11 @@ void main() {
     float vdn = max(dot(view, n), 0.0);
     float f   = 0.02 + 0.98 * pow(1.0 - vdn, 5.0);
 
-    vec3 shallow = vec3(0.28, 0.68, 0.82);
-    vec3 deep    = vec3(0.02, 0.10, 0.22);
-    vec3 base    = mix(deep, shallow, vdn);
+    // Mix between the refracted scene (visible through shallow
+    // water) and the deep-water saturation tint (where the ray has
+    // attenuated to zero). attenuation is a per-channel lerp factor:
+    // high → see-through, low → deep colour.
+    vec3 base = mix(u_deep_color, refracted, attenuation);
 
     vec3 refl   = reflect(-view, n);
     float up_f  = clamp(dot(refl, radial), 0.0, 1.0);
@@ -165,7 +218,6 @@ void main() {
     float spec  = pow(max(dot(n, halfv), 0.0), 140.0);
     vec3  sun_highlight = vec3(1.35, 1.25, 1.10) * spec * 0.6;
 
-    // Foam — wave crest + slope. Height fbm goes ~[-1, 1].
     float steepness = length(t_grad);
     float crest     = smoothstep(0.35, 0.60, h0);
     float slope_f   = smoothstep(0.50, 1.20, steepness);
@@ -173,7 +225,10 @@ void main() {
 
     vec3 color = mix(base, sky, f) + sun_highlight;
     color = mix(color, vec3(0.95, 0.97, 1.0), foam * 0.6);
-    float alpha = mix(0.45, 0.80, f);
+    // Alpha stays high — the refracted scene is already the base, so
+    // we don't need much swapchain-blend for the through-water look.
+    // A small Fresnel range still softens the edge of the cap mesh.
+    float alpha = mix(0.85, 0.95, f);
 
     frag_color = vec4(color, alpha);
 }

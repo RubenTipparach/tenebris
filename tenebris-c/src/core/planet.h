@@ -77,6 +77,13 @@ typedef struct {
      * fields default to zero meaning "use renderer default" — leave
      * a body's atmo_* zeroed and you get the default sky look. */
     float       atmo_radius_mult;     /* shell radius / planet radius; 0 → 1.3   */
+    float       atmo_lower_radius_mult; /* atmosphere lower bound / planet radius;
+                                           0 → 1.0 (atmosphere starts AT the
+                                           ground). Raise to thin the shell from
+                                           the bottom; lower to extend it below
+                                           the surface. Also moves the planet-
+                                           shadow / planet-clip sphere used by
+                                           the ray-march. */
     float       atmo_rayleigh_scale;  /* main blue-sky knob, 0 → 1.0              */
     float       atmo_mie_scale;       /* haze / sun glow, 0 → 0.05                */
     float       atmo_sun_intensity;   /* overall sky brightness, 0 → 30           */
@@ -108,6 +115,7 @@ const body_config_t* planet_get(body_id_t id);
  * patch is a no-op), letting the YAML express partial overrides. */
 typedef struct {
     float  radius_mult;
+    float  lower_radius_mult;
     float  rayleigh_scale;
     float  mie_scale;
     float  sun_intensity;

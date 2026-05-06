@@ -264,6 +264,20 @@ static void update_overlay(float dt) {
     } else {
         sdtx_printf("[H] hide terrain\n");
     }
+    if (!renderer_water_visible()) {
+        sdtx_color3b(0x55, 0xff, 0xff);
+        sdtx_printf("WATER HIDDEN    [J or top-left tap]\n");
+        sdtx_color3b(0xff, 0xff, 0xff);
+    } else {
+        sdtx_printf("[J] hide water\n");
+    }
+    if (!renderer_skybox_visible()) {
+        sdtx_color3b(0x55, 0xff, 0xff);
+        sdtx_printf("SKY/ATMO HIDDEN [K or top-mid tap]\n");
+        sdtx_color3b(0xff, 0xff, 0xff);
+    } else {
+        sdtx_printf("[K] hide sky/atmo\n");
+    }
 
     /* Mining progress bar (survival only). */
     if (G.player.survival_mode && G.interact.mining_progress_s > 0.0f) {
@@ -389,6 +403,8 @@ static void frame(void) {
     const float planet_r = (float)active_body->radius_m;
     const float radius_mult     = active_body->atmo_radius_mult     > 0.0f
                                 ? active_body->atmo_radius_mult     : 1.3f;
+    const float lower_mult      = active_body->atmo_lower_radius_mult > 0.0f
+                                ? active_body->atmo_lower_radius_mult : 1.0f;
     const float rayleigh        = active_body->atmo_rayleigh_scale  > 0.0f
                                 ? active_body->atmo_rayleigh_scale  : 1.0f;
     const float mie             = active_body->atmo_mie_scale       > 0.0f
@@ -428,7 +444,17 @@ static void frame(void) {
     const vec3_t sunset_horizon     = has_sunset_horizon
                                     ? active_body->atmo_sunset_horizon
                                     : (vec3_t){ 0.80f, 0.40f, 0.15f };
-    const float atmo_r = planet_r * radius_mult;
+    /* atmo_lower is what the shader receives as Rg (atmosphere
+     * lower bound + planet-clip sphere). Default 1.0× planet_r =
+     * Caelum-style shader uses a single pRadius for both planet-
+     * clip and density lower bound. lower_mult < 1.0 sinks the
+     * imaginary clip sphere BELOW the actual ground, which lets the
+     * atmosphere ray-march continue past the visible horizon and
+     * softens the harsh dark band that otherwise appears just below
+     * the limb. Real terrain still occludes via depth test, so this
+     * only matters in the area beyond the visible terrain horizon. */
+    const float clip_radius = planet_r * lower_mult;
+    const float atmo_r      = planet_r * radius_mult;
     render_env_t env = {
         .sun_dir    = sun_dir,
         .sun_pos    = sun_pos,
@@ -441,8 +467,8 @@ static void frame(void) {
             (float)active_body->pos_y,
             (float)active_body->pos_z,
         },
-        .atmo_planet_radius   = planet_r,
-        .atmo_radius          = atmo_r,
+        .atmo_planet_radius   = clip_radius, /* Rp — atmosphere lower / planet-clip */
+        .atmo_radius          = atmo_r,      /* Ra — outer shell                    */
         .atmo_strength        = has_atmo ? 1.0f : 0.0f,
         .atmo_rayleigh_scale  = rayleigh,
         .atmo_mie_scale       = mie,
@@ -464,15 +490,23 @@ static void frame(void) {
     env.camera_world = cam_world;
 
     renderer_begin_frame(sapp_width(), sapp_height(), env);
-    /* Skybox first — fullscreen stars + sun-disc backdrop, no depth
-     * write so the rest of the scene paints over it. */
+    /* Opaque scene → offscreen colour + depth attachments. */
     renderer_draw_skybox(view, proj);
-    /* Sun sphere — emissive body at env.sun_pos, depth-write so
-     * later opaques occlude it. */
     renderer_draw_sun(view, proj);
     renderer_draw_world(view, proj, G.world, cam_world, dt);
     renderer_draw_moons(view, proj, cam_world);
 
+    /* Hand off to the swapchain pass — blits the offscreen colour
+     * (everything opaque) onto the swapchain. */
+    renderer_compose_to_swapchain();
+
+    /* Water now draws in the swapchain pass on TOP of the composited
+     * scene. The water shader samples the offscreen colour + depth
+     * textures (the underwater scene we just composited) for
+     * screen-space refraction and manual depth-discard. */
+    renderer_draw_water(view, proj, cam_world);
+
+    /* UI overlays go on the swapchain on top of the water. */
     update_overlay(dt);
     teleport_menu_draw();
     draw_error_overlay();
@@ -496,6 +530,14 @@ static void event(const sapp_event* e) {
         renderer_set_terrain_visible(!renderer_terrain_visible());
         return;
     }
+    if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_J) {
+        renderer_set_water_visible(!renderer_water_visible());
+        return;
+    }
+    if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_K) {
+        renderer_set_skybox_visible(!renderer_skybox_visible());
+        return;
+    }
     if (e->type == SAPP_EVENTTYPE_TOUCHES_BEGAN && e->num_touches > 0) {
         const float w = sapp_widthf();
         const float corner = 96.0f;   /* px hit-box edge length */
@@ -503,6 +545,17 @@ static void event(const sapp_event* e) {
         float ty = e->touches[0].pos_y;
         if (tx > w - corner && ty < corner) {
             renderer_set_terrain_visible(!renderer_terrain_visible());
+            return;
+        }
+        if (tx < corner && ty < corner) {
+            renderer_set_water_visible(!renderer_water_visible());
+            return;
+        }
+        /* Top-middle band toggles sky / atmosphere. Same height as
+         * the other two corner zones. */
+        if (ty < corner && tx > w * 0.5f - corner * 0.5f
+                       && tx < w * 0.5f + corner * 0.5f) {
+            renderer_set_skybox_visible(!renderer_skybox_visible());
             return;
         }
     }

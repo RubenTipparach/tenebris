@@ -23,8 +23,9 @@ typedef struct {
      * `atmo_strength` 0..1 cross-fades between starfield-only space
      * (moons / asteroids) and full atmosphere (Tenebris, Sequoia). */
     vec3_t atmo_planet_center;
-    float  atmo_planet_radius;
-    float  atmo_radius;
+    float  atmo_planet_radius;     /* Rp — actual planet ground (planet-clip) */
+    float  atmo_radius;            /* Ra — outer atmosphere shell             */
+    float  atmo_lower_radius;      /* Rg — density lower bound; 0 → use Rp    */
     float  atmo_strength;
     /* Per-body scattering tuning — comes straight from body_config.
      * Lets us make Tenebris bluer, Sequoia greener, etc., without
@@ -59,11 +60,28 @@ void renderer_draw_skybox(mat4_t view, mat4_t proj);
  * planets correctly occlude it when in front. */
 void renderer_draw_sun(mat4_t view, mat4_t proj);
 
-/* Draw the planet: opaque terrain in one merged pass, then water caps
- * in a blended pass. `dt_seconds` advances the water-wave time
- * uniform; `camera_world` is used by the water fresnel term. */
+/* Draw the active body's opaque terrain. Water caps used to be
+ * drawn here too — now they happen in renderer_draw_water on the
+ * swapchain pass after the offscreen scene has been composited, so
+ * the water shader can sample the underwater colour + depth.
+ * `dt_seconds` still advances the water-wave time accumulator. */
 void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world,
                          vec3_t camera_world, float dt_seconds);
+
+/* Phase A.3 transition. Ends the offscreen pass that begin_frame
+ * opened, opens the swapchain pass, and draws a fullscreen-quad
+ * composite that blits the offscreen colour onto the swapchain.
+ * Must be called exactly once per frame, after every opaque draw
+ * (skybox, sun, terrain, moons) and before water + UI. */
+void renderer_compose_to_swapchain(void);
+
+/* Water cap pass. Draws every has_water body's translucent water
+ * mesh. Called after renderer_compose_to_swapchain so the cap
+ * shader can sample the offscreen scene texture for refraction +
+ * depth-thickness extinction (Phase B). `view`/`proj` rebuild the
+ * MVP per body; `camera_world` feeds the Fresnel + view-direction
+ * lighting. */
+void renderer_draw_water(mat4_t view, mat4_t proj, vec3_t camera_world);
 
 /* Register a celestial body for chunked rendering. Every body —
  * Tenebris, moons, asteroids — uses the same 32-chunk layout, so block
@@ -86,6 +104,19 @@ void renderer_set_active_world(world_t* w);
  * shader on its own without geometry obscuring the view. */
 void renderer_set_terrain_visible(bool visible);
 bool renderer_terrain_visible(void);
+
+/* Companion debug toggle for water. When off, no water cap is
+ * drawn on any has_water body — useful for confirming whether a
+ * suspicious silhouette is the cap or something else. */
+void renderer_set_water_visible(bool visible);
+bool renderer_water_visible(void);
+
+/* Same idea for the skybox / atmospheric scattering pass. The
+ * atmosphere is a fullscreen ray-march, not geometry, but it
+ * produces a sphere-shaped halo around the planet that can look
+ * like leftover geometry when the rest of the scene is hidden. */
+void renderer_set_skybox_visible(bool visible);
+bool renderer_skybox_visible(void);
 /* Draw each registered body. `camera_world` is used to compute angular
  * screen size — bodies that subtend less than ~20% of the viewport
  * swap to a flat-shaded 20-face icosphere instead of their detailed
