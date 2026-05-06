@@ -46,7 +46,5 @@ water:
   deep_color:         [0.02, 0.10, 0.22]
   shoreline_fade_m:   0.50
   shore_foam_dist_m:  0.80
-  # specular_intensity halved from the previous 0.60 — water reads
-  # less glossy, more matte / less mirror-bright in direct sun.
-  specular_intensity: 0.30
+  specular_intensity: 0.60
   specular_power:     140.0
