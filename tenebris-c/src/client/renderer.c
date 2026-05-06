@@ -547,13 +547,14 @@ void renderer_init(void) {
         .index_type = SG_INDEXTYPE_UINT32,
         /* Water draws in the swapchain pass, AFTER compose blits the
          * offscreen scene onto the swapchain. The swapchain's depth
-         * buffer was cleared at the start of that pass and never
-         * written, so a hardware depth-test would let every water
-         * fragment pass. Instead the pipeline disables HW depth
-         * testing (compare = ALWAYS) and the fragment shader samples
-         * the offscreen depth texture directly to do its own
-         * gl_FragCoord.z > scene_z discard. */
-        .depth = { .write_enabled = false, .compare = SG_COMPAREFUNC_ALWAYS },
+         * buffer was cleared at the start of that pass; water writes
+         * its own depth here and uses LESS_EQUAL to sort fragments
+         * against each other (so far-side waves don't pop in front
+         * of near-side ones). Terrain-vs-water occlusion is still
+         * done manually in the fragment shader by sampling the
+         * offscreen depth texture and discarding fragments where
+         * the opaque scene is in front of this water pixel. */
+        .depth = { .write_enabled = true, .compare = SG_COMPAREFUNC_LESS_EQUAL },
         .cull_mode = SG_CULLMODE_BACK,
         .face_winding = SG_FACEWINDING_CCW,
         /* Water shader outputs alpha = 1.0 (opaque). Shoreline fade
