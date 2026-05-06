@@ -53,12 +53,6 @@ void main() {
     // depth_offset_m cap drop in hex_mesher.c so wave crests can't
     // poke through coplanar beach sand. Pushing u_swell_amplitude
     // above ~1.39 will start clipping into beach geometry.
-    //
-    // KEEP IN SYNC with swell_at() in src/shaders/hex.glsl — the
-    // terrain shader evaluates the same sum to draw the per-fragment
-    // wet line on coastal block faces. Any coefficient tweak here
-    // needs to be mirrored there or the visible water line will
-    // drift away from the actual wave crests on the cap.
     float t  = u_time * u_swell_speed;
     float fx = u_swell_frequency;
     float swell = 0.0;

@@ -183,4 +183,4 @@ water:
   #                               sin-perturbation applied to the scene
   #                               sample on underwater pixels. ~0.005
   #                               is a subtle shimmer; 0.0 disables it.
-  underwater_distortion:   0.0015
+  underwater_distortion:   0.006
