@@ -655,7 +655,15 @@ static const char* FS_SKY =
     "  float dens_cam = density(h_norm);\n"
     "  float bg_atten = clamp(1.0 - dens_cam * 0.85, 0.05, 1.0);\n"
 
-    "  vec3 col = mix(space_col, space_col * bg_atten + sky, strength);\n"
+    /* Caelum-style alpha-by-intensity. The atmosphere shader is the
+     * base pass here (not an overlay like Caelum's), but we can still
+     * use Caelum's `length(color) * 1.5` as a per-pixel gate on how
+     * much the atmosphere contributes — bright limbs stay bright,
+     * dim regions (back side of the shell, where the planet clipped
+     * the ray short) fall away to space_col. Kills the "full sphere
+     * of glow" look when terrain is hidden. */
+    "  float atmo_alpha = clamp(length(sky) * 1.5, 0.0, 0.95);\n"
+    "  vec3 col = mix(space_col, space_col * bg_atten + sky, strength * atmo_alpha);\n"
     "  frag_color = vec4(col, 1.0);\n"
     "}\n";
 
