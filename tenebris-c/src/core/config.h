@@ -23,6 +23,7 @@
 int config_load_atmosphere(const char* path);
 int config_load_skybox(const char* path);
 int config_load_lod(const char* path);
+int config_load_water(const char* path);
 
 /*
  * Global skybox tuning — read by renderer_draw_skybox each frame and
@@ -99,5 +100,134 @@ typedef struct {
 } lod_config_t;
 
 const lod_config_t* config_lod(void);
+
+/*
+ * Water surface + refraction tuning. All knobs the cap shader and
+ * mesh-build code consume — every literal that used to live as a
+ * C #define or hardcoded fs_params struct field is now sourced
+ * from this struct so designers can tune without recompiling.
+ */
+typedef struct {
+    /* Animation: subjective-time multiplier on R.time_seconds.
+     * Higher = faster ripples / swell. */
+    float  time_scale;
+    /* Geometry: vertical drop of the cap below sea level so the
+     * vertex-shader swell can't push crests above neighbour beach
+     * sand. Read by hex_mesher.c at mesh-build time, not per-frame. */
+    float  depth_offset_m;
+    /* Creative water-level offset, applied additively on top of
+     * depth_offset_m. Positive raises the cap (water deeper /
+     * floods further inland), negative lowers it. Use this for sea-
+     * level tweaks; leave depth_offset_m as the swell-clipping
+     * safety margin. Also read at mesh-build time. */
+    float  height_offset_m;
+    /* Refraction: scalar applied to the surface tangent gradient
+     * before it perturbs the screen UV used for the offscreen-colour
+     * sample. 0.0 = no refraction, ~0.04 = noticeable shimmer. */
+    float  refract_amount;
+    /* Beer-Lambert per-channel extinction (1/m). Higher = water
+     * gets dark/saturated faster with depth. Real ocean has red
+     * absorbed ~6× more than blue. */
+    vec3_t absorption;
+    /* Saturation colour where the view ray has fully attenuated —
+     * the limit colour of deep water. */
+    vec3_t deep_color;
+    /* Alpha smoothstep upper edge in metres. At thickness 0 the cap
+     * goes fully transparent; by this much water it's back to the
+     * Fresnel-driven alpha. Hides the hex-mesh silhouette where the
+     * cap meets the seabed. */
+    float  shoreline_fade_m;
+    /* Shoreline foam smoothstep upper edge. White-wash band peaks
+     * at thickness 0 and fades to nothing by this much water.
+     * Usually slightly wider than shoreline_fade so the foam keeps
+     * body inside the alpha-feathered region. */
+    float  shore_foam_dist_m;
+    /* Sun-highlight specular. Multiplied with the warm-white sun
+     * tint to make the surface glint. Higher = brighter glints,
+     * lower = matte. */
+    float  specular_intensity;
+    /* Blinn-Phong specular exponent. Higher = tighter / smaller
+     * highlight, lower = broader / softer. */
+    float  specular_power;
+    /* Warm tint multiplied into the sun-highlight (independent of
+     * specular_intensity). Raise above 1.0 in any channel to push
+     * the glint colour over white. */
+    vec3_t sun_tint;
+
+    /* Wave-crest + slope foam — the bright flecks scattered across
+     * the wave surface. Two smoothstep ranges (one on fbm height,
+     * one on surface gradient magnitude) feed into a max() blend
+     * with per-source weights. The combined result tints the water
+     * toward foam_color at strength foam_intensity.
+     *
+     * Tip: if open water is too busy with white flecks, raise the
+     * crest_lo threshold (e.g. 0.35 -> 0.55) so only the tallest
+     * peaks paint foam, and/or drop foam_intensity. */
+    float  foam_crest_lo;       /* smoothstep on fbm height [-1, +1] */
+    float  foam_crest_hi;
+    float  foam_crest_weight;
+    float  foam_slope_lo;       /* smoothstep on |tangent gradient|  */
+    float  foam_slope_hi;
+    float  foam_slope_weight;
+    float  foam_intensity;      /* final mix strength toward foam_color */
+    vec3_t foam_color;
+
+    /* Shoreline foam tint (separate from wave-crest foam). White-
+     * wash band already gated by shore_foam_dist_m thickness. */
+    vec3_t shore_foam_color;
+    /* Posterize the thickness-driven shoreline foam into N discrete
+     * bands for a cel-shaded ring look. 0 (or 1) disables banding —
+     * keeps the original smooth gradient. 3-5 reads as visible
+     * stepped rings; pushing higher tends to alias against the fbm
+     * height modulation. */
+    float  shore_foam_bands;
+    /* Per-band edge softness in [0, 1]. 0 = hard cel-shade steps
+     * between bands. 1 = no banding (smooth gradient regardless of
+     * shore_foam_bands). ~0.2 keeps the ring read while avoiding
+     * shimmer at the band boundaries. */
+    float  shore_foam_band_softness;
+
+    /* Sky reflection palette. The water reflects the upper
+     * hemisphere via reflect(view, n) and blends between these two
+     * tones based on the reflected ray's vertical component. */
+    vec3_t sky_horizon_color;   /* bright tone where the reflected ray skims horizontal */
+    vec3_t sky_zenith_color;    /* darker tone where the reflected ray points straight up */
+    /* Opacity of the horizon-direction sky reflection on the final
+     * water colour. Scales the Fresnel sky→base blend factor by
+     * (1-up_f)·strength + up_f·1, so it only affects fragments where
+     * the reflected ray skims the horizon. 1.0 = unchanged Fresnel
+     * mix, 0.0 = horizon reflection vanishes (water shows the
+     * refracted/deep colour at glancing angles), zenith-direction
+     * reflection is unaffected at any value. >1.0 over-amplifies the
+     * horizon reflection beyond Fresnel — clamps at full sky. */
+    float  sky_horizon_strength;
+
+    /* Wave shape — vertex-shader swell (overall ocean undulation
+     * pushed into the cap mesh) and fragment-shader ripple (per-pixel
+     * normal perturbation that drives the highlight pattern).
+     *
+     * Swell tuning at amplitude=1.0 produces the historical 0.36 m
+     * peak-to-trough swell — pushing amplitude above ~1.39 starts
+     * clipping into beach geometry (depth_offset_m = 0.50). frequency
+     * scales spatial frequency (higher → shorter-wavelength swell);
+     * speed scales animation rate.
+     *
+     * Ripple tuning is independent — affects only how the surface
+     * normal (and therefore Fresnel / specular / refraction direction)
+     * varies pixel-to-pixel, not the geometric height. ripple_scale
+     * scales the spatial frequency inside the fbm noise (higher →
+     * finer / busier ripples); ripple_speed scales the time advection
+     * inside fbm; wave_steepness is the magnitude with which the
+     * tangent gradient perturbs the radial normal (replaces the
+     * historical 0.65 literal — higher → choppier-looking surface). */
+    float  swell_amplitude;
+    float  swell_frequency;
+    float  swell_speed;
+    float  ripple_scale;
+    float  ripple_speed;
+    float  wave_steepness;
+} water_config_t;
+
+const water_config_t* config_water(void);
 
 #endif

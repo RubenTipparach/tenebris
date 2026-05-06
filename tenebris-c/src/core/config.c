@@ -296,6 +296,171 @@ int config_load_lod(const char* path) {
 }
 
 /* ------------------------------------------------------------------------ */
+/* Water config — compiled-in defaults overridable via water.yaml.
+ * Defaults match the inline literals body_draw_water + hex_mesher
+ * had before the YAML extraction; the YAML override is a pure
+ * tuning surface, not a behaviour change. */
+
+static water_config_t S_WATER = {
+    .time_scale         = 0.75f,
+    .depth_offset_m     = 0.50f,
+    .height_offset_m    = 0.00f,
+    .refract_amount     = 0.04f,
+    .absorption         = { 0.60f, 0.20f, 0.10f },
+    .deep_color         = { 0.02f, 0.10f, 0.22f },
+    .shoreline_fade_m   = 0.50f,
+    .shore_foam_dist_m  = 0.80f,
+    .specular_intensity = 0.60f,
+    .specular_power     = 140.0f,
+    .sun_tint           = { 1.35f, 1.25f, 1.10f },
+    .foam_crest_lo      = 0.35f,
+    .foam_crest_hi      = 0.60f,
+    .foam_crest_weight  = 0.55f,
+    .foam_slope_lo      = 0.50f,
+    .foam_slope_hi      = 1.20f,
+    .foam_slope_weight  = 0.45f,
+    .foam_intensity     = 0.60f,
+    .foam_color         = { 0.95f, 0.97f, 1.00f },
+    .shore_foam_color   = { 0.98f, 0.99f, 1.00f },
+    .shore_foam_bands   = 0.0f,
+    .shore_foam_band_softness = 0.2f,
+    .sky_horizon_color  = { 0.85f, 0.92f, 0.98f },
+    .sky_zenith_color   = { 0.35f, 0.55f, 0.85f },
+    .sky_horizon_strength = 1.0f,
+    .swell_amplitude    = 1.0f,
+    .swell_frequency    = 1.0f,
+    .swell_speed        = 1.0f,
+    .ripple_scale       = 1.0f,
+    .ripple_speed       = 1.0f,
+    .wave_steepness     = 0.65f,
+};
+
+const water_config_t* config_water(void) { return &S_WATER; }
+
+int config_load_water(const char* path) {
+    size_t fsize = 0;
+    char* buf = slurp_file(path, &fsize);
+    if (!buf) {
+        printf("[config] %s not found, using compiled-in water defaults\n",
+               path);
+        fflush(stdout);
+        return -1;
+    }
+
+    int line_no = 0;
+    int parse_errors = 0;
+    char* p = buf;
+    char* line_start = buf;
+    while (1) {
+        if (*p == '\n' || *p == '\0') {
+            char saved = *p;
+            *p = '\0';
+            ++line_no;
+            char* line = trim_strip(line_start);
+            if (*line == '\0') {
+                /* skip */
+            } else {
+                char* colon = strchr(line, ':');
+                if (!colon) {
+                    printf("[config] %s:%d: missing ':' in '%s'\n",
+                           path, line_no, line);
+                    parse_errors++;
+                } else {
+                    *colon = '\0';
+                    char* key = line;
+                    char* val = trim_strip(colon + 1);
+                    size_t kn = strlen(key);
+                    while (kn > 0 && isspace((unsigned char)key[kn - 1])) key[--kn] = '\0';
+
+                    if (*val == '\0') {
+                        /* "water:" header — single-section file, ignored */
+                    } else if (strcmp(key, "time_scale"        ) == 0) {
+                        S_WATER.time_scale        = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "depth_offset_m"    ) == 0) {
+                        S_WATER.depth_offset_m    = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "height_offset_m"   ) == 0) {
+                        S_WATER.height_offset_m   = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "refract_amount"    ) == 0) {
+                        S_WATER.refract_amount    = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "absorption"        ) == 0) {
+                        if (!parse_vec3(val, &S_WATER.absorption)) parse_errors++;
+                    } else if (strcmp(key, "deep_color"        ) == 0) {
+                        if (!parse_vec3(val, &S_WATER.deep_color)) parse_errors++;
+                    } else if (strcmp(key, "shoreline_fade_m"  ) == 0) {
+                        S_WATER.shoreline_fade_m  = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "shore_foam_dist_m" ) == 0) {
+                        S_WATER.shore_foam_dist_m = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "specular_intensity") == 0) {
+                        S_WATER.specular_intensity = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "specular_power"    ) == 0) {
+                        S_WATER.specular_power    = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "sun_tint"          ) == 0) {
+                        if (!parse_vec3(val, &S_WATER.sun_tint)) parse_errors++;
+                    } else if (strcmp(key, "foam_crest_lo"     ) == 0) {
+                        S_WATER.foam_crest_lo     = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "foam_crest_hi"     ) == 0) {
+                        S_WATER.foam_crest_hi     = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "foam_crest_weight" ) == 0) {
+                        S_WATER.foam_crest_weight = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "foam_slope_lo"     ) == 0) {
+                        S_WATER.foam_slope_lo     = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "foam_slope_hi"     ) == 0) {
+                        S_WATER.foam_slope_hi     = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "foam_slope_weight" ) == 0) {
+                        S_WATER.foam_slope_weight = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "foam_intensity"    ) == 0) {
+                        S_WATER.foam_intensity    = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "foam_color"        ) == 0) {
+                        if (!parse_vec3(val, &S_WATER.foam_color)) parse_errors++;
+                    } else if (strcmp(key, "shore_foam_color"  ) == 0) {
+                        if (!parse_vec3(val, &S_WATER.shore_foam_color)) parse_errors++;
+                    } else if (strcmp(key, "shore_foam_bands"  ) == 0) {
+                        S_WATER.shore_foam_bands = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "shore_foam_band_softness") == 0) {
+                        S_WATER.shore_foam_band_softness = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "sky_horizon_color" ) == 0) {
+                        if (!parse_vec3(val, &S_WATER.sky_horizon_color)) parse_errors++;
+                    } else if (strcmp(key, "sky_zenith_color"  ) == 0) {
+                        if (!parse_vec3(val, &S_WATER.sky_zenith_color)) parse_errors++;
+                    } else if (strcmp(key, "sky_horizon_strength") == 0) {
+                        S_WATER.sky_horizon_strength = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "swell_amplitude"   ) == 0) {
+                        S_WATER.swell_amplitude   = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "swell_frequency"   ) == 0) {
+                        S_WATER.swell_frequency   = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "swell_speed"       ) == 0) {
+                        S_WATER.swell_speed       = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "ripple_scale"      ) == 0) {
+                        S_WATER.ripple_scale      = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "ripple_speed"      ) == 0) {
+                        S_WATER.ripple_speed      = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "wave_steepness"    ) == 0) {
+                        S_WATER.wave_steepness    = (float)strtod(val, NULL);
+                    } else {
+                        printf("[config] %s:%d: unknown key '%s'\n",
+                               path, line_no, key);
+                    }
+                }
+            }
+            *p = saved;
+            if (saved == '\0') break;
+            line_start = p + 1;
+        }
+        ++p;
+    }
+
+    free(buf);
+    if (parse_errors > 0) {
+        printf("[config] %s loaded with %d parse error(s)\n",
+               path, parse_errors);
+        return -2;
+    }
+    printf("[config] loaded %s\n", path);
+    fflush(stdout);
+    return 0;
+}
+
+/* ------------------------------------------------------------------------ */
 
 int config_load_atmosphere(const char* path) {
     size_t fsize = 0;

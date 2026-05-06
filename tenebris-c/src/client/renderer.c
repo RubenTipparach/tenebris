@@ -17,6 +17,9 @@
 #include "composite.glsl.h"
 #include "starfield.glsl.h"
 #include "atmosphere.glsl.h"
+#include "hex.glsl.h"
+#include "distant.glsl.h"
+#include "sun.glsl.h"
 #include "sokol_glue.h"
 #include "sokol_log.h"
 
@@ -234,99 +237,10 @@ static bool R_SKYBOX_VISIBLE = true;
 
 /* ----------------------------------------------------------------------- */
 
-static const char* VS_HEX =
-    "#version 300 es\n"
-    "layout(location=0) in vec3 a_pos;\n"
-    "layout(location=1) in vec3 a_normal;\n"
-    "layout(location=2) in vec2 a_uv;\n"
-    "uniform mat4 u_vp;\n"
-    "uniform vec3 u_sun_dir;\n"
-    "uniform vec3 u_ambient;\n"
-    "out vec2 v_uv;\n"
-    "out float v_light;\n"
-    "void main() {\n"
-    "  gl_Position = u_vp * vec4(a_pos, 1.0);\n"
-    "  vec3 n = normalize(a_normal);\n"
-    "  float ndl = max(dot(n, normalize(u_sun_dir)), 0.0);\n"
-    "  v_light = clamp(u_ambient.r + ndl, 0.0, 1.5);\n"
-    "  v_uv = a_uv;\n"
-    "}\n";
-
-static const char* FS_HEX =
-    "#version 300 es\n"
-    "precision highp float;\n"
-    "in vec2 v_uv;\n"
-    "in float v_light;\n"
-    "uniform sampler2D u_atlas;\n"
-    "out vec4 frag_color;\n"
-    "void main() {\n"
-    "  vec4 tex = texture(u_atlas, v_uv);\n"
-    "  frag_color = vec4(tex.rgb * v_light, tex.a);\n"
-    "}\n";
-
-/* Distant-body pipeline — a per-body subdivided icosphere scaled to
- * the body's radius, used when the body subtends less than ~20 % of
- * the viewport. The mesh is built once at register time with smooth
- * radial normals and per-vertex colours sampled from the body's own
- * topmost-block atlas tile, so a distant Sequoia shows mottled green,
- * Crag rusty red, etc., instead of every body looking like the same
- * featureless solid sphere. Lighting is per-vertex Lambert. */
-static const char* VS_DISTANT =
-    "#version 300 es\n"
-    "layout(location=0) in vec3 a_pos;\n"
-    "layout(location=1) in vec3 a_normal;\n"
-    "layout(location=2) in vec3 a_color;\n"
-    "uniform mat4 u_mvp;\n"
-    "uniform vec3 u_sun_dir;\n"
-    "uniform vec3 u_ambient;\n"
-    "out vec3 v_color;\n"
-    "void main() {\n"
-    "  gl_Position = u_mvp * vec4(a_pos, 1.0);\n"
-    "  float ndl = max(dot(normalize(a_normal), normalize(u_sun_dir)), 0.0);\n"
-    "  v_color = a_color * (u_ambient + vec3(ndl));\n"
-    "}\n";
-
-static const char* FS_DISTANT =
-    "#version 300 es\n"
-    "precision highp float;\n"
-    "in vec3 v_color;\n"
-    "out vec4 frag_color;\n"
-    "void main() { frag_color = vec4(v_color, 1.0); }\n";
-
-/* Emissive sun. Uniformly bright disc with a soft fresnel-ish rim
- * so the silhouette glows slightly without bloom. This is the only
- * sun in the scene — the previous procedural sun disc / glow drawn
- * inside the skybox shader was removed so we don't render two suns
- * at slightly different positions / sizes. The skybox now draws only
- * stars + atmospheric scattering; this physical sphere fills in the
- * sun itself. */
-static const char* VS_SUN =
-    "#version 300 es\n"
-    "layout(location=0) in vec3 a_pos;\n"
-    "uniform mat4 u_mvp;\n"
-    "out vec3 v_local;\n"
-    "void main() {\n"
-    "  v_local = a_pos;\n"
-    "  gl_Position = u_mvp * vec4(a_pos, 1.0);\n"
-    "}\n";
-
-static const char* FS_SUN =
-    "#version 300 es\n"
-    "precision highp float;\n"
-    "in vec3 v_local;\n"
-    "uniform vec3 u_color;\n"
-    "out vec4 frag_color;\n"
-    "void main() {\n"
-    /* Local-space position is on the unit sphere (vbuf is unit). The
-     * dot of the normalised position with -view_dir would give true
-     * fresnel, but for an isotropic star a radial-from-center power
-     * looks the same and is cheaper. */
-    "  float r = length(v_local);\n"
-    "  float core = 1.0;\n"
-    "  float halo = pow(clamp(r, 0.0, 1.0), 8.0);\n"
-    "  vec3 col = u_color * (core + halo * 0.4);\n"
-    "  frag_color = vec4(col, 1.0);\n"
-    "}\n";
+/* Hex / distant-body / sun shaders are sokol-shdc-managed under
+ * src/shaders/{hex,distant,sun}.glsl — see the generated *.glsl.h
+ * #includes above for the matching shader_desc functions, ATTR_*
+ * slot constants, and *_params_t structs. */
 
 /* Skybox is now two sokol-shdc shaders under src/shaders/:
  * starfield.glsl (stars + nebula, opaque) and atmosphere.glsl
@@ -477,44 +391,14 @@ void renderer_init(void) {
     memset(&R, 0, sizeof(R));
     R.active_body_idx = -1;     /* no body registered yet */
 
-    sg_shader shd = sg_make_shader(&(sg_shader_desc){
-        .vertex_func.source   = VS_HEX,
-        .fragment_func.source = FS_HEX,
-        .attrs = {
-            [0].glsl_name = "a_pos",
-            [1].glsl_name = "a_normal",
-            [2].glsl_name = "a_uv",
-        },
-        .uniform_blocks[0] = {
-            .stage = SG_SHADERSTAGE_VERTEX,
-            .size  = 16 * sizeof(float),
-            .layout = SG_UNIFORMLAYOUT_STD140,
-            .glsl_uniforms[0] = { .glsl_name = "u_vp", .type = SG_UNIFORMTYPE_MAT4 },
-        },
-        .uniform_blocks[1] = {
-            .stage = SG_SHADERSTAGE_VERTEX,
-            .size  = 8 * sizeof(float),
-            .layout = SG_UNIFORMLAYOUT_STD140,
-            .glsl_uniforms[0] = { .glsl_name = "u_sun_dir", .type = SG_UNIFORMTYPE_FLOAT3 },
-            .glsl_uniforms[1] = { .glsl_name = "u_ambient", .type = SG_UNIFORMTYPE_FLOAT3 },
-        },
-        .views[0].texture = { .stage = SG_SHADERSTAGE_FRAGMENT,
-                              .image_type = SG_IMAGETYPE_2D,
-                              .sample_type = SG_IMAGESAMPLETYPE_FLOAT },
-        .samplers[0] = { .stage = SG_SHADERSTAGE_FRAGMENT,
-                         .sampler_type = SG_SAMPLERTYPE_FILTERING },
-        .texture_sampler_pairs[0] = { .stage = SG_SHADERSTAGE_FRAGMENT,
-                                      .view_slot = 0, .sampler_slot = 0,
-                                      .glsl_name = "u_atlas" },
-        .label = "hex-shader",
-    });
+    sg_shader shd = sg_make_shader(hex_shader_desc(sg_query_backend()));
     R.pip_hex = sg_make_pipeline(&(sg_pipeline_desc){
         .shader = shd,
         .layout = {
             .attrs = {
-                [0] = { .format = SG_VERTEXFORMAT_FLOAT3 },
-                [1] = { .format = SG_VERTEXFORMAT_FLOAT3 },
-                [2] = { .format = SG_VERTEXFORMAT_FLOAT2 },
+                [ATTR_hex_a_pos]    = { .format = SG_VERTEXFORMAT_FLOAT3 },
+                [ATTR_hex_a_normal] = { .format = SG_VERTEXFORMAT_FLOAT3 },
+                [ATTR_hex_a_uv]     = { .format = SG_VERTEXFORMAT_FLOAT2 },
             },
             .buffers[0].stride = sizeof(hex_vertex_t),
         },
@@ -538,31 +422,31 @@ void renderer_init(void) {
         .shader = shd_water,
         .layout = {
             .attrs = {
-                [ATTR_water_a_pos]    = { .format = SG_VERTEXFORMAT_FLOAT3 },
-                [ATTR_water_a_normal] = { .format = SG_VERTEXFORMAT_FLOAT3 },
-                [ATTR_water_a_uv]     = { .format = SG_VERTEXFORMAT_FLOAT2 },
+                /* Only a_pos is consumed; normal/uv are still in the
+                 * shared hex_vertex_t vbuf but the 32-byte stride skips
+                 * them. See water.glsl @vs for the rationale. */
+                [ATTR_water_a_pos] = { .format = SG_VERTEXFORMAT_FLOAT3 },
             },
             .buffers[0].stride = sizeof(hex_vertex_t),
         },
         .index_type = SG_INDEXTYPE_UINT32,
         /* Water draws in the swapchain pass, AFTER compose blits the
          * offscreen scene onto the swapchain. The swapchain's depth
-         * buffer was cleared at the start of that pass and never
-         * written, so a hardware depth-test would let every water
-         * fragment pass. Instead the pipeline disables HW depth
-         * testing (compare = ALWAYS) and the fragment shader samples
-         * the offscreen depth texture directly to do its own
-         * gl_FragCoord.z > scene_z discard. */
-        .depth = { .write_enabled = false, .compare = SG_COMPAREFUNC_ALWAYS },
+         * buffer was cleared at the start of that pass; water writes
+         * its own depth here and uses LESS_EQUAL to sort fragments
+         * against each other (so far-side waves don't pop in front
+         * of near-side ones). Terrain-vs-water occlusion is still
+         * done manually in the fragment shader by sampling the
+         * offscreen depth texture and discarding fragments where
+         * the opaque scene is in front of this water pixel. */
+        .depth = { .write_enabled = true, .compare = SG_COMPAREFUNC_LESS_EQUAL },
         .cull_mode = SG_CULLMODE_BACK,
         .face_winding = SG_FACEWINDING_CCW,
-        .colors[0].blend = {
-            .enabled = true,
-            .src_factor_rgb = SG_BLENDFACTOR_SRC_ALPHA,
-            .dst_factor_rgb = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
-            .src_factor_alpha = SG_BLENDFACTOR_ONE,
-            .dst_factor_alpha = SG_BLENDFACTOR_ONE,
-        },
+        /* Water shader outputs alpha = 1.0 (opaque). Shoreline fade
+         * is done in-shader by mixing toward the unrefracted compose
+         * sample, not via alpha-blend, so we don't double-count the
+         * underwater scene. Blend stays disabled. */
+        .colors[0].blend = { .enabled = false },
         .label = "water-pipeline",
     });
 
@@ -657,31 +541,14 @@ void renderer_init(void) {
      * built at register time (build_distant_mesh_for_body); each
      * vertex carries a colour sampled from the body's terrain so
      * different planets show different colours from far away. */
-    sg_shader shd_distant = sg_make_shader(&(sg_shader_desc){
-        .vertex_func.source   = VS_DISTANT,
-        .fragment_func.source = FS_DISTANT,
-        .attrs = {
-            [0].glsl_name = "a_pos",
-            [1].glsl_name = "a_normal",
-            [2].glsl_name = "a_color",
-        },
-        .uniform_blocks[0] = {
-            .stage = SG_SHADERSTAGE_VERTEX,
-            .size  = (16 + 4 + 4) * sizeof(float),   /* mat4 + 2 vec3+pad */
-            .layout = SG_UNIFORMLAYOUT_STD140,
-            .glsl_uniforms[0] = { .glsl_name = "u_mvp",     .type = SG_UNIFORMTYPE_MAT4 },
-            .glsl_uniforms[1] = { .glsl_name = "u_sun_dir", .type = SG_UNIFORMTYPE_FLOAT3 },
-            .glsl_uniforms[2] = { .glsl_name = "u_ambient", .type = SG_UNIFORMTYPE_FLOAT3 },
-        },
-        .label = "distant-shader",
-    });
+    sg_shader shd_distant = sg_make_shader(distant_shader_desc(sg_query_backend()));
     R.pip_distant = sg_make_pipeline(&(sg_pipeline_desc){
         .shader = shd_distant,
         .layout = {
             .attrs = {
-                [0] = { .format = SG_VERTEXFORMAT_FLOAT3 },   /* pos    */
-                [1] = { .format = SG_VERTEXFORMAT_FLOAT3 },   /* normal */
-                [2] = { .format = SG_VERTEXFORMAT_FLOAT3 },   /* color  */
+                [ATTR_distant_a_pos]    = { .format = SG_VERTEXFORMAT_FLOAT3 },
+                [ATTR_distant_a_normal] = { .format = SG_VERTEXFORMAT_FLOAT3 },
+                [ATTR_distant_a_color]  = { .format = SG_VERTEXFORMAT_FLOAT3 },
             },
             .buffers[0].stride = 9 * sizeof(float),
         },
@@ -744,28 +611,11 @@ void renderer_init(void) {
 
     /* Sun pipeline — emissive front-face sphere, depth-write so it
      * occludes the skybox disc when the sphere is in view. */
-    sg_shader shd_sun = sg_make_shader(&(sg_shader_desc){
-        .vertex_func.source   = VS_SUN,
-        .fragment_func.source = FS_SUN,
-        .attrs = { [0].glsl_name = "a_pos" },
-        .uniform_blocks[0] = {
-            .stage = SG_SHADERSTAGE_VERTEX,
-            .size  = 16 * sizeof(float),
-            .layout = SG_UNIFORMLAYOUT_STD140,
-            .glsl_uniforms[0] = { .glsl_name = "u_mvp", .type = SG_UNIFORMTYPE_MAT4 },
-        },
-        .uniform_blocks[1] = {
-            .stage = SG_SHADERSTAGE_FRAGMENT,
-            .size  = 4 * sizeof(float),
-            .layout = SG_UNIFORMLAYOUT_STD140,
-            .glsl_uniforms[0] = { .glsl_name = "u_color", .type = SG_UNIFORMTYPE_FLOAT3 },
-        },
-        .label = "sun-shader",
-    });
+    sg_shader shd_sun = sg_make_shader(sun_shader_desc(sg_query_backend()));
     R.pip_sun = sg_make_pipeline(&(sg_pipeline_desc){
         .shader = shd_sun,
         .layout = {
-            .attrs = { [0] = { .format = SG_VERTEXFORMAT_FLOAT3 } },
+            .attrs = { [ATTR_sun_a_pos] = { .format = SG_VERTEXFORMAT_FLOAT3 } },
             .buffers[0].stride = 3 * sizeof(float),
         },
         .index_type = SG_INDEXTYPE_UINT32,
@@ -892,7 +742,10 @@ void renderer_draw_skybox(mat4_t view, mat4_t proj) {
         .u_space_color     = { sky->space_color.x, sky->space_color.y, sky->space_color.z },
     };
     sg_apply_uniforms(UB_starfield_params, &SG_RANGE(sp));
-    sg_apply_bindings(&(sg_bindings){ 0 });
+    /* No sg_apply_bindings: the starfield pipeline has no vertex layout
+     * and no textures (the fs gets positions from gl_VertexIndex), so
+     * required_bindings == 0 and an empty bindings struct trips sokol's
+     * VALIDATE_ABND_EMPTY_BINDINGS check. */
     sg_draw(0, 3, 1);
 
     /* ---- Pass B: atmospheric scattering (alpha-blended overlay) ---- */
@@ -944,11 +797,13 @@ void renderer_draw_sun(mat4_t view, mat4_t proj) {
     mat4_t mvp   = mat4_mul(vp, model);
 
     sg_apply_pipeline(R.pip_sun);
-    sg_apply_uniforms(0, &(sg_range){ .ptr = mvp.m, .size = sizeof(mvp.m) });
+    sun_vs_params_t sun_vs = {0};
+    memcpy(sun_vs.u_mvp, mvp.m, sizeof(sun_vs.u_mvp));
+    sg_apply_uniforms(UB_sun_vs_params, &SG_RANGE(sun_vs));
     /* Warm white core, slightly clipping. Same colour the skybox
      * disc uses so the two read as one body when both are visible. */
-    float color_ub[4] = { 1.40f, 1.25f, 0.90f, 0.0f };
-    sg_apply_uniforms(1, &(sg_range){ .ptr = color_ub, .size = sizeof(color_ub) });
+    sun_fs_params_t sun_fs = { .u_color = { 1.40f, 1.25f, 0.90f } };
+    sg_apply_uniforms(UB_sun_fs_params, &SG_RANGE(sun_fs));
     sg_apply_bindings(&(sg_bindings){
         .vertex_buffers[0] = R.uvsphere_vbuf,
         .index_buffer      = R.uvsphere_ibuf,
@@ -1310,13 +1165,12 @@ void renderer_draw_moons(mat4_t view, mat4_t proj, vec3_t camera_world) {
             .vertex_buffers[0] = body->distant_vbuf,
             .index_buffer      = body->distant_ibuf,
         });
-        /* Packed std140 uniform block: mat4 + 2x (vec3+pad). Per-vertex
-         * colour replaces the old u_color uniform. */
-        float ub[16 + 8];
-        memcpy(ub, mvp.m, sizeof(mvp.m));
-        ub[16] = R.env.sun_dir.x; ub[17] = R.env.sun_dir.y; ub[18] = R.env.sun_dir.z; ub[19] = 0.0f;
-        ub[20] = R.env.ambient.x; ub[21] = R.env.ambient.y; ub[22] = R.env.ambient.z; ub[23] = 0.0f;
-        sg_apply_uniforms(0, &(sg_range){ .ptr = ub, .size = sizeof(ub) });
+        distant_vs_params_t dvp = {
+            .u_sun_dir = { R.env.sun_dir.x, R.env.sun_dir.y, R.env.sun_dir.z },
+            .u_ambient = { R.env.ambient.x, R.env.ambient.y, R.env.ambient.z },
+        };
+        memcpy(dvp.u_mvp, mvp.m, sizeof(dvp.u_mvp));
+        sg_apply_uniforms(UB_distant_vs_params, &SG_RANGE(dvp));
         sg_draw(0, body->distant_index_count, 1);
         R.tris += (size_t)body->distant_index_count / 3;
     }
@@ -1363,7 +1217,12 @@ static void ensure_offscreen_targets(int w, int h) {
     R.offscreen_depth = sg_make_image(&(sg_image_desc){
         .usage = { .depth_stencil_attachment = true },
         .width = w, .height = h,
-        .pixel_format = SG_PIXELFORMAT_DEPTH,
+        /* DEPTH_STENCIL (not DEPTH-only) so the offscreen depth attachment
+         * matches the default swapchain depth format that pipelines inherit
+         * via sapp_depth_format(). Sampling this image as a texture2D in the
+         * water shader returns the depth component on both GLES3 (WebGL2)
+         * and desktop GL — both treat DEPTH24_STENCIL8 sampling like DEPTH. */
+        .pixel_format = SG_PIXELFORMAT_DEPTH_STENCIL,
         .sample_count = 1,
         .label = "offscreen-depth",
     });
@@ -1667,15 +1526,17 @@ static void body_draw_chunks(chunked_body_t* body, mat4_t vp) {
      * mesh out to its pos_x/y/z. */
     mat4_t model = mat4_translate(body->world_pos);
     mat4_t mvp   = mat4_mul(vp, model);
-    sg_apply_uniforms(0, &(sg_range){ .ptr = mvp.m, .size = sizeof(mvp.m) });
+    hex_vs_params_t hvp = {0};
+    memcpy(hvp.u_vp, mvp.m, sizeof(hvp.u_vp));
+    sg_apply_uniforms(UB_hex_vs_params, &SG_RANGE(hvp));
     for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
         mesh_chunk_t* c = &body->chunks[ci];
         if (c->last_uploaded_index_count <= 0) continue;
         sg_apply_bindings(&(sg_bindings){
-            .vertex_buffers[0] = c->vbuf,
-            .index_buffer      = c->ibuf,
-            .views[0]          = R.atlas_view,
-            .samplers[0]       = R.atlas_smp,
+            .vertex_buffers[0]         = c->vbuf,
+            .index_buffer              = c->ibuf,
+            .views[VIEW_hex_atlas]     = R.atlas_view,
+            .samplers[SMP_hex_atlas_smp] = R.atlas_smp,
         });
         sg_draw(0, c->last_uploaded_index_count, 1);
         R.tris += (size_t)c->last_uploaded_index_count / 3;
@@ -1694,38 +1555,55 @@ static void body_draw_water(chunked_body_t* body, mat4_t vp,
     mat4_t model = mat4_translate(body->world_pos);
     mat4_t mvp   = mat4_mul(vp, model);
 
-    /* The water shader treats u_time as a phase already scaled to
-     * "subjective" time. Spatial frequencies and amplitudes inside
-     * the shader are fixed; this multiplier is the only animation
-     * knob exposed from C. Higher = faster ripples. Will move to
-     * water.yaml in Phase C alongside the other tunables. */
-    const float water_time_scale = 0.75f;
-    const float t_scaled = R.time_seconds * water_time_scale;
+    /* All water knobs come from assets/config/water.yaml — see
+     * core/config.h water_config_t for field meanings. The shader
+     * just reads them as uniforms. Projection near/far still come
+     * from main_web.c's mat4_perspective call (kept hardcoded here
+     * because they're a renderer-pipeline detail, not a tuning
+     * knob). */
+    const water_config_t* W = config_water();
+    const float t_scaled = R.time_seconds * W->time_scale;
 
     /* sokol-shdc emits std140-laid-out structs + slot constants —
      * no manual offset math, no _pad_NN by hand. */
-    vs_params_t vs_params = { .u_time = t_scaled };
+    vs_params_t vs_params = {
+        .u_time             = t_scaled,
+        .u_swell_amplitude  = W->swell_amplitude,
+        .u_swell_frequency  = W->swell_frequency,
+        .u_swell_speed      = W->swell_speed,
+    };
     memcpy(vs_params.u_vp, mvp.m, sizeof(vs_params.u_vp));
     sg_apply_uniforms(UB_vs_params, &SG_RANGE(vs_params));
 
     fs_params_t fs_params = {
-        .u_camera_pos     = { camera_world.x, camera_world.y, camera_world.z },
-        .u_sun_dir        = { R.env.sun_dir.x, R.env.sun_dir.y, R.env.sun_dir.z },
-        .u_time           = t_scaled,
-        /* Refraction: surface tangent gradient → screen UV offset.
-         * 0.04 = noticeable shimmer without warping the view too much. */
-        .u_refract_amount = 0.04f,
-        /* Projection near/far for depth linearisation — must match
-         * the perspective set up in main_web.c (mat4_perspective
-         * 0.3, 20000). Beer-Lambert sigma per channel: red goes
-         * faster than blue so deep water reads cyan/blue. Tuned for
-         * our 30 m max water depth — at 5 m, red has dropped to
-         * ~30 %, blue still ~80 %. u_deep_color is the saturation
-         * tint where the ray has fully attenuated. */
-        .u_near           = 0.3f,
-        .u_far            = 20000.0f,
-        .u_absorption     = { 0.60f, 0.20f, 0.10f },
-        .u_deep_color     = { 0.02f, 0.10f, 0.22f },
+        .u_camera_pos      = { camera_world.x, camera_world.y, camera_world.z },
+        .u_sun_dir         = { R.env.sun_dir.x, R.env.sun_dir.y, R.env.sun_dir.z },
+        .u_time            = t_scaled,
+        .u_refract_amount  = W->refract_amount,
+        .u_near            = 0.3f,
+        .u_far             = 20000.0f,
+        .u_absorption      = { W->absorption.x, W->absorption.y, W->absorption.z },
+        .u_deep_color      = { W->deep_color.x, W->deep_color.y, W->deep_color.z },
+        .u_shoreline_fade  = W->shoreline_fade_m,
+        .u_shore_foam_dist = W->shore_foam_dist_m,
+        .u_spec_intensity  = W->specular_intensity,
+        .u_spec_power      = W->specular_power,
+        .u_sun_tint        = { W->sun_tint.x, W->sun_tint.y, W->sun_tint.z },
+        /* Pack the four foam scalars into vec4s so std140 keeps them
+         * tightly aligned. crest.w doubles as the overall mix
+         * intensity; slope.w is unused (kept aligned). */
+        .u_foam_crest      = { W->foam_crest_lo, W->foam_crest_hi, W->foam_crest_weight, W->foam_intensity },
+        .u_foam_slope      = { W->foam_slope_lo, W->foam_slope_hi, W->foam_slope_weight, 0.0f },
+        .u_foam_color      = { W->foam_color.x, W->foam_color.y, W->foam_color.z },
+        .u_shore_foam_color= { W->shore_foam_color.x, W->shore_foam_color.y, W->shore_foam_color.z },
+        .u_shore_foam_bands         = W->shore_foam_bands,
+        .u_shore_foam_band_softness = W->shore_foam_band_softness,
+        .u_sky_horizon     = { W->sky_horizon_color.x, W->sky_horizon_color.y, W->sky_horizon_color.z },
+        .u_sky_horizon_strength = W->sky_horizon_strength,
+        .u_sky_zenith      = { W->sky_zenith_color.x, W->sky_zenith_color.y, W->sky_zenith_color.z },
+        .u_ripple_scale    = W->ripple_scale,
+        .u_ripple_speed    = W->ripple_speed,
+        .u_wave_steepness  = W->wave_steepness,
     };
     sg_apply_uniforms(UB_fs_params, &SG_RANGE(fs_params));
 
@@ -1861,11 +1739,11 @@ void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world,
      * still run so we can verify those in isolation. */
     if (R_TERRAIN_VISIBLE) {
     sg_apply_pipeline(R.pip_hex);
-    float light_ub[8] = {
-        R.env.sun_dir.x, R.env.sun_dir.y, R.env.sun_dir.z, 0.0f,
-        R.env.ambient.x, R.env.ambient.y, R.env.ambient.z, 0.0f,
+    hex_vs_light_t hex_light = {
+        .u_sun_dir = { R.env.sun_dir.x, R.env.sun_dir.y, R.env.sun_dir.z },
+        .u_ambient = { R.env.ambient.x, R.env.ambient.y, R.env.ambient.z },
     };
-    sg_apply_uniforms(1, &(sg_range){ .ptr = light_ub, .size = sizeof(light_ub) });
+    sg_apply_uniforms(UB_hex_vs_light, &SG_RANGE(hex_light));
 
     /* Frustum + LOD culling — far bodies drop to a single icosphere
      * draw via renderer_draw_moons. Detailed (chunked) draws happen
