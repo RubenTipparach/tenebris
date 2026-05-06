@@ -11,13 +11,21 @@
 @vs water_vs
 
 layout(binding=0) uniform vs_params {
-    mat4 u_vp;     // pre-multiplied with model so a_pos is body-local
-    float u_time;  // pre-scaled "subjective" time
+    mat4 u_vp;                  // pre-multiplied with model so a_pos is body-local
+    float u_time;               // pre-scaled "subjective" time
+    float u_swell_amplitude;    // overall vertex-displacement multiplier (wave height)
+    float u_swell_frequency;    // spatial-frequency multiplier in the sine swell (wavelength)
+    float u_swell_speed;        // time multiplier in the sine swell (animation speed)
 };
 
+// a_normal / a_uv aren't read here (the radial wave normal is derived
+// from normalize(a_pos)). They're still in the shared hex_vertex_t
+// vbuf, but the water pipeline omits them from its vertex layout —
+// sokol's per-attribute offset arithmetic plus the 32-byte stride
+// silently skips the extra bytes. Keeping the unused `in` decls would
+// trip GL_VERTEX_ATTRIBUTE_NOT_FOUND warnings whenever the GLSL
+// compiler dead-strips them.
 in vec3 a_pos;
-in vec3 a_normal;
-in vec2 a_uv;     // unused; declared for shared-vbuf layout parity
 
 out vec3 v_wpos;
 
@@ -32,14 +40,18 @@ void main() {
     // boundaries.
     vec3 n = normalize(a_pos);
 
-    // Three-octave directional swell. Max combined amplitude 0.36 m
-    // — well inside the 0.50 m cap drop in hex_mesher.c so wave
-    // crests can't reach coplanar beach sand.
-    float t = u_time;
+    // Three-octave directional swell. Per-octave amplitudes sum to
+    // 0.36 m at u_swell_amplitude=1.0 — well inside the 0.50 m
+    // depth_offset_m cap drop in hex_mesher.c so wave crests can't
+    // poke through coplanar beach sand. Pushing u_swell_amplitude
+    // above ~1.39 will start clipping into beach geometry.
+    float t  = u_time * u_swell_speed;
+    float fx = u_swell_frequency;
     float swell = 0.0;
-    swell += sin(t * 0.9 + a_pos.x * 1.4 + a_pos.z * 0.6) * 0.18;
-    swell += sin(t * 1.3 - a_pos.x * 0.7 + a_pos.z * 1.2) * 0.12;
-    swell += sin(t * 1.7 + a_pos.x * 2.3 - a_pos.z * 1.9) * 0.06;
+    swell += sin(t * 0.9 + a_pos.x * 1.4 * fx + a_pos.z * 0.6 * fx) * 0.18;
+    swell += sin(t * 1.3 - a_pos.x * 0.7 * fx + a_pos.z * 1.2 * fx) * 0.12;
+    swell += sin(t * 1.7 + a_pos.x * 2.3 * fx - a_pos.z * 1.9 * fx) * 0.06;
+    swell *= u_swell_amplitude;
 
     vec3 p = a_pos + n * swell;
     gl_Position = u_vp * vec4(p, 1.0);
@@ -68,8 +80,14 @@ layout(binding=1) uniform fs_params {
     vec4  u_foam_slope;      // x=lo, y=hi, z=weight, w=unused
     vec3  u_foam_color;      // wave-crest + slope foam tint
     vec3  u_shore_foam_color;
+    float u_shore_foam_bands;         // posterize ring count (≤1 disables)
+    float u_shore_foam_band_softness; // band-edge softness (0=hard, 1=smooth)
     vec3  u_sky_horizon;     // reflected-ray-skimming-horizontal sky tint
+    float u_sky_horizon_strength; // horizon-direction reflection opacity (0=hide, 1=Fresnel default)
     vec3  u_sky_zenith;      // reflected-ray-up sky tint
+    float u_ripple_scale;    // spatial multiplier inside the fbm lookup
+    float u_ripple_speed;    // multiplier on the time advection inside fbm
+    float u_wave_steepness;  // normal-perturbation factor (was hard-coded 0.65)
 };
 
 // water_scene_color / water_scene_depth are texture views of the
@@ -164,16 +182,20 @@ void main() {
 
     // Scalar height + 3-sample finite-difference world-space
     // gradient. Epsilon ~8 cm — small enough to stay inside the
-    // smallest noise cell, big enough to dodge fp noise.
-    float h0 = fbm3(v_wpos, u_time);
+    // smallest noise cell, big enough to dodge fp noise. Position is
+    // pre-multiplied by u_ripple_scale (smaller scale → bigger ripple
+    // cells; larger → finer / busier ripples), time by u_ripple_speed.
+    vec3  rp = v_wpos * u_ripple_scale;
+    float rt = u_time * u_ripple_speed;
     float e  = 0.08;
+    float h0 = fbm3(rp, rt);
     vec3 grad = vec3(
-        fbm3(v_wpos + vec3(e, 0, 0), u_time) - h0,
-        fbm3(v_wpos + vec3(0, e, 0), u_time) - h0,
-        fbm3(v_wpos + vec3(0, 0, e), u_time) - h0) / e;
+        fbm3(rp + vec3(e, 0, 0), rt) - h0,
+        fbm3(rp + vec3(0, e, 0), rt) - h0,
+        fbm3(rp + vec3(0, 0, e), rt) - h0) / e;
 
     vec3 t_grad = grad - radial * dot(grad, radial);
-    vec3 n = normalize(radial - t_grad * 0.65);
+    vec3 n = normalize(radial - t_grad * u_wave_steepness);
 
     // Screen-space UV: gl_FragCoord.xy is in pixels; texture size
     // gives us the divisor without needing a uniform.
@@ -225,6 +247,15 @@ void main() {
     float up_f  = clamp(dot(refl, radial), 0.0, 1.0);
     vec3 sky    = mix(u_sky_horizon, u_sky_zenith, up_f);
 
+    // Horizon-direction reflection opacity. up_f=0 (reflected ray skims
+    // horizontal — i.e. the bit of sky a flat-on viewer sees on distant
+    // water) gets multiplied by u_sky_horizon_strength; up_f=1
+    // (reflected ray points straight up) is untouched. So strength=0
+    // erases the horizon-leaning sky reflection entirely while leaving
+    // overhead reflections intact, and 1.0 keeps the original Fresnel
+    // mix.
+    float sky_weight = f * mix(u_sky_horizon_strength, 1.0, up_f);
+
     vec3  halfv = normalize(view + sun);
     float spec  = pow(max(dot(n, halfv), 0.0), u_spec_power);
     vec3  sun_highlight = u_sun_tint * spec * u_spec_intensity;
@@ -244,7 +275,21 @@ void main() {
     float shore_foam = 1.0 - smoothstep(0.0, u_shore_foam_dist, thickness);
     shore_foam *= 0.6 + 0.4 * smoothstep(-0.4, 0.4, h0);
 
-    vec3 color = mix(base, sky, f) + sun_highlight;
+    // Optional posterize for a cel-shaded ring look. bands ≤ 1
+    // short-circuits to the smooth gradient. Otherwise quantise into
+    // N steps; band_softness widens the smoothstep across each band
+    // so the ring edges aren't a jagged staircase under the
+    // fbm-modulated thickness.
+    if (u_shore_foam_bands > 1.0) {
+        float scaled  = shore_foam * u_shore_foam_bands;
+        float floored = floor(scaled);
+        float frac    = scaled - floored;
+        float w       = clamp(u_shore_foam_band_softness, 0.0, 1.0);
+        float t       = smoothstep(0.5 - w * 0.5, 0.5 + w * 0.5, frac);
+        shore_foam    = (floored + t) / u_shore_foam_bands;
+    }
+
+    vec3 color = mix(base, sky, sky_weight);
     color = mix(color, u_foam_color, foam * u_foam_crest.w);
 
     // Shoreline foam covers the cap-edge silhouette: at thickness ~0
@@ -254,9 +299,27 @@ void main() {
     // refracted+attenuated water colour from above.
     color = mix(color, u_shore_foam_color, shore_foam);
 
+    // Sun highlight (Blinn-Phong) is applied AFTER the foam + shore-
+    // foam mixes — physically the sun still glints off foam, and more
+    // importantly the shore_foam mix above runs at strength ~1 in the
+    // entire near-shore band, so adding spec earlier would wash out
+    // every near-shore glint. With spec applied here, u_spec_intensity
+    // is a true additive scaler whose visual impact is independent of
+    // where on the cap the fragment lives.
+    color += sun_highlight;
+
     frag_color = vec4(color, 1.0);
 }
 @end
 
+
+// Depth sampler must be non-filtering on desktop GL (and on WebGL2 in
+// most drivers): a DEPTH24_STENCIL8 / depth-only texture isn't a
+// filterable resource, so binding it with a SG_SAMPLERTYPE_FILTERING
+// sampler trips sokol's VALIDATE_ABND_TEXVIEW_EXPECTED_FILTERABLE_IMAGE.
+// `unfilterable_float` keeps texture(sampler2D, uv).r returning the raw
+// depth value; the matching sampler must be `nonfiltering`.
+@image_sample_type water_scene_depth unfilterable_float
+@sampler_type water_scene_depth_smp nonfiltering
 
 @program water water_vs water_fs

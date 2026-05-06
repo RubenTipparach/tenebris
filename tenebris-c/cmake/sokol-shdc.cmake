@@ -34,7 +34,9 @@ if (EMSCRIPTEN)
 elseif (APPLE)
     set(SOKOL_SHDC_SLANG "metal_macos")
 elseif (WIN32)
-    set(SOKOL_SHDC_SLANG "hlsl5")
+    # Native Windows builds use SOKOL_GLCORE (see CMakeLists.txt) — same
+    # GLSL slang as Linux desktop, not HLSL.
+    set(SOKOL_SHDC_SLANG "glsl410")
 else()
     set(SOKOL_SHDC_SLANG "glsl410")
 endif()

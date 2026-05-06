@@ -210,9 +210,13 @@ void hex_mesh_build_water(hex_mesh_t* out, const world_t* w, int tile_idx) {
      * emit_cap renders the TOP face of layer N at radius(N+1), so to
      * land the water surface at sea level (= radius(SEA_LEVEL_DEPTH))
      * we pass depth = SEA_LEVEL_DEPTH - 1. */
-    const float depth_off = config_water()->depth_offset_m;
+    /* depth_offset_m drops the cap to keep wave crests below beach
+     * sand; height_offset_m is the creative sea-level knob layered
+     * on top (positive = raise water, negative = lower). */
+    const float depth_off  = config_water()->depth_offset_m;
+    const float height_off = config_water()->height_offset_m;
     emit_cap(out, t, w, SEA_LEVEL_DEPTH - 1, BLOCK_WATER, true, 1.0f,
-             -depth_off);
+             -depth_off + height_off);
 }
 
 /* ----------------------------------------------------------------------- */

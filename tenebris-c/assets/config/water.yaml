@@ -11,6 +11,11 @@
 #   depth_offset_m      float  vertical drop of the cap below sea
 #                              level (metres). Has to exceed the max
 #                              swell or wave crests poke above sand.
+#   height_offset_m     float  creative water-level offset, additive
+#                              on top of depth_offset_m. Positive
+#                              raises the cap (water deeper / floods
+#                              further inland), negative lowers it.
+#                              0.0 = current sea level.
 #   refract_amount      float  surface gradient → screen UV
 #                              perturbation scale. 0 = no refraction,
 #                              ~0.04 = noticeable shimmer without
@@ -58,22 +63,74 @@
 #
 #   shore_foam_color    vec3   tint for the thickness-driven foam
 #                              wash at the shoreline.
+#   shore_foam_bands    float  posterize the shoreline foam into N
+#                              discrete bands for a cel-shaded ring
+#                              look. 0 or 1 disables banding (smooth
+#                              gradient). 3-5 reads as visible
+#                              stepped rings; higher tends to alias
+#                              against the fbm height modulation.
+#   shore_foam_band_softness float per-band edge softness in [0, 1].
+#                              0 = hard cel-shade steps, 1 = smooth
+#                              gradient (banding effectively off),
+#                              ~0.2 keeps the rings while damping
+#                              shimmer at the band edges.
 #
 #   --- Sky reflection. Water reflects the upper hemisphere via
 #   reflect(view, n); the result blends between two tones based on
 #   the reflected ray's vertical component.
 #   sky_horizon_color   vec3   bright tone, reflected ray ~horizontal
 #   sky_zenith_color    vec3   darker tone, reflected ray ~vertical
+#   sky_horizon_strength float opacity of the horizon-direction sky
+#                              reflection on the final water colour.
+#                              Scales the Fresnel sky→base blend
+#                              factor, but only where the reflected
+#                              ray skims horizontal — zenith-direction
+#                              reflections are unaffected at any
+#                              value. 1.0 = unchanged Fresnel mix,
+#                              0.0 = horizon reflection disappears
+#                              entirely (water shows the refracted /
+#                              deep colour even at glancing angles).
+#
+#   --- Wave shape. Two independent stages:
+#     * Swell  — vertex-shader sine sum, displaces the cap mesh.
+#                Geometric height of the waves; visible silhouette.
+#     * Ripple — fragment-shader fbm noise, perturbs the surface
+#                normal. Drives where the highlights and refraction
+#                go without changing the geometry.
+#   swell_amplitude     float  vertex-displacement multiplier (wave
+#                              height). 1.0 keeps the historical
+#                              0.36 m peak; >~1.39 starts poking
+#                              crests through depth_offset_m into
+#                              beach geometry.
+#   swell_frequency     float  spatial-frequency multiplier on the
+#                              sine swell. Higher = shorter wavelength
+#                              (more, smaller waves).
+#   swell_speed         float  time multiplier on the sine swell
+#                              (animation speed). Stacks with
+#                              time_scale.
+#   ripple_scale        float  spatial multiplier inside the fbm
+#                              normal noise. Higher = finer / busier
+#                              ripple cells; gradient sharpens too,
+#                              so the surface looks bumpier unless
+#                              you also drop wave_steepness.
+#   ripple_speed        float  time-advection multiplier inside fbm.
+#                              Stacks with time_scale.
+#   wave_steepness      float  magnitude with which the tangent
+#                              gradient perturbs the radial normal.
+#                              Higher = choppier-looking surface;
+#                              0.0 = perfect mirror sphere. Replaces
+#                              the historical 0.65 literal.
 
 water:
   time_scale:         0.75
   depth_offset_m:     0.50
+  height_offset_m:    0.00
   refract_amount:     0.04
   absorption:         [0.60, 0.20, 0.10]
   deep_color:         [0.02, 0.10, 0.22]
   shoreline_fade_m:   0.50
-  shore_foam_dist_m:  0.80
-  specular_intensity: 0.60
+  shore_foam_dist_m:  2.80
+  specular_intensity: 0.30
   specular_power:     140.0
   sun_tint:           [1.35, 1.25, 1.10]
 
@@ -83,10 +140,20 @@ water:
   foam_slope_lo:      0.50
   foam_slope_hi:      1.20
   foam_slope_weight:  0.45
-  foam_intensity:     0.60
+  foam_intensity:     0.20
   foam_color:         [0.95, 0.97, 1.00]
 
-  shore_foam_color:   [0.98, 0.99, 1.00]
+  shore_foam_color:        [0.98, 0.99, 1.00]
+  shore_foam_bands:        0.0
+  shore_foam_band_softness: 0.2
 
-  sky_horizon_color:  [0.85, 0.92, 0.98]
-  sky_zenith_color:   [0.35, 0.55, 0.85]
+  sky_horizon_color:    [0.85, 0.92, 0.98]
+  sky_zenith_color:     [0.35, 0.55, 0.85]
+  sky_horizon_strength: 0.5
+
+  swell_amplitude:    0.5
+  swell_frequency:    2.0
+  swell_speed:        1.0
+  ripple_scale:       1.5
+  ripple_speed:       1.0
+  wave_steepness:     0.65

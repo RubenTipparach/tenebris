@@ -35,10 +35,16 @@ set(TENEBRIS_CORE_SOURCES
 
 add_library(tenebris_core STATIC ${TENEBRIS_CORE_SOURCES})
 target_include_directories(tenebris_core PUBLIC src)
-target_compile_options(tenebris_core PRIVATE
-    -Wall -Wextra -Wpedantic
-    -ffp-contract=off -fno-fast-math    # determinism: same FP on native + wasm
-)
+if (MSVC)
+    # MSVC's default /fp:precise already disables FP contraction and fast-math,
+    # so we don't need explicit determinism flags. Keep warnings at /W3.
+    target_compile_options(tenebris_core PRIVATE /W3)
+else()
+    target_compile_options(tenebris_core PRIVATE
+        -Wall -Wextra -Wpedantic
+        -ffp-contract=off -fno-fast-math    # determinism: same FP on native + wasm
+    )
+endif()
 
 # ---------------------------------------------------------------------------
 # third-party: vendored single-header libs (fetch via scripts/fetch-deps.sh)
@@ -68,6 +74,29 @@ set(TENEBRIS_CLIENT_SOURCES
     src/client/gfx_math.c
 )
 
+# Populate assets/textures/ from the parent JS project's public/textures.
+# Both web and native targets read these at runtime — the web build
+# preloads the whole assets/ tree into the WASM filesystem, the native
+# build reads them off disk relative to the working directory. Filenames
+# must match the bake_atlas block in renderer.c.
+set(TENEBRIS_PUBLIC_TEXTURES "${CMAKE_SOURCE_DIR}/../public/textures")
+if (EXISTS "${TENEBRIS_PUBLIC_TEXTURES}/rocks.png")
+    file(MAKE_DIRECTORY "${CMAKE_SOURCE_DIR}/assets/textures")
+    foreach(name water sand dirt grass rocks ice snow dirt_grass dirt_snow torch moon wood)
+        if (EXISTS "${TENEBRIS_PUBLIC_TEXTURES}/${name}.png")
+            configure_file("${TENEBRIS_PUBLIC_TEXTURES}/${name}.png"
+                           "${CMAKE_SOURCE_DIR}/assets/textures/${name}.png" COPYONLY)
+        endif()
+    endforeach()
+    file(MAKE_DIRECTORY "${CMAKE_SOURCE_DIR}/assets/textures/planet_seq")
+    foreach(name planet_seq_grass planet_seq_dirt planet_seq_grass_dirt planet_seq_sand planet_seq_snow planet_seq_snow_dirt)
+        if (EXISTS "${TENEBRIS_PUBLIC_TEXTURES}/planet_seq/${name}.png")
+            configure_file("${TENEBRIS_PUBLIC_TEXTURES}/planet_seq/${name}.png"
+                           "${CMAKE_SOURCE_DIR}/assets/textures/planet_seq/${name}.png" COPYONLY)
+        endif()
+    endforeach()
+endif()
+
 if (EMSCRIPTEN)
     add_executable(tenebris ${TENEBRIS_CLIENT_SOURCES})
     target_link_libraries(tenebris PRIVATE tenebris_core tenebris_third_party)
@@ -81,6 +110,9 @@ if (EMSCRIPTEN)
     add_sokol_shader(tenebris src/shaders/composite.glsl)
     add_sokol_shader(tenebris src/shaders/starfield.glsl)
     add_sokol_shader(tenebris src/shaders/atmosphere.glsl)
+    add_sokol_shader(tenebris src/shaders/hex.glsl)
+    add_sokol_shader(tenebris src/shaders/distant.glsl)
+    add_sokol_shader(tenebris src/shaders/sun.glsl)
 
     set(EMCC_LINK_FLAGS
         "-sUSE_WEBGL2=1"
@@ -93,27 +125,6 @@ if (EMSCRIPTEN)
     )
     target_link_options(tenebris PRIVATE ${EMCC_LINK_FLAGS})
     set_target_properties(tenebris PROPERTIES SUFFIX ".html")
-
-    # Populate assets/ from the parent project's public/textures when the
-    # C project is built standalone (no scripts/build-wasm.sh in the loop).
-    # Filenames must match the bake_atlas block in renderer.c.
-    set(TENEBRIS_PUBLIC_TEXTURES "${CMAKE_SOURCE_DIR}/../public/textures")
-    if (EXISTS "${TENEBRIS_PUBLIC_TEXTURES}/rocks.png")
-        file(MAKE_DIRECTORY "${CMAKE_SOURCE_DIR}/assets/textures")
-        foreach(name water sand dirt grass rocks ice snow dirt_grass dirt_snow torch moon wood)
-            if (EXISTS "${TENEBRIS_PUBLIC_TEXTURES}/${name}.png")
-                configure_file("${TENEBRIS_PUBLIC_TEXTURES}/${name}.png"
-                               "${CMAKE_SOURCE_DIR}/assets/textures/${name}.png" COPYONLY)
-            endif()
-        endforeach()
-        file(MAKE_DIRECTORY "${CMAKE_SOURCE_DIR}/assets/textures/planet_seq")
-        foreach(name planet_seq_grass planet_seq_dirt planet_seq_grass_dirt planet_seq_sand planet_seq_snow planet_seq_snow_dirt)
-            if (EXISTS "${TENEBRIS_PUBLIC_TEXTURES}/planet_seq/${name}.png")
-                configure_file("${TENEBRIS_PUBLIC_TEXTURES}/planet_seq/${name}.png"
-                               "${CMAKE_SOURCE_DIR}/assets/textures/planet_seq/${name}.png" COPYONLY)
-            endif()
-        endforeach()
-    endif()
 
     # Copy assets next to the build output.
     add_custom_command(TARGET tenebris POST_BUILD
@@ -131,6 +142,9 @@ else()
     add_sokol_shader(tenebris src/shaders/composite.glsl)
     add_sokol_shader(tenebris src/shaders/starfield.glsl)
     add_sokol_shader(tenebris src/shaders/atmosphere.glsl)
+    add_sokol_shader(tenebris src/shaders/hex.glsl)
+    add_sokol_shader(tenebris src/shaders/distant.glsl)
+    add_sokol_shader(tenebris src/shaders/sun.glsl)
 
     if (APPLE)
         target_compile_definitions(tenebris PRIVATE SOKOL_METAL)
@@ -139,7 +153,13 @@ else()
             "-framework Metal" "-framework MetalKit"
             "-framework AudioToolbox")
     elseif (WIN32)
-        target_compile_definitions(tenebris PRIVATE SOKOL_D3D11)
+        # Native Windows uses desktop GL. All shaders go through
+        # sokol-shdc (slang glsl410 — see cmake/sokol-shdc.cmake) so the
+        # backend is interchangeable with D3D11; GLCORE was the working
+        # path while inline GLSL-ES shaders still existed in renderer.c
+        # and is kept as the default.
+        target_compile_definitions(tenebris PRIVATE SOKOL_GLCORE)
+        target_link_libraries(tenebris PRIVATE opengl32)
     else()
         target_compile_definitions(tenebris PRIVATE SOKOL_GLCORE)
         find_package(OpenGL REQUIRED)

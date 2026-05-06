@@ -304,6 +304,7 @@ int config_load_lod(const char* path) {
 static water_config_t S_WATER = {
     .time_scale         = 0.75f,
     .depth_offset_m     = 0.50f,
+    .height_offset_m    = 0.00f,
     .refract_amount     = 0.04f,
     .absorption         = { 0.60f, 0.20f, 0.10f },
     .deep_color         = { 0.02f, 0.10f, 0.22f },
@@ -321,8 +322,17 @@ static water_config_t S_WATER = {
     .foam_intensity     = 0.60f,
     .foam_color         = { 0.95f, 0.97f, 1.00f },
     .shore_foam_color   = { 0.98f, 0.99f, 1.00f },
+    .shore_foam_bands   = 0.0f,
+    .shore_foam_band_softness = 0.2f,
     .sky_horizon_color  = { 0.85f, 0.92f, 0.98f },
     .sky_zenith_color   = { 0.35f, 0.55f, 0.85f },
+    .sky_horizon_strength = 1.0f,
+    .swell_amplitude    = 1.0f,
+    .swell_frequency    = 1.0f,
+    .swell_speed        = 1.0f,
+    .ripple_scale       = 1.0f,
+    .ripple_speed       = 1.0f,
+    .wave_steepness     = 0.65f,
 };
 
 const water_config_t* config_water(void) { return &S_WATER; }
@@ -368,6 +378,8 @@ int config_load_water(const char* path) {
                         S_WATER.time_scale        = (float)strtod(val, NULL);
                     } else if (strcmp(key, "depth_offset_m"    ) == 0) {
                         S_WATER.depth_offset_m    = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "height_offset_m"   ) == 0) {
+                        S_WATER.height_offset_m   = (float)strtod(val, NULL);
                     } else if (strcmp(key, "refract_amount"    ) == 0) {
                         S_WATER.refract_amount    = (float)strtod(val, NULL);
                     } else if (strcmp(key, "absorption"        ) == 0) {
@@ -402,10 +414,28 @@ int config_load_water(const char* path) {
                         if (!parse_vec3(val, &S_WATER.foam_color)) parse_errors++;
                     } else if (strcmp(key, "shore_foam_color"  ) == 0) {
                         if (!parse_vec3(val, &S_WATER.shore_foam_color)) parse_errors++;
+                    } else if (strcmp(key, "shore_foam_bands"  ) == 0) {
+                        S_WATER.shore_foam_bands = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "shore_foam_band_softness") == 0) {
+                        S_WATER.shore_foam_band_softness = (float)strtod(val, NULL);
                     } else if (strcmp(key, "sky_horizon_color" ) == 0) {
                         if (!parse_vec3(val, &S_WATER.sky_horizon_color)) parse_errors++;
                     } else if (strcmp(key, "sky_zenith_color"  ) == 0) {
                         if (!parse_vec3(val, &S_WATER.sky_zenith_color)) parse_errors++;
+                    } else if (strcmp(key, "sky_horizon_strength") == 0) {
+                        S_WATER.sky_horizon_strength = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "swell_amplitude"   ) == 0) {
+                        S_WATER.swell_amplitude   = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "swell_frequency"   ) == 0) {
+                        S_WATER.swell_frequency   = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "swell_speed"       ) == 0) {
+                        S_WATER.swell_speed       = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "ripple_scale"      ) == 0) {
+                        S_WATER.ripple_scale      = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "ripple_speed"      ) == 0) {
+                        S_WATER.ripple_speed      = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "wave_steepness"    ) == 0) {
+                        S_WATER.wave_steepness    = (float)strtod(val, NULL);
                     } else {
                         printf("[config] %s:%d: unknown key '%s'\n",
                                path, line_no, key);
