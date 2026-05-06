@@ -26,7 +26,7 @@ layout(binding=0) uniform starfield_params {
     vec3 u_cam_right;
     vec3 u_cam_up;
     vec3 u_cam_fwd;
-    vec4 u_sky_params;        // x=tan(fovY/2), y=aspect, z=time
+    vec4 u_sky_params;        // x=tan(fovY/2), y=aspect, z=time, w=bg_atten
     vec4 u_star_densities;    // xyz=3 layer densities, w=sharpness
     vec4 u_star_intensities;  // xyz=3 layer weights, w=brightness threshold
     vec3 u_star_color;
@@ -120,6 +120,14 @@ void main() {
                   * cloud * u_nebula_params.x;
 
     vec3 col = u_space_color + nebula + starColor;
+
+    // bg_atten fades stars + nebula as the camera dives into the
+    // atmosphere — at ground level it's near zero so the daytime
+    // sky is the atmosphere alone, in space it's 1.0 so stars are
+    // full-bright. Computed per-frame on the C side from the
+    // camera's altitude through the atmosphere shell.
+    col *= u_sky_params.w;
+
     frag_color = vec4(col, 1.0);
 }
 @end

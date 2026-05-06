@@ -224,7 +224,9 @@ static bool R_WATER_VISIBLE = true;
 /* Same again for the skybox / atmosphere ray-march. The atmosphere
  * is a fullscreen shader pass, not geometry — but it produces a
  * sphere-shaped halo around the planet body that can be confused
- * for one. Toggling this off draws no sky / no atmosphere. */
+ * for one. The starfield underneath always draws; toggling this
+ * off only skips the atmosphere overlay so the space backdrop
+ * stays visible. */
 static bool R_SKYBOX_VISIBLE = true;
 
 /* ----------------------------------------------------------------------- */
@@ -782,7 +784,9 @@ void renderer_shutdown(void) {
 /* ----------------------------------------------------------------------- */
 
 void renderer_draw_skybox(mat4_t view, mat4_t proj) {
-    if (!R_SKYBOX_VISIBLE) return;
+    /* Starfield always draws regardless of the K toggle so the
+     * space backdrop survives debug-mode atmosphere-off. The
+     * K toggle scopes to the atmosphere overlay further down. */
 
     /* Camera basis from the view matrix (column-major from
      * mat4_look_at):
@@ -807,13 +811,36 @@ void renderer_draw_skybox(mat4_t view, mat4_t proj) {
 
     const skybox_config_t* sky = config_skybox();
 
+    /* bg_atten: starfield brightness multiplier so daytime stars
+     * fade as the camera dives into the atmosphere. Uses density at
+     * camera altitude as a proxy for "how much air is between camera
+     * and space" — high density (deep in atmosphere) → near zero,
+     * low density (in space) → 1. */
+    float bg_atten = 1.0f;
+    if (R.env.atmo_strength > 0.001f && R.env.atmo_radius > R.env.atmo_lower_radius) {
+        const float Rg = (R.env.atmo_lower_radius > 0.0f)
+                         ? R.env.atmo_lower_radius
+                         : R.env.atmo_planet_radius;
+        const float thickness = R.env.atmo_radius - Rg;
+        const vec3_t cam_local = vec3_sub(R.env.camera_world, R.env.atmo_planet_center);
+        const float  cam_r     = vec3_length(cam_local);
+        const float  h_norm    = (cam_r - Rg) / thickness;
+        const float  clamped   = (h_norm < 0.0f) ? 0.0f : (h_norm > 1.0f ? 1.0f : h_norm);
+        const float  scale_h   = (R.env.atmo_scale_height > 0.0f)
+                                 ? R.env.atmo_scale_height : 0.25f;
+        const float  dens_cam  = expf(-clamped / scale_h);
+        bg_atten = 1.0f - dens_cam;
+        if (bg_atten < 0.05f) bg_atten = 0.05f;   /* never absolute black */
+        if (bg_atten > 1.0f)  bg_atten = 1.0f;
+    }
+
     /* ---- Pass A: starfield + nebula (opaque) ---- */
     sg_apply_pipeline(R.pip_starfield);
     starfield_params_t sp = {
         .u_cam_right       = { cam_right[0], cam_right[1], cam_right[2] },
         .u_cam_up          = { cam_up[0],    cam_up[1],    cam_up[2]    },
         .u_cam_fwd         = { cam_fwd[0],   cam_fwd[1],   cam_fwd[2]   },
-        .u_sky_params      = { tan_half, aspect, R.time_seconds, 0.0f },
+        .u_sky_params      = { tan_half, aspect, R.time_seconds, bg_atten },
         .u_star_densities  = { sky->star_densities.x, sky->star_densities.y, sky->star_densities.z, sky->star_sharpness },
         .u_star_intensities= { sky->star_intensities.x, sky->star_intensities.y, sky->star_intensities.z, sky->star_brightness_threshold },
         .u_star_color      = { sky->star_color.x, sky->star_color.y, sky->star_color.z },
@@ -828,7 +855,7 @@ void renderer_draw_skybox(mat4_t view, mat4_t proj) {
     sg_draw(0, 3, 1);
 
     /* ---- Pass B: atmospheric scattering (alpha-blended overlay) ---- */
-    if (R.env.atmo_strength > 0.001f) {
+    if (R_SKYBOX_VISIBLE && R.env.atmo_strength > 0.001f) {
         sg_apply_pipeline(R.pip_atmosphere);
         atmosphere_params_t ap = {
             .u_sun_dir       = { R.env.sun_dir.x, R.env.sun_dir.y, R.env.sun_dir.z },
