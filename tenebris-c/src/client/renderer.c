@@ -423,12 +423,19 @@ void renderer_init(void) {
         .shader = shd_water,
         .layout = {
             .attrs = {
-                /* a_pos at offset 0; the 12 bytes of normal + 8 bytes
-                 * of uv between pos and shore_dist are skipped via the
-                 * 36-byte stride, mirroring how the hex pipeline skips
-                 * the trailing shore_dist on its side. See water.glsl
-                 * @vs for the rationale. */
-                [ATTR_water_a_pos]        = { .format = SG_VERTEXFORMAT_FLOAT3 },
+                /* Explicit offsets — a_pos sits at the start of
+                 * hex_vertex_t and a_shore_dist sits past the
+                 * normal + uv bytes that the water pipeline doesn't
+                 * consume. Mixing auto-offset (left implicit) with
+                 * explicit offset on a later slot is fragile in
+                 * sokol-gfx: the auto-pack walks attrs in slot
+                 * order, so any non-zero ATTR_water_a_pos slot
+                 * would skew the inferred a_pos offset. Specifying
+                 * both rules out that footgun. */
+                [ATTR_water_a_pos]        = {
+                    .format = SG_VERTEXFORMAT_FLOAT3,
+                    .offset = (int)offsetof(hex_vertex_t, pos),
+                },
                 [ATTR_water_a_shore_dist] = {
                     .format = SG_VERTEXFORMAT_FLOAT,
                     .offset = (int)offsetof(hex_vertex_t, shore_dist),

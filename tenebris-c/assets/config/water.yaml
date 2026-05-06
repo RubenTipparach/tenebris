@@ -135,7 +135,12 @@ water:
   absorption:         [0.60, 0.20, 0.10]
   deep_color:         [0.02, 0.10, 0.22]
   shoreline_fade_m:   0.50
-  shore_foam_dist_m:  2.80
+  # Tile spacing on Tenebris (radius 150 m, subdivisions 6) is
+  # ~2.6 m; setting this near a single tile width hides the
+  # foam at the cap-center vertex so the band reads as one
+  # tile of fade. ~8 m gives a ~3-tile-wide band and reads as
+  # a visible white wash at the shore.
+  shore_foam_dist_m:  8.00
   specular_intensity: 0.30
   specular_power:     140.0
   sun_tint:           [1.35, 1.25, 1.10]
