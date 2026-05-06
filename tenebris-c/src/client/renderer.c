@@ -1712,10 +1712,12 @@ static void body_draw_water(chunked_body_t* body, mat4_t vp,
         sg_apply_bindings(&(sg_bindings){
             .vertex_buffers[0] = c->water_vbuf,
             .index_buffer      = c->water_ibuf,
-            /* Offscreen colour + depth views — same images that hold
-             * the rendered scene from before compose_to_swapchain. */
+            /* Offscreen colour view — same image the compose blit
+             * sampled. The depth view (water_scene_depth) is unused
+             * while the manual depth-discard is commented out in the
+             * shader, so sokol-shdc dropped that binding from the
+             * generated header; will be re-added when discard returns. */
             .views[VIEW_water_scene_color] = R.offscreen_color_tex,
-            .views[VIEW_water_scene_depth] = R.offscreen_depth_tex,
             .samplers[SMP_water_scene_smp] = R.smp_offscreen,
         });
         sg_draw(0, c->last_uploaded_water_idx_count, 1);
