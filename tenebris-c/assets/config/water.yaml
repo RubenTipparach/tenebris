@@ -140,7 +140,7 @@ water:
   # value around 3-4 m gives a ~one-tile-wide white wash hugging the
   # shoreline. Smaller values pull the foam tighter to land; larger
   # spread it further out to sea.
-  shore_foam_dist_m:  3.50
+  shore_foam_dist_m:  1.00
   specular_intensity: 0.30
   specular_power:     140.0
   sun_tint:           [1.35, 1.25, 1.10]
