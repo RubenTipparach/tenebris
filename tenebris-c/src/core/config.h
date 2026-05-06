@@ -229,6 +229,15 @@ typedef struct {
     float  ripple_scale;
     float  ripple_speed;
     float  wave_steepness;
+
+    /* Underwater post-process. Drives the composite-pass fog +
+     * sin-perturbation distortion when the camera (or any individual
+     * pixel) sits below the sea-level radius. Per-pixel masked so a
+     * half-submerged camera only fogs the wet side of the screen. */
+    vec3_t underwater_fog_color;
+    float  underwater_fog_near;
+    float  underwater_fog_far;
+    float  underwater_distortion;
 } water_config_t;
 
 const water_config_t* config_water(void);

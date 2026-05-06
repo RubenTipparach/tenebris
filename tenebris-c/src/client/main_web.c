@@ -499,7 +499,7 @@ static void frame(void) {
 
     /* Hand off to the swapchain pass — blits the offscreen colour
      * (everything opaque) onto the swapchain. */
-    renderer_compose_to_swapchain();
+    renderer_compose_to_swapchain(view, proj);
 
     /* Water now draws in the swapchain pass on TOP of the composited
      * scene. The water shader samples the offscreen colour + depth

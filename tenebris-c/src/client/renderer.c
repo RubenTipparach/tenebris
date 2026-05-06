@@ -460,7 +460,13 @@ void renderer_init(void) {
          * offscreen depth texture and discarding fragments where
          * the opaque scene is in front of this water pixel. */
         .depth = { .write_enabled = true, .compare = SG_COMPAREFUNC_LESS_EQUAL },
-        .cull_mode = SG_CULLMODE_BACK,
+        /* Cull none: when the camera dives below the cap (snorkelling
+         * shoreline, hopping into a lake, etc.) the player needs to
+         * see the cap from underneath, which is the back face. Doubles
+         * the water-cap fill rate but the cap is one hexagon per tile
+         * so the cost is negligible vs the render cost of the rest of
+         * the scene. */
+        .cull_mode = SG_CULLMODE_NONE,
         .face_winding = SG_FACEWINDING_CCW,
         /* Water shader outputs alpha = 1.0 (opaque). Shoreline fade
          * is done in-shader by mixing toward the unrefracted compose
@@ -1294,10 +1300,13 @@ void renderer_begin_frame(int w, int h, render_env_t env) {
     });
 }
 
-void renderer_compose_to_swapchain(void) {
+void renderer_compose_to_swapchain(mat4_t view, mat4_t proj) {
     /* End the offscreen pass + start the swapchain pass. Composite
      * draws a single fullscreen triangle that samples the offscreen
-     * colour image and writes it to the swapchain. */
+     * colour + depth images and writes to the swapchain, applying
+     * the underwater fog + distortion post-process per pixel based
+     * on whether each pixel reconstructs to a world position below
+     * sea level. */
     sg_end_pass();
 
     sg_begin_pass(&(sg_pass){
@@ -1309,9 +1318,64 @@ void renderer_compose_to_swapchain(void) {
         .label = "swapchain-composite",
     });
     sg_apply_pipeline(R.pip_composite);
+
+    /* Camera basis from the view matrix (column-major from
+     * mat4_look_at) — same extraction the skybox + atmosphere passes
+     * use so the underwater post-process reconstructs world rays
+     * with the same convention. tan(fovY/2) and aspect come out of
+     * the projection matrix. */
+    const float inv_tan_half = proj.m[5];
+    const float tan_half     = (inv_tan_half != 0.0f) ? (1.0f / inv_tan_half) : 1.0f;
+    const float aspect       = (proj.m[0] != 0.0f) ? (inv_tan_half / proj.m[0]) : 1.0f;
+    const float cam_right[3] = {  view.m[0],  view.m[4],  view.m[8]  };
+    const float cam_up[3]    = {  view.m[1],  view.m[5],  view.m[9]  };
+    const float cam_fwd[3]   = { -view.m[2], -view.m[6], -view.m[10] };
+
+    composite_vs_params_t vs = {
+        .cam_right   = { cam_right[0], cam_right[1], cam_right[2], tan_half },
+        .cam_up      = { cam_up[0],    cam_up[1],    cam_up[2],    aspect   },
+        .cam_forward = { cam_fwd[0],   cam_fwd[1],   cam_fwd[2],   0.0f     },
+        .camera_pos  = { R.env.camera_world.x, R.env.camera_world.y, R.env.camera_world.z, 0.0f },
+    };
+    sg_apply_uniforms(UB_composite_vs_params, &SG_RANGE(vs));
+
+    /* Underwater FX uniforms. The body parameters come from the
+     * active body — we mask pixels against ITS sea-level radius,
+     * so a player standing on Tenebris but looking at distant
+     * Sequoia doesn't fog Sequoia just because Tenebris's water
+     * is somewhere off-screen. The cap radius is derived the same
+     * way hex_mesher.c places the actual cap, so the boolean
+     * "below cap" test stays consistent with what the player sees. */
+    const water_config_t* W = config_water();
+    vec3_t  body_center  = (vec3_t){ 0, 0, 0 };
+    float   sea_radius   = 0.0f;
+    bool    cam_under    = false;
+    if (R.active_body_idx >= 0) {
+        chunked_body_t* ab = &R.bodies[R.active_body_idx];
+        body_center = ab->world_pos;
+        sea_radius  = ab->radius_m + W->height_offset_m - W->depth_offset_m;
+        vec3_t to_cam = vec3_sub(R.env.camera_world, body_center);
+        cam_under = vec3_length(to_cam) < sea_radius;
+    }
+
+    composite_fs_params_t fs = {
+        .fog_color     = { W->underwater_fog_color.x,
+                           W->underwater_fog_color.y,
+                           W->underwater_fog_color.z, 0.0f },
+        .fog_params    = { W->underwater_fog_near, W->underwater_fog_far, 0.3f, 20000.0f },
+        .planet_params = { body_center.x, body_center.y, body_center.z, sea_radius },
+        .fx_params     = { W->underwater_distortion,
+                           R.time_seconds,
+                           cam_under ? 1.0f : 0.0f,
+                           0.0f },
+    };
+    sg_apply_uniforms(UB_composite_fs_params, &SG_RANGE(fs));
+
     sg_apply_bindings(&(sg_bindings){
-        .views[VIEW_scene_color] = R.offscreen_color_tex,
-        .samplers[SMP_scene_smp] = R.smp_offscreen,
+        .views[VIEW_scene_color]    = R.offscreen_color_tex,
+        .views[VIEW_scene_depth]    = R.offscreen_depth_tex,
+        .samplers[SMP_scene_smp]       = R.smp_offscreen,
+        .samplers[SMP_scene_depth_smp] = R.smp_offscreen_depth,
     });
     sg_draw(0, 3, 1);
 }

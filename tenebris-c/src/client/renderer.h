@@ -73,7 +73,7 @@ void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world,
  * composite that blits the offscreen colour onto the swapchain.
  * Must be called exactly once per frame, after every opaque draw
  * (skybox, sun, terrain, moons) and before water + UI. */
-void renderer_compose_to_swapchain(void);
+void renderer_compose_to_swapchain(mat4_t view, mat4_t proj);
 
 /* Water cap pass. Draws every has_water body's translucent water
  * mesh. Called after renderer_compose_to_swapchain so the cap
