@@ -15,6 +15,8 @@
  * ATTR_<name>_<attr>, and UB_<block> slot constants. */
 #include "water.glsl.h"
 #include "composite.glsl.h"
+#include "starfield.glsl.h"
+#include "atmosphere.glsl.h"
 #include "sokol_glue.h"
 #include "sokol_log.h"
 
@@ -141,7 +143,8 @@ static struct {
     sg_pipeline pip_water;     /* translucent, wave-animated cap layer */
     sg_pipeline pip_composite; /* fullscreen blit of offscreen colour to swapchain */
     sg_sampler  smp_offscreen; /* linear-clamp sampler for the composite + water passes */
-    sg_pipeline pip_sky;       /* fullscreen atmosphere + starfield     */
+    sg_pipeline pip_starfield;     /* fullscreen stars + nebula              */
+    sg_pipeline pip_atmosphere;    /* fullscreen alpha-blended scattering    */
     sg_pipeline pip_distant;   /* subdivided icosphere w/ vertex colours (far LOD) */
     sg_pipeline pip_sun;       /* emissive sun sphere                   */
     /* Average RGB of each atlas column, computed once at bake_atlas
@@ -320,358 +323,13 @@ static const char* FS_SUN =
     "  frag_color = vec4(col, 1.0);\n"
     "}\n";
 
-/* Atmospheric scattering skybox.
- *
- * Direct port of the sister Caelum project's atmosphere.glsl
- * (https://github.com/RubenTipparach/Caelum/blob/master/shaders/atmosphere.glsl).
- * The previous in-tree shader had subtle math bugs: the ray-sphere
- * "no hit" sentinel returned vec2(1, -1), which the t-clipping logic
- * later interpreted as a planet hit at t=1, collapsing the
- * integration ray to almost zero length whenever the view didn't
- * actually hit the planet. End result: bright atmosphere only when
- * looking at terrain, dark sky everywhere else. Caelum returns
- * vec2(-1) on miss and the whole thing is straightforward — we use
- * its math verbatim.
- *
- * Per-fragment work:
- *   1. Reconstruct world-space view direction from inverse-VP.
- *   2. Translate camera into planet-local space (planet at origin).
- *   3. Intersect view ray with atmosphere shell + planet sphere.
- *   4. Ray-march N samples along the in-atmosphere segment.
- *   5. At each sample, march toward the sun to compute the
- *      sunlight-side optical depth (with planet-shadow check).
- *   6. Accumulate Rayleigh + Mie inscatter, weighted by combined
- *      transmittance and phase functions.
- *   7. Apply sunset warm-tint + horizon-glow approximations.
- *   8. HDR → LDR via 1 - exp(-color), then composite over the
- *      starfield backdrop.
- *
- * Stars stay in this shader. The procedural sun disc + glow used to
- * be drawn here too — it's been removed so the only sun in the
- * scene is the physical UV sphere drawn by renderer_draw_sun. */
-static const char* VS_SKY =
-    "#version 300 es\n"
-    "out vec2 v_ndc;\n"
-    "void main() {\n"
-    /* Fullscreen triangle from gl_VertexID — the same trick the old
-     * shader used, but we now keep NDC.xy as a varying for the FS
-     * to reconstruct view rays from a camera basis. NDC z = 0.99999
-     * sits just inside the LESS_EQUAL depth test against a buffer
-     * cleared to 1.0, so the starfield draws and any later geometry
-     * paints over it. */
-    "  vec2 pos = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);\n"
-    "  pos = pos * 2.0 - 1.0;\n"
-    "  gl_Position = vec4(pos, 0.99999, 1.0);\n"
-    "  v_ndc = pos;\n"
-    "}\n";
-
-static const char* FS_SKY =
-    "#version 300 es\n"
-    "precision highp float;\n"
-    "in vec2 v_ndc;\n"
-    "uniform vec3  u_sun_dir;\n"
-    "uniform vec3  u_sun_color;\n"
-    "uniform vec3  u_planet_center;\n"
-    "uniform vec3  u_camera_pos;\n"
-    "uniform vec4  u_atmo_params;\n"   /* x=Rg, y=Ra, z=strength, w=unused */
-    "uniform vec4  u_atmo_tuning;\n"   /* x=rayleigh, y=mie, z=sun_intensity, w=sunset */
-    "uniform vec4  u_atmo_phys;\n"     /* xyz=wavelengths_inv4, w=scale_height          */
-    "uniform vec4  u_atmo_mie;\n"      /* x=mie_g, yzw=unused                           */
-    "uniform vec4  u_sunset_tint;\n"   /* xyz=multiplicative warm tint, w=unused        */
-    "uniform vec4  u_sunset_glow;\n"   /* xyz=sun-direction glow rgb, w=unused          */
-    "uniform vec4  u_sunset_horiz;\n"  /* xyz=horizon-band rgb, w=unused                */
-    "uniform vec3  u_cam_right;\n"     /* world-space camera basis vectors              */
-    "uniform vec3  u_cam_up;\n"
-    "uniform vec3  u_cam_fwd;\n"
-    "uniform vec4  u_sky_params;\n"    /* x=tan(fovY/2), y=aspect, z=time, w=unused    */
-    /* Skybox tuning, loaded from assets/config/skybox.yaml. See
-     * skybox_config_t in core/config.h for the field meanings. */
-    "uniform vec4  u_star_densities;\n"   /* xyz=3 layer densities, w=sharpness         */
-    "uniform vec4  u_star_intensities;\n" /* xyz=3 layer weights,  w=brightness threshold */
-    "uniform vec3  u_star_color;\n"
-    "uniform vec3  u_nebula_warm;\n"
-    "uniform vec3  u_nebula_cool;\n"
-    "uniform vec4  u_nebula_params;\n"    /* x=intensity, y=drift, z=scale1, w=scale2  */
-    "uniform vec4  u_nebula_smoothstep;\n"/* xy=cloud (lo,hi), zw=warm-blend (lo,hi)   */
-    "uniform vec3  u_space_color;\n"
-    "out vec4 frag_color;\n"
-
-    "#define PI 3.14159265359\n"
-    "#define NUM_SAMPLES 12\n"
-    "#define NUM_LIGHT_SAMPLES 4\n"
-
-    /* Hash used by atmosphere ray-march dither (kept). */
-    "float h31(vec3 p) {\n"
-    "  p = fract(p * vec3(443.897, 441.423, 437.195));\n"
-    "  p += dot(p, p.yzx + 19.19);\n"
-    "  return fract((p.x + p.y) * p.z);\n"
-    "}\n"
-
-    /* Voronoi star + nebula hashes — ported from the rts-engine /
-     * Phantom-Nebula starfield. Replaces the previous floor(d*180)
-     * threshold-on-hash, which had no smoothing across cell boundaries
-     * and so twinkled every time camera rotation crossed a grid plane. */
-    "float vh1(float x) {\n"
-    "  return fract(x + 1.3215 * 1.8152);\n"
-    "}\n"
-    "float vh3(vec3 a) {\n"
-    "  return fract((vh1(a.z * 42.8883) + vh1(a.y * 36.9125) + vh1(a.x * 65.4321)) * 291.1257);\n"
-    "}\n"
-    "vec3 rh3(float x) {\n"
-    "  return vec3(\n"
-    "    vh1(((x + 0.5283) * 59.3829) * 274.3487),\n"
-    "    vh1(((x + 0.8192) * 83.6621) * 345.3871),\n"
-    "    vh1(((x + 0.2157) * 36.6521) * 458.3971));\n"
-    "}\n"
-
-    /* 27-cell 3D Voronoi: each cell scatters one star at a sub-cell
-     * position keyed by the cell hash, the fragment finds the squared
-     * distance to the nearest star across itself + 26 neighbours.
-     * Smooth-falloff over that distance gives stable point lights
-     * that don't pop in/out as the camera rotates. */
-    "float voronoi_star(vec3 dir, float density, out float cell_id) {\n"
-    "  vec3 pos = dir * density;\n"
-    "  vec3 base = floor(pos);\n"
-    "  float m = 9999.0;\n"
-    "  float w = 0.0;\n"
-    "  for (int x = -1; x < 2; ++x) {\n"
-    "    for (int y = -1; y < 2; ++y) {\n"
-    "      for (int z = -1; z < 2; ++z) {\n"
-    "        vec3 cell = base + vec3(float(x), float(y), float(z));\n"
-    "        float h = vh3(cell);\n"
-    "        vec3 pt = rh3(h) + cell;\n"
-    "        vec3 diff = pos - pt;\n"
-    "        float d2 = dot(diff, diff);\n"
-    "        if (d2 < m) { m = d2; w = h; }\n"
-    "      }\n"
-    "    }\n"
-    "  }\n"
-    "  cell_id = w;\n"
-    "  return m;\n"
-    "}\n"
-    "float starfield_layer(vec3 dir, float density) {\n"
-    "  float cid;\n"
-    "  float d2 = voronoi_star(dir, density, cid);\n"
-    "  float star = 1.0 - smoothstep(0.0, u_star_densities.w, d2);\n"
-    "  float br   = fract(cid * 123.456);\n"
-    "  return star * br * step(u_star_intensities.w, br);\n"
-    "}\n"
-
-    /* Cheap 5-octave value-noise fbm for nebula clouds. */
-    "float vnoise(vec3 p) {\n"
-    "  vec3 i = floor(p);\n"
-    "  vec3 f = fract(p);\n"
-    "  vec3 s = f * f * (3.0 - 2.0 * f);\n"
-    "  return mix(\n"
-    "    mix(mix(vh3(i),                  vh3(i + vec3(1,0,0)), s.x),\n"
-    "        mix(vh3(i + vec3(0,1,0)),    vh3(i + vec3(1,1,0)), s.x), s.y),\n"
-    "    mix(mix(vh3(i + vec3(0,0,1)),    vh3(i + vec3(1,0,1)), s.x),\n"
-    "        mix(vh3(i + vec3(0,1,1)),    vh3(i + vec3(1,1,1)), s.x), s.y),\n"
-    "    s.z);\n"
-    "}\n"
-    "float fbm5(vec3 p) {\n"
-    "  float v = 0.0; float a = 0.5; vec3 q = p;\n"
-    "  for (int i = 0; i < 5; ++i) { v += a * vnoise(q); q *= 2.07; a *= 0.5; }\n"
-    "  return v;\n"
-    "}\n"
-
-    /* Caelum's ray-sphere — sphere at origin, returns vec2(-1) on miss
-     * so a downstream `if (hit.x > 0.0) ...` works correctly. The
-     * previous shader's vec2(1, -1) sentinel was the source of the
-     * "atmosphere only at low elevations" bug. */
-    "vec2 raySphereIntersect(vec3 ro, vec3 rd, float radius) {\n"
-    "  float b = dot(ro, rd);\n"
-    "  float c = dot(ro, ro) - radius * radius;\n"
-    "  float disc = b * b - c;\n"
-    "  if (disc < 0.0) return vec2(-1.0);\n"
-    "  float s = sqrt(disc);\n"
-    "  return vec2(-b - s, -b + s);\n"
-    "}\n"
-
-    /* All scattering knobs are uniforms — see u_atmo_phys for
-     * wavelengths-inv-4 and scale-height, u_atmo_mie.x for the Mie
-     * asymmetry, u_atmo_tuning for the four primary scales. */
-
-    "float density(float altitude) {\n"
-    "  return exp(-altitude / u_atmo_phys.w);\n"
-    "}\n"
-
-    /* Optical depth from a sun-side sample point through the
-     * remaining atmosphere — small inner loop, normalised by\n"
-     * thickness so values stay scale-independent. */
-    "float opticalDepth(vec3 ro, vec3 rd, float rayLen, float Rg, float thickness) {\n"
-    "  float step = rayLen / float(NUM_LIGHT_SAMPLES);\n"
-    "  float ns = step / thickness;\n"
-    "  float depth = 0.0;\n"
-    "  for (int i = 0; i < NUM_LIGHT_SAMPLES; ++i) {\n"
-    "    vec3  p = ro + rd * (step * (float(i) + 0.5));\n"
-    "    float a = clamp((length(p) - Rg) / thickness, 0.0, 1.0);\n"
-    "    depth += density(a) * ns;\n"
-    "  }\n"
-    "  return depth;\n"
-    "}\n"
-
-    "void main() {\n"
-    /* Reconstruct the world-space view ray from the camera basis +
-     * fov instead of inv(VP). The basis vectors come from the C side
-     * already orthonormal, so this is numerically clean and makes the
-     * resulting `d` depend only on camera rotation — eye position can
-     * jitter all it wants and the stars hold still. */
-    "  float t  = u_sky_params.x;\n"
-    "  float ar = u_sky_params.y;\n"
-    "  vec3 d = normalize(u_cam_fwd\n"
-    "                   + v_ndc.x * ar * t * u_cam_right\n"
-    "                   + v_ndc.y * t       * u_cam_up);\n"
-
-    /* Three-layer Voronoi starfield + soft nebula. No sun disc here —
-     * the physical sun sphere is drawn in the pass after this. All
-     * tuning lives in u_star_* / u_nebula_* / u_space_color uniforms,
-     * sourced from assets/config/skybox.yaml. */
-    "  float stars = 0.0;\n"
-    "  stars += starfield_layer(d, u_star_densities.x) * u_star_intensities.x;\n"
-    "  stars += starfield_layer(d, u_star_densities.y) * u_star_intensities.y;\n"
-    "  stars += starfield_layer(d, u_star_densities.z) * u_star_intensities.z;\n"
-    "  vec3 starColor = u_star_color * stars;\n"
-
-    "  float drift = u_sky_params.z * u_nebula_params.y;\n"
-    "  float n  = fbm5(d * u_nebula_params.z + vec3(drift, 0.0, drift * 0.7));\n"
-    "  float n2 = fbm5(d * u_nebula_params.w + vec3(7.3, 2.1, 9.9));\n"
-    "  float cloud = smoothstep(u_nebula_smoothstep.x, u_nebula_smoothstep.y, n);\n"
-    "  vec3 nebula = mix(u_nebula_cool, u_nebula_warm,\n"
-    "                    smoothstep(u_nebula_smoothstep.z, u_nebula_smoothstep.w, n2))\n"
-    "                * cloud * u_nebula_params.x;\n"
-
-    "  vec3 space_col = u_space_color + nebula + starColor;\n"
-
-    "  float strength = u_atmo_params.z;\n"
-    "  if (strength <= 0.001) {\n"
-    "    frag_color = vec4(space_col, 1.0);\n"
-    "    return;\n"
-    "  }\n"
-
-    /* Two radii used to be the same uniform (u_atmo_params.x):
-     *   - Rp = planet clip — terminates the ray-march at the ground
-     *          and blocks sun rays for the planet-shadow check.
-     *   - Rg = atmosphere density lower bound — samples below this
-     *          contribute zero density.
-     * Coupling them forced "lift the atmosphere" and "lift the
-     * ground clip" to move together, producing a void band between
-     * actual ground and the new clip when the lower bound was
-     * raised. Splitting them: u_atmo_params.x stays the ground (Rp);
-     * u_atmo_params.w is the new density lower bound (Rg). When .w
-     * is 0 we fall back to Rp so existing behaviour is unchanged. */
-    "  float Rp = u_atmo_params.x;\n"
-    "  float Ra = u_atmo_params.y;\n"
-    "  float Rg = (u_atmo_params.w > 0.0) ? u_atmo_params.w : Rp;\n"
-    "  float thickness = max(Ra - Rg, 0.001);\n"
-
-    /* Translate to planet-local space — Caelum's ray_sphere assumes
-     * the sphere sits at origin. */
-    "  vec3 ro = u_camera_pos - u_planet_center;\n"
-
-    "  vec2 atmoHit = raySphereIntersect(ro, d, Ra);\n"
-    "  if (atmoHit.y < 0.0) {\n"
-    "    frag_color = vec4(space_col, 1.0);\n"
-    "    return;\n"
-    "  }\n"
-
-    "  float rayStart = max(0.0, atmoHit.x);\n"
-    "  float rayEnd   = atmoHit.y;\n"
-
-    /* Planet occlusion — clip the ray at the actual ground (Rp), NOT
-     * at Rg. Using Rp here is what kills the void-band at the inner
-     * shell boundary: the ray-march now extends all the way down to
-     * the surface, and samples in [Rp, Rg] just contribute no
-     * density (skipped below). */
-    "  vec2 planetHit = raySphereIntersect(ro, d, Rp);\n"
-    "  if (planetHit.x > 0.0) {\n"
-    "    rayEnd = min(rayEnd, planetHit.x);\n"
-    "  }\n"
-
-    "  if (rayStart >= rayEnd) {\n"
-    "    frag_color = vec4(space_col, 1.0);\n"
-    "    return;\n"
-    "  }\n"
-
-    "  float rayLen   = rayEnd - rayStart;\n"
-    "  float stepSize = rayLen / float(NUM_SAMPLES);\n"
-    "  float normStep = stepSize / thickness;\n"
-    "  float dither   = h31(vec3(gl_FragCoord.xy, 0.5)) * 0.5;\n"
-
-    "  vec3 sunDir = normalize(u_sun_dir);\n"
-
-    "  vec3  rSum = vec3(0.0);\n"
-    "  vec3  mSum = vec3(0.0);\n"
-    "  float odR  = 0.0;\n"
-    "  float odM  = 0.0;\n"
-
-    "  for (int i = 0; i < NUM_SAMPLES; ++i) {\n"
-    "    vec3  p = ro + d * (rayStart + stepSize * (float(i) + dither));\n"
-    "    float h = length(p);\n"
-    "    if (h < Rg) continue;\n"
-    "    float altitude = clamp((h - Rg) / thickness, 0.0, 1.0);\n"
-    "    float dens = density(altitude);\n"
-    "    float seg  = dens * normStep;\n"
-    "    odR += seg;\n"
-    "    odM += seg;\n"
-
-    /* Planet shadow check — if the sun sits behind the planet from
-     * this sample's POV, skip it. */
-    "    vec2 sunPlanet = raySphereIntersect(p, sunDir, Rp);\n"
-    "    if (sunPlanet.x > 0.0) continue;\n"
-    "    vec2 sunAtmo   = raySphereIntersect(p, sunDir, Ra);\n"
-    "    float sunLen   = max(0.0, sunAtmo.y);\n"
-    "    float sunOd    = opticalDepth(p, sunDir, sunLen, Rg, thickness);\n"
-
-    "    vec3 tauR = u_atmo_tuning.x * u_atmo_phys.xyz * (odR + sunOd);\n"
-    "    vec3 tauM = vec3(u_atmo_tuning.y * (odM + sunOd));\n"
-    "    vec3 atten = exp(-(tauR + tauM));\n"
-    "    rSum += dens * atten * normStep;\n"
-    "    mSum += dens * atten * normStep;\n"
-    "  }\n"
-
-    "  rSum *= u_atmo_tuning.x * u_atmo_phys.xyz;\n"
-    "  mSum *= u_atmo_tuning.y;\n"
-
-    "  float cosTheta = dot(d, sunDir);\n"
-    "  float phaseR   = 0.75 * (1.0 + cosTheta * cosTheta);\n"
-    "  float gg       = u_atmo_mie.x * u_atmo_mie.x;\n"
-    "  float phaseM   = (1.0 - gg) /\n"
-    "                   (4.0 * PI *\n"
-    "                    pow(max(1.0 + gg - 2.0 * u_atmo_mie.x * cosTheta, 0.0001), 1.5));\n"
-
-    "  vec3 sky = u_atmo_tuning.z * (rSum * phaseR + mSum * phaseM);\n"
-
-    /* Sunset warmth — analytical multipliers; numerical integration
-     * tends to under-shoot these at the step counts we afford. */
-    "  vec3  ro_norm    = normalize(ro);\n"
-    "  float sun_height = dot(sunDir, ro_norm);\n"
-    "  float sunset     = smoothstep(0.3, -0.05, sun_height);\n"
-    "  float view_sun   = max(0.0, cosTheta);\n"
-    /* Sunset warmth scaled by u_atmo_tuning.w (sunset_strength). At
-     * 1.0 you get the full Caelum orange-on-horizon look; 0.0 strips
-     * all warm-tint and the sky stays Rayleigh-blue all the way to
-     * the horizon. Tenebris currently uses 0.3 — present but subtle. */
-    "  float ws = u_atmo_tuning.w;\n"
-    "  sky *= mix(vec3(1.0), u_sunset_tint.xyz, sunset * 0.5 * ws);\n"
-    "  sky += u_sunset_glow.xyz * pow(view_sun, 3.0) * sunset * u_atmo_tuning.z * 0.12 * ws;\n"
-    "  float horizon = 1.0 - abs(dot(d, ro_norm));\n"
-    "  horizon = pow(horizon, 3.0);\n"
-    "  sky += u_sunset_horiz.xyz * horizon * sunset * u_atmo_tuning.z * 0.04 * ws;\n"
-
-    /* HDR -> LDR. */
-    "  sky = 1.0 - exp(-sky);\n"
-
-    /* Smooth analytical attenuation of the starfield based on the
-     * camera altitude. Doesn't depend on the per-fragment ray-march
-     * sample positions, so it's stable as the camera moves. */
-    "  float h_norm = clamp((length(ro) - Rg) / thickness, 0.0, 1.0);\n"
-    "  float dens_cam = density(h_norm);\n"
-    "  float bg_atten = clamp(1.0 - dens_cam * 0.85, 0.05, 1.0);\n"
-
-    "  vec3 col = mix(space_col, space_col * bg_atten + sky, strength);\n"
-    "  frag_color = vec4(col, 1.0);\n"
-    "}\n";
+/* Skybox is now two sokol-shdc shaders under src/shaders/:
+ * starfield.glsl (stars + nebula, opaque) and atmosphere.glsl
+ * (Bruneton scattering ray-march, alpha-blended overlay). The
+ * runtime side calls both pipelines back-to-back from
+ * renderer_draw_skybox. Generated headers expose
+ * starfield_shader_desc / atmosphere_shader_desc plus the
+ * matching _params_t structs and UB_*_params slot constants. */
 
 /* Water shader source lives in tenebris-c/src/shaders/water.glsl,
  * cross-compiled at build time by sokol-shdc into water.glsl.h
@@ -919,63 +577,40 @@ void renderer_init(void) {
     /* Per-body chunk storage is allocated lazily by renderer_register_world
      * once we know the body's tile_count + radius. Nothing to do here. */
 
-    /* Skybox pipeline — fullscreen triangle via gl_VertexID, no vbuf
-     * bound. No depth write (so world geometry lands on top) and no
-     * cull (the triangle is in clip-space). The fragment shader does
-     * Caelum-port atmospheric scattering plus a procedural starfield;
-     * the sun itself is drawn separately as a physical sphere via
-     * renderer_draw_sun (no procedural disc here, that gave a
-     * doubled sun). */
-    sg_shader shd_sky = sg_make_shader(&(sg_shader_desc){
-        .vertex_func.source   = VS_SKY,
-        .fragment_func.source = FS_SKY,
-        /* Sokol caps glsl_uniforms at 16 entries per block, so the
-         * scene-state uniforms (atmo + camera basis) live in block 0
-         * and the YAML-driven sky tuning (stars + nebula + backdrop)
-         * lives in block 1. The split is purely a sokol limitation —
-         * both blocks are bound at the same draw. */
-        .uniform_blocks[0] = {
-            .stage = SG_SHADERSTAGE_FRAGMENT,
-            /* std140: 15 vec4 slots = 60 floats. */
-            .size  = 60 * sizeof(float),
-            .layout = SG_UNIFORMLAYOUT_STD140,
-            .glsl_uniforms[0]  = { .glsl_name = "u_sun_dir",       .type = SG_UNIFORMTYPE_FLOAT3 },
-            .glsl_uniforms[1]  = { .glsl_name = "u_sun_color",     .type = SG_UNIFORMTYPE_FLOAT3 },
-            .glsl_uniforms[2]  = { .glsl_name = "u_planet_center", .type = SG_UNIFORMTYPE_FLOAT3 },
-            .glsl_uniforms[3]  = { .glsl_name = "u_camera_pos",    .type = SG_UNIFORMTYPE_FLOAT3 },
-            .glsl_uniforms[4]  = { .glsl_name = "u_atmo_params",   .type = SG_UNIFORMTYPE_FLOAT4 },
-            .glsl_uniforms[5]  = { .glsl_name = "u_atmo_tuning",   .type = SG_UNIFORMTYPE_FLOAT4 },
-            .glsl_uniforms[6]  = { .glsl_name = "u_atmo_phys",     .type = SG_UNIFORMTYPE_FLOAT4 },
-            .glsl_uniforms[7]  = { .glsl_name = "u_atmo_mie",      .type = SG_UNIFORMTYPE_FLOAT4 },
-            .glsl_uniforms[8]  = { .glsl_name = "u_sunset_tint",   .type = SG_UNIFORMTYPE_FLOAT4 },
-            .glsl_uniforms[9]  = { .glsl_name = "u_sunset_glow",   .type = SG_UNIFORMTYPE_FLOAT4 },
-            .glsl_uniforms[10] = { .glsl_name = "u_sunset_horiz",  .type = SG_UNIFORMTYPE_FLOAT4 },
-            .glsl_uniforms[11] = { .glsl_name = "u_cam_right",     .type = SG_UNIFORMTYPE_FLOAT3 },
-            .glsl_uniforms[12] = { .glsl_name = "u_cam_up",        .type = SG_UNIFORMTYPE_FLOAT3 },
-            .glsl_uniforms[13] = { .glsl_name = "u_cam_fwd",       .type = SG_UNIFORMTYPE_FLOAT3 },
-            .glsl_uniforms[14] = { .glsl_name = "u_sky_params",    .type = SG_UNIFORMTYPE_FLOAT4 },
-        },
-        .uniform_blocks[1] = {
-            .stage = SG_SHADERSTAGE_FRAGMENT,
-            /* std140: 8 vec4 slots = 32 floats. */
-            .size  = 32 * sizeof(float),
-            .layout = SG_UNIFORMLAYOUT_STD140,
-            .glsl_uniforms[0]  = { .glsl_name = "u_star_densities",     .type = SG_UNIFORMTYPE_FLOAT4 },
-            .glsl_uniforms[1]  = { .glsl_name = "u_star_intensities",   .type = SG_UNIFORMTYPE_FLOAT4 },
-            .glsl_uniforms[2]  = { .glsl_name = "u_star_color",         .type = SG_UNIFORMTYPE_FLOAT3 },
-            .glsl_uniforms[3]  = { .glsl_name = "u_nebula_warm",        .type = SG_UNIFORMTYPE_FLOAT3 },
-            .glsl_uniforms[4]  = { .glsl_name = "u_nebula_cool",        .type = SG_UNIFORMTYPE_FLOAT3 },
-            .glsl_uniforms[5]  = { .glsl_name = "u_nebula_params",      .type = SG_UNIFORMTYPE_FLOAT4 },
-            .glsl_uniforms[6]  = { .glsl_name = "u_nebula_smoothstep",  .type = SG_UNIFORMTYPE_FLOAT4 },
-            .glsl_uniforms[7]  = { .glsl_name = "u_space_color",        .type = SG_UNIFORMTYPE_FLOAT3 },
-        },
-        .label = "sky-shader",
-    });
-    R.pip_sky = sg_make_pipeline(&(sg_pipeline_desc){
-        .shader = shd_sky,
-        .depth = { .write_enabled = false, .compare = SG_COMPAREFUNC_LESS_EQUAL },
+    /* Starfield + nebula pipeline (opaque base layer). Fullscreen
+     * triangle via gl_VertexIndex, no vbuf, no depth write so world
+     * geometry can paint over it. Opaque output — replaces whatever
+     * was in the framebuffer. */
+    sg_shader shd_starfield = sg_make_shader(starfield_shader_desc(sg_query_backend()));
+    R.pip_starfield = sg_make_pipeline(&(sg_pipeline_desc){
+        .shader = shd_starfield,
+        .index_type = SG_INDEXTYPE_NONE,
         .cull_mode = SG_CULLMODE_NONE,
-        .label = "sky-pipeline",
+        .depth = { .write_enabled = false, .compare = SG_COMPAREFUNC_LESS_EQUAL },
+        .label = "starfield-pipeline",
+    });
+
+    /* Atmospheric scattering pipeline (alpha-blended overlay).
+     * Drawn after starfield: the shader outputs vec4(rgb, alpha)
+     * where alpha = clamp(length(sky)*1.5, 0, 0.95) * strength, so
+     * SRC_ALPHA / ONE_MINUS_SRC_ALPHA leaves bright limbs / sun-side
+     * pixels fully replacing the stars while dim back-of-shell
+     * pixels leave the starfield visible. Same Caelum-style
+     * composition Caelum's own demo uses. */
+    sg_shader shd_atmosphere = sg_make_shader(atmosphere_shader_desc(sg_query_backend()));
+    R.pip_atmosphere = sg_make_pipeline(&(sg_pipeline_desc){
+        .shader = shd_atmosphere,
+        .index_type = SG_INDEXTYPE_NONE,
+        .cull_mode = SG_CULLMODE_NONE,
+        .depth = { .write_enabled = false, .compare = SG_COMPAREFUNC_LESS_EQUAL },
+        .colors[0].blend = {
+            .enabled = true,
+            .src_factor_rgb = SG_BLENDFACTOR_SRC_ALPHA,
+            .dst_factor_rgb = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+            .src_factor_alpha = SG_BLENDFACTOR_ONE,
+            .dst_factor_alpha = SG_BLENDFACTOR_ONE,
+        },
+        .label = "atmosphere-pipeline",
     });
 
     /* Distant-LOD pipeline. The mesh itself is per-body and gets
@@ -1136,7 +771,8 @@ void renderer_shutdown(void) {
     sg_destroy_pipeline(R.pip_water);
     sg_destroy_pipeline(R.pip_composite);
     sg_destroy_sampler(R.smp_offscreen);
-    sg_destroy_pipeline(R.pip_sky);
+    sg_destroy_pipeline(R.pip_starfield);
+    sg_destroy_pipeline(R.pip_atmosphere);
     sg_destroy_pipeline(R.pip_distant);
     sg_destroy_pipeline(R.pip_sun);
     sg_destroy_buffer(R.uvsphere_vbuf);
@@ -1147,128 +783,73 @@ void renderer_shutdown(void) {
 
 void renderer_draw_skybox(mat4_t view, mat4_t proj) {
     if (!R_SKYBOX_VISIBLE) return;
-    /* The fragment shader rebuilds view rays from a world-space camera
-     * basis + tan(fovY/2) + aspect, so we extract those from the view
-     * and projection matrices instead of inverting VP. The view matrix
-     * is column-major from mat4_look_at:
-     *   col 0 = (s.x, u.x, -f.x, 0)   — right
-     *   col 1 = (s.y, u.y, -f.y, 0)   — up
-     *   col 2 = (s.z, u.z, -f.z, 0)   — −forward
-     * so the camera basis vectors in world space are read off the
-     * rows of the 3×3 rotation submatrix.
-     *
-     * Because the FS uses these basis vectors directly, the eye
-     * translation (m[12..14]) drops out completely and stars depend
-     * only on camera rotation — they hold still even if the eye
-     * jitters by sub-mm amounts each frame. */
-    sg_apply_pipeline(R.pip_sky);
-    /* Block 0 — std140, 15 vec4 slots = 60 floats (scene state).
-     *   [0..3]   u_sun_dir            (vec3 + pad)
-     *   [4..7]   u_sun_color          (vec3 + pad)
-     *   [8..11]  u_planet_center      (vec3 + pad)
-     *   [12..15] u_camera_pos         (vec3 + pad)
-     *   [16..19] u_atmo_params        (vec4)
-     *   [20..23] u_atmo_tuning        (vec4)
-     *   [24..27] u_atmo_phys          (vec3 wavelengths + scale_height)
-     *   [28..31] u_atmo_mie           (vec4: x = mie_g, rest unused)
-     *   [32..35] u_sunset_tint        (vec3 + pad)
-     *   [36..39] u_sunset_glow        (vec3 + pad)
-     *   [40..43] u_sunset_horiz       (vec3 + pad)
-     *   [44..47] u_cam_right          (vec3 + pad)
-     *   [48..51] u_cam_up             (vec3 + pad)
-     *   [52..55] u_cam_fwd            (vec3 + pad)
-     *   [56..59] u_sky_params         (vec4: tan(fovY/2), aspect, time, _)
-     */
-    float ub[60] = { 0 };
-    ub[0]  = R.env.sun_dir.x; ub[1]  = R.env.sun_dir.y; ub[2]  = R.env.sun_dir.z;
-    ub[4]  = 1.40f;           ub[5]  = 1.25f;           ub[6]  = 0.90f;
-    ub[8]  = R.env.atmo_planet_center.x;
-    ub[9]  = R.env.atmo_planet_center.y;
-    ub[10] = R.env.atmo_planet_center.z;
-    ub[12] = R.env.camera_world.x;
-    ub[13] = R.env.camera_world.y;
-    ub[14] = R.env.camera_world.z;
-    ub[16] = R.env.atmo_planet_radius;       /* x = Rp (planet-clip)        */
-    ub[17] = R.env.atmo_radius;              /* y = Ra (outer shell)        */
-    ub[18] = R.env.atmo_strength;            /* z = strength                */
-    ub[19] = R.env.atmo_lower_radius;        /* w = Rg (density lower bound)*/
-    ub[20] = R.env.atmo_rayleigh_scale;
-    ub[21] = R.env.atmo_mie_scale;
-    ub[22] = R.env.atmo_sun_intensity;
-    ub[23] = R.env.atmo_sunset_strength;
-    ub[24] = R.env.atmo_wavelengths.x;
-    ub[25] = R.env.atmo_wavelengths.y;
-    ub[26] = R.env.atmo_wavelengths.z;
-    ub[27] = R.env.atmo_scale_height;
-    ub[28] = R.env.atmo_mie_g;
-    ub[32] = R.env.atmo_sunset_tint.x;
-    ub[33] = R.env.atmo_sunset_tint.y;
-    ub[34] = R.env.atmo_sunset_tint.z;
-    ub[36] = R.env.atmo_sunset_glow.x;
-    ub[37] = R.env.atmo_sunset_glow.y;
-    ub[38] = R.env.atmo_sunset_glow.z;
-    ub[40] = R.env.atmo_sunset_horizon.x;
-    ub[41] = R.env.atmo_sunset_horizon.y;
-    ub[42] = R.env.atmo_sunset_horizon.z;
-    /* Camera basis vectors (world space). */
-    ub[44] = view.m[0];      ub[45] = view.m[4];      ub[46] = view.m[8];
-    ub[48] = view.m[1];      ub[49] = view.m[5];      ub[50] = view.m[9];
-    ub[52] = -view.m[2];     ub[53] = -view.m[6];     ub[54] = -view.m[10];
-    /* tan(fovY/2) and aspect from the projection matrix:
-     *   proj.m[5] = 1 / tan(fovY/2)   →   tan(fovY/2) = 1 / m[5]
-     *   proj.m[0] = m[5] / aspect     →   aspect      = m[5] / m[0] */
-    float inv_tan_half = proj.m[5];
-    ub[56] = (inv_tan_half != 0.0f) ? (1.0f / inv_tan_half) : 1.0f;
-    ub[57] = (proj.m[0]    != 0.0f) ? (inv_tan_half / proj.m[0]) : 1.0f;
-    ub[58] = R.time_seconds;
-    ub[59] = 0.0f;
-    sg_apply_uniforms(0, &(sg_range){ .ptr = ub, .size = sizeof(ub) });
 
-    /* Block 1 — std140, 8 vec4 slots = 32 floats (skybox tuning from
-     * assets/config/skybox.yaml).
-     *   [0..3]   u_star_densities     (vec4: d1, d2, d3, sharpness)
-     *   [4..7]   u_star_intensities   (vec4: i1, i2, i3, threshold)
-     *   [8..11]  u_star_color         (vec3 + pad)
-     *   [12..15] u_nebula_warm        (vec3 + pad)
-     *   [16..19] u_nebula_cool        (vec3 + pad)
-     *   [20..23] u_nebula_params      (vec4: intensity, drift, scale1, scale2)
-     *   [24..27] u_nebula_smoothstep  (vec4: cloud_lo, cloud_hi, warm_lo, warm_hi)
-     *   [28..31] u_space_color        (vec3 + pad)
+    /* Camera basis from the view matrix (column-major from
+     * mat4_look_at):
+     *   col 0 row 0..2 = right
+     *   col 1 row 0..2 = up
+     *   col 2 row 0..2 = -forward
+     * Stars are reconstructed from the basis directly, so eye
+     * translation (m[12..14]) drops out — stars hold still even if
+     * the eye jitters by sub-mm amounts each frame.
+     *
+     * tan(fovY/2) and aspect come out of the projection matrix:
+     *   proj.m[5] = 1/tan(fovY/2)
+     *   proj.m[0] = m[5]/aspect
      */
+    const float inv_tan_half = proj.m[5];
+    const float tan_half     = (inv_tan_half != 0.0f) ? (1.0f / inv_tan_half) : 1.0f;
+    const float aspect       = (proj.m[0] != 0.0f) ? (inv_tan_half / proj.m[0]) : 1.0f;
+
+    const float cam_right[3] = {  view.m[0],  view.m[4],  view.m[8]  };
+    const float cam_up[3]    = {  view.m[1],  view.m[5],  view.m[9]  };
+    const float cam_fwd[3]   = { -view.m[2], -view.m[6], -view.m[10] };
+
     const skybox_config_t* sky = config_skybox();
-    float sb[32] = { 0 };
-    sb[0]  = sky->star_densities.x;
-    sb[1]  = sky->star_densities.y;
-    sb[2]  = sky->star_densities.z;
-    sb[3]  = sky->star_sharpness;
-    sb[4]  = sky->star_intensities.x;
-    sb[5]  = sky->star_intensities.y;
-    sb[6]  = sky->star_intensities.z;
-    sb[7]  = sky->star_brightness_threshold;
-    sb[8]  = sky->star_color.x;
-    sb[9]  = sky->star_color.y;
-    sb[10] = sky->star_color.z;
-    sb[12] = sky->nebula_warm_color.x;
-    sb[13] = sky->nebula_warm_color.y;
-    sb[14] = sky->nebula_warm_color.z;
-    sb[16] = sky->nebula_cool_color.x;
-    sb[17] = sky->nebula_cool_color.y;
-    sb[18] = sky->nebula_cool_color.z;
-    sb[20] = sky->nebula_intensity;
-    sb[21] = sky->nebula_drift_speed;
-    sb[22] = sky->nebula_scale1;
-    sb[23] = sky->nebula_scale2;
-    sb[24] = sky->nebula_cloud_lo;
-    sb[25] = sky->nebula_cloud_hi;
-    sb[26] = sky->nebula_warm_blend_lo;
-    sb[27] = sky->nebula_warm_blend_hi;
-    sb[28] = sky->space_color.x;
-    sb[29] = sky->space_color.y;
-    sb[30] = sky->space_color.z;
-    sg_apply_uniforms(1, &(sg_range){ .ptr = sb, .size = sizeof(sb) });
-    /* No bindings needed — fullscreen triangle generated from gl_VertexID. */
+
+    /* ---- Pass A: starfield + nebula (opaque) ---- */
+    sg_apply_pipeline(R.pip_starfield);
+    starfield_params_t sp = {
+        .u_cam_right       = { cam_right[0], cam_right[1], cam_right[2] },
+        .u_cam_up          = { cam_up[0],    cam_up[1],    cam_up[2]    },
+        .u_cam_fwd         = { cam_fwd[0],   cam_fwd[1],   cam_fwd[2]   },
+        .u_sky_params      = { tan_half, aspect, R.time_seconds, 0.0f },
+        .u_star_densities  = { sky->star_densities.x, sky->star_densities.y, sky->star_densities.z, sky->star_sharpness },
+        .u_star_intensities= { sky->star_intensities.x, sky->star_intensities.y, sky->star_intensities.z, sky->star_brightness_threshold },
+        .u_star_color      = { sky->star_color.x, sky->star_color.y, sky->star_color.z },
+        .u_nebula_warm     = { sky->nebula_warm_color.x, sky->nebula_warm_color.y, sky->nebula_warm_color.z },
+        .u_nebula_cool     = { sky->nebula_cool_color.x, sky->nebula_cool_color.y, sky->nebula_cool_color.z },
+        .u_nebula_params   = { sky->nebula_intensity, sky->nebula_drift_speed, sky->nebula_scale1, sky->nebula_scale2 },
+        .u_nebula_smoothstep = { sky->nebula_cloud_lo, sky->nebula_cloud_hi, sky->nebula_warm_blend_lo, sky->nebula_warm_blend_hi },
+        .u_space_color     = { sky->space_color.x, sky->space_color.y, sky->space_color.z },
+    };
+    sg_apply_uniforms(UB_starfield_params, &SG_RANGE(sp));
     sg_apply_bindings(&(sg_bindings){ 0 });
     sg_draw(0, 3, 1);
+
+    /* ---- Pass B: atmospheric scattering (alpha-blended overlay) ---- */
+    if (R.env.atmo_strength > 0.001f) {
+        sg_apply_pipeline(R.pip_atmosphere);
+        atmosphere_params_t ap = {
+            .u_sun_dir       = { R.env.sun_dir.x, R.env.sun_dir.y, R.env.sun_dir.z },
+            .u_planet_center = { R.env.atmo_planet_center.x, R.env.atmo_planet_center.y, R.env.atmo_planet_center.z },
+            .u_camera_pos    = { R.env.camera_world.x, R.env.camera_world.y, R.env.camera_world.z },
+            .u_atmo_params   = { R.env.atmo_planet_radius, R.env.atmo_radius, R.env.atmo_strength, R.env.atmo_lower_radius },
+            .u_atmo_tuning   = { R.env.atmo_rayleigh_scale, R.env.atmo_mie_scale, R.env.atmo_sun_intensity, R.env.atmo_sunset_strength },
+            .u_atmo_phys     = { R.env.atmo_wavelengths.x, R.env.atmo_wavelengths.y, R.env.atmo_wavelengths.z, R.env.atmo_scale_height },
+            .u_atmo_mie      = { R.env.atmo_mie_g, 0.0f, 0.0f, 0.0f },
+            .u_sunset_tint   = { R.env.atmo_sunset_tint.x, R.env.atmo_sunset_tint.y, R.env.atmo_sunset_tint.z, 0.0f },
+            .u_sunset_glow   = { R.env.atmo_sunset_glow.x, R.env.atmo_sunset_glow.y, R.env.atmo_sunset_glow.z, 0.0f },
+            .u_sunset_horiz  = { R.env.atmo_sunset_horizon.x, R.env.atmo_sunset_horizon.y, R.env.atmo_sunset_horizon.z, 0.0f },
+            .u_cam_right     = { cam_right[0], cam_right[1], cam_right[2] },
+            .u_cam_up        = { cam_up[0],    cam_up[1],    cam_up[2]    },
+            .u_cam_fwd       = { cam_fwd[0],   cam_fwd[1],   cam_fwd[2]   },
+            .u_sky_params    = { tan_half, aspect, R.time_seconds, 0.0f },
+        };
+        sg_apply_uniforms(UB_atmosphere_params, &SG_RANGE(ap));
+        sg_apply_bindings(&(sg_bindings){ 0 });
+        sg_draw(0, 3, 1);
+    }
 }
 
 /* ----------------------------------------------------------------------- */

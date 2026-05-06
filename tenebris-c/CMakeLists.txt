@@ -79,6 +79,8 @@ if (EMSCRIPTEN)
     # GLSL strings.
     add_sokol_shader(tenebris src/shaders/water.glsl)
     add_sokol_shader(tenebris src/shaders/composite.glsl)
+    add_sokol_shader(tenebris src/shaders/starfield.glsl)
+    add_sokol_shader(tenebris src/shaders/atmosphere.glsl)
 
     set(EMCC_LINK_FLAGS
         "-sUSE_WEBGL2=1"
@@ -127,6 +129,8 @@ else()
 
     add_sokol_shader(tenebris src/shaders/water.glsl)
     add_sokol_shader(tenebris src/shaders/composite.glsl)
+    add_sokol_shader(tenebris src/shaders/starfield.glsl)
+    add_sokol_shader(tenebris src/shaders/atmosphere.glsl)
 
     if (APPLE)
         target_compile_definitions(tenebris PRIVATE SOKOL_METAL)
