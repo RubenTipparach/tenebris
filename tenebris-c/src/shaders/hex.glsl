@@ -45,7 +45,9 @@ void main() {
 
 @fs hex_fs
 
-layout(binding=0) uniform hex_fs_water {
+// Binding=2: vs_params at 0, vs_light at 1 already; sokol-shdc wants
+// uniform-block bindings to be unique across both stages of a program.
+layout(binding=2) uniform hex_fs_water {
     vec4 wet_params;     // x = sea_radius, y = time, z = wet_band_softness (m), w = unused
     vec4 swell_params;   // x = swell_amplitude, y = swell_frequency, z = swell_speed, w = enabled (0|1)
     vec4 wet_color;      // xyz = wet tint (deep_color), w = mix strength (0..1)
