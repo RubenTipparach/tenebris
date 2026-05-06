@@ -1724,7 +1724,7 @@ static void body_draw_water(chunked_body_t* body, mat4_t vp,
          * tint where the ray has fully attenuated. */
         .u_near           = 0.3f,
         .u_far            = 20000.0f,
-        .u_absorption     = { 0.30f, 0.10f, 0.05f },
+        .u_absorption     = { 0.60f, 0.20f, 0.10f },
         .u_deep_color     = { 0.02f, 0.10f, 0.22f },
     };
     sg_apply_uniforms(UB_fs_params, &SG_RANGE(fs_params));
