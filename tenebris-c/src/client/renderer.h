@@ -117,6 +117,12 @@ bool renderer_water_visible(void);
  * like leftover geometry when the rest of the scene is hidden. */
 void renderer_set_skybox_visible(bool visible);
 bool renderer_skybox_visible(void);
+
+/* Debug-only: replace the water surface with a heatmap of the
+ * per-vertex shoreline-distance attribute. Drives a uniform on
+ * the water shader. Off by default. */
+void renderer_set_shore_heatmap(bool on);
+bool renderer_shore_heatmap(void);
 /* Draw each registered body. `camera_world` is used to compute angular
  * screen size — bodies that subtend less than ~20% of the viewport
  * swap to a flat-shaded 20-face icosphere instead of their detailed

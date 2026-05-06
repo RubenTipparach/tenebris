@@ -527,6 +527,9 @@ static void event(const sapp_event* e) {
      * touch devices. Hides the chunked planet terrain so the
      * atmosphere / sky / distant LOD passes can be verified in
      * isolation. State lives in the renderer; we just flip it here. */
+    /* Keyboard shortcuts for the debug toggles. Mirror the four
+     * buttons in the hamburger drop-down (mobile_ui.c) so a desktop
+     * user can flip them without reaching for the mouse. */
     if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_H) {
         renderer_set_terrain_visible(!renderer_terrain_visible());
         return;
@@ -539,24 +542,19 @@ static void event(const sapp_event* e) {
         renderer_set_skybox_visible(!renderer_skybox_visible());
         return;
     }
+    /* Note: no F key for the heatmap — F is already bound to fly-mode
+     * in input.c. The heatmap is reachable via the menu button only. */
+
+    /* Debug-menu hit-test runs first on both touch + mouse so the
+     * hamburger and its popup buttons consume the input before it
+     * reaches the movement layer. */
     if (e->type == SAPP_EVENTTYPE_TOUCHES_BEGAN && e->num_touches > 0) {
-        const float w = sapp_widthf();
-        const float corner = 96.0f;   /* px hit-box edge length */
-        float tx = e->touches[0].pos_x;
-        float ty = e->touches[0].pos_y;
-        if (tx > w - corner && ty < corner) {
-            renderer_set_terrain_visible(!renderer_terrain_visible());
+        if (mobile_ui_handle_touch(e->touches[0].pos_x, e->touches[0].pos_y)) {
             return;
         }
-        if (tx < corner && ty < corner) {
-            renderer_set_water_visible(!renderer_water_visible());
-            return;
-        }
-        /* Top-middle band toggles sky / atmosphere. Same height as
-         * the other two corner zones. */
-        if (ty < corner && tx > w * 0.5f - corner * 0.5f
-                       && tx < w * 0.5f + corner * 0.5f) {
-            renderer_set_skybox_visible(!renderer_skybox_visible());
+    }
+    if (e->type == SAPP_EVENTTYPE_MOUSE_DOWN && e->mouse_button == SAPP_MOUSEBUTTON_LEFT) {
+        if (mobile_ui_handle_touch(e->mouse_x, e->mouse_y)) {
             return;
         }
     }

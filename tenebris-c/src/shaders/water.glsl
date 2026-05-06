@@ -97,6 +97,7 @@ layout(binding=1) uniform fs_params {
     float u_ripple_scale;    // spatial multiplier inside the fbm lookup
     float u_ripple_speed;    // multiplier on the time advection inside fbm
     float u_wave_steepness;  // normal-perturbation factor (was hard-coded 0.65)
+    float u_debug_shore_heatmap; // 0 = normal water, 1 = paint v_shore_dist as a heatmap
 };
 
 // water_scene_color / water_scene_depth are texture views of the
@@ -278,17 +279,22 @@ void main() {
     // Shoreline foam — distance-from-shore white wash. v_shore_dist
     // is the per-vertex BFS distance to the nearest land tile (m,
     // along the surface), baked at mesh-build time and interpolated
-    // across the cap face. 1 at the shoreline (dist=0), 0 by
-    // u_shore_foam_dist. View-independent + swell-independent —
+    // across the cap face. View-independent + swell-independent —
     // replaces the earlier thickness=max(0, scene_z - water_z)
     // proxy, which was a view-ray length, not vertical depth, so it
-    // grew with camera tilt and pulsed with the swell. Modulated by
-    // fbm height so the band has texture instead of being a flat
-    // band. Lives on its own alpha track so it stays visible inside
-    // the shoreline_fade region (the alpha feather would otherwise
-    // wash it out).
-    float shore_foam = 1.0 - smoothstep(0.0, u_shore_foam_dist, v_shore_dist);
-    shore_foam *= 0.6 + 0.4 * smoothstep(-0.4, 0.4, h0);
+    // grew with camera tilt and pulsed with the swell.
+    //
+    // Two-stage blend so the foam reads as opaque white right at
+    // the shoreline and only feathers out in the outer half:
+    //   * inner core: smoothstep(0, foam_dist*0.5, dist) → solid 1
+    //     across the first half of the band (no fbm dampening here).
+    //   * outer feather: smoothstep(foam_dist*0.5, foam_dist, dist)
+    //     → ramps to 0, fbm-modulated so the trailing edge has
+    //     texture instead of looking like a flat band.
+    float core_in = 1.0 - smoothstep(0.0, u_shore_foam_dist * 0.5, v_shore_dist);
+    float feather = 1.0 - smoothstep(u_shore_foam_dist * 0.5, u_shore_foam_dist, v_shore_dist);
+    float fbm_mod = 0.7 + 0.3 * smoothstep(-0.4, 0.4, h0);
+    float shore_foam = max(core_in, feather * fbm_mod);
 
     // Optional posterize for a cel-shaded ring look. bands ≤ 1
     // short-circuits to the smooth gradient. Otherwise quantise into
@@ -323,15 +329,13 @@ void main() {
     // where on the cap the fragment lives.
     color += sun_highlight;
 
-    // ---- DEBUG: shore-dist heatmap ----
-    // Replaces the final water colour with a heatmap of v_shore_dist
-    // so we can see whether the per-vertex attribute is actually
-    // making it through. Remove once the foam reads correctly.
-    //   v_shore_dist == 0     → solid red    (right at shore)
-    //   0 < v < foam_dist     → red→yellow gradient (in foam band)
-    //   foam_dist < v < 5×    → yellow→green (just past foam)
-    //   v > 5× foam_dist      → solid blue (open water)
-    {
+    // Debug heatmap: when u_debug_shore_heatmap is on, override the
+    // final water colour with a gradient mapped from v_shore_dist
+    // (red at the shore, yellow inside the foam band, green just
+    // past it, blue in open water). Lets us verify the per-vertex
+    // shoreline-distance attribute end-to-end without trusting the
+    // foam smoothstep tuning.
+    if (u_debug_shore_heatmap > 0.5) {
         float d = v_shore_dist;
         float fd = max(u_shore_foam_dist, 0.0001);
         vec3 dbg;

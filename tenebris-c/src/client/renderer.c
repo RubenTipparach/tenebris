@@ -236,6 +236,12 @@ static bool R_WATER_VISIBLE = true;
  * stays visible. */
 static bool R_SKYBOX_VISIBLE = true;
 
+/* Debug-only: paint the water cap as a heatmap of v_shore_dist
+ * (red at the shore, yellow inside the foam band, green just past,
+ * blue in open water). Useful for confirming the per-vertex
+ * shoreline-distance attribute end-to-end. Off by default. */
+static bool R_DEBUG_SHORE_HEATMAP = false;
+
 /* ----------------------------------------------------------------------- */
 
 /* Hex / distant-body / sun shaders are sokol-shdc-managed under
@@ -1618,6 +1624,7 @@ static void body_draw_water(chunked_body_t* body, mat4_t vp,
         .u_ripple_scale    = W->ripple_scale,
         .u_ripple_speed    = W->ripple_speed,
         .u_wave_steepness  = W->wave_steepness,
+        .u_debug_shore_heatmap = R_DEBUG_SHORE_HEATMAP ? 1.0f : 0.0f,
     };
     sg_apply_uniforms(UB_fs_params, &SG_RANGE(fs_params));
 
@@ -1859,3 +1866,5 @@ void renderer_set_water_visible(bool v)   { R_WATER_VISIBLE = v;   }
 bool renderer_water_visible(void)          { return R_WATER_VISIBLE; }
 void renderer_set_skybox_visible(bool v)  { R_SKYBOX_VISIBLE = v;  }
 bool renderer_skybox_visible(void)         { return R_SKYBOX_VISIBLE; }
+void renderer_set_shore_heatmap(bool v)   { R_DEBUG_SHORE_HEATMAP = v; }
+bool renderer_shore_heatmap(void)          { return R_DEBUG_SHORE_HEATMAP; }
