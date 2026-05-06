@@ -1,58 +1,69 @@
-// Atmospheric scattering shader. Fullscreen pass that runs AFTER
-// the starfield draws, alpha-blended over it. Bruneton-style
-// ray-march through a sphere shell — direct port of Caelum's
-// atmosphere.glsl. Outputs vec4(rgb, alpha) where alpha gates how
-// much the atmosphere replaces the starfield underneath.
-//
-// Two radii: Rp = planet ground (clip + sun shadow), Rg = density
-// lower bound (raise to thin the rim halo without producing a void
-// band — see WATER_REFRACTION.md notes for the void-band fix).
+// atmosphere.glsl — GPU Gems 2 Ch.16 atmospheric scattering
+// (fullscreen ray-march). Direct port of the Caelum reference shader
+// to sokol-shdc format. Renders as a fullscreen pass with
+// alpha-blending on top of the starfield.
 
 @vs atmosphere_vs
 
-out vec2 v_ndc;
+layout(binding=0) uniform atmosphere_vs_params {
+    vec4 cam_right;    // xyz = right vector, w = tan(fov/2)
+    vec4 cam_up;       // xyz = up vector,    w = aspect ratio
+    vec4 cam_forward;  // xyz = forward vector
+    vec4 camera_pos;   // xyz = camera world position
+};
+
+layout(location=0) in vec2 a_pos;
+
+out vec3 view_dir;
+out vec3 v_camera_pos;
 
 void main() {
-    vec2 pos = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2);
-    pos = pos * 2.0 - 1.0;
-    gl_Position = vec4(pos, 0.99999, 1.0);
-    v_ndc = pos;
+    gl_Position = vec4(a_pos, 0.0, 1.0);
+
+    float tan_half_fov = cam_right.w;
+    float aspect       = cam_up.w;
+    view_dir = cam_forward.xyz
+             + cam_right.xyz * (a_pos.x * tan_half_fov * aspect)
+             + cam_up.xyz    * (a_pos.y * tan_half_fov);
+    v_camera_pos = camera_pos.xyz;
 }
 @end
 
 
 @fs atmosphere_fs
 
-precision highp int;
-
-layout(binding=0) uniform atmosphere_params {
-    vec3 u_sun_dir;
-    vec3 u_planet_center;
-    vec3 u_camera_pos;
-    vec4 u_atmo_params;       // x=Rp, y=Ra, z=strength, w=Rg
-    vec4 u_atmo_tuning;       // x=rayleigh, y=mie, z=sun_intensity, w=sunset_strength
-    vec4 u_atmo_phys;         // xyz=wavelengths^-4, w=scale_height
-    vec4 u_atmo_mie;          // x=mie_g, yzw=unused
-    vec4 u_sunset_tint;       // xyz=multiplicative warm tint
-    vec4 u_sunset_glow;       // xyz=sun-direction glow rgb
-    vec4 u_sunset_horiz;      // xyz=horizon-band rgb
-    vec3 u_cam_right;
-    vec3 u_cam_up;
-    vec3 u_cam_fwd;
-    vec4 u_sky_params;        // x=tan(fovY/2), y=aspect, z=time (unused here)
+layout(binding=1) uniform atmosphere_fs_params {
+    vec4 sun_direction;     // xyz = normalised sun direction
+    vec4 radii;             // x = planet_radius, y = atmosphere_radius, z = scale_height
+    vec4 scatter_coeffs;    // x = rayleigh_scale, y = mie_scale, z = mie_g, w = sun_intensity
 };
 
-in vec2 v_ndc;
+in vec3 view_dir;
+in vec3 v_camera_pos;
+
 out vec4 frag_color;
 
 #define PI 3.14159265359
-#define NUM_SAMPLES 12
+#define NUM_SAMPLES 8
 #define NUM_LIGHT_SAMPLES 4
 
-float h31(vec3 p) {
-    p = fract(p * vec3(443.897, 441.423, 437.195));
-    p += dot(p, p.yzx + 19.19);
-    return fract((p.x + p.y) * p.z);
+// (1/wavelength)^4 for Rayleigh scattering — 680 nm / 550 nm / 440 nm.
+const vec3 wavelengthsInv4 = vec3(5.602, 9.473, 19.644);
+
+float scaleHeight;
+
+float hash(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+float rayleighPhase(float cosTheta) {
+    return 0.75 * (1.0 + cosTheta * cosTheta);
+}
+
+float miePhase(float cosTheta, float g) {
+    float g2 = g * g;
+    float denom = 1.0 + g2 - 2.0 * g * cosTheta;
+    return (1.0 - g2) / (4.0 * PI * pow(max(denom, 0.0001), 1.5));
 }
 
 vec2 raySphereIntersect(vec3 ro, vec3 rd, float radius) {
@@ -60,56 +71,51 @@ vec2 raySphereIntersect(vec3 ro, vec3 rd, float radius) {
     float c = dot(ro, ro) - radius * radius;
     float disc = b * b - c;
     if (disc < 0.0) return vec2(-1.0);
-    float s = sqrt(disc);
-    return vec2(-b - s, -b + s);
+    float sqrtDisc = sqrt(disc);
+    return vec2(-b - sqrtDisc, -b + sqrtDisc);
 }
 
-float density(float altitude) {
-    return exp(-altitude / u_atmo_phys.w);
+float getDensity(float altitude) {
+    return exp(-altitude / scaleHeight);
 }
 
-float opticalDepth(vec3 ro, vec3 rd, float rayLen, float Rg, float thickness) {
-    float step_size = rayLen / float(NUM_LIGHT_SAMPLES);
-    float ns = step_size / thickness;
+float computeOpticalDepth(vec3 rayOrigin, vec3 rayDir, float rayLength,
+                          float pRadius, float aRadius) {
+    float atmosThickness = aRadius - pRadius;
+    float stepSize = rayLength / float(NUM_LIGHT_SAMPLES);
+    float normalizedStep = stepSize / atmosThickness;
     float depth = 0.0;
-    for (int i = 0; i < NUM_LIGHT_SAMPLES; ++i) {
-        vec3  p = ro + rd * (step_size * (float(i) + 0.5));
-        float a = clamp((length(p) - Rg) / thickness, 0.0, 1.0);
-        depth += density(a) * ns;
+    for (int i = 0; i < NUM_LIGHT_SAMPLES; i++) {
+        vec3 samplePos = rayOrigin + rayDir * (stepSize * (float(i) + 0.5));
+        float altitude = (length(samplePos) - pRadius) / atmosThickness;
+        altitude = clamp(altitude, 0.0, 1.0);
+        depth += getDensity(altitude) * normalizedStep;
     }
     return depth;
 }
 
 void main() {
-    float strength = u_atmo_params.z;
-    if (strength <= 0.001) {
+    scaleHeight = radii.z;
+    vec3 rayDir = normalize(view_dir);
+    vec3 rayOrigin = v_camera_pos;
+    float pRadius = radii.x;
+    float aRadius = radii.y;
+    float rayleighScale = scatter_coeffs.x;
+    float mieScale = scatter_coeffs.y;
+    float mieG = scatter_coeffs.z;
+    float sunIntensity = scatter_coeffs.w;
+    vec3 sunDir = normalize(sun_direction.xyz);
+
+    vec2 atmosHit = raySphereIntersect(rayOrigin, rayDir, aRadius);
+    if (atmosHit.y < 0.0) {
         frag_color = vec4(0.0);
         return;
     }
 
-    float t  = u_sky_params.x;
-    float ar = u_sky_params.y;
-    vec3 d = normalize(u_cam_fwd
-                     + v_ndc.x * ar * t * u_cam_right
-                     + v_ndc.y * t       * u_cam_up);
+    float rayStart = max(0.0, atmosHit.x);
+    float rayEnd = atmosHit.y;
 
-    float Rp = u_atmo_params.x;
-    float Ra = u_atmo_params.y;
-    float Rg = (u_atmo_params.w > 0.0) ? u_atmo_params.w : Rp;
-    float thickness = max(Ra - Rg, 0.001);
-
-    vec3 ro = u_camera_pos - u_planet_center;
-
-    vec2 atmoHit = raySphereIntersect(ro, d, Ra);
-    if (atmoHit.y < 0.0) {
-        frag_color = vec4(0.0);
-        return;
-    }
-
-    float rayStart = max(0.0, atmoHit.x);
-    float rayEnd   = atmoHit.y;
-
-    vec2 planetHit = raySphereIntersect(ro, d, Rp);
+    vec2 planetHit = raySphereIntersect(rayOrigin, rayDir, pRadius);
     if (planetHit.x > 0.0) {
         rayEnd = min(rayEnd, planetHit.x);
     }
@@ -119,74 +125,80 @@ void main() {
         return;
     }
 
-    float rayLen   = rayEnd - rayStart;
-    float stepSize = rayLen / float(NUM_SAMPLES);
-    float normStep = stepSize / thickness;
-    float dither   = h31(vec3(gl_FragCoord.xy, 0.5)) * 0.5;
+    float rayLength = rayEnd - rayStart;
+    float stepSize = rayLength / float(NUM_SAMPLES);
+    float atmosThickness = aRadius - pRadius;
+    float normalizedStep = stepSize / atmosThickness;
 
-    vec3 sunDir = normalize(u_sun_dir);
+    float dither = hash(gl_FragCoord.xy) * 0.5;
 
-    vec3  rSum = vec3(0.0);
-    vec3  mSum = vec3(0.0);
-    float odR  = 0.0;
-    float odM  = 0.0;
+    vec3 rayleighSum = vec3(0.0);
+    vec3 mieSum = vec3(0.0);
+    float optDepthR = 0.0;
+    float optDepthM = 0.0;
 
-    for (int i = 0; i < NUM_SAMPLES; ++i) {
-        vec3  p = ro + d * (rayStart + stepSize * (float(i) + dither));
-        float h = length(p);
-        if (h < Rg) continue;
-        float altitude = clamp((h - Rg) / thickness, 0.0, 1.0);
-        float dens = density(altitude);
-        float seg  = dens * normStep;
-        odR += seg;
-        odM += seg;
+    for (int i = 0; i < NUM_SAMPLES; i++) {
+        vec3 samplePos = rayOrigin + rayDir * (rayStart + stepSize * (float(i) + dither));
+        float height = length(samplePos);
 
-        vec2 sunPlanet = raySphereIntersect(p, sunDir, Rp);
-        if (sunPlanet.x > 0.0) continue;
-        vec2 sunAtmo   = raySphereIntersect(p, sunDir, Ra);
-        float sunLen   = max(0.0, sunAtmo.y);
-        float sunOd    = opticalDepth(p, sunDir, sunLen, Rg, thickness);
+        if (height < pRadius) continue;
 
-        vec3 tauR = u_atmo_tuning.x * u_atmo_phys.xyz * (odR + sunOd);
-        vec3 tauM = vec3(u_atmo_tuning.y * (odM + sunOd));
-        vec3 atten = exp(-(tauR + tauM));
-        rSum += dens * atten * normStep;
-        mSum += dens * atten * normStep;
+        float altitude = (height - pRadius) / atmosThickness;
+        altitude = clamp(altitude, 0.0, 1.0);
+
+        float localDensity = getDensity(altitude);
+
+        float segmentDepth = localDensity * normalizedStep;
+        optDepthR += segmentDepth;
+        optDepthM += segmentDepth;
+
+        vec2 sunPlanetHit = raySphereIntersect(samplePos, sunDir, pRadius);
+        if (sunPlanetHit.x > 0.0) continue;
+
+        vec2 sunAtmosHit = raySphereIntersect(samplePos, sunDir, aRadius);
+        float sunRayLength = max(0.0, sunAtmosHit.y);
+        float sunOptDepth = computeOpticalDepth(samplePos, sunDir, sunRayLength,
+                                                 pRadius, aRadius);
+
+        vec3 tauR = rayleighScale * wavelengthsInv4 * (optDepthR + sunOptDepth);
+        vec3 tauM = vec3(mieScale * (optDepthM + sunOptDepth));
+        vec3 attenuation = exp(-(tauR + tauM));
+
+        rayleighSum += localDensity * attenuation * normalizedStep;
+        mieSum += localDensity * attenuation * normalizedStep;
     }
 
-    rSum *= u_atmo_tuning.x * u_atmo_phys.xyz;
-    mSum *= u_atmo_tuning.y;
+    rayleighSum *= rayleighScale * wavelengthsInv4;
+    mieSum *= mieScale;
 
-    float cosTheta = dot(d, sunDir);
-    float phaseR   = 0.75 * (1.0 + cosTheta * cosTheta);
-    float gg       = u_atmo_mie.x * u_atmo_mie.x;
-    float phaseM   = (1.0 - gg) /
-                     (4.0 * PI *
-                      pow(max(1.0 + gg - 2.0 * u_atmo_mie.x * cosTheta, 0.0001), 1.5));
+    float cosTheta = dot(rayDir, sunDir);
+    float phaseR = rayleighPhase(cosTheta);
+    float phaseM = miePhase(cosTheta, mieG);
 
-    vec3 sky = u_atmo_tuning.z * (rSum * phaseR + mSum * phaseM);
+    vec3 color = sunIntensity * (rayleighSum * phaseR + mieSum * phaseM);
 
-    vec3  ro_norm    = normalize(ro);
-    float sun_height = dot(sunDir, ro_norm);
-    float sunset     = smoothstep(0.3, -0.05, sun_height);
-    float view_sun   = max(0.0, cosTheta);
-    float ws = u_atmo_tuning.w;
-    sky *= mix(vec3(1.0), u_sunset_tint.xyz, sunset * 0.5 * ws);
-    sky += u_sunset_glow.xyz * pow(view_sun, 3.0) * sunset * u_atmo_tuning.z * 0.12 * ws;
-    float horizon = 1.0 - abs(dot(d, ro_norm));
-    horizon = pow(horizon, 3.0);
-    sky += u_sunset_horiz.xyz * horizon * sunset * u_atmo_tuning.z * 0.04 * ws;
+    // Sunset warmth — analytical multipliers; numerical integration
+    // tends to under-shoot these at the step counts we afford.
+    {
+        float sun_height = dot(sunDir, normalize(v_camera_pos));
+        float sunset = smoothstep(0.3, -0.05, sun_height);
+        float view_sun = max(0.0, dot(rayDir, sunDir));
 
-    sky = 1.0 - exp(-sky);
+        color *= mix(vec3(1.0), vec3(1.3, 1.0, 0.6), sunset * 0.5);
 
-    // Caelum-style alpha-by-intensity. With SRC_ALPHA /
-    // ONE_MINUS_SRC_ALPHA blending against the starfield underneath:
-    // bright limbs / sun-side fully replace the stars, dim regions
-    // (back side of the shell, planet-occluded segments) leave the
-    // starfield visible. `strength` from atmo_params crossfades the
-    // whole effect for non-atmospheric bodies.
-    float alpha = clamp(length(sky) * 1.5, 0.0, 0.95) * strength;
-    frag_color = vec4(sky, alpha);
+        float glow = pow(view_sun, 3.0) * sunset;
+        color += vec3(1.0, 0.65, 0.25) * glow * sunIntensity * 0.12;
+
+        float horizon = 1.0 - abs(dot(rayDir, normalize(v_camera_pos)));
+        horizon = pow(horizon, 3.0);
+        color += vec3(0.8, 0.4, 0.15) * horizon * sunset * sunIntensity * 0.04;
+    }
+
+    color = 1.0 - exp(-color);
+
+    float alpha = clamp(length(color) * 1.5, 0.0, 0.95);
+
+    frag_color = vec4(color, alpha);
 }
 @end
 

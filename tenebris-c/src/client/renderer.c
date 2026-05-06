@@ -145,6 +145,7 @@ static struct {
     sg_sampler  smp_offscreen; /* linear-clamp sampler for the composite + water passes */
     sg_pipeline pip_starfield;     /* fullscreen stars + nebula              */
     sg_pipeline pip_atmosphere;    /* fullscreen alpha-blended scattering    */
+    sg_buffer   fullscreen_tri_vbuf; /* 3-vert vec2 vbuf used by atmosphere  */
     sg_pipeline pip_distant;   /* subdivided icosphere w/ vertex colours (far LOD) */
     sg_pipeline pip_sun;       /* emissive sun sphere                   */
     /* Average RGB of each atlas column, computed once at bake_atlas
@@ -602,6 +603,12 @@ void renderer_init(void) {
     sg_shader shd_atmosphere = sg_make_shader(atmosphere_shader_desc(sg_query_backend()));
     R.pip_atmosphere = sg_make_pipeline(&(sg_pipeline_desc){
         .shader = shd_atmosphere,
+        .layout = {
+            .attrs = {
+                [ATTR_atmosphere_a_pos] = { .format = SG_VERTEXFORMAT_FLOAT2 },
+            },
+            .buffers[0].stride = 2 * sizeof(float),
+        },
         .index_type = SG_INDEXTYPE_NONE,
         .cull_mode = SG_CULLMODE_NONE,
         .depth = { .write_enabled = false, .compare = SG_COMPAREFUNC_LESS_EQUAL },
@@ -613,6 +620,17 @@ void renderer_init(void) {
             .dst_factor_alpha = SG_BLENDFACTOR_ONE,
         },
         .label = "atmosphere-pipeline",
+    });
+
+    /* Fullscreen-triangle vbuf used by the atmosphere shader (and
+     * any future pass that wants to take vec2 a_pos rather than
+     * gl_VertexIndex). Three NDC verts: (-1,-1), (3,-1), (-1,3) —
+     * the over-large triangle covers the entire viewport including
+     * the corners; the unused area gets clipped by the viewport. */
+    static const float fullscreen_tri[6] = { -1.0f, -1.0f,  3.0f, -1.0f,  -1.0f,  3.0f };
+    R.fullscreen_tri_vbuf = sg_make_buffer(&(sg_buffer_desc){
+        .data = SG_RANGE(fullscreen_tri),
+        .label = "fullscreen-tri-vbuf",
     });
 
     /* Distant-LOD pipeline. The mesh itself is per-body and gets
@@ -775,6 +793,7 @@ void renderer_shutdown(void) {
     sg_destroy_sampler(R.smp_offscreen);
     sg_destroy_pipeline(R.pip_starfield);
     sg_destroy_pipeline(R.pip_atmosphere);
+    sg_destroy_buffer(R.fullscreen_tri_vbuf);
     sg_destroy_pipeline(R.pip_distant);
     sg_destroy_pipeline(R.pip_sun);
     sg_destroy_buffer(R.uvsphere_vbuf);
@@ -855,26 +874,36 @@ void renderer_draw_skybox(mat4_t view, mat4_t proj) {
     sg_draw(0, 3, 1);
 
     /* ---- Pass B: atmospheric scattering (alpha-blended overlay) ---- */
+    /* Camera position is passed in PLANET-LOCAL space because the
+     * shader's ray-sphere intersect assumes the planet sits at origin
+     * (Caelum's convention — see atmosphere.glsl). */
     if (R_SKYBOX_VISIBLE && R.env.atmo_strength > 0.001f) {
         sg_apply_pipeline(R.pip_atmosphere);
-        atmosphere_params_t ap = {
-            .u_sun_dir       = { R.env.sun_dir.x, R.env.sun_dir.y, R.env.sun_dir.z },
-            .u_planet_center = { R.env.atmo_planet_center.x, R.env.atmo_planet_center.y, R.env.atmo_planet_center.z },
-            .u_camera_pos    = { R.env.camera_world.x, R.env.camera_world.y, R.env.camera_world.z },
-            .u_atmo_params   = { R.env.atmo_planet_radius, R.env.atmo_radius, R.env.atmo_strength, R.env.atmo_lower_radius },
-            .u_atmo_tuning   = { R.env.atmo_rayleigh_scale, R.env.atmo_mie_scale, R.env.atmo_sun_intensity, R.env.atmo_sunset_strength },
-            .u_atmo_phys     = { R.env.atmo_wavelengths.x, R.env.atmo_wavelengths.y, R.env.atmo_wavelengths.z, R.env.atmo_scale_height },
-            .u_atmo_mie      = { R.env.atmo_mie_g, 0.0f, 0.0f, 0.0f },
-            .u_sunset_tint   = { R.env.atmo_sunset_tint.x, R.env.atmo_sunset_tint.y, R.env.atmo_sunset_tint.z, 0.0f },
-            .u_sunset_glow   = { R.env.atmo_sunset_glow.x, R.env.atmo_sunset_glow.y, R.env.atmo_sunset_glow.z, 0.0f },
-            .u_sunset_horiz  = { R.env.atmo_sunset_horizon.x, R.env.atmo_sunset_horizon.y, R.env.atmo_sunset_horizon.z, 0.0f },
-            .u_cam_right     = { cam_right[0], cam_right[1], cam_right[2] },
-            .u_cam_up        = { cam_up[0],    cam_up[1],    cam_up[2]    },
-            .u_cam_fwd       = { cam_fwd[0],   cam_fwd[1],   cam_fwd[2]   },
-            .u_sky_params    = { tan_half, aspect, R.time_seconds, 0.0f },
+        const vec3_t cam_local = vec3_sub(R.env.camera_world, R.env.atmo_planet_center);
+        atmosphere_vs_params_t avp = {
+            .cam_right   = { cam_right[0], cam_right[1], cam_right[2], tan_half },
+            .cam_up      = { cam_up[0],    cam_up[1],    cam_up[2],    aspect   },
+            .cam_forward = { cam_fwd[0],   cam_fwd[1],   cam_fwd[2],   0.0f     },
+            .camera_pos  = { cam_local.x,  cam_local.y,  cam_local.z,  0.0f     },
         };
-        sg_apply_uniforms(UB_atmosphere_params, &SG_RANGE(ap));
-        sg_apply_bindings(&(sg_bindings){ 0 });
+        sg_apply_uniforms(UB_atmosphere_vs_params, &SG_RANGE(avp));
+
+        atmosphere_fs_params_t afp = {
+            .sun_direction  = { R.env.sun_dir.x, R.env.sun_dir.y, R.env.sun_dir.z, 0.0f },
+            .radii          = { R.env.atmo_planet_radius,
+                                R.env.atmo_radius,
+                                R.env.atmo_scale_height > 0.0f ? R.env.atmo_scale_height : 0.25f,
+                                0.0f },
+            .scatter_coeffs = { R.env.atmo_rayleigh_scale,
+                                R.env.atmo_mie_scale,
+                                R.env.atmo_mie_g,
+                                R.env.atmo_sun_intensity },
+        };
+        sg_apply_uniforms(UB_atmosphere_fs_params, &SG_RANGE(afp));
+
+        sg_apply_bindings(&(sg_bindings){
+            .vertex_buffers[0] = R.fullscreen_tri_vbuf,
+        });
         sg_draw(0, 3, 1);
     }
 }
