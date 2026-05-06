@@ -129,7 +129,15 @@
 
 water:
   time_scale:         0.75
-  depth_offset_m:     0.50
+  # Cap rests AT sea level (depth_offset = 0) so the wave swell can
+  # crest above sea level and trough below it, dragging the visible
+  # waterline on coastal block side-faces up and down with the
+  # actual surface. Setting this back to 0.50 reintroduces the
+  # static "blue strip" of dry side-face above the always-depressed
+  # cap; raising swell_amplitude with depth_offset = 0 lets crests
+  # spill across beach tops (which is the realistic behaviour at
+  # the tide line, not the artefact the old comment thought it was).
+  depth_offset_m:     0.00
   height_offset_m:    0.00
   refract_amount:     0.04
   absorption:         [0.60, 0.20, 0.10]
