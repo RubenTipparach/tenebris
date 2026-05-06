@@ -1726,6 +1726,11 @@ static void body_draw_water(chunked_body_t* body, mat4_t vp,
         .u_far            = 20000.0f,
         .u_absorption     = { 0.60f, 0.20f, 0.10f },
         .u_deep_color     = { 0.02f, 0.10f, 0.22f },
+        /* Shoreline alpha smoothstep: fully transparent at the
+         * cap-edge thickness=0 pixel, fully opaque by 0.5 m of
+         * water. Hides the hard hex-cap silhouette where the cap
+         * meets sand. */
+        .u_shoreline_fade = 0.5f,
     };
     sg_apply_uniforms(UB_fs_params, &SG_RANGE(fs_params));
 

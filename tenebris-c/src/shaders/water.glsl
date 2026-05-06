@@ -59,6 +59,7 @@ layout(binding=1) uniform fs_params {
     float u_far;             // projection far plane (m)
     vec3 u_absorption;       // Beer-Lambert sigma per RGB channel (1/m)
     vec3 u_deep_color;       // saturation colour where the ray has fully attenuated
+    float u_shoreline_fade;  // smoothstep upper edge for thickness-driven alpha (m)
 };
 
 // water_scene_color / water_scene_depth are texture views of the
@@ -225,10 +226,15 @@ void main() {
 
     vec3 color = mix(base, sky, f) + sun_highlight;
     color = mix(color, vec3(0.95, 0.97, 1.0), foam * 0.6);
-    // Alpha stays high — the refracted scene is already the base, so
-    // we don't need much swapchain-blend for the through-water look.
-    // A small Fresnel range still softens the edge of the cap mesh.
-    float alpha = mix(0.85, 0.95, f);
+    // Alpha: Fresnel-driven base, plus a thickness-driven smoothstep
+    // that feathers the cap edge into the beach. At thickness 0 (the
+    // exact pixel where cap mesh meets sand) alpha goes to zero so
+    // the hard cap-edge silhouette dissolves; by 0.5 m of water the
+    // cap is fully opaque again. u_shoreline_fade is the upper edge
+    // of the smoothstep — tunable from C without a shader rebuild.
+    float fresnel_alpha  = mix(0.85, 0.95, f);
+    float shoreline_fade = smoothstep(0.0, u_shoreline_fade, thickness);
+    float alpha = fresnel_alpha * shoreline_fade;
 
     frag_color = vec4(color, alpha);
 }
