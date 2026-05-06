@@ -127,15 +127,59 @@ void main() {
     // band the mask saturates to 0 above / 1 below as expected.
     float wet = smoothstep(band_m, -band_m, pixel_alt);
 
-    // Meniscus band: 1 at the waterline, falls to 0 at |alt| = band.
-    // ONLY fires when the camera itself is within the band — outside
-    // of that the smear has nothing to hide (camera fully above /
-    // below has a clean transition through the cap), and stacking
-    // the smear + blur on the cap from a distance reads as a wide
-    // shimmery stripe across the whole sea instead of a tight wet-
-    // lens line at the actual waterline.
-    float cam_in_band = 1.0 - smoothstep(band_m, band_m * 2.0, abs(camera_alt));
-    float meniscus    = (1.0 - smoothstep(0.0, band_m, abs(pixel_alt))) * cam_in_band;
+    // Meniscus band — a thin horizontal strip on screen at the
+    // camera's water-line, NOT a per-pixel altitude test. Two
+    // independent gates:
+    //
+    //   1. cam_at_surface — only fires when the camera lens is
+    //      essentially AT the surface (full strength < 5 cm,
+    //      faded out by 15 cm). Above or below by more than that
+    //      there's no lens-water interface to hide.
+    //   2. pitch_band — only fires on screen pixels whose view ray
+    //      points roughly horizontal in the local camera-up frame.
+    //      That's the row across the screen where the water plane
+    //      crosses the camera, and the only place the smear is
+    //      hiding a real geometric clip. Past ±~6° from horizontal
+    //      we're looking at sky or seabed, where smear has nothing
+    //      to do.
+    //
+    // The earlier per-pixel altitude test painted the smear over
+    // every cap fragment (the cap geometry IS at sea level, so all
+    // of its pixels had altitude ≈ 0) and read as a wide shimmery
+    // stripe across the whole screen instead of a tight wet-lens
+    // line. The pitch gate fixes that — the cap geometry is wide
+    // angularly, but only the slice of it skimming the horizontal
+    // direction is actually on the lens-water boundary.
+    // Compute the camera-space waterline directly. The water plane
+    // (camera_alt = 0 surface) has normal = cam_up_world. A view
+    // ray with normalised direction `view_norm` crosses the plane at
+    // distance t along the ray such that:
+    //
+    //     view_norm · cam_up_world * t  +  camera_alt  =  0
+    //  →  t = -camera_alt / dot(view_norm, cam_up_world)
+    //
+    // For a half-submerged camera (camera_alt → 0), t → 0 only on
+    // pixels whose view ray is perpendicular to cam_up — exactly
+    // the row of pixels where the water plane skims the lens.
+    // Other pixels' view rays hit the water plane at non-zero
+    // distance (above or below), and don't need the smear.
+    //
+    // dot(view_norm, cam_up_world) is positive looking up, negative
+    // looking down, ~0 looking horizontal. The thin meniscus strip
+    // is where |dot| is very small. Using the absolute value here
+    // gates a single horizontal strip; tightness in radians defines
+    // the strip's screen-pixel height (≈ pitch_threshold * screen_h
+    // / vertical_fov).
+    //
+    // Tuned for a ~10-20 px tall band on a 60° vertical FOV / 1080p
+    // screen: full strength under 0.17° (sin ≈ 0.003), faded by
+    // 1.7° (sin ≈ 0.030).
+    vec3  cam_up         = normalize(v_camera_pos - pcen);
+    vec3  view_norm      = normalize(v_view_dir);
+    float pitch_proxy    = abs(dot(view_norm, cam_up));
+    float cam_at_surface = 1.0 - smoothstep(0.05, 0.15, abs(camera_alt));
+    float pitch_band     = 1.0 - smoothstep(0.003, 0.030, pitch_proxy);
+    float meniscus       = cam_at_surface * pitch_band;
 
     // Underwater shimmer (gentle, applies wherever wet > 0) PLUS
     // the heavy meniscus smear (applies inside the band on either
