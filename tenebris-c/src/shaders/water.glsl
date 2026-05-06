@@ -54,7 +54,15 @@ layout(binding=1) uniform fs_params {
     vec3 u_camera_pos;
     vec3 u_sun_dir;
     float u_time;
+    float u_refract_amount;  // surface-gradient → screen UV perturbation scale
 };
+
+// water_scene_color / water_scene_depth are texture views of the offscreen colour
+// + depth attachments rendered before the water draw. Sampled at
+// gl_FragCoord-derived UV for screen-space refraction.
+layout(binding=0) uniform texture2D water_scene_color;
+layout(binding=1) uniform texture2D water_scene_depth;
+layout(binding=0) uniform sampler   water_scene_smp;
 
 precision highp int;
 
@@ -128,9 +136,8 @@ float fbm3(vec3 p, float t) {
 }
 
 void main() {
-    // Same trick as the VS: derive the radial from world-space
-    // position, not from a per-tile-flat varying. Keeps lighting
-    // continuous across tile boundaries.
+    // Radial from world-space position keeps lighting continuous
+    // across tile boundaries.
     vec3 radial = normalize(v_wpos);
 
     // Scalar height + 3-sample finite-difference world-space
@@ -143,9 +150,27 @@ void main() {
         fbm3(v_wpos + vec3(0, e, 0), u_time) - h0,
         fbm3(v_wpos + vec3(0, 0, e), u_time) - h0) / e;
 
-    // Tangent-plane gradient tilts the radial normal.
     vec3 t_grad = grad - radial * dot(grad, radial);
     vec3 n = normalize(radial - t_grad * 0.65);
+
+    // Screen-space UV: gl_FragCoord.xy is in pixels; texture size
+    // gives us the divisor without needing a uniform.
+    vec2 screen_size = vec2(textureSize(sampler2D(water_scene_color, water_scene_smp), 0));
+    vec2 screen_uv   = gl_FragCoord.xy / screen_size;
+
+    // Manual depth occlusion. The water pipeline uses depth.compare =
+    // ALWAYS so the swapchain depth buffer doesn't kill us; instead
+    // we sample the offscreen scene depth here and discard fragments
+    // that are behind the opaque scene at the same screen pixel.
+    float scene_z = texture(sampler2D(water_scene_depth, water_scene_smp), screen_uv).r;
+    if (gl_FragCoord.z > scene_z) discard;
+
+    // Refraction: perturb the colour-sample UV by the surface
+    // tangent-plane gradient. Magnitude scales with u_refract_amount
+    // so the C side can dial it without a shader rebuild.
+    vec2 refract_uv = clamp(screen_uv + t_grad.xy * u_refract_amount,
+                            vec2(0.0), vec2(1.0));
+    vec3 refracted = texture(sampler2D(water_scene_color, water_scene_smp), refract_uv).rgb;
 
     vec3 view = normalize(u_camera_pos - v_wpos);
     vec3 sun  = normalize(u_sun_dir);
@@ -153,9 +178,11 @@ void main() {
     float vdn = max(dot(view, n), 0.0);
     float f   = 0.02 + 0.98 * pow(1.0 - vdn, 5.0);
 
-    vec3 shallow = vec3(0.28, 0.68, 0.82);
-    vec3 deep    = vec3(0.02, 0.10, 0.22);
-    vec3 base    = mix(deep, shallow, vdn);
+    // The refracted scene becomes the base — what you'd see *through*
+    // the water. Tinted toward water-blue so the underwater terrain
+    // reads as submerged rather than just smeared.
+    vec3 water_tint = vec3(0.45, 0.75, 0.95);
+    vec3 base = refracted * water_tint;
 
     vec3 refl   = reflect(-view, n);
     float up_f  = clamp(dot(refl, radial), 0.0, 1.0);
@@ -165,7 +192,6 @@ void main() {
     float spec  = pow(max(dot(n, halfv), 0.0), 140.0);
     vec3  sun_highlight = vec3(1.35, 1.25, 1.10) * spec * 0.6;
 
-    // Foam — wave crest + slope. Height fbm goes ~[-1, 1].
     float steepness = length(t_grad);
     float crest     = smoothstep(0.35, 0.60, h0);
     float slope_f   = smoothstep(0.50, 1.20, steepness);
@@ -173,7 +199,10 @@ void main() {
 
     vec3 color = mix(base, sky, f) + sun_highlight;
     color = mix(color, vec3(0.95, 0.97, 1.0), foam * 0.6);
-    float alpha = mix(0.45, 0.80, f);
+    // Alpha stays high — the refracted scene is already the base, so
+    // we don't need much swapchain-blend for the through-water look.
+    // A small Fresnel range still softens the edge of the cap mesh.
+    float alpha = mix(0.85, 0.95, f);
 
     frag_color = vec4(color, alpha);
 }

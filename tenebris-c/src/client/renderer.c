@@ -178,7 +178,8 @@ static struct {
     sg_image  offscreen_depth;
     sg_view   offscreen_color_att;  /* color_attachment view of offscreen_color */
     sg_view   offscreen_depth_att;  /* depth_stencil_attachment view of offscreen_depth */
-    sg_view   offscreen_color_tex;  /* texture view of offscreen_color (sampled in B.1) */
+    sg_view   offscreen_color_tex;  /* texture view of offscreen_color (sampled by water/composite) */
+    sg_view   offscreen_depth_tex;  /* texture view of offscreen_depth (sampled by water for thickness/discard) */
     int       offscreen_w;
     int       offscreen_h;
 
@@ -543,7 +544,15 @@ void renderer_init(void) {
             .buffers[0].stride = sizeof(hex_vertex_t),
         },
         .index_type = SG_INDEXTYPE_UINT32,
-        .depth = { .write_enabled = false, .compare = SG_COMPAREFUNC_LESS_EQUAL },
+        /* Water draws in the swapchain pass, AFTER compose blits the
+         * offscreen scene onto the swapchain. The swapchain's depth
+         * buffer was cleared at the start of that pass and never
+         * written, so a hardware depth-test would let every water
+         * fragment pass. Instead the pipeline disables HW depth
+         * testing (compare = ALWAYS) and the fragment shader samples
+         * the offscreen depth texture directly to do its own
+         * gl_FragCoord.z > scene_z discard. */
+        .depth = { .write_enabled = false, .compare = SG_COMPAREFUNC_ALWAYS },
         .cull_mode = SG_CULLMODE_BACK,
         .face_winding = SG_FACEWINDING_CCW,
         .colors[0].blend = {
@@ -783,6 +792,7 @@ void renderer_shutdown(void) {
     sg_destroy_image(R.atlas_img);
     sg_destroy_sampler(R.atlas_smp);
     if (R.offscreen_color_tex.id) sg_destroy_view(R.offscreen_color_tex);
+    if (R.offscreen_depth_tex.id) sg_destroy_view(R.offscreen_depth_tex);
     if (R.offscreen_color_att.id) sg_destroy_view(R.offscreen_color_att);
     if (R.offscreen_depth_att.id) sg_destroy_view(R.offscreen_depth_att);
     if (R.offscreen_color.id)     sg_destroy_image(R.offscreen_color);
@@ -1325,6 +1335,7 @@ static void ensure_offscreen_targets(int w, int h) {
         return;
     }
     if (R.offscreen_color_tex.id) sg_destroy_view(R.offscreen_color_tex);
+    if (R.offscreen_depth_tex.id) sg_destroy_view(R.offscreen_depth_tex);
     if (R.offscreen_color_att.id) sg_destroy_view(R.offscreen_color_att);
     if (R.offscreen_depth_att.id) sg_destroy_view(R.offscreen_depth_att);
     if (R.offscreen_color.id)     sg_destroy_image(R.offscreen_color);
@@ -1355,6 +1366,10 @@ static void ensure_offscreen_targets(int w, int h) {
     R.offscreen_color_tex = sg_make_view(&(sg_view_desc){
         .texture.image = R.offscreen_color,
         .label = "offscreen-color-tex",
+    });
+    R.offscreen_depth_tex = sg_make_view(&(sg_view_desc){
+        .texture.image = R.offscreen_depth,
+        .label = "offscreen-depth-tex",
     });
     R.offscreen_w = w;
     R.offscreen_h = h;
@@ -1682,9 +1697,12 @@ static void body_draw_water(chunked_body_t* body, mat4_t vp,
     sg_apply_uniforms(UB_vs_params, &SG_RANGE(vs_params));
 
     fs_params_t fs_params = {
-        .u_camera_pos = { camera_world.x, camera_world.y, camera_world.z },
-        .u_sun_dir    = { R.env.sun_dir.x, R.env.sun_dir.y, R.env.sun_dir.z },
-        .u_time       = t_scaled,
+        .u_camera_pos     = { camera_world.x, camera_world.y, camera_world.z },
+        .u_sun_dir        = { R.env.sun_dir.x, R.env.sun_dir.y, R.env.sun_dir.z },
+        .u_time           = t_scaled,
+        /* Refraction: surface tangent gradient → screen UV offset.
+         * 0.04 = noticeable shimmer without warping the view too much. */
+        .u_refract_amount = 0.04f,
     };
     sg_apply_uniforms(UB_fs_params, &SG_RANGE(fs_params));
 
@@ -1694,6 +1712,11 @@ static void body_draw_water(chunked_body_t* body, mat4_t vp,
         sg_apply_bindings(&(sg_bindings){
             .vertex_buffers[0] = c->water_vbuf,
             .index_buffer      = c->water_ibuf,
+            /* Offscreen colour + depth views — same images that hold
+             * the rendered scene from before compose_to_swapchain. */
+            .views[VIEW_water_scene_color] = R.offscreen_color_tex,
+            .views[VIEW_water_scene_depth] = R.offscreen_depth_tex,
+            .samplers[SMP_water_scene_smp] = R.smp_offscreen,
         });
         sg_draw(0, c->last_uploaded_water_idx_count, 1);
         R.tris += (size_t)c->last_uploaded_water_idx_count / 3;

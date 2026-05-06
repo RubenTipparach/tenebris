@@ -490,27 +490,23 @@ static void frame(void) {
     env.camera_world = cam_world;
 
     renderer_begin_frame(sapp_width(), sapp_height(), env);
-    /* Every draw below this line goes into the offscreen colour +
-     * depth attachments, not directly to the swapchain.
-     * compose_to_swapchain blits the result onto the screen.
-     *
-     * Water draws inside the offscreen pass too — it has to share
-     * the depth buffer with the terrain or it won't be occluded by
-     * land sitting in front of it. The eventual post-process water
-     * (Lague-style fullscreen pass — see WATER_REFRACTION.md R3+)
-     * will move out of this pass and replace the water cap mesh
-     * entirely; until then water stays here. */
+    /* Opaque scene → offscreen colour + depth attachments. */
     renderer_draw_skybox(view, proj);
     renderer_draw_sun(view, proj);
     renderer_draw_world(view, proj, G.world, cam_world, dt);
     renderer_draw_moons(view, proj, cam_world);
-    renderer_draw_water(view, proj, cam_world);
 
     /* Hand off to the swapchain pass — blits the offscreen colour
-     * (terrain + water already composited there) onto the swapchain. */
+     * (everything opaque) onto the swapchain. */
     renderer_compose_to_swapchain();
 
-    /* UI overlays go on the swapchain on top of the composited scene. */
+    /* Water now draws in the swapchain pass on TOP of the composited
+     * scene. The water shader samples the offscreen colour + depth
+     * textures (the underwater scene we just composited) for
+     * screen-space refraction and manual depth-discard. */
+    renderer_draw_water(view, proj, cam_world);
+
+    /* UI overlays go on the swapchain on top of the water. */
     update_overlay(dt);
     teleport_menu_draw();
     draw_error_overlay();
