@@ -222,6 +222,51 @@ void main() {
     float scene_z = texture(sampler2D(water_scene_depth, water_scene_depth_smp), screen_uv).r;
     if (gl_FragCoord.z > scene_z) discard;
 
+    // ---- Lens-water meniscus ----
+    //
+    // Cap fragments very close to the camera ARE the geometric clip
+    // line where the lens crosses the water surface — they form a
+    // thin screen-space stripe by construction (only the cap pixels
+    // within a few cm of the lens are this close, and that set of
+    // pixels traces the water plane / image plane intersection).
+    // Output a heavily distorted + vertically-blurred sample of the
+    // offscreen colour for those fragments and bail out — the
+    // normal cap shading below doesn't fire on the meniscus strip.
+    //
+    // Threshold is in world metres. The cap sits depth_offset_m below
+    // sea level (~0.5 m), so a camera AT sea level is 0.5 m above
+    // the closest cap fragment. We want the smear to fire there, so
+    // the band is centred on ~depth_offset_m and falls off either side.
+    // Tighter band → thinner pixel strip (only fragments very near
+    // that exact distance fire it). Loose enough that the camera can
+    // be a few cm off sea level and the strip still shows.
+    float dist_to_cam = length(v_wpos - u_camera_pos);
+    float meniscus    = 1.0 - smoothstep(0.04, 0.10, abs(dist_to_cam - 0.5));
+    if (meniscus > 0.0) {
+        // Heavy sin smear on the screen UV — same shape as the calm
+        // shimmer in the composite pass but ~10x amplitude.
+        vec2 d = vec2(
+            sin(u_time * 2.1 + screen_uv.y * 60.0) + 0.7 * sin(u_time * 1.3 + screen_uv.x * 80.0),
+            cos(u_time * 1.7 + screen_uv.x * 50.0) + 0.7 * cos(u_time * 2.4 + screen_uv.y * 70.0)
+        ) * 0.012 * meniscus;
+        vec2 smear_uv = clamp(screen_uv + d, vec2(0.001), vec2(0.999));
+
+        // 5-tap vertical blur — soft, slightly-out-of-focus refracted
+        // strip a half-dome shows at the waterline.
+        vec3  acc    = texture(sampler2D(water_scene_color, water_scene_smp), smear_uv).rgb;
+        float weight = 1.0;
+        for (int i = 1; i <= 2; ++i) {
+            float dy = float(i) * 0.0025;
+            vec2 a = clamp(vec2(smear_uv.x, smear_uv.y - dy), vec2(0.0), vec2(1.0));
+            vec2 b = clamp(vec2(smear_uv.x, smear_uv.y + dy), vec2(0.0), vec2(1.0));
+            acc += texture(sampler2D(water_scene_color, water_scene_smp), a).rgb;
+            acc += texture(sampler2D(water_scene_color, water_scene_smp), b).rgb;
+            weight += 2.0;
+        }
+        frag_color = vec4(acc / weight, 1.0);
+        return;
+    }
+
     // Refraction: perturb the colour-sample UV by the surface
     // tangent-plane gradient. Magnitude scales with u_refract_amount
     // so the C side can dial it without a shader rebuild.
