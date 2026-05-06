@@ -1691,6 +1691,12 @@ static void body_draw_water(chunked_body_t* body, mat4_t vp,
         .u_ripple_speed    = W->ripple_speed,
         .u_wave_steepness  = W->wave_steepness,
         .u_debug_shore_heatmap = R_DEBUG_SHORE_HEATMAP ? 1.0f : 0.0f,
+        /* Body-local sea-level radius — same value hex_mesher.c uses
+         * to position the cap top. The cap shader subtracts this
+         * from length(u_camera_pos) to get a signed camera altitude,
+         * which gates the meniscus smear so it only fires when the
+         * lens is straddling the water surface. */
+        .u_sea_radius      = (float)body->radius_m + W->height_offset_m - W->depth_offset_m,
     };
     sg_apply_uniforms(UB_fs_params, &SG_RANGE(fs_params));
 
