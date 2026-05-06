@@ -46,11 +46,13 @@ void hex_mesh_free(hex_mesh_t* m) {
     free(m->vertices); free(m->indices); memset(m, 0, sizeof(*m));
 }
 
-static void push_vertex(hex_mesh_t* m, dvec3_t p, dvec3_t n, float u, float v) {
+static void push_vertex(hex_mesh_t* m, dvec3_t p, dvec3_t n, float u, float v,
+                        float shore_dist) {
     hex_vertex_t* vv = &m->vertices[m->vertex_count++];
     vv->pos[0] = (float)p.x; vv->pos[1] = (float)p.y; vv->pos[2] = (float)p.z;
     vv->normal[0] = (float)n.x; vv->normal[1] = (float)n.y; vv->normal[2] = (float)n.z;
     vv->uv[0] = u; vv->uv[1] = v;
+    vv->shore_dist = shore_dist;
 }
 
 /* ----------------------------------------------------------------------- */
@@ -95,6 +97,9 @@ static dvec3_t shrink_corner(const goldberg_tile_t* t, int k, float width) {
  * `r_offset_m` shifts the cap radius by this many metres. Used by the
  * water cap to drop the surface below sea level so the vertex
  * shader's wave displacement can't spill above coplanar beach sand.
+ * `shore_dist_center` and `shore_dist_corners` populate the per-vertex
+ * shoreline-distance attribute consumed by water.glsl. NULL corners
+ * means "all zeros" (terrain caps don't need the value).
  */
 static void emit_cap(hex_mesh_t* out,
                      const goldberg_tile_t* t,
@@ -103,7 +108,9 @@ static void emit_cap(hex_mesh_t* out,
                      block_t block,
                      bool is_top,
                      float width,
-                     float r_offset_m) {
+                     float r_offset_m,
+                     float shore_dist_center,
+                     const float* shore_dist_corners) {
     const int n = t->num_verts;
     reserve(out, (size_t)(n + 1), (size_t)n * 3);
     uint32_t center_idx = (uint32_t)out->vertex_count;
@@ -120,7 +127,7 @@ static void emit_cap(hex_mesh_t* out,
     float uc = u0 + HEX_ATLAS_U_STEP * 0.5f;
     float vc = 0.5f;
 
-    push_vertex(out, center_pos, normal, uc, vc);
+    push_vertex(out, center_pos, normal, uc, vc, shore_dist_center);
 
     for (int k = 0; k < n; ++k) {
         dvec3_t corner_dir = shrink_corner(t, k, width);
@@ -128,7 +135,8 @@ static void emit_cap(hex_mesh_t* out,
         double angle = (double)k / (double)n * 6.2831853 - 1.5707963;
         float u = uc + (float)cos(angle) * HEX_ATLAS_U_STEP * 0.5f;
         float v = vc + (float)sin(angle) * 0.5f;
-        push_vertex(out, corner, normal, u, v);
+        float sd = shore_dist_corners ? shore_dist_corners[k] : 0.0f;
+        push_vertex(out, corner, normal, u, v, sd);
     }
 
     for (int k = 0; k < n; ++k) {
@@ -173,10 +181,13 @@ static void emit_side_quad(hex_mesh_t* out,
     float u0 = (float)block_face_tile(block, FACE_CAP_SIDE) * HEX_ATLAS_U_STEP;
     float u1 = u0 + HEX_ATLAS_U_STEP;
 
-    push_vertex(out, inner_a, normal, u0, 0.0f);
-    push_vertex(out, inner_b, normal, u1, 0.0f);
-    push_vertex(out, outer_b, normal, u1, 1.0f);
-    push_vertex(out, outer_a, normal, u0, 1.0f);
+    /* Side quads only ever appear on terrain (non-water blocks) — the
+     * water cap is a single planar hexagon, never a side. shore_dist
+     * stays 0 here. */
+    push_vertex(out, inner_a, normal, u0, 0.0f, 0.0f);
+    push_vertex(out, inner_b, normal, u1, 0.0f, 0.0f);
+    push_vertex(out, outer_b, normal, u1, 1.0f, 0.0f);
+    push_vertex(out, outer_a, normal, u0, 1.0f, 0.0f);
 
     out->indices[out->index_count++] = base + 0;
     out->indices[out->index_count++] = base + 1;
@@ -215,8 +226,40 @@ void hex_mesh_build_water(hex_mesh_t* out, const world_t* w, int tile_idx) {
      * on top (positive = raise water, negative = lower). */
     const float depth_off  = config_water()->depth_offset_m;
     const float height_off = config_water()->height_offset_m;
+
+    /* Per-vertex shoreline-distance attribute: feeds the foam band
+     * in water.glsl. The center vertex gets this tile's BFS distance
+     * (great-arc metres to nearest land tile center). Each corner
+     * sits where this tile meets two of its neighbours; we average
+     * those three tiles' distances so vertex values agree at the
+     * shared geometric corner across the seam (no inter-tile
+     * staircase). The two adjacent neighbours per corner are
+     * identified geometrically — neighbour-of-T whose center is
+     * closest to corner k, plus the runner-up. The CCW corner-vs-
+     * neighbour ordering in goldberg_t isn't guaranteed to line up
+     * directly, so the geometric pick stays robust regardless. */
+    world_t* wm = (world_t*)w;
+    float center_d = world_tile_shore_dist(wm, tile_idx);
+    float corner_d[GOLDBERG_MAX_VERTS_PER_TILE];
+    for (int k = 0; k < t->num_verts; ++k) {
+        int   n_a = -1, n_b = -1;
+        double d_a = 1e30, d_b = 1e30;
+        for (int i = 0; i < t->num_neighbors; ++i) {
+            int nb = t->neighbors[i];
+            const goldberg_tile_t* nt = goldberg_tile(w->grid, nb);
+            if (!nt) continue;
+            dvec3_t diff = dvec3_sub(t->verts[k], nt->center);
+            double d2 = dvec3_dot(diff, diff);
+            if      (d2 < d_a) { d_b = d_a; n_b = n_a; d_a = d2; n_a = nb; }
+            else if (d2 < d_b) { d_b = d2; n_b = nb; }
+        }
+        float d_n_a = (n_a >= 0) ? world_tile_shore_dist(wm, n_a) : 0.0f;
+        float d_n_b = (n_b >= 0) ? world_tile_shore_dist(wm, n_b) : 0.0f;
+        corner_d[k] = (center_d + d_n_a + d_n_b) * (1.0f / 3.0f);
+    }
+
     emit_cap(out, t, w, SEA_LEVEL_DEPTH - 1, BLOCK_WATER, true, 1.0f,
-             -depth_off + height_off);
+             -depth_off + height_off, center_d, corner_d);
 }
 
 /* ----------------------------------------------------------------------- */
@@ -248,13 +291,13 @@ void hex_mesh_build_tile(hex_mesh_t* out, const world_t* w, int tile_idx) {
 
         block_t above = (d + 1 < WORLD_MAX_DEPTH) ? (block_t)col[d + 1] : BLOCK_AIR;
         if (!block_covers_face(above)) {
-            emit_cap(out, t, w, d, b, true, width, 0.0f);
+            emit_cap(out, t, w, d, b, true, width, 0.0f, 0.0f, NULL);
         }
 
         if (d > 0) {
             block_t below = (block_t)col[d - 1];
             if (!block_covers_face(below)) {
-                emit_cap(out, t, w, d, b, false, width, 0.0f);
+                emit_cap(out, t, w, d, b, false, width, 0.0f, 0.0f, NULL);
             }
         }
 

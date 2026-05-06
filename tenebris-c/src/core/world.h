@@ -50,6 +50,14 @@ typedef struct world_s {
      * far. Fill is streamed across frames; tiles past this cursor are
      * all BLOCK_AIR. */
     int                  gen_cursor;
+
+    /* Per-tile great-arc distance (metres along the surface) from the
+     * tile center to the nearest land tile center. Land tiles get 0;
+     * water tiles get a positive value that grows toward the open
+     * ocean. NULL until world_compute_shore_dist() runs (lazy — first
+     * call to world_tile_shore_dist triggers the BFS). Drives
+     * shoreline foam in water.glsl via a per-vertex attribute. */
+    float*               shore_dist_m;
 } world_t;
 
 /* ----------------------------------------------------------------------- */
@@ -73,5 +81,14 @@ void     world_tile_clear_dirty(world_t* w, int tile);
 /* Radial meters corresponding to a block depth. Surface sits at
  * depth = body->seaLevel relative offset from the top. */
 double   world_depth_to_radius_m(const world_t* w, int depth);
+
+/* Per-tile shoreline distance in metres along the surface (great-arc).
+ * Land tiles return 0. Water tiles return BFS-computed shortest
+ * distance to the nearest land tile. The first call computes the
+ * whole array (Bellman-Ford / SPFA over the goldberg adjacency); all
+ * subsequent calls are O(1). Caller must ensure terrain gen has
+ * completed before the first call — otherwise tiles past gen_cursor
+ * read as land (column is all-AIR, no water column). */
+float    world_tile_shore_dist(world_t* w, int tile);
 
 #endif

@@ -26,6 +26,7 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -422,10 +423,16 @@ void renderer_init(void) {
         .shader = shd_water,
         .layout = {
             .attrs = {
-                /* Only a_pos is consumed; normal/uv are still in the
-                 * shared hex_vertex_t vbuf but the 32-byte stride skips
-                 * them. See water.glsl @vs for the rationale. */
-                [ATTR_water_a_pos] = { .format = SG_VERTEXFORMAT_FLOAT3 },
+                /* a_pos at offset 0; the 12 bytes of normal + 8 bytes
+                 * of uv between pos and shore_dist are skipped via the
+                 * 36-byte stride, mirroring how the hex pipeline skips
+                 * the trailing shore_dist on its side. See water.glsl
+                 * @vs for the rationale. */
+                [ATTR_water_a_pos]        = { .format = SG_VERTEXFORMAT_FLOAT3 },
+                [ATTR_water_a_shore_dist] = {
+                    .format = SG_VERTEXFORMAT_FLOAT,
+                    .offset = (int)offsetof(hex_vertex_t, shore_dist),
+                },
             },
             .buffers[0].stride = sizeof(hex_vertex_t),
         },

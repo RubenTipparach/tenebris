@@ -21,13 +21,21 @@ layout(binding=0) uniform vs_params {
 // a_normal / a_uv aren't read here (the radial wave normal is derived
 // from normalize(a_pos)). They're still in the shared hex_vertex_t
 // vbuf, but the water pipeline omits them from its vertex layout —
-// sokol's per-attribute offset arithmetic plus the 32-byte stride
+// sokol's per-attribute offset arithmetic plus the 36-byte stride
 // silently skips the extra bytes. Keeping the unused `in` decls would
 // trip GL_VERTEX_ATTRIBUTE_NOT_FOUND warnings whenever the GLSL
 // compiler dead-strips them.
+//
+// a_shore_dist is the per-vertex great-arc distance (m) to the
+// nearest land tile, baked at mesh-build time by hex_mesher.c via
+// the BFS in world.c. Drives the shoreline foam band in the fs —
+// view-independent and swell-independent, replacing the old
+// thickness-as-shore-proxy path.
 in vec3 a_pos;
+in float a_shore_dist;
 
 out vec3 v_wpos;
+out float v_shore_dist;
 
 void main() {
     // Radial from the planet centre, NOT the per-tile flat normal in
@@ -56,6 +64,7 @@ void main() {
     vec3 p = a_pos + n * swell;
     gl_Position = u_vp * vec4(p, 1.0);
     v_wpos = p;
+    v_shore_dist = a_shore_dist;
 }
 @end
 
@@ -107,6 +116,7 @@ layout(binding=1) uniform sampler   water_scene_depth_smp;
 precision highp int;
 
 in vec3 v_wpos;
+in float v_shore_dist;
 out vec4 frag_color;
 
 // 3D gradient (Perlin) noise — quintic fade, integer-hash gradient
@@ -265,14 +275,19 @@ void main() {
     float slope_f   = smoothstep(u_foam_slope.x, u_foam_slope.y, steepness);
     float foam      = max(crest * u_foam_crest.z, slope_f * u_foam_slope.z);
 
-    // Shoreline foam — thickness-driven white wash where the water
-    // meets the seabed. 1 at thickness=0 (cap edge), 0 by
-    // u_shore_foam_dist. Modulated by fbm height so the band has
-    // texture instead of being a flat band. Adds to crest/slope foam
-    // but lives on its own alpha track so it stays visible inside
-    // the shoreline_fade region (otherwise the alpha feather would
+    // Shoreline foam — distance-from-shore white wash. v_shore_dist
+    // is the per-vertex BFS distance to the nearest land tile (m,
+    // along the surface), baked at mesh-build time and interpolated
+    // across the cap face. 1 at the shoreline (dist=0), 0 by
+    // u_shore_foam_dist. View-independent + swell-independent —
+    // replaces the earlier thickness=max(0, scene_z - water_z)
+    // proxy, which was a view-ray length, not vertical depth, so it
+    // grew with camera tilt and pulsed with the swell. Modulated by
+    // fbm height so the band has texture instead of being a flat
+    // band. Lives on its own alpha track so it stays visible inside
+    // the shoreline_fade region (the alpha feather would otherwise
     // wash it out).
-    float shore_foam = 1.0 - smoothstep(0.0, u_shore_foam_dist, thickness);
+    float shore_foam = 1.0 - smoothstep(0.0, u_shore_foam_dist, v_shore_dist);
     shore_foam *= 0.6 + 0.4 * smoothstep(-0.4, 0.4, h0);
 
     // Optional posterize for a cel-shaded ring look. bands ≤ 1

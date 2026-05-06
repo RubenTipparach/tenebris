@@ -137,10 +137,13 @@ typedef struct {
      * Fresnel-driven alpha. Hides the hex-mesh silhouette where the
      * cap meets the seabed. */
     float  shoreline_fade_m;
-    /* Shoreline foam smoothstep upper edge. White-wash band peaks
-     * at thickness 0 and fades to nothing by this much water.
-     * Usually slightly wider than shoreline_fade so the foam keeps
-     * body inside the alpha-feathered region. */
+    /* Shoreline foam smoothstep upper edge, measured in metres along
+     * the surface from the nearest land tile (great-arc distance,
+     * baked into the water cap as a per-vertex attribute by
+     * hex_mesher.c). White-wash band peaks at the shoreline (dist=0)
+     * and fades to nothing by this many metres out. View-independent
+     * and swell-independent — replaces an earlier thickness-driven
+     * proxy that depended on camera angle and the wave swell. */
     float  shore_foam_dist_m;
     /* Sun-highlight specular. Multiplied with the warm-white sun
      * tint to make the surface glint. Higher = brighter glints,

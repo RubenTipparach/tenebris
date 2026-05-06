@@ -31,11 +31,17 @@
 #                              transparent, by this much water it's
 #                              back to the Fresnel-driven alpha.
 #                              Hides the hex-mesh edge at the beach.
-#   shore_foam_dist_m   float  shoreline foam smoothstep upper edge.
-#                              White-wash band peaks at thickness 0.
-#                              Usually slightly wider than
-#                              shoreline_fade so the foam keeps body
-#                              in the alpha-feathered region.
+#   shore_foam_dist_m   float  shoreline foam smoothstep upper edge,
+#                              measured in metres along the surface
+#                              from the nearest land tile (great-arc
+#                              distance, baked into the water cap as
+#                              a per-vertex attribute by hex_mesher.c).
+#                              White-wash band peaks at distance 0
+#                              (right at the shoreline) and fades to
+#                              nothing by this many metres out.
+#                              View-independent and swell-independent
+#                              — replaces the earlier thickness-based
+#                              proxy.
 #   specular_intensity  float  sun-highlight strength multiplier.
 #                              Higher = brighter glints / glossier;
 #                              lower = matte.

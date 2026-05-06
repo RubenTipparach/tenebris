@@ -27,6 +27,7 @@ void world_destroy(world_t* w) {
     goldberg_destroy(w->grid);
     free(w->blocks);
     free(w->dirty);
+    free(w->shore_dist_m);
     free(w);
 }
 
@@ -158,4 +159,97 @@ double world_depth_to_radius_m(const world_t* w, int depth) {
     /* Depth index 0 = deepest bedrock. Sea level = SEA_LEVEL_IDX.
      * Convert so radius = body.radius_m - (SEA_LEVEL_IDX - depth) * BLOCK_HEIGHT. */
     return w->body->radius_m - ((double)SEA_LEVEL_IDX - (double)depth) * BLOCK_HEIGHT;
+}
+
+/* ----------------------------------------------------------------------- */
+/* Shoreline distance: per-tile great-arc distance (m) to nearest land.
+ *
+ * Used by hex_mesher.c → water.glsl as a per-vertex attribute that
+ * drives shoreline foam. Replaces the earlier thickness-based proxy
+ * (max(0, scene_z - water_z) in the fs), which decorrelated from
+ * actual shore proximity at glancing camera angles and pumped with
+ * the swell. This metric is view-independent and swell-independent.
+ *
+ * SPFA (Bellman-Ford with FIFO relaxation): seed every land tile at 0,
+ * relax water-tile distances over the goldberg adjacency. Edge weight
+ * is the great-arc length on the unit sphere times body->radius_m —
+ * adjacent goldberg tiles all sit ≈the same arc apart, but since the
+ * cost is identical to chord length for a 6-degree-of-freedom mesh
+ * we still pay nothing extra to get the right metric. Settles in a
+ * handful of passes for the ~40k-tile case (each pass ≈ tile_count
+ * neighbour visits).
+ */
+
+static bool tile_is_water(const world_t* w, int tile) {
+    /* Mirror of column_top_solid in hex_mesher.c — a column whose
+     * topmost solid voxel sits below sea level holds a water column
+     * above it. column_top_solid < SEA_LEVEL_IDX. */
+    const uint8_t* col = &w->blocks[tile * WORLD_MAX_DEPTH];
+    for (int d = WORLD_MAX_DEPTH - 1; d >= 0; --d) {
+        if (block_is_solid((block_t)col[d])) return d < SEA_LEVEL_IDX;
+    }
+    return false;
+}
+
+static void compute_shore_dist(world_t* w) {
+    int N = w->tile_count;
+    w->shore_dist_m = (float*)malloc((size_t)N * sizeof(float));
+    bool* in_queue = (bool*)calloc((size_t)N, sizeof(bool));
+    /* Circular FIFO. At most N tiles can be in_queue at once (the
+     * in_queue flag dedupes), so a buffer of size N suffices. */
+    int*  queue    = (int*) malloc((size_t)N * sizeof(int));
+    int   q_head = 0, q_count = 0;
+    const float INF = 1e30f;
+    const double R = w->body->radius_m;
+
+    for (int i = 0; i < N; ++i) {
+        if (tile_is_water(w, i)) {
+            w->shore_dist_m[i] = INF;
+        } else {
+            w->shore_dist_m[i] = 0.0f;
+            queue[(q_head + q_count++) % N] = i;
+            in_queue[i] = true;
+        }
+    }
+
+    while (q_count > 0) {
+        int t = queue[q_head];
+        q_head = (q_head + 1) % N;
+        --q_count;
+        in_queue[t] = false;
+        const goldberg_tile_t* tt = goldberg_tile(w->grid, t);
+        for (int k = 0; k < tt->num_neighbors; ++k) {
+            int nb = tt->neighbors[k];
+            if (!tile_is_water(w, nb)) continue;
+            const goldberg_tile_t* nt = goldberg_tile(w->grid, nb);
+            double cosang = dvec3_dot(tt->center, nt->center);
+            if (cosang >  1.0) cosang =  1.0;
+            if (cosang < -1.0) cosang = -1.0;
+            double arc_m = acos(cosang) * R;
+            float cand = w->shore_dist_m[t] + (float)arc_m;
+            if (cand < w->shore_dist_m[nb]) {
+                w->shore_dist_m[nb] = cand;
+                if (!in_queue[nb]) {
+                    queue[(q_head + q_count++) % N] = nb;
+                    in_queue[nb] = true;
+                }
+            }
+        }
+    }
+
+    /* Fully-enclosed water bodies (no land tiles reachable) keep INF.
+     * Clamp to a large but finite value so downstream smoothstep math
+     * doesn't trip on infinity in the GPU upload. */
+    for (int i = 0; i < N; ++i) {
+        if (w->shore_dist_m[i] > 1e9f) w->shore_dist_m[i] = 1e9f;
+    }
+
+    free(queue);
+    free(in_queue);
+}
+
+float world_tile_shore_dist(world_t* w, int tile) {
+    if (tile < 0 || tile >= w->tile_count) return 0.0f;
+    if (!w->shore_dist_m) compute_shore_dist(w);
+    return w->shore_dist_m[tile];
 }

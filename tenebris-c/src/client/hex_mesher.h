@@ -12,12 +12,22 @@
  * floating origin isn't needed yet). Atlas UVs + shaded in the hex
  * shader.
  *
- * Vertex layout: 32 bytes (pos + normal + uv).
+ * Vertex layout: 36 bytes (pos + normal + uv + shore_dist). The hex
+ * pipeline only binds the first three attributes (pos/normal/uv);
+ * the water pipeline binds pos and shore_dist (its uv/normal are
+ * derived from world position). The unused-by-each-pipeline bytes
+ * are silently skipped via the shared 36-byte stride.
+ *
+ * shore_dist is great-arc distance (m) from this vertex to the
+ * nearest land tile, computed at mesh-build time via the per-tile
+ * BFS in world.c. 0 on land vertices; positive on water vertices,
+ * driving shoreline foam in water.glsl.
  */
 typedef struct {
     float pos[3];
     float normal[3];
     float uv[2];
+    float shore_dist;
 } hex_vertex_t;
 
 typedef struct {
