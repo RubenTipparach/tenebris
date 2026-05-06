@@ -109,6 +109,13 @@ bool renderer_terrain_visible(void);
  * suspicious silhouette is the cap or something else. */
 void renderer_set_water_visible(bool visible);
 bool renderer_water_visible(void);
+
+/* Same idea for the skybox / atmospheric scattering pass. The
+ * atmosphere is a fullscreen ray-march, not geometry, but it
+ * produces a sphere-shaped halo around the planet that can look
+ * like leftover geometry when the rest of the scene is hidden. */
+void renderer_set_skybox_visible(bool visible);
+bool renderer_skybox_visible(void);
 /* Draw each registered body. `camera_world` is used to compute angular
  * screen size — bodies that subtend less than ~20% of the viewport
  * swap to a flat-shaded 20-face icosphere instead of their detailed

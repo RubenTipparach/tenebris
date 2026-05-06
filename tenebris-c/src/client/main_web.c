@@ -271,6 +271,13 @@ static void update_overlay(float dt) {
     } else {
         sdtx_printf("[J] hide water\n");
     }
+    if (!renderer_skybox_visible()) {
+        sdtx_color3b(0x55, 0xff, 0xff);
+        sdtx_printf("SKY/ATMO HIDDEN [K or top-mid tap]\n");
+        sdtx_color3b(0xff, 0xff, 0xff);
+    } else {
+        sdtx_printf("[K] hide sky/atmo\n");
+    }
 
     /* Mining progress bar (survival only). */
     if (G.player.survival_mode && G.interact.mining_progress_s > 0.0f) {
@@ -519,6 +526,10 @@ static void event(const sapp_event* e) {
         renderer_set_water_visible(!renderer_water_visible());
         return;
     }
+    if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_K) {
+        renderer_set_skybox_visible(!renderer_skybox_visible());
+        return;
+    }
     if (e->type == SAPP_EVENTTYPE_TOUCHES_BEGAN && e->num_touches > 0) {
         const float w = sapp_widthf();
         const float corner = 96.0f;   /* px hit-box edge length */
@@ -530,6 +541,13 @@ static void event(const sapp_event* e) {
         }
         if (tx < corner && ty < corner) {
             renderer_set_water_visible(!renderer_water_visible());
+            return;
+        }
+        /* Top-middle band toggles sky / atmosphere. Same height as
+         * the other two corner zones. */
+        if (ty < corner && tx > w * 0.5f - corner * 0.5f
+                       && tx < w * 0.5f + corner * 0.5f) {
+            renderer_set_skybox_visible(!renderer_skybox_visible());
             return;
         }
     }

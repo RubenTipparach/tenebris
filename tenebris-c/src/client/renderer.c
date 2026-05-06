@@ -218,6 +218,12 @@ static bool R_TERRAIN_VISIBLE = true;
  * such thing). */
 static bool R_WATER_VISIBLE = true;
 
+/* Same again for the skybox / atmosphere ray-march. The atmosphere
+ * is a fullscreen shader pass, not geometry — but it produces a
+ * sphere-shaped halo around the planet body that can be confused
+ * for one. Toggling this off draws no sky / no atmosphere. */
+static bool R_SKYBOX_VISIBLE = true;
+
 /* ----------------------------------------------------------------------- */
 
 static const char* VS_HEX =
@@ -1126,6 +1132,7 @@ void renderer_shutdown(void) {
 /* ----------------------------------------------------------------------- */
 
 void renderer_draw_skybox(mat4_t view, mat4_t proj) {
+    if (!R_SKYBOX_VISIBLE) return;
     /* The fragment shader rebuilds view rays from a world-space camera
      * basis + tan(fovY/2) + aspect, so we extract those from the view
      * and projection matrices instead of inverting VP. The view matrix
@@ -2258,3 +2265,5 @@ void renderer_set_terrain_visible(bool v) { R_TERRAIN_VISIBLE = v; }
 bool renderer_terrain_visible(void)        { return R_TERRAIN_VISIBLE; }
 void renderer_set_water_visible(bool v)   { R_WATER_VISIBLE = v;   }
 bool renderer_water_visible(void)          { return R_WATER_VISIBLE; }
+void renderer_set_skybox_visible(bool v)  { R_SKYBOX_VISIBLE = v;  }
+bool renderer_skybox_visible(void)         { return R_SKYBOX_VISIBLE; }

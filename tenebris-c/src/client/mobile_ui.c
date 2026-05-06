@@ -120,6 +120,12 @@ static void draw_glyph(char ch, float cx, float cy, float size, float r, float g
             draw_segment(left,  mid_y, right, mid_y, thick, r, g, b, 1.0f);
             break;
         }
+        case 'K': {
+            draw_segment(left,  top, left, bot, thick, r, g, b, 1.0f);
+            draw_segment(left,  mid_y, right, top, thick, r, g, b, 1.0f);
+            draw_segment(left,  mid_y, right, bot, thick, r, g, b, 1.0f);
+            break;
+        }
         case 'X': {
             draw_segment(left, top, right, bot, thick, r, g, b, 1.0f);
             draw_segment(left, bot, right, top, thick, r, g, b, 1.0f);
@@ -300,6 +306,20 @@ void mobile_ui_draw(void) {
             draw_circle_fan(cx_l, cy_t, BTN_RADIUS,        32, 0.45f, 0.10f, 0.10f, 0.65f);
             draw_ring      (cx_l, cy_t, BTN_RADIUS - 2.0f, BTN_RADIUS, 32, 1.00f, 0.45f, 0.45f, 0.85f);
             draw_glyph     ('J', cx_l, cy_t, 16.0f, 1.00f, 0.85f, 0.85f);
+        }
+
+        /* Sky / atmosphere (top-middle) — orange when on, dim red
+         * when hidden. Sits between the H and J buttons. */
+        const float cx_m = w * 0.5f;
+        const bool  sky_on = renderer_skybox_visible();
+        if (sky_on) {
+            draw_circle_fan(cx_m, cy_t, BTN_RADIUS,        32, 0.40f, 0.25f, 0.10f, 0.55f);
+            draw_ring      (cx_m, cy_t, BTN_RADIUS - 2.0f, BTN_RADIUS, 32, 1.00f, 0.85f, 0.55f, 0.80f);
+            draw_glyph     ('K', cx_m, cy_t, 16.0f, 1.00f, 0.95f, 0.85f);
+        } else {
+            draw_circle_fan(cx_m, cy_t, BTN_RADIUS,        32, 0.45f, 0.10f, 0.10f, 0.65f);
+            draw_ring      (cx_m, cy_t, BTN_RADIUS - 2.0f, BTN_RADIUS, 32, 1.00f, 0.45f, 0.45f, 0.85f);
+            draw_glyph     ('K', cx_m, cy_t, 16.0f, 1.00f, 0.85f, 0.85f);
         }
     }
 
