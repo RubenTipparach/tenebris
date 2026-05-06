@@ -1612,6 +1612,26 @@ static void body_draw_chunks(chunked_body_t* body, mat4_t vp) {
     hex_vs_params_t hvp = {0};
     memcpy(hvp.u_vp, mvp.m, sizeof(hvp.u_vp));
     sg_apply_uniforms(UB_hex_vs_params, &SG_RANGE(hvp));
+
+    /* Wet-line uniforms for the swell-aware waterline on coastal
+     * block side-faces. Only the active body actually has water,
+     * but feeding the same uniforms to non-water bodies is harmless
+     * — a swell amplitude of zero turns the effect off cleanly. */
+    const water_config_t* W = config_water();
+    const bool body_has_water = body->has_water;
+    /* Sea-level radius the cap effectively sits at, in body-local
+     * metres. Same expression hex_mesher.c uses to position the cap
+     * top, so the wet-line threshold lines up with the actual cap
+     * surface (modulo the swell sample, which the fs evaluates
+     * itself). */
+    const float sea_r = body->radius_m + W->height_offset_m - W->depth_offset_m;
+    hex_fs_water_t wet = {
+        .wet_params  = { sea_r, R.time_seconds * W->time_scale, 0.04f, 0.0f },
+        .swell_params = { W->swell_amplitude, W->swell_frequency, W->swell_speed,
+                          body_has_water ? 1.0f : 0.0f },
+        .wet_color   = { W->deep_color.x, W->deep_color.y, W->deep_color.z, 0.85f },
+    };
+    sg_apply_uniforms(UB_hex_fs_water, &SG_RANGE(wet));
     for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
         mesh_chunk_t* c = &body->chunks[ci];
         if (c->last_uploaded_index_count <= 0) continue;
