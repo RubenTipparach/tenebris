@@ -260,18 +260,36 @@ void main() {
         // doesn't read as a hard ring under the wave normals.
         float snell = smoothstep(0.55, 0.75, cos_theta);
 
-        vec3 above_through_surface = refracted;
-        vec3 tir_tint              = u_deep_color;
-        vec3 below_color           = mix(tir_tint, above_through_surface, snell);
+        // Beer-Lambert through the water column between camera and
+        // the surface. The above-water path uses scene-thickness
+        // (water_z to scene_z) for this; from below we use the
+        // straight-line camera-to-cap distance, which is the
+        // equivalent path length for the refracted ray. Same
+        // absorption + deep_color the cap uses topside, so distant
+        // cap fragments saturate to deep_color and the seabed-fog
+        // colour matches the cap-underside colour at the seam where
+        // they meet on screen.
+        float view_dist     = length(v_wpos - u_camera_pos);
+        vec3  attenuation   = exp(-view_dist * u_absorption);
+        vec3  refracted_lit = mix(u_deep_color, refracted, attenuation);
+
+        // Inside Snell's window: the refracted sky/scene visible
+        // through the surface, attenuated by the water in front of
+        // it. Outside: total internal reflection saturates to
+        // deep_color (stylised — we don't actually screen-space-
+        // reflect the seabed, the dome reads as solid dark blue).
+        vec3 below_color = mix(u_deep_color, refracted_lit, snell);
 
         // Optional sun glint surviving the underside — sells the
         // surface as glassy water rather than a flat plane. Scaled
-        // by snell so it only fires inside the window.
+        // by snell so it only fires inside the window, and by
+        // attenuation so it dims with depth alongside the rest.
         vec3 view  = -view_to_frag;
         vec3 sun   = normalize(u_sun_dir);
         vec3 halfv = normalize(view + sun);
         float spec = pow(max(dot(n, halfv), 0.0), u_spec_power) * snell;
-        below_color += u_sun_tint * spec * u_spec_intensity * 0.5;
+        below_color += u_sun_tint * spec * u_spec_intensity * 0.5
+                     * dot(attenuation, vec3(1.0/3.0));
 
         frag_color = vec4(below_color, 1.0);
         return;
