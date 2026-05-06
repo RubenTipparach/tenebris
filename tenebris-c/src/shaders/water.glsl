@@ -60,6 +60,7 @@ layout(binding=1) uniform fs_params {
     vec3 u_absorption;       // Beer-Lambert sigma per RGB channel (1/m)
     vec3 u_deep_color;       // saturation colour where the ray has fully attenuated
     float u_shoreline_fade;  // smoothstep upper edge for thickness-driven alpha (m)
+    float u_shore_foam_dist; // smoothstep upper edge for shoreline foam (m)
 };
 
 // water_scene_color / water_scene_depth are texture views of the
@@ -224,17 +225,30 @@ void main() {
     float slope_f   = smoothstep(0.50, 1.20, steepness);
     float foam      = max(crest * 0.55, slope_f * 0.45);
 
+    // Shoreline foam — thickness-driven white wash where the water
+    // meets the seabed. 1 at thickness=0 (cap edge), 0 by
+    // u_shore_foam_dist. Modulated by fbm height so the band has
+    // texture instead of being a flat band. Adds to crest/slope foam
+    // but lives on its own alpha track so it stays visible inside
+    // the shoreline_fade region (otherwise the alpha feather would
+    // wash it out).
+    float shore_foam = 1.0 - smoothstep(0.0, u_shore_foam_dist, thickness);
+    shore_foam *= 0.6 + 0.4 * smoothstep(-0.4, 0.4, h0);
+
     vec3 color = mix(base, sky, f) + sun_highlight;
     color = mix(color, vec3(0.95, 0.97, 1.0), foam * 0.6);
+    color = mix(color, vec3(0.98, 0.99, 1.0), shore_foam);
+
     // Alpha: Fresnel-driven base, plus a thickness-driven smoothstep
     // that feathers the cap edge into the beach. At thickness 0 (the
     // exact pixel where cap mesh meets sand) alpha goes to zero so
-    // the hard cap-edge silhouette dissolves; by 0.5 m of water the
-    // cap is fully opaque again. u_shoreline_fade is the upper edge
-    // of the smoothstep — tunable from C without a shader rebuild.
+    // the hard cap-edge silhouette dissolves; by u_shoreline_fade m
+    // of water the cap is fully opaque again. shore_foam wins on
+    // alpha so the foam wash stays visible right up to the cap edge
+    // even though the rest of the water is feathering out there.
     float fresnel_alpha  = mix(0.85, 0.95, f);
     float shoreline_fade = smoothstep(0.0, u_shoreline_fade, thickness);
-    float alpha = fresnel_alpha * shoreline_fade;
+    float alpha = max(fresnel_alpha * shoreline_fade, shore_foam);
 
     frag_color = vec4(color, alpha);
 }

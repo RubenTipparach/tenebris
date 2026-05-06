@@ -1731,6 +1731,11 @@ static void body_draw_water(chunked_body_t* body, mat4_t vp,
          * water. Hides the hard hex-cap silhouette where the cap
          * meets sand. */
         .u_shoreline_fade = 0.5f,
+        /* White-wash foam band where the cap meets the seabed.
+         * Wider than the alpha-fade so the foam has visible
+         * thickness even after the cap behind it has feathered
+         * away. */
+        .u_shore_foam_dist = 0.8f,
     };
     sg_apply_uniforms(UB_fs_params, &SG_RANGE(fs_params));
 
