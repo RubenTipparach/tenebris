@@ -59,7 +59,7 @@ layout(binding=1) uniform composite_fs_params {
     vec4  deep_color;     // xyz = water deep tint, w = unused
     vec4  absorption;     // xyz = Beer-Lambert per-channel sigma (1/m)
     vec4  near_far;       // x = near plane, y = far plane, z = unused, w = unused
-    vec4  fx_params;      // x = distortion strength (UV units), y = time, z = camera_underwater [0|1], w = debug_mask_view [0|1]
+    vec4  fx_params;      // x = distortion strength (UV units), y = time, z = camera_underwater [0|1], w = camera_alt (signed metres above sea level)
 };
 
 layout(binding=0) uniform texture2D scene_color;
@@ -88,29 +88,46 @@ void main() {
     float dist_amt  = fx_params.x;
     float t         = fx_params.y;
     bool  cam_under = fx_params.z > 0.5;
+    float camera_alt = fx_params.w;
 
     // Water-mask sample at the un-distorted uv. r-channel = coverage
     // (0 = no cap, 1 = cap visible at this pixel).
     float mask_c = texture(sampler2D(water_mask, water_mask_smp), v_uv).r;
 
-    // 4-tap edge sample for the meniscus. Fixed pixel-space offset
-    // — small (~1 px on any reasonable resolution) so the strip is
-    // a thin polyline rather than a wide band. screen_size derived
-    // from the offscreen colour texture so the edge sample is in
-    // pixel units regardless of viewport.
-    vec2 res     = vec2(textureSize(sampler2D(scene_color, scene_smp), 0));
-    vec2 px      = 1.0 / res;
-    float m_l    = texture(sampler2D(water_mask, water_mask_smp), v_uv + vec2(-px.x, 0.0)).r;
-    float m_r    = texture(sampler2D(water_mask, water_mask_smp), v_uv + vec2( px.x, 0.0)).r;
-    float m_u    = texture(sampler2D(water_mask, water_mask_smp), v_uv + vec2(0.0,  px.y)).r;
-    float m_d    = texture(sampler2D(water_mask, water_mask_smp), v_uv + vec2(0.0, -px.y)).r;
-    // Edge strength: high when this fragment is on the boundary
-    // between covered and uncovered. abs(centre - neighbour) peaks
-    // at ~0.5 if the linear filter halves the step; sum the four
-    // and clamp to 1. Keeping it simple — no Sobel needed for a
-    // binary mask.
-    float edge = clamp((abs(mask_c - m_l) + abs(mask_c - m_r)
-                      + abs(mask_c - m_u) + abs(mask_c - m_d)) * 1.5, 0.0, 1.0);
+    // 4-tap edge sample for the meniscus. Filtered down to ONLY
+    // cap-vs-sky boundaries — every cap silhouette in screen space
+    // (cap-shore, cap-distant-cap, etc.) fires on a raw mask edge,
+    // but only the cap-against-sky edge is the actual lens-water
+    // clip line. Test: a neighbour that has no cap (mask=0) AND no
+    // terrain (offscreen scene_z at the far plane) is sky → that
+    // edge counts. Otherwise (neighbour is sky-without-cap → also
+    // edge, neighbour is terrain-with-no-cap → cap-shore edge,
+    // skipped).
+    //
+    // Then gate on camera-altitude: only fire the meniscus when the
+    // lens is essentially AT the surface. Above + below the surface
+    // by more than ~15 cm there's no clip line to hide.
+    vec2 res = vec2(textureSize(sampler2D(scene_color, scene_smp), 0));
+    vec2 px  = 1.0 / res;
+    vec2 offsets[4] = vec2[4](
+        vec2(-px.x, 0.0), vec2( px.x, 0.0),
+        vec2( 0.0,  px.y), vec2( 0.0, -px.y)
+    );
+    float edge = 0.0;
+    for (int i = 0; i < 4; ++i) {
+        float m_n = texture(sampler2D(water_mask, water_mask_smp), v_uv + offsets[i]).r;
+        float z_n = texture(sampler2D(scene_depth, scene_depth_smp), v_uv + offsets[i]).r;
+        // Mask transition AND neighbour is sky.
+        float is_sky_neighbour = z_n >= 0.99999 ? 1.0 : 0.0;
+        edge += abs(mask_c - m_n) * is_sky_neighbour;
+    }
+    edge = clamp(edge * 1.5, 0.0, 1.0);
+
+    // Camera-at-surface gate: only fires the smear when the lens is
+    // literally clipping through the water plane. Outside ±15 cm of
+    // sea level the clip doesn't exist, so no smear.
+    float cam_at_surface = 1.0 - smoothstep(0.05, 0.15, abs(camera_alt));
+    edge *= cam_at_surface;
 
     // ---- distortion + sample selection ----
     //
@@ -180,19 +197,6 @@ void main() {
     if (wet > 0.0) {
         vec3 attenuation = exp(-view_dist * sigma);
         color = mix(deep, color, attenuation);
-    }
-
-    // ---- DEBUG: visualise the water mask + edge ----
-    // fx_params.w = 1 → paint the mask coverage as solid red, edge
-    // pixels as solid yellow. Lets us tell at a glance whether:
-    //   * the mask pass is rendering at all (red somewhere = yes),
-    //   * the cap silhouette is where we'd expect it (yellow line
-    //     should hug the visible cap edge),
-    //   * cap fragments behind terrain are being correctly rejected
-    //     (red shouldn't bleed into hill silhouettes).
-    if (fx_params.w > 0.5) {
-        if (edge > 0.05) color = vec3(1.0, 1.0, 0.0);     // yellow for edge
-        else if (mask_c > 0.5) color = vec3(1.0, 0.2, 0.2); // red for cap interior
     }
 
     frag_color = vec4(color, 1.0);

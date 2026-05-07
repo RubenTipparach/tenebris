@@ -1503,12 +1503,15 @@ void renderer_compose_to_swapchain(mat4_t view, mat4_t proj) {
      * camera, off-screen) — the mask says 0 there but we still
      * want fog. */
     const water_config_t* W = config_water();
-    bool cam_under = false;
+    bool  cam_under  = false;
+    float camera_alt = 1.0e6f;     /* huge → cam_at_surface gate stays off when no body */
     if (R.active_body_idx >= 0) {
         chunked_body_t* ab = &R.bodies[R.active_body_idx];
         const float sea_radius = ab->radius_m + W->height_offset_m - W->depth_offset_m;
-        vec3_t to_cam = vec3_sub(R.env.camera_world, ab->world_pos);
-        cam_under = vec3_length(to_cam) < sea_radius;
+        vec3_t to_cam   = vec3_sub(R.env.camera_world, ab->world_pos);
+        const float r   = vec3_length(to_cam);
+        camera_alt      = r - sea_radius;          /* signed: negative = below */
+        cam_under       = camera_alt < 0.0f;
     }
 
     composite_fs_params_t fs = {
@@ -1518,7 +1521,7 @@ void renderer_compose_to_swapchain(mat4_t view, mat4_t proj) {
         .fx_params     = { W->underwater_distortion,
                            R.time_seconds,
                            cam_under ? 1.0f : 0.0f,
-                           1.0f /* debug: visualise water_mask */ },
+                           camera_alt },
     };
     sg_apply_uniforms(UB_composite_fs_params, &SG_RANGE(fs));
 
