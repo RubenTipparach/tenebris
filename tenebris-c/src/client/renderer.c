@@ -1,5 +1,6 @@
 #include "client/renderer.h"
 #include "client/hex_mesher.h"
+#include "client/torch.h"
 #include "core/blocks.h"
 #include "core/config.h"
 #include "core/goldberg.h"
@@ -236,12 +237,6 @@ static bool R_WATER_VISIBLE = true;
  * stays visible. */
 static bool R_SKYBOX_VISIBLE = true;
 
-/* Debug-only: paint the water cap as a heatmap of v_shore_dist
- * (red at the shore, yellow inside the foam band, green just past,
- * blue in open water). Useful for confirming the per-vertex
- * shoreline-distance attribute end-to-end. Off by default. */
-static bool R_DEBUG_SHORE_HEATMAP = false;
-
 /* ----------------------------------------------------------------------- */
 
 /* Hex / distant-body / sun shaders are sokol-shdc-managed under
@@ -403,9 +398,21 @@ void renderer_init(void) {
         .shader = shd,
         .layout = {
             .attrs = {
-                [ATTR_hex_a_pos]    = { .format = SG_VERTEXFORMAT_FLOAT3 },
-                [ATTR_hex_a_normal] = { .format = SG_VERTEXFORMAT_FLOAT3 },
-                [ATTR_hex_a_uv]     = { .format = SG_VERTEXFORMAT_FLOAT2 },
+                /* Explicit offsets keep the auto-pack walker from
+                 * skewing later attrs if any slot order drifts. The
+                 * stride is the full hex_vertex_t (40 B) — both the
+                 * hex pipeline (all 5 attrs) and the water pipeline
+                 * (a_pos only) read from the same shared vbuf. */
+                [ATTR_hex_a_pos]         = { .format = SG_VERTEXFORMAT_FLOAT3,
+                                             .offset = (int)offsetof(hex_vertex_t, pos) },
+                [ATTR_hex_a_normal]      = { .format = SG_VERTEXFORMAT_FLOAT3,
+                                             .offset = (int)offsetof(hex_vertex_t, normal) },
+                [ATTR_hex_a_uv]          = { .format = SG_VERTEXFORMAT_FLOAT2,
+                                             .offset = (int)offsetof(hex_vertex_t, uv) },
+                [ATTR_hex_a_sky_light]   = { .format = SG_VERTEXFORMAT_FLOAT,
+                                             .offset = (int)offsetof(hex_vertex_t, sky_light) },
+                [ATTR_hex_a_torch_light] = { .format = SG_VERTEXFORMAT_FLOAT,
+                                             .offset = (int)offsetof(hex_vertex_t, torch_light) },
             },
             .buffers[0].stride = sizeof(hex_vertex_t),
         },
@@ -429,22 +436,23 @@ void renderer_init(void) {
         .shader = shd_water,
         .layout = {
             .attrs = {
-                /* Explicit offsets — a_pos sits at the start of
-                 * hex_vertex_t and a_shore_dist sits past the
-                 * normal + uv bytes that the water pipeline doesn't
-                 * consume. Mixing auto-offset (left implicit) with
-                 * explicit offset on a later slot is fragile in
-                 * sokol-gfx: the auto-pack walks attrs in slot
-                 * order, so any non-zero ATTR_water_a_pos slot
-                 * would skew the inferred a_pos offset. Specifying
-                 * both rules out that footgun. */
-                [ATTR_water_a_pos]        = {
+                /* a_pos for swell + radial-normal lookup; a_sky_light
+                 * + a_torch_light for the per-vertex baked lighting.
+                 * Normal + uv bytes between them are silently skipped
+                 * via the shared 40-byte stride — explicit offsets
+                 * keep the auto-pack walker from skewing later attrs
+                 * if any slot order drifts. */
+                [ATTR_water_a_pos] = {
                     .format = SG_VERTEXFORMAT_FLOAT3,
                     .offset = (int)offsetof(hex_vertex_t, pos),
                 },
-                [ATTR_water_a_shore_dist] = {
+                [ATTR_water_a_sky_light] = {
                     .format = SG_VERTEXFORMAT_FLOAT,
-                    .offset = (int)offsetof(hex_vertex_t, shore_dist),
+                    .offset = (int)offsetof(hex_vertex_t, sky_light),
+                },
+                [ATTR_water_a_torch_light] = {
+                    .format = SG_VERTEXFORMAT_FLOAT,
+                    .offset = (int)offsetof(hex_vertex_t, torch_light),
                 },
             },
             .buffers[0].stride = sizeof(hex_vertex_t),
@@ -1345,7 +1353,17 @@ void renderer_compose_to_swapchain(mat4_t view, mat4_t proj) {
      * Sequoia doesn't fog Sequoia just because Tenebris's water
      * is somewhere off-screen. The cap radius is derived the same
      * way hex_mesher.c places the actual cap, so the boolean
-     * "below cap" test stays consistent with what the player sees. */
+     * "below cap" test stays consistent with what the player sees.
+     *
+     * cam_under is voxel-driven: the camera position is resolved to
+     * its containing block and we only flag the camera as
+     * "underwater" when that block is actually BLOCK_WATER. A player
+     * who dug a cave below sea level on a land tile sits in an AIR
+     * cell, so the composite skips all water-fog/distortion for
+     * them — caves stay crisp. The screen-space pixel-altitude check
+     * inside the shader still applies, so a half-submerged camera
+     * (in water at the eyes, dry at the chin) still gates fog by
+     * pixel altitude. */
     const water_config_t* W = config_water();
     vec3_t  body_center  = (vec3_t){ 0, 0, 0 };
     float   sea_radius   = 0.0f;
@@ -1354,8 +1372,9 @@ void renderer_compose_to_swapchain(mat4_t view, mat4_t proj) {
         chunked_body_t* ab = &R.bodies[R.active_body_idx];
         body_center = ab->world_pos;
         sea_radius  = ab->radius_m + W->height_offset_m - W->depth_offset_m;
-        vec3_t to_cam   = vec3_sub(R.env.camera_world, body_center);
-        cam_under       = vec3_length(to_cam) < sea_radius;
+        vec3_t cam_local = vec3_sub(R.env.camera_world, body_center);
+        block_t cam_blk  = world_block_at_pos(ab->world, cam_local, -1);
+        cam_under = (cam_blk == BLOCK_WATER);
     }
 
     composite_fs_params_t fs = {
@@ -1603,7 +1622,7 @@ static void chunk_upload(mesh_chunk_t* c) {
 
 /* Draw a body's chunked terrain at its world position with the
  * supplied vp. Caller has already applied pip_hex + the sun/ambient
- * uniform block; this just sets the per-body model matrix uniform
+ * uniform block; this just sets the per-body model + planet block
  * and issues the chunk draws. */
 static void body_draw_chunks(chunked_body_t* body, mat4_t vp) {
     /* Translate to body origin. For Tenebris this is identity (body
@@ -1611,8 +1630,24 @@ static void body_draw_chunks(chunked_body_t* body, mat4_t vp) {
      * mesh out to its pos_x/y/z. */
     mat4_t model = mat4_translate(body->world_pos);
     mat4_t mvp   = mat4_mul(vp, model);
+
+    /* Per-body block also carries planet centre (in the same model
+     * space the vertex positions are in — that's body-local pre-
+     * translate, so origin is (0,0,0)) and the sea-level radius. The
+     * shader needs both for the day/night terminator and underwater-
+     * dim depth calc. Water level matches the cap mesh: body radius
+     * + water height_offset_m, minus depth_offset_m so the geometric
+     * sea level matches where the cap actually sits. */
+    const water_config_t* W = config_water();
+    const float sea_radius = body->radius_m
+                           + W->height_offset_m
+                           - W->depth_offset_m;
     hex_vs_params_t hvp = {0};
     memcpy(hvp.u_vp, mvp.m, sizeof(hvp.u_vp));
+    hvp.u_planet[0] = 0.0f;          /* model-space body centre */
+    hvp.u_planet[1] = 0.0f;
+    hvp.u_planet[2] = 0.0f;
+    hvp.u_planet[3] = body->has_water ? sea_radius : 0.0f;
     sg_apply_uniforms(UB_hex_vs_params, &SG_RANGE(hvp));
     for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
         mesh_chunk_t* c = &body->chunks[ci];
@@ -1650,8 +1685,17 @@ static void body_draw_water(chunked_body_t* body, mat4_t vp,
     const float t_scaled = R.time_seconds * W->time_scale;
 
     /* sokol-shdc emits std140-laid-out structs + slot constants —
-     * no manual offset math, no _pad_NN by hand. */
+     * no manual offset math, no _pad_NN by hand. The water cap
+     * shares its day/night terminator inputs with the hex shader —
+     * planet centre is body-local origin (model translates to
+     * body->world_pos before the vp), sun_dir + terminator come from
+     * the shared lighting config. */
+    const lighting_config_t* L = config_lighting();
     vs_params_t vs_params = {
+        .u_planet           = { 0.0f, 0.0f, 0.0f, 0.0f },
+        .u_sun_dir          = { R.env.sun_dir.x, R.env.sun_dir.y, R.env.sun_dir.z, 0.0f },
+        .u_terminator       = { L->night_ambient_floor, L->terminator_lo,
+                                L->terminator_hi, 0.0f },
         .u_time             = t_scaled,
         .u_swell_amplitude  = W->swell_amplitude,
         .u_swell_frequency  = W->swell_frequency,
@@ -1669,27 +1713,24 @@ static void body_draw_water(chunked_body_t* body, mat4_t vp,
         .u_far             = 20000.0f,
         .u_absorption      = { W->absorption.x, W->absorption.y, W->absorption.z },
         .u_deep_color      = { W->deep_color.x, W->deep_color.y, W->deep_color.z },
-        .u_shoreline_fade  = W->shoreline_fade_m,
-        .u_shore_foam_dist = W->shore_foam_dist_m,
         .u_spec_intensity  = W->specular_intensity,
         .u_spec_power      = W->specular_power,
         .u_sun_tint        = { W->sun_tint.x, W->sun_tint.y, W->sun_tint.z },
-        /* Pack the four foam scalars into vec4s so std140 keeps them
+        /* Pack the foam scalars into vec4s so std140 keeps them
          * tightly aligned. crest.w doubles as the overall mix
          * intensity; slope.w is unused (kept aligned). */
         .u_foam_crest      = { W->foam_crest_lo, W->foam_crest_hi, W->foam_crest_weight, W->foam_intensity },
         .u_foam_slope      = { W->foam_slope_lo, W->foam_slope_hi, W->foam_slope_weight, 0.0f },
         .u_foam_color      = { W->foam_color.x, W->foam_color.y, W->foam_color.z },
-        .u_shore_foam_color= { W->shore_foam_color.x, W->shore_foam_color.y, W->shore_foam_color.z },
-        .u_shore_foam_bands         = W->shore_foam_bands,
-        .u_shore_foam_band_softness = W->shore_foam_band_softness,
         .u_sky_horizon     = { W->sky_horizon_color.x, W->sky_horizon_color.y, W->sky_horizon_color.z },
         .u_sky_horizon_strength = W->sky_horizon_strength,
         .u_sky_zenith      = { W->sky_zenith_color.x, W->sky_zenith_color.y, W->sky_zenith_color.z },
         .u_ripple_scale    = W->ripple_scale,
         .u_ripple_speed    = W->ripple_speed,
         .u_wave_steepness  = W->wave_steepness,
-        .u_debug_shore_heatmap = R_DEBUG_SHORE_HEATMAP ? 1.0f : 0.0f,
+        .u_night_floor     = L->night_ambient_floor,
+        .u_torch_color     = { L->torch_color.x, L->torch_color.y, L->torch_color.z,
+                               L->torch_intensity },
     };
     sg_apply_uniforms(UB_fs_params, &SG_RANGE(fs_params));
 
@@ -1825,11 +1866,54 @@ void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world,
      * still run so we can verify those in isolation. */
     if (R_TERRAIN_VISIBLE) {
     sg_apply_pipeline(R.pip_hex);
-    hex_vs_light_t hex_light = {
-        .u_sun_dir = { R.env.sun_dir.x, R.env.sun_dir.y, R.env.sun_dir.z },
-        .u_ambient = { R.env.ambient.x, R.env.ambient.y, R.env.ambient.z },
-    };
-    sg_apply_uniforms(UB_hex_vs_light, &SG_RANGE(hex_light));
+    /* Per-frame lighting blocks — sun direction (vs + fs both need it
+     * so it appears in both blocks), ambient (fs only), and the
+     * day/night terminator. .x carries the night-side ambient floor,
+     * .yz the smoothstep lo/hi the vs uses to gate v_sun_brightness. */
+    const lighting_config_t* L = config_lighting();
+    {
+        hex_vs_light_t hex_vs_light = {
+            .u_sun_dir    = { R.env.sun_dir.x, R.env.sun_dir.y, R.env.sun_dir.z },
+            .u_terminator = { L->night_ambient_floor, L->terminator_lo,
+                              L->terminator_hi, 0.0f },
+        };
+        sg_apply_uniforms(UB_hex_vs_light, &SG_RANGE(hex_vs_light));
+    }
+    {
+        hex_fs_light_t hex_fs_light = {
+            .u_sun_dir    = { R.env.sun_dir.x, R.env.sun_dir.y, R.env.sun_dir.z },
+            .u_ambient    = { R.env.ambient.x, R.env.ambient.y, R.env.ambient.z },
+            .u_terminator = { L->night_ambient_floor, L->terminator_lo,
+                              L->terminator_hi, 0.0f },
+        };
+        sg_apply_uniforms(UB_hex_fs_light, &SG_RANGE(hex_fs_light));
+    }
+    /* Underwater-dim block reuses the water cap's per-channel
+     * absorption + deep_color so terrain visible *under* the cap
+     * tints with the same colour curve the cap uses, and the
+     * boundary where they meet reads as one continuous body of
+     * water instead of two stacked layers with different formulas. */
+    {
+        const water_config_t* W = config_water();
+        hex_fs_water_t hex_under = {
+            .u_absorption = { W->absorption.x, W->absorption.y, W->absorption.z },
+            .u_deep_color = { W->deep_color.x, W->deep_color.y, W->deep_color.z },
+        };
+        sg_apply_uniforms(UB_hex_fs_water, &SG_RANGE(hex_under));
+    }
+
+    /* Torch tint + intensity — additive warm contribution per unit
+     * of v_torch_light (which the mesher baked from the placed-torch
+     * list at remesh time). Tint matches the JS reference's
+     * (1.0, 0.7, 0.3) warm-orange, exposed via lighting.yaml so it
+     * can be cooled / brightened without recompiling. */
+    {
+        hex_fs_torch_t hex_torch = {
+            .u_torch_color = { L->torch_color.x, L->torch_color.y, L->torch_color.z,
+                               L->torch_intensity },
+        };
+        sg_apply_uniforms(UB_hex_fs_torch, &SG_RANGE(hex_torch));
+    }
 
     /* Frustum + LOD culling — far bodies drop to a single icosphere
      * draw via renderer_draw_moons. Detailed (chunked) draws happen
@@ -1931,5 +2015,12 @@ void renderer_set_water_visible(bool v)   { R_WATER_VISIBLE = v;   }
 bool renderer_water_visible(void)          { return R_WATER_VISIBLE; }
 void renderer_set_skybox_visible(bool v)  { R_SKYBOX_VISIBLE = v;  }
 bool renderer_skybox_visible(void)         { return R_SKYBOX_VISIBLE; }
-void renderer_set_shore_heatmap(bool v)   { R_DEBUG_SHORE_HEATMAP = v; }
-bool renderer_shore_heatmap(void)          { return R_DEBUG_SHORE_HEATMAP; }
+
+unsigned int renderer_atlas_view_id(void)    { return R.atlas_view.id; }
+unsigned int renderer_atlas_sampler_id(void) { return R.atlas_smp.id; }
+
+void renderer_draw_torches(mat4_t view, mat4_t proj) {
+    if (!R_TERRAIN_VISIBLE) return;
+    mat4_t vp = mat4_mul(proj, view);
+    torch_draw(vp, R.time_seconds);
+}

@@ -27,6 +27,8 @@
 #include "client/mobile_ui.h"
 #include "client/teleport_menu.h"
 #include "client/inventory.h"
+#include "client/hotbar_ui.h"
+#include "client/torch.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -129,7 +131,9 @@ static void init(void) {
     input_init();
     job_system_init(0);
     renderer_init();
+    torch_init();
     mobile_ui_init();
+    hotbar_ui_init();
     teleport_menu_init();
     teleport_menu_set_player(&G.player);
 
@@ -142,6 +146,7 @@ static void init(void) {
     config_load_skybox("assets/config/skybox.yaml");
     config_load_lod("assets/config/lod.yaml");
     config_load_water("assets/config/water.yaml");
+    config_load_lighting("assets/config/lighting.yaml");
     /* One-shot dump of Tenebris's effective atmosphere values so we
      * can sanity-check that the YAML actually landed (vs. defaults
      * from main_web.c being silently used). Comment out once the
@@ -245,8 +250,14 @@ static void update_overlay(float dt) {
         sdtx_color3b(0xff, 0xff, 0xff);
     }
     if (G.interact.has_target) {
-        sdtx_printf("target: tile=%d depth=%d dist=%.1fm\n",
-                    G.interact.hit_tile, G.interact.hit_depth, G.interact.distance);
+        if (G.interact.is_torch_target) {
+            sdtx_printf("target: torch #%d  dist=%.1fm  [LMB break]\n",
+                        G.interact.torch_idx, G.interact.distance);
+        } else {
+            sdtx_printf("target: tile=%d depth=%d dist=%.1fm\n",
+                        G.interact.hit_tile, G.interact.hit_depth,
+                        G.interact.distance);
+        }
     }
 
     /* Mode + hotbar. */
@@ -293,39 +304,6 @@ static void update_overlay(float dt) {
         sdtx_color3b(0xff, 0xff, 0xff);
     }
 
-    /* Hotbar — one line, selected slot wrapped in '>...<'. */
-    {
-        const inventory_t* inv = &G.player.inventory;
-        sdtx_printf("\nhotbar: ");
-        for (int i = 0; i < INV_HOTBAR_SLOTS; ++i) {
-            const inv_slot_t* s = &inv->slots[i];
-            if (i == inv->selected) sdtx_color3b(0xff, 0xe0, 0x40);
-            else                     sdtx_color3b(0xb0, 0xb0, 0xc0);
-            const char* name = "----";
-            switch (s->type) {
-                case BLOCK_AIR:    name = "----"; break;
-                case BLOCK_STONE:  name = "STON"; break;
-                case BLOCK_DIRT:   name = "DIRT"; break;
-                case BLOCK_GRASS:  name = "GRSS"; break;
-                case BLOCK_SAND:   name = "SAND"; break;
-                case BLOCK_WATER:  name = "WATR"; break;
-                case BLOCK_ICE:    name = "ICE "; break;
-                case BLOCK_SNOW:   name = "SNOW"; break;
-                case BLOCK_WOOD:   name = "WOOD"; break;
-                case BLOCK_LEAVES: name = "LEAF"; break;
-                default:           name = "BLK "; break;
-            }
-            if (s->type == BLOCK_AIR) {
-                sdtx_printf(" %d:----", i + 1);
-            } else if (s->count > 9000) {
-                sdtx_printf(" %d:%s*", i + 1, name);   /* * == effectively infinite */
-            } else {
-                sdtx_printf(" %d:%s%d", i + 1, name, s->count);
-            }
-        }
-        sdtx_color3b(0xff, 0xff, 0xff);
-        sdtx_printf("\n");
-    }
 
     if (!input_state()->pointer_locked && !input_state()->touch_active) {
         sdtx_color3b(0xf0, 0xc0, 0x50);
@@ -496,6 +474,7 @@ static void frame(void) {
     renderer_draw_sun(view, proj);
     renderer_draw_world(view, proj, G.world, cam_world, dt);
     renderer_draw_moons(view, proj, cam_world);
+    renderer_draw_torches(view, proj);
 
     /* Hand off to the swapchain pass — blits the offscreen colour
      * (everything opaque) onto the swapchain. */
@@ -512,6 +491,7 @@ static void frame(void) {
     teleport_menu_draw();
     draw_error_overlay();
     sdtx_draw();
+    hotbar_ui_draw(&G.player.inventory);
     mobile_ui_draw();
 
     renderer_end_frame();
@@ -566,7 +546,9 @@ static void event(const sapp_event* e) {
 
 static void cleanup(void) {
     teleport_menu_shutdown();
+    hotbar_ui_shutdown();
     mobile_ui_shutdown();
+    torch_shutdown();
     renderer_shutdown();
     for (int i = 0; i < G.moon_count; ++i) world_destroy(G.moons[i]);
     G.moon_count = 0;

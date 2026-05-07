@@ -12,22 +12,33 @@
  * floating origin isn't needed yet). Atlas UVs + shaded in the hex
  * shader.
  *
- * Vertex layout: 36 bytes (pos + normal + uv + shore_dist). The hex
- * pipeline only binds the first three attributes (pos/normal/uv);
- * the water pipeline binds pos and shore_dist (its uv/normal are
- * derived from world position). The unused-by-each-pipeline bytes
- * are silently skipped via the shared 36-byte stride.
+ * Vertex layout: 40 bytes (pos + normal + uv + sky_light + torch_light).
  *
- * shore_dist is great-arc distance (m) from this vertex to the
- * nearest land tile, computed at mesh-build time via the per-tile
- * BFS in world.c. 0 on land vertices; positive on water vertices,
- * driving shoreline foam in water.glsl.
+ *   sky_light    — 0..1 fraction of sky reaching this vertex, baked
+ *                  from the count of solid voxels stacked above it
+ *                  in the same column. Drops exponentially per
+ *                  blocking voxel — caves go dark, exposed surface
+ *                  stays full-bright. Replaces the implicit "ambient
+ *                  is uniform everywhere" assumption with a cheap
+ *                  voxel-occlusion approximation.
+ *   torch_light  — sum of inverse-square contributions from nearby
+ *                  placed torches (clamped to ~3). Drives the warm-
+ *                  orange additive light in the hex shader. Baked at
+ *                  mesh-build time from the torch.c list, so a chunk
+ *                  must be re-meshed when torches are placed or
+ *                  removed within range.
+ *
+ * The hex pipeline binds all five attributes; the water pipeline
+ * binds only pos (its normal is derived radially from a_pos in the
+ * vs, uv isn't used). The unused bytes are silently skipped via the
+ * shared 40-byte stride.
  */
 typedef struct {
     float pos[3];
     float normal[3];
     float uv[2];
-    float shore_dist;
+    float sky_light;
+    float torch_light;
 } hex_vertex_t;
 
 typedef struct {

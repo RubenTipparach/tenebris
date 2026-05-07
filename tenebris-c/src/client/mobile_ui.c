@@ -190,10 +190,12 @@ static bool S_MENU_OPEN = false;
  * recomputed every frame so it stays in sync with sapp_widthf().
  * Returned by menu_button_layout for both the draw and hit-test
  * paths so they can't drift apart. */
+#define MENU_ITEM_COUNT 3
+
 typedef struct {
     float menu_x, menu_y;     /* hamburger button centre */
     float item_x;             /* shared x for the popup column */
-    float item_y[4];          /* y centres for the four toggles */
+    float item_y[MENU_ITEM_COUNT];
     float radius;
     float hit_pad;            /* hit-box expansion for fat-thumb taps */
 } menu_layout_t;
@@ -206,7 +208,7 @@ static menu_layout_t menu_button_layout(void) {
     L.menu_y  = BTN_MARGIN + L.radius;
     L.item_x  = L.menu_x;
     const float dy = L.radius * 2.0f + BTN_GAP;
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < MENU_ITEM_COUNT; ++i) {
         L.item_y[i] = L.menu_y + dy * (float)(i + 1);
     }
     return L;
@@ -232,13 +234,12 @@ bool mobile_ui_handle_touch(float x, float y) {
     }
     if (!S_MENU_OPEN) return false;
 
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < MENU_ITEM_COUNT; ++i) {
         if (fabsf(x - L.item_x) <= item_r && fabsf(y - L.item_y[i]) <= item_r) {
             switch (i) {
                 case 0: renderer_set_terrain_visible(!renderer_terrain_visible()); break;
                 case 1: renderer_set_water_visible  (!renderer_water_visible());   break;
                 case 2: renderer_set_skybox_visible (!renderer_skybox_visible());  break;
-                case 3: renderer_set_shore_heatmap  (!renderer_shore_heatmap());   break;
             }
             return true;
         }
@@ -358,16 +359,15 @@ void mobile_ui_draw(void) {
     draw_glyph('T', bx, tp_y, 16.0f, 1.0f, 0.95f, 1.0f);
 
     /* Debug-toggle menu — single hamburger button at the top-right
-     * corner that drops down a vertical column of four toggles when
-     * open: terrain (H), water (J), sky (K), shoreline-distance
-     * heatmap (F). Each toggle button paints itself in a coloured
-     * "on" state or dim-red "off" state so the current setting is
-     * unmissable. Hit-testing lives in mobile_ui_handle_touch so
-     * the layout in menu_button_layout() is the only source of
-     * truth shared by the draw + tap paths.
+     * corner that drops down a vertical column of three toggles when
+     * open: terrain (H), water (J), sky (K). Each toggle paints
+     * itself in a coloured "on" state or dim-red "off" state so the
+     * current setting is unmissable. Hit-testing lives in
+     * mobile_ui_handle_touch so the layout in menu_button_layout()
+     * is the only source of truth shared by the draw + tap paths.
      *
      * Closed by default — first-time players don't see a debug
-     * overlay sprouting from the corner. Keyboard shortcuts H/J/K/F
+     * overlay sprouting from the corner. Keyboard shortcuts H/J/K
      * still work directly without opening the menu. */
     {
         menu_layout_t L = menu_button_layout();
@@ -391,13 +391,12 @@ void mobile_ui_draw(void) {
                 char glyph;
                 bool on;
                 float on_r, on_g, on_b;     /* tint when enabled */
-            } items[4] = {
+            } items[MENU_ITEM_COUNT] = {
                 { 'H', renderer_terrain_visible(), 0.20f, 0.25f, 0.35f },  /* terrain */
                 { 'J', renderer_water_visible(),   0.10f, 0.30f, 0.40f },  /* water   */
                 { 'K', renderer_skybox_visible(),  0.40f, 0.25f, 0.10f },  /* sky     */
-                { 'F', renderer_shore_heatmap(),   0.30f, 0.10f, 0.40f },  /* heatmap */
             };
-            for (int i = 0; i < 4; ++i) {
+            for (int i = 0; i < MENU_ITEM_COUNT; ++i) {
                 float ix = L.item_x;
                 float iy = L.item_y[i];
                 if (items[i].on) {

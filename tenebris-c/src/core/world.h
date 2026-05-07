@@ -50,14 +50,6 @@ typedef struct world_s {
      * far. Fill is streamed across frames; tiles past this cursor are
      * all BLOCK_AIR. */
     int                  gen_cursor;
-
-    /* Per-tile great-arc distance (metres along the surface) from the
-     * tile center to the nearest land tile center. Land tiles get 0;
-     * water tiles get a positive value that grows toward the open
-     * ocean. NULL until world_compute_shore_dist() runs (lazy — first
-     * call to world_tile_shore_dist triggers the BFS). Drives
-     * shoreline foam in water.glsl via a per-vertex attribute. */
-    float*               shore_dist_m;
 } world_t;
 
 /* ----------------------------------------------------------------------- */
@@ -78,17 +70,23 @@ void     world_set(world_t* w, int tile, int depth, block_t b);
 bool     world_tile_dirty(const world_t* w, int tile);
 void     world_tile_clear_dirty(world_t* w, int tile);
 
+/* Mark every tile whose centre sits within `radius_m` of `world_pos`
+ * as dirty, so the renderer's remesh-on-dirty pass picks them up.
+ * Used by torch place/remove so per-vertex torch_light gets re-baked
+ * for affected tiles. world_pos is body-local (matches goldberg
+ * tile centres scaled by body radius). */
+void     world_dirty_in_range(world_t* w, vec3_t world_pos, float radius_m);
+
+/* Resolve a body-local point to its containing voxel cell. Returns
+ * the block at that (tile, depth); BLOCK_AIR if the position falls
+ * outside the world (above the build cap, below bedrock, or outside
+ * the goldberg grid). The lookup walks the goldberg adjacency from
+ * `tile_hint` (use the player's last_tile for cheap re-targeting;
+ * pass -1 to start from scratch). */
+block_t  world_block_at_pos(const world_t* w, vec3_t body_local_pos, int tile_hint);
+
 /* Radial meters corresponding to a block depth. Surface sits at
  * depth = body->seaLevel relative offset from the top. */
 double   world_depth_to_radius_m(const world_t* w, int depth);
-
-/* Per-tile shoreline distance in metres along the surface (great-arc).
- * Land tiles return 0. Water tiles return BFS-computed shortest
- * distance to the nearest land tile. The first call computes the
- * whole array (Bellman-Ford / SPFA over the goldberg adjacency); all
- * subsequent calls are O(1). Caller must ensure terrain gen has
- * completed before the first call — otherwise tiles past gen_cursor
- * read as land (column is all-AIR, no water column). */
-float    world_tile_shore_dist(world_t* w, int tile);
 
 #endif

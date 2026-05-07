@@ -309,7 +309,6 @@ static water_config_t S_WATER = {
     .absorption         = { 0.60f, 0.20f, 0.10f },
     .deep_color         = { 0.02f, 0.10f, 0.22f },
     .shoreline_fade_m   = 0.50f,
-    .shore_foam_dist_m  = 0.80f,
     .specular_intensity = 0.60f,
     .specular_power     = 140.0f,
     .sun_tint           = { 1.35f, 1.25f, 1.10f },
@@ -321,9 +320,6 @@ static water_config_t S_WATER = {
     .foam_slope_weight  = 0.45f,
     .foam_intensity     = 0.60f,
     .foam_color         = { 0.95f, 0.97f, 1.00f },
-    .shore_foam_color   = { 0.98f, 0.99f, 1.00f },
-    .shore_foam_bands   = 0.0f,
-    .shore_foam_band_softness = 0.2f,
     .sky_horizon_color  = { 0.85f, 0.92f, 0.98f },
     .sky_zenith_color   = { 0.35f, 0.55f, 0.85f },
     .sky_horizon_strength = 1.0f,
@@ -389,8 +385,6 @@ int config_load_water(const char* path) {
                         if (!parse_vec3(val, &S_WATER.deep_color)) parse_errors++;
                     } else if (strcmp(key, "shoreline_fade_m"  ) == 0) {
                         S_WATER.shoreline_fade_m  = (float)strtod(val, NULL);
-                    } else if (strcmp(key, "shore_foam_dist_m" ) == 0) {
-                        S_WATER.shore_foam_dist_m = (float)strtod(val, NULL);
                     } else if (strcmp(key, "specular_intensity") == 0) {
                         S_WATER.specular_intensity = (float)strtod(val, NULL);
                     } else if (strcmp(key, "specular_power"    ) == 0) {
@@ -413,12 +407,6 @@ int config_load_water(const char* path) {
                         S_WATER.foam_intensity    = (float)strtod(val, NULL);
                     } else if (strcmp(key, "foam_color"        ) == 0) {
                         if (!parse_vec3(val, &S_WATER.foam_color)) parse_errors++;
-                    } else if (strcmp(key, "shore_foam_color"  ) == 0) {
-                        if (!parse_vec3(val, &S_WATER.shore_foam_color)) parse_errors++;
-                    } else if (strcmp(key, "shore_foam_bands"  ) == 0) {
-                        S_WATER.shore_foam_bands = (float)strtod(val, NULL);
-                    } else if (strcmp(key, "shore_foam_band_softness") == 0) {
-                        S_WATER.shore_foam_band_softness = (float)strtod(val, NULL);
                     } else if (strcmp(key, "sky_horizon_color" ) == 0) {
                         if (!parse_vec3(val, &S_WATER.sky_horizon_color)) parse_errors++;
                     } else if (strcmp(key, "sky_zenith_color"  ) == 0) {
@@ -439,6 +427,92 @@ int config_load_water(const char* path) {
                         S_WATER.wave_steepness    = (float)strtod(val, NULL);
                     } else if (strcmp(key, "underwater_distortion") == 0) {
                         S_WATER.underwater_distortion = (float)strtod(val, NULL);
+                    } else {
+                        printf("[config] %s:%d: unknown key '%s'\n",
+                               path, line_no, key);
+                    }
+                }
+            }
+            *p = saved;
+            if (saved == '\0') break;
+            line_start = p + 1;
+        }
+        ++p;
+    }
+
+    free(buf);
+    if (parse_errors > 0) {
+        printf("[config] %s loaded with %d parse error(s)\n",
+               path, parse_errors);
+        return -2;
+    }
+    printf("[config] loaded %s\n", path);
+    fflush(stdout);
+    return 0;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Lighting config — terrain day/night terminator. Compiled-in defaults
+ * match the JS terrain.frag (`smoothstep(-0.1, 0.3, ...)` + 10 % night
+ * ambient floor); lighting.yaml overrides them. */
+
+static lighting_config_t S_LIGHTING = {
+    .night_ambient_floor = 0.10f,
+    .terminator_lo       = -0.10f,
+    .terminator_hi       =  0.30f,
+    .torch_color         = { 1.00f, 0.70f, 0.30f },
+    .torch_intensity     = 1.00f,
+};
+
+const lighting_config_t* config_lighting(void) { return &S_LIGHTING; }
+
+int config_load_lighting(const char* path) {
+    size_t fsize = 0;
+    char* buf = slurp_file(path, &fsize);
+    if (!buf) {
+        printf("[config] %s not found, using compiled-in lighting defaults\n",
+               path);
+        fflush(stdout);
+        return -1;
+    }
+
+    int line_no = 0;
+    int parse_errors = 0;
+    char* p = buf;
+    char* line_start = buf;
+    while (1) {
+        if (*p == '\n' || *p == '\0') {
+            char saved = *p;
+            *p = '\0';
+            ++line_no;
+            char* line = trim_strip(line_start);
+            if (*line == '\0') {
+                /* skip */
+            } else {
+                char* colon = strchr(line, ':');
+                if (!colon) {
+                    printf("[config] %s:%d: missing ':' in '%s'\n",
+                           path, line_no, line);
+                    parse_errors++;
+                } else {
+                    *colon = '\0';
+                    char* key = line;
+                    char* val = trim_strip(colon + 1);
+                    size_t kn = strlen(key);
+                    while (kn > 0 && isspace((unsigned char)key[kn - 1])) key[--kn] = '\0';
+
+                    if (*val == '\0') {
+                        /* "lighting:" wrapper — single section, ignored */
+                    } else if (strcmp(key, "night_ambient_floor") == 0) {
+                        S_LIGHTING.night_ambient_floor = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "terminator_lo") == 0) {
+                        S_LIGHTING.terminator_lo = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "terminator_hi") == 0) {
+                        S_LIGHTING.terminator_hi = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "torch_color") == 0) {
+                        if (!parse_vec3(val, &S_LIGHTING.torch_color)) parse_errors++;
+                    } else if (strcmp(key, "torch_intensity") == 0) {
+                        S_LIGHTING.torch_intensity = (float)strtod(val, NULL);
                     } else {
                         printf("[config] %s:%d: unknown key '%s'\n",
                                path, line_no, key);

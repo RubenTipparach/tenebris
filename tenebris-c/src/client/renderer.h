@@ -118,22 +118,33 @@ bool renderer_water_visible(void);
 void renderer_set_skybox_visible(bool visible);
 bool renderer_skybox_visible(void);
 
-/* Debug-only: replace the water surface with a heatmap of the
- * per-vertex shoreline-distance attribute. Drives a uniform on
- * the water shader. Off by default. */
-void renderer_set_shore_heatmap(bool on);
-bool renderer_shore_heatmap(void);
 /* Draw each registered body. `camera_world` is used to compute angular
  * screen size — bodies that subtend less than ~20% of the viewport
  * swap to a flat-shaded 20-face icosphere instead of their detailed
  * Goldberg mesh. */
 void renderer_draw_moons(mat4_t view, mat4_t proj, vec3_t camera_world);
+
+/* Draw all placed torches with the current frame's clock. Runs in
+ * the offscreen opaque pass alongside terrain + moons so the water
+ * cap can sample torch pixels for refraction. Active body assumed
+ * to sit at the world origin (Tenebris) — torches are stored in
+ * body-local space and drawn directly. */
+void renderer_draw_torches(mat4_t view, mat4_t proj);
 int  renderer_moon_count(void);
 void renderer_end_frame(void);
 
 size_t renderer_triangles_drawn_this_frame(void);
 size_t renderer_tiles_drawn_this_frame(void);
 size_t renderer_tiles_remeshed_this_frame(void);
+
+/* Texture-atlas-id accessors so UI modules (hotbar) can sample the
+ * same atlas the terrain mesher uses — every block lives in its own
+ * column. Returns the raw sg_view / sg_sampler id; the caller wraps
+ * it back into the typed handle (`(sg_view){ .id = ... }`) without
+ * needing sokol_gfx.h pulled into this header. Both ids are valid
+ * for the program lifetime after renderer_init runs. */
+unsigned int renderer_atlas_view_id(void);
+unsigned int renderer_atlas_sampler_id(void);
 /* Chunked-mesh diagnostics for the HUD. `out_chunks` = total chunk
  * count (configured at compile time), `out_tiles_meshed` = number of
  * tiles that have been routed into a chunk so far. */

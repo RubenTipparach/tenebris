@@ -12,6 +12,9 @@
 
 layout(binding=0) uniform vs_params {
     mat4 u_vp;                  // pre-multiplied with model so a_pos is body-local
+    vec4 u_planet;              // xyz = body centre (model space), w unused
+    vec4 u_sun_dir;             // xyz = world sun direction, w unused
+    vec4 u_terminator;          // x=night_floor, y=lo, z=hi, w unused
     float u_time;               // pre-scaled "subjective" time
     float u_swell_amplitude;    // overall vertex-displacement multiplier (wave height)
     float u_swell_frequency;    // spatial-frequency multiplier in the sine swell (wavelength)
@@ -21,21 +24,24 @@ layout(binding=0) uniform vs_params {
 // a_normal / a_uv aren't read here (the radial wave normal is derived
 // from normalize(a_pos)). They're still in the shared hex_vertex_t
 // vbuf, but the water pipeline omits them from its vertex layout —
-// sokol's per-attribute offset arithmetic plus the 36-byte stride
+// sokol's per-attribute offset arithmetic plus the shared stride
 // silently skips the extra bytes. Keeping the unused `in` decls would
 // trip GL_VERTEX_ATTRIBUTE_NOT_FOUND warnings whenever the GLSL
 // compiler dead-strips them.
 //
-// a_shore_dist is the per-vertex great-arc distance (m) to the
-// nearest land tile, baked at mesh-build time by hex_mesher.c via
-// the BFS in world.c. Drives the shoreline foam band in the fs —
-// view-independent and swell-independent, replacing the old
-// thickness-as-shore-proxy path.
-in vec3 a_pos;
-in float a_shore_dist;
+// a_sky_light / a_torch_light are baked at mesh time by the same
+// hex_mesher path the terrain uses (sky-occlusion sum + nearby torch
+// inverse-square). The water cap reads both so a player-built roof
+// over the water dims it like land, and a placed torch on the
+// shoreline spills its warm circle onto the water beside it.
+in vec3  a_pos;
+in float a_sky_light;
+in float a_torch_light;
 
-out vec3 v_wpos;
-out float v_shore_dist;
+out vec3  v_wpos;
+out float v_sun_brightness;     // 0 on full-night side of the planet, 1 on full-day
+out float v_sky_light;          // 0..1 voxel-occlusion sky-reach
+out float v_torch_light;        // 0..3 sum of inverse-square torch contributions
 
 void main() {
     // Radial from the planet centre, NOT the per-tile flat normal in
@@ -64,7 +70,16 @@ void main() {
     vec3 p = a_pos + n * swell;
     gl_Position = u_vp * vec4(p, 1.0);
     v_wpos = p;
-    v_shore_dist = a_shore_dist;
+    v_sky_light   = a_sky_light;
+    v_torch_light = a_torch_light;
+
+    // Day/night terminator — same surface-dir·sun_dir smoothstep the
+    // terrain shader uses, so the water cap darkens on the night side
+    // in lockstep with the land beside it. Computed per vertex (the
+    // cap mesh is fine enough that interpolation reads as smooth).
+    vec3 surface_dir = normalize(p - u_planet.xyz);
+    float sun_facing = dot(surface_dir, normalize(u_sun_dir.xyz));
+    v_sun_brightness = smoothstep(u_terminator.y, u_terminator.z, sun_facing);
 }
 @end
 
@@ -80,24 +95,25 @@ layout(binding=1) uniform fs_params {
     float u_far;             // projection far plane (m)
     vec3 u_absorption;       // Beer-Lambert sigma per RGB channel (1/m)
     vec3 u_deep_color;       // saturation colour where the ray has fully attenuated
-    float u_shoreline_fade;  // smoothstep upper edge for thickness-driven alpha (m)
-    float u_shore_foam_dist; // smoothstep upper edge for shoreline foam (m)
     float u_spec_intensity;  // sun-highlight strength multiplier
     float u_spec_power;      // Blinn-Phong exponent
     vec3  u_sun_tint;        // warm tint multiplied with the sun highlight
     vec4  u_foam_crest;      // x=lo, y=hi, z=weight, w=overall foam_intensity
     vec4  u_foam_slope;      // x=lo, y=hi, z=weight, w=unused
     vec3  u_foam_color;      // wave-crest + slope foam tint
-    vec3  u_shore_foam_color;
-    float u_shore_foam_bands;         // posterize ring count (≤1 disables)
-    float u_shore_foam_band_softness; // band-edge softness (0=hard, 1=smooth)
     vec3  u_sky_horizon;     // reflected-ray-skimming-horizontal sky tint
     float u_sky_horizon_strength; // horizon-direction reflection opacity (0=hide, 1=Fresnel default)
     vec3  u_sky_zenith;      // reflected-ray-up sky tint
     float u_ripple_scale;    // spatial multiplier inside the fbm lookup
     float u_ripple_speed;    // multiplier on the time advection inside fbm
     float u_wave_steepness;  // normal-perturbation factor (was hard-coded 0.65)
-    float u_debug_shore_heatmap; // 0 = normal water, 1 = paint v_shore_dist as a heatmap
+    float u_night_floor;     // lighting.yaml night_ambient_floor — water cap multiplies
+                             // its final colour by mix(night_floor, 1, sun_brightness)
+    vec4  u_torch_color;     // xyz = warm tint, w = intensity scalar. Per-vertex
+                             // v_torch_light is multiplied by this (matches the
+                             // hex shader's torch contribution exactly so a torch
+                             // placed at a shore reads continuously across the
+                             // water/land seam).
 };
 
 // water_scene_color / water_scene_depth are texture views of the
@@ -116,8 +132,10 @@ layout(binding=1) uniform sampler   water_scene_depth_smp;
 
 precision highp int;
 
-in vec3 v_wpos;
-in float v_shore_dist;
+in vec3  v_wpos;
+in float v_sun_brightness;
+in float v_sky_light;
+in float v_torch_light;
 out vec4 frag_color;
 
 // 3D gradient (Perlin) noise — quintic fade, integer-hash gradient
@@ -237,20 +255,6 @@ void main() {
     // looks like a refracted window onto the sky; outside, total
     // internal reflection — the rest of the underside reads as
     // dark deep-water tint.
-    //
-    // We rely on the cull-mode = NONE on the water pipeline plus
-    // gl_FrontFacing to detect the underside. The cap geometry's
-    // normal points outward from the planet, so any fragment seen
-    // from inside the planet (camera radius < cap radius) is back-
-    // facing.
-    //
-    // The offscreen scene_color at screen_uv already holds whatever
-    // was rendered in that pixel direction without water — sky +
-    // atmosphere + any above-water terrain peeking over the
-    // shoreline — so sampling it at the same perturbed UV gives the
-    // refracted-sky look. The ripple t_grad already perturbs the
-    // sample, matching the above-water refraction so the surface
-    // looks like the same water from both sides.
     if (!gl_FrontFacing) {
         vec3  view_to_frag = normalize(v_wpos - u_camera_pos);
         float cos_theta    = dot(view_to_frag, n);
@@ -261,14 +265,7 @@ void main() {
         float snell = smoothstep(0.55, 0.75, cos_theta);
 
         // Beer-Lambert through the water column between camera and
-        // the surface. The above-water path uses scene-thickness
-        // (water_z to scene_z) for this; from below we use the
-        // straight-line camera-to-cap distance, which is the
-        // equivalent path length for the refracted ray. Same
-        // absorption + deep_color the cap uses topside, so distant
-        // cap fragments saturate to deep_color and the seabed-fog
-        // colour matches the cap-underside colour at the seam where
-        // they meet on screen.
+        // the surface.
         float view_dist     = length(v_wpos - u_camera_pos);
         vec3  attenuation   = exp(-view_dist * u_absorption);
         vec3  refracted_lit = mix(u_deep_color, refracted, attenuation);
@@ -276,8 +273,7 @@ void main() {
         // Inside Snell's window: the refracted sky/scene visible
         // through the surface, attenuated by the water in front of
         // it. Outside: total internal reflection saturates to
-        // deep_color (stylised — we don't actually screen-space-
-        // reflect the seabed, the dome reads as solid dark blue).
+        // deep_color.
         vec3 below_color = mix(u_deep_color, refracted_lit, snell);
 
         // Optional sun glint surviving the underside — sells the
@@ -290,6 +286,21 @@ void main() {
         float spec = pow(max(dot(n, halfv), 0.0), u_spec_power) * snell;
         below_color += u_sun_tint * spec * u_spec_intensity * 0.5
                      * dot(attenuation, vec3(1.0/3.0));
+
+        // Day/night dim: same below-cap surface should darken on
+        // the dark side of the planet. Sky-light multiplies into the
+        // sun_brightness so an underside seen from inside a roofed
+        // pool also dims. Refracted sample carries the terrain
+        // shader's own day/night tone already, so multiplying here
+        // just darkens the deep-colour saturation + sun glint.
+        float ambient_dn = mix(u_night_floor, 1.0, v_sun_brightness * v_sky_light);
+        below_color *= ambient_dn;
+
+        // Torch contribution comes through from the underside too —
+        // a torch held at a pool's edge lights the underside of the
+        // surface for a swimmer looking up. Added after the daylight
+        // dim so torches survive midnight + roof darkness.
+        below_color += u_torch_color.xyz * u_torch_color.w * v_torch_light;
 
         frag_color = vec4(below_color, 1.0);
         return;
@@ -337,83 +348,42 @@ void main() {
     float spec  = pow(max(dot(n, halfv), 0.0), u_spec_power);
     vec3  sun_highlight = u_sun_tint * spec * u_spec_intensity;
 
+    // Wave-crest + slope foam — bright flecks on tall fbm peaks and
+    // steep tangent gradients. Two smoothstep ranges feed a max()
+    // blend with per-source weights; the combined mass tints toward
+    // foam_color at foam_intensity.
     float steepness = length(t_grad);
     float crest     = smoothstep(u_foam_crest.x, u_foam_crest.y, h0);
     float slope_f   = smoothstep(u_foam_slope.x, u_foam_slope.y, steepness);
     float foam      = max(crest * u_foam_crest.z, slope_f * u_foam_slope.z);
 
-    // Shoreline foam — distance-from-shore white wash. v_shore_dist
-    // is the per-vertex BFS distance to the nearest land tile (m,
-    // along the surface), baked at mesh-build time and interpolated
-    // across the cap face. View-independent + swell-independent —
-    // replaces the earlier thickness=max(0, scene_z - water_z)
-    // proxy, which was a view-ray length, not vertical depth, so it
-    // grew with camera tilt and pulsed with the swell.
-    //
-    // Two-stage blend so the foam reads as opaque white right at
-    // the shoreline and only feathers out in the outer half:
-    //   * inner core: smoothstep(0, foam_dist*0.5, dist) → solid 1
-    //     across the first half of the band (no fbm dampening here).
-    //   * outer feather: smoothstep(foam_dist*0.5, foam_dist, dist)
-    //     → ramps to 0, fbm-modulated so the trailing edge has
-    //     texture instead of looking like a flat band.
-    float core_in = 1.0 - smoothstep(0.0, u_shore_foam_dist * 0.5, v_shore_dist);
-    float feather = 1.0 - smoothstep(u_shore_foam_dist * 0.5, u_shore_foam_dist, v_shore_dist);
-    float fbm_mod = 0.7 + 0.3 * smoothstep(-0.4, 0.4, h0);
-    float shore_foam = max(core_in, feather * fbm_mod);
-
-    // Optional posterize for a cel-shaded ring look. bands ≤ 1
-    // short-circuits to the smooth gradient. Otherwise quantise into
-    // N steps; band_softness widens the smoothstep across each band
-    // so the ring edges aren't a jagged staircase under the
-    // fbm-modulated thickness.
-    if (u_shore_foam_bands > 1.0) {
-        float scaled  = shore_foam * u_shore_foam_bands;
-        float floored = floor(scaled);
-        float frac    = scaled - floored;
-        float w       = clamp(u_shore_foam_band_softness, 0.0, 1.0);
-        float t       = smoothstep(0.5 - w * 0.5, 0.5 + w * 0.5, frac);
-        shore_foam    = (floored + t) / u_shore_foam_bands;
-    }
-
     vec3 color = mix(base, sky, sky_weight);
     color = mix(color, u_foam_color, foam * u_foam_crest.w);
 
-    // Shoreline foam covers the cap-edge silhouette: at thickness ~0
-    // shore_foam is 1.0, so this mix replaces the cap pixel with the
-    // foam tint (no underlying terrain visible). Past
-    // u_shore_foam_dist the foam fades away and we see the
-    // refracted+attenuated water colour from above.
-    color = mix(color, u_shore_foam_color, shore_foam);
-
-    // Sun highlight (Blinn-Phong) is applied AFTER the foam + shore-
-    // foam mixes — physically the sun still glints off foam, and more
-    // importantly the shore_foam mix above runs at strength ~1 in the
-    // entire near-shore band, so adding spec earlier would wash out
-    // every near-shore glint. With spec applied here, u_spec_intensity
-    // is a true additive scaler whose visual impact is independent of
-    // where on the cap the fragment lives.
+    // Sun highlight (Blinn-Phong) is applied AFTER the foam mix —
+    // physically the sun still glints off foam, and u_spec_intensity
+    // is a true additive scaler whose visual impact is independent
+    // of where on the cap the fragment lives.
     color += sun_highlight;
 
-    // Debug heatmap: when u_debug_shore_heatmap is on, override the
-    // final water colour with a gradient mapped from v_shore_dist
-    // (red at the shore, yellow inside the foam band, green just
-    // past it, blue in open water). Lets us verify the per-vertex
-    // shoreline-distance attribute end-to-end without trusting the
-    // foam smoothstep tuning.
-    if (u_debug_shore_heatmap > 0.5) {
-        float d = v_shore_dist;
-        float fd = max(u_shore_foam_dist, 0.0001);
-        vec3 dbg;
-        if (d < fd) {
-            dbg = mix(vec3(1.0, 0.0, 0.0), vec3(1.0, 1.0, 0.0), d / fd);
-        } else if (d < fd * 5.0) {
-            dbg = mix(vec3(1.0, 1.0, 0.0), vec3(0.0, 1.0, 0.0), (d - fd) / (fd * 4.0));
-        } else {
-            dbg = vec3(0.0, 0.2, 1.0);
-        }
-        color = dbg;
-    }
+    // Day/night dim, last step. Mirrors the terrain shader: the cap
+    // multiplies its final colour by mix(night_floor, 1, sky_light *
+    // sun_brightness) so the night-side ocean surface darkens in
+    // lockstep with the night-side land beside it, and water under
+    // a built roof dims like the land under that same roof. Sun
+    // glint passes through this gate because it's added before — the
+    // Blinn-Phong dot is already ~zero on the dark side anyway, so
+    // the dimming reads as a tiny tail on an already-dim quantity.
+    float ambient_dn = mix(u_night_floor, 1.0, v_sun_brightness * v_sky_light);
+    color *= ambient_dn;
+
+    // Torch contribution: warm-orange additive from per-vertex
+    // v_torch_light baked at mesh time. Same colour curve the hex
+    // shader uses (lighting.yaml torch_color × torch_intensity), so
+    // a torch placed on a shore lights the water and the ground in
+    // the same warm circle without a visible tone seam. Added AFTER
+    // the daylight dim so torches survive on the night side.
+    color += u_torch_color.xyz * u_torch_color.w * v_torch_light;
 
     frag_color = vec4(color, 1.0);
 }
