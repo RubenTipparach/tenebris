@@ -9,15 +9,10 @@
 //      level radius — that's the signed altitude of the pixel.
 //   2. Smoothly fade between "above water" (untouched) and "below
 //      water" (Beer-Lambert toward deep_color) using a smoothstep
-//      across a meniscus band centred on altitude=0. No more hard
-//      boolean — half-submerged camera gets a soft transition.
-//   3. Inside the meniscus band (|alt| < band_m) apply a much
-//      heavier sin-wave smear + a 7-tap vertical blur on the colour
-//      sample. Hides the otherwise-clean camera-clip waterline
-//      with a wet-looking refracted band, in the spirit of a GoPro
-//      half-dome shot.
-//   4. Outside the band, the regular gentle underwater shimmer
-//      still applies on the wet side only.
+//      across a thin altitude window so the half-submerged camera
+//      still gets a soft transition rather than a hard boolean.
+//   3. Apply a gentle sin-wave shimmer to wet pixels' UV before
+//      sampling the offscreen colour.
 
 @vs composite_vs
 
@@ -59,7 +54,7 @@ void main() {
 layout(binding=1) uniform composite_fs_params {
     vec4  deep_color;     // xyz = water deep tint (matches water cap's u_deep_color)
     vec4  absorption;     // xyz = Beer-Lambert per-channel sigma (1/m)
-    vec4  near_far;       // x = near plane, y = far plane, z = meniscus_band_m, w = camera_alt
+    vec4  near_far;       // x = near plane, y = far plane, z = wet_fade_band (m), w = unused
     vec4  planet_params;  // xyz = body centre,           w = sea-level radius
     vec4  fx_params;      // x = distortion strength (UV units), y = time, z = camera_underwater [0|1], w = unused
 };
@@ -87,7 +82,6 @@ void main() {
     float near        = near_far.x;
     float far         = near_far.y;
     float band_m      = max(near_far.z, 0.0001);
-    float camera_alt  = near_far.w;
     vec3  pcen        = planet_params.xyz;
     float sea_radius  = planet_params.w;
     float dist_amt    = fx_params.x;
@@ -103,17 +97,15 @@ void main() {
     // forward component = 1, so multiplying by linearised camera-z
     // gives the right world foreshortening.
     //
-    // Sky pixels have no recoverable position. Fall back to the
-    // camera's altitude — that way a fully-submerged camera fogs
-    // the void to deep_color, a half-submerged camera treats the
-    // sky pixel as on the same side of the line as the camera, and
-    // the meniscus smear still kicks in at the same screen rows
-    // where reconstructable pixels are crossing zero.
+    // Sky pixels have no recoverable position. Fall back to using
+    // the fx_params.z flag (camera_underwater) so a fully-submerged
+    // camera still fogs the void toward deep_color, while a half-
+    // submerged camera leaves the dry side untouched.
     vec3  pixel_world = v_camera_pos;
     float view_dist   = far;
     float pixel_alt;
     if (is_sky) {
-        pixel_alt = camera_alt;
+        pixel_alt = (fx_params.z > 0.5) ? -band_m : band_m;
     } else {
         float lin_z = linearize_z(scene_z_ndc, near, far);
         pixel_world = v_camera_pos + v_view_dir * lin_z;
@@ -122,67 +114,28 @@ void main() {
     }
 
     // Soft underwater mask: smoothstep from above (alt = +band) to
-    // below (alt = -band) so the fog opacity ramps across the
-    // meniscus instead of slamming on at altitude = 0. Outside the
-    // band the mask saturates to 0 above / 1 below as expected.
+    // below (alt = -band) so the fog opacity ramps across a thin
+    // altitude window rather than slamming on at altitude = 0. The
+    // half-submerged camera still gets a soft transition.
     float wet = smoothstep(band_m, -band_m, pixel_alt);
 
-    // Meniscus band: 1 at the waterline, falls to 0 at |alt| = band.
-    // Drives both the heavy sin smear and the 7-tap vertical blur
-    // below.
-    float meniscus = 1.0 - smoothstep(0.0, band_m, abs(pixel_alt));
-
-    // Underwater shimmer (gentle, applies wherever wet > 0) PLUS
-    // the heavy meniscus smear (applies inside the band on either
-    // side of the line). The two stack — the band gets both — so
-    // the trans-medium region reads as a chaotic refracted strip.
+    // Underwater shimmer — gentle sin perturbation on the screen UV
+    // for wet pixels. Below-water pixels read as wobbly water; above-
+    // water pixels keep their crisp sample.
     vec2 sample_uv = v_uv;
     if (wet > 0.0 && dist_amt > 0.0) {
         vec2 d_calm = vec2(
             sin(t * 1.3 + v_uv.y * 32.0) + 0.5 * sin(t * 0.7 + v_uv.x * 47.0),
             cos(t * 0.9 + v_uv.x * 28.0) + 0.5 * cos(t * 1.6 + v_uv.y * 41.0)
         ) * dist_amt;
-        sample_uv += d_calm * wet;
+        sample_uv = clamp(v_uv + d_calm * wet, vec2(0.0), vec2(1.0));
     }
-    if (meniscus > 0.0) {
-        // Heavier smear at the waterline: ~8x the calm distortion
-        // amplitude at peak meniscus. Read as wet-lens refraction.
-        vec2 d_smear = vec2(
-            sin(t * 2.1 + v_uv.y * 60.0) + 0.7 * sin(t * 1.3 + v_uv.x * 80.0),
-            cos(t * 1.7 + v_uv.x * 50.0) + 0.7 * cos(t * 2.4 + v_uv.y * 70.0)
-        ) * dist_amt * meniscus * 8.0;
-        sample_uv += d_smear;
-    }
-    sample_uv = clamp(sample_uv, vec2(0.0), vec2(1.0));
-
     vec3 color = texture(sampler2D(scene_color, scene_smp), sample_uv).rgb;
 
-    // 7-tap vertical blur in the meniscus band. Mimics the soft
-    // out-of-focus refraction strip a GoPro dome shows at the
-    // waterline. Falls off with meniscus so it costs nothing
-    // outside the band and disappears smoothly.
-    if (meniscus > 0.0) {
-        vec3  acc       = color;
-        float weight    = 1.0;
-        float blur_amt  = 0.012 * meniscus;       // screen-uv units
-        for (int i = 1; i <= 3; ++i) {
-            float dy = float(i) * blur_amt / 3.0;
-            vec2 a = clamp(vec2(sample_uv.x, sample_uv.y - dy), vec2(0.0), vec2(1.0));
-            vec2 b = clamp(vec2(sample_uv.x, sample_uv.y + dy), vec2(0.0), vec2(1.0));
-            acc += texture(sampler2D(scene_color, scene_smp), a).rgb;
-            acc += texture(sampler2D(scene_color, scene_smp), b).rgb;
-            weight += 2.0;
-        }
-        vec3 blurred = acc / weight;
-        color = mix(color, blurred, meniscus);
-    }
-
     // Beer-Lambert per-channel attenuation, matching the water cap's
-    // above-water formula (see water.glsl: `mix(deep_color, refracted,
-    // attenuation)`). Applied with the soft `wet` weight so above-
-    // water pixels stay untouched, below-water pixels get the full
-    // fog tint, and meniscus pixels get a partial mix that makes the
-    // transition feel like a gradient rather than a step.
+    // above-water formula. `wet` ramps softly across the band_m
+    // altitude window so the trans-medium boundary feels like a
+    // gradient rather than a step.
     vec3 attenuation = exp(-view_dist * sigma);
     vec3 fogged      = mix(deep, color, attenuation);
     color = mix(color, fogged, wet);
