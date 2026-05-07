@@ -226,9 +226,18 @@ static void update_overlay(float dt) {
     sdtx_printf("FPS: %.1f\n", G.smoothed_fps);
 
     dvec3_t pos = player_world_pos(&G.player);
-    double r = sqrt(pos.x*pos.x + pos.y*pos.y + pos.z*pos.z);
-    double alt = r - G.body->radius_m;
-    sdtx_printf("planet: %s  radius: %.1f m\n", G.body->name, G.body->radius_m);
+    /* Altitude reads against the body the player is currently
+     * anchored to (G.player.body), not the spawn-time root planet
+     * (G.body) — once the SOI tracker hands the frame off to e.g.
+     * Sequoia, "alt" should show metres above Sequoia, not above
+     * Tenebris's centre. Same logic for the body name. */
+    const body_config_t* frame = G.player.body ? G.player.body : G.body;
+    double dx = pos.x - frame->pos_x;
+    double dy = pos.y - frame->pos_y;
+    double dz = pos.z - frame->pos_z;
+    double r = sqrt(dx*dx + dy*dy + dz*dz);
+    double alt = r - frame->radius_m;
+    sdtx_printf("frame: %s  radius: %.1f m\n", frame->name, frame->radius_m);
     sdtx_printf("alt: %.1f m  tile: %d\n", alt, G.player.last_tile);
     sdtx_printf("yaw: %.2f  pitch: %.2f  fly:%s  grounded:%s\n",
                 G.player.yaw, G.player.pitch,
@@ -366,6 +375,28 @@ static void frame(void) {
     player_update(&G.player, G.world, dt);
     interact_update(&G.interact, G.world, &G.player, dt);
     input_consume();
+
+    /* Sphere-of-influence tracking. After the teleport menu drops
+     * the player just above a target body — or whenever they fly
+     * across an SOI boundary in free flight — the closest body
+     * whose SOI contains the player becomes the new frame of
+     * reference. player_set_body swaps body anchor + forces a cold
+     * basis rebuild without moving the player, so gravity / camera
+     * up / atmosphere shell follow the body the player is closest
+     * to. The SOI multiplier lives in lod.yaml so designers can
+     * tune the transition radius without recompiling.
+     *
+     * If the SOI lookup misses (player drifted into deep space
+     * between every body's SOI), we keep the existing body — better
+     * than yanking the basis back to Tenebris. */
+    {
+        const float soi_mult = config_lod()->soi_radius_mult;
+        const body_config_t* soi_body =
+            planet_soi_at(G.player.position, soi_mult);
+        if (soi_body && soi_body != G.player.body) {
+            player_set_body(&G.player, soi_body);
+        }
+    }
 
     const float aspect = sapp_widthf() / sapp_heightf();
     mat4_t view = player_view(&G.player);

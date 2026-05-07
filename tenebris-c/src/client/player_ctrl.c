@@ -286,6 +286,17 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
     sync_basis(p);
 }
 
+void player_set_body(player_ctrl_t* p, const body_config_t* body) {
+    if (!p || !body || p->body == body) return;
+    p->body = body;
+    /* Force a cold rebuild of the tangent basis next sync — parallel
+     * transport from the old body's "up" carries no useful info once
+     * the anchor moves. Position stays put so the player keeps their
+     * trajectory across the SOI boundary. */
+    p->basis_ready = false;
+    p->last_tile = -1;
+}
+
 void player_teleport_to(player_ctrl_t* p, const body_config_t* body) {
     if (!body) return;
     /* Switch gravity/surface-normal anchor to the destination body.

@@ -210,14 +210,65 @@ int config_load_skybox(const char* path) {
 /* ------------------------------------------------------------------------ */
 /* LOD config — compiled-in defaults overridable via lod.yaml. */
 
+/* Per-tileset distant-LOD palette defaults. Index order matches
+ * tileset_t (EARTH, SEQUOIA, CRAG, FROST, ASTEROID). water_color is
+ * what an icosphere vertex over a deep ocean tile reads as; the
+ * lowland/peak tints multiply the existing per-vertex shade so each
+ * tileset's elevation pattern carries its own colour grade. ASTEROID
+ * and barren-rock tilesets have water_color filled in even though
+ * those bodies set has_water=false — the sampler only consults the
+ * water entry when the column actually contains BLOCK_WATER, so the
+ * value just sits unused there. */
 static lod_config_t S_LOD = {
     .distant_subdivisions   = 2,
     .distant_shade_floor    = 0.65f,
     .distant_shade_ceiling  = 1.20f,
     .distant_shade_range_m  = 50.0f,
+    .tileset_water_color = {
+        [0] = { 0.10f, 0.28f, 0.55f },  /* EARTH    — open-ocean blue          */
+        [1] = { 0.16f, 0.42f, 0.34f },  /* SEQUOIA  — alien greenish water     */
+        [2] = { 0.55f, 0.30f, 0.18f },  /* CRAG     — rusty (no water in game) */
+        [3] = { 0.45f, 0.65f, 0.85f },  /* FROST    — pale glacial blue        */
+        [4] = { 0.20f, 0.20f, 0.22f },  /* ASTEROID — placeholder              */
+    },
+    .tileset_lowland_tint = {
+        [0] = { 0.85f, 0.80f, 0.65f },  /* EARTH    — sandy / dry coast         */
+        [1] = { 0.75f, 0.85f, 0.55f },  /* SEQUOIA  — yellow-green lowland      */
+        [2] = { 0.95f, 0.55f, 0.35f },  /* CRAG     — bright rust basin         */
+        [3] = { 0.85f, 0.95f, 1.00f },  /* FROST    — pale ice basin            */
+        [4] = { 0.60f, 0.55f, 0.50f },  /* ASTEROID — warm grey                 */
+    },
+    .tileset_peak_tint = {
+        [0] = { 1.05f, 1.05f, 1.10f },  /* EARTH    — slightly cool snowy peak  */
+        [1] = { 1.00f, 0.95f, 0.80f },  /* SEQUOIA  — warm peak                  */
+        [2] = { 0.70f, 0.45f, 0.35f },  /* CRAG     — dark red ridge            */
+        [3] = { 1.10f, 1.15f, 1.20f },  /* FROST    — bright icy ridge          */
+        [4] = { 0.75f, 0.72f, 0.70f },  /* ASTEROID — cool grey                 */
+    },
+    .tileset_water_full_depth_m = {
+        [0] = 4.0f,
+        [1] = 4.0f,
+        [2] = 4.0f,
+        [3] = 4.0f,
+        [4] = 4.0f,
+    },
+    .soi_radius_mult = 6.0f,
 };
 
 const lod_config_t* config_lod(void) { return &S_LOD; }
+
+/* Map a YAML section name (e.g. "earth", "sequoia") to the matching
+ * tileset_t index for the per-tileset palette tables. Returns -1 for
+ * any non-tileset section (e.g. "lod") so the parser knows it's a
+ * top-level section header rather than a palette section. */
+static int tileset_section_index(const char* key) {
+    if      (strcmp(key, "earth"   ) == 0) return 0;  /* TILESET_EARTH    */
+    else if (strcmp(key, "sequoia" ) == 0) return 1;  /* TILESET_SEQUOIA  */
+    else if (strcmp(key, "crag"    ) == 0) return 2;  /* TILESET_CRAG     */
+    else if (strcmp(key, "frost"   ) == 0) return 3;  /* TILESET_FROST    */
+    else if (strcmp(key, "asteroid") == 0) return 4;  /* TILESET_ASTEROID */
+    return -1;
+}
 
 int config_load_lod(const char* path) {
     size_t fsize = 0;
@@ -231,6 +282,11 @@ int config_load_lod(const char* path) {
 
     int line_no = 0;
     int parse_errors = 0;
+    /* active_tileset tracks the most recent palette section we
+     * entered (-1 = top-level "lod" section / no palette section).
+     * Field assignments under a palette section write into the
+     * indexed slot of the per-tileset arrays. */
+    int active_tileset = -1;
     char* p = buf;
     char* line_start = buf;
     while (1) {
@@ -255,7 +311,24 @@ int config_load_lod(const char* path) {
                     while (kn > 0 && isspace((unsigned char)key[kn - 1])) key[--kn] = '\0';
 
                     if (*val == '\0') {
-                        /* "lod:" header — single-section file, ignored */
+                        /* Section header — could be "lod:" (top
+                         * level) or a tileset palette section. */
+                        int ts = tileset_section_index(key);
+                        active_tileset = ts;   /* -1 for "lod" */
+                    } else if (active_tileset >= 0) {
+                        /* Palette section field. */
+                        if (strcmp(key, "water_color") == 0) {
+                            if (!parse_vec3(val, &S_LOD.tileset_water_color[active_tileset])) parse_errors++;
+                        } else if (strcmp(key, "lowland_tint") == 0) {
+                            if (!parse_vec3(val, &S_LOD.tileset_lowland_tint[active_tileset])) parse_errors++;
+                        } else if (strcmp(key, "peak_tint") == 0) {
+                            if (!parse_vec3(val, &S_LOD.tileset_peak_tint[active_tileset])) parse_errors++;
+                        } else if (strcmp(key, "water_full_depth_m") == 0) {
+                            S_LOD.tileset_water_full_depth_m[active_tileset] = (float)strtod(val, NULL);
+                        } else {
+                            printf("[config] %s:%d: unknown palette key '%s'\n",
+                                   path, line_no, key);
+                        }
                     } else {
                         if (strcmp(key, "distant_subdivisions") == 0) {
                             int n = (int)strtol(val, NULL, 10);
@@ -270,6 +343,8 @@ int config_load_lod(const char* path) {
                             S_LOD.distant_shade_ceiling = (float)strtod(val, NULL);
                         } else if (strcmp(key, "distant_shade_range_m") == 0) {
                             S_LOD.distant_shade_range_m = (float)strtod(val, NULL);
+                        } else if (strcmp(key, "soi_radius_mult") == 0) {
+                            S_LOD.soi_radius_mult       = (float)strtod(val, NULL);
                         } else {
                             printf("[config] %s:%d: unknown key '%s'\n",
                                    path, line_no, key);

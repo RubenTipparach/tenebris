@@ -97,6 +97,39 @@ typedef struct {
     float distant_shade_floor;
     float distant_shade_ceiling;
     float distant_shade_range_m;
+
+    /* Per-tileset palette for the distant-LOD vertex sampler.
+     * Indexed by tileset_t: EARTH=0, SEQUOIA=1, CRAG=2, FROST=3,
+     * ASTEROID=4. The sampler looks up the tile's column under each
+     * icosphere vertex and:
+     *   - If the column has water above the topmost solid block,
+     *     the seabed atlas colour is mixed toward water_color by a
+     *     factor that ramps up with water-column thickness — so a
+     *     deep ocean reads as the planet's water hue, while a thin
+     *     shoreline keeps the sandy seabed showing through.
+     *   - The per-altitude shade (above) is then multiplied by a
+     *     tint vec3 interpolated between lowland_tint at -range_m
+     *     and peak_tint at +range_m, giving each tileset its own
+     *     elevation colour grade (e.g. peaks lean white on Earth,
+     *     red on Crag, deep blue on Frost). */
+    vec3_t tileset_water_color [5];
+    vec3_t tileset_lowland_tint[5];
+    vec3_t tileset_peak_tint   [5];
+    /* Water-column thickness (in metres) at which water_color fully
+     * dominates the seabed colour. Below this the shore reads
+     * sandy / muddy; above it the open ocean reads pure water hue.
+     * Per-tileset so e.g. an icy planet's shoreline is shorter than
+     * an Earth-like's. Zero → use a sane default at runtime. */
+    float  tileset_water_full_depth_m[5];
+
+    /* Sphere-of-influence radius, expressed as a multiple of each
+     * body's radius. When the player crosses into a body's SOI the
+     * "frame of reference" (gravity anchor, surface basis, atmo
+     * shell) switches to that body. The teleport menu spawns the
+     * player a few hundred metres above the destination — well
+     * inside its SOI — so the per-frame tracker keeps the frame
+     * stuck to the right body as you fly around. */
+    float soi_radius_mult;
 } lod_config_t;
 
 const lod_config_t* config_lod(void);

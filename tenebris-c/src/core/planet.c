@@ -1,6 +1,7 @@
 #include "core/planet.h"
 #include <stdbool.h>
 #include <stddef.h>
+#include <math.h>
 
 static body_config_t BODIES[BODY_COUNT] = {
     /* ---- main planet ---- */
@@ -200,4 +201,32 @@ void planet_set_atmosphere(body_id_t id, const body_atmo_t* p) {
         b->atmo_sunset_glow = p->sunset_glow;
     if (p->sunset_horizon.x + p->sunset_horizon.y + p->sunset_horizon.z > 0.0f)
         b->atmo_sunset_horizon = p->sunset_horizon;
+}
+
+const body_config_t* planet_soi_at(dvec3_t world_pos, float radius_mult) {
+    /* Among every body whose SOI sphere contains world_pos, pick
+     * the one with the smallest dist/soi_r ratio — i.e. the body
+     * the player is closest to relative to its own SOI. This
+     * matters in places like the asteroid belt or the Crag / Quartz
+     * pair where a small moon sits inside its parent's SOI: raw
+     * distance picks the parent, but the fractional metric
+     * correctly favours the moon you're hovering right above. */
+    if (radius_mult <= 0.0f) return NULL;
+    const body_config_t* best = NULL;
+    double best_frac = 1.0;   /* < 1 means inside an SOI; 0 = at centre */
+    for (int id = 0; id < BODY_COUNT; ++id) {
+        const body_config_t* b = &BODIES[id];
+        double dx = world_pos.x - b->pos_x;
+        double dy = world_pos.y - b->pos_y;
+        double dz = world_pos.z - b->pos_z;
+        double dist2 = dx*dx + dy*dy + dz*dz;
+        double soi_r = b->radius_m * (double)radius_mult;
+        if (dist2 >= soi_r * soi_r) continue;
+        double frac = sqrt(dist2) / soi_r;
+        if (best == NULL || frac < best_frac) {
+            best = b;
+            best_frac = frac;
+        }
+    }
+    return best;
 }

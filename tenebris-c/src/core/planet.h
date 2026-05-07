@@ -130,4 +130,17 @@ typedef struct {
 
 void planet_set_atmosphere(body_id_t id, const body_atmo_t* patch);
 
+/* Sphere-of-influence query. Returns the body whose SOI contains
+ * `world_pos` (defined as a sphere of radius body.radius_m *
+ * radius_mult around the body centre). When multiple SOIs overlap
+ * — common in the asteroid belt — the body whose centre is closest
+ * to world_pos wins. Returns NULL when world_pos is outside every
+ * body's SOI; the caller should treat that as "stay anchored to the
+ * current body" rather than dropping the player into free space.
+ *
+ * Used by the per-frame SOI tracker to decide when to switch the
+ * player's frame of reference (gravity anchor, surface basis,
+ * atmosphere shell) as they fly between bodies after a teleport. */
+const body_config_t* planet_soi_at(dvec3_t world_pos, float radius_mult);
+
 #endif

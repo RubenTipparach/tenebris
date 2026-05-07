@@ -45,6 +45,15 @@ void    player_update(player_ctrl_t* p, world_t* w, float dt);
  * the player would just fall back toward (0, 0, 0). */
 void    player_teleport_to(player_ctrl_t* p, const body_config_t* body);
 
+/* Switch the player's frame of reference to a new body without
+ * moving them. The next sync_basis pass rebuilds the tangent basis
+ * around the new surface normal, so gravity, the camera up vector,
+ * and the atmosphere shell follow the change. Used by the per-frame
+ * SOI tracker when the player crosses from one body's sphere of
+ * influence into another's; teleport_to handles the discrete-jump
+ * case (with a position change). No-op when body is already current. */
+void    player_set_body(player_ctrl_t* p, const body_config_t* body);
+
 dvec3_t player_world_pos(const player_ctrl_t* p);
 mat4_t  player_view(const player_ctrl_t* p);
 

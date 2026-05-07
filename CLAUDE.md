@@ -1,15 +1,20 @@
 # Repo rules
 
-## DO NOT MODIFY THE TENEBRIS JS SOURCE
+## DO NOT MODIFY THE TENEBRIS JS SOURCE — IT IS DEPRECATED
 
 The original Three.js / TypeScript implementation lives at the repo root
-(`src/`, `public/`, `index.html`, `package.json`, etc.). It is the
-reference implementation.
+(`src/`, `public/`, `index.html`, `package.json`, etc.). **It is
+deprecated.** It exists only as a reference implementation for the C port
+to study; it is not maintained, not shipped, and not part of the active
+product.
 
-**Do not edit, refactor, or "fix" any file under the JS tree** — including
+**Updates to the JS code are strictly off limits.** Do not edit, refactor,
+"fix", reformat, or otherwise touch any file under the JS tree — including
 shaders under `src/shaders/`, configs under `src/config/`, world generation
 under `src/planet/`, or anything else outside `tenebris-c/`. Reading the JS
-to learn how a feature works is fine and encouraged. Touching it is not.
+to learn how a feature works is fine and encouraged. Touching it is not,
+even if you spot a bug, a typo, or an obvious improvement — port the fix
+into `tenebris-c/` instead, or leave it alone.
 
 This rule stays in force until the user says otherwise.
 

@@ -52,7 +52,18 @@ static void action_ok(void) {
     if (!M.open) return;
     if (M.player) {
         const body_config_t* b = planet_get((body_id_t)M.selected);
-        if (b) player_teleport_to(M.player, b);
+        if (b) {
+            /* player_teleport_to drops the player 15 m above the
+             * target body's surface — well inside that body's
+             * sphere of influence (SOI radius is body.radius_m *
+             * lod.soi_radius_mult, default 6). The per-frame SOI
+             * tracker in main_web.c picks the body up on the very
+             * next update tick, so by the time the player sees
+             * their post-teleport frame the gravity anchor /
+             * camera up / atmosphere shell are already aligned
+             * with the destination body. */
+            player_teleport_to(M.player, b);
+        }
     }
     M.open = false;
 }
