@@ -107,7 +107,6 @@ if (EMSCRIPTEN)
     # uses <name>_shader_desc(sg_query_backend()) instead of inlining
     # GLSL strings.
     add_sokol_shader(tenebris src/shaders/water.glsl)
-    add_sokol_shader(tenebris src/shaders/water_mask.glsl)
     add_sokol_shader(tenebris src/shaders/composite.glsl)
     add_sokol_shader(tenebris src/shaders/starfield.glsl)
     add_sokol_shader(tenebris src/shaders/atmosphere.glsl)
@@ -140,7 +139,6 @@ else()
     target_compile_definitions(tenebris PRIVATE CLIENT_BUILD)
 
     add_sokol_shader(tenebris src/shaders/water.glsl)
-    add_sokol_shader(tenebris src/shaders/water_mask.glsl)
     add_sokol_shader(tenebris src/shaders/composite.glsl)
     add_sokol_shader(tenebris src/shaders/starfield.glsl)
     add_sokol_shader(tenebris src/shaders/atmosphere.glsl)

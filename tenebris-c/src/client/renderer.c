@@ -14,7 +14,6 @@
  * header exposes <name>_shader_desc(), <name>_<block>_t structs,
  * ATTR_<name>_<attr>, and UB_<block> slot constants. */
 #include "water.glsl.h"
-#include "water_mask.glsl.h"
 #include "composite.glsl.h"
 #include "starfield.glsl.h"
 #include "atmosphere.glsl.h"
@@ -146,7 +145,6 @@ typedef struct {
 static struct {
     sg_pipeline pip_hex;
     sg_pipeline pip_water;     /* translucent, wave-animated cap layer */
-    sg_pipeline pip_water_mask;/* renders cap silhouette into water_mask_image */
     sg_pipeline pip_composite; /* fullscreen blit of offscreen colour to swapchain */
     sg_sampler  smp_offscreen;       /* linear-clamp sampler for offscreen colour sampling */
     sg_sampler  smp_offscreen_depth; /* nearest-clamp sampler for offscreen depth (WebGL2 disallows linear-filtered depth) */
@@ -187,18 +185,6 @@ static struct {
     sg_view   offscreen_depth_att;  /* depth_stencil_attachment view of offscreen_depth */
     sg_view   offscreen_color_tex;  /* texture view of offscreen_color (sampled by water/composite) */
     sg_view   offscreen_depth_tex;  /* texture view of offscreen_depth (sampled by water for thickness/discard) */
-    /* Water-cap coverage mask. Rendered between the offscreen scene
-     * pass and the composite pass by pip_water_mask: same wave-
-     * displaced cap geometry the visible water shader uses, but
-     * outputs only "cap covers this pixel" into a single colour
-     * target. Composite samples this to (a) tightly mask underwater
-     * fog and (b) edge-detect the cap silhouette for the lens-water
-     * meniscus smear. Sized + recreated alongside the main offscreen
-     * targets in ensure_offscreen_targets(). */
-    sg_image  water_mask_image;
-    sg_view   water_mask_att;       /* color attachment view */
-    sg_view   water_mask_tex;       /* texture view (sampled by composite) */
-    sg_sampler water_mask_smp;
     int       offscreen_w;
     int       offscreen_h;
 
@@ -490,49 +476,6 @@ void renderer_init(void) {
         .label = "water-pipeline",
     });
 
-    /* Water-cap mask pipeline. Renders the same wave-displaced cap
-     * geometry into the single-channel water_mask_image with depth-
-     * test against the offscreen depth (cap fragments behind opaque
-     * terrain are rejected) but no depth-write (the visible cap
-     * shader still does its own manual depth-discard against the
-     * untouched offscreen depth). Cull-mode = none mirrors the
-     * visible cap pipeline so the back face renders too — that's
-     * what gives us the underside silhouette when the camera is
-     * fully underwater looking up.
-     *
-     * Same vbuf layout as the visible cap (only a_pos is read; the
-     * normal/uv/shore_dist bytes are silently skipped via the
-     * 36-byte stride). The matching colour-attachment pixel format
-     * is R8 (set in ensure_offscreen_targets); sokol's pipeline-
-     * vs-pass colour format check requires we declare it explicitly
-     * since the default pipeline format is RGBA8. */
-    sg_shader shd_water_mask = sg_make_shader(water_mask_shader_desc(sg_query_backend()));
-    R.pip_water_mask = sg_make_pipeline(&(sg_pipeline_desc){
-        .shader = shd_water_mask,
-        .layout = {
-            .attrs = {
-                [ATTR_water_mask_a_pos] = {
-                    .format = SG_VERTEXFORMAT_FLOAT3,
-                    .offset = (int)offsetof(hex_vertex_t, pos),
-                },
-            },
-            .buffers[0].stride = sizeof(hex_vertex_t),
-        },
-        .index_type = SG_INDEXTYPE_UINT32,
-        .depth = {
-            .pixel_format  = SG_PIXELFORMAT_DEPTH_STENCIL,
-            .write_enabled = false,
-            .compare       = SG_COMPAREFUNC_LESS_EQUAL,
-        },
-        .colors[0] = {
-            .pixel_format = SG_PIXELFORMAT_R8,
-            .blend        = { .enabled = false },
-        },
-        .cull_mode = SG_CULLMODE_NONE,
-        .face_winding = SG_FACEWINDING_CCW,
-        .label = "water-mask-pipeline",
-    });
-
     /* Composite blit pipeline — Phase A.3. Draws a single fullscreen
      * triangle (gl_VertexIndex-based, no vbuf), samples the offscreen
      * colour image via R.offscreen_color_tex, writes to swapchain.
@@ -556,16 +499,6 @@ void renderer_init(void) {
     /* Depth needs a separate sampler — WebGL2 disallows linear
      * filtering on depth textures sampled as regular sampler2D
      * (results are undefined / silently zero on most drivers). */
-    /* Water-mask sampler — linear so the 4-tap edge-detect in
-     * composite picks up smooth gradients along the cap silhouette
-     * (a hard-edged boolean would alias into a stair-stepped line). */
-    R.water_mask_smp = sg_make_sampler(&(sg_sampler_desc){
-        .min_filter = SG_FILTER_LINEAR,
-        .mag_filter = SG_FILTER_LINEAR,
-        .wrap_u = SG_WRAP_CLAMP_TO_EDGE,
-        .wrap_v = SG_WRAP_CLAMP_TO_EDGE,
-        .label = "water-mask-sampler",
-    });
     R.smp_offscreen_depth = sg_make_sampler(&(sg_sampler_desc){
         .min_filter = SG_FILTER_NEAREST,
         .mag_filter = SG_FILTER_NEAREST,
@@ -751,16 +684,11 @@ void renderer_shutdown(void) {
     if (R.offscreen_depth_att.id) sg_destroy_view(R.offscreen_depth_att);
     if (R.offscreen_color.id)     sg_destroy_image(R.offscreen_color);
     if (R.offscreen_depth.id)     sg_destroy_image(R.offscreen_depth);
-    if (R.water_mask_tex.id)      sg_destroy_view(R.water_mask_tex);
-    if (R.water_mask_att.id)      sg_destroy_view(R.water_mask_att);
-    if (R.water_mask_image.id)    sg_destroy_image(R.water_mask_image);
     sg_destroy_pipeline(R.pip_hex);
     sg_destroy_pipeline(R.pip_water);
-    sg_destroy_pipeline(R.pip_water_mask);
     sg_destroy_pipeline(R.pip_composite);
     sg_destroy_sampler(R.smp_offscreen);
     sg_destroy_sampler(R.smp_offscreen_depth);
-    sg_destroy_sampler(R.water_mask_smp);
     sg_destroy_pipeline(R.pip_starfield);
     sg_destroy_pipeline(R.pip_atmosphere);
     sg_destroy_buffer(R.fullscreen_tri_vbuf);
@@ -1304,9 +1232,6 @@ static void ensure_offscreen_targets(int w, int h) {
     if (R.offscreen_depth_att.id) sg_destroy_view(R.offscreen_depth_att);
     if (R.offscreen_color.id)     sg_destroy_image(R.offscreen_color);
     if (R.offscreen_depth.id)     sg_destroy_image(R.offscreen_depth);
-    if (R.water_mask_tex.id)      sg_destroy_view(R.water_mask_tex);
-    if (R.water_mask_att.id)      sg_destroy_view(R.water_mask_att);
-    if (R.water_mask_image.id)    sg_destroy_image(R.water_mask_image);
 
     R.offscreen_color = sg_make_image(&(sg_image_desc){
         .usage = { .color_attachment = true },
@@ -1343,26 +1268,6 @@ static void ensure_offscreen_targets(int w, int h) {
         .texture.image = R.offscreen_depth,
         .label = "offscreen-depth-tex",
     });
-
-    /* Water-cap coverage mask. R8 single-channel — we only need a
-     * 0/1 flag per pixel, not full RGBA. Sized + recreated alongside
-     * the main offscreen targets so a window resize stays in sync. */
-    R.water_mask_image = sg_make_image(&(sg_image_desc){
-        .usage = { .color_attachment = true },
-        .width = w, .height = h,
-        .pixel_format = SG_PIXELFORMAT_R8,
-        .sample_count = 1,
-        .label = "water-mask",
-    });
-    R.water_mask_att = sg_make_view(&(sg_view_desc){
-        .color_attachment.image = R.water_mask_image,
-        .label = "water-mask-att",
-    });
-    R.water_mask_tex = sg_make_view(&(sg_view_desc){
-        .texture.image = R.water_mask_image,
-        .label = "water-mask-tex",
-    });
-
     R.offscreen_w = w;
     R.offscreen_h = h;
 }
@@ -1395,74 +1300,13 @@ void renderer_begin_frame(int w, int h, render_env_t env) {
     });
 }
 
-/* Renders the visible cap geometry (with the same swell vertex
- * displacement) into water_mask_image — single coverage flag per
- * pixel. The composite pass samples this to (a) tightly mask the
- * underwater fog and (b) edge-detect the cap silhouette for the
- * lens-water meniscus smear. Forward-declared above next to
- * body_draw_water; defined down here next to compose_to_swapchain
- * for proximity to the pass that consumes it. */
-static void body_draw_water_mask(chunked_body_t* body, mat4_t vp) {
-    if (!body->has_water) return;
-    bool any = false;
-    for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
-        if (body->chunks[ci].last_uploaded_water_idx_count > 0) { any = true; break; }
-    }
-    if (!any) return;
-
-    mat4_t model = mat4_translate(body->world_pos);
-    mat4_t mvp   = mat4_mul(vp, model);
-
-    const water_config_t* W = config_water();
-    const float t_scaled = R.time_seconds * W->time_scale;
-    mask_vs_params_t vs = {
-        .u_time            = t_scaled,
-        .u_swell_amplitude = W->swell_amplitude,
-        .u_swell_frequency = W->swell_frequency,
-        .u_swell_speed     = W->swell_speed,
-    };
-    memcpy(vs.u_vp, mvp.m, sizeof(vs.u_vp));
-    sg_apply_uniforms(UB_mask_vs_params, &SG_RANGE(vs));
-
-    for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
-        mesh_chunk_t* c = &body->chunks[ci];
-        if (c->last_uploaded_water_idx_count <= 0) continue;
-        sg_apply_bindings(&(sg_bindings){
-            .vertex_buffers[0] = c->water_vbuf,
-            .index_buffer      = c->water_ibuf,
-        });
-        sg_draw(0, c->last_uploaded_water_idx_count, 1);
-    }
-}
-
 void renderer_compose_to_swapchain(mat4_t view, mat4_t proj) {
-    /* End the offscreen scene pass. Now do the water-cap mask pass
-     * (writes to water_mask_image, depth-tests against the offscreen
-     * depth so cap fragments behind opaque terrain are rejected,
-     * doesn't write depth so the visible cap shader's manual
-     * depth-discard later still sees the original terrain depth).
-     * Then start the swapchain composite pass which samples both
-     * the offscreen scene colour + this mask. */
-    sg_end_pass();
-
-    sg_begin_pass(&(sg_pass){
-        .action = {
-            .colors[0] = { .load_action = SG_LOADACTION_CLEAR, .clear_value = {0,0,0,0} },
-            .depth     = { .load_action = SG_LOADACTION_LOAD },     /* preserve offscreen depth */
-        },
-        .attachments = {
-            .colors[0]     = R.water_mask_att,
-            .depth_stencil = R.offscreen_depth_att,
-        },
-        .label = "water-mask-pass",
-    });
-    if (R_WATER_VISIBLE) {
-        sg_apply_pipeline(R.pip_water_mask);
-        mat4_t vp = mat4_mul(proj, view);
-        for (int bi = 0; bi < R.body_count; ++bi) {
-            body_draw_water_mask(&R.bodies[bi], vp);
-        }
-    }
+    /* End the offscreen pass + start the swapchain pass. Composite
+     * draws a single fullscreen triangle that samples the offscreen
+     * colour + depth images and writes to the swapchain, applying
+     * the underwater fog + distortion post-process per pixel based
+     * on whether each pixel reconstructs to a world position below
+     * sea level. */
     sg_end_pass();
 
     sg_begin_pass(&(sg_pass){
@@ -1495,43 +1339,44 @@ void renderer_compose_to_swapchain(mat4_t view, mat4_t proj) {
     };
     sg_apply_uniforms(UB_composite_vs_params, &SG_RANGE(vs));
 
-    /* Underwater FX uniforms. The composite reads the water_mask
-     * to know "is this pixel under water" — no longer needs the
-     * planet_params reconstruction it used to do. cam_under stays
-     * because for a fully-submerged camera there's no cap covering
-     * the seabed pixels in the forward view (cap is above the
-     * camera, off-screen) — the mask says 0 there but we still
-     * want fog. */
+    /* Underwater FX uniforms. The body parameters come from the
+     * active body — we mask pixels against ITS sea-level radius,
+     * so a player standing on Tenebris but looking at distant
+     * Sequoia doesn't fog Sequoia just because Tenebris's water
+     * is somewhere off-screen. The cap radius is derived the same
+     * way hex_mesher.c places the actual cap, so the boolean
+     * "below cap" test stays consistent with what the player sees. */
     const water_config_t* W = config_water();
-    bool  cam_under  = false;
-    float camera_alt = 1.0e6f;     /* huge → cam_at_surface gate stays off when no body */
+    vec3_t  body_center  = (vec3_t){ 0, 0, 0 };
+    float   sea_radius   = 0.0f;
+    bool    cam_under    = false;
     if (R.active_body_idx >= 0) {
         chunked_body_t* ab = &R.bodies[R.active_body_idx];
-        const float sea_radius = ab->radius_m + W->height_offset_m - W->depth_offset_m;
-        vec3_t to_cam   = vec3_sub(R.env.camera_world, ab->world_pos);
-        const float r   = vec3_length(to_cam);
-        camera_alt      = r - sea_radius;          /* signed: negative = below */
-        cam_under       = camera_alt < 0.0f;
+        body_center = ab->world_pos;
+        sea_radius  = ab->radius_m + W->height_offset_m - W->depth_offset_m;
+        vec3_t to_cam   = vec3_sub(R.env.camera_world, body_center);
+        cam_under       = vec3_length(to_cam) < sea_radius;
     }
 
     composite_fs_params_t fs = {
         .deep_color    = { W->deep_color.x,  W->deep_color.y,  W->deep_color.z,  0.0f },
         .absorption    = { W->absorption.x,  W->absorption.y,  W->absorption.z,  0.0f },
-        .near_far      = { 0.3f, 20000.0f, 0.0f, 0.0f },
+        /* near_far.z is the wet-fade altitude window (a small softness
+         * on the above/below transition; not a meniscus band). */
+        .near_far      = { 0.3f, 20000.0f, 0.05f, 0.0f },
+        .planet_params = { body_center.x, body_center.y, body_center.z, sea_radius },
         .fx_params     = { W->underwater_distortion,
                            R.time_seconds,
                            cam_under ? 1.0f : 0.0f,
-                           camera_alt },
+                           0.0f },
     };
     sg_apply_uniforms(UB_composite_fs_params, &SG_RANGE(fs));
 
     sg_apply_bindings(&(sg_bindings){
-        .views[VIEW_scene_color]      = R.offscreen_color_tex,
-        .views[VIEW_scene_depth]      = R.offscreen_depth_tex,
-        .views[VIEW_water_mask]       = R.water_mask_tex,
+        .views[VIEW_scene_color]    = R.offscreen_color_tex,
+        .views[VIEW_scene_depth]    = R.offscreen_depth_tex,
         .samplers[SMP_scene_smp]       = R.smp_offscreen,
         .samplers[SMP_scene_depth_smp] = R.smp_offscreen_depth,
-        .samplers[SMP_water_mask_smp]  = R.water_mask_smp,
     });
     sg_draw(0, 3, 1);
 }
