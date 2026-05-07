@@ -1495,32 +1495,26 @@ void renderer_compose_to_swapchain(mat4_t view, mat4_t proj) {
     };
     sg_apply_uniforms(UB_composite_vs_params, &SG_RANGE(vs));
 
-    /* Underwater FX uniforms. The body parameters come from the
-     * active body — we mask pixels against ITS sea-level radius,
-     * so a player standing on Tenebris but looking at distant
-     * Sequoia doesn't fog Sequoia just because Tenebris's water
-     * is somewhere off-screen. The cap radius is derived the same
-     * way hex_mesher.c places the actual cap, so the boolean
-     * "below cap" test stays consistent with what the player sees. */
+    /* Underwater FX uniforms. The composite reads the water_mask
+     * to know "is this pixel under water" — no longer needs the
+     * planet_params reconstruction it used to do. cam_under stays
+     * because for a fully-submerged camera there's no cap covering
+     * the seabed pixels in the forward view (cap is above the
+     * camera, off-screen) — the mask says 0 there but we still
+     * want fog. */
     const water_config_t* W = config_water();
-    vec3_t  body_center  = (vec3_t){ 0, 0, 0 };
-    float   sea_radius   = 0.0f;
-    bool    cam_under    = false;
+    bool cam_under = false;
     if (R.active_body_idx >= 0) {
         chunked_body_t* ab = &R.bodies[R.active_body_idx];
-        body_center = ab->world_pos;
-        sea_radius  = ab->radius_m + W->height_offset_m - W->depth_offset_m;
-        vec3_t to_cam   = vec3_sub(R.env.camera_world, body_center);
-        cam_under       = vec3_length(to_cam) < sea_radius;
+        const float sea_radius = ab->radius_m + W->height_offset_m - W->depth_offset_m;
+        vec3_t to_cam = vec3_sub(R.env.camera_world, ab->world_pos);
+        cam_under = vec3_length(to_cam) < sea_radius;
     }
 
     composite_fs_params_t fs = {
         .deep_color    = { W->deep_color.x,  W->deep_color.y,  W->deep_color.z,  0.0f },
         .absorption    = { W->absorption.x,  W->absorption.y,  W->absorption.z,  0.0f },
-        /* near_far.z is the wet-fade altitude window (a small softness
-         * on the above/below transition; not a meniscus band). */
-        .near_far      = { 0.3f, 20000.0f, 0.05f, 0.0f },
-        .planet_params = { body_center.x, body_center.y, body_center.z, sea_radius },
+        .near_far      = { 0.3f, 20000.0f, 0.0f, 0.0f },
         .fx_params     = { W->underwater_distortion,
                            R.time_seconds,
                            cam_under ? 1.0f : 0.0f,
