@@ -197,5 +197,5 @@ water:
   #                               to hide the camera-clip waterline
   #                               (the GoPro-dome "wet line" look).
   #                               0.0 disables the smear entirely.
-  underwater_distortion:   0.006
+  underwater_distortion:   0.0015
   meniscus_band_m:         0.30
