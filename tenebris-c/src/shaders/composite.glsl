@@ -91,52 +91,72 @@ void main() {
     // computed against the correct geometry.
     float scene_z_ndc = texture(sampler2D(scene_depth, scene_depth_smp), v_uv).r;
     bool  is_sky      = scene_z_ndc >= 0.99999;
+    bool  cam_under   = fx_params.z > 0.5;
 
-    // Reconstruct the world position of the pixel + signed altitude
-    // relative to sea level. v_view_dir is parameterised so its
-    // forward component = 1, so multiplying by linearised camera-z
-    // gives the right world foreshortening.
-    //
-    // Sky pixels have no recoverable position. Fall back to using
-    // the fx_params.z flag (camera_underwater) so a fully-submerged
-    // camera still fogs the void toward deep_color, while a half-
-    // submerged camera leaves the dry side untouched.
+    // Reconstruct the world position of the pixel — v_view_dir is
+    // parameterised so its forward component = 1, so multiplying
+    // by linearised camera-z gives the right world foreshortening.
     vec3  pixel_world = v_camera_pos;
-    float view_dist   = far;
-    float pixel_alt;
-    if (is_sky) {
-        pixel_alt = (fx_params.z > 0.5) ? -band_m : band_m;
-    } else {
+    float view_dist   = 0.0;
+    float pixel_alt   = band_m;
+    if (!is_sky) {
         float lin_z = linearize_z(scene_z_ndc, near, far);
         pixel_world = v_camera_pos + v_view_dir * lin_z;
         view_dist   = length(pixel_world - v_camera_pos);
         pixel_alt   = length(pixel_world - pcen) - sea_radius;
     }
 
-    // Soft underwater mask: smoothstep from above (alt = +band) to
-    // below (alt = -band) so the fog opacity ramps across a thin
-    // altitude window rather than slamming on at altitude = 0. The
-    // half-submerged camera still gets a soft transition.
-    float wet = smoothstep(band_m, -band_m, pixel_alt);
+    // Voxel-driven wet mask. Each opaque pipeline writes the per-
+    // vertex / per-cap "is the cell behind this face actually
+    // BLOCK_WATER" flag into the offscreen alpha channel; sky/sun/
+    // distant/torch write 0; water cap writes 1; the atmosphere
+    // overlay's blend preserves dst alpha. So sampling alpha here
+    // gives a direct yes/no for "is this pixel a wet surface" with
+    // none of the altitude/cave failure modes the previous test
+    // had — a stone wall under the sea but inside a dug-out cave
+    // is dry, while seabed sand below an actual water cap is wet.
+    //
+    // Sky pixels fall back to the camera-underwater flag: if the
+    // camera is in a water voxel, looking at sky means looking up
+    // through water, so the void should still fog. Otherwise sky
+    // is dry.
+    vec4 sc = texture(sampler2D(scene_color, scene_smp), v_uv);
+    float wet = is_sky ? (cam_under ? 1.0 : 0.0) : sc.a;
+    // Soften the binary mask across the band so neighbouring wet
+    // and dry faces don't tear the fog edge — a small smoothstep
+    // around 0.5 turns the 0/1 vertex mask into a smooth value
+    // when interpolation has produced fractional alpha (e.g. on
+    // an edge where one corner of a quad is wet and the other dry).
+    wet = smoothstep(0.5 - band_m, 0.5 + band_m, wet);
 
     // Underwater shimmer — gentle sin perturbation on the screen UV
-    // for wet pixels. Below-water pixels read as wobbly water; above-
-    // water pixels keep their crisp sample.
+    // for wet pixels. Resample colour through the perturbed UV when
+    // distortion is active.
     vec2 sample_uv = v_uv;
+    vec3 color     = sc.rgb;
     if (wet > 0.0 && dist_amt > 0.0) {
         vec2 d_calm = vec2(
             sin(t * 1.3 + v_uv.y * 32.0) + 0.5 * sin(t * 0.7 + v_uv.x * 47.0),
             cos(t * 0.9 + v_uv.x * 28.0) + 0.5 * cos(t * 1.6 + v_uv.y * 41.0)
         ) * dist_amt;
         sample_uv = clamp(v_uv + d_calm * wet, vec2(0.0), vec2(1.0));
+        color     = texture(sampler2D(scene_color, scene_smp), sample_uv).rgb;
     }
-    vec3 color = texture(sampler2D(scene_color, scene_smp), sample_uv).rgb;
 
-    // Beer-Lambert per-channel attenuation, matching the water cap's
-    // above-water formula. `wet` ramps softly across the band_m
-    // altitude window so the trans-medium boundary feels like a
-    // gradient rather than a step.
-    vec3 attenuation = exp(-view_dist * sigma);
+    // Beer-Lambert thickness. Two regimes:
+    //   - Camera under water (in a BLOCK_WATER voxel): the entire
+    //     view ray from camera to opaque is in water, so use the
+    //     full view distance.
+    //   - Camera above water, looking at a wet surface: the ray
+    //     traverses water vertically from sea-level to the surface,
+    //     so use the vertical depth (-pixel_alt) as a conservative
+    //     proxy for the underwater segment length. This is exact
+    //     for straight-down views and slightly under-fogs at
+    //     glancing angles — a future closed-water-volume pass can
+    //     replace this with a true segment length without touching
+    //     the wet-mask plumbing.
+    float thickness = cam_under ? view_dist : max(0.0, -pixel_alt);
+    vec3 attenuation = exp(-thickness * sigma);
     vec3 fogged      = mix(deep, color, attenuation);
     color = mix(color, fogged, wet);
 

@@ -28,8 +28,11 @@
  *                   space (~64 m of headroom over the tallest mountain
  *                   for stacking blocks).
  *
- * 128 byte/column × 40 962 tiles = 5.0 MB of voxel state, well within
- * the WASM heap limit.
+ * 128 byte/column × per-body tile count = voxel state per body. Tile
+ * count is picked at world_create time via
+ * planet_subdivisions_for_radius() to target ~1 m hex width across
+ * bodies; subdivision is capped at 7 (~164k tiles, ~21 MB voxels)
+ * for the largest planets to stay within the WASM heap budget.
  */
 #define WORLD_MAX_DEPTH   128
 

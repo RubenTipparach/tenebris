@@ -67,7 +67,9 @@ void main() {
     // source, the handle/head are at most lit by the bake on the
     // terrain around them; their own surface colour stays self-lit
     // so a torch in shadow still reads as a torch.
-    frag_color = vec4(v_color, 1.0);
+    /* Alpha = wet mask (0 = dry). Torches are placed entities, never
+     * a face of a water voxel. */
+    frag_color = vec4(v_color, 0.0);
 }
 @end
 

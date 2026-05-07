@@ -38,7 +38,8 @@ void main() {
     float core = 1.0;
     float halo = pow(clamp(r, 0.0, 1.0), 8.0);
     vec3  col  = u_color * (core + halo * 0.4);
-    frag_color = vec4(col, 1.0);
+    /* Alpha = wet mask (0 = dry). Sun is in the sky, never wet. */
+    frag_color = vec4(col, 0.0);
 }
 @end
 

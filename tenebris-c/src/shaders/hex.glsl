@@ -33,6 +33,7 @@ in vec3  a_normal;
 in vec2  a_uv;
 in float a_sky_light;
 in float a_torch_light;
+in float a_wet;
 
 out vec2  v_uv;
 out vec3  v_normal;
@@ -40,6 +41,7 @@ out float v_sun_brightness;  // 0 on full-night side, 1 on full-day side
 out float v_water_depth;     // metres below sea level, 0 if above
 out float v_sky_light;       // 0..1 voxel-occlusion sky-reach
 out float v_torch_light;     // 0..3 sum of inverse-square torch contributions
+out float v_wet;             // 1.0 if face borders a water voxel, 0.0 if dry
 
 void main() {
     gl_Position = u_vp * vec4(a_pos, 1.0);
@@ -47,6 +49,7 @@ void main() {
     v_uv = a_uv;
     v_sky_light   = a_sky_light;
     v_torch_light = a_torch_light;
+    v_wet         = a_wet;
 
     // Surface direction from planet centre — gives day/night per tile,
     // independent of the mesh face normal so a wall facing away from
@@ -107,6 +110,7 @@ in float v_sun_brightness;
 in float v_water_depth;
 in float v_sky_light;
 in float v_torch_light;
+in float v_wet;
 
 out vec4 frag_color;
 
@@ -144,14 +148,24 @@ void main() {
     // u_deep_color so deep submerged terrain doesn't go completely
     // opaque — there's still a hint of the original tile colour at
     // depth (matching the JS terrain.frag tint blend).
-    if (v_water_depth > 0.0) {
+    //
+    // Gated by v_wet (the voxel-driven "is face actually under
+    // water" flag), NOT just by altitude. A cave wall whose
+    // neighbour cell is air reads dry even when geometrically
+    // below sea level, so caves stop picking up the underwater
+    // tint they used to inherit from the altitude-only check.
+    if (v_wet > 0.5 && v_water_depth > 0.0) {
         vec3 dim = exp(-v_water_depth * u_absorption);
         lit *= dim;
         float tint_w = (1.0 - dot(dim, vec3(1.0/3.0))) * 0.5;
         lit = mix(lit, u_deep_color * dim, tint_w);
     }
 
-    frag_color = vec4(lit, tex.a);
+    // Alpha channel is repurposed as the per-pixel "wet" mask the
+    // composite reads to gate underwater fog. tex.a is always 1.0
+    // for the opaque atlas tiles (we don't use cut-out
+    // transparency in terrain), so dropping it here is safe.
+    frag_color = vec4(lit, v_wet);
 }
 @end
 

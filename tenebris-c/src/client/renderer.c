@@ -400,8 +400,8 @@ void renderer_init(void) {
             .attrs = {
                 /* Explicit offsets keep the auto-pack walker from
                  * skewing later attrs if any slot order drifts. The
-                 * stride is the full hex_vertex_t (40 B) — both the
-                 * hex pipeline (all 5 attrs) and the water pipeline
+                 * stride is the full hex_vertex_t (44 B) — both the
+                 * hex pipeline (all 6 attrs) and the water pipeline
                  * (a_pos only) read from the same shared vbuf. */
                 [ATTR_hex_a_pos]         = { .format = SG_VERTEXFORMAT_FLOAT3,
                                              .offset = (int)offsetof(hex_vertex_t, pos) },
@@ -413,6 +413,8 @@ void renderer_init(void) {
                                              .offset = (int)offsetof(hex_vertex_t, sky_light) },
                 [ATTR_hex_a_torch_light] = { .format = SG_VERTEXFORMAT_FLOAT,
                                              .offset = (int)offsetof(hex_vertex_t, torch_light) },
+                [ATTR_hex_a_wet]         = { .format = SG_VERTEXFORMAT_FLOAT,
+                                             .offset = (int)offsetof(hex_vertex_t, wet) },
             },
             .buffers[0].stride = sizeof(hex_vertex_t),
         },
@@ -554,7 +556,11 @@ void renderer_init(void) {
             .enabled = true,
             .src_factor_rgb = SG_BLENDFACTOR_SRC_ALPHA,
             .dst_factor_rgb = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
-            .src_factor_alpha = SG_BLENDFACTOR_ONE,
+            /* Preserve destination alpha — terrain/water/sky pre-write
+             * the per-pixel "wet" mask in alpha for composite.glsl,
+             * and this overlay must not corrupt it. (zero, one) =
+             * keep dst_a, ignore src_a. */
+            .src_factor_alpha = SG_BLENDFACTOR_ZERO,
             .dst_factor_alpha = SG_BLENDFACTOR_ONE,
         },
         .label = "atmosphere-pipeline",
@@ -1174,9 +1180,15 @@ void renderer_draw_moons(mat4_t view, mat4_t proj, vec3_t camera_world) {
 
     /* renderer_draw_world already drew detailed (close-enough) bodies
      * via their chunked meshes. This pass picks up bodies that are
-     * far away enough to swap to a single flat-shaded icosphere — the
-     * 0.12 angular-size threshold matches the cull check there. */
-    const float LOD_RATIO = 0.12f;
+     * far away enough to swap to a single flat-shaded icosphere. The
+     * 0.30 angular-size threshold (= radius/dist; equivalent to
+     * "distance > 3.33 × radius") matches the cull check in the
+     * other two paths so a body is exclusively on either hexes OR
+     * icosphere, never both. The earlier value 0.12 (= dist > 8.3 R)
+     * was too lax — mid-distance planets like Sequoia at ~2.2 km
+     * from Tenebris kept rendering ~163k-tile hex meshes the player
+     * couldn't visually resolve. */
+    const float LOD_RATIO = 0.30f;
 
     sg_apply_pipeline(R.pip_distant);
     for (int bi = 0; bi < R.body_count; ++bi) {
@@ -1624,7 +1636,61 @@ static void chunk_upload(mesh_chunk_t* c) {
  * supplied vp. Caller has already applied pip_hex + the sun/ambient
  * uniform block; this just sets the per-body model + planet block
  * and issues the chunk draws. */
-static void body_draw_chunks(chunked_body_t* body, mat4_t vp) {
+/* Per-frame chunk-level backface cull. Each of the 32 chunks has a
+ * known unit-sphere centroid in CHUNK_ANCHORS; the dot product of
+ * that centroid with the camera's direction-from-body-centre tells
+ * us how aligned the chunk is with the visible hemisphere. We skip
+ * chunks whose alignment is less than cos(theta_horizon + theta_pad),
+ * where theta_horizon depends on the camera's altitude (= acos(R/d)
+ * for d > R; 90° at/below surface) and theta_pad is a generous
+ * angular margin for chunks straddling the horizon.
+ *
+ * On a 300 m subdiv-8 planet at eye height (1.6 m), theta_horizon ≈
+ * 5.9°, so we keep ~10° + 31° pad ≈ 37° around the camera direction,
+ * which covers about 4-6 of the 32 chunks. In orbit (camera 1 km
+ * up) the cull keeps roughly the visible hemisphere. In deep space
+ * (camera much further than R) it relaxes toward "no cull" because
+ * theta_horizon → 90° and almost every anchor is within range. */
+typedef struct {
+    double cux, cuy, cuz;   /* body-local camera direction (unit) */
+    double cull_cos;        /* anchor·cam_dir < this → cull */
+} chunk_cull_t;
+
+static chunk_cull_t compute_chunk_cull(const chunked_body_t* body,
+                                       vec3_t camera_world) {
+    chunk_cull_t cc;
+    double cx = (double)(camera_world.x - body->world_pos.x);
+    double cy = (double)(camera_world.y - body->world_pos.y);
+    double cz = (double)(camera_world.z - body->world_pos.z);
+    double cd = sqrt(cx * cx + cy * cy + cz * cz);
+    if (cd < 1e-9) {
+        /* Camera exactly at body centre — pathological. Don't cull. */
+        cc.cux = 1.0; cc.cuy = 0.0; cc.cuz = 0.0;
+        cc.cull_cos = -2.0;
+        return cc;
+    }
+    cc.cux = cx / cd;
+    cc.cuy = cy / cd;
+    cc.cuz = cz / cd;
+    double cos_h = (cd > body->radius_m) ? (body->radius_m / cd) : 0.0;
+    double theta_h = acos(cos_h);
+    /* Chunk angular padding. 32 anchors split 4π sr ⇒ each anchor
+     * region ≈ π/8 sr, sphere-cap half-angle acos(15/16) ≈ 20°.
+     * Voronoi-on-sphere boundaries extend slightly past the cap,
+     * so pad to ~31° to keep horizon-straddling chunks visible. */
+    const double theta_chunk = 0.55;
+    cc.cull_cos = cos(theta_h + theta_chunk);
+    return cc;
+}
+
+static inline bool chunk_visible(const chunk_cull_t* cc, int ci) {
+    dvec3_t a = CHUNK_ANCHORS[ci];
+    double dot = a.x * cc->cux + a.y * cc->cuy + a.z * cc->cuz;
+    return dot >= cc->cull_cos;
+}
+
+static void body_draw_chunks(chunked_body_t* body, mat4_t vp,
+                             vec3_t camera_world) {
     /* Translate to body origin. For Tenebris this is identity (body
      * sits at world origin); for the moons it shifts the chunked
      * mesh out to its pos_x/y/z. */
@@ -1649,9 +1715,11 @@ static void body_draw_chunks(chunked_body_t* body, mat4_t vp) {
     hvp.u_planet[2] = 0.0f;
     hvp.u_planet[3] = body->has_water ? sea_radius : 0.0f;
     sg_apply_uniforms(UB_hex_vs_params, &SG_RANGE(hvp));
+    chunk_cull_t cc = compute_chunk_cull(body, camera_world);
     for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
         mesh_chunk_t* c = &body->chunks[ci];
         if (c->last_uploaded_index_count <= 0) continue;
+        if (!chunk_visible(&cc, ci)) continue;
         sg_apply_bindings(&(sg_bindings){
             .vertex_buffers[0]         = c->vbuf,
             .index_buffer              = c->ibuf,
@@ -1734,9 +1802,11 @@ static void body_draw_water(chunked_body_t* body, mat4_t vp,
     };
     sg_apply_uniforms(UB_fs_params, &SG_RANGE(fs_params));
 
+    chunk_cull_t cc = compute_chunk_cull(body, camera_world);
     for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
         mesh_chunk_t* c = &body->chunks[ci];
         if (c->last_uploaded_water_idx_count <= 0) continue;
+        if (!chunk_visible(&cc, ci)) continue;
         sg_apply_bindings(&(sg_bindings){
             .vertex_buffers[0] = c->water_vbuf,
             .index_buffer      = c->water_ibuf,
@@ -1917,10 +1987,11 @@ void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world,
 
     /* Frustum + LOD culling — far bodies drop to a single icosphere
      * draw via renderer_draw_moons. Detailed (chunked) draws happen
-     * here for any body that's both visible and close enough. */
+     * here for any body that's both visible and close enough.
+     * Threshold matches renderer_draw_moons (3.33 × radius cutoff). */
     frustum_plane_t frustum[6];
     extract_frustum(vp, frustum);
-    const float LOD_RATIO = 0.12f;
+    const float LOD_RATIO = 0.30f;
 
     for (int bi = 0; bi < R.body_count; ++bi) {
         chunked_body_t* body = &R.bodies[bi];
@@ -1950,7 +2021,7 @@ void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world,
         const bool distant = !is_active && (body->radius_m / dist) < LOD_RATIO;
         if (distant) continue;
         if (!body->meshed) body_load_detail(body);
-        body_draw_chunks(body, vp);
+        body_draw_chunks(body, vp, R.env.camera_world);
     }
 
     /* Water no longer drawn here — moved to renderer_draw_water,
@@ -1966,7 +2037,11 @@ void renderer_draw_water(mat4_t view, mat4_t proj, vec3_t camera_world) {
     mat4_t vp = mat4_mul(proj, view);
     frustum_plane_t frustum[6];
     extract_frustum(vp, frustum);
-    const float LOD_RATIO = 0.12f;
+    /* Match the terrain LOD cutoff so distant water (icosphere LOD
+     * shows the body as a flat sphere) doesn't also render its full
+     * cap mesh — it's invisible at that distance and triples the
+     * draw cost. */
+    const float LOD_RATIO = 0.30f;
 
     sg_apply_pipeline(R.pip_water);
     for (int bi = 0; bi < R.body_count; ++bi) {

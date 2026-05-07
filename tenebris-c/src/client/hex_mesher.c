@@ -48,13 +48,14 @@ void hex_mesh_free(hex_mesh_t* m) {
 }
 
 static void push_vertex(hex_mesh_t* m, dvec3_t p, dvec3_t n, float u, float v,
-                        float sky_light, float torch_light) {
+                        float sky_light, float torch_light, float wet) {
     hex_vertex_t* vv = &m->vertices[m->vertex_count++];
     vv->pos[0] = (float)p.x; vv->pos[1] = (float)p.y; vv->pos[2] = (float)p.z;
     vv->normal[0] = (float)n.x; vv->normal[1] = (float)n.y; vv->normal[2] = (float)n.z;
     vv->uv[0] = u; vv->uv[1] = v;
     vv->sky_light   = sky_light;
     vv->torch_light = torch_light;
+    vv->wet         = wet;
 }
 
 /* ----------------------------------------------------------------------- */
@@ -162,7 +163,8 @@ static void emit_cap(hex_mesh_t* out,
                      bool is_top,
                      float width,
                      float r_offset_m,
-                     bool bake_lighting) {
+                     bool bake_lighting,
+                     float wet) {
     const int n = t->num_verts;
     reserve(out, (size_t)(n + 1), (size_t)n * 3);
     uint32_t center_idx = (uint32_t)out->vertex_count;
@@ -191,7 +193,7 @@ static void emit_cap(hex_mesh_t* out,
                  : 0.0f;
 
     float center_torch = bake_lighting ? torch_light_at(dvec3_to_vec3f(center_pos)) : 0.0f;
-    push_vertex(out, center_pos, normal, uc, vc, sky_at, center_torch);
+    push_vertex(out, center_pos, normal, uc, vc, sky_at, center_torch, wet);
 
     for (int k = 0; k < n; ++k) {
         dvec3_t corner_dir = shrink_corner(t, k, width);
@@ -200,7 +202,7 @@ static void emit_cap(hex_mesh_t* out,
         float u = uc + (float)cos(angle) * HEX_ATLAS_U_STEP * 0.5f;
         float v = vc + (float)sin(angle) * 0.5f;
         float corner_torch = bake_lighting ? torch_light_at(dvec3_to_vec3f(corner)) : 0.0f;
-        push_vertex(out, corner, normal, u, v, sky_at, corner_torch);
+        push_vertex(out, corner, normal, u, v, sky_at, corner_torch, wet);
     }
 
     for (int k = 0; k < n; ++k) {
@@ -237,7 +239,8 @@ static void emit_side_quad(hex_mesh_t* out,
                            double r_bot,
                            double r_top,
                            block_t block,
-                           float width) {
+                           float width,
+                           float wet) {
     dvec3_t corner_a = shrink_corner(t, k_a, width);
     dvec3_t corner_b = shrink_corner(t, k_b, width);
     dvec3_t inner_a = dvec3_scale(corner_a, r_bot);
@@ -261,10 +264,10 @@ static void emit_side_quad(hex_mesh_t* out,
     float t_oa = torch_light_at(dvec3_to_vec3f(outer_a));
     float t_ob = torch_light_at(dvec3_to_vec3f(outer_b));
 
-    push_vertex(out, inner_a, normal, u0, 0.0f, sky, t_ia);
-    push_vertex(out, inner_b, normal, u1, 0.0f, sky, t_ib);
-    push_vertex(out, outer_b, normal, u1, 1.0f, sky, t_ob);
-    push_vertex(out, outer_a, normal, u0, 1.0f, sky, t_oa);
+    push_vertex(out, inner_a, normal, u0, 0.0f, sky, t_ia, wet);
+    push_vertex(out, inner_b, normal, u1, 0.0f, sky, t_ib, wet);
+    push_vertex(out, outer_b, normal, u1, 1.0f, sky, t_ob, wet);
+    push_vertex(out, outer_a, normal, u0, 1.0f, sky, t_oa, wet);
 
     out->indices[out->index_count++] = base + 0;
     out->indices[out->index_count++] = base + 1;
@@ -331,7 +334,8 @@ void hex_mesh_build_water(hex_mesh_t* out, const world_t* w, int tile_idx) {
      * placed on a pier or shoreline now spills its warm circle onto
      * the water beside it, exactly like it spills onto the land. */
     emit_cap(out, t, w, tile_idx, SEA_LEVEL_DEPTH - 1, BLOCK_WATER, true, 1.0f,
-             -depth_off + height_off, true /* bake sky/torch lighting */);
+             -depth_off + height_off, true /* bake sky/torch lighting */,
+             1.0f /* the water cap IS water */);
 }
 
 /* ----------------------------------------------------------------------- */
@@ -355,21 +359,57 @@ void hex_mesh_build_tile(hex_mesh_t* out, const world_t* w, int tile_idx) {
      * Width comes from block_hex_width: 1.0 default, 0.4 for wood
      * trunks, 0.65–1.0 hash-driven for leaves so the canopy isn't
      * uniformly stamped. */
+    /* "Wet" = face is below sea level AND there's actually a water
+     * cap nearby that puts it underwater. Neither pure-voxel-adjacency
+     * nor pure-altitude was right: voxel-adjacency missed pit walls
+     * dug into the seabed (the inside cells are AIR after digging,
+     * so neighbour-is-water reads dry), while pure altitude fogged
+     * inland holes that just happen to be below sea altitude with no
+     * water anywhere near.
+     *
+     * The "near water" predicate: this tile or any of its 1-ring
+     * neighbours has BLOCK_WATER at SEA_LEVEL_DEPTH-1 (the column
+     * cell that drives the water cap). That covers:
+     *   - ocean tiles (own cap)            → wet below sea ✓
+     *   - beach tiles next to ocean        → wet below sea ✓
+     *   - inland tiles past the shoreline  → dry, even if dug deep ✓
+     * Closed inland caves dug far from any water no longer fog. The
+     * 1-ring approximation can leave a 2nd-ring shore pit slightly
+     * dry; bump to a wider ring if that case shows up in screenshots.
+     *
+     * Computed per-tile (one neighbour scan), not per-face — the
+     * water-cap presence doesn't change with depth. */
+    const bool body_wet = (w->body != NULL) && w->body->has_water;
+    bool near_water = false;
+    if (body_wet) {
+        if (world_get(w, tile_idx, SEA_LEVEL_DEPTH - 1) == BLOCK_WATER) {
+            near_water = true;
+        } else {
+            for (int i = 0; i < t->num_neighbors; ++i) {
+                if (world_get(w, t->neighbors[i], SEA_LEVEL_DEPTH - 1) == BLOCK_WATER) {
+                    near_water = true;
+                    break;
+                }
+            }
+        }
+    }
+
     for (int d = 0; d < WORLD_MAX_DEPTH; ++d) {
         block_t b = (block_t)col[d];
         if (!block_is_solid(b)) continue;
 
         float width = block_hex_width(b, tile_idx, d);
+        float wet = (near_water && d < SEA_LEVEL_DEPTH) ? 1.0f : 0.0f;
 
         block_t above = (d + 1 < WORLD_MAX_DEPTH) ? (block_t)col[d + 1] : BLOCK_AIR;
         if (!block_covers_face(above)) {
-            emit_cap(out, t, w, tile_idx, d, b, true, width, 0.0f, true);
+            emit_cap(out, t, w, tile_idx, d, b, true, width, 0.0f, true, wet);
         }
 
         if (d > 0) {
             block_t below = (block_t)col[d - 1];
             if (!block_covers_face(below)) {
-                emit_cap(out, t, w, tile_idx, d, b, false, width, 0.0f, true);
+                emit_cap(out, t, w, tile_idx, d, b, false, width, 0.0f, true, wet);
             }
         }
 
@@ -384,7 +424,7 @@ void hex_mesh_build_tile(hex_mesh_t* out, const world_t* w, int tile_idx) {
         double r_top = world_depth_to_radius_m(w, d + 1);
         for (int k = 0; k < n; ++k) {
             int next = (k + 1) % n;
-            emit_side_quad(out, t, w, tile_idx, d, k, next, r_bot, r_top, b, width);
+            emit_side_quad(out, t, w, tile_idx, d, k, next, r_bot, r_top, b, width, wet);
         }
     }
 }

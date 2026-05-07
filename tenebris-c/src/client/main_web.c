@@ -170,7 +170,7 @@ static void init(void) {
     }
 
     G.body  = planet_get(BODY_TENEBRIS);
-    G.world = world_create(G.body, G.body->subdivisions);
+    G.world = world_create(G.body, planet_subdivisions_for_radius(G.body->radius_m));
     player_init(&G.player, G.body);
 
     /* Drain Tenebris gen synchronously at init so the spawn tile has
@@ -189,13 +189,14 @@ static void init(void) {
     /* Build and register every non-main body — moons, neighbouring
      * planets, the asteroid belt. Each is fully generated + chunked
      * synchronously at boot, so block edits on any of them go through
-     * the same dirty-rebuild path the active body uses. Asteroids
-     * have subs=3 (642 tiles), moons subs=3–4, sister planets up to
-     * subs=6 — total init cost ~700 ms but it's a one-off. */
+     * the same dirty-rebuild path the active body uses. Subdivision
+     * count is auto-picked from radius (planet_subdivisions_for_radius)
+     * to target ~1 m hex width on every body — small asteroids end up
+     * at subs 3-4, moons 5-6, big planets capped at 7 (~163k tiles). */
     for (int id = BODY_LUNA; id < BODY_COUNT; ++id) {
         const body_config_t* b = planet_get((body_id_t)id);
         if (!b) continue;
-        world_t* body_world = world_create(b, b->subdivisions);
+        world_t* body_world = world_create(b, planet_subdivisions_for_radius(b->radius_m));
         while (!world_gen_complete(body_world)) world_stream_gen(body_world, body_world->tile_count);
         renderer_register_world(body_world);
         if (G.moon_count < (int)(sizeof(G.moons) / sizeof(G.moons[0]))) {

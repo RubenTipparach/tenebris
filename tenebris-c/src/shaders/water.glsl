@@ -274,33 +274,17 @@ void main() {
         // through the surface, attenuated by the water in front of
         // it. Outside: total internal reflection saturates to
         // deep_color.
+        //
+        // No surface-light terms here — viewed from below, the cap
+        // is purely a window onto whatever's above (Snell-mixed with
+        // deep_color outside the cone). The refracted sample already
+        // carries the sun's lighting on the sky/terrain above the
+        // surface, so re-adding sun-glint or torch additives just
+        // paints a yellow film over the underside that doesn't
+        // correspond to any real light path. Day/night dim is also
+        // already in the refracted sample (the skybox / terrain it
+        // views are dimmed at source), so we don't multiply again.
         vec3 below_color = mix(u_deep_color, refracted_lit, snell);
-
-        // Optional sun glint surviving the underside — sells the
-        // surface as glassy water rather than a flat plane. Scaled
-        // by snell so it only fires inside the window, and by
-        // attenuation so it dims with depth alongside the rest.
-        vec3 view  = -view_to_frag;
-        vec3 sun   = normalize(u_sun_dir);
-        vec3 halfv = normalize(view + sun);
-        float spec = pow(max(dot(n, halfv), 0.0), u_spec_power) * snell;
-        below_color += u_sun_tint * spec * u_spec_intensity * 0.5
-                     * dot(attenuation, vec3(1.0/3.0));
-
-        // Day/night dim: same below-cap surface should darken on
-        // the dark side of the planet. Sky-light multiplies into the
-        // sun_brightness so an underside seen from inside a roofed
-        // pool also dims. Refracted sample carries the terrain
-        // shader's own day/night tone already, so multiplying here
-        // just darkens the deep-colour saturation + sun glint.
-        float ambient_dn = mix(u_night_floor, 1.0, v_sun_brightness * v_sky_light);
-        below_color *= ambient_dn;
-
-        // Torch contribution comes through from the underside too —
-        // a torch held at a pool's edge lights the underside of the
-        // surface for a swimmer looking up. Added after the daylight
-        // dim so torches survive midnight + roof darkness.
-        below_color += u_torch_color.xyz * u_torch_color.w * v_torch_light;
 
         frag_color = vec4(below_color, 1.0);
         return;
@@ -377,13 +361,28 @@ void main() {
     float ambient_dn = mix(u_night_floor, 1.0, v_sun_brightness * v_sky_light);
     color *= ambient_dn;
 
-    // Torch contribution: warm-orange additive from per-vertex
-    // v_torch_light baked at mesh time. Same colour curve the hex
-    // shader uses (lighting.yaml torch_color × torch_intensity), so
-    // a torch placed on a shore lights the water and the ground in
-    // the same warm circle without a visible tone seam. Added AFTER
-    // the daylight dim so torches survive on the night side.
-    color += u_torch_color.xyz * u_torch_color.w * v_torch_light;
+    // Torch contribution. Bulk water is transparent — it doesn't
+    // diffuse-scatter the way terrain does, so the body of the cap
+    // must NOT pick up a flat torch tint (that's what made shallow
+    // water near a torch look like opaque yellow paint at night).
+    // Instead the torch only feeds the surface channels that would
+    // physically catch a nearby flame:
+    //   * Fresnel sky-reflection — the surface acts as a mirror, so
+    //     a torch behind the camera glints off it the same way the
+    //     sun's specular does. Modulated by sky_weight so it's
+    //     strongest at glancing angles and absent when looking
+    //     straight down at calm water.
+    //   * Foam — bright flecks behave like terrain-style diffuse
+    //     receivers; their existing white tint warms toward orange
+    //     under a torch. Modulated by the same foam mass the cap
+    //     mixes toward u_foam_color above.
+    // The shoreline-sand glow comes through the refracted sample on
+    // its own (the terrain shader bakes torch_light into the sand
+    // below), so we don't need to double-paint it on the cap.
+    // Added AFTER the daylight dim so torches survive on the night
+    // side, matching the hex shader's torch-after-dim ordering.
+    vec3 torch = u_torch_color.xyz * u_torch_color.w * v_torch_light;
+    color += torch * (sky_weight + foam * u_foam_crest.w);
 
     frag_color = vec4(color, 1.0);
 }

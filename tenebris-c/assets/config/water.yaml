@@ -119,8 +119,8 @@ water:
   foam_crest_weight:  0.55
   foam_slope_lo:      0.50
   foam_slope_hi:      1.20
-  foam_slope_weight:  0.45
-  foam_intensity:     0.20
+  foam_slope_weight:  0.26
+  foam_intensity:     0.10
   foam_color:         [0.95, 0.97, 1.00]
 
   sky_horizon_color:    [0.85, 0.92, 0.98]
