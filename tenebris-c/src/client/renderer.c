@@ -1518,7 +1518,7 @@ void renderer_compose_to_swapchain(mat4_t view, mat4_t proj) {
         .fx_params     = { W->underwater_distortion,
                            R.time_seconds,
                            cam_under ? 1.0f : 0.0f,
-                           0.0f },
+                           1.0f /* debug: visualise water_mask */ },
     };
     sg_apply_uniforms(UB_composite_fs_params, &SG_RANGE(fs));
 

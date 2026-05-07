@@ -59,7 +59,7 @@ layout(binding=1) uniform composite_fs_params {
     vec4  deep_color;     // xyz = water deep tint, w = unused
     vec4  absorption;     // xyz = Beer-Lambert per-channel sigma (1/m)
     vec4  near_far;       // x = near plane, y = far plane, z = unused, w = unused
-    vec4  fx_params;      // x = distortion strength (UV units), y = time, z = camera_underwater [0|1], w = unused
+    vec4  fx_params;      // x = distortion strength (UV units), y = time, z = camera_underwater [0|1], w = debug_mask_view [0|1]
 };
 
 layout(binding=0) uniform texture2D scene_color;
@@ -180,6 +180,19 @@ void main() {
     if (wet > 0.0) {
         vec3 attenuation = exp(-view_dist * sigma);
         color = mix(deep, color, attenuation);
+    }
+
+    // ---- DEBUG: visualise the water mask + edge ----
+    // fx_params.w = 1 → paint the mask coverage as solid red, edge
+    // pixels as solid yellow. Lets us tell at a glance whether:
+    //   * the mask pass is rendering at all (red somewhere = yes),
+    //   * the cap silhouette is where we'd expect it (yellow line
+    //     should hug the visible cap edge),
+    //   * cap fragments behind terrain are being correctly rejected
+    //     (red shouldn't bleed into hill silhouettes).
+    if (fx_params.w > 0.5) {
+        if (edge > 0.05) color = vec3(1.0, 1.0, 0.0);     // yellow for edge
+        else if (mask_c > 0.5) color = vec3(1.0, 0.2, 0.2); // red for cap interior
     }
 
     frag_color = vec4(color, 1.0);
