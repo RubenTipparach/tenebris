@@ -234,13 +234,15 @@ dvec3_t player_world_pos(const player_ctrl_t* p) { return p->position; }
  * drag with no anchor. The transition slerp bridges the space →
  * planet edge so the camera doesn't pop. */
 
-/* Camera-jerk diagnostic. Snapshots the bits of player state that,
- * if they change discontinuously frame-to-frame, manifest as a
- * sudden camera rotation/translation. Logs the prev → next deltas
- * whenever a frame crosses a threshold so users can drop a single
- * suspicious tick into a bug report instead of trying to recreate
- * the wobble live. Cheap when nothing's happening — six dot
- * products and a body-pointer compare. */
+/* Camera-jerk diagnostic. Distinguishes legitimate transitions
+ * (intentional 6DOF look in space, slerp-controlled roll on planet
+ * entry, body-swap edges) from genuine anomalies (basis flipping
+ * during steady-state walking, position teleporting beyond what
+ * velocity * dt can explain). The logger only barks on the second
+ * class — and labels it [ERROR] so it stands out in the console —
+ * so a "wild rotate while walking" report shows up as a single
+ * obvious line. Cheap and rate-limited so it can't tank the
+ * framerate even if multiple frames fire in a row. */
 typedef struct {
     bool                 valid;
     dvec3_t              position;
@@ -253,25 +255,41 @@ typedef struct {
     const body_config_t* body;
 } jerk_snapshot_t;
 
-/* Thresholds. Tuned to log "the player would notice this" jumps
- * without spamming on normal walking + slerp. Walking caps at
- * SPRINT_SPEED * dt ≈ 0.23 m/frame at 60 Hz; a 1 m position jump
- * is 4× that. Roll slerp at speed=0.8 over a 90° angle resolves at
- * up to 0.8*dt ≈ 0.013 rad/frame ≈ 0.75°; logging at 5° catches
- * the basis flip without firing during the slerp itself. */
-#define JERK_POS_DELTA_M    1.0
-#define JERK_UP_DELTA_RAD   0.0873   /* ~5° */
-#define JERK_FWD_DELTA_RAD  0.1745   /* ~10° */
+/* Wild-rotation thresholds (steady-state planet mode only). Walking
+ * smoothly produces basis changes of ~0.05° / frame at 60 fps; ground
+ * snap can yield up to STEP_HEIGHT (0.6 m) of vertical pop on a step-
+ * up; horizontal motion caps at SPRINT_SPEED * dt ≈ 0.23 m / frame.
+ * The thresholds are well above those expected values so normal
+ * gameplay stays silent. */
+#define JERK_UP_DELTA_RAD       0.0349   /* ~2°  */
+#define JERK_FWD_DELTA_RAD      0.0349   /* ~2°  */
+#define JERK_POS_FUDGE_M        1.0      /* tolerance over velocity * dt */
+#define JERK_RATE_LIMIT_S       0.25     /* max one [INFO] line per quarter-second */
+
+/* Total elapsed time the diagnostic has seen. Used purely to rate-
+ * limit chatty INFO transitions (body swap, space flip) so they
+ * don't spam during a long flight that crosses several SOI edges.
+ * ERRORs aren't rate-limited — a real wild rotate is something we
+ * want every instance of. */
+static double s_jerk_clock_s = 0.0;
+static double s_jerk_last_info_s = -1e9;
 
 static void jerk_log(const player_ctrl_t* p, const jerk_snapshot_t* prev,
                      world_t* w, float dt) {
+    s_jerk_clock_s += (double)dt;
+    /* Skip the very first frame after init — basis_t starts as
+     * zero-init {0,0,0} and acos(0)=90°, which would print a
+     * spurious 90° "rotation" the first time player_update runs.
+     * The valid flag on `prev` is set the first time we run; the
+     * basis check confirms it had real content. */
     if (!prev->valid) return;
-    /* Position jump in world space. */
+    if (dvec3_dot(prev->basis_up, prev->basis_up) < 0.5) return;
+
+    /* Snapshot deltas. */
     double dx = p->position.x - prev->position.x;
     double dy = p->position.y - prev->position.y;
     double dz = p->position.z - prev->position.z;
     double pos_jump = sqrt(dx*dx + dy*dy + dz*dz);
-    /* Angle between prev and next basis.up / basis.fwd. */
     double up_dot  = dvec3_dot(p->basis.up,  prev->basis_up);
     double fwd_dot = dvec3_dot(p->basis.fwd, prev->basis_fwd);
     if (up_dot  >  1.0) up_dot  =  1.0;
@@ -280,22 +298,60 @@ static void jerk_log(const player_ctrl_t* p, const jerk_snapshot_t* prev,
     if (fwd_dot < -1.0) fwd_dot = -1.0;
     double up_angle  = acos(up_dot);
     double fwd_angle = acos(fwd_dot);
-    bool body_changed = (p->body != prev->body);
-    bool space_flipped = (p->is_in_space != prev->is_in_space);
+    double vL_prev   = dvec3_length(prev->velocity);
+    bool   body_changed  = (p->body != prev->body);
+    bool   space_flipped = (p->is_in_space != prev->is_in_space);
 
-    bool interesting =
-        body_changed ||
-        space_flipped ||
-        pos_jump  > JERK_POS_DELTA_M ||
-        up_angle  > JERK_UP_DELTA_RAD ||
-        fwd_angle > JERK_FWD_DELTA_RAD;
-    if (!interesting) return;
+    /* Frames where wild rotation is *expected* — skip ERROR
+     * detection (still consider INFO for the edges). The slerp
+     * mutates the basis directly; space mode is full 6DOF; body
+     * swaps trigger their own slerp; teleport is user-initiated. */
+    bool transitioning = prev->transition_timer_s > 0.0f
+                      || p->transition_timer_s    > 0.0f
+                      || prev->is_in_space
+                      || p->is_in_space
+                      || body_changed
+                      || space_flipped;
+
+    /* ---- ERROR class: anomalies in steady-state planet mode that
+     * the player would perceive as a snap. Logged unconditionally
+     * (no rate-limit) so a single occurrence shows up. */
+    const char* err_reason = NULL;
+    if (!transitioning) {
+        if (up_angle > JERK_UP_DELTA_RAD) {
+            err_reason = "wild basis.up rotation";
+        } else if (fwd_angle > JERK_FWD_DELTA_RAD) {
+            err_reason = "wild basis.fwd rotation";
+        } else {
+            /* Position jump > what velocity*dt + ground-snap step
+             * can plausibly explain. Uses prev velocity so the
+             * tolerance reflects what the player had on entry to
+             * this frame, not what got damped out by the integrator. */
+            double max_expected = vL_prev * (double)dt + JERK_POS_FUDGE_M;
+            if (pos_jump > max_expected) err_reason = "unexplained position jump";
+        }
+    }
+
+    /* ---- INFO class: legitimate transitions, rate-limited so a
+     * long flight crossing several SOI edges doesn't drown the
+     * console. */
+    const char* info_reason = NULL;
+    if (!err_reason) {
+        if (body_changed)        info_reason = "body change";
+        else if (space_flipped)  info_reason = p->is_in_space ? "entered space" : "entered gravity";
+    }
+    if (info_reason && (s_jerk_clock_s - s_jerk_last_info_s) < JERK_RATE_LIMIT_S) {
+        info_reason = NULL;
+    }
+
+    if (!err_reason && !info_reason) return;
+
+    const char* prefix = err_reason ? "[ERROR]" : "[INFO]";
+    const char* reason = err_reason ? err_reason : info_reason;
+    if (info_reason) s_jerk_last_info_s = s_jerk_clock_s;
 
     const char* old_name = prev->body ? prev->body->name : "(null)";
     const char* new_name = p->body    ? p->body->name    : "(null)";
-    /* Altitudes against each end's body so the report shows where
-     * we were in each gravity well — handy for diagnosing whether
-     * a flip happened mid-air or near the ground. */
     double prev_alt = -1.0, next_alt = -1.0;
     if (prev->body) {
         double rx = prev->position.x - prev->body->pos_x;
@@ -309,15 +365,13 @@ static void jerk_log(const player_ctrl_t* p, const jerk_snapshot_t* prev,
         double rz = p->position.z - p->body->pos_z;
         next_alt = sqrt(rx*rx + ry*ry + rz*rz) - p->body->radius_m;
     }
-    double vL = dvec3_length(p->velocity);
-    int    tile_count = (w && w->grid) ? w->tile_count : -1;
-    int    gen_cursor = w ? w->gen_cursor : -1;
-    bool   world_matches = (w && w->body == p->body);
+    bool world_matches = (w && w->body == p->body);
 
-    printf("[jerk] dt=%.4fs body:%s->%s alt:%.1f->%.1f "
+    printf("%s [jerk] %s :: dt=%.4fs body:%s->%s alt:%.1f->%.1f "
            "Δpos=%.3fm Δup=%.2f° Δfwd=%.2f° "
-           "is_space=%d->%d grounded=%d->%d trans=%.2fs->%.2fs "
-           "|v|=%.2f world_matches=%d (gen %d/%d)\n",
+           "is_space=%d->%d grounded=%d->%d trans=%.3fs->%.3fs "
+           "|v|=%.2f world_matches=%d\n",
+           prefix, reason,
            (double)dt, old_name, new_name, prev_alt, next_alt,
            pos_jump, up_angle * (180.0 / M_PI),
            fwd_angle * (180.0 / M_PI),
@@ -325,8 +379,8 @@ static void jerk_log(const player_ctrl_t* p, const jerk_snapshot_t* prev,
            prev->grounded, p->grounded,
            (double)prev->transition_timer_s,
            (double)p->transition_timer_s,
-           vL, world_matches ? 1 : 0,
-           gen_cursor, tile_count);
+           dvec3_length(p->velocity),
+           world_matches ? 1 : 0);
     fflush(stdout);
 }
 
