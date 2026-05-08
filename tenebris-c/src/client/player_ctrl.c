@@ -3,6 +3,11 @@
 #include "core/blocks.h"
 #include "core/config.h"
 #include <math.h>
+#include <stdio.h>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 #define MOUSE_SENS       0.002f
 #define LOOK_STICK_SENS  2.4f
@@ -229,8 +234,126 @@ dvec3_t player_world_pos(const player_ctrl_t* p) { return p->position; }
  * drag with no anchor. The transition slerp bridges the space →
  * planet edge so the camera doesn't pop. */
 
+/* Camera-jerk diagnostic. Snapshots the bits of player state that,
+ * if they change discontinuously frame-to-frame, manifest as a
+ * sudden camera rotation/translation. Logs the prev → next deltas
+ * whenever a frame crosses a threshold so users can drop a single
+ * suspicious tick into a bug report instead of trying to recreate
+ * the wobble live. Cheap when nothing's happening — six dot
+ * products and a body-pointer compare. */
+typedef struct {
+    bool                 valid;
+    dvec3_t              position;
+    dvec3_t              basis_up;
+    dvec3_t              basis_fwd;
+    dvec3_t              velocity;
+    bool                 is_in_space;
+    bool                 grounded;
+    float                transition_timer_s;
+    const body_config_t* body;
+} jerk_snapshot_t;
+
+/* Thresholds. Tuned to log "the player would notice this" jumps
+ * without spamming on normal walking + slerp. Walking caps at
+ * SPRINT_SPEED * dt ≈ 0.23 m/frame at 60 Hz; a 1 m position jump
+ * is 4× that. Roll slerp at speed=0.8 over a 90° angle resolves at
+ * up to 0.8*dt ≈ 0.013 rad/frame ≈ 0.75°; logging at 5° catches
+ * the basis flip without firing during the slerp itself. */
+#define JERK_POS_DELTA_M    1.0
+#define JERK_UP_DELTA_RAD   0.0873   /* ~5° */
+#define JERK_FWD_DELTA_RAD  0.1745   /* ~10° */
+
+static void jerk_log(const player_ctrl_t* p, const jerk_snapshot_t* prev,
+                     world_t* w, float dt) {
+    if (!prev->valid) return;
+    /* Position jump in world space. */
+    double dx = p->position.x - prev->position.x;
+    double dy = p->position.y - prev->position.y;
+    double dz = p->position.z - prev->position.z;
+    double pos_jump = sqrt(dx*dx + dy*dy + dz*dz);
+    /* Angle between prev and next basis.up / basis.fwd. */
+    double up_dot  = dvec3_dot(p->basis.up,  prev->basis_up);
+    double fwd_dot = dvec3_dot(p->basis.fwd, prev->basis_fwd);
+    if (up_dot  >  1.0) up_dot  =  1.0;
+    if (up_dot  < -1.0) up_dot  = -1.0;
+    if (fwd_dot >  1.0) fwd_dot =  1.0;
+    if (fwd_dot < -1.0) fwd_dot = -1.0;
+    double up_angle  = acos(up_dot);
+    double fwd_angle = acos(fwd_dot);
+    bool body_changed = (p->body != prev->body);
+    bool space_flipped = (p->is_in_space != prev->is_in_space);
+
+    bool interesting =
+        body_changed ||
+        space_flipped ||
+        pos_jump  > JERK_POS_DELTA_M ||
+        up_angle  > JERK_UP_DELTA_RAD ||
+        fwd_angle > JERK_FWD_DELTA_RAD;
+    if (!interesting) return;
+
+    const char* old_name = prev->body ? prev->body->name : "(null)";
+    const char* new_name = p->body    ? p->body->name    : "(null)";
+    /* Altitudes against each end's body so the report shows where
+     * we were in each gravity well — handy for diagnosing whether
+     * a flip happened mid-air or near the ground. */
+    double prev_alt = -1.0, next_alt = -1.0;
+    if (prev->body) {
+        double rx = prev->position.x - prev->body->pos_x;
+        double ry = prev->position.y - prev->body->pos_y;
+        double rz = prev->position.z - prev->body->pos_z;
+        prev_alt = sqrt(rx*rx + ry*ry + rz*rz) - prev->body->radius_m;
+    }
+    if (p->body) {
+        double rx = p->position.x - p->body->pos_x;
+        double ry = p->position.y - p->body->pos_y;
+        double rz = p->position.z - p->body->pos_z;
+        next_alt = sqrt(rx*rx + ry*ry + rz*rz) - p->body->radius_m;
+    }
+    double vL = dvec3_length(p->velocity);
+    int    tile_count = (w && w->grid) ? w->tile_count : -1;
+    int    gen_cursor = w ? w->gen_cursor : -1;
+    bool   world_matches = (w && w->body == p->body);
+
+    printf("[jerk] dt=%.4fs body:%s->%s alt:%.1f->%.1f "
+           "Δpos=%.3fm Δup=%.2f° Δfwd=%.2f° "
+           "is_space=%d->%d grounded=%d->%d trans=%.2fs->%.2fs "
+           "|v|=%.2f world_matches=%d (gen %d/%d)\n",
+           (double)dt, old_name, new_name, prev_alt, next_alt,
+           pos_jump, up_angle * (180.0 / M_PI),
+           fwd_angle * (180.0 / M_PI),
+           prev->is_in_space, p->is_in_space,
+           prev->grounded, p->grounded,
+           (double)prev->transition_timer_s,
+           (double)p->transition_timer_s,
+           vL, world_matches ? 1 : 0,
+           gen_cursor, tile_count);
+    fflush(stdout);
+}
+
+static void jerk_snapshot_take(jerk_snapshot_t* s, const player_ctrl_t* p) {
+    s->valid              = true;
+    s->position           = p->position;
+    s->basis_up           = p->basis.up;
+    s->basis_fwd          = p->basis.fwd;
+    s->velocity           = p->velocity;
+    s->is_in_space        = p->is_in_space;
+    s->grounded           = p->grounded;
+    s->transition_timer_s = p->transition_timer_s;
+    s->body               = p->body;
+}
+
+/* Compose: take a BEFORE snapshot, run player_update_inner, log if
+ * the per-frame deltas crossed any of the thresholds. The snapshot
+ * captures p->state at function entry; comparing it against p at
+ * function exit gives the net camera-relevant change, which is
+ * what the player actually perceives as a "jerk". */
+
 void player_update(player_ctrl_t* p, world_t* w, float dt) {
     const input_state_t* in = input_state();
+    /* Snapshot the BEFORE state for the camera-jerk diagnostic so
+     * we can compare against it after the update. */
+    jerk_snapshot_t before;
+    jerk_snapshot_take(&before, p);
 
     /* ---- Body selection + space/planet detection. The gravity
      * tracker picks whichever body delivers the strongest pull at
@@ -334,6 +457,7 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
                                 dvec3_scale(p->velocity, (double)dt));
         p->grounded = false;
         p->last_tile = -1;
+        jerk_log(p, &before, w, dt);
         return;
     }
 
@@ -473,19 +597,31 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
     } else {
         p->grounded = false;
     }
+
+    /* End-of-frame jerk diagnostic. Compares current state against
+     * the BEFORE snapshot taken at function entry; logs a single
+     * line per "interesting" frame so the bug report can pinpoint
+     * the exact event that caused the camera snap. */
+    jerk_log(p, &before, w, dt);
 }
 
 void player_set_body(player_ctrl_t* p, const body_config_t* body) {
     if (!p || !body || p->body == body) return;
     p->body = body;
     p->last_tile = -1;
-    /* If we were in space and now have a body, arm the slerp so the
-     * basis aligns smoothly with the new planet's up. The
-     * planet-mode branch in player_update reads transition_timer_s
-     * each frame and applies the slerp. */
-    if (p->is_in_space) {
-        p->transition_timer_s = config_lod()->roll_slerp_duration_s;
-    }
+    /* Always arm the roll slerp on a body swap, not just when
+     * leaving space. Two bodies' gravity wells can overlap (Crag /
+     * Quartz, asteroid pairs, anywhere two falloff radii kiss),
+     * which means the gravity tracker can hand the frame from one
+     * planet to another without is_in_space ever flipping true.
+     * Without the slerp the next sync_basis_to_planet call would
+     * parallel-transport fwd/right through a huge rotation in a
+     * single frame — that's the camera-jerk-on-chunk-transition
+     * symptom: it isn't actually about chunks, it's about the
+     * basis.up vector flipping from "radial w.r.t. old body" to
+     * "radial w.r.t. new body" instantly. The slerp spreads that
+     * rotation over ROLL_SLERP_DURATION seconds. */
+    p->transition_timer_s = config_lod()->roll_slerp_duration_s;
 }
 
 void player_teleport_to(player_ctrl_t* p, const body_config_t* body) {
