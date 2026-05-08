@@ -218,6 +218,14 @@ typedef struct {
      * tint) so the view from underwater matches the view from above
      * — same water, same look. Only the shimmer is independent. */
     float  underwater_distortion;
+    /* Soft fade band (m) around the actual water-cap altitude
+     * (sea_level + height_offset_m - depth_offset_m) where the
+     * composite gates the wet mask. Pixels at altitude > +band are
+     * fully dry (no fog, no shimmer), pixels at < -band are fully
+     * wet, with smoothstep in between. Stops the upper portion of
+     * beach blocks (whose top sticks above the cap by depth_offset_m)
+     * from picking up the underwater distortion shimmer. */
+    float  wet_fade_band_m;
 } water_config_t;
 
 const water_config_t* config_water(void);
