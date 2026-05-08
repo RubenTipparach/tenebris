@@ -1,13 +1,13 @@
 #include "client/player_ctrl.h"
 #include "client/input.h"
 #include "core/blocks.h"
+#include "core/config.h"
 #include <math.h>
 
 #define MOUSE_SENS       0.002f
 #define LOOK_STICK_SENS  2.4f
 #define WALK_SPEED       8.0f
 #define SPRINT_SPEED    14.0f
-#define FLY_SPEED       20.0f
 #define JUMP_VEL         8.0f
 #define JETPACK_ACCEL   42.0f
 #define JETPACK_MAX_VY  14.0f
@@ -46,12 +46,48 @@ static dvec3_t player_local_pos(const player_ctrl_t* p) {
     return dvec3_sub(p->position, c);
 }
 
-/* Re-align the player's persistent tangent basis to the current
- * radial up (the surface normal of p->body at the player's position).
- * Carry fwd/right across by parallel transport so the basis stays
- * continuous as the player traverses the sphere.
- * basis_ready = false forces a cold rebuild — used on init + teleport. */
-static void sync_basis(player_ctrl_t* p) {
+/* Rotate v by `angle` radians around unit axis `axis` (Rodrigues).
+ * Used to mutate the basis in space mode where mouse / roll input
+ * applies free 6DOF rotations around basis.up / basis.right /
+ * basis.fwd. */
+static dvec3_t rotate_axis_angle(dvec3_t v, dvec3_t axis, double angle) {
+    double c = cos(angle), s = sin(angle);
+    dvec3_t cross = dvec3_cross(axis, v);
+    double  kdotv = dvec3_dot(axis, v);
+    return dvec3_add(dvec3_add(dvec3_scale(v, c),
+                                dvec3_scale(cross, s)),
+                     dvec3_scale(axis, kdotv * (1.0 - c)));
+}
+
+/* Re-orthonormalise the basis after partial rotations / slerps so
+ * we don't drift off the rotation manifold. up is taken as the
+ * authoritative direction; fwd is projected to be perpendicular,
+ * then right = cross(fwd, up). */
+static void orthonormalise_basis(tangent_basis_t* b) {
+    b->up    = dvec3_normalize(b->up);
+    /* Project fwd onto the plane perpendicular to up. */
+    double d = dvec3_dot(b->fwd, b->up);
+    b->fwd   = dvec3_sub(b->fwd, dvec3_scale(b->up, d));
+    if (dvec3_dot(b->fwd, b->fwd) < 1e-12) {
+        /* Degenerate — fwd was parallel to up. Fall back to a stable
+         * tangent axis so the next rotation has something to work
+         * with. */
+        b->fwd = (fabs(b->up.x) < 0.9) ? dvec3_make(1, 0, 0) : dvec3_make(0, 1, 0);
+        d = dvec3_dot(b->fwd, b->up);
+        b->fwd = dvec3_normalize(dvec3_sub(b->fwd, dvec3_scale(b->up, d)));
+    } else {
+        b->fwd = dvec3_normalize(b->fwd);
+    }
+    b->right = dvec3_normalize(dvec3_cross(b->fwd, b->up));
+}
+
+/* Re-align the player's persistent tangent basis to the planet
+ * radial up. Used in planet mode (after the transition slerp ends)
+ * where basis.up must track the surface normal as the player walks
+ * around the sphere. fwd/right parallel-transport across by the
+ * shortest-arc rotation so the look direction stays continuous.
+ * basis_ready = false forces a cold rebuild — used on init. */
+static void sync_basis_to_planet(player_ctrl_t* p) {
     dvec3_t local = player_local_pos(p);
     dvec3_t new_up = dvec3_normalize(local);
     if (!p->basis_ready) {
@@ -65,6 +101,32 @@ static void sync_basis(player_ctrl_t* p) {
     p->basis.up    = new_up;
     p->basis.right = dvec3_normalize(dvec3_cross(p->basis.fwd, p->basis.up));
     p->basis.fwd   = dvec3_normalize(dvec3_cross(p->basis.up,  p->basis.right));
+}
+
+/* Roll-slerp: each frame the basis rotates by `factor` of the way
+ * from its current up toward `target_up`, with fwd/right carried
+ * along. Matches PlanetPlayer.slerpRollToLevel — exponential
+ * approach (lower factor = smoother / slower), so big mis-
+ * alignments correct fast and the last few degrees ease in. */
+static void slerp_basis_to_up(tangent_basis_t* b, dvec3_t target_up, float factor) {
+    dvec3_t cur = dvec3_normalize(b->up);
+    dvec3_t tgt = dvec3_normalize(target_up);
+    double  d   = dvec3_dot(cur, tgt);
+    if (d >  0.99999999) { b->up = tgt; orthonormalise_basis(b); return; }
+    double angle = acos(d > 1.0 ? 1.0 : (d < -1.0 ? -1.0 : d));
+    double step  = angle * (double)factor;
+    dvec3_t axis;
+    if (d < -0.99999999) {
+        /* 180° flip — pick any perpendicular axis. */
+        axis = (fabs(cur.x) < 0.9) ? dvec3_make(1, 0, 0) : dvec3_make(0, 1, 0);
+        axis = dvec3_normalize(dvec3_cross(cur, axis));
+    } else {
+        axis = dvec3_normalize(dvec3_cross(cur, tgt));
+    }
+    b->up    = rotate_axis_angle(b->up,    axis, step);
+    b->fwd   = rotate_axis_angle(b->fwd,   axis, step);
+    b->right = rotate_axis_angle(b->right, axis, step);
+    orthonormalise_basis(b);
 }
 
 /* ----------------------------------------------------------------------- */
@@ -141,8 +203,9 @@ void player_init(player_ctrl_t* p, const body_config_t* body) {
     p->yaw = 0.0f;
     p->pitch = 0.0f;
     p->grounded = false;
-    p->fly_mode = false;       /* start on the ground, gravity on */
-    p->vy = 0.0f;
+    p->velocity = dvec3_make(0, 0, 0);
+    p->is_in_space = false;
+    p->transition_timer_s = 0.0f;
     p->last_tile = -1;
     p->basis_ready = false;
     /* Default to creative — the menu / a key toggle will switch to
@@ -158,35 +221,45 @@ dvec3_t player_world_pos(const player_ctrl_t* p) { return p->position; }
 
 /* ----------------------------------------------------------------------- */
 
+/* ----------------------------------------------------------------------- */
+/* Player update — split into two top-level branches by gravity
+ * influence at the current position. In planet mode we run walking +
+ * jetpack + gravity + ground snap with the basis locked to the
+ * planet's radial up. In space mode we run 6DOF mouse-look + thrust +
+ * drag with no anchor. The transition slerp bridges the space →
+ * planet edge so the camera doesn't pop. */
+
 void player_update(player_ctrl_t* p, world_t* w, float dt) {
     const input_state_t* in = input_state();
 
-    /* Parallel-transport the tangent basis to the current position
-     * before any movement. Subsequent sync_basis calls below handle
-     * position changes from walking + gravity. */
-    sync_basis(p);
-
-    /* Mouse / look-stick. Yaw is +right (fwd rotates toward basis.right). */
-    p->yaw   += in->mouse_dx * MOUSE_SENS;
-    p->pitch -= in->mouse_dy * MOUSE_SENS;
-    if (in->look_stick_active) {
-        p->yaw   += in->look_stick_x * LOOK_STICK_SENS * dt;
-        p->pitch += in->look_stick_y * LOOK_STICK_SENS * dt;
+    /* ---- Body selection + space/planet detection. The gravity
+     * tracker picks whichever body delivers the strongest pull at
+     * p->position, with a smooth taper out to gravity_falloff_mult.
+     * Outside every body's falloff radius we're "in space" and the
+     * 6DOF branch takes over. */
+    const lod_config_t* L = config_lod();
+    gravity_query_t gq = planet_gravity_at(p->position,
+                                           L->gravity_full_mult,
+                                           L->gravity_falloff_mult);
+    bool was_in_space = p->is_in_space;
+    p->is_in_space = (gq.body == NULL);
+    if (gq.body && gq.body != p->body) {
+        /* Mid-flight body swap — keep the basis as-is and let the
+         * transition slerp align with the new planet's up. Reset
+         * basis_ready=false would yank the camera; we want smooth. */
+        p->body = gq.body;
+        p->last_tile = -1;
     }
-    if (p->pitch >  PITCH_LIMIT) p->pitch =  PITCH_LIMIT;
-    if (p->pitch < -PITCH_LIMIT) p->pitch = -PITCH_LIMIT;
+    /* Edge: leaving space → entering a gravity well. Arm the roll
+     * slerp so the basis aligns smoothly with the new planet up. */
+    if (was_in_space && !p->is_in_space) {
+        p->transition_timer_s = L->roll_slerp_duration_s;
+    }
 
-    p->fly_mode = in->phys.fly_mode;
-
-    /* Hotbar 1..9 picks an inventory slot. Edge-triggered by input.c. */
+    /* ---- Hotbar / wheel. Same as before, mode-independent. */
     for (int i = 0; i < INV_HOTBAR_SLOTS; ++i) {
         if (in->hotbar[i]) inventory_select(&p->inventory, i);
     }
-
-    /* Mouse-wheel cycles the hotbar one slot per ±1.0 of accumulated
-     * scroll, with wrap-around at both ends. Positive wheel_dy
-     * (scroll up / away from user) selects the previous slot — the
-     * Minecraft convention. */
     p->hotbar_scroll_accum += in->wheel_dy;
     while (p->hotbar_scroll_accum >= 1.0f) {
         int s = p->inventory.selected - 1;
@@ -201,27 +274,123 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
         p->hotbar_scroll_accum += 1.0f;
     }
 
-    /* Movement. */
+    /* Mouse / look-stick deltas — combined inputs in radians. */
+    double yaw_delta   =  (double)in->mouse_dx * MOUSE_SENS;
+    double pitch_delta = -(double)in->mouse_dy * MOUSE_SENS;
+    if (in->look_stick_active) {
+        yaw_delta   += (double)in->look_stick_x * LOOK_STICK_SENS * (double)dt;
+        pitch_delta += (double)in->look_stick_y * LOOK_STICK_SENS * (double)dt;
+    }
+
+    /* ============================================================== */
+    /* SPACE MODE — 6DOF orientation, thrust + drag flight.            */
+    /* ============================================================== */
+    if (p->is_in_space) {
+        /* Rotate basis directly around its own axes. Yaw around
+         * basis.up turns left/right; pitch around basis.right looks
+         * up/down (no clamp — full 6DOF allows looping); roll around
+         * basis.fwd via Q/E so the player can bank. Keeps the basis
+         * orthonormal each step. */
+        if (yaw_delta   != 0.0) {
+            p->basis.fwd   = rotate_axis_angle(p->basis.fwd,   p->basis.up, -yaw_delta);
+            p->basis.right = rotate_axis_angle(p->basis.right, p->basis.up, -yaw_delta);
+        }
+        if (pitch_delta != 0.0) {
+            p->basis.fwd = rotate_axis_angle(p->basis.fwd, p->basis.right, pitch_delta);
+            p->basis.up  = rotate_axis_angle(p->basis.up,  p->basis.right, pitch_delta);
+        }
+        double roll_delta = 0.0;
+        if (in->phys.roll_left)  roll_delta += (double)L->space_roll_speed * (double)dt;
+        if (in->phys.roll_right) roll_delta -= (double)L->space_roll_speed * (double)dt;
+        if (roll_delta != 0.0) {
+            p->basis.up    = rotate_axis_angle(p->basis.up,    p->basis.fwd, roll_delta);
+            p->basis.right = rotate_axis_angle(p->basis.right, p->basis.fwd, roll_delta);
+        }
+        orthonormalise_basis(&p->basis);
+
+        /* Thrust acts along basis axes — fwd/back, strafe via
+         * basis.right, up/down via basis.up (Space/C). Velocity is
+         * world-space and decays exponentially toward zero so the
+         * ship coasts to a stop. */
+        dvec3_t accel = dvec3_make(0, 0, 0);
+        if (in->phys.forward)  accel = dvec3_add(accel, p->basis.fwd);
+        if (in->phys.backward) accel = dvec3_sub(accel, p->basis.fwd);
+        if (in->phys.right)    accel = dvec3_add(accel, p->basis.right);
+        if (in->phys.left)     accel = dvec3_sub(accel, p->basis.right);
+        if (in->phys.fly_up)   accel = dvec3_add(accel, p->basis.up);
+        if (in->phys.fly_down) accel = dvec3_sub(accel, p->basis.up);
+        double aL = dvec3_length(accel);
+        if (aL > 1e-6) {
+            accel = dvec3_scale(accel, 1.0 / aL);
+            double thrust = (double)L->space_thrust;
+            if (in->phys.sprint) thrust *= 2.0;
+            p->velocity = dvec3_add(p->velocity,
+                                    dvec3_scale(accel, thrust * (double)dt));
+        }
+        /* Exponential drag — frame-rate-independent. */
+        double damp = exp(-(double)L->space_drag * (double)dt);
+        p->velocity = dvec3_scale(p->velocity, damp);
+        p->position = dvec3_add(p->position,
+                                dvec3_scale(p->velocity, (double)dt));
+        p->grounded = false;
+        p->last_tile = -1;
+        return;
+    }
+
+    /* ============================================================== */
+    /* PLANET MODE — basis locked to planet up; walking + gravity.    */
+    /* ============================================================== */
+
+    /* Bring basis into sync with the current radial up. Either via
+     * the slerp (transition_timer counting down) or direct
+     * parallel-transport (steady state on the planet). */
+    if (p->transition_timer_s > 0.0f) {
+        dvec3_t target_up = dvec3_normalize(player_local_pos(p));
+        float step = L->roll_slerp_speed * dt;
+        if (step > 1.0f) step = 1.0f;
+        slerp_basis_to_up(&p->basis, target_up, step);
+        p->transition_timer_s -= dt;
+        if (p->transition_timer_s <= 0.0f) {
+            /* Snap final alignment. After this point yaw + pitch
+             * scalars take over and basis.up tracks planet up. */
+            p->basis.up = target_up;
+            orthonormalise_basis(&p->basis);
+            p->basis_ready = true;
+            /* Reset yaw/pitch to zero so the post-slerp basis is
+             * exactly the look direction the player ended up at. */
+            p->yaw = 0.0f;
+            p->pitch = 0.0f;
+        }
+        /* During the slerp, mouse-look applies to the basis directly
+         * (so the player can keep looking around). The yaw/pitch
+         * scalars stay zero until the slerp ends; we'll re-key them
+         * after. */
+        if (yaw_delta != 0.0) {
+            p->basis.fwd   = rotate_axis_angle(p->basis.fwd,   p->basis.up, -yaw_delta);
+            p->basis.right = rotate_axis_angle(p->basis.right, p->basis.up, -yaw_delta);
+        }
+        if (pitch_delta != 0.0) {
+            p->basis.fwd = rotate_axis_angle(p->basis.fwd, p->basis.right, pitch_delta);
+            p->basis.up  = rotate_axis_angle(p->basis.up,  p->basis.right, pitch_delta);
+            orthonormalise_basis(&p->basis);
+        }
+    } else {
+        sync_basis_to_planet(p);
+        /* Standard tangent-mouse-look — yaw rotates basis.fwd /
+         * basis.right around basis.up; pitch is a stored angle that
+         * compute_look adds when building the camera matrix. */
+        p->yaw   += (float)yaw_delta;
+        p->pitch += (float)pitch_delta;
+        if (p->pitch >  PITCH_LIMIT) p->pitch =  PITCH_LIMIT;
+        if (p->pitch < -PITCH_LIMIT) p->pitch = -PITCH_LIMIT;
+    }
+
+    /* ---- Walking + jetpack + gravity, all on planet up. */
+    const bool has_world = (w != NULL && w->body == p->body);
     float speed = in->phys.sprint ? SPRINT_SPEED : WALK_SPEED;
-    if (p->fly_mode) speed = FLY_SPEED;
     dvec3_t wish = walk_wish(p, &in->phys);
 
-    /* "has_world" gates ground-aware movement + collision: when the
-     * world we were handed actually backs p->body we can query its
-     * voxels for walking + ground snap; when we weren't (e.g. flying
-     * across deep space outside any SOI) we fall back to free-flight
-     * movement. Replaces the old hardcoded "Tenebris only" gate so
-     * gravity + walking work on every body the SOI tracker hands us. */
-    const bool has_world = (w != NULL && w->body == p->body);
-    if (p->fly_mode || !has_world) {
-        p->position = dvec3_add(p->position, dvec3_scale(wish, (double)speed * (double)dt));
-    } else {
-        /* Quake-style axis-separated wall collision: walk-fwd and strafe
-         * sub-moves are tested independently so a wall blocks only the
-         * component that hits it, leaving the perpendicular slide
-         * intact. Replaces the old "walk into a column, get teleported
-         * to the top of it" snap which yanked the camera up over
-         * vertical faces. */
+    if (has_world) {
         const tangent_basis_t* b = &p->basis;
         double cy = cos((double)p->yaw), sy = sin((double)p->yaw);
         dvec3_t walk_fwd = dvec3_add(dvec3_scale(b->fwd,  cy), dvec3_scale(b->right, sy));
@@ -231,124 +400,117 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
         double strafe_amt = dvec3_dot(wish, strafe)   * s;
         p->position = try_horizontal_step(w, p, p->position, dvec3_scale(walk_fwd, walk_amt));
         p->position = try_horizontal_step(w, p, p->position, dvec3_scale(strafe,   strafe_amt));
-    }
-
-    /* Track the tile we're over against whichever body's world we
-     * were handed. The SOI tracker keeps p->body in sync with the
-     * frame we want gravity to read, and main_web.c routes the
-     * matching world_t in — so this works on Tenebris, Sequoia, and
-     * any moon the player teleports to. */
-    if (has_world) {
         dvec3_t local_dir = dvec3_normalize(player_local_pos(p));
         p->last_tile = goldberg_find_tile(w->grid, local_dir, p->last_tile);
     } else {
+        /* Body anchored but no world handed in (e.g. transition
+         * frame before main_web routes the new body's world). Fall
+         * back to free walking on the basis tangent. */
+        p->position = dvec3_add(p->position,
+                                dvec3_scale(wish, (double)speed * (double)dt));
         p->last_tile = -1;
     }
 
-    const float gravity = 25.0f * p->body->gravity_g;
-    if (p->fly_mode) {
-        float fy = 0.0f;
-        if (in->phys.fly_up)   fy += 1.0f;
-        if (in->phys.fly_down) fy -= 1.0f;
-        p->position = dvec3_add(p->position,
-            dvec3_scale(p->basis.up, (double)fy * (double)speed * (double)dt));
-        p->vy = 0.0f;
+    /* Vertical velocity along basis.up — kept as a scalar (vy)
+     * folded into p->velocity so the space → planet handoff doesn't
+     * need to convert representations. We only USE the basis-up
+     * component here; tangential velocity is allowed to coast on
+     * for a frame or two as the slerp ends. */
+    double vy = dvec3_dot(p->velocity, p->basis.up);
+    /* Gravity scaled by (a) the body's gravity_g modifier and (b)
+     * the smooth falloff multiplier from planet_gravity_at, so as
+     * the player drifts up out of the well their fall slows. */
+    const float base_gravity = 25.0f * p->body->gravity_g;
+    const float gravity = base_gravity * gq.multiplier;
+    if (in->phys.jump && p->grounded) {
+        vy = JUMP_VEL;
         p->grounded = false;
-    } else {
-        if (in->phys.jump && p->grounded) {
-            p->vy = JUMP_VEL;
-            p->grounded = false;
-        } else if (in->phys.jump && !p->grounded) {
-            p->vy += JETPACK_ACCEL * dt;
-            if (p->vy > JETPACK_MAX_VY) p->vy = JETPACK_MAX_VY;
-        }
-        /* Gravity is supported by the floor when grounded — without
-         * this gate, vy drains by `g*dt` every frame and the snap below
-         * yanks the eye back up by a few mm, producing a per-frame
-         * vertical bobble that reads as camera jitter. */
-        if (!p->grounded) {
-            p->vy -= gravity * dt;
-        }
+    } else if (in->phys.jump && !p->grounded) {
+        vy += (double)JETPACK_ACCEL * (double)dt;
+        if (vy > (double)JETPACK_MAX_VY) vy = JETPACK_MAX_VY;
+    }
+    if (!p->grounded) {
+        vy -= (double)gravity * (double)dt;
+    }
+    /* Re-pack vy back into the world-space velocity. Tangential
+     * component (orthogonal to basis.up) is damped — without this
+     * the player keeps any orbital push from a recent space-mode
+     * coast forever. */
+    dvec3_t vel_tan = dvec3_sub(p->velocity, dvec3_scale(p->basis.up, dvec3_dot(p->velocity, p->basis.up)));
+    double tan_damp = exp(-2.0 * (double)dt);
+    vel_tan = dvec3_scale(vel_tan, tan_damp);
+    p->velocity = dvec3_add(vel_tan, dvec3_scale(p->basis.up, vy));
 
-        p->position = dvec3_add(p->position,
-            dvec3_scale(p->basis.up, (double)p->vy * (double)dt));
+    /* Apply position update from velocity. */
+    p->position = dvec3_add(p->position, dvec3_scale(p->velocity, (double)dt));
 
-        /* Ground snap: only engage when falling or stationary, and
-         * only when the world we were handed backs the body the
-         * player is anchored to. Without a matching world we have no
-         * voxel data to snap against, so the player just keeps
-         * falling per the gravity integrator above. */
-        if (has_world) {
-            double gr = ground_radius_under(w, p->last_tile);
-            if (gr > -1e8) {
-                dvec3_t local = player_local_pos(p);
-                double  r     = dvec3_length(local);
-                if (r < gr && p->vy <= 0.0f) {
-                    /* Snap: scale the local (body-relative) position to
-                     * the ground radius and re-offset back to world. */
-                    dvec3_t snapped_local = dvec3_scale(dvec3_normalize(local), gr);
-                    p->position = dvec3_add(
-                        dvec3_make(p->body->pos_x, p->body->pos_y, p->body->pos_z),
-                        snapped_local);
-                    p->vy = 0.0f;
-                    p->grounded = true;
-                } else if (fabs(r - gr) < 0.05 && p->vy <= 0.0f) {
-                    p->grounded = true;
-                    p->vy = 0.0f;
-                } else {
-                    p->grounded = false;
-                }
+    /* Ground snap. */
+    if (has_world) {
+        double gr = ground_radius_under(w, p->last_tile);
+        if (gr > -1e8) {
+            dvec3_t local = player_local_pos(p);
+            double  r     = dvec3_length(local);
+            if (r < gr && vy <= 0.0) {
+                dvec3_t snapped_local = dvec3_scale(dvec3_normalize(local), gr);
+                p->position = dvec3_add(
+                    dvec3_make(p->body->pos_x, p->body->pos_y, p->body->pos_z),
+                    snapped_local);
+                /* Zero out the radial component but keep tangential
+                 * for one frame so a sliding landing reads correct. */
+                vel_tan = dvec3_sub(p->velocity, dvec3_scale(p->basis.up, dvec3_dot(p->velocity, p->basis.up)));
+                p->velocity = vel_tan;
+                p->grounded = true;
+            } else if (fabs(r - gr) < 0.05 && vy <= 0.0) {
+                p->grounded = true;
+                vel_tan = dvec3_sub(p->velocity, dvec3_scale(p->basis.up, dvec3_dot(p->velocity, p->basis.up)));
+                p->velocity = vel_tan;
             } else {
                 p->grounded = false;
-                p->vy = 0.0f;
             }
         } else {
-            /* No matching world (player is between SOIs or the body
-             * lookup missed). Skip snap; gravity above keeps the
-             * vertical velocity integrating but there's nothing to
-             * land on, so the player coasts until they re-enter an
-             * SOI. */
             p->grounded = false;
         }
+    } else {
+        p->grounded = false;
     }
-
-    /* Parallel-transport basis to the post-movement position so the
-     * view + next frame see the updated frame. */
-    sync_basis(p);
 }
 
 void player_set_body(player_ctrl_t* p, const body_config_t* body) {
     if (!p || !body || p->body == body) return;
     p->body = body;
-    /* Force a cold rebuild of the tangent basis next sync — parallel
-     * transport from the old body's "up" carries no useful info once
-     * the anchor moves. Position stays put so the player keeps their
-     * trajectory across the SOI boundary. */
-    p->basis_ready = false;
     p->last_tile = -1;
+    /* If we were in space and now have a body, arm the slerp so the
+     * basis aligns smoothly with the new planet's up. The
+     * planet-mode branch in player_update reads transition_timer_s
+     * each frame and applies the slerp. */
+    if (p->is_in_space) {
+        p->transition_timer_s = config_lod()->roll_slerp_duration_s;
+    }
 }
 
 void player_teleport_to(player_ctrl_t* p, const body_config_t* body) {
     if (!body) return;
-    /* Switch gravity/surface-normal anchor to the destination body.
-     * All subsequent sync_basis and gravity math reads p->body, so
-     * "up" becomes the surface normal of the visited body instead of
-     * staying stuck to Tenebris's. */
+    /* Snap to the destination's prime meridian, ~3 m above the
+     * surface — well within the body's full-gravity radius (default
+     * 1.4×r), so the gravity integrator pulls the player straight
+     * onto the ground rather than letting them drift through. */
     p->body = body;
-    /* Spawn at body center + (radius + 15 m) along (1, 0, 0). */
     dvec3_t center = dvec3_make(body->pos_x, body->pos_y, body->pos_z);
-    dvec3_t offset = dvec3_make(body->radius_m + 15.0, 0.0, 0.0);
+    dvec3_t offset = dvec3_make(body->radius_m + 3.0, 0.0, 0.0);
     p->position = dvec3_add(center, offset);
-    p->vy = 0.0f;
+    p->velocity = dvec3_make(0, 0, 0);
     p->grounded = false;
-    /* Force fly mode on so the player can orbit the new body; they
-     * can press F to land. */
-    p->fly_mode = true;
-    input_set_fly_mode(true);
-    /* Rebuild the tangent basis next frame — the huge jump means
-     * parallel transport from the old up would be meaningless. */
+    p->is_in_space = false;
+    /* Cold-rebuild the basis so the slerp starts from a clean
+     * planet-aligned starting point — the old basis pointed at
+     * the previous body's surface, which is irrelevant after a
+     * cross-system jump. */
     p->basis_ready = false;
     p->last_tile = -1;
+    /* Arm the roll-slerp anyway so the very first frame eases the
+     * camera into level rather than popping into a fully-locked
+     * planet basis from whatever orientation the player was in. */
+    p->transition_timer_s = config_lod()->roll_slerp_duration_s;
 }
 
 mat4_t player_view(const player_ctrl_t* p) {

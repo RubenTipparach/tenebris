@@ -63,6 +63,8 @@ static void set_key(sapp_keycode k, bool down) {
         case SAPP_KEYCODE_C:           S.pub.phys.fly_down = down; break;
         case SAPP_KEYCODE_F:           if (down) S.pub.phys.fly_mode = !S.pub.phys.fly_mode; break;
         case SAPP_KEYCODE_G:           if (down) S.survival_toggle_edge = true; break;
+        case SAPP_KEYCODE_Q:           S.pub.phys.roll_left  = down; break;
+        case SAPP_KEYCODE_E:           S.pub.phys.roll_right = down; break;
         case SAPP_KEYCODE_1: case SAPP_KEYCODE_2: case SAPP_KEYCODE_3:
         case SAPP_KEYCODE_4: case SAPP_KEYCODE_5: case SAPP_KEYCODE_6:
         case SAPP_KEYCODE_7: case SAPP_KEYCODE_8: case SAPP_KEYCODE_9:

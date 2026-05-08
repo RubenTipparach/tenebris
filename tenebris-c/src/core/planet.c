@@ -231,30 +231,40 @@ void planet_set_atmosphere(body_id_t id, const body_atmo_t* p) {
         b->atmo_sunset_horizon = p->sunset_horizon;
 }
 
-const body_config_t* planet_soi_at(dvec3_t world_pos, float radius_mult) {
-    /* Among every body whose SOI sphere contains world_pos, pick
-     * the one with the smallest dist/soi_r ratio — i.e. the body
-     * the player is closest to relative to its own SOI. This
-     * matters in places like the asteroid belt or the Crag / Quartz
-     * pair where a small moon sits inside its parent's SOI: raw
-     * distance picks the parent, but the fractional metric
-     * correctly favours the moon you're hovering right above. */
-    if (radius_mult <= 0.0f) return NULL;
-    const body_config_t* best = NULL;
-    double best_frac = 1.0;   /* < 1 means inside an SOI; 0 = at centre */
+gravity_query_t planet_gravity_at(dvec3_t world_pos,
+                                  float full_default,
+                                  float falloff_default) {
+    gravity_query_t q = { NULL, 0.0f, 0.0 };
+    /* Walk every body and pick the strongest-pull one. We can't just
+     * pick the closest — Crag's gravity well overlaps Quartz's, and
+     * the moon you're hovering above should win even when the parent
+     * planet's centre is technically further. The multiplier is
+     * monotonic in (radius - distance) within the falloff band, so
+     * "largest multiplier" is the right tie-break. */
     for (int id = 0; id < BODY_COUNT; ++id) {
         const body_config_t* b = &BODIES[id];
         double dx = world_pos.x - b->pos_x;
         double dy = world_pos.y - b->pos_y;
         double dz = world_pos.z - b->pos_z;
-        double dist2 = dx*dx + dy*dy + dz*dz;
-        double soi_r = b->radius_m * (double)radius_mult;
-        if (dist2 >= soi_r * soi_r) continue;
-        double frac = sqrt(dist2) / soi_r;
-        if (best == NULL || frac < best_frac) {
-            best = b;
-            best_frac = frac;
+        double dist = sqrt(dx*dx + dy*dy + dz*dz);
+        float full = (b->gravity_full_mult    > 0.0f) ? b->gravity_full_mult    : full_default;
+        float fall = (b->gravity_falloff_mult > 0.0f) ? b->gravity_falloff_mult : falloff_default;
+        if (fall <= full) fall = full + 0.01f;   /* guard against bad config */
+        double r_full = b->radius_m * (double)full;
+        double r_fall = b->radius_m * (double)fall;
+        float  mult;
+        if (dist <= r_full) {
+            mult = 1.0f;
+        } else if (dist >= r_fall) {
+            continue;   /* outside falloff — no pull from this body */
+        } else {
+            mult = (float)(1.0 - (dist - r_full) / (r_fall - r_full));
+        }
+        if (mult > q.multiplier) {
+            q.body       = b;
+            q.multiplier = mult;
+            q.altitude_m = dist - b->radius_m;
         }
     }
-    return best;
+    return q;
 }

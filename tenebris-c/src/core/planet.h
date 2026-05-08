@@ -104,6 +104,16 @@ typedef struct {
     vec3_t      atmo_sunset_tint;     /* sky multiplier at sunset, 0 → (1.3, 1.0, 0.6)   */
     vec3_t      atmo_sunset_glow;     /* sun-direction glow, 0 → (1.0, 0.65, 0.25)       */
     vec3_t      atmo_sunset_horizon;  /* horizon-band tint, 0 → (0.8, 0.4, 0.15)         */
+
+    /* ---- Gravity field. Per-body overrides for the lod.yaml-level
+     * defaults (gravity_full_mult / gravity_falloff_mult). Below
+     * radius * full_mult the player feels 100 % of this body's
+     * gravity; from there to radius * falloff_mult it tapers
+     * linearly to 0 %. Outside falloff_mult the body exerts no
+     * gravitational pull and the player is "in space" w.r.t. this
+     * body. Zero → use lod-config default. */
+    float       gravity_full_mult;
+    float       gravity_falloff_mult;
 } body_config_t;
 
 const body_config_t* planet_get(body_id_t id);
@@ -137,17 +147,30 @@ typedef struct {
 
 void planet_set_atmosphere(body_id_t id, const body_atmo_t* patch);
 
-/* Sphere-of-influence query. Returns the body whose SOI contains
- * `world_pos` (defined as a sphere of radius body.radius_m *
- * radius_mult around the body centre). When multiple SOIs overlap
- * — common in the asteroid belt — the body whose centre is closest
- * to world_pos wins. Returns NULL when world_pos is outside every
- * body's SOI; the caller should treat that as "stay anchored to the
- * current body" rather than dropping the player into free space.
+/* Gravity-influence query. For every body in the system, computes
+ *   multiplier = clamp01( 1 - (dist - r * full_mult)
+ *                          / (r * (falloff_mult - full_mult)) )
+ * and returns whichever body delivers the largest non-zero
+ * multiplier at `world_pos`. The dest fields capture that body's
+ * radii so the caller can compute altitude without re-deriving
+ * them. When the position is outside every body's falloff radius
+ * the player is "in space" — out_body comes back NULL and
+ * out_multiplier is 0.
  *
- * Used by the per-frame SOI tracker to decide when to switch the
- * player's frame of reference (gravity anchor, surface basis,
- * atmosphere shell) as they fly between bodies after a teleport. */
-const body_config_t* planet_soi_at(dvec3_t world_pos, float radius_mult);
+ * Drives both (a) the active body the player is anchored to (used
+ * for gravity, surface basis, atmosphere shell) and (b) the
+ * `is_in_space` flag that flips the player into 6DOF flight. Replaces
+ * the old hard-edge SOI sphere — gravity now tapers smoothly so the
+ * camera roll-slerp on planet entry has time to play out before the
+ * player hits the ground. */
+typedef struct {
+    const body_config_t* body;        /* strongest-pull body, or NULL in deep space */
+    float                multiplier;  /* 0..1 — 0 means in space                    */
+    double               altitude_m;  /* dist_to_centre - body->radius_m            */
+} gravity_query_t;
+
+gravity_query_t planet_gravity_at(dvec3_t world_pos,
+                                  float full_default,
+                                  float falloff_default);
 
 #endif

@@ -252,7 +252,13 @@ static lod_config_t S_LOD = {
         [3] = 4.0f,
         [4] = 4.0f,
     },
-    .soi_radius_mult = 6.0f,
+    .gravity_full_mult       = 1.4f,
+    .gravity_falloff_mult    = 1.8f,
+    .roll_slerp_duration_s   = 3.0f,
+    .roll_slerp_speed        = 0.8f,
+    .space_thrust            = 15.0f,
+    .space_drag              = 1.21f,   /* exp(-1.21) ≈ 0.30 ≈ JS *=0.98^60 */
+    .space_roll_speed        = 2.0f,
 };
 
 const lod_config_t* config_lod(void) { return &S_LOD; }
@@ -343,8 +349,20 @@ int config_load_lod(const char* path) {
                             S_LOD.distant_shade_ceiling = (float)strtod(val, NULL);
                         } else if (strcmp(key, "distant_shade_range_m") == 0) {
                             S_LOD.distant_shade_range_m = (float)strtod(val, NULL);
-                        } else if (strcmp(key, "soi_radius_mult") == 0) {
-                            S_LOD.soi_radius_mult       = (float)strtod(val, NULL);
+                        } else if (strcmp(key, "gravity_full_mult"    ) == 0) {
+                            S_LOD.gravity_full_mult     = (float)strtod(val, NULL);
+                        } else if (strcmp(key, "gravity_falloff_mult" ) == 0) {
+                            S_LOD.gravity_falloff_mult  = (float)strtod(val, NULL);
+                        } else if (strcmp(key, "roll_slerp_duration_s") == 0) {
+                            S_LOD.roll_slerp_duration_s = (float)strtod(val, NULL);
+                        } else if (strcmp(key, "roll_slerp_speed"     ) == 0) {
+                            S_LOD.roll_slerp_speed      = (float)strtod(val, NULL);
+                        } else if (strcmp(key, "space_thrust"         ) == 0) {
+                            S_LOD.space_thrust          = (float)strtod(val, NULL);
+                        } else if (strcmp(key, "space_drag"           ) == 0) {
+                            S_LOD.space_drag            = (float)strtod(val, NULL);
+                        } else if (strcmp(key, "space_roll_speed"     ) == 0) {
+                            S_LOD.space_roll_speed      = (float)strtod(val, NULL);
                         } else {
                             printf("[config] %s:%d: unknown key '%s'\n",
                                    path, line_no, key);

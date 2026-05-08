@@ -123,14 +123,33 @@ typedef struct {
      * an Earth-like's. Zero → use a sane default at runtime. */
     float  tileset_water_full_depth_m[5];
 
-    /* Sphere-of-influence radius, expressed as a multiple of each
-     * body's radius. When the player crosses into a body's SOI the
-     * "frame of reference" (gravity anchor, surface basis, atmo
-     * shell) switches to that body. The teleport menu spawns the
-     * player a few hundred metres above the destination — well
-     * inside its SOI — so the per-frame tracker keeps the frame
-     * stuck to the right body as you fly around. */
-    float soi_radius_mult;
+    /* Gravity field — JS PlayerConfig.GRAVITY_FULL_RADIUS / FALLOFF_RADIUS
+     * ported. Below body.radius * gravity_full_mult the player
+     * feels 100 % of that body's gravity; from there to radius *
+     * gravity_falloff_mult it tapers linearly to 0 %. Outside the
+     * falloff radius the player is "in space" and switches to 6DOF
+     * thrust + drag flight. A body may override these per-instance
+     * via body_config_t.gravity_full_mult / gravity_falloff_mult. */
+    float gravity_full_mult;
+    float gravity_falloff_mult;
+
+    /* Camera roll-slerp on space → planet entry. While the timer
+     * counts down (transition_timer_s seconds), the basis is
+     * rotated each frame toward the planet's radial up by
+     * roll_slerp_speed * dt — exponential approach, so big
+     * misalignments correct fast and the last few degrees ease in.
+     * Matches JS PlayerConfig.ROLL_SLERP_DURATION / ROLL_SLERP_SPEED. */
+    float roll_slerp_duration_s;
+    float roll_slerp_speed;
+
+    /* Space-mode flight tuning. space_thrust is the per-second
+     * acceleration applied while a movement key is held; space_drag
+     * is a per-second damping coefficient ( velocity *= exp(-drag * dt) )
+     * so the player coasts to a stop after releasing the keys. Roll
+     * speed is radians/second when Q/E is held. */
+    float space_thrust;
+    float space_drag;
+    float space_roll_speed;
 } lod_config_t;
 
 const lod_config_t* config_lod(void);

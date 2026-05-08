@@ -26,6 +26,8 @@ typedef struct {
     bool forward, backward, left, right;
     bool jump, sprint;
     bool fly_up, fly_down, fly_mode;
+    /* Roll keys — Q/E in space mode. Held-state, not edge. */
+    bool roll_left, roll_right;
 } phys_input_t;
 
 /* Tangent basis at a position on the sphere. up = radial out;

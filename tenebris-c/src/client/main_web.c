@@ -262,12 +262,25 @@ static void update_overlay(float dt) {
     double dz = pos.z - frame->pos_z;
     double r = sqrt(dx*dx + dy*dy + dz*dz);
     double alt = r - frame->radius_m;
+    /* Per-frame gravity readout — same query the player physics
+     * uses, so the % shown here is exactly what the gravity
+     * integrator is multiplying base_gravity by this tick. Status
+     * tag mirrors PlanetPlayer.updateUI: SPACE FLIGHT / ENTERING
+     * GRAVITY / AIRBORNE / GROUNDED. */
+    const lod_config_t* L = config_lod();
+    gravity_query_t hud_gq = planet_gravity_at(pos,
+                                               L->gravity_full_mult,
+                                               L->gravity_falloff_mult);
+    const char* status =
+        G.player.is_in_space               ? "[SPACE FLIGHT]"
+      : (G.player.transition_timer_s > 0)  ? "[ENTERING GRAVITY]"
+      : G.player.grounded                  ? "[GROUNDED]"
+      :                                      "[AIRBORNE]";
     sdtx_printf("frame: %s  radius: %.1f m\n", frame->name, frame->radius_m);
-    sdtx_printf("alt: %.1f m  tile: %d\n", alt, G.player.last_tile);
-    sdtx_printf("yaw: %.2f  pitch: %.2f  fly:%s  grounded:%s\n",
-                G.player.yaw, G.player.pitch,
-                G.player.fly_mode ? "on" : "off",
-                G.player.grounded ? "yes" : "no");
+    sdtx_printf("alt: %.1f m  grav: %3.0f%%  %s\n",
+                alt, hud_gq.multiplier * 100.0f, status);
+    sdtx_printf("yaw: %.2f  pitch: %.2f  tile: %d\n",
+                G.player.yaw, G.player.pitch, G.player.last_tile);
     sdtx_printf("tris: %zu  tiles drawn: %zu  remeshed/f: %zu\n",
                 renderer_triangles_drawn_this_frame(),
                 renderer_tiles_drawn_this_frame(),
@@ -370,41 +383,32 @@ static void frame(void) {
         else                        inventory_init_creative(&G.player.inventory);
     }
 
+    /* Pre-update body selection. Picks whichever body delivers the
+     * strongest gravity pull at the player's current position; if
+     * that's a different body than p->body, swap (player_set_body
+     * arms the roll-slerp on space → planet edges). Doing this
+     * before player_update means the world_t we hand in matches
+     * p->body even at the exact frame the swap happens — no
+     * one-frame "fall through the planet" gap. */
+    {
+        const lod_config_t* L = config_lod();
+        gravity_query_t gq = planet_gravity_at(G.player.position,
+                                               L->gravity_full_mult,
+                                               L->gravity_falloff_mult);
+        if (gq.body && gq.body != G.player.body) {
+            player_set_body(&G.player, gq.body);
+        }
+    }
     /* Route physics through the world that backs the player's
-     * current body. After SOI tracking hands the frame off to e.g.
-     * Sequoia, gravity / ground-snap / block interaction all need
-     * Sequoia's voxel data — using G.world (always Tenebris) was
-     * the cause of "no gravity on other planets" because
-     * player_update couldn't find a ground tile under the player.
-     * Falls back to G.world when the lookup misses so the path is
-     * never NULL. */
+     * current body. player_update will re-query gravity internally
+     * for the smooth multiplier; the body has already been pinned
+     * by the swap above. Falls back to G.world when the lookup
+     * misses so the path is never NULL. */
     world_t* phys_world = world_for_body(G.player.body);
     if (!phys_world) phys_world = G.world;
     player_update(&G.player, phys_world, dt);
     interact_update(&G.interact, phys_world, &G.player, dt);
     input_consume();
-
-    /* Sphere-of-influence tracking. After the teleport menu drops
-     * the player just above a target body — or whenever they fly
-     * across an SOI boundary in free flight — the closest body
-     * whose SOI contains the player becomes the new frame of
-     * reference. player_set_body swaps body anchor + forces a cold
-     * basis rebuild without moving the player, so gravity / camera
-     * up / atmosphere shell follow the body the player is closest
-     * to. The SOI multiplier lives in lod.yaml so designers can
-     * tune the transition radius without recompiling.
-     *
-     * If the SOI lookup misses (player drifted into deep space
-     * between every body's SOI), we keep the existing body — better
-     * than yanking the basis back to Tenebris. */
-    {
-        const float soi_mult = config_lod()->soi_radius_mult;
-        const body_config_t* soi_body =
-            planet_soi_at(G.player.position, soi_mult);
-        if (soi_body && soi_body != G.player.body) {
-            player_set_body(&G.player, soi_body);
-        }
-    }
 
     const float aspect = sapp_widthf() / sapp_heightf();
     mat4_t view = player_view(&G.player);

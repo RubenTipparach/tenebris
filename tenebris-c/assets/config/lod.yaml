@@ -34,12 +34,26 @@
 #                                  level that maps to the ceiling/floor
 #                                  shade. Smaller = more dramatic
 #                                  contrast over the same elevation.
-#   soi_radius_mult         float  sphere-of-influence radius as a
-#                                  multiple of each body's radius. The
-#                                  per-frame SOI tracker switches the
-#                                  player's active body to whichever
-#                                  body's SOI they're inside (closest
-#                                  one wins on overlap).
+#   gravity_full_mult       float  body radius multiplier inside which
+#                                  gravity is at 100%. Default 1.4 =
+#                                  full pull from the surface up to
+#                                  40% of a planet radius above it.
+#   gravity_falloff_mult    float  body radius multiplier at which
+#                                  gravity has tapered to 0%. Outside
+#                                  this radius the player is "in
+#                                  space" and switches to 6DOF flight.
+#                                  Default 1.8 (=80% above surface).
+#   roll_slerp_duration_s   float  seconds the camera-roll-to-level
+#                                  slerp runs after a space → planet
+#                                  transition. Default 3.0.
+#   roll_slerp_speed        float  per-second exponential approach
+#                                  factor for the slerp; lower =
+#                                  smoother / slower. Default 0.8.
+#   space_thrust            float  m/s² of acceleration while a
+#                                  movement key is held in space.
+#   space_drag              float  per-second damping coefficient on
+#                                  the space velocity vector.
+#   space_roll_speed        float  rad/s for Q/E roll keys in space.
 #
 # Per-tileset palette sections (earth / sequoia / crag / frost /
 # asteroid). Each may set:
@@ -65,7 +79,13 @@ lod:
   distant_shade_floor:    0.65
   distant_shade_ceiling:  1.20
   distant_shade_range_m:  50.0
-  soi_radius_mult:        6.0
+  gravity_full_mult:      1.4
+  gravity_falloff_mult:   1.8
+  roll_slerp_duration_s:  3.0
+  roll_slerp_speed:       0.8
+  space_thrust:           15.0
+  space_drag:             1.21
+  space_roll_speed:       2.0
 
 earth:
   water_color:        [0.10, 0.28, 0.55]
