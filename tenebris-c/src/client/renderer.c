@@ -1432,9 +1432,12 @@ void renderer_compose_to_swapchain(mat4_t view, mat4_t proj) {
     composite_fs_params_t fs = {
         .deep_color    = { W->deep_color.x,  W->deep_color.y,  W->deep_color.z,  0.0f },
         .absorption    = { W->absorption.x,  W->absorption.y,  W->absorption.z,  0.0f },
-        /* near_far.z is the wet-fade altitude window (a small softness
-         * on the above/below transition; not a meniscus band). */
-        .near_far      = { 0.3f, 20000.0f, 0.05f, 0.0f },
+        /* near_far.z is the wet-fade altitude window (m). The composite
+         * gates the wet mask by smoothstep(-band, +band, pixel_alt) so
+         * dry geometry above the cap (beach blocks at the depth-cell
+         * boundary, whose tops sit above the cap by depth_offset_m)
+         * doesn't pick up the distortion shimmer. */
+        .near_far      = { 0.3f, 20000.0f, W->wet_fade_band_m, 0.0f },
         .planet_params = { body_center.x, body_center.y, body_center.z, sea_radius },
         .fx_params     = { W->underwater_distortion,
                            R.time_seconds,

@@ -148,4 +148,13 @@ water:
   #                               sin-perturbation applied to the scene
   #                               sample on underwater pixels. ~0.005
   #                               is a subtle shimmer; 0.0 disables it.
+  # wet_fade_band_m        float  soft fade either side of the actual
+  #                               water-cap altitude (m) where the
+  #                               composite gates the wet mask. Wider =
+  #                               longer crossfade across the waterline;
+  #                               keeps dry portions of beach blocks
+  #                               (whose tops sit above the cap by
+  #                               depth_offset_m) from picking up the
+  #                               distortion shimmer.
   underwater_distortion:   0.0015
+  wet_fade_band_m:         0.5

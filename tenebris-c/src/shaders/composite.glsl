@@ -122,12 +122,23 @@ void main() {
     // is dry.
     vec4 sc = texture(sampler2D(scene_color, scene_smp), v_uv);
     float wet = is_sky ? (cam_under ? 1.0 : 0.0) : sc.a;
-    // Soften the binary mask across the band so neighbouring wet
-    // and dry faces don't tear the fog edge — a small smoothstep
-    // around 0.5 turns the 0/1 vertex mask into a smooth value
-    // when interpolation has produced fractional alpha (e.g. on
-    // an edge where one corner of a quad is wet and the other dry).
-    wet = smoothstep(0.5 - band_m, 0.5 + band_m, wet);
+    // The voxel mask flags every face of any solid block sharing a
+    // column with water as wet, but the actual water cap sits below
+    // the top of the sea-level depth cell by depth_offset_m. That
+    // means beach blocks at depth SEA_LEVEL_DEPTH-1 (and the upper
+    // strip of their side faces) stick above the cap while still
+    // being tagged wet=1 — without a per-pixel altitude gate, the
+    // distortion shimmer leaks onto dry geometry above the waterline.
+    //
+    // sea_radius already bakes in height_offset_m - depth_offset_m,
+    // so pixel_alt is signed altitude relative to the actual water
+    // surface. Smoothstep across the band gives a soft transition
+    // so the gate doesn't show a hard line at the cap. Sky pixels
+    // skip the gate (the cam_under case wants full effect through
+    // the void above).
+    float alt_gate = is_sky ? 1.0
+                            : (1.0 - smoothstep(-band_m, band_m, pixel_alt));
+    wet *= alt_gate;
 
     // Underwater shimmer — gentle sin perturbation on the screen UV
     // for wet pixels. Resample colour through the perturbed UV when
