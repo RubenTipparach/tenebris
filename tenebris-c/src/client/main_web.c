@@ -347,7 +347,22 @@ static void update_overlay(float dt) {
     }
 
 
-    if (!input_state()->pointer_locked && !input_state()->touch_active) {
+    /* Click-to-lock prompt. Poll sapp_mouse_locked() directly each
+     * frame instead of trusting input_state()->pointer_locked —
+     * that field is only refreshed inside input_event handlers, so
+     * if no events fire the cached value goes stale and the prompt
+     * flashes on/off as browser focus blips toggle the real lock
+     * state. A small "must stay unlocked for N frames" hysteresis
+     * also smooths over the one-frame transient between
+     * sapp_lock_mouse(true) being called and the browser actually
+     * granting the lock. */
+    static int s_unlocked_frames = 0;
+    if (!sapp_mouse_locked() && !input_state()->touch_active) {
+        if (s_unlocked_frames < 30) ++s_unlocked_frames;
+    } else {
+        s_unlocked_frames = 0;
+    }
+    if (s_unlocked_frames >= 6) {   /* ~100 ms — past any brief focus blip */
         sdtx_color3b(0xf0, 0xc0, 0x50);
         sdtx_printf("\n[click to lock mouse]\n");
         sdtx_color3b(0xff, 0xff, 0xff);
