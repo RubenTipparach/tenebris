@@ -206,8 +206,14 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
     if (p->fly_mode) speed = FLY_SPEED;
     dvec3_t wish = walk_wish(p, &in->phys);
 
-    const bool on_tenebris = (p->body->id == BODY_TENEBRIS);
-    if (p->fly_mode || !on_tenebris) {
+    /* "has_world" gates ground-aware movement + collision: when the
+     * world we were handed actually backs p->body we can query its
+     * voxels for walking + ground snap; when we weren't (e.g. flying
+     * across deep space outside any SOI) we fall back to free-flight
+     * movement. Replaces the old hardcoded "Tenebris only" gate so
+     * gravity + walking work on every body the SOI tracker hands us. */
+    const bool has_world = (w != NULL && w->body == p->body);
+    if (p->fly_mode || !has_world) {
         p->position = dvec3_add(p->position, dvec3_scale(wish, (double)speed * (double)dt));
     } else {
         /* Quake-style axis-separated wall collision: walk-fwd and strafe
@@ -227,9 +233,12 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
         p->position = try_horizontal_step(w, p, p->position, dvec3_scale(strafe,   strafe_amt));
     }
 
-    /* Track the tile we're over (Tenebris only — it's the only body
-     * whose world_t is wired through the physics path right now). */
-    if (on_tenebris) {
+    /* Track the tile we're over against whichever body's world we
+     * were handed. The SOI tracker keeps p->body in sync with the
+     * frame we want gravity to read, and main_web.c routes the
+     * matching world_t in — so this works on Tenebris, Sequoia, and
+     * any moon the player teleports to. */
+    if (has_world) {
         dvec3_t local_dir = dvec3_normalize(player_local_pos(p));
         p->last_tile = goldberg_find_tile(w->grid, local_dir, p->last_tile);
     } else {
@@ -264,11 +273,12 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
         p->position = dvec3_add(p->position,
             dvec3_scale(p->basis.up, (double)p->vy * (double)dt));
 
-        /* Ground snap: only engage when falling or stationary, and only
-         * when we're over Tenebris (the only body with voxel data in
-         * `w`). Off-body physics just lets the player float — teleport
-         * forces fly mode precisely so this doesn't matter visually. */
-        if (on_tenebris) {
+        /* Ground snap: only engage when falling or stationary, and
+         * only when the world we were handed backs the body the
+         * player is anchored to. Without a matching world we have no
+         * voxel data to snap against, so the player just keeps
+         * falling per the gravity integrator above. */
+        if (has_world) {
             double gr = ground_radius_under(w, p->last_tile);
             if (gr > -1e8) {
                 dvec3_t local = player_local_pos(p);
@@ -293,8 +303,11 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
                 p->vy = 0.0f;
             }
         } else {
-            /* On a non-Tenebris body, no snap. Player relies on fly
-             * mode until we wire per-body world_t through physics. */
+            /* No matching world (player is between SOIs or the body
+             * lookup missed). Skip snap; gravity above keeps the
+             * vertical velocity integrating but there's nothing to
+             * land on, so the player coasts until they re-enter an
+             * SOI. */
             p->grounded = false;
         }
     }

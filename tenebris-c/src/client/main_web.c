@@ -219,6 +219,25 @@ static void init(void) {
 
 /* --------------------------------------------------------------------- */
 
+/* Find the world_t backing a given body. G.world holds Tenebris's
+ * voxel state; every other body's world lives in G.moons[]. Returns
+ * NULL if the body wasn't registered (shouldn't happen for any body
+ * planet_get() returns, but a defensive null-check keeps the
+ * physics path safe if it ever does). Used by the per-frame update
+ * to hand player_update / interact_update the world matching the
+ * player's current frame of reference, so gravity and ground snap
+ * work on every body — not just on Tenebris. */
+static world_t* world_for_body(const body_config_t* body) {
+    if (!body) return NULL;
+    if (G.world && G.world->body == body) return G.world;
+    for (int i = 0; i < G.moon_count; ++i) {
+        if (G.moons[i] && G.moons[i]->body == body) return G.moons[i];
+    }
+    return NULL;
+}
+
+/* --------------------------------------------------------------------- */
+
 static void update_overlay(float dt) {
     const float inst_fps = (dt > 0.0f) ? (1.0f / dt) : 0.0f;
     G.smoothed_fps = G.smoothed_fps * 0.9f + inst_fps * 0.1f;
@@ -351,8 +370,18 @@ static void frame(void) {
         else                        inventory_init_creative(&G.player.inventory);
     }
 
-    player_update(&G.player, G.world, dt);
-    interact_update(&G.interact, G.world, &G.player, dt);
+    /* Route physics through the world that backs the player's
+     * current body. After SOI tracking hands the frame off to e.g.
+     * Sequoia, gravity / ground-snap / block interaction all need
+     * Sequoia's voxel data — using G.world (always Tenebris) was
+     * the cause of "no gravity on other planets" because
+     * player_update couldn't find a ground tile under the player.
+     * Falls back to G.world when the lookup misses so the path is
+     * never NULL. */
+    world_t* phys_world = world_for_body(G.player.body);
+    if (!phys_world) phys_world = G.world;
+    player_update(&G.player, phys_world, dt);
+    interact_update(&G.interact, phys_world, &G.player, dt);
     input_consume();
 
     /* Sphere-of-influence tracking. After the teleport menu drops
