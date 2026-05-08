@@ -69,8 +69,10 @@ set(TENEBRIS_CLIENT_SOURCES
     src/client/player_ctrl.c
     src/client/interact.c
     src/client/inventory.c
+    src/client/hotbar_ui.c
     src/client/mobile_ui.c
     src/client/teleport_menu.c
+    src/client/torch.c
     src/client/gfx_math.c
 )
 
@@ -113,6 +115,7 @@ if (EMSCRIPTEN)
     add_sokol_shader(tenebris src/shaders/hex.glsl)
     add_sokol_shader(tenebris src/shaders/distant.glsl)
     add_sokol_shader(tenebris src/shaders/sun.glsl)
+    add_sokol_shader(tenebris src/shaders/torch.glsl)
 
     set(EMCC_LINK_FLAGS
         "-sUSE_WEBGL2=1"
@@ -145,6 +148,7 @@ else()
     add_sokol_shader(tenebris src/shaders/hex.glsl)
     add_sokol_shader(tenebris src/shaders/distant.glsl)
     add_sokol_shader(tenebris src/shaders/sun.glsl)
+    add_sokol_shader(tenebris src/shaders/torch.glsl)
 
     if (APPLE)
         target_compile_definitions(tenebris PRIVATE SOKOL_METAL)

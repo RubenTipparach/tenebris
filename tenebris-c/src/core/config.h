@@ -24,6 +24,7 @@ int config_load_atmosphere(const char* path);
 int config_load_skybox(const char* path);
 int config_load_lod(const char* path);
 int config_load_water(const char* path);
+int config_load_lighting(const char* path);
 
 /*
  * Global skybox tuning — read by renderer_draw_skybox each frame and
@@ -170,11 +171,6 @@ typedef struct {
      * Fresnel-driven alpha. Hides the hex-mesh silhouette where the
      * cap meets the seabed. */
     float  shoreline_fade_m;
-    /* Shoreline foam smoothstep upper edge. White-wash band peaks
-     * at thickness 0 and fades to nothing by this much water.
-     * Usually slightly wider than shoreline_fade so the foam keeps
-     * body inside the alpha-feathered region. */
-    float  shore_foam_dist_m;
     /* Sun-highlight specular. Multiplied with the warm-white sun
      * tint to make the surface glint. Higher = brighter glints,
      * lower = matte. */
@@ -204,21 +200,6 @@ typedef struct {
     float  foam_slope_weight;
     float  foam_intensity;      /* final mix strength toward foam_color */
     vec3_t foam_color;
-
-    /* Shoreline foam tint (separate from wave-crest foam). White-
-     * wash band already gated by shore_foam_dist_m thickness. */
-    vec3_t shore_foam_color;
-    /* Posterize the thickness-driven shoreline foam into N discrete
-     * bands for a cel-shaded ring look. 0 (or 1) disables banding —
-     * keeps the original smooth gradient. 3-5 reads as visible
-     * stepped rings; pushing higher tends to alias against the fbm
-     * height modulation. */
-    float  shore_foam_bands;
-    /* Per-band edge softness in [0, 1]. 0 = hard cel-shade steps
-     * between bands. 1 = no banding (smooth gradient regardless of
-     * shore_foam_bands). ~0.2 keeps the ring read while avoiding
-     * shimmer at the band boundaries. */
-    float  shore_foam_band_softness;
 
     /* Sky reflection palette. The water reflects the upper
      * hemisphere via reflect(view, n) and blends between these two
@@ -259,8 +240,55 @@ typedef struct {
     float  ripple_scale;
     float  ripple_speed;
     float  wave_steepness;
+
+    /* Underwater post-process. Drives the composite-pass fog +
+     * sin-perturbation distortion when the camera (or any individual
+     * pixel) sits below the sea-level radius. Per-pixel masked so a
+     * half-submerged camera only fogs the wet side of the screen.
+     *
+     * The fog itself reuses absorption + deep_color above (Beer-
+     * Lambert per-channel, exactly like the water cap's above-water
+     * tint) so the view from underwater matches the view from above
+     * — same water, same look. Only the shimmer is independent. */
+    float  underwater_distortion;
 } water_config_t;
 
 const water_config_t* config_water(void);
+
+/*
+ * Terrain lighting tuning. Drives the planet-aware day/night terminator
+ * + ambient curve in hex.glsl. Underwater terrain dimming reuses the
+ * Beer-Lambert absorption + deep_color from water_config_t so the
+ * terrain visible *under* the water cap reads continuously with the
+ * cap above it; only the day/night knobs live here.
+ */
+typedef struct {
+    /* Ambient floor on the night side of the terminator, expressed as
+     * a fraction of the full-day ambient. 0.10 = night side rendered
+     * at 10% of day-side ambient brightness; 0.0 = pitch-black night;
+     * 1.0 = no day/night cycle at all. Matches the JS terrain.frag
+     * `ambientDayNight = mix(0.1, 1.0, vSunBrightness)` constant. */
+    float night_ambient_floor;
+    /* Smoothstep range applied to the surface-dir·sun-dir dot product.
+     * lo = below this dot value the tile is fully in shadow; hi = above
+     * this dot value the tile is fully lit. The JS reference uses
+     * (-0.1, 0.3) — a soft ~25° wide twilight band straddling the
+     * geometric terminator. Narrower = sharper terminator line, wider
+     * = more gradual dawn/dusk. */
+    float terminator_lo;
+    float terminator_hi;
+
+    /* Torch tint multiplied by the per-vertex v_torch_light bake to
+     * produce the additive warm contribution. Defaults to the JS
+     * reference's (1.0, 0.7, 0.3) — push toward red for a wood-fire
+     * look or toward white for a magical-glow look. */
+    vec3_t torch_color;
+    /* Global intensity scalar applied on top. Lets designers dim or
+     * boost all torches without re-baking the per-vertex sums in the
+     * mesh. 1.0 = nominal brightness. */
+    float  torch_intensity;
+} lighting_config_t;
+
+const lighting_config_t* config_lighting(void);
 
 #endif

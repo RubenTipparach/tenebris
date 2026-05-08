@@ -183,6 +183,24 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
         if (in->hotbar[i]) inventory_select(&p->inventory, i);
     }
 
+    /* Mouse-wheel cycles the hotbar one slot per ±1.0 of accumulated
+     * scroll, with wrap-around at both ends. Positive wheel_dy
+     * (scroll up / away from user) selects the previous slot — the
+     * Minecraft convention. */
+    p->hotbar_scroll_accum += in->wheel_dy;
+    while (p->hotbar_scroll_accum >= 1.0f) {
+        int s = p->inventory.selected - 1;
+        if (s < 0) s = INV_HOTBAR_SLOTS - 1;
+        inventory_select(&p->inventory, s);
+        p->hotbar_scroll_accum -= 1.0f;
+    }
+    while (p->hotbar_scroll_accum <= -1.0f) {
+        int s = p->inventory.selected + 1;
+        if (s >= INV_HOTBAR_SLOTS) s = 0;
+        inventory_select(&p->inventory, s);
+        p->hotbar_scroll_accum += 1.0f;
+    }
+
     /* Movement. */
     float speed = in->phys.sprint ? SPRINT_SPEED : WALK_SPEED;
     if (p->fly_mode) speed = FLY_SPEED;

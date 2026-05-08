@@ -12,12 +12,41 @@
  * floating origin isn't needed yet). Atlas UVs + shaded in the hex
  * shader.
  *
- * Vertex layout: 32 bytes (pos + normal + uv).
+ * Vertex layout: 44 bytes (pos + normal + uv + sky_light + torch_light + wet).
+ *
+ *   sky_light    — 0..1 fraction of sky reaching this vertex, baked
+ *                  from the count of solid voxels stacked above it
+ *                  in the same column. Drops exponentially per
+ *                  blocking voxel — caves go dark, exposed surface
+ *                  stays full-bright. Replaces the implicit "ambient
+ *                  is uniform everywhere" assumption with a cheap
+ *                  voxel-occlusion approximation.
+ *   torch_light  — sum of inverse-square contributions from nearby
+ *                  placed torches (clamped to ~3). Drives the warm-
+ *                  orange additive light in the hex shader. Baked at
+ *                  mesh-build time from the torch.c list, so a chunk
+ *                  must be re-meshed when torches are placed or
+ *                  removed within range.
+ *   wet          — 1.0 if the voxel on the *other* side of this face
+ *                  is BLOCK_WATER, else 0.0. Drives the underwater
+ *                  fog mask in composite.glsl and gates hex.glsl's
+ *                  water-depth dimming. Voxel-driven, not altitude-
+ *                  driven, so a cave wall under sea level (where the
+ *                  neighbour cell is air or rock) reads dry and never
+ *                  picks up the underwater tint.
+ *
+ * The hex pipeline binds all six attributes; the water pipeline
+ * binds only pos (its normal is derived radially from a_pos in the
+ * vs, uv isn't used). The unused bytes are silently skipped via the
+ * shared 44-byte stride.
  */
 typedef struct {
     float pos[3];
     float normal[3];
     float uv[2];
+    float sky_light;
+    float torch_light;
+    float wet;
 } hex_vertex_t;
 
 typedef struct {

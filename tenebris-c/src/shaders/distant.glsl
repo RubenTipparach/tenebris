@@ -31,7 +31,9 @@ in vec3 v_color;
 out vec4 frag_color;
 
 void main() {
-    frag_color = vec4(v_color, 1.0);
+    /* Alpha = wet mask (0 = dry). Distant LOD planets are sky-side
+     * surfaces seen from afar — never the local water we fog. */
+    frag_color = vec4(v_color, 0.0);
 }
 @end
 

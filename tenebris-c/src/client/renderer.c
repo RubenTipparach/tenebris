@@ -1,5 +1,6 @@
 #include "client/renderer.h"
 #include "client/hex_mesher.h"
+#include "client/torch.h"
 #include "core/blocks.h"
 #include "core/config.h"
 #include "core/goldberg.h"
@@ -26,6 +27,7 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -396,9 +398,23 @@ void renderer_init(void) {
         .shader = shd,
         .layout = {
             .attrs = {
-                [ATTR_hex_a_pos]    = { .format = SG_VERTEXFORMAT_FLOAT3 },
-                [ATTR_hex_a_normal] = { .format = SG_VERTEXFORMAT_FLOAT3 },
-                [ATTR_hex_a_uv]     = { .format = SG_VERTEXFORMAT_FLOAT2 },
+                /* Explicit offsets keep the auto-pack walker from
+                 * skewing later attrs if any slot order drifts. The
+                 * stride is the full hex_vertex_t (44 B) — both the
+                 * hex pipeline (all 6 attrs) and the water pipeline
+                 * (a_pos only) read from the same shared vbuf. */
+                [ATTR_hex_a_pos]         = { .format = SG_VERTEXFORMAT_FLOAT3,
+                                             .offset = (int)offsetof(hex_vertex_t, pos) },
+                [ATTR_hex_a_normal]      = { .format = SG_VERTEXFORMAT_FLOAT3,
+                                             .offset = (int)offsetof(hex_vertex_t, normal) },
+                [ATTR_hex_a_uv]          = { .format = SG_VERTEXFORMAT_FLOAT2,
+                                             .offset = (int)offsetof(hex_vertex_t, uv) },
+                [ATTR_hex_a_sky_light]   = { .format = SG_VERTEXFORMAT_FLOAT,
+                                             .offset = (int)offsetof(hex_vertex_t, sky_light) },
+                [ATTR_hex_a_torch_light] = { .format = SG_VERTEXFORMAT_FLOAT,
+                                             .offset = (int)offsetof(hex_vertex_t, torch_light) },
+                [ATTR_hex_a_wet]         = { .format = SG_VERTEXFORMAT_FLOAT,
+                                             .offset = (int)offsetof(hex_vertex_t, wet) },
             },
             .buffers[0].stride = sizeof(hex_vertex_t),
         },
@@ -422,10 +438,24 @@ void renderer_init(void) {
         .shader = shd_water,
         .layout = {
             .attrs = {
-                /* Only a_pos is consumed; normal/uv are still in the
-                 * shared hex_vertex_t vbuf but the 32-byte stride skips
-                 * them. See water.glsl @vs for the rationale. */
-                [ATTR_water_a_pos] = { .format = SG_VERTEXFORMAT_FLOAT3 },
+                /* a_pos for swell + radial-normal lookup; a_sky_light
+                 * + a_torch_light for the per-vertex baked lighting.
+                 * Normal + uv bytes between them are silently skipped
+                 * via the shared 40-byte stride — explicit offsets
+                 * keep the auto-pack walker from skewing later attrs
+                 * if any slot order drifts. */
+                [ATTR_water_a_pos] = {
+                    .format = SG_VERTEXFORMAT_FLOAT3,
+                    .offset = (int)offsetof(hex_vertex_t, pos),
+                },
+                [ATTR_water_a_sky_light] = {
+                    .format = SG_VERTEXFORMAT_FLOAT,
+                    .offset = (int)offsetof(hex_vertex_t, sky_light),
+                },
+                [ATTR_water_a_torch_light] = {
+                    .format = SG_VERTEXFORMAT_FLOAT,
+                    .offset = (int)offsetof(hex_vertex_t, torch_light),
+                },
             },
             .buffers[0].stride = sizeof(hex_vertex_t),
         },
@@ -440,7 +470,13 @@ void renderer_init(void) {
          * offscreen depth texture and discarding fragments where
          * the opaque scene is in front of this water pixel. */
         .depth = { .write_enabled = true, .compare = SG_COMPAREFUNC_LESS_EQUAL },
-        .cull_mode = SG_CULLMODE_BACK,
+        /* Cull none: when the camera dives below the cap (snorkelling
+         * shoreline, hopping into a lake, etc.) the player needs to
+         * see the cap from underneath, which is the back face. Doubles
+         * the water-cap fill rate but the cap is one hexagon per tile
+         * so the cost is negligible vs the render cost of the rest of
+         * the scene. */
+        .cull_mode = SG_CULLMODE_NONE,
         .face_winding = SG_FACEWINDING_CCW,
         /* Water shader outputs alpha = 1.0 (opaque). Shoreline fade
          * is done in-shader by mixing toward the unrefracted compose
@@ -520,7 +556,11 @@ void renderer_init(void) {
             .enabled = true,
             .src_factor_rgb = SG_BLENDFACTOR_SRC_ALPHA,
             .dst_factor_rgb = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
-            .src_factor_alpha = SG_BLENDFACTOR_ONE,
+            /* Preserve destination alpha — terrain/water/sky pre-write
+             * the per-pixel "wet" mask in alpha for composite.glsl,
+             * and this overlay must not corrupt it. (zero, one) =
+             * keep dst_a, ignore src_a. */
+            .src_factor_alpha = SG_BLENDFACTOR_ZERO,
             .dst_factor_alpha = SG_BLENDFACTOR_ONE,
         },
         .label = "atmosphere-pipeline",
@@ -1180,9 +1220,15 @@ void renderer_draw_moons(mat4_t view, mat4_t proj, vec3_t camera_world) {
 
     /* renderer_draw_world already drew detailed (close-enough) bodies
      * via their chunked meshes. This pass picks up bodies that are
-     * far away enough to swap to a single flat-shaded icosphere — the
-     * 0.12 angular-size threshold matches the cull check there. */
-    const float LOD_RATIO = 0.12f;
+     * far away enough to swap to a single flat-shaded icosphere. The
+     * 0.30 angular-size threshold (= radius/dist; equivalent to
+     * "distance > 3.33 × radius") matches the cull check in the
+     * other two paths so a body is exclusively on either hexes OR
+     * icosphere, never both. The earlier value 0.12 (= dist > 8.3 R)
+     * was too lax — mid-distance planets like Sequoia at ~2.2 km
+     * from Tenebris kept rendering ~163k-tile hex meshes the player
+     * couldn't visually resolve. */
+    const float LOD_RATIO = 0.30f;
 
     sg_apply_pipeline(R.pip_distant);
     for (int bi = 0; bi < R.body_count; ++bi) {
@@ -1314,10 +1360,13 @@ void renderer_begin_frame(int w, int h, render_env_t env) {
     });
 }
 
-void renderer_compose_to_swapchain(void) {
+void renderer_compose_to_swapchain(mat4_t view, mat4_t proj) {
     /* End the offscreen pass + start the swapchain pass. Composite
      * draws a single fullscreen triangle that samples the offscreen
-     * colour image and writes it to the swapchain. */
+     * colour + depth images and writes to the swapchain, applying
+     * the underwater fog + distortion post-process per pixel based
+     * on whether each pixel reconstructs to a world position below
+     * sea level. */
     sg_end_pass();
 
     sg_begin_pass(&(sg_pass){
@@ -1329,9 +1378,76 @@ void renderer_compose_to_swapchain(void) {
         .label = "swapchain-composite",
     });
     sg_apply_pipeline(R.pip_composite);
+
+    /* Camera basis from the view matrix (column-major from
+     * mat4_look_at) — same extraction the skybox + atmosphere passes
+     * use so the underwater post-process reconstructs world rays
+     * with the same convention. tan(fovY/2) and aspect come out of
+     * the projection matrix. */
+    const float inv_tan_half = proj.m[5];
+    const float tan_half     = (inv_tan_half != 0.0f) ? (1.0f / inv_tan_half) : 1.0f;
+    const float aspect       = (proj.m[0] != 0.0f) ? (inv_tan_half / proj.m[0]) : 1.0f;
+    const float cam_right[3] = {  view.m[0],  view.m[4],  view.m[8]  };
+    const float cam_up[3]    = {  view.m[1],  view.m[5],  view.m[9]  };
+    const float cam_fwd[3]   = { -view.m[2], -view.m[6], -view.m[10] };
+
+    composite_vs_params_t vs = {
+        .cam_right   = { cam_right[0], cam_right[1], cam_right[2], tan_half },
+        .cam_up      = { cam_up[0],    cam_up[1],    cam_up[2],    aspect   },
+        .cam_forward = { cam_fwd[0],   cam_fwd[1],   cam_fwd[2],   0.0f     },
+        .camera_pos  = { R.env.camera_world.x, R.env.camera_world.y, R.env.camera_world.z, 0.0f },
+    };
+    sg_apply_uniforms(UB_composite_vs_params, &SG_RANGE(vs));
+
+    /* Underwater FX uniforms. The body parameters come from the
+     * active body — we mask pixels against ITS sea-level radius,
+     * so a player standing on Tenebris but looking at distant
+     * Sequoia doesn't fog Sequoia just because Tenebris's water
+     * is somewhere off-screen. The cap radius is derived the same
+     * way hex_mesher.c places the actual cap, so the boolean
+     * "below cap" test stays consistent with what the player sees.
+     *
+     * cam_under is voxel-driven: the camera position is resolved to
+     * its containing block and we only flag the camera as
+     * "underwater" when that block is actually BLOCK_WATER. A player
+     * who dug a cave below sea level on a land tile sits in an AIR
+     * cell, so the composite skips all water-fog/distortion for
+     * them — caves stay crisp. The screen-space pixel-altitude check
+     * inside the shader still applies, so a half-submerged camera
+     * (in water at the eyes, dry at the chin) still gates fog by
+     * pixel altitude. */
+    const water_config_t* W = config_water();
+    vec3_t  body_center  = (vec3_t){ 0, 0, 0 };
+    float   sea_radius   = 0.0f;
+    bool    cam_under    = false;
+    if (R.active_body_idx >= 0) {
+        chunked_body_t* ab = &R.bodies[R.active_body_idx];
+        body_center = ab->world_pos;
+        sea_radius  = ab->radius_m + W->height_offset_m - W->depth_offset_m;
+        vec3_t cam_local = vec3_sub(R.env.camera_world, body_center);
+        block_t cam_blk  = world_block_at_pos(ab->world, cam_local, -1);
+        cam_under = (cam_blk == BLOCK_WATER);
+    }
+
+    composite_fs_params_t fs = {
+        .deep_color    = { W->deep_color.x,  W->deep_color.y,  W->deep_color.z,  0.0f },
+        .absorption    = { W->absorption.x,  W->absorption.y,  W->absorption.z,  0.0f },
+        /* near_far.z is the wet-fade altitude window (a small softness
+         * on the above/below transition; not a meniscus band). */
+        .near_far      = { 0.3f, 20000.0f, 0.05f, 0.0f },
+        .planet_params = { body_center.x, body_center.y, body_center.z, sea_radius },
+        .fx_params     = { W->underwater_distortion,
+                           R.time_seconds,
+                           cam_under ? 1.0f : 0.0f,
+                           0.0f },
+    };
+    sg_apply_uniforms(UB_composite_fs_params, &SG_RANGE(fs));
+
     sg_apply_bindings(&(sg_bindings){
-        .views[VIEW_scene_color] = R.offscreen_color_tex,
-        .samplers[SMP_scene_smp] = R.smp_offscreen,
+        .views[VIEW_scene_color]    = R.offscreen_color_tex,
+        .views[VIEW_scene_depth]    = R.offscreen_depth_tex,
+        .samplers[SMP_scene_smp]       = R.smp_offscreen,
+        .samplers[SMP_scene_depth_smp] = R.smp_offscreen_depth,
     });
     sg_draw(0, 3, 1);
 }
@@ -1558,20 +1674,92 @@ static void chunk_upload(mesh_chunk_t* c) {
 
 /* Draw a body's chunked terrain at its world position with the
  * supplied vp. Caller has already applied pip_hex + the sun/ambient
- * uniform block; this just sets the per-body model matrix uniform
+ * uniform block; this just sets the per-body model + planet block
  * and issues the chunk draws. */
-static void body_draw_chunks(chunked_body_t* body, mat4_t vp) {
+/* Per-frame chunk-level backface cull. Each of the 32 chunks has a
+ * known unit-sphere centroid in CHUNK_ANCHORS; the dot product of
+ * that centroid with the camera's direction-from-body-centre tells
+ * us how aligned the chunk is with the visible hemisphere. We skip
+ * chunks whose alignment is less than cos(theta_horizon + theta_pad),
+ * where theta_horizon depends on the camera's altitude (= acos(R/d)
+ * for d > R; 90° at/below surface) and theta_pad is a generous
+ * angular margin for chunks straddling the horizon.
+ *
+ * On a 300 m subdiv-8 planet at eye height (1.6 m), theta_horizon ≈
+ * 5.9°, so we keep ~10° + 31° pad ≈ 37° around the camera direction,
+ * which covers about 4-6 of the 32 chunks. In orbit (camera 1 km
+ * up) the cull keeps roughly the visible hemisphere. In deep space
+ * (camera much further than R) it relaxes toward "no cull" because
+ * theta_horizon → 90° and almost every anchor is within range. */
+typedef struct {
+    double cux, cuy, cuz;   /* body-local camera direction (unit) */
+    double cull_cos;        /* anchor·cam_dir < this → cull */
+} chunk_cull_t;
+
+static chunk_cull_t compute_chunk_cull(const chunked_body_t* body,
+                                       vec3_t camera_world) {
+    chunk_cull_t cc;
+    double cx = (double)(camera_world.x - body->world_pos.x);
+    double cy = (double)(camera_world.y - body->world_pos.y);
+    double cz = (double)(camera_world.z - body->world_pos.z);
+    double cd = sqrt(cx * cx + cy * cy + cz * cz);
+    if (cd < 1e-9) {
+        /* Camera exactly at body centre — pathological. Don't cull. */
+        cc.cux = 1.0; cc.cuy = 0.0; cc.cuz = 0.0;
+        cc.cull_cos = -2.0;
+        return cc;
+    }
+    cc.cux = cx / cd;
+    cc.cuy = cy / cd;
+    cc.cuz = cz / cd;
+    double cos_h = (cd > body->radius_m) ? (body->radius_m / cd) : 0.0;
+    double theta_h = acos(cos_h);
+    /* Chunk angular padding. 32 anchors split 4π sr ⇒ each anchor
+     * region ≈ π/8 sr, sphere-cap half-angle acos(15/16) ≈ 20°.
+     * Voronoi-on-sphere boundaries extend slightly past the cap,
+     * so pad to ~31° to keep horizon-straddling chunks visible. */
+    const double theta_chunk = 0.55;
+    cc.cull_cos = cos(theta_h + theta_chunk);
+    return cc;
+}
+
+static inline bool chunk_visible(const chunk_cull_t* cc, int ci) {
+    dvec3_t a = CHUNK_ANCHORS[ci];
+    double dot = a.x * cc->cux + a.y * cc->cuy + a.z * cc->cuz;
+    return dot >= cc->cull_cos;
+}
+
+static void body_draw_chunks(chunked_body_t* body, mat4_t vp,
+                             vec3_t camera_world) {
     /* Translate to body origin. For Tenebris this is identity (body
      * sits at world origin); for the moons it shifts the chunked
      * mesh out to its pos_x/y/z. */
     mat4_t model = mat4_translate(body->world_pos);
     mat4_t mvp   = mat4_mul(vp, model);
+
+    /* Per-body block also carries planet centre (in the same model
+     * space the vertex positions are in — that's body-local pre-
+     * translate, so origin is (0,0,0)) and the sea-level radius. The
+     * shader needs both for the day/night terminator and underwater-
+     * dim depth calc. Water level matches the cap mesh: body radius
+     * + water height_offset_m, minus depth_offset_m so the geometric
+     * sea level matches where the cap actually sits. */
+    const water_config_t* W = config_water();
+    const float sea_radius = body->radius_m
+                           + W->height_offset_m
+                           - W->depth_offset_m;
     hex_vs_params_t hvp = {0};
     memcpy(hvp.u_vp, mvp.m, sizeof(hvp.u_vp));
+    hvp.u_planet[0] = 0.0f;          /* model-space body centre */
+    hvp.u_planet[1] = 0.0f;
+    hvp.u_planet[2] = 0.0f;
+    hvp.u_planet[3] = body->has_water ? sea_radius : 0.0f;
     sg_apply_uniforms(UB_hex_vs_params, &SG_RANGE(hvp));
+    chunk_cull_t cc = compute_chunk_cull(body, camera_world);
     for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
         mesh_chunk_t* c = &body->chunks[ci];
         if (c->last_uploaded_index_count <= 0) continue;
+        if (!chunk_visible(&cc, ci)) continue;
         sg_apply_bindings(&(sg_bindings){
             .vertex_buffers[0]         = c->vbuf,
             .index_buffer              = c->ibuf,
@@ -1605,8 +1793,17 @@ static void body_draw_water(chunked_body_t* body, mat4_t vp,
     const float t_scaled = R.time_seconds * W->time_scale;
 
     /* sokol-shdc emits std140-laid-out structs + slot constants —
-     * no manual offset math, no _pad_NN by hand. */
+     * no manual offset math, no _pad_NN by hand. The water cap
+     * shares its day/night terminator inputs with the hex shader —
+     * planet centre is body-local origin (model translates to
+     * body->world_pos before the vp), sun_dir + terminator come from
+     * the shared lighting config. */
+    const lighting_config_t* L = config_lighting();
     vs_params_t vs_params = {
+        .u_planet           = { 0.0f, 0.0f, 0.0f, 0.0f },
+        .u_sun_dir          = { R.env.sun_dir.x, R.env.sun_dir.y, R.env.sun_dir.z, 0.0f },
+        .u_terminator       = { L->night_ambient_floor, L->terminator_lo,
+                                L->terminator_hi, 0.0f },
         .u_time             = t_scaled,
         .u_swell_amplitude  = W->swell_amplitude,
         .u_swell_frequency  = W->swell_frequency,
@@ -1624,32 +1821,32 @@ static void body_draw_water(chunked_body_t* body, mat4_t vp,
         .u_far             = 20000.0f,
         .u_absorption      = { W->absorption.x, W->absorption.y, W->absorption.z },
         .u_deep_color      = { W->deep_color.x, W->deep_color.y, W->deep_color.z },
-        .u_shoreline_fade  = W->shoreline_fade_m,
-        .u_shore_foam_dist = W->shore_foam_dist_m,
         .u_spec_intensity  = W->specular_intensity,
         .u_spec_power      = W->specular_power,
         .u_sun_tint        = { W->sun_tint.x, W->sun_tint.y, W->sun_tint.z },
-        /* Pack the four foam scalars into vec4s so std140 keeps them
+        /* Pack the foam scalars into vec4s so std140 keeps them
          * tightly aligned. crest.w doubles as the overall mix
          * intensity; slope.w is unused (kept aligned). */
         .u_foam_crest      = { W->foam_crest_lo, W->foam_crest_hi, W->foam_crest_weight, W->foam_intensity },
         .u_foam_slope      = { W->foam_slope_lo, W->foam_slope_hi, W->foam_slope_weight, 0.0f },
         .u_foam_color      = { W->foam_color.x, W->foam_color.y, W->foam_color.z },
-        .u_shore_foam_color= { W->shore_foam_color.x, W->shore_foam_color.y, W->shore_foam_color.z },
-        .u_shore_foam_bands         = W->shore_foam_bands,
-        .u_shore_foam_band_softness = W->shore_foam_band_softness,
         .u_sky_horizon     = { W->sky_horizon_color.x, W->sky_horizon_color.y, W->sky_horizon_color.z },
         .u_sky_horizon_strength = W->sky_horizon_strength,
         .u_sky_zenith      = { W->sky_zenith_color.x, W->sky_zenith_color.y, W->sky_zenith_color.z },
         .u_ripple_scale    = W->ripple_scale,
         .u_ripple_speed    = W->ripple_speed,
         .u_wave_steepness  = W->wave_steepness,
+        .u_night_floor     = L->night_ambient_floor,
+        .u_torch_color     = { L->torch_color.x, L->torch_color.y, L->torch_color.z,
+                               L->torch_intensity },
     };
     sg_apply_uniforms(UB_fs_params, &SG_RANGE(fs_params));
 
+    chunk_cull_t cc = compute_chunk_cull(body, camera_world);
     for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
         mesh_chunk_t* c = &body->chunks[ci];
         if (c->last_uploaded_water_idx_count <= 0) continue;
+        if (!chunk_visible(&cc, ci)) continue;
         sg_apply_bindings(&(sg_bindings){
             .vertex_buffers[0] = c->water_vbuf,
             .index_buffer      = c->water_ibuf,
@@ -1779,18 +1976,62 @@ void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world,
      * still run so we can verify those in isolation. */
     if (R_TERRAIN_VISIBLE) {
     sg_apply_pipeline(R.pip_hex);
-    hex_vs_light_t hex_light = {
-        .u_sun_dir = { R.env.sun_dir.x, R.env.sun_dir.y, R.env.sun_dir.z },
-        .u_ambient = { R.env.ambient.x, R.env.ambient.y, R.env.ambient.z },
-    };
-    sg_apply_uniforms(UB_hex_vs_light, &SG_RANGE(hex_light));
+    /* Per-frame lighting blocks — sun direction (vs + fs both need it
+     * so it appears in both blocks), ambient (fs only), and the
+     * day/night terminator. .x carries the night-side ambient floor,
+     * .yz the smoothstep lo/hi the vs uses to gate v_sun_brightness. */
+    const lighting_config_t* L = config_lighting();
+    {
+        hex_vs_light_t hex_vs_light = {
+            .u_sun_dir    = { R.env.sun_dir.x, R.env.sun_dir.y, R.env.sun_dir.z },
+            .u_terminator = { L->night_ambient_floor, L->terminator_lo,
+                              L->terminator_hi, 0.0f },
+        };
+        sg_apply_uniforms(UB_hex_vs_light, &SG_RANGE(hex_vs_light));
+    }
+    {
+        hex_fs_light_t hex_fs_light = {
+            .u_sun_dir    = { R.env.sun_dir.x, R.env.sun_dir.y, R.env.sun_dir.z },
+            .u_ambient    = { R.env.ambient.x, R.env.ambient.y, R.env.ambient.z },
+            .u_terminator = { L->night_ambient_floor, L->terminator_lo,
+                              L->terminator_hi, 0.0f },
+        };
+        sg_apply_uniforms(UB_hex_fs_light, &SG_RANGE(hex_fs_light));
+    }
+    /* Underwater-dim block reuses the water cap's per-channel
+     * absorption + deep_color so terrain visible *under* the cap
+     * tints with the same colour curve the cap uses, and the
+     * boundary where they meet reads as one continuous body of
+     * water instead of two stacked layers with different formulas. */
+    {
+        const water_config_t* W = config_water();
+        hex_fs_water_t hex_under = {
+            .u_absorption = { W->absorption.x, W->absorption.y, W->absorption.z },
+            .u_deep_color = { W->deep_color.x, W->deep_color.y, W->deep_color.z },
+        };
+        sg_apply_uniforms(UB_hex_fs_water, &SG_RANGE(hex_under));
+    }
+
+    /* Torch tint + intensity — additive warm contribution per unit
+     * of v_torch_light (which the mesher baked from the placed-torch
+     * list at remesh time). Tint matches the JS reference's
+     * (1.0, 0.7, 0.3) warm-orange, exposed via lighting.yaml so it
+     * can be cooled / brightened without recompiling. */
+    {
+        hex_fs_torch_t hex_torch = {
+            .u_torch_color = { L->torch_color.x, L->torch_color.y, L->torch_color.z,
+                               L->torch_intensity },
+        };
+        sg_apply_uniforms(UB_hex_fs_torch, &SG_RANGE(hex_torch));
+    }
 
     /* Frustum + LOD culling — far bodies drop to a single icosphere
      * draw via renderer_draw_moons. Detailed (chunked) draws happen
-     * here for any body that's both visible and close enough. */
+     * here for any body that's both visible and close enough.
+     * Threshold matches renderer_draw_moons (3.33 × radius cutoff). */
     frustum_plane_t frustum[6];
     extract_frustum(vp, frustum);
-    const float LOD_RATIO = 0.12f;
+    const float LOD_RATIO = 0.30f;
 
     for (int bi = 0; bi < R.body_count; ++bi) {
         chunked_body_t* body = &R.bodies[bi];
@@ -1820,7 +2061,7 @@ void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world,
         const bool distant = !is_active && (body->radius_m / dist) < LOD_RATIO;
         if (distant) continue;
         if (!body->meshed) body_load_detail(body);
-        body_draw_chunks(body, vp);
+        body_draw_chunks(body, vp, R.env.camera_world);
     }
 
     /* Water no longer drawn here — moved to renderer_draw_water,
@@ -1836,7 +2077,11 @@ void renderer_draw_water(mat4_t view, mat4_t proj, vec3_t camera_world) {
     mat4_t vp = mat4_mul(proj, view);
     frustum_plane_t frustum[6];
     extract_frustum(vp, frustum);
-    const float LOD_RATIO = 0.12f;
+    /* Match the terrain LOD cutoff so distant water (icosphere LOD
+     * shows the body as a flat sphere) doesn't also render its full
+     * cap mesh — it's invisible at that distance and triples the
+     * draw cost. */
+    const float LOD_RATIO = 0.30f;
 
     sg_apply_pipeline(R.pip_water);
     for (int bi = 0; bi < R.body_count; ++bi) {
@@ -1885,3 +2130,12 @@ void renderer_set_water_visible(bool v)   { R_WATER_VISIBLE = v;   }
 bool renderer_water_visible(void)          { return R_WATER_VISIBLE; }
 void renderer_set_skybox_visible(bool v)  { R_SKYBOX_VISIBLE = v;  }
 bool renderer_skybox_visible(void)         { return R_SKYBOX_VISIBLE; }
+
+unsigned int renderer_atlas_view_id(void)    { return R.atlas_view.id; }
+unsigned int renderer_atlas_sampler_id(void) { return R.atlas_smp.id; }
+
+void renderer_draw_torches(mat4_t view, mat4_t proj) {
+    if (!R_TERRAIN_VISIBLE) return;
+    mat4_t vp = mat4_mul(proj, view);
+    torch_draw(vp, R.time_seconds);
+}

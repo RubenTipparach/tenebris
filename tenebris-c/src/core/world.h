@@ -28,8 +28,11 @@
  *                   space (~64 m of headroom over the tallest mountain
  *                   for stacking blocks).
  *
- * 128 byte/column × 40 962 tiles = 5.0 MB of voxel state, well within
- * the WASM heap limit.
+ * 128 byte/column × per-body tile count = voxel state per body. Tile
+ * count is picked at world_create time via
+ * planet_subdivisions_for_radius() to target ~1 m hex width across
+ * bodies; subdivision is capped at 7 (~164k tiles, ~21 MB voxels)
+ * for the largest planets to stay within the WASM heap budget.
  */
 #define WORLD_MAX_DEPTH   128
 
@@ -69,6 +72,21 @@ void     world_set(world_t* w, int tile, int depth, block_t b);
 
 bool     world_tile_dirty(const world_t* w, int tile);
 void     world_tile_clear_dirty(world_t* w, int tile);
+
+/* Mark every tile whose centre sits within `radius_m` of `world_pos`
+ * as dirty, so the renderer's remesh-on-dirty pass picks them up.
+ * Used by torch place/remove so per-vertex torch_light gets re-baked
+ * for affected tiles. world_pos is body-local (matches goldberg
+ * tile centres scaled by body radius). */
+void     world_dirty_in_range(world_t* w, vec3_t world_pos, float radius_m);
+
+/* Resolve a body-local point to its containing voxel cell. Returns
+ * the block at that (tile, depth); BLOCK_AIR if the position falls
+ * outside the world (above the build cap, below bedrock, or outside
+ * the goldberg grid). The lookup walks the goldberg adjacency from
+ * `tile_hint` (use the player's last_tile for cheap re-targeting;
+ * pass -1 to start from scratch). */
+block_t  world_block_at_pos(const world_t* w, vec3_t body_local_pos, int tile_hint);
 
 /* Radial meters corresponding to a block depth. Surface sits at
  * depth = body->seaLevel relative offset from the top. */

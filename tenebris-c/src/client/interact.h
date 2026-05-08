@@ -11,6 +11,12 @@
 
 typedef struct {
     bool has_target;
+    /* When true, the target is a placed torch entity rather than a
+     * voxel — torch_idx identifies it. Block fields (hit_tile etc.)
+     * are unused in this case. The HUD reads this to label the
+     * target and the click path branches off it. */
+    bool is_torch_target;
+    int  torch_idx;
     int  hit_tile;
     int  hit_depth;
     int  place_tile;

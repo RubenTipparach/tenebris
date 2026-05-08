@@ -1,4 +1,5 @@
 #include "core/planet.h"
+#include <math.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <math.h>
@@ -7,7 +8,7 @@ static body_config_t BODIES[BODY_COUNT] = {
     /* ---- main planet ---- */
     [BODY_TENEBRIS] = {
         .id = BODY_TENEBRIS, .name = "Tenebris",
-        .radius_m = 150.0, .seed = 0x7e7e6815ULL,
+        .radius_m = 300.0, .seed = 0x7e7e6815ULL,
         .subdivisions = 6, .gravity_g = 1.0f,
         .pos_x = 0.0, .pos_y = 0.0, .pos_z = 0.0,
         .has_water = true,
@@ -16,158 +17,158 @@ static body_config_t BODIES[BODY_COUNT] = {
     /* ---- Tenebris moons ---- */
     [BODY_LUNA] = {
         .id = BODY_LUNA, .name = "Luna",
-        .radius_m = 40.0, .seed = 0xCAFEBEEFULL,
+        .radius_m = 80.0, .seed = 0xCAFEBEEFULL,
         .subdivisions = 4, .gravity_g = 0.4f,
-        .pos_x = -420.0, .pos_y = 80.0, .pos_z = 0.0,
+        .pos_x = -840.0, .pos_y = 160.0, .pos_z = 0.0,
         .barren = true,
     },
     [BODY_SELENE] = {
         .id = BODY_SELENE, .name = "Selene",
-        .radius_m = 25.0, .seed = 0x12345678ULL,
+        .radius_m = 50.0, .seed = 0x12345678ULL,
         .subdivisions = 4, .gravity_g = 0.25f,
-        .pos_x = 320.0, .pos_y = -60.0, .pos_z = 380.0,
+        .pos_x = 640.0, .pos_y = -120.0, .pos_z = 760.0,
         .barren = true,
     },
 
     /* ---- Sequoia (green sister planet) + moons ---- */
     [BODY_SEQUOIA] = {
         .id = BODY_SEQUOIA, .name = "Sequoia",
-        .radius_m = 180.0, .seed = 0x5E9A01A1ULL,
+        .radius_m = 360.0, .seed = 0x5E9A01A1ULL,
         .subdivisions = 6, .gravity_g = 1.1f,
-        .pos_x = -850.0, .pos_y = 120.0, .pos_z = -700.0,
+        .pos_x = -1700.0, .pos_y = 240.0, .pos_z = -1400.0,
         .has_water = true,
         .tileset = TILESET_SEQUOIA,
     },
     [BODY_VERDANT] = {
         .id = BODY_VERDANT, .name = "Verdant",
-        .radius_m = 30.0, .seed = 0x0FACE001ULL,
+        .radius_m = 60.0, .seed = 0x0FACE001ULL,
         .subdivisions = 4, .gravity_g = 0.3f,
-        .pos_x = -600.0, .pos_y = 160.0, .pos_z = -740.0,
+        .pos_x = -1200.0, .pos_y = 320.0, .pos_z = -1480.0,
         .barren = true,
     },
     [BODY_SPROUT] = {
         .id = BODY_SPROUT, .name = "Sprout",
-        .radius_m = 18.0, .seed = 0x59E0A710ULL,
+        .radius_m = 36.0, .seed = 0x59E0A710ULL,
         .subdivisions = 3, .gravity_g = 0.15f,
-        .pos_x = -940.0, .pos_y = 260.0, .pos_z = -520.0,
+        .pos_x = -1880.0, .pos_y = 520.0, .pos_z = -1040.0,
         .barren = true,
     },
 
     /* ---- Crag (barren red planet) + moon ---- */
     [BODY_CRAG] = {
         .id = BODY_CRAG, .name = "Crag",
-        .radius_m = 95.0, .seed = 0xC2A6B10CULL,
+        .radius_m = 190.0, .seed = 0xC2A6B10CULL,
         .subdivisions = 5, .gravity_g = 0.6f,
-        .pos_x = 780.0, .pos_y = -220.0, .pos_z = -900.0,
+        .pos_x = 1560.0, .pos_y = -440.0, .pos_z = -1800.0,
         .barren = true,
         .tileset = TILESET_CRAG,
     },
     [BODY_QUARTZ] = {
         .id = BODY_QUARTZ, .name = "Quartz",
-        .radius_m = 22.0, .seed = 0xC0BA17EDULL,
+        .radius_m = 44.0, .seed = 0xC0BA17EDULL,
         .subdivisions = 4, .gravity_g = 0.2f,
-        .pos_x = 960.0, .pos_y = -220.0, .pos_z = -900.0,
+        .pos_x = 1920.0, .pos_y = -440.0, .pos_z = -1800.0,
         .barren = true,
     },
 
     /* ---- Frostbite (icy outer planet) + moon ---- */
     [BODY_FROSTBITE] = {
         .id = BODY_FROSTBITE, .name = "Frostbite",
-        .radius_m = 110.0, .seed = 0xF0057B17ULL,
+        .radius_m = 220.0, .seed = 0xF0057B17ULL,
         .subdivisions = 5, .gravity_g = 0.8f,
-        .pos_x = -240.0, .pos_y = -850.0, .pos_z = 1300.0,
+        .pos_x = -480.0, .pos_y = -1700.0, .pos_z = 2600.0,
         .icy = true,
         .tileset = TILESET_FROST,
     },
     [BODY_RIME] = {
         .id = BODY_RIME, .name = "Rime",
-        .radius_m = 20.0, .seed = 0x21CE5001ULL,
+        .radius_m = 40.0, .seed = 0x21CE5001ULL,
         .subdivisions = 4, .gravity_g = 0.15f,
-        .pos_x = -340.0, .pos_y = -700.0, .pos_z = 1300.0,
+        .pos_x = -680.0, .pos_y = -1400.0, .pos_z = 2600.0,
         .icy = true,
     },
 
     /* ---- Asteroid belt: 10 tiny rocky bodies in a loose ring
-     * roughly 1500 m from the system origin, slightly scattered in Y
+     * roughly 3000 m from the system origin, slightly scattered in Y
      * so they don't look like a perfect circle. Seeds pulled from
      * arbitrary bytes so each asteroid has its own bumpy shape. */
     [BODY_ASTEROID_0] = {
         .id = BODY_ASTEROID_0, .name = "Asteroid A",
-        .radius_m = 7.0, .seed = 0xA51E0010ULL,
+        .radius_m = 14.0, .seed = 0xA51E0010ULL,
         .subdivisions = 3, .gravity_g = 0.05f,
-        .pos_x = 1500.0, .pos_y = 40.0, .pos_z = 0.0,
+        .pos_x = 3000.0, .pos_y = 80.0, .pos_z = 0.0,
         .barren = true, .is_asteroid = true,
         .tileset = TILESET_ASTEROID,
     },
     [BODY_ASTEROID_1] = {
         .id = BODY_ASTEROID_1, .name = "Asteroid B",
-        .radius_m = 9.0, .seed = 0xA51E0011ULL,
+        .radius_m = 18.0, .seed = 0xA51E0011ULL,
         .subdivisions = 3, .gravity_g = 0.05f,
-        .pos_x = 1180.0, .pos_y = -30.0, .pos_z = 900.0,
+        .pos_x = 2360.0, .pos_y = -60.0, .pos_z = 1800.0,
         .barren = true, .is_asteroid = true,
         .tileset = TILESET_ASTEROID,
     },
     [BODY_ASTEROID_2] = {
         .id = BODY_ASTEROID_2, .name = "Asteroid C",
-        .radius_m = 5.0, .seed = 0xA51E0012ULL,
+        .radius_m = 10.0, .seed = 0xA51E0012ULL,
         .subdivisions = 3, .gravity_g = 0.05f,
-        .pos_x = 500.0, .pos_y = 20.0, .pos_z = 1400.0,
+        .pos_x = 1000.0, .pos_y = 40.0, .pos_z = 2800.0,
         .barren = true, .is_asteroid = true,
         .tileset = TILESET_ASTEROID,
     },
     [BODY_ASTEROID_3] = {
         .id = BODY_ASTEROID_3, .name = "Asteroid D",
-        .radius_m = 11.0, .seed = 0xA51E0013ULL,
+        .radius_m = 22.0, .seed = 0xA51E0013ULL,
         .subdivisions = 3, .gravity_g = 0.05f,
-        .pos_x = -400.0, .pos_y = 80.0, .pos_z = 1450.0,
+        .pos_x = -800.0, .pos_y = 160.0, .pos_z = 2900.0,
         .barren = true, .is_asteroid = true,
         .tileset = TILESET_ASTEROID,
     },
     [BODY_ASTEROID_4] = {
         .id = BODY_ASTEROID_4, .name = "Asteroid E",
-        .radius_m = 6.0, .seed = 0xA51E0014ULL,
+        .radius_m = 12.0, .seed = 0xA51E0014ULL,
         .subdivisions = 3, .gravity_g = 0.05f,
-        .pos_x = -1200.0, .pos_y = -10.0, .pos_z = 800.0,
+        .pos_x = -2400.0, .pos_y = -20.0, .pos_z = 1600.0,
         .barren = true, .is_asteroid = true,
         .tileset = TILESET_ASTEROID,
     },
     [BODY_ASTEROID_5] = {
         .id = BODY_ASTEROID_5, .name = "Asteroid F",
-        .radius_m = 8.0, .seed = 0xA51E0015ULL,
+        .radius_m = 16.0, .seed = 0xA51E0015ULL,
         .subdivisions = 3, .gravity_g = 0.05f,
-        .pos_x = -1500.0, .pos_y = 60.0, .pos_z = -150.0,
+        .pos_x = -3000.0, .pos_y = 120.0, .pos_z = -300.0,
         .barren = true, .is_asteroid = true,
         .tileset = TILESET_ASTEROID,
     },
     [BODY_ASTEROID_6] = {
         .id = BODY_ASTEROID_6, .name = "Asteroid G",
-        .radius_m = 10.0, .seed = 0xA51E0016ULL,
+        .radius_m = 20.0, .seed = 0xA51E0016ULL,
         .subdivisions = 3, .gravity_g = 0.05f,
-        .pos_x = -1100.0, .pos_y = -90.0, .pos_z = -1000.0,
+        .pos_x = -2200.0, .pos_y = -180.0, .pos_z = -2000.0,
         .barren = true, .is_asteroid = true,
         .tileset = TILESET_ASTEROID,
     },
     [BODY_ASTEROID_7] = {
         .id = BODY_ASTEROID_7, .name = "Asteroid H",
-        .radius_m = 6.5, .seed = 0xA51E0017ULL,
+        .radius_m = 13.0, .seed = 0xA51E0017ULL,
         .subdivisions = 3, .gravity_g = 0.05f,
-        .pos_x = -200.0, .pos_y = 50.0, .pos_z = -1500.0,
+        .pos_x = -400.0, .pos_y = 100.0, .pos_z = -3000.0,
         .barren = true, .is_asteroid = true,
         .tileset = TILESET_ASTEROID,
     },
     [BODY_ASTEROID_8] = {
         .id = BODY_ASTEROID_8, .name = "Asteroid I",
-        .radius_m = 9.5, .seed = 0xA51E0018ULL,
+        .radius_m = 19.0, .seed = 0xA51E0018ULL,
         .subdivisions = 3, .gravity_g = 0.05f,
-        .pos_x = 650.0, .pos_y = -40.0, .pos_z = -1350.0,
+        .pos_x = 1300.0, .pos_y = -80.0, .pos_z = -2700.0,
         .barren = true, .is_asteroid = true,
         .tileset = TILESET_ASTEROID,
     },
     [BODY_ASTEROID_9] = {
         .id = BODY_ASTEROID_9, .name = "Asteroid J",
-        .radius_m = 7.5, .seed = 0xA51E0019ULL,
+        .radius_m = 15.0, .seed = 0xA51E0019ULL,
         .subdivisions = 3, .gravity_g = 0.05f,
-        .pos_x = 1300.0, .pos_y = 100.0, .pos_z = -700.0,
+        .pos_x = 2600.0, .pos_y = 200.0, .pos_z = -1400.0,
         .barren = true, .is_asteroid = true,
         .tileset = TILESET_ASTEROID,
     },
@@ -176,6 +177,33 @@ static body_config_t BODIES[BODY_COUNT] = {
 const body_config_t* planet_get(body_id_t id) {
     if (id < 0 || id >= BODY_COUNT) return NULL;
     return &BODIES[id];
+}
+
+int planet_subdivisions_for_radius(double radius_m) {
+    /* Goldberg(m, 0) on a sphere of radius R has tile width
+     * w ≈ 1.05 R / m, where m = 2^subdivisions. So for a target
+     * width of 1 m: m ≈ 1.05 R, subdivisions ≈ ceil(log2(1.05 R)).
+     *
+     * Clamp to [3, 7].
+     *   - Lower bound keeps tiny asteroids from collapsing to a
+     *     92-tile pentakis dodecahedron silhouette.
+     *   - Upper bound is a vertex-shader-bandwidth limit, NOT a
+     *     memory limit. Memory-wise subdiv 8 is fine (84 MB per
+     *     body), but with the current CHUNK_COUNT=32, each chunk
+     *     holds ~20k tiles. The chunk-level backface cull keeps
+     *     ~5-6 chunks visible at ground level, which means ~840k
+     *     vertices/frame submitted to the VS — enough to drop
+     *     a 165 fps build to 55 fps on integrated GPUs. To raise
+     *     the cap above 7 we'd need to bump CHUNK_COUNT (smaller
+     *     chunks, finer cull granularity) so visible vertex count
+     *     stays bounded. Until then, big planets cap at ~2.5 m
+     *     hex width. */
+    if (radius_m < 1.0) return 3;
+    double m_target = 1.05 * radius_m;
+    int subdiv = (int)ceil(log2(m_target));
+    if (subdiv < 3) subdiv = 3;
+    if (subdiv > 7) subdiv = 7;
+    return subdiv;
 }
 
 /* Apply a YAML-loaded atmosphere patch on top of a body's compiled-in
