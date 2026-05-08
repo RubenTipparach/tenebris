@@ -20,10 +20,17 @@ void mobile_ui_shutdown(void);
 void mobile_ui_draw(void);
 
 /* Primitive shared with teleport_menu so all HUD buttons look the
- * same (same ring, same glyph style). Supported glyphs: BPJTXOxv^. */
+ * same (same ring, same glyph style). Supported glyphs: BPJTXOxv^=F. */
 void mobile_ui_draw_button(float cx, float cy, float r,
                            float fill_r, float fill_g, float fill_b, float fill_a,
                            float ring_r, float ring_g, float ring_b, float ring_a,
                            char glyph);
+
+/* Hit-test the debug-menu hamburger + (when open) its popup column.
+ * Returns true if the touch / click landed on a debug button — the
+ * caller treats that as exclusive so the underlying movement layer
+ * doesn't also see the tap. Coordinates are in pixels, origin
+ * top-left, matching sapp_event touch / mouse positions. */
+bool mobile_ui_handle_touch(float x, float y);
 
 #endif

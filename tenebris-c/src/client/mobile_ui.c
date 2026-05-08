@@ -147,6 +147,20 @@ static void draw_glyph(char ch, float cx, float cy, float size, float r, float g
             draw_segment(left + size * 0.25f, bot - 2, right, top, thick, r, g, b, 1.0f);
             break;
         }
+        case 'F': {
+            draw_segment(left, top, left, bot, thick, r, g, b, 1.0f);
+            draw_segment(left, top, right, top, thick, r, g, b, 1.0f);
+            draw_segment(left, mid_y, right - 2, mid_y, thick, r, g, b, 1.0f);
+            break;
+        }
+        case '=': {
+            /* Hamburger menu — three horizontal stripes. */
+            float dy = size * 0.30f;
+            draw_segment(left, mid_y - dy, right, mid_y - dy, thick, r, g, b, 1.0f);
+            draw_segment(left, mid_y,      right, mid_y,      thick, r, g, b, 1.0f);
+            draw_segment(left, mid_y + dy, right, mid_y + dy, thick, r, g, b, 1.0f);
+            break;
+        }
         default: break;
     }
 }
@@ -160,6 +174,77 @@ void mobile_ui_draw_button(float cx, float cy, float r,
     draw_circle_fan(cx, cy, r, 32, fill_r, fill_g, fill_b, fill_a);
     draw_ring      (cx, cy, r - 2.0f, r, 32, ring_r, ring_g, ring_b, ring_a);
     draw_glyph(glyph, cx, cy, 16.0f, 1.0f, 1.0f, 1.0f);
+}
+
+/* ----------------------------------------------------------------------- */
+
+/* Debug-toggle menu state. The hamburger button at top-right toggles
+ * S_MENU_OPEN; when open, a vertical column of toggle buttons drops
+ * below it (terrain / water / sky / shoreline-heatmap). Closed by
+ * default so first-time users don't see a debug overlay. Tracked
+ * here rather than in renderer.c because it's a UI concern — the
+ * underlying toggles already live in the renderer's debug-flag block. */
+static bool S_MENU_OPEN = false;
+
+/* Geometry of the four menu-item buttons + the menu button itself,
+ * recomputed every frame so it stays in sync with sapp_widthf().
+ * Returned by menu_button_layout for both the draw and hit-test
+ * paths so they can't drift apart. */
+#define MENU_ITEM_COUNT 3
+
+typedef struct {
+    float menu_x, menu_y;     /* hamburger button centre */
+    float item_x;             /* shared x for the popup column */
+    float item_y[MENU_ITEM_COUNT];
+    float radius;
+    float hit_pad;            /* hit-box expansion for fat-thumb taps */
+} menu_layout_t;
+
+static menu_layout_t menu_button_layout(void) {
+    menu_layout_t L = {0};
+    L.radius  = BTN_RADIUS;
+    L.hit_pad = 14.0f;        /* generous — same idea as the 96 px corner used before */
+    L.menu_x  = sapp_widthf() - BTN_MARGIN - L.radius;
+    L.menu_y  = BTN_MARGIN + L.radius;
+    L.item_x  = L.menu_x;
+    const float dy = L.radius * 2.0f + BTN_GAP;
+    for (int i = 0; i < MENU_ITEM_COUNT; ++i) {
+        L.item_y[i] = L.menu_y + dy * (float)(i + 1);
+    }
+    return L;
+}
+
+/* Hit-test the menu button + (when open) its popup column. Returns
+ * true if the touch / click landed on a debug button — the caller
+ * (main_web.c) treats that as an exclusive event so the underlying
+ * movement layer doesn't also see the tap. */
+bool mobile_ui_handle_touch(float x, float y) {
+    menu_layout_t L = menu_button_layout();
+    /* Menu button gets the full top-right corner zone for mobile
+     * fat-thumb friendliness — same generosity the original
+     * corner-based debug toggles used. The popup items use a
+     * tighter hit_pad so adjacent items don't overlap their hit
+     * boxes (their centres sit 2*radius + BTN_GAP apart). */
+    const float menu_r = L.radius + 30.0f;
+    const float item_r = L.radius + L.hit_pad;
+
+    if (fabsf(x - L.menu_x) <= menu_r && fabsf(y - L.menu_y) <= menu_r) {
+        S_MENU_OPEN = !S_MENU_OPEN;
+        return true;
+    }
+    if (!S_MENU_OPEN) return false;
+
+    for (int i = 0; i < MENU_ITEM_COUNT; ++i) {
+        if (fabsf(x - L.item_x) <= item_r && fabsf(y - L.item_y[i]) <= item_r) {
+            switch (i) {
+                case 0: renderer_set_terrain_visible(!renderer_terrain_visible()); break;
+                case 1: renderer_set_water_visible  (!renderer_water_visible());   break;
+                case 2: renderer_set_skybox_visible (!renderer_skybox_visible());  break;
+            }
+            return true;
+        }
+    }
+    return false;
 }
 
 /* ----------------------------------------------------------------------- */
@@ -273,53 +358,58 @@ void mobile_ui_draw(void) {
      * "portal" well enough. */
     draw_glyph('T', bx, tp_y, 16.0f, 1.0f, 0.95f, 1.0f);
 
-    /* Top-corner debug toggle buttons. Top-right = terrain (H),
-     * top-left = water (J). Tinted dim red when the layer is hidden
-     * so the disabled state is unmissable on phone. Hit-test for
-     * these lives in main_web.c's event handler (96 px corner
-     * rectangle) — generous on purpose so a fat thumb still lands
-     * even though the button itself is BTN_RADIUS = 22 px. */
+    /* Debug-toggle menu — single hamburger button at the top-right
+     * corner that drops down a vertical column of three toggles when
+     * open: terrain (H), water (J), sky (K). Each toggle paints
+     * itself in a coloured "on" state or dim-red "off" state so the
+     * current setting is unmissable. Hit-testing lives in
+     * mobile_ui_handle_touch so the layout in menu_button_layout()
+     * is the only source of truth shared by the draw + tap paths.
+     *
+     * Closed by default — first-time players don't see a debug
+     * overlay sprouting from the corner. Keyboard shortcuts H/J/K
+     * still work directly without opening the menu. */
     {
-        const float cx_r = w - BTN_MARGIN - BTN_RADIUS;
-        const float cy_t = BTN_MARGIN + BTN_RADIUS;
-        const float cx_l = BTN_MARGIN + BTN_RADIUS;
-        const bool terrain_on = renderer_terrain_visible();
-        const bool water_on   = renderer_water_visible();
+        menu_layout_t L = menu_button_layout();
+        const bool open = S_MENU_OPEN;
+        const float r = L.radius;
 
-        /* Terrain (top-right) — slate when on, dim red when hidden. */
-        if (terrain_on) {
-            draw_circle_fan(cx_r, cy_t, BTN_RADIUS,        32, 0.20f, 0.25f, 0.35f, 0.55f);
-            draw_ring      (cx_r, cy_t, BTN_RADIUS - 2.0f, BTN_RADIUS, 32, 0.85f, 0.90f, 1.00f, 0.80f);
-            draw_glyph     ('H', cx_r, cy_t, 16.0f, 0.95f, 0.97f, 1.00f);
-        } else {
-            draw_circle_fan(cx_r, cy_t, BTN_RADIUS,        32, 0.45f, 0.10f, 0.10f, 0.65f);
-            draw_ring      (cx_r, cy_t, BTN_RADIUS - 2.0f, BTN_RADIUS, 32, 1.00f, 0.45f, 0.45f, 0.85f);
-            draw_glyph     ('H', cx_r, cy_t, 16.0f, 1.00f, 0.85f, 0.85f);
-        }
+        /* Hamburger / X button itself. Glyph flips to indicate
+         * open vs closed state. */
+        draw_circle_fan(L.menu_x, L.menu_y, r,        32,
+                        open ? 0.55f : 0.20f,
+                        open ? 0.45f : 0.22f,
+                        open ? 0.15f : 0.28f, 0.65f);
+        draw_ring      (L.menu_x, L.menu_y, r - 2.0f, r, 32,
+                        open ? 1.00f : 0.85f,
+                        open ? 0.95f : 0.90f,
+                        open ? 0.55f : 1.00f, 0.85f);
+        draw_glyph(open ? 'X' : '=', L.menu_x, L.menu_y, 16.0f, 1.0f, 1.0f, 1.0f);
 
-        /* Water (top-left) — teal when on, dim red when hidden. */
-        if (water_on) {
-            draw_circle_fan(cx_l, cy_t, BTN_RADIUS,        32, 0.10f, 0.30f, 0.40f, 0.55f);
-            draw_ring      (cx_l, cy_t, BTN_RADIUS - 2.0f, BTN_RADIUS, 32, 0.55f, 0.90f, 1.00f, 0.80f);
-            draw_glyph     ('J', cx_l, cy_t, 16.0f, 0.85f, 0.97f, 1.00f);
-        } else {
-            draw_circle_fan(cx_l, cy_t, BTN_RADIUS,        32, 0.45f, 0.10f, 0.10f, 0.65f);
-            draw_ring      (cx_l, cy_t, BTN_RADIUS - 2.0f, BTN_RADIUS, 32, 1.00f, 0.45f, 0.45f, 0.85f);
-            draw_glyph     ('J', cx_l, cy_t, 16.0f, 1.00f, 0.85f, 0.85f);
-        }
-
-        /* Sky / atmosphere (top-middle) — orange when on, dim red
-         * when hidden. Sits between the H and J buttons. */
-        const float cx_m = w * 0.5f;
-        const bool  sky_on = renderer_skybox_visible();
-        if (sky_on) {
-            draw_circle_fan(cx_m, cy_t, BTN_RADIUS,        32, 0.40f, 0.25f, 0.10f, 0.55f);
-            draw_ring      (cx_m, cy_t, BTN_RADIUS - 2.0f, BTN_RADIUS, 32, 1.00f, 0.85f, 0.55f, 0.80f);
-            draw_glyph     ('K', cx_m, cy_t, 16.0f, 1.00f, 0.95f, 0.85f);
-        } else {
-            draw_circle_fan(cx_m, cy_t, BTN_RADIUS,        32, 0.45f, 0.10f, 0.10f, 0.65f);
-            draw_ring      (cx_m, cy_t, BTN_RADIUS - 2.0f, BTN_RADIUS, 32, 1.00f, 0.45f, 0.45f, 0.85f);
-            draw_glyph     ('K', cx_m, cy_t, 16.0f, 1.00f, 0.85f, 0.85f);
+        if (open) {
+            const struct {
+                char glyph;
+                bool on;
+                float on_r, on_g, on_b;     /* tint when enabled */
+            } items[MENU_ITEM_COUNT] = {
+                { 'H', renderer_terrain_visible(), 0.20f, 0.25f, 0.35f },  /* terrain */
+                { 'J', renderer_water_visible(),   0.10f, 0.30f, 0.40f },  /* water   */
+                { 'K', renderer_skybox_visible(),  0.40f, 0.25f, 0.10f },  /* sky     */
+            };
+            for (int i = 0; i < MENU_ITEM_COUNT; ++i) {
+                float ix = L.item_x;
+                float iy = L.item_y[i];
+                if (items[i].on) {
+                    draw_circle_fan(ix, iy, r,        32,
+                                    items[i].on_r, items[i].on_g, items[i].on_b, 0.55f);
+                    draw_ring      (ix, iy, r - 2.0f, r, 32, 0.85f, 0.95f, 1.00f, 0.80f);
+                    draw_glyph     (items[i].glyph, ix, iy, 16.0f, 1.00f, 1.00f, 1.00f);
+                } else {
+                    draw_circle_fan(ix, iy, r,        32, 0.45f, 0.10f, 0.10f, 0.65f);
+                    draw_ring      (ix, iy, r - 2.0f, r, 32, 1.00f, 0.45f, 0.45f, 0.85f);
+                    draw_glyph     (items[i].glyph, ix, iy, 16.0f, 1.00f, 0.85f, 0.85f);
+                }
+            }
         }
     }
 

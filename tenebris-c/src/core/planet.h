@@ -108,6 +108,13 @@ typedef struct {
 
 const body_config_t* planet_get(body_id_t id);
 
+/* Pick the Goldberg subdivision count that gives ~1 m hex tile width
+ * on a body of the given radius, capped at 7 (≈164k tiles per body)
+ * for memory sanity on big planets. The body_config_t.subdivisions
+ * field is treated as a hint — main_web.c uses this helper at
+ * world_create time so radii can change without per-body retuning. */
+int planet_subdivisions_for_radius(double radius_m);
+
 /* Atmosphere-only patch struct — same fields as body_config_t.atmo_*
  * (matches one-for-one). Pass to planet_set_atmosphere() at boot
  * with values from the YAML config to override the in-tree defaults

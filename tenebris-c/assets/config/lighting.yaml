@@ -1,0 +1,45 @@
+# Terrain lighting tuning — drives the planet-aware day/night terminator
+# in hex.glsl. Loaded at boot by config_load_lighting() and applied to
+# every chunked terrain draw.
+#
+# Underwater terrain dimming is NOT tuned here — it reuses water.yaml's
+# absorption + deep_color so the terrain visible under the cap reads
+# continuously with the cap colour above it. Adjust those in water.yaml
+# if you want the underwater look to change.
+#
+# Fields:
+#   night_ambient_floor  float  Ambient brightness on the night side
+#                               of the terminator, as a fraction of
+#                               the full-day ambient. 0.10 = 10 % at
+#                               midnight; 0.0 = pitch-black; 1.0 =
+#                               no day/night cycle.
+#   terminator_lo        float  Smoothstep lo edge on surface-dir·sun
+#                               (the dot product of the per-tile
+#                               radial vector with the sun direction).
+#                               Below this value the tile is fully
+#                               shaded.
+#   terminator_hi        float  Smoothstep hi edge. Above this value
+#                               the tile is fully lit. The gap between
+#                               lo and hi is the dawn/dusk band — the
+#                               JS reference uses (-0.1, 0.3) which
+#                               reads as a soft ~25° twilight zone
+#                               straddling the geometric terminator.
+
+#   torch_color          vec3   warm-tint multiplier for the additive
+#                               torch contribution baked per-vertex
+#                               on terrain. (1.0, 0.7, 0.3) = JS
+#                               reference's wood-fire orange. Push
+#                               red for embers, push white for a
+#                               cleaner magic-glow.
+#   torch_intensity      float  global scalar on top of torch_color.
+#                               Lets designers dim/boost all torches
+#                               without re-baking the per-vertex
+#                               inverse-square sums.
+
+lighting:
+  night_ambient_floor: 0.20
+  terminator_lo:      -0.10
+  terminator_hi:       0.30
+
+  torch_color:         [1.00, 0.70, 0.30]
+  torch_intensity:     1.00

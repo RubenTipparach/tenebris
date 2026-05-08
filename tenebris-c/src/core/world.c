@@ -154,8 +154,69 @@ void world_tile_clear_dirty(world_t* w, int tile) {
     w->dirty[tile >> 3] &= (uint8_t)~(1 << (tile & 7));
 }
 
+void world_dirty_in_range(world_t* w, vec3_t world_pos, float radius_m) {
+    /* Brute-force tile sweep — cheap (40k tiles ~= 40k float compares
+     * per torch event) and avoids needing a spatial index.
+     *
+     * Project the torch position radially onto the body surface
+     * before comparing against tile centres (which sit at radius R).
+     * Without the projection, a torch placed on elevated terrain
+     * (e.g. a column top at radius R+7m) carries a 7m radial offset
+     * the comparison can't see past — a 6m torch range then excludes
+     * every tile (radial gap alone exceeds range), no chunk gets
+     * dirtied, and the new torch never bakes until something else in
+     * the area triggers a remesh. The projection makes the test
+     * horizontal-only (great-arc chord), which is conservative —
+     * slightly over-dirties on tall terrain, never under-dirties. */
+    const double R = w->body->radius_m;
+    const float pos_len = sqrtf(world_pos.x * world_pos.x +
+                                world_pos.y * world_pos.y +
+                                world_pos.z * world_pos.z);
+    if (pos_len <= 0.0f) return;
+    const float scale = (float)R / pos_len;
+    const float px = world_pos.x * scale;
+    const float py = world_pos.y * scale;
+    const float pz = world_pos.z * scale;
+    const float r2 = radius_m * radius_m;
+    for (int i = 0; i < w->tile_count; ++i) {
+        const goldberg_tile_t* t = goldberg_tile(w->grid, i);
+        if (!t) continue;
+        float cx = (float)(t->center.x * R) - px;
+        float cy = (float)(t->center.y * R) - py;
+        float cz = (float)(t->center.z * R) - pz;
+        if (cx*cx + cy*cy + cz*cz <= r2) {
+            w->dirty[i >> 3] |= (uint8_t)(1 << (i & 7));
+        }
+    }
+}
+
 double world_depth_to_radius_m(const world_t* w, int depth) {
     /* Depth index 0 = deepest bedrock. Sea level = SEA_LEVEL_IDX.
      * Convert so radius = body.radius_m - (SEA_LEVEL_IDX - depth) * BLOCK_HEIGHT. */
     return w->body->radius_m - ((double)SEA_LEVEL_IDX - (double)depth) * BLOCK_HEIGHT;
 }
+
+block_t world_block_at_pos(const world_t* w, vec3_t body_local_pos, int tile_hint) {
+    /* Goldberg grid lives on the unit sphere — normalise the body-
+     * local position to look up the tile, then convert the radial
+     * length back to a depth index using the same transform
+     * world_depth_to_radius_m inverts. Anything outside the depth
+     * window reads as AIR (above the build cap or "below bedrock"
+     * which doesn't exist anyway). */
+    double r = sqrt((double)body_local_pos.x * body_local_pos.x +
+                    (double)body_local_pos.y * body_local_pos.y +
+                    (double)body_local_pos.z * body_local_pos.z);
+    if (r <= 0.0) return BLOCK_AIR;
+    double inv = 1.0 / r;
+    dvec3_t dir = (dvec3_t){
+        (double)body_local_pos.x * inv,
+        (double)body_local_pos.y * inv,
+        (double)body_local_pos.z * inv,
+    };
+    int tile = goldberg_find_tile(w->grid, dir, tile_hint);
+    if (tile < 0) return BLOCK_AIR;
+    int depth = (int)floor(r - w->body->radius_m) + SEA_LEVEL_IDX;
+    if (depth < 0 || depth >= WORLD_MAX_DEPTH) return BLOCK_AIR;
+    return (block_t)w->blocks[tile * WORLD_MAX_DEPTH + depth];
+}
+

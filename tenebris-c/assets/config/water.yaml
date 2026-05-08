@@ -31,11 +31,6 @@
 #                              transparent, by this much water it's
 #                              back to the Fresnel-driven alpha.
 #                              Hides the hex-mesh edge at the beach.
-#   shore_foam_dist_m   float  shoreline foam smoothstep upper edge.
-#                              White-wash band peaks at thickness 0.
-#                              Usually slightly wider than
-#                              shoreline_fade so the foam keeps body
-#                              in the alpha-feathered region.
 #   specular_intensity  float  sun-highlight strength multiplier.
 #                              Higher = brighter glints / glossier;
 #                              lower = matte.
@@ -60,20 +55,6 @@
 #   foam_slope_weight   float
 #   foam_intensity      float  final mix strength toward foam_color
 #   foam_color          vec3
-#
-#   shore_foam_color    vec3   tint for the thickness-driven foam
-#                              wash at the shoreline.
-#   shore_foam_bands    float  posterize the shoreline foam into N
-#                              discrete bands for a cel-shaded ring
-#                              look. 0 or 1 disables banding (smooth
-#                              gradient). 3-5 reads as visible
-#                              stepped rings; higher tends to alias
-#                              against the fbm height modulation.
-#   shore_foam_band_softness float per-band edge softness in [0, 1].
-#                              0 = hard cel-shade steps, 1 = smooth
-#                              gradient (banding effectively off),
-#                              ~0.2 keeps the rings while damping
-#                              shimmer at the band edges.
 #
 #   --- Sky reflection. Water reflects the upper hemisphere via
 #   reflect(view, n); the result blends between two tones based on
@@ -129,7 +110,6 @@ water:
   absorption:         [0.60, 0.20, 0.10]
   deep_color:         [0.02, 0.10, 0.22]
   shoreline_fade_m:   0.50
-  shore_foam_dist_m:  2.80
   specular_intensity: 0.30
   specular_power:     140.0
   sun_tint:           [1.35, 1.25, 1.10]
@@ -139,13 +119,9 @@ water:
   foam_crest_weight:  0.55
   foam_slope_lo:      0.50
   foam_slope_hi:      1.20
-  foam_slope_weight:  0.45
-  foam_intensity:     0.20
+  foam_slope_weight:  0.26
+  foam_intensity:     0.10
   foam_color:         [0.95, 0.97, 1.00]
-
-  shore_foam_color:        [0.98, 0.99, 1.00]
-  shore_foam_bands:        0.0
-  shore_foam_band_softness: 0.2
 
   sky_horizon_color:    [0.85, 0.92, 0.98]
   sky_zenith_color:     [0.35, 0.55, 0.85]
@@ -157,3 +133,19 @@ water:
   ripple_scale:       1.5
   ripple_speed:       1.0
   wave_steepness:     0.65
+
+  # ---- Underwater post-process (fires when the camera is below sea
+  # level; per-pixel masked so a half-submerged camera leaves dry-side
+  # pixels untouched).
+  #
+  # The fog itself reuses the same Beer-Lambert formula the water cap
+  # uses when looking down through water from above (absorption +
+  # deep_color above), so above-water and below-water views read as
+  # the same body of water. Only the screen-space distortion has its
+  # own knob — it has no above-water analogue.
+  #
+  # underwater_distortion  float  amplitude (in screen-UV units) of the
+  #                               sin-perturbation applied to the scene
+  #                               sample on underwater pixels. ~0.005
+  #                               is a subtle shimmer; 0.0 disables it.
+  underwater_distortion:   0.0015

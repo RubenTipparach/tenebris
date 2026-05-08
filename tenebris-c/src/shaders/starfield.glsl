@@ -128,7 +128,9 @@ void main() {
     // camera's altitude through the atmosphere shell.
     col *= u_sky_params.w;
 
-    frag_color = vec4(col, 1.0);
+    /* Alpha = wet mask (0 = dry). Stars/nebula are sky pixels —
+     * never underwater, so dry. composite.glsl reads this. */
+    frag_color = vec4(col, 0.0);
 }
 @end
 

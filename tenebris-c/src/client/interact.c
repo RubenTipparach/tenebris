@@ -1,5 +1,6 @@
 #include "client/interact.h"
 #include "client/input.h"
+#include "client/torch.h"
 #include "core/blocks.h"
 #include <math.h>
 
@@ -42,58 +43,108 @@ static bool world_to_tile_depth(const world_t* w, dvec3_t pos, int hint,
 /* ----------------------------------------------------------------------- */
 
 void interact_update(interact_state_t* s, world_t* w, player_ctrl_t* p, float dt) {
-    s->has_target = false;
+    s->has_target      = false;
+    s->is_torch_target = false;
+    s->torch_idx       = -1;
 
     /* Eye position from the player's carried basis. */
     dvec3_t eye = dvec3_add(p->position, dvec3_scale(p->basis.up, 1.6));
     dvec3_t dir = player_look_dir(p);
 
-    /* Fixed-step raycast. */
+    /* Fixed-step voxel raycast. */
     const double step_m = 0.25;
     int prev_tile = -1, prev_depth = -1;
     bool prev_valid = false;
     int hint = p->last_tile;
+    double block_dist = INTERACT_MAX_DIST + 1.0;
+    bool   block_hit  = false;
+    int    block_tile = 0, block_depth = 0, block_place_tile = 0, block_place_depth = 0;
 
-    for (double d = 0.0; d <= INTERACT_MAX_DIST; d += step_m) {
-        dvec3_t cur = dvec3_add(eye, dvec3_scale(dir, d));
+    for (double dd = 0.0; dd <= INTERACT_MAX_DIST; dd += step_m) {
+        dvec3_t cur = dvec3_add(eye, dvec3_scale(dir, dd));
         int tile, depth;
         if (!world_to_tile_depth(w, cur, hint, &tile, &depth)) continue;
         hint = tile;
         block_t blk = world_get(w, tile, depth);
         if (block_is_solid(blk)) {
-            s->has_target  = true;
-            s->hit_tile    = tile;
-            s->hit_depth   = depth;
-            s->place_tile  = prev_valid ? prev_tile  : tile;
-            s->place_depth = prev_valid ? prev_depth : depth + 1;
-            s->distance    = d;
+            block_hit         = true;
+            block_tile        = tile;
+            block_depth       = depth;
+            block_place_tile  = prev_valid ? prev_tile  : tile;
+            block_place_depth = prev_valid ? prev_depth : depth + 1;
+            block_dist        = dd;
             break;
         }
         prev_tile = tile; prev_depth = depth; prev_valid = true;
     }
 
-    /* Reset mining timer if the target moved or we released LMB. */
+    /* Torch raycast — placed-torch entities are NOT in the voxel grid,
+     * so they need their own intersection pass. Whichever target sits
+     * closer along the look ray wins; the torch path short-circuits
+     * the block path so a torch always takes precedence on a tie. */
+    vec3_t eye_f = (vec3_t){ (float)eye.x, (float)eye.y, (float)eye.z };
+    vec3_t dir_f = (vec3_t){ (float)dir.x, (float)dir.y, (float)dir.z };
+    float  torch_dist_f = 1e30f;
+    int    torch_hit    = torch_raycast(eye_f, dir_f, (float)INTERACT_MAX_DIST,
+                                        &torch_dist_f);
+    bool   target_torch = (torch_hit >= 0) &&
+                          (!block_hit || (double)torch_dist_f <= block_dist);
+
+    if (target_torch) {
+        s->has_target      = true;
+        s->is_torch_target = true;
+        s->torch_idx       = torch_hit;
+        s->distance        = (double)torch_dist_f;
+        /* Block fields stay zero — caller branches on is_torch_target. */
+    } else if (block_hit) {
+        s->has_target  = true;
+        s->hit_tile    = block_tile;
+        s->hit_depth   = block_depth;
+        s->place_tile  = block_place_tile;
+        s->place_depth = block_place_depth;
+        s->distance    = block_dist;
+    }
+
+    /* Reset mining timer when the block target changes (or there
+     * isn't one). Mining progress is block-only — torches are
+     * removed instantly on click in either mode. */
     const input_state_t* in = input_state();
-    /* Note: input.c marks left_click as edge-triggered (true on the
-     * frame of touch-down/click-down). For survival we want a "held"
-     * signal — input_state.phys doesn't have that for mouse, so we
-     * approximate by the click-down edge re-arming each frame the
-     * raycast is on the same block. Held detection comes from input
-     * flags later if we add a dedicated mouse-held bit; for now the
-     * timer holds across frames as long as the target tile/depth
-     * doesn't change. */
-    const bool target_changed =
-        !s->has_target ||
-         s->hit_tile  != s->mining_tile ||
-         s->hit_depth != s->mining_depth;
-    if (target_changed) {
+    const bool block_target_changed =
+        target_torch || !block_hit ||
+        block_tile  != s->mining_tile ||
+        block_depth != s->mining_depth;
+    if (block_target_changed) {
         s->mining_progress_s = 0.0f;
-        s->mining_tile  = s->has_target ? s->hit_tile  : -1;
-        s->mining_depth = s->has_target ? s->hit_depth : -1;
+        s->mining_tile  = block_hit && !target_torch ? block_tile  : -1;
+        s->mining_depth = block_hit && !target_torch ? block_depth : -1;
+    }
+
+    /* ---- Torch target click handling ----
+     * Both creative and survival break torches instantly on the
+     * left-click edge. Survival recovers a TORCH item back into
+     * inventory; creative drops the torch on the floor (it was
+     * effectively free anyway). The dirty-in-range walk re-bakes
+     * per-vertex torch_light on every tile whose terrain was lit
+     * by the removed torch. */
+    if (target_torch) {
+        if (in->left_click) {
+            vec3_t pos = torch_position_at(s->torch_idx);
+            torch_remove(s->torch_idx);
+            world_dirty_in_range(w, pos, TORCH_LIGHT_RANGE_M);
+            if (p->survival_mode) inventory_add(&p->inventory, BLOCK_TORCH);
+            /* Index is now invalid (swap-removed); clear it so the
+             * HUD doesn't print stale state for the rest of this
+             * frame. */
+            s->is_torch_target = false;
+            s->torch_idx       = -1;
+            s->has_target      = false;
+        }
+        return;
     }
 
     if (!s->has_target) return;
 
+    /* ---- Block target click handling (unchanged from before) ---- */
     block_t target_block = world_get(w, s->hit_tile, s->hit_depth);
 
     /* SURVIVAL: hold LMB on a block to mine it over MINING_TIME_S. The
@@ -125,8 +176,38 @@ void interact_update(interact_state_t* s, world_t* w, player_ctrl_t* p, float dt
             inventory_can_place(&p->inventory))
         {
             block_t to_place = inventory_selected(&p->inventory);
-            world_set(w, s->place_tile, s->place_depth, to_place);
-            inventory_consume(&p->inventory);
+            if (to_place == BLOCK_TORCH) {
+                /* A torch is NOT a hex block — it's an entity drawn
+                 * by torch.c. Place it sitting on top of the targeted
+                 * solid block (s->hit_tile / s->hit_depth) with its
+                 * up vector aligned to the local surface normal so it
+                 * stands "up" everywhere on the sphere. The block
+                 * grid stays untouched. */
+                const goldberg_tile_t* tt = goldberg_tile(w->grid, s->hit_tile);
+                if (tt) {
+                    /* Top face of the hit block sits at radius
+                     * world_depth_to_radius_m(hit_depth + 1). */
+                    double r_top = world_depth_to_radius_m(w, s->hit_depth + 1);
+                    vec3_t base_dir = (vec3_t){
+                        (float)tt->center.x,
+                        (float)tt->center.y,
+                        (float)tt->center.z,
+                    };
+                    vec3_t base_pos = vec3_scale(base_dir, (float)r_top);
+                    if (torch_place(base_pos, base_dir, s->hit_tile)) {
+                        /* Dirty every tile whose centre sits within
+                         * the torch's light range — they need their
+                         * per-vertex torch_light re-baked. The
+                         * renderer's per-frame dirty sweep will
+                         * remesh + re-upload affected chunks. */
+                        world_dirty_in_range(w, base_pos, TORCH_LIGHT_RANGE_M);
+                        inventory_consume(&p->inventory);
+                    }
+                }
+            } else {
+                world_set(w, s->place_tile, s->place_depth, to_place);
+                inventory_consume(&p->inventory);
+            }
         }
     }
 }

@@ -27,7 +27,11 @@
       "Bash(npm run build:itch:*)",
       "Bash(powershell.exe -NoProfile -NonInteractive -Command \"Get-ChildItem -Path src/shaders -Recurse -Filter *.vert | % { (Get-Content $_.FullName -Raw) -replace [char]13 | Set-Content $_.FullName -NoNewline }\")",
       "Bash(find:*)",
-      "Bash(git -C \"c:\\Users\\santi\\repos\\tenebris\" diff 66d65bb HEAD -- src/planet/Planet.ts)"
+      "Bash(git -C \"c:\\Users\\santi\\repos\\tenebris\" diff 66d65bb HEAD -- src/planet/Planet.ts)",
+      "Bash(cmake --build tenebris-c/build-native --target tenebris)",
+      "Bash(cmake --build c:/Users/santi/repos/tenebris/tenebris-c/build-native)",
+      "Bash(cmake --build c:/Users/santi/repos/tenebris/tenebris-c/build-native --target clean)",
+      "Bash(cmake --build tenebris-c/build-native --target tenebris -- -d explain)"
     ],
     "deny": [],
     "ask": []

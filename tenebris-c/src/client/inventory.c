@@ -5,16 +5,20 @@
 
 void inventory_init_creative(inventory_t* inv) {
     memset(inv, 0, sizeof(*inv));
-    /* A reasonable Minecraft-ish starter row of buildable blocks. */
+    /* Hotbar layout: rocks first (slot 1) so a fresh creative session
+     * starts holding the most common building block, torch second
+     * (slot 2) so light-placement is one keypress away — matches the
+     * JS reference hotbar order. The rest is a sensible terrain
+     * palette. */
     inv->slots[0] = (inv_slot_t){ BLOCK_STONE,  CREATIVE_COUNT };
-    inv->slots[1] = (inv_slot_t){ BLOCK_DIRT,   CREATIVE_COUNT };
-    inv->slots[2] = (inv_slot_t){ BLOCK_GRASS,  CREATIVE_COUNT };
-    inv->slots[3] = (inv_slot_t){ BLOCK_SAND,   CREATIVE_COUNT };
-    inv->slots[4] = (inv_slot_t){ BLOCK_WOOD,   CREATIVE_COUNT };
-    inv->slots[5] = (inv_slot_t){ BLOCK_LEAVES, CREATIVE_COUNT };
-    inv->slots[6] = (inv_slot_t){ BLOCK_ICE,    CREATIVE_COUNT };
-    inv->slots[7] = (inv_slot_t){ BLOCK_SNOW,   CREATIVE_COUNT };
-    inv->slots[8] = (inv_slot_t){ BLOCK_WATER,  CREATIVE_COUNT };
+    inv->slots[1] = (inv_slot_t){ BLOCK_TORCH,  CREATIVE_COUNT };
+    inv->slots[2] = (inv_slot_t){ BLOCK_DIRT,   CREATIVE_COUNT };
+    inv->slots[3] = (inv_slot_t){ BLOCK_GRASS,  CREATIVE_COUNT };
+    inv->slots[4] = (inv_slot_t){ BLOCK_SAND,   CREATIVE_COUNT };
+    inv->slots[5] = (inv_slot_t){ BLOCK_WOOD,   CREATIVE_COUNT };
+    inv->slots[6] = (inv_slot_t){ BLOCK_LEAVES, CREATIVE_COUNT };
+    inv->slots[7] = (inv_slot_t){ BLOCK_ICE,    CREATIVE_COUNT };
+    inv->slots[8] = (inv_slot_t){ BLOCK_SNOW,   CREATIVE_COUNT };
     inv->selected = 0;
 }
 

@@ -23,6 +23,11 @@ typedef struct {
      * pickups + costs time, or is instantaneous + free (creative). */
     inventory_t inventory;
     bool        survival_mode;
+    /* Fractional accumulator for mouse-wheel hotbar cycling. Trackpad
+     * scrolls send small per-frame deltas; we only step a slot per
+     * unit of accumulated scroll so high-resolution input doesn't
+     * skip past every slot in one swipe. */
+    float       hotbar_scroll_accum;
 
     /* Parallel-transported tangent frame, anchored to the *current*
      * body — up is the surface normal of `body`, not of the world

@@ -27,6 +27,8 @@
 #include "client/mobile_ui.h"
 #include "client/teleport_menu.h"
 #include "client/inventory.h"
+#include "client/hotbar_ui.h"
+#include "client/torch.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -129,7 +131,9 @@ static void init(void) {
     input_init();
     job_system_init(0);
     renderer_init();
+    torch_init();
     mobile_ui_init();
+    hotbar_ui_init();
     teleport_menu_init();
     teleport_menu_set_player(&G.player);
 
@@ -142,6 +146,7 @@ static void init(void) {
     config_load_skybox("assets/config/skybox.yaml");
     config_load_lod("assets/config/lod.yaml");
     config_load_water("assets/config/water.yaml");
+    config_load_lighting("assets/config/lighting.yaml");
     /* One-shot dump of Tenebris's effective atmosphere values so we
      * can sanity-check that the YAML actually landed (vs. defaults
      * from main_web.c being silently used). Comment out once the
@@ -165,7 +170,7 @@ static void init(void) {
     }
 
     G.body  = planet_get(BODY_TENEBRIS);
-    G.world = world_create(G.body, G.body->subdivisions);
+    G.world = world_create(G.body, planet_subdivisions_for_radius(G.body->radius_m));
     player_init(&G.player, G.body);
 
     /* Drain Tenebris gen synchronously at init so the spawn tile has
@@ -184,13 +189,14 @@ static void init(void) {
     /* Build and register every non-main body — moons, neighbouring
      * planets, the asteroid belt. Each is fully generated + chunked
      * synchronously at boot, so block edits on any of them go through
-     * the same dirty-rebuild path the active body uses. Asteroids
-     * have subs=3 (642 tiles), moons subs=3–4, sister planets up to
-     * subs=6 — total init cost ~700 ms but it's a one-off. */
+     * the same dirty-rebuild path the active body uses. Subdivision
+     * count is auto-picked from radius (planet_subdivisions_for_radius)
+     * to target ~1 m hex width on every body — small asteroids end up
+     * at subs 3-4, moons 5-6, big planets capped at 7 (~163k tiles). */
     for (int id = BODY_LUNA; id < BODY_COUNT; ++id) {
         const body_config_t* b = planet_get((body_id_t)id);
         if (!b) continue;
-        world_t* body_world = world_create(b, b->subdivisions);
+        world_t* body_world = world_create(b, planet_subdivisions_for_radius(b->radius_m));
         while (!world_gen_complete(body_world)) world_stream_gen(body_world, body_world->tile_count);
         renderer_register_world(body_world);
         if (G.moon_count < (int)(sizeof(G.moons) / sizeof(G.moons[0]))) {
@@ -245,8 +251,14 @@ static void update_overlay(float dt) {
         sdtx_color3b(0xff, 0xff, 0xff);
     }
     if (G.interact.has_target) {
-        sdtx_printf("target: tile=%d depth=%d dist=%.1fm\n",
-                    G.interact.hit_tile, G.interact.hit_depth, G.interact.distance);
+        if (G.interact.is_torch_target) {
+            sdtx_printf("target: torch #%d  dist=%.1fm  [LMB break]\n",
+                        G.interact.torch_idx, G.interact.distance);
+        } else {
+            sdtx_printf("target: tile=%d depth=%d dist=%.1fm\n",
+                        G.interact.hit_tile, G.interact.hit_depth,
+                        G.interact.distance);
+        }
     }
 
     /* Mode + hotbar. */
@@ -293,39 +305,6 @@ static void update_overlay(float dt) {
         sdtx_color3b(0xff, 0xff, 0xff);
     }
 
-    /* Hotbar — one line, selected slot wrapped in '>...<'. */
-    {
-        const inventory_t* inv = &G.player.inventory;
-        sdtx_printf("\nhotbar: ");
-        for (int i = 0; i < INV_HOTBAR_SLOTS; ++i) {
-            const inv_slot_t* s = &inv->slots[i];
-            if (i == inv->selected) sdtx_color3b(0xff, 0xe0, 0x40);
-            else                     sdtx_color3b(0xb0, 0xb0, 0xc0);
-            const char* name = "----";
-            switch (s->type) {
-                case BLOCK_AIR:    name = "----"; break;
-                case BLOCK_STONE:  name = "STON"; break;
-                case BLOCK_DIRT:   name = "DIRT"; break;
-                case BLOCK_GRASS:  name = "GRSS"; break;
-                case BLOCK_SAND:   name = "SAND"; break;
-                case BLOCK_WATER:  name = "WATR"; break;
-                case BLOCK_ICE:    name = "ICE "; break;
-                case BLOCK_SNOW:   name = "SNOW"; break;
-                case BLOCK_WOOD:   name = "WOOD"; break;
-                case BLOCK_LEAVES: name = "LEAF"; break;
-                default:           name = "BLK "; break;
-            }
-            if (s->type == BLOCK_AIR) {
-                sdtx_printf(" %d:----", i + 1);
-            } else if (s->count > 9000) {
-                sdtx_printf(" %d:%s*", i + 1, name);   /* * == effectively infinite */
-            } else {
-                sdtx_printf(" %d:%s%d", i + 1, name, s->count);
-            }
-        }
-        sdtx_color3b(0xff, 0xff, 0xff);
-        sdtx_printf("\n");
-    }
 
     if (!input_state()->pointer_locked && !input_state()->touch_active) {
         sdtx_color3b(0xf0, 0xc0, 0x50);
@@ -496,10 +475,11 @@ static void frame(void) {
     renderer_draw_sun(view, proj);
     renderer_draw_world(view, proj, G.world, cam_world, dt);
     renderer_draw_moons(view, proj, cam_world);
+    renderer_draw_torches(view, proj);
 
     /* Hand off to the swapchain pass — blits the offscreen colour
      * (everything opaque) onto the swapchain. */
-    renderer_compose_to_swapchain();
+    renderer_compose_to_swapchain(view, proj);
 
     /* Water now draws in the swapchain pass on TOP of the composited
      * scene. The water shader samples the offscreen colour + depth
@@ -512,6 +492,7 @@ static void frame(void) {
     teleport_menu_draw();
     draw_error_overlay();
     sdtx_draw();
+    hotbar_ui_draw(&G.player.inventory);
     mobile_ui_draw();
 
     renderer_end_frame();
@@ -527,6 +508,9 @@ static void event(const sapp_event* e) {
      * touch devices. Hides the chunked planet terrain so the
      * atmosphere / sky / distant LOD passes can be verified in
      * isolation. State lives in the renderer; we just flip it here. */
+    /* Keyboard shortcuts for the debug toggles. Mirror the four
+     * buttons in the hamburger drop-down (mobile_ui.c) so a desktop
+     * user can flip them without reaching for the mouse. */
     if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_H) {
         renderer_set_terrain_visible(!renderer_terrain_visible());
         return;
@@ -539,24 +523,19 @@ static void event(const sapp_event* e) {
         renderer_set_skybox_visible(!renderer_skybox_visible());
         return;
     }
+    /* Note: no F key for the heatmap — F is already bound to fly-mode
+     * in input.c. The heatmap is reachable via the menu button only. */
+
+    /* Debug-menu hit-test runs first on both touch + mouse so the
+     * hamburger and its popup buttons consume the input before it
+     * reaches the movement layer. */
     if (e->type == SAPP_EVENTTYPE_TOUCHES_BEGAN && e->num_touches > 0) {
-        const float w = sapp_widthf();
-        const float corner = 96.0f;   /* px hit-box edge length */
-        float tx = e->touches[0].pos_x;
-        float ty = e->touches[0].pos_y;
-        if (tx > w - corner && ty < corner) {
-            renderer_set_terrain_visible(!renderer_terrain_visible());
+        if (mobile_ui_handle_touch(e->touches[0].pos_x, e->touches[0].pos_y)) {
             return;
         }
-        if (tx < corner && ty < corner) {
-            renderer_set_water_visible(!renderer_water_visible());
-            return;
-        }
-        /* Top-middle band toggles sky / atmosphere. Same height as
-         * the other two corner zones. */
-        if (ty < corner && tx > w * 0.5f - corner * 0.5f
-                       && tx < w * 0.5f + corner * 0.5f) {
-            renderer_set_skybox_visible(!renderer_skybox_visible());
+    }
+    if (e->type == SAPP_EVENTTYPE_MOUSE_DOWN && e->mouse_button == SAPP_MOUSEBUTTON_LEFT) {
+        if (mobile_ui_handle_touch(e->mouse_x, e->mouse_y)) {
             return;
         }
     }
@@ -568,7 +547,9 @@ static void event(const sapp_event* e) {
 
 static void cleanup(void) {
     teleport_menu_shutdown();
+    hotbar_ui_shutdown();
     mobile_ui_shutdown();
+    torch_shutdown();
     renderer_shutdown();
     for (int i = 0; i < G.moon_count; ++i) world_destroy(G.moons[i]);
     G.moon_count = 0;
