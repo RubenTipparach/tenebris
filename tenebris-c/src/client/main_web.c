@@ -357,9 +357,35 @@ static void update_overlay(float dt) {
 /* --------------------------------------------------------------------- */
 
 static void frame(void) {
-    const double dt_sec = stm_sec(stm_laptime(&G.last_time));
-    float dt = (float)dt_sec;
-    if (dt > 0.1f) dt = 0.1f;
+    const double raw_dt_sec = stm_sec(stm_laptime(&G.last_time));
+    float dt = (float)raw_dt_sec;
+    /* Lag-spike handling. body_load_detail meshes a whole planet in
+     * one go (~160k tiles for Crag / Frostbite, multiple seconds of
+     * CPU work synchronously inside renderer_draw_world). While that
+     * stalls the frame, the browser keeps firing pointer-move events
+     * which input.c happily accumulates into mouse_dx / mouse_dy.
+     * When the frame finally completes, the next player_update gets
+     * a normal-looking dt (clamped below) but a HUGE accumulated
+     * mouse delta — yaw_delta = mouse_dx * MOUSE_SENS spins the
+     * camera by tens of degrees in one tick. That's the "wild rotate
+     * on chunk load" bug. Solution: when raw_dt indicates a stall,
+     * discard the mouse + look-stick deltas before clamping dt, so
+     * the player resumes from the orientation they had pre-stall
+     * rather than wherever the cursor happened to drift. */
+    const float LAG_SPIKE_S = 0.1f;
+    if (dt > LAG_SPIKE_S) {
+        printf("[ERROR] [lag] frame stall %.3fs (clamped to %.3fs); "
+               "discarding %d/%d px of accumulated mouse delta\n",
+               dt, LAG_SPIKE_S,
+               (int)input_state()->mouse_dx, (int)input_state()->mouse_dy);
+        fflush(stdout);
+        input_state_t* s = input_state_mut();
+        s->mouse_dx = 0;
+        s->mouse_dy = 0;
+        s->look_stick_x = 0;
+        s->look_stick_y = 0;
+        dt = LAG_SPIKE_S;
+    }
     G.tick++;
 
     /* Stream a few tiles of terrain per frame. */
