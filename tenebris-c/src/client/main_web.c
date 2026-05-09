@@ -388,7 +388,11 @@ static void frame(void) {
     G.tick++;
     profiler_begin_frame();
 
-    /* Stream a few tiles of terrain per frame. */
+    /* Stream a few tiles of terrain per frame. The profiler slot
+     * names use '-' separators rather than '_' because sokol_debug-
+     * text's oric font renders ASCII 0x5F ('_') as a euro-sign glyph
+     * — switching the labels keeps the readout legible without
+     * swapping fonts or patching the third-party header. */
     profiler_begin("worldgen");
     if (!world_gen_complete(G.world)) {
         world_stream_gen(G.world, GEN_TILES_PER_FRAME);
@@ -434,9 +438,9 @@ static void frame(void) {
      * misses so the path is never NULL. */
     world_t* phys_world = world_for_body(G.player.body);
     if (!phys_world) phys_world = G.world;
-    profiler_begin("player_update");
+    profiler_begin("player-update");
     player_update(&G.player, phys_world, dt);
-    profiler_end("player_update");
+    profiler_end("player-update");
     profiler_begin("interact");
     interact_update(&G.interact, phys_world, &G.player, dt);
     profiler_end("interact");
@@ -567,21 +571,21 @@ static void frame(void) {
 
     renderer_begin_frame(sapp_width(), sapp_height(), env);
     /* Opaque scene → offscreen colour + depth attachments. */
-    profiler_begin("draw_skybox");
+    profiler_begin("draw-skybox");
     renderer_draw_skybox(view, proj);
-    profiler_end("draw_skybox");
-    profiler_begin("draw_sun");
+    profiler_end("draw-skybox");
+    profiler_begin("draw-sun");
     renderer_draw_sun(view, proj);
-    profiler_end("draw_sun");
-    profiler_begin("draw_world");
+    profiler_end("draw-sun");
+    profiler_begin("draw-world");
     renderer_draw_world(view, proj, G.world, cam_world, dt);
-    profiler_end("draw_world");
-    profiler_begin("draw_moons");
+    profiler_end("draw-world");
+    profiler_begin("draw-moons");
     renderer_draw_moons(view, proj, cam_world);
-    profiler_end("draw_moons");
-    profiler_begin("draw_torches");
+    profiler_end("draw-moons");
+    profiler_begin("draw-torches");
     renderer_draw_torches(view, proj);
-    profiler_end("draw_torches");
+    profiler_end("draw-torches");
 
     /* Hand off to the swapchain pass — blits the offscreen colour
      * (everything opaque) onto the swapchain. */
@@ -593,9 +597,9 @@ static void frame(void) {
      * scene. The water shader samples the offscreen colour + depth
      * textures (the underwater scene we just composited) for
      * screen-space refraction and manual depth-discard. */
-    profiler_begin("draw_water");
+    profiler_begin("draw-water");
     renderer_draw_water(view, proj, cam_world);
-    profiler_end("draw_water");
+    profiler_end("draw-water");
 
     /* UI overlays go on the swapchain on top of the water. */
     profiler_begin("ui");

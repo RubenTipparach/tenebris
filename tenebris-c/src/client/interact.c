@@ -20,12 +20,18 @@ static dvec3_t player_look_dir(const player_ctrl_t* p) {
 }
 
 /* Convert a world position to (tile, depth). tile lookup uses the
- * player's last-known tile as a hint for speed. */
+ * player's last-known tile as a hint for speed. *out_tile is set
+ * to the resolved tile EVEN WHEN the depth check fails, so callers
+ * stepping along a ray can keep the goldberg hint warm across
+ * iterations — without that, an out-of-bounds raycast (player above
+ * the planet's voxel column range) hands a stale -1 hint into every
+ * step, blowing the search back into a slow path. */
 static bool world_to_tile_depth(const world_t* w, dvec3_t pos, int hint,
                                 int* out_tile, int* out_depth) {
     dvec3_t dir = dvec3_normalize(pos);
     int tile = goldberg_find_tile(w->grid, dir, hint);
     if (tile < 0) return false;
+    *out_tile = tile;
     double r = dvec3_length(pos);
     /* Invert world_depth_to_radius_m: r = body_r - (SEA_LEVEL_IDX - d)
      * with block height = 1m. So depth = (r - body_r) + SEA_LEVEL_IDX.
@@ -35,7 +41,6 @@ static bool world_to_tile_depth(const world_t* w, dvec3_t pos, int hint,
     const int SEA_LEVEL_IDX = 64;
     int depth = (int)floor(r - w->body->radius_m) + SEA_LEVEL_IDX;
     if (depth < 0 || depth >= WORLD_MAX_DEPTH) return false;
-    *out_tile  = tile;
     *out_depth = depth;
     return true;
 }
@@ -46,6 +51,17 @@ void interact_update(interact_state_t* s, world_t* w, player_ctrl_t* p, float dt
     s->has_target      = false;
     s->is_torch_target = false;
     s->torch_idx       = -1;
+
+    /* In space mode there are no blocks within reach — no point
+     * raycasting. Skip the whole pass; mining_progress stays at 0
+     * so the existing reset-on-target-change branch still does the
+     * right thing on landing. This is the dominant fix for the
+     * "framerate tanks in space" report — interact_update was
+     * burning ~140 ms / frame when the raycast couldn't find a tile
+     * column inside its 8 m reach (every step's depth check failed
+     * with an out-of-range result, but the goldberg lookup still
+     * ran on every iteration). */
+    if (p->is_in_space) return;
 
     /* Eye position from the player's carried basis. */
     dvec3_t eye = dvec3_add(p->position, dvec3_scale(p->basis.up, 1.6));
@@ -62,9 +78,14 @@ void interact_update(interact_state_t* s, world_t* w, player_ctrl_t* p, float dt
 
     for (double dd = 0.0; dd <= INTERACT_MAX_DIST; dd += step_m) {
         dvec3_t cur = dvec3_add(eye, dvec3_scale(dir, dd));
-        int tile, depth;
-        if (!world_to_tile_depth(w, cur, hint, &tile, &depth)) continue;
-        hint = tile;
+        int tile = -1, depth = 0;
+        bool inside = world_to_tile_depth(w, cur, hint, &tile, &depth);
+        /* Keep the hint warm even when depth was out of range —
+         * world_to_tile_depth still wrote out_tile, so subsequent
+         * iterations get a fresh greedy starting point instead of
+         * falling back to an O(N) scan. */
+        if (tile >= 0) hint = tile;
+        if (!inside) continue;
         block_t blk = world_get(w, tile, depth);
         if (block_is_solid(blk)) {
             block_hit         = true;

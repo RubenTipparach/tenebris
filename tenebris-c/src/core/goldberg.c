@@ -266,14 +266,17 @@ const goldberg_tile_t* goldberg_tile(const goldberg_t* g, int index) {
 int goldberg_find_tile(const goldberg_t* g, dvec3_t unit_dir, int hint) {
     dvec3_t p = dvec3_normalize(unit_dir);
     if (hint < 0 || hint >= g->count) {
-        int best = 0;
-        double best_d2 = 1e30;
-        for (int i = 0; i < g->count; ++i) {
-            dvec3_t d = dvec3_sub(g->tiles[i].center, p);
-            double dd = dvec3_dot(d, d);
-            if (dd < best_d2) { best_d2 = dd; best = i; }
-        }
-        return best;
+        /* No usable hint — bootstrap the greedy walk from tile 0
+         * instead of doing a full linear scan. The Goldberg
+         * neighbourhood graph is well-connected (5–6 neighbours per
+         * tile), so the loop below converges in O(log N) hops on
+         * the unit sphere. The old full-scan fallback was the
+         * proximate cause of the "framerate tanks in space" bug:
+         * interact.c's raycast called this 32 times per frame with
+         * a stale -1 hint when the player was outside any voxel
+         * column, meaning 32 × 163k = 5.2 M distance comparisons
+         * per frame. */
+        hint = 0;
     }
     /* Greedy walk along neighbors toward the nearest tile. */
     int cur = hint;
