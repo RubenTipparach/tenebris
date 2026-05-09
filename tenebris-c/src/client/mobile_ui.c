@@ -272,27 +272,28 @@ void mobile_ui_draw(void) {
     /* Buttons stacked vertically to the left of the right stick. The
      * right thumb can hop between the look stick and the buttons
      * without crossing the screen. Order (top to bottom):
-     *   BREAK / PLACE / JUMP — jump at the bottom, closest to the
-     *   stick so your thumb rests there. The teleport button used to
-     *   sit above BREAK; it now lives in the debug-menu drop-down at
-     *   top-right alongside the render flags + profiler. Frees up
-     *   thumb-reachable space on the main HUD. */
+     *   TP / BREAK / PLACE / JUMP — jump at the bottom, closest to the
+     *   stick so your thumb rests there. The teleport entry point
+     *   ALSO lives in the top-right debug-menu drop-down; both are
+     *   wired so mobile users have a one-tap shortcut and desktop
+     *   users still have the menu version. */
     const float bx = right_sx - STICK_RADIUS - BTN_GAP - BTN_RADIUS;
     const float j_y = right_sy + STICK_RADIUS - BTN_RADIUS;            /* bottom-aligned */
     const float p_y = j_y - (BTN_RADIUS * 2.0f + BTN_GAP);
     const float b_y = p_y - (BTN_RADIUS * 2.0f + BTN_GAP);
+    const float tp_y = b_y - (BTN_RADIUS * 2.0f + BTN_GAP);
 
-    /* Report hit rects to input.c. The old btn_tp_* slot is left
-     * zeroed so input.c's classify_touch never matches it — we route
-     * teleport entirely through the debug menu now. menu-nav buttons
-     * are still registered by teleport_menu when open. */
+    /* Report hit rects to input.c. TP is its own slot; menu-nav
+     * buttons are registered by teleport_menu when open. */
     input_register_mobile_buttons(
         bx, b_y, BTN_RADIUS,
         bx, p_y, BTN_RADIUS,
         bx, j_y, BTN_RADIUS);
     {
         input_state_t* in = input_state_mut();
-        in->btn_tp_cx = 0; in->btn_tp_cy = 0; in->btn_tp_r = 0;
+        in->btn_tp_cx = bx;
+        in->btn_tp_cy = tp_y;
+        in->btn_tp_r  = BTN_RADIUS;
     }
 
     /* Orthographic projection: (0,0) top-left to (w,h) bottom-right. */
@@ -361,7 +362,13 @@ void mobile_ui_draw(void) {
     draw_ring      (bx, j_y, BTN_RADIUS - 2.0f, BTN_RADIUS, 32, 1.00f, 0.95f, 0.55f, 0.75f);
     draw_glyph('J', bx, j_y, 16.0f, 1.0f, 1.0f, 0.9f);
 
-    /* (Teleport button moved to the debug-menu drop-down at top-right.) */
+    /* Teleport (purple) — top of the stack, out of the way of the
+     * combat-relevant buttons. Mirrors the [T] toggle in the
+     * top-right debug menu so mobile users have a one-tap entry to
+     * the teleport list without opening the hamburger first. */
+    draw_circle_fan(bx, tp_y, BTN_RADIUS,        32, 0.35f, 0.20f, 0.50f, 0.50f);
+    draw_ring      (bx, tp_y, BTN_RADIUS - 2.0f, BTN_RADIUS, 32, 0.85f, 0.60f, 1.00f, 0.75f);
+    draw_glyph('T', bx, tp_y, 16.0f, 1.0f, 0.95f, 1.0f);
 
     /* Debug-toggle menu — single hamburger button at the top-right
      * corner that drops down a vertical column of three toggles when
