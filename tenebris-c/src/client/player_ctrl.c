@@ -13,9 +13,10 @@
 #define LOOK_STICK_SENS  2.4f
 #define WALK_SPEED       8.0f
 #define SPRINT_SPEED    14.0f
-#define JUMP_VEL         8.0f
-#define JETPACK_ACCEL   42.0f
-#define JETPACK_MAX_VY  14.0f
+/* JUMP_VEL / JETPACK_* are now sourced from lod.yaml (config_lod()->
+ * jump_velocity_mps / jetpack_accel_mps2 / jetpack_max_vy_mps); the
+ * old defines are retired so the only knob designers reach for is
+ * the YAML, not a recompile. */
 #define PITCH_LIMIT      1.55334f
 
 /* ----------------------------------------------------------------------- */
@@ -212,6 +213,8 @@ void player_init(player_ctrl_t* p, const body_config_t* body) {
     p->is_in_space = false;
     p->transition_timer_s = 0.0f;
     p->last_tile = -1;
+    p->jump_held_s = 0.0f;
+    p->jump_consumed = false;
     p->basis_ready = false;
     /* Default to creative — the menu / a key toggle will switch to
      * survival, which calls inventory_init_empty + sets survival_mode. */
@@ -600,12 +603,34 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
      * the player drifts up out of the well their fall slows. */
     const float base_gravity = 25.0f * p->body->gravity_g;
     const float gravity = base_gravity * gq.multiplier;
-    if (in->phys.jump && p->grounded) {
-        vy = JUMP_VEL;
-        p->grounded = false;
-    } else if (in->phys.jump && !p->grounded) {
-        vy += (double)JETPACK_ACCEL * (double)dt;
-        if (vy > (double)JETPACK_MAX_VY) vy = JETPACK_MAX_VY;
+    /* Tap-to-jump vs hold-for-jetpack. Two-stage logic driven by
+     * how long the jump key has been held since its last 0→1 edge:
+     *   - On first frame of a fresh press while grounded: fire one
+     *     strong impulse (jump_velocity_mps). jump_consumed flips so
+     *     subsequent frames don't double-fire the impulse.
+     *   - While the key stays down past jetpack_hold_threshold_s,
+     *     start applying jetpack acceleration each frame, capped at
+     *     jetpack_max_vy_mps.
+     *   - When the key releases, the held timer + consumed flag
+     *     reset so the next press is a fresh tap.
+     * That gates jetpack thrust behind a deliberate hold and keeps
+     * a quick tap as a clean impulse — previously the jetpack
+     * activated the frame after the tap (the moment grounded flipped
+     * false), so even a brief press leaked thrust into the climb. */
+    if (in->phys.jump) {
+        p->jump_held_s += dt;
+        if (!p->jump_consumed && p->grounded) {
+            vy = (double)L->jump_velocity_mps;
+            p->grounded = false;
+            p->jump_consumed = true;
+        }
+        if (p->jump_held_s > L->jetpack_hold_threshold_s && !p->grounded) {
+            vy += (double)L->jetpack_accel_mps2 * (double)dt;
+            if (vy > (double)L->jetpack_max_vy_mps) vy = (double)L->jetpack_max_vy_mps;
+        }
+    } else {
+        p->jump_held_s = 0.0f;
+        p->jump_consumed = false;
     }
     if (!p->grounded) {
         vy -= (double)gravity * (double)dt;

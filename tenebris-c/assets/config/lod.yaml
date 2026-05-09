@@ -86,6 +86,15 @@ lod:
   space_thrust:           15.0
   space_drag:             1.21
   space_roll_speed:       2.0
+  # Tap-to-jump vs hold-for-jetpack discrimination. A jump press is
+  # treated as a tap (one strong impulse, scaled by jump_velocity_mps)
+  # when released within jetpack_hold_threshold_s seconds; holding
+  # past the threshold continuously fires the jetpack at
+  # jetpack_accel_mps2 up to jetpack_max_vy_mps terminal velocity.
+  jump_velocity_mps:           12.0
+  jetpack_hold_threshold_s:    0.5
+  jetpack_accel_mps2:          42.0
+  jetpack_max_vy_mps:          14.0
 
 earth:
   water_color:        [0.10, 0.28, 0.55]

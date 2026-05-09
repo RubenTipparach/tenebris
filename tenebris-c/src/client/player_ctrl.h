@@ -32,6 +32,15 @@ typedef struct {
     float       transition_timer_s;
     int         last_tile;
 
+    /* Jump/jetpack timing. jump_held_s counts seconds the jump key
+     * has been held since its last 0→1 edge; jump_consumed flips
+     * true the frame the impulse fires so it never fires twice for
+     * one press. Together they let player_update keep tap-to-jump
+     * distinct from hold-for-jetpack — jetpack thrust only kicks in
+     * once jump_held_s passes the configured threshold. */
+    float       jump_held_s;
+    bool        jump_consumed;
+
     /* Hotbar inventory. selected_block is the type the right-click
      * place will use; survival_mode gates whether breaking accumulates
      * pickups + costs time, or is instantaneous + free (creative). */

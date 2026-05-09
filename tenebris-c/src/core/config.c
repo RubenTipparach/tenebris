@@ -259,6 +259,10 @@ static lod_config_t S_LOD = {
     .space_thrust            = 15.0f,
     .space_drag              = 1.21f,   /* exp(-1.21) ≈ 0.30 ≈ JS *=0.98^60 */
     .space_roll_speed        = 2.0f,
+    .jump_velocity_mps           = 12.0f,
+    .jetpack_hold_threshold_s    = 0.5f,
+    .jetpack_accel_mps2          = 42.0f,
+    .jetpack_max_vy_mps          = 14.0f,
 };
 
 const lod_config_t* config_lod(void) { return &S_LOD; }
@@ -363,6 +367,14 @@ int config_load_lod(const char* path) {
                             S_LOD.space_drag            = (float)strtod(val, NULL);
                         } else if (strcmp(key, "space_roll_speed"     ) == 0) {
                             S_LOD.space_roll_speed      = (float)strtod(val, NULL);
+                        } else if (strcmp(key, "jump_velocity_mps"        ) == 0) {
+                            S_LOD.jump_velocity_mps           = (float)strtod(val, NULL);
+                        } else if (strcmp(key, "jetpack_hold_threshold_s" ) == 0) {
+                            S_LOD.jetpack_hold_threshold_s    = (float)strtod(val, NULL);
+                        } else if (strcmp(key, "jetpack_accel_mps2"       ) == 0) {
+                            S_LOD.jetpack_accel_mps2          = (float)strtod(val, NULL);
+                        } else if (strcmp(key, "jetpack_max_vy_mps"       ) == 0) {
+                            S_LOD.jetpack_max_vy_mps          = (float)strtod(val, NULL);
                         } else {
                             printf("[config] %s:%d: unknown key '%s'\n",
                                    path, line_no, key);

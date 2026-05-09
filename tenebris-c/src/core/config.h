@@ -150,6 +150,18 @@ typedef struct {
     float space_thrust;
     float space_drag;
     float space_roll_speed;
+
+    /* Jump / jetpack discrimination. A jump press is classified as
+     * a tap (one strong impulse, scaled by jump_velocity_mps) when
+     * the key is released within jetpack_hold_threshold_s seconds;
+     * holding past the threshold continuously fires the jetpack at
+     * jetpack_accel_mps2 acceleration up to jetpack_max_vy_mps
+     * terminal velocity. Without the threshold, every tap leaks
+     * one frame into the jetpack the moment grounded flips false. */
+    float jump_velocity_mps;
+    float jetpack_hold_threshold_s;
+    float jetpack_accel_mps2;
+    float jetpack_max_vy_mps;
 } lod_config_t;
 
 const lod_config_t* config_lod(void);
