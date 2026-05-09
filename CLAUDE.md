@@ -78,6 +78,36 @@ The only exception is values that are part of an algorithm's
 semantic meaning, it just makes the hash work. Those stay inline,
 because exposing them would invite breakage rather than tuning.
 
+## UI guidelines
+
+When the user asks for UI — menus, dialogs, popups, debug panels,
+HUD readouts — **do not generate low-effort ASCII art** as the
+default. Tenebris already has a sokol_gl helper layer with rounded
+buttons, rings, segments, glyph rendering, and an alpha-blended
+2D pipeline (see `src/client/mobile_ui.c`). New UI should use that
+layer to draw real geometry: filled rectangles or rounded buttons
+for backgrounds, distinct colours for hover / selected / disabled
+states, and `sokol_debugtext` only for labels *on top of* a real
+panel — never as the panel itself.
+
+Specifically:
+
+- A "popup menu" or "modal" means a drawn panel with a backdrop,
+  a title, and clickable rows. Not a frame of `+----+ | text |
+  +----+` characters built from `sdtx_printf`.
+- Buttons must be hit-testable. Wire each one through
+  `mobile_ui_handle_touch` (or an equivalent module-local hit
+  table) so a click / tap actually triggers its action.
+- Labels go through `sdtx_printf` because that's the only readable
+  text path. That's fine — the rule is about the *structure* of
+  the UI, not whether glyphs are rastered.
+
+The exception is plain HUD readouts that are inherently text (FPS,
+altitude, `[H] hide terrain`). Those stay as `sdtx_printf`.
+
+Only deliver an ASCII-only UI when the user explicitly asks for it
+("draw an ASCII frame", "I just want text").
+
 ## Static game asset guidelines
 
 These rules apply to every asset Claude generates, hand-edits, or asks
