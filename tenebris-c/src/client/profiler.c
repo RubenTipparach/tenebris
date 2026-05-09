@@ -89,7 +89,7 @@ bool profiler_visible(void)        { return P.visible; }
 void profiler_draw(void) {
     if (!P.visible) return;
     sdtx_color3b(0xff, 0xe0, 0x40);
-    sdtx_printf("\n=== profiler [P] ===\n");
+    sdtx_printf("\n=== profiler [F3 / P] ===\n");
     sdtx_color3b(0xc0, 0xd0, 0xff);
     sdtx_printf("frame                    %5.2f ms (avg %5.2f)  fps %4.0f\n",
                 P.frame_ms_last, P.frame_ms_avg,

@@ -333,6 +333,9 @@ static void update_overlay(float dt) {
     } else {
         sdtx_printf("[K] hide sky/atmo\n");
     }
+    /* Always-visible reminders so the player knows the keys exist
+     * even if the top-right hamburger menu is hard to spot. */
+    sdtx_printf("[T] teleport menu   [F3 / P] profiler\n");
 
     /* Mining progress bar (survival only). */
     if (G.player.survival_mode && G.interact.mining_progress_s > 0.0f) {
@@ -634,10 +637,14 @@ static void event(const sapp_event* e) {
         renderer_set_skybox_visible(!renderer_skybox_visible());
         return;
     }
-    /* Profiler toggle. F3 is intercepted by the browser ("find next"
-     * dialog) and never reaches sokol's keydown handler, so we use
-     * 'P' instead — easy mnemonic, not bound to anything else. */
-    if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_P) {
+    /* Profiler toggle. F3 is the "natural" key — the JS profiler uses
+     * it too — so we bind it. The browser also intercepts F3 for the
+     * "find next" dialog, but the keydown event still fires to sokol
+     * first, so the toggle works (the find dialog may also pop up;
+     * pressing F3 again closes it). 'P' is bound as a backup that's
+     * not browser-intercepted. */
+    if (e->type == SAPP_EVENTTYPE_KEY_DOWN &&
+        (e->key_code == SAPP_KEYCODE_F3 || e->key_code == SAPP_KEYCODE_P)) {
         profiler_toggle_visible();
         return;
     }
