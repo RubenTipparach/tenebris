@@ -23,6 +23,7 @@
 #include "sun.glsl.h"
 #include "sokol_glue.h"
 #include "sokol_log.h"
+#include "sokol_time.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
