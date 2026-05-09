@@ -109,6 +109,40 @@ static void sync_basis_to_planet(player_ctrl_t* p) {
     p->basis.fwd   = dvec3_normalize(dvec3_cross(p->basis.up,  p->basis.right));
 }
 
+/* Bake the planet-mode scalar yaw + pitch into the basis itself
+ * and zero them. compute_look applies yaw/pitch ON TOP of basis.fwd
+ * by design — that's the cheap way to accumulate look direction
+ * while basis.up tracks the planet radial. The trick stops working
+ * the moment the basis becomes 6DOF (entering space, or starting a
+ * roll-slerp on a body swap): mouse-look from then on rotates the
+ * basis directly, but compute_look would still apply the stale
+ * yaw/pitch on top, painting the view direction with a phantom
+ * offset that the player can't shake without walking back to the
+ * exact orientation they had when the transition started.
+ *
+ * Baking transfers those rotations into basis.fwd/right/up so the
+ * basis IS the orientation; subsequent space-mode mouse-look
+ * mutates the right thing. Sign conventions match the inline space-
+ * mode mouse handling: yaw rotates around basis.up by -yaw (because
+ * up × fwd = -right under our basis construction); pitch rotates
+ * around basis.right by +pitch (right × fwd = +up). Re-orthonormalise
+ * after to clamp any drift from the two sequential rotations. */
+static void bake_yaw_pitch_into_basis(player_ctrl_t* p) {
+    if (p->yaw != 0.0f) {
+        double y = (double)p->yaw;
+        p->basis.fwd   = rotate_axis_angle(p->basis.fwd,   p->basis.up, -y);
+        p->basis.right = rotate_axis_angle(p->basis.right, p->basis.up, -y);
+    }
+    if (p->pitch != 0.0f) {
+        double pi = (double)p->pitch;
+        p->basis.fwd = rotate_axis_angle(p->basis.fwd, p->basis.right,  pi);
+        p->basis.up  = rotate_axis_angle(p->basis.up,  p->basis.right,  pi);
+    }
+    orthonormalise_basis(&p->basis);
+    p->yaw = 0.0f;
+    p->pitch = 0.0f;
+}
+
 /* Roll-slerp: each frame the basis rotates by `factor` of the way
  * from its current up toward `target_up`, with fwd/right carried
  * along. Matches PlanetPlayer.slerpRollToLevel — exponential
@@ -430,6 +464,15 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
         p->body = gq.body;
         p->last_tile = -1;
     }
+    /* Edge: planet → space. Bake the planet-mode yaw/pitch into the
+     * basis so the look direction is preserved when compute_look
+     * stops adding them on top, then drop into 6DOF mutation of the
+     * basis directly. Without this, the player keeps seeing through
+     * a phantom yaw/pitch offset that mouse-look in space can never
+     * cancel. */
+    if (!was_in_space && p->is_in_space) {
+        bake_yaw_pitch_into_basis(p);
+    }
     /* Edge: leaving space → entering a gravity well. Arm the roll
      * slerp so the basis aligns smoothly with the new planet up. */
     if (was_in_space && !p->is_in_space) {
@@ -479,9 +522,16 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
             p->basis.fwd = rotate_axis_angle(p->basis.fwd, p->basis.right, pitch_delta);
             p->basis.up  = rotate_axis_angle(p->basis.up,  p->basis.right, pitch_delta);
         }
+        /* Roll Q/E: rotation around basis.fwd. Under our basis
+         * convention fwd × up = +right, so a +θ rotation around fwd
+         * tilts up toward +right — visually that's the camera
+         * banking RIGHT. Q is the "roll left" key, so we apply a
+         * NEGATIVE θ when roll_left is held; E (roll right) gets the
+         * positive θ. The previous signs were inverted, which
+         * mapped Q to a right-roll. */
         double roll_delta = 0.0;
-        if (in->phys.roll_left)  roll_delta += (double)L->space_roll_speed * (double)dt;
-        if (in->phys.roll_right) roll_delta -= (double)L->space_roll_speed * (double)dt;
+        if (in->phys.roll_left)  roll_delta -= (double)L->space_roll_speed * (double)dt;
+        if (in->phys.roll_right) roll_delta += (double)L->space_roll_speed * (double)dt;
         if (roll_delta != 0.0) {
             p->basis.up    = rotate_axis_angle(p->basis.up,    p->basis.fwd, roll_delta);
             p->basis.right = rotate_axis_angle(p->basis.right, p->basis.fwd, roll_delta);
@@ -701,6 +751,11 @@ void player_set_body(player_ctrl_t* p, const body_config_t* body) {
      * "radial w.r.t. new body" instantly. The slerp spreads that
      * rotation over ROLL_SLERP_DURATION seconds. */
     p->transition_timer_s = config_lod()->roll_slerp_duration_s;
+    /* Bake any accumulated yaw/pitch into the basis before the
+     * slerp starts. During the slerp mouse-look mutates the basis
+     * directly (6DOF style), so leaving the scalars non-zero would
+     * compound them on top of mouse rotations and warp the view. */
+    bake_yaw_pitch_into_basis(p);
 }
 
 void player_teleport_to(player_ctrl_t* p, const body_config_t* body) {
@@ -726,6 +781,11 @@ void player_teleport_to(player_ctrl_t* p, const body_config_t* body) {
      * camera into level rather than popping into a fully-locked
      * planet basis from whatever orientation the player was in. */
     p->transition_timer_s = config_lod()->roll_slerp_duration_s;
+    /* Same yaw/pitch bake reasoning as in player_set_body — during
+     * the post-teleport slerp mouse-look mutates the basis directly,
+     * so any leftover scalars would compound and warp the view. */
+    p->yaw = 0.0f;
+    p->pitch = 0.0f;
 }
 
 mat4_t player_view(const player_ctrl_t* p) {
