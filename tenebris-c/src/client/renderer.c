@@ -1132,6 +1132,13 @@ void renderer_register_world(world_t* w) {
  * the body renders the same way the active body does. */
 static void body_load_detail(chunked_body_t* body) {
     if (body->meshed) return;
+    /* This path is the prime suspect for "framerate tanks in space" —
+     * it's a synchronous mesh of every tile on the body, kicked off
+     * the first time the body enters close-LOD range. For a 160k-tile
+     * planet (Crag, Frostbite) it's seconds of CPU work blocking the
+     * frame. Time it explicitly so the profiler attributes the spike
+     * correctly instead of burying it inside draw_world / draw_moons. */
+    uint64_t t0 = stm_now();
     if (!body->chunks_allocated) {
         body_alloc_chunks(body);
         body->chunks_allocated = true;
@@ -1141,8 +1148,9 @@ static void body_load_detail(chunked_body_t* body) {
         chunk_upload(&body->chunks[ci]);
     }
     body->meshed = true;
-    printf("[renderer] loaded detail for %s (%d tiles)\n",
-           body->world->body->name, body->world->tile_count);
+    double elapsed_ms = stm_ms(stm_diff(stm_now(), t0));
+    printf("[renderer] loaded detail for %s (%d tiles) in %.1f ms\n",
+           body->world->body->name, body->world->tile_count, elapsed_ms);
     fflush(stdout);
 }
 

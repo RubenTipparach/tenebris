@@ -74,6 +74,7 @@ set(TENEBRIS_CLIENT_SOURCES
     src/client/teleport_menu.c
     src/client/torch.c
     src/client/gfx_math.c
+    src/client/profiler.c
 )
 
 # Populate assets/textures/ from the parent JS project's public/textures.
