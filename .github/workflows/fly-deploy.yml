@@ -6,7 +6,10 @@
 #       commit that change so this workflow targets the same app)
 #   2. fly volumes create tenebris_saves --size 1 --region iad
 #      (the volume mount referenced by fly.toml)
-#   3. fly auth token | head -1   →  copy the token
+#   3. fly tokens create deploy -a <your-app-name>
+#      (scoped deploy token — can only deploy this one app, so a
+#       leak doesn't compromise the rest of your Fly account.
+#       Copy the entire output, including the "FlyV1 " prefix.)
 #   4. In GitHub:  Settings → Secrets and variables → Actions
 #      → New repository secret  name=FLY_API_TOKEN  value=<token>
 #
