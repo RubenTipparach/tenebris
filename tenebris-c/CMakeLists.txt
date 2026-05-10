@@ -190,12 +190,41 @@ endif() # TENEBRIS_BUILD_CLIENT
 # Sokol / sokol-shdc / OpenGL entirely. Used by the Fly.io Docker build.
 # ---------------------------------------------------------------------------
 if (TENEBRIS_BUILD_SERVER AND NOT EMSCRIPTEN AND UNIX)
+    # libwebsockets — primary backend for net_transport.h.
+    # Use pkg-config when available; fall back to find_library otherwise.
+    find_package(PkgConfig QUIET)
+    if (PkgConfig_FOUND)
+        pkg_check_modules(LIBWEBSOCKETS QUIET libwebsockets)
+    endif()
+    if (NOT LIBWEBSOCKETS_FOUND)
+        find_library(LWS_LIB websockets)
+        find_path(LWS_INC libwebsockets.h)
+        if (LWS_LIB AND LWS_INC)
+            set(LIBWEBSOCKETS_FOUND TRUE)
+            set(LIBWEBSOCKETS_LIBRARIES ${LWS_LIB})
+            set(LIBWEBSOCKETS_INCLUDE_DIRS ${LWS_INC})
+        endif()
+    endif()
+    if (NOT LIBWEBSOCKETS_FOUND)
+        message(FATAL_ERROR
+            "libwebsockets not found. Install libwebsockets-dev (Debian/Ubuntu) "
+            "or libwebsockets (brew), or configure with "
+            "-DTENEBRIS_BUILD_SERVER=OFF to skip the server target.")
+    endif()
+
     add_executable(tenebris-server
         src/server/server_main.c
         src/server/server.c
+        src/server/net_transport_ws.c
     )
-    target_link_libraries(tenebris-server PRIVATE tenebris_core)
-    target_include_directories(tenebris-server PRIVATE src)
+    target_link_libraries(tenebris-server PRIVATE
+        tenebris_core
+        ${LIBWEBSOCKETS_LIBRARIES}
+    )
+    target_include_directories(tenebris-server PRIVATE
+        src
+        ${LIBWEBSOCKETS_INCLUDE_DIRS}
+    )
     target_compile_options(tenebris-server PRIVATE
         -Wall -Wextra -Wpedantic
         -ffp-contract=off -fno-fast-math

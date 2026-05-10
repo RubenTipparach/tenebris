@@ -10,7 +10,8 @@
 
 FROM debian:bookworm-slim AS build
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential cmake ninja-build ca-certificates \
+        build-essential cmake ninja-build pkg-config ca-certificates \
+        libwebsockets-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
@@ -24,12 +25,13 @@ COPY third_party ./third_party
 RUN cmake -B build -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_C_FLAGS_RELEASE="-O2 -DNDEBUG" \
+        -DTENEBRIS_BUILD_CLIENT=OFF \
     && cmake --build build --target tenebris-server
 
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates \
+        ca-certificates libwebsockets19 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

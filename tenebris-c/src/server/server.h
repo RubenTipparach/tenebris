@@ -1,6 +1,7 @@
 #ifndef TENEBRIS_SERVER_SERVER_H
 #define TENEBRIS_SERVER_SERVER_H
 
+#include "core/net_transport.h"
 #include "core/planet.h"
 #include "core/world.h"
 #include <stdbool.h>
@@ -8,12 +9,19 @@
 
 /*
  * Server state. One per process. Owns the worlds (Tenebris + moons +
- * neighbours), tick counter, and listener handle once M2 wires
- * a transport in. Built / torn down by server_init / server_shutdown
- * in server.c; ticked by server_tick once per simulated frame.
+ * neighbours), tick counter, listener handle, and per-client state.
+ * Built / torn down by server_init / server_shutdown in server.c;
+ * ticked by server_tick once per simulated frame.
  */
 
 #define SERVER_MAX_BODIES 32
+#define SERVER_MAX_CLIENTS 16
+
+typedef struct {
+    net_conn_t* conn;          /* NULL slot = free */
+    uint32_t    player_id;
+    bool        handshaked;    /* HELLO received, WELCOME sent */
+} server_client_t;
 
 typedef struct {
     int    port;          /* listen port for the WS backend (M2+) */
@@ -30,6 +38,10 @@ typedef struct {
     uint64_t  tick;
     double    accum_seconds;
     bool      shutdown_requested;
+
+    net_listener_t*  listener;
+    server_client_t  clients[SERVER_MAX_CLIENTS];
+    uint32_t         next_player_id;
 } server_t;
 
 bool server_init(server_t* s, const server_config_t* cfg);
