@@ -126,7 +126,39 @@ it as a third backend whenever it's ready.
 
 ---
 
-## Repo layout
+## Deployment: Fly.io
+
+The server ships as a single Linux binary in a small Docker image,
+deployed to **Fly.io's free tier** (3 × shared-cpu-1x VMs with 256 MB
+RAM, free forever for our scale). Fly was chosen over Vercel because
+Vercel only runs short-lived serverless functions and can't host a
+persistent process. Fly's model — persistent Docker containers,
+regional deploy, CLI-driven — is exactly what a dedicated game
+server needs.
+
+Repo additions:
+
+```
+tenebris-c/
+  Dockerfile           ← multi-stage: build with cmake + gcc,
+                          final image is a thin runtime layer
+  fly.toml             ← Fly app config: app name, region,
+                          internal_port, healthcheck
+  .dockerignore        ← keep the build context lean
+```
+
+Deploy is `cd tenebris-c && fly deploy`. Region defaults to one
+close to the dev (`iad` / `sjc` / `lhr`) and can be overridden.
+TLS is terminated by Fly's edge proxy, so the client connects to
+`wss://<app>.fly.dev/`.
+
+For self-hosting, the same Dockerfile produces the same binary —
+players run `docker run -p 8080:8080 tenebris-server` (or just the
+bare binary) on their own machine. No cloud account required.
+
+---
+
+
 
 ```
 tenebris-c/
@@ -264,15 +296,18 @@ game runnable.
 * **M0. Plan + protocol freeze.** This doc. Lock the wire format in
   `proto.h` (fill in the v1 payload structs). No behaviour change.
 
-* **M1. Server skeleton + transport interface.** New
+* **M1. Server skeleton + transport interface + deploy path.** New
   `tenebris-c/src/server/` directory and `tenebris-server` CMake
-  target. Binary boots, initialises a world from a seed, runs a
-  20 Hz tick loop, logs "tick N." Lands `core/net_transport.h`
-  with the `net_listen` / `net_connect` / `net_send` / `net_poll`
-  surface — no implementation yet, just the interface and a
-  no-op stub so server code can be written against it. Verifiable:
-  `./tenebris-server --seed=42` prints ticks and exits cleanly on
-  Ctrl-C.
+  target (gated to non-Emscripten builds). Binary boots,
+  initialises Tenebris from `core/`, runs a 20 Hz tick loop, logs
+  every Nth tick, handles SIGINT/SIGTERM cleanly. Lands
+  `core/net_transport.h` with the `net_listen` / `net_connect` /
+  `net_send` / `net_poll` surface — no implementation yet, just
+  the interface so server code is written against it. Also lands
+  the `Dockerfile` + `fly.toml` so `fly deploy` works end-to-end
+  (deploys a binary that ticks but doesn't yet accept connections).
+  Verifiable: `./tenebris-server --seed=42` prints ticks and exits
+  cleanly on Ctrl-C; `fly deploy` succeeds.
 
 * **M2. WebSocket backend + HELLO/WELCOME.** Implements
   `net_transport_ws.c` (libwebsockets) as the first backend behind

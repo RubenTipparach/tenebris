@@ -1,0 +1,51 @@
+# Fly.io app config for tenebris-server.
+#
+# Setup:
+#   1. cd tenebris-c
+#   2. fly launch --no-deploy --copy-config   # pick a unique app name
+#   3. fly volumes create tenebris_saves --size 1 --region <region>
+#   4. fly deploy
+#
+# The app name below is a placeholder; `fly launch` rewrites it on first
+# run. Once claimed, the server is reachable at wss://<app>.fly.dev/.
+#
+# Free-tier guidance: one shared-cpu-1x VM with 256 MB RAM fits inside
+# the free allowance for a single region.
+
+app = "tenebris-server"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  TENEBRIS_PORT = "8080"
+
+[[services]]
+  protocol     = "tcp"
+  internal_port = 8080
+
+  # WebSocket runs over the same TCP port; Fly's edge terminates TLS
+  # and forwards to internal_port. Clients connect to wss://<app>.fly.dev.
+  [[services.ports]]
+    port     = 443
+    handlers = ["tls", "http"]
+
+  [[services.ports]]
+    port     = 80
+    handlers = ["http"]
+
+  # Healthcheck is a TCP open until M2 lands a real HTTP /healthz route.
+  [[services.tcp_checks]]
+    interval     = "15s"
+    timeout      = "2s"
+    grace_period = "10s"
+
+[[mounts]]
+  source      = "tenebris_saves"
+  destination = "/data"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus     = 1
+  memory   = "256mb"

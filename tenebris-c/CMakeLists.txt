@@ -9,11 +9,20 @@ if (NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
 endif()
 
+# Build-target gates. Server-only builds (e.g. the Fly.io Docker image)
+# set -DTENEBRIS_BUILD_CLIENT=OFF to skip Sokol / sokol-shdc / OpenGL
+# entirely, which keeps the runtime container small and lets the
+# server compile on hosts without a GL stack installed.
+option(TENEBRIS_BUILD_CLIENT "Build the WASM / native client" ON)
+option(TENEBRIS_BUILD_SERVER "Build the dedicated server" ON)
+
 # sokol-shdc shader cross-compiler integration. Defines
 # add_sokol_shader(target path/to/shader.glsl) which attaches the
 # generated header to `target` and exposes its directory on the
 # include path. The binary itself is fetched by scripts/fetch-deps.sh.
-include(cmake/sokol-shdc.cmake)
+if (TENEBRIS_BUILD_CLIENT)
+    include(cmake/sokol-shdc.cmake)
+endif()
 
 # ---------------------------------------------------------------------------
 # core library — shared between client and server. MUST NOT depend on sokol.
@@ -60,6 +69,7 @@ target_include_directories(tenebris_third_party INTERFACE
 # ---------------------------------------------------------------------------
 # client build — different shape depending on target
 # ---------------------------------------------------------------------------
+if (TENEBRIS_BUILD_CLIENT)
 set(TENEBRIS_CLIENT_SOURCES
     src/client/sokol_impl.c
     src/client/main_web.c
@@ -171,8 +181,28 @@ else()
         target_link_libraries(tenebris PRIVATE
             OpenGL::GL X11 Xi Xcursor m dl pthread asound)
     endif()
+endif()
+endif() # TENEBRIS_BUILD_CLIENT
 
-    # server target — headless, native only. Empty shell for now; wired in Tier 5.
-    # add_executable(tenebris_server src/server/main_server.c)
-    # target_link_libraries(tenebris_server PRIVATE tenebris_core)
+# ---------------------------------------------------------------------------
+# server target — headless, native, POSIX-only. Standalone of the client
+# target so a server-only configure (TENEBRIS_BUILD_CLIENT=OFF) skips
+# Sokol / sokol-shdc / OpenGL entirely. Used by the Fly.io Docker build.
+# ---------------------------------------------------------------------------
+if (TENEBRIS_BUILD_SERVER AND NOT EMSCRIPTEN AND UNIX)
+    add_executable(tenebris-server
+        src/server/server_main.c
+        src/server/server.c
+    )
+    target_link_libraries(tenebris-server PRIVATE tenebris_core)
+    target_include_directories(tenebris-server PRIVATE src)
+    target_compile_options(tenebris-server PRIVATE
+        -Wall -Wextra -Wpedantic
+        -ffp-contract=off -fno-fast-math
+    )
+    # POSIX feature-test macro for clock_gettime, nanosleep, SIGTERM.
+    target_compile_definitions(tenebris-server PRIVATE _POSIX_C_SOURCE=200809L)
+    if (NOT APPLE)
+        target_link_libraries(tenebris-server PRIVATE m pthread)
+    endif()
 endif()
