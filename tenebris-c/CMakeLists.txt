@@ -85,7 +85,17 @@ set(TENEBRIS_CLIENT_SOURCES
     src/client/torch.c
     src/client/gfx_math.c
     src/client/profiler.c
+    src/client/net_client.c
 )
+
+# Browser-only: WS transport against emscripten/websocket.h (linked
+# with `-lwebsocket.js` below). The native client doesn't yet have a
+# transport backend — single-player only until M7 in-process server
+# lands.
+if (EMSCRIPTEN)
+    list(APPEND TENEBRIS_CLIENT_SOURCES
+        src/client/net_transport_wasm.c)
+endif()
 
 # Populate assets/textures/ from the parent JS project's public/textures.
 # Both web and native targets read these at runtime — the web build
@@ -133,7 +143,8 @@ if (EMSCRIPTEN)
         "-sFULL_ES3=1"
         "-sALLOW_MEMORY_GROWTH=1"
         "-sSTACK_SIZE=1mb"
-        "-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap']"
+        "-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','UTF8ToString','stringToUTF8','lengthBytesUTF8']"
+        "-lwebsocket.js"       # emscripten WebSocket bindings used by net_transport_wasm.c
         "--shell-file=${CMAKE_SOURCE_DIR}/web/shell.html"
         "--preload-file" "${CMAKE_SOURCE_DIR}/assets@/assets"
     )

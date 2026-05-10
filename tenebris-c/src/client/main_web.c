@@ -25,7 +25,26 @@
 #include "client/renderer.h"
 #include "client/interact.h"
 #include "client/mobile_ui.h"
+#include "client/net_client.h"
 #include "client/teleport_menu.h"
+
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+/* Read the server URL from the page's `?server=` query param. Returns
+ * a malloc'd C string the caller must free, or NULL if no param was
+ * set (in which case the client stays single-player offline). */
+EM_JS(char*, tenebris_get_server_url, (void), {
+    try {
+        var u = new URL(window.location.href);
+        var s = u.searchParams.get('server');
+        if (!s) return 0;
+        var len = lengthBytesUTF8(s) + 1;
+        var p = _malloc(len);
+        stringToUTF8(s, p, len);
+        return p;
+    } catch (_e) { return 0; }
+});
+#endif
 #include "client/inventory.h"
 #include "client/profiler.h"
 #include "client/hotbar_ui.h"
@@ -216,6 +235,19 @@ static void init(void) {
 
     G.last_time = stm_now();
     G.smoothed_fps = 60.0f;
+
+#ifdef __EMSCRIPTEN__
+    /* Opt-in server connection. With no `?server=` query param the
+     * client stays fully offline / single-player; with one set
+     * (e.g. `?server=wss://tenebris.fly.dev/`) we open a socket,
+     * send HELLO, and wait for WELCOME. Gameplay still runs off the
+     * local world for M3 — server-authoritative position lands in M4. */
+    char* server_url = tenebris_get_server_url();
+    if (server_url) {
+        net_client_connect(server_url);
+        free(server_url);
+    }
+#endif
 }
 
 /* --------------------------------------------------------------------- */
@@ -250,6 +282,27 @@ static void update_overlay(float dt) {
                 goldberg_tile_count(G.world->grid),
                 renderer_moon_count());
     sdtx_printf("FPS: %.1f\n", G.smoothed_fps);
+
+    {
+        net_client_state_t ns = net_client_state();
+        if (ns != NET_CLIENT_IDLE) {
+            const char* label =
+                ns == NET_CLIENT_CONNECTING ? "connecting"  :
+                ns == NET_CLIENT_HANDSHAKE  ? "handshaking" :
+                ns == NET_CLIENT_READY      ? "online"      :
+                                              "offline";
+            if (ns == NET_CLIENT_READY) {
+                const net_client_welcome_t* w = net_client_welcome();
+                sdtx_color3b(0x80, 0xff, 0x80);
+                sdtx_printf("net: %s (player_id=%u, body=%u)\n",
+                            label, w->player_id, w->body_id);
+            } else {
+                sdtx_color3b(0xff, 0xc0, 0x40);
+                sdtx_printf("net: %s\n", label);
+            }
+            sdtx_color3b(0xff, 0xff, 0xff);
+        }
+    }
 
     dvec3_t pos = player_world_pos(&G.player);
     /* Altitude reads against the body the player is currently
@@ -356,6 +409,11 @@ static void update_overlay(float dt) {
 /* --------------------------------------------------------------------- */
 
 static void frame(void) {
+    /* Pump the network state machine first so any handshake progress
+     * is reflected in this frame's HUD. Cheap — no I/O on the C side
+     * on the wasm backend, callbacks fire from the JS event loop. */
+    net_client_tick();
+
     const double raw_dt_sec = stm_sec(stm_laptime(&G.last_time));
     float dt = (float)raw_dt_sec;
     /* Lag-spike handling. body_load_detail meshes a whole planet in
@@ -675,6 +733,7 @@ static void event(const sapp_event* e) {
 }
 
 static void cleanup(void) {
+    net_client_disconnect();
     teleport_menu_shutdown();
     hotbar_ui_shutdown();
     mobile_ui_shutdown();
