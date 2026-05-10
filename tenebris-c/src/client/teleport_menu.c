@@ -52,7 +52,16 @@ static void action_ok(void) {
     if (!M.open) return;
     if (M.player) {
         const body_config_t* b = planet_get((body_id_t)M.selected);
-        if (b) player_teleport_to(M.player, b);
+        if (b) {
+            /* player_teleport_to drops the player ~3 m above the
+             * destination's surface — comfortably inside its full-
+             * gravity radius (default 1.4 × body radius), so the
+             * gravity integrator pulls them straight to the ground
+             * rather than letting them no-clip through. The roll-
+             * slerp timer is armed at the same time so the camera
+             * eases into level rather than popping. */
+            player_teleport_to(M.player, b);
+        }
     }
     M.open = false;
 }

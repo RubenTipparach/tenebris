@@ -2,6 +2,7 @@
 #include "client/input.h"
 #include "client/teleport_menu.h"
 #include "client/renderer.h"
+#include "client/profiler.h"
 
 #include "sokol_gfx.h"   /* sokol_gl uses sg_* types — must come first */
 #include "sokol_app.h"
@@ -180,17 +181,23 @@ void mobile_ui_draw_button(float cx, float cy, float r,
 
 /* Debug-toggle menu state. The hamburger button at top-right toggles
  * S_MENU_OPEN; when open, a vertical column of toggle buttons drops
- * below it (terrain / water / sky / shoreline-heatmap). Closed by
+ * below it (terrain / water / sky / teleport / profiler). Closed by
  * default so first-time users don't see a debug overlay. Tracked
  * here rather than in renderer.c because it's a UI concern — the
  * underlying toggles already live in the renderer's debug-flag block. */
 static bool S_MENU_OPEN = false;
 
-/* Geometry of the four menu-item buttons + the menu button itself,
+/* Geometry of the menu-item buttons + the menu button itself,
  * recomputed every frame so it stays in sync with sapp_widthf().
  * Returned by menu_button_layout for both the draw and hit-test
- * paths so they can't drift apart. */
-#define MENU_ITEM_COUNT 3
+ * paths so they can't drift apart. Item order:
+ *   [0] terrain (H)   render flag
+ *   [1] water   (J)   render flag
+ *   [2] sky     (K)   render flag
+ *   [3] teleport (T)  opens teleport list (replaces the old floating TP button)
+ *   [4] profiler (P)  toggles the profiler overlay
+ */
+#define MENU_ITEM_COUNT 5
 
 typedef struct {
     float menu_x, menu_y;     /* hamburger button centre */
@@ -240,6 +247,8 @@ bool mobile_ui_handle_touch(float x, float y) {
                 case 0: renderer_set_terrain_visible(!renderer_terrain_visible()); break;
                 case 1: renderer_set_water_visible  (!renderer_water_visible());   break;
                 case 2: renderer_set_skybox_visible (!renderer_skybox_visible());  break;
+                case 3: teleport_menu_toggle();                                    break;
+                case 4: profiler_toggle_visible();                                 break;
             }
             return true;
         }
@@ -264,15 +273,18 @@ void mobile_ui_draw(void) {
      * right thumb can hop between the look stick and the buttons
      * without crossing the screen. Order (top to bottom):
      *   TP / BREAK / PLACE / JUMP — jump at the bottom, closest to the
-     *   stick so your thumb rests there. */
+     *   stick so your thumb rests there. The teleport entry point
+     *   ALSO lives in the top-right debug-menu drop-down; both are
+     *   wired so mobile users have a one-tap shortcut and desktop
+     *   users still have the menu version. */
     const float bx = right_sx - STICK_RADIUS - BTN_GAP - BTN_RADIUS;
     const float j_y = right_sy + STICK_RADIUS - BTN_RADIUS;            /* bottom-aligned */
     const float p_y = j_y - (BTN_RADIUS * 2.0f + BTN_GAP);
     const float b_y = p_y - (BTN_RADIUS * 2.0f + BTN_GAP);
     const float tp_y = b_y - (BTN_RADIUS * 2.0f + BTN_GAP);
 
-    /* Report hit rects to input.c. TP is its own button in the main
-     * HUD; menu-nav buttons are registered by teleport_menu when open. */
+    /* Report hit rects to input.c. TP is its own slot; menu-nav
+     * buttons are registered by teleport_menu when open. */
     input_register_mobile_buttons(
         bx, b_y, BTN_RADIUS,
         bx, p_y, BTN_RADIUS,
@@ -351,11 +363,11 @@ void mobile_ui_draw(void) {
     draw_glyph('J', bx, j_y, 16.0f, 1.0f, 1.0f, 0.9f);
 
     /* Teleport (purple) — top of the stack, out of the way of the
-     * combat-relevant buttons. */
+     * combat-relevant buttons. Mirrors the [T] toggle in the
+     * top-right debug menu so mobile users have a one-tap entry to
+     * the teleport list without opening the hamburger first. */
     draw_circle_fan(bx, tp_y, BTN_RADIUS,        32, 0.35f, 0.20f, 0.50f, 0.50f);
     draw_ring      (bx, tp_y, BTN_RADIUS - 2.0f, BTN_RADIUS, 32, 0.85f, 0.60f, 1.00f, 0.75f);
-    /* Use 'P' for teleport — we don't have a T glyph and it reads as
-     * "portal" well enough. */
     draw_glyph('T', bx, tp_y, 16.0f, 1.0f, 0.95f, 1.0f);
 
     /* Debug-toggle menu — single hamburger button at the top-right
@@ -395,6 +407,8 @@ void mobile_ui_draw(void) {
                 { 'H', renderer_terrain_visible(), 0.20f, 0.25f, 0.35f },  /* terrain */
                 { 'J', renderer_water_visible(),   0.10f, 0.30f, 0.40f },  /* water   */
                 { 'K', renderer_skybox_visible(),  0.40f, 0.25f, 0.10f },  /* sky     */
+                { 'T', teleport_menu_is_open(),    0.35f, 0.20f, 0.50f },  /* teleport */
+                { 'P', profiler_visible(),         0.15f, 0.45f, 0.20f },  /* profiler */
             };
             for (int i = 0; i < MENU_ITEM_COUNT; ++i) {
                 float ix = L.item_x;

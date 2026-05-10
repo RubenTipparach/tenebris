@@ -1,15 +1,20 @@
 # Repo rules
 
-## DO NOT MODIFY THE TENEBRIS JS SOURCE
+## DO NOT MODIFY THE TENEBRIS JS SOURCE — IT IS DEPRECATED
 
 The original Three.js / TypeScript implementation lives at the repo root
-(`src/`, `public/`, `index.html`, `package.json`, etc.). It is the
-reference implementation.
+(`src/`, `public/`, `index.html`, `package.json`, etc.). **It is
+deprecated.** It exists only as a reference implementation for the C port
+to study; it is not maintained, not shipped, and not part of the active
+product.
 
-**Do not edit, refactor, or "fix" any file under the JS tree** — including
+**Updates to the JS code are strictly off limits.** Do not edit, refactor,
+"fix", reformat, or otherwise touch any file under the JS tree — including
 shaders under `src/shaders/`, configs under `src/config/`, world generation
 under `src/planet/`, or anything else outside `tenebris-c/`. Reading the JS
-to learn how a feature works is fine and encouraged. Touching it is not.
+to learn how a feature works is fine and encouraged. Touching it is not,
+even if you spot a bug, a typo, or an obvious improvement — port the fix
+into `tenebris-c/` instead, or leave it alone.
 
 This rule stays in force until the user says otherwise.
 
@@ -72,6 +77,36 @@ The only exception is values that are part of an algorithm's
 (`0.1031`, `443.897`) where the specific number doesn't have a
 semantic meaning, it just makes the hash work. Those stay inline,
 because exposing them would invite breakage rather than tuning.
+
+## UI guidelines
+
+When the user asks for UI — menus, dialogs, popups, debug panels,
+HUD readouts — **do not generate low-effort ASCII art** as the
+default. Tenebris already has a sokol_gl helper layer with rounded
+buttons, rings, segments, glyph rendering, and an alpha-blended
+2D pipeline (see `src/client/mobile_ui.c`). New UI should use that
+layer to draw real geometry: filled rectangles or rounded buttons
+for backgrounds, distinct colours for hover / selected / disabled
+states, and `sokol_debugtext` only for labels *on top of* a real
+panel — never as the panel itself.
+
+Specifically:
+
+- A "popup menu" or "modal" means a drawn panel with a backdrop,
+  a title, and clickable rows. Not a frame of `+----+ | text |
+  +----+` characters built from `sdtx_printf`.
+- Buttons must be hit-testable. Wire each one through
+  `mobile_ui_handle_touch` (or an equivalent module-local hit
+  table) so a click / tap actually triggers its action.
+- Labels go through `sdtx_printf` because that's the only readable
+  text path. That's fine — the rule is about the *structure* of
+  the UI, not whether glyphs are rastered.
+
+The exception is plain HUD readouts that are inherently text (FPS,
+altitude, `[H] hide terrain`). Those stay as `sdtx_printf`.
+
+Only deliver an ASCII-only UI when the user explicitly asks for it
+("draw an ASCII frame", "I just want text").
 
 ## Static game asset guidelines
 

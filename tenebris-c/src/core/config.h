@@ -98,6 +98,70 @@ typedef struct {
     float distant_shade_floor;
     float distant_shade_ceiling;
     float distant_shade_range_m;
+
+    /* Per-tileset palette for the distant-LOD vertex sampler.
+     * Indexed by tileset_t: EARTH=0, SEQUOIA=1, CRAG=2, FROST=3,
+     * ASTEROID=4. The sampler looks up the tile's column under each
+     * icosphere vertex and:
+     *   - If the column has water above the topmost solid block,
+     *     the seabed atlas colour is mixed toward water_color by a
+     *     factor that ramps up with water-column thickness — so a
+     *     deep ocean reads as the planet's water hue, while a thin
+     *     shoreline keeps the sandy seabed showing through.
+     *   - The per-altitude shade (above) is then multiplied by a
+     *     tint vec3 interpolated between lowland_tint at -range_m
+     *     and peak_tint at +range_m, giving each tileset its own
+     *     elevation colour grade (e.g. peaks lean white on Earth,
+     *     red on Crag, deep blue on Frost). */
+    vec3_t tileset_water_color [5];
+    vec3_t tileset_lowland_tint[5];
+    vec3_t tileset_peak_tint   [5];
+    /* Water-column thickness (in metres) at which water_color fully
+     * dominates the seabed colour. Below this the shore reads
+     * sandy / muddy; above it the open ocean reads pure water hue.
+     * Per-tileset so e.g. an icy planet's shoreline is shorter than
+     * an Earth-like's. Zero → use a sane default at runtime. */
+    float  tileset_water_full_depth_m[5];
+
+    /* Gravity field — JS PlayerConfig.GRAVITY_FULL_RADIUS / FALLOFF_RADIUS
+     * ported. Below body.radius * gravity_full_mult the player
+     * feels 100 % of that body's gravity; from there to radius *
+     * gravity_falloff_mult it tapers linearly to 0 %. Outside the
+     * falloff radius the player is "in space" and switches to 6DOF
+     * thrust + drag flight. A body may override these per-instance
+     * via body_config_t.gravity_full_mult / gravity_falloff_mult. */
+    float gravity_full_mult;
+    float gravity_falloff_mult;
+
+    /* Camera roll-slerp on space → planet entry. While the timer
+     * counts down (transition_timer_s seconds), the basis is
+     * rotated each frame toward the planet's radial up by
+     * roll_slerp_speed * dt — exponential approach, so big
+     * misalignments correct fast and the last few degrees ease in.
+     * Matches JS PlayerConfig.ROLL_SLERP_DURATION / ROLL_SLERP_SPEED. */
+    float roll_slerp_duration_s;
+    float roll_slerp_speed;
+
+    /* Space-mode flight tuning. space_thrust is the per-second
+     * acceleration applied while a movement key is held; space_drag
+     * is a per-second damping coefficient ( velocity *= exp(-drag * dt) )
+     * so the player coasts to a stop after releasing the keys. Roll
+     * speed is radians/second when Q/E is held. */
+    float space_thrust;
+    float space_drag;
+    float space_roll_speed;
+
+    /* Jump / jetpack discrimination. A jump press is classified as
+     * a tap (one strong impulse, scaled by jump_velocity_mps) when
+     * the key is released within jetpack_hold_threshold_s seconds;
+     * holding past the threshold continuously fires the jetpack at
+     * jetpack_accel_mps2 acceleration up to jetpack_max_vy_mps
+     * terminal velocity. Without the threshold, every tap leaks
+     * one frame into the jetpack the moment grounded flips false. */
+    float jump_velocity_mps;
+    float jetpack_hold_threshold_s;
+    float jetpack_accel_mps2;
+    float jetpack_max_vy_mps;
 } lod_config_t;
 
 const lod_config_t* config_lod(void);

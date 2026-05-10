@@ -23,6 +23,7 @@
 #include "sun.glsl.h"
 #include "sokol_glue.h"
 #include "sokol_log.h"
+#include "sokol_time.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
@@ -910,33 +911,73 @@ static vec3_t sample_body_top_color(const chunked_body_t* body, const float dir[
     if (tile < 0 || tile >= w->tile_count || tile >= w->gen_cursor) {
         return body->distant_color;
     }
+    /* Walk the column once: locate the topmost solid block and count
+     * the water layers stacked above it. The water count drives the
+     * shoreline → open-ocean blend so a deep basin reads as the
+     * planet's water hue while a sandy shore keeps the seabed
+     * showing through. */
     block_t top = BLOCK_AIR;
     int     d_top = -1;
+    int     water_layers = 0;
     for (int dep = WORLD_MAX_DEPTH - 1; dep >= 0; --dep) {
         block_t b = (block_t)w->blocks[tile * WORLD_MAX_DEPTH + dep];
         if (block_is_solid(b)) { top = b; d_top = dep; break; }
+        if (b == BLOCK_WATER) ++water_layers;
     }
     if (top == BLOCK_AIR) return body->distant_color;
     int col = (int)block_face_tile(top, FACE_CAP_TOP);
     if (col < 0 || col >= HEX_ATLAS_TILES) return body->distant_color;
     vec3_t base = R.atlas_col_avg[col];
 
+    /* Tileset palette — clamp to the array length so a body with an
+     * out-of-range tileset (shouldn't happen, but be defensive)
+     * falls back to the EARTH slot. */
+    const lod_config_t* L = config_lod();
+    int ts = (int)w->body->tileset;
+    if (ts < 0 || ts > 4) ts = 0;
+
+    /* Water mix — only when the body actually has water and the
+     * column we just sampled has water above the seabed. Mix factor
+     * ramps with column thickness so the shore stays sandy and the
+     * deep ocean reads as the water hue. */
+    if (body->has_water && water_layers > 0) {
+        float full_depth = L->tileset_water_full_depth_m[ts];
+        if (full_depth <= 0.0f) full_depth = 4.0f;
+        float wf = (float)water_layers / full_depth;
+        if (wf > 1.0f) wf = 1.0f;
+        vec3_t wc = L->tileset_water_color[ts];
+        base.x = base.x * (1.0f - wf) + wc.x * wf;
+        base.y = base.y * (1.0f - wf) + wc.y * wf;
+        base.z = base.z * (1.0f - wf) + wc.z * wf;
+    }
+
     /* Height shade — the topmost-block depth is the planet-gen noise
      * output, so multiplying the base biome colour by an altitude-
      * driven shade carries the actual elevation pattern (not just the
      * biome boundaries) onto the distant LOD. Lowlands darken,
      * highlands lighten, ocean basins read distinctly bluer than
-     * coastal grass even when both sample to similar atlas tiles. */
-    const lod_config_t* L = config_lod();
+     * coastal grass even when both sample to similar atlas tiles.
+     * The lowland/peak tint multiplies on top so each tileset's
+     * elevation pattern carries its own colour grade — Crag's
+     * basins lean rust, Frost's peaks lean cold blue, etc. */
     double altitude_m = world_depth_to_radius_m(w, d_top + 1)
                       - w->body->radius_m;
     float t = (float)(altitude_m / (double)L->distant_shade_range_m);
     if (t < -1.0f) t = -1.0f;
     if (t >  1.0f) t =  1.0f;
+    float u = t * 0.5f + 0.5f;   /* [0..1] from lowland to peak */
     float shade = L->distant_shade_floor
-                + (L->distant_shade_ceiling - L->distant_shade_floor)
-                  * (t * 0.5f + 0.5f);
-    base.x *= shade; base.y *= shade; base.z *= shade;
+                + (L->distant_shade_ceiling - L->distant_shade_floor) * u;
+    vec3_t lo = L->tileset_lowland_tint[ts];
+    vec3_t hi = L->tileset_peak_tint   [ts];
+    vec3_t tint = (vec3_t){
+        lo.x * (1.0f - u) + hi.x * u,
+        lo.y * (1.0f - u) + hi.y * u,
+        lo.z * (1.0f - u) + hi.z * u,
+    };
+    base.x *= shade * tint.x;
+    base.y *= shade * tint.y;
+    base.z *= shade * tint.z;
     return base;
 }
 
@@ -1092,6 +1133,13 @@ void renderer_register_world(world_t* w) {
  * the body renders the same way the active body does. */
 static void body_load_detail(chunked_body_t* body) {
     if (body->meshed) return;
+    /* This path is the prime suspect for "framerate tanks in space" —
+     * it's a synchronous mesh of every tile on the body, kicked off
+     * the first time the body enters close-LOD range. For a 160k-tile
+     * planet (Crag, Frostbite) it's seconds of CPU work blocking the
+     * frame. Time it explicitly so the profiler attributes the spike
+     * correctly instead of burying it inside draw_world / draw_moons. */
+    uint64_t t0 = stm_now();
     if (!body->chunks_allocated) {
         body_alloc_chunks(body);
         body->chunks_allocated = true;
@@ -1101,8 +1149,9 @@ static void body_load_detail(chunked_body_t* body) {
         chunk_upload(&body->chunks[ci]);
     }
     body->meshed = true;
-    printf("[renderer] loaded detail for %s (%d tiles)\n",
-           body->world->body->name, body->world->tile_count);
+    double elapsed_ms = stm_ms(stm_diff(stm_now(), t0));
+    printf("[renderer] loaded detail for %s (%d tiles) in %.1f ms\n",
+           body->world->body->name, body->world->tile_count, elapsed_ms);
     fflush(stdout);
 }
 

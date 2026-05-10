@@ -2,6 +2,7 @@
 #include <math.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <math.h>
 
 static body_config_t BODIES[BODY_COUNT] = {
     /* ---- main planet ---- */
@@ -228,4 +229,42 @@ void planet_set_atmosphere(body_id_t id, const body_atmo_t* p) {
         b->atmo_sunset_glow = p->sunset_glow;
     if (p->sunset_horizon.x + p->sunset_horizon.y + p->sunset_horizon.z > 0.0f)
         b->atmo_sunset_horizon = p->sunset_horizon;
+}
+
+gravity_query_t planet_gravity_at(dvec3_t world_pos,
+                                  float full_default,
+                                  float falloff_default) {
+    gravity_query_t q = { NULL, 0.0f, 0.0 };
+    /* Walk every body and pick the strongest-pull one. We can't just
+     * pick the closest — Crag's gravity well overlaps Quartz's, and
+     * the moon you're hovering above should win even when the parent
+     * planet's centre is technically further. The multiplier is
+     * monotonic in (radius - distance) within the falloff band, so
+     * "largest multiplier" is the right tie-break. */
+    for (int id = 0; id < BODY_COUNT; ++id) {
+        const body_config_t* b = &BODIES[id];
+        double dx = world_pos.x - b->pos_x;
+        double dy = world_pos.y - b->pos_y;
+        double dz = world_pos.z - b->pos_z;
+        double dist = sqrt(dx*dx + dy*dy + dz*dz);
+        float full = (b->gravity_full_mult    > 0.0f) ? b->gravity_full_mult    : full_default;
+        float fall = (b->gravity_falloff_mult > 0.0f) ? b->gravity_falloff_mult : falloff_default;
+        if (fall <= full) fall = full + 0.01f;   /* guard against bad config */
+        double r_full = b->radius_m * (double)full;
+        double r_fall = b->radius_m * (double)fall;
+        float  mult;
+        if (dist <= r_full) {
+            mult = 1.0f;
+        } else if (dist >= r_fall) {
+            continue;   /* outside falloff — no pull from this body */
+        } else {
+            mult = (float)(1.0 - (dist - r_full) / (r_fall - r_full));
+        }
+        if (mult > q.multiplier) {
+            q.body       = b;
+            q.multiplier = mult;
+            q.altitude_m = dist - b->radius_m;
+        }
+    }
+    return q;
 }

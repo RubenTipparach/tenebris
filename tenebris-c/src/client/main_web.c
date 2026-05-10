@@ -27,6 +27,7 @@
 #include "client/mobile_ui.h"
 #include "client/teleport_menu.h"
 #include "client/inventory.h"
+#include "client/profiler.h"
 #include "client/hotbar_ui.h"
 #include "client/torch.h"
 
@@ -219,6 +220,25 @@ static void init(void) {
 
 /* --------------------------------------------------------------------- */
 
+/* Find the world_t backing a given body. G.world holds Tenebris's
+ * voxel state; every other body's world lives in G.moons[]. Returns
+ * NULL if the body wasn't registered (shouldn't happen for any body
+ * planet_get() returns, but a defensive null-check keeps the
+ * physics path safe if it ever does). Used by the per-frame update
+ * to hand player_update / interact_update the world matching the
+ * player's current frame of reference, so gravity and ground snap
+ * work on every body — not just on Tenebris. */
+static world_t* world_for_body(const body_config_t* body) {
+    if (!body) return NULL;
+    if (G.world && G.world->body == body) return G.world;
+    for (int i = 0; i < G.moon_count; ++i) {
+        if (G.moons[i] && G.moons[i]->body == body) return G.moons[i];
+    }
+    return NULL;
+}
+
+/* --------------------------------------------------------------------- */
+
 static void update_overlay(float dt) {
     const float inst_fps = (dt > 0.0f) ? (1.0f / dt) : 0.0f;
     G.smoothed_fps = G.smoothed_fps * 0.9f + inst_fps * 0.1f;
@@ -232,14 +252,36 @@ static void update_overlay(float dt) {
     sdtx_printf("FPS: %.1f\n", G.smoothed_fps);
 
     dvec3_t pos = player_world_pos(&G.player);
-    double r = sqrt(pos.x*pos.x + pos.y*pos.y + pos.z*pos.z);
-    double alt = r - G.body->radius_m;
-    sdtx_printf("planet: %s  radius: %.1f m\n", G.body->name, G.body->radius_m);
-    sdtx_printf("alt: %.1f m  tile: %d\n", alt, G.player.last_tile);
-    sdtx_printf("yaw: %.2f  pitch: %.2f  fly:%s  grounded:%s\n",
-                G.player.yaw, G.player.pitch,
-                G.player.fly_mode ? "on" : "off",
-                G.player.grounded ? "yes" : "no");
+    /* Altitude reads against the body the player is currently
+     * anchored to (G.player.body), not the spawn-time root planet
+     * (G.body) — once the SOI tracker hands the frame off to e.g.
+     * Sequoia, "alt" should show metres above Sequoia, not above
+     * Tenebris's centre. Same logic for the body name. */
+    const body_config_t* frame = G.player.body ? G.player.body : G.body;
+    double dx = pos.x - frame->pos_x;
+    double dy = pos.y - frame->pos_y;
+    double dz = pos.z - frame->pos_z;
+    double r = sqrt(dx*dx + dy*dy + dz*dz);
+    double alt = r - frame->radius_m;
+    /* Per-frame gravity readout — same query the player physics
+     * uses, so the % shown here is exactly what the gravity
+     * integrator is multiplying base_gravity by this tick. Status
+     * tag mirrors PlanetPlayer.updateUI: SPACE FLIGHT / ENTERING
+     * GRAVITY / AIRBORNE / GROUNDED. */
+    const lod_config_t* L = config_lod();
+    gravity_query_t hud_gq = planet_gravity_at(pos,
+                                               L->gravity_full_mult,
+                                               L->gravity_falloff_mult);
+    const char* status =
+        G.player.is_in_space               ? "[SPACE FLIGHT]"
+      : (G.player.transition_timer_s > 0)  ? "[ENTERING GRAVITY]"
+      : G.player.grounded                  ? "[GROUNDED]"
+      :                                      "[AIRBORNE]";
+    sdtx_printf("frame: %s  radius: %.1f m\n", frame->name, frame->radius_m);
+    sdtx_printf("alt: %.1f m  grav: %3.0f%%  %s\n",
+                alt, hud_gq.multiplier * 100.0f, status);
+    sdtx_printf("yaw: %.2f  pitch: %.2f  tile: %d\n",
+                G.player.yaw, G.player.pitch, G.player.last_tile);
     sdtx_printf("tris: %zu  tiles drawn: %zu  remeshed/f: %zu\n",
                 renderer_triangles_drawn_this_frame(),
                 renderer_tiles_drawn_this_frame(),
@@ -291,6 +333,9 @@ static void update_overlay(float dt) {
     } else {
         sdtx_printf("[K] hide sky/atmo\n");
     }
+    /* Always-visible reminders so the player knows the keys exist
+     * even if the top-right hamburger menu is hard to spot. */
+    sdtx_printf("[T] teleport menu   [F3 / P] profiler\n");
 
     /* Mining progress bar (survival only). */
     if (G.player.survival_mode && G.interact.mining_progress_s > 0.0f) {
@@ -306,25 +351,53 @@ static void update_overlay(float dt) {
     }
 
 
-    if (!input_state()->pointer_locked && !input_state()->touch_active) {
-        sdtx_color3b(0xf0, 0xc0, 0x50);
-        sdtx_printf("\n[click to lock mouse]\n");
-        sdtx_color3b(0xff, 0xff, 0xff);
-    }
 }
 
 /* --------------------------------------------------------------------- */
 
 static void frame(void) {
-    const double dt_sec = stm_sec(stm_laptime(&G.last_time));
-    float dt = (float)dt_sec;
-    if (dt > 0.1f) dt = 0.1f;
+    const double raw_dt_sec = stm_sec(stm_laptime(&G.last_time));
+    float dt = (float)raw_dt_sec;
+    /* Lag-spike handling. body_load_detail meshes a whole planet in
+     * one go (~160k tiles for Crag / Frostbite, multiple seconds of
+     * CPU work synchronously inside renderer_draw_world). While that
+     * stalls the frame, the browser keeps firing pointer-move events
+     * which input.c happily accumulates into mouse_dx / mouse_dy.
+     * When the frame finally completes, the next player_update gets
+     * a normal-looking dt (clamped below) but a HUGE accumulated
+     * mouse delta — yaw_delta = mouse_dx * MOUSE_SENS spins the
+     * camera by tens of degrees in one tick. That's the "wild rotate
+     * on chunk load" bug. Solution: when raw_dt indicates a stall,
+     * discard the mouse + look-stick deltas before clamping dt, so
+     * the player resumes from the orientation they had pre-stall
+     * rather than wherever the cursor happened to drift. */
+    const float LAG_SPIKE_S = 0.1f;
+    if (dt > LAG_SPIKE_S) {
+        printf("[ERROR] [lag] frame stall %.3fs (clamped to %.3fs); "
+               "discarding %d/%d px of accumulated mouse delta\n",
+               dt, LAG_SPIKE_S,
+               (int)input_state()->mouse_dx, (int)input_state()->mouse_dy);
+        fflush(stdout);
+        input_state_t* s = input_state_mut();
+        s->mouse_dx = 0;
+        s->mouse_dy = 0;
+        s->look_stick_x = 0;
+        s->look_stick_y = 0;
+        dt = LAG_SPIKE_S;
+    }
     G.tick++;
+    profiler_begin_frame();
 
-    /* Stream a few tiles of terrain per frame. */
+    /* Stream a few tiles of terrain per frame. The profiler slot
+     * names use '-' separators rather than '_' because sokol_debug-
+     * text's oric font renders ASCII 0x5F ('_') as a euro-sign glyph
+     * — switching the labels keeps the readout legible without
+     * swapping fonts or patching the third-party header. */
+    profiler_begin("worldgen");
     if (!world_gen_complete(G.world)) {
         world_stream_gen(G.world, GEN_TILES_PER_FRAME);
     }
+    profiler_end("worldgen");
 
     /* Poll touch-button edge events before consuming input — the
      * teleport menu's mobile nav buttons live in input.c and this is
@@ -342,8 +415,35 @@ static void frame(void) {
         else                        inventory_init_creative(&G.player.inventory);
     }
 
-    player_update(&G.player, G.world, dt);
-    interact_update(&G.interact, G.world, &G.player, dt);
+    /* Pre-update body selection. Picks whichever body delivers the
+     * strongest gravity pull at the player's current position; if
+     * that's a different body than p->body, swap (player_set_body
+     * arms the roll-slerp on space → planet edges). Doing this
+     * before player_update means the world_t we hand in matches
+     * p->body even at the exact frame the swap happens — no
+     * one-frame "fall through the planet" gap. */
+    {
+        const lod_config_t* L = config_lod();
+        gravity_query_t gq = planet_gravity_at(G.player.position,
+                                               L->gravity_full_mult,
+                                               L->gravity_falloff_mult);
+        if (gq.body && gq.body != G.player.body) {
+            player_set_body(&G.player, gq.body);
+        }
+    }
+    /* Route physics through the world that backs the player's
+     * current body. player_update will re-query gravity internally
+     * for the smooth multiplier; the body has already been pinned
+     * by the swap above. Falls back to G.world when the lookup
+     * misses so the path is never NULL. */
+    world_t* phys_world = world_for_body(G.player.body);
+    if (!phys_world) phys_world = G.world;
+    profiler_begin("player-update");
+    player_update(&G.player, phys_world, dt);
+    profiler_end("player-update");
+    profiler_begin("interact");
+    interact_update(&G.interact, phys_world, &G.player, dt);
+    profiler_end("interact");
     input_consume();
 
     const float aspect = sapp_widthf() / sapp_heightf();
@@ -471,30 +571,48 @@ static void frame(void) {
 
     renderer_begin_frame(sapp_width(), sapp_height(), env);
     /* Opaque scene → offscreen colour + depth attachments. */
+    profiler_begin("draw-skybox");
     renderer_draw_skybox(view, proj);
+    profiler_end("draw-skybox");
+    profiler_begin("draw-sun");
     renderer_draw_sun(view, proj);
+    profiler_end("draw-sun");
+    profiler_begin("draw-world");
     renderer_draw_world(view, proj, G.world, cam_world, dt);
+    profiler_end("draw-world");
+    profiler_begin("draw-moons");
     renderer_draw_moons(view, proj, cam_world);
+    profiler_end("draw-moons");
+    profiler_begin("draw-torches");
     renderer_draw_torches(view, proj);
+    profiler_end("draw-torches");
 
     /* Hand off to the swapchain pass — blits the offscreen colour
      * (everything opaque) onto the swapchain. */
+    profiler_begin("compose");
     renderer_compose_to_swapchain(view, proj);
+    profiler_end("compose");
 
     /* Water now draws in the swapchain pass on TOP of the composited
      * scene. The water shader samples the offscreen colour + depth
      * textures (the underwater scene we just composited) for
      * screen-space refraction and manual depth-discard. */
+    profiler_begin("draw-water");
     renderer_draw_water(view, proj, cam_world);
+    profiler_end("draw-water");
 
     /* UI overlays go on the swapchain on top of the water. */
+    profiler_begin("ui");
     update_overlay(dt);
     teleport_menu_draw();
     draw_error_overlay();
+    profiler_draw();
     sdtx_draw();
     hotbar_ui_draw(&G.player.inventory);
     mobile_ui_draw();
+    profiler_end("ui");
 
+    profiler_end_frame();
     renderer_end_frame();
 }
 
@@ -521,6 +639,17 @@ static void event(const sapp_event* e) {
     }
     if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_K) {
         renderer_set_skybox_visible(!renderer_skybox_visible());
+        return;
+    }
+    /* Profiler toggle. F3 is the "natural" key — the JS profiler uses
+     * it too — so we bind it. The browser also intercepts F3 for the
+     * "find next" dialog, but the keydown event still fires to sokol
+     * first, so the toggle works (the find dialog may also pop up;
+     * pressing F3 again closes it). 'P' is bound as a backup that's
+     * not browser-intercepted. */
+    if (e->type == SAPP_EVENTTYPE_KEY_DOWN &&
+        (e->key_code == SAPP_KEYCODE_F3 || e->key_code == SAPP_KEYCODE_P)) {
+        profiler_toggle_visible();
         return;
     }
     /* Note: no F key for the heatmap — F is already bound to fly-mode
