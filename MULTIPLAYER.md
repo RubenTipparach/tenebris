@@ -52,25 +52,77 @@ wire.
 
 ---
 
-## Why WebSocket (and not WebRTC)
+## Transport: pluggable, WebSocket first, WebRTC later
 
-WebRTC's DataChannel offers unreliable/unordered datagrams and P2P NAT
-traversal. Neither moves the needle for Tenebris v1:
+Long-term, **WebRTC DataChannel is the better transport** for a real
+game, and Tenebris should grow into it. It's what every shipping
+engine — Source, Unreal, Minecraft Bedrock, Roblox — does in some
+form, because:
 
-* Block edits **must** be reliable + ordered (a dropped edit is a
-  desync). That's most of our outbound bandwidth.
-* Player movement runs fine at 20 Hz interpolated; we don't have
-  twitch-shooter latency requirements.
-* WebRTC still needs WebSocket signalling on top, plus a STUN server,
-  plus a TURN server you pay bandwidth for when NAT punch fails.
-* Server-side WebRTC means linking libdatachannel → OpenSSL → usrsctp
-  → libjuice. Big surface area for one feature.
+* **Two channels on one connection.** DataChannel lets you mark each
+  stream reliable-ordered (chunk edits, chat) or unreliable-unordered
+  (player positions, projectiles), or partial-reliability with
+  time-bounded retransmit. WebSocket only does reliable-ordered.
+* **No TCP head-of-line blocking.** WS rides TCP; one dropped packet
+  stalls everything behind it for 50–200 ms. Invisible at Tenebris's
+  current pacing, but a hard ceiling for ship combat, vehicle
+  physics, or 8+ players in proximity.
+* **P2P NAT punching** for self-hosted, so a friend can host from
+  their laptop without router config.
 
-WebSocket gives us a single trivial transport that works for browsers,
-native clients, LAN, and cloud, with the same code path. If profiling
-ever shows movement-jitter latency we can't fix at the snapshot layer,
-we can add a DataChannel transport later — `proto.h` doesn't change,
-only the framing.
+What we **don't** want is to pay for that in v1. The cost is real:
+
+* libdatachannel pulls in OpenSSL + usrsctp + libjuice — ~50k LOC of
+  dependency vs ~5k for a WS server in C.
+* More failure modes per connection (signalling, SDP, ICE, SCTP,
+  DataChannel) and harder debugging.
+* TURN relay bandwidth costs money when NAT punch fails (~10–20 %
+  of connections). Self-hosted would need to ship a TURN server too.
+* Stalling M1 on "make libdatachannel build on the CI matrix" pushes
+  the "two players move on screen" demo out by weeks.
+
+So the architecture is: **pluggable transport, WebSocket backend
+first, DataChannel backend later, game code never sees the socket.**
+
+```c
+/* core/net_transport.h — sketch */
+typedef struct net_transport_s net_transport_t;
+typedef struct net_conn_s      net_conn_t;
+
+typedef enum {
+    NET_CHANNEL_RELIABLE = 0,   /* ordered, retransmits forever */
+    NET_CHANNEL_UNRELIABLE = 1, /* unordered, no retransmit     */
+} net_channel_t;
+
+typedef void (*net_on_open_fn) (net_conn_t* c, void* user);
+typedef void (*net_on_msg_fn)  (net_conn_t* c, net_channel_t ch,
+                                  const void* data, size_t len, void* user);
+typedef void (*net_on_close_fn)(net_conn_t* c, int reason, void* user);
+
+net_transport_t* net_listen (const char* bind_addr, int port,
+                                net_on_open_fn, net_on_msg_fn,
+                                net_on_close_fn, void* user);
+net_conn_t*       net_connect(const char* url,
+                                net_on_open_fn, net_on_msg_fn,
+                                net_on_close_fn, void* user);
+void              net_send   (net_conn_t*, net_channel_t,
+                                const void* data, size_t len);
+void              net_poll   (net_transport_t*);    /* tick the event loop */
+void              net_close  (net_conn_t*);
+```
+
+v1 ships a WS implementation of this interface
+(`net_transport_ws.c`). On the WS backend, `NET_CHANNEL_UNRELIABLE`
+silently falls back to reliable-ordered — same correctness, just no
+latency win yet. When/if we feel the WS ceiling, we add
+`net_transport_rtc.c` as a second backend without touching protocol,
+server, or client logic. The discipline is just "no raw socket calls
+outside the transport module."
+
+WebTransport (HTTP/3 + QUIC) is the eventual successor to both and
+is even better, but Safari support is still spotty in early 2026 and
+server-side QUIC tooling is immature. Same abstraction lets us add
+it as a third backend whenever it's ready.
 
 ---
 
@@ -212,20 +264,30 @@ game runnable.
 * **M0. Plan + protocol freeze.** This doc. Lock the wire format in
   `proto.h` (fill in the v1 payload structs). No behaviour change.
 
-* **M1. Server skeleton (native).** New `tenebris-c/src/server/`
-  directory and `tenebris-server` CMake target. Binary boots,
-  initialises a world from a seed, runs a 20 Hz tick loop, logs
-  "tick N." No socket yet. Verifiable: `./tenebris-server --seed=42`
-  prints ticks and exits cleanly on Ctrl-C.
+* **M1. Server skeleton + transport interface.** New
+  `tenebris-c/src/server/` directory and `tenebris-server` CMake
+  target. Binary boots, initialises a world from a seed, runs a
+  20 Hz tick loop, logs "tick N." Lands `core/net_transport.h`
+  with the `net_listen` / `net_connect` / `net_send` / `net_poll`
+  surface — no implementation yet, just the interface and a
+  no-op stub so server code can be written against it. Verifiable:
+  `./tenebris-server --seed=42` prints ticks and exits cleanly on
+  Ctrl-C.
 
-* **M2. WebSocket listen + HELLO/WELCOME.** Server accepts WS
-  connections, handshakes the HELLO/WELCOME pair, prints connected
-  clients. Verifiable with `websocat ws://localhost:PORT`.
+* **M2. WebSocket backend + HELLO/WELCOME.** Implements
+  `net_transport_ws.c` (libwebsockets) as the first backend behind
+  the M1 interface. `NET_CHANNEL_UNRELIABLE` silently maps to
+  reliable-ordered on this backend. Server accepts WS connections,
+  handshakes the HELLO/WELCOME pair, prints connected clients.
+  Verifiable with `websocat ws://localhost:PORT`.
 
 * **M3. Client net module.** WASM client gets a `net_client.c` that
-  opens a WS to a URL, handshakes, and stores the welcome. No
-  gameplay change yet — the client still runs its own local world.
-  Verifiable: dev console shows "connected, player_id=N."
+  uses the same `net_transport_t` interface (browser-side WS
+  backend lives in `net_transport_ws_wasm.c`, thin shim over the
+  JS `WebSocket` API). Opens a WS to a URL, handshakes, and stores
+  the welcome. No gameplay change yet — the client still runs its
+  own local world. Verifiable: dev console shows "connected,
+  player_id=N."
 
 * **M4. Server-authoritative position.** Client sends INPUT; server
   runs player physics; server sends SNAPSHOT; client renders the
@@ -316,7 +378,16 @@ Parser follows `core/config.c`. Zero / missing fields mean
 * Client-side prediction + reconciliation for player movement.
 * Delta-compressed snapshots (only send entities that changed).
 * Authentication (shared secret → real accounts).
-* WebRTC DataChannel transport, if snapshot latency ever measurably
-  hurts.
+* **WebRTC DataChannel backend** (`net_transport_rtc.c`) — second
+  implementation of the M1 transport interface. Unlocks real
+  unreliable-unordered for positions, P2P NAT punching for
+  self-hosting, and no TCP head-of-line blocking. Triggered by
+  either: profiling shows movement jitter we can't hide at the
+  snapshot layer, or one-click self-hosting becomes a UX priority.
+  Requires libdatachannel + a STUN server (free) and decisions on
+  TURN relay cost-sharing for cloud.
+* **WebTransport (HTTP/3 + QUIC) backend**, once Safari ships full
+  support and server-side QUIC tooling matures. Same interface,
+  third backend. Long-term replacement for both WS and WebRTC.
 * Mod / scripting sandbox.
 * Multi-world hosting on one server binary.
