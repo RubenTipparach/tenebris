@@ -1,0 +1,90 @@
+# Deploy tenebris-server to Fly.io.
+#
+# One-time setup (per repo):
+#   1. cd tenebris-c && fly launch --no-deploy --copy-config
+#      (claims a unique app name and rewrites fly.toml in place;
+#       commit that change so this workflow targets the same app)
+#   2. fly volumes create tenebris_saves --size 1 --region iad
+#      (the volume mount referenced by fly.toml)
+#   3. fly auth token | head -1   →  copy the token
+#   4. In GitHub:  Settings → Secrets and variables → Actions
+#      → New repository secret  name=FLY_API_TOKEN  value=<token>
+#
+# After that, every push to `main` that touches the server, the
+# Dockerfile, or core/ triggers a deploy. The workflow also exposes
+# a manual `workflow_dispatch` trigger so a feature branch can deploy
+# on demand (useful for testing M2+ before merging).
+
+name: Deploy server to Fly.io
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'tenebris-c/Dockerfile'
+      - 'tenebris-c/.dockerignore'
+      - 'tenebris-c/fly.toml'
+      - 'tenebris-c/CMakeLists.txt'
+      - 'tenebris-c/cmake/**'
+      - 'tenebris-c/src/core/**'
+      - 'tenebris-c/src/server/**'
+      - 'tenebris-c/assets/**'
+      - '.github/workflows/fly-deploy.yml'
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to deploy (defaults to the workflow ref)'
+        required: false
+        default: ''
+
+# One deploy at a time across the whole repo. A newer push waits for
+# the older one to finish rather than racing it.
+concurrency:
+  group: fly-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: fly deploy
+    runs-on: ubuntu-latest
+    # Fail fast if the secret is missing instead of leaking a confusing
+    # flyctl auth error 10 lines into the deploy.
+    if: ${{ vars.FLY_DEPLOY_DISABLED != 'true' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch || github.ref }}
+
+      - name: Set up flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Verify FLY_API_TOKEN is set
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          if [ -z "$FLY_API_TOKEN" ]; then
+            echo "::error::FLY_API_TOKEN repo secret is not set."
+            echo "::error::Add it under Settings → Secrets and variables → Actions."
+            echo "::error::Get a token via:  fly auth token"
+            exit 1
+          fi
+          echo "FLY_API_TOKEN present (length=${#FLY_API_TOKEN})"
+
+      - name: Deploy
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        working-directory: tenebris-c
+        run: |
+          set -e
+          # --remote-only builds inside Fly's builder rather than on
+          # the GitHub runner. Faster on a cold cache because Fly
+          # keeps a warm Docker layer cache per app.
+          flyctl deploy --remote-only --wait-timeout 300
+
+      - name: Show app status
+        if: always()
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        working-directory: tenebris-c
+        run: flyctl status || true
