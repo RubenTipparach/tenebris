@@ -13,6 +13,7 @@
 #include "sokol_log.h"
 #include "sokol_time.h"
 #include "sokol_debugtext.h"
+#include "sokol_gl.h"   /* draw_desync_popup uses sgl_* for the rect backdrop */
 
 #include "core/planet.h"
 #include "core/planet_gen.h"
