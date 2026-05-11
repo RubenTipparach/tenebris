@@ -19,6 +19,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Older libwebsockets (Debian bookworm ships 4.0.20) doesn't define
+ * the LWS_PROTOCOL_LIST_TERM convenience macro that 4.1+ does. Fall
+ * back to a manually-zeroed terminator with the field count from the
+ * 4.x struct definition. */
+#ifndef LWS_PROTOCOL_LIST_TERM
+#define LWS_PROTOCOL_LIST_TERM { NULL, NULL, 0, 0, 0, NULL, 0 }
+#endif
+
 #define NET_SEND_QUEUE_CAP 64
 
 typedef struct send_item_s {
