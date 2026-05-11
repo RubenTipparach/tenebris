@@ -22,7 +22,7 @@ name: Deploy server to Fly.io
 
 on:
   push:
-    branches: [main]
+    branches: ['**']
     paths:
       - 'tenebris-c/Dockerfile'
       - 'tenebris-c/.dockerignore'
