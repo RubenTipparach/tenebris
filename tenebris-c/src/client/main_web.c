@@ -419,7 +419,7 @@ static void update_overlay(float dt) {
     }
     /* Always-visible reminders so the player knows the keys exist
      * even if the top-right hamburger menu is hard to spot. */
-    sdtx_printf("[T] teleport menu   [F3 / P] profiler\n");
+    sdtx_printf("[T] teleport menu   [F3 / P] profiler   [F1] players\n");
 
     /* Mining progress bar (survival only). */
     if (G.player.survival_mode && G.interact.mining_progress_s > 0.0f) {
@@ -481,6 +481,164 @@ static void   maybe_autosave_sp(double dt) {
         .body_id = 0,
     };
     persistence_save(world, &s);
+}
+
+/* ------------------------------------------------------------------ */
+/* F1 players panel — toggle a small overlay listing every connected
+ * player (local + remote) with their lat/long on the body they're
+ * standing on. Useful for debugging position-relay + figuring out
+ * where friends are without flying to them. */
+/* ------------------------------------------------------------------ */
+
+static bool G_players_panel_visible = false;
+
+static void player_lat_lon_deg(dvec3_t world_pos,
+                                 const body_config_t* body,
+                                 double* out_lat_deg,
+                                 double* out_lon_deg,
+                                 double* out_alt_m) {
+    double dx = world_pos.x - body->pos_x;
+    double dy = world_pos.y - body->pos_y;
+    double dz = world_pos.z - body->pos_z;
+    double len = sqrt(dx * dx + dy * dy + dz * dz);
+    if (len < 1e-9) {
+        *out_lat_deg = 0.0;
+        *out_lon_deg = 0.0;
+        *out_alt_m   = -body->radius_m;
+        return;
+    }
+    const double k = 180.0 / 3.14159265358979323846;
+    *out_lat_deg = asin(dy / len) * k;
+    *out_lon_deg = atan2(dz, dx) * k;
+    *out_alt_m   = len - body->radius_m;
+}
+
+static void draw_players_panel(float screen_w, float screen_h) {
+    if (!G_players_panel_visible) return;
+    (void)screen_h;
+
+    /* Count entries upfront so we can size the panel. */
+    int local_count = (net_client_state() == NET_CLIENT_READY) ? 1 : 0;
+    int remote_n    = remote_players_count();
+    int total       = local_count + remote_n;
+    if (total < 1) total = 1;       /* show 'no peers' line at minimum */
+
+    const float row_h    = 18.0f;
+    const float pad      = 12.0f;
+    const float title_h  = 28.0f;
+    const float w        = 360.0f;
+    const float h        = title_h + (float)total * row_h + pad;
+    const float x        = screen_w - w - 16.0f;
+    const float y        = 16.0f;
+
+    /* Backdrop. */
+    sgl_defaults();
+    sgl_matrix_mode_projection();
+    sgl_load_identity();
+    sgl_ortho(0.0f, screen_w, screen_h, 0.0f, -1.0f, 1.0f);
+    sgl_matrix_mode_modelview();
+    sgl_load_identity();
+    static sgl_pipeline pip = (sgl_pipeline){0};
+    if (pip.id == 0) {
+        pip = sgl_make_pipeline(&(sg_pipeline_desc){
+            .colors[0].blend = {
+                .enabled = true,
+                .src_factor_rgb = SG_BLENDFACTOR_SRC_ALPHA,
+                .dst_factor_rgb = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+                .src_factor_alpha = SG_BLENDFACTOR_ONE,
+                .dst_factor_alpha = SG_BLENDFACTOR_ONE,
+            },
+        });
+    }
+    sgl_load_pipeline(pip);
+
+    sgl_begin_quads();
+    sgl_c4f(0.05f, 0.06f, 0.10f, 0.88f);
+    sgl_v2f(x,     y);
+    sgl_v2f(x + w, y);
+    sgl_v2f(x + w, y + h);
+    sgl_v2f(x,     y + h);
+    sgl_end();
+
+    const float t = 1.5f;
+    sgl_begin_quads();
+    sgl_c4f(0.55f, 0.65f, 0.85f, 0.85f);
+    sgl_v2f(x,           y);           sgl_v2f(x + w,       y);           sgl_v2f(x + w,       y + t);     sgl_v2f(x,           y + t);
+    sgl_v2f(x,           y + h - t);   sgl_v2f(x + w,       y + h - t);   sgl_v2f(x + w,       y + h);     sgl_v2f(x,           y + h);
+    sgl_v2f(x,           y);           sgl_v2f(x + t,       y);           sgl_v2f(x + t,       y + h);     sgl_v2f(x,           y + h);
+    sgl_v2f(x + w - t,   y);           sgl_v2f(x + w,       y);           sgl_v2f(x + w,       y + h);     sgl_v2f(x + w - t,   y + h);
+    sgl_end();
+
+    sgl_draw();
+
+    /* Title + rows via sdtx. Title at scale 1.5, rows at scale 1. The
+     * sdtx canvas trick: shrink the canvas by scale, place origin in
+     * canvas char cells. */
+    {
+        const float ts = 1.5f;
+        const float cell = 8.0f * ts;
+        const char* title = "PLAYERS  [F1]";
+        sdtx_canvas(screen_w / ts, screen_h / ts);
+        sdtx_font(1);
+        sdtx_origin((x + 12.0f) / cell, (y + 8.0f) / cell);
+        sdtx_color3b(0xff, 0xff, 0xff);
+        sdtx_home();
+        sdtx_printf("%s", title);
+        sdtx_font(0);
+    }
+    /* One row per player. */
+    float row_y = y + title_h;
+    char buf[160];
+
+    if (local_count) {
+        const net_client_welcome_t* wcm = net_client_welcome();
+        const body_config_t* body = planet_get((body_id_t)wcm->body_id);
+        if (!body) body = G.body;
+        double lat, lon, alt;
+        player_lat_lon_deg(G.player.position, body, &lat, &lon, &alt);
+        snprintf(buf, sizeof buf,
+                 "* id=%-3u  %s  lat=%+7.2f  lon=%+7.2f  alt=%5.0fm",
+                 wcm->player_id, body->name, lat, lon, alt);
+        sdtx_canvas(screen_w, screen_h);
+        sdtx_font(1);
+        sdtx_origin((x + 12.0f) / 8.0f, row_y / 8.0f);
+        sdtx_color3b(0x80, 0xff, 0xa0);
+        sdtx_home();
+        sdtx_printf("%s", buf);
+        sdtx_font(0);
+        row_y += row_h;
+    }
+
+    for (int i = 0; i < remote_n; ++i) {
+        const remote_player_t* rp = remote_players_get(i);
+        if (!rp) continue;
+        const body_config_t* body = planet_get((body_id_t)rp->body_id);
+        if (!body) body = G.body;
+        double lat, lon, alt;
+        player_lat_lon_deg(rp->pos, body, &lat, &lon, &alt);
+        snprintf(buf, sizeof buf,
+                 "  id=%-3u  %s  lat=%+7.2f  lon=%+7.2f  alt=%5.0fm",
+                 rp->player_id, body->name, lat, lon, alt);
+        sdtx_canvas(screen_w, screen_h);
+        sdtx_font(1);
+        sdtx_origin((x + 12.0f) / 8.0f, row_y / 8.0f);
+        sdtx_color3b(0xff, 0xc0, 0x70);
+        sdtx_home();
+        sdtx_printf("%s", buf);
+        sdtx_font(0);
+        row_y += row_h;
+    }
+
+    if (local_count + remote_n == 0) {
+        snprintf(buf, sizeof buf, "  (offline - single player)");
+        sdtx_canvas(screen_w, screen_h);
+        sdtx_font(1);
+        sdtx_origin((x + 12.0f) / 8.0f, row_y / 8.0f);
+        sdtx_color3b(0x80, 0x90, 0xa8);
+        sdtx_home();
+        sdtx_printf("%s", buf);
+        sdtx_font(0);
+    }
 }
 
 /* Server-side desync popup. Drawn during the UI overlay pass — shows
@@ -884,6 +1042,7 @@ static void frame(void) {
     draw_error_overlay();
     profiler_draw();
     draw_desync_popup(sapp_widthf(), sapp_heightf());
+    draw_players_panel(sapp_widthf(), sapp_heightf());
     sdtx_draw();
     hotbar_ui_draw(&G.player.inventory);
     mobile_ui_draw();
@@ -930,6 +1089,11 @@ static void event(const sapp_event* e) {
      * first, so the toggle works (the find dialog may also pop up;
      * pressing F3 again closes it). 'P' is bound as a backup that's
      * not browser-intercepted. */
+    /* F1 toggles the players panel (lat/lon list of everyone online). */
+    if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_F1) {
+        G_players_panel_visible = !G_players_panel_visible;
+        return;
+    }
     if (e->type == SAPP_EVENTTYPE_KEY_DOWN &&
         (e->key_code == SAPP_KEYCODE_F3 || e->key_code == SAPP_KEYCODE_P)) {
         profiler_toggle_visible();
