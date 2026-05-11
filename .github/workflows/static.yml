@@ -1,8 +1,14 @@
 # Continuous build + deploy for Tenebris.
 #
-# Every push to every branch builds AND deploys to GitHub Pages. Single-
-# dev / fast-iteration mode — whoever pushed last wins the live site.
-# Tighten to a branch allowlist later if the project grows contributors.
+# Every push to every branch builds AND deploys: the WASM + landing
+# pages go to GitHub Pages, the dedicated server goes to Fly.io.
+# Single-dev / fast-iteration mode — whoever pushed last wins both
+# the live site and the live server. Tighten to a branch allowlist
+# later if the project grows contributors.
+#
+# Fly deploy requires a FLY_API_TOKEN repo secret (scoped deploy
+# token from `fly tokens create deploy -a tenebris-c`, including the
+# 'FlyV1 ' prefix). Without it the deploy step fails fast.
 name: Build and deploy
 
 on:
@@ -80,6 +86,29 @@ jobs:
         uses: actions/upload-pages-artifact@v3
         with:
           path: 'dist'
+
+      # ---------------------------------------------------------------
+      # Server deploy. Folded into the build job so a single push gives
+      # you a single "Run workflow" button + a single status indicator
+      # for the whole pipeline. Cold-cache depot builds can take 5-8 min;
+      # --wait-timeout 900 (15 min) leaves headroom without giving up
+      # early. --verbose makes failures self-diagnose in the run log.
+      # ---------------------------------------------------------------
+      - name: Set up flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Deploy server to Fly.io
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        working-directory: tenebris-c
+        run: |
+          if [ -z "$FLY_API_TOKEN" ]; then
+            echo "::error::FLY_API_TOKEN repo secret is not set."
+            echo "::error::Get a deploy-scoped token via:  fly tokens create deploy -a tenebris-c"
+            echo "::error::Add it under Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+          flyctl deploy --remote-only --wait-timeout 900 --verbose
 
   deploy:
     needs: build
