@@ -13,10 +13,10 @@
 #   4. In GitHub:  Settings → Secrets and variables → Actions
 #      → New repository secret  name=FLY_API_TOKEN  value=<token>
 #
-# After that, every push to `main` that touches the server, the
-# Dockerfile, or core/ triggers a deploy. The workflow also exposes
-# a manual `workflow_dispatch` trigger so a feature branch can deploy
-# on demand (useful for testing M2+ before merging).
+# After that, every push to ANY branch that touches the server, the
+# Dockerfile, or core/ triggers a deploy — same single-dev /
+# last-push-wins model used by the Pages workflow. workflow_dispatch
+# stays available for one-off / branch-pick deploys.
 
 name: Deploy server to Fly.io
 
@@ -78,12 +78,13 @@ jobs:
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
         working-directory: tenebris-c
-        run: |
-          set -e
-          # --remote-only builds inside Fly's builder rather than on
-          # the GitHub runner. Faster on a cold cache because Fly
-          # keeps a warm Docker layer cache per app.
-          flyctl deploy --remote-only --wait-timeout 300
+        # --remote-only builds inside Fly's builder rather than on the
+        # GitHub runner. Cold cache (first build of the day) can take
+        # 5-8 min, warm rebuilds 30-60 s. --wait-timeout 900 (15 min)
+        # gives the depot builder enough room without giving up early
+        # on first builds. --verbose makes failures self-diagnose
+        # rather than landing as a bare exit-1.
+        run: flyctl deploy --remote-only --wait-timeout 900 --verbose
 
       - name: Show app status
         if: always()
