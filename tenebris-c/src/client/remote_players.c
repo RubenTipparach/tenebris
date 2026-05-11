@@ -2,6 +2,7 @@
 
 #include "sokol_gfx.h"
 #include "sokol_gl.h"
+#include "sokol_time.h"
 
 #include <math.h>
 #include <string.h>
@@ -17,11 +18,49 @@ void remote_players_init(void) {
 
 void remote_players_shutdown(void) { }
 
-void remote_players_set_from_snapshot(const remote_player_t* arr, int count) {
+void remote_players_set_from_snapshot(const remote_pose_t* arr, int count) {
     if (count < 0) count = 0;
     if (count > REMOTE_PLAYERS_MAX) count = REMOTE_PLAYERS_MAX;
-    memset(R.players, 0, sizeof R.players);
-    for (int i = 0; i < count; ++i) R.players[i] = arr[i];
+
+    const double now = stm_sec(stm_now());
+
+    remote_player_t fresh[REMOTE_PLAYERS_MAX];
+    memset(fresh, 0, sizeof fresh);
+
+    for (int i = 0; i < count; ++i) {
+        const remote_pose_t* in = &arr[i];
+
+        /* Look up the previous slot for this player_id so prev pose
+         * survives across snapshots. Linear scan is cheap at N=16. */
+        const remote_player_t* old = NULL;
+        for (int j = 0; j < R.count; ++j) {
+            if (R.players[j].active && R.players[j].player_id == in->player_id) {
+                old = &R.players[j];
+                break;
+            }
+        }
+
+        remote_player_t* slot = &fresh[i];
+        slot->player_id = in->player_id;
+        slot->body_id   = in->body_id;
+        slot->pos_cur   = in->pos;
+        slot->yaw_cur   = in->yaw;
+        slot->pitch_cur = in->pitch;
+        if (old) {
+            slot->pos_prev   = old->pos_cur;
+            slot->yaw_prev   = old->yaw_cur;
+            slot->pitch_prev = old->pitch_cur;
+        } else {
+            /* New player — no history yet; snap to the incoming pose. */
+            slot->pos_prev   = in->pos;
+            slot->yaw_prev   = in->yaw;
+            slot->pitch_prev = in->pitch;
+        }
+        slot->snapshot_time_s = now;
+        slot->active          = true;
+    }
+
+    memcpy(R.players, fresh, sizeof R.players);
     R.count = count;
 }
 
@@ -56,6 +95,11 @@ static void draw_octahedron(float cx, float cy, float cz, float r) {
     sgl_end();
 }
 
+/* yaw/pitch interp will land when the renderer actually orients the
+ * remote-player marker (player model + heading arrow). For now only
+ * position is interpolated; the prev/cur yaw and pitch are stored in
+ * remote_player_t so the future change is one place. */
+
 void remote_players_draw(mat4_t view, mat4_t proj) {
     if (R.count == 0) return;
 
@@ -75,18 +119,28 @@ void remote_players_draw(mat4_t view, mat4_t proj) {
     }
     sgl_load_pipeline(pip3d);
 
-    /* Octahedron radius in metres. 0.5 m is roughly head-sized; visible
-     * from a fair distance without overwhelming up close. */
-    const float r = 0.5f;
+    /* Server broadcasts at ~6.7 Hz so the gap between snapshots is
+     * ~150 ms. Interpolating across that window lags the displayed
+     * pose by one snapshot interval but keeps motion smooth. */
+    const double interp_delay_s = 0.150;
+    const double now = stm_sec(stm_now());
+    const float  r   = 0.5f;       /* octahedron radius */
+
     for (int i = 0; i < R.count; ++i) {
         const remote_player_t* p = &R.players[i];
         if (!p->active) continue;
-        /* Positions arrive in world space (dvec3); the renderer's view
-         * matrix is the world->camera transform, so straight float
-         * coords work. Tenebris doesn't yet use floating origin (plan.md
-         * Part 1) — when it does, this becomes (pos - origin). */
+
+        double dt = now - p->snapshot_time_s;
+        double t  = dt / interp_delay_s;
+        if (t < 0.0) t = 0.0;
+        if (t > 1.0) t = 1.0;
+
+        double lx = p->pos_prev.x + (p->pos_cur.x - p->pos_prev.x) * t;
+        double ly = p->pos_prev.y + (p->pos_cur.y - p->pos_prev.y) * t;
+        double lz = p->pos_prev.z + (p->pos_cur.z - p->pos_prev.z) * t;
+
         sgl_push_matrix();
-        sgl_translate((float)p->pos.x, (float)p->pos.y, (float)p->pos.z);
+        sgl_translate((float)lx, (float)ly, (float)lz);
         draw_octahedron(0.0f, 0.0f, 0.0f, r);
         sgl_pop_matrix();
     }

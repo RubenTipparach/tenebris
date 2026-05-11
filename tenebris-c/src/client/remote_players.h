@@ -17,20 +17,40 @@
 
 #define REMOTE_PLAYERS_MAX 16
 
+/* Incoming pose from a SNAPSHOT entry. net_client builds an array of
+ * these from the decoded snapshot and hands it to
+ * remote_players_set_from_snapshot, which then owns the interp
+ * machinery (prev/cur poses + timestamps). */
 typedef struct {
     uint32_t player_id;
     uint32_t body_id;
     dvec3_t  pos;
     float    yaw, pitch;
+} remote_pose_t;
+
+/* One slot per known remote player. The renderer interpolates between
+ * `pos_prev` (pose at second-most-recent snapshot) and `pos_cur`
+ * (pose at most-recent snapshot), lagging displayed motion by one
+ * snapshot interval so it stays smooth across the 6.7 Hz update rate.
+ * Classic Source-style entity interpolation. */
+typedef struct {
+    uint32_t player_id;
+    uint32_t body_id;
+    dvec3_t  pos_prev;
+    dvec3_t  pos_cur;
+    float    yaw_prev,   yaw_cur;
+    float    pitch_prev, pitch_cur;
+    double   snapshot_time_s;   /* monotonic seconds at last update */
     bool     active;
 } remote_player_t;
 
 void remote_players_init(void);
 void remote_players_shutdown(void);
 
-/* Wholesale-replace from a freshly-arrived SNAPSHOT. Removes anyone
- * not in the snapshot (so disconnected players vanish promptly). */
-void remote_players_set_from_snapshot(const remote_player_t* arr, int count);
+/* Wholesale-replace from a freshly-arrived SNAPSHOT. Matches each
+ * incoming pose to the previous one by player_id so the prev/cur
+ * interp pair survives across snapshots. */
+void remote_players_set_from_snapshot(const remote_pose_t* arr, int count);
 
 int  remote_players_count(void);
 const remote_player_t* remote_players_get(int i);

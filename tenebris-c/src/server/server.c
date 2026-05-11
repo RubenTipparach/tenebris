@@ -38,21 +38,30 @@ static server_client_t* find_client_by_conn(server_t* s, net_conn_t* c) {
  * decides what to do with the DESYNC message (currently: HUD warning). */
 /* ------------------------------------------------------------------ */
 
-static world_t* find_world_for_body(server_t* s, uint32_t body_id) {
-    for (int i = 0; i < s->world_count; ++i) {
-        world_t* w = s->worlds[i];
-        if (w && w->body && (uint32_t)w->body->id == body_id) return w;
-    }
-    return NULL;
-}
-
 static void check_for_desync(server_t* s, server_client_t* cl) {
-    /* Rate-limit: at most one DESYNC per second per client. */
-    const uint64_t cooldown_ticks = (uint64_t)(s->cfg.tick_hz);
-    if (cl->last_desync_tick != 0 &&
-        s->tick - cl->last_desync_tick < cooldown_ticks) return;
+    /* DESYNC popup is disabled for now — the naive 'is the player
+     * inside a solid block?' check fires for normally-grounded
+     * players because player.position is the FEET anchor and a
+     * grounded player's feet sit right at the surface grass block.
+     * A real check needs to sample at head height (+1.6 m along the
+     * surface normal). Until that lands, just no-op so we don't
+     * spam the HUD. */
+    (void)s; (void)cl;
+    return;
 
-    world_t* w = find_world_for_body(s, cl->body_id);
+    /* Disabled body, kept here so the eventual head-height fix is a
+     * one-line edit (move the early return + tweak body_local to add
+     * 1.6 m up the surface normal). #if 0 keeps the linker / dead
+     * code analysers happy without making the function look bare. */
+#if 0
+    world_t* w = NULL;
+    for (int i = 0; i < s->world_count; ++i) {
+        world_t* candidate = s->worlds[i];
+        if (candidate && candidate->body &&
+            (uint32_t)candidate->body->id == cl->body_id) {
+            w = candidate; break;
+        }
+    }
     if (!w || !w->body) return;     /* unknown body — skip silently */
 
     /* world_block_at_pos takes body-local float coords. The wire pos is
@@ -80,6 +89,7 @@ static void check_for_desync(server_t* s, server_client_t* cl) {
     cl->last_desync_tick = s->tick;
     printf("[server] DESYNC sent to player_id=%u: inside block=%u at (%.1f, %.1f, %.1f)\n",
            cl->player_id, (unsigned)b, cl->pos_x, cl->pos_y, cl->pos_z);
+#endif
 }
 
 /* ------------------------------------------------------------------ */

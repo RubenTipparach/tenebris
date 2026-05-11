@@ -614,7 +614,9 @@ static void draw_players_panel(float screen_w, float screen_h) {
         const body_config_t* body = planet_get((body_id_t)rp->body_id);
         if (!body) body = G.body;
         double lat, lon, alt;
-        player_lat_lon_deg(rp->pos, body, &lat, &lon, &alt);
+        /* F1 shows the freshest known pose (no interp lag); the
+         * renderer's lerp is purely cosmetic for smooth motion. */
+        player_lat_lon_deg(rp->pos_cur, body, &lat, &lon, &alt);
         snprintf(buf, sizeof buf,
                  "  id=%-3u  %s  lat=%+7.2f  lon=%+7.2f  alt=%5.0fm",
                  rp->player_id, body->name, lat, lon, alt);

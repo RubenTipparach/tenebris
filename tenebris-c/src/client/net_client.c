@@ -117,7 +117,7 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
                 fprintf(stderr, "[net-client] malformed SNAPSHOT\n");
                 break;
             }
-            remote_player_t out[REMOTE_PLAYERS_MAX];
+            remote_pose_t out[REMOTE_PLAYERS_MAX];
             int n_out = 0;
             for (int i = 0; i < snap.player_count; ++i) {
                 const msg_snapshot_entry_t* e = &snap.players[i];
@@ -125,7 +125,7 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
                  * marker on top of the camera. */
                 if (e->player_id == C.welcome.player_id) continue;
                 if (n_out >= REMOTE_PLAYERS_MAX) break;
-                remote_player_t* r = &out[n_out++];
+                remote_pose_t* r = &out[n_out++];
                 r->player_id = e->player_id;
                 r->body_id   = e->body_id;
                 r->pos.x     = e->pos_x;
@@ -133,7 +133,6 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
                 r->pos.z     = e->pos_z;
                 r->yaw       = e->yaw;
                 r->pitch     = e->pitch;
-                r->active    = true;
             }
             remote_players_set_from_snapshot(out, n_out);
             /* Diagnostic: log every ~5 s (33 snapshots at 6.7 Hz) so
