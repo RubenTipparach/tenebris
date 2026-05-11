@@ -202,6 +202,7 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
             }
             /* Drop out-of-order packets — keep only the freshest pose. */
             if (cl->has_state && st.client_tick <= cl->last_client_tick) break;
+            bool first = !cl->has_state;
             cl->has_state        = true;
             cl->body_id          = st.body_id;
             cl->pos_x            = st.pos_x;
@@ -210,6 +211,12 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
             cl->yaw              = st.yaw;
             cl->pitch            = st.pitch;
             cl->last_client_tick = st.client_tick;
+            if (first) {
+                printf("[server] first PLAYER_STATE from player_id=%u at "
+                       "(%.1f, %.1f, %.1f) body=%u\n",
+                       cl->player_id, st.pos_x, st.pos_y, st.pos_z, st.body_id);
+                fflush(stdout);
+            }
             check_for_desync(s, cl);
             break;
         }
@@ -315,9 +322,19 @@ static void broadcast_snapshot(server_t* s) {
                        + SNAPSHOT_MAX_PLAYERS * MSG_SNAPSHOT_ENTRY_SIZE];
     size_t n = proto_write_snapshot(buf, sizeof buf, &snap);
     if (n == 0) return;
+    int sent = 0;
     for (int i = 0; i < SERVER_MAX_CLIENTS; ++i) {
         const server_client_t* cl = &s->clients[i];
-        if (cl->conn) net_send(cl->conn, NET_CHANNEL_UNRELIABLE, buf, n);
+        if (cl->conn) { net_send(cl->conn, NET_CHANNEL_UNRELIABLE, buf, n); ++sent; }
+    }
+    /* Heartbeat log every ~5 s (33 broadcasts at 6.7 Hz) so the Fly
+     * log isn't drowned in snapshot spam but we can still confirm
+     * delivery from the server side. */
+    static uint64_t snap_count = 0;
+    if ((++snap_count % 33) == 0) {
+        printf("[server] snapshot #%llu: %u players, sent to %d conns\n",
+               (unsigned long long)snap_count, snap.player_count, sent);
+        fflush(stdout);
     }
 }
 

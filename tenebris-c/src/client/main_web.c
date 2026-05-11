@@ -523,9 +523,9 @@ static void draw_players_panel(float screen_w, float screen_h) {
     int total       = local_count + remote_n;
     if (total < 1) total = 1;       /* show 'no peers' line at minimum */
 
-    const float row_h    = 18.0f;
-    const float pad      = 12.0f;
-    const float title_h  = 28.0f;
+    const float row_h    = 14.0f;
+    const float pad      = 10.0f;
+    const float title_h  = 22.0f;
     const float w        = 360.0f;
     const float h        = title_h + (float)total * row_h + pad;
     const float x        = screen_w - w - 16.0f;
@@ -571,16 +571,15 @@ static void draw_players_panel(float screen_w, float screen_h) {
 
     sgl_draw();
 
-    /* Title + rows via sdtx. Title at scale 1.5, rows at scale 1. The
-     * sdtx canvas trick: shrink the canvas by scale, place origin in
-     * canvas char cells. */
+    /* Title + rows via sdtx. Single scale (= 1) for everything in the
+     * panel — sdtx batches per-canvas state, and switching scales
+     * mid-panel makes the title and rows render against different
+     * canvases (title ends up positioned wrong). */
     {
-        const float ts = 1.5f;
-        const float cell = 8.0f * ts;
-        const char* title = "PLAYERS  [F1]";
-        sdtx_canvas(screen_w / ts, screen_h / ts);
+        const char* title = "PLAYERS [F1]";
+        sdtx_canvas(screen_w, screen_h);
         sdtx_font(1);
-        sdtx_origin((x + 12.0f) / cell, (y + 8.0f) / cell);
+        sdtx_origin((x + 12.0f) / 8.0f, (y + 8.0f) / 8.0f);
         sdtx_color3b(0xff, 0xff, 0xff);
         sdtx_home();
         sdtx_printf("%s", title);
