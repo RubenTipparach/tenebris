@@ -180,16 +180,10 @@ void menu_draw(int screen_w, int screen_h) {
     /* Backdrop: dim the scene behind the menu. */
     quad(0, 0, w, h, 0.03f, 0.05f, 0.10f, 0.80f);
 
-    /* Title strip. Just a coloured band; the actual text goes through
-     * sdtx_printf below the buttons so the alignment can use sdtx
-     * character metrics directly. */
-    float strip_y = h * 0.5f - 200.0f;
-    quad(w * 0.5f - 220.0f, strip_y, 440.0f, 8.0f, 0.85f, 0.90f, 1.0f, 0.30f);
-
     draw_button(&M.btn_sp);
     draw_button(&M.btn_mp);
 
-    /* Status message strip near bottom of screen. */
+    /* Status message backdrop near bottom of screen. */
     if (M.state == GAME_MP_URL_PROMPT) {
         quad(w * 0.5f - 200.0f, h * 0.5f + 160.0f, 400.0f, 40.0f,
              0.20f, 0.20f, 0.22f, 0.90f);
@@ -205,7 +199,7 @@ void menu_draw(int screen_w, int screen_h) {
 
     draw_text_centered("TENEBRIS", cx, h * 0.5f - 220.0f, 5.0f,
                          0xff, 0xff, 0xff);
-    draw_text_centered("select a mode", cx, strip_y + 24.0f, 2.0f,
+    draw_text_centered("select a mode", cx, h * 0.5f - 160.0f, 2.0f,
                          0xa0, 0xb0, 0xc8);
 
     {
