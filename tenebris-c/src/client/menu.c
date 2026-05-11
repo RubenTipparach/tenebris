@@ -31,12 +31,15 @@ EM_JS(char*, menu_js_prompt_server_url, (void), {
     return p;
 });
 
-/* Prompt for a new SP world name. Sanitises out newline / carriage
- * return / colon (storage-format characters) and trims whitespace. */
+/* Prompt for a new SP world name. JS just trims and forwards the
+ * raw string; C-side strips storage-format characters (newline,
+ * carriage return, colon) — keeping any regex out of the EM_JS body
+ * so the C preprocessor doesn't choke on the backslash escapes,
+ * which sit outside any string literal here. */
 EM_JS(char*, menu_js_prompt_world_name, (void), {
     var raw = window.prompt('Name your world:', 'world-' + Date.now().toString().slice(-4));
     if (!raw) return 0;
-    var n = raw.replace(/[\n\r:]/g, '').trim();
+    var n = raw.trim();
     if (!n) return 0;
     if (n.length > 31) n = n.substring(0, 31);
     var len = lengthBytesUTF8(n) + 1;
@@ -369,6 +372,16 @@ static void start_sp_new_world(void) {
         printf("[menu] new-world cancelled\n");
         return;     /* stay on world-list screen */
     }
+    /* Strip storage-format characters that would corrupt our flat
+     * 'tenebris-c:world:<name>' key (newline / CR break the list
+     * enumeration; colon collides with the prefix separator). */
+    char* w = name;
+    for (const char* r = name; *r; ++r) {
+        if (*r == '\n' || *r == '\r' || *r == ':') continue;
+        *w++ = *r;
+    }
+    *w = 0;
+    if (!*name) { free(name); return; }
     /* If the name collides, we just overwrite — same UX as picking
      * the existing world from the list. */
     start_sp_for_world(name);
