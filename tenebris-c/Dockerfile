@@ -30,8 +30,12 @@ RUN cmake -B build -G Ninja \
 
 
 FROM debian:bookworm-slim AS runtime
+# Pull in libwebsockets via the -dev package so the SONAME version
+# (which differs across Debian releases) is never named explicitly.
+# The dev package depends on the matching runtime lib; the +5 MB of
+# headers is negligible compared to dragging in clang again.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates libwebsockets19 \
+        ca-certificates libwebsockets-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
