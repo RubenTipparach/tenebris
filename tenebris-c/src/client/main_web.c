@@ -441,6 +441,8 @@ static void maybe_apply_sp_resume(void) {
 static double G_sp_save_accum = 0.0;
 static void   maybe_autosave_sp(double dt) {
     if (menu_state() != GAME_IN_GAME_SP) return;
+    const char* world = menu_active_world();
+    if (!world || !*world) return;       /* SP without a world — shouldn't happen */
     G_sp_save_accum += dt;
     if (G_sp_save_accum < 5.0) return;
     G_sp_save_accum = 0.0;
@@ -453,7 +455,7 @@ static void   maybe_autosave_sp(double dt) {
         .roll  = 0.0f,
         .body_id = 0,
     };
-    persistence_save(&s);
+    persistence_save(world, &s);
 }
 
 static void frame(void) {

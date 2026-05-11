@@ -20,9 +20,10 @@
 
 typedef enum {
     GAME_MAIN_MENU      = 0,
-    GAME_MP_URL_PROMPT  = 1,   /* transient — waits for window.prompt */
-    GAME_IN_GAME_SP     = 2,
-    GAME_IN_GAME_MP     = 3,
+    GAME_SP_WORLD_LIST  = 1,   /* picking which world to load   */
+    GAME_MP_URL_PROMPT  = 2,   /* transient — waits for prompt   */
+    GAME_IN_GAME_SP     = 3,
+    GAME_IN_GAME_MP     = 4,
 } game_state_t;
 
 void menu_init(void);
@@ -50,5 +51,10 @@ bool menu_event(const sapp_event* e);
  * calls until the next SP transition. Caller (main_web) applies the
  * pose to the player on entering IN_GAME_SP. */
 bool menu_take_sp_resume(persistence_save_t* out);
+
+/* The name of the world the SP session is currently writing back to.
+ * Empty string when not in SP. Used by the throttled autosave in
+ * main_web. */
+const char* menu_active_world(void);
 
 #endif

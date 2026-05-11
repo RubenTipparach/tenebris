@@ -6,14 +6,17 @@
 
 /*
  * Browser-side single-player save / load. Backed by window.localStorage
- * — small (~5 MB) but always available and synchronous, which fits the
- * "save player position every few seconds" pattern. Larger saves
- * (chunk diffs, inventory) will migrate to IndexedDB when M6's
- * persistence layer lands.
+ * (~5 MB total, synchronous). Each save lives at the key
  *
- * v1 scope: just the player's pose + which body they're on. Enough to
- * resume where you left off after a tab close.
+ *     tenebris-c:world:<name>
+ *
+ * so multiple worlds coexist; the menu's world picker lists every key
+ * matching that prefix. Larger saves (chunk diffs, inventory) will
+ * migrate to IndexedDB when M6's persistence layer lands.
  */
+
+#define PERSISTENCE_NAME_MAX   31    /* + null terminator */
+#define PERSISTENCE_MAX_WORLDS 32
 
 typedef struct {
     double   pos_x, pos_y, pos_z;   /* world-space position */
@@ -21,15 +24,22 @@ typedef struct {
     uint32_t body_id;
 } persistence_save_t;
 
-/* Write the current pose to localStorage. Cheap, but throttle to
- * once every few seconds in the caller — don't hammer it every frame. */
-bool persistence_save(const persistence_save_t* s);
+/* Read all save names (matching the tenebris-c:world: prefix) into
+ * `out_names`. Each entry is up to PERSISTENCE_NAME_MAX chars + null.
+ * Returns the count written, capped at PERSISTENCE_MAX_WORLDS. Worlds
+ * are sorted alphabetically. */
+int persistence_list_worlds(char out_names[PERSISTENCE_MAX_WORLDS]
+                                          [PERSISTENCE_NAME_MAX + 1]);
 
-/* Load the most recent save. Returns false if nothing's stored or
- * the blob is malformed. */
-bool persistence_load(persistence_save_t* out);
+/* Write/read/delete a named save. `world_name` must be non-empty and
+ * <= PERSISTENCE_NAME_MAX chars; longer names get rejected (returns
+ * false on save, false on load). Cheap on the hot path — call from a
+ * throttled autosave loop. */
+bool persistence_save  (const char* world_name, const persistence_save_t* s);
+bool persistence_load  (const char* world_name, persistence_save_t* out);
+void persistence_delete(const char* world_name);
 
-/* Drop the save (used by a future "New Game" button). */
-void persistence_clear(void);
+/* True if a save exists for that name. */
+bool persistence_exists(const char* world_name);
 
 #endif
