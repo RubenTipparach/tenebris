@@ -63,6 +63,33 @@ static void q_drain_free(net_conn_t* c) {
     }
 }
 
+/* Serve one in-memory HTTP body. Returns -1 on transport error (caller
+ * should drop the connection), 0 on success. */
+static int serve_http(struct lws* wsi, int status,
+                       const char* mime,
+                       const uint8_t* body, size_t body_len) {
+    unsigned char buf[LWS_PRE + 1024];
+    unsigned char* p   = buf + LWS_PRE;
+    unsigned char* end = buf + sizeof buf - 1;
+    if (lws_add_http_common_headers(wsi, (unsigned int)status, mime,
+                                       (unsigned long)body_len, &p, end) ||
+        lws_finalize_write_http_header(wsi, buf + LWS_PRE, &p, end)) {
+        return -1;
+    }
+    if (body_len > 0 && body) {
+        /* Send the body in one shot. Small enough for any reasonable
+         * dashboard payload — large blobs would need chunked writes. */
+        uint8_t* out = (uint8_t*)malloc(LWS_PRE + body_len);
+        if (!out) return -1;
+        memcpy(out + LWS_PRE, body, body_len);
+        int n = lws_write(wsi, out + LWS_PRE, body_len, LWS_WRITE_HTTP_FINAL);
+        free(out);
+        if (n < (int)body_len) return -1;
+    }
+    if (lws_http_transaction_completed(wsi)) return -1;
+    return 0;
+}
+
 static int tenebris_callback(struct lws* wsi, enum lws_callback_reasons reason,
                                void* user, void* in, size_t len) {
     net_conn_t* C = (net_conn_t*)user;
@@ -70,6 +97,29 @@ static int tenebris_callback(struct lws* wsi, enum lws_callback_reasons reason,
     net_listener_t* L = ctx ? (net_listener_t*)lws_context_user(ctx) : NULL;
 
     switch (reason) {
+        case LWS_CALLBACK_HTTP: {
+            if (!L || !L->cb.on_http) {
+                /* No dashboard registered — return a friendly text
+                 * line. Better than a libwebsockets default 404 that
+                 * Fly's health-check shows as "connection closed". */
+                static const char msg[] =
+                    "tenebris-server is alive (WebSocket-only by default)\n";
+                return serve_http(wsi, 200, "text/plain; charset=utf-8",
+                                    (const uint8_t*)msg, sizeof msg - 1);
+            }
+            const char* path = (const char*)in;
+            const uint8_t* body = NULL;
+            size_t body_len = 0;
+            const char* mime = "text/plain";
+            int hit = L->cb.on_http(path, &body, &body_len, &mime, L->cb.user);
+            if (!hit) {
+                static const char notfound[] = "404\n";
+                return serve_http(wsi, 404, "text/plain",
+                                    (const uint8_t*)notfound, sizeof notfound - 1);
+            }
+            return serve_http(wsi, 200, mime, body, body_len);
+        }
+
         case LWS_CALLBACK_ESTABLISHED:
             if (!C) return -1;
             memset(C, 0, sizeof(*C));

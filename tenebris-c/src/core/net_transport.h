@@ -51,10 +51,21 @@ typedef void (*net_on_close_fn)(net_conn_t* conn,
                                   net_close_reason_t reason,
                                   void* user);
 
+/* Optional HTTP handler. Fires for non-WebSocket GETs on the same
+ * port — useful for dashboards / healthchecks. Fill out_body /
+ * out_body_len / out_mime, return non-zero on hit, zero for 404.
+ * The body pointer must stay valid until the next call. */
+typedef int (*net_http_fn)(const char* path,
+                            const uint8_t** out_body,
+                            size_t* out_body_len,
+                            const char** out_mime,
+                            void* user);
+
 typedef struct {
     net_on_open_fn  on_open;
     net_on_msg_fn   on_msg;
     net_on_close_fn on_close;
+    net_http_fn     on_http;     /* NULL = WebSocket-only listener */
     void*           user;
 } net_callbacks_t;
 
