@@ -119,6 +119,47 @@ typedef struct {
 } msg_snapshot_t;
 
 /* ------------------------------------------------------------------
+ * World edits (M5). Client sends PLAYER_CMD on every place / break;
+ * server applies the edit to its authoritative world, then broadcasts
+ * a CHUNK_DIFF to all connected clients so everyone's local copy
+ * converges. The server is the persistence point — see M6 in
+ * MULTIPLAYER.md for the disk path.
+ * ------------------------------------------------------------------ */
+
+typedef enum {
+    PLAYER_CMD_PLACE  = 0,
+    PLAYER_CMD_BREAK  = 1,
+} player_cmd_kind_t;
+
+#define MSG_PLAYER_CMD_WIRE_SIZE   16   /* kind+pad(4) + body(4) + tile(4) + depth(2) + block(2) */
+
+typedef struct {
+    uint8_t  cmd_kind;       /* player_cmd_kind_t */
+    uint8_t  reserved8a;
+    uint16_t reserved16a;
+    uint32_t body_id;
+    uint32_t tile_idx;
+    uint16_t depth;
+    uint16_t block_type;     /* destination block (BLOCK_AIR for break) */
+} msg_player_cmd_t;
+
+#define CHUNK_DIFF_MAX_EDITS         64
+#define MSG_CHUNK_DIFF_HEADER_SIZE   8     /* body(4) + count(2) + reserved(2) */
+#define MSG_CHUNK_DIFF_ENTRY_SIZE    8     /* tile(4) + depth(2) + block(2) */
+
+typedef struct {
+    uint32_t tile_idx;
+    uint16_t depth;
+    uint16_t block_type;
+} msg_chunk_diff_entry_t;
+
+typedef struct {
+    uint32_t body_id;
+    uint16_t edit_count;
+    msg_chunk_diff_entry_t edits[CHUNK_DIFF_MAX_EDITS];
+} msg_chunk_diff_t;
+
+/* ------------------------------------------------------------------
  * Server-side sanity check feedback. The server doesn't simulate
  * player physics (M4 trust-the-client) but it can still spot
  * impossible poses — like "you're standing inside bedrock" — and
@@ -170,5 +211,11 @@ int    proto_read_snapshot (const uint8_t* payload, size_t len, msg_snapshot_t* 
 
 size_t proto_write_desync(uint8_t* buf, size_t cap, const msg_desync_t* m);
 int    proto_read_desync (const uint8_t* payload, size_t len, msg_desync_t* out);
+
+size_t proto_write_player_cmd(uint8_t* buf, size_t cap, const msg_player_cmd_t* m);
+int    proto_read_player_cmd (const uint8_t* payload, size_t len, msg_player_cmd_t* out);
+
+size_t proto_write_chunk_diff(uint8_t* buf, size_t cap, const msg_chunk_diff_t* m);
+int    proto_read_chunk_diff (const uint8_t* payload, size_t len, msg_chunk_diff_t* out);
 
 #endif

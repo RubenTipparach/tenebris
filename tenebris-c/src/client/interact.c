@@ -1,7 +1,9 @@
 #include "client/interact.h"
 #include "client/input.h"
+#include "client/net_client.h"
 #include "client/torch.h"
 #include "core/blocks.h"
+#include "core/proto.h"        /* PLAYER_CMD_PLACE / PLAYER_CMD_BREAK */
 #include <math.h>
 
 /* ----------------------------------------------------------------------- */
@@ -178,6 +180,9 @@ void interact_update(interact_state_t* s, world_t* w, player_ctrl_t* p, float dt
             s->mining_progress_s += dt;
             if (s->mining_progress_s >= MINING_TIME_S) {
                 world_set(w, s->hit_tile, s->hit_depth, BLOCK_AIR);
+                net_client_send_edit(PLAYER_CMD_BREAK,
+                                       (uint32_t)w->body->id,
+                                       s->hit_tile, s->hit_depth, BLOCK_AIR);
                 inventory_add(&p->inventory, target_block);
                 s->mining_progress_s = 0.0f;
             }
@@ -188,6 +193,9 @@ void interact_update(interact_state_t* s, world_t* w, player_ctrl_t* p, float dt
         /* Creative: instant break on the click edge, no inventory. */
         if (in->left_click) {
             world_set(w, s->hit_tile, s->hit_depth, BLOCK_AIR);
+            net_client_send_edit(PLAYER_CMD_BREAK,
+                                   (uint32_t)w->body->id,
+                                   s->hit_tile, s->hit_depth, BLOCK_AIR);
         }
         s->mining_progress_s = 0.0f;
     }
@@ -227,6 +235,9 @@ void interact_update(interact_state_t* s, world_t* w, player_ctrl_t* p, float dt
                 }
             } else {
                 world_set(w, s->place_tile, s->place_depth, to_place);
+                net_client_send_edit(PLAYER_CMD_PLACE,
+                                       (uint32_t)w->body->id,
+                                       s->place_tile, s->place_depth, to_place);
                 inventory_consume(&p->inventory);
             }
         }

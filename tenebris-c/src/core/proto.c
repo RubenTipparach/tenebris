@@ -222,6 +222,86 @@ int proto_read_desync(const uint8_t* payload, size_t len, msg_desync_t* out) {
     return 0;
 }
 
+/* ------------------------------------------------------------------ */
+
+size_t proto_write_player_cmd(uint8_t* buf, size_t cap,
+                                const msg_player_cmd_t* m) {
+    const size_t total = MSG_HEADER_SIZE + MSG_PLAYER_CMD_WIRE_SIZE;
+    if (cap < total) return 0;
+    proto_write_header(buf, MSG_PLAYER_CMD, MSG_PLAYER_CMD_VERSION,
+                         MSG_PLAYER_CMD_WIRE_SIZE);
+    uint8_t* p = buf + MSG_HEADER_SIZE;
+    p[0] = m->cmd_kind;
+    p[1] = m->reserved8a;
+    put_u16_le(p + 2,  m->reserved16a);
+    put_u32_le(p + 4,  m->body_id);
+    put_u32_le(p + 8,  m->tile_idx);
+    put_u16_le(p + 12, m->depth);
+    put_u16_le(p + 14, m->block_type);
+    return total;
+}
+
+int proto_read_player_cmd(const uint8_t* payload, size_t len,
+                            msg_player_cmd_t* out) {
+    if (len < MSG_PLAYER_CMD_WIRE_SIZE) return -1;
+    out->cmd_kind     = payload[0];
+    out->reserved8a   = payload[1];
+    out->reserved16a  = get_u16_le(payload + 2);
+    out->body_id      = get_u32_le(payload + 4);
+    out->tile_idx     = get_u32_le(payload + 8);
+    out->depth        = get_u16_le(payload + 12);
+    out->block_type   = get_u16_le(payload + 14);
+    return 0;
+}
+
+/* ------------------------------------------------------------------ */
+
+size_t proto_write_chunk_diff(uint8_t* buf, size_t cap,
+                                const msg_chunk_diff_t* m) {
+    if (!m) return 0;
+    uint16_t n = m->edit_count;
+    if (n > CHUNK_DIFF_MAX_EDITS) n = CHUNK_DIFF_MAX_EDITS;
+    const size_t payload_len = MSG_CHUNK_DIFF_HEADER_SIZE
+                               + (size_t)n * MSG_CHUNK_DIFF_ENTRY_SIZE;
+    const size_t total = MSG_HEADER_SIZE + payload_len;
+    if (cap < total) return 0;
+    proto_write_header(buf, MSG_CHUNK_DIFF, MSG_CHUNK_DIFF_VERSION,
+                         (uint32_t)payload_len);
+    uint8_t* p = buf + MSG_HEADER_SIZE;
+    put_u32_le(p + 0, m->body_id);
+    put_u16_le(p + 4, n);
+    put_u16_le(p + 6, 0);
+    p += MSG_CHUNK_DIFF_HEADER_SIZE;
+    for (int i = 0; i < (int)n; ++i) {
+        const msg_chunk_diff_entry_t* e = &m->edits[i];
+        put_u32_le(p + 0, e->tile_idx);
+        put_u16_le(p + 4, e->depth);
+        put_u16_le(p + 6, e->block_type);
+        p += MSG_CHUNK_DIFF_ENTRY_SIZE;
+    }
+    return total;
+}
+
+int proto_read_chunk_diff(const uint8_t* payload, size_t len,
+                            msg_chunk_diff_t* out) {
+    if (len < MSG_CHUNK_DIFF_HEADER_SIZE) return -1;
+    out->body_id    = get_u32_le(payload + 0);
+    uint16_t n      = get_u16_le(payload + 4);
+    if (n > CHUNK_DIFF_MAX_EDITS) return -1;
+    if (len < MSG_CHUNK_DIFF_HEADER_SIZE + (size_t)n * MSG_CHUNK_DIFF_ENTRY_SIZE)
+        return -1;
+    out->edit_count = n;
+    const uint8_t* p = payload + MSG_CHUNK_DIFF_HEADER_SIZE;
+    for (int i = 0; i < (int)n; ++i) {
+        msg_chunk_diff_entry_t* e = &out->edits[i];
+        e->tile_idx   = get_u32_le(p + 0);
+        e->depth      = get_u16_le(p + 4);
+        e->block_type = get_u16_le(p + 6);
+        p += MSG_CHUNK_DIFF_ENTRY_SIZE;
+    }
+    return 0;
+}
+
 int proto_read_snapshot(const uint8_t* payload, size_t len,
                           msg_snapshot_t* out) {
     if (len < MSG_SNAPSHOT_HEADER_SIZE) return -1;

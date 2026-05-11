@@ -98,6 +98,11 @@ void renderer_register_moon(world_t* w);
  * moves to the new world. */
 void renderer_set_active_world(world_t* w);
 
+/* Find a registered world by its body id. Used by net_client to apply
+ * incoming CHUNK_DIFF messages to the right planet/moon. Returns NULL
+ * if no world for that body has been registered. */
+world_t* renderer_world_for_body(uint32_t body_id);
+
 /* Debug toggle — when terrain is hidden, the chunked-terrain draw
  * passes are skipped (atmosphere + sky still render, distant body
  * icospheres still render). Useful for verifying the atmosphere

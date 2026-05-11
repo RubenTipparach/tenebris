@@ -69,4 +69,14 @@ void net_client_send_player_state(uint32_t client_tick,
                                     double pos_x, double pos_y, double pos_z,
                                     float yaw, float pitch);
 
+/* Tell the server about a block edit. Caller has already applied it
+ * locally for snappy feedback; the server applies it to its own
+ * authoritative world, broadcasts a CHUNK_DIFF to all clients, and
+ * persists it to disk (M6). No-op when offline / SP.
+ *
+ *   kind=PLAYER_CMD_PLACE → place `block_type` at (body, tile, depth)
+ *   kind=PLAYER_CMD_BREAK → set that cell to BLOCK_AIR (block_type ignored) */
+void net_client_send_edit(int kind, uint32_t body_id,
+                           int tile, int depth, int block_type);
+
 #endif

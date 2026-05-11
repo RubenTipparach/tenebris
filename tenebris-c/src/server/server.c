@@ -198,6 +198,52 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
         case MSG_HELLO:
             handle_hello(s, cl, payload, hdr.length, hdr.version);
             break;
+        case MSG_PLAYER_CMD: {
+            if (hdr.version != MSG_PLAYER_CMD_VERSION) break;
+            msg_player_cmd_t cmd;
+            if (proto_read_player_cmd(payload, hdr.length, &cmd) != 0) break;
+            /* Find the world for the claimed body. Trust-the-client
+             * model: no anti-cheat here, just resolve + apply. */
+            world_t* w = NULL;
+            for (int j = 0; j < s->world_count; ++j) {
+                world_t* candidate = s->worlds[j];
+                if (candidate && candidate->body &&
+                    (uint32_t)candidate->body->id == cmd.body_id) {
+                    w = candidate; break;
+                }
+            }
+            if (!w) {
+                fprintf(stderr, "[server] PLAYER_CMD unknown body=%u from player_id=%u\n",
+                        cmd.body_id, cl->player_id);
+                break;
+            }
+            /* PLACE = whatever block_type the client sent.
+             * BREAK  = force BLOCK_AIR regardless of block_type. */
+            block_t target = (cmd.cmd_kind == PLAYER_CMD_BREAK)
+                ? BLOCK_AIR : (block_t)cmd.block_type;
+            world_set(w, (int)cmd.tile_idx, (int)cmd.depth, target);
+
+            /* Broadcast as a single-entry CHUNK_DIFF to everyone,
+             * including the sender (idempotent — they already applied
+             * locally). */
+            msg_chunk_diff_t diff = { 0 };
+            diff.body_id    = cmd.body_id;
+            diff.edit_count = 1;
+            diff.edits[0].tile_idx   = cmd.tile_idx;
+            diff.edits[0].depth      = cmd.depth;
+            diff.edits[0].block_type = (uint16_t)target;
+            uint8_t buf[MSG_HEADER_SIZE + MSG_CHUNK_DIFF_HEADER_SIZE
+                        + MSG_CHUNK_DIFF_ENTRY_SIZE];
+            size_t n = proto_write_chunk_diff(buf, sizeof buf, &diff);
+            if (n > 0) {
+                for (int j = 0; j < SERVER_MAX_CLIENTS; ++j) {
+                    if (s->clients[j].conn)
+                        net_send(s->clients[j].conn,
+                                   NET_CHANNEL_RELIABLE, buf, n);
+                }
+            }
+            break;
+        }
         case MSG_PLAYER_STATE: {
             if (hdr.version != MSG_PLAYER_STATE_VERSION) {
                 fprintf(stderr, "[server] PLAYER_STATE version %u != %u, closing\n",

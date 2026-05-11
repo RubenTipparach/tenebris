@@ -1,7 +1,9 @@
 #include "client/net_client.h"
 #include "client/remote_players.h"
+#include "client/renderer.h"
 #include "core/net_transport.h"
 #include "core/proto.h"
+#include "core/world.h"
 
 #include "sokol_time.h"
 
@@ -110,6 +112,29 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
                     (unsigned)d.block_type);
             break;
         }
+        case MSG_CHUNK_DIFF: {
+            if (hdr.version != MSG_CHUNK_DIFF_VERSION) break;
+            msg_chunk_diff_t diff;
+            if (proto_read_chunk_diff(payload, hdr.length, &diff) != 0) {
+                fprintf(stderr, "[net-client] malformed CHUNK_DIFF\n");
+                break;
+            }
+            world_t* w = renderer_world_for_body(diff.body_id);
+            if (!w) {
+                fprintf(stderr, "[net-client] CHUNK_DIFF for unknown body %u\n",
+                        diff.body_id);
+                break;
+            }
+            for (int i = 0; i < diff.edit_count; ++i) {
+                const msg_chunk_diff_entry_t* e = &diff.edits[i];
+                /* world_set marks the tile dirty; the renderer's mesh
+                 * dirty sweep remeshes it on the next frame. Same path
+                 * as locally-applied edits. */
+                world_set(w, (int)e->tile_idx, (int)e->depth,
+                            (block_t)e->block_type);
+            }
+            break;
+        }
         case MSG_SNAPSHOT: {
             if (hdr.version != MSG_SNAPSHOT_VERSION) break;
             msg_snapshot_t snap;
@@ -151,6 +176,26 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
              * without breaking us. */
             break;
     }
+}
+
+void net_client_send_edit(int kind, uint32_t body_id,
+                            int tile, int depth, int block_type) {
+    if (C.state != NET_CLIENT_READY || !C.conn) return;
+    if (tile < 0 || depth < 0) return;
+    msg_player_cmd_t cmd = {
+        .cmd_kind    = (uint8_t)kind,
+        .reserved8a  = 0,
+        .reserved16a = 0,
+        .body_id     = body_id,
+        .tile_idx    = (uint32_t)tile,
+        .depth       = (uint16_t)depth,
+        .block_type  = (uint16_t)block_type,
+    };
+    uint8_t buf[MSG_HEADER_SIZE + MSG_PLAYER_CMD_WIRE_SIZE];
+    size_t n = proto_write_player_cmd(buf, sizeof buf, &cmd);
+    if (n == 0) return;
+    /* Reliable channel — block edits are ordered & cannot be dropped. */
+    net_send(C.conn, NET_CHANNEL_RELIABLE, buf, n);
 }
 
 void net_client_send_player_state(uint32_t client_tick,
