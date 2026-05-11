@@ -25,7 +25,9 @@
 #include "client/renderer.h"
 #include "client/interact.h"
 #include "client/mobile_ui.h"
+#include "client/menu.h"
 #include "client/net_client.h"
+#include "client/persistence.h"
 #include "client/teleport_menu.h"
 
 #ifdef __EMSCRIPTEN__
@@ -236,16 +238,20 @@ static void init(void) {
     G.last_time = stm_now();
     G.smoothed_fps = 60.0f;
 
+    /* Show the main menu after worldgen finishes. SP / MP buttons
+     * drive the transition into gameplay. Backwards-compat with the
+     * `?server=URL` query param is preserved — if present, we skip
+     * the menu and jump straight into MP (handy for bookmarks). */
+    menu_init();
+
 #ifdef __EMSCRIPTEN__
-    /* Opt-in server connection. With no `?server=` query param the
-     * client stays fully offline / single-player; with one set
-     * (e.g. `?server=wss://tenebris.fly.dev/`) we open a socket,
-     * send HELLO, and wait for WELCOME. Gameplay still runs off the
-     * local world for M3 — server-authoritative position lands in M4. */
     char* server_url = tenebris_get_server_url();
     if (server_url) {
         net_client_connect(server_url);
         free(server_url);
+        /* Bypass the menu when an explicit URL was provided —
+         * bookmark / shortcut path stays one-click. */
+        menu_force_state(GAME_IN_GAME_MP);
     }
 #endif
 }
@@ -408,11 +414,72 @@ static void update_overlay(float dt) {
 
 /* --------------------------------------------------------------------- */
 
+/* One-shot apply of a resume pose when SP transitions in. Reads
+ * the menu's queued save and writes it into the player + the camera
+ * frame. Called from the top of frame() the first tick we're in
+ * GAME_IN_GAME_SP. */
+static bool G_sp_resume_applied = false;
+
+static void maybe_apply_sp_resume(void) {
+    if (G_sp_resume_applied) return;
+    if (menu_state() != GAME_IN_GAME_SP) return;
+    persistence_save_t s;
+    if (!menu_take_sp_resume(&s)) { G_sp_resume_applied = true; return; }
+
+    G.player.position = (dvec3_t){ .x = s.pos_x, .y = s.pos_y, .z = s.pos_z };
+    G.player.yaw      = s.yaw;
+    G.player.pitch    = s.pitch;
+    /* roll lives in the save struct for forward-compat but the
+     * player_ctrl_t doesn't track it — basis re-slerp on body change
+     * is what levels the camera. Body resolution stays on Tenebris
+     * for now; M4's SOI tracker handles re-anchoring on the fly. */
+    (void)s.roll;
+    (void)s.body_id;
+    G_sp_resume_applied = true;
+}
+
+static double G_sp_save_accum = 0.0;
+static void   maybe_autosave_sp(double dt) {
+    if (menu_state() != GAME_IN_GAME_SP) return;
+    G_sp_save_accum += dt;
+    if (G_sp_save_accum < 5.0) return;
+    G_sp_save_accum = 0.0;
+    persistence_save_t s = {
+        .pos_x = G.player.position.x,
+        .pos_y = G.player.position.y,
+        .pos_z = G.player.position.z,
+        .yaw   = G.player.yaw,
+        .pitch = G.player.pitch,
+        .roll  = 0.0f,
+        .body_id = 0,
+    };
+    persistence_save(&s);
+}
+
 static void frame(void) {
     /* Pump the network state machine first so any handshake progress
      * is reflected in this frame's HUD. Cheap — no I/O on the C side
      * on the wasm backend, callbacks fire from the JS event loop. */
     net_client_tick();
+
+    /* In the main menu, draw the menu overlay over the last-rendered
+     * scene (3D buffer keeps its previous contents — fine since gameplay
+     * hasn't started yet). Skip the entire game update path. */
+    if (menu_is_overlay()) {
+        sg_begin_pass(&(sg_pass){
+            .action = { .colors[0] = { .load_action = SG_LOADACTION_CLEAR,
+                                          .clear_value = { 0.04f, 0.06f, 0.10f, 1.0f } } },
+            .swapchain = sglue_swapchain(),
+        });
+        sdtx_canvas(sapp_widthf(), sapp_heightf());
+        menu_draw((int)sapp_widthf(), (int)sapp_heightf());
+        sdtx_draw();
+        sg_end_pass();
+        sg_commit();
+        return;
+    }
+
+    maybe_apply_sp_resume();
 
     const double raw_dt_sec = stm_sec(stm_laptime(&G.last_time));
     float dt = (float)raw_dt_sec;
@@ -499,6 +566,10 @@ static void frame(void) {
     profiler_begin("player-update");
     player_update(&G.player, phys_world, dt);
     profiler_end("player-update");
+    /* Throttled SP autosave: writes the player's pose to localStorage
+     * every 5 s while in SP. Cheap (~140 byte string), serial to the
+     * browser. No-op in MP — server-side persistence lands in M6. */
+    maybe_autosave_sp((double)dt);
     profiler_begin("interact");
     interact_update(&G.interact, phys_world, &G.player, dt);
     profiler_end("interact");
@@ -677,6 +748,12 @@ static void frame(void) {
 /* --------------------------------------------------------------------- */
 
 static void event(const sapp_event* e) {
+    /* The main menu owns input while it's up — every event is either
+     * a button click or noise to be swallowed. */
+    if (menu_is_overlay()) {
+        menu_event(e);
+        return;
+    }
     /* Teleport menu gets first crack — it intercepts T/M/arrows/enter
      * when open so those keys don't also reach the movement layer. */
     if (teleport_menu_event(e, &G.player)) return;
@@ -734,6 +811,7 @@ static void event(const sapp_event* e) {
 
 static void cleanup(void) {
     net_client_disconnect();
+    menu_shutdown();
     teleport_menu_shutdown();
     hotbar_ui_shutdown();
     mobile_ui_shutdown();
