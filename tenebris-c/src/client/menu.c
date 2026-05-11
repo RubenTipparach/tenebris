@@ -113,33 +113,38 @@ static void border(float x, float y, float w, float h, float thick,
     quad(x + w-thick, y,       thick, h,   r, g, b, a);
 }
 
+/* sokol_debugtext renders 8x8 character bitmaps into a virtual canvas
+ * sized via sdtx_canvas(). To make text appear `scale`x bigger on
+ * screen, shrink the canvas to (screen_w/scale, screen_h/scale) — one
+ * char cell then maps to (8 * scale) screen pixels.
+ *
+ * Origin is in CANVAS char cells, so to land a char at screen pixel
+ *  (sx, sy):
+ *      canvas_x = sx / scale         (canvas is 1/scale of screen)
+ *      origin   = canvas_x / 8 cells
+ *               = sx / (8 * scale)
+ */
+static void draw_text_centered(const char* str, float screen_x_center,
+                                 float screen_y, float scale,
+                                 uint8_t r, uint8_t g, uint8_t b) {
+    int n = (int)strlen(str);
+    float cell_px = 8.0f * scale;        /* screen px per char */
+    float text_w  = cell_px * (float)n;
+    float text_x  = screen_x_center - text_w * 0.5f;
+
+    sdtx_canvas(sapp_widthf() / scale, sapp_heightf() / scale);
+    sdtx_origin(text_x / cell_px, screen_y / cell_px);
+    sdtx_color3b(r, g, b);
+    sdtx_home();
+    sdtx_printf("%s", str);
+}
+
 static void draw_button(const menu_button_t* b) {
     /* Body */
     if (b->hover) quad(b->x, b->y, b->w, b->h, 0.22f, 0.30f, 0.42f, 0.95f);
     else          quad(b->x, b->y, b->w, b->h, 0.12f, 0.14f, 0.19f, 0.90f);
     /* Border */
     border(b->x, b->y, b->w, b->h, 2.0f, 0.85f, 0.90f, 1.0f, 1.0f);
-}
-
-/* sdtx draws into its own context — must be set up by main. We assume
- * the caller already invoked sdtx_canvas / sdtx_origin etc. for the
- * frame. Returns the column position where the label was drawn. */
-static void draw_button_label(const menu_button_t* b) {
-    /* sokol_debugtext draws 8x8 chars by default. Center the label in
-     * the button by counting characters. */
-    int n = (int)strlen(b->label);
-    float scale = 2.0f;
-    float char_w = 8.0f * scale;
-    float char_h = 8.0f * scale;
-    float text_w = char_w * (float)n;
-    float tx = b->x + (b->w - text_w) * 0.5f;
-    float ty = b->y + (b->h - char_h) * 0.5f;
-
-    sdtx_canvas(sapp_widthf(), sapp_heightf());
-    sdtx_origin(tx / char_w, ty / char_h);
-    sdtx_color3b(0xff, 0xff, 0xff);
-    sdtx_home();
-    sdtx_printf("%s", b->label);
 }
 
 void menu_draw(int screen_w, int screen_h) {
@@ -192,47 +197,34 @@ void menu_draw(int screen_w, int screen_h) {
 
     sgl_draw();
 
-    /* Labels last so they sit on top of the rectangles. sdtx canvas
-     * coords are in "char cells" (1 cell = 8 px at scale 1). */
+    /* Labels last so they sit on top of the rectangles. Each call to
+     * draw_text_centered re-sizes the sdtx canvas; that's fine — sdtx
+     * batches per call and we don't depend on canvas state between
+     * draws. */
+    float cx = w * 0.5f;
+
+    draw_text_centered("TENEBRIS", cx, h * 0.5f - 220.0f, 5.0f,
+                         0xff, 0xff, 0xff);
+    draw_text_centered("select a mode", cx, strip_y + 24.0f, 2.0f,
+                         0xa0, 0xb0, 0xc8);
+
     {
-        sdtx_canvas(w, h);
-        sdtx_origin(0.0f, 0.0f);
+        /* Button labels — centered vertically in the button rect. */
+        float sp_cx = M.btn_sp.x + M.btn_sp.w * 0.5f;
+        float sp_cy = M.btn_sp.y + (M.btn_sp.h - 8.0f * 2.0f) * 0.5f;
+        draw_text_centered(M.btn_sp.label, sp_cx, sp_cy, 2.0f,
+                             0xff, 0xff, 0xff);
 
-        /* TENEBRIS title. */
-        const char* title = "TENEBRIS";
-        float scale = 4.0f;
-        float ch_w = 8.0f * scale;
-        float tx = (w - ch_w * (float)strlen(title)) * 0.5f;
-        float ty = h * 0.5f - 280.0f;
-        sdtx_origin(tx / 8.0f, ty / 8.0f);
-        sdtx_color3b(0xff, 0xff, 0xff);
-        sdtx_home();
-        sdtx_printf("%s", title);
+        float mp_cx = M.btn_mp.x + M.btn_mp.w * 0.5f;
+        float mp_cy = M.btn_mp.y + (M.btn_mp.h - 8.0f * 2.0f) * 0.5f;
+        draw_text_centered(M.btn_mp.label, mp_cx, mp_cy, 2.0f,
+                             0xff, 0xff, 0xff);
+    }
 
-        /* Subtitle under the strip. */
-        const char* sub = "select a mode";
-        float sub_scale = 1.5f;
-        float sub_ch_w = 8.0f * sub_scale;
-        float sub_tx = (w - sub_ch_w * (float)strlen(sub)) * 0.5f;
-        float sub_ty = strip_y + 24.0f;
-        sdtx_origin(sub_tx / 8.0f, sub_ty / 8.0f);
-        sdtx_color3b(0xa0, 0xb0, 0xc8);
-        sdtx_home();
-        sdtx_printf("%s", sub);
-
-        draw_button_label(&M.btn_sp);
-        draw_button_label(&M.btn_mp);
-
-        if (M.state == GAME_MP_URL_PROMPT) {
-            const char* msg = "ENTER URL IN THE BROWSER PROMPT...";
-            float mc_w = 8.0f * 1.5f;
-            float mtx = (w - mc_w * (float)strlen(msg)) * 0.5f;
-            float mty = h * 0.5f + 170.0f;
-            sdtx_origin(mtx / 8.0f, mty / 8.0f);
-            sdtx_color3b(0xff, 0xd0, 0x60);
-            sdtx_home();
-            sdtx_printf("%s", msg);
-        }
+    if (M.state == GAME_MP_URL_PROMPT) {
+        draw_text_centered("ENTER URL IN THE BROWSER PROMPT",
+                             cx, h * 0.5f + 170.0f, 2.0f,
+                             0xff, 0xd0, 0x60);
     }
 }
 
