@@ -97,9 +97,17 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
             C.last_desync       = (net_desync_kind_t)d.reason;
             C.last_desync_block = d.block_type;
             C.last_desync_time  = stm_now();
-            printf("[net-client] server DESYNC: reason=%u block=%u pos=(%.1f, %.1f, %.1f)\n",
-                   (unsigned)d.reason, (unsigned)d.block_type,
-                   d.client_pos_x, d.client_pos_y, d.client_pos_z);
+            /* Loud console line — emscripten pipes printf to console.log,
+             * so this lands in browser devtools. Two messages so it's
+             * easy to spot among the rest of the per-frame chatter. */
+            fprintf(stderr,
+                    "============================================================\n"
+                    "[DESYNC] server rejected pose at (%.1f, %.1f, %.1f)\n"
+                    "         reason=%u  body=%u  block=%u\n"
+                    "============================================================\n",
+                    d.client_pos_x, d.client_pos_y, d.client_pos_z,
+                    (unsigned)d.reason, (unsigned)d.body_id,
+                    (unsigned)d.block_type);
             break;
         }
         case MSG_SNAPSHOT: {

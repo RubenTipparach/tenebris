@@ -292,16 +292,9 @@ static void update_overlay(float dt) {
     sdtx_printf("FPS: %.1f\n", G.smoothed_fps);
 
     {
-        /* Server-side desync banner. Up to 5 s after the latest notice. */
-        double dsec = -1.0;
-        uint32_t dblock = 0;
-        net_desync_kind_t dk = net_client_last_desync(&dsec, &dblock);
-        if (dk != NET_DESYNC_NONE && dsec >= 0.0 && dsec < 5.0) {
-            sdtx_color3b(0xff, 0x60, 0x60);
-            sdtx_printf("DESYNC: server says you're inside block %u (%.1fs ago)\n",
-                        dblock, dsec);
-            sdtx_color3b(0xff, 0xff, 0xff);
-        }
+        /* Desync banner is its own popup panel — see draw_desync_popup
+         * just below in the UI overlay block. No HUD line here so the
+         * tiny corner status row doesn't double up with the popup. */
     }
     {
         net_client_state_t ns = net_client_state();
@@ -471,6 +464,104 @@ static void   maybe_autosave_sp(double dt) {
         .body_id = 0,
     };
     persistence_save(world, &s);
+}
+
+/* Server-side desync popup. Drawn during the UI overlay pass — shows
+ * a centred panel with the reason + block id for 5 s after each
+ * notice, then fades. Real drawn rectangles + sdtx labels per the
+ * CLAUDE.md UI rule (no ASCII frames). */
+static void draw_desync_popup(float screen_w, float screen_h) {
+    double  dsec   = -1.0;
+    uint32_t dblock = 0;
+    net_desync_kind_t dk = net_client_last_desync(&dsec, &dblock);
+    if (dk == NET_DESYNC_NONE || dsec < 0.0 || dsec > 5.0) return;
+
+    /* Fade alpha out over the last second of the 5 s window. */
+    float fade = (dsec < 4.0f) ? 1.0f : (float)(5.0 - dsec);
+
+    const float w = 480.0f;
+    const float h = 96.0f;
+    const float x = (screen_w - w) * 0.5f;
+    const float y = 64.0f;     /* near top of screen */
+
+    /* sgl 2D pipeline (alpha-blended). Set up an ortho projection for
+     * pixel-space coords with (0,0) top-left. */
+    sgl_defaults();
+    sgl_matrix_mode_projection();
+    sgl_load_identity();
+    sgl_ortho(0.0f, screen_w, screen_h, 0.0f, -1.0f, 1.0f);
+    sgl_matrix_mode_modelview();
+    sgl_load_identity();
+    static sgl_pipeline pip_alpha = (sgl_pipeline){0};
+    if (pip_alpha.id == 0) {
+        pip_alpha = sgl_make_pipeline(&(sg_pipeline_desc){
+            .colors[0].blend = {
+                .enabled = true,
+                .src_factor_rgb = SG_BLENDFACTOR_SRC_ALPHA,
+                .dst_factor_rgb = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+                .src_factor_alpha = SG_BLENDFACTOR_ONE,
+                .dst_factor_alpha = SG_BLENDFACTOR_ONE,
+            },
+        });
+    }
+    sgl_load_pipeline(pip_alpha);
+
+    /* Backdrop. */
+    sgl_begin_quads();
+    sgl_c4f(0.18f, 0.04f, 0.04f, 0.85f * fade);
+    sgl_v2f(x,     y);
+    sgl_v2f(x + w, y);
+    sgl_v2f(x + w, y + h);
+    sgl_v2f(x,     y + h);
+    sgl_end();
+
+    /* Red border, 2 px. */
+    const float t = 2.0f;
+    sgl_begin_quads();
+    sgl_c4f(1.0f, 0.40f, 0.40f, fade);
+    /* top */    sgl_v2f(x,     y);         sgl_v2f(x + w, y);         sgl_v2f(x + w, y + t);     sgl_v2f(x,     y + t);
+    /* bottom */ sgl_v2f(x,     y + h - t); sgl_v2f(x + w, y + h - t); sgl_v2f(x + w, y + h);     sgl_v2f(x,     y + h);
+    /* left */   sgl_v2f(x,     y);         sgl_v2f(x + t, y);         sgl_v2f(x + t, y + h);     sgl_v2f(x,     y + h);
+    /* right */  sgl_v2f(x + w - t, y);     sgl_v2f(x + w, y);         sgl_v2f(x + w, y + h);     sgl_v2f(x + w - t, y + h);
+    sgl_end();
+
+    sgl_draw();
+
+    /* Labels via sdtx. The scaled-canvas trick (same as menu.c): shrink
+     * the canvas by `scale` so each 8-px char cell maps to `8 * scale`
+     * screen pixels. Title 3x, body 1.5x. */
+    {
+        const float title_scale = 3.0f;
+        const float title_cell  = 8.0f * title_scale;
+        const char* title       = "DESYNC";
+        float tw = title_cell * (float)strlen(title);
+        float tx = x + (w - tw) * 0.5f;
+        float ty = y + 14.0f;
+        sdtx_canvas(screen_w / title_scale, screen_h / title_scale);
+        sdtx_origin(tx / title_cell, ty / title_cell);
+        sdtx_color3b(0xff, 0x80, 0x80);
+        sdtx_home();
+        sdtx_printf("%s", title);
+    }
+    {
+        const float body_scale = 1.5f;
+        const float body_cell  = 8.0f * body_scale;
+        char buf[96];
+        snprintf(buf, sizeof buf,
+                 "server says you're inside block %u  (%.1fs ago)",
+                 (unsigned)dblock, dsec);
+        float tw = body_cell * (float)strlen(buf);
+        float tx = x + (w - tw) * 0.5f;
+        float ty = y + 60.0f;
+        sdtx_canvas(screen_w / body_scale, screen_h / body_scale);
+        sdtx_origin(tx / body_cell, ty / body_cell);
+        sdtx_color3b(0xff, 0xc0, 0xc0);
+        sdtx_home();
+        sdtx_printf("%s", buf);
+    }
+    /* Restore the default-scale canvas so any later sdtx_printf calls
+     * land at expected positions. */
+    sdtx_canvas(screen_w, screen_h);
 }
 
 static void frame(void) {
@@ -775,6 +866,7 @@ static void frame(void) {
     teleport_menu_draw();
     draw_error_overlay();
     profiler_draw();
+    draw_desync_popup(sapp_widthf(), sapp_heightf());
     sdtx_draw();
     hotbar_ui_draw(&G.player.inventory);
     mobile_ui_draw();
