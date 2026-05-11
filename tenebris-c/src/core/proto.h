@@ -23,14 +23,15 @@
 #define MSG_HEADER_SIZE     8
 
 typedef enum {
-    MSG_NONE       = 0,
-    MSG_HELLO      = 1,   /* C->S handshake init */
-    MSG_WELCOME    = 2,   /* S->C handshake reply */
-    MSG_INPUT      = 3,   /* C->S input bitfield + look */
-    MSG_PLAYER_CMD = 4,   /* C->S place / break / interact / teleport */
-    MSG_SNAPSHOT   = 10,  /* S->C entity state */
-    MSG_CHUNK_DIFF = 11,  /* S->C block edits */
-    MSG_CHAT       = 20,
+    MSG_NONE         = 0,
+    MSG_HELLO        = 1,   /* C->S handshake init */
+    MSG_WELCOME      = 2,   /* S->C handshake reply */
+    MSG_INPUT        = 3,   /* C->S input bitfield + look */
+    MSG_PLAYER_CMD   = 4,   /* C->S place / break / interact / teleport */
+    MSG_PLAYER_STATE = 5,   /* C->S relayed pose (M4 position-relay path) */
+    MSG_SNAPSHOT     = 10,  /* S->C entity state */
+    MSG_CHUNK_DIFF   = 11,  /* S->C block edits */
+    MSG_CHAT         = 20,
 } msg_kind_t;
 
 /* Per-kind protocol versions. Bump on any wire change. */
@@ -38,6 +39,7 @@ typedef enum {
 #define MSG_WELCOME_VERSION       1
 #define MSG_INPUT_VERSION         1
 #define MSG_PLAYER_CMD_VERSION    1
+#define MSG_PLAYER_STATE_VERSION  1
 #define MSG_SNAPSHOT_VERSION      1
 #define MSG_CHUNK_DIFF_VERSION    1
 #define MSG_CHAT_VERSION          1
@@ -75,6 +77,45 @@ typedef struct {
     uint32_t body_id;
 } msg_welcome_t;
 
+/* ------------------------------------------------------------------
+ * Player-state relay (M4 — pragmatic, trust-the-client). Each client
+ * tells the server where it is; the server broadcasts everyone's
+ * position to everyone via SNAPSHOT. Cheating-resistance comes later
+ * when player physics moves into core/ and the server runs it.
+ * ------------------------------------------------------------------ */
+
+#define MSG_PLAYER_STATE_WIRE_SIZE  44   /* 4 + 4 + 24 + 8 + 4 */
+
+typedef struct {
+    uint32_t client_tick;    /* sender's tick — server uses for ordering */
+    uint32_t body_id;        /* body the player is anchored to */
+    double   pos_x, pos_y, pos_z;
+    float    yaw, pitch;
+    uint16_t buttons;        /* reserved (input bitfield, M4b) */
+    uint16_t reserved;
+} msg_player_state_t;
+
+/* SNAPSHOT carries an array of remote-player poses. Sender's player
+ * is included (the client snaps to it for authoritative reconcile
+ * later; relay path ignores it for the local player). */
+
+#define SNAPSHOT_MAX_PLAYERS       16
+#define MSG_SNAPSHOT_HEADER_SIZE    8   /* tick(4) + count(2) + reserved(2) */
+#define MSG_SNAPSHOT_ENTRY_SIZE    40   /* id(4) + body(4) + pos(24) + yaw/pitch(8) */
+
+typedef struct {
+    uint32_t player_id;
+    uint32_t body_id;
+    double   pos_x, pos_y, pos_z;
+    float    yaw, pitch;
+} msg_snapshot_entry_t;
+
+typedef struct {
+    uint32_t server_tick;
+    uint16_t player_count;
+    msg_snapshot_entry_t players[SNAPSHOT_MAX_PLAYERS];
+} msg_snapshot_t;
+
 /* Protocol-level version. Bumped when the set of message kinds, or
  * any handshake-relevant payload, changes. The server rejects HELLOs
  * whose client_version doesn't match. */
@@ -96,5 +137,11 @@ int    proto_read_hello (const uint8_t* payload, size_t len, msg_hello_t* out);
 
 size_t proto_write_welcome(uint8_t* buf, size_t cap, const msg_welcome_t* m);
 int    proto_read_welcome (const uint8_t* payload, size_t len, msg_welcome_t* out);
+
+size_t proto_write_player_state(uint8_t* buf, size_t cap, const msg_player_state_t* m);
+int    proto_read_player_state (const uint8_t* payload, size_t len, msg_player_state_t* out);
+
+size_t proto_write_snapshot(uint8_t* buf, size_t cap, const msg_snapshot_t* m);
+int    proto_read_snapshot (const uint8_t* payload, size_t len, msg_snapshot_t* out);
 
 #endif

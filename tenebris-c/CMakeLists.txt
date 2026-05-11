@@ -88,6 +88,7 @@ set(TENEBRIS_CLIENT_SOURCES
     src/client/net_client.c
     src/client/menu.c
     src/client/persistence.c
+    src/client/remote_players.c
 )
 
 # Browser-only: WS transport against emscripten/websocket.h (linked

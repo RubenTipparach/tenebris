@@ -136,11 +136,35 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
         case MSG_HELLO:
             handle_hello(s, cl, payload, hdr.length, hdr.version);
             break;
+        case MSG_PLAYER_STATE: {
+            if (hdr.version != MSG_PLAYER_STATE_VERSION) {
+                fprintf(stderr, "[server] PLAYER_STATE version %u != %u, closing\n",
+                        hdr.version, MSG_PLAYER_STATE_VERSION);
+                net_close(conn);
+                return;
+            }
+            msg_player_state_t st;
+            if (proto_read_player_state(payload, hdr.length, &st) != 0) {
+                fprintf(stderr, "[server] malformed PLAYER_STATE\n");
+                return;
+            }
+            /* Drop out-of-order packets — keep only the freshest pose. */
+            if (cl->has_state && st.client_tick <= cl->last_client_tick) break;
+            cl->has_state        = true;
+            cl->body_id          = st.body_id;
+            cl->pos_x            = st.pos_x;
+            cl->pos_y            = st.pos_y;
+            cl->pos_z            = st.pos_z;
+            cl->yaw              = st.yaw;
+            cl->pitch            = st.pitch;
+            cl->last_client_tick = st.client_tick;
+            break;
+        }
         default:
-            /* M2: every other kind is decoded in M3+ once the client
-             * actually sends them. Ignore for now rather than close,
-             * so future tests against a half-built client still work. */
-            printf("[server] ignoring kind=%u from player_id=%u (M2 only handles HELLO)\n",
+            /* Unknown / not-yet-implemented kinds: log and skip rather
+             * than disconnect, so the client can ship new messages
+             * before the server learns about them. */
+            printf("[server] ignoring kind=%u from player_id=%u\n",
                    hdr.kind, cl->player_id);
             break;
     }
@@ -213,13 +237,48 @@ bool server_init(server_t* s, const server_config_t* cfg) {
     return true;
 }
 
+static void broadcast_snapshot(server_t* s) {
+    /* Gather every handshaked client with at least one reported pose
+     * into one SNAPSHOT, then send the same blob to every connection.
+     * O(N) on N = max clients; trivial at the M4 scale. */
+    msg_snapshot_t snap = { 0 };
+    snap.server_tick = (uint32_t)s->tick;
+    for (int i = 0; i < SERVER_MAX_CLIENTS; ++i) {
+        const server_client_t* cl = &s->clients[i];
+        if (!cl->conn || !cl->has_state) continue;
+        if (snap.player_count >= SNAPSHOT_MAX_PLAYERS) break;
+        msg_snapshot_entry_t* e = &snap.players[snap.player_count++];
+        e->player_id = cl->player_id;
+        e->body_id   = cl->body_id;
+        e->pos_x     = cl->pos_x;
+        e->pos_y     = cl->pos_y;
+        e->pos_z     = cl->pos_z;
+        e->yaw       = cl->yaw;
+        e->pitch     = cl->pitch;
+    }
+    if (snap.player_count == 0) return;
+
+    static uint8_t buf[MSG_HEADER_SIZE + MSG_SNAPSHOT_HEADER_SIZE
+                       + SNAPSHOT_MAX_PLAYERS * MSG_SNAPSHOT_ENTRY_SIZE];
+    size_t n = proto_write_snapshot(buf, sizeof buf, &snap);
+    if (n == 0) return;
+    for (int i = 0; i < SERVER_MAX_CLIENTS; ++i) {
+        const server_client_t* cl = &s->clients[i];
+        if (cl->conn) net_send(cl->conn, NET_CHANNEL_UNRELIABLE, buf, n);
+    }
+}
+
 void server_tick(server_t* s) {
     s->tick++;
     /* Drain inbound socket events; callbacks (on_open, on_msg, on_close)
      * fire synchronously from inside net_poll. */
     net_poll(s->listener);
-    /* M2: nothing simulates yet. Snapshot loop + physics integration
-     * land in M4. */
+
+    /* M4 (position relay): broadcast every 3rd tick. At 20 Hz that's
+     * ~6.7 snapshots/sec — visibly smooth with client-side interp
+     * landing in a follow-up. */
+    if ((s->tick % 3) == 0) broadcast_snapshot(s);
+
     if ((s->tick % (uint64_t)s->cfg.log_every_n) == 0) {
         int connected = 0;
         for (int i = 0; i < SERVER_MAX_CLIENTS; ++i) {

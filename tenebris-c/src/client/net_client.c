@@ -1,4 +1,5 @@
 #include "client/net_client.h"
+#include "client/remote_players.h"
 #include "core/net_transport.h"
 #include "core/proto.h"
 #include <stdio.h>
@@ -80,11 +81,61 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
                    w.spawn_x, w.spawn_y, w.spawn_z, w.body_id);
             break;
         }
+        case MSG_SNAPSHOT: {
+            if (hdr.version != MSG_SNAPSHOT_VERSION) break;
+            msg_snapshot_t snap;
+            if (proto_read_snapshot(payload, hdr.length, &snap) != 0) {
+                fprintf(stderr, "[net-client] malformed SNAPSHOT\n");
+                break;
+            }
+            remote_player_t out[REMOTE_PLAYERS_MAX];
+            int n_out = 0;
+            for (int i = 0; i < snap.player_count; ++i) {
+                const msg_snapshot_entry_t* e = &snap.players[i];
+                /* Skip the local player so we don't draw our own
+                 * marker on top of the camera. */
+                if (e->player_id == C.welcome.player_id) continue;
+                if (n_out >= REMOTE_PLAYERS_MAX) break;
+                remote_player_t* r = &out[n_out++];
+                r->player_id = e->player_id;
+                r->body_id   = e->body_id;
+                r->pos.x     = e->pos_x;
+                r->pos.y     = e->pos_y;
+                r->pos.z     = e->pos_z;
+                r->yaw       = e->yaw;
+                r->pitch     = e->pitch;
+                r->active    = true;
+            }
+            remote_players_set_from_snapshot(out, n_out);
+            break;
+        }
         default:
-            /* M3 only cares about WELCOME; ignore other kinds so the
-             * server can ship newer messages without breaking us. */
+            /* Ignore unknown kinds so the server can ship new ones
+             * without breaking us. */
             break;
     }
+}
+
+void net_client_send_player_state(uint32_t client_tick,
+                                    uint32_t body_id,
+                                    double pos_x, double pos_y, double pos_z,
+                                    float yaw, float pitch) {
+    if (C.state != NET_CLIENT_READY || !C.conn) return;
+    msg_player_state_t st = {
+        .client_tick = client_tick,
+        .body_id     = body_id,
+        .pos_x       = pos_x,
+        .pos_y       = pos_y,
+        .pos_z       = pos_z,
+        .yaw         = yaw,
+        .pitch       = pitch,
+        .buttons     = 0,
+        .reserved    = 0,
+    };
+    uint8_t buf[MSG_HEADER_SIZE + MSG_PLAYER_STATE_WIRE_SIZE];
+    size_t n = proto_write_player_state(buf, sizeof buf, &st);
+    if (n == 0) return;
+    net_send(C.conn, NET_CHANNEL_UNRELIABLE, buf, n);
 }
 
 static void on_close(net_conn_t* conn, net_close_reason_t reason, void* user) {

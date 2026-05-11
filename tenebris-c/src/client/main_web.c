@@ -28,6 +28,7 @@
 #include "client/menu.h"
 #include "client/net_client.h"
 #include "client/persistence.h"
+#include "client/remote_players.h"
 #include "client/teleport_menu.h"
 
 #ifdef __EMSCRIPTEN__
@@ -243,6 +244,7 @@ static void init(void) {
      * `?server=URL` query param is preserved — if present, we skip
      * the menu and jump straight into MP (handy for bookmarks). */
     menu_init();
+    remote_players_init();
 
 #ifdef __EMSCRIPTEN__
     char* server_url = tenebris_get_server_url();
@@ -300,8 +302,9 @@ static void update_overlay(float dt) {
             if (ns == NET_CLIENT_READY) {
                 const net_client_welcome_t* w = net_client_welcome();
                 sdtx_color3b(0x80, 0xff, 0x80);
-                sdtx_printf("net: %s (player_id=%u, body=%u)\n",
-                            label, w->player_id, w->body_id);
+                sdtx_printf("net: %s (player_id=%u, body=%u, +%d remote)\n",
+                            label, w->player_id, w->body_id,
+                            remote_players_count());
             } else {
                 sdtx_color3b(0xff, 0xc0, 0x40);
                 sdtx_printf("net: %s\n", label);
@@ -572,6 +575,24 @@ static void frame(void) {
      * every 5 s while in SP. Cheap (~140 byte string), serial to the
      * browser. No-op in MP — server-side persistence lands in M6. */
     maybe_autosave_sp((double)dt);
+
+    /* M4 position relay: when MP is READY, ship our pose to the server
+     * every 3rd frame (~20 Hz at 60 fps capped by the server tick).
+     * Server broadcasts the union in SNAPSHOT so other clients see us. */
+    {
+        static uint32_t G_state_send_ctr = 0;
+        if (menu_state() == GAME_IN_GAME_MP && net_client_state() == NET_CLIENT_READY
+            && (++G_state_send_ctr % 3) == 0) {
+            uint32_t body_id = 0;     /* TODO: thread the active body id once SOI is wired */
+            net_client_send_player_state(G_state_send_ctr,
+                                            body_id,
+                                            G.player.position.x,
+                                            G.player.position.y,
+                                            G.player.position.z,
+                                            G.player.yaw,
+                                            G.player.pitch);
+        }
+    }
     profiler_begin("interact");
     interact_update(&G.interact, phys_world, &G.player, dt);
     profiler_end("interact");
@@ -718,6 +739,10 @@ static void frame(void) {
     renderer_draw_torches(view, proj);
     profiler_end("draw-torches");
 
+    /* Remote-player markers — drawn into the same offscreen pass so
+     * they get the depth-sorted composite + water refraction for free. */
+    remote_players_draw(view, proj);
+
     /* Hand off to the swapchain pass — blits the offscreen colour
      * (everything opaque) onto the swapchain. */
     profiler_begin("compose");
@@ -813,6 +838,7 @@ static void event(const sapp_event* e) {
 
 static void cleanup(void) {
     net_client_disconnect();
+    remote_players_shutdown();
     menu_shutdown();
     teleport_menu_shutdown();
     hotbar_ui_shutdown();

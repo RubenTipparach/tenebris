@@ -48,4 +48,13 @@ void net_client_disconnect(void);
 net_client_state_t   net_client_state  (void);
 const net_client_welcome_t* net_client_welcome(void);
 
+/* Send the local player's pose to the server. Cheap; safe to call
+ * every frame, but the caller throttles to a few times per second
+ * (proto only supports newest-wins, so over-sending wastes bandwidth).
+ * No-op until the connection is READY. */
+void net_client_send_player_state(uint32_t client_tick,
+                                    uint32_t body_id,
+                                    double pos_x, double pos_y, double pos_z,
+                                    float yaw, float pitch);
+
 #endif

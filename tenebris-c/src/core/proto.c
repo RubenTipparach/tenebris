@@ -119,3 +119,106 @@ int proto_read_welcome(const uint8_t* payload, size_t len, msg_welcome_t* out) {
     out->body_id     = get_u32_le(payload + 36);
     return 0;
 }
+
+/* ------------------------------------------------------------------ */
+
+size_t proto_write_player_state(uint8_t* buf, size_t cap,
+                                  const msg_player_state_t* m) {
+    const size_t total = MSG_HEADER_SIZE + MSG_PLAYER_STATE_WIRE_SIZE;
+    if (cap < total) return 0;
+    proto_write_header(buf, MSG_PLAYER_STATE, MSG_PLAYER_STATE_VERSION,
+                         MSG_PLAYER_STATE_WIRE_SIZE);
+    uint8_t* p = buf + MSG_HEADER_SIZE;
+    put_u32_le(p + 0,  m->client_tick);
+    put_u32_le(p + 4,  m->body_id);
+    put_f64_le(p + 8,  m->pos_x);
+    put_f64_le(p + 16, m->pos_y);
+    put_f64_le(p + 24, m->pos_z);
+    /* IEEE-754 float bits through uint32 for endian-explicit copy. */
+    uint32_t yb, pb;
+    memcpy(&yb, &m->yaw,   sizeof yb);
+    memcpy(&pb, &m->pitch, sizeof pb);
+    put_u32_le(p + 32, yb);
+    put_u32_le(p + 36, pb);
+    put_u16_le(p + 40, m->buttons);
+    put_u16_le(p + 42, m->reserved);
+    return total;
+}
+
+int proto_read_player_state(const uint8_t* payload, size_t len,
+                              msg_player_state_t* out) {
+    if (len < MSG_PLAYER_STATE_WIRE_SIZE) return -1;
+    out->client_tick = get_u32_le(payload + 0);
+    out->body_id     = get_u32_le(payload + 4);
+    out->pos_x       = get_f64_le(payload + 8);
+    out->pos_y       = get_f64_le(payload + 16);
+    out->pos_z       = get_f64_le(payload + 24);
+    uint32_t yb = get_u32_le(payload + 32);
+    uint32_t pb = get_u32_le(payload + 36);
+    memcpy(&out->yaw,   &yb, sizeof out->yaw);
+    memcpy(&out->pitch, &pb, sizeof out->pitch);
+    out->buttons  = get_u16_le(payload + 40);
+    out->reserved = get_u16_le(payload + 42);
+    return 0;
+}
+
+/* ------------------------------------------------------------------ */
+
+size_t proto_write_snapshot(uint8_t* buf, size_t cap, const msg_snapshot_t* m) {
+    if (!m) return 0;
+    uint16_t n = m->player_count;
+    if (n > SNAPSHOT_MAX_PLAYERS) n = SNAPSHOT_MAX_PLAYERS;
+    const size_t payload_len = MSG_SNAPSHOT_HEADER_SIZE
+                               + (size_t)n * MSG_SNAPSHOT_ENTRY_SIZE;
+    const size_t total = MSG_HEADER_SIZE + payload_len;
+    if (cap < total) return 0;
+
+    proto_write_header(buf, MSG_SNAPSHOT, MSG_SNAPSHOT_VERSION,
+                         (uint32_t)payload_len);
+    uint8_t* p = buf + MSG_HEADER_SIZE;
+    put_u32_le(p + 0, m->server_tick);
+    put_u16_le(p + 4, n);
+    put_u16_le(p + 6, 0);
+    p += MSG_SNAPSHOT_HEADER_SIZE;
+    for (int i = 0; i < (int)n; ++i) {
+        const msg_snapshot_entry_t* e = &m->players[i];
+        put_u32_le(p + 0,  e->player_id);
+        put_u32_le(p + 4,  e->body_id);
+        put_f64_le(p + 8,  e->pos_x);
+        put_f64_le(p + 16, e->pos_y);
+        put_f64_le(p + 24, e->pos_z);
+        uint32_t yb, pb;
+        memcpy(&yb, &e->yaw,   sizeof yb);
+        memcpy(&pb, &e->pitch, sizeof pb);
+        put_u32_le(p + 32, yb);
+        put_u32_le(p + 36, pb);
+        p += MSG_SNAPSHOT_ENTRY_SIZE;
+    }
+    return total;
+}
+
+int proto_read_snapshot(const uint8_t* payload, size_t len,
+                          msg_snapshot_t* out) {
+    if (len < MSG_SNAPSHOT_HEADER_SIZE) return -1;
+    out->server_tick  = get_u32_le(payload + 0);
+    uint16_t n        = get_u16_le(payload + 4);
+    if (n > SNAPSHOT_MAX_PLAYERS) return -1;
+    if (len < MSG_SNAPSHOT_HEADER_SIZE + (size_t)n * MSG_SNAPSHOT_ENTRY_SIZE)
+        return -1;
+    out->player_count = n;
+    const uint8_t* p = payload + MSG_SNAPSHOT_HEADER_SIZE;
+    for (int i = 0; i < (int)n; ++i) {
+        msg_snapshot_entry_t* e = &out->players[i];
+        e->player_id = get_u32_le(p + 0);
+        e->body_id   = get_u32_le(p + 4);
+        e->pos_x     = get_f64_le(p + 8);
+        e->pos_y     = get_f64_le(p + 16);
+        e->pos_z     = get_f64_le(p + 24);
+        uint32_t yb  = get_u32_le(p + 32);
+        uint32_t pb  = get_u32_le(p + 36);
+        memcpy(&e->yaw,   &yb, sizeof e->yaw);
+        memcpy(&e->pitch, &pb, sizeof e->pitch);
+        p += MSG_SNAPSHOT_ENTRY_SIZE;
+    }
+    return 0;
+}

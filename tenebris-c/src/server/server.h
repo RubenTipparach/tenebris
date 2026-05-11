@@ -21,6 +21,11 @@ typedef struct {
     net_conn_t* conn;          /* NULL slot = free */
     uint32_t    player_id;
     bool        handshaked;    /* HELLO received, WELCOME sent */
+    bool        has_state;     /* received at least one PLAYER_STATE */
+    uint32_t    body_id;
+    double      pos_x, pos_y, pos_z;
+    float       yaw, pitch;
+    uint32_t    last_client_tick;
 } server_client_t;
 
 typedef struct {
