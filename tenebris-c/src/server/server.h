@@ -26,6 +26,10 @@ typedef struct {
     double      pos_x, pos_y, pos_z;
     float       yaw, pitch;
     uint32_t    last_client_tick;
+    /* Sanity-check throttle: tick of the last DESYNC sent. The check
+     * only fires at most once per second to avoid flooding a client
+     * that's stuck in geometry. */
+    uint64_t    last_desync_tick;
 } server_client_t;
 
 typedef struct {

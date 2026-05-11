@@ -292,6 +292,18 @@ static void update_overlay(float dt) {
     sdtx_printf("FPS: %.1f\n", G.smoothed_fps);
 
     {
+        /* Server-side desync banner. Up to 5 s after the latest notice. */
+        double dsec = -1.0;
+        uint32_t dblock = 0;
+        net_desync_kind_t dk = net_client_last_desync(&dsec, &dblock);
+        if (dk != NET_DESYNC_NONE && dsec >= 0.0 && dsec < 5.0) {
+            sdtx_color3b(0xff, 0x60, 0x60);
+            sdtx_printf("DESYNC: server says you're inside block %u (%.1fs ago)\n",
+                        dblock, dsec);
+            sdtx_color3b(0xff, 0xff, 0xff);
+        }
+    }
+    {
         net_client_state_t ns = net_client_state();
         if (ns != NET_CLIENT_IDLE) {
             const char* label =

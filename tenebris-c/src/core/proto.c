@@ -197,6 +197,31 @@ size_t proto_write_snapshot(uint8_t* buf, size_t cap, const msg_snapshot_t* m) {
     return total;
 }
 
+size_t proto_write_desync(uint8_t* buf, size_t cap, const msg_desync_t* m) {
+    const size_t total = MSG_HEADER_SIZE + MSG_DESYNC_WIRE_SIZE;
+    if (cap < total) return 0;
+    proto_write_header(buf, MSG_DESYNC, MSG_DESYNC_VERSION, MSG_DESYNC_WIRE_SIZE);
+    uint8_t* p = buf + MSG_HEADER_SIZE;
+    put_u32_le(p + 0,  m->reason);
+    put_u32_le(p + 4,  m->body_id);
+    put_f64_le(p + 8,  m->client_pos_x);
+    put_f64_le(p + 16, m->client_pos_y);
+    put_f64_le(p + 24, m->client_pos_z);
+    put_u32_le(p + 32, m->block_type);
+    return total;
+}
+
+int proto_read_desync(const uint8_t* payload, size_t len, msg_desync_t* out) {
+    if (len < MSG_DESYNC_WIRE_SIZE) return -1;
+    out->reason       = get_u32_le(payload + 0);
+    out->body_id      = get_u32_le(payload + 4);
+    out->client_pos_x = get_f64_le(payload + 8);
+    out->client_pos_y = get_f64_le(payload + 16);
+    out->client_pos_z = get_f64_le(payload + 24);
+    out->block_type   = get_u32_le(payload + 32);
+    return 0;
+}
+
 int proto_read_snapshot(const uint8_t* payload, size_t len,
                           msg_snapshot_t* out) {
     if (len < MSG_SNAPSHOT_HEADER_SIZE) return -1;

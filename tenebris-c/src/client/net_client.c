@@ -2,6 +2,9 @@
 #include "client/remote_players.h"
 #include "core/net_transport.h"
 #include "core/proto.h"
+
+#include "sokol_time.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,6 +13,12 @@ typedef struct {
     net_client_state_t   state;
     net_conn_t*          conn;
     net_client_welcome_t welcome;
+    /* Most recent DESYNC notice from the server. last_desync_time is
+     * a sokol_time stamp (0 = never). The HUD compares against
+     * stm_now() and fades the warning out after a few seconds. */
+    net_desync_kind_t    last_desync;
+    uint32_t             last_desync_block;
+    uint64_t             last_desync_time;
 } net_client_t;
 
 static net_client_t C;
@@ -79,6 +88,18 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
                    "spawn=(%.2f, %.2f, %.2f) body=%u\n",
                    w.player_id, (unsigned long long)w.world_seed,
                    w.spawn_x, w.spawn_y, w.spawn_z, w.body_id);
+            break;
+        }
+        case MSG_DESYNC: {
+            if (hdr.version != MSG_DESYNC_VERSION) break;
+            msg_desync_t d;
+            if (proto_read_desync(payload, hdr.length, &d) != 0) break;
+            C.last_desync       = (net_desync_kind_t)d.reason;
+            C.last_desync_block = d.block_type;
+            C.last_desync_time  = stm_now();
+            printf("[net-client] server DESYNC: reason=%u block=%u pos=(%.1f, %.1f, %.1f)\n",
+                   (unsigned)d.reason, (unsigned)d.block_type,
+                   d.client_pos_x, d.client_pos_y, d.client_pos_z);
             break;
         }
         case MSG_SNAPSHOT: {
@@ -183,3 +204,14 @@ void net_client_disconnect(void) {
 
 net_client_state_t          net_client_state  (void) { return C.state; }
 const net_client_welcome_t* net_client_welcome(void) { return &C.welcome; }
+
+net_desync_kind_t net_client_last_desync(double* out_seconds_ago,
+                                            uint32_t* out_block_type) {
+    if (out_block_type) *out_block_type = C.last_desync_block;
+    if (out_seconds_ago) {
+        *out_seconds_ago = (C.last_desync_time == 0)
+            ? -1.0
+            : stm_sec(stm_diff(stm_now(), C.last_desync_time));
+    }
+    return C.last_desync;
+}

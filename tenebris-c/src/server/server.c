@@ -1,5 +1,7 @@
 #include "server/server.h"
+#include "core/blocks.h"
 #include "core/job_system.h"
+#include "core/math.h"
 #include "core/net_transport.h"
 #include "core/planet.h"
 #include "core/proto.h"
@@ -29,9 +31,59 @@ static server_client_t* find_client_by_conn(server_t* s, net_conn_t* c) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Handshake. M2 handles HELLO -> WELCOME only; INPUT / PLAYER_CMD /
- * SNAPSHOT / CHUNK_DIFF wiring lands in M4+. Anything other than a
- * well-formed HELLO on an un-handshaked socket closes the conn. */
+/* Sanity check on incoming PLAYER_STATE. The server doesn't run player
+ * physics yet, but it can spot "you're inside a wall" — a clear sign
+ * of client/server worldgen drift, a chunk-update race, or a trivial
+ * teleport-cheat. Throttled to once per second per client; the client
+ * decides what to do with the DESYNC message (currently: HUD warning). */
+/* ------------------------------------------------------------------ */
+
+static world_t* find_world_for_body(server_t* s, uint32_t body_id) {
+    for (int i = 0; i < s->world_count; ++i) {
+        world_t* w = s->worlds[i];
+        if (w && w->body && (uint32_t)w->body->id == body_id) return w;
+    }
+    return NULL;
+}
+
+static void check_for_desync(server_t* s, server_client_t* cl) {
+    /* Rate-limit: at most one DESYNC per second per client. */
+    const uint64_t cooldown_ticks = (uint64_t)(s->cfg.tick_hz);
+    if (cl->last_desync_tick != 0 &&
+        s->tick - cl->last_desync_tick < cooldown_ticks) return;
+
+    world_t* w = find_world_for_body(s, cl->body_id);
+    if (!w || !w->body) return;     /* unknown body — skip silently */
+
+    /* world_block_at_pos takes body-local float coords. The wire pos is
+     * world-space dvec; subtract the body's centre and downcast. */
+    vec3_t body_local = {
+        (float)(cl->pos_x - w->body->pos_x),
+        (float)(cl->pos_y - w->body->pos_y),
+        (float)(cl->pos_z - w->body->pos_z),
+    };
+    block_t b = world_block_at_pos(w, body_local, -1);
+    if (!block_is_solid(b)) return;
+
+    msg_desync_t d = {
+        .reason       = DESYNC_INSIDE_SOLID,
+        .body_id      = cl->body_id,
+        .client_pos_x = cl->pos_x,
+        .client_pos_y = cl->pos_y,
+        .client_pos_z = cl->pos_z,
+        .block_type   = (uint32_t)b,
+    };
+    uint8_t buf[MSG_HEADER_SIZE + MSG_DESYNC_WIRE_SIZE];
+    size_t n = proto_write_desync(buf, sizeof buf, &d);
+    if (n == 0) return;
+    net_send(cl->conn, NET_CHANNEL_RELIABLE, buf, n);
+    cl->last_desync_tick = s->tick;
+    printf("[server] DESYNC sent to player_id=%u: inside block=%u at (%.1f, %.1f, %.1f)\n",
+           cl->player_id, (unsigned)b, cl->pos_x, cl->pos_y, cl->pos_z);
+}
+
+/* ------------------------------------------------------------------ */
+/* Handshake. M2 handles HELLO -> WELCOME; M4 adds PLAYER_STATE. */
 /* ------------------------------------------------------------------ */
 
 static void send_welcome(server_t* s, server_client_t* cl) {
@@ -158,6 +210,7 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
             cl->yaw              = st.yaw;
             cl->pitch            = st.pitch;
             cl->last_client_tick = st.client_tick;
+            check_for_desync(s, cl);
             break;
         }
         default:

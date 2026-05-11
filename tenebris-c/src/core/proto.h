@@ -31,6 +31,7 @@ typedef enum {
     MSG_PLAYER_STATE = 5,   /* C->S relayed pose (M4 position-relay path) */
     MSG_SNAPSHOT     = 10,  /* S->C entity state */
     MSG_CHUNK_DIFF   = 11,  /* S->C block edits */
+    MSG_DESYNC       = 12,  /* S->C "your reported pose is impossible" */
     MSG_CHAT         = 20,
 } msg_kind_t;
 
@@ -42,6 +43,7 @@ typedef enum {
 #define MSG_PLAYER_STATE_VERSION  1
 #define MSG_SNAPSHOT_VERSION      1
 #define MSG_CHUNK_DIFF_VERSION    1
+#define MSG_DESYNC_VERSION        1
 #define MSG_CHAT_VERSION          1
 
 typedef struct {
@@ -116,6 +118,28 @@ typedef struct {
     msg_snapshot_entry_t players[SNAPSHOT_MAX_PLAYERS];
 } msg_snapshot_t;
 
+/* ------------------------------------------------------------------
+ * Server-side sanity check feedback. The server doesn't simulate
+ * player physics (M4 trust-the-client) but it can still spot
+ * impossible poses — like "you're standing inside bedrock" — and
+ * tell the client. Useful both for detecting client/server world
+ * disagreement and as a tripwire against trivial cheats.
+ * ------------------------------------------------------------------ */
+
+#define MSG_DESYNC_WIRE_SIZE   36   /* 4 + 4 + 24 + 4 */
+
+typedef enum {
+    DESYNC_NONE          = 0,
+    DESYNC_INSIDE_SOLID  = 1,    /* claimed position is inside a non-air block */
+} desync_reason_t;
+
+typedef struct {
+    uint32_t reason;             /* desync_reason_t */
+    uint32_t body_id;
+    double   client_pos_x, client_pos_y, client_pos_z;
+    uint32_t block_type;         /* block_t the player was reported inside */
+} msg_desync_t;
+
 /* Protocol-level version. Bumped when the set of message kinds, or
  * any handshake-relevant payload, changes. The server rejects HELLOs
  * whose client_version doesn't match. */
@@ -143,5 +167,8 @@ int    proto_read_player_state (const uint8_t* payload, size_t len, msg_player_s
 
 size_t proto_write_snapshot(uint8_t* buf, size_t cap, const msg_snapshot_t* m);
 int    proto_read_snapshot (const uint8_t* payload, size_t len, msg_snapshot_t* out);
+
+size_t proto_write_desync(uint8_t* buf, size_t cap, const msg_desync_t* m);
+int    proto_read_desync (const uint8_t* payload, size_t len, msg_desync_t* out);
 
 #endif

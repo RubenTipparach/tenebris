@@ -48,6 +48,18 @@ void net_client_disconnect(void);
 net_client_state_t   net_client_state  (void);
 const net_client_welcome_t* net_client_welcome(void);
 
+/* Most recent server-side DESYNC notice. Returns 0 if the server has
+ * never flagged us, or the seconds-ago timestamp of the last notice
+ * otherwise. Also returns the reason / block type via the out params
+ * (NULL-safe). HUD reads this to surface a transient warning. */
+typedef enum {
+    NET_DESYNC_NONE         = 0,
+    NET_DESYNC_INSIDE_SOLID = 1,
+} net_desync_kind_t;
+
+net_desync_kind_t net_client_last_desync(double* out_seconds_ago,
+                                            uint32_t* out_block_type);
+
 /* Send the local player's pose to the server. Cheap; safe to call
  * every frame, but the caller throttles to a few times per second
  * (proto only supports newest-wins, so over-sending wastes bandwidth).
