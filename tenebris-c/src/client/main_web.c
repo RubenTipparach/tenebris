@@ -149,6 +149,7 @@ static void init(void) {
     stm_setup();
     sdtx_setup(&(sdtx_desc_t){
         .fonts[0] = sdtx_font_oric(),
+        .fonts[1] = sdtx_font_c64(),    /* clean baseline for the menu */
         .logger.func = on_screen_log,
     });
 

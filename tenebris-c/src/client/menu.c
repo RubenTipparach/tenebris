@@ -203,7 +203,9 @@ static void border(float x, float y, float w, float h, float thick,
 
 /* sokol_debugtext renders 8x8 char cells. Shrink the canvas by `scale`
  * so each cell becomes `8 * scale` screen pixels; place origin in
- * canvas char cells (one cell = 8 canvas units regardless of scale). */
+ * canvas char cells (one cell = 8 canvas units regardless of scale).
+ * The menu uses font slot 1 (c64) — its baseline is clean, where
+ * Oric's bottom row reads as an underline at 5x scale. */
 static void draw_text_centered(const char* str, float center_x,
                                  float screen_y, float scale,
                                  uint8_t r, uint8_t g, uint8_t b) {
@@ -212,10 +214,12 @@ static void draw_text_centered(const char* str, float center_x,
     float text_w  = cell_px * (float)n;
     float text_x  = center_x - text_w * 0.5f;
     sdtx_canvas(sapp_widthf() / scale, sapp_heightf() / scale);
+    sdtx_font(1);
     sdtx_origin(text_x / cell_px, screen_y / cell_px);
     sdtx_color3b(r, g, b);
     sdtx_home();
     sdtx_printf("%s", str);
+    sdtx_font(0);     /* restore HUD font for any non-menu printers */
 }
 
 static void draw_text_left(const char* str, float screen_x,
@@ -223,10 +227,12 @@ static void draw_text_left(const char* str, float screen_x,
                              uint8_t r, uint8_t g, uint8_t b) {
     float cell_px = 8.0f * scale;
     sdtx_canvas(sapp_widthf() / scale, sapp_heightf() / scale);
+    sdtx_font(1);
     sdtx_origin(screen_x / cell_px, screen_y / cell_px);
     sdtx_color3b(r, g, b);
     sdtx_home();
     sdtx_printf("%s", str);
+    sdtx_font(0);
 }
 
 static void draw_button(const menu_button_t* b) {
