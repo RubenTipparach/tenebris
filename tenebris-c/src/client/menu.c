@@ -15,22 +15,6 @@
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 
-EM_JS(char*, menu_js_prompt_server_url, (void), {
-    var key = 'tenebris-c:last-server';
-    var defaultUrl = '';
-    try { defaultUrl = window.localStorage.getItem(key) || ''; } catch (e) {}
-    if (!defaultUrl) defaultUrl = 'wss://tenebris-c.fly.dev/';
-    var url = window.prompt(
-        'Server URL\n(e.g. wss://your-app.fly.dev/  or  ws://localhost:8080/)',
-        defaultUrl);
-    if (!url) return 0;
-    try { window.localStorage.setItem(key, url); } catch (e) {}
-    var len = lengthBytesUTF8(url) + 1;
-    var p = _malloc(len);
-    stringToUTF8(url, p, len);
-    return p;
-});
-
 /* Prompt for a new SP world name. JS just trims and forwards the
  * raw string; C-side strips storage-format characters (newline,
  * carriage return, colon) — keeping any regex out of the EM_JS body
@@ -48,7 +32,6 @@ EM_JS(char*, menu_js_prompt_world_name, (void), {
     return p;
 });
 #else
-static char* menu_js_prompt_server_url(void)  { return NULL; }
 static char* menu_js_prompt_world_name(void)  { return NULL; }
 #endif
 
@@ -394,16 +377,15 @@ static void start_sp_new_world(void) {
     free(name);
 }
 
+/* Hardcoded default server. The browser prompt was annoying for every
+ * MP session, so the menu just connects straight to this. Power users
+ * can still override via the `?server=...` URL query param — see the
+ * bypass branch in main_web.c's init(). */
+#define DEFAULT_MP_SERVER_URL "wss://tenebris-c.fly.dev/"
+
 static void start_multiplayer(void) {
-    M.state = GAME_MP_URL_PROMPT;
-    char* url = menu_js_prompt_server_url();
-    if (!url) {
-        M.state = GAME_MAIN_MENU;
-        return;
-    }
-    printf("[menu] MP: connecting to %s\n", url);
-    net_client_connect(url);
-    free(url);
+    printf("[menu] MP: connecting to %s\n", DEFAULT_MP_SERVER_URL);
+    net_client_connect(DEFAULT_MP_SERVER_URL);
     M.active_world[0] = 0;     /* no SP save target while in MP */
     M.state = GAME_IN_GAME_MP;
 }
