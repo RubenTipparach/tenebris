@@ -108,6 +108,29 @@ altitude, `[H] hide terrain`). Those stay as `sdtx_printf`.
 Only deliver an ASCII-only UI when the user explicitly asks for it
 ("draw an ASCII frame", "I just want text").
 
+## In-game text: ASCII only — no em-dashes, no smart quotes
+
+Every string that ends up rendered on screen via `sdtx_printf` must
+be plain 7-bit ASCII. The bundled `sokol_debugtext` fonts (Oric,
+c64, etc.) only define glyphs for the standard ASCII range, and
+non-ASCII characters render as garbage glyphs (you'll see € for
+`_`, weird boxes for `'`, etc.).
+
+**Never use em-dashes (—) in any string that reaches the player.**
+Use a regular hyphen `-` instead. Same goes for en-dashes (–),
+typographic quotes (`'`, `'`, `"`, `"`), the ellipsis character (…),
+non-breaking spaces, and any other Unicode punctuation. Comments in
+the C source are free to use whatever — the rule is strictly about
+*rendered* text.
+
+Also avoid `_` (underscore) in player-visible strings — the Oric
+font maps it to a graphic glyph rather than a true underline, so
+`player_id` renders as `player€id`. Use `-` (hyphen), space, or
+camelCase if you need to break words.
+
+This rule stays in force until the font pipeline gains real Unicode
+coverage, which is not on the roadmap.
+
 ## Static game asset guidelines
 
 These rules apply to every asset Claude generates, hand-edits, or asks

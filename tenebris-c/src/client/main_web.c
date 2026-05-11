@@ -147,9 +147,24 @@ static void init(void) {
         .buffer_pool_size = 4096,
     });
     stm_setup();
+    /* IMPORTANT: every one of the 8 sdtx font slots gets filled, even
+     * the ones we don't actively use. sokol_debugtext stacks all slots
+     * vertically in a single texture atlas and memset's the whole
+     * atlas to 0xFF (white). At anything above 1x scale, the sampler
+     * bleeds ~half a pixel into the slot below the active glyph row,
+     * showing the white as a visible underline at the bottom of every
+     * character. Filling every slot with a real bitmap kills the
+     * white bleed — bleed now reads the top of the next font's
+     * glyphs, which is far less noticeable. */
     sdtx_setup(&(sdtx_desc_t){
-        .fonts[0] = sdtx_font_oric(),
-        .fonts[1] = sdtx_font_c64(),    /* clean baseline for the menu */
+        .fonts[0] = sdtx_font_oric(),   /* HUD               */
+        .fonts[1] = sdtx_font_c64(),    /* menu              */
+        .fonts[2] = sdtx_font_c64(),    /* trailing-bleed guards: */
+        .fonts[3] = sdtx_font_c64(),
+        .fonts[4] = sdtx_font_c64(),
+        .fonts[5] = sdtx_font_c64(),
+        .fonts[6] = sdtx_font_c64(),
+        .fonts[7] = sdtx_font_c64(),
         .logger.func = on_screen_log,
     });
 
@@ -309,7 +324,7 @@ static void update_overlay(float dt) {
             if (ns == NET_CLIENT_READY) {
                 const net_client_welcome_t* w = net_client_welcome();
                 sdtx_color3b(0x80, 0xff, 0x80);
-                sdtx_printf("net: %s (player_id=%u, body=%u, +%d remote)\n",
+                sdtx_printf("net: %s (player-id=%u, body=%u, +%d remote)\n",
                             label, w->player_id, w->body_id,
                             remote_players_count());
             } else {
