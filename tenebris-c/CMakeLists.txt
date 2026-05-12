@@ -67,6 +67,28 @@ target_include_directories(tenebris_third_party INTERFACE
 )
 
 # ---------------------------------------------------------------------------
+# libwebsockets — the native WebSocket backend, shared by the dedicated
+# server and the native client. Located once at top level so both targets
+# pull from the same install. The browser client uses `-lwebsocket.js`
+# from emscripten instead and skips this entirely.
+# ---------------------------------------------------------------------------
+if (NOT EMSCRIPTEN AND UNIX)
+    find_package(PkgConfig QUIET)
+    if (PkgConfig_FOUND)
+        pkg_check_modules(LIBWEBSOCKETS QUIET libwebsockets)
+    endif()
+    if (NOT LIBWEBSOCKETS_FOUND)
+        find_library(LWS_LIB websockets)
+        find_path(LWS_INC libwebsockets.h)
+        if (LWS_LIB AND LWS_INC)
+            set(LIBWEBSOCKETS_FOUND TRUE)
+            set(LIBWEBSOCKETS_LIBRARIES ${LWS_LIB})
+            set(LIBWEBSOCKETS_INCLUDE_DIRS ${LWS_INC})
+        endif()
+    endif()
+endif()
+
+# ---------------------------------------------------------------------------
 # client build — different shape depending on target
 # ---------------------------------------------------------------------------
 if (TENEBRIS_BUILD_CLIENT)
@@ -90,16 +112,20 @@ set(TENEBRIS_CLIENT_SOURCES
     src/client/menu.c
     src/client/persistence.c
     src/client/profile.c
+    src/client/client_kv.c
     src/client/remote_players.c
 )
 
-# Browser-only: WS transport against emscripten/websocket.h (linked
-# with `-lwebsocket.js` below). The native client doesn't yet have a
-# transport backend — single-player only until M7 in-process server
-# lands.
+# Browser client uses the emscripten/websocket.h bridge (linked with
+# `-lwebsocket.js` below). Native client uses the same libwebsockets
+# backend the server speaks — net_transport_ws.c serves both call
+# sites; the unused half is just unreachable code in each binary.
 if (EMSCRIPTEN)
     list(APPEND TENEBRIS_CLIENT_SOURCES
         src/client/net_transport_wasm.c)
+else()
+    list(APPEND TENEBRIS_CLIENT_SOURCES
+        src/server/net_transport_ws.c)
 endif()
 
 # Populate assets/textures/ from the parent JS project's public/textures.
@@ -168,6 +194,17 @@ else()
     target_link_libraries(tenebris PRIVATE tenebris_core tenebris_third_party)
     target_compile_definitions(tenebris PRIVATE CLIENT_BUILD)
 
+    # libwebsockets — the native client's WebSocket transport. Required;
+    # the browser client side-steps this by using -lwebsocket.js instead.
+    if (UNIX AND LIBWEBSOCKETS_FOUND)
+        target_link_libraries(tenebris PRIVATE ${LIBWEBSOCKETS_LIBRARIES})
+        target_include_directories(tenebris PRIVATE ${LIBWEBSOCKETS_INCLUDE_DIRS})
+    elseif (UNIX)
+        message(FATAL_ERROR
+            "libwebsockets not found for the native client. Install "
+            "libwebsockets-dev (Debian/Ubuntu) or libwebsockets (brew).")
+    endif()
+
     add_sokol_shader(tenebris src/shaders/water.glsl)
     add_sokol_shader(tenebris src/shaders/composite.glsl)
     add_sokol_shader(tenebris src/shaders/starfield.glsl)
@@ -206,21 +243,6 @@ endif() # TENEBRIS_BUILD_CLIENT
 # Sokol / sokol-shdc / OpenGL entirely. Used by the Fly.io Docker build.
 # ---------------------------------------------------------------------------
 if (TENEBRIS_BUILD_SERVER AND NOT EMSCRIPTEN AND UNIX)
-    # libwebsockets — primary backend for net_transport.h.
-    # Use pkg-config when available; fall back to find_library otherwise.
-    find_package(PkgConfig QUIET)
-    if (PkgConfig_FOUND)
-        pkg_check_modules(LIBWEBSOCKETS QUIET libwebsockets)
-    endif()
-    if (NOT LIBWEBSOCKETS_FOUND)
-        find_library(LWS_LIB websockets)
-        find_path(LWS_INC libwebsockets.h)
-        if (LWS_LIB AND LWS_INC)
-            set(LIBWEBSOCKETS_FOUND TRUE)
-            set(LIBWEBSOCKETS_LIBRARIES ${LWS_LIB})
-            set(LIBWEBSOCKETS_INCLUDE_DIRS ${LWS_INC})
-        endif()
-    endif()
     if (NOT LIBWEBSOCKETS_FOUND)
         message(FATAL_ERROR
             "libwebsockets not found. Install libwebsockets-dev (Debian/Ubuntu) "

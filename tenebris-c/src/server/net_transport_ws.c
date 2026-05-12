@@ -1,16 +1,18 @@
 /*
- * WebSocket backend for the net_transport interface, server side.
- * Implements net_listen / net_poll / net_send / net_close /
- * net_conn_user against libwebsockets 4.x.
+ * WebSocket backend for the net_transport interface, native side.
+ * Implements both the server half (net_listen / net_poll) and the
+ * client half (net_connect / net_poll_client) on top of
+ * libwebsockets 4.x.
  *
- * Client-side functions (net_connect, net_poll_client) are stubbed
- * here — the browser client gets its own implementation against the
- * JS WebSocket API in client/net_transport_wasm.c (lands in M3).
+ * Same file serves the dedicated server binary AND the native client
+ * binary — only the call sites differ. The browser client lives in
+ * client/net_transport_wasm.c and bridges to the JS WebSocket API.
  *
- * Threading model: the libwebsockets context is single-threaded.
- * net_poll() drives all I/O and fires all callbacks synchronously
- * on the calling thread. Server code can therefore touch game
- * state from inside callbacks with no locking.
+ * Threading model: each lws_context is single-threaded. The server
+ * has one context shared by all accepted sockets; the client has
+ * one context per outbound connection. All callbacks fire from
+ * inside the matching net_poll_*() so the calling thread can mutate
+ * game state with no locking.
  */
 
 #include "core/net_transport.h"
@@ -36,11 +38,17 @@ typedef struct send_item_s {
 
 struct net_conn_s {
     struct lws*      wsi;
-    net_listener_t*  owner;
+    net_listener_t*  owner;        /* NULL on the client side */
     void*            user_data;
 
-    /* Single-producer / single-consumer ring buffer. Always touched
-     * from the libwebsockets thread (== server tick thread). */
+    /* Client-only fields. Valid when owner == NULL. */
+    net_callbacks_t      client_cb;
+    struct lws_context*  client_ctx;
+    int                  client_open;         /* CLIENT_ESTABLISHED fired */
+    int                  client_close_fired;  /* on_close already ran once */
+
+    /* Outbound queue. Single-producer / single-consumer; always
+     * touched from the same lws thread that drives the context. */
     send_item_t      queue[NET_SEND_QUEUE_CAP];
     int              qhead;
     int              qtail;
@@ -63,6 +71,27 @@ static void q_drain_free(net_conn_t* c) {
     }
 }
 
+/* Drain the outbound queue. Called from SERVER_WRITEABLE on the server
+ * side and CLIENT_WRITEABLE on the client side — both have identical
+ * semantics. Returns -1 if a write failed (caller passes that back to
+ * libwebsockets to close the connection), 0 otherwise. */
+static int drain_send_queue(struct lws* wsi, net_conn_t* C) {
+    while (!q_empty(C)) {
+        send_item_t* it = &C->queue[C->qhead];
+        int n = lws_write(wsi, it->buf + LWS_PRE, it->len, LWS_WRITE_BINARY);
+        free(it->buf);
+        it->buf = NULL;
+        C->qhead = q_next(C->qhead);
+        if (n < (int)it->len) {
+            /* partial send -> bail; lws will fire writable again */
+            lws_callback_on_writable(wsi);
+            return -1;
+        }
+    }
+    if (!q_empty(C)) lws_callback_on_writable(wsi);
+    return 0;
+}
+
 /* Serve one in-memory HTTP body. Returns -1 on transport error (caller
  * should drop the connection), 0 on success. */
 static int serve_http(struct lws* wsi, int status,
@@ -77,8 +106,8 @@ static int serve_http(struct lws* wsi, int status,
         return -1;
     }
     if (body_len > 0 && body) {
-        /* Send the body in one shot. Small enough for any reasonable
-         * dashboard payload — large blobs would need chunked writes. */
+        /* Small dashboard payloads only; chunked writes would be needed
+         * for blobs above a few KB. */
         uint8_t* out = (uint8_t*)malloc(LWS_PRE + body_len);
         if (!out) return -1;
         memcpy(out + LWS_PRE, body, body_len);
@@ -97,11 +126,12 @@ static int tenebris_callback(struct lws* wsi, enum lws_callback_reasons reason,
     net_listener_t* L = ctx ? (net_listener_t*)lws_context_user(ctx) : NULL;
 
     switch (reason) {
+        /* -------- Server-side events -------- */
         case LWS_CALLBACK_HTTP: {
             if (!L || !L->cb.on_http) {
-                /* No dashboard registered — return a friendly text
-                 * line. Better than a libwebsockets default 404 that
-                 * Fly's health-check shows as "connection closed". */
+                /* No dashboard registered — return a friendly text line
+                 * so Fly's health check sees a 200 instead of a default
+                 * 404. */
                 static const char msg[] =
                     "tenebris-server is alive (WebSocket-only by default)\n";
                 return serve_http(wsi, 200, "text/plain; charset=utf-8",
@@ -129,37 +159,77 @@ static int tenebris_callback(struct lws* wsi, enum lws_callback_reasons reason,
             break;
 
         case LWS_CALLBACK_RECEIVE:
-            if (L && L->cb.on_msg) {
-                /* All inbound on the WS backend is reliable-ordered.
-                 * When a DataChannel backend ships, that one delivers
-                 * unreliable on a different channel. */
-                L->cb.on_msg(C, NET_CHANNEL_RELIABLE, in, len, L->cb.user);
+            if (C && C->owner && C->owner->cb.on_msg) {
+                /* All inbound on the WS backend is reliable-ordered. A
+                 * future DataChannel backend will deliver unreliable on
+                 * its own channel. */
+                C->owner->cb.on_msg(C, NET_CHANNEL_RELIABLE, in, len,
+                                     C->owner->cb.user);
             }
             break;
 
         case LWS_CALLBACK_SERVER_WRITEABLE:
             if (!C) return 0;
-            while (!q_empty(C)) {
-                send_item_t* it = &C->queue[C->qhead];
-                int n = lws_write(wsi, it->buf + LWS_PRE, it->len,
-                                    LWS_WRITE_BINARY);
-                free(it->buf);
-                it->buf = NULL;
-                C->qhead = q_next(C->qhead);
-                if (n < (int)it->len) {
-                    /* partial send — bail; lws will retry later */
-                    lws_callback_on_writable(wsi);
-                    return -1;
-                }
-            }
-            if (!q_empty(C)) lws_callback_on_writable(wsi);
-            break;
+            return drain_send_queue(wsi, C);
 
         case LWS_CALLBACK_CLOSED:
-            if (C && L && L->cb.on_close) {
-                L->cb.on_close(C, NET_CLOSE_REMOTE_GONE, L->cb.user);
+            if (C && C->owner && C->owner->cb.on_close) {
+                C->owner->cb.on_close(C, NET_CLOSE_REMOTE_GONE,
+                                       C->owner->cb.user);
             }
             if (C) q_drain_free(C);
+            break;
+
+        /* -------- Client-side events --------
+         * For client connections lws_client_connect_info.userdata points
+         * the per-session `user` arg at our pre-allocated net_conn_t,
+         * so `C` is already valid here. */
+        case LWS_CALLBACK_CLIENT_ESTABLISHED:
+            if (!C) break;
+            C->wsi = wsi;
+            C->client_open = 1;
+            if (C->client_cb.on_open)
+                C->client_cb.on_open(C, C->client_cb.user);
+            break;
+
+        case LWS_CALLBACK_CLIENT_RECEIVE:
+            if (C && C->client_cb.on_msg) {
+                C->client_cb.on_msg(C, NET_CHANNEL_RELIABLE, in, len,
+                                      C->client_cb.user);
+            }
+            break;
+
+        case LWS_CALLBACK_CLIENT_WRITEABLE:
+            if (!C) return 0;
+            return drain_send_queue(wsi, C);
+
+        case LWS_CALLBACK_CLIENT_CONNECTION_ERROR:
+            if (C && !C->client_close_fired) {
+                C->client_close_fired = 1;
+                if (C->client_cb.on_close)
+                    C->client_cb.on_close(C, NET_CLOSE_PROTOCOL_ERR,
+                                           C->client_cb.user);
+            }
+            if (C) {
+                C->wsi = NULL;
+                q_drain_free(C);
+            }
+            return -1;
+
+        case LWS_CALLBACK_CLIENT_CLOSED:
+            /* Single-fire guard: this can run from a remote drop (via
+             * net_poll_client -> lws_service) OR from net_close (via
+             * lws_context_destroy). We only want one user on_close. */
+            if (C && !C->client_close_fired) {
+                C->client_close_fired = 1;
+                if (C->client_cb.on_close)
+                    C->client_cb.on_close(C, NET_CLOSE_REMOTE_GONE,
+                                           C->client_cb.user);
+            }
+            if (C) {
+                C->wsi = NULL;
+                q_drain_free(C);
+            }
             break;
 
         default:
@@ -168,9 +238,12 @@ static int tenebris_callback(struct lws* wsi, enum lws_callback_reasons reason,
     return 0;
 }
 
-/* Single binary subprotocol — the wire format is opaque WS binary frames
- * containing our own length-prefixed msg_hdr_t + payload. We don't
- * negotiate a subprotocol name; the server accepts the default. */
+/* Two protocol entries that share a callback. The server entry has
+ * per_session_data_size = sizeof(net_conn_s) so lws allocates the
+ * conn on accept. The client entry has per_session_data_size = 0 so
+ * we can pre-allocate the conn in net_connect() and hand it to lws
+ * via i.userdata — net_connect needs to return the conn before
+ * CLIENT_ESTABLISHED fires. */
 static struct lws_protocols PROTOCOLS[] = {
     {
         .name                  = "tenebris-net",
@@ -179,11 +252,18 @@ static struct lws_protocols PROTOCOLS[] = {
         .rx_buffer_size        = 64 * 1024,
         .tx_packet_size        = 64 * 1024,
     },
+    {
+        .name                  = "tenebris-net-client",
+        .callback              = tenebris_callback,
+        .per_session_data_size = 0,
+        .rx_buffer_size        = 64 * 1024,
+        .tx_packet_size        = 64 * 1024,
+    },
     LWS_PROTOCOL_LIST_TERM,
 };
 
 /* ------------------------------------------------------------------ */
-/* Public surface — see core/net_transport.h.                          */
+/* Server surface — see core/net_transport.h.                          */
 /* ------------------------------------------------------------------ */
 
 net_listener_t* net_listen(const char* bind_addr, int port,
@@ -214,7 +294,7 @@ net_listener_t* net_listen(const char* bind_addr, int port,
 
 void net_poll(net_listener_t* listener) {
     if (!listener || !listener->ctx) return;
-    /* timeout_ms = 0 → non-blocking; the tick loop owns pacing. */
+    /* timeout_ms = 0 -> non-blocking; the tick loop owns pacing. */
     lws_service(listener->ctx, 0);
 }
 
@@ -224,13 +304,134 @@ void net_close_listener(net_listener_t* L) {
     free(L);
 }
 
+/* ------------------------------------------------------------------ */
+/* Client surface.                                                     */
+/* ------------------------------------------------------------------ */
+
+/* Tiny URL splitter — accepts ws://host[:port][/path] or wss://...
+ * Writes host into `out_host`, the integer port into `*out_port`, the
+ * path into `out_path`, and `*out_ssl` to 1 for wss. Returns 0 on
+ * success, -1 on parse failure.
+ *
+ * Deliberately limited: no userinfo, no query string, no IPv6 brackets.
+ * Good enough for the deployment URLs Tenebris actually uses. */
+static int parse_ws_url(const char* url,
+                          char* out_host, size_t host_cap,
+                          int* out_port,
+                          char* out_path, size_t path_cap,
+                          int* out_ssl) {
+    if (!url) return -1;
+    const char* p = url;
+    int ssl = 0;
+    if (strncmp(p, "wss://", 6) == 0) { ssl = 1; p += 6; }
+    else if (strncmp(p, "ws://", 5) == 0) { ssl = 0; p += 5; }
+    else return -1;
+
+    const char* host_start = p;
+    const char* host_end   = p;
+    while (*host_end && *host_end != ':' && *host_end != '/') ++host_end;
+    size_t hlen = (size_t)(host_end - host_start);
+    if (hlen == 0 || hlen + 1 > host_cap) return -1;
+    memcpy(out_host, host_start, hlen);
+    out_host[hlen] = 0;
+
+    int port = ssl ? 443 : 80;
+    if (*host_end == ':') {
+        port = atoi(host_end + 1);
+        while (*host_end && *host_end != '/') ++host_end;
+    }
+    *out_port = port;
+    *out_ssl  = ssl;
+
+    /* Path. Default to "/" if absent. lws wants a leading slash. */
+    if (*host_end == '/') {
+        size_t plen = strlen(host_end);
+        if (plen + 1 > path_cap) return -1;
+        memcpy(out_path, host_end, plen + 1);
+    } else {
+        if (path_cap < 2) return -1;
+        out_path[0] = '/'; out_path[1] = 0;
+    }
+    return 0;
+}
+
+net_conn_t* net_connect(const char* url, net_callbacks_t cb) {
+    if (!url) return NULL;
+    char host[256], path[256];
+    int port = 0, ssl = 0;
+    if (parse_ws_url(url, host, sizeof host, &port, path, sizeof path, &ssl) != 0) {
+        fprintf(stderr, "[net] bad client URL: %s\n", url);
+        return NULL;
+    }
+
+    net_conn_t* C = (net_conn_t*)calloc(1, sizeof(*C));
+    if (!C) return NULL;
+    C->client_cb = cb;
+
+    struct lws_context_creation_info info;
+    memset(&info, 0, sizeof info);
+    info.port      = CONTEXT_PORT_NO_LISTEN;
+    info.protocols = PROTOCOLS;
+    info.user      = NULL;          /* server-only field */
+    /* Pull in the system trust store so wss:// works. Cheap on Linux/
+     * macOS, no-op on Windows builds that don't link OpenSSL. */
+    info.options   = LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
+
+    C->client_ctx = lws_create_context(&info);
+    if (!C->client_ctx) {
+        fprintf(stderr, "[net] lws_create_context (client) failed for %s\n", url);
+        free(C);
+        return NULL;
+    }
+
+    struct lws_client_connect_info ccinfo;
+    memset(&ccinfo, 0, sizeof ccinfo);
+    ccinfo.context        = C->client_ctx;
+    ccinfo.address        = host;
+    ccinfo.port           = port;
+    ccinfo.path           = path;
+    ccinfo.host           = host;
+    ccinfo.origin         = host;
+    ccinfo.protocol       = "tenebris-net-client";
+    ccinfo.ssl_connection = ssl ? LCCSCF_USE_SSL : 0;
+    ccinfo.userdata       = C;     /* becomes `user` in the callback */
+
+    C->wsi = lws_client_connect_via_info(&ccinfo);
+    if (!C->wsi) {
+        fprintf(stderr, "[net] lws_client_connect_via_info failed for %s\n", url);
+        lws_context_destroy(C->client_ctx);
+        free(C);
+        return NULL;
+    }
+    printf("[net] connecting to %s (host=%s port=%d ssl=%d)\n",
+           url, host, port, ssl);
+    return C;
+}
+
+void net_poll_client(net_conn_t* C) {
+    if (!C || !C->client_ctx) return;
+    lws_service(C->client_ctx, 0);
+    /* If the wsi got closed during this service tick (remote drop or
+     * error), tear down the now-empty context so subsequent ticks
+     * don't burn CPU on nothing. The conn struct stays — caller still
+     * owns it and must call net_close to free. */
+    if (C->client_close_fired && C->wsi == NULL && C->client_ctx) {
+        lws_context_destroy(C->client_ctx);
+        C->client_ctx = NULL;
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Shared surface.                                                     */
+/* ------------------------------------------------------------------ */
+
 void net_send(net_conn_t* C, net_channel_t ch, const void* data, size_t len) {
     (void)ch;        /* WS backend has only one channel */
     if (!C || !C->wsi || !data || len == 0) return;
 
     int next = q_next(C->qtail);
     if (next == C->qhead) {
-        /* Queue full — drop. In practice this means a slow / stalled
+        /* Queue full -> drop. In practice this means a slow / stalled
          * peer; better to close than to grow unbounded. */
         fprintf(stderr, "[net] send queue full, dropping %zu bytes\n", len);
         return;
@@ -247,8 +448,33 @@ void net_send(net_conn_t* C, net_channel_t ch, const void* data, size_t len) {
 }
 
 void net_close(net_conn_t* C) {
-    if (!C || !C->wsi) return;
-    lws_close_reason(C->wsi, LWS_CLOSE_STATUS_NORMAL, NULL, 0);
+    if (!C) return;
+    if (C->owner) {
+        /* Server-side conn: signal close; lws frees the per-session
+         * struct via CALLBACK_CLOSED. */
+        if (C->wsi) lws_close_reason(C->wsi, LWS_CLOSE_STATUS_NORMAL, NULL, 0);
+        return;
+    }
+    /* Client-side conn. net_close fully tears down: signal close,
+     * destroy the context (which fires CLIENT_CLOSED -> user on_close
+     * if it hasn't already), free outbound queue, free the conn.
+     *
+     * After this returns, the C pointer is invalid; callers must
+     * null their copy.
+     *
+     * Re-entry guard: lws_context_destroy calls the user's on_close
+     * synchronously, and if that handler decides to call net_close
+     * again we'd recurse into a half-destroyed context. Clear the
+     * ctx field first so the inner call sees nothing to do. */
+    if (C->client_ctx == NULL) return;
+    struct lws_context* ctx = C->client_ctx;
+    C->client_ctx = NULL;
+    if (C->wsi) {
+        lws_close_reason(C->wsi, LWS_CLOSE_STATUS_NORMAL, NULL, 0);
+    }
+    lws_context_destroy(ctx);
+    q_drain_free(C);
+    free(C);
 }
 
 void* net_conn_user(net_conn_t* C) {
@@ -257,21 +483,4 @@ void* net_conn_user(net_conn_t* C) {
 
 void net_conn_set_user(net_conn_t* C, void* user) {
     if (C) C->user_data = user;
-}
-
-/* ------------------------------------------------------------------ */
-/* Client-side stubs. The WASM client implements these against the
- * browser's WebSocket object in a separate file (M3). On the server
- * binary, no caller ever invokes them. */
-/* ------------------------------------------------------------------ */
-
-net_conn_t* net_connect(const char* url, net_callbacks_t cb) {
-    (void)url; (void)cb;
-    fprintf(stderr, "[net] net_connect is unimplemented on the server-side WS backend\n");
-    return NULL;
-}
-
-void net_poll_client(net_conn_t* C) {
-    (void)C;
-    /* No-op; client-side polling happens in the browser. */
 }
