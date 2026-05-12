@@ -40,21 +40,23 @@ typedef struct {
 bool saves_init(const char* saves_dir);
 void saves_shutdown(void);
 
-/* Apply every saved column for `w`'s body onto its block array. Called
- * once after world_stream_gen completes during server_init. Silent
- * no-op if no saves exist (fresh server). Returns count of tiles
- * loaded (0 = clean boot). */
-int  saves_load_world(world_t* w, uint64_t seed);
+/* Apply every saved column for `(room, body)` onto `w`'s block array.
+ * `room` is the 6-char room code, or "" / NULL for the public room
+ * (stored on disk as __public__). Returns the count of tile columns
+ * actually overlaid. */
+int  saves_load_world(world_t* w, const char* room, uint64_t seed);
 
-/* Write the current value of `tile_idx`'s column to disk. Called
- * batched from saves_flush_world; direct calls are also fine for
- * "save immediately after this edit" patterns. */
-bool saves_write_tile(world_t* w, uint64_t seed, int tile_idx);
+/* Persist `tile_idx`'s column under (room, body). Call right after
+ * world_set in the PLAYER_CMD handler so only the actually-edited
+ * tile hits disk — see the M5 chunk-save commit. */
+bool saves_write_tile(world_t* w, const char* room, uint64_t seed, int tile_idx);
 
 /* Walk the world's dirty bitset and persist every dirty tile, then
  * clear the dirty bits the saves module owns. Cheap when no edits
- * happened recently. */
-int  saves_flush_world(world_t* w, uint64_t seed);
+ * happened recently. Kept in the API for an eventual edit-only
+ * dirty bitmap — the server no longer calls it (immediate save
+ * covers chunk edits). */
+int  saves_flush_world(world_t* w, const char* room, uint64_t seed);
 
 /* Per-player pose. `token` must be a non-empty hex string (the HELLO
  * token); empty tokens are skipped so guest sessions don't fight over

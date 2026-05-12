@@ -12,6 +12,96 @@
 #include <string.h>
 
 /* ------------------------------------------------------------------ */
+/* Room management. Public room lives at rooms[0]; private rooms get
+ * an index 1..MAX_ROOMS-1 on first join and are freed when the last
+ * client leaves (public sticks around). Each room owns its own clones
+ * of every world so chunk edits in one room don't leak to others. */
+/* ------------------------------------------------------------------ */
+
+static void room_alloc_worlds(server_t* s, server_room_t* room) {
+    room->world_count = 0;
+    for (int i = 0; i < s->world_count && i < SERVER_MAX_BODIES; ++i) {
+        const world_t* baseline = s->worlds[i];
+        if (!baseline) continue;
+        world_t* w = world_clone(baseline);
+        if (!w) {
+            fprintf(stderr, "[server] room '%s': clone of body %d failed\n",
+                    room->code, i);
+            continue;
+        }
+        /* Overlay any persisted edits for THIS room onto the clone. */
+        saves_load_world(w, room->code, s->cfg.seed);
+        room->worlds[room->world_count++] = w;
+    }
+}
+
+static void room_free_worlds(server_room_t* room) {
+    for (int i = 0; i < room->world_count; ++i) {
+        if (room->worlds[i]) world_destroy(room->worlds[i]);
+        room->worlds[i] = NULL;
+    }
+    room->world_count = 0;
+}
+
+static int room_find(server_t* s, const char* code) {
+    for (int i = 0; i < SERVER_MAX_ROOMS; ++i) {
+        if (s->rooms[i].in_use && strcmp(s->rooms[i].code, code) == 0)
+            return i;
+    }
+    return -1;
+}
+
+/* Locate the room matching `code` or create a fresh one. Returns its
+ * index in s->rooms[], or -1 if no slot was available. Increments
+ * ref_count on success. */
+static int room_acquire(server_t* s, const char* code) {
+    int idx = room_find(s, code);
+    if (idx < 0) {
+        /* Find an empty slot, skipping rooms[0] (reserved public). */
+        for (int i = 0; i < SERVER_MAX_ROOMS; ++i) {
+            if (!s->rooms[i].in_use) { idx = i; break; }
+        }
+        if (idx < 0) {
+            fprintf(stderr, "[server] no room slot free for code='%s'\n", code);
+            return -1;
+        }
+        memset(&s->rooms[idx], 0, sizeof s->rooms[idx]);
+        snprintf(s->rooms[idx].code, sizeof s->rooms[idx].code, "%s", code);
+        s->rooms[idx].in_use = true;
+        room_alloc_worlds(s, &s->rooms[idx]);
+        printf("[server] room created '%s' (%d cloned worlds)\n",
+               s->rooms[idx].code, s->rooms[idx].world_count);
+    }
+    s->rooms[idx].ref_count++;
+    return idx;
+}
+
+static void room_release(server_t* s, int idx) {
+    if (idx < 0 || idx >= SERVER_MAX_ROOMS) return;
+    server_room_t* r = &s->rooms[idx];
+    if (!r->in_use) return;
+    if (r->ref_count > 0) r->ref_count--;
+    /* Keep the public room alive even at ref=0 so it's hot for the
+     * next join. Private rooms get freed to bound memory. */
+    if (r->ref_count == 0 && idx != 0) {
+        printf("[server] room freed '%s' (last client left)\n", r->code);
+        room_free_worlds(r);
+        memset(r, 0, sizeof *r);
+    }
+}
+
+static world_t* client_world_for_body(server_t* s, const server_client_t* cl,
+                                        uint32_t body_id) {
+    if (cl->room_idx < 0) return NULL;
+    const server_room_t* room = &s->rooms[cl->room_idx];
+    for (int i = 0; i < room->world_count; ++i) {
+        world_t* w = room->worlds[i];
+        if (w && w->body && (uint32_t)w->body->id == body_id) return w;
+    }
+    return NULL;
+}
+
+/* ------------------------------------------------------------------ */
 /* Per-client slot management. The clients[] array is searched
  * linearly — at SERVER_MAX_CLIENTS == 16 this is cheaper than any
  * hashmap and keeps the lifecycle obvious. */
@@ -55,14 +145,7 @@ static void check_for_desync(server_t* s, server_client_t* cl) {
      * 1.6 m up the surface normal). #if 0 keeps the linker / dead
      * code analysers happy without making the function look bare. */
 #if 0
-    world_t* w = NULL;
-    for (int i = 0; i < s->world_count; ++i) {
-        world_t* candidate = s->worlds[i];
-        if (candidate && candidate->body &&
-            (uint32_t)candidate->body->id == cl->body_id) {
-            w = candidate; break;
-        }
-    }
+    world_t* w = client_world_for_body(s, cl, cl->body_id);
     if (!w || !w->body) return;     /* unknown body — skip silently */
 
     /* world_block_at_pos takes body-local float coords. The wire pos is
@@ -171,6 +254,17 @@ static void handle_hello(server_t* s, server_client_t* cl,
     memcpy(cl->room, h.room_code, SERVER_ROOM_LEN);
     cl->room[SERVER_ROOM_LEN] = 0;
 
+    /* Acquire the room (find or create + clone worlds). If the slot
+     * pool is full, the client gets dropped — we can't host them
+     * cleanly without a room. */
+    cl->room_idx = room_acquire(s, cl->room);
+    if (cl->room_idx < 0) {
+        fprintf(stderr, "[server] no room slot for player_id=%u, closing\n",
+                cl->player_id);
+        net_close(cl->conn);
+        return;
+    }
+
     printf("[server] HELLO from player_id=%u name='%s' room='%s' (client_version=%u)\n",
            cl->player_id, cl->name,
            cl->room[0] ? cl->room : "(public)", h.client_version);
@@ -257,6 +351,9 @@ static void on_open(net_conn_t* conn, void* user) {
     cl->conn       = conn;
     cl->player_id  = ++s->next_player_id;
     cl->handshaked = false;
+    /* No room until HELLO. -1 means 'unattached' so on_close knows not
+     * to release a room ref that was never acquired. */
+    cl->room_idx   = -1;
     net_conn_set_user(conn, cl);
     printf("[server] open: player_id=%u (slot %ld)\n",
            cl->player_id, (long)(cl - s->clients));
@@ -298,19 +395,14 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
             if (hdr.version != MSG_PLAYER_CMD_VERSION) break;
             msg_player_cmd_t cmd;
             if (proto_read_player_cmd(payload, hdr.length, &cmd) != 0) break;
-            /* Find the world for the claimed body. Trust-the-client
-             * model: no anti-cheat here, just resolve + apply. */
-            world_t* w = NULL;
-            for (int j = 0; j < s->world_count; ++j) {
-                world_t* candidate = s->worlds[j];
-                if (candidate && candidate->body &&
-                    (uint32_t)candidate->body->id == cmd.body_id) {
-                    w = candidate; break;
-                }
-            }
+            /* Resolve the world inside the sender's room. World-per-
+             * room isolation means edits never bleed across rooms even
+             * for the same body id. */
+            world_t* w = client_world_for_body(s, cl, cmd.body_id);
             if (!w) {
-                fprintf(stderr, "[server] PLAYER_CMD unknown body=%u from player_id=%u\n",
-                        cmd.body_id, cl->player_id);
+                fprintf(stderr, "[server] PLAYER_CMD unknown body=%u in room='%s' from player_id=%u\n",
+                        cmd.body_id, cl->room[0] ? cl->room : "(public)",
+                        cl->player_id);
                 break;
             }
             /* PLACE = whatever block_type the client sent.
@@ -318,17 +410,18 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
             block_t target = (cmd.cmd_kind == PLAYER_CMD_BREAK)
                 ? BLOCK_AIR : (block_t)cmd.block_type;
             world_set(w, (int)cmd.tile_idx, (int)cmd.depth, target);
-            /* Persist immediately. world_set marks the edited tile +
-             * neighbours dirty (for the renderer's remesh seam logic),
-             * but only the EDITED tile's column actually changed —
-             * saving via the dirty bitmap would also persist 6-7
-             * unchanged neighbour columns each edit. Skip the wasted
-             * disk + write only the tile we touched. */
-            saves_write_tile(w, s->cfg.seed, (int)cmd.tile_idx);
+            /* Persist immediately under the room's save path. world_set
+             * marks the edited tile + neighbours dirty (for the
+             * renderer's remesh seam logic), but only the EDITED tile's
+             * column actually changed — saving via the dirty bitmap
+             * would also persist 6-7 unchanged neighbour columns each
+             * edit. Skip the wasted disk + write only the tile we
+             * touched. */
+            saves_write_tile(w, cl->room, s->cfg.seed, (int)cmd.tile_idx);
 
-            /* Broadcast as a single-entry CHUNK_DIFF to everyone,
-             * including the sender (idempotent — they already applied
-             * locally). */
+            /* Broadcast as a single-entry CHUNK_DIFF to same-room peers
+             * (including the sender — idempotent since they already
+             * applied locally). */
             msg_chunk_diff_t diff = { 0 };
             diff.body_id    = cmd.body_id;
             diff.edit_count = 1;
@@ -339,12 +432,6 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
                         + MSG_CHUNK_DIFF_ENTRY_SIZE];
             size_t n = proto_write_chunk_diff(buf, sizeof buf, &diff);
             if (n > 0) {
-                /* Room-scoped: edits only propagate to same-room peers.
-                 * NB: server still applies the edit to its single
-                 * shared world copy — different rooms see each
-                 * other's terrain changes indirectly when they walk
-                 * to the same area. World-per-room separation is a
-                 * follow-up. */
                 for (int j = 0; j < SERVER_MAX_CLIENTS; ++j) {
                     const server_client_t* peer = &s->clients[j];
                     if (!peer->conn) continue;
@@ -448,6 +535,12 @@ static void on_close(net_conn_t* conn, net_close_reason_t reason, void* user) {
     printf("[server] close: player_id=%u name=%s (reason=%d)\n",
            cl->player_id, cl->name[0] ? cl->name : "(unnamed)", (int)reason);
     fflush(stdout);
+    /* Release the room ref. Private rooms with zero refs get freed
+     * to reclaim ~25 MB of cloned world data; the public room sticks. */
+    if (cl->room_idx >= 0) {
+        room_release(s, cl->room_idx);
+        cl->room_idx = -1;
+    }
     cl->conn       = NULL;
     cl->player_id  = 0;
     cl->handshaked = false;
@@ -478,20 +571,19 @@ bool server_init(server_t* s, const server_config_t* cfg) {
         fprintf(stderr, "[server] planet_get(BODY_TENEBRIS) returned NULL\n");
         return false;
     }
-    /* World setup runs in three phases per body:
+    /* Baseline worlds are the immutable procgen output. We never load
+     * saves onto them and never mutate them post-init — room clones
+     * own all the room-specific state (saves overlay, chunk edits).
+     * Building baselines is two phases per body:
      *   1. world_create + world_stream_gen — procgen fills tiles.
      *      world_set is called during gen, so every gen-touched tile
      *      is in world->dirty.
-     *   2. saves_load_world — overlays any persisted edits. Bypasses
-     *      world_set so it doesn't add to dirty.
-     *   3. Clear dirty bits so the "post-boot baseline" is clean.
-     *      Subsequent edits flip dirty bits we actually want flushed. */
+     *   2. Clear dirty bits so clones start clean. */
     world_t* main_world = world_create(main_body,
                                          planet_subdivisions_for_radius(main_body->radius_m));
     while (!world_gen_complete(main_world)) {
         world_stream_gen(main_world, main_world->tile_count);
     }
-    saves_load_world(main_world, s->cfg.seed);
     for (int t = 0; t < main_world->tile_count; ++t)
         world_tile_clear_dirty(main_world, t);
     s->worlds[s->world_count++] = main_world;
@@ -502,13 +594,35 @@ bool server_init(server_t* s, const server_config_t* cfg) {
         if (!b) continue;
         world_t* w = world_create(b, planet_subdivisions_for_radius(b->radius_m));
         while (!world_gen_complete(w)) world_stream_gen(w, w->tile_count);
-        saves_load_world(w, s->cfg.seed);
         for (int t = 0; t < w->tile_count; ++t)
             world_tile_clear_dirty(w, t);
         s->worlds[s->world_count++] = w;
     }
 
-    printf("[server] init: %d worlds, tick_hz=%.1f, port=%d, saves=%s, seed=%llu\n",
+    /* Mark every client slot as unattached to a room (-1 sentinel).
+     * room_idx is set by handle_hello once a slot exists. */
+    for (int i = 0; i < SERVER_MAX_CLIENTS; ++i) s->clients[i].room_idx = -1;
+
+    /* Public room lives at rooms[0]. Acquire it now so it's hot for the
+     * first joiner and so on-disk public-room saves overlay onto its
+     * world clones at boot rather than at first-join. */
+    int public_idx = room_acquire(s, "");
+    if (public_idx != 0) {
+        /* room_acquire returns 0 for the first acquire of an empty
+         * code, which is what we want. If somehow not, the layout
+         * assumption is broken and we should bail. */
+        fprintf(stderr, "[server] expected public room at slot 0, got %d\n",
+                public_idx);
+        return false;
+    }
+    /* Keep the public ref alive so the room never auto-frees on
+     * ref_count==0. room_release already special-cases idx==0 to keep
+     * it allocated, but we still want the ref count to reflect "the
+     * server itself holds a handle" so initial state isn't 0. */
+    /* (No-op: room_acquire already incremented ref_count to 1.) */
+
+    printf("[server] init: %d baseline worlds, public room ready, "
+           "tick_hz=%.1f, port=%d, saves=%s, seed=%llu\n",
            s->world_count, s->cfg.tick_hz, s->cfg.port,
            s->cfg.saves_dir ? s->cfg.saves_dir : "(none)",
            (unsigned long long)s->cfg.seed);
@@ -657,6 +771,15 @@ void server_shutdown(server_t* s) {
     if (s->listener) {
         net_close_listener(s->listener);
         s->listener = NULL;
+    }
+    /* Free every room (clones included) before the baselines. The
+     * order matters: clones reference no baseline memory, but freeing
+     * baselines first would invalidate any debug iteration we'd do
+     * across rooms during shutdown. */
+    for (int i = 0; i < SERVER_MAX_ROOMS; ++i) {
+        if (!s->rooms[i].in_use) continue;
+        room_free_worlds(&s->rooms[i]);
+        memset(&s->rooms[i], 0, sizeof s->rooms[i]);
     }
     for (int i = 0; i < s->world_count; ++i) {
         world_destroy(s->worlds[i]);

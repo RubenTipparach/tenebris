@@ -16,10 +16,25 @@
 
 #define SERVER_MAX_BODIES 32
 #define SERVER_MAX_CLIENTS 16
+#define SERVER_MAX_ROOMS  8
 
 #define SERVER_NAME_MAX  31
 #define SERVER_TOKEN_LEN 32
 #define SERVER_ROOM_LEN  8
+
+/* Per-room world isolation. Each room gets its own copies of every
+ * world (cloned from the procgen baseline + any persisted edits for
+ * that specific room). Empty `code` slot = unused. Public room lives
+ * at rooms[0] with code == "" and is allocated at server_init. Private
+ * rooms get allocated on first join and freed when ref_count drops
+ * to zero (keeps memory bounded). */
+typedef struct {
+    char     code[SERVER_ROOM_LEN + 1];
+    world_t* worlds[SERVER_MAX_BODIES];
+    int      world_count;
+    int      ref_count;       /* connected clients in this room */
+    bool     in_use;
+} server_room_t;
 
 typedef struct {
     net_conn_t* conn;          /* NULL slot = free */
@@ -28,10 +43,11 @@ typedef struct {
     bool        has_state;     /* received at least one PLAYER_STATE */
     char        token[SERVER_TOKEN_LEN + 1];
     char        name [SERVER_NAME_MAX  + 1];
-    /* Room code = visibility group. Empty string = public room.
-     * Snapshots / chunk diffs / player-info fan-outs only reach
-     * clients with the same room string. */
+    /* Room code = visibility group. Empty string = public room. */
     char        room [SERVER_ROOM_LEN  + 1];
+    /* Resolved room index in server.rooms[]; -1 when none. Set by
+     * the HELLO handler after acquiring the matching room slot. */
+    int         room_idx;
     uint32_t    body_id;
     double      pos_x, pos_y, pos_z;
     float       yaw, pitch;
@@ -52,8 +68,16 @@ typedef struct {
 
 typedef struct {
     server_config_t cfg;
+    /* Procgen baseline. Cloned per-room on demand; never mutated
+     * after server_init, so rooms share its terrain without locking.
+     * Same shape (count + ordering) as before the per-room refactor. */
     world_t*  worlds[SERVER_MAX_BODIES];
     int       world_count;
+
+    /* Active rooms. rooms[0] is the public room (code == ""), always
+     * allocated. Private rooms occupy 1..MAX_ROOMS-1 lazily. */
+    server_room_t    rooms[SERVER_MAX_ROOMS];
+
     uint64_t  tick;
     double    accum_seconds;
     bool      shutdown_requested;

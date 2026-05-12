@@ -75,36 +75,45 @@ void saves_shutdown(void) {
     G_saves_dir = NULL;
 }
 
-static void body_dir(char* out, size_t cap, uint64_t seed, uint32_t body_id) {
-    snprintf(out, cap, "%s/world-%llx/body-%u",
-             G_saves_dir, (unsigned long long)seed, (unsigned)body_id);
+/* Map an empty / NULL room code to the on-disk placeholder for the
+ * public room so the path is always well-formed. */
+static const char* room_dir_name(const char* room) {
+    return (room && *room) ? room : "__public__";
 }
 
-static void tile_path(char* out, size_t cap, uint64_t seed,
-                        uint32_t body_id, int tile_idx) {
-    snprintf(out, cap, "%s/world-%llx/body-%u/%d.col",
-             G_saves_dir, (unsigned long long)seed,
+static void body_dir(char* out, size_t cap, const char* room,
+                       uint64_t seed, uint32_t body_id) {
+    snprintf(out, cap, "%s/rooms/%s/world-%llx/body-%u",
+             G_saves_dir, room_dir_name(room),
+             (unsigned long long)seed, (unsigned)body_id);
+}
+
+static void tile_path(char* out, size_t cap, const char* room,
+                        uint64_t seed, uint32_t body_id, int tile_idx) {
+    snprintf(out, cap, "%s/rooms/%s/world-%llx/body-%u/%d.col",
+             G_saves_dir, room_dir_name(room),
+             (unsigned long long)seed,
              (unsigned)body_id, tile_idx);
 }
 
-bool saves_write_tile(world_t* w, uint64_t seed, int tile_idx) {
+bool saves_write_tile(world_t* w, const char* room, uint64_t seed, int tile_idx) {
     if (!G_saves_dir || !w || !w->body) return false;
     if (tile_idx < 0 || tile_idx >= w->tile_count) return false;
     char dir[512];
-    body_dir(dir, sizeof dir, seed, (uint32_t)w->body->id);
+    body_dir(dir, sizeof dir, room, seed, (uint32_t)w->body->id);
     if (!mkdir_p(dir)) return false;
     char path[512];
-    tile_path(path, sizeof path, seed, (uint32_t)w->body->id, tile_idx);
+    tile_path(path, sizeof path, room, seed, (uint32_t)w->body->id, tile_idx);
     const uint8_t* col = &w->blocks[(size_t)tile_idx * WORLD_MAX_DEPTH];
     return write_atomic(path, col, WORLD_MAX_DEPTH);
 }
 
-int saves_flush_world(world_t* w, uint64_t seed) {
+int saves_flush_world(world_t* w, const char* room, uint64_t seed) {
     if (!G_saves_dir || !w) return 0;
     int written = 0;
     for (int tile = 0; tile < w->tile_count; ++tile) {
         if (!world_tile_dirty(w, tile)) continue;
-        if (saves_write_tile(w, seed, tile)) {
+        if (saves_write_tile(w, room, seed, tile)) {
             world_tile_clear_dirty(w, tile);
             ++written;
         }
@@ -112,10 +121,10 @@ int saves_flush_world(world_t* w, uint64_t seed) {
     return written;
 }
 
-int saves_load_world(world_t* w, uint64_t seed) {
+int saves_load_world(world_t* w, const char* room, uint64_t seed) {
     if (!G_saves_dir || !w || !w->body) return 0;
     char dir[512];
-    body_dir(dir, sizeof dir, seed, (uint32_t)w->body->id);
+    body_dir(dir, sizeof dir, room, seed, (uint32_t)w->body->id);
     DIR* d = opendir(dir);
     if (!d) return 0;     /* no saves yet — silent skip */
     int loaded = 0;

@@ -60,6 +60,12 @@ typedef struct world_s {
 world_t* world_create(const body_config_t* body, int subdivisions);
 void     world_destroy(world_t* w);
 
+/* Deep-copy clone. Shares the goldberg grid (read-only) with the
+ * source; the block + dirty arrays are freshly allocated. Used by
+ * the server to fan out a procgen baseline into per-room world
+ * copies without paying for worldgen each time. */
+world_t* world_clone(const world_t* src);
+
 /* Generate terrain for up to `max_tiles` tiles of the pending pool.
  * Call each frame until world_gen_complete returns true. */
 void     world_stream_gen(world_t* w, int max_tiles);

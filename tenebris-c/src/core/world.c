@@ -1,4 +1,5 @@
 #include "core/world.h"
+#include "core/planet.h"
 #include "core/planet_gen.h"
 #include <stdlib.h>
 #include <string.h>
@@ -28,6 +29,24 @@ void world_destroy(world_t* w) {
     free(w->blocks);
     free(w->dirty);
     free(w);
+}
+
+world_t* world_clone(const world_t* src) {
+    if (!src || !src->body) return NULL;
+    /* Re-derive subdivisions from the body so we can build a fresh
+     * grid for the clone (the grid is owned per-world and would
+     * double-free if shared with the source). */
+    int subs = planet_subdivisions_for_radius(src->body->radius_m);
+    world_t* w = world_create(src->body, subs);
+    if (!w) return NULL;
+    /* The freshly-created world has empty blocks (calloc'd). Copy the
+     * source's filled columns straight over — that's the procgen-
+     * plus-edits state we want the clone to inherit. */
+    memcpy(w->blocks, src->blocks, (size_t)(w->tile_count * WORLD_MAX_DEPTH));
+    /* Mark gen as complete so callers don't re-run world_stream_gen. */
+    w->gen_cursor = w->tile_count;
+    /* Dirty bits start clean — the clone is a snapshot. */
+    return w;
 }
 
 /* ----------------------------------------------------------------------- */
