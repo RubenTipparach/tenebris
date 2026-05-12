@@ -7,6 +7,7 @@
 #include "sokol_app.h"
 #include "sokol_gl.h"
 #include "sokol_log.h"
+#include "sokol_time.h"
 #include "sokol_debugtext.h"
 
 #include <stdio.h>
@@ -108,7 +109,14 @@ static struct {
     menu_button_t btn_profile[PROFILE_MAX];
     /* MP submenu buttons. */
     menu_button_t btn_self_host;
+    menu_button_t btn_join;
     menu_button_t btn_cloud_host;
+
+    /* In-game text input. Active when state == GAME_MP_JOIN_INPUT
+     * (and any future text-input flows we route through it). */
+    char input_buf[32];
+    int  input_len;
+    double input_cursor_blink_start;
 
     float mouse_x, mouse_y;
 
@@ -187,24 +195,48 @@ static void layout_main(float w, float h) {
     hide_button(&M.btn_new_profile);
     for (int i = 0; i < PROFILE_MAX; ++i) hide_button(&M.btn_profile[i]);
     hide_button(&M.btn_self_host);
+    hide_button(&M.btn_join);
     hide_button(&M.btn_cloud_host);
 }
 
 static void layout_mp_submenu(float w, float h) {
     float cx = w * 0.5f;
-    float cy = h * 0.5f;
+    /* Three stacked buttons: SELF HOST / JOIN / CLOUD HOSTED. */
+    float total_h = 3.0f * MAIN_BTN_H + 2.0f * MAIN_BTN_GAP;
+    float y0 = (h - total_h) * 0.5f;
     set_button(&M.btn_self_host,
-                 cx - MAIN_BTN_W * 0.5f,
-                 cy - MAIN_BTN_H - MAIN_BTN_GAP * 0.5f,
+                 cx - MAIN_BTN_W * 0.5f, y0,
                  MAIN_BTN_W, MAIN_BTN_H, "SELF HOST");
+    set_button(&M.btn_join,
+                 cx - MAIN_BTN_W * 0.5f,
+                 y0 + MAIN_BTN_H + MAIN_BTN_GAP,
+                 MAIN_BTN_W, MAIN_BTN_H, "JOIN");
     set_button(&M.btn_cloud_host,
                  cx - MAIN_BTN_W * 0.5f,
-                 cy + MAIN_BTN_GAP * 0.5f,
+                 y0 + 2.0f * (MAIN_BTN_H + MAIN_BTN_GAP),
                  MAIN_BTN_W, MAIN_BTN_H, "CLOUD HOSTED");
     set_button(&M.btn_back,
                  cx - 120.0f, h * 0.5f + 220.0f, 240.0f, LIST_BTN_H, "BACK");
     hide_button(&M.btn_sp);
     hide_button(&M.btn_mp);
+    hide_button(&M.btn_active_profile);
+    hide_button(&M.btn_new_world);
+    for (int i = 0; i < PERSISTENCE_MAX_WORLDS; ++i) hide_button(&M.btn_world[i]);
+    hide_button(&M.btn_new_profile);
+    for (int i = 0; i < PROFILE_MAX; ++i) hide_button(&M.btn_profile[i]);
+}
+
+static void layout_join_input(float w, float h) {
+    /* Just a BACK button — the input itself isn't a button, it's a
+     * drawn box with a typed buffer rendered in menu_draw. */
+    set_button(&M.btn_back,
+                 w * 0.5f - 120.0f, h * 0.5f + 220.0f, 240.0f, LIST_BTN_H, "BACK");
+    hide_button(&M.btn_sp);
+    hide_button(&M.btn_mp);
+    hide_button(&M.btn_self_host);
+    hide_button(&M.btn_join);
+    hide_button(&M.btn_join);
+    hide_button(&M.btn_cloud_host);
     hide_button(&M.btn_active_profile);
     hide_button(&M.btn_new_world);
     for (int i = 0; i < PERSISTENCE_MAX_WORLDS; ++i) hide_button(&M.btn_world[i]);
@@ -246,6 +278,7 @@ static void layout_world_list(float w, float h) {
     hide_button(&M.btn_new_profile);
     for (int i = 0; i < PROFILE_MAX; ++i) hide_button(&M.btn_profile[i]);
     hide_button(&M.btn_self_host);
+    hide_button(&M.btn_join);
     hide_button(&M.btn_cloud_host);
 }
 
@@ -278,6 +311,7 @@ static void layout_profile_select(float w, float h) {
     hide_button(&M.btn_new_world);
     for (int i = 0; i < PERSISTENCE_MAX_WORLDS; ++i) hide_button(&M.btn_world[i]);
     hide_button(&M.btn_self_host);
+    hide_button(&M.btn_join);
     hide_button(&M.btn_cloud_host);
 }
 
@@ -292,6 +326,8 @@ static void layout(float w, float h) {
             layout_world_list(w, h); break;
         case GAME_MP_SUBMENU:
             layout_mp_submenu(w, h); break;
+        case GAME_MP_JOIN_INPUT:
+            layout_join_input(w, h); break;
         default:
             break;
     }
@@ -396,6 +432,7 @@ void menu_draw(int screen_w, int screen_h) {
     draw_button(&M.btn_sp);
     draw_button(&M.btn_mp);
     draw_button(&M.btn_self_host);
+    draw_button(&M.btn_join);
     draw_button(&M.btn_cloud_host);
     draw_button(&M.btn_active_profile);
     draw_button(&M.btn_new_profile);
@@ -407,6 +444,32 @@ void menu_draw(int screen_w, int screen_h) {
     if (M.state == GAME_MP_URL_PROMPT) {
         quad(w * 0.5f - 200.0f, h * 0.5f + 160.0f, 400.0f, 40.0f,
              0.20f, 0.20f, 0.22f, 0.90f);
+    }
+
+    /* In-game text-input box for JOIN flow. Real drawn rect, blinking
+     * cursor, all driven by SAPP CHAR / KEY_DOWN events. No browser
+     * prompt — per CLAUDE.md the canvas owns every input panel. */
+    if (M.state == GAME_MP_JOIN_INPUT) {
+        const float box_w = 320.0f;
+        const float box_h = 48.0f;
+        const float bx = w * 0.5f - box_w * 0.5f;
+        const float by = h * 0.5f - 24.0f;
+        /* Backdrop */
+        quad(bx, by, box_w, box_h, 0.12f, 0.14f, 0.19f, 0.95f);
+        /* Border */
+        border(bx, by, box_w, box_h, 2.0f, 0.85f, 0.90f, 1.0f, 1.0f);
+        /* Cursor — blink at 2 Hz. Caret position = end of buffer. */
+        double t_since = stm_sec(stm_now()) - M.input_cursor_blink_start;
+        bool blink_on = (((int)(t_since * 2.0)) & 1) == 0;
+        if (blink_on) {
+            const float cell = 8.0f * 3.0f;             /* must match text scale below */
+            const float text_w = cell * (float)M.input_len;
+            const float text_x = w * 0.5f - text_w * 0.5f;
+            const float caret_x = text_x + text_w + 2.0f;
+            const float caret_y = by + 8.0f;
+            quad(caret_x, caret_y, 3.0f, box_h - 16.0f,
+                 1.0f, 0.95f, 0.30f, 1.0f);
+        }
     }
 
     sgl_draw();
@@ -446,9 +509,27 @@ void menu_draw(int screen_w, int screen_h) {
             draw_text_centered("self host = new room you control",
                                  cx, h * 0.5f + 180.0f, 1.0f,
                                  0xa0, 0xb0, 0xc8);
-            draw_text_centered("cloud hosted = join the public world",
+            draw_text_centered("join = enter a friend's 6-char code",
                                  cx, h * 0.5f + 196.0f, 1.0f,
                                  0xa0, 0xb0, 0xc8);
+            draw_text_centered("cloud hosted = join the public world",
+                                 cx, h * 0.5f + 212.0f, 1.0f,
+                                 0xa0, 0xb0, 0xc8);
+            break;
+        case GAME_MP_JOIN_INPUT:
+            draw_text_centered("JOIN ROOM", cx, h * 0.5f - 200.0f, 3.0f,
+                                 0xff, 0xff, 0xff);
+            draw_text_centered("type the 6-char code  -  Enter to join  -  Esc to cancel",
+                                 cx, h * 0.5f + 60.0f, 1.0f,
+                                 0xa0, 0xb0, 0xc8);
+            /* Typed text — scale 3 fills the input rect nicely. */
+            if (M.input_len > 0) {
+                draw_text_centered(M.input_buf, cx, h * 0.5f - 12.0f, 3.0f,
+                                     0xff, 0xff, 0xff);
+            } else {
+                draw_text_centered("(type here)", cx, h * 0.5f - 4.0f, 1.5f,
+                                     0x55, 0x60, 0x70);
+            }
             break;
         default:
             break;
@@ -469,6 +550,11 @@ void menu_draw(int screen_w, int screen_h) {
         float bx = M.btn_self_host.x + M.btn_self_host.w * 0.5f;
         float by = M.btn_self_host.y + (M.btn_self_host.h - 8.0f * 2.0f) * 0.5f;
         draw_text_centered(M.btn_self_host.label, bx, by, 2.0f, 0xff, 0xff, 0xff);
+    }
+    if (M.btn_join.visible) {
+        float bx = M.btn_join.x + M.btn_join.w * 0.5f;
+        float by = M.btn_join.y + (M.btn_join.h - 8.0f * 2.0f) * 0.5f;
+        draw_text_centered(M.btn_join.label, bx, by, 2.0f, 0xff, 0xff, 0xff);
     }
     if (M.btn_cloud_host.visible) {
         float bx = M.btn_cloud_host.x + M.btn_cloud_host.w * 0.5f;
@@ -669,6 +755,17 @@ static void on_click_mp_submenu(float x, float y) {
     if (hit(&M.btn_back, x, y))       { M.state = GAME_MAIN_MENU; return; }
     if (hit(&M.btn_self_host, x, y))  { start_self_host();        return; }
     if (hit(&M.btn_cloud_host, x, y)) { start_cloud_host();       return; }
+    if (hit(&M.btn_join, x, y)) {
+        M.input_buf[0] = 0;
+        M.input_len    = 0;
+        M.input_cursor_blink_start = stm_sec(stm_now());
+        M.state = GAME_MP_JOIN_INPUT;
+        return;
+    }
+}
+
+static void on_click_join_input(float x, float y) {
+    if (hit(&M.btn_back, x, y)) { M.state = GAME_MP_SUBMENU; return; }
 }
 
 static void on_click(float x, float y) {
@@ -677,12 +774,56 @@ static void on_click(float x, float y) {
         case GAME_MAIN_MENU:      on_click_main(x, y);           break;
         case GAME_SP_WORLD_LIST:  on_click_world_list(x, y);     break;
         case GAME_MP_SUBMENU:     on_click_mp_submenu(x, y);     break;
+        case GAME_MP_JOIN_INPUT:  on_click_join_input(x, y);     break;
         default: break;
     }
 }
 
+/* Append a typed character to the input buffer, filtering to the
+ * room-code alphabet (uppercase letters + digits) since that's the
+ * only consumer right now. When we route other inputs through here
+ * we'll pass an alphabet hint per active flow. */
+static void input_append_char(uint32_t ch) {
+    if (M.state != GAME_MP_JOIN_INPUT) return;
+    if (M.input_len >= (int)sizeof M.input_buf - 1) return;
+    /* Uppercase + digit only — keeps the room-code matching the
+     * generator alphabet without making the user worry about case. */
+    if (ch >= 'a' && ch <= 'z') ch -= ('a' - 'A');
+    if (!((ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9'))) return;
+    M.input_buf[M.input_len++] = (char)ch;
+    M.input_buf[M.input_len]   = 0;
+    M.input_cursor_blink_start = stm_sec(stm_now());
+}
+
+static void input_backspace(void) {
+    if (M.state != GAME_MP_JOIN_INPUT) return;
+    if (M.input_len == 0) return;
+    M.input_buf[--M.input_len] = 0;
+    M.input_cursor_blink_start = stm_sec(stm_now());
+}
+
+static void input_submit(void) {
+    if (M.state != GAME_MP_JOIN_INPUT) return;
+    if (M.input_len == 0) return;     /* empty submit = no-op, not "public" */
+    /* Reuse the same path the SELF HOST button took — connect_to_room
+     * stores the code into M.room_code and flips state to IN_GAME_MP. */
+    connect_to_room(M.input_buf);
+}
+
 bool menu_event(const sapp_event* e) {
     if (!menu_is_overlay()) return false;
+    /* Text-input flow gets first crack at keyboard events. */
+    if (M.state == GAME_MP_JOIN_INPUT) {
+        if (e->type == SAPP_EVENTTYPE_CHAR) {
+            input_append_char(e->char_code);
+            return true;
+        }
+        if (e->type == SAPP_EVENTTYPE_KEY_DOWN) {
+            if (e->key_code == SAPP_KEYCODE_ENTER)      { input_submit();    return true; }
+            if (e->key_code == SAPP_KEYCODE_BACKSPACE)  { input_backspace(); return true; }
+            if (e->key_code == SAPP_KEYCODE_ESCAPE)     { M.state = GAME_MP_SUBMENU; return true; }
+        }
+    }
     switch (e->type) {
         case SAPP_EVENTTYPE_MOUSE_MOVE:
             M.mouse_x = e->mouse_x;
