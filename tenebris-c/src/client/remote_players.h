@@ -60,4 +60,16 @@ const remote_player_t* remote_players_get(int i);
  * but before the swapchain composite — see main_web.c for the slot). */
 void remote_players_draw(mat4_t view, mat4_t proj);
 
+/* Queue nameplates as sdtx text above each remote player's head.
+ * Projects each player's pose through view*proj to compute the
+ * on-screen pixel where the name should land. Call AFTER
+ * remote_players_draw, INSIDE the swapchain pass where sdtx is
+ * accumulating text. main_web passes the screen dimensions + a
+ * lookup that maps player_id to a display string (the net_client
+ * name cache). */
+typedef const char* (*remote_players_name_fn)(uint32_t player_id);
+void remote_players_draw_nameplates(mat4_t view, mat4_t proj,
+                                       float screen_w, float screen_h,
+                                       remote_players_name_fn name_fn);
+
 #endif

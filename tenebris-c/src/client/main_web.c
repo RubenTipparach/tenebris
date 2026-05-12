@@ -1044,6 +1044,12 @@ static void frame(void) {
     profiler_draw();
     draw_desync_popup(sapp_widthf(), sapp_heightf());
     draw_players_panel(sapp_widthf(), sapp_heightf());
+    /* Nameplates above remote players. View/proj are still in scope
+     * from the 3D pass earlier in frame(). The lookup goes through
+     * the net_client name cache (populated by PLAYER_INFO + WELCOME). */
+    remote_players_draw_nameplates(view, proj,
+                                      sapp_widthf(), sapp_heightf(),
+                                      net_client_name_for_id);
     sdtx_draw();
     hotbar_ui_draw(&G.player.inventory);
     mobile_ui_draw();
