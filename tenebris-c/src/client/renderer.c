@@ -540,16 +540,10 @@ void renderer_init(void) {
                 .buffers[0].stride = sizeof(hex_vertex_t),
             },
             .index_type = SG_INDEXTYPE_UINT32,
-            .depth = { .write_enabled = false, .compare = SG_COMPAREFUNC_LESS_EQUAL },
+            .depth = { .write_enabled = true, .compare = SG_COMPAREFUNC_LESS_EQUAL },
             .cull_mode = SG_CULLMODE_NONE,
             .face_winding = SG_FACEWINDING_CCW,
-            .colors[0].blend = {
-                .enabled = true,
-                .src_factor_rgb   = SG_BLENDFACTOR_SRC_ALPHA,
-                .dst_factor_rgb   = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
-                .src_factor_alpha = SG_BLENDFACTOR_ONE,
-                .dst_factor_alpha = SG_BLENDFACTOR_ZERO,
-            },
+            .colors[0].blend = { .enabled = false },
             .label = "water-mobile-pipeline",
         });
     }
@@ -1480,12 +1474,38 @@ void renderer_compose_to_swapchain(mat4_t view, mat4_t proj) {
         .label = "swapchain-composite",
     });
 
-    /* Perf mode: plain texture blit, no underwater post-process. The
-     * water_mobile shader does its own alpha-blended deep_color tint,
-     * so dropping the screen-space Beer-Lambert here doesn't leave
-     * the underwater view colour-flat. */
+    /* cam_under is voxel-driven: the camera position is resolved to
+     * its containing block and we only flag the camera as
+     * "underwater" when that block is actually BLOCK_WATER. A player
+     * who dug a cave below sea level on a land tile sits in an AIR
+     * cell, so the composite skips fog for them - caves stay crisp.
+     * Shared between the desktop and perf-mode composite paths.
+     *
+     * Hoisted above the perf-mode branch so both pipelines reuse
+     * the same flag. */
+    const water_config_t* W_cu = config_water();
+    bool cam_under_shared = false;
+    if (R.active_body_idx >= 0) {
+        chunked_body_t* ab = &R.bodies[R.active_body_idx];
+        vec3_t cam_local = vec3_sub(R.env.camera_world, ab->world_pos);
+        block_t cam_blk  = world_block_at_pos(ab->world, cam_local, -1);
+        cam_under_shared = (cam_blk == BLOCK_WATER);
+    }
+
+    /* Perf mode: blit the offscreen colour + forward its depth via
+     * gl_FragDepth, then - if the camera is in a water voxel -
+     * apply a screen-wide Beer-Lambert fog using view-distance
+     * attenuation. No per-pixel altitude reconstruction or wet
+     * mask; the desktop composite's fbm-gated path is dropped in
+     * favour of "camera in water = fog everything". */
     if (R_PERF_MODE) {
         sg_apply_pipeline(R.pip_composite_mobile);
+        composite_mobile_fs_params_t fs_m = {
+            .deep_color  = { W_cu->deep_color.x, W_cu->deep_color.y, W_cu->deep_color.z, 0.0f },
+            .absorption  = { W_cu->absorption.x, W_cu->absorption.y, W_cu->absorption.z, 0.0f },
+            .fog_params  = { 0.3f, 20000.0f, cam_under_shared ? 1.0f : 0.0f, 0.0f },
+        };
+        sg_apply_uniforms(UB_composite_mobile_fs_params, &SG_RANGE(fs_m));
         sg_apply_bindings(&(sg_bindings){
             .views[VIEW_scene_color_mobile]        = R.offscreen_color_tex,
             .views[VIEW_scene_depth_mobile]        = R.offscreen_depth_tex,
@@ -1518,34 +1538,19 @@ void renderer_compose_to_swapchain(mat4_t view, mat4_t proj) {
     };
     sg_apply_uniforms(UB_composite_vs_params, &SG_RANGE(vs));
 
-    /* Underwater FX uniforms. The body parameters come from the
-     * active body — we mask pixels against ITS sea-level radius,
-     * so a player standing on Tenebris but looking at distant
-     * Sequoia doesn't fog Sequoia just because Tenebris's water
-     * is somewhere off-screen. The cap radius is derived the same
-     * way hex_mesher.c places the actual cap, so the boolean
-     * "below cap" test stays consistent with what the player sees.
-     *
-     * cam_under is voxel-driven: the camera position is resolved to
-     * its containing block and we only flag the camera as
-     * "underwater" when that block is actually BLOCK_WATER. A player
-     * who dug a cave below sea level on a land tile sits in an AIR
-     * cell, so the composite skips all water-fog/distortion for
-     * them — caves stay crisp. The screen-space pixel-altitude check
-     * inside the shader still applies, so a half-submerged camera
-     * (in water at the eyes, dry at the chin) still gates fog by
-     * pixel altitude. */
-    const water_config_t* W = config_water();
+    /* Body parameters for the desktop composite's wet-mask gate
+     * (cam_under already computed up top, shared with the perf
+     * path). The cap radius is derived the same way hex_mesher.c
+     * places the actual cap, so the "below cap" smoothstep stays
+     * consistent with what the player sees. */
+    const water_config_t* W = W_cu;
     vec3_t  body_center  = (vec3_t){ 0, 0, 0 };
     float   sea_radius   = 0.0f;
-    bool    cam_under    = false;
+    bool    cam_under    = cam_under_shared;
     if (R.active_body_idx >= 0) {
         chunked_body_t* ab = &R.bodies[R.active_body_idx];
         body_center = ab->world_pos;
         sea_radius  = ab->radius_m + W->height_offset_m - W->depth_offset_m;
-        vec3_t cam_local = vec3_sub(R.env.camera_world, body_center);
-        block_t cam_blk  = world_block_at_pos(ab->world, cam_local, -1);
-        cam_under = (cam_blk == BLOCK_WATER);
     }
 
     composite_fs_params_t fs = {
@@ -1942,19 +1947,13 @@ static void body_draw_water(chunked_body_t* body, mat4_t vp,
             .u_sun_tint       = { W->sun_tint.x, W->sun_tint.y, W->sun_tint.z },
             .u_sky_horizon    = { W->sky_horizon_color.x, W->sky_horizon_color.y, W->sky_horizon_color.z },
             .u_sky_zenith     = { W->sky_zenith_color.x, W->sky_zenith_color.y, W->sky_zenith_color.z },
+            .u_sky_horizon_strength = W->sky_horizon_strength,
+            .u_ripple_scale   = W->ripple_scale,
             .u_ripple_speed   = W->ripple_speed,
             .u_wave_steepness = W->wave_steepness,
             .u_night_floor    = L->night_ambient_floor,
             .u_torch_color    = { L->torch_color.x, L->torch_color.y, L->torch_color.z,
                                   L->torch_intensity },
-            /* Beer-Lambert depth fog. absorption + near/far are the
-             * same values the desktop water shader uses; mobile just
-             * uses them to drive an alpha-fade instead of a colour
-             * mix (the seabed comes through the alpha-blend from the
-             * composite_mobile pass underneath). */
-            .u_absorption     = { W->absorption.x, W->absorption.y, W->absorption.z },
-            .u_near           = 0.3f,
-            .u_far            = 20000.0f,
         };
         sg_apply_uniforms(UB_fs_params_mobile, &SG_RANGE(fs_mobile));
 
@@ -1966,13 +1965,12 @@ static void body_draw_water(chunked_body_t* body, mat4_t vp,
             sg_apply_bindings(&(sg_bindings){
                 .vertex_buffers[0] = c->water_vbuf,
                 .index_buffer      = c->water_ibuf,
-                /* Offscreen depth tex - same image composite_mobile
-                 * just blitted; sampled here for the depth-fog
-                 * thickness. No colour sample (mobile path doesn't
-                 * refract); the seabed comes through the alpha blend
-                 * with the composite underneath. */
-                .views[VIEW_water_mobile_scene_depth]       = R.offscreen_depth_tex,
-                .samplers[SMP_water_mobile_scene_depth_smp] = R.smp_offscreen_depth,
+                /* No FBO bindings - the mobile surface shader uses a
+                 * flat u_deep_color body (no refraction, no thickness
+                 * fog). composite_mobile already forwarded opaque
+                 * scene depth into the swapchain depth, so the
+                 * pipeline's LESS_EQUAL test handles terrain
+                 * occlusion. */
             });
             sg_draw(0, c->last_uploaded_water_idx_count, 1);
             R.tris += (size_t)c->last_uploaded_water_idx_count / 3;
