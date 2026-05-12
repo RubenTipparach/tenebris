@@ -318,6 +318,13 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
             block_t target = (cmd.cmd_kind == PLAYER_CMD_BREAK)
                 ? BLOCK_AIR : (block_t)cmd.block_type;
             world_set(w, (int)cmd.tile_idx, (int)cmd.depth, target);
+            /* Persist immediately. world_set marks the edited tile +
+             * neighbours dirty (for the renderer's remesh seam logic),
+             * but only the EDITED tile's column actually changed —
+             * saving via the dirty bitmap would also persist 6-7
+             * unchanged neighbour columns each edit. Skip the wasted
+             * disk + write only the tile we touched. */
+            saves_write_tile(w, s->cfg.seed, (int)cmd.tile_idx);
 
             /* Broadcast as a single-entry CHUNK_DIFF to everyone,
              * including the sender (idempotent — they already applied
@@ -593,15 +600,11 @@ void server_tick(server_t* s) {
      * landing in a follow-up. */
     if ((s->tick % 3) == 0) broadcast_snapshot(s);
 
-    /* M6 periodic flush: every 30 s walk dirty tiles to disk and
-     * save the current pose of every connected profile. Cheap when
-     * the world is quiet — only dirty tiles actually open files. */
+    /* M6 periodic flush: chunk edits are saved immediately on
+     * PLAYER_CMD now, so the only thing this loop persists is
+     * player poses. Runs every 30 s. */
     const uint64_t flush_interval = (uint64_t)(s->cfg.tick_hz * 30.0);
     if (flush_interval > 0 && (s->tick % flush_interval) == 0) {
-        int total_tiles = 0;
-        for (int i = 0; i < s->world_count; ++i) {
-            total_tiles += saves_flush_world(s->worlds[i], s->cfg.seed);
-        }
         int saved_poses = 0;
         for (int i = 0; i < SERVER_MAX_CLIENTS; ++i) {
             server_client_t* cl = &s->clients[i];
@@ -613,9 +616,8 @@ void server_tick(server_t* s) {
             };
             if (saves_write_player(cl->token, &pose)) ++saved_poses;
         }
-        if (total_tiles > 0 || saved_poses > 0) {
-            printf("[server] flush: %d tiles, %d player poses\n",
-                   total_tiles, saved_poses);
+        if (saved_poses > 0) {
+            printf("[server] flush: %d player poses\n", saved_poses);
             fflush(stdout);
         }
     }
@@ -635,13 +637,9 @@ void server_shutdown(server_t* s) {
     printf("[server] shutdown after %llu ticks\n",
            (unsigned long long)s->tick);
     fflush(stdout);
-    /* Final flush before tearing down — both block edits and the
-     * pose of every still-connected profile. SIGTERM from Fly on a
-     * redeploy lands here, so this is the last chance to persist. */
-    int final_tiles = 0;
-    for (int i = 0; i < s->world_count; ++i) {
-        final_tiles += saves_flush_world(s->worlds[i], s->cfg.seed);
-    }
+    /* Final flush before tearing down. Block edits already hit disk
+     * the moment they happened, so only player poses need a last
+     * write here. SIGTERM from Fly on redeploy lands here. */
     int final_poses = 0;
     for (int i = 0; i < SERVER_MAX_CLIENTS; ++i) {
         server_client_t* cl = &s->clients[i];
@@ -653,8 +651,7 @@ void server_shutdown(server_t* s) {
         };
         if (saves_write_player(cl->token, &pose)) ++final_poses;
     }
-    printf("[server] final flush: %d tiles, %d poses\n",
-           final_tiles, final_poses);
+    printf("[server] final flush: %d poses\n", final_poses);
     fflush(stdout);
 
     if (s->listener) {
