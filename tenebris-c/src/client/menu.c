@@ -17,14 +17,13 @@
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 
-/* Prompt for a new SP world name. JS just trims and forwards the
- * raw string; C-side strips storage-format characters (newline,
- * carriage return, colon) — keeping any regex out of the EM_JS body
- * so the C preprocessor doesn't choke on the backslash escapes,
- * which sit outside any string literal here. */
 /* Generate a 6-char room code from a safe alphabet (no ambiguous
  * 0/O, 1/I). 32^6 = ~1 billion combinations, plenty for v1's small
- * concurrent-room count. */
+ * concurrent-room count.
+ *
+ * (Last surviving EM_JS prompt-style helper — every text-input
+ * dialog now uses the in-game text box per CLAUDE.md. This one
+ * doesn't show a UI; it just generates a random string.) */
 EM_JS(char*, menu_js_new_room_code, (void), {
     var A = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
     var b = new Uint8Array(6);
@@ -36,36 +35,8 @@ EM_JS(char*, menu_js_new_room_code, (void), {
     stringToUTF8(code, p, len);
     return p;
 });
-
-/* Prompt for a profile name. Same shape as the world-name prompt —
- * trims, length-clamps, lets C strip control chars. */
-EM_JS(char*, menu_js_prompt_profile_name, (void), {
-    var raw = window.prompt('Pick a name:', '');
-    if (!raw) return 0;
-    var n = raw.trim();
-    if (!n) return 0;
-    if (n.length > 31) n = n.substring(0, 31);
-    var len = lengthBytesUTF8(n) + 1;
-    var p = _malloc(len);
-    stringToUTF8(n, p, len);
-    return p;
-});
-
-EM_JS(char*, menu_js_prompt_world_name, (void), {
-    var raw = window.prompt('Name your world:', 'world-' + Date.now().toString().slice(-4));
-    if (!raw) return 0;
-    var n = raw.trim();
-    if (!n) return 0;
-    if (n.length > 31) n = n.substring(0, 31);
-    var len = lengthBytesUTF8(n) + 1;
-    var p = _malloc(len);
-    stringToUTF8(n, p, len);
-    return p;
-});
 #else
-static char* menu_js_prompt_world_name(void)   { return NULL; }
-static char* menu_js_prompt_profile_name(void) { return NULL; }
-static char* menu_js_new_room_code(void)       {
+static char* menu_js_new_room_code(void) {
     static char fake[7] = "AAAAAA";
     char* out = (char*)malloc(7);
     if (out) memcpy(out, fake, 7);
@@ -142,6 +113,11 @@ static struct {
 /* ------------------------------------------------------------------ */
 /* Hit test + layout                                                    */
 /* ------------------------------------------------------------------ */
+
+/* Forward decl: input-state membership predicate is used by both
+ * menu_draw (early in the file) and menu_event (later). Definition
+ * lives near the input handlers. */
+static bool state_is_input(game_state_t s);
 
 static bool hit(const menu_button_t* b, float x, float y) {
     if (!b->visible) return false;
@@ -327,7 +303,9 @@ static void layout(float w, float h) {
         case GAME_MP_SUBMENU:
             layout_mp_submenu(w, h); break;
         case GAME_MP_JOIN_INPUT:
-            layout_join_input(w, h); break;
+        case GAME_PROFILE_NAME_INPUT:
+        case GAME_SP_NEW_WORLD_INPUT:
+            layout_join_input(w, h); break;     /* same layout: just BACK + box */
         default:
             break;
     }
@@ -449,20 +427,24 @@ void menu_draw(int screen_w, int screen_h) {
     /* In-game text-input box for JOIN flow. Real drawn rect, blinking
      * cursor, all driven by SAPP CHAR / KEY_DOWN events. No browser
      * prompt — per CLAUDE.md the canvas owns every input panel. */
-    if (M.state == GAME_MP_JOIN_INPUT) {
-        const float box_w = 320.0f;
-        const float box_h = 48.0f;
+    if (state_is_input(M.state)) {
+        /* Wider box for the longer name inputs; the room JOIN box
+         * stays the same shape it had. */
+        bool is_long_input = (M.state == GAME_PROFILE_NAME_INPUT
+                              || M.state == GAME_SP_NEW_WORLD_INPUT);
+        const float box_w  = is_long_input ? 480.0f : 320.0f;
+        const float box_h  = 48.0f;
         const float bx = w * 0.5f - box_w * 0.5f;
         const float by = h * 0.5f - 24.0f;
-        /* Backdrop */
+        const float input_text_scale = is_long_input ? 2.0f : 3.0f;
+
         quad(bx, by, box_w, box_h, 0.12f, 0.14f, 0.19f, 0.95f);
-        /* Border */
         border(bx, by, box_w, box_h, 2.0f, 0.85f, 0.90f, 1.0f, 1.0f);
-        /* Cursor — blink at 2 Hz. Caret position = end of buffer. */
+
         double t_since = stm_sec(stm_now()) - M.input_cursor_blink_start;
         bool blink_on = (((int)(t_since * 2.0)) & 1) == 0;
         if (blink_on) {
-            const float cell = 8.0f * 3.0f;             /* must match text scale below */
+            const float cell = 8.0f * input_text_scale;
             const float text_w = cell * (float)M.input_len;
             const float text_x = w * 0.5f - text_w * 0.5f;
             const float caret_x = text_x + text_w + 2.0f;
@@ -517,20 +499,36 @@ void menu_draw(int screen_w, int screen_h) {
                                  0xa0, 0xb0, 0xc8);
             break;
         case GAME_MP_JOIN_INPUT:
-            draw_text_centered("JOIN ROOM", cx, h * 0.5f - 200.0f, 3.0f,
+        case GAME_PROFILE_NAME_INPUT:
+        case GAME_SP_NEW_WORLD_INPUT: {
+            const char* title = "JOIN ROOM";
+            const char* hint  = "type the 6-char code  -  Enter to join  -  Esc to cancel";
+            const char* placeholder = "(type here)";
+            float text_scale = 3.0f;
+            if (M.state == GAME_PROFILE_NAME_INPUT) {
+                title       = "NEW PROFILE";
+                hint        = "type your name  -  Enter to create  -  Esc to cancel";
+                placeholder = "(type your name)";
+                text_scale  = 2.0f;       /* names are longer than codes */
+            } else if (M.state == GAME_SP_NEW_WORLD_INPUT) {
+                title       = "NAME YOUR WORLD";
+                hint        = "type a world name  -  Enter to create  -  Esc to cancel";
+                placeholder = "(type a world name)";
+                text_scale  = 2.0f;
+            }
+            draw_text_centered(title, cx, h * 0.5f - 200.0f, 3.0f,
                                  0xff, 0xff, 0xff);
-            draw_text_centered("type the 6-char code  -  Enter to join  -  Esc to cancel",
-                                 cx, h * 0.5f + 60.0f, 1.0f,
+            draw_text_centered(hint,  cx, h * 0.5f + 60.0f, 1.0f,
                                  0xa0, 0xb0, 0xc8);
-            /* Typed text — scale 3 fills the input rect nicely. */
             if (M.input_len > 0) {
-                draw_text_centered(M.input_buf, cx, h * 0.5f - 12.0f, 3.0f,
-                                     0xff, 0xff, 0xff);
+                draw_text_centered(M.input_buf, cx, h * 0.5f - 12.0f,
+                                     text_scale, 0xff, 0xff, 0xff);
             } else {
-                draw_text_centered("(type here)", cx, h * 0.5f - 4.0f, 1.5f,
+                draw_text_centered(placeholder, cx, h * 0.5f - 4.0f, 1.5f,
                                      0x55, 0x60, 0x70);
             }
             break;
+        }
         default:
             break;
     }
@@ -632,25 +630,13 @@ static void start_sp_for_world(const char* world_name) {
 }
 
 static void start_sp_new_world(void) {
-    char* name = menu_js_prompt_world_name();
-    if (!name) {
-        printf("[menu] new-world cancelled\n");
-        return;     /* stay on world-list screen */
-    }
-    /* Strip storage-format characters that would corrupt our flat
-     * 'tenebris-c:world:<name>' key (newline / CR break the list
-     * enumeration; colon collides with the prefix separator). */
-    char* w = name;
-    for (const char* r = name; *r; ++r) {
-        if (*r == '\n' || *r == '\r' || *r == ':') continue;
-        *w++ = *r;
-    }
-    *w = 0;
-    if (!*name) { free(name); return; }
-    /* If the name collides, we just overwrite — same UX as picking
-     * the existing world from the list. */
-    start_sp_for_world(name);
-    free(name);
+    /* Drops to the in-game text-input flow. submit_world_name routes
+     * the typed name back through start_sp_for_world. The old
+     * window.prompt path is gone per CLAUDE.md. */
+    M.input_buf[0] = 0;
+    M.input_len    = 0;
+    M.input_cursor_blink_start = stm_sec(stm_now());
+    M.state = GAME_SP_NEW_WORLD_INPUT;
 }
 
 /* Hardcoded default server. The browser prompt was annoying for every
@@ -703,20 +689,15 @@ static void enter_main_menu_with(const profile_t* p) {
 }
 
 static void new_profile_flow(void) {
-    char* name = menu_js_prompt_profile_name();
-    if (!name) return;
-    /* Strip storage-format characters before persisting. */
-    char* w = name;
-    for (const char* r = name; *r; ++r) {
-        if (*r == '\n' || *r == '\r' || *r == ':') continue;
-        *w++ = *r;
-    }
-    *w = 0;
-    if (!*name) { free(name); return; }
-
-    profile_t p;
-    if (profile_create(name, &p)) enter_main_menu_with(&p);
-    free(name);
+    /* In-game text input — submit_profile_name calls profile_create
+     * + enter_main_menu_with on Enter. The character filter in
+     * input_accepts_char already drops the storage-format separators
+     * (newline, CR, colon, tab), so the typed buffer is safe to pass
+     * straight to profile_create. */
+    M.input_buf[0] = 0;
+    M.input_len    = 0;
+    M.input_cursor_blink_start = stm_sec(stm_now());
+    M.state = GAME_PROFILE_NAME_INPUT;
 }
 
 static void on_click_profile_select(float x, float y) {
@@ -768,52 +749,100 @@ static void on_click_join_input(float x, float y) {
     if (hit(&M.btn_back, x, y)) { M.state = GAME_MP_SUBMENU; return; }
 }
 
+static void on_click_profile_name_input(float x, float y) {
+    if (hit(&M.btn_back, x, y)) { M.state = GAME_PROFILE_SELECT; return; }
+}
+
+static void on_click_new_world_input(float x, float y) {
+    if (hit(&M.btn_back, x, y)) { M.state = GAME_SP_WORLD_LIST; return; }
+}
+
 static void on_click(float x, float y) {
     switch (M.state) {
         case GAME_PROFILE_SELECT: on_click_profile_select(x, y); break;
         case GAME_MAIN_MENU:      on_click_main(x, y);           break;
         case GAME_SP_WORLD_LIST:  on_click_world_list(x, y);     break;
         case GAME_MP_SUBMENU:     on_click_mp_submenu(x, y);     break;
-        case GAME_MP_JOIN_INPUT:  on_click_join_input(x, y);     break;
+        case GAME_MP_JOIN_INPUT:      on_click_join_input(x, y);          break;
+        case GAME_PROFILE_NAME_INPUT: on_click_profile_name_input(x, y);  break;
+        case GAME_SP_NEW_WORLD_INPUT: on_click_new_world_input(x, y);     break;
         default: break;
     }
 }
 
-/* Append a typed character to the input buffer, filtering to the
- * room-code alphabet (uppercase letters + digits) since that's the
- * only consumer right now. When we route other inputs through here
- * we'll pass an alphabet hint per active flow. */
+static bool state_is_input(game_state_t s) {
+    return s == GAME_MP_JOIN_INPUT
+        || s == GAME_PROFILE_NAME_INPUT
+        || s == GAME_SP_NEW_WORLD_INPUT;
+}
+
+/* Per-input-state: which characters are allowed. JOIN room codes are
+ * uppercase + digit only; profile / world names accept printable
+ * ASCII minus the storage-format separators (newline, CR, colon,
+ * tab) so they can sit in a localStorage key without ambiguity. */
+static bool input_accepts_char(game_state_t s, uint32_t ch) {
+    if (s == GAME_MP_JOIN_INPUT) {
+        if (ch >= 'a' && ch <= 'z') return true;     /* will fold to upper */
+        return (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9');
+    }
+    /* Profile + world names: printable ASCII minus separators. */
+    if (ch < 0x20 || ch > 0x7e) return false;
+    if (ch == ':' || ch == '\t') return false;
+    return true;
+}
+
 static void input_append_char(uint32_t ch) {
-    if (M.state != GAME_MP_JOIN_INPUT) return;
+    if (!state_is_input(M.state)) return;
     if (M.input_len >= (int)sizeof M.input_buf - 1) return;
-    /* Uppercase + digit only — keeps the room-code matching the
-     * generator alphabet without making the user worry about case. */
-    if (ch >= 'a' && ch <= 'z') ch -= ('a' - 'A');
-    if (!((ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9'))) return;
+    if (!input_accepts_char(M.state, ch)) return;
+    /* Room codes auto-uppercased so users don't need to think
+     * about case. */
+    if (M.state == GAME_MP_JOIN_INPUT && ch >= 'a' && ch <= 'z') {
+        ch -= ('a' - 'A');
+    }
     M.input_buf[M.input_len++] = (char)ch;
     M.input_buf[M.input_len]   = 0;
     M.input_cursor_blink_start = stm_sec(stm_now());
 }
 
 static void input_backspace(void) {
-    if (M.state != GAME_MP_JOIN_INPUT) return;
+    if (!state_is_input(M.state)) return;
     if (M.input_len == 0) return;
     M.input_buf[--M.input_len] = 0;
     M.input_cursor_blink_start = stm_sec(stm_now());
 }
 
-static void input_submit(void) {
-    if (M.state != GAME_MP_JOIN_INPUT) return;
-    if (M.input_len == 0) return;     /* empty submit = no-op, not "public" */
-    /* Reuse the same path the SELF HOST button took — connect_to_room
-     * stores the code into M.room_code and flips state to IN_GAME_MP. */
-    connect_to_room(M.input_buf);
+/* Forward declarations for per-input submit handlers. */
+static void enter_main_menu_with(const profile_t* p);
+static void start_sp_for_world(const char* world_name);
+
+static void submit_profile_name(const char* name) {
+    profile_t p;
+    if (!profile_create(name, &p)) return;
+    enter_main_menu_with(&p);
 }
+
+static void submit_world_name(const char* name) {
+    /* Trim any whitespace at the edges. */
+    start_sp_for_world(name);
+}
+
+static void input_submit(void) {
+    if (!state_is_input(M.state)) return;
+    if (M.input_len == 0) return;     /* empty submit = no-op */
+    switch (M.state) {
+        case GAME_MP_JOIN_INPUT:      connect_to_room(M.input_buf);   break;
+        case GAME_PROFILE_NAME_INPUT: submit_profile_name(M.input_buf); break;
+        case GAME_SP_NEW_WORLD_INPUT: submit_world_name(M.input_buf);   break;
+        default: break;
+    }
+}
+
 
 bool menu_event(const sapp_event* e) {
     if (!menu_is_overlay()) return false;
     /* Text-input flow gets first crack at keyboard events. */
-    if (M.state == GAME_MP_JOIN_INPUT) {
+    if (state_is_input(M.state)) {
         if (e->type == SAPP_EVENTTYPE_CHAR) {
             input_append_char(e->char_code);
             return true;
@@ -821,7 +850,17 @@ bool menu_event(const sapp_event* e) {
         if (e->type == SAPP_EVENTTYPE_KEY_DOWN) {
             if (e->key_code == SAPP_KEYCODE_ENTER)      { input_submit();    return true; }
             if (e->key_code == SAPP_KEYCODE_BACKSPACE)  { input_backspace(); return true; }
-            if (e->key_code == SAPP_KEYCODE_ESCAPE)     { M.state = GAME_MP_SUBMENU; return true; }
+            if (e->key_code == SAPP_KEYCODE_ESCAPE) {
+                /* Cancel back to the screen the input was launched
+                 * from — different per input state. */
+                switch (M.state) {
+                    case GAME_MP_JOIN_INPUT:      M.state = GAME_MP_SUBMENU;     break;
+                    case GAME_PROFILE_NAME_INPUT: M.state = GAME_PROFILE_SELECT; break;
+                    case GAME_SP_NEW_WORLD_INPUT: M.state = GAME_SP_WORLD_LIST;  break;
+                    default: break;
+                }
+                return true;
+            }
         }
     }
     switch (e->type) {
@@ -869,9 +908,12 @@ void         menu_force_state(game_state_t s) { M.state = s; }
 
 bool menu_is_overlay(void) {
     return M.state == GAME_PROFILE_SELECT
+        || M.state == GAME_PROFILE_NAME_INPUT
         || M.state == GAME_MAIN_MENU
         || M.state == GAME_SP_WORLD_LIST
+        || M.state == GAME_SP_NEW_WORLD_INPUT
         || M.state == GAME_MP_SUBMENU
+        || M.state == GAME_MP_JOIN_INPUT
         || M.state == GAME_MP_URL_PROMPT;
 }
 

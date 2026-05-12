@@ -19,14 +19,16 @@
  */
 
 typedef enum {
-    GAME_PROFILE_SELECT = 0,   /* boot lands here first */
-    GAME_MAIN_MENU      = 1,
-    GAME_SP_WORLD_LIST  = 2,   /* picking which world to load */
-    GAME_MP_SUBMENU     = 3,   /* self-host / join / cloud-host picker */
-    GAME_MP_JOIN_INPUT  = 4,   /* in-game text input for room code */
-    GAME_MP_URL_PROMPT  = 5,   /* transient — kept for future */
-    GAME_IN_GAME_SP     = 6,
-    GAME_IN_GAME_MP     = 7,
+    GAME_PROFILE_SELECT     = 0,   /* boot lands here first */
+    GAME_PROFILE_NAME_INPUT = 1,   /* typing a new profile name */
+    GAME_MAIN_MENU          = 2,
+    GAME_SP_WORLD_LIST      = 3,   /* picking which world to load */
+    GAME_SP_NEW_WORLD_INPUT = 4,   /* typing a new world name */
+    GAME_MP_SUBMENU         = 5,   /* self-host / join / cloud-host picker */
+    GAME_MP_JOIN_INPUT      = 6,   /* in-game text input for room code */
+    GAME_MP_URL_PROMPT      = 7,   /* transient — kept for future */
+    GAME_IN_GAME_SP         = 8,
+    GAME_IN_GAME_MP         = 9,
 } game_state_t;
 
 /* The 6-char room code shown in the HUD while in IN_GAME_MP. Empty
