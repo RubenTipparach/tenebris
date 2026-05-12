@@ -15,9 +15,9 @@
  * header exposes <name>_shader_desc(), <name>_<block>_t structs,
  * ATTR_<name>_<attr>, and UB_<block> slot constants. */
 #include "water.glsl.h"
-#include "water_lite.glsl.h"
+#include "water_mobile.glsl.h"
 #include "composite.glsl.h"
-#include "composite_lite.glsl.h"
+#include "composite_mobile.glsl.h"
 #include "starfield.glsl.h"
 #include "atmosphere.glsl.h"
 #include "hex.glsl.h"
@@ -148,10 +148,10 @@ typedef struct {
 
 static struct {
     sg_pipeline pip_hex;
-    sg_pipeline pip_water;     /* translucent, wave-animated cap layer */
-    sg_pipeline pip_water_lite; /* mobile-mode water: alpha-blended, no FBO sample */
-    sg_pipeline pip_composite; /* fullscreen blit of offscreen colour to swapchain */
-    sg_pipeline pip_composite_lite; /* mobile-mode composite: plain blit, no post-process */
+    sg_pipeline pip_water;       /* translucent, wave-animated cap layer */
+    sg_pipeline pip_water_mobile;/* mobile-mode water: alpha-blended, no FBO sample */
+    sg_pipeline pip_composite;   /* fullscreen blit of offscreen colour to swapchain */
+    sg_pipeline pip_composite_mobile; /* mobile-mode composite: plain blit, no post-process */
     sg_sampler  smp_offscreen;       /* linear-clamp sampler for offscreen colour sampling */
     sg_sampler  smp_offscreen_depth; /* nearest-clamp sampler for offscreen depth (WebGL2 disallows linear-filtered depth) */
     sg_pipeline pip_starfield;     /* fullscreen stars + nebula              */
@@ -243,12 +243,15 @@ static bool R_WATER_VISIBLE = true;
 static bool R_SKYBOX_VISIBLE = true;
 
 /* Perf mode (mobile / low-power). When true the renderer:
- *   - draws the water cap with the stripped water_lite shader: no
- *     screen-space refraction, no fbm-noise normal perturbation, no
- *     Snell-window backface branch. Alpha-blended on top of the
- *     swapchain composite instead.
- *   - blits the offscreen scene with composite_lite: plain texture
- *     copy, no Beer-Lambert underwater fog, no shimmer distortion.
+ *   - draws the water cap with the stripped water_mobile shader: no
+ *     vertex swell, no screen-space refraction, no fbm-noise normal
+ *     perturbation, no Snell-window backface branch. Keeps a cheap
+ *     two-sine fragment-shader normal bump and alpha-blends on top
+ *     of the swapchain composite.
+ *   - blits the offscreen scene with composite_mobile: plain texture
+ *     copy + depth forwarded via gl_FragDepth so subsequent water
+ *     draws still depth-test against the opaque scene. No Beer-
+ *     Lambert underwater fog, no shimmer distortion.
  *
  * Set via renderer_set_perf_mode() BEFORE renderer_init - it gates
  * which pipelines get built. Toggling after init does nothing
@@ -516,20 +519,20 @@ void renderer_init(void) {
      * swapchain composite without needing an FBO sample. Only built
      * when R_PERF_MODE was set before renderer_init. */
     if (R_PERF_MODE) {
-        sg_shader shd_water_lite = sg_make_shader(water_lite_shader_desc(sg_query_backend()));
-        R.pip_water_lite = sg_make_pipeline(&(sg_pipeline_desc){
-            .shader = shd_water_lite,
+        sg_shader shd_water_mobile = sg_make_shader(water_mobile_shader_desc(sg_query_backend()));
+        R.pip_water_mobile = sg_make_pipeline(&(sg_pipeline_desc){
+            .shader = shd_water_mobile,
             .layout = {
                 .attrs = {
-                    [ATTR_water_lite_a_pos] = {
+                    [ATTR_water_mobile_a_pos] = {
                         .format = SG_VERTEXFORMAT_FLOAT3,
                         .offset = (int)offsetof(hex_vertex_t, pos),
                     },
-                    [ATTR_water_lite_a_sky_light] = {
+                    [ATTR_water_mobile_a_sky_light] = {
                         .format = SG_VERTEXFORMAT_FLOAT,
                         .offset = (int)offsetof(hex_vertex_t, sky_light),
                     },
-                    [ATTR_water_lite_a_torch_light] = {
+                    [ATTR_water_mobile_a_torch_light] = {
                         .format = SG_VERTEXFORMAT_FLOAT,
                         .offset = (int)offsetof(hex_vertex_t, torch_light),
                     },
@@ -547,7 +550,7 @@ void renderer_init(void) {
                 .src_factor_alpha = SG_BLENDFACTOR_ONE,
                 .dst_factor_alpha = SG_BLENDFACTOR_ZERO,
             },
-            .label = "water-lite-pipeline",
+            .label = "water-mobile-pipeline",
         });
     }
 
@@ -565,19 +568,19 @@ void renderer_init(void) {
         .label = "composite-pipeline",
     });
     if (R_PERF_MODE) {
-        sg_shader shd_composite_lite = sg_make_shader(composite_lite_shader_desc(sg_query_backend()));
-        R.pip_composite_lite = sg_make_pipeline(&(sg_pipeline_desc){
-            .shader = shd_composite_lite,
+        sg_shader shd_composite_mobile = sg_make_shader(composite_mobile_shader_desc(sg_query_backend()));
+        R.pip_composite_mobile = sg_make_pipeline(&(sg_pipeline_desc){
+            .shader = shd_composite_mobile,
             .index_type = SG_INDEXTYPE_NONE,
             .cull_mode = SG_CULLMODE_NONE,
             /* Depth write is enabled and compare is ALWAYS: we forward
              * the offscreen depth into gl_FragDepth so the swapchain
              * depth buffer ends up with a copy of the opaque scene's
-             * depth. The subsequent water_lite draw then uses normal
+             * depth. The subsequent water_mobile draw then uses normal
              * LESS_EQUAL depth testing against it, so mountains in
              * front of the water cap correctly occlude it. */
             .depth = { .write_enabled = true, .compare = SG_COMPAREFUNC_ALWAYS },
-            .label = "composite-lite-pipeline",
+            .label = "composite-mobile-pipeline",
         });
     }
     R.smp_offscreen = sg_make_sampler(&(sg_sampler_desc){
@@ -781,9 +784,9 @@ void renderer_shutdown(void) {
     if (R.offscreen_depth.id)     sg_destroy_image(R.offscreen_depth);
     sg_destroy_pipeline(R.pip_hex);
     sg_destroy_pipeline(R.pip_water);
-    if (R.pip_water_lite.id) sg_destroy_pipeline(R.pip_water_lite);
+    if (R.pip_water_mobile.id) sg_destroy_pipeline(R.pip_water_mobile);
     sg_destroy_pipeline(R.pip_composite);
-    if (R.pip_composite_lite.id) sg_destroy_pipeline(R.pip_composite_lite);
+    if (R.pip_composite_mobile.id) sg_destroy_pipeline(R.pip_composite_mobile);
     sg_destroy_sampler(R.smp_offscreen);
     sg_destroy_sampler(R.smp_offscreen_depth);
     sg_destroy_pipeline(R.pip_starfield);
@@ -1478,16 +1481,16 @@ void renderer_compose_to_swapchain(mat4_t view, mat4_t proj) {
     });
 
     /* Perf mode: plain texture blit, no underwater post-process. The
-     * water_lite shader does its own alpha-blended deep_color tint, so
-     * dropping the screen-space Beer-Lambert here doesn't leave the
-     * underwater view colour-flat. */
+     * water_mobile shader does its own alpha-blended deep_color tint,
+     * so dropping the screen-space Beer-Lambert here doesn't leave
+     * the underwater view colour-flat. */
     if (R_PERF_MODE) {
-        sg_apply_pipeline(R.pip_composite_lite);
+        sg_apply_pipeline(R.pip_composite_mobile);
         sg_apply_bindings(&(sg_bindings){
-            .views[VIEW_scene_color_lite]        = R.offscreen_color_tex,
-            .views[VIEW_scene_depth_lite]        = R.offscreen_depth_tex,
-            .samplers[SMP_scene_lite_smp]        = R.smp_offscreen,
-            .samplers[SMP_scene_depth_lite_smp]  = R.smp_offscreen_depth,
+            .views[VIEW_scene_color_mobile]        = R.offscreen_color_tex,
+            .views[VIEW_scene_depth_mobile]        = R.offscreen_depth_tex,
+            .samplers[SMP_scene_mobile_smp]        = R.smp_offscreen,
+            .samplers[SMP_scene_depth_mobile_smp]  = R.smp_offscreen_depth,
         });
         sg_draw(0, 3, 1);
         return;
@@ -1912,25 +1915,24 @@ static void body_draw_water(chunked_body_t* body, mat4_t vp,
     const float t_scaled = R.time_seconds * W->time_scale;
     const lighting_config_t* L = config_lighting();
 
-    /* Perf mode: feed water_lite.glsl's smaller uniform blocks +
+    /* Perf mode: feed water_mobile.glsl's smaller uniform blocks +
      * skip the offscreen scene-color/depth bindings entirely. The
-     * lite pipeline is alpha-blended on top of the swapchain
-     * composite, so there's no FBO sample. */
+     * mobile pipeline is alpha-blended on top of the swapchain
+     * composite, so there's no FBO sample. The mobile vertex shader
+     * has no swell (waves), so we don't pass swell_* / u_time to vs -
+     * the fragment ripple keeps the surface looking like water via
+     * normal-bump alone. */
     if (R_PERF_MODE) {
-        vs_params_lite_t vs_lite = {
-            .u_planet           = { 0.0f, 0.0f, 0.0f, 0.0f },
-            .u_sun_dir          = { R.env.sun_dir.x, R.env.sun_dir.y, R.env.sun_dir.z, 0.0f },
-            .u_terminator       = { L->night_ambient_floor, L->terminator_lo,
-                                    L->terminator_hi, 0.0f },
-            .u_time             = t_scaled,
-            .u_swell_amplitude  = W->swell_amplitude,
-            .u_swell_frequency  = W->swell_frequency,
-            .u_swell_speed      = W->swell_speed,
+        vs_params_mobile_t vs_mobile = {
+            .u_planet     = { 0.0f, 0.0f, 0.0f, 0.0f },
+            .u_sun_dir    = { R.env.sun_dir.x, R.env.sun_dir.y, R.env.sun_dir.z, 0.0f },
+            .u_terminator = { L->night_ambient_floor, L->terminator_lo,
+                              L->terminator_hi, 0.0f },
         };
-        memcpy(vs_lite.u_vp, mvp.m, sizeof(vs_lite.u_vp));
-        sg_apply_uniforms(UB_vs_params_lite, &SG_RANGE(vs_lite));
+        memcpy(vs_mobile.u_vp, mvp.m, sizeof(vs_mobile.u_vp));
+        sg_apply_uniforms(UB_vs_params_mobile, &SG_RANGE(vs_mobile));
 
-        fs_params_lite_t fs_lite = {
+        fs_params_mobile_t fs_mobile = {
             .u_camera_pos     = { camera_world.x, camera_world.y, camera_world.z },
             .u_sun_dir        = { R.env.sun_dir.x, R.env.sun_dir.y, R.env.sun_dir.z },
             .u_time           = t_scaled,
@@ -1946,7 +1948,7 @@ static void body_draw_water(chunked_body_t* body, mat4_t vp,
             .u_torch_color    = { L->torch_color.x, L->torch_color.y, L->torch_color.z,
                                   L->torch_intensity },
         };
-        sg_apply_uniforms(UB_fs_params_lite, &SG_RANGE(fs_lite));
+        sg_apply_uniforms(UB_fs_params_mobile, &SG_RANGE(fs_mobile));
 
         chunk_cull_t cc = compute_chunk_cull(body, camera_world);
         for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
@@ -2253,7 +2255,7 @@ void renderer_draw_water(mat4_t view, mat4_t proj, vec3_t camera_world) {
      * draw cost. */
     const float LOD_RATIO = 0.30f;
 
-    sg_apply_pipeline(R_PERF_MODE ? R.pip_water_lite : R.pip_water);
+    sg_apply_pipeline(R_PERF_MODE ? R.pip_water_mobile : R.pip_water);
     for (int bi = 0; bi < R.body_count; ++bi) {
         chunked_body_t* body = &R.bodies[bi];
         if (!body->has_water) continue;

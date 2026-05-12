@@ -1,6 +1,6 @@
-// Mobile / low-power water cap shader. Same vertex inputs and same
-// per-body uniform feed as water.glsl, but the fragment path skips
-// every cost centre that mobile GPUs struggle with:
+// Mobile water cap shader. Same vertex inputs and same per-body
+// uniform feed as water.glsl, but the fragment path skips every
+// cost centre that mobile GPUs struggle with:
 //
 //   * No offscreen scene_color / scene_depth sampling - the cap is
 //     plain alpha-blended on top of the swapchain composite, so the
@@ -12,23 +12,24 @@
 //   * No Snell-window backface branch, no foam, no Beer-Lambert
 //     thickness integral - opacity is a fixed Fresnel-driven alpha
 //     blend toward deep_color.
+//   * No vertex swell - the surface stays geometrically flat. The
+//     fragment-shader bump is enough to read as water without paying
+//     for displaced geometry; phones don't gain anything visible
+//     from the vertex sines since the same surface reads bumpy via
+//     the normal perturbation below.
 //
 // Picked at renderer_init time when renderer_set_perf_mode(true) was
 // called before init - main_web.c calls that when EM_JS detects a
 // mobile user agent. The full water.glsl pipeline still ships for
 // desktop / high-end paths.
 
-@vs water_lite_vs
+@vs water_mobile_vs
 
-layout(binding=0) uniform vs_params_lite {
+layout(binding=0) uniform vs_params_mobile {
     mat4 u_vp;
     vec4 u_planet;
     vec4 u_sun_dir;
     vec4 u_terminator;
-    float u_time;
-    float u_swell_amplitude;
-    float u_swell_frequency;
-    float u_swell_speed;
 };
 
 in vec3  a_pos;
@@ -41,33 +42,21 @@ out float v_sky_light;
 out float v_torch_light;
 
 void main() {
-    vec3 n = normalize(a_pos);
-
-    // Single-octave sine swell. The desktop path sums three octaves;
-    // a mobile fragment shader spends so much less time per pixel
-    // that the extra geometry detail is wasted - one wave layer reads
-    // cleanly without the ALU cost.
-    float t = u_time * u_swell_speed;
-    float fx = u_swell_frequency;
-    float swell = sin(t * 0.9 + a_pos.x * 1.4 * fx + a_pos.z * 0.6 * fx) * 0.30
-                * u_swell_amplitude;
-
-    vec3 p = a_pos + n * swell;
-    gl_Position = u_vp * vec4(p, 1.0);
-    v_wpos = p;
+    gl_Position = u_vp * vec4(a_pos, 1.0);
+    v_wpos = a_pos;
     v_sky_light   = a_sky_light;
     v_torch_light = a_torch_light;
 
-    vec3 surface_dir = normalize(p - u_planet.xyz);
+    vec3 surface_dir = normalize(a_pos - u_planet.xyz);
     float sun_facing = dot(surface_dir, normalize(u_sun_dir.xyz));
     v_sun_brightness = smoothstep(u_terminator.y, u_terminator.z, sun_facing);
 }
 @end
 
 
-@fs water_lite_fs
+@fs water_mobile_fs
 
-layout(binding=1) uniform fs_params_lite {
+layout(binding=1) uniform fs_params_mobile {
     vec3  u_camera_pos;
     vec3  u_sun_dir;
     float u_time;
@@ -92,17 +81,16 @@ out vec4 frag_color;
 void main() {
     vec3 radial = normalize(v_wpos);
 
-    // Two-sine normal perturbation. Direction-of-perturbation comes
-    // from a per-pixel tangent built off the radial - we don't bother
-    // with a finite-difference gradient since the noise is cheap
-    // enough to differentiate analytically into a pair of sin/cos
-    // terms.
+    // Two-sine normal perturbation - cheap analytical "bump map" for
+    // the water surface. Replaces the desktop path's 4-sample fbm
+    // gradient. The perturbation direction lives in the surface
+    // tangent plane (built by removing the radial component), so it
+    // tilts the normal without changing how the cap reads as a
+    // sphere.
     float t = u_time * u_ripple_speed;
     float s1 = sin(v_wpos.x * 1.7 + v_wpos.z * 1.3 + t * 1.4);
     float s2 = sin(v_wpos.z * 2.1 - v_wpos.x * 0.9 + t * 1.7);
     vec3  bump = vec3(s1, 0.0, s2) * (u_wave_steepness * 0.18);
-    // Project the bump into the surface tangent plane so it perturbs
-    // the normal without tilting it inward or outward.
     vec3 t_bump = bump - radial * dot(bump, radial);
     vec3 n = normalize(radial - t_bump);
 
@@ -145,4 +133,4 @@ void main() {
 }
 @end
 
-@program water_lite water_lite_vs water_lite_fs
+@program water_mobile water_mobile_vs water_mobile_fs
