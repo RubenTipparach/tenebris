@@ -29,6 +29,7 @@
 #include "client/menu.h"
 #include "client/net_client.h"
 #include "client/persistence.h"
+#include "client/profile.h"
 #include "client/remote_players.h"
 #include "client/teleport_menu.h"
 
@@ -42,6 +43,21 @@ EM_JS(char*, tenebris_get_server_url, (void), {
         var u = new URL(window.location.href);
         var s = u.searchParams.get('server');
         if (!s) return 0;
+        var len = lengthBytesUTF8(s) + 1;
+        var p = _malloc(len);
+        stringToUTF8(s, p, len);
+        return p;
+    } catch (_e) { return 0; }
+});
+
+/* `?room=ABCD23` lets friends jump directly into a self-host room
+ * without going through the menu. Returns NULL if absent. */
+EM_JS(char*, tenebris_get_room_code, (void), {
+    try {
+        var u = new URL(window.location.href);
+        var s = u.searchParams.get('room');
+        if (!s) return 0;
+        s = s.toUpperCase().substring(0, 8);
         var len = lengthBytesUTF8(s) + 1;
         var p = _malloc(len);
         stringToUTF8(s, p, len);
@@ -264,14 +280,25 @@ static void init(void) {
     remote_players_init();
 
 #ifdef __EMSCRIPTEN__
+    /* ?room=ABCD23 — bypass the menu and join that specific room. The
+     * profile picker is still useful so we don't skip it; the room
+     * code just primes net_client before connect. The menu's MP
+     * submenu would route here too if entered manually. */
+    char* room = tenebris_get_room_code();
     char* server_url = tenebris_get_server_url();
-    if (server_url) {
-        net_client_connect(server_url);
-        free(server_url);
-        /* Bypass the menu when an explicit URL was provided —
-         * bookmark / shortcut path stays one-click. */
+    if (server_url || room) {
+        profile_t active;
+        const char* tok  = NULL;
+        const char* name = NULL;
+        if (profile_get_active(&active)) {
+            tok  = active.token; name = active.name;
+        }
+        net_client_set_profile(tok, name, room ? room : "");
+        net_client_connect(server_url ? server_url : "wss://tenebris-c.fly.dev/");
         menu_force_state(GAME_IN_GAME_MP);
     }
+    if (server_url) free(server_url);
+    if (room)       free(room);
 #endif
 }
 
@@ -324,9 +351,18 @@ static void update_overlay(float dt) {
             if (ns == NET_CLIENT_READY) {
                 const net_client_welcome_t* w = net_client_welcome();
                 sdtx_color3b(0x80, 0xff, 0x80);
-                sdtx_printf("net: %s (player-id=%u, body=%u, +%d remote)\n",
-                            label, w->player_id, w->body_id,
-                            remote_players_count());
+                const char* room = menu_room_code();
+                if (room && room[0]) {
+                    sdtx_printf("net: %s (player-id=%u, body=%u, +%d remote) "
+                                "room: %s\n",
+                                label, w->player_id, w->body_id,
+                                remote_players_count(), room);
+                } else {
+                    sdtx_printf("net: %s (player-id=%u, body=%u, +%d remote) "
+                                "room: public\n",
+                                label, w->player_id, w->body_id,
+                                remote_players_count());
+                }
             } else {
                 sdtx_color3b(0xff, 0xc0, 0x40);
                 sdtx_printf("net: %s\n", label);

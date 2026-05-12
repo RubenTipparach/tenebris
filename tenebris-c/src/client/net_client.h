@@ -38,11 +38,12 @@ typedef struct {
  * live connection. */
 void net_client_connect(const char* url);
 
-/* Tell net_client which profile to identify as on the next HELLO.
- * Called by the menu after the profile picker resolves. Both args
- * may be NULL — net_client falls back to a 'guest' name and an
- * all-zero token in that case. */
-void net_client_set_profile(const char* token, const char* name);
+/* Tell net_client which profile to identify as on the next HELLO,
+ * and which room code to join. Both may be NULL: empty token =
+ * anonymous guest, empty room = public room. Call before
+ * net_client_connect. */
+void net_client_set_profile(const char* token, const char* name,
+                              const char* room_code);
 
 /* Most recently learned display name for a player_id (via WELCOME
  * for the local id, MSG_PLAYER_INFO for everyone else). Returns NULL

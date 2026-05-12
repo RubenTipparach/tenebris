@@ -167,34 +167,38 @@ static void handle_hello(server_t* s, server_client_t* cl,
     if (cl->name[0] == 0) {
         snprintf(cl->name, sizeof cl->name, "guest-%u", cl->player_id);
     }
+    /* Room code — fixed-8 on the wire; null-padded. Empty = public. */
+    memcpy(cl->room, h.room_code, SERVER_ROOM_LEN);
+    cl->room[SERVER_ROOM_LEN] = 0;
 
-    printf("[server] HELLO from player_id=%u name='%s' (client_version=%u)\n",
-           cl->player_id, cl->name, h.client_version);
+    printf("[server] HELLO from player_id=%u name='%s' room='%s' (client_version=%u)\n",
+           cl->player_id, cl->name,
+           cl->room[0] ? cl->room : "(public)", h.client_version);
     send_welcome(s, cl);
 
-    /* PLAYER_INFO fan-out: tell every existing client about the new
-     * arrival, and tell the new arrival about every existing client.
-     * Reliable channel — never want a client to see an unnamed
-     * player_id in the F1 list. */
+    /* PLAYER_INFO fan-out, room-scoped: only clients in the same
+     * room see each other's identities. Reliable channel — names
+     * must stick. */
     {
         uint8_t buf[MSG_HEADER_SIZE + MSG_PLAYER_INFO_WIRE_SIZE];
-        /* New arrival -> everyone (including themselves; idempotent). */
         msg_player_info_t info_new = { .player_id = cl->player_id };
         memcpy(info_new.name, cl->name,
                strnlen(cl->name, MSG_PLAYER_INFO_NAME_LEN));
         size_t n = proto_write_player_info(buf, sizeof buf, &info_new);
         if (n > 0) {
             for (int j = 0; j < SERVER_MAX_CLIENTS; ++j) {
-                if (s->clients[j].conn)
-                    net_send(s->clients[j].conn,
-                               NET_CHANNEL_RELIABLE, buf, n);
+                const server_client_t* peer = &s->clients[j];
+                if (!peer->conn) continue;
+                if (strcmp(peer->room, cl->room) != 0) continue;
+                net_send(peer->conn, NET_CHANNEL_RELIABLE, buf, n);
             }
         }
-        /* Existing clients -> new arrival, so they back-fill names. */
+        /* Existing same-room clients -> new arrival. */
         for (int j = 0; j < SERVER_MAX_CLIENTS; ++j) {
             const server_client_t* other = &s->clients[j];
             if (!other->conn || !other->handshaked) continue;
             if (other == cl) continue;
+            if (strcmp(other->room, cl->room) != 0) continue;
             msg_player_info_t info_other = { .player_id = other->player_id };
             memcpy(info_other.name, other->name,
                    strnlen(other->name, MSG_PLAYER_INFO_NAME_LEN));
@@ -295,10 +299,17 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
                         + MSG_CHUNK_DIFF_ENTRY_SIZE];
             size_t n = proto_write_chunk_diff(buf, sizeof buf, &diff);
             if (n > 0) {
+                /* Room-scoped: edits only propagate to same-room peers.
+                 * NB: server still applies the edit to its single
+                 * shared world copy — different rooms see each
+                 * other's terrain changes indirectly when they walk
+                 * to the same area. World-per-room separation is a
+                 * follow-up. */
                 for (int j = 0; j < SERVER_MAX_CLIENTS; ++j) {
-                    if (s->clients[j].conn)
-                        net_send(s->clients[j].conn,
-                                   NET_CHANNEL_RELIABLE, buf, n);
+                    const server_client_t* peer = &s->clients[j];
+                    if (!peer->conn) continue;
+                    if (strcmp(peer->room, cl->room) != 0) continue;
+                    net_send(peer->conn, NET_CHANNEL_RELIABLE, buf, n);
                 }
             }
             break;
@@ -371,6 +382,7 @@ static void on_close(net_conn_t* conn, net_close_reason_t reason, void* user) {
     cl->handshaked = false;
     cl->name[0]    = 0;
     cl->token[0]   = 0;
+    cl->room[0]    = 0;
     cl->has_state  = false;
 }
 
@@ -448,42 +460,60 @@ bool server_init(server_t* s, const server_config_t* cfg) {
 }
 
 static void broadcast_snapshot(server_t* s) {
-    /* Gather every handshaked client with at least one reported pose
-     * into one SNAPSHOT, then send the same blob to every connection.
-     * O(N) on N = max clients; trivial at the M4 scale. */
-    msg_snapshot_t snap = { 0 };
-    snap.server_tick = (uint32_t)s->tick;
-    for (int i = 0; i < SERVER_MAX_CLIENTS; ++i) {
-        const server_client_t* cl = &s->clients[i];
-        if (!cl->conn || !cl->has_state) continue;
-        if (snap.player_count >= SNAPSHOT_MAX_PLAYERS) break;
-        msg_snapshot_entry_t* e = &snap.players[snap.player_count++];
-        e->player_id = cl->player_id;
-        e->body_id   = cl->body_id;
-        e->pos_x     = cl->pos_x;
-        e->pos_y     = cl->pos_y;
-        e->pos_z     = cl->pos_z;
-        e->yaw       = cl->yaw;
-        e->pitch     = cl->pitch;
-    }
-    if (snap.player_count == 0) return;
-
+    /* Room-scoped: each unique room code gets its own snapshot built
+     * from same-room poses, then sent to same-room clients only.
+     * O(rooms * clients) on a tiny SERVER_MAX_CLIENTS=16 — trivial.
+     * Public room (empty code) is just another room key. */
     static uint8_t buf[MSG_HEADER_SIZE + MSG_SNAPSHOT_HEADER_SIZE
                        + SNAPSHOT_MAX_PLAYERS * MSG_SNAPSHOT_ENTRY_SIZE];
-    size_t n = proto_write_snapshot(buf, sizeof buf, &snap);
-    if (n == 0) return;
-    int sent = 0;
+
+    bool seen[SERVER_MAX_CLIENTS] = { false };
+    int total_sent = 0;
+    int total_players = 0;
+    int rooms = 0;
+
     for (int i = 0; i < SERVER_MAX_CLIENTS; ++i) {
-        const server_client_t* cl = &s->clients[i];
-        if (cl->conn) { net_send(cl->conn, NET_CHANNEL_UNRELIABLE, buf, n); ++sent; }
+        if (seen[i] || !s->clients[i].conn) continue;
+        const char* room = s->clients[i].room;
+        seen[i] = true;
+
+        msg_snapshot_t snap = { 0 };
+        snap.server_tick = (uint32_t)s->tick;
+        for (int j = i; j < SERVER_MAX_CLIENTS; ++j) {
+            const server_client_t* cl = &s->clients[j];
+            if (!cl->conn) continue;
+            if (strcmp(cl->room, room) != 0) continue;
+            seen[j] = true;
+            if (!cl->has_state) continue;
+            if (snap.player_count >= SNAPSHOT_MAX_PLAYERS) break;
+            msg_snapshot_entry_t* e = &snap.players[snap.player_count++];
+            e->player_id = cl->player_id;
+            e->body_id   = cl->body_id;
+            e->pos_x     = cl->pos_x;
+            e->pos_y     = cl->pos_y;
+            e->pos_z     = cl->pos_z;
+            e->yaw       = cl->yaw;
+            e->pitch     = cl->pitch;
+        }
+        if (snap.player_count == 0) continue;
+        size_t n = proto_write_snapshot(buf, sizeof buf, &snap);
+        if (n == 0) continue;
+        for (int j = 0; j < SERVER_MAX_CLIENTS; ++j) {
+            const server_client_t* cl = &s->clients[j];
+            if (!cl->conn) continue;
+            if (strcmp(cl->room, room) != 0) continue;
+            net_send(cl->conn, NET_CHANNEL_UNRELIABLE, buf, n);
+            ++total_sent;
+        }
+        total_players += snap.player_count;
+        ++rooms;
     }
-    /* Heartbeat log every ~5 s (33 broadcasts at 6.7 Hz) so the Fly
-     * log isn't drowned in snapshot spam but we can still confirm
-     * delivery from the server side. */
+
+    /* Heartbeat log every ~5 s. */
     static uint64_t snap_count = 0;
-    if ((++snap_count % 33) == 0) {
-        printf("[server] snapshot #%llu: %u players, sent to %d conns\n",
-               (unsigned long long)snap_count, snap.player_count, sent);
+    if (rooms > 0 && (++snap_count % 33) == 0) {
+        printf("[server] snapshots #%llu across %d room(s): %d total players, %d sends\n",
+               (unsigned long long)snap_count, rooms, total_players, total_sent);
         fflush(stdout);
     }
 }

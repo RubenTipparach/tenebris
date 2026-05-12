@@ -21,6 +21,21 @@
  * carriage return, colon) — keeping any regex out of the EM_JS body
  * so the C preprocessor doesn't choke on the backslash escapes,
  * which sit outside any string literal here. */
+/* Generate a 6-char room code from a safe alphabet (no ambiguous
+ * 0/O, 1/I). 32^6 = ~1 billion combinations, plenty for v1's small
+ * concurrent-room count. */
+EM_JS(char*, menu_js_new_room_code, (void), {
+    var A = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    var b = new Uint8Array(6);
+    crypto.getRandomValues(b);
+    var code = '';
+    for (var i = 0; i < 6; ++i) code += A[b[i] & 31];
+    var len = lengthBytesUTF8(code) + 1;
+    var p = _malloc(len);
+    stringToUTF8(code, p, len);
+    return p;
+});
+
 /* Prompt for a profile name. Same shape as the world-name prompt —
  * trims, length-clamps, lets C strip control chars. */
 EM_JS(char*, menu_js_prompt_profile_name, (void), {
@@ -49,6 +64,12 @@ EM_JS(char*, menu_js_prompt_world_name, (void), {
 #else
 static char* menu_js_prompt_world_name(void)   { return NULL; }
 static char* menu_js_prompt_profile_name(void) { return NULL; }
+static char* menu_js_new_room_code(void)       {
+    static char fake[7] = "AAAAAA";
+    char* out = (char*)malloc(7);
+    if (out) memcpy(out, fake, 7);
+    return out;
+}
 #endif
 
 /* ------------------------------------------------------------------ */
@@ -85,6 +106,9 @@ static struct {
     /* Profile-picker buttons. */
     menu_button_t btn_new_profile;
     menu_button_t btn_profile[PROFILE_MAX];
+    /* MP submenu buttons. */
+    menu_button_t btn_self_host;
+    menu_button_t btn_cloud_host;
 
     float mouse_x, mouse_y;
 
@@ -102,6 +126,9 @@ static struct {
 
     /* Name the SP autosave loop writes back to. Empty in MP / menu. */
     char active_world[PERSISTENCE_NAME_MAX + 1];
+
+    /* Room code for the active MP session. Empty = public room. */
+    char room_code[9];
 } M;
 
 /* ------------------------------------------------------------------ */
@@ -159,6 +186,30 @@ static void layout_main(float w, float h) {
     for (int i = 0; i < PERSISTENCE_MAX_WORLDS; ++i) hide_button(&M.btn_world[i]);
     hide_button(&M.btn_new_profile);
     for (int i = 0; i < PROFILE_MAX; ++i) hide_button(&M.btn_profile[i]);
+    hide_button(&M.btn_self_host);
+    hide_button(&M.btn_cloud_host);
+}
+
+static void layout_mp_submenu(float w, float h) {
+    float cx = w * 0.5f;
+    float cy = h * 0.5f;
+    set_button(&M.btn_self_host,
+                 cx - MAIN_BTN_W * 0.5f,
+                 cy - MAIN_BTN_H - MAIN_BTN_GAP * 0.5f,
+                 MAIN_BTN_W, MAIN_BTN_H, "SELF HOST");
+    set_button(&M.btn_cloud_host,
+                 cx - MAIN_BTN_W * 0.5f,
+                 cy + MAIN_BTN_GAP * 0.5f,
+                 MAIN_BTN_W, MAIN_BTN_H, "CLOUD HOSTED");
+    set_button(&M.btn_back,
+                 cx - 120.0f, h * 0.5f + 220.0f, 240.0f, LIST_BTN_H, "BACK");
+    hide_button(&M.btn_sp);
+    hide_button(&M.btn_mp);
+    hide_button(&M.btn_active_profile);
+    hide_button(&M.btn_new_world);
+    for (int i = 0; i < PERSISTENCE_MAX_WORLDS; ++i) hide_button(&M.btn_world[i]);
+    hide_button(&M.btn_new_profile);
+    for (int i = 0; i < PROFILE_MAX; ++i) hide_button(&M.btn_profile[i]);
 }
 
 static void layout_world_list(float w, float h) {
@@ -194,6 +245,8 @@ static void layout_world_list(float w, float h) {
     hide_button(&M.btn_active_profile);
     hide_button(&M.btn_new_profile);
     for (int i = 0; i < PROFILE_MAX; ++i) hide_button(&M.btn_profile[i]);
+    hide_button(&M.btn_self_host);
+    hide_button(&M.btn_cloud_host);
 }
 
 static void layout_profile_select(float w, float h) {
@@ -224,6 +277,8 @@ static void layout_profile_select(float w, float h) {
     hide_button(&M.btn_active_profile);
     hide_button(&M.btn_new_world);
     for (int i = 0; i < PERSISTENCE_MAX_WORLDS; ++i) hide_button(&M.btn_world[i]);
+    hide_button(&M.btn_self_host);
+    hide_button(&M.btn_cloud_host);
 }
 
 static void layout(float w, float h) {
@@ -235,6 +290,8 @@ static void layout(float w, float h) {
             layout_main(w, h); break;
         case GAME_SP_WORLD_LIST:
             layout_world_list(w, h); break;
+        case GAME_MP_SUBMENU:
+            layout_mp_submenu(w, h); break;
         default:
             break;
     }
@@ -338,6 +395,8 @@ void menu_draw(int screen_w, int screen_h) {
     /* Geometry */
     draw_button(&M.btn_sp);
     draw_button(&M.btn_mp);
+    draw_button(&M.btn_self_host);
+    draw_button(&M.btn_cloud_host);
     draw_button(&M.btn_active_profile);
     draw_button(&M.btn_new_profile);
     for (int i = 0; i < PROFILE_MAX; ++i) draw_button(&M.btn_profile[i]);
@@ -381,6 +440,16 @@ void menu_draw(int screen_w, int screen_h) {
                                      0xa0, 0xb0, 0xc8);
             }
             break;
+        case GAME_MP_SUBMENU:
+            draw_text_centered("MULTIPLAYER", cx, h * 0.5f - 200.0f, 3.0f,
+                                 0xff, 0xff, 0xff);
+            draw_text_centered("self host = new room you control",
+                                 cx, h * 0.5f + 180.0f, 1.0f,
+                                 0xa0, 0xb0, 0xc8);
+            draw_text_centered("cloud hosted = join the public world",
+                                 cx, h * 0.5f + 196.0f, 1.0f,
+                                 0xa0, 0xb0, 0xc8);
+            break;
         default:
             break;
     }
@@ -395,6 +464,16 @@ void menu_draw(int screen_w, int screen_h) {
         float bx = M.btn_mp.x + M.btn_mp.w * 0.5f;
         float by = M.btn_mp.y + (M.btn_mp.h - 8.0f * 2.0f) * 0.5f;
         draw_text_centered(M.btn_mp.label, bx, by, 2.0f, 0xff, 0xff, 0xff);
+    }
+    if (M.btn_self_host.visible) {
+        float bx = M.btn_self_host.x + M.btn_self_host.w * 0.5f;
+        float by = M.btn_self_host.y + (M.btn_self_host.h - 8.0f * 2.0f) * 0.5f;
+        draw_text_centered(M.btn_self_host.label, bx, by, 2.0f, 0xff, 0xff, 0xff);
+    }
+    if (M.btn_cloud_host.visible) {
+        float bx = M.btn_cloud_host.x + M.btn_cloud_host.w * 0.5f;
+        float by = M.btn_cloud_host.y + (M.btn_cloud_host.h - 8.0f * 2.0f) * 0.5f;
+        draw_text_centered(M.btn_cloud_host.label, bx, by, 2.0f, 0xff, 0xff, 0xff);
     }
     if (M.btn_active_profile.visible) {
         char chip[64];
@@ -494,18 +573,41 @@ static void start_sp_new_world(void) {
  * bypass branch in main_web.c's init(). */
 #define DEFAULT_MP_SERVER_URL "wss://tenebris-c.fly.dev/"
 
-static void start_multiplayer(void) {
-    /* Send the active profile (token + name) along with HELLO. */
+static void connect_to_room(const char* room_code) {
+    /* Send active profile + chosen room to the server. */
     profile_t active;
+    const char* tok  = NULL;
+    const char* name = NULL;
     if (profile_get_active(&active)) {
-        net_client_set_profile(active.token, active.name);
-    } else {
-        net_client_set_profile(NULL, NULL);
+        tok  = active.token;
+        name = active.name;
     }
-    printf("[menu] MP: connecting to %s\n", DEFAULT_MP_SERVER_URL);
+    net_client_set_profile(tok, name, room_code ? room_code : "");
+    snprintf(M.room_code, sizeof M.room_code, "%s",
+             room_code ? room_code : "");
+    printf("[menu] MP: connect to %s (room='%s')\n",
+           DEFAULT_MP_SERVER_URL,
+           M.room_code[0] ? M.room_code : "(public)");
     net_client_connect(DEFAULT_MP_SERVER_URL);
     M.active_world[0] = 0;     /* no SP save target while in MP */
     M.state = GAME_IN_GAME_MP;
+}
+
+static void start_self_host(void) {
+    char* code = menu_js_new_room_code();
+    if (!code) return;
+    connect_to_room(code);
+    free(code);
+}
+
+static void start_cloud_host(void) {
+    connect_to_room("");        /* empty = public room */
+}
+
+static void start_multiplayer(void) {
+    /* MP button drops to the self-host / cloud-host picker — the
+     * actual connect happens after the user picks one. */
+    M.state = GAME_MP_SUBMENU;
 }
 
 static void enter_main_menu_with(const profile_t* p) {
@@ -563,11 +665,18 @@ static void on_click_world_list(float x, float y) {
     }
 }
 
+static void on_click_mp_submenu(float x, float y) {
+    if (hit(&M.btn_back, x, y))       { M.state = GAME_MAIN_MENU; return; }
+    if (hit(&M.btn_self_host, x, y))  { start_self_host();        return; }
+    if (hit(&M.btn_cloud_host, x, y)) { start_cloud_host();       return; }
+}
+
 static void on_click(float x, float y) {
     switch (M.state) {
         case GAME_PROFILE_SELECT: on_click_profile_select(x, y); break;
         case GAME_MAIN_MENU:      on_click_main(x, y);           break;
         case GAME_SP_WORLD_LIST:  on_click_world_list(x, y);     break;
+        case GAME_MP_SUBMENU:     on_click_mp_submenu(x, y);     break;
         default: break;
     }
 }
@@ -621,8 +730,11 @@ bool menu_is_overlay(void) {
     return M.state == GAME_PROFILE_SELECT
         || M.state == GAME_MAIN_MENU
         || M.state == GAME_SP_WORLD_LIST
+        || M.state == GAME_MP_SUBMENU
         || M.state == GAME_MP_URL_PROMPT;
 }
+
+const char* menu_room_code(void) { return M.room_code; }
 
 bool menu_take_sp_resume(persistence_save_t* out) {
     if (!M.pending_sp_resume) return false;

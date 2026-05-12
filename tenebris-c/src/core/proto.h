@@ -37,7 +37,7 @@ typedef enum {
 } msg_kind_t;
 
 /* Per-kind protocol versions. Bump on any wire change. */
-#define MSG_HELLO_VERSION         2     /* v2: adds name field */
+#define MSG_HELLO_VERSION         3     /* v2: name field; v3: room_code */
 #define MSG_WELCOME_VERSION       1
 #define MSG_INPUT_VERSION         1
 #define MSG_PLAYER_CMD_VERSION    1
@@ -63,12 +63,14 @@ typedef struct {
 
 #define MSG_HELLO_TOKEN_LEN     32
 #define MSG_HELLO_NAME_LEN      32
-#define MSG_HELLO_WIRE_SIZE     72    /* v2: 4 + 32 + 32 + 4 */
+#define MSG_HELLO_ROOM_LEN       8
+#define MSG_HELLO_WIRE_SIZE     80    /* v3: 4 + 32 + 32 + 8 + 4 */
 
 typedef struct {
     uint32_t client_version;
-    uint8_t  token[MSG_HELLO_TOKEN_LEN];   /* hex chars, persistent profile id */
-    uint8_t  name [MSG_HELLO_NAME_LEN];    /* UTF-8 display name, null-padded */
+    uint8_t  token[MSG_HELLO_TOKEN_LEN];      /* persistent profile id */
+    uint8_t  name [MSG_HELLO_NAME_LEN];       /* UTF-8 display name, null-padded */
+    uint8_t  room_code[MSG_HELLO_ROOM_LEN];   /* private room id, null-padded; empty = public */
     uint32_t reserved;
 } msg_hello_t;
 
@@ -80,6 +82,24 @@ typedef struct {
     uint8_t  name[MSG_PLAYER_INFO_NAME_LEN];
     uint32_t reserved;
 } msg_player_info_t;
+
+/* ------------------------------------------------------------------
+ * Chat. Client sends MSG_CHAT with message text (player_id field is
+ * ignored on the wire); server fans out MSG_CHAT to every connected
+ * client with player_id stamped to the sender so receivers can render
+ * 'name: text'. UTF-8 truncated at MSG_CHAT_TEXT_LEN bytes — no
+ * splitting on grapheme boundaries, so very long emoji could be
+ * mangled at the cut point. Acceptable for v1.
+ * ------------------------------------------------------------------ */
+
+#define MSG_CHAT_TEXT_LEN     128
+#define MSG_CHAT_WIRE_SIZE    136   /* 4 + 128 + 4 */
+
+typedef struct {
+    uint32_t player_id;
+    uint8_t  text[MSG_CHAT_TEXT_LEN];
+    uint32_t reserved;
+} msg_chat_t;
 
 #define MSG_WELCOME_WIRE_SIZE   40    /* 4 + 8 + 24 + 4 */
 
@@ -233,5 +253,8 @@ int    proto_read_chunk_diff (const uint8_t* payload, size_t len, msg_chunk_diff
 
 size_t proto_write_player_info(uint8_t* buf, size_t cap, const msg_player_info_t* m);
 int    proto_read_player_info (const uint8_t* payload, size_t len, msg_player_info_t* out);
+
+size_t proto_write_chat(uint8_t* buf, size_t cap, const msg_chat_t* m);
+int    proto_read_chat (const uint8_t* payload, size_t len, msg_chat_t* out);
 
 #endif

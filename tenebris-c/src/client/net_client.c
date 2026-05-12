@@ -27,6 +27,8 @@ typedef struct {
      * name is the friendly display string other clients see. */
     char                 profile_token[33];
     char                 profile_name[NET_NAME_MAX];
+    /* Room code to join (8 chars max). Empty = public room. */
+    char                 room_code[9];
     /* Name cache: player_id → name, populated from MSG_PLAYER_INFO
      * (and from WELCOME for the local player). The F1 panel reads
      * net_client_name_for_id to render rows. */
@@ -72,11 +74,14 @@ const char* net_client_name_for_id(uint32_t player_id) {
     return NULL;
 }
 
-void net_client_set_profile(const char* token, const char* name) {
+void net_client_set_profile(const char* token, const char* name,
+                              const char* room_code) {
     memset(C.profile_token, 0, sizeof C.profile_token);
     memset(C.profile_name,  0, sizeof C.profile_name);
-    if (token) snprintf(C.profile_token, sizeof C.profile_token, "%s", token);
-    if (name)  snprintf(C.profile_name,  sizeof C.profile_name,  "%s", name);
+    memset(C.room_code,     0, sizeof C.room_code);
+    if (token)     snprintf(C.profile_token, sizeof C.profile_token, "%s", token);
+    if (name)      snprintf(C.profile_name,  sizeof C.profile_name,  "%s", name);
+    if (room_code) snprintf(C.room_code,     sizeof C.room_code,     "%s", room_code);
 }
 
 static void send_hello(void) {
@@ -88,6 +93,9 @@ static void send_hello(void) {
     /* name: same — null-padded fixed-32. */
     size_t nn = strnlen(C.profile_name, MSG_HELLO_NAME_LEN);
     memcpy(h.name, C.profile_name, nn);
+    /* room: null-padded fixed-8. Empty string = public room. */
+    size_t rn = strnlen(C.room_code, MSG_HELLO_ROOM_LEN);
+    memcpy(h.room_code, C.room_code, rn);
     uint8_t buf[MSG_HEADER_SIZE + MSG_HELLO_WIRE_SIZE];
     size_t n = proto_write_hello(buf, sizeof buf, &h);
     if (n == 0) return;

@@ -22,10 +22,15 @@ typedef enum {
     GAME_PROFILE_SELECT = 0,   /* boot lands here first */
     GAME_MAIN_MENU      = 1,
     GAME_SP_WORLD_LIST  = 2,   /* picking which world to load */
-    GAME_MP_URL_PROMPT  = 3,   /* transient — kept for future */
-    GAME_IN_GAME_SP     = 4,
-    GAME_IN_GAME_MP     = 5,
+    GAME_MP_SUBMENU     = 3,   /* self-host / cloud-host picker */
+    GAME_MP_URL_PROMPT  = 4,   /* transient — kept for future */
+    GAME_IN_GAME_SP     = 5,
+    GAME_IN_GAME_MP     = 6,
 } game_state_t;
+
+/* The 6-char room code shown in the HUD while in IN_GAME_MP. Empty
+ * string = public room. Set when the menu enters MP. */
+const char* menu_room_code(void);
 
 void menu_init(void);
 void menu_shutdown(void);

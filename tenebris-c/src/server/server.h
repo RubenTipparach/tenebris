@@ -19,6 +19,7 @@
 
 #define SERVER_NAME_MAX  31
 #define SERVER_TOKEN_LEN 32
+#define SERVER_ROOM_LEN  8
 
 typedef struct {
     net_conn_t* conn;          /* NULL slot = free */
@@ -27,6 +28,10 @@ typedef struct {
     bool        has_state;     /* received at least one PLAYER_STATE */
     char        token[SERVER_TOKEN_LEN + 1];
     char        name [SERVER_NAME_MAX  + 1];
+    /* Room code = visibility group. Empty string = public room.
+     * Snapshots / chunk diffs / player-info fan-outs only reach
+     * clients with the same room string. */
+    char        room [SERVER_ROOM_LEN  + 1];
     uint32_t    body_id;
     double      pos_x, pos_y, pos_z;
     float       yaw, pitch;
