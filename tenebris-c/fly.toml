@@ -19,3 +19,10 @@ primary_region = 'ord'
   cpu_kind = 'shared'
   cpus = 1
   memory_mb = 1024
+
+# Persistent volume so M6 chunk-diff saves survive every fly deploy.
+# IMPORTANT: do NOT re-run `fly launch --copy-config` — it strips this
+# block silently and saves stop persisting on the next redeploy.
+[[mounts]]
+  source      = "tenebris_saves"
+  destination = "/data"

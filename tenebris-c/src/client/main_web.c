@@ -13,6 +13,7 @@
 #include "sokol_log.h"
 #include "sokol_time.h"
 #include "sokol_debugtext.h"
+#include "sokol_gl.h"   /* draw_desync_popup uses sgl_* for the rect backdrop */
 
 #include "core/planet.h"
 #include "core/planet_gen.h"
@@ -25,7 +26,46 @@
 #include "client/renderer.h"
 #include "client/interact.h"
 #include "client/mobile_ui.h"
+#include "client/chat.h"
+#include "client/menu.h"
+#include "client/net_client.h"
+#include "client/persistence.h"
+#include "client/profile.h"
+#include "client/remote_players.h"
 #include "client/teleport_menu.h"
+
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+/* Read the server URL from the page's `?server=` query param. Returns
+ * a malloc'd C string the caller must free, or NULL if no param was
+ * set (in which case the client stays single-player offline). */
+EM_JS(char*, tenebris_get_server_url, (void), {
+    try {
+        var u = new URL(window.location.href);
+        var s = u.searchParams.get('server');
+        if (!s) return 0;
+        var len = lengthBytesUTF8(s) + 1;
+        var p = _malloc(len);
+        stringToUTF8(s, p, len);
+        return p;
+    } catch (_e) { return 0; }
+});
+
+/* `?room=ABCD23` lets friends jump directly into a self-host room
+ * without going through the menu. Returns NULL if absent. */
+EM_JS(char*, tenebris_get_room_code, (void), {
+    try {
+        var u = new URL(window.location.href);
+        var s = u.searchParams.get('room');
+        if (!s) return 0;
+        s = s.toUpperCase().substring(0, 8);
+        var len = lengthBytesUTF8(s) + 1;
+        var p = _malloc(len);
+        stringToUTF8(s, p, len);
+        return p;
+    } catch (_e) { return 0; }
+});
+#endif
 #include "client/inventory.h"
 #include "client/profiler.h"
 #include "client/hotbar_ui.h"
@@ -124,8 +164,24 @@ static void init(void) {
         .buffer_pool_size = 4096,
     });
     stm_setup();
+    /* IMPORTANT: every one of the 8 sdtx font slots gets filled, even
+     * the ones we don't actively use. sokol_debugtext stacks all slots
+     * vertically in a single texture atlas and memset's the whole
+     * atlas to 0xFF (white). At anything above 1x scale, the sampler
+     * bleeds ~half a pixel into the slot below the active glyph row,
+     * showing the white as a visible underline at the bottom of every
+     * character. Filling every slot with a real bitmap kills the
+     * white bleed — bleed now reads the top of the next font's
+     * glyphs, which is far less noticeable. */
     sdtx_setup(&(sdtx_desc_t){
-        .fonts[0] = sdtx_font_oric(),
+        .fonts[0] = sdtx_font_oric(),   /* HUD               */
+        .fonts[1] = sdtx_font_c64(),    /* menu              */
+        .fonts[2] = sdtx_font_c64(),    /* trailing-bleed guards: */
+        .fonts[3] = sdtx_font_c64(),
+        .fonts[4] = sdtx_font_c64(),
+        .fonts[5] = sdtx_font_c64(),
+        .fonts[6] = sdtx_font_c64(),
+        .fonts[7] = sdtx_font_c64(),
         .logger.func = on_screen_log,
     });
 
@@ -216,6 +272,36 @@ static void init(void) {
 
     G.last_time = stm_now();
     G.smoothed_fps = 60.0f;
+
+    /* Show the main menu after worldgen finishes. SP / MP buttons
+     * drive the transition into gameplay. Backwards-compat with the
+     * `?server=URL` query param is preserved — if present, we skip
+     * the menu and jump straight into MP (handy for bookmarks). */
+    menu_init();
+    remote_players_init();
+    chat_init();
+
+#ifdef __EMSCRIPTEN__
+    /* ?room=ABCD23 — bypass the menu and join that specific room. The
+     * profile picker is still useful so we don't skip it; the room
+     * code just primes net_client before connect. The menu's MP
+     * submenu would route here too if entered manually. */
+    char* room = tenebris_get_room_code();
+    char* server_url = tenebris_get_server_url();
+    if (server_url || room) {
+        profile_t active;
+        const char* tok  = NULL;
+        const char* name = NULL;
+        if (profile_get_active(&active)) {
+            tok  = active.token; name = active.name;
+        }
+        net_client_set_profile(tok, name, room ? room : "");
+        net_client_connect(server_url ? server_url : "wss://tenebris-c.fly.dev/");
+        menu_force_state(GAME_IN_GAME_MP);
+    }
+    if (server_url) free(server_url);
+    if (room)       free(room);
+#endif
 }
 
 /* --------------------------------------------------------------------- */
@@ -250,6 +336,42 @@ static void update_overlay(float dt) {
                 goldberg_tile_count(G.world->grid),
                 renderer_moon_count());
     sdtx_printf("FPS: %.1f\n", G.smoothed_fps);
+
+    {
+        /* Desync banner is its own popup panel — see draw_desync_popup
+         * just below in the UI overlay block. No HUD line here so the
+         * tiny corner status row doesn't double up with the popup. */
+    }
+    {
+        net_client_state_t ns = net_client_state();
+        if (ns != NET_CLIENT_IDLE) {
+            const char* label =
+                ns == NET_CLIENT_CONNECTING ? "connecting"  :
+                ns == NET_CLIENT_HANDSHAKE  ? "handshaking" :
+                ns == NET_CLIENT_READY      ? "online"      :
+                                              "offline";
+            if (ns == NET_CLIENT_READY) {
+                const net_client_welcome_t* w = net_client_welcome();
+                sdtx_color3b(0x80, 0xff, 0x80);
+                const char* room = menu_room_code();
+                if (room && room[0]) {
+                    sdtx_printf("net: %s (player-id=%u, body=%u, +%d remote) "
+                                "room: %s\n",
+                                label, w->player_id, w->body_id,
+                                remote_players_count(), room);
+                } else {
+                    sdtx_printf("net: %s (player-id=%u, body=%u, +%d remote) "
+                                "room: public\n",
+                                label, w->player_id, w->body_id,
+                                remote_players_count());
+                }
+            } else {
+                sdtx_color3b(0xff, 0xc0, 0x40);
+                sdtx_printf("net: %s\n", label);
+            }
+            sdtx_color3b(0xff, 0xff, 0xff);
+        }
+    }
 
     dvec3_t pos = player_world_pos(&G.player);
     /* Altitude reads against the body the player is currently
@@ -335,7 +457,7 @@ static void update_overlay(float dt) {
     }
     /* Always-visible reminders so the player knows the keys exist
      * even if the top-right hamburger menu is hard to spot. */
-    sdtx_printf("[T] teleport menu   [F3 / P] profiler\n");
+    sdtx_printf("[T] teleport menu   [F3 / P] profiler   [F1] players\n");
 
     /* Mining progress bar (survival only). */
     if (G.player.survival_mode && G.interact.mining_progress_s > 0.0f) {
@@ -355,7 +477,337 @@ static void update_overlay(float dt) {
 
 /* --------------------------------------------------------------------- */
 
+/* One-shot apply of a resume pose when SP transitions in. Reads
+ * the menu's queued save and writes it into the player + the camera
+ * frame. Called from the top of frame() the first tick we're in
+ * GAME_IN_GAME_SP. */
+static bool G_sp_resume_applied = false;
+
+static void maybe_apply_sp_resume(void) {
+    if (G_sp_resume_applied) return;
+    if (menu_state() != GAME_IN_GAME_SP) return;
+    persistence_save_t s;
+    if (!menu_take_sp_resume(&s)) { G_sp_resume_applied = true; return; }
+
+    G.player.position = (dvec3_t){ .x = s.pos_x, .y = s.pos_y, .z = s.pos_z };
+    G.player.yaw      = s.yaw;
+    G.player.pitch    = s.pitch;
+    /* roll lives in the save struct for forward-compat but the
+     * player_ctrl_t doesn't track it — basis re-slerp on body change
+     * is what levels the camera. Body resolution stays on Tenebris
+     * for now; M4's SOI tracker handles re-anchoring on the fly. */
+    (void)s.roll;
+    (void)s.body_id;
+    G_sp_resume_applied = true;
+}
+
+static double G_sp_save_accum = 0.0;
+static void   maybe_autosave_sp(double dt) {
+    if (menu_state() != GAME_IN_GAME_SP) return;
+    const char* world = menu_active_world();
+    if (!world || !*world) return;       /* SP without a world — shouldn't happen */
+    G_sp_save_accum += dt;
+    if (G_sp_save_accum < 5.0) return;
+    G_sp_save_accum = 0.0;
+    persistence_save_t s = {
+        .pos_x = G.player.position.x,
+        .pos_y = G.player.position.y,
+        .pos_z = G.player.position.z,
+        .yaw   = G.player.yaw,
+        .pitch = G.player.pitch,
+        .roll  = 0.0f,
+        .body_id = 0,
+    };
+    persistence_save(world, &s);
+}
+
+/* ------------------------------------------------------------------ */
+/* F1 players panel — toggle a small overlay listing every connected
+ * player (local + remote) with their lat/long on the body they're
+ * standing on. Useful for debugging position-relay + figuring out
+ * where friends are without flying to them. */
+/* ------------------------------------------------------------------ */
+
+static bool G_players_panel_visible = false;
+
+static void player_lat_lon_deg(dvec3_t world_pos,
+                                 const body_config_t* body,
+                                 double* out_lat_deg,
+                                 double* out_lon_deg,
+                                 double* out_alt_m) {
+    double dx = world_pos.x - body->pos_x;
+    double dy = world_pos.y - body->pos_y;
+    double dz = world_pos.z - body->pos_z;
+    double len = sqrt(dx * dx + dy * dy + dz * dz);
+    if (len < 1e-9) {
+        *out_lat_deg = 0.0;
+        *out_lon_deg = 0.0;
+        *out_alt_m   = -body->radius_m;
+        return;
+    }
+    const double k = 180.0 / 3.14159265358979323846;
+    *out_lat_deg = asin(dy / len) * k;
+    *out_lon_deg = atan2(dz, dx) * k;
+    *out_alt_m   = len - body->radius_m;
+}
+
+static void draw_players_panel(float screen_w, float screen_h) {
+    if (!G_players_panel_visible) return;
+    (void)screen_h;
+
+    /* Count entries upfront so we can size the panel. */
+    int local_count = (net_client_state() == NET_CLIENT_READY) ? 1 : 0;
+    int remote_n    = remote_players_count();
+    int total       = local_count + remote_n;
+    if (total < 1) total = 1;       /* show 'no peers' line at minimum */
+
+    const float row_h    = 14.0f;
+    const float pad      = 10.0f;
+    const float title_h  = 22.0f;
+    const float w        = 360.0f;
+    const float h        = title_h + (float)total * row_h + pad;
+    const float x        = screen_w - w - 16.0f;
+    const float y        = 16.0f;
+
+    /* Backdrop. */
+    sgl_defaults();
+    sgl_matrix_mode_projection();
+    sgl_load_identity();
+    sgl_ortho(0.0f, screen_w, screen_h, 0.0f, -1.0f, 1.0f);
+    sgl_matrix_mode_modelview();
+    sgl_load_identity();
+    static sgl_pipeline pip = (sgl_pipeline){0};
+    if (pip.id == 0) {
+        pip = sgl_make_pipeline(&(sg_pipeline_desc){
+            .colors[0].blend = {
+                .enabled = true,
+                .src_factor_rgb = SG_BLENDFACTOR_SRC_ALPHA,
+                .dst_factor_rgb = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+                .src_factor_alpha = SG_BLENDFACTOR_ONE,
+                .dst_factor_alpha = SG_BLENDFACTOR_ONE,
+            },
+        });
+    }
+    sgl_load_pipeline(pip);
+
+    sgl_begin_quads();
+    sgl_c4f(0.05f, 0.06f, 0.10f, 0.88f);
+    sgl_v2f(x,     y);
+    sgl_v2f(x + w, y);
+    sgl_v2f(x + w, y + h);
+    sgl_v2f(x,     y + h);
+    sgl_end();
+
+    const float t = 1.5f;
+    sgl_begin_quads();
+    sgl_c4f(0.55f, 0.65f, 0.85f, 0.85f);
+    sgl_v2f(x,           y);           sgl_v2f(x + w,       y);           sgl_v2f(x + w,       y + t);     sgl_v2f(x,           y + t);
+    sgl_v2f(x,           y + h - t);   sgl_v2f(x + w,       y + h - t);   sgl_v2f(x + w,       y + h);     sgl_v2f(x,           y + h);
+    sgl_v2f(x,           y);           sgl_v2f(x + t,       y);           sgl_v2f(x + t,       y + h);     sgl_v2f(x,           y + h);
+    sgl_v2f(x + w - t,   y);           sgl_v2f(x + w,       y);           sgl_v2f(x + w,       y + h);     sgl_v2f(x + w - t,   y + h);
+    sgl_end();
+
+    sgl_draw();
+
+    /* Title + rows via sdtx. Single scale (= 1) for everything in the
+     * panel — sdtx batches per-canvas state, and switching scales
+     * mid-panel makes the title and rows render against different
+     * canvases (title ends up positioned wrong). */
+    {
+        const char* title = "PLAYERS [F1]";
+        sdtx_canvas(screen_w, screen_h);
+        sdtx_font(1);
+        sdtx_origin((x + 12.0f) / 8.0f, (y + 8.0f) / 8.0f);
+        sdtx_color3b(0xff, 0xff, 0xff);
+        sdtx_home();
+        sdtx_printf("%s", title);
+        sdtx_font(0);
+    }
+    /* One row per player. */
+    float row_y = y + title_h;
+    char buf[160];
+
+    if (local_count) {
+        const net_client_welcome_t* wcm = net_client_welcome();
+        const body_config_t* body = planet_get((body_id_t)wcm->body_id);
+        if (!body) body = G.body;
+        double lat, lon, alt;
+        player_lat_lon_deg(G.player.position, body, &lat, &lon, &alt);
+        snprintf(buf, sizeof buf,
+                 "* id=%-3u  %s  lat=%+7.2f  lon=%+7.2f  alt=%5.0fm",
+                 wcm->player_id, body->name, lat, lon, alt);
+        sdtx_canvas(screen_w, screen_h);
+        sdtx_font(1);
+        sdtx_origin((x + 12.0f) / 8.0f, row_y / 8.0f);
+        sdtx_color3b(0x80, 0xff, 0xa0);
+        sdtx_home();
+        sdtx_printf("%s", buf);
+        sdtx_font(0);
+        row_y += row_h;
+    }
+
+    for (int i = 0; i < remote_n; ++i) {
+        const remote_player_t* rp = remote_players_get(i);
+        if (!rp) continue;
+        const body_config_t* body = planet_get((body_id_t)rp->body_id);
+        if (!body) body = G.body;
+        double lat, lon, alt;
+        /* F1 shows the freshest known pose (no interp lag); the
+         * renderer's lerp is purely cosmetic for smooth motion. */
+        player_lat_lon_deg(rp->pos_cur, body, &lat, &lon, &alt);
+        snprintf(buf, sizeof buf,
+                 "  id=%-3u  %s  lat=%+7.2f  lon=%+7.2f  alt=%5.0fm",
+                 rp->player_id, body->name, lat, lon, alt);
+        sdtx_canvas(screen_w, screen_h);
+        sdtx_font(1);
+        sdtx_origin((x + 12.0f) / 8.0f, row_y / 8.0f);
+        sdtx_color3b(0xff, 0xc0, 0x70);
+        sdtx_home();
+        sdtx_printf("%s", buf);
+        sdtx_font(0);
+        row_y += row_h;
+    }
+
+    if (local_count + remote_n == 0) {
+        snprintf(buf, sizeof buf, "  (offline - single player)");
+        sdtx_canvas(screen_w, screen_h);
+        sdtx_font(1);
+        sdtx_origin((x + 12.0f) / 8.0f, row_y / 8.0f);
+        sdtx_color3b(0x80, 0x90, 0xa8);
+        sdtx_home();
+        sdtx_printf("%s", buf);
+        sdtx_font(0);
+    }
+}
+
+/* Server-side desync popup. Drawn during the UI overlay pass — shows
+ * a centred panel with the reason + block id for 5 s after each
+ * notice, then fades. Real drawn rectangles + sdtx labels per the
+ * CLAUDE.md UI rule (no ASCII frames). */
+static void draw_desync_popup(float screen_w, float screen_h) {
+    double  dsec   = -1.0;
+    uint32_t dblock = 0;
+    net_desync_kind_t dk = net_client_last_desync(&dsec, &dblock);
+    if (dk == NET_DESYNC_NONE || dsec < 0.0 || dsec > 5.0) return;
+
+    /* Fade alpha out over the last second of the 5 s window. */
+    float fade = (dsec < 4.0f) ? 1.0f : (float)(5.0 - dsec);
+
+    const float w = 480.0f;
+    const float h = 96.0f;
+    const float x = (screen_w - w) * 0.5f;
+    const float y = 64.0f;     /* near top of screen */
+
+    /* sgl 2D pipeline (alpha-blended). Set up an ortho projection for
+     * pixel-space coords with (0,0) top-left. */
+    sgl_defaults();
+    sgl_matrix_mode_projection();
+    sgl_load_identity();
+    sgl_ortho(0.0f, screen_w, screen_h, 0.0f, -1.0f, 1.0f);
+    sgl_matrix_mode_modelview();
+    sgl_load_identity();
+    static sgl_pipeline pip_alpha = (sgl_pipeline){0};
+    if (pip_alpha.id == 0) {
+        pip_alpha = sgl_make_pipeline(&(sg_pipeline_desc){
+            .colors[0].blend = {
+                .enabled = true,
+                .src_factor_rgb = SG_BLENDFACTOR_SRC_ALPHA,
+                .dst_factor_rgb = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+                .src_factor_alpha = SG_BLENDFACTOR_ONE,
+                .dst_factor_alpha = SG_BLENDFACTOR_ONE,
+            },
+        });
+    }
+    sgl_load_pipeline(pip_alpha);
+
+    /* Backdrop. */
+    sgl_begin_quads();
+    sgl_c4f(0.18f, 0.04f, 0.04f, 0.85f * fade);
+    sgl_v2f(x,     y);
+    sgl_v2f(x + w, y);
+    sgl_v2f(x + w, y + h);
+    sgl_v2f(x,     y + h);
+    sgl_end();
+
+    /* Red border, 2 px. */
+    const float t = 2.0f;
+    sgl_begin_quads();
+    sgl_c4f(1.0f, 0.40f, 0.40f, fade);
+    /* top */    sgl_v2f(x,     y);         sgl_v2f(x + w, y);         sgl_v2f(x + w, y + t);     sgl_v2f(x,     y + t);
+    /* bottom */ sgl_v2f(x,     y + h - t); sgl_v2f(x + w, y + h - t); sgl_v2f(x + w, y + h);     sgl_v2f(x,     y + h);
+    /* left */   sgl_v2f(x,     y);         sgl_v2f(x + t, y);         sgl_v2f(x + t, y + h);     sgl_v2f(x,     y + h);
+    /* right */  sgl_v2f(x + w - t, y);     sgl_v2f(x + w, y);         sgl_v2f(x + w, y + h);     sgl_v2f(x + w - t, y + h);
+    sgl_end();
+
+    sgl_draw();
+
+    /* Labels via sdtx. The scaled-canvas trick (same as menu.c): shrink
+     * the canvas by `scale` so each 8-px char cell maps to `8 * scale`
+     * screen pixels. Title 3x, body 1.5x. */
+    {
+        const float title_scale = 3.0f;
+        const float title_cell  = 8.0f * title_scale;
+        const char* title       = "DESYNC";
+        float tw = title_cell * (float)strlen(title);
+        float tx = x + (w - tw) * 0.5f;
+        float ty = y + 14.0f;
+        sdtx_canvas(screen_w / title_scale, screen_h / title_scale);
+        sdtx_origin(tx / title_cell, ty / title_cell);
+        sdtx_color3b(0xff, 0x80, 0x80);
+        sdtx_home();
+        sdtx_printf("%s", title);
+    }
+    {
+        const float body_scale = 1.5f;
+        const float body_cell  = 8.0f * body_scale;
+        char buf[96];
+        snprintf(buf, sizeof buf,
+                 "server says you're inside block %u  (%.1fs ago)",
+                 (unsigned)dblock, dsec);
+        float tw = body_cell * (float)strlen(buf);
+        float tx = x + (w - tw) * 0.5f;
+        float ty = y + 60.0f;
+        sdtx_canvas(screen_w / body_scale, screen_h / body_scale);
+        sdtx_origin(tx / body_cell, ty / body_cell);
+        sdtx_color3b(0xff, 0xc0, 0xc0);
+        sdtx_home();
+        sdtx_printf("%s", buf);
+    }
+    /* Restore the default-scale canvas so any later sdtx_printf calls
+     * land at expected positions. */
+    sdtx_canvas(screen_w, screen_h);
+}
+
 static void frame(void) {
+    /* Pump the network state machine first so any handshake progress
+     * is reflected in this frame's HUD. Cheap — no I/O on the C side
+     * on the wasm backend, callbacks fire from the JS event loop. */
+    net_client_tick();
+    /* Let the menu observe the net state and promote a dropped MP
+     * socket to the modal error popup. Must run BEFORE the overlay
+     * short-circuit below so the transition takes effect on the same
+     * frame the popup is rendered. */
+    menu_tick();
+
+    /* In the main menu, draw the menu overlay over the last-rendered
+     * scene (3D buffer keeps its previous contents — fine since gameplay
+     * hasn't started yet). Skip the entire game update path. */
+    if (menu_is_overlay()) {
+        sg_begin_pass(&(sg_pass){
+            .action = { .colors[0] = { .load_action = SG_LOADACTION_CLEAR,
+                                          .clear_value = { 0.04f, 0.06f, 0.10f, 1.0f } } },
+            .swapchain = sglue_swapchain(),
+        });
+        sdtx_canvas(sapp_widthf(), sapp_heightf());
+        menu_draw((int)sapp_widthf(), (int)sapp_heightf());
+        sdtx_draw();
+        sg_end_pass();
+        sg_commit();
+        return;
+    }
+
+    maybe_apply_sp_resume();
+
     const double raw_dt_sec = stm_sec(stm_laptime(&G.last_time));
     float dt = (float)raw_dt_sec;
     /* Lag-spike handling. body_load_detail meshes a whole planet in
@@ -441,6 +893,28 @@ static void frame(void) {
     profiler_begin("player-update");
     player_update(&G.player, phys_world, dt);
     profiler_end("player-update");
+    /* Throttled SP autosave: writes the player's pose to localStorage
+     * every 5 s while in SP. Cheap (~140 byte string), serial to the
+     * browser. No-op in MP — server-side persistence lands in M6. */
+    maybe_autosave_sp((double)dt);
+
+    /* M4 position relay: when MP is READY, ship our pose to the server
+     * every 3rd frame (~20 Hz at 60 fps capped by the server tick).
+     * Server broadcasts the union in SNAPSHOT so other clients see us. */
+    {
+        static uint32_t G_state_send_ctr = 0;
+        if (menu_state() == GAME_IN_GAME_MP && net_client_state() == NET_CLIENT_READY
+            && (++G_state_send_ctr % 3) == 0) {
+            uint32_t body_id = 0;     /* TODO: thread the active body id once SOI is wired */
+            net_client_send_player_state(G_state_send_ctr,
+                                            body_id,
+                                            G.player.position.x,
+                                            G.player.position.y,
+                                            G.player.position.z,
+                                            G.player.yaw,
+                                            G.player.pitch);
+        }
+    }
     profiler_begin("interact");
     interact_update(&G.interact, phys_world, &G.player, dt);
     profiler_end("interact");
@@ -587,6 +1061,10 @@ static void frame(void) {
     renderer_draw_torches(view, proj);
     profiler_end("draw-torches");
 
+    /* Remote-player markers — drawn into the same offscreen pass so
+     * they get the depth-sorted composite + water refraction for free. */
+    remote_players_draw(view, proj);
+
     /* Hand off to the swapchain pass — blits the offscreen colour
      * (everything opaque) onto the swapchain. */
     profiler_begin("compose");
@@ -607,6 +1085,15 @@ static void frame(void) {
     teleport_menu_draw();
     draw_error_overlay();
     profiler_draw();
+    draw_desync_popup(sapp_widthf(), sapp_heightf());
+    draw_players_panel(sapp_widthf(), sapp_heightf());
+    chat_draw(sapp_widthf(), sapp_heightf());
+    /* Nameplates above remote players. View/proj are still in scope
+     * from the 3D pass earlier in frame(). The lookup goes through
+     * the net_client name cache (populated by PLAYER_INFO + WELCOME). */
+    remote_players_draw_nameplates(view, proj,
+                                      sapp_widthf(), sapp_heightf(),
+                                      net_client_name_for_id);
     sdtx_draw();
     hotbar_ui_draw(&G.player.inventory);
     mobile_ui_draw();
@@ -619,6 +1106,16 @@ static void frame(void) {
 /* --------------------------------------------------------------------- */
 
 static void event(const sapp_event* e) {
+    /* The main menu owns input while it's up — every event is either
+     * a button click or noise to be swallowed. */
+    if (menu_is_overlay()) {
+        menu_event(e);
+        return;
+    }
+    /* Chat takes Enter (open compose) and every keystroke while
+     * composing. Returns true when it owned the event so movement /
+     * teleport keys don't double-fire while the player is typing. */
+    if (chat_event(e)) return;
     /* Teleport menu gets first crack — it intercepts T/M/arrows/enter
      * when open so those keys don't also reach the movement layer. */
     if (teleport_menu_event(e, &G.player)) return;
@@ -647,6 +1144,11 @@ static void event(const sapp_event* e) {
      * first, so the toggle works (the find dialog may also pop up;
      * pressing F3 again closes it). 'P' is bound as a backup that's
      * not browser-intercepted. */
+    /* F1 toggles the players panel (lat/lon list of everyone online). */
+    if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_F1) {
+        G_players_panel_visible = !G_players_panel_visible;
+        return;
+    }
     if (e->type == SAPP_EVENTTYPE_KEY_DOWN &&
         (e->key_code == SAPP_KEYCODE_F3 || e->key_code == SAPP_KEYCODE_P)) {
         profiler_toggle_visible();
@@ -675,6 +1177,10 @@ static void event(const sapp_event* e) {
 }
 
 static void cleanup(void) {
+    net_client_disconnect();
+    chat_shutdown();
+    remote_players_shutdown();
+    menu_shutdown();
     teleport_menu_shutdown();
     hotbar_ui_shutdown();
     mobile_ui_shutdown();

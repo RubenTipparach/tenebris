@@ -9,11 +9,20 @@ if (NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
 endif()
 
+# Build-target gates. Server-only builds (e.g. the Fly.io Docker image)
+# set -DTENEBRIS_BUILD_CLIENT=OFF to skip Sokol / sokol-shdc / OpenGL
+# entirely, which keeps the runtime container small and lets the
+# server compile on hosts without a GL stack installed.
+option(TENEBRIS_BUILD_CLIENT "Build the WASM / native client" ON)
+option(TENEBRIS_BUILD_SERVER "Build the dedicated server" ON)
+
 # sokol-shdc shader cross-compiler integration. Defines
 # add_sokol_shader(target path/to/shader.glsl) which attaches the
 # generated header to `target` and exposes its directory on the
 # include path. The binary itself is fetched by scripts/fetch-deps.sh.
-include(cmake/sokol-shdc.cmake)
+if (TENEBRIS_BUILD_CLIENT)
+    include(cmake/sokol-shdc.cmake)
+endif()
 
 # ---------------------------------------------------------------------------
 # core library — shared between client and server. MUST NOT depend on sokol.
@@ -58,8 +67,31 @@ target_include_directories(tenebris_third_party INTERFACE
 )
 
 # ---------------------------------------------------------------------------
+# libwebsockets — the native WebSocket backend, shared by the dedicated
+# server and the native client. Located once at top level so both targets
+# pull from the same install. The browser client uses `-lwebsocket.js`
+# from emscripten instead and skips this entirely.
+# ---------------------------------------------------------------------------
+if (NOT EMSCRIPTEN AND UNIX)
+    find_package(PkgConfig QUIET)
+    if (PkgConfig_FOUND)
+        pkg_check_modules(LIBWEBSOCKETS QUIET libwebsockets)
+    endif()
+    if (NOT LIBWEBSOCKETS_FOUND)
+        find_library(LWS_LIB websockets)
+        find_path(LWS_INC libwebsockets.h)
+        if (LWS_LIB AND LWS_INC)
+            set(LIBWEBSOCKETS_FOUND TRUE)
+            set(LIBWEBSOCKETS_LIBRARIES ${LWS_LIB})
+            set(LIBWEBSOCKETS_INCLUDE_DIRS ${LWS_INC})
+        endif()
+    endif()
+endif()
+
+# ---------------------------------------------------------------------------
 # client build — different shape depending on target
 # ---------------------------------------------------------------------------
+if (TENEBRIS_BUILD_CLIENT)
 set(TENEBRIS_CLIENT_SOURCES
     src/client/sokol_impl.c
     src/client/main_web.c
@@ -75,7 +107,26 @@ set(TENEBRIS_CLIENT_SOURCES
     src/client/torch.c
     src/client/gfx_math.c
     src/client/profiler.c
+    src/client/net_client.c
+    src/client/chat.c
+    src/client/menu.c
+    src/client/persistence.c
+    src/client/profile.c
+    src/client/client_kv.c
+    src/client/remote_players.c
 )
+
+# Browser client uses the emscripten/websocket.h bridge (linked with
+# `-lwebsocket.js` below). Native client uses the same libwebsockets
+# backend the server speaks — net_transport_ws.c serves both call
+# sites; the unused half is just unreachable code in each binary.
+if (EMSCRIPTEN)
+    list(APPEND TENEBRIS_CLIENT_SOURCES
+        src/client/net_transport_wasm.c)
+else()
+    list(APPEND TENEBRIS_CLIENT_SOURCES
+        src/server/net_transport_ws.c)
+endif()
 
 # Populate assets/textures/ from the parent JS project's public/textures.
 # Both web and native targets read these at runtime — the web build
@@ -123,7 +174,8 @@ if (EMSCRIPTEN)
         "-sFULL_ES3=1"
         "-sALLOW_MEMORY_GROWTH=1"
         "-sSTACK_SIZE=1mb"
-        "-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap']"
+        "-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','UTF8ToString','stringToUTF8','lengthBytesUTF8']"
+        "-lwebsocket.js"       # emscripten WebSocket bindings used by net_transport_wasm.c
         "--shell-file=${CMAKE_SOURCE_DIR}/web/shell.html"
         "--preload-file" "${CMAKE_SOURCE_DIR}/assets@/assets"
     )
@@ -141,6 +193,17 @@ else()
     add_executable(tenebris ${TENEBRIS_CLIENT_SOURCES})
     target_link_libraries(tenebris PRIVATE tenebris_core tenebris_third_party)
     target_compile_definitions(tenebris PRIVATE CLIENT_BUILD)
+
+    # libwebsockets — the native client's WebSocket transport. Required;
+    # the browser client side-steps this by using -lwebsocket.js instead.
+    if (UNIX AND LIBWEBSOCKETS_FOUND)
+        target_link_libraries(tenebris PRIVATE ${LIBWEBSOCKETS_LIBRARIES})
+        target_include_directories(tenebris PRIVATE ${LIBWEBSOCKETS_INCLUDE_DIRS})
+    elseif (UNIX)
+        message(FATAL_ERROR
+            "libwebsockets not found for the native client. Install "
+            "libwebsockets-dev (Debian/Ubuntu) or libwebsockets (brew).")
+    endif()
 
     add_sokol_shader(tenebris src/shaders/water.glsl)
     add_sokol_shader(tenebris src/shaders/composite.glsl)
@@ -171,8 +234,43 @@ else()
         target_link_libraries(tenebris PRIVATE
             OpenGL::GL X11 Xi Xcursor m dl pthread asound)
     endif()
+endif()
+endif() # TENEBRIS_BUILD_CLIENT
 
-    # server target — headless, native only. Empty shell for now; wired in Tier 5.
-    # add_executable(tenebris_server src/server/main_server.c)
-    # target_link_libraries(tenebris_server PRIVATE tenebris_core)
+# ---------------------------------------------------------------------------
+# server target — headless, native, POSIX-only. Standalone of the client
+# target so a server-only configure (TENEBRIS_BUILD_CLIENT=OFF) skips
+# Sokol / sokol-shdc / OpenGL entirely. Used by the Fly.io Docker build.
+# ---------------------------------------------------------------------------
+if (TENEBRIS_BUILD_SERVER AND NOT EMSCRIPTEN AND UNIX)
+    if (NOT LIBWEBSOCKETS_FOUND)
+        message(FATAL_ERROR
+            "libwebsockets not found. Install libwebsockets-dev (Debian/Ubuntu) "
+            "or libwebsockets (brew), or configure with "
+            "-DTENEBRIS_BUILD_SERVER=OFF to skip the server target.")
+    endif()
+
+    add_executable(tenebris-server
+        src/server/server_main.c
+        src/server/server.c
+        src/server/saves.c
+        src/server/net_transport_ws.c
+    )
+    target_link_libraries(tenebris-server PRIVATE
+        tenebris_core
+        ${LIBWEBSOCKETS_LIBRARIES}
+    )
+    target_include_directories(tenebris-server PRIVATE
+        src
+        ${LIBWEBSOCKETS_INCLUDE_DIRS}
+    )
+    target_compile_options(tenebris-server PRIVATE
+        -Wall -Wextra -Wpedantic
+        -ffp-contract=off -fno-fast-math
+    )
+    # POSIX feature-test macro for clock_gettime, nanosleep, SIGTERM.
+    target_compile_definitions(tenebris-server PRIVATE _POSIX_C_SOURCE=200809L)
+    if (NOT APPLE)
+        target_link_libraries(tenebris-server PRIVATE m pthread)
+    endif()
 endif()

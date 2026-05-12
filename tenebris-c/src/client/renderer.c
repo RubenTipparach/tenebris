@@ -1159,6 +1159,14 @@ static void body_load_detail(chunked_body_t* body) {
  * for non-Tenebris bodies. Same behavior as renderer_register_world. */
 void renderer_register_moon(world_t* w) { renderer_register_world(w); }
 
+world_t* renderer_world_for_body(uint32_t body_id) {
+    for (int i = 0; i < R.body_count; ++i) {
+        world_t* w = R.bodies[i].world;
+        if (w && w->body && (uint32_t)w->body->id == body_id) return w;
+    }
+    return NULL;
+}
+
 int renderer_moon_count(void) {
     /* "moon count" historically meant non-active bodies. */
     if (R.body_count == 0) return 0;

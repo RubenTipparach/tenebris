@@ -108,6 +108,55 @@ altitude, `[H] hide terrain`). Those stay as `sdtx_printf`.
 Only deliver an ASCII-only UI when the user explicitly asks for it
 ("draw an ASCII frame", "I just want text").
 
+## In-game text: ASCII only — no em-dashes, no smart quotes
+
+Every string that ends up rendered on screen via `sdtx_printf` must
+be plain 7-bit ASCII. The bundled `sokol_debugtext` fonts (Oric,
+c64, etc.) only define glyphs for the standard ASCII range, and
+non-ASCII characters render as garbage glyphs (you'll see € for
+`_`, weird boxes for `'`, etc.).
+
+**Never use em-dashes (—) in any string that reaches the player.**
+Use a regular hyphen `-` instead. Same goes for en-dashes (–),
+typographic quotes (`'`, `'`, `"`, `"`), the ellipsis character (…),
+non-breaking spaces, and any other Unicode punctuation. Comments in
+the C source are free to use whatever — the rule is strictly about
+*rendered* text.
+
+Also avoid `_` (underscore) in player-visible strings — the Oric
+font maps it to a graphic glyph rather than a true underline, so
+`player_id` renders as `player€id`. Use `-` (hyphen), space, or
+camelCase if you need to break words.
+
+This rule stays in force until the font pipeline gains real Unicode
+coverage, which is not on the roadmap.
+
+## No browser alert / prompt / confirm boxes — in-game UI only
+
+**Never use `window.alert`, `window.prompt`, or `window.confirm` for
+any user-facing input or dialog.** Those native browser modals look
+out of place over the game canvas, can't be styled, steal focus
+mid-gameplay, and on mobile cover most of the screen. They have no
+place in the shipping UX.
+
+Every text input — room codes, profile names, world names, server
+URLs, chat — goes through an **in-game input box**: a real drawn
+panel rendered with `sokol_gl` for the geometry and `sokol_debugtext`
+for the typed glyphs, with the input loop driven by
+`SAPP_EVENTTYPE_CHAR` (typed characters) and `SAPP_EVENTTYPE_KEY_DOWN`
+(Enter / Escape / Backspace). The menu module already owns one such
+box for the room JOIN flow — reuse / extend that rather than
+reaching for `EM_JS(window.prompt)`.
+
+Same applies to confirmations: a real two-button dialog drawn on
+the canvas, not `window.confirm`. The exception is `console.log` /
+`console.error` for dev diagnostics — those go to devtools, not the
+game, so they're fine to keep on the standard JS console.
+
+If a feature *requires* the browser prompt UX (e.g. a deep-link
+permission grant), document the exception inline at the call site.
+Otherwise this rule is absolute.
+
 ## Static game asset guidelines
 
 These rules apply to every asset Claude generates, hand-edits, or asks
