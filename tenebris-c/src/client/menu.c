@@ -53,6 +53,7 @@ typedef struct {
     const char* label;
     int  hover;
     int  visible;
+    int  disabled;        /* greyed-out, click does nothing */
 } menu_button_t;
 
 #define MAIN_BTN_W   240.0f
@@ -78,10 +79,13 @@ static struct {
     /* Profile-picker buttons. */
     menu_button_t btn_new_profile;
     menu_button_t btn_profile[PROFILE_MAX];
-    /* MP submenu buttons. */
+    /* MP submenu buttons.
+     * MP top: btn_self_host (greyed, future) + btn_cloud_host (active).
+     * Cloud submenu: btn_host (generates code) + btn_join (enters code). */
     menu_button_t btn_self_host;
-    menu_button_t btn_join;
     menu_button_t btn_cloud_host;
+    menu_button_t btn_host;
+    menu_button_t btn_join;
 
     /* In-game text input. Active when state == GAME_MP_JOIN_INPUT
      * (and any future text-input flows we route through it). */
@@ -120,7 +124,7 @@ static struct {
 static bool state_is_input(game_state_t s);
 
 static bool hit(const menu_button_t* b, float x, float y) {
-    if (!b->visible) return false;
+    if (!b->visible || b->disabled) return false;
     return x >= b->x && x <= b->x + b->w && y >= b->y && y <= b->y + b->h;
 }
 
@@ -129,13 +133,25 @@ static void set_button(menu_button_t* b, float x, float y, float w, float h,
     b->x = x; b->y = y; b->w = w; b->h = h;
     b->label = label;
     b->visible = 1;
+    b->disabled = 0;
     b->hover = (M.mouse_x >= x && M.mouse_x <= x + w &&
                 M.mouse_y >= y && M.mouse_y <= y + h);
 }
 
+/* Same as set_button but also marks the button as greyed-out: dimmer
+ * fill, no hover state, no click. Used for not-yet-built features
+ * (e.g. SELF HOSTED in the MP top-level submenu). */
+static void set_button_disabled(menu_button_t* b, float x, float y, float w, float h,
+                                  const char* label) {
+    set_button(b, x, y, w, h, label);
+    b->disabled = 1;
+    b->hover    = 0;
+}
+
 static void hide_button(menu_button_t* b) {
-    b->visible = 0;
-    b->hover   = 0;
+    b->visible  = 0;
+    b->hover    = 0;
+    b->disabled = 0;
 }
 
 static void layout_main(float w, float h) {
@@ -171,30 +187,55 @@ static void layout_main(float w, float h) {
     hide_button(&M.btn_new_profile);
     for (int i = 0; i < PROFILE_MAX; ++i) hide_button(&M.btn_profile[i]);
     hide_button(&M.btn_self_host);
+    hide_button(&M.btn_host);
     hide_button(&M.btn_join);
     hide_button(&M.btn_cloud_host);
 }
 
 static void layout_mp_submenu(float w, float h) {
     float cx = w * 0.5f;
-    /* Three stacked buttons: SELF HOST / JOIN / CLOUD HOSTED. */
-    float total_h = 3.0f * MAIN_BTN_H + 2.0f * MAIN_BTN_GAP;
-    float y0 = (h - total_h) * 0.5f;
-    set_button(&M.btn_self_host,
-                 cx - MAIN_BTN_W * 0.5f, y0,
-                 MAIN_BTN_W, MAIN_BTN_H, "SELF HOST");
-    set_button(&M.btn_join,
-                 cx - MAIN_BTN_W * 0.5f,
-                 y0 + MAIN_BTN_H + MAIN_BTN_GAP,
-                 MAIN_BTN_W, MAIN_BTN_H, "JOIN");
+    float cy = h * 0.5f;
+    /* Two buttons: SELF HOSTED (disabled — "coming soon") and
+     * CLOUD HOSTED (active — enters the cloud submenu). */
+    set_button_disabled(&M.btn_self_host,
+                          cx - MAIN_BTN_W * 0.5f,
+                          cy - MAIN_BTN_H - MAIN_BTN_GAP * 0.5f,
+                          MAIN_BTN_W, MAIN_BTN_H, "SELF HOSTED");
     set_button(&M.btn_cloud_host,
                  cx - MAIN_BTN_W * 0.5f,
-                 y0 + 2.0f * (MAIN_BTN_H + MAIN_BTN_GAP),
+                 cy + MAIN_BTN_GAP * 0.5f,
                  MAIN_BTN_W, MAIN_BTN_H, "CLOUD HOSTED");
     set_button(&M.btn_back,
                  cx - 120.0f, h * 0.5f + 220.0f, 240.0f, LIST_BTN_H, "BACK");
     hide_button(&M.btn_sp);
     hide_button(&M.btn_mp);
+    hide_button(&M.btn_host);
+    hide_button(&M.btn_host);
+    hide_button(&M.btn_join);
+    hide_button(&M.btn_active_profile);
+    hide_button(&M.btn_new_world);
+    for (int i = 0; i < PERSISTENCE_MAX_WORLDS; ++i) hide_button(&M.btn_world[i]);
+    hide_button(&M.btn_new_profile);
+    for (int i = 0; i < PROFILE_MAX; ++i) hide_button(&M.btn_profile[i]);
+}
+
+static void layout_mp_cloud_submenu(float w, float h) {
+    float cx = w * 0.5f;
+    float cy = h * 0.5f;
+    set_button(&M.btn_host,
+                 cx - MAIN_BTN_W * 0.5f,
+                 cy - MAIN_BTN_H - MAIN_BTN_GAP * 0.5f,
+                 MAIN_BTN_W, MAIN_BTN_H, "HOST");
+    set_button(&M.btn_join,
+                 cx - MAIN_BTN_W * 0.5f,
+                 cy + MAIN_BTN_GAP * 0.5f,
+                 MAIN_BTN_W, MAIN_BTN_H, "JOIN");
+    set_button(&M.btn_back,
+                 cx - 120.0f, h * 0.5f + 220.0f, 240.0f, LIST_BTN_H, "BACK");
+    hide_button(&M.btn_sp);
+    hide_button(&M.btn_mp);
+    hide_button(&M.btn_self_host);
+    hide_button(&M.btn_cloud_host);
     hide_button(&M.btn_active_profile);
     hide_button(&M.btn_new_world);
     for (int i = 0; i < PERSISTENCE_MAX_WORLDS; ++i) hide_button(&M.btn_world[i]);
@@ -210,7 +251,9 @@ static void layout_join_input(float w, float h) {
     hide_button(&M.btn_sp);
     hide_button(&M.btn_mp);
     hide_button(&M.btn_self_host);
+    hide_button(&M.btn_host);
     hide_button(&M.btn_join);
+    hide_button(&M.btn_host);
     hide_button(&M.btn_join);
     hide_button(&M.btn_cloud_host);
     hide_button(&M.btn_active_profile);
@@ -254,6 +297,7 @@ static void layout_world_list(float w, float h) {
     hide_button(&M.btn_new_profile);
     for (int i = 0; i < PROFILE_MAX; ++i) hide_button(&M.btn_profile[i]);
     hide_button(&M.btn_self_host);
+    hide_button(&M.btn_host);
     hide_button(&M.btn_join);
     hide_button(&M.btn_cloud_host);
 }
@@ -287,6 +331,7 @@ static void layout_profile_select(float w, float h) {
     hide_button(&M.btn_new_world);
     for (int i = 0; i < PERSISTENCE_MAX_WORLDS; ++i) hide_button(&M.btn_world[i]);
     hide_button(&M.btn_self_host);
+    hide_button(&M.btn_host);
     hide_button(&M.btn_join);
     hide_button(&M.btn_cloud_host);
 }
@@ -302,6 +347,8 @@ static void layout(float w, float h) {
             layout_world_list(w, h); break;
         case GAME_MP_SUBMENU:
             layout_mp_submenu(w, h); break;
+        case GAME_MP_CLOUD_SUBMENU:
+            layout_mp_cloud_submenu(w, h); break;
         case GAME_MP_JOIN_INPUT:
         case GAME_PROFILE_NAME_INPUT:
         case GAME_SP_NEW_WORLD_INPUT:
@@ -370,6 +417,13 @@ static void draw_text_left(const char* str, float screen_x,
 
 static void draw_button(const menu_button_t* b) {
     if (!b->visible) return;
+    if (b->disabled) {
+        /* Dim fill + dim border; matches the "future feature" tone in
+         * the rest of the UI. */
+        quad(b->x, b->y, b->w, b->h, 0.08f, 0.09f, 0.12f, 0.85f);
+        border(b->x, b->y, b->w, b->h, 2.0f, 0.35f, 0.38f, 0.45f, 0.85f);
+        return;
+    }
     if (b->hover) quad(b->x, b->y, b->w, b->h, 0.22f, 0.30f, 0.42f, 0.95f);
     else          quad(b->x, b->y, b->w, b->h, 0.12f, 0.14f, 0.19f, 0.90f);
     border(b->x, b->y, b->w, b->h, 2.0f, 0.85f, 0.90f, 1.0f, 1.0f);
@@ -410,8 +464,9 @@ void menu_draw(int screen_w, int screen_h) {
     draw_button(&M.btn_sp);
     draw_button(&M.btn_mp);
     draw_button(&M.btn_self_host);
-    draw_button(&M.btn_join);
     draw_button(&M.btn_cloud_host);
+    draw_button(&M.btn_host);
+    draw_button(&M.btn_join);
     draw_button(&M.btn_active_profile);
     draw_button(&M.btn_new_profile);
     for (int i = 0; i < PROFILE_MAX; ++i) draw_button(&M.btn_profile[i]);
@@ -488,14 +543,21 @@ void menu_draw(int screen_w, int screen_h) {
         case GAME_MP_SUBMENU:
             draw_text_centered("MULTIPLAYER", cx, h * 0.5f - 200.0f, 3.0f,
                                  0xff, 0xff, 0xff);
-            draw_text_centered("self host = new room you control",
+            draw_text_centered("self hosted = run the server on your machine (coming soon)",
+                                 cx, h * 0.5f + 180.0f, 1.0f,
+                                 0x70, 0x78, 0x88);
+            draw_text_centered("cloud hosted = play on the shared fly.io server",
+                                 cx, h * 0.5f + 196.0f, 1.0f,
+                                 0xa0, 0xb0, 0xc8);
+            break;
+        case GAME_MP_CLOUD_SUBMENU:
+            draw_text_centered("CLOUD HOSTED", cx, h * 0.5f - 200.0f, 3.0f,
+                                 0xff, 0xff, 0xff);
+            draw_text_centered("host = open a new private room (you get a code)",
                                  cx, h * 0.5f + 180.0f, 1.0f,
                                  0xa0, 0xb0, 0xc8);
             draw_text_centered("join = enter a friend's 6-char code",
                                  cx, h * 0.5f + 196.0f, 1.0f,
-                                 0xa0, 0xb0, 0xc8);
-            draw_text_centered("cloud hosted = join the public world",
-                                 cx, h * 0.5f + 212.0f, 1.0f,
                                  0xa0, 0xb0, 0xc8);
             break;
         case GAME_MP_JOIN_INPUT:
@@ -547,17 +609,27 @@ void menu_draw(int screen_w, int screen_h) {
     if (M.btn_self_host.visible) {
         float bx = M.btn_self_host.x + M.btn_self_host.w * 0.5f;
         float by = M.btn_self_host.y + (M.btn_self_host.h - 8.0f * 2.0f) * 0.5f;
-        draw_text_centered(M.btn_self_host.label, bx, by, 2.0f, 0xff, 0xff, 0xff);
-    }
-    if (M.btn_join.visible) {
-        float bx = M.btn_join.x + M.btn_join.w * 0.5f;
-        float by = M.btn_join.y + (M.btn_join.h - 8.0f * 2.0f) * 0.5f;
-        draw_text_centered(M.btn_join.label, bx, by, 2.0f, 0xff, 0xff, 0xff);
+        /* Disabled buttons get a muted label colour to match their
+         * dimmer fill. */
+        uint8_t lr = M.btn_self_host.disabled ? 0x70 : 0xff;
+        uint8_t lg = M.btn_self_host.disabled ? 0x78 : 0xff;
+        uint8_t lb = M.btn_self_host.disabled ? 0x88 : 0xff;
+        draw_text_centered(M.btn_self_host.label, bx, by, 2.0f, lr, lg, lb);
     }
     if (M.btn_cloud_host.visible) {
         float bx = M.btn_cloud_host.x + M.btn_cloud_host.w * 0.5f;
         float by = M.btn_cloud_host.y + (M.btn_cloud_host.h - 8.0f * 2.0f) * 0.5f;
         draw_text_centered(M.btn_cloud_host.label, bx, by, 2.0f, 0xff, 0xff, 0xff);
+    }
+    if (M.btn_host.visible) {
+        float bx = M.btn_host.x + M.btn_host.w * 0.5f;
+        float by = M.btn_host.y + (M.btn_host.h - 8.0f * 2.0f) * 0.5f;
+        draw_text_centered(M.btn_host.label, bx, by, 2.0f, 0xff, 0xff, 0xff);
+    }
+    if (M.btn_join.visible) {
+        float bx = M.btn_join.x + M.btn_join.w * 0.5f;
+        float by = M.btn_join.y + (M.btn_join.h - 8.0f * 2.0f) * 0.5f;
+        draw_text_centered(M.btn_join.label, bx, by, 2.0f, 0xff, 0xff, 0xff);
     }
     if (M.btn_active_profile.visible) {
         char chip[64];
@@ -665,15 +737,13 @@ static void connect_to_room(const char* room_code) {
     M.state = GAME_IN_GAME_MP;
 }
 
-static void start_self_host(void) {
+/* Generate a fresh room code, connect to it. Cloud submenu's HOST
+ * button. */
+static void start_host(void) {
     char* code = menu_js_new_room_code();
     if (!code) return;
     connect_to_room(code);
     free(code);
-}
-
-static void start_cloud_host(void) {
-    connect_to_room("");        /* empty = public room */
 }
 
 static void start_multiplayer(void) {
@@ -733,9 +803,15 @@ static void on_click_world_list(float x, float y) {
 }
 
 static void on_click_mp_submenu(float x, float y) {
-    if (hit(&M.btn_back, x, y))       { M.state = GAME_MAIN_MENU; return; }
-    if (hit(&M.btn_self_host, x, y))  { start_self_host();        return; }
-    if (hit(&M.btn_cloud_host, x, y)) { start_cloud_host();       return; }
+    if (hit(&M.btn_back, x, y))       { M.state = GAME_MAIN_MENU;          return; }
+    /* SELF HOSTED is set_button_disabled -> hit() returns false; click
+     * falls through silently. CLOUD HOSTED enters its own submenu. */
+    if (hit(&M.btn_cloud_host, x, y)) { M.state = GAME_MP_CLOUD_SUBMENU;   return; }
+}
+
+static void on_click_mp_cloud_submenu(float x, float y) {
+    if (hit(&M.btn_back, x, y)) { M.state = GAME_MP_SUBMENU; return; }
+    if (hit(&M.btn_host, x, y)) { start_host();              return; }
     if (hit(&M.btn_join, x, y)) {
         M.input_buf[0] = 0;
         M.input_len    = 0;
@@ -746,7 +822,7 @@ static void on_click_mp_submenu(float x, float y) {
 }
 
 static void on_click_join_input(float x, float y) {
-    if (hit(&M.btn_back, x, y)) { M.state = GAME_MP_SUBMENU; return; }
+    if (hit(&M.btn_back, x, y)) { M.state = GAME_MP_CLOUD_SUBMENU; return; }
 }
 
 static void on_click_profile_name_input(float x, float y) {
@@ -762,7 +838,8 @@ static void on_click(float x, float y) {
         case GAME_PROFILE_SELECT: on_click_profile_select(x, y); break;
         case GAME_MAIN_MENU:      on_click_main(x, y);           break;
         case GAME_SP_WORLD_LIST:  on_click_world_list(x, y);     break;
-        case GAME_MP_SUBMENU:     on_click_mp_submenu(x, y);     break;
+        case GAME_MP_SUBMENU:        on_click_mp_submenu(x, y);       break;
+        case GAME_MP_CLOUD_SUBMENU:  on_click_mp_cloud_submenu(x, y); break;
         case GAME_MP_JOIN_INPUT:      on_click_join_input(x, y);          break;
         case GAME_PROFILE_NAME_INPUT: on_click_profile_name_input(x, y);  break;
         case GAME_SP_NEW_WORLD_INPUT: on_click_new_world_input(x, y);     break;
@@ -854,9 +931,9 @@ bool menu_event(const sapp_event* e) {
                 /* Cancel back to the screen the input was launched
                  * from — different per input state. */
                 switch (M.state) {
-                    case GAME_MP_JOIN_INPUT:      M.state = GAME_MP_SUBMENU;     break;
-                    case GAME_PROFILE_NAME_INPUT: M.state = GAME_PROFILE_SELECT; break;
-                    case GAME_SP_NEW_WORLD_INPUT: M.state = GAME_SP_WORLD_LIST;  break;
+                    case GAME_MP_JOIN_INPUT:      M.state = GAME_MP_CLOUD_SUBMENU; break;
+                    case GAME_PROFILE_NAME_INPUT: M.state = GAME_PROFILE_SELECT;   break;
+                    case GAME_SP_NEW_WORLD_INPUT: M.state = GAME_SP_WORLD_LIST;    break;
                     default: break;
                 }
                 return true;
@@ -913,6 +990,7 @@ bool menu_is_overlay(void) {
         || M.state == GAME_SP_WORLD_LIST
         || M.state == GAME_SP_NEW_WORLD_INPUT
         || M.state == GAME_MP_SUBMENU
+        || M.state == GAME_MP_CLOUD_SUBMENU
         || M.state == GAME_MP_JOIN_INPUT
         || M.state == GAME_MP_URL_PROMPT;
 }

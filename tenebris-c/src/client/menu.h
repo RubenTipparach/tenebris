@@ -24,11 +24,12 @@ typedef enum {
     GAME_MAIN_MENU          = 2,
     GAME_SP_WORLD_LIST      = 3,   /* picking which world to load */
     GAME_SP_NEW_WORLD_INPUT = 4,   /* typing a new world name */
-    GAME_MP_SUBMENU         = 5,   /* self-host / join / cloud-host picker */
-    GAME_MP_JOIN_INPUT      = 6,   /* in-game text input for room code */
-    GAME_MP_URL_PROMPT      = 7,   /* transient — kept for future */
-    GAME_IN_GAME_SP         = 8,
-    GAME_IN_GAME_MP         = 9,
+    GAME_MP_SUBMENU         = 5,   /* self-hosted (disabled) / cloud-hosted picker */
+    GAME_MP_CLOUD_SUBMENU   = 6,   /* under cloud-hosted: host / join */
+    GAME_MP_JOIN_INPUT      = 7,   /* in-game text input for room code */
+    GAME_MP_URL_PROMPT      = 8,   /* transient — kept for future */
+    GAME_IN_GAME_SP         = 9,
+    GAME_IN_GAME_MP         = 10,
 } game_state_t;
 
 /* The 6-char room code shown in the HUD while in IN_GAME_MP. Empty
