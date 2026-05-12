@@ -75,6 +75,9 @@ static struct {
     /* Main-menu buttons. */
     menu_button_t btn_sp;
     menu_button_t btn_mp;
+    /* Top-right indicator on the main menu — shows the active profile
+     * name; clicking it dumps you back to the profile picker. */
+    menu_button_t btn_active_profile;
     /* SP world-list buttons. */
     menu_button_t btn_new_world;
     menu_button_t btn_back;
@@ -135,9 +138,27 @@ static void layout_main(float w, float h) {
                  cx - MAIN_BTN_W * 0.5f,
                  cy + MAIN_BTN_GAP * 0.5f,
                  MAIN_BTN_W, MAIN_BTN_H, "MULTIPLAYER");
+    /* Active-profile chip top-right. The label gets filled with
+     * "as <name>" in menu_draw so the layout doesn't need to read
+     * profile state. */
+    profile_t active;
+    if (profile_get_active(&active)) {
+        const float chip_w = 200.0f;
+        const float chip_h = 32.0f;
+        set_button(&M.btn_active_profile,
+                     w - chip_w - 16.0f, 16.0f,
+                     chip_w, chip_h, active.name);
+    } else {
+        hide_button(&M.btn_active_profile);
+    }
+    /* Hide every button that belongs to other screens — these were
+     * positioned by layout_profile_select / layout_world_list and
+     * would otherwise draw on top of the main menu. */
     hide_button(&M.btn_new_world);
     hide_button(&M.btn_back);
     for (int i = 0; i < PERSISTENCE_MAX_WORLDS; ++i) hide_button(&M.btn_world[i]);
+    hide_button(&M.btn_new_profile);
+    for (int i = 0; i < PROFILE_MAX; ++i) hide_button(&M.btn_profile[i]);
 }
 
 static void layout_world_list(float w, float h) {
@@ -170,6 +191,9 @@ static void layout_world_list(float w, float h) {
                  cx - 120.0f, h * 0.5f + 220.0f, 240.0f, LIST_BTN_H, "BACK");
     hide_button(&M.btn_sp);
     hide_button(&M.btn_mp);
+    hide_button(&M.btn_active_profile);
+    hide_button(&M.btn_new_profile);
+    for (int i = 0; i < PROFILE_MAX; ++i) hide_button(&M.btn_profile[i]);
 }
 
 static void layout_profile_select(float w, float h) {
@@ -197,6 +221,7 @@ static void layout_profile_select(float w, float h) {
     hide_button(&M.btn_back);
     hide_button(&M.btn_sp);
     hide_button(&M.btn_mp);
+    hide_button(&M.btn_active_profile);
     hide_button(&M.btn_new_world);
     for (int i = 0; i < PERSISTENCE_MAX_WORLDS; ++i) hide_button(&M.btn_world[i]);
 }
@@ -313,6 +338,7 @@ void menu_draw(int screen_w, int screen_h) {
     /* Geometry */
     draw_button(&M.btn_sp);
     draw_button(&M.btn_mp);
+    draw_button(&M.btn_active_profile);
     draw_button(&M.btn_new_profile);
     for (int i = 0; i < PROFILE_MAX; ++i) draw_button(&M.btn_profile[i]);
     draw_button(&M.btn_new_world);
@@ -340,22 +366,12 @@ void menu_draw(int screen_w, int screen_h) {
             }
             break;
         case GAME_MAIN_MENU:
-        case GAME_MP_URL_PROMPT: {
+        case GAME_MP_URL_PROMPT:
             draw_text_centered("TENEBRIS", cx, h * 0.5f - 220.0f, 5.0f,
                                  0xff, 0xff, 0xff);
-            /* Greeting under the title shows who's playing. */
-            profile_t active;
-            if (profile_get_active(&active)) {
-                char greet[80];
-                snprintf(greet, sizeof greet, "hi %s", active.name);
-                draw_text_centered(greet, cx, h * 0.5f - 160.0f, 2.0f,
-                                     0xa0, 0xb0, 0xc8);
-            } else {
-                draw_text_centered("select a mode", cx, h * 0.5f - 160.0f, 2.0f,
-                                     0xa0, 0xb0, 0xc8);
-            }
+            draw_text_centered("select a mode", cx, h * 0.5f - 160.0f, 2.0f,
+                                 0xa0, 0xb0, 0xc8);
             break;
-        }
         case GAME_SP_WORLD_LIST:
             draw_text_centered("SELECT WORLD", cx, h * 0.5f - 200.0f, 3.0f,
                                  0xff, 0xff, 0xff);
@@ -379,6 +395,14 @@ void menu_draw(int screen_w, int screen_h) {
         float bx = M.btn_mp.x + M.btn_mp.w * 0.5f;
         float by = M.btn_mp.y + (M.btn_mp.h - 8.0f * 2.0f) * 0.5f;
         draw_text_centered(M.btn_mp.label, bx, by, 2.0f, 0xff, 0xff, 0xff);
+    }
+    if (M.btn_active_profile.visible) {
+        char chip[64];
+        snprintf(chip, sizeof chip, "as %s", M.btn_active_profile.label);
+        float bx = M.btn_active_profile.x + M.btn_active_profile.w * 0.5f;
+        float by = M.btn_active_profile.y
+                   + (M.btn_active_profile.h - 8.0f * 1.0f) * 0.5f;
+        draw_text_centered(chip, bx, by, 1.0f, 0xc0, 0xd0, 0xe8);
     }
     if (M.btn_new_world.visible) {
         float bx = M.btn_new_world.x + 20.0f;
@@ -518,6 +542,12 @@ static void on_click_profile_select(float x, float y) {
 }
 
 static void on_click_main(float x, float y) {
+    if (hit(&M.btn_active_profile, x, y)) {
+        /* Refresh the cache + drop to picker. */
+        M.profile_count = profile_list(M.profiles, PROFILE_MAX);
+        M.state = GAME_PROFILE_SELECT;
+        return;
+    }
     if (hit(&M.btn_sp, x, y)) { enter_world_list(); return; }
     if (hit(&M.btn_mp, x, y)) { start_multiplayer(); return; }
 }
