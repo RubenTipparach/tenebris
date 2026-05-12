@@ -19,11 +19,12 @@
  */
 
 typedef enum {
-    GAME_MAIN_MENU      = 0,
-    GAME_SP_WORLD_LIST  = 1,   /* picking which world to load   */
-    GAME_MP_URL_PROMPT  = 2,   /* transient — waits for prompt   */
-    GAME_IN_GAME_SP     = 3,
-    GAME_IN_GAME_MP     = 4,
+    GAME_PROFILE_SELECT = 0,   /* boot lands here first */
+    GAME_MAIN_MENU      = 1,
+    GAME_SP_WORLD_LIST  = 2,   /* picking which world to load */
+    GAME_MP_URL_PROMPT  = 3,   /* transient — kept for future */
+    GAME_IN_GAME_SP     = 4,
+    GAME_IN_GAME_MP     = 5,
 } game_state_t;
 
 void menu_init(void);

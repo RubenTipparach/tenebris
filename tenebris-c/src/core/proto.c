@@ -81,7 +81,8 @@ size_t proto_write_hello(uint8_t* buf, size_t cap, const msg_hello_t* m) {
     uint8_t* p = buf + MSG_HEADER_SIZE;
     put_u32_le(p + 0, m->client_version);
     memcpy   (p + 4, m->token, MSG_HELLO_TOKEN_LEN);
-    put_u32_le(p + 4 + MSG_HELLO_TOKEN_LEN, m->reserved);
+    memcpy   (p + 4 + MSG_HELLO_TOKEN_LEN, m->name, MSG_HELLO_NAME_LEN);
+    put_u32_le(p + 4 + MSG_HELLO_TOKEN_LEN + MSG_HELLO_NAME_LEN, m->reserved);
     return total;
 }
 
@@ -89,7 +90,32 @@ int proto_read_hello(const uint8_t* payload, size_t len, msg_hello_t* out) {
     if (len < MSG_HELLO_WIRE_SIZE) return -1;
     out->client_version = get_u32_le(payload + 0);
     memcpy(out->token, payload + 4, MSG_HELLO_TOKEN_LEN);
-    out->reserved = get_u32_le(payload + 4 + MSG_HELLO_TOKEN_LEN);
+    memcpy(out->name,  payload + 4 + MSG_HELLO_TOKEN_LEN, MSG_HELLO_NAME_LEN);
+    out->reserved = get_u32_le(payload + 4 + MSG_HELLO_TOKEN_LEN + MSG_HELLO_NAME_LEN);
+    return 0;
+}
+
+/* ------------------------------------------------------------------ */
+
+size_t proto_write_player_info(uint8_t* buf, size_t cap,
+                                 const msg_player_info_t* m) {
+    const size_t total = MSG_HEADER_SIZE + MSG_PLAYER_INFO_WIRE_SIZE;
+    if (cap < total) return 0;
+    proto_write_header(buf, MSG_PLAYER_INFO, MSG_PLAYER_INFO_VERSION,
+                         MSG_PLAYER_INFO_WIRE_SIZE);
+    uint8_t* p = buf + MSG_HEADER_SIZE;
+    put_u32_le(p + 0, m->player_id);
+    memcpy   (p + 4, m->name, MSG_PLAYER_INFO_NAME_LEN);
+    put_u32_le(p + 4 + MSG_PLAYER_INFO_NAME_LEN, m->reserved);
+    return total;
+}
+
+int proto_read_player_info(const uint8_t* payload, size_t len,
+                             msg_player_info_t* out) {
+    if (len < MSG_PLAYER_INFO_WIRE_SIZE) return -1;
+    out->player_id = get_u32_le(payload + 0);
+    memcpy(out->name, payload + 4, MSG_PLAYER_INFO_NAME_LEN);
+    out->reserved  = get_u32_le(payload + 4 + MSG_PLAYER_INFO_NAME_LEN);
     return 0;
 }
 

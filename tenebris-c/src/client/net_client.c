@@ -11,10 +11,27 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define NET_NAME_MAX           32
+#define NET_NAME_CACHE_SIZE    32
+
+typedef struct {
+    uint32_t player_id;
+    char     name[NET_NAME_MAX];
+} net_name_entry_t;
+
 typedef struct {
     net_client_state_t   state;
     net_conn_t*          conn;
     net_client_welcome_t welcome;
+    /* Profile sent in HELLO. Token is the persistent identifier;
+     * name is the friendly display string other clients see. */
+    char                 profile_token[33];
+    char                 profile_name[NET_NAME_MAX];
+    /* Name cache: player_id → name, populated from MSG_PLAYER_INFO
+     * (and from WELCOME for the local player). The F1 panel reads
+     * net_client_name_for_id to render rows. */
+    net_name_entry_t     names[NET_NAME_CACHE_SIZE];
+    int                  name_count;
     /* Most recent DESYNC notice from the server. last_desync_time is
      * a sokol_time stamp (0 = never). The HUD compares against
      * stm_now() and fades the warning out after a few seconds. */
@@ -31,16 +48,53 @@ static net_client_t C;
  * mutate C directly. */
 /* ------------------------------------------------------------------ */
 
+static void cache_name(uint32_t player_id, const char* name) {
+    if (!name || !*name) return;
+    /* Update existing entry if present. */
+    for (int i = 0; i < C.name_count; ++i) {
+        if (C.names[i].player_id == player_id) {
+            snprintf(C.names[i].name, sizeof C.names[i].name, "%s", name);
+            return;
+        }
+    }
+    if (C.name_count < NET_NAME_CACHE_SIZE) {
+        C.names[C.name_count].player_id = player_id;
+        snprintf(C.names[C.name_count].name,
+                 sizeof C.names[C.name_count].name, "%s", name);
+        ++C.name_count;
+    }
+}
+
+const char* net_client_name_for_id(uint32_t player_id) {
+    for (int i = 0; i < C.name_count; ++i) {
+        if (C.names[i].player_id == player_id) return C.names[i].name;
+    }
+    return NULL;
+}
+
+void net_client_set_profile(const char* token, const char* name) {
+    memset(C.profile_token, 0, sizeof C.profile_token);
+    memset(C.profile_name,  0, sizeof C.profile_name);
+    if (token) snprintf(C.profile_token, sizeof C.profile_token, "%s", token);
+    if (name)  snprintf(C.profile_name,  sizeof C.profile_name,  "%s", name);
+}
+
 static void send_hello(void) {
     msg_hello_t h = { 0 };
     h.client_version = TENEBRIS_PROTOCOL_VERSION;
-    /* token is zeroed for now — auth lives in the post-M9 backlog. */
+    /* token: copy at most MSG_HELLO_TOKEN_LEN bytes (no null on wire). */
+    size_t tn = strnlen(C.profile_token, MSG_HELLO_TOKEN_LEN);
+    memcpy(h.token, C.profile_token, tn);
+    /* name: same — null-padded fixed-32. */
+    size_t nn = strnlen(C.profile_name, MSG_HELLO_NAME_LEN);
+    memcpy(h.name, C.profile_name, nn);
     uint8_t buf[MSG_HEADER_SIZE + MSG_HELLO_WIRE_SIZE];
     size_t n = proto_write_hello(buf, sizeof buf, &h);
     if (n == 0) return;
     net_send(C.conn, NET_CHANNEL_RELIABLE, buf, n);
     C.state = NET_CLIENT_HANDSHAKE;
-    printf("[net-client] HELLO sent\n");
+    printf("[net-client] HELLO sent (name='%s')\n",
+           C.profile_name[0] ? C.profile_name : "(empty)");
 }
 
 static void on_open(net_conn_t* conn, void* user) {
@@ -86,10 +140,26 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
             C.welcome.spawn_z     = w.spawn_z;
             C.welcome.body_id     = w.body_id;
             C.state = NET_CLIENT_READY;
+            /* Cache our own name so F1 can show it for the local
+             * player too — the server has it from HELLO but doesn't
+             * echo it in WELCOME; the locally-known profile name is
+             * the ground truth. */
+            cache_name(w.player_id, C.profile_name);
             printf("[net-client] READY: player_id=%u seed=%llu "
                    "spawn=(%.2f, %.2f, %.2f) body=%u\n",
                    w.player_id, (unsigned long long)w.world_seed,
                    w.spawn_x, w.spawn_y, w.spawn_z, w.body_id);
+            break;
+        }
+        case MSG_PLAYER_INFO: {
+            if (hdr.version != MSG_PLAYER_INFO_VERSION) break;
+            msg_player_info_t info;
+            if (proto_read_player_info(payload, hdr.length, &info) != 0) break;
+            /* Server name is null-padded fixed-32; treat as C string. */
+            char name[MSG_PLAYER_INFO_NAME_LEN + 1];
+            memcpy(name, info.name, MSG_PLAYER_INFO_NAME_LEN);
+            name[MSG_PLAYER_INFO_NAME_LEN] = 0;
+            cache_name(info.player_id, name);
             break;
         }
         case MSG_DESYNC: {

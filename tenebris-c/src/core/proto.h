@@ -32,11 +32,12 @@ typedef enum {
     MSG_SNAPSHOT     = 10,  /* S->C entity state */
     MSG_CHUNK_DIFF   = 11,  /* S->C block edits */
     MSG_DESYNC       = 12,  /* S->C "your reported pose is impossible" */
+    MSG_PLAYER_INFO  = 13,  /* S->C name announcement: (player_id, name) */
     MSG_CHAT         = 20,
 } msg_kind_t;
 
 /* Per-kind protocol versions. Bump on any wire change. */
-#define MSG_HELLO_VERSION         1
+#define MSG_HELLO_VERSION         2     /* v2: adds name field */
 #define MSG_WELCOME_VERSION       1
 #define MSG_INPUT_VERSION         1
 #define MSG_PLAYER_CMD_VERSION    1
@@ -44,6 +45,7 @@ typedef enum {
 #define MSG_SNAPSHOT_VERSION      1
 #define MSG_CHUNK_DIFF_VERSION    1
 #define MSG_DESYNC_VERSION        1
+#define MSG_PLAYER_INFO_VERSION   1
 #define MSG_CHAT_VERSION          1
 
 typedef struct {
@@ -60,13 +62,24 @@ typedef struct {
  * ------------------------------------------------------------------ */
 
 #define MSG_HELLO_TOKEN_LEN     32
-#define MSG_HELLO_WIRE_SIZE     40    /* 4 + 32 + 4 */
+#define MSG_HELLO_NAME_LEN      32
+#define MSG_HELLO_WIRE_SIZE     72    /* v2: 4 + 32 + 32 + 4 */
 
 typedef struct {
     uint32_t client_version;
-    uint8_t  token[MSG_HELLO_TOKEN_LEN];
+    uint8_t  token[MSG_HELLO_TOKEN_LEN];   /* hex chars, persistent profile id */
+    uint8_t  name [MSG_HELLO_NAME_LEN];    /* UTF-8 display name, null-padded */
     uint32_t reserved;
 } msg_hello_t;
+
+#define MSG_PLAYER_INFO_NAME_LEN  32
+#define MSG_PLAYER_INFO_WIRE_SIZE 40    /* 4 + 32 + 4 */
+
+typedef struct {
+    uint32_t player_id;
+    uint8_t  name[MSG_PLAYER_INFO_NAME_LEN];
+    uint32_t reserved;
+} msg_player_info_t;
 
 #define MSG_WELCOME_WIRE_SIZE   40    /* 4 + 8 + 24 + 4 */
 
@@ -217,5 +230,8 @@ int    proto_read_player_cmd (const uint8_t* payload, size_t len, msg_player_cmd
 
 size_t proto_write_chunk_diff(uint8_t* buf, size_t cap, const msg_chunk_diff_t* m);
 int    proto_read_chunk_diff (const uint8_t* payload, size_t len, msg_chunk_diff_t* out);
+
+size_t proto_write_player_info(uint8_t* buf, size_t cap, const msg_player_info_t* m);
+int    proto_read_player_info (const uint8_t* payload, size_t len, msg_player_info_t* out);
 
 #endif

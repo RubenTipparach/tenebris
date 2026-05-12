@@ -17,11 +17,16 @@
 #define SERVER_MAX_BODIES 32
 #define SERVER_MAX_CLIENTS 16
 
+#define SERVER_NAME_MAX  31
+#define SERVER_TOKEN_LEN 32
+
 typedef struct {
     net_conn_t* conn;          /* NULL slot = free */
     uint32_t    player_id;
     bool        handshaked;    /* HELLO received, WELCOME sent */
     bool        has_state;     /* received at least one PLAYER_STATE */
+    char        token[SERVER_TOKEN_LEN + 1];
+    char        name [SERVER_NAME_MAX  + 1];
     uint32_t    body_id;
     double      pos_x, pos_y, pos_z;
     float       yaw, pitch;

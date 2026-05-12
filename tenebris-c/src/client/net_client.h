@@ -38,6 +38,17 @@ typedef struct {
  * live connection. */
 void net_client_connect(const char* url);
 
+/* Tell net_client which profile to identify as on the next HELLO.
+ * Called by the menu after the profile picker resolves. Both args
+ * may be NULL — net_client falls back to a 'guest' name and an
+ * all-zero token in that case. */
+void net_client_set_profile(const char* token, const char* name);
+
+/* Most recently learned display name for a player_id (via WELCOME
+ * for the local id, MSG_PLAYER_INFO for everyone else). Returns NULL
+ * if unknown. Safe to call from anywhere. */
+const char* net_client_name_for_id(uint32_t player_id);
+
 /* Per-frame pump. Cheap — just runs callback-driven state
  * transitions; no I/O on this side. */
 void net_client_tick(void);

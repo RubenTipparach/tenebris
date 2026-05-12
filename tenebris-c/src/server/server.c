@@ -140,9 +140,55 @@ static void handle_hello(server_t* s, server_client_t* cl,
         net_close(cl->conn);
         return;
     }
-    printf("[server] HELLO from player_id=%u (client_version=%u)\n",
-           cl->player_id, h.client_version);
+    /* Stash profile token + name on the connection. Empty name gets
+     * a fallback "guest-<id>" so the F1 list never shows blanks. */
+    memcpy(cl->token, h.token, SERVER_TOKEN_LEN);
+    cl->token[SERVER_TOKEN_LEN] = 0;
+    /* Name on the wire is null-padded fixed-32; clip at the first
+     * null or at SERVER_NAME_MAX, whichever is shorter. */
+    int nlen = 0;
+    while (nlen < (int)sizeof h.name && h.name[nlen]) ++nlen;
+    if (nlen > SERVER_NAME_MAX) nlen = SERVER_NAME_MAX;
+    memcpy(cl->name, h.name, (size_t)nlen);
+    cl->name[nlen] = 0;
+    if (cl->name[0] == 0) {
+        snprintf(cl->name, sizeof cl->name, "guest-%u", cl->player_id);
+    }
+
+    printf("[server] HELLO from player_id=%u name='%s' (client_version=%u)\n",
+           cl->player_id, cl->name, h.client_version);
     send_welcome(s, cl);
+
+    /* PLAYER_INFO fan-out: tell every existing client about the new
+     * arrival, and tell the new arrival about every existing client.
+     * Reliable channel — never want a client to see an unnamed
+     * player_id in the F1 list. */
+    {
+        uint8_t buf[MSG_HEADER_SIZE + MSG_PLAYER_INFO_WIRE_SIZE];
+        /* New arrival -> everyone (including themselves; idempotent). */
+        msg_player_info_t info_new = { .player_id = cl->player_id };
+        memcpy(info_new.name, cl->name,
+               strnlen(cl->name, MSG_PLAYER_INFO_NAME_LEN));
+        size_t n = proto_write_player_info(buf, sizeof buf, &info_new);
+        if (n > 0) {
+            for (int j = 0; j < SERVER_MAX_CLIENTS; ++j) {
+                if (s->clients[j].conn)
+                    net_send(s->clients[j].conn,
+                               NET_CHANNEL_RELIABLE, buf, n);
+            }
+        }
+        /* Existing clients -> new arrival, so they back-fill names. */
+        for (int j = 0; j < SERVER_MAX_CLIENTS; ++j) {
+            const server_client_t* other = &s->clients[j];
+            if (!other->conn || !other->handshaked) continue;
+            if (other == cl) continue;
+            msg_player_info_t info_other = { .player_id = other->player_id };
+            memcpy(info_other.name, other->name,
+                   strnlen(other->name, MSG_PLAYER_INFO_NAME_LEN));
+            size_t m = proto_write_player_info(buf, sizeof buf, &info_other);
+            if (m > 0) net_send(cl->conn, NET_CHANNEL_RELIABLE, buf, m);
+        }
+    }
 }
 
 /* ------------------------------------------------------------------ */

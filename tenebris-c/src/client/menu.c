@@ -1,6 +1,7 @@
 #include "client/menu.h"
 #include "client/net_client.h"
 #include "client/persistence.h"
+#include "client/profile.h"
 
 #include "sokol_gfx.h"
 #include "sokol_app.h"
@@ -20,6 +21,20 @@
  * carriage return, colon) — keeping any regex out of the EM_JS body
  * so the C preprocessor doesn't choke on the backslash escapes,
  * which sit outside any string literal here. */
+/* Prompt for a profile name. Same shape as the world-name prompt —
+ * trims, length-clamps, lets C strip control chars. */
+EM_JS(char*, menu_js_prompt_profile_name, (void), {
+    var raw = window.prompt('Pick a name:', '');
+    if (!raw) return 0;
+    var n = raw.trim();
+    if (!n) return 0;
+    if (n.length > 31) n = n.substring(0, 31);
+    var len = lengthBytesUTF8(n) + 1;
+    var p = _malloc(len);
+    stringToUTF8(n, p, len);
+    return p;
+});
+
 EM_JS(char*, menu_js_prompt_world_name, (void), {
     var raw = window.prompt('Name your world:', 'world-' + Date.now().toString().slice(-4));
     if (!raw) return 0;
@@ -32,7 +47,8 @@ EM_JS(char*, menu_js_prompt_world_name, (void), {
     return p;
 });
 #else
-static char* menu_js_prompt_world_name(void)  { return NULL; }
+static char* menu_js_prompt_world_name(void)   { return NULL; }
+static char* menu_js_prompt_profile_name(void) { return NULL; }
 #endif
 
 /* ------------------------------------------------------------------ */
@@ -63,6 +79,9 @@ static struct {
     menu_button_t btn_new_world;
     menu_button_t btn_back;
     menu_button_t btn_world[PERSISTENCE_MAX_WORLDS];
+    /* Profile-picker buttons. */
+    menu_button_t btn_new_profile;
+    menu_button_t btn_profile[PROFILE_MAX];
 
     float mouse_x, mouse_y;
 
@@ -73,6 +92,10 @@ static struct {
     /* Cached world directory. Refreshed on entering SP world list. */
     char worlds[PERSISTENCE_MAX_WORLDS][PERSISTENCE_NAME_MAX + 1];
     int  world_count;
+
+    /* Cached profile directory. Refreshed on entering profile-select. */
+    profile_t profiles[PROFILE_MAX];
+    int       profile_count;
 
     /* Name the SP autosave loop writes back to. Empty in MP / menu. */
     char active_world[PERSISTENCE_NAME_MAX + 1];
@@ -149,8 +172,39 @@ static void layout_world_list(float w, float h) {
     hide_button(&M.btn_mp);
 }
 
+static void layout_profile_select(float w, float h) {
+    float cx = w * 0.5f;
+    float y0 = h * 0.5f - 120.0f;
+
+    set_button(&M.btn_new_profile,
+                 cx - LIST_BTN_W * 0.5f, y0,
+                 LIST_BTN_W, LIST_BTN_H, "+ NEW PROFILE");
+
+    float y = y0 + LIST_BTN_H + LIST_BTN_GAP * 2.0f;
+    int max_rows = (int)((h * 0.4f) / (LIST_BTN_H + LIST_BTN_GAP));
+    if (max_rows > PROFILE_MAX) max_rows = PROFILE_MAX;
+    for (int i = 0; i < PROFILE_MAX; ++i) {
+        if (i < M.profile_count && i < max_rows) {
+            set_button(&M.btn_profile[i],
+                         cx - LIST_BTN_W * 0.5f, y,
+                         LIST_BTN_W, LIST_BTN_H, M.profiles[i].name);
+            y += LIST_BTN_H + LIST_BTN_GAP;
+        } else {
+            hide_button(&M.btn_profile[i]);
+        }
+    }
+    /* No "back" — this is the first screen, nothing to go back to. */
+    hide_button(&M.btn_back);
+    hide_button(&M.btn_sp);
+    hide_button(&M.btn_mp);
+    hide_button(&M.btn_new_world);
+    for (int i = 0; i < PERSISTENCE_MAX_WORLDS; ++i) hide_button(&M.btn_world[i]);
+}
+
 static void layout(float w, float h) {
     switch (M.state) {
+        case GAME_PROFILE_SELECT:
+            layout_profile_select(w, h); break;
         case GAME_MAIN_MENU:
         case GAME_MP_URL_PROMPT:
             layout_main(w, h); break;
@@ -259,6 +313,8 @@ void menu_draw(int screen_w, int screen_h) {
     /* Geometry */
     draw_button(&M.btn_sp);
     draw_button(&M.btn_mp);
+    draw_button(&M.btn_new_profile);
+    for (int i = 0; i < PROFILE_MAX; ++i) draw_button(&M.btn_profile[i]);
     draw_button(&M.btn_new_world);
     for (int i = 0; i < PERSISTENCE_MAX_WORLDS; ++i) draw_button(&M.btn_world[i]);
     draw_button(&M.btn_back);
@@ -274,13 +330,32 @@ void menu_draw(int screen_w, int screen_h) {
     float cx = w * 0.5f;
 
     switch (M.state) {
+        case GAME_PROFILE_SELECT:
+            draw_text_centered("WHO ARE YOU?", cx, h * 0.5f - 200.0f, 3.0f,
+                                 0xff, 0xff, 0xff);
+            if (M.profile_count == 0) {
+                draw_text_centered("no profiles yet  -  click + new profile",
+                                     cx, h * 0.5f + 40.0f, 1.5f,
+                                     0xa0, 0xb0, 0xc8);
+            }
+            break;
         case GAME_MAIN_MENU:
-        case GAME_MP_URL_PROMPT:
+        case GAME_MP_URL_PROMPT: {
             draw_text_centered("TENEBRIS", cx, h * 0.5f - 220.0f, 5.0f,
                                  0xff, 0xff, 0xff);
-            draw_text_centered("select a mode", cx, h * 0.5f - 160.0f, 2.0f,
-                                 0xa0, 0xb0, 0xc8);
+            /* Greeting under the title shows who's playing. */
+            profile_t active;
+            if (profile_get_active(&active)) {
+                char greet[80];
+                snprintf(greet, sizeof greet, "hi %s", active.name);
+                draw_text_centered(greet, cx, h * 0.5f - 160.0f, 2.0f,
+                                     0xa0, 0xb0, 0xc8);
+            } else {
+                draw_text_centered("select a mode", cx, h * 0.5f - 160.0f, 2.0f,
+                                     0xa0, 0xb0, 0xc8);
+            }
             break;
+        }
         case GAME_SP_WORLD_LIST:
             draw_text_centered("SELECT WORLD", cx, h * 0.5f - 200.0f, 3.0f,
                                  0xff, 0xff, 0xff);
@@ -312,6 +387,18 @@ void menu_draw(int screen_w, int screen_h) {
     }
     for (int i = 0; i < PERSISTENCE_MAX_WORLDS; ++i) {
         const menu_button_t* b = &M.btn_world[i];
+        if (!b->visible) continue;
+        float bx = b->x + 20.0f;
+        float by = b->y + (b->h - 8.0f * 1.5f) * 0.5f;
+        draw_text_left(b->label, bx, by, 1.5f, 0xff, 0xff, 0xff);
+    }
+    if (M.btn_new_profile.visible) {
+        float bx = M.btn_new_profile.x + 20.0f;
+        float by = M.btn_new_profile.y + (M.btn_new_profile.h - 8.0f * 1.5f) * 0.5f;
+        draw_text_left(M.btn_new_profile.label, bx, by, 1.5f, 0x90, 0xff, 0xa0);
+    }
+    for (int i = 0; i < PROFILE_MAX; ++i) {
+        const menu_button_t* b = &M.btn_profile[i];
         if (!b->visible) continue;
         float bx = b->x + 20.0f;
         float by = b->y + (b->h - 8.0f * 1.5f) * 0.5f;
@@ -384,10 +471,50 @@ static void start_sp_new_world(void) {
 #define DEFAULT_MP_SERVER_URL "wss://tenebris-c.fly.dev/"
 
 static void start_multiplayer(void) {
+    /* Send the active profile (token + name) along with HELLO. */
+    profile_t active;
+    if (profile_get_active(&active)) {
+        net_client_set_profile(active.token, active.name);
+    } else {
+        net_client_set_profile(NULL, NULL);
+    }
     printf("[menu] MP: connecting to %s\n", DEFAULT_MP_SERVER_URL);
     net_client_connect(DEFAULT_MP_SERVER_URL);
     M.active_world[0] = 0;     /* no SP save target while in MP */
     M.state = GAME_IN_GAME_MP;
+}
+
+static void enter_main_menu_with(const profile_t* p) {
+    profile_set_active(p->token);
+    M.state = GAME_MAIN_MENU;
+    printf("[menu] active profile = %s (%s)\n", p->name, p->token);
+}
+
+static void new_profile_flow(void) {
+    char* name = menu_js_prompt_profile_name();
+    if (!name) return;
+    /* Strip storage-format characters before persisting. */
+    char* w = name;
+    for (const char* r = name; *r; ++r) {
+        if (*r == '\n' || *r == '\r' || *r == ':') continue;
+        *w++ = *r;
+    }
+    *w = 0;
+    if (!*name) { free(name); return; }
+
+    profile_t p;
+    if (profile_create(name, &p)) enter_main_menu_with(&p);
+    free(name);
+}
+
+static void on_click_profile_select(float x, float y) {
+    if (hit(&M.btn_new_profile, x, y)) { new_profile_flow(); return; }
+    for (int i = 0; i < PROFILE_MAX; ++i) {
+        if (hit(&M.btn_profile[i], x, y)) {
+            enter_main_menu_with(&M.profiles[i]);
+            return;
+        }
+    }
 }
 
 static void on_click_main(float x, float y) {
@@ -408,8 +535,9 @@ static void on_click_world_list(float x, float y) {
 
 static void on_click(float x, float y) {
     switch (M.state) {
-        case GAME_MAIN_MENU:      on_click_main(x, y);       break;
-        case GAME_SP_WORLD_LIST:  on_click_world_list(x, y); break;
+        case GAME_PROFILE_SELECT: on_click_profile_select(x, y); break;
+        case GAME_MAIN_MENU:      on_click_main(x, y);           break;
+        case GAME_SP_WORLD_LIST:  on_click_world_list(x, y);     break;
         default: break;
     }
 }
@@ -445,7 +573,13 @@ bool menu_event(const sapp_event* e) {
 
 void menu_init(void) {
     memset(&M, 0, sizeof M);
-    M.state = GAME_MAIN_MENU;
+    profile_module_init();
+    /* Cache the profile list for the picker screen up front. If a
+     * profile is already active (returning user) we still land on
+     * the picker so they can swap accounts — one tap on their name
+     * advances to the main menu. */
+    M.profile_count = profile_list(M.profiles, PROFILE_MAX);
+    M.state = GAME_PROFILE_SELECT;
 }
 
 void menu_shutdown(void) { }
@@ -454,7 +588,8 @@ game_state_t menu_state(void) { return M.state; }
 void         menu_force_state(game_state_t s) { M.state = s; }
 
 bool menu_is_overlay(void) {
-    return M.state == GAME_MAIN_MENU
+    return M.state == GAME_PROFILE_SELECT
+        || M.state == GAME_MAIN_MENU
         || M.state == GAME_SP_WORLD_LIST
         || M.state == GAME_MP_URL_PROMPT;
 }
