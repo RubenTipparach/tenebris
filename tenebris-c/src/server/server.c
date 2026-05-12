@@ -1,4 +1,5 @@
 #include "server/server.h"
+#include "server/saves.h"
 #include "core/blocks.h"
 #include "core/job_system.h"
 #include "core/math.h"
@@ -100,6 +101,9 @@ static void send_welcome(server_t* s, server_client_t* cl) {
     const body_config_t* spawn_body = planet_get(BODY_TENEBRIS);
     if (!spawn_body) return;
 
+    /* Spawn coordinates default to Tenebris's pole. If the profile has
+     * a saved pose (M6 persistence), resume from there instead — this
+     * is the 'logout at position, login back to that spot' path. */
     msg_welcome_t w = {
         .player_id  = cl->player_id,
         .world_seed = s->cfg.seed,
@@ -108,6 +112,15 @@ static void send_welcome(server_t* s, server_client_t* cl) {
         .spawn_z    = spawn_body->pos_z,
         .body_id    = BODY_TENEBRIS,
     };
+    saves_player_pose_t resume;
+    if (cl->token[0] && saves_load_player(cl->token, &resume)) {
+        w.spawn_x = resume.pos_x;
+        w.spawn_y = resume.pos_y;
+        w.spawn_z = resume.pos_z;
+        w.body_id = resume.body_id;
+        printf("[server] resume profile=%s body=%u pos=(%.1f, %.1f, %.1f)\n",
+               cl->token, resume.body_id, resume.pos_x, resume.pos_y, resume.pos_z);
+    }
 
     uint8_t buf[MSG_HEADER_SIZE + MSG_WELCOME_WIRE_SIZE];
     size_t n = proto_write_welcome(buf, sizeof buf, &w);
@@ -336,12 +349,29 @@ static void on_close(net_conn_t* conn, net_close_reason_t reason, void* user) {
     server_t* s = (server_t*)user;
     server_client_t* cl = find_client_by_conn(s, conn);
     if (!cl) return;
-    printf("[server] close: player_id=%u (reason=%d)\n",
-           cl->player_id, (int)reason);
+    /* Persist the pose so the player resumes here on reconnect.
+     * Token-keyed — only profile-bearing sessions get saved; guests
+     * fall through. */
+    if (cl->has_state && cl->token[0]) {
+        saves_player_pose_t pose = {
+            .body_id = cl->body_id,
+            .pos_x   = cl->pos_x,
+            .pos_y   = cl->pos_y,
+            .pos_z   = cl->pos_z,
+            .yaw     = cl->yaw,
+            .pitch   = cl->pitch,
+        };
+        saves_write_player(cl->token, &pose);
+    }
+    printf("[server] close: player_id=%u name=%s (reason=%d)\n",
+           cl->player_id, cl->name[0] ? cl->name : "(unnamed)", (int)reason);
     fflush(stdout);
     cl->conn       = NULL;
     cl->player_id  = 0;
     cl->handshaked = false;
+    cl->name[0]    = 0;
+    cl->token[0]   = 0;
+    cl->has_state  = false;
 }
 
 /* ------------------------------------------------------------------ */
@@ -356,16 +386,31 @@ bool server_init(server_t* s, const server_config_t* cfg) {
 
     job_system_init(0);
 
+    /* Open the saves dir (creates if missing). Failures here are
+     * non-fatal — the server still runs, edits just won't persist. */
+    if (s->cfg.saves_dir) saves_init(s->cfg.saves_dir);
+
     const body_config_t* main_body = planet_get(BODY_TENEBRIS);
     if (!main_body) {
         fprintf(stderr, "[server] planet_get(BODY_TENEBRIS) returned NULL\n");
         return false;
     }
+    /* World setup runs in three phases per body:
+     *   1. world_create + world_stream_gen — procgen fills tiles.
+     *      world_set is called during gen, so every gen-touched tile
+     *      is in world->dirty.
+     *   2. saves_load_world — overlays any persisted edits. Bypasses
+     *      world_set so it doesn't add to dirty.
+     *   3. Clear dirty bits so the "post-boot baseline" is clean.
+     *      Subsequent edits flip dirty bits we actually want flushed. */
     world_t* main_world = world_create(main_body,
                                          planet_subdivisions_for_radius(main_body->radius_m));
     while (!world_gen_complete(main_world)) {
         world_stream_gen(main_world, main_world->tile_count);
     }
+    saves_load_world(main_world, s->cfg.seed);
+    for (int t = 0; t < main_world->tile_count; ++t)
+        world_tile_clear_dirty(main_world, t);
     s->worlds[s->world_count++] = main_world;
 
     for (int id = BODY_LUNA; id < BODY_COUNT; ++id) {
@@ -374,6 +419,9 @@ bool server_init(server_t* s, const server_config_t* cfg) {
         if (!b) continue;
         world_t* w = world_create(b, planet_subdivisions_for_radius(b->radius_m));
         while (!world_gen_complete(w)) world_stream_gen(w, w->tile_count);
+        saves_load_world(w, s->cfg.seed);
+        for (int t = 0; t < w->tile_count; ++t)
+            world_tile_clear_dirty(w, t);
         s->worlds[s->world_count++] = w;
     }
 
@@ -451,6 +499,33 @@ void server_tick(server_t* s) {
      * landing in a follow-up. */
     if ((s->tick % 3) == 0) broadcast_snapshot(s);
 
+    /* M6 periodic flush: every 30 s walk dirty tiles to disk and
+     * save the current pose of every connected profile. Cheap when
+     * the world is quiet — only dirty tiles actually open files. */
+    const uint64_t flush_interval = (uint64_t)(s->cfg.tick_hz * 30.0);
+    if (flush_interval > 0 && (s->tick % flush_interval) == 0) {
+        int total_tiles = 0;
+        for (int i = 0; i < s->world_count; ++i) {
+            total_tiles += saves_flush_world(s->worlds[i], s->cfg.seed);
+        }
+        int saved_poses = 0;
+        for (int i = 0; i < SERVER_MAX_CLIENTS; ++i) {
+            server_client_t* cl = &s->clients[i];
+            if (!cl->conn || !cl->has_state || !cl->token[0]) continue;
+            saves_player_pose_t pose = {
+                .body_id = cl->body_id,
+                .pos_x   = cl->pos_x, .pos_y = cl->pos_y, .pos_z = cl->pos_z,
+                .yaw     = cl->yaw,   .pitch = cl->pitch,
+            };
+            if (saves_write_player(cl->token, &pose)) ++saved_poses;
+        }
+        if (total_tiles > 0 || saved_poses > 0) {
+            printf("[server] flush: %d tiles, %d player poses\n",
+                   total_tiles, saved_poses);
+            fflush(stdout);
+        }
+    }
+
     if ((s->tick % (uint64_t)s->cfg.log_every_n) == 0) {
         int connected = 0;
         for (int i = 0; i < SERVER_MAX_CLIENTS; ++i) {
@@ -466,6 +541,28 @@ void server_shutdown(server_t* s) {
     printf("[server] shutdown after %llu ticks\n",
            (unsigned long long)s->tick);
     fflush(stdout);
+    /* Final flush before tearing down — both block edits and the
+     * pose of every still-connected profile. SIGTERM from Fly on a
+     * redeploy lands here, so this is the last chance to persist. */
+    int final_tiles = 0;
+    for (int i = 0; i < s->world_count; ++i) {
+        final_tiles += saves_flush_world(s->worlds[i], s->cfg.seed);
+    }
+    int final_poses = 0;
+    for (int i = 0; i < SERVER_MAX_CLIENTS; ++i) {
+        server_client_t* cl = &s->clients[i];
+        if (!cl->conn || !cl->has_state || !cl->token[0]) continue;
+        saves_player_pose_t pose = {
+            .body_id = cl->body_id,
+            .pos_x   = cl->pos_x, .pos_y = cl->pos_y, .pos_z = cl->pos_z,
+            .yaw     = cl->yaw,   .pitch = cl->pitch,
+        };
+        if (saves_write_player(cl->token, &pose)) ++final_poses;
+    }
+    printf("[server] final flush: %d tiles, %d poses\n",
+           final_tiles, final_poses);
+    fflush(stdout);
+
     if (s->listener) {
         net_close_listener(s->listener);
         s->listener = NULL;
@@ -475,6 +572,7 @@ void server_shutdown(server_t* s) {
         s->worlds[i] = NULL;
     }
     s->world_count = 0;
+    saves_shutdown();
     job_system_shutdown();
 }
 

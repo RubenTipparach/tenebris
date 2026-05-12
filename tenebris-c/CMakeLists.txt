@@ -230,6 +230,7 @@ if (TENEBRIS_BUILD_SERVER AND NOT EMSCRIPTEN AND UNIX)
     add_executable(tenebris-server
         src/server/server_main.c
         src/server/server.c
+        src/server/saves.c
         src/server/net_transport_ws.c
     )
     target_link_libraries(tenebris-server PRIVATE
