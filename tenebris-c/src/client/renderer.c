@@ -1947,6 +1947,14 @@ static void body_draw_water(chunked_body_t* body, mat4_t vp,
             .u_night_floor    = L->night_ambient_floor,
             .u_torch_color    = { L->torch_color.x, L->torch_color.y, L->torch_color.z,
                                   L->torch_intensity },
+            /* Beer-Lambert depth fog. absorption + near/far are the
+             * same values the desktop water shader uses; mobile just
+             * uses them to drive an alpha-fade instead of a colour
+             * mix (the seabed comes through the alpha-blend from the
+             * composite_mobile pass underneath). */
+            .u_absorption     = { W->absorption.x, W->absorption.y, W->absorption.z },
+            .u_near           = 0.3f,
+            .u_far            = 20000.0f,
         };
         sg_apply_uniforms(UB_fs_params_mobile, &SG_RANGE(fs_mobile));
 
@@ -1958,6 +1966,13 @@ static void body_draw_water(chunked_body_t* body, mat4_t vp,
             sg_apply_bindings(&(sg_bindings){
                 .vertex_buffers[0] = c->water_vbuf,
                 .index_buffer      = c->water_ibuf,
+                /* Offscreen depth tex - same image composite_mobile
+                 * just blitted; sampled here for the depth-fog
+                 * thickness. No colour sample (mobile path doesn't
+                 * refract); the seabed comes through the alpha blend
+                 * with the composite underneath. */
+                .views[VIEW_water_mobile_scene_depth]       = R.offscreen_depth_tex,
+                .samplers[SMP_water_mobile_scene_depth_smp] = R.smp_offscreen_depth,
             });
             sg_draw(0, c->last_uploaded_water_idx_count, 1);
             R.tris += (size_t)c->last_uploaded_water_idx_count / 3;
