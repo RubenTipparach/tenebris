@@ -195,3 +195,137 @@ bool saves_load_player(const char* token, saves_player_pose_t* out) {
     *out = buf;
     return true;
 }
+
+/* ----------------------------------------------------------------- */
+/* Chat log                                                           */
+/* ----------------------------------------------------------------- */
+
+static void room_filename(const char* room, char* out, size_t cap) {
+    /* Empty room -> __public__. Otherwise the room code (already
+     * sanitised on the wire to A-Z + 2-9) is the filename verbatim. */
+    snprintf(out, cap, "%s/chat/%s.log",
+             G_saves_dir,
+             (room && *room) ? room : "__public__");
+}
+
+/* Strip newline / tab from a string in place — they break our line
+ * format. Cheap, runs once per chat append. */
+static void strip_log_chars(char* s, size_t cap) {
+    if (!s) return;
+    for (size_t i = 0; i < cap && s[i]; ++i) {
+        if (s[i] == '\n' || s[i] == '\r' || s[i] == '\t') s[i] = ' ';
+    }
+}
+
+void saves_chat_append(const char* room, const char* name, const char* text) {
+    if (!G_saves_dir || !name || !text) return;
+    char dir[512];
+    snprintf(dir, sizeof dir, "%s/chat", G_saves_dir);
+    if (!mkdir_p(dir)) return;
+    char path[512];
+    room_filename(room, path, sizeof path);
+
+    char clean_name[SAVES_CHAT_NAME_MAX + 1];
+    char clean_text[SAVES_CHAT_TEXT_MAX + 1];
+    snprintf(clean_name, sizeof clean_name, "%s", name);
+    snprintf(clean_text, sizeof clean_text, "%s", text);
+    strip_log_chars(clean_name, sizeof clean_name);
+    strip_log_chars(clean_text, sizeof clean_text);
+
+    /* Append. We rely on POSIX append-mode atomicity — for our
+     * single-writer server, chat writes never interleave. */
+    FILE* f = fopen(path, "ab");
+    if (!f) return;
+    fprintf(f, "%s\t%s\n", clean_name, clean_text);
+    fclose(f);
+
+    /* Cheap truncation: if the file has gone past SAVES_CHAT_FILE_MAX
+     * lines, rewrite it keeping only the last N. We check by reading
+     * the whole file (worst case ~30 KB at the cap) and only rewrite
+     * when over. */
+    f = fopen(path, "rb");
+    if (!f) return;
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    if (sz < 0 || sz > 1024 * 1024) { fclose(f); return; }
+    rewind(f);
+    char* buf = (char*)malloc((size_t)sz + 1);
+    if (!buf) { fclose(f); return; }
+    size_t r = fread(buf, 1, (size_t)sz, f);
+    fclose(f);
+    buf[r] = 0;
+
+    /* Count lines. */
+    int line_count = 0;
+    for (size_t i = 0; i < r; ++i) if (buf[i] == '\n') ++line_count;
+    if (line_count <= SAVES_CHAT_FILE_MAX) { free(buf); return; }
+
+    /* Find the start of the (line_count - SAVES_CHAT_FILE_MAX)th
+     * line — that's where the kept tail begins. */
+    int drop = line_count - SAVES_CHAT_FILE_MAX;
+    size_t off = 0;
+    int seen = 0;
+    while (off < r && seen < drop) {
+        if (buf[off] == '\n') ++seen;
+        ++off;
+    }
+    /* Atomic-rewrite via .tmp swap. */
+    char tmp[512];
+    snprintf(tmp, sizeof tmp, "%s.tmp", path);
+    FILE* w = fopen(tmp, "wb");
+    if (w) {
+        fwrite(buf + off, 1, r - off, w);
+        fclose(w);
+        rename(tmp, path);
+    }
+    free(buf);
+}
+
+int saves_chat_load_backlog(const char* room,
+                              saves_chat_msg_t* out, int cap) {
+    if (!G_saves_dir || !out || cap <= 0) return 0;
+    char path[512];
+    room_filename(room, path, sizeof path);
+    FILE* f = fopen(path, "rb");
+    if (!f) return 0;
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    if (sz <= 0 || sz > 1024 * 1024) { fclose(f); return 0; }
+    rewind(f);
+    char* buf = (char*)malloc((size_t)sz + 1);
+    if (!buf) { fclose(f); return 0; }
+    size_t r = fread(buf, 1, (size_t)sz, f);
+    fclose(f);
+    buf[r] = 0;
+
+    /* Walk lines forward, fill a ring of size `cap`. Then unwrap
+     * into `out` so the result is oldest -> newest. */
+    saves_chat_msg_t* ring = (saves_chat_msg_t*)calloc((size_t)cap, sizeof(*ring));
+    if (!ring) { free(buf); return 0; }
+    int head = 0, count = 0;
+    char* line = buf;
+    while (line < buf + r) {
+        char* nl = (char*)memchr(line, '\n', (size_t)(buf + r - line));
+        size_t len = nl ? (size_t)(nl - line) : (size_t)(buf + r - line);
+        char* tab = (char*)memchr(line, '\t', len);
+        if (tab && tab > line && (size_t)(tab - line) <= SAVES_CHAT_NAME_MAX) {
+            saves_chat_msg_t* slot = &ring[head];
+            size_t name_len = (size_t)(tab - line);
+            memcpy(slot->name, line, name_len); slot->name[name_len] = 0;
+            size_t text_len = len - name_len - 1;
+            if (text_len > SAVES_CHAT_TEXT_MAX) text_len = SAVES_CHAT_TEXT_MAX;
+            memcpy(slot->text, tab + 1, text_len); slot->text[text_len] = 0;
+            head = (head + 1) % cap;
+            if (count < cap) ++count;
+        }
+        if (!nl) break;
+        line = nl + 1;
+    }
+    free(buf);
+
+    /* Unwrap into out, oldest first. */
+    int start = (head - count + cap) % cap;
+    for (int i = 0; i < count; ++i) out[i] = ring[(start + i) % cap];
+    free(ring);
+    return count;
+}

@@ -206,6 +206,39 @@ static void handle_hello(server_t* s, server_client_t* cl,
             if (m > 0) net_send(cl->conn, NET_CHANNEL_RELIABLE, buf, m);
         }
     }
+
+    /* Chat backlog: ship the last N messages from this room as
+     * MSG_CHAT one at a time. player_id stays as the original
+     * sender; if their session is gone the client's name cache may
+     * not have a match — chat falls back to '?' and the message
+     * still renders. */
+    {
+        saves_chat_msg_t backlog[SAVES_CHAT_BACKLOG];
+        int n = saves_chat_load_backlog(cl->room, backlog, SAVES_CHAT_BACKLOG);
+        for (int j = 0; j < n; ++j) {
+            msg_chat_t cmsg = { .player_id = 0 };
+            size_t tn = strnlen(backlog[j].text, MSG_CHAT_TEXT_LEN);
+            memcpy(cmsg.text, backlog[j].text, tn);
+            uint8_t buf2[MSG_HEADER_SIZE + MSG_CHAT_WIRE_SIZE];
+            size_t w = proto_write_chat(buf2, sizeof buf2, &cmsg);
+            if (w == 0) continue;
+            /* Pre-seed the recipient's name cache so the backlog row
+             * doesn't render as '?'. We fake a PLAYER_INFO with the
+             * historical sender name. player_id 0 collides with no
+             * live session. */
+            uint8_t pibuf[MSG_HEADER_SIZE + MSG_PLAYER_INFO_WIRE_SIZE];
+            msg_player_info_t pi = { .player_id = 0 };
+            memcpy(pi.name, backlog[j].name,
+                   strnlen(backlog[j].name, MSG_PLAYER_INFO_NAME_LEN));
+            size_t pw = proto_write_player_info(pibuf, sizeof pibuf, &pi);
+            if (pw > 0) net_send(cl->conn, NET_CHANNEL_RELIABLE, pibuf, pw);
+            net_send(cl->conn, NET_CHANNEL_RELIABLE, buf2, w);
+        }
+        if (n > 0) {
+            printf("[server] sent %d chat backlog message(s) to player_id=%u room=%s\n",
+                   n, cl->player_id, cl->room[0] ? cl->room : "(public)");
+        }
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -331,11 +364,14 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
                 if (strcmp(peer->room, cl->room) != 0) continue;
                 net_send(peer->conn, NET_CHANNEL_RELIABLE, buf, n);
             }
-            /* Brief log so the Fly tail shows chat activity without
-             * persisting message bodies (M6+ chat-log lands in a
-             * follow-up). */
+            /* Persist + brief Fly log line. */
+            char nz_text[MSG_CHAT_TEXT_LEN + 1];
+            memcpy(nz_text, m.text, MSG_CHAT_TEXT_LEN);
+            nz_text[MSG_CHAT_TEXT_LEN] = 0;
+            saves_chat_append(cl->room, cl->name, nz_text);
+
             char short_text[33];
-            memcpy(short_text, m.text, 32); short_text[32] = 0;
+            memcpy(short_text, nz_text, 32); short_text[32] = 0;
             printf("[server] chat room=%s %s: %s\n",
                    cl->room[0] ? cl->room : "(public)",
                    cl->name, short_text);

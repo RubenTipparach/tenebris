@@ -78,14 +78,17 @@ const remote_player_t* remote_players_get  (int i)     {
 
 /* Emit a colour-shaded cuboid centred on (cx, cy, cz) with extents
  * (hx, hy, hz). Top and bottom faces get a slight tone bias so the
- * mesh reads three-dimensional without baked lighting. Caller wraps
- * the calls in a single sgl_begin_triangles / sgl_end pair. */
+ * mesh reads three-dimensional without baked lighting. Each call
+ * is its own sgl_begin_triangles / sgl_end pair so the caller is
+ * free to push / rotate / pop the modelview between parts (the walk
+ * cycle does this per limb). */
 static void box(float cx, float cy, float cz,
                   float hx, float hy, float hz,
                   float r, float g, float b) {
     const float x0 = cx - hx, x1 = cx + hx;
     const float y0 = cy - hy, y1 = cy + hy;
     const float z0 = cz - hz, z1 = cz + hz;
+    sgl_begin_triangles();
 
     /* Bake per-face shading so even with no lighting model the cuboid
      * silhouettes read clearly. Top brightest, bottom darkest, sides
@@ -120,48 +123,80 @@ static void box(float cx, float cy, float cz,
     sgl_c3f(mid_r, mid_g, mid_b);
     sgl_v3f(x0, y0, z0); sgl_v3f(x0, y0, z1); sgl_v3f(x0, y1, z1);
     sgl_v3f(x0, y0, z0); sgl_v3f(x0, y1, z1); sgl_v3f(x0, y1, z0);
+    sgl_end();
 }
 
-/* Procedural humanoid figure. ~1.8 m tall, origin at feet. Geometry is
- * six axis-aligned boxes (legs, torso, arms, head). Yaw rotates the
- * whole figure around its vertical axis so the player faces where
- * they're looking. Idle pose only — no animation; bone weights wait
- * for the M8b skeletal pass.
+/* Procedural humanoid. ~1.8 m tall, origin at feet, faces -Z at
+ * yaw=0. Six axis-aligned boxes drawn through the sgl modelview
+ * stack so legs and arms can swing for a walk cycle.
  *
- * Colour palette: warm skin, blue tunic, dark trousers. Per-profile
- * tinting would slot in as a (r,g,b) hash of the player_id; for now
- * everyone wears the same uniform. */
-static void draw_humanoid(float cx, float cy, float cz, float yaw) {
-    /* Local axes after yaw rotation. The figure faces -Z when yaw=0;
-     * positive yaw rotates clockwise viewed from above (matches the
-     * player's own basis). */
-    const float c = cosf(yaw);
-    const float s = sinf(yaw);
+ * Anatomy (origin = feet, +Y up):
+ *   foot  ground level
+ *   hips  y = 0.80 m       (legs are 0.40 m half-height boxes)
+ *   chest y = 1.10 m       (torso 0.30 m half-height)
+ *   shoulder y = 1.40 m    (arms 0.30 m half-height, hang from chest top)
+ *   head  y = 1.60 m       (0.13 m cube)
+ *
+ * `swing_rad` rotates legs / arms around their hip / shoulder pivot
+ * in the X axis (forward / back). Right limbs swing opposite to
+ * left, arms counter-phase to legs — classic walk cycle. swing_rad
+ * == 0 = idle pose. */
+static void draw_humanoid(float cx, float cy, float cz,
+                            float yaw, float swing_rad) {
+    /* Move the whole figure to its world position + apply yaw, then
+     * draw every body part in the figure-local frame. */
+    sgl_push_matrix();
+    sgl_translate(cx, cy, cz);
+    sgl_rotate(yaw, 0.0f, 1.0f, 0.0f);
 
-    /* Offset helper: rotate a local (lx, lz) into world relative to
-     * the figure's centreline, then bake into the absolute (cx,cz).
-     * Y stays as-is. */
-    #define BODY_PART(LX, LY, LZ, HX, HY, HZ, R, G, B) do { \
-        float wx = cx + (LX) * c + (LZ) * s;                 \
-        float wz = cz - (LX) * s + (LZ) * c;                 \
-        box(wx, cy + (LY), wz, (HX), (HY), (HZ), (R), (G), (B));    \
-    } while (0)
+    /* Torso — fixed, centred on the chest. */
+    sgl_push_matrix();
+    sgl_translate(0.0f, 1.10f, 0.0f);
+    box(0.0f, 0.0f, 0.0f, 0.22f, 0.30f, 0.13f, 0.25f, 0.45f, 0.80f);
+    sgl_pop_matrix();
 
-    /* Legs — two boxes side-by-side. Hips at ~0.85 m. */
-    BODY_PART(-0.12f, 0.40f, 0.0f, 0.10f, 0.40f, 0.10f, 0.20f, 0.20f, 0.30f);
-    BODY_PART(+0.12f, 0.40f, 0.0f, 0.10f, 0.40f, 0.10f, 0.20f, 0.20f, 0.30f);
+    /* Head — fixed, on top of torso. */
+    sgl_push_matrix();
+    sgl_translate(0.0f, 1.60f, 0.0f);
+    box(0.0f, 0.0f, 0.0f, 0.13f, 0.13f, 0.13f, 0.95f, 0.78f, 0.62f);
+    sgl_pop_matrix();
 
-    /* Torso — wider than deep, centred at chest height. */
-    BODY_PART(0.0f,   1.10f, 0.0f, 0.22f, 0.30f, 0.13f, 0.25f, 0.45f, 0.80f);
+    /* Left leg — pivot at hip, hangs down. swing_rad rotates around
+     * X so the leg sweeps forward / back as the figure walks. */
+    sgl_push_matrix();
+    sgl_translate(-0.12f, 0.80f, 0.0f);
+    sgl_rotate(swing_rad, 1.0f, 0.0f, 0.0f);
+    sgl_translate(0.0f, -0.40f, 0.0f);
+    box(0.0f, 0.0f, 0.0f, 0.10f, 0.40f, 0.10f, 0.20f, 0.20f, 0.30f);
+    sgl_pop_matrix();
 
-    /* Arms — flank the torso. Slightly narrower than legs. */
-    BODY_PART(-0.30f, 1.10f, 0.0f, 0.08f, 0.30f, 0.10f, 0.20f, 0.40f, 0.75f);
-    BODY_PART(+0.30f, 1.10f, 0.0f, 0.08f, 0.30f, 0.10f, 0.20f, 0.40f, 0.75f);
+    /* Right leg — opposite phase. */
+    sgl_push_matrix();
+    sgl_translate(+0.12f, 0.80f, 0.0f);
+    sgl_rotate(-swing_rad, 1.0f, 0.0f, 0.0f);
+    sgl_translate(0.0f, -0.40f, 0.0f);
+    box(0.0f, 0.0f, 0.0f, 0.10f, 0.40f, 0.10f, 0.20f, 0.20f, 0.30f);
+    sgl_pop_matrix();
 
-    /* Head — cube on top of the torso. */
-    BODY_PART(0.0f,   1.60f, 0.0f, 0.13f, 0.13f, 0.13f, 0.95f, 0.78f, 0.62f);
+    /* Left arm — counter-phase to left leg (== same sign as right
+     * leg) so opposite-side limbs swing forward together. Pivots at
+     * the shoulder (top of torso). */
+    sgl_push_matrix();
+    sgl_translate(-0.30f, 1.40f, 0.0f);
+    sgl_rotate(-swing_rad, 1.0f, 0.0f, 0.0f);
+    sgl_translate(0.0f, -0.30f, 0.0f);
+    box(0.0f, 0.0f, 0.0f, 0.08f, 0.30f, 0.10f, 0.20f, 0.40f, 0.75f);
+    sgl_pop_matrix();
 
-    #undef BODY_PART
+    /* Right arm — opposite the left. */
+    sgl_push_matrix();
+    sgl_translate(+0.30f, 1.40f, 0.0f);
+    sgl_rotate(+swing_rad, 1.0f, 0.0f, 0.0f);
+    sgl_translate(0.0f, -0.30f, 0.0f);
+    box(0.0f, 0.0f, 0.0f, 0.08f, 0.30f, 0.10f, 0.20f, 0.40f, 0.75f);
+    sgl_pop_matrix();
+
+    sgl_pop_matrix();
 }
 
 /* Minimal-angle interpolation for yaw — wraps past ±π so a snap from
@@ -200,7 +235,6 @@ void remote_players_draw(mat4_t view, mat4_t proj) {
     const double interp_delay_s = 0.150;
     const double now = stm_sec(stm_now());
 
-    sgl_begin_triangles();
     for (int i = 0; i < R.count; ++i) {
         const remote_player_t* p = &R.players[i];
         if (!p->active) continue;
@@ -215,12 +249,26 @@ void remote_players_draw(mat4_t view, mat4_t proj) {
         float lz = (float)(p->pos_prev.z + (p->pos_cur.z - p->pos_prev.z) * t);
         float yaw = lerp_yaw(p->yaw_prev, p->yaw_cur, (float)t);
 
+        /* Walk cycle. Speed is the horizontal distance covered between
+         * the prev/cur snapshot poses divided by the interp window.
+         * Above ~0.5 m/s we play a swing animation at 1.4 Hz scaled
+         * to the speed (capped so very fast players don't flail). */
+        double dxh = p->pos_cur.x - p->pos_prev.x;
+        double dzh = p->pos_cur.z - p->pos_prev.z;
+        double horizontal_speed = sqrt(dxh*dxh + dzh*dzh) / interp_delay_s;
+        float swing_rad = 0.0f;
+        if (horizontal_speed > 0.4) {
+            double cycle_hz = 1.4;
+            double swing_amp = 0.45;     /* radians, ~26 degrees */
+            if (horizontal_speed > 4.0) horizontal_speed = 4.0;
+            cycle_hz *= (horizontal_speed * 0.5);
+            swing_rad = (float)(swing_amp * sin(now * cycle_hz * 6.28318530718));
+        }
+
         /* The player's reported position is the FEET anchor, same as
-         * G.player.position. draw_humanoid grows upward from cy, so
-         * pass (lx, ly, lz) straight in. */
-        draw_humanoid(lx, ly, lz, yaw);
+         * G.player.position. draw_humanoid grows upward from cy. */
+        draw_humanoid(lx, ly, lz, yaw, swing_rad);
     }
-    sgl_end();
 
     sgl_draw();
 }

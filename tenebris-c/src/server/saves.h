@@ -62,4 +62,27 @@ int  saves_flush_world(world_t* w, uint64_t seed);
 bool saves_write_player(const char* token, const saves_player_pose_t* pose);
 bool saves_load_player (const char* token, saves_player_pose_t* out);
 
+/* ----------------------------------------------------------------- */
+/* Chat log per room (M6+, but ships in the chat commit). */
+
+#define SAVES_CHAT_NAME_MAX  31
+#define SAVES_CHAT_TEXT_MAX  127
+#define SAVES_CHAT_BACKLOG    50      /* messages sent to new joiners */
+#define SAVES_CHAT_FILE_MAX   200     /* lines kept on disk per room */
+
+typedef struct {
+    char name[SAVES_CHAT_NAME_MAX + 1];
+    char text[SAVES_CHAT_TEXT_MAX + 1];
+} saves_chat_msg_t;
+
+/* Append one message to the room's log file. Empty room = public.
+ * Auto-truncates when the file passes SAVES_CHAT_FILE_MAX lines so
+ * the log doesn't grow forever. */
+void saves_chat_append(const char* room, const char* name, const char* text);
+
+/* Read up to `cap` recent messages (oldest -> newest) into `out`.
+ * Returns the count actually loaded. */
+int  saves_chat_load_backlog(const char* room,
+                                saves_chat_msg_t* out, int cap);
+
 #endif
