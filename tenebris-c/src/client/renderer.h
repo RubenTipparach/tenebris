@@ -47,6 +47,18 @@ typedef struct {
 void renderer_init(void);
 void renderer_shutdown(void);
 
+/* Perf mode (mobile / low-power). MUST be called before renderer_init.
+ * When enabled, renderer_init builds the water_mobile + composite_mobile
+ * shader pipelines alongside the desktop pair and the draw paths route
+ * through them: the water cap has no vertex swell (flat surface), keeps
+ * a cheap two-sine fragment-shader normal bump, and is alpha-blended on
+ * top of the swapchain (no offscreen scene-sample for refraction); the
+ * composite is a plain depth-forwarding blit with no Beer-Lambert
+ * underwater fog or shimmer distortion. Toggling after init does
+ * nothing - the matching pipeline wouldn't exist. */
+void renderer_set_perf_mode(bool enabled);
+bool renderer_perf_mode_enabled(void);
+
 void renderer_begin_frame(int w, int h, render_env_t env);
 
 /* Procedural skybox: fullscreen pass that draws stars + the sun disc.

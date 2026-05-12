@@ -51,6 +51,34 @@ EM_JS(char*, tenebris_get_server_url, (void), {
     } catch (_e) { return 0; }
 });
 
+/* Returns 1 if the browser is running on a mobile / tablet device
+ * (or the URL carries ?perf=lite to force the low-power path on
+ * desktop for testing). Read once at boot, fed to
+ * renderer_set_perf_mode before renderer_init so the lite water +
+ * composite pipelines get built. Detection is a userAgent regex
+ * matching the common mobile vendor strings - good enough for the
+ * "do we drop heavy fragment shaders" decision; we're not gating
+ * anything security-sensitive on it. */
+EM_JS(int, tenebris_is_mobile_device, (void), {
+    try {
+        var u = new URL(window.location.href);
+        var force = u.searchParams.get('perf');
+        if (force === 'lite' || force === 'mobile') return 1;
+        if (force === 'high' || force === 'desktop') return 0;
+    } catch (_e) { /* fall through */ }
+    try {
+        var ua = (navigator.userAgent || '') + ' ' + (navigator.platform || '');
+        if (/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile|Tablet/i.test(ua)) {
+            return 1;
+        }
+        if (navigator.maxTouchPoints && navigator.maxTouchPoints > 1
+            && Math.min(screen.width, screen.height) <= 900) {
+            return 1;
+        }
+    } catch (_e) { return 0; }
+    return 0;
+});
+
 /* `?room=ABCD23` lets friends jump directly into a self-host room
  * without going through the menu. Returns NULL if absent. */
 EM_JS(char*, tenebris_get_room_code, (void), {
@@ -187,6 +215,16 @@ static void init(void) {
 
     input_init();
     job_system_init(0);
+#ifdef __EMSCRIPTEN__
+    /* Mobile / tablet browsers swap in the lite water + composite
+     * shaders. Decision happens before renderer_init because the
+     * setter gates which pipelines get created. Native desktop
+     * builds always run the full path. */
+    if (tenebris_is_mobile_device()) {
+        renderer_set_perf_mode(true);
+        printf("[renderer] perf mode enabled (mobile device detected)\n");
+    }
+#endif
     renderer_init();
     torch_init();
     mobile_ui_init();
