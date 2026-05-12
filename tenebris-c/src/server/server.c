@@ -314,6 +314,34 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
             }
             break;
         }
+        case MSG_CHAT: {
+            if (hdr.version != MSG_CHAT_VERSION) break;
+            msg_chat_t m;
+            if (proto_read_chat(payload, hdr.length, &m) != 0) break;
+            /* Stamp sender id so receivers know who sent it; keep
+             * original text untouched (no trim, no censor). */
+            m.player_id = cl->player_id;
+            uint8_t buf[MSG_HEADER_SIZE + MSG_CHAT_WIRE_SIZE];
+            size_t n = proto_write_chat(buf, sizeof buf, &m);
+            if (n == 0) break;
+            /* Room-scoped broadcast — same filter as everything else. */
+            for (int j = 0; j < SERVER_MAX_CLIENTS; ++j) {
+                const server_client_t* peer = &s->clients[j];
+                if (!peer->conn) continue;
+                if (strcmp(peer->room, cl->room) != 0) continue;
+                net_send(peer->conn, NET_CHANNEL_RELIABLE, buf, n);
+            }
+            /* Brief log so the Fly tail shows chat activity without
+             * persisting message bodies (M6+ chat-log lands in a
+             * follow-up). */
+            char short_text[33];
+            memcpy(short_text, m.text, 32); short_text[32] = 0;
+            printf("[server] chat room=%s %s: %s\n",
+                   cl->room[0] ? cl->room : "(public)",
+                   cl->name, short_text);
+            fflush(stdout);
+            break;
+        }
         case MSG_PLAYER_STATE: {
             if (hdr.version != MSG_PLAYER_STATE_VERSION) {
                 fprintf(stderr, "[server] PLAYER_STATE version %u != %u, closing\n",

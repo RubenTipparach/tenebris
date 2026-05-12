@@ -86,6 +86,7 @@ set(TENEBRIS_CLIENT_SOURCES
     src/client/gfx_math.c
     src/client/profiler.c
     src/client/net_client.c
+    src/client/chat.c
     src/client/menu.c
     src/client/persistence.c
     src/client/profile.c

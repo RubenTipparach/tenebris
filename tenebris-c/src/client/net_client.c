@@ -1,4 +1,5 @@
 #include "client/net_client.h"
+#include "client/chat.h"
 #include "client/remote_players.h"
 #include "client/renderer.h"
 #include "core/net_transport.h"
@@ -159,6 +160,19 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
                    w.spawn_x, w.spawn_y, w.spawn_z, w.body_id);
             break;
         }
+        case MSG_CHAT: {
+            if (hdr.version != MSG_CHAT_VERSION) break;
+            msg_chat_t m;
+            if (proto_read_chat(payload, hdr.length, &m) != 0) break;
+            char text[MSG_CHAT_TEXT_LEN + 1];
+            memcpy(text, m.text, MSG_CHAT_TEXT_LEN);
+            text[MSG_CHAT_TEXT_LEN] = 0;
+            const char* sender = net_client_name_for_id(m.player_id);
+            chat_post_recv(m.player_id,
+                            sender ? sender : "?",
+                            text);
+            break;
+        }
         case MSG_PLAYER_INFO: {
             if (hdr.version != MSG_PLAYER_INFO_VERSION) break;
             msg_player_info_t info;
@@ -254,6 +268,20 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
              * without breaking us. */
             break;
     }
+}
+
+void net_client_send_chat(const char* text) {
+    if (C.state != NET_CLIENT_READY || !C.conn) return;
+    if (!text || !*text) return;
+    msg_chat_t m = { 0 };
+    /* player_id is filled by the server when it broadcasts; we leave
+     * it zero on the wire. */
+    size_t n = strnlen(text, MSG_CHAT_TEXT_LEN);
+    memcpy(m.text, text, n);
+    uint8_t buf[MSG_HEADER_SIZE + MSG_CHAT_WIRE_SIZE];
+    size_t w = proto_write_chat(buf, sizeof buf, &m);
+    if (w == 0) return;
+    net_send(C.conn, NET_CHANNEL_RELIABLE, buf, w);
 }
 
 void net_client_send_edit(int kind, uint32_t body_id,

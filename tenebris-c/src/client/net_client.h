@@ -50,6 +50,11 @@ void net_client_set_profile(const char* token, const char* name,
  * if unknown. Safe to call from anywhere. */
 const char* net_client_name_for_id(uint32_t player_id);
 
+/* Send a chat message to the server. Server stamps the sender id +
+ * broadcasts to same-room peers. No-op if not connected. Text is
+ * truncated at MSG_CHAT_TEXT_LEN-1. */
+void net_client_send_chat(const char* text);
+
 /* Per-frame pump. Cheap — just runs callback-driven state
  * transitions; no I/O on this side. */
 void net_client_tick(void);

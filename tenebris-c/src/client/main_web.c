@@ -26,6 +26,7 @@
 #include "client/renderer.h"
 #include "client/interact.h"
 #include "client/mobile_ui.h"
+#include "client/chat.h"
 #include "client/menu.h"
 #include "client/net_client.h"
 #include "client/persistence.h"
@@ -278,6 +279,7 @@ static void init(void) {
      * the menu and jump straight into MP (handy for bookmarks). */
     menu_init();
     remote_players_init();
+    chat_init();
 
 #ifdef __EMSCRIPTEN__
     /* ?room=ABCD23 — bypass the menu and join that specific room. The
@@ -1080,6 +1082,7 @@ static void frame(void) {
     profiler_draw();
     draw_desync_popup(sapp_widthf(), sapp_heightf());
     draw_players_panel(sapp_widthf(), sapp_heightf());
+    chat_draw(sapp_widthf(), sapp_heightf());
     /* Nameplates above remote players. View/proj are still in scope
      * from the 3D pass earlier in frame(). The lookup goes through
      * the net_client name cache (populated by PLAYER_INFO + WELCOME). */
@@ -1104,6 +1107,10 @@ static void event(const sapp_event* e) {
         menu_event(e);
         return;
     }
+    /* Chat takes Enter (open compose) and every keystroke while
+     * composing. Returns true when it owned the event so movement /
+     * teleport keys don't double-fire while the player is typing. */
+    if (chat_event(e)) return;
     /* Teleport menu gets first crack — it intercepts T/M/arrows/enter
      * when open so those keys don't also reach the movement layer. */
     if (teleport_menu_event(e, &G.player)) return;
@@ -1166,6 +1173,7 @@ static void event(const sapp_event* e) {
 
 static void cleanup(void) {
     net_client_disconnect();
+    chat_shutdown();
     remote_players_shutdown();
     menu_shutdown();
     teleport_menu_shutdown();
