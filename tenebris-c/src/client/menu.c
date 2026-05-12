@@ -35,6 +35,89 @@ EM_JS(char*, menu_js_new_room_code, (void), {
     stringToUTF8(code, p, len);
     return p;
 });
+
+/* Mobile soft-keyboard shim. The in-canvas text box (drawn with
+ * sokol_gl + sdtx) is the actual visible UI - this is purely the
+ * plumbing that summons the OS keyboard on phones / tablets, because
+ * a WebGL canvas never receives keyboard events on its own. We mount
+ * an offscreen <input>, focus it when entering an input state, and
+ * forward its 'input' / Enter / Escape events back into C via the
+ * EMSCRIPTEN_KEEPALIVE callbacks below. The input element is
+ * positioned at 1x1 px with opacity 0 so the player only ever sees
+ * the in-canvas box, not an HTML widget.
+ *
+ * Doesn't violate the CLAUDE.md "no browser alert/prompt/confirm"
+ * rule - the UI the user types into stays in the canvas. The hidden
+ * <input> only exists because iOS / Android won't open their keyboard
+ * unless a real DOM input is focused inside a user-gesture handler. */
+EM_JS(void, menu_js_focus_text_input, (void), {
+    var inp = document.getElementById('tenebris-text-input-shim');
+    if (!inp) {
+        inp = document.createElement('input');
+        inp.id = 'tenebris-text-input-shim';
+        inp.type = 'text';
+        inp.autocapitalize = 'off';
+        inp.autocomplete   = 'off';
+        inp.autocorrect    = 'off';
+        inp.spellcheck     = false;
+        inp.setAttribute('aria-hidden', 'true');
+        /* Visible to focus, invisible to the player. position:fixed
+         * + opacity 0 + 1px size keeps it offscreen-ish without the
+         * browser deciding to skip it on focus. */
+        inp.style.cssText =
+            'position:fixed;left:50%;top:50%;width:1px;height:1px;'
+            + 'opacity:0;border:0;padding:0;margin:0;background:transparent;'
+            + 'color:transparent;caret-color:transparent;z-index:-1;';
+        document.body.appendChild(inp);
+
+        var lastVal = '';
+        inp.addEventListener('input', function() {
+            var cur = inp.value;
+            if (cur.length > lastVal.length) {
+                for (var i = lastVal.length; i < cur.length; i++) {
+                    Module.ccall('tenebris_js_input_char', null,
+                                 ['number'], [cur.charCodeAt(i)]);
+                }
+            } else if (cur.length < lastVal.length) {
+                var diff = lastVal.length - cur.length;
+                for (var i = 0; i < diff; i++) {
+                    Module.ccall('tenebris_js_input_backspace', null, [], []);
+                }
+            }
+            lastVal = cur;
+        });
+        inp.addEventListener('keydown', function(ev) {
+            if (ev.key === 'Enter') {
+                Module.ccall('tenebris_js_input_submit', null, [], []);
+                ev.preventDefault();
+            } else if (ev.key === 'Escape') {
+                Module.ccall('tenebris_js_input_cancel', null, [], []);
+                ev.preventDefault();
+            }
+        });
+        /* iOS Safari hides the keyboard the instant focus leaves the
+         * input, so a tap anywhere else on the canvas would dismiss
+         * it. We re-focus on blur if the C side still says we're in
+         * an input state. */
+        inp.addEventListener('blur', function() {
+            if (Module.ccall('tenebris_js_in_input_state', 'number', [], [])) {
+                setTimeout(function(){ inp.focus(); }, 0);
+            }
+        });
+        window.__tenebris_input_shim_reset = function() { lastVal = ''; inp.value = ''; };
+    }
+    if (window.__tenebris_input_shim_reset) window.__tenebris_input_shim_reset();
+    /* Synchronous focus inside the gesture - iOS Safari only opens
+     * the soft keyboard if focus() is called from within a user
+     * gesture handler (touchend / click). Our call chain came in
+     * through sokol's touch event, so we're still on that stack. */
+    inp.focus();
+});
+
+EM_JS(void, menu_js_blur_text_input, (void), {
+    var inp = document.getElementById('tenebris-text-input-shim');
+    if (inp) inp.blur();
+});
 #else
 static char* menu_js_new_room_code(void) {
     static char fake[7] = "AAAAAA";
@@ -42,6 +125,8 @@ static char* menu_js_new_room_code(void) {
     if (out) memcpy(out, fake, 7);
     return out;
 }
+static void menu_js_focus_text_input(void) { }
+static void menu_js_blur_text_input(void)  { }
 #endif
 
 /* ------------------------------------------------------------------ */
@@ -767,6 +852,7 @@ static void start_sp_new_world(void) {
     M.input_len    = 0;
     M.input_cursor_blink_start = stm_sec(stm_now());
     M.state = GAME_SP_NEW_WORLD_INPUT;
+    menu_js_focus_text_input();
 }
 
 /* Hardcoded default server. The browser prompt was annoying for every
@@ -826,6 +912,8 @@ static void new_profile_flow(void) {
     M.input_len    = 0;
     M.input_cursor_blink_start = stm_sec(stm_now());
     M.state = GAME_PROFILE_NAME_INPUT;
+    /* Pop the OS soft keyboard on mobile - no-op on desktop. */
+    menu_js_focus_text_input();
 }
 
 static void on_click_profile_select(float x, float y) {
@@ -875,20 +963,33 @@ static void on_click_mp_cloud_submenu(float x, float y) {
         M.input_len    = 0;
         M.input_cursor_blink_start = stm_sec(stm_now());
         M.state = GAME_MP_JOIN_INPUT;
+        menu_js_focus_text_input();
         return;
     }
 }
 
 static void on_click_join_input(float x, float y) {
-    if (hit(&M.btn_back, x, y)) { M.state = GAME_MP_CLOUD_SUBMENU; return; }
+    if (hit(&M.btn_back, x, y)) {
+        M.state = GAME_MP_CLOUD_SUBMENU;
+        menu_js_blur_text_input();
+        return;
+    }
 }
 
 static void on_click_profile_name_input(float x, float y) {
-    if (hit(&M.btn_back, x, y)) { M.state = GAME_PROFILE_SELECT; return; }
+    if (hit(&M.btn_back, x, y)) {
+        M.state = GAME_PROFILE_SELECT;
+        menu_js_blur_text_input();
+        return;
+    }
 }
 
 static void on_click_new_world_input(float x, float y) {
-    if (hit(&M.btn_back, x, y)) { M.state = GAME_SP_WORLD_LIST; return; }
+    if (hit(&M.btn_back, x, y)) {
+        M.state = GAME_SP_WORLD_LIST;
+        menu_js_blur_text_input();
+        return;
+    }
 }
 
 static void on_click_connect_error(float x, float y) {
@@ -984,6 +1085,42 @@ static void input_submit(void) {
     }
 }
 
+static void input_cancel(void) {
+    switch (M.state) {
+        case GAME_MP_JOIN_INPUT:      M.state = GAME_MP_CLOUD_SUBMENU; break;
+        case GAME_PROFILE_NAME_INPUT: M.state = GAME_PROFILE_SELECT;   break;
+        case GAME_SP_NEW_WORLD_INPUT: M.state = GAME_SP_WORLD_LIST;    break;
+        default: break;
+    }
+    menu_js_blur_text_input();
+}
+
+#ifdef __EMSCRIPTEN__
+/* JS-side bridge for the mobile soft-keyboard shim. Each typed char
+ * on the hidden <input> ends up here, forwarded to the same handlers
+ * the SAPP CHAR / KEY_DOWN events feed on desktop. Marked KEEPALIVE
+ * so the emcc linker doesn't dead-strip them; called from JS via
+ * Module.ccall in menu_js_focus_text_input's listeners. */
+EMSCRIPTEN_KEEPALIVE
+void tenebris_js_input_char(int ch) {
+    if (ch <= 0) return;
+    input_append_char((uint32_t)ch);
+}
+EMSCRIPTEN_KEEPALIVE
+void tenebris_js_input_backspace(void) { input_backspace(); }
+EMSCRIPTEN_KEEPALIVE
+void tenebris_js_input_submit(void) {
+    input_submit();
+    menu_js_blur_text_input();
+}
+EMSCRIPTEN_KEEPALIVE
+void tenebris_js_input_cancel(void) { input_cancel(); }
+EMSCRIPTEN_KEEPALIVE
+int  tenebris_js_in_input_state(void) {
+    return state_is_input(M.state) ? 1 : 0;
+}
+#endif
+
 
 bool menu_event(const sapp_event* e) {
     if (!menu_is_overlay()) return false;
@@ -998,13 +1135,9 @@ bool menu_event(const sapp_event* e) {
             if (e->key_code == SAPP_KEYCODE_BACKSPACE)  { input_backspace(); return true; }
             if (e->key_code == SAPP_KEYCODE_ESCAPE) {
                 /* Cancel back to the screen the input was launched
-                 * from — different per input state. */
-                switch (M.state) {
-                    case GAME_MP_JOIN_INPUT:      M.state = GAME_MP_CLOUD_SUBMENU; break;
-                    case GAME_PROFILE_NAME_INPUT: M.state = GAME_PROFILE_SELECT;   break;
-                    case GAME_SP_NEW_WORLD_INPUT: M.state = GAME_SP_WORLD_LIST;    break;
-                    default: break;
-                }
+                 * from. input_cancel handles the per-state target
+                 * + drops the mobile soft keyboard. */
+                input_cancel();
                 return true;
             }
         }
