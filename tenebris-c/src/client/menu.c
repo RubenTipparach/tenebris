@@ -112,6 +112,11 @@ static struct {
 
     /* Room code for the active MP session. Empty = public room. */
     char room_code[9];
+
+    /* Connection-failure popup. Set on the GAME_IN_GAME_MP ->
+     * GAME_MP_CONNECT_ERROR transition by menu_tick; cleared on
+     * dismiss. Buffer matches net_client_error_message's max. */
+    char error_msg[96];
 } M;
 
 /* ------------------------------------------------------------------ */
@@ -302,6 +307,28 @@ static void layout_world_list(float w, float h) {
     hide_button(&M.btn_cloud_host);
 }
 
+static void layout_connect_error(float w, float h) {
+    /* Single centred BACK TO MENU button under the error panel. The
+     * panel itself isn't a button — we draw it in menu_draw and only
+     * hit-test this one. */
+    float cx = w * 0.5f;
+    set_button(&M.btn_back,
+                 cx - MAIN_BTN_W * 0.5f,
+                 h * 0.5f + 40.0f,
+                 MAIN_BTN_W, MAIN_BTN_H, "BACK TO MENU");
+    hide_button(&M.btn_sp);
+    hide_button(&M.btn_mp);
+    hide_button(&M.btn_self_host);
+    hide_button(&M.btn_cloud_host);
+    hide_button(&M.btn_host);
+    hide_button(&M.btn_join);
+    hide_button(&M.btn_active_profile);
+    hide_button(&M.btn_new_world);
+    for (int i = 0; i < PERSISTENCE_MAX_WORLDS; ++i) hide_button(&M.btn_world[i]);
+    hide_button(&M.btn_new_profile);
+    for (int i = 0; i < PROFILE_MAX; ++i) hide_button(&M.btn_profile[i]);
+}
+
 static void layout_profile_select(float w, float h) {
     float cx = w * 0.5f;
     float y0 = h * 0.5f - 120.0f;
@@ -353,6 +380,8 @@ static void layout(float w, float h) {
         case GAME_PROFILE_NAME_INPUT:
         case GAME_SP_NEW_WORLD_INPUT:
             layout_join_input(w, h); break;     /* same layout: just BACK + box */
+        case GAME_MP_CONNECT_ERROR:
+            layout_connect_error(w, h); break;
         default:
             break;
     }
@@ -479,6 +508,18 @@ void menu_draw(int screen_w, int screen_h) {
              0.20f, 0.20f, 0.22f, 0.90f);
     }
 
+    /* Connection-failed popup panel. Dim red border so the warning
+     * reads at a glance; matches the title colour used in the text
+     * pass below. */
+    if (M.state == GAME_MP_CONNECT_ERROR) {
+        const float panel_w = 480.0f;
+        const float panel_h = 160.0f;
+        const float px = w * 0.5f - panel_w * 0.5f;
+        const float py = h * 0.5f - panel_h - 40.0f;
+        quad(px, py, panel_w, panel_h, 0.10f, 0.07f, 0.09f, 0.95f);
+        border(px, py, panel_w, panel_h, 2.0f, 1.0f, 0.45f, 0.45f, 1.0f);
+    }
+
     /* In-game text-input box for JOIN flow. Real drawn rect, blinking
      * cursor, all driven by SAPP CHAR / KEY_DOWN events. No browser
      * prompt — per CLAUDE.md the canvas owns every input panel. */
@@ -560,6 +601,23 @@ void menu_draw(int screen_w, int screen_h) {
                                  cx, h * 0.5f + 196.0f, 1.0f,
                                  0xa0, 0xb0, 0xc8);
             break;
+        case GAME_MP_CONNECT_ERROR: {
+            /* Geometry was already flushed above. Just the title /
+             * message text here; the BACK button label is rendered by
+             * the generic button-label loop further down. Panel
+             * coordinates mirror the geometry block — keep in sync. */
+            const float panel_h = 160.0f;
+            const float py = h * 0.5f - panel_h - 40.0f;
+            draw_text_centered("CONNECTION FAILED",
+                                 cx, py + 28.0f, 2.5f,
+                                 0xff, 0xa0, 0xa0);
+            if (M.error_msg[0]) {
+                draw_text_centered(M.error_msg,
+                                     cx, py + 84.0f, 1.5f,
+                                     0xff, 0xff, 0xff);
+            }
+            break;
+        }
         case GAME_MP_JOIN_INPUT:
         case GAME_PROFILE_NAME_INPUT:
         case GAME_SP_NEW_WORLD_INPUT: {
@@ -833,6 +891,16 @@ static void on_click_new_world_input(float x, float y) {
     if (hit(&M.btn_back, x, y)) { M.state = GAME_SP_WORLD_LIST; return; }
 }
 
+static void on_click_connect_error(float x, float y) {
+    if (!hit(&M.btn_back, x, y)) return;
+    /* Tear down the dead socket so the next attempt starts clean,
+     * then drop the player back to the top of the menu tree. */
+    net_client_disconnect();
+    M.error_msg[0] = 0;
+    M.room_code[0] = 0;
+    M.state = GAME_MAIN_MENU;
+}
+
 static void on_click(float x, float y) {
     switch (M.state) {
         case GAME_PROFILE_SELECT: on_click_profile_select(x, y); break;
@@ -843,6 +911,7 @@ static void on_click(float x, float y) {
         case GAME_MP_JOIN_INPUT:      on_click_join_input(x, y);          break;
         case GAME_PROFILE_NAME_INPUT: on_click_profile_name_input(x, y);  break;
         case GAME_SP_NEW_WORLD_INPUT: on_click_new_world_input(x, y);     break;
+        case GAME_MP_CONNECT_ERROR:   on_click_connect_error(x, y);       break;
         default: break;
     }
 }
@@ -992,7 +1061,23 @@ bool menu_is_overlay(void) {
         || M.state == GAME_MP_SUBMENU
         || M.state == GAME_MP_CLOUD_SUBMENU
         || M.state == GAME_MP_JOIN_INPUT
-        || M.state == GAME_MP_URL_PROMPT;
+        || M.state == GAME_MP_URL_PROMPT
+        || M.state == GAME_MP_CONNECT_ERROR;
+}
+
+void menu_tick(void) {
+    /* Promote a dead MP socket into the modal error popup. We only
+     * watch from inside the in-game state — checking from menu
+     * screens would re-fire the popup the moment the user clicked
+     * BACK TO MENU (state is still ERROR until the next connect
+     * attempt overwrites it). */
+    if (M.state != GAME_IN_GAME_MP) return;
+    if (net_client_state() != NET_CLIENT_ERROR) return;
+    const char* msg = net_client_error_message();
+    snprintf(M.error_msg, sizeof M.error_msg, "%s",
+             msg ? msg : "connection failed");
+    M.state = GAME_MP_CONNECT_ERROR;
+    printf("[menu] MP connect error: %s\n", M.error_msg);
 }
 
 const char* menu_room_code(void) { return M.room_code; }

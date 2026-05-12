@@ -783,6 +783,11 @@ static void frame(void) {
      * is reflected in this frame's HUD. Cheap — no I/O on the C side
      * on the wasm backend, callbacks fire from the JS event loop. */
     net_client_tick();
+    /* Let the menu observe the net state and promote a dropped MP
+     * socket to the modal error popup. Must run BEFORE the overlay
+     * short-circuit below so the transition takes effect on the same
+     * frame the popup is rendered. */
+    menu_tick();
 
     /* In the main menu, draw the menu overlay over the last-rendered
      * scene (3D buffer keeps its previous contents — fine since gameplay

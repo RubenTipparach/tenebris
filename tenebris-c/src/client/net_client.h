@@ -65,6 +65,12 @@ void net_client_disconnect(void);
 net_client_state_t   net_client_state  (void);
 const net_client_welcome_t* net_client_welcome(void);
 
+/* Human-readable description of the most recent connection failure.
+ * Returns a stable ASCII string suitable for direct render via
+ * sdtx_printf, or NULL if the client has never failed. Cleared on
+ * the next net_client_connect. */
+const char* net_client_error_message(void);
+
 /* Most recent server-side DESYNC notice. Returns 0 if the server has
  * never flagged us, or the seconds-ago timestamp of the last notice
  * otherwise. Also returns the reason / block type via the out params

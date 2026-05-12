@@ -41,6 +41,11 @@ typedef struct {
     net_desync_kind_t    last_desync;
     uint32_t             last_desync_block;
     uint64_t             last_desync_time;
+    /* Last connection-failure reason, populated by on_close (or by
+     * net_client_connect when net_connect returns NULL). Plain ASCII,
+     * empty until something fails. The menu reads this to render the
+     * in-game error dialog. */
+    char                 error_message[96];
 } net_client_t;
 
 static net_client_t C;
@@ -328,7 +333,22 @@ void net_client_send_player_state(uint32_t client_tick,
 
 static void on_close(net_conn_t* conn, net_close_reason_t reason, void* user) {
     (void)conn; (void)user;
-    printf("[net-client] socket closed (reason=%d)\n", (int)reason);
+    printf("[net-client] socket closed (reason=%d, state=%d)\n",
+           (int)reason, (int)C.state);
+    /* Pick a message based on whether the handshake had completed. A
+     * close before READY means we never reached the server (refused,
+     * DNS, blocked); after READY means the link dropped mid-session. */
+    const char* msg;
+    if (C.state == NET_CLIENT_READY) {
+        msg = "lost connection to server";
+    } else if (reason == NET_CLOSE_TIMEOUT) {
+        msg = "connection timed out";
+    } else if (reason == NET_CLOSE_PROTOCOL_ERR) {
+        msg = "could not reach server";
+    } else {
+        msg = "server is unreachable";
+    }
+    snprintf(C.error_message, sizeof C.error_message, "%s", msg);
     C.state = NET_CLIENT_ERROR;
 }
 
@@ -352,6 +372,8 @@ void net_client_connect(const char* url) {
     C.conn = net_connect(url, cb);
     if (!C.conn) {
         fprintf(stderr, "[net-client] net_connect(%s) failed\n", url);
+        snprintf(C.error_message, sizeof C.error_message,
+                 "could not start connection");
         C.state = NET_CLIENT_ERROR;
         return;
     }
@@ -371,6 +393,10 @@ void net_client_disconnect(void) {
 
 net_client_state_t          net_client_state  (void) { return C.state; }
 const net_client_welcome_t* net_client_welcome(void) { return &C.welcome; }
+
+const char* net_client_error_message(void) {
+    return C.error_message[0] ? C.error_message : NULL;
+}
 
 net_desync_kind_t net_client_last_desync(double* out_seconds_ago,
                                             uint32_t* out_block_type) {

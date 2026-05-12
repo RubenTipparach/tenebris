@@ -30,6 +30,7 @@ typedef enum {
     GAME_MP_URL_PROMPT      = 8,   /* transient — kept for future */
     GAME_IN_GAME_SP         = 9,
     GAME_IN_GAME_MP         = 10,
+    GAME_MP_CONNECT_ERROR   = 11,  /* connect failed / link dropped — modal popup */
 } game_state_t;
 
 /* The 6-char room code shown in the HUD while in IN_GAME_MP. Empty
@@ -38,6 +39,12 @@ const char* menu_room_code(void);
 
 void menu_init(void);
 void menu_shutdown(void);
+
+/* Per-frame poll. Reads net_client state and drives transitions that
+ * can't be tied to a user click — e.g. promoting GAME_IN_GAME_MP to
+ * GAME_MP_CONNECT_ERROR when the socket dies. Cheap; safe to call
+ * every frame from main_web's frame(). */
+void menu_tick(void);
 
 game_state_t menu_state(void);
 bool         menu_is_overlay(void);   /* true when MAIN_MENU or MP_URL_PROMPT */
