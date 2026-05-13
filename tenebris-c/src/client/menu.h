@@ -86,6 +86,14 @@ void menu_pause_toggle(void);
 void menu_pause_draw(int screen_w, int screen_h);
 bool menu_pause_event(const sapp_event* e);
 
+/* Connecting overlay drawn while an MP socket is mid-connect /
+ * mid-handshake. Stateless - caller decides when to draw based on
+ * net_client_state(); the function just paints a centred panel
+ * with the supplied status + room labels. */
+void menu_connecting_draw(int screen_w, int screen_h,
+                          const char* status_label,
+                          const char* room_label);
+
 /* Render the menu UI in screen-space. Call after the 3D pass during
  * MAIN_MENU; safe (no-op) during in-game states. Width/height are the
  * current sapp framebuffer dimensions. */

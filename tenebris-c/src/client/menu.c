@@ -1860,6 +1860,63 @@ void menu_pause_draw(int screen_w, int screen_h) {
     }
 }
 
+/* Cross-platform connecting overlay drawn while the MP socket is
+ * mid-connect / mid-handshake. Caller (main_web) decides when to
+ * call this based on net_client_state(); the panel is otherwise
+ * stateless. Geometry uses the shared mobile_ui alpha pipeline so
+ * it shares the centralised sgl_draw at the end of the frame. */
+void menu_connecting_draw(int screen_w, int screen_h,
+                          const char* status_label,
+                          const char* room_label) {
+    const float w = (float)screen_w;
+    const float h = (float)screen_h;
+    if (w <= 0.0f || h <= 0.0f) return;
+
+    /* Panel sized like a stripped-down pause card - 320 wide so even
+     * a narrow phone in portrait gets a readable label without
+     * truncating. */
+    const float panel_w = 320.0f;
+    const float panel_h = 120.0f;
+    const float panel_x = (w - panel_w) * 0.5f;
+    const float panel_y = (h - panel_h) * 0.5f;
+
+    sgl_defaults();
+    sgl_matrix_mode_projection();
+    sgl_load_identity();
+    sgl_ortho(0.0f, w, h, 0.0f, -1.0f, 1.0f);
+    sgl_matrix_mode_modelview();
+    sgl_load_identity();
+    sgl_load_pipeline(mobile_ui_alpha_pipeline());
+
+    /* Full-screen dim backdrop - matches the pause panel's tint so
+     * the transition between connecting -> in-game feels continuous. */
+    mobile_ui_draw_rect(0.0f, 0.0f, w, h, 0.02f, 0.03f, 0.07f, 0.75f);
+    mobile_ui_draw_rect(panel_x, panel_y, panel_w, panel_h,
+                          0.10f, 0.12f, 0.18f, 0.96f);
+    mobile_ui_draw_rect_outline(panel_x, panel_y, panel_w, panel_h,
+                                  2.0f, 0.85f, 0.90f, 1.00f, 1.0f);
+
+    /* Animated trailing dots so the player knows the screen is live
+     * and the client hasn't hung. Cycles 1 -> 4 dots over a second. */
+    double t_now = stm_sec(stm_now());
+    int dots = ((int)(t_now * 2.0)) % 4;
+    char header[24];
+    snprintf(header, sizeof header, "CONNECTING%s%s%s",
+             dots >= 1 ? "." : " ",
+             dots >= 2 ? "." : " ",
+             dots >= 3 ? "." : " ");
+    const float cx = w * 0.5f;
+    draw_text_centered(header, cx, panel_y + 24.0f, 3.0f, 0xff, 0xff, 0xff);
+    if (status_label && status_label[0]) {
+        draw_text_centered(status_label, cx, panel_y + 62.0f, 1.5f,
+                           0xc0, 0xc0, 0xff);
+    }
+    if (room_label && room_label[0]) {
+        draw_text_centered(room_label, cx, panel_y + 88.0f, 1.5f,
+                           0x80, 0xff, 0xa0);
+    }
+}
+
 bool menu_pause_event(const sapp_event* e) {
     if (!M.pause_visible) return false;
 
