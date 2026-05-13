@@ -1370,16 +1370,27 @@ static void frame(void) {
     world_t* phys_world = world_for_body(G.player.body);
     if (!phys_world) phys_world = G.world;
     profiler_begin("player-update");
-    /* Skip the player physics update while the pause overlay is up.
-     * Even though menu_pause_event swallows new key/mouse events,
-     * input.c's held-key state lingers across the pause, so without
-     * this check a player who pressed Esc mid-stride would keep
-     * sliding forward behind the panel. The interact pipeline below
-     * is also conditional on the player having moved, so freezing
-     * the player here freezes mining + placement too. */
-    if (!menu_pause_active()) {
-        player_update(&G.player, phys_world, dt);
+    /* Pause keeps physics running so the world stays alive behind the
+     * panel - gravity pulls falling players to the ground, mining
+     * timers keep ticking, and MP clients don't desync from the
+     * server-authoritative simulation. We do zero out the held-key
+     * + click state for the duration so the player doesn't slide
+     * forward on a W that was held when Esc was pressed; they'll
+     * re-press to move on resume. */
+    if (menu_pause_active()) {
+        input_state_t* mut = input_state_mut();
+        mut->phys = (phys_input_t){0};
+        mut->left_held = false;
+        mut->right_held = false;
+        mut->left_click = false;
+        mut->right_click = false;
+        mut->middle_click = false;
+        mut->stick_active = false;
+        mut->stick_x = mut->stick_y = 0.0f;
+        mut->look_stick_active = false;
+        mut->look_stick_x = mut->look_stick_y = 0.0f;
     }
+    player_update(&G.player, phys_world, dt);
     profiler_end("player-update");
     /* Throttled SP autosave: writes the player's pose to localStorage
      * every 5 s while in SP. Cheap (~140 byte string), serial to the
@@ -1404,12 +1415,12 @@ static void frame(void) {
         }
     }
     profiler_begin("interact");
-    /* Pause also freezes the mining timer / placement raycast - matches
-     * the player_update freeze above so nothing in the world changes
-     * behind the panel. */
-    if (!menu_pause_active()) {
-        interact_update(&G.interact, phys_world, &G.player, dt);
-    }
+    /* interact_update keeps running while paused; the input zeroing
+     * above already cleared left_held / right_held, so mining +
+     * placement naturally stop without a separate gate. Letting the
+     * call through means raycast cleanup / tile invalidation still
+     * happens behind the panel. */
+    interact_update(&G.interact, phys_world, &G.player, dt);
     profiler_end("interact");
     input_consume();
 
