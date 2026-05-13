@@ -1026,11 +1026,12 @@ static void frame(void) {
     }
     profiler_end("worldgen");
 
-    /* Poll touch-button edge events before consuming input — the
+    /* Poll touch-button edge events before consuming input - the
      * teleport menu's mobile nav buttons live in input.c and this is
      * the only place to drive them. Also swallows any body-selection
-     * click before movement/interact reads the input state. */
-    teleport_menu_poll_touches();
+     * click before movement/interact reads the input state. Skipped
+     * in survival - no teleport entry points at all. */
+    if (!G.player.survival_mode) teleport_menu_poll_touches();
 
     /* G-key toggles survival mode in SP. Switching modes resets the
      * inventory to the appropriate starter state so creative-bonanza
@@ -1265,7 +1266,10 @@ static void frame(void) {
     /* UI overlays go on the swapchain on top of the water. */
     profiler_begin("ui");
     update_overlay(dt);
-    teleport_menu_draw();
+    /* Teleport overlay is creative-only. Survival players (which
+     * includes everyone in MP) shouldn't see the fast-travel list at
+     * all - it would break the mining loop. */
+    if (!G.player.survival_mode) teleport_menu_draw();
     if (G_debug_ui_visible) {
         draw_error_overlay();
         profiler_draw();
@@ -1288,8 +1292,10 @@ static void frame(void) {
     /* Sync the hamburger debug-menu visibility with the master F2
      * toggle every frame. mobile_ui owns its own draw state; we
      * just forward the boolean rather than threading it through
-     * every call. */
+     * every call. Same shape for the standalone teleport button -
+     * survival hides it because teleport is creative-only. */
     mobile_ui_set_debug_menu_visible(G_debug_ui_visible);
+    mobile_ui_set_teleport_visible(!G.player.survival_mode);
     mobile_ui_draw();
     /* Pause overlay draws last so the dim backdrop + panel sit on
      * top of every HUD element. No-op when not active. */
@@ -1333,9 +1339,13 @@ static void event(const sapp_event* e) {
      * composing. Returns true when it owned the event so movement /
      * teleport keys don't double-fire while the player is typing. */
     if (chat_event(e)) return;
-    /* Teleport menu gets first crack — it intercepts T/M/arrows/enter
-     * when open so those keys don't also reach the movement layer. */
-    if (teleport_menu_event(e, &G.player)) return;
+    /* Teleport menu gets first crack - it intercepts T/M/arrows/enter
+     * when open so those keys don't also reach the movement layer.
+     * Disabled in survival because the whole feature is hidden in
+     * that mode. */
+    if (!G.player.survival_mode) {
+        if (teleport_menu_event(e, &G.player)) return;
+    }
     /* F2 toggles the master debug-UI visibility. Every other debug
      * key (F1, F3, P, H, J, K) and the mobile hamburger menu are
      * gated on G_debug_ui_visible so first-time players never see

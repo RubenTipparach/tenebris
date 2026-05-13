@@ -222,10 +222,15 @@ static menu_layout_t menu_button_layout(void) {
 }
 
 static bool S_DEBUG_MENU_VISIBLE = false;
+static bool S_TELEPORT_VISIBLE   = true;
 
 void mobile_ui_set_debug_menu_visible(bool visible) {
     S_DEBUG_MENU_VISIBLE = visible;
     if (!visible) S_MENU_OPEN = false;       /* collapse the popup */
+}
+
+void mobile_ui_set_teleport_visible(bool visible) {
+    S_TELEPORT_VISIBLE = visible;
 }
 
 /* Hit-test the menu button + (when open) its popup column. Returns
@@ -250,6 +255,10 @@ bool mobile_ui_handle_touch(float x, float y) {
     if (!S_MENU_OPEN) return false;
 
     for (int i = 0; i < MENU_ITEM_COUNT; ++i) {
+        /* Skip the teleport item entirely when teleport is hidden -
+         * survival players shouldn't be able to summon the teleport
+         * menu via the hamburger either. */
+        if (i == 3 && !S_TELEPORT_VISIBLE) continue;
         if (fabsf(x - L.item_x) <= item_r && fabsf(y - L.item_y[i]) <= item_r) {
             switch (i) {
                 case 0: renderer_set_terrain_visible(!renderer_terrain_visible()); break;
@@ -370,13 +379,16 @@ void mobile_ui_draw(void) {
     draw_ring      (bx, j_y, BTN_RADIUS - 2.0f, BTN_RADIUS, 32, 1.00f, 0.95f, 0.55f, 0.75f);
     draw_glyph('J', bx, j_y, 16.0f, 1.0f, 1.0f, 0.9f);
 
-    /* Teleport (purple) — top of the stack, out of the way of the
+    /* Teleport (purple) - top of the stack, out of the way of the
      * combat-relevant buttons. Mirrors the [T] toggle in the
      * top-right debug menu so mobile users have a one-tap entry to
-     * the teleport list without opening the hamburger first. */
-    draw_circle_fan(bx, tp_y, BTN_RADIUS,        32, 0.35f, 0.20f, 0.50f, 0.50f);
-    draw_ring      (bx, tp_y, BTN_RADIUS - 2.0f, BTN_RADIUS, 32, 0.85f, 0.60f, 1.00f, 0.75f);
-    draw_glyph('T', bx, tp_y, 16.0f, 1.0f, 0.95f, 1.0f);
+     * the teleport list without opening the hamburger first. Hidden
+     * in survival because fast travel breaks the mining loop. */
+    if (S_TELEPORT_VISIBLE) {
+        draw_circle_fan(bx, tp_y, BTN_RADIUS,        32, 0.35f, 0.20f, 0.50f, 0.50f);
+        draw_ring      (bx, tp_y, BTN_RADIUS - 2.0f, BTN_RADIUS, 32, 0.85f, 0.60f, 1.00f, 0.75f);
+        draw_glyph('T', bx, tp_y, 16.0f, 1.0f, 0.95f, 1.0f);
+    }
 
     /* Debug-toggle menu — single hamburger button at the top-right
      * corner that drops down a vertical column of three toggles when
@@ -419,6 +431,10 @@ void mobile_ui_draw(void) {
                 { 'P', profiler_visible(),         0.15f, 0.45f, 0.20f },  /* profiler */
             };
             for (int i = 0; i < MENU_ITEM_COUNT; ++i) {
+                /* Mirror handle_touch's skip - keep the row empty
+                 * rather than re-laying-out the column, which would
+                 * confuse the hit-test math. */
+                if (i == 3 && !S_TELEPORT_VISIBLE) continue;
                 float ix = L.item_x;
                 float iy = L.item_y[i];
                 if (items[i].on) {
@@ -436,8 +452,12 @@ void mobile_ui_draw(void) {
     }
 
     /* Teleport-menu nav buttons piggyback on this state block so they
-     * share the same orthographic pipeline + blend. */
-    teleport_menu_draw_mobile_buttons();
+     * share the same orthographic pipeline + blend. Gated on the same
+     * flag as the standalone T button so survival players never see
+     * the teleport-list overlay or its nav arrows. */
+    if (S_TELEPORT_VISIBLE) {
+        teleport_menu_draw_mobile_buttons();
+    }
 
     sgl_draw();
 }

@@ -22,6 +22,12 @@ void mobile_ui_shutdown(void);
  * are gameplay controls, not debug. */
 void mobile_ui_set_debug_menu_visible(bool visible);
 
+/* Toggle whether the standalone teleport (T) button + the teleport
+ * menu's mobile nav buttons are drawn / hit-tested. Survival players
+ * shouldn't have access to fast travel, so main_web flips this off
+ * whenever G.player.survival_mode is true. On by default. */
+void mobile_ui_set_teleport_visible(bool visible);
+
 /* Must be called inside the main render pass (after sg_begin_pass,
  * before sg_end_pass). Submits orthographic 2D geometry via sokol_gl. */
 void mobile_ui_draw(void);

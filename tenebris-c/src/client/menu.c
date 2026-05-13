@@ -776,11 +776,11 @@ void menu_draw(int screen_w, int screen_h) {
                                  + MAIN_BTN_H + MAIN_BTN_GAP * 0.5f + 8.0f;
                 draw_text_centered("RECENT ROOMS", cx, ry_heading, 1.0f,
                                      0xa0, 0xb0, 0xc8);
-            } else {
-                draw_text_centered("no recent rooms yet  -  host or join to start one",
-                                     cx, h * 0.5f + 110.0f, 1.0f,
-                                     0x70, 0x78, 0x88);
             }
+            /* No empty-state hint when there are no recent rooms - the
+             * HOST / JOIN buttons are self-explanatory and a floating
+             * line of grey text in the middle of the panel reads as
+             * stray junk to first-time players. */
             break;
         case GAME_MP_CONNECT_ERROR: {
             /* Geometry was already flushed above. Just the title /
