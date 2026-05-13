@@ -1013,27 +1013,11 @@ static void frame(void) {
     maybe_apply_sp_resume();
     maybe_prime_mode_for_state();
 
-    /* Pointer-lock-loss -> open pause menu. The browser eats the
-     * first Escape press to release pointer lock (we never see the
-     * KEY_DOWN event), so detecting the lock-state transition is
-     * how we land the pause panel on a single press. Only fires
-     * during gameplay - the menu / pause states don't lock the
-     * mouse to begin with. */
+    /* DIAGNOSTIC: pointer-lock-loss pause-open detector is disabled
+     * while we isolate the menu-bleed bug. */
     {
-        static bool s_was_mouse_locked = false;
         bool now_locked = sapp_mouse_locked();
-        game_state_t st = menu_state();
-        bool in_gameplay = (st == GAME_IN_GAME_SP || st == GAME_IN_GAME_MP);
-        if (in_gameplay && s_was_mouse_locked && !now_locked
-            && !menu_pause_active()) {
-            printf("[frame] pointer-lock-loss detected -> open pause "
-                   "(state=%d locked %d->%d pause_was=%d)\n",
-                   (int)st, (int)s_was_mouse_locked, (int)now_locked,
-                   (int)menu_pause_active());
-            menu_pause_toggle();
-            sapp_show_mouse(true);
-        }
-        s_was_mouse_locked = now_locked;
+        (void)now_locked;
     }
 
     const double raw_dt_sec = stm_sec(stm_laptime(&G.last_time));
@@ -1375,21 +1359,10 @@ static void event(const sapp_event* e) {
     if (menu_pause_active()) {
         if (menu_pause_event(e)) return;
     }
+    /* DIAGNOSTIC: pause toggle on Escape is disabled while we
+     * isolate the bleed. */
     if (e->type == SAPP_EVENTTYPE_KEY_DOWN
         && e->key_code == SAPP_KEYCODE_ESCAPE) {
-        printf("[event] Escape KEY_DOWN seen by event handler "
-               "(locked=%d pause_was=%d state=%d)\n",
-               (int)sapp_mouse_locked(), (int)menu_pause_active(),
-               (int)menu_state());
-        menu_pause_toggle();
-        if (menu_pause_active()) {
-            /* Show the OS cursor + release pointer lock so the player
-             * can click the pause buttons. Pointer lock will need to
-             * be re-engaged via a click after resume, which is how
-             * the browser requires it anyway. */
-            sapp_lock_mouse(false);
-            sapp_show_mouse(true);
-        }
         return;
     }
     /* Chat takes Enter (open compose) and every keystroke while
