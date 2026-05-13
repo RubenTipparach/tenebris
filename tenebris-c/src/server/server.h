@@ -56,6 +56,14 @@ typedef struct {
      * only fires at most once per second to avoid flooding a client
      * that's stuck in geometry. */
     uint64_t    last_desync_tick;
+    /* Pose-save debounce. Periodic flush skips the disk write when
+     * the player hasn't moved >= 0.25 m since the last successful
+     * save - an idle lobby of 50 players would otherwise rewrite
+     * 100 identical files per second. last_saved_tick == 0 means
+     * "no save has happened yet for this session", which forces the
+     * first eligible flush to write unconditionally. */
+    double      last_saved_pos_x, last_saved_pos_y, last_saved_pos_z;
+    uint64_t    last_saved_tick;
 } server_client_t;
 
 typedef struct {

@@ -354,6 +354,12 @@ static void on_open(net_conn_t* conn, void* user) {
     /* No room until HELLO. -1 means 'unattached' so on_close knows not
      * to release a room ref that was never acquired. */
     cl->room_idx   = -1;
+    /* Fresh save-debounce state for the new session - last_saved_tick
+     * == 0 makes the first eligible flush write unconditionally. */
+    cl->last_saved_pos_x = 0.0;
+    cl->last_saved_pos_y = 0.0;
+    cl->last_saved_pos_z = 0.0;
+    cl->last_saved_tick  = 0;
     net_conn_set_user(conn, cl);
     printf("[server] open: player_id=%u (slot %ld)\n",
            cl->player_id, (long)(cl - s->clients));
@@ -716,21 +722,37 @@ void server_tick(server_t* s) {
 
     /* M6 periodic flush: chunk edits are saved immediately on
      * PLAYER_CMD now, so the only thing this loop persists is
-     * player poses. Runs every 30 s. */
-    const uint64_t flush_interval = (uint64_t)(s->cfg.tick_hz * 30.0);
+     * player poses. Runs every 0.5 s so a hard tab-close that
+     * skips on_close at most loses half a second of movement.
+     * A position-debounce inside skips the write when the player
+     * hasn't moved >= 0.25 m since the last save, so an idle
+     * lobby doesn't churn the disk. */
+    const uint64_t flush_interval = (uint64_t)(s->cfg.tick_hz * 0.5);
     if (flush_interval > 0 && (s->tick % flush_interval) == 0) {
         int saved_poses = 0;
         for (int i = 0; i < SERVER_MAX_CLIENTS; ++i) {
             server_client_t* cl = &s->clients[i];
             if (!cl->conn || !cl->has_state || !cl->token[0]) continue;
+            const double dx = cl->pos_x - cl->last_saved_pos_x;
+            const double dy = cl->pos_y - cl->last_saved_pos_y;
+            const double dz = cl->pos_z - cl->last_saved_pos_z;
+            const double moved2 = dx*dx + dy*dy + dz*dz;
+            if (cl->last_saved_tick != 0 && moved2 < 0.0625) continue;  /* 0.25 m */
             saves_player_pose_t pose = {
                 .body_id = cl->body_id,
                 .pos_x   = cl->pos_x, .pos_y = cl->pos_y, .pos_z = cl->pos_z,
                 .yaw     = cl->yaw,   .pitch = cl->pitch,
             };
-            if (saves_write_player(cl->token, &pose)) ++saved_poses;
+            if (saves_write_player(cl->token, &pose)) {
+                ++saved_poses;
+                cl->last_saved_pos_x = cl->pos_x;
+                cl->last_saved_pos_y = cl->pos_y;
+                cl->last_saved_pos_z = cl->pos_z;
+                cl->last_saved_tick  = s->tick;
+            }
         }
-        if (saved_poses > 0) {
+        if (saved_poses > 0 && (s->tick % (flush_interval * 20)) == 0) {
+            /* Throttled log (every ~10 s of saves) to keep stdout calm. */
             printf("[server] flush: %d player poses\n", saved_poses);
             fflush(stdout);
         }

@@ -1427,7 +1427,18 @@ static void frame(void) {
         mut->look_stick_active = false;
         mut->look_stick_x = mut->look_stick_y = 0.0f;
     }
-    player_update(&G.player, phys_world, dt);
+    /* MP join freeze: while the socket is still connecting / handshaking,
+     * the server's saved pose hasn't arrived yet. Running physics now
+     * would let the player fall from whatever stale pose the client
+     * last had, and then snap to the server pose when WELCOME lands -
+     * that's the "teleporting" the user sees. Skip the update entirely
+     * until net is READY; maybe_apply_mp_spawn applies the pose on the
+     * frame the WELCOME arrives, and simulation resumes from there. */
+    const bool mp_loading = (menu_state() == GAME_IN_GAME_MP
+                             && net_client_state() != NET_CLIENT_READY);
+    if (!mp_loading) {
+        player_update(&G.player, phys_world, dt);
+    }
     profiler_end("player-update");
     /* Throttled SP autosave: writes the player's pose to localStorage
      * every 5 s while in SP. Cheap (~140 byte string), serial to the
@@ -1456,8 +1467,13 @@ static void frame(void) {
      * above already cleared left_held / right_held, so mining +
      * placement naturally stop without a separate gate. Letting the
      * call through means raycast cleanup / tile invalidation still
-     * happens behind the panel. */
-    interact_update(&G.interact, phys_world, &G.player, dt);
+     * happens behind the panel. Also frozen during MP join until net
+     * is READY - mining a block before the server-authoritative pose
+     * arrives would target a chunk the player isn't actually standing
+     * in. */
+    if (!mp_loading) {
+        interact_update(&G.interact, phys_world, &G.player, dt);
+    }
     profiler_end("interact");
     input_consume();
 
