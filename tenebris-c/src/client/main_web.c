@@ -628,7 +628,11 @@ static void draw_mining_bar(float screen_w, float screen_h) {
     sdtx_printf("%s", buf);
     sdtx_font(0);
     sdtx_color3b(0xff, 0xff, 0xff);
-    sdtx_draw();
+    /* sdtx flush is centralised at frame end - see note in
+     * hotbar_ui_draw. Premature sdtx_draw here was uploading the
+     * vertex buffer before later text (pause / nameplates) had a
+     * chance to queue, which made those reads STALE GPU memory
+     * and was the root of the menu-UI-bleed-into-gameplay bug. */
 }
 
 /* --------------------------------------------------------------------- */
@@ -1320,7 +1324,11 @@ static void frame(void) {
     remote_players_draw_nameplates(view, proj,
                                       sapp_widthf(), sapp_heightf(),
                                       net_client_name_for_id);
-    sdtx_draw();
+    /* No sdtx_draw here - a single flush at the end of the UI block
+     * (after pause / mining / hotbar / mobile UI all queue their
+     * text) avoids the multi-flush bug where later text reads
+     * stale GPU memory because sokol_debugtext only uploads the
+     * vertex buffer once per frame. */
     hotbar_ui_draw(&G.player.inventory);
     /* Real (non-ASCII) mining progress bar. Self-gates on
      * survival_mode + mining_progress > 0; per CLAUDE.md the old
@@ -1337,6 +1345,11 @@ static void frame(void) {
     /* Pause overlay draws last so the dim backdrop + panel sit on
      * top of every HUD element. No-op when not active. */
     menu_pause_draw(sapp_width(), sapp_height());
+    /* ONE sdtx_draw per frame, at the very end after every HUD
+     * module has queued its text. Earlier flushes were the root
+     * cause of stale-GPU-text bleeding between frames - see
+     * hotbar_ui_draw and draw_mining_bar comments. */
+    sdtx_draw();
     profiler_end("ui");
 
     profiler_end_frame();

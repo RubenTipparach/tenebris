@@ -229,5 +229,10 @@ void hotbar_ui_draw(const inventory_t* inv) {
         sdtx_puts(buf);
     }
     sdtx_color3b(0xff, 0xff, 0xff);
-    sdtx_draw();
+    /* sdtx flush is centralised at the end of main_web's UI block.
+     * Calling sdtx_draw here would force an early upload of the
+     * vertex buffer, after which any text queued later in the same
+     * frame (mining bar, pause overlay, nameplates) would render
+     * stale GPU memory because sokol_debugtext guards
+     * sg_update_buffer behind a once-per-frame frame_id check. */
 }
