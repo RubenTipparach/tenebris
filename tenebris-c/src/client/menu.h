@@ -86,21 +86,6 @@ void menu_pause_toggle(void);
 void menu_pause_draw(int screen_w, int screen_h);
 bool menu_pause_event(const sapp_event* e);
 
-/* Explicit close + quit hooks, called by the DOM pause panel's
- * RETURN TO GAME and QUIT TO MENU buttons. menu_pause_close just
- * dismisses the overlay; menu_pause_quit_to_main_menu also
- * disconnects from MP, clears the active world, and routes the
- * menu state back to GAME_MAIN_MENU. */
-void menu_pause_close(void);
-void menu_pause_quit_to_main_menu(void);
-
-/* Fire the navigator.share / clipboard fallback for the current
- * room. Returns 1 = shared via Web Share API, 2 = copied to
- * clipboard, 3 = no API available, 0 = no room to share. Public
- * so the DOM pause panel's INVITE PLAYERS button can call it
- * without reaching into menu.c's static helpers. */
-int  menu_share_current_room(void);
-
 /* Render the menu UI in screen-space. Call after the 3D pass during
  * MAIN_MENU; safe (no-op) during in-game states. Width/height are the
  * current sapp framebuffer dimensions. */

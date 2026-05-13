@@ -1612,25 +1612,6 @@ void menu_pause_toggle(void) {
     set_pause_visible(!M.pause_visible, "toggle");
 }
 
-void menu_pause_close(void) {
-    set_pause_visible(false, "pause-close");
-}
-
-void menu_pause_quit_to_main_menu(void) {
-    if (M.state == GAME_IN_GAME_MP) {
-        net_client_disconnect();
-        M.room_code[0] = 0;
-    }
-    M.active_world[0] = 0;
-    set_pause_visible(false, "pause-quit");
-    M.state = GAME_MAIN_MENU;
-}
-
-int menu_share_current_room(void) {
-    const char* room = M.room_code[0] ? M.room_code : "";
-    return menu_js_share_invite(room);
-}
-
 static void layout_pause(float w, float h) {
     /* Three vertical buttons centred on the screen. Order top-down:
      * RETURN TO GAME, INVITE PLAYERS, QUIT TO MENU. */
@@ -1783,13 +1764,72 @@ static bool pause_btn_hit(const pause_btn_t* b, float x, float y) {
 }
 
 void menu_pause_draw(int screen_w, int screen_h) {
-    (void)screen_w; (void)screen_h;
-    /* Pause panel renders as a DOM overlay (see
-     * tenebris_pause_panel_install in main_web.c). The canvas
-     * version was unreliable across browsers; DOM gives us a
-     * proper background, hover + active button states, and
-     * touch support for free. This function stays as a no-op
-     * so the frame loop call site doesn't need changing. */
+    if (!M.pause_visible) return;
+
+    const float w = (float)screen_w;
+    const float h = (float)screen_h;
+    pause_layout(w, h);
+
+    /* Use mobile_ui's shared alpha pipeline - it draws the joystick
+     * + buttons every frame so we know it lands on the swapchain
+     * across browser / driver combos. */
+    sgl_defaults();
+    sgl_matrix_mode_projection();
+    sgl_load_identity();
+    sgl_ortho(0.0f, w, h, 0.0f, -1.0f, 1.0f);
+    sgl_matrix_mode_modelview();
+    sgl_load_identity();
+    sgl_load_pipeline(mobile_ui_alpha_pipeline());
+
+    /* Full-screen dim backdrop. */
+    mobile_ui_draw_rect(0.0f, 0.0f, w, h, 0.02f, 0.03f, 0.07f, 0.75f);
+    /* Panel + border. */
+    mobile_ui_draw_rect(G_pl.panel_x, G_pl.panel_y, G_pl.panel_w, G_pl.panel_h,
+                         0.10f, 0.12f, 0.18f, 0.96f);
+    mobile_ui_draw_rect_outline(G_pl.panel_x, G_pl.panel_y, G_pl.panel_w, G_pl.panel_h,
+                                  2.0f, 0.85f, 0.90f, 1.00f, 1.0f);
+    /* Buttons - hover-aware. */
+    const pause_btn_t* btns[3] = { &G_pl.resume, &G_pl.invite, &G_pl.quit };
+    for (int i = 0; i < 3; ++i) {
+        const pause_btn_t* b = btns[i];
+        if (!b->label) continue;
+        bool hovered = pause_btn_hit(b, M.mouse_x, M.mouse_y);
+        if (hovered) {
+            mobile_ui_draw_rect(b->x, b->y, b->w, b->h, 0.22f, 0.30f, 0.42f, 0.98f);
+        } else {
+            mobile_ui_draw_rect(b->x, b->y, b->w, b->h, 0.14f, 0.16f, 0.22f, 0.95f);
+        }
+        mobile_ui_draw_rect_outline(b->x, b->y, b->w, b->h, 2.0f,
+                                      0.85f, 0.90f, 1.00f, 1.0f);
+    }
+    sgl_draw();
+
+    /* Text on top of the geometry. */
+    const float cx = w * 0.5f;
+    draw_text_centered("PAUSED", cx, G_pl.panel_y + 20.0f, 4.0f,
+                         0xff, 0xff, 0xff);
+    for (int i = 0; i < 3; ++i) {
+        const pause_btn_t* b = btns[i];
+        if (!b->label) continue;
+        float bx = b->x + b->w * 0.5f;
+        float by = b->y + (b->h - 8.0f * 2.0f) * 0.5f;
+        draw_text_centered(b->label, bx, by, 2.0f, 0xff, 0xff, 0xff);
+    }
+
+    /* Share-result toast under the INVITE button (MP only). */
+    double t_now = stm_sec(stm_now());
+    if (G_pl.invite.label && M.pause_share_msg_until > t_now) {
+        const char* msg = "SHARE FAILED";
+        uint8_t r = 0xff, g = 0x80, bl = 0x60;
+        if (M.pause_share_result == 1) {
+            msg = "SHARED!"; r = 0x80; g = 0xff; bl = 0xa0;
+        } else if (M.pause_share_result == 2) {
+            msg = "LINK COPIED TO CLIPBOARD";
+            r = 0x80; g = 0xff; bl = 0xa0;
+        }
+        float ty = G_pl.invite.y + G_pl.invite.h + 8.0f;
+        draw_text_centered(msg, cx, ty, 1.0f, r, g, bl);
+    }
 }
 
 bool menu_pause_event(const sapp_event* e) {

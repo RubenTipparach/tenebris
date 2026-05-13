@@ -157,52 +157,46 @@ If a feature *requires* the browser prompt UX (e.g. a deep-link
 permission grant), document the exception inline at the call site.
 Otherwise this rule is absolute.
 
-## Touch-only input controls vs. cross-platform UI
+## Cross-platform UI lives in the canvas, DOM is mobile-only scaffolding
 
-This is a web game, so DOM overlays are a normal tool we use on
-every platform. The rule isn't about DOM vs. canvas — it's about
-which *roles* of UI should appear where.
+This is a web game, but "web" doesn't mean "browser-styled HTML".
+The core game UI — every menu, pause panel, dialog, input box,
+HUD readout — is rendered **inside the canvas** with `sokol_gl`
++ `sokol_debugtext` so it matches the game's visual identity on
+every platform. A real game's pause screen looks like part of
+the game, not like a `<button>` with the browser's default UA
+styling.
 
-**Virtual input controls** — anything that duplicates input the
-desktop player already has via keyboard / mouse: virtual
-joysticks, on-screen `JUMP` / `BREAK` / `PLACE` buttons, an
-on-screen pause-button stand-in for the Esc key — are
-**mobile-only**. They exist because phones don't have a keyboard
-or an Esc key; on desktop they're clutter that just covers up the
-3D scene. Gate their installation on
-`tenebris_is_mobile_device()`:
+DOM overlays exist only for **mobile-only virtual input
+controls** — things that duplicate input the desktop player
+already has via keyboard / mouse, and that we'd never show on
+desktop. Phones don't have an Esc key, a `W` key, or a left mouse
+button, so they need on-screen stand-ins. Those stand-ins are
+scaffolding, not part of the game's UI; using the browser's
+native button styling is fine for them because they're already
+visually outside the game world.
+
+The pattern in `main_web.c` `init()`:
 
 ```c
 #ifdef __EMSCRIPTEN__
 if (tenebris_is_mobile_device()) {
-    tenebris_pause_button_install();      // mobile-only: stands in for Esc
-    tenebris_mobile_controls_install();   // mobile-only: joysticks + JBP
+    /* DOM scaffolding so phones can play at all. Gated on mobile
+     * detection - desktop already has the real inputs. */
+    tenebris_pause_button_install();      // stands in for Esc
+    tenebris_mobile_controls_install();   // joysticks + JUMP / BREAK / PLACE
 }
 #endif
 ```
 
-**Cross-platform UI** — menus, pause panels, dialogs, toasts, the
-share-link prompt, the input box for a profile name — is
-universal. Both phone and desktop players need to see the same
-panel, click the same button. Use DOM overlays uniformly:
+Pause panels, profile pickers, error dialogs, the chat box,
+the world picker — all drawn with `sokol_gl` panels and
+`sokol_debugtext` labels through the existing menu module, no
+DOM. Same code path on every platform.
 
-```c
-#ifdef __EMSCRIPTEN__
-tenebris_pause_panel_install();           // every platform sees this
-#endif
-```
-
-Why DOM rather than `sokol_gl` for these panels: a real `<button>`
-gets `:hover`, `:active`, `:focus-visible`, OS focus rings,
-keyboard navigation, screen-reader semantics, and the platform's
-touch-highlight handling **for free**. We get all of that without
-writing a hit-test or a hover-state machine. Reach for `sokol_gl`
-when the UI lives inside the rendered scene (debug HUD overlays,
-the diegetic in-game text input box) — not for menus.
-
-The two layers do **not** mix: a touch-only control button (the
-mobile pause Esc-stand-in) is hidden on desktop; a cross-platform
-panel (the pause menu itself) is the same everywhere.
+The two layers never mix: a touch-only DOM control (the mobile
+pause Esc-stand-in) is hidden on desktop; a cross-platform panel
+(the pause menu itself) renders into the canvas on every device.
 
 ## Static game asset guidelines
 
