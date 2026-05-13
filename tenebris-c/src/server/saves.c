@@ -105,7 +105,11 @@ bool saves_write_tile(world_t* w, const char* room, uint64_t seed, int tile_idx)
     char path[512];
     tile_path(path, sizeof path, room, seed, (uint32_t)w->body->id, tile_idx);
     const uint8_t* col = &w->blocks[(size_t)tile_idx * WORLD_MAX_DEPTH];
-    return write_atomic(path, col, WORLD_MAX_DEPTH);
+    bool ok = write_atomic(path, col, WORLD_MAX_DEPTH);
+    /* Track that this tile now has a persisted column so the join-
+     * time replay path picks it up on the next client connect. */
+    if (ok) world_tile_mark_saved(w, tile_idx);
+    return ok;
 }
 
 int saves_flush_world(world_t* w, const char* room, uint64_t seed) {
@@ -142,7 +146,12 @@ int saves_load_world(world_t* w, const char* room, uint64_t seed) {
         uint8_t* col = &w->blocks[(size_t)tile * WORLD_MAX_DEPTH];
         size_t n = fread(col, 1, WORLD_MAX_DEPTH, f);
         fclose(f);
-        if (n == WORLD_MAX_DEPTH) ++loaded;
+        if (n == WORLD_MAX_DEPTH) {
+            ++loaded;
+            /* Remember that this tile diverges from procgen so the
+             * server can replay it to joining clients. */
+            world_tile_mark_saved(w, tile);
+        }
     }
     closedir(d);
     if (loaded > 0) {

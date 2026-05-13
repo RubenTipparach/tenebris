@@ -180,6 +180,67 @@ static void check_for_desync(server_t* s, server_client_t* cl) {
 /* Handshake. M2 handles HELLO -> WELCOME; M4 adds PLAYER_STATE. */
 /* ------------------------------------------------------------------ */
 
+/* Replay every persisted column for the joining client's room.
+ * Walks each world's saved-tile bitmap and emits CHUNK_DIFF
+ * messages so the client overlays its procgen baseline with the
+ * server-authoritative edits before the player can interact.
+ *
+ * We send the FULL column (all 128 depths) per saved tile rather
+ * than diffing against the procgen baseline. Re-running procgen
+ * to compute a true diff would cost real CPU on every join; the
+ * client's procgen already matches the server's for unedited
+ * depths, so identical-value overwrites are idempotent and the
+ * only cost is wire bytes. CHUNK_DIFF carries 64 entries per
+ * message, so a saved tile fans out to two messages. */
+static void send_chunk_replay(server_t* s, server_client_t* cl) {
+    if (cl->room_idx < 0 || cl->room_idx >= SERVER_MAX_ROOMS) return;
+    server_room_t* room = &s->rooms[cl->room_idx];
+    if (!room->in_use) return;
+
+    int replayed_tiles = 0;
+    int replayed_msgs  = 0;
+    for (int wi = 0; wi < room->world_count; ++wi) {
+        world_t* w = room->worlds[wi];
+        if (!w || !w->saved || !w->body) continue;
+
+        for (int tile = 0; tile < w->tile_count; ++tile) {
+            if (!world_tile_saved(w, tile)) continue;
+            const uint8_t* col = &w->blocks[(size_t)tile * WORLD_MAX_DEPTH];
+
+            /* Emit ceil(WORLD_MAX_DEPTH / CHUNK_DIFF_MAX_EDITS) messages.
+             * Each batch covers a contiguous depth range so the receiver
+             * can apply them in any order without losing entries. */
+            int depth = 0;
+            while (depth < WORLD_MAX_DEPTH) {
+                msg_chunk_diff_t diff = { 0 };
+                diff.body_id = (uint32_t)w->body->id;
+                int batch = WORLD_MAX_DEPTH - depth;
+                if (batch > CHUNK_DIFF_MAX_EDITS) batch = CHUNK_DIFF_MAX_EDITS;
+                diff.edit_count = (uint16_t)batch;
+                for (int i = 0; i < batch; ++i) {
+                    diff.edits[i].tile_idx   = (uint32_t)tile;
+                    diff.edits[i].depth      = (uint16_t)(depth + i);
+                    diff.edits[i].block_type = (uint16_t)col[depth + i];
+                }
+                depth += batch;
+
+                uint8_t buf[MSG_HEADER_SIZE + MSG_CHUNK_DIFF_HEADER_SIZE
+                            + MSG_CHUNK_DIFF_ENTRY_SIZE * CHUNK_DIFF_MAX_EDITS];
+                size_t n = proto_write_chunk_diff(buf, sizeof buf, &diff);
+                if (n == 0) break;
+                net_send(cl->conn, NET_CHANNEL_RELIABLE, buf, n);
+                ++replayed_msgs;
+            }
+            ++replayed_tiles;
+        }
+    }
+    if (replayed_tiles > 0) {
+        printf("[server] CHUNK replay -> player_id=%u: %d tile(s), %d msg(s)\n",
+               cl->player_id, replayed_tiles, replayed_msgs);
+        fflush(stdout);
+    }
+}
+
 static void send_welcome(server_t* s, server_client_t* cl) {
     const body_config_t* spawn_body = planet_get(BODY_TENEBRIS);
     if (!spawn_body) return;
@@ -269,6 +330,12 @@ static void handle_hello(server_t* s, server_client_t* cl,
            cl->player_id, cl->name,
            cl->room[0] ? cl->room : "(public)", h.client_version);
     send_welcome(s, cl);
+    /* Bring the joining client up to date with the room's persisted
+     * chunk edits before they can act, so the world they see matches
+     * what was on disk when they last (or any previous player) left.
+     * Idempotent for unedited depths - the server's procgen + client's
+     * procgen agree there. */
+    send_chunk_replay(s, cl);
 
     /* PLAYER_INFO fan-out, room-scoped: only clients in the same
      * room see each other's identities. Reliable channel — names

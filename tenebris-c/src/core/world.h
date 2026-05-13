@@ -49,6 +49,17 @@ typedef struct world_s {
     uint8_t*             dirty;
     int                  dirty_bytes;
 
+    /* "Has a persisted column on disk" bitset — one bit per tile.
+     * Set by saves_load_world (on the server, after reading a tile's
+     * .col file off disk) and by saves_write_tile (when the server
+     * persists a new edit). Used at WELCOME time to enumerate which
+     * tiles need to be replayed to a joining client so the client's
+     * procgen view gets overlaid with the server-authoritative
+     * edits. Sized identically to the dirty bitmap; null on builds
+     * that never call the saves API (clients during SP procgen). */
+    uint8_t*             saved;
+    int                  saved_bytes;
+
     /* Generation progress: how many tiles have had terrain computed so
      * far. Fill is streamed across frames; tiles past this cursor are
      * all BLOCK_AIR. */
@@ -78,6 +89,14 @@ void     world_set(world_t* w, int tile, int depth, block_t b);
 
 bool     world_tile_dirty(const world_t* w, int tile);
 void     world_tile_clear_dirty(world_t* w, int tile);
+
+/* "Saved" bitset: tracks which tiles have a persisted column on
+ * disk so the server can replay them to a joining client. Lazily
+ * allocated on first mark - native server builds touch it via the
+ * saves API; client + SP builds never set anything and the bitmap
+ * stays null. */
+bool     world_tile_saved(const world_t* w, int tile);
+void     world_tile_mark_saved(world_t* w, int tile);
 
 /* Mark every tile whose centre sits within `radius_m` of `world_pos`
  * as dirty, so the renderer's remesh-on-dirty pass picks them up.

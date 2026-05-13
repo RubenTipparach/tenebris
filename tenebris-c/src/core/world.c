@@ -28,6 +28,7 @@ void world_destroy(world_t* w) {
     goldberg_destroy(w->grid);
     free(w->blocks);
     free(w->dirty);
+    free(w->saved);
     free(w);
 }
 
@@ -171,6 +172,22 @@ bool world_tile_dirty(const world_t* w, int tile) {
 void world_tile_clear_dirty(world_t* w, int tile) {
     if (tile < 0 || tile >= w->tile_count) return;
     w->dirty[tile >> 3] &= (uint8_t)~(1 << (tile & 7));
+}
+
+bool world_tile_saved(const world_t* w, int tile) {
+    if (!w || !w->saved) return false;
+    if (tile < 0 || tile >= w->tile_count) return false;
+    return (w->saved[tile >> 3] & (1 << (tile & 7))) != 0;
+}
+
+void world_tile_mark_saved(world_t* w, int tile) {
+    if (!w || tile < 0 || tile >= w->tile_count) return;
+    if (!w->saved) {
+        w->saved_bytes = (w->tile_count + 7) / 8;
+        w->saved = (uint8_t*)calloc((size_t)w->saved_bytes, 1);
+        if (!w->saved) { w->saved_bytes = 0; return; }
+    }
+    w->saved[tile >> 3] |= (uint8_t)(1 << (tile & 7));
 }
 
 void world_dirty_in_range(world_t* w, vec3_t world_pos, float radius_m) {
