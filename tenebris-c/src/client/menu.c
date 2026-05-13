@@ -5,12 +5,12 @@
 #include "client/persistence.h"
 #include "client/profile.h"
 
-/* Trace logging. Every event that could plausibly mis-route the
- * pause / cloud-submenu render paths goes through MENU_TRACE so
- * the JS console reads as a single timeline. Prefix is "[menu]"
- * so the user can filter their devtools console quickly. Set the
- * environment flag below to 0 once the bug is pinned. */
-#define MENU_TRACE_ENABLED 1
+/* Trace logging. Was used to chase the menu-text-bleed bug (root
+ * cause: multiple sdtx_draw calls per frame trip a once-per-frame
+ * upload guard inside sokol_debugtext, so later draws read stale
+ * GPU memory). Disabled now that the fix landed; flip the flag
+ * to 1 to bring the timeline back if a new menu issue appears. */
+#define MENU_TRACE_ENABLED 0
 #if MENU_TRACE_ENABLED
 #  define MENU_TRACE(fmt, ...) printf("[menu] " fmt "\n", ##__VA_ARGS__)
 #else
@@ -1711,16 +1711,190 @@ static void pause_text_left(float screen_w, float screen_h,
     sdtx_font(0);
 }
 
+/* ------------------------------------------------------------------ */
+/* In-game pause overlay (rebuilt as proper sokol_gl geometry)          */
+/* ------------------------------------------------------------------ */
+
+/* Pause panel layout in screen pixels. Computed once per draw and
+ * stashed so the click handler can hit-test the same rectangles. */
+typedef struct { float x, y, w, h; const char* label; } pause_btn_t;
+static struct {
+    float       panel_x, panel_y, panel_w, panel_h;
+    pause_btn_t resume, invite, quit;
+} G_pl;
+
+static void pause_layout(float w, float h) {
+    const float btn_w = 280.0f;
+    const float btn_h = 56.0f;
+    const float gap   = 16.0f;
+    const float pad   = 24.0f;
+    const float panel_w = btn_w + 2.0f * pad;
+    const float panel_h = 90.0f                  /* title row */
+                        + 3.0f * btn_h + 2.0f * gap
+                        + pad;
+    const float panel_x = (w - panel_w) * 0.5f;
+    const float panel_y = (h - panel_h) * 0.5f;
+    const float btn_x = panel_x + pad;
+    float       btn_y = panel_y + 90.0f;
+
+    G_pl.panel_x = panel_x;
+    G_pl.panel_y = panel_y;
+    G_pl.panel_w = panel_w;
+    G_pl.panel_h = panel_h;
+    G_pl.resume = (pause_btn_t){ btn_x, btn_y, btn_w, btn_h, "RETURN TO GAME" };
+    btn_y += btn_h + gap;
+    G_pl.invite = (pause_btn_t){ btn_x, btn_y, btn_w, btn_h, "INVITE PLAYERS" };
+    btn_y += btn_h + gap;
+    G_pl.quit   = (pause_btn_t){ btn_x, btn_y, btn_w, btn_h, "QUIT TO MENU"   };
+}
+
+static bool pause_btn_hit(const pause_btn_t* b, float x, float y) {
+    return x >= b->x && x <= b->x + b->w
+        && y >= b->y && y <= b->y + b->h;
+}
+
 void menu_pause_draw(int screen_w, int screen_h) {
-    (void)screen_w; (void)screen_h;
-    /* DIAGNOSTIC: pause draw is a no-op. If you still see
-     * menu UI bleeding through gameplay, the bleed is NOT
-     * coming from this path. */
+    if (!M.pause_visible) return;
+
+    const float w = (float)screen_w;
+    const float h = (float)screen_h;
+    pause_layout(w, h);
+
+    sgl_defaults();
+    sgl_matrix_mode_projection();
+    sgl_load_identity();
+    sgl_ortho(0.0f, w, h, 0.0f, -1.0f, 1.0f);
+    sgl_matrix_mode_modelview();
+    sgl_load_identity();
+
+    static sgl_pipeline pip = (sgl_pipeline){0};
+    if (pip.id == 0) {
+        pip = sgl_make_pipeline(&(sg_pipeline_desc){
+            .colors[0].blend = {
+                .enabled = true,
+                .src_factor_rgb = SG_BLENDFACTOR_SRC_ALPHA,
+                .dst_factor_rgb = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+                .src_factor_alpha = SG_BLENDFACTOR_ONE,
+                .dst_factor_alpha = SG_BLENDFACTOR_ONE,
+            },
+        });
+    }
+    sgl_load_pipeline(pip);
+
+    /* Dim full-screen backdrop. */
+    quad(0.0f, 0.0f, w, h, 0.02f, 0.03f, 0.07f, 0.70f);
+    /* Panel + border. */
+    quad(G_pl.panel_x, G_pl.panel_y, G_pl.panel_w, G_pl.panel_h,
+         0.10f, 0.12f, 0.18f, 0.95f);
+    border(G_pl.panel_x, G_pl.panel_y, G_pl.panel_w, G_pl.panel_h, 2.0f,
+           0.85f, 0.90f, 1.0f, 1.0f);
+    /* Buttons - hover-aware. */
+    const pause_btn_t* btns[3] = { &G_pl.resume, &G_pl.invite, &G_pl.quit };
+    for (int i = 0; i < 3; ++i) {
+        const pause_btn_t* b = btns[i];
+        bool hovered = pause_btn_hit(b, M.mouse_x, M.mouse_y);
+        if (hovered) quad(b->x, b->y, b->w, b->h, 0.22f, 0.30f, 0.42f, 0.95f);
+        else         quad(b->x, b->y, b->w, b->h, 0.12f, 0.14f, 0.19f, 0.90f);
+        border(b->x, b->y, b->w, b->h, 2.0f, 0.85f, 0.90f, 1.0f, 1.0f);
+    }
+    sgl_draw();
+
+    /* Text on top. draw_text_centered comes from menu_draw; both
+     * paths share the same helper so the font + colour pipeline is
+     * identical. */
+    const float cx = w * 0.5f;
+    draw_text_centered("PAUSED", cx, G_pl.panel_y + 16.0f, 3.0f,
+                         0xff, 0xff, 0xff);
+    draw_text_centered("press Esc to resume",
+                         cx, G_pl.panel_y + 64.0f, 1.0f,
+                         0xa0, 0xb0, 0xc8);
+    for (int i = 0; i < 3; ++i) {
+        const pause_btn_t* b = btns[i];
+        float bx = b->x + b->w * 0.5f;
+        float by = b->y + (b->h - 8.0f * 2.0f) * 0.5f;
+        draw_text_centered(b->label, bx, by, 2.0f, 0xff, 0xff, 0xff);
+    }
+
+    /* Share-result toast under the INVITE button. */
+    double t_now = stm_sec(stm_now());
+    if (M.pause_share_msg_until > t_now) {
+        const char* msg = "SHARE FAILED";
+        uint8_t r = 0xff, g = 0x80, bl = 0x60;
+        if (M.pause_share_result == 1) {
+            msg = "SHARED!"; r = 0x80; g = 0xff; bl = 0xa0;
+        } else if (M.pause_share_result == 2) {
+            msg = "LINK COPIED TO CLIPBOARD";
+            r = 0x80; g = 0xff; bl = 0xa0;
+        }
+        float ty = G_pl.invite.y + G_pl.invite.h + 8.0f;
+        draw_text_centered(msg, cx, ty, 1.0f, r, g, bl);
+    }
 }
 
 bool menu_pause_event(const sapp_event* e) {
-    (void)e;
-    return false;
+    if (!M.pause_visible) return false;
+
+    /* Track mouse for hover. */
+    if (e->type == SAPP_EVENTTYPE_MOUSE_MOVE) {
+        M.mouse_x = e->mouse_x;
+        M.mouse_y = e->mouse_y;
+        return true;
+    }
+    if (e->type == SAPP_EVENTTYPE_TOUCHES_MOVED && e->num_touches > 0) {
+        M.mouse_x = e->touches[0].pos_x;
+        M.mouse_y = e->touches[0].pos_y;
+        return true;
+    }
+
+    /* Escape resumes. */
+    if (e->type == SAPP_EVENTTYPE_KEY_DOWN
+        && e->key_code == SAPP_KEYCODE_ESCAPE) {
+        set_pause_visible(false, "esc-resume");
+        sapp_show_mouse(true);
+        return true;
+    }
+
+    /* Click / touch hit-test against the same rects the draw path
+     * computed. */
+    bool click = false;
+    float cx = 0, cy = 0;
+    if (e->type == SAPP_EVENTTYPE_MOUSE_DOWN
+        && e->mouse_button == SAPP_MOUSEBUTTON_LEFT) {
+        click = true; cx = e->mouse_x; cy = e->mouse_y;
+    } else if (e->type == SAPP_EVENTTYPE_TOUCHES_BEGAN
+               && e->num_touches > 0) {
+        click = true; cx = e->touches[0].pos_x; cy = e->touches[0].pos_y;
+    }
+    if (click) {
+        pause_layout(sapp_widthf(), sapp_heightf());
+        if (pause_btn_hit(&G_pl.resume, cx, cy)) {
+            set_pause_visible(false, "click-resume");
+            sapp_show_mouse(true);
+            return true;
+        }
+        if (pause_btn_hit(&G_pl.invite, cx, cy)) {
+            const char* room = M.room_code[0] ? M.room_code : "";
+            int rc = menu_js_share_invite(room);
+            M.pause_share_result    = (rc == 0) ? 3 : rc;
+            M.pause_share_msg_until = stm_sec(stm_now()) + 2.5;
+            return true;
+        }
+        if (pause_btn_hit(&G_pl.quit, cx, cy)) {
+            if (M.state == GAME_IN_GAME_MP) {
+                net_client_disconnect();
+                M.room_code[0] = 0;
+            }
+            M.active_world[0] = 0;
+            set_pause_visible(false, "click-quit");
+            M.state = GAME_MAIN_MENU;
+            return true;
+        }
+        return true;       /* swallow clicks inside the dim backdrop */
+    }
+
+    /* Swallow everything else (keyboard movement, scroll, etc.) so
+     * the player doesn't keep walking / mining behind the panel. */
+    return true;
 }
 
 bool menu_take_sp_resume(persistence_save_t* out) {

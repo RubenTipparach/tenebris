@@ -177,18 +177,6 @@ static struct {
 
 /* --------------------------------------------------------------------- */
 
-/* Watchdog commit listener: if this stops firing, sg_commit isn't
- * being called, which would mean sokol_debugtext's commit listener
- * also isn't firing and sdtx_rewind never runs. That would let
- * stale vertices (e.g. menu UI text) accumulate forever. */
-static int g_sg_commit_count = 0;
-void on_my_commit(void* userdata) {
-    (void)userdata;
-    if ((++g_sg_commit_count % 60) == 0) {
-        printf("[sg_commit] watchdog: %d commits seen\n", g_sg_commit_count);
-    }
-}
-
 static void init(void) {
     /* Bump sokol's buffer pool way above the default 128 — the
      * chunked-terrain renderer creates 4 buffers per chunk × 32
@@ -229,12 +217,6 @@ static void init(void) {
         .fonts[7] = sdtx_font_c64(),
         .logger.func = on_screen_log,
     });
-
-    /* Watchdog: if this listener stops firing, sg_commit isn't being
-     * called - which would mean sdtx_rewind never runs and stale
-     * vertices accumulate forever. */
-    extern void on_my_commit(void* userdata);
-    sg_add_commit_listener((sg_commit_listener){ on_my_commit, NULL });
 
     input_init();
     job_system_init(0);
@@ -993,28 +975,6 @@ static void frame(void) {
      * frame the popup is rendered. */
     menu_tick();
 
-    /* Heartbeat trace - one line per frame summarising the routing
-     * decision the rest of frame() is about to make. Throttled so
-     * it doesn't drown the console; only logs when something
-     * relevant changed (state / pause / pointer-lock). */
-    {
-        static game_state_t prev_state = (game_state_t)-1;
-        static bool         prev_pause = false;
-        static bool         prev_lock  = false;
-        game_state_t cur_state = menu_state();
-        bool cur_pause = menu_pause_active();
-        bool cur_lock  = sapp_mouse_locked();
-        if (cur_state != prev_state || cur_pause != prev_pause
-            || cur_lock != prev_lock) {
-            printf("[frame] state-change: state -> %d, pause=%d, locked=%d, overlay=%d\n",
-                   (int)cur_state, (int)cur_pause, (int)cur_lock,
-                   (int)menu_is_overlay());
-            prev_state = cur_state;
-            prev_pause = cur_pause;
-            prev_lock  = cur_lock;
-        }
-    }
-
     /* In the main menu, draw the menu overlay over the last-rendered
      * scene (3D buffer keeps its previous contents — fine since gameplay
      * hasn't started yet). Skip the entire game update path. */
@@ -1090,7 +1050,7 @@ static void frame(void) {
      * the only place to drive them. Also swallows any body-selection
      * click before movement/interact reads the input state. Skipped
      * in survival - no teleport entry points at all. */
-    if (!G.player.survival_mode) teleport_menu_poll_touches();
+    if (G_debug_ui_visible) teleport_menu_poll_touches();
 
     /* G-key toggles survival mode in SP. Switching modes resets the
      * inventory to the appropriate starter state so creative-bonanza
@@ -1134,7 +1094,16 @@ static void frame(void) {
     world_t* phys_world = world_for_body(G.player.body);
     if (!phys_world) phys_world = G.world;
     profiler_begin("player-update");
-    player_update(&G.player, phys_world, dt);
+    /* Skip the player physics update while the pause overlay is up.
+     * Even though menu_pause_event swallows new key/mouse events,
+     * input.c's held-key state lingers across the pause, so without
+     * this check a player who pressed Esc mid-stride would keep
+     * sliding forward behind the panel. The interact pipeline below
+     * is also conditional on the player having moved, so freezing
+     * the player here freezes mining + placement too. */
+    if (!menu_pause_active()) {
+        player_update(&G.player, phys_world, dt);
+    }
     profiler_end("player-update");
     /* Throttled SP autosave: writes the player's pose to localStorage
      * every 5 s while in SP. Cheap (~140 byte string), serial to the
@@ -1159,7 +1128,12 @@ static void frame(void) {
         }
     }
     profiler_begin("interact");
-    interact_update(&G.interact, phys_world, &G.player, dt);
+    /* Pause also freezes the mining timer / placement raycast - matches
+     * the player_update freeze above so nothing in the world changes
+     * behind the panel. */
+    if (!menu_pause_active()) {
+        interact_update(&G.interact, phys_world, &G.player, dt);
+    }
     profiler_end("interact");
     input_consume();
 
@@ -1328,7 +1302,7 @@ static void frame(void) {
     /* Teleport overlay is creative-only. Survival players (which
      * includes everyone in MP) shouldn't see the fast-travel list at
      * all - it would break the mining loop. */
-    if (!G.player.survival_mode) teleport_menu_draw();
+    if (G_debug_ui_visible) teleport_menu_draw();
     if (G_debug_ui_visible) {
         draw_error_overlay();
         profiler_draw();
@@ -1358,7 +1332,7 @@ static void frame(void) {
      * every call. Same shape for the standalone teleport button -
      * survival hides it because teleport is creative-only. */
     mobile_ui_set_debug_menu_visible(G_debug_ui_visible);
-    mobile_ui_set_teleport_visible(!G.player.survival_mode);
+    mobile_ui_set_teleport_visible(G_debug_ui_visible);
     mobile_ui_draw();
     /* Pause overlay draws last so the dim backdrop + panel sit on
      * top of every HUD element. No-op when not active. */
@@ -1390,10 +1364,21 @@ static void event(const sapp_event* e) {
     if (menu_pause_active()) {
         if (menu_pause_event(e)) return;
     }
-    /* DIAGNOSTIC: pause toggle on Escape is disabled while we
-     * isolate the bleed. */
+    /* Escape during gameplay toggles the pause overlay. While the
+     * overlay is open, menu_pause_event above already consumes
+     * Escape (closes the panel); this handler only fires when the
+     * overlay is closed and opens it. */
     if (e->type == SAPP_EVENTTYPE_KEY_DOWN
         && e->key_code == SAPP_KEYCODE_ESCAPE) {
+        menu_pause_toggle();
+        if (menu_pause_active()) {
+            /* Release pointer lock + show the OS cursor so the player
+             * can click the panel buttons. Browser requires a user
+             * gesture for re-lock on close - that happens on the
+             * next canvas click via input.c. */
+            sapp_lock_mouse(false);
+            sapp_show_mouse(true);
+        }
         return;
     }
     /* Chat takes Enter (open compose) and every keystroke while
@@ -1402,9 +1387,9 @@ static void event(const sapp_event* e) {
     if (chat_event(e)) return;
     /* Teleport menu gets first crack - it intercepts T/M/arrows/enter
      * when open so those keys don't also reach the movement layer.
-     * Disabled in survival because the whole feature is hidden in
-     * that mode. */
-    if (!G.player.survival_mode) {
+     * Gated on the F2 debug UI master so a casual player can't
+     * accidentally summon the fast-travel list. */
+    if (G_debug_ui_visible) {
         if (teleport_menu_event(e, &G.player)) return;
     }
     /* F2 toggles the master debug-UI visibility. Every other debug
@@ -1441,6 +1426,33 @@ static void event(const sapp_event* e) {
             (e->key_code == SAPP_KEYCODE_F3 || e->key_code == SAPP_KEYCODE_P)) {
             profiler_toggle_visible();
             return;
+        }
+    }
+
+    /* Mobile pause button (top-left). Always hit-testable during
+     * gameplay so phone players (no Esc key) can open the pause
+     * overlay. Must come BEFORE the hamburger debug-gated check so
+     * pause works regardless of F2 state. */
+    {
+        bool tapped = false;
+        float tx = 0, ty = 0;
+        if (e->type == SAPP_EVENTTYPE_TOUCHES_BEGAN && e->num_touches > 0) {
+            tapped = true; tx = e->touches[0].pos_x; ty = e->touches[0].pos_y;
+        } else if (e->type == SAPP_EVENTTYPE_MOUSE_DOWN
+                   && e->mouse_button == SAPP_MOUSEBUTTON_LEFT) {
+            tapped = true; tx = e->mouse_x; ty = e->mouse_y;
+        }
+        if (tapped) {
+            mobile_ui_circle_t p = mobile_ui_pause_button_rect();
+            float dx = tx - p.x, dy = ty - p.y;
+            if (dx * dx + dy * dy <= p.r * p.r) {
+                menu_pause_toggle();
+                if (menu_pause_active()) {
+                    sapp_lock_mouse(false);
+                    sapp_show_mouse(true);
+                }
+                return;
+            }
         }
     }
 

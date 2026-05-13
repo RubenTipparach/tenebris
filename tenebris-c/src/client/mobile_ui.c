@@ -223,6 +223,19 @@ static menu_layout_t menu_button_layout(void) {
 
 static bool          S_DEBUG_MENU_VISIBLE = false;
 static bool          S_TELEPORT_VISIBLE    = true;
+
+/* Standalone mobile pause button: a top-left circle so mobile
+ * players (no Esc key) can open the pause overlay. Always visible
+ * during gameplay - main_web only calls mobile_ui_draw when in-game
+ * anyway. */
+mobile_ui_circle_t mobile_ui_pause_button_rect(void) {
+    const float r = BTN_RADIUS;
+    return (mobile_ui_circle_t){
+        .x = BTN_MARGIN + r,
+        .y = BTN_MARGIN + r,
+        .r = r,
+    };
+}
 /* Shared alpha-blended 2D pipeline. Created the first time
  * mobile_ui_draw runs; exposed via mobile_ui_alpha_pipeline so menu_pause
  * and other overlays can use it instead of each lazily making their
@@ -487,6 +500,35 @@ void mobile_ui_draw(void) {
      * the teleport-list overlay or its nav arrows. */
     if (S_TELEPORT_VISIBLE) {
         teleport_menu_draw_mobile_buttons();
+    }
+
+    /* Standalone pause button at top-left. Mobile players (no Esc
+     * key) tap this to open the pause overlay. main_web hit-tests
+     * the same rect via mobile_ui_pause_button_rect. Two short
+     * vertical bars form the universally-recognised "II" pause
+     * glyph drawn over the circle. */
+    {
+        mobile_ui_circle_t p = mobile_ui_pause_button_rect();
+        draw_circle_fan(p.x, p.y, p.r, 32, 0.15f, 0.15f, 0.20f, 0.55f);
+        draw_ring      (p.x, p.y, p.r - 2.0f, p.r, 32, 0.90f, 0.95f, 1.00f, 0.85f);
+        /* Two filled rectangles = pause icon. Each bar is ~4 px wide,
+         * spaced ~6 px apart, centred on the button. */
+        sgl_begin_quads();
+        sgl_c4f(1.00f, 1.00f, 1.00f, 0.95f);
+        const float bw = 3.0f;
+        const float bh = 11.0f;
+        const float gap = 4.0f;
+        const float lx = p.x - gap * 0.5f - bw;
+        const float rx = p.x + gap * 0.5f;
+        sgl_v2f(lx,      p.y - bh);
+        sgl_v2f(lx + bw, p.y - bh);
+        sgl_v2f(lx + bw, p.y + bh);
+        sgl_v2f(lx,      p.y + bh);
+        sgl_v2f(rx,      p.y - bh);
+        sgl_v2f(rx + bw, p.y - bh);
+        sgl_v2f(rx + bw, p.y + bh);
+        sgl_v2f(rx,      p.y + bh);
+        sgl_end();
     }
 
     sgl_draw();

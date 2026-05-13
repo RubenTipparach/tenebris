@@ -30,6 +30,16 @@ void mobile_ui_set_debug_menu_visible(bool visible);
  * whenever G.player.survival_mode is true. On by default. */
 void mobile_ui_set_teleport_visible(bool visible);
 
+/* Geometry of the standalone mobile pause button in screen pixels.
+ * Returned by mobile_ui_pause_button_rect() so main_web can hit-test
+ * the same rectangle the draw path renders. The button is always
+ * drawn at the top-left corner of the canvas during gameplay so
+ * mobile players (with no Esc key) can open the pause overlay. */
+typedef struct {
+    float x, y, r;
+} mobile_ui_circle_t;
+mobile_ui_circle_t mobile_ui_pause_button_rect(void);
+
 /* Must be called inside the main render pass (after sg_begin_pass,
  * before sg_end_pass). Submits orthographic 2D geometry via sokol_gl. */
 void mobile_ui_draw(void);
