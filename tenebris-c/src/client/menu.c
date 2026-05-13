@@ -1,4 +1,5 @@
 #include "client/menu.h"
+#include "client/client_kv.h"
 #include "client/net_client.h"
 #include "client/persistence.h"
 #include "client/profile.h"
@@ -149,6 +150,14 @@ typedef struct {
 #define LIST_BTN_H    36.0f
 #define LIST_BTN_GAP   8.0f
 
+/* Recent-room history shown on the MP cloud submenu. Max stored on
+ * disk is generous; the visible window is smaller because the panel
+ * has limited vertical space between the JOIN button and BACK. */
+#define ROOM_HISTORY_MAX         8
+#define ROOM_HISTORY_VISIBLE     4
+#define ROOM_CODE_LEN            6
+#define ROOM_HISTORY_KV_KEY      "tenebris-c:recent-rooms"
+
 static struct {
     game_state_t state;
     /* Main-menu buttons. */
@@ -197,6 +206,13 @@ static struct {
 
     /* Room code for the active MP session. Empty = public room. */
     char room_code[9];
+
+    /* MRU list of rooms the player has hosted / joined. Loaded from
+     * client_kv on entering the cloud submenu, updated on every
+     * successful connect (menu-driven or URL bypass). */
+    char recent_rooms[ROOM_HISTORY_MAX][ROOM_CODE_LEN + 1];
+    int  recent_room_count;
+    menu_button_t btn_recent_room[ROOM_HISTORY_MAX];
 
     /* Connection-failure popup. Set on the GAME_IN_GAME_MP ->
      * GAME_MP_CONNECT_ERROR transition by menu_tick; cleared on
@@ -320,6 +336,20 @@ static void layout_mp_cloud_submenu(float w, float h) {
                  cx - MAIN_BTN_W * 0.5f,
                  cy + MAIN_BTN_GAP * 0.5f,
                  MAIN_BTN_W, MAIN_BTN_H, "JOIN");
+    /* Recent-room list under the JOIN button. Leave room above the
+     * BACK button at h*0.5+220; with LIST_BTN_H=36 + GAP=8 that's
+     * ~4 rows plus a heading line. */
+    float ry = cy + MAIN_BTN_H + MAIN_BTN_GAP * 0.5f + 28.0f;
+    for (int i = 0; i < ROOM_HISTORY_MAX; ++i) {
+        if (i < M.recent_room_count && i < ROOM_HISTORY_VISIBLE) {
+            set_button(&M.btn_recent_room[i],
+                         cx - LIST_BTN_W * 0.5f, ry,
+                         LIST_BTN_W, LIST_BTN_H, M.recent_rooms[i]);
+            ry += LIST_BTN_H + LIST_BTN_GAP;
+        } else {
+            hide_button(&M.btn_recent_room[i]);
+        }
+    }
     set_button(&M.btn_back,
                  cx - 120.0f, h * 0.5f + 220.0f, 240.0f, LIST_BTN_H, "BACK");
     hide_button(&M.btn_sp);
@@ -449,6 +479,10 @@ static void layout_profile_select(float w, float h) {
 }
 
 static void layout(float w, float h) {
+    /* Recent-room buttons only appear on GAME_MP_CLOUD_SUBMENU; default
+     * them to hidden so they don't bleed onto any other screen. The
+     * cloud-submenu layout re-sets the visible subset after this. */
+    for (int i = 0; i < ROOM_HISTORY_MAX; ++i) hide_button(&M.btn_recent_room[i]);
     switch (M.state) {
         case GAME_PROFILE_SELECT:
             layout_profile_select(w, h); break;
@@ -586,6 +620,7 @@ void menu_draw(int screen_w, int screen_h) {
     for (int i = 0; i < PROFILE_MAX; ++i) draw_button(&M.btn_profile[i]);
     draw_button(&M.btn_new_world);
     for (int i = 0; i < PERSISTENCE_MAX_WORLDS; ++i) draw_button(&M.btn_world[i]);
+    for (int i = 0; i < ROOM_HISTORY_MAX; ++i) draw_button(&M.btn_recent_room[i]);
     draw_button(&M.btn_back);
 
     if (M.state == GAME_MP_URL_PROMPT) {
@@ -679,12 +714,18 @@ void menu_draw(int screen_w, int screen_h) {
         case GAME_MP_CLOUD_SUBMENU:
             draw_text_centered("CLOUD HOSTED", cx, h * 0.5f - 200.0f, 3.0f,
                                  0xff, 0xff, 0xff);
-            draw_text_centered("host = open a new private room (you get a code)",
-                                 cx, h * 0.5f + 180.0f, 1.0f,
-                                 0xa0, 0xb0, 0xc8);
-            draw_text_centered("join = enter a friend's 6-char code",
-                                 cx, h * 0.5f + 196.0f, 1.0f,
-                                 0xa0, 0xb0, 0xc8);
+            if (M.recent_room_count > 0) {
+                /* Heading sits just above the first recent-room button.
+                 * Y matches the offset used in layout_mp_cloud_submenu. */
+                float ry_heading = h * 0.5f
+                                 + MAIN_BTN_H + MAIN_BTN_GAP * 0.5f + 8.0f;
+                draw_text_centered("RECENT ROOMS", cx, ry_heading, 1.0f,
+                                     0xa0, 0xb0, 0xc8);
+            } else {
+                draw_text_centered("no recent rooms yet  -  host or join to start one",
+                                     cx, h * 0.5f + 110.0f, 1.0f,
+                                     0x70, 0x78, 0x88);
+            }
             break;
         case GAME_MP_CONNECT_ERROR: {
             /* Geometry was already flushed above. Just the title /
@@ -794,6 +835,13 @@ void menu_draw(int screen_w, int screen_h) {
         float by = b->y + (b->h - 8.0f * 1.5f) * 0.5f;
         draw_text_left(b->label, bx, by, 1.5f, 0xff, 0xff, 0xff);
     }
+    for (int i = 0; i < ROOM_HISTORY_MAX; ++i) {
+        const menu_button_t* b = &M.btn_recent_room[i];
+        if (!b->visible) continue;
+        float bx = b->x + b->w * 0.5f;
+        float by = b->y + (b->h - 8.0f * 1.5f) * 0.5f;
+        draw_text_centered(b->label, bx, by, 1.5f, 0xff, 0xff, 0xff);
+    }
     if (M.btn_new_profile.visible) {
         float bx = M.btn_new_profile.x + 20.0f;
         float by = M.btn_new_profile.y + (M.btn_new_profile.h - 8.0f * 1.5f) * 0.5f;
@@ -861,6 +909,93 @@ static void start_sp_new_world(void) {
  * bypass branch in main_web.c's init(). */
 #define DEFAULT_MP_SERVER_URL "wss://tenebris-c.fly.dev/"
 
+/* True if `s` is a syntactically valid 6-char uppercase-alphanumeric
+ * room code. Mirrors input_accepts_char for GAME_MP_JOIN_INPUT plus
+ * the length check. Used to filter stale / garbage entries when
+ * reading back the persisted history. */
+static bool room_code_is_valid(const char* s) {
+    if (!s) return false;
+    int len = (int)strlen(s);
+    if (len != ROOM_CODE_LEN) return false;
+    for (int i = 0; i < len; ++i) {
+        char c = s[i];
+        bool ok = (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
+        if (!ok) return false;
+    }
+    return true;
+}
+
+/* Refresh M.recent_rooms from client_kv. The on-disk format is one
+ * code per line, MRU first. Invalid / duplicate / over-long entries
+ * are dropped silently so a corrupted localStorage key doesn't break
+ * the menu. */
+static void recent_rooms_load(void) {
+    M.recent_room_count = 0;
+    char* csv = client_kv_get(ROOM_HISTORY_KV_KEY);
+    if (!csv) return;
+    char* p = csv;
+    while (*p && M.recent_room_count < ROOM_HISTORY_MAX) {
+        char* nl = strchr(p, '\n');
+        size_t n = nl ? (size_t)(nl - p) : strlen(p);
+        if (n == ROOM_CODE_LEN) {
+            char tmp[ROOM_CODE_LEN + 1];
+            memcpy(tmp, p, n);
+            tmp[n] = 0;
+            bool dup = false;
+            for (int i = 0; i < M.recent_room_count; ++i) {
+                if (strcmp(M.recent_rooms[i], tmp) == 0) { dup = true; break; }
+            }
+            if (!dup && room_code_is_valid(tmp)) {
+                memcpy(M.recent_rooms[M.recent_room_count], tmp, ROOM_CODE_LEN + 1);
+                ++M.recent_room_count;
+            }
+        }
+        if (!nl) break;
+        p = nl + 1;
+    }
+    free(csv);
+}
+
+/* Write M.recent_rooms back to client_kv in MRU-first order. */
+static void recent_rooms_save(void) {
+    /* Each line is 6 chars + newline; +1 null. */
+    char buf[ROOM_HISTORY_MAX * (ROOM_CODE_LEN + 1) + 1];
+    int off = 0;
+    for (int i = 0; i < M.recent_room_count; ++i) {
+        memcpy(buf + off, M.recent_rooms[i], ROOM_CODE_LEN);
+        off += ROOM_CODE_LEN;
+        if (i + 1 < M.recent_room_count) buf[off++] = '\n';
+    }
+    buf[off] = 0;
+    if (off == 0) client_kv_remove(ROOM_HISTORY_KV_KEY);
+    else          client_kv_set(ROOM_HISTORY_KV_KEY, buf);
+}
+
+void menu_record_recent_room(const char* room_code) {
+    if (!room_code_is_valid(room_code)) return;
+    /* Re-read so a record from main_web's URL-bypass path doesn't
+     * stomp a list mutated by a different session / tab. */
+    recent_rooms_load();
+    /* Drop any existing copy so it moves to the front. */
+    int kept = 0;
+    for (int i = 0; i < M.recent_room_count; ++i) {
+        if (strcmp(M.recent_rooms[i], room_code) == 0) continue;
+        if (kept != i) memcpy(M.recent_rooms[kept], M.recent_rooms[i], ROOM_CODE_LEN + 1);
+        ++kept;
+    }
+    M.recent_room_count = kept;
+    /* Shift right to make room at index 0. */
+    int n = M.recent_room_count;
+    if (n > ROOM_HISTORY_MAX - 1) n = ROOM_HISTORY_MAX - 1;
+    for (int i = n; i > 0; --i) {
+        memcpy(M.recent_rooms[i], M.recent_rooms[i - 1], ROOM_CODE_LEN + 1);
+    }
+    memcpy(M.recent_rooms[0], room_code, ROOM_CODE_LEN);
+    M.recent_rooms[0][ROOM_CODE_LEN] = 0;
+    M.recent_room_count = (n < ROOM_HISTORY_MAX - 1) ? n + 1 : ROOM_HISTORY_MAX;
+    recent_rooms_save();
+}
+
 static void connect_to_room(const char* room_code) {
     /* Send active profile + chosen room to the server. */
     profile_t active;
@@ -877,6 +1012,7 @@ static void connect_to_room(const char* room_code) {
            DEFAULT_MP_SERVER_URL,
            M.room_code[0] ? M.room_code : "(public)");
     net_client_connect(DEFAULT_MP_SERVER_URL);
+    if (room_code) menu_record_recent_room(room_code);
     M.active_world[0] = 0;     /* no SP save target while in MP */
     M.state = GAME_IN_GAME_MP;
 }
@@ -948,11 +1084,16 @@ static void on_click_world_list(float x, float y) {
     }
 }
 
+static void enter_mp_cloud_submenu(void) {
+    recent_rooms_load();
+    M.state = GAME_MP_CLOUD_SUBMENU;
+}
+
 static void on_click_mp_submenu(float x, float y) {
-    if (hit(&M.btn_back, x, y))       { M.state = GAME_MAIN_MENU;          return; }
+    if (hit(&M.btn_back, x, y))       { M.state = GAME_MAIN_MENU; return; }
     /* SELF HOSTED is set_button_disabled -> hit() returns false; click
      * falls through silently. CLOUD HOSTED enters its own submenu. */
-    if (hit(&M.btn_cloud_host, x, y)) { M.state = GAME_MP_CLOUD_SUBMENU;   return; }
+    if (hit(&M.btn_cloud_host, x, y)) { enter_mp_cloud_submenu();  return; }
 }
 
 static void on_click_mp_cloud_submenu(float x, float y) {
@@ -965,6 +1106,12 @@ static void on_click_mp_cloud_submenu(float x, float y) {
         M.state = GAME_MP_JOIN_INPUT;
         menu_js_focus_text_input();
         return;
+    }
+    for (int i = 0; i < ROOM_HISTORY_MAX; ++i) {
+        if (hit(&M.btn_recent_room[i], x, y)) {
+            connect_to_room(M.recent_rooms[i]);
+            return;
+        }
     }
 }
 

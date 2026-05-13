@@ -55,6 +55,12 @@ bool         menu_is_overlay(void);   /* true when MAIN_MENU or MP_URL_PROMPT */
  * path. */
 void menu_force_state(game_state_t s);
 
+/* Append a 6-char room code to the MRU "recent rooms" list backed by
+ * client_kv. Called by the menu's own connect path; also called from
+ * main_web's URL-bypass branch (?room= / ?invite=) so links count as
+ * joins. Empty or invalid codes are ignored. */
+void menu_record_recent_room(const char* room_code);
+
 /* Render the menu UI in screen-space. Call after the 3D pass during
  * MAIN_MENU; safe (no-op) during in-game states. Width/height are the
  * current sapp framebuffer dimensions. */

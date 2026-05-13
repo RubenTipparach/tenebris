@@ -79,12 +79,17 @@ EM_JS(int, tenebris_is_mobile_device, (void), {
     return 0;
 });
 
-/* `?room=ABCD23` lets friends jump directly into a self-host room
- * without going through the menu. Returns NULL if absent. */
+/* `?room=ABCD23` (or `?invite=ABCD23`) lets friends jump directly
+ * into a self-host room without going through the menu. The `invite`
+ * alias exists so share links like `/tenebris/wasm?invite=123456`
+ * Just Work against the bundled default server — no `?server=` needed,
+ * because main_web.c's boot path falls back to the cloud URL when none
+ * is supplied. Returns NULL if neither param is present. */
 EM_JS(char*, tenebris_get_room_code, (void), {
     try {
         var u = new URL(window.location.href);
         var s = u.searchParams.get('room');
+        if (!s) s = u.searchParams.get('invite');
         if (!s) return 0;
         s = s.toUpperCase().substring(0, 8);
         var len = lengthBytesUTF8(s) + 1;
@@ -335,6 +340,7 @@ static void init(void) {
         }
         net_client_set_profile(tok, name, room ? room : "");
         net_client_connect(server_url ? server_url : "wss://tenebris-c.fly.dev/");
+        if (room) menu_record_recent_room(room);
         menu_force_state(GAME_IN_GAME_MP);
     }
     if (server_url) free(server_url);
