@@ -1813,6 +1813,19 @@ void menu_pause_draw(int screen_w, int screen_h) {
         mobile_ui_draw_rect_outline(b->x, b->y, b->w, b->h, 2.0f,
                                       0.85f, 0.90f, 1.00f, 1.0f);
     }
+    /* One-shot post-queue trace: log the sokol_gl error state, the
+     * queued vertex count, and the panel rect so we can see if our
+     * geometry got dropped before sgl_draw() flushed it. */
+    static bool s_logged_post_queue = false;
+    if (!s_logged_post_queue) {
+        sgl_error_t e = sgl_error();
+        printf("[menu] pause queued: err.any=%d v_full=%d u_full=%d c_full=%d v=%d screen=%dx%d panel=(%.1f,%.1f %.1fx%.1f)\n",
+               e.any, e.vertices_full, e.uniforms_full, e.commands_full,
+               sgl_num_vertices(),
+               screen_w, screen_h,
+               G_pl.panel_x, G_pl.panel_y, G_pl.panel_w, G_pl.panel_h);
+        s_logged_post_queue = true;
+    }
     sgl_draw();
 
     /* Text on top of the geometry. */
