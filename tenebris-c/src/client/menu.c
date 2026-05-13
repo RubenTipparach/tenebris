@@ -264,9 +264,9 @@ static struct {
      * a new game_state_t entry. */
     bool          pause_visible;
     menu_button_t btn_pause_resume;
-    menu_button_t btn_pause_options;
-    menu_button_t btn_pause_invite;
     menu_button_t btn_pause_quit;
+    menu_button_t btn_pause_invite;
+    menu_button_t btn_pause_options;  /* unused but kept to keep the struct symmetric across builds */
     /* Toast under the INVITE FRIENDS button after a successful share.
      * pause_share_msg_until is a sokol_time stamp; the label fades
      * once stm_now() passes it. share_result is 1=shared via Web
@@ -557,6 +557,24 @@ static void layout(float w, float h) {
         case GAME_MP_CONNECT_ERROR:
             layout_connect_error(w, h); break;
         default:
+            /* GAME_IN_GAME_SP / GAME_IN_GAME_MP land here. menu_draw
+             * early-returns in those states so geometry never draws,
+             * but hide every menu button anyway so any future overlay
+             * that re-uses these structs can't render a stale "+ NEW
+             * WORLD" / "+ NEW PROFILE" / world-list row. Defense in
+             * depth against UI bleed when gameplay starts. */
+            hide_button(&M.btn_sp);
+            hide_button(&M.btn_mp);
+            hide_button(&M.btn_back);
+            hide_button(&M.btn_active_profile);
+            hide_button(&M.btn_new_world);
+            for (int i = 0; i < PERSISTENCE_MAX_WORLDS; ++i) hide_button(&M.btn_world[i]);
+            hide_button(&M.btn_new_profile);
+            for (int i = 0; i < PROFILE_MAX; ++i) hide_button(&M.btn_profile[i]);
+            hide_button(&M.btn_self_host);
+            hide_button(&M.btn_cloud_host);
+            hide_button(&M.btn_host);
+            hide_button(&M.btn_join);
             break;
     }
 }
@@ -734,11 +752,9 @@ void menu_draw(int screen_w, int screen_h) {
         case GAME_PROFILE_SELECT:
             draw_text_centered("WHO ARE YOU?", cx, h * 0.5f - 200.0f, 3.0f,
                                  0xff, 0xff, 0xff);
-            if (M.profile_count == 0) {
-                draw_text_centered("no profiles yet  -  click + new profile",
-                                     cx, h * 0.5f + 40.0f, 1.5f,
-                                     0xa0, 0xb0, 0xc8);
-            }
+            /* No empty-state hint: "+ NEW PROFILE" is the first
+             * button in the picker. Floating grey text below it
+             * reads as junk. */
             break;
         case GAME_MAIN_MENU:
         case GAME_MP_URL_PROMPT:
@@ -750,11 +766,10 @@ void menu_draw(int screen_w, int screen_h) {
         case GAME_SP_WORLD_LIST:
             draw_text_centered("SELECT WORLD", cx, h * 0.5f - 200.0f, 3.0f,
                                  0xff, 0xff, 0xff);
-            if (M.world_count == 0) {
-                draw_text_centered("no saves yet  -  click + new world",
-                                     cx, h * 0.5f + 40.0f, 1.5f,
-                                     0xa0, 0xb0, 0xc8);
-            }
+            /* No empty-state hint: "+ NEW WORLD" is the first button
+             * in the list and reads as the obvious next click. A
+             * floating "click + new world" line above it was
+             * confusable as stray UI. */
             break;
         case GAME_MP_SUBMENU:
             draw_text_centered("MULTIPLAYER", cx, h * 0.5f - 200.0f, 3.0f,
@@ -920,6 +935,14 @@ void menu_draw(int screen_w, int screen_h) {
                              cx, h * 0.5f + 170.0f, 2.0f,
                              0xff, 0xd0, 0x60);
     }
+
+    /* Flush every sdtx_printf we queued above so the menu's text
+     * doesn't sit in the buffer across the menu -> gameplay state
+     * transition. main_web's menu path also calls sdtx_draw right
+     * after us, but flushing here keeps the contract local to
+     * menu_draw - any caller that forgets the outer flush still
+     * gets a clean queue at return. */
+    sdtx_draw();
 }
 
 /* ------------------------------------------------------------------ */
@@ -1487,22 +1510,22 @@ void menu_pause_toggle(void) {
 
 static void layout_pause(float w, float h) {
     /* Three vertical buttons centred on the screen. Order top-down:
-     * INVITE FRIENDS, OPTIONS, QUIT TO MENU. */
+     * RETURN TO GAME, INVITE PLAYERS, QUIT TO MENU. */
     float cx = w * 0.5f;
     float cy = h * 0.5f;
-    set_button(&M.btn_pause_invite,
+    set_button(&M.btn_pause_resume,
                  cx - MAIN_BTN_W * 0.5f,
                  cy - MAIN_BTN_H * 0.5f - (MAIN_BTN_H + MAIN_BTN_GAP),
-                 MAIN_BTN_W, MAIN_BTN_H, "INVITE FRIENDS");
-    set_button(&M.btn_pause_options,
+                 MAIN_BTN_W, MAIN_BTN_H, "RETURN TO GAME");
+    set_button(&M.btn_pause_invite,
                  cx - MAIN_BTN_W * 0.5f,
                  cy - MAIN_BTN_H * 0.5f,
-                 MAIN_BTN_W, MAIN_BTN_H, "OPTIONS");
+                 MAIN_BTN_W, MAIN_BTN_H, "INVITE PLAYERS");
     set_button(&M.btn_pause_quit,
                  cx - MAIN_BTN_W * 0.5f,
                  cy - MAIN_BTN_H * 0.5f + (MAIN_BTN_H + MAIN_BTN_GAP),
                  MAIN_BTN_W, MAIN_BTN_H, "QUIT TO MENU");
-    hide_button(&M.btn_pause_resume);
+    hide_button(&M.btn_pause_options);
 }
 
 void menu_pause_draw(int screen_w, int screen_h) {
@@ -1544,8 +1567,8 @@ void menu_pause_draw(int screen_w, int screen_h) {
     quad(px, py, panel_w, panel_h, 0.10f, 0.12f, 0.18f, 0.95f);
     border(px, py, panel_w, panel_h, 2.0f, 0.85f, 0.90f, 1.0f, 1.0f);
 
+    draw_button(&M.btn_pause_resume);
     draw_button(&M.btn_pause_invite);
-    draw_button(&M.btn_pause_options);
     draw_button(&M.btn_pause_quit);
 
     sgl_draw();
@@ -1557,22 +1580,19 @@ void menu_pause_draw(int screen_w, int screen_h) {
                           cx, py + 76.0f, 1.0f, 0xa0, 0xb0, 0xc8);
 
     /* Button labels. Match menu_draw's button label drawing. */
+    if (M.btn_pause_resume.visible) {
+        float bx = M.btn_pause_resume.x + M.btn_pause_resume.w * 0.5f;
+        float by = M.btn_pause_resume.y
+                 + (M.btn_pause_resume.h - 8.0f * 2.0f) * 0.5f;
+        draw_text_centered(M.btn_pause_resume.label, bx, by, 2.0f,
+                             0xff, 0xff, 0xff);
+    }
     if (M.btn_pause_invite.visible) {
         float bx = M.btn_pause_invite.x + M.btn_pause_invite.w * 0.5f;
         float by = M.btn_pause_invite.y
                  + (M.btn_pause_invite.h - 8.0f * 2.0f) * 0.5f;
         draw_text_centered(M.btn_pause_invite.label, bx, by, 2.0f,
                              0xff, 0xff, 0xff);
-    }
-    if (M.btn_pause_options.visible) {
-        float bx = M.btn_pause_options.x + M.btn_pause_options.w * 0.5f;
-        float by = M.btn_pause_options.y
-                 + (M.btn_pause_options.h - 8.0f * 2.0f) * 0.5f;
-        /* Slightly dim so it reads as "not yet wired" without being
-         * fully disabled - the user asked for the button to exist
-         * even though there's nothing inside it yet. */
-        draw_text_centered(M.btn_pause_options.label, bx, by, 2.0f,
-                             0xa0, 0xa8, 0xb8);
     }
     if (M.btn_pause_quit.visible) {
         float bx = M.btn_pause_quit.x + M.btn_pause_quit.w * 0.5f;
@@ -1639,6 +1659,12 @@ bool menu_pause_event(const sapp_event* e) {
     }
     if (click) {
         layout_pause(sapp_widthf(), sapp_heightf());
+        if (hit(&M.btn_pause_resume, cx, cy)) {
+            /* Same path as the Escape resume - close the panel and
+             * fall back into the gameplay loop. */
+            M.pause_visible = false;
+            return true;
+        }
         if (hit(&M.btn_pause_quit, cx, cy)) {
             if (M.state == GAME_IN_GAME_MP) {
                 net_client_disconnect();
@@ -1647,12 +1673,6 @@ bool menu_pause_event(const sapp_event* e) {
             M.active_world[0] = 0;
             M.pause_visible   = false;
             M.state           = GAME_MAIN_MENU;
-            return true;
-        }
-        if (hit(&M.btn_pause_options, cx, cy)) {
-            /* Placeholder - the user asked for the button to exist
-             * even though there's nothing behind it yet. Eat the
-             * click so it doesn't bleed through to gameplay. */
             return true;
         }
         if (hit(&M.btn_pause_invite, cx, cy)) {
