@@ -1255,7 +1255,8 @@ static void start_multiplayer(void) {
             MENU_TRACE("state -> PROFILE_SELECT (MP gate)");
         } else {
             M.input_buf[0] = 0;
-            M.input_cursor = 0;
+            M.input_len    = 0;
+            M.input_cursor_blink_start = stm_sec(stm_now());
             M.state = GAME_PROFILE_NAME_INPUT;
             MENU_TRACE("state -> PROFILE_NAME_INPUT (MP gate, no profiles)");
         }
