@@ -1632,10 +1632,87 @@ static void layout_pause(float w, float h) {
     hide_button(&M.btn_pause_options);
 }
 
+/* Pause-panel layout in screen pixels. Computed once per draw and
+ * stashed so menu_pause_event can hit-test the same rectangles
+ * without recomputing. The sokol_gl draw path of the previous
+ * iteration of this panel was silently failing to reach the swap-
+ * chain even with the trace log firing, so this version uses ONLY
+ * sokol_debugtext - the same primitive the F2 HUD already proves
+ * works in the gameplay pass. No geometry, no extra pipeline, no
+ * lazy-initialised sgl handles that could fail at first use. */
+typedef struct {
+    float x, y, w, h;
+    const char* label;
+} pause_rect_t;
+static struct {
+    pause_rect_t resume, invite, quit;
+    float        panel_x, panel_y, panel_w, panel_h;
+} G_pause_layout;
+
+static void pause_compute_layout(float screen_w, float screen_h) {
+    const float cell = 16.0f;   /* sdtx scale 2 = 16 px / glyph */
+    const float btn_w = 24.0f * cell;   /* 24 chars wide */
+    const float btn_h = 3.0f  * cell;   /* 3 lines tall   */
+    const float gap   = cell;
+    const float panel_pad = 2.0f * cell;
+    const float panel_w = btn_w + 2.0f * panel_pad;
+    const float panel_h = 4.0f * cell                /* title row */
+                        + 2.0f * cell                /* hint row */
+                        + 3.0f * (btn_h + gap) + gap
+                        + 2.0f * panel_pad;
+    const float panel_x = (screen_w - panel_w) * 0.5f;
+    const float panel_y = (screen_h - panel_h) * 0.5f;
+    const float btn_x = panel_x + panel_pad;
+    float btn_y = panel_y + panel_pad
+                + 4.0f * cell + 2.0f * cell + gap;
+    G_pause_layout.panel_x = panel_x;
+    G_pause_layout.panel_y = panel_y;
+    G_pause_layout.panel_w = panel_w;
+    G_pause_layout.panel_h = panel_h;
+    G_pause_layout.resume = (pause_rect_t){ btn_x, btn_y, btn_w, btn_h, "RETURN TO GAME" };
+    btn_y += btn_h + gap;
+    G_pause_layout.invite = (pause_rect_t){ btn_x, btn_y, btn_w, btn_h, "INVITE PLAYERS" };
+    btn_y += btn_h + gap;
+    G_pause_layout.quit   = (pause_rect_t){ btn_x, btn_y, btn_w, btn_h, "QUIT TO MENU"   };
+}
+
+/* Centred sdtx text at scale `s`, position in screen pixels. */
+static void pause_text(float screen_w, float screen_h,
+                        const char* str,
+                        float center_x, float screen_y,
+                        float scale,
+                        uint8_t r, uint8_t g, uint8_t b) {
+    const float cell_px = 8.0f * scale;
+    int n = (int)strlen(str);
+    float text_w = cell_px * (float)n;
+    float text_x = center_x - text_w * 0.5f;
+    sdtx_canvas(screen_w / scale, screen_h / scale);
+    sdtx_font(1);
+    sdtx_origin(text_x / cell_px, screen_y / cell_px);
+    sdtx_color3b(r, g, b);
+    sdtx_home();
+    sdtx_printf("%s", str);
+    sdtx_font(0);
+}
+
+/* Same but left-aligned at `screen_x`. */
+static void pause_text_left(float screen_w, float screen_h,
+                              const char* str,
+                              float screen_x, float screen_y,
+                              float scale,
+                              uint8_t r, uint8_t g, uint8_t b) {
+    const float cell_px = 8.0f * scale;
+    sdtx_canvas(screen_w / scale, screen_h / scale);
+    sdtx_font(1);
+    sdtx_origin(screen_x / cell_px, screen_y / cell_px);
+    sdtx_color3b(r, g, b);
+    sdtx_home();
+    sdtx_printf("%s", str);
+    sdtx_font(0);
+}
+
 void menu_pause_draw(int screen_w, int screen_h) {
     if (!M.pause_visible) return;
-    /* Throttle: log once a second while pause is up rather than once
-     * per frame. */
     {
         static double s_last_log = 0.0;
         double now = stm_sec(stm_now());
@@ -1648,76 +1725,35 @@ void menu_pause_draw(int screen_w, int screen_h) {
 
     const float w = (float)screen_w;
     const float h = (float)screen_h;
-    layout_pause(w, h);
+    pause_compute_layout(w, h);
 
-    sgl_defaults();
-    sgl_matrix_mode_projection();
-    sgl_load_identity();
-    sgl_ortho(0.0f, w, h, 0.0f, -1.0f, 1.0f);
-    sgl_matrix_mode_modelview();
-    sgl_load_identity();
+    /* Title - big and centred above the panel. */
+    pause_text(w, h, "*** PAUSED ***",
+                 w * 0.5f, G_pause_layout.panel_y + 16.0f,
+                 3.0f, 0xff, 0xff, 0xff);
+    pause_text(w, h, "press Esc to resume",
+                 w * 0.5f, G_pause_layout.panel_y + 48.0f,
+                 1.0f, 0xa0, 0xb0, 0xc8);
 
-    static sgl_pipeline pip = (sgl_pipeline){0};
-    if (pip.id == 0) {
-        pip = sgl_make_pipeline(&(sg_pipeline_desc){
-            .colors[0].blend = {
-                .enabled = true,
-                .src_factor_rgb   = SG_BLENDFACTOR_SRC_ALPHA,
-                .dst_factor_rgb   = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
-                .src_factor_alpha = SG_BLENDFACTOR_ONE,
-                .dst_factor_alpha = SG_BLENDFACTOR_ONE,
-            },
-        });
-    }
-    sgl_load_pipeline(pip);
-
-    /* DIAG: full-screen bright magenta backdrop. If you see magenta,
-     * the pause draw path IS running through sokol_gl and reaching
-     * the swapchain. If you don't see magenta despite the trace log
-     * firing, the issue is in pipeline / pass setup, not state. */
-    quad(0.0f, 0.0f, w, h, 1.0f, 0.0f, 1.0f, 0.95f);
-
-    /* Panel. */
-    const float panel_w = 360.0f;
-    const float panel_h = 320.0f;
-    const float px = w * 0.5f - panel_w * 0.5f;
-    const float py = h * 0.5f - panel_h * 0.5f;
-    quad(px, py, panel_w, panel_h, 0.10f, 0.12f, 0.18f, 0.95f);
-    border(px, py, panel_w, panel_h, 2.0f, 0.85f, 0.90f, 1.0f, 1.0f);
-
-    draw_button(&M.btn_pause_resume);
-    draw_button(&M.btn_pause_invite);
-    draw_button(&M.btn_pause_quit);
-
-    sgl_draw();
-
-    /* Title + hint. */
-    const float cx = w * 0.5f;
-    draw_text_centered("PAUSED", cx, py + 24.0f, 3.0f, 0xff, 0xff, 0xff);
-    draw_text_centered("press Esc to resume",
-                          cx, py + 76.0f, 1.0f, 0xa0, 0xb0, 0xc8);
-
-    /* Button labels. Match menu_draw's button label drawing. */
-    if (M.btn_pause_resume.visible) {
-        float bx = M.btn_pause_resume.x + M.btn_pause_resume.w * 0.5f;
-        float by = M.btn_pause_resume.y
-                 + (M.btn_pause_resume.h - 8.0f * 2.0f) * 0.5f;
-        draw_text_centered(M.btn_pause_resume.label, bx, by, 2.0f,
-                             0xff, 0xff, 0xff);
-    }
-    if (M.btn_pause_invite.visible) {
-        float bx = M.btn_pause_invite.x + M.btn_pause_invite.w * 0.5f;
-        float by = M.btn_pause_invite.y
-                 + (M.btn_pause_invite.h - 8.0f * 2.0f) * 0.5f;
-        draw_text_centered(M.btn_pause_invite.label, bx, by, 2.0f,
-                             0xff, 0xff, 0xff);
-    }
-    if (M.btn_pause_quit.visible) {
-        float bx = M.btn_pause_quit.x + M.btn_pause_quit.w * 0.5f;
-        float by = M.btn_pause_quit.y
-                 + (M.btn_pause_quit.h - 8.0f * 2.0f) * 0.5f;
-        draw_text_centered(M.btn_pause_quit.label, bx, by, 2.0f,
-                             0xff, 0xff, 0xff);
+    /* Buttons - left-aligned inside the panel with hover-style
+     * brightness lift. */
+    const pause_rect_t* btns[3] = {
+        &G_pause_layout.resume,
+        &G_pause_layout.invite,
+        &G_pause_layout.quit,
+    };
+    for (int i = 0; i < 3; ++i) {
+        const pause_rect_t* b = btns[i];
+        bool hovered = (M.mouse_x >= b->x && M.mouse_x <= b->x + b->w &&
+                        M.mouse_y >= b->y && M.mouse_y <= b->y + b->h);
+        uint8_t r = hovered ? 0xff : 0xc0;
+        uint8_t g = hovered ? 0xe0 : 0xc8;
+        uint8_t bl = hovered ? 0x40 : 0xff;
+        char line[64];
+        snprintf(line, sizeof line, "  [%d]  %s", i + 1, b->label);
+        pause_text_left(w, h, line,
+                          b->x, b->y + b->h * 0.25f,
+                          2.0f, r, g, bl);
     }
 
     /* Share-result toast under the INVITE button. */
@@ -1731,15 +1767,10 @@ void menu_pause_draw(int screen_w, int screen_h) {
             msg = "LINK COPIED TO CLIPBOARD";
             r = 0x80; g = 0xff; b = 0xa0;
         }
-        float ty = M.btn_pause_invite.y + M.btn_pause_invite.h + 12.0f;
-        draw_text_centered(msg, cx, ty, 1.0f, r, g, b);
+        float ty = G_pause_layout.invite.y + G_pause_layout.invite.h + 8.0f;
+        pause_text(w, h, msg, w * 0.5f, ty, 1.0f, r, g, b);
     }
 
-    /* Flush every sdtx_printf we just queued. mobile_ui_draw runs
-     * before us and doesn't touch sdtx, so without this call the
-     * title + button labels never make it to the swapchain - which
-     * is why an earlier build of the pause menu showed an empty
-     * dark panel and the user (rightly) couldn't find it. */
     sdtx_draw();
 }
 
@@ -1770,7 +1801,37 @@ bool menu_pause_event(const sapp_event* e) {
         return true;
     }
 
-    /* Hit-test on click / first touch. */
+    /* Number keys 1 / 2 / 3 trigger Resume / Invite / Quit. Keyboard
+     * is the most reliable input path on every device + browser
+     * combination, and gives us a fallback when the mouse-click hit
+     * test isn't matching for some reason. */
+    if (e->type == SAPP_EVENTTYPE_KEY_DOWN) {
+        if (e->key_code == SAPP_KEYCODE_1) {
+            set_pause_visible(false, "kbd-1-resume");
+            sapp_lock_mouse(true); sapp_show_mouse(false);
+            return true;
+        }
+        if (e->key_code == SAPP_KEYCODE_2) {
+            const char* room = M.room_code[0] ? M.room_code : "";
+            int rc = menu_js_share_invite(room);
+            M.pause_share_result    = (rc == 0) ? 3 : rc;
+            M.pause_share_msg_until = stm_sec(stm_now()) + 2.5;
+            return true;
+        }
+        if (e->key_code == SAPP_KEYCODE_3) {
+            if (M.state == GAME_IN_GAME_MP) {
+                net_client_disconnect();
+                M.room_code[0] = 0;
+            }
+            M.active_world[0] = 0;
+            set_pause_visible(false, "kbd-3-quit");
+            M.state = GAME_MAIN_MENU;
+            return true;
+        }
+    }
+
+    /* Hit-test mouse / touch against the layout the draw path
+     * computed in pause_compute_layout. */
     bool   click = false;
     float  cx = 0.0f, cy = 0.0f;
     if (e->type == SAPP_EVENTTYPE_MOUSE_DOWN
@@ -1781,39 +1842,34 @@ bool menu_pause_event(const sapp_event* e) {
         click = true; cx = e->touches[0].pos_x; cy = e->touches[0].pos_y;
     }
     if (click) {
-        layout_pause(sapp_widthf(), sapp_heightf());
-        if (hit(&M.btn_pause_resume, cx, cy)) {
-            /* Close the panel + immediately re-engage pointer lock so
-             * the player drops straight back into FPS look without
-             * having to click the canvas again. Pointer lock needs a
-             * user-gesture stack frame; this click handler is that
-             * gesture so the browser honours it. */
-            set_pause_visible(false, "return-to-game-click");
-            sapp_lock_mouse(true);
-            sapp_show_mouse(false);
+        pause_compute_layout(sapp_widthf(), sapp_heightf());
+        const pause_rect_t* r;
+        r = &G_pause_layout.resume;
+        if (cx >= r->x && cx <= r->x + r->w && cy >= r->y && cy <= r->y + r->h) {
+            set_pause_visible(false, "click-resume");
+            sapp_lock_mouse(true); sapp_show_mouse(false);
             return true;
         }
-        if (hit(&M.btn_pause_quit, cx, cy)) {
+        r = &G_pause_layout.invite;
+        if (cx >= r->x && cx <= r->x + r->w && cy >= r->y && cy <= r->y + r->h) {
+            const char* room = M.room_code[0] ? M.room_code : "";
+            int rc = menu_js_share_invite(room);
+            M.pause_share_result    = (rc == 0) ? 3 : rc;
+            M.pause_share_msg_until = stm_sec(stm_now()) + 2.5;
+            return true;
+        }
+        r = &G_pause_layout.quit;
+        if (cx >= r->x && cx <= r->x + r->w && cy >= r->y && cy <= r->y + r->h) {
             if (M.state == GAME_IN_GAME_MP) {
                 net_client_disconnect();
                 M.room_code[0] = 0;
             }
             M.active_world[0] = 0;
-            set_pause_visible(false, "quit-to-menu");
-            M.state           = GAME_MAIN_MENU;
+            set_pause_visible(false, "click-quit");
+            M.state = GAME_MAIN_MENU;
             return true;
         }
-        if (hit(&M.btn_pause_invite, cx, cy)) {
-            const char* room = M.room_code[0] ? M.room_code : "";
-            int rc = menu_js_share_invite(room);
-            /* rc 0 = no API, 1 = Web Share, 2 = clipboard. Map 0 to
-             * the FAILED toast (result code 3) so the user sees
-             * something happen. */
-            M.pause_share_result    = (rc == 0) ? 3 : rc;
-            M.pause_share_msg_until = stm_sec(stm_now()) + 2.5;
-            return true;
-        }
-        return true;       /* clicks inside the dim backdrop stay swallowed */
+        return true;       /* swallow stray clicks while paused */
     }
 
     /* Swallow everything else (keyboard movement etc.) so the player
