@@ -192,13 +192,18 @@ static void draw_humanoid(float cx, float cy, float cz,
     /* Move the whole figure to its world position, rotate so local
      * +Y points along the planet radial, then apply yaw around the
      * local up axis (now +Y in the figure frame) before drawing the
-     * limbs. */
+     * limbs. The trailing 90 deg Y rotation re-aligns the model's
+     * "front" with the yaw forward vector - the limbs / torso are
+     * built with the figure's side facing +Z in body-local space,
+     * and without this twist remote players appear walking sideways
+     * to their actual heading. */
+    const float MODEL_YAW_OFFSET = 1.57079632679f;  /* +pi/2 */
     sgl_push_matrix();
     sgl_translate(cx, cy, cz);
     float basis[16];
     planet_up_basis(up_x, up_y, up_z, basis);
     sgl_mult_matrix(basis);
-    sgl_rotate(yaw, 0.0f, 1.0f, 0.0f);
+    sgl_rotate(yaw + MODEL_YAW_OFFSET, 0.0f, 1.0f, 0.0f);
 
     /* Torso — fixed, centred on the chest. */
     sgl_push_matrix();

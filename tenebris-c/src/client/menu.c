@@ -322,6 +322,12 @@ static struct {
     double        reconnect_deadline_t;
     double        reconnect_next_try_t;
     int           reconnect_attempts;
+
+    /* If true, the profile picker / name input is being shown as a
+     * gate to MP rather than as the boot screen. The next successful
+     * enter_main_menu_with should route to GAME_MP_SUBMENU instead
+     * of stopping at the main menu. */
+    bool          pending_mp_after_profile;
 } M;
 
 /* ------------------------------------------------------------------ */
@@ -1182,14 +1188,24 @@ void menu_record_recent_room(const char* room_code) {
 static void connect_to_room(const char* room_code) {
     MENU_TRACE("connect_to_room: '%s' from state=%s",
                room_code ? room_code : "(null)", state_name(M.state));
-    /* Send active profile + chosen room to the server. */
+    /* MP requires a profile - the server uses the token to key
+     * persisted poses and the name to label nameplates. If we got
+     * here without one, the profile-gate in start_multiplayer was
+     * bypassed; bounce back to the picker rather than logging in
+     * as guest-N. */
     profile_t active;
-    const char* tok  = NULL;
-    const char* name = NULL;
-    if (profile_get_active(&active)) {
-        tok  = active.token;
-        name = active.name;
+    if (!profile_get_active(&active)) {
+        M.pending_mp_after_profile = true;
+        M.profile_count = profile_list(M.profiles, PROFILE_MAX);
+        M.state = (M.profile_count > 0)
+                    ? GAME_PROFILE_SELECT
+                    : GAME_PROFILE_NAME_INPUT;
+        MENU_TRACE("connect_to_room blocked: no active profile, state -> %s",
+                   state_name(M.state));
+        return;
     }
+    const char* tok  = active.token;
+    const char* name = active.name;
     net_client_set_profile(tok, name, room_code ? room_code : "");
     snprintf(M.room_code, sizeof M.room_code, "%s",
              room_code ? room_code : "");
@@ -1223,6 +1239,28 @@ static void start_host(void) {
 }
 
 static void start_multiplayer(void) {
+    /* MP requires a profile so the server can attribute saves +
+     * label nameplates with a real name. If the player hasn't
+     * picked / created one yet, gate the MP submenu behind the
+     * profile picker (or the name-input screen if there are no
+     * profiles to pick from). enter_main_menu_with will see the
+     * pending_mp_after_profile flag and route straight to
+     * GAME_MP_SUBMENU once the profile lands. */
+    profile_t active;
+    if (!profile_get_active(&active)) {
+        M.pending_mp_after_profile = true;
+        M.profile_count = profile_list(M.profiles, PROFILE_MAX);
+        if (M.profile_count > 0) {
+            M.state = GAME_PROFILE_SELECT;
+            MENU_TRACE("state -> PROFILE_SELECT (MP gate)");
+        } else {
+            M.input_buf[0] = 0;
+            M.input_cursor = 0;
+            M.state = GAME_PROFILE_NAME_INPUT;
+            MENU_TRACE("state -> PROFILE_NAME_INPUT (MP gate, no profiles)");
+        }
+        return;
+    }
     /* MP button drops to the self-host / cloud-host picker — the
      * actual connect happens after the user picks one. */
     M.state = GAME_MP_SUBMENU;
@@ -1273,6 +1311,17 @@ static void enter_main_menu_with(const profile_t* p) {
      * profile picker, creates a profile, and gets dropped straight
      * into the invited room here. No-op when no invite is pending. */
     consume_pending_invite_if_ready();
+    /* If the player came in via the MP gate (clicked MULTIPLAYER
+     * without an active profile), continue to the MP submenu now
+     * that they have one. Invite-flow above already routes past
+     * the main menu; this is the manual MP-button case. */
+    if (M.pending_mp_after_profile && M.state == GAME_MAIN_MENU) {
+        M.pending_mp_after_profile = false;
+        M.state = GAME_MP_SUBMENU;
+        MENU_TRACE("state -> MP_SUBMENU (post-profile MP gate)");
+    } else {
+        M.pending_mp_after_profile = false;
+    }
 }
 
 void menu_set_pending_invite(const char* room_code, const char* server_url) {
