@@ -61,6 +61,16 @@ void menu_force_state(game_state_t s);
  * joins. Empty or invalid codes are ignored. */
 void menu_record_recent_room(const char* room_code);
 
+/* Stash a deep-link invite (room code + optional server override) and
+ * either jump straight into the MP session if a profile is already
+ * active, or stay parked on the profile picker until the player
+ * creates / selects one and then auto-route to the room. Lets share
+ * links like `/tenebris/wasm?invite=ABCDEF` walk first-time visitors
+ * through the profile wizard before dropping them into the game,
+ * which keeps their nameplate from rendering as the empty string.
+ * Pass NULL or "" for `server_url` to use the bundled default. */
+void menu_set_pending_invite(const char* room_code, const char* server_url);
+
 /* Render the menu UI in screen-space. Call after the 3D pass during
  * MAIN_MENU; safe (no-op) during in-game states. Width/height are the
  * current sapp framebuffer dimensions. */

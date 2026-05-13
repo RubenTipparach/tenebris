@@ -325,24 +325,18 @@ static void init(void) {
     chat_init();
 
 #ifdef __EMSCRIPTEN__
-    /* ?room=ABCD23 — bypass the menu and join that specific room. The
-     * profile picker is still useful so we don't skip it; the room
-     * code just primes net_client before connect. The menu's MP
-     * submenu would route here too if entered manually. */
+    /* ?room=ABCD23 / ?invite=ABCD23 - stash the room (and optional
+     * ?server= override) on the menu module so the boot flow Just
+     * Works for first-time visitors too. menu_set_pending_invite
+     * jumps straight to MP when a profile is already active, or
+     * parks on the profile picker until the player creates one and
+     * then auto-routes - which keeps their nameplate from rendering
+     * as the empty string for everyone else in the room. ?server=
+     * alone (no room) drops the user on the regular menu; they can
+     * pick HOST / JOIN from the cloud submenu manually. */
     char* room = tenebris_get_room_code();
     char* server_url = tenebris_get_server_url();
-    if (server_url || room) {
-        profile_t active;
-        const char* tok  = NULL;
-        const char* name = NULL;
-        if (profile_get_active(&active)) {
-            tok  = active.token; name = active.name;
-        }
-        net_client_set_profile(tok, name, room ? room : "");
-        net_client_connect(server_url ? server_url : "wss://tenebris-c.fly.dev/");
-        if (room) menu_record_recent_room(room);
-        menu_force_state(GAME_IN_GAME_MP);
-    }
+    if (room) menu_set_pending_invite(room, server_url);
     if (server_url) free(server_url);
     if (room)       free(room);
 #endif
@@ -526,6 +520,32 @@ static void update_overlay(float dt) {
  * frame. Called from the top of frame() the first tick we're in
  * GAME_IN_GAME_SP. */
 static bool G_sp_resume_applied = false;
+
+/* Tracks which menu state we last primed inventory / survival defaults
+ * for, so the per-frame check below only fires on the actual menu
+ * transition rather than every frame. -1 = never primed. */
+static int G_inv_primed_for_state = -1;
+
+static void maybe_prime_mode_for_state(void) {
+    int s = (int)menu_state();
+    if (s == G_inv_primed_for_state) return;
+    if (s == GAME_IN_GAME_MP) {
+        /* MP defaults to survival: blocks have quantity, players only
+         * keep what they've mined. Jetpack is unaffected (it isn't
+         * gated by survival_mode). Torches still flow in unlimited
+         * via inventory_init_empty so caves are lightable without a
+         * crafting system. */
+        G.player.survival_mode = true;
+        inventory_init_empty(&G.player.inventory);
+        printf("[main] entered MP - survival mode + empty hotbar (torches granted)\n");
+    } else if (s == GAME_IN_GAME_SP) {
+        /* SP stays creative by default; the G key still toggles
+         * survival mid-session if the player wants the challenge. */
+        G.player.survival_mode = false;
+        inventory_init_creative(&G.player.inventory);
+    }
+    G_inv_primed_for_state = s;
+}
 
 static void maybe_apply_sp_resume(void) {
     if (G_sp_resume_applied) return;
@@ -851,6 +871,7 @@ static void frame(void) {
     }
 
     maybe_apply_sp_resume();
+    maybe_prime_mode_for_state();
 
     const double raw_dt_sec = stm_sec(stm_laptime(&G.last_time));
     float dt = (float)raw_dt_sec;

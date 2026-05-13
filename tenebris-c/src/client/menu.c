@@ -218,6 +218,14 @@ static struct {
      * GAME_MP_CONNECT_ERROR transition by menu_tick; cleared on
      * dismiss. Buffer matches net_client_error_message's max. */
     char error_msg[96];
+
+    /* Pending deep-link invite waiting for a profile to exist before
+     * we connect. menu_set_pending_invite fills these from
+     * ?invite= / ?room= + ?server= at boot, and the profile-picker
+     * exit path drains them via consume_pending_invite. Empty room
+     * means no pending invite. */
+    char pending_invite_room[9];
+    char pending_invite_server[256];
 } M;
 
 /* ------------------------------------------------------------------ */
@@ -1032,10 +1040,63 @@ static void start_multiplayer(void) {
     M.state = GAME_MP_SUBMENU;
 }
 
+/* If a deep-link invite is waiting and we now have an active
+ * profile, jump straight into the room. Called from
+ * menu_set_pending_invite (boot path - skips the wizard when a
+ * profile already exists) and from enter_main_menu_with (after the
+ * player picks / creates a profile via the wizard). Idempotent: once
+ * consumed, the stored room is cleared so further profile swaps
+ * don't reconnect. */
+static void consume_pending_invite_if_ready(void) {
+    if (M.pending_invite_room[0] == 0) return;
+    profile_t active;
+    if (!profile_get_active(&active)) return;
+
+    const char* room   = M.pending_invite_room;
+    const char* server = M.pending_invite_server[0]
+                           ? M.pending_invite_server
+                           : DEFAULT_MP_SERVER_URL;
+
+    net_client_set_profile(active.token, active.name, room);
+    snprintf(M.room_code, sizeof M.room_code, "%s", room);
+    printf("[menu] consuming invite: connect to %s (room='%s')\n", server, room);
+    net_client_connect(server);
+    menu_record_recent_room(room);
+    M.active_world[0] = 0;
+    M.state = GAME_IN_GAME_MP;
+
+    M.pending_invite_room[0]   = 0;
+    M.pending_invite_server[0] = 0;
+}
+
 static void enter_main_menu_with(const profile_t* p) {
     profile_set_active(p->token);
     M.state = GAME_MAIN_MENU;
     printf("[menu] active profile = %s (%s)\n", p->name, p->token);
+    /* A first-time visitor following an invite link lands on the
+     * profile picker, creates a profile, and gets dropped straight
+     * into the invited room here. No-op when no invite is pending. */
+    consume_pending_invite_if_ready();
+}
+
+void menu_set_pending_invite(const char* room_code, const char* server_url) {
+    if (!room_code || !room_code[0]) {
+        M.pending_invite_room[0]   = 0;
+        M.pending_invite_server[0] = 0;
+        return;
+    }
+    snprintf(M.pending_invite_room, sizeof M.pending_invite_room,
+             "%s", room_code);
+    if (server_url && server_url[0]) {
+        snprintf(M.pending_invite_server, sizeof M.pending_invite_server,
+                 "%s", server_url);
+    } else {
+        M.pending_invite_server[0] = 0;
+    }
+    /* If a profile is already active (returning user), don't make
+     * them re-pick - jump straight to the room. The picker shows up
+     * only when there's no active profile yet. */
+    consume_pending_invite_if_ready();
 }
 
 static void new_profile_flow(void) {

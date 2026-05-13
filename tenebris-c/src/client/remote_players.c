@@ -272,9 +272,22 @@ void remote_players_draw(mat4_t view, mat4_t proj) {
 
     static sgl_pipeline pip3d = (sgl_pipeline){0};
     if (pip3d.id == 0) {
+        /* Depth state is explicit: humanoids must z-sort against
+         * terrain + each other in the offscreen pass. write_enabled
+         * + LESS lets a near figure occlude a far one and lets the
+         * terrain occlude figures behind it. The offscreen pass uses
+         * DEPTH_STENCIL (renderer.c:1407) which sokol-gl inherits
+         * from the default sgl context (set up to match the swapchain
+         * defaults via sgl_setup's zero-init), so the pipeline depth
+         * format lines up without having to specify it here.
+         * cull_mode stays NONE because box() doesn't guarantee a
+         * single winding across its six faces - convex + depth_write
+         * + LESS still resolves correctly without face culling. */
         pip3d = sgl_make_pipeline(&(sg_pipeline_desc){
-            .depth = { .write_enabled = true,
-                        .compare = SG_COMPAREFUNC_LESS_EQUAL },
+            .depth = {
+                .write_enabled = true,
+                .compare       = SG_COMPAREFUNC_LESS,
+            },
             .cull_mode = SG_CULLMODE_NONE,
         });
     }
@@ -362,6 +375,21 @@ void remote_players_draw_nameplates(mat4_t view, mat4_t proj,
     const double interp_delay_s = 0.150;
     const double now = stm_sec(stm_now());
 
+    /* Project every visible remote player to screen coords once and
+     * cache the result. Two render passes follow: dark backdrops via
+     * sokol_gl, then yellow text via sokol_debugtext on top. Caching
+     * keeps the math from running twice and lets us sort backdrop
+     * draws into a single sgl batch. */
+    struct {
+        float tx, ty;
+        float text_w;
+        const char* name;
+    } entries[REMOTE_PLAYERS_MAX];
+    int entry_count = 0;
+
+    const float scale = 1.0f;
+    const float cell  = 8.0f * scale;
+
     for (int i = 0; i < R.count; ++i) {
         const remote_player_t* p = &R.players[i];
         if (!p->active) continue;
@@ -391,27 +419,71 @@ void remote_players_draw_nameplates(mat4_t view, mat4_t proj,
         float sx = (ndc_x * 0.5f + 0.5f) * screen_w;
         float sy = (1.0f - (ndc_y * 0.5f + 0.5f)) * screen_h;
 
-        /* Drop the name centred above the projected head. sdtx uses
-         * font slot 1 (c64) — clean baseline at any scale, matches the
-         * menu's font choice. */
-        const float scale = 1.0f;
-        const float cell  = 8.0f * scale;
         int n = (int)strlen(name);
         float text_w = cell * (float)n;
         float tx = sx - text_w * 0.5f;
         float ty = sy - cell;
 
-        /* Off-screen? Skip — keeps text from oozing along the edges
+        /* Off-screen? Skip - keeps text from oozing along the edges
          * when a player is way off to the side. */
         if (tx < -text_w || tx > screen_w) continue;
         if (ty < -cell    || ty > screen_h) continue;
 
-        sdtx_canvas(screen_w / scale, screen_h / scale);
-        sdtx_font(1);
-        sdtx_origin(tx / cell, ty / cell);
-        sdtx_color3b(0xff, 0xe8, 0x80);
-        sdtx_home();
-        sdtx_printf("%s", name);
-        sdtx_font(0);
+        entries[entry_count].tx     = tx;
+        entries[entry_count].ty     = ty;
+        entries[entry_count].text_w = text_w;
+        entries[entry_count].name   = name;
+        ++entry_count;
     }
+
+    if (entry_count == 0) return;
+
+    /* ----- Pass 1: dark transparent backdrop rectangles via sgl ----- */
+    static sgl_pipeline pip_alpha = (sgl_pipeline){0};
+    if (pip_alpha.id == 0) {
+        pip_alpha = sgl_make_pipeline(&(sg_pipeline_desc){
+            .colors[0].blend = {
+                .enabled = true,
+                .src_factor_rgb   = SG_BLENDFACTOR_SRC_ALPHA,
+                .dst_factor_rgb   = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+                .src_factor_alpha = SG_BLENDFACTOR_ONE,
+                .dst_factor_alpha = SG_BLENDFACTOR_ONE,
+            },
+        });
+    }
+    sgl_defaults();
+    sgl_matrix_mode_projection();
+    sgl_load_identity();
+    sgl_ortho(0.0f, screen_w, screen_h, 0.0f, -1.0f, 1.0f);
+    sgl_matrix_mode_modelview();
+    sgl_load_identity();
+    sgl_load_pipeline(pip_alpha);
+
+    const float pad_x = 4.0f;
+    const float pad_y = 2.0f;
+    sgl_begin_quads();
+    sgl_c4f(0.0f, 0.0f, 0.0f, 0.65f);
+    for (int i = 0; i < entry_count; ++i) {
+        float x0 = entries[i].tx - pad_x;
+        float y0 = entries[i].ty - pad_y;
+        float x1 = entries[i].tx + entries[i].text_w + pad_x;
+        float y1 = entries[i].ty + cell + pad_y;
+        sgl_v2f(x0, y0);
+        sgl_v2f(x1, y0);
+        sgl_v2f(x1, y1);
+        sgl_v2f(x0, y1);
+    }
+    sgl_end();
+    sgl_draw();
+
+    /* ----- Pass 2: nameplate text via sdtx on top of the backdrop ----- */
+    sdtx_canvas(screen_w / scale, screen_h / scale);
+    sdtx_font(1);
+    sdtx_color3b(0xff, 0xe8, 0x80);
+    for (int i = 0; i < entry_count; ++i) {
+        sdtx_origin(entries[i].tx / cell, entries[i].ty / cell);
+        sdtx_home();
+        sdtx_printf("%s", entries[i].name);
+    }
+    sdtx_font(0);
 }
