@@ -538,6 +538,28 @@ static void layout(float w, float h) {
      * them to hidden so they don't bleed onto any other screen. The
      * cloud-submenu layout re-sets the visible subset after this. */
     for (int i = 0; i < ROOM_HISTORY_MAX; ++i) hide_button(&M.btn_recent_room[i]);
+
+    /* Bulk-hide every named button up front. Each per-state
+     * layout_X() function below only has to SET the buttons it
+     * actually uses; it never has to remember to hide a stranger
+     * from a different screen. This is the single fence keeping
+     * "HOST" / "JOIN" / "+ NEW WORLD" / etc. from bleeding through
+     * when the state machine transitions - the previous root cause
+     * of menu UI surviving into gameplay was a hide_button() that
+     * one screen forgot to call. */
+    hide_button(&M.btn_sp);
+    hide_button(&M.btn_mp);
+    hide_button(&M.btn_back);
+    hide_button(&M.btn_active_profile);
+    hide_button(&M.btn_new_world);
+    for (int i = 0; i < PERSISTENCE_MAX_WORLDS; ++i) hide_button(&M.btn_world[i]);
+    hide_button(&M.btn_new_profile);
+    for (int i = 0; i < PROFILE_MAX; ++i) hide_button(&M.btn_profile[i]);
+    hide_button(&M.btn_self_host);
+    hide_button(&M.btn_cloud_host);
+    hide_button(&M.btn_host);
+    hide_button(&M.btn_join);
+
     switch (M.state) {
         case GAME_PROFILE_SELECT:
             layout_profile_select(w, h); break;
