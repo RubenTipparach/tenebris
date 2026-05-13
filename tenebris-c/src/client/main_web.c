@@ -98,6 +98,59 @@ EM_JS(char*, tenebris_get_room_code, (void), {
         return p;
     } catch (_e) { return 0; }
 });
+
+/* HTML overlay pause button. mobile_ui_draw's sokol_gl rendering is
+ * unreliable on certain mobile browsers (the joystick + on-canvas
+ * buttons don't render even though sdtx text does), so the pause
+ * trigger uses a real DOM <button> positioned absolutely over the
+ * canvas. CSS keeps it big, opaque, and unmistakable, plus the
+ * browser handles touch / hover / focus for us. Click is forwarded
+ * into C via Module.ccall onto tenebris_js_pause_pressed. */
+EM_JS(void, tenebris_pause_button_install, (void), {
+    if (document.getElementById('tenebris-pause-btn')) return;
+    var btn = document.createElement('button');
+    btn.id = 'tenebris-pause-btn';
+    btn.textContent = '∥';   /* "II" pause glyph */
+    btn.setAttribute('aria-label', 'Pause');
+    btn.style.cssText =
+        'position:fixed;top:14px;left:14px;width:60px;height:60px;'
+      + 'border-radius:50%;border:3px solid #fff;'
+      + 'background:rgba(15,17,26,0.92);color:#fff;'
+      + 'font-size:30px;font-weight:bold;'
+      + 'display:flex;align-items:center;justify-content:center;'
+      + 'cursor:pointer;z-index:10;'
+      + 'touch-action:manipulation;'
+      + '-webkit-tap-highlight-color:transparent;'
+      + 'box-shadow:0 2px 6px rgba(0,0,0,0.5);'
+      + 'visibility:hidden;';
+    btn.addEventListener('click', function(ev) {
+        ev.preventDefault();
+        Module.ccall('tenebris_js_pause_pressed', null, [], []);
+    });
+    btn.addEventListener('touchend', function(ev) {
+        ev.preventDefault();
+        Module.ccall('tenebris_js_pause_pressed', null, [], []);
+    });
+    document.body.appendChild(btn);
+});
+
+EM_JS(void, tenebris_pause_button_set_visible, (int visible), {
+    var b = document.getElementById('tenebris-pause-btn');
+    if (b) b.style.visibility = visible ? 'visible' : 'hidden';
+});
+
+/* JS calls this when the HTML pause button is tapped. Same effect
+ * as pressing Escape on desktop: toggles the pause overlay and
+ * releases pointer lock so the player can interact with the
+ * canvas panel buttons. */
+EMSCRIPTEN_KEEPALIVE
+void tenebris_js_pause_pressed(void) {
+    menu_pause_toggle();
+    if (menu_pause_active()) {
+        sapp_lock_mouse(false);
+        sapp_show_mouse(true);
+    }
+}
 #endif
 #include "client/inventory.h"
 #include "client/profiler.h"
@@ -236,6 +289,12 @@ static void init(void) {
     hotbar_ui_init();
     teleport_menu_init();
     teleport_menu_set_player(&G.player);
+
+#ifdef __EMSCRIPTEN__
+    /* Install the HTML overlay pause button. Stays hidden until the
+     * frame loop turns it on once gameplay starts. */
+    tenebris_pause_button_install();
+#endif
 
     /* Load atmosphere overrides from YAML before creating any
      * worlds — planet_set_atmosphere mutates BODIES[] and the
@@ -1346,33 +1405,25 @@ static void frame(void) {
     mobile_ui_set_debug_menu_visible(G_debug_ui_visible);
     mobile_ui_set_teleport_visible(G_debug_ui_visible);
     mobile_ui_draw();
+    /* HTML overlay pause button: visible during gameplay, hidden
+     * while the pause panel is already up or while a menu state
+     * owns the screen. */
+#ifdef __EMSCRIPTEN__
+    {
+        game_state_t st = menu_state();
+        bool in_game = (st == GAME_IN_GAME_SP || st == GAME_IN_GAME_MP);
+        bool show = in_game && !menu_pause_active();
+        static int last_show = -1;
+        if ((int)show != last_show) {
+            tenebris_pause_button_set_visible(show ? 1 : 0);
+            last_show = (int)show;
+        }
+    }
+#endif
     /* Pause overlay draws last so the dim backdrop + panel sit on
      * top of every HUD element. No-op when not active. */
     menu_pause_draw(sapp_width(), sapp_height());
 
-    /* sdtx-only fallback label for the mobile pause button. Some
-     * mobile browsers don't render the sokol_gl circle reliably,
-     * but sdtx always works (the hotbar slot numbers prove it),
-     * so this guarantees the button is visible + tappable on every
-     * device. Only drawn while pause is NOT already open so it
-     * doesn't fight the pause panel for attention. */
-    if (!menu_pause_active() && !menu_is_overlay()) {
-        mobile_ui_circle_t pb = mobile_ui_pause_button_rect();
-        const float scale = 2.0f;
-        const float cell  = 8.0f * scale;
-        const char* lbl   = "[II]";
-        int n = (int)strlen(lbl);
-        float text_w = cell * (float)n;
-        float tx = pb.x - text_w * 0.5f;
-        float ty = pb.y - cell * 0.5f;
-        sdtx_canvas(sapp_widthf() / scale, sapp_heightf() / scale);
-        sdtx_font(1);
-        sdtx_origin(tx / cell, ty / cell);
-        sdtx_color3b(0xff, 0xff, 0xff);
-        sdtx_home();
-        sdtx_printf("%s", lbl);
-        sdtx_font(0);
-    }
     /* ONE sdtx_draw per frame, at the very end after every HUD
      * module has queued its text. Earlier flushes were the root
      * cause of stale-GPU-text bleeding between frames - see
@@ -1459,32 +1510,10 @@ static void event(const sapp_event* e) {
         }
     }
 
-    /* Mobile pause button (top-left). Always hit-testable during
-     * gameplay so phone players (no Esc key) can open the pause
-     * overlay. Must come BEFORE the hamburger debug-gated check so
-     * pause works regardless of F2 state. */
-    {
-        bool tapped = false;
-        float tx = 0, ty = 0;
-        if (e->type == SAPP_EVENTTYPE_TOUCHES_BEGAN && e->num_touches > 0) {
-            tapped = true; tx = e->touches[0].pos_x; ty = e->touches[0].pos_y;
-        } else if (e->type == SAPP_EVENTTYPE_MOUSE_DOWN
-                   && e->mouse_button == SAPP_MOUSEBUTTON_LEFT) {
-            tapped = true; tx = e->mouse_x; ty = e->mouse_y;
-        }
-        if (tapped) {
-            mobile_ui_circle_t p = mobile_ui_pause_button_rect();
-            float dx = tx - p.x, dy = ty - p.y;
-            if (dx * dx + dy * dy <= p.r * p.r) {
-                menu_pause_toggle();
-                if (menu_pause_active()) {
-                    sapp_lock_mouse(false);
-                    sapp_show_mouse(true);
-                }
-                return;
-            }
-        }
-    }
+    /* (Mobile pause button is an HTML overlay now - its click
+     * handler calls tenebris_js_pause_pressed directly via
+     * Module.ccall, so we don't hit-test it on the canvas event
+     * stream.) */
 
     /* Mobile hamburger hit-test. Only active while the debug UI is
      * shown - the dedicated teleport (T) button next to the hamburger

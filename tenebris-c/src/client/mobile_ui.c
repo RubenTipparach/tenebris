@@ -503,33 +503,10 @@ void mobile_ui_draw(void) {
         teleport_menu_draw_mobile_buttons();
     }
 
-    /* Standalone pause button at top-left. Mobile players (no Esc
-     * key) tap this to open the pause overlay. main_web hit-tests
-     * the same rect via mobile_ui_pause_button_rect. Two filled
-     * bars form the universal "II" pause glyph. Bright + opaque so
-     * it stays readable over any sky / terrain colour. */
-    {
-        mobile_ui_circle_t p = mobile_ui_pause_button_rect();
-        draw_circle_fan(p.x, p.y, p.r, 36, 0.05f, 0.07f, 0.10f, 0.90f);
-        draw_ring      (p.x, p.y, p.r - 3.0f, p.r, 36, 1.00f, 1.00f, 1.00f, 0.95f);
-        /* Bars scaled to the bigger pause button (radius 30). */
-        sgl_begin_quads();
-        sgl_c4f(1.00f, 1.00f, 1.00f, 1.00f);
-        const float bw  = 5.0f;
-        const float bh  = 16.0f;
-        const float gap = 6.0f;
-        const float lx = p.x - gap * 0.5f - bw;
-        const float rx = p.x + gap * 0.5f;
-        sgl_v2f(lx,      p.y - bh);
-        sgl_v2f(lx + bw, p.y - bh);
-        sgl_v2f(lx + bw, p.y + bh);
-        sgl_v2f(lx,      p.y + bh);
-        sgl_v2f(rx,      p.y - bh);
-        sgl_v2f(rx + bw, p.y - bh);
-        sgl_v2f(rx + bw, p.y + bh);
-        sgl_v2f(rx,      p.y + bh);
-        sgl_end();
-    }
+    /* (Pause button now lives as an HTML overlay in main_web.c -
+     * the sokol_gl on-canvas version was invisible on certain
+     * mobile browsers, and the DOM button handles touch + visibility
+     * more reliably anyway.) */
 
     sgl_draw();
 }
