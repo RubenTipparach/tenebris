@@ -436,6 +436,17 @@ static void init(void) {
         .environment = sglue_environment(),
         .logger.func = on_screen_log,
         .buffer_pool_size = 4096,
+        /* Default pipeline pool of 64 was exhausted by the
+         * renderer's hex / water / composite / atmosphere /
+         * skybox / per-body pipelines plus the UI ones (hotbar,
+         * mobile_ui, menu, chat, profiler, mining bar, players
+         * panel, desync popup, remote players, nameplates,
+         * teleport menu). Once we hit the limit, sg_make_pipeline
+         * silently returns SG_INVALID_ID and any sgl draw using
+         * that pipeline ends up flushing into the void - which
+         * was why the pause panel + joystick rendered as ghosts
+         * (sdtx labels visible, sokol_gl geometry not). */
+        .pipeline_pool_size = 256,
     });
     stm_setup();
     /* IMPORTANT: every one of the 8 sdtx font slots gets filled, even

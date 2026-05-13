@@ -22,7 +22,16 @@
 #define STICK_KNOB_R   15.0f
 
 void mobile_ui_init(void) {
-    sgl_setup(&(sgl_desc_t){ .logger.func = slog_func });
+    sgl_setup(&(sgl_desc_t){
+        .logger.func = slog_func,
+        /* Default sgl pipeline pool is 64; every module that draws
+         * via sokol_gl (hotbar, menu, pause, chat, profiler, etc.)
+         * adds one entry, and each sgl pipeline expands to multiple
+         * sg_pipelines internally. Bumping the sgl pool keeps headroom
+         * for future overlays without re-tripping the silent
+         * "pause panel renders as ghost" failure. */
+        .pipeline_pool_size = 128,
+    });
 }
 void mobile_ui_shutdown(void) {
     sgl_shutdown();
