@@ -15,6 +15,13 @@
 void mobile_ui_init(void);
 void mobile_ui_shutdown(void);
 
+/* Toggle whether the top-right hamburger debug menu is drawn /
+ * hit-tested. Off by default; main_web flips it on along with every
+ * other debug surface when F2 is pressed. Joysticks, jump, and the
+ * standalone teleport button stay visible regardless because they
+ * are gameplay controls, not debug. */
+void mobile_ui_set_debug_menu_visible(bool visible);
+
 /* Must be called inside the main render pass (after sg_begin_pass,
  * before sg_end_pass). Submits orthographic 2D geometry via sokol_gl. */
 void mobile_ui_draw(void);

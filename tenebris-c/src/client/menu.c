@@ -1596,6 +1596,13 @@ void menu_pause_draw(int screen_w, int screen_h) {
         float ty = M.btn_pause_invite.y + M.btn_pause_invite.h + 12.0f;
         draw_text_centered(msg, cx, ty, 1.0f, r, g, b);
     }
+
+    /* Flush every sdtx_printf we just queued. mobile_ui_draw runs
+     * before us and doesn't touch sdtx, so without this call the
+     * title + button labels never make it to the swapchain - which
+     * is why an earlier build of the pause menu showed an empty
+     * dark panel and the user (rightly) couldn't find it. */
+    sdtx_draw();
 }
 
 bool menu_pause_event(const sapp_event* e) {

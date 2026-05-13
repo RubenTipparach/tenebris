@@ -363,9 +363,28 @@ static world_t* world_for_body(const body_config_t* body) {
 
 /* --------------------------------------------------------------------- */
 
+/* F2 master toggle for ALL debug UI: tile-count + FPS + key hints in
+ * update_overlay, the on-screen sokol error overlay, the F1 players
+ * panel, the F3/P profiler, the H/J/K render-visibility toggles, and
+ * the mobile hamburger menu (which holds those toggles + the
+ * profiler). Off by default so casual players never see the
+ * scaffolding. Per CLAUDE.md, every debug-only readout / shortcut /
+ * panel funnels through this single gate. */
+static bool G_debug_ui_visible = false;
+
 static void update_overlay(float dt) {
     const float inst_fps = (dt > 0.0f) ? (1.0f / dt) : 0.0f;
     G.smoothed_fps = G.smoothed_fps * 0.9f + inst_fps * 0.1f;
+
+    /* Every readout in this function - tile count, FPS, net status,
+     * frame / alt / yaw / tile / tris, mode banner, hide-terrain
+     * key hints, the loading progress percent, the target row, the
+     * F1 / F3 / T key hints - is developer scaffolding. Hide all of
+     * it unless the player has explicitly toggled the debug UI on
+     * with F2. Gameplay surfaces (hotbar, mining bar, chat, pause
+     * menu, connect-error popup, nameplates) live in their own draw
+     * functions and stay visible. */
+    if (!G_debug_ui_visible) return;
 
     sdtx_canvas(sapp_widthf() * 0.5f, sapp_heightf() * 0.5f);
     sdtx_origin(1.0f, 1.0f);
@@ -496,21 +515,112 @@ static void update_overlay(float dt) {
     /* Always-visible reminders so the player knows the keys exist
      * even if the top-right hamburger menu is hard to spot. */
     sdtx_printf("[T] teleport menu   [F3 / P] profiler   [F1] players\n");
+}
 
-    /* Mining progress bar (survival only). */
-    if (G.player.survival_mode && G.interact.mining_progress_s > 0.0f) {
-        float pct = G.interact.mining_progress_s / MINING_TIME_S;
-        if (pct > 1.0f) pct = 1.0f;
-        char bar[21];
-        int filled = (int)(pct * 20.0f);
-        for (int i = 0; i < 20; ++i) bar[i] = (i < filled) ? '#' : '-';
-        bar[20] = 0;
-        sdtx_color3b(0xf0, 0xa0, 0x40);
-        sdtx_printf("mining: [%s] %d%%\n", bar, (int)(pct * 100));
-        sdtx_color3b(0xff, 0xff, 0xff);
+/* Centred mining progress bar drawn via sokol_gl. Replaces the older
+ * ASCII "[####----] 50%" version that violated CLAUDE.md's no-ASCII-art
+ * rule. Visible only while a survival mine is in progress; positioned
+ * just above the hotbar so the player's eye line stays near the
+ * action. */
+static void draw_mining_bar(float screen_w, float screen_h) {
+    if (!G.player.survival_mode) return;
+    if (G.interact.mining_progress_s <= 0.0f) return;
+
+    float pct = G.interact.mining_progress_s / MINING_TIME_S;
+    if (pct < 0.0f) pct = 0.0f;
+    if (pct > 1.0f) pct = 1.0f;
+
+    const float bar_w   = 280.0f;
+    const float bar_h   = 14.0f;
+    const float pad     = 3.0f;
+    const float bx      = screen_w * 0.5f - bar_w * 0.5f;
+    /* Sit ~96 px above the bottom edge, just above the hotbar
+     * (SLOT_SIZE 48 + BOTTOM_MARGIN 18 + breathing room). */
+    const float by      = screen_h - 96.0f;
+    const float fill_w  = bar_w * pct;
+
+    sgl_defaults();
+    sgl_matrix_mode_projection();
+    sgl_load_identity();
+    sgl_ortho(0.0f, screen_w, screen_h, 0.0f, -1.0f, 1.0f);
+    sgl_matrix_mode_modelview();
+    sgl_load_identity();
+
+    static sgl_pipeline pip = (sgl_pipeline){0};
+    if (pip.id == 0) {
+        pip = sgl_make_pipeline(&(sg_pipeline_desc){
+            .colors[0].blend = {
+                .enabled = true,
+                .src_factor_rgb   = SG_BLENDFACTOR_SRC_ALPHA,
+                .dst_factor_rgb   = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+                .src_factor_alpha = SG_BLENDFACTOR_ONE,
+                .dst_factor_alpha = SG_BLENDFACTOR_ONE,
+            },
+        });
     }
+    sgl_load_pipeline(pip);
 
+    /* Track (dark backdrop with halo) so the bar reads against any
+     * sky / terrain colour. */
+    sgl_begin_quads();
+    sgl_c4f(0.04f, 0.06f, 0.10f, 0.85f);
+    sgl_v2f(bx - pad,         by - pad);
+    sgl_v2f(bx + bar_w + pad, by - pad);
+    sgl_v2f(bx + bar_w + pad, by + bar_h + pad);
+    sgl_v2f(bx - pad,         by + bar_h + pad);
+    sgl_end();
 
+    /* Fill - warm orange that matches the old colour scheme but as a
+     * real quad rather than glyphs. */
+    sgl_begin_quads();
+    sgl_c4f(0.95f, 0.62f, 0.22f, 1.0f);
+    sgl_v2f(bx,          by);
+    sgl_v2f(bx + fill_w, by);
+    sgl_v2f(bx + fill_w, by + bar_h);
+    sgl_v2f(bx,          by + bar_h);
+    sgl_end();
+
+    /* Light border around the bar interior. */
+    const float t = 1.0f;
+    sgl_begin_quads();
+    sgl_c4f(0.85f, 0.90f, 1.0f, 0.95f);
+    sgl_v2f(bx,             by);
+    sgl_v2f(bx + bar_w,     by);
+    sgl_v2f(bx + bar_w,     by + t);
+    sgl_v2f(bx,             by + t);
+    sgl_v2f(bx,             by + bar_h - t);
+    sgl_v2f(bx + bar_w,     by + bar_h - t);
+    sgl_v2f(bx + bar_w,     by + bar_h);
+    sgl_v2f(bx,             by + bar_h);
+    sgl_v2f(bx,             by);
+    sgl_v2f(bx + t,         by);
+    sgl_v2f(bx + t,         by + bar_h);
+    sgl_v2f(bx,             by + bar_h);
+    sgl_v2f(bx + bar_w - t, by);
+    sgl_v2f(bx + bar_w,     by);
+    sgl_v2f(bx + bar_w,     by + bar_h);
+    sgl_v2f(bx + bar_w - t, by + bar_h);
+    sgl_end();
+    sgl_draw();
+
+    /* Percentage label centred just above the bar. */
+    char buf[24];
+    snprintf(buf, sizeof buf, "MINING %d%%", (int)(pct * 100.0f));
+    int n = (int)strlen(buf);
+    const float scale = 1.0f;
+    const float cell  = 8.0f * scale;
+    const float text_w = cell * (float)n;
+    const float tx = screen_w * 0.5f - text_w * 0.5f;
+    const float ty = by - cell - 4.0f;
+    sdtx_canvas(screen_w / scale, screen_h / scale);
+    sdtx_font(1);
+    sdtx_origin(tx / cell, ty / cell);
+    sdtx_color3b(0xff, 0xd0, 0x70);
+    sdtx_home();
+    sdtx_printf("%s", buf);
+    sdtx_font(0);
+    sdtx_color3b(0xff, 0xff, 0xff);
+    sdtx_draw();
 }
 
 /* --------------------------------------------------------------------- */
@@ -922,14 +1032,22 @@ static void frame(void) {
      * click before movement/interact reads the input state. */
     teleport_menu_poll_touches();
 
-    /* G-key toggles survival mode. Switching modes resets inventory
-     * to the appropriate starter state so creative-bonanza items
-     * don't persist into a fresh survival run, and so a survival
-     * stockpile doesn't leak back into a creative session. */
+    /* G-key toggles survival mode in SP. Switching modes resets the
+     * inventory to the appropriate starter state so creative-bonanza
+     * items don't persist into a fresh survival run, and so a
+     * survival stockpile doesn't leak back into a creative session.
+     *
+     * MP is always survival - creative would let any joiner spawn
+     * unlimited blocks and edit the shared world, so the toggle is
+     * gated to SP only here. Consume the edge either way so a stale
+     * press doesn't fire the moment the player exits to the main
+     * menu and starts an SP session. */
     if (input_consume_survival_toggle()) {
-        G.player.survival_mode = !G.player.survival_mode;
-        if (G.player.survival_mode) inventory_init_empty(&G.player.inventory);
-        else                        inventory_init_creative(&G.player.inventory);
+        if (menu_state() == GAME_IN_GAME_SP) {
+            G.player.survival_mode = !G.player.survival_mode;
+            if (G.player.survival_mode) inventory_init_empty(&G.player.inventory);
+            else                        inventory_init_creative(&G.player.inventory);
+        }
     }
 
     /* Pre-update body selection. Picks whichever body delivers the
@@ -1148,10 +1266,12 @@ static void frame(void) {
     profiler_begin("ui");
     update_overlay(dt);
     teleport_menu_draw();
-    draw_error_overlay();
-    profiler_draw();
+    if (G_debug_ui_visible) {
+        draw_error_overlay();
+        profiler_draw();
+        draw_players_panel(sapp_widthf(), sapp_heightf());
+    }
     draw_desync_popup(sapp_widthf(), sapp_heightf());
-    draw_players_panel(sapp_widthf(), sapp_heightf());
     chat_draw(sapp_widthf(), sapp_heightf());
     /* Nameplates above remote players. View/proj are still in scope
      * from the 3D pass earlier in frame(). The lookup goes through
@@ -1161,6 +1281,15 @@ static void frame(void) {
                                       net_client_name_for_id);
     sdtx_draw();
     hotbar_ui_draw(&G.player.inventory);
+    /* Real (non-ASCII) mining progress bar. Self-gates on
+     * survival_mode + mining_progress > 0; per CLAUDE.md the old
+     * "[####----] 50%" sdtx-printf bar was a no-go. */
+    draw_mining_bar(sapp_widthf(), sapp_heightf());
+    /* Sync the hamburger debug-menu visibility with the master F2
+     * toggle every frame. mobile_ui owns its own draw state; we
+     * just forward the boolean rather than threading it through
+     * every call. */
+    mobile_ui_set_debug_menu_visible(G_debug_ui_visible);
     mobile_ui_draw();
     /* Pause overlay draws last so the dim backdrop + panel sit on
      * top of every HUD element. No-op when not active. */
@@ -1207,55 +1336,57 @@ static void event(const sapp_event* e) {
     /* Teleport menu gets first crack — it intercepts T/M/arrows/enter
      * when open so those keys don't also reach the movement layer. */
     if (teleport_menu_event(e, &G.player)) return;
-    /* Debug toggle — H on desktop, tap top-right ~96 px corner on
-     * touch devices. Hides the chunked planet terrain so the
-     * atmosphere / sky / distant LOD passes can be verified in
-     * isolation. State lives in the renderer; we just flip it here. */
-    /* Keyboard shortcuts for the debug toggles. Mirror the four
-     * buttons in the hamburger drop-down (mobile_ui.c) so a desktop
-     * user can flip them without reaching for the mouse. */
-    if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_H) {
-        renderer_set_terrain_visible(!renderer_terrain_visible());
+    /* F2 toggles the master debug-UI visibility. Every other debug
+     * key (F1, F3, P, H, J, K) and the mobile hamburger menu are
+     * gated on G_debug_ui_visible so first-time players never see
+     * the scaffolding. F2 itself stays live always so they can
+     * still get back in. */
+    if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_F2) {
+        G_debug_ui_visible = !G_debug_ui_visible;
         return;
     }
-    if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_J) {
-        renderer_set_water_visible(!renderer_water_visible());
-        return;
-    }
-    if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_K) {
-        renderer_set_skybox_visible(!renderer_skybox_visible());
-        return;
-    }
-    /* Profiler toggle. F3 is the "natural" key — the JS profiler uses
-     * it too — so we bind it. The browser also intercepts F3 for the
-     * "find next" dialog, but the keydown event still fires to sokol
-     * first, so the toggle works (the find dialog may also pop up;
-     * pressing F3 again closes it). 'P' is bound as a backup that's
-     * not browser-intercepted. */
-    /* F1 toggles the players panel (lat/lon list of everyone online). */
-    if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_F1) {
-        G_players_panel_visible = !G_players_panel_visible;
-        return;
-    }
-    if (e->type == SAPP_EVENTTYPE_KEY_DOWN &&
-        (e->key_code == SAPP_KEYCODE_F3 || e->key_code == SAPP_KEYCODE_P)) {
-        profiler_toggle_visible();
-        return;
-    }
-    /* Note: no F key for the heatmap — F is already bound to fly-mode
-     * in input.c. The heatmap is reachable via the menu button only. */
-
-    /* Debug-menu hit-test runs first on both touch + mouse so the
-     * hamburger and its popup buttons consume the input before it
-     * reaches the movement layer. */
-    if (e->type == SAPP_EVENTTYPE_TOUCHES_BEGAN && e->num_touches > 0) {
-        if (mobile_ui_handle_touch(e->touches[0].pos_x, e->touches[0].pos_y)) {
+    /* The remaining debug shortcuts are no-ops while the debug UI is
+     * hidden. The mobile hamburger menu draws / hit-tests only when
+     * debug is visible (gated below), so its toggles can't sneak
+     * around this either. */
+    if (G_debug_ui_visible) {
+        if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_H) {
+            renderer_set_terrain_visible(!renderer_terrain_visible());
+            return;
+        }
+        if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_J) {
+            renderer_set_water_visible(!renderer_water_visible());
+            return;
+        }
+        if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_K) {
+            renderer_set_skybox_visible(!renderer_skybox_visible());
+            return;
+        }
+        if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_F1) {
+            G_players_panel_visible = !G_players_panel_visible;
+            return;
+        }
+        if (e->type == SAPP_EVENTTYPE_KEY_DOWN &&
+            (e->key_code == SAPP_KEYCODE_F3 || e->key_code == SAPP_KEYCODE_P)) {
+            profiler_toggle_visible();
             return;
         }
     }
-    if (e->type == SAPP_EVENTTYPE_MOUSE_DOWN && e->mouse_button == SAPP_MOUSEBUTTON_LEFT) {
-        if (mobile_ui_handle_touch(e->mouse_x, e->mouse_y)) {
-            return;
+
+    /* Mobile hamburger hit-test. Only active while the debug UI is
+     * shown - the dedicated teleport (T) button next to the hamburger
+     * still works because it lives in its own draw path. */
+    if (G_debug_ui_visible) {
+        if (e->type == SAPP_EVENTTYPE_TOUCHES_BEGAN && e->num_touches > 0) {
+            if (mobile_ui_handle_touch(e->touches[0].pos_x, e->touches[0].pos_y)) {
+                return;
+            }
+        }
+        if (e->type == SAPP_EVENTTYPE_MOUSE_DOWN
+            && e->mouse_button == SAPP_MOUSEBUTTON_LEFT) {
+            if (mobile_ui_handle_touch(e->mouse_x, e->mouse_y)) {
+                return;
+            }
         }
     }
     input_event(e);

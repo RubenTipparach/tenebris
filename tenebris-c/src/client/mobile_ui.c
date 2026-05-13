@@ -221,11 +221,19 @@ static menu_layout_t menu_button_layout(void) {
     return L;
 }
 
+static bool S_DEBUG_MENU_VISIBLE = false;
+
+void mobile_ui_set_debug_menu_visible(bool visible) {
+    S_DEBUG_MENU_VISIBLE = visible;
+    if (!visible) S_MENU_OPEN = false;       /* collapse the popup */
+}
+
 /* Hit-test the menu button + (when open) its popup column. Returns
  * true if the touch / click landed on a debug button — the caller
  * (main_web.c) treats that as an exclusive event so the underlying
  * movement layer doesn't also see the tap. */
 bool mobile_ui_handle_touch(float x, float y) {
+    if (!S_DEBUG_MENU_VISIBLE) return false;
     menu_layout_t L = menu_button_layout();
     /* Menu button gets the full top-right corner zone for mobile
      * fat-thumb friendliness — same generosity the original
@@ -378,10 +386,10 @@ void mobile_ui_draw(void) {
      * mobile_ui_handle_touch so the layout in menu_button_layout()
      * is the only source of truth shared by the draw + tap paths.
      *
-     * Closed by default — first-time players don't see a debug
-     * overlay sprouting from the corner. Keyboard shortcuts H/J/K
-     * still work directly without opening the menu. */
-    {
+     * Hidden unless main_web has flipped on the debug UI master
+     * (F2). The dedicated teleport (T) button above stays visible
+     * regardless - it's a gameplay control, not debug. */
+    if (S_DEBUG_MENU_VISIBLE) {
         menu_layout_t L = menu_button_layout();
         const bool open = S_MENU_OPEN;
         const float r = L.radius;
