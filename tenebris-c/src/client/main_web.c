@@ -995,11 +995,23 @@ static void frame(void) {
     maybe_apply_sp_resume();
     maybe_prime_mode_for_state();
 
-    /* DIAGNOSTIC: pointer-lock-loss pause-open detector is disabled
-     * while we isolate the menu-bleed bug. */
+    /* Pointer-lock-loss -> open pause menu. The browser eats the
+     * first Escape press to release pointer lock (we never see the
+     * KEY_DOWN event). Detecting the lock-state transition is what
+     * gets the pause panel up on a SINGLE Esc press. Only fires
+     * during gameplay - the menu states don't lock the mouse to
+     * begin with. */
     {
+        static bool s_was_mouse_locked = false;
         bool now_locked = sapp_mouse_locked();
-        (void)now_locked;
+        game_state_t st = menu_state();
+        bool in_gameplay = (st == GAME_IN_GAME_SP || st == GAME_IN_GAME_MP);
+        if (in_gameplay && s_was_mouse_locked && !now_locked
+            && !menu_pause_active()) {
+            menu_pause_toggle();
+            sapp_show_mouse(true);
+        }
+        s_was_mouse_locked = now_locked;
     }
 
     const double raw_dt_sec = stm_sec(stm_laptime(&G.last_time));
@@ -1364,21 +1376,15 @@ static void event(const sapp_event* e) {
     if (menu_pause_active()) {
         if (menu_pause_event(e)) return;
     }
-    /* Escape during gameplay toggles the pause overlay. While the
-     * overlay is open, menu_pause_event above already consumes
-     * Escape (closes the panel); this handler only fires when the
-     * overlay is closed and opens it. */
+    /* Escape: do nothing directly here. The browser intercepts Escape
+     * to release pointer lock; the per-frame pointer-lock-loss
+     * detector earlier in frame() catches the resulting state
+     * transition and opens the pause panel on the same gesture.
+     * Resume is intentionally NOT bound to Escape - the player has
+     * to click RETURN TO GAME so a stray Esc keypress can't dismiss
+     * the panel by accident. */
     if (e->type == SAPP_EVENTTYPE_KEY_DOWN
         && e->key_code == SAPP_KEYCODE_ESCAPE) {
-        menu_pause_toggle();
-        if (menu_pause_active()) {
-            /* Release pointer lock + show the OS cursor so the player
-             * can click the panel buttons. Browser requires a user
-             * gesture for re-lock on close - that happens on the
-             * next canvas click via input.c. */
-            sapp_lock_mouse(false);
-            sapp_show_mouse(true);
-        }
         return;
     }
     /* Chat takes Enter (open compose) and every keystroke while

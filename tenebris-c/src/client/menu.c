@@ -1724,18 +1724,21 @@ static struct {
 } G_pl;
 
 static void pause_layout(float w, float h) {
-    const float btn_w = 280.0f;
-    const float btn_h = 56.0f;
-    const float gap   = 16.0f;
-    const float pad   = 24.0f;
+    bool is_mp = (M.state == GAME_IN_GAME_MP);
+    const float btn_w = 320.0f;
+    const float btn_h = 64.0f;
+    const float gap   = 18.0f;
+    const float pad   = 28.0f;
+    const int   row_count = is_mp ? 3 : 2;
     const float panel_w = btn_w + 2.0f * pad;
-    const float panel_h = 90.0f                  /* title row */
-                        + 3.0f * btn_h + 2.0f * gap
+    const float panel_h = 110.0f                       /* title block */
+                        + (float)row_count * btn_h
+                        + (float)(row_count - 1) * gap
                         + pad;
     const float panel_x = (w - panel_w) * 0.5f;
     const float panel_y = (h - panel_h) * 0.5f;
     const float btn_x = panel_x + pad;
-    float       btn_y = panel_y + 90.0f;
+    float       btn_y = panel_y + 110.0f;
 
     G_pl.panel_x = panel_x;
     G_pl.panel_y = panel_y;
@@ -1743,12 +1746,19 @@ static void pause_layout(float w, float h) {
     G_pl.panel_h = panel_h;
     G_pl.resume = (pause_btn_t){ btn_x, btn_y, btn_w, btn_h, "RETURN TO GAME" };
     btn_y += btn_h + gap;
-    G_pl.invite = (pause_btn_t){ btn_x, btn_y, btn_w, btn_h, "INVITE PLAYERS" };
-    btn_y += btn_h + gap;
-    G_pl.quit   = (pause_btn_t){ btn_x, btn_y, btn_w, btn_h, "QUIT TO MENU"   };
+    if (is_mp) {
+        G_pl.invite = (pause_btn_t){ btn_x, btn_y, btn_w, btn_h, "INVITE PLAYERS" };
+        btn_y += btn_h + gap;
+    } else {
+        /* Hide invite by parking it offscreen so the hit-test never
+         * matches. SP doesn't have a room to invite anyone to. */
+        G_pl.invite = (pause_btn_t){ -1e9f, -1e9f, 0, 0, NULL };
+    }
+    G_pl.quit = (pause_btn_t){ btn_x, btn_y, btn_w, btn_h, "QUIT TO MENU" };
 }
 
 static bool pause_btn_hit(const pause_btn_t* b, float x, float y) {
+    if (!b->label) return false;
     return x >= b->x && x <= b->x + b->w
         && y >= b->y && y <= b->y + b->h;
 }
@@ -1760,64 +1770,56 @@ void menu_pause_draw(int screen_w, int screen_h) {
     const float h = (float)screen_h;
     pause_layout(w, h);
 
+    /* Use mobile_ui's shared alpha pipeline - it's been drawing the
+     * joystick + buttons every frame so we know it lands on the
+     * swapchain. Our own lazy pipeline was failing silently on some
+     * browsers, which left the pause panel as text-on-bare-sky. */
     sgl_defaults();
     sgl_matrix_mode_projection();
     sgl_load_identity();
     sgl_ortho(0.0f, w, h, 0.0f, -1.0f, 1.0f);
     sgl_matrix_mode_modelview();
     sgl_load_identity();
-
-    static sgl_pipeline pip = (sgl_pipeline){0};
-    if (pip.id == 0) {
-        pip = sgl_make_pipeline(&(sg_pipeline_desc){
-            .colors[0].blend = {
-                .enabled = true,
-                .src_factor_rgb = SG_BLENDFACTOR_SRC_ALPHA,
-                .dst_factor_rgb = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
-                .src_factor_alpha = SG_BLENDFACTOR_ONE,
-                .dst_factor_alpha = SG_BLENDFACTOR_ONE,
-            },
-        });
-    }
-    sgl_load_pipeline(pip);
+    sgl_load_pipeline(mobile_ui_alpha_pipeline());
 
     /* Dim full-screen backdrop. */
-    quad(0.0f, 0.0f, w, h, 0.02f, 0.03f, 0.07f, 0.70f);
+    mobile_ui_draw_rect(0.0f, 0.0f, w, h, 0.02f, 0.03f, 0.07f, 0.75f);
     /* Panel + border. */
-    quad(G_pl.panel_x, G_pl.panel_y, G_pl.panel_w, G_pl.panel_h,
-         0.10f, 0.12f, 0.18f, 0.95f);
-    border(G_pl.panel_x, G_pl.panel_y, G_pl.panel_w, G_pl.panel_h, 2.0f,
-           0.85f, 0.90f, 1.0f, 1.0f);
+    mobile_ui_draw_rect(G_pl.panel_x, G_pl.panel_y, G_pl.panel_w, G_pl.panel_h,
+                         0.10f, 0.12f, 0.18f, 0.96f);
+    mobile_ui_draw_rect_outline(G_pl.panel_x, G_pl.panel_y, G_pl.panel_w, G_pl.panel_h,
+                                  2.0f, 0.85f, 0.90f, 1.00f, 1.0f);
     /* Buttons - hover-aware. */
     const pause_btn_t* btns[3] = { &G_pl.resume, &G_pl.invite, &G_pl.quit };
     for (int i = 0; i < 3; ++i) {
         const pause_btn_t* b = btns[i];
+        if (!b->label) continue;
         bool hovered = pause_btn_hit(b, M.mouse_x, M.mouse_y);
-        if (hovered) quad(b->x, b->y, b->w, b->h, 0.22f, 0.30f, 0.42f, 0.95f);
-        else         quad(b->x, b->y, b->w, b->h, 0.12f, 0.14f, 0.19f, 0.90f);
-        border(b->x, b->y, b->w, b->h, 2.0f, 0.85f, 0.90f, 1.0f, 1.0f);
+        if (hovered) {
+            mobile_ui_draw_rect(b->x, b->y, b->w, b->h, 0.22f, 0.30f, 0.42f, 0.98f);
+        } else {
+            mobile_ui_draw_rect(b->x, b->y, b->w, b->h, 0.14f, 0.16f, 0.22f, 0.95f);
+        }
+        mobile_ui_draw_rect_outline(b->x, b->y, b->w, b->h, 2.0f,
+                                      0.85f, 0.90f, 1.00f, 1.0f);
     }
     sgl_draw();
 
-    /* Text on top. draw_text_centered comes from menu_draw; both
-     * paths share the same helper so the font + colour pipeline is
-     * identical. */
+    /* Text on top of the geometry. */
     const float cx = w * 0.5f;
-    draw_text_centered("PAUSED", cx, G_pl.panel_y + 16.0f, 3.0f,
+    draw_text_centered("PAUSED", cx, G_pl.panel_y + 20.0f, 4.0f,
                          0xff, 0xff, 0xff);
-    draw_text_centered("press Esc to resume",
-                         cx, G_pl.panel_y + 64.0f, 1.0f,
-                         0xa0, 0xb0, 0xc8);
     for (int i = 0; i < 3; ++i) {
         const pause_btn_t* b = btns[i];
+        if (!b->label) continue;
         float bx = b->x + b->w * 0.5f;
         float by = b->y + (b->h - 8.0f * 2.0f) * 0.5f;
         draw_text_centered(b->label, bx, by, 2.0f, 0xff, 0xff, 0xff);
     }
 
-    /* Share-result toast under the INVITE button. */
+    /* Share-result toast under the INVITE button (MP only). */
     double t_now = stm_sec(stm_now());
-    if (M.pause_share_msg_until > t_now) {
+    if (G_pl.invite.label && M.pause_share_msg_until > t_now) {
         const char* msg = "SHARE FAILED";
         uint8_t r = 0xff, g = 0x80, bl = 0x60;
         if (M.pause_share_result == 1) {
@@ -1846,11 +1848,15 @@ bool menu_pause_event(const sapp_event* e) {
         return true;
     }
 
-    /* Escape resumes. */
+    /* Escape inside the pause overlay is INTENTIONALLY swallowed
+     * without closing the panel. The player must click RETURN TO
+     * GAME to resume. This keeps the behaviour symmetric: the first
+     * Escape opens pause + releases pointer lock (the browser
+     * intercepts it for the lock release; main_web's pointer-lock-
+     * loss detector turns that into a menu_pause_toggle), and the
+     * close action is a deliberate click on the resume button. */
     if (e->type == SAPP_EVENTTYPE_KEY_DOWN
         && e->key_code == SAPP_KEYCODE_ESCAPE) {
-        set_pause_visible(false, "esc-resume");
-        sapp_show_mouse(true);
         return true;
     }
 
