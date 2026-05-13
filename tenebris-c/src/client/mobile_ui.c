@@ -331,37 +331,21 @@ void mobile_ui_draw(void) {
     const float h = sapp_heightf();
     if (w <= 0.0f || h <= 0.0f) return;
 
-    /* Two sticks at bottom corners. */
-    const float left_sx  = BTN_MARGIN + STICK_RADIUS;
-    const float left_sy  = h - BTN_MARGIN - STICK_RADIUS;
-    const float right_sx = w - BTN_MARGIN - STICK_RADIUS;
-    const float right_sy = h - BTN_MARGIN - STICK_RADIUS;
+    /* Standalone teleport (T) shortcut anchored at the bottom-right.
+     * Only debug-mode + creative players ever see this; mobile uses
+     * the F2 hamburger menu's T entry to reach the same flow. */
+    const float bx   = w - BTN_MARGIN - BTN_RADIUS;
+    const float tp_y = h - BTN_MARGIN - BTN_RADIUS;
 
-    /* Buttons stacked vertically to the left of the right stick. The
-     * right thumb can hop between the look stick and the buttons
-     * without crossing the screen. Order (top to bottom):
-     *   TP / BREAK / PLACE / JUMP — jump at the bottom, closest to the
-     *   stick so your thumb rests there. The teleport entry point
-     *   ALSO lives in the top-right debug-menu drop-down; both are
-     *   wired so mobile users have a one-tap shortcut and desktop
-     *   users still have the menu version. */
-    const float bx = right_sx - STICK_RADIUS - BTN_GAP - BTN_RADIUS;
-    const float j_y = right_sy + STICK_RADIUS - BTN_RADIUS;            /* bottom-aligned */
-    const float p_y = j_y - (BTN_RADIUS * 2.0f + BTN_GAP);
-    const float b_y = p_y - (BTN_RADIUS * 2.0f + BTN_GAP);
-    const float tp_y = b_y - (BTN_RADIUS * 2.0f + BTN_GAP);
-
-    /* Report hit rects to input.c. TP is its own slot; menu-nav
-     * buttons are registered by teleport_menu when open. */
-    input_register_mobile_buttons(
-        bx, b_y, BTN_RADIUS,
-        bx, p_y, BTN_RADIUS,
-        bx, j_y, BTN_RADIUS);
+    /* No on-canvas BREAK / PLACE / JUMP buttons any more - the DOM
+     * control deck handles touch input. Clear the hit rects so a
+     * stale on-canvas button can't fire on a stray tap. */
+    input_register_mobile_buttons(0, 0, 0, 0, 0, 0, 0, 0, 0);
     {
         input_state_t* in = input_state_mut();
         in->btn_tp_cx = bx;
         in->btn_tp_cy = tp_y;
-        in->btn_tp_r  = BTN_RADIUS;
+        in->btn_tp_r  = S_TELEPORT_VISIBLE ? BTN_RADIUS : 0.0f;
     }
 
     /* Orthographic projection: (0,0) top-left to (w,h) bottom-right. */
@@ -397,53 +381,14 @@ void mobile_ui_draw(void) {
     }
     sgl_load_pipeline(S_PIP_ALPHA);
 
-    const input_state_t* in = input_state();
-
-    /* ---- left stick (movement) ---- */
-    draw_circle_fan(left_sx, left_sy, STICK_RADIUS,       32, 0.20f, 0.20f, 0.25f, 0.40f);
-    draw_ring      (left_sx, left_sy, STICK_RADIUS - 2.0f, STICK_RADIUS, 32, 0.95f, 0.95f, 1.0f, 0.55f);
-    {
-        float kx = left_sx, ky = left_sy;
-        if (in->stick_active) {
-            kx += in->stick_x * (STICK_RADIUS - STICK_KNOB_R);
-            ky -= in->stick_y * (STICK_RADIUS - STICK_KNOB_R);
-        }
-        draw_circle_fan(kx, ky, STICK_KNOB_R, 24, 0.95f, 0.95f, 1.0f, 0.85f);
-    }
-
-    /* ---- right stick (look) ---- */
-    draw_circle_fan(right_sx, right_sy, STICK_RADIUS,       32, 0.20f, 0.25f, 0.20f, 0.40f);
-    draw_ring      (right_sx, right_sy, STICK_RADIUS - 2.0f, STICK_RADIUS, 32, 0.85f, 1.00f, 0.90f, 0.55f);
-    {
-        float kx = right_sx, ky = right_sy;
-        if (in->look_stick_active) {
-            kx += in->look_stick_x * (STICK_RADIUS - STICK_KNOB_R);
-            ky -= in->look_stick_y * (STICK_RADIUS - STICK_KNOB_R);
-        }
-        draw_circle_fan(kx, ky, STICK_KNOB_R, 24, 0.85f, 1.00f, 0.90f, 0.85f);
-    }
-
-    /* ---- three round buttons, stacked vertically left of the right stick ---- */
-    /* Break (red) */
-    draw_circle_fan(bx, b_y, BTN_RADIUS,        32, 0.50f, 0.15f, 0.15f, 0.50f);
-    draw_ring      (bx, b_y, BTN_RADIUS - 2.0f, BTN_RADIUS, 32, 1.00f, 0.55f, 0.55f, 0.75f);
-    draw_glyph('B', bx, b_y, 16.0f, 1.0f, 0.9f, 0.9f);
-
-    /* Place (green) */
-    draw_circle_fan(bx, p_y, BTN_RADIUS,        32, 0.15f, 0.45f, 0.20f, 0.50f);
-    draw_ring      (bx, p_y, BTN_RADIUS - 2.0f, BTN_RADIUS, 32, 0.65f, 1.00f, 0.70f, 0.75f);
-    draw_glyph('P', bx, p_y, 16.0f, 0.9f, 1.0f, 0.9f);
-
-    /* Jump / jetpack (yellow) — closest to the stick so hold-to-fly is easy */
-    draw_circle_fan(bx, j_y, BTN_RADIUS,        32, 0.40f, 0.40f, 0.15f, 0.50f);
-    draw_ring      (bx, j_y, BTN_RADIUS - 2.0f, BTN_RADIUS, 32, 1.00f, 0.95f, 0.55f, 0.75f);
-    draw_glyph('J', bx, j_y, 16.0f, 1.0f, 1.0f, 0.9f);
-
-    /* Teleport (purple) - top of the stack, out of the way of the
-     * combat-relevant buttons. Mirrors the [T] toggle in the
-     * top-right debug menu so mobile users have a one-tap entry to
-     * the teleport list without opening the hamburger first. Hidden
-     * in survival because fast travel breaks the mining loop. */
+    /* On-canvas joysticks + BREAK / PLACE / JUMP buttons used to live
+     * here. They've been retired in favour of the DOM control deck
+     * (mobile-only; see main_web's tenebris_mobile_controls_install).
+     * Desktop never needed the on-canvas duplicates - keyboard +
+     * mouse cover everything. The standalone teleport (T) shortcut
+     * stays because it's debug / creative-only and is gated by F2
+     * via S_TELEPORT_VISIBLE - mobile reaches teleport through the
+     * F2 hamburger menu below. */
     if (S_TELEPORT_VISIBLE) {
         draw_circle_fan(bx, tp_y, BTN_RADIUS,        32, 0.35f, 0.20f, 0.50f, 0.50f);
         draw_ring      (bx, tp_y, BTN_RADIUS - 2.0f, BTN_RADIUS, 32, 0.85f, 0.60f, 1.00f, 0.75f);
