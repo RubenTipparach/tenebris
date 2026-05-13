@@ -951,6 +951,42 @@ static void maybe_apply_sp_resume(void) {
     G_sp_resume_applied = true;
 }
 
+/* Apply the server-side saved pose on MP entry. The server keys
+ * saves by profile token, looks them up during HELLO -> WELCOME,
+ * and returns either the persisted pose (if the player has been
+ * here before) or the default spawn. Re-applies once per MP
+ * session: G_mp_spawn_applied flips back to false the moment we
+ * leave the MP state so the next join (or a reconnect after a
+ * dropped socket) picks up the fresh WELCOME again. */
+static bool   G_mp_spawn_applied = false;
+static int    G_mp_spawn_player_id = 0;
+static void maybe_apply_mp_spawn(void) {
+    int s = (int)menu_state();
+    if (s != GAME_IN_GAME_MP) {
+        G_mp_spawn_applied = false;
+        G_mp_spawn_player_id = 0;
+        return;
+    }
+    if (net_client_state() != NET_CLIENT_READY) return;
+    const net_client_welcome_t* w = net_client_welcome();
+    if (!w) return;
+    /* Re-apply if the player_id changed (reconnect / new session). */
+    if (G_mp_spawn_applied && (int)w->player_id == G_mp_spawn_player_id) return;
+    /* Sentinel: server always fills spawn with either the default
+     * pole spawn or a persisted pose, both of which are non-zero
+     * in at least one axis. Zero on all three means the WELCOME
+     * arrived without a meaningful spawn - leave the player where
+     * the client already placed them. */
+    if (w->spawn_x == 0.0 && w->spawn_y == 0.0 && w->spawn_z == 0.0) return;
+
+    G.player.position = (dvec3_t){ .x = w->spawn_x, .y = w->spawn_y, .z = w->spawn_z };
+    G.player.velocity = (dvec3_t){0};
+    printf("[main] MP spawn applied: player_id=%u pos=(%.1f, %.1f, %.1f) body=%u\n",
+           w->player_id, w->spawn_x, w->spawn_y, w->spawn_z, w->body_id);
+    G_mp_spawn_applied = true;
+    G_mp_spawn_player_id = (int)w->player_id;
+}
+
 static double G_sp_save_accum = 0.0;
 static void   maybe_autosave_sp(double dt) {
     if (menu_state() != GAME_IN_GAME_SP) return;
@@ -1257,6 +1293,7 @@ static void frame(void) {
     }
 
     maybe_apply_sp_resume();
+    maybe_apply_mp_spawn();
     maybe_prime_mode_for_state();
 
     /* Pointer-lock-loss -> open pause menu. The browser eats the
