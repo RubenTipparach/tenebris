@@ -119,6 +119,36 @@ EM_JS(void, menu_js_blur_text_input, (void), {
     var inp = document.getElementById('tenebris-text-input-shim');
     if (inp) inp.blur();
 });
+
+/* Builds a share URL from the current page origin + path with the
+ * room code in `?invite=`, then dispatches via the Web Share API on
+ * mobile / supported browsers, or falls back to writing the URL to
+ * the clipboard. Returns 1 = shared, 2 = copied to clipboard,
+ * 0 = neither API available. Both navigator.share and
+ * navigator.clipboard need user-gesture context; this is always
+ * called from a touch / click handler so that's fine. */
+EM_JS(int, menu_js_share_invite, (const char* room_code), {
+    var c = UTF8ToString(room_code);
+    if (!c) c = "";
+    try {
+        var url = window.location.origin + window.location.pathname
+                + '?invite=' + encodeURIComponent(c);
+        if (typeof navigator !== 'undefined' && navigator.share) {
+            navigator.share({
+                title: 'Tenebris',
+                text:  'Join my Tenebris room',
+                url:   url
+            }).catch(function(){});
+            return 1;
+        }
+        if (typeof navigator !== 'undefined'
+            && navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(url).catch(function(){});
+            return 2;
+        }
+    } catch (_e) { }
+    return 0;
+});
 #else
 static char* menu_js_new_room_code(void) {
     static char fake[7] = "AAAAAA";
@@ -128,6 +158,7 @@ static char* menu_js_new_room_code(void) {
 }
 static void menu_js_focus_text_input(void) { }
 static void menu_js_blur_text_input(void)  { }
+static int  menu_js_share_invite(const char* room_code) { (void)room_code; return 0; }
 #endif
 
 /* ------------------------------------------------------------------ */
@@ -226,6 +257,22 @@ static struct {
      * means no pending invite. */
     char pending_invite_room[9];
     char pending_invite_server[256];
+
+    /* In-game pause overlay (Escape during gameplay). The world keeps
+     * rendering underneath - menu_state() stays on the gameplay
+     * state - so this is a side-channel visibility flag rather than
+     * a new game_state_t entry. */
+    bool          pause_visible;
+    menu_button_t btn_pause_resume;
+    menu_button_t btn_pause_options;
+    menu_button_t btn_pause_invite;
+    menu_button_t btn_pause_quit;
+    /* Toast under the INVITE FRIENDS button after a successful share.
+     * pause_share_msg_until is a sokol_time stamp; the label fades
+     * once stm_now() passes it. share_result is 1=shared via Web
+     * Share API, 2=copied to clipboard, 3=failure / no API. */
+    int           pause_share_result;
+    double        pause_share_msg_until;
 } M;
 
 /* ------------------------------------------------------------------ */
@@ -1422,6 +1469,202 @@ void menu_tick(void) {
 }
 
 const char* menu_room_code(void) { return M.room_code; }
+
+/* ------------------------------------------------------------------ */
+/* In-game pause overlay                                                */
+/* ------------------------------------------------------------------ */
+
+bool menu_pause_active(void) { return M.pause_visible; }
+
+void menu_pause_toggle(void) {
+    bool is_game = (M.state == GAME_IN_GAME_SP || M.state == GAME_IN_GAME_MP);
+    if (!is_game) {
+        M.pause_visible = false;
+        return;
+    }
+    M.pause_visible = !M.pause_visible;
+}
+
+static void layout_pause(float w, float h) {
+    /* Three vertical buttons centred on the screen. Order top-down:
+     * INVITE FRIENDS, OPTIONS, QUIT TO MENU. */
+    float cx = w * 0.5f;
+    float cy = h * 0.5f;
+    set_button(&M.btn_pause_invite,
+                 cx - MAIN_BTN_W * 0.5f,
+                 cy - MAIN_BTN_H * 0.5f - (MAIN_BTN_H + MAIN_BTN_GAP),
+                 MAIN_BTN_W, MAIN_BTN_H, "INVITE FRIENDS");
+    set_button(&M.btn_pause_options,
+                 cx - MAIN_BTN_W * 0.5f,
+                 cy - MAIN_BTN_H * 0.5f,
+                 MAIN_BTN_W, MAIN_BTN_H, "OPTIONS");
+    set_button(&M.btn_pause_quit,
+                 cx - MAIN_BTN_W * 0.5f,
+                 cy - MAIN_BTN_H * 0.5f + (MAIN_BTN_H + MAIN_BTN_GAP),
+                 MAIN_BTN_W, MAIN_BTN_H, "QUIT TO MENU");
+    hide_button(&M.btn_pause_resume);
+}
+
+void menu_pause_draw(int screen_w, int screen_h) {
+    if (!M.pause_visible) return;
+
+    const float w = (float)screen_w;
+    const float h = (float)screen_h;
+    layout_pause(w, h);
+
+    sgl_defaults();
+    sgl_matrix_mode_projection();
+    sgl_load_identity();
+    sgl_ortho(0.0f, w, h, 0.0f, -1.0f, 1.0f);
+    sgl_matrix_mode_modelview();
+    sgl_load_identity();
+
+    static sgl_pipeline pip = (sgl_pipeline){0};
+    if (pip.id == 0) {
+        pip = sgl_make_pipeline(&(sg_pipeline_desc){
+            .colors[0].blend = {
+                .enabled = true,
+                .src_factor_rgb   = SG_BLENDFACTOR_SRC_ALPHA,
+                .dst_factor_rgb   = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+                .src_factor_alpha = SG_BLENDFACTOR_ONE,
+                .dst_factor_alpha = SG_BLENDFACTOR_ONE,
+            },
+        });
+    }
+    sgl_load_pipeline(pip);
+
+    /* Dim the world behind us so the panel reads even on bright skies. */
+    quad(0.0f, 0.0f, w, h, 0.02f, 0.03f, 0.07f, 0.65f);
+
+    /* Panel. */
+    const float panel_w = 360.0f;
+    const float panel_h = 320.0f;
+    const float px = w * 0.5f - panel_w * 0.5f;
+    const float py = h * 0.5f - panel_h * 0.5f;
+    quad(px, py, panel_w, panel_h, 0.10f, 0.12f, 0.18f, 0.95f);
+    border(px, py, panel_w, panel_h, 2.0f, 0.85f, 0.90f, 1.0f, 1.0f);
+
+    draw_button(&M.btn_pause_invite);
+    draw_button(&M.btn_pause_options);
+    draw_button(&M.btn_pause_quit);
+
+    sgl_draw();
+
+    /* Title + hint. */
+    const float cx = w * 0.5f;
+    draw_text_centered("PAUSED", cx, py + 24.0f, 3.0f, 0xff, 0xff, 0xff);
+    draw_text_centered("press Esc to resume",
+                          cx, py + 76.0f, 1.0f, 0xa0, 0xb0, 0xc8);
+
+    /* Button labels. Match menu_draw's button label drawing. */
+    if (M.btn_pause_invite.visible) {
+        float bx = M.btn_pause_invite.x + M.btn_pause_invite.w * 0.5f;
+        float by = M.btn_pause_invite.y
+                 + (M.btn_pause_invite.h - 8.0f * 2.0f) * 0.5f;
+        draw_text_centered(M.btn_pause_invite.label, bx, by, 2.0f,
+                             0xff, 0xff, 0xff);
+    }
+    if (M.btn_pause_options.visible) {
+        float bx = M.btn_pause_options.x + M.btn_pause_options.w * 0.5f;
+        float by = M.btn_pause_options.y
+                 + (M.btn_pause_options.h - 8.0f * 2.0f) * 0.5f;
+        /* Slightly dim so it reads as "not yet wired" without being
+         * fully disabled - the user asked for the button to exist
+         * even though there's nothing inside it yet. */
+        draw_text_centered(M.btn_pause_options.label, bx, by, 2.0f,
+                             0xa0, 0xa8, 0xb8);
+    }
+    if (M.btn_pause_quit.visible) {
+        float bx = M.btn_pause_quit.x + M.btn_pause_quit.w * 0.5f;
+        float by = M.btn_pause_quit.y
+                 + (M.btn_pause_quit.h - 8.0f * 2.0f) * 0.5f;
+        draw_text_centered(M.btn_pause_quit.label, bx, by, 2.0f,
+                             0xff, 0xff, 0xff);
+    }
+
+    /* Share-result toast under the INVITE button. */
+    double t_now = stm_sec(stm_now());
+    if (M.pause_share_msg_until > t_now) {
+        const char* msg = "SHARE FAILED";
+        uint8_t r = 0xff, g = 0x80, b = 0x60;
+        if (M.pause_share_result == 1) {
+            msg = "SHARED!"; r = 0x80; g = 0xff; b = 0xa0;
+        } else if (M.pause_share_result == 2) {
+            msg = "LINK COPIED TO CLIPBOARD";
+            r = 0x80; g = 0xff; b = 0xa0;
+        }
+        float ty = M.btn_pause_invite.y + M.btn_pause_invite.h + 12.0f;
+        draw_text_centered(msg, cx, ty, 1.0f, r, g, b);
+    }
+}
+
+bool menu_pause_event(const sapp_event* e) {
+    if (!M.pause_visible) return false;
+
+    /* Track mouse for hover + remember for click hit-tests. */
+    if (e->type == SAPP_EVENTTYPE_MOUSE_MOVE) {
+        M.mouse_x = e->mouse_x;
+        M.mouse_y = e->mouse_y;
+        return true;
+    }
+    if (e->type == SAPP_EVENTTYPE_TOUCHES_MOVED && e->num_touches > 0) {
+        M.mouse_x = e->touches[0].pos_x;
+        M.mouse_y = e->touches[0].pos_y;
+        return true;
+    }
+
+    /* Escape resumes. */
+    if (e->type == SAPP_EVENTTYPE_KEY_DOWN
+        && e->key_code == SAPP_KEYCODE_ESCAPE) {
+        M.pause_visible = false;
+        return true;
+    }
+
+    /* Hit-test on click / first touch. */
+    bool   click = false;
+    float  cx = 0.0f, cy = 0.0f;
+    if (e->type == SAPP_EVENTTYPE_MOUSE_DOWN
+        && e->mouse_button == SAPP_MOUSEBUTTON_LEFT) {
+        click = true; cx = e->mouse_x; cy = e->mouse_y;
+    } else if (e->type == SAPP_EVENTTYPE_TOUCHES_BEGAN
+               && e->num_touches > 0) {
+        click = true; cx = e->touches[0].pos_x; cy = e->touches[0].pos_y;
+    }
+    if (click) {
+        layout_pause(sapp_widthf(), sapp_heightf());
+        if (hit(&M.btn_pause_quit, cx, cy)) {
+            if (M.state == GAME_IN_GAME_MP) {
+                net_client_disconnect();
+                M.room_code[0] = 0;
+            }
+            M.active_world[0] = 0;
+            M.pause_visible   = false;
+            M.state           = GAME_MAIN_MENU;
+            return true;
+        }
+        if (hit(&M.btn_pause_options, cx, cy)) {
+            /* Placeholder - the user asked for the button to exist
+             * even though there's nothing behind it yet. Eat the
+             * click so it doesn't bleed through to gameplay. */
+            return true;
+        }
+        if (hit(&M.btn_pause_invite, cx, cy)) {
+            const char* room = M.room_code[0] ? M.room_code : "";
+            int rc = menu_js_share_invite(room);
+            /* rc 0 = no API, 1 = Web Share, 2 = clipboard. Map 0 to
+             * the FAILED toast (result code 3) so the user sees
+             * something happen. */
+            M.pause_share_result    = (rc == 0) ? 3 : rc;
+            M.pause_share_msg_until = stm_sec(stm_now()) + 2.5;
+            return true;
+        }
+        return true;       /* clicks inside the dim backdrop stay swallowed */
+    }
+
+    /* Swallow everything else (keyboard movement etc.) so the player
+     * doesn't keep walking while the menu is up. */
+    return true;
+}
 
 bool menu_take_sp_resume(persistence_save_t* out) {
     if (!M.pending_sp_resume) return false;

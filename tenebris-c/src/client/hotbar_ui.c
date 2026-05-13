@@ -151,6 +151,33 @@ void hotbar_ui_draw(const inventory_t* inv) {
     }
     sgl_disable_texture();
 
+    /* ---- pass 2b: black quantity badge under each finite-count slot ---
+     * Sits on top of the textured icon but below the sdtx digits drawn
+     * in pass 3, so the count reads clearly even when it overlaps a
+     * bright tile colour. Sized to the digit string (8 px per char at
+     * scale 1.0) + a 1-px halo. CREATIVE_COUNT (>9000) skips the badge
+     * for the same reason pass 3 skips the digits - it's the "infinite"
+     * sentinel and a giant number on every slot is just noise. */
+    sgl_load_pipeline(P_FRAME);
+    for (int i = 0; i < slots; ++i) {
+        const inv_slot_t* s = &inv->slots[i];
+        if (s->type == BLOCK_AIR || s->count <= 0) continue;
+        if (s->count > 9000) continue;
+        char digits[16];
+        int  n = snprintf(digits, sizeof(digits), "%d", s->count);
+        const float x = x0 + (float)i * (SLOT_SIZE + SLOT_GAP);
+        const float y = y0;
+        const float cell   = 8.0f;
+        const float text_w = cell * (float)n;
+        /* Match the sdtx digit position in pass 3: digits at
+         * (x + SLOT_SIZE - text_w - 2, y + SLOT_SIZE - 10). The badge
+         * adds a 1 px halo so the digits don't kiss the slot border. */
+        const float bx = x + SLOT_SIZE - text_w - 3.0f;
+        const float by = y + SLOT_SIZE - 11.0f;
+        filled_quad(bx, by, text_w + 2.0f, cell + 2.0f,
+                    0.0f, 0.0f, 0.0f, 0.85f);
+    }
+
     sgl_draw();
 
     /* ---- pass 3: slot numbers + finite-count badges via sdtx ---- */

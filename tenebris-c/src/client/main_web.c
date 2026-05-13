@@ -1162,6 +1162,9 @@ static void frame(void) {
     sdtx_draw();
     hotbar_ui_draw(&G.player.inventory);
     mobile_ui_draw();
+    /* Pause overlay draws last so the dim backdrop + panel sit on
+     * top of every HUD element. No-op when not active. */
+    menu_pause_draw(sapp_width(), sapp_height());
     profiler_end("ui");
 
     profiler_end_frame();
@@ -1175,6 +1178,26 @@ static void event(const sapp_event* e) {
      * a button click or noise to be swallowed. */
     if (menu_is_overlay()) {
         menu_event(e);
+        return;
+    }
+    /* In-game pause overlay. When active, swallow every event so
+     * player movement / chat / interact don't fire behind the panel.
+     * Escape during gameplay toggles the pause on/off; pause's own
+     * event handler swallows Escape while it's open. */
+    if (menu_pause_active()) {
+        if (menu_pause_event(e)) return;
+    }
+    if (e->type == SAPP_EVENTTYPE_KEY_DOWN
+        && e->key_code == SAPP_KEYCODE_ESCAPE) {
+        menu_pause_toggle();
+        if (menu_pause_active()) {
+            /* Show the OS cursor + release pointer lock so the player
+             * can click the pause buttons. Pointer lock will need to
+             * be re-engaged via a click after resume, which is how
+             * the browser requires it anyway. */
+            sapp_lock_mouse(false);
+            sapp_show_mouse(true);
+        }
         return;
     }
     /* Chat takes Enter (open compose) and every keystroke while
@@ -1236,9 +1259,6 @@ static void event(const sapp_event* e) {
         }
     }
     input_event(e);
-    if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_ESCAPE) {
-        sapp_lock_mouse(false);
-    }
 }
 
 static void cleanup(void) {

@@ -71,6 +71,21 @@ void menu_record_recent_room(const char* room_code);
  * Pass NULL or "" for `server_url` to use the bundled default. */
 void menu_set_pending_invite(const char* room_code, const char* server_url);
 
+/* In-game pause menu (overlay drawn on top of GAME_IN_GAME_SP /
+ * GAME_IN_GAME_MP). Owns its own visibility flag rather than a
+ * dedicated game_state_t entry so the world keeps rendering behind
+ * the panel - menu_state() stays on the gameplay state.
+ *
+ * Call order from main_web:
+ *   - on SAPP_KEYCODE_ESCAPE during gameplay: menu_pause_toggle()
+ *   - in event(): if menu_pause_active(), route into menu_pause_event
+ *     BEFORE input.c / chat / teleport_menu see the event
+ *   - at the end of the UI overlay pass: menu_pause_draw() */
+bool menu_pause_active(void);
+void menu_pause_toggle(void);
+void menu_pause_draw(int screen_w, int screen_h);
+bool menu_pause_event(const sapp_event* e);
+
 /* Render the menu UI in screen-space. Call after the 3D pass during
  * MAIN_MENU; safe (no-op) during in-game states. Width/height are the
  * current sapp framebuffer dimensions. */
