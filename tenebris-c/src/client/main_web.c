@@ -478,11 +478,16 @@ static void init(void) {
     teleport_menu_set_player(&G.player);
 
 #ifdef __EMSCRIPTEN__
-    /* Install the HTML overlay pause button + mobile control deck
-     * (two joysticks + Jump / Break / Place). Both stay hidden
-     * until the frame loop turns them on once gameplay starts. */
+    /* HTML overlay pause button - always installed on web (desktop
+     * gets it too as a fallback for users who don't know Esc opens
+     * the panel). */
     tenebris_pause_button_install();
-    tenebris_mobile_controls_install();
+    /* Joysticks + action buttons are mobile-only. Skip installing
+     * them on desktop so they don't clutter the screen for players
+     * who already have a keyboard + mouse. */
+    if (tenebris_is_mobile_device()) {
+        tenebris_mobile_controls_install();
+    }
 #endif
 
     /* Load atmosphere overrides from YAML before creating any
