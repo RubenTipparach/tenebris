@@ -126,6 +126,46 @@ static void box(float cx, float cy, float cz,
     sgl_end();
 }
 
+/* Build a 4x4 column-major rotation that maps local +Y to `up`, picks
+ * an arbitrary tangent forward, and writes it into `out`. Used so the
+ * humanoid stands radial-up on the planet instead of along world-Y.
+ * Forward axis isn't tracked across snapshots (yaw is just a scalar),
+ * so the choice of reference is the same convention as
+ * phys_tangent_basis — close enough that remote players don't moonwalk
+ * sideways when walking around the equator. */
+static void planet_up_basis(double ux, double uy, double uz, float* out) {
+    /* Pick a reference axis not parallel to up so the cross product is
+     * well-defined. Same threshold as phys_tangent_basis. */
+    double rx, ry, rz;
+    if (fabs(uy) < 0.9) { rx = 0.0; ry = 1.0; rz = 0.0; }
+    else                { rx = 1.0; ry = 0.0; rz = 0.0; }
+    /* right = normalize(cross(ref, up)) */
+    double cx = ry * uz - rz * uy;
+    double cy = rz * ux - rx * uz;
+    double cz = rx * uy - ry * ux;
+    double cl = sqrt(cx * cx + cy * cy + cz * cz);
+    if (cl < 1e-9) { /* should not happen given the threshold above */
+        out[0]=1; out[1]=0; out[2]=0; out[3]=0;
+        out[4]=0; out[5]=1; out[6]=0; out[7]=0;
+        out[8]=0; out[9]=0; out[10]=1; out[11]=0;
+        out[12]=0; out[13]=0; out[14]=0; out[15]=1;
+        return;
+    }
+    cx /= cl; cy /= cl; cz /= cl;
+    /* fwd = cross(up, right) */
+    double fx = uy * cz - uz * cy;
+    double fy = uz * cx - ux * cz;
+    double fz = ux * cy - uy * cx;
+    /* Humanoid local axes: +X right, +Y up, faces toward -Z (the head
+     * draws at +Y, the body grows along +Y). Map local +Z to -fwd so
+     * the face direction (-Z) is +fwd. Column-major: col0=right,
+     * col1=up, col2=-fwd, col3=origin. */
+    out[ 0] = (float)cx; out[ 1] = (float)cy; out[ 2] = (float)cz; out[ 3] = 0.0f;
+    out[ 4] = (float)ux; out[ 5] = (float)uy; out[ 6] = (float)uz; out[ 7] = 0.0f;
+    out[ 8] = -(float)fx; out[ 9] = -(float)fy; out[10] = -(float)fz; out[11] = 0.0f;
+    out[12] = 0.0f;       out[13] = 0.0f;       out[14] = 0.0f;       out[15] = 1.0f;
+}
+
 /* Procedural humanoid. ~1.8 m tall, origin at feet, faces -Z at
  * yaw=0. Six axis-aligned boxes drawn through the sgl modelview
  * stack so legs and arms can swing for a walk cycle.
@@ -140,13 +180,24 @@ static void box(float cx, float cy, float cz,
  * `swing_rad` rotates legs / arms around their hip / shoulder pivot
  * in the X axis (forward / back). Right limbs swing opposite to
  * left, arms counter-phase to legs — classic walk cycle. swing_rad
- * == 0 = idle pose. */
+ * == 0 = idle pose.
+ *
+ * `up_x/y/z` is the planet radial direction at the figure's feet,
+ * already normalised. The whole figure is rotated so its local +Y
+ * aligns with that vector, so the avatar stands upright on the
+ * planet's surface regardless of where on the sphere it stands. */
 static void draw_humanoid(float cx, float cy, float cz,
-                            float yaw, float swing_rad) {
-    /* Move the whole figure to its world position + apply yaw, then
-     * draw every body part in the figure-local frame. */
+                            float yaw, float swing_rad,
+                            double up_x, double up_y, double up_z) {
+    /* Move the whole figure to its world position, rotate so local
+     * +Y points along the planet radial, then apply yaw around the
+     * local up axis (now +Y in the figure frame) before drawing the
+     * limbs. */
     sgl_push_matrix();
     sgl_translate(cx, cy, cz);
+    float basis[16];
+    planet_up_basis(up_x, up_y, up_z, basis);
+    sgl_mult_matrix(basis);
     sgl_rotate(yaw, 0.0f, 1.0f, 0.0f);
 
     /* Torso — fixed, centred on the chest. */
@@ -266,8 +317,13 @@ void remote_players_draw(mat4_t view, mat4_t proj) {
         }
 
         /* The player's reported position is the FEET anchor, same as
-         * G.player.position. draw_humanoid grows upward from cy. */
-        draw_humanoid(lx, ly, lz, yaw, swing_rad);
+         * G.player.position. draw_humanoid grows upward from cy along
+         * the planet radial computed from the interpolated position. */
+        double ul = sqrt((double)lx*lx + (double)ly*ly + (double)lz*lz);
+        double ux, uy, uz;
+        if (ul > 1e-6) { ux = lx/ul; uy = ly/ul; uz = lz/ul; }
+        else           { ux = 0.0; uy = 1.0; uz = 0.0; }
+        draw_humanoid(lx, ly, lz, yaw, swing_rad, ux, uy, uz);
     }
 
     sgl_draw();
