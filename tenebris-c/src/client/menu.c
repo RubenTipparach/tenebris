@@ -1836,8 +1836,13 @@ bool menu_pause_event(const sapp_event* e) {
     if (e->type == SAPP_EVENTTYPE_KEY_DOWN
         && e->key_code == SAPP_KEYCODE_ESCAPE) {
         set_pause_visible(false, "esc-resume");
-        sapp_lock_mouse(true);
-        sapp_show_mouse(false);
+        /* Don't auto-relock pointer here. The browser throws
+         * "SecurityError: Pointer lock cannot be acquired immediately
+         * after the user has exited the lock" when we request lock
+         * right after the player pressed Esc / clicked Resume. The
+         * gameplay input layer (input.c) will re-lock on the next
+         * canvas click, which is the standard browser pattern anyway. */
+        sapp_show_mouse(true);
         return true;
     }
 
