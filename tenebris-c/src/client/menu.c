@@ -681,6 +681,24 @@ void menu_draw(int screen_w, int screen_h) {
     /* Backdrop covers the entire screen, dim. */
     quad(0, 0, w, h, 0.03f, 0.05f, 0.10f, 0.85f);
 
+    /* Container panel behind every menu state's content. Sits the
+     * buttons + title + helper text on a single readable surface
+     * instead of letting them float on the dim sky - which was the
+     * "needs a box behind it" complaint. Sized generously so the
+     * world picker / profile picker / cloud submenu all fit. Slight
+     * border (matched to draw_button's outline) ties everything
+     * together. Drawn before the buttons so it sits underneath. */
+    if (M.state != GAME_PROFILE_SELECT
+        && M.state != GAME_MP_URL_PROMPT
+        && M.state != GAME_MP_CONNECT_ERROR) {
+        const float panel_w = 520.0f;
+        const float panel_h = 540.0f;
+        const float px = w * 0.5f - panel_w * 0.5f;
+        const float py = h * 0.5f - panel_h * 0.5f;
+        quad(px, py, panel_w, panel_h, 0.10f, 0.12f, 0.18f, 0.95f);
+        border(px, py, panel_w, panel_h, 2.0f, 0.85f, 0.90f, 1.0f, 1.0f);
+    }
+
     /* Geometry */
     draw_button(&M.btn_sp);
     draw_button(&M.btn_mp);
@@ -774,10 +792,16 @@ void menu_draw(int screen_w, int screen_h) {
         case GAME_MP_SUBMENU:
             draw_text_centered("MULTIPLAYER", cx, h * 0.5f - 200.0f, 3.0f,
                                  0xff, 0xff, 0xff);
-            draw_text_centered("self hosted = run the server on your machine (coming soon)",
+            /* Shortened hint lines so they fit on narrow screens.
+             * The old "...run the server on your machine (coming
+             * soon)" + "...play on the shared fly.io server" pair
+             * overflowed past the panel edge on phones and ended up
+             * spelling out across multiple frames as the user saw
+             * stale fragments. Keep the explanation tight. */
+            draw_text_centered("self hosted = your machine (coming soon)",
                                  cx, h * 0.5f + 180.0f, 1.0f,
                                  0x70, 0x78, 0x88);
-            draw_text_centered("cloud hosted = play on the shared fly.io server",
+            draw_text_centered("cloud hosted = shared fly.io server",
                                  cx, h * 0.5f + 196.0f, 1.0f,
                                  0xa0, 0xb0, 0xc8);
             break;
@@ -1640,10 +1664,15 @@ bool menu_pause_event(const sapp_event* e) {
         return true;
     }
 
-    /* Escape resumes. */
+    /* Escape resumes. Re-engage pointer lock so the player drops
+     * straight back into FPS look. Keypress is a valid user gesture
+     * for the pointer-lock API, so the browser honours the request
+     * from this handler. */
     if (e->type == SAPP_EVENTTYPE_KEY_DOWN
         && e->key_code == SAPP_KEYCODE_ESCAPE) {
         M.pause_visible = false;
+        sapp_lock_mouse(true);
+        sapp_show_mouse(false);
         return true;
     }
 
@@ -1660,9 +1689,14 @@ bool menu_pause_event(const sapp_event* e) {
     if (click) {
         layout_pause(sapp_widthf(), sapp_heightf());
         if (hit(&M.btn_pause_resume, cx, cy)) {
-            /* Same path as the Escape resume - close the panel and
-             * fall back into the gameplay loop. */
+            /* Close the panel + immediately re-engage pointer lock so
+             * the player drops straight back into FPS look without
+             * having to click the canvas again. Pointer lock needs a
+             * user-gesture stack frame; this click handler is that
+             * gesture so the browser honours it. */
             M.pause_visible = false;
+            sapp_lock_mouse(true);
+            sapp_show_mouse(false);
             return true;
         }
         if (hit(&M.btn_pause_quit, cx, cy)) {

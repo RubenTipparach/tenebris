@@ -983,6 +983,25 @@ static void frame(void) {
     maybe_apply_sp_resume();
     maybe_prime_mode_for_state();
 
+    /* Pointer-lock-loss -> open pause menu. The browser eats the
+     * first Escape press to release pointer lock (we never see the
+     * KEY_DOWN event), so detecting the lock-state transition is
+     * how we land the pause panel on a single press. Only fires
+     * during gameplay - the menu / pause states don't lock the
+     * mouse to begin with. */
+    {
+        static bool s_was_mouse_locked = false;
+        bool now_locked = sapp_mouse_locked();
+        game_state_t st = menu_state();
+        bool in_gameplay = (st == GAME_IN_GAME_SP || st == GAME_IN_GAME_MP);
+        if (in_gameplay && s_was_mouse_locked && !now_locked
+            && !menu_pause_active()) {
+            menu_pause_toggle();
+            sapp_show_mouse(true);
+        }
+        s_was_mouse_locked = now_locked;
+    }
+
     const double raw_dt_sec = stm_sec(stm_laptime(&G.last_time));
     float dt = (float)raw_dt_sec;
     /* Lag-spike handling. body_load_detail meshes a whole planet in
