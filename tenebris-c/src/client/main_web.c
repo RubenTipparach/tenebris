@@ -1700,13 +1700,14 @@ static void frame(void) {
      * top of every HUD element. No-op when not active. */
     menu_pause_draw(sapp_width(), sapp_height());
 
-    /* Connecting overlay: drawn while the MP socket is connecting /
-     * handshaking, before WELCOME applies the saved pose. Same
-     * gate as the player_update freeze - the player can't act
-     * until the server-authoritative state is in, so the dim
-     * panel covers the world to make that state visible. */
+    /* Connecting overlay: drawn while the MP socket is doing its
+     * INITIAL connect / handshake (i.e. the player has never been
+     * READY in this session). Once they've been ready, a drop
+     * triggers menu_tick to auto-open the pause panel which carries
+     * its own reconnect UI - showing both would double up. */
     if (menu_state() == GAME_IN_GAME_MP
-        && net_client_state() != NET_CLIENT_READY) {
+        && net_client_state() != NET_CLIENT_READY
+        && !menu_pause_active()) {
         net_client_state_t ns = net_client_state();
         const char* status =
             ns == NET_CLIENT_CONNECTING ? "OPENING SOCKET"  :

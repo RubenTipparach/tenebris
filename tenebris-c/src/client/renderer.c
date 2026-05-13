@@ -558,7 +558,13 @@ void renderer_init(void) {
         .shader = shd_composite,
         .index_type = SG_INDEXTYPE_NONE,
         .cull_mode = SG_CULLMODE_NONE,
-        .depth = { .write_enabled = false, .compare = SG_COMPAREFUNC_ALWAYS },
+        /* write_enabled = true + compare = ALWAYS + the shader writes
+         * gl_FragDepth = scene_z_ndc. Forwards the offscreen depth
+         * into the swapchain depth buffer so the deferred sokol_gl
+         * flush (humanoid markers, etc.) has something real to test
+         * against. Without this the swapchain depth stays cleared
+         * and remote players draw over walls in front of them. */
+        .depth = { .write_enabled = true, .compare = SG_COMPAREFUNC_ALWAYS },
         .label = "composite-pipeline",
     });
     if (R_PERF_MODE) {

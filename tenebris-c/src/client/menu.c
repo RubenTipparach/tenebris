@@ -304,6 +304,12 @@ static struct {
      * Share API, 2=copied to clipboard, 3=failure / no API. */
     int           pause_share_result;
     double        pause_share_msg_until;
+    /* True when the pause panel was opened automatically by a
+     * mid-session disconnect rather than by the player pressing
+     * Esc. Lets menu_tick auto-close the panel when the link is
+     * restored - the manual-Esc case stays open until the player
+     * clicks RETURN TO GAME themselves. */
+    bool          pause_auto_disconnect;
 
     /* MP auto-reconnect state. Populated by connect_to_room /
      * consume_pending_invite so menu_tick can re-call net_client
@@ -1658,6 +1664,9 @@ bool menu_is_overlay(void) {
 #define MP_RECONNECT_TOTAL_S     300.0
 #define MP_RECONNECT_INTERVAL_S  5.0
 
+/* Forward decl: pause-visibility setter lives below this section. */
+static void set_pause_visible(bool v, const char* who);
+
 static void launch_reconnect_attempt(void) {
     if (!M.reconnect_url[0]) return;
     M.reconnect_attempts++;
@@ -1690,13 +1699,18 @@ void menu_tick(void) {
      * one-time MP spawn snap already ran on the first WELCOME, so
      * a successful reconnect leaves the player where they currently
      * are (matches the 'don't teleport on temporary disconnect'
-     * rule). */
+     * rule). If we auto-opened the pause panel on the drop, dismiss
+     * it now so the player can keep playing without an extra click. */
     if (ns == NET_CLIENT_READY && M.reconnect_deadline_t > 0.0) {
         printf("[menu] MP reconnect succeeded after %d attempt(s)\n",
                M.reconnect_attempts);
         M.reconnect_deadline_t = 0;
         M.reconnect_next_try_t = 0;
         M.reconnect_attempts   = 0;
+        if (M.pause_auto_disconnect) {
+            set_pause_visible(false, "reconnect-auto-resume");
+            M.pause_auto_disconnect = false;
+        }
         return;
     }
     if (ns != NET_CLIENT_ERROR) return;
@@ -1716,12 +1730,19 @@ void menu_tick(void) {
 
     double now = stm_sec(stm_now());
     /* First time we observe ERROR in this session: open the retry
-     * window. The 0.5 s offset lets the connect-overlay render at
-     * least one frame so the player sees feedback. */
+     * window AND auto-open the pause panel so the reconnect status
+     * (and the disabled RETURN TO GAME button) is the only thing
+     * the player sees behind the dim backdrop. pause_auto_disconnect
+     * lets us close the panel without a click once the link is
+     * back. */
     if (M.reconnect_deadline_t == 0.0) {
         M.reconnect_deadline_t = now + MP_RECONNECT_TOTAL_S;
         M.reconnect_next_try_t = now + 0.5;
         M.reconnect_attempts   = 0;
+        if (!M.pause_visible) {
+            M.pause_auto_disconnect = true;
+            set_pause_visible(true, "auto-open-on-disconnect");
+        }
         printf("[menu] MP link dropped, retrying for %.0fs\n",
                MP_RECONNECT_TOTAL_S);
         return;
@@ -1963,19 +1984,27 @@ void menu_pause_draw(int screen_w, int screen_h) {
                          0.10f, 0.12f, 0.18f, 0.96f);
     mobile_ui_draw_rect_outline(G_pl.panel_x, G_pl.panel_y, G_pl.panel_w, G_pl.panel_h,
                                   2.0f, 0.85f, 0.90f, 1.00f, 1.0f);
-    /* Buttons - hover-aware. */
+    /* Buttons - hover-aware. RETURN TO GAME is greyed out while the
+     * MP reconnect window is open: the game isn't actually playable
+     * until the socket is back, and pretending it is would let the
+     * player click resume into an empty world. */
+    const bool reconnecting = (M.reconnect_deadline_t > 0.0);
     const pause_btn_t* btns[3] = { &G_pl.resume, &G_pl.invite, &G_pl.quit };
     for (int i = 0; i < 3; ++i) {
         const pause_btn_t* b = btns[i];
         if (!b->label) continue;
-        bool hovered = pause_btn_hit(b, M.mouse_x, M.mouse_y);
-        if (hovered) {
+        const bool disabled = (b == &G_pl.resume && reconnecting);
+        bool hovered = !disabled && pause_btn_hit(b, M.mouse_x, M.mouse_y);
+        if (disabled) {
+            mobile_ui_draw_rect(b->x, b->y, b->w, b->h, 0.08f, 0.09f, 0.12f, 0.85f);
+        } else if (hovered) {
             mobile_ui_draw_rect(b->x, b->y, b->w, b->h, 0.22f, 0.30f, 0.42f, 0.98f);
         } else {
             mobile_ui_draw_rect(b->x, b->y, b->w, b->h, 0.14f, 0.16f, 0.22f, 0.95f);
         }
+        const float oa = disabled ? 0.35f : 1.0f;
         mobile_ui_draw_rect_outline(b->x, b->y, b->w, b->h, 2.0f,
-                                      0.85f, 0.90f, 1.00f, 1.0f);
+                                      0.85f, 0.90f, 1.00f, oa);
     }
     /* One-shot post-queue trace: log the sokol_gl error state, the
      * queued vertex count, and the panel rect so we can see if our
@@ -1996,16 +2025,42 @@ void menu_pause_draw(int screen_w, int screen_h) {
      * the buffer at our 2136-vert mark and drop every later UI
      * module's quads. */
 
-    /* Text on top of the geometry. */
+    /* Text on top of the geometry. Title swaps to DISCONNECTED while
+     * the reconnect window is open so the player understands why
+     * RETURN TO GAME is greyed out. */
     const float cx = w * 0.5f;
-    draw_text_centered("PAUSED", cx, G_pl.panel_y + 20.0f, 4.0f,
-                         0xff, 0xff, 0xff);
+    if (reconnecting) {
+        draw_text_centered("DISCONNECTED", cx, G_pl.panel_y + 20.0f, 4.0f,
+                             0xff, 0xc0, 0x60);
+        /* Animated trailing dots + attempt / countdown line. */
+        double rt = stm_sec(stm_now());
+        int dots = ((int)(rt * 2.0)) % 4;
+        char status[64];
+        snprintf(status, sizeof status, "RECONNECTING%s%s%s",
+                 dots >= 1 ? "." : " ",
+                 dots >= 2 ? "." : " ",
+                 dots >= 3 ? "." : " ");
+        draw_text_centered(status, cx, G_pl.panel_y + 60.0f, 2.0f,
+                             0xff, 0xff, 0xff);
+        double remaining = M.reconnect_deadline_t - rt;
+        if (remaining < 0.0) remaining = 0.0;
+        char line[64];
+        snprintf(line, sizeof line, "ATTEMPT %d - %ds LEFT",
+                 M.reconnect_attempts, (int)remaining);
+        draw_text_centered(line, cx, G_pl.panel_y + 86.0f, 1.5f,
+                             0xc0, 0xc0, 0xff);
+    } else {
+        draw_text_centered("PAUSED", cx, G_pl.panel_y + 20.0f, 4.0f,
+                             0xff, 0xff, 0xff);
+    }
     for (int i = 0; i < 3; ++i) {
         const pause_btn_t* b = btns[i];
         if (!b->label) continue;
+        const bool disabled = (b == &G_pl.resume && reconnecting);
+        const uint8_t tc = disabled ? 0x60 : 0xff;
         float bx = b->x + b->w * 0.5f;
         float by = b->y + (b->h - 8.0f * 2.0f) * 0.5f;
-        draw_text_centered(b->label, bx, by, 2.0f, 0xff, 0xff, 0xff);
+        draw_text_centered(b->label, bx, by, 2.0f, tc, tc, tc);
     }
 
     /* Share-result toast under the INVITE button (MP only). */
@@ -2133,9 +2188,16 @@ bool menu_pause_event(const sapp_event* e) {
     }
     if (click) {
         pause_layout(sapp_widthf(), sapp_heightf());
-        if (pause_btn_hit(&G_pl.resume, cx, cy)) {
+        const bool reconnecting = (M.reconnect_deadline_t > 0.0);
+        if (!reconnecting && pause_btn_hit(&G_pl.resume, cx, cy)) {
             set_pause_visible(false, "click-resume");
+            M.pause_auto_disconnect = false;
             sapp_show_mouse(true);
+            return true;
+        }
+        if (reconnecting && pause_btn_hit(&G_pl.resume, cx, cy)) {
+            /* RETURN TO GAME is disabled while retrying - swallow the
+             * click so it can't fall through to the QUIT button below. */
             return true;
         }
         if (pause_btn_hit(&G_pl.invite, cx, cy)) {
