@@ -99,14 +99,14 @@ static void box(float cx, float cy, float cz,
     const float mid_r = r,         mid_g = g,         mid_b = b;
     const float xs_r  = r * 0.80f, xs_g  = g * 0.80f, xs_b  = b * 0.80f;
 
-    /* +Y top */
+    /* +Y top - CCW from outside (viewed from +Y looking down). */
     sgl_c3f(top_r, top_g, top_b);
-    sgl_v3f(x0, y1, z0); sgl_v3f(x1, y1, z0); sgl_v3f(x1, y1, z1);
-    sgl_v3f(x0, y1, z0); sgl_v3f(x1, y1, z1); sgl_v3f(x0, y1, z1);
-    /* -Y bottom */
+    sgl_v3f(x0, y1, z0); sgl_v3f(x1, y1, z1); sgl_v3f(x1, y1, z0);
+    sgl_v3f(x0, y1, z0); sgl_v3f(x0, y1, z1); sgl_v3f(x1, y1, z1);
+    /* -Y bottom - CCW from outside (viewed from -Y looking up). */
     sgl_c3f(bot_r, bot_g, bot_b);
-    sgl_v3f(x0, y0, z0); sgl_v3f(x1, y0, z1); sgl_v3f(x1, y0, z0);
-    sgl_v3f(x0, y0, z0); sgl_v3f(x0, y0, z1); sgl_v3f(x1, y0, z1);
+    sgl_v3f(x0, y0, z0); sgl_v3f(x1, y0, z0); sgl_v3f(x1, y0, z1);
+    sgl_v3f(x0, y0, z0); sgl_v3f(x1, y0, z1); sgl_v3f(x0, y0, z1);
     /* +Z front */
     sgl_c3f(mid_r, mid_g, mid_b);
     sgl_v3f(x0, y0, z1); sgl_v3f(x1, y0, z1); sgl_v3f(x1, y1, z1);
@@ -277,18 +277,23 @@ void remote_players_draw(mat4_t view, mat4_t proj) {
          * + LESS lets a near figure occlude a far one and lets the
          * terrain occlude figures behind it. The offscreen pass uses
          * DEPTH_STENCIL (renderer.c:1407) which sokol-gl inherits
-         * from the default sgl context (set up to match the swapchain
-         * defaults via sgl_setup's zero-init), so the pipeline depth
-         * format lines up without having to specify it here.
-         * cull_mode stays NONE because box() doesn't guarantee a
-         * single winding across its six faces - convex + depth_write
-         * + LESS still resolves correctly without face culling. */
+         * from the default sgl context (zero-init formats match the
+         * swapchain defaults), so the pipeline depth format lines up
+         * without having to specify it here.
+         *
+         * cull_mode=BACK because box() emits CCW-from-outside winding
+         * for every face (verified: see the per-face vertex order in
+         * box() above). Culling back faces halves the fragment work
+         * for the six-cube-per-figure mesh. face_winding=CCW matches
+         * sokol-gl's default, called out explicitly so a future tweak
+         * to sgl_setup doesn't silently flip the convention. */
         pip3d = sgl_make_pipeline(&(sg_pipeline_desc){
             .depth = {
                 .write_enabled = true,
                 .compare       = SG_COMPAREFUNC_LESS,
             },
-            .cull_mode = SG_CULLMODE_NONE,
+            .cull_mode    = SG_CULLMODE_BACK,
+            .face_winding = SG_FACEWINDING_CCW,
         });
     }
     sgl_load_pipeline(pip3d);
