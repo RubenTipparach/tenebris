@@ -703,14 +703,18 @@ static void draw_button(const menu_button_t* b) {
 }
 
 void menu_draw(int screen_w, int screen_h) {
-    if (!menu_is_overlay()) {
-        MENU_TRACE("menu_draw: early-return (state=%s not overlay)",
-                   state_name(M.state));
-        return;
+    if (!menu_is_overlay()) return;
+    /* Throttle to 1Hz so console isn't flooded. */
+    {
+        static double s_last_log = 0.0;
+        double now = stm_sec(stm_now());
+        if (now - s_last_log > 1.0) {
+            s_last_log = now;
+            MENU_TRACE("menu_draw: state=%s pause=%d w=%d h=%d",
+                       state_name(M.state), (int)M.pause_visible,
+                       screen_w, screen_h);
+        }
     }
-    MENU_TRACE("menu_draw: state=%s pause=%d w=%d h=%d",
-               state_name(M.state), (int)M.pause_visible,
-               screen_w, screen_h);
 
     float w = (float)screen_w;
     float h = (float)screen_h;
@@ -1586,17 +1590,26 @@ const char* menu_room_code(void) { return M.room_code; }
 
 bool menu_pause_active(void) { return M.pause_visible; }
 
+/* Wrap every pause_visible mutation so we can spot mystery writes -
+ * the trace showed pause being on without any pause_toggle log. */
+static void set_pause_visible(bool v, const char* who) {
+    if (M.pause_visible != v) {
+        MENU_TRACE("set_pause_visible: %d -> %d (from %s, state=%s)",
+                   (int)M.pause_visible, (int)v, who,
+                   state_name(M.state));
+    }
+    M.pause_visible = v;
+}
+
 void menu_pause_toggle(void) {
     bool is_game = (M.state == GAME_IN_GAME_SP || M.state == GAME_IN_GAME_MP);
     if (!is_game) {
         MENU_TRACE("pause_toggle: ignored, state=%s (not in-game)",
                    state_name(M.state));
-        M.pause_visible = false;
+        set_pause_visible(false, "toggle:not-game");
         return;
     }
-    M.pause_visible = !M.pause_visible;
-    MENU_TRACE("pause_toggle: state=%s pause_visible -> %d",
-               state_name(M.state), (int)M.pause_visible);
+    set_pause_visible(!M.pause_visible, "toggle");
 }
 
 static void layout_pause(float w, float h) {
@@ -1621,8 +1634,17 @@ static void layout_pause(float w, float h) {
 
 void menu_pause_draw(int screen_w, int screen_h) {
     if (!M.pause_visible) return;
-    MENU_TRACE("menu_pause_draw: state=%s w=%d h=%d",
-               state_name(M.state), screen_w, screen_h);
+    /* Throttle: log once a second while pause is up rather than once
+     * per frame. */
+    {
+        static double s_last_log = 0.0;
+        double now = stm_sec(stm_now());
+        if (now - s_last_log > 1.0) {
+            s_last_log = now;
+            MENU_TRACE("menu_pause_draw: state=%s w=%d h=%d",
+                       state_name(M.state), screen_w, screen_h);
+        }
+    }
 
     const float w = (float)screen_w;
     const float h = (float)screen_h;
@@ -1649,8 +1671,11 @@ void menu_pause_draw(int screen_w, int screen_h) {
     }
     sgl_load_pipeline(pip);
 
-    /* Dim the world behind us so the panel reads even on bright skies. */
-    quad(0.0f, 0.0f, w, h, 0.02f, 0.03f, 0.07f, 0.65f);
+    /* DIAG: full-screen bright magenta backdrop. If you see magenta,
+     * the pause draw path IS running through sokol_gl and reaching
+     * the swapchain. If you don't see magenta despite the trace log
+     * firing, the issue is in pipeline / pass setup, not state. */
+    quad(0.0f, 0.0f, w, h, 1.0f, 0.0f, 1.0f, 0.95f);
 
     /* Panel. */
     const float panel_w = 360.0f;
@@ -1739,7 +1764,7 @@ bool menu_pause_event(const sapp_event* e) {
      * from this handler. */
     if (e->type == SAPP_EVENTTYPE_KEY_DOWN
         && e->key_code == SAPP_KEYCODE_ESCAPE) {
-        M.pause_visible = false;
+        set_pause_visible(false, "esc-resume");
         sapp_lock_mouse(true);
         sapp_show_mouse(false);
         return true;
@@ -1763,7 +1788,7 @@ bool menu_pause_event(const sapp_event* e) {
              * having to click the canvas again. Pointer lock needs a
              * user-gesture stack frame; this click handler is that
              * gesture so the browser honours it. */
-            M.pause_visible = false;
+            set_pause_visible(false, "return-to-game-click");
             sapp_lock_mouse(true);
             sapp_show_mouse(false);
             return true;
@@ -1774,7 +1799,7 @@ bool menu_pause_event(const sapp_event* e) {
                 M.room_code[0] = 0;
             }
             M.active_world[0] = 0;
-            M.pause_visible   = false;
+            set_pause_visible(false, "quit-to-menu");
             M.state           = GAME_MAIN_MENU;
             return true;
         }
