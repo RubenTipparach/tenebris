@@ -1467,7 +1467,16 @@ void renderer_compose_to_swapchain(mat4_t view, mat4_t proj) {
 
     sg_begin_pass(&(sg_pass){
         .action = {
-            .colors[0] = { .load_action = SG_LOADACTION_DONTCARE },
+            /* CLEAR (not DONTCARE) so the swapchain colour is wiped
+             * to black before the composite shader writes over it.
+             * DONTCARE was allowing prior-frame menu UI (HOST / JOIN
+             * / "cloud hosted ...") to bleed through into gameplay
+             * on browsers that preserve the back buffer between
+             * passes. The composite shader still writes every pixel
+             * so the CLEAR is effectively free, just guarantees the
+             * buffer starts blank. */
+            .colors[0] = { .load_action = SG_LOADACTION_CLEAR,
+                             .clear_value = { 0.0f, 0.0f, 0.0f, 1.0f } },
             .depth     = { .load_action = SG_LOADACTION_CLEAR, .clear_value = 1.0f },
         },
         .swapchain = sglue_swapchain(),

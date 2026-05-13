@@ -1,5 +1,6 @@
 #include "client/menu.h"
 #include "client/client_kv.h"
+#include "client/mobile_ui.h"
 #include "client/net_client.h"
 #include "client/persistence.h"
 #include "client/profile.h"
@@ -1727,16 +1728,62 @@ void menu_pause_draw(int screen_w, int screen_h) {
     const float h = (float)screen_h;
     pause_compute_layout(w, h);
 
-    /* Title - big and centred above the panel. */
-    pause_text(w, h, "*** PAUSED ***",
+    /* Use the SAME sokol_gl pipeline mobile_ui_draw uses every frame
+     * - it's proven to reach the swapchain. Lazily-created pipelines
+     * inside this function were silently failing on some browsers;
+     * mobile_ui's runs first in the frame so the pipeline is guaranteed
+     * valid by the time we get here. */
+    sgl_pipeline pip = mobile_ui_alpha_pipeline();
+    if (pip.id != 0) {
+        sgl_defaults();
+        sgl_matrix_mode_projection();
+        sgl_load_identity();
+        sgl_ortho(0.0f, w, h, 0.0f, -1.0f, 1.0f);
+        sgl_matrix_mode_modelview();
+        sgl_load_identity();
+        sgl_load_pipeline(pip);
+
+        /* Full-screen dim backdrop so menu UI underneath doesn't bleed. */
+        mobile_ui_draw_rect(0.0f, 0.0f, w, h,
+                            0.02f, 0.03f, 0.07f, 0.78f);
+
+        /* Panel. */
+        mobile_ui_draw_rect(G_pause_layout.panel_x, G_pause_layout.panel_y,
+                            G_pause_layout.panel_w, G_pause_layout.panel_h,
+                            0.10f, 0.12f, 0.18f, 0.98f);
+        mobile_ui_draw_rect_outline(G_pause_layout.panel_x, G_pause_layout.panel_y,
+                                    G_pause_layout.panel_w, G_pause_layout.panel_h,
+                                    2.0f, 0.85f, 0.90f, 1.00f, 1.0f);
+
+        /* Button rectangles, with brighter fill when hovered. */
+        const pause_rect_t* btns[3] = {
+            &G_pause_layout.resume,
+            &G_pause_layout.invite,
+            &G_pause_layout.quit,
+        };
+        for (int i = 0; i < 3; ++i) {
+            const pause_rect_t* b = btns[i];
+            bool hovered = (M.mouse_x >= b->x && M.mouse_x <= b->x + b->w &&
+                            M.mouse_y >= b->y && M.mouse_y <= b->y + b->h);
+            if (hovered) mobile_ui_draw_rect(b->x, b->y, b->w, b->h,
+                                             0.22f, 0.30f, 0.42f, 0.95f);
+            else         mobile_ui_draw_rect(b->x, b->y, b->w, b->h,
+                                             0.12f, 0.14f, 0.19f, 0.90f);
+            mobile_ui_draw_rect_outline(b->x, b->y, b->w, b->h,
+                                        2.0f, 0.85f, 0.90f, 1.0f, 1.0f);
+        }
+        sgl_draw();
+    }
+
+    /* Title + hint sdtx text above the panel. */
+    pause_text(w, h, "PAUSED",
                  w * 0.5f, G_pause_layout.panel_y + 16.0f,
                  3.0f, 0xff, 0xff, 0xff);
     pause_text(w, h, "press Esc to resume",
-                 w * 0.5f, G_pause_layout.panel_y + 48.0f,
+                 w * 0.5f, G_pause_layout.panel_y + 56.0f,
                  1.0f, 0xa0, 0xb0, 0xc8);
 
-    /* Buttons - left-aligned inside the panel with hover-style
-     * brightness lift. */
+    /* Button labels - centred on each rect, no number prefixes. */
     const pause_rect_t* btns[3] = {
         &G_pause_layout.resume,
         &G_pause_layout.invite,
@@ -1744,16 +1791,9 @@ void menu_pause_draw(int screen_w, int screen_h) {
     };
     for (int i = 0; i < 3; ++i) {
         const pause_rect_t* b = btns[i];
-        bool hovered = (M.mouse_x >= b->x && M.mouse_x <= b->x + b->w &&
-                        M.mouse_y >= b->y && M.mouse_y <= b->y + b->h);
-        uint8_t r = hovered ? 0xff : 0xc0;
-        uint8_t g = hovered ? 0xe0 : 0xc8;
-        uint8_t bl = hovered ? 0x40 : 0xff;
-        char line[64];
-        snprintf(line, sizeof line, "  [%d]  %s", i + 1, b->label);
-        pause_text_left(w, h, line,
-                          b->x, b->y + b->h * 0.25f,
-                          2.0f, r, g, bl);
+        float cx = b->x + b->w * 0.5f;
+        float cy = b->y + (b->h - 16.0f) * 0.5f;
+        pause_text(w, h, b->label, cx, cy, 2.0f, 0xff, 0xff, 0xff);
     }
 
     /* Share-result toast under the INVITE button. */
@@ -1801,34 +1841,11 @@ bool menu_pause_event(const sapp_event* e) {
         return true;
     }
 
-    /* Number keys 1 / 2 / 3 trigger Resume / Invite / Quit. Keyboard
-     * is the most reliable input path on every device + browser
-     * combination, and gives us a fallback when the mouse-click hit
-     * test isn't matching for some reason. */
-    if (e->type == SAPP_EVENTTYPE_KEY_DOWN) {
-        if (e->key_code == SAPP_KEYCODE_1) {
-            set_pause_visible(false, "kbd-1-resume");
-            sapp_lock_mouse(true); sapp_show_mouse(false);
-            return true;
-        }
-        if (e->key_code == SAPP_KEYCODE_2) {
-            const char* room = M.room_code[0] ? M.room_code : "";
-            int rc = menu_js_share_invite(room);
-            M.pause_share_result    = (rc == 0) ? 3 : rc;
-            M.pause_share_msg_until = stm_sec(stm_now()) + 2.5;
-            return true;
-        }
-        if (e->key_code == SAPP_KEYCODE_3) {
-            if (M.state == GAME_IN_GAME_MP) {
-                net_client_disconnect();
-                M.room_code[0] = 0;
-            }
-            M.active_world[0] = 0;
-            set_pause_visible(false, "kbd-3-quit");
-            M.state = GAME_MAIN_MENU;
-            return true;
-        }
-    }
+    /* No number-key shortcuts on the pause panel - the hotbar owns
+     * 1..9 for slot selection, and overloading them here would mean
+     * pressing "1" mid-game to switch tools would jump to the pause
+     * menu's RETURN action. Mouse / touch is the only way to fire
+     * a pause button; Escape closes. */
 
     /* Hit-test mouse / touch against the layout the draw path
      * computed in pause_compute_layout. */

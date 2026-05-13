@@ -221,8 +221,35 @@ static menu_layout_t menu_button_layout(void) {
     return L;
 }
 
-static bool S_DEBUG_MENU_VISIBLE = false;
-static bool S_TELEPORT_VISIBLE   = true;
+static bool          S_DEBUG_MENU_VISIBLE = false;
+static bool          S_TELEPORT_VISIBLE    = true;
+/* Shared alpha-blended 2D pipeline. Created the first time
+ * mobile_ui_draw runs; exposed via mobile_ui_alpha_pipeline so menu_pause
+ * and other overlays can use it instead of each lazily making their
+ * own (which was silently failing for the pause panel). */
+static sgl_pipeline  S_PIP_ALPHA = (sgl_pipeline){0};
+
+sgl_pipeline mobile_ui_alpha_pipeline(void) { return S_PIP_ALPHA; }
+
+void mobile_ui_draw_rect(float x, float y, float w, float h,
+                          float r, float g, float b, float a) {
+    sgl_begin_quads();
+    sgl_c4f(r, g, b, a);
+    sgl_v2f(x,     y);
+    sgl_v2f(x + w, y);
+    sgl_v2f(x + w, y + h);
+    sgl_v2f(x,     y + h);
+    sgl_end();
+}
+
+void mobile_ui_draw_rect_outline(float x, float y, float w, float h,
+                                  float t,
+                                  float r, float g, float b, float a) {
+    mobile_ui_draw_rect(x,             y,             w, t, r, g, b, a);
+    mobile_ui_draw_rect(x,             y + h - t,     w, t, r, g, b, a);
+    mobile_ui_draw_rect(x,             y,             t, h, r, g, b, a);
+    mobile_ui_draw_rect(x + w - t,     y,             t, h, r, g, b, a);
+}
 
 void mobile_ui_set_debug_menu_visible(bool visible) {
     S_DEBUG_MENU_VISIBLE = visible;
@@ -322,10 +349,13 @@ void mobile_ui_draw(void) {
     sgl_load_identity();
 
     /* Alpha-blended 2D. sokol_gl defaults don't enable blending; set a
-     * pipeline with SRC_ALPHA / ONE_MINUS_SRC_ALPHA below the UI. */
-    static sgl_pipeline pip_alpha = (sgl_pipeline){0};
-    if (pip_alpha.id == 0) {
-        pip_alpha = sgl_make_pipeline(&(sg_pipeline_desc){
+     * pipeline with SRC_ALPHA / ONE_MINUS_SRC_ALPHA below the UI.
+     * Stashed in S_PIP_ALPHA on first call so other overlays
+     * (menu_pause_draw, etc.) can use the same pipeline rather than
+     * each lazily creating their own (which silently failed for the
+     * pause panel on some browser / driver combos). */
+    if (S_PIP_ALPHA.id == 0) {
+        S_PIP_ALPHA = sgl_make_pipeline(&(sg_pipeline_desc){
             .colors[0].blend = {
                 .enabled = true,
                 .src_factor_rgb = SG_BLENDFACTOR_SRC_ALPHA,
@@ -335,7 +365,7 @@ void mobile_ui_draw(void) {
             },
         });
     }
-    sgl_load_pipeline(pip_alpha);
+    sgl_load_pipeline(S_PIP_ALPHA);
 
     const input_state_t* in = input_state();
 

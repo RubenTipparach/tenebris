@@ -2,6 +2,8 @@
 #define TENEBRIS_CLIENT_MOBILE_UI_H
 
 #include <stdbool.h>
+#include "sokol_gfx.h"
+#include "sokol_gl.h"
 
 /*
  * Tiny 2D overlay drawn via sokol_gl: left-thumb virtual joystick and
@@ -38,6 +40,28 @@ void mobile_ui_draw_button(float cx, float cy, float r,
                            float fill_r, float fill_g, float fill_b, float fill_a,
                            float ring_r, float ring_g, float ring_b, float ring_a,
                            char glyph);
+
+/* Shared alpha-blended 2D sokol_gl pipeline. Created on first
+ * mobile_ui_draw and proven to render correctly in the gameplay
+ * swapchain pass. Exposed so menu_pause_draw and other overlays
+ * can use the same pipeline instead of each lazily creating their
+ * own (which was silently failing for menu_pause_draw on certain
+ * browser / driver combinations). Returns an invalid pipeline (.id
+ * == 0) until the first mobile_ui_draw call has run. */
+sgl_pipeline mobile_ui_alpha_pipeline(void);
+
+/* Filled rectangle in screen-pixel coords using the shared alpha
+ * pipeline. Caller must have already called sgl_load_pipeline +
+ * sgl_ortho. Wraps the sgl_begin_quads / sgl_v2f / sgl_end pattern
+ * so menu_pause_draw etc. don't have to duplicate it. */
+void mobile_ui_draw_rect(float x, float y, float w, float h,
+                          float r, float g, float b, float a);
+
+/* Rectangle outline (1-2 px strip on each edge) at the given rect.
+ * Caller is responsible for matching the pipeline state. */
+void mobile_ui_draw_rect_outline(float x, float y, float w, float h,
+                                  float thick,
+                                  float r, float g, float b, float a);
 
 /* Hit-test the debug-menu hamburger + (when open) its popup column.
  * Returns true if the touch / click landed on a debug button — the
