@@ -873,7 +873,7 @@ static void draw_mining_bar(float screen_w, float screen_h) {
     sgl_v2f(bx + bar_w,     by + bar_h);
     sgl_v2f(bx + bar_w - t, by + bar_h);
     sgl_end();
-    sgl_draw();
+    /* No sgl_draw - centralised flush at end of frame. */
 
     /* Percentage label centred just above the bar. */
     char buf[24];
@@ -1057,7 +1057,7 @@ static void draw_players_panel(float screen_w, float screen_h) {
     sgl_v2f(x + w - t,   y);           sgl_v2f(x + w,       y);           sgl_v2f(x + w,       y + h);     sgl_v2f(x + w - t,   y + h);
     sgl_end();
 
-    sgl_draw();
+    /* No sgl_draw - centralised flush at end of frame. */
 
     /* Title + rows via sdtx. Single scale (= 1) for everything in the
      * panel — sdtx batches per-canvas state, and switching scales
@@ -1189,7 +1189,7 @@ static void draw_desync_popup(float screen_w, float screen_h) {
     /* right */  sgl_v2f(x + w - t, y);     sgl_v2f(x + w, y);         sgl_v2f(x + w, y + h);     sgl_v2f(x + w - t, y + h);
     sgl_end();
 
-    sgl_draw();
+    /* No sgl_draw - centralised flush at end of frame. */
 
     /* Labels via sdtx. The scaled-canvas trick (same as menu.c): shrink
      * the canvas by `scale` so each 8-px char cell maps to `8 * scale`
@@ -1633,6 +1633,18 @@ static void frame(void) {
     /* Pause overlay draws last so the dim backdrop + panel sit on
      * top of every HUD element. No-op when not active. */
     menu_pause_draw(sapp_width(), sapp_height());
+
+    /* ONE sgl_draw per frame, at the very end after every UI module
+     * has queued its geometry. sokol_gl uploads its vertex buffer to
+     * the GPU only on the first sgl_draw of the frame and never
+     * re-uploads; any sgl_draw called mid-frame would freeze the
+     * GPU's vertex view at that point, and every later module's
+     * quads (panel backdrops, hotbar slots, joysticks) would
+     * reference un-uploaded memory and render as nothing. This
+     * single flush replays every recorded command - 3D players
+     * queued in the offscreen pass land here as well, depth-tested
+     * against the swapchain depth that compose_to_swapchain wrote. */
+    sgl_draw();
 
     /* ONE sdtx_draw per frame, at the very end after every HUD
      * module has queued its text. Earlier flushes were the root

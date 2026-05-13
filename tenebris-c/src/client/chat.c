@@ -232,7 +232,9 @@ void chat_draw(float screen_w, float screen_h) {
         const float panel_y  = input_y - panel_h - 6.0f;
         quad(panel_x, panel_y, panel_w, panel_h, 0.05f, 0.06f, 0.10f, 0.55f);
     }
-    sgl_draw();
+    /* sgl_draw is centralised in main_web's frame end - see comment
+     * at that flush site. Calling it here would lock the GPU upload
+     * to chat's vertex range and drop every later module's quads. */
 
     /* Compose-box label + typed text. */
     if (C.active) {

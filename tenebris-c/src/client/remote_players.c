@@ -344,7 +344,11 @@ void remote_players_draw(mat4_t view, mat4_t proj) {
         draw_humanoid(lx, ly, lz, yaw, swing_rad, ux, uy, uz);
     }
 
-    sgl_draw();
+    /* No sgl_draw here. We queue 3D player geometry on layer 0 and
+     * let main_web flush every queued layer at the end of the frame
+     * - calling sgl_draw mid-flow would upload only this layer's
+     * vertices, then later UI quads (queued on layer 1) would
+     * reference un-uploaded GPU memory and render as a void. */
 }
 
 /* Multiply a 4x4 column-major mat4_t by a homogeneous (x,y,z,1).
@@ -479,7 +483,7 @@ void remote_players_draw_nameplates(mat4_t view, mat4_t proj,
         sgl_v2f(x0, y1);
     }
     sgl_end();
-    sgl_draw();
+    /* No sgl_draw - see remote_players_draw's matching comment. */
 
     /* ----- Pass 2: nameplate text via sdtx on top of the backdrop ----- */
     sdtx_canvas(screen_w / scale, screen_h / scale);

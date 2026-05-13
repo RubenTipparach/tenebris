@@ -194,7 +194,11 @@ void hotbar_ui_draw(const inventory_t* inv) {
                     0.0f, 0.0f, 0.0f, 0.85f);
     }
 
-    sgl_draw();
+    /* No sgl_draw() here. sokol_gl uploads its vertex buffer only on
+     * the FIRST sgl_draw of the frame, then never re-uploads; any
+     * vertices queued by later modules would reference un-uploaded
+     * GPU memory. main_web does a single sgl_draw at end of frame
+     * after every UI module has queued. */
 
     /* ---- pass 3: slot numbers + finite-count badges via sdtx ---- */
     /* sdtx is fine to drive in a second flush per frame — main_web

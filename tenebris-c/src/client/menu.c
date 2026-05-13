@@ -1826,7 +1826,11 @@ void menu_pause_draw(int screen_w, int screen_h) {
                G_pl.panel_x, G_pl.panel_y, G_pl.panel_w, G_pl.panel_h);
         s_logged_post_queue = true;
     }
-    sgl_draw();
+    /* No sgl_draw - centralised flush at end of main_web's frame.
+     * sokol_gl uploads its vertex buffer only on the first sgl_draw
+     * of the frame; flushing here would freeze the GPU's view of
+     * the buffer at our 2136-vert mark and drop every later UI
+     * module's quads. */
 
     /* Text on top of the geometry. */
     const float cx = w * 0.5f;

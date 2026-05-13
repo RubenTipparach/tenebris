@@ -524,5 +524,8 @@ void mobile_ui_draw(void) {
      * mobile browsers, and the DOM button handles touch + visibility
      * more reliably anyway.) */
 
-    sgl_draw();
+    /* Single sgl_draw lives at the end of main_web's frame so all
+     * UI modules get their geometry uploaded together. See the
+     * comment at that flush site for the upload-once-per-frame
+     * rationale. */
 }
