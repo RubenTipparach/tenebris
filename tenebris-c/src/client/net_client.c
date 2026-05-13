@@ -350,6 +350,10 @@ static void on_close(net_conn_t* conn, net_close_reason_t reason, void* user) {
     }
     snprintf(C.error_message, sizeof C.error_message, "%s", msg);
     C.state = NET_CLIENT_ERROR;
+    /* Null the conn so a follow-up net_client_connect (auto-reconnect
+     * path) doesn't early-return on the stale handle. The transport
+     * already owns the close; we just drop our pointer. */
+    C.conn = NULL;
 }
 
 /* ------------------------------------------------------------------ */

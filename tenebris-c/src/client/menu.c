@@ -304,6 +304,24 @@ static struct {
      * Share API, 2=copied to clipboard, 3=failure / no API. */
     int           pause_share_result;
     double        pause_share_msg_until;
+
+    /* MP auto-reconnect state. Populated by connect_to_room /
+     * consume_pending_invite so menu_tick can re-call net_client
+     * with the same parameters when the socket drops mid-session.
+     * deadline_t == 0 means "not currently retrying"; non-zero is
+     * an stm_sec timestamp past which we promote to the disconnected
+     * popup. next_try_t paces attempts at ~5 s apart.
+     *
+     * Existing M.room_code already holds the room, but we keep our
+     * own copy so a manual disconnect / mode switch doesn't
+     * accidentally feed the wrong room into a retry. */
+    char          reconnect_url  [128];
+    char          reconnect_token[40];
+    char          reconnect_name [40];
+    char          reconnect_room [9];
+    double        reconnect_deadline_t;
+    double        reconnect_next_try_t;
+    int           reconnect_attempts;
 } M;
 
 /* ------------------------------------------------------------------ */
@@ -1178,6 +1196,16 @@ static void connect_to_room(const char* room_code) {
     printf("[menu] MP: connect to %s (room='%s')\n",
            DEFAULT_MP_SERVER_URL,
            M.room_code[0] ? M.room_code : "(public)");
+    /* Stash the connect parameters so menu_tick can rebuild the
+     * session if the socket drops mid-game. Cleared when we leave
+     * MP (so a manual quit doesn't trigger phantom reconnects). */
+    snprintf(M.reconnect_url,   sizeof M.reconnect_url,   "%s", DEFAULT_MP_SERVER_URL);
+    snprintf(M.reconnect_token, sizeof M.reconnect_token, "%s", tok  ? tok  : "");
+    snprintf(M.reconnect_name,  sizeof M.reconnect_name,  "%s", name ? name : "");
+    snprintf(M.reconnect_room,  sizeof M.reconnect_room,  "%s", room_code ? room_code : "");
+    M.reconnect_deadline_t = 0;
+    M.reconnect_next_try_t = 0;
+    M.reconnect_attempts   = 0;
     net_client_connect(DEFAULT_MP_SERVER_URL);
     if (room_code) menu_record_recent_room(room_code);
     M.active_world[0] = 0;     /* no SP save target while in MP */
@@ -1220,6 +1248,13 @@ static void consume_pending_invite_if_ready(void) {
     net_client_set_profile(active.token, active.name, room);
     snprintf(M.room_code, sizeof M.room_code, "%s", room);
     MENU_TRACE("consume_pending_invite: connect to %s (room='%s')", server, room);
+    snprintf(M.reconnect_url,   sizeof M.reconnect_url,   "%s", server);
+    snprintf(M.reconnect_token, sizeof M.reconnect_token, "%s", active.token);
+    snprintf(M.reconnect_name,  sizeof M.reconnect_name,  "%s", active.name);
+    snprintf(M.reconnect_room,  sizeof M.reconnect_room,  "%s", room);
+    M.reconnect_deadline_t = 0;
+    M.reconnect_next_try_t = 0;
+    M.reconnect_attempts   = 0;
     net_client_connect(server);
     menu_record_recent_room(room);
     M.active_world[0] = 0;
@@ -1567,19 +1602,98 @@ bool menu_is_overlay(void) {
         || M.state == GAME_MP_CONNECT_ERROR;
 }
 
+/* Retry budget: 5 minutes total, ~5 s between attempts. The first
+ * retry fires near-immediately so a transient hiccup doesn't show
+ * the CONNECTING overlay for a full pacing interval. */
+#define MP_RECONNECT_TOTAL_S     300.0
+#define MP_RECONNECT_INTERVAL_S  5.0
+
+static void launch_reconnect_attempt(void) {
+    if (!M.reconnect_url[0]) return;
+    M.reconnect_attempts++;
+    printf("[menu] MP reconnect attempt %d -> %s (room='%s')\n",
+           M.reconnect_attempts, M.reconnect_url,
+           M.reconnect_room[0] ? M.reconnect_room : "(public)");
+    /* set_profile must come BEFORE connect - net_client_connect
+     * memsets its state, so the profile has to land after that. */
+    net_client_set_profile(M.reconnect_token, M.reconnect_name, M.reconnect_room);
+    net_client_connect(M.reconnect_url);
+}
+
 void menu_tick(void) {
-    /* Promote a dead MP socket into the modal error popup. We only
-     * watch from inside the in-game state — checking from menu
-     * screens would re-fire the popup the moment the user clicked
-     * BACK TO MENU (state is still ERROR until the next connect
-     * attempt overwrites it). */
-    if (M.state != GAME_IN_GAME_MP) return;
-    if (net_client_state() != NET_CLIENT_ERROR) return;
-    const char* msg = net_client_error_message();
-    snprintf(M.error_msg, sizeof M.error_msg, "%s",
-             msg ? msg : "connection failed");
-    M.state = GAME_MP_CONNECT_ERROR;
-    printf("[menu] MP connect error: %s\n", M.error_msg);
+    /* Only watch from inside the in-game state - checking from
+     * menu screens would re-fire the popup the moment the user
+     * clicked BACK TO MENU (state is still ERROR until the next
+     * connect attempt overwrites it). */
+    if (M.state != GAME_IN_GAME_MP) {
+        /* Leaving MP cancels any in-flight retry window and drops
+         * the stashed reconnect params so a stale URL doesn't get
+         * fired against a fresh session later. */
+        M.reconnect_deadline_t = 0;
+        M.reconnect_next_try_t = 0;
+        M.reconnect_url[0]     = 0;
+        return;
+    }
+    net_client_state_t ns = net_client_state();
+
+    /* Reconnect resolved successfully - clear the retry window. The
+     * one-time MP spawn snap already ran on the first WELCOME, so
+     * a successful reconnect leaves the player where they currently
+     * are (matches the 'don't teleport on temporary disconnect'
+     * rule). */
+    if (ns == NET_CLIENT_READY && M.reconnect_deadline_t > 0.0) {
+        printf("[menu] MP reconnect succeeded after %d attempt(s)\n",
+               M.reconnect_attempts);
+        M.reconnect_deadline_t = 0;
+        M.reconnect_next_try_t = 0;
+        M.reconnect_attempts   = 0;
+        return;
+    }
+    if (ns != NET_CLIENT_ERROR) return;
+
+    /* Promote to the error popup if we have nothing to retry with
+     * (manual disconnect path, or the very first connect failed
+     * before reconnect_url got populated - shouldn't happen but
+     * keeps the surface symmetric). */
+    if (!M.reconnect_url[0]) {
+        const char* msg = net_client_error_message();
+        snprintf(M.error_msg, sizeof M.error_msg, "%s",
+                 msg ? msg : "connection failed");
+        M.state = GAME_MP_CONNECT_ERROR;
+        printf("[menu] MP connect error (no retry slot): %s\n", M.error_msg);
+        return;
+    }
+
+    double now = stm_sec(stm_now());
+    /* First time we observe ERROR in this session: open the retry
+     * window. The 0.5 s offset lets the connect-overlay render at
+     * least one frame so the player sees feedback. */
+    if (M.reconnect_deadline_t == 0.0) {
+        M.reconnect_deadline_t = now + MP_RECONNECT_TOTAL_S;
+        M.reconnect_next_try_t = now + 0.5;
+        M.reconnect_attempts   = 0;
+        printf("[menu] MP link dropped, retrying for %.0fs\n",
+               MP_RECONNECT_TOTAL_S);
+        return;
+    }
+
+    /* Past the deadline -> give up and show the disconnected popup. */
+    if (now >= M.reconnect_deadline_t) {
+        snprintf(M.error_msg, sizeof M.error_msg,
+                 "DISCONNECTED FROM SERVER");
+        M.state = GAME_MP_CONNECT_ERROR;
+        M.reconnect_deadline_t = 0;
+        M.reconnect_next_try_t = 0;
+        printf("[menu] MP reconnect gave up after %d attempt(s)\n",
+               M.reconnect_attempts);
+        return;
+    }
+
+    /* Fire the next attempt if we're past the pacing gate. */
+    if (now >= M.reconnect_next_try_t) {
+        launch_reconnect_attempt();
+        M.reconnect_next_try_t = now + MP_RECONNECT_INTERVAL_S;
+    }
 }
 
 const char* menu_room_code(void) { return M.room_code; }
@@ -1900,16 +2014,28 @@ void menu_connecting_draw(int screen_w, int screen_h,
      * and the client hasn't hung. Cycles 1 -> 4 dots over a second. */
     double t_now = stm_sec(stm_now());
     int dots = ((int)(t_now * 2.0)) % 4;
+    const bool retrying = (M.reconnect_deadline_t > 0.0);
     char header[24];
-    snprintf(header, sizeof header, "CONNECTING%s%s%s",
+    snprintf(header, sizeof header, "%s%s%s%s",
+             retrying ? "RECONNECTING" : "CONNECTING",
              dots >= 1 ? "." : " ",
              dots >= 2 ? "." : " ",
              dots >= 3 ? "." : " ");
     const float cx = w * 0.5f;
     draw_text_centered(header, cx, panel_y + 24.0f, 3.0f, 0xff, 0xff, 0xff);
-    if (status_label && status_label[0]) {
-        draw_text_centered(status_label, cx, panel_y + 62.0f, 1.5f,
-                           0xc0, 0xc0, 0xff);
+
+    char retry_line[64];
+    retry_line[0] = 0;
+    if (retrying) {
+        double remaining = M.reconnect_deadline_t - t_now;
+        if (remaining < 0.0) remaining = 0.0;
+        snprintf(retry_line, sizeof retry_line,
+                 "ATTEMPT %d - %ds LEFT",
+                 M.reconnect_attempts, (int)remaining);
+    }
+    const char* sub = retrying ? retry_line : (status_label ? status_label : "");
+    if (sub && sub[0]) {
+        draw_text_centered(sub, cx, panel_y + 62.0f, 1.5f, 0xc0, 0xc0, 0xff);
     }
     if (room_label && room_label[0]) {
         draw_text_centered(room_label, cx, panel_y + 88.0f, 1.5f,
