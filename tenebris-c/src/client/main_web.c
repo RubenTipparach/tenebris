@@ -1052,7 +1052,7 @@ static void draw_players_panel(float screen_w, float screen_h) {
     const float row_h    = 14.0f;
     const float pad      = 10.0f;
     const float title_h  = 22.0f;
-    const float w        = 360.0f;
+    const float w        = 460.0f;     /* widened for the name column */
     const float h        = title_h + (float)total * row_h + pad;
     const float x        = screen_w - w - 16.0f;
     const float y        = 16.0f;
@@ -1121,9 +1121,13 @@ static void draw_players_panel(float screen_w, float screen_h) {
         if (!body) body = G.body;
         double lat, lon, alt;
         player_lat_lon_deg(G.player.position, body, &lat, &lon, &alt);
+        const char* nm = net_client_name_for_id(wcm->player_id);
+        if (!nm || !*nm) nm = "(unknown)";
+        char nmbuf[17];
+        snprintf(nmbuf, sizeof nmbuf, "%-16s", nm);
         snprintf(buf, sizeof buf,
-                 "* id=%-3u  %s  lat=%+7.2f  lon=%+7.2f  alt=%5.0fm",
-                 wcm->player_id, body->name, lat, lon, alt);
+                 "* %s  %s  lat=%+7.2f  lon=%+7.2f  alt=%5.0fm",
+                 nmbuf, body->name, lat, lon, alt);
         sdtx_canvas(screen_w, screen_h);
         sdtx_font(1);
         sdtx_origin((x + 12.0f) / 8.0f, row_y / 8.0f);
@@ -1143,9 +1147,13 @@ static void draw_players_panel(float screen_w, float screen_h) {
         /* F1 shows the freshest known pose (no interp lag); the
          * renderer's lerp is purely cosmetic for smooth motion. */
         player_lat_lon_deg(rp->pos_cur, body, &lat, &lon, &alt);
+        const char* nm = net_client_name_for_id(rp->player_id);
+        if (!nm || !*nm) nm = "(unknown)";
+        char nmbuf[17];
+        snprintf(nmbuf, sizeof nmbuf, "%-16s", nm);
         snprintf(buf, sizeof buf,
-                 "  id=%-3u  %s  lat=%+7.2f  lon=%+7.2f  alt=%5.0fm",
-                 rp->player_id, body->name, lat, lon, alt);
+                 "  %s  %s  lat=%+7.2f  lon=%+7.2f  alt=%5.0fm",
+                 nmbuf, body->name, lat, lon, alt);
         sdtx_canvas(screen_w, screen_h);
         sdtx_font(1);
         sdtx_origin((x + 12.0f) / 8.0f, row_y / 8.0f);
@@ -1648,8 +1656,11 @@ static void frame(void) {
     if (G_debug_ui_visible) {
         draw_error_overlay();
         profiler_draw();
-        draw_players_panel(sapp_widthf(), sapp_heightf());
     }
+    /* F1 players panel is independent of the F2 debug master so the
+     * server roster is reachable in normal play. The function
+     * internally early-outs when G_players_panel_visible is false. */
+    draw_players_panel(sapp_widthf(), sapp_heightf());
     draw_desync_popup(sapp_widthf(), sapp_heightf());
     chat_draw(sapp_widthf(), sapp_heightf());
     /* Nameplates above remote players. View/proj are still in scope
@@ -1796,6 +1807,14 @@ static void event(const sapp_event* e) {
      * hidden. The mobile hamburger menu draws / hit-tests only when
      * debug is visible (gated below), so its toggles can't sneak
      * around this either. */
+    /* F1 stays available regardless of the F2 debug master - the
+     * server roster is a gameplay-facing panel (who's online, where
+     * are they) rather than dev scaffolding, and the user wants it
+     * one keypress away. */
+    if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_F1) {
+        G_players_panel_visible = !G_players_panel_visible;
+        return;
+    }
     if (G_debug_ui_visible) {
         if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_H) {
             renderer_set_terrain_visible(!renderer_terrain_visible());
@@ -1807,10 +1826,6 @@ static void event(const sapp_event* e) {
         }
         if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_K) {
             renderer_set_skybox_visible(!renderer_skybox_visible());
-            return;
-        }
-        if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_F1) {
-            G_players_panel_visible = !G_players_panel_visible;
             return;
         }
         if (e->type == SAPP_EVENTTYPE_KEY_DOWN &&
