@@ -393,6 +393,14 @@ static void update_overlay(float dt) {
                 goldberg_tile_count(G.world->grid),
                 renderer_moon_count());
     sdtx_printf("FPS: %.1f\n", G.smoothed_fps);
+    /* Menu / pause state line for live debugging. Visible alongside
+     * the JS-console trace stream so two-screen diagnosis is possible
+     * (devtools open + game in-frame). */
+    sdtx_color3b(0xff, 0xc0, 0x70);
+    sdtx_printf("menu state=%d pause=%d locked=%d overlay=%d\n",
+                (int)menu_state(), (int)menu_pause_active(),
+                (int)sapp_mouse_locked(), (int)menu_is_overlay());
+    sdtx_color3b(0xff, 0xff, 0xff);
 
     {
         /* Desync banner is its own popup panel — see draw_desync_popup
@@ -963,6 +971,28 @@ static void frame(void) {
      * frame the popup is rendered. */
     menu_tick();
 
+    /* Heartbeat trace - one line per frame summarising the routing
+     * decision the rest of frame() is about to make. Throttled so
+     * it doesn't drown the console; only logs when something
+     * relevant changed (state / pause / pointer-lock). */
+    {
+        static game_state_t prev_state = (game_state_t)-1;
+        static bool         prev_pause = false;
+        static bool         prev_lock  = false;
+        game_state_t cur_state = menu_state();
+        bool cur_pause = menu_pause_active();
+        bool cur_lock  = sapp_mouse_locked();
+        if (cur_state != prev_state || cur_pause != prev_pause
+            || cur_lock != prev_lock) {
+            printf("[frame] state-change: state -> %d, pause=%d, locked=%d, overlay=%d\n",
+                   (int)cur_state, (int)cur_pause, (int)cur_lock,
+                   (int)menu_is_overlay());
+            prev_state = cur_state;
+            prev_pause = cur_pause;
+            prev_lock  = cur_lock;
+        }
+    }
+
     /* In the main menu, draw the menu overlay over the last-rendered
      * scene (3D buffer keeps its previous contents — fine since gameplay
      * hasn't started yet). Skip the entire game update path. */
@@ -996,6 +1026,10 @@ static void frame(void) {
         bool in_gameplay = (st == GAME_IN_GAME_SP || st == GAME_IN_GAME_MP);
         if (in_gameplay && s_was_mouse_locked && !now_locked
             && !menu_pause_active()) {
+            printf("[frame] pointer-lock-loss detected -> open pause "
+                   "(state=%d locked %d->%d pause_was=%d)\n",
+                   (int)st, (int)s_was_mouse_locked, (int)now_locked,
+                   (int)menu_pause_active());
             menu_pause_toggle();
             sapp_show_mouse(true);
         }
@@ -1343,6 +1377,10 @@ static void event(const sapp_event* e) {
     }
     if (e->type == SAPP_EVENTTYPE_KEY_DOWN
         && e->key_code == SAPP_KEYCODE_ESCAPE) {
+        printf("[event] Escape KEY_DOWN seen by event handler "
+               "(locked=%d pause_was=%d state=%d)\n",
+               (int)sapp_mouse_locked(), (int)menu_pause_active(),
+               (int)menu_state());
         menu_pause_toggle();
         if (menu_pause_active()) {
             /* Show the OS cursor + release pointer lock so the player

@@ -4,6 +4,36 @@
 #include "client/persistence.h"
 #include "client/profile.h"
 
+/* Trace logging. Every event that could plausibly mis-route the
+ * pause / cloud-submenu render paths goes through MENU_TRACE so
+ * the JS console reads as a single timeline. Prefix is "[menu]"
+ * so the user can filter their devtools console quickly. Set the
+ * environment flag below to 0 once the bug is pinned. */
+#define MENU_TRACE_ENABLED 1
+#if MENU_TRACE_ENABLED
+#  define MENU_TRACE(fmt, ...) printf("[menu] " fmt "\n", ##__VA_ARGS__)
+#else
+#  define MENU_TRACE(...) ((void)0)
+#endif
+
+static const char* state_name(game_state_t s) {
+    switch (s) {
+        case GAME_PROFILE_SELECT:      return "PROFILE_SELECT";
+        case GAME_PROFILE_NAME_INPUT:  return "PROFILE_NAME_INPUT";
+        case GAME_MAIN_MENU:           return "MAIN_MENU";
+        case GAME_SP_WORLD_LIST:       return "SP_WORLD_LIST";
+        case GAME_SP_NEW_WORLD_INPUT:  return "SP_NEW_WORLD_INPUT";
+        case GAME_MP_SUBMENU:          return "MP_SUBMENU";
+        case GAME_MP_CLOUD_SUBMENU:    return "MP_CLOUD_SUBMENU";
+        case GAME_MP_JOIN_INPUT:       return "MP_JOIN_INPUT";
+        case GAME_MP_URL_PROMPT:       return "MP_URL_PROMPT";
+        case GAME_IN_GAME_SP:          return "IN_GAME_SP";
+        case GAME_IN_GAME_MP:          return "IN_GAME_MP";
+        case GAME_MP_CONNECT_ERROR:    return "MP_CONNECT_ERROR";
+    }
+    return "?";
+}
+
 #include "sokol_gfx.h"
 #include "sokol_app.h"
 #include "sokol_gl.h"
@@ -673,7 +703,14 @@ static void draw_button(const menu_button_t* b) {
 }
 
 void menu_draw(int screen_w, int screen_h) {
-    if (!menu_is_overlay()) return;
+    if (!menu_is_overlay()) {
+        MENU_TRACE("menu_draw: early-return (state=%s not overlay)",
+                   state_name(M.state));
+        return;
+    }
+    MENU_TRACE("menu_draw: state=%s pause=%d w=%d h=%d",
+               state_name(M.state), (int)M.pause_visible,
+               screen_w, screen_h);
 
     float w = (float)screen_w;
     float h = (float)screen_h;
@@ -1121,6 +1158,8 @@ void menu_record_recent_room(const char* room_code) {
 }
 
 static void connect_to_room(const char* room_code) {
+    MENU_TRACE("connect_to_room: '%s' from state=%s",
+               room_code ? room_code : "(null)", state_name(M.state));
     /* Send active profile + chosen room to the server. */
     profile_t active;
     const char* tok  = NULL;
@@ -1139,6 +1178,7 @@ static void connect_to_room(const char* room_code) {
     if (room_code) menu_record_recent_room(room_code);
     M.active_world[0] = 0;     /* no SP save target while in MP */
     M.state = GAME_IN_GAME_MP;
+    MENU_TRACE("state -> IN_GAME_MP (via connect_to_room)");
 }
 
 /* Generate a fresh room code, connect to it. Cloud submenu's HOST
@@ -1175,11 +1215,12 @@ static void consume_pending_invite_if_ready(void) {
 
     net_client_set_profile(active.token, active.name, room);
     snprintf(M.room_code, sizeof M.room_code, "%s", room);
-    printf("[menu] consuming invite: connect to %s (room='%s')\n", server, room);
+    MENU_TRACE("consume_pending_invite: connect to %s (room='%s')", server, room);
     net_client_connect(server);
     menu_record_recent_room(room);
     M.active_world[0] = 0;
     M.state = GAME_IN_GAME_MP;
+    MENU_TRACE("state -> IN_GAME_MP (via invite)");
 
     M.pending_invite_room[0]   = 0;
     M.pending_invite_server[0] = 0;
@@ -1188,7 +1229,7 @@ static void consume_pending_invite_if_ready(void) {
 static void enter_main_menu_with(const profile_t* p) {
     profile_set_active(p->token);
     M.state = GAME_MAIN_MENU;
-    printf("[menu] active profile = %s (%s)\n", p->name, p->token);
+    MENU_TRACE("state -> MAIN_MENU (profile %s / %s)", p->name, p->token);
     /* A first-time visitor following an invite link lands on the
      * profile picker, creates a profile, and gets dropped straight
      * into the invited room here. No-op when no invite is pending. */
@@ -1548,10 +1589,14 @@ bool menu_pause_active(void) { return M.pause_visible; }
 void menu_pause_toggle(void) {
     bool is_game = (M.state == GAME_IN_GAME_SP || M.state == GAME_IN_GAME_MP);
     if (!is_game) {
+        MENU_TRACE("pause_toggle: ignored, state=%s (not in-game)",
+                   state_name(M.state));
         M.pause_visible = false;
         return;
     }
     M.pause_visible = !M.pause_visible;
+    MENU_TRACE("pause_toggle: state=%s pause_visible -> %d",
+               state_name(M.state), (int)M.pause_visible);
 }
 
 static void layout_pause(float w, float h) {
@@ -1576,6 +1621,8 @@ static void layout_pause(float w, float h) {
 
 void menu_pause_draw(int screen_w, int screen_h) {
     if (!M.pause_visible) return;
+    MENU_TRACE("menu_pause_draw: state=%s w=%d h=%d",
+               state_name(M.state), screen_w, screen_h);
 
     const float w = (float)screen_w;
     const float h = (float)screen_h;
