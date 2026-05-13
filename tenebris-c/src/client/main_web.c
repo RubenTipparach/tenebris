@@ -1349,6 +1349,30 @@ static void frame(void) {
     /* Pause overlay draws last so the dim backdrop + panel sit on
      * top of every HUD element. No-op when not active. */
     menu_pause_draw(sapp_width(), sapp_height());
+
+    /* sdtx-only fallback label for the mobile pause button. Some
+     * mobile browsers don't render the sokol_gl circle reliably,
+     * but sdtx always works (the hotbar slot numbers prove it),
+     * so this guarantees the button is visible + tappable on every
+     * device. Only drawn while pause is NOT already open so it
+     * doesn't fight the pause panel for attention. */
+    if (!menu_pause_active() && !menu_is_overlay()) {
+        mobile_ui_circle_t pb = mobile_ui_pause_button_rect();
+        const float scale = 2.0f;
+        const float cell  = 8.0f * scale;
+        const char* lbl   = "[II]";
+        int n = (int)strlen(lbl);
+        float text_w = cell * (float)n;
+        float tx = pb.x - text_w * 0.5f;
+        float ty = pb.y - cell * 0.5f;
+        sdtx_canvas(sapp_widthf() / scale, sapp_heightf() / scale);
+        sdtx_font(1);
+        sdtx_origin(tx / cell, ty / cell);
+        sdtx_color3b(0xff, 0xff, 0xff);
+        sdtx_home();
+        sdtx_printf("%s", lbl);
+        sdtx_font(0);
+    }
     /* ONE sdtx_draw per frame, at the very end after every HUD
      * module has queued its text. Earlier flushes were the root
      * cause of stale-GPU-text bleeding between frames - see

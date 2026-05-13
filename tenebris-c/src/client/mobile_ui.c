@@ -227,13 +227,14 @@ static bool          S_TELEPORT_VISIBLE    = true;
 /* Standalone mobile pause button: a top-left circle so mobile
  * players (no Esc key) can open the pause overlay. Always visible
  * during gameplay - main_web only calls mobile_ui_draw when in-game
- * anyway. */
+ * anyway. Bigger than the right-cluster buttons so it's easy to
+ * spot + tap. */
+#define PAUSE_BTN_RADIUS 30.0f
 mobile_ui_circle_t mobile_ui_pause_button_rect(void) {
-    const float r = BTN_RADIUS;
     return (mobile_ui_circle_t){
-        .x = BTN_MARGIN + r,
-        .y = BTN_MARGIN + r,
-        .r = r,
+        .x = BTN_MARGIN + PAUSE_BTN_RADIUS,
+        .y = BTN_MARGIN + PAUSE_BTN_RADIUS,
+        .r = PAUSE_BTN_RADIUS,
     };
 }
 /* Shared alpha-blended 2D pipeline. Created the first time
@@ -504,20 +505,19 @@ void mobile_ui_draw(void) {
 
     /* Standalone pause button at top-left. Mobile players (no Esc
      * key) tap this to open the pause overlay. main_web hit-tests
-     * the same rect via mobile_ui_pause_button_rect. Two short
-     * vertical bars form the universally-recognised "II" pause
-     * glyph drawn over the circle. */
+     * the same rect via mobile_ui_pause_button_rect. Two filled
+     * bars form the universal "II" pause glyph. Bright + opaque so
+     * it stays readable over any sky / terrain colour. */
     {
         mobile_ui_circle_t p = mobile_ui_pause_button_rect();
-        draw_circle_fan(p.x, p.y, p.r, 32, 0.15f, 0.15f, 0.20f, 0.55f);
-        draw_ring      (p.x, p.y, p.r - 2.0f, p.r, 32, 0.90f, 0.95f, 1.00f, 0.85f);
-        /* Two filled rectangles = pause icon. Each bar is ~4 px wide,
-         * spaced ~6 px apart, centred on the button. */
+        draw_circle_fan(p.x, p.y, p.r, 36, 0.05f, 0.07f, 0.10f, 0.90f);
+        draw_ring      (p.x, p.y, p.r - 3.0f, p.r, 36, 1.00f, 1.00f, 1.00f, 0.95f);
+        /* Bars scaled to the bigger pause button (radius 30). */
         sgl_begin_quads();
-        sgl_c4f(1.00f, 1.00f, 1.00f, 0.95f);
-        const float bw = 3.0f;
-        const float bh = 11.0f;
-        const float gap = 4.0f;
+        sgl_c4f(1.00f, 1.00f, 1.00f, 1.00f);
+        const float bw  = 5.0f;
+        const float bh  = 16.0f;
+        const float gap = 6.0f;
         const float lx = p.x - gap * 0.5f - bw;
         const float rx = p.x + gap * 0.5f;
         sgl_v2f(lx,      p.y - bh);
