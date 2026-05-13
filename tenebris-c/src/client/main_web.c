@@ -270,6 +270,106 @@ EM_JS(void, tenebris_mobile_controls_set_visible, (int visible), {
     if (c) c.style.visibility = visible ? 'visible' : 'hidden';
 });
 
+/* Pause panel as a DOM overlay. Cross-platform (CLAUDE.md carves
+ * an exception for menus / dialogs: only controls duplicating
+ * keyboard input are mobile-only). DOM gives us proper :hover and
+ * :active CSS states for free + works regardless of whether
+ * sokol_gl renders on a given mobile browser, which is why the
+ * old on-canvas version was sometimes invisible. */
+EM_JS(void, tenebris_pause_panel_install, (void), {
+    if (document.getElementById('tenebris-pause-panel')) return;
+    var style = document.createElement('style');
+    style.textContent = ''
+      + '#tenebris-pause-backdrop { position:fixed; inset:0; '
+      +   'background:rgba(4,6,12,0.72); z-index:20; '
+      +   'display:flex; align-items:center; justify-content:center; '
+      +   'visibility:hidden; font-family:monospace; }'
+      + '#tenebris-pause-panel { background:#1a1f2e; '
+      +   'border:2px solid #c4d4ff; border-radius:10px; '
+      +   'padding:40px 56px; min-width:360px; '
+      +   'box-shadow:0 8px 32px rgba(0,0,0,0.6); '
+      +   'display:flex; flex-direction:column; align-items:stretch; '
+      +   'gap:18px; }'
+      + '#tenebris-pause-title { color:#fff; font-size:36px; '
+      +   'font-weight:bold; text-align:center; letter-spacing:4px; '
+      +   'margin:0 0 12px 0; }'
+      + '.tn-pause-btn { background:#23293c; color:#fff; '
+      +   'border:2px solid #8696b8; border-radius:6px; '
+      +   'padding:16px 24px; font:bold 18px monospace; '
+      +   'letter-spacing:2px; cursor:pointer; '
+      +   'transition:background 0.1s, border-color 0.1s, transform 0.05s; '
+      +   '-webkit-tap-highlight-color:transparent; }'
+      + '.tn-pause-btn:hover { background:#374261; border-color:#c4d4ff; }'
+      + '.tn-pause-btn:active { background:#4a5680; transform:scale(0.98); }'
+      + '#tenebris-pause-share-toast { color:#80ffa0; font-size:14px; '
+      +   'text-align:center; min-height:1em; }';
+    document.head.appendChild(style);
+
+    var back  = document.createElement('div');
+    back.id = 'tenebris-pause-backdrop';
+    var panel = document.createElement('div');
+    panel.id = 'tenebris-pause-panel';
+    var title = document.createElement('div');
+    title.id = 'tenebris-pause-title';
+    title.textContent = 'PAUSED';
+    panel.appendChild(title);
+
+    function mkbtn(id, label) {
+        var b = document.createElement('button');
+        b.id = id;
+        b.className = 'tn-pause-btn';
+        b.textContent = label;
+        panel.appendChild(b);
+        return b;
+    }
+    var bResume = mkbtn('tenebris-pause-resume', 'RETURN TO GAME');
+    var bInvite = mkbtn('tenebris-pause-invite', 'INVITE PLAYERS');
+    var bQuit   = mkbtn('tenebris-pause-quit',   'QUIT TO MENU');
+
+    var toast = document.createElement('div');
+    toast.id = 'tenebris-pause-share-toast';
+    panel.appendChild(toast);
+
+    back.appendChild(panel);
+    document.body.appendChild(back);
+
+    /* Click on the dim backdrop (outside the panel) is swallowed -
+     * resume must be deliberate. */
+    back.addEventListener('click', function(ev) {
+        ev.stopPropagation();
+    });
+
+    bResume.addEventListener('click', function() {
+        Module.ccall('tenebris_js_pause_resume', null, [], []);
+    });
+    bInvite.addEventListener('click', function() {
+        var rc = Module.ccall('tenebris_js_pause_invite', 'number', [], []);
+        var msg = '';
+        if      (rc === 1) msg = 'SHARED!';
+        else if (rc === 2) msg = 'LINK COPIED TO CLIPBOARD';
+        else               msg = 'SHARE FAILED';
+        toast.textContent = msg;
+        setTimeout(function() {
+            if (toast.textContent === msg) toast.textContent = '';
+        }, 2500);
+    });
+    bQuit.addEventListener('click', function() {
+        Module.ccall('tenebris_js_pause_quit', null, [], []);
+    });
+});
+
+EM_JS(void, tenebris_pause_panel_set_visible, (int visible, int show_invite), {
+    var back = document.getElementById('tenebris-pause-backdrop');
+    if (!back) return;
+    back.style.visibility = visible ? 'visible' : 'hidden';
+    var invite = document.getElementById('tenebris-pause-invite');
+    if (invite) invite.style.display = show_invite ? '' : 'none';
+    if (!visible) {
+        var toast = document.getElementById('tenebris-pause-share-toast');
+        if (toast) toast.textContent = '';
+    }
+});
+
 /* JS calls this when the HTML pause button is tapped. Same effect
  * as pressing Escape on desktop: toggles the pause overlay and
  * releases pointer lock so the player can interact with the
@@ -281,6 +381,30 @@ void tenebris_js_pause_pressed(void) {
         sapp_lock_mouse(false);
         sapp_show_mouse(true);
     }
+}
+
+/* DOM pause panel: RETURN TO GAME click. */
+EMSCRIPTEN_KEEPALIVE
+void tenebris_js_pause_resume(void) {
+    menu_pause_close();
+    /* Don't auto-relock pointer here - the browser throws if we ask
+     * too soon after the user exited the lock. They'll click the
+     * canvas to re-engage. */
+    sapp_show_mouse(true);
+}
+
+/* DOM pause panel: INVITE PLAYERS click. Returns the share-result
+ * code (0 = none, 1 = navigator.share fired, 2 = clipboard) so the
+ * JS toast can pick the right message. */
+EMSCRIPTEN_KEEPALIVE
+int tenebris_js_pause_invite(void) {
+    return menu_share_current_room();
+}
+
+/* DOM pause panel: QUIT TO MENU click. */
+EMSCRIPTEN_KEEPALIVE
+void tenebris_js_pause_quit(void) {
+    menu_pause_quit_to_main_menu();
 }
 
 EMSCRIPTEN_KEEPALIVE
@@ -478,14 +602,16 @@ static void init(void) {
     teleport_menu_set_player(&G.player);
 
 #ifdef __EMSCRIPTEN__
-    /* HTML overlay pause button - always installed on web (desktop
-     * gets it too as a fallback for users who don't know Esc opens
-     * the panel). */
-    tenebris_pause_button_install();
-    /* Joysticks + action buttons are mobile-only. Skip installing
-     * them on desktop so they don't clutter the screen for players
-     * who already have a keyboard + mouse. */
+    /* Pause panel is a DOM overlay so it has a real background and
+     * buttons with hover / active states - the on-canvas sokol_gl
+     * version was unreliable across browsers. Installed on every
+     * platform. */
+    tenebris_pause_panel_install();
+    /* On-canvas-equivalent JS controls (pause button, joysticks,
+     * action buttons that duplicate keyboard input) are mobile-
+     * only per CLAUDE.md. Desktop has keyboard + mouse + Esc. */
     if (tenebris_is_mobile_device()) {
+        tenebris_pause_button_install();
         tenebris_mobile_controls_install();
     }
 #endif
@@ -1599,24 +1725,36 @@ static void frame(void) {
     mobile_ui_set_debug_menu_visible(G_debug_ui_visible);
     mobile_ui_set_teleport_visible(G_debug_ui_visible);
     mobile_ui_draw();
-    /* HTML overlay UI: pause button + mobile control deck. Both
-     * visible during gameplay, hidden while the pause panel is
-     * already up or while a menu state owns the screen. */
+    /* HTML overlay UI: pause panel (cross-platform), plus pause
+     * button + mobile control deck (mobile only). Shown during
+     * gameplay; hidden while a menu state owns the screen. The
+     * pause panel is shown when pause_active, the button + deck
+     * are hidden when pause_active so they don't fight the panel
+     * for taps. */
 #ifdef __EMSCRIPTEN__
     {
         game_state_t st = menu_state();
         bool in_game = (st == GAME_IN_GAME_SP || st == GAME_IN_GAME_MP);
-        bool show_pause   = in_game && !menu_pause_active();
-        bool show_mobile  = in_game && !menu_pause_active();
-        static int last_pause = -1;
-        static int last_mobile = -1;
-        if ((int)show_pause != last_pause) {
-            tenebris_pause_button_set_visible(show_pause ? 1 : 0);
-            last_pause = (int)show_pause;
+        bool paused  = menu_pause_active();
+        bool show_pause_btn  = in_game && !paused;
+        bool show_mobile_deck = in_game && !paused;
+        bool show_panel       = in_game && paused;
+        bool show_invite      = (st == GAME_IN_GAME_MP);
+        static int last_pause_btn = -1, last_mobile = -1, last_panel = -1;
+        static int last_invite = -1;
+        if ((int)show_pause_btn != last_pause_btn) {
+            tenebris_pause_button_set_visible(show_pause_btn ? 1 : 0);
+            last_pause_btn = (int)show_pause_btn;
         }
-        if ((int)show_mobile != last_mobile) {
-            tenebris_mobile_controls_set_visible(show_mobile ? 1 : 0);
-            last_mobile = (int)show_mobile;
+        if ((int)show_mobile_deck != last_mobile) {
+            tenebris_mobile_controls_set_visible(show_mobile_deck ? 1 : 0);
+            last_mobile = (int)show_mobile_deck;
+        }
+        if ((int)show_panel != last_panel || (int)show_invite != last_invite) {
+            tenebris_pause_panel_set_visible(show_panel ? 1 : 0,
+                                              show_invite ? 1 : 0);
+            last_panel = (int)show_panel;
+            last_invite = (int)show_invite;
         }
     }
 #endif

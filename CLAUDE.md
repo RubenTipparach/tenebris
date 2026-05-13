@@ -157,6 +157,34 @@ If a feature *requires* the browser prompt UX (e.g. a deep-link
 permission grant), document the exception inline at the call site.
 Otherwise this rule is absolute.
 
+## DOM / JS overlay controls are mobile-only
+
+The on-canvas mobile control deck — virtual joysticks, on-screen
+JUMP / BREAK / PLACE buttons, and similar duplicates of keyboard
+input that exist only because phones don't have keys — must be
+installed as DOM overlays **only when `tenebris_is_mobile_device()`
+returns true**. Desktop players already have a keyboard, mouse,
+and Escape key, so putting an always-visible JUMP button or
+joystick on top of their canvas is clutter.
+
+The pattern lives in `main_web.c` `init()`:
+
+```c
+#ifdef __EMSCRIPTEN__
+if (tenebris_is_mobile_device()) {
+    tenebris_pause_button_install();
+    tenebris_mobile_controls_install();
+}
+#endif
+```
+
+This rule covers any future on-canvas tap target whose function is
+already reachable via desktop input (movement keys, mouse buttons,
+context menus). Cross-platform UI — menus, pause panels, dialogs,
+the share toast — is a separate category and can be drawn the same
+way on every device since it isn't duplicating an existing input
+path.
+
 ## Static game asset guidelines
 
 These rules apply to every asset Claude generates, hand-edits, or asks
