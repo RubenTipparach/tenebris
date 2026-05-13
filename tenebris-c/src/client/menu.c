@@ -1779,7 +1779,18 @@ void menu_pause_draw(int screen_w, int screen_h) {
     sgl_ortho(0.0f, w, h, 0.0f, -1.0f, 1.0f);
     sgl_matrix_mode_modelview();
     sgl_load_identity();
-    sgl_load_pipeline(mobile_ui_alpha_pipeline());
+    sgl_pipeline pause_pip = mobile_ui_alpha_pipeline();
+    /* One-shot trace: prove the pipeline we're about to bind at the
+     * pause overlay site is the same valid one mobile_ui created.
+     * id == 0 here would explain a ghost panel (geometry submitted
+     * but never rasterised). */
+    static bool s_logged_pause_pip = false;
+    if (!s_logged_pause_pip) {
+        printf("[menu] pause_draw using S_PIP_ALPHA: id=%u\n",
+               (unsigned)pause_pip.id);
+        s_logged_pause_pip = true;
+    }
+    sgl_load_pipeline(pause_pip);
 
     /* Full-screen dim backdrop. */
     mobile_ui_draw_rect(0.0f, 0.0f, w, h, 0.02f, 0.03f, 0.07f, 0.75f);

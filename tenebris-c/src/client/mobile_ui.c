@@ -387,6 +387,12 @@ void mobile_ui_draw(void) {
                 .dst_factor_alpha = SG_BLENDFACTOR_ONE,
             },
         });
+        /* One-shot trace so we can confirm the pool wasn't exhausted
+         * when this pipeline went in. id != 0 means valid; id == 0
+         * means sg_make_pipeline silently failed (any sgl_draw bound
+         * to this pipeline will render nothing). */
+        printf("[mobile_ui] S_PIP_ALPHA created: id=%u\n",
+               (unsigned)S_PIP_ALPHA.id);
     }
     sgl_load_pipeline(S_PIP_ALPHA);
 
