@@ -1024,13 +1024,12 @@ void menu_draw(int screen_w, int screen_h) {
                              0xff, 0xd0, 0x60);
     }
 
-    /* Flush every sdtx_printf we queued above so the menu's text
-     * doesn't sit in the buffer across the menu -> gameplay state
-     * transition. main_web's menu path also calls sdtx_draw right
-     * after us, but flushing here keeps the contract local to
-     * menu_draw - any caller that forgets the outer flush still
-     * gets a clean queue at return. */
-    sdtx_draw();
+    /* Single sdtx_draw happens in main_web (gameplay path uses the
+     * end-of-frame flush; menu path uses the one right after this
+     * call returns). Calling sdtx_draw twice per frame triggers the
+     * once-per-frame sg_update_buffer guard inside sokol_debugtext
+     * and leaves later text reads pointing at stale GPU memory -
+     * which was producing the menu UI bleed into gameplay. */
 }
 
 /* ------------------------------------------------------------------ */

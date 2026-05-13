@@ -177,6 +177,18 @@ static struct {
 
 /* --------------------------------------------------------------------- */
 
+/* Watchdog commit listener: if this stops firing, sg_commit isn't
+ * being called, which would mean sokol_debugtext's commit listener
+ * also isn't firing and sdtx_rewind never runs. That would let
+ * stale vertices (e.g. menu UI text) accumulate forever. */
+static int g_sg_commit_count = 0;
+void on_my_commit(void* userdata) {
+    (void)userdata;
+    if ((++g_sg_commit_count % 60) == 0) {
+        printf("[sg_commit] watchdog: %d commits seen\n", g_sg_commit_count);
+    }
+}
+
 static void init(void) {
     /* Bump sokol's buffer pool way above the default 128 — the
      * chunked-terrain renderer creates 4 buffers per chunk × 32
@@ -217,6 +229,12 @@ static void init(void) {
         .fonts[7] = sdtx_font_c64(),
         .logger.func = on_screen_log,
     });
+
+    /* Watchdog: if this listener stops firing, sg_commit isn't being
+     * called - which would mean sdtx_rewind never runs and stale
+     * vertices accumulate forever. */
+    extern void on_my_commit(void* userdata);
+    sg_add_commit_listener((sg_commit_listener){ on_my_commit, NULL });
 
     input_init();
     job_system_init(0);
