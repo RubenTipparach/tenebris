@@ -139,6 +139,137 @@ EM_JS(void, tenebris_pause_button_set_visible, (int visible), {
     if (b) b.style.visibility = visible ? 'visible' : 'hidden';
 });
 
+/* Full mobile control deck as DOM elements (two virtual joysticks +
+ * Jump / Break / Place buttons). Same reason as the pause button:
+ * sokol_gl on certain mobile browsers fails to render the sticks
+ * + buttons, so we side-step it with real DOM overlays. Each
+ * control streams its state into C via Module.ccall onto the
+ * tenebris_js_set_* hooks below. */
+EM_JS(void, tenebris_mobile_controls_install, (void), {
+    if (document.getElementById('tenebris-mobile-controls')) return;
+    var style = document.createElement('style');
+    style.textContent = ''
+      + '#tenebris-mobile-controls { position:fixed; inset:0; pointer-events:none; z-index:5; visibility:hidden; }'
+      + '.tn-stick { position:absolute; width:140px; height:140px; border-radius:50%; '
+      +    'background:rgba(20,22,30,0.45); border:2px solid rgba(255,255,255,0.7); '
+      +    'pointer-events:auto; touch-action:none; -webkit-tap-highlight-color:transparent; }'
+      + '.tn-stick .knob { position:absolute; left:50%; top:50%; width:56px; height:56px; '
+      +    'border-radius:50%; background:rgba(255,255,255,0.85); transform:translate(-50%,-50%); pointer-events:none; }'
+      + '#tn-stick-left  { bottom:24px; left:24px; }'
+      + '#tn-stick-right { bottom:24px; right:24px; }'
+      + '.tn-btn { position:absolute; width:64px; height:64px; border-radius:50%; '
+      +    'background:rgba(15,17,26,0.88); color:#fff; border:2px solid rgba(255,255,255,0.85); '
+      +    'font:bold 14px sans-serif; display:flex; align-items:center; justify-content:center; '
+      +    'pointer-events:auto; touch-action:none; -webkit-tap-highlight-color:transparent; '
+      +    'box-shadow:0 2px 6px rgba(0,0,0,0.5); user-select:none; }'
+      + '.tn-btn:active { background:rgba(80,90,110,0.95); }'
+      + '#tn-btn-jump  { bottom: 24px; right:184px; }'
+      + '#tn-btn-break { bottom:100px; right:184px; }'
+      + '#tn-btn-place { bottom:176px; right:184px; }';
+    document.head.appendChild(style);
+
+    function mk(tag, id, cls, text) {
+        var e = document.createElement(tag);
+        if (id) e.id = id;
+        if (cls) e.className = cls;
+        if (text) e.textContent = text;
+        return e;
+    }
+    var root = mk('div', 'tenebris-mobile-controls', null, null);
+    var ls = mk('div', 'tn-stick-left',  'tn-stick', null);
+    var rs = mk('div', 'tn-stick-right', 'tn-stick', null);
+    var lk = mk('div', null, 'knob', null);
+    var rk = mk('div', null, 'knob', null);
+    ls.appendChild(lk); rs.appendChild(rk);
+    var bJump  = mk('div', 'tn-btn-jump',  'tn-btn', 'JUMP');
+    var bBreak = mk('div', 'tn-btn-break', 'tn-btn', 'BREAK');
+    var bPlace = mk('div', 'tn-btn-place', 'tn-btn', 'PLACE');
+    root.appendChild(ls); root.appendChild(rs);
+    root.appendChild(bJump); root.appendChild(bBreak); root.appendChild(bPlace);
+    document.body.appendChild(root);
+
+    function makeStick(elem, knob, fnName) {
+        var activeId = -1;
+        function reset() {
+            knob.style.left = '50%'; knob.style.top = '50%';
+            Module.ccall(fnName, null,
+                ['number','number','number'], [0, 0, 0]);
+        }
+        function update(touch) {
+            var rect = elem.getBoundingClientRect();
+            var cx = rect.left + rect.width * 0.5;
+            var cy = rect.top  + rect.height * 0.5;
+            var dx = touch.clientX - cx;
+            var dy = touch.clientY - cy;
+            var max = rect.width * 0.5;
+            var len = Math.sqrt(dx*dx + dy*dy);
+            if (len > max) { dx = dx * max / len; dy = dy * max / len; }
+            knob.style.left = (50 + 100 * dx / rect.width)  + '%';
+            knob.style.top  = (50 + 100 * dy / rect.height) + '%';
+            var nx =  dx / max;
+            var ny = -dy / max;     /* screen y flips */
+            Module.ccall(fnName, null,
+                ['number','number','number'], [nx, ny, 1]);
+        }
+        function findTouch(ev) {
+            for (var i = 0; i < ev.changedTouches.length; ++i) {
+                if (ev.changedTouches[i].identifier === activeId) {
+                    return ev.changedTouches[i];
+                }
+            }
+            return null;
+        }
+        elem.addEventListener('touchstart', function(ev) {
+            ev.preventDefault();
+            if (activeId !== -1) return;
+            var t = ev.changedTouches[0];
+            activeId = t.identifier;
+            update(t);
+        }, { passive: false });
+        elem.addEventListener('touchmove', function(ev) {
+            ev.preventDefault();
+            var t = findTouch(ev);
+            if (t) update(t);
+        }, { passive: false });
+        function end(ev) {
+            ev.preventDefault();
+            if (findTouch(ev)) {
+                activeId = -1;
+                reset();
+            }
+        }
+        elem.addEventListener('touchend',    end, { passive: false });
+        elem.addEventListener('touchcancel', end, { passive: false });
+    }
+    makeStick(ls, lk, 'tenebris_js_set_move_stick');
+    makeStick(rs, rk, 'tenebris_js_set_look_stick');
+
+    function makeHoldBtn(elem, fnName) {
+        function down(ev) {
+            ev.preventDefault();
+            Module.ccall(fnName, null, ['number'], [1]);
+        }
+        function up(ev) {
+            ev.preventDefault();
+            Module.ccall(fnName, null, ['number'], [0]);
+        }
+        elem.addEventListener('touchstart',  down, { passive: false });
+        elem.addEventListener('touchend',    up,   { passive: false });
+        elem.addEventListener('touchcancel', up,   { passive: false });
+        elem.addEventListener('mousedown',   down);
+        elem.addEventListener('mouseup',     up);
+        elem.addEventListener('mouseleave',  up);
+    }
+    makeHoldBtn(bJump,  'tenebris_js_set_jump');
+    makeHoldBtn(bBreak, 'tenebris_js_set_break');
+    makeHoldBtn(bPlace, 'tenebris_js_set_place');
+});
+
+EM_JS(void, tenebris_mobile_controls_set_visible, (int visible), {
+    var c = document.getElementById('tenebris-mobile-controls');
+    if (c) c.style.visibility = visible ? 'visible' : 'hidden';
+});
+
 /* JS calls this when the HTML pause button is tapped. Same effect
  * as pressing Escape on desktop: toggles the pause overlay and
  * releases pointer lock so the player can interact with the
@@ -150,6 +281,62 @@ void tenebris_js_pause_pressed(void) {
         sapp_lock_mouse(false);
         sapp_show_mouse(true);
     }
+}
+
+EMSCRIPTEN_KEEPALIVE
+void tenebris_js_set_move_stick(double x, double y, int active) {
+    input_state_t* in = input_state_mut();
+    if (active) {
+        in->stick_x = (float)x;
+        in->stick_y = (float)y;
+        in->stick_active = true;
+        in->phys.forward  = (y >  0.3);
+        in->phys.backward = (y < -0.3);
+        in->phys.right    = (x >  0.3);
+        in->phys.left     = (x < -0.3);
+    } else {
+        in->stick_x = 0;
+        in->stick_y = 0;
+        in->stick_active = false;
+        in->phys.forward = in->phys.backward = false;
+        in->phys.left = in->phys.right = false;
+    }
+    in->touch_active = true;
+}
+
+EMSCRIPTEN_KEEPALIVE
+void tenebris_js_set_look_stick(double x, double y, int active) {
+    input_state_t* in = input_state_mut();
+    in->look_stick_x = (float)x;
+    in->look_stick_y = (float)y;
+    in->look_stick_active = active != 0;
+    in->touch_active = true;
+}
+
+EMSCRIPTEN_KEEPALIVE
+void tenebris_js_set_break(int held) {
+    input_state_t* in = input_state_mut();
+    bool was = in->left_held;
+    in->left_held = held != 0;
+    if (held && !was) in->left_click = true;
+    in->touch_active = true;
+}
+
+EMSCRIPTEN_KEEPALIVE
+void tenebris_js_set_place(int held) {
+    input_state_t* in = input_state_mut();
+    bool was = in->right_held;
+    in->right_held = held != 0;
+    if (held && !was) in->right_click = true;
+    in->touch_active = true;
+}
+
+EMSCRIPTEN_KEEPALIVE
+void tenebris_js_set_jump(int held) {
+    input_state_t* in = input_state_mut();
+    in->phys.jump   = held != 0;
+    in->phys.fly_up = held != 0;
+    in->touch_active = true;
 }
 #endif
 #include "client/inventory.h"
@@ -291,9 +478,11 @@ static void init(void) {
     teleport_menu_set_player(&G.player);
 
 #ifdef __EMSCRIPTEN__
-    /* Install the HTML overlay pause button. Stays hidden until the
-     * frame loop turns it on once gameplay starts. */
+    /* Install the HTML overlay pause button + mobile control deck
+     * (two joysticks + Jump / Break / Place). Both stay hidden
+     * until the frame loop turns them on once gameplay starts. */
     tenebris_pause_button_install();
+    tenebris_mobile_controls_install();
 #endif
 
     /* Load atmosphere overrides from YAML before creating any
@@ -1405,18 +1594,24 @@ static void frame(void) {
     mobile_ui_set_debug_menu_visible(G_debug_ui_visible);
     mobile_ui_set_teleport_visible(G_debug_ui_visible);
     mobile_ui_draw();
-    /* HTML overlay pause button: visible during gameplay, hidden
-     * while the pause panel is already up or while a menu state
-     * owns the screen. */
+    /* HTML overlay UI: pause button + mobile control deck. Both
+     * visible during gameplay, hidden while the pause panel is
+     * already up or while a menu state owns the screen. */
 #ifdef __EMSCRIPTEN__
     {
         game_state_t st = menu_state();
         bool in_game = (st == GAME_IN_GAME_SP || st == GAME_IN_GAME_MP);
-        bool show = in_game && !menu_pause_active();
-        static int last_show = -1;
-        if ((int)show != last_show) {
-            tenebris_pause_button_set_visible(show ? 1 : 0);
-            last_show = (int)show;
+        bool show_pause   = in_game && !menu_pause_active();
+        bool show_mobile  = in_game && !menu_pause_active();
+        static int last_pause = -1;
+        static int last_mobile = -1;
+        if ((int)show_pause != last_pause) {
+            tenebris_pause_button_set_visible(show_pause ? 1 : 0);
+            last_pause = (int)show_pause;
+        }
+        if ((int)show_mobile != last_mobile) {
+            tenebris_mobile_controls_set_visible(show_mobile ? 1 : 0);
+            last_mobile = (int)show_mobile;
         }
     }
 #endif
