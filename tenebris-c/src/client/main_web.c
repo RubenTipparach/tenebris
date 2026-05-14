@@ -1187,9 +1187,15 @@ static void   periodic_pos_log(double dt) {
     }
     const char* mode = (menu_state() == GAME_IN_GAME_MP) ? "MP" :
                        (menu_state() == GAME_IN_GAME_SP) ? "SP" : "menu";
-    printf("[main] pos %s body=%s curr=(%.2f, %.2f, %.2f) r=%.2f alt=%+.2f "
+    /* The engine tracks two separate states: G.player.body (the
+     * last-known gravitational anchor, never cleared) and
+     * G.player.is_in_space (this-frame gravity-falloff result).
+     * Log both so a "stuck in space" report is unambiguous about
+     * which one is which. */
+    printf("[main] pos %s body=%s%s curr=(%.2f, %.2f, %.2f) r=%.2f alt=%+.2f "
            "yaw=%.2f pitch=%.2f grounded=%d\n",
            mode, b ? b->name : "?",
+           G.player.is_in_space ? " (in-space)" : "",
            G.player.position.x, G.player.position.y, G.player.position.z,
            r, alt, G.player.yaw, G.player.pitch, (int)G.player.grounded);
     if (G_last_sent_valid) {
