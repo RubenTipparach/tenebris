@@ -1,5 +1,26 @@
 # Repo rules
 
+## Terminology
+
+When the user describes work in terms of these labels, treat them as
+load-bearing - they say where the change belongs:
+
+- **MP** - multiplayer.
+- **SP** - single player.
+- **Client** - the SP + MP client side. Anything under
+  `tenebris-c/src/client/` plus the shaders under `tenebris-c/src/shaders/`.
+  "Non-server code." Includes rendering, input, local prediction, UI,
+  audio, the chat UI, profile management, etc.
+- **Core** - SP and MP code that mutates authoritative state / poses /
+  voxel data. Anything under `tenebris-c/src/core/` plus the relevant
+  parts of `tenebris-c/src/server/`. Physics, world / chunk edits,
+  saves, the server tick loop.
+
+A bug that "doesn't work in SP or MP" is a Core bug if it touches
+world state (mining, placement, physics) and a Client bug if it
+touches rendering or input. When in doubt, fix it in Core so SP and
+MP share the same code path.
+
 ## DO NOT MODIFY THE TENEBRIS JS SOURCE — IT IS DEPRECATED
 
 The original Three.js / TypeScript implementation lives at the repo root

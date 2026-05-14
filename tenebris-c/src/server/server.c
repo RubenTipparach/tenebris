@@ -300,7 +300,7 @@ static void handle_hello(server_t* s, server_client_t* cl,
          * will never be compatible with. */
         msg_kick_t kick = { .reason = KICK_VERSION_MISMATCH };
         snprintf((char*)kick.text, sizeof kick.text,
-                 "Version mismatch (client %u, server %u). Refresh: Ctrl+F5",
+                 "Version mismatch (client %u, server %u). Refresh: Ctrl+Shift+R",
                  h.client_version, TENEBRIS_PROTOCOL_VERSION);
         uint8_t buf[MSG_HEADER_SIZE + MSG_KICK_WIRE_SIZE];
         size_t kn = proto_write_kick(buf, sizeof buf, &kick);

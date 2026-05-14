@@ -101,7 +101,8 @@ static void gen_tile(world_t* w, int tile_idx) {
         prof.surface_m > 1.0f && prof.surface_m < 22.0f)
     {
         block_t top = (block_t)column[surface_idx];
-        const bool is_grass = (top == BLOCK_GRASS) || (top == BLOCK_SEQ_GRASS);
+        const bool is_sequoia_grass = (top == BLOCK_SEQ_GRASS);
+        const bool is_grass = (top == BLOCK_GRASS) || is_sequoia_grass;
         if (is_grass) {
             uint32_t h = tile_hash(w->body->seed, tile_idx, 0xA1B2C3D4u);
             /* ~5% of qualifying tiles get a tree. */
@@ -116,10 +117,15 @@ static void gen_tile(world_t* w, int tile_idx) {
                 for (int d = surface_idx + 1; d <= trunk_top && d < WORLD_MAX_DEPTH; ++d) {
                     column[d] = (uint8_t)BLOCK_WOOD;
                 }
-                /* Leafy crown spread vertically over the trunk top. */
+                /* Leafy crown spread vertically over the trunk top.
+                 * Sequoia uses its own red-tinted leaf block so the
+                 * biome reads as alien even before you land. */
+                const uint8_t leaf_block = is_sequoia_grass
+                                              ? (uint8_t)BLOCK_SEQ_LEAVES
+                                              : (uint8_t)BLOCK_LEAVES;
                 for (int d = leaf_lo; d <= leaf_hi; ++d) {
                     if (d <= surface_idx) continue;
-                    if (column[d] == BLOCK_AIR) column[d] = (uint8_t)BLOCK_LEAVES;
+                    if (column[d] == BLOCK_AIR) column[d] = leaf_block;
                 }
             }
         }

@@ -30,11 +30,22 @@ static dvec3_t player_look_dir(const player_ctrl_t* p) {
  * step, blowing the search back into a slow path. */
 static bool world_to_tile_depth(const world_t* w, dvec3_t pos, int hint,
                                 int* out_tile, int* out_depth) {
-    dvec3_t dir = dvec3_normalize(pos);
+    /* pos is in WORLD space (same frame as p->position) but the
+     * goldberg grid + body radius are body-local. Subtract the
+     * body's centre so the raycast lines up on planets that don't
+     * sit at the origin (Tenebris is at 0,0,0 but Sequoia / Crag /
+     * Frostbite all sit elsewhere). Without this fix, mining +
+     * placement only worked on Tenebris - the raycast normalised
+     * a world-space vector that pointed somewhere unrelated to
+     * the planet beneath the player. */
+    dvec3_t local = dvec3_make(pos.x - w->body->pos_x,
+                                pos.y - w->body->pos_y,
+                                pos.z - w->body->pos_z);
+    dvec3_t dir = dvec3_normalize(local);
     int tile = goldberg_find_tile(w->grid, dir, hint);
     if (tile < 0) return false;
     *out_tile = tile;
-    double r = dvec3_length(pos);
+    double r = dvec3_length(local);
     /* Invert world_depth_to_radius_m: r = body_r - (SEA_LEVEL_IDX - d)
      * with block height = 1m. So depth = (r - body_r) + SEA_LEVEL_IDX.
      * Must match world.c's SEA_LEVEL_IDX (64). With the wrong value (12),

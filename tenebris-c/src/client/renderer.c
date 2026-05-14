@@ -323,6 +323,7 @@ static void bake_atlas(void) {
         "assets/textures/wood.png",   /* 21 WOOD     */
         "assets/textures/grass.png",  /* 22 LEAVES   — tinted darker green */
         "assets/textures/rocks.png",  /* 23 BEDROCK  — tinted near-black   */
+        "assets/textures/grass.png",  /* 24 SEQ_LEAVES — same source, red-tinted */
     };
     /* Per-channel multiplier applied to each loaded tile before it goes
      * into the atlas. {1, 1, 1} = untinted. */
@@ -338,6 +339,7 @@ static void bake_atlas(void) {
         [21] = {1.00f, 1.00f, 1.00f},  /* WOOD     — passthrough       */
         [22] = {0.65f, 1.05f, 0.50f},  /* LEAVES   — saturated green   */
         [23] = {0.30f, 0.30f, 0.32f},  /* BEDROCK  — near-black slate  */
+        [24] = {1.45f, 0.30f, 0.30f},  /* SEQ_LEAVES — Sequoia red foliage */
     };
     for (int col = 0; col < HEX_ATLAS_TILES; ++col) {
         if (!paths[col]) continue;
@@ -1335,9 +1337,16 @@ void renderer_draw_moons(mat4_t view, mat4_t proj, vec3_t camera_world) {
     sg_apply_pipeline(R.pip_distant);
     for (int bi = 0; bi < R.body_count; ++bi) {
         chunked_body_t* body = &R.bodies[bi];
-        /* The active body is always drawn detailed in renderer_draw_world;
-         * never as an icosphere here. */
-        if (bi == R.active_body_idx) continue;
+        /* Used to short-circuit on `bi == R.active_body_idx` here -
+         * the active body always drew chunks regardless of distance.
+         * That broke the LOD for the player's home planet: fly far
+         * enough from Tenebris (which is permanently active because
+         * main_web hands the renderer G.world) and the chunked draw
+         * trivially culled, leaving the planet invisible while
+         * Sequoia / Crag still rendered as icospheres. Letting the
+         * active body fall through the same distance test means it
+         * swaps to the icosphere LOD on the way out and back to
+         * chunks on the way in, just like every other body. */
         if (body->distant_index_count <= 0) continue;
         if (!sphere_visible(frustum, body->world_pos, body->radius_m * 1.5f)) continue;
         vec3_t delta = vec3_sub(body->world_pos, camera_world);
