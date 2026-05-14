@@ -1059,8 +1059,27 @@ static void maybe_apply_mp_spawn(void) {
      * procgen-vs-mesh noise. */
     const double SNAP_MIN_ALT_M = 3.0;
     const double SNAP_MAX_ALT_M = 100.0;
-    const body_id_t spawn_body_id = (body_id_t)w->body_id;
-    const body_config_t* spawn_body = planet_get(spawn_body_id);
+    /* body_id resolution. Three cases:
+     *   - BODY_ID_IN_SPACE: player logged out in deep space. Apply
+     *     the absolute pose, no snap, and don't bind the player to
+     *     any body. The next planet_gravity_at tick will pick one up
+     *     if the saved coords happen to be inside a falloff radius.
+     *   - Valid id we know about: snap as before AND explicitly bind
+     *     G.player.body so the renderer activates that body the same
+     *     frame instead of waiting one gravity-tick of auto-switch.
+     *     This is what fixes "logged out on a different planet, came
+     *     back to a black screen".
+     *   - Unknown / out-of-range id: log and treat like in-space. */
+    const body_config_t* spawn_body = NULL;
+    if (w->body_id == BODY_ID_IN_SPACE) {
+        printf("[main] MP spawn: body=IN_SPACE, applying absolute pose without ground-snap\n");
+    } else {
+        spawn_body = planet_get((body_id_t)w->body_id);
+        if (!spawn_body) {
+            printf("[main] WARN MP spawn: unknown body_id=%u, treating as in-space\n",
+                   w->body_id);
+        }
+    }
     if (spawn_body) {
         dvec3_t center = dvec3_make(spawn_body->pos_x,
                                      spawn_body->pos_y,
@@ -1094,6 +1113,17 @@ static void maybe_apply_mp_spawn(void) {
     G.player.basis_ready = false;
     G.player.last_tile   = -1;
     G.player.transition_timer_s = config_lod()->roll_slerp_duration_s;
+    /* Bind the player to the saved body so the renderer's per-frame
+     * "world for current body" lookup activates the right one on the
+     * very next draw. Without this, a player who logged out near
+     * Crag would rejoin with G.player.body still pointing at the
+     * boot-time Tenebris (registered first at init), and the renderer
+     * would draw an empty frame (Crag not loaded, position too far
+     * from Tenebris for it to render) until the gravity tick swapped
+     * the anchor several frames later. */
+    if (spawn_body && G.player.body != spawn_body) {
+        player_set_body(&G.player, spawn_body);
+    }
     /* Loud diagnostic for the floating-spawn investigation. Reports
      * the WELCOME pose, the body, the final applied position, and
      * the altitude above that body's surface so we can tell exactly
@@ -1679,7 +1709,28 @@ static void frame(void) {
         static uint32_t G_state_send_ctr = 0;
         if (menu_state() == GAME_IN_GAME_MP && net_client_state() == NET_CLIENT_READY
             && (++G_state_send_ctr % 3) == 0) {
-            uint32_t body_id = 0;     /* TODO: thread the active body id once SOI is wired */
+            /* Real body anchor on the wire. G.player.body is non-NULL
+             * whenever the player is gravitationally bound; the gravity
+             * tracker at the top of frame() clears nothing on transition
+             * to deep space, but we treat "no body inside any falloff
+             * radius this frame" as in-space by querying planet_gravity_at
+             * directly. The server persists whichever value we send, so
+             * rejoin reaches maybe_apply_mp_spawn with the right anchor. */
+            uint32_t body_id;
+            {
+                const lod_config_t* Lsend = config_lod();
+                gravity_query_t gq_send = planet_gravity_at(G.player.position,
+                                                              Lsend->gravity_full_mult,
+                                                              Lsend->gravity_falloff_mult);
+                if (gq_send.body) {
+                    body_id = (uint32_t)gq_send.body->id;
+                } else {
+                    /* No body in falloff this frame. Player is in deep
+                     * space - persist that fact so rejoin doesn't drop
+                     * them next to a stale planet they're nowhere near. */
+                    body_id = BODY_ID_IN_SPACE;
+                }
+            }
             net_client_send_player_state(G_state_send_ctr,
                                             body_id,
                                             G.player.position.x,

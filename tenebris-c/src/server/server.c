@@ -352,7 +352,9 @@ static void send_welcome(server_t* s, server_client_t* cl) {
      * radial altitude (length(spawn - body_centre) - body_radius)
      * so the floating-spawn report has a concrete number to chase. */
     {
-        const body_config_t* dbg_body = planet_get((body_id_t)w.body_id);
+        const bool in_space = (w.body_id == BODY_ID_IN_SPACE);
+        const body_config_t* dbg_body = in_space
+            ? NULL : planet_get((body_id_t)w.body_id);
         double r = 0.0, alt = 0.0;
         if (dbg_body) {
             double dx = w.spawn_x - dbg_body->pos_x;
@@ -361,11 +363,13 @@ static void send_welcome(server_t* s, server_client_t* cl) {
             r = sqrt(dx*dx + dy*dy + dz*dz);
             alt = r - dbg_body->radius_m;
         }
-        printf("[server] WELCOME spawn name=%s %s body=%u pos=(%.2f, %.2f, %.2f) "
+        printf("[server] WELCOME spawn name=%s %s body=%s pos=(%.2f, %.2f, %.2f) "
                "r=%.2f alt=%+.2f yaw=%.2f pitch=%.2f\n",
                cl->name,
                had_save ? "RESUME" : "DEFAULT",
-               w.body_id, w.spawn_x, w.spawn_y, w.spawn_z,
+               in_space ? "IN_SPACE" :
+                   (dbg_body ? dbg_body->name : "unknown"),
+               w.spawn_x, w.spawn_y, w.spawn_z,
                r, alt, w.spawn_yaw, w.spawn_pitch);
         fflush(stdout);
     }

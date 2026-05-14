@@ -22,6 +22,14 @@
 
 #define MSG_HEADER_SIZE     8
 
+/* Sentinel for the `body_id` field of PLAYER_STATE / WELCOME /
+ * SNAPSHOT entries. Indicates "the player is in deep space, not
+ * gravitationally bound to any registered body". The position
+ * fields remain absolute world coords; only the body anchor is
+ * undefined. Valid body_id_t enum values are 0..BODY_COUNT-1, so
+ * 0xFFFFFFFF can never collide with a real body. */
+#define BODY_ID_IN_SPACE   0xFFFFFFFFu
+
 typedef enum {
     MSG_NONE         = 0,
     MSG_HELLO        = 1,   /* C->S handshake init */
