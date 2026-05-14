@@ -45,8 +45,16 @@ sets COOP/COEP headers.
 The dedicated server (`tenebris-server`) listens for WebSocket clients
 on `--port` (default `8080`) and answers plain HTTP `GET`s on the same
 port. The live deployment runs on Fly.io at
-[`https://tenebris-c.fly.dev`](https://tenebris-c.fly.dev/health), so
-you can inspect activity straight from a browser or `curl`:
+[`https://tenebris-c.fly.dev`](https://tenebris-c.fly.dev/health).
+
+The pretty UI: **[the live dashboard on GitHub Pages](https://rubentipparach.github.io/tenebris/dashboard/)**
+polls these endpoints every 2-5 seconds and pairs login/logout events
+to show session durations. The page itself is a single static HTML
+file (`web/dashboard/index.html`) that the landing-page build stages
+into `dist/dashboard/index.html`. Append `#http://localhost:8080` (or
+`?host=...`) to point it at a different server.
+
+Raw JSON for `curl` / scripts:
 
 | Endpoint | Description |
 | --- | --- |

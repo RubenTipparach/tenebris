@@ -1,0 +1,418 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>tenebris-server dashboard</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #0c0d10;
+      color: #d8d8d8;
+      font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    a { color: #7ab8ff; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .wrap { max-width: 1100px; margin: 0 auto; padding: 18px; }
+    h1 { font-size: 18px; margin: 0 0 4px; color: #fff; letter-spacing: .02em; }
+    h2 {
+      font-size: 12px;
+      margin: 22px 0 8px;
+      color: #9ad;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      font-weight: 600;
+    }
+    .sub { color: #888; font-size: 12px; margin-bottom: 18px; }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+    .stat {
+      background: #15171c;
+      border: 1px solid #23262d;
+      border-radius: 6px;
+      padding: 10px 12px;
+    }
+    .stat .k {
+      color: #888;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+    }
+    .stat .v { color: #fff; font-size: 18px; margin-top: 2px; }
+    .bar {
+      background: #23262d;
+      height: 4px;
+      border-radius: 2px;
+      margin-top: 6px;
+      overflow: hidden;
+    }
+    .bar > div { height: 100%; background: #7ab8ff; transition: width .3s; }
+    .cols {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+    @media (max-width: 720px) { .cols { grid-template-columns: 1fr; } }
+    table { width: 100%; border-collapse: collapse; }
+    th, td {
+      text-align: left;
+      padding: 4px 8px;
+      border-bottom: 1px solid #1c1f25;
+      font-size: 12px;
+      vertical-align: top;
+    }
+    th {
+      color: #888;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+      font-size: 11px;
+    }
+    .pill {
+      display: inline-block;
+      background: #1c2230;
+      color: #9ad;
+      padding: 1px 6px;
+      border-radius: 3px;
+      font-size: 11px;
+    }
+    .empty { color: #555; padding: 8px 0; }
+    .ev-login  { color: #7fe28f; }
+    .ev-logout { color: #e2987f; }
+    .ts { color: #666; }
+    .err { color: #e26b6b; }
+    .dur { color: #c8c8c8; }
+    .dur.live { color: #7fe28f; }
+    footer { margin-top: 24px; color: #555; font-size: 11px; }
+    input.host {
+      background: #15171c;
+      color: #d8d8d8;
+      border: 1px solid #23262d;
+      border-radius: 4px;
+      padding: 4px 6px;
+      font: inherit;
+      width: 260px;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>tenebris-server</h1>
+    <div class="sub" id="sub">connecting...</div>
+
+    <div class="stats">
+      <div class="stat">
+        <div class="k">CPU</div>
+        <div class="v" id="cpu">-</div>
+        <div class="bar"><div id="cpuBar" style="width:0%"></div></div>
+      </div>
+      <div class="stat">
+        <div class="k">RAM (RSS)</div>
+        <div class="v" id="rss">-</div>
+      </div>
+      <div class="stat">
+        <div class="k">RAM (VmSize)</div>
+        <div class="v" id="vm">-</div>
+      </div>
+      <div class="stat">
+        <div class="k">Players</div>
+        <div class="v" id="pcount">-</div>
+      </div>
+      <div class="stat">
+        <div class="k">Tick</div>
+        <div class="v" id="tick">-</div>
+      </div>
+      <div class="stat">
+        <div class="k">Uptime</div>
+        <div class="v" id="uptime">-</div>
+      </div>
+    </div>
+
+    <div class="cols">
+      <div>
+        <h2>Players online</h2>
+        <div id="players"></div>
+      </div>
+      <div>
+        <h2>Rooms</h2>
+        <div id="rooms"></div>
+      </div>
+    </div>
+
+    <h2>Sessions (last 50, paired login &rarr; logout)</h2>
+    <div id="sessions"></div>
+
+    <h2>Recent chat (last 50)</h2>
+    <div id="chat"></div>
+
+    <footer>
+      Server: <input class="host" id="host" /> &middot;
+      <a id="lnk-status"  target="_blank">/status</a> &middot;
+      <a id="lnk-logins"  target="_blank">/logins</a> &middot;
+      <a id="lnk-chat"    target="_blank">/chat</a> &middot;
+      <a id="lnk-health"  target="_blank">/health</a>
+      <br>
+      Polling /status every 2 s, /logins + /chat every 5 s. Durations
+      shown in 5-min increments (server snapshots roll up that way).
+    </footer>
+  </div>
+
+  <script>
+    // Server origin is configurable via #host (or ?host=) so the
+    // dashboard works against the live Fly deployment by default and
+    // a local server during dev. URL takes precedence over hash;
+    // hash takes precedence over the baked default.
+    const DEFAULT_HOST = "https://tenebris-c.fly.dev";
+    function resolveHost() {
+      const u = new URL(window.location.href);
+      const q = u.searchParams.get("host");
+      if (q) return q.replace(/\/$/, "");
+      if (window.location.hash.length > 1) {
+        return decodeURIComponent(window.location.hash.slice(1)).replace(/\/$/, "");
+      }
+      return DEFAULT_HOST;
+    }
+    let HOST = resolveHost();
+
+    const $ = (id) => document.getElementById(id);
+    const esc = (s) =>
+      String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;",
+      }[c]));
+
+    function fmtBytes(kb) {
+      if (kb < 0) return "-";
+      if (kb < 1024) return kb + " KB";
+      if (kb < 1024 * 1024) return (kb / 1024).toFixed(1) + " MB";
+      return (kb / 1024 / 1024).toFixed(2) + " GB";
+    }
+
+    function fmtDur(seconds) {
+      seconds = Math.max(0, Math.floor(seconds));
+      const d = Math.floor(seconds / 86400);
+      const h = Math.floor((seconds % 86400) / 3600);
+      const m = Math.floor((seconds % 3600) / 60);
+      const s = seconds % 60;
+      if (d) return d + "d " + h + "h " + m + "m";
+      if (h) return h + "h " + m + "m";
+      if (m) return m + "m " + s + "s";
+      return s + "s";
+    }
+
+    function fmtTime(ts) {
+      return new Date(ts * 1000).toLocaleString();
+    }
+
+    async function getJSON(path) {
+      const r = await fetch(HOST + path, { cache: "no-store" });
+      if (!r.ok) throw new Error(path + ": " + r.status);
+      return r.json();
+    }
+
+    function updateFooterLinks() {
+      $("host").value = HOST;
+      for (const p of ["status", "logins", "chat", "health"]) {
+        $("lnk-" + p).href = HOST + "/" + p;
+      }
+    }
+
+    $("host") &&
+      $("host").addEventListener("change", (e) => {
+        HOST = e.target.value.replace(/\/$/, "");
+        window.location.hash = encodeURIComponent(HOST);
+        updateFooterLinks();
+        refreshStatus();
+        refreshSessions();
+        refreshChat();
+      });
+
+    async function refreshStatus() {
+      try {
+        const s = await getJSON("/status");
+        $("sub").textContent =
+          "live - " +
+          s.tick_hz.toFixed(0) +
+          " Hz tick - " +
+          s.cpu.cores +
+          " core(s)";
+        $("cpu").textContent = s.cpu.percent.toFixed(1) + "%";
+        $("cpuBar").style.width = Math.min(100, s.cpu.percent) + "%";
+        $("rss").textContent = fmtBytes(s.memory.rss_kb);
+        $("vm").textContent = fmtBytes(s.memory.vm_kb);
+        $("pcount").textContent = s.player_count;
+        $("tick").textContent = (s.tick || 0).toLocaleString();
+        $("uptime").textContent = fmtDur(s.uptime_s);
+
+        if (!s.players || s.players.length === 0) {
+          $("players").innerHTML = '<div class="empty">no one online</div>';
+        } else {
+          let h =
+            "<table><tr><th>id</th><th>name</th><th>room</th><th>body</th></tr>";
+          for (const p of s.players) {
+            h +=
+              "<tr><td>" +
+              p.player_id +
+              "</td><td>" +
+              esc(p.name) +
+              '</td><td><span class="pill">' +
+              esc(p.room) +
+              "</span></td><td>" +
+              p.body_id +
+              "</td></tr>";
+          }
+          h += "</table>";
+          $("players").innerHTML = h;
+        }
+
+        if (!s.rooms || s.rooms.length === 0) {
+          $("rooms").innerHTML = '<div class="empty">no rooms</div>';
+        } else {
+          let h = "<table><tr><th>code</th><th>clients</th></tr>";
+          for (const r of s.rooms) {
+            h +=
+              '<tr><td><span class="pill">' +
+              esc(r.code) +
+              "</span></td><td>" +
+              r.clients +
+              "</td></tr>";
+          }
+          h += "</table>";
+          $("rooms").innerHTML = h;
+        }
+      } catch (e) {
+        $("sub").innerHTML = '<span class="err">' + esc(e.message) + "</span>";
+      }
+    }
+
+    // Pair sessions: for each login event, the matching logout is the
+    // next event with the same (name, room) after that login. If no
+    // logout exists the session is "live" (still on the server) and we
+    // compute duration against `now` so the dashboard ticks upward.
+    function pairSessions(events) {
+      const sorted = events.slice().sort((a, b) => a.ts - b.ts);
+      const out = [];
+      const openByKey = new Map(); // "name|room" -> index in out
+      for (const e of sorted) {
+        const key = e.name + "|" + e.room;
+        if (e.event === "login") {
+          openByKey.set(key, out.length);
+          out.push({
+            name: e.name,
+            room: e.room,
+            login_ts: e.ts,
+            logout_ts: null,
+          });
+        } else if (e.event === "logout") {
+          if (openByKey.has(key)) {
+            const idx = openByKey.get(key);
+            out[idx].logout_ts = e.ts;
+            openByKey.delete(key);
+          } else {
+            // Orphan logout (login predates the audit window).
+            out.push({
+              name: e.name,
+              room: e.room,
+              login_ts: null,
+              logout_ts: e.ts,
+            });
+          }
+        }
+      }
+      return out.reverse();
+    }
+
+    async function refreshSessions() {
+      try {
+        const d = await getJSON("/logins?n=200");
+        const list = d.sessions || [];
+        if (list.length === 0) {
+          $("sessions").innerHTML =
+            '<div class="empty">no events yet</div>';
+          return;
+        }
+        const paired = pairSessions(list).slice(0, 50);
+        const now = Math.floor(Date.now() / 1000);
+        let h =
+          "<table><tr><th>login</th><th>logout</th><th>name</th>" +
+          "<th>room</th><th>duration</th></tr>";
+        for (const r of paired) {
+          let dur, durClass;
+          if (r.login_ts == null) {
+            dur = "(no login)";
+            durClass = "dur";
+          } else if (r.logout_ts == null) {
+            dur = fmtDur(now - r.login_ts) + " (live)";
+            durClass = "dur live";
+          } else {
+            dur = fmtDur(r.logout_ts - r.login_ts);
+            durClass = "dur";
+          }
+          h +=
+            '<tr><td class="ts">' +
+            (r.login_ts ? fmtTime(r.login_ts) : "-") +
+            '</td><td class="ts">' +
+            (r.logout_ts ? fmtTime(r.logout_ts) : "-") +
+            "</td><td>" +
+            esc(r.name) +
+            '</td><td><span class="pill">' +
+            esc(r.room) +
+            '</span></td><td class="' +
+            durClass +
+            '">' +
+            esc(dur) +
+            "</td></tr>";
+        }
+        h += "</table>";
+        $("sessions").innerHTML = h;
+      } catch (e) {
+        $("sessions").innerHTML = '<div class="err">' + esc(e.message) + "</div>";
+      }
+    }
+
+    async function refreshChat() {
+      try {
+        const d = await getJSON("/chat?n=50");
+        if (!d.chat || d.chat.length === 0) {
+          $("chat").innerHTML = '<div class="empty">no chat yet</div>';
+          return;
+        }
+        let h =
+          "<table><tr><th>time</th><th>name</th><th>room</th><th>message</th></tr>";
+        for (const e of d.chat.slice().reverse()) {
+          h +=
+            '<tr><td class="ts">' +
+            fmtTime(e.ts) +
+            "</td><td>" +
+            esc(e.name) +
+            '</td><td><span class="pill">' +
+            esc(e.room) +
+            "</span></td><td>" +
+            esc(e.text) +
+            "</td></tr>";
+        }
+        h += "</table>";
+        $("chat").innerHTML = h;
+      } catch (e) {
+        $("chat").innerHTML = '<div class="err">' + esc(e.message) + "</div>";
+      }
+    }
+
+    updateFooterLinks();
+    refreshStatus();
+    refreshSessions();
+    refreshChat();
+    setInterval(refreshStatus, 2000);
+    setInterval(refreshSessions, 5000);
+    setInterval(refreshChat, 5000);
+  </script>
+</body>
+</html>

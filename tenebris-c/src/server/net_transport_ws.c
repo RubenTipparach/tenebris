@@ -101,7 +101,19 @@ static int serve_http(struct lws* wsi, int status,
     unsigned char* p   = buf + LWS_PRE;
     unsigned char* end = buf + sizeof buf - 1;
     if (lws_add_http_common_headers(wsi, (unsigned int)status, mime,
-                                       (unsigned long)body_len, &p, end) ||
+                                       (unsigned long)body_len, &p, end)) {
+        return -1;
+    }
+    /* CORS - the dashboard lives on github.io while the JSON endpoints
+     * are served from fly.dev, so a wildcard origin is required for
+     * fetch() to read the response. Read-only, no credentials, so the
+     * usual "don't use *" caveats don't bite us. */
+    if (lws_add_http_header_by_name(wsi,
+            (const unsigned char*)"Access-Control-Allow-Origin",
+            (const unsigned char*)"*", 1, &p, end) ||
+        lws_add_http_header_by_name(wsi,
+            (const unsigned char*)"Access-Control-Allow-Methods",
+            (const unsigned char*)"GET, OPTIONS", 12, &p, end) ||
         lws_finalize_write_http_header(wsi, buf + LWS_PRE, &p, end)) {
         return -1;
     }
