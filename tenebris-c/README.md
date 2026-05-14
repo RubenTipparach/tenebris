@@ -51,6 +51,7 @@ you can inspect activity straight from a browser or `curl`:
 | Endpoint | Description |
 | --- | --- |
 | [`GET /health`](https://tenebris-c.fly.dev/health) | Plaintext "alive" line + usage hint. |
+| [`GET /status`](https://tenebris-c.fly.dev/status) | Live JSON snapshot: uptime, tick rate, CPU %, RAM (RSS/VmSize), online players (id/name/room/body), and allocated rooms. |
 | [`GET /logins`](https://tenebris-c.fly.dev/logins) | JSON array of `{ts, event, name, room}` records. `event` is `"login"` (handshake success) or `"logout"` (client disconnect after handshake). |
 | [`GET /chat`](https://tenebris-c.fly.dev/chat) | JSON array of `{ts, name, room, text}` chat messages, server-wide, time-ordered. |
 

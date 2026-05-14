@@ -5,6 +5,8 @@
 #include "core/math.h"
 #include <math.h>   /* sqrt for the spawn-altitude diagnostic */
 #include <stdarg.h> /* va_list for the HTTP dashboard's JSON builder */
+#include <sys/resource.h>   /* getrusage for the /status CPU sampler */
+#include <unistd.h>         /* sysconf for clock ticks + core count */
 #include "core/net_transport.h"
 #include "core/planet.h"
 #include "core/proto.h"
@@ -1038,14 +1040,146 @@ static const char* strip_query(const char* path, char* out, size_t cap) {
     return out;
 }
 
+/* Process self-stats for /status. CPU usage is sampled across calls:
+ * we record (utime+stime, wall) on each request and report the delta
+ * since the previous one as a percentage of one core. Memory comes
+ * straight from /proc/self/status. Linux-only, which matches the
+ * deployment target (Fly.io runs a Debian-based image). */
+typedef struct {
+    double last_wall_s;
+    double last_cpu_s;
+    double cached_percent;
+} cpu_sampler_t;
+static cpu_sampler_t G_CPU = { 0 };
+static double         G_START_WALL_S = 0.0;
+
+static double monotonic_seconds_local(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+}
+
+static double cpu_seconds_used(void) {
+    struct rusage ru;
+    if (getrusage(RUSAGE_SELF, &ru) != 0) return 0.0;
+    return (double)ru.ru_utime.tv_sec + (double)ru.ru_utime.tv_usec * 1e-6
+         + (double)ru.ru_stime.tv_sec + (double)ru.ru_stime.tv_usec * 1e-6;
+}
+
+static double cpu_percent_sample(void) {
+    double now = monotonic_seconds_local();
+    double cpu = cpu_seconds_used();
+    if (G_CPU.last_wall_s == 0.0) {
+        G_CPU.last_wall_s = now;
+        G_CPU.last_cpu_s = cpu;
+        return 0.0;
+    }
+    double dt = now - G_CPU.last_wall_s;
+    /* Below 50 ms the delta is too noisy - reuse the previous value. */
+    if (dt < 0.05) return G_CPU.cached_percent;
+    double dcpu = cpu - G_CPU.last_cpu_s;
+    G_CPU.last_wall_s = now;
+    G_CPU.last_cpu_s  = cpu;
+    G_CPU.cached_percent = (dt > 0.0) ? (dcpu / dt * 100.0) : 0.0;
+    return G_CPU.cached_percent;
+}
+
+/* Pull one named field (e.g. "VmRSS") out of /proc/self/status. The
+ * format is `Name:\t<int> kB`. Returns the integer in kB, or -1 on
+ * any error (file missing on a non-Linux host, key absent, etc.). */
+static long proc_status_kb(const char* key) {
+    FILE* f = fopen("/proc/self/status", "r");
+    if (!f) return -1;
+    size_t klen = strlen(key);
+    char line[256];
+    long out = -1;
+    while (fgets(line, sizeof line, f)) {
+        if (strncmp(line, key, klen) == 0 && line[klen] == ':') {
+            out = strtol(line + klen + 1, NULL, 10);
+            break;
+        }
+    }
+    fclose(f);
+    return out;
+}
+
+static size_t build_status_json(server_t* s) {
+    size_t pos = 0;
+    double now = monotonic_seconds_local();
+    if (G_START_WALL_S == 0.0) G_START_WALL_S = now;
+    double uptime = now - G_START_WALL_S;
+    double cpu_pct = cpu_percent_sample();
+    long   rss_kb  = proc_status_kb("VmRSS");
+    long   vm_kb   = proc_status_kb("VmSize");
+    long   cores   = sysconf(_SC_NPROCESSORS_ONLN);
+    if (cores < 1) cores = 1;
+
+    json_appendf(&pos,
+        "{\"uptime_s\":%.1f,\"tick\":%llu,\"tick_hz\":%.1f,"
+        "\"cpu\":{\"percent\":%.2f,\"cores\":%ld},"
+        "\"memory\":{\"rss_kb\":%ld,\"vm_kb\":%ld},",
+        uptime, (unsigned long long)s->tick, s->cfg.tick_hz,
+        cpu_pct, cores, rss_kb, vm_kb);
+
+    /* Online players. Same handshaked gate as the rest of the server
+     * uses for "real" clients - half-open sockets don't leak in. */
+    json_appendf(&pos, "\"players\":[");
+    bool first = true;
+    int player_count = 0;
+    for (int i = 0; i < SERVER_MAX_CLIENTS; ++i) {
+        const server_client_t* cl = &s->clients[i];
+        if (!cl->conn || !cl->handshaked) continue;
+        char esc_name[SAVES_CHAT_NAME_MAX * 2 + 4];
+        char esc_room[32];
+        json_escape(cl->name, esc_name, sizeof esc_name);
+        json_escape(cl->room[0] ? cl->room : "__public__",
+                    esc_room, sizeof esc_room);
+        json_appendf(&pos,
+            "%s{\"player_id\":%u,\"name\":\"%s\",\"room\":\"%s\","
+            "\"body_id\":%u,\"has_state\":%s}",
+            first ? "" : ",",
+            cl->player_id, esc_name, esc_room, cl->body_id,
+            cl->has_state ? "true" : "false");
+        first = false;
+        ++player_count;
+    }
+    json_appendf(&pos, "],\"player_count\":%d,", player_count);
+
+    /* Allocated rooms. Includes the public slot at index 0 once it
+     * has been touched; idle private rooms within the grace window
+     * still show up so the operator can see them age out. */
+    json_appendf(&pos, "\"rooms\":[");
+    first = true;
+    for (int i = 0; i < SERVER_MAX_ROOMS; ++i) {
+        const server_room_t* r = &s->rooms[i];
+        if (!r->in_use) continue;
+        char esc_code[32];
+        json_escape(r->code[0] ? r->code : "__public__",
+                    esc_code, sizeof esc_code);
+        json_appendf(&pos,
+            "%s{\"code\":\"%s\",\"clients\":%d}",
+            first ? "" : ",", esc_code, r->ref_count);
+        first = false;
+    }
+    json_appendf(&pos, "]}");
+    return pos;
+}
+
 static int on_http(const char* path,
                     const uint8_t** out_body, size_t* out_body_len,
                     const char** out_mime, void* user) {
-    (void)user;
+    server_t* s = (server_t*)user;
     if (!path) return 0;
     char clean[256];
     strip_query(path, clean, sizeof clean);
 
+    if (strcmp(clean, "/status") == 0) {
+        size_t len = s ? build_status_json(s) : 0;
+        *out_body     = (const uint8_t*)HTTP_BODY;
+        *out_body_len = len;
+        *out_mime     = "application/json; charset=utf-8";
+        return 1;
+    }
     if (strcmp(clean, "/logins") == 0) {
         int n = http_query_int(path, "n", 200);
         size_t len = build_audit_json("sessions", n);
@@ -1065,6 +1199,7 @@ static int on_http(const char* path,
     if (strcmp(clean, "/") == 0 || strcmp(clean, "/health") == 0) {
         static const char msg[] =
             "tenebris-server alive\n"
+            "  GET /status         - live JSON (players, CPU, RAM, rooms)\n"
             "  GET /logins[?n=N]   - last N login/logout events\n"
             "  GET /chat[?n=N]     - last N chat messages\n";
         *out_body     = (const uint8_t*)msg;
