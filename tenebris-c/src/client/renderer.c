@@ -440,9 +440,15 @@ static void load_water_normal(void) {
         /* Asset missing: upload a 1x1 flat-blue so the sampler stays
          * valid. Mobile water reads as a glassy slab but doesn't
          * crash. */
+        printf("[renderer] WARNING: assets/textures/water_normal.png "
+               "missing; mobile water normals will be flat\n");
         upload = fallback;
         w = h = 1;
+    } else {
+        printf("[renderer] loaded water_normal.png %dx%d (channels=%d)\n",
+               w, h, c);
     }
+    fflush(stdout);
     R.water_normal_img = sg_make_image(&(sg_image_desc){
         .width = w, .height = h,
         .pixel_format = SG_PIXELFORMAT_RGBA8,
