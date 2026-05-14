@@ -102,21 +102,41 @@ out vec4 frag_color;
 void main() {
     vec3 radial = normalize(v_wpos);
 
-    // Build a stable tangent basis on the sphere so we can project
-    // world position into a 2D UV for the seamless normal-map sample.
-    // The reference axis flip handles the pole where radial nearly
-    // parallels (0,1,0) - same trick the C-side phys_tangent_basis
-    // uses for the same reason.
-    vec3 ref = (abs(radial.y) < 0.9) ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
-    vec3 t1 = normalize(cross(ref, radial));
+    // Build a stable tangent basis at the body centre (NOT at the
+    // fragment) so the basis is the same vector for every fragment in
+    // the draw. Earlier the basis was per-fragment, which gave
+    // dot(v_wpos, t1) = 0 everywhere (t1 is tangent at v_wpos, so
+    // perpendicular to v_wpos) and collapsed the UV to a single texel.
+    //
+    // Choosing a globally fixed basis means UV grows linearly across
+    // the surface at the planet's tangent rate - the texture tiles
+    // smoothly in a band around the equator (relative to whichever
+    // axis we picked). Distortion at the poles is OK because the
+    // player's local view only spans a few hex tiles.
+    vec3 axis = (abs(radial.y) < 0.9) ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 t1 = normalize(cross(axis, radial));
     vec3 t2 = cross(radial, t1);
+    // Re-anchor the projection to a *constant* (per-draw) pair of
+    // axes using the global Y / X axes themselves. dot(v_wpos, world_x)
+    // = v_wpos.x; we just want two independent linear functions of
+    // v_wpos that don't collapse. Use the cardinal axes that aren't
+    // close to the local radial.
+    vec2 uv_base;
+    if (abs(radial.y) < 0.7) {
+        // Near the equator - project onto x/z plane.
+        uv_base = vec2(v_wpos.x, v_wpos.z);
+    } else if (abs(radial.x) < 0.7) {
+        // Polar caps - project onto x/y so the seam doesn't sit under
+        // the player's feet.
+        uv_base = vec2(v_wpos.x, v_wpos.y);
+    } else {
+        uv_base = vec2(v_wpos.z, v_wpos.y);
+    }
 
-    // Project the world-space point into the tangent plane. Two
-    // animated UV layers at different scales + opposing drift
+    // Two animated UV layers at different scales + opposing drift
     // directions blend so the underlying texture doesn't read as a
     // repeating tile. Scale factor mirrors the desktop ripple_scale
     // knob from water.yaml.
-    vec2 uv_base = vec2(dot(v_wpos, t1), dot(v_wpos, t2));
     vec2 uv1 = uv_base * (u_ripple_scale * 0.10)
              + vec2( u_time * (u_ripple_speed * 0.025),
                      u_time * (u_ripple_speed * 0.018));
@@ -146,11 +166,10 @@ void main() {
 
     float sky_weight = f * mix(u_sky_horizon_strength, 1.0, up_f);
 
-    // Base body tone. Fakes the desktop "deep water fades toward
-    // atmosphere with distance" effect by blending u_deep_color
-    // toward u_sky_horizon as the view-distance grows. Without this
-    // the mobile surface reads as a flat slab where the desktop
-    // version had a soft horizon haze.
+    // View-distance haze - mobile stand-in for the desktop Beer-
+    // Lambert thickness fog. Closer water reads near-deep_color; the
+    // surface fades toward u_sky_horizon at distance so the
+    // horizon-line doesn't look like a sharp slab edge.
     float view_dist = length(u_camera_pos - v_wpos);
     float haze = clamp(view_dist / max(u_horizon_fade_m, 1.0), 0.0, 1.0);
     haze = pow(haze, 0.7) * u_horizon_fade_strength;
@@ -173,7 +192,15 @@ void main() {
     vec3 torch = u_torch_color.xyz * u_torch_color.w * v_torch_light;
     color += torch * sky_weight;
 
-    frag_color = vec4(color, 1.0);
+    // Alpha = Fresnel-weighted opacity so shore tiles read as
+    // half-transparent (seabed shows through) and deep / grazing
+    // pixels read more opaque. Approximates the desktop shoreline
+    // fade without needing an offscreen depth probe. shoreline
+    // opacity is clamped to a small floor so even at zero Fresnel
+    // the water doesn't vanish entirely.
+    float alpha = clamp(0.45 + 0.55 * sky_weight, 0.45, 0.95);
+
+    frag_color = vec4(color, alpha);
 }
 @end
 

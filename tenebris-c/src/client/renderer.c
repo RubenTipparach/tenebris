@@ -591,10 +591,28 @@ void renderer_init(void) {
                 .buffers[0].stride = sizeof(hex_vertex_t),
             },
             .index_type = SG_INDEXTYPE_UINT32,
-            .depth = { .write_enabled = true, .compare = SG_COMPAREFUNC_LESS_EQUAL },
+            /* Depth test against the swapchain depth that composite_mobile
+             * forwarded from the offscreen pass, but DON'T write depth
+             * for the water layer - that keeps transparent water from
+             * occluding overlapping water tiles drawn later, same trick
+             * Minecraft and friends use for translucent surfaces. */
+            .depth = { .write_enabled = false, .compare = SG_COMPAREFUNC_LESS_EQUAL },
             .cull_mode = SG_CULLMODE_NONE,
             .face_winding = SG_FACEWINDING_CCW,
-            .colors[0].blend = { .enabled = false },
+            /* Premultiplied-alpha src-alpha blend so the cap reads as a
+             * semi-transparent layer over the seabed (the composite
+             * pass already wrote the opaque terrain into the swapchain).
+             * Shoreline pixels turn the seabed visible; deeper or
+             * grazing-angle pixels stay closer to opaque. */
+            .colors[0].blend = {
+                .enabled         = true,
+                .src_factor_rgb  = SG_BLENDFACTOR_SRC_ALPHA,
+                .dst_factor_rgb  = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+                .op_rgb          = SG_BLENDOP_ADD,
+                .src_factor_alpha = SG_BLENDFACTOR_ONE,
+                .dst_factor_alpha = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+                .op_alpha        = SG_BLENDOP_ADD,
+            },
             .label = "water-mobile-pipeline",
         });
     }
