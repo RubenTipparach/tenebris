@@ -241,6 +241,32 @@ goldberg_t* goldberg_create(int subdivisions) {
         }
         sort_corners_ccw(t->verts, vf_count[v], t->center);
         for (int k = 0; k < vn_count[v]; ++k) t->neighbors[k] = vn[v][k];
+
+        /* Edge-aligned neighbour map. For each edge k (corner k ->
+         * corner k+1), pick the neighbour whose direction-from-centre
+         * best aligns with the edge midpoint direction. The neighbour
+         * sits "across" that edge - tangent vectors from this tile
+         * toward a neighbouring tile are perpendicular to their shared
+         * edge, but since both centres lie on the unit sphere we can
+         * use the chord direction (neighbour.center - this.center) as
+         * a proxy and still rank by dot product against the edge
+         * midpoint. Worst-case mapping cost is 6 edges * 6 neighbours
+         * = 36 dot products per tile, one-shot at construction. */
+        const int n = vf_count[v];
+        for (int k = 0; k < n; ++k) {
+            dvec3_t mid = dvec3_scale(
+                dvec3_add(t->verts[k], t->verts[(k + 1) % n]), 0.5);
+            dvec3_t edge_dir = dvec3_normalize(dvec3_sub(mid, t->center));
+            int best = -1;
+            double best_dot = -2.0;
+            for (int i = 0; i < t->num_neighbors; ++i) {
+                int ni = t->neighbors[i];
+                dvec3_t nd = dvec3_normalize(dvec3_sub(vs.v[ni], t->center));
+                double d = nd.x * edge_dir.x + nd.y * edge_dir.y + nd.z * edge_dir.z;
+                if (d > best_dot) { best_dot = d; best = ni; }
+            }
+            t->edge_neighbours[k] = best;
+        }
     }
 
     free(vf); free(vn); free(vf_count); free(vn_count);

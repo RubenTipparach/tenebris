@@ -146,6 +146,42 @@ static float torch_light_voxel(const world_t* w, int tile, int depth_at_air) {
     return (float)world_light_block(w->light, tile, depth_at_air) / 15.0f;
 }
 
+/* Smooth-lighting corner sample. Averages the sky + block nibbles
+ * across the three voxels that share a hex/pent corner (this tile +
+ * the two edge-adjacent neighbours), each sampled at the same depth.
+ * Returns 0..1 fractions in *out_sky / *out_block. Caller passes the
+ * two flanking edge neighbours (edge_neighbours[k-1], edge_neighbours[k])
+ * for corner k. -1 in either slot is skipped (open-edge pentagon
+ * boundary, not actually possible for closed-surface goldbergs but
+ * the guard keeps the helper safe). */
+static void smooth_corner_sample(const world_t* w,
+                                 int tile, int nbr_a, int nbr_b,
+                                 int depth_at_air,
+                                 float* out_sky, float* out_block) {
+    if (!w || !w->light) { *out_sky = 1.0f; *out_block = 0.0f; return; }
+    int sky_sum   = 0;
+    int block_sum = 0;
+    int samples   = 0;
+    int max = config_lighting()->voxel_sky_max;
+    if (max <= 0) max = 15;
+
+    int tiles[3] = { tile, nbr_a, nbr_b };
+    for (int i = 0; i < 3; ++i) {
+        int ti = tiles[i];
+        if (ti < 0) continue;
+        sky_sum   += world_light_sky  (w->light, ti, depth_at_air);
+        block_sum += world_light_block(w->light, ti, depth_at_air);
+        ++samples;
+    }
+    if (samples == 0) { *out_sky = 0.0f; *out_block = 0.0f; return; }
+    float s = (float)sky_sum   / (float)(samples * max);
+    float b = (float)block_sum / (float)(samples * 15);
+    if (s > 1.0f) s = 1.0f;
+    if (b > 1.0f) b = 1.0f;
+    *out_sky   = s;
+    *out_block = b;
+}
+
 /* ----------------------------------------------------------------------- */
 
 /* Per-voxel hex-prism width factor along the tangent plane. 1.0 = full
@@ -222,25 +258,28 @@ static void emit_cap(hex_mesh_t* out,
     const bool voxel = use_voxel_engine();
     const int  depth_at_air = is_top ? depth + 1 : depth;
 
-    /* Sky + (in voxel mode) torch are shared by every vertex of the cap
-     * since they're sampled at the cap's air-side voxel. Column mode
-     * keeps the legacy per-vertex torch lookup so smooth inverse-square
-     * falloff is preserved when the engine is left at its default. */
-    float sky_at = 0.0f;
-    float voxel_torch_shared = 0.0f;
+    /* Cap centre samples just (this_tile, depth_at_air). Each corner
+     * vertex samples the three voxels meeting at that corner - the
+     * own column plus the two edge-flanking neighbours - and averages,
+     * giving per-vertex smooth lighting under the voxel engine. Column
+     * mode keeps the legacy "sky shared across the cap + per-vertex
+     * inverse-square torch" path so flipping engine: column back on
+     * is a pure visual revert. */
+    float center_sky   = 0.0f;
+    float center_block = 0.0f;
     if (bake_lighting) {
         if (voxel) {
-            sky_at             = sky_light_voxel(w, tile_idx, depth_at_air);
-            voxel_torch_shared = torch_light_voxel(w, tile_idx, depth_at_air);
+            center_sky   = sky_light_voxel  (w, tile_idx, depth_at_air);
+            center_block = torch_light_voxel(w, tile_idx, depth_at_air);
         } else {
-            sky_at = sky_light_at(w, tile_idx, depth_at_air);
+            center_sky = sky_light_at(w, tile_idx, depth_at_air);
         }
     }
 
     float center_torch = !bake_lighting ? 0.0f
-                       : voxel          ? voxel_torch_shared
+                       : voxel          ? center_block
                        : torch_light_at(dvec3_to_vec3f(center_pos));
-    push_vertex(out, center_pos, normal, uc, vc, sky_at, center_torch, wet);
+    push_vertex(out, center_pos, normal, uc, vc, center_sky, center_torch, wet);
 
     for (int k = 0; k < n; ++k) {
         dvec3_t corner_dir = shrink_corner(t, k, width);
@@ -248,10 +287,20 @@ static void emit_cap(hex_mesh_t* out,
         double angle = (double)k / (double)n * 6.2831853 - 1.5707963;
         float u = uc + (float)cos(angle) * HEX_ATLAS_U_STEP * 0.5f;
         float v = vc + (float)sin(angle) * 0.5f;
+
+        float corner_sky   = center_sky;
+        float corner_block = center_block;
+        if (bake_lighting && voxel) {
+            int nbr_a = t->edge_neighbours[(k - 1 + n) % n];
+            int nbr_b = t->edge_neighbours[k];
+            smooth_corner_sample(w, tile_idx, nbr_a, nbr_b, depth_at_air,
+                                 &corner_sky, &corner_block);
+        }
+
         float corner_torch = !bake_lighting ? 0.0f
-                           : voxel          ? voxel_torch_shared
+                           : voxel          ? corner_block
                            : torch_light_at(dvec3_to_vec3f(corner));
-        push_vertex(out, corner, normal, u, v, sky_at, corner_torch, wet);
+        push_vertex(out, corner, normal, u, v, corner_sky, corner_torch, wet);
     }
 
     for (int k = 0; k < n; ++k) {
@@ -308,29 +357,46 @@ static void emit_side_quad(hex_mesh_t* out,
     float u1 = u0 + HEX_ATLAS_U_STEP;
 
     const bool voxel = use_voxel_engine();
-    float sky;
-    float t_ia, t_ib, t_oa, t_ob;
+    /* sky_a/sky_b carry the per-corner sky values at the OUTER ring
+     * (top of the block at depth d). The mesher carries a single sky
+     * sample down each side face today; we keep that vertical-uniform
+     * behaviour but split horizontally per corner so the gradient
+     * across the face matches the cap's gradient at the join. Block
+     * (torch) channel follows the same shape under voxel; column
+     * mode keeps per-vertex inverse-square. */
+    float sky_a = 0.0f, sky_b = 0.0f;
+    float t_ia = 0.0f, t_ib = 0.0f, t_oa = 0.0f, t_ob = 0.0f;
     if (voxel) {
-        sky = sky_light_voxel(w, tile_idx, depth + 1);
-        /* Side faces have no explicit "neighbour-air voxel" mapping in
-         * the mesher (the same six quads are emitted regardless of
-         * which neighbour is open), so we share the cap-air sample
-         * across all four corners. Block-light is shared the same way -
-         * the propagated value already reflects 3D occlusion. */
-        float tv = torch_light_voxel(w, tile_idx, depth + 1);
-        t_ia = t_ib = t_oa = t_ob = tv;
+        const int n = t->num_verts;
+        /* Edge k spans corner k_a -> k_b, so the across-face neighbour
+         * is edge_neighbours[k_a]. Corner k_a is bounded by edges
+         * (k_a-1, k_a); corner k_b by edges (k_a, k_a+1). The shared
+         * "across" edge is k_a for both, plus one outboard edge each. */
+        const int edge_k = k_a;
+        const int nbr_a_outboard = t->edge_neighbours[(k_a - 1 + n) % n];
+        const int nbr_b_outboard = t->edge_neighbours[(k_b)         % n];
+        const int nbr_across     = t->edge_neighbours[edge_k];
+        float bl_a, bl_b;
+        smooth_corner_sample(w, tile_idx, nbr_a_outboard, nbr_across,
+                             depth + 1, &sky_a, &bl_a);
+        smooth_corner_sample(w, tile_idx, nbr_across, nbr_b_outboard,
+                             depth + 1, &sky_b, &bl_b);
+        t_ia = bl_a;  t_oa = bl_a;
+        t_ib = bl_b;  t_ob = bl_b;
     } else {
-        sky  = sky_light_at(w, tile_idx, depth + 1);
+        /* Legacy path: sky shared across the quad, torch per-vertex. */
+        float legacy_sky = sky_light_at(w, tile_idx, depth + 1);
+        sky_a = sky_b = legacy_sky;
         t_ia = torch_light_at(dvec3_to_vec3f(inner_a));
         t_ib = torch_light_at(dvec3_to_vec3f(inner_b));
         t_oa = torch_light_at(dvec3_to_vec3f(outer_a));
         t_ob = torch_light_at(dvec3_to_vec3f(outer_b));
     }
 
-    push_vertex(out, inner_a, normal, u0, 0.0f, sky, t_ia, wet);
-    push_vertex(out, inner_b, normal, u1, 0.0f, sky, t_ib, wet);
-    push_vertex(out, outer_b, normal, u1, 1.0f, sky, t_ob, wet);
-    push_vertex(out, outer_a, normal, u0, 1.0f, sky, t_oa, wet);
+    push_vertex(out, inner_a, normal, u0, 0.0f, sky_a, t_ia, wet);
+    push_vertex(out, inner_b, normal, u1, 0.0f, sky_b, t_ib, wet);
+    push_vertex(out, outer_b, normal, u1, 1.0f, sky_b, t_ob, wet);
+    push_vertex(out, outer_a, normal, u0, 1.0f, sky_a, t_oa, wet);
 
     out->indices[out->index_count++] = base + 0;
     out->indices[out->index_count++] = base + 1;

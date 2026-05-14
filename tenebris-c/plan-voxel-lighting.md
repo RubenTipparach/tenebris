@@ -48,11 +48,12 @@ overhang shadows and wall-blocked torches as the gain.
   (configurable per torch type). Propagate losing 1 per step.
   Removal currently triggers a full relight; the BFS-darken + re-
   light-from-remaining-sources optimisation lands in Phase 2.
-- [~] **1.4** Per-vertex sample at mesh time. `sky_light_voxel` /
-  `torch_light_voxel` in `hex_mesher.c` read from the grid when the
-  engine is voxel and bake into the existing vertex attributes.
-  Currently a single-voxel sample shared across cap corners; smooth
-  4-8 neighbour averaging is a follow-up.
+- [x] **1.4** Per-vertex smooth sampling. Cap corners average the
+  three voxels meeting at that corner (own column + two edge-flanking
+  neighbours via the new `goldberg_tile_t.edge_neighbours[]` table).
+  Side quads sample the across-face air voxel through `edge_neighbours[k]`
+  and split sky horizontally per corner so the cap-to-side join matches.
+  Column mode still bakes per-vertex inverse-square torch contribution.
 - [x] **1.5** `assets/config/lighting.yaml` engine + voxel knobs
   (`voxel_sky_max`, `voxel_torch_emission`). Parser pattern follows
   the existing lighting section in `core/config.c`.

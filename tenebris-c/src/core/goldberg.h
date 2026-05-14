@@ -30,6 +30,18 @@ typedef struct {
     bool    is_pentagon;
     dvec3_t verts[GOLDBERG_MAX_VERTS_PER_TILE];        /* CCW around center */
     int32_t neighbors[GOLDBERG_MAX_NEIGHBORS];         /* tile indices */
+    /* Edge-aligned neighbour table. edge_neighbours[k] is the tile
+     * across the edge spanning verts[k] -> verts[(k+1)%num_verts].
+     * Built at construction time by best-angular-match between each
+     * edge midpoint direction and the per-neighbour direction-from-
+     * centre, so it's safe to index even though the `neighbors[]`
+     * array above carries no defined angular order. Corner k is
+     * touched by edge_neighbours[(k-1+n)%n] and edge_neighbours[k] -
+     * the two tiles that share that corner with this one. Used by
+     * the mesher to sample the air voxel ACROSS a given side face
+     * (rather than the air voxel above the column) and to drive per-
+     * corner smooth lighting on the cap. */
+    int32_t edge_neighbours[GOLDBERG_MAX_NEIGHBORS];
 } goldberg_tile_t;
 
 typedef struct goldberg_s goldberg_t;
