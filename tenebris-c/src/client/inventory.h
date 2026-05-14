@@ -45,4 +45,9 @@ void   inventory_consume(inventory_t* inv);
 /* Move selection. Wraps. */
 void   inventory_select(inventory_t* inv, int slot);
 
+/* Enforce the "slot 0 is always torches" invariant. Called after
+ * boot init (redundant but cheap) and after every server-driven
+ * inventory restore so a stale save can never strip the torch slot. */
+void   inventory_ensure_reserved_torch(inventory_t* inv);
+
 #endif

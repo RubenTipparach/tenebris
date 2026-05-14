@@ -738,6 +738,21 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
     jerk_log(p, &before, w, dt);
 }
 
+void player_rebuild_basis(player_ctrl_t* p) {
+    if (!p || !p->body) return;
+    /* phys_tangent_basis fabricates an orthonormal triad with .up
+     * pointing radially out from the body and fwd/right arbitrary
+     * tangents - good enough for both planet-mode (the slerp will
+     * align fwd to look-direction) and space-mode (mouse rotates
+     * them freely). Zeroing yaw/pitch keeps the camera consistent:
+     * a fresh basis means the saved yaw/pitch are spent now. */
+    dvec3_t local = player_local_pos(p);
+    p->basis = phys_tangent_basis(local);
+    p->basis_ready = true;
+    p->yaw   = 0.0f;
+    p->pitch = 0.0f;
+}
+
 void player_set_body(player_ctrl_t* p, const body_config_t* body) {
     if (!p || !body || p->body == body) return;
     p->body = body;

@@ -1046,9 +1046,41 @@ static void maybe_apply_mp_spawn(void) {
      *     was probably in space or on a long jetpack hop, and
      *     yanking them onto a planet they were flying past would
      *     be worse than the floating-spawn it solves. */
+    /* Minimum delta to trigger the snap. planet_surface_altitude() is a
+     * cheap analytic sample of the procedural height field; the actual
+     * collision mesh is produced by the chunker and disagrees by up to
+     * ~1 m at the same direction. A saved pose that's grounded on the
+     * mesh therefore reads as ~0.5-1.0 m "above" the analytic surface
+     * here, and the snap used to push it UP into the mesh, after which
+     * the physics solver ejected the player 25-30 m radially to escape
+     * interpenetration - exactly the floating-spawn we were trying to
+     * fix. Only trigger the snap when the saved pose is meaningfully
+     * above the surface (mid-jump / jetpack saves), not for sub-metre
+     * procgen-vs-mesh noise. */
+    const double SNAP_MIN_ALT_M = 3.0;
     const double SNAP_MAX_ALT_M = 100.0;
-    const body_id_t spawn_body_id = (body_id_t)w->body_id;
-    const body_config_t* spawn_body = planet_get(spawn_body_id);
+    /* body_id resolution. Three cases:
+     *   - BODY_ID_IN_SPACE: player logged out in deep space. Apply
+     *     the absolute pose, no snap, and don't bind the player to
+     *     any body. The next planet_gravity_at tick will pick one up
+     *     if the saved coords happen to be inside a falloff radius.
+     *   - Valid id we know about: snap as before AND explicitly bind
+     *     G.player.body so the renderer activates that body the same
+     *     frame instead of waiting one gravity-tick of auto-switch.
+     *     This is what fixes "logged out on a different planet, came
+     *     back to a black screen".
+     *   - Unknown / out-of-range id: log and treat like in-space. */
+    const body_config_t* spawn_body = NULL;
+    const bool spawn_in_space = (w->body_id == BODY_ID_IN_SPACE);
+    if (spawn_in_space) {
+        printf("[main] MP spawn: body=IN_SPACE, applying absolute pose without ground-snap\n");
+    } else {
+        spawn_body = planet_get((body_id_t)w->body_id);
+        if (!spawn_body) {
+            printf("[main] WARN MP spawn: unknown body_id=%u, treating as in-space\n",
+                   w->body_id);
+        }
+    }
     if (spawn_body) {
         dvec3_t center = dvec3_make(spawn_body->pos_x,
                                      spawn_body->pos_y,
@@ -1062,7 +1094,7 @@ static void maybe_apply_mp_spawn(void) {
             const double surface_r = spawn_body->radius_m + (double)surf;
             const double ground_r  = surface_r + 1.5;
             const double alt_above_surf = r - surface_r;
-            if (alt_above_surf > 0.0 && alt_above_surf < SNAP_MAX_ALT_M) {
+            if (alt_above_surf > SNAP_MIN_ALT_M && alt_above_surf < SNAP_MAX_ALT_M) {
                 spawn = dvec3_add(center, dvec3_scale(dir, ground_r));
                 printf("[main] MP spawn ground-snapped: was alt=%.1fm, snapped to %.1fm\n",
                        r - spawn_body->radius_m,
@@ -1082,6 +1114,36 @@ static void maybe_apply_mp_spawn(void) {
     G.player.basis_ready = false;
     G.player.last_tile   = -1;
     G.player.transition_timer_s = config_lod()->roll_slerp_duration_s;
+    /* Bind the player to the saved body so the renderer's per-frame
+     * "world for current body" lookup activates the right one on the
+     * very next draw. Without this, a player who logged out near
+     * Crag would rejoin with G.player.body still pointing at the
+     * boot-time Tenebris (registered first at init), and the renderer
+     * would draw an empty frame (Crag not loaded, position too far
+     * from Tenebris for it to render) until the gravity tick swapped
+     * the anchor several frames later.
+     *
+     * In-space rejoin keeps the boot-default body as the anchor.
+     * The whole engine (sync_basis_to_planet, player_local_pos,
+     * renderer atmosphere uniforms, world_for_body fallback) reads
+     * p->body without a NULL check - clearing it produces NaN
+     * through the basis and a black screen. is_in_space is set
+     * separately by the gravity tick once player_update runs, so
+     * 6DOF controls activate naturally; we just need *some* valid
+     * body so the engine has a coordinate frame to render in. */
+    if (spawn_body && G.player.body != spawn_body) {
+        player_set_body(&G.player, spawn_body);
+    }
+    /* Cold-rebuild the basis from the just-applied position. Critical
+     * for in-space spawns - the player enters space-mode immediately
+     * (gravity tick sees no body in falloff), and space-mode never
+     * calls sync_basis_to_planet. Without this the basis stays at
+     * the zero vectors player_init left it at, producing a degenerate
+     * view matrix (black screen) and zero-length thrust axes (player
+     * frozen in place). Cheap; safe on planet-side spawns too since
+     * the planet-mode tick re-syncs the basis on its first frame
+     * anyway. */
+    player_rebuild_basis(&G.player);
     /* Loud diagnostic for the floating-spawn investigation. Reports
      * the WELCOME pose, the body, the final applied position, and
      * the altitude above that body's surface so we can tell exactly
@@ -1129,9 +1191,17 @@ static bool    G_last_sent_valid = false;
 static double G_pos_log_accum_s = 0.0;
 static void   periodic_pos_log(double dt) {
     G_pos_log_accum_s += dt;
-    if (G_pos_log_accum_s < 10.0) return;
+    /* 1 s cadence: short enough that idle-drift (player walking off a
+     * mid-air spawn under gravity) shows up within a sample or two of
+     * the spawn line, instead of having to wait 10 s. */
+    if (G_pos_log_accum_s < 1.0) return;
     G_pos_log_accum_s = 0.0;
-    const body_config_t* b = G.player.body ? G.player.body : G.body;
+    /* Anchor body is what the engine considers the player attached
+     * to. NULL == truly anchorless (logged out in space, before any
+     * gravity tick rebinds). Fall back to G.body only for the
+     * radius / altitude math so the log still has a yardstick. */
+    const body_config_t* anchor = G.player.body;
+    const body_config_t* b      = anchor ? anchor : G.body;
     double r = 0.0, alt = 0.0;
     if (b) {
         double dx = G.player.position.x - b->pos_x;
@@ -1142,9 +1212,19 @@ static void   periodic_pos_log(double dt) {
     }
     const char* mode = (menu_state() == GAME_IN_GAME_MP) ? "MP" :
                        (menu_state() == GAME_IN_GAME_SP) ? "SP" : "menu";
-    printf("[main] pos %s body=%s curr=(%.2f, %.2f, %.2f) r=%.2f alt=%+.2f "
-           "yaw=%.2f pitch=%.2f grounded=%d\n",
-           mode, b ? b->name : "?",
+    /* The engine tracks two separate states: G.player.body (the
+     * last-known gravitational anchor, NULL when the player is in
+     * deep space) and G.player.is_in_space (this-frame gravity-
+     * falloff result). Log both so a "stuck in space" report is
+     * unambiguous about which one is which. NULL anchor renders as
+     * NONE (not the fallback body's name) so a cleared anchor is
+     * visible at a glance. */
+    printf("[main] pos %s anchor=%s%s alt-vs=%s curr=(%.2f, %.2f, %.2f) "
+           "r=%.2f alt=%+.2f yaw=%.2f pitch=%.2f grounded=%d\n",
+           mode,
+           anchor ? anchor->name : "NONE",
+           G.player.is_in_space ? " (in-space)" : "",
+           b ? b->name : "?",
            G.player.position.x, G.player.position.y, G.player.position.z,
            r, alt, G.player.yaw, G.player.pitch, (int)G.player.grounded);
     if (G_last_sent_valid) {
@@ -1160,11 +1240,21 @@ static void   periodic_pos_log(double dt) {
         double ddy = G.player.position.y - G_last_sent_pos.y;
         double ddz = G.player.position.z - G_last_sent_pos.z;
         double delta = sqrt(ddx*ddx + ddy*ddy + ddz*ddz);
+        /* Show the IN_SPACE sentinel as a word rather than the raw
+         * 0xFFFFFFFF - 4294967295 in a log line is just noise. Any
+         * other body_id is a real body id (small int) and prints
+         * inline. */
+        char body_str[32];
+        if (G_last_sent_body == BODY_ID_IN_SPACE) {
+            snprintf(body_str, sizeof body_str, "IN_SPACE");
+        } else {
+            snprintf(body_str, sizeof body_str, "%u", G_last_sent_body);
+        }
         printf("[main] pos %s     sent=(%.2f, %.2f, %.2f) r=%.2f alt=%+.2f "
-               "body=%u yaw=%.2f pitch=%.2f  delta_from_curr=%.2fm\n",
+               "body=%s yaw=%.2f pitch=%.2f  delta_from_curr=%.2fm\n",
                mode,
                G_last_sent_pos.x, G_last_sent_pos.y, G_last_sent_pos.z,
-               sr, salt, G_last_sent_body,
+               sr, salt, body_str,
                G_last_sent_yaw, G_last_sent_pitch, delta);
     } else {
         printf("[main] pos %s     sent=(none yet)\n", mode);
@@ -1664,7 +1754,28 @@ static void frame(void) {
         static uint32_t G_state_send_ctr = 0;
         if (menu_state() == GAME_IN_GAME_MP && net_client_state() == NET_CLIENT_READY
             && (++G_state_send_ctr % 3) == 0) {
-            uint32_t body_id = 0;     /* TODO: thread the active body id once SOI is wired */
+            /* Real body anchor on the wire. G.player.body is non-NULL
+             * whenever the player is gravitationally bound; the gravity
+             * tracker at the top of frame() clears nothing on transition
+             * to deep space, but we treat "no body inside any falloff
+             * radius this frame" as in-space by querying planet_gravity_at
+             * directly. The server persists whichever value we send, so
+             * rejoin reaches maybe_apply_mp_spawn with the right anchor. */
+            uint32_t body_id;
+            {
+                const lod_config_t* Lsend = config_lod();
+                gravity_query_t gq_send = planet_gravity_at(G.player.position,
+                                                              Lsend->gravity_full_mult,
+                                                              Lsend->gravity_falloff_mult);
+                if (gq_send.body) {
+                    body_id = (uint32_t)gq_send.body->id;
+                } else {
+                    /* No body in falloff this frame. Player is in deep
+                     * space - persist that fact so rejoin doesn't drop
+                     * them next to a stale planet they're nowhere near. */
+                    body_id = BODY_ID_IN_SPACE;
+                }
+            }
             net_client_send_player_state(G_state_send_ctr,
                                             body_id,
                                             G.player.position.x,
@@ -1681,6 +1792,66 @@ static void frame(void) {
             G_last_sent_yaw     = G.player.yaw;
             G_last_sent_pitch   = G.player.pitch;
             G_last_sent_valid   = true;
+        }
+    }
+    /* MP inventory persistence.
+     *
+     * 1) Server pushes the saved hotbar right after WELCOME via
+     *    MSG_INVENTORY_STATE. Apply it once when it arrives so the
+     *    player picks up the stacks they had at logout. The flag
+     *    self-clears on read so an idle session doesn't keep
+     *    overwriting in-progress mining.
+     * 2) Whenever the local hotbar changes (place / mine / select),
+     *    snapshot it and ship to the server so the next save flush
+     *    has the latest state. Detection is a cheap memcmp against
+     *    the last shipped snapshot - no listening into inventory.c. */
+    if (menu_state() == GAME_IN_GAME_MP && net_client_state() == NET_CLIENT_READY) {
+        uint16_t pend_type[9];
+        int16_t  pend_count[9];
+        int      pend_sel = 0;
+        if (net_client_take_pending_inventory(pend_type, pend_count, &pend_sel)) {
+            for (int i = 0; i < INV_HOTBAR_SLOTS && i < 9; ++i) {
+                G.player.inventory.slots[i].type  = (block_t)pend_type[i];
+                G.player.inventory.slots[i].count = pend_count[i];
+            }
+            if (pend_sel >= 0 && pend_sel < INV_HOTBAR_SLOTS) {
+                G.player.inventory.selected = pend_sel;
+            }
+            /* Slot 0 (key "1") is the reserved torch slot - re-stamp
+             * it after any restore so a stale save can never leave
+             * the player without a light source. */
+            inventory_ensure_reserved_torch(&G.player.inventory);
+        }
+        static uint16_t G_inv_last_type [9];
+        static int16_t  G_inv_last_count[9];
+        static int      G_inv_last_sel = -1;
+        static bool     G_inv_init     = false;
+        uint16_t cur_type [9];
+        int16_t  cur_count[9];
+        for (int i = 0; i < 9; ++i) {
+            cur_type [i] = (i < INV_HOTBAR_SLOTS)
+                ? (uint16_t)G.player.inventory.slots[i].type  : 0;
+            int c = (i < INV_HOTBAR_SLOTS) ? G.player.inventory.slots[i].count : 0;
+            /* Clamp the creative-mode "essentially infinite" count
+             * (> 9000 per inventory.c) to INT16_MAX so the wire
+             * round-trips cleanly. The server preserves whatever we
+             * send and the next inventory_init_creative on rejoin
+             * restocks naturally. */
+            if (c > INT16_MAX) c = INT16_MAX;
+            if (c < 0)         c = 0;
+            cur_count[i] = (int16_t)c;
+        }
+        const int cur_sel = G.player.inventory.selected;
+        bool changed = !G_inv_init
+                     || cur_sel != G_inv_last_sel
+                     || memcmp(cur_type,  G_inv_last_type,  sizeof cur_type)  != 0
+                     || memcmp(cur_count, G_inv_last_count, sizeof cur_count) != 0;
+        if (changed) {
+            net_client_send_inventory_state(cur_type, cur_count, cur_sel);
+            memcpy(G_inv_last_type,  cur_type,  sizeof G_inv_last_type);
+            memcpy(G_inv_last_count, cur_count, sizeof G_inv_last_count);
+            G_inv_last_sel = cur_sel;
+            G_inv_init     = true;
         }
     }
     profiler_begin("interact");

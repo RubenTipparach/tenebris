@@ -362,11 +362,24 @@ bool saves_load_player(const char* name, saves_player_pose_t* out) {
     FILE* f = fopen(path, "rb");
     if (!f) return false;
     saves_player_pose_t buf;
+    memset(&buf, 0, sizeof buf);
     size_t n = fread(&buf, 1, sizeof buf, f);
     fclose(f);
-    if (n != sizeof buf) return false;
-    if (buf.version != SAVES_PLAYER_VERSION) {
-        fprintf(stderr, "[saves] player %s: version %u != %u, ignoring\n",
+    /* Accept both v1 (no inventory tail) and v2 (full struct). The
+     * v1 partial read leaves the inv_* fields at their memset-zero
+     * values, which the server treats as "empty hotbar" - cleaner
+     * than rejecting the file and dropping the player at default
+     * spawn. */
+    if (n < (sizeof(uint32_t) * 2 + sizeof(double) * 3 + sizeof(float) * 2)) {
+        return false;
+    }
+    if (buf.version == 1) {
+        /* Truncated v1 record. Inventory stays zeroed. */
+        memset(buf.inv_slot_type,  0, sizeof buf.inv_slot_type);
+        memset(buf.inv_slot_count, 0, sizeof buf.inv_slot_count);
+        buf.inv_selected = 0;
+    } else if (buf.version != SAVES_PLAYER_VERSION) {
+        fprintf(stderr, "[saves] player %s: version %u not supported (current %u), ignoring\n",
                 name, buf.version, SAVES_PLAYER_VERSION);
         return false;
     }

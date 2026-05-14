@@ -2169,8 +2169,9 @@ void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world,
             for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
                 total_idx += R.bodies[R.active_body_idx].chunks[ci].last_uploaded_index_count;
             }
-            printf("[renderer] all %d chunks loaded on %s (%d total indices)\n",
-                   CHUNK_COUNT, active->world->body->name, total_idx);
+            /* printf("[renderer] all %d chunks loaded on %s (%d total indices)\n",
+             *        CHUNK_COUNT, active->world->body->name, total_idx); */
+            (void)total_idx;
         }
         fflush(stdout);
     }
