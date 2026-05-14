@@ -3,6 +3,7 @@
 #include "core/blocks.h"
 #include "core/job_system.h"
 #include "core/math.h"
+#include <math.h>   /* sqrt for the spawn-altitude diagnostic */
 #include "core/net_transport.h"
 #include "core/planet.h"
 #include "core/proto.h"
@@ -336,16 +337,37 @@ static void send_welcome(server_t* s, server_client_t* cl) {
      * already enforces unique names at HELLO, so two simultaneous
      * connections can't fight over the same file. */
     saves_player_pose_t resume;
-    if (cl->name[0] && saves_load_player(cl->name, &resume)) {
+    bool had_save = (cl->name[0] && saves_load_player(cl->name, &resume));
+    if (had_save) {
         w.spawn_x     = resume.pos_x;
         w.spawn_y     = resume.pos_y;
         w.spawn_z     = resume.pos_z;
         w.body_id     = resume.body_id;
         w.spawn_yaw   = resume.yaw;
         w.spawn_pitch = resume.pitch;
-        printf("[server] resume name=%s body=%u pos=(%.1f, %.1f, %.1f) yaw=%.2f pitch=%.2f\n",
-               cl->name, resume.body_id, resume.pos_x, resume.pos_y, resume.pos_z,
-               resume.yaw, resume.pitch);
+    }
+    /* HELLO/WELCOME spawn diagnostic. One line per join so we can
+     * tell where the player got placed and why - 'DEFAULT' branch
+     * means no save file, 'RESUME' means we loaded one. Includes
+     * radial altitude (length(spawn - body_centre) - body_radius)
+     * so the floating-spawn report has a concrete number to chase. */
+    {
+        const body_config_t* dbg_body = planet_get((body_id_t)w.body_id);
+        double r = 0.0, alt = 0.0;
+        if (dbg_body) {
+            double dx = w.spawn_x - dbg_body->pos_x;
+            double dy = w.spawn_y - dbg_body->pos_y;
+            double dz = w.spawn_z - dbg_body->pos_z;
+            r = sqrt(dx*dx + dy*dy + dz*dz);
+            alt = r - dbg_body->radius_m;
+        }
+        printf("[server] WELCOME spawn name=%s %s body=%u pos=(%.2f, %.2f, %.2f) "
+               "r=%.2f alt=%+.2f yaw=%.2f pitch=%.2f\n",
+               cl->name,
+               had_save ? "RESUME" : "DEFAULT",
+               w.body_id, w.spawn_x, w.spawn_y, w.spawn_z,
+               r, alt, w.spawn_yaw, w.spawn_pitch);
+        fflush(stdout);
     }
 
     uint8_t buf[MSG_HEADER_SIZE + MSG_WELCOME_WIRE_SIZE];

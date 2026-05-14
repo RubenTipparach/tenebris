@@ -1082,11 +1082,93 @@ static void maybe_apply_mp_spawn(void) {
     G.player.basis_ready = false;
     G.player.last_tile   = -1;
     G.player.transition_timer_s = config_lod()->roll_slerp_duration_s;
-    printf("[main] MP spawn applied: player_id=%u pos=(%.1f, %.1f, %.1f) body=%u "
-           "yaw=%.2f pitch=%.2f\n",
-           w->player_id, spawn.x, spawn.y, spawn.z, w->body_id,
-           w->spawn_yaw, w->spawn_pitch);
+    /* Loud diagnostic for the floating-spawn investigation. Reports
+     * the WELCOME pose, the body, the final applied position, and
+     * the altitude above that body's surface so we can tell exactly
+     * how far in the air the spawn ended up. */
+    {
+        const body_config_t* sb = planet_get((body_id_t)w->body_id);
+        double r = 0.0, alt = 0.0;
+        if (sb) {
+            double dx = spawn.x - sb->pos_x;
+            double dy = spawn.y - sb->pos_y;
+            double dz = spawn.z - sb->pos_z;
+            r = sqrt(dx*dx + dy*dy + dz*dz);
+            alt = r - sb->radius_m;
+        }
+        printf("[main] MP spawn applied: player_id=%u "
+               "welcome=(%.2f, %.2f, %.2f) body=%u -> pos=(%.2f, %.2f, %.2f) "
+               "r=%.2f alt=%+.2f yaw=%.2f pitch=%.2f\n",
+               w->player_id,
+               w->spawn_x, w->spawn_y, w->spawn_z, w->body_id,
+               spawn.x, spawn.y, spawn.z, r, alt,
+               w->spawn_yaw, w->spawn_pitch);
+    }
     G_mp_spawn_applied = true;
+}
+
+/* Last position the client shipped to the server via
+ * net_client_send_player_state. Used by the 10 s position log so
+ * we can compare 'where the client thinks it is RIGHT NOW' vs
+ * 'where the server last heard from us'. Drift between the two
+ * is the signature of the floating-spawn bug: if the saved value
+ * on disk doesn't match what we're rendering at, something in
+ * the send-or-receive pipeline is mangling the y. */
+static dvec3_t G_last_sent_pos = (dvec3_t){0};
+static uint32_t G_last_sent_body = 0;
+static float   G_last_sent_yaw = 0.0f;
+static float   G_last_sent_pitch = 0.0f;
+static bool    G_last_sent_valid = false;
+
+/* Diagnostic: every 10 s log G.player.position alongside the most
+ * recent pose we sent to the server. The server saves what we
+ * sent, so the two should round-trip exactly. A divergence here
+ * (or between the spawn line and the first 10 s sample after a
+ * fresh join) tells us where the floating-spawn delta is coming
+ * from. */
+static double G_pos_log_accum_s = 0.0;
+static void   periodic_pos_log(double dt) {
+    G_pos_log_accum_s += dt;
+    if (G_pos_log_accum_s < 10.0) return;
+    G_pos_log_accum_s = 0.0;
+    const body_config_t* b = G.player.body ? G.player.body : G.body;
+    double r = 0.0, alt = 0.0;
+    if (b) {
+        double dx = G.player.position.x - b->pos_x;
+        double dy = G.player.position.y - b->pos_y;
+        double dz = G.player.position.z - b->pos_z;
+        r = sqrt(dx*dx + dy*dy + dz*dz);
+        alt = r - b->radius_m;
+    }
+    const char* mode = (menu_state() == GAME_IN_GAME_MP) ? "MP" :
+                       (menu_state() == GAME_IN_GAME_SP) ? "SP" : "menu";
+    printf("[main] pos %s body=%s curr=(%.2f, %.2f, %.2f) r=%.2f alt=%+.2f "
+           "yaw=%.2f pitch=%.2f grounded=%d\n",
+           mode, b ? b->name : "?",
+           G.player.position.x, G.player.position.y, G.player.position.z,
+           r, alt, G.player.yaw, G.player.pitch, (int)G.player.grounded);
+    if (G_last_sent_valid) {
+        double sr = 0.0, salt = 0.0;
+        if (b) {
+            double dx = G_last_sent_pos.x - b->pos_x;
+            double dy = G_last_sent_pos.y - b->pos_y;
+            double dz = G_last_sent_pos.z - b->pos_z;
+            sr = sqrt(dx*dx + dy*dy + dz*dz);
+            salt = sr - b->radius_m;
+        }
+        double ddx = G.player.position.x - G_last_sent_pos.x;
+        double ddy = G.player.position.y - G_last_sent_pos.y;
+        double ddz = G.player.position.z - G_last_sent_pos.z;
+        double delta = sqrt(ddx*ddx + ddy*ddy + ddz*ddz);
+        printf("[main] pos %s     sent=(%.2f, %.2f, %.2f) r=%.2f alt=%+.2f "
+               "body=%u yaw=%.2f pitch=%.2f  delta_from_curr=%.2fm\n",
+               mode,
+               G_last_sent_pos.x, G_last_sent_pos.y, G_last_sent_pos.z,
+               sr, salt, G_last_sent_body,
+               G_last_sent_yaw, G_last_sent_pitch, delta);
+    } else {
+        printf("[main] pos %s     sent=(none yet)\n", mode);
+    }
 }
 
 static double G_sp_save_accum = 0.0;
@@ -1573,6 +1655,7 @@ static void frame(void) {
      * every 5 s while in SP. Cheap (~140 byte string), serial to the
      * browser. No-op in MP — server-side persistence lands in M6. */
     maybe_autosave_sp((double)dt);
+    periodic_pos_log((double)dt);
 
     /* M4 position relay: when MP is READY, ship our pose to the server
      * every 3rd frame (~20 Hz at 60 fps capped by the server tick).
@@ -1589,6 +1672,15 @@ static void frame(void) {
                                             G.player.position.z,
                                             G.player.yaw,
                                             G.player.pitch);
+            /* Mirror what we just put on the wire so periodic_pos_log
+             * can compare it against G.player.position later. */
+            G_last_sent_pos.x   = G.player.position.x;
+            G_last_sent_pos.y   = G.player.position.y;
+            G_last_sent_pos.z   = G.player.position.z;
+            G_last_sent_body    = body_id;
+            G_last_sent_yaw     = G.player.yaw;
+            G_last_sent_pitch   = G.player.pitch;
+            G_last_sent_valid   = true;
         }
     }
     profiler_begin("interact");
