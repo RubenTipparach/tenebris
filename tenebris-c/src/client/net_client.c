@@ -388,8 +388,23 @@ void net_client_connect(const char* url) {
     if (!url) return;
     if (C.conn) return;     /* already connected / connecting */
 
+    /* Preserve the profile/room set by net_client_set_profile across
+     * the state reset. The memset below clears every field of C; if
+     * we don't snapshot these first, HELLO ships an empty name and
+     * the server falls back to 'guest-N' even when the player has
+     * a real profile selected. */
+    char saved_token[sizeof C.profile_token];
+    char saved_name [sizeof C.profile_name];
+    char saved_room [sizeof C.room_code];
+    memcpy(saved_token, C.profile_token, sizeof saved_token);
+    memcpy(saved_name,  C.profile_name,  sizeof saved_name);
+    memcpy(saved_room,  C.room_code,     sizeof saved_room);
+
     memset(&C, 0, sizeof C);
     C.state = NET_CLIENT_CONNECTING;
+    memcpy(C.profile_token, saved_token, sizeof C.profile_token);
+    memcpy(C.profile_name,  saved_name,  sizeof C.profile_name);
+    memcpy(C.room_code,     saved_room,  sizeof C.room_code);
 
     net_callbacks_t cb = {
         .on_open  = on_open,

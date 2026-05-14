@@ -1157,9 +1157,21 @@ static void draw_players_panel(float screen_w, float screen_h) {
         if (!body) body = G.body;
         double lat, lon, alt;
         player_lat_lon_deg(G.player.position, body, &lat, &lon, &alt);
-        const char* nm = net_client_name_for_id(wcm->player_id);
-        if (!nm || !*nm) nm = "(unknown)";
+        /* Prefer the active profile name for the local row - the
+         * net_client cache is also fed from this on WELCOME, but
+         * starting from the profile means we never show '(unknown)'
+         * to the player about themselves while WELCOME is in flight
+         * or if the cache slot raced. */
+        profile_t active;
+        const char* nm = NULL;
+        if (profile_get_active(&active) && active.name[0]) nm = active.name;
+        if (!nm) nm = net_client_name_for_id(wcm->player_id);
         char nmbuf[17];
+        char fallback[17];
+        if (!nm || !*nm) {
+            snprintf(fallback, sizeof fallback, "id-%u", wcm->player_id);
+            nm = fallback;
+        }
         snprintf(nmbuf, sizeof nmbuf, "%-16s", nm);
         snprintf(buf, sizeof buf,
                  "* %s  %s  lat=%+7.2f  lon=%+7.2f  alt=%5.0fm",
@@ -1184,8 +1196,15 @@ static void draw_players_panel(float screen_w, float screen_h) {
          * renderer's lerp is purely cosmetic for smooth motion. */
         player_lat_lon_deg(rp->pos_cur, body, &lat, &lon, &alt);
         const char* nm = net_client_name_for_id(rp->player_id);
-        if (!nm || !*nm) nm = "(unknown)";
         char nmbuf[17];
+        char fallback[17];
+        if (!nm || !*nm) {
+            /* Show id-N rather than '(unknown)' so every row in the
+             * roster is identifiable - PLAYER_INFO might still be
+             * in flight for a freshly-joined peer. */
+            snprintf(fallback, sizeof fallback, "id-%u", rp->player_id);
+            nm = fallback;
+        }
         snprintf(nmbuf, sizeof nmbuf, "%-16s", nm);
         snprintf(buf, sizeof buf,
                  "  %s  %s  lat=%+7.2f  lon=%+7.2f  alt=%5.0fm",

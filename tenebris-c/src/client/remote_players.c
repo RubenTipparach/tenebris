@@ -408,7 +408,15 @@ void remote_players_draw_nameplates(mat4_t view, mat4_t proj,
         const remote_player_t* p = &R.players[i];
         if (!p->active) continue;
         const char* name = name_fn(p->player_id);
-        if (!name || !*name) continue;
+        char fallback[20];
+        if (!name || !*name) {
+            /* Never skip the plate - always show SOMETHING so a
+             * silent peer isn't visually anonymous. PLAYER_INFO is
+             * eventual; once it lands the cache returns the real
+             * name and this branch stops firing. */
+            snprintf(fallback, sizeof fallback, "id-%u", p->player_id);
+            name = fallback;
+        }
 
         double dt = now - p->snapshot_time_s;
         double t  = dt / interp_delay_s;
@@ -416,14 +424,23 @@ void remote_players_draw_nameplates(mat4_t view, mat4_t proj,
         if (t > 1.0) t = 1.0;
 
         /* Anchor the nameplate at head height + a little extra so it
-         * floats clear of the model's hair. */
+         * floats clear of the model's hair. The +2.1 offset MUST be
+         * along the player's local up (= radial direction from the
+         * body centre) - adding to world +Y put the plate to the
+         * SIDE of any player who wasn't standing at the +Y pole. */
         float wx = (float)(p->pos_prev.x + (p->pos_cur.x - p->pos_prev.x) * t);
         float wy = (float)(p->pos_prev.y + (p->pos_cur.y - p->pos_prev.y) * t);
         float wz = (float)(p->pos_prev.z + (p->pos_cur.z - p->pos_prev.z) * t);
-        float head_y = wy + 2.1f;
+        float ulen = sqrtf(wx*wx + wy*wy + wz*wz);
+        float ux = 0.0f, uy = 1.0f, uz = 0.0f;
+        if (ulen > 1e-6f) { ux = wx / ulen; uy = wy / ulen; uz = wz / ulen; }
+        const float head_off = 2.1f;
+        float head_x = wx + ux * head_off;
+        float head_y = wy + uy * head_off;
+        float head_z = wz + uz * head_off;
 
         float cx, cy, cz, cw;
-        mat4_mul_vec4(vp, wx, head_y, wz, &cx, &cy, &cz, &cw);
+        mat4_mul_vec4(vp, head_x, head_y, head_z, &cx, &cy, &cz, &cw);
         /* Behind-the-camera: skip. */
         if (cw <= 0.001f) continue;
 
