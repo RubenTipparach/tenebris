@@ -158,20 +158,21 @@ EM_JS(void, tenebris_mobile_controls_install, (void), {
       +    'border-radius:50%; background:rgba(255,255,255,0.85); transform:translate(-50%,-50%); pointer-events:none; }'
       + '#tn-stick-left  { bottom:24px; left:24px; }'
       + '#tn-stick-right { bottom:24px; right:24px; }'
-      + '.tn-btn { position:absolute; width:64px; height:64px; border-radius:50%; '
+      + '.tn-btn { position:absolute; width:48px; height:48px; border-radius:50%; '
       +    'background:rgba(15,17,26,0.88); color:#fff; border:2px solid rgba(255,255,255,0.85); '
-      +    'font:bold 14px sans-serif; display:flex; align-items:center; justify-content:center; '
+      +    'font:bold 11px sans-serif; display:flex; align-items:center; justify-content:center; '
       +    'pointer-events:auto; touch-action:none; -webkit-tap-highlight-color:transparent; '
       +    'box-shadow:0 2px 6px rgba(0,0,0,0.5); user-select:none; }'
       + '.tn-btn:active { background:rgba(80,90,110,0.95); }'
-      /* Action buttons sit in a row directly above the right look
-       * stick: PLACE on the left, BREAK in the middle, JUMP on the
-       * right. 64 px buttons + 24 px spacing line up cleanly with the
-       * 140 px stick (24 + 64 + 24 + 64 + 24 + 64 + 24 = 248 px row
-       * width, stick is 24 + 140 + 24 = 188 px below). */
-      + '#tn-btn-jump  { bottom:188px; right: 24px; }'
-      + '#tn-btn-break { bottom:188px; right:112px; }'
-      + '#tn-btn-place { bottom:188px; right:200px; }';
+      /* Action buttons sit in a tight row directly above the right
+       * look stick. Buttons are 48 px so three of them (3 * 48 = 144
+       * px) line up with the stick's 140 px footprint below - same
+       * cluster width, reads as one control unit under the right
+       * thumb. PLACE on the left, BREAK middle, JUMP on the right.
+       * `bottom:178` = 24 (margin) + 140 (stick) + 14 (gap). */
+      + '#tn-btn-jump  { bottom:178px; right: 22px; }'
+      + '#tn-btn-break { bottom:178px; right: 70px; }'
+      + '#tn-btn-place { bottom:178px; right:118px; }';
     document.head.appendChild(style);
 
     function mk(tag, id, cls, text) {
