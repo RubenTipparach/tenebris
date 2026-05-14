@@ -35,6 +35,26 @@
 #                               Lets designers dim/boost all torches
 #                               without re-baking the per-vertex
 #                               inverse-square sums.
+#
+#   engine               str    Per-vertex lighting backend.
+#                               'column' = legacy path (sky_light_at
+#                               counts solid voxels stacked above the
+#                               column, torch_light_at sums inverse-
+#                               square through walls). 'voxel' = new
+#                               propagated grid in core/world_light:
+#                               6-neighbour BFS with straight-down-
+#                               through-air sky shafts + per-step
+#                               attenuation. Defaults to 'column'
+#                               for visual parity with previous builds.
+#   voxel_sky_max        int    Max sky value seeded into open-sky air
+#                               voxels before propagation. 15 matches
+#                               the nibble range the mesher normalises
+#                               against. Lower = darker daylight.
+#   voxel_torch_emission int    Block light at each torch's anchor
+#                               voxel before propagation. 14 leaves
+#                               one step of headroom under the 15-cap;
+#                               0 disables torch propagation entirely
+#                               (useful when isolating sky tuning).
 
 lighting:
   night_ambient_floor: 0.20
@@ -43,3 +63,7 @@ lighting:
 
   torch_color:         [1.00, 0.70, 0.30]
   torch_intensity:     1.00
+
+  engine:               column
+  voxel_sky_max:        15
+  voxel_torch_emission: 14

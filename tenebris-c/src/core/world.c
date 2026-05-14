@@ -1,4 +1,5 @@
 #include "core/world.h"
+#include "core/world_light.h"
 #include "core/planet.h"
 #include "core/planet_gen.h"
 #include <stdlib.h>
@@ -20,11 +21,13 @@ world_t* world_create(const body_config_t* body, int subdivisions) {
     w->dirty_bytes = (w->tile_count + 7) / 8;
     w->dirty = (uint8_t*)calloc((size_t)w->dirty_bytes, 1);
     w->gen_cursor = 0;
+    w->light = world_light_create(w);
     return w;
 }
 
 void world_destroy(world_t* w) {
     if (!w) return;
+    world_light_destroy(w->light);
     goldberg_destroy(w->grid);
     free(w->blocks);
     free(w->dirty);
@@ -47,6 +50,10 @@ world_t* world_clone(const world_t* src) {
     /* Mark gen as complete so callers don't re-run world_stream_gen. */
     w->gen_cursor = w->tile_count;
     /* Dirty bits start clean — the clone is a snapshot. */
+    /* Light grid: copy the source's nibbles so the snapshot keeps its
+     * relit state without paying for another BFS. Torches reset; the
+     * client that consumes this clone republishes its torch list. */
+    world_light_clone_into(w->light, src->light);
     return w;
 }
 
@@ -168,6 +175,10 @@ void world_set(world_t* w, int tile, int depth, block_t b) {
         int n = t->neighbors[i];
         w->dirty[n >> 3] |= (uint8_t)(1 << (n & 7));
     }
+    /* The light grid is now stale - mark for relight before the next
+     * mesh build. Phase 1 does a full BFS rebuild on the dirty flag;
+     * Phase 2 will swap to a bounded incremental queue. */
+    world_light_mark_dirty(w->light);
 }
 
 bool world_tile_dirty(const world_t* w, int tile) {
@@ -230,6 +241,11 @@ void world_dirty_in_range(world_t* w, vec3_t world_pos, float radius_m) {
             w->dirty[i >> 3] |= (uint8_t)(1 << (i & 7));
         }
     }
+    /* This function is only called from torch place / remove paths
+     * (see torch.h), so the light grid's published torch set is stale.
+     * Mark dirty to trigger a relight on the next mesh build under the
+     * voxel engine; no-op cost under the column engine. */
+    world_light_mark_dirty(w->light);
 }
 
 double world_depth_to_radius_m(const world_t* w, int depth) {

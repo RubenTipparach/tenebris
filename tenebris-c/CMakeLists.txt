@@ -38,6 +38,7 @@ set(TENEBRIS_CORE_SOURCES
     src/core/planet_gen.c
     src/core/goldberg.c
     src/core/world.c
+    src/core/world_light.c
     src/core/job_system.c
     src/core/config.c
 )

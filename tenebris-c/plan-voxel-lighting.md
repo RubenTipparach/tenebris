@@ -36,27 +36,28 @@ Goal: replace `sky_light_at()` and `torch_light_at()` with samples
 from a real voxel light grid. Visual parity with today as a floor;
 overhang shadows and wall-blocked torches as the gain.
 
-- [ ] **1.1** Add `world_light.{c,h}` under `core/`. Owns the parallel
+- [x] **1.1** Add `world_light.{c,h}` under `core/`. Owns the parallel
   array sized like `blocks[]` (`tile * WORLD_MAX_DEPTH + depth`),
   packed `sky_nibble << 4 | block_nibble` per voxel.
-- [ ] **1.2** Direct skylight BFS. Seed value 15 at the topmost air
-  voxel of each column. Propagate to 6-neighbours losing 1 per step,
-  except straight-down-through-air which keeps the parent value
-  (preserves "shafts of daylight" without ambient leak).
-- [ ] **1.3** Block-light BFS. Seed each torch at its emission value
+- [x] **1.2** Direct skylight BFS. Seed value 15 at the topmost air
+  voxel of each column. Propagate to 6-neighbours losing 1 per step.
+  The seed pass walks straight down through every non-face-covering
+  voxel at full strength, so "shafts of daylight" fall out naturally
+  without a special BFS rule.
+- [x] **1.3** Block-light BFS. Seed each torch at its emission value
   (configurable per torch type). Propagate losing 1 per step.
-  Standard removal: BFS-darken from the removed source, re-light from
-  any remaining sources hit during the darken pass.
-- [ ] **1.4** Per-vertex sample at mesh time. Replace the two
-  `*_light_at()` callers in `hex_mesher.c` with a smooth-lighting
-  read of the 4-8 voxels around each vertex; bake into the existing
-  `sky_light` / `torch_light` attributes. No shader change.
-- [ ] **1.5** `assets/config/lighting.yaml` for tunables: sky max,
-  attenuation step, per-torch-type emission, ripple cap, indirect
-  diffusion fraction + iterations. Parser pattern follows
-  `core/config.c` (atmosphere.yaml).
-- [ ] **1.6** Visual A/B switch (`lighting.engine: column | voxel`)
-  so we can keep the old path during transition.
+  Removal currently triggers a full relight; the BFS-darken + re-
+  light-from-remaining-sources optimisation lands in Phase 2.
+- [~] **1.4** Per-vertex sample at mesh time. `sky_light_voxel` /
+  `torch_light_voxel` in `hex_mesher.c` read from the grid when the
+  engine is voxel and bake into the existing vertex attributes.
+  Currently a single-voxel sample shared across cap corners; smooth
+  4-8 neighbour averaging is a follow-up.
+- [x] **1.5** `assets/config/lighting.yaml` engine + voxel knobs
+  (`voxel_sky_max`, `voxel_torch_emission`). Parser pattern follows
+  the existing lighting section in `core/config.c`.
+- [x] **1.6** Visual A/B switch (`lighting.engine: column | voxel`).
+  Defaults to `column` so behaviour is unchanged until flipped.
 
 ## Phase 2 — Incremental updates
 
