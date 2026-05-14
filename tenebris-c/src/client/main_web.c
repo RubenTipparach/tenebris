@@ -1121,21 +1121,29 @@ static void maybe_apply_mp_spawn(void) {
      * boot-time Tenebris (registered first at init), and the renderer
      * would draw an empty frame (Crag not loaded, position too far
      * from Tenebris for it to render) until the gravity tick swapped
-     * the anchor several frames later. */
+     * the anchor several frames later.
+     *
+     * In-space rejoin keeps the boot-default body as the anchor.
+     * The whole engine (sync_basis_to_planet, player_local_pos,
+     * renderer atmosphere uniforms, world_for_body fallback) reads
+     * p->body without a NULL check - clearing it produces NaN
+     * through the basis and a black screen. is_in_space is set
+     * separately by the gravity tick once player_update runs, so
+     * 6DOF controls activate naturally; we just need *some* valid
+     * body so the engine has a coordinate frame to render in. */
     if (spawn_body && G.player.body != spawn_body) {
         player_set_body(&G.player, spawn_body);
-    } else if (spawn_in_space) {
-        /* User explicitly logged out in space - don't pin them back
-         * onto the boot-default body. Clear the anchor and arm the
-         * in-space flag so the gravity tick that runs next frame
-         * sees the right state. The HUD / F1 / pose-log will read
-         * "(in space)" instead of misreporting "on Tenebris" until
-         * the player flies back into a falloff radius. */
-        G.player.body         = NULL;
-        G.player.is_in_space  = true;
-        G.player.basis_ready  = false;
-        G.player.transition_timer_s = 0.0f;
     }
+    /* Cold-rebuild the basis from the just-applied position. Critical
+     * for in-space spawns - the player enters space-mode immediately
+     * (gravity tick sees no body in falloff), and space-mode never
+     * calls sync_basis_to_planet. Without this the basis stays at
+     * the zero vectors player_init left it at, producing a degenerate
+     * view matrix (black screen) and zero-length thrust axes (player
+     * frozen in place). Cheap; safe on planet-side spawns too since
+     * the planet-mode tick re-syncs the basis on its first frame
+     * anyway. */
+    player_rebuild_basis(&G.player);
     /* Loud diagnostic for the floating-spawn investigation. Reports
      * the WELCOME pose, the body, the final applied position, and
      * the altitude above that body's surface so we can tell exactly
@@ -1188,7 +1196,12 @@ static void   periodic_pos_log(double dt) {
      * the spawn line, instead of having to wait 10 s. */
     if (G_pos_log_accum_s < 1.0) return;
     G_pos_log_accum_s = 0.0;
-    const body_config_t* b = G.player.body ? G.player.body : G.body;
+    /* Anchor body is what the engine considers the player attached
+     * to. NULL == truly anchorless (logged out in space, before any
+     * gravity tick rebinds). Fall back to G.body only for the
+     * radius / altitude math so the log still has a yardstick. */
+    const body_config_t* anchor = G.player.body;
+    const body_config_t* b      = anchor ? anchor : G.body;
     double r = 0.0, alt = 0.0;
     if (b) {
         double dx = G.player.position.x - b->pos_x;
@@ -1200,14 +1213,18 @@ static void   periodic_pos_log(double dt) {
     const char* mode = (menu_state() == GAME_IN_GAME_MP) ? "MP" :
                        (menu_state() == GAME_IN_GAME_SP) ? "SP" : "menu";
     /* The engine tracks two separate states: G.player.body (the
-     * last-known gravitational anchor, never cleared) and
-     * G.player.is_in_space (this-frame gravity-falloff result).
-     * Log both so a "stuck in space" report is unambiguous about
-     * which one is which. */
-    printf("[main] pos %s body=%s%s curr=(%.2f, %.2f, %.2f) r=%.2f alt=%+.2f "
-           "yaw=%.2f pitch=%.2f grounded=%d\n",
-           mode, b ? b->name : "?",
+     * last-known gravitational anchor, NULL when the player is in
+     * deep space) and G.player.is_in_space (this-frame gravity-
+     * falloff result). Log both so a "stuck in space" report is
+     * unambiguous about which one is which. NULL anchor renders as
+     * NONE (not the fallback body's name) so a cleared anchor is
+     * visible at a glance. */
+    printf("[main] pos %s anchor=%s%s alt-vs=%s curr=(%.2f, %.2f, %.2f) "
+           "r=%.2f alt=%+.2f yaw=%.2f pitch=%.2f grounded=%d\n",
+           mode,
+           anchor ? anchor->name : "NONE",
            G.player.is_in_space ? " (in-space)" : "",
+           b ? b->name : "?",
            G.player.position.x, G.player.position.y, G.player.position.z,
            r, alt, G.player.yaw, G.player.pitch, (int)G.player.grounded);
     if (G_last_sent_valid) {
@@ -1223,11 +1240,21 @@ static void   periodic_pos_log(double dt) {
         double ddy = G.player.position.y - G_last_sent_pos.y;
         double ddz = G.player.position.z - G_last_sent_pos.z;
         double delta = sqrt(ddx*ddx + ddy*ddy + ddz*ddz);
+        /* Show the IN_SPACE sentinel as a word rather than the raw
+         * 0xFFFFFFFF - 4294967295 in a log line is just noise. Any
+         * other body_id is a real body id (small int) and prints
+         * inline. */
+        char body_str[32];
+        if (G_last_sent_body == BODY_ID_IN_SPACE) {
+            snprintf(body_str, sizeof body_str, "IN_SPACE");
+        } else {
+            snprintf(body_str, sizeof body_str, "%u", G_last_sent_body);
+        }
         printf("[main] pos %s     sent=(%.2f, %.2f, %.2f) r=%.2f alt=%+.2f "
-               "body=%u yaw=%.2f pitch=%.2f  delta_from_curr=%.2fm\n",
+               "body=%s yaw=%.2f pitch=%.2f  delta_from_curr=%.2fm\n",
                mode,
                G_last_sent_pos.x, G_last_sent_pos.y, G_last_sent_pos.z,
-               sr, salt, G_last_sent_body,
+               sr, salt, body_str,
                G_last_sent_yaw, G_last_sent_pitch, delta);
     } else {
         printf("[main] pos %s     sent=(none yet)\n", mode);
