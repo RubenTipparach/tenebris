@@ -3,6 +3,8 @@
 Sokol + C11 + WebAssembly port of Tenebris. See `../conversion.md` for
 the full plan.
 
+[**Join our test server here!**](https://rubentipparach.github.io/tenebris/wasm/?invite=T9VVPW)
+
 ## Status
 
 **Tier 0**: hello triangle (in progress). Target is a browser-loadable
