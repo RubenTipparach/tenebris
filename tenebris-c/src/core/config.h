@@ -313,6 +313,17 @@ typedef struct {
     float  ripple_speed;
     float  wave_steepness;
 
+    /* Mobile-only horizon haze. The mobile water shader can't sample
+     * the offscreen scene (no FBO on phones) so it can't run the
+     * desktop Beer-Lambert thickness fog. Instead it lerps the base
+     * water tone toward `sky_horizon_color` with view distance, which
+     * mimics the "deep ocean fades into atmosphere" feel the desktop
+     * version gets for free. fade_m is the distance at which the haze
+     * is at full strength; fade_strength scales the final mix (0 =
+     * disabled, 1 = full horizon). Desktop water ignores these. */
+    float  horizon_fade_m;
+    float  horizon_fade_strength;
+
     /* Underwater post-process. Drives the composite-pass fog +
      * sin-perturbation distortion when the camera (or any individual
      * pixel) sits below the sea-level radius. Per-pixel masked so a

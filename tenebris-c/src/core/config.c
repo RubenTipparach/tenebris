@@ -460,6 +460,8 @@ static water_config_t S_WATER = {
     .wave_steepness     = 0.65f,
     .underwater_distortion = 0.006f,
     .wet_fade_band_m       = 0.5f,
+    .horizon_fade_m        = 600.0f,
+    .horizon_fade_strength = 0.55f,
 };
 
 const water_config_t* config_water(void) { return &S_WATER; }
@@ -559,6 +561,10 @@ int config_load_water(const char* path) {
                         S_WATER.underwater_distortion = (float)strtod(val, NULL);
                     } else if (strcmp(key, "wet_fade_band_m"   ) == 0) {
                         S_WATER.wet_fade_band_m   = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "horizon_fade_m"    ) == 0) {
+                        S_WATER.horizon_fade_m    = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "horizon_fade_strength") == 0) {
+                        S_WATER.horizon_fade_strength = (float)strtod(val, NULL);
                     } else {
                         printf("[config] %s:%d: unknown key '%s'\n",
                                path, line_no, key);
