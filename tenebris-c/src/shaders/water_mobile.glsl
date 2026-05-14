@@ -107,50 +107,58 @@ void main() {
     // the draw. Earlier the basis was per-fragment, which gave
     // dot(v_wpos, t1) = 0 everywhere (t1 is tangent at v_wpos, so
     // perpendicular to v_wpos) and collapsed the UV to a single texel.
-    //
-    // Choosing a globally fixed basis means UV grows linearly across
-    // the surface at the planet's tangent rate - the texture tiles
-    // smoothly in a band around the equator (relative to whichever
-    // axis we picked). Distortion at the poles is OK because the
-    // player's local view only spans a few hex tiles.
     vec3 axis = (abs(radial.y) < 0.9) ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
     vec3 t1 = normalize(cross(axis, radial));
     vec3 t2 = cross(radial, t1);
-    // Re-anchor the projection to a *constant* (per-draw) pair of
-    // axes using the global Y / X axes themselves. dot(v_wpos, world_x)
-    // = v_wpos.x; we just want two independent linear functions of
-    // v_wpos that don't collapse. Use the cardinal axes that aren't
-    // close to the local radial.
-    vec2 uv_base;
-    if (abs(radial.y) < 0.7) {
-        // Near the equator - project onto x/z plane.
-        uv_base = vec2(v_wpos.x, v_wpos.z);
-    } else if (abs(radial.x) < 0.7) {
-        // Polar caps - project onto x/y so the seam doesn't sit under
-        // the player's feet.
-        uv_base = vec2(v_wpos.x, v_wpos.y);
-    } else {
-        uv_base = vec2(v_wpos.z, v_wpos.y);
-    }
 
-    // Two animated UV layers at different scales + opposing drift
-    // directions blend so the underlying texture doesn't read as a
-    // repeating tile. Scale factor mirrors the desktop ripple_scale
-    // knob from water.yaml.
-    vec2 uv1 = uv_base * (u_ripple_scale * 0.10)
-             + vec2( u_time * (u_ripple_speed * 0.025),
-                     u_time * (u_ripple_speed * 0.018));
-    vec2 uv2 = uv_base * (u_ripple_scale * 0.23)
-             + vec2(-u_time * (u_ripple_speed * 0.013),
-                     u_time * (u_ripple_speed * 0.029));
+    // Triplanar mapping: sample the normal map on all three world-axis
+    // planes (xz / xy / zy) and blend by |radial|. Avoids the directional
+    // stretching of a single cardinal-plane projection - whichever face
+    // of the planet the player is on, the dominant projection plane
+    // gives near-undistorted tiling, and the blend hides the seam where
+    // two faces meet.
+    vec2 uv_xz = v_wpos.xz;
+    vec2 uv_xy = v_wpos.xy;
+    vec2 uv_zy = v_wpos.zy;
 
-    vec3 nm1 = texture(sampler2D(water_normal_tex, water_normal_smp), uv1).xyz * 2.0 - 1.0;
-    vec3 nm2 = texture(sampler2D(water_normal_tex, water_normal_smp), uv2).xyz * 2.0 - 1.0;
-    vec2 bump = (nm1.xy + nm2.xy) * 0.5;
+    float scale_a = u_ripple_scale * 0.10;
+    float scale_b = u_ripple_scale * 0.23;
+    vec2 t_off_a = vec2( u_time * (u_ripple_speed * 0.025),
+                          u_time * (u_ripple_speed * 0.018));
+    vec2 t_off_b = vec2(-u_time * (u_ripple_speed * 0.013),
+                          u_time * (u_ripple_speed * 0.029));
 
-    // Apply the tangent-space xy as a perturbation in the local
-    // tangent plane, then re-normalise back onto the radial.
-    vec3 perturb = t1 * bump.x + t2 * bump.y;
+    // Each plane gets the two animated layers blended together so the
+    // pattern doesn't read as a single repeating tile.
+    vec2 bxz =
+        ((texture(sampler2D(water_normal_tex, water_normal_smp), uv_xz * scale_a + t_off_a).xy * 2.0 - 1.0) +
+         (texture(sampler2D(water_normal_tex, water_normal_smp), uv_xz * scale_b + t_off_b).xy * 2.0 - 1.0)) * 0.5;
+    vec2 bxy =
+        ((texture(sampler2D(water_normal_tex, water_normal_smp), uv_xy * scale_a + t_off_a).xy * 2.0 - 1.0) +
+         (texture(sampler2D(water_normal_tex, water_normal_smp), uv_xy * scale_b + t_off_b).xy * 2.0 - 1.0)) * 0.5;
+    vec2 bzy =
+        ((texture(sampler2D(water_normal_tex, water_normal_smp), uv_zy * scale_a + t_off_a).xy * 2.0 - 1.0) +
+         (texture(sampler2D(water_normal_tex, water_normal_smp), uv_zy * scale_b + t_off_b).xy * 2.0 - 1.0)) * 0.5;
+
+    // Sharpen the per-axis blend weights so each fragment is dominated
+    // by one plane (cheaper than three full contributions everywhere)
+    // while still letting the seams between faces blend smoothly.
+    vec3 wn = abs(radial);
+    wn = pow(wn, vec3(4.0));
+    wn /= max(wn.x + wn.y + wn.z, 1e-5);
+
+    // Each plane's bump is a 2D vector in that plane's coordinate
+    // system. Lift them back into 3D world-space tangent perturbation.
+    vec3 perturb_xz = vec3(bxz.x, 0.0, bxz.y);   // x/z plane: y-up faces
+    vec3 perturb_xy = vec3(bxy.x, bxy.y, 0.0);   // x/y plane: z-facing
+    vec3 perturb_zy = vec3(0.0, bzy.y, bzy.x);   // z/y plane: x-facing
+    vec3 perturb = perturb_xz * wn.y + perturb_xy * wn.z + perturb_zy * wn.x;
+
+    // Project the blended perturbation onto the local tangent plane
+    // (drop the radial component) so the displacement only tilts the
+    // normal sideways, never pushes it through the surface.
+    perturb -= radial * dot(perturb, radial);
+
     vec3 n = normalize(radial + perturb * u_wave_steepness);
 
     vec3 view = normalize(u_camera_pos - v_wpos);
@@ -194,10 +202,7 @@ void main() {
 
     // Alpha = Fresnel-weighted opacity so shore tiles read as
     // half-transparent (seabed shows through) and deep / grazing
-    // pixels read more opaque. Approximates the desktop shoreline
-    // fade without needing an offscreen depth probe. shoreline
-    // opacity is clamped to a small floor so even at zero Fresnel
-    // the water doesn't vanish entirely.
+    // pixels read more opaque.
     float alpha = clamp(0.45 + 0.55 * sky_weight, 0.45, 0.95);
 
     frag_color = vec4(color, alpha);

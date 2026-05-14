@@ -164,9 +164,14 @@ EM_JS(void, tenebris_mobile_controls_install, (void), {
       +    'pointer-events:auto; touch-action:none; -webkit-tap-highlight-color:transparent; '
       +    'box-shadow:0 2px 6px rgba(0,0,0,0.5); user-select:none; }'
       + '.tn-btn:active { background:rgba(80,90,110,0.95); }'
-      + '#tn-btn-jump  { bottom: 24px; right:184px; }'
-      + '#tn-btn-break { bottom:100px; right:184px; }'
-      + '#tn-btn-place { bottom:176px; right:184px; }';
+      /* Action buttons sit in a row directly above the right look
+       * stick: PLACE on the left, BREAK in the middle, JUMP on the
+       * right. 64 px buttons + 24 px spacing line up cleanly with the
+       * 140 px stick (24 + 64 + 24 + 64 + 24 + 64 + 24 = 248 px row
+       * width, stick is 24 + 140 + 24 = 188 px below). */
+      + '#tn-btn-jump  { bottom:188px; right: 24px; }'
+      + '#tn-btn-break { bottom:188px; right:112px; }'
+      + '#tn-btn-place { bottom:188px; right:200px; }';
     document.head.appendChild(style);
 
     function mk(tag, id, cls, text) {
