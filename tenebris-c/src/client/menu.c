@@ -706,6 +706,83 @@ static void draw_text_centered(const char* str, float center_x,
     sdtx_font(0);     /* restore HUD font for any non-menu printers */
 }
 
+/* Centred word-wrap. Splits `str` at spaces so no rendered line is
+ * wider than `max_width_px`, then emits each line via
+ * draw_text_centered. Long words that don't fit are hard-broken
+ * at the column limit so the loop always terminates. Returns the
+ * number of lines drawn so the caller can advance the y cursor.
+ * Line pitch is `8 * scale` px (one glyph cell). */
+static int draw_text_centered_wrapped(const char* str, float center_x,
+                                        float screen_y, float scale,
+                                        float max_width_px,
+                                        uint8_t r, uint8_t g, uint8_t b) {
+    if (!str || !*str) return 0;
+    const float cell_px = 8.0f * scale;
+    int max_chars = (int)(max_width_px / cell_px);
+    if (max_chars < 1) max_chars = 1;
+    char line[256];
+    int  line_len = 0;
+    int  lines_drawn = 0;
+    const float line_pitch = cell_px;
+    size_t i = 0;
+    while (str[i]) {
+        while (str[i] == ' ') ++i;
+        if (!str[i]) break;
+        size_t wstart = i;
+        while (str[i] && str[i] != ' ') ++i;
+        int wlen = (int)(i - wstart);
+        /* Word longer than the line - hard-break it. */
+        if (wlen > max_chars) {
+            if (line_len > 0) {
+                line[line_len] = 0;
+                draw_text_centered(line, center_x,
+                                      screen_y + line_pitch * (float)lines_drawn,
+                                      scale, r, g, b);
+                ++lines_drawn;
+                line_len = 0;
+            }
+            int consumed = 0;
+            while (consumed < wlen) {
+                int take = wlen - consumed;
+                if (take > max_chars) take = max_chars;
+                memcpy(line, str + wstart + consumed, (size_t)take);
+                line[take] = 0;
+                draw_text_centered(line, center_x,
+                                      screen_y + line_pitch * (float)lines_drawn,
+                                      scale, r, g, b);
+                ++lines_drawn;
+                consumed += take;
+            }
+            continue;
+        }
+        int needed = wlen + (line_len > 0 ? 1 : 0);
+        if (line_len + needed > max_chars) {
+            line[line_len] = 0;
+            draw_text_centered(line, center_x,
+                                  screen_y + line_pitch * (float)lines_drawn,
+                                  scale, r, g, b);
+            ++lines_drawn;
+            line_len = 0;
+        }
+        if (line_len > 0) line[line_len++] = ' ';
+        if (line_len + wlen >= (int)sizeof line - 1) {
+            /* Defensive guard - shouldn't trigger for any realistic
+             * max_chars (line[256], cell_px>=8 means <=32-char lines). */
+            wlen = (int)sizeof line - 2 - line_len;
+        }
+        memcpy(line + line_len, str + wstart, (size_t)wlen);
+        line_len += wlen;
+    }
+    if (line_len > 0) {
+        line[line_len] = 0;
+        draw_text_centered(line, center_x,
+                              screen_y + line_pitch * (float)lines_drawn,
+                              scale, r, g, b);
+        ++lines_drawn;
+    }
+    return lines_drawn;
+}
+
 static void draw_text_left(const char* str, float screen_x,
                              float screen_y, float scale,
                              uint8_t r, uint8_t g, uint8_t b) {
@@ -919,16 +996,24 @@ void menu_draw(int screen_w, int screen_h) {
             /* Geometry was already flushed above. Just the title /
              * message text here; the BACK button label is rendered by
              * the generic button-label loop further down. Panel
-             * coordinates mirror the geometry block — keep in sync. */
+             * coordinates mirror the geometry block — keep in sync.
+             * The kick text ('Version mismatch ... Refresh: Ctrl+Shift+R')
+             * runs longer than the panel can hold at scale 1.5, so
+             * draw_text_centered_wrapped breaks it across lines on
+             * word boundaries instead of letting it bleed past the
+             * border. */
+            const float panel_w = 480.0f;
             const float panel_h = 160.0f;
             const float py = h * 0.5f - panel_h - 40.0f;
+            const float wrap_budget = panel_w - 32.0f;   /* 16 px pad each side */
             draw_text_centered("CONNECTION FAILED",
                                  cx, py + 28.0f, 2.5f,
                                  0xff, 0xa0, 0xa0);
             if (M.error_msg[0]) {
-                draw_text_centered(M.error_msg,
-                                     cx, py + 84.0f, 1.5f,
-                                     0xff, 0xff, 0xff);
+                draw_text_centered_wrapped(M.error_msg,
+                                             cx, py + 84.0f, 1.5f,
+                                             wrap_budget,
+                                             0xff, 0xff, 0xff);
             }
             break;
         }
