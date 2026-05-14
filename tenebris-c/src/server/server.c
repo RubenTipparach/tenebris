@@ -1165,6 +1165,147 @@ static size_t build_status_json(server_t* s) {
     return pos;
 }
 
+/* /rooms aggregator. Combines two sources:
+ *   - sessions.log     for the full set of rooms that have ever hosted
+ *                      a player + unique-user count per room
+ *   - s->rooms[]       for the currently-live client counts
+ * Output JSON: { rooms: [{code, unique_users, total_logins,
+ *                          last_seen_ts, live_clients}, ...] }. */
+
+#define RS_MAX_ROOMS           32
+#define RS_MAX_UNIQUE_NAMES    64    /* per room */
+#define RS_NAME_MAX            32
+#define RS_ROOM_MAX            16    /* "__public__" + NUL fits */
+
+typedef struct {
+    char  room[RS_ROOM_MAX];
+    int   total_logins;
+    long  last_seen_ts;
+    int   unique_count;
+    char  names[RS_MAX_UNIQUE_NAMES][RS_NAME_MAX];
+} rs_room_t;
+
+static rs_room_t RS_ROOMS_BUF[RS_MAX_ROOMS];
+
+/* Look up `room` in the aggregate buffer, allocating a new slot on
+ * first sight. Returns the index, or -1 if the slot pool is exhausted. */
+static int rs_find_or_add(const char* room, int* count) {
+    for (int i = 0; i < *count; ++i) {
+        if (strcmp(RS_ROOMS_BUF[i].room, room) == 0) return i;
+    }
+    if (*count >= RS_MAX_ROOMS) return -1;
+    int idx = (*count)++;
+    memset(&RS_ROOMS_BUF[idx], 0, sizeof RS_ROOMS_BUF[idx]);
+    snprintf(RS_ROOMS_BUF[idx].room, sizeof RS_ROOMS_BUF[idx].room, "%s", room);
+    return idx;
+}
+
+static size_t build_rooms_json(server_t* s) {
+    int rs_count = 0;
+    memset(RS_ROOMS_BUF, 0, sizeof RS_ROOMS_BUF);
+
+    /* Walk every session record in the audit log, accumulating per-
+     * room unique-user counts. Capped at SAVES_AUDIT_FILE_MAX, which
+     * is also where the log auto-truncates. */
+    size_t raw_len = saves_audit_tail("sessions", SAVES_AUDIT_FILE_MAX,
+                                        HTTP_RAW, HTTP_BODY_CAP);
+    char* line = HTTP_RAW;
+    char* end  = HTTP_RAW + raw_len;
+    while (line < end) {
+        char* nl = (char*)memchr(line, '\n', (size_t)(end - line));
+        size_t len = nl ? (size_t)(nl - line) : (size_t)(end - line);
+        if (len == 0) { if (!nl) break; line = nl + 1; continue; }
+
+        char fields[4][SAVES_CHAT_TEXT_MAX + 1];
+        int fc = 0;
+        size_t fstart = 0;
+        for (size_t i = 0; i <= len && fc < 4; ++i) {
+            if (i == len || line[i] == '\t') {
+                size_t flen = i - fstart;
+                if (flen > sizeof fields[0] - 1) flen = sizeof fields[0] - 1;
+                memcpy(fields[fc], line + fstart, flen);
+                fields[fc][flen] = 0;
+                ++fc;
+                fstart = i + 1;
+            }
+        }
+        if (fc == 4) {
+            long        ts    = strtol(fields[0], NULL, 10);
+            const char* event = fields[1];
+            const char* name  = fields[2];
+            const char* room  = fields[3];
+            int ri = rs_find_or_add(room, &rs_count);
+            if (ri >= 0) {
+                if (strcmp(event, "login") == 0) RS_ROOMS_BUF[ri].total_logins++;
+                if (ts > RS_ROOMS_BUF[ri].last_seen_ts) RS_ROOMS_BUF[ri].last_seen_ts = ts;
+                /* Unique-name probe. Linear scan is fine - the cap is
+                 * 64 names per room and the audit log is 5k lines. */
+                bool seen = false;
+                for (int j = 0; j < RS_ROOMS_BUF[ri].unique_count; ++j) {
+                    if (strcmp(RS_ROOMS_BUF[ri].names[j], name) == 0) {
+                        seen = true; break;
+                    }
+                }
+                if (!seen && RS_ROOMS_BUF[ri].unique_count < RS_MAX_UNIQUE_NAMES) {
+                    snprintf(RS_ROOMS_BUF[ri].names[RS_ROOMS_BUF[ri].unique_count],
+                             RS_NAME_MAX, "%s", name);
+                    RS_ROOMS_BUF[ri].unique_count++;
+                }
+            }
+        }
+        if (!nl) break;
+        line = nl + 1;
+    }
+
+    /* Live rooms not yet in the aggregate (brand-new room that hasn't
+     * persisted a login event yet, or audit log was rotated past their
+     * earliest history) still need to show up. */
+    if (s) {
+        for (int j = 0; j < SERVER_MAX_ROOMS; ++j) {
+            const server_room_t* r = &s->rooms[j];
+            if (!r->in_use) continue;
+            const char* slug = r->code[0] ? r->code : "__public__";
+            (void)rs_find_or_add(slug, &rs_count);
+        }
+    }
+
+    /* Emit JSON. Cross-reference s->rooms for live_clients. */
+    size_t pos = 0;
+    json_appendf(&pos, "{\"rooms\":[");
+    bool first = true;
+    for (int i = 0; i < rs_count; ++i) {
+        int live = 0;
+        const char* room_internal =
+            (strcmp(RS_ROOMS_BUF[i].room, "__public__") == 0) ? "" : RS_ROOMS_BUF[i].room;
+        if (s) {
+            for (int j = 0; j < SERVER_MAX_ROOMS; ++j) {
+                const server_room_t* r = &s->rooms[j];
+                if (!r->in_use) continue;
+                if (strcmp(r->code, room_internal) == 0) {
+                    live = r->ref_count;
+                    break;
+                }
+            }
+        }
+        char esc_code[32];
+        json_escape(RS_ROOMS_BUF[i].room, esc_code, sizeof esc_code);
+        if (!json_appendf(&pos,
+                "%s{\"code\":\"%s\",\"unique_users\":%d,\"total_logins\":%d,"
+                "\"last_seen_ts\":%ld,\"live_clients\":%d}",
+                first ? "" : ",",
+                esc_code,
+                RS_ROOMS_BUF[i].unique_count,
+                RS_ROOMS_BUF[i].total_logins,
+                RS_ROOMS_BUF[i].last_seen_ts,
+                live)) {
+            break;
+        }
+        first = false;
+    }
+    json_appendf(&pos, "]}");
+    return pos;
+}
+
 /* URL-decode `in` into `out`, stopping at `&` or NUL. Handles `+`
  * (space) and `%XX` (hex). Returns the number of bytes written
  * (excluding the NUL); always NUL-terminates. */
@@ -1290,6 +1431,13 @@ static int on_http(const char* path,
         *out_mime     = "application/json; charset=utf-8";
         return 1;
     }
+    if (strcmp(clean, "/rooms") == 0) {
+        size_t len = build_rooms_json(s);
+        *out_body     = (const uint8_t*)HTTP_BODY;
+        *out_body_len = len;
+        *out_mime     = "application/json; charset=utf-8";
+        return 1;
+    }
     if (strcmp(clean, "/logins") == 0) {
         int n = http_query_int(path, "n", 200);
         size_t len = build_audit_json("sessions", n);
@@ -1351,6 +1499,7 @@ static int on_http(const char* path,
         static const char msg[] =
             "tenebris-server alive\n"
             "  GET /status               - live JSON (players, CPU, RAM, rooms)\n"
+            "  GET /rooms                - per-room unique-user + total-login counts\n"
             "  GET /logins[?n=N]         - last N login/logout events\n"
             "  GET /chat[?n=N]           - last N chat messages\n"
             "  GET /chat/send?text=...   - broadcast '~server~' chat to a room\n"

@@ -60,6 +60,7 @@ Raw JSON for `curl` / scripts:
 | --- | --- |
 | [`GET /health`](https://tenebris-c.fly.dev/health) | Plaintext "alive" line + usage hint. |
 | [`GET /status`](https://tenebris-c.fly.dev/status) | Live JSON snapshot: uptime, tick rate, CPU %, RAM (RSS/VmSize), online players (id/name/room/body), and allocated rooms. |
+| [`GET /rooms`](https://tenebris-c.fly.dev/rooms) | Every room ever seen, with `unique_users` (distinct names ever to log in), `total_logins`, `last_seen_ts`, and `live_clients`. Combines `sessions.log` with the live room table so empty private rooms still appear. |
 | [`GET /logins`](https://tenebris-c.fly.dev/logins) | JSON array of `{ts, event, name, room}` records. `event` is `"login"` (handshake success) or `"logout"` (client disconnect after handshake). |
 | [`GET /chat`](https://tenebris-c.fly.dev/chat) | JSON array of `{ts, name, room, text}` chat messages, server-wide, time-ordered. |
 | `GET /chat/send?text=...&room=...` | Broadcast a chat message to a room as `~server~` (sender renders with that name in-game). Authenticated by the `TENEBRIS_ADMIN_TOKEN` env var if set: append `&token=...`. Without the env var the endpoint is open (dev mode). |

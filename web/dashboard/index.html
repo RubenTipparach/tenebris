@@ -82,6 +82,18 @@
       font-size: 11px;
     }
     .empty { color: #555; padding: 8px 0; }
+    .invite-btn {
+      background: #1c2230;
+      color: #9ad;
+      border: 1px solid #2a3a55;
+      border-radius: 3px;
+      padding: 1px 8px;
+      font: inherit;
+      font-size: 11px;
+      cursor: pointer;
+    }
+    .invite-btn:hover { background: #25324a; color: #cde2ff; }
+    .invite-btn.copied { background: #1c2e1c; color: #7fe28f; border-color: #2a552a; }
     .ev-login  { color: #7fe28f; }
     .ev-logout { color: #e2987f; }
     .ts { color: #666; }
@@ -201,6 +213,7 @@
     <footer>
       Server: <input class="host" id="host" /> &middot;
       <a id="lnk-status"  target="_blank">/status</a> &middot;
+      <a id="lnk-rooms"   target="_blank">/rooms</a> &middot;
       <a id="lnk-logins"  target="_blank">/logins</a> &middot;
       <a id="lnk-chat"    target="_blank">/chat</a> &middot;
       <a id="lnk-health"  target="_blank">/health</a>
@@ -268,7 +281,7 @@
 
     function updateFooterLinks() {
       $("host").value = HOST;
-      for (const p of ["status", "logins", "chat", "health"]) {
+      for (const p of ["status", "rooms", "logins", "chat", "health"]) {
         $("lnk-" + p).href = HOST + "/" + p;
       }
     }
@@ -279,6 +292,7 @@
         window.location.hash = encodeURIComponent(HOST);
         updateFooterLinks();
         refreshStatus();
+        refreshRooms();
         refreshSessions();
         refreshChat();
       });
@@ -321,22 +335,13 @@
           $("players").innerHTML = h;
         }
 
-        if (!s.rooms || s.rooms.length === 0) {
-          $("rooms").innerHTML = '<div class="empty">no rooms</div>';
-        } else {
-          let h = "<table><tr><th>code</th><th>clients</th></tr>";
-          for (const r of s.rooms) {
-            h +=
-              '<tr><td><span class="pill">' +
-              esc(r.code) +
-              "</span></td><td>" +
-              r.clients +
-              "</td></tr>";
-          }
-          h += "</table>";
-          $("rooms").innerHTML = h;
-        }
-        rebuildRoomSelect(s.rooms || []);
+        // The rooms panel + the broadcast dropdown are now driven by
+        // /rooms (live counts + historical aggregates). Keep the live
+        // snapshot here for cross-reference but skip the table render.
+        rebuildRoomSelect((s.rooms || []).map((r) => ({
+          code: r.code,
+          live_clients: r.clients,
+        })));
       } catch (e) {
         $("sub").innerHTML = '<span class="err">' + esc(e.message) + "</span>";
       }
@@ -377,6 +382,93 @@
         }
       }
       return out.reverse();
+    }
+
+    // Where the WASM client lives. Invite links land players directly
+    // into the matching private room. __public__ doesn't get a button
+    // since you can just send the player the bare URL.
+    const INVITE_BASE = "https://rubentipparach.github.io/tenebris/wasm/";
+
+    async function copyInvite(code, btn) {
+      const url = INVITE_BASE + "?invite=" + encodeURIComponent(code);
+      try {
+        await navigator.clipboard.writeText(url);
+        btn.classList.add("copied");
+        btn.textContent = "copied!";
+        setTimeout(() => {
+          btn.classList.remove("copied");
+          btn.textContent = "invite";
+        }, 1500);
+      } catch (_) {
+        // Fallback: surface the URL via prompt so the operator can
+        // copy it manually (clipboard API needs a user gesture +
+        // secure context; iframes etc. can refuse).
+        window.prompt("Invite URL", url);
+      }
+    }
+
+    async function refreshRooms() {
+      try {
+        const d = await getJSON("/rooms");
+        const list = d.rooms || [];
+        // Feed code list into the historical set so the broadcast
+        // dropdown picks up rooms even if they only appear here.
+        let dropdownDirty = false;
+        for (const r of list) {
+          if (r.code && !historicalRooms.has(r.code)) {
+            historicalRooms.add(r.code);
+            dropdownDirty = true;
+          }
+        }
+        if (dropdownDirty) rebuildRoomSelect(lastRoomsSnapshot);
+
+        if (list.length === 0) {
+          $("rooms").innerHTML = '<div class="empty">no rooms</div>';
+          return;
+        }
+
+        // Sort live rooms first, then most-recently-seen, then by code.
+        list.sort((a, b) => {
+          if ((b.live_clients > 0) !== (a.live_clients > 0))
+            return b.live_clients - a.live_clients;
+          if (a.last_seen_ts !== b.last_seen_ts)
+            return b.last_seen_ts - a.last_seen_ts;
+          return a.code.localeCompare(b.code);
+        });
+
+        let h =
+          "<table><tr><th>code</th><th>live</th><th>unique users</th>" +
+          "<th>logins</th><th>last seen</th><th></th></tr>";
+        for (const r of list) {
+          const showInvite =
+            r.code && r.code !== "__public__" && r.code !== "__all__";
+          const lastSeen = r.last_seen_ts ? fmtTime(r.last_seen_ts) : "-";
+          h +=
+            '<tr><td><span class="pill">' + esc(r.code) + "</span></td>" +
+            "<td>" + (r.live_clients || 0) + "</td>" +
+            "<td>" + (r.unique_users || 0) + "</td>" +
+            "<td>" + (r.total_logins || 0) + "</td>" +
+            '<td class="ts">' + esc(lastSeen) + "</td>" +
+            "<td>" +
+            (showInvite
+              ? '<button class="invite-btn" data-code="' +
+                esc(r.code) +
+                '">invite</button>'
+              : "") +
+            "</td></tr>";
+        }
+        h += "</table>";
+        $("rooms").innerHTML = h;
+
+        // Wire up the buttons after each rebuild.
+        for (const btn of $("rooms").querySelectorAll(".invite-btn")) {
+          btn.addEventListener("click", () =>
+            copyInvite(btn.getAttribute("data-code"), btn)
+          );
+        }
+      } catch (e) {
+        $("rooms").innerHTML = '<div class="err">' + esc(e.message) + "</div>";
+      }
     }
 
     async function refreshSessions() {
@@ -517,7 +609,9 @@
       // private rooms that are currently empty so the operator can
       // still pick them.
       const codeToClients = new Map();
-      for (const r of rooms) codeToClients.set(r.code, r.clients || 0);
+      for (const r of rooms) {
+        codeToClients.set(r.code, r.live_clients ?? r.clients ?? 0);
+      }
       for (const c of historicalRooms) {
         if (!codeToClients.has(c)) codeToClients.set(c, 0);
       }
@@ -554,7 +648,10 @@
         want = "__public__";
       }
 
-      const totalClients = rooms.reduce((n, r) => n + (r.clients || 0), 0);
+      const totalClients = rooms.reduce(
+        (n, r) => n + (r.live_clients ?? r.clients ?? 0),
+        0
+      );
 
       let html =
         '<option value="__all__"' +
@@ -607,9 +704,11 @@
 
     updateFooterLinks();
     refreshStatus();
+    refreshRooms();
     refreshSessions();
     refreshChat();
     setInterval(refreshStatus, 2000);
+    setInterval(refreshRooms, 5000);
     setInterval(refreshSessions, 5000);
     setInterval(refreshChat, 5000);
   </script>
