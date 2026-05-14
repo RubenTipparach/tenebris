@@ -41,7 +41,12 @@
 #define BEACH_BAND            2.0f
 #define SNOW_ELEV            22.0f
 #define STONE_ELEV           32.0f
-#define POLAR_LATITUDE        0.90f
+/* Latitude threshold (|sin(lat)|) above which the surface gets the
+ * polar / ice-cap treatment. 0.90 caps at ~64 deg latitude;
+ * 0.95 caps at ~72 deg, which halves the spherical-cap area
+ * (cap area = 2*pi*(1 - sin(lat)), so going from 0.10 to 0.05
+ * is the requested "50% smaller ice cap"). */
+#define POLAR_LATITUDE        0.95f
 #define COLD_LATITUDE         0.75f
 
 /* ----------------------------------------------------------------------- */

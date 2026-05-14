@@ -245,14 +245,18 @@ static void send_welcome(server_t* s, server_client_t* cl) {
     const body_config_t* spawn_body = planet_get(BODY_TENEBRIS);
     if (!spawn_body) return;
 
-    /* Spawn coordinates default to Tenebris's pole. If the profile has
-     * a saved pose (M6 persistence), resume from there instead — this
-     * is the 'logout at position, login back to that spot' path. */
+    /* New players spawn on Tenebris's equator at (radius + 5, 0, 0)
+     * relative to the body centre. The equator gives a warmer first
+     * impression than the ice cap, and it's the same direction the
+     * SP boot path uses (main_web.c spawns at dvec3_make(1, 0, 0)).
+     * If the profile has a saved pose (M6 persistence), resume from
+     * there instead - this is the 'logout at position, login back
+     * to that spot' path. */
     msg_welcome_t w = {
         .player_id  = cl->player_id,
         .world_seed = s->cfg.seed,
-        .spawn_x    = spawn_body->pos_x,
-        .spawn_y    = spawn_body->pos_y + spawn_body->radius_m + 5.0,
+        .spawn_x    = spawn_body->pos_x + spawn_body->radius_m + 5.0,
+        .spawn_y    = spawn_body->pos_y,
         .spawn_z    = spawn_body->pos_z,
         .body_id    = BODY_TENEBRIS,
     };
