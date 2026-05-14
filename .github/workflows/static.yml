@@ -12,9 +12,15 @@
 name: Build and deploy
 
 on:
+  # Push covers branch commits AND PR synchronize events (a PR
+  # synchronize is itself a push to the head branch in this repo).
+  # We used to ALSO list `pull_request: branches: ['**']` here, but
+  # that fired its own workflow run on top of the push run for the
+  # same commit - two identical builds in parallel. Dropped since
+  # this repo doesn't take fork PRs (single-dev mode, see the
+  # top-of-file comment); revisit if external contributors land and
+  # PR-only runs become necessary for the no-write-access case.
   push:
-    branches: ['**']
-  pull_request:
     branches: ['**']
   workflow_dispatch:
     inputs:

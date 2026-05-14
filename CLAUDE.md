@@ -1,5 +1,26 @@
 # Repo rules
 
+## Terminology
+
+When the user describes work in terms of these labels, treat them as
+load-bearing - they say where the change belongs:
+
+- **MP** - multiplayer.
+- **SP** - single player.
+- **Client** - the SP + MP client side. Anything under
+  `tenebris-c/src/client/` plus the shaders under `tenebris-c/src/shaders/`.
+  "Non-server code." Includes rendering, input, local prediction, UI,
+  audio, the chat UI, profile management, etc.
+- **Core** - SP and MP code that mutates authoritative state / poses /
+  voxel data. Anything under `tenebris-c/src/core/` plus the relevant
+  parts of `tenebris-c/src/server/`. Physics, world / chunk edits,
+  saves, the server tick loop.
+
+A bug that "doesn't work in SP or MP" is a Core bug if it touches
+world state (mining, placement, physics) and a Client bug if it
+touches rendering or input. When in doubt, fix it in Core so SP and
+MP share the same code path.
+
 ## DO NOT MODIFY THE TENEBRIS JS SOURCE — IT IS DEPRECATED
 
 The original Three.js / TypeScript implementation lives at the repo root
@@ -156,6 +177,47 @@ game, so they're fine to keep on the standard JS console.
 If a feature *requires* the browser prompt UX (e.g. a deep-link
 permission grant), document the exception inline at the call site.
 Otherwise this rule is absolute.
+
+## Cross-platform UI lives in the canvas, DOM is mobile-only scaffolding
+
+This is a web game, but "web" doesn't mean "browser-styled HTML".
+The core game UI — every menu, pause panel, dialog, input box,
+HUD readout — is rendered **inside the canvas** with `sokol_gl`
++ `sokol_debugtext` so it matches the game's visual identity on
+every platform. A real game's pause screen looks like part of
+the game, not like a `<button>` with the browser's default UA
+styling.
+
+DOM overlays exist only for **mobile-only virtual input
+controls** — things that duplicate input the desktop player
+already has via keyboard / mouse, and that we'd never show on
+desktop. Phones don't have an Esc key, a `W` key, or a left mouse
+button, so they need on-screen stand-ins. Those stand-ins are
+scaffolding, not part of the game's UI; using the browser's
+native button styling is fine for them because they're already
+visually outside the game world.
+
+The pattern in `main_web.c` `init()`:
+
+```c
+#ifdef __EMSCRIPTEN__
+if (tenebris_is_mobile_device()) {
+    /* DOM scaffolding so phones can play at all. Gated on mobile
+     * detection - desktop already has the real inputs. */
+    tenebris_pause_button_install();      // stands in for Esc
+    tenebris_mobile_controls_install();   // joysticks + JUMP / BREAK / PLACE
+}
+#endif
+```
+
+Pause panels, profile pickers, error dialogs, the chat box,
+the world picker — all drawn with `sokol_gl` panels and
+`sokol_debugtext` labels through the existing menu module, no
+DOM. Same code path on every platform.
+
+The two layers never mix: a touch-only DOM control (the mobile
+pause Esc-stand-in) is hidden on desktop; a cross-platform panel
+(the pause menu itself) renders into the canvas on every device.
 
 ## Static game asset guidelines
 

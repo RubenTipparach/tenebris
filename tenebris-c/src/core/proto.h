@@ -33,12 +33,13 @@ typedef enum {
     MSG_CHUNK_DIFF   = 11,  /* S->C block edits */
     MSG_DESYNC       = 12,  /* S->C "your reported pose is impossible" */
     MSG_PLAYER_INFO  = 13,  /* S->C name announcement: (player_id, name) */
+    MSG_KICK         = 14,  /* S->C terminal error + user-facing reason */
     MSG_CHAT         = 20,
 } msg_kind_t;
 
 /* Per-kind protocol versions. Bump on any wire change. */
 #define MSG_HELLO_VERSION         3     /* v2: name field; v3: room_code */
-#define MSG_WELCOME_VERSION       1
+#define MSG_WELCOME_VERSION       2     /* v2: + spawn_yaw / spawn_pitch */
 #define MSG_INPUT_VERSION         1
 #define MSG_PLAYER_CMD_VERSION    1
 #define MSG_PLAYER_STATE_VERSION  1
@@ -46,6 +47,7 @@ typedef enum {
 #define MSG_CHUNK_DIFF_VERSION    1
 #define MSG_DESYNC_VERSION        1
 #define MSG_PLAYER_INFO_VERSION   1
+#define MSG_KICK_VERSION          1
 #define MSG_CHAT_VERSION          1
 
 typedef struct {
@@ -101,7 +103,7 @@ typedef struct {
     uint32_t reserved;
 } msg_chat_t;
 
-#define MSG_WELCOME_WIRE_SIZE   40    /* 4 + 8 + 24 + 4 */
+#define MSG_WELCOME_WIRE_SIZE   48    /* 4 + 8 + 24 + 4 + 4 + 4 */
 
 typedef struct {
     uint32_t player_id;
@@ -110,6 +112,8 @@ typedef struct {
     double   spawn_y;
     double   spawn_z;
     uint32_t body_id;
+    float    spawn_yaw;
+    float    spawn_pitch;
 } msg_welcome_t;
 
 /* ------------------------------------------------------------------
@@ -214,10 +218,39 @@ typedef struct {
     uint32_t block_type;         /* block_t the player was reported inside */
 } msg_desync_t;
 
+/* ------------------------------------------------------------------
+ * MSG_KICK: terminal error message the server sends right before
+ * closing a connection that can't be served. Carries a numeric
+ * reason code (so the client can branch on it - e.g. suppress the
+ * normal auto-reconnect loop for version mismatches that are
+ * never going to resolve without a refresh) and a short ASCII
+ * text the client surfaces in the disconnected popup.
+ * ------------------------------------------------------------------ */
+
+#define MSG_KICK_TEXT_LEN     64
+#define MSG_KICK_WIRE_SIZE    72    /* 4 reason + 64 text + 4 reserved */
+
+typedef enum {
+    KICK_NONE             = 0,
+    KICK_VERSION_MISMATCH = 1,    /* client's protocol version != server's */
+    KICK_SERVER_FULL      = 2,
+    KICK_GENERIC          = 3,
+    KICK_NAME_TAKEN       = 4,    /* another connected client has this name */
+} kick_reason_t;
+
+typedef struct {
+    uint32_t reason;     /* kick_reason_t */
+    uint8_t  text[MSG_KICK_TEXT_LEN];
+    uint32_t reserved;
+} msg_kick_t;
+
 /* Protocol-level version. Bumped when the set of message kinds, or
  * any handshake-relevant payload, changes. The server rejects HELLOs
- * whose client_version doesn't match. */
-#define TENEBRIS_PROTOCOL_VERSION   1
+ * whose client_version doesn't match. Mismatched clients receive
+ * MSG_KICK with reason=KICK_VERSION_MISMATCH so the client can show
+ * a "refresh your browser" popup instead of looping the auto-reconnect
+ * timer against a server that will never accept them. */
+#define TENEBRIS_PROTOCOL_VERSION   3
 
 /* ------------------------------------------------------------------
  * Encode / decode helpers. All functions assume little-endian on the
@@ -244,6 +277,9 @@ int    proto_read_snapshot (const uint8_t* payload, size_t len, msg_snapshot_t* 
 
 size_t proto_write_desync(uint8_t* buf, size_t cap, const msg_desync_t* m);
 int    proto_read_desync (const uint8_t* payload, size_t len, msg_desync_t* out);
+
+size_t proto_write_kick(uint8_t* buf, size_t cap, const msg_kick_t* m);
+int    proto_read_kick (const uint8_t* payload, size_t len, msg_kick_t* out);
 
 size_t proto_write_player_cmd(uint8_t* buf, size_t cap, const msg_player_cmd_t* m);
 int    proto_read_player_cmd (const uint8_t* payload, size_t len, msg_player_cmd_t* out);

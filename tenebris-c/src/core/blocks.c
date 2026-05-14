@@ -11,7 +11,8 @@ bool block_is_transparent(block_t b) {
     return b == BLOCK_AIR
         || b == BLOCK_WATER
         || b == BLOCK_ICE
-        || b == BLOCK_LEAVES;
+        || b == BLOCK_LEAVES
+        || b == BLOCK_SEQ_LEAVES;
 }
 
 /* Bedrock cannot be broken by interact_update. Exposed so input/edit
@@ -22,7 +23,7 @@ bool block_covers_face(block_t b) {
     if (b == BLOCK_AIR || b == BLOCK_WATER || b == BLOCK_ICE) return false;
     /* Wood and leaves are partial-width — they don't fully cover the
      * face of an adjacent voxel, so neighbors must still draw. */
-    if (b == BLOCK_WOOD || b == BLOCK_LEAVES) return false;
+    if (b == BLOCK_WOOD || b == BLOCK_LEAVES || b == BLOCK_SEQ_LEAVES) return false;
     return true;
 }
 

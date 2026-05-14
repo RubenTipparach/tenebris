@@ -3,6 +3,7 @@
 #include "core/blocks.h"
 #include "core/job_system.h"
 #include "core/math.h"
+#include <math.h>   /* sqrt for the spawn-altitude diagnostic */
 #include "core/net_transport.h"
 #include "core/planet.h"
 #include "core/proto.h"
@@ -10,6 +11,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>     /* strcasecmp - POSIX */
+#include <time.h>
 
 /* ------------------------------------------------------------------ */
 /* Room management. Public room lives at rooms[0]; private rooms get
@@ -18,21 +21,73 @@
  * of every world so chunk edits in one room don't leak to others. */
 /* ------------------------------------------------------------------ */
 
+/* Number of seconds an empty room hangs around before its clones
+ * get freed. A refresh / brief drop within this window lands back
+ * on the warm in-memory state instead of paying the disk reload. */
+#define IDLE_ROOM_GRACE_S  300.0
+
 static void room_alloc_worlds(server_t* s, server_room_t* room) {
+    /* Lazy world model: a room starts with ZERO cloned worlds. The
+     * shared baselines in s->worlds[] are the source of truth for
+     * unedited terrain (procgen is deterministic from seed, every
+     * client + the server agree without communication). A room
+     * only ever clones a body when:
+     *   1. There are persisted .col edits for that body on disk
+     *      (loaded here so the join-time chunk replay can ship
+     *      them to incoming clients).
+     *   2. A PLAYER_CMD edits that body at runtime
+     *      (room_ensure_world_for_body clones on demand).
+     *
+     * Previously every room eagerly cloned all 20 baseline worlds
+     * (~370 MB of blocks + goldberg grids), which OOM-killed the
+     * 1 GB Fly machine on the second simultaneous room. */
     room->world_count = 0;
     for (int i = 0; i < s->world_count && i < SERVER_MAX_BODIES; ++i) {
         const world_t* baseline = s->worlds[i];
-        if (!baseline) continue;
+        if (!baseline || !baseline->body) continue;
+        const uint32_t body_id = (uint32_t)baseline->body->id;
+        if (!saves_room_body_has_edits(room->code, s->cfg.seed, body_id))
+            continue;
         world_t* w = world_clone(baseline);
         if (!w) {
-            fprintf(stderr, "[server] room '%s': clone of body %d failed\n",
-                    room->code, i);
+            fprintf(stderr, "[server] room '%s': clone of body %u failed\n",
+                    room->code, body_id);
             continue;
         }
-        /* Overlay any persisted edits for THIS room onto the clone. */
         saves_load_world(w, room->code, s->cfg.seed);
         room->worlds[room->world_count++] = w;
     }
+}
+
+/* Look up a room's world for a body, cloning the shared baseline
+ * on first reference (write path). Returns NULL if the body isn't
+ * registered as a baseline (shouldn't happen for any valid
+ * body_id). The clone is registered in room->worlds so subsequent
+ * lookups hit the cached copy. */
+static world_t* room_ensure_world_for_body(server_t* s, server_room_t* room,
+                                              uint32_t body_id) {
+    for (int i = 0; i < room->world_count; ++i) {
+        world_t* w = room->worlds[i];
+        if (w && w->body && (uint32_t)w->body->id == body_id) return w;
+    }
+    const world_t* baseline = NULL;
+    for (int i = 0; i < s->world_count; ++i) {
+        const world_t* b = s->worlds[i];
+        if (b && b->body && (uint32_t)b->body->id == body_id) { baseline = b; break; }
+    }
+    if (!baseline) return NULL;
+    if (room->world_count >= SERVER_MAX_BODIES) return NULL;
+    world_t* w = world_clone(baseline);
+    if (!w) return NULL;
+    /* Load any persisted edits the first time we materialise this
+     * body in-memory. Subsequent edits write through saves_write_tile
+     * directly so we don't re-walk the directory. */
+    saves_load_world(w, room->code, s->cfg.seed);
+    room->worlds[room->world_count++] = w;
+    printf("[server] room '%s': lazy-cloned body %u\n",
+           room->code[0] ? room->code : "(public)", body_id);
+    fflush(stdout);
+    return w;
 }
 
 static void room_free_worlds(server_room_t* room) {
@@ -57,7 +112,9 @@ static int room_find(server_t* s, const char* code) {
 static int room_acquire(server_t* s, const char* code) {
     int idx = room_find(s, code);
     if (idx < 0) {
-        /* Find an empty slot, skipping rooms[0] (reserved public). */
+        /* Find an empty slot. Public room (empty code) no longer
+         * has a reserved slot - it's created on first empty-code
+         * HELLO like any other room. */
         for (int i = 0; i < SERVER_MAX_ROOMS; ++i) {
             if (!s->rooms[i].in_use) { idx = i; break; }
         }
@@ -69,8 +126,16 @@ static int room_acquire(server_t* s, const char* code) {
         snprintf(s->rooms[idx].code, sizeof s->rooms[idx].code, "%s", code);
         s->rooms[idx].in_use = true;
         room_alloc_worlds(s, &s->rooms[idx]);
-        printf("[server] room created '%s' (%d cloned worlds)\n",
-               s->rooms[idx].code, s->rooms[idx].world_count);
+        printf("[server] room created '%s' (%d cloned worlds from disk)\n",
+               s->rooms[idx].code[0] ? s->rooms[idx].code : "(public)",
+               s->rooms[idx].world_count);
+    } else if (s->rooms[idx].ref_count == 0) {
+        /* Re-attaching to a still-allocated empty room within the
+         * grace window. Clear the empty-time so the sweeper doesn't
+         * free it underfoot. */
+        s->rooms[idx].last_empty_time_s = 0.0;
+        printf("[server] room re-attached '%s' (within idle grace)\n",
+               s->rooms[idx].code[0] ? s->rooms[idx].code : "(public)");
     }
     s->rooms[idx].ref_count++;
     return idx;
@@ -81,12 +146,15 @@ static void room_release(server_t* s, int idx) {
     server_room_t* r = &s->rooms[idx];
     if (!r->in_use) return;
     if (r->ref_count > 0) r->ref_count--;
-    /* Keep the public room alive even at ref=0 so it's hot for the
-     * next join. Private rooms get freed to bound memory. */
-    if (r->ref_count == 0 && idx != 0) {
-        printf("[server] room freed '%s' (last client left)\n", r->code);
-        room_free_worlds(r);
-        memset(r, 0, sizeof *r);
+    /* Grace window: an empty room sticks around for IDLE_ROOM_GRACE_S
+     * (~5 min) so a refresh / brief drop comes back to warm in-memory
+     * state. The sweeper in server_tick frees rooms past the window.
+     * If the player reconnects in time, room_acquire clears
+     * last_empty_time_s. */
+    if (r->ref_count == 0) {
+        r->last_empty_time_s = ((double)time(NULL));
+        printf("[server] room '%s' empty - retained for idle grace\n",
+               r->code[0] ? r->code : "(public)");
     }
 }
 
@@ -180,29 +248,126 @@ static void check_for_desync(server_t* s, server_client_t* cl) {
 /* Handshake. M2 handles HELLO -> WELCOME; M4 adds PLAYER_STATE. */
 /* ------------------------------------------------------------------ */
 
+/* Replay every persisted column for the joining client's room.
+ * Walks each world's saved-tile bitmap and emits CHUNK_DIFF
+ * messages so the client overlays its procgen baseline with the
+ * server-authoritative edits before the player can interact.
+ *
+ * We send the FULL column (all 128 depths) per saved tile rather
+ * than diffing against the procgen baseline. Re-running procgen
+ * to compute a true diff would cost real CPU on every join; the
+ * client's procgen already matches the server's for unedited
+ * depths, so identical-value overwrites are idempotent and the
+ * only cost is wire bytes. CHUNK_DIFF carries 64 entries per
+ * message, so a saved tile fans out to two messages. */
+static void send_chunk_replay(server_t* s, server_client_t* cl) {
+    if (cl->room_idx < 0 || cl->room_idx >= SERVER_MAX_ROOMS) return;
+    server_room_t* room = &s->rooms[cl->room_idx];
+    if (!room->in_use) return;
+
+    int replayed_tiles = 0;
+    int replayed_msgs  = 0;
+    for (int wi = 0; wi < room->world_count; ++wi) {
+        world_t* w = room->worlds[wi];
+        if (!w || !w->saved || !w->body) continue;
+
+        for (int tile = 0; tile < w->tile_count; ++tile) {
+            if (!world_tile_saved(w, tile)) continue;
+            const uint8_t* col = &w->blocks[(size_t)tile * WORLD_MAX_DEPTH];
+
+            /* Emit ceil(WORLD_MAX_DEPTH / CHUNK_DIFF_MAX_EDITS) messages.
+             * Each batch covers a contiguous depth range so the receiver
+             * can apply them in any order without losing entries. */
+            int depth = 0;
+            while (depth < WORLD_MAX_DEPTH) {
+                msg_chunk_diff_t diff = { 0 };
+                diff.body_id = (uint32_t)w->body->id;
+                int batch = WORLD_MAX_DEPTH - depth;
+                if (batch > CHUNK_DIFF_MAX_EDITS) batch = CHUNK_DIFF_MAX_EDITS;
+                diff.edit_count = (uint16_t)batch;
+                for (int i = 0; i < batch; ++i) {
+                    diff.edits[i].tile_idx   = (uint32_t)tile;
+                    diff.edits[i].depth      = (uint16_t)(depth + i);
+                    diff.edits[i].block_type = (uint16_t)col[depth + i];
+                }
+                depth += batch;
+
+                uint8_t buf[MSG_HEADER_SIZE + MSG_CHUNK_DIFF_HEADER_SIZE
+                            + MSG_CHUNK_DIFF_ENTRY_SIZE * CHUNK_DIFF_MAX_EDITS];
+                size_t n = proto_write_chunk_diff(buf, sizeof buf, &diff);
+                if (n == 0) break;
+                net_send(cl->conn, NET_CHANNEL_RELIABLE, buf, n);
+                ++replayed_msgs;
+            }
+            ++replayed_tiles;
+        }
+    }
+    if (replayed_tiles > 0) {
+        printf("[server] CHUNK replay -> player_id=%u: %d tile(s), %d msg(s)\n",
+               cl->player_id, replayed_tiles, replayed_msgs);
+        fflush(stdout);
+    }
+}
+
 static void send_welcome(server_t* s, server_client_t* cl) {
     const body_config_t* spawn_body = planet_get(BODY_TENEBRIS);
     if (!spawn_body) return;
 
-    /* Spawn coordinates default to Tenebris's pole. If the profile has
-     * a saved pose (M6 persistence), resume from there instead — this
-     * is the 'logout at position, login back to that spot' path. */
+    /* New players spawn on Tenebris's equator at (radius + 5, 0, 0)
+     * relative to the body centre. The equator gives a warmer first
+     * impression than the ice cap, and it's the same direction the
+     * SP boot path uses (main_web.c spawns at dvec3_make(1, 0, 0)).
+     * If the profile has a saved pose (M6 persistence), resume from
+     * there instead - this is the 'logout at position, login back
+     * to that spot' path. */
     msg_welcome_t w = {
-        .player_id  = cl->player_id,
-        .world_seed = s->cfg.seed,
-        .spawn_x    = spawn_body->pos_x,
-        .spawn_y    = spawn_body->pos_y + spawn_body->radius_m + 5.0,
-        .spawn_z    = spawn_body->pos_z,
-        .body_id    = BODY_TENEBRIS,
+        .player_id   = cl->player_id,
+        .world_seed  = s->cfg.seed,
+        .spawn_x     = spawn_body->pos_x + spawn_body->radius_m + 5.0,
+        .spawn_y     = spawn_body->pos_y,
+        .spawn_z     = spawn_body->pos_z,
+        .body_id     = BODY_TENEBRIS,
+        .spawn_yaw   = 0.0f,
+        .spawn_pitch = 0.0f,
     };
+    /* Resume the player at their last known pose. The save key is
+     * the sanitized display name now (not the profile token), so
+     * the same name reliably finds the same save across browser
+     * swaps / profile re-creation / localStorage wipes. The server
+     * already enforces unique names at HELLO, so two simultaneous
+     * connections can't fight over the same file. */
     saves_player_pose_t resume;
-    if (cl->token[0] && saves_load_player(cl->token, &resume)) {
-        w.spawn_x = resume.pos_x;
-        w.spawn_y = resume.pos_y;
-        w.spawn_z = resume.pos_z;
-        w.body_id = resume.body_id;
-        printf("[server] resume profile=%s body=%u pos=(%.1f, %.1f, %.1f)\n",
-               cl->token, resume.body_id, resume.pos_x, resume.pos_y, resume.pos_z);
+    bool had_save = (cl->name[0] && saves_load_player(cl->name, &resume));
+    if (had_save) {
+        w.spawn_x     = resume.pos_x;
+        w.spawn_y     = resume.pos_y;
+        w.spawn_z     = resume.pos_z;
+        w.body_id     = resume.body_id;
+        w.spawn_yaw   = resume.yaw;
+        w.spawn_pitch = resume.pitch;
+    }
+    /* HELLO/WELCOME spawn diagnostic. One line per join so we can
+     * tell where the player got placed and why - 'DEFAULT' branch
+     * means no save file, 'RESUME' means we loaded one. Includes
+     * radial altitude (length(spawn - body_centre) - body_radius)
+     * so the floating-spawn report has a concrete number to chase. */
+    {
+        const body_config_t* dbg_body = planet_get((body_id_t)w.body_id);
+        double r = 0.0, alt = 0.0;
+        if (dbg_body) {
+            double dx = w.spawn_x - dbg_body->pos_x;
+            double dy = w.spawn_y - dbg_body->pos_y;
+            double dz = w.spawn_z - dbg_body->pos_z;
+            r = sqrt(dx*dx + dy*dy + dz*dz);
+            alt = r - dbg_body->radius_m;
+        }
+        printf("[server] WELCOME spawn name=%s %s body=%u pos=(%.2f, %.2f, %.2f) "
+               "r=%.2f alt=%+.2f yaw=%.2f pitch=%.2f\n",
+               cl->name,
+               had_save ? "RESUME" : "DEFAULT",
+               w.body_id, w.spawn_x, w.spawn_y, w.spawn_z,
+               r, alt, w.spawn_yaw, w.spawn_pitch);
+        fflush(stdout);
     }
 
     uint8_t buf[MSG_HEADER_SIZE + MSG_WELCOME_WIRE_SIZE];
@@ -231,8 +396,19 @@ static void handle_hello(server_t* s, server_client_t* cl,
         return;
     }
     if (h.client_version != TENEBRIS_PROTOCOL_VERSION) {
-        fprintf(stderr, "[server] HELLO client_version %u != %u, closing\n",
+        fprintf(stderr, "[server] HELLO client_version %u != %u, kicking\n",
                 h.client_version, TENEBRIS_PROTOCOL_VERSION);
+        /* Tell the client WHY before dropping the socket so it can
+         * show a 'refresh your browser' popup instead of looping
+         * the auto-reconnect timer forever against a server it
+         * will never be compatible with. */
+        msg_kick_t kick = { .reason = KICK_VERSION_MISMATCH };
+        snprintf((char*)kick.text, sizeof kick.text,
+                 "Version mismatch (client %u, server %u). Refresh: Ctrl+Shift+R",
+                 h.client_version, TENEBRIS_PROTOCOL_VERSION);
+        uint8_t buf[MSG_HEADER_SIZE + MSG_KICK_WIRE_SIZE];
+        size_t kn = proto_write_kick(buf, sizeof buf, &kick);
+        if (kn > 0) net_send(cl->conn, NET_CHANNEL_RELIABLE, buf, kn);
         net_close(cl->conn);
         return;
     }
@@ -254,6 +430,37 @@ static void handle_hello(server_t* s, server_client_t* cl,
     memcpy(cl->room, h.room_code, SERVER_ROOM_LEN);
     cl->room[SERVER_ROOM_LEN] = 0;
 
+    /* Reject duplicate names (case-insensitive) across the whole
+     * server. Two clients sharing a label would make chat ambiguous
+     * ('who is Alice?'), break per-profile pose lookup downstream
+     * if tokens were ever ambiguous, and confuse F1 / nameplates.
+     * Picking the first-come wins is the simplest rule. The
+     * incoming connection gets MSG_KICK with reason=KICK_NAME_TAKEN
+     * so the client surfaces a real popup, not a silent drop. */
+    {
+        bool taken = false;
+        for (int i = 0; i < SERVER_MAX_CLIENTS; ++i) {
+            const server_client_t* peer = &s->clients[i];
+            if (peer == cl) continue;
+            if (!peer->conn || !peer->handshaked) continue;
+            if (peer->name[0] == 0) continue;
+            if (strcasecmp(peer->name, cl->name) == 0) { taken = true; break; }
+        }
+        if (taken) {
+            fprintf(stderr, "[server] HELLO name='%s' already in use, kicking player_id=%u\n",
+                    cl->name, cl->player_id);
+            msg_kick_t kick = { .reason = KICK_NAME_TAKEN };
+            snprintf((char*)kick.text, sizeof kick.text,
+                     "Name '%s' is already on the server. Pick another profile.",
+                     cl->name);
+            uint8_t buf[MSG_HEADER_SIZE + MSG_KICK_WIRE_SIZE];
+            size_t kn = proto_write_kick(buf, sizeof buf, &kick);
+            if (kn > 0) net_send(cl->conn, NET_CHANNEL_RELIABLE, buf, kn);
+            net_close(cl->conn);
+            return;
+        }
+    }
+
     /* Acquire the room (find or create + clone worlds). If the slot
      * pool is full, the client gets dropped — we can't host them
      * cleanly without a room. */
@@ -269,6 +476,12 @@ static void handle_hello(server_t* s, server_client_t* cl,
            cl->player_id, cl->name,
            cl->room[0] ? cl->room : "(public)", h.client_version);
     send_welcome(s, cl);
+    /* Bring the joining client up to date with the room's persisted
+     * chunk edits before they can act, so the world they see matches
+     * what was on disk when they last (or any previous player) left.
+     * Idempotent for unedited depths - the server's procgen + client's
+     * procgen agree there. */
+    send_chunk_replay(s, cl);
 
     /* PLAYER_INFO fan-out, room-scoped: only clients in the same
      * room see each other's identities. Reliable channel — names
@@ -354,6 +567,12 @@ static void on_open(net_conn_t* conn, void* user) {
     /* No room until HELLO. -1 means 'unattached' so on_close knows not
      * to release a room ref that was never acquired. */
     cl->room_idx   = -1;
+    /* Fresh save-debounce state for the new session - last_saved_tick
+     * == 0 makes the first eligible flush write unconditionally. */
+    cl->last_saved_pos_x = 0.0;
+    cl->last_saved_pos_y = 0.0;
+    cl->last_saved_pos_z = 0.0;
+    cl->last_saved_tick  = 0;
     net_conn_set_user(conn, cl);
     printf("[server] open: player_id=%u (slot %ld)\n",
            cl->player_id, (long)(cl - s->clients));
@@ -397,8 +616,14 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
             if (proto_read_player_cmd(payload, hdr.length, &cmd) != 0) break;
             /* Resolve the world inside the sender's room. World-per-
              * room isolation means edits never bleed across rooms even
-             * for the same body id. */
+             * for the same body id. First reference to a body in this
+             * room triggers a lazy clone of the shared baseline so
+             * unedited bodies cost zero memory. */
             world_t* w = client_world_for_body(s, cl, cmd.body_id);
+            if (!w && cl->room_idx >= 0) {
+                w = room_ensure_world_for_body(s, &s->rooms[cl->room_idx],
+                                                  cmd.body_id);
+            }
             if (!w) {
                 fprintf(stderr, "[server] PLAYER_CMD unknown body=%u in room='%s' from player_id=%u\n",
                         cmd.body_id, cl->room[0] ? cl->room : "(public)",
@@ -519,9 +744,11 @@ static void on_close(net_conn_t* conn, net_close_reason_t reason, void* user) {
     server_client_t* cl = find_client_by_conn(s, conn);
     if (!cl) return;
     /* Persist the pose so the player resumes here on reconnect.
-     * Token-keyed — only profile-bearing sessions get saved; guests
-     * fall through. */
-    if (cl->has_state && cl->token[0]) {
+     * Name-keyed (sanitized display name) so the same identity
+     * always lands on the same file. Gated on cl->token[0] so
+     * server-stamped 'guest-N' connections don't pollute the
+     * saves dir; only real profile-bearing sessions persist. */
+    if (cl->has_state && cl->token[0] && cl->name[0]) {
         saves_player_pose_t pose = {
             .body_id = cl->body_id,
             .pos_x   = cl->pos_x,
@@ -530,7 +757,7 @@ static void on_close(net_conn_t* conn, net_close_reason_t reason, void* user) {
             .yaw     = cl->yaw,
             .pitch   = cl->pitch,
         };
-        saves_write_player(cl->token, &pose);
+        saves_write_player(cl->name, &pose);
     }
     printf("[server] close: player_id=%u name=%s (reason=%d)\n",
            cl->player_id, cl->name[0] ? cl->name : "(unnamed)", (int)reason);
@@ -603,25 +830,18 @@ bool server_init(server_t* s, const server_config_t* cfg) {
      * room_idx is set by handle_hello once a slot exists. */
     for (int i = 0; i < SERVER_MAX_CLIENTS; ++i) s->clients[i].room_idx = -1;
 
-    /* Public room lives at rooms[0]. Acquire it now so it's hot for the
-     * first joiner and so on-disk public-room saves overlay onto its
-     * world clones at boot rather than at first-join. */
-    int public_idx = room_acquire(s, "");
-    if (public_idx != 0) {
-        /* room_acquire returns 0 for the first acquire of an empty
-         * code, which is what we want. If somehow not, the layout
-         * assumption is broken and we should bail. */
-        fprintf(stderr, "[server] expected public room at slot 0, got %d\n",
-                public_idx);
-        return false;
-    }
-    /* Keep the public ref alive so the room never auto-frees on
-     * ref_count==0. room_release already special-cases idx==0 to keep
-     * it allocated, but we still want the ref count to reflect "the
-     * server itself holds a handle" so initial state isn't 0. */
-    /* (No-op: room_acquire already incremented ref_count to 1.) */
+    /* The public room is NO LONGER pre-cloned at boot. The previous
+     * design eagerly cloned all 20 baseline worlds into a public
+     * room slot so the first joiner skipped a cold-start cost - but
+     * each clone set is ~370 MB (5 subs-7 worlds at ~54 MB each
+     * plus mids + asteroids), and the 1 GB Fly machine OOM-killed
+     * the moment a second room was acquired (baseline + public +
+     * first private = ~1.1 GB). Public room is now created on
+     * demand by room_acquire("") on the first empty-code HELLO,
+     * same path as private rooms. Servers with only private-room
+     * traffic never pay the public-room memory cost. */
 
-    printf("[server] init: %d baseline worlds, public room ready, "
+    printf("[server] init: %d baseline worlds, "
            "tick_hz=%.1f, port=%d, saves=%s, seed=%llu\n",
            s->world_count, s->cfg.tick_hz, s->cfg.port,
            s->cfg.saves_dir ? s->cfg.saves_dir : "(none)",
@@ -703,11 +923,32 @@ static void broadcast_snapshot(server_t* s) {
     }
 }
 
+static void room_sweep_idle(server_t* s) {
+    /* Free rooms that have been empty for longer than the grace
+     * window. Cheap: scan SERVER_MAX_ROOMS slots once a second
+     * (caller throttles via tick modulus). */
+    const double now = ((double)time(NULL));
+    for (int i = 0; i < SERVER_MAX_ROOMS; ++i) {
+        server_room_t* r = &s->rooms[i];
+        if (!r->in_use || r->ref_count > 0) continue;
+        if (r->last_empty_time_s <= 0.0) continue;
+        if (now - r->last_empty_time_s < IDLE_ROOM_GRACE_S) continue;
+        printf("[server] room '%s' freed after %.0fs idle\n",
+               r->code[0] ? r->code : "(public)",
+               now - r->last_empty_time_s);
+        room_free_worlds(r);
+        memset(r, 0, sizeof *r);
+    }
+}
+
 void server_tick(server_t* s) {
     s->tick++;
     /* Drain inbound socket events; callbacks (on_open, on_msg, on_close)
      * fire synchronously from inside net_poll. */
     net_poll(s->listener);
+
+    /* Idle-room sweeper: runs once a second. Cheap O(rooms). */
+    if ((s->tick % (uint64_t)s->cfg.tick_hz) == 0) room_sweep_idle(s);
 
     /* M4 (position relay): broadcast every 3rd tick. At 20 Hz that's
      * ~6.7 snapshots/sec — visibly smooth with client-side interp
@@ -716,21 +957,37 @@ void server_tick(server_t* s) {
 
     /* M6 periodic flush: chunk edits are saved immediately on
      * PLAYER_CMD now, so the only thing this loop persists is
-     * player poses. Runs every 30 s. */
-    const uint64_t flush_interval = (uint64_t)(s->cfg.tick_hz * 30.0);
+     * player poses. Runs every 0.5 s so a hard tab-close that
+     * skips on_close at most loses half a second of movement.
+     * A position-debounce inside skips the write when the player
+     * hasn't moved >= 0.25 m since the last save, so an idle
+     * lobby doesn't churn the disk. */
+    const uint64_t flush_interval = (uint64_t)(s->cfg.tick_hz * 0.5);
     if (flush_interval > 0 && (s->tick % flush_interval) == 0) {
         int saved_poses = 0;
         for (int i = 0; i < SERVER_MAX_CLIENTS; ++i) {
             server_client_t* cl = &s->clients[i];
-            if (!cl->conn || !cl->has_state || !cl->token[0]) continue;
+            if (!cl->conn || !cl->has_state || !cl->token[0] || !cl->name[0]) continue;
+            const double dx = cl->pos_x - cl->last_saved_pos_x;
+            const double dy = cl->pos_y - cl->last_saved_pos_y;
+            const double dz = cl->pos_z - cl->last_saved_pos_z;
+            const double moved2 = dx*dx + dy*dy + dz*dz;
+            if (cl->last_saved_tick != 0 && moved2 < 0.0625) continue;  /* 0.25 m */
             saves_player_pose_t pose = {
                 .body_id = cl->body_id,
                 .pos_x   = cl->pos_x, .pos_y = cl->pos_y, .pos_z = cl->pos_z,
                 .yaw     = cl->yaw,   .pitch = cl->pitch,
             };
-            if (saves_write_player(cl->token, &pose)) ++saved_poses;
+            if (saves_write_player(cl->name, &pose)) {
+                ++saved_poses;
+                cl->last_saved_pos_x = cl->pos_x;
+                cl->last_saved_pos_y = cl->pos_y;
+                cl->last_saved_pos_z = cl->pos_z;
+                cl->last_saved_tick  = s->tick;
+            }
         }
-        if (saved_poses > 0) {
+        if (saved_poses > 0 && (s->tick % (flush_interval * 20)) == 0) {
+            /* Throttled log (every ~10 s of saves) to keep stdout calm. */
             printf("[server] flush: %d player poses\n", saved_poses);
             fflush(stdout);
         }
@@ -757,13 +1014,13 @@ void server_shutdown(server_t* s) {
     int final_poses = 0;
     for (int i = 0; i < SERVER_MAX_CLIENTS; ++i) {
         server_client_t* cl = &s->clients[i];
-        if (!cl->conn || !cl->has_state || !cl->token[0]) continue;
+        if (!cl->conn || !cl->has_state || !cl->token[0] || !cl->name[0]) continue;
         saves_player_pose_t pose = {
             .body_id = cl->body_id,
             .pos_x   = cl->pos_x, .pos_y = cl->pos_y, .pos_z = cl->pos_z,
             .yaw     = cl->yaw,   .pitch = cl->pitch,
         };
-        if (saves_write_player(cl->token, &pose)) ++final_poses;
+        if (saves_write_player(cl->name, &pose)) ++final_poses;
     }
     printf("[server] final flush: %d poses\n", final_poses);
     fflush(stdout);

@@ -45,7 +45,7 @@ tenebris:
   # with normalized steps)' values from src/atmosphere.c. Our shader
   # is now a faithful Caelum port (atmosphere.glsl), so the same
   # coefficients should produce the same look.
-  sun_intensity: 5.0
+  sun_intensity: 9.0
   rayleigh_scale: 0.015
   mie_scale: 0.01
   mie_g: 0.85

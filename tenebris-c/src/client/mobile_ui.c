@@ -10,6 +10,7 @@
 #include "sokol_gl.h"
 
 #include <math.h>
+#include <stdio.h>
 
 /* ----------------------------------------------------------------------- */
 
@@ -22,7 +23,16 @@
 #define STICK_KNOB_R   15.0f
 
 void mobile_ui_init(void) {
-    sgl_setup(&(sgl_desc_t){ .logger.func = slog_func });
+    sgl_setup(&(sgl_desc_t){
+        .logger.func = slog_func,
+        /* Default sgl pipeline pool is 64; every module that draws
+         * via sokol_gl (hotbar, menu, pause, chat, profiler, etc.)
+         * adds one entry, and each sgl pipeline expands to multiple
+         * sg_pipelines internally. Bumping the sgl pool keeps headroom
+         * for future overlays without re-tripping the silent
+         * "pause panel renders as ghost" failure. */
+        .pipeline_pool_size = 128,
+    });
 }
 void mobile_ui_shutdown(void) {
     sgl_shutdown();
@@ -221,11 +231,65 @@ static menu_layout_t menu_button_layout(void) {
     return L;
 }
 
+static bool          S_DEBUG_MENU_VISIBLE = false;
+static bool          S_TELEPORT_VISIBLE    = true;
+
+/* Standalone mobile pause button: a top-left circle so mobile
+ * players (no Esc key) can open the pause overlay. Always visible
+ * during gameplay - main_web only calls mobile_ui_draw when in-game
+ * anyway. Bigger than the right-cluster buttons so it's easy to
+ * spot + tap. */
+#define PAUSE_BTN_RADIUS 30.0f
+mobile_ui_circle_t mobile_ui_pause_button_rect(void) {
+    return (mobile_ui_circle_t){
+        .x = BTN_MARGIN + PAUSE_BTN_RADIUS,
+        .y = BTN_MARGIN + PAUSE_BTN_RADIUS,
+        .r = PAUSE_BTN_RADIUS,
+    };
+}
+/* Shared alpha-blended 2D pipeline. Created the first time
+ * mobile_ui_draw runs; exposed via mobile_ui_alpha_pipeline so menu_pause
+ * and other overlays can use it instead of each lazily making their
+ * own (which was silently failing for the pause panel). */
+static sgl_pipeline  S_PIP_ALPHA = (sgl_pipeline){0};
+
+sgl_pipeline mobile_ui_alpha_pipeline(void) { return S_PIP_ALPHA; }
+
+void mobile_ui_draw_rect(float x, float y, float w, float h,
+                          float r, float g, float b, float a) {
+    sgl_begin_quads();
+    sgl_c4f(r, g, b, a);
+    sgl_v2f(x,     y);
+    sgl_v2f(x + w, y);
+    sgl_v2f(x + w, y + h);
+    sgl_v2f(x,     y + h);
+    sgl_end();
+}
+
+void mobile_ui_draw_rect_outline(float x, float y, float w, float h,
+                                  float t,
+                                  float r, float g, float b, float a) {
+    mobile_ui_draw_rect(x,             y,             w, t, r, g, b, a);
+    mobile_ui_draw_rect(x,             y + h - t,     w, t, r, g, b, a);
+    mobile_ui_draw_rect(x,             y,             t, h, r, g, b, a);
+    mobile_ui_draw_rect(x + w - t,     y,             t, h, r, g, b, a);
+}
+
+void mobile_ui_set_debug_menu_visible(bool visible) {
+    S_DEBUG_MENU_VISIBLE = visible;
+    if (!visible) S_MENU_OPEN = false;       /* collapse the popup */
+}
+
+void mobile_ui_set_teleport_visible(bool visible) {
+    S_TELEPORT_VISIBLE = visible;
+}
+
 /* Hit-test the menu button + (when open) its popup column. Returns
  * true if the touch / click landed on a debug button — the caller
  * (main_web.c) treats that as an exclusive event so the underlying
  * movement layer doesn't also see the tap. */
 bool mobile_ui_handle_touch(float x, float y) {
+    if (!S_DEBUG_MENU_VISIBLE) return false;
     menu_layout_t L = menu_button_layout();
     /* Menu button gets the full top-right corner zone for mobile
      * fat-thumb friendliness — same generosity the original
@@ -242,6 +306,10 @@ bool mobile_ui_handle_touch(float x, float y) {
     if (!S_MENU_OPEN) return false;
 
     for (int i = 0; i < MENU_ITEM_COUNT; ++i) {
+        /* Skip the teleport item entirely when teleport is hidden -
+         * survival players shouldn't be able to summon the teleport
+         * menu via the hamburger either. */
+        if (i == 3 && !S_TELEPORT_VISIBLE) continue;
         if (fabsf(x - L.item_x) <= item_r && fabsf(y - L.item_y[i]) <= item_r) {
             switch (i) {
                 case 0: renderer_set_terrain_visible(!renderer_terrain_visible()); break;
@@ -263,37 +331,21 @@ void mobile_ui_draw(void) {
     const float h = sapp_heightf();
     if (w <= 0.0f || h <= 0.0f) return;
 
-    /* Two sticks at bottom corners. */
-    const float left_sx  = BTN_MARGIN + STICK_RADIUS;
-    const float left_sy  = h - BTN_MARGIN - STICK_RADIUS;
-    const float right_sx = w - BTN_MARGIN - STICK_RADIUS;
-    const float right_sy = h - BTN_MARGIN - STICK_RADIUS;
+    /* Standalone teleport (T) shortcut anchored at the bottom-right.
+     * Only debug-mode + creative players ever see this; mobile uses
+     * the F2 hamburger menu's T entry to reach the same flow. */
+    const float bx   = w - BTN_MARGIN - BTN_RADIUS;
+    const float tp_y = h - BTN_MARGIN - BTN_RADIUS;
 
-    /* Buttons stacked vertically to the left of the right stick. The
-     * right thumb can hop between the look stick and the buttons
-     * without crossing the screen. Order (top to bottom):
-     *   TP / BREAK / PLACE / JUMP — jump at the bottom, closest to the
-     *   stick so your thumb rests there. The teleport entry point
-     *   ALSO lives in the top-right debug-menu drop-down; both are
-     *   wired so mobile users have a one-tap shortcut and desktop
-     *   users still have the menu version. */
-    const float bx = right_sx - STICK_RADIUS - BTN_GAP - BTN_RADIUS;
-    const float j_y = right_sy + STICK_RADIUS - BTN_RADIUS;            /* bottom-aligned */
-    const float p_y = j_y - (BTN_RADIUS * 2.0f + BTN_GAP);
-    const float b_y = p_y - (BTN_RADIUS * 2.0f + BTN_GAP);
-    const float tp_y = b_y - (BTN_RADIUS * 2.0f + BTN_GAP);
-
-    /* Report hit rects to input.c. TP is its own slot; menu-nav
-     * buttons are registered by teleport_menu when open. */
-    input_register_mobile_buttons(
-        bx, b_y, BTN_RADIUS,
-        bx, p_y, BTN_RADIUS,
-        bx, j_y, BTN_RADIUS);
+    /* No on-canvas BREAK / PLACE / JUMP buttons any more - the DOM
+     * control deck handles touch input. Clear the hit rects so a
+     * stale on-canvas button can't fire on a stray tap. */
+    input_register_mobile_buttons(0, 0, 0, 0, 0, 0, 0, 0, 0);
     {
         input_state_t* in = input_state_mut();
         in->btn_tp_cx = bx;
         in->btn_tp_cy = tp_y;
-        in->btn_tp_r  = BTN_RADIUS;
+        in->btn_tp_r  = S_TELEPORT_VISIBLE ? BTN_RADIUS : 0.0f;
     }
 
     /* Orthographic projection: (0,0) top-left to (w,h) bottom-right. */
@@ -305,10 +357,13 @@ void mobile_ui_draw(void) {
     sgl_load_identity();
 
     /* Alpha-blended 2D. sokol_gl defaults don't enable blending; set a
-     * pipeline with SRC_ALPHA / ONE_MINUS_SRC_ALPHA below the UI. */
-    static sgl_pipeline pip_alpha = (sgl_pipeline){0};
-    if (pip_alpha.id == 0) {
-        pip_alpha = sgl_make_pipeline(&(sg_pipeline_desc){
+     * pipeline with SRC_ALPHA / ONE_MINUS_SRC_ALPHA below the UI.
+     * Stashed in S_PIP_ALPHA on first call so other overlays
+     * (menu_pause_draw, etc.) can use the same pipeline rather than
+     * each lazily creating their own (which silently failed for the
+     * pause panel on some browser / driver combos). */
+    if (S_PIP_ALPHA.id == 0) {
+        S_PIP_ALPHA = sgl_make_pipeline(&(sg_pipeline_desc){
             .colors[0].blend = {
                 .enabled = true,
                 .src_factor_rgb = SG_BLENDFACTOR_SRC_ALPHA,
@@ -317,58 +372,28 @@ void mobile_ui_draw(void) {
                 .dst_factor_alpha = SG_BLENDFACTOR_ONE,
             },
         });
+        /* One-shot trace so we can confirm the pool wasn't exhausted
+         * when this pipeline went in. id != 0 means valid; id == 0
+         * means sg_make_pipeline silently failed (any sgl_draw bound
+         * to this pipeline will render nothing). */
+        printf("[mobile_ui] S_PIP_ALPHA created: id=%u\n",
+               (unsigned)S_PIP_ALPHA.id);
     }
-    sgl_load_pipeline(pip_alpha);
+    sgl_load_pipeline(S_PIP_ALPHA);
 
-    const input_state_t* in = input_state();
-
-    /* ---- left stick (movement) ---- */
-    draw_circle_fan(left_sx, left_sy, STICK_RADIUS,       32, 0.20f, 0.20f, 0.25f, 0.40f);
-    draw_ring      (left_sx, left_sy, STICK_RADIUS - 2.0f, STICK_RADIUS, 32, 0.95f, 0.95f, 1.0f, 0.55f);
-    {
-        float kx = left_sx, ky = left_sy;
-        if (in->stick_active) {
-            kx += in->stick_x * (STICK_RADIUS - STICK_KNOB_R);
-            ky -= in->stick_y * (STICK_RADIUS - STICK_KNOB_R);
-        }
-        draw_circle_fan(kx, ky, STICK_KNOB_R, 24, 0.95f, 0.95f, 1.0f, 0.85f);
+    /* On-canvas joysticks + BREAK / PLACE / JUMP buttons used to live
+     * here. They've been retired in favour of the DOM control deck
+     * (mobile-only; see main_web's tenebris_mobile_controls_install).
+     * Desktop never needed the on-canvas duplicates - keyboard +
+     * mouse cover everything. The standalone teleport (T) shortcut
+     * stays because it's debug / creative-only and is gated by F2
+     * via S_TELEPORT_VISIBLE - mobile reaches teleport through the
+     * F2 hamburger menu below. */
+    if (S_TELEPORT_VISIBLE) {
+        draw_circle_fan(bx, tp_y, BTN_RADIUS,        32, 0.35f, 0.20f, 0.50f, 0.50f);
+        draw_ring      (bx, tp_y, BTN_RADIUS - 2.0f, BTN_RADIUS, 32, 0.85f, 0.60f, 1.00f, 0.75f);
+        draw_glyph('T', bx, tp_y, 16.0f, 1.0f, 0.95f, 1.0f);
     }
-
-    /* ---- right stick (look) ---- */
-    draw_circle_fan(right_sx, right_sy, STICK_RADIUS,       32, 0.20f, 0.25f, 0.20f, 0.40f);
-    draw_ring      (right_sx, right_sy, STICK_RADIUS - 2.0f, STICK_RADIUS, 32, 0.85f, 1.00f, 0.90f, 0.55f);
-    {
-        float kx = right_sx, ky = right_sy;
-        if (in->look_stick_active) {
-            kx += in->look_stick_x * (STICK_RADIUS - STICK_KNOB_R);
-            ky -= in->look_stick_y * (STICK_RADIUS - STICK_KNOB_R);
-        }
-        draw_circle_fan(kx, ky, STICK_KNOB_R, 24, 0.85f, 1.00f, 0.90f, 0.85f);
-    }
-
-    /* ---- three round buttons, stacked vertically left of the right stick ---- */
-    /* Break (red) */
-    draw_circle_fan(bx, b_y, BTN_RADIUS,        32, 0.50f, 0.15f, 0.15f, 0.50f);
-    draw_ring      (bx, b_y, BTN_RADIUS - 2.0f, BTN_RADIUS, 32, 1.00f, 0.55f, 0.55f, 0.75f);
-    draw_glyph('B', bx, b_y, 16.0f, 1.0f, 0.9f, 0.9f);
-
-    /* Place (green) */
-    draw_circle_fan(bx, p_y, BTN_RADIUS,        32, 0.15f, 0.45f, 0.20f, 0.50f);
-    draw_ring      (bx, p_y, BTN_RADIUS - 2.0f, BTN_RADIUS, 32, 0.65f, 1.00f, 0.70f, 0.75f);
-    draw_glyph('P', bx, p_y, 16.0f, 0.9f, 1.0f, 0.9f);
-
-    /* Jump / jetpack (yellow) — closest to the stick so hold-to-fly is easy */
-    draw_circle_fan(bx, j_y, BTN_RADIUS,        32, 0.40f, 0.40f, 0.15f, 0.50f);
-    draw_ring      (bx, j_y, BTN_RADIUS - 2.0f, BTN_RADIUS, 32, 1.00f, 0.95f, 0.55f, 0.75f);
-    draw_glyph('J', bx, j_y, 16.0f, 1.0f, 1.0f, 0.9f);
-
-    /* Teleport (purple) — top of the stack, out of the way of the
-     * combat-relevant buttons. Mirrors the [T] toggle in the
-     * top-right debug menu so mobile users have a one-tap entry to
-     * the teleport list without opening the hamburger first. */
-    draw_circle_fan(bx, tp_y, BTN_RADIUS,        32, 0.35f, 0.20f, 0.50f, 0.50f);
-    draw_ring      (bx, tp_y, BTN_RADIUS - 2.0f, BTN_RADIUS, 32, 0.85f, 0.60f, 1.00f, 0.75f);
-    draw_glyph('T', bx, tp_y, 16.0f, 1.0f, 0.95f, 1.0f);
 
     /* Debug-toggle menu — single hamburger button at the top-right
      * corner that drops down a vertical column of three toggles when
@@ -378,10 +403,10 @@ void mobile_ui_draw(void) {
      * mobile_ui_handle_touch so the layout in menu_button_layout()
      * is the only source of truth shared by the draw + tap paths.
      *
-     * Closed by default — first-time players don't see a debug
-     * overlay sprouting from the corner. Keyboard shortcuts H/J/K
-     * still work directly without opening the menu. */
-    {
+     * Hidden unless main_web has flipped on the debug UI master
+     * (F2). The dedicated teleport (T) button above stays visible
+     * regardless - it's a gameplay control, not debug. */
+    if (S_DEBUG_MENU_VISIBLE) {
         menu_layout_t L = menu_button_layout();
         const bool open = S_MENU_OPEN;
         const float r = L.radius;
@@ -411,6 +436,10 @@ void mobile_ui_draw(void) {
                 { 'P', profiler_visible(),         0.15f, 0.45f, 0.20f },  /* profiler */
             };
             for (int i = 0; i < MENU_ITEM_COUNT; ++i) {
+                /* Mirror handle_touch's skip - keep the row empty
+                 * rather than re-laying-out the column, which would
+                 * confuse the hit-test math. */
+                if (i == 3 && !S_TELEPORT_VISIBLE) continue;
                 float ix = L.item_x;
                 float iy = L.item_y[i];
                 if (items[i].on) {
@@ -428,8 +457,20 @@ void mobile_ui_draw(void) {
     }
 
     /* Teleport-menu nav buttons piggyback on this state block so they
-     * share the same orthographic pipeline + blend. */
-    teleport_menu_draw_mobile_buttons();
+     * share the same orthographic pipeline + blend. Gated on the same
+     * flag as the standalone T button so survival players never see
+     * the teleport-list overlay or its nav arrows. */
+    if (S_TELEPORT_VISIBLE) {
+        teleport_menu_draw_mobile_buttons();
+    }
 
-    sgl_draw();
+    /* (Pause button now lives as an HTML overlay in main_web.c -
+     * the sokol_gl on-canvas version was invisible on certain
+     * mobile browsers, and the DOM button handles touch + visibility
+     * more reliably anyway.) */
+
+    /* Single sgl_draw lives at the end of main_web's frame so all
+     * UI modules get their geometry uploaded together. See the
+     * comment at that flush site for the upload-once-per-frame
+     * rationale. */
 }
