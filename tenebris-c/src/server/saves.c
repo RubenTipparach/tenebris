@@ -472,6 +472,153 @@ void saves_chat_append(const char* room, const char* name, const char* text) {
     free(buf);
 }
 
+/* ----------------------------------------------------------------- */
+/* Audit logs (sessions + global chat).
+ *
+ * Shared helpers:
+ *   - audit_path()        — resolve <saves_dir>/<which>.log
+ *   - audit_truncate()    — drop oldest lines if past SAVES_AUDIT_FILE_MAX
+ *   - audit_append_line() — fsync-less append (single-writer server)
+ *   - audit_tail_lines()  — read up to N lines from the tail
+ *
+ * Files use \n line separators and \t field separators so curl + awk
+ * read them trivially. Names/text get strip_log_chars'd identically
+ * to per-room chat - no embedded tabs/newlines. */
+
+static bool audit_path(const char* which, char* out, size_t cap) {
+    if (!G_saves_dir || !which) return false;
+    int n = snprintf(out, cap, "%s/%s.log", G_saves_dir, which);
+    return n > 0 && (size_t)n < cap;
+}
+
+static void audit_truncate(const char* path) {
+    /* Cheap: read the whole file, count newlines, rewrite tail via
+     * .tmp swap when over cap. Matches the per-room chat log pattern. */
+    FILE* f = fopen(path, "rb");
+    if (!f) return;
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    /* Conservative ceiling - audit files cap at ~5k lines * ~200 bytes
+     * each. Anything past 4 MB means the writer has lost a guard and
+     * we'd rather skip truncation than scan a runaway file. */
+    if (sz < 0 || sz > 4 * 1024 * 1024) { fclose(f); return; }
+    rewind(f);
+    char* buf = (char*)malloc((size_t)sz + 1);
+    if (!buf) { fclose(f); return; }
+    size_t r = fread(buf, 1, (size_t)sz, f);
+    fclose(f);
+    buf[r] = 0;
+
+    int line_count = 0;
+    for (size_t i = 0; i < r; ++i) if (buf[i] == '\n') ++line_count;
+    if (line_count <= SAVES_AUDIT_FILE_MAX) { free(buf); return; }
+
+    int drop = line_count - SAVES_AUDIT_FILE_MAX;
+    size_t off = 0;
+    int seen = 0;
+    while (off < r && seen < drop) {
+        if (buf[off] == '\n') ++seen;
+        ++off;
+    }
+    char tmp[512];
+    snprintf(tmp, sizeof tmp, "%s.tmp", path);
+    FILE* w = fopen(tmp, "wb");
+    if (w) {
+        fwrite(buf + off, 1, r - off, w);
+        fclose(w);
+        rename(tmp, path);
+    }
+    free(buf);
+}
+
+void saves_session_log(const char* event, const char* name, const char* room) {
+    if (!G_saves_dir || !event || !name) return;
+    char path[512];
+    if (!audit_path("sessions", path, sizeof path)) return;
+
+    char clean_event[16];
+    char clean_name [SAVES_CHAT_NAME_MAX + 1];
+    char clean_room [16];
+    snprintf(clean_event, sizeof clean_event, "%s", event);
+    snprintf(clean_name,  sizeof clean_name,  "%s", name);
+    snprintf(clean_room,  sizeof clean_room,  "%s",
+             (room && *room) ? room : "__public__");
+    strip_log_chars(clean_event, sizeof clean_event);
+    strip_log_chars(clean_name,  sizeof clean_name);
+    strip_log_chars(clean_room,  sizeof clean_room);
+
+    FILE* f = fopen(path, "ab");
+    if (!f) return;
+    fprintf(f, "%lld\t%s\t%s\t%s\n",
+            (long long)time(NULL), clean_event, clean_name, clean_room);
+    fclose(f);
+    audit_truncate(path);
+}
+
+void saves_global_chat_append(const char* room, const char* name, const char* text) {
+    if (!G_saves_dir || !name || !text) return;
+    char path[512];
+    if (!audit_path("chat", path, sizeof path)) return;
+
+    char clean_name[SAVES_CHAT_NAME_MAX + 1];
+    char clean_text[SAVES_CHAT_TEXT_MAX + 1];
+    char clean_room[16];
+    snprintf(clean_name, sizeof clean_name, "%s", name);
+    snprintf(clean_text, sizeof clean_text, "%s", text);
+    snprintf(clean_room, sizeof clean_room, "%s",
+             (room && *room) ? room : "__public__");
+    strip_log_chars(clean_name, sizeof clean_name);
+    strip_log_chars(clean_text, sizeof clean_text);
+    strip_log_chars(clean_room, sizeof clean_room);
+
+    FILE* f = fopen(path, "ab");
+    if (!f) return;
+    fprintf(f, "%lld\t%s\t%s\t%s\n",
+            (long long)time(NULL), clean_name, clean_room, clean_text);
+    fclose(f);
+    audit_truncate(path);
+}
+
+size_t saves_audit_tail(const char* which, int max_lines,
+                          char* out, size_t cap) {
+    if (!out || cap == 0) return 0;
+    out[0] = 0;
+    char path[512];
+    if (!audit_path(which, path, sizeof path)) return 0;
+    if (max_lines <= 0) max_lines = SAVES_AUDIT_FILE_MAX;
+
+    FILE* f = fopen(path, "rb");
+    if (!f) return 0;
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    if (sz < 0 || sz > 4 * 1024 * 1024) { fclose(f); return 0; }
+    rewind(f);
+    char* buf = (char*)malloc((size_t)sz + 1);
+    if (!buf) { fclose(f); return 0; }
+    size_t r = fread(buf, 1, (size_t)sz, f);
+    fclose(f);
+    buf[r] = 0;
+
+    /* Count newlines, then walk forward to the start of the keep
+     * window so the tail comes out copied as one contiguous slice. */
+    int total = 0;
+    for (size_t i = 0; i < r; ++i) if (buf[i] == '\n') ++total;
+    int drop = total - max_lines;
+    if (drop < 0) drop = 0;
+    size_t off = 0;
+    int seen = 0;
+    while (off < r && seen < drop) {
+        if (buf[off] == '\n') ++seen;
+        ++off;
+    }
+    size_t avail = r - off;
+    if (avail >= cap) avail = cap - 1;
+    memcpy(out, buf + off, avail);
+    out[avail] = 0;
+    free(buf);
+    return avail;
+}
+
 int saves_chat_load_backlog(const char* room,
                               saves_chat_msg_t* out, int cap) {
     if (!G_saves_dir || !out || cap <= 0) return 0;

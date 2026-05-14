@@ -4,6 +4,7 @@
 #include "core/job_system.h"
 #include "core/math.h"
 #include <math.h>   /* sqrt for the spawn-altitude diagnostic */
+#include <stdarg.h> /* va_list for the HTTP dashboard's JSON builder */
 #include "core/net_transport.h"
 #include "core/planet.h"
 #include "core/proto.h"
@@ -502,6 +503,10 @@ static void handle_hello(server_t* s, server_client_t* cl,
     printf("[server] HELLO from player_id=%u name='%s' room='%s' (client_version=%u)\n",
            cl->player_id, cl->name,
            cl->room[0] ? cl->room : "(public)", h.client_version);
+    /* Audit-log the login so an operator can reconstruct who was on
+     * the server at a given time via GET /logins. Only real (named,
+     * room-attached) joins reach this point. */
+    saves_session_log("login", cl->name, cl->room);
     send_welcome(s, cl);
     /* Bring the joining client up to date with the room's persisted
      * chunk edits before they can act, so the world they see matches
@@ -722,6 +727,11 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
             memcpy(nz_text, m.text, MSG_CHAT_TEXT_LEN);
             nz_text[MSG_CHAT_TEXT_LEN] = 0;
             saves_chat_append(cl->room, cl->name, nz_text);
+            /* Also append to the global, timestamped audit log so
+             * GET /chat returns a server-wide, time-ordered view
+             * across rooms - separate file because the per-room
+             * backlog stays in its terse `<name>\t<text>` format. */
+            saves_global_chat_append(cl->room, cl->name, nz_text);
 
             char short_text[33];
             memcpy(short_text, nz_text, 32); short_text[32] = 0;
@@ -857,6 +867,13 @@ static void on_close(net_conn_t* conn, net_close_reason_t reason, void* user) {
     printf("[server] close: player_id=%u name=%s (reason=%d)\n",
            cl->player_id, cl->name[0] ? cl->name : "(unnamed)", (int)reason);
     fflush(stdout);
+    /* Pair the audit `login` from HELLO with a matching `logout` on
+     * the way out. handshaked is the gate - half-open / version-
+     * mismatch drops never wrote a login record, so we don't want a
+     * spurious logout for them. */
+    if (cl->handshaked && cl->name[0]) {
+        saves_session_log("logout", cl->name, cl->room);
+    }
     /* Release the room ref. Private rooms with zero refs get freed
      * to reclaim ~25 MB of cloned world data; the public room sticks. */
     if (cl->room_idx >= 0) {
@@ -870,6 +887,192 @@ static void on_close(net_conn_t* conn, net_close_reason_t reason, void* user) {
     cl->token[0]   = 0;
     cl->room[0]    = 0;
     cl->has_state  = false;
+}
+
+/* ------------------------------------------------------------------ */
+/* HTTP dashboard. The net_transport fires on_http for non-WebSocket
+ * GETs against the listener port, which lets an operator hit the
+ * server with `curl http://host:port/logins` (or /chat) without
+ * needing a separate process. The bodies are JSON arrays built from
+ * the audit logs that login/logout/chat write into the saves dir.
+ *
+ * Response bodies live in `HTTP_BODY` - a static buffer scoped to
+ * the listener so it stays valid across the on_http return and the
+ * transport's serve_http copy. Single-threaded server, so a static
+ * is safe; if HTTP ever moves off the lws callback thread this
+ * would need to be per-listener malloc'd. */
+#define HTTP_BODY_CAP  (64 * 1024)
+static char  HTTP_BODY[HTTP_BODY_CAP];
+static char  HTTP_RAW [HTTP_BODY_CAP];
+
+/* Append `fmt...` to JSON_BODY starting at *pos. Caps at HTTP_BODY_CAP
+ * with a trailing NUL. Returns true if everything fit, false if we
+ * had to truncate (caller closes the array gracefully). */
+static bool json_appendf(size_t* pos, const char* fmt, ...) {
+    if (*pos + 2 >= HTTP_BODY_CAP) return false;
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(HTTP_BODY + *pos, HTTP_BODY_CAP - *pos, fmt, ap);
+    va_end(ap);
+    if (n < 0) return false;
+    if ((size_t)n >= HTTP_BODY_CAP - *pos) {
+        /* Truncated - rewind to last good NUL. */
+        HTTP_BODY[*pos] = 0;
+        return false;
+    }
+    *pos += (size_t)n;
+    return true;
+}
+
+/* JSON-escape `in` into `out`, capped at `cap-1` bytes + NUL. Only
+ * handles the subset the audit logs can actually produce: tab/
+ * newline have already been stripped by strip_log_chars, so we just
+ * escape `"` and `\` here. */
+static void json_escape(const char* in, char* out, size_t cap) {
+    size_t o = 0;
+    for (size_t i = 0; in[i] && o + 2 < cap; ++i) {
+        char c = in[i];
+        if (c == '"' || c == '\\') {
+            if (o + 3 >= cap) break;
+            out[o++] = '\\';
+        }
+        out[o++] = c;
+    }
+    out[o] = 0;
+}
+
+/* Parse `?n=NNN` out of `path`. Returns the parsed int clamped to
+ * [1, SAVES_AUDIT_FILE_MAX], or `def` if absent / unparseable. */
+static int http_query_int(const char* path, const char* key, int def) {
+    const char* q = strchr(path, '?');
+    if (!q) return def;
+    size_t klen = strlen(key);
+    const char* p = q + 1;
+    while (*p) {
+        if (strncmp(p, key, klen) == 0 && p[klen] == '=') {
+            int v = atoi(p + klen + 1);
+            if (v < 1) v = 1;
+            if (v > SAVES_AUDIT_FILE_MAX) v = SAVES_AUDIT_FILE_MAX;
+            return v;
+        }
+        const char* amp = strchr(p, '&');
+        if (!amp) break;
+        p = amp + 1;
+    }
+    return def;
+}
+
+/* `which` is "sessions" or "chat". Emits a JSON array of objects
+ * built by splitting each audit-log TSV line on \t. The session
+ * format is ts/event/name/room (4 fields); chat is ts/name/room/text
+ * (also 4 but different keys). Unknown line shapes are skipped. */
+static size_t build_audit_json(const char* which, int max_lines) {
+    size_t pos = 0;
+    size_t raw_len = saves_audit_tail(which, max_lines, HTTP_RAW, HTTP_BODY_CAP);
+    if (!json_appendf(&pos, "{\"%s\":[", which)) return 0;
+
+    bool first = true;
+    char* line = HTTP_RAW;
+    char* end  = HTTP_RAW + raw_len;
+    while (line < end) {
+        char* nl = (char*)memchr(line, '\n', (size_t)(end - line));
+        size_t len = nl ? (size_t)(nl - line) : (size_t)(end - line);
+        if (len == 0) { if (!nl) break; line = nl + 1; continue; }
+
+        /* Split into up to 4 tab-separated fields. */
+        char fields[4][SAVES_CHAT_TEXT_MAX + 1];
+        int fc = 0;
+        size_t fstart = 0;
+        for (size_t i = 0; i <= len && fc < 4; ++i) {
+            if (i == len || line[i] == '\t') {
+                size_t flen = i - fstart;
+                if (flen > sizeof fields[0] - 1) flen = sizeof fields[0] - 1;
+                memcpy(fields[fc], line + fstart, flen);
+                fields[fc][flen] = 0;
+                ++fc;
+                fstart = i + 1;
+            }
+        }
+        if (fc == 4) {
+            char esc_a[256], esc_b[256], esc_c[256];
+            const char* sep = first ? "" : ",";
+            first = false;
+            if (strcmp(which, "sessions") == 0) {
+                /* ts \t event \t name \t room */
+                json_escape(fields[1], esc_a, sizeof esc_a);
+                json_escape(fields[2], esc_b, sizeof esc_b);
+                json_escape(fields[3], esc_c, sizeof esc_c);
+                if (!json_appendf(&pos,
+                        "%s{\"ts\":%s,\"event\":\"%s\",\"name\":\"%s\",\"room\":\"%s\"}",
+                        sep, fields[0], esc_a, esc_b, esc_c)) {
+                    break;   /* truncate gracefully */
+                }
+            } else {
+                /* ts \t name \t room \t text */
+                json_escape(fields[1], esc_a, sizeof esc_a);
+                json_escape(fields[2], esc_b, sizeof esc_b);
+                json_escape(fields[3], esc_c, sizeof esc_c);
+                if (!json_appendf(&pos,
+                        "%s{\"ts\":%s,\"name\":\"%s\",\"room\":\"%s\",\"text\":\"%s\"}",
+                        sep, fields[0], esc_a, esc_b, esc_c)) {
+                    break;
+                }
+            }
+        }
+        if (!nl) break;
+        line = nl + 1;
+    }
+    json_appendf(&pos, "]}");
+    return pos;
+}
+
+/* Strip URL query from the path so the prefix compare hits regardless
+ * of `?n=...`. Writes into `out`; returns `out`. */
+static const char* strip_query(const char* path, char* out, size_t cap) {
+    size_t i = 0;
+    while (path[i] && path[i] != '?' && i + 1 < cap) {
+        out[i] = path[i];
+        ++i;
+    }
+    out[i] = 0;
+    return out;
+}
+
+static int on_http(const char* path,
+                    const uint8_t** out_body, size_t* out_body_len,
+                    const char** out_mime, void* user) {
+    (void)user;
+    if (!path) return 0;
+    char clean[256];
+    strip_query(path, clean, sizeof clean);
+
+    if (strcmp(clean, "/logins") == 0) {
+        int n = http_query_int(path, "n", 200);
+        size_t len = build_audit_json("sessions", n);
+        *out_body     = (const uint8_t*)HTTP_BODY;
+        *out_body_len = len;
+        *out_mime     = "application/json; charset=utf-8";
+        return 1;
+    }
+    if (strcmp(clean, "/chat") == 0) {
+        int n = http_query_int(path, "n", 200);
+        size_t len = build_audit_json("chat", n);
+        *out_body     = (const uint8_t*)HTTP_BODY;
+        *out_body_len = len;
+        *out_mime     = "application/json; charset=utf-8";
+        return 1;
+    }
+    if (strcmp(clean, "/") == 0 || strcmp(clean, "/health") == 0) {
+        static const char msg[] =
+            "tenebris-server alive\n"
+            "  GET /logins[?n=N]   - last N login/logout events\n"
+            "  GET /chat[?n=N]     - last N chat messages\n";
+        *out_body     = (const uint8_t*)msg;
+        *out_body_len = sizeof msg - 1;
+        *out_mime     = "text/plain; charset=utf-8";
+        return 1;
+    }
+    return 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -946,6 +1149,7 @@ bool server_init(server_t* s, const server_config_t* cfg) {
         .on_open  = on_open,
         .on_msg   = on_msg,
         .on_close = on_close,
+        .on_http  = on_http,
         .user     = s,
     };
     s->listener = net_listen("0.0.0.0", s->cfg.port, cb);
