@@ -1165,6 +1165,116 @@ static size_t build_status_json(server_t* s) {
     return pos;
 }
 
+/* URL-decode `in` into `out`, stopping at `&` or NUL. Handles `+`
+ * (space) and `%XX` (hex). Returns the number of bytes written
+ * (excluding the NUL); always NUL-terminates. */
+static int hex_nybble(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+static size_t url_decode(const char* in, char* out, size_t out_cap) {
+    if (out_cap == 0) return 0;
+    size_t o = 0;
+    for (size_t i = 0; in[i] && in[i] != '&' && o + 1 < out_cap; ++i) {
+        char c = in[i];
+        if (c == '+') {
+            out[o++] = ' ';
+        } else if (c == '%' && in[i + 1] && in[i + 2]) {
+            int h1 = hex_nybble(in[i + 1]);
+            int h2 = hex_nybble(in[i + 2]);
+            if (h1 >= 0 && h2 >= 0) {
+                out[o++] = (char)((h1 << 4) | h2);
+                i += 2;
+            } else {
+                out[o++] = c;
+            }
+        } else {
+            out[o++] = c;
+        }
+    }
+    out[o] = 0;
+    return o;
+}
+
+/* Pull a string-valued query parameter out of `path`. Writes the
+ * URL-decoded value into `out`. Returns the byte count written, or
+ * -1 if the key wasn't present. */
+static int http_query_str(const char* path, const char* key,
+                            char* out, size_t out_cap) {
+    if (!out || out_cap == 0) return -1;
+    out[0] = 0;
+    const char* q = strchr(path, '?');
+    if (!q) return -1;
+    size_t klen = strlen(key);
+    const char* p = q + 1;
+    while (*p) {
+        if (strncmp(p, key, klen) == 0 && p[klen] == '=') {
+            return (int)url_decode(p + klen + 1, out, out_cap);
+        }
+        const char* amp = strchr(p, '&');
+        if (!amp) break;
+        p = amp + 1;
+    }
+    return -1;
+}
+
+/* Broadcast a chat message AS THE SERVER to every client currently
+ * in `room`. The sender renders as `~server~` on each client because
+ * we pre-broadcast a PLAYER_INFO with id=SERVER_CHAT_ID + that name,
+ * so the chat lookup resolves to it. The persisted audit logs use
+ * the same display name so the dashboard's /chat view matches what
+ * players actually see. */
+#define SERVER_CHAT_ID 0xFFFFFFFFu
+static void server_chat_say(server_t* s, const char* room, const char* text) {
+    if (!s || !text) return;
+    const char* room_real = room ? room : "";
+
+    /* Strip any control chars from the message - the audit logs and
+     * the chat protocol both expect plain printable bytes. */
+    char clean_text[MSG_CHAT_TEXT_LEN + 1];
+    snprintf(clean_text, sizeof clean_text, "%s", text);
+    for (size_t i = 0; i < sizeof clean_text && clean_text[i]; ++i) {
+        if (clean_text[i] == '\r' || clean_text[i] == '\n' ||
+            clean_text[i] == '\t') {
+            clean_text[i] = ' ';
+        }
+    }
+
+    /* Build the PLAYER_INFO once. Same buffer reused per recipient. */
+    uint8_t pi_buf[MSG_HEADER_SIZE + MSG_PLAYER_INFO_WIRE_SIZE];
+    msg_player_info_t info = { .player_id = SERVER_CHAT_ID };
+    const char* sname = "~server~";
+    size_t snlen = strnlen(sname, MSG_PLAYER_INFO_NAME_LEN);
+    memcpy(info.name, sname, snlen);
+    size_t pin = proto_write_player_info(pi_buf, sizeof pi_buf, &info);
+
+    msg_chat_t m = { .player_id = SERVER_CHAT_ID };
+    size_t tlen = strnlen(clean_text, MSG_CHAT_TEXT_LEN);
+    memcpy(m.text, clean_text, tlen);
+    uint8_t cbuf[MSG_HEADER_SIZE + MSG_CHAT_WIRE_SIZE];
+    size_t cn = proto_write_chat(cbuf, sizeof cbuf, &m);
+
+    int sent_to = 0;
+    for (int j = 0; j < SERVER_MAX_CLIENTS; ++j) {
+        const server_client_t* peer = &s->clients[j];
+        if (!peer->conn) continue;
+        if (strcmp(peer->room, room_real) != 0) continue;
+        if (pin > 0) net_send(peer->conn, NET_CHANNEL_RELIABLE, pi_buf, pin);
+        if (cn  > 0) net_send(peer->conn, NET_CHANNEL_RELIABLE, cbuf,  cn);
+        ++sent_to;
+    }
+
+    saves_chat_append       (room_real, sname, clean_text);
+    saves_global_chat_append(room_real, sname, clean_text);
+
+    printf("[server] dashboard chat room=%s ~server~: %s (-> %d client%s)\n",
+           room_real[0] ? room_real : "(public)",
+           clean_text, sent_to, sent_to == 1 ? "" : "s");
+    fflush(stdout);
+}
+
 static int on_http(const char* path,
                     const uint8_t** out_body, size_t* out_body_len,
                     const char** out_mime, void* user) {
@@ -1196,12 +1306,57 @@ static int on_http(const char* path,
         *out_mime     = "application/json; charset=utf-8";
         return 1;
     }
+    if (strcmp(clean, "/chat/send") == 0) {
+        /* Auth gate: if the TENEBRIS_ADMIN_TOKEN env var is set, the
+         * caller must echo it as ?token=X. If the env var isn't set,
+         * the endpoint is open - dev convenience. The token is
+         * unauthenticated transport so it's "soft auth" - good enough
+         * to keep a scanner from spamming /chat/send, not good enough
+         * to defend against a determined attacker. */
+        const char* expected = getenv("TENEBRIS_ADMIN_TOKEN");
+        char token[128];
+        int  tn = http_query_str(path, "token", token, sizeof token);
+        if (expected && expected[0]) {
+            if (tn < 0 || strcmp(token, expected) != 0) {
+                static const char body[] = "{\"error\":\"unauthorized\"}";
+                *out_body     = (const uint8_t*)body;
+                *out_body_len = sizeof body - 1;
+                *out_mime     = "application/json; charset=utf-8";
+                return 1;
+            }
+        }
+        char room[32];
+        char text[MSG_CHAT_TEXT_LEN + 1];
+        http_query_str(path, "room", room, sizeof room);
+        int xn = http_query_str(path, "text", text, sizeof text);
+        if (xn <= 0) {
+            static const char body[] = "{\"error\":\"missing text\"}";
+            *out_body     = (const uint8_t*)body;
+            *out_body_len = sizeof body - 1;
+            *out_mime     = "application/json; charset=utf-8";
+            return 1;
+        }
+        /* Map the JSON view's __public__ slug back to the empty room
+         * code the server uses internally. */
+        const char* room_real = room;
+        if (strcmp(room, "__public__") == 0) room_real = "";
+        if (s) server_chat_say(s, room_real, text);
+
+        static const char ok[] = "{\"ok\":true}";
+        *out_body     = (const uint8_t*)ok;
+        *out_body_len = sizeof ok - 1;
+        *out_mime     = "application/json; charset=utf-8";
+        return 1;
+    }
     if (strcmp(clean, "/") == 0 || strcmp(clean, "/health") == 0) {
         static const char msg[] =
             "tenebris-server alive\n"
-            "  GET /status         - live JSON (players, CPU, RAM, rooms)\n"
-            "  GET /logins[?n=N]   - last N login/logout events\n"
-            "  GET /chat[?n=N]     - last N chat messages\n";
+            "  GET /status               - live JSON (players, CPU, RAM, rooms)\n"
+            "  GET /logins[?n=N]         - last N login/logout events\n"
+            "  GET /chat[?n=N]           - last N chat messages\n"
+            "  GET /chat/send?text=...   - broadcast '~server~' chat to a room\n"
+            "                              (&room=ABC123 for private; default public,\n"
+            "                               &token=X required if TENEBRIS_ADMIN_TOKEN set)\n";
         *out_body     = (const uint8_t*)msg;
         *out_body_len = sizeof msg - 1;
         *out_mime     = "text/plain; charset=utf-8";

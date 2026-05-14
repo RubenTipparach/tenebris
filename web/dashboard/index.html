@@ -98,6 +98,38 @@
       font: inherit;
       width: 260px;
     }
+    form.send {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    form.send input {
+      background: #15171c;
+      color: #d8d8d8;
+      border: 1px solid #23262d;
+      border-radius: 4px;
+      padding: 6px 8px;
+      font: inherit;
+    }
+    form.send .send-room  { width: 180px; }
+    form.send .send-text  { flex: 1; min-width: 200px; }
+    form.send .send-token { width: 180px; }
+    form.send button {
+      background: #1c2230;
+      color: #9ad;
+      border: 1px solid #2a3a55;
+      border-radius: 4px;
+      padding: 6px 14px;
+      font: inherit;
+      cursor: pointer;
+    }
+    form.send button:hover { background: #25324a; color: #cde2ff; }
+    form.send button:disabled { opacity: .5; cursor: default; }
+    .send-status { color: #888; font-size: 12px; }
+    .send-status.ok { color: #7fe28f; }
+    .send-status.err { color: #e26b6b; }
   </style>
 </head>
 <body>
@@ -146,6 +178,15 @@
 
     <h2>Sessions (last 50, paired login &rarr; logout)</h2>
     <div id="sessions"></div>
+
+    <h2>Broadcast as ~server~</h2>
+    <form id="sendForm" class="send">
+      <input class="send-room" id="sendRoom" placeholder="room (blank = public)" />
+      <input class="send-text" id="sendText" placeholder="message..." maxlength="120" />
+      <input class="send-token" id="sendToken" placeholder="admin token (if set)" />
+      <button type="submit">Send</button>
+      <span class="send-status" id="sendStatus"></span>
+    </form>
 
     <h2>Recent chat (last 50)</h2>
     <div id="chat"></div>
@@ -405,6 +446,52 @@
         $("chat").innerHTML = '<div class="err">' + esc(e.message) + "</div>";
       }
     }
+
+    // Persist the optional admin token in localStorage so the page
+    // remembers it across reloads. Plain string, no escaping needed.
+    const TOKEN_KEY = "tenebris-dashboard-token";
+    try {
+      $("sendToken").value = localStorage.getItem(TOKEN_KEY) || "";
+    } catch (_) {}
+    $("sendToken").addEventListener("change", (e) => {
+      try { localStorage.setItem(TOKEN_KEY, e.target.value); } catch (_) {}
+    });
+
+    $("sendForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const room = $("sendRoom").value.trim();
+      const text = $("sendText").value;
+      const token = $("sendToken").value;
+      if (!text.trim()) return;
+      const status = $("sendStatus");
+      status.textContent = "sending...";
+      status.className = "send-status";
+
+      const qs = new URLSearchParams({ text });
+      if (room) qs.set("room", room);
+      if (token) qs.set("token", token);
+
+      try {
+        const r = await fetch(HOST + "/chat/send?" + qs.toString(), {
+          method: "GET",
+          cache: "no-store",
+        });
+        const data = await r.json().catch(() => ({}));
+        if (data.ok) {
+          status.textContent = "sent";
+          status.className = "send-status ok";
+          $("sendText").value = "";
+          // Refresh chat immediately so the operator sees their own line.
+          refreshChat();
+        } else {
+          status.textContent = data.error || ("HTTP " + r.status);
+          status.className = "send-status err";
+        }
+      } catch (err) {
+        status.textContent = err.message;
+        status.className = "send-status err";
+      }
+    });
 
     updateFooterLinks();
     refreshStatus();

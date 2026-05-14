@@ -62,6 +62,14 @@ Raw JSON for `curl` / scripts:
 | [`GET /status`](https://tenebris-c.fly.dev/status) | Live JSON snapshot: uptime, tick rate, CPU %, RAM (RSS/VmSize), online players (id/name/room/body), and allocated rooms. |
 | [`GET /logins`](https://tenebris-c.fly.dev/logins) | JSON array of `{ts, event, name, room}` records. `event` is `"login"` (handshake success) or `"logout"` (client disconnect after handshake). |
 | [`GET /chat`](https://tenebris-c.fly.dev/chat) | JSON array of `{ts, name, room, text}` chat messages, server-wide, time-ordered. |
+| `GET /chat/send?text=...&room=...` | Broadcast a chat message to a room as `~server~` (sender renders with that name in-game). Authenticated by the `TENEBRIS_ADMIN_TOKEN` env var if set: append `&token=...`. Without the env var the endpoint is open (dev mode). |
+
+> **Why does the server seem to restart on its own?** `fly.toml` sets
+> `auto_stop_machines = 'stop'` + `min_machines_running = 0`, so the Fly
+> machine sleeps when idle and starts back up on the first request. The
+> first `/status` after a quiet period will take a few seconds; subsequent
+> ones are instant. Audit logs persist on the `/data` mount across these
+> stops, so login / chat history isn't lost.
 
 Both `/logins` and `/chat` accept `?n=N` to limit the number of
 returned records (default `200`, clamped to `[1, 5000]`). Example:
