@@ -15,10 +15,23 @@
 #define NET_NAME_MAX           32
 #define NET_NAME_CACHE_SIZE    32
 
+/* Per-player throttle for PLAYER_INFO_REQUEST retries. Each unknown
+ * id in the F1 / nameplate path triggers one request and re-sends
+ * once every NET_NAME_REQUEST_RETRY_S seconds while still unknown.
+ * Sized to match the snapshot cap; one slot per concurrently-unknown
+ * peer is plenty for a 16-slot room. */
+#define NET_NAME_REQ_TABLE_SIZE      16
+#define NET_NAME_REQUEST_RETRY_S     2.0
+
 typedef struct {
     uint32_t player_id;
     char     name[NET_NAME_MAX];
 } net_name_entry_t;
+
+typedef struct {
+    uint32_t player_id;
+    double   last_request_s;     /* 0 == never */
+} net_name_request_t;
 
 typedef struct {
     net_client_state_t   state;
@@ -35,6 +48,9 @@ typedef struct {
      * net_client_name_for_id to render rows. */
     net_name_entry_t     names[NET_NAME_CACHE_SIZE];
     int                  name_count;
+    /* Pending PLAYER_INFO_REQUEST throttle. */
+    net_name_request_t   name_requests[NET_NAME_REQ_TABLE_SIZE];
+    int                  name_request_count;
     /* Most recent DESYNC notice from the server. last_desync_time is
      * a sokol_time stamp (0 = never). The HUD compares against
      * stm_now() and fades the warning out after a few seconds. */
@@ -79,10 +95,47 @@ static void cache_name(uint32_t player_id, const char* name) {
     }
 }
 
+/* Fire a PLAYER_INFO_REQUEST for player_id, but only if our last
+ * request for that id is older than NET_NAME_REQUEST_RETRY_S. The
+ * F1 panel can therefore call net_client_name_for_id every frame on
+ * a missing id without spamming the server. */
+static void request_name(uint32_t player_id) {
+    if (C.state != NET_CLIENT_READY || !C.conn) return;
+    if (player_id == 0) return;
+    double now = stm_sec(stm_now());
+    net_name_request_t* slot = NULL;
+    for (int i = 0; i < C.name_request_count; ++i) {
+        if (C.name_requests[i].player_id == player_id) {
+            slot = &C.name_requests[i];
+            break;
+        }
+    }
+    if (!slot) {
+        if (C.name_request_count >= NET_NAME_REQ_TABLE_SIZE) return;
+        slot = &C.name_requests[C.name_request_count++];
+        slot->player_id      = player_id;
+        slot->last_request_s = 0.0;
+    }
+    if (slot->last_request_s != 0.0
+        && now - slot->last_request_s < NET_NAME_REQUEST_RETRY_S) {
+        return;
+    }
+    slot->last_request_s = now;
+    msg_player_info_request_t req = { .player_id = player_id, .reserved = 0 };
+    uint8_t buf[MSG_HEADER_SIZE + MSG_PLAYER_INFO_REQUEST_WIRE_SIZE];
+    size_t n = proto_write_player_info_request(buf, sizeof buf, &req);
+    if (n == 0) return;
+    net_send(C.conn, NET_CHANNEL_RELIABLE, buf, n);
+}
+
 const char* net_client_name_for_id(uint32_t player_id) {
     for (int i = 0; i < C.name_count; ++i) {
         if (C.names[i].player_id == player_id) return C.names[i].name;
     }
+    /* Cache miss: kick off a (throttled) PLAYER_INFO_REQUEST so the
+     * next render after the server replies has a real name. Returning
+     * NULL right now is fine - callers already render id-N fallback. */
+    request_name(player_id);
     return NULL;
 }
 

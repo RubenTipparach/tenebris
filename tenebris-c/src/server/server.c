@@ -697,6 +697,32 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
             fflush(stdout);
             break;
         }
+        case MSG_PLAYER_INFO_REQUEST: {
+            if (hdr.version != MSG_PLAYER_INFO_REQUEST_VERSION) break;
+            msg_player_info_request_t req;
+            if (proto_read_player_info_request(payload, hdr.length, &req) != 0)
+                break;
+            if (req.player_id == 0 || req.player_id == cl->player_id) break;
+            /* Look up the target in the same room as the requester
+             * so cross-room identities stay isolated. */
+            const server_client_t* target = NULL;
+            for (int j = 0; j < SERVER_MAX_CLIENTS; ++j) {
+                const server_client_t* peer = &s->clients[j];
+                if (!peer->conn || !peer->handshaked) continue;
+                if (peer->player_id != req.player_id) continue;
+                if (strcmp(peer->room, cl->room) != 0) continue;
+                target = peer;
+                break;
+            }
+            if (!target) break;
+            msg_player_info_t info = { .player_id = target->player_id };
+            memcpy(info.name, target->name,
+                   strnlen(target->name, MSG_PLAYER_INFO_NAME_LEN));
+            uint8_t buf[MSG_HEADER_SIZE + MSG_PLAYER_INFO_WIRE_SIZE];
+            size_t n = proto_write_player_info(buf, sizeof buf, &info);
+            if (n > 0) net_send(cl->conn, NET_CHANNEL_RELIABLE, buf, n);
+            break;
+        }
         case MSG_PLAYER_STATE: {
             if (hdr.version != MSG_PLAYER_STATE_VERSION) {
                 fprintf(stderr, "[server] PLAYER_STATE version %u != %u, closing\n",

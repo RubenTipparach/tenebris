@@ -124,6 +124,27 @@ int proto_read_player_info(const uint8_t* payload, size_t len,
     return 0;
 }
 
+size_t proto_write_player_info_request(uint8_t* buf, size_t cap,
+                                          const msg_player_info_request_t* m) {
+    const size_t total = MSG_HEADER_SIZE + MSG_PLAYER_INFO_REQUEST_WIRE_SIZE;
+    if (cap < total) return 0;
+    proto_write_header(buf, MSG_PLAYER_INFO_REQUEST,
+                         MSG_PLAYER_INFO_REQUEST_VERSION,
+                         MSG_PLAYER_INFO_REQUEST_WIRE_SIZE);
+    uint8_t* p = buf + MSG_HEADER_SIZE;
+    put_u32_le(p + 0, m->player_id);
+    put_u32_le(p + 4, m->reserved);
+    return total;
+}
+
+int proto_read_player_info_request(const uint8_t* payload, size_t len,
+                                      msg_player_info_request_t* out) {
+    if (len < MSG_PLAYER_INFO_REQUEST_WIRE_SIZE) return -1;
+    out->player_id = get_u32_le(payload + 0);
+    out->reserved  = get_u32_le(payload + 4);
+    return 0;
+}
+
 /* ------------------------------------------------------------------ */
 
 size_t proto_write_chat(uint8_t* buf, size_t cap, const msg_chat_t* m) {

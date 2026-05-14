@@ -35,6 +35,7 @@ typedef enum {
     MSG_PLAYER_INFO  = 13,  /* S->C name announcement: (player_id, name) */
     MSG_KICK         = 14,  /* S->C terminal error + user-facing reason */
     MSG_CHAT         = 20,
+    MSG_PLAYER_INFO_REQUEST = 21, /* C->S: please re-send PLAYER_INFO for this id */
 } msg_kind_t;
 
 /* Per-kind protocol versions. Bump on any wire change. */
@@ -49,6 +50,7 @@ typedef enum {
 #define MSG_PLAYER_INFO_VERSION   1
 #define MSG_KICK_VERSION          1
 #define MSG_CHAT_VERSION          1
+#define MSG_PLAYER_INFO_REQUEST_VERSION  1
 
 typedef struct {
     uint16_t kind;       /* msg_kind_t */
@@ -84,6 +86,18 @@ typedef struct {
     uint8_t  name[MSG_PLAYER_INFO_NAME_LEN];
     uint32_t reserved;
 } msg_player_info_t;
+
+/* Client-side trigger when an in-room peer appears in SNAPSHOT but
+ * the PLAYER_INFO broadcast went missing (e.g. it joined before the
+ * other client opened the WebSocket fully and the join-time fan-out
+ * raced the local handshake). Server looks up `player_id` in its
+ * room-scoped client table and replies with a single PLAYER_INFO. */
+#define MSG_PLAYER_INFO_REQUEST_WIRE_SIZE  8    /* 4 + 4 */
+
+typedef struct {
+    uint32_t player_id;
+    uint32_t reserved;
+} msg_player_info_request_t;
 
 /* ------------------------------------------------------------------
  * Chat. Client sends MSG_CHAT with message text (player_id field is
@@ -289,6 +303,11 @@ int    proto_read_chunk_diff (const uint8_t* payload, size_t len, msg_chunk_diff
 
 size_t proto_write_player_info(uint8_t* buf, size_t cap, const msg_player_info_t* m);
 int    proto_read_player_info (const uint8_t* payload, size_t len, msg_player_info_t* out);
+
+size_t proto_write_player_info_request(uint8_t* buf, size_t cap,
+                                         const msg_player_info_request_t* m);
+int    proto_read_player_info_request (const uint8_t* payload, size_t len,
+                                         msg_player_info_request_t* out);
 
 size_t proto_write_chat(uint8_t* buf, size_t cap, const msg_chat_t* m);
 int    proto_read_chat (const uint8_t* payload, size_t len, msg_chat_t* out);
