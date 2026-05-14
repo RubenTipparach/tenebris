@@ -19,9 +19,17 @@
  * id in the F1 / nameplate path triggers one request and re-sends
  * once every NET_NAME_REQUEST_RETRY_S seconds while still unknown.
  * Sized to match the snapshot cap; one slot per concurrently-unknown
- * peer is plenty for a 16-slot room. */
+ * peer is plenty for a 16-slot room.
+ *
+ * After NET_NAME_REQUEST_WARN_AT attempts with no PLAYER_INFO reply
+ * the client logs a console.error so a player who's stuck on id-N
+ * forever can see why. After NET_NAME_REQUEST_MAX_TRIES we give up
+ * retrying and leave the id as id-N - the server is either dropping
+ * the request or doesn't know that peer anymore. */
 #define NET_NAME_REQ_TABLE_SIZE      16
 #define NET_NAME_REQUEST_RETRY_S     2.0
+#define NET_NAME_REQUEST_WARN_AT     3       /* ~6 s */
+#define NET_NAME_REQUEST_MAX_TRIES   5       /* ~10 s */
 
 typedef struct {
     uint32_t player_id;
@@ -31,6 +39,9 @@ typedef struct {
 typedef struct {
     uint32_t player_id;
     double   last_request_s;     /* 0 == never */
+    int      attempts;           /* how many requests we've sent */
+    bool     nacked;             /* server replied "unknown id" - stop retrying */
+    bool     warned;             /* console.error already emitted, don't spam */
 } net_name_request_t;
 
 typedef struct {
@@ -115,12 +126,27 @@ static void request_name(uint32_t player_id) {
         slot = &C.name_requests[C.name_request_count++];
         slot->player_id      = player_id;
         slot->last_request_s = 0.0;
+        slot->attempts       = 0;
+        slot->nacked         = false;
+        slot->warned         = false;
     }
+    if (slot->nacked) return;                 /* server already said "unknown" */
+    if (slot->attempts >= NET_NAME_REQUEST_MAX_TRIES) return;
     if (slot->last_request_s != 0.0
         && now - slot->last_request_s < NET_NAME_REQUEST_RETRY_S) {
         return;
     }
     slot->last_request_s = now;
+    ++slot->attempts;
+    if (!slot->warned && slot->attempts >= NET_NAME_REQUEST_WARN_AT) {
+        fprintf(stderr,
+                "[net-client] WARN: no PLAYER_INFO for player_id=%u after %d "
+                "requests (~%.0fs). Server may not know this peer or "
+                "responses are being dropped.\n",
+                player_id, slot->attempts,
+                (double)slot->attempts * NET_NAME_REQUEST_RETRY_S);
+        slot->warned = true;
+    }
     msg_player_info_request_t req = { .player_id = player_id, .reserved = 0 };
     uint8_t buf[MSG_HEADER_SIZE + MSG_PLAYER_INFO_REQUEST_WIRE_SIZE];
     size_t n = proto_write_player_info_request(buf, sizeof buf, &req);
@@ -248,6 +274,48 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
             memcpy(name, info.name, MSG_PLAYER_INFO_NAME_LEN);
             name[MSG_PLAYER_INFO_NAME_LEN] = 0;
             cache_name(info.player_id, name);
+            /* Clear any pending-request slot for this id so a peer
+             * who reconnects later can be re-resolved cleanly. */
+            for (int i = 0; i < C.name_request_count; ++i) {
+                if (C.name_requests[i].player_id == info.player_id) {
+                    C.name_requests[i].attempts       = 0;
+                    C.name_requests[i].nacked         = false;
+                    C.name_requests[i].warned         = false;
+                    C.name_requests[i].last_request_s = 0.0;
+                    break;
+                }
+            }
+            break;
+        }
+        case MSG_PLAYER_INFO_NACK: {
+            if (hdr.version != MSG_PLAYER_INFO_NACK_VERSION) break;
+            msg_player_info_nack_t nack;
+            if (proto_read_player_info_nack(payload, hdr.length, &nack) != 0) break;
+            const char* reason_str =
+                (nack.reason == PLAYER_INFO_NACK_UNKNOWN_ID) ? "unknown_id"
+                                                              : "unspecified";
+            fprintf(stderr,
+                    "[net-client] ERROR: server cannot resolve name for "
+                    "player_id=%u (reason=%s). Will stop retrying this id.\n",
+                    nack.player_id, reason_str);
+            /* Mark the slot so future net_client_name_for_id calls
+             * don't trigger more requests. Create the slot if it
+             * doesn't exist (e.g. a stale NACK from before we asked). */
+            net_name_request_t* slot = NULL;
+            for (int i = 0; i < C.name_request_count; ++i) {
+                if (C.name_requests[i].player_id == nack.player_id) {
+                    slot = &C.name_requests[i];
+                    break;
+                }
+            }
+            if (!slot && C.name_request_count < NET_NAME_REQ_TABLE_SIZE) {
+                slot = &C.name_requests[C.name_request_count++];
+                slot->player_id      = nack.player_id;
+                slot->last_request_s = 0.0;
+                slot->attempts       = 0;
+                slot->warned         = false;
+            }
+            if (slot) slot->nacked = true;
             break;
         }
         case MSG_KICK: {

@@ -714,7 +714,23 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
                 target = peer;
                 break;
             }
-            if (!target) break;
+            if (!target) {
+                /* Tell the requester so they can log + stop retrying.
+                 * Common when a peer disconnected between the snapshot
+                 * frame and the request arriving. */
+                msg_player_info_nack_t nack = {
+                    .player_id = req.player_id,
+                    .reason    = PLAYER_INFO_NACK_UNKNOWN_ID,
+                };
+                uint8_t nbuf[MSG_HEADER_SIZE + MSG_PLAYER_INFO_NACK_WIRE_SIZE];
+                size_t nn = proto_write_player_info_nack(nbuf, sizeof nbuf, &nack);
+                if (nn > 0) net_send(cl->conn, NET_CHANNEL_RELIABLE, nbuf, nn);
+                printf("[server] PLAYER_INFO_REQUEST from player_id=%u for unknown "
+                       "id=%u in room='%s' -> NACK\n",
+                       cl->player_id, req.player_id,
+                       cl->room[0] ? cl->room : "(public)");
+                break;
+            }
             msg_player_info_t info = { .player_id = target->player_id };
             memcpy(info.name, target->name,
                    strnlen(target->name, MSG_PLAYER_INFO_NAME_LEN));
