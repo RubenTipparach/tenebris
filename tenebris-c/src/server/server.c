@@ -320,12 +320,14 @@ static void send_welcome(server_t* s, server_client_t* cl) {
      * there instead - this is the 'logout at position, login back
      * to that spot' path. */
     msg_welcome_t w = {
-        .player_id  = cl->player_id,
-        .world_seed = s->cfg.seed,
-        .spawn_x    = spawn_body->pos_x + spawn_body->radius_m + 5.0,
-        .spawn_y    = spawn_body->pos_y,
-        .spawn_z    = spawn_body->pos_z,
-        .body_id    = BODY_TENEBRIS,
+        .player_id   = cl->player_id,
+        .world_seed  = s->cfg.seed,
+        .spawn_x     = spawn_body->pos_x + spawn_body->radius_m + 5.0,
+        .spawn_y     = spawn_body->pos_y,
+        .spawn_z     = spawn_body->pos_z,
+        .body_id     = BODY_TENEBRIS,
+        .spawn_yaw   = 0.0f,
+        .spawn_pitch = 0.0f,
     };
     /* Resume the player at their last known pose. The save key is
      * the sanitized display name now (not the profile token), so
@@ -335,12 +337,15 @@ static void send_welcome(server_t* s, server_client_t* cl) {
      * connections can't fight over the same file. */
     saves_player_pose_t resume;
     if (cl->name[0] && saves_load_player(cl->name, &resume)) {
-        w.spawn_x = resume.pos_x;
-        w.spawn_y = resume.pos_y;
-        w.spawn_z = resume.pos_z;
-        w.body_id = resume.body_id;
-        printf("[server] resume name=%s body=%u pos=(%.1f, %.1f, %.1f)\n",
-               cl->name, resume.body_id, resume.pos_x, resume.pos_y, resume.pos_z);
+        w.spawn_x     = resume.pos_x;
+        w.spawn_y     = resume.pos_y;
+        w.spawn_z     = resume.pos_z;
+        w.body_id     = resume.body_id;
+        w.spawn_yaw   = resume.yaw;
+        w.spawn_pitch = resume.pitch;
+        printf("[server] resume name=%s body=%u pos=(%.1f, %.1f, %.1f) yaw=%.2f pitch=%.2f\n",
+               cl->name, resume.body_id, resume.pos_x, resume.pos_y, resume.pos_z,
+               resume.yaw, resume.pitch);
     }
 
     uint8_t buf[MSG_HEADER_SIZE + MSG_WELCOME_WIRE_SIZE];

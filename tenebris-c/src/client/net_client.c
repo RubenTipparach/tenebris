@@ -159,6 +159,8 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
             C.welcome.spawn_y     = w.spawn_y;
             C.welcome.spawn_z     = w.spawn_z;
             C.welcome.body_id     = w.body_id;
+            C.welcome.spawn_yaw   = w.spawn_yaw;
+            C.welcome.spawn_pitch = w.spawn_pitch;
             C.state = NET_CLIENT_READY;
             /* Cache our own name so F1 can show it for the local
              * player too — the server has it from HELLO but doesn't

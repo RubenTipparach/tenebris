@@ -1032,8 +1032,20 @@ static void maybe_apply_mp_spawn(void) {
 
     G.player.position = (dvec3_t){ .x = w->spawn_x, .y = w->spawn_y, .z = w->spawn_z };
     G.player.velocity = (dvec3_t){0};
-    printf("[main] MP spawn applied: player_id=%u pos=(%.1f, %.1f, %.1f) body=%u\n",
-           w->player_id, w->spawn_x, w->spawn_y, w->spawn_z, w->body_id);
+    G.player.yaw      = w->spawn_yaw;
+    G.player.pitch    = w->spawn_pitch;
+    /* Force a fresh planet basis at the new position so the saved
+     * yaw / pitch read as 'look this way relative to the surface'
+     * rather than 'apply on top of the previous body's basis'. The
+     * roll-slerp armed by the basis rebuild eases the camera into
+     * level over transition_timer_s. */
+    G.player.basis_ready = false;
+    G.player.last_tile   = -1;
+    G.player.transition_timer_s = config_lod()->roll_slerp_duration_s;
+    printf("[main] MP spawn applied: player_id=%u pos=(%.1f, %.1f, %.1f) body=%u "
+           "yaw=%.2f pitch=%.2f\n",
+           w->player_id, w->spawn_x, w->spawn_y, w->spawn_z, w->body_id,
+           w->spawn_yaw, w->spawn_pitch);
     G_mp_spawn_applied = true;
 }
 

@@ -39,7 +39,7 @@ typedef enum {
 
 /* Per-kind protocol versions. Bump on any wire change. */
 #define MSG_HELLO_VERSION         3     /* v2: name field; v3: room_code */
-#define MSG_WELCOME_VERSION       1
+#define MSG_WELCOME_VERSION       2     /* v2: + spawn_yaw / spawn_pitch */
 #define MSG_INPUT_VERSION         1
 #define MSG_PLAYER_CMD_VERSION    1
 #define MSG_PLAYER_STATE_VERSION  1
@@ -103,7 +103,7 @@ typedef struct {
     uint32_t reserved;
 } msg_chat_t;
 
-#define MSG_WELCOME_WIRE_SIZE   40    /* 4 + 8 + 24 + 4 */
+#define MSG_WELCOME_WIRE_SIZE   48    /* 4 + 8 + 24 + 4 + 4 + 4 */
 
 typedef struct {
     uint32_t player_id;
@@ -112,6 +112,8 @@ typedef struct {
     double   spawn_y;
     double   spawn_z;
     uint32_t body_id;
+    float    spawn_yaw;
+    float    spawn_pitch;
 } msg_welcome_t;
 
 /* ------------------------------------------------------------------
@@ -248,7 +250,7 @@ typedef struct {
  * MSG_KICK with reason=KICK_VERSION_MISMATCH so the client can show
  * a "refresh your browser" popup instead of looping the auto-reconnect
  * timer against a server that will never accept them. */
-#define TENEBRIS_PROTOCOL_VERSION   2
+#define TENEBRIS_PROTOCOL_VERSION   3
 
 /* ------------------------------------------------------------------
  * Encode / decode helpers. All functions assume little-endian on the

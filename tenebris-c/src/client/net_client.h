@@ -29,6 +29,7 @@ typedef struct {
     uint64_t world_seed;
     double   spawn_x, spawn_y, spawn_z;
     uint32_t body_id;
+    float    spawn_yaw, spawn_pitch;
 } net_client_welcome_t;
 
 /* Open a connection to the dedicated server. URL is one of
