@@ -107,12 +107,19 @@ static int serve_http(struct lws* wsi, int status,
     /* CORS - the dashboard lives on github.io while the JSON endpoints
      * are served from fly.dev, so a wildcard origin is required for
      * fetch() to read the response. Read-only, no credentials, so the
-     * usual "don't use *" caveats don't bite us. */
+     * usual "don't use *" caveats don't bite us.
+     *
+     * Important: lws_add_http_header_by_name expects the header NAME
+     * to include its trailing colon - the function only injects a
+     * space between name and value. Without the colon the emitted
+     * line is "Access-Control-Allow-Origin *" (no colon, no CRLF
+     * framing), which corrupts the HTTP response and trips Fly's
+     * edge into 502 Bad Gateway. */
     if (lws_add_http_header_by_name(wsi,
-            (const unsigned char*)"Access-Control-Allow-Origin",
+            (const unsigned char*)"Access-Control-Allow-Origin:",
             (const unsigned char*)"*", 1, &p, end) ||
         lws_add_http_header_by_name(wsi,
-            (const unsigned char*)"Access-Control-Allow-Methods",
+            (const unsigned char*)"Access-Control-Allow-Methods:",
             (const unsigned char*)"GET, OPTIONS", 12, &p, end) ||
         lws_finalize_write_http_header(wsi, buf + LWS_PRE, &p, end)) {
         return -1;
