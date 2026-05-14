@@ -24,7 +24,13 @@ void inventory_init_creative(inventory_t* inv) {
 
 void inventory_init_empty(inventory_t* inv) {
     memset(inv, 0, sizeof(*inv));
-    /* All slots type=AIR count=0 by memset. */
+    /* Survival starts with an empty hotbar so every block has to be
+     * mined. The one exception is torches: there's no crafting system
+     * yet, so without an unlimited torch slot players have no way to
+     * light caves at all. Slotted at index 0 so a fresh joiner sees a
+     * usable item the moment they spawn. */
+    inv->slots[0] = (inv_slot_t){ BLOCK_TORCH, CREATIVE_COUNT };
+    inv->selected = 0;
 }
 
 bool inventory_add(inventory_t* inv, block_t type) {

@@ -55,6 +55,45 @@ bool         menu_is_overlay(void);   /* true when MAIN_MENU or MP_URL_PROMPT */
  * path. */
 void menu_force_state(game_state_t s);
 
+/* Append a 6-char room code to the MRU "recent rooms" list backed by
+ * client_kv. Called by the menu's own connect path; also called from
+ * main_web's URL-bypass branch (?room= / ?invite=) so links count as
+ * joins. Empty or invalid codes are ignored. */
+void menu_record_recent_room(const char* room_code);
+
+/* Stash a deep-link invite (room code + optional server override) and
+ * either jump straight into the MP session if a profile is already
+ * active, or stay parked on the profile picker until the player
+ * creates / selects one and then auto-route to the room. Lets share
+ * links like `/tenebris/wasm?invite=ABCDEF` walk first-time visitors
+ * through the profile wizard before dropping them into the game,
+ * which keeps their nameplate from rendering as the empty string.
+ * Pass NULL or "" for `server_url` to use the bundled default. */
+void menu_set_pending_invite(const char* room_code, const char* server_url);
+
+/* In-game pause menu (overlay drawn on top of GAME_IN_GAME_SP /
+ * GAME_IN_GAME_MP). Owns its own visibility flag rather than a
+ * dedicated game_state_t entry so the world keeps rendering behind
+ * the panel - menu_state() stays on the gameplay state.
+ *
+ * Call order from main_web:
+ *   - on SAPP_KEYCODE_ESCAPE during gameplay: menu_pause_toggle()
+ *   - in event(): if menu_pause_active(), route into menu_pause_event
+ *     BEFORE input.c / chat / teleport_menu see the event
+ *   - at the end of the UI overlay pass: menu_pause_draw() */
+bool menu_pause_active(void);
+void menu_pause_toggle(void);
+void menu_pause_draw(int screen_w, int screen_h);
+bool menu_pause_event(const sapp_event* e);
+
+/* Connecting overlay drawn while an MP socket is mid-connect /
+ * mid-handshake. Stateless - caller decides when to draw based on
+ * net_client_state(); the function just paints a centred panel
+ * with the supplied status + room labels. */
+void menu_connecting_draw(int screen_w, int screen_h,
+                          const char* status_label,
+                          const char* room_label);
+
 /* Render the menu UI in screen-space. Call after the 3D pass during
  * MAIN_MENU; safe (no-op) during in-game states. Width/height are the
  * current sapp framebuffer dimensions. */

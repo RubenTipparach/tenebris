@@ -123,7 +123,7 @@ static vec3_t dvec3_to_vec3f(dvec3_t v) {
  * hash-driven variable width so the canopy isn't perfectly stamped. */
 static float block_hex_width(block_t b, int tile_idx, int depth) {
     if (b == BLOCK_WOOD) return 0.20f;
-    if (b == BLOCK_LEAVES) {
+    if (b == BLOCK_LEAVES || b == BLOCK_SEQ_LEAVES) {
         uint32_t h = (uint32_t)tile_idx * 0xDEADBEEFu
                    + (uint32_t)depth   * 0xBADF00Du
                    + 0x12345678u;

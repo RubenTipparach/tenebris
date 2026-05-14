@@ -46,6 +46,12 @@ typedef struct {
      * empty until something fails. The menu reads this to render the
      * in-game error dialog. */
     char                 error_message[96];
+    /* True after a server-issued MSG_KICK with a terminal reason
+     * (version mismatch, etc). The menu retry loop reads this and
+     * goes straight to the disconnected popup rather than retrying
+     * a connection that will never succeed. Cleared on every
+     * net_client_connect call. */
+    bool                 no_retry;
 } net_client_t;
 
 static net_client_t C;
@@ -153,6 +159,8 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
             C.welcome.spawn_y     = w.spawn_y;
             C.welcome.spawn_z     = w.spawn_z;
             C.welcome.body_id     = w.body_id;
+            C.welcome.spawn_yaw   = w.spawn_yaw;
+            C.welcome.spawn_pitch = w.spawn_pitch;
             C.state = NET_CLIENT_READY;
             /* Cache our own name so F1 can show it for the local
              * player too — the server has it from HELLO but doesn't
@@ -187,6 +195,24 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
             memcpy(name, info.name, MSG_PLAYER_INFO_NAME_LEN);
             name[MSG_PLAYER_INFO_NAME_LEN] = 0;
             cache_name(info.player_id, name);
+            break;
+        }
+        case MSG_KICK: {
+            if (hdr.version != MSG_KICK_VERSION) break;
+            msg_kick_t k;
+            if (proto_read_kick(payload, hdr.length, &k) != 0) break;
+            /* Copy the server-supplied text into the error slot the
+             * menu reads when it promotes ERROR -> popup. Truncate
+             * cleanly at the smaller buffer. */
+            char text[MSG_KICK_TEXT_LEN + 1];
+            memcpy(text, k.text, MSG_KICK_TEXT_LEN);
+            text[MSG_KICK_TEXT_LEN] = 0;
+            snprintf(C.error_message, sizeof C.error_message, "%s",
+                     text[0] ? text : "kicked");
+            C.no_retry = true;
+            C.state    = NET_CLIENT_ERROR;
+            printf("[net-client] KICK reason=%u text='%s'\n",
+                   k.reason, text);
             break;
         }
         case MSG_DESYNC: {
@@ -350,6 +376,10 @@ static void on_close(net_conn_t* conn, net_close_reason_t reason, void* user) {
     }
     snprintf(C.error_message, sizeof C.error_message, "%s", msg);
     C.state = NET_CLIENT_ERROR;
+    /* Null the conn so a follow-up net_client_connect (auto-reconnect
+     * path) doesn't early-return on the stale handle. The transport
+     * already owns the close; we just drop our pointer. */
+    C.conn = NULL;
 }
 
 /* ------------------------------------------------------------------ */
@@ -360,8 +390,23 @@ void net_client_connect(const char* url) {
     if (!url) return;
     if (C.conn) return;     /* already connected / connecting */
 
+    /* Preserve the profile/room set by net_client_set_profile across
+     * the state reset. The memset below clears every field of C; if
+     * we don't snapshot these first, HELLO ships an empty name and
+     * the server falls back to 'guest-N' even when the player has
+     * a real profile selected. */
+    char saved_token[sizeof C.profile_token];
+    char saved_name [sizeof C.profile_name];
+    char saved_room [sizeof C.room_code];
+    memcpy(saved_token, C.profile_token, sizeof saved_token);
+    memcpy(saved_name,  C.profile_name,  sizeof saved_name);
+    memcpy(saved_room,  C.room_code,     sizeof saved_room);
+
     memset(&C, 0, sizeof C);
     C.state = NET_CLIENT_CONNECTING;
+    memcpy(C.profile_token, saved_token, sizeof C.profile_token);
+    memcpy(C.profile_name,  saved_name,  sizeof C.profile_name);
+    memcpy(C.room_code,     saved_room,  sizeof C.room_code);
 
     net_callbacks_t cb = {
         .on_open  = on_open,
@@ -392,6 +437,7 @@ void net_client_disconnect(void) {
 }
 
 net_client_state_t          net_client_state  (void) { return C.state; }
+bool                        net_client_can_retry(void) { return !C.no_retry; }
 const net_client_welcome_t* net_client_welcome(void) { return &C.welcome; }
 
 const char* net_client_error_message(void) {

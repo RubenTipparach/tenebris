@@ -172,6 +172,12 @@ void main() {
     color = mix(color, fogged, wet);
 
     frag_color = vec4(color, 1.0);
+    // Forward the offscreen scene depth into the swapchain so the
+    // deferred sokol_gl flush (remote players, hex blocks, anything
+    // 3D queued during the offscreen pass) depth-tests correctly
+    // against the opaque scene. Without this the swapchain depth
+    // stays cleared and humanoids render in front of walls.
+    gl_FragDepth = scene_z_ndc;
 }
 @end
 

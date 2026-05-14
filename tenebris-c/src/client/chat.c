@@ -175,33 +175,42 @@ void chat_draw(float screen_w, float screen_h) {
     ensure_pip();
     sgl_load_pipeline(pip_alpha);
 
-    /* Compose box at the bottom edge when active. */
-    const float input_h = 32.0f;
-    const float pad     = 12.0f;
-    const float input_y = screen_h - input_h - pad;
+    /* Compose box parked above the hotbar so the input + caret don't
+     * sit on top of the slot row. The hotbar reserves
+     * (BOTTOM_MARGIN + SLOT_SIZE) = 66 px from the bottom; lift the
+     * input enough to clear it with a small visual gap. Width is
+     * half the screen (pinned to the left margin) per the chat-bar
+     * sizing rule - the rest of the bottom-row real estate belongs
+     * to the hotbar centred on the right. */
+    const float input_h    = 32.0f;
+    const float pad        = 12.0f;
+    const float hotbar_top = 66.0f + 8.0f;   /* hotbar + small gap */
+    const float input_y    = screen_h - input_h - hotbar_top;
+    const float input_w    = (screen_w - pad * 2.0f) * 0.5f;
+    const float input_right = pad + input_w;
     if (C.active) {
-        quad(pad, input_y, screen_w - pad * 2.0f, input_h,
+        quad(pad, input_y, input_w, input_h,
              0.06f, 0.07f, 0.10f, 0.92f);
         /* Border */
         sgl_begin_quads();
         sgl_c4f(0.55f, 0.65f, 0.85f, 0.85f);
         const float t = 1.5f;
         sgl_v2f(pad,                 input_y);
-        sgl_v2f(screen_w - pad,      input_y);
-        sgl_v2f(screen_w - pad,      input_y + t);
+        sgl_v2f(input_right,         input_y);
+        sgl_v2f(input_right,         input_y + t);
         sgl_v2f(pad,                 input_y + t);
         sgl_v2f(pad,                 input_y + input_h - t);
-        sgl_v2f(screen_w - pad,      input_y + input_h - t);
-        sgl_v2f(screen_w - pad,      input_y + input_h);
+        sgl_v2f(input_right,         input_y + input_h - t);
+        sgl_v2f(input_right,         input_y + input_h);
         sgl_v2f(pad,                 input_y + input_h);
         sgl_v2f(pad,                 input_y);
         sgl_v2f(pad + t,             input_y);
         sgl_v2f(pad + t,             input_y + input_h);
         sgl_v2f(pad,                 input_y + input_h);
-        sgl_v2f(screen_w - pad - t,  input_y);
-        sgl_v2f(screen_w - pad,      input_y);
-        sgl_v2f(screen_w - pad,      input_y + input_h);
-        sgl_v2f(screen_w - pad - t,  input_y + input_h);
+        sgl_v2f(input_right - t,     input_y);
+        sgl_v2f(input_right,         input_y);
+        sgl_v2f(input_right,         input_y + input_h);
+        sgl_v2f(input_right - t,     input_y + input_h);
         sgl_end();
         /* Blinking caret at end of typed text. */
         double t_since = now - C.input_blink_start_s;
@@ -232,7 +241,9 @@ void chat_draw(float screen_w, float screen_h) {
         const float panel_y  = input_y - panel_h - 6.0f;
         quad(panel_x, panel_y, panel_w, panel_h, 0.05f, 0.06f, 0.10f, 0.55f);
     }
-    sgl_draw();
+    /* sgl_draw is centralised in main_web's frame end - see comment
+     * at that flush site. Calling it here would lock the GPU upload
+     * to chat's vertex range and drop every later module's quads. */
 
     /* Compose-box label + typed text. */
     if (C.active) {

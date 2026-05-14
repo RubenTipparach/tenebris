@@ -17,7 +17,9 @@
  *       <tile-id>.col     128 raw bytes — the tile's full block column.
  *                         Overlaid onto the procgen baseline at boot.
  *   players/
- *     <token>.dat         binary blob: { body_id, x, y, z, yaw, pitch }.
+ *     <name>.dat          binary blob: { body_id, x, y, z, yaw, pitch }.
+ *                         Filename is the sanitized lowercase form
+ *                         of the player's display name.
  *
  * Files are written atomically by saves_write_*  via a *.tmp swap so a
  * crash mid-write leaves the previous good copy intact.
@@ -28,6 +30,16 @@
  */
 
 #define SAVES_PLAYER_VERSION   1
+
+/* On-disk format version for tile column .col files. v0 was the
+ * headerless 128-raw-bytes layout shipped before this change; the
+ * loader still accepts those by fall-back (file size == 128 ->
+ * treat as v0). v1 prepends a 16-byte header so any future change
+ * to WORLD_MAX_DEPTH or block-id layout is detectable at load
+ * time rather than silently miscompiled. */
+#define SAVES_TILE_VERSION     1
+#define SAVES_TILE_MAGIC       0x4C4F4354u   /* 'TCOL' little-endian */
+#define SAVES_TILE_HEADER_SIZE 16
 
 typedef struct {
     uint32_t version;
@@ -46,6 +58,13 @@ void saves_shutdown(void);
  * actually overlaid. */
 int  saves_load_world(world_t* w, const char* room, uint64_t seed);
 
+/* Cheap directory probe: returns true iff (room, seed, body_id) has
+ * at least one .col file on disk. Used by room_acquire to decide
+ * which bodies need an eager clone-and-overlay vs which can stay
+ * lazy. */
+bool saves_room_body_has_edits(const char* room, uint64_t seed,
+                                 uint32_t body_id);
+
 /* Persist `tile_idx`'s column under (room, body). Call right after
  * world_set in the PLAYER_CMD handler so only the actually-edited
  * tile hits disk — see the M5 chunk-save commit. */
@@ -58,11 +77,16 @@ bool saves_write_tile(world_t* w, const char* room, uint64_t seed, int tile_idx)
  * covers chunk edits). */
 int  saves_flush_world(world_t* w, const char* room, uint64_t seed);
 
-/* Per-player pose. `token` must be a non-empty hex string (the HELLO
- * token); empty tokens are skipped so guest sessions don't fight over
- * a single anonymous file. */
-bool saves_write_player(const char* token, const saves_player_pose_t* pose);
-bool saves_load_player (const char* token, saves_player_pose_t* out);
+/* Per-player pose. `name` is the player's display name; the file
+ * key is a sanitized lowercase form (alnum + dash + underscore;
+ * spaces become _). Same name -> same file across browser swaps,
+ * profile re-creation, or localStorage wipes. The HELLO-time
+ * unique-name check on the server prevents two simultaneous
+ * connections from racing against the same file. Names that
+ * sanitize to empty (all emoji etc.) return false rather than
+ * writing to a zero-length path. */
+bool saves_write_player(const char* name, const saves_player_pose_t* pose);
+bool saves_load_player (const char* name, saves_player_pose_t* out);
 
 /* ----------------------------------------------------------------- */
 /* Chat log per room (M6+, but ships in the chat commit). */

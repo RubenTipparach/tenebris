@@ -48,6 +48,12 @@ typedef enum {
     BLOCK_LEAVES         = 22,   /* tinted grass — pulled darker green at bake */
     BLOCK_BEDROCK        = 23,   /* impassable layer-0 floor (tinted very dark) */
 
+    /* Sequoia foliage: tinted red at atlas-bake time so Sequoia's
+     * trees read as a different biome than Tenebris's at a glance.
+     * Treated identically to BLOCK_LEAVES everywhere else (covering,
+     * width, mining loot). */
+    BLOCK_SEQ_LEAVES     = 24,
+
     BLOCK_COUNT
 } block_t;
 

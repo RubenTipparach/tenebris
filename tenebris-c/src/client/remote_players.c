@@ -99,14 +99,14 @@ static void box(float cx, float cy, float cz,
     const float mid_r = r,         mid_g = g,         mid_b = b;
     const float xs_r  = r * 0.80f, xs_g  = g * 0.80f, xs_b  = b * 0.80f;
 
-    /* +Y top */
+    /* +Y top - CCW from outside (viewed from +Y looking down). */
     sgl_c3f(top_r, top_g, top_b);
-    sgl_v3f(x0, y1, z0); sgl_v3f(x1, y1, z0); sgl_v3f(x1, y1, z1);
-    sgl_v3f(x0, y1, z0); sgl_v3f(x1, y1, z1); sgl_v3f(x0, y1, z1);
-    /* -Y bottom */
+    sgl_v3f(x0, y1, z0); sgl_v3f(x1, y1, z1); sgl_v3f(x1, y1, z0);
+    sgl_v3f(x0, y1, z0); sgl_v3f(x0, y1, z1); sgl_v3f(x1, y1, z1);
+    /* -Y bottom - CCW from outside (viewed from -Y looking up). */
     sgl_c3f(bot_r, bot_g, bot_b);
-    sgl_v3f(x0, y0, z0); sgl_v3f(x1, y0, z1); sgl_v3f(x1, y0, z0);
-    sgl_v3f(x0, y0, z0); sgl_v3f(x0, y0, z1); sgl_v3f(x1, y0, z1);
+    sgl_v3f(x0, y0, z0); sgl_v3f(x1, y0, z0); sgl_v3f(x1, y0, z1);
+    sgl_v3f(x0, y0, z0); sgl_v3f(x1, y0, z1); sgl_v3f(x0, y0, z1);
     /* +Z front */
     sgl_c3f(mid_r, mid_g, mid_b);
     sgl_v3f(x0, y0, z1); sgl_v3f(x1, y0, z1); sgl_v3f(x1, y1, z1);
@@ -126,6 +126,46 @@ static void box(float cx, float cy, float cz,
     sgl_end();
 }
 
+/* Build a 4x4 column-major rotation that maps local +Y to `up`, picks
+ * an arbitrary tangent forward, and writes it into `out`. Used so the
+ * humanoid stands radial-up on the planet instead of along world-Y.
+ * Forward axis isn't tracked across snapshots (yaw is just a scalar),
+ * so the choice of reference is the same convention as
+ * phys_tangent_basis — close enough that remote players don't moonwalk
+ * sideways when walking around the equator. */
+static void planet_up_basis(double ux, double uy, double uz, float* out) {
+    /* Pick a reference axis not parallel to up so the cross product is
+     * well-defined. Same threshold as phys_tangent_basis. */
+    double rx, ry, rz;
+    if (fabs(uy) < 0.9) { rx = 0.0; ry = 1.0; rz = 0.0; }
+    else                { rx = 1.0; ry = 0.0; rz = 0.0; }
+    /* right = normalize(cross(ref, up)) */
+    double cx = ry * uz - rz * uy;
+    double cy = rz * ux - rx * uz;
+    double cz = rx * uy - ry * ux;
+    double cl = sqrt(cx * cx + cy * cy + cz * cz);
+    if (cl < 1e-9) { /* should not happen given the threshold above */
+        out[0]=1; out[1]=0; out[2]=0; out[3]=0;
+        out[4]=0; out[5]=1; out[6]=0; out[7]=0;
+        out[8]=0; out[9]=0; out[10]=1; out[11]=0;
+        out[12]=0; out[13]=0; out[14]=0; out[15]=1;
+        return;
+    }
+    cx /= cl; cy /= cl; cz /= cl;
+    /* fwd = cross(up, right) */
+    double fx = uy * cz - uz * cy;
+    double fy = uz * cx - ux * cz;
+    double fz = ux * cy - uy * cx;
+    /* Humanoid local axes: +X right, +Y up, faces toward -Z (the head
+     * draws at +Y, the body grows along +Y). Map local +Z to -fwd so
+     * the face direction (-Z) is +fwd. Column-major: col0=right,
+     * col1=up, col2=-fwd, col3=origin. */
+    out[ 0] = (float)cx; out[ 1] = (float)cy; out[ 2] = (float)cz; out[ 3] = 0.0f;
+    out[ 4] = (float)ux; out[ 5] = (float)uy; out[ 6] = (float)uz; out[ 7] = 0.0f;
+    out[ 8] = -(float)fx; out[ 9] = -(float)fy; out[10] = -(float)fz; out[11] = 0.0f;
+    out[12] = 0.0f;       out[13] = 0.0f;       out[14] = 0.0f;       out[15] = 1.0f;
+}
+
 /* Procedural humanoid. ~1.8 m tall, origin at feet, faces -Z at
  * yaw=0. Six axis-aligned boxes drawn through the sgl modelview
  * stack so legs and arms can swing for a walk cycle.
@@ -140,14 +180,37 @@ static void box(float cx, float cy, float cz,
  * `swing_rad` rotates legs / arms around their hip / shoulder pivot
  * in the X axis (forward / back). Right limbs swing opposite to
  * left, arms counter-phase to legs — classic walk cycle. swing_rad
- * == 0 = idle pose. */
+ * == 0 = idle pose.
+ *
+ * `up_x/y/z` is the planet radial direction at the figure's feet,
+ * already normalised. The whole figure is rotated so its local +Y
+ * aligns with that vector, so the avatar stands upright on the
+ * planet's surface regardless of where on the sphere it stands. */
 static void draw_humanoid(float cx, float cy, float cz,
-                            float yaw, float swing_rad) {
-    /* Move the whole figure to its world position + apply yaw, then
-     * draw every body part in the figure-local frame. */
+                            float yaw, float swing_rad,
+                            double up_x, double up_y, double up_z) {
+    /* Move the whole figure to its world position, rotate so local
+     * +Y points along the planet radial, then apply yaw around the
+     * local up axis (now +Y in the figure frame) before drawing the
+     * limbs.
+     *   - MODEL_YAW_OFFSET (+pi/2): the limbs / torso are built with
+     *     the figure's side facing +Z in body-local space; this
+     *     trailing turn re-aligns the front with the yaw forward
+     *     vector so remote players don't walk sideways to their
+     *     heading.
+     *   - yaw_sign = -1: the local player's yaw convention is the
+     *     reverse of sgl_rotate's positive-around-+Y direction for
+     *     this basis, so the model appeared to mirror the camera
+     *     ('I look left, the other player sees me look right').
+     *     Negating yaw fixes the mirror without disturbing the
+     *     +90 deg side-vs-front offset. */
+    const float MODEL_YAW_OFFSET = 1.57079632679f;  /* +pi/2 */
     sgl_push_matrix();
     sgl_translate(cx, cy, cz);
-    sgl_rotate(yaw, 0.0f, 1.0f, 0.0f);
+    float basis[16];
+    planet_up_basis(up_x, up_y, up_z, basis);
+    sgl_mult_matrix(basis);
+    sgl_rotate(-yaw + MODEL_YAW_OFFSET, 0.0f, 1.0f, 0.0f);
 
     /* Torso — fixed, centred on the chest. */
     sgl_push_matrix();
@@ -221,10 +284,28 @@ void remote_players_draw(mat4_t view, mat4_t proj) {
 
     static sgl_pipeline pip3d = (sgl_pipeline){0};
     if (pip3d.id == 0) {
+        /* Depth state is explicit: humanoids must z-sort against
+         * terrain + each other in the offscreen pass. write_enabled
+         * + LESS lets a near figure occlude a far one and lets the
+         * terrain occlude figures behind it. The offscreen pass uses
+         * DEPTH_STENCIL (renderer.c:1407) which sokol-gl inherits
+         * from the default sgl context (zero-init formats match the
+         * swapchain defaults), so the pipeline depth format lines up
+         * without having to specify it here.
+         *
+         * cull_mode=BACK because box() emits CCW-from-outside winding
+         * for every face (verified: see the per-face vertex order in
+         * box() above). Culling back faces halves the fragment work
+         * for the six-cube-per-figure mesh. face_winding=CCW matches
+         * sokol-gl's default, called out explicitly so a future tweak
+         * to sgl_setup doesn't silently flip the convention. */
         pip3d = sgl_make_pipeline(&(sg_pipeline_desc){
-            .depth = { .write_enabled = true,
-                        .compare = SG_COMPAREFUNC_LESS_EQUAL },
-            .cull_mode = SG_CULLMODE_NONE,
+            .depth = {
+                .write_enabled = true,
+                .compare       = SG_COMPAREFUNC_LESS,
+            },
+            .cull_mode    = SG_CULLMODE_BACK,
+            .face_winding = SG_FACEWINDING_CCW,
         });
     }
     sgl_load_pipeline(pip3d);
@@ -266,11 +347,20 @@ void remote_players_draw(mat4_t view, mat4_t proj) {
         }
 
         /* The player's reported position is the FEET anchor, same as
-         * G.player.position. draw_humanoid grows upward from cy. */
-        draw_humanoid(lx, ly, lz, yaw, swing_rad);
+         * G.player.position. draw_humanoid grows upward from cy along
+         * the planet radial computed from the interpolated position. */
+        double ul = sqrt((double)lx*lx + (double)ly*ly + (double)lz*lz);
+        double ux, uy, uz;
+        if (ul > 1e-6) { ux = lx/ul; uy = ly/ul; uz = lz/ul; }
+        else           { ux = 0.0; uy = 1.0; uz = 0.0; }
+        draw_humanoid(lx, ly, lz, yaw, swing_rad, ux, uy, uz);
     }
 
-    sgl_draw();
+    /* No sgl_draw here. We queue 3D player geometry on layer 0 and
+     * let main_web flush every queued layer at the end of the frame
+     * - calling sgl_draw mid-flow would upload only this layer's
+     * vertices, then later UI quads (queued on layer 1) would
+     * reference un-uploaded GPU memory and render as a void. */
 }
 
 /* Multiply a 4x4 column-major mat4_t by a homogeneous (x,y,z,1).
@@ -306,11 +396,34 @@ void remote_players_draw_nameplates(mat4_t view, mat4_t proj,
     const double interp_delay_s = 0.150;
     const double now = stm_sec(stm_now());
 
+    /* Project every visible remote player to screen coords once and
+     * cache the result. Two render passes follow: dark backdrops via
+     * sokol_gl, then yellow text via sokol_debugtext on top. Caching
+     * keeps the math from running twice and lets us sort backdrop
+     * draws into a single sgl batch. */
+    struct {
+        float tx, ty;
+        float text_w;
+        const char* name;
+    } entries[REMOTE_PLAYERS_MAX];
+    int entry_count = 0;
+
+    const float scale = 1.0f;
+    const float cell  = 8.0f * scale;
+
     for (int i = 0; i < R.count; ++i) {
         const remote_player_t* p = &R.players[i];
         if (!p->active) continue;
         const char* name = name_fn(p->player_id);
-        if (!name || !*name) continue;
+        char fallback[20];
+        if (!name || !*name) {
+            /* Never skip the plate - always show SOMETHING so a
+             * silent peer isn't visually anonymous. PLAYER_INFO is
+             * eventual; once it lands the cache returns the real
+             * name and this branch stops firing. */
+            snprintf(fallback, sizeof fallback, "id-%u", p->player_id);
+            name = fallback;
+        }
 
         double dt = now - p->snapshot_time_s;
         double t  = dt / interp_delay_s;
@@ -318,14 +431,23 @@ void remote_players_draw_nameplates(mat4_t view, mat4_t proj,
         if (t > 1.0) t = 1.0;
 
         /* Anchor the nameplate at head height + a little extra so it
-         * floats clear of the model's hair. */
+         * floats clear of the model's hair. The +2.1 offset MUST be
+         * along the player's local up (= radial direction from the
+         * body centre) - adding to world +Y put the plate to the
+         * SIDE of any player who wasn't standing at the +Y pole. */
         float wx = (float)(p->pos_prev.x + (p->pos_cur.x - p->pos_prev.x) * t);
         float wy = (float)(p->pos_prev.y + (p->pos_cur.y - p->pos_prev.y) * t);
         float wz = (float)(p->pos_prev.z + (p->pos_cur.z - p->pos_prev.z) * t);
-        float head_y = wy + 2.1f;
+        float ulen = sqrtf(wx*wx + wy*wy + wz*wz);
+        float ux = 0.0f, uy = 1.0f, uz = 0.0f;
+        if (ulen > 1e-6f) { ux = wx / ulen; uy = wy / ulen; uz = wz / ulen; }
+        const float head_off = 2.1f;
+        float head_x = wx + ux * head_off;
+        float head_y = wy + uy * head_off;
+        float head_z = wz + uz * head_off;
 
         float cx, cy, cz, cw;
-        mat4_mul_vec4(vp, wx, head_y, wz, &cx, &cy, &cz, &cw);
+        mat4_mul_vec4(vp, head_x, head_y, head_z, &cx, &cy, &cz, &cw);
         /* Behind-the-camera: skip. */
         if (cw <= 0.001f) continue;
 
@@ -335,27 +457,71 @@ void remote_players_draw_nameplates(mat4_t view, mat4_t proj,
         float sx = (ndc_x * 0.5f + 0.5f) * screen_w;
         float sy = (1.0f - (ndc_y * 0.5f + 0.5f)) * screen_h;
 
-        /* Drop the name centred above the projected head. sdtx uses
-         * font slot 1 (c64) — clean baseline at any scale, matches the
-         * menu's font choice. */
-        const float scale = 1.0f;
-        const float cell  = 8.0f * scale;
         int n = (int)strlen(name);
         float text_w = cell * (float)n;
         float tx = sx - text_w * 0.5f;
         float ty = sy - cell;
 
-        /* Off-screen? Skip — keeps text from oozing along the edges
+        /* Off-screen? Skip - keeps text from oozing along the edges
          * when a player is way off to the side. */
         if (tx < -text_w || tx > screen_w) continue;
         if (ty < -cell    || ty > screen_h) continue;
 
-        sdtx_canvas(screen_w / scale, screen_h / scale);
-        sdtx_font(1);
-        sdtx_origin(tx / cell, ty / cell);
-        sdtx_color3b(0xff, 0xe8, 0x80);
-        sdtx_home();
-        sdtx_printf("%s", name);
-        sdtx_font(0);
+        entries[entry_count].tx     = tx;
+        entries[entry_count].ty     = ty;
+        entries[entry_count].text_w = text_w;
+        entries[entry_count].name   = name;
+        ++entry_count;
     }
+
+    if (entry_count == 0) return;
+
+    /* ----- Pass 1: dark transparent backdrop rectangles via sgl ----- */
+    static sgl_pipeline pip_alpha = (sgl_pipeline){0};
+    if (pip_alpha.id == 0) {
+        pip_alpha = sgl_make_pipeline(&(sg_pipeline_desc){
+            .colors[0].blend = {
+                .enabled = true,
+                .src_factor_rgb   = SG_BLENDFACTOR_SRC_ALPHA,
+                .dst_factor_rgb   = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+                .src_factor_alpha = SG_BLENDFACTOR_ONE,
+                .dst_factor_alpha = SG_BLENDFACTOR_ONE,
+            },
+        });
+    }
+    sgl_defaults();
+    sgl_matrix_mode_projection();
+    sgl_load_identity();
+    sgl_ortho(0.0f, screen_w, screen_h, 0.0f, -1.0f, 1.0f);
+    sgl_matrix_mode_modelview();
+    sgl_load_identity();
+    sgl_load_pipeline(pip_alpha);
+
+    const float pad_x = 4.0f;
+    const float pad_y = 2.0f;
+    sgl_begin_quads();
+    sgl_c4f(0.0f, 0.0f, 0.0f, 0.65f);
+    for (int i = 0; i < entry_count; ++i) {
+        float x0 = entries[i].tx - pad_x;
+        float y0 = entries[i].ty - pad_y;
+        float x1 = entries[i].tx + entries[i].text_w + pad_x;
+        float y1 = entries[i].ty + cell + pad_y;
+        sgl_v2f(x0, y0);
+        sgl_v2f(x1, y0);
+        sgl_v2f(x1, y1);
+        sgl_v2f(x0, y1);
+    }
+    sgl_end();
+    /* No sgl_draw - see remote_players_draw's matching comment. */
+
+    /* ----- Pass 2: nameplate text via sdtx on top of the backdrop ----- */
+    sdtx_canvas(screen_w / scale, screen_h / scale);
+    sdtx_font(1);
+    sdtx_color3b(0xff, 0xe8, 0x80);
+    for (int i = 0; i < entry_count; ++i) {
+        sdtx_origin(entries[i].tx / cell, entries[i].ty / cell);
+        sdtx_home();
+        sdtx_printf("%s", entries[i].name);
+    }
+    sdtx_font(0);
 }

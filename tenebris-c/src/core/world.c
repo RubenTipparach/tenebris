@@ -28,6 +28,7 @@ void world_destroy(world_t* w) {
     goldberg_destroy(w->grid);
     free(w->blocks);
     free(w->dirty);
+    free(w->saved);
     free(w);
 }
 
@@ -100,7 +101,8 @@ static void gen_tile(world_t* w, int tile_idx) {
         prof.surface_m > 1.0f && prof.surface_m < 22.0f)
     {
         block_t top = (block_t)column[surface_idx];
-        const bool is_grass = (top == BLOCK_GRASS) || (top == BLOCK_SEQ_GRASS);
+        const bool is_sequoia_grass = (top == BLOCK_SEQ_GRASS);
+        const bool is_grass = (top == BLOCK_GRASS) || is_sequoia_grass;
         if (is_grass) {
             uint32_t h = tile_hash(w->body->seed, tile_idx, 0xA1B2C3D4u);
             /* ~5% of qualifying tiles get a tree. */
@@ -115,10 +117,15 @@ static void gen_tile(world_t* w, int tile_idx) {
                 for (int d = surface_idx + 1; d <= trunk_top && d < WORLD_MAX_DEPTH; ++d) {
                     column[d] = (uint8_t)BLOCK_WOOD;
                 }
-                /* Leafy crown spread vertically over the trunk top. */
+                /* Leafy crown spread vertically over the trunk top.
+                 * Sequoia uses its own red-tinted leaf block so the
+                 * biome reads as alien even before you land. */
+                const uint8_t leaf_block = is_sequoia_grass
+                                              ? (uint8_t)BLOCK_SEQ_LEAVES
+                                              : (uint8_t)BLOCK_LEAVES;
                 for (int d = leaf_lo; d <= leaf_hi; ++d) {
                     if (d <= surface_idx) continue;
-                    if (column[d] == BLOCK_AIR) column[d] = (uint8_t)BLOCK_LEAVES;
+                    if (column[d] == BLOCK_AIR) column[d] = leaf_block;
                 }
             }
         }
@@ -171,6 +178,22 @@ bool world_tile_dirty(const world_t* w, int tile) {
 void world_tile_clear_dirty(world_t* w, int tile) {
     if (tile < 0 || tile >= w->tile_count) return;
     w->dirty[tile >> 3] &= (uint8_t)~(1 << (tile & 7));
+}
+
+bool world_tile_saved(const world_t* w, int tile) {
+    if (!w || !w->saved) return false;
+    if (tile < 0 || tile >= w->tile_count) return false;
+    return (w->saved[tile >> 3] & (1 << (tile & 7))) != 0;
+}
+
+void world_tile_mark_saved(world_t* w, int tile) {
+    if (!w || tile < 0 || tile >= w->tile_count) return;
+    if (!w->saved) {
+        w->saved_bytes = (w->tile_count + 7) / 8;
+        w->saved = (uint8_t*)calloc((size_t)w->saved_bytes, 1);
+        if (!w->saved) { w->saved_bytes = 0; return; }
+    }
+    w->saved[tile >> 3] |= (uint8_t)(1 << (tile & 7));
 }
 
 void world_dirty_in_range(world_t* w, vec3_t world_pos, float radius_m) {

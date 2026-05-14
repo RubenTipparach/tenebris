@@ -553,7 +553,11 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
         if (aL > 1e-6) {
             accel = dvec3_scale(accel, 1.0 / aL);
             double thrust = (double)L->space_thrust;
-            if (in->phys.sprint) thrust *= 2.0;
+            /* Jetpack-in-space boost: sprint quadruples thrust so the
+             * "jetpack" feel reads as a real burner-mode burst rather
+             * than a tiny step up. Drag stays unchanged so the player
+             * still coasts to a stop on release. */
+            if (in->phys.sprint) thrust *= 4.0;
             p->velocity = dvec3_add(p->velocity,
                                     dvec3_scale(accel, thrust * (double)dt));
         }

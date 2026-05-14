@@ -1,7 +1,39 @@
 #include "client/menu.h"
+#include "client/client_kv.h"
+#include "client/mobile_ui.h"
 #include "client/net_client.h"
 #include "client/persistence.h"
 #include "client/profile.h"
+
+/* Trace logging. Was used to chase the menu-text-bleed bug (root
+ * cause: multiple sdtx_draw calls per frame trip a once-per-frame
+ * upload guard inside sokol_debugtext, so later draws read stale
+ * GPU memory). Disabled now that the fix landed; flip the flag
+ * to 1 to bring the timeline back if a new menu issue appears. */
+#define MENU_TRACE_ENABLED 0
+#if MENU_TRACE_ENABLED
+#  define MENU_TRACE(fmt, ...) printf("[menu] " fmt "\n", ##__VA_ARGS__)
+#else
+#  define MENU_TRACE(...) ((void)0)
+#endif
+
+static const char* state_name(game_state_t s) {
+    switch (s) {
+        case GAME_PROFILE_SELECT:      return "PROFILE_SELECT";
+        case GAME_PROFILE_NAME_INPUT:  return "PROFILE_NAME_INPUT";
+        case GAME_MAIN_MENU:           return "MAIN_MENU";
+        case GAME_SP_WORLD_LIST:       return "SP_WORLD_LIST";
+        case GAME_SP_NEW_WORLD_INPUT:  return "SP_NEW_WORLD_INPUT";
+        case GAME_MP_SUBMENU:          return "MP_SUBMENU";
+        case GAME_MP_CLOUD_SUBMENU:    return "MP_CLOUD_SUBMENU";
+        case GAME_MP_JOIN_INPUT:       return "MP_JOIN_INPUT";
+        case GAME_MP_URL_PROMPT:       return "MP_URL_PROMPT";
+        case GAME_IN_GAME_SP:          return "IN_GAME_SP";
+        case GAME_IN_GAME_MP:          return "IN_GAME_MP";
+        case GAME_MP_CONNECT_ERROR:    return "MP_CONNECT_ERROR";
+    }
+    return "?";
+}
 
 #include "sokol_gfx.h"
 #include "sokol_app.h"
@@ -118,6 +150,36 @@ EM_JS(void, menu_js_blur_text_input, (void), {
     var inp = document.getElementById('tenebris-text-input-shim');
     if (inp) inp.blur();
 });
+
+/* Builds a share URL from the current page origin + path with the
+ * room code in `?invite=`, then dispatches via the Web Share API on
+ * mobile / supported browsers, or falls back to writing the URL to
+ * the clipboard. Returns 1 = shared, 2 = copied to clipboard,
+ * 0 = neither API available. Both navigator.share and
+ * navigator.clipboard need user-gesture context; this is always
+ * called from a touch / click handler so that's fine. */
+EM_JS(int, menu_js_share_invite, (const char* room_code), {
+    var c = UTF8ToString(room_code);
+    if (!c) c = "";
+    try {
+        var url = window.location.origin + window.location.pathname
+                + '?invite=' + encodeURIComponent(c);
+        if (typeof navigator !== 'undefined' && navigator.share) {
+            navigator.share({
+                title: 'Tenebris',
+                text:  'Join my Tenebris room',
+                url:   url
+            }).catch(function(){});
+            return 1;
+        }
+        if (typeof navigator !== 'undefined'
+            && navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(url).catch(function(){});
+            return 2;
+        }
+    } catch (_e) { }
+    return 0;
+});
 #else
 static char* menu_js_new_room_code(void) {
     static char fake[7] = "AAAAAA";
@@ -127,6 +189,7 @@ static char* menu_js_new_room_code(void) {
 }
 static void menu_js_focus_text_input(void) { }
 static void menu_js_blur_text_input(void)  { }
+static int  menu_js_share_invite(const char* room_code) { (void)room_code; return 0; }
 #endif
 
 /* ------------------------------------------------------------------ */
@@ -148,6 +211,14 @@ typedef struct {
 #define LIST_BTN_W   360.0f
 #define LIST_BTN_H    36.0f
 #define LIST_BTN_GAP   8.0f
+
+/* Recent-room history shown on the MP cloud submenu. Max stored on
+ * disk is generous; the visible window is smaller because the panel
+ * has limited vertical space between the JOIN button and BACK. */
+#define ROOM_HISTORY_MAX         8
+#define ROOM_HISTORY_VISIBLE     4
+#define ROOM_CODE_LEN            6
+#define ROOM_HISTORY_KV_KEY      "tenebris-c:recent-rooms"
 
 static struct {
     game_state_t state;
@@ -198,10 +269,71 @@ static struct {
     /* Room code for the active MP session. Empty = public room. */
     char room_code[9];
 
+    /* MRU list of rooms the player has hosted / joined. Loaded from
+     * client_kv on entering the cloud submenu, updated on every
+     * successful connect (menu-driven or URL bypass). */
+    char recent_rooms[ROOM_HISTORY_MAX][ROOM_CODE_LEN + 1];
+    int  recent_room_count;
+    menu_button_t btn_recent_room[ROOM_HISTORY_MAX];
+
     /* Connection-failure popup. Set on the GAME_IN_GAME_MP ->
      * GAME_MP_CONNECT_ERROR transition by menu_tick; cleared on
      * dismiss. Buffer matches net_client_error_message's max. */
     char error_msg[96];
+
+    /* Pending deep-link invite waiting for a profile to exist before
+     * we connect. menu_set_pending_invite fills these from
+     * ?invite= / ?room= + ?server= at boot, and the profile-picker
+     * exit path drains them via consume_pending_invite. Empty room
+     * means no pending invite. */
+    char pending_invite_room[9];
+    char pending_invite_server[256];
+
+    /* In-game pause overlay (Escape during gameplay). The world keeps
+     * rendering underneath - menu_state() stays on the gameplay
+     * state - so this is a side-channel visibility flag rather than
+     * a new game_state_t entry. */
+    bool          pause_visible;
+    menu_button_t btn_pause_resume;
+    menu_button_t btn_pause_quit;
+    menu_button_t btn_pause_invite;
+    menu_button_t btn_pause_options;  /* unused but kept to keep the struct symmetric across builds */
+    /* Toast under the INVITE FRIENDS button after a successful share.
+     * pause_share_msg_until is a sokol_time stamp; the label fades
+     * once stm_now() passes it. share_result is 1=shared via Web
+     * Share API, 2=copied to clipboard, 3=failure / no API. */
+    int           pause_share_result;
+    double        pause_share_msg_until;
+    /* True when the pause panel was opened automatically by a
+     * mid-session disconnect rather than by the player pressing
+     * Esc. Lets menu_tick auto-close the panel when the link is
+     * restored - the manual-Esc case stays open until the player
+     * clicks RETURN TO GAME themselves. */
+    bool          pause_auto_disconnect;
+
+    /* MP auto-reconnect state. Populated by connect_to_room /
+     * consume_pending_invite so menu_tick can re-call net_client
+     * with the same parameters when the socket drops mid-session.
+     * deadline_t == 0 means "not currently retrying"; non-zero is
+     * an stm_sec timestamp past which we promote to the disconnected
+     * popup. next_try_t paces attempts at ~5 s apart.
+     *
+     * Existing M.room_code already holds the room, but we keep our
+     * own copy so a manual disconnect / mode switch doesn't
+     * accidentally feed the wrong room into a retry. */
+    char          reconnect_url  [128];
+    char          reconnect_token[40];
+    char          reconnect_name [40];
+    char          reconnect_room [9];
+    double        reconnect_deadline_t;
+    double        reconnect_next_try_t;
+    int           reconnect_attempts;
+
+    /* If true, the profile picker / name input is being shown as a
+     * gate to MP rather than as the boot screen. The next successful
+     * enter_main_menu_with should route to GAME_MP_SUBMENU instead
+     * of stopping at the main menu. */
+    bool          pending_mp_after_profile;
 } M;
 
 /* ------------------------------------------------------------------ */
@@ -320,6 +452,20 @@ static void layout_mp_cloud_submenu(float w, float h) {
                  cx - MAIN_BTN_W * 0.5f,
                  cy + MAIN_BTN_GAP * 0.5f,
                  MAIN_BTN_W, MAIN_BTN_H, "JOIN");
+    /* Recent-room list under the JOIN button. Leave room above the
+     * BACK button at h*0.5+220; with LIST_BTN_H=36 + GAP=8 that's
+     * ~4 rows plus a heading line. */
+    float ry = cy + MAIN_BTN_H + MAIN_BTN_GAP * 0.5f + 28.0f;
+    for (int i = 0; i < ROOM_HISTORY_MAX; ++i) {
+        if (i < M.recent_room_count && i < ROOM_HISTORY_VISIBLE) {
+            set_button(&M.btn_recent_room[i],
+                         cx - LIST_BTN_W * 0.5f, ry,
+                         LIST_BTN_W, LIST_BTN_H, M.recent_rooms[i]);
+            ry += LIST_BTN_H + LIST_BTN_GAP;
+        } else {
+            hide_button(&M.btn_recent_room[i]);
+        }
+    }
     set_button(&M.btn_back,
                  cx - 120.0f, h * 0.5f + 220.0f, 240.0f, LIST_BTN_H, "BACK");
     hide_button(&M.btn_sp);
@@ -449,6 +595,32 @@ static void layout_profile_select(float w, float h) {
 }
 
 static void layout(float w, float h) {
+    /* Recent-room buttons only appear on GAME_MP_CLOUD_SUBMENU; default
+     * them to hidden so they don't bleed onto any other screen. The
+     * cloud-submenu layout re-sets the visible subset after this. */
+    for (int i = 0; i < ROOM_HISTORY_MAX; ++i) hide_button(&M.btn_recent_room[i]);
+
+    /* Bulk-hide every named button up front. Each per-state
+     * layout_X() function below only has to SET the buttons it
+     * actually uses; it never has to remember to hide a stranger
+     * from a different screen. This is the single fence keeping
+     * "HOST" / "JOIN" / "+ NEW WORLD" / etc. from bleeding through
+     * when the state machine transitions - the previous root cause
+     * of menu UI surviving into gameplay was a hide_button() that
+     * one screen forgot to call. */
+    hide_button(&M.btn_sp);
+    hide_button(&M.btn_mp);
+    hide_button(&M.btn_back);
+    hide_button(&M.btn_active_profile);
+    hide_button(&M.btn_new_world);
+    for (int i = 0; i < PERSISTENCE_MAX_WORLDS; ++i) hide_button(&M.btn_world[i]);
+    hide_button(&M.btn_new_profile);
+    for (int i = 0; i < PROFILE_MAX; ++i) hide_button(&M.btn_profile[i]);
+    hide_button(&M.btn_self_host);
+    hide_button(&M.btn_cloud_host);
+    hide_button(&M.btn_host);
+    hide_button(&M.btn_join);
+
     switch (M.state) {
         case GAME_PROFILE_SELECT:
             layout_profile_select(w, h); break;
@@ -468,6 +640,24 @@ static void layout(float w, float h) {
         case GAME_MP_CONNECT_ERROR:
             layout_connect_error(w, h); break;
         default:
+            /* GAME_IN_GAME_SP / GAME_IN_GAME_MP land here. menu_draw
+             * early-returns in those states so geometry never draws,
+             * but hide every menu button anyway so any future overlay
+             * that re-uses these structs can't render a stale "+ NEW
+             * WORLD" / "+ NEW PROFILE" / world-list row. Defense in
+             * depth against UI bleed when gameplay starts. */
+            hide_button(&M.btn_sp);
+            hide_button(&M.btn_mp);
+            hide_button(&M.btn_back);
+            hide_button(&M.btn_active_profile);
+            hide_button(&M.btn_new_world);
+            for (int i = 0; i < PERSISTENCE_MAX_WORLDS; ++i) hide_button(&M.btn_world[i]);
+            hide_button(&M.btn_new_profile);
+            for (int i = 0; i < PROFILE_MAX; ++i) hide_button(&M.btn_profile[i]);
+            hide_button(&M.btn_self_host);
+            hide_button(&M.btn_cloud_host);
+            hide_button(&M.btn_host);
+            hide_button(&M.btn_join);
             break;
     }
 }
@@ -516,6 +706,83 @@ static void draw_text_centered(const char* str, float center_x,
     sdtx_font(0);     /* restore HUD font for any non-menu printers */
 }
 
+/* Centred word-wrap. Splits `str` at spaces so no rendered line is
+ * wider than `max_width_px`, then emits each line via
+ * draw_text_centered. Long words that don't fit are hard-broken
+ * at the column limit so the loop always terminates. Returns the
+ * number of lines drawn so the caller can advance the y cursor.
+ * Line pitch is `8 * scale` px (one glyph cell). */
+static int draw_text_centered_wrapped(const char* str, float center_x,
+                                        float screen_y, float scale,
+                                        float max_width_px,
+                                        uint8_t r, uint8_t g, uint8_t b) {
+    if (!str || !*str) return 0;
+    const float cell_px = 8.0f * scale;
+    int max_chars = (int)(max_width_px / cell_px);
+    if (max_chars < 1) max_chars = 1;
+    char line[256];
+    int  line_len = 0;
+    int  lines_drawn = 0;
+    const float line_pitch = cell_px;
+    size_t i = 0;
+    while (str[i]) {
+        while (str[i] == ' ') ++i;
+        if (!str[i]) break;
+        size_t wstart = i;
+        while (str[i] && str[i] != ' ') ++i;
+        int wlen = (int)(i - wstart);
+        /* Word longer than the line - hard-break it. */
+        if (wlen > max_chars) {
+            if (line_len > 0) {
+                line[line_len] = 0;
+                draw_text_centered(line, center_x,
+                                      screen_y + line_pitch * (float)lines_drawn,
+                                      scale, r, g, b);
+                ++lines_drawn;
+                line_len = 0;
+            }
+            int consumed = 0;
+            while (consumed < wlen) {
+                int take = wlen - consumed;
+                if (take > max_chars) take = max_chars;
+                memcpy(line, str + wstart + consumed, (size_t)take);
+                line[take] = 0;
+                draw_text_centered(line, center_x,
+                                      screen_y + line_pitch * (float)lines_drawn,
+                                      scale, r, g, b);
+                ++lines_drawn;
+                consumed += take;
+            }
+            continue;
+        }
+        int needed = wlen + (line_len > 0 ? 1 : 0);
+        if (line_len + needed > max_chars) {
+            line[line_len] = 0;
+            draw_text_centered(line, center_x,
+                                  screen_y + line_pitch * (float)lines_drawn,
+                                  scale, r, g, b);
+            ++lines_drawn;
+            line_len = 0;
+        }
+        if (line_len > 0) line[line_len++] = ' ';
+        if (line_len + wlen >= (int)sizeof line - 1) {
+            /* Defensive guard - shouldn't trigger for any realistic
+             * max_chars (line[256], cell_px>=8 means <=32-char lines). */
+            wlen = (int)sizeof line - 2 - line_len;
+        }
+        memcpy(line + line_len, str + wstart, (size_t)wlen);
+        line_len += wlen;
+    }
+    if (line_len > 0) {
+        line[line_len] = 0;
+        draw_text_centered(line, center_x,
+                              screen_y + line_pitch * (float)lines_drawn,
+                              scale, r, g, b);
+        ++lines_drawn;
+    }
+    return lines_drawn;
+}
+
 static void draw_text_left(const char* str, float screen_x,
                              float screen_y, float scale,
                              uint8_t r, uint8_t g, uint8_t b) {
@@ -545,6 +812,17 @@ static void draw_button(const menu_button_t* b) {
 
 void menu_draw(int screen_w, int screen_h) {
     if (!menu_is_overlay()) return;
+    /* Throttle to 1Hz so console isn't flooded. */
+    {
+        static double s_last_log = 0.0;
+        double now = stm_sec(stm_now());
+        if (now - s_last_log > 1.0) {
+            s_last_log = now;
+            MENU_TRACE("menu_draw: state=%s pause=%d w=%d h=%d",
+                       state_name(M.state), (int)M.pause_visible,
+                       screen_w, screen_h);
+        }
+    }
 
     float w = (float)screen_w;
     float h = (float)screen_h;
@@ -574,6 +852,24 @@ void menu_draw(int screen_w, int screen_h) {
     /* Backdrop covers the entire screen, dim. */
     quad(0, 0, w, h, 0.03f, 0.05f, 0.10f, 0.85f);
 
+    /* Container panel behind every menu state's content. Sits the
+     * buttons + title + helper text on a single readable surface
+     * instead of letting them float on the dim sky - which was the
+     * "needs a box behind it" complaint. Sized generously so the
+     * world picker / profile picker / cloud submenu all fit. Slight
+     * border (matched to draw_button's outline) ties everything
+     * together. Drawn before the buttons so it sits underneath. */
+    if (M.state != GAME_PROFILE_SELECT
+        && M.state != GAME_MP_URL_PROMPT
+        && M.state != GAME_MP_CONNECT_ERROR) {
+        const float panel_w = 520.0f;
+        const float panel_h = 540.0f;
+        const float px = w * 0.5f - panel_w * 0.5f;
+        const float py = h * 0.5f - panel_h * 0.5f;
+        quad(px, py, panel_w, panel_h, 0.10f, 0.12f, 0.18f, 0.95f);
+        border(px, py, panel_w, panel_h, 2.0f, 0.85f, 0.90f, 1.0f, 1.0f);
+    }
+
     /* Geometry */
     draw_button(&M.btn_sp);
     draw_button(&M.btn_mp);
@@ -586,6 +882,7 @@ void menu_draw(int screen_w, int screen_h) {
     for (int i = 0; i < PROFILE_MAX; ++i) draw_button(&M.btn_profile[i]);
     draw_button(&M.btn_new_world);
     for (int i = 0; i < PERSISTENCE_MAX_WORLDS; ++i) draw_button(&M.btn_world[i]);
+    for (int i = 0; i < ROOM_HISTORY_MAX; ++i) draw_button(&M.btn_recent_room[i]);
     draw_button(&M.btn_back);
 
     if (M.state == GAME_MP_URL_PROMPT) {
@@ -644,11 +941,9 @@ void menu_draw(int screen_w, int screen_h) {
         case GAME_PROFILE_SELECT:
             draw_text_centered("WHO ARE YOU?", cx, h * 0.5f - 200.0f, 3.0f,
                                  0xff, 0xff, 0xff);
-            if (M.profile_count == 0) {
-                draw_text_centered("no profiles yet  -  click + new profile",
-                                     cx, h * 0.5f + 40.0f, 1.5f,
-                                     0xa0, 0xb0, 0xc8);
-            }
+            /* No empty-state hint: "+ NEW PROFILE" is the first
+             * button in the picker. Floating grey text below it
+             * reads as junk. */
             break;
         case GAME_MAIN_MENU:
         case GAME_MP_URL_PROMPT:
@@ -660,46 +955,65 @@ void menu_draw(int screen_w, int screen_h) {
         case GAME_SP_WORLD_LIST:
             draw_text_centered("SELECT WORLD", cx, h * 0.5f - 200.0f, 3.0f,
                                  0xff, 0xff, 0xff);
-            if (M.world_count == 0) {
-                draw_text_centered("no saves yet  -  click + new world",
-                                     cx, h * 0.5f + 40.0f, 1.5f,
-                                     0xa0, 0xb0, 0xc8);
-            }
+            /* No empty-state hint: "+ NEW WORLD" is the first button
+             * in the list and reads as the obvious next click. A
+             * floating "click + new world" line above it was
+             * confusable as stray UI. */
             break;
         case GAME_MP_SUBMENU:
             draw_text_centered("MULTIPLAYER", cx, h * 0.5f - 200.0f, 3.0f,
                                  0xff, 0xff, 0xff);
-            draw_text_centered("self hosted = run the server on your machine (coming soon)",
+            /* Shortened hint lines so they fit on narrow screens.
+             * The old "...run the server on your machine (coming
+             * soon)" + "...play on the shared fly.io server" pair
+             * overflowed past the panel edge on phones and ended up
+             * spelling out across multiple frames as the user saw
+             * stale fragments. Keep the explanation tight. */
+            draw_text_centered("self hosted = your machine (coming soon)",
                                  cx, h * 0.5f + 180.0f, 1.0f,
                                  0x70, 0x78, 0x88);
-            draw_text_centered("cloud hosted = play on the shared fly.io server",
+            draw_text_centered("cloud hosted = shared fly.io server",
                                  cx, h * 0.5f + 196.0f, 1.0f,
                                  0xa0, 0xb0, 0xc8);
             break;
         case GAME_MP_CLOUD_SUBMENU:
             draw_text_centered("CLOUD HOSTED", cx, h * 0.5f - 200.0f, 3.0f,
                                  0xff, 0xff, 0xff);
-            draw_text_centered("host = open a new private room (you get a code)",
-                                 cx, h * 0.5f + 180.0f, 1.0f,
-                                 0xa0, 0xb0, 0xc8);
-            draw_text_centered("join = enter a friend's 6-char code",
-                                 cx, h * 0.5f + 196.0f, 1.0f,
-                                 0xa0, 0xb0, 0xc8);
+            if (M.recent_room_count > 0) {
+                /* Heading sits just above the first recent-room button.
+                 * Y matches the offset used in layout_mp_cloud_submenu. */
+                float ry_heading = h * 0.5f
+                                 + MAIN_BTN_H + MAIN_BTN_GAP * 0.5f + 8.0f;
+                draw_text_centered("RECENT ROOMS", cx, ry_heading, 1.0f,
+                                     0xa0, 0xb0, 0xc8);
+            }
+            /* No empty-state hint when there are no recent rooms - the
+             * HOST / JOIN buttons are self-explanatory and a floating
+             * line of grey text in the middle of the panel reads as
+             * stray junk to first-time players. */
             break;
         case GAME_MP_CONNECT_ERROR: {
             /* Geometry was already flushed above. Just the title /
              * message text here; the BACK button label is rendered by
              * the generic button-label loop further down. Panel
-             * coordinates mirror the geometry block — keep in sync. */
+             * coordinates mirror the geometry block — keep in sync.
+             * The kick text ('Version mismatch ... Refresh: Ctrl+Shift+R')
+             * runs longer than the panel can hold at scale 1.5, so
+             * draw_text_centered_wrapped breaks it across lines on
+             * word boundaries instead of letting it bleed past the
+             * border. */
+            const float panel_w = 480.0f;
             const float panel_h = 160.0f;
             const float py = h * 0.5f - panel_h - 40.0f;
+            const float wrap_budget = panel_w - 32.0f;   /* 16 px pad each side */
             draw_text_centered("CONNECTION FAILED",
                                  cx, py + 28.0f, 2.5f,
                                  0xff, 0xa0, 0xa0);
             if (M.error_msg[0]) {
-                draw_text_centered(M.error_msg,
-                                     cx, py + 84.0f, 1.5f,
-                                     0xff, 0xff, 0xff);
+                draw_text_centered_wrapped(M.error_msg,
+                                             cx, py + 84.0f, 1.5f,
+                                             wrap_budget,
+                                             0xff, 0xff, 0xff);
             }
             break;
         }
@@ -794,6 +1108,13 @@ void menu_draw(int screen_w, int screen_h) {
         float by = b->y + (b->h - 8.0f * 1.5f) * 0.5f;
         draw_text_left(b->label, bx, by, 1.5f, 0xff, 0xff, 0xff);
     }
+    for (int i = 0; i < ROOM_HISTORY_MAX; ++i) {
+        const menu_button_t* b = &M.btn_recent_room[i];
+        if (!b->visible) continue;
+        float bx = b->x + b->w * 0.5f;
+        float by = b->y + (b->h - 8.0f * 1.5f) * 0.5f;
+        draw_text_centered(b->label, bx, by, 1.5f, 0xff, 0xff, 0xff);
+    }
     if (M.btn_new_profile.visible) {
         float bx = M.btn_new_profile.x + 20.0f;
         float by = M.btn_new_profile.y + (M.btn_new_profile.h - 8.0f * 1.5f) * 0.5f;
@@ -817,6 +1138,13 @@ void menu_draw(int screen_w, int screen_h) {
                              cx, h * 0.5f + 170.0f, 2.0f,
                              0xff, 0xd0, 0x60);
     }
+
+    /* Single sdtx_draw happens in main_web (gameplay path uses the
+     * end-of-frame flush; menu path uses the one right after this
+     * call returns). Calling sdtx_draw twice per frame triggers the
+     * once-per-frame sg_update_buffer guard inside sokol_debugtext
+     * and leaves later text reads pointing at stale GPU memory -
+     * which was producing the menu UI bleed into gameplay. */
 }
 
 /* ------------------------------------------------------------------ */
@@ -861,24 +1189,135 @@ static void start_sp_new_world(void) {
  * bypass branch in main_web.c's init(). */
 #define DEFAULT_MP_SERVER_URL "wss://tenebris-c.fly.dev/"
 
-static void connect_to_room(const char* room_code) {
-    /* Send active profile + chosen room to the server. */
-    profile_t active;
-    const char* tok  = NULL;
-    const char* name = NULL;
-    if (profile_get_active(&active)) {
-        tok  = active.token;
-        name = active.name;
+/* True if `s` is a syntactically valid 6-char uppercase-alphanumeric
+ * room code. Mirrors input_accepts_char for GAME_MP_JOIN_INPUT plus
+ * the length check. Used to filter stale / garbage entries when
+ * reading back the persisted history. */
+static bool room_code_is_valid(const char* s) {
+    if (!s) return false;
+    int len = (int)strlen(s);
+    if (len != ROOM_CODE_LEN) return false;
+    for (int i = 0; i < len; ++i) {
+        char c = s[i];
+        bool ok = (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
+        if (!ok) return false;
     }
+    return true;
+}
+
+/* Refresh M.recent_rooms from client_kv. The on-disk format is one
+ * code per line, MRU first. Invalid / duplicate / over-long entries
+ * are dropped silently so a corrupted localStorage key doesn't break
+ * the menu. */
+static void recent_rooms_load(void) {
+    M.recent_room_count = 0;
+    char* csv = client_kv_get(ROOM_HISTORY_KV_KEY);
+    if (!csv) return;
+    char* p = csv;
+    while (*p && M.recent_room_count < ROOM_HISTORY_MAX) {
+        char* nl = strchr(p, '\n');
+        size_t n = nl ? (size_t)(nl - p) : strlen(p);
+        if (n == ROOM_CODE_LEN) {
+            char tmp[ROOM_CODE_LEN + 1];
+            memcpy(tmp, p, n);
+            tmp[n] = 0;
+            bool dup = false;
+            for (int i = 0; i < M.recent_room_count; ++i) {
+                if (strcmp(M.recent_rooms[i], tmp) == 0) { dup = true; break; }
+            }
+            if (!dup && room_code_is_valid(tmp)) {
+                memcpy(M.recent_rooms[M.recent_room_count], tmp, ROOM_CODE_LEN + 1);
+                ++M.recent_room_count;
+            }
+        }
+        if (!nl) break;
+        p = nl + 1;
+    }
+    free(csv);
+}
+
+/* Write M.recent_rooms back to client_kv in MRU-first order. */
+static void recent_rooms_save(void) {
+    /* Each line is 6 chars + newline; +1 null. */
+    char buf[ROOM_HISTORY_MAX * (ROOM_CODE_LEN + 1) + 1];
+    int off = 0;
+    for (int i = 0; i < M.recent_room_count; ++i) {
+        memcpy(buf + off, M.recent_rooms[i], ROOM_CODE_LEN);
+        off += ROOM_CODE_LEN;
+        if (i + 1 < M.recent_room_count) buf[off++] = '\n';
+    }
+    buf[off] = 0;
+    if (off == 0) client_kv_remove(ROOM_HISTORY_KV_KEY);
+    else          client_kv_set(ROOM_HISTORY_KV_KEY, buf);
+}
+
+void menu_record_recent_room(const char* room_code) {
+    if (!room_code_is_valid(room_code)) return;
+    /* Re-read so a record from main_web's URL-bypass path doesn't
+     * stomp a list mutated by a different session / tab. */
+    recent_rooms_load();
+    /* Drop any existing copy so it moves to the front. */
+    int kept = 0;
+    for (int i = 0; i < M.recent_room_count; ++i) {
+        if (strcmp(M.recent_rooms[i], room_code) == 0) continue;
+        if (kept != i) memcpy(M.recent_rooms[kept], M.recent_rooms[i], ROOM_CODE_LEN + 1);
+        ++kept;
+    }
+    M.recent_room_count = kept;
+    /* Shift right to make room at index 0. */
+    int n = M.recent_room_count;
+    if (n > ROOM_HISTORY_MAX - 1) n = ROOM_HISTORY_MAX - 1;
+    for (int i = n; i > 0; --i) {
+        memcpy(M.recent_rooms[i], M.recent_rooms[i - 1], ROOM_CODE_LEN + 1);
+    }
+    memcpy(M.recent_rooms[0], room_code, ROOM_CODE_LEN);
+    M.recent_rooms[0][ROOM_CODE_LEN] = 0;
+    M.recent_room_count = (n < ROOM_HISTORY_MAX - 1) ? n + 1 : ROOM_HISTORY_MAX;
+    recent_rooms_save();
+}
+
+static void connect_to_room(const char* room_code) {
+    MENU_TRACE("connect_to_room: '%s' from state=%s",
+               room_code ? room_code : "(null)", state_name(M.state));
+    /* MP requires a profile - the server uses the token to key
+     * persisted poses and the name to label nameplates. If we got
+     * here without one, the profile-gate in start_multiplayer was
+     * bypassed; bounce back to the picker rather than logging in
+     * as guest-N. */
+    profile_t active;
+    if (!profile_get_active(&active)) {
+        M.pending_mp_after_profile = true;
+        M.profile_count = profile_list(M.profiles, PROFILE_MAX);
+        M.state = (M.profile_count > 0)
+                    ? GAME_PROFILE_SELECT
+                    : GAME_PROFILE_NAME_INPUT;
+        MENU_TRACE("connect_to_room blocked: no active profile, state -> %s",
+                   state_name(M.state));
+        return;
+    }
+    const char* tok  = active.token;
+    const char* name = active.name;
     net_client_set_profile(tok, name, room_code ? room_code : "");
     snprintf(M.room_code, sizeof M.room_code, "%s",
              room_code ? room_code : "");
     printf("[menu] MP: connect to %s (room='%s')\n",
            DEFAULT_MP_SERVER_URL,
            M.room_code[0] ? M.room_code : "(public)");
+    /* Stash the connect parameters so menu_tick can rebuild the
+     * session if the socket drops mid-game. Cleared when we leave
+     * MP (so a manual quit doesn't trigger phantom reconnects). */
+    snprintf(M.reconnect_url,   sizeof M.reconnect_url,   "%s", DEFAULT_MP_SERVER_URL);
+    snprintf(M.reconnect_token, sizeof M.reconnect_token, "%s", tok  ? tok  : "");
+    snprintf(M.reconnect_name,  sizeof M.reconnect_name,  "%s", name ? name : "");
+    snprintf(M.reconnect_room,  sizeof M.reconnect_room,  "%s", room_code ? room_code : "");
+    M.reconnect_deadline_t = 0;
+    M.reconnect_next_try_t = 0;
+    M.reconnect_attempts   = 0;
     net_client_connect(DEFAULT_MP_SERVER_URL);
+    if (room_code) menu_record_recent_room(room_code);
     M.active_world[0] = 0;     /* no SP save target while in MP */
     M.state = GAME_IN_GAME_MP;
+    MENU_TRACE("state -> IN_GAME_MP (via connect_to_room)");
 }
 
 /* Generate a fresh room code, connect to it. Cloud submenu's HOST
@@ -891,15 +1330,119 @@ static void start_host(void) {
 }
 
 static void start_multiplayer(void) {
+    /* MP requires a profile so the server can attribute saves +
+     * label nameplates with a real name. If the player hasn't
+     * picked / created one yet, gate the MP submenu behind the
+     * profile picker (or the name-input screen if there are no
+     * profiles to pick from). enter_main_menu_with will see the
+     * pending_mp_after_profile flag and route straight to
+     * GAME_MP_SUBMENU once the profile lands. */
+    profile_t active;
+    if (!profile_get_active(&active)) {
+        M.pending_mp_after_profile = true;
+        M.profile_count = profile_list(M.profiles, PROFILE_MAX);
+        if (M.profile_count > 0) {
+            M.state = GAME_PROFILE_SELECT;
+            MENU_TRACE("state -> PROFILE_SELECT (MP gate)");
+        } else {
+            M.input_buf[0] = 0;
+            M.input_len    = 0;
+            M.input_cursor_blink_start = stm_sec(stm_now());
+            M.state = GAME_PROFILE_NAME_INPUT;
+            MENU_TRACE("state -> PROFILE_NAME_INPUT (MP gate, no profiles)");
+        }
+        return;
+    }
     /* MP button drops to the self-host / cloud-host picker — the
      * actual connect happens after the user picks one. */
     M.state = GAME_MP_SUBMENU;
 }
 
+/* If a deep-link invite is waiting and we now have an active
+ * profile, jump straight into the room. Called from
+ * menu_set_pending_invite (boot path - skips the wizard when a
+ * profile already exists) and from enter_main_menu_with (after the
+ * player picks / creates a profile via the wizard). Idempotent: once
+ * consumed, the stored room is cleared so further profile swaps
+ * don't reconnect. */
+static void consume_pending_invite_if_ready(void) {
+    if (M.pending_invite_room[0] == 0) return;
+    profile_t active;
+    if (!profile_get_active(&active)) return;
+
+    const char* room   = M.pending_invite_room;
+    const char* server = M.pending_invite_server[0]
+                           ? M.pending_invite_server
+                           : DEFAULT_MP_SERVER_URL;
+
+    net_client_set_profile(active.token, active.name, room);
+    snprintf(M.room_code, sizeof M.room_code, "%s", room);
+    MENU_TRACE("consume_pending_invite: connect to %s (room='%s')", server, room);
+    snprintf(M.reconnect_url,   sizeof M.reconnect_url,   "%s", server);
+    snprintf(M.reconnect_token, sizeof M.reconnect_token, "%s", active.token);
+    snprintf(M.reconnect_name,  sizeof M.reconnect_name,  "%s", active.name);
+    snprintf(M.reconnect_room,  sizeof M.reconnect_room,  "%s", room);
+    M.reconnect_deadline_t = 0;
+    M.reconnect_next_try_t = 0;
+    M.reconnect_attempts   = 0;
+    net_client_connect(server);
+    menu_record_recent_room(room);
+    M.active_world[0] = 0;
+    M.state = GAME_IN_GAME_MP;
+    MENU_TRACE("state -> IN_GAME_MP (via invite)");
+
+    M.pending_invite_room[0]   = 0;
+    M.pending_invite_server[0] = 0;
+}
+
 static void enter_main_menu_with(const profile_t* p) {
     profile_set_active(p->token);
     M.state = GAME_MAIN_MENU;
-    printf("[menu] active profile = %s (%s)\n", p->name, p->token);
+    MENU_TRACE("state -> MAIN_MENU (profile %s / %s)", p->name, p->token);
+    /* A first-time visitor following an invite link lands on the
+     * profile picker, creates a profile, and gets dropped straight
+     * into the invited room here. No-op when no invite is pending. */
+    consume_pending_invite_if_ready();
+    /* If the player came in via the MP gate (clicked MULTIPLAYER
+     * without an active profile), continue to the MP submenu now
+     * that they have one. Invite-flow above already routes past
+     * the main menu; this is the manual MP-button case. */
+    if (M.pending_mp_after_profile && M.state == GAME_MAIN_MENU) {
+        M.pending_mp_after_profile = false;
+        M.state = GAME_MP_SUBMENU;
+        MENU_TRACE("state -> MP_SUBMENU (post-profile MP gate)");
+    } else {
+        M.pending_mp_after_profile = false;
+    }
+}
+
+void menu_set_pending_invite(const char* room_code, const char* server_url) {
+    if (!room_code || !room_code[0]) {
+        M.pending_invite_room[0]   = 0;
+        M.pending_invite_server[0] = 0;
+        return;
+    }
+    snprintf(M.pending_invite_room, sizeof M.pending_invite_room,
+             "%s", room_code);
+    if (server_url && server_url[0]) {
+        snprintf(M.pending_invite_server, sizeof M.pending_invite_server,
+                 "%s", server_url);
+    } else {
+        M.pending_invite_server[0] = 0;
+    }
+    /* Invite links ALWAYS route through the profile picker first
+     * (which menu_init already left as the boot state). Previously
+     * we short-circuited when an active profile was already set,
+     * but that hid the "which profile am I?" confirmation step -
+     * a returning user joining from a fresh tab could end up
+     * connected under whichever profile happened to be the last
+     * one used, and the server would key their saved pose to a
+     * profile they didn't mean to be playing as.
+     *
+     * enter_main_menu_with re-runs consume_pending_invite_if_ready
+     * once the player explicitly picks / creates a profile, so the
+     * invite room still auto-loads - just after one deliberate
+     * confirmation click. */
 }
 
 static void new_profile_flow(void) {
@@ -948,11 +1491,16 @@ static void on_click_world_list(float x, float y) {
     }
 }
 
+static void enter_mp_cloud_submenu(void) {
+    recent_rooms_load();
+    M.state = GAME_MP_CLOUD_SUBMENU;
+}
+
 static void on_click_mp_submenu(float x, float y) {
-    if (hit(&M.btn_back, x, y))       { M.state = GAME_MAIN_MENU;          return; }
+    if (hit(&M.btn_back, x, y))       { M.state = GAME_MAIN_MENU; return; }
     /* SELF HOSTED is set_button_disabled -> hit() returns false; click
      * falls through silently. CLOUD HOSTED enters its own submenu. */
-    if (hit(&M.btn_cloud_host, x, y)) { M.state = GAME_MP_CLOUD_SUBMENU;   return; }
+    if (hit(&M.btn_cloud_host, x, y)) { enter_mp_cloud_submenu();  return; }
 }
 
 static void on_click_mp_cloud_submenu(float x, float y) {
@@ -965,6 +1513,12 @@ static void on_click_mp_cloud_submenu(float x, float y) {
         M.state = GAME_MP_JOIN_INPUT;
         menu_js_focus_text_input();
         return;
+    }
+    for (int i = 0; i < ROOM_HISTORY_MAX; ++i) {
+        if (hit(&M.btn_recent_room[i], x, y)) {
+            connect_to_room(M.recent_rooms[i]);
+            return;
+        }
     }
 }
 
@@ -1198,22 +1752,580 @@ bool menu_is_overlay(void) {
         || M.state == GAME_MP_CONNECT_ERROR;
 }
 
+/* Retry budget: 5 minutes total, ~5 s between attempts. The first
+ * retry fires near-immediately so a transient hiccup doesn't show
+ * the CONNECTING overlay for a full pacing interval. */
+#define MP_RECONNECT_TOTAL_S     300.0
+#define MP_RECONNECT_INTERVAL_S  5.0
+
+/* Forward decl: pause-visibility setter lives below this section. */
+static void set_pause_visible(bool v, const char* who);
+
+static void launch_reconnect_attempt(void) {
+    if (!M.reconnect_url[0]) return;
+    M.reconnect_attempts++;
+    printf("[menu] MP reconnect attempt %d -> %s (room='%s')\n",
+           M.reconnect_attempts, M.reconnect_url,
+           M.reconnect_room[0] ? M.reconnect_room : "(public)");
+    /* set_profile must come BEFORE connect - net_client_connect
+     * memsets its state, so the profile has to land after that. */
+    net_client_set_profile(M.reconnect_token, M.reconnect_name, M.reconnect_room);
+    net_client_connect(M.reconnect_url);
+}
+
 void menu_tick(void) {
-    /* Promote a dead MP socket into the modal error popup. We only
-     * watch from inside the in-game state — checking from menu
-     * screens would re-fire the popup the moment the user clicked
-     * BACK TO MENU (state is still ERROR until the next connect
-     * attempt overwrites it). */
-    if (M.state != GAME_IN_GAME_MP) return;
-    if (net_client_state() != NET_CLIENT_ERROR) return;
-    const char* msg = net_client_error_message();
-    snprintf(M.error_msg, sizeof M.error_msg, "%s",
-             msg ? msg : "connection failed");
-    M.state = GAME_MP_CONNECT_ERROR;
-    printf("[menu] MP connect error: %s\n", M.error_msg);
+    /* Only watch from inside the in-game state - checking from
+     * menu screens would re-fire the popup the moment the user
+     * clicked BACK TO MENU (state is still ERROR until the next
+     * connect attempt overwrites it). */
+    if (M.state != GAME_IN_GAME_MP) {
+        /* Leaving MP cancels any in-flight retry window and drops
+         * the stashed reconnect params so a stale URL doesn't get
+         * fired against a fresh session later. */
+        M.reconnect_deadline_t = 0;
+        M.reconnect_next_try_t = 0;
+        M.reconnect_url[0]     = 0;
+        return;
+    }
+    net_client_state_t ns = net_client_state();
+
+    /* Reconnect resolved successfully - clear the retry window. The
+     * one-time MP spawn snap already ran on the first WELCOME, so
+     * a successful reconnect leaves the player where they currently
+     * are (matches the 'don't teleport on temporary disconnect'
+     * rule). If we auto-opened the pause panel on the drop, dismiss
+     * it now so the player can keep playing without an extra click. */
+    if (ns == NET_CLIENT_READY && M.reconnect_deadline_t > 0.0) {
+        printf("[menu] MP reconnect succeeded after %d attempt(s)\n",
+               M.reconnect_attempts);
+        M.reconnect_deadline_t = 0;
+        M.reconnect_next_try_t = 0;
+        M.reconnect_attempts   = 0;
+        if (M.pause_auto_disconnect) {
+            set_pause_visible(false, "reconnect-auto-resume");
+            M.pause_auto_disconnect = false;
+        }
+        return;
+    }
+    if (ns != NET_CLIENT_ERROR) return;
+
+    /* Promote to the error popup if we have nothing to retry with
+     * (manual disconnect path, or the very first connect failed
+     * before reconnect_url got populated - shouldn't happen but
+     * keeps the surface symmetric). Same path for server-issued
+     * terminal kicks (version mismatch, etc) - those never resolve
+     * via retry, so jump straight to the popup with the kick text. */
+    if (!M.reconnect_url[0] || !net_client_can_retry()) {
+        const char* msg = net_client_error_message();
+        snprintf(M.error_msg, sizeof M.error_msg, "%s",
+                 msg ? msg : "connection failed");
+        M.state = GAME_MP_CONNECT_ERROR;
+        if (M.pause_visible && M.pause_auto_disconnect) {
+            set_pause_visible(false, "kick-no-retry");
+            M.pause_auto_disconnect = false;
+        }
+        M.reconnect_deadline_t = 0;
+        M.reconnect_next_try_t = 0;
+        printf("[menu] MP terminal error (no retry): %s\n", M.error_msg);
+        return;
+    }
+
+    double now = stm_sec(stm_now());
+    /* First time we observe ERROR in this session: open the retry
+     * window AND auto-open the pause panel so the reconnect status
+     * (and the disabled RETURN TO GAME button) is the only thing
+     * the player sees behind the dim backdrop. pause_auto_disconnect
+     * lets us close the panel without a click once the link is
+     * back. */
+    if (M.reconnect_deadline_t == 0.0) {
+        M.reconnect_deadline_t = now + MP_RECONNECT_TOTAL_S;
+        M.reconnect_next_try_t = now + 0.5;
+        M.reconnect_attempts   = 0;
+        if (!M.pause_visible) {
+            M.pause_auto_disconnect = true;
+            set_pause_visible(true, "auto-open-on-disconnect");
+        }
+        printf("[menu] MP link dropped, retrying for %.0fs\n",
+               MP_RECONNECT_TOTAL_S);
+        return;
+    }
+
+    /* Past the deadline -> give up and show the disconnected popup. */
+    if (now >= M.reconnect_deadline_t) {
+        snprintf(M.error_msg, sizeof M.error_msg,
+                 "DISCONNECTED FROM SERVER");
+        M.state = GAME_MP_CONNECT_ERROR;
+        M.reconnect_deadline_t = 0;
+        M.reconnect_next_try_t = 0;
+        printf("[menu] MP reconnect gave up after %d attempt(s)\n",
+               M.reconnect_attempts);
+        return;
+    }
+
+    /* Fire the next attempt if we're past the pacing gate. */
+    if (now >= M.reconnect_next_try_t) {
+        launch_reconnect_attempt();
+        M.reconnect_next_try_t = now + MP_RECONNECT_INTERVAL_S;
+    }
 }
 
 const char* menu_room_code(void) { return M.room_code; }
+
+/* ------------------------------------------------------------------ */
+/* In-game pause overlay                                                */
+/* ------------------------------------------------------------------ */
+
+bool menu_pause_active(void) { return M.pause_visible; }
+
+/* Wrap every pause_visible mutation so we can spot mystery writes -
+ * the trace showed pause being on without any pause_toggle log. */
+static void set_pause_visible(bool v, const char* who) {
+    if (M.pause_visible != v) {
+        MENU_TRACE("set_pause_visible: %d -> %d (from %s, state=%s)",
+                   (int)M.pause_visible, (int)v, who,
+                   state_name(M.state));
+    }
+    M.pause_visible = v;
+}
+
+void menu_pause_toggle(void) {
+    bool is_game = (M.state == GAME_IN_GAME_SP || M.state == GAME_IN_GAME_MP);
+    if (!is_game) {
+        MENU_TRACE("pause_toggle: ignored, state=%s (not in-game)",
+                   state_name(M.state));
+        set_pause_visible(false, "toggle:not-game");
+        return;
+    }
+    set_pause_visible(!M.pause_visible, "toggle");
+}
+
+static void layout_pause(float w, float h) {
+    /* Three vertical buttons centred on the screen. Order top-down:
+     * RETURN TO GAME, INVITE PLAYERS, QUIT TO MENU. */
+    float cx = w * 0.5f;
+    float cy = h * 0.5f;
+    set_button(&M.btn_pause_resume,
+                 cx - MAIN_BTN_W * 0.5f,
+                 cy - MAIN_BTN_H * 0.5f - (MAIN_BTN_H + MAIN_BTN_GAP),
+                 MAIN_BTN_W, MAIN_BTN_H, "RETURN TO GAME");
+    set_button(&M.btn_pause_invite,
+                 cx - MAIN_BTN_W * 0.5f,
+                 cy - MAIN_BTN_H * 0.5f,
+                 MAIN_BTN_W, MAIN_BTN_H, "INVITE PLAYERS");
+    set_button(&M.btn_pause_quit,
+                 cx - MAIN_BTN_W * 0.5f,
+                 cy - MAIN_BTN_H * 0.5f + (MAIN_BTN_H + MAIN_BTN_GAP),
+                 MAIN_BTN_W, MAIN_BTN_H, "QUIT TO MENU");
+    hide_button(&M.btn_pause_options);
+}
+
+/* Pause-panel layout in screen pixels. Computed once per draw and
+ * stashed so menu_pause_event can hit-test the same rectangles
+ * without recomputing. The sokol_gl draw path of the previous
+ * iteration of this panel was silently failing to reach the swap-
+ * chain even with the trace log firing, so this version uses ONLY
+ * sokol_debugtext - the same primitive the F2 HUD already proves
+ * works in the gameplay pass. No geometry, no extra pipeline, no
+ * lazy-initialised sgl handles that could fail at first use. */
+typedef struct {
+    float x, y, w, h;
+    const char* label;
+} pause_rect_t;
+static struct {
+    pause_rect_t resume, invite, quit;
+    float        panel_x, panel_y, panel_w, panel_h;
+} G_pause_layout;
+
+static void pause_compute_layout(float screen_w, float screen_h) {
+    const float cell = 16.0f;   /* sdtx scale 2 = 16 px / glyph */
+    const float btn_w = 24.0f * cell;   /* 24 chars wide */
+    const float btn_h = 3.0f  * cell;   /* 3 lines tall   */
+    const float gap   = cell;
+    const float panel_pad = 2.0f * cell;
+    const float panel_w = btn_w + 2.0f * panel_pad;
+    const float panel_h = 4.0f * cell                /* title row */
+                        + 2.0f * cell                /* hint row */
+                        + 3.0f * (btn_h + gap) + gap
+                        + 2.0f * panel_pad;
+    const float panel_x = (screen_w - panel_w) * 0.5f;
+    const float panel_y = (screen_h - panel_h) * 0.5f;
+    const float btn_x = panel_x + panel_pad;
+    float btn_y = panel_y + panel_pad
+                + 4.0f * cell + 2.0f * cell + gap;
+    G_pause_layout.panel_x = panel_x;
+    G_pause_layout.panel_y = panel_y;
+    G_pause_layout.panel_w = panel_w;
+    G_pause_layout.panel_h = panel_h;
+    G_pause_layout.resume = (pause_rect_t){ btn_x, btn_y, btn_w, btn_h, "RETURN TO GAME" };
+    btn_y += btn_h + gap;
+    G_pause_layout.invite = (pause_rect_t){ btn_x, btn_y, btn_w, btn_h, "INVITE PLAYERS" };
+    btn_y += btn_h + gap;
+    G_pause_layout.quit   = (pause_rect_t){ btn_x, btn_y, btn_w, btn_h, "QUIT TO MENU"   };
+}
+
+/* Centred sdtx text at scale `s`, position in screen pixels. */
+static void pause_text(float screen_w, float screen_h,
+                        const char* str,
+                        float center_x, float screen_y,
+                        float scale,
+                        uint8_t r, uint8_t g, uint8_t b) {
+    const float cell_px = 8.0f * scale;
+    int n = (int)strlen(str);
+    float text_w = cell_px * (float)n;
+    float text_x = center_x - text_w * 0.5f;
+    sdtx_canvas(screen_w / scale, screen_h / scale);
+    sdtx_font(1);
+    sdtx_origin(text_x / cell_px, screen_y / cell_px);
+    sdtx_color3b(r, g, b);
+    sdtx_home();
+    sdtx_printf("%s", str);
+    sdtx_font(0);
+}
+
+/* Same but left-aligned at `screen_x`. */
+static void pause_text_left(float screen_w, float screen_h,
+                              const char* str,
+                              float screen_x, float screen_y,
+                              float scale,
+                              uint8_t r, uint8_t g, uint8_t b) {
+    const float cell_px = 8.0f * scale;
+    sdtx_canvas(screen_w / scale, screen_h / scale);
+    sdtx_font(1);
+    sdtx_origin(screen_x / cell_px, screen_y / cell_px);
+    sdtx_color3b(r, g, b);
+    sdtx_home();
+    sdtx_printf("%s", str);
+    sdtx_font(0);
+}
+
+/* ------------------------------------------------------------------ */
+/* In-game pause overlay (rebuilt as proper sokol_gl geometry)          */
+/* ------------------------------------------------------------------ */
+
+/* Pause panel layout in screen pixels. Computed once per draw and
+ * stashed so the click handler can hit-test the same rectangles. */
+typedef struct { float x, y, w, h; const char* label; } pause_btn_t;
+static struct {
+    float       panel_x, panel_y, panel_w, panel_h;
+    pause_btn_t resume, invite, quit;
+} G_pl;
+
+static void pause_layout(float w, float h) {
+    bool is_mp = (M.state == GAME_IN_GAME_MP);
+    const float btn_w = 320.0f;
+    const float btn_h = 64.0f;
+    const float gap   = 18.0f;
+    const float pad   = 28.0f;
+    const int   row_count = is_mp ? 3 : 2;
+    const float panel_w = btn_w + 2.0f * pad;
+    const float panel_h = 110.0f                       /* title block */
+                        + (float)row_count * btn_h
+                        + (float)(row_count - 1) * gap
+                        + pad;
+    const float panel_x = (w - panel_w) * 0.5f;
+    const float panel_y = (h - panel_h) * 0.5f;
+    const float btn_x = panel_x + pad;
+    float       btn_y = panel_y + 110.0f;
+
+    G_pl.panel_x = panel_x;
+    G_pl.panel_y = panel_y;
+    G_pl.panel_w = panel_w;
+    G_pl.panel_h = panel_h;
+    G_pl.resume = (pause_btn_t){ btn_x, btn_y, btn_w, btn_h, "RETURN TO GAME" };
+    btn_y += btn_h + gap;
+    if (is_mp) {
+        G_pl.invite = (pause_btn_t){ btn_x, btn_y, btn_w, btn_h, "INVITE PLAYERS" };
+        btn_y += btn_h + gap;
+    } else {
+        /* Hide invite by parking it offscreen so the hit-test never
+         * matches. SP doesn't have a room to invite anyone to. */
+        G_pl.invite = (pause_btn_t){ -1e9f, -1e9f, 0, 0, NULL };
+    }
+    G_pl.quit = (pause_btn_t){ btn_x, btn_y, btn_w, btn_h, "QUIT TO MENU" };
+}
+
+static bool pause_btn_hit(const pause_btn_t* b, float x, float y) {
+    if (!b->label) return false;
+    return x >= b->x && x <= b->x + b->w
+        && y >= b->y && y <= b->y + b->h;
+}
+
+void menu_pause_draw(int screen_w, int screen_h) {
+    if (!M.pause_visible) return;
+
+    const float w = (float)screen_w;
+    const float h = (float)screen_h;
+    pause_layout(w, h);
+
+    /* Use mobile_ui's shared alpha pipeline - it draws the joystick
+     * + buttons every frame so we know it lands on the swapchain
+     * across browser / driver combos. */
+    sgl_defaults();
+    sgl_matrix_mode_projection();
+    sgl_load_identity();
+    sgl_ortho(0.0f, w, h, 0.0f, -1.0f, 1.0f);
+    sgl_matrix_mode_modelview();
+    sgl_load_identity();
+    sgl_pipeline pause_pip = mobile_ui_alpha_pipeline();
+    /* One-shot trace: prove the pipeline we're about to bind at the
+     * pause overlay site is the same valid one mobile_ui created.
+     * id == 0 here would explain a ghost panel (geometry submitted
+     * but never rasterised). */
+    static bool s_logged_pause_pip = false;
+    if (!s_logged_pause_pip) {
+        printf("[menu] pause_draw using S_PIP_ALPHA: id=%u\n",
+               (unsigned)pause_pip.id);
+        s_logged_pause_pip = true;
+    }
+    sgl_load_pipeline(pause_pip);
+
+    /* Full-screen dim backdrop. */
+    mobile_ui_draw_rect(0.0f, 0.0f, w, h, 0.02f, 0.03f, 0.07f, 0.75f);
+    /* Panel + border. */
+    mobile_ui_draw_rect(G_pl.panel_x, G_pl.panel_y, G_pl.panel_w, G_pl.panel_h,
+                         0.10f, 0.12f, 0.18f, 0.96f);
+    mobile_ui_draw_rect_outline(G_pl.panel_x, G_pl.panel_y, G_pl.panel_w, G_pl.panel_h,
+                                  2.0f, 0.85f, 0.90f, 1.00f, 1.0f);
+    /* Buttons - hover-aware. RETURN TO GAME is greyed out while the
+     * MP reconnect window is open: the game isn't actually playable
+     * until the socket is back, and pretending it is would let the
+     * player click resume into an empty world. */
+    const bool reconnecting = (M.reconnect_deadline_t > 0.0);
+    const pause_btn_t* btns[3] = { &G_pl.resume, &G_pl.invite, &G_pl.quit };
+    for (int i = 0; i < 3; ++i) {
+        const pause_btn_t* b = btns[i];
+        if (!b->label) continue;
+        const bool disabled = (b == &G_pl.resume && reconnecting);
+        bool hovered = !disabled && pause_btn_hit(b, M.mouse_x, M.mouse_y);
+        if (disabled) {
+            mobile_ui_draw_rect(b->x, b->y, b->w, b->h, 0.08f, 0.09f, 0.12f, 0.85f);
+        } else if (hovered) {
+            mobile_ui_draw_rect(b->x, b->y, b->w, b->h, 0.22f, 0.30f, 0.42f, 0.98f);
+        } else {
+            mobile_ui_draw_rect(b->x, b->y, b->w, b->h, 0.14f, 0.16f, 0.22f, 0.95f);
+        }
+        const float oa = disabled ? 0.35f : 1.0f;
+        mobile_ui_draw_rect_outline(b->x, b->y, b->w, b->h, 2.0f,
+                                      0.85f, 0.90f, 1.00f, oa);
+    }
+    /* One-shot post-queue trace: log the sokol_gl error state, the
+     * queued vertex count, and the panel rect so we can see if our
+     * geometry got dropped before sgl_draw() flushed it. */
+    static bool s_logged_post_queue = false;
+    if (!s_logged_post_queue) {
+        sgl_error_t e = sgl_error();
+        printf("[menu] pause queued: err.any=%d v_full=%d u_full=%d c_full=%d v=%d screen=%dx%d panel=(%.1f,%.1f %.1fx%.1f)\n",
+               e.any, e.vertices_full, e.uniforms_full, e.commands_full,
+               sgl_num_vertices(),
+               screen_w, screen_h,
+               G_pl.panel_x, G_pl.panel_y, G_pl.panel_w, G_pl.panel_h);
+        s_logged_post_queue = true;
+    }
+    /* No sgl_draw - centralised flush at end of main_web's frame.
+     * sokol_gl uploads its vertex buffer only on the first sgl_draw
+     * of the frame; flushing here would freeze the GPU's view of
+     * the buffer at our 2136-vert mark and drop every later UI
+     * module's quads. */
+
+    /* Text on top of the geometry. Title swaps to DISCONNECTED while
+     * the reconnect window is open so the player understands why
+     * RETURN TO GAME is greyed out. */
+    const float cx = w * 0.5f;
+    if (reconnecting) {
+        draw_text_centered("DISCONNECTED", cx, G_pl.panel_y + 20.0f, 4.0f,
+                             0xff, 0xc0, 0x60);
+        /* Animated trailing dots + attempt / countdown line. */
+        double rt = stm_sec(stm_now());
+        int dots = ((int)(rt * 2.0)) % 4;
+        char status[64];
+        snprintf(status, sizeof status, "RECONNECTING%s%s%s",
+                 dots >= 1 ? "." : " ",
+                 dots >= 2 ? "." : " ",
+                 dots >= 3 ? "." : " ");
+        draw_text_centered(status, cx, G_pl.panel_y + 60.0f, 2.0f,
+                             0xff, 0xff, 0xff);
+        double remaining = M.reconnect_deadline_t - rt;
+        if (remaining < 0.0) remaining = 0.0;
+        char line[64];
+        snprintf(line, sizeof line, "ATTEMPT %d - %ds LEFT",
+                 M.reconnect_attempts, (int)remaining);
+        draw_text_centered(line, cx, G_pl.panel_y + 86.0f, 1.5f,
+                             0xc0, 0xc0, 0xff);
+    } else {
+        draw_text_centered("PAUSED", cx, G_pl.panel_y + 20.0f, 4.0f,
+                             0xff, 0xff, 0xff);
+    }
+    for (int i = 0; i < 3; ++i) {
+        const pause_btn_t* b = btns[i];
+        if (!b->label) continue;
+        const bool disabled = (b == &G_pl.resume && reconnecting);
+        const uint8_t tc = disabled ? 0x60 : 0xff;
+        float bx = b->x + b->w * 0.5f;
+        float by = b->y + (b->h - 8.0f * 2.0f) * 0.5f;
+        draw_text_centered(b->label, bx, by, 2.0f, tc, tc, tc);
+    }
+
+    /* Share-result toast under the INVITE button (MP only). */
+    double t_now = stm_sec(stm_now());
+    if (G_pl.invite.label && M.pause_share_msg_until > t_now) {
+        const char* msg = "SHARE FAILED";
+        uint8_t r = 0xff, g = 0x80, bl = 0x60;
+        if (M.pause_share_result == 1) {
+            msg = "SHARED!"; r = 0x80; g = 0xff; bl = 0xa0;
+        } else if (M.pause_share_result == 2) {
+            msg = "LINK COPIED TO CLIPBOARD";
+            r = 0x80; g = 0xff; bl = 0xa0;
+        }
+        float ty = G_pl.invite.y + G_pl.invite.h + 8.0f;
+        draw_text_centered(msg, cx, ty, 1.0f, r, g, bl);
+    }
+}
+
+/* Cross-platform connecting overlay drawn while the MP socket is
+ * mid-connect / mid-handshake. Caller (main_web) decides when to
+ * call this based on net_client_state(); the panel is otherwise
+ * stateless. Geometry uses the shared mobile_ui alpha pipeline so
+ * it shares the centralised sgl_draw at the end of the frame. */
+void menu_connecting_draw(int screen_w, int screen_h,
+                          const char* status_label,
+                          const char* room_label) {
+    const float w = (float)screen_w;
+    const float h = (float)screen_h;
+    if (w <= 0.0f || h <= 0.0f) return;
+
+    /* Panel sized like a stripped-down pause card - 320 wide so even
+     * a narrow phone in portrait gets a readable label without
+     * truncating. */
+    const float panel_w = 320.0f;
+    const float panel_h = 120.0f;
+    const float panel_x = (w - panel_w) * 0.5f;
+    const float panel_y = (h - panel_h) * 0.5f;
+
+    sgl_defaults();
+    sgl_matrix_mode_projection();
+    sgl_load_identity();
+    sgl_ortho(0.0f, w, h, 0.0f, -1.0f, 1.0f);
+    sgl_matrix_mode_modelview();
+    sgl_load_identity();
+    sgl_load_pipeline(mobile_ui_alpha_pipeline());
+
+    /* Full-screen dim backdrop - matches the pause panel's tint so
+     * the transition between connecting -> in-game feels continuous. */
+    mobile_ui_draw_rect(0.0f, 0.0f, w, h, 0.02f, 0.03f, 0.07f, 0.75f);
+    mobile_ui_draw_rect(panel_x, panel_y, panel_w, panel_h,
+                          0.10f, 0.12f, 0.18f, 0.96f);
+    mobile_ui_draw_rect_outline(panel_x, panel_y, panel_w, panel_h,
+                                  2.0f, 0.85f, 0.90f, 1.00f, 1.0f);
+
+    /* Animated trailing dots so the player knows the screen is live
+     * and the client hasn't hung. Cycles 1 -> 4 dots over a second. */
+    double t_now = stm_sec(stm_now());
+    int dots = ((int)(t_now * 2.0)) % 4;
+    const bool retrying = (M.reconnect_deadline_t > 0.0);
+    char header[24];
+    snprintf(header, sizeof header, "%s%s%s%s",
+             retrying ? "RECONNECTING" : "CONNECTING",
+             dots >= 1 ? "." : " ",
+             dots >= 2 ? "." : " ",
+             dots >= 3 ? "." : " ");
+    const float cx = w * 0.5f;
+    draw_text_centered(header, cx, panel_y + 24.0f, 3.0f, 0xff, 0xff, 0xff);
+
+    char retry_line[64];
+    retry_line[0] = 0;
+    if (retrying) {
+        double remaining = M.reconnect_deadline_t - t_now;
+        if (remaining < 0.0) remaining = 0.0;
+        snprintf(retry_line, sizeof retry_line,
+                 "ATTEMPT %d - %ds LEFT",
+                 M.reconnect_attempts, (int)remaining);
+    }
+    const char* sub = retrying ? retry_line : (status_label ? status_label : "");
+    if (sub && sub[0]) {
+        draw_text_centered(sub, cx, panel_y + 62.0f, 1.5f, 0xc0, 0xc0, 0xff);
+    }
+    if (room_label && room_label[0]) {
+        draw_text_centered(room_label, cx, panel_y + 88.0f, 1.5f,
+                           0x80, 0xff, 0xa0);
+    }
+}
+
+bool menu_pause_event(const sapp_event* e) {
+    if (!M.pause_visible) return false;
+
+    /* Track mouse for hover. */
+    if (e->type == SAPP_EVENTTYPE_MOUSE_MOVE) {
+        M.mouse_x = e->mouse_x;
+        M.mouse_y = e->mouse_y;
+        return true;
+    }
+    if (e->type == SAPP_EVENTTYPE_TOUCHES_MOVED && e->num_touches > 0) {
+        M.mouse_x = e->touches[0].pos_x;
+        M.mouse_y = e->touches[0].pos_y;
+        return true;
+    }
+
+    /* Escape inside the pause overlay is INTENTIONALLY swallowed
+     * without closing the panel. The player must click RETURN TO
+     * GAME to resume. This keeps the behaviour symmetric: the first
+     * Escape opens pause + releases pointer lock (the browser
+     * intercepts it for the lock release; main_web's pointer-lock-
+     * loss detector turns that into a menu_pause_toggle), and the
+     * close action is a deliberate click on the resume button. */
+    if (e->type == SAPP_EVENTTYPE_KEY_DOWN
+        && e->key_code == SAPP_KEYCODE_ESCAPE) {
+        return true;
+    }
+
+    /* Click / touch hit-test against the same rects the draw path
+     * computed. */
+    bool click = false;
+    float cx = 0, cy = 0;
+    if (e->type == SAPP_EVENTTYPE_MOUSE_DOWN
+        && e->mouse_button == SAPP_MOUSEBUTTON_LEFT) {
+        click = true; cx = e->mouse_x; cy = e->mouse_y;
+    } else if (e->type == SAPP_EVENTTYPE_TOUCHES_BEGAN
+               && e->num_touches > 0) {
+        click = true; cx = e->touches[0].pos_x; cy = e->touches[0].pos_y;
+    }
+    if (click) {
+        pause_layout(sapp_widthf(), sapp_heightf());
+        const bool reconnecting = (M.reconnect_deadline_t > 0.0);
+        if (!reconnecting && pause_btn_hit(&G_pl.resume, cx, cy)) {
+            set_pause_visible(false, "click-resume");
+            M.pause_auto_disconnect = false;
+            sapp_show_mouse(true);
+            return true;
+        }
+        if (reconnecting && pause_btn_hit(&G_pl.resume, cx, cy)) {
+            /* RETURN TO GAME is disabled while retrying - swallow the
+             * click so it can't fall through to the QUIT button below. */
+            return true;
+        }
+        if (pause_btn_hit(&G_pl.invite, cx, cy)) {
+            const char* room = M.room_code[0] ? M.room_code : "";
+            int rc = menu_js_share_invite(room);
+            M.pause_share_result    = (rc == 0) ? 3 : rc;
+            M.pause_share_msg_until = stm_sec(stm_now()) + 2.5;
+            return true;
+        }
+        if (pause_btn_hit(&G_pl.quit, cx, cy)) {
+            if (M.state == GAME_IN_GAME_MP) {
+                net_client_disconnect();
+                M.room_code[0] = 0;
+            }
+            M.active_world[0] = 0;
+            set_pause_visible(false, "click-quit");
+            M.state = GAME_MAIN_MENU;
+            return true;
+        }
+        return true;       /* swallow clicks inside the dim backdrop */
+    }
+
+    /* Swallow everything else (keyboard movement, scroll, etc.) so
+     * the player doesn't keep walking / mining behind the panel. */
+    return true;
+}
 
 bool menu_take_sp_resume(persistence_save_t* out) {
     if (!M.pending_sp_resume) return false;

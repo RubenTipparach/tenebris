@@ -20,6 +20,7 @@
 #include "core/world.h"
 #include "core/job_system.h"
 #include "core/config.h"
+#include "core/proto.h"
 #include "client/gfx_math.h"
 #include "client/input.h"
 #include "client/player_ctrl.h"
@@ -79,12 +80,17 @@ EM_JS(int, tenebris_is_mobile_device, (void), {
     return 0;
 });
 
-/* `?room=ABCD23` lets friends jump directly into a self-host room
- * without going through the menu. Returns NULL if absent. */
+/* `?room=ABCD23` (or `?invite=ABCD23`) lets friends jump directly
+ * into a self-host room without going through the menu. The `invite`
+ * alias exists so share links like `/tenebris/wasm?invite=123456`
+ * Just Work against the bundled default server — no `?server=` needed,
+ * because main_web.c's boot path falls back to the cloud URL when none
+ * is supplied. Returns NULL if neither param is present. */
 EM_JS(char*, tenebris_get_room_code, (void), {
     try {
         var u = new URL(window.location.href);
         var s = u.searchParams.get('room');
+        if (!s) s = u.searchParams.get('invite');
         if (!s) return 0;
         s = s.toUpperCase().substring(0, 8);
         var len = lengthBytesUTF8(s) + 1;
@@ -93,6 +99,247 @@ EM_JS(char*, tenebris_get_room_code, (void), {
         return p;
     } catch (_e) { return 0; }
 });
+
+/* HTML overlay pause button. mobile_ui_draw's sokol_gl rendering is
+ * unreliable on certain mobile browsers (the joystick + on-canvas
+ * buttons don't render even though sdtx text does), so the pause
+ * trigger uses a real DOM <button> positioned absolutely over the
+ * canvas. CSS keeps it big, opaque, and unmistakable, plus the
+ * browser handles touch / hover / focus for us. Click is forwarded
+ * into C via Module.ccall onto tenebris_js_pause_pressed. */
+EM_JS(void, tenebris_pause_button_install, (void), {
+    if (document.getElementById('tenebris-pause-btn')) return;
+    var btn = document.createElement('button');
+    btn.id = 'tenebris-pause-btn';
+    btn.textContent = '∥';   /* "II" pause glyph */
+    btn.setAttribute('aria-label', 'Pause');
+    btn.style.cssText =
+        'position:fixed;top:14px;left:14px;width:60px;height:60px;'
+      + 'border-radius:50%;border:3px solid #fff;'
+      + 'background:rgba(15,17,26,0.92);color:#fff;'
+      + 'font-size:30px;font-weight:bold;'
+      + 'display:flex;align-items:center;justify-content:center;'
+      + 'cursor:pointer;z-index:10;'
+      + 'touch-action:manipulation;'
+      + '-webkit-tap-highlight-color:transparent;'
+      + 'box-shadow:0 2px 6px rgba(0,0,0,0.5);'
+      + 'visibility:hidden;';
+    btn.addEventListener('click', function(ev) {
+        ev.preventDefault();
+        Module.ccall('tenebris_js_pause_pressed', null, [], []);
+    });
+    btn.addEventListener('touchend', function(ev) {
+        ev.preventDefault();
+        Module.ccall('tenebris_js_pause_pressed', null, [], []);
+    });
+    document.body.appendChild(btn);
+});
+
+EM_JS(void, tenebris_pause_button_set_visible, (int visible), {
+    var b = document.getElementById('tenebris-pause-btn');
+    if (b) b.style.visibility = visible ? 'visible' : 'hidden';
+});
+
+/* Full mobile control deck as DOM elements (two virtual joysticks +
+ * Jump / Break / Place buttons). Same reason as the pause button:
+ * sokol_gl on certain mobile browsers fails to render the sticks
+ * + buttons, so we side-step it with real DOM overlays. Each
+ * control streams its state into C via Module.ccall onto the
+ * tenebris_js_set_* hooks below. */
+EM_JS(void, tenebris_mobile_controls_install, (void), {
+    if (document.getElementById('tenebris-mobile-controls')) return;
+    var style = document.createElement('style');
+    style.textContent = ''
+      + '#tenebris-mobile-controls { position:fixed; inset:0; pointer-events:none; z-index:5; visibility:hidden; }'
+      + '.tn-stick { position:absolute; width:140px; height:140px; border-radius:50%; '
+      +    'background:rgba(20,22,30,0.45); border:2px solid rgba(255,255,255,0.7); '
+      +    'pointer-events:auto; touch-action:none; -webkit-tap-highlight-color:transparent; }'
+      + '.tn-stick .knob { position:absolute; left:50%; top:50%; width:56px; height:56px; '
+      +    'border-radius:50%; background:rgba(255,255,255,0.85); transform:translate(-50%,-50%); pointer-events:none; }'
+      + '#tn-stick-left  { bottom:24px; left:24px; }'
+      + '#tn-stick-right { bottom:24px; right:24px; }'
+      + '.tn-btn { position:absolute; width:64px; height:64px; border-radius:50%; '
+      +    'background:rgba(15,17,26,0.88); color:#fff; border:2px solid rgba(255,255,255,0.85); '
+      +    'font:bold 14px sans-serif; display:flex; align-items:center; justify-content:center; '
+      +    'pointer-events:auto; touch-action:none; -webkit-tap-highlight-color:transparent; '
+      +    'box-shadow:0 2px 6px rgba(0,0,0,0.5); user-select:none; }'
+      + '.tn-btn:active { background:rgba(80,90,110,0.95); }'
+      + '#tn-btn-jump  { bottom: 24px; right:184px; }'
+      + '#tn-btn-break { bottom:100px; right:184px; }'
+      + '#tn-btn-place { bottom:176px; right:184px; }';
+    document.head.appendChild(style);
+
+    function mk(tag, id, cls, text) {
+        var e = document.createElement(tag);
+        if (id) e.id = id;
+        if (cls) e.className = cls;
+        if (text) e.textContent = text;
+        return e;
+    }
+    var root = mk('div', 'tenebris-mobile-controls', null, null);
+    var ls = mk('div', 'tn-stick-left',  'tn-stick', null);
+    var rs = mk('div', 'tn-stick-right', 'tn-stick', null);
+    var lk = mk('div', null, 'knob', null);
+    var rk = mk('div', null, 'knob', null);
+    ls.appendChild(lk); rs.appendChild(rk);
+    var bJump  = mk('div', 'tn-btn-jump',  'tn-btn', 'JUMP');
+    var bBreak = mk('div', 'tn-btn-break', 'tn-btn', 'BREAK');
+    var bPlace = mk('div', 'tn-btn-place', 'tn-btn', 'PLACE');
+    root.appendChild(ls); root.appendChild(rs);
+    root.appendChild(bJump); root.appendChild(bBreak); root.appendChild(bPlace);
+    document.body.appendChild(root);
+
+    function makeStick(elem, knob, fnName) {
+        var activeId = -1;
+        function reset() {
+            knob.style.left = '50%'; knob.style.top = '50%';
+            Module.ccall(fnName, null,
+                ['number','number','number'], [0, 0, 0]);
+        }
+        function update(touch) {
+            var rect = elem.getBoundingClientRect();
+            var cx = rect.left + rect.width * 0.5;
+            var cy = rect.top  + rect.height * 0.5;
+            var dx = touch.clientX - cx;
+            var dy = touch.clientY - cy;
+            var max = rect.width * 0.5;
+            var len = Math.sqrt(dx*dx + dy*dy);
+            if (len > max) { dx = dx * max / len; dy = dy * max / len; }
+            knob.style.left = (50 + 100 * dx / rect.width)  + '%';
+            knob.style.top  = (50 + 100 * dy / rect.height) + '%';
+            var nx =  dx / max;
+            var ny = -dy / max;     /* screen y flips */
+            Module.ccall(fnName, null,
+                ['number','number','number'], [nx, ny, 1]);
+        }
+        function findTouch(ev) {
+            for (var i = 0; i < ev.changedTouches.length; ++i) {
+                if (ev.changedTouches[i].identifier === activeId) {
+                    return ev.changedTouches[i];
+                }
+            }
+            return null;
+        }
+        elem.addEventListener('touchstart', function(ev) {
+            ev.preventDefault();
+            if (activeId !== -1) return;
+            var t = ev.changedTouches[0];
+            activeId = t.identifier;
+            update(t);
+        }, { passive: false });
+        elem.addEventListener('touchmove', function(ev) {
+            ev.preventDefault();
+            var t = findTouch(ev);
+            if (t) update(t);
+        }, { passive: false });
+        function end(ev) {
+            ev.preventDefault();
+            if (findTouch(ev)) {
+                activeId = -1;
+                reset();
+            }
+        }
+        elem.addEventListener('touchend',    end, { passive: false });
+        elem.addEventListener('touchcancel', end, { passive: false });
+    }
+    makeStick(ls, lk, 'tenebris_js_set_move_stick');
+    makeStick(rs, rk, 'tenebris_js_set_look_stick');
+
+    function makeHoldBtn(elem, fnName) {
+        function down(ev) {
+            ev.preventDefault();
+            Module.ccall(fnName, null, ['number'], [1]);
+        }
+        function up(ev) {
+            ev.preventDefault();
+            Module.ccall(fnName, null, ['number'], [0]);
+        }
+        elem.addEventListener('touchstart',  down, { passive: false });
+        elem.addEventListener('touchend',    up,   { passive: false });
+        elem.addEventListener('touchcancel', up,   { passive: false });
+        elem.addEventListener('mousedown',   down);
+        elem.addEventListener('mouseup',     up);
+        elem.addEventListener('mouseleave',  up);
+    }
+    makeHoldBtn(bJump,  'tenebris_js_set_jump');
+    makeHoldBtn(bBreak, 'tenebris_js_set_break');
+    makeHoldBtn(bPlace, 'tenebris_js_set_place');
+});
+
+EM_JS(void, tenebris_mobile_controls_set_visible, (int visible), {
+    var c = document.getElementById('tenebris-mobile-controls');
+    if (c) c.style.visibility = visible ? 'visible' : 'hidden';
+});
+
+
+/* JS calls this when the HTML pause button is tapped. Same effect
+ * as pressing Escape on desktop: toggles the pause overlay and
+ * releases pointer lock so the player can interact with the
+ * canvas panel buttons. */
+EMSCRIPTEN_KEEPALIVE
+void tenebris_js_pause_pressed(void) {
+    menu_pause_toggle();
+    if (menu_pause_active()) {
+        sapp_lock_mouse(false);
+        sapp_show_mouse(true);
+    }
+}
+
+EMSCRIPTEN_KEEPALIVE
+void tenebris_js_set_move_stick(double x, double y, int active) {
+    input_state_t* in = input_state_mut();
+    if (active) {
+        in->stick_x = (float)x;
+        in->stick_y = (float)y;
+        in->stick_active = true;
+        in->phys.forward  = (y >  0.3);
+        in->phys.backward = (y < -0.3);
+        in->phys.right    = (x >  0.3);
+        in->phys.left     = (x < -0.3);
+    } else {
+        in->stick_x = 0;
+        in->stick_y = 0;
+        in->stick_active = false;
+        in->phys.forward = in->phys.backward = false;
+        in->phys.left = in->phys.right = false;
+    }
+    in->touch_active = true;
+}
+
+EMSCRIPTEN_KEEPALIVE
+void tenebris_js_set_look_stick(double x, double y, int active) {
+    input_state_t* in = input_state_mut();
+    in->look_stick_x = (float)x;
+    in->look_stick_y = (float)y;
+    in->look_stick_active = active != 0;
+    in->touch_active = true;
+}
+
+EMSCRIPTEN_KEEPALIVE
+void tenebris_js_set_break(int held) {
+    input_state_t* in = input_state_mut();
+    bool was = in->left_held;
+    in->left_held = held != 0;
+    if (held && !was) in->left_click = true;
+    in->touch_active = true;
+}
+
+EMSCRIPTEN_KEEPALIVE
+void tenebris_js_set_place(int held) {
+    input_state_t* in = input_state_mut();
+    bool was = in->right_held;
+    in->right_held = held != 0;
+    if (held && !was) in->right_click = true;
+    in->touch_active = true;
+}
+
+EMSCRIPTEN_KEEPALIVE
+void tenebris_js_set_jump(int held) {
+    input_state_t* in = input_state_mut();
+    in->phys.jump   = held != 0;
+    in->phys.fly_up = held != 0;
+    in->touch_active = true;
+}
 #endif
 #include "client/inventory.h"
 #include "client/profiler.h"
@@ -190,6 +437,17 @@ static void init(void) {
         .environment = sglue_environment(),
         .logger.func = on_screen_log,
         .buffer_pool_size = 4096,
+        /* Default pipeline pool of 64 was exhausted by the
+         * renderer's hex / water / composite / atmosphere /
+         * skybox / per-body pipelines plus the UI ones (hotbar,
+         * mobile_ui, menu, chat, profiler, mining bar, players
+         * panel, desync popup, remote players, nameplates,
+         * teleport menu). Once we hit the limit, sg_make_pipeline
+         * silently returns SG_INVALID_ID and any sgl draw using
+         * that pipeline ends up flushing into the void - which
+         * was why the pause panel + joystick rendered as ghosts
+         * (sdtx labels visible, sokol_gl geometry not). */
+        .pipeline_pool_size = 256,
     });
     stm_setup();
     /* IMPORTANT: every one of the 8 sdtx font slots gets filled, even
@@ -231,6 +489,18 @@ static void init(void) {
     hotbar_ui_init();
     teleport_menu_init();
     teleport_menu_set_player(&G.player);
+
+#ifdef __EMSCRIPTEN__
+    /* DOM overlays are mobile-only scaffolding per CLAUDE.md: the
+     * pause button stands in for the Esc key, and the joystick +
+     * action deck stand in for keyboard / mouse. The pause panel
+     * itself is in-canvas (menu.c) on every platform so it matches
+     * the game's visual identity. */
+    if (tenebris_is_mobile_device()) {
+        tenebris_pause_button_install();
+        tenebris_mobile_controls_install();
+    }
+#endif
 
     /* Load atmosphere overrides from YAML before creating any
      * worlds — planet_set_atmosphere mutates BODIES[] and the
@@ -320,23 +590,18 @@ static void init(void) {
     chat_init();
 
 #ifdef __EMSCRIPTEN__
-    /* ?room=ABCD23 — bypass the menu and join that specific room. The
-     * profile picker is still useful so we don't skip it; the room
-     * code just primes net_client before connect. The menu's MP
-     * submenu would route here too if entered manually. */
+    /* ?room=ABCD23 / ?invite=ABCD23 - stash the room (and optional
+     * ?server= override) on the menu module so the boot flow Just
+     * Works for first-time visitors too. menu_set_pending_invite
+     * jumps straight to MP when a profile is already active, or
+     * parks on the profile picker until the player creates one and
+     * then auto-routes - which keeps their nameplate from rendering
+     * as the empty string for everyone else in the room. ?server=
+     * alone (no room) drops the user on the regular menu; they can
+     * pick HOST / JOIN from the cloud submenu manually. */
     char* room = tenebris_get_room_code();
     char* server_url = tenebris_get_server_url();
-    if (server_url || room) {
-        profile_t active;
-        const char* tok  = NULL;
-        const char* name = NULL;
-        if (profile_get_active(&active)) {
-            tok  = active.token; name = active.name;
-        }
-        net_client_set_profile(tok, name, room ? room : "");
-        net_client_connect(server_url ? server_url : "wss://tenebris-c.fly.dev/");
-        menu_force_state(GAME_IN_GAME_MP);
-    }
+    if (room) menu_set_pending_invite(room, server_url);
     if (server_url) free(server_url);
     if (room)       free(room);
 #endif
@@ -363,9 +628,75 @@ static world_t* world_for_body(const body_config_t* body) {
 
 /* --------------------------------------------------------------------- */
 
+/* F2 master toggle for ALL debug UI: tile-count + FPS + key hints in
+ * update_overlay, the on-screen sokol error overlay, the F1 players
+ * panel, the F3/P profiler, the H/J/K render-visibility toggles, and
+ * the mobile hamburger menu (which holds those toggles + the
+ * profiler). Off by default so casual players never see the
+ * scaffolding. Per CLAUDE.md, every debug-only readout / shortcut /
+ * panel funnels through this single gate. */
+static bool G_debug_ui_visible = false;
+
+/* Always-on bottom-right strip: protocol version + active profile
+ * name when in MP. Not gated on the F2 debug toggle - the version
+ * is the first thing a player checks when they see a "refresh the
+ * page" popup, and the profile name reassures them they're logged
+ * in as themselves. */
+static void draw_version_strip(void) {
+    char line[80];
+    int  n = 0;
+    if (menu_state() == GAME_IN_GAME_MP) {
+        /* Priority: active profile name > server-side cached name
+         * for our welcome.player_id > 'guest'. The cache fallback
+         * picks up the server's 'guest-N' label when the player
+         * really did join without a profile, and the explicit
+         * 'guest' string covers the moment between menu transition
+         * and WELCOME. */
+        profile_t active;
+        const char* nm = NULL;
+        if (profile_get_active(&active) && active.name[0]) nm = active.name;
+        if (!nm) {
+            const net_client_welcome_t* w = net_client_welcome();
+            if (w) nm = net_client_name_for_id(w->player_id);
+        }
+        if (!nm || !*nm) nm = "guest";
+        n = snprintf(line, sizeof line, "%s  v%u",
+                     nm, TENEBRIS_PROTOCOL_VERSION);
+    } else {
+        n = snprintf(line, sizeof line, "v%u", TENEBRIS_PROTOCOL_VERSION);
+    }
+    if (n <= 0) return;
+    /* sdtx scale 1 = 8 px per glyph. Stick the line one row up from
+     * the absolute bottom-right corner. The canvas is the full
+     * screen size so origin is in glyph cells (1 cell = 8 px). */
+    const float w = sapp_widthf();
+    const float h = sapp_heightf();
+    if (w < 64.0f || h < 16.0f) return;
+    sdtx_canvas(w, h);
+    sdtx_font(0);
+    /* Place text right-anchored: origin_x = (w - text_w) / 8 cells. */
+    float text_w = 8.0f * (float)n;
+    float origin_x = (w - text_w - 8.0f) / 8.0f;
+    float origin_y = (h - 12.0f) / 8.0f;
+    sdtx_origin(origin_x, origin_y);
+    sdtx_color3b(0xa0, 0xc0, 0xff);
+    sdtx_home();
+    sdtx_printf("%s", line);
+}
+
 static void update_overlay(float dt) {
     const float inst_fps = (dt > 0.0f) ? (1.0f / dt) : 0.0f;
     G.smoothed_fps = G.smoothed_fps * 0.9f + inst_fps * 0.1f;
+
+    /* Every readout in this function - tile count, FPS, net status,
+     * frame / alt / yaw / tile / tris, mode banner, hide-terrain
+     * key hints, the loading progress percent, the target row, the
+     * F1 / F3 / T key hints - is developer scaffolding. Hide all of
+     * it unless the player has explicitly toggled the debug UI on
+     * with F2. Gameplay surfaces (hotbar, mining bar, chat, pause
+     * menu, connect-error popup, nameplates) live in their own draw
+     * functions and stay visible. */
+    if (!G_debug_ui_visible) return;
 
     sdtx_canvas(sapp_widthf() * 0.5f, sapp_heightf() * 0.5f);
     sdtx_origin(1.0f, 1.0f);
@@ -374,6 +705,14 @@ static void update_overlay(float dt) {
                 goldberg_tile_count(G.world->grid),
                 renderer_moon_count());
     sdtx_printf("FPS: %.1f\n", G.smoothed_fps);
+    /* Menu / pause state line for live debugging. Visible alongside
+     * the JS-console trace stream so two-screen diagnosis is possible
+     * (devtools open + game in-frame). */
+    sdtx_color3b(0xff, 0xc0, 0x70);
+    sdtx_printf("menu state=%d pause=%d locked=%d overlay=%d\n",
+                (int)menu_state(), (int)menu_pause_active(),
+                (int)sapp_mouse_locked(), (int)menu_is_overlay());
+    sdtx_color3b(0xff, 0xff, 0xff);
 
     {
         /* Desync banner is its own popup panel — see draw_desync_popup
@@ -496,21 +835,116 @@ static void update_overlay(float dt) {
     /* Always-visible reminders so the player knows the keys exist
      * even if the top-right hamburger menu is hard to spot. */
     sdtx_printf("[T] teleport menu   [F3 / P] profiler   [F1] players\n");
+}
 
-    /* Mining progress bar (survival only). */
-    if (G.player.survival_mode && G.interact.mining_progress_s > 0.0f) {
-        float pct = G.interact.mining_progress_s / MINING_TIME_S;
-        if (pct > 1.0f) pct = 1.0f;
-        char bar[21];
-        int filled = (int)(pct * 20.0f);
-        for (int i = 0; i < 20; ++i) bar[i] = (i < filled) ? '#' : '-';
-        bar[20] = 0;
-        sdtx_color3b(0xf0, 0xa0, 0x40);
-        sdtx_printf("mining: [%s] %d%%\n", bar, (int)(pct * 100));
-        sdtx_color3b(0xff, 0xff, 0xff);
+/* Centred mining progress bar drawn via sokol_gl. Replaces the older
+ * ASCII "[####----] 50%" version that violated CLAUDE.md's no-ASCII-art
+ * rule. Visible only while a survival mine is in progress; positioned
+ * just above the hotbar so the player's eye line stays near the
+ * action. */
+static void draw_mining_bar(float screen_w, float screen_h) {
+    if (!G.player.survival_mode) return;
+    if (G.interact.mining_progress_s <= 0.0f) return;
+
+    float pct = G.interact.mining_progress_s / MINING_TIME_S;
+    if (pct < 0.0f) pct = 0.0f;
+    if (pct > 1.0f) pct = 1.0f;
+
+    const float bar_w   = 280.0f;
+    const float bar_h   = 14.0f;
+    const float pad     = 3.0f;
+    const float bx      = screen_w * 0.5f - bar_w * 0.5f;
+    /* Sit ~96 px above the bottom edge, just above the hotbar
+     * (SLOT_SIZE 48 + BOTTOM_MARGIN 18 + breathing room). */
+    const float by      = screen_h - 96.0f;
+    const float fill_w  = bar_w * pct;
+
+    sgl_defaults();
+    sgl_matrix_mode_projection();
+    sgl_load_identity();
+    sgl_ortho(0.0f, screen_w, screen_h, 0.0f, -1.0f, 1.0f);
+    sgl_matrix_mode_modelview();
+    sgl_load_identity();
+
+    static sgl_pipeline pip = (sgl_pipeline){0};
+    if (pip.id == 0) {
+        pip = sgl_make_pipeline(&(sg_pipeline_desc){
+            .colors[0].blend = {
+                .enabled = true,
+                .src_factor_rgb   = SG_BLENDFACTOR_SRC_ALPHA,
+                .dst_factor_rgb   = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+                .src_factor_alpha = SG_BLENDFACTOR_ONE,
+                .dst_factor_alpha = SG_BLENDFACTOR_ONE,
+            },
+        });
     }
+    sgl_load_pipeline(pip);
 
+    /* Track (dark backdrop with halo) so the bar reads against any
+     * sky / terrain colour. */
+    sgl_begin_quads();
+    sgl_c4f(0.04f, 0.06f, 0.10f, 0.85f);
+    sgl_v2f(bx - pad,         by - pad);
+    sgl_v2f(bx + bar_w + pad, by - pad);
+    sgl_v2f(bx + bar_w + pad, by + bar_h + pad);
+    sgl_v2f(bx - pad,         by + bar_h + pad);
+    sgl_end();
 
+    /* Fill - warm orange that matches the old colour scheme but as a
+     * real quad rather than glyphs. */
+    sgl_begin_quads();
+    sgl_c4f(0.95f, 0.62f, 0.22f, 1.0f);
+    sgl_v2f(bx,          by);
+    sgl_v2f(bx + fill_w, by);
+    sgl_v2f(bx + fill_w, by + bar_h);
+    sgl_v2f(bx,          by + bar_h);
+    sgl_end();
+
+    /* Light border around the bar interior. */
+    const float t = 1.0f;
+    sgl_begin_quads();
+    sgl_c4f(0.85f, 0.90f, 1.0f, 0.95f);
+    sgl_v2f(bx,             by);
+    sgl_v2f(bx + bar_w,     by);
+    sgl_v2f(bx + bar_w,     by + t);
+    sgl_v2f(bx,             by + t);
+    sgl_v2f(bx,             by + bar_h - t);
+    sgl_v2f(bx + bar_w,     by + bar_h - t);
+    sgl_v2f(bx + bar_w,     by + bar_h);
+    sgl_v2f(bx,             by + bar_h);
+    sgl_v2f(bx,             by);
+    sgl_v2f(bx + t,         by);
+    sgl_v2f(bx + t,         by + bar_h);
+    sgl_v2f(bx,             by + bar_h);
+    sgl_v2f(bx + bar_w - t, by);
+    sgl_v2f(bx + bar_w,     by);
+    sgl_v2f(bx + bar_w,     by + bar_h);
+    sgl_v2f(bx + bar_w - t, by + bar_h);
+    sgl_end();
+    /* No sgl_draw - centralised flush at end of frame. */
+
+    /* Percentage label centred just above the bar. */
+    char buf[24];
+    snprintf(buf, sizeof buf, "MINING %d%%", (int)(pct * 100.0f));
+    int n = (int)strlen(buf);
+    const float scale = 1.0f;
+    const float cell  = 8.0f * scale;
+    const float text_w = cell * (float)n;
+    const float tx = screen_w * 0.5f - text_w * 0.5f;
+    const float ty = by - cell - 4.0f;
+    sdtx_canvas(screen_w / scale, screen_h / scale);
+    sdtx_font(1);
+    sdtx_origin(tx / cell, ty / cell);
+    sdtx_color3b(0xff, 0xd0, 0x70);
+    sdtx_home();
+    sdtx_printf("%s", buf);
+    sdtx_font(0);
+    sdtx_color3b(0xff, 0xff, 0xff);
+    /* sdtx flush is centralised at frame end - see note in
+     * hotbar_ui_draw. Premature sdtx_draw here was uploading the
+     * vertex buffer before later text (pause / nameplates) had a
+     * chance to queue, which made those reads STALE GPU memory
+     * and was the root of the menu-UI-bleed-into-gameplay bug. */
 }
 
 /* --------------------------------------------------------------------- */
@@ -520,6 +954,32 @@ static void update_overlay(float dt) {
  * frame. Called from the top of frame() the first tick we're in
  * GAME_IN_GAME_SP. */
 static bool G_sp_resume_applied = false;
+
+/* Tracks which menu state we last primed inventory / survival defaults
+ * for, so the per-frame check below only fires on the actual menu
+ * transition rather than every frame. -1 = never primed. */
+static int G_inv_primed_for_state = -1;
+
+static void maybe_prime_mode_for_state(void) {
+    int s = (int)menu_state();
+    if (s == G_inv_primed_for_state) return;
+    if (s == GAME_IN_GAME_MP) {
+        /* MP defaults to survival: blocks have quantity, players only
+         * keep what they've mined. Jetpack is unaffected (it isn't
+         * gated by survival_mode). Torches still flow in unlimited
+         * via inventory_init_empty so caves are lightable without a
+         * crafting system. */
+        G.player.survival_mode = true;
+        inventory_init_empty(&G.player.inventory);
+        printf("[main] entered MP - survival mode + empty hotbar (torches granted)\n");
+    } else if (s == GAME_IN_GAME_SP) {
+        /* SP stays creative by default; the G key still toggles
+         * survival mid-session if the player wants the challenge. */
+        G.player.survival_mode = false;
+        inventory_init_creative(&G.player.inventory);
+    }
+    G_inv_primed_for_state = s;
+}
 
 static void maybe_apply_sp_resume(void) {
     if (G_sp_resume_applied) return;
@@ -537,6 +997,178 @@ static void maybe_apply_sp_resume(void) {
     (void)s.roll;
     (void)s.body_id;
     G_sp_resume_applied = true;
+}
+
+/* Apply the server-side saved pose on the FIRST MP entry only.
+ * Reconnects within the same MP session (temporary socket drop ->
+ * the client reopens, gets a fresh player_id + WELCOME) skip the
+ * snap so the player doesn't get yanked backwards to whatever pose
+ * the server last persisted. The next periodic flush brings the
+ * server back in line with the client's live position.
+ *
+ * G_mp_spawn_applied flips back to false the moment we leave MP
+ * (back to main menu / SP), so a fresh re-entry to MP picks the
+ * server pose up again as expected. */
+static bool   G_mp_spawn_applied = false;
+static void maybe_apply_mp_spawn(void) {
+    int s = (int)menu_state();
+    if (s != GAME_IN_GAME_MP) {
+        G_mp_spawn_applied = false;
+        return;
+    }
+    if (G_mp_spawn_applied) return;
+    if (net_client_state() != NET_CLIENT_READY) return;
+    const net_client_welcome_t* w = net_client_welcome();
+    if (!w) return;
+    /* Sentinel: server always fills spawn with either the default
+     * pole spawn or a persisted pose, both of which are non-zero
+     * in at least one axis. Zero on all three means the WELCOME
+     * arrived without a meaningful spawn - leave the player where
+     * the client already placed them. */
+    if (w->spawn_x == 0.0 && w->spawn_y == 0.0 && w->spawn_z == 0.0) {
+        G_mp_spawn_applied = true;
+        return;
+    }
+
+    dvec3_t spawn = (dvec3_t){ .x = w->spawn_x, .y = w->spawn_y, .z = w->spawn_z };
+    /* Ground-snap: if the saved pose lives above the surface (which
+     * happens whenever the periodic 0.5 s save fires mid-jump or
+     * during jetpack flight), drop the player straight back down to
+     * just over the surface column rather than spawning them at the
+     * jump / flight apex.
+     *
+     * Snap is done in body-local coords against the authoritative
+     * procgen surface for the saved body. Bounds:
+     *   - Positions AT or BELOW the surface (caves, tunnels,
+     *     dug-out areas) are left untouched.
+     *   - Positions far above the surface (>= SNAP_MAX_ALT_M above
+     *     the surface column) are also left untouched - the player
+     *     was probably in space or on a long jetpack hop, and
+     *     yanking them onto a planet they were flying past would
+     *     be worse than the floating-spawn it solves. */
+    const double SNAP_MAX_ALT_M = 100.0;
+    const body_id_t spawn_body_id = (body_id_t)w->body_id;
+    const body_config_t* spawn_body = planet_get(spawn_body_id);
+    if (spawn_body) {
+        dvec3_t center = dvec3_make(spawn_body->pos_x,
+                                     spawn_body->pos_y,
+                                     spawn_body->pos_z);
+        dvec3_t local  = dvec3_sub(spawn, center);
+        double  r      = dvec3_length(local);
+        if (r > 1e-6) {
+            dvec3_t dir   = dvec3_scale(local, 1.0 / r);
+            float   surf  = planet_surface_altitude(spawn_body, dir);
+            if (surf < 0.5f) surf = 0.5f;
+            const double surface_r = spawn_body->radius_m + (double)surf;
+            const double ground_r  = surface_r + 1.5;
+            const double alt_above_surf = r - surface_r;
+            if (alt_above_surf > 0.0 && alt_above_surf < SNAP_MAX_ALT_M) {
+                spawn = dvec3_add(center, dvec3_scale(dir, ground_r));
+                printf("[main] MP spawn ground-snapped: was alt=%.1fm, snapped to %.1fm\n",
+                       r - spawn_body->radius_m,
+                       ground_r - spawn_body->radius_m);
+            }
+        }
+    }
+    G.player.position = spawn;
+    G.player.velocity = (dvec3_t){0};
+    G.player.yaw      = w->spawn_yaw;
+    G.player.pitch    = w->spawn_pitch;
+    /* Force a fresh planet basis at the new position so the saved
+     * yaw / pitch read as 'look this way relative to the surface'
+     * rather than 'apply on top of the previous body's basis'. The
+     * roll-slerp armed by the basis rebuild eases the camera into
+     * level over transition_timer_s. */
+    G.player.basis_ready = false;
+    G.player.last_tile   = -1;
+    G.player.transition_timer_s = config_lod()->roll_slerp_duration_s;
+    /* Loud diagnostic for the floating-spawn investigation. Reports
+     * the WELCOME pose, the body, the final applied position, and
+     * the altitude above that body's surface so we can tell exactly
+     * how far in the air the spawn ended up. */
+    {
+        const body_config_t* sb = planet_get((body_id_t)w->body_id);
+        double r = 0.0, alt = 0.0;
+        if (sb) {
+            double dx = spawn.x - sb->pos_x;
+            double dy = spawn.y - sb->pos_y;
+            double dz = spawn.z - sb->pos_z;
+            r = sqrt(dx*dx + dy*dy + dz*dz);
+            alt = r - sb->radius_m;
+        }
+        printf("[main] MP spawn applied: player_id=%u "
+               "welcome=(%.2f, %.2f, %.2f) body=%u -> pos=(%.2f, %.2f, %.2f) "
+               "r=%.2f alt=%+.2f yaw=%.2f pitch=%.2f\n",
+               w->player_id,
+               w->spawn_x, w->spawn_y, w->spawn_z, w->body_id,
+               spawn.x, spawn.y, spawn.z, r, alt,
+               w->spawn_yaw, w->spawn_pitch);
+    }
+    G_mp_spawn_applied = true;
+}
+
+/* Last position the client shipped to the server via
+ * net_client_send_player_state. Used by the 10 s position log so
+ * we can compare 'where the client thinks it is RIGHT NOW' vs
+ * 'where the server last heard from us'. Drift between the two
+ * is the signature of the floating-spawn bug: if the saved value
+ * on disk doesn't match what we're rendering at, something in
+ * the send-or-receive pipeline is mangling the y. */
+static dvec3_t G_last_sent_pos = (dvec3_t){0};
+static uint32_t G_last_sent_body = 0;
+static float   G_last_sent_yaw = 0.0f;
+static float   G_last_sent_pitch = 0.0f;
+static bool    G_last_sent_valid = false;
+
+/* Diagnostic: every 10 s log G.player.position alongside the most
+ * recent pose we sent to the server. The server saves what we
+ * sent, so the two should round-trip exactly. A divergence here
+ * (or between the spawn line and the first 10 s sample after a
+ * fresh join) tells us where the floating-spawn delta is coming
+ * from. */
+static double G_pos_log_accum_s = 0.0;
+static void   periodic_pos_log(double dt) {
+    G_pos_log_accum_s += dt;
+    if (G_pos_log_accum_s < 10.0) return;
+    G_pos_log_accum_s = 0.0;
+    const body_config_t* b = G.player.body ? G.player.body : G.body;
+    double r = 0.0, alt = 0.0;
+    if (b) {
+        double dx = G.player.position.x - b->pos_x;
+        double dy = G.player.position.y - b->pos_y;
+        double dz = G.player.position.z - b->pos_z;
+        r = sqrt(dx*dx + dy*dy + dz*dz);
+        alt = r - b->radius_m;
+    }
+    const char* mode = (menu_state() == GAME_IN_GAME_MP) ? "MP" :
+                       (menu_state() == GAME_IN_GAME_SP) ? "SP" : "menu";
+    printf("[main] pos %s body=%s curr=(%.2f, %.2f, %.2f) r=%.2f alt=%+.2f "
+           "yaw=%.2f pitch=%.2f grounded=%d\n",
+           mode, b ? b->name : "?",
+           G.player.position.x, G.player.position.y, G.player.position.z,
+           r, alt, G.player.yaw, G.player.pitch, (int)G.player.grounded);
+    if (G_last_sent_valid) {
+        double sr = 0.0, salt = 0.0;
+        if (b) {
+            double dx = G_last_sent_pos.x - b->pos_x;
+            double dy = G_last_sent_pos.y - b->pos_y;
+            double dz = G_last_sent_pos.z - b->pos_z;
+            sr = sqrt(dx*dx + dy*dy + dz*dz);
+            salt = sr - b->radius_m;
+        }
+        double ddx = G.player.position.x - G_last_sent_pos.x;
+        double ddy = G.player.position.y - G_last_sent_pos.y;
+        double ddz = G.player.position.z - G_last_sent_pos.z;
+        double delta = sqrt(ddx*ddx + ddy*ddy + ddz*ddz);
+        printf("[main] pos %s     sent=(%.2f, %.2f, %.2f) r=%.2f alt=%+.2f "
+               "body=%u yaw=%.2f pitch=%.2f  delta_from_curr=%.2fm\n",
+               mode,
+               G_last_sent_pos.x, G_last_sent_pos.y, G_last_sent_pos.z,
+               sr, salt, G_last_sent_body,
+               G_last_sent_yaw, G_last_sent_pitch, delta);
+    } else {
+        printf("[main] pos %s     sent=(none yet)\n", mode);
+    }
 }
 
 static double G_sp_save_accum = 0.0;
@@ -602,7 +1234,7 @@ static void draw_players_panel(float screen_w, float screen_h) {
     const float row_h    = 14.0f;
     const float pad      = 10.0f;
     const float title_h  = 22.0f;
-    const float w        = 360.0f;
+    const float w        = 460.0f;     /* widened for the name column */
     const float h        = title_h + (float)total * row_h + pad;
     const float x        = screen_w - w - 16.0f;
     const float y        = 16.0f;
@@ -645,7 +1277,7 @@ static void draw_players_panel(float screen_w, float screen_h) {
     sgl_v2f(x + w - t,   y);           sgl_v2f(x + w,       y);           sgl_v2f(x + w,       y + h);     sgl_v2f(x + w - t,   y + h);
     sgl_end();
 
-    sgl_draw();
+    /* No sgl_draw - centralised flush at end of frame. */
 
     /* Title + rows via sdtx. Single scale (= 1) for everything in the
      * panel — sdtx batches per-canvas state, and switching scales
@@ -671,9 +1303,25 @@ static void draw_players_panel(float screen_w, float screen_h) {
         if (!body) body = G.body;
         double lat, lon, alt;
         player_lat_lon_deg(G.player.position, body, &lat, &lon, &alt);
+        /* Prefer the active profile name for the local row - the
+         * net_client cache is also fed from this on WELCOME, but
+         * starting from the profile means we never show '(unknown)'
+         * to the player about themselves while WELCOME is in flight
+         * or if the cache slot raced. */
+        profile_t active;
+        const char* nm = NULL;
+        if (profile_get_active(&active) && active.name[0]) nm = active.name;
+        if (!nm) nm = net_client_name_for_id(wcm->player_id);
+        char nmbuf[17];
+        char fallback[17];
+        if (!nm || !*nm) {
+            snprintf(fallback, sizeof fallback, "id-%u", wcm->player_id);
+            nm = fallback;
+        }
+        snprintf(nmbuf, sizeof nmbuf, "%-16s", nm);
         snprintf(buf, sizeof buf,
-                 "* id=%-3u  %s  lat=%+7.2f  lon=%+7.2f  alt=%5.0fm",
-                 wcm->player_id, body->name, lat, lon, alt);
+                 "* %s  %s  lat=%+7.2f  lon=%+7.2f  alt=%5.0fm",
+                 nmbuf, body->name, lat, lon, alt);
         sdtx_canvas(screen_w, screen_h);
         sdtx_font(1);
         sdtx_origin((x + 12.0f) / 8.0f, row_y / 8.0f);
@@ -693,9 +1341,20 @@ static void draw_players_panel(float screen_w, float screen_h) {
         /* F1 shows the freshest known pose (no interp lag); the
          * renderer's lerp is purely cosmetic for smooth motion. */
         player_lat_lon_deg(rp->pos_cur, body, &lat, &lon, &alt);
+        const char* nm = net_client_name_for_id(rp->player_id);
+        char nmbuf[17];
+        char fallback[17];
+        if (!nm || !*nm) {
+            /* Show id-N rather than '(unknown)' so every row in the
+             * roster is identifiable - PLAYER_INFO might still be
+             * in flight for a freshly-joined peer. */
+            snprintf(fallback, sizeof fallback, "id-%u", rp->player_id);
+            nm = fallback;
+        }
+        snprintf(nmbuf, sizeof nmbuf, "%-16s", nm);
         snprintf(buf, sizeof buf,
-                 "  id=%-3u  %s  lat=%+7.2f  lon=%+7.2f  alt=%5.0fm",
-                 rp->player_id, body->name, lat, lon, alt);
+                 "  %s  %s  lat=%+7.2f  lon=%+7.2f  alt=%5.0fm",
+                 nmbuf, body->name, lat, lon, alt);
         sdtx_canvas(screen_w, screen_h);
         sdtx_font(1);
         sdtx_origin((x + 12.0f) / 8.0f, row_y / 8.0f);
@@ -777,7 +1436,7 @@ static void draw_desync_popup(float screen_w, float screen_h) {
     /* right */  sgl_v2f(x + w - t, y);     sgl_v2f(x + w, y);         sgl_v2f(x + w, y + h);     sgl_v2f(x + w - t, y + h);
     sgl_end();
 
-    sgl_draw();
+    /* No sgl_draw - centralised flush at end of frame. */
 
     /* Labels via sdtx. The scaled-canvas trick (same as menu.c): shrink
      * the canvas by `scale` so each 8-px char cell maps to `8 * scale`
@@ -845,6 +1504,27 @@ static void frame(void) {
     }
 
     maybe_apply_sp_resume();
+    maybe_apply_mp_spawn();
+    maybe_prime_mode_for_state();
+
+    /* Pointer-lock-loss -> open pause menu. The browser eats the
+     * first Escape press to release pointer lock (we never see the
+     * KEY_DOWN event). Detecting the lock-state transition is what
+     * gets the pause panel up on a SINGLE Esc press. Only fires
+     * during gameplay - the menu states don't lock the mouse to
+     * begin with. */
+    {
+        static bool s_was_mouse_locked = false;
+        bool now_locked = sapp_mouse_locked();
+        game_state_t st = menu_state();
+        bool in_gameplay = (st == GAME_IN_GAME_SP || st == GAME_IN_GAME_MP);
+        if (in_gameplay && s_was_mouse_locked && !now_locked
+            && !menu_pause_active()) {
+            menu_pause_toggle();
+            sapp_show_mouse(true);
+        }
+        s_was_mouse_locked = now_locked;
+    }
 
     const double raw_dt_sec = stm_sec(stm_laptime(&G.last_time));
     float dt = (float)raw_dt_sec;
@@ -889,20 +1569,29 @@ static void frame(void) {
     }
     profiler_end("worldgen");
 
-    /* Poll touch-button edge events before consuming input — the
+    /* Poll touch-button edge events before consuming input - the
      * teleport menu's mobile nav buttons live in input.c and this is
      * the only place to drive them. Also swallows any body-selection
-     * click before movement/interact reads the input state. */
-    teleport_menu_poll_touches();
+     * click before movement/interact reads the input state. Skipped
+     * in survival - no teleport entry points at all. */
+    if (G_debug_ui_visible) teleport_menu_poll_touches();
 
-    /* G-key toggles survival mode. Switching modes resets inventory
-     * to the appropriate starter state so creative-bonanza items
-     * don't persist into a fresh survival run, and so a survival
-     * stockpile doesn't leak back into a creative session. */
+    /* G-key toggles survival mode in SP. Switching modes resets the
+     * inventory to the appropriate starter state so creative-bonanza
+     * items don't persist into a fresh survival run, and so a
+     * survival stockpile doesn't leak back into a creative session.
+     *
+     * MP is always survival - creative would let any joiner spawn
+     * unlimited blocks and edit the shared world, so the toggle is
+     * gated to SP only here. Consume the edge either way so a stale
+     * press doesn't fire the moment the player exits to the main
+     * menu and starts an SP session. */
     if (input_consume_survival_toggle()) {
-        G.player.survival_mode = !G.player.survival_mode;
-        if (G.player.survival_mode) inventory_init_empty(&G.player.inventory);
-        else                        inventory_init_creative(&G.player.inventory);
+        if (menu_state() == GAME_IN_GAME_SP) {
+            G.player.survival_mode = !G.player.survival_mode;
+            if (G.player.survival_mode) inventory_init_empty(&G.player.inventory);
+            else                        inventory_init_creative(&G.player.inventory);
+        }
     }
 
     /* Pre-update body selection. Picks whichever body delivers the
@@ -929,12 +1618,44 @@ static void frame(void) {
     world_t* phys_world = world_for_body(G.player.body);
     if (!phys_world) phys_world = G.world;
     profiler_begin("player-update");
-    player_update(&G.player, phys_world, dt);
+    /* Pause keeps physics running so the world stays alive behind the
+     * panel - gravity pulls falling players to the ground, mining
+     * timers keep ticking, and MP clients don't desync from the
+     * server-authoritative simulation. We do zero out the held-key
+     * + click state for the duration so the player doesn't slide
+     * forward on a W that was held when Esc was pressed; they'll
+     * re-press to move on resume. */
+    if (menu_pause_active()) {
+        input_state_t* mut = input_state_mut();
+        mut->phys = (phys_input_t){0};
+        mut->left_held = false;
+        mut->right_held = false;
+        mut->left_click = false;
+        mut->right_click = false;
+        mut->middle_click = false;
+        mut->stick_active = false;
+        mut->stick_x = mut->stick_y = 0.0f;
+        mut->look_stick_active = false;
+        mut->look_stick_x = mut->look_stick_y = 0.0f;
+    }
+    /* MP join freeze: while the socket is still connecting / handshaking,
+     * the server's saved pose hasn't arrived yet. Running physics now
+     * would let the player fall from whatever stale pose the client
+     * last had, and then snap to the server pose when WELCOME lands -
+     * that's the "teleporting" the user sees. Skip the update entirely
+     * until net is READY; maybe_apply_mp_spawn applies the pose on the
+     * frame the WELCOME arrives, and simulation resumes from there. */
+    const bool mp_loading = (menu_state() == GAME_IN_GAME_MP
+                             && net_client_state() != NET_CLIENT_READY);
+    if (!mp_loading) {
+        player_update(&G.player, phys_world, dt);
+    }
     profiler_end("player-update");
     /* Throttled SP autosave: writes the player's pose to localStorage
      * every 5 s while in SP. Cheap (~140 byte string), serial to the
      * browser. No-op in MP — server-side persistence lands in M6. */
     maybe_autosave_sp((double)dt);
+    periodic_pos_log((double)dt);
 
     /* M4 position relay: when MP is READY, ship our pose to the server
      * every 3rd frame (~20 Hz at 60 fps capped by the server tick).
@@ -951,10 +1672,29 @@ static void frame(void) {
                                             G.player.position.z,
                                             G.player.yaw,
                                             G.player.pitch);
+            /* Mirror what we just put on the wire so periodic_pos_log
+             * can compare it against G.player.position later. */
+            G_last_sent_pos.x   = G.player.position.x;
+            G_last_sent_pos.y   = G.player.position.y;
+            G_last_sent_pos.z   = G.player.position.z;
+            G_last_sent_body    = body_id;
+            G_last_sent_yaw     = G.player.yaw;
+            G_last_sent_pitch   = G.player.pitch;
+            G_last_sent_valid   = true;
         }
     }
     profiler_begin("interact");
-    interact_update(&G.interact, phys_world, &G.player, dt);
+    /* interact_update keeps running while paused; the input zeroing
+     * above already cleared left_held / right_held, so mining +
+     * placement naturally stop without a separate gate. Letting the
+     * call through means raycast cleanup / tile invalidation still
+     * happens behind the panel. Also frozen during MP join until net
+     * is READY - mining a block before the server-authoritative pose
+     * arrives would target a chunk the player isn't actually standing
+     * in. */
+    if (!mp_loading) {
+        interact_update(&G.interact, phys_world, &G.player, dt);
+    }
     profiler_end("interact");
     input_consume();
 
@@ -1120,11 +1860,22 @@ static void frame(void) {
     /* UI overlays go on the swapchain on top of the water. */
     profiler_begin("ui");
     update_overlay(dt);
-    teleport_menu_draw();
-    draw_error_overlay();
-    profiler_draw();
-    draw_desync_popup(sapp_widthf(), sapp_heightf());
+    /* Always-on version + profile readout in the bottom-right corner,
+     * outside the F2 debug gate. */
+    draw_version_strip();
+    /* Teleport overlay is creative-only. Survival players (which
+     * includes everyone in MP) shouldn't see the fast-travel list at
+     * all - it would break the mining loop. */
+    if (G_debug_ui_visible) teleport_menu_draw();
+    if (G_debug_ui_visible) {
+        draw_error_overlay();
+        profiler_draw();
+    }
+    /* F1 players panel is independent of the F2 debug master so the
+     * server roster is reachable in normal play. The function
+     * internally early-outs when G_players_panel_visible is false. */
     draw_players_panel(sapp_widthf(), sapp_heightf());
+    draw_desync_popup(sapp_widthf(), sapp_heightf());
     chat_draw(sapp_widthf(), sapp_heightf());
     /* Nameplates above remote players. View/proj are still in scope
      * from the 3D pass earlier in frame(). The lookup goes through
@@ -1132,9 +1883,87 @@ static void frame(void) {
     remote_players_draw_nameplates(view, proj,
                                       sapp_widthf(), sapp_heightf(),
                                       net_client_name_for_id);
-    sdtx_draw();
+    /* No sdtx_draw here - a single flush at the end of the UI block
+     * (after pause / mining / hotbar / mobile UI all queue their
+     * text) avoids the multi-flush bug where later text reads
+     * stale GPU memory because sokol_debugtext only uploads the
+     * vertex buffer once per frame. */
     hotbar_ui_draw(&G.player.inventory);
+    /* Real (non-ASCII) mining progress bar. Self-gates on
+     * survival_mode + mining_progress > 0; per CLAUDE.md the old
+     * "[####----] 50%" sdtx-printf bar was a no-go. */
+    draw_mining_bar(sapp_widthf(), sapp_heightf());
+    /* Sync the hamburger debug-menu visibility with the master F2
+     * toggle every frame. mobile_ui owns its own draw state; we
+     * just forward the boolean rather than threading it through
+     * every call. Same shape for the standalone teleport button -
+     * survival hides it because teleport is creative-only. */
+    mobile_ui_set_debug_menu_visible(G_debug_ui_visible);
+    mobile_ui_set_teleport_visible(G_debug_ui_visible);
     mobile_ui_draw();
+    /* DOM overlays are mobile-only scaffolding (pause button +
+     * joystick deck). The pause panel itself is in-canvas, drawn
+     * by menu_pause_draw below. Hide both DOM overlays while the
+     * pause panel is up so taps don't pass behind it. */
+#ifdef __EMSCRIPTEN__
+    {
+        game_state_t st = menu_state();
+        bool in_game = (st == GAME_IN_GAME_SP || st == GAME_IN_GAME_MP);
+        bool show_mobile_dom = in_game && !menu_pause_active();
+        static int last_pause_btn = -1, last_mobile = -1;
+        if ((int)show_mobile_dom != last_pause_btn) {
+            tenebris_pause_button_set_visible(show_mobile_dom ? 1 : 0);
+            last_pause_btn = (int)show_mobile_dom;
+        }
+        if ((int)show_mobile_dom != last_mobile) {
+            tenebris_mobile_controls_set_visible(show_mobile_dom ? 1 : 0);
+            last_mobile = (int)show_mobile_dom;
+        }
+    }
+#endif
+    /* Pause overlay draws last so the dim backdrop + panel sit on
+     * top of every HUD element. No-op when not active. */
+    menu_pause_draw(sapp_width(), sapp_height());
+
+    /* Connecting overlay: drawn while the MP socket is doing its
+     * INITIAL connect / handshake (i.e. the player has never been
+     * READY in this session). Once they've been ready, a drop
+     * triggers menu_tick to auto-open the pause panel which carries
+     * its own reconnect UI - showing both would double up. */
+    if (menu_state() == GAME_IN_GAME_MP
+        && net_client_state() != NET_CLIENT_READY
+        && !menu_pause_active()) {
+        net_client_state_t ns = net_client_state();
+        const char* status =
+            ns == NET_CLIENT_CONNECTING ? "OPENING SOCKET"  :
+            ns == NET_CLIENT_HANDSHAKE  ? "WAITING FOR SERVER" :
+                                          "RECONNECTING";
+        const char* room = menu_room_code();
+        char room_buf[64];
+        room_buf[0] = 0;
+        if (room && room[0]) {
+            snprintf(room_buf, sizeof room_buf, "ROOM %s", room);
+        }
+        menu_connecting_draw(sapp_width(), sapp_height(), status, room_buf);
+    }
+
+    /* ONE sgl_draw per frame, at the very end after every UI module
+     * has queued its geometry. sokol_gl uploads its vertex buffer to
+     * the GPU only on the first sgl_draw of the frame and never
+     * re-uploads; any sgl_draw called mid-frame would freeze the
+     * GPU's vertex view at that point, and every later module's
+     * quads (panel backdrops, hotbar slots, joysticks) would
+     * reference un-uploaded memory and render as nothing. This
+     * single flush replays every recorded command - 3D players
+     * queued in the offscreen pass land here as well, depth-tested
+     * against the swapchain depth that compose_to_swapchain wrote. */
+    sgl_draw();
+
+    /* ONE sdtx_draw per frame, at the very end after every HUD
+     * module has queued its text. Earlier flushes were the root
+     * cause of stale-GPU-text bleeding between frames - see
+     * hotbar_ui_draw and draw_mining_bar comments. */
+    sdtx_draw();
     profiler_end("ui");
 
     profiler_end_frame();
@@ -1150,68 +1979,98 @@ static void event(const sapp_event* e) {
         menu_event(e);
         return;
     }
+    /* In-game pause overlay. When active, swallow every event so
+     * player movement / chat / interact don't fire behind the panel.
+     * Escape during gameplay toggles the pause on/off; pause's own
+     * event handler swallows Escape while it's open. */
+    if (menu_pause_active()) {
+        if (menu_pause_event(e)) return;
+    }
+    /* Escape: do nothing directly here. The browser intercepts Escape
+     * to release pointer lock; the per-frame pointer-lock-loss
+     * detector earlier in frame() catches the resulting state
+     * transition and opens the pause panel on the same gesture.
+     * Resume is intentionally NOT bound to Escape - the player has
+     * to click RETURN TO GAME so a stray Esc keypress can't dismiss
+     * the panel by accident. */
+    if (e->type == SAPP_EVENTTYPE_KEY_DOWN
+        && e->key_code == SAPP_KEYCODE_ESCAPE) {
+        return;
+    }
     /* Chat takes Enter (open compose) and every keystroke while
      * composing. Returns true when it owned the event so movement /
      * teleport keys don't double-fire while the player is typing. */
     if (chat_event(e)) return;
-    /* Teleport menu gets first crack — it intercepts T/M/arrows/enter
-     * when open so those keys don't also reach the movement layer. */
-    if (teleport_menu_event(e, &G.player)) return;
-    /* Debug toggle — H on desktop, tap top-right ~96 px corner on
-     * touch devices. Hides the chunked planet terrain so the
-     * atmosphere / sky / distant LOD passes can be verified in
-     * isolation. State lives in the renderer; we just flip it here. */
-    /* Keyboard shortcuts for the debug toggles. Mirror the four
-     * buttons in the hamburger drop-down (mobile_ui.c) so a desktop
-     * user can flip them without reaching for the mouse. */
-    if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_H) {
-        renderer_set_terrain_visible(!renderer_terrain_visible());
+    /* Teleport menu gets first crack - it intercepts T/M/arrows/enter
+     * when open so those keys don't also reach the movement layer.
+     * Gated on the F2 debug UI master so a casual player can't
+     * accidentally summon the fast-travel list. */
+    if (G_debug_ui_visible) {
+        if (teleport_menu_event(e, &G.player)) return;
+    }
+    /* F2 toggles the master debug-UI visibility. Every other debug
+     * key (F1, F3, P, H, J, K) and the mobile hamburger menu are
+     * gated on G_debug_ui_visible so first-time players never see
+     * the scaffolding. F2 itself stays live always so they can
+     * still get back in. */
+    if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_F2) {
+        G_debug_ui_visible = !G_debug_ui_visible;
         return;
     }
-    if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_J) {
-        renderer_set_water_visible(!renderer_water_visible());
-        return;
-    }
-    if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_K) {
-        renderer_set_skybox_visible(!renderer_skybox_visible());
-        return;
-    }
-    /* Profiler toggle. F3 is the "natural" key — the JS profiler uses
-     * it too — so we bind it. The browser also intercepts F3 for the
-     * "find next" dialog, but the keydown event still fires to sokol
-     * first, so the toggle works (the find dialog may also pop up;
-     * pressing F3 again closes it). 'P' is bound as a backup that's
-     * not browser-intercepted. */
-    /* F1 toggles the players panel (lat/lon list of everyone online). */
+    /* The remaining debug shortcuts are no-ops while the debug UI is
+     * hidden. The mobile hamburger menu draws / hit-tests only when
+     * debug is visible (gated below), so its toggles can't sneak
+     * around this either. */
+    /* F1 stays available regardless of the F2 debug master - the
+     * server roster is a gameplay-facing panel (who's online, where
+     * are they) rather than dev scaffolding, and the user wants it
+     * one keypress away. */
     if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_F1) {
         G_players_panel_visible = !G_players_panel_visible;
         return;
     }
-    if (e->type == SAPP_EVENTTYPE_KEY_DOWN &&
-        (e->key_code == SAPP_KEYCODE_F3 || e->key_code == SAPP_KEYCODE_P)) {
-        profiler_toggle_visible();
-        return;
-    }
-    /* Note: no F key for the heatmap — F is already bound to fly-mode
-     * in input.c. The heatmap is reachable via the menu button only. */
-
-    /* Debug-menu hit-test runs first on both touch + mouse so the
-     * hamburger and its popup buttons consume the input before it
-     * reaches the movement layer. */
-    if (e->type == SAPP_EVENTTYPE_TOUCHES_BEGAN && e->num_touches > 0) {
-        if (mobile_ui_handle_touch(e->touches[0].pos_x, e->touches[0].pos_y)) {
+    if (G_debug_ui_visible) {
+        if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_H) {
+            renderer_set_terrain_visible(!renderer_terrain_visible());
+            return;
+        }
+        if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_J) {
+            renderer_set_water_visible(!renderer_water_visible());
+            return;
+        }
+        if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_K) {
+            renderer_set_skybox_visible(!renderer_skybox_visible());
+            return;
+        }
+        if (e->type == SAPP_EVENTTYPE_KEY_DOWN &&
+            (e->key_code == SAPP_KEYCODE_F3 || e->key_code == SAPP_KEYCODE_P)) {
+            profiler_toggle_visible();
             return;
         }
     }
-    if (e->type == SAPP_EVENTTYPE_MOUSE_DOWN && e->mouse_button == SAPP_MOUSEBUTTON_LEFT) {
-        if (mobile_ui_handle_touch(e->mouse_x, e->mouse_y)) {
-            return;
+
+    /* (Mobile pause button is an HTML overlay now - its click
+     * handler calls tenebris_js_pause_pressed directly via
+     * Module.ccall, so we don't hit-test it on the canvas event
+     * stream.) */
+
+    /* Mobile hamburger hit-test. Only active while the debug UI is
+     * shown - the dedicated teleport (T) button next to the hamburger
+     * still works because it lives in its own draw path. */
+    if (G_debug_ui_visible) {
+        if (e->type == SAPP_EVENTTYPE_TOUCHES_BEGAN && e->num_touches > 0) {
+            if (mobile_ui_handle_touch(e->touches[0].pos_x, e->touches[0].pos_y)) {
+                return;
+            }
+        }
+        if (e->type == SAPP_EVENTTYPE_MOUSE_DOWN
+            && e->mouse_button == SAPP_MOUSEBUTTON_LEFT) {
+            if (mobile_ui_handle_touch(e->mouse_x, e->mouse_y)) {
+                return;
+            }
         }
     }
     input_event(e);
-    if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_ESCAPE) {
-        sapp_lock_mouse(false);
-    }
 }
 
 static void cleanup(void) {

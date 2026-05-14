@@ -151,7 +151,54 @@ void hotbar_ui_draw(const inventory_t* inv) {
     }
     sgl_disable_texture();
 
-    sgl_draw();
+    /* ---- pass 2b: black quantity badge under each finite-count slot ---
+     * Sits on top of the textured icon but below the sdtx digits drawn
+     * in pass 3, so the count reads clearly even when it overlaps a
+     * bright tile colour. Sized to the digit string (8 px per char at
+     * scale 1.0) + a 1-px halo. CREATIVE_COUNT (>9000) skips the badge
+     * for the same reason pass 3 skips the digits - it's the "infinite"
+     * sentinel and a giant number on every slot is just noise. */
+    sgl_load_pipeline(P_FRAME);
+    for (int i = 0; i < slots; ++i) {
+        const inv_slot_t* s = &inv->slots[i];
+        const float x = x0 + (float)i * (SLOT_SIZE + SLOT_GAP);
+        const float y = y0;
+        const float cell = 8.0f;
+
+        /* Slot number badge at the top-left of every slot. The
+         * number always renders in pass 3 (selected = bright
+         * yellow, others = soft grey) but the underlying scene was
+         * making it inconsistent to read - bright sky behind the
+         * "1" of slot 1 erased it for the user. A black halo
+         * matches the count badge at the bottom-right and gives
+         * the digits a consistent surface. */
+        {
+            const float bx = x + 1.0f;
+            const float by = y + 1.0f;
+            const float n_w = cell + 2.0f;
+            const float n_h = cell + 2.0f;
+            filled_quad(bx, by, n_w, n_h, 0.0f, 0.0f, 0.0f, 0.85f);
+        }
+
+        /* Count badge (bottom-right). Only for finite-count slots;
+         * empty slots have nothing to caption and CREATIVE_COUNT
+         * (>9000) is the "infinite" sentinel. */
+        if (s->type == BLOCK_AIR || s->count <= 0) continue;
+        if (s->count > 9000) continue;
+        char digits[16];
+        int  n = snprintf(digits, sizeof(digits), "%d", s->count);
+        const float text_w = cell * (float)n;
+        const float bx = x + SLOT_SIZE - text_w - 3.0f;
+        const float by = y + SLOT_SIZE - 11.0f;
+        filled_quad(bx, by, text_w + 2.0f, cell + 2.0f,
+                    0.0f, 0.0f, 0.0f, 0.85f);
+    }
+
+    /* No sgl_draw() here. sokol_gl uploads its vertex buffer only on
+     * the FIRST sgl_draw of the frame, then never re-uploads; any
+     * vertices queued by later modules would reference un-uploaded
+     * GPU memory. main_web does a single sgl_draw at end of frame
+     * after every UI module has queued. */
 
     /* ---- pass 3: slot numbers + finite-count badges via sdtx ---- */
     /* sdtx is fine to drive in a second flush per frame — main_web
@@ -186,5 +233,10 @@ void hotbar_ui_draw(const inventory_t* inv) {
         sdtx_puts(buf);
     }
     sdtx_color3b(0xff, 0xff, 0xff);
-    sdtx_draw();
+    /* sdtx flush is centralised at the end of main_web's UI block.
+     * Calling sdtx_draw here would force an early upload of the
+     * vertex buffer, after which any text queued later in the same
+     * frame (mining bar, pause overlay, nameplates) would render
+     * stale GPU memory because sokol_debugtext guards
+     * sg_update_buffer behind a once-per-frame frame_id check. */
 }
