@@ -287,11 +287,12 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
              * we can confirm the server's sending us peers. Quiet
              * enough not to drown out real warnings. */
             static uint64_t snap_recv = 0;
-            if ((++snap_recv % 33) == 0) {
-                printf("[net-client] snapshot #%llu: %u entries (kept %d remote)\n",
-                       (unsigned long long)snap_recv,
-                       (unsigned)snap.player_count, n_out);
-            }
+            ++snap_recv;
+            /* if ((snap_recv % 33) == 0) {
+             *     printf("[net-client] snapshot #%llu: %u entries (kept %d remote)\n",
+             *            (unsigned long long)snap_recv,
+             *            (unsigned)snap.player_count, n_out);
+             * } */
             break;
         }
         default:

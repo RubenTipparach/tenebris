@@ -1129,7 +1129,10 @@ static bool    G_last_sent_valid = false;
 static double G_pos_log_accum_s = 0.0;
 static void   periodic_pos_log(double dt) {
     G_pos_log_accum_s += dt;
-    if (G_pos_log_accum_s < 10.0) return;
+    /* 1 s cadence: short enough that idle-drift (player walking off a
+     * mid-air spawn under gravity) shows up within a sample or two of
+     * the spawn line, instead of having to wait 10 s. */
+    if (G_pos_log_accum_s < 1.0) return;
     G_pos_log_accum_s = 0.0;
     const body_config_t* b = G.player.body ? G.player.body : G.body;
     double r = 0.0, alt = 0.0;
