@@ -291,28 +291,44 @@ int saves_load_world(world_t* w, const char* room, uint64_t seed) {
 /* Per-player pose                                                    */
 /* ----------------------------------------------------------------- */
 
-static bool token_is_valid(const char* tok) {
-    if (!tok || !*tok) return false;
-    size_t len = strlen(tok);
-    if (len > 64) return false;
-    for (size_t i = 0; i < len; ++i) {
-        char c = tok[i];
-        if (!((c >= '0' && c <= '9') ||
-              (c >= 'a' && c <= 'f') ||
-              (c >= 'A' && c <= 'F') ||
-              c == '-' || c == '_')) return false;
+/* Build a filesystem-safe key from a player name. Lowercase, allow
+ * [a-z0-9_-], substitute '_' for space, drop everything else.
+ * Names that sanitize to empty (e.g. all emoji) return false so the
+ * caller skips the save instead of writing to a zero-length path.
+ *
+ * This is the on-disk identity for player poses: the same display
+ * name always lands on the same save file, which is what the user
+ * means by 'Ruben should spawn where Ruben left off' even across
+ * profile re-creation, browser swap, or localStorage wipes. The
+ * already-enforced unique-name rule on HELLO keeps two simultaneous
+ * connections from fighting over the same file. */
+static bool name_to_key(const char* name, char* out, size_t cap) {
+    if (!name || !*name || cap < 2) return false;
+    size_t o = 0;
+    for (size_t i = 0; name[i] && o + 1 < cap; ++i) {
+        char c = name[i];
+        if (c == ' ') { out[o++] = '_'; continue; }
+        if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+        if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+            c == '-' || c == '_') {
+            out[o++] = c;
+        }
     }
-    return true;
+    out[o] = 0;
+    return o > 0;
 }
 
-static void player_path(char* out, size_t cap, const char* token) {
-    snprintf(out, cap, "%s/players/%s.dat", G_saves_dir, token);
+static bool player_path_for_name(char* out, size_t cap, const char* name) {
+    char key[64];
+    if (!name_to_key(name, key, sizeof key)) return false;
+    int n = snprintf(out, cap, "%s/players/%s.dat", G_saves_dir, key);
+    return n > 0 && (size_t)n < cap;
 }
 
-bool saves_write_player(const char* token, const saves_player_pose_t* pose) {
-    if (!G_saves_dir || !pose || !token_is_valid(token)) return false;
+bool saves_write_player(const char* name, const saves_player_pose_t* pose) {
+    if (!G_saves_dir || !pose) return false;
     char path[512];
-    player_path(path, sizeof path, token);
+    if (!player_path_for_name(path, sizeof path, name)) return false;
     /* On-disk layout matches the in-memory struct; both server and
      * future loader see the same C ABI. Bump SAVES_PLAYER_VERSION
      * when fields shift. */
@@ -321,10 +337,10 @@ bool saves_write_player(const char* token, const saves_player_pose_t* pose) {
     return write_atomic(path, &out, sizeof out);
 }
 
-bool saves_load_player(const char* token, saves_player_pose_t* out) {
-    if (!G_saves_dir || !out || !token_is_valid(token)) return false;
+bool saves_load_player(const char* name, saves_player_pose_t* out) {
+    if (!G_saves_dir || !out) return false;
     char path[512];
-    player_path(path, sizeof path, token);
+    if (!player_path_for_name(path, sizeof path, name)) return false;
     FILE* f = fopen(path, "rb");
     if (!f) return false;
     saves_player_pose_t buf;
@@ -333,7 +349,7 @@ bool saves_load_player(const char* token, saves_player_pose_t* out) {
     if (n != sizeof buf) return false;
     if (buf.version != SAVES_PLAYER_VERSION) {
         fprintf(stderr, "[saves] player %s: version %u != %u, ignoring\n",
-                token, buf.version, SAVES_PLAYER_VERSION);
+                name, buf.version, SAVES_PLAYER_VERSION);
         return false;
     }
     *out = buf;

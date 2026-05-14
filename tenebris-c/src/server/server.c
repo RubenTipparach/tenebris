@@ -261,14 +261,20 @@ static void send_welcome(server_t* s, server_client_t* cl) {
         .spawn_z    = spawn_body->pos_z,
         .body_id    = BODY_TENEBRIS,
     };
+    /* Resume the player at their last known pose. The save key is
+     * the sanitized display name now (not the profile token), so
+     * the same name reliably finds the same save across browser
+     * swaps / profile re-creation / localStorage wipes. The server
+     * already enforces unique names at HELLO, so two simultaneous
+     * connections can't fight over the same file. */
     saves_player_pose_t resume;
-    if (cl->token[0] && saves_load_player(cl->token, &resume)) {
+    if (cl->name[0] && saves_load_player(cl->name, &resume)) {
         w.spawn_x = resume.pos_x;
         w.spawn_y = resume.pos_y;
         w.spawn_z = resume.pos_z;
         w.body_id = resume.body_id;
-        printf("[server] resume profile=%s body=%u pos=(%.1f, %.1f, %.1f)\n",
-               cl->token, resume.body_id, resume.pos_x, resume.pos_y, resume.pos_z);
+        printf("[server] resume name=%s body=%u pos=(%.1f, %.1f, %.1f)\n",
+               cl->name, resume.body_id, resume.pos_x, resume.pos_y, resume.pos_z);
     }
 
     uint8_t buf[MSG_HEADER_SIZE + MSG_WELCOME_WIRE_SIZE];
@@ -639,9 +645,11 @@ static void on_close(net_conn_t* conn, net_close_reason_t reason, void* user) {
     server_client_t* cl = find_client_by_conn(s, conn);
     if (!cl) return;
     /* Persist the pose so the player resumes here on reconnect.
-     * Token-keyed — only profile-bearing sessions get saved; guests
-     * fall through. */
-    if (cl->has_state && cl->token[0]) {
+     * Name-keyed (sanitized display name) so the same identity
+     * always lands on the same file. Gated on cl->token[0] so
+     * server-stamped 'guest-N' connections don't pollute the
+     * saves dir; only real profile-bearing sessions persist. */
+    if (cl->has_state && cl->token[0] && cl->name[0]) {
         saves_player_pose_t pose = {
             .body_id = cl->body_id,
             .pos_x   = cl->pos_x,
@@ -650,7 +658,7 @@ static void on_close(net_conn_t* conn, net_close_reason_t reason, void* user) {
             .yaw     = cl->yaw,
             .pitch   = cl->pitch,
         };
-        saves_write_player(cl->token, &pose);
+        saves_write_player(cl->name, &pose);
     }
     printf("[server] close: player_id=%u name=%s (reason=%d)\n",
            cl->player_id, cl->name[0] ? cl->name : "(unnamed)", (int)reason);
@@ -846,7 +854,7 @@ void server_tick(server_t* s) {
         int saved_poses = 0;
         for (int i = 0; i < SERVER_MAX_CLIENTS; ++i) {
             server_client_t* cl = &s->clients[i];
-            if (!cl->conn || !cl->has_state || !cl->token[0]) continue;
+            if (!cl->conn || !cl->has_state || !cl->token[0] || !cl->name[0]) continue;
             const double dx = cl->pos_x - cl->last_saved_pos_x;
             const double dy = cl->pos_y - cl->last_saved_pos_y;
             const double dz = cl->pos_z - cl->last_saved_pos_z;
@@ -857,7 +865,7 @@ void server_tick(server_t* s) {
                 .pos_x   = cl->pos_x, .pos_y = cl->pos_y, .pos_z = cl->pos_z,
                 .yaw     = cl->yaw,   .pitch = cl->pitch,
             };
-            if (saves_write_player(cl->token, &pose)) {
+            if (saves_write_player(cl->name, &pose)) {
                 ++saved_poses;
                 cl->last_saved_pos_x = cl->pos_x;
                 cl->last_saved_pos_y = cl->pos_y;
@@ -893,13 +901,13 @@ void server_shutdown(server_t* s) {
     int final_poses = 0;
     for (int i = 0; i < SERVER_MAX_CLIENTS; ++i) {
         server_client_t* cl = &s->clients[i];
-        if (!cl->conn || !cl->has_state || !cl->token[0]) continue;
+        if (!cl->conn || !cl->has_state || !cl->token[0] || !cl->name[0]) continue;
         saves_player_pose_t pose = {
             .body_id = cl->body_id,
             .pos_x   = cl->pos_x, .pos_y = cl->pos_y, .pos_z = cl->pos_z,
             .yaw     = cl->yaw,   .pitch = cl->pitch,
         };
-        if (saves_write_player(cl->token, &pose)) ++final_poses;
+        if (saves_write_player(cl->name, &pose)) ++final_poses;
     }
     printf("[server] final flush: %d poses\n", final_poses);
     fflush(stdout);

@@ -17,7 +17,9 @@
  *       <tile-id>.col     128 raw bytes — the tile's full block column.
  *                         Overlaid onto the procgen baseline at boot.
  *   players/
- *     <token>.dat         binary blob: { body_id, x, y, z, yaw, pitch }.
+ *     <name>.dat          binary blob: { body_id, x, y, z, yaw, pitch }.
+ *                         Filename is the sanitized lowercase form
+ *                         of the player's display name.
  *
  * Files are written atomically by saves_write_*  via a *.tmp swap so a
  * crash mid-write leaves the previous good copy intact.
@@ -68,11 +70,16 @@ bool saves_write_tile(world_t* w, const char* room, uint64_t seed, int tile_idx)
  * covers chunk edits). */
 int  saves_flush_world(world_t* w, const char* room, uint64_t seed);
 
-/* Per-player pose. `token` must be a non-empty hex string (the HELLO
- * token); empty tokens are skipped so guest sessions don't fight over
- * a single anonymous file. */
-bool saves_write_player(const char* token, const saves_player_pose_t* pose);
-bool saves_load_player (const char* token, saves_player_pose_t* out);
+/* Per-player pose. `name` is the player's display name; the file
+ * key is a sanitized lowercase form (alnum + dash + underscore;
+ * spaces become _). Same name -> same file across browser swaps,
+ * profile re-creation, or localStorage wipes. The HELLO-time
+ * unique-name check on the server prevents two simultaneous
+ * connections from racing against the same file. Names that
+ * sanitize to empty (all emoji etc.) return false rather than
+ * writing to a zero-length path. */
+bool saves_write_player(const char* name, const saves_player_pose_t* pose);
+bool saves_load_player (const char* name, saves_player_pose_t* out);
 
 /* ----------------------------------------------------------------- */
 /* Chat log per room (M6+, but ships in the chat commit). */
