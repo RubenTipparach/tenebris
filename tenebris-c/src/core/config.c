@@ -263,6 +263,14 @@ static lod_config_t S_LOD = {
     .jetpack_hold_threshold_s    = 0.5f,
     .jetpack_accel_mps2          = 42.0f,
     .jetpack_max_vy_mps          = 14.0f,
+    .player_height_m             = 1.8f,
+    .water_gravity_mult          = 0.30f,
+    .water_drag_per_s            = 3.0f,
+    .water_movement_mult         = 0.50f,
+    .water_swim_force_mps2       = 20.0f,
+    .water_surface_float_height_m = -0.8f,
+    .water_body_check_height_m   = 0.50f,
+    .water_submerged_jump_mult   = 0.30f,
 };
 
 const lod_config_t* config_lod(void) { return &S_LOD; }
@@ -375,6 +383,22 @@ int config_load_lod(const char* path) {
                             S_LOD.jetpack_accel_mps2          = (float)strtod(val, NULL);
                         } else if (strcmp(key, "jetpack_max_vy_mps"       ) == 0) {
                             S_LOD.jetpack_max_vy_mps          = (float)strtod(val, NULL);
+                        } else if (strcmp(key, "player_height_m"          ) == 0) {
+                            S_LOD.player_height_m             = (float)strtod(val, NULL);
+                        } else if (strcmp(key, "water_gravity_mult"       ) == 0) {
+                            S_LOD.water_gravity_mult          = (float)strtod(val, NULL);
+                        } else if (strcmp(key, "water_drag_per_s"         ) == 0) {
+                            S_LOD.water_drag_per_s            = (float)strtod(val, NULL);
+                        } else if (strcmp(key, "water_movement_mult"      ) == 0) {
+                            S_LOD.water_movement_mult         = (float)strtod(val, NULL);
+                        } else if (strcmp(key, "water_swim_force_mps2"    ) == 0) {
+                            S_LOD.water_swim_force_mps2       = (float)strtod(val, NULL);
+                        } else if (strcmp(key, "water_surface_float_height_m") == 0) {
+                            S_LOD.water_surface_float_height_m = (float)strtod(val, NULL);
+                        } else if (strcmp(key, "water_body_check_height_m") == 0) {
+                            S_LOD.water_body_check_height_m   = (float)strtod(val, NULL);
+                        } else if (strcmp(key, "water_submerged_jump_mult") == 0) {
+                            S_LOD.water_submerged_jump_mult   = (float)strtod(val, NULL);
                         } else {
                             printf("[config] %s:%d: unknown key '%s'\n",
                                    path, line_no, key);

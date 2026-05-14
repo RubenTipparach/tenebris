@@ -162,6 +162,47 @@ typedef struct {
     float jetpack_hold_threshold_s;
     float jetpack_accel_mps2;
     float jetpack_max_vy_mps;
+
+    /* Player capsule. height_m is foot-to-head; head collision uses
+     * feet + height_m against the ceiling block bottom radius. */
+    float player_height_m;
+
+    /* Water physics — ported from JS PlayerConfig WATER_* knobs.
+     *   gravity_mult         — multiplier on body gravity while
+     *                          the player's body is submerged. 0.3
+     *                          gives the slow-sink feel.
+     *   drag_per_s           — exponential damping coefficient on
+     *                          velocity while submerged
+     *                          (velocity *= exp(-drag * dt)). Slows
+     *                          horizontal motion + falling.
+     *   movement_mult        — horizontal walk/sprint speed scalar
+     *                          while submerged.
+     *   swim_force_mps2      — upward acceleration while jump is
+     *                          held under water.
+     *   surface_float_height_m
+     *                        — feet radius offset relative to the
+     *                          water cap radius at which a swimming
+     *                          player floats stably. Negative =
+     *                          feet sit BELOW the cap so the head
+     *                          breaks the surface but the body
+     *                          doesn't bob fully out.
+     *   body_check_height_m  — height above feet used to sample
+     *                          "body submerged" — gates whether the
+     *                          water gravity/drag apply, distinct
+     *                          from "eyes submerged" (eye check uses
+     *                          EYE_HEIGHT) which drives the swim
+     *                          jump weakening + jetpack lock-out.
+     *   submerged_jump_mult  — fraction of jump_velocity_mps applied
+     *                          when jumping while fully submerged
+     *                          (eyes + body in water). JS uses the
+     *                          gravity_mult value here directly. */
+    float water_gravity_mult;
+    float water_drag_per_s;
+    float water_movement_mult;
+    float water_swim_force_mps2;
+    float water_surface_float_height_m;
+    float water_body_check_height_m;
+    float water_submerged_jump_mult;
 } lod_config_t;
 
 const lod_config_t* config_lod(void);
