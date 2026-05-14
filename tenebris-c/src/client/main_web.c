@@ -646,8 +646,20 @@ static void draw_version_strip(void) {
     char line[80];
     int  n = 0;
     if (menu_state() == GAME_IN_GAME_MP) {
+        /* Priority: active profile name > server-side cached name
+         * for our welcome.player_id > 'guest'. The cache fallback
+         * picks up the server's 'guest-N' label when the player
+         * really did join without a profile, and the explicit
+         * 'guest' string covers the moment between menu transition
+         * and WELCOME. */
         profile_t active;
-        const char* nm = profile_get_active(&active) ? active.name : "guest";
+        const char* nm = NULL;
+        if (profile_get_active(&active) && active.name[0]) nm = active.name;
+        if (!nm) {
+            const net_client_welcome_t* w = net_client_welcome();
+            if (w) nm = net_client_name_for_id(w->player_id);
+        }
+        if (!nm || !*nm) nm = "guest";
         n = snprintf(line, sizeof line, "%s  v%u",
                      nm, TENEBRIS_PROTOCOL_VERSION);
     } else {

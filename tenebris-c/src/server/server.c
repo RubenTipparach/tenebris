@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>     /* strcasecmp - POSIX */
 
 /* ------------------------------------------------------------------ */
 /* Room management. Public room lives at rooms[0]; private rooms get
@@ -329,6 +330,37 @@ static void handle_hello(server_t* s, server_client_t* cl,
     /* Room code — fixed-8 on the wire; null-padded. Empty = public. */
     memcpy(cl->room, h.room_code, SERVER_ROOM_LEN);
     cl->room[SERVER_ROOM_LEN] = 0;
+
+    /* Reject duplicate names (case-insensitive) across the whole
+     * server. Two clients sharing a label would make chat ambiguous
+     * ('who is Alice?'), break per-profile pose lookup downstream
+     * if tokens were ever ambiguous, and confuse F1 / nameplates.
+     * Picking the first-come wins is the simplest rule. The
+     * incoming connection gets MSG_KICK with reason=KICK_NAME_TAKEN
+     * so the client surfaces a real popup, not a silent drop. */
+    {
+        bool taken = false;
+        for (int i = 0; i < SERVER_MAX_CLIENTS; ++i) {
+            const server_client_t* peer = &s->clients[i];
+            if (peer == cl) continue;
+            if (!peer->conn || !peer->handshaked) continue;
+            if (peer->name[0] == 0) continue;
+            if (strcasecmp(peer->name, cl->name) == 0) { taken = true; break; }
+        }
+        if (taken) {
+            fprintf(stderr, "[server] HELLO name='%s' already in use, kicking player_id=%u\n",
+                    cl->name, cl->player_id);
+            msg_kick_t kick = { .reason = KICK_NAME_TAKEN };
+            snprintf((char*)kick.text, sizeof kick.text,
+                     "Name '%s' is already on the server. Pick another profile.",
+                     cl->name);
+            uint8_t buf[MSG_HEADER_SIZE + MSG_KICK_WIRE_SIZE];
+            size_t kn = proto_write_kick(buf, sizeof buf, &kick);
+            if (kn > 0) net_send(cl->conn, NET_CHANNEL_RELIABLE, buf, kn);
+            net_close(cl->conn);
+            return;
+        }
+    }
 
     /* Acquire the room (find or create + clone worlds). If the slot
      * pool is full, the client gets dropped — we can't host them

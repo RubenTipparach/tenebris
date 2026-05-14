@@ -233,6 +233,7 @@ typedef enum {
     KICK_VERSION_MISMATCH = 1,    /* client's protocol version != server's */
     KICK_SERVER_FULL      = 2,
     KICK_GENERIC          = 3,
+    KICK_NAME_TAKEN       = 4,    /* another connected client has this name */
 } kick_reason_t;
 
 typedef struct {
