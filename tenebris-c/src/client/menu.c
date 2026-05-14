@@ -1718,13 +1718,21 @@ void menu_tick(void) {
     /* Promote to the error popup if we have nothing to retry with
      * (manual disconnect path, or the very first connect failed
      * before reconnect_url got populated - shouldn't happen but
-     * keeps the surface symmetric). */
-    if (!M.reconnect_url[0]) {
+     * keeps the surface symmetric). Same path for server-issued
+     * terminal kicks (version mismatch, etc) - those never resolve
+     * via retry, so jump straight to the popup with the kick text. */
+    if (!M.reconnect_url[0] || !net_client_can_retry()) {
         const char* msg = net_client_error_message();
         snprintf(M.error_msg, sizeof M.error_msg, "%s",
                  msg ? msg : "connection failed");
         M.state = GAME_MP_CONNECT_ERROR;
-        printf("[menu] MP connect error (no retry slot): %s\n", M.error_msg);
+        if (M.pause_visible && M.pause_auto_disconnect) {
+            set_pause_visible(false, "kick-no-retry");
+            M.pause_auto_disconnect = false;
+        }
+        M.reconnect_deadline_t = 0;
+        M.reconnect_next_try_t = 0;
+        printf("[menu] MP terminal error (no retry): %s\n", M.error_msg);
         return;
     }
 

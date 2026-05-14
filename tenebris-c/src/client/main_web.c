@@ -20,6 +20,7 @@
 #include "core/world.h"
 #include "core/job_system.h"
 #include "core/config.h"
+#include "core/proto.h"
 #include "client/gfx_math.h"
 #include "client/input.h"
 #include "client/player_ctrl.h"
@@ -635,6 +636,41 @@ static world_t* world_for_body(const body_config_t* body) {
  * scaffolding. Per CLAUDE.md, every debug-only readout / shortcut /
  * panel funnels through this single gate. */
 static bool G_debug_ui_visible = false;
+
+/* Always-on bottom-right strip: protocol version + active profile
+ * name when in MP. Not gated on the F2 debug toggle - the version
+ * is the first thing a player checks when they see a "refresh the
+ * page" popup, and the profile name reassures them they're logged
+ * in as themselves. */
+static void draw_version_strip(void) {
+    char line[80];
+    int  n = 0;
+    if (menu_state() == GAME_IN_GAME_MP) {
+        profile_t active;
+        const char* nm = profile_get_active(&active) ? active.name : "guest";
+        n = snprintf(line, sizeof line, "%s  v%u",
+                     nm, TENEBRIS_PROTOCOL_VERSION);
+    } else {
+        n = snprintf(line, sizeof line, "v%u", TENEBRIS_PROTOCOL_VERSION);
+    }
+    if (n <= 0) return;
+    /* sdtx scale 1 = 8 px per glyph. Stick the line one row up from
+     * the absolute bottom-right corner. The canvas is the full
+     * screen size so origin is in glyph cells (1 cell = 8 px). */
+    const float w = sapp_widthf();
+    const float h = sapp_heightf();
+    if (w < 64.0f || h < 16.0f) return;
+    sdtx_canvas(w, h);
+    sdtx_font(0);
+    /* Place text right-anchored: origin_x = (w - text_w) / 8 cells. */
+    float text_w = 8.0f * (float)n;
+    float origin_x = (w - text_w - 8.0f) / 8.0f;
+    float origin_y = (h - 12.0f) / 8.0f;
+    sdtx_origin(origin_x, origin_y);
+    sdtx_color3b(0xa0, 0xc0, 0xff);
+    sdtx_home();
+    sdtx_printf("%s", line);
+}
 
 static void update_overlay(float dt) {
     const float inst_fps = (dt > 0.0f) ? (1.0f / dt) : 0.0f;
@@ -1649,6 +1685,9 @@ static void frame(void) {
     /* UI overlays go on the swapchain on top of the water. */
     profiler_begin("ui");
     update_overlay(dt);
+    /* Always-on version + profile readout in the bottom-right corner,
+     * outside the F2 debug gate. */
+    draw_version_strip();
     /* Teleport overlay is creative-only. Survival players (which
      * includes everyone in MP) shouldn't see the fast-travel list at
      * all - it would break the mining loop. */

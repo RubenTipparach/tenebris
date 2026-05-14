@@ -274,6 +274,25 @@ int proto_read_desync(const uint8_t* payload, size_t len, msg_desync_t* out) {
     return 0;
 }
 
+size_t proto_write_kick(uint8_t* buf, size_t cap, const msg_kick_t* m) {
+    const size_t total = MSG_HEADER_SIZE + MSG_KICK_WIRE_SIZE;
+    if (cap < total) return 0;
+    proto_write_header(buf, MSG_KICK, MSG_KICK_VERSION, MSG_KICK_WIRE_SIZE);
+    uint8_t* p = buf + MSG_HEADER_SIZE;
+    put_u32_le(p + 0, m->reason);
+    memcpy(p + 4, m->text, MSG_KICK_TEXT_LEN);
+    put_u32_le(p + 4 + MSG_KICK_TEXT_LEN, m->reserved);
+    return total;
+}
+
+int proto_read_kick(const uint8_t* payload, size_t len, msg_kick_t* out) {
+    if (len < MSG_KICK_WIRE_SIZE) return -1;
+    out->reason   = get_u32_le(payload + 0);
+    memcpy(out->text, payload + 4, MSG_KICK_TEXT_LEN);
+    out->reserved = get_u32_le(payload + 4 + MSG_KICK_TEXT_LEN);
+    return 0;
+}
+
 /* ------------------------------------------------------------------ */
 
 size_t proto_write_player_cmd(uint8_t* buf, size_t cap,

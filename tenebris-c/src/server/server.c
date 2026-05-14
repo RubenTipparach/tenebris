@@ -292,8 +292,19 @@ static void handle_hello(server_t* s, server_client_t* cl,
         return;
     }
     if (h.client_version != TENEBRIS_PROTOCOL_VERSION) {
-        fprintf(stderr, "[server] HELLO client_version %u != %u, closing\n",
+        fprintf(stderr, "[server] HELLO client_version %u != %u, kicking\n",
                 h.client_version, TENEBRIS_PROTOCOL_VERSION);
+        /* Tell the client WHY before dropping the socket so it can
+         * show a 'refresh your browser' popup instead of looping
+         * the auto-reconnect timer forever against a server it
+         * will never be compatible with. */
+        msg_kick_t kick = { .reason = KICK_VERSION_MISMATCH };
+        snprintf((char*)kick.text, sizeof kick.text,
+                 "Version mismatch (client %u, server %u). Refresh: Ctrl+F5",
+                 h.client_version, TENEBRIS_PROTOCOL_VERSION);
+        uint8_t buf[MSG_HEADER_SIZE + MSG_KICK_WIRE_SIZE];
+        size_t kn = proto_write_kick(buf, sizeof buf, &kick);
+        if (kn > 0) net_send(cl->conn, NET_CHANNEL_RELIABLE, buf, kn);
         net_close(cl->conn);
         return;
     }

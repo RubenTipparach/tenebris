@@ -46,6 +46,12 @@ typedef struct {
      * empty until something fails. The menu reads this to render the
      * in-game error dialog. */
     char                 error_message[96];
+    /* True after a server-issued MSG_KICK with a terminal reason
+     * (version mismatch, etc). The menu retry loop reads this and
+     * goes straight to the disconnected popup rather than retrying
+     * a connection that will never succeed. Cleared on every
+     * net_client_connect call. */
+    bool                 no_retry;
 } net_client_t;
 
 static net_client_t C;
@@ -187,6 +193,24 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
             memcpy(name, info.name, MSG_PLAYER_INFO_NAME_LEN);
             name[MSG_PLAYER_INFO_NAME_LEN] = 0;
             cache_name(info.player_id, name);
+            break;
+        }
+        case MSG_KICK: {
+            if (hdr.version != MSG_KICK_VERSION) break;
+            msg_kick_t k;
+            if (proto_read_kick(payload, hdr.length, &k) != 0) break;
+            /* Copy the server-supplied text into the error slot the
+             * menu reads when it promotes ERROR -> popup. Truncate
+             * cleanly at the smaller buffer. */
+            char text[MSG_KICK_TEXT_LEN + 1];
+            memcpy(text, k.text, MSG_KICK_TEXT_LEN);
+            text[MSG_KICK_TEXT_LEN] = 0;
+            snprintf(C.error_message, sizeof C.error_message, "%s",
+                     text[0] ? text : "kicked");
+            C.no_retry = true;
+            C.state    = NET_CLIENT_ERROR;
+            printf("[net-client] KICK reason=%u text='%s'\n",
+                   k.reason, text);
             break;
         }
         case MSG_DESYNC: {
@@ -396,6 +420,7 @@ void net_client_disconnect(void) {
 }
 
 net_client_state_t          net_client_state  (void) { return C.state; }
+bool                        net_client_can_retry(void) { return !C.no_retry; }
 const net_client_welcome_t* net_client_welcome(void) { return &C.welcome; }
 
 const char* net_client_error_message(void) {

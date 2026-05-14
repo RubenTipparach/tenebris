@@ -65,6 +65,13 @@ void net_client_disconnect(void);
 net_client_state_t   net_client_state  (void);
 const net_client_welcome_t* net_client_welcome(void);
 
+/* False after a server-issued kick with a terminal reason (e.g.
+ * version mismatch). The menu's auto-reconnect loop should give
+ * up immediately when this returns false rather than burning the
+ * 5-minute retry window against a server that will never accept
+ * this client. */
+bool                 net_client_can_retry(void);
+
 /* Human-readable description of the most recent connection failure.
  * Returns a stable ASCII string suitable for direct render via
  * sdtx_printf, or NULL if the client has never failed. Cleared on
