@@ -209,6 +209,24 @@ int saves_flush_world(world_t* w, const char* room, uint64_t seed) {
     return written;
 }
 
+bool saves_room_body_has_edits(const char* room, uint64_t seed,
+                                 uint32_t body_id) {
+    if (!G_saves_dir) return false;
+    char dir[512];
+    body_dir(dir, sizeof dir, room, seed, body_id);
+    DIR* d = opendir(dir);
+    if (!d) return false;
+    bool any = false;
+    struct dirent* e;
+    while ((e = readdir(d)) != NULL) {
+        if (e->d_name[0] == '.') continue;
+        const char* dot = strrchr(e->d_name, '.');
+        if (dot && strcmp(dot, ".col") == 0) { any = true; break; }
+    }
+    closedir(d);
+    return any;
+}
+
 int saves_load_world(world_t* w, const char* room, uint64_t seed) {
     if (!G_saves_dir || !w || !w->body) return 0;
     char dir[512];

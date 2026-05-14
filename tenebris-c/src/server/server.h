@@ -34,6 +34,13 @@ typedef struct {
     int      world_count;
     int      ref_count;       /* connected clients in this room */
     bool     in_use;
+    /* Wall time (stm_sec) when ref_count last dropped to 0. The
+     * room hangs around for IDLE_ROOM_GRACE_S after going empty
+     * so a player who refreshes the page lands back on the same
+     * in-memory state instead of paying a disk reload. server_tick
+     * sweeps stale entries past the grace window. 0 = currently
+     * occupied or just allocated. */
+    double   last_empty_time_s;
 } server_room_t;
 
 typedef struct {

@@ -58,6 +58,13 @@ void saves_shutdown(void);
  * actually overlaid. */
 int  saves_load_world(world_t* w, const char* room, uint64_t seed);
 
+/* Cheap directory probe: returns true iff (room, seed, body_id) has
+ * at least one .col file on disk. Used by room_acquire to decide
+ * which bodies need an eager clone-and-overlay vs which can stay
+ * lazy. */
+bool saves_room_body_has_edits(const char* room, uint64_t seed,
+                                 uint32_t body_id);
+
 /* Persist `tile_idx`'s column under (room, body). Call right after
  * world_set in the PLAYER_CMD handler so only the actually-edited
  * tile hits disk — see the M5 chunk-save commit. */

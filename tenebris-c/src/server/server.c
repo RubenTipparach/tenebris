@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>     /* strcasecmp - POSIX */
+#include <time.h>
 
 /* ------------------------------------------------------------------ */
 /* Room management. Public room lives at rooms[0]; private rooms get
@@ -19,21 +20,73 @@
  * of every world so chunk edits in one room don't leak to others. */
 /* ------------------------------------------------------------------ */
 
+/* Number of seconds an empty room hangs around before its clones
+ * get freed. A refresh / brief drop within this window lands back
+ * on the warm in-memory state instead of paying the disk reload. */
+#define IDLE_ROOM_GRACE_S  300.0
+
 static void room_alloc_worlds(server_t* s, server_room_t* room) {
+    /* Lazy world model: a room starts with ZERO cloned worlds. The
+     * shared baselines in s->worlds[] are the source of truth for
+     * unedited terrain (procgen is deterministic from seed, every
+     * client + the server agree without communication). A room
+     * only ever clones a body when:
+     *   1. There are persisted .col edits for that body on disk
+     *      (loaded here so the join-time chunk replay can ship
+     *      them to incoming clients).
+     *   2. A PLAYER_CMD edits that body at runtime
+     *      (room_ensure_world_for_body clones on demand).
+     *
+     * Previously every room eagerly cloned all 20 baseline worlds
+     * (~370 MB of blocks + goldberg grids), which OOM-killed the
+     * 1 GB Fly machine on the second simultaneous room. */
     room->world_count = 0;
     for (int i = 0; i < s->world_count && i < SERVER_MAX_BODIES; ++i) {
         const world_t* baseline = s->worlds[i];
-        if (!baseline) continue;
+        if (!baseline || !baseline->body) continue;
+        const uint32_t body_id = (uint32_t)baseline->body->id;
+        if (!saves_room_body_has_edits(room->code, s->cfg.seed, body_id))
+            continue;
         world_t* w = world_clone(baseline);
         if (!w) {
-            fprintf(stderr, "[server] room '%s': clone of body %d failed\n",
-                    room->code, i);
+            fprintf(stderr, "[server] room '%s': clone of body %u failed\n",
+                    room->code, body_id);
             continue;
         }
-        /* Overlay any persisted edits for THIS room onto the clone. */
         saves_load_world(w, room->code, s->cfg.seed);
         room->worlds[room->world_count++] = w;
     }
+}
+
+/* Look up a room's world for a body, cloning the shared baseline
+ * on first reference (write path). Returns NULL if the body isn't
+ * registered as a baseline (shouldn't happen for any valid
+ * body_id). The clone is registered in room->worlds so subsequent
+ * lookups hit the cached copy. */
+static world_t* room_ensure_world_for_body(server_t* s, server_room_t* room,
+                                              uint32_t body_id) {
+    for (int i = 0; i < room->world_count; ++i) {
+        world_t* w = room->worlds[i];
+        if (w && w->body && (uint32_t)w->body->id == body_id) return w;
+    }
+    const world_t* baseline = NULL;
+    for (int i = 0; i < s->world_count; ++i) {
+        const world_t* b = s->worlds[i];
+        if (b && b->body && (uint32_t)b->body->id == body_id) { baseline = b; break; }
+    }
+    if (!baseline) return NULL;
+    if (room->world_count >= SERVER_MAX_BODIES) return NULL;
+    world_t* w = world_clone(baseline);
+    if (!w) return NULL;
+    /* Load any persisted edits the first time we materialise this
+     * body in-memory. Subsequent edits write through saves_write_tile
+     * directly so we don't re-walk the directory. */
+    saves_load_world(w, room->code, s->cfg.seed);
+    room->worlds[room->world_count++] = w;
+    printf("[server] room '%s': lazy-cloned body %u\n",
+           room->code[0] ? room->code : "(public)", body_id);
+    fflush(stdout);
+    return w;
 }
 
 static void room_free_worlds(server_room_t* room) {
@@ -58,7 +111,9 @@ static int room_find(server_t* s, const char* code) {
 static int room_acquire(server_t* s, const char* code) {
     int idx = room_find(s, code);
     if (idx < 0) {
-        /* Find an empty slot, skipping rooms[0] (reserved public). */
+        /* Find an empty slot. Public room (empty code) no longer
+         * has a reserved slot - it's created on first empty-code
+         * HELLO like any other room. */
         for (int i = 0; i < SERVER_MAX_ROOMS; ++i) {
             if (!s->rooms[i].in_use) { idx = i; break; }
         }
@@ -70,8 +125,16 @@ static int room_acquire(server_t* s, const char* code) {
         snprintf(s->rooms[idx].code, sizeof s->rooms[idx].code, "%s", code);
         s->rooms[idx].in_use = true;
         room_alloc_worlds(s, &s->rooms[idx]);
-        printf("[server] room created '%s' (%d cloned worlds)\n",
-               s->rooms[idx].code, s->rooms[idx].world_count);
+        printf("[server] room created '%s' (%d cloned worlds from disk)\n",
+               s->rooms[idx].code[0] ? s->rooms[idx].code : "(public)",
+               s->rooms[idx].world_count);
+    } else if (s->rooms[idx].ref_count == 0) {
+        /* Re-attaching to a still-allocated empty room within the
+         * grace window. Clear the empty-time so the sweeper doesn't
+         * free it underfoot. */
+        s->rooms[idx].last_empty_time_s = 0.0;
+        printf("[server] room re-attached '%s' (within idle grace)\n",
+               s->rooms[idx].code[0] ? s->rooms[idx].code : "(public)");
     }
     s->rooms[idx].ref_count++;
     return idx;
@@ -82,12 +145,15 @@ static void room_release(server_t* s, int idx) {
     server_room_t* r = &s->rooms[idx];
     if (!r->in_use) return;
     if (r->ref_count > 0) r->ref_count--;
-    /* Keep the public room alive even at ref=0 so it's hot for the
-     * next join. Private rooms get freed to bound memory. */
-    if (r->ref_count == 0 && idx != 0) {
-        printf("[server] room freed '%s' (last client left)\n", r->code);
-        room_free_worlds(r);
-        memset(r, 0, sizeof *r);
+    /* Grace window: an empty room sticks around for IDLE_ROOM_GRACE_S
+     * (~5 min) so a refresh / brief drop comes back to warm in-memory
+     * state. The sweeper in server_tick frees rooms past the window.
+     * If the player reconnects in time, room_acquire clears
+     * last_empty_time_s. */
+    if (r->ref_count == 0) {
+        r->last_empty_time_s = ((double)time(NULL));
+        printf("[server] room '%s' empty - retained for idle grace\n",
+               r->code[0] ? r->code : "(public)");
     }
 }
 
@@ -523,8 +589,14 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
             if (proto_read_player_cmd(payload, hdr.length, &cmd) != 0) break;
             /* Resolve the world inside the sender's room. World-per-
              * room isolation means edits never bleed across rooms even
-             * for the same body id. */
+             * for the same body id. First reference to a body in this
+             * room triggers a lazy clone of the shared baseline so
+             * unedited bodies cost zero memory. */
             world_t* w = client_world_for_body(s, cl, cmd.body_id);
+            if (!w && cl->room_idx >= 0) {
+                w = room_ensure_world_for_body(s, &s->rooms[cl->room_idx],
+                                                  cmd.body_id);
+            }
             if (!w) {
                 fprintf(stderr, "[server] PLAYER_CMD unknown body=%u in room='%s' from player_id=%u\n",
                         cmd.body_id, cl->room[0] ? cl->room : "(public)",
@@ -731,25 +803,18 @@ bool server_init(server_t* s, const server_config_t* cfg) {
      * room_idx is set by handle_hello once a slot exists. */
     for (int i = 0; i < SERVER_MAX_CLIENTS; ++i) s->clients[i].room_idx = -1;
 
-    /* Public room lives at rooms[0]. Acquire it now so it's hot for the
-     * first joiner and so on-disk public-room saves overlay onto its
-     * world clones at boot rather than at first-join. */
-    int public_idx = room_acquire(s, "");
-    if (public_idx != 0) {
-        /* room_acquire returns 0 for the first acquire of an empty
-         * code, which is what we want. If somehow not, the layout
-         * assumption is broken and we should bail. */
-        fprintf(stderr, "[server] expected public room at slot 0, got %d\n",
-                public_idx);
-        return false;
-    }
-    /* Keep the public ref alive so the room never auto-frees on
-     * ref_count==0. room_release already special-cases idx==0 to keep
-     * it allocated, but we still want the ref count to reflect "the
-     * server itself holds a handle" so initial state isn't 0. */
-    /* (No-op: room_acquire already incremented ref_count to 1.) */
+    /* The public room is NO LONGER pre-cloned at boot. The previous
+     * design eagerly cloned all 20 baseline worlds into a public
+     * room slot so the first joiner skipped a cold-start cost - but
+     * each clone set is ~370 MB (5 subs-7 worlds at ~54 MB each
+     * plus mids + asteroids), and the 1 GB Fly machine OOM-killed
+     * the moment a second room was acquired (baseline + public +
+     * first private = ~1.1 GB). Public room is now created on
+     * demand by room_acquire("") on the first empty-code HELLO,
+     * same path as private rooms. Servers with only private-room
+     * traffic never pay the public-room memory cost. */
 
-    printf("[server] init: %d baseline worlds, public room ready, "
+    printf("[server] init: %d baseline worlds, "
            "tick_hz=%.1f, port=%d, saves=%s, seed=%llu\n",
            s->world_count, s->cfg.tick_hz, s->cfg.port,
            s->cfg.saves_dir ? s->cfg.saves_dir : "(none)",
@@ -831,11 +896,32 @@ static void broadcast_snapshot(server_t* s) {
     }
 }
 
+static void room_sweep_idle(server_t* s) {
+    /* Free rooms that have been empty for longer than the grace
+     * window. Cheap: scan SERVER_MAX_ROOMS slots once a second
+     * (caller throttles via tick modulus). */
+    const double now = ((double)time(NULL));
+    for (int i = 0; i < SERVER_MAX_ROOMS; ++i) {
+        server_room_t* r = &s->rooms[i];
+        if (!r->in_use || r->ref_count > 0) continue;
+        if (r->last_empty_time_s <= 0.0) continue;
+        if (now - r->last_empty_time_s < IDLE_ROOM_GRACE_S) continue;
+        printf("[server] room '%s' freed after %.0fs idle\n",
+               r->code[0] ? r->code : "(public)",
+               now - r->last_empty_time_s);
+        room_free_worlds(r);
+        memset(r, 0, sizeof *r);
+    }
+}
+
 void server_tick(server_t* s) {
     s->tick++;
     /* Drain inbound socket events; callbacks (on_open, on_msg, on_close)
      * fire synchronously from inside net_poll. */
     net_poll(s->listener);
+
+    /* Idle-room sweeper: runs once a second. Cheap O(rooms). */
+    if ((s->tick % (uint64_t)s->cfg.tick_hz) == 0) room_sweep_idle(s);
 
     /* M4 (position relay): broadcast every 3rd tick. At 20 Hz that's
      * ~6.7 snapshots/sec — visibly smooth with client-side interp
