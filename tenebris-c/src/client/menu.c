@@ -1345,10 +1345,19 @@ void menu_set_pending_invite(const char* room_code, const char* server_url) {
     } else {
         M.pending_invite_server[0] = 0;
     }
-    /* If a profile is already active (returning user), don't make
-     * them re-pick - jump straight to the room. The picker shows up
-     * only when there's no active profile yet. */
-    consume_pending_invite_if_ready();
+    /* Invite links ALWAYS route through the profile picker first
+     * (which menu_init already left as the boot state). Previously
+     * we short-circuited when an active profile was already set,
+     * but that hid the "which profile am I?" confirmation step -
+     * a returning user joining from a fresh tab could end up
+     * connected under whichever profile happened to be the last
+     * one used, and the server would key their saved pose to a
+     * profile they didn't mean to be playing as.
+     *
+     * enter_main_menu_with re-runs consume_pending_invite_if_ready
+     * once the player explicitly picks / creates a profile, so the
+     * invite room still auto-loads - just after one deliberate
+     * confirmation click. */
 }
 
 static void new_profile_flow(void) {
