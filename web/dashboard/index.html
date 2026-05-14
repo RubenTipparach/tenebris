@@ -113,7 +113,16 @@
       padding: 6px 8px;
       font: inherit;
     }
-    form.send .send-room  { width: 180px; }
+    form.send .send-room  { width: 200px; }
+    form.send select.send-room {
+      appearance: none;
+      background: #15171c;
+      color: #d8d8d8;
+      border: 1px solid #23262d;
+      border-radius: 4px;
+      padding: 6px 8px;
+      font: inherit;
+    }
     form.send .send-text  { flex: 1; min-width: 200px; }
     form.send .send-token { width: 180px; }
     form.send button {
@@ -181,7 +190,7 @@
 
     <h2>Broadcast as ~server~</h2>
     <form id="sendForm" class="send">
-      <input class="send-room" id="sendRoom" placeholder="room (blank = public)" />
+      <select class="send-room" id="sendRoom"></select>
       <input class="send-text" id="sendText" placeholder="message..." maxlength="120" />
       <input class="send-token" id="sendToken" placeholder="admin token (if set)" />
       <button type="submit">Send</button>
@@ -329,6 +338,7 @@
           h += "</table>";
           $("rooms").innerHTML = h;
         }
+        rebuildRoomSelect(s.rooms || []);
       } catch (e) {
         $("sub").innerHTML = '<span class="err">' + esc(e.message) + "</span>";
       }
@@ -375,6 +385,15 @@
       try {
         const d = await getJSON("/logins?n=200");
         const list = d.sessions || [];
+        // Most recent login event -> default broadcast room until the
+        // user picks one explicitly. Walk the list from newest to oldest
+        // and grab the first 'login' we see.
+        for (let i = list.length - 1; i >= 0; --i) {
+          if (list[i].event === "login" && list[i].room) {
+            lastLoggedInRoom = list[i].room;
+            break;
+          }
+        }
         if (list.length === 0) {
           $("sessions").innerHTML =
             '<div class="empty">no events yet</div>';
@@ -450,12 +469,92 @@
     // Persist the optional admin token in localStorage so the page
     // remembers it across reloads. Plain string, no escaping needed.
     const TOKEN_KEY = "tenebris-dashboard-token";
+    const ROOM_KEY  = "tenebris-dashboard-room";
     try {
       $("sendToken").value = localStorage.getItem(TOKEN_KEY) || "";
     } catch (_) {}
     $("sendToken").addEventListener("change", (e) => {
       try { localStorage.setItem(TOKEN_KEY, e.target.value); } catch (_) {}
     });
+
+    // Most-recent-login room, refreshed from /logins. Falls back to
+    // __public__ until /logins reports something. Used as the broadcast
+    // default when the user hasn't saved a choice yet.
+    let lastLoggedInRoom = "__public__";
+    // Last rooms array we saw from /status, so refreshSessions can
+    // rebuild the <select> right after learning the new default
+    // instead of waiting for the next /status tick.
+    let lastRoomsSnapshot = [];
+    $("sendRoom").addEventListener("change", (e) => {
+      try { localStorage.setItem(ROOM_KEY, e.target.value); } catch (_) {}
+    });
+
+    // Repaint the room <select> from the union of:
+    //   - rooms reported by /status (truth for "which rooms exist")
+    //   - the saved choice in localStorage (so a stale code stays
+    //     visible as "(saved: X)" rather than vanishing silently)
+    //   - the most-recent-login room (for the default selection)
+    // We preserve the current selection if it still exists, otherwise
+    // pick the highest-priority candidate.
+    function rebuildRoomSelect(rooms) {
+      const sel = $("sendRoom");
+      const codes = new Set(rooms.map((r) => r.code));
+      let saved = "";
+      try { saved = localStorage.getItem(ROOM_KEY) || ""; } catch (_) {}
+
+      // __public__ is always in the list so the operator can reach it
+      // even when no one's online. __all__ fans out across every active
+      // room - server-side it iterates s->rooms and broadcasts to each.
+      codes.add("__public__");
+
+      const sorted = Array.from(codes).sort((a, b) =>
+        a === "__public__" ? -1 : b === "__public__" ? 1 : a.localeCompare(b)
+      );
+
+      // Pick the value to keep selected after the repaint. Allow
+      // __all__ as a valid choice even though it isn't a real room.
+      const current = sel.value;
+      let want;
+      if (current === "__all__") {
+        want = "__all__";
+      } else if (current && codes.has(current)) {
+        want = current;
+      } else if (saved === "__all__") {
+        want = "__all__";
+      } else if (saved && codes.has(saved)) {
+        want = saved;
+      } else if (codes.has(lastLoggedInRoom)) {
+        want = lastLoggedInRoom;
+      } else {
+        want = "__public__";
+      }
+
+      const totalClients = rooms.reduce((n, r) => n + (r.clients || 0), 0);
+
+      let html =
+        '<option value="__all__"' +
+        (want === "__all__" ? " selected" : "") +
+        ">all rooms (" + totalClients + ")</option>";
+
+      for (const c of sorted) {
+        const room = rooms.find((r) => r.code === c);
+        const label = c + " (" + (room ? room.clients : 0) + ")";
+        html +=
+          '<option value="' + esc(c) + '"' +
+          (c === want ? " selected" : "") + ">" + esc(label) + "</option>";
+      }
+
+      // If the saved room isn't in the live list, surface it so the
+      // operator knows the choice is stale. Skip when saved === __all__
+      // (already represented above).
+      if (saved && saved !== "__all__" && !codes.has(saved)) {
+        html +=
+          '<option value="' + esc(saved) + '"' +
+          (saved === want ? " selected" : "") +
+          ">(saved: " + esc(saved) + ", offline)</option>";
+      }
+      sel.innerHTML = html;
+    }
 
     $("sendForm").addEventListener("submit", async (e) => {
       e.preventDefault();

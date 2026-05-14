@@ -1336,11 +1336,24 @@ static int on_http(const char* path,
             *out_mime     = "application/json; charset=utf-8";
             return 1;
         }
-        /* Map the JSON view's __public__ slug back to the empty room
-         * code the server uses internally. */
-        const char* room_real = room;
-        if (strcmp(room, "__public__") == 0) room_real = "";
-        if (s) server_chat_say(s, room_real, text);
+        /* Map the JSON view's slugs back to room codes the server
+         * uses internally:
+         *   __public__ -> ""  (single public room)
+         *   __all__    -> fan out across every in-use room
+         *   anything else is sent verbatim as a private room code. */
+        if (s) {
+            if (strcmp(room, "__all__") == 0) {
+                for (int i = 0; i < SERVER_MAX_ROOMS; ++i) {
+                    const server_room_t* r = &s->rooms[i];
+                    if (!r->in_use) continue;
+                    server_chat_say(s, r->code, text);
+                }
+            } else {
+                const char* room_real = room;
+                if (strcmp(room, "__public__") == 0) room_real = "";
+                server_chat_say(s, room_real, text);
+            }
+        }
 
         static const char ok[] = "{\"ok\":true}";
         *out_body     = (const uint8_t*)ok;

@@ -156,7 +156,21 @@ static int tenebris_callback(struct lws* wsi, enum lws_callback_reasons reason,
                 return serve_http(wsi, 200, "text/plain; charset=utf-8",
                                     (const uint8_t*)msg, sizeof msg - 1);
             }
-            const char* path = (const char*)in;
+            /* `in` carries the URL PATH only - libwebsockets parks the
+             * query string in the WSI_TOKEN_HTTP_URI_ARGS header. Splice
+             * them back together so callbacks can use a single
+             * "/path?a=b&c=d" string and parse it with plain strchr. */
+            const char* raw_path = (const char*)in;
+            char full[1024];
+            char args[768];
+            int alen = lws_hdr_copy(wsi, args, sizeof args,
+                                      WSI_TOKEN_HTTP_URI_ARGS);
+            if (alen > 0) {
+                args[alen] = 0;
+                int n = snprintf(full, sizeof full, "%s?%s", raw_path, args);
+                if (n > 0 && n < (int)sizeof full) raw_path = full;
+            }
+            const char* path = raw_path;
             const uint8_t* body = NULL;
             size_t body_len = 0;
             const char* mime = "text/plain";
