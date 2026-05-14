@@ -29,7 +29,12 @@
  * to implement, easy to inspect with `ls /data/saves`.
  */
 
-#define SAVES_PLAYER_VERSION   1
+/* v1: pose only. v2: pose + 9-slot hotbar (inv_*). The loader still
+ * accepts v1 records and zero-fills the inventory so existing saves
+ * keep working - new saves are always v2. */
+#define SAVES_PLAYER_VERSION   2
+
+#define SAVES_PLAYER_INVENTORY_SLOTS  9
 
 /* On-disk format version for tile column .col files. v0 was the
  * headerless 128-raw-bytes layout shipped before this change; the
@@ -46,6 +51,14 @@ typedef struct {
     uint32_t body_id;
     double   pos_x, pos_y, pos_z;
     float    yaw, pitch;
+    /* v2+: per-player hotbar snapshot. inv_slot_type[i] is the block
+     * id (BLOCK_AIR == empty); inv_slot_count[i] is the stack size
+     * (creative-mode infinite slots get stored as INT16_MAX so the
+     * value clamps cleanly on re-save). inv_selected is 0..8. */
+    uint16_t inv_slot_type [SAVES_PLAYER_INVENTORY_SLOTS];
+    int16_t  inv_slot_count[SAVES_PLAYER_INVENTORY_SLOTS];
+    uint8_t  inv_selected;
+    uint8_t  inv_reserved[3];
 } saves_player_pose_t;
 
 /* Boot-time setup. saves_dir must outlive the module. */

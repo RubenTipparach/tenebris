@@ -45,6 +45,7 @@ typedef enum {
     MSG_CHAT         = 20,
     MSG_PLAYER_INFO_REQUEST = 21, /* C->S: please re-send PLAYER_INFO for this id */
     MSG_PLAYER_INFO_NACK    = 22, /* S->C: cannot fulfill PLAYER_INFO_REQUEST */
+    MSG_INVENTORY_STATE     = 23, /* both ways: client uploads hotbar; server replays on rejoin */
 } msg_kind_t;
 
 /* Per-kind protocol versions. Bump on any wire change. */
@@ -61,6 +62,7 @@ typedef enum {
 #define MSG_CHAT_VERSION          1
 #define MSG_PLAYER_INFO_REQUEST_VERSION  1
 #define MSG_PLAYER_INFO_NACK_VERSION     1
+#define MSG_INVENTORY_STATE_VERSION      1
 
 typedef struct {
     uint16_t kind;       /* msg_kind_t */
@@ -123,6 +125,27 @@ typedef struct {
     uint32_t player_id;
     uint32_t reason;     /* player_info_nack_reason_t */
 } msg_player_info_nack_t;
+
+/* Inventory snapshot. Both client and server send this:
+ *   - Client sends after the local hotbar changes (place / mine /
+ *     select) so the server has the latest state to persist.
+ *   - Server sends once right after WELCOME with the saved hotbar
+ *     so the player picks up where they left off (and any time it
+ *     wants to authoritatively reset a client's hotbar).
+ * Fixed-size 9-slot hotbar matches the client struct - inventory.h.
+ * Slot type is the block id (BLOCK_AIR = empty slot). Count is an
+ * int16 so the creative-mode "infinite" sentinel (any value >= 9000)
+ * fits as a regular int. Selected is 0..8. */
+#define MSG_INVENTORY_SLOTS        9
+#define MSG_INVENTORY_STATE_WIRE_SIZE  44  /* 4 + 9*2 + 9*2 + 1 + 3 */
+
+typedef struct {
+    uint32_t player_id;
+    uint16_t slot_type [MSG_INVENTORY_SLOTS];
+    int16_t  slot_count[MSG_INVENTORY_SLOTS];
+    uint8_t  selected;
+    uint8_t  reserved[3];
+} msg_inventory_state_t;
 
 /* ------------------------------------------------------------------
  * Chat. Client sends MSG_CHAT with message text (player_id field is
@@ -338,6 +361,11 @@ size_t proto_write_player_info_nack(uint8_t* buf, size_t cap,
                                       const msg_player_info_nack_t* m);
 int    proto_read_player_info_nack (const uint8_t* payload, size_t len,
                                       msg_player_info_nack_t* out);
+
+size_t proto_write_inventory_state(uint8_t* buf, size_t cap,
+                                     const msg_inventory_state_t* m);
+int    proto_read_inventory_state (const uint8_t* payload, size_t len,
+                                     msg_inventory_state_t* out);
 
 size_t proto_write_chat(uint8_t* buf, size_t cap, const msg_chat_t* m);
 int    proto_read_chat (const uint8_t* payload, size_t len, msg_chat_t* out);

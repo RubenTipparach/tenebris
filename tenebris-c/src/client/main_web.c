@@ -1749,6 +1749,62 @@ static void frame(void) {
             G_last_sent_valid   = true;
         }
     }
+    /* MP inventory persistence.
+     *
+     * 1) Server pushes the saved hotbar right after WELCOME via
+     *    MSG_INVENTORY_STATE. Apply it once when it arrives so the
+     *    player picks up the stacks they had at logout. The flag
+     *    self-clears on read so an idle session doesn't keep
+     *    overwriting in-progress mining.
+     * 2) Whenever the local hotbar changes (place / mine / select),
+     *    snapshot it and ship to the server so the next save flush
+     *    has the latest state. Detection is a cheap memcmp against
+     *    the last shipped snapshot - no listening into inventory.c. */
+    if (menu_state() == GAME_IN_GAME_MP && net_client_state() == NET_CLIENT_READY) {
+        uint16_t pend_type[9];
+        int16_t  pend_count[9];
+        int      pend_sel = 0;
+        if (net_client_take_pending_inventory(pend_type, pend_count, &pend_sel)) {
+            for (int i = 0; i < INV_HOTBAR_SLOTS && i < 9; ++i) {
+                G.player.inventory.slots[i].type  = (block_t)pend_type[i];
+                G.player.inventory.slots[i].count = pend_count[i];
+            }
+            if (pend_sel >= 0 && pend_sel < INV_HOTBAR_SLOTS) {
+                G.player.inventory.selected = pend_sel;
+            }
+        }
+        static uint16_t G_inv_last_type [9];
+        static int16_t  G_inv_last_count[9];
+        static int      G_inv_last_sel = -1;
+        static bool     G_inv_init     = false;
+        uint16_t cur_type [9];
+        int16_t  cur_count[9];
+        for (int i = 0; i < 9; ++i) {
+            cur_type [i] = (i < INV_HOTBAR_SLOTS)
+                ? (uint16_t)G.player.inventory.slots[i].type  : 0;
+            int c = (i < INV_HOTBAR_SLOTS) ? G.player.inventory.slots[i].count : 0;
+            /* Clamp the creative-mode "essentially infinite" count
+             * (> 9000 per inventory.c) to INT16_MAX so the wire
+             * round-trips cleanly. The server preserves whatever we
+             * send and the next inventory_init_creative on rejoin
+             * restocks naturally. */
+            if (c > INT16_MAX) c = INT16_MAX;
+            if (c < 0)         c = 0;
+            cur_count[i] = (int16_t)c;
+        }
+        const int cur_sel = G.player.inventory.selected;
+        bool changed = !G_inv_init
+                     || cur_sel != G_inv_last_sel
+                     || memcmp(cur_type,  G_inv_last_type,  sizeof cur_type)  != 0
+                     || memcmp(cur_count, G_inv_last_count, sizeof cur_count) != 0;
+        if (changed) {
+            net_client_send_inventory_state(cur_type, cur_count, cur_sel);
+            memcpy(G_inv_last_type,  cur_type,  sizeof G_inv_last_type);
+            memcpy(G_inv_last_count, cur_count, sizeof G_inv_last_count);
+            G_inv_last_sel = cur_sel;
+            G_inv_init     = true;
+        }
+    }
     profiler_begin("interact");
     /* interact_update keeps running while paused; the input zeroing
      * above already cleared left_held / right_held, so mining +

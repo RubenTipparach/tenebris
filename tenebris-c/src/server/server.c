@@ -345,6 +345,15 @@ static void send_welcome(server_t* s, server_client_t* cl) {
         w.body_id     = resume.body_id;
         w.spawn_yaw   = resume.yaw;
         w.spawn_pitch = resume.pitch;
+        /* Stash the saved hotbar so it's authoritative until the
+         * client sends its first MSG_INVENTORY_STATE. Otherwise an
+         * inactive player whose game tab is idle could be flushed
+         * back to disk with empty inventory before the client
+         * uploads the live one. */
+        memcpy(cl->inv_slot_type,  resume.inv_slot_type,  sizeof cl->inv_slot_type);
+        memcpy(cl->inv_slot_count, resume.inv_slot_count, sizeof cl->inv_slot_count);
+        cl->inv_selected = resume.inv_selected;
+        cl->inv_known    = true;
     }
     /* HELLO/WELCOME spawn diagnostic. One line per join so we can
      * tell where the player got placed and why - 'DEFAULT' branch
@@ -382,6 +391,20 @@ static void send_welcome(server_t* s, server_client_t* cl) {
     printf("[server] WELCOME -> player_id=%u (spawn body=%u)\n",
            cl->player_id, w.body_id);
     fflush(stdout);
+
+    /* Replay the saved hotbar right after WELCOME. The client's
+     * inventory module zeroes itself at boot, so without this the
+     * player would always come back with an empty / creative-default
+     * hotbar even if they had stacks before logging out. */
+    if (cl->inv_known) {
+        msg_inventory_state_t inv = { .player_id = cl->player_id };
+        memcpy(inv.slot_type,  cl->inv_slot_type,  sizeof inv.slot_type);
+        memcpy(inv.slot_count, cl->inv_slot_count, sizeof inv.slot_count);
+        inv.selected = cl->inv_selected;
+        uint8_t ibuf[MSG_HEADER_SIZE + MSG_INVENTORY_STATE_WIRE_SIZE];
+        size_t ni = proto_write_inventory_state(ibuf, sizeof ibuf, &inv);
+        if (ni > 0) net_send(cl->conn, NET_CHANNEL_RELIABLE, ibuf, ni);
+    }
 }
 
 static void handle_hello(server_t* s, server_client_t* cl,
@@ -646,7 +669,14 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
              * would also persist 6-7 unchanged neighbour columns each
              * edit. Skip the wasted disk + write only the tile we
              * touched. */
-            saves_write_tile(w, cl->room, s->cfg.seed, (int)cmd.tile_idx);
+            bool save_ok = saves_write_tile(w, cl->room, s->cfg.seed, (int)cmd.tile_idx);
+            printf("[server] EDIT player_id=%u %s body=%u tile=%u depth=%u block=%u "
+                   "save=%s\n",
+                   cl->player_id,
+                   (cmd.cmd_kind == PLAYER_CMD_BREAK) ? "BREAK" : "PLACE",
+                   cmd.body_id, cmd.tile_idx, cmd.depth, (unsigned)target,
+                   save_ok ? "ok" : "FAIL");
+            fflush(stdout);
 
             /* Broadcast as a single-entry CHUNK_DIFF to same-room peers
              * (including the sender — idempotent since they already
@@ -699,6 +729,20 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
                    cl->room[0] ? cl->room : "(public)",
                    cl->name, short_text);
             fflush(stdout);
+            break;
+        }
+        case MSG_INVENTORY_STATE: {
+            if (hdr.version != MSG_INVENTORY_STATE_VERSION) break;
+            msg_inventory_state_t inv;
+            if (proto_read_inventory_state(payload, hdr.length, &inv) != 0) break;
+            memcpy(cl->inv_slot_type,  inv.slot_type,  sizeof cl->inv_slot_type);
+            memcpy(cl->inv_slot_count, inv.slot_count, sizeof cl->inv_slot_count);
+            cl->inv_selected = (inv.selected < 9) ? inv.selected : 0;
+            cl->inv_known    = true;
+            /* Force the next periodic flush to write even if the
+             * player hasn't moved - inventory changes are otherwise
+             * invisible to the 0.25 m pose-debounce. */
+            cl->last_saved_tick = 0;
             break;
         }
         case MSG_PLAYER_INFO_REQUEST: {
@@ -803,6 +847,11 @@ static void on_close(net_conn_t* conn, net_close_reason_t reason, void* user) {
             .yaw     = cl->yaw,
             .pitch   = cl->pitch,
         };
+        if (cl->inv_known) {
+            memcpy(pose.inv_slot_type,  cl->inv_slot_type,  sizeof pose.inv_slot_type);
+            memcpy(pose.inv_slot_count, cl->inv_slot_count, sizeof pose.inv_slot_count);
+            pose.inv_selected = cl->inv_selected;
+        }
         saves_write_player(cl->name, &pose);
     }
     printf("[server] close: player_id=%u name=%s (reason=%d)\n",
@@ -1024,6 +1073,11 @@ void server_tick(server_t* s) {
                 .pos_x   = cl->pos_x, .pos_y = cl->pos_y, .pos_z = cl->pos_z,
                 .yaw     = cl->yaw,   .pitch = cl->pitch,
             };
+            if (cl->inv_known) {
+                memcpy(pose.inv_slot_type,  cl->inv_slot_type,  sizeof pose.inv_slot_type);
+                memcpy(pose.inv_slot_count, cl->inv_slot_count, sizeof pose.inv_slot_count);
+                pose.inv_selected = cl->inv_selected;
+            }
             if (saves_write_player(cl->name, &pose)) {
                 ++saved_poses;
                 cl->last_saved_pos_x = cl->pos_x;
@@ -1066,6 +1120,11 @@ void server_shutdown(server_t* s) {
             .pos_x   = cl->pos_x, .pos_y = cl->pos_y, .pos_z = cl->pos_z,
             .yaw     = cl->yaw,   .pitch = cl->pitch,
         };
+        if (cl->inv_known) {
+            memcpy(pose.inv_slot_type,  cl->inv_slot_type,  sizeof pose.inv_slot_type);
+            memcpy(pose.inv_slot_count, cl->inv_slot_count, sizeof pose.inv_slot_count);
+            pose.inv_selected = cl->inv_selected;
+        }
         if (saves_write_player(cl->name, &pose)) ++final_poses;
     }
     printf("[server] final flush: %d poses\n", final_poses);

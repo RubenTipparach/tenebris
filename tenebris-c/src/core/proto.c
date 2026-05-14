@@ -168,6 +168,54 @@ int proto_read_player_info_nack(const uint8_t* payload, size_t len,
 
 /* ------------------------------------------------------------------ */
 
+size_t proto_write_inventory_state(uint8_t* buf, size_t cap,
+                                      const msg_inventory_state_t* m) {
+    const size_t total = MSG_HEADER_SIZE + MSG_INVENTORY_STATE_WIRE_SIZE;
+    if (cap < total) return 0;
+    proto_write_header(buf, MSG_INVENTORY_STATE,
+                         MSG_INVENTORY_STATE_VERSION,
+                         MSG_INVENTORY_STATE_WIRE_SIZE);
+    uint8_t* p = buf + MSG_HEADER_SIZE;
+    put_u32_le(p, m->player_id);
+    p += 4;
+    for (int i = 0; i < MSG_INVENTORY_SLOTS; ++i) {
+        put_u16_le(p, m->slot_type[i]);
+        p += 2;
+    }
+    for (int i = 0; i < MSG_INVENTORY_SLOTS; ++i) {
+        put_u16_le(p, (uint16_t)m->slot_count[i]);
+        p += 2;
+    }
+    *p++ = m->selected;
+    *p++ = m->reserved[0];
+    *p++ = m->reserved[1];
+    *p++ = m->reserved[2];
+    return total;
+}
+
+int proto_read_inventory_state(const uint8_t* payload, size_t len,
+                                  msg_inventory_state_t* out) {
+    if (len < MSG_INVENTORY_STATE_WIRE_SIZE) return -1;
+    const uint8_t* p = payload;
+    out->player_id = get_u32_le(p);
+    p += 4;
+    for (int i = 0; i < MSG_INVENTORY_SLOTS; ++i) {
+        out->slot_type[i] = get_u16_le(p);
+        p += 2;
+    }
+    for (int i = 0; i < MSG_INVENTORY_SLOTS; ++i) {
+        out->slot_count[i] = (int16_t)get_u16_le(p);
+        p += 2;
+    }
+    out->selected    = *p++;
+    out->reserved[0] = *p++;
+    out->reserved[1] = *p++;
+    out->reserved[2] = *p++;
+    return 0;
+}
+
+/* ------------------------------------------------------------------ */
+
 size_t proto_write_chat(uint8_t* buf, size_t cap, const msg_chat_t* m) {
     const size_t total = MSG_HEADER_SIZE + MSG_CHAT_WIRE_SIZE;
     if (cap < total) return 0;

@@ -79,6 +79,12 @@ typedef struct {
      * a connection that will never succeed. Cleared on every
      * net_client_connect call. */
     bool                 no_retry;
+    /* Pending inventory restore from server. Set when MSG_INVENTORY_STATE
+     * arrives; cleared by net_client_take_pending_inventory. */
+    bool                 inv_pending;
+    uint16_t             inv_slot_type [9];
+    int16_t              inv_slot_count[9];
+    uint8_t              inv_selected;
 } net_client_t;
 
 static net_client_t C;
@@ -263,6 +269,18 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
             chat_post_recv(m.player_id,
                             sender ? sender : "?",
                             text);
+            break;
+        }
+        case MSG_INVENTORY_STATE: {
+            if (hdr.version != MSG_INVENTORY_STATE_VERSION) break;
+            msg_inventory_state_t inv;
+            if (proto_read_inventory_state(payload, hdr.length, &inv) != 0) break;
+            memcpy(C.inv_slot_type,  inv.slot_type,  sizeof C.inv_slot_type);
+            memcpy(C.inv_slot_count, inv.slot_count, sizeof C.inv_slot_count);
+            C.inv_selected = (inv.selected < 9) ? inv.selected : 0;
+            C.inv_pending  = true;
+            printf("[net-client] inventory restored from server (selected=%u)\n",
+                   (unsigned)C.inv_selected);
             break;
         }
         case MSG_PLAYER_INFO: {
@@ -455,6 +473,34 @@ void net_client_send_edit(int kind, uint32_t body_id,
     if (n == 0) return;
     /* Reliable channel — block edits are ordered & cannot be dropped. */
     net_send(C.conn, NET_CHANNEL_RELIABLE, buf, n);
+}
+
+void net_client_send_inventory_state(const uint16_t* slot_type,
+                                        const int16_t* slot_count,
+                                        int selected) {
+    if (C.state != NET_CLIENT_READY || !C.conn) return;
+    if (!slot_type || !slot_count) return;
+    msg_inventory_state_t inv = { .player_id = 0 };
+    memcpy(inv.slot_type,  slot_type,  sizeof inv.slot_type);
+    memcpy(inv.slot_count, slot_count, sizeof inv.slot_count);
+    inv.selected = (selected >= 0 && selected < 9) ? (uint8_t)selected : 0;
+    uint8_t buf[MSG_HEADER_SIZE + MSG_INVENTORY_STATE_WIRE_SIZE];
+    size_t n = proto_write_inventory_state(buf, sizeof buf, &inv);
+    if (n == 0) return;
+    net_send(C.conn, NET_CHANNEL_RELIABLE, buf, n);
+}
+
+bool net_client_take_pending_inventory(uint16_t* out_slot_type,
+                                          int16_t* out_slot_count,
+                                          int* out_selected) {
+    if (!C.inv_pending) return false;
+    if (out_slot_type)  memcpy(out_slot_type,  C.inv_slot_type,
+                               sizeof C.inv_slot_type);
+    if (out_slot_count) memcpy(out_slot_count, C.inv_slot_count,
+                               sizeof C.inv_slot_count);
+    if (out_selected)   *out_selected = C.inv_selected;
+    C.inv_pending = false;
+    return true;
 }
 
 void net_client_send_player_state(uint32_t client_tick,
