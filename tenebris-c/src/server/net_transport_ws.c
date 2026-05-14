@@ -157,16 +157,39 @@ static int tenebris_callback(struct lws* wsi, enum lws_callback_reasons reason,
                                     (const uint8_t*)msg, sizeof msg - 1);
             }
             /* `in` carries the URL PATH only - libwebsockets parks the
-             * query string in the WSI_TOKEN_HTTP_URI_ARGS header. Splice
-             * them back together so callbacks can use a single
-             * "/path?a=b&c=d" string and parse it with plain strchr. */
+             * query string in the WSI_TOKEN_HTTP_URI_ARGS header.
+             *
+             * Each `key=value` pair is stored as a separate fragment.
+             * lws_hdr_copy *does* concatenate them, but it does so with
+             * COMMAS between fragments (which is what HTTP allows for
+             * generic multi-value headers). That breaks query-string
+             * parsing: a request like `?text=hi&room=T9VVPW` would come
+             * out as `text=hi,room=T9VVPW`, and the room field would
+             * vanish into the text field while my `&`-splitting parser
+             * found no room key.
+             *
+             * Iterate fragments with lws_hdr_copy_fragment instead and
+             * rejoin them with the standard `&` so the caller sees a
+             * normal query string. */
             const char* raw_path = (const char*)in;
             char full[1024];
             char args[768];
-            int alen = lws_hdr_copy(wsi, args, sizeof args,
-                                      WSI_TOKEN_HTTP_URI_ARGS);
-            if (alen > 0) {
-                args[alen] = 0;
+            size_t args_off = 0;
+            args[0] = 0;
+            for (int fi = 0; fi < 32; ++fi) {
+                char frag[256];
+                int fn = lws_hdr_copy_fragment(wsi, frag, sizeof frag,
+                                                  WSI_TOKEN_HTTP_URI_ARGS, fi);
+                if (fn <= 0) break;
+                if (args_off > 0 && args_off + 1 < sizeof args) {
+                    args[args_off++] = '&';
+                }
+                if (args_off + (size_t)fn + 1 >= sizeof args) break;
+                memcpy(args + args_off, frag, (size_t)fn);
+                args_off += (size_t)fn;
+                args[args_off] = 0;
+            }
+            if (args_off > 0) {
                 int n = snprintf(full, sizeof full, "%s?%s", raw_path, args);
                 if (n > 0 && n < (int)sizeof full) raw_path = full;
             }
