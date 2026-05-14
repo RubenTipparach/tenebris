@@ -1071,7 +1071,8 @@ static void maybe_apply_mp_spawn(void) {
      *     back to a black screen".
      *   - Unknown / out-of-range id: log and treat like in-space. */
     const body_config_t* spawn_body = NULL;
-    if (w->body_id == BODY_ID_IN_SPACE) {
+    const bool spawn_in_space = (w->body_id == BODY_ID_IN_SPACE);
+    if (spawn_in_space) {
         printf("[main] MP spawn: body=IN_SPACE, applying absolute pose without ground-snap\n");
     } else {
         spawn_body = planet_get((body_id_t)w->body_id);
@@ -1123,6 +1124,17 @@ static void maybe_apply_mp_spawn(void) {
      * the anchor several frames later. */
     if (spawn_body && G.player.body != spawn_body) {
         player_set_body(&G.player, spawn_body);
+    } else if (spawn_in_space) {
+        /* User explicitly logged out in space - don't pin them back
+         * onto the boot-default body. Clear the anchor and arm the
+         * in-space flag so the gravity tick that runs next frame
+         * sees the right state. The HUD / F1 / pose-log will read
+         * "(in space)" instead of misreporting "on Tenebris" until
+         * the player flies back into a falloff radius. */
+        G.player.body         = NULL;
+        G.player.is_in_space  = true;
+        G.player.basis_ready  = false;
+        G.player.transition_timer_s = 0.0f;
     }
     /* Loud diagnostic for the floating-spawn investigation. Reports
      * the WELCOME pose, the body, the final applied position, and
@@ -1778,6 +1790,10 @@ static void frame(void) {
             if (pend_sel >= 0 && pend_sel < INV_HOTBAR_SLOTS) {
                 G.player.inventory.selected = pend_sel;
             }
+            /* Slot 0 (key "1") is the reserved torch slot - re-stamp
+             * it after any restore so a stale save can never leave
+             * the player without a light source. */
+            inventory_ensure_reserved_torch(&G.player.inventory);
         }
         static uint16_t G_inv_last_type [9];
         static int16_t  G_inv_last_count[9];
