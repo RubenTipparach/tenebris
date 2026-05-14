@@ -71,6 +71,16 @@ typedef struct {
      * first eligible flush to write unconditionally. */
     double      last_saved_pos_x, last_saved_pos_y, last_saved_pos_z;
     uint64_t    last_saved_tick;
+    /* Cached inventory snapshot from MSG_INVENTORY_STATE. The server
+     * doesn't simulate inventory - it just stores the latest claim
+     * from the client and persists it alongside the pose so a
+     * disconnect / reconnect lands the hotbar back where it was.
+     * inv_known == false means we never received an inventory update
+     * yet (don't persist garbage; let saves_load_player's value win). */
+    bool        inv_known;
+    uint16_t    inv_slot_type [9];
+    int16_t     inv_slot_count[9];
+    uint8_t     inv_selected;
 } server_client_t;
 
 typedef struct {

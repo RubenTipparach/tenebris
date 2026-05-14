@@ -84,6 +84,16 @@ void    player_teleport_to(player_ctrl_t* p, const body_config_t* body);
  * current. */
 void    player_set_body(player_ctrl_t* p, const body_config_t* body);
 
+/* Cold-rebuild the basis from the player's current position relative
+ * to p->body. Use after a teleport or MP-spawn lands the player at a
+ * new pose without going through player_set_body (same body),
+ * especially when the player will immediately enter space-mode
+ * (is_in_space=true) - space-mode never calls sync_basis_to_planet,
+ * so without an explicit rebuild the basis stays at the zero vectors
+ * from player_init, producing a degenerate view matrix and zero-
+ * length thrust axes. Safe to call any time p->body is non-NULL. */
+void    player_rebuild_basis(player_ctrl_t* p);
+
 dvec3_t player_world_pos(const player_ctrl_t* p);
 mat4_t  player_view(const player_ctrl_t* p);
 

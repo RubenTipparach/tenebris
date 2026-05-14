@@ -225,13 +225,19 @@ void chat_draw(float screen_w, float screen_h) {
     }
 
     /* History panel — semi-opaque backdrop only when there's content
-     * so it doesn't permanently darken the corner. */
+     * so it doesn't permanently darken the corner. When the compose
+     * box is open the player is reading back the conversation, so
+     * show every retained message regardless of age. */
     int visible = 0;
-    for (int i = 0; i < C.count; ++i) {
-        int idx = (C.head - 1 - i + CHAT_HISTORY_MAX) % CHAT_HISTORY_MAX;
-        double age = now - C.history[idx].recv_time_s;
-        if (age >= CHAT_FADE_HOLD_S + CHAT_FADE_OUT_S) break;
-        ++visible;
+    if (C.active) {
+        visible = C.count;
+    } else {
+        for (int i = 0; i < C.count; ++i) {
+            int idx = (C.head - 1 - i + CHAT_HISTORY_MAX) % CHAT_HISTORY_MAX;
+            double age = now - C.history[idx].recv_time_s;
+            if (age >= CHAT_FADE_HOLD_S + CHAT_FADE_OUT_S) break;
+            ++visible;
+        }
     }
     if (visible > 0) {
         const float row_h    = 18.0f;
@@ -269,7 +275,7 @@ void chat_draw(float screen_w, float screen_h) {
             const chat_msg_t* m = &C.history[idx];
             double age = now - m->recv_time_s;
             float alpha = 1.0f;
-            if (age > CHAT_FADE_HOLD_S) {
+            if (!C.active && age > CHAT_FADE_HOLD_S) {
                 alpha = (float)((CHAT_FADE_HOLD_S + CHAT_FADE_OUT_S - age)
                                 / CHAT_FADE_OUT_S);
                 if (alpha < 0.0f) alpha = 0.0f;

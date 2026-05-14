@@ -5,13 +5,13 @@
 
 void inventory_init_creative(inventory_t* inv) {
     memset(inv, 0, sizeof(*inv));
-    /* Hotbar layout: rocks first (slot 1) so a fresh creative session
-     * starts holding the most common building block, torch second
-     * (slot 2) so light-placement is one keypress away — matches the
-     * JS reference hotbar order. The rest is a sensible terrain
-     * palette. */
-    inv->slots[0] = (inv_slot_t){ BLOCK_STONE,  CREATIVE_COUNT };
-    inv->slots[1] = (inv_slot_t){ BLOCK_TORCH,  CREATIVE_COUNT };
+    /* Hotbar layout: torch is reserved at slot 0 (key "1") so a
+     * fresh creative session always has light one keypress away,
+     * and the persistence path enforces the same invariant on every
+     * restore - see inventory_ensure_reserved_torch. The rest is a
+     * sensible terrain palette. */
+    inv->slots[0] = (inv_slot_t){ BLOCK_TORCH,  CREATIVE_COUNT };
+    inv->slots[1] = (inv_slot_t){ BLOCK_STONE,  CREATIVE_COUNT };
     inv->slots[2] = (inv_slot_t){ BLOCK_DIRT,   CREATIVE_COUNT };
     inv->slots[3] = (inv_slot_t){ BLOCK_GRASS,  CREATIVE_COUNT };
     inv->slots[4] = (inv_slot_t){ BLOCK_SAND,   CREATIVE_COUNT };
@@ -20,6 +20,14 @@ void inventory_init_creative(inventory_t* inv) {
     inv->slots[7] = (inv_slot_t){ BLOCK_ICE,    CREATIVE_COUNT };
     inv->slots[8] = (inv_slot_t){ BLOCK_SNOW,   CREATIVE_COUNT };
     inv->selected = 0;
+}
+
+void inventory_ensure_reserved_torch(inventory_t* inv) {
+    if (!inv) return;
+    if (inv->slots[0].type != BLOCK_TORCH || inv->slots[0].count <= 0) {
+        inv->slots[0].type  = BLOCK_TORCH;
+        inv->slots[0].count = CREATIVE_COUNT;
+    }
 }
 
 void inventory_init_empty(inventory_t* inv) {

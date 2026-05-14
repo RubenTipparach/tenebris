@@ -15,10 +15,34 @@
 #define NET_NAME_MAX           32
 #define NET_NAME_CACHE_SIZE    32
 
+/* Per-player throttle for PLAYER_INFO_REQUEST retries. Each unknown
+ * id in the F1 / nameplate path triggers one request and re-sends
+ * once every NET_NAME_REQUEST_RETRY_S seconds while still unknown.
+ * Sized to match the snapshot cap; one slot per concurrently-unknown
+ * peer is plenty for a 16-slot room.
+ *
+ * After NET_NAME_REQUEST_WARN_AT attempts with no PLAYER_INFO reply
+ * the client logs a console.error so a player who's stuck on id-N
+ * forever can see why. After NET_NAME_REQUEST_MAX_TRIES we give up
+ * retrying and leave the id as id-N - the server is either dropping
+ * the request or doesn't know that peer anymore. */
+#define NET_NAME_REQ_TABLE_SIZE      16
+#define NET_NAME_REQUEST_RETRY_S     2.0
+#define NET_NAME_REQUEST_WARN_AT     3       /* ~6 s */
+#define NET_NAME_REQUEST_MAX_TRIES   5       /* ~10 s */
+
 typedef struct {
     uint32_t player_id;
     char     name[NET_NAME_MAX];
 } net_name_entry_t;
+
+typedef struct {
+    uint32_t player_id;
+    double   last_request_s;     /* 0 == never */
+    int      attempts;           /* how many requests we've sent */
+    bool     nacked;             /* server replied "unknown id" - stop retrying */
+    bool     warned;             /* console.error already emitted, don't spam */
+} net_name_request_t;
 
 typedef struct {
     net_client_state_t   state;
@@ -35,6 +59,9 @@ typedef struct {
      * net_client_name_for_id to render rows. */
     net_name_entry_t     names[NET_NAME_CACHE_SIZE];
     int                  name_count;
+    /* Pending PLAYER_INFO_REQUEST throttle. */
+    net_name_request_t   name_requests[NET_NAME_REQ_TABLE_SIZE];
+    int                  name_request_count;
     /* Most recent DESYNC notice from the server. last_desync_time is
      * a sokol_time stamp (0 = never). The HUD compares against
      * stm_now() and fades the warning out after a few seconds. */
@@ -52,6 +79,12 @@ typedef struct {
      * a connection that will never succeed. Cleared on every
      * net_client_connect call. */
     bool                 no_retry;
+    /* Pending inventory restore from server. Set when MSG_INVENTORY_STATE
+     * arrives; cleared by net_client_take_pending_inventory. */
+    bool                 inv_pending;
+    uint16_t             inv_slot_type [9];
+    int16_t              inv_slot_count[9];
+    uint8_t              inv_selected;
 } net_client_t;
 
 static net_client_t C;
@@ -79,10 +112,62 @@ static void cache_name(uint32_t player_id, const char* name) {
     }
 }
 
+/* Fire a PLAYER_INFO_REQUEST for player_id, but only if our last
+ * request for that id is older than NET_NAME_REQUEST_RETRY_S. The
+ * F1 panel can therefore call net_client_name_for_id every frame on
+ * a missing id without spamming the server. */
+static void request_name(uint32_t player_id) {
+    if (C.state != NET_CLIENT_READY || !C.conn) return;
+    if (player_id == 0) return;
+    double now = stm_sec(stm_now());
+    net_name_request_t* slot = NULL;
+    for (int i = 0; i < C.name_request_count; ++i) {
+        if (C.name_requests[i].player_id == player_id) {
+            slot = &C.name_requests[i];
+            break;
+        }
+    }
+    if (!slot) {
+        if (C.name_request_count >= NET_NAME_REQ_TABLE_SIZE) return;
+        slot = &C.name_requests[C.name_request_count++];
+        slot->player_id      = player_id;
+        slot->last_request_s = 0.0;
+        slot->attempts       = 0;
+        slot->nacked         = false;
+        slot->warned         = false;
+    }
+    if (slot->nacked) return;                 /* server already said "unknown" */
+    if (slot->attempts >= NET_NAME_REQUEST_MAX_TRIES) return;
+    if (slot->last_request_s != 0.0
+        && now - slot->last_request_s < NET_NAME_REQUEST_RETRY_S) {
+        return;
+    }
+    slot->last_request_s = now;
+    ++slot->attempts;
+    if (!slot->warned && slot->attempts >= NET_NAME_REQUEST_WARN_AT) {
+        fprintf(stderr,
+                "[net-client] WARN: no PLAYER_INFO for player_id=%u after %d "
+                "requests (~%.0fs). Server may not know this peer or "
+                "responses are being dropped.\n",
+                player_id, slot->attempts,
+                (double)slot->attempts * NET_NAME_REQUEST_RETRY_S);
+        slot->warned = true;
+    }
+    msg_player_info_request_t req = { .player_id = player_id, .reserved = 0 };
+    uint8_t buf[MSG_HEADER_SIZE + MSG_PLAYER_INFO_REQUEST_WIRE_SIZE];
+    size_t n = proto_write_player_info_request(buf, sizeof buf, &req);
+    if (n == 0) return;
+    net_send(C.conn, NET_CHANNEL_RELIABLE, buf, n);
+}
+
 const char* net_client_name_for_id(uint32_t player_id) {
     for (int i = 0; i < C.name_count; ++i) {
         if (C.names[i].player_id == player_id) return C.names[i].name;
     }
+    /* Cache miss: kick off a (throttled) PLAYER_INFO_REQUEST so the
+     * next render after the server replies has a real name. Returning
+     * NULL right now is fine - callers already render id-N fallback. */
+    request_name(player_id);
     return NULL;
 }
 
@@ -186,6 +271,18 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
                             text);
             break;
         }
+        case MSG_INVENTORY_STATE: {
+            if (hdr.version != MSG_INVENTORY_STATE_VERSION) break;
+            msg_inventory_state_t inv;
+            if (proto_read_inventory_state(payload, hdr.length, &inv) != 0) break;
+            memcpy(C.inv_slot_type,  inv.slot_type,  sizeof C.inv_slot_type);
+            memcpy(C.inv_slot_count, inv.slot_count, sizeof C.inv_slot_count);
+            C.inv_selected = (inv.selected < 9) ? inv.selected : 0;
+            C.inv_pending  = true;
+            printf("[net-client] inventory restored from server (selected=%u)\n",
+                   (unsigned)C.inv_selected);
+            break;
+        }
         case MSG_PLAYER_INFO: {
             if (hdr.version != MSG_PLAYER_INFO_VERSION) break;
             msg_player_info_t info;
@@ -195,6 +292,48 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
             memcpy(name, info.name, MSG_PLAYER_INFO_NAME_LEN);
             name[MSG_PLAYER_INFO_NAME_LEN] = 0;
             cache_name(info.player_id, name);
+            /* Clear any pending-request slot for this id so a peer
+             * who reconnects later can be re-resolved cleanly. */
+            for (int i = 0; i < C.name_request_count; ++i) {
+                if (C.name_requests[i].player_id == info.player_id) {
+                    C.name_requests[i].attempts       = 0;
+                    C.name_requests[i].nacked         = false;
+                    C.name_requests[i].warned         = false;
+                    C.name_requests[i].last_request_s = 0.0;
+                    break;
+                }
+            }
+            break;
+        }
+        case MSG_PLAYER_INFO_NACK: {
+            if (hdr.version != MSG_PLAYER_INFO_NACK_VERSION) break;
+            msg_player_info_nack_t nack;
+            if (proto_read_player_info_nack(payload, hdr.length, &nack) != 0) break;
+            const char* reason_str =
+                (nack.reason == PLAYER_INFO_NACK_UNKNOWN_ID) ? "unknown_id"
+                                                              : "unspecified";
+            fprintf(stderr,
+                    "[net-client] ERROR: server cannot resolve name for "
+                    "player_id=%u (reason=%s). Will stop retrying this id.\n",
+                    nack.player_id, reason_str);
+            /* Mark the slot so future net_client_name_for_id calls
+             * don't trigger more requests. Create the slot if it
+             * doesn't exist (e.g. a stale NACK from before we asked). */
+            net_name_request_t* slot = NULL;
+            for (int i = 0; i < C.name_request_count; ++i) {
+                if (C.name_requests[i].player_id == nack.player_id) {
+                    slot = &C.name_requests[i];
+                    break;
+                }
+            }
+            if (!slot && C.name_request_count < NET_NAME_REQ_TABLE_SIZE) {
+                slot = &C.name_requests[C.name_request_count++];
+                slot->player_id      = nack.player_id;
+                slot->last_request_s = 0.0;
+                slot->attempts       = 0;
+                slot->warned         = false;
+            }
+            if (slot) slot->nacked = true;
             break;
         }
         case MSG_KICK: {
@@ -287,11 +426,12 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
              * we can confirm the server's sending us peers. Quiet
              * enough not to drown out real warnings. */
             static uint64_t snap_recv = 0;
-            if ((++snap_recv % 33) == 0) {
-                printf("[net-client] snapshot #%llu: %u entries (kept %d remote)\n",
-                       (unsigned long long)snap_recv,
-                       (unsigned)snap.player_count, n_out);
-            }
+            ++snap_recv;
+            /* if ((snap_recv % 33) == 0) {
+             *     printf("[net-client] snapshot #%llu: %u entries (kept %d remote)\n",
+             *            (unsigned long long)snap_recv,
+             *            (unsigned)snap.player_count, n_out);
+             * } */
             break;
         }
         default:
@@ -333,6 +473,34 @@ void net_client_send_edit(int kind, uint32_t body_id,
     if (n == 0) return;
     /* Reliable channel — block edits are ordered & cannot be dropped. */
     net_send(C.conn, NET_CHANNEL_RELIABLE, buf, n);
+}
+
+void net_client_send_inventory_state(const uint16_t* slot_type,
+                                        const int16_t* slot_count,
+                                        int selected) {
+    if (C.state != NET_CLIENT_READY || !C.conn) return;
+    if (!slot_type || !slot_count) return;
+    msg_inventory_state_t inv = { .player_id = 0 };
+    memcpy(inv.slot_type,  slot_type,  sizeof inv.slot_type);
+    memcpy(inv.slot_count, slot_count, sizeof inv.slot_count);
+    inv.selected = (selected >= 0 && selected < 9) ? (uint8_t)selected : 0;
+    uint8_t buf[MSG_HEADER_SIZE + MSG_INVENTORY_STATE_WIRE_SIZE];
+    size_t n = proto_write_inventory_state(buf, sizeof buf, &inv);
+    if (n == 0) return;
+    net_send(C.conn, NET_CHANNEL_RELIABLE, buf, n);
+}
+
+bool net_client_take_pending_inventory(uint16_t* out_slot_type,
+                                          int16_t* out_slot_count,
+                                          int* out_selected) {
+    if (!C.inv_pending) return false;
+    if (out_slot_type)  memcpy(out_slot_type,  C.inv_slot_type,
+                               sizeof C.inv_slot_type);
+    if (out_slot_count) memcpy(out_slot_count, C.inv_slot_count,
+                               sizeof C.inv_slot_count);
+    if (out_selected)   *out_selected = C.inv_selected;
+    C.inv_pending = false;
+    return true;
 }
 
 void net_client_send_player_state(uint32_t client_tick,

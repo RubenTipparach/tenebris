@@ -110,4 +110,20 @@ void net_client_send_player_state(uint32_t client_tick,
 void net_client_send_edit(int kind, uint32_t body_id,
                            int tile, int depth, int block_type);
 
+/* Ship the local hotbar to the server so it can persist it per-player.
+ * Arrays are fixed-size 9 slots matching INV_HOTBAR_SLOTS. No-op when
+ * offline; cheap, but the caller should still throttle if it's wired
+ * to per-frame state. */
+void net_client_send_inventory_state(const uint16_t* slot_type,
+                                       const int16_t* slot_count,
+                                       int selected);
+
+/* True iff the server pushed an inventory snapshot we haven't yet
+ * applied (right after WELCOME or on a server-side authoritative
+ * reset). Reads + clears the flag, copies the slot arrays into the
+ * caller-provided buffers. Returns false when nothing's pending. */
+bool net_client_take_pending_inventory(uint16_t* out_slot_type,
+                                          int16_t* out_slot_count,
+                                          int* out_selected);
+
 #endif
