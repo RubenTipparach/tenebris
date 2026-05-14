@@ -38,6 +38,32 @@ Web artifacts land in `build-web/tenebris.html + .js + .wasm`. Serve
 with `emrun build-web/tenebris.html` or any static HTTP server that
 sets COOP/COEP headers.
 
+## Server HTTP dashboard
+
+The dedicated server (`tenebris-server`) listens for WebSocket clients
+on `--port` (default `8080`) and answers plain HTTP `GET`s on the same
+port. Use these to inspect activity from a browser, `curl`, or any
+log-shipper:
+
+| Endpoint | Description |
+| --- | --- |
+| [`GET /health`](http://localhost:8080/health) | Plaintext "alive" line + usage hint. |
+| [`GET /logins`](http://localhost:8080/logins) | JSON array of `{ts, event, name, room}` records. `event` is `"login"` (handshake success) or `"logout"` (client disconnect after handshake). |
+| [`GET /chat`](http://localhost:8080/chat) | JSON array of `{ts, name, room, text}` chat messages, server-wide, time-ordered. |
+
+Both `/logins` and `/chat` accept `?n=N` to limit the number of
+returned records (default `200`, clamped to `[1, 5000]`). Example:
+
+```sh
+curl http://localhost:8080/logins?n=50 | jq
+curl http://localhost:8080/chat?n=100  | jq
+```
+
+Records are persisted to `<saves_dir>/sessions.log` and
+`<saves_dir>/chat.log` (tab-separated, one event per line) so the
+history survives restarts. Each file auto-truncates to the most
+recent 5000 lines.
+
 ## Directory layout
 
 ```
