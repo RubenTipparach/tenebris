@@ -117,4 +117,38 @@ block_t  world_block_at_pos(const world_t* w, vec3_t body_local_pos, int tile_hi
  * depth = body->seaLevel relative offset from the top. */
 double   world_depth_to_radius_m(const world_t* w, int depth);
 
+/* Convert a body-local radius to the integer depth index of the voxel
+ * containing it. Out-of-range returns -1 or WORLD_MAX_DEPTH respectively
+ * so callers can detect "below bedrock" / "above build cap". */
+int      world_radius_to_depth(const world_t* w, double radius_m);
+
+/* True when the voxel at (tile, radius) is BLOCK_WATER. Used by the
+ * player controller to gate water physics — eyes, body, feet checks
+ * sample at different radii along basis.up. Returns false for any
+ * out-of-range / ungenerated tile (treat as air). */
+bool     world_is_water_at(const world_t* w, int tile, double radius_m);
+
+/* Find the walkable-floor radius closest to `target_radius_m`, where
+ * a "walkable floor" is the top of a solid voxel that has air OR
+ * water in the cell above (so swimming over a flooded floor is still
+ * walkable for ground-snap purposes). Preference: a floor at or
+ * below `target_radius_m` wins over one above it when both exist, so
+ * walking onto a tile with a cave roof above and a real floor below
+ * snaps the player to the lower floor. Returns -1e9 when the tile is
+ * ungenerated or has no walkable floor.
+ *
+ * `body_height_m` is the head-clearance the floor must satisfy: the
+ * column above it must be air/water for body_height_m metres of
+ * radius. Pass <= 0 to skip the headroom check (used by ground snap
+ * after a vertical clamp; horizontal step rejection wants the
+ * headroom). */
+double   world_walkable_floor_near(const world_t* w, int tile,
+                                   double target_radius_m,
+                                   double body_height_m);
+
+/* Bottom radius of the first solid voxel at or above `head_radius_m`
+ * in the column. Returns +1e30 when no ceiling exists (open sky).
+ * Used by the vertical integrator to clamp upward motion. */
+double   world_ceiling_above(const world_t* w, int tile, double head_radius_m);
+
 #endif

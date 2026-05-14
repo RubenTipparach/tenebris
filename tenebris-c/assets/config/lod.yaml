@@ -96,6 +96,26 @@ lod:
   jetpack_accel_mps2:          42.0
   jetpack_max_vy_mps:          14.0
 
+  # Player capsule. height_m is foot-to-head distance - the ceiling
+  # collision rejects any tile whose first overhead solid block sits
+  # within feet + height_m. Set this to match EYE_HEIGHT plus a bit
+  # of head clearance.
+  player_height_m:             1.8
+
+  # Water physics. The player has three "water" gates:
+  #   - feet in water  (feet_radius is inside a water voxel)
+  #   - body in water  (feet + water_body_check_height_m is in water)
+  #   - eyes in water  (feet + EYE_HEIGHT is in water)
+  # Slow movement + reduced gravity + drag apply while the body is
+  # submerged; the swim jump model engages once the eyes go under.
+  water_gravity_mult:           0.30
+  water_drag_per_s:             3.0
+  water_movement_mult:          0.50
+  water_swim_force_mps2:        20.0
+  water_surface_float_height_m: -0.8
+  water_body_check_height_m:    0.50
+  water_submerged_jump_mult:    0.30
+
 earth:
   water_color:        [0.10, 0.28, 0.55]
   lowland_tint:       [0.85, 0.80, 0.65]

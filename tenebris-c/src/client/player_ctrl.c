@@ -1,6 +1,5 @@
 #include "client/player_ctrl.h"
 #include "client/input.h"
-#include "core/blocks.h"
 #include "core/config.h"
 #include <math.h>
 #include <stdio.h>
@@ -196,42 +195,42 @@ static dvec3_t walk_wish(const player_ctrl_t* p, const phys_input_t* in) {
     return wish;
 }
 
-/* Ground altitude under the player: top of the solid column at the
- * player's current tile. Returns -1e9 if the tile is not yet generated. */
-static double ground_radius_under(const world_t* w, int tile) {
-    if (tile < 0 || tile >= w->tile_count || tile >= w->gen_cursor) return -1e9;
-    for (int d = WORLD_MAX_DEPTH - 1; d >= 0; --d) {
-        uint8_t b = w->blocks[tile * WORLD_MAX_DEPTH + d];
-        if (block_is_solid((block_t)b)) {
-            /* Player stands on top of this voxel. */
-            return world_depth_to_radius_m(w, d + 1);
-        }
-    }
-    return -1e9;
-}
-
 /* Max step-up the player can take horizontally without jumping. Walking
- * onto a column whose top exceeds (current feet radius + STEP_HEIGHT)
+ * onto a column whose floor exceeds (current feet radius + STEP_HEIGHT)
  * is treated as a vertical wall and blocked. Matches the Minecraft
  * "auto-step-up half a block" feel; tall walls require jump/jetpack. */
 #define STEP_HEIGHT 0.6
 
-/* Try to apply `delta` to `pos` along the body's tangent plane. If the
- * tile under the candidate position is a wall (its column top sits
- * more than STEP_HEIGHT above the player's current feet), the move is
- * rejected and `pos` is returned unchanged so the player slides along
- * the wall instead of teleporting up onto it. */
+/* Try to apply `delta` to `pos` along the body's tangent plane. The
+ * candidate tile is rejected (and the move slides) if either:
+ *   - no walkable floor exists at or below the player's feet within
+ *     STEP_HEIGHT (i.e. a wall blocks the move), or
+ *   - the headroom above the candidate floor is less than body_height
+ *     (i.e. moving forward would push the player's head into the
+ *     ceiling of a low passage). */
 static dvec3_t try_horizontal_step(const world_t* w,
                                     const player_ctrl_t* p,
                                     dvec3_t pos,
-                                    dvec3_t delta) {
+                                    dvec3_t delta,
+                                    double body_height_m) {
     dvec3_t center    = dvec3_make(p->body->pos_x, p->body->pos_y, p->body->pos_z);
     dvec3_t candidate = dvec3_add(pos, delta);
     dvec3_t cand_loc  = dvec3_sub(candidate, center);
     int     cand_tile = goldberg_find_tile(w->grid, dvec3_normalize(cand_loc), p->last_tile);
-    double  cand_gr   = ground_radius_under(w, cand_tile);
-    if (cand_gr <= -1e8) return candidate;  /* ungenerated — don't block */
-    double feet_r = dvec3_length(dvec3_sub(pos, center));
+    double  feet_r    = dvec3_length(dvec3_sub(pos, center));
+    /* Headroom-respecting floor search: any floor we accept must have
+     * body_height_m of clear air above it. If none exists, the
+     * candidate tile is impassable from this elevation. */
+    double  cand_gr   = world_walkable_floor_near(w, cand_tile, feet_r, body_height_m);
+    if (cand_gr <= -1e8) {
+        /* No walkable+headroom-clear floor on the candidate tile.
+         * Check if the tile is ungenerated (in which case let the
+         * player drift) vs. genuinely blocked. */
+        if (cand_tile < 0 || cand_tile >= w->tile_count || cand_tile >= w->gen_cursor) {
+            return candidate;
+        }
+        return pos;  /* blocked — too tight or no floor */
+    }
     if (cand_gr - feet_r > STEP_HEIGHT) return pos;  /* wall — slide */
     return candidate;
 }
@@ -620,9 +619,33 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
         if (p->pitch < -PITCH_LIMIT) p->pitch = -PITCH_LIMIT;
     }
 
-    /* ---- Walking + jetpack + gravity, all on planet up. */
+    /* ---- Walking + jetpack + gravity, all on planet up.
+     *
+     * Water-state probes feed both the movement-speed scalar (slow
+     * down once the body is submerged) and the swim-jump model
+     * below. We sample three radii along basis.up:
+     *   - feet     (gates feetInWater)
+     *   - body     (gates the gravity/drag/movement scalars)
+     *   - eyes     (gates the submerged-jump fork, drives "underwater"
+     *               look effects in the renderer once those hook in)
+     * Without a world handed in the probes default to dry. */
     const bool has_world = (w != NULL && w->body == p->body);
+    const double player_height = (double)L->player_height_m;
+    bool feet_in_water = false;
+    bool body_in_water = false;
+    bool eyes_in_water = false;
+    if (has_world) {
+        dvec3_t center = dvec3_make(p->body->pos_x, p->body->pos_y, p->body->pos_z);
+        dvec3_t local  = dvec3_sub(p->position, center);
+        double  feet_r = dvec3_length(local);
+        dvec3_t local_dir = dvec3_scale(local, 1.0 / (feet_r > 1e-9 ? feet_r : 1.0));
+        int     ft     = goldberg_find_tile(w->grid, local_dir, p->last_tile);
+        feet_in_water = world_is_water_at(w, ft, feet_r);
+        body_in_water = world_is_water_at(w, ft, feet_r + (double)L->water_body_check_height_m);
+        eyes_in_water = world_is_water_at(w, ft, feet_r + (double)EYE_HEIGHT);
+    }
     float speed = in->phys.sprint ? SPRINT_SPEED : WALK_SPEED;
+    if (body_in_water) speed *= L->water_movement_mult;
     dvec3_t wish = walk_wish(p, &in->phys);
 
     if (has_world) {
@@ -633,8 +656,12 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
         double s = (double)speed * (double)dt;
         double walk_amt   = dvec3_dot(wish, walk_fwd) * s;
         double strafe_amt = dvec3_dot(wish, strafe)   * s;
-        p->position = try_horizontal_step(w, p, p->position, dvec3_scale(walk_fwd, walk_amt));
-        p->position = try_horizontal_step(w, p, p->position, dvec3_scale(strafe,   strafe_amt));
+        /* Headroom check is skipped while submerged so the player can
+         * swim freely under low ceilings; out of water it gates entry
+         * into cramped passages so the head can't clip into stone. */
+        double horiz_height = body_in_water ? 0.0 : player_height;
+        p->position = try_horizontal_step(w, p, p->position, dvec3_scale(walk_fwd, walk_amt), horiz_height);
+        p->position = try_horizontal_step(w, p, p->position, dvec3_scale(strafe,   strafe_amt), horiz_height);
         dvec3_t local_dir = dvec3_normalize(player_local_pos(p));
         p->last_tile = goldberg_find_tile(w->grid, local_dir, p->last_tile);
     } else {
@@ -652,33 +679,45 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
      * component here; tangential velocity is allowed to coast on
      * for a frame or two as the slerp ends. */
     double vy = dvec3_dot(p->velocity, p->basis.up);
-    /* Gravity scaled by (a) the body's gravity_g modifier and (b)
-     * the smooth falloff multiplier from planet_gravity_at, so as
-     * the player drifts up out of the well their fall slows. */
+    /* Gravity scaled by (a) the body's gravity_g modifier, (b) the
+     * smooth falloff multiplier from planet_gravity_at, and (c) the
+     * water gravity multiplier while the body is submerged — so the
+     * player sinks slowly underwater instead of free-falling. */
     const float base_gravity = 25.0f * p->body->gravity_g;
-    const float gravity = base_gravity * gq.multiplier;
-    /* Tap-to-jump vs hold-for-jetpack. Two-stage logic driven by
-     * how long the jump key has been held since its last 0→1 edge:
-     *   - On first frame of a fresh press while grounded: fire one
-     *     strong impulse (jump_velocity_mps). jump_consumed flips so
-     *     subsequent frames don't double-fire the impulse.
-     *   - While the key stays down past jetpack_hold_threshold_s,
-     *     start applying jetpack acceleration each frame, capped at
-     *     jetpack_max_vy_mps.
-     *   - When the key releases, the held timer + consumed flag
-     *     reset so the next press is a fresh tap.
-     * That gates jetpack thrust behind a deliberate hold and keeps
-     * a quick tap as a clean impulse — previously the jetpack
-     * activated the frame after the tap (the moment grounded flipped
-     * false), so even a brief press leaked thrust into the climb. */
+    float       gravity      = base_gravity * gq.multiplier;
+    if (body_in_water) gravity *= L->water_gravity_mult;
+    /* Jump / jetpack / swim. Three input branches:
+     *   1) Underwater (eyes submerged): jump key is a continuous swim
+     *      thrust along basis.up. No tap impulse, no jetpack. Lets
+     *      the player surface by holding space. The grounded-jump
+     *      branch below still handles the "feet on sea floor, body
+     *      submerged" case for an initial push.
+     *   2) Grounded, feet in water, eyes above water (wading): the
+     *      regular jump impulse fires at full strength.
+     *   3) Dry: regular tap-to-jump + hold-for-jetpack as before. */
     if (in->phys.jump) {
         p->jump_held_s += dt;
-        if (!p->jump_consumed && p->grounded) {
-            vy = (double)L->jump_velocity_mps;
+        if (eyes_in_water) {
+            /* Swim up — continuous acceleration while held. Cap at
+             * the jetpack terminal so the player can't break the
+             * water surface at infinite speed. */
+            vy += (double)L->water_swim_force_mps2 * (double)dt;
+            if (vy > (double)L->jetpack_max_vy_mps) vy = (double)L->jetpack_max_vy_mps;
+            p->jump_consumed = true;   /* no separate impulse */
+        } else if (!p->jump_consumed && p->grounded) {
+            double impulse = (double)L->jump_velocity_mps;
+            /* Submerged jump from a sea-floor stance is weakened
+             * to roughly the water gravity scale so the player
+             * can't launch out of water as if on dry land. */
+            if (body_in_water) impulse *= L->water_submerged_jump_mult;
+            vy = impulse;
             p->grounded = false;
             p->jump_consumed = true;
         }
-        if (p->jump_held_s > L->jetpack_hold_threshold_s && !p->grounded) {
+        /* Jetpack stays gated behind the hold threshold AND requires
+         * the player to be dry — swimming is the analogous mechanic
+         * underwater and we don't want both stacking. */
+        if (!body_in_water && p->jump_held_s > L->jetpack_hold_threshold_s && !p->grounded) {
             vy += (double)L->jetpack_accel_mps2 * (double)dt;
             if (vy > (double)L->jetpack_max_vy_mps) vy = (double)L->jetpack_max_vy_mps;
         }
@@ -692,33 +731,87 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
     /* Re-pack vy back into the world-space velocity. Tangential
      * component (orthogonal to basis.up) is damped — without this
      * the player keeps any orbital push from a recent space-mode
-     * coast forever. */
+     * coast forever. While submerged the damping kicks much harder
+     * (per JS PlayerConfig.WATER_DRAG ≈ 3 /s) so swimming has the
+     * sluggish "moving through honey" feel. */
     dvec3_t vel_tan = dvec3_sub(p->velocity, dvec3_scale(p->basis.up, dvec3_dot(p->velocity, p->basis.up)));
-    double tan_damp = exp(-2.0 * (double)dt);
+    double tan_damp_rate = body_in_water ? (double)L->water_drag_per_s : 2.0;
+    double tan_damp      = exp(-tan_damp_rate * (double)dt);
     vel_tan = dvec3_scale(vel_tan, tan_damp);
+    if (body_in_water) {
+        /* Same exponential drag on the vertical component so the
+         * player neither plummets nor rockets while submerged. */
+        vy *= exp(-(double)L->water_drag_per_s * (double)dt);
+    }
     p->velocity = dvec3_add(vel_tan, dvec3_scale(p->basis.up, vy));
 
     /* Apply position update from velocity. */
     p->position = dvec3_add(p->position, dvec3_scale(p->velocity, (double)dt));
 
-    /* Ground snap. */
+    /* Ground snap + ceiling collision. Both run only when we have a
+     * world for the current body. */
     if (has_world) {
-        double gr = ground_radius_under(w, p->last_tile);
+        dvec3_t local = player_local_pos(p);
+        double  r     = dvec3_length(local);
+        dvec3_t local_dir = dvec3_normalize(local);
+        /* Re-resolve the tile under the player after the position
+         * update so the cave-aware floor finder samples the column
+         * we actually moved into. */
+        int     cur_tile = goldberg_find_tile(w->grid, local_dir, p->last_tile);
+        p->last_tile = cur_tile;
+
+        /* Ceiling collision first. If the player's head pokes into a
+         * solid voxel — typically because they jumped under an
+         * overhang — clamp the radial position back to (ceiling -
+         * height) and zero any upward velocity component. Skipped
+         * underwater so swimming up against rock simply stops; the
+         * player doesn't get teleported. */
+        double head_r = r + player_height;
+        double ceiling_r = world_ceiling_above(w, cur_tile, head_r);
+        if (ceiling_r < head_r && vy > 0.0 && !body_in_water) {
+            double clamp_r = ceiling_r - player_height;
+            p->position = dvec3_add(
+                dvec3_make(p->body->pos_x, p->body->pos_y, p->body->pos_z),
+                dvec3_scale(local_dir, clamp_r));
+            /* Kill the upward velocity; tangential keeps coasting. */
+            vy = 0.0;
+            vel_tan = dvec3_sub(p->velocity, dvec3_scale(p->basis.up, dvec3_dot(p->velocity, p->basis.up)));
+            p->velocity = vel_tan;
+            /* Recompute the snapshot used below. */
+            local = player_local_pos(p);
+            r     = dvec3_length(local);
+        } else if (ceiling_r < head_r && body_in_water) {
+            /* Underwater: just nudge radial velocity to zero so the
+             * player stops rising into rock without the visible snap. */
+            if (vy > 0.0) {
+                vy = 0.0;
+                vel_tan = dvec3_sub(p->velocity, dvec3_scale(p->basis.up, dvec3_dot(p->velocity, p->basis.up)));
+                p->velocity = vel_tan;
+            }
+        }
+
+        /* Cave-aware ground snap. The walkable floor closest to the
+         * player's feet wins (preferring at-or-below over above), so
+         * walking into a cave with an overhang above and a real floor
+         * below resolves to the cave floor instead of the overhang
+         * top. */
+        double gr = world_walkable_floor_near(w, cur_tile, r, 0.0);
         if (gr > -1e8) {
-            dvec3_t local = player_local_pos(p);
-            double  r     = dvec3_length(local);
+            /* Standard wading state: feet under water but grounded
+             * on the seabed. Allowed (player still counts as
+             * grounded) so they can jump from the bottom. Fully
+             * submerged swimming sets grounded=false even when
+             * touching a floor — the JS reference does the same. */
             if (r < gr && vy <= 0.0) {
-                dvec3_t snapped_local = dvec3_scale(dvec3_normalize(local), gr);
+                dvec3_t snapped_local = dvec3_scale(local_dir, gr);
                 p->position = dvec3_add(
                     dvec3_make(p->body->pos_x, p->body->pos_y, p->body->pos_z),
                     snapped_local);
-                /* Zero out the radial component but keep tangential
-                 * for one frame so a sliding landing reads correct. */
                 vel_tan = dvec3_sub(p->velocity, dvec3_scale(p->basis.up, dvec3_dot(p->velocity, p->basis.up)));
                 p->velocity = vel_tan;
-                p->grounded = true;
+                p->grounded = !eyes_in_water;
             } else if (fabs(r - gr) < 0.05 && vy <= 0.0) {
-                p->grounded = true;
+                p->grounded = !eyes_in_water;
                 vel_tan = dvec3_sub(p->velocity, dvec3_scale(p->basis.up, dvec3_dot(p->velocity, p->basis.up)));
                 p->velocity = vel_tan;
             } else {
@@ -730,6 +823,7 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
     } else {
         p->grounded = false;
     }
+    (void)feet_in_water;   /* feet probe reserved for footstep / dive sound hooks */
 
     /* End-of-frame jerk diagnostic. Compares current state against
      * the BEFORE snapshot taken at function entry; logs a single

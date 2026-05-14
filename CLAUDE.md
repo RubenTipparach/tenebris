@@ -252,6 +252,50 @@ involves "generate a model / texture / animation".
   baked artifact deterministically, with no third-party deps beyond
   what the existing scripts already use (stdlib + zlib).
 
+## Time compression on server resume
+
+The Fly deployment has `auto_stop_machines = 'stop'` +
+`min_machines_running = 0`, so the dedicated server sleeps when
+idle and starts back up on the first request. When the server
+boots it should treat wall-clock time *since the last persisted
+state* as "elapsed simulation time" - not "time the server has
+been running" - and fast-forward any long-running simulation
+processes by that delta in one step at startup. This keeps the
+world coherent across cost-saving stops without the operator
+having to keep the machine warm.
+
+Subsystems that should participate when they land:
+
+- **Plant / tree growth** - regrow harvested leaves, age stumps,
+  spread saplings.
+- **Animal populations** - births / deaths / migration on a
+  per-biome stat, not per-individual; the per-individual entities
+  are spawned lazily when a player is nearby.
+- **Resource regen** - ore veins refilling, water table recovery
+  after pumping.
+- **Economy / market** - price drift, NPC trader inventories
+  cycling, faction balance shifts.
+- **World events** - timers on storms, eclipses, comet visits.
+
+Implementation pattern:
+
+1. Persist a `last_sim_time_unix_s` on every relevant save (alongside
+   the existing chunk / player files under `/data/saves/`).
+2. At `server_init`, after loading the saves, compute
+   `dt = max(0, now() - last_sim_time)` and call each subsystem's
+   `*_catch_up(dt)` once before opening the listener.
+3. Cap the delta (e.g. one in-game year) so a server that's been
+   off for months doesn't blow up - long absences just settle to
+   the steady state.
+4. Subsystems live in `core/` so the same code path runs in SP and
+   MP - the SP client uses `dt = save_age` exactly the same way.
+
+This note is a *reminder*, not a current spec. None of the above
+subsystems exist yet; when adding the first one, also add a
+`world_time.{c,h}` module in `core/` that owns the `last_sim_time`
+field + the central catch-up dispatch, so each new system plugs
+into one place.
+
 ## Post-commit links
 
 After each commit, always show these links to the user:

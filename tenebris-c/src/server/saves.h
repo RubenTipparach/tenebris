@@ -3,6 +3,7 @@
 
 #include "core/planet.h"
 #include "core/world.h"
+#include <stddef.h>
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -123,5 +124,36 @@ void saves_chat_append(const char* room, const char* name, const char* text);
  * Returns the count actually loaded. */
 int  saves_chat_load_backlog(const char* room,
                                 saves_chat_msg_t* out, int cap);
+
+/* ----------------------------------------------------------------- */
+/* Audit logs (sessions + global chat). Disk-persisted, tab-separated
+ * lines under <saves_dir>/sessions.log + <saves_dir>/chat.log. Each
+ * line is `<unix_seconds>\t<event>\t<name>\t<room>\n` for sessions
+ * and `<unix_seconds>\t<name>\t<room>\t<text>\n` for chat. The HTTP
+ * dashboard reads straight off these files so an operator can
+ * `curl http://host/logins` without booting a separate tool.
+ *
+ * Both files auto-truncate to SAVES_AUDIT_FILE_MAX lines once they
+ * grow past it, the same cheap "read the whole file, drop the head,
+ * rewrite via .tmp swap" pattern as the per-room chat log. */
+#define SAVES_AUDIT_FILE_MAX     5000
+
+/* Append a session event (`login` or `logout`). Room is the 6-char
+ * code, or empty / NULL for the public room. */
+void saves_session_log(const char* event, const char* name, const char* room);
+
+/* Append a chat message to the global, timestamped log (separate
+ * from the per-room backlog file that `saves_chat_append` writes -
+ * that one stays purely TSV `<name>\t<text>` for in-game replay). */
+void saves_global_chat_append(const char* room, const char* name, const char* text);
+
+/* Read the tail of <saves_dir>/<which>.log (which must be "sessions"
+ * or "chat") into `out`, terminating it with a NUL. Returns the
+ * number of bytes written (excluding the NUL). The buffer is
+ * filled with the last `max_lines` lines of the file - older lines
+ * are silently dropped. Returns 0 on any error (missing file,
+ * over-cap, etc.) so callers can fall back to "no data yet". */
+size_t saves_audit_tail(const char* which, int max_lines,
+                          char* out, size_t cap);
 
 #endif

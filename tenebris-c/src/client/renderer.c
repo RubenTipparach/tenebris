@@ -173,6 +173,17 @@ static struct {
     sg_view     atlas_view;
     sg_sampler  atlas_smp;
 
+    /* Tileable water normal map sampled by water_mobile.glsl. Phones
+     * burn a lot of fragment budget on the desktop water shader's
+     * 3-octave fbm + 4-sample finite-difference gradient (~12 hashes/
+     * pixel); on the mobile path we sample this pre-baked normal map
+     * twice instead. The asset is baked offline by
+     * tools/gen-water-normal.py from the same fbm shape, so the visual
+     * character matches without the per-frame cost. */
+    sg_image    water_normal_img;
+    sg_view     water_normal_view;
+    sg_sampler  water_normal_smp;
+
     /* Phase A scaffolding for FBO-based water (see WATER_STAGES.md).
      * Offscreen colour + depth render targets sized to the swapchain.
      * Created lazily in renderer_begin_frame once the window size is
@@ -414,6 +425,50 @@ static void bake_atlas(void) {
     free(atlas);
 }
 
+/* Load the pre-baked water normal map. Bound only by the water_mobile
+ * pipeline - the desktop water shader generates normals in-shader.
+ * Repeat-wrap + bilinear so the texture tiles cleanly across the
+ * sphere and the wave pattern stays smooth at oblique angles. */
+static void load_water_normal(void) {
+    stbi_set_flip_vertically_on_load(0);
+    int w = 0, h = 0, c = 0;
+    unsigned char* pix = stbi_load("assets/textures/water_normal.png",
+                                     &w, &h, &c, 4);
+    static const unsigned char fallback[4] = { 128, 128, 255, 255 };
+    const unsigned char* upload = pix;
+    if (!pix) {
+        /* Asset missing: upload a 1x1 flat-blue so the sampler stays
+         * valid. Mobile water reads as a glassy slab but doesn't
+         * crash. */
+        printf("[renderer] WARNING: assets/textures/water_normal.png "
+               "missing; mobile water normals will be flat\n");
+        upload = fallback;
+        w = h = 1;
+    } else {
+        printf("[renderer] loaded water_normal.png %dx%d (channels=%d)\n",
+               w, h, c);
+    }
+    fflush(stdout);
+    R.water_normal_img = sg_make_image(&(sg_image_desc){
+        .width = w, .height = h,
+        .pixel_format = SG_PIXELFORMAT_RGBA8,
+        .data.mip_levels[0] = { .ptr = upload, .size = (size_t)(w * h * 4) },
+        .label = "water-normal",
+    });
+    R.water_normal_view = sg_make_view(&(sg_view_desc){
+        .texture.image = R.water_normal_img,
+        .label = "water-normal-view",
+    });
+    R.water_normal_smp = sg_make_sampler(&(sg_sampler_desc){
+        .min_filter = SG_FILTER_LINEAR,
+        .mag_filter = SG_FILTER_LINEAR,
+        .wrap_u = SG_WRAP_REPEAT,
+        .wrap_v = SG_WRAP_REPEAT,
+        .label = "water-normal-sampler",
+    });
+    if (pix) stbi_image_free(pix);
+}
+
 /* ----------------------------------------------------------------------- */
 
 void renderer_init(void) {
@@ -542,10 +597,28 @@ void renderer_init(void) {
                 .buffers[0].stride = sizeof(hex_vertex_t),
             },
             .index_type = SG_INDEXTYPE_UINT32,
-            .depth = { .write_enabled = true, .compare = SG_COMPAREFUNC_LESS_EQUAL },
+            /* Depth test against the swapchain depth that composite_mobile
+             * forwarded from the offscreen pass, but DON'T write depth
+             * for the water layer - that keeps transparent water from
+             * occluding overlapping water tiles drawn later, same trick
+             * Minecraft and friends use for translucent surfaces. */
+            .depth = { .write_enabled = false, .compare = SG_COMPAREFUNC_LESS_EQUAL },
             .cull_mode = SG_CULLMODE_NONE,
             .face_winding = SG_FACEWINDING_CCW,
-            .colors[0].blend = { .enabled = false },
+            /* Premultiplied-alpha src-alpha blend so the cap reads as a
+             * semi-transparent layer over the seabed (the composite
+             * pass already wrote the opaque terrain into the swapchain).
+             * Shoreline pixels turn the seabed visible; deeper or
+             * grazing-angle pixels stay closer to opaque. */
+            .colors[0].blend = {
+                .enabled         = true,
+                .src_factor_rgb  = SG_BLENDFACTOR_SRC_ALPHA,
+                .dst_factor_rgb  = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+                .op_rgb          = SG_BLENDOP_ADD,
+                .src_factor_alpha = SG_BLENDFACTOR_ONE,
+                .dst_factor_alpha = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+                .op_alpha        = SG_BLENDOP_ADD,
+            },
             .label = "water-mobile-pipeline",
         });
     }
@@ -752,6 +825,7 @@ void renderer_init(void) {
     });
 
     bake_atlas();
+    load_water_normal();
     /* Per-chunk meshes are allocated lazily by ensure_chunks() once we
      * see the world tile count — keeps init cheap when there's nothing
      * to mesh yet (Tenebris's first frame). */
@@ -778,6 +852,9 @@ void renderer_shutdown(void) {
     sg_destroy_view(R.atlas_view);
     sg_destroy_image(R.atlas_img);
     sg_destroy_sampler(R.atlas_smp);
+    sg_destroy_view(R.water_normal_view);
+    sg_destroy_image(R.water_normal_img);
+    sg_destroy_sampler(R.water_normal_smp);
     if (R.offscreen_color_tex.id) sg_destroy_view(R.offscreen_color_tex);
     if (R.offscreen_depth_tex.id) sg_destroy_view(R.offscreen_depth_tex);
     if (R.offscreen_color_att.id) sg_destroy_view(R.offscreen_color_att);
@@ -1978,6 +2055,14 @@ static void body_draw_water(chunked_body_t* body, mat4_t vp,
             .u_night_floor    = L->night_ambient_floor,
             .u_torch_color    = { L->torch_color.x, L->torch_color.y, L->torch_color.z,
                                   L->torch_intensity },
+            /* Horizon haze - cheap stand-in for the desktop shader's
+             * Beer-Lambert thickness fog. Without it, mobile water
+             * reads as a uniform slab where the desktop version softly
+             * fades into the atmosphere at distance. Tunable knobs
+             * land in water.yaml below; defaults are sized so the
+             * effect kicks in at ~300 m and saturates around 800 m. */
+            .u_horizon_fade_m        = W->horizon_fade_m,
+            .u_horizon_fade_strength = W->horizon_fade_strength,
         };
         sg_apply_uniforms(UB_fs_params_mobile, &SG_RANGE(fs_mobile));
 
@@ -1989,12 +2074,16 @@ static void body_draw_water(chunked_body_t* body, mat4_t vp,
             sg_apply_bindings(&(sg_bindings){
                 .vertex_buffers[0] = c->water_vbuf,
                 .index_buffer      = c->water_ibuf,
-                /* No FBO bindings - the mobile surface shader uses a
+                /* Mobile water surface samples the pre-baked normal
+                 * map - cheaper than the desktop fbm + finite-diff.
+                 * No FBO bindings: the mobile surface shader uses a
                  * flat u_deep_color body (no refraction, no thickness
                  * fog). composite_mobile already forwarded opaque
                  * scene depth into the swapchain depth, so the
                  * pipeline's LESS_EQUAL test handles terrain
                  * occlusion. */
+                .views[VIEW_water_normal_tex] = R.water_normal_view,
+                .samplers[SMP_water_normal_smp] = R.water_normal_smp,
             });
             sg_draw(0, c->last_uploaded_water_idx_count, 1);
             R.tris += (size_t)c->last_uploaded_water_idx_count / 3;

@@ -101,7 +101,26 @@ static int serve_http(struct lws* wsi, int status,
     unsigned char* p   = buf + LWS_PRE;
     unsigned char* end = buf + sizeof buf - 1;
     if (lws_add_http_common_headers(wsi, (unsigned int)status, mime,
-                                       (unsigned long)body_len, &p, end) ||
+                                       (unsigned long)body_len, &p, end)) {
+        return -1;
+    }
+    /* CORS - the dashboard lives on github.io while the JSON endpoints
+     * are served from fly.dev, so a wildcard origin is required for
+     * fetch() to read the response. Read-only, no credentials, so the
+     * usual "don't use *" caveats don't bite us.
+     *
+     * Important: lws_add_http_header_by_name expects the header NAME
+     * to include its trailing colon - the function only injects a
+     * space between name and value. Without the colon the emitted
+     * line is "Access-Control-Allow-Origin *" (no colon, no CRLF
+     * framing), which corrupts the HTTP response and trips Fly's
+     * edge into 502 Bad Gateway. */
+    if (lws_add_http_header_by_name(wsi,
+            (const unsigned char*)"Access-Control-Allow-Origin:",
+            (const unsigned char*)"*", 1, &p, end) ||
+        lws_add_http_header_by_name(wsi,
+            (const unsigned char*)"Access-Control-Allow-Methods:",
+            (const unsigned char*)"GET, OPTIONS", 12, &p, end) ||
         lws_finalize_write_http_header(wsi, buf + LWS_PRE, &p, end)) {
         return -1;
     }
@@ -137,7 +156,44 @@ static int tenebris_callback(struct lws* wsi, enum lws_callback_reasons reason,
                 return serve_http(wsi, 200, "text/plain; charset=utf-8",
                                     (const uint8_t*)msg, sizeof msg - 1);
             }
-            const char* path = (const char*)in;
+            /* `in` carries the URL PATH only - libwebsockets parks the
+             * query string in the WSI_TOKEN_HTTP_URI_ARGS header.
+             *
+             * Each `key=value` pair is stored as a separate fragment.
+             * lws_hdr_copy *does* concatenate them, but it does so with
+             * COMMAS between fragments (which is what HTTP allows for
+             * generic multi-value headers). That breaks query-string
+             * parsing: a request like `?text=hi&room=T9VVPW` would come
+             * out as `text=hi,room=T9VVPW`, and the room field would
+             * vanish into the text field while my `&`-splitting parser
+             * found no room key.
+             *
+             * Iterate fragments with lws_hdr_copy_fragment instead and
+             * rejoin them with the standard `&` so the caller sees a
+             * normal query string. */
+            const char* raw_path = (const char*)in;
+            char full[1024];
+            char args[768];
+            size_t args_off = 0;
+            args[0] = 0;
+            for (int fi = 0; fi < 32; ++fi) {
+                char frag[256];
+                int fn = lws_hdr_copy_fragment(wsi, frag, sizeof frag,
+                                                  WSI_TOKEN_HTTP_URI_ARGS, fi);
+                if (fn <= 0) break;
+                if (args_off > 0 && args_off + 1 < sizeof args) {
+                    args[args_off++] = '&';
+                }
+                if (args_off + (size_t)fn + 1 >= sizeof args) break;
+                memcpy(args + args_off, frag, (size_t)fn);
+                args_off += (size_t)fn;
+                args[args_off] = 0;
+            }
+            if (args_off > 0) {
+                int n = snprintf(full, sizeof full, "%s?%s", raw_path, args);
+                if (n > 0 && n < (int)sizeof full) raw_path = full;
+            }
+            const char* path = raw_path;
             const uint8_t* body = NULL;
             size_t body_len = 0;
             const char* mime = "text/plain";

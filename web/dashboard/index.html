@@ -1,0 +1,716 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>tenebris-server dashboard</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #0c0d10;
+      color: #d8d8d8;
+      font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    a { color: #7ab8ff; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .wrap { max-width: 1100px; margin: 0 auto; padding: 18px; }
+    h1 { font-size: 18px; margin: 0 0 4px; color: #fff; letter-spacing: .02em; }
+    h2 {
+      font-size: 12px;
+      margin: 22px 0 8px;
+      color: #9ad;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      font-weight: 600;
+    }
+    .sub { color: #888; font-size: 12px; margin-bottom: 18px; }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+    .stat {
+      background: #15171c;
+      border: 1px solid #23262d;
+      border-radius: 6px;
+      padding: 10px 12px;
+    }
+    .stat .k {
+      color: #888;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+    }
+    .stat .v { color: #fff; font-size: 18px; margin-top: 2px; }
+    .bar {
+      background: #23262d;
+      height: 4px;
+      border-radius: 2px;
+      margin-top: 6px;
+      overflow: hidden;
+    }
+    .bar > div { height: 100%; background: #7ab8ff; transition: width .3s; }
+    .cols {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+    @media (max-width: 720px) { .cols { grid-template-columns: 1fr; } }
+    table { width: 100%; border-collapse: collapse; }
+    th, td {
+      text-align: left;
+      padding: 4px 8px;
+      border-bottom: 1px solid #1c1f25;
+      font-size: 12px;
+      vertical-align: top;
+    }
+    th {
+      color: #888;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+      font-size: 11px;
+    }
+    .pill {
+      display: inline-block;
+      background: #1c2230;
+      color: #9ad;
+      padding: 1px 6px;
+      border-radius: 3px;
+      font-size: 11px;
+    }
+    .empty { color: #555; padding: 8px 0; }
+    .invite-btn {
+      background: #1c2230;
+      color: #9ad;
+      border: 1px solid #2a3a55;
+      border-radius: 3px;
+      padding: 1px 8px;
+      font: inherit;
+      font-size: 11px;
+      cursor: pointer;
+    }
+    .invite-btn:hover { background: #25324a; color: #cde2ff; }
+    .invite-btn.copied { background: #1c2e1c; color: #7fe28f; border-color: #2a552a; }
+    .ev-login  { color: #7fe28f; }
+    .ev-logout { color: #e2987f; }
+    .ts { color: #666; }
+    .err { color: #e26b6b; }
+    .dur { color: #c8c8c8; }
+    .dur.live { color: #7fe28f; }
+    footer { margin-top: 24px; color: #555; font-size: 11px; }
+    input.host {
+      background: #15171c;
+      color: #d8d8d8;
+      border: 1px solid #23262d;
+      border-radius: 4px;
+      padding: 4px 6px;
+      font: inherit;
+      width: 260px;
+    }
+    form.send {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    form.send input {
+      background: #15171c;
+      color: #d8d8d8;
+      border: 1px solid #23262d;
+      border-radius: 4px;
+      padding: 6px 8px;
+      font: inherit;
+    }
+    form.send .send-room  { width: 200px; }
+    form.send select.send-room {
+      appearance: none;
+      background: #15171c;
+      color: #d8d8d8;
+      border: 1px solid #23262d;
+      border-radius: 4px;
+      padding: 6px 8px;
+      font: inherit;
+    }
+    form.send .send-text  { flex: 1; min-width: 200px; }
+    form.send button {
+      background: #1c2230;
+      color: #9ad;
+      border: 1px solid #2a3a55;
+      border-radius: 4px;
+      padding: 6px 14px;
+      font: inherit;
+      cursor: pointer;
+    }
+    form.send button:hover { background: #25324a; color: #cde2ff; }
+    form.send button:disabled { opacity: .5; cursor: default; }
+    .send-status { color: #888; font-size: 12px; }
+    .send-status.ok { color: #7fe28f; }
+    .send-status.err { color: #e26b6b; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>tenebris-server</h1>
+    <div class="sub" id="sub">connecting...</div>
+
+    <div class="stats">
+      <div class="stat">
+        <div class="k">CPU</div>
+        <div class="v" id="cpu">-</div>
+        <div class="bar"><div id="cpuBar" style="width:0%"></div></div>
+      </div>
+      <div class="stat">
+        <div class="k">RAM (RSS)</div>
+        <div class="v" id="rss">-</div>
+      </div>
+      <div class="stat">
+        <div class="k">RAM (VmSize)</div>
+        <div class="v" id="vm">-</div>
+      </div>
+      <div class="stat">
+        <div class="k">Players</div>
+        <div class="v" id="pcount">-</div>
+      </div>
+      <div class="stat">
+        <div class="k">Tick</div>
+        <div class="v" id="tick">-</div>
+      </div>
+      <div class="stat">
+        <div class="k">Uptime</div>
+        <div class="v" id="uptime">-</div>
+      </div>
+    </div>
+
+    <div class="cols">
+      <div>
+        <h2>Players online</h2>
+        <div id="players"></div>
+      </div>
+      <div>
+        <h2>Rooms</h2>
+        <div id="rooms"></div>
+      </div>
+    </div>
+
+    <h2>Sessions (last 50, paired login &rarr; logout)</h2>
+    <div id="sessions"></div>
+
+    <h2>Broadcast as ~server~</h2>
+    <form id="sendForm" class="send">
+      <select class="send-room" id="sendRoom"></select>
+      <input class="send-text" id="sendText" placeholder="message..." maxlength="120" />
+      <button type="submit">Send</button>
+      <span class="send-status" id="sendStatus"></span>
+    </form>
+
+    <h2>Recent chat (last 50)</h2>
+    <div id="chat"></div>
+
+    <footer>
+      Server: <input class="host" id="host" /> &middot;
+      <a id="lnk-status"  target="_blank">/status</a> &middot;
+      <a id="lnk-rooms"   target="_blank">/rooms</a> &middot;
+      <a id="lnk-logins"  target="_blank">/logins</a> &middot;
+      <a id="lnk-chat"    target="_blank">/chat</a> &middot;
+      <a id="lnk-health"  target="_blank">/health</a>
+      <br>
+      Polling /status every 2 s, /logins + /chat every 5 s. Durations
+      shown in 5-min increments (server snapshots roll up that way).
+    </footer>
+  </div>
+
+  <script>
+    // Server origin is configurable via #host (or ?host=) so the
+    // dashboard works against the live Fly deployment by default and
+    // a local server during dev. URL takes precedence over hash;
+    // hash takes precedence over the baked default.
+    const DEFAULT_HOST = "https://tenebris-c.fly.dev";
+    function resolveHost() {
+      const u = new URL(window.location.href);
+      const q = u.searchParams.get("host");
+      if (q) return q.replace(/\/$/, "");
+      if (window.location.hash.length > 1) {
+        return decodeURIComponent(window.location.hash.slice(1)).replace(/\/$/, "");
+      }
+      return DEFAULT_HOST;
+    }
+    let HOST = resolveHost();
+
+    const $ = (id) => document.getElementById(id);
+    const esc = (s) =>
+      String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;",
+      }[c]));
+
+    function fmtBytes(kb) {
+      if (kb < 0) return "-";
+      if (kb < 1024) return kb + " KB";
+      if (kb < 1024 * 1024) return (kb / 1024).toFixed(1) + " MB";
+      return (kb / 1024 / 1024).toFixed(2) + " GB";
+    }
+
+    function fmtDur(seconds) {
+      seconds = Math.max(0, Math.floor(seconds));
+      const d = Math.floor(seconds / 86400);
+      const h = Math.floor((seconds % 86400) / 3600);
+      const m = Math.floor((seconds % 3600) / 60);
+      const s = seconds % 60;
+      if (d) return d + "d " + h + "h " + m + "m";
+      if (h) return h + "h " + m + "m";
+      if (m) return m + "m " + s + "s";
+      return s + "s";
+    }
+
+    function fmtTime(ts) {
+      return new Date(ts * 1000).toLocaleString();
+    }
+
+    async function getJSON(path) {
+      const r = await fetch(HOST + path, { cache: "no-store" });
+      if (!r.ok) throw new Error(path + ": " + r.status);
+      return r.json();
+    }
+
+    function updateFooterLinks() {
+      $("host").value = HOST;
+      for (const p of ["status", "rooms", "logins", "chat", "health"]) {
+        $("lnk-" + p).href = HOST + "/" + p;
+      }
+    }
+
+    $("host") &&
+      $("host").addEventListener("change", (e) => {
+        HOST = e.target.value.replace(/\/$/, "");
+        window.location.hash = encodeURIComponent(HOST);
+        updateFooterLinks();
+        refreshStatus();
+        refreshRooms();
+        refreshSessions();
+        refreshChat();
+      });
+
+    async function refreshStatus() {
+      try {
+        const s = await getJSON("/status");
+        $("sub").textContent =
+          "live - " +
+          s.tick_hz.toFixed(0) +
+          " Hz tick - " +
+          s.cpu.cores +
+          " core(s)";
+        $("cpu").textContent = s.cpu.percent.toFixed(1) + "%";
+        $("cpuBar").style.width = Math.min(100, s.cpu.percent) + "%";
+        $("rss").textContent = fmtBytes(s.memory.rss_kb);
+        $("vm").textContent = fmtBytes(s.memory.vm_kb);
+        $("pcount").textContent = s.player_count;
+        $("tick").textContent = (s.tick || 0).toLocaleString();
+        $("uptime").textContent = fmtDur(s.uptime_s);
+
+        if (!s.players || s.players.length === 0) {
+          $("players").innerHTML = '<div class="empty">no one online</div>';
+        } else {
+          let h =
+            "<table><tr><th>id</th><th>name</th><th>room</th><th>body</th></tr>";
+          for (const p of s.players) {
+            h +=
+              "<tr><td>" +
+              p.player_id +
+              "</td><td>" +
+              esc(p.name) +
+              '</td><td><span class="pill">' +
+              esc(p.room) +
+              "</span></td><td>" +
+              p.body_id +
+              "</td></tr>";
+          }
+          h += "</table>";
+          $("players").innerHTML = h;
+        }
+
+        // The rooms panel + the broadcast dropdown are now driven by
+        // /rooms (live counts + historical aggregates). Keep the live
+        // snapshot here for cross-reference but skip the table render.
+        rebuildRoomSelect((s.rooms || []).map((r) => ({
+          code: r.code,
+          live_clients: r.clients,
+        })));
+      } catch (e) {
+        $("sub").innerHTML = '<span class="err">' + esc(e.message) + "</span>";
+      }
+    }
+
+    // Pair sessions: for each login event, the matching logout is the
+    // next event with the same (name, room) after that login. If no
+    // logout exists the session is "live" (still on the server) and we
+    // compute duration against `now` so the dashboard ticks upward.
+    function pairSessions(events) {
+      const sorted = events.slice().sort((a, b) => a.ts - b.ts);
+      const out = [];
+      const openByKey = new Map(); // "name|room" -> index in out
+      for (const e of sorted) {
+        const key = e.name + "|" + e.room;
+        if (e.event === "login") {
+          openByKey.set(key, out.length);
+          out.push({
+            name: e.name,
+            room: e.room,
+            login_ts: e.ts,
+            logout_ts: null,
+          });
+        } else if (e.event === "logout") {
+          if (openByKey.has(key)) {
+            const idx = openByKey.get(key);
+            out[idx].logout_ts = e.ts;
+            openByKey.delete(key);
+          } else {
+            // Orphan logout (login predates the audit window).
+            out.push({
+              name: e.name,
+              room: e.room,
+              login_ts: null,
+              logout_ts: e.ts,
+            });
+          }
+        }
+      }
+      return out.reverse();
+    }
+
+    // Where the WASM client lives. Invite links land players directly
+    // into the matching private room. __public__ doesn't get a button
+    // since you can just send the player the bare URL.
+    const INVITE_BASE = "https://rubentipparach.github.io/tenebris/wasm/";
+
+    async function copyInvite(code, btn) {
+      const url = INVITE_BASE + "?invite=" + encodeURIComponent(code);
+      try {
+        await navigator.clipboard.writeText(url);
+        btn.classList.add("copied");
+        btn.textContent = "copied!";
+        setTimeout(() => {
+          btn.classList.remove("copied");
+          btn.textContent = "invite";
+        }, 1500);
+      } catch (_) {
+        // Fallback: surface the URL via prompt so the operator can
+        // copy it manually (clipboard API needs a user gesture +
+        // secure context; iframes etc. can refuse).
+        window.prompt("Invite URL", url);
+      }
+    }
+
+    async function refreshRooms() {
+      try {
+        const d = await getJSON("/rooms");
+        const list = d.rooms || [];
+        // Feed code list into the historical set so the broadcast
+        // dropdown picks up rooms even if they only appear here.
+        let dropdownDirty = false;
+        for (const r of list) {
+          if (r.code && !historicalRooms.has(r.code)) {
+            historicalRooms.add(r.code);
+            dropdownDirty = true;
+          }
+        }
+        if (dropdownDirty) rebuildRoomSelect(lastRoomsSnapshot);
+
+        if (list.length === 0) {
+          $("rooms").innerHTML = '<div class="empty">no rooms</div>';
+          return;
+        }
+
+        // Sort live rooms first, then most-recently-seen, then by code.
+        list.sort((a, b) => {
+          if ((b.live_clients > 0) !== (a.live_clients > 0))
+            return b.live_clients - a.live_clients;
+          if (a.last_seen_ts !== b.last_seen_ts)
+            return b.last_seen_ts - a.last_seen_ts;
+          return a.code.localeCompare(b.code);
+        });
+
+        let h =
+          "<table><tr><th>code</th><th>live</th><th>unique users</th>" +
+          "<th>logins</th><th>last seen</th><th></th></tr>";
+        for (const r of list) {
+          const showInvite =
+            r.code && r.code !== "__public__" && r.code !== "__all__";
+          const lastSeen = r.last_seen_ts ? fmtTime(r.last_seen_ts) : "-";
+          h +=
+            '<tr><td><span class="pill">' + esc(r.code) + "</span></td>" +
+            "<td>" + (r.live_clients || 0) + "</td>" +
+            "<td>" + (r.unique_users || 0) + "</td>" +
+            "<td>" + (r.total_logins || 0) + "</td>" +
+            '<td class="ts">' + esc(lastSeen) + "</td>" +
+            "<td>" +
+            (showInvite
+              ? '<button class="invite-btn" data-code="' +
+                esc(r.code) +
+                '">invite</button>'
+              : "") +
+            "</td></tr>";
+        }
+        h += "</table>";
+        $("rooms").innerHTML = h;
+
+        // Wire up the buttons after each rebuild.
+        for (const btn of $("rooms").querySelectorAll(".invite-btn")) {
+          btn.addEventListener("click", () =>
+            copyInvite(btn.getAttribute("data-code"), btn)
+          );
+        }
+      } catch (e) {
+        $("rooms").innerHTML = '<div class="err">' + esc(e.message) + "</div>";
+      }
+    }
+
+    async function refreshSessions() {
+      try {
+        const d = await getJSON("/logins?n=200");
+        const list = d.sessions || [];
+        // Walk newest -> oldest. While we're at it, collect every
+        // distinct room we've seen so the dropdown can include
+        // private rooms that are currently empty.
+        let pickedDefault = false;
+        let addedNew = false;
+        for (let i = list.length - 1; i >= 0; --i) {
+          const e = list[i];
+          if (e.room && !historicalRooms.has(e.room)) {
+            historicalRooms.add(e.room);
+            addedNew = true;
+          }
+          if (!pickedDefault && e.event === "login" && e.room) {
+            lastLoggedInRoom = e.room;
+            pickedDefault = true;
+          }
+        }
+        if (addedNew) rebuildRoomSelect(lastRoomsSnapshot);
+        if (list.length === 0) {
+          $("sessions").innerHTML =
+            '<div class="empty">no events yet</div>';
+          return;
+        }
+        const paired = pairSessions(list).slice(0, 50);
+        const now = Math.floor(Date.now() / 1000);
+        let h =
+          "<table><tr><th>login</th><th>logout</th><th>name</th>" +
+          "<th>room</th><th>duration</th></tr>";
+        for (const r of paired) {
+          let dur, durClass;
+          if (r.login_ts == null) {
+            dur = "(no login)";
+            durClass = "dur";
+          } else if (r.logout_ts == null) {
+            dur = fmtDur(now - r.login_ts) + " (live)";
+            durClass = "dur live";
+          } else {
+            dur = fmtDur(r.logout_ts - r.login_ts);
+            durClass = "dur";
+          }
+          h +=
+            '<tr><td class="ts">' +
+            (r.login_ts ? fmtTime(r.login_ts) : "-") +
+            '</td><td class="ts">' +
+            (r.logout_ts ? fmtTime(r.logout_ts) : "-") +
+            "</td><td>" +
+            esc(r.name) +
+            '</td><td><span class="pill">' +
+            esc(r.room) +
+            '</span></td><td class="' +
+            durClass +
+            '">' +
+            esc(dur) +
+            "</td></tr>";
+        }
+        h += "</table>";
+        $("sessions").innerHTML = h;
+      } catch (e) {
+        $("sessions").innerHTML = '<div class="err">' + esc(e.message) + "</div>";
+      }
+    }
+
+    async function refreshChat() {
+      try {
+        const d = await getJSON("/chat?n=50");
+        // Folder chat history into the room set too so a room that's
+        // seen messages but no logins still ends up in the dropdown.
+        let addedNew = false;
+        for (const e of d.chat || []) {
+          if (e.room && !historicalRooms.has(e.room)) {
+            historicalRooms.add(e.room);
+            addedNew = true;
+          }
+        }
+        if (addedNew) rebuildRoomSelect(lastRoomsSnapshot);
+        if (!d.chat || d.chat.length === 0) {
+          $("chat").innerHTML = '<div class="empty">no chat yet</div>';
+          return;
+        }
+        let h =
+          "<table><tr><th>time</th><th>name</th><th>room</th><th>message</th></tr>";
+        for (const e of d.chat.slice().reverse()) {
+          h +=
+            '<tr><td class="ts">' +
+            fmtTime(e.ts) +
+            "</td><td>" +
+            esc(e.name) +
+            '</td><td><span class="pill">' +
+            esc(e.room) +
+            "</span></td><td>" +
+            esc(e.text) +
+            "</td></tr>";
+        }
+        h += "</table>";
+        $("chat").innerHTML = h;
+      } catch (e) {
+        $("chat").innerHTML = '<div class="err">' + esc(e.message) + "</div>";
+      }
+    }
+
+    const ROOM_KEY = "tenebris-dashboard-room";
+
+    // Most-recent-login room, refreshed from /logins. Falls back to
+    // __public__ until /logins reports something. Used as the broadcast
+    // default when the user hasn't saved a choice yet.
+    let lastLoggedInRoom = "__public__";
+    // Last rooms array we saw from /status, so refreshSessions can
+    // rebuild the <select> right after learning the new default
+    // instead of waiting for the next /status tick.
+    let lastRoomsSnapshot = [];
+    // Rooms we've seen in /logins or /chat history. /status only lists
+    // currently-in-use rooms (clients > 0 or inside the empty grace
+    // window) - private rooms that have hosted a session in the past
+    // still need to be reachable from the dropdown so the operator
+    // can broadcast there if a player comes back.
+    const historicalRooms = new Set();
+    $("sendRoom").addEventListener("change", (e) => {
+      try { localStorage.setItem(ROOM_KEY, e.target.value); } catch (_) {}
+    });
+
+    // Repaint the room <select> from the union of:
+    //   - rooms reported by /status (truth for "which rooms exist")
+    //   - the saved choice in localStorage (so a stale code stays
+    //     visible as "(saved: X)" rather than vanishing silently)
+    //   - the most-recent-login room (for the default selection)
+    // We preserve the current selection if it still exists, otherwise
+    // pick the highest-priority candidate.
+    function rebuildRoomSelect(rooms) {
+      const sel = $("sendRoom");
+      lastRoomsSnapshot = rooms;
+      // Build a code -> client count map. Live rooms from /status
+      // win; historical rooms (seen in /logins or /chat) fill in
+      // private rooms that are currently empty so the operator can
+      // still pick them.
+      const codeToClients = new Map();
+      for (const r of rooms) {
+        codeToClients.set(r.code, r.live_clients ?? r.clients ?? 0);
+      }
+      for (const c of historicalRooms) {
+        if (!codeToClients.has(c)) codeToClients.set(c, 0);
+      }
+      codeToClients.set("__public__", codeToClients.get("__public__") || 0);
+
+      let saved = "";
+      try { saved = localStorage.getItem(ROOM_KEY) || ""; } catch (_) {}
+      if (saved && saved !== "__all__" && !codeToClients.has(saved)) {
+        // Pin the saved choice into the list so it doesn't disappear
+        // even if it has no audit history (e.g. brand-new code typed
+        // somewhere else).
+        codeToClients.set(saved, 0);
+      }
+
+      const sorted = Array.from(codeToClients.keys()).sort((a, b) =>
+        a === "__public__" ? -1 : b === "__public__" ? 1 : a.localeCompare(b)
+      );
+
+      // Pick the value to keep selected after the repaint. Allow
+      // __all__ as a valid choice even though it isn't a real room.
+      const current = sel.value;
+      let want;
+      if (current === "__all__") {
+        want = "__all__";
+      } else if (current && codeToClients.has(current)) {
+        want = current;
+      } else if (saved === "__all__") {
+        want = "__all__";
+      } else if (saved && codeToClients.has(saved)) {
+        want = saved;
+      } else if (codeToClients.has(lastLoggedInRoom)) {
+        want = lastLoggedInRoom;
+      } else {
+        want = "__public__";
+      }
+
+      const totalClients = rooms.reduce(
+        (n, r) => n + (r.live_clients ?? r.clients ?? 0),
+        0
+      );
+
+      let html =
+        '<option value="__all__"' +
+        (want === "__all__" ? " selected" : "") +
+        ">all rooms (" + totalClients + ")</option>";
+
+      for (const c of sorted) {
+        const clients = codeToClients.get(c) || 0;
+        const label = c + " (" + clients + ")";
+        html +=
+          '<option value="' + esc(c) + '"' +
+          (c === want ? " selected" : "") + ">" + esc(label) + "</option>";
+      }
+      sel.innerHTML = html;
+    }
+
+    $("sendForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const room = $("sendRoom").value.trim();
+      const text = $("sendText").value;
+      if (!text.trim()) return;
+      const status = $("sendStatus");
+      status.textContent = "sending...";
+      status.className = "send-status";
+
+      const qs = new URLSearchParams({ text });
+      if (room) qs.set("room", room);
+
+      try {
+        const r = await fetch(HOST + "/chat/send?" + qs.toString(), {
+          method: "GET",
+          cache: "no-store",
+        });
+        const data = await r.json().catch(() => ({}));
+        if (data.ok) {
+          status.textContent = "sent";
+          status.className = "send-status ok";
+          $("sendText").value = "";
+          // Refresh chat immediately so the operator sees their own line.
+          refreshChat();
+        } else {
+          status.textContent = data.error || ("HTTP " + r.status);
+          status.className = "send-status err";
+        }
+      } catch (err) {
+        status.textContent = err.message;
+        status.className = "send-status err";
+      }
+    });
+
+    updateFooterLinks();
+    refreshStatus();
+    refreshRooms();
+    refreshSessions();
+    refreshChat();
+    setInterval(refreshStatus, 2000);
+    setInterval(refreshRooms, 5000);
+    setInterval(refreshSessions, 5000);
+    setInterval(refreshChat, 5000);
+  </script>
+</body>
+</html>

@@ -158,3 +158,21 @@ water:
   #                               distortion shimmer.
   underwater_distortion:   0.0015
   wet_fade_band_m:         0.5
+
+  # Mobile-only horizon haze. The mobile water shader can't sample the
+  # offscreen scene (no FBO on phones), so it can't reproduce the
+  # desktop Beer-Lambert thickness fog. Instead it blends the base
+  # tone toward sky_horizon_color with view distance, faking the
+  # "deep ocean fades into atmosphere" feel.
+  #
+  # horizon_fade_m         float  view-distance (m) at which the haze
+  #                               saturates. Closer = haze kicks in
+  #                               faster (busier-looking water in the
+  #                               middle distance), farther = surface
+  #                               stays the deep colour for longer.
+  # horizon_fade_strength  float  final mix scalar. 0 disables the
+  #                               effect (mobile reads like a flat
+  #                               slab again); 1 fully replaces deep
+  #                               colour with sky_horizon at fade_m.
+  horizon_fade_m:          600.0
+  horizon_fade_strength:   0.55

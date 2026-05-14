@@ -4,6 +4,9 @@
 #include "core/job_system.h"
 #include "core/math.h"
 #include <math.h>   /* sqrt for the spawn-altitude diagnostic */
+#include <stdarg.h> /* va_list for the HTTP dashboard's JSON builder */
+#include <sys/resource.h>   /* getrusage for the /status CPU sampler */
+#include <unistd.h>         /* sysconf for clock ticks + core count */
 #include "core/net_transport.h"
 #include "core/planet.h"
 #include "core/proto.h"
@@ -502,6 +505,10 @@ static void handle_hello(server_t* s, server_client_t* cl,
     printf("[server] HELLO from player_id=%u name='%s' room='%s' (client_version=%u)\n",
            cl->player_id, cl->name,
            cl->room[0] ? cl->room : "(public)", h.client_version);
+    /* Audit-log the login so an operator can reconstruct who was on
+     * the server at a given time via GET /logins. Only real (named,
+     * room-attached) joins reach this point. */
+    saves_session_log("login", cl->name, cl->room);
     send_welcome(s, cl);
     /* Bring the joining client up to date with the room's persisted
      * chunk edits before they can act, so the world they see matches
@@ -722,6 +729,11 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
             memcpy(nz_text, m.text, MSG_CHAT_TEXT_LEN);
             nz_text[MSG_CHAT_TEXT_LEN] = 0;
             saves_chat_append(cl->room, cl->name, nz_text);
+            /* Also append to the global, timestamped audit log so
+             * GET /chat returns a server-wide, time-ordered view
+             * across rooms - separate file because the per-room
+             * backlog stays in its terse `<name>\t<text>` format. */
+            saves_global_chat_append(cl->room, cl->name, nz_text);
 
             char short_text[33];
             memcpy(short_text, nz_text, 32); short_text[32] = 0;
@@ -857,6 +869,13 @@ static void on_close(net_conn_t* conn, net_close_reason_t reason, void* user) {
     printf("[server] close: player_id=%u name=%s (reason=%d)\n",
            cl->player_id, cl->name[0] ? cl->name : "(unnamed)", (int)reason);
     fflush(stdout);
+    /* Pair the audit `login` from HELLO with a matching `logout` on
+     * the way out. handshaked is the gate - half-open / version-
+     * mismatch drops never wrote a login record, so we don't want a
+     * spurious logout for them. */
+    if (cl->handshaked && cl->name[0]) {
+        saves_session_log("logout", cl->name, cl->room);
+    }
     /* Release the room ref. Private rooms with zero refs get freed
      * to reclaim ~25 MB of cloned world data; the public room sticks. */
     if (cl->room_idx >= 0) {
@@ -870,6 +889,628 @@ static void on_close(net_conn_t* conn, net_close_reason_t reason, void* user) {
     cl->token[0]   = 0;
     cl->room[0]    = 0;
     cl->has_state  = false;
+}
+
+/* ------------------------------------------------------------------ */
+/* HTTP dashboard. The net_transport fires on_http for non-WebSocket
+ * GETs against the listener port, which lets an operator hit the
+ * server with `curl http://host:port/logins` (or /chat) without
+ * needing a separate process. The bodies are JSON arrays built from
+ * the audit logs that login/logout/chat write into the saves dir.
+ *
+ * Response bodies live in `HTTP_BODY` - a static buffer scoped to
+ * the listener so it stays valid across the on_http return and the
+ * transport's serve_http copy. Single-threaded server, so a static
+ * is safe; if HTTP ever moves off the lws callback thread this
+ * would need to be per-listener malloc'd. */
+#define HTTP_BODY_CAP  (64 * 1024)
+static char  HTTP_BODY[HTTP_BODY_CAP];
+static char  HTTP_RAW [HTTP_BODY_CAP];
+
+/* Append `fmt...` to JSON_BODY starting at *pos. Caps at HTTP_BODY_CAP
+ * with a trailing NUL. Returns true if everything fit, false if we
+ * had to truncate (caller closes the array gracefully). */
+static bool json_appendf(size_t* pos, const char* fmt, ...) {
+    if (*pos + 2 >= HTTP_BODY_CAP) return false;
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(HTTP_BODY + *pos, HTTP_BODY_CAP - *pos, fmt, ap);
+    va_end(ap);
+    if (n < 0) return false;
+    if ((size_t)n >= HTTP_BODY_CAP - *pos) {
+        /* Truncated - rewind to last good NUL. */
+        HTTP_BODY[*pos] = 0;
+        return false;
+    }
+    *pos += (size_t)n;
+    return true;
+}
+
+/* JSON-escape `in` into `out`, capped at `cap-1` bytes + NUL. Only
+ * handles the subset the audit logs can actually produce: tab/
+ * newline have already been stripped by strip_log_chars, so we just
+ * escape `"` and `\` here. */
+static void json_escape(const char* in, char* out, size_t cap) {
+    size_t o = 0;
+    for (size_t i = 0; in[i] && o + 2 < cap; ++i) {
+        char c = in[i];
+        if (c == '"' || c == '\\') {
+            if (o + 3 >= cap) break;
+            out[o++] = '\\';
+        }
+        out[o++] = c;
+    }
+    out[o] = 0;
+}
+
+/* Parse `?n=NNN` out of `path`. Returns the parsed int clamped to
+ * [1, SAVES_AUDIT_FILE_MAX], or `def` if absent / unparseable. */
+static int http_query_int(const char* path, const char* key, int def) {
+    const char* q = strchr(path, '?');
+    if (!q) return def;
+    size_t klen = strlen(key);
+    const char* p = q + 1;
+    while (*p) {
+        if (strncmp(p, key, klen) == 0 && p[klen] == '=') {
+            int v = atoi(p + klen + 1);
+            if (v < 1) v = 1;
+            if (v > SAVES_AUDIT_FILE_MAX) v = SAVES_AUDIT_FILE_MAX;
+            return v;
+        }
+        const char* amp = strchr(p, '&');
+        if (!amp) break;
+        p = amp + 1;
+    }
+    return def;
+}
+
+/* `which` is "sessions" or "chat". Emits a JSON array of objects
+ * built by splitting each audit-log TSV line on \t. The session
+ * format is ts/event/name/room (4 fields); chat is ts/name/room/text
+ * (also 4 but different keys). Unknown line shapes are skipped. */
+static size_t build_audit_json(const char* which, int max_lines) {
+    size_t pos = 0;
+    size_t raw_len = saves_audit_tail(which, max_lines, HTTP_RAW, HTTP_BODY_CAP);
+    if (!json_appendf(&pos, "{\"%s\":[", which)) return 0;
+
+    bool first = true;
+    char* line = HTTP_RAW;
+    char* end  = HTTP_RAW + raw_len;
+    while (line < end) {
+        char* nl = (char*)memchr(line, '\n', (size_t)(end - line));
+        size_t len = nl ? (size_t)(nl - line) : (size_t)(end - line);
+        if (len == 0) { if (!nl) break; line = nl + 1; continue; }
+
+        /* Split into up to 4 tab-separated fields. */
+        char fields[4][SAVES_CHAT_TEXT_MAX + 1];
+        int fc = 0;
+        size_t fstart = 0;
+        for (size_t i = 0; i <= len && fc < 4; ++i) {
+            if (i == len || line[i] == '\t') {
+                size_t flen = i - fstart;
+                if (flen > sizeof fields[0] - 1) flen = sizeof fields[0] - 1;
+                memcpy(fields[fc], line + fstart, flen);
+                fields[fc][flen] = 0;
+                ++fc;
+                fstart = i + 1;
+            }
+        }
+        if (fc == 4) {
+            char esc_a[256], esc_b[256], esc_c[256];
+            const char* sep = first ? "" : ",";
+            first = false;
+            if (strcmp(which, "sessions") == 0) {
+                /* ts \t event \t name \t room */
+                json_escape(fields[1], esc_a, sizeof esc_a);
+                json_escape(fields[2], esc_b, sizeof esc_b);
+                json_escape(fields[3], esc_c, sizeof esc_c);
+                if (!json_appendf(&pos,
+                        "%s{\"ts\":%s,\"event\":\"%s\",\"name\":\"%s\",\"room\":\"%s\"}",
+                        sep, fields[0], esc_a, esc_b, esc_c)) {
+                    break;   /* truncate gracefully */
+                }
+            } else {
+                /* ts \t name \t room \t text */
+                json_escape(fields[1], esc_a, sizeof esc_a);
+                json_escape(fields[2], esc_b, sizeof esc_b);
+                json_escape(fields[3], esc_c, sizeof esc_c);
+                if (!json_appendf(&pos,
+                        "%s{\"ts\":%s,\"name\":\"%s\",\"room\":\"%s\",\"text\":\"%s\"}",
+                        sep, fields[0], esc_a, esc_b, esc_c)) {
+                    break;
+                }
+            }
+        }
+        if (!nl) break;
+        line = nl + 1;
+    }
+    json_appendf(&pos, "]}");
+    return pos;
+}
+
+/* Strip URL query from the path so the prefix compare hits regardless
+ * of `?n=...`. Writes into `out`; returns `out`. */
+static const char* strip_query(const char* path, char* out, size_t cap) {
+    size_t i = 0;
+    while (path[i] && path[i] != '?' && i + 1 < cap) {
+        out[i] = path[i];
+        ++i;
+    }
+    out[i] = 0;
+    return out;
+}
+
+/* Process self-stats for /status. CPU usage is sampled across calls:
+ * we record (utime+stime, wall) on each request and report the delta
+ * since the previous one as a percentage of one core. Memory comes
+ * straight from /proc/self/status. Linux-only, which matches the
+ * deployment target (Fly.io runs a Debian-based image). */
+typedef struct {
+    double last_wall_s;
+    double last_cpu_s;
+    double cached_percent;
+} cpu_sampler_t;
+static cpu_sampler_t G_CPU = { 0 };
+static double         G_START_WALL_S = 0.0;
+
+static double monotonic_seconds_local(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+}
+
+static double cpu_seconds_used(void) {
+    struct rusage ru;
+    if (getrusage(RUSAGE_SELF, &ru) != 0) return 0.0;
+    return (double)ru.ru_utime.tv_sec + (double)ru.ru_utime.tv_usec * 1e-6
+         + (double)ru.ru_stime.tv_sec + (double)ru.ru_stime.tv_usec * 1e-6;
+}
+
+static double cpu_percent_sample(void) {
+    double now = monotonic_seconds_local();
+    double cpu = cpu_seconds_used();
+    if (G_CPU.last_wall_s == 0.0) {
+        G_CPU.last_wall_s = now;
+        G_CPU.last_cpu_s = cpu;
+        return 0.0;
+    }
+    double dt = now - G_CPU.last_wall_s;
+    /* Below 50 ms the delta is too noisy - reuse the previous value. */
+    if (dt < 0.05) return G_CPU.cached_percent;
+    double dcpu = cpu - G_CPU.last_cpu_s;
+    G_CPU.last_wall_s = now;
+    G_CPU.last_cpu_s  = cpu;
+    G_CPU.cached_percent = (dt > 0.0) ? (dcpu / dt * 100.0) : 0.0;
+    return G_CPU.cached_percent;
+}
+
+/* Pull one named field (e.g. "VmRSS") out of /proc/self/status. The
+ * format is `Name:\t<int> kB`. Returns the integer in kB, or -1 on
+ * any error (file missing on a non-Linux host, key absent, etc.). */
+static long proc_status_kb(const char* key) {
+    FILE* f = fopen("/proc/self/status", "r");
+    if (!f) return -1;
+    size_t klen = strlen(key);
+    char line[256];
+    long out = -1;
+    while (fgets(line, sizeof line, f)) {
+        if (strncmp(line, key, klen) == 0 && line[klen] == ':') {
+            out = strtol(line + klen + 1, NULL, 10);
+            break;
+        }
+    }
+    fclose(f);
+    return out;
+}
+
+static size_t build_status_json(server_t* s) {
+    size_t pos = 0;
+    double now = monotonic_seconds_local();
+    if (G_START_WALL_S == 0.0) G_START_WALL_S = now;
+    double uptime = now - G_START_WALL_S;
+    double cpu_pct = cpu_percent_sample();
+    long   rss_kb  = proc_status_kb("VmRSS");
+    long   vm_kb   = proc_status_kb("VmSize");
+    long   cores   = sysconf(_SC_NPROCESSORS_ONLN);
+    if (cores < 1) cores = 1;
+
+    json_appendf(&pos,
+        "{\"uptime_s\":%.1f,\"tick\":%llu,\"tick_hz\":%.1f,"
+        "\"cpu\":{\"percent\":%.2f,\"cores\":%ld},"
+        "\"memory\":{\"rss_kb\":%ld,\"vm_kb\":%ld},",
+        uptime, (unsigned long long)s->tick, s->cfg.tick_hz,
+        cpu_pct, cores, rss_kb, vm_kb);
+
+    /* Online players. Same handshaked gate as the rest of the server
+     * uses for "real" clients - half-open sockets don't leak in. */
+    json_appendf(&pos, "\"players\":[");
+    bool first = true;
+    int player_count = 0;
+    for (int i = 0; i < SERVER_MAX_CLIENTS; ++i) {
+        const server_client_t* cl = &s->clients[i];
+        if (!cl->conn || !cl->handshaked) continue;
+        char esc_name[SAVES_CHAT_NAME_MAX * 2 + 4];
+        char esc_room[32];
+        json_escape(cl->name, esc_name, sizeof esc_name);
+        json_escape(cl->room[0] ? cl->room : "__public__",
+                    esc_room, sizeof esc_room);
+        json_appendf(&pos,
+            "%s{\"player_id\":%u,\"name\":\"%s\",\"room\":\"%s\","
+            "\"body_id\":%u,\"has_state\":%s}",
+            first ? "" : ",",
+            cl->player_id, esc_name, esc_room, cl->body_id,
+            cl->has_state ? "true" : "false");
+        first = false;
+        ++player_count;
+    }
+    json_appendf(&pos, "],\"player_count\":%d,", player_count);
+
+    /* Allocated rooms. Includes the public slot at index 0 once it
+     * has been touched; idle private rooms within the grace window
+     * still show up so the operator can see them age out. */
+    json_appendf(&pos, "\"rooms\":[");
+    first = true;
+    for (int i = 0; i < SERVER_MAX_ROOMS; ++i) {
+        const server_room_t* r = &s->rooms[i];
+        if (!r->in_use) continue;
+        char esc_code[32];
+        json_escape(r->code[0] ? r->code : "__public__",
+                    esc_code, sizeof esc_code);
+        json_appendf(&pos,
+            "%s{\"code\":\"%s\",\"clients\":%d}",
+            first ? "" : ",", esc_code, r->ref_count);
+        first = false;
+    }
+    json_appendf(&pos, "]}");
+    return pos;
+}
+
+/* /rooms aggregator. Combines two sources:
+ *   - sessions.log     for the full set of rooms that have ever hosted
+ *                      a player + unique-user count per room
+ *   - s->rooms[]       for the currently-live client counts
+ * Output JSON: { rooms: [{code, unique_users, total_logins,
+ *                          last_seen_ts, live_clients}, ...] }. */
+
+#define RS_MAX_ROOMS           32
+#define RS_MAX_UNIQUE_NAMES    64    /* per room */
+#define RS_NAME_MAX            32
+#define RS_ROOM_MAX            16    /* "__public__" + NUL fits */
+
+typedef struct {
+    char  room[RS_ROOM_MAX];
+    int   total_logins;
+    long  last_seen_ts;
+    int   unique_count;
+    char  names[RS_MAX_UNIQUE_NAMES][RS_NAME_MAX];
+} rs_room_t;
+
+static rs_room_t RS_ROOMS_BUF[RS_MAX_ROOMS];
+
+/* Look up `room` in the aggregate buffer, allocating a new slot on
+ * first sight. Returns the index, or -1 if the slot pool is exhausted. */
+static int rs_find_or_add(const char* room, int* count) {
+    for (int i = 0; i < *count; ++i) {
+        if (strcmp(RS_ROOMS_BUF[i].room, room) == 0) return i;
+    }
+    if (*count >= RS_MAX_ROOMS) return -1;
+    int idx = (*count)++;
+    memset(&RS_ROOMS_BUF[idx], 0, sizeof RS_ROOMS_BUF[idx]);
+    snprintf(RS_ROOMS_BUF[idx].room, sizeof RS_ROOMS_BUF[idx].room, "%s", room);
+    return idx;
+}
+
+static size_t build_rooms_json(server_t* s) {
+    int rs_count = 0;
+    memset(RS_ROOMS_BUF, 0, sizeof RS_ROOMS_BUF);
+
+    /* Walk every session record in the audit log, accumulating per-
+     * room unique-user counts. Capped at SAVES_AUDIT_FILE_MAX, which
+     * is also where the log auto-truncates. */
+    size_t raw_len = saves_audit_tail("sessions", SAVES_AUDIT_FILE_MAX,
+                                        HTTP_RAW, HTTP_BODY_CAP);
+    char* line = HTTP_RAW;
+    char* end  = HTTP_RAW + raw_len;
+    while (line < end) {
+        char* nl = (char*)memchr(line, '\n', (size_t)(end - line));
+        size_t len = nl ? (size_t)(nl - line) : (size_t)(end - line);
+        if (len == 0) { if (!nl) break; line = nl + 1; continue; }
+
+        char fields[4][SAVES_CHAT_TEXT_MAX + 1];
+        int fc = 0;
+        size_t fstart = 0;
+        for (size_t i = 0; i <= len && fc < 4; ++i) {
+            if (i == len || line[i] == '\t') {
+                size_t flen = i - fstart;
+                if (flen > sizeof fields[0] - 1) flen = sizeof fields[0] - 1;
+                memcpy(fields[fc], line + fstart, flen);
+                fields[fc][flen] = 0;
+                ++fc;
+                fstart = i + 1;
+            }
+        }
+        if (fc == 4) {
+            long        ts    = strtol(fields[0], NULL, 10);
+            const char* event = fields[1];
+            const char* name  = fields[2];
+            const char* room  = fields[3];
+            int ri = rs_find_or_add(room, &rs_count);
+            if (ri >= 0) {
+                if (strcmp(event, "login") == 0) RS_ROOMS_BUF[ri].total_logins++;
+                if (ts > RS_ROOMS_BUF[ri].last_seen_ts) RS_ROOMS_BUF[ri].last_seen_ts = ts;
+                /* Unique-name probe. Linear scan is fine - the cap is
+                 * 64 names per room and the audit log is 5k lines. */
+                bool seen = false;
+                for (int j = 0; j < RS_ROOMS_BUF[ri].unique_count; ++j) {
+                    if (strcmp(RS_ROOMS_BUF[ri].names[j], name) == 0) {
+                        seen = true; break;
+                    }
+                }
+                if (!seen && RS_ROOMS_BUF[ri].unique_count < RS_MAX_UNIQUE_NAMES) {
+                    snprintf(RS_ROOMS_BUF[ri].names[RS_ROOMS_BUF[ri].unique_count],
+                             RS_NAME_MAX, "%s", name);
+                    RS_ROOMS_BUF[ri].unique_count++;
+                }
+            }
+        }
+        if (!nl) break;
+        line = nl + 1;
+    }
+
+    /* Live rooms not yet in the aggregate (brand-new room that hasn't
+     * persisted a login event yet, or audit log was rotated past their
+     * earliest history) still need to show up. */
+    if (s) {
+        for (int j = 0; j < SERVER_MAX_ROOMS; ++j) {
+            const server_room_t* r = &s->rooms[j];
+            if (!r->in_use) continue;
+            const char* slug = r->code[0] ? r->code : "__public__";
+            (void)rs_find_or_add(slug, &rs_count);
+        }
+    }
+
+    /* Emit JSON. Cross-reference s->rooms for live_clients. */
+    size_t pos = 0;
+    json_appendf(&pos, "{\"rooms\":[");
+    bool first = true;
+    for (int i = 0; i < rs_count; ++i) {
+        int live = 0;
+        const char* room_internal =
+            (strcmp(RS_ROOMS_BUF[i].room, "__public__") == 0) ? "" : RS_ROOMS_BUF[i].room;
+        if (s) {
+            for (int j = 0; j < SERVER_MAX_ROOMS; ++j) {
+                const server_room_t* r = &s->rooms[j];
+                if (!r->in_use) continue;
+                if (strcmp(r->code, room_internal) == 0) {
+                    live = r->ref_count;
+                    break;
+                }
+            }
+        }
+        char esc_code[32];
+        json_escape(RS_ROOMS_BUF[i].room, esc_code, sizeof esc_code);
+        if (!json_appendf(&pos,
+                "%s{\"code\":\"%s\",\"unique_users\":%d,\"total_logins\":%d,"
+                "\"last_seen_ts\":%ld,\"live_clients\":%d}",
+                first ? "" : ",",
+                esc_code,
+                RS_ROOMS_BUF[i].unique_count,
+                RS_ROOMS_BUF[i].total_logins,
+                RS_ROOMS_BUF[i].last_seen_ts,
+                live)) {
+            break;
+        }
+        first = false;
+    }
+    json_appendf(&pos, "]}");
+    return pos;
+}
+
+/* URL-decode `in` into `out`, stopping at `&` or NUL. Handles `+`
+ * (space) and `%XX` (hex). Returns the number of bytes written
+ * (excluding the NUL); always NUL-terminates. */
+static int hex_nybble(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+static size_t url_decode(const char* in, char* out, size_t out_cap) {
+    if (out_cap == 0) return 0;
+    size_t o = 0;
+    for (size_t i = 0; in[i] && in[i] != '&' && o + 1 < out_cap; ++i) {
+        char c = in[i];
+        if (c == '+') {
+            out[o++] = ' ';
+        } else if (c == '%' && in[i + 1] && in[i + 2]) {
+            int h1 = hex_nybble(in[i + 1]);
+            int h2 = hex_nybble(in[i + 2]);
+            if (h1 >= 0 && h2 >= 0) {
+                out[o++] = (char)((h1 << 4) | h2);
+                i += 2;
+            } else {
+                out[o++] = c;
+            }
+        } else {
+            out[o++] = c;
+        }
+    }
+    out[o] = 0;
+    return o;
+}
+
+/* Pull a string-valued query parameter out of `path`. Writes the
+ * URL-decoded value into `out`. Returns the byte count written, or
+ * -1 if the key wasn't present. */
+static int http_query_str(const char* path, const char* key,
+                            char* out, size_t out_cap) {
+    if (!out || out_cap == 0) return -1;
+    out[0] = 0;
+    const char* q = strchr(path, '?');
+    if (!q) return -1;
+    size_t klen = strlen(key);
+    const char* p = q + 1;
+    while (*p) {
+        if (strncmp(p, key, klen) == 0 && p[klen] == '=') {
+            return (int)url_decode(p + klen + 1, out, out_cap);
+        }
+        const char* amp = strchr(p, '&');
+        if (!amp) break;
+        p = amp + 1;
+    }
+    return -1;
+}
+
+/* Broadcast a chat message AS THE SERVER to every client currently
+ * in `room`. The sender renders as `~server~` on each client because
+ * we pre-broadcast a PLAYER_INFO with id=SERVER_CHAT_ID + that name,
+ * so the chat lookup resolves to it. The persisted audit logs use
+ * the same display name so the dashboard's /chat view matches what
+ * players actually see. */
+#define SERVER_CHAT_ID 0xFFFFFFFFu
+static void server_chat_say(server_t* s, const char* room, const char* text) {
+    if (!s || !text) return;
+    const char* room_real = room ? room : "";
+
+    /* Strip any control chars from the message - the audit logs and
+     * the chat protocol both expect plain printable bytes. */
+    char clean_text[MSG_CHAT_TEXT_LEN + 1];
+    snprintf(clean_text, sizeof clean_text, "%s", text);
+    for (size_t i = 0; i < sizeof clean_text && clean_text[i]; ++i) {
+        if (clean_text[i] == '\r' || clean_text[i] == '\n' ||
+            clean_text[i] == '\t') {
+            clean_text[i] = ' ';
+        }
+    }
+
+    /* Build the PLAYER_INFO once. Same buffer reused per recipient. */
+    uint8_t pi_buf[MSG_HEADER_SIZE + MSG_PLAYER_INFO_WIRE_SIZE];
+    msg_player_info_t info = { .player_id = SERVER_CHAT_ID };
+    const char* sname = "~server~";
+    size_t snlen = strnlen(sname, MSG_PLAYER_INFO_NAME_LEN);
+    memcpy(info.name, sname, snlen);
+    size_t pin = proto_write_player_info(pi_buf, sizeof pi_buf, &info);
+
+    msg_chat_t m = { .player_id = SERVER_CHAT_ID };
+    size_t tlen = strnlen(clean_text, MSG_CHAT_TEXT_LEN);
+    memcpy(m.text, clean_text, tlen);
+    uint8_t cbuf[MSG_HEADER_SIZE + MSG_CHAT_WIRE_SIZE];
+    size_t cn = proto_write_chat(cbuf, sizeof cbuf, &m);
+
+    int sent_to = 0;
+    for (int j = 0; j < SERVER_MAX_CLIENTS; ++j) {
+        const server_client_t* peer = &s->clients[j];
+        if (!peer->conn) continue;
+        if (strcmp(peer->room, room_real) != 0) continue;
+        if (pin > 0) net_send(peer->conn, NET_CHANNEL_RELIABLE, pi_buf, pin);
+        if (cn  > 0) net_send(peer->conn, NET_CHANNEL_RELIABLE, cbuf,  cn);
+        ++sent_to;
+    }
+
+    saves_chat_append       (room_real, sname, clean_text);
+    saves_global_chat_append(room_real, sname, clean_text);
+
+    printf("[server] dashboard chat room=%s ~server~: %s (-> %d client%s)\n",
+           room_real[0] ? room_real : "(public)",
+           clean_text, sent_to, sent_to == 1 ? "" : "s");
+    fflush(stdout);
+}
+
+static int on_http(const char* path,
+                    const uint8_t** out_body, size_t* out_body_len,
+                    const char** out_mime, void* user) {
+    server_t* s = (server_t*)user;
+    if (!path) return 0;
+    char clean[256];
+    strip_query(path, clean, sizeof clean);
+
+    if (strcmp(clean, "/status") == 0) {
+        size_t len = s ? build_status_json(s) : 0;
+        *out_body     = (const uint8_t*)HTTP_BODY;
+        *out_body_len = len;
+        *out_mime     = "application/json; charset=utf-8";
+        return 1;
+    }
+    if (strcmp(clean, "/rooms") == 0) {
+        size_t len = build_rooms_json(s);
+        *out_body     = (const uint8_t*)HTTP_BODY;
+        *out_body_len = len;
+        *out_mime     = "application/json; charset=utf-8";
+        return 1;
+    }
+    if (strcmp(clean, "/logins") == 0) {
+        int n = http_query_int(path, "n", 200);
+        size_t len = build_audit_json("sessions", n);
+        *out_body     = (const uint8_t*)HTTP_BODY;
+        *out_body_len = len;
+        *out_mime     = "application/json; charset=utf-8";
+        return 1;
+    }
+    if (strcmp(clean, "/chat") == 0) {
+        int n = http_query_int(path, "n", 200);
+        size_t len = build_audit_json("chat", n);
+        *out_body     = (const uint8_t*)HTTP_BODY;
+        *out_body_len = len;
+        *out_mime     = "application/json; charset=utf-8";
+        return 1;
+    }
+    if (strcmp(clean, "/chat/send") == 0) {
+        /* Open endpoint - anyone hitting it can broadcast as ~server~.
+         * If chat spam becomes a problem, add a token gate (env var
+         * compared against ?token=X); until then the operator's
+         * convenience wins. */
+        char room[32];
+        char text[MSG_CHAT_TEXT_LEN + 1];
+        http_query_str(path, "room", room, sizeof room);
+        int xn = http_query_str(path, "text", text, sizeof text);
+        if (xn <= 0) {
+            static const char body[] = "{\"error\":\"missing text\"}";
+            *out_body     = (const uint8_t*)body;
+            *out_body_len = sizeof body - 1;
+            *out_mime     = "application/json; charset=utf-8";
+            return 1;
+        }
+        /* Map the JSON view's slugs back to room codes the server
+         * uses internally:
+         *   __public__ -> ""  (single public room)
+         *   __all__    -> fan out across every in-use room
+         *   anything else is sent verbatim as a private room code. */
+        if (s) {
+            if (strcmp(room, "__all__") == 0) {
+                for (int i = 0; i < SERVER_MAX_ROOMS; ++i) {
+                    const server_room_t* r = &s->rooms[i];
+                    if (!r->in_use) continue;
+                    server_chat_say(s, r->code, text);
+                }
+            } else {
+                const char* room_real = room;
+                if (strcmp(room, "__public__") == 0) room_real = "";
+                server_chat_say(s, room_real, text);
+            }
+        }
+
+        static const char ok[] = "{\"ok\":true}";
+        *out_body     = (const uint8_t*)ok;
+        *out_body_len = sizeof ok - 1;
+        *out_mime     = "application/json; charset=utf-8";
+        return 1;
+    }
+    if (strcmp(clean, "/") == 0 || strcmp(clean, "/health") == 0) {
+        static const char msg[] =
+            "tenebris-server alive\n"
+            "  GET /status               - live JSON (players, CPU, RAM, rooms)\n"
+            "  GET /rooms                - per-room unique-user + total-login counts\n"
+            "  GET /logins[?n=N]         - last N login/logout events\n"
+            "  GET /chat[?n=N]           - last N chat messages\n"
+            "  GET /chat/send?text=...   - broadcast '~server~' chat to a room\n"
+            "                              (&room=ABC123 for private,\n"
+            "                               &room=__all__ to fan out, default public)\n";
+        *out_body     = (const uint8_t*)msg;
+        *out_body_len = sizeof msg - 1;
+        *out_mime     = "text/plain; charset=utf-8";
+        return 1;
+    }
+    return 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -946,6 +1587,7 @@ bool server_init(server_t* s, const server_config_t* cfg) {
         .on_open  = on_open,
         .on_msg   = on_msg,
         .on_close = on_close,
+        .on_http  = on_http,
         .user     = s,
     };
     s->listener = net_listen("0.0.0.0", s->cfg.port, cb);

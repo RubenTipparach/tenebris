@@ -3,9 +3,9 @@
 // Differences from water.glsl:
 //
 //   * No vertex swell - the cap stays geometrically flat at the
-//     radius hex_mesher placed it. The fragment-shader fbm normal-
-//     bump below tilts the lighting; phones don't gain anything
-//     visible from displacing the vertices on top of that.
+//     radius hex_mesher placed it. The fragment-shader normal-bump
+//     below tilts the lighting; phones don't gain anything visible
+//     from displacing the vertices on top of that.
 //
 //   * No screen-space refraction sample. The base water tone is a
 //     constant u_deep_color instead of `mix(deep_color, refracted,
@@ -14,20 +14,23 @@
 //     composite_mobile blit only at the shoreline, where the cap
 //     mesh ends and dry terrain takes over.
 //
-//   * No per-fragment Beer-Lambert thickness fog. The depth-fog
-//     effect is moved to composite_mobile, triggered on
-//     camera-submerged and applied to every pixel rather than gated
-//     by the fbm-driven thickness mask.
+//   * Per-fragment Beer-Lambert thickness fog is moved to
+//     composite_mobile; on the surface itself we approximate the
+//     desktop "deep ocean fades into atmosphere" feel via a view-
+//     distance haze blend toward the sky-horizon colour. Cheap, no
+//     extra samples.
 //
 //   * No Snell-window backface branch, no foam, no offscreen depth
 //     read (the offscreen depth is forwarded into the swapchain
 //     depth buffer by composite_mobile, so the LESS_EQUAL depth
 //     test handles terrain occlusion).
 //
-// The fbm-based normal generation itself is bit-identical to
-// water.glsl - same gnoise3 hash, same 3-octave fbm, same 4-sample
-// finite-difference gradient, same tangent-plane projection. The
-// surface noise pattern matches the heavy shader profile exactly.
+//   * Normals come from a pre-baked tileable normal-map texture
+//     instead of the 3-octave fbm + 4-sample finite-difference
+//     gradient the desktop shader does per fragment. Two animated
+//     samples are blended for a non-tiling look. Net effect on a
+//     phone GPU: ~12 hash + 16 mul per fragment becomes 2 cheap
+//     texture fetches.
 
 @vs water_mobile_vs
 
@@ -78,7 +81,15 @@ layout(binding=1) uniform fs_params_mobile {
     float u_wave_steepness;
     float u_night_floor;
     vec4  u_torch_color;
+    // Horizon-haze tuning. distance_m at which the surface fully fades
+    // toward u_sky_horizon (mimics the desktop refraction fading out
+    // with depth), and a 0..1 strength scalar.
+    float u_horizon_fade_m;
+    float u_horizon_fade_strength;
 };
+
+layout(binding=0) uniform texture2D water_normal_tex;
+layout(binding=0) uniform sampler   water_normal_smp;
 
 precision highp int;
 
@@ -88,78 +99,67 @@ in float v_sky_light;
 in float v_torch_light;
 out vec4 frag_color;
 
-// 3D gradient (Perlin) noise - identical to water.glsl's
-// implementation. Same quintic fade, same uint hash, same gradient
-// lookup, same range. Surface noise pattern matches the desktop
-// pipeline exactly.
-float gn_fade(float t) { return t * t * t * (t * (t * 6.0 - 15.0) + 10.0); }
-
-uint gn_hash(int x, int y, int z) {
-    uint ux = uint(x + 0x40000000);
-    uint uy = uint(y + 0x40000000);
-    uint uz = uint(z + 0x40000000);
-    uint h = ux * 374761393u ^ uy * 668265263u ^ uz * 1274126177u;
-    h = (h ^ (h >> 13u)) * 1103515245u;
-    return h ^ (h >> 16u);
-}
-
-float gn_grad(uint hash, float x, float y, float z) {
-    uint h = hash & 15u;
-    float u = (h < 8u)  ? x : y;
-    float v = (h < 4u)  ? y : ((h == 12u || h == 14u) ? x : z);
-    return ((h & 1u) != 0u ? -u : u) + ((h & 2u) != 0u ? -v : v);
-}
-
-float gnoise3(vec3 p) {
-    int ix = int(floor(p.x));
-    int iy = int(floor(p.y));
-    int iz = int(floor(p.z));
-    float fx = p.x - float(ix);
-    float fy = p.y - float(iy);
-    float fz = p.z - float(iz);
-    float u = gn_fade(fx);
-    float v = gn_fade(fy);
-    float w = gn_fade(fz);
-    float g000 = gn_grad(gn_hash(ix,   iy,   iz  ), fx,       fy,       fz);
-    float g100 = gn_grad(gn_hash(ix+1, iy,   iz  ), fx-1.0,   fy,       fz);
-    float g010 = gn_grad(gn_hash(ix,   iy+1, iz  ), fx,       fy-1.0,   fz);
-    float g110 = gn_grad(gn_hash(ix+1, iy+1, iz  ), fx-1.0,   fy-1.0,   fz);
-    float g001 = gn_grad(gn_hash(ix,   iy,   iz+1), fx,       fy,       fz-1.0);
-    float g101 = gn_grad(gn_hash(ix+1, iy,   iz+1), fx-1.0,   fy,       fz-1.0);
-    float g011 = gn_grad(gn_hash(ix,   iy+1, iz+1), fx,       fy-1.0,   fz-1.0);
-    float g111 = gn_grad(gn_hash(ix+1, iy+1, iz+1), fx-1.0,   fy-1.0,   fz-1.0);
-    float a = mix(mix(g000, g100, u), mix(g010, g110, u), v);
-    float b = mix(mix(g001, g101, u), mix(g011, g111, u), v);
-    return mix(a, b, w);
-}
-
-float fbm3(vec3 p, float t) {
-    float h = 0.0;
-    vec3 q = p * 0.9 + vec3(t * 0.35, t * 0.18, -t * 0.42);
-    h += gnoise3(q) * 0.50;
-    q = q * 2.1 + vec3(-t * 0.22, t * 0.33, t * 0.17);
-    h += gnoise3(q) * 0.28;
-    q = q * 2.3 + vec3(t * 0.19, -t * 0.27, t * 0.11);
-    h += gnoise3(q) * 0.15;
-    return h;
-}
-
 void main() {
     vec3 radial = normalize(v_wpos);
 
-    // Scalar height + 3-sample finite-difference world-space
-    // gradient. Identical to water.glsl's normal generation.
-    vec3  rp = v_wpos * u_ripple_scale;
-    float rt = u_time * u_ripple_speed;
-    float e  = 0.08;
-    float h0 = fbm3(rp, rt);
-    vec3 grad = vec3(
-        fbm3(rp + vec3(e, 0, 0), rt) - h0,
-        fbm3(rp + vec3(0, e, 0), rt) - h0,
-        fbm3(rp + vec3(0, 0, e), rt) - h0) / e;
+    // Build a stable tangent basis at the body centre (NOT at the
+    // fragment) so the basis is the same vector for every fragment in
+    // the draw. Earlier the basis was per-fragment, which gave
+    // dot(v_wpos, t1) = 0 everywhere (t1 is tangent at v_wpos, so
+    // perpendicular to v_wpos) and collapsed the UV to a single texel.
+    vec3 axis = (abs(radial.y) < 0.9) ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 t1 = normalize(cross(axis, radial));
+    vec3 t2 = cross(radial, t1);
 
-    vec3 t_grad = grad - radial * dot(grad, radial);
-    vec3 n = normalize(radial - t_grad * u_wave_steepness);
+    // Triplanar mapping: sample the normal map on all three world-axis
+    // planes (xz / xy / zy) and blend by |radial|. Avoids the directional
+    // stretching of a single cardinal-plane projection - whichever face
+    // of the planet the player is on, the dominant projection plane
+    // gives near-undistorted tiling, and the blend hides the seam where
+    // two faces meet.
+    vec2 uv_xz = v_wpos.xz;
+    vec2 uv_xy = v_wpos.xy;
+    vec2 uv_zy = v_wpos.zy;
+
+    float scale_a = u_ripple_scale * 0.10;
+    float scale_b = u_ripple_scale * 0.23;
+    vec2 t_off_a = vec2( u_time * (u_ripple_speed * 0.025),
+                          u_time * (u_ripple_speed * 0.018));
+    vec2 t_off_b = vec2(-u_time * (u_ripple_speed * 0.013),
+                          u_time * (u_ripple_speed * 0.029));
+
+    // Each plane gets the two animated layers blended together so the
+    // pattern doesn't read as a single repeating tile.
+    vec2 bxz =
+        ((texture(sampler2D(water_normal_tex, water_normal_smp), uv_xz * scale_a + t_off_a).xy * 2.0 - 1.0) +
+         (texture(sampler2D(water_normal_tex, water_normal_smp), uv_xz * scale_b + t_off_b).xy * 2.0 - 1.0)) * 0.5;
+    vec2 bxy =
+        ((texture(sampler2D(water_normal_tex, water_normal_smp), uv_xy * scale_a + t_off_a).xy * 2.0 - 1.0) +
+         (texture(sampler2D(water_normal_tex, water_normal_smp), uv_xy * scale_b + t_off_b).xy * 2.0 - 1.0)) * 0.5;
+    vec2 bzy =
+        ((texture(sampler2D(water_normal_tex, water_normal_smp), uv_zy * scale_a + t_off_a).xy * 2.0 - 1.0) +
+         (texture(sampler2D(water_normal_tex, water_normal_smp), uv_zy * scale_b + t_off_b).xy * 2.0 - 1.0)) * 0.5;
+
+    // Sharpen the per-axis blend weights so each fragment is dominated
+    // by one plane (cheaper than three full contributions everywhere)
+    // while still letting the seams between faces blend smoothly.
+    vec3 wn = abs(radial);
+    wn = pow(wn, vec3(4.0));
+    wn /= max(wn.x + wn.y + wn.z, 1e-5);
+
+    // Each plane's bump is a 2D vector in that plane's coordinate
+    // system. Lift them back into 3D world-space tangent perturbation.
+    vec3 perturb_xz = vec3(bxz.x, 0.0, bxz.y);   // x/z plane: y-up faces
+    vec3 perturb_xy = vec3(bxy.x, bxy.y, 0.0);   // x/y plane: z-facing
+    vec3 perturb_zy = vec3(0.0, bzy.y, bzy.x);   // z/y plane: x-facing
+    vec3 perturb = perturb_xz * wn.y + perturb_xy * wn.z + perturb_zy * wn.x;
+
+    // Project the blended perturbation onto the local tangent plane
+    // (drop the radial component) so the displacement only tilts the
+    // normal sideways, never pushes it through the surface.
+    perturb -= radial * dot(perturb, radial);
+
+    vec3 n = normalize(radial + perturb * u_wave_steepness);
 
     vec3 view = normalize(u_camera_pos - v_wpos);
     vec3 sun  = normalize(u_sun_dir);
@@ -174,10 +174,15 @@ void main() {
 
     float sky_weight = f * mix(u_sky_horizon_strength, 1.0, up_f);
 
-    // Constant deep_color body - no thickness fog on the surface,
-    // no refraction sample. Camera-submerged fog in composite_mobile
-    // takes over for the under-water case.
-    vec3 base  = u_deep_color;
+    // View-distance haze - mobile stand-in for the desktop Beer-
+    // Lambert thickness fog. Closer water reads near-deep_color; the
+    // surface fades toward u_sky_horizon at distance so the
+    // horizon-line doesn't look like a sharp slab edge.
+    float view_dist = length(u_camera_pos - v_wpos);
+    float haze = clamp(view_dist / max(u_horizon_fade_m, 1.0), 0.0, 1.0);
+    haze = pow(haze, 0.7) * u_horizon_fade_strength;
+    vec3 base = mix(u_deep_color, u_sky_horizon, haze);
+
     vec3 color = mix(base, sky, sky_weight);
 
     // Sun highlight - same Blinn-Phong as the desktop path.
@@ -195,7 +200,12 @@ void main() {
     vec3 torch = u_torch_color.xyz * u_torch_color.w * v_torch_light;
     color += torch * sky_weight;
 
-    frag_color = vec4(color, 1.0);
+    // Alpha = Fresnel-weighted opacity so shore tiles read as
+    // half-transparent (seabed shows through) and deep / grazing
+    // pixels read more opaque.
+    float alpha = clamp(0.45 + 0.55 * sky_weight, 0.45, 0.95);
+
+    frag_color = vec4(color, alpha);
 }
 @end
 

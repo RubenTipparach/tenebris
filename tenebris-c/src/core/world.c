@@ -238,6 +238,106 @@ double world_depth_to_radius_m(const world_t* w, int depth) {
     return w->body->radius_m - ((double)SEA_LEVEL_IDX - (double)depth) * BLOCK_HEIGHT;
 }
 
+int world_radius_to_depth(const world_t* w, double radius_m) {
+    /* Inverse of world_depth_to_radius_m. The voxel at depth d spans
+     * radii [depth_to_radius(d), depth_to_radius(d+1)) - so flooring
+     * (r - body.radius) / BLOCK_HEIGHT + SEA_LEVEL_IDX gives the
+     * containing voxel. */
+    double offset = radius_m - w->body->radius_m;
+    int depth = (int)floor(offset / BLOCK_HEIGHT) + SEA_LEVEL_IDX;
+    return depth;
+}
+
+bool world_is_water_at(const world_t* w, int tile, double radius_m) {
+    if (!w || tile < 0 || tile >= w->tile_count || tile >= w->gen_cursor) {
+        return false;
+    }
+    int depth = world_radius_to_depth(w, radius_m);
+    if (depth < 0 || depth >= WORLD_MAX_DEPTH) return false;
+    return w->blocks[tile * WORLD_MAX_DEPTH + depth] == (uint8_t)BLOCK_WATER;
+}
+
+/* True if a block_t is "passable" from the player's POV (air or water).
+ * Walkable floors are solid blocks with a passable cell directly above. */
+static bool block_is_passable(uint8_t b) {
+    return b == (uint8_t)BLOCK_AIR || b == (uint8_t)BLOCK_WATER;
+}
+
+double world_walkable_floor_near(const world_t* w, int tile,
+                                 double target_radius_m,
+                                 double body_height_m) {
+    if (!w || tile < 0 || tile >= w->tile_count || tile >= w->gen_cursor) {
+        return -1e9;
+    }
+    const uint8_t* col = &w->blocks[tile * WORLD_MAX_DEPTH];
+
+    /* Scan all walkable floors in the column. Prefer floors at or
+     * below target_radius_m; among those, the closest wins. Only fall
+     * back to a floor above the target if no candidate sits below.
+     * Headroom check (body_height_m > 0): the column above the
+     * candidate must be passable for body_height_m metres. */
+    double best_radius_below = -1e9;
+    double best_dist_below   = 1e9;
+    double best_radius_above = -1e9;
+    double best_dist_above   = 1e9;
+
+    for (int d = 0; d + 1 < WORLD_MAX_DEPTH; ++d) {
+        uint8_t cur = col[d];
+        uint8_t up  = col[d + 1];
+        if (block_is_passable(cur))     continue;   /* not solid */
+        if (!block_is_passable(up))     continue;   /* roofed by solid */
+        double floor_r = world_depth_to_radius_m(w, d + 1);
+
+        if (body_height_m > 0.0) {
+            /* Number of overhead voxels we need clear, rounded up so
+             * a 1.8 m player needs 2 m of headroom and a 2.0 m
+             * player still only needs 2. Walk the column above and
+             * bail if any of those cells is solid. */
+            int rows = (int)ceil(body_height_m / BLOCK_HEIGHT);
+            int top_depth = d + rows;
+            if (top_depth >= WORLD_MAX_DEPTH) top_depth = WORLD_MAX_DEPTH - 1;
+            bool clear = true;
+            for (int e = d + 1; e <= top_depth; ++e) {
+                if (!block_is_passable(col[e])) { clear = false; break; }
+            }
+            if (!clear) continue;
+        }
+
+        double dist = floor_r - target_radius_m;
+        if (dist <= 0.0) {
+            double ad = -dist;
+            if (ad < best_dist_below) {
+                best_dist_below   = ad;
+                best_radius_below = floor_r;
+            }
+        } else {
+            if (dist < best_dist_above) {
+                best_dist_above   = dist;
+                best_radius_above = floor_r;
+            }
+        }
+    }
+    if (best_radius_below > -1e8) return best_radius_below;
+    return best_radius_above;   /* may still be -1e9 if none */
+}
+
+double world_ceiling_above(const world_t* w, int tile, double head_radius_m) {
+    if (!w || tile < 0 || tile >= w->tile_count || tile >= w->gen_cursor) {
+        return 1e30;
+    }
+    const uint8_t* col = &w->blocks[tile * WORLD_MAX_DEPTH];
+    int head_depth = world_radius_to_depth(w, head_radius_m);
+    if (head_depth < 0) head_depth = 0;
+    for (int d = head_depth; d < WORLD_MAX_DEPTH; ++d) {
+        uint8_t b = col[d];
+        if (!block_is_passable(b)) {
+            /* This voxel is solid; its bottom radius is depth d. */
+            return world_depth_to_radius_m(w, d);
+        }
+    }
+    return 1e30;
+}
+
 block_t world_block_at_pos(const world_t* w, vec3_t body_local_pos, int tile_hint) {
     /* Goldberg grid lives on the unit sphere — normalise the body-
      * local position to look up the tile, then convert the radial
