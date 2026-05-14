@@ -1046,6 +1046,18 @@ static void maybe_apply_mp_spawn(void) {
      *     was probably in space or on a long jetpack hop, and
      *     yanking them onto a planet they were flying past would
      *     be worse than the floating-spawn it solves. */
+    /* Minimum delta to trigger the snap. planet_surface_altitude() is a
+     * cheap analytic sample of the procedural height field; the actual
+     * collision mesh is produced by the chunker and disagrees by up to
+     * ~1 m at the same direction. A saved pose that's grounded on the
+     * mesh therefore reads as ~0.5-1.0 m "above" the analytic surface
+     * here, and the snap used to push it UP into the mesh, after which
+     * the physics solver ejected the player 25-30 m radially to escape
+     * interpenetration - exactly the floating-spawn we were trying to
+     * fix. Only trigger the snap when the saved pose is meaningfully
+     * above the surface (mid-jump / jetpack saves), not for sub-metre
+     * procgen-vs-mesh noise. */
+    const double SNAP_MIN_ALT_M = 3.0;
     const double SNAP_MAX_ALT_M = 100.0;
     const body_id_t spawn_body_id = (body_id_t)w->body_id;
     const body_config_t* spawn_body = planet_get(spawn_body_id);
@@ -1062,7 +1074,7 @@ static void maybe_apply_mp_spawn(void) {
             const double surface_r = spawn_body->radius_m + (double)surf;
             const double ground_r  = surface_r + 1.5;
             const double alt_above_surf = r - surface_r;
-            if (alt_above_surf > 0.0 && alt_above_surf < SNAP_MAX_ALT_M) {
+            if (alt_above_surf > SNAP_MIN_ALT_M && alt_above_surf < SNAP_MAX_ALT_M) {
                 spawn = dvec3_add(center, dvec3_scale(dir, ground_r));
                 printf("[main] MP spawn ground-snapped: was alt=%.1fm, snapped to %.1fm\n",
                        r - spawn_body->radius_m,
