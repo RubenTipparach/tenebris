@@ -29,6 +29,16 @@
 
 #define SAVES_PLAYER_VERSION   1
 
+/* On-disk format version for tile column .col files. v0 was the
+ * headerless 128-raw-bytes layout shipped before this change; the
+ * loader still accepts those by fall-back (file size == 128 ->
+ * treat as v0). v1 prepends a 16-byte header so any future change
+ * to WORLD_MAX_DEPTH or block-id layout is detectable at load
+ * time rather than silently miscompiled. */
+#define SAVES_TILE_VERSION     1
+#define SAVES_TILE_MAGIC       0x4C4F4354u   /* 'TCOL' little-endian */
+#define SAVES_TILE_HEADER_SIZE 16
+
 typedef struct {
     uint32_t version;
     uint32_t body_id;

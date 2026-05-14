@@ -9,6 +9,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
 
 static const char* G_saves_dir = NULL;
@@ -60,6 +61,66 @@ static bool write_atomic(const char* path, const void* data, size_t len) {
 /* Public surface                                                     */
 /* ----------------------------------------------------------------- */
 
+/* Manifest: a single 32-byte file at the saves root that captures
+ * the on-disk format version of the whole save tree. Read at boot;
+ * if missing, written with the current version. If present with a
+ * different SAVES_TILE_VERSION, logs a warning so the operator
+ * knows about a format drift before a single tile file goes
+ * stale. The structure is intentionally fixed-size and additive
+ * (only the trailing reserved fields shift) so future versions can
+ * carry more metadata without breaking the layout. */
+typedef struct {
+    uint32_t magic;          /* 'TSAV' = 0x56415354 */
+    uint32_t format_version; /* SAVES_TILE_VERSION at write time */
+    uint64_t first_seen_at;  /* unix seconds when the dir was first claimed */
+    uint8_t  reserved[16];
+} saves_manifest_t;
+
+#define SAVES_MANIFEST_MAGIC  0x56415354u
+
+static void manifest_path(char* out, size_t cap) {
+    snprintf(out, cap, "%s/manifest.dat", G_saves_dir);
+}
+
+static void load_or_write_manifest(void) {
+    char path[512];
+    manifest_path(path, sizeof path);
+    FILE* f = fopen(path, "rb");
+    if (f) {
+        saves_manifest_t m;
+        size_t n = fread(&m, 1, sizeof m, f);
+        fclose(f);
+        if (n == sizeof m && m.magic == SAVES_MANIFEST_MAGIC) {
+            if (m.format_version != SAVES_TILE_VERSION) {
+                fprintf(stderr,
+                    "[saves] manifest format_version=%u, expected %u - "
+                    "on-disk saves predate this build. Legacy tiles "
+                    "will be migrated lazily on first write.\n",
+                    m.format_version, SAVES_TILE_VERSION);
+            } else {
+                printf("[saves] manifest ok: format_version=%u first_seen=%llu\n",
+                       m.format_version, (unsigned long long)m.first_seen_at);
+            }
+            return;
+        }
+        /* Corrupt or wrong magic - fall through to rewrite. */
+        fprintf(stderr, "[saves] manifest unreadable, rewriting\n");
+    }
+    saves_manifest_t m = {
+        .magic          = SAVES_MANIFEST_MAGIC,
+        .format_version = SAVES_TILE_VERSION,
+        .first_seen_at  = 0,
+    };
+    /* Best-effort timestamp; not safety-critical so a stat failure
+     * just leaves it at 0. */
+    {
+        time_t t = time(NULL);
+        if (t > 0) m.first_seen_at = (uint64_t)t;
+    }
+    write_atomic(path, &m, sizeof m);
+    printf("[saves] manifest created: format_version=%u\n", m.format_version);
+}
+
 bool saves_init(const char* saves_dir) {
     if (!saves_dir || !*saves_dir) return false;
     G_saves_dir = saves_dir;
@@ -67,6 +128,7 @@ bool saves_init(const char* saves_dir) {
     char players[512];
     snprintf(players, sizeof players, "%s/players", saves_dir);
     if (!mkdir_p(players)) return false;
+    load_or_write_manifest();
     printf("[saves] init dir=%s\n", saves_dir);
     return true;
 }
@@ -96,6 +158,16 @@ static void tile_path(char* out, size_t cap, const char* room,
              (unsigned)body_id, tile_idx);
 }
 
+/* Encode the .col file as [16-byte header][WORLD_MAX_DEPTH bytes].
+ * Header layout (little-endian):
+ *   u32 magic       = SAVES_TILE_MAGIC ('TCOL')
+ *   u32 version     = SAVES_TILE_VERSION
+ *   u32 depth       = WORLD_MAX_DEPTH (number of column bytes)
+ *   u32 reserved    = 0 (kept for future block-id-namespace tags)
+ *
+ * Magic catches accidental reads of an unrelated file; version
+ * gates compatibility; depth lets a future column-height change
+ * reject mismatched files instead of silently truncating. */
 bool saves_write_tile(world_t* w, const char* room, uint64_t seed, int tile_idx) {
     if (!G_saves_dir || !w || !w->body) return false;
     if (tile_idx < 0 || tile_idx >= w->tile_count) return false;
@@ -104,8 +176,20 @@ bool saves_write_tile(world_t* w, const char* room, uint64_t seed, int tile_idx)
     if (!mkdir_p(dir)) return false;
     char path[512];
     tile_path(path, sizeof path, room, seed, (uint32_t)w->body->id, tile_idx);
-    const uint8_t* col = &w->blocks[(size_t)tile_idx * WORLD_MAX_DEPTH];
-    bool ok = write_atomic(path, col, WORLD_MAX_DEPTH);
+
+    uint8_t buf[SAVES_TILE_HEADER_SIZE + WORLD_MAX_DEPTH];
+    uint32_t magic = SAVES_TILE_MAGIC;
+    uint32_t ver   = SAVES_TILE_VERSION;
+    uint32_t depth = WORLD_MAX_DEPTH;
+    uint32_t rsv   = 0;
+    memcpy(buf + 0,  &magic, 4);
+    memcpy(buf + 4,  &ver,   4);
+    memcpy(buf + 8,  &depth, 4);
+    memcpy(buf + 12, &rsv,   4);
+    memcpy(buf + SAVES_TILE_HEADER_SIZE,
+           &w->blocks[(size_t)tile_idx * WORLD_MAX_DEPTH],
+           WORLD_MAX_DEPTH);
+    bool ok = write_atomic(path, buf, sizeof buf);
     /* Track that this tile now has a persisted column so the join-
      * time replay path picks it up on the next client connect. */
     if (ok) world_tile_mark_saved(w, tile_idx);
@@ -144,13 +228,55 @@ int saves_load_world(world_t* w, const char* room, uint64_t seed) {
         FILE* f = fopen(path, "rb");
         if (!f) continue;
         uint8_t* col = &w->blocks[(size_t)tile * WORLD_MAX_DEPTH];
-        size_t n = fread(col, 1, WORLD_MAX_DEPTH, f);
+        /* Two formats supported:
+         *   - Legacy v0: file is exactly WORLD_MAX_DEPTH raw bytes,
+         *     no header. Pre-versioning saves on disk.
+         *   - v1+: 16-byte header (magic 'TCOL' / version / depth /
+         *     reserved) followed by WORLD_MAX_DEPTH bytes.
+         * Detect by peeking the first 4 bytes for magic. Anything
+         * else: drop the file (corruption or wrong block-id era). */
+        uint8_t head[SAVES_TILE_HEADER_SIZE];
+        size_t hn = fread(head, 1, sizeof head, f);
+        bool accepted = false;
+        if (hn == sizeof head) {
+            uint32_t magic, ver, depth;
+            memcpy(&magic, head + 0, 4);
+            memcpy(&ver,   head + 4, 4);
+            memcpy(&depth, head + 8, 4);
+            if (magic == SAVES_TILE_MAGIC
+                && ver <= SAVES_TILE_VERSION
+                && depth == WORLD_MAX_DEPTH) {
+                size_t cn = fread(col, 1, WORLD_MAX_DEPTH, f);
+                accepted = (cn == WORLD_MAX_DEPTH);
+            } else if (hn == WORLD_MAX_DEPTH
+                       && SAVES_TILE_HEADER_SIZE == WORLD_MAX_DEPTH) {
+                /* Defensive: never hit unless WORLD_MAX_DEPTH happens
+                 * to equal SAVES_TILE_HEADER_SIZE. Real v0 path is
+                 * the size-based branch below. */
+                accepted = true;
+                memcpy(col, head, WORLD_MAX_DEPTH);
+            } else {
+                /* Legacy v0: file is exactly 128 bytes, first 16 of
+                 * which we already read into `head`. Rewind to start
+                 * and refill the column. */
+                rewind(f);
+                size_t cn = fread(col, 1, WORLD_MAX_DEPTH, f);
+                if (cn == WORLD_MAX_DEPTH) {
+                    /* If there are extra bytes after the column, the
+                     * file is neither v0 nor v1 - reject it. */
+                    uint8_t spill;
+                    if (fread(&spill, 1, 1, f) == 0) accepted = true;
+                }
+            }
+        }
         fclose(f);
-        if (n == WORLD_MAX_DEPTH) {
+        if (accepted) {
             ++loaded;
             /* Remember that this tile diverges from procgen so the
              * server can replay it to joining clients. */
             world_tile_mark_saved(w, tile);
+        } else {
+            fprintf(stderr, "[saves] %s: skipped (unknown format)\n", path);
         }
     }
     closedir(d);
