@@ -1307,24 +1307,10 @@ static int on_http(const char* path,
         return 1;
     }
     if (strcmp(clean, "/chat/send") == 0) {
-        /* Auth gate: if the TENEBRIS_ADMIN_TOKEN env var is set, the
-         * caller must echo it as ?token=X. If the env var isn't set,
-         * the endpoint is open - dev convenience. The token is
-         * unauthenticated transport so it's "soft auth" - good enough
-         * to keep a scanner from spamming /chat/send, not good enough
-         * to defend against a determined attacker. */
-        const char* expected = getenv("TENEBRIS_ADMIN_TOKEN");
-        char token[128];
-        int  tn = http_query_str(path, "token", token, sizeof token);
-        if (expected && expected[0]) {
-            if (tn < 0 || strcmp(token, expected) != 0) {
-                static const char body[] = "{\"error\":\"unauthorized\"}";
-                *out_body     = (const uint8_t*)body;
-                *out_body_len = sizeof body - 1;
-                *out_mime     = "application/json; charset=utf-8";
-                return 1;
-            }
-        }
+        /* Open endpoint - anyone hitting it can broadcast as ~server~.
+         * If chat spam becomes a problem, add a token gate (env var
+         * compared against ?token=X); until then the operator's
+         * convenience wins. */
         char room[32];
         char text[MSG_CHAT_TEXT_LEN + 1];
         http_query_str(path, "room", room, sizeof room);
@@ -1368,8 +1354,8 @@ static int on_http(const char* path,
             "  GET /logins[?n=N]         - last N login/logout events\n"
             "  GET /chat[?n=N]           - last N chat messages\n"
             "  GET /chat/send?text=...   - broadcast '~server~' chat to a room\n"
-            "                              (&room=ABC123 for private; default public,\n"
-            "                               &token=X required if TENEBRIS_ADMIN_TOKEN set)\n";
+            "                              (&room=ABC123 for private,\n"
+            "                               &room=__all__ to fan out, default public)\n";
         *out_body     = (const uint8_t*)msg;
         *out_body_len = sizeof msg - 1;
         *out_mime     = "text/plain; charset=utf-8";

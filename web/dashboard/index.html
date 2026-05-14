@@ -124,7 +124,6 @@
       font: inherit;
     }
     form.send .send-text  { flex: 1; min-width: 200px; }
-    form.send .send-token { width: 180px; }
     form.send button {
       background: #1c2230;
       color: #9ad;
@@ -192,7 +191,6 @@
     <form id="sendForm" class="send">
       <select class="send-room" id="sendRoom"></select>
       <input class="send-text" id="sendText" placeholder="message..." maxlength="120" />
-      <input class="send-token" id="sendToken" placeholder="admin token (if set)" />
       <button type="submit">Send</button>
       <span class="send-status" id="sendStatus"></span>
     </form>
@@ -385,15 +383,23 @@
       try {
         const d = await getJSON("/logins?n=200");
         const list = d.sessions || [];
-        // Most recent login event -> default broadcast room until the
-        // user picks one explicitly. Walk the list from newest to oldest
-        // and grab the first 'login' we see.
+        // Walk newest -> oldest. While we're at it, collect every
+        // distinct room we've seen so the dropdown can include
+        // private rooms that are currently empty.
+        let pickedDefault = false;
+        let addedNew = false;
         for (let i = list.length - 1; i >= 0; --i) {
-          if (list[i].event === "login" && list[i].room) {
-            lastLoggedInRoom = list[i].room;
-            break;
+          const e = list[i];
+          if (e.room && !historicalRooms.has(e.room)) {
+            historicalRooms.add(e.room);
+            addedNew = true;
+          }
+          if (!pickedDefault && e.event === "login" && e.room) {
+            lastLoggedInRoom = e.room;
+            pickedDefault = true;
           }
         }
+        if (addedNew) rebuildRoomSelect(lastRoomsSnapshot);
         if (list.length === 0) {
           $("sessions").innerHTML =
             '<div class="empty">no events yet</div>';
@@ -441,6 +447,16 @@
     async function refreshChat() {
       try {
         const d = await getJSON("/chat?n=50");
+        // Folder chat history into the room set too so a room that's
+        // seen messages but no logins still ends up in the dropdown.
+        let addedNew = false;
+        for (const e of d.chat || []) {
+          if (e.room && !historicalRooms.has(e.room)) {
+            historicalRooms.add(e.room);
+            addedNew = true;
+          }
+        }
+        if (addedNew) rebuildRoomSelect(lastRoomsSnapshot);
         if (!d.chat || d.chat.length === 0) {
           $("chat").innerHTML = '<div class="empty">no chat yet</div>';
           return;
@@ -466,16 +482,7 @@
       }
     }
 
-    // Persist the optional admin token in localStorage so the page
-    // remembers it across reloads. Plain string, no escaping needed.
-    const TOKEN_KEY = "tenebris-dashboard-token";
-    const ROOM_KEY  = "tenebris-dashboard-room";
-    try {
-      $("sendToken").value = localStorage.getItem(TOKEN_KEY) || "";
-    } catch (_) {}
-    $("sendToken").addEventListener("change", (e) => {
-      try { localStorage.setItem(TOKEN_KEY, e.target.value); } catch (_) {}
-    });
+    const ROOM_KEY = "tenebris-dashboard-room";
 
     // Most-recent-login room, refreshed from /logins. Falls back to
     // __public__ until /logins reports something. Used as the broadcast
@@ -485,6 +492,12 @@
     // rebuild the <select> right after learning the new default
     // instead of waiting for the next /status tick.
     let lastRoomsSnapshot = [];
+    // Rooms we've seen in /logins or /chat history. /status only lists
+    // currently-in-use rooms (clients > 0 or inside the empty grace
+    // window) - private rooms that have hosted a session in the past
+    // still need to be reachable from the dropdown so the operator
+    // can broadcast there if a player comes back.
+    const historicalRooms = new Set();
     $("sendRoom").addEventListener("change", (e) => {
       try { localStorage.setItem(ROOM_KEY, e.target.value); } catch (_) {}
     });
@@ -498,16 +511,28 @@
     // pick the highest-priority candidate.
     function rebuildRoomSelect(rooms) {
       const sel = $("sendRoom");
-      const codes = new Set(rooms.map((r) => r.code));
+      lastRoomsSnapshot = rooms;
+      // Build a code -> client count map. Live rooms from /status
+      // win; historical rooms (seen in /logins or /chat) fill in
+      // private rooms that are currently empty so the operator can
+      // still pick them.
+      const codeToClients = new Map();
+      for (const r of rooms) codeToClients.set(r.code, r.clients || 0);
+      for (const c of historicalRooms) {
+        if (!codeToClients.has(c)) codeToClients.set(c, 0);
+      }
+      codeToClients.set("__public__", codeToClients.get("__public__") || 0);
+
       let saved = "";
       try { saved = localStorage.getItem(ROOM_KEY) || ""; } catch (_) {}
+      if (saved && saved !== "__all__" && !codeToClients.has(saved)) {
+        // Pin the saved choice into the list so it doesn't disappear
+        // even if it has no audit history (e.g. brand-new code typed
+        // somewhere else).
+        codeToClients.set(saved, 0);
+      }
 
-      // __public__ is always in the list so the operator can reach it
-      // even when no one's online. __all__ fans out across every active
-      // room - server-side it iterates s->rooms and broadcasts to each.
-      codes.add("__public__");
-
-      const sorted = Array.from(codes).sort((a, b) =>
+      const sorted = Array.from(codeToClients.keys()).sort((a, b) =>
         a === "__public__" ? -1 : b === "__public__" ? 1 : a.localeCompare(b)
       );
 
@@ -517,13 +542,13 @@
       let want;
       if (current === "__all__") {
         want = "__all__";
-      } else if (current && codes.has(current)) {
+      } else if (current && codeToClients.has(current)) {
         want = current;
       } else if (saved === "__all__") {
         want = "__all__";
-      } else if (saved && codes.has(saved)) {
+      } else if (saved && codeToClients.has(saved)) {
         want = saved;
-      } else if (codes.has(lastLoggedInRoom)) {
+      } else if (codeToClients.has(lastLoggedInRoom)) {
         want = lastLoggedInRoom;
       } else {
         want = "__public__";
@@ -537,21 +562,11 @@
         ">all rooms (" + totalClients + ")</option>";
 
       for (const c of sorted) {
-        const room = rooms.find((r) => r.code === c);
-        const label = c + " (" + (room ? room.clients : 0) + ")";
+        const clients = codeToClients.get(c) || 0;
+        const label = c + " (" + clients + ")";
         html +=
           '<option value="' + esc(c) + '"' +
           (c === want ? " selected" : "") + ">" + esc(label) + "</option>";
-      }
-
-      // If the saved room isn't in the live list, surface it so the
-      // operator knows the choice is stale. Skip when saved === __all__
-      // (already represented above).
-      if (saved && saved !== "__all__" && !codes.has(saved)) {
-        html +=
-          '<option value="' + esc(saved) + '"' +
-          (saved === want ? " selected" : "") +
-          ">(saved: " + esc(saved) + ", offline)</option>";
       }
       sel.innerHTML = html;
     }
@@ -560,7 +575,6 @@
       e.preventDefault();
       const room = $("sendRoom").value.trim();
       const text = $("sendText").value;
-      const token = $("sendToken").value;
       if (!text.trim()) return;
       const status = $("sendStatus");
       status.textContent = "sending...";
@@ -568,7 +582,6 @@
 
       const qs = new URLSearchParams({ text });
       if (room) qs.set("room", room);
-      if (token) qs.set("token", token);
 
       try {
         const r = await fetch(HOST + "/chat/send?" + qs.toString(), {
