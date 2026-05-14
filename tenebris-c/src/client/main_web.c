@@ -1030,7 +1030,47 @@ static void maybe_apply_mp_spawn(void) {
         return;
     }
 
-    G.player.position = (dvec3_t){ .x = w->spawn_x, .y = w->spawn_y, .z = w->spawn_z };
+    dvec3_t spawn = (dvec3_t){ .x = w->spawn_x, .y = w->spawn_y, .z = w->spawn_z };
+    /* Ground-snap: if the saved pose lives above the surface (which
+     * happens whenever the periodic 0.5 s save fires mid-jump or
+     * during jetpack flight), drop the player straight back down to
+     * just over the surface column rather than spawning them at the
+     * jump / flight apex.
+     *
+     * Snap is done in body-local coords against the authoritative
+     * procgen surface for the saved body. Bounds:
+     *   - Positions AT or BELOW the surface (caves, tunnels,
+     *     dug-out areas) are left untouched.
+     *   - Positions far above the surface (>= SNAP_MAX_ALT_M above
+     *     the surface column) are also left untouched - the player
+     *     was probably in space or on a long jetpack hop, and
+     *     yanking them onto a planet they were flying past would
+     *     be worse than the floating-spawn it solves. */
+    const double SNAP_MAX_ALT_M = 100.0;
+    const body_id_t spawn_body_id = (body_id_t)w->body_id;
+    const body_config_t* spawn_body = planet_get(spawn_body_id);
+    if (spawn_body) {
+        dvec3_t center = dvec3_make(spawn_body->pos_x,
+                                     spawn_body->pos_y,
+                                     spawn_body->pos_z);
+        dvec3_t local  = dvec3_sub(spawn, center);
+        double  r      = dvec3_length(local);
+        if (r > 1e-6) {
+            dvec3_t dir   = dvec3_scale(local, 1.0 / r);
+            float   surf  = planet_surface_altitude(spawn_body, dir);
+            if (surf < 0.5f) surf = 0.5f;
+            const double surface_r = spawn_body->radius_m + (double)surf;
+            const double ground_r  = surface_r + 1.5;
+            const double alt_above_surf = r - surface_r;
+            if (alt_above_surf > 0.0 && alt_above_surf < SNAP_MAX_ALT_M) {
+                spawn = dvec3_add(center, dvec3_scale(dir, ground_r));
+                printf("[main] MP spawn ground-snapped: was alt=%.1fm, snapped to %.1fm\n",
+                       r - spawn_body->radius_m,
+                       ground_r - spawn_body->radius_m);
+            }
+        }
+    }
+    G.player.position = spawn;
     G.player.velocity = (dvec3_t){0};
     G.player.yaw      = w->spawn_yaw;
     G.player.pitch    = w->spawn_pitch;
@@ -1044,7 +1084,7 @@ static void maybe_apply_mp_spawn(void) {
     G.player.transition_timer_s = config_lod()->roll_slerp_duration_s;
     printf("[main] MP spawn applied: player_id=%u pos=(%.1f, %.1f, %.1f) body=%u "
            "yaw=%.2f pitch=%.2f\n",
-           w->player_id, w->spawn_x, w->spawn_y, w->spawn_z, w->body_id,
+           w->player_id, spawn.x, spawn.y, spawn.z, w->body_id,
            w->spawn_yaw, w->spawn_pitch);
     G_mp_spawn_applied = true;
 }
