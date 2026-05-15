@@ -179,6 +179,183 @@ static void load_or_write_manifest(void) {
     printf("[saves] manifest created: format_version=%u\n", m.format_version);
 }
 
+/* Forward decls for helpers defined further down (audit_path /
+ * audit_truncate live next to the sessions + chat audit code). */
+static bool audit_path    (const char* which, char* out, size_t cap);
+static void audit_truncate(const char* path);
+
+/* One-shot migration of historic per-room chat files into the global
+ * chat.log so the in-game backlog (which now reads chat.log) and the
+ * dashboard /chat endpoint match. Runs at most once per saves_dir;
+ * the marker file <saves>/.chat_migrated short-circuits subsequent
+ * boots. Entries already present in chat.log (matched by
+ * name|room|text tuple) are skipped so the migration is idempotent
+ * even if the marker disappears.
+ *
+ * Per-room files store `name\ttext` lines with no timestamps. We
+ * approximate using each file's mtime, which preserves the relative
+ * order of rooms and is close enough for the dashboard timeline. */
+static bool key_present_in(const char* haystack, size_t hay_len,
+                             const char* room, const char* name,
+                             const char* text) {
+    /* chat.log lines look like "<ts>\t<name>\t<room>\t<text>\n".
+     * The dedup needle "\t<name>\t<room>\t<text>\n" matches both at
+     * line start (after the timestamp) and never collides with a
+     * line whose text legitimately contains the needle (newlines
+     * are stripped at write time by strip_log_chars). */
+    char needle[SAVES_CHAT_NAME_MAX + 32 + SAVES_CHAT_TEXT_MAX + 8];
+    int n = snprintf(needle, sizeof needle, "\t%s\t%s\t%s\n",
+                     name, room, text);
+    if (n <= 0 || (size_t)n >= sizeof needle) return false;
+    /* memmem isn't on every libc; do a small manual scan instead. */
+    if (hay_len < (size_t)n) return false;
+    for (size_t i = 0; i + (size_t)n <= hay_len; ++i) {
+        if (memcmp(haystack + i, needle, (size_t)n) == 0) return true;
+    }
+    return false;
+}
+
+static void migrate_chat_per_room_to_global(void) {
+    char marker[512];
+    snprintf(marker, sizeof marker, "%s/.chat_migrated", G_saves_dir);
+    if (access(marker, F_OK) == 0) return;
+
+    char chat_dir[512];
+    snprintf(chat_dir, sizeof chat_dir, "%s/chat", G_saves_dir);
+    DIR* d = opendir(chat_dir);
+    if (!d) {
+        /* No per-room files - nothing to migrate. Still drop the
+         * marker so we don't re-stat every boot. */
+        FILE* f = fopen(marker, "wb");
+        if (f) { fputs("ok\n", f); fclose(f); }
+        return;
+    }
+
+    /* Pre-read chat.log into memory for dedup. */
+    char global_path[512];
+    if (!audit_path("chat", global_path, sizeof global_path)) {
+        closedir(d);
+        return;
+    }
+    char*  existing     = NULL;
+    size_t existing_len = 0;
+    {
+        FILE* f = fopen(global_path, "rb");
+        if (f) {
+            fseek(f, 0, SEEK_END);
+            long sz = ftell(f);
+            if (sz > 0 && sz < 8 * 1024 * 1024) {
+                existing = (char*)malloc((size_t)sz + 1);
+                if (existing) {
+                    rewind(f);
+                    existing_len = fread(existing, 1, (size_t)sz, f);
+                    existing[existing_len] = 0;
+                }
+            }
+            fclose(f);
+        }
+    }
+
+    int appended = 0;
+    int scanned  = 0;
+    struct dirent* e;
+    while ((e = readdir(d)) != NULL) {
+        if (e->d_name[0] == '.') continue;
+        const char* dot = strrchr(e->d_name, '.');
+        if (!dot || strcmp(dot, ".log") != 0) continue;
+
+        /* Filename "<room>.log" -> on-disk room slug. */
+        char room[16];
+        size_t rlen = (size_t)(dot - e->d_name);
+        if (rlen >= sizeof room) rlen = sizeof room - 1;
+        memcpy(room, e->d_name, rlen);
+        room[rlen] = 0;
+
+        char path[600];
+        snprintf(path, sizeof path, "%s/%s", chat_dir, e->d_name);
+        struct stat st;
+        uint64_t ts_base = (uint64_t)time(NULL);
+        if (stat(path, &st) == 0) ts_base = (uint64_t)st.st_mtime;
+
+        FILE* f = fopen(path, "rb");
+        if (!f) continue;
+
+        /* Read the whole file (capped at 1 MiB matching the runtime
+         * truncation cap), parse line-by-line. */
+        fseek(f, 0, SEEK_END);
+        long sz = ftell(f);
+        if (sz <= 0 || sz > 1024 * 1024) { fclose(f); continue; }
+        rewind(f);
+        char* buf = (char*)malloc((size_t)sz + 1);
+        if (!buf) { fclose(f); continue; }
+        size_t r = fread(buf, 1, (size_t)sz, f);
+        fclose(f);
+        buf[r] = 0;
+
+        /* Count lines first so we can spread timestamps across the
+         * file's mtime window (oldest line oldest, newest closest to
+         * mtime). N lines -> stride 1 second back per line. */
+        int line_count = 0;
+        for (size_t i = 0; i < r; ++i) if (buf[i] == '\n') ++line_count;
+        int idx = 0;
+        char* line = buf;
+        while (line < buf + r) {
+            char* nl = (char*)memchr(line, '\n', (size_t)(buf + r - line));
+            size_t len = nl ? (size_t)(nl - line) : (size_t)(buf + r - line);
+            char* tab = (char*)memchr(line, '\t', len);
+            if (tab && tab > line) {
+                size_t name_len = (size_t)(tab - line);
+                size_t text_len = len - name_len - 1;
+                if (name_len > 0 && name_len <= SAVES_CHAT_NAME_MAX) {
+                    char name[SAVES_CHAT_NAME_MAX + 1];
+                    char text[SAVES_CHAT_TEXT_MAX + 1];
+                    memcpy(name, line, name_len); name[name_len] = 0;
+                    if (text_len > SAVES_CHAT_TEXT_MAX) text_len = SAVES_CHAT_TEXT_MAX;
+                    memcpy(text, tab + 1, text_len); text[text_len] = 0;
+                    ++scanned;
+                    /* Skip entries that are already in chat.log. */
+                    bool already = (existing && key_present_in(
+                                       existing, existing_len, room, name, text));
+                    if (!already) {
+                        /* Write a chat.log line directly so we get a
+                         * synthetic timestamp instead of the current
+                         * wall clock that saves_global_chat_append
+                         * would stamp. */
+                        FILE* g = fopen(global_path, "ab");
+                        if (g) {
+                            uint64_t ts = ts_base
+                                        - (uint64_t)(line_count - 1 - idx);
+                            fprintf(g, "%llu\t%s\t%s\t%s\n",
+                                    (unsigned long long)ts, name, room, text);
+                            fclose(g);
+                            ++appended;
+                        }
+                    }
+                }
+            }
+            ++idx;
+            if (!nl) break;
+            line = nl + 1;
+        }
+        free(buf);
+    }
+    closedir(d);
+    free(existing);
+
+    /* Touch the marker so the migration doesn't re-run. */
+    FILE* mf = fopen(marker, "wb");
+    if (mf) {
+        fprintf(mf, "scanned=%d appended=%d\n", scanned, appended);
+        fclose(mf);
+    }
+    printf("[saves] chat migration: scanned=%d entries across per-room files, "
+           "appended %d to chat.log (rest already present)\n",
+           scanned, appended);
+    fflush(stdout);
+    /* Run audit_truncate so the file stays under SAVES_AUDIT_FILE_MAX. */
+    audit_truncate(global_path);
+}
+
 bool saves_init(const char* saves_dir) {
     if (!saves_dir || !*saves_dir) return false;
     G_saves_dir = saves_dir;
@@ -218,6 +395,10 @@ bool saves_init(const char* saves_dir) {
         printf("[saves] write-probe ok in %s\n", saves_dir);
     }
     load_or_write_manifest();
+    /* Fold any historic per-room chat.log files into chat.log so the
+     * in-game backlog and the /chat endpoint agree. Idempotent and
+     * gated on a marker file. */
+    migrate_chat_per_room_to_global();
     printf("[saves] init dir=%s\n", saves_dir);
     return true;
 }
@@ -500,13 +681,9 @@ bool saves_load_player(const char* name, saves_player_pose_t* out) {
 /* Chat log                                                           */
 /* ----------------------------------------------------------------- */
 
-static void room_filename(const char* room, char* out, size_t cap) {
-    /* Empty room -> __public__. Otherwise the room code (already
-     * sanitised on the wire to A-Z + 2-9) is the filename verbatim. */
-    snprintf(out, cap, "%s/chat/%s.log",
-             G_saves_dir,
-             (room && *room) ? room : "__public__");
-}
+/* room_filename retired - per-room chat files are no longer the
+ * source of truth. saves_chat_load_backlog now reads chat.log
+ * filtered by room. */
 
 /* Strip newline / tab from a string in place — they break our line
  * format. Cheap, runs once per chat append. */
@@ -518,67 +695,16 @@ static void strip_log_chars(char* s, size_t cap) {
 }
 
 void saves_chat_append(const char* room, const char* name, const char* text) {
-    if (!G_saves_dir || !name || !text) return;
-    char dir[512];
-    snprintf(dir, sizeof dir, "%s/chat", G_saves_dir);
-    if (!mkdir_p(dir)) return;
-    char path[512];
-    room_filename(room, path, sizeof path);
-
-    char clean_name[SAVES_CHAT_NAME_MAX + 1];
-    char clean_text[SAVES_CHAT_TEXT_MAX + 1];
-    snprintf(clean_name, sizeof clean_name, "%s", name);
-    snprintf(clean_text, sizeof clean_text, "%s", text);
-    strip_log_chars(clean_name, sizeof clean_name);
-    strip_log_chars(clean_text, sizeof clean_text);
-
-    /* Append. We rely on POSIX append-mode atomicity — for our
-     * single-writer server, chat writes never interleave. */
-    FILE* f = fopen(path, "ab");
-    if (!f) return;
-    fprintf(f, "%s\t%s\n", clean_name, clean_text);
-    fclose(f);
-
-    /* Cheap truncation: if the file has gone past SAVES_CHAT_FILE_MAX
-     * lines, rewrite it keeping only the last N. We check by reading
-     * the whole file (worst case ~30 KB at the cap) and only rewrite
-     * when over. */
-    f = fopen(path, "rb");
-    if (!f) return;
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    if (sz < 0 || sz > 1024 * 1024) { fclose(f); return; }
-    rewind(f);
-    char* buf = (char*)malloc((size_t)sz + 1);
-    if (!buf) { fclose(f); return; }
-    size_t r = fread(buf, 1, (size_t)sz, f);
-    fclose(f);
-    buf[r] = 0;
-
-    /* Count lines. */
-    int line_count = 0;
-    for (size_t i = 0; i < r; ++i) if (buf[i] == '\n') ++line_count;
-    if (line_count <= SAVES_CHAT_FILE_MAX) { free(buf); return; }
-
-    /* Find the start of the (line_count - SAVES_CHAT_FILE_MAX)th
-     * line — that's where the kept tail begins. */
-    int drop = line_count - SAVES_CHAT_FILE_MAX;
-    size_t off = 0;
-    int seen = 0;
-    while (off < r && seen < drop) {
-        if (buf[off] == '\n') ++seen;
-        ++off;
-    }
-    /* Atomic-rewrite via .tmp swap. */
-    char tmp[512];
-    snprintf(tmp, sizeof tmp, "%s.tmp", path);
-    FILE* w = fopen(tmp, "wb");
-    if (w) {
-        fwrite(buf + off, 1, r - off, w);
-        fclose(w);
-        rename(tmp, path);
-    }
-    free(buf);
+    /* Per-room chat files were dropped: chat.log is now the single
+     * source of truth for both the dashboard view (GET /chat) and the
+     * in-game backlog replay (saves_chat_load_backlog filters chat.log
+     * by room). The historical two-path design caused exactly the
+     * kind of drift the user reported - entries written to the
+     * per-room file before the global feature shipped never appeared
+     * on the dashboard, so the two views diverged. This forwards to
+     * the global writer so old callers still produce the right
+     * behaviour. */
+    saves_global_chat_append(room, name, text);
 }
 
 /* ----------------------------------------------------------------- */
@@ -972,13 +1098,21 @@ size_t saves_audit_tail(const char* which, int max_lines,
 int saves_chat_load_backlog(const char* room,
                               saves_chat_msg_t* out, int cap) {
     if (!G_saves_dir || !out || cap <= 0) return 0;
+
+    /* Single source of truth: parse <saves>/chat.log, filter by room,
+     * keep the last `cap` matching entries. chat.log lines look like:
+     *   <ts>\t<name>\t<room>\t<text>\n
+     * The per-room <saves>/chat/<room>.log file is no longer read or
+     * written - the migration in saves_init folds its contents into
+     * chat.log on first boot, after which everything routes through
+     * one file. */
     char path[512];
-    room_filename(room, path, sizeof path);
+    if (!audit_path("chat", path, sizeof path)) return 0;
     FILE* f = fopen(path, "rb");
     if (!f) return 0;
     fseek(f, 0, SEEK_END);
     long sz = ftell(f);
-    if (sz <= 0 || sz > 1024 * 1024) { fclose(f); return 0; }
+    if (sz <= 0 || sz > 8 * 1024 * 1024) { fclose(f); return 0; }
     rewind(f);
     char* buf = (char*)malloc((size_t)sz + 1);
     if (!buf) { fclose(f); return 0; }
@@ -986,8 +1120,11 @@ int saves_chat_load_backlog(const char* room,
     fclose(f);
     buf[r] = 0;
 
-    /* Walk lines forward, fill a ring of size `cap`. Then unwrap
-     * into `out` so the result is oldest -> newest. */
+    /* Map empty / NULL incoming room to the on-disk slug "__public__"
+     * so the comparison against chat.log lines (which carry the same
+     * slug from saves_global_chat_append) matches. */
+    const char* want_room = (room && *room) ? room : "__public__";
+
     saves_chat_msg_t* ring = (saves_chat_msg_t*)calloc((size_t)cap, sizeof(*ring));
     if (!ring) { free(buf); return 0; }
     int head = 0, count = 0;
@@ -995,17 +1132,39 @@ int saves_chat_load_backlog(const char* room,
     while (line < buf + r) {
         char* nl = (char*)memchr(line, '\n', (size_t)(buf + r - line));
         size_t len = nl ? (size_t)(nl - line) : (size_t)(buf + r - line);
-        char* tab = (char*)memchr(line, '\t', len);
-        if (tab && tab > line && (size_t)(tab - line) <= SAVES_CHAT_NAME_MAX) {
-            saves_chat_msg_t* slot = &ring[head];
-            size_t name_len = (size_t)(tab - line);
-            memcpy(slot->name, line, name_len); slot->name[name_len] = 0;
-            size_t text_len = len - name_len - 1;
-            if (text_len > SAVES_CHAT_TEXT_MAX) text_len = SAVES_CHAT_TEXT_MAX;
-            memcpy(slot->text, tab + 1, text_len); slot->text[text_len] = 0;
-            head = (head + 1) % cap;
-            if (count < cap) ++count;
-        }
+        /* Find the three field separators (\t). Format demands four
+         * fields - bail on any line that doesn't have them. */
+        char* tab1 = (char*)memchr(line, '\t', len);
+        if (!tab1) goto next_line;
+        size_t rest_len = len - (size_t)(tab1 + 1 - line);
+        char* tab2 = (char*)memchr(tab1 + 1, '\t', rest_len);
+        if (!tab2) goto next_line;
+        size_t rest2_len = len - (size_t)(tab2 + 1 - line);
+        char* tab3 = (char*)memchr(tab2 + 1, '\t', rest2_len);
+        if (!tab3) goto next_line;
+
+        const char* name_start = tab1 + 1;
+        size_t      name_len   = (size_t)(tab2 - name_start);
+        const char* room_start = tab2 + 1;
+        size_t      room_len   = (size_t)(tab3 - room_start);
+        const char* text_start = tab3 + 1;
+        size_t      text_len   = (size_t)(line + len - text_start);
+
+        /* Room filter. Compare bytes exactly so "__public__" only
+         * matches the lobby. */
+        size_t want_len = strlen(want_room);
+        if (room_len != want_len) goto next_line;
+        if (memcmp(room_start, want_room, want_len) != 0) goto next_line;
+        if (name_len == 0 || name_len > SAVES_CHAT_NAME_MAX) goto next_line;
+
+        saves_chat_msg_t* slot = &ring[head];
+        if (name_len > SAVES_CHAT_NAME_MAX) name_len = SAVES_CHAT_NAME_MAX;
+        memcpy(slot->name, name_start, name_len); slot->name[name_len] = 0;
+        if (text_len > SAVES_CHAT_TEXT_MAX) text_len = SAVES_CHAT_TEXT_MAX;
+        memcpy(slot->text, text_start, text_len); slot->text[text_len] = 0;
+        head = (head + 1) % cap;
+        if (count < cap) ++count;
+    next_line:
         if (!nl) break;
         line = nl + 1;
     }

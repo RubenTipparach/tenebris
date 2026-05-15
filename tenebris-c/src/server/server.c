@@ -759,11 +759,11 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
             char nz_text[MSG_CHAT_TEXT_LEN + 1];
             memcpy(nz_text, m.text, MSG_CHAT_TEXT_LEN);
             nz_text[MSG_CHAT_TEXT_LEN] = 0;
-            saves_chat_append(cl->room, cl->name, nz_text);
-            /* Also append to the global, timestamped audit log so
-             * GET /chat returns a server-wide, time-ordered view
-             * across rooms - separate file because the per-room
-             * backlog stays in its terse `<name>\t<text>` format. */
+            /* chat.log is the single source of truth for both the
+             * dashboard /chat endpoint and the in-game backlog
+             * replay (the latter filters by room when loading).
+             * saves_chat_append now forwards here, so we only
+             * make one call. */
             saves_global_chat_append(cl->room, cl->name, nz_text);
 
             char short_text[33];
@@ -1562,7 +1562,9 @@ static void server_chat_say(server_t* s, const char* room, const char* text) {
         ++sent_to;
     }
 
-    saves_chat_append       (room_real, sname, clean_text);
+    /* Single write path - chat.log feeds both the dashboard and the
+     * in-game backlog now. saves_chat_append was a paired duplicate;
+     * removed to avoid double entries. */
     saves_global_chat_append(room_real, sname, clean_text);
 
     printf("[server] dashboard chat room=%s ~server~: %s (-> %d client%s)\n",
