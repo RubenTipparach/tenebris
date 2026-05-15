@@ -1011,19 +1011,84 @@ static int http_query_int(const char* path, const char* key, int def) {
  * built by splitting each audit-log TSV line on \t. The session
  * format is ts/event/name/room (4 fields); chat is ts/name/room/text
  * (also 4 but different keys). Unknown line shapes are skipped. */
-static size_t build_audit_json(const char* which, int max_lines) {
+/* Build a JSON page for /logins or /chat. The dashboard fetches an
+ * initial page (newest entries, count = max_lines) then walks back
+ * through history by re-issuing with before_ts set to the oldest
+ * ts it already has - so the API returns "the newest `max_lines`
+ * entries whose ts < before_ts". before_ts = 0 means "no filter".
+ *
+ * The response carries:
+ *   "sessions" / "chat"  : array of entries, NEWEST FIRST in the
+ *                          slice but oldest-first inside the array
+ *                          (callers usually iterate in array order).
+ *   "oldest_ts"          : the timestamp of the oldest entry returned;
+ *                          callers pass this back as `before` to get
+ *                          the next page. Missing when the response
+ *                          is empty.
+ *   "more"               : true iff at least one entry older than
+ *                          oldest_ts exists on disk - callers stop
+ *                          paginating when this is false. */
+static size_t build_audit_json(const char* which, int max_lines,
+                                  uint64_t before_ts) {
     size_t pos = 0;
-    size_t raw_len = saves_audit_tail(which, max_lines, HTTP_RAW, HTTP_BODY_CAP);
+    /* Pull the full file (capped at SAVES_AUDIT_FILE_MAX lines).
+     * Filtering happens here, not in saves_audit_tail, so a single
+     * disk read serves any page request. */
+    size_t raw_len = saves_audit_tail(which, SAVES_AUDIT_FILE_MAX,
+                                        HTTP_RAW, HTTP_BODY_CAP);
     if (!json_appendf(&pos, "{\"%s\":[", which)) return 0;
 
-    bool first = true;
-    char* line = HTTP_RAW;
-    char* end  = HTTP_RAW + raw_len;
-    while (line < end) {
-        char* nl = (char*)memchr(line, '\n', (size_t)(end - line));
-        size_t len = nl ? (size_t)(nl - line) : (size_t)(end - line);
-        if (len == 0) { if (!nl) break; line = nl + 1; continue; }
+    /* First pass: find every line's start offset + parsed ts. */
+    typedef struct { size_t off; size_t len; uint64_t ts; } line_t;
+    /* SAVES_AUDIT_FILE_MAX is 5000; one entry per line is the
+     * theoretical worst. Allocate on the stack scaled to that. */
+    static line_t lines[SAVES_AUDIT_FILE_MAX + 8];
+    int line_count = 0;
+    {
+        size_t off = 0;
+        while (off < raw_len && line_count < SAVES_AUDIT_FILE_MAX) {
+            const char* nl = (const char*)memchr(HTTP_RAW + off, '\n', raw_len - off);
+            size_t lend = nl ? (size_t)(nl - HTTP_RAW) : raw_len;
+            size_t llen = lend - off;
+            if (llen == 0) { if (!nl) break; off = lend + 1; continue; }
+            /* ts is the first field up to the first \t. */
+            const char* tab = (const char*)memchr(HTTP_RAW + off, '\t', llen);
+            uint64_t ts = tab ? strtoull(HTTP_RAW + off, NULL, 10) : 0;
+            lines[line_count].off = off;
+            lines[line_count].len = llen;
+            lines[line_count].ts  = ts;
+            ++line_count;
+            if (!nl) break;
+            off = lend + 1;
+        }
+    }
 
+    /* Walk newest-to-oldest (= reverse), skip entries with ts >=
+     * before_ts when before_ts is set, collect up to max_lines into
+     * a "kept" array (most-recent-first). */
+    static int kept[SAVES_AUDIT_FILE_MAX + 8];
+    int kept_count = 0;
+    bool has_older = false;
+    for (int i = line_count - 1; i >= 0 && kept_count < max_lines; --i) {
+        if (before_ts > 0 && lines[i].ts >= before_ts) continue;
+        kept[kept_count++] = i;
+    }
+    /* After we've filled the page, check if anything older than the
+     * oldest kept entry exists - drives the "more" flag. */
+    if (kept_count > 0) {
+        uint64_t oldest = lines[kept[kept_count - 1]].ts;
+        for (int i = 0; i < line_count; ++i) {
+            if (lines[i].ts < oldest) { has_older = true; break; }
+        }
+    }
+
+    bool first = true;
+    /* Emit oldest-first inside the array so callers can render in
+     * natural reading order without reversing client-side. */
+    for (int slot = kept_count - 1; slot >= 0; --slot) {
+        const line_t* L = &lines[kept[slot]];
+        char* line = HTTP_RAW + L->off;
+        size_t len = L->len;
         /* Split into up to 4 tab-separated fields. */
         char fields[4][SAVES_CHAT_TEXT_MAX + 1];
         int fc = 0;
@@ -1038,36 +1103,37 @@ static size_t build_audit_json(const char* which, int max_lines) {
                 fstart = i + 1;
             }
         }
-        if (fc == 4) {
-            char esc_a[256], esc_b[256], esc_c[256];
-            const char* sep = first ? "" : ",";
-            first = false;
-            if (strcmp(which, "sessions") == 0) {
-                /* ts \t event \t name \t room */
-                json_escape(fields[1], esc_a, sizeof esc_a);
-                json_escape(fields[2], esc_b, sizeof esc_b);
-                json_escape(fields[3], esc_c, sizeof esc_c);
-                if (!json_appendf(&pos,
-                        "%s{\"ts\":%s,\"event\":\"%s\",\"name\":\"%s\",\"room\":\"%s\"}",
-                        sep, fields[0], esc_a, esc_b, esc_c)) {
-                    break;   /* truncate gracefully */
-                }
-            } else {
-                /* ts \t name \t room \t text */
-                json_escape(fields[1], esc_a, sizeof esc_a);
-                json_escape(fields[2], esc_b, sizeof esc_b);
-                json_escape(fields[3], esc_c, sizeof esc_c);
-                if (!json_appendf(&pos,
-                        "%s{\"ts\":%s,\"name\":\"%s\",\"room\":\"%s\",\"text\":\"%s\"}",
-                        sep, fields[0], esc_a, esc_b, esc_c)) {
-                    break;
-                }
+        if (fc != 4) continue;
+        char esc_a[256], esc_b[256], esc_c[256];
+        const char* sep = first ? "" : ",";
+        first = false;
+        if (strcmp(which, "sessions") == 0) {
+            json_escape(fields[1], esc_a, sizeof esc_a);
+            json_escape(fields[2], esc_b, sizeof esc_b);
+            json_escape(fields[3], esc_c, sizeof esc_c);
+            if (!json_appendf(&pos,
+                    "%s{\"ts\":%s,\"event\":\"%s\",\"name\":\"%s\",\"room\":\"%s\"}",
+                    sep, fields[0], esc_a, esc_b, esc_c)) {
+                break;
+            }
+        } else {
+            json_escape(fields[1], esc_a, sizeof esc_a);
+            json_escape(fields[2], esc_b, sizeof esc_b);
+            json_escape(fields[3], esc_c, sizeof esc_c);
+            if (!json_appendf(&pos,
+                    "%s{\"ts\":%s,\"name\":\"%s\",\"room\":\"%s\",\"text\":\"%s\"}",
+                    sep, fields[0], esc_a, esc_b, esc_c)) {
+                break;
             }
         }
-        if (!nl) break;
-        line = nl + 1;
     }
-    json_appendf(&pos, "]}");
+    json_appendf(&pos, "]");
+    if (kept_count > 0) {
+        json_appendf(&pos, ",\"oldest_ts\":%llu",
+                     (unsigned long long)lines[kept[kept_count - 1]].ts);
+    }
+    json_appendf(&pos, ",\"more\":%s,\"returned\":%d}",
+                 has_older ? "true" : "false", kept_count);
     return pos;
 }
 
@@ -1596,16 +1662,49 @@ static int on_http(const char* path,
         return 1;
     }
     if (strcmp(clean, "/logins") == 0) {
-        int n = http_query_int(path, "n", 200);
-        size_t len = build_audit_json("sessions", n);
+        /* Default page size 100. The dashboard scrolls back by
+         * passing ?before=<oldest_ts> from the previous page so
+         * disk reads stay bounded even with thousands of events. */
+        int n = http_query_int(path, "n", 100);
+        uint64_t before_ts = 0;
+        {
+            const char* q = strchr(path, '?');
+            if (q) {
+                const char* p = q + 1;
+                while (*p) {
+                    if (strncmp(p, "before=", 7) == 0) {
+                        before_ts = strtoull(p + 7, NULL, 10);
+                    }
+                    const char* amp = strchr(p, '&');
+                    if (!amp) break;
+                    p = amp + 1;
+                }
+            }
+        }
+        size_t len = build_audit_json("sessions", n, before_ts);
         *out_body     = (const uint8_t*)HTTP_BODY;
         *out_body_len = len;
         *out_mime     = "application/json; charset=utf-8";
         return 1;
     }
     if (strcmp(clean, "/chat") == 0) {
-        int n = http_query_int(path, "n", 200);
-        size_t len = build_audit_json("chat", n);
+        int n = http_query_int(path, "n", 100);
+        uint64_t before_ts = 0;
+        {
+            const char* q = strchr(path, '?');
+            if (q) {
+                const char* p = q + 1;
+                while (*p) {
+                    if (strncmp(p, "before=", 7) == 0) {
+                        before_ts = strtoull(p + 7, NULL, 10);
+                    }
+                    const char* amp = strchr(p, '&');
+                    if (!amp) break;
+                    p = amp + 1;
+                }
+            }
+        }
+        size_t len = build_audit_json("chat", n, before_ts);
         *out_body     = (const uint8_t*)HTTP_BODY;
         *out_body_len = len;
         *out_mime     = "application/json; charset=utf-8";
@@ -1737,8 +1836,11 @@ static int on_http(const char* path,
             "tenebris-server alive\n"
             "  GET /status               - live JSON (players, CPU, RAM, rooms)\n"
             "  GET /rooms                - per-room unique-user + total-login counts\n"
-            "  GET /logins[?n=N]         - last N login/logout events\n"
-            "  GET /chat[?n=N]           - last N chat messages\n"
+            "  GET /logins[?n=N&before=TS] - newest N login/logout events older than TS\n"
+            "                                (default n=100, no before filter -> tail)\n"
+            "  GET /chat  [?n=N&before=TS] - newest N chat messages older than TS\n"
+            "                                (default n=100; response carries oldest_ts +\n"
+            "                                 more=true/false so callers can paginate)\n"
             "  GET /chat/send?text=...   - broadcast '~server~' chat to a room\n"
             "                              (&room=ABC123 for private,\n"
             "                               &room=__all__ to fan out, default public)\n"
