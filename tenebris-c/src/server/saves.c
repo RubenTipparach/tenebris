@@ -688,6 +688,99 @@ void saves_global_chat_append(const char* room, const char* name, const char* te
     audit_truncate(path);
 }
 
+/* ----------------------------------------------------------------- */
+/* Directory walker for /saves. Enumerates every .col file under
+ * <saves_dir>/rooms/<room>/world-<seed>/body-<body>/ and fires the
+ * visitor with the parsed identity + stat metadata. Single-threaded
+ * server, so the malloc'd path strings stay short-lived. */
+
+static void parse_seed_from_dir(const char* name, uint64_t* out_seed,
+                                  bool* out_ok) {
+    /* Expect "world-<hex>". On parse failure, mark not ok so the
+     * caller skips this entry instead of fabricating a zero seed. */
+    *out_ok = false;
+    if (strncmp(name, "world-", 6) != 0) return;
+    char* end = NULL;
+    uint64_t s = strtoull(name + 6, &end, 16);
+    if (!end || *end != 0) return;
+    *out_seed = s;
+    *out_ok = true;
+}
+
+static void parse_body_from_dir(const char* name, uint32_t* out_id,
+                                  bool* out_ok) {
+    *out_ok = false;
+    if (strncmp(name, "body-", 5) != 0) return;
+    char* end = NULL;
+    unsigned long v = strtoul(name + 5, &end, 10);
+    if (!end || *end != 0) return;
+    *out_id = (uint32_t)v;
+    *out_ok = true;
+}
+
+int saves_enumerate_tiles(saves_tile_visitor_t fn, void* user) {
+    if (!G_saves_dir || !fn) return 0;
+    char rooms_root[512];
+    snprintf(rooms_root, sizeof rooms_root, "%s/rooms", G_saves_dir);
+    DIR* rd = opendir(rooms_root);
+    if (!rd) return 0;
+    int total = 0;
+    struct dirent* re;
+    while ((re = readdir(rd)) != NULL) {
+        if (re->d_name[0] == '.') continue;
+        char world_root[600];
+        snprintf(world_root, sizeof world_root, "%s/%s", rooms_root, re->d_name);
+        DIR* wd = opendir(world_root);
+        if (!wd) continue;
+        struct dirent* we;
+        while ((we = readdir(wd)) != NULL) {
+            if (we->d_name[0] == '.') continue;
+            uint64_t seed = 0;
+            bool ok;
+            parse_seed_from_dir(we->d_name, &seed, &ok);
+            if (!ok) continue;
+            char body_root[700];
+            snprintf(body_root, sizeof body_root, "%s/%s",
+                     world_root, we->d_name);
+            DIR* bd = opendir(body_root);
+            if (!bd) continue;
+            struct dirent* be;
+            while ((be = readdir(bd)) != NULL) {
+                if (be->d_name[0] == '.') continue;
+                uint32_t body_id = 0;
+                parse_body_from_dir(be->d_name, &body_id, &ok);
+                if (!ok) continue;
+                char tile_root[800];
+                snprintf(tile_root, sizeof tile_root, "%s/%s",
+                         body_root, be->d_name);
+                DIR* td = opendir(tile_root);
+                if (!td) continue;
+                struct dirent* te;
+                while ((te = readdir(td)) != NULL) {
+                    if (te->d_name[0] == '.') continue;
+                    const char* dot = strrchr(te->d_name, '.');
+                    if (!dot || strcmp(dot, ".col") != 0) continue;
+                    int tile_idx = atoi(te->d_name);
+                    char tile_path_buf[900];
+                    snprintf(tile_path_buf, sizeof tile_path_buf,
+                             "%s/%s", tile_root, te->d_name);
+                    struct stat st;
+                    if (stat(tile_path_buf, &st) != 0) continue;
+                    fn(re->d_name, seed, body_id, tile_idx,
+                       (size_t)st.st_size,
+                       (uint64_t)st.st_mtime, user);
+                    ++total;
+                }
+                closedir(td);
+            }
+            closedir(bd);
+        }
+        closedir(wd);
+    }
+    closedir(rd);
+    return total;
+}
+
 size_t saves_audit_tail(const char* which, int max_lines,
                           char* out, size_t cap) {
     if (!out || cap == 0) return 0;

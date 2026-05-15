@@ -64,6 +64,57 @@ Raw JSON for `curl` / scripts:
 | [`GET /logins`](https://tenebris-c.fly.dev/logins) | JSON array of `{ts, event, name, room}` records. `event` is `"login"` (handshake success) or `"logout"` (client disconnect after handshake). |
 | [`GET /chat`](https://tenebris-c.fly.dev/chat) | JSON array of `{ts, name, room, text}` chat messages, server-wide, time-ordered. |
 | `GET /chat/send?text=...&room=...` | Broadcast a chat message to a room as `~server~` (sender renders with that name in-game). Authenticated by the `TENEBRIS_ADMIN_TOKEN` env var if set: append `&token=...`. Without the env var the endpoint is open (dev mode). |
+| [`GET /saves`](https://tenebris-c.fly.dev/saves) | JSON inventory of every persisted tile column (`.col` file) on the saves volume. Use this to confirm that block edits are actually hitting durable storage and to verify which room/seed/body they belong to. |
+
+### Inspecting persisted block edits
+
+When the in-game world looks like your placed blocks vanished after a
+relog, hit `/saves` to see what the server actually has on disk.
+Sample output:
+
+```json
+{
+  "filters": {},
+  "tiles": [
+    {"room": "T9VVPW",     "seed": 0, "body": 0, "tile": 160427, "size": 144, "mtime": 1778808130},
+    {"room": "__public__", "seed": 0, "body": 0, "tile":    100, "size": 144, "mtime": 1778808129}
+  ],
+  "total_files": 2,
+  "matched": 2,
+  "emitted": 2,
+  "truncated": false
+}
+```
+
+Each entry corresponds to one tile column (128 block depths) on a
+specific body for a specific room. `room` is the slug used on disk;
+`__public__` is the empty-code lobby. `size` is bytes (16-byte header
++ 128-byte payload = 144 for v1 files). `mtime` is the unix timestamp
+of the last write.
+
+Filter with any combination of:
+
+```sh
+# Just the tiles for one private room
+curl 'https://tenebris-c.fly.dev/saves?room=T9VVPW' | jq
+
+# Just one body across every room (handy for the spawn planet)
+curl 'https://tenebris-c.fly.dev/saves?body=0' | jq
+
+# A specific (room, body, seed) tuple
+curl 'https://tenebris-c.fly.dev/saves?room=T9VVPW&body=0&seed=0' | jq '.tiles | length'
+```
+
+`total_files` always reflects the full disk state regardless of how
+the filters narrowed `matched` / `emitted`. When the JSON gets
+truncated to fit the response buffer, `"truncated": true` and
+`emitted < matched` so you know to narrow further with filters.
+
+If `total_files` is 0 right after you placed blocks, the volume isn't
+persisting writes - check `fly volumes list` to confirm the
+`tenebris_saves` volume exists and is actually attached to the
+running machine. The server prints `[saves] write-probe ok in
+/data/saves` at boot when writes round-trip correctly.
 
 > **Why does the server seem to restart on its own?** `fly.toml` sets
 > `auto_stop_machines = 'stop'` + `min_machines_running = 0`, so the Fly
