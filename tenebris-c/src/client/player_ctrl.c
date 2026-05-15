@@ -790,58 +790,30 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
             }
         }
 
-        /* Sink-through detector. Scans every voxel cell the player's
-         * capsule occupies (feet up through head) and triggers if any
-         * is solid - meaning either gravity dipped the feet past a
-         * cavity into a floor below the surface they were standing on,
-         * OR the feet landed inside an air pocket but the player's
-         * body intersects the column above (the "two surfaces" case
-         * the user flagged: feet on a deeper block inside a cavity,
-         * head poking through the lid that should have caught them).
-         *
-         * Either way, scan from rescue_floor upward for the first
-         * solid -> passable transition and snap the player so their
-         * feet stand on top of that column. Vertical velocity zeros
-         * so the next frame doesn't re-sink. */
-        int feet_depth = world_radius_to_depth(w, r);
-        int head_depth = world_radius_to_depth(w, r + (double)player_height);
-        if (head_depth >= WORLD_MAX_DEPTH) head_depth = WORLD_MAX_DEPTH - 1;
-        if (feet_depth >= 0 && feet_depth < WORLD_MAX_DEPTH
-            && head_depth >= feet_depth
+        /* Sink-through detector. Scans a SINGLE cell at the player's
+         * body midpoint. The previous "feet up through head" scan
+         * tripped on cave ceilings (head pokes into the ceiling
+         * voxel when jumping inside a cave) and snapped the player
+         * to the top of the column above - aka teleporting them out
+         * of the cave on every jump. The midpoint check avoids that:
+         * a player walking around in a cave has clear air at their
+         * torso, a player who has fallen through a surface into a
+         * deeper cell has solid wrapped around their torso. The
+         * head-cell intersection gets handled by the existing
+         * ceiling clamp earlier in the frame. */
+        int   mid_depth = world_radius_to_depth(w, r + (double)player_height * 0.5);
+        if (mid_depth >= 0 && mid_depth < WORLD_MAX_DEPTH
             && cur_tile >= 0 && cur_tile < w->tile_count) {
-            int   intersect_depth = -1;
+            block_t mid_block = (block_t)w->blocks[
+                (size_t)cur_tile * WORLD_MAX_DEPTH + mid_depth];
+            int     intersect_depth = -1;
             block_t intersect_block = BLOCK_AIR;
-            for (int d = feet_depth; d <= head_depth; ++d) {
-                block_t b = (block_t)w->blocks[
-                    (size_t)cur_tile * WORLD_MAX_DEPTH + d];
-                /* block_is_solid is true for everything that isn't air
-                 * or water - exposed via blocks.h. Wading through
-                 * water doesn't count as sink-through. */
-                if (block_is_solid(b)) {
-                    intersect_depth = d;
-                    intersect_block = b;
-                    break;
-                }
-            }
-            if (intersect_depth >= 0) {
-                /* Sub-block epsilon: the player's r being a floating-
-                 * point hair below a floor top makes world_radius_to_depth
-                 * round INTO the floor block, but they aren't really
-                 * sinking - they're standing on the surface and gravity
-                 * keeps pulling them by ~mm per frame against the
-                 * ground-snap below. Only treat the intersection as a
-                 * real sink-through when the gap between the player's
-                 * r and the TOP of the intersecting cell exceeds the
-                 * epsilon. 5 cm is comfortably below WORLD_STEP_HEIGHT
-                 * and well above the per-frame jitter from a normal
-                 * 60-fps physics tick. */
-                const double SINK_EPSILON_M = 0.05;
-                double intersect_top_r = world_depth_to_radius_m(w, intersect_depth + 1);
-                if (intersect_top_r - r <= SINK_EPSILON_M) {
-                    /* False alarm - skip the rescue + log so we don't
-                     * spam the console on every grounded frame. */
-                    intersect_depth = -1;
-                }
+            /* block_is_solid is true for everything that isn't air
+             * or water - exposed via blocks.h. Wading through water
+             * doesn't count as sink-through. */
+            if (block_is_solid(mid_block)) {
+                intersect_depth = mid_depth;
+                intersect_block = mid_block;
             }
             if (intersect_depth >= 0) {
                 /* Walk up the column for the first solid -> passable
@@ -860,20 +832,12 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
                 }
                 if (rescue_depth >= 0) {
                     double rescue_r = world_depth_to_radius_m(w, rescue_depth + 1);
-                    /* Diagnostic distinguishes the two cases: "feet"
-                     * means feet voxel is solid (classic overshoot);
-                     * "body" means feet are in air but the capsule's
-                     * upper cells intersect the column (the two-
-                     * surfaces case). */
-                    const char* kind = (intersect_depth == feet_depth)
-                                          ? "feet" : "body";
                     fprintf(stderr,
-                            "[player] ERROR: sink-through (%s) detected on body=%u "
-                            "tile=%d feet_depth=%d head_depth=%d intersect_depth=%d "
-                            "block=%u r=%.3f (velocity_radial=%.3fm/s, dt=%.3fs) - "
-                            "snapping feet up to floor at depth=%d r=%.3f\n",
-                            kind, (unsigned)p->body->id, cur_tile,
-                            feet_depth, head_depth, intersect_depth,
+                            "[player] ERROR: sink-through detected on body=%u "
+                            "tile=%d mid_depth=%d block=%u r=%.3f "
+                            "(velocity_radial=%.3fm/s, dt=%.3fs) - snapping "
+                            "feet up to floor at depth=%d r=%.3f\n",
+                            (unsigned)p->body->id, cur_tile, mid_depth,
                             (unsigned)intersect_block, r,
                             dvec3_dot(p->velocity, p->basis.up),
                             (double)dt,
@@ -895,10 +859,10 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
                 } else {
                     fprintf(stderr,
                             "[player] ERROR: sink-through detected on body=%u "
-                            "tile=%d intersect_depth=%d block=%u r=%.3f but no "
+                            "tile=%d mid_depth=%d block=%u r=%.3f but no "
                             "walkable floor above - column is solid to the top, "
                             "leaving player in place (will look stuck)\n",
-                            (unsigned)p->body->id, cur_tile, intersect_depth,
+                            (unsigned)p->body->id, cur_tile, mid_depth,
                             (unsigned)intersect_block, r);
                 }
             }
