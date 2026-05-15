@@ -294,15 +294,30 @@ static void emit_cap(hex_mesh_t* out,
     float uc = u0 + HEX_ATLAS_U_STEP * 0.5f;
     float vc = 0.5f;
 
-    /* Sky-light depth lookup point: top cap → column above this
-     * block (depth+1 onward). Bottom cap → column above the cap
-     * itself (i.e. the block layer at depth and everything above).
-     * Both reduce to "what lies between this fragment and the sky";
-     * in a normal terrain column the top cap reads sky=1 and the
-     * bottom cap of an exposed leaf canopy reads close to the value
-     * for its block. */
+    /* Voxel-mode sample depth differs between top and bottom caps:
+     *   Top cap    -> depth+1 (the air ABOVE the block - that's the
+     *                 cell the face looks up into).
+     *   Bottom cap -> depth-1 (the air BELOW the block - that's
+     *                 where torch-light + sky propagation actually
+     *                 lives). The previous "depth" lookup landed in
+     *                 the block's own layer (always solid for the
+     *                 face we're meshing) and smooth_corner_sample
+     *                 skipped it; for a sealed-room ceiling every
+     *                 neighbour at that depth is also solid, so the
+     *                 sample collapsed to zero and the ceiling read
+     *                 pitch black even with a torch right below it.
+     * Column-mode keeps the legacy "what's between this fragment
+     * and the sky" semantic (no per-voxel grid) so its inputs
+     * stay unchanged. */
     const bool voxel = use_voxel_engine();
-    const int  depth_at_air = is_top ? depth + 1 : depth;
+    int depth_at_air;
+    if (voxel) {
+        depth_at_air = is_top ? depth + 1 : depth - 1;
+        if (depth_at_air < 0)              depth_at_air = 0;
+        if (depth_at_air >= WORLD_MAX_DEPTH) depth_at_air = WORLD_MAX_DEPTH - 1;
+    } else {
+        depth_at_air = is_top ? depth + 1 : depth;
+    }
 
     /* Cap centre samples just (this_tile, depth_at_air). Each corner
      * vertex samples the three voxels meeting at that corner - the
