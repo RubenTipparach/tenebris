@@ -6,6 +6,7 @@
 #include "core/blocks.h"
 #include "core/config.h"
 #include "core/goldberg.h"
+#include "core/planet_gen.h"
 #include "core/world_light.h"
 
 #include "sokol_gfx.h"
@@ -148,6 +149,18 @@ typedef struct {
     sg_buffer    distant_vbuf;
     sg_buffer    distant_ibuf;
     int          distant_index_count;
+    /* Per-body distant LOD textures. Albedo (RGBA8) carries the
+     * baked biome colour + height tint + water blend; alpha is the
+     * water mask the fragment shader uses to gate the sun-glint
+     * specular layer. Normal (RGBA8) carries tangent-space dx/dy
+     * derived from the procedural altitude gradient so the distant
+     * planet picks up fine terrain shading the icosphere mesh is
+     * too coarse to represent geometrically. Built alongside the
+     * mesh; reset to {0} until both are populated. */
+    sg_image     distant_tex_albedo;
+    sg_image     distant_tex_normal;
+    sg_view      distant_view_albedo;
+    sg_view      distant_view_normal;
 } chunked_body_t;
 
 static struct {
@@ -187,6 +200,11 @@ static struct {
     sg_image    water_normal_img;
     sg_view     water_normal_view;
     sg_sampler  water_normal_smp;
+
+    /* Shared linear-clamp sampler for the per-body distant LOD
+     * textures (albedo + normal). One sampler binding satisfies both
+     * texture slots; per-body image/view live in chunked_body_t. */
+    sg_sampler  distant_lod_smp;
 
     /* Phase A scaffolding for FBO-based water (see WATER_STAGES.md).
      * Offscreen colour + depth render targets sized to the swapchain.
@@ -502,6 +520,19 @@ static void load_water_normal(void) {
         .label = "water-normal-sampler",
     });
     if (pix) stbi_image_free(pix);
+
+    /* Shared sampler for the per-body distant-LOD albedo + normal
+     * textures. Equirectangular wraps cleanly in U (longitude wraps
+     * 360 deg) but NOT in V (latitude clamps at the poles), so use
+     * repeat-clamp accordingly. Linear filtering keeps the noise
+     * pattern smooth at the icosphere's tris. */
+    R.distant_lod_smp = sg_make_sampler(&(sg_sampler_desc){
+        .min_filter = SG_FILTER_LINEAR,
+        .mag_filter = SG_FILTER_LINEAR,
+        .wrap_u = SG_WRAP_REPEAT,
+        .wrap_v = SG_WRAP_CLAMP_TO_EDGE,
+        .label = "distant-lod-sampler",
+    });
 }
 
 /* ----------------------------------------------------------------------- */
@@ -782,9 +813,8 @@ void renderer_init(void) {
             .attrs = {
                 [ATTR_distant_a_pos]    = { .format = SG_VERTEXFORMAT_FLOAT3 },
                 [ATTR_distant_a_normal] = { .format = SG_VERTEXFORMAT_FLOAT3 },
-                [ATTR_distant_a_color]  = { .format = SG_VERTEXFORMAT_FLOAT3 },
             },
-            .buffers[0].stride = 9 * sizeof(float),
+            .buffers[0].stride = 6 * sizeof(float),
         },
         .index_type = SG_INDEXTYPE_UINT32,
         .depth = { .write_enabled = true, .compare = SG_COMPAREFUNC_LESS_EQUAL },
@@ -878,8 +908,12 @@ void renderer_shutdown(void) {
             if (c->water_vbuf.id)  sg_destroy_buffer(c->water_vbuf);
             if (c->water_ibuf.id)  sg_destroy_buffer(c->water_ibuf);
         }
-        if (body->distant_vbuf.id) sg_destroy_buffer(body->distant_vbuf);
-        if (body->distant_ibuf.id) sg_destroy_buffer(body->distant_ibuf);
+        if (body->distant_vbuf.id)        sg_destroy_buffer(body->distant_vbuf);
+        if (body->distant_ibuf.id)        sg_destroy_buffer(body->distant_ibuf);
+        if (body->distant_view_albedo.id) sg_destroy_view(body->distant_view_albedo);
+        if (body->distant_view_normal.id) sg_destroy_view(body->distant_view_normal);
+        if (body->distant_tex_albedo.id)  sg_destroy_image(body->distant_tex_albedo);
+        if (body->distant_tex_normal.id)  sg_destroy_image(body->distant_tex_normal);
         free(body->tile_to_chunk); body->tile_to_chunk = NULL;
     }
     R.body_count = 0;
@@ -890,6 +924,7 @@ void renderer_shutdown(void) {
     sg_destroy_view(R.water_normal_view);
     sg_destroy_image(R.water_normal_img);
     sg_destroy_sampler(R.water_normal_smp);
+    if (R.distant_lod_smp.id) sg_destroy_sampler(R.distant_lod_smp);
     if (R.offscreen_color_tex.id) sg_destroy_view(R.offscreen_color_tex);
     if (R.offscreen_depth_tex.id) sg_destroy_view(R.offscreen_depth_tex);
     if (R.offscreen_color_att.id) sg_destroy_view(R.offscreen_color_att);
@@ -1102,82 +1137,241 @@ static uint32_t midpoint_lookup(edge_mid_t* edges, int* nedges,
     return idx;
 }
 
-static vec3_t sample_body_top_color(const chunked_body_t* body, const float dir[3]) {
-    const world_t* w = body->world;
-    if (!w) return body->distant_color;
-    dvec3_t d = dvec3_make(dir[0], dir[1], dir[2]);
-    int tile = goldberg_find_tile(w->grid, d, -1);
-    if (tile < 0 || tile >= w->tile_count || tile >= w->gen_cursor) {
-        return body->distant_color;
-    }
-    /* Walk the column once: locate the topmost solid block and count
-     * the water layers stacked above it. The water count drives the
-     * shoreline → open-ocean blend so a deep basin reads as the
-     * planet's water hue while a sandy shore keeps the seabed
-     * showing through. */
-    block_t top = BLOCK_AIR;
-    int     d_top = -1;
-    int     water_layers = 0;
-    for (int dep = WORLD_MAX_DEPTH - 1; dep >= 0; --dep) {
-        block_t b = (block_t)w->blocks[tile * WORLD_MAX_DEPTH + dep];
-        if (block_is_solid(b)) { top = b; d_top = dep; break; }
-        if (b == BLOCK_WATER) ++water_layers;
-    }
-    if (top == BLOCK_AIR) return body->distant_color;
-    int col = (int)block_face_tile(top, FACE_CAP_TOP);
-    if (col < 0 || col >= HEX_ATLAS_TILES) return body->distant_color;
-    vec3_t base = R.atlas_col_avg[col];
+/* (sample_body_top_color removed — the distant LOD now samples a
+ * per-body pre-baked albedo texture in the fragment shader rather
+ * than computing a per-vertex colour by walking the world. See
+ * sample_planet_lod_color + build_distant_textures_for_body below.) */
 
-    /* Tileset palette — clamp to the array length so a body with an
-     * out-of-range tileset (shouldn't happen, but be defensive)
-     * falls back to the EARTH slot. */
+/* ----------------------------------------------------------------------- */
+/* Per-body distant-LOD textures.
+ *
+ * Builds two equirectangular RGBA8 textures from the body's procgen
+ * noise + tileset palette, suitable for direct sampling by the
+ * distant fragment shader. Resolution is small (256x128) since the
+ * distant LOD only covers ~10% of the viewport at most, and the
+ * sampled noise is intrinsically low-frequency at planet scale -
+ * higher resolutions cost memory + generation time without adding
+ * visible detail.
+ *
+ *   ALBEDO (RGBA8): RGB = same colour the old per-vertex
+ *                   sample_body_top_color used (biome + water blend +
+ *                   height shade + tileset tint), evaluated per
+ *                   pixel rather than per vertex. A = water mask
+ *                   (255 when the column at this direction is
+ *                   below sea level on a body that has water, else
+ *                   0). The shader gates its specular highlight on
+ *                   this alpha so dry terrain stays matte.
+ *   NORMAL (RGBA8): RG = (dx, dy) tangent-space slope encoded
+ *                   (0,0) = flat, packed as v*0.5+0.5. Built from
+ *                   the planet's altitude gradient via central
+ *                   differences across one texel in each axis,
+ *                   scaled so a 5 m peak-to-trough swing reads as
+ *                   a unit slope. B = 1.0 placeholder, A unused. */
+
+#define DISTANT_TEX_W   256
+#define DISTANT_TEX_H   128
+/* Tangent-space slope encoder: scales raw altitude delta (m / texel)
+ * into [-1, +1] so a 5 m vertical change across one texel registers
+ * as a full unit slope (still rare in practice; most terrain reads
+ * far softer than that, which is fine - the shader's
+ * normal_strength uniform tunes the visible bumpiness on top). */
+#define DISTANT_NORMAL_SLOPE_SCALE   0.2f
+
+/* Equirectangular pixel index -> body-local unit direction. Keep
+ * in lock-step with the dir_to_uv mapping in distant.glsl: U sweeps
+ * longitude via atan2(z, x), V sweeps latitude via asin(y). */
+static dvec3_t distant_pixel_to_dir(int px, int py) {
+    double u = ((double)px + 0.5) / (double)DISTANT_TEX_W;
+    double v = ((double)py + 0.5) / (double)DISTANT_TEX_H;
+    double lon = (u - 0.5) * 2.0 * 3.14159265358979323846;
+    double lat = (0.5 - v) * 3.14159265358979323846;
+    double cl  = cos(lat);
+    return (dvec3_t){ cl * cos(lon), sin(lat), cl * sin(lon) };
+}
+
+/* Same biome-colour pipeline as the removed sample_body_top_color,
+ * but driven directly from the procgen noise (planet_profile +
+ * planet_sample_with_profile) rather than the world's tile data -
+ * so it works for bodies that haven't streamed their voxels yet, and
+ * stays in exact sync with the procgen even when local edits drift
+ * the live world from the seed. RGB goes in `out_rgb`, water-amount
+ * (0..1) goes in `out_water_alpha`. */
+static void sample_planet_lod_color(const body_config_t* body,
+                                     vec3_t fallback,
+                                     dvec3_t unit_dir,
+                                     float surface_m,
+                                     vec3_t* out_rgb,
+                                     float* out_water_alpha) {
+    column_profile_t prof = planet_profile(body, unit_dir);
+    block_t top = planet_sample_with_profile(&prof, surface_m);
+    /* Fallback: if the procgen returned an empty / non-solid cell
+     * at the surface (rare - polar caps where surface is below sea
+     * level and the top is ice/water), seed with the renderer-side
+     * distant fallback so the texture never goes black. */
+    if (top == BLOCK_AIR) {
+        *out_rgb = fallback;
+        *out_water_alpha = 0.0f;
+        return;
+    }
+    int col = (int)block_face_tile(top, FACE_CAP_TOP);
+    vec3_t base = (col >= 0 && col < HEX_ATLAS_TILES)
+                ? R.atlas_col_avg[col]
+                : fallback;
+
     const lod_config_t* L = config_lod();
-    int ts = (int)w->body->tileset;
+    int ts = (int)body->tileset;
     if (ts < 0 || ts > 4) ts = 0;
 
-    /* Water mix — only when the body actually has water and the
-     * column we just sampled has water above the seabed. Mix factor
-     * ramps with column thickness so the shore stays sandy and the
-     * deep ocean reads as the water hue. */
-    if (body->has_water && water_layers > 0) {
+    /* Water column thickness drives both the visual water blend AND
+     * the alpha mask the shader reads for its specular gate. Bodies
+     * with no water (barren / icy / asteroid) skip the blend. */
+    float water_alpha = 0.0f;
+    if (body->has_water && surface_m < 0.0f) {
+        float depth_m = -surface_m;
         float full_depth = L->tileset_water_full_depth_m[ts];
         if (full_depth <= 0.0f) full_depth = 4.0f;
-        float wf = (float)water_layers / full_depth;
+        float wf = depth_m / full_depth;
         if (wf > 1.0f) wf = 1.0f;
         vec3_t wc = L->tileset_water_color[ts];
         base.x = base.x * (1.0f - wf) + wc.x * wf;
         base.y = base.y * (1.0f - wf) + wc.y * wf;
         base.z = base.z * (1.0f - wf) + wc.z * wf;
+        water_alpha = wf;
     }
 
-    /* Height shade — the topmost-block depth is the planet-gen noise
-     * output, so multiplying the base biome colour by an altitude-
-     * driven shade carries the actual elevation pattern (not just the
-     * biome boundaries) onto the distant LOD. Lowlands darken,
-     * highlands lighten, ocean basins read distinctly bluer than
-     * coastal grass even when both sample to similar atlas tiles.
-     * The lowland/peak tint multiplies on top so each tileset's
-     * elevation pattern carries its own colour grade — Crag's
-     * basins lean rust, Frost's peaks lean cold blue, etc. */
-    double altitude_m = world_depth_to_radius_m(w, d_top + 1)
-                      - w->body->radius_m;
-    float t = (float)(altitude_m / (double)L->distant_shade_range_m);
+    /* Height shade + per-tileset tint. */
+    float t = surface_m / L->distant_shade_range_m;
     if (t < -1.0f) t = -1.0f;
     if (t >  1.0f) t =  1.0f;
-    float u = t * 0.5f + 0.5f;   /* [0..1] from lowland to peak */
+    float u = t * 0.5f + 0.5f;
     float shade = L->distant_shade_floor
                 + (L->distant_shade_ceiling - L->distant_shade_floor) * u;
     vec3_t lo = L->tileset_lowland_tint[ts];
     vec3_t hi = L->tileset_peak_tint   [ts];
-    vec3_t tint = (vec3_t){
-        lo.x * (1.0f - u) + hi.x * u,
-        lo.y * (1.0f - u) + hi.y * u,
-        lo.z * (1.0f - u) + hi.z * u,
-    };
-    base.x *= shade * tint.x;
-    base.y *= shade * tint.y;
-    base.z *= shade * tint.z;
-    return base;
+    base.x *= shade * (lo.x * (1.0f - u) + hi.x * u);
+    base.y *= shade * (lo.y * (1.0f - u) + hi.y * u);
+    base.z *= shade * (lo.z * (1.0f - u) + hi.z * u);
+    *out_rgb = base;
+    *out_water_alpha = water_alpha;
+}
+
+static void build_distant_textures_for_body(chunked_body_t* body) {
+    /* Discard any previous textures - body_register can be called
+     * multiple times for the same slot when a world rebuild is
+     * needed (e.g. seed change during dev). */
+    if (body->distant_view_albedo.id) {
+        sg_destroy_view(body->distant_view_albedo);
+        body->distant_view_albedo = (sg_view){0};
+    }
+    if (body->distant_view_normal.id) {
+        sg_destroy_view(body->distant_view_normal);
+        body->distant_view_normal = (sg_view){0};
+    }
+    if (body->distant_tex_albedo.id) {
+        sg_destroy_image(body->distant_tex_albedo);
+        body->distant_tex_albedo = (sg_image){0};
+    }
+    if (body->distant_tex_normal.id) {
+        sg_destroy_image(body->distant_tex_normal);
+        body->distant_tex_normal = (sg_image){0};
+    }
+    if (!body->world || !body->world->body) return;
+    const body_config_t* bcfg = body->world->body;
+
+    const int W = DISTANT_TEX_W;
+    const int H = DISTANT_TEX_H;
+
+    /* Single altitude buffer - we use it once to compute the albedo
+     * (which depends only on the per-pixel surface_m) and a second
+     * time to build the normal map (central differences across
+     * neighbouring pixels). Storing the whole grid up front means
+     * we don't re-evaluate ~12 noise octaves per neighbour lookup. */
+    float* alt = (float*)malloc((size_t)W * (size_t)H * sizeof(float));
+    if (!alt) return;
+    for (int py = 0; py < H; ++py) {
+        for (int px = 0; px < W; ++px) {
+            dvec3_t dir = distant_pixel_to_dir(px, py);
+            float surface_m = planet_surface_altitude(bcfg, dir);
+            if (bcfg->barren) surface_m *= 0.3f;
+            alt[py * W + px] = surface_m;
+        }
+    }
+
+    uint8_t* albedo = (uint8_t*)malloc((size_t)W * (size_t)H * 4u);
+    uint8_t* normal = (uint8_t*)malloc((size_t)W * (size_t)H * 4u);
+    if (!albedo || !normal) { free(alt); free(albedo); free(normal); return; }
+
+    vec3_t fallback = body->distant_color;
+    for (int py = 0; py < H; ++py) {
+        for (int px = 0; px < W; ++px) {
+            dvec3_t dir = distant_pixel_to_dir(px, py);
+            float   surface_m = alt[py * W + px];
+            vec3_t  rgb;
+            float   water_a;
+            sample_planet_lod_color(bcfg, fallback, dir, surface_m, &rgb, &water_a);
+            /* Quantise to 8-bit. Clamp covers a couple of edge cases
+             * where height-shade x tint can push a channel just over
+             * 1.0 before quantisation. */
+            float r = rgb.x; if (r < 0) r = 0; if (r > 1) r = 1;
+            float g = rgb.y; if (g < 0) g = 0; if (g > 1) g = 1;
+            float b = rgb.z; if (b < 0) b = 0; if (b > 1) b = 1;
+            float a = water_a;
+            int idx = (py * W + px) * 4;
+            albedo[idx + 0] = (uint8_t)(r * 255.0f + 0.5f);
+            albedo[idx + 1] = (uint8_t)(g * 255.0f + 0.5f);
+            albedo[idx + 2] = (uint8_t)(b * 255.0f + 0.5f);
+            albedo[idx + 3] = (uint8_t)(a * 255.0f + 0.5f);
+
+            /* Normal map via central differences across the altitude
+             * grid. U wraps (longitude), V clamps (latitude). The
+             * resulting slope is in metres-per-texel; the scale
+             * factor maps a 5 m / texel ridge to a unit slope. */
+            int px_l = (px == 0)       ? (W - 1) : (px - 1);
+            int px_r = (px == W - 1)   ? 0       : (px + 1);
+            int py_d = (py == 0)       ? 0       : (py - 1);
+            int py_u = (py == H - 1)   ? (H - 1) : (py + 1);
+            float h_l = alt[py    * W + px_l];
+            float h_r = alt[py    * W + px_r];
+            float h_d = alt[py_d  * W + px ];
+            float h_u = alt[py_u  * W + px ];
+            float dx = (h_r - h_l) * 0.5f * DISTANT_NORMAL_SLOPE_SCALE;
+            float dy = (h_u - h_d) * 0.5f * DISTANT_NORMAL_SLOPE_SCALE;
+            if (dx < -1.0f) dx = -1.0f;
+            if (dx >  1.0f) dx =  1.0f;
+            if (dy < -1.0f) dy = -1.0f;
+            if (dy >  1.0f) dy =  1.0f;
+            normal[idx + 0] = (uint8_t)((dx * 0.5f + 0.5f) * 255.0f + 0.5f);
+            normal[idx + 1] = (uint8_t)((dy * 0.5f + 0.5f) * 255.0f + 0.5f);
+            normal[idx + 2] = 255;
+            normal[idx + 3] = 255;
+        }
+    }
+    free(alt);
+
+    body->distant_tex_albedo = sg_make_image(&(sg_image_desc){
+        .width  = W,
+        .height = H,
+        .pixel_format = SG_PIXELFORMAT_RGBA8,
+        .data.mip_levels[0] = { .ptr = albedo, .size = (size_t)W * H * 4u },
+        .label = "distant-lod-albedo",
+    });
+    body->distant_tex_normal = sg_make_image(&(sg_image_desc){
+        .width  = W,
+        .height = H,
+        .pixel_format = SG_PIXELFORMAT_RGBA8,
+        .data.mip_levels[0] = { .ptr = normal, .size = (size_t)W * H * 4u },
+        .label = "distant-lod-normal",
+    });
+    body->distant_view_albedo = sg_make_view(&(sg_view_desc){
+        .texture.image = body->distant_tex_albedo,
+        .label = "distant-lod-albedo-view",
+    });
+    body->distant_view_normal = sg_make_view(&(sg_view_desc){
+        .texture.image = body->distant_tex_normal,
+        .label = "distant-lod-normal-view",
+    });
+    free(albedo);
+    free(normal);
 }
 
 static void build_distant_mesh_for_body(chunked_body_t* body) {
@@ -1228,14 +1422,13 @@ static void build_distant_mesh_for_body(chunked_body_t* body) {
         nt = new_nt;
     }
 
-    /* Pack: pos (3) + normal (3, radial) + colour (3, sampled). */
-    static float vbuf[DISTANT_MAX_VERTS * 9];
+    /* Pack: pos (3) + normal (3, radial). Per-pixel colour comes from
+     * the distant LOD texture sampled in the fragment shader. */
+    static float vbuf[DISTANT_MAX_VERTS * 6];
     for (int i = 0; i < nv; ++i) {
         const float* p = verts[i];
-        vbuf[i*9 + 0] = p[0]; vbuf[i*9 + 1] = p[1]; vbuf[i*9 + 2] = p[2];
-        vbuf[i*9 + 3] = p[0]; vbuf[i*9 + 4] = p[1]; vbuf[i*9 + 5] = p[2];
-        vec3_t col = sample_body_top_color(body, p);
-        vbuf[i*9 + 6] = col.x; vbuf[i*9 + 7] = col.y; vbuf[i*9 + 8] = col.z;
+        vbuf[i*6 + 0] = p[0]; vbuf[i*6 + 1] = p[1]; vbuf[i*6 + 2] = p[2];
+        vbuf[i*6 + 3] = p[0]; vbuf[i*6 + 4] = p[1]; vbuf[i*6 + 5] = p[2];
     }
     static uint32_t ibuf[DISTANT_MAX_TRIS * 3];
     for (int i = 0; i < nt; ++i) {
@@ -1245,7 +1438,7 @@ static void build_distant_mesh_for_body(chunked_body_t* body) {
     }
 
     body->distant_vbuf = sg_make_buffer(&(sg_buffer_desc){
-        .data = { .ptr = vbuf, .size = (size_t)nv * 9 * sizeof(float) },
+        .data = { .ptr = vbuf, .size = (size_t)nv * 6 * sizeof(float) },
         .label = "body-distant-vbuf",
     });
     body->distant_ibuf = sg_make_buffer(&(sg_buffer_desc){
@@ -1293,6 +1486,11 @@ void renderer_register_world(world_t* w) {
      * vertex colours. The mesh is small (≤ 1280 tris) so the cost
      * is negligible at register time. */
     build_distant_mesh_for_body(body);
+    /* Build the per-body distant-LOD textures (albedo + normal) from
+     * the procedural noise, sized 256x128 each. ~33k pixels x ~12
+     * noise octaves x ~20 bodies = a few hundred ms total at boot;
+     * one-shot cost, never re-evaluated. */
+    build_distant_textures_for_body(body);
 
     if (R.active_body_idx < 0) {
         /* First-registered body is the active one — full detail at
@@ -1489,16 +1687,39 @@ void renderer_draw_moons(mat4_t view, mat4_t proj, vec3_t camera_world) {
         mat4_t model = mat4_mul(mat4_translate(body->world_pos),
                                 mat4_scale_uniform(body->radius_m));
         mat4_t mvp = mat4_mul(vp_base, model);
+        /* Bindings include the per-body distant albedo + normal texture
+         * views and the shared linear-clamp sampler. If the textures
+         * haven't been built yet (rare race during init) skip this body
+         * - the mesh path needs them. */
+        if (!body->distant_view_albedo.id || !body->distant_view_normal.id) {
+            continue;
+        }
         sg_apply_bindings(&(sg_bindings){
             .vertex_buffers[0] = body->distant_vbuf,
             .index_buffer      = body->distant_ibuf,
+            .views[VIEW_tex_albedo]    = body->distant_view_albedo,
+            .views[VIEW_tex_normal]    = body->distant_view_normal,
+            .samplers[SMP_smp_clamp]   = R.distant_lod_smp,
         });
-        distant_vs_params_t dvp = {
-            .u_sun_dir = { R.env.sun_dir.x, R.env.sun_dir.y, R.env.sun_dir.z },
-            .u_ambient = { R.env.ambient.x, R.env.ambient.y, R.env.ambient.z },
-        };
+        distant_vs_params_t dvp = { 0 };
         memcpy(dvp.u_mvp, mvp.m, sizeof(dvp.u_mvp));
         sg_apply_uniforms(UB_distant_vs_params, &SG_RANGE(dvp));
+        /* Fragment params: sun direction + ambient floor (re-used
+         * across other passes), camera world position for the
+         * water-specular view ray, plus the water-glint tuning. */
+        const water_config_t* WC = config_water();
+        distant_fs_params_t dfp = {
+            .u_sun_dir    = { R.env.sun_dir.x, R.env.sun_dir.y, R.env.sun_dir.z },
+            .u_ambient    = { R.env.ambient.x, R.env.ambient.y, R.env.ambient.z },
+            .u_camera_pos = { camera_world.x,  camera_world.y,  camera_world.z  },
+            .u_normal_strength            = 0.6f,
+            .u_water_specular_tint        = { WC->sun_tint.x,
+                                              WC->sun_tint.y,
+                                              WC->sun_tint.z },
+            .u_water_specular_intensity   = WC->specular_intensity,
+            .u_water_specular_power       = WC->specular_power,
+        };
+        sg_apply_uniforms(UB_distant_fs_params, &SG_RANGE(dfp));
         sg_draw(0, body->distant_index_count, 1);
         R.tris += (size_t)body->distant_index_count / 3;
     }
