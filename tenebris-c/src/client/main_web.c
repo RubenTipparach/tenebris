@@ -1202,12 +1202,21 @@ static void maybe_apply_mp_spawn(void) {
     G.player.pitch    = w->spawn_pitch;
     /* Force a fresh planet basis at the new position so the saved
      * yaw / pitch read as 'look this way relative to the surface'
-     * rather than 'apply on top of the previous body's basis'. The
-     * roll-slerp armed by the basis rebuild eases the camera into
-     * level over transition_timer_s. */
+     * rather than 'apply on top of the previous body's basis'.
+     *
+     * The MP spawn intentionally does NOT arm the roll slerp. The
+     * player is appearing at this position for the first time of
+     * the session - there's no previous orientation to "ease from",
+     * so the slerp just shows up as a visible spin-up rolling the
+     * camera level over a second. player_rebuild_basis below
+     * computes the surface-aligned basis directly, and the next
+     * planet-mode tick parallel-transports it forward at no further
+     * cost. (player_set_body / player_teleport_to elsewhere arm the
+     * slerp on body SWAPS, which IS an "ease from previous up to
+     * new up" scenario - that path is unchanged.) */
     G.player.basis_ready = false;
     G.player.last_tile   = -1;
-    G.player.transition_timer_s = config_lod()->roll_slerp_duration_s;
+    G.player.transition_timer_s = 0.0f;
     /* Bind the player to the saved body so the renderer's per-frame
      * "world for current body" lookup activates the right one on the
      * very next draw. Without this, a player who logged out near
