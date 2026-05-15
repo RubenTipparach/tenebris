@@ -185,6 +185,34 @@ static int smooth_corner_sample_n(const world_t* w,
     if (samples == 0) { *out_sky = 0.0f; *out_block = 0.0f; return 0; }
     float s = (float)sky_sum   / (float)(samples * max);
     float b = (float)block_sum / (float)(samples * 15);
+
+    /* Ambient-occlusion darkening at the corner. Counts SIDE-NEIGHBOUR
+     * tiles (nbr_a / nbr_b - NOT the meshed tile itself) that are
+     * solid at depth_at_air. The "self" tile is excluded because for
+     * caps it's always air (the cell above the block) and for sides
+     * it's always solid (the block we're meshing); neither tells us
+     * anything about how exposed the corner is to surrounding
+     * geometry. With the side-neighbour count we get a real measure
+     * of "how much corner is wedged into adjacent stone", which is
+     * the visual the user circled at the base of a column meeting
+     * flat ground - the cap corner touching the column should
+     * darken, the cap centre should stay bright, and the GPU
+     * interpolates linearly between them. Values cribbed from
+     * Notch's classic 3-step ladder. */
+    int ao_occluders = 0;
+    for (int i = 1; i < 3; ++i) {            /* skip tiles[0] = self */
+        int ti = tiles[i];
+        if (ti < 0) continue;
+        if (depth_at_air < 0 || depth_at_air >= WORLD_MAX_DEPTH) continue;
+        block_t nb = (block_t)w->blocks[(size_t)ti * WORLD_MAX_DEPTH + depth_at_air];
+        if (block_covers_face(nb)) ++ao_occluders;
+    }
+    float ao = 1.0f;
+    if      (ao_occluders == 1) ao = 0.80f;
+    else if (ao_occluders >= 2) ao = 0.55f;
+    s *= ao;
+    b *= ao;
+
     if (s > 1.0f) s = 1.0f;
     if (b > 1.0f) b = 1.0f;
     *out_sky   = s;
