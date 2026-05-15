@@ -14,6 +14,27 @@
  * lives on the grid (not the world) because torch state is owned
  * by the client and core/ must stay client-free. */
 
+/* Incremental rebuild state. The BFS runs in budgeted slices across
+ * frames so a relight after a big chunk edit doesn't stall the main
+ * loop. world_light_rebuild() is the single entry: it advances the
+ * state machine by `voxel_rebuild_ops_per_frame` BFS pops and returns.
+ * The next frame's call resumes from the saved phase + queue. */
+typedef enum {
+    LR_IDLE       = 0,
+    LR_SKY_SEED   = 1,    /* seeding sky=max down each column      */
+    LR_SKY_BFS    = 2,    /* draining the sky propagation queue    */
+    LR_BLOCK_SEED = 3,    /* seeding torch sources                  */
+    LR_BLOCK_BFS  = 4,    /* draining the block propagation queue   */
+} light_rebuild_phase_t;
+
+typedef struct {
+    uint32_t* buf;
+    int       head;     /* next to pop  */
+    int       tail;     /* next to push */
+    int       cap;
+    int       count;
+} queue_t;
+
 struct world_light_s {
     int        tile_count;
     int        depth;            /* always WORLD_MAX_DEPTH; cached     */
@@ -23,6 +44,14 @@ struct world_light_s {
     world_light_torch_t* torches;
     int                  torch_count;
     int                  torch_cap;
+
+    /* Rebuild state machine. Lives on the grid so the BFS queue
+     * persists across frames. */
+    light_rebuild_phase_t phase;
+    queue_t               q;
+    int                   seed_tile_cursor;   /* sky seed pass progress */
+    int                   torch_seed_cursor;
+    bool                  restart_pending;     /* edit during rebuild */
 };
 
 /* ----------------------------------------------------------------------- */
@@ -60,6 +89,7 @@ void world_light_destroy(world_light_t* l) {
     if (!l) return;
     free(l->nibbles);
     free(l->torches);
+    free(l->q.buf);
     free(l);
 }
 
@@ -73,10 +103,25 @@ void world_light_clone_into(world_light_t* dst, const world_light_t* src) {
     free(dst->torches);
     dst->torches = NULL;
     dst->torch_count = dst->torch_cap = 0;
+    /* Drop any in-progress rebuild state - the clone is a fresh
+     * snapshot, the consumer will dirty + rebuild from scratch. */
+    free(dst->q.buf);
+    dst->q.buf = NULL;
+    dst->q.cap = dst->q.head = dst->q.tail = dst->q.count = 0;
+    dst->phase = LR_IDLE;
+    dst->seed_tile_cursor = 0;
+    dst->torch_seed_cursor = 0;
+    dst->restart_pending = false;
 }
 
 void world_light_mark_dirty(world_light_t* l) {
-    if (l) l->dirty = true;
+    if (!l) return;
+    if (l->phase != LR_IDLE) {
+        /* Edit landed mid-rebuild. Let the current pass finish so we
+         * don't churn the queue, then schedule a fresh rebuild after. */
+        l->restart_pending = true;
+    }
+    l->dirty = true;
 }
 bool world_light_is_dirty(const world_light_t* l) {
     return l ? l->dirty : false;
@@ -87,31 +132,46 @@ void world_light_set_torches(world_light_t* l,
                              int count) {
     if (!l) return;
     if (count < 0) count = 0;
+
+    /* hex_mesher republishes the torch list every frame an edit was
+     * detected, but the list usually hasn't actually changed (place /
+     * remove are rare events). Diff against the cached copy and bail
+     * silently when identical so the incremental rebuild isn't
+     * reset on every frame the player is mid-mining a block. */
+    bool same = (count == l->torch_count);
+    if (same && count > 0 && (!sources || !l->torches)) same = false;
+    if (same) {
+        for (int i = 0; i < count; ++i) {
+            if (l->torches[i].tile      != sources[i].tile
+                || l->torches[i].depth     != sources[i].depth
+                || l->torches[i].intensity != sources[i].intensity) {
+                same = false;
+                break;
+            }
+        }
+    }
+    if (same) return;
+
     if (count > l->torch_cap) {
         free(l->torches);
         l->torch_cap = count > 16 ? count : 16;
         l->torches   = (world_light_torch_t*)calloc((size_t)l->torch_cap,
                                                     sizeof(world_light_torch_t));
     }
-    if (count > 0 && sources) {
+    if (count > 0 && sources && l->torches) {
         memcpy(l->torches, sources, (size_t)count * sizeof(world_light_torch_t));
     }
     l->torch_count = count;
-    l->dirty = true;
+    /* Goes through mark_dirty so a mid-rebuild edit triggers a
+     * post-completion restart instead of corrupting in-flight state. */
+    world_light_mark_dirty(l);
 }
 
 /* ----------------------------------------------------------------------- */
 /* Queue. Ring buffer of flat voxel indices. Grows on overflow.
- * Allocated per rebuild — keeps the rebuild self-contained and
- * pays a single malloc / free per relight. */
-
-typedef struct {
-    uint32_t* buf;
-    int       head;     /* next to pop  */
-    int       tail;     /* next to push */
-    int       cap;
-    int       count;
-} queue_t;
+ * Owned by world_light_s so the incremental BFS can resume across
+ * frames - the old per-rebuild malloc/free pair would discard work
+ * in progress every time a new edit re-marked the grid dirty. */
 
 static void queue_init(queue_t* q, int initial_cap) {
     q->cap   = initial_cap > 64 ? initial_cap : 64;
@@ -120,7 +180,8 @@ static void queue_init(queue_t* q, int initial_cap) {
     q->tail  = 0;
     q->count = 0;
 }
-static void queue_free(queue_t* q) { free(q->buf); q->buf = NULL; }
+/* queue_free retired - the queue buffer's lifetime is now tied to
+ * the owning world_light_t (freed in world_light_destroy directly). */
 
 static void queue_grow(queue_t* q) {
     int new_cap = q->cap * 2;
@@ -158,136 +219,200 @@ static uint32_t queue_pop(queue_t* q) {
 
 #define MAX_NEIGHBOURS 8
 
-static int voxel_neighbours(const world_t* w, int tile, int depth, int out[MAX_NEIGHBOURS]) {
+/* voxel_neighbours_with_cost (below) replaces the single-cost helper
+ * that used to live here. Vertical neighbours still cost 1; lateral
+ * cost is the config-driven voxel_sky_lateral_loss. */
+
+/* ----------------------------------------------------------------------- */
+/* Incremental BFS plumbing.
+ *
+ * sky_seed_step seeds one tile column at a time so the seed pass
+ * is also budgeted (a 160k-tile planet's seed alone touches several
+ * hundred k voxels). bfs_one_pop processes a single dequeue against
+ * either channel. The rebuild driver below interleaves seed work and
+ * BFS work within one frame budget so a fresh dirty starts producing
+ * visible light immediately instead of waiting for the seed to fully
+ * complete before any propagation kicks off. */
+
+/* Per-step attenuation table: lateral neighbours cost
+ * voxel_sky_lateral_loss, vertical neighbours always cost 1. The
+ * voxel_neighbours order is (lateral first, then depth+1, depth-1)
+ * so we know which is which by index. */
+static int voxel_neighbours_with_cost(const world_t* w, int tile, int depth,
+                                        int out[MAX_NEIGHBOURS],
+                                        int cost[MAX_NEIGHBOURS],
+                                        int lateral_cost) {
     int n = 0;
     const goldberg_tile_t* t = goldberg_tile(w->grid, tile);
     if (!t) return 0;
     for (int i = 0; i < t->num_neighbors; ++i) {
         int nb = t->neighbors[i];
         if (nb >= 0 && nb < w->tile_count) {
-            out[n++] = voxel_index(nb, depth);
+            out[n]  = voxel_index(nb, depth);
+            cost[n] = lateral_cost;
+            ++n;
         }
     }
-    if (depth + 1 < WORLD_MAX_DEPTH) out[n++] = voxel_index(tile, depth + 1);
-    if (depth - 1 >= 0)              out[n++] = voxel_index(tile, depth - 1);
+    /* Vertical neighbours stay at 1 per step so daylight shafts
+     * remain at full strength. */
+    if (depth + 1 < WORLD_MAX_DEPTH) { out[n] = voxel_index(tile, depth + 1); cost[n] = 1; ++n; }
+    if (depth - 1 >= 0)              { out[n] = voxel_index(tile, depth - 1); cost[n] = 1; ++n; }
     return n;
 }
 
-/* ----------------------------------------------------------------------- */
-/* Sky pass.
- *
- * Seeding: from each column's top, walk downward through any voxel
- * whose block does not cover its face (air, water, ice, wood, leaves);
- * seed sky = sky_max at each. The block_covers_face rule matches the
- * mesher's existing column-mode behaviour - a tree trunk over a tile
- * does not blot out the column below.
- *
- * Propagation: BFS with -1 per step in every direction. No special-
- * casing in the BFS itself: the "shafts of daylight" effect is already
- * carried by the seeding pass continuing straight down through air. */
-
-static void sky_seed_and_propagate(world_light_t* l, const world_t* w, int sky_max) {
-    if (sky_max <= 0) return;
-    queue_t q;
-    queue_init(&q, w->tile_count * 4);
-
-    /* Seed pass. */
-    for (int tile = 0; tile < w->tile_count; ++tile) {
-        const uint8_t* col = &w->blocks[tile * WORLD_MAX_DEPTH];
-        for (int d = WORLD_MAX_DEPTH - 1; d >= 0; --d) {
-            block_t b = (block_t)col[d];
-            if (block_covers_face(b)) break;
-            int idx = voxel_index(tile, d);
-            set_sky(l, idx, (uint8_t)sky_max);
-            queue_push(&q, (uint32_t)idx);
-        }
+/* Seed one tile column for the sky pass. Walks from the top down,
+ * stops at the first face-covering block. Returns the number of
+ * voxels touched (so the budget accounting reflects real work). */
+static int sky_seed_one_column(world_light_t* l, const world_t* w,
+                                  int tile, int sky_max) {
+    if (tile < 0 || tile >= w->tile_count) return 0;
+    const uint8_t* col = &w->blocks[(size_t)tile * WORLD_MAX_DEPTH];
+    int touched = 0;
+    for (int d = WORLD_MAX_DEPTH - 1; d >= 0; --d) {
+        block_t b = (block_t)col[d];
+        if (block_covers_face(b)) break;
+        int idx = voxel_index(tile, d);
+        set_sky(l, idx, (uint8_t)sky_max);
+        queue_push(&l->q, (uint32_t)idx);
+        ++touched;
     }
-
-    /* BFS. */
-    int nbrs[MAX_NEIGHBOURS];
-    while (q.count > 0) {
-        uint32_t idx = queue_pop(&q);
-        int tile  = (int)idx / WORLD_MAX_DEPTH;
-        int depth = (int)idx % WORLD_MAX_DEPTH;
-        uint8_t cur = get_sky(l, (int)idx);
-        if (cur <= 1) continue;
-        uint8_t pass = (uint8_t)(cur - 1);
-
-        int count = voxel_neighbours(w, tile, depth, nbrs);
-        for (int k = 0; k < count; ++k) {
-            int n_idx = nbrs[k];
-            int n_tile  = n_idx / WORLD_MAX_DEPTH;
-            int n_depth = n_idx % WORLD_MAX_DEPTH;
-            block_t nb = (block_t)w->blocks[n_tile * WORLD_MAX_DEPTH + n_depth];
-            if (block_covers_face(nb)) continue;
-            if (get_sky(l, n_idx) >= pass) continue;
-            set_sky(l, n_idx, pass);
-            queue_push(&q, (uint32_t)n_idx);
-        }
-    }
-
-    queue_free(&q);
+    return touched;
 }
 
-/* ----------------------------------------------------------------------- */
-/* Block pass. Each torch source seeds its anchor voxel; standard BFS
- * with -1 per step through non-face-covering blocks. */
+/* Pop one entry off the queue and propagate to its neighbours. Used
+ * for both the sky and block passes; the channel is selected by
+ * the get/set callbacks. Returns the number of neighbour pushes
+ * (used purely for budget accounting; one pop always costs the
+ * lateral + 2 vertical neighbour visits). */
+typedef uint8_t (*get_fn_t)(const world_light_t*, int);
+typedef void    (*set_fn_t)(world_light_t*, int, uint8_t);
 
-static void block_seed_and_propagate(world_light_t* l, const world_t* w) {
-    if (l->torch_count <= 0) return;
-    queue_t q;
-    queue_init(&q, l->torch_count * 8 + 64);
-
-    for (int i = 0; i < l->torch_count; ++i) {
-        const world_light_torch_t* s = &l->torches[i];
-        if (s->tile  < 0 || s->tile  >= w->tile_count)  continue;
-        if (s->depth < 0 || s->depth >= WORLD_MAX_DEPTH) continue;
-        if (s->intensity == 0) continue;
-        int idx = voxel_index(s->tile, s->depth);
-        uint8_t cur = get_block(l, idx);
-        uint8_t v   = s->intensity > 15 ? 15 : s->intensity;
-        if (v > cur) {
-            set_block(l, idx, v);
-            queue_push(&q, (uint32_t)idx);
-        }
-    }
+static void bfs_one_pop(world_light_t* l, const world_t* w,
+                          get_fn_t getf, set_fn_t setf,
+                          int lateral_cost) {
+    if (l->q.count == 0) return;
+    uint32_t idx = queue_pop(&l->q);
+    int tile  = (int)idx / WORLD_MAX_DEPTH;
+    int depth = (int)idx % WORLD_MAX_DEPTH;
+    uint8_t cur = getf(l, (int)idx);
+    if (cur <= 1) return;
 
     int nbrs[MAX_NEIGHBOURS];
-    while (q.count > 0) {
-        uint32_t idx = queue_pop(&q);
-        int tile  = (int)idx / WORLD_MAX_DEPTH;
-        int depth = (int)idx % WORLD_MAX_DEPTH;
-        uint8_t cur = get_block(l, (int)idx);
-        if (cur <= 1) continue;
-        uint8_t pass = (uint8_t)(cur - 1);
-
-        int count = voxel_neighbours(w, tile, depth, nbrs);
-        for (int k = 0; k < count; ++k) {
-            int n_idx = nbrs[k];
-            int n_tile  = n_idx / WORLD_MAX_DEPTH;
-            int n_depth = n_idx % WORLD_MAX_DEPTH;
-            block_t nb = (block_t)w->blocks[n_tile * WORLD_MAX_DEPTH + n_depth];
-            if (block_covers_face(nb)) continue;
-            if (get_block(l, n_idx) >= pass) continue;
-            set_block(l, n_idx, pass);
-            queue_push(&q, (uint32_t)n_idx);
-        }
+    int cost[MAX_NEIGHBOURS];
+    int count = voxel_neighbours_with_cost(w, tile, depth, nbrs, cost, lateral_cost);
+    for (int k = 0; k < count; ++k) {
+        int n_idx = nbrs[k];
+        int n_tile  = n_idx / WORLD_MAX_DEPTH;
+        int n_depth = n_idx % WORLD_MAX_DEPTH;
+        block_t nb = (block_t)w->blocks[(size_t)n_tile * WORLD_MAX_DEPTH + n_depth];
+        if (block_covers_face(nb)) continue;
+        int after = (int)cur - cost[k];
+        if (after <= 0) continue;
+        if (getf(l, n_idx) >= (uint8_t)after) continue;
+        setf(l, n_idx, (uint8_t)after);
+        queue_push(&l->q, (uint32_t)n_idx);
     }
-
-    queue_free(&q);
 }
+
+/* Wrappers so bfs_one_pop's function-pointer signatures line up. */
+static uint8_t get_sky_w  (const world_light_t* l, int idx) { return get_sky  (l, idx); }
+static uint8_t get_block_w(const world_light_t* l, int idx) { return get_block(l, idx); }
+static void    set_sky_w  (world_light_t* l, int idx, uint8_t v) { set_sky  (l, idx, v); }
+static void    set_block_w(world_light_t* l, int idx, uint8_t v) { set_block(l, idx, v); }
 
 /* ----------------------------------------------------------------------- */
 
 void world_light_rebuild(world_light_t* l, const world_t* w) {
     if (!l || !w) return;
-    memset(l->nibbles, 0, (size_t)(l->tile_count * l->depth));
+    if (!l->dirty && l->phase == LR_IDLE) return;
 
     const lighting_config_t* cfg = config_lighting();
-    sky_seed_and_propagate(l, w, cfg->voxel_sky_max);
-    block_seed_and_propagate(l, w);
+    int budget = cfg->voxel_rebuild_ops_per_frame;
+    if (budget < 1000) budget = 1000;
+    int lateral_cost = cfg->voxel_sky_lateral_loss;
+    if (lateral_cost < 1) lateral_cost = 1;
 
-    l->dirty = false;
+    /* Fresh dirty + no in-progress rebuild -> start a new one. The
+     * memset is amortised across the same frame budget so a huge
+     * world doesn't tank the frame just on the clear. */
+    if (l->phase == LR_IDLE) {
+        memset(l->nibbles, 0, (size_t)(l->tile_count * l->depth));
+        if (!l->q.buf) queue_init(&l->q, l->tile_count * 4);
+        else { l->q.head = l->q.tail = l->q.count = 0; }
+        l->seed_tile_cursor  = 0;
+        l->torch_seed_cursor = 0;
+        l->phase = LR_SKY_SEED;
+        l->restart_pending = false;
+    }
+
+    while (budget > 0) {
+        if (l->phase == LR_SKY_SEED) {
+            if (cfg->voxel_sky_max <= 0
+                || l->seed_tile_cursor >= w->tile_count) {
+                l->phase = LR_SKY_BFS;
+                continue;
+            }
+            int touched = sky_seed_one_column(l, w, l->seed_tile_cursor,
+                                                 cfg->voxel_sky_max);
+            ++l->seed_tile_cursor;
+            /* One column tops out at WORLD_MAX_DEPTH=128 touches so
+             * even worst-case the loop stays bounded. */
+            budget -= (touched > 0 ? touched : 1);
+        } else if (l->phase == LR_SKY_BFS) {
+            if (l->q.count == 0) {
+                l->phase = LR_BLOCK_SEED;
+                continue;
+            }
+            bfs_one_pop(l, w, get_sky_w, set_sky_w, lateral_cost);
+            --budget;
+        } else if (l->phase == LR_BLOCK_SEED) {
+            if (l->torch_count <= 0
+                || l->torch_seed_cursor >= l->torch_count) {
+                l->phase = LR_BLOCK_BFS;
+                continue;
+            }
+            const world_light_torch_t* s = &l->torches[l->torch_seed_cursor];
+            ++l->torch_seed_cursor;
+            if (s->tile < 0 || s->tile >= w->tile_count) continue;
+            if (s->depth < 0 || s->depth >= WORLD_MAX_DEPTH) continue;
+            if (s->intensity == 0) continue;
+            int idx = voxel_index(s->tile, s->depth);
+            uint8_t cur = get_block(l, idx);
+            uint8_t v   = s->intensity > 15 ? 15 : s->intensity;
+            if (v > cur) {
+                set_block(l, idx, v);
+                queue_push(&l->q, (uint32_t)idx);
+            }
+            --budget;
+        } else if (l->phase == LR_BLOCK_BFS) {
+            if (l->q.count == 0) {
+                /* Done. If an edit landed mid-rebuild we kick another
+                 * pass next frame; otherwise we clear dirty here. */
+                l->phase = LR_IDLE;
+                if (l->restart_pending) {
+                    l->restart_pending = false;
+                    l->dirty           = true;
+                } else {
+                    l->dirty = false;
+                }
+                return;
+            }
+            /* Block-light lateral attenuation matches sky: torches in
+             * a deep room shouldn't leak through a single voxel of
+             * stone in a way that beats their per-step cost. */
+            bfs_one_pop(l, w, get_block_w, set_block_w, lateral_cost);
+            --budget;
+        } else {
+            /* Unreachable - paranoia recover. */
+            l->phase = LR_IDLE;
+            l->dirty = false;
+            return;
+        }
+    }
+    /* Budget ran out mid-pass. Leave the grid + queue in place; the
+     * next call to world_light_rebuild picks up where we stopped. The
+     * mesher samples the partially-built grid in the meantime, which
+     * shows up as light "ripple in" rather than a frame stall. */
 }
 
 /* ----------------------------------------------------------------------- */

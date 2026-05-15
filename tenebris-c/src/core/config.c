@@ -603,6 +603,14 @@ static lighting_config_t S_LIGHTING = {
     .engine              = 0,    /* "column" — legacy path, no behaviour change */
     .voxel_sky_max       = 15,
     .voxel_torch_emission= 14,
+    /* Default to a steeper lateral falloff than vertical so cavities
+     * actually go dark instead of leaking sky in laterally at 1
+     * step / voxel. The yaml overrides this. */
+    .voxel_sky_lateral_loss     = 3,
+    /* 50 000 BFS pops per frame budgets the rebuild around 1-2 ms on
+     * the wasm target; smaller values stretch the rebuild over more
+     * frames at the cost of stale lighting for longer. */
+    .voxel_rebuild_ops_per_frame = 50000,
 };
 
 const lighting_config_t* config_lighting(void) { return &S_LIGHTING; }
@@ -676,6 +684,17 @@ int config_load_lighting(const char* path) {
                         if (n < 0)  n = 0;
                         if (n > 15) n = 15;
                         S_LIGHTING.voxel_torch_emission = n;
+                    } else if (strcmp(key, "voxel_sky_lateral_loss") == 0) {
+                        int n = (int)strtol(val, NULL, 10);
+                        if (n < 1)  n = 1;
+                        if (n > 15) n = 15;
+                        S_LIGHTING.voxel_sky_lateral_loss = n;
+                    } else if (strcmp(key, "voxel_rebuild_ops_per_frame") == 0) {
+                        int n = (int)strtol(val, NULL, 10);
+                        /* Tiny budgets (< 1000) make the rebuild crawl;
+                         * negative or zero would deadlock. Floor at 1000. */
+                        if (n < 1000) n = 1000;
+                        S_LIGHTING.voxel_rebuild_ops_per_frame = n;
                     } else {
                         printf("[config] %s:%d: unknown key '%s'\n",
                                path, line_no, key);
