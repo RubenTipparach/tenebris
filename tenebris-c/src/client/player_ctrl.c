@@ -639,11 +639,12 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
     /* Fail-safe: did the player fall through the world? If their
      * feet radius is way below the body surface (collision-solver
      * bug, NaN, sink-through that escaped the ground snap), snap
-     * them back to the body's spawn point so they aren't lost
-     * forever. Only checks when bound to a body (in space the
-     * notion doesn't apply - the player can legitimately be at
-     * any distance from any body). */
-    if (p->body && !p->is_in_space) {
+     * them back to the surface ABOVE wherever they fell from - we
+     * preserve their tangential direction and just fix the radial
+     * height. NOT a teleport to the body's prime-meridian spawn,
+     * which would chuck the player across the planet from where
+     * they were playing. Only checks when bound to a body. */
+    if (p->body && !p->is_in_space && w && w->body == p->body) {
         const float fall_frac = L->respawn_fall_radius_frac;
         if (fall_frac > 0.0f) {
             dvec3_t local = dvec3_sub(p->position,
@@ -651,16 +652,37 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
             double r_now = dvec3_length(local);
             double threshold = (double)p->body->radius_m * (double)fall_frac;
             if (r_now < threshold) {
+                /* Use the player's current tangential direction so
+                 * they land at the surface RIGHT ABOVE where they
+                 * fell from. If they ended up at exactly the body
+                 * centre (r=0) the direction is degenerate; fall
+                 * back to (1,0,0) so we have something defined. */
+                dvec3_t unit_dir = (r_now > 1e-6)
+                    ? dvec3_scale(local, 1.0 / r_now)
+                    : dvec3_make(1, 0, 0);
+                dvec3_t safe_local = world_safe_spawn_local(w, unit_dir, 2.0);
+                dvec3_t center = dvec3_make(p->body->pos_x,
+                                            p->body->pos_y,
+                                            p->body->pos_z);
                 fprintf(stderr,
                         "[player] WARN: fell through world (r=%.3f < %.3f on "
-                        "body=%s, body_radius=%.1f); respawning at body spawn\n",
+                        "body=%s, body_radius=%.1f); snapping to nearest-floor "
+                        "surface at this direction (new_r=%.3f)\n",
                         r_now, threshold, p->body->name,
-                        (double)p->body->radius_m);
+                        (double)p->body->radius_m,
+                        dvec3_length(safe_local));
                 fflush(stderr);
-                player_teleport_to(p, p->body);
-                /* Skip the rest of this frame's update - teleport
-                 * already armed the slerp, cleared velocity, and
-                 * reset basis state. Next frame picks up from spawn. */
+                p->position = dvec3_add(center, safe_local);
+                p->velocity = dvec3_make(0, 0, 0);
+                p->grounded = false;
+                /* Force a fresh basis from the new position - the
+                 * old basis was for some other location entirely
+                 * (the body centre or wherever they fell through). */
+                p->basis_ready = false;
+                p->last_tile = -1;
+                p->transition_timer_s = L->roll_slerp_duration_s;
+                p->yaw = 0.0f;
+                p->pitch = 0.0f;
                 jerk_log(p, &before, w, dt);
                 return;
             }

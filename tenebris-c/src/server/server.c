@@ -1046,15 +1046,17 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
             }
             /* Drop out-of-order packets — keep only the freshest pose. */
             if (cl->has_state && st.client_tick <= cl->last_client_tick) break;
-            /* Sanity-check the reported position against the body
-             * the player claims to be on. A position close to the
-             * body centre means the player has fallen through the
-             * world; if we accepted + persisted it the player would
-             * re-spawn into the same broken state on every reconnect.
-             * Reject the update (keep the previous good pose) and
-             * log so the client-side root cause is fixable. The
-             * threshold mirrors the client's respawn safety net. */
-            if (cl->has_state) {
+            /* Sub-surface fall-through check. A position close to
+             * the body centre means the client's physics dropped
+             * them through the world; if we just persisted it the
+             * player would re-spawn into the same broken state on
+             * every reconnect. Snap the pose to the SURFACE ABOVE
+             * the player's current tangential direction (the
+             * "nearest floor" rescue) so the corrected pose lands
+             * back where they fell from, not on the prime meridian.
+             * The threshold mirrors the client's respawn safety net
+             * via the shared config_lod() value. */
+            {
                 const body_config_t* body = planet_get((body_id_t)st.body_id);
                 if (body) {
                     double dx = st.pos_x - body->pos_x;
@@ -1064,13 +1066,31 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
                     double threshold = (double)body->radius_m
                                     * (double)config_lod()->respawn_fall_radius_frac;
                     if (threshold > 0.0 && r < threshold) {
-                        fprintf(stderr,
-                                "[server] WARN: rejecting PLAYER_STATE from "
-                                "player_id=%u body=%u with sub-surface pose "
-                                "(r=%.2f < %.2f); keeping previous good pose\n",
-                                cl->player_id, st.body_id, r, threshold);
-                        fflush(stderr);
-                        break;
+                        world_t* corr_w = client_world_for_body(s, cl, st.body_id);
+                        if (!corr_w && cl->room_idx >= 0) {
+                            corr_w = room_ensure_world_for_body(
+                                s, &s->rooms[cl->room_idx], st.body_id);
+                        }
+                        if (corr_w) {
+                            dvec3_t unit_dir = (r > 1e-6)
+                                ? (dvec3_t){ dx / r, dy / r, dz / r }
+                                : (dvec3_t){ 1.0, 0.0, 0.0 };
+                            dvec3_t safe_local = world_safe_spawn_local(
+                                corr_w, unit_dir, 2.0);
+                            double new_r = sqrt(safe_local.x * safe_local.x
+                                              + safe_local.y * safe_local.y
+                                              + safe_local.z * safe_local.z);
+                            fprintf(stderr,
+                                    "[server] WARN: PLAYER_STATE from player_id=%u "
+                                    "body=%u sub-surface (r=%.2f < %.2f); "
+                                    "snapping pose to nearest-floor surface "
+                                    "(new_r=%.2f)\n",
+                                    cl->player_id, st.body_id, r, threshold, new_r);
+                            fflush(stderr);
+                            st.pos_x = body->pos_x + safe_local.x;
+                            st.pos_y = body->pos_y + safe_local.y;
+                            st.pos_z = body->pos_z + safe_local.z;
+                        }
                     }
                 }
             }
