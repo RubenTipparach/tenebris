@@ -2096,28 +2096,18 @@ static void frame(void) {
      * they get the depth-sorted composite + water refraction for free. */
     remote_players_draw(view, proj);
 
-    /* Target highlight: wireframe outline around the block the player
-     * is aiming at + a fainter outline on the cell where a placement
-     * would land. Drawn into the world pass so depth-test naturally
-     * occludes the back edges. */
+    /* Target highlight: outline only the SINGLE FACE of the targeted
+     * block that the reticle is aimed at (the face shared with the
+     * placement candidate cell). Drawn into the world pass so
+     * depth-test naturally hides the outline through other geometry. */
     if (G.interact.has_target && !G.interact.is_torch_target
         && !menu_pause_active()) {
-        /* White outline on the targeted block. */
-        renderer_draw_block_outline(view, proj, G.world,
-                                      G.interact.hit_tile, G.interact.hit_depth,
-                                      1.00f, 1.00f, 1.00f, 0.95f);
-        /* Cyan outline at the placement candidate (one cell out
-         * from the hit). Skipped when place_depth would overlap
-         * the hit block itself (e.g. looking up at a ceiling
-         * gives place_depth == hit_depth + 1; that's a different
-         * cell so still drawn). */
-        if (G.interact.place_tile != G.interact.hit_tile
-            || G.interact.place_depth != G.interact.hit_depth) {
-            renderer_draw_block_outline(view, proj, G.world,
-                                          G.interact.place_tile,
-                                          G.interact.place_depth,
-                                          0.40f, 0.85f, 1.00f, 0.60f);
-        }
+        renderer_draw_face_outline(view, proj, G.world,
+                                     G.interact.hit_tile,
+                                     G.interact.hit_depth,
+                                     G.interact.place_tile,
+                                     G.interact.place_depth,
+                                     1.00f, 1.00f, 1.00f, 0.95f);
     }
 
     /* Hand off to the swapchain pass — blits the offscreen colour

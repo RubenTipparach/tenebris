@@ -148,15 +148,19 @@ void renderer_draw_moons(mat4_t view, mat4_t proj, vec3_t camera_world);
  * body-local space and drawn directly. */
 void renderer_draw_torches(mat4_t view, mat4_t proj);
 
-/* Draw a wireframe outline of one hex-prism block. Used by the
- * interact HUD to highlight the block the player is targeting
- * (break candidate) and the block that would land next to it
- * (place candidate). Drawn into the same pass as the world so
- * depth-test naturally hides the back edges. */
-void renderer_draw_block_outline(mat4_t view, mat4_t proj,
-                                   const world_t* world,
-                                   int tile_idx, int depth,
-                                   float r, float g, float b, float a);
+/* Draw a wireframe outline of the SINGLE face of (tile, depth)
+ * that's shared with (nbr_tile, nbr_depth). The neighbour pair
+ * tells us which face the raycast hit:
+ *   nbr_depth = depth + 1, same tile  -> top cap of (tile, depth)
+ *   nbr_depth = depth - 1, same tile  -> bottom cap
+ *   nbr_tile != tile, same depth      -> side face on the tile-edge
+ *                                        between them
+ * No-op for any combination that isn't a valid neighbour. */
+void renderer_draw_face_outline(mat4_t view, mat4_t proj,
+                                  const world_t* world,
+                                  int tile_idx, int depth,
+                                  int nbr_tile, int nbr_depth,
+                                  float r, float g, float b, float a);
 
 int  renderer_moon_count(void);
 void renderer_end_frame(void);

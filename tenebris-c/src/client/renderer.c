@@ -2470,10 +2470,11 @@ static void ensure_outline_pip(void) {
     });
 }
 
-void renderer_draw_block_outline(mat4_t view, mat4_t proj,
-                                   const world_t* world,
-                                   int tile_idx, int depth,
-                                   float r, float g, float b, float a) {
+void renderer_draw_face_outline(mat4_t view, mat4_t proj,
+                                  const world_t* world,
+                                  int tile_idx, int depth,
+                                  int nbr_tile, int nbr_depth,
+                                  float r, float g, float b, float a) {
     if (!world || !world->body || !world->grid) return;
     if (tile_idx < 0 || tile_idx >= world->tile_count) return;
     if (depth < 0 || depth >= WORLD_MAX_DEPTH) return;
@@ -2482,8 +2483,21 @@ void renderer_draw_block_outline(mat4_t view, mat4_t proj,
     const int n = t->num_verts;
     if (n <= 0) return;
 
-    double r_bot = world_depth_to_radius_m(world, depth);
-    double r_top = world_depth_to_radius_m(world, depth + 1);
+    /* Classify which face. Top/bottom caps are aligned with depth+1 /
+     * depth-1 on the same tile; side faces are same-depth, neighbour-
+     * tile pairs found via the goldberg edge_neighbours table. */
+    enum { FACE_NONE, FACE_TOP_CAP, FACE_BOTTOM_CAP, FACE_SIDE } kind = FACE_NONE;
+    int side_edge_k = -1;
+    if (nbr_tile == tile_idx) {
+        if (nbr_depth == depth + 1) kind = FACE_TOP_CAP;
+        else if (nbr_depth == depth - 1) kind = FACE_BOTTOM_CAP;
+    } else if (nbr_depth == depth) {
+        for (int k = 0; k < n; ++k) {
+            if (t->edge_neighbours[k] == nbr_tile) { side_edge_k = k; break; }
+        }
+        if (side_edge_k >= 0) kind = FACE_SIDE;
+    }
+    if (kind == FACE_NONE) return;
 
     ensure_outline_pip();
     sgl_defaults();
@@ -2491,7 +2505,6 @@ void renderer_draw_block_outline(mat4_t view, mat4_t proj,
     sgl_load_matrix(proj.m);
     sgl_matrix_mode_modelview();
     sgl_load_matrix(view.m);
-    /* Body-local -> world: just a translation by the body's centre. */
     sgl_translate((float)world->body->pos_x,
                   (float)world->body->pos_y,
                   (float)world->body->pos_z);
@@ -2499,23 +2512,44 @@ void renderer_draw_block_outline(mat4_t view, mat4_t proj,
 
     sgl_begin_lines();
     sgl_c4f(r, g, b, a);
-    for (int k = 0; k < n; ++k) {
-        int next = (k + 1) % n;
-        /* Each hex-prism corner sits along the tile's vertex direction
-         * scaled to the inner / outer ring radius. */
-        dvec3_t inner_a = dvec3_scale(t->verts[k],    r_bot);
-        dvec3_t inner_b = dvec3_scale(t->verts[next], r_bot);
-        dvec3_t outer_a = dvec3_scale(t->verts[k],    r_top);
-        dvec3_t outer_b = dvec3_scale(t->verts[next], r_top);
-        /* Bottom ring edge */
+
+    if (kind == FACE_TOP_CAP || kind == FACE_BOTTOM_CAP) {
+        /* Cap perimeter at the matching radius. Top cap sits at
+         * radius(depth+1) (top of the block). Bottom cap at
+         * radius(depth). */
+        double ring_r = (kind == FACE_TOP_CAP)
+                          ? world_depth_to_radius_m(world, depth + 1)
+                          : world_depth_to_radius_m(world, depth);
+        for (int k = 0; k < n; ++k) {
+            int next = (k + 1) % n;
+            dvec3_t a_v = dvec3_scale(t->verts[k],    ring_r);
+            dvec3_t b_v = dvec3_scale(t->verts[next], ring_r);
+            sgl_v3f((float)a_v.x, (float)a_v.y, (float)a_v.z);
+            sgl_v3f((float)b_v.x, (float)b_v.y, (float)b_v.z);
+        }
+    } else {  /* FACE_SIDE */
+        /* Side quad: corners verts[k] and verts[k+1] at the two
+         * radii. Trace 4 edges around the rectangle. */
+        int k_a = side_edge_k;
+        int k_b = (k_a + 1) % n;
+        double r_bot = world_depth_to_radius_m(world, depth);
+        double r_top = world_depth_to_radius_m(world, depth + 1);
+        dvec3_t inner_a = dvec3_scale(t->verts[k_a], r_bot);
+        dvec3_t inner_b = dvec3_scale(t->verts[k_b], r_bot);
+        dvec3_t outer_a = dvec3_scale(t->verts[k_a], r_top);
+        dvec3_t outer_b = dvec3_scale(t->verts[k_b], r_top);
+        /* bottom edge */
         sgl_v3f((float)inner_a.x, (float)inner_a.y, (float)inner_a.z);
         sgl_v3f((float)inner_b.x, (float)inner_b.y, (float)inner_b.z);
-        /* Top ring edge */
-        sgl_v3f((float)outer_a.x, (float)outer_a.y, (float)outer_a.z);
+        /* right edge */
+        sgl_v3f((float)inner_b.x, (float)inner_b.y, (float)inner_b.z);
         sgl_v3f((float)outer_b.x, (float)outer_b.y, (float)outer_b.z);
-        /* Vertical edge connecting corresponding corners */
-        sgl_v3f((float)inner_a.x, (float)inner_a.y, (float)inner_a.z);
+        /* top edge */
+        sgl_v3f((float)outer_b.x, (float)outer_b.y, (float)outer_b.z);
         sgl_v3f((float)outer_a.x, (float)outer_a.y, (float)outer_a.z);
+        /* left edge */
+        sgl_v3f((float)outer_a.x, (float)outer_a.y, (float)outer_a.z);
+        sgl_v3f((float)inner_a.x, (float)inner_a.y, (float)inner_a.z);
     }
     sgl_end();
 }
