@@ -45,21 +45,31 @@ static void room_alloc_worlds(server_t* s, server_room_t* room) {
      * (~370 MB of blocks + goldberg grids), which OOM-killed the
      * 1 GB Fly machine on the second simultaneous room. */
     room->world_count = 0;
+    int bodies_with_edits = 0;
+    int total_tiles_loaded = 0;
     for (int i = 0; i < s->world_count && i < SERVER_MAX_BODIES; ++i) {
         const world_t* baseline = s->worlds[i];
         if (!baseline || !baseline->body) continue;
         const uint32_t body_id = (uint32_t)baseline->body->id;
         if (!saves_room_body_has_edits(room->code, s->cfg.seed, body_id))
             continue;
+        ++bodies_with_edits;
         world_t* w = world_clone(baseline);
         if (!w) {
             fprintf(stderr, "[server] room '%s': clone of body %u failed\n",
                     room->code, body_id);
             continue;
         }
-        saves_load_world(w, room->code, s->cfg.seed);
+        int loaded = saves_load_world(w, room->code, s->cfg.seed);
+        total_tiles_loaded += loaded;
         room->worlds[room->world_count++] = w;
     }
+    printf("[server] room '%s' load: %d body(ies) had on-disk edits, "
+           "restored %d tile column(s) total (seed=%llu)\n",
+           room->code[0] ? room->code : "(public)",
+           bodies_with_edits, total_tiles_loaded,
+           (unsigned long long)s->cfg.seed);
+    fflush(stdout);
 }
 
 /* Look up a room's world for a body, cloning the shared baseline

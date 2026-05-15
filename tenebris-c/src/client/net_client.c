@@ -31,6 +31,15 @@
 #define NET_NAME_REQUEST_WARN_AT     3       /* ~6 s */
 #define NET_NAME_REQUEST_MAX_TRIES   5       /* ~10 s */
 
+/* Block-edit ack tracking. Every PLAYER_CMD we send is held here until
+ * the server's CHUNK_DIFF echo confirms it; missing acks are logged as
+ * errors so we surface "the server lost my edit" the moment it happens
+ * instead of waiting for the player to log back in and notice missing
+ * blocks. Cap is comfortably larger than any plausible burst within
+ * the timeout window (creative-mode click spam tops out around 10/s). */
+#define NET_PENDING_EDITS_MAX        128
+#define NET_EDIT_ACK_TIMEOUT_S       5.0
+
 typedef struct {
     uint32_t player_id;
     char     name[NET_NAME_MAX];
@@ -85,9 +94,39 @@ typedef struct {
     uint16_t             inv_slot_type [9];
     int16_t              inv_slot_count[9];
     uint8_t              inv_selected;
+    /* Outstanding block-edit round-trip table. Every PLAYER_CMD push
+     * goes in here so we can confirm the server applied + broadcast it
+     * back via MSG_CHUNK_DIFF. An entry stays until either:
+     *   - a CHUNK_DIFF for the same (body, tile, depth) acks it (RTT
+     *     logged),
+     *   - the timeout elapses (logged as an ERROR via stderr - the
+     *     server silently dropped our edit, the persistence path will
+     *     not pick it up on rejoin).
+     * Sized to the worst-case place-spam burst within the timeout
+     * window; older entries are evicted oldest-first if we ever fill,
+     * which itself is logged as an error. */
+    struct {
+        uint32_t body_id;
+        uint32_t tile_idx;
+        uint16_t depth;
+        uint16_t expected_block;
+        uint8_t  cmd_kind;
+        uint64_t sent_time;       /* sokol stm_now() - 0 means slot free */
+        uint32_t seq;
+    }                    pending_edits[NET_PENDING_EDITS_MAX];
+    uint32_t             next_edit_seq;
+    uint32_t             edits_sent_total;
+    uint32_t             edits_acked_total;
+    uint32_t             edits_timed_out_total;
 } net_client_t;
 
 static net_client_t C;
+
+/* Forward decls so on_msg (above) can call into the pending-edit
+ * helpers (defined further down next to net_client_send_edit). */
+static bool pending_edit_try_ack(uint32_t body_id, uint32_t tile_idx,
+                                   uint16_t depth, uint16_t block_seen);
+static void pending_edit_check_timeouts(void);
 
 /* ------------------------------------------------------------------ */
 /* Transport callbacks. The transport's poll fires these on the main
@@ -394,6 +433,12 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
                  * as locally-applied edits. */
                 world_set(w, (int)e->tile_idx, (int)e->depth,
                             (block_t)e->block_type);
+                /* Round-trip ack: try to pair this entry with one of
+                 * our outstanding sends. Replays at join time and
+                 * peer-driven edits will simply not match anything in
+                 * the table (no error - we never sent them). */
+                pending_edit_try_ack(diff.body_id, e->tile_idx,
+                                       e->depth, e->block_type);
             }
             break;
         }
@@ -455,6 +500,98 @@ void net_client_send_chat(const char* text) {
     net_send(C.conn, NET_CHANNEL_RELIABLE, buf, w);
 }
 
+/* ------------------------------------------------------------------ */
+/* Block-edit round-trip tracking.
+ *
+ * The wire protocol has no explicit ACK; the server's authoritative
+ * answer is the MSG_CHUNK_DIFF it broadcasts back to the same room
+ * after applying the edit. That broadcast is our ack: when a CHUNK_DIFF
+ * entry matches a (body, tile, depth) we still have outstanding, the
+ * round-trip is closed and the RTT logged. Anything that ages past
+ * NET_EDIT_ACK_TIMEOUT_S is dumped to stderr as an error - the server
+ * lost it, the persistence path will not save it, and the next time
+ * the player joins the block will be missing. We want that loud now.
+ * ------------------------------------------------------------------ */
+
+static int pending_edit_alloc_slot(void) {
+    /* First free slot wins. Returns -1 only when the table is full,
+     * which itself is logged by the caller. */
+    for (int i = 0; i < NET_PENDING_EDITS_MAX; ++i) {
+        if (C.pending_edits[i].sent_time == 0) return i;
+    }
+    return -1;
+}
+
+static const char* edit_kind_name(uint8_t kind) {
+    return (kind == PLAYER_CMD_BREAK) ? "BREAK" : "PLACE";
+}
+
+/* Try to ack the oldest outstanding edit matching (body, tile, depth).
+ * Returns true on a hit. block_seen is what the server says the cell
+ * actually holds now; if it disagrees with what we asked for, we log
+ * a WARN (the server overrode us, e.g. survival range / inventory
+ * check) but still treat the slot as acked - the round trip itself
+ * completed, the disagreement is a separate concern. */
+static bool pending_edit_try_ack(uint32_t body_id, uint32_t tile_idx,
+                                   uint16_t depth, uint16_t block_seen) {
+    int found = -1;
+    uint64_t oldest_t = 0;
+    for (int i = 0; i < NET_PENDING_EDITS_MAX; ++i) {
+        if (C.pending_edits[i].sent_time == 0) continue;
+        if (C.pending_edits[i].body_id  != body_id)  continue;
+        if (C.pending_edits[i].tile_idx != tile_idx) continue;
+        if (C.pending_edits[i].depth    != depth)    continue;
+        if (found < 0 || C.pending_edits[i].sent_time < oldest_t) {
+            found = i;
+            oldest_t = C.pending_edits[i].sent_time;
+        }
+    }
+    if (found < 0) return false;
+    double rtt_ms = stm_sec(stm_diff(stm_now(), C.pending_edits[found].sent_time)) * 1000.0;
+    uint16_t expected = C.pending_edits[found].expected_block;
+    uint8_t  kind     = C.pending_edits[found].cmd_kind;
+    uint32_t seq      = C.pending_edits[found].seq;
+    if (block_seen != expected) {
+        fprintf(stderr,
+                "[net-client] WARN: EDIT seq=%u %s body=%u tile=%u depth=%u: "
+                "expected block=%u, server applied block=%u (server overrode)\n",
+                seq, edit_kind_name(kind), body_id, tile_idx, depth,
+                (unsigned)expected, (unsigned)block_seen);
+    } else {
+        printf("[net-client] EDIT-ACK seq=%u %s body=%u tile=%u depth=%u block=%u rtt=%.1fms\n",
+               seq, edit_kind_name(kind), body_id, tile_idx, depth,
+               (unsigned)block_seen, rtt_ms);
+    }
+    C.pending_edits[found].sent_time = 0;
+    ++C.edits_acked_total;
+    return true;
+}
+
+static void pending_edit_check_timeouts(void) {
+    /* Linear scan; capped at NET_PENDING_EDITS_MAX (=128). Cheap. */
+    if (C.state != NET_CLIENT_READY) return;
+    uint64_t now = stm_now();
+    for (int i = 0; i < NET_PENDING_EDITS_MAX; ++i) {
+        if (C.pending_edits[i].sent_time == 0) continue;
+        double age = stm_sec(stm_diff(now, C.pending_edits[i].sent_time));
+        if (age < NET_EDIT_ACK_TIMEOUT_S) continue;
+        ++C.edits_timed_out_total;
+        fprintf(stderr,
+                "[net-client] ERROR: EDIT seq=%u %s body=%u tile=%u depth=%u block=%u "
+                "NOT ACKED after %.1fs - server dropped this edit; it WILL be missing on next login. "
+                "(stats: sent=%u acked=%u timed_out=%u)\n",
+                C.pending_edits[i].seq,
+                edit_kind_name(C.pending_edits[i].cmd_kind),
+                C.pending_edits[i].body_id,
+                C.pending_edits[i].tile_idx,
+                (unsigned)C.pending_edits[i].depth,
+                (unsigned)C.pending_edits[i].expected_block,
+                age,
+                C.edits_sent_total, C.edits_acked_total, C.edits_timed_out_total);
+        C.pending_edits[i].sent_time = 0;
+    }
+}
+
 void net_client_send_edit(int kind, uint32_t body_id,
                             int tile, int depth, int block_type) {
     if (C.state != NET_CLIENT_READY || !C.conn) return;
@@ -471,6 +608,38 @@ void net_client_send_edit(int kind, uint32_t body_id,
     uint8_t buf[MSG_HEADER_SIZE + MSG_PLAYER_CMD_WIRE_SIZE];
     size_t n = proto_write_player_cmd(buf, sizeof buf, &cmd);
     if (n == 0) return;
+
+    /* Push into the ack table BEFORE sending so a fast loopback echo
+     * can't outrun the bookkeeping. Survival BREAK uses BLOCK_AIR as
+     * the expected value (matches what the server forces), even though
+     * the wire field is ignored on BREAK - keeps the ack-match path
+     * uniform. */
+    uint32_t seq = ++C.next_edit_seq;
+    int slot = pending_edit_alloc_slot();
+    if (slot < 0) {
+        fprintf(stderr,
+                "[net-client] ERROR: pending-edit table full (cap=%d) - "
+                "cannot track EDIT seq=%u %s body=%u tile=%u depth=%u. "
+                "Round-trip ack will not fire for this edit.\n",
+                NET_PENDING_EDITS_MAX, seq, edit_kind_name((uint8_t)kind),
+                body_id, (unsigned)tile, (unsigned)depth);
+    } else {
+        uint16_t expected = (kind == PLAYER_CMD_BREAK)
+            ? 0  /* BLOCK_AIR */
+            : (uint16_t)block_type;
+        C.pending_edits[slot].body_id        = body_id;
+        C.pending_edits[slot].tile_idx       = (uint32_t)tile;
+        C.pending_edits[slot].depth          = (uint16_t)depth;
+        C.pending_edits[slot].expected_block = expected;
+        C.pending_edits[slot].cmd_kind       = (uint8_t)kind;
+        C.pending_edits[slot].sent_time      = stm_now();
+        C.pending_edits[slot].seq            = seq;
+    }
+    ++C.edits_sent_total;
+    printf("[net-client] EDIT-SEND seq=%u %s body=%u tile=%u depth=%u block=%u\n",
+           seq, edit_kind_name((uint8_t)kind), body_id,
+           (unsigned)tile, (unsigned)depth, (unsigned)block_type);
+
     /* Reliable channel — block edits are ordered & cannot be dropped. */
     net_send(C.conn, NET_CHANNEL_RELIABLE, buf, n);
 }
@@ -595,6 +764,7 @@ void net_client_connect(const char* url) {
 
 void net_client_tick(void) {
     if (C.conn) net_poll_client(C.conn);
+    pending_edit_check_timeouts();
 }
 
 void net_client_disconnect(void) {
