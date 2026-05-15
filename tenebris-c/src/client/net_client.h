@@ -126,6 +126,20 @@ bool net_client_take_pending_inventory(uint16_t* out_slot_type,
                                           int16_t* out_slot_count,
                                           int* out_selected);
 
+/* Tell the server about a torch place / remove. Mirrors send_edit's
+ * "apply locally for snappy feedback, server is authoritative for
+ * persistence + broadcast" model. The server stores the torch in
+ * its per-body torch list on disk and broadcasts a TORCH_DIFF to
+ * every peer (including sender; the sender's local torch module
+ * deduplicates by tile + position so the round-trip echo doesn't
+ * double-add). No-op when offline. `place_op` = true for PLACE,
+ * false for REMOVE; for REMOVE the position is used to identify
+ * which torch in the server list to drop (proximity match within
+ * REMOVE_RANGE_M). */
+void net_client_send_torch(bool place_op, uint32_t body_id, int tile_idx,
+                             float pos_x, float pos_y, float pos_z,
+                             float up_x,  float up_y,  float up_z);
+
 /* Lazy-per-body HTTP fetch of the server's persisted .col files.
  * Kicks an async request to /saves/body?body=N&room=...; the response
  * applies each saved column via world_set when it lands. Idempotent

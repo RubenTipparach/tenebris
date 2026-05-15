@@ -473,6 +473,89 @@ int proto_read_chunk_diff(const uint8_t* payload, size_t len,
     return 0;
 }
 
+/* ------------------------------------------------------------------ */
+/* Floats on the wire as little-endian IEEE-754 bit patterns: memcpy
+ * the float into a u32 (so the strict-aliasing rule isn't violated)
+ * and then encode that u32 little-endian. Mirrors how SNAPSHOT does
+ * its yaw / pitch packing. */
+
+static void put_f32_le(uint8_t* b, float v) {
+    uint32_t bits;
+    memcpy(&bits, &v, sizeof bits);
+    put_u32_le(b, bits);
+}
+static float get_f32_le(const uint8_t* b) {
+    uint32_t bits = get_u32_le(b);
+    float v;
+    memcpy(&v, &bits, sizeof v);
+    return v;
+}
+
+size_t proto_write_torch_diff(uint8_t* buf, size_t cap,
+                                const msg_torch_diff_t* m) {
+    if (!m) return 0;
+    uint16_t n = m->entry_count;
+    if (n > TORCH_DIFF_MAX_ENTRIES) n = TORCH_DIFF_MAX_ENTRIES;
+    const size_t payload_len = MSG_TORCH_DIFF_HEADER
+                               + (size_t)n * MSG_TORCH_ENTRY_SIZE;
+    const size_t total = MSG_HEADER_SIZE + payload_len;
+    if (cap < total) return 0;
+    proto_write_header(buf, MSG_TORCH_DIFF, MSG_TORCH_DIFF_VERSION,
+                         (uint32_t)payload_len);
+    uint8_t* p = buf + MSG_HEADER_SIZE;
+    put_u32_le(p + 0, m->body_id);
+    put_u16_le(p + 4, n);
+    put_u16_le(p + 6, 0);
+    p += MSG_TORCH_DIFF_HEADER;
+    for (int i = 0; i < (int)n; ++i) {
+        const msg_torch_entry_t* e = &m->entries[i];
+        /* Encode op + 3 reserved bytes as a u32 so the header stays
+         * 4-byte aligned. Decoder reads the same way. */
+        uint32_t op_field = ((uint32_t)e->op)
+                          | ((uint32_t)e->reserved8 << 8)
+                          | ((uint32_t)e->reserved16 << 16);
+        put_u32_le(p + 0,  op_field);
+        put_u32_le(p + 4,  e->tile_idx);
+        put_f32_le(p + 8,  e->pos_x);
+        put_f32_le(p + 12, e->pos_y);
+        put_f32_le(p + 16, e->pos_z);
+        put_f32_le(p + 20, e->up_x);
+        put_f32_le(p + 24, e->up_y);
+        put_f32_le(p + 28, e->up_z);
+        p += MSG_TORCH_ENTRY_SIZE;
+    }
+    return total;
+}
+
+int proto_read_torch_diff(const uint8_t* payload, size_t len,
+                            msg_torch_diff_t* out) {
+    if (len < MSG_TORCH_DIFF_HEADER) return -1;
+    out->body_id     = get_u32_le(payload + 0);
+    uint16_t n       = get_u16_le(payload + 4);
+    out->reserved    = get_u16_le(payload + 6);
+    if (n > TORCH_DIFF_MAX_ENTRIES) return -1;
+    if (len < MSG_TORCH_DIFF_HEADER + (size_t)n * MSG_TORCH_ENTRY_SIZE)
+        return -1;
+    out->entry_count = n;
+    const uint8_t* p = payload + MSG_TORCH_DIFF_HEADER;
+    for (int i = 0; i < (int)n; ++i) {
+        msg_torch_entry_t* e = &out->entries[i];
+        uint32_t op_field = get_u32_le(p + 0);
+        e->op         = (uint8_t)(op_field & 0xFFu);
+        e->reserved8  = (uint8_t)((op_field >> 8)  & 0xFFu);
+        e->reserved16 = (uint16_t)((op_field >> 16) & 0xFFFFu);
+        e->tile_idx   = get_u32_le(p + 4);
+        e->pos_x      = get_f32_le(p + 8);
+        e->pos_y      = get_f32_le(p + 12);
+        e->pos_z      = get_f32_le(p + 16);
+        e->up_x       = get_f32_le(p + 20);
+        e->up_y       = get_f32_le(p + 24);
+        e->up_z       = get_f32_le(p + 28);
+        p += MSG_TORCH_ENTRY_SIZE;
+    }
+    return 0;
+}
+
 int proto_read_snapshot(const uint8_t* payload, size_t len,
                           msg_snapshot_t* out) {
     if (len < MSG_SNAPSHOT_HEADER_SIZE) return -1;

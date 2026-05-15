@@ -91,6 +91,39 @@ bool saves_write_tile(world_t* w, const char* room, uint64_t seed, int tile_idx)
  * covers chunk edits). */
 int  saves_flush_world(world_t* w, const char* room, uint64_t seed);
 
+/* ----------------------------------------------------------------- */
+/* Per-body torch lists. Stored at
+ *   <saves_dir>/rooms/<room>/world-<seed>/body-<id>/torches.dat
+ * as a single binary blob written atomically via the same .tmp swap
+ * the tile columns use. Loaded once when a room's per-body world is
+ * lazily cloned, and rewritten in full on every torch place / remove
+ * (the file is small - 256 max torches at 28 B each = 7 KB - so
+ * delta-encoding isn't worth the bookkeeping).
+ *
+ * Layout (little-endian):
+ *   u32 magic    = 'TTRC' (= SAVES_TORCHES_MAGIC)
+ *   u32 version  = SAVES_TORCHES_VERSION
+ *   u32 body_id
+ *   u32 count
+ *   { i32 tile_idx, f32 pos[3], f32 up[3] } * count                  */
+#define SAVES_TORCHES_MAGIC        0x43525454u  /* 'TTRC' little-endian */
+#define SAVES_TORCHES_VERSION      1u
+#define SAVES_TORCHES_HEADER_SIZE  16
+#define SAVES_TORCHES_ENTRY_SIZE   28           /* i32 + 6*f32         */
+#define SAVES_TORCHES_MAX_COUNT    256
+
+typedef struct {
+    int32_t  tile_idx;
+    float    pos[3];
+    float    up [3];
+} saves_torch_t;
+
+bool saves_torches_write(const char* room, uint64_t seed, uint32_t body_id,
+                           const saves_torch_t* torches, int count);
+
+int  saves_torches_load (const char* room, uint64_t seed, uint32_t body_id,
+                           saves_torch_t* out, int cap);
+
 /* Per-player pose. `name` is the player's display name; the file
  * key is a sanitized lowercase form (alnum + dash + underscore;
  * spaces become _). Same name -> same file across browser swaps,

@@ -660,6 +660,130 @@ bool saves_write_tile(world_t* w, const char* room, uint64_t seed, int tile_idx)
     return ok;
 }
 
+/* ----------------------------------------------------------------- */
+/* Per-body torch list persistence. */
+
+static void torches_path(char* out, size_t cap, const char* room,
+                           uint64_t seed, uint32_t body_id) {
+    snprintf(out, cap, "%s/rooms/%s/world-%llx/body-%u/torches.dat",
+             G_saves_dir, room_dir_name(room),
+             (unsigned long long)seed, (unsigned)body_id);
+}
+
+bool saves_torches_write(const char* room, uint64_t seed, uint32_t body_id,
+                           const saves_torch_t* torches, int count) {
+    if (!G_saves_dir) {
+        fprintf(stderr, "[saves] torches_write rejected: saves disabled\n");
+        return false;
+    }
+    if (count < 0) count = 0;
+    if (count > SAVES_TORCHES_MAX_COUNT) count = SAVES_TORCHES_MAX_COUNT;
+    if (count > 0 && !torches) {
+        fprintf(stderr, "[saves] torches_write rejected: NULL list, count=%d\n", count);
+        return false;
+    }
+    char dir[512];
+    body_dir(dir, sizeof dir, room, seed, body_id);
+    if (!mkdir_p(dir)) {
+        fprintf(stderr, "[saves] torches_write mkdir_p(%s) failed: %s\n",
+                dir, strerror(errno));
+        return false;
+    }
+    char path[512];
+    torches_path(path, sizeof path, room, seed, body_id);
+
+    if (count == 0) {
+        /* Empty list: remove the file rather than write a header-only
+         * blob, so a body that's had all its torches removed shows up
+         * the same way as one that never had any. unlink() succeeds
+         * idempotently here. */
+        if (unlink(path) != 0 && errno != ENOENT) {
+            fprintf(stderr, "[saves] torches_write unlink(%s): %s\n",
+                    path, strerror(errno));
+            return false;
+        }
+        return true;
+    }
+
+    const size_t blob_len = SAVES_TORCHES_HEADER_SIZE
+                            + (size_t)count * SAVES_TORCHES_ENTRY_SIZE;
+    uint8_t* buf = (uint8_t*)malloc(blob_len);
+    if (!buf) {
+        fprintf(stderr, "[saves] torches_write OOM (%zu B)\n", blob_len);
+        return false;
+    }
+    uint32_t magic = SAVES_TORCHES_MAGIC;
+    uint32_t ver   = SAVES_TORCHES_VERSION;
+    uint32_t bid   = body_id;
+    uint32_t n     = (uint32_t)count;
+    memcpy(buf + 0,  &magic, 4);
+    memcpy(buf + 4,  &ver,   4);
+    memcpy(buf + 8,  &bid,   4);
+    memcpy(buf + 12, &n,     4);
+    uint8_t* p = buf + SAVES_TORCHES_HEADER_SIZE;
+    for (int i = 0; i < count; ++i) {
+        int32_t tile = torches[i].tile_idx;
+        memcpy(p + 0,  &tile,           4);
+        memcpy(p + 4,  &torches[i].pos[0], 4);
+        memcpy(p + 8,  &torches[i].pos[1], 4);
+        memcpy(p + 12, &torches[i].pos[2], 4);
+        memcpy(p + 16, &torches[i].up [0], 4);
+        memcpy(p + 20, &torches[i].up [1], 4);
+        memcpy(p + 24, &torches[i].up [2], 4);
+        p += SAVES_TORCHES_ENTRY_SIZE;
+    }
+    bool ok = write_atomic(path, buf, blob_len);
+    free(buf);
+    if (!ok) {
+        fprintf(stderr, "[saves] torches_write FAILED path=%s (room='%s' body=%u count=%d)\n",
+                path, room && *room ? room : "(public)",
+                (unsigned)body_id, count);
+    }
+    return ok;
+}
+
+int saves_torches_load(const char* room, uint64_t seed, uint32_t body_id,
+                         saves_torch_t* out, int cap) {
+    if (!G_saves_dir || !out || cap <= 0) return 0;
+    char path[512];
+    torches_path(path, sizeof path, room, seed, body_id);
+    FILE* f = fopen(path, "rb");
+    if (!f) return 0;
+    uint8_t hdr[SAVES_TORCHES_HEADER_SIZE];
+    if (fread(hdr, 1, sizeof hdr, f) != sizeof hdr) { fclose(f); return 0; }
+    uint32_t magic, ver, bid, count;
+    memcpy(&magic, hdr + 0,  4);
+    memcpy(&ver,   hdr + 4,  4);
+    memcpy(&bid,   hdr + 8,  4);
+    memcpy(&count, hdr + 12, 4);
+    if (magic != SAVES_TORCHES_MAGIC || ver != SAVES_TORCHES_VERSION) {
+        fprintf(stderr, "[saves] torches_load %s: bad magic/version "
+                "(magic=0x%08x ver=%u)\n", path, magic, ver);
+        fclose(f);
+        return 0;
+    }
+    if ((int)count > cap) count = (uint32_t)cap;
+    if (count > SAVES_TORCHES_MAX_COUNT) count = SAVES_TORCHES_MAX_COUNT;
+    int loaded = 0;
+    for (uint32_t i = 0; i < count; ++i) {
+        uint8_t e[SAVES_TORCHES_ENTRY_SIZE];
+        if (fread(e, 1, sizeof e, f) != sizeof e) break;
+        int32_t tile;
+        memcpy(&tile, e + 0, 4);
+        out[loaded].tile_idx = tile;
+        memcpy(&out[loaded].pos[0], e + 4,  4);
+        memcpy(&out[loaded].pos[1], e + 8,  4);
+        memcpy(&out[loaded].pos[2], e + 12, 4);
+        memcpy(&out[loaded].up [0], e + 16, 4);
+        memcpy(&out[loaded].up [1], e + 20, 4);
+        memcpy(&out[loaded].up [2], e + 24, 4);
+        ++loaded;
+    }
+    fclose(f);
+    (void)bid;   /* body_id stored in file for visual inspection; not validated */
+    return loaded;
+}
+
 int saves_flush_world(world_t* w, const char* room, uint64_t seed) {
     if (!G_saves_dir || !w) return 0;
     int written = 0;

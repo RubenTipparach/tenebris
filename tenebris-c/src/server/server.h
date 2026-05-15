@@ -4,6 +4,7 @@
 #include "core/net_transport.h"
 #include "core/planet.h"
 #include "core/world.h"
+#include "server/saves.h"
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -28,10 +29,29 @@
  * at rooms[0] with code == "" and is allocated at server_init. Private
  * rooms get allocated on first join and freed when ref_count drops
  * to zero (keeps memory bounded). */
+/* Per-body torch list kept in memory alongside the room. Loaded
+ * once from disk the first time the room sees a reference to that
+ * body (via the WELCOME initial-sync iteration or an inbound
+ * TORCH_DIFF), rewritten via saves_torches_write on every change,
+ * and replayed to new joiners as a bulk TORCH_DIFF right after
+ * WELCOME. The on-disk layout matches saves_torch_t entry-for-
+ * entry so the server just memcpys between the two. */
+typedef struct {
+    bool           in_use;       /* slot occupied (body_id valid)         */
+    uint32_t       body_id;
+    int            count;
+    saves_torch_t  list[SAVES_TORCHES_MAX_COUNT];
+} server_torch_body_t;
+
 typedef struct {
     char     code[SERVER_ROOM_LEN + 1];
     world_t* worlds[SERVER_MAX_BODIES];
     int      world_count;
+    /* Per-body torch lists, addressed by linear search on body_id
+     * (room_torches_get_or_load). Independent of worlds[] - a body
+     * with torches but no block edits still needs an entry, and the
+     * server lazy-clones worlds only when a block edit lands. */
+    server_torch_body_t torches[SERVER_MAX_BODIES];
     int      ref_count;       /* connected clients in this room */
     bool     in_use;
     /* Wall time (stm_sec) when ref_count last dropped to 0. The
