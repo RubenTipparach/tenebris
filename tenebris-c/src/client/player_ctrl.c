@@ -824,6 +824,26 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
                 }
             }
             if (intersect_depth >= 0) {
+                /* Sub-block epsilon: the player's r being a floating-
+                 * point hair below a floor top makes world_radius_to_depth
+                 * round INTO the floor block, but they aren't really
+                 * sinking - they're standing on the surface and gravity
+                 * keeps pulling them by ~mm per frame against the
+                 * ground-snap below. Only treat the intersection as a
+                 * real sink-through when the gap between the player's
+                 * r and the TOP of the intersecting cell exceeds the
+                 * epsilon. 5 cm is comfortably below WORLD_STEP_HEIGHT
+                 * and well above the per-frame jitter from a normal
+                 * 60-fps physics tick. */
+                const double SINK_EPSILON_M = 0.05;
+                double intersect_top_r = world_depth_to_radius_m(w, intersect_depth + 1);
+                if (intersect_top_r - r <= SINK_EPSILON_M) {
+                    /* False alarm - skip the rescue + log so we don't
+                     * spam the console on every grounded frame. */
+                    intersect_depth = -1;
+                }
+            }
+            if (intersect_depth >= 0) {
                 /* Walk up the column for the first solid -> passable
                  * transition AT OR ABOVE the intersection. The TOP of
                  * that solid block is where the player should stand. */
