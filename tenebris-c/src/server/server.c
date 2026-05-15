@@ -532,12 +532,20 @@ static void handle_hello(server_t* s, server_client_t* cl,
      * room-attached) joins reach this point. */
     saves_session_log("login", cl->name, cl->room);
     send_welcome(s, cl);
-    /* Bring the joining client up to date with the room's persisted
-     * chunk edits before they can act, so the world they see matches
-     * what was on disk when they last (or any previous player) left.
-     * Idempotent for unedited depths - the server's procgen + client's
-     * procgen agree there. */
-    send_chunk_replay(s, cl);
+    /* WebSocket CHUNK_DIFF replay disabled: the client now pulls the
+     * room's persisted columns over HTTP via /saves/body on join +
+     * body_load_detail. WS replay dropped messages at scale (the
+     * client-side audit showed ~80% of saved tiles never arriving
+     * on heavily edited planets), and the HTTP path is TCP with
+     * retransmits so it's the reliable route. The replay function
+     * stays in the file as a clearly-named no-call so a re-enable
+     * is one-line diff if HTTP fetch ever needs a fallback.
+     *
+     *   send_chunk_replay(s, cl);  // disabled, see /saves/body
+     *
+     * Real-time CHUNK_DIFFs from peers' edits still flow over WS -
+     * the disable is only for the boot-time bulk-load. */
+    (void)send_chunk_replay;
 
     /* PLAYER_INFO fan-out, room-scoped: only clients in the same
      * room see each other's identities. Reliable channel — names
@@ -629,6 +637,8 @@ static void on_open(net_conn_t* conn, void* user) {
     cl->last_saved_pos_y = 0.0;
     cl->last_saved_pos_z = 0.0;
     cl->last_saved_tick  = 0;
+    cl->last_msg_unix_s  = (int64_t)time(NULL);
+    cl->timed_out_logged = false;
     net_conn_set_user(conn, cl);
     printf("[server] open: player_id=%u (slot %ld)\n",
            cl->player_id, (long)(cl - s->clients));
@@ -645,6 +655,11 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
         net_close(conn);
         return;
     }
+    /* Any inbound message counts as activity for the idle-timeout
+     * sweeper. A handshake-stalled client (HELLO sent, never followed
+     * by anything) gets its open-time stamp from on_open and ages
+     * out the same way. */
+    cl->last_msg_unix_s = (int64_t)time(NULL);
 
     msg_hdr_t hdr;
     if (proto_read_header((const uint8_t*)data, len, &hdr) != 0) {
@@ -751,11 +766,11 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
             char nz_text[MSG_CHAT_TEXT_LEN + 1];
             memcpy(nz_text, m.text, MSG_CHAT_TEXT_LEN);
             nz_text[MSG_CHAT_TEXT_LEN] = 0;
-            saves_chat_append(cl->room, cl->name, nz_text);
-            /* Also append to the global, timestamped audit log so
-             * GET /chat returns a server-wide, time-ordered view
-             * across rooms - separate file because the per-room
-             * backlog stays in its terse `<name>\t<text>` format. */
+            /* chat.log is the single source of truth for both the
+             * dashboard /chat endpoint and the in-game backlog
+             * replay (the latter filters by room when loading).
+             * saves_chat_append now forwards here, so we only
+             * make one call. */
             saves_global_chat_append(cl->room, cl->name, nz_text);
 
             char short_text[33];
@@ -926,7 +941,15 @@ static void on_close(net_conn_t* conn, net_close_reason_t reason, void* user) {
  * transport's serve_http copy. Single-threaded server, so a static
  * is safe; if HTTP ever moves off the lws callback thread this
  * would need to be per-listener malloc'd. */
-#define HTTP_BODY_CAP  (64 * 1024)
+/* Bumped from 64 KiB to 4 MiB so the /saves/body endpoint can return
+ * an entire planet's persisted .col files in one binary blob (the
+ * client's lazy-load-on-approach path expects a single shot per
+ * body, not chunked transfer). A typical 5-subdivision planet with
+ * a few hundred edited tile columns lands at ~40-80 KiB; the headroom
+ * accommodates someone who has terraformed an unreasonable amount of
+ * a single planet. 4 MiB of static RAM out of a 1-2 GiB Fly machine
+ * is in the noise. */
+#define HTTP_BODY_CAP  (4 * 1024 * 1024)
 static char  HTTP_BODY[HTTP_BODY_CAP];
 static char  HTTP_RAW [HTTP_BODY_CAP];
 
@@ -995,19 +1018,84 @@ static int http_query_int(const char* path, const char* key, int def) {
  * built by splitting each audit-log TSV line on \t. The session
  * format is ts/event/name/room (4 fields); chat is ts/name/room/text
  * (also 4 but different keys). Unknown line shapes are skipped. */
-static size_t build_audit_json(const char* which, int max_lines) {
+/* Build a JSON page for /logins or /chat. The dashboard fetches an
+ * initial page (newest entries, count = max_lines) then walks back
+ * through history by re-issuing with before_ts set to the oldest
+ * ts it already has - so the API returns "the newest `max_lines`
+ * entries whose ts < before_ts". before_ts = 0 means "no filter".
+ *
+ * The response carries:
+ *   "sessions" / "chat"  : array of entries, NEWEST FIRST in the
+ *                          slice but oldest-first inside the array
+ *                          (callers usually iterate in array order).
+ *   "oldest_ts"          : the timestamp of the oldest entry returned;
+ *                          callers pass this back as `before` to get
+ *                          the next page. Missing when the response
+ *                          is empty.
+ *   "more"               : true iff at least one entry older than
+ *                          oldest_ts exists on disk - callers stop
+ *                          paginating when this is false. */
+static size_t build_audit_json(const char* which, int max_lines,
+                                  uint64_t before_ts) {
     size_t pos = 0;
-    size_t raw_len = saves_audit_tail(which, max_lines, HTTP_RAW, HTTP_BODY_CAP);
+    /* Pull the full file (capped at SAVES_AUDIT_FILE_MAX lines).
+     * Filtering happens here, not in saves_audit_tail, so a single
+     * disk read serves any page request. */
+    size_t raw_len = saves_audit_tail(which, SAVES_AUDIT_FILE_MAX,
+                                        HTTP_RAW, HTTP_BODY_CAP);
     if (!json_appendf(&pos, "{\"%s\":[", which)) return 0;
 
-    bool first = true;
-    char* line = HTTP_RAW;
-    char* end  = HTTP_RAW + raw_len;
-    while (line < end) {
-        char* nl = (char*)memchr(line, '\n', (size_t)(end - line));
-        size_t len = nl ? (size_t)(nl - line) : (size_t)(end - line);
-        if (len == 0) { if (!nl) break; line = nl + 1; continue; }
+    /* First pass: find every line's start offset + parsed ts. */
+    typedef struct { size_t off; size_t len; uint64_t ts; } line_t;
+    /* SAVES_AUDIT_FILE_MAX is 5000; one entry per line is the
+     * theoretical worst. Allocate on the stack scaled to that. */
+    static line_t lines[SAVES_AUDIT_FILE_MAX + 8];
+    int line_count = 0;
+    {
+        size_t off = 0;
+        while (off < raw_len && line_count < SAVES_AUDIT_FILE_MAX) {
+            const char* nl = (const char*)memchr(HTTP_RAW + off, '\n', raw_len - off);
+            size_t lend = nl ? (size_t)(nl - HTTP_RAW) : raw_len;
+            size_t llen = lend - off;
+            if (llen == 0) { if (!nl) break; off = lend + 1; continue; }
+            /* ts is the first field up to the first \t. */
+            const char* tab = (const char*)memchr(HTTP_RAW + off, '\t', llen);
+            uint64_t ts = tab ? strtoull(HTTP_RAW + off, NULL, 10) : 0;
+            lines[line_count].off = off;
+            lines[line_count].len = llen;
+            lines[line_count].ts  = ts;
+            ++line_count;
+            if (!nl) break;
+            off = lend + 1;
+        }
+    }
 
+    /* Walk newest-to-oldest (= reverse), skip entries with ts >=
+     * before_ts when before_ts is set, collect up to max_lines into
+     * a "kept" array (most-recent-first). */
+    static int kept[SAVES_AUDIT_FILE_MAX + 8];
+    int kept_count = 0;
+    bool has_older = false;
+    for (int i = line_count - 1; i >= 0 && kept_count < max_lines; --i) {
+        if (before_ts > 0 && lines[i].ts >= before_ts) continue;
+        kept[kept_count++] = i;
+    }
+    /* After we've filled the page, check if anything older than the
+     * oldest kept entry exists - drives the "more" flag. */
+    if (kept_count > 0) {
+        uint64_t oldest = lines[kept[kept_count - 1]].ts;
+        for (int i = 0; i < line_count; ++i) {
+            if (lines[i].ts < oldest) { has_older = true; break; }
+        }
+    }
+
+    bool first = true;
+    /* Emit oldest-first inside the array so callers can render in
+     * natural reading order without reversing client-side. */
+    for (int slot = kept_count - 1; slot >= 0; --slot) {
+        const line_t* L = &lines[kept[slot]];
+        char* line = HTTP_RAW + L->off;
+        size_t len = L->len;
         /* Split into up to 4 tab-separated fields. */
         char fields[4][SAVES_CHAT_TEXT_MAX + 1];
         int fc = 0;
@@ -1022,36 +1110,37 @@ static size_t build_audit_json(const char* which, int max_lines) {
                 fstart = i + 1;
             }
         }
-        if (fc == 4) {
-            char esc_a[256], esc_b[256], esc_c[256];
-            const char* sep = first ? "" : ",";
-            first = false;
-            if (strcmp(which, "sessions") == 0) {
-                /* ts \t event \t name \t room */
-                json_escape(fields[1], esc_a, sizeof esc_a);
-                json_escape(fields[2], esc_b, sizeof esc_b);
-                json_escape(fields[3], esc_c, sizeof esc_c);
-                if (!json_appendf(&pos,
-                        "%s{\"ts\":%s,\"event\":\"%s\",\"name\":\"%s\",\"room\":\"%s\"}",
-                        sep, fields[0], esc_a, esc_b, esc_c)) {
-                    break;   /* truncate gracefully */
-                }
-            } else {
-                /* ts \t name \t room \t text */
-                json_escape(fields[1], esc_a, sizeof esc_a);
-                json_escape(fields[2], esc_b, sizeof esc_b);
-                json_escape(fields[3], esc_c, sizeof esc_c);
-                if (!json_appendf(&pos,
-                        "%s{\"ts\":%s,\"name\":\"%s\",\"room\":\"%s\",\"text\":\"%s\"}",
-                        sep, fields[0], esc_a, esc_b, esc_c)) {
-                    break;
-                }
+        if (fc != 4) continue;
+        char esc_a[256], esc_b[256], esc_c[256];
+        const char* sep = first ? "" : ",";
+        first = false;
+        if (strcmp(which, "sessions") == 0) {
+            json_escape(fields[1], esc_a, sizeof esc_a);
+            json_escape(fields[2], esc_b, sizeof esc_b);
+            json_escape(fields[3], esc_c, sizeof esc_c);
+            if (!json_appendf(&pos,
+                    "%s{\"ts\":%s,\"event\":\"%s\",\"name\":\"%s\",\"room\":\"%s\"}",
+                    sep, fields[0], esc_a, esc_b, esc_c)) {
+                break;
+            }
+        } else {
+            json_escape(fields[1], esc_a, sizeof esc_a);
+            json_escape(fields[2], esc_b, sizeof esc_b);
+            json_escape(fields[3], esc_c, sizeof esc_c);
+            if (!json_appendf(&pos,
+                    "%s{\"ts\":%s,\"name\":\"%s\",\"room\":\"%s\",\"text\":\"%s\"}",
+                    sep, fields[0], esc_a, esc_b, esc_c)) {
+                break;
             }
         }
-        if (!nl) break;
-        line = nl + 1;
     }
-    json_appendf(&pos, "]}");
+    json_appendf(&pos, "]");
+    if (kept_count > 0) {
+        json_appendf(&pos, ",\"oldest_ts\":%llu",
+                     (unsigned long long)lines[kept[kept_count - 1]].ts);
+    }
+    json_appendf(&pos, ",\"more\":%s,\"returned\":%d}",
+                 has_older ? "true" : "false", kept_count);
     return pos;
 }
 
@@ -1546,7 +1635,9 @@ static void server_chat_say(server_t* s, const char* room, const char* text) {
         ++sent_to;
     }
 
-    saves_chat_append       (room_real, sname, clean_text);
+    /* Single write path - chat.log feeds both the dashboard and the
+     * in-game backlog now. saves_chat_append was a paired duplicate;
+     * removed to avoid double entries. */
     saves_global_chat_append(room_real, sname, clean_text);
 
     printf("[server] dashboard chat room=%s ~server~: %s (-> %d client%s)\n",
@@ -1578,16 +1669,49 @@ static int on_http(const char* path,
         return 1;
     }
     if (strcmp(clean, "/logins") == 0) {
-        int n = http_query_int(path, "n", 200);
-        size_t len = build_audit_json("sessions", n);
+        /* Default page size 100. The dashboard scrolls back by
+         * passing ?before=<oldest_ts> from the previous page so
+         * disk reads stay bounded even with thousands of events. */
+        int n = http_query_int(path, "n", 100);
+        uint64_t before_ts = 0;
+        {
+            const char* q = strchr(path, '?');
+            if (q) {
+                const char* p = q + 1;
+                while (*p) {
+                    if (strncmp(p, "before=", 7) == 0) {
+                        before_ts = strtoull(p + 7, NULL, 10);
+                    }
+                    const char* amp = strchr(p, '&');
+                    if (!amp) break;
+                    p = amp + 1;
+                }
+            }
+        }
+        size_t len = build_audit_json("sessions", n, before_ts);
         *out_body     = (const uint8_t*)HTTP_BODY;
         *out_body_len = len;
         *out_mime     = "application/json; charset=utf-8";
         return 1;
     }
     if (strcmp(clean, "/chat") == 0) {
-        int n = http_query_int(path, "n", 200);
-        size_t len = build_audit_json("chat", n);
+        int n = http_query_int(path, "n", 100);
+        uint64_t before_ts = 0;
+        {
+            const char* q = strchr(path, '?');
+            if (q) {
+                const char* p = q + 1;
+                while (*p) {
+                    if (strncmp(p, "before=", 7) == 0) {
+                        before_ts = strtoull(p + 7, NULL, 10);
+                    }
+                    const char* amp = strchr(p, '&');
+                    if (!amp) break;
+                    p = amp + 1;
+                }
+            }
+        }
+        size_t len = build_audit_json("chat", n, before_ts);
         *out_body     = (const uint8_t*)HTTP_BODY;
         *out_body_len = len;
         *out_mime     = "application/json; charset=utf-8";
@@ -1641,18 +1765,96 @@ static int on_http(const char* path,
         *out_mime     = "application/json; charset=utf-8";
         return 1;
     }
+    if (strcmp(clean, "/saves/body") == 0) {
+        /* Bulk binary download of one body's persisted tile columns.
+         * Used by the client's lazy-per-body fetch path, which calls
+         * this whenever it's about to mesh a body (active body at
+         * WELCOME, deferred bodies at body_load_detail). The WS
+         * CHUNK_DIFF replay was unreliable for large bodies; this
+         * is the source of truth at boot. */
+        char room[16];
+        room[0] = 0;
+        http_query_str(path, "room", room, sizeof room);
+        /* "__public__" maps to the empty-code lobby on disk; let
+         * the client send either spelling. */
+        const char* room_real =
+            (strcmp(room, "__public__") == 0) ? "" : room;
+
+        uint64_t seed = 0;
+        uint32_t body_id = 0;
+        bool have_body = false;
+        {
+            const char* q = strchr(path, '?');
+            if (q) {
+                const char* p = q + 1;
+                while (*p) {
+                    if (strncmp(p, "seed=", 5) == 0) {
+                        seed = strtoull(p + 5, NULL, 10);
+                    } else if (strncmp(p, "body=", 5) == 0) {
+                        body_id = (uint32_t)strtoul(p + 5, NULL, 10);
+                        have_body = true;
+                    }
+                    const char* amp = strchr(p, '&');
+                    if (!amp) break;
+                    p = amp + 1;
+                }
+            }
+        }
+        if (!have_body) {
+            static const char err[] = "missing required ?body=N parameter";
+            *out_body     = (const uint8_t*)err;
+            *out_body_len = sizeof err - 1;
+            *out_mime     = "text/plain; charset=utf-8";
+            return 1;
+        }
+        /* Default the seed to whatever the server booted with so a
+         * client that doesn't know the seed yet still gets the right
+         * data. The server only runs one seed at a time. */
+        if (seed == 0 && s) seed = s->cfg.seed;
+
+        size_t blob_len = 0;
+        bool   ok = saves_body_blob(room_real, seed, body_id,
+                                       (uint8_t*)HTTP_BODY, HTTP_BODY_CAP,
+                                       &blob_len);
+        if (!ok) {
+            /* Either the buffer was too small (blob_len = required size)
+             * or the saves layer is offline. Surface a small JSON error
+             * with the size so the operator can see what happened. */
+            int n = snprintf(HTTP_RAW, HTTP_BODY_CAP,
+                             "{\"error\":\"blob too large\",\"required_bytes\":%zu,"
+                             "\"buffer_bytes\":%d}\n",
+                             blob_len, HTTP_BODY_CAP);
+            *out_body     = (const uint8_t*)HTTP_RAW;
+            *out_body_len = (size_t)n;
+            *out_mime     = "application/json; charset=utf-8";
+            return 1;
+        }
+        printf("[server] /saves/body room='%s' body=%u seed=%llu -> %zu bytes\n",
+               room && *room ? room : "(empty-code/lobby)",
+               (unsigned)body_id, (unsigned long long)seed, blob_len);
+        fflush(stdout);
+        *out_body     = (const uint8_t*)HTTP_BODY;
+        *out_body_len = blob_len;
+        *out_mime     = "application/octet-stream";
+        return 1;
+    }
     if (strcmp(clean, "/") == 0 || strcmp(clean, "/health") == 0) {
         static const char msg[] =
             "tenebris-server alive\n"
             "  GET /status               - live JSON (players, CPU, RAM, rooms)\n"
             "  GET /rooms                - per-room unique-user + total-login counts\n"
-            "  GET /logins[?n=N]         - last N login/logout events\n"
-            "  GET /chat[?n=N]           - last N chat messages\n"
+            "  GET /logins[?n=N&before=TS] - newest N login/logout events older than TS\n"
+            "                                (default n=100, no before filter -> tail)\n"
+            "  GET /chat  [?n=N&before=TS] - newest N chat messages older than TS\n"
+            "                                (default n=100; response carries oldest_ts +\n"
+            "                                 more=true/false so callers can paginate)\n"
             "  GET /chat/send?text=...   - broadcast '~server~' chat to a room\n"
             "                              (&room=ABC123 for private,\n"
             "                               &room=__all__ to fan out, default public)\n"
             "  GET /saves                - JSON: every persisted .col file on disk\n"
-            "                              filter with ?room=ABC123 / ?body=0 / ?seed=N\n";
+            "                              filter with ?room=ABC123 / ?body=0 / ?seed=N\n"
+            "  GET /saves/body?body=N    - BINARY: every persisted column for one body\n"
+            "                              also ?room=ABC123 (default lobby) and ?seed=N\n";
         *out_body     = (const uint8_t*)msg;
         *out_body_len = sizeof msg - 1;
         *out_mime     = "text/plain; charset=utf-8";
@@ -1808,6 +2010,35 @@ static void broadcast_snapshot(server_t* s) {
     }
 }
 
+/* Player idle timeout (seconds). After this much wall-clock silence
+ * from a connected client, we write a "timeout" event to sessions.log
+ * so the dashboard's session-pairing isn't stuck showing them as
+ * live forever. The connection itself stays open - a slow link or a
+ * mobile tab put to sleep should not be kicked - and on_close still
+ * writes a "logout" if/when the socket actually dies. */
+#define CLIENT_IDLE_TIMEOUT_S  300
+
+static void client_sweep_idle(server_t* s) {
+    int64_t now = (int64_t)time(NULL);
+    for (int i = 0; i < SERVER_MAX_CLIENTS; ++i) {
+        server_client_t* cl = &s->clients[i];
+        if (!cl->conn) continue;
+        if (!cl->handshaked) continue;          /* never had a login event */
+        if (cl->timed_out_logged) continue;     /* already flagged */
+        if (cl->last_msg_unix_s == 0) continue; /* uninitialised guard */
+        int64_t silent_s = now - cl->last_msg_unix_s;
+        if (silent_s < CLIENT_IDLE_TIMEOUT_S) continue;
+        cl->timed_out_logged = true;
+        saves_session_log("timeout", cl->name, cl->room);
+        printf("[server] timeout: player_id=%u name='%s' room='%s' silent_s=%lld\n",
+               cl->player_id,
+               cl->name[0] ? cl->name : "(unnamed)",
+               cl->room[0] ? cl->room : "(empty-code/lobby)",
+               (long long)silent_s);
+        fflush(stdout);
+    }
+}
+
 static void room_sweep_idle(server_t* s) {
     /* Free rooms that have been empty for longer than the grace
      * window. Cheap: scan SERVER_MAX_ROOMS slots once a second
@@ -1834,6 +2065,11 @@ void server_tick(server_t* s) {
 
     /* Idle-room sweeper: runs once a second. Cheap O(rooms). */
     if ((s->tick % (uint64_t)s->cfg.tick_hz) == 0) room_sweep_idle(s);
+    /* Idle-client sweeper: same cadence, writes a "timeout" session
+     * audit entry for any client silent past CLIENT_IDLE_TIMEOUT_S.
+     * The connection isn't closed - just logged, so the dashboard
+     * stops showing forever-live sessions. */
+    if ((s->tick % (uint64_t)s->cfg.tick_hz) == 0) client_sweep_idle(s);
 
     /* M4 (position relay): broadcast every 3rd tick. At 20 Hz that's
      * ~6.7 snapshots/sec — visibly smooth with client-side interp

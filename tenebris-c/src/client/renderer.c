@@ -1,9 +1,11 @@
 #include "client/renderer.h"
 #include "client/hex_mesher.h"
+#include "client/net_client.h"
 #include "client/torch.h"
 #include "core/blocks.h"
 #include "core/config.h"
 #include "core/goldberg.h"
+#include "core/world_light.h"
 
 #include "sokol_gfx.h"
 #include "sokol_app.h"
@@ -24,6 +26,7 @@
 #include "distant.glsl.h"
 #include "sun.glsl.h"
 #include "sokol_glue.h"
+#include "sokol_gl.h"
 #include "sokol_log.h"
 #include "sokol_time.h"
 
@@ -1304,6 +1307,17 @@ static void body_load_detail(chunked_body_t* body) {
      * frame. Time it explicitly so the profiler attributes the spike
      * correctly instead of burying it inside draw_world / draw_moons. */
     uint64_t t0 = stm_now();
+    /* Kick the lazy-per-body HTTP fetch of persisted .col files for
+     * this body. Idempotent within a connection; returns immediately
+     * if we've already requested or applied. The response arrives
+     * async via JS fetch; it lands on the world's blocks + dirty
+     * bits, and the next per-frame remesh sweep picks them up. The
+     * initial mesh below proceeds with procgen-only blocks, which is
+     * fine - the moment the blob lands the dirty sweep rebuilds the
+     * affected chunks and the persisted state overlays cleanly. */
+    if (body->world && body->world->body) {
+        net_client_fetch_body_saves((uint32_t)body->world->body->id);
+    }
     if (!body->chunks_allocated) {
         body_alloc_chunks(body);
         body->chunks_allocated = true;
@@ -1314,8 +1328,16 @@ static void body_load_detail(chunked_body_t* body) {
     }
     body->meshed = true;
     double elapsed_ms = stm_ms(stm_diff(stm_now(), t0));
-    printf("[renderer] loaded detail for %s (%d tiles) in %.1f ms\n",
-           body->world->body->name, body->world->tile_count, elapsed_ms);
+    /* The mesh built here already reflects every CHUNK_DIFF the
+     * client has received for this body so far (world->blocks was
+     * mutated as each diff arrived, even while the body was deferred).
+     * Compare this body's tile_count against the net-client per-body
+     * coverage line to confirm coverage. */
+    printf("[renderer] loaded detail for %s (body=%u, %d tiles) in %.1f ms - "
+           "compare net-client body-totals for this body to /saves output\n",
+           body->world->body->name,
+           (unsigned)body->world->body->id,
+           body->world->tile_count, elapsed_ms);
     fflush(stdout);
 }
 
@@ -1810,11 +1832,20 @@ static sg_buffer regrow_buffer(sg_buffer old, int* capacity, int needed,
 
 static void body_chunk_rebuild_full(chunked_body_t* body, int chunk_idx) {
     world_t* w = body->world;
-    /* Voxel-engine relight: idempotent across the multiple chunk
-     * rebuilds a single edit triggers (mesher_relight_if_needed runs
-     * the BFS at most once per dirty flip per world). No-op under
-     * the legacy column engine. */
-    hex_mesher_relight_if_needed(w);
+    /* Voxel-engine relight: drive the BFS to completion BEFORE meshing
+     * this chunk so the per-vertex sky/torch values reflect a fully
+     * converged grid. The single-call version (one budgeted slice
+     * per chunk) baked stale light values into the mesh when the
+     * BFS took longer than one slice to converge - dug-out cavities
+     * read as pitch black because the BFS hadn't reached them when
+     * the chunk got rebuilt. Each subsequent edit-driven chunk
+     * rebuild also runs this loop; the typical per-edit BFS work
+     * is tiny (incremental ripple-radius), so the loop usually
+     * exits after one iteration. */
+    int safety = 200;
+    while (world_light_is_dirty(w->light) && safety-- > 0) {
+        hex_mesher_relight_if_needed(w);
+    }
     mesh_chunk_t* c = &body->chunks[chunk_idx];
     hex_mesh_reset(&c->mesh);
     hex_mesh_reset(&c->water_mesh);
@@ -1833,9 +1864,27 @@ static void body_chunk_rebuild_full(chunked_body_t* body, int chunk_idx) {
  * a streaming budget. */
 static void body_full_mesh(chunked_body_t* body) {
     world_t* w = body->world;
-    /* Same relight gate as the per-chunk path - one BFS up front when
-     * the engine is voxel and the grid is dirty. */
-    hex_mesher_relight_if_needed(w);
+    /* Run the BFS to completion before building the mesh, not just
+     * one budgeted slice. The vertex sky / block values get baked
+     * into the mesh here and the chunks only rebuild on subsequent
+     * frames when a tile's dirty bit fires; if the BFS were still
+     * mid-flight at the moment of meshing, every chunk would carry
+     * STALE light values forever (BFS catches up in later frames
+     * but those frames don't see a dirty bit, so they don't remesh).
+     * The user-visible symptom: caves and shadowed cavities read as
+     * pitch black because the BFS hadn't reached those cells when
+     * the chunk was built.
+     *
+     * Looping here forces light convergence as a one-shot stall (~50
+     * ms worst case on the biggest baseline) so the initial mesh is
+     * built from the converged grid. Per-frame edit-driven relights
+     * still use the budgeted path - they're cheap enough not to
+     * matter. The safety cap prevents an unbounded loop if some
+     * future bug leaves dirty stuck on. */
+    int safety = 200;
+    while (world_light_is_dirty(w->light) && safety-- > 0) {
+        hex_mesher_relight_if_needed(w);
+    }
     for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
         mesh_chunk_t* c = &body->chunks[ci];
         hex_mesh_reset(&c->mesh);
@@ -2211,20 +2260,39 @@ void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world,
         chunked_body_t* body = &R.bodies[bi];
         if (!body->meshed || !body->tile_to_chunk) continue;
         bool body_grew[CHUNK_COUNT] = { 0 };
+        int dirty_tiles = 0;
         for (int i = 0; i < body->world->tile_count; ++i) {
             if (!world_tile_dirty(body->world, i)) continue;
             body->chunks[body->tile_to_chunk[i]].dirty = true;
             world_tile_clear_dirty(body->world, i);
+            ++dirty_tiles;
         }
+        int chunks_rebuilt = 0;
         for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
             if (!body->chunks[ci].dirty) continue;
             body_chunk_rebuild_full(body, ci);
             body->chunks[ci].dirty = false;
             body_grew[ci] = true;
+            ++chunks_rebuilt;
             any_grew = true;
         }
         for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
             if (body_grew[ci]) chunk_upload(&body->chunks[ci]);
+        }
+        /* Loudly trace the per-frame remesh activity on the active +
+         * any already-detailed body. This is the difference between
+         * "CHUNK_DIFFs arrived but the world stays visually frozen"
+         * (silent here = no rebuild = bug) and "CHUNK_DIFFs arrived
+         * AND we rebuilt N chunks" (visible change incoming next
+         * frame). Skip the silent zero-tile case so idle frames stay
+         * quiet. */
+        if (dirty_tiles > 0) {
+            const char* name = (body->world && body->world->body
+                                 && body->world->body->name)
+                                 ? body->world->body->name : "?";
+            printf("[renderer] remesh %s: %d dirty tile(s), %d chunk(s) rebuilt\n",
+                   name, dirty_tiles, chunks_rebuilt);
+            fflush(stdout);
         }
     }
     (void)any_grew;
@@ -2375,6 +2443,115 @@ void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world,
      * which runs in the swapchain pass after compose_to_swapchain so
      * the water shader can sample the offscreen colour + depth. */
     }   /* end of if (R_TERRAIN_VISIBLE) */
+}
+
+/* Pipeline for the block-outline wireframe. Lazy-created on first use
+ * so we don't pay the make_pipeline cost for SP-only / menu-mode
+ * sessions that never call into the interact path. Lines + depth test
+ * enabled + alpha blend so the outline sits on top of the world but
+ * gets occluded by closer geometry. */
+static sgl_pipeline G_OUTLINE_PIP = (sgl_pipeline){0};
+
+static void ensure_outline_pip(void) {
+    if (G_OUTLINE_PIP.id != 0) return;
+    G_OUTLINE_PIP = sgl_make_pipeline(&(sg_pipeline_desc){
+        .primitive_type = SG_PRIMITIVETYPE_LINES,
+        .depth = {
+            .compare       = SG_COMPAREFUNC_LESS_EQUAL,
+            .write_enabled = false,
+        },
+        .colors[0].blend = {
+            .enabled         = true,
+            .src_factor_rgb  = SG_BLENDFACTOR_SRC_ALPHA,
+            .dst_factor_rgb  = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+            .src_factor_alpha= SG_BLENDFACTOR_ONE,
+            .dst_factor_alpha= SG_BLENDFACTOR_ONE,
+        },
+    });
+}
+
+void renderer_draw_face_outline(mat4_t view, mat4_t proj,
+                                  const world_t* world,
+                                  int tile_idx, int depth,
+                                  int nbr_tile, int nbr_depth,
+                                  float r, float g, float b, float a) {
+    if (!world || !world->body || !world->grid) return;
+    if (tile_idx < 0 || tile_idx >= world->tile_count) return;
+    if (depth < 0 || depth >= WORLD_MAX_DEPTH) return;
+    const goldberg_tile_t* t = goldberg_tile(world->grid, tile_idx);
+    if (!t) return;
+    const int n = t->num_verts;
+    if (n <= 0) return;
+
+    /* Classify which face. Top/bottom caps are aligned with depth+1 /
+     * depth-1 on the same tile; side faces are same-depth, neighbour-
+     * tile pairs found via the goldberg edge_neighbours table. */
+    enum { FACE_NONE, FACE_TOP_CAP, FACE_BOTTOM_CAP, FACE_SIDE } kind = FACE_NONE;
+    int side_edge_k = -1;
+    if (nbr_tile == tile_idx) {
+        if (nbr_depth == depth + 1) kind = FACE_TOP_CAP;
+        else if (nbr_depth == depth - 1) kind = FACE_BOTTOM_CAP;
+    } else if (nbr_depth == depth) {
+        for (int k = 0; k < n; ++k) {
+            if (t->edge_neighbours[k] == nbr_tile) { side_edge_k = k; break; }
+        }
+        if (side_edge_k >= 0) kind = FACE_SIDE;
+    }
+    if (kind == FACE_NONE) return;
+
+    ensure_outline_pip();
+    sgl_defaults();
+    sgl_matrix_mode_projection();
+    sgl_load_matrix(proj.m);
+    sgl_matrix_mode_modelview();
+    sgl_load_matrix(view.m);
+    sgl_translate((float)world->body->pos_x,
+                  (float)world->body->pos_y,
+                  (float)world->body->pos_z);
+    sgl_load_pipeline(G_OUTLINE_PIP);
+
+    sgl_begin_lines();
+    sgl_c4f(r, g, b, a);
+
+    if (kind == FACE_TOP_CAP || kind == FACE_BOTTOM_CAP) {
+        /* Cap perimeter at the matching radius. Top cap sits at
+         * radius(depth+1) (top of the block). Bottom cap at
+         * radius(depth). */
+        double ring_r = (kind == FACE_TOP_CAP)
+                          ? world_depth_to_radius_m(world, depth + 1)
+                          : world_depth_to_radius_m(world, depth);
+        for (int k = 0; k < n; ++k) {
+            int next = (k + 1) % n;
+            dvec3_t a_v = dvec3_scale(t->verts[k],    ring_r);
+            dvec3_t b_v = dvec3_scale(t->verts[next], ring_r);
+            sgl_v3f((float)a_v.x, (float)a_v.y, (float)a_v.z);
+            sgl_v3f((float)b_v.x, (float)b_v.y, (float)b_v.z);
+        }
+    } else {  /* FACE_SIDE */
+        /* Side quad: corners verts[k] and verts[k+1] at the two
+         * radii. Trace 4 edges around the rectangle. */
+        int k_a = side_edge_k;
+        int k_b = (k_a + 1) % n;
+        double r_bot = world_depth_to_radius_m(world, depth);
+        double r_top = world_depth_to_radius_m(world, depth + 1);
+        dvec3_t inner_a = dvec3_scale(t->verts[k_a], r_bot);
+        dvec3_t inner_b = dvec3_scale(t->verts[k_b], r_bot);
+        dvec3_t outer_a = dvec3_scale(t->verts[k_a], r_top);
+        dvec3_t outer_b = dvec3_scale(t->verts[k_b], r_top);
+        /* bottom edge */
+        sgl_v3f((float)inner_a.x, (float)inner_a.y, (float)inner_a.z);
+        sgl_v3f((float)inner_b.x, (float)inner_b.y, (float)inner_b.z);
+        /* right edge */
+        sgl_v3f((float)inner_b.x, (float)inner_b.y, (float)inner_b.z);
+        sgl_v3f((float)outer_b.x, (float)outer_b.y, (float)outer_b.z);
+        /* top edge */
+        sgl_v3f((float)outer_b.x, (float)outer_b.y, (float)outer_b.z);
+        sgl_v3f((float)outer_a.x, (float)outer_a.y, (float)outer_a.z);
+        /* left edge */
+        sgl_v3f((float)outer_a.x, (float)outer_a.y, (float)outer_a.z);
+        sgl_v3f((float)inner_a.x, (float)inner_a.y, (float)inner_a.z);
+    }
+    sgl_end();
 }
 
 void renderer_draw_water(mat4_t view, mat4_t proj, vec3_t camera_world) {

@@ -423,6 +423,23 @@ static struct {
     float            smoothed_fps;
 } G;
 
+/* Accessors for modules that need the live player pose but don't
+ * want to pull main_web.h. The /saves audit in net_client.c uses
+ * these to score the distance from the camera to each persisted
+ * tile. Returning a dvec3 by value keeps the contract minimal. */
+dvec3_t tenebris_get_local_player_pos(void) {
+    return G.player.position;
+}
+
+uint32_t tenebris_get_local_player_body_id(void) {
+    /* G.player.body is the live gravitational anchor (NULL when the
+     * player is anchorless in deep space). Fall back to BODY_TENEBRIS
+     * so the audit's distance calculations have something to anchor
+     * to instead of mis-attributing everything to body 0 = error. */
+    if (G.player.body) return (uint32_t)G.player.body->id;
+    return 0;  /* BODY_TENEBRIS */
+}
+
 /* --------------------------------------------------------------------- */
 
 static void init(void) {
@@ -1185,12 +1202,21 @@ static void maybe_apply_mp_spawn(void) {
     G.player.pitch    = w->spawn_pitch;
     /* Force a fresh planet basis at the new position so the saved
      * yaw / pitch read as 'look this way relative to the surface'
-     * rather than 'apply on top of the previous body's basis'. The
-     * roll-slerp armed by the basis rebuild eases the camera into
-     * level over transition_timer_s. */
+     * rather than 'apply on top of the previous body's basis'.
+     *
+     * The MP spawn intentionally does NOT arm the roll slerp. The
+     * player is appearing at this position for the first time of
+     * the session - there's no previous orientation to "ease from",
+     * so the slerp just shows up as a visible spin-up rolling the
+     * camera level over a second. player_rebuild_basis below
+     * computes the surface-aligned basis directly, and the next
+     * planet-mode tick parallel-transports it forward at no further
+     * cost. (player_set_body / player_teleport_to elsewhere arm the
+     * slerp on body SWAPS, which IS an "ease from previous up to
+     * new up" scenario - that path is unchanged.) */
     G.player.basis_ready = false;
     G.player.last_tile   = -1;
-    G.player.transition_timer_s = config_lod()->roll_slerp_duration_s;
+    G.player.transition_timer_s = 0.0f;
     /* Bind the player to the saved body so the renderer's per-frame
      * "world for current body" lookup activates the right one on the
      * very next draw. Without this, a player who logged out near
@@ -1265,77 +1291,65 @@ static bool    G_last_sent_valid = false;
  * (or between the spawn line and the first 10 s sample after a
  * fresh join) tells us where the floating-spawn delta is coming
  * from. */
-static double G_pos_log_accum_s = 0.0;
 static void   periodic_pos_log(double dt) {
-    G_pos_log_accum_s += dt;
-    /* 1 s cadence: short enough that idle-drift (player walking off a
-     * mid-air spawn under gravity) shows up within a sample or two of
-     * the spawn line, instead of having to wait 10 s. */
-    if (G_pos_log_accum_s < 1.0) return;
-    G_pos_log_accum_s = 0.0;
-    /* Anchor body is what the engine considers the player attached
-     * to. NULL == truly anchorless (logged out in space, before any
-     * gravity tick rebinds). Fall back to G.body only for the
-     * radius / altitude math so the log still has a yardstick. */
-    const body_config_t* anchor = G.player.body;
-    const body_config_t* b      = anchor ? anchor : G.body;
-    double r = 0.0, alt = 0.0;
-    if (b) {
-        double dx = G.player.position.x - b->pos_x;
-        double dy = G.player.position.y - b->pos_y;
-        double dz = G.player.position.z - b->pos_z;
-        r = sqrt(dx*dx + dy*dy + dz*dz);
-        alt = r - b->radius_m;
-    }
-    const char* mode = (menu_state() == GAME_IN_GAME_MP) ? "MP" :
-                       (menu_state() == GAME_IN_GAME_SP) ? "SP" : "menu";
-    /* The engine tracks two separate states: G.player.body (the
-     * last-known gravitational anchor, NULL when the player is in
-     * deep space) and G.player.is_in_space (this-frame gravity-
-     * falloff result). Log both so a "stuck in space" report is
-     * unambiguous about which one is which. NULL anchor renders as
-     * NONE (not the fallback body's name) so a cleared anchor is
-     * visible at a glance. */
-    printf("[main] pos %s anchor=%s%s alt-vs=%s curr=(%.2f, %.2f, %.2f) "
-           "r=%.2f alt=%+.2f yaw=%.2f pitch=%.2f grounded=%d\n",
-           mode,
-           anchor ? anchor->name : "NONE",
-           G.player.is_in_space ? " (in-space)" : "",
-           b ? b->name : "?",
-           G.player.position.x, G.player.position.y, G.player.position.z,
-           r, alt, G.player.yaw, G.player.pitch, (int)G.player.grounded);
-    if (G_last_sent_valid) {
-        double sr = 0.0, salt = 0.0;
-        if (b) {
-            double dx = G_last_sent_pos.x - b->pos_x;
-            double dy = G_last_sent_pos.y - b->pos_y;
-            double dz = G_last_sent_pos.z - b->pos_z;
-            sr = sqrt(dx*dx + dy*dy + dz*dz);
-            salt = sr - b->radius_m;
-        }
-        double ddx = G.player.position.x - G_last_sent_pos.x;
-        double ddy = G.player.position.y - G_last_sent_pos.y;
-        double ddz = G.player.position.z - G_last_sent_pos.z;
-        double delta = sqrt(ddx*ddx + ddy*ddy + ddz*ddz);
-        /* Show the IN_SPACE sentinel as a word rather than the raw
-         * 0xFFFFFFFF - 4294967295 in a log line is just noise. Any
-         * other body_id is a real body id (small int) and prints
-         * inline. */
-        char body_str[32];
-        if (G_last_sent_body == BODY_ID_IN_SPACE) {
-            snprintf(body_str, sizeof body_str, "IN_SPACE");
-        } else {
-            snprintf(body_str, sizeof body_str, "%u", G_last_sent_body);
-        }
-        printf("[main] pos %s     sent=(%.2f, %.2f, %.2f) r=%.2f alt=%+.2f "
-               "body=%s yaw=%.2f pitch=%.2f  delta_from_curr=%.2fm\n",
-               mode,
-               G_last_sent_pos.x, G_last_sent_pos.y, G_last_sent_pos.z,
-               sr, salt, body_str,
-               G_last_sent_yaw, G_last_sent_pitch, delta);
-    } else {
-        printf("[main] pos %s     sent=(none yet)\n", mode);
-    }
+    // Commented out per request: this 1 Hz position log floods the
+    // console during normal play and crowds out CHUNK_DIFF / AUDIT
+    // lines. Restore from git when the next spawn issue lands. The
+    // README's debug-log reference still documents the line shape so
+    // reading old captures stays meaningful.
+    (void)dt;
+    // static double accum_s = 0.0;
+    // accum_s += dt;
+    // if (accum_s < 1.0) return;
+    // accum_s = 0.0;
+    // const body_config_t* anchor = G.player.body;
+    // const body_config_t* b      = anchor ? anchor : G.body;
+    // double r = 0.0, alt = 0.0;
+    // if (b) {
+    //     double dx = G.player.position.x - b->pos_x;
+    //     double dy = G.player.position.y - b->pos_y;
+    //     double dz = G.player.position.z - b->pos_z;
+    //     r = sqrt(dx*dx + dy*dy + dz*dz);
+    //     alt = r - b->radius_m;
+    // }
+    // const char* mode = (menu_state() == GAME_IN_GAME_MP) ? "MP" :
+    //                    (menu_state() == GAME_IN_GAME_SP) ? "SP" : "menu";
+    // printf("[main] pos %s anchor=%s%s alt-vs=%s curr=(%.2f, %.2f, %.2f) "
+    //        "r=%.2f alt=%+.2f yaw=%.2f pitch=%.2f grounded=%d\n",
+    //        mode,
+    //        anchor ? anchor->name : "NONE",
+    //        G.player.is_in_space ? " (in-space)" : "",
+    //        b ? b->name : "?",
+    //        G.player.position.x, G.player.position.y, G.player.position.z,
+    //        r, alt, G.player.yaw, G.player.pitch, (int)G.player.grounded);
+    // if (G_last_sent_valid) {
+    //     double sr = 0.0, salt = 0.0;
+    //     if (b) {
+    //         double dx = G_last_sent_pos.x - b->pos_x;
+    //         double dy = G_last_sent_pos.y - b->pos_y;
+    //         double dz = G_last_sent_pos.z - b->pos_z;
+    //         sr = sqrt(dx*dx + dy*dy + dz*dz);
+    //         salt = sr - b->radius_m;
+    //     }
+    //     double ddx = G.player.position.x - G_last_sent_pos.x;
+    //     double ddy = G.player.position.y - G_last_sent_pos.y;
+    //     double ddz = G.player.position.z - G_last_sent_pos.z;
+    //     double delta = sqrt(ddx*ddx + ddy*ddy + ddz*ddz);
+    //     char body_str[32];
+    //     if (G_last_sent_body == BODY_ID_IN_SPACE) {
+    //         snprintf(body_str, sizeof body_str, "IN_SPACE");
+    //     } else {
+    //         snprintf(body_str, sizeof body_str, "%u", G_last_sent_body);
+    //     }
+    //     printf("[main] pos %s     sent=(%.2f, %.2f, %.2f) r=%.2f alt=%+.2f "
+    //            "body=%s yaw=%.2f pitch=%.2f  delta_from_curr=%.2fm\n",
+    //            mode,
+    //            G_last_sent_pos.x, G_last_sent_pos.y, G_last_sent_pos.z,
+    //            sr, salt, body_str,
+    //            G_last_sent_yaw, G_last_sent_pitch, delta);
+    // } else {
+    //     printf("[main] pos %s     sent=(none yet)\n", mode);
+    // }
 }
 
 static double G_sp_save_accum = 0.0;
@@ -2091,6 +2105,20 @@ static void frame(void) {
      * they get the depth-sorted composite + water refraction for free. */
     remote_players_draw(view, proj);
 
+    /* Target highlight: outline only the SINGLE FACE of the targeted
+     * block that the reticle is aimed at (the face shared with the
+     * placement candidate cell). Drawn into the world pass so
+     * depth-test naturally hides the outline through other geometry. */
+    if (G.interact.has_target && !G.interact.is_torch_target
+        && !menu_pause_active()) {
+        renderer_draw_face_outline(view, proj, G.world,
+                                     G.interact.hit_tile,
+                                     G.interact.hit_depth,
+                                     G.interact.place_tile,
+                                     G.interact.place_depth,
+                                     1.00f, 1.00f, 1.00f, 0.95f);
+    }
+
     /* Hand off to the swapchain pass — blits the offscreen colour
      * (everything opaque) onto the swapchain. */
     profiler_begin("compose");
@@ -2149,6 +2177,23 @@ static void frame(void) {
     mobile_ui_set_debug_menu_visible(G_debug_ui_visible);
     mobile_ui_set_teleport_visible(G_debug_ui_visible);
     mobile_ui_draw();
+
+    /* Centre-screen reticle dot. Only in gameplay (skip on the menu /
+     * profile picker so it doesn't sit over the buttons). mobile_ui_draw
+     * just left the alpha pipeline + ortho projection bound for us; if
+     * that order ever flips we'd need to set them again here. */
+    {
+        game_state_t st = menu_state();
+        bool in_game = (st == GAME_IN_GAME_SP || st == GAME_IN_GAME_MP);
+        if (in_game && !menu_pause_active()) {
+            const float sw = sapp_widthf();
+            const float sh = sapp_heightf();
+            const float dot = 3.0f;
+            mobile_ui_draw_rect(sw * 0.5f - dot, sh * 0.5f - dot,
+                                  dot * 2.0f, dot * 2.0f,
+                                  1.0f, 1.0f, 1.0f, 0.85f);
+        }
+    }
     /* DOM overlays are mobile-only scaffolding (pause button +
      * joystick deck). The pause panel itself is in-canvas, drawn
      * by menu_pause_draw below. Hide both DOM overlays while the

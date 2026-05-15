@@ -402,6 +402,23 @@ typedef struct {
      * 15-cap; 0 disables torch propagation entirely (useful for
      * isolating sky behaviour during tuning). */
     int    voxel_torch_emission;
+    /* Sky-light attenuation per LATERAL step (tile-neighbour) in the
+     * BFS. Vertical-down attenuation stays 1 so daylight shafts are
+     * full strength. Lateral loss > 1 makes cavities, holes, and the
+     * region under overhangs go dark faster - the "shadows should
+     * extend into the cave" mental model. 1 = Minecraft-classic;
+     * 3 = noticeably darker indoors; 5 = small cavities are pitch
+     * black. */
+    int    voxel_sky_lateral_loss;
+    /* Per-frame cap on BFS pop operations in world_light_rebuild.
+     * Below this number the rebuild may complete in a single frame;
+     * above it the rebuild yields and resumes the next frame, so
+     * a heavy relight doesn't stall the main loop. The mesher
+     * continues to sample the (partially up-to-date) grid during
+     * the resume - players see brightness ripple in until the BFS
+     * catches up. 50000 sweeps a typical full-planet relight in
+     * roughly 2-3 frames at 60 fps on the production target. */
+    int    voxel_rebuild_ops_per_frame;
 } lighting_config_t;
 
 const lighting_config_t* config_lighting(void);

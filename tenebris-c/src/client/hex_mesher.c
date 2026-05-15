@@ -154,11 +154,16 @@ static float torch_light_voxel(const world_t* w, int tile, int depth_at_air) {
  * for corner k. -1 in either slot is skipped (open-edge pentagon
  * boundary, not actually possible for closed-surface goldbergs but
  * the guard keeps the helper safe). */
-static void smooth_corner_sample(const world_t* w,
-                                 int tile, int nbr_a, int nbr_b,
-                                 int depth_at_air,
-                                 float* out_sky, float* out_block) {
-    if (!w || !w->light) { *out_sky = 1.0f; *out_block = 0.0f; return; }
+/* Returns the number of air voxels actually sampled. Caller can use
+ * this as a "did the corner have anything to look at?" signal -
+ * smooth_corner_sample falls back to *out_sky = 0 when every voxel
+ * at the requested depth was solid, which is wrong for a corner
+ * standing on a floor (air is right above, not at). */
+static int smooth_corner_sample_n(const world_t* w,
+                                    int tile, int nbr_a, int nbr_b,
+                                    int depth_at_air,
+                                    float* out_sky, float* out_block) {
+    if (!w || !w->light) { *out_sky = 1.0f; *out_block = 0.0f; return 0; }
     int sky_sum   = 0;
     int block_sum = 0;
     int samples   = 0;
@@ -169,17 +174,58 @@ static void smooth_corner_sample(const world_t* w,
     for (int i = 0; i < 3; ++i) {
         int ti = tiles[i];
         if (ti < 0) continue;
+        if (depth_at_air >= 0 && depth_at_air < WORLD_MAX_DEPTH) {
+            block_t b = (block_t)w->blocks[(size_t)ti * WORLD_MAX_DEPTH + depth_at_air];
+            if (block_covers_face(b)) continue;
+        }
         sky_sum   += world_light_sky  (w->light, ti, depth_at_air);
         block_sum += world_light_block(w->light, ti, depth_at_air);
         ++samples;
     }
-    if (samples == 0) { *out_sky = 0.0f; *out_block = 0.0f; return; }
+    if (samples == 0) { *out_sky = 0.0f; *out_block = 0.0f; return 0; }
     float s = (float)sky_sum   / (float)(samples * max);
     float b = (float)block_sum / (float)(samples * 15);
+
+    /* Ambient-occlusion darkening at the corner. Counts SIDE-NEIGHBOUR
+     * tiles (nbr_a / nbr_b - NOT the meshed tile itself) that are
+     * solid at depth_at_air. The "self" tile is excluded because for
+     * caps it's always air (the cell above the block) and for sides
+     * it's always solid (the block we're meshing); neither tells us
+     * anything about how exposed the corner is to surrounding
+     * geometry. With the side-neighbour count we get a real measure
+     * of "how much corner is wedged into adjacent stone", which is
+     * the visual the user circled at the base of a column meeting
+     * flat ground - the cap corner touching the column should
+     * darken, the cap centre should stay bright, and the GPU
+     * interpolates linearly between them. Values cribbed from
+     * Notch's classic 3-step ladder. */
+    int ao_occluders = 0;
+    for (int i = 1; i < 3; ++i) {            /* skip tiles[0] = self */
+        int ti = tiles[i];
+        if (ti < 0) continue;
+        if (depth_at_air < 0 || depth_at_air >= WORLD_MAX_DEPTH) continue;
+        block_t nb = (block_t)w->blocks[(size_t)ti * WORLD_MAX_DEPTH + depth_at_air];
+        if (block_covers_face(nb)) ++ao_occluders;
+    }
+    float ao = 1.0f;
+    if      (ao_occluders == 1) ao = 0.85f;
+    else if (ao_occluders >= 2) ao = 0.70f;
+    s *= ao;
+    b *= ao;
+
     if (s > 1.0f) s = 1.0f;
     if (b > 1.0f) b = 1.0f;
     *out_sky   = s;
     *out_block = b;
+    return samples;
+}
+
+static void smooth_corner_sample(const world_t* w,
+                                 int tile, int nbr_a, int nbr_b,
+                                 int depth_at_air,
+                                 float* out_sky, float* out_block) {
+    smooth_corner_sample_n(w, tile, nbr_a, nbr_b, depth_at_air,
+                             out_sky, out_block);
 }
 
 /* ----------------------------------------------------------------------- */
@@ -248,15 +294,30 @@ static void emit_cap(hex_mesh_t* out,
     float uc = u0 + HEX_ATLAS_U_STEP * 0.5f;
     float vc = 0.5f;
 
-    /* Sky-light depth lookup point: top cap → column above this
-     * block (depth+1 onward). Bottom cap → column above the cap
-     * itself (i.e. the block layer at depth and everything above).
-     * Both reduce to "what lies between this fragment and the sky";
-     * in a normal terrain column the top cap reads sky=1 and the
-     * bottom cap of an exposed leaf canopy reads close to the value
-     * for its block. */
+    /* Voxel-mode sample depth differs between top and bottom caps:
+     *   Top cap    -> depth+1 (the air ABOVE the block - that's the
+     *                 cell the face looks up into).
+     *   Bottom cap -> depth-1 (the air BELOW the block - that's
+     *                 where torch-light + sky propagation actually
+     *                 lives). The previous "depth" lookup landed in
+     *                 the block's own layer (always solid for the
+     *                 face we're meshing) and smooth_corner_sample
+     *                 skipped it; for a sealed-room ceiling every
+     *                 neighbour at that depth is also solid, so the
+     *                 sample collapsed to zero and the ceiling read
+     *                 pitch black even with a torch right below it.
+     * Column-mode keeps the legacy "what's between this fragment
+     * and the sky" semantic (no per-voxel grid) so its inputs
+     * stay unchanged. */
     const bool voxel = use_voxel_engine();
-    const int  depth_at_air = is_top ? depth + 1 : depth;
+    int depth_at_air;
+    if (voxel) {
+        depth_at_air = is_top ? depth + 1 : depth - 1;
+        if (depth_at_air < 0)              depth_at_air = 0;
+        if (depth_at_air >= WORLD_MAX_DEPTH) depth_at_air = WORLD_MAX_DEPTH - 1;
+    } else {
+        depth_at_air = is_top ? depth + 1 : depth;
+    }
 
     /* Cap centre samples just (this_tile, depth_at_air). Each corner
      * vertex samples the three voxels meeting at that corner - the
@@ -357,14 +418,17 @@ static void emit_side_quad(hex_mesh_t* out,
     float u1 = u0 + HEX_ATLAS_U_STEP;
 
     const bool voxel = use_voxel_engine();
-    /* sky_a/sky_b carry the per-corner sky values at the OUTER ring
-     * (top of the block at depth d). The mesher carries a single sky
-     * sample down each side face today; we keep that vertical-uniform
-     * behaviour but split horizontally per corner so the gradient
-     * across the face matches the cap's gradient at the join. Block
-     * (torch) channel follows the same shape under voxel; column
-     * mode keeps per-vertex inverse-square. */
-    float sky_a = 0.0f, sky_b = 0.0f;
+    /* Per-corner sky / torch values. Top corners (outer ring, at the
+     * top-of-block radius) and bottom corners (inner ring, at the
+     * bottom-of-block radius) sample DIFFERENT depths so a tall side
+     * face shows the vertical gradient between bright air above and
+     * darker air below - the user's "shadow cell should only be
+     * incrementally darker than adjacent cell" requirement requires
+     * the side face to interpolate vertically rather than carry one
+     * sky value top-to-bottom. The horizontal split between corner
+     * a and corner b stays as before. */
+    float sky_top_a = 0.0f, sky_top_b = 0.0f;
+    float sky_bot_a = 0.0f, sky_bot_b = 0.0f;
     float t_ia = 0.0f, t_ib = 0.0f, t_oa = 0.0f, t_ob = 0.0f;
     if (voxel) {
         const int n = t->num_verts;
@@ -376,27 +440,50 @@ static void emit_side_quad(hex_mesh_t* out,
         const int nbr_a_outboard = t->edge_neighbours[(k_a - 1 + n) % n];
         const int nbr_b_outboard = t->edge_neighbours[(k_b)         % n];
         const int nbr_across     = t->edge_neighbours[edge_k];
-        float bl_a, bl_b;
+        float bl_top_a, bl_top_b, bl_bot_a, bl_bot_b;
+        /* Top corners: air at depth+1 (above this block - either the
+         * column air going up, or open sky). */
         smooth_corner_sample(w, tile_idx, nbr_a_outboard, nbr_across,
-                             depth + 1, &sky_a, &bl_a);
+                             depth + 1, &sky_top_a, &bl_top_a);
         smooth_corner_sample(w, tile_idx, nbr_across, nbr_b_outboard,
-                             depth + 1, &sky_b, &bl_b);
-        t_ia = bl_a;  t_oa = bl_a;
-        t_ib = bl_b;  t_ob = bl_b;
+                             depth + 1, &sky_top_b, &bl_top_b);
+        /* Bottom corners: try depth first (cells AT the bottom-of-face
+         * height - e.g. cave interior air on the side of a tall wall).
+         * If every sampled tile at that depth is solid (the wall is
+         * sitting on a flat surface where the air above the floor
+         * resumes at depth+1), fall back to the top-corner depth so
+         * the bottom doesn't read pitch black. This matches the
+         * "shadow cells should only be incrementally darker than
+         * adjacent cells" rule: a floor-level corner always has SOME
+         * adjacent air to derive light from, never a hard 0. */
+        int n_bot_a = smooth_corner_sample_n(w, tile_idx,
+                                                 nbr_a_outboard, nbr_across,
+                                                 depth, &sky_bot_a, &bl_bot_a);
+        if (n_bot_a == 0) {
+            sky_bot_a = sky_top_a; bl_bot_a = bl_top_a;
+        }
+        int n_bot_b = smooth_corner_sample_n(w, tile_idx,
+                                                 nbr_across, nbr_b_outboard,
+                                                 depth, &sky_bot_b, &bl_bot_b);
+        if (n_bot_b == 0) {
+            sky_bot_b = sky_top_b; bl_bot_b = bl_top_b;
+        }
+        t_ia = bl_bot_a;  t_oa = bl_top_a;
+        t_ib = bl_bot_b;  t_ob = bl_top_b;
     } else {
         /* Legacy path: sky shared across the quad, torch per-vertex. */
         float legacy_sky = sky_light_at(w, tile_idx, depth + 1);
-        sky_a = sky_b = legacy_sky;
+        sky_top_a = sky_top_b = sky_bot_a = sky_bot_b = legacy_sky;
         t_ia = torch_light_at(dvec3_to_vec3f(inner_a));
         t_ib = torch_light_at(dvec3_to_vec3f(inner_b));
         t_oa = torch_light_at(dvec3_to_vec3f(outer_a));
         t_ob = torch_light_at(dvec3_to_vec3f(outer_b));
     }
 
-    push_vertex(out, inner_a, normal, u0, 0.0f, sky_a, t_ia, wet);
-    push_vertex(out, inner_b, normal, u1, 0.0f, sky_b, t_ib, wet);
-    push_vertex(out, outer_b, normal, u1, 1.0f, sky_b, t_ob, wet);
-    push_vertex(out, outer_a, normal, u0, 1.0f, sky_a, t_oa, wet);
+    push_vertex(out, inner_a, normal, u0, 0.0f, sky_bot_a, t_ia, wet);
+    push_vertex(out, inner_b, normal, u1, 0.0f, sky_bot_b, t_ib, wet);
+    push_vertex(out, outer_b, normal, u1, 1.0f, sky_top_b, t_ob, wet);
+    push_vertex(out, outer_a, normal, u0, 1.0f, sky_top_a, t_oa, wet);
 
     out->indices[out->index_count++] = base + 0;
     out->indices[out->index_count++] = base + 1;
@@ -568,12 +655,17 @@ void hex_mesher_relight_if_needed(world_t* w) {
     if (!w || !w->light) return;
     const lighting_config_t* cfg = config_lighting();
     if (cfg->engine != 1) return;
-    if (!world_light_is_dirty(w->light)) return;
 
-    /* Publish current torches. Torch coordinates are body-local; the
-     * flame sits TORCH_FLAME_HEIGHT_M above the base, so the seeded
-     * voxel is the air voxel containing the flame. tile_idx is stored
-     * on the torch directly. */
+    /* Publish current torches FIRST, before checking the dirty flag.
+     * Torch place / remove only modifies the torch list, not the
+     * world's blocks - the light grid won't show as dirty yet, but
+     * set_torches diffs the new list against the cached one and
+     * marks dirty when it differs. The previous order had this
+     * after the dirty check, so a fresh torch sat on the torch list
+     * forever without ever propagating into the light grid (the bug
+     * the user is hitting: "Torches also not contributing to lighting
+     * updates"). Torch coordinates are body-local; the flame sits
+     * TORCH_FLAME_HEIGHT_M above the base. */
     static world_light_torch_t buf[TORCH_MAX_COUNT];
     int published = 0;
     int n = torch_count();
@@ -595,7 +687,10 @@ void hex_mesher_relight_if_needed(world_t* w) {
             ++published;
         }
     }
-    /* set_torches marks dirty again; rebuild clears it on completion. */
     world_light_set_torches(w->light, buf, published);
+
+    /* Now (after a possible torch-driven dirty mark above) decide
+     * whether anything needs rebuilding. */
+    if (!world_light_is_dirty(w->light)) return;
     world_light_rebuild(w->light, w);
 }

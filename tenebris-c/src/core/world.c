@@ -167,7 +167,20 @@ block_t world_get(const world_t* w, int tile, int depth) {
 void world_set(world_t* w, int tile, int depth, block_t b) {
     if (tile < 0 || tile >= w->tile_count) return;
     if (depth < 0 || depth >= WORLD_MAX_DEPTH) return;
-    w->blocks[tile * WORLD_MAX_DEPTH + depth] = (uint8_t)b;
+    /* No-op early-return when the new block matches the existing one.
+     * The /saves/body fetch on join writes every depth of every
+     * persisted tile (3840 calls for a 30-tile body) - the vast
+     * majority of those are idempotent because most depths haven't
+     * actually changed from procgen. Without this guard each
+     * idempotent call would queue a light edit, run a removal +
+     * addition BFS through the cell's neighbours, and risk
+     * overflowing the BFS's bounded add queue (which silently drops
+     * neighbour pushes), leaving correctly-lit surface cells stuck
+     * at sky=0. The mesh dirty bitset is also untouched here - no
+     * change, no remesh needed. */
+    int idx = tile * WORLD_MAX_DEPTH + depth;
+    if (w->blocks[idx] == (uint8_t)b) return;
+    w->blocks[idx] = (uint8_t)b;
     w->dirty[tile >> 3] |= (uint8_t)(1 << (tile & 7));
     /* Dirty neighbors too so their seam faces rebuild. */
     const goldberg_tile_t* t = goldberg_tile(w->grid, tile);
@@ -175,10 +188,13 @@ void world_set(world_t* w, int tile, int depth, block_t b) {
         int n = t->neighbors[i];
         w->dirty[n >> 3] |= (uint8_t)(1 << (n & 7));
     }
-    /* The light grid is now stale - mark for relight before the next
-     * mesh build. Phase 1 does a full BFS rebuild on the dirty flag;
-     * Phase 2 will swap to a bounded incremental queue. */
-    world_light_mark_dirty(w->light);
+    /* Mark the edited cell for incremental relight. The light grid
+     * runs a Minecraft-style removal-then-addition BFS bounded by
+     * sky_max steps, so a single block change only re-propagates the
+     * cells within roughly sky_max / lateral_loss tiles - not the
+     * whole planet. If the queue overflows the mark layer escalates
+     * to a full rebuild automatically. */
+    world_light_mark_dirty_at(w->light, tile, depth);
 }
 
 bool world_tile_dirty(const world_t* w, int tile) {
@@ -321,9 +337,18 @@ double world_walkable_floor_near(const world_t* w, int tile,
     double best_radius_above = -1e9;
     double best_dist_above   = 1e9;
 
-    for (int d = 0; d + 1 < WORLD_MAX_DEPTH; ++d) {
+    for (int d = 0; d < WORLD_MAX_DEPTH; ++d) {
         uint8_t cur = col[d];
-        uint8_t up  = col[d + 1];
+        /* Treat the cell ABOVE the topmost stored depth as implicit
+         * air - it's the open sky above the planet's build cap.
+         * Without this, the topmost solid block (d = WORLD_MAX_DEPTH-1)
+         * was never recognised as a walkable floor: the previous
+         * `d + 1 < WORLD_MAX_DEPTH` loop bound skipped it, so a
+         * player standing on a column they'd built all the way to
+         * the cap got snapped down to the next floor below any
+         * mid-column air pocket. Bug report: "if there's air below
+         * a top-cap column, the column loses collision". */
+        uint8_t up  = (d + 1 < WORLD_MAX_DEPTH) ? col[d + 1] : (uint8_t)BLOCK_AIR;
         if (block_is_passable(cur))     continue;   /* not solid */
         if (!block_is_passable(up))     continue;   /* roofed by solid */
         double floor_r = world_depth_to_radius_m(w, d + 1);

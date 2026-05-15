@@ -13,13 +13,25 @@
 #include <string.h>
 
 #define CHAT_NAME_MAX     32
-#define CHAT_FADE_HOLD_S  8.0    /* full opacity for this long */
-#define CHAT_FADE_OUT_S   2.0    /* fade-out window after hold */
+/* Live-chat visibility: a new message stays on screen for 5 minutes
+ * after it arrives, then fades over the last 15 seconds and drops off.
+ * The compose box being open always shows the full retained scrollback
+ * regardless of age. */
+#define CHAT_FADE_HOLD_S  (5.0 * 60.0)
+#define CHAT_FADE_OUT_S   15.0
+/* On a fresh connection the server replays the room's recent chat as
+ * a flurry of MSG_CHATs. They reach the client with current-time
+ * stamps and would otherwise look like brand-new traffic. Treat any
+ * MSG_CHAT received in the first CHAT_JOIN_GRACE_S after
+ * chat_begin_session as backlog: stored in scrollback (visible when
+ * the compose box opens), suppressed from the floating live panel. */
+#define CHAT_JOIN_GRACE_S 1.5
 
 typedef struct {
     char     name[CHAT_NAME_MAX];
     char     text[CHAT_TEXT_MAX + 1];
     double   recv_time_s;
+    bool     is_backlog;
 } chat_msg_t;
 
 static struct {
@@ -31,6 +43,11 @@ static struct {
     char       input_buf[CHAT_TEXT_MAX + 1];
     int        input_len;
     double     input_blink_start_s;
+
+    /* Session-grace bookkeeping for backlog suppression. session_grace_until_s
+     * is monotonic-now + grace at chat_begin_session; comparing inside
+     * chat_post_recv decides whether the inbound message is backlog. */
+    double     session_grace_until_s;
 } C;
 
 void chat_init(void) {
@@ -41,6 +58,10 @@ void chat_shutdown(void) { }
 
 bool chat_is_active(void) { return C.active; }
 
+void chat_begin_session(void) {
+    C.session_grace_until_s = stm_sec(stm_now()) + CHAT_JOIN_GRACE_S;
+}
+
 void chat_post_recv(uint32_t player_id, const char* name, const char* text) {
     (void)player_id;
     if (!text || !*text) return;
@@ -48,6 +69,7 @@ void chat_post_recv(uint32_t player_id, const char* name, const char* text) {
     snprintf(m->name, sizeof m->name, "%s", name && *name ? name : "?");
     snprintf(m->text, sizeof m->text, "%s", text);
     m->recv_time_s = stm_sec(stm_now());
+    m->is_backlog  = (m->recv_time_s < C.session_grace_until_s);
     C.head = (C.head + 1) % CHAT_HISTORY_MAX;
     if (C.count < CHAT_HISTORY_MAX) ++C.count;
 }
@@ -227,17 +249,31 @@ void chat_draw(float screen_w, float screen_h) {
     /* History panel — semi-opaque backdrop only when there's content
      * so it doesn't permanently darken the corner. When the compose
      * box is open the player is reading back the conversation, so
-     * show every retained message regardless of age. */
+     * show every retained message regardless of age or backlog flag.
+     * Otherwise: only real-time messages received within the live
+     * window (5 min + fade tail) make it to the floating panel.
+     * Backlog (the server's join-time chat replay) stays in
+     * scrollback - visible the moment the player opens the compose
+     * box - but doesn't pollute the live HUD with already-seen
+     * traffic.
+     *
+     * Resolved indices land in visible_idx[] so the row-render loop
+     * below can walk a dense list without re-deriving the skip
+     * conditions (and without subtly diverging on interleaved
+     * backlog vs real-time entries, which the previous index-stride
+     * approach silently mis-rendered). */
+    int visible_idx[CHAT_HISTORY_MAX];
     int visible = 0;
-    if (C.active) {
-        visible = C.count;
-    } else {
-        for (int i = 0; i < C.count; ++i) {
-            int idx = (C.head - 1 - i + CHAT_HISTORY_MAX) % CHAT_HISTORY_MAX;
-            double age = now - C.history[idx].recv_time_s;
+    for (int i = 0; i < C.count; ++i) {
+        int idx = (C.head - 1 - i + CHAT_HISTORY_MAX) % CHAT_HISTORY_MAX;
+        const chat_msg_t* m = &C.history[idx];
+        if (!C.active) {
+            if (m->is_backlog) continue;
+            double age = now - m->recv_time_s;
             if (age >= CHAT_FADE_HOLD_S + CHAT_FADE_OUT_S) break;
-            ++visible;
         }
+        visible_idx[visible++] = idx;
+        if (visible >= CHAT_HISTORY_MAX) break;
     }
     if (visible > 0) {
         const float row_h    = 18.0f;
@@ -271,8 +307,7 @@ void chat_draw(float screen_w, float screen_h) {
         const float row_x0  = pad + 8.0f;
         const float panel_y = input_y - panel_h - 6.0f;
         for (int i = 0; i < visible; ++i) {
-            int idx = (C.head - 1 - i + CHAT_HISTORY_MAX) % CHAT_HISTORY_MAX;
-            const chat_msg_t* m = &C.history[idx];
+            const chat_msg_t* m = &C.history[visible_idx[i]];
             double age = now - m->recv_time_s;
             float alpha = 1.0f;
             if (!C.active && age > CHAT_FADE_HOLD_S) {
