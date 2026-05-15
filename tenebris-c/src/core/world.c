@@ -2,6 +2,7 @@
 #include "core/world_light.h"
 #include "core/planet.h"
 #include "core/planet_gen.h"
+#include "core/config.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -305,14 +306,16 @@ static bool block_is_passable(uint8_t b) {
 }
 
 /* Vertical tolerance for "step me up onto a floor that's slightly
- * above where I asked". Matches player_ctrl.c's STEP_HEIGHT exactly -
- * it's the same physical concept: how far the player can be lifted
- * by ground-snap without it feeling like teleport. A bridge whose
- * top sits 1 cm above the player's feet (after one tick of gravity)
- * must be picked over the distant planet ground below, otherwise
- * the player falls through their own builds. Keep this in lock-step
- * with player_ctrl.c::STEP_HEIGHT. */
-#define WORLD_STEP_HEIGHT 0.6
+ * above where I asked". Sourced from lod.yaml's step_height_m - the
+ * same knob player_ctrl.c reads, so the two stay in lock-step without
+ * a duplicate define. It's the same physical concept: how far the
+ * player can be lifted by ground-snap without it feeling like
+ * teleport. A bridge whose top sits 1 cm above the player's feet
+ * (after one tick of gravity) must be picked over the distant planet
+ * ground below, otherwise the player falls through their own builds. */
+static double world_step_height(void) {
+    return (double)config_lod()->step_height_m;
+}
 
 double world_walkable_floor_near(const world_t* w, int tile,
                                  double target_radius_m,
@@ -397,7 +400,8 @@ double world_walkable_floor_near(const world_t* w, int tile,
      * needs to snap back. Only relevant when the above candidate is
      * physically close - bigger gaps (cave ceilings, terrain above an
      * overhang) keep the legacy "prefer below" behaviour. */
-    if (best_radius_above > -1e8 && best_dist_above <= WORLD_STEP_HEIGHT) {
+    const double step_h = world_step_height();
+    if (best_radius_above > -1e8 && best_dist_above <= step_h) {
         if (best_radius_below < -1e8 || best_dist_above < best_dist_below) {
             return best_radius_above;
         }

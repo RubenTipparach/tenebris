@@ -167,6 +167,27 @@ typedef struct {
      * feet + height_m against the ceiling block bottom radius. */
     float player_height_m;
 
+    /* Maximum vertical "step up" the player can take in one frame -
+     * both for horizontal step-on-curb (walking into a tile whose
+     * floor sits this much above current feet) and for ground-snap
+     * pop-up (the bridge case where feet have dipped a hair below
+     * the floor through gravity, or the falling-into-a-narrow-hole
+     * case where horizontal drift puts feet inside a wall column).
+     * Larger = more permissive (climb taller steps without jumping,
+     * but also more risk of popping to the top of a tall column).
+     * 0.6 m is the historical Minecraft-style "auto-step half a
+     * block" feel. */
+    float step_height_m;
+
+    /* Camera-cylinder collider radius. The eye sits EYE_HEIGHT above
+     * the player's feet; when the eye gets closer than this distance
+     * to a solid voxel face at eye depth, the player is pushed back
+     * along the offending direction so the near plane doesn't clip
+     * through the wall. Must be >= the perspective near plane (0.3 m)
+     * with some margin. 0.4 m gives a 10 cm cushion. Set to 0 to
+     * disable the collider entirely. */
+    float camera_collider_radius_m;
+
     /* Water physics — ported from JS PlayerConfig WATER_* knobs.
      *   gravity_mult         — multiplier on body gravity while
      *                          the player's body is submerged. 0.3

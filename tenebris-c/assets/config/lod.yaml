@@ -102,6 +102,21 @@ lod:
   # of head clearance.
   player_height_m:             1.8
 
+  # Maximum vertical step-up in one frame. Used both for horizontal
+  # step-on-curb (walking into a tile whose floor sits this much above
+  # current feet) AND for ground-snap pop-up (bridge case, or feet
+  # below a near floor). Larger = climb taller steps without jumping,
+  # but more risk of popping to the top of a tall column after a fall.
+  # 0.6 is the historical "auto-step half a block" feel.
+  step_height_m:               0.6
+
+  # Camera-cylinder collider radius. The eye sits EYE_HEIGHT above the
+  # player's feet; when it gets closer than this to a solid voxel face
+  # at eye depth, the player is pushed back so the near plane doesn't
+  # clip through the wall. Must be >= 0.3 m (the perspective near
+  # plane) with some margin. Set to 0 to disable.
+  camera_collider_radius_m:    0.4
+
   # Water physics. The player has three "water" gates:
   #   - feet in water  (feet_radius is inside a water voxel)
   #   - body in water  (feet + water_body_check_height_m is in water)

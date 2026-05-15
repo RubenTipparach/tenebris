@@ -264,6 +264,8 @@ static lod_config_t S_LOD = {
     .jetpack_accel_mps2          = 42.0f,
     .jetpack_max_vy_mps          = 14.0f,
     .player_height_m             = 1.8f,
+    .step_height_m               = 0.6f,
+    .camera_collider_radius_m    = 0.4f,
     .water_gravity_mult          = 0.30f,
     .water_drag_per_s            = 3.0f,
     .water_movement_mult         = 0.50f,
@@ -385,6 +387,10 @@ int config_load_lod(const char* path) {
                             S_LOD.jetpack_max_vy_mps          = (float)strtod(val, NULL);
                         } else if (strcmp(key, "player_height_m"          ) == 0) {
                             S_LOD.player_height_m             = (float)strtod(val, NULL);
+                        } else if (strcmp(key, "step_height_m"            ) == 0) {
+                            S_LOD.step_height_m               = (float)strtod(val, NULL);
+                        } else if (strcmp(key, "camera_collider_radius_m" ) == 0) {
+                            S_LOD.camera_collider_radius_m    = (float)strtod(val, NULL);
                         } else if (strcmp(key, "water_gravity_mult"       ) == 0) {
                             S_LOD.water_gravity_mult          = (float)strtod(val, NULL);
                         } else if (strcmp(key, "water_drag_per_s"         ) == 0) {
