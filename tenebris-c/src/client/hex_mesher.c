@@ -165,10 +165,24 @@ static void smooth_corner_sample(const world_t* w,
     int max = config_lighting()->voxel_sky_max;
     if (max <= 0) max = 15;
 
+    /* Skip voxels whose block covers their face: those cells are solid
+     * stone and the BFS leaves them at sky=0, but they aren't what the
+     * surface "sees" from this corner. Including them averages a 0 in
+     * and tanks brightness for any face on a tall isolated column -
+     * the own tile at depth_at_air is solid for every side face, so
+     * we were silently halving sky on the sides of a 1-tile-wide
+     * tower even though all the surrounding open-sky neighbours read
+     * full sky_max. The same skip lets cap faces keep their previous
+     * behaviour (the own tile at depth_at_air is air for caps, so it
+     * contributes normally). */
     int tiles[3] = { tile, nbr_a, nbr_b };
     for (int i = 0; i < 3; ++i) {
         int ti = tiles[i];
         if (ti < 0) continue;
+        if (depth_at_air >= 0 && depth_at_air < WORLD_MAX_DEPTH) {
+            block_t b = (block_t)w->blocks[(size_t)ti * WORLD_MAX_DEPTH + depth_at_air];
+            if (block_covers_face(b)) continue;
+        }
         sky_sum   += world_light_sky  (w->light, ti, depth_at_air);
         block_sum += world_light_block(w->light, ti, depth_at_air);
         ++samples;

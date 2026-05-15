@@ -64,6 +64,6 @@ lighting:
   torch_color:         [1.00, 0.70, 0.30]
   torch_intensity:     1.00
 
-  engine:               column
+  engine:               voxel
   voxel_sky_max:        15
   voxel_torch_emission: 14
