@@ -337,9 +337,18 @@ double world_walkable_floor_near(const world_t* w, int tile,
     double best_radius_above = -1e9;
     double best_dist_above   = 1e9;
 
-    for (int d = 0; d + 1 < WORLD_MAX_DEPTH; ++d) {
+    for (int d = 0; d < WORLD_MAX_DEPTH; ++d) {
         uint8_t cur = col[d];
-        uint8_t up  = col[d + 1];
+        /* Treat the cell ABOVE the topmost stored depth as implicit
+         * air - it's the open sky above the planet's build cap.
+         * Without this, the topmost solid block (d = WORLD_MAX_DEPTH-1)
+         * was never recognised as a walkable floor: the previous
+         * `d + 1 < WORLD_MAX_DEPTH` loop bound skipped it, so a
+         * player standing on a column they'd built all the way to
+         * the cap got snapped down to the next floor below any
+         * mid-column air pocket. Bug report: "if there's air below
+         * a top-cap column, the column loses collision". */
+        uint8_t up  = (d + 1 < WORLD_MAX_DEPTH) ? col[d + 1] : (uint8_t)BLOCK_AIR;
         if (block_is_passable(cur))     continue;   /* not solid */
         if (!block_is_passable(up))     continue;   /* roofed by solid */
         double floor_r = world_depth_to_radius_m(w, d + 1);

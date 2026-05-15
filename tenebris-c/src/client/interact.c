@@ -272,7 +272,17 @@ void interact_update(interact_state_t* s, world_t* w, player_ctrl_t* p, float dt
     }
 
     if (in->right_click) {
-        if (s->place_depth >= 0 && s->place_depth < WORLD_MAX_DEPTH &&
+        /* The topmost cell (depth = WORLD_MAX_DEPTH - 1) is reserved
+         * as the planet's build cap - the layer above it is the
+         * implicit-air sky boundary the floor / ceiling helpers
+         * rely on, and placing a block here would put it flush
+         * against that boundary with no air gap, breaking collision
+         * (a player on top of such a block would have their head
+         * past the cap). Reject the placement entirely; the click
+         * is consumed as a no-op so the inventory keeps the block,
+         * exactly as the user requested. */
+        const int MAX_BUILD_DEPTH = WORLD_MAX_DEPTH - 1;
+        if (s->place_depth >= 0 && s->place_depth < MAX_BUILD_DEPTH &&
             inventory_can_place(&p->inventory))
         {
             block_t to_place = inventory_selected(&p->inventory);
