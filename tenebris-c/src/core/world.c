@@ -175,10 +175,13 @@ void world_set(world_t* w, int tile, int depth, block_t b) {
         int n = t->neighbors[i];
         w->dirty[n >> 3] |= (uint8_t)(1 << (n & 7));
     }
-    /* The light grid is now stale - mark for relight before the next
-     * mesh build. Phase 1 does a full BFS rebuild on the dirty flag;
-     * Phase 2 will swap to a bounded incremental queue. */
-    world_light_mark_dirty(w->light);
+    /* Mark the edited cell for incremental relight. The light grid
+     * runs a Minecraft-style removal-then-addition BFS bounded by
+     * sky_max steps, so a single block change only re-propagates the
+     * cells within roughly sky_max / lateral_loss tiles - not the
+     * whole planet. If the queue overflows the mark layer escalates
+     * to a full rebuild automatically. */
+    world_light_mark_dirty_at(w->light, tile, depth);
 }
 
 bool world_tile_dirty(const world_t* w, int tile) {

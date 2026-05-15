@@ -48,11 +48,20 @@ void           world_light_destroy(world_light_t* l);
  * dst against a world cloned from the same body / subdivisions). */
 void world_light_clone_into(world_light_t* dst, const world_light_t* src);
 
-/* Mark the grid as needing a full relight. Cheap O(1). Called from
- * world_set on any block edit, and from the torch place / remove
- * paths via world_light_set_torches. */
+/* Mark the grid as needing a full relight. Cheap O(1). Used when
+ * the world is created / cloned and the entire grid must be rebuilt
+ * from scratch. For ongoing block edits, prefer mark_dirty_at so
+ * the BFS only touches cells near the change. */
 void world_light_mark_dirty(world_light_t* l);
 bool world_light_is_dirty(const world_light_t* l);
+
+/* Per-edit dirty: pushes (tile, depth) into the incremental rebuild
+ * queue. world_set calls this on each block change so the rebuild
+ * only re-propagates light around the affected cell, Minecraft-
+ * style, instead of clearing + reseeding the whole planet. If the
+ * queue overflows (e.g. a huge multi-tile chunk diff lands at once),
+ * the next rebuild silently falls back to a full pass. */
+void world_light_mark_dirty_at(world_light_t* l, int tile, int depth);
 
 /* Block-light source description. The mesher (which owns the torch
  * list) publishes these via world_light_set_torches before each

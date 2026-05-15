@@ -35,6 +35,13 @@ typedef struct {
     int       count;
 } queue_t;
 
+/* Per-edit ripple queue cap. Larger = more edits batch into the next
+ * incremental rebuild before we fall back to a full pass. 8192 is
+ * comfortable for hundreds of CHUNK_DIFF entries arriving in one
+ * frame; one player placing blocks at human speed never gets near
+ * the cap. Each entry is a uint32 voxel index. */
+#define LIGHT_EDIT_QUEUE_CAP   8192
+
 struct world_light_s {
     int        tile_count;
     int        depth;            /* always WORLD_MAX_DEPTH; cached     */
@@ -52,6 +59,15 @@ struct world_light_s {
     int                   seed_tile_cursor;   /* sky seed pass progress */
     int                   torch_seed_cursor;
     bool                  restart_pending;     /* edit during rebuild */
+
+    /* Incremental rebuild state. world_set pushes (tile, depth) here
+     * via mark_dirty_at; the next rebuild drains the queue with a
+     * bounded BFS (removal + addition pass) rather than a full
+     * memset + seed. A full rebuild is forced when needs_full = true
+     * (initial create / clone, or overflow). */
+    uint32_t   edits[LIGHT_EDIT_QUEUE_CAP];
+    int        edit_count;
+    bool       needs_full;
 };
 
 /* ----------------------------------------------------------------------- */
@@ -82,6 +98,10 @@ world_light_t* world_light_create(const world_t* w) {
     l->depth      = WORLD_MAX_DEPTH;
     l->nibbles    = (uint8_t*)calloc((size_t)(l->tile_count * l->depth), 1);
     l->dirty      = true;
+    /* Fresh grid - the first rebuild has to walk every column to
+     * seed sky; subsequent rebuilds run incrementally from the edit
+     * queue. */
+    l->needs_full = true;
     return l;
 }
 
@@ -112,6 +132,8 @@ void world_light_clone_into(world_light_t* dst, const world_light_t* src) {
     dst->seed_tile_cursor = 0;
     dst->torch_seed_cursor = 0;
     dst->restart_pending = false;
+    dst->edit_count = 0;
+    dst->needs_full = true;       /* first rebuild on the clone is full */
 }
 
 void world_light_mark_dirty(world_light_t* l) {
@@ -121,7 +143,29 @@ void world_light_mark_dirty(world_light_t* l) {
          * don't churn the queue, then schedule a fresh rebuild after. */
         l->restart_pending = true;
     }
+    l->needs_full = true;
+    l->dirty      = true;
+}
+
+void world_light_mark_dirty_at(world_light_t* l, int tile, int depth) {
+    if (!l) return;
+    if (tile < 0 || tile >= l->tile_count) return;
+    if (depth < 0 || depth >= WORLD_MAX_DEPTH) return;
+    /* Already requested a full pass - no point queueing per-cell
+     * entries that will be discarded. */
+    if (l->needs_full) { l->dirty = true; return; }
+    if (l->edit_count >= LIGHT_EDIT_QUEUE_CAP) {
+        /* Queue overflow - escalate to a full rebuild so we don't
+         * silently miss any edits. */
+        l->needs_full = true;
+        l->edit_count = 0;
+        l->dirty      = true;
+        if (l->phase != LR_IDLE) l->restart_pending = true;
+        return;
+    }
+    l->edits[l->edit_count++] = (uint32_t)voxel_index(tile, depth);
     l->dirty = true;
+    if (l->phase != LR_IDLE) l->restart_pending = true;
 }
 bool world_light_is_dirty(const world_light_t* l) {
     return l ? l->dirty : false;
@@ -321,10 +365,198 @@ static void    set_sky_w  (world_light_t* l, int idx, uint8_t v) { set_sky  (l, 
 static void    set_block_w(world_light_t* l, int idx, uint8_t v) { set_block(l, idx, v); }
 
 /* ----------------------------------------------------------------------- */
+/* Incremental rebuild (Minecraft-style).
+ *
+ * For each edited voxel we run a Tomas-Akenine-Mol-style two-pass
+ * BFS: a "removal" pass that BFS-clears any light value that was
+ * derived from a now-decreased source, then an "addition" pass that
+ * re-propagates from remaining sources. This means a single block
+ * place / break only touches the cells within at most sky_max steps
+ * of the edit, not the whole planet. The full-rebuild path stays as
+ * a fallback for the initial world creation and for the queue-
+ * overflow case.
+ *
+ * Queues use the encoding (idx | (old_value << 24)) so the removal
+ * pass knows the threshold below which a neighbour was "definitely
+ * lit by us"; standard packing matches Minecraft's reference impl. */
+
+static void incremental_pass_for_channel(world_light_t* l, const world_t* w,
+                                            const uint32_t* edits, int edit_count,
+                                            get_fn_t getf, set_fn_t setf,
+                                            int lateral_cost,
+                                            int seed_sky_max,
+                                            bool channel_is_sky) {
+    /* Reuse the persistent queue on the grid. Make sure it's empty
+     * so we don't blend with a previous BFS. */
+    if (!l->q.buf) queue_init(&l->q, 1024);
+    l->q.head = l->q.tail = l->q.count = 0;
+
+    /* Pass 1: removal. Seed with each edited cell's PRIOR value;
+     * neighbours strictly less than that prior value were lit BY
+     * the edit (they get cleared and queued for further removal),
+     * neighbours greater-or-equal are independent sources that get
+     * pushed into the addition queue afterwards. */
+    int nbrs[MAX_NEIGHBOURS];
+    int cost[MAX_NEIGHBOURS];
+
+    for (int i = 0; i < edit_count; ++i) {
+        uint32_t idx = edits[i];
+        int tile  = (int)idx / WORLD_MAX_DEPTH;
+        int depth = (int)idx % WORLD_MAX_DEPTH;
+        block_t b = (block_t)w->blocks[(size_t)tile * WORLD_MAX_DEPTH + depth];
+        uint8_t old = getf(l, (int)idx);
+        /* If the cell is now solid OR was previously a light source
+         * and lost its source, its stored value is now stale - clear
+         * it. Air-becoming-air is also valid (the BFS will just
+         * re-derive the right value during the addition pass). */
+        if (block_covers_face(b)) setf(l, (int)idx, 0);
+        /* Pack (idx | (old << 24)) for the removal BFS. old <= 15 so
+         * the top byte is safe to use. */
+        if (old > 0) {
+            queue_push(&l->q, idx | ((uint32_t)old << 24));
+        } else {
+            /* No prior light - go straight to addition with cell +
+             * neighbours so light can flow in if the cell opened up. */
+            queue_push(&l->q, idx | 0x80000000u);  /* marker bit = "addition" */
+        }
+    }
+
+    /* Process removal entries. Mixed in with addition markers for
+     * cells with no prior light; we route them appropriately. */
+    /* Use a second pass through a scratch list for the addition
+     * queue - we can't share the BFS queue between removal and
+     * addition phases because Minecraft's algorithm requires the
+     * removal frontier fully expand before additions begin. */
+    uint32_t* add_q = (uint32_t*)malloc(sizeof(uint32_t) * (size_t)LIGHT_EDIT_QUEUE_CAP * 32);
+    int       add_head = 0, add_tail = 0;
+    int       add_cap  = LIGHT_EDIT_QUEUE_CAP * 32;
+    if (!add_q) return;
+
+    /* Drain the (mixed) queue into removal work and the addition
+     * queue. */
+    while (l->q.count > 0) {
+        uint32_t packed = queue_pop(&l->q);
+        if (packed & 0x80000000u) {
+            /* Pre-marked addition entry. Strip marker, push to add_q. */
+            if (add_tail < add_cap) add_q[add_tail++] = packed & 0x7FFFFFFFu;
+            continue;
+        }
+        uint32_t idx = packed & 0x00FFFFFFu;
+        uint8_t  old = (uint8_t)((packed >> 24) & 0xFF);
+        int tile  = (int)idx / WORLD_MAX_DEPTH;
+        int depth = (int)idx % WORLD_MAX_DEPTH;
+        int count = voxel_neighbours_with_cost(w, tile, depth, nbrs, cost, lateral_cost);
+        for (int k = 0; k < count; ++k) {
+            int n_idx = nbrs[k];
+            uint8_t n_v = getf(l, n_idx);
+            if (n_v == 0) continue;
+            if (n_v < old) {
+                /* Definitely lit by us - clear + recurse. */
+                setf(l, n_idx, 0);
+                queue_push(&l->q, (uint32_t)n_idx | ((uint32_t)n_v << 24));
+            } else {
+                /* Independent source - re-add. */
+                if (add_tail < add_cap) add_q[add_tail++] = (uint32_t)n_idx;
+            }
+        }
+        /* Also push the cell itself to addition so it can pull from
+         * any neighbour that survived the removal. */
+        if (add_tail < add_cap) add_q[add_tail++] = idx;
+    }
+
+    /* Pass 2: addition. For each candidate, compute what its sky
+     * SHOULD be from neighbour values + (if applicable) the column-
+     * top seed. If the computed value > stored, set it and propagate
+     * to neighbours. */
+    while (add_head < add_tail) {
+        uint32_t idx = add_q[add_head++];
+        int tile  = (int)idx / WORLD_MAX_DEPTH;
+        int depth = (int)idx % WORLD_MAX_DEPTH;
+        block_t b = (block_t)w->blocks[(size_t)tile * WORLD_MAX_DEPTH + depth];
+        if (block_covers_face(b)) continue;
+
+        /* Best candidate value: max of neighbour - cost. */
+        int count = voxel_neighbours_with_cost(w, tile, depth, nbrs, cost, lateral_cost);
+        int best = 0;
+        for (int k = 0; k < count; ++k) {
+            int n_idx = nbrs[k];
+            int v = (int)getf(l, n_idx) - cost[k];
+            if (v > best) best = v;
+        }
+        /* Sky channel only: if this cell sees direct sky (every
+         * cell above is non-face-covering), the column-top seed
+         * lifts it to sky_max. */
+        if (channel_is_sky && seed_sky_max > 0) {
+            bool sees_sky = true;
+            for (int d = depth + 1; d < WORLD_MAX_DEPTH; ++d) {
+                block_t up = (block_t)w->blocks[
+                    (size_t)tile * WORLD_MAX_DEPTH + d];
+                if (block_covers_face(up)) { sees_sky = false; break; }
+            }
+            if (sees_sky && best < seed_sky_max) best = seed_sky_max;
+        }
+
+        if (best > (int)getf(l, (int)idx)) {
+            setf(l, (int)idx, (uint8_t)best);
+            /* Propagate to neighbours. */
+            for (int k = 0; k < count; ++k) {
+                int n_idx = nbrs[k];
+                block_t nb = (block_t)w->blocks[
+                    (size_t)(n_idx / WORLD_MAX_DEPTH) * WORLD_MAX_DEPTH
+                    + (n_idx % WORLD_MAX_DEPTH)];
+                if (block_covers_face(nb)) continue;
+                if (add_tail >= add_cap) break;
+                add_q[add_tail++] = (uint32_t)n_idx;
+            }
+        }
+    }
+    free(add_q);
+}
+
+static void run_incremental_rebuild(world_light_t* l, const world_t* w) {
+    if (l->edit_count <= 0) return;
+    const lighting_config_t* cfg = config_lighting();
+    int lateral_cost = cfg->voxel_sky_lateral_loss;
+    if (lateral_cost < 1) lateral_cost = 1;
+
+    /* Snapshot the edit list and clear it - new edits arriving
+     * during this pass land in a fresh queue and are processed on
+     * the next rebuild call (cheap, the BFS is bounded). */
+    int      n = l->edit_count;
+    uint32_t edits[LIGHT_EDIT_QUEUE_CAP];
+    memcpy(edits, l->edits, (size_t)n * sizeof(uint32_t));
+    l->edit_count = 0;
+
+    /* Sky channel. */
+    incremental_pass_for_channel(l, w, edits, n,
+                                    get_sky_w, set_sky_w,
+                                    lateral_cost, cfg->voxel_sky_max,
+                                    /* channel_is_sky = */ true);
+    /* Block channel - same algorithm with the seed step skipped. */
+    incremental_pass_for_channel(l, w, edits, n,
+                                    get_block_w, set_block_w,
+                                    lateral_cost, /*seed_max=*/0,
+                                    /* channel_is_sky = */ false);
+}
+
+/* ----------------------------------------------------------------------- */
 
 void world_light_rebuild(world_light_t* l, const world_t* w) {
     if (!l || !w) return;
     if (!l->dirty && l->phase == LR_IDLE) return;
+
+    /* Two distinct paths. The incremental path - the common case
+     * once the world has been loaded once - drains the edit queue
+     * with a bounded BFS per touched cell. The full path covers
+     * the initial create / clone of a world, and the queue-overflow
+     * fallback. */
+    if (!l->needs_full && l->phase == LR_IDLE && l->edit_count > 0) {
+        run_incremental_rebuild(l, w);
+        if (l->edit_count == 0 && !l->needs_full) {
+            l->dirty = false;
+        }
+        return;
+    }
 
     const lighting_config_t* cfg = config_lighting();
     int budget = cfg->voxel_rebuild_ops_per_frame;
@@ -392,9 +624,15 @@ void world_light_rebuild(world_light_t* l, const world_t* w) {
             --budget;
         } else if (l->phase == LR_BLOCK_BFS) {
             if (l->q.count == 0) {
-                /* Done. If an edit landed mid-rebuild we kick another
-                 * pass next frame; otherwise we clear dirty here. */
-                l->phase = LR_IDLE;
+                /* Done. The full pass is complete - subsequent edits
+                 * route through the incremental path until something
+                 * forces another full rebuild (clone, overflow). If
+                 * an edit landed mid-rebuild it sets restart_pending
+                 * + dirty so the next call kicks again, but uses
+                 * incremental (the edits live in the per-cell queue
+                 * if needs_full wasn't forced). */
+                l->phase      = LR_IDLE;
+                l->needs_full = false;
                 if (l->restart_pending) {
                     l->restart_pending = false;
                     l->dirty           = true;

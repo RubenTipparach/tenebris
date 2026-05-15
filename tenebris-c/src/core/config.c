@@ -603,10 +603,12 @@ static lighting_config_t S_LIGHTING = {
     .engine              = 0,    /* "column" — legacy path, no behaviour change */
     .voxel_sky_max       = 15,
     .voxel_torch_emission= 14,
-    /* Default to a steeper lateral falloff than vertical so cavities
-     * actually go dark instead of leaking sky in laterally at 1
-     * step / voxel. The yaml overrides this. */
-    .voxel_sky_lateral_loss     = 3,
+    /* 1 matches Minecraft's classic lateral falloff: no extra
+     * attenuation beyond the per-step minus one. Higher values
+     * darken cavities faster but also pull open-ground shadows
+     * away from cliff bases, which read as "ground that obviously
+     * sees sky is still dark". The yaml overrides this. */
+    .voxel_sky_lateral_loss     = 1,
     /* 50 000 BFS pops per frame budgets the rebuild around 1-2 ms on
      * the wasm target; smaller values stretch the rebuild over more
      * frames at the cost of stale lighting for longer. */

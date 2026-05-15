@@ -68,10 +68,11 @@ lighting:
   voxel_sky_max:        15
   voxel_torch_emission: 14
   # Lateral BFS step attenuation. Vertical-down stays implicit -1
-  # (preserves the daylight-shaft effect). 3 darkens cavities and
-  # under-overhang interiors noticeably faster than the Minecraft-
-  # classic 1; bump higher if shadows still feel too soft.
-  voxel_sky_lateral_loss: 3
+  # (preserves the daylight-shaft effect). 1 matches Minecraft's
+  # behaviour: cavities and under-overhang interiors only darken
+  # at the boundary, not several tiles into the open ground. Bump
+  # to 2-3 if shadows feel too soft.
+  voxel_sky_lateral_loss: 1
   # Per-frame BFS pop budget. Keeps a heavy relight from stalling
   # the frame after a chunk edit; the BFS resumes the following
   # frame from where it left off.
