@@ -965,8 +965,13 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
         dvec3_t local_dir = dvec3_normalize(local);
         /* Re-resolve the tile under the player after the position
          * update so the cave-aware floor finder samples the column
-         * we actually moved into. */
-        int     cur_tile = goldberg_find_tile(w->grid, local_dir, p->last_tile);
+         * we actually moved into. The prev_tile snapshot is what
+         * distinguishes a "still in my own column, just overshot
+         * the floor" rescue (snap up regardless of distance) from
+         * a "drifted tangentially into a tall wall column"
+         * (cap snap at step_height to avoid the pop-to-top bug). */
+        int     prev_tile = p->last_tile;
+        int     cur_tile  = goldberg_find_tile(w->grid, local_dir, p->last_tile);
         p->last_tile = cur_tile;
 
         /* Ceiling collision first. If the player's head pokes into a
@@ -1014,24 +1019,50 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
          * below resolves to the cave floor instead of the overhang
          * top.
          *
-         * The pop-up branch (feet below floor) is capped at
-         * step_height_m: a feet-below-floor situation within step
-         * height is the bridge-dip case (gravity nudged feet a hair
-         * under the bridge top, snap them back). Anything further
-         * means the player is falling past a tall wall they got
-         * tangentially nudged into - we DON'T want to teleport them
-         * to the top of that wall; let them keep falling so the next
-         * frame's gravity carries them clear of the wall column and
-         * resumes finding a floor at-or-below their feet. */
+         * The "feet below floor" branch needs to handle three
+         * distinct situations:
+         *   1. BRIDGE DIP - feet slipped a hair under the floor they
+         *      were ON via gravity. (gr - r) is small. Snap up to
+         *      restore the player to the bridge top.
+         *   2. VERTICAL OVERSHOOT - player was already in this
+         *      column and fell past its floor in one frame (lag
+         *      spike, jetpack-fall hitting terrain, spawn placing
+         *      them inside the procgen-vs-mesh disagreement). Same
+         *      tile as last frame, OR first frame after a warp
+         *      (prev_tile = -1 from init / teleport / body swap).
+         *      (gr - r) can be arbitrarily large; we still want to
+         *      snap so the player doesn't fall through the world.
+         *   3. TANGENTIAL DRIFT INTO A WALL - player was in a hole
+         *      adjacent to a tall column, drifted sideways into the
+         *      column tile. The column has its only floor far above
+         *      (the wall top). prev_tile != cur_tile AND (gr - r) is
+         *      large. Do NOT snap - this is the pop-to-top-of-wall
+         *      bug; let the player keep falling so gravity carries
+         *      them clear of the wall column next frame. */
         double gr = world_walkable_floor_near(w, cur_tile, r, 0.0);
         const double step_h = (double)config_lod()->step_height_m;
         if (gr > -1e8) {
+            bool warped     = (prev_tile < 0);
+            bool same_tile  = (prev_tile == cur_tile);
+            bool small_step = ((gr - r) <= step_h);
+            bool rescue     = same_tile || warped;
             /* Standard wading state: feet under water but grounded
              * on the seabed. Allowed (player still counts as
              * grounded) so they can jump from the bottom. Fully
              * submerged swimming sets grounded=false even when
              * touching a floor — the JS reference does the same. */
-            if (r < gr && (gr - r) <= step_h && vy <= 0.0) {
+            if (r < gr && vy <= 0.0 && (small_step || rescue)) {
+                if (!small_step) {
+                    /* Big snap - log once per event so we can spot
+                     * the pattern in console (helps tell legitimate
+                     * spawn rescues from glitchy-physics events). */
+                    fprintf(stderr,
+                            "[player] INFO: vertical-overshoot rescue "
+                            "(body=%s r=%.2f gr=%.2f Δ=%.2f same_tile=%d warped=%d)\n",
+                            p->body->name, r, gr, gr - r,
+                            same_tile ? 1 : 0, warped ? 1 : 0);
+                    fflush(stderr);
+                }
                 dvec3_t snapped_local = dvec3_scale(local_dir, gr);
                 p->position = dvec3_add(
                     dvec3_make(p->body->pos_x, p->body->pos_y, p->body->pos_z),

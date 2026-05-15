@@ -7,6 +7,7 @@
 #include <stdarg.h> /* va_list for the HTTP dashboard's JSON builder */
 #include <sys/resource.h>   /* getrusage for the /status CPU sampler */
 #include <unistd.h>         /* sysconf for clock ticks + core count */
+#include "core/config.h"
 #include "core/net_transport.h"
 #include "core/planet.h"
 #include "core/proto.h"
@@ -1045,6 +1046,34 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
             }
             /* Drop out-of-order packets — keep only the freshest pose. */
             if (cl->has_state && st.client_tick <= cl->last_client_tick) break;
+            /* Sanity-check the reported position against the body
+             * the player claims to be on. A position close to the
+             * body centre means the player has fallen through the
+             * world; if we accepted + persisted it the player would
+             * re-spawn into the same broken state on every reconnect.
+             * Reject the update (keep the previous good pose) and
+             * log so the client-side root cause is fixable. The
+             * threshold mirrors the client's respawn safety net. */
+            if (cl->has_state) {
+                const body_config_t* body = planet_get((body_id_t)st.body_id);
+                if (body) {
+                    double dx = st.pos_x - body->pos_x;
+                    double dy = st.pos_y - body->pos_y;
+                    double dz = st.pos_z - body->pos_z;
+                    double r  = sqrt(dx*dx + dy*dy + dz*dz);
+                    double threshold = (double)body->radius_m
+                                    * (double)config_lod()->respawn_fall_radius_frac;
+                    if (threshold > 0.0 && r < threshold) {
+                        fprintf(stderr,
+                                "[server] WARN: rejecting PLAYER_STATE from "
+                                "player_id=%u body=%u with sub-surface pose "
+                                "(r=%.2f < %.2f); keeping previous good pose\n",
+                                cl->player_id, st.body_id, r, threshold);
+                        fflush(stderr);
+                        break;
+                    }
+                }
+            }
             bool first = !cl->has_state;
             cl->has_state        = true;
             cl->body_id          = st.body_id;
