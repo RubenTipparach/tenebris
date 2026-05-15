@@ -423,6 +423,23 @@ static struct {
     float            smoothed_fps;
 } G;
 
+/* Accessors for modules that need the live player pose but don't
+ * want to pull main_web.h. The /saves audit in net_client.c uses
+ * these to score the distance from the camera to each persisted
+ * tile. Returning a dvec3 by value keeps the contract minimal. */
+dvec3_t tenebris_get_local_player_pos(void) {
+    return G.player.position;
+}
+
+uint32_t tenebris_get_local_player_body_id(void) {
+    /* G.player.body is the live gravitational anchor (NULL when the
+     * player is anchorless in deep space). Fall back to BODY_TENEBRIS
+     * so the audit's distance calculations have something to anchor
+     * to instead of mis-attributing everything to body 0 = error. */
+    if (G.player.body) return (uint32_t)G.player.body->id;
+    return 0;  /* BODY_TENEBRIS */
+}
+
 /* --------------------------------------------------------------------- */
 
 static void init(void) {

@@ -2,15 +2,29 @@
 #include "client/chat.h"
 #include "client/remote_players.h"
 #include "client/renderer.h"
+#include "core/goldberg.h"
+#include "core/math.h"
 #include "core/net_transport.h"
 #include "core/proto.h"
 #include "core/world.h"
 
 #include "sokol_time.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
+
+/* Player-position accessor provided by main_web.c so the /saves audit
+ * can score distance from the camera to each persisted tile. Declared
+ * here as an extern instead of pulling main_web.h to avoid coupling
+ * the net layer to the game-loop module. Returns world-space dvec3. */
+extern dvec3_t tenebris_get_local_player_pos(void);
+extern uint32_t tenebris_get_local_player_body_id(void);
 
 #define NET_NAME_MAX           32
 #define NET_NAME_CACHE_SIZE    32
@@ -45,6 +59,23 @@
  * sparse: every body the client ever sees a diff for gets one slot
  * for the rest of the session. */
 #define NET_BODY_COVERAGE_MAX        32
+
+/* /saves audit timing. The audit kicks once per connection after
+ * NET_AUDIT_MIN_READY_S in NET_CLIENT_READY AND NET_AUDIT_QUIET_S
+ * since the last CHUNK_DIFF. Both gates matter: the min-ready prevents
+ * the audit from firing before the server even sends its first
+ * replay batch on a slow link, and the quiet gate prevents firing
+ * mid-stream when the server's still pushing hundreds of diffs. */
+#define NET_AUDIT_MIN_READY_S        3.0
+#define NET_AUDIT_QUIET_S            2.0
+
+/* Distance from the player below which an audit miss is logged as
+ * an ERROR (the tile is in /saves but no CHUNK_DIFF for it ever
+ * arrived AND the player is close enough that the missing blocks
+ * would be visible). Misses outside this radius drop to a count-only
+ * summary so a flyby of a 160k-tile planet doesn't spam the console
+ * with every tile on the far side. */
+#define NET_AUDIT_NEAR_RADIUS_M      256.0
 
 typedef struct {
     uint32_t player_id;
@@ -132,15 +163,33 @@ typedef struct {
      * maintained as a small in-memory set of "last seen" tile ids
      * per body - good enough for the operator-facing log we use to
      * compare against /saves output, without paying for a real hash
-     * table. */
+     * table.
+     *
+     * `tile_bits` is the bitset of every tile_idx we've seen at least
+     * one CHUNK_DIFF entry for on this body. Sized to the body's
+     * tile_count at first-touch and never resized. Drives the /saves
+     * audit which cross-references our received set against the
+     * server's authoritative list. */
     struct {
         uint32_t body_id;
         uint32_t edits_seen;      /* total entries across all diffs */
         uint32_t unique_tiles;    /* count of distinct tile ids seen */
         uint32_t last_tile_seen;  /* dedup tip for back-to-back same-tile diffs */
         bool     last_tile_valid;
+        uint8_t* tile_bits;       /* bit per tile_idx, NULL until allocated */
+        int      tile_bits_bytes; /* size of tile_bits in bytes */
+        int      world_tile_count;
     }                    body_coverage[NET_BODY_COVERAGE_MAX];
     int                  body_coverage_count;
+
+    /* /saves audit: fires once per connection, after CHUNK_DIFF replays
+     * settle. last_chunk_diff_time is bumped on every received diff;
+     * once it goes quiet for NET_AUDIT_QUIET_S and we've been READY for
+     * at least NET_AUDIT_MIN_READY_S, we kick the HTTP fetch. */
+    char                 server_url[160];
+    uint64_t             ready_time;          /* stm_now() when state became READY */
+    uint64_t             last_chunk_diff_time;/* stm_now() of last CHUNK_DIFF received */
+    bool                 audit_triggered;     /* true once fetch fired */
 } net_client_t;
 
 static net_client_t C;
@@ -311,6 +360,8 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
             C.welcome.spawn_yaw   = w.spawn_yaw;
             C.welcome.spawn_pitch = w.spawn_pitch;
             C.state = NET_CLIENT_READY;
+            C.ready_time = stm_now();
+            C.last_chunk_diff_time = C.ready_time;
             /* Cache our own name so F1 can show it for the local
              * player too — the server has it from HELLO but doesn't
              * echo it in WELCOME; the locally-known profile name is
@@ -502,6 +553,23 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
                 C.body_coverage[slot].edits_seen      = 0;
                 C.body_coverage[slot].unique_tiles    = 0;
                 C.body_coverage[slot].last_tile_valid = false;
+                C.body_coverage[slot].tile_bits       = NULL;
+                C.body_coverage[slot].tile_bits_bytes = 0;
+                C.body_coverage[slot].world_tile_count= w->tile_count;
+                /* Lazily allocate the tile bitset on first sight of this
+                 * body. Sized to the world's tile_count so the audit
+                 * can iterate every possible tile id without bounds
+                 * checks. Calloc -> zero -> "nothing received yet". */
+                int bytes = (w->tile_count + 7) / 8;
+                C.body_coverage[slot].tile_bits = (uint8_t*)calloc((size_t)bytes, 1);
+                if (C.body_coverage[slot].tile_bits) {
+                    C.body_coverage[slot].tile_bits_bytes = bytes;
+                } else {
+                    fprintf(stderr,
+                            "[net-client] WARN: tile_bits calloc(%d) failed for body=%u, "
+                            "audit will miss this body\n",
+                            bytes, diff.body_id);
+                }
             }
             if (slot >= 0) {
                 C.body_coverage[slot].edits_seen += diff.edit_count;
@@ -516,7 +584,22 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
                      * new unique tile. */
                     C.body_coverage[slot].last_tile_seen = last_tile;
                 }
+                /* Record every distinct tile_idx in this diff for the
+                 * audit. Cheap: 64 iterations max. */
+                uint8_t* bits = C.body_coverage[slot].tile_bits;
+                int bytes    = C.body_coverage[slot].tile_bits_bytes;
+                int tcount   = C.body_coverage[slot].world_tile_count;
+                if (bits) {
+                    for (int i = 0; i < diff.edit_count; ++i) {
+                        uint32_t t = diff.edits[i].tile_idx;
+                        if ((int)t >= 0 && (int)t < tcount) {
+                            int byte = (int)t >> 3;
+                            if (byte < bytes) bits[byte] |= (uint8_t)(1u << (t & 7));
+                        }
+                    }
+                }
             }
+            C.last_chunk_diff_time = stm_now();
             /* Per-message detail: leading + trailing (tile, depth) and
              * the block id of the first entry so the operator can
              * compare against /saves output line by line. Trailing pair
@@ -833,6 +916,15 @@ void net_client_connect(const char* url) {
     memcpy(saved_name,  C.profile_name,  sizeof saved_name);
     memcpy(saved_room,  C.room_code,     sizeof saved_room);
 
+    /* Release per-body tile bitsets from any prior session before the
+     * memset wipes the pointers. Each calloc is the size of the body's
+     * tile_count / 8 so cumulative across reconnects this would grow
+     * without bound otherwise. */
+    for (int s = 0; s < C.body_coverage_count; ++s) {
+        free(C.body_coverage[s].tile_bits);
+        C.body_coverage[s].tile_bits = NULL;
+    }
+
     memset(&C, 0, sizeof C);
     C.state = NET_CLIENT_CONNECTING;
     memcpy(C.profile_token, saved_token, sizeof C.profile_token);
@@ -853,12 +945,318 @@ void net_client_connect(const char* url) {
         C.state = NET_CLIENT_ERROR;
         return;
     }
+    /* Stash for the /saves audit so we know which origin to GET from.
+     * The audit converts the ws/wss scheme to http/https when it
+     * builds the request URL. */
+    snprintf(C.server_url, sizeof C.server_url, "%s", url);
     printf("[net-client] connecting to %s\n", url);
+}
+
+/* ------------------------------------------------------------------ */
+/* /saves audit.
+ *
+ * After CHUNK_DIFF replays settle, fetch the server's /saves endpoint
+ * and verify every (body, tile) the server says it has on disk is
+ * also present in our received-tiles bitset. Tiles within
+ * NET_AUDIT_NEAR_RADIUS_M of the player are flagged as ERRORs (the
+ * missing blocks would be visible from where the player stands);
+ * misses outside that radius are summarised so a 160k-tile planet's
+ * far side doesn't drown the console.
+ *
+ * Fetch lives in the JS half because the C side has no HTTP client
+ * - sockets-only via libwebsockets in native, browser-side WS in
+ * WASM. Re-using fetch() in the browser is cheap and avoids dragging
+ * in another transport. Native builds skip the audit (the audit's
+ * a debugging tool aimed at the deployed Fly server, not headless
+ * test environments). */
+
+static void net_client_run_saves_audit(const char* json);
+static bool match_key(const char** p, const char* end, const char* key);
+static long parse_long(const char** p, const char* end);
+
+#ifdef __EMSCRIPTEN__
+/* Re-entry from the JS fetch promise. EMSCRIPTEN_KEEPALIVE prevents
+ * dead-code elimination of an export the wasm linker would otherwise
+ * strip. */
+EMSCRIPTEN_KEEPALIVE
+void net_client_saves_audit_cb(const char* json) {
+    if (!json) return;
+    net_client_run_saves_audit(json);
+}
+
+EM_JS(void, net_client_js_fetch_saves, (const char* url_cstr), {
+    var url = UTF8ToString(url_cstr);
+    fetch(url)
+        .then(function(r) {
+            if (!r.ok) throw new Error('http ' + r.status);
+            return r.text();
+        })
+        .then(function(t) {
+            var len = lengthBytesUTF8(t) + 1;
+            var ptr = _malloc(len);
+            stringToUTF8(t, ptr, len);
+            Module.ccall('net_client_saves_audit_cb',
+                         'void', ['number'], [ptr]);
+            _free(ptr);
+        })
+        .catch(function(e) {
+            console.error('[net-client] /saves fetch failed:', e);
+        });
+});
+#else
+static void net_client_js_fetch_saves(const char* url_cstr) {
+    /* No HTTP client in the native build. The audit fires from
+     * net_client_tick which only invokes this on production where
+     * the WASM client is the active code path; leaving as a no-op
+     * keeps the unit/integration build green. */
+    (void)url_cstr;
+}
+#endif
+
+static void maybe_trigger_saves_audit(void) {
+    if (C.audit_triggered) return;
+    if (C.state != NET_CLIENT_READY) return;
+    if (C.ready_time == 0) return;
+    double ready_age = stm_sec(stm_diff(stm_now(), C.ready_time));
+    double quiet_for = stm_sec(stm_diff(stm_now(), C.last_chunk_diff_time));
+    if (ready_age < NET_AUDIT_MIN_READY_S) return;
+    if (quiet_for < NET_AUDIT_QUIET_S) return;
+
+    /* Build the HTTP origin from the stashed WS url. wss:// -> https://,
+     * ws:// -> http://. Anything else leaves the scheme untouched. */
+    char url[256];
+    const char* base = C.server_url;
+    if (strncmp(base, "wss://", 6) == 0) {
+        snprintf(url, sizeof url, "https://%s", base + 6);
+    } else if (strncmp(base, "ws://", 5) == 0) {
+        snprintf(url, sizeof url, "http://%s",  base + 5);
+    } else {
+        snprintf(url, sizeof url, "%s", base);
+    }
+    /* Strip trailing slash so the path joins cleanly. */
+    size_t ulen = strlen(url);
+    if (ulen > 0 && url[ulen - 1] == '/') url[ulen - 1] = 0;
+    /* Append /saves[?room=X]. Empty room code = lobby; the server's
+     * filter treats no-room as "every room" so we pass __public__
+     * explicitly when we're in the lobby. */
+    char fetch_url[400];
+    if (C.room_code[0]) {
+        snprintf(fetch_url, sizeof fetch_url, "%s/saves?room=%s",
+                 url, C.room_code);
+    } else {
+        snprintf(fetch_url, sizeof fetch_url, "%s/saves?room=__public__", url);
+    }
+    printf("[net-client] AUDIT: fetching %s\n", fetch_url);
+    C.audit_triggered = true;
+    net_client_js_fetch_saves(fetch_url);
+}
+
+/* Minimal JSON scan: walk forward looking for "key" and then ":"
+ * followed by an integer. Returns the integer; sets *p past the
+ * digits. Tolerant of whitespace and the surrounding comma/quote
+ * noise our /saves format uses but doesn't try to be a general
+ * parser - the response is fixed-shape so this gets us through. */
+static bool match_key(const char** p, const char* end, const char* key) {
+    /* Match "key": with arbitrary whitespace around the colon. */
+    size_t klen = strlen(key);
+    if (*p + klen + 3 >= end) return false;
+    if ((*p)[0] != '"') return false;
+    if (memcmp(*p + 1, key, klen) != 0) return false;
+    if ((*p)[1 + klen] != '"') return false;
+    const char* q = *p + 2 + klen;
+    while (q < end && (*q == ' ' || *q == '\t' || *q == ':')) ++q;
+    *p = q;
+    return true;
+}
+
+static long parse_long(const char** p, const char* end) {
+    while (*p < end && (**p == ' ' || **p == '\t')) ++(*p);
+    char* eptr = NULL;
+    long v = strtol(*p, &eptr, 10);
+    if (eptr) *p = eptr;
+    (void)end;
+    return v;
+}
+
+static void net_client_run_saves_audit(const char* json) {
+    if (!json) return;
+    size_t json_len = strlen(json);
+    const char* p   = json;
+    const char* end = json + json_len;
+
+    /* Find the "tiles":[ ... ] section. */
+    const char* tiles_start = strstr(json, "\"tiles\"");
+    if (!tiles_start) {
+        fprintf(stderr, "[net-client] AUDIT: /saves response missing 'tiles' array\n");
+        return;
+    }
+    const char* arr_open = strchr(tiles_start, '[');
+    if (!arr_open) {
+        fprintf(stderr, "[net-client] AUDIT: malformed /saves response\n");
+        return;
+    }
+    p = arr_open + 1;
+
+    dvec3_t  player_pos     = tenebris_get_local_player_pos();
+    uint32_t player_body_id = tenebris_get_local_player_body_id();
+
+    int total_in_saves = 0;
+    int total_received = 0;
+    int near_missing   = 0;
+    int far_missing    = 0;
+    /* Per-body running counters for the summary line. */
+    struct {
+        uint32_t body_id;
+        int saved;
+        int received;
+        int near_missing;
+    } per_body[NET_BODY_COVERAGE_MAX] = { 0 };
+    int per_body_count = 0;
+
+    while (p < end) {
+        /* Find the next object opening brace. End of array exits. */
+        while (p < end && *p != '{' && *p != ']') ++p;
+        if (p >= end || *p == ']') break;
+        const char* obj_end = strchr(p, '}');
+        if (!obj_end || obj_end >= end) break;
+
+        long seed = 0, body = -1, tile = -1;
+        char room_buf[16];
+        room_buf[0] = 0;
+        (void)seed;
+
+        /* Walk fields inside the object. */
+        const char* q = p + 1;
+        while (q < obj_end) {
+            while (q < obj_end && (*q == ' ' || *q == ',' || *q == '\t')) ++q;
+            if (q >= obj_end) break;
+            if (match_key(&q, obj_end, "room")) {
+                /* "room":"XXX" - grab the string. */
+                while (q < obj_end && *q != '"') ++q;
+                if (q < obj_end) {
+                    ++q;
+                    int o = 0;
+                    while (q < obj_end && *q != '"'
+                            && o + 1 < (int)sizeof room_buf) {
+                        room_buf[o++] = *q++;
+                    }
+                    room_buf[o] = 0;
+                }
+            } else if (match_key(&q, obj_end, "body")) {
+                body = parse_long(&q, obj_end);
+            } else if (match_key(&q, obj_end, "tile")) {
+                tile = parse_long(&q, obj_end);
+            } else {
+                /* Skip the value for keys we don't care about - jump
+                 * past the comma or to the end of the object. */
+                while (q < obj_end && *q != ',' && *q != '}') ++q;
+            }
+        }
+        p = obj_end + 1;
+
+        if (body < 0 || tile < 0) continue;
+        ++total_in_saves;
+
+        /* Find the body coverage slot. */
+        int slot = -1;
+        for (int s = 0; s < C.body_coverage_count; ++s) {
+            if (C.body_coverage[s].body_id == (uint32_t)body) { slot = s; break; }
+        }
+        bool received = false;
+        if (slot >= 0 && C.body_coverage[slot].tile_bits
+            && tile < C.body_coverage[slot].world_tile_count) {
+            int byte = (int)(tile >> 3);
+            if (byte < C.body_coverage[slot].tile_bits_bytes) {
+                received = (C.body_coverage[slot].tile_bits[byte]
+                             & (uint8_t)(1u << (tile & 7))) != 0;
+            }
+        }
+        if (received) ++total_received;
+
+        /* Per-body accumulator. */
+        int pb = -1;
+        for (int s = 0; s < per_body_count; ++s) {
+            if (per_body[s].body_id == (uint32_t)body) { pb = s; break; }
+        }
+        if (pb < 0 && per_body_count < NET_BODY_COVERAGE_MAX) {
+            pb = per_body_count++;
+            per_body[pb].body_id = (uint32_t)body;
+        }
+        if (pb >= 0) {
+            ++per_body[pb].saved;
+            if (received) ++per_body[pb].received;
+        }
+
+        /* Distance check - only meaningful when (a) we know the player
+         * body, (b) this tile belongs to that body, and (c) we can
+         * resolve the tile center via goldberg. */
+        if (!received) {
+            double dist_m = -1.0;
+            if (player_body_id == (uint32_t)body) {
+                world_t* w = renderer_world_for_body((uint32_t)body);
+                if (w && w->body && w->grid) {
+                    const goldberg_tile_t* gt = goldberg_tile(w->grid, (int)tile);
+                    if (gt) {
+                        dvec3_t center_dir = dvec3_make(gt->center.x,
+                                                          gt->center.y,
+                                                          gt->center.z);
+                        dvec3_t tile_world = dvec3_make(
+                            w->body->pos_x + center_dir.x * w->body->radius_m,
+                            w->body->pos_y + center_dir.y * w->body->radius_m,
+                            w->body->pos_z + center_dir.z * w->body->radius_m);
+                        double dx = tile_world.x - player_pos.x;
+                        double dy = tile_world.y - player_pos.y;
+                        double dz = tile_world.z - player_pos.z;
+                        dist_m = sqrt(dx*dx + dy*dy + dz*dz);
+                    }
+                }
+            }
+            if (dist_m >= 0.0 && dist_m <= NET_AUDIT_NEAR_RADIUS_M) {
+                ++near_missing;
+                if (pb >= 0) ++per_body[pb].near_missing;
+                fprintf(stderr,
+                        "[net-client] AUDIT MISS body=%ld tile=%ld room='%s' "
+                        "distance=%.1fm - persisted on server but no CHUNK_DIFF "
+                        "received, blocks will appear missing\n",
+                        body, tile, room_buf, dist_m);
+            } else {
+                ++far_missing;
+                if (pb >= 0 && dist_m >= 0.0
+                    && dist_m <= NET_AUDIT_NEAR_RADIUS_M * 4.0) {
+                    /* Within 4x near-radius - log so the operator
+                     * has some signal without listing every tile on
+                     * the far side of a planet. */
+                    fprintf(stderr,
+                            "[net-client] AUDIT MISS (distant) body=%ld tile=%ld "
+                            "room='%s' distance=%.1fm\n",
+                            body, tile, room_buf, dist_m);
+                }
+            }
+        }
+    }
+
+    printf("[net-client] AUDIT REPORT: /saves=%d tile(s) total, "
+           "client received %d, missing %d (near=%d, far=%d)\n",
+           total_in_saves, total_received,
+           total_in_saves - total_received,
+           near_missing, far_missing);
+    for (int i = 0; i < per_body_count; ++i) {
+        world_t* w = renderer_world_for_body(per_body[i].body_id);
+        const char* name = (w && w->body && w->body->name)
+                             ? w->body->name : "?";
+        printf("[net-client] AUDIT body=%u (%s): /saves=%d received=%d "
+               "near-missing=%d\n",
+               per_body[i].body_id, name,
+               per_body[i].saved, per_body[i].received,
+               per_body[i].near_missing);
+    }
+    fflush(stdout);
 }
 
 void net_client_tick(void) {
     if (C.conn) net_poll_client(C.conn);
     pending_edit_check_timeouts();
+    maybe_trigger_saves_audit();
 }
 
 void net_client_disconnect(void) {

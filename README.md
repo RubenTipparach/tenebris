@@ -116,6 +116,53 @@ persisting writes - check `fly volumes list` to confirm the
 running machine. The server prints `[saves] write-probe ok in
 /data/saves` at boot when writes round-trip correctly.
 
+## Debug log reference
+
+The browser console emits structured log lines for the moving parts
+of the client. They look chatty but each one answers a specific
+question - the table below maps line shapes to the question they
+answer when something goes wrong.
+
+### `[main] pos` - player spawn / pose drift
+
+```
+[main] pos MP anchor=Tenebris alt-vs=Tenebris curr=(298.57, 5.12, -45.08)
+       r=302.00 alt=+2.00 yaw=0.00 pitch=0.00 grounded=1
+[main] pos MP     sent=(298.57, 5.12, -45.08) r=302.00 alt=+2.00 body=0
+       yaw=0.00 pitch=0.00 delta_from_curr=0.00m
+```
+
+One pair per second. The first line is the engine's current player
+state; the second is the most recent pose we shipped to the server.
+
+| Field | Meaning |
+| --- | --- |
+| `MP` / `SP` / `menu` | Game mode the player is in. `menu` means the player hasn't entered gameplay yet. |
+| `anchor=Tenebris` | The gravitational anchor the player is currently attached to. `NONE` means truly anchorless (logged out mid-space). |
+| `(in-space)` suffix | The this-frame gravity classifier flipped to "in space" (above the falloff threshold). Distinct from `anchor=NONE` because it can flicker as the player rises / falls. |
+| `alt-vs=Tenebris` | The body used as the yardstick for `r` and `alt`. Falls back to `G.body` when there's no anchor, so you still get a number. |
+| `curr=(x, y, z)` | Engine world-space position of the player. |
+| `r=302.00` | Distance from `alt-vs` body's centre. `alt = r - radius_m` for that body. |
+| `alt=+2.00` | Metres above the body's surface (negative = inside the planet). A spawning player should land at `alt ≈ +2` (feet on the surface) within one frame of WELCOME. |
+| `yaw` / `pitch` | Look direction, radians. |
+| `grounded` | 1 if the physics step found contact this frame, 0 if airborne. |
+| `sent=...` | Most recent pose the network layer pushed to the server. Always slightly stale because we throttle uploads. |
+| `delta_from_curr=N m` | Distance between `curr` and `sent`. `> 1 m` indicates the upload throttle is too coarse for the player's current speed. |
+
+**Use it to diagnose spawn problems.** A "floating spawn" report
+looks like:
+
+```
+[main] pos MP anchor=NONE          curr=(...) r=380.50 alt=+78.50 grounded=0
+[main] pos MP anchor=NONE          curr=(...) r=379.40 alt=+77.40 grounded=0
+```
+
+Anchor `NONE`, `grounded=0`, `alt > 0` and falling - the welcome
+spawn placed the player off the surface and they're drifting under
+gravity until the next anchor rebind. Cross-reference against the
+`[server] WELCOME spawn ...` server log to see the exact spawn coords
+the server sent.
+
 > **Why does the server seem to restart on its own?** `fly.toml` sets
 > `auto_stop_machines = 'stop'` + `min_machines_running = 0`, so the Fly
 > machine sleeps when idle and starts back up on the first request. The
