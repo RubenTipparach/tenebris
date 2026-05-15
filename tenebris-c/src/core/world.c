@@ -279,6 +279,16 @@ static bool block_is_passable(uint8_t b) {
     return b == (uint8_t)BLOCK_AIR || b == (uint8_t)BLOCK_WATER;
 }
 
+/* Vertical tolerance for "step me up onto a floor that's slightly
+ * above where I asked". Matches player_ctrl.c's STEP_HEIGHT exactly -
+ * it's the same physical concept: how far the player can be lifted
+ * by ground-snap without it feeling like teleport. A bridge whose
+ * top sits 1 cm above the player's feet (after one tick of gravity)
+ * must be picked over the distant planet ground below, otherwise
+ * the player falls through their own builds. Keep this in lock-step
+ * with player_ctrl.c::STEP_HEIGHT. */
+#define WORLD_STEP_HEIGHT 0.6
+
 double world_walkable_floor_near(const world_t* w, int tile,
                                  double target_radius_m,
                                  double body_height_m) {
@@ -287,9 +297,23 @@ double world_walkable_floor_near(const world_t* w, int tile,
     }
     const uint8_t* col = &w->blocks[tile * WORLD_MAX_DEPTH];
 
-    /* Scan all walkable floors in the column. Prefer floors at or
-     * below target_radius_m; among those, the closest wins. Only fall
-     * back to a floor above the target if no candidate sits below.
+    /* Scan every walkable floor in the column. We track the closest
+     * floor below the target separately from the closest above, then
+     * pick between them:
+     *
+     *   - A floor close above (within WORLD_STEP_HEIGHT) BEATS any
+     *     floor below. This is what makes a player-built bridge work:
+     *     gravity dips the feet a cm under the bridge top each tick,
+     *     and we need to snap back to the bridge instead of the
+     *     planet surface tens of metres down.
+     *   - Otherwise prefer the closest floor at-or-below the target.
+     *     Falling into a cave with a roof a few metres overhead and a
+     *     real floor below: the roof's TOP sits far above the
+     *     player's feet (more than STEP_HEIGHT), so it's correctly
+     *     ignored and the cave floor wins.
+     *   - With no below-or-near-above candidate, fall through to the
+     *     best above (may still be -1e9 if the column has no floor).
+     *
      * Headroom check (body_height_m > 0): the column above the
      * candidate must be passable for body_height_m metres. */
     double best_radius_below = -1e9;
@@ -331,6 +355,17 @@ double world_walkable_floor_near(const world_t* w, int tile,
                 best_dist_above   = dist;
                 best_radius_above = floor_r;
             }
+        }
+    }
+    /* Bridge-aware tiebreak. A floor within step-height ABOVE the
+     * target beats whatever is far below it, because the player has
+     * almost certainly just dipped a hair under it via gravity and
+     * needs to snap back. Only relevant when the above candidate is
+     * physically close - bigger gaps (cave ceilings, terrain above an
+     * overhang) keep the legacy "prefer below" behaviour. */
+    if (best_radius_above > -1e8 && best_dist_above <= WORLD_STEP_HEIGHT) {
+        if (best_radius_below < -1e8 || best_dist_above < best_dist_below) {
+            return best_radius_above;
         }
     }
     if (best_radius_below > -1e8) return best_radius_below;
