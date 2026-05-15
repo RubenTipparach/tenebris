@@ -332,33 +332,39 @@ void world_light_rebuild(world_light_t* l, const world_t* w) {
     int lateral_cost = cfg->voxel_sky_lateral_loss;
     if (lateral_cost < 1) lateral_cost = 1;
 
-    /* Fresh dirty + no in-progress rebuild -> start a new one. The
-     * memset is amortised across the same frame budget so a huge
-     * world doesn't tank the frame just on the clear. */
+    /* Fresh dirty + no in-progress rebuild -> start one. The seed
+     * pass runs in this same call (NOT budgeted): a column-seed is
+     * a linear walk with at most WORLD_MAX_DEPTH=128 writes, so the
+     * whole planet's seed costs roughly tile_count * 128 memory
+     * stores which is bounded and fast (~50 ms worst case on the
+     * largest baseline). Budgeting the seed turned out worse than
+     * the stall it tried to avoid: an in-progress seed left most
+     * columns at sky=0 from the memset, which looked like the
+     * world had gone dark. The BFS is still budgeted - that's
+     * where the real cost lives and where the per-frame yield
+     * actually matters.
+     *
+     * The block-seed phase is also tiny (torch_count entries
+     * total) so it runs in one shot alongside the sky seed. */
     if (l->phase == LR_IDLE) {
         memset(l->nibbles, 0, (size_t)(l->tile_count * l->depth));
         if (!l->q.buf) queue_init(&l->q, l->tile_count * 4);
         else { l->q.head = l->q.tail = l->q.count = 0; }
-        l->seed_tile_cursor  = 0;
         l->torch_seed_cursor = 0;
-        l->phase = LR_SKY_SEED;
         l->restart_pending = false;
+        /* One-shot sky seed. Walks every column once; cells above
+         * the first face-covering block get sky_max and land in
+         * the BFS queue. */
+        if (cfg->voxel_sky_max > 0) {
+            for (int t = 0; t < w->tile_count; ++t) {
+                sky_seed_one_column(l, w, t, cfg->voxel_sky_max);
+            }
+        }
+        l->phase = LR_SKY_BFS;
     }
 
     while (budget > 0) {
-        if (l->phase == LR_SKY_SEED) {
-            if (cfg->voxel_sky_max <= 0
-                || l->seed_tile_cursor >= w->tile_count) {
-                l->phase = LR_SKY_BFS;
-                continue;
-            }
-            int touched = sky_seed_one_column(l, w, l->seed_tile_cursor,
-                                                 cfg->voxel_sky_max);
-            ++l->seed_tile_cursor;
-            /* One column tops out at WORLD_MAX_DEPTH=128 touches so
-             * even worst-case the loop stays bounded. */
-            budget -= (touched > 0 ? touched : 1);
-        } else if (l->phase == LR_SKY_BFS) {
+        if (l->phase == LR_SKY_BFS) {
             if (l->q.count == 0) {
                 l->phase = LR_BLOCK_SEED;
                 continue;
