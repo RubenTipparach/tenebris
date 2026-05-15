@@ -7,6 +7,7 @@
 #include "core/blocks.h"
 #include "core/proto.h"        /* PLAYER_CMD_PLACE / PLAYER_CMD_BREAK */
 #include <math.h>
+#include <stdio.h>
 
 /* ----------------------------------------------------------------- */
 /* SP per-edit persistence helpers. CLAUDE.md mandates that every
@@ -216,6 +217,10 @@ void interact_update(interact_state_t* s, world_t* w, player_ctrl_t* p, float dt
     if (target_torch) {
         if (in->left_click) {
             vec3_t pos = torch_position_at(s->torch_idx);
+            printf("[light] torch removed at tile %d - kicking relight; "
+                   "wall-clock blocking cost to follow on session-done line\n",
+                   s->torch_idx);
+            fflush(stdout);
             torch_remove(s->torch_idx);
             world_dirty_in_range(w, pos, TORCH_LIGHT_RANGE_M);
             /* SP: same-frame persistence of the updated torch list.
@@ -305,6 +310,10 @@ void interact_update(interact_state_t* s, world_t* w, player_ctrl_t* p, float dt
                     };
                     vec3_t base_pos = vec3_scale(base_dir, (float)r_top);
                     if (torch_place(base_pos, base_dir, s->hit_tile)) {
+                        printf("[light] torch placed on tile %d - kicking "
+                               "relight; blocking cost to follow on "
+                               "session-done line\n", s->hit_tile);
+                        fflush(stdout);
                         /* Dirty every tile whose centre sits within
                          * the torch's light range — they need their
                          * per-vertex torch_light re-baked. The

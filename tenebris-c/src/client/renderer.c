@@ -1,6 +1,7 @@
 #include "client/renderer.h"
 #include "client/hex_mesher.h"
 #include "client/net_client.h"
+#include "client/profiler.h"
 #include "client/torch.h"
 #include "core/blocks.h"
 #include "core/config.h"
@@ -225,6 +226,37 @@ static struct {
 
     size_t tris;
     size_t tiles_remeshed;
+
+    /* Relight-session blocking-cost tracker. Pairs world_light's
+     * op-count / call-count session counters with the renderer's
+     * wall-clock measurements of the synchronous relight loop
+     * (body_chunk_rebuild_full / body_full_mesh), and prints a
+     * one-shot console summary when world_light reports the session
+     * drained back to clean. This is the measurement the user wants
+     * to see for the "torches cause visible lag" symptom: how many
+     * milliseconds the lighting rebuild blocked the frame, how many
+     * frames it spread across, what triggered it.
+     *
+     * The tracker is bound to whichever world_t most recently had a
+     * relight session active. Multi-body relights would need a
+     * per-body version - in practice only the active body sees
+     * torch / block edits so a single tracker is fine. */
+    struct {
+        const world_t* world;      /* which world is being relit       */
+        bool     active;           /* a session is in progress         */
+        uint64_t started_at;       /* stm_now() at first work frame    */
+        double   block_ms_total;   /* sum of relight-loop wall-clock   */
+        double   peak_call_ms;     /* worst single rebuild() call      */
+        int      frames;           /* frames with relight work         */
+        int      peak_iters;       /* worst loop-iter count in 1 frame */
+        int      last_frame_iters; /* iters in current frame (resets)  */
+    } relight_track;
+
+    /* Per-frame counters reset by renderer_begin_frame. */
+    double relight_loop_ms_this_frame;
+    int    relight_iters_this_frame;
+    double mesh_rebuild_ms_this_frame;
+    int    chunks_remeshed_this_frame;
 } R;
 
 /* Forward declarations — body_alloc_chunks / body_full_mesh /
@@ -1547,6 +1579,20 @@ void renderer_begin_frame(int w, int h, render_env_t env) {
     R.env = env;
     R.tris = 0;
     R.tiles_remeshed = 0;
+    /* Frame-scoped relight cost counters. Accumulated by
+     * body_chunk_rebuild_full / body_full_mesh; surfaced via the
+     * "relight-loop" and "chunk-remesh" profiler scopes. The session
+     * tracker (R.relight_track) spans frames - those counters reset
+     * only when a relight session ends. */
+    R.relight_loop_ms_this_frame   = 0;
+    R.relight_iters_this_frame     = 0;
+    R.mesh_rebuild_ms_this_frame   = 0;
+    R.chunks_remeshed_this_frame   = 0;
+    /* last_frame_iters resets here so per-frame peak tracking in
+     * body_chunk_rebuild_full sees a clean accumulator. The session
+     * frame count is bumped on the first relight call of each frame
+     * (see body_chunk_rebuild_full). */
+    if (R.relight_track.active) R.relight_track.last_frame_iters = 0;
 
     /* Phase A.2 — opaque scene now goes into the offscreen colour +
      * depth attachments instead of straight to the swapchain. The
@@ -1841,11 +1887,51 @@ static void body_chunk_rebuild_full(chunked_body_t* body, int chunk_idx) {
      * the chunk got rebuilt. Each subsequent edit-driven chunk
      * rebuild also runs this loop; the typical per-edit BFS work
      * is tiny (incremental ripple-radius), so the loop usually
-     * exits after one iteration. */
+     * exits after one iteration.
+     *
+     * Time the loop explicitly so the profiler ("relight-loop") and
+     * the per-session console summary (see relight_track below) can
+     * surface the blocking cost. After the first chunk in a frame
+     * drives the BFS to convergence, subsequent chunks find dirty
+     * already clear and the loop is a no-op; only the first one
+     * pays the wall-clock cost. */
+    uint64_t t_relight_start = stm_now();
+    int relight_iters = 0;
+    profiler_begin("relight-loop");
     int safety = 200;
     while (world_light_is_dirty(w->light) && safety-- > 0) {
         hex_mesher_relight_if_needed(w);
+        ++relight_iters;
     }
+    profiler_end("relight-loop");
+    double relight_ms = stm_ms(stm_diff(stm_now(), t_relight_start));
+    if (relight_iters > 0) {
+        bool first_work_this_frame = (R.relight_loop_ms_this_frame == 0.0);
+        if (!R.relight_track.active) {
+            R.relight_track.active           = true;
+            R.relight_track.world            = w;
+            R.relight_track.started_at       = t_relight_start;
+            R.relight_track.block_ms_total   = 0;
+            R.relight_track.peak_call_ms     = 0;
+            R.relight_track.frames           = 0;
+            R.relight_track.peak_iters       = 0;
+            R.relight_track.last_frame_iters = 0;
+        }
+        if (first_work_this_frame) ++R.relight_track.frames;
+        R.relight_track.block_ms_total += relight_ms;
+        if (relight_ms > R.relight_track.peak_call_ms) {
+            R.relight_track.peak_call_ms = relight_ms;
+        }
+        R.relight_track.last_frame_iters += relight_iters;
+        if (R.relight_track.last_frame_iters > R.relight_track.peak_iters) {
+            R.relight_track.peak_iters = R.relight_track.last_frame_iters;
+        }
+    }
+    R.relight_loop_ms_this_frame += relight_ms;
+    R.relight_iters_this_frame   += relight_iters;
+
+    uint64_t t_mesh_start = stm_now();
+    profiler_begin("chunk-remesh");
     mesh_chunk_t* c = &body->chunks[chunk_idx];
     hex_mesh_reset(&c->mesh);
     hex_mesh_reset(&c->water_mesh);
@@ -1855,6 +1941,49 @@ static void body_chunk_rebuild_full(chunked_body_t* body, int chunk_idx) {
         hex_mesh_build_tile(&c->mesh, w, i);
         hex_mesh_build_water(&c->water_mesh, w, i);
         R.tiles_remeshed++;
+    }
+    profiler_end("chunk-remesh");
+    R.mesh_rebuild_ms_this_frame += stm_ms(stm_diff(stm_now(), t_mesh_start));
+    ++R.chunks_remeshed_this_frame;
+
+    /* If world_light reports that the session drained to clean in
+     * one of the relight calls above, log a one-shot summary line so
+     * the user can see the actual blocking cost the "lag on torch
+     * place" complaint refers to. The summary is consumed exactly
+     * once per session (one-shot edge), so back-to-back chunk
+     * rebuilds in the same frame won't double-log. */
+    world_light_session_summary_t summary;
+    if (world_light_consume_session_summary(w->light, &summary)) {
+        char trig[64];
+        trig[0] = '\0';
+        if (summary.triggers & LIGHT_TRIGGER_TORCH)
+            strncat(trig, "torch ", sizeof(trig) - strlen(trig) - 1);
+        if (summary.triggers & LIGHT_TRIGGER_BLOCK_EDIT)
+            strncat(trig, "block-edit ", sizeof(trig) - strlen(trig) - 1);
+        if (summary.triggers & LIGHT_TRIGGER_FULL_MARK)
+            strncat(trig, "full-mark ", sizeof(trig) - strlen(trig) - 1);
+        if (trig[0] == '\0')
+            strncat(trig, "(none) ", sizeof(trig) - strlen(trig) - 1);
+        double real_elapsed_ms = stm_ms(stm_diff(stm_now(),
+                                                  R.relight_track.started_at));
+        printf("[light] %srebuild done on %s: blocked %.2f ms cpu over "
+               "%d frame(s) (peak %.2f ms / %d iters in 1 frame), "
+               "wall %.0f ms, %d ops, %d call(s), %d edit(s), "
+               "%d torch(es)%s\n",
+               trig,
+               (w->body && w->body->name) ? w->body->name : "?",
+               R.relight_track.block_ms_total,
+               R.relight_track.frames,
+               R.relight_track.peak_call_ms,
+               R.relight_track.peak_iters,
+               real_elapsed_ms,
+               summary.total_ops,
+               summary.total_calls,
+               summary.edits_seen,
+               summary.torch_count,
+               summary.was_full_pass ? ", FULL pass" : "");
+        fflush(stdout);
+        R.relight_track.active = false;
     }
 }
 
@@ -1881,10 +2010,34 @@ static void body_full_mesh(chunked_body_t* body) {
      * still use the budgeted path - they're cheap enough not to
      * matter. The safety cap prevents an unbounded loop if some
      * future bug leaves dirty stuck on. */
+    uint64_t t_relight_start = stm_now();
+    int relight_iters = 0;
+    profiler_begin("relight-loop");
     int safety = 200;
     while (world_light_is_dirty(w->light) && safety-- > 0) {
         hex_mesher_relight_if_needed(w);
+        ++relight_iters;
     }
+    profiler_end("relight-loop");
+    double relight_ms = stm_ms(stm_diff(stm_now(), t_relight_start));
+    R.relight_loop_ms_this_frame += relight_ms;
+    R.relight_iters_this_frame   += relight_iters;
+    /* body_full_mesh is only called for the initial demand-load /
+     * register of an inactive body, where the full BFS pass is
+     * expected to be heavy (the comment above documents the ~50 ms
+     * worst case). Log it directly so the cost shows even though
+     * the per-session console summary mechanism above attributes
+     * the bulk to the world_light session rather than the meshing
+     * stall. */
+    if (relight_ms > 1.0) {
+        printf("[light] body_full_mesh relight on %s: %.2f ms in %d call(s)\n",
+               (w->body && w->body->name) ? w->body->name : "?",
+               relight_ms, relight_iters);
+        fflush(stdout);
+    }
+
+    uint64_t t_mesh_start = stm_now();
+    profiler_begin("chunk-remesh");
     for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
         mesh_chunk_t* c = &body->chunks[ci];
         hex_mesh_reset(&c->mesh);
@@ -1898,8 +2051,23 @@ static void body_full_mesh(chunked_body_t* body) {
         if (body->has_water) hex_mesh_build_water(&c->water_mesh, w, i);
         world_tile_clear_dirty(w, i);
     }
+    profiler_end("chunk-remesh");
+    R.mesh_rebuild_ms_this_frame += stm_ms(stm_diff(stm_now(), t_mesh_start));
     body->streamed_complete = true;
     body->mesh_cursor = w->tile_count;
+    /* Consume any session that the full BFS pass completed during
+     * this call so the next world_light_consume_session_summary on
+     * a different body / chunk path doesn't pick up our session. */
+    world_light_session_summary_t summary;
+    if (world_light_consume_session_summary(w->light, &summary)) {
+        printf("[light] body_full_mesh session done on %s: %d ops, "
+               "%d call(s), trig=0x%x%s\n",
+               (w->body && w->body->name) ? w->body->name : "?",
+               summary.total_ops, summary.total_calls,
+               summary.triggers,
+               summary.was_full_pass ? ", FULL pass" : "");
+        fflush(stdout);
+    }
 }
 
 static void chunk_upload(mesh_chunk_t* c) {
