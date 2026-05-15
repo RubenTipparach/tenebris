@@ -1104,12 +1104,24 @@ static void net_client_run_saves_audit(const char* json) {
     int total_received = 0;
     int near_missing   = 0;
     int far_missing    = 0;
+    /* Distance histogram of missing tiles for the final summary.
+     * Buckets are chosen to be readable on a planet-scale walk:
+     * within 50 m = "I'd notice on screen right now", within 250 m =
+     * "next few seconds of walking", within 1 km = "the nearby
+     * chunks", beyond = "far side of the planet, only matters if
+     * the player teleports". */
+    int miss_within_50m   = 0;
+    int miss_within_250m  = 0;
+    int miss_within_1km   = 0;
+    int miss_beyond_1km   = 0;
+    int miss_unknown_dist = 0;     /* on a body the player isn't on */
     /* Per-body running counters for the summary line. */
     struct {
         uint32_t body_id;
         int saved;
         int received;
         int near_missing;
+        int total_missing;
     } per_body[NET_BODY_COVERAGE_MAX] = { 0 };
     int per_body_count = 0;
 
@@ -1185,6 +1197,7 @@ static void net_client_run_saves_audit(const char* json) {
         if (pb >= 0) {
             ++per_body[pb].saved;
             if (received) ++per_body[pb].received;
+            else          ++per_body[pb].total_missing;
         }
 
         /* Distance check - only meaningful when (a) we know the player
@@ -1211,6 +1224,15 @@ static void net_client_run_saves_audit(const char* json) {
                     }
                 }
             }
+            /* Histogram. dist_m < 0 means we couldn't resolve a
+             * distance (different body than the player) - bucket
+             * it separately so the totals still add up. */
+            if (dist_m < 0.0)              ++miss_unknown_dist;
+            else if (dist_m <=    50.0)    ++miss_within_50m;
+            else if (dist_m <=   250.0)    ++miss_within_250m;
+            else if (dist_m <=  1000.0)    ++miss_within_1km;
+            else                            ++miss_beyond_1km;
+
             if (dist_m >= 0.0 && dist_m <= NET_AUDIT_NEAR_RADIUS_M) {
                 ++near_missing;
                 if (pb >= 0) ++per_body[pb].near_missing;
@@ -1235,21 +1257,50 @@ static void net_client_run_saves_audit(const char* json) {
         }
     }
 
-    printf("[net-client] AUDIT REPORT: /saves=%d tile(s) total, "
-           "client received %d, missing %d (near=%d, far=%d)\n",
-           total_in_saves, total_received,
-           total_in_saves - total_received,
-           near_missing, far_missing);
+    /* End-of-audit summary. The user-facing question is: how many of
+     * the server's persisted edits failed to reach me, and where are
+     * they relative to where I'm standing? Three blocks of output:
+     *   1. Headline counts (totals + missing).
+     *   2. Distance histogram of the missing tiles.
+     *   3. Per-body breakdown with body name, on-server count,
+     *      received count, total missing, and a one-line verdict. */
+    int total_missing = total_in_saves - total_received;
+    printf("\n[net-client] ====== AUDIT SUMMARY ======\n");
+    printf("[net-client] /saves      = %d tile(s) on server\n", total_in_saves);
+    printf("[net-client] received    = %d tile(s) in client's CHUNK_DIFF set\n",
+           total_received);
+    printf("[net-client] missing     = %d tile(s) (%.1f%%) - persisted on server but never sent to client\n",
+           total_missing,
+           total_in_saves > 0
+               ? 100.0 * (double)total_missing / (double)total_in_saves
+               : 0.0);
+    if (total_missing > 0) {
+        printf("[net-client] missing distance histogram (from player at body=%u):\n",
+               player_body_id);
+        printf("[net-client]   <=50 m     : %d\n", miss_within_50m);
+        printf("[net-client]   <=250 m    : %d\n", miss_within_250m);
+        printf("[net-client]   <=1 km     : %d\n", miss_within_1km);
+        printf("[net-client]   >1 km      : %d\n", miss_beyond_1km);
+        printf("[net-client]   other body : %d  (can't compute distance from this player)\n",
+               miss_unknown_dist);
+    }
+    printf("[net-client] per-body:\n");
     for (int i = 0; i < per_body_count; ++i) {
         world_t* w = renderer_world_for_body(per_body[i].body_id);
         const char* name = (w && w->body && w->body->name)
                              ? w->body->name : "?";
-        printf("[net-client] AUDIT body=%u (%s): /saves=%d received=%d "
-               "near-missing=%d\n",
+        const char* verdict =
+            per_body[i].total_missing == 0
+                ? "OK - every persisted tile was replayed"
+                : "MISSING CHUNK_DIFFs - server has tiles it never sent";
+        printf("[net-client]   body=%u (%-10s): %d saved, %d received, "
+               "missing %d CHUNK_DIFFs - %s\n",
                per_body[i].body_id, name,
                per_body[i].saved, per_body[i].received,
-               per_body[i].near_missing);
+               per_body[i].total_missing,
+               verdict);
     }
+    printf("[net-client] ====== END AUDIT SUMMARY ======\n");
     fflush(stdout);
 }
 
