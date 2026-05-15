@@ -362,11 +362,17 @@ static void migrate_chat_per_room_to_global(void) {
  * "live" on the dashboard. The fresh server has no clients yet, so
  * any prior open session is over by definition.
  *
- * The dedup is per (name, room): a sequence
- *   ts1  login  Ruben  T9VVPW
- *   ts2  logout Ruben  T9VVPW
- *   ts3  login  Ruben  T9VVPW       <- still open
- * would write a single logout for ts3's login. */
+ * Also detects MID-STREAM orphans: a sequence
+ *   login Ruben    <- never paired
+ *   login Ruben    <- overwrites the previous one's open-state
+ *   logout Ruben   <- closes only the SECOND login, leaving the
+ *                     first as a forever-live row
+ * Whenever a login lands for an already-open (name, room), we
+ * stamp a synthetic logout for the prior login at the new login's
+ * timestamp.
+ *
+ * Writes happen after the scan completes so we don't read our own
+ * appends mid-walk. */
 static void close_orphan_sessions_at_startup(void) {
     if (!G_saves_dir) return;
     char path[512];
@@ -384,9 +390,7 @@ static void close_orphan_sessions_at_startup(void) {
     fclose(f);
     buf[r] = 0;
 
-    /* Build a list of (name, room, is_open) keyed by appearance. The
-     * audit log caps at SAVES_AUDIT_FILE_MAX lines so the linear
-     * search stays cheap. */
+    /* Per (name, room): is the most recent event a login? */
     typedef struct {
         char name[SAVES_CHAT_NAME_MAX + 1];
         char room[16];
@@ -394,6 +398,18 @@ static void close_orphan_sessions_at_startup(void) {
     } session_state_t;
     static session_state_t sessions[SAVES_AUDIT_FILE_MAX + 8];
     int session_count = 0;
+
+    /* Stash of orphan-closing logouts to write after the scan. Each
+     * entry's ts is the timestamp of whatever event made it an
+     * orphan (the over-writing login, or the boot time for trailing
+     * opens). */
+    typedef struct {
+        char     name[SAVES_CHAT_NAME_MAX + 1];
+        char     room[16];
+        int64_t  ts;
+    } pending_close_t;
+    static pending_close_t pending[SAVES_AUDIT_FILE_MAX + 8];
+    int pending_count = 0;
 
     char* line = buf;
     while (line < buf + r) {
@@ -410,6 +426,7 @@ static void close_orphan_sessions_at_startup(void) {
         char* tab3 = (char*)memchr(tab2 + 1, '\t', after2);
         if (!tab3) goto next;
 
+        int64_t ts            = (int64_t)strtoll(line, NULL, 10);
         const char* event_p   = tab1 + 1;
         size_t      event_len = (size_t)(tab2 - event_p);
         const char* name_p    = tab2 + 1;
@@ -429,7 +446,7 @@ static void close_orphan_sessions_at_startup(void) {
         bool is_timeout = (event_len == 7 && memcmp(event_p, "timeout", 7) == 0);
         if (!is_login && !is_logout && !is_timeout) goto next;
 
-        /* Find or insert. */
+        /* Find or insert the per-key state slot. */
         int idx = -1;
         for (int i = 0; i < session_count; ++i) {
             if (strcmp(sessions[i].name, name) == 0
@@ -442,28 +459,68 @@ static void close_orphan_sessions_at_startup(void) {
             snprintf(sessions[idx].room, sizeof sessions[idx].room, "%s", room);
             sessions[idx].open = false;
         }
-        sessions[idx].open = is_login;     /* login opens, logout/timeout closes */
+        if (is_login) {
+            /* Mid-stream orphan: the previous login for this key
+             * never paired. Stash a synthetic logout at THIS login's
+             * timestamp - that lands between the orphan login and
+             * the new one, so the dashboard pair-finder closes the
+             * earlier session cleanly. */
+            if (sessions[idx].open
+                && pending_count < (int)(sizeof pending / sizeof pending[0])) {
+                snprintf(pending[pending_count].name,
+                         sizeof pending[pending_count].name, "%s", name);
+                snprintf(pending[pending_count].room,
+                         sizeof pending[pending_count].room, "%s", room);
+                pending[pending_count].ts = ts;
+                ++pending_count;
+            }
+            sessions[idx].open = true;
+        } else {
+            sessions[idx].open = false;
+        }
     next:
         if (!nl) break;
         line = nl + 1;
     }
     free(buf);
 
-    int closed = 0;
+    /* Trailing opens (last event was a login): close at boot time. */
+    int64_t now = (int64_t)time(NULL);
     for (int i = 0; i < session_count; ++i) {
         if (!sessions[i].open) continue;
-        /* sessions[i].room is the on-disk slug; saves_session_log
-         * accepts "" / NULL for the empty-code lobby and writes the
-         * "__public__" slug back, but everything else passes through. */
-        const char* room = (strcmp(sessions[i].room, "__public__") == 0)
-                             ? "" : sessions[i].room;
-        saves_session_log("logout", sessions[i].name, room);
-        ++closed;
+        if (pending_count >= (int)(sizeof pending / sizeof pending[0])) break;
+        snprintf(pending[pending_count].name,
+                 sizeof pending[pending_count].name, "%s", sessions[i].name);
+        snprintf(pending[pending_count].room,
+                 sizeof pending[pending_count].room, "%s", sessions[i].room);
+        pending[pending_count].ts = now;
+        ++pending_count;
     }
-    if (closed > 0) {
-        printf("[saves] startup orphan-session sweep: closed %d unpaired login(s)\n",
-               closed);
-        fflush(stdout);
+
+    /* Append all pending logouts. We bypass saves_session_log because
+     * its time() stamp would override the synthetic mid-stream
+     * timestamps. The file format is intentionally identical. */
+    if (pending_count > 0) {
+        FILE* af = fopen(path, "ab");
+        if (af) {
+            int mid_orphans = 0, trailing_orphans = 0;
+            for (int i = 0; i < pending_count; ++i) {
+                const char* room_real =
+                    (strcmp(pending[i].room, "__public__") == 0)
+                        ? "__public__" : pending[i].room;
+                fprintf(af, "%lld\tlogout\t%s\t%s\n",
+                        (long long)pending[i].ts,
+                        pending[i].name, room_real);
+                if (pending[i].ts == now) ++trailing_orphans;
+                else                       ++mid_orphans;
+            }
+            fclose(af);
+            printf("[saves] startup orphan-session sweep: closed %d unpaired login(s) "
+                   "(%d mid-stream + %d trailing)\n",
+                   pending_count, mid_orphans, trailing_orphans);
+            fflush(stdout);
+            audit_truncate(path);
+        }
     }
 }
 
