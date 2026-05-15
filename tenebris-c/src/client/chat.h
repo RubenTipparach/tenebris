@@ -43,4 +43,12 @@ void chat_draw(float screen_w, float screen_h);
  * server-emitted notices in the future. */
 void chat_post_recv(uint32_t player_id, const char* name, const char* text);
 
+/* Signal that a fresh server session just started. The next CHAT_JOIN_GRACE_S
+ * seconds of received messages are tagged as backlog (the server replays
+ * the room's recent chat history at WELCOME) and hidden from the live
+ * floating-chat panel - they only appear when the compose box is opened.
+ * Without this, every reconnect floods the HUD with already-seen logs.
+ * Idempotent: re-arming on a second WELCOME just resets the window. */
+void chat_begin_session(void);
+
 #endif

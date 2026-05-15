@@ -373,6 +373,12 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
             C.state = NET_CLIENT_READY;
             C.ready_time = stm_now();
             C.last_chunk_diff_time = C.ready_time;
+            /* Arm chat's backlog-suppression grace window. The server
+             * follows WELCOME with a flurry of MSG_CHAT messages
+             * replaying the room's recent chat history; without
+             * this hook every reconnect floods the HUD with already-
+             * seen logs because the recv-time stamps look fresh. */
+            chat_begin_session();
             /* Kick off the lazy fetch for the spawn body so the
              * player's first frame in MP shows persisted blocks
              * without waiting for body_load_detail (the active body
