@@ -115,7 +115,7 @@ lod:
   # at eye depth, the player is pushed back so the near plane doesn't
   # clip through the wall. Must be >= 0.3 m (the perspective near
   # plane) with some margin. Set to 0 to disable.
-  camera_collider_radius_m:    0.4
+  camera_collider_radius_m:    0.5
 
   # Fail-safe respawn. If the player's feet radius drops below
   # body.radius_m * this fraction, assume they fell through the
