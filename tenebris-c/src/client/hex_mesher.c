@@ -612,12 +612,17 @@ void hex_mesher_relight_if_needed(world_t* w) {
     if (!w || !w->light) return;
     const lighting_config_t* cfg = config_lighting();
     if (cfg->engine != 1) return;
-    if (!world_light_is_dirty(w->light)) return;
 
-    /* Publish current torches. Torch coordinates are body-local; the
-     * flame sits TORCH_FLAME_HEIGHT_M above the base, so the seeded
-     * voxel is the air voxel containing the flame. tile_idx is stored
-     * on the torch directly. */
+    /* Publish current torches FIRST, before checking the dirty flag.
+     * Torch place / remove only modifies the torch list, not the
+     * world's blocks - the light grid won't show as dirty yet, but
+     * set_torches diffs the new list against the cached one and
+     * marks dirty when it differs. The previous order had this
+     * after the dirty check, so a fresh torch sat on the torch list
+     * forever without ever propagating into the light grid (the bug
+     * the user is hitting: "Torches also not contributing to lighting
+     * updates"). Torch coordinates are body-local; the flame sits
+     * TORCH_FLAME_HEIGHT_M above the base. */
     static world_light_torch_t buf[TORCH_MAX_COUNT];
     int published = 0;
     int n = torch_count();
@@ -639,7 +644,10 @@ void hex_mesher_relight_if_needed(world_t* w) {
             ++published;
         }
     }
-    /* set_torches marks dirty again; rebuild clears it on completion. */
     world_light_set_torches(w->light, buf, published);
+
+    /* Now (after a possible torch-driven dirty mark above) decide
+     * whether anything needs rebuilding. */
+    if (!world_light_is_dirty(w->light)) return;
     world_light_rebuild(w->light, w);
 }

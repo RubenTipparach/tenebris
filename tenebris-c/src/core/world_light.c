@@ -151,21 +151,29 @@ void world_light_mark_dirty_at(world_light_t* l, int tile, int depth) {
     if (!l) return;
     if (tile < 0 || tile >= l->tile_count) return;
     if (depth < 0 || depth >= WORLD_MAX_DEPTH) return;
-    /* Already requested a full pass - no point queueing per-cell
-     * entries that will be discarded. */
-    if (l->needs_full) { l->dirty = true; return; }
+    /* Always set dirty + restart_pending. The previous early-return
+     * for needs_full silently DROPPED edits that landed mid-rebuild,
+     * so saves/body data and live block edits weren't reflected in
+     * the lighting after the in-flight full rebuild finished
+     * (because the rebuild's seed pass already ran with stale
+     * blocks). */
+    l->dirty = true;
+    if (l->phase != LR_IDLE) l->restart_pending = true;
+    if (l->needs_full) {
+        /* Full pass already requested. The queue would be discarded
+         * anyway, but we need restart_pending so the rebuild kicks
+         * again after the current one completes - the current pass
+         * may have seeded with the OLD block state for this cell. */
+        return;
+    }
     if (l->edit_count >= LIGHT_EDIT_QUEUE_CAP) {
         /* Queue overflow - escalate to a full rebuild so we don't
          * silently miss any edits. */
         l->needs_full = true;
         l->edit_count = 0;
-        l->dirty      = true;
-        if (l->phase != LR_IDLE) l->restart_pending = true;
         return;
     }
     l->edits[l->edit_count++] = (uint32_t)voxel_index(tile, depth);
-    l->dirty = true;
-    if (l->phase != LR_IDLE) l->restart_pending = true;
 }
 bool world_light_is_dirty(const world_light_t* l) {
     return l ? l->dirty : false;
@@ -632,12 +640,23 @@ void world_light_rebuild(world_light_t* l, const world_t* w) {
                  * incremental (the edits live in the per-cell queue
                  * if needs_full wasn't forced). */
                 l->phase      = LR_IDLE;
-                l->needs_full = false;
-                if (l->restart_pending) {
+                /* Only clear needs_full + dirty when nothing else is
+                 * pending. If an edit landed mid-rebuild (restart_pending)
+                 * OR per-cell edits queued up while we were running,
+                 * keep going - the next call resolves them. needs_full
+                 * stays true if it was set during the current pass
+                 * (overflow case) so the next pass re-seeds with the
+                 * latest world state. */
+                if (l->restart_pending || l->edit_count > 0) {
                     l->restart_pending = false;
                     l->dirty           = true;
+                    /* needs_full preserved if still set - the next
+                     * call will run another full pass instead of an
+                     * incremental that misses the seed-time
+                     * block changes. */
                 } else {
-                    l->dirty = false;
+                    l->dirty      = false;
+                    l->needs_full = false;
                 }
                 return;
             }
