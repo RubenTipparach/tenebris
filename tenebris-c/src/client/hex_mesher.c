@@ -2,6 +2,7 @@
 #include "client/torch.h"
 #include "core/blocks.h"
 #include "core/config.h"
+#include "core/world_light.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -115,6 +116,72 @@ static vec3_t dvec3_to_vec3f(dvec3_t v) {
     return (vec3_t){ (float)v.x, (float)v.y, (float)v.z };
 }
 
+/* True when the voxel engine is selected. Cached as a single config
+ * read per call site to keep the hot mesher path predictable. */
+static inline bool use_voxel_engine(void) {
+    return config_lighting()->engine == 1;
+}
+
+/* Normalised sky for the air voxel adjacent to a face, sampled from
+ * the propagated grid. Sky values are 0..voxel_sky_max; we divide so
+ * the mesher's downstream shader continues to read a 0..1 range
+ * identical to the column-mode output. */
+static float sky_light_voxel(const world_t* w, int tile, int depth_at_air) {
+    if (!w || !w->light) return 1.0f;
+    int max = config_lighting()->voxel_sky_max;
+    if (max <= 0) max = 15;
+    float v = (float)world_light_sky(w->light, tile, depth_at_air) / (float)max;
+    if (v > 1.0f) v = 1.0f;
+    return v;
+}
+
+/* Normalised block-light (torch) sample from the propagated grid.
+ * Returns the 0..1 fraction of full block-light at the sampled voxel.
+ * Downstream torch tint + intensity is applied in the shader exactly
+ * the same way as the column-mode per-vertex sum, so we don't try to
+ * match the column path's 0..3 clamped magnitude here - the grid is
+ * a single bounded source whose semantics differ. */
+static float torch_light_voxel(const world_t* w, int tile, int depth_at_air) {
+    if (!w || !w->light) return 0.0f;
+    return (float)world_light_block(w->light, tile, depth_at_air) / 15.0f;
+}
+
+/* Smooth-lighting corner sample. Averages the sky + block nibbles
+ * across the three voxels that share a hex/pent corner (this tile +
+ * the two edge-adjacent neighbours), each sampled at the same depth.
+ * Returns 0..1 fractions in *out_sky / *out_block. Caller passes the
+ * two flanking edge neighbours (edge_neighbours[k-1], edge_neighbours[k])
+ * for corner k. -1 in either slot is skipped (open-edge pentagon
+ * boundary, not actually possible for closed-surface goldbergs but
+ * the guard keeps the helper safe). */
+static void smooth_corner_sample(const world_t* w,
+                                 int tile, int nbr_a, int nbr_b,
+                                 int depth_at_air,
+                                 float* out_sky, float* out_block) {
+    if (!w || !w->light) { *out_sky = 1.0f; *out_block = 0.0f; return; }
+    int sky_sum   = 0;
+    int block_sum = 0;
+    int samples   = 0;
+    int max = config_lighting()->voxel_sky_max;
+    if (max <= 0) max = 15;
+
+    int tiles[3] = { tile, nbr_a, nbr_b };
+    for (int i = 0; i < 3; ++i) {
+        int ti = tiles[i];
+        if (ti < 0) continue;
+        sky_sum   += world_light_sky  (w->light, ti, depth_at_air);
+        block_sum += world_light_block(w->light, ti, depth_at_air);
+        ++samples;
+    }
+    if (samples == 0) { *out_sky = 0.0f; *out_block = 0.0f; return; }
+    float s = (float)sky_sum   / (float)(samples * max);
+    float b = (float)block_sum / (float)(samples * 15);
+    if (s > 1.0f) s = 1.0f;
+    if (b > 1.0f) b = 1.0f;
+    *out_sky   = s;
+    *out_block = b;
+}
+
 /* ----------------------------------------------------------------------- */
 
 /* Per-voxel hex-prism width factor along the tangent plane. 1.0 = full
@@ -188,12 +255,31 @@ static void emit_cap(hex_mesh_t* out,
      * in a normal terrain column the top cap reads sky=1 and the
      * bottom cap of an exposed leaf canopy reads close to the value
      * for its block. */
-    float sky_at = bake_lighting
-                 ? sky_light_at(w, tile_idx, is_top ? depth + 1 : depth)
-                 : 0.0f;
+    const bool voxel = use_voxel_engine();
+    const int  depth_at_air = is_top ? depth + 1 : depth;
 
-    float center_torch = bake_lighting ? torch_light_at(dvec3_to_vec3f(center_pos)) : 0.0f;
-    push_vertex(out, center_pos, normal, uc, vc, sky_at, center_torch, wet);
+    /* Cap centre samples just (this_tile, depth_at_air). Each corner
+     * vertex samples the three voxels meeting at that corner - the
+     * own column plus the two edge-flanking neighbours - and averages,
+     * giving per-vertex smooth lighting under the voxel engine. Column
+     * mode keeps the legacy "sky shared across the cap + per-vertex
+     * inverse-square torch" path so flipping engine: column back on
+     * is a pure visual revert. */
+    float center_sky   = 0.0f;
+    float center_block = 0.0f;
+    if (bake_lighting) {
+        if (voxel) {
+            center_sky   = sky_light_voxel  (w, tile_idx, depth_at_air);
+            center_block = torch_light_voxel(w, tile_idx, depth_at_air);
+        } else {
+            center_sky = sky_light_at(w, tile_idx, depth_at_air);
+        }
+    }
+
+    float center_torch = !bake_lighting ? 0.0f
+                       : voxel          ? center_block
+                       : torch_light_at(dvec3_to_vec3f(center_pos));
+    push_vertex(out, center_pos, normal, uc, vc, center_sky, center_torch, wet);
 
     for (int k = 0; k < n; ++k) {
         dvec3_t corner_dir = shrink_corner(t, k, width);
@@ -201,8 +287,20 @@ static void emit_cap(hex_mesh_t* out,
         double angle = (double)k / (double)n * 6.2831853 - 1.5707963;
         float u = uc + (float)cos(angle) * HEX_ATLAS_U_STEP * 0.5f;
         float v = vc + (float)sin(angle) * 0.5f;
-        float corner_torch = bake_lighting ? torch_light_at(dvec3_to_vec3f(corner)) : 0.0f;
-        push_vertex(out, corner, normal, u, v, sky_at, corner_torch, wet);
+
+        float corner_sky   = center_sky;
+        float corner_block = center_block;
+        if (bake_lighting && voxel) {
+            int nbr_a = t->edge_neighbours[(k - 1 + n) % n];
+            int nbr_b = t->edge_neighbours[k];
+            smooth_corner_sample(w, tile_idx, nbr_a, nbr_b, depth_at_air,
+                                 &corner_sky, &corner_block);
+        }
+
+        float corner_torch = !bake_lighting ? 0.0f
+                           : voxel          ? corner_block
+                           : torch_light_at(dvec3_to_vec3f(corner));
+        push_vertex(out, corner, normal, u, v, corner_sky, corner_torch, wet);
     }
 
     for (int k = 0; k < n; ++k) {
@@ -258,16 +356,47 @@ static void emit_side_quad(hex_mesh_t* out,
     float u0 = (float)block_face_tile(block, FACE_CAP_SIDE) * HEX_ATLAS_U_STEP;
     float u1 = u0 + HEX_ATLAS_U_STEP;
 
-    float sky = sky_light_at(w, tile_idx, depth + 1);
-    float t_ia = torch_light_at(dvec3_to_vec3f(inner_a));
-    float t_ib = torch_light_at(dvec3_to_vec3f(inner_b));
-    float t_oa = torch_light_at(dvec3_to_vec3f(outer_a));
-    float t_ob = torch_light_at(dvec3_to_vec3f(outer_b));
+    const bool voxel = use_voxel_engine();
+    /* sky_a/sky_b carry the per-corner sky values at the OUTER ring
+     * (top of the block at depth d). The mesher carries a single sky
+     * sample down each side face today; we keep that vertical-uniform
+     * behaviour but split horizontally per corner so the gradient
+     * across the face matches the cap's gradient at the join. Block
+     * (torch) channel follows the same shape under voxel; column
+     * mode keeps per-vertex inverse-square. */
+    float sky_a = 0.0f, sky_b = 0.0f;
+    float t_ia = 0.0f, t_ib = 0.0f, t_oa = 0.0f, t_ob = 0.0f;
+    if (voxel) {
+        const int n = t->num_verts;
+        /* Edge k spans corner k_a -> k_b, so the across-face neighbour
+         * is edge_neighbours[k_a]. Corner k_a is bounded by edges
+         * (k_a-1, k_a); corner k_b by edges (k_a, k_a+1). The shared
+         * "across" edge is k_a for both, plus one outboard edge each. */
+        const int edge_k = k_a;
+        const int nbr_a_outboard = t->edge_neighbours[(k_a - 1 + n) % n];
+        const int nbr_b_outboard = t->edge_neighbours[(k_b)         % n];
+        const int nbr_across     = t->edge_neighbours[edge_k];
+        float bl_a, bl_b;
+        smooth_corner_sample(w, tile_idx, nbr_a_outboard, nbr_across,
+                             depth + 1, &sky_a, &bl_a);
+        smooth_corner_sample(w, tile_idx, nbr_across, nbr_b_outboard,
+                             depth + 1, &sky_b, &bl_b);
+        t_ia = bl_a;  t_oa = bl_a;
+        t_ib = bl_b;  t_ob = bl_b;
+    } else {
+        /* Legacy path: sky shared across the quad, torch per-vertex. */
+        float legacy_sky = sky_light_at(w, tile_idx, depth + 1);
+        sky_a = sky_b = legacy_sky;
+        t_ia = torch_light_at(dvec3_to_vec3f(inner_a));
+        t_ib = torch_light_at(dvec3_to_vec3f(inner_b));
+        t_oa = torch_light_at(dvec3_to_vec3f(outer_a));
+        t_ob = torch_light_at(dvec3_to_vec3f(outer_b));
+    }
 
-    push_vertex(out, inner_a, normal, u0, 0.0f, sky, t_ia, wet);
-    push_vertex(out, inner_b, normal, u1, 0.0f, sky, t_ib, wet);
-    push_vertex(out, outer_b, normal, u1, 1.0f, sky, t_ob, wet);
-    push_vertex(out, outer_a, normal, u0, 1.0f, sky, t_oa, wet);
+    push_vertex(out, inner_a, normal, u0, 0.0f, sky_a, t_ia, wet);
+    push_vertex(out, inner_b, normal, u1, 0.0f, sky_b, t_ib, wet);
+    push_vertex(out, outer_b, normal, u1, 1.0f, sky_b, t_ob, wet);
+    push_vertex(out, outer_a, normal, u0, 1.0f, sky_a, t_oa, wet);
 
     out->indices[out->index_count++] = base + 0;
     out->indices[out->index_count++] = base + 1;
@@ -427,4 +556,46 @@ void hex_mesh_build_tile(hex_mesh_t* out, const world_t* w, int tile_idx) {
             emit_side_quad(out, t, w, tile_idx, d, k, next, r_bot, r_top, b, width, wet);
         }
     }
+}
+
+/* ----------------------------------------------------------------------- */
+/* Voxel-engine relight entry point. Idempotent within a frame: the
+ * first chunk-rebuild call after a world edit publishes torches and
+ * runs the BFS, subsequent calls find the dirty flag cleared and
+ * return immediately. */
+
+void hex_mesher_relight_if_needed(world_t* w) {
+    if (!w || !w->light) return;
+    const lighting_config_t* cfg = config_lighting();
+    if (cfg->engine != 1) return;
+    if (!world_light_is_dirty(w->light)) return;
+
+    /* Publish current torches. Torch coordinates are body-local; the
+     * flame sits TORCH_FLAME_HEIGHT_M above the base, so the seeded
+     * voxel is the air voxel containing the flame. tile_idx is stored
+     * on the torch directly. */
+    static world_light_torch_t buf[TORCH_MAX_COUNT];
+    int published = 0;
+    int n = torch_count();
+    if (n > 0) {
+        const torch_t* list = torch_list();
+        const uint8_t intensity = (uint8_t)cfg->voxel_torch_emission;
+        for (int i = 0; i < n && published < TORCH_MAX_COUNT; ++i) {
+            int tile = list[i].tile_idx;
+            if (tile < 0 || tile >= w->tile_count) continue;
+            vec3_t flame = torch_flame_pos(&list[i]);
+            double r = sqrt((double)flame.x * (double)flame.x +
+                            (double)flame.y * (double)flame.y +
+                            (double)flame.z * (double)flame.z);
+            int depth = world_radius_to_depth(w, r);
+            if (depth < 0 || depth >= WORLD_MAX_DEPTH) continue;
+            buf[published].tile      = tile;
+            buf[published].depth     = depth;
+            buf[published].intensity = intensity;
+            ++published;
+        }
+    }
+    /* set_torches marks dirty again; rebuild clears it on completion. */
+    world_light_set_torches(w->light, buf, published);
+    world_light_rebuild(w->light, w);
 }

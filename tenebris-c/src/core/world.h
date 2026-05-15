@@ -8,6 +8,12 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+/* Forward decl - world_light owns a parallel per-voxel light grid,
+ * lifecycle-tied to the world. The mesher reads it through the
+ * core/world_light.h API. Defined as an opaque pointer here to avoid
+ * pulling the BFS header into every world.h consumer. */
+struct world_light_s;
+
 /*
  * The whole world. Holds the Goldberg tile set + a column of voxels per
  * tile. Matches the src/planet/Planet.ts model: depth 0 = deepest
@@ -64,6 +70,12 @@ typedef struct world_s {
      * far. Fill is streamed across frames; tiles past this cursor are
      * all BLOCK_AIR. */
     int                  gen_cursor;
+
+    /* Per-voxel propagated light grid (sky + block nibbles). Created
+     * alongside the world; mark-dirty / rebuild semantics live in
+     * core/world_light. The mesher gates on config_lighting()->engine
+     * to decide between this and the legacy column-based bake. */
+    struct world_light_s* light;
 } world_t;
 
 /* ----------------------------------------------------------------------- */

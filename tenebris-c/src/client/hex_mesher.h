@@ -71,6 +71,16 @@ void hex_mesh_build_tile(hex_mesh_t* out, const world_t* w, int tile_idx);
  * sin-based waves and alpha-blends it. */
 void hex_mesh_build_water(hex_mesh_t* out, const world_t* w, int tile_idx);
 
+/* When config_lighting()->engine == "voxel", relight the world's
+ * propagated light grid if it's marked dirty. Idempotent within a
+ * frame: multiple chunk rebuilds hit the dirty flag once, run the
+ * BFS once, and the rest see is_dirty=false and return. Always safe
+ * to call; a no-op under the legacy "column" engine. Publishes the
+ * current torch list as the block-light source set, so torch
+ * place/remove events automatically participate via the world_set
+ * dirty hook. */
+void hex_mesher_relight_if_needed(world_t* w);
+
 /* Atlas column count (must match the runtime bake in renderer.c).
  * 12 default + 6 Sequoia + 3 tinted variants + wood + leaves + bedrock
  * + seq-leaves = 25 total. */

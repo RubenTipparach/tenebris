@@ -21,6 +21,33 @@ world state (mining, placement, physics) and a Client bug if it
 touches rendering or input. When in doubt, fix it in Core so SP and
 MP share the same code path.
 
+## All world edits must persist immediately
+
+Every block placement, every block break, every torch placement,
+every torch removal must be written to durable storage **on the
+same input frame it happens**, not batched, not snapshotted, not
+deferred to a timer.
+
+- **MP**: per-edit write through `saves_write_tile()` in the
+  server's `PLAYER_CMD` handler (the whole 128-byte column, not a
+  delta). Already wired; do not regress it.
+- **SP**: per-edit write to `window.localStorage` via
+  `persistence_save_tile()` / `persistence_save_torches()`. Calls
+  live next to the `world_set()` / `torch_place` / `torch_remove`
+  call in `interact.c` (or wherever the equivalent mutation
+  originates).
+
+There is no "save on quit" or "save every N seconds" path for block
+or torch state. A browser tab can close without warning; a Fly
+machine can auto-stop mid-frame. The 5 s pose autosave is acceptable
+because pose is cheap to re-derive — block + torch state is not.
+
+When you add any new world-mutating action (fluid placement, entity
+spawn, terrain reshape, vehicle parts, etc.), wire its persistence
+at the same point in the call graph as `world_set` is wired today.
+A new mutator without a same-frame save is a bug, not a feature
+request.
+
 ## DO NOT MODIFY THE TENEBRIS JS SOURCE — IT IS DEPRECATED
 
 The original Three.js / TypeScript implementation lives at the repo root

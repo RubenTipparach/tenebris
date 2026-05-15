@@ -987,9 +987,80 @@ static void maybe_prime_mode_for_state(void) {
     G_inv_primed_for_state = s;
 }
 
+/* Restore every saved tile column + torch list for an SP world. Runs
+ * once when the SP session enters gameplay (procgen has already baked
+ * the baseline at boot). Per CLAUDE.md persistence rule, every edit
+ * the player made before reload is on disk - this is the read side
+ * of that contract. */
+static void apply_sp_world_saves(world_t* w) {
+    if (!w || !w->body) return;
+    const char* world_name = menu_active_world();
+    if (!world_name || !*world_name) return;
+
+    /* Tile columns: enumerate every tenebris-c:tile:<world>:<body>:*
+     * entry, load it, and apply per-voxel via world_set so dirty
+     * marking + light invalidation behave exactly as a live edit
+     * would. Cap matches the largest goldberg tile count we ever
+     * build (sub=7 = ~164k). */
+    static int  s_idx_buf[200000];
+    int n = persistence_list_saved_tiles(world_name, (uint32_t)w->body->id,
+                                         s_idx_buf,
+                                         (int)(sizeof(s_idx_buf) / sizeof(s_idx_buf[0])));
+    int tiles_applied = 0;
+    int voxels_applied = 0;
+    for (int i = 0; i < n; ++i) {
+        int tile = s_idx_buf[i];
+        if (tile < 0 || tile >= w->tile_count) continue;
+        uint8_t column[PERSISTENCE_COLUMN_BYTES];
+        if (!persistence_load_tile(world_name, (uint32_t)w->body->id, tile, column))
+            continue;
+        for (int d = 0; d < PERSISTENCE_COLUMN_BYTES && d < WORLD_MAX_DEPTH; ++d) {
+            block_t b = (block_t)column[d];
+            if (b != (block_t)w->blocks[tile * WORLD_MAX_DEPTH + d]) {
+                world_set(w, tile, d, b);
+                ++voxels_applied;
+            }
+        }
+        ++tiles_applied;
+    }
+    if (tiles_applied > 0) {
+        printf("[sp-saves] body=%d: %d tile(s) restored, %d voxel(s) overwrote procgen\n",
+               (int)w->body->id, tiles_applied, voxels_applied);
+        fflush(stdout);
+    }
+
+    /* Torch list: load + replay through torch_place. The runtime
+     * list is global, so this body's torches accumulate alongside
+     * any others restored earlier in the loop. */
+    persistence_torch_t torches[TORCH_MAX_COUNT];
+    int tn = persistence_load_torches(world_name, (uint32_t)w->body->id,
+                                      torches, TORCH_MAX_COUNT);
+    int placed = 0;
+    for (int i = 0; i < tn; ++i) {
+        vec3_t pos = { torches[i].pos[0], torches[i].pos[1], torches[i].pos[2] };
+        vec3_t up  = { torches[i].up[0],  torches[i].up[1],  torches[i].up[2]  };
+        if (torch_place(pos, up, torches[i].tile_idx)) ++placed;
+    }
+    if (placed > 0) {
+        printf("[sp-saves] body=%d: %d torch(es) restored\n",
+               (int)w->body->id, placed);
+        fflush(stdout);
+    }
+}
+
 static void maybe_apply_sp_resume(void) {
     if (G_sp_resume_applied) return;
     if (menu_state() != GAME_IN_GAME_SP) return;
+
+    /* Always replay saved tiles + torches when entering SP, even if
+     * the menu didn't hand us a one-shot pose resume (e.g. starting
+     * fresh on an existing world). World saves are independent of
+     * pose - the player wants their builds back regardless. */
+    apply_sp_world_saves(G.world);
+    for (int i = 0; i < G.moon_count; ++i) {
+        apply_sp_world_saves(G.moons[i]);
+    }
+
     persistence_save_t s;
     if (!menu_take_sp_resume(&s)) { G_sp_resume_applied = true; return; }
 

@@ -600,6 +600,9 @@ static lighting_config_t S_LIGHTING = {
     .terminator_hi       =  0.30f,
     .torch_color         = { 1.00f, 0.70f, 0.30f },
     .torch_intensity     = 1.00f,
+    .engine              = 0,    /* "column" — legacy path, no behaviour change */
+    .voxel_sky_max       = 15,
+    .voxel_torch_emission= 14,
 };
 
 const lighting_config_t* config_lighting(void) { return &S_LIGHTING; }
@@ -651,6 +654,28 @@ int config_load_lighting(const char* path) {
                         if (!parse_vec3(val, &S_LIGHTING.torch_color)) parse_errors++;
                     } else if (strcmp(key, "torch_intensity") == 0) {
                         S_LIGHTING.torch_intensity = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "engine") == 0) {
+                        /* Bareword: "column" / "voxel". Tolerates quotes
+                         * if a YAML editor adds them. */
+                        char* v = val;
+                        if (*v == '"' || *v == '\'') ++v;
+                        if (strncmp(v, "voxel", 5) == 0)       S_LIGHTING.engine = 1;
+                        else if (strncmp(v, "column", 6) == 0) S_LIGHTING.engine = 0;
+                        else {
+                            printf("[config] %s:%d: engine must be 'column' or 'voxel', got '%s'\n",
+                                   path, line_no, val);
+                            parse_errors++;
+                        }
+                    } else if (strcmp(key, "voxel_sky_max") == 0) {
+                        int n = (int)strtol(val, NULL, 10);
+                        if (n < 0)  n = 0;
+                        if (n > 15) n = 15;
+                        S_LIGHTING.voxel_sky_max = n;
+                    } else if (strcmp(key, "voxel_torch_emission") == 0) {
+                        int n = (int)strtol(val, NULL, 10);
+                        if (n < 0)  n = 0;
+                        if (n > 15) n = 15;
+                        S_LIGHTING.voxel_torch_emission = n;
                     } else {
                         printf("[config] %s:%d: unknown key '%s'\n",
                                path, line_no, key);

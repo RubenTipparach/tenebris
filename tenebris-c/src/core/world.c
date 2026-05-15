@@ -1,4 +1,5 @@
 #include "core/world.h"
+#include "core/world_light.h"
 #include "core/planet.h"
 #include "core/planet_gen.h"
 #include <stdlib.h>
@@ -20,11 +21,13 @@ world_t* world_create(const body_config_t* body, int subdivisions) {
     w->dirty_bytes = (w->tile_count + 7) / 8;
     w->dirty = (uint8_t*)calloc((size_t)w->dirty_bytes, 1);
     w->gen_cursor = 0;
+    w->light = world_light_create(w);
     return w;
 }
 
 void world_destroy(world_t* w) {
     if (!w) return;
+    world_light_destroy(w->light);
     goldberg_destroy(w->grid);
     free(w->blocks);
     free(w->dirty);
@@ -47,6 +50,10 @@ world_t* world_clone(const world_t* src) {
     /* Mark gen as complete so callers don't re-run world_stream_gen. */
     w->gen_cursor = w->tile_count;
     /* Dirty bits start clean — the clone is a snapshot. */
+    /* Light grid: copy the source's nibbles so the snapshot keeps its
+     * relit state without paying for another BFS. Torches reset; the
+     * client that consumes this clone republishes its torch list. */
+    world_light_clone_into(w->light, src->light);
     return w;
 }
 
@@ -168,6 +175,10 @@ void world_set(world_t* w, int tile, int depth, block_t b) {
         int n = t->neighbors[i];
         w->dirty[n >> 3] |= (uint8_t)(1 << (n & 7));
     }
+    /* The light grid is now stale - mark for relight before the next
+     * mesh build. Phase 1 does a full BFS rebuild on the dirty flag;
+     * Phase 2 will swap to a bounded incremental queue. */
+    world_light_mark_dirty(w->light);
 }
 
 bool world_tile_dirty(const world_t* w, int tile) {
@@ -230,6 +241,11 @@ void world_dirty_in_range(world_t* w, vec3_t world_pos, float radius_m) {
             w->dirty[i >> 3] |= (uint8_t)(1 << (i & 7));
         }
     }
+    /* This function is only called from torch place / remove paths
+     * (see torch.h), so the light grid's published torch set is stale.
+     * Mark dirty to trigger a relight on the next mesh build under the
+     * voxel engine; no-op cost under the column engine. */
+    world_light_mark_dirty(w->light);
 }
 
 double world_depth_to_radius_m(const world_t* w, int depth) {
@@ -263,6 +279,16 @@ static bool block_is_passable(uint8_t b) {
     return b == (uint8_t)BLOCK_AIR || b == (uint8_t)BLOCK_WATER;
 }
 
+/* Vertical tolerance for "step me up onto a floor that's slightly
+ * above where I asked". Matches player_ctrl.c's STEP_HEIGHT exactly -
+ * it's the same physical concept: how far the player can be lifted
+ * by ground-snap without it feeling like teleport. A bridge whose
+ * top sits 1 cm above the player's feet (after one tick of gravity)
+ * must be picked over the distant planet ground below, otherwise
+ * the player falls through their own builds. Keep this in lock-step
+ * with player_ctrl.c::STEP_HEIGHT. */
+#define WORLD_STEP_HEIGHT 0.6
+
 double world_walkable_floor_near(const world_t* w, int tile,
                                  double target_radius_m,
                                  double body_height_m) {
@@ -271,9 +297,23 @@ double world_walkable_floor_near(const world_t* w, int tile,
     }
     const uint8_t* col = &w->blocks[tile * WORLD_MAX_DEPTH];
 
-    /* Scan all walkable floors in the column. Prefer floors at or
-     * below target_radius_m; among those, the closest wins. Only fall
-     * back to a floor above the target if no candidate sits below.
+    /* Scan every walkable floor in the column. We track the closest
+     * floor below the target separately from the closest above, then
+     * pick between them:
+     *
+     *   - A floor close above (within WORLD_STEP_HEIGHT) BEATS any
+     *     floor below. This is what makes a player-built bridge work:
+     *     gravity dips the feet a cm under the bridge top each tick,
+     *     and we need to snap back to the bridge instead of the
+     *     planet surface tens of metres down.
+     *   - Otherwise prefer the closest floor at-or-below the target.
+     *     Falling into a cave with a roof a few metres overhead and a
+     *     real floor below: the roof's TOP sits far above the
+     *     player's feet (more than STEP_HEIGHT), so it's correctly
+     *     ignored and the cave floor wins.
+     *   - With no below-or-near-above candidate, fall through to the
+     *     best above (may still be -1e9 if the column has no floor).
+     *
      * Headroom check (body_height_m > 0): the column above the
      * candidate must be passable for body_height_m metres. */
     double best_radius_below = -1e9;
@@ -315,6 +355,17 @@ double world_walkable_floor_near(const world_t* w, int tile,
                 best_dist_above   = dist;
                 best_radius_above = floor_r;
             }
+        }
+    }
+    /* Bridge-aware tiebreak. A floor within step-height ABOVE the
+     * target beats whatever is far below it, because the player has
+     * almost certainly just dipped a hair under it via gravity and
+     * needs to snap back. Only relevant when the above candidate is
+     * physically close - bigger gaps (cave ceilings, terrain above an
+     * overhang) keep the legacy "prefer below" behaviour. */
+    if (best_radius_above > -1e8 && best_dist_above <= WORLD_STEP_HEIGHT) {
+        if (best_radius_below < -1e8 || best_dist_above < best_dist_below) {
+            return best_radius_above;
         }
     }
     if (best_radius_below > -1e8) return best_radius_below;

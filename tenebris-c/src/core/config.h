@@ -378,6 +378,30 @@ typedef struct {
      * boost all torches without re-baking the per-vertex sums in the
      * mesh. 1.0 = nominal brightness. */
     float  torch_intensity;
+
+    /* Per-vertex lighting backend selection.
+     *   0 = "column" — legacy path. sky_light_at counts solid voxels
+     *       stacked above the column; torch_light_at sums inverse-
+     *       square contributions from every torch within range with
+     *       no occlusion test. Cheap, no extra state.
+     *   1 = "voxel" — propagated grid. core/world_light owns a per-
+     *       voxel sky-nibble + block-nibble pair fed by a 6-neighbour
+     *       BFS. Sky propagates straight-down through air at full
+     *       value (preserves shafts of daylight) and -1 per step in
+     *       every other direction. Block light seeds at each torch
+     *       voxel and falls off -1 per step through any non-face-
+     *       covering block. Both honour walls. */
+    int    engine;
+    /* Maximum sky value (the value seeded into every open-sky air
+     * voxel before propagation). 15 matches the Minecraft-style
+     * nibble range and is the value the mesher normalises against.
+     * Lower = darker sky. */
+    int    voxel_sky_max;
+    /* Block light emitted by a single torch at its anchor voxel
+     * before propagation. 14 leaves one step of headroom under the
+     * 15-cap; 0 disables torch propagation entirely (useful for
+     * isolating sky behaviour during tuning). */
+    int    voxel_torch_emission;
 } lighting_config_t;
 
 const lighting_config_t* config_lighting(void);

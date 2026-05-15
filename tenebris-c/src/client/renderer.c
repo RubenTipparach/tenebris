@@ -1810,6 +1810,11 @@ static sg_buffer regrow_buffer(sg_buffer old, int* capacity, int needed,
 
 static void body_chunk_rebuild_full(chunked_body_t* body, int chunk_idx) {
     world_t* w = body->world;
+    /* Voxel-engine relight: idempotent across the multiple chunk
+     * rebuilds a single edit triggers (mesher_relight_if_needed runs
+     * the BFS at most once per dirty flip per world). No-op under
+     * the legacy column engine. */
+    hex_mesher_relight_if_needed(w);
     mesh_chunk_t* c = &body->chunks[chunk_idx];
     hex_mesh_reset(&c->mesh);
     hex_mesh_reset(&c->water_mesh);
@@ -1828,6 +1833,9 @@ static void body_chunk_rebuild_full(chunked_body_t* body, int chunk_idx) {
  * a streaming budget. */
 static void body_full_mesh(chunked_body_t* body) {
     world_t* w = body->world;
+    /* Same relight gate as the per-chunk path - one BFS up front when
+     * the engine is voxel and the grid is dirty. */
+    hex_mesher_relight_if_needed(w);
     for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
         mesh_chunk_t* c = &body->chunks[ci];
         hex_mesh_reset(&c->mesh);
