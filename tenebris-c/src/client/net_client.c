@@ -190,6 +190,17 @@ typedef struct {
     uint64_t             ready_time;          /* stm_now() when state became READY */
     uint64_t             last_chunk_diff_time;/* stm_now() of last CHUNK_DIFF received */
     bool                 audit_triggered;     /* true once fetch fired */
+    /* Per-body HTTP fetch tracking. Each body's /saves/body response
+     * applies once per connection - subsequent re-approaches reuse
+     * the already-applied in-memory state. Tracked as a small dense
+     * array keyed by body_id. NOT a bitset because we want three
+     * states (never asked / in-flight / done), and 32 bodies is
+     * trivially small. */
+    struct {
+        uint32_t body_id;
+        uint8_t  state;            /* 0 idle, 1 in-flight, 2 done */
+    }                    body_fetch[NET_BODY_COVERAGE_MAX];
+    int                  body_fetch_count;
 } net_client_t;
 
 static net_client_t C;
@@ -362,6 +373,12 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
             C.state = NET_CLIENT_READY;
             C.ready_time = stm_now();
             C.last_chunk_diff_time = C.ready_time;
+            /* Kick off the lazy fetch for the spawn body so the
+             * player's first frame in MP shows persisted blocks
+             * without waiting for body_load_detail (the active body
+             * never triggers that path - it's meshed at register
+             * time). Deferred bodies fetch from body_load_detail. */
+            net_client_fetch_body_saves(w.body_id);
             /* Cache our own name so F1 can show it for the local
              * player too — the server has it from HELLO but doesn't
              * echo it in WELCOME; the locally-known profile name is
@@ -1301,6 +1318,233 @@ static void net_client_run_saves_audit(const char* json) {
                verdict);
     }
     printf("[net-client] ====== END AUDIT SUMMARY ======\n");
+    fflush(stdout);
+}
+
+/* ------------------------------------------------------------------ */
+/* /saves/body lazy-per-body fetch.
+ *
+ * The WS CHUNK_DIFF replay turned out to be unreliable at scale: a
+ * planet with hundreds of persisted columns drops messages on the
+ * way down. The HTTP route is TCP-with-retransmits and is the source
+ * of truth at boot. We fetch one body at a time, on demand:
+ *   - WELCOME -> fetch the spawn body
+ *   - body_load_detail (renderer) -> fetch the body about to be meshed
+ * Both routes go through net_client_fetch_body_saves which dedupes
+ * via the per-body fetch-state slot.
+ *
+ * Format of the binary response (matches saves.h SAVES_BODY_BLOB):
+ *   u8[4]  magic = 'TBOD'
+ *   u32    version = 1
+ *   u32    body_id
+ *   u64    seed
+ *   u32    tile_count
+ *   u32    depth
+ *   { u32 tile_idx, u8[depth] blocks } * tile_count
+ * ------------------------------------------------------------------ */
+
+#define SAVES_BODY_BLOB_MAGIC_LE  0x444F4254u   /* 'T' 'B' 'O' 'D' little-endian */
+#define SAVES_BODY_BLOB_HEADER    28
+
+static void net_client_apply_body_blob(uint32_t expected_body_id,
+                                         const uint8_t* data, size_t len);
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+void net_client_body_blob_cb(uint32_t body_id, const uint8_t* data,
+                                int len) {
+    if (len <= 0 || !data) {
+        fprintf(stderr,
+                "[net-client] /saves/body body=%u: empty response (len=%d)\n",
+                body_id, len);
+        /* Mark idle again so a retry has a chance. */
+        for (int i = 0; i < C.body_fetch_count; ++i) {
+            if (C.body_fetch[i].body_id == body_id) {
+                C.body_fetch[i].state = 0;
+                break;
+            }
+        }
+        return;
+    }
+    net_client_apply_body_blob(body_id, data, (size_t)len);
+}
+
+EM_JS(void, net_client_js_fetch_body, (const char* url_cstr, uint32_t body_id), {
+    var url = UTF8ToString(url_cstr);
+    fetch(url)
+        .then(function(r) {
+            if (!r.ok) throw new Error('http ' + r.status);
+            return r.arrayBuffer();
+        })
+        .then(function(buf) {
+            var bytes = new Uint8Array(buf);
+            var ptr = _malloc(bytes.length);
+            HEAPU8.set(bytes, ptr);
+            Module.ccall('net_client_body_blob_cb',
+                         'void',
+                         ['number', 'number', 'number'],
+                         [body_id, ptr, bytes.length]);
+            _free(ptr);
+        })
+        .catch(function(e) {
+            console.error('[net-client] /saves/body fetch failed for body=' + body_id + ':', e);
+        });
+});
+#else
+static void net_client_js_fetch_body(const char* url_cstr, uint32_t body_id) {
+    (void)url_cstr; (void)body_id;
+}
+#endif
+
+void net_client_fetch_body_saves(uint32_t body_id) {
+    if (C.state != NET_CLIENT_READY) {
+        /* Pre-READY: stash nothing - the WELCOME path re-issues the
+         * fetch for the spawn body once we know the URL anyway. */
+        return;
+    }
+    if (!C.server_url[0]) return;
+
+    /* Dedupe: idle / in-flight / done state per body. Allocate a slot
+     * on first call. */
+    int slot = -1;
+    for (int i = 0; i < C.body_fetch_count; ++i) {
+        if (C.body_fetch[i].body_id == body_id) { slot = i; break; }
+    }
+    if (slot < 0 && C.body_fetch_count < NET_BODY_COVERAGE_MAX) {
+        slot = C.body_fetch_count++;
+        C.body_fetch[slot].body_id = body_id;
+        C.body_fetch[slot].state   = 0;
+    }
+    if (slot < 0) {
+        fprintf(stderr,
+                "[net-client] body-fetch table full, can't track body=%u\n",
+                body_id);
+        return;
+    }
+    if (C.body_fetch[slot].state != 0) {
+        /* Already fetched or in flight; skip. */
+        return;
+    }
+    C.body_fetch[slot].state = 1;
+
+    /* Build the HTTP URL the same way the audit does: ws:// -> http://,
+     * wss:// -> https://. */
+    char origin[200];
+    const char* base = C.server_url;
+    if (strncmp(base, "wss://", 6) == 0) {
+        snprintf(origin, sizeof origin, "https://%s", base + 6);
+    } else if (strncmp(base, "ws://", 5) == 0) {
+        snprintf(origin, sizeof origin, "http://%s",  base + 5);
+    } else {
+        snprintf(origin, sizeof origin, "%s", base);
+    }
+    size_t olen = strlen(origin);
+    if (olen > 0 && origin[olen - 1] == '/') origin[olen - 1] = 0;
+
+    char url[400];
+    if (C.room_code[0]) {
+        snprintf(url, sizeof url,
+                 "%s/saves/body?room=%s&body=%u&seed=%llu",
+                 origin, C.room_code, body_id,
+                 (unsigned long long)C.welcome.world_seed);
+    } else {
+        snprintf(url, sizeof url,
+                 "%s/saves/body?room=__public__&body=%u&seed=%llu",
+                 origin, body_id,
+                 (unsigned long long)C.welcome.world_seed);
+    }
+    printf("[net-client] /saves/body fetch -> %s\n", url);
+    net_client_js_fetch_body(url, body_id);
+}
+
+static void net_client_apply_body_blob(uint32_t expected_body_id,
+                                         const uint8_t* data, size_t len) {
+    if (len < SAVES_BODY_BLOB_HEADER) {
+        fprintf(stderr,
+                "[net-client] body blob too small (%zu bytes) for body=%u\n",
+                len, expected_body_id);
+        return;
+    }
+    uint32_t magic, version, body_id_in;
+    uint64_t seed;
+    uint32_t tile_count, depth;
+    memcpy(&magic,      data + 0,  4);
+    memcpy(&version,    data + 4,  4);
+    memcpy(&body_id_in, data + 8,  4);
+    memcpy(&seed,       data + 12, 8);
+    memcpy(&tile_count, data + 20, 4);
+    memcpy(&depth,      data + 24, 4);
+    if (magic != SAVES_BODY_BLOB_MAGIC_LE) {
+        fprintf(stderr,
+                "[net-client] body blob magic mismatch for body=%u (got 0x%08x, expected 0x%08x)\n",
+                expected_body_id, magic, SAVES_BODY_BLOB_MAGIC_LE);
+        return;
+    }
+    if (body_id_in != expected_body_id) {
+        fprintf(stderr,
+                "[net-client] body blob body_id mismatch (response %u, requested %u)\n",
+                body_id_in, expected_body_id);
+        /* Trust the response's body_id - the URL might have routed
+         * somewhere unexpected and applying to the wrong world would
+         * silently corrupt the right one. */
+    }
+
+    world_t* w = renderer_world_for_body(body_id_in);
+    if (!w) {
+        fprintf(stderr,
+                "[net-client] body blob body=%u unknown to renderer, %u tile(s) DROPPED\n",
+                body_id_in, tile_count);
+        return;
+    }
+    if ((int)depth != WORLD_MAX_DEPTH) {
+        fprintf(stderr,
+                "[net-client] body blob depth=%u != WORLD_MAX_DEPTH=%d, refusing to apply\n",
+                depth, WORLD_MAX_DEPTH);
+        return;
+    }
+
+    const size_t record_size = 4 + (size_t)depth;
+    const uint8_t* cursor = data + SAVES_BODY_BLOB_HEADER;
+    const uint8_t* end    = data + len;
+    int applied_tiles = 0;
+    int applied_cells = 0;
+    for (uint32_t i = 0; i < tile_count; ++i) {
+        if (cursor + record_size > end) {
+            fprintf(stderr,
+                    "[net-client] body blob truncated at record %u/%u\n",
+                    i, tile_count);
+            break;
+        }
+        uint32_t tile_idx;
+        memcpy(&tile_idx, cursor, 4);
+        cursor += 4;
+        const uint8_t* col = cursor;
+        cursor += depth;
+        if ((int)tile_idx < 0 || (int)tile_idx >= w->tile_count) continue;
+        /* Apply the saved column wholesale. world_set marks the
+         * tile + neighbors dirty so the renderer remeshes on the
+         * next frame; if the body is already meshed this is a
+         * visible refresh, if it isn't (deferred) the bits stick
+         * until body_full_mesh runs. */
+        for (int d = 0; d < (int)depth; ++d) {
+            world_set(w, (int)tile_idx, d, (block_t)col[d]);
+            ++applied_cells;
+        }
+        ++applied_tiles;
+    }
+
+    /* Mark the fetch slot done so re-approach skips the refetch. */
+    for (int i = 0; i < C.body_fetch_count; ++i) {
+        if (C.body_fetch[i].body_id == expected_body_id) {
+            C.body_fetch[i].state = 2;
+            break;
+        }
+    }
+
+    const char* name = (w && w->body && w->body->name) ? w->body->name : "?";
+    printf("[net-client] /saves/body body=%u (%s) applied: %d tile(s), %d cell(s) "
+           "(%zu bytes received)\n",
+           body_id_in, name, applied_tiles, applied_cells, len);
     fflush(stdout);
 }
 

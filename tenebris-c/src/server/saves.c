@@ -781,6 +781,154 @@ int saves_enumerate_tiles(saves_tile_visitor_t fn, void* user) {
     return total;
 }
 
+/* ----------------------------------------------------------------- */
+/* /saves/body bulk download. Walks the body's directory once, then
+ * once again to write entries - simpler than building an intermediate
+ * vector. Each .col file's payload comes from disk; we tolerate v0
+ * (legacy 128 bytes, no header) and v1 (16-byte header + 128 bytes)
+ * by detecting the header magic. Mismatched files are skipped with
+ * a warning so a single corrupt entry doesn't drop the whole blob. */
+bool saves_body_blob(const char* room, uint64_t seed, uint32_t body_id,
+                       uint8_t* out, size_t cap, size_t* out_len) {
+    if (out_len) *out_len = 0;
+    if (!G_saves_dir || !out) return false;
+    char dir[512];
+    body_dir(dir, sizeof dir, room, seed, body_id);
+
+    /* First pass: count valid tiles + compute total size so we can
+     * decide whether the buffer fits before doing any writes. */
+    DIR* d = opendir(dir);
+    if (!d) {
+        /* Empty / missing dir is success with zero tiles - return a
+         * well-formed empty blob so the client can tell "no edits
+         * for this body" from "fetch failed". */
+        if (cap < SAVES_BODY_BLOB_HEADER) {
+            if (out_len) *out_len = SAVES_BODY_BLOB_HEADER;
+            return false;
+        }
+        uint32_t mag = SAVES_BODY_BLOB_MAGIC;
+        uint32_t ver = SAVES_BODY_BLOB_VERSION;
+        uint32_t bid = body_id;
+        uint64_t sd  = seed;
+        uint32_t tc  = 0;
+        uint32_t dp  = WORLD_MAX_DEPTH;
+        size_t off = 0;
+        memcpy(out + off, &mag, 4); off += 4;
+        memcpy(out + off, &ver, 4); off += 4;
+        memcpy(out + off, &bid, 4); off += 4;
+        memcpy(out + off, &sd,  8); off += 8;
+        memcpy(out + off, &tc,  4); off += 4;
+        memcpy(out + off, &dp,  4); off += 4;
+        if (out_len) *out_len = SAVES_BODY_BLOB_HEADER;
+        return true;
+    }
+
+    int     tile_count = 0;
+    struct dirent* e;
+    while ((e = readdir(d)) != NULL) {
+        if (e->d_name[0] == '.') continue;
+        const char* dot = strrchr(e->d_name, '.');
+        if (!dot || strcmp(dot, ".col") != 0) continue;
+        int tile = atoi(e->d_name);
+        if (tile < 0) continue;
+        ++tile_count;
+    }
+    closedir(d);
+
+    /* Header (28) + per-record (4 + WORLD_MAX_DEPTH). */
+    const size_t record_size = 4 + (size_t)WORLD_MAX_DEPTH;
+    size_t needed = SAVES_BODY_BLOB_HEADER + (size_t)tile_count * record_size;
+    if (out_len) *out_len = needed;
+    if (needed > cap) return false;
+
+    /* Write the fixed-layout header once. Field order matches the
+     * documentation in saves.h - keep them in sync. */
+    {
+        uint32_t mag = SAVES_BODY_BLOB_MAGIC;
+        uint32_t ver = SAVES_BODY_BLOB_VERSION;
+        uint32_t bid = body_id;
+        uint64_t sd  = seed;
+        uint32_t tc  = (uint32_t)tile_count;
+        uint32_t dp  = WORLD_MAX_DEPTH;
+        size_t off = 0;
+        memcpy(out + off, &mag, 4); off += 4;
+        memcpy(out + off, &ver, 4); off += 4;
+        memcpy(out + off, &bid, 4); off += 4;
+        memcpy(out + off, &sd,  8); off += 8;
+        memcpy(out + off, &tc,  4); off += 4;
+        memcpy(out + off, &dp,  4); off += 4;
+    }
+
+    /* Second pass: emit each tile's record. */
+    d = opendir(dir);
+    if (!d) {
+        /* Race - directory vanished between passes. Return header-only
+         * (matches the "no edits" case). */
+        memset(out + SAVES_BODY_BLOB_HEADER, 0, 0);
+        if (out_len) *out_len = SAVES_BODY_BLOB_HEADER;
+        return true;
+    }
+    size_t write_off = SAVES_BODY_BLOB_HEADER;
+    int    written = 0;
+    while ((e = readdir(d)) != NULL && write_off + record_size <= cap) {
+        if (e->d_name[0] == '.') continue;
+        const char* dot = strrchr(e->d_name, '.');
+        if (!dot || strcmp(dot, ".col") != 0) continue;
+        int tile = atoi(e->d_name);
+        if (tile < 0) continue;
+        char path[512];
+        snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
+        FILE* f = fopen(path, "rb");
+        if (!f) continue;
+        /* Read the column payload, tolerating both v0 (raw 128 bytes)
+         * and v1 (16-byte header + 128 bytes). Match the same logic as
+         * saves_load_world so a tile readable by load is readable here. */
+        uint8_t col[WORLD_MAX_DEPTH];
+        uint8_t head[SAVES_TILE_HEADER_SIZE];
+        size_t hn = fread(head, 1, sizeof head, f);
+        bool ok = false;
+        if (hn == sizeof head) {
+            uint32_t fmagic, fver, fdepth;
+            memcpy(&fmagic, head + 0, 4);
+            memcpy(&fver,   head + 4, 4);
+            memcpy(&fdepth, head + 8, 4);
+            if (fmagic == SAVES_TILE_MAGIC
+                && fver <= SAVES_TILE_VERSION
+                && fdepth == WORLD_MAX_DEPTH) {
+                size_t cn = fread(col, 1, WORLD_MAX_DEPTH, f);
+                ok = (cn == WORLD_MAX_DEPTH);
+            } else {
+                /* Legacy v0: rewind + read raw 128 bytes. */
+                rewind(f);
+                size_t cn = fread(col, 1, WORLD_MAX_DEPTH, f);
+                if (cn == WORLD_MAX_DEPTH) {
+                    uint8_t spill;
+                    if (fread(&spill, 1, 1, f) == 0) ok = true;
+                }
+            }
+        }
+        fclose(f);
+        if (!ok) {
+            fprintf(stderr, "[saves] body_blob: skipping unreadable %s\n", path);
+            continue;
+        }
+        uint32_t tile_idx = (uint32_t)tile;
+        memcpy(out + write_off, &tile_idx, 4); write_off += 4;
+        memcpy(out + write_off, col, WORLD_MAX_DEPTH); write_off += WORLD_MAX_DEPTH;
+        ++written;
+    }
+    closedir(d);
+    /* The header's tile_count was computed from the first pass; if
+     * the second pass skipped some unreadable files, rewrite the
+     * count so parsers don't read past the end. */
+    if (written != tile_count) {
+        uint32_t tc_fixed = (uint32_t)written;
+        memcpy(out + 20, &tc_fixed, 4);
+    }
+    if (out_len) *out_len = write_off;
+    return true;
+}
+
 size_t saves_audit_tail(const char* which, int max_lines,
                           char* out, size_t cap) {
     if (!out || cap == 0) return 0;

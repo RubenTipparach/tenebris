@@ -926,7 +926,15 @@ static void on_close(net_conn_t* conn, net_close_reason_t reason, void* user) {
  * transport's serve_http copy. Single-threaded server, so a static
  * is safe; if HTTP ever moves off the lws callback thread this
  * would need to be per-listener malloc'd. */
-#define HTTP_BODY_CAP  (64 * 1024)
+/* Bumped from 64 KiB to 4 MiB so the /saves/body endpoint can return
+ * an entire planet's persisted .col files in one binary blob (the
+ * client's lazy-load-on-approach path expects a single shot per
+ * body, not chunked transfer). A typical 5-subdivision planet with
+ * a few hundred edited tile columns lands at ~40-80 KiB; the headroom
+ * accommodates someone who has terraformed an unreasonable amount of
+ * a single planet. 4 MiB of static RAM out of a 1-2 GiB Fly machine
+ * is in the noise. */
+#define HTTP_BODY_CAP  (4 * 1024 * 1024)
 static char  HTTP_BODY[HTTP_BODY_CAP];
 static char  HTTP_RAW [HTTP_BODY_CAP];
 
@@ -1641,6 +1649,79 @@ static int on_http(const char* path,
         *out_mime     = "application/json; charset=utf-8";
         return 1;
     }
+    if (strcmp(clean, "/saves/body") == 0) {
+        /* Bulk binary download of one body's persisted tile columns.
+         * Used by the client's lazy-per-body fetch path, which calls
+         * this whenever it's about to mesh a body (active body at
+         * WELCOME, deferred bodies at body_load_detail). The WS
+         * CHUNK_DIFF replay was unreliable for large bodies; this
+         * is the source of truth at boot. */
+        char room[16];
+        room[0] = 0;
+        http_query_str(path, "room", room, sizeof room);
+        /* "__public__" maps to the empty-code lobby on disk; let
+         * the client send either spelling. */
+        const char* room_real =
+            (strcmp(room, "__public__") == 0) ? "" : room;
+
+        uint64_t seed = 0;
+        uint32_t body_id = 0;
+        bool have_body = false;
+        {
+            const char* q = strchr(path, '?');
+            if (q) {
+                const char* p = q + 1;
+                while (*p) {
+                    if (strncmp(p, "seed=", 5) == 0) {
+                        seed = strtoull(p + 5, NULL, 10);
+                    } else if (strncmp(p, "body=", 5) == 0) {
+                        body_id = (uint32_t)strtoul(p + 5, NULL, 10);
+                        have_body = true;
+                    }
+                    const char* amp = strchr(p, '&');
+                    if (!amp) break;
+                    p = amp + 1;
+                }
+            }
+        }
+        if (!have_body) {
+            static const char err[] = "missing required ?body=N parameter";
+            *out_body     = (const uint8_t*)err;
+            *out_body_len = sizeof err - 1;
+            *out_mime     = "text/plain; charset=utf-8";
+            return 1;
+        }
+        /* Default the seed to whatever the server booted with so a
+         * client that doesn't know the seed yet still gets the right
+         * data. The server only runs one seed at a time. */
+        if (seed == 0 && s) seed = s->cfg.seed;
+
+        size_t blob_len = 0;
+        bool   ok = saves_body_blob(room_real, seed, body_id,
+                                       (uint8_t*)HTTP_BODY, HTTP_BODY_CAP,
+                                       &blob_len);
+        if (!ok) {
+            /* Either the buffer was too small (blob_len = required size)
+             * or the saves layer is offline. Surface a small JSON error
+             * with the size so the operator can see what happened. */
+            int n = snprintf(HTTP_RAW, HTTP_BODY_CAP,
+                             "{\"error\":\"blob too large\",\"required_bytes\":%zu,"
+                             "\"buffer_bytes\":%d}\n",
+                             blob_len, HTTP_BODY_CAP);
+            *out_body     = (const uint8_t*)HTTP_RAW;
+            *out_body_len = (size_t)n;
+            *out_mime     = "application/json; charset=utf-8";
+            return 1;
+        }
+        printf("[server] /saves/body room='%s' body=%u seed=%llu -> %zu bytes\n",
+               room && *room ? room : "(empty-code/lobby)",
+               (unsigned)body_id, (unsigned long long)seed, blob_len);
+        fflush(stdout);
+        *out_body     = (const uint8_t*)HTTP_BODY;
+        *out_body_len = blob_len;
+        *out_mime     = "application/octet-stream";
+        return 1;
+    }
     if (strcmp(clean, "/") == 0 || strcmp(clean, "/health") == 0) {
         static const char msg[] =
             "tenebris-server alive\n"
@@ -1652,7 +1733,9 @@ static int on_http(const char* path,
             "                              (&room=ABC123 for private,\n"
             "                               &room=__all__ to fan out, default public)\n"
             "  GET /saves                - JSON: every persisted .col file on disk\n"
-            "                              filter with ?room=ABC123 / ?body=0 / ?seed=N\n";
+            "                              filter with ?room=ABC123 / ?body=0 / ?seed=N\n"
+            "  GET /saves/body?body=N    - BINARY: every persisted column for one body\n"
+            "                              also ?room=ABC123 (default lobby) and ?seed=N\n";
         *out_body     = (const uint8_t*)msg;
         *out_body_len = sizeof msg - 1;
         *out_mime     = "text/plain; charset=utf-8";

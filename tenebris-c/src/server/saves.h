@@ -177,4 +177,33 @@ typedef void (*saves_tile_visitor_t)(const char* room,
                                       void*      user);
 int saves_enumerate_tiles(saves_tile_visitor_t fn, void* user);
 
+/* ----------------------------------------------------------------- */
+/* Bulk download: one body's worth of persisted columns as a single
+ * binary blob. Used by the client's lazy-per-body fetch path (the
+ * WebSocket CHUNK_DIFF replay was unreliable for large bodies; the
+ * HTTP route runs over TCP-with-retransmits and is the source of
+ * truth at boot).
+ *
+ * Output layout (all little-endian):
+ *
+ *   u8[4]    magic = "TBOD"
+ *   u32      version = 1
+ *   u32      body_id
+ *   u64      seed
+ *   u32      tile_count          - number of records following
+ *   u32      depth               - WORLD_MAX_DEPTH
+ *   { u32 tile_idx, u8[depth] blocks } * tile_count
+ *
+ * `out` must point at a buffer of `cap` bytes. On success returns
+ * true and writes the full blob length into *out_len. Returns false
+ * if the blob would exceed cap (in which case *out_len is set to
+ * the required size so the caller can grow the buffer). */
+#define SAVES_BODY_BLOB_MAGIC   0x444F4254u   /* 'TBOD' little-endian */
+#define SAVES_BODY_BLOB_VERSION 1u
+/* 4 magic + 4 version + 4 body_id + 8 seed + 4 tile_count + 4 depth */
+#define SAVES_BODY_BLOB_HEADER  28
+
+bool saves_body_blob(const char* room, uint64_t seed, uint32_t body_id,
+                       uint8_t* out, size_t cap, size_t* out_len);
+
 #endif

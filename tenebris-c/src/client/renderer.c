@@ -1,5 +1,6 @@
 #include "client/renderer.h"
 #include "client/hex_mesher.h"
+#include "client/net_client.h"
 #include "client/torch.h"
 #include "core/blocks.h"
 #include "core/config.h"
@@ -1304,6 +1305,17 @@ static void body_load_detail(chunked_body_t* body) {
      * frame. Time it explicitly so the profiler attributes the spike
      * correctly instead of burying it inside draw_world / draw_moons. */
     uint64_t t0 = stm_now();
+    /* Kick the lazy-per-body HTTP fetch of persisted .col files for
+     * this body. Idempotent within a connection; returns immediately
+     * if we've already requested or applied. The response arrives
+     * async via JS fetch; it lands on the world's blocks + dirty
+     * bits, and the next per-frame remesh sweep picks them up. The
+     * initial mesh below proceeds with procgen-only blocks, which is
+     * fine - the moment the blob lands the dirty sweep rebuilds the
+     * affected chunks and the persisted state overlays cleanly. */
+    if (body->world && body->world->body) {
+        net_client_fetch_body_saves((uint32_t)body->world->body->id);
+    }
     if (!body->chunks_allocated) {
         body_alloc_chunks(body);
         body->chunks_allocated = true;

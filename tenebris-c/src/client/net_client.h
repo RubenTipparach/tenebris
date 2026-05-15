@@ -126,4 +126,15 @@ bool net_client_take_pending_inventory(uint16_t* out_slot_type,
                                           int16_t* out_slot_count,
                                           int* out_selected);
 
+/* Lazy-per-body HTTP fetch of the server's persisted .col files.
+ * Kicks an async request to /saves/body?body=N&room=...; the response
+ * applies each saved column via world_set when it lands. Idempotent
+ * within a connection: a second call for the same body_id no-ops.
+ * The renderer's body_load_detail path calls this when a deferred
+ * body first comes into LOD range; net_client itself calls it for
+ * the spawn body the moment WELCOME arrives. Safe to call before
+ * READY (drops silently - URL not known yet). No-op in native
+ * builds (no HTTP client). */
+void net_client_fetch_body_saves(uint32_t body_id);
+
 #endif
