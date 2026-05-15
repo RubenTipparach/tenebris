@@ -148,6 +148,15 @@ EM_JS(void, tenebris_pause_button_set_visible, (int visible), {
  * tenebris_js_set_* hooks below. */
 EM_JS(void, tenebris_mobile_controls_install, (void), {
     if (document.getElementById('tenebris-mobile-controls')) return;
+    /* Layered stack (bottom -> top of screen):
+     *   - INVENTORY HOTBAR  (drawn in-canvas by hotbar_ui.c, mobile
+     *     bottom margin = 8 px, 36 px slot height)  → bottom 8..44
+     *   - JOYSTICKS         (these DOM elements, 70 px diameter)
+     *     bottom 56 = 8 + 36 + 12 (hotbar + small gap)  → 56..126
+     *   - ACTION BUTTONS    (44 px diameter, in a row above the
+     *     right joystick)  bottom 138 = 56 + 70 + 12  → 138..182
+     * Coordinate any change to these numbers with hotbar_ui.c's
+     * BOTTOM_MARGIN_MOBILE so the three stacks stay flush. */
     var style = document.createElement('style');
     style.textContent = ''
       + '#tenebris-mobile-controls { position:fixed; inset:0; pointer-events:none; z-index:5; visibility:hidden; }'
@@ -156,22 +165,21 @@ EM_JS(void, tenebris_mobile_controls_install, (void), {
       +    'pointer-events:auto; touch-action:none; -webkit-tap-highlight-color:transparent; }'
       + '.tn-stick .knob { position:absolute; left:50%; top:50%; width:28px; height:28px; '
       +    'border-radius:50%; background:rgba(255,255,255,0.85); transform:translate(-50%,-50%); pointer-events:none; }'
-      + '#tn-stick-left  { bottom:18px; left:18px; }'
-      + '#tn-stick-right { bottom:18px; right:18px; }'
+      + '#tn-stick-left  { bottom:56px; left:18px; }'
+      + '#tn-stick-right { bottom:56px; right:18px; }'
       + '.tn-btn { position:absolute; width:44px; height:44px; border-radius:50%; '
       +    'background:rgba(15,17,26,0.88); color:#fff; border:2px solid rgba(255,255,255,0.85); '
       +    'font:bold 11px sans-serif; display:flex; align-items:center; justify-content:center; '
       +    'pointer-events:auto; touch-action:none; -webkit-tap-highlight-color:transparent; '
       +    'box-shadow:0 2px 6px rgba(0,0,0,0.5); user-select:none; }'
       + '.tn-btn:active { background:rgba(80,90,110,0.95); }'
-      /* Action buttons sit in a tight row directly above the right
-       * look stick. The stick now shrinks to 70 px so the action row
-       * (3 x 44 px = 132 px) overhangs the stick column on the right
-       * side - that's fine, they're above the stick footprint, not
-       * on top of it. bottom:100 = 18 (margin) + 70 (stick) + 12 (gap). */
-      + '#tn-btn-jump  { bottom:100px; right: 18px; }'
-      + '#tn-btn-break { bottom:100px; right: 66px; }'
-      + '#tn-btn-place { bottom:100px; right:114px; }';
+      /* Action buttons sit in a row directly above the right
+       * look stick. bottom:138 = 56 (stick bottom) + 70 (stick) + 12
+       * (gap). The 3x44 px row overhangs the stick column on the
+       * right - fine, they're above the stick footprint not on top. */
+      + '#tn-btn-jump  { bottom:138px; right: 18px; }'
+      + '#tn-btn-break { bottom:138px; right: 66px; }'
+      + '#tn-btn-place { bottom:138px; right:114px; }';
     document.head.appendChild(style);
 
     function mk(tag, id, cls, text) {

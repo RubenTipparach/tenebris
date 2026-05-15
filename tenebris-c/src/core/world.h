@@ -163,19 +163,4 @@ double   world_walkable_floor_near(const world_t* w, int tile,
  * Used by the vertical integrator to clamp upward motion. */
 double   world_ceiling_above(const world_t* w, int tile, double head_radius_m);
 
-/* Find a safe body-local position above the nearest walkable floor
- * in the direction `unit_dir` (must be normalised). Returns a vector
- * pointing FROM the body centre to a point `headroom_m` above the
- * topmost walkable floor of the tile under `unit_dir`. Used by the
- * fall-through fail-safe so a player who's somehow ended up inside
- * the body gets placed back at the actual surface ABOVE wherever
- * they fell from - not teleported across the planet to a prime-
- * meridian spawn point.
- *
- * If the tile has no walkable floor (ungenerated, or all-solid /
- * all-air column), returns body.radius_m + headroom_m along
- * unit_dir as a sane fallback. Never returns a zero vector. */
-dvec3_t  world_safe_spawn_local(const world_t* w, dvec3_t unit_dir,
-                                double headroom_m);
-
 #endif

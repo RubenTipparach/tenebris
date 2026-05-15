@@ -410,42 +410,6 @@ double world_walkable_floor_near(const world_t* w, int tile,
     return best_radius_above;   /* may still be -1e9 if none */
 }
 
-dvec3_t world_safe_spawn_local(const world_t* w, dvec3_t unit_dir, double headroom_m) {
-    /* Fallback: body.radius_m + headroom_m along unit_dir. Used when
-     * the tile under unit_dir has no walkable floor we can read
-     * (ungenerated column, or pathological all-solid / all-air). */
-    double fallback_r = w->body->radius_m + headroom_m;
-    if (!w || w->tile_count <= 0) {
-        return dvec3_scale(unit_dir, fallback_r);
-    }
-    int tile = goldberg_find_tile(w->grid, unit_dir, -1);
-    if (tile < 0 || tile >= w->tile_count || tile >= w->gen_cursor) {
-        return dvec3_scale(unit_dir, fallback_r);
-    }
-    /* Scan the column for the TOPMOST walkable floor (solid block
-     * with passable above). We can't just call walkable_floor_near
-     * with a sane target because the player calling this has
-     * almost certainly fallen to a position whose `target_radius`
-     * is meaningless - we want the surface, not the closest floor
-     * to wherever-they-ended-up. */
-    const uint8_t* col = &w->blocks[tile * WORLD_MAX_DEPTH];
-    int top_floor_depth = -1;
-    for (int d = WORLD_MAX_DEPTH - 1; d >= 0; --d) {
-        uint8_t cur = col[d];
-        if (block_is_passable(cur)) continue;
-        uint8_t up = (d + 1 < WORLD_MAX_DEPTH) ? col[d + 1] : (uint8_t)BLOCK_AIR;
-        if (block_is_passable(up)) {
-            top_floor_depth = d;
-            break;
-        }
-    }
-    if (top_floor_depth < 0) {
-        return dvec3_scale(unit_dir, fallback_r);
-    }
-    double floor_r = world_depth_to_radius_m(w, top_floor_depth + 1);
-    return dvec3_scale(unit_dir, floor_r + headroom_m);
-}
-
 double world_ceiling_above(const world_t* w, int tile, double head_radius_m) {
     if (!w || tile < 0 || tile >= w->tile_count || tile >= w->gen_cursor) {
         return 1e30;

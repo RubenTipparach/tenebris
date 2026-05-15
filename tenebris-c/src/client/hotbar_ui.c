@@ -14,22 +14,17 @@
 
 /* Slot geometry (pixels). Desktop uses 48 px slots centred at the
  * bottom; on mobile (perf mode) we shrink to 36 px so 9 slots fit a
- * ~412 CSS-px phone width AND we push the bar UP above the virtual
- * joysticks (which now occupy the bottom 88 px of the screen) so
- * the two no longer overlap. The shared sampler still uses pixel
- * coordinates - slot positions get published into input.c so touch
- * hits land on the right slot. */
+ * ~412 CSS-px phone width. Mobile layout puts the inventory at the
+ * VERY BOTTOM (so the player's thumb naturally reaches it) and
+ * stacks the joysticks + action buttons above. The joystick CSS
+ * (main_web.c) is positioned to sit just above this bar - keep the
+ * three stacks (hotbar / joysticks / action buttons) coordinated. */
 #define SLOT_SIZE_DESKTOP       48.0f
 #define SLOT_GAP_DESKTOP         6.0f
 #define BOTTOM_MARGIN_DESKTOP   18.0f
 #define SLOT_SIZE_MOBILE        36.0f
 #define SLOT_GAP_MOBILE          3.0f
-/* Mobile bottom margin clears the 70 px virtual joystick at 18 px
- * from the bottom: 18 (stick margin) + 70 (stick) + 12 (gap above
- * stick) = 100 px - the same baseline the action-button row sits
- * at, so the hotbar reads as a separate strip ABOVE the input deck
- * rather than overlapping it. */
-#define BOTTOM_MARGIN_MOBILE   100.0f
+#define BOTTOM_MARGIN_MOBILE     8.0f
 #define ICON_PAD                4.0f
 
 static sgl_pipeline P_FRAME;     /* untextured alpha-blended frames + bg */
