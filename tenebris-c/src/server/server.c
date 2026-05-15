@@ -111,6 +111,104 @@ static void room_free_worlds(server_room_t* room) {
         room->worlds[i] = NULL;
     }
     room->world_count = 0;
+    /* Torch lists live in fixed-size arrays in server_room_t so there's
+     * no allocation to free, but we do want to clear them so a freshly-
+     * re-acquired slot starts empty rather than reusing stale state. */
+    for (int i = 0; i < SERVER_MAX_BODIES; ++i) {
+        room->torches[i].in_use  = false;
+        room->torches[i].body_id = 0;
+        room->torches[i].count   = 0;
+    }
+}
+
+/* Find or allocate the per-body torch slot in this room. If the body
+ * has never been touched in this room yet, this is the first call -
+ * loads any persisted torches from disk into the slot's list. */
+static server_torch_body_t*
+room_torches_get_or_load(server_t* s, server_room_t* room, uint32_t body_id) {
+    if (!room) return NULL;
+    for (int i = 0; i < SERVER_MAX_BODIES; ++i) {
+        if (room->torches[i].in_use && room->torches[i].body_id == body_id)
+            return &room->torches[i];
+    }
+    /* New slot - find a free one and load any persisted state. */
+    for (int i = 0; i < SERVER_MAX_BODIES; ++i) {
+        if (room->torches[i].in_use) continue;
+        room->torches[i].in_use  = true;
+        room->torches[i].body_id = body_id;
+        room->torches[i].count   = saves_torches_load(
+            room->code, s->cfg.seed, body_id,
+            room->torches[i].list, SAVES_TORCHES_MAX_COUNT);
+        if (room->torches[i].count > 0) {
+            printf("[server] room '%s' body=%u: %d torch(es) loaded from disk\n",
+                   room->code[0] ? room->code : "(public)",
+                   body_id, room->torches[i].count);
+            fflush(stdout);
+        }
+        return &room->torches[i];
+    }
+    fprintf(stderr, "[server] room '%s': no free torch slot for body=%u\n",
+            room->code[0] ? room->code : "(public)", body_id);
+    return NULL;
+}
+
+/* Bulk-send the new client every body's current torch list as one
+ * TORCH_DIFF per body (all entries marked TORCH_OP_PLACE). Sent direct
+ * to the joining client, not broadcast, so existing peers don't
+ * receive duplicates of state they already have. */
+static void send_torch_replay(server_t* s, server_client_t* cl) {
+    if (cl->room_idx < 0) return;
+    server_room_t* room = &s->rooms[cl->room_idx];
+    /* Iterate every baseline body the server knows about, lazily
+     * loading the room's torch list for each. Bodies with no torches
+     * on disk end up with count = 0 and we skip them. */
+    int bodies_sent = 0;
+    int torches_sent = 0;
+    for (int bi = 0; bi < s->world_count; ++bi) {
+        const world_t* baseline = s->worlds[bi];
+        if (!baseline || !baseline->body) continue;
+        uint32_t body_id = (uint32_t)baseline->body->id;
+        server_torch_body_t* slot = room_torches_get_or_load(s, room, body_id);
+        if (!slot || slot->count <= 0) continue;
+        /* The list may exceed TORCH_DIFF_MAX_ENTRIES in theory (256
+         * vs 64); chunk into multiple messages. In practice the
+         * placement cap is 256 per body but the wire bound is 64 -
+         * stays under MTU and matches how CHUNK_DIFF batches. */
+        for (int off = 0; off < slot->count; off += TORCH_DIFF_MAX_ENTRIES) {
+            int n = slot->count - off;
+            if (n > TORCH_DIFF_MAX_ENTRIES) n = TORCH_DIFF_MAX_ENTRIES;
+            msg_torch_diff_t diff = { 0 };
+            diff.body_id     = body_id;
+            diff.entry_count = (uint16_t)n;
+            for (int i = 0; i < n; ++i) {
+                const saves_torch_t* t = &slot->list[off + i];
+                msg_torch_entry_t* e = &diff.entries[i];
+                e->op       = TORCH_OP_PLACE;
+                e->tile_idx = (uint32_t)t->tile_idx;
+                e->pos_x = t->pos[0]; e->pos_y = t->pos[1]; e->pos_z = t->pos[2];
+                e->up_x  = t->up [0]; e->up_y  = t->up [1]; e->up_z  = t->up [2];
+            }
+            uint8_t buf[MSG_HEADER_SIZE + MSG_TORCH_DIFF_HEADER
+                        + TORCH_DIFF_MAX_ENTRIES * MSG_TORCH_ENTRY_SIZE];
+            size_t wn = proto_write_torch_diff(buf, sizeof buf, &diff);
+            if (wn == 0) {
+                fprintf(stderr, "[server] torch replay encode failed body=%u\n",
+                        body_id);
+                continue;
+            }
+            net_send(cl->conn, NET_CHANNEL_RELIABLE, buf, wn);
+            torches_sent += n;
+        }
+        ++bodies_sent;
+    }
+    if (bodies_sent > 0) {
+        printf("[server] TORCH replay -> player_id=%u room='%s': "
+               "%d body(ies), %d torch(es) total\n",
+               cl->player_id,
+               room->code[0] ? room->code : "(public)",
+               bodies_sent, torches_sent);
+        fflush(stdout);
+    }
 }
 
 static int room_find(server_t* s, const char* code) {
@@ -428,6 +526,11 @@ static void send_welcome(server_t* s, server_client_t* cl) {
         size_t ni = proto_write_inventory_state(ibuf, sizeof ibuf, &inv);
         if (ni > 0) net_send(cl->conn, NET_CHANNEL_RELIABLE, ibuf, ni);
     }
+    /* Replay every body's torch list. The client's torch module
+     * starts empty at boot, so without this a player joining a
+     * room with placed torches sees pitch-black caves until someone
+     * else places / removes one. */
+    send_torch_replay(s, cl);
 }
 
 static void handle_hello(server_t* s, server_client_t* cl,
@@ -735,6 +838,97 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
             uint8_t buf[MSG_HEADER_SIZE + MSG_CHUNK_DIFF_HEADER_SIZE
                         + MSG_CHUNK_DIFF_ENTRY_SIZE];
             size_t n = proto_write_chunk_diff(buf, sizeof buf, &diff);
+            if (n > 0) {
+                for (int j = 0; j < SERVER_MAX_CLIENTS; ++j) {
+                    const server_client_t* peer = &s->clients[j];
+                    if (!peer->conn) continue;
+                    if (strcmp(peer->room, cl->room) != 0) continue;
+                    net_send(peer->conn, NET_CHANNEL_RELIABLE, buf, n);
+                }
+            }
+            break;
+        }
+        case MSG_TORCH_DIFF: {
+            if (hdr.version != MSG_TORCH_DIFF_VERSION) break;
+            msg_torch_diff_t diff;
+            if (proto_read_torch_diff(payload, hdr.length, &diff) != 0) break;
+            if (cl->room_idx < 0) break;
+            server_room_t* room = &s->rooms[cl->room_idx];
+            server_torch_body_t* slot = room_torches_get_or_load(
+                s, room, diff.body_id);
+            if (!slot) break;
+            /* Apply each entry to the in-memory list. PLACE appends if
+             * there's no matching torch (by tile_idx + position
+             * epsilon) already; REMOVE swap-removes the closest
+             * torch by position within a generous range. Both ops
+             * silently no-op on mismatch so a duplicate client
+             * retry doesn't double-add. */
+            int placed = 0, removed = 0;
+            const float MATCH_EPSILON_M = 0.1f;
+            const float REMOVE_RANGE_M  = 1.0f;
+            const float MATCH_EPS2      = MATCH_EPSILON_M * MATCH_EPSILON_M;
+            const float REMOVE_RANGE2   = REMOVE_RANGE_M  * REMOVE_RANGE_M;
+            for (int i = 0; i < diff.entry_count; ++i) {
+                const msg_torch_entry_t* e = &diff.entries[i];
+                if (e->op == TORCH_OP_PLACE) {
+                    /* Skip if a near-duplicate is already present. */
+                    bool dup = false;
+                    for (int j = 0; j < slot->count; ++j) {
+                        float dx = slot->list[j].pos[0] - e->pos_x;
+                        float dy = slot->list[j].pos[1] - e->pos_y;
+                        float dz = slot->list[j].pos[2] - e->pos_z;
+                        if (dx*dx + dy*dy + dz*dz <= MATCH_EPS2) { dup = true; break; }
+                    }
+                    if (dup) continue;
+                    if (slot->count >= SAVES_TORCHES_MAX_COUNT) {
+                        fprintf(stderr, "[server] torch list full for body=%u\n",
+                                diff.body_id);
+                        continue;
+                    }
+                    saves_torch_t* t = &slot->list[slot->count++];
+                    t->tile_idx = (int32_t)e->tile_idx;
+                    t->pos[0] = e->pos_x; t->pos[1] = e->pos_y; t->pos[2] = e->pos_z;
+                    t->up [0] = e->up_x;  t->up [1] = e->up_y;  t->up [2] = e->up_z;
+                    ++placed;
+                } else if (e->op == TORCH_OP_REMOVE) {
+                    int best = -1;
+                    float best_d2 = REMOVE_RANGE2;
+                    for (int j = 0; j < slot->count; ++j) {
+                        float dx = slot->list[j].pos[0] - e->pos_x;
+                        float dy = slot->list[j].pos[1] - e->pos_y;
+                        float dz = slot->list[j].pos[2] - e->pos_z;
+                        float d2 = dx*dx + dy*dy + dz*dz;
+                        if (d2 < best_d2) { best_d2 = d2; best = j; }
+                    }
+                    if (best < 0) continue;
+                    slot->list[best] = slot->list[slot->count - 1];
+                    --slot->count;
+                    ++removed;
+                }
+            }
+            /* Persist if anything changed. saves_torches_write rewrites
+             * the whole file (cheap - <8 KB) so partial state can't
+             * end up on disk. */
+            if (placed > 0 || removed > 0) {
+                bool save_ok = saves_torches_write(cl->room, s->cfg.seed,
+                                                     diff.body_id,
+                                                     slot->list, slot->count);
+                printf("[server] TORCH player_id=%u room='%s' body=%u "
+                       "placed=%d removed=%d total=%d save=%s\n",
+                       cl->player_id,
+                       cl->room[0] ? cl->room : "(public)",
+                       diff.body_id, placed, removed, slot->count,
+                       save_ok ? "ok" : "FAIL");
+                fflush(stdout);
+            }
+            /* Broadcast the diff verbatim to every room peer (including
+             * sender; their local list deduplicates via tile + epsilon
+             * position match). Forwarding the original entries keeps
+             * the placement positions exact across the wire so the
+             * dedup is reliable. */
+            uint8_t buf[MSG_HEADER_SIZE + MSG_TORCH_DIFF_HEADER
+                        + TORCH_DIFF_MAX_ENTRIES * MSG_TORCH_ENTRY_SIZE];
+            size_t n = proto_write_torch_diff(buf, sizeof buf, &diff);
             if (n > 0) {
                 for (int j = 0; j < SERVER_MAX_CLIENTS; ++j) {
                     const server_client_t* peer = &s->clients[j];

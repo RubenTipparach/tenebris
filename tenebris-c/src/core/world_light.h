@@ -90,4 +90,52 @@ void world_light_rebuild(world_light_t* l, const struct world_s* w);
 uint8_t world_light_sky  (const world_light_t* l, int tile, int depth);
 uint8_t world_light_block(const world_light_t* l, int tile, int depth);
 
+/* ---------------------------------------------------------------------
+ * Profiling / telemetry.
+ *
+ * A "rebuild session" spans from the first dirty mark on a previously
+ * clean grid to the moment the grid converges back to clean. Multiple
+ * world_light_rebuild() calls may participate in a single session if
+ * the per-frame BFS budget yields early. The counters below let the
+ * caller (renderer) pair op counts with wall-clock to quantify how
+ * much the synchronous relight loop is blocking the frame - the
+ * "torches cause visible lag" symptom this instrumentation exists
+ * to measure.
+ * ------------------------------------------------------------------- */
+
+/* What caused the current session to start. OR'd together so a
+ * session that began on a torch edit and was extended by a block
+ * break reports both. */
+#define LIGHT_TRIGGER_TORCH       (1u << 0)
+#define LIGHT_TRIGGER_BLOCK_EDIT  (1u << 1)
+#define LIGHT_TRIGGER_FULL_MARK   (1u << 2)
+
+typedef struct world_light_session_summary_s {
+    int          total_ops;     /* BFS pops + seed touches in the session  */
+    int          total_calls;   /* world_light_rebuild() invocations        */
+    unsigned int triggers;      /* bitmask of LIGHT_TRIGGER_*               */
+    int          edits_seen;    /* mark_dirty_at calls during session       */
+    int          torch_count;   /* size of the torch list at session start  */
+    bool         was_full_pass; /* a full BFS pass ran (vs incremental)     */
+} world_light_session_summary_t;
+
+/* Number of BFS pops the most recent world_light_rebuild() call did.
+ * Resets to zero on the next rebuild() call so a 0 reading on an
+ * idle frame means "no work done", not "stale value". */
+int  world_light_last_call_ops(const world_light_t* l);
+
+/* True while a rebuild is pending or in-flight (dirty flag set or
+ * incremental queue non-empty or BFS phase != IDLE). Becomes false
+ * the instant the grid is fully converged. */
+bool world_light_is_active(const world_light_t* l);
+
+/* If a session just completed (the most recent rebuild() drained the
+ * grid back to clean), fill *out with the session totals and return
+ * true. Subsequent calls return false until another session
+ * completes. The renderer calls this once per frame after running
+ * world_light_rebuild() so it can log a one-shot summary of the
+ * blocking cost when the session ends. */
+bool world_light_consume_session_summary(world_light_t* l,
+                                         world_light_session_summary_t* out);
+
 #endif

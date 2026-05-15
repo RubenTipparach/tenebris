@@ -1048,7 +1048,16 @@ static void apply_sp_world_saves(world_t* w) {
 
     /* Torch list: load + replay through torch_place. The runtime
      * list is global, so this body's torches accumulate alongside
-     * any others restored earlier in the loop. */
+     * any others restored earlier in the loop.
+     *
+     * After placing each, also mark every mesh tile within the
+     * torch's light range as dirty so the renderer remeshes those
+     * chunks with the loaded torch baked into the per-vertex
+     * torch_light sum. Without this, tiles that were already meshed
+     * before the load finished (e.g. the streaming mesher got to
+     * them first) would keep their pre-load torch_light=0 forever -
+     * the user-visible bug: caves stayed dark after a reload even
+     * though the torches were physically back in the world. */
     persistence_torch_t torches[TORCH_MAX_COUNT];
     int tn = persistence_load_torches(world_name, (uint32_t)w->body->id,
                                       torches, TORCH_MAX_COUNT);
@@ -1056,7 +1065,10 @@ static void apply_sp_world_saves(world_t* w) {
     for (int i = 0; i < tn; ++i) {
         vec3_t pos = { torches[i].pos[0], torches[i].pos[1], torches[i].pos[2] };
         vec3_t up  = { torches[i].up[0],  torches[i].up[1],  torches[i].up[2]  };
-        if (torch_place(pos, up, torches[i].tile_idx)) ++placed;
+        if (torch_place(pos, up, torches[i].tile_idx)) {
+            world_dirty_in_range(w, pos, TORCH_LIGHT_RANGE_M);
+            ++placed;
+        }
     }
     if (placed > 0) {
         printf("[sp-saves] body=%d: %d torch(es) restored\n",

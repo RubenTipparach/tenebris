@@ -68,7 +68,67 @@ struct world_light_s {
     uint32_t   edits[LIGHT_EDIT_QUEUE_CAP];
     int        edit_count;
     bool       needs_full;
+
+    /* Profiling counters. Lifetime model:
+     *  - in_session       — true between the first dirty mark on a
+     *                       clean grid and the moment the grid
+     *                       converges back to clean.
+     *  - ops_this_call    — reset at the top of every rebuild() call
+     *                       and incremented per unit of work (one
+     *                       BFS pop, one seed-pass touch, one
+     *                       torch-seed entry). The renderer reads
+     *                       this immediately after the call.
+     *  - the *_session    — accumulated across the whole session;
+     *                       reset when a new session starts.
+     *  - summary_pending  — set on the rebuild() call that drained
+     *                       the grid; consumed via
+     *                       world_light_consume_session_summary so
+     *                       the renderer can print exactly one
+     *                       blocking-cost line per session. */
+    int                            ops_this_call;
+    int                            ops_this_session;
+    int                            calls_this_session;
+    unsigned int                   triggers_this_session;
+    int                            edits_this_session;
+    int                            torches_at_session_start;
+    bool                           full_pass_this_session;
+    bool                           in_session;
+    bool                           summary_pending;
+    world_light_session_summary_t  pending_summary;
 };
+
+/* Start a new session if one isn't already in flight. Called from
+ * every code path that sets `dirty` on a previously clean grid. The
+ * trigger bit is OR'd in either way so a session that started on a
+ * block edit and was extended by a torch edit reports both. */
+static void session_begin(world_light_t* l, unsigned int trigger) {
+    if (!l->in_session) {
+        l->in_session              = true;
+        l->ops_this_session        = 0;
+        l->calls_this_session      = 0;
+        l->triggers_this_session   = 0;
+        l->edits_this_session      = 0;
+        l->torches_at_session_start = l->torch_count;
+        l->full_pass_this_session  = false;
+    }
+    l->triggers_this_session |= trigger;
+}
+
+/* Called when world_light_rebuild() drains the grid back to clean.
+ * Snapshots the session counters into pending_summary and arms the
+ * one-shot consume function so the renderer can print a single
+ * blocking-cost line and reset its own wall-clock accumulators. */
+static void session_end(world_light_t* l) {
+    if (!l->in_session) return;
+    l->pending_summary.total_ops     = l->ops_this_session;
+    l->pending_summary.total_calls   = l->calls_this_session;
+    l->pending_summary.triggers      = l->triggers_this_session;
+    l->pending_summary.edits_seen    = l->edits_this_session;
+    l->pending_summary.torch_count   = l->torches_at_session_start;
+    l->pending_summary.was_full_pass = l->full_pass_this_session;
+    l->summary_pending = true;
+    l->in_session      = false;
+}
 
 /* ----------------------------------------------------------------------- */
 
@@ -134,6 +194,18 @@ void world_light_clone_into(world_light_t* dst, const world_light_t* src) {
     dst->restart_pending = false;
     dst->edit_count = 0;
     dst->needs_full = true;       /* first rebuild on the clone is full */
+    /* Reset profiling state - a clone is a fresh world; the source's
+     * in-flight session counters don't transfer. The next mark_dirty
+     * on this grid will start a new session. */
+    dst->ops_this_call            = 0;
+    dst->ops_this_session         = 0;
+    dst->calls_this_session       = 0;
+    dst->triggers_this_session    = 0;
+    dst->edits_this_session       = 0;
+    dst->torches_at_session_start = 0;
+    dst->full_pass_this_session   = false;
+    dst->in_session               = false;
+    dst->summary_pending          = false;
 }
 
 void world_light_mark_dirty(world_light_t* l) {
@@ -145,6 +217,7 @@ void world_light_mark_dirty(world_light_t* l) {
     }
     l->needs_full = true;
     l->dirty      = true;
+    session_begin(l, LIGHT_TRIGGER_FULL_MARK);
 }
 
 void world_light_mark_dirty_at(world_light_t* l, int tile, int depth) {
@@ -158,6 +231,8 @@ void world_light_mark_dirty_at(world_light_t* l, int tile, int depth) {
      * (because the rebuild's seed pass already ran with stale
      * blocks). */
     l->dirty = true;
+    session_begin(l, LIGHT_TRIGGER_BLOCK_EDIT);
+    ++l->edits_this_session;
     if (l->phase != LR_IDLE) l->restart_pending = true;
     if (l->needs_full) {
         /* Full pass already requested. The queue would be discarded
@@ -230,6 +305,7 @@ void world_light_set_torches(world_light_t* l,
     }
     l->torch_count = count;
     l->dirty = true;
+    session_begin(l, LIGHT_TRIGGER_TORCH);
 }
 
 /* ----------------------------------------------------------------------- */
@@ -607,7 +683,9 @@ static void run_incremental_rebuild(world_light_t* l, const world_t* w) {
 
 void world_light_rebuild(world_light_t* l, const world_t* w) {
     if (!l || !w) return;
+    l->ops_this_call = 0;
     if (!l->dirty && l->phase == LR_IDLE) return;
+    ++l->calls_this_session;
 
     /* Two distinct paths. The incremental path - the common case
      * once the world has been loaded once - drains the edit queue
@@ -615,9 +693,12 @@ void world_light_rebuild(world_light_t* l, const world_t* w) {
      * the initial create / clone of a world, and the queue-overflow
      * fallback. */
     if (!l->needs_full && l->phase == LR_IDLE && l->edit_count > 0) {
+        int ops_before = l->ops_this_session;
         run_incremental_rebuild(l, w);
+        l->ops_this_call    = l->ops_this_session - ops_before;
         if (l->edit_count == 0 && !l->needs_full) {
             l->dirty = false;
+            session_end(l);
         }
         return;
     }
@@ -643,6 +724,7 @@ void world_light_rebuild(world_light_t* l, const world_t* w) {
      * The block-seed phase is also tiny (torch_count entries
      * total) so it runs in one shot alongside the sky seed. */
     if (l->phase == LR_IDLE) {
+        l->full_pass_this_session = true;
         memset(l->nibbles, 0, (size_t)(l->tile_count * l->depth));
         if (!l->q.buf) queue_init(&l->q, l->tile_count * 4);
         else { l->q.head = l->q.tail = l->q.count = 0; }
@@ -653,7 +735,9 @@ void world_light_rebuild(world_light_t* l, const world_t* w) {
          * the BFS queue. */
         if (cfg->voxel_sky_max > 0) {
             for (int t = 0; t < w->tile_count; ++t) {
-                sky_seed_one_column(l, w, t, cfg->voxel_sky_max);
+                int touched = sky_seed_one_column(l, w, t, cfg->voxel_sky_max);
+                l->ops_this_call    += touched;
+                l->ops_this_session += touched;
             }
         }
         l->phase = LR_SKY_BFS;
@@ -666,6 +750,8 @@ void world_light_rebuild(world_light_t* l, const world_t* w) {
                 continue;
             }
             bfs_one_pop(l, w, get_sky_w, set_sky_w, lateral_cost);
+            ++l->ops_this_call;
+            ++l->ops_this_session;
             --budget;
         } else if (l->phase == LR_BLOCK_SEED) {
             if (l->torch_count <= 0
@@ -685,6 +771,8 @@ void world_light_rebuild(world_light_t* l, const world_t* w) {
                 set_block(l, idx, v);
                 queue_push(&l->q, (uint32_t)idx);
             }
+            ++l->ops_this_call;
+            ++l->ops_this_session;
             --budget;
         } else if (l->phase == LR_BLOCK_BFS) {
             if (l->q.count == 0) {
@@ -713,6 +801,7 @@ void world_light_rebuild(world_light_t* l, const world_t* w) {
                 } else {
                     l->dirty      = false;
                     l->needs_full = false;
+                    session_end(l);
                 }
                 return;
             }
@@ -720,11 +809,14 @@ void world_light_rebuild(world_light_t* l, const world_t* w) {
              * a deep room shouldn't leak through a single voxel of
              * stone in a way that beats their per-step cost. */
             bfs_one_pop(l, w, get_block_w, set_block_w, lateral_cost);
+            ++l->ops_this_call;
+            ++l->ops_this_session;
             --budget;
         } else {
             /* Unreachable - paranoia recover. */
             l->phase = LR_IDLE;
             l->dirty = false;
+            session_end(l);
             return;
         }
     }
@@ -748,4 +840,24 @@ uint8_t world_light_block(const world_light_t* l, int tile, int depth) {
     if (tile  < 0 || tile  >= l->tile_count)  return 0;
     if (depth < 0 || depth >= WORLD_MAX_DEPTH) return 0;
     return get_block(l, voxel_index(tile, depth));
+}
+
+/* ----------------------------------------------------------------------- */
+/* Profiling accessors. */
+
+int world_light_last_call_ops(const world_light_t* l) {
+    return l ? l->ops_this_call : 0;
+}
+
+bool world_light_is_active(const world_light_t* l) {
+    if (!l) return false;
+    return l->dirty || l->phase != LR_IDLE || l->edit_count > 0;
+}
+
+bool world_light_consume_session_summary(world_light_t* l,
+                                         world_light_session_summary_t* out) {
+    if (!l || !l->summary_pending) return false;
+    if (out) *out = l->pending_summary;
+    l->summary_pending = false;
+    return true;
 }

@@ -2,6 +2,7 @@
 #include "client/chat.h"
 #include "client/remote_players.h"
 #include "client/renderer.h"
+#include "client/torch.h"
 #include "core/goldberg.h"
 #include "core/math.h"
 #include "core/net_transport.h"
@@ -642,6 +643,73 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
                    slot >= 0 ? C.body_coverage[slot].unique_tiles : 0);
             break;
         }
+        case MSG_TORCH_DIFF: {
+            if (hdr.version != MSG_TORCH_DIFF_VERSION) break;
+            msg_torch_diff_t diff;
+            if (proto_read_torch_diff(payload, hdr.length, &diff) != 0) {
+                fprintf(stderr, "[net-client] malformed TORCH_DIFF\n");
+                break;
+            }
+            world_t* w = renderer_world_for_body(diff.body_id);
+            if (!w) {
+                /* The body isn't registered with the renderer yet. This
+                 * is normal for the initial-sync TORCH_DIFFs that
+                 * arrive right after WELCOME for moons / planets the
+                 * client hasn't approached yet. Bodies stream in
+                 * lazily; the server resends torches when the player
+                 * teleports. For now, drop. */
+                fprintf(stderr,
+                        "[net-client] TORCH_DIFF body=%u not yet registered "
+                        "(entries=%u dropped)\n",
+                        diff.body_id, (unsigned)diff.entry_count);
+                break;
+            }
+            /* Per-entry dedup epsilon: match server. Two torches with
+             * the same tile_idx and positions within ~10 cm are
+             * considered the same torch (round-tripped echo of our
+             * own placement). */
+            const float MATCH_EPS_M = 0.1f;
+            const float MATCH_EPS2  = MATCH_EPS_M * MATCH_EPS_M;
+            const float REMOVE_RANGE_M = 1.0f;
+            int placed = 0, removed = 0, skipped = 0;
+            for (int i = 0; i < diff.entry_count; ++i) {
+                const msg_torch_entry_t* e = &diff.entries[i];
+                if (e->op == TORCH_OP_PLACE) {
+                    /* Dedup against the local torch list. */
+                    const torch_t* list = torch_list();
+                    int n = torch_count();
+                    bool dup = false;
+                    for (int j = 0; j < n; ++j) {
+                        float dx = list[j].position.x - e->pos_x;
+                        float dy = list[j].position.y - e->pos_y;
+                        float dz = list[j].position.z - e->pos_z;
+                        if (dx*dx + dy*dy + dz*dz <= MATCH_EPS2) { dup = true; break; }
+                    }
+                    if (dup) { ++skipped; continue; }
+                    vec3_t pos = { e->pos_x, e->pos_y, e->pos_z };
+                    vec3_t up  = { e->up_x,  e->up_y,  e->up_z  };
+                    if (torch_place(pos, up, (int)e->tile_idx)) {
+                        world_dirty_in_range(w, pos, 6.0f);  /* TORCH_LIGHT_RANGE_M */
+                        ++placed;
+                    }
+                } else if (e->op == TORCH_OP_REMOVE) {
+                    vec3_t pos = { e->pos_x, e->pos_y, e->pos_z };
+                    if (torch_remove_near(pos, REMOVE_RANGE_M)) {
+                        world_dirty_in_range(w, pos, 6.0f);
+                        ++removed;
+                    } else {
+                        ++skipped;
+                    }
+                }
+            }
+            const char* body_name =
+                (w && w->body && w->body->name) ? w->body->name : "?";
+            printf("[net-client] TORCH_DIFF recv body=%u (%s) entries=%u "
+                   "placed=%d removed=%d echo/skip=%d\n",
+                   diff.body_id, body_name, (unsigned)diff.entry_count,
+                   placed, removed, skipped);
+            break;
+        }
         case MSG_SNAPSHOT: {
             if (hdr.version != MSG_SNAPSHOT_VERSION) break;
             msg_snapshot_t snap;
@@ -841,6 +909,27 @@ void net_client_send_edit(int kind, uint32_t body_id,
            (unsigned)tile, (unsigned)depth, (unsigned)block_type);
 
     /* Reliable channel — block edits are ordered & cannot be dropped. */
+    net_send(C.conn, NET_CHANNEL_RELIABLE, buf, n);
+}
+
+void net_client_send_torch(bool place_op, uint32_t body_id, int tile_idx,
+                             float pos_x, float pos_y, float pos_z,
+                             float up_x,  float up_y,  float up_z) {
+    if (C.state != NET_CLIENT_READY || !C.conn) return;
+    if (tile_idx < 0) return;
+    msg_torch_diff_t diff = { 0 };
+    diff.body_id     = body_id;
+    diff.entry_count = 1;
+    diff.entries[0].op       = place_op ? TORCH_OP_PLACE : TORCH_OP_REMOVE;
+    diff.entries[0].tile_idx = (uint32_t)tile_idx;
+    diff.entries[0].pos_x = pos_x; diff.entries[0].pos_y = pos_y; diff.entries[0].pos_z = pos_z;
+    diff.entries[0].up_x  = up_x;  diff.entries[0].up_y  = up_y;  diff.entries[0].up_z  = up_z;
+    uint8_t buf[MSG_HEADER_SIZE + MSG_TORCH_DIFF_HEADER + MSG_TORCH_ENTRY_SIZE];
+    size_t n = proto_write_torch_diff(buf, sizeof buf, &diff);
+    if (n == 0) return;
+    printf("[net-client] TORCH-SEND %s body=%u tile=%d pos=(%.2f,%.2f,%.2f)\n",
+           place_op ? "PLACE" : "REMOVE", body_id, tile_idx,
+           pos_x, pos_y, pos_z);
     net_send(C.conn, NET_CHANNEL_RELIABLE, buf, n);
 }
 

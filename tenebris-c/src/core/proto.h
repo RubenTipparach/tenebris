@@ -46,6 +46,7 @@ typedef enum {
     MSG_PLAYER_INFO_REQUEST = 21, /* C->S: please re-send PLAYER_INFO for this id */
     MSG_PLAYER_INFO_NACK    = 22, /* S->C: cannot fulfill PLAYER_INFO_REQUEST */
     MSG_INVENTORY_STATE     = 23, /* both ways: client uploads hotbar; server replays on rejoin */
+    MSG_TORCH_DIFF          = 24, /* both ways: torch place / remove (single entry C->S, broadcast S->C, bulk on join) */
 } msg_kind_t;
 
 /* Per-kind protocol versions. Bump on any wire change. */
@@ -63,6 +64,7 @@ typedef enum {
 #define MSG_PLAYER_INFO_REQUEST_VERSION  1
 #define MSG_PLAYER_INFO_NACK_VERSION     1
 #define MSG_INVENTORY_STATE_VERSION      1
+#define MSG_TORCH_DIFF_VERSION           1
 
 typedef struct {
     uint16_t kind;       /* msg_kind_t */
@@ -259,6 +261,49 @@ typedef struct {
 } msg_chunk_diff_t;
 
 /* ------------------------------------------------------------------
+ * Torch place / remove. Symmetric message used in both directions:
+ *
+ *   - Client sends a single-entry TORCH_DIFF on every place / remove
+ *     (op = PLACE / REMOVE, the entry payload describing the torch).
+ *   - Server applies, persists to disk, then broadcasts a single-
+ *     entry TORCH_DIFF to every room peer (including the sender,
+ *     who deduplicates against its local list by tile_idx + epsilon
+ *     position match - mirrors how CHUNK_DIFF is fanned out).
+ *   - On WELCOME, server fans out the full torch state for every
+ *     body the room knows about as a bulk TORCH_DIFF (count > 1,
+ *     all PLACE entries) sent directly to the joining client only,
+ *     so other peers don't apply duplicates.
+ *
+ * Same on-disk torch list lives at world-<seed>/body-<id>/torches.dat;
+ * see saves_torches_* in src/server/saves.h.
+ * ------------------------------------------------------------------ */
+
+typedef enum {
+    TORCH_OP_PLACE  = 0,
+    TORCH_OP_REMOVE = 1,
+} torch_op_t;
+
+#define TORCH_DIFF_MAX_ENTRIES   64
+#define MSG_TORCH_ENTRY_SIZE     32  /* op(4) + tile(4) + pos(12) + up(12) */
+#define MSG_TORCH_DIFF_HEADER    8   /* body(4) + count(2) + reserved(2)   */
+
+typedef struct {
+    uint8_t  op;          /* torch_op_t */
+    uint8_t  reserved8;
+    uint16_t reserved16;
+    uint32_t tile_idx;
+    float    pos_x, pos_y, pos_z;
+    float    up_x,  up_y,  up_z;
+} msg_torch_entry_t;
+
+typedef struct {
+    uint32_t body_id;
+    uint16_t entry_count;
+    uint16_t reserved;
+    msg_torch_entry_t entries[TORCH_DIFF_MAX_ENTRIES];
+} msg_torch_diff_t;
+
+/* ------------------------------------------------------------------
  * Server-side sanity check feedback. The server doesn't simulate
  * player physics (M4 trust-the-client) but it can still spot
  * impossible poses — like "you're standing inside bedrock" — and
@@ -312,7 +357,7 @@ typedef struct {
  * MSG_KICK with reason=KICK_VERSION_MISMATCH so the client can show
  * a "refresh your browser" popup instead of looping the auto-reconnect
  * timer against a server that will never accept them. */
-#define TENEBRIS_PROTOCOL_VERSION   3
+#define TENEBRIS_PROTOCOL_VERSION   4    /* +TORCH_DIFF */
 
 /* ------------------------------------------------------------------
  * Encode / decode helpers. All functions assume little-endian on the
@@ -348,6 +393,9 @@ int    proto_read_player_cmd (const uint8_t* payload, size_t len, msg_player_cmd
 
 size_t proto_write_chunk_diff(uint8_t* buf, size_t cap, const msg_chunk_diff_t* m);
 int    proto_read_chunk_diff (const uint8_t* payload, size_t len, msg_chunk_diff_t* out);
+
+size_t proto_write_torch_diff(uint8_t* buf, size_t cap, const msg_torch_diff_t* m);
+int    proto_read_torch_diff (const uint8_t* payload, size_t len, msg_torch_diff_t* out);
 
 size_t proto_write_player_info(uint8_t* buf, size_t cap, const msg_player_info_t* m);
 int    proto_read_player_info (const uint8_t* payload, size_t len, msg_player_info_t* out);

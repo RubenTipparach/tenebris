@@ -257,11 +257,20 @@ void world_dirty_in_range(world_t* w, vec3_t world_pos, float radius_m) {
             w->dirty[i >> 3] |= (uint8_t)(1 << (i & 7));
         }
     }
-    /* This function is only called from torch place / remove paths
-     * (see torch.h), so the light grid's published torch set is stale.
-     * Mark dirty to trigger a relight on the next mesh build under the
-     * voxel engine; no-op cost under the column engine. */
-    world_light_mark_dirty(w->light);
+    /* DO NOT mark the light grid full-dirty here. world_light_mark_dirty
+     * sets needs_full = true, escalating what should be a tiny ripple
+     * around the torch position into a planet-wide BFS - measured at
+     * ~1000 ms / 17M ops per torch place on a 160k-tile body, vs the
+     * 0.4 ms / few-ops cost of a normal incremental block edit.
+     *
+     * The torch list change is already picked up by
+     * world_light_set_torches() in hex_mesher_relight_if_needed: it
+     * diffs the new list against the cached one and calls
+     * mark_dirty_at on both the OLD and NEW torch cells, which routes
+     * through the incremental ripple-BFS path bounded by sky_max
+     * steps around each cell. The mesh dirty bits above are still
+     * needed so the affected chunks remesh and pick up the
+     * (newly-propagated) per-vertex torch_light values. */
 }
 
 double world_depth_to_radius_m(const world_t* w, int depth) {

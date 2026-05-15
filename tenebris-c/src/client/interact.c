@@ -7,6 +7,7 @@
 #include "core/blocks.h"
 #include "core/proto.h"        /* PLAYER_CMD_PLACE / PLAYER_CMD_BREAK */
 #include <math.h>
+#include <stdio.h>
 
 /* ----------------------------------------------------------------- */
 /* SP per-edit persistence helpers. CLAUDE.md mandates that every
@@ -215,14 +216,36 @@ void interact_update(interact_state_t* s, world_t* w, player_ctrl_t* p, float dt
      * by the removed torch. */
     if (target_torch) {
         if (in->left_click) {
+            /* Capture the full torch record BEFORE removing - we need
+             * the body-local position + up vector + anchor tile so the
+             * server's TORCH_DIFF REMOVE message can identify which
+             * torch in its authoritative list to drop. After
+             * torch_remove the slot is swap-overwritten and the data
+             * is gone. */
+            const torch_t* slist = torch_list();
+            int tor_tile = (s->torch_idx >= 0 && s->torch_idx < torch_count())
+                           ? slist[s->torch_idx].tile_idx : -1;
             vec3_t pos = torch_position_at(s->torch_idx);
+            vec3_t up_v = (s->torch_idx >= 0 && s->torch_idx < torch_count())
+                          ? slist[s->torch_idx].up : (vec3_t){0,1,0};
+            printf("[light] torch removed at tile %d - kicking relight; "
+                   "wall-clock blocking cost to follow on session-done line\n",
+                   s->torch_idx);
+            fflush(stdout);
             torch_remove(s->torch_idx);
             world_dirty_in_range(w, pos, TORCH_LIGHT_RANGE_M);
             /* SP: same-frame persistence of the updated torch list.
-             * MP: server isn't authoritative on torches today; this
-             * still records nothing on the wire. CLAUDE.md persistence
-             * rule applies to the local list either way. */
+             * MP: also forward the remove to the server so it can drop
+             * the torch from its authoritative list, persist the
+             * change, and broadcast a TORCH_DIFF to all room peers.
+             * CLAUDE.md persistence rule applies to both modes. */
             sp_save_torches_after_change(w);
+            if (w->body && tor_tile >= 0) {
+                net_client_send_torch(/* place_op */ false,
+                                       (uint32_t)w->body->id, tor_tile,
+                                       pos.x, pos.y, pos.z,
+                                       up_v.x, up_v.y, up_v.z);
+            }
             if (p->survival_mode) inventory_add(&p->inventory, BLOCK_TORCH);
             /* Index is now invalid (swap-removed); clear it so the
              * HUD doesn't print stale state for the rest of this
@@ -305,6 +328,10 @@ void interact_update(interact_state_t* s, world_t* w, player_ctrl_t* p, float dt
                     };
                     vec3_t base_pos = vec3_scale(base_dir, (float)r_top);
                     if (torch_place(base_pos, base_dir, s->hit_tile)) {
+                        printf("[light] torch placed on tile %d - kicking "
+                               "relight; blocking cost to follow on "
+                               "session-done line\n", s->hit_tile);
+                        fflush(stdout);
                         /* Dirty every tile whose centre sits within
                          * the torch's light range — they need their
                          * per-vertex torch_light re-baked. The
@@ -312,6 +339,20 @@ void interact_update(interact_state_t* s, world_t* w, player_ctrl_t* p, float dt
                          * remesh + re-upload affected chunks. */
                         world_dirty_in_range(w, base_pos, TORCH_LIGHT_RANGE_M);
                         sp_save_torches_after_change(w);
+                        /* MP: tell the server. It applies to its
+                         * authoritative torch list, persists to
+                         * world-<seed>/body-<id>/torches.dat, and
+                         * broadcasts a TORCH_DIFF to every room peer
+                         * so other players see this torch. Sender
+                         * receives the echo too but the local list
+                         * deduplicates by position. */
+                        if (w->body) {
+                            net_client_send_torch(/* place_op */ true,
+                                                   (uint32_t)w->body->id,
+                                                   s->hit_tile,
+                                                   base_pos.x, base_pos.y, base_pos.z,
+                                                   base_dir.x, base_dir.y, base_dir.z);
+                        }
                         inventory_consume(&p->inventory);
                     }
                 }
