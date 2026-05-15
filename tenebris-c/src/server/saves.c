@@ -4,6 +4,7 @@
 
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>      /* open(O_RDONLY) for parent-dir fsync */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,14 +38,50 @@ static bool mkdir_p(const char* path) {
     return true;
 }
 
+/* Atomic write: tmp file -> fsync -> rename -> fsync(parent dir).
+ *
+ * Without the fsyncs the data sits in page cache after fclose+rename.
+ * Fly's auto_stop_machines='stop' policy stops idle machines, and even
+ * a graceful SIGTERM doesn't guarantee dirty pages flush before the
+ * VM disappears - we've observed block edits silently vanish across
+ * a sleep/wake cycle. fsync(file) makes sure the bytes are durable
+ * before the rename, and fsync(parent_dir) makes the rename itself
+ * durable (POSIX requires the directory's own metadata to be synced
+ * for a rename to survive a crash).
+ *
+ * Per-edit fsync is fine performance-wise: blocks are placed at human
+ * speed, the WS handler is single-threaded, and the volume backing
+ * /data on Fly handles low-frequency fsyncs comfortably. */
 static bool write_atomic(const char* path, const void* data, size_t len) {
     char tmp[512];
     snprintf(tmp, sizeof tmp, "%s.tmp", path);
     FILE* f = fopen(tmp, "wb");
     if (!f) { fprintf(stderr, "[saves] fopen %s: %s\n", tmp, strerror(errno)); return false; }
     size_t n = fwrite(data, 1, len, f);
-    int closed = fclose(f);
-    if (n != len || closed != 0) {
+    if (n != len) {
+        fprintf(stderr, "[saves] short write %s: %zu of %zu (%s)\n",
+                tmp, n, len, strerror(errno));
+        fclose(f);
+        unlink(tmp);
+        return false;
+    }
+    if (fflush(f) != 0) {
+        fprintf(stderr, "[saves] fflush %s: %s\n", tmp, strerror(errno));
+        fclose(f);
+        unlink(tmp);
+        return false;
+    }
+    /* Push the bytes to disk before we rename them into the public
+     * name. Without this, a crash between rename and the next sync
+     * leaves the new directory entry pointing at a zero-length file. */
+    if (fsync(fileno(f)) != 0) {
+        fprintf(stderr, "[saves] fsync %s: %s\n", tmp, strerror(errno));
+        fclose(f);
+        unlink(tmp);
+        return false;
+    }
+    if (fclose(f) != 0) {
+        fprintf(stderr, "[saves] fclose %s: %s\n", tmp, strerror(errno));
         unlink(tmp);
         return false;
     }
@@ -53,6 +90,27 @@ static bool write_atomic(const char* path, const void* data, size_t len) {
                 tmp, path, strerror(errno));
         unlink(tmp);
         return false;
+    }
+    /* fsync the parent directory so the rename persists. Best-effort:
+     * a directory open or fsync failure here means the bytes are
+     * durable but the directory entry might not be - log and keep
+     * going, the next save attempt under the same dir will re-sync. */
+    char parent[512];
+    snprintf(parent, sizeof parent, "%s", path);
+    char* slash = strrchr(parent, '/');
+    if (slash) {
+        *slash = 0;
+        int dfd = open(parent, O_RDONLY);
+        if (dfd < 0) {
+            fprintf(stderr, "[saves] open dir %s for fsync: %s\n",
+                    parent, strerror(errno));
+        } else {
+            if (fsync(dfd) != 0) {
+                fprintf(stderr, "[saves] fsync dir %s: %s\n",
+                        parent, strerror(errno));
+            }
+            close(dfd);
+        }
     }
     return true;
 }
@@ -124,10 +182,41 @@ static void load_or_write_manifest(void) {
 bool saves_init(const char* saves_dir) {
     if (!saves_dir || !*saves_dir) return false;
     G_saves_dir = saves_dir;
-    if (!mkdir_p(saves_dir)) return false;
+    if (!mkdir_p(saves_dir)) {
+        fprintf(stderr, "[saves] FATAL: cannot create saves dir '%s' (%s) - "
+                        "block edits will not persist across this session.\n",
+                saves_dir, strerror(errno));
+        G_saves_dir = NULL;
+        return false;
+    }
     char players[512];
     snprintf(players, sizeof players, "%s/players", saves_dir);
-    if (!mkdir_p(players)) return false;
+    if (!mkdir_p(players)) {
+        fprintf(stderr, "[saves] FATAL: cannot create players dir '%s'\n", players);
+        G_saves_dir = NULL;
+        return false;
+    }
+    /* Writability probe. Round-trip a tiny sentinel through the same
+     * write_atomic path the real saves use - if /data is mounted
+     * read-only or the volume isn't actually attached, surface it
+     * here at boot rather than letting every block edit fail one at
+     * a time with the player thinking the world saved fine. */
+    {
+        char probe[512];
+        snprintf(probe, sizeof probe, "%s/.write-probe", saves_dir);
+        const char marker[] = "tenebris-saves-probe";
+        if (!write_atomic(probe, marker, sizeof marker - 1)) {
+            fprintf(stderr,
+                    "[saves] FATAL: write-probe failed in '%s'. The saves "
+                    "directory is unwritable. Block edits WILL NOT PERSIST. "
+                    "Check the mount (Fly volume?) and process permissions.\n",
+                    saves_dir);
+            G_saves_dir = NULL;
+            return false;
+        }
+        unlink(probe);
+        printf("[saves] write-probe ok in %s\n", saves_dir);
+    }
     load_or_write_manifest();
     printf("[saves] init dir=%s\n", saves_dir);
     return true;
@@ -169,11 +258,26 @@ static void tile_path(char* out, size_t cap, const char* room,
  * gates compatibility; depth lets a future column-height change
  * reject mismatched files instead of silently truncating. */
 bool saves_write_tile(world_t* w, const char* room, uint64_t seed, int tile_idx) {
-    if (!G_saves_dir || !w || !w->body) return false;
-    if (tile_idx < 0 || tile_idx >= w->tile_count) return false;
+    if (!G_saves_dir) {
+        fprintf(stderr, "[saves] write_tile rejected: saves disabled (no init/probe)\n");
+        return false;
+    }
+    if (!w || !w->body) {
+        fprintf(stderr, "[saves] write_tile rejected: null world/body\n");
+        return false;
+    }
+    if (tile_idx < 0 || tile_idx >= w->tile_count) {
+        fprintf(stderr, "[saves] write_tile rejected: tile=%d out of range [0,%d)\n",
+                tile_idx, w->tile_count);
+        return false;
+    }
     char dir[512];
     body_dir(dir, sizeof dir, room, seed, (uint32_t)w->body->id);
-    if (!mkdir_p(dir)) return false;
+    if (!mkdir_p(dir)) {
+        fprintf(stderr, "[saves] write_tile mkdir_p(%s) failed: %s\n",
+                dir, strerror(errno));
+        return false;
+    }
     char path[512];
     tile_path(path, sizeof path, room, seed, (uint32_t)w->body->id, tile_idx);
 
@@ -190,6 +294,11 @@ bool saves_write_tile(world_t* w, const char* room, uint64_t seed, int tile_idx)
            &w->blocks[(size_t)tile_idx * WORLD_MAX_DEPTH],
            WORLD_MAX_DEPTH);
     bool ok = write_atomic(path, buf, sizeof buf);
+    if (!ok) {
+        fprintf(stderr, "[saves] write_tile FAILED path=%s (room='%s' body=%u tile=%d)\n",
+                path, room && *room ? room : "(public)",
+                (unsigned)w->body->id, tile_idx);
+    }
     /* Track that this tile now has a persisted column so the join-
      * time replay path picks it up on the next client connect. */
     if (ok) world_tile_mark_saved(w, tile_idx);
@@ -577,6 +686,99 @@ void saves_global_chat_append(const char* room, const char* name, const char* te
             (long long)time(NULL), clean_name, clean_room, clean_text);
     fclose(f);
     audit_truncate(path);
+}
+
+/* ----------------------------------------------------------------- */
+/* Directory walker for /saves. Enumerates every .col file under
+ * <saves_dir>/rooms/<room>/world-<seed>/body-<body>/ and fires the
+ * visitor with the parsed identity + stat metadata. Single-threaded
+ * server, so the malloc'd path strings stay short-lived. */
+
+static void parse_seed_from_dir(const char* name, uint64_t* out_seed,
+                                  bool* out_ok) {
+    /* Expect "world-<hex>". On parse failure, mark not ok so the
+     * caller skips this entry instead of fabricating a zero seed. */
+    *out_ok = false;
+    if (strncmp(name, "world-", 6) != 0) return;
+    char* end = NULL;
+    uint64_t s = strtoull(name + 6, &end, 16);
+    if (!end || *end != 0) return;
+    *out_seed = s;
+    *out_ok = true;
+}
+
+static void parse_body_from_dir(const char* name, uint32_t* out_id,
+                                  bool* out_ok) {
+    *out_ok = false;
+    if (strncmp(name, "body-", 5) != 0) return;
+    char* end = NULL;
+    unsigned long v = strtoul(name + 5, &end, 10);
+    if (!end || *end != 0) return;
+    *out_id = (uint32_t)v;
+    *out_ok = true;
+}
+
+int saves_enumerate_tiles(saves_tile_visitor_t fn, void* user) {
+    if (!G_saves_dir || !fn) return 0;
+    char rooms_root[512];
+    snprintf(rooms_root, sizeof rooms_root, "%s/rooms", G_saves_dir);
+    DIR* rd = opendir(rooms_root);
+    if (!rd) return 0;
+    int total = 0;
+    struct dirent* re;
+    while ((re = readdir(rd)) != NULL) {
+        if (re->d_name[0] == '.') continue;
+        char world_root[600];
+        snprintf(world_root, sizeof world_root, "%s/%s", rooms_root, re->d_name);
+        DIR* wd = opendir(world_root);
+        if (!wd) continue;
+        struct dirent* we;
+        while ((we = readdir(wd)) != NULL) {
+            if (we->d_name[0] == '.') continue;
+            uint64_t seed = 0;
+            bool ok;
+            parse_seed_from_dir(we->d_name, &seed, &ok);
+            if (!ok) continue;
+            char body_root[700];
+            snprintf(body_root, sizeof body_root, "%s/%s",
+                     world_root, we->d_name);
+            DIR* bd = opendir(body_root);
+            if (!bd) continue;
+            struct dirent* be;
+            while ((be = readdir(bd)) != NULL) {
+                if (be->d_name[0] == '.') continue;
+                uint32_t body_id = 0;
+                parse_body_from_dir(be->d_name, &body_id, &ok);
+                if (!ok) continue;
+                char tile_root[800];
+                snprintf(tile_root, sizeof tile_root, "%s/%s",
+                         body_root, be->d_name);
+                DIR* td = opendir(tile_root);
+                if (!td) continue;
+                struct dirent* te;
+                while ((te = readdir(td)) != NULL) {
+                    if (te->d_name[0] == '.') continue;
+                    const char* dot = strrchr(te->d_name, '.');
+                    if (!dot || strcmp(dot, ".col") != 0) continue;
+                    int tile_idx = atoi(te->d_name);
+                    char tile_path_buf[900];
+                    snprintf(tile_path_buf, sizeof tile_path_buf,
+                             "%s/%s", tile_root, te->d_name);
+                    struct stat st;
+                    if (stat(tile_path_buf, &st) != 0) continue;
+                    fn(re->d_name, seed, body_id, tile_idx,
+                       (size_t)st.st_size,
+                       (uint64_t)st.st_mtime, user);
+                    ++total;
+                }
+                closedir(td);
+            }
+            closedir(bd);
+        }
+        closedir(wd);
+    }
+    closedir(rd);
+    return total;
 }
 
 size_t saves_audit_tail(const char* which, int max_lines,

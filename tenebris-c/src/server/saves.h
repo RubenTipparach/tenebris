@@ -156,4 +156,25 @@ void saves_global_chat_append(const char* room, const char* name, const char* te
 size_t saves_audit_tail(const char* which, int max_lines,
                           char* out, size_t cap);
 
+/* ----------------------------------------------------------------- */
+/* Inventory of every persisted tile column on disk. Used by the
+ * /saves HTTP endpoint so an operator can answer "is the volume
+ * actually persisting my edits?" without ssh'ing into the machine.
+ *
+ * One callback per .col file found. The walker is breadth-first
+ * over rooms then bodies then tiles so output is easy to read.
+ * Returns the total count.
+ *
+ * `room` is the on-disk room slug ("__public__" for empty-code).
+ * `seed` and `body_id` come from the directory names.
+ * `size_bytes` is the file size as stat'd. */
+typedef void (*saves_tile_visitor_t)(const char* room,
+                                      uint64_t   seed,
+                                      uint32_t   body_id,
+                                      int        tile_idx,
+                                      size_t     size_bytes,
+                                      uint64_t   mtime_unix_s,
+                                      void*      user);
+int saves_enumerate_tiles(saves_tile_visitor_t fn, void* user);
+
 #endif

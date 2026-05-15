@@ -45,21 +45,33 @@ static void room_alloc_worlds(server_t* s, server_room_t* room) {
      * (~370 MB of blocks + goldberg grids), which OOM-killed the
      * 1 GB Fly machine on the second simultaneous room. */
     room->world_count = 0;
+    int bodies_with_edits = 0;
+    int total_tiles_loaded = 0;
     for (int i = 0; i < s->world_count && i < SERVER_MAX_BODIES; ++i) {
         const world_t* baseline = s->worlds[i];
         if (!baseline || !baseline->body) continue;
         const uint32_t body_id = (uint32_t)baseline->body->id;
         if (!saves_room_body_has_edits(room->code, s->cfg.seed, body_id))
             continue;
+        ++bodies_with_edits;
         world_t* w = world_clone(baseline);
         if (!w) {
             fprintf(stderr, "[server] room '%s': clone of body %u failed\n",
                     room->code, body_id);
             continue;
         }
-        saves_load_world(w, room->code, s->cfg.seed);
+        int loaded = saves_load_world(w, room->code, s->cfg.seed);
+        total_tiles_loaded += loaded;
         room->worlds[room->world_count++] = w;
     }
+    printf("[server] room '%s' load: %d body(ies) had on-disk edits, "
+           "restored %d tile column(s) total (seed=%llu, on-disk path=rooms/%s/world-%llx/)\n",
+           room->code[0] ? room->code : "(empty-code/lobby)",
+           bodies_with_edits, total_tiles_loaded,
+           (unsigned long long)s->cfg.seed,
+           room->code[0] ? room->code : "__public__",
+           (unsigned long long)s->cfg.seed);
+    fflush(stdout);
 }
 
 /* Look up a room's world for a body, cloning the shared baseline
@@ -305,11 +317,19 @@ static void send_chunk_replay(server_t* s, server_client_t* cl) {
             ++replayed_tiles;
         }
     }
-    if (replayed_tiles > 0) {
-        printf("[server] CHUNK replay -> player_id=%u: %d tile(s), %d msg(s)\n",
-               cl->player_id, replayed_tiles, replayed_msgs);
-        fflush(stdout);
-    }
+    /* Always log the replay outcome - the 0-tile case ("nothing to
+     * restore for you") is exactly the symptom we chase when a player
+     * reports "my blocks are gone": it means the room had no cloned
+     * worlds with saved bits set, which in turn means either the
+     * .col files for this (room, seed, body) were not on disk at
+     * room_alloc_worlds time, or the bodies they belonged to were
+     * never registered as baselines on the server. */
+    printf("[server] CHUNK replay -> player_id=%u room='%s': %d tile(s), %d msg(s) "
+           "(room->world_count=%d)\n",
+           cl->player_id,
+           cl->room[0] ? cl->room : "(empty-code/lobby)",
+           replayed_tiles, replayed_msgs, room->world_count);
+    fflush(stdout);
 }
 
 static void send_welcome(server_t* s, server_client_t* cl) {
@@ -502,9 +522,11 @@ static void handle_hello(server_t* s, server_client_t* cl,
         return;
     }
 
-    printf("[server] HELLO from player_id=%u name='%s' room='%s' (client_version=%u)\n",
+    printf("[server] HELLO from player_id=%u name='%s' room='%s' %s (client_version=%u)\n",
            cl->player_id, cl->name,
-           cl->room[0] ? cl->room : "(public)", h.client_version);
+           cl->room[0] ? cl->room : "",
+           cl->room[0] ? "(private-room)" : "(EMPTY-CODE -> empty-code/lobby room)",
+           h.client_version);
     /* Audit-log the login so an operator can reconstruct who was on
      * the server at a given time via GET /logins. Only real (named,
      * room-attached) joins reach this point. */
@@ -677,9 +699,10 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
              * edit. Skip the wasted disk + write only the tile we
              * touched. */
             bool save_ok = saves_write_tile(w, cl->room, s->cfg.seed, (int)cmd.tile_idx);
-            printf("[server] EDIT player_id=%u %s body=%u tile=%u depth=%u block=%u "
+            printf("[server] EDIT player_id=%u room='%s' %s body=%u tile=%u depth=%u block=%u "
                    "save=%s\n",
                    cl->player_id,
+                   cl->room[0] ? cl->room : "(empty-code/lobby)",
                    (cmd.cmd_kind == PLAYER_CMD_BREAK) ? "BREAK" : "PLACE",
                    cmd.body_id, cmd.tile_idx, cmd.depth, (unsigned)target,
                    save_ok ? "ok" : "FAIL");
@@ -945,6 +968,10 @@ static void json_escape(const char* in, char* out, size_t cap) {
 
 /* Parse `?n=NNN` out of `path`. Returns the parsed int clamped to
  * [1, SAVES_AUDIT_FILE_MAX], or `def` if absent / unparseable. */
+/* Forward decl: definition lives near the chat/send endpoint below. */
+static int http_query_str(const char* path, const char* key,
+                            char* out, size_t cap);
+
 static int http_query_int(const char* path, const char* key, int def) {
     const char* q = strchr(path, '?');
     if (!q) return def;
@@ -1101,6 +1128,118 @@ static long proc_status_kb(const char* key) {
     }
     fclose(f);
     return out;
+}
+
+/* /saves: enumerate every persisted .col file on disk so an operator
+ * can answer "is my volume actually persisting block edits?" without
+ * shelling into the machine. Supports cheap filtering on
+ *   ?room=ABCD23   (or ?room=__public__ for the empty-code lobby)
+ *   ?seed=N        (decimal)
+ *   ?body=N        (decimal body id)
+ * Output: { "saves_dir": "...", "total_files": N,
+ *           "filters": {...}, "matched": N,
+ *           "tiles": [ { room, seed, body, tile, size, mtime }... ] }
+ * Truncated cleanly when HTTP_BODY fills; total_files / matched still
+ * reflect the real disk state so the operator sees "33429 on disk,
+ * showing first N". */
+typedef struct {
+    const char* filter_room;
+    bool        have_seed_filter;
+    uint64_t    filter_seed;
+    bool        have_body_filter;
+    uint32_t    filter_body;
+    size_t      json_pos;
+    int         matched;
+    int         emitted;
+    bool        truncated;
+} saves_walk_ctx_t;
+
+static void saves_walk_cb(const char* room, uint64_t seed,
+                            uint32_t body_id, int tile_idx,
+                            size_t size_bytes, uint64_t mtime_unix_s,
+                            void* user) {
+    saves_walk_ctx_t* c = (saves_walk_ctx_t*)user;
+    if (c->filter_room && c->filter_room[0]
+        && strcmp(c->filter_room, room) != 0) return;
+    if (c->have_seed_filter && seed != c->filter_seed) return;
+    if (c->have_body_filter && body_id != c->filter_body) return;
+    ++c->matched;
+    if (c->truncated) return;
+    char rname[64];
+    json_escape(room, rname, sizeof rname);
+    bool ok = json_appendf(&c->json_pos,
+        "%s\n    {\"room\":\"%s\",\"seed\":%llu,\"body\":%u,"
+        "\"tile\":%d,\"size\":%zu,\"mtime\":%llu}",
+        c->emitted == 0 ? "" : ",",
+        rname,
+        (unsigned long long)seed,
+        (unsigned)body_id,
+        tile_idx, size_bytes,
+        (unsigned long long)mtime_unix_s);
+    if (!ok) {
+        c->truncated = true;
+        return;
+    }
+    ++c->emitted;
+}
+
+static size_t build_saves_json(const char* path) {
+    char room_buf[16];
+    room_buf[0] = 0;
+    http_query_str(path, "room", room_buf, sizeof room_buf);
+    /* "__public__" is the on-disk slug for the empty-code lobby; let
+     * the operator filter using either spelling. */
+
+    saves_walk_ctx_t ctx = { 0 };
+    ctx.filter_room = room_buf[0] ? room_buf : NULL;
+    {
+        const char* q = strchr(path, '?');
+        if (q) {
+            const char* p = q + 1;
+            while (*p) {
+                if (strncmp(p, "seed=", 5) == 0) {
+                    ctx.filter_seed = strtoull(p + 5, NULL, 10);
+                    ctx.have_seed_filter = true;
+                } else if (strncmp(p, "body=", 5) == 0) {
+                    ctx.filter_body = (uint32_t)strtoul(p + 5, NULL, 10);
+                    ctx.have_body_filter = true;
+                }
+                const char* amp = strchr(p, '&');
+                if (!amp) break;
+                p = amp + 1;
+            }
+        }
+    }
+
+    json_appendf(&ctx.json_pos, "{\n  \"filters\":{");
+    bool first = true;
+    if (ctx.filter_room) {
+        char esc[64];
+        json_escape(ctx.filter_room, esc, sizeof esc);
+        json_appendf(&ctx.json_pos, "%s\"room\":\"%s\"",
+                     first ? "" : ",", esc);
+        first = false;
+    }
+    if (ctx.have_seed_filter) {
+        json_appendf(&ctx.json_pos, "%s\"seed\":%llu",
+                     first ? "" : ",",
+                     (unsigned long long)ctx.filter_seed);
+        first = false;
+    }
+    if (ctx.have_body_filter) {
+        json_appendf(&ctx.json_pos, "%s\"body\":%u",
+                     first ? "" : ",",
+                     (unsigned)ctx.filter_body);
+        first = false;
+    }
+    json_appendf(&ctx.json_pos, "},\n  \"tiles\":[");
+    int total = saves_enumerate_tiles(saves_walk_cb, &ctx);
+    json_appendf(&ctx.json_pos,
+                 "\n  ],\n  \"total_files\":%d,\n  \"matched\":%d,"
+                 "\n  \"emitted\":%d,\n  \"truncated\":%s\n}\n",
+                 total, ctx.matched, ctx.emitted,
+                 ctx.truncated ? "true" : "false");
+    return ctx.json_pos;
 }
 
 static size_t build_status_json(server_t* s) {
@@ -1495,6 +1634,13 @@ static int on_http(const char* path,
         *out_mime     = "application/json; charset=utf-8";
         return 1;
     }
+    if (strcmp(clean, "/saves") == 0) {
+        size_t len = build_saves_json(path);
+        *out_body     = (const uint8_t*)HTTP_BODY;
+        *out_body_len = len;
+        *out_mime     = "application/json; charset=utf-8";
+        return 1;
+    }
     if (strcmp(clean, "/") == 0 || strcmp(clean, "/health") == 0) {
         static const char msg[] =
             "tenebris-server alive\n"
@@ -1504,7 +1650,9 @@ static int on_http(const char* path,
             "  GET /chat[?n=N]           - last N chat messages\n"
             "  GET /chat/send?text=...   - broadcast '~server~' chat to a room\n"
             "                              (&room=ABC123 for private,\n"
-            "                               &room=__all__ to fan out, default public)\n";
+            "                               &room=__all__ to fan out, default public)\n"
+            "  GET /saves                - JSON: every persisted .col file on disk\n"
+            "                              filter with ?room=ABC123 / ?body=0 / ?seed=N\n";
         *out_body     = (const uint8_t*)msg;
         *out_body_len = sizeof msg - 1;
         *out_mime     = "text/plain; charset=utf-8";
