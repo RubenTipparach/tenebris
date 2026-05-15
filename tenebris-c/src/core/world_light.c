@@ -204,6 +204,21 @@ void world_light_set_torches(world_light_t* l,
     }
     if (same) return;
 
+    /* Mark every cell that's changing dirty for an incremental BFS
+     * pass. We queue both the OLD positions (so the removal pass
+     * cascades from the cell's existing block-light value) and the
+     * NEW positions (so the addition pass re-seeds them once the
+     * snapshot below is swapped in). Placing a single torch only
+     * touches the ~sky_max^3 cells around the edit, so this stays
+     * off the frame budget instead of forcing a planet-wide full
+     * rebuild on every torch click. */
+    for (int i = 0; i < l->torch_count; ++i) {
+        world_light_mark_dirty_at(l, l->torches[i].tile, l->torches[i].depth);
+    }
+    for (int i = 0; i < count; ++i) {
+        world_light_mark_dirty_at(l, sources[i].tile, sources[i].depth);
+    }
+
     if (count > l->torch_cap) {
         free(l->torches);
         l->torch_cap = count > 16 ? count : 16;
@@ -214,9 +229,7 @@ void world_light_set_torches(world_light_t* l,
         memcpy(l->torches, sources, (size_t)count * sizeof(world_light_torch_t));
     }
     l->torch_count = count;
-    /* Goes through mark_dirty so a mid-rebuild edit triggers a
-     * post-completion restart instead of corrupting in-flight state. */
-    world_light_mark_dirty(l);
+    l->dirty = true;
 }
 
 /* ----------------------------------------------------------------------- */
@@ -521,6 +534,22 @@ static void incremental_pass_for_channel(world_light_t* l, const world_t* w,
                 if (block_covers_face(up)) { sees_sky = false; break; }
             }
             if (sees_sky && best < seed_sky_max) best = seed_sky_max;
+        }
+        /* Block channel: if this cell hosts a torch, lift `best` to
+         * the torch intensity. Without this, a newly-placed torch
+         * marked dirty would compute best=0 from its (un-lit)
+         * neighbours and stay dark - only the full-rebuild seed
+         * phase knew about torches. */
+        if (!channel_is_sky && l->torch_count > 0) {
+            for (int i = 0; i < l->torch_count; ++i) {
+                if (l->torches[i].tile == tile
+                    && l->torches[i].depth == depth) {
+                    int v = l->torches[i].intensity > 15
+                            ? 15 : l->torches[i].intensity;
+                    if (v > best) best = v;
+                    break;
+                }
+            }
         }
 
         if (best > (int)getf(l, (int)idx)) {
