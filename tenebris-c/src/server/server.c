@@ -637,6 +637,8 @@ static void on_open(net_conn_t* conn, void* user) {
     cl->last_saved_pos_y = 0.0;
     cl->last_saved_pos_z = 0.0;
     cl->last_saved_tick  = 0;
+    cl->last_msg_unix_s  = (int64_t)time(NULL);
+    cl->timed_out_logged = false;
     net_conn_set_user(conn, cl);
     printf("[server] open: player_id=%u (slot %ld)\n",
            cl->player_id, (long)(cl - s->clients));
@@ -653,6 +655,11 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
         net_close(conn);
         return;
     }
+    /* Any inbound message counts as activity for the idle-timeout
+     * sweeper. A handshake-stalled client (HELLO sent, never followed
+     * by anything) gets its open-time stamp from on_open and ages
+     * out the same way. */
+    cl->last_msg_unix_s = (int64_t)time(NULL);
 
     msg_hdr_t hdr;
     if (proto_read_header((const uint8_t*)data, len, &hdr) != 0) {
@@ -2003,6 +2010,35 @@ static void broadcast_snapshot(server_t* s) {
     }
 }
 
+/* Player idle timeout (seconds). After this much wall-clock silence
+ * from a connected client, we write a "timeout" event to sessions.log
+ * so the dashboard's session-pairing isn't stuck showing them as
+ * live forever. The connection itself stays open - a slow link or a
+ * mobile tab put to sleep should not be kicked - and on_close still
+ * writes a "logout" if/when the socket actually dies. */
+#define CLIENT_IDLE_TIMEOUT_S  300
+
+static void client_sweep_idle(server_t* s) {
+    int64_t now = (int64_t)time(NULL);
+    for (int i = 0; i < SERVER_MAX_CLIENTS; ++i) {
+        server_client_t* cl = &s->clients[i];
+        if (!cl->conn) continue;
+        if (!cl->handshaked) continue;          /* never had a login event */
+        if (cl->timed_out_logged) continue;     /* already flagged */
+        if (cl->last_msg_unix_s == 0) continue; /* uninitialised guard */
+        int64_t silent_s = now - cl->last_msg_unix_s;
+        if (silent_s < CLIENT_IDLE_TIMEOUT_S) continue;
+        cl->timed_out_logged = true;
+        saves_session_log("timeout", cl->name, cl->room);
+        printf("[server] timeout: player_id=%u name='%s' room='%s' silent_s=%lld\n",
+               cl->player_id,
+               cl->name[0] ? cl->name : "(unnamed)",
+               cl->room[0] ? cl->room : "(empty-code/lobby)",
+               (long long)silent_s);
+        fflush(stdout);
+    }
+}
+
 static void room_sweep_idle(server_t* s) {
     /* Free rooms that have been empty for longer than the grace
      * window. Cheap: scan SERVER_MAX_ROOMS slots once a second
@@ -2029,6 +2065,11 @@ void server_tick(server_t* s) {
 
     /* Idle-room sweeper: runs once a second. Cheap O(rooms). */
     if ((s->tick % (uint64_t)s->cfg.tick_hz) == 0) room_sweep_idle(s);
+    /* Idle-client sweeper: same cadence, writes a "timeout" session
+     * audit entry for any client silent past CLIENT_IDLE_TIMEOUT_S.
+     * The connection isn't closed - just logged, so the dashboard
+     * stops showing forever-live sessions. */
+    if ((s->tick % (uint64_t)s->cfg.tick_hz) == 0) client_sweep_idle(s);
 
     /* M4 (position relay): broadcast every 3rd tick. At 20 Hz that's
      * ~6.7 snapshots/sec — visibly smooth with client-side interp

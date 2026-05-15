@@ -81,6 +81,16 @@ typedef struct {
     uint16_t    inv_slot_type [9];
     int16_t     inv_slot_count[9];
     uint8_t     inv_selected;
+    /* Last unix timestamp the server received any message from this
+     * client (HELLO, PLAYER_STATE, PLAYER_CMD, CHAT, anything). Used
+     * by the idle-timeout sweeper in server_tick: a client that goes
+     * quiet for IDLE_TIMEOUT_S without on_close firing (network
+     * black-hole, browser tab put to sleep) gets a "timeout" entry
+     * written to sessions.log so the dashboard's session pairing
+     * isn't stuck showing them as live forever. timed_out_logged
+     * gates the sweeper to one entry per session. */
+    int64_t     last_msg_unix_s;
+    bool        timed_out_logged;
 } server_client_t;
 
 typedef struct {

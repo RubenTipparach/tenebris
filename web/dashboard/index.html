@@ -377,6 +377,9 @@
     // next event with the same (name, room) after that login. If no
     // logout exists the session is "live" (still on the server) and we
     // compute duration against `now` so the dashboard ticks upward.
+    // "timeout" events (server-side idle sweeper - 5 min of silence)
+    // close the session like a logout, but render with a separate
+    // "timed out" tag so it's distinguishable from a clean disconnect.
     function pairSessions(events) {
       const sorted = events.slice().sort((a, b) => a.ts - b.ts);
       const out = [];
@@ -390,19 +393,29 @@
             room: e.room,
             login_ts: e.ts,
             logout_ts: null,
+            ended_by: null,        // "logout" | "timeout"
           });
-        } else if (e.event === "logout") {
+        } else if (e.event === "logout" || e.event === "timeout") {
           if (openByKey.has(key)) {
             const idx = openByKey.get(key);
-            out[idx].logout_ts = e.ts;
-            openByKey.delete(key);
+            // First close wins. A login -> timeout -> logout sequence
+            // (server flags idle, then the socket actually drops a
+            // bit later) keeps the timeout timestamp + tag.
+            if (out[idx].logout_ts == null) {
+              out[idx].logout_ts = e.ts;
+              out[idx].ended_by  = e.event;
+            }
+            if (e.event === "logout") {
+              openByKey.delete(key);
+            }
           } else {
-            // Orphan logout (login predates the audit window).
+            // Orphan close (login predates the audit window).
             out.push({
               name: e.name,
               room: e.room,
               login_ts: null,
               logout_ts: e.ts,
+              ended_by: e.event,
             });
           }
         }
@@ -545,6 +558,11 @@
         } else if (r.logout_ts == null) {
           dur = fmtDur(now - r.login_ts) + " (live)";
           durClass = "dur live";
+        } else if (r.ended_by === "timeout") {
+          // Server idle-sweeper closed the session - the socket may
+          // still be technically open; the player just went silent.
+          dur = fmtDur(r.logout_ts - r.login_ts) + " (timed out)";
+          durClass = "dur";
         } else {
           dur = fmtDur(r.logout_ts - r.login_ts);
           durClass = "dur";
