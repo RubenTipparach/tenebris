@@ -356,6 +356,117 @@ static void migrate_chat_per_room_to_global(void) {
     audit_truncate(global_path);
 }
 
+/* On boot, walk sessions.log and write a "logout" event for any
+ * (name, room) whose most recent event was a login - those sessions
+ * never paired with a logout / timeout and would render forever as
+ * "live" on the dashboard. The fresh server has no clients yet, so
+ * any prior open session is over by definition.
+ *
+ * The dedup is per (name, room): a sequence
+ *   ts1  login  Ruben  T9VVPW
+ *   ts2  logout Ruben  T9VVPW
+ *   ts3  login  Ruben  T9VVPW       <- still open
+ * would write a single logout for ts3's login. */
+static void close_orphan_sessions_at_startup(void) {
+    if (!G_saves_dir) return;
+    char path[512];
+    if (!audit_path("sessions", path, sizeof path)) return;
+
+    FILE* f = fopen(path, "rb");
+    if (!f) return;
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    if (sz <= 0 || sz > 4 * 1024 * 1024) { fclose(f); return; }
+    rewind(f);
+    char* buf = (char*)malloc((size_t)sz + 1);
+    if (!buf) { fclose(f); return; }
+    size_t r = fread(buf, 1, (size_t)sz, f);
+    fclose(f);
+    buf[r] = 0;
+
+    /* Build a list of (name, room, is_open) keyed by appearance. The
+     * audit log caps at SAVES_AUDIT_FILE_MAX lines so the linear
+     * search stays cheap. */
+    typedef struct {
+        char name[SAVES_CHAT_NAME_MAX + 1];
+        char room[16];
+        bool open;
+    } session_state_t;
+    static session_state_t sessions[SAVES_AUDIT_FILE_MAX + 8];
+    int session_count = 0;
+
+    char* line = buf;
+    while (line < buf + r) {
+        char* nl = (char*)memchr(line, '\n', (size_t)(buf + r - line));
+        size_t llen = nl ? (size_t)(nl - line) : (size_t)(buf + r - line);
+        if (llen == 0) goto next;
+        /* Tab-split into 4 fields: ts \t event \t name \t room. */
+        char* tab1 = (char*)memchr(line, '\t', llen);
+        if (!tab1) goto next;
+        size_t after1 = (size_t)(line + llen - (tab1 + 1));
+        char* tab2 = (char*)memchr(tab1 + 1, '\t', after1);
+        if (!tab2) goto next;
+        size_t after2 = (size_t)(line + llen - (tab2 + 1));
+        char* tab3 = (char*)memchr(tab2 + 1, '\t', after2);
+        if (!tab3) goto next;
+
+        const char* event_p   = tab1 + 1;
+        size_t      event_len = (size_t)(tab2 - event_p);
+        const char* name_p    = tab2 + 1;
+        size_t      name_len  = (size_t)(tab3 - name_p);
+        const char* room_p    = tab3 + 1;
+        size_t      room_len  = (size_t)(line + llen - room_p);
+
+        if (name_len == 0 || name_len > SAVES_CHAT_NAME_MAX) goto next;
+        char name[SAVES_CHAT_NAME_MAX + 1];
+        char room[16];
+        memcpy(name, name_p, name_len); name[name_len] = 0;
+        if (room_len > sizeof room - 1) room_len = sizeof room - 1;
+        memcpy(room, room_p, room_len); room[room_len] = 0;
+
+        bool is_login   = (event_len == 5 && memcmp(event_p, "login",   5) == 0);
+        bool is_logout  = (event_len == 6 && memcmp(event_p, "logout",  6) == 0);
+        bool is_timeout = (event_len == 7 && memcmp(event_p, "timeout", 7) == 0);
+        if (!is_login && !is_logout && !is_timeout) goto next;
+
+        /* Find or insert. */
+        int idx = -1;
+        for (int i = 0; i < session_count; ++i) {
+            if (strcmp(sessions[i].name, name) == 0
+                && strcmp(sessions[i].room, room) == 0) { idx = i; break; }
+        }
+        if (idx < 0) {
+            if (session_count >= (int)(sizeof sessions / sizeof sessions[0])) goto next;
+            idx = session_count++;
+            snprintf(sessions[idx].name, sizeof sessions[idx].name, "%s", name);
+            snprintf(sessions[idx].room, sizeof sessions[idx].room, "%s", room);
+            sessions[idx].open = false;
+        }
+        sessions[idx].open = is_login;     /* login opens, logout/timeout closes */
+    next:
+        if (!nl) break;
+        line = nl + 1;
+    }
+    free(buf);
+
+    int closed = 0;
+    for (int i = 0; i < session_count; ++i) {
+        if (!sessions[i].open) continue;
+        /* sessions[i].room is the on-disk slug; saves_session_log
+         * accepts "" / NULL for the empty-code lobby and writes the
+         * "__public__" slug back, but everything else passes through. */
+        const char* room = (strcmp(sessions[i].room, "__public__") == 0)
+                             ? "" : sessions[i].room;
+        saves_session_log("logout", sessions[i].name, room);
+        ++closed;
+    }
+    if (closed > 0) {
+        printf("[saves] startup orphan-session sweep: closed %d unpaired login(s)\n",
+               closed);
+        fflush(stdout);
+    }
+}
+
 bool saves_init(const char* saves_dir) {
     if (!saves_dir || !*saves_dir) return false;
     G_saves_dir = saves_dir;
@@ -399,6 +510,12 @@ bool saves_init(const char* saves_dir) {
      * in-game backlog and the /chat endpoint agree. Idempotent and
      * gated on a marker file. */
     migrate_chat_per_room_to_global();
+    /* Close any login events that never paired with a logout / timeout
+     * before the previous shutdown. The dashboard would otherwise
+     * keep showing them as "live" forever - the live server is fresh
+     * and has nobody connected, so any prior open session is by
+     * definition over. */
+    close_orphan_sessions_at_startup();
     printf("[saves] init dir=%s\n", saves_dir);
     return true;
 }
