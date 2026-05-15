@@ -65,9 +65,11 @@ static void room_alloc_worlds(server_t* s, server_room_t* room) {
         room->worlds[room->world_count++] = w;
     }
     printf("[server] room '%s' load: %d body(ies) had on-disk edits, "
-           "restored %d tile column(s) total (seed=%llu)\n",
-           room->code[0] ? room->code : "(public)",
+           "restored %d tile column(s) total (seed=%llu, on-disk path=rooms/%s/world-%llx/)\n",
+           room->code[0] ? room->code : "(empty-code/lobby)",
            bodies_with_edits, total_tiles_loaded,
+           (unsigned long long)s->cfg.seed,
+           room->code[0] ? room->code : "__public__",
            (unsigned long long)s->cfg.seed);
     fflush(stdout);
 }
@@ -315,11 +317,19 @@ static void send_chunk_replay(server_t* s, server_client_t* cl) {
             ++replayed_tiles;
         }
     }
-    if (replayed_tiles > 0) {
-        printf("[server] CHUNK replay -> player_id=%u: %d tile(s), %d msg(s)\n",
-               cl->player_id, replayed_tiles, replayed_msgs);
-        fflush(stdout);
-    }
+    /* Always log the replay outcome - the 0-tile case ("nothing to
+     * restore for you") is exactly the symptom we chase when a player
+     * reports "my blocks are gone": it means the room had no cloned
+     * worlds with saved bits set, which in turn means either the
+     * .col files for this (room, seed, body) were not on disk at
+     * room_alloc_worlds time, or the bodies they belonged to were
+     * never registered as baselines on the server. */
+    printf("[server] CHUNK replay -> player_id=%u room='%s': %d tile(s), %d msg(s) "
+           "(room->world_count=%d)\n",
+           cl->player_id,
+           cl->room[0] ? cl->room : "(empty-code/lobby)",
+           replayed_tiles, replayed_msgs, room->world_count);
+    fflush(stdout);
 }
 
 static void send_welcome(server_t* s, server_client_t* cl) {
@@ -512,9 +522,11 @@ static void handle_hello(server_t* s, server_client_t* cl,
         return;
     }
 
-    printf("[server] HELLO from player_id=%u name='%s' room='%s' (client_version=%u)\n",
+    printf("[server] HELLO from player_id=%u name='%s' room='%s' %s (client_version=%u)\n",
            cl->player_id, cl->name,
-           cl->room[0] ? cl->room : "(public)", h.client_version);
+           cl->room[0] ? cl->room : "",
+           cl->room[0] ? "(private-room)" : "(EMPTY-CODE -> empty-code/lobby room)",
+           h.client_version);
     /* Audit-log the login so an operator can reconstruct who was on
      * the server at a given time via GET /logins. Only real (named,
      * room-attached) joins reach this point. */
@@ -687,9 +699,10 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
              * edit. Skip the wasted disk + write only the tile we
              * touched. */
             bool save_ok = saves_write_tile(w, cl->room, s->cfg.seed, (int)cmd.tile_idx);
-            printf("[server] EDIT player_id=%u %s body=%u tile=%u depth=%u block=%u "
+            printf("[server] EDIT player_id=%u room='%s' %s body=%u tile=%u depth=%u block=%u "
                    "save=%s\n",
                    cl->player_id,
+                   cl->room[0] ? cl->room : "(empty-code/lobby)",
                    (cmd.cmd_kind == PLAYER_CMD_BREAK) ? "BREAK" : "PLACE",
                    cmd.body_id, cmd.tile_idx, cmd.depth, (unsigned)target,
                    save_ok ? "ok" : "FAIL");

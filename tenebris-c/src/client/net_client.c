@@ -237,8 +237,10 @@ static void send_hello(void) {
     if (n == 0) return;
     net_send(C.conn, NET_CHANNEL_RELIABLE, buf, n);
     C.state = NET_CLIENT_HANDSHAKE;
-    printf("[net-client] HELLO sent (name='%s')\n",
-           C.profile_name[0] ? C.profile_name : "(empty)");
+    printf("[net-client] HELLO sent (name='%s' room='%s' %s)\n",
+           C.profile_name[0] ? C.profile_name : "(empty)",
+           C.room_code[0]    ? C.room_code    : "",
+           C.room_code[0]    ? "private-room" : "EMPTY-CODE -> lobby room");
 }
 
 static void on_open(net_conn_t* conn, void* user) {
@@ -422,10 +424,18 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
             }
             world_t* w = renderer_world_for_body(diff.body_id);
             if (!w) {
-                fprintf(stderr, "[net-client] CHUNK_DIFF for unknown body %u\n",
-                        diff.body_id);
+                /* Replay diffs land here for bodies the renderer has
+                 * never seen - that's silently dropped by world_set,
+                 * but the diff itself is real persistence data we just
+                 * lost. Loud error. */
+                fprintf(stderr,
+                        "[net-client] ERROR: CHUNK_DIFF for body=%u not registered "
+                        "with renderer (edits=%u DROPPED). If this fires at join "
+                        "time, the server-replayed persisted blocks will not show.\n",
+                        diff.body_id, (unsigned)diff.edit_count);
                 break;
             }
+            int matched_acks = 0;
             for (int i = 0; i < diff.edit_count; ++i) {
                 const msg_chunk_diff_entry_t* e = &diff.edits[i];
                 /* world_set marks the tile dirty; the renderer's mesh
@@ -437,9 +447,19 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
                  * our outstanding sends. Replays at join time and
                  * peer-driven edits will simply not match anything in
                  * the table (no error - we never sent them). */
-                pending_edit_try_ack(diff.body_id, e->tile_idx,
-                                       e->depth, e->block_type);
+                if (pending_edit_try_ack(diff.body_id, e->tile_idx,
+                                           e->depth, e->block_type)) {
+                    ++matched_acks;
+                }
             }
+            /* Surface every diff so we can see the join-time replay
+             * actually happening. matched_acks separates 'echo of my
+             * own edit' from 'peer edit / persistence replay' - if
+             * the post-WELCOME stream shows replays=0 the server is
+             * not replaying the saved tiles to us. */
+            printf("[net-client] CHUNK_DIFF recv body=%u edits=%u (%d acks, %d replay/peer)\n",
+                   diff.body_id, (unsigned)diff.edit_count,
+                   matched_acks, diff.edit_count - matched_acks);
             break;
         }
         case MSG_SNAPSHOT: {
