@@ -5,6 +5,7 @@
 #include "core/blocks.h"
 #include "core/config.h"
 #include "core/goldberg.h"
+#include "core/world_light.h"
 
 #include "sokol_gfx.h"
 #include "sokol_app.h"
@@ -1830,11 +1831,20 @@ static sg_buffer regrow_buffer(sg_buffer old, int* capacity, int needed,
 
 static void body_chunk_rebuild_full(chunked_body_t* body, int chunk_idx) {
     world_t* w = body->world;
-    /* Voxel-engine relight: idempotent across the multiple chunk
-     * rebuilds a single edit triggers (mesher_relight_if_needed runs
-     * the BFS at most once per dirty flip per world). No-op under
-     * the legacy column engine. */
-    hex_mesher_relight_if_needed(w);
+    /* Voxel-engine relight: drive the BFS to completion BEFORE meshing
+     * this chunk so the per-vertex sky/torch values reflect a fully
+     * converged grid. The single-call version (one budgeted slice
+     * per chunk) baked stale light values into the mesh when the
+     * BFS took longer than one slice to converge - dug-out cavities
+     * read as pitch black because the BFS hadn't reached them when
+     * the chunk got rebuilt. Each subsequent edit-driven chunk
+     * rebuild also runs this loop; the typical per-edit BFS work
+     * is tiny (incremental ripple-radius), so the loop usually
+     * exits after one iteration. */
+    int safety = 200;
+    while (world_light_is_dirty(w->light) && safety-- > 0) {
+        hex_mesher_relight_if_needed(w);
+    }
     mesh_chunk_t* c = &body->chunks[chunk_idx];
     hex_mesh_reset(&c->mesh);
     hex_mesh_reset(&c->water_mesh);
@@ -1853,9 +1863,27 @@ static void body_chunk_rebuild_full(chunked_body_t* body, int chunk_idx) {
  * a streaming budget. */
 static void body_full_mesh(chunked_body_t* body) {
     world_t* w = body->world;
-    /* Same relight gate as the per-chunk path - one BFS up front when
-     * the engine is voxel and the grid is dirty. */
-    hex_mesher_relight_if_needed(w);
+    /* Run the BFS to completion before building the mesh, not just
+     * one budgeted slice. The vertex sky / block values get baked
+     * into the mesh here and the chunks only rebuild on subsequent
+     * frames when a tile's dirty bit fires; if the BFS were still
+     * mid-flight at the moment of meshing, every chunk would carry
+     * STALE light values forever (BFS catches up in later frames
+     * but those frames don't see a dirty bit, so they don't remesh).
+     * The user-visible symptom: caves and shadowed cavities read as
+     * pitch black because the BFS hadn't reached those cells when
+     * the chunk was built.
+     *
+     * Looping here forces light convergence as a one-shot stall (~50
+     * ms worst case on the biggest baseline) so the initial mesh is
+     * built from the converged grid. Per-frame edit-driven relights
+     * still use the budgeted path - they're cheap enough not to
+     * matter. The safety cap prevents an unbounded loop if some
+     * future bug leaves dirty stuck on. */
+    int safety = 200;
+    while (world_light_is_dirty(w->light) && safety-- > 0) {
+        hex_mesher_relight_if_needed(w);
+    }
     for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
         mesh_chunk_t* c = &body->chunks[ci];
         hex_mesh_reset(&c->mesh);
