@@ -1,10 +1,63 @@
 #include "client/interact.h"
 #include "client/input.h"
+#include "client/menu.h"
 #include "client/net_client.h"
+#include "client/persistence.h"
 #include "client/torch.h"
 #include "core/blocks.h"
 #include "core/proto.h"        /* PLAYER_CMD_PLACE / PLAYER_CMD_BREAK */
 #include <math.h>
+
+/* ----------------------------------------------------------------- */
+/* SP per-edit persistence helpers. CLAUDE.md mandates that every
+ * block place/break and every torch place/remove write to durable
+ * storage on the same input frame. MP routes the edit through the
+ * server (saves_write_tile fires there); SP has no server, so the
+ * call lands here.
+ *
+ * Gated on menu_state() == GAME_IN_GAME_SP — in MP the local cache
+ * would diverge from the server's authoritative state on rejoin,
+ * which is worse than no cache at all. */
+
+static bool sp_active_for_world(const world_t* w) {
+    if (!w || !w->body) return false;
+    if (menu_state() != GAME_IN_GAME_SP) return false;
+    const char* name = menu_active_world();
+    return (name && *name);
+}
+
+static void sp_save_tile_after_edit(const world_t* w, int tile_idx) {
+    if (!sp_active_for_world(w)) return;
+    if (tile_idx < 0 || tile_idx >= w->tile_count) return;
+    const uint8_t* col = &w->blocks[(size_t)tile_idx * WORLD_MAX_DEPTH];
+    persistence_save_tile(menu_active_world(),
+                          (uint32_t)w->body->id, tile_idx, col);
+}
+
+static void sp_save_torches_after_change(const world_t* w) {
+    if (!sp_active_for_world(w)) return;
+    /* Snapshot every torch anchored on THIS body. The torch list is
+     * one global array; filter by tile_idx range under the body's
+     * goldberg grid using the position projection torch_position_at
+     * already exposes. Cheap (~256 entries max). */
+    int total = torch_count();
+    persistence_torch_t buf[TORCH_MAX_COUNT];
+    int n = 0;
+    const torch_t* list = torch_list();
+    for (int i = 0; i < total && n < TORCH_MAX_COUNT; ++i) {
+        if (list[i].tile_idx < 0 || list[i].tile_idx >= w->tile_count) continue;
+        buf[n].tile_idx = list[i].tile_idx;
+        buf[n].pos[0]   = list[i].position.x;
+        buf[n].pos[1]   = list[i].position.y;
+        buf[n].pos[2]   = list[i].position.z;
+        buf[n].up[0]    = list[i].up.x;
+        buf[n].up[1]    = list[i].up.y;
+        buf[n].up[2]    = list[i].up.z;
+        ++n;
+    }
+    persistence_save_torches(menu_active_world(),
+                             (uint32_t)w->body->id, buf, n);
+}
 
 /* ----------------------------------------------------------------------- */
 
@@ -165,6 +218,11 @@ void interact_update(interact_state_t* s, world_t* w, player_ctrl_t* p, float dt
             vec3_t pos = torch_position_at(s->torch_idx);
             torch_remove(s->torch_idx);
             world_dirty_in_range(w, pos, TORCH_LIGHT_RANGE_M);
+            /* SP: same-frame persistence of the updated torch list.
+             * MP: server isn't authoritative on torches today; this
+             * still records nothing on the wire. CLAUDE.md persistence
+             * rule applies to the local list either way. */
+            sp_save_torches_after_change(w);
             if (p->survival_mode) inventory_add(&p->inventory, BLOCK_TORCH);
             /* Index is now invalid (swap-removed); clear it so the
              * HUD doesn't print stale state for the rest of this
@@ -194,6 +252,7 @@ void interact_update(interact_state_t* s, world_t* w, player_ctrl_t* p, float dt
                 net_client_send_edit(PLAYER_CMD_BREAK,
                                        (uint32_t)w->body->id,
                                        s->hit_tile, s->hit_depth, BLOCK_AIR);
+                sp_save_tile_after_edit(w, s->hit_tile);
                 inventory_add(&p->inventory, target_block);
                 s->mining_progress_s = 0.0f;
             }
@@ -207,6 +266,7 @@ void interact_update(interact_state_t* s, world_t* w, player_ctrl_t* p, float dt
             net_client_send_edit(PLAYER_CMD_BREAK,
                                    (uint32_t)w->body->id,
                                    s->hit_tile, s->hit_depth, BLOCK_AIR);
+            sp_save_tile_after_edit(w, s->hit_tile);
         }
         s->mining_progress_s = 0.0f;
     }
@@ -241,6 +301,7 @@ void interact_update(interact_state_t* s, world_t* w, player_ctrl_t* p, float dt
                          * renderer's per-frame dirty sweep will
                          * remesh + re-upload affected chunks. */
                         world_dirty_in_range(w, base_pos, TORCH_LIGHT_RANGE_M);
+                        sp_save_torches_after_change(w);
                         inventory_consume(&p->inventory);
                     }
                 }
@@ -249,6 +310,7 @@ void interact_update(interact_state_t* s, world_t* w, player_ctrl_t* p, float dt
                 net_client_send_edit(PLAYER_CMD_PLACE,
                                        (uint32_t)w->body->id,
                                        s->place_tile, s->place_depth, to_place);
+                sp_save_tile_after_edit(w, s->place_tile);
                 inventory_consume(&p->inventory);
             }
         }
