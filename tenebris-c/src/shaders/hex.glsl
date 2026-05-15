@@ -124,14 +124,23 @@ void main() {
     float ndl = max(dot(v_normal, normalize(u_sun_dir)), 0.0);
     float directional = ndl * v_sun_brightness * v_sky_light;
 
-    // Ambient: mix between night floor and full-day, then gate by
-    // sky_light so cave fragments lose ambient bounce too. A small
-    // residual "rock glow" floor (0.05) keeps deep cave walls from
-    // being literally pitch-black silhouettes — matches the JS
-    // reference's behaviour where a tiny ambient survives in the
-    // dark for readability.
+    // Ambient: mix between night floor and full-day, then apply a
+    // SHADOW_KEEP-floored sky factor. The user explicitly asked for
+    // "dark blocks should only be slightly darker than adjacent
+    // blocks - lighting doesn't change abruptly cell-to-cell": with
+    // the previous max(0.05, ...) floor, sky=0 cells dropped to ~5 %
+    // of full ambient and read as pitch black next to sky=15 sand
+    // walls at 100 %. The mix() with SHADOW_KEEP guarantees a sky=0
+    // cell keeps SHADOW_KEEP fraction of the local ambient (60 %),
+    // so the worst-case-dark face still reads as a softer shade of
+    // its base colour rather than a black silhouette. Open-sky cells
+    // still hit the full 1.0 multiplier so brightness on lit ground
+    // is unchanged. Day/night terminator still attenuates everything
+    // via ambient_dn.
+    const float SHADOW_KEEP = 0.60;
     float ambient_dn    = mix(u_terminator.x, 1.0, v_sun_brightness);
-    float ambient_scale = max(0.05, ambient_dn * v_sky_light);
+    float lit_fraction  = mix(SHADOW_KEEP, 1.0, v_sky_light);
+    float ambient_scale = ambient_dn * lit_fraction;
     vec3 lit = tex.rgb * (u_ambient * ambient_scale + vec3(directional));
 
     // Torch contribution. Warm-orange tint multiplied by the per-
