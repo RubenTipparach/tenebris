@@ -26,6 +26,7 @@
 #include "distant.glsl.h"
 #include "sun.glsl.h"
 #include "sokol_glue.h"
+#include "sokol_gl.h"
 #include "sokol_log.h"
 #include "sokol_time.h"
 
@@ -2442,6 +2443,81 @@ void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world,
      * which runs in the swapchain pass after compose_to_swapchain so
      * the water shader can sample the offscreen colour + depth. */
     }   /* end of if (R_TERRAIN_VISIBLE) */
+}
+
+/* Pipeline for the block-outline wireframe. Lazy-created on first use
+ * so we don't pay the make_pipeline cost for SP-only / menu-mode
+ * sessions that never call into the interact path. Lines + depth test
+ * enabled + alpha blend so the outline sits on top of the world but
+ * gets occluded by closer geometry. */
+static sgl_pipeline G_OUTLINE_PIP = (sgl_pipeline){0};
+
+static void ensure_outline_pip(void) {
+    if (G_OUTLINE_PIP.id != 0) return;
+    G_OUTLINE_PIP = sgl_make_pipeline(&(sg_pipeline_desc){
+        .primitive_type = SG_PRIMITIVETYPE_LINES,
+        .depth = {
+            .compare       = SG_COMPAREFUNC_LESS_EQUAL,
+            .write_enabled = false,
+        },
+        .colors[0].blend = {
+            .enabled         = true,
+            .src_factor_rgb  = SG_BLENDFACTOR_SRC_ALPHA,
+            .dst_factor_rgb  = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+            .src_factor_alpha= SG_BLENDFACTOR_ONE,
+            .dst_factor_alpha= SG_BLENDFACTOR_ONE,
+        },
+    });
+}
+
+void renderer_draw_block_outline(mat4_t view, mat4_t proj,
+                                   const world_t* world,
+                                   int tile_idx, int depth,
+                                   float r, float g, float b, float a) {
+    if (!world || !world->body || !world->grid) return;
+    if (tile_idx < 0 || tile_idx >= world->tile_count) return;
+    if (depth < 0 || depth >= WORLD_MAX_DEPTH) return;
+    const goldberg_tile_t* t = goldberg_tile(world->grid, tile_idx);
+    if (!t) return;
+    const int n = t->num_verts;
+    if (n <= 0) return;
+
+    double r_bot = world_depth_to_radius_m(world, depth);
+    double r_top = world_depth_to_radius_m(world, depth + 1);
+
+    ensure_outline_pip();
+    sgl_defaults();
+    sgl_matrix_mode_projection();
+    sgl_load_matrix(proj.m);
+    sgl_matrix_mode_modelview();
+    sgl_load_matrix(view.m);
+    /* Body-local -> world: just a translation by the body's centre. */
+    sgl_translate((float)world->body->pos_x,
+                  (float)world->body->pos_y,
+                  (float)world->body->pos_z);
+    sgl_load_pipeline(G_OUTLINE_PIP);
+
+    sgl_begin_lines();
+    sgl_c4f(r, g, b, a);
+    for (int k = 0; k < n; ++k) {
+        int next = (k + 1) % n;
+        /* Each hex-prism corner sits along the tile's vertex direction
+         * scaled to the inner / outer ring radius. */
+        dvec3_t inner_a = dvec3_scale(t->verts[k],    r_bot);
+        dvec3_t inner_b = dvec3_scale(t->verts[next], r_bot);
+        dvec3_t outer_a = dvec3_scale(t->verts[k],    r_top);
+        dvec3_t outer_b = dvec3_scale(t->verts[next], r_top);
+        /* Bottom ring edge */
+        sgl_v3f((float)inner_a.x, (float)inner_a.y, (float)inner_a.z);
+        sgl_v3f((float)inner_b.x, (float)inner_b.y, (float)inner_b.z);
+        /* Top ring edge */
+        sgl_v3f((float)outer_a.x, (float)outer_a.y, (float)outer_a.z);
+        sgl_v3f((float)outer_b.x, (float)outer_b.y, (float)outer_b.z);
+        /* Vertical edge connecting corresponding corners */
+        sgl_v3f((float)inner_a.x, (float)inner_a.y, (float)inner_a.z);
+        sgl_v3f((float)outer_a.x, (float)outer_a.y, (float)outer_a.z);
+    }
+    sgl_end();
 }
 
 void renderer_draw_water(mat4_t view, mat4_t proj, vec3_t camera_world) {

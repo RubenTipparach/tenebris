@@ -2096,6 +2096,30 @@ static void frame(void) {
      * they get the depth-sorted composite + water refraction for free. */
     remote_players_draw(view, proj);
 
+    /* Target highlight: wireframe outline around the block the player
+     * is aiming at + a fainter outline on the cell where a placement
+     * would land. Drawn into the world pass so depth-test naturally
+     * occludes the back edges. */
+    if (G.interact.has_target && !G.interact.is_torch_target
+        && !menu_pause_active()) {
+        /* White outline on the targeted block. */
+        renderer_draw_block_outline(view, proj, G.world,
+                                      G.interact.hit_tile, G.interact.hit_depth,
+                                      1.00f, 1.00f, 1.00f, 0.95f);
+        /* Cyan outline at the placement candidate (one cell out
+         * from the hit). Skipped when place_depth would overlap
+         * the hit block itself (e.g. looking up at a ceiling
+         * gives place_depth == hit_depth + 1; that's a different
+         * cell so still drawn). */
+        if (G.interact.place_tile != G.interact.hit_tile
+            || G.interact.place_depth != G.interact.hit_depth) {
+            renderer_draw_block_outline(view, proj, G.world,
+                                          G.interact.place_tile,
+                                          G.interact.place_depth,
+                                          0.40f, 0.85f, 1.00f, 0.60f);
+        }
+    }
+
     /* Hand off to the swapchain pass — blits the offscreen colour
      * (everything opaque) onto the swapchain. */
     profiler_begin("compose");
@@ -2154,6 +2178,23 @@ static void frame(void) {
     mobile_ui_set_debug_menu_visible(G_debug_ui_visible);
     mobile_ui_set_teleport_visible(G_debug_ui_visible);
     mobile_ui_draw();
+
+    /* Centre-screen reticle dot. Only in gameplay (skip on the menu /
+     * profile picker so it doesn't sit over the buttons). mobile_ui_draw
+     * just left the alpha pipeline + ortho projection bound for us; if
+     * that order ever flips we'd need to set them again here. */
+    {
+        game_state_t st = menu_state();
+        bool in_game = (st == GAME_IN_GAME_SP || st == GAME_IN_GAME_MP);
+        if (in_game && !menu_pause_active()) {
+            const float sw = sapp_widthf();
+            const float sh = sapp_heightf();
+            const float dot = 3.0f;
+            mobile_ui_draw_rect(sw * 0.5f - dot, sh * 0.5f - dot,
+                                  dot * 2.0f, dot * 2.0f,
+                                  1.0f, 1.0f, 1.0f, 0.85f);
+        }
+    }
     /* DOM overlays are mobile-only scaffolding (pause button +
      * joystick deck). The pause panel itself is in-canvas, drawn
      * by menu_pause_draw below. Hide both DOM overlays while the
