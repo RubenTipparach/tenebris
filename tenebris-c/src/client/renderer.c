@@ -1314,8 +1314,16 @@ static void body_load_detail(chunked_body_t* body) {
     }
     body->meshed = true;
     double elapsed_ms = stm_ms(stm_diff(stm_now(), t0));
-    printf("[renderer] loaded detail for %s (%d tiles) in %.1f ms\n",
-           body->world->body->name, body->world->tile_count, elapsed_ms);
+    /* The mesh built here already reflects every CHUNK_DIFF the
+     * client has received for this body so far (world->blocks was
+     * mutated as each diff arrived, even while the body was deferred).
+     * Compare this body's tile_count against the net-client per-body
+     * coverage line to confirm coverage. */
+    printf("[renderer] loaded detail for %s (body=%u, %d tiles) in %.1f ms - "
+           "compare net-client body-totals for this body to /saves output\n",
+           body->world->body->name,
+           (unsigned)body->world->body->id,
+           body->world->tile_count, elapsed_ms);
     fflush(stdout);
 }
 
@@ -2211,20 +2219,39 @@ void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world,
         chunked_body_t* body = &R.bodies[bi];
         if (!body->meshed || !body->tile_to_chunk) continue;
         bool body_grew[CHUNK_COUNT] = { 0 };
+        int dirty_tiles = 0;
         for (int i = 0; i < body->world->tile_count; ++i) {
             if (!world_tile_dirty(body->world, i)) continue;
             body->chunks[body->tile_to_chunk[i]].dirty = true;
             world_tile_clear_dirty(body->world, i);
+            ++dirty_tiles;
         }
+        int chunks_rebuilt = 0;
         for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
             if (!body->chunks[ci].dirty) continue;
             body_chunk_rebuild_full(body, ci);
             body->chunks[ci].dirty = false;
             body_grew[ci] = true;
+            ++chunks_rebuilt;
             any_grew = true;
         }
         for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
             if (body_grew[ci]) chunk_upload(&body->chunks[ci]);
+        }
+        /* Loudly trace the per-frame remesh activity on the active +
+         * any already-detailed body. This is the difference between
+         * "CHUNK_DIFFs arrived but the world stays visually frozen"
+         * (silent here = no rebuild = bug) and "CHUNK_DIFFs arrived
+         * AND we rebuilt N chunks" (visible change incoming next
+         * frame). Skip the silent zero-tile case so idle frames stay
+         * quiet. */
+        if (dirty_tiles > 0) {
+            const char* name = (body->world && body->world->body
+                                 && body->world->body->name)
+                                 ? body->world->body->name : "?";
+            printf("[renderer] remesh %s: %d dirty tile(s), %d chunk(s) rebuilt\n",
+                   name, dirty_tiles, chunks_rebuilt);
+            fflush(stdout);
         }
     }
     (void)any_grew;

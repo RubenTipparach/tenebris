@@ -40,6 +40,12 @@
 #define NET_PENDING_EDITS_MAX        128
 #define NET_EDIT_ACK_TIMEOUT_S       5.0
 
+/* Sized to one slot per body the server can replay edits for - matches
+ * SERVER_MAX_BODIES on the server side. The counters are dense, not
+ * sparse: every body the client ever sees a diff for gets one slot
+ * for the rest of the session. */
+#define NET_BODY_COVERAGE_MAX        32
+
 typedef struct {
     uint32_t player_id;
     char     name[NET_NAME_MAX];
@@ -118,6 +124,23 @@ typedef struct {
     uint32_t             edits_sent_total;
     uint32_t             edits_acked_total;
     uint32_t             edits_timed_out_total;
+    /* Per-body running tally of unique tile columns we've seen in
+     * CHUNK_DIFF replays this session. One CHUNK_DIFF carries 64
+     * (tile, depth) entries; a full column fans out across 2 messages
+     * so a fresh-join replay for one tile = +2 messages but +1 unique
+     * tile in this counter. The counter is keyed by body_id and
+     * maintained as a small in-memory set of "last seen" tile ids
+     * per body - good enough for the operator-facing log we use to
+     * compare against /saves output, without paying for a real hash
+     * table. */
+    struct {
+        uint32_t body_id;
+        uint32_t edits_seen;      /* total entries across all diffs */
+        uint32_t unique_tiles;    /* count of distinct tile ids seen */
+        uint32_t last_tile_seen;  /* dedup tip for back-to-back same-tile diffs */
+        bool     last_tile_valid;
+    }                    body_coverage[NET_BODY_COVERAGE_MAX];
+    int                  body_coverage_count;
 } net_client_t;
 
 static net_client_t C;
@@ -436,8 +459,20 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
                 break;
             }
             int matched_acks = 0;
+            uint32_t first_tile = 0;
+            uint16_t first_depth = 0;
+            uint16_t first_block = 0;
+            uint32_t last_tile  = 0;
+            uint16_t last_depth = 0;
             for (int i = 0; i < diff.edit_count; ++i) {
                 const msg_chunk_diff_entry_t* e = &diff.edits[i];
+                if (i == 0) {
+                    first_tile  = e->tile_idx;
+                    first_depth = e->depth;
+                    first_block = e->block_type;
+                }
+                last_tile  = e->tile_idx;
+                last_depth = e->depth;
                 /* world_set marks the tile dirty; the renderer's mesh
                  * dirty sweep remeshes it on the next frame. Same path
                  * as locally-applied edits. */
@@ -452,14 +487,53 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
                     ++matched_acks;
                 }
             }
-            /* Surface every diff so we can see the join-time replay
-             * actually happening. matched_acks separates 'echo of my
-             * own edit' from 'peer edit / persistence replay' - if
-             * the post-WELCOME stream shows replays=0 the server is
-             * not replaying the saved tiles to us. */
-            printf("[net-client] CHUNK_DIFF recv body=%u edits=%u (%d acks, %d replay/peer)\n",
-                   diff.body_id, (unsigned)diff.edit_count,
-                   matched_acks, diff.edit_count - matched_acks);
+            /* Per-body running tally: find / allocate a slot, add this
+             * diff's entry count, bump unique-tile counter when the
+             * leading tile id changes (server's chunk-replay path emits
+             * each tile as a contiguous run of one or two messages, so
+             * the leading-tile dedup matches reality). */
+            int slot = -1;
+            for (int s = 0; s < C.body_coverage_count; ++s) {
+                if (C.body_coverage[s].body_id == diff.body_id) { slot = s; break; }
+            }
+            if (slot < 0 && C.body_coverage_count < NET_BODY_COVERAGE_MAX) {
+                slot = C.body_coverage_count++;
+                C.body_coverage[slot].body_id         = diff.body_id;
+                C.body_coverage[slot].edits_seen      = 0;
+                C.body_coverage[slot].unique_tiles    = 0;
+                C.body_coverage[slot].last_tile_valid = false;
+            }
+            if (slot >= 0) {
+                C.body_coverage[slot].edits_seen += diff.edit_count;
+                if (!C.body_coverage[slot].last_tile_valid
+                    || C.body_coverage[slot].last_tile_seen != first_tile) {
+                    ++C.body_coverage[slot].unique_tiles;
+                    C.body_coverage[slot].last_tile_seen  = last_tile;
+                    C.body_coverage[slot].last_tile_valid = true;
+                } else {
+                    /* Same leading tile as last message - this is the
+                     * 64..127 continuation of the same column. Not a
+                     * new unique tile. */
+                    C.body_coverage[slot].last_tile_seen = last_tile;
+                }
+            }
+            /* Per-message detail: leading + trailing (tile, depth) and
+             * the block id of the first entry so the operator can
+             * compare against /saves output line by line. Trailing pair
+             * helps tell apart "1 column, 64 entries" from "64 separate
+             * tiles" (the server's reply currently uses run-by-tile, so
+             * leading == trailing tile means a single-column batch). */
+            const char* body_name =
+                (w && w->body && w->body->name) ? w->body->name : "?";
+            printf("[net-client] CHUNK_DIFF recv body=%u (%s) edits=%u "
+                   "first=(tile=%u,d=%u,block=%u) last=(tile=%u,d=%u) "
+                   "(%d acks, %d replay/peer) | body-totals: edits=%u unique_tiles=%u\n",
+                   diff.body_id, body_name, (unsigned)diff.edit_count,
+                   first_tile, (unsigned)first_depth, (unsigned)first_block,
+                   last_tile,  (unsigned)last_depth,
+                   matched_acks, diff.edit_count - matched_acks,
+                   slot >= 0 ? C.body_coverage[slot].edits_seen : 0,
+                   slot >= 0 ? C.body_coverage[slot].unique_tiles : 0);
             break;
         }
         case MSG_SNAPSHOT: {
