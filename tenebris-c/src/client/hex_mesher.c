@@ -208,8 +208,8 @@ static int smooth_corner_sample_n(const world_t* w,
         if (block_covers_face(nb)) ++ao_occluders;
     }
     float ao = 1.0f;
-    if      (ao_occluders == 1) ao = 0.80f;
-    else if (ao_occluders >= 2) ao = 0.55f;
+    if      (ao_occluders == 1) ao = 0.85f;
+    else if (ao_occluders >= 2) ao = 0.70f;
     s *= ao;
     b *= ao;
 
