@@ -808,7 +808,12 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
             && cur_tile >= 0 && cur_tile < w->tile_count) {
             block_t feet_block = (block_t)w->blocks[
                 (size_t)cur_tile * WORLD_MAX_DEPTH + feet_depth];
-            if (!block_is_passable(feet_block)) {
+            /* block_is_solid is true for everything that isn't air or
+             * water - matches the static block_is_passable in world.c
+             * (which the cave-aware floor finder also uses) but is
+             * exposed via blocks.h. Wading through water doesn't
+             * count as sink-through. */
+            if (block_is_solid(feet_block)) {
                 /* Walk up the column for the first solid -> passable
                  * transition above feet_depth. floor_r is the top of
                  * that solid block. */
@@ -818,7 +823,7 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
                         (size_t)cur_tile * WORLD_MAX_DEPTH + d];
                     block_t up  = (block_t)w->blocks[
                         (size_t)cur_tile * WORLD_MAX_DEPTH + d + 1];
-                    if (!block_is_passable(cur) && block_is_passable(up)) {
+                    if (block_is_solid(cur) && !block_is_solid(up)) {
                         rescue_depth = d;
                         break;
                     }
