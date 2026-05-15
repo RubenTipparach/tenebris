@@ -154,27 +154,22 @@ static float torch_light_voxel(const world_t* w, int tile, int depth_at_air) {
  * for corner k. -1 in either slot is skipped (open-edge pentagon
  * boundary, not actually possible for closed-surface goldbergs but
  * the guard keeps the helper safe). */
-static void smooth_corner_sample(const world_t* w,
-                                 int tile, int nbr_a, int nbr_b,
-                                 int depth_at_air,
-                                 float* out_sky, float* out_block) {
-    if (!w || !w->light) { *out_sky = 1.0f; *out_block = 0.0f; return; }
+/* Returns the number of air voxels actually sampled. Caller can use
+ * this as a "did the corner have anything to look at?" signal -
+ * smooth_corner_sample falls back to *out_sky = 0 when every voxel
+ * at the requested depth was solid, which is wrong for a corner
+ * standing on a floor (air is right above, not at). */
+static int smooth_corner_sample_n(const world_t* w,
+                                    int tile, int nbr_a, int nbr_b,
+                                    int depth_at_air,
+                                    float* out_sky, float* out_block) {
+    if (!w || !w->light) { *out_sky = 1.0f; *out_block = 0.0f; return 0; }
     int sky_sum   = 0;
     int block_sum = 0;
     int samples   = 0;
     int max = config_lighting()->voxel_sky_max;
     if (max <= 0) max = 15;
 
-    /* Skip voxels whose block covers their face: those cells are solid
-     * stone and the BFS leaves them at sky=0, but they aren't what the
-     * surface "sees" from this corner. Including them averages a 0 in
-     * and tanks brightness for any face on a tall isolated column -
-     * the own tile at depth_at_air is solid for every side face, so
-     * we were silently halving sky on the sides of a 1-tile-wide
-     * tower even though all the surrounding open-sky neighbours read
-     * full sky_max. The same skip lets cap faces keep their previous
-     * behaviour (the own tile at depth_at_air is air for caps, so it
-     * contributes normally). */
     int tiles[3] = { tile, nbr_a, nbr_b };
     for (int i = 0; i < 3; ++i) {
         int ti = tiles[i];
@@ -187,13 +182,22 @@ static void smooth_corner_sample(const world_t* w,
         block_sum += world_light_block(w->light, ti, depth_at_air);
         ++samples;
     }
-    if (samples == 0) { *out_sky = 0.0f; *out_block = 0.0f; return; }
+    if (samples == 0) { *out_sky = 0.0f; *out_block = 0.0f; return 0; }
     float s = (float)sky_sum   / (float)(samples * max);
     float b = (float)block_sum / (float)(samples * 15);
     if (s > 1.0f) s = 1.0f;
     if (b > 1.0f) b = 1.0f;
     *out_sky   = s;
     *out_block = b;
+    return samples;
+}
+
+static void smooth_corner_sample(const world_t* w,
+                                 int tile, int nbr_a, int nbr_b,
+                                 int depth_at_air,
+                                 float* out_sky, float* out_block) {
+    smooth_corner_sample_n(w, tile, nbr_a, nbr_b, depth_at_air,
+                             out_sky, out_block);
 }
 
 /* ----------------------------------------------------------------------- */
@@ -371,14 +375,17 @@ static void emit_side_quad(hex_mesh_t* out,
     float u1 = u0 + HEX_ATLAS_U_STEP;
 
     const bool voxel = use_voxel_engine();
-    /* sky_a/sky_b carry the per-corner sky values at the OUTER ring
-     * (top of the block at depth d). The mesher carries a single sky
-     * sample down each side face today; we keep that vertical-uniform
-     * behaviour but split horizontally per corner so the gradient
-     * across the face matches the cap's gradient at the join. Block
-     * (torch) channel follows the same shape under voxel; column
-     * mode keeps per-vertex inverse-square. */
-    float sky_a = 0.0f, sky_b = 0.0f;
+    /* Per-corner sky / torch values. Top corners (outer ring, at the
+     * top-of-block radius) and bottom corners (inner ring, at the
+     * bottom-of-block radius) sample DIFFERENT depths so a tall side
+     * face shows the vertical gradient between bright air above and
+     * darker air below - the user's "shadow cell should only be
+     * incrementally darker than adjacent cell" requirement requires
+     * the side face to interpolate vertically rather than carry one
+     * sky value top-to-bottom. The horizontal split between corner
+     * a and corner b stays as before. */
+    float sky_top_a = 0.0f, sky_top_b = 0.0f;
+    float sky_bot_a = 0.0f, sky_bot_b = 0.0f;
     float t_ia = 0.0f, t_ib = 0.0f, t_oa = 0.0f, t_ob = 0.0f;
     if (voxel) {
         const int n = t->num_verts;
@@ -390,27 +397,50 @@ static void emit_side_quad(hex_mesh_t* out,
         const int nbr_a_outboard = t->edge_neighbours[(k_a - 1 + n) % n];
         const int nbr_b_outboard = t->edge_neighbours[(k_b)         % n];
         const int nbr_across     = t->edge_neighbours[edge_k];
-        float bl_a, bl_b;
+        float bl_top_a, bl_top_b, bl_bot_a, bl_bot_b;
+        /* Top corners: air at depth+1 (above this block - either the
+         * column air going up, or open sky). */
         smooth_corner_sample(w, tile_idx, nbr_a_outboard, nbr_across,
-                             depth + 1, &sky_a, &bl_a);
+                             depth + 1, &sky_top_a, &bl_top_a);
         smooth_corner_sample(w, tile_idx, nbr_across, nbr_b_outboard,
-                             depth + 1, &sky_b, &bl_b);
-        t_ia = bl_a;  t_oa = bl_a;
-        t_ib = bl_b;  t_ob = bl_b;
+                             depth + 1, &sky_top_b, &bl_top_b);
+        /* Bottom corners: try depth first (cells AT the bottom-of-face
+         * height - e.g. cave interior air on the side of a tall wall).
+         * If every sampled tile at that depth is solid (the wall is
+         * sitting on a flat surface where the air above the floor
+         * resumes at depth+1), fall back to the top-corner depth so
+         * the bottom doesn't read pitch black. This matches the
+         * "shadow cells should only be incrementally darker than
+         * adjacent cells" rule: a floor-level corner always has SOME
+         * adjacent air to derive light from, never a hard 0. */
+        int n_bot_a = smooth_corner_sample_n(w, tile_idx,
+                                                 nbr_a_outboard, nbr_across,
+                                                 depth, &sky_bot_a, &bl_bot_a);
+        if (n_bot_a == 0) {
+            sky_bot_a = sky_top_a; bl_bot_a = bl_top_a;
+        }
+        int n_bot_b = smooth_corner_sample_n(w, tile_idx,
+                                                 nbr_across, nbr_b_outboard,
+                                                 depth, &sky_bot_b, &bl_bot_b);
+        if (n_bot_b == 0) {
+            sky_bot_b = sky_top_b; bl_bot_b = bl_top_b;
+        }
+        t_ia = bl_bot_a;  t_oa = bl_top_a;
+        t_ib = bl_bot_b;  t_ob = bl_top_b;
     } else {
         /* Legacy path: sky shared across the quad, torch per-vertex. */
         float legacy_sky = sky_light_at(w, tile_idx, depth + 1);
-        sky_a = sky_b = legacy_sky;
+        sky_top_a = sky_top_b = sky_bot_a = sky_bot_b = legacy_sky;
         t_ia = torch_light_at(dvec3_to_vec3f(inner_a));
         t_ib = torch_light_at(dvec3_to_vec3f(inner_b));
         t_oa = torch_light_at(dvec3_to_vec3f(outer_a));
         t_ob = torch_light_at(dvec3_to_vec3f(outer_b));
     }
 
-    push_vertex(out, inner_a, normal, u0, 0.0f, sky_a, t_ia, wet);
-    push_vertex(out, inner_b, normal, u1, 0.0f, sky_b, t_ib, wet);
-    push_vertex(out, outer_b, normal, u1, 1.0f, sky_b, t_ob, wet);
-    push_vertex(out, outer_a, normal, u0, 1.0f, sky_a, t_oa, wet);
+    push_vertex(out, inner_a, normal, u0, 0.0f, sky_bot_a, t_ia, wet);
+    push_vertex(out, inner_b, normal, u1, 0.0f, sky_bot_b, t_ib, wet);
+    push_vertex(out, outer_b, normal, u1, 1.0f, sky_top_b, t_ob, wet);
+    push_vertex(out, outer_a, normal, u0, 1.0f, sky_top_a, t_oa, wet);
 
     out->indices[out->index_count++] = base + 0;
     out->indices[out->index_count++] = base + 1;
