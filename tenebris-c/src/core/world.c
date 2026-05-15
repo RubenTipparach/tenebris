@@ -167,7 +167,20 @@ block_t world_get(const world_t* w, int tile, int depth) {
 void world_set(world_t* w, int tile, int depth, block_t b) {
     if (tile < 0 || tile >= w->tile_count) return;
     if (depth < 0 || depth >= WORLD_MAX_DEPTH) return;
-    w->blocks[tile * WORLD_MAX_DEPTH + depth] = (uint8_t)b;
+    /* No-op early-return when the new block matches the existing one.
+     * The /saves/body fetch on join writes every depth of every
+     * persisted tile (3840 calls for a 30-tile body) - the vast
+     * majority of those are idempotent because most depths haven't
+     * actually changed from procgen. Without this guard each
+     * idempotent call would queue a light edit, run a removal +
+     * addition BFS through the cell's neighbours, and risk
+     * overflowing the BFS's bounded add queue (which silently drops
+     * neighbour pushes), leaving correctly-lit surface cells stuck
+     * at sky=0. The mesh dirty bitset is also untouched here - no
+     * change, no remesh needed. */
+    int idx = tile * WORLD_MAX_DEPTH + depth;
+    if (w->blocks[idx] == (uint8_t)b) return;
+    w->blocks[idx] = (uint8_t)b;
     w->dirty[tile >> 3] |= (uint8_t)(1 << (tile & 7));
     /* Dirty neighbors too so their seam faces rebuild. */
     const goldberg_tile_t* t = goldberg_tile(w->grid, tile);

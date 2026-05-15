@@ -430,15 +430,34 @@ static void incremental_pass_for_channel(world_light_t* l, const world_t* w,
     }
 
     /* Process removal entries. Mixed in with addition markers for
-     * cells with no prior light; we route them appropriately. */
-    /* Use a second pass through a scratch list for the addition
-     * queue - we can't share the BFS queue between removal and
-     * addition phases because Minecraft's algorithm requires the
-     * removal frontier fully expand before additions begin. */
-    uint32_t* add_q = (uint32_t*)malloc(sizeof(uint32_t) * (size_t)LIGHT_EDIT_QUEUE_CAP * 32);
+     * cells with no prior light; we route them appropriately.
+     *
+     * The addition queue lives separately from the BFS queue
+     * because Minecraft's algorithm requires the removal frontier
+     * fully expand before additions begin. Sizing: a single edit's
+     * worst-case cascade visits ~sky_max^3 cells; 1M slots is
+     * comfortable for hundreds of simultaneous edits before we'd
+     * even consider overflow. The overflow path no longer silently
+     * drops pushes - it sets needs_full so the lighting catches up
+     * with a full pass instead of leaving cells stuck at sky=0
+     * (the user-visible bug: dug-out cells stayed dark forever
+     * because the add_q filled before the cell got its post-edit
+     * neighbour push). */
+    const int add_cap = LIGHT_EDIT_QUEUE_CAP * 128;
+    uint32_t* add_q = (uint32_t*)malloc(sizeof(uint32_t) * (size_t)add_cap);
     int       add_head = 0, add_tail = 0;
-    int       add_cap  = LIGHT_EDIT_QUEUE_CAP * 32;
-    if (!add_q) return;
+    if (!add_q) {
+        /* OOM is rare on the target but not impossible on a constrained
+         * mobile device. Escalate to full rebuild and bail. */
+        l->needs_full = true;
+        l->dirty      = true;
+        return;
+    }
+    bool overflow = false;
+    #define ADD_PUSH(v) do {                                              \
+        if (add_tail < add_cap) add_q[add_tail++] = (v);                  \
+        else overflow = true;                                             \
+    } while (0)
 
     /* Drain the (mixed) queue into removal work and the addition
      * queue. */
@@ -446,7 +465,7 @@ static void incremental_pass_for_channel(world_light_t* l, const world_t* w,
         uint32_t packed = queue_pop(&l->q);
         if (packed & 0x80000000u) {
             /* Pre-marked addition entry. Strip marker, push to add_q. */
-            if (add_tail < add_cap) add_q[add_tail++] = packed & 0x7FFFFFFFu;
+            ADD_PUSH(packed & 0x7FFFFFFFu);
             continue;
         }
         uint32_t idx = packed & 0x00FFFFFFu;
@@ -464,12 +483,12 @@ static void incremental_pass_for_channel(world_light_t* l, const world_t* w,
                 queue_push(&l->q, (uint32_t)n_idx | ((uint32_t)n_v << 24));
             } else {
                 /* Independent source - re-add. */
-                if (add_tail < add_cap) add_q[add_tail++] = (uint32_t)n_idx;
+                ADD_PUSH((uint32_t)n_idx);
             }
         }
         /* Also push the cell itself to addition so it can pull from
          * any neighbour that survived the removal. */
-        if (add_tail < add_cap) add_q[add_tail++] = idx;
+        ADD_PUSH(idx);
     }
 
     /* Pass 2: addition. For each candidate, compute what its sky
@@ -513,12 +532,20 @@ static void incremental_pass_for_channel(world_light_t* l, const world_t* w,
                     (size_t)(n_idx / WORLD_MAX_DEPTH) * WORLD_MAX_DEPTH
                     + (n_idx % WORLD_MAX_DEPTH)];
                 if (block_covers_face(nb)) continue;
-                if (add_tail >= add_cap) break;
-                add_q[add_tail++] = (uint32_t)n_idx;
+                ADD_PUSH((uint32_t)n_idx);
             }
         }
     }
     free(add_q);
+    #undef ADD_PUSH
+    if (overflow) {
+        /* The incremental pass dropped at least one neighbour push.
+         * That cell could now be stuck under-lit, so escalate to a
+         * full rebuild next time and let the from-scratch BFS sort
+         * it out. */
+        l->needs_full = true;
+        l->dirty      = true;
+    }
 }
 
 static void run_incremental_rebuild(world_light_t* l, const world_t* w) {
