@@ -188,6 +188,15 @@ typedef struct {
      * disable the collider entirely. */
     float camera_collider_radius_m;
 
+    /* Fail-safe respawn trigger. If the player's feet radius drops
+     * below body.radius_m * this fraction, they've almost certainly
+     * fallen through the world (collision bug, NaN, etc.) - snap them
+     * back to the body's spawn point so they're not lost forever.
+     * 0.3 is well below any legitimate "underground" radius (depth-0
+     * bedrock sits at body.radius - 64 m on standard planets); set to
+     * 0 to disable the safety entirely. */
+    float respawn_fall_radius_frac;
+
     /* Water physics — ported from JS PlayerConfig WATER_* knobs.
      *   gravity_mult         — multiplier on body gravity while
      *                          the player's body is submerged. 0.3

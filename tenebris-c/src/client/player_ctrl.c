@@ -635,6 +635,37 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
         p->body = gq.body;
         p->last_tile = -1;
     }
+
+    /* Fail-safe: did the player fall through the world? If their
+     * feet radius is way below the body surface (collision-solver
+     * bug, NaN, sink-through that escaped the ground snap), snap
+     * them back to the body's spawn point so they aren't lost
+     * forever. Only checks when bound to a body (in space the
+     * notion doesn't apply - the player can legitimately be at
+     * any distance from any body). */
+    if (p->body && !p->is_in_space) {
+        const float fall_frac = L->respawn_fall_radius_frac;
+        if (fall_frac > 0.0f) {
+            dvec3_t local = dvec3_sub(p->position,
+                dvec3_make(p->body->pos_x, p->body->pos_y, p->body->pos_z));
+            double r_now = dvec3_length(local);
+            double threshold = (double)p->body->radius_m * (double)fall_frac;
+            if (r_now < threshold) {
+                fprintf(stderr,
+                        "[player] WARN: fell through world (r=%.3f < %.3f on "
+                        "body=%s, body_radius=%.1f); respawning at body spawn\n",
+                        r_now, threshold, p->body->name,
+                        (double)p->body->radius_m);
+                fflush(stderr);
+                player_teleport_to(p, p->body);
+                /* Skip the rest of this frame's update - teleport
+                 * already armed the slerp, cleared velocity, and
+                 * reset basis state. Next frame picks up from spawn. */
+                jerk_log(p, &before, w, dt);
+                return;
+            }
+        }
+    }
     /* Edge: planet → space. Bake the planet-mode yaw/pitch into the
      * basis so the look direction is preserved when compute_look
      * stops adding them on top, then drop into 6DOF mutation of the

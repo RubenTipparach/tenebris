@@ -117,6 +117,13 @@ lod:
   # plane) with some margin. Set to 0 to disable.
   camera_collider_radius_m:    0.4
 
+  # Fail-safe respawn. If the player's feet radius drops below
+  # body.radius_m * this fraction, assume they fell through the
+  # world (collision bug, NaN position, etc.) and snap them back to
+  # the body's spawn point. 0.3 is well below any legitimate
+  # underground radius. Set to 0 to disable the safety.
+  respawn_fall_radius_frac:    0.3
+
   # Water physics. The player has three "water" gates:
   #   - feet in water  (feet_radius is inside a water voxel)
   #   - body in water  (feet + water_body_check_height_m is in water)
