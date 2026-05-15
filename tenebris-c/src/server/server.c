@@ -532,12 +532,20 @@ static void handle_hello(server_t* s, server_client_t* cl,
      * room-attached) joins reach this point. */
     saves_session_log("login", cl->name, cl->room);
     send_welcome(s, cl);
-    /* Bring the joining client up to date with the room's persisted
-     * chunk edits before they can act, so the world they see matches
-     * what was on disk when they last (or any previous player) left.
-     * Idempotent for unedited depths - the server's procgen + client's
-     * procgen agree there. */
-    send_chunk_replay(s, cl);
+    /* WebSocket CHUNK_DIFF replay disabled: the client now pulls the
+     * room's persisted columns over HTTP via /saves/body on join +
+     * body_load_detail. WS replay dropped messages at scale (the
+     * client-side audit showed ~80% of saved tiles never arriving
+     * on heavily edited planets), and the HTTP path is TCP with
+     * retransmits so it's the reliable route. The replay function
+     * stays in the file as a clearly-named no-call so a re-enable
+     * is one-line diff if HTTP fetch ever needs a fallback.
+     *
+     *   send_chunk_replay(s, cl);  // disabled, see /saves/body
+     *
+     * Real-time CHUNK_DIFFs from peers' edits still flow over WS -
+     * the disable is only for the boot-time bulk-load. */
+    (void)send_chunk_replay;
 
     /* PLAYER_INFO fan-out, room-scoped: only clients in the same
      * room see each other's identities. Reliable channel — names
