@@ -66,6 +66,18 @@ typedef struct world_s {
     uint8_t*             saved;
     int                  saved_bytes;
 
+    /* "Column has been edited from the procgen baseline" bitset.
+     * Set the FIRST time any voxel in the column is mutated via
+     * world_set; never cleared. Lets the collision code skip the
+     * voxel scan and trust the analytic procgen surface for any
+     * column that's still pristine - i.e. the 99% case. The dirty
+     * bit can't be reused here because it's cleared on remesh and
+     * also gets set on neighbour-tile mesh-seam invalidations
+     * that aren't actually edits. The saved bit is null in SP and
+     * server-only in MP. Sized like dirty/saved. */
+    uint8_t*             edited;
+    int                  edited_bytes;
+
     /* Generation progress: how many tiles have had terrain computed so
      * far. Fill is streamed across frames; tiles past this cursor are
      * all BLOCK_AIR. */

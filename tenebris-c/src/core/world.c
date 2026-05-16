@@ -19,8 +19,10 @@ world_t* world_create(const body_config_t* body, int subdivisions) {
     w->grid = goldberg_create(subdivisions);
     w->tile_count = goldberg_tile_count(w->grid);
     w->blocks = (uint8_t*)calloc((size_t)(w->tile_count * WORLD_MAX_DEPTH), 1);
-    w->dirty_bytes = (w->tile_count + 7) / 8;
-    w->dirty = (uint8_t*)calloc((size_t)w->dirty_bytes, 1);
+    w->dirty_bytes  = (w->tile_count + 7) / 8;
+    w->dirty        = (uint8_t*)calloc((size_t)w->dirty_bytes, 1);
+    w->edited_bytes = w->dirty_bytes;
+    w->edited       = (uint8_t*)calloc((size_t)w->edited_bytes, 1);
     w->gen_cursor = 0;
     w->light = world_light_create(w);
     return w;
@@ -33,6 +35,7 @@ void world_destroy(world_t* w) {
     free(w->blocks);
     free(w->dirty);
     free(w->saved);
+    free(w->edited);
     free(w);
 }
 
@@ -183,6 +186,15 @@ void world_set(world_t* w, int tile, int depth, block_t b) {
     if (w->blocks[idx] == (uint8_t)b) return;
     w->blocks[idx] = (uint8_t)b;
     w->dirty[tile >> 3] |= (uint8_t)(1 << (tile & 7));
+    /* Mark the column as edited from procgen so collision queries
+     * fall through to the voxel-scan path. Until set, the
+     * walkable-floor query short-circuits to the analytic surface
+     * (zero voxel lookup) - which is the right behaviour for the
+     * 99% of columns that still match procgen. The edited bit is
+     * never cleared; once a tile has been touched, future floor
+     * queries always read the voxel data so bridges over voids
+     * and dug-out caves stand. */
+    w->edited[tile >> 3] |= (uint8_t)(1 << (tile & 7));
     /* Dirty neighbors too so their seam faces rebuild. */
     const goldberg_tile_t* t = goldberg_tile(w->grid, tile);
     for (int i = 0; i < t->num_neighbors; ++i) {
@@ -355,6 +367,18 @@ double world_walkable_floor_near(const world_t* w, int tile,
          * meaningful here (there's nothing above the surface yet),
          * so we ignore body_height_m. The real terrain will replace
          * this value as soon as the tile streams. */
+        (void)body_height_m;
+        return world_analytic_surface_r(w, tile);
+    }
+    /* Fast path: untouched column. If world_set never modified this
+     * tile, the voxel data is bit-identical to what planet_gen wrote
+     * from the procgen noise - so we can skip the column scan and
+     * return the same answer the analytic surface would give. Zero
+     * lookups: one bit test + one noise eval. Edited columns
+     * (player-built bridges, dug-out caves) keep using the voxel
+     * scan below because their data has diverged from procgen. */
+    if (w->edited
+        && ((w->edited[tile >> 3] >> (tile & 7)) & 1u) == 0u) {
         (void)body_height_m;
         return world_analytic_surface_r(w, tile);
     }
