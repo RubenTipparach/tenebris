@@ -842,6 +842,18 @@ static void draw_button(const menu_button_t* b) {
 
 void menu_draw(int screen_w, int screen_h) {
     if (!menu_is_overlay()) return;
+    /* Settings overlay is a self-contained unit - when it's visible
+     * it draws its own full-screen dim backdrop + panel + text, and
+     * the underlying menu (main menu / world picker / etc.) is
+     * suppressed entirely. We can't safely interleave the two:
+     * sdtx batches all text into one flush per frame, so the
+     * underlying menu's labels would render ON TOP of the settings
+     * panel geometry no matter how we ordered the sgl quads. The
+     * cleanest fix is to draw exactly ONE menu unit at a time. */
+    if (M.settings_visible) {
+        settings_draw((float)screen_w, (float)screen_h);
+        return;
+    }
     /* Throttle to 1Hz so console isn't flooded. */
     {
         static double s_last_log = 0.0;
@@ -1170,14 +1182,11 @@ void menu_draw(int screen_w, int screen_h) {
                              0xff, 0xd0, 0x60);
     }
 
-    /* Modal Settings overlay sits on top of every other menu state
-     * when visible. Drawn last so its dim backdrop covers the main-
-     * menu surface below. Geometry queues into the same sgl batch
-     * the main menu just used; text via draw_text_centered also
-     * defers to main_web's end-of-frame sdtx flush. */
-    if (M.settings_visible) {
-        settings_draw(w, h);
-    }
+    /* (Settings overlay is drawn from the early-return path at the
+     * top of this function so it stands alone as its own UI unit -
+     * underlying menu labels and panels aren't queued at all, which
+     * is the only way to keep the once-per-frame sdtx flush from
+     * stacking the wrong text on top of the wrong geometry.) */
 
     /* Single sdtx_draw happens in main_web (gameplay path uses the
      * end-of-frame flush; menu path uses the one right after this
@@ -2308,6 +2317,17 @@ static bool pause_btn_hit(const pause_btn_t* b, float x, float y) {
 
 void menu_pause_draw(int screen_w, int screen_h) {
     if (!M.pause_visible) return;
+    /* Settings overlay is a self-contained unit. If it's open we
+     * draw ONLY settings and skip the pause panel entirely - sdtx
+     * batches all text into one flush per frame, so leaving the
+     * pause-panel labels queued would let them render on top of
+     * the settings panel geometry (the bug screenshot showed
+     * RETURN TO GAME / INVITE PLAYERS / etc. bleeding through the
+     * settings dialog). One menu unit at a time. */
+    if (M.settings_visible) {
+        settings_draw((float)screen_w, (float)screen_h);
+        return;
+    }
 
     const float w = (float)screen_w;
     const float h = (float)screen_h;
@@ -2436,12 +2456,11 @@ void menu_pause_draw(int screen_w, int screen_h) {
         draw_text_centered(msg, cx, ty, 1.0f, r, g, bl);
     }
 
-    /* Modal Settings overlay on top of the pause panel - covers it
-     * with its own dim backdrop + panel + slider. Drawn last so the
-     * SETTINGS button on the pause panel is hidden under the modal. */
-    if (M.settings_visible) {
-        settings_draw(w, h);
-    }
+    /* (Settings overlay short-circuits at the top of this function -
+     * see the early-return there. We don't tack it on at the end any
+     * more because the pause-panel text we'd already queued above
+     * would render on top of the settings dialog when sdtx flushes
+     * at end of frame.) */
 }
 
 /* Cross-platform connecting overlay drawn while the MP socket is
