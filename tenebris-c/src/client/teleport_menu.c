@@ -1,6 +1,7 @@
 #include "client/teleport_menu.h"
 #include "client/input.h"
 #include "client/mobile_ui.h"
+#include "client/renderer.h"
 #include "sokol_gfx.h"
 #include "sokol_gl.h"
 #include "sokol_debugtext.h"
@@ -83,6 +84,14 @@ static void action_ok(void) {
              * slerp timer is armed at the same time so the camera
              * eases into level rather than popping. */
             player_teleport_to(M.player, b);
+            /* Belt-and-suspenders: the per-frame body-sync in
+             * main_web also catches this, but call it here too so
+             * the renderer's chunked / LOD partition flips on the
+             * SAME frame the teleport happens - no stale "previous
+             * planet still meshed at full detail" window between
+             * teleport and the next frame's gravity tick. */
+            world_t* w = renderer_world_for_body((uint32_t)b->id);
+            if (w) renderer_set_active_world(w);
         }
     }
     M.open = false;

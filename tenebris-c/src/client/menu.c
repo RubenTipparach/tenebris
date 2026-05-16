@@ -4,6 +4,7 @@
 #include "client/net_client.h"
 #include "client/persistence.h"
 #include "client/profile.h"
+#include "client/settings.h"
 
 /* Trace logging. Was used to chase the menu-text-bleed bug (root
  * cause: multiple sdtx_draw calls per frame trip a once-per-frame
@@ -228,6 +229,10 @@ static struct {
     /* Top-right indicator on the main menu — shows the active profile
      * name; clicking it dumps you back to the profile picker. */
     menu_button_t btn_active_profile;
+    /* Top-LEFT chip on the main menu - opens the modal Settings
+     * overlay (mouse-sens slider, etc.). Mirrors btn_active_profile
+     * on the opposite corner to balance the layout. */
+    menu_button_t btn_settings;
     /* SP world-list buttons. */
     menu_button_t btn_new_world;
     menu_button_t btn_back;
@@ -298,6 +303,28 @@ static struct {
     menu_button_t btn_pause_quit;
     menu_button_t btn_pause_invite;
     menu_button_t btn_pause_options;  /* unused but kept to keep the struct symmetric across builds */
+
+    /* Settings overlay. Modal panel that can be opened from EITHER
+     * the main menu's SETTINGS button or the pause menu's SETTINGS
+     * button. Owns its own visibility flag so the underlying
+     * surface (main menu / pause panel) keeps rendering behind it
+     * and we don't need a dedicated game_state_t entry. While
+     * visible, settings_event swallows every event and gets first
+     * crack ahead of the regular menu / pause routes. */
+    bool          settings_visible;
+    menu_button_t btn_settings_back;
+    /* Mouse-sensitivity slider geometry + drag state. Recomputed
+     * every frame in settings_layout; sens_dragging persists across
+     * frames so a mouse-down that started on the handle keeps
+     * tracking mouse_move events even when they leave the track
+     * bounds. */
+    float         sens_track_x, sens_track_y, sens_track_w, sens_track_h;
+    bool          sens_dragging;
+    /* Chat-fade slider geometry + drag state. Same shape as the
+     * sens slider; maps [SETTINGS_CHAT_FADE_MIN..MAX_S] to
+     * settings_set_chat_fade_s(). */
+    float         chat_track_x, chat_track_y, chat_track_w, chat_track_h;
+    bool          chat_dragging;
     /* Toast under the INVITE FRIENDS button after a successful share.
      * pause_share_msg_until is a sokol_time stamp; the label fades
      * once stm_now() passes it. share_result is 1=shared via Web
@@ -344,6 +371,10 @@ static struct {
  * menu_draw (early in the file) and menu_event (later). Definition
  * lives near the input handlers. */
 static bool state_is_input(game_state_t s);
+/* Forward decls for the Settings overlay so menu_draw / menu_event
+ * (above the settings code) can call them. */
+static void settings_draw(float w, float h);
+static bool settings_event(const sapp_event* e);
 
 static bool hit(const menu_button_t* b, float x, float y) {
     if (!b->visible || b->disabled) return false;
@@ -400,6 +431,8 @@ static void layout_main(float w, float h) {
     } else {
         hide_button(&M.btn_active_profile);
     }
+    /* Settings chip top-LEFT (mirrors the profile chip). */
+    set_button(&M.btn_settings, 16.0f, 16.0f, 140.0f, 32.0f, "SETTINGS");
     /* Hide every button that belongs to other screens — these were
      * positioned by layout_profile_select / layout_world_list and
      * would otherwise draw on top of the main menu. */
@@ -612,6 +645,7 @@ static void layout(float w, float h) {
     hide_button(&M.btn_mp);
     hide_button(&M.btn_back);
     hide_button(&M.btn_active_profile);
+    hide_button(&M.btn_settings);
     hide_button(&M.btn_new_world);
     for (int i = 0; i < PERSISTENCE_MAX_WORLDS; ++i) hide_button(&M.btn_world[i]);
     hide_button(&M.btn_new_profile);
@@ -650,6 +684,7 @@ static void layout(float w, float h) {
             hide_button(&M.btn_mp);
             hide_button(&M.btn_back);
             hide_button(&M.btn_active_profile);
+            hide_button(&M.btn_settings);
             hide_button(&M.btn_new_world);
             for (int i = 0; i < PERSISTENCE_MAX_WORLDS; ++i) hide_button(&M.btn_world[i]);
             hide_button(&M.btn_new_profile);
@@ -812,6 +847,18 @@ static void draw_button(const menu_button_t* b) {
 
 void menu_draw(int screen_w, int screen_h) {
     if (!menu_is_overlay()) return;
+    /* Settings overlay is a self-contained unit - when it's visible
+     * it draws its own full-screen dim backdrop + panel + text, and
+     * the underlying menu (main menu / world picker / etc.) is
+     * suppressed entirely. We can't safely interleave the two:
+     * sdtx batches all text into one flush per frame, so the
+     * underlying menu's labels would render ON TOP of the settings
+     * panel geometry no matter how we ordered the sgl quads. The
+     * cleanest fix is to draw exactly ONE menu unit at a time. */
+    if (M.settings_visible) {
+        settings_draw((float)screen_w, (float)screen_h);
+        return;
+    }
     /* Throttle to 1Hz so console isn't flooded. */
     {
         static double s_last_log = 0.0;
@@ -878,6 +925,7 @@ void menu_draw(int screen_w, int screen_h) {
     draw_button(&M.btn_host);
     draw_button(&M.btn_join);
     draw_button(&M.btn_active_profile);
+    draw_button(&M.btn_settings);
     draw_button(&M.btn_new_profile);
     for (int i = 0; i < PROFILE_MAX; ++i) draw_button(&M.btn_profile[i]);
     draw_button(&M.btn_new_world);
@@ -1138,6 +1186,12 @@ void menu_draw(int screen_w, int screen_h) {
                              cx, h * 0.5f + 170.0f, 2.0f,
                              0xff, 0xd0, 0x60);
     }
+
+    /* (Settings overlay is drawn from the early-return path at the
+     * top of this function so it stands alone as its own UI unit -
+     * underlying menu labels and panels aren't queued at all, which
+     * is the only way to keep the once-per-frame sdtx flush from
+     * stacking the wrong text on top of the wrong geometry.) */
 
     /* Single sdtx_draw happens in main_web (gameplay path uses the
      * end-of-frame flush; menu path uses the one right after this
@@ -1476,6 +1530,7 @@ static void on_click_main(float x, float y) {
         M.state = GAME_PROFILE_SELECT;
         return;
     }
+    if (hit(&M.btn_settings, x, y)) { M.settings_visible = true; return; }
     if (hit(&M.btn_sp, x, y)) { enter_world_list(); return; }
     if (hit(&M.btn_mp, x, y)) { start_multiplayer(); return; }
 }
@@ -1678,6 +1733,9 @@ int  tenebris_js_in_input_state(void) {
 
 bool menu_event(const sapp_event* e) {
     if (!menu_is_overlay()) return false;
+    /* Settings overlay (if visible) is a modal that swallows
+     * everything before any other menu logic gets to see it. */
+    if (M.settings_visible) return settings_event(e);
     /* Text-input flow gets first crack at keyboard events. */
     if (state_is_input(M.state)) {
         if (e->type == SAPP_EVENTTYPE_CHAR) {
@@ -1999,6 +2057,282 @@ static void pause_text_left(float screen_w, float screen_h,
 }
 
 /* ------------------------------------------------------------------ */
+/* Settings overlay - modal panel reachable from both the main menu  */
+/* and the pause menu. Hosts the mouse-sensitivity slider for now;   */
+/* future settings (audio volume, FOV, etc.) get appended to the     */
+/* same panel. Owns its own visibility flag (M.settings_visible) so  */
+/* the underlying surface keeps drawing behind it.                   */
+/* ------------------------------------------------------------------ */
+
+#define SETTINGS_PANEL_W   440.0f
+#define SETTINGS_PANEL_H   360.0f
+#define SETTINGS_TRACK_H    12.0f
+
+static void settings_layout(float w, float h) {
+    const float px = (w - SETTINGS_PANEL_W) * 0.5f;
+    const float py = (h - SETTINGS_PANEL_H) * 0.5f;
+    /* Two sliders stacked: mouse-sens then chat-fade. Each slider
+     * leaves room above for label + value text. */
+    M.sens_track_x = px + 40.0f;
+    M.sens_track_y = py + 130.0f;
+    M.sens_track_w = SETTINGS_PANEL_W - 80.0f;
+    M.sens_track_h = SETTINGS_TRACK_H;
+    M.chat_track_x = px + 40.0f;
+    M.chat_track_y = py + 230.0f;
+    M.chat_track_w = SETTINGS_PANEL_W - 80.0f;
+    M.chat_track_h = SETTINGS_TRACK_H;
+    /* BACK button anchored to the panel's bottom edge. */
+    set_button(&M.btn_settings_back,
+                 px + (SETTINGS_PANEL_W - 200.0f) * 0.5f,
+                 py + SETTINGS_PANEL_H - 70.0f,
+                 200.0f, 48.0f, "BACK");
+}
+
+/* Map current sens value to a screen x along the track (handle centre). */
+static float sens_value_to_handle_x(void) {
+    float v = settings_mouse_sensitivity();
+    float t = (v - SETTINGS_MOUSE_SENS_MIN)
+            / (SETTINGS_MOUSE_SENS_MAX - SETTINGS_MOUSE_SENS_MIN);
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    return M.sens_track_x + t * M.sens_track_w;
+}
+
+/* Inverse of above - clamp a mouse x to the track and convert to a
+ * sens value, then commit via settings_set_mouse_sensitivity (which
+ * persists through client_kv). */
+static void sens_set_from_handle_x(float x) {
+    float t = (x - M.sens_track_x) / M.sens_track_w;
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    float v = SETTINGS_MOUSE_SENS_MIN
+            + t * (SETTINGS_MOUSE_SENS_MAX - SETTINGS_MOUSE_SENS_MIN);
+    settings_set_mouse_sensitivity(v);
+}
+
+/* True when the cursor is over the slider's hit zone. Extended a few
+ * px vertically beyond the track itself so the handle is easy to
+ * grab on a phone. */
+static bool sens_track_hit(float x, float y) {
+    const float pad = 12.0f;
+    return x >= M.sens_track_x
+        && x <= M.sens_track_x + M.sens_track_w
+        && y >= M.sens_track_y - pad
+        && y <= M.sens_track_y + M.sens_track_h + pad;
+}
+
+/* Chat-fade slider helpers - mirror the sens versions exactly,
+ * just bound to settings_chat_fade_s instead of mouse sensitivity. */
+static float chat_value_to_handle_x(void) {
+    float v = settings_chat_fade_s();
+    float t = (v - SETTINGS_CHAT_FADE_MIN_S)
+            / (SETTINGS_CHAT_FADE_MAX_S - SETTINGS_CHAT_FADE_MIN_S);
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    return M.chat_track_x + t * M.chat_track_w;
+}
+static void chat_set_from_handle_x(float x) {
+    float t = (x - M.chat_track_x) / M.chat_track_w;
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    float v = SETTINGS_CHAT_FADE_MIN_S
+            + t * (SETTINGS_CHAT_FADE_MAX_S - SETTINGS_CHAT_FADE_MIN_S);
+    settings_set_chat_fade_s(v);
+}
+static bool chat_track_hit(float x, float y) {
+    const float pad = 12.0f;
+    return x >= M.chat_track_x
+        && x <= M.chat_track_x + M.chat_track_w
+        && y >= M.chat_track_y - pad
+        && y <= M.chat_track_y + M.chat_track_h + pad;
+}
+
+static void settings_draw(float w, float h) {
+    settings_layout(w, h);
+    const float px = (w - SETTINGS_PANEL_W) * 0.5f;
+    const float py = (h - SETTINGS_PANEL_H) * 0.5f;
+
+    sgl_defaults();
+    sgl_matrix_mode_projection();
+    sgl_load_identity();
+    sgl_ortho(0.0f, w, h, 0.0f, -1.0f, 1.0f);
+    sgl_matrix_mode_modelview();
+    sgl_load_identity();
+    sgl_pipeline pip = mobile_ui_alpha_pipeline();
+    sgl_load_pipeline(pip);
+
+    /* Dim backdrop covers everything below. */
+    mobile_ui_draw_rect(0.0f, 0.0f, w, h, 0.02f, 0.03f, 0.07f, 0.78f);
+    /* Panel + border. */
+    mobile_ui_draw_rect(px, py, SETTINGS_PANEL_W, SETTINGS_PANEL_H,
+                          0.10f, 0.12f, 0.18f, 0.96f);
+    mobile_ui_draw_rect_outline(px, py, SETTINGS_PANEL_W, SETTINGS_PANEL_H,
+                                  2.0f, 0.85f, 0.90f, 1.00f, 1.0f);
+
+    /* Two sliders stacked: mouse sens then chat fade. Same shape
+     * for both - track with filled left half + handle. Inline so
+     * the geometry batches in a single sgl pass. */
+    const float handle_w = 18.0f;
+    const float handle_h_off = 14.0f;
+    /* --- mouse sens slider --- */
+    {
+        float hx = sens_value_to_handle_x();
+        mobile_ui_draw_rect(M.sens_track_x, M.sens_track_y,
+                              M.sens_track_w, M.sens_track_h,
+                              0.18f, 0.20f, 0.26f, 1.0f);
+        mobile_ui_draw_rect(M.sens_track_x, M.sens_track_y,
+                              hx - M.sens_track_x, M.sens_track_h,
+                              0.45f, 0.65f, 0.95f, 1.0f);
+        mobile_ui_draw_rect_outline(M.sens_track_x, M.sens_track_y,
+                                      M.sens_track_w, M.sens_track_h, 1.5f,
+                                      0.85f, 0.90f, 1.00f, 1.0f);
+        const float handle_h = M.sens_track_h + handle_h_off;
+        const float hx_l = hx - handle_w * 0.5f;
+        const float hy_l = M.sens_track_y - 7.0f;
+        mobile_ui_draw_rect(hx_l, hy_l, handle_w, handle_h,
+                              0.90f, 0.92f, 1.0f, 1.0f);
+        mobile_ui_draw_rect_outline(hx_l, hy_l, handle_w, handle_h, 2.0f,
+                                      0.30f, 0.40f, 0.60f, 1.0f);
+    }
+    /* --- chat fade slider --- */
+    {
+        float hx = chat_value_to_handle_x();
+        mobile_ui_draw_rect(M.chat_track_x, M.chat_track_y,
+                              M.chat_track_w, M.chat_track_h,
+                              0.18f, 0.20f, 0.26f, 1.0f);
+        mobile_ui_draw_rect(M.chat_track_x, M.chat_track_y,
+                              hx - M.chat_track_x, M.chat_track_h,
+                              0.45f, 0.65f, 0.95f, 1.0f);
+        mobile_ui_draw_rect_outline(M.chat_track_x, M.chat_track_y,
+                                      M.chat_track_w, M.chat_track_h, 1.5f,
+                                      0.85f, 0.90f, 1.00f, 1.0f);
+        const float handle_h = M.chat_track_h + handle_h_off;
+        const float hx_l = hx - handle_w * 0.5f;
+        const float hy_l = M.chat_track_y - 7.0f;
+        mobile_ui_draw_rect(hx_l, hy_l, handle_w, handle_h,
+                              0.90f, 0.92f, 1.0f, 1.0f);
+        mobile_ui_draw_rect_outline(hx_l, hy_l, handle_w, handle_h, 2.0f,
+                                      0.30f, 0.40f, 0.60f, 1.0f);
+    }
+
+    /* BACK button - re-use the menu button visuals. */
+    const bool back_hover = hit(&M.btn_settings_back, M.mouse_x, M.mouse_y);
+    if (back_hover) {
+        mobile_ui_draw_rect(M.btn_settings_back.x, M.btn_settings_back.y,
+                              M.btn_settings_back.w, M.btn_settings_back.h,
+                              0.22f, 0.30f, 0.42f, 0.98f);
+    } else {
+        mobile_ui_draw_rect(M.btn_settings_back.x, M.btn_settings_back.y,
+                              M.btn_settings_back.w, M.btn_settings_back.h,
+                              0.12f, 0.14f, 0.19f, 0.95f);
+    }
+    mobile_ui_draw_rect_outline(M.btn_settings_back.x, M.btn_settings_back.y,
+                                  M.btn_settings_back.w, M.btn_settings_back.h,
+                                  2.0f, 0.85f, 0.90f, 1.00f, 1.0f);
+
+    /* Text labels on top of the geometry. */
+    const float cx = w * 0.5f;
+    draw_text_centered("SETTINGS", cx, py + 22.0f, 3.5f, 0xff, 0xff, 0xff);
+    /* Mouse sens label + value. Internal value is small (0.0005..0.0080)
+     * so we display it x 1000 for a friendlier 0.5..8.0 readout. */
+    draw_text_centered("MOUSE SENSITIVITY", cx, py + 80.0f, 1.5f,
+                         0xc0, 0xc8, 0xd8);
+    char buf[32];
+    snprintf(buf, sizeof buf, "%.2f",
+             settings_mouse_sensitivity() * 1000.0f);
+    draw_text_centered(buf, cx, py + 104.0f, 1.5f, 0xff, 0xe0, 0x60);
+    /* Chat fade label + value (whole seconds). */
+    draw_text_centered("CHAT FADE (SECONDS)", cx, py + 180.0f, 1.5f,
+                         0xc0, 0xc8, 0xd8);
+    snprintf(buf, sizeof buf, "%.0f", settings_chat_fade_s());
+    draw_text_centered(buf, cx, py + 204.0f, 1.5f, 0xff, 0xe0, 0x60);
+    /* BACK button label. */
+    draw_text_centered(M.btn_settings_back.label,
+                         M.btn_settings_back.x + M.btn_settings_back.w * 0.5f,
+                         M.btn_settings_back.y
+                             + (M.btn_settings_back.h - 8.0f * 2.0f) * 0.5f,
+                         2.0f, 0xff, 0xff, 0xff);
+}
+
+/* Handles every event while M.settings_visible is true. Returns true
+ * for events consumed; the modal swallows everything except hover
+ * tracking so input doesn't leak through to the menu / gameplay. */
+static bool settings_event(const sapp_event* e) {
+    /* Hover tracking + drag updates ride on mouse_move / touches_moved. */
+    if (e->type == SAPP_EVENTTYPE_MOUSE_MOVE) {
+        M.mouse_x = e->mouse_x;
+        M.mouse_y = e->mouse_y;
+        if (M.sens_dragging) sens_set_from_handle_x(e->mouse_x);
+        if (M.chat_dragging) chat_set_from_handle_x(e->mouse_x);
+        return true;
+    }
+    if (e->type == SAPP_EVENTTYPE_TOUCHES_MOVED && e->num_touches > 0) {
+        M.mouse_x = e->touches[0].pos_x;
+        M.mouse_y = e->touches[0].pos_y;
+        if (M.sens_dragging) sens_set_from_handle_x(e->touches[0].pos_x);
+        if (M.chat_dragging) chat_set_from_handle_x(e->touches[0].pos_x);
+        return true;
+    }
+    /* Escape closes the overlay so the player isn't trapped if the
+     * BACK button somehow gets covered. */
+    if (e->type == SAPP_EVENTTYPE_KEY_DOWN
+        && e->key_code == SAPP_KEYCODE_ESCAPE) {
+        M.settings_visible = false;
+        M.sens_dragging = false;
+        M.chat_dragging = false;
+        return true;
+    }
+
+    /* Mouse / touch press, release. */
+    bool press = false, release = false;
+    float cx = 0, cy = 0;
+    if (e->type == SAPP_EVENTTYPE_MOUSE_DOWN
+        && e->mouse_button == SAPP_MOUSEBUTTON_LEFT) {
+        press = true; cx = e->mouse_x; cy = e->mouse_y;
+    } else if (e->type == SAPP_EVENTTYPE_TOUCHES_BEGAN
+               && e->num_touches > 0) {
+        press = true; cx = e->touches[0].pos_x; cy = e->touches[0].pos_y;
+    } else if (e->type == SAPP_EVENTTYPE_MOUSE_UP
+               && e->mouse_button == SAPP_MOUSEBUTTON_LEFT) {
+        release = true;
+    } else if (e->type == SAPP_EVENTTYPE_TOUCHES_ENDED
+            || e->type == SAPP_EVENTTYPE_TOUCHES_CANCELLED) {
+        release = true;
+    }
+    if (press) {
+        settings_layout(sapp_widthf(), sapp_heightf());
+        if (hit(&M.btn_settings_back, cx, cy)) {
+            M.settings_visible = false;
+            M.sens_dragging = false;
+            M.chat_dragging = false;
+            return true;
+        }
+        if (sens_track_hit(cx, cy)) {
+            M.sens_dragging = true;
+            sens_set_from_handle_x(cx);
+            return true;
+        }
+        if (chat_track_hit(cx, cy)) {
+            M.chat_dragging = true;
+            chat_set_from_handle_x(cx);
+            return true;
+        }
+        /* Press elsewhere inside the modal does nothing but is
+         * still consumed - prevents click-through to the underlying
+         * menu / gameplay. */
+        return true;
+    }
+    if (release) {
+        M.sens_dragging = false;
+        M.chat_dragging = false;
+        return true;
+    }
+    /* Swallow every other event (keyboard, scroll, etc.) so chat /
+     * movement can't fire behind the panel. */
+    return true;
+}
+
+/* ------------------------------------------------------------------ */
 /* In-game pause overlay (rebuilt as proper sokol_gl geometry)          */
 /* ------------------------------------------------------------------ */
 
@@ -2007,7 +2341,7 @@ static void pause_text_left(float screen_w, float screen_h,
 typedef struct { float x, y, w, h; const char* label; } pause_btn_t;
 static struct {
     float       panel_x, panel_y, panel_w, panel_h;
-    pause_btn_t resume, invite, quit;
+    pause_btn_t resume, settings, invite, quit;
 } G_pl;
 
 static void pause_layout(float w, float h) {
@@ -2016,7 +2350,8 @@ static void pause_layout(float w, float h) {
     const float btn_h = 64.0f;
     const float gap   = 18.0f;
     const float pad   = 28.0f;
-    const int   row_count = is_mp ? 3 : 2;
+    /* RESUME + SETTINGS + (INVITE if MP) + QUIT */
+    const int   row_count = is_mp ? 4 : 3;
     const float panel_w = btn_w + 2.0f * pad;
     const float panel_h = 110.0f                       /* title block */
                         + (float)row_count * btn_h
@@ -2032,6 +2367,8 @@ static void pause_layout(float w, float h) {
     G_pl.panel_w = panel_w;
     G_pl.panel_h = panel_h;
     G_pl.resume = (pause_btn_t){ btn_x, btn_y, btn_w, btn_h, "RETURN TO GAME" };
+    btn_y += btn_h + gap;
+    G_pl.settings = (pause_btn_t){ btn_x, btn_y, btn_w, btn_h, "SETTINGS" };
     btn_y += btn_h + gap;
     if (is_mp) {
         G_pl.invite = (pause_btn_t){ btn_x, btn_y, btn_w, btn_h, "INVITE PLAYERS" };
@@ -2052,6 +2389,17 @@ static bool pause_btn_hit(const pause_btn_t* b, float x, float y) {
 
 void menu_pause_draw(int screen_w, int screen_h) {
     if (!M.pause_visible) return;
+    /* Settings overlay is a self-contained unit. If it's open we
+     * draw ONLY settings and skip the pause panel entirely - sdtx
+     * batches all text into one flush per frame, so leaving the
+     * pause-panel labels queued would let them render on top of
+     * the settings panel geometry (the bug screenshot showed
+     * RETURN TO GAME / INVITE PLAYERS / etc. bleeding through the
+     * settings dialog). One menu unit at a time. */
+    if (M.settings_visible) {
+        settings_draw((float)screen_w, (float)screen_h);
+        return;
+    }
 
     const float w = (float)screen_w;
     const float h = (float)screen_h;
@@ -2091,8 +2439,8 @@ void menu_pause_draw(int screen_w, int screen_h) {
      * until the socket is back, and pretending it is would let the
      * player click resume into an empty world. */
     const bool reconnecting = (M.reconnect_deadline_t > 0.0);
-    const pause_btn_t* btns[3] = { &G_pl.resume, &G_pl.invite, &G_pl.quit };
-    for (int i = 0; i < 3; ++i) {
+    const pause_btn_t* btns[4] = { &G_pl.resume, &G_pl.settings, &G_pl.invite, &G_pl.quit };
+    for (int i = 0; i < 4; ++i) {
         const pause_btn_t* b = btns[i];
         if (!b->label) continue;
         const bool disabled = (b == &G_pl.resume && reconnecting);
@@ -2155,7 +2503,7 @@ void menu_pause_draw(int screen_w, int screen_h) {
         draw_text_centered("PAUSED", cx, G_pl.panel_y + 20.0f, 4.0f,
                              0xff, 0xff, 0xff);
     }
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < 4; ++i) {
         const pause_btn_t* b = btns[i];
         if (!b->label) continue;
         const bool disabled = (b == &G_pl.resume && reconnecting);
@@ -2179,6 +2527,12 @@ void menu_pause_draw(int screen_w, int screen_h) {
         float ty = G_pl.invite.y + G_pl.invite.h + 8.0f;
         draw_text_centered(msg, cx, ty, 1.0f, r, g, bl);
     }
+
+    /* (Settings overlay short-circuits at the top of this function -
+     * see the early-return there. We don't tack it on at the end any
+     * more because the pause-panel text we'd already queued above
+     * would render on top of the settings dialog when sdtx flushes
+     * at end of frame.) */
 }
 
 /* Cross-platform connecting overlay drawn while the MP socket is
@@ -2252,6 +2606,9 @@ void menu_connecting_draw(int screen_w, int screen_h,
 
 bool menu_pause_event(const sapp_event* e) {
     if (!M.pause_visible) return false;
+    /* Settings overlay opened from the pause panel is modal on top
+     * of pause - swallow everything through settings first. */
+    if (M.settings_visible) return settings_event(e);
 
     /* Track mouse for hover. */
     if (e->type == SAPP_EVENTTYPE_MOUSE_MOVE) {
@@ -2300,6 +2657,10 @@ bool menu_pause_event(const sapp_event* e) {
         if (reconnecting && pause_btn_hit(&G_pl.resume, cx, cy)) {
             /* RETURN TO GAME is disabled while retrying - swallow the
              * click so it can't fall through to the QUIT button below. */
+            return true;
+        }
+        if (pause_btn_hit(&G_pl.settings, cx, cy)) {
+            M.settings_visible = true;
             return true;
         }
         if (pause_btn_hit(&G_pl.invite, cx, cy)) {

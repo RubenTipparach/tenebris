@@ -14,6 +14,7 @@ typedef enum {
     TOUCH_BREAK,
     TOUCH_PLACE,
     TOUCH_JUMP,
+    TOUCH_HOTBAR,       /* tap on a hotbar slot - slot index in hotbar_slot */
     /* Teleport-menu buttons. Edge-triggered — the caller checks
      * for a true value once and is expected to reset it via
      * input_consume_menu_event. */
@@ -34,6 +35,7 @@ typedef struct {
 typedef struct {
     uintptr_t id;
     touch_role_t role;
+    int    hotbar_slot;            /* valid when role == TOUCH_HOTBAR  */
     float  origin_x, origin_y;     /* where the touch began */
     float  last_x,   last_y;       /* most recent position */
     bool   active;
@@ -135,7 +137,30 @@ static bool in_circle(float x, float y, float cx, float cy, float r) {
     return (dx * dx + dy * dy) <= (r * r);
 }
 
-static touch_role_t classify_touch(float x, float y) {
+/* Returns -1 if (x,y) does NOT hit a hotbar slot, else the 0-based
+ * slot index. The hotbar's row is left-aligned at (hotbar_x0,
+ * hotbar_y0), slot_count slots of size slot_size pitched horizontally
+ * by slot_pitch. */
+static int hotbar_slot_at(float x, float y) {
+    if (S.pub.hotbar_slot_count <= 0 || S.pub.hotbar_slot_size <= 0.0f) {
+        return -1;
+    }
+    if (y < S.pub.hotbar_y0
+     || y > S.pub.hotbar_y0 + S.pub.hotbar_slot_size) {
+        return -1;
+    }
+    float dx = x - S.pub.hotbar_x0;
+    if (dx < 0.0f) return -1;
+    int slot = (int)(dx / S.pub.hotbar_slot_pitch);
+    if (slot < 0 || slot >= S.pub.hotbar_slot_count) return -1;
+    /* dx-into-slot must still land in the slot's size, not the gap. */
+    float into = dx - (float)slot * S.pub.hotbar_slot_pitch;
+    if (into > S.pub.hotbar_slot_size) return -1;
+    return slot;
+}
+
+static touch_role_t classify_touch(float x, float y, int* out_hotbar_slot) {
+    *out_hotbar_slot = -1;
     /* Menu buttons (only active while the menu is open, i.e. r > 0) win
      * over everything else so a tap on them doesn't leak to the stick
      * or the main-HUD buttons underneath. */
@@ -149,6 +174,16 @@ static touch_role_t classify_touch(float x, float y) {
     if (S.pub.btn_place_r > 0.0f && in_circle(x, y, S.pub.btn_place_cx, S.pub.btn_place_cy, S.pub.btn_place_r)) return TOUCH_PLACE;
     if (S.pub.btn_jump_r  > 0.0f && in_circle(x, y, S.pub.btn_jump_cx,  S.pub.btn_jump_cy,  S.pub.btn_jump_r))  return TOUCH_JUMP;
     if (S.pub.btn_tp_r    > 0.0f && in_circle(x, y, S.pub.btn_tp_cx,    S.pub.btn_tp_cy,    S.pub.btn_tp_r))    return TOUCH_TP;
+
+    /* Hotbar slot taps - mobile-only, hotbar_ui_draw deactivates the
+     * row on desktop by setting slot_count = 0. Must win over the
+     * bottom-half stick / look-stick zones so a tap-on-slot doesn't
+     * leak into the look stick. */
+    int slot = hotbar_slot_at(x, y);
+    if (slot >= 0) {
+        *out_hotbar_slot = slot;
+        return TOUCH_HOTBAR;
+    }
 
     const float w = sapp_widthf();
     const float h = sapp_heightf();
@@ -229,7 +264,9 @@ static void handle_touches_began(const sapp_event* e) {
         t->origin_x = tp->pos_x; t->origin_y = tp->pos_y;
         t->last_x   = tp->pos_x; t->last_y   = tp->pos_y;
         t->active = true;
-        t->role = classify_touch(tp->pos_x, tp->pos_y);
+        t->hotbar_slot = -1;
+        int hotbar_slot = -1;
+        t->role = classify_touch(tp->pos_x, tp->pos_y, &hotbar_slot);
 
         switch (t->role) {
             case TOUCH_STICK:      update_stick_from_touch(t);      break;
@@ -237,6 +274,15 @@ static void handle_touches_began(const sapp_event* e) {
             case TOUCH_BREAK: S.pub.left_click  = true;  S.pub.left_held  = true; break;
             case TOUCH_PLACE: S.pub.right_click = true;  S.pub.right_held = true; break;
             case TOUCH_JUMP:  S.jump_edge = true; S.pub.phys.jump = true; break;
+            case TOUCH_HOTBAR:
+                /* Edge-trigger the per-slot bool the player controller
+                 * already consumes for keyboard 1..9; player_update
+                 * folds it into inventory_select. */
+                if (hotbar_slot >= 0 && hotbar_slot < 10) {
+                    S.pub.hotbar[hotbar_slot] = true;
+                    t->hotbar_slot = hotbar_slot;
+                }
+                break;
             case TOUCH_TP:          S.menu.tp_tapped = true; break;
             case TOUCH_MENU_UP:     S.menu.menu_up    = true; break;
             case TOUCH_MENU_DOWN:   S.menu.menu_down  = true; break;
@@ -299,8 +345,29 @@ void input_event(const sapp_event* e) {
 
         case SAPP_EVENTTYPE_MOUSE_MOVE:
             if (S.pub.pointer_locked) {
-                S.pub.mouse_dx += e->mouse_dx;
-                S.pub.mouse_dy += e->mouse_dy;
+                /* Per-event delta clamp. Normal fast mouse motion at
+                 * 1000 Hz polling produces small per-event deltas
+                 * (tens of pixels at most); a single event with a
+                 * delta in the hundreds is almost always either a
+                 * browser pointer-lock-warp synthetic event or a
+                 * stalled-event burst the browser fused into one.
+                 * Clamping per event filters those out without
+                 * limiting legitimate fast flicks (which spread
+                 * across many sub-clamp events). The user-perceived
+                 * effect: snap-on-mouse rotation glitches disappear
+                 * but 360-degree wrist flicks still work normally.
+                 *
+                 * The look-stick path on mobile is naturally rate-
+                 * bounded so it doesn't need this gate. */
+                const float MAX_PER_EVENT_PX = 200.0f;
+                float dx = e->mouse_dx;
+                float dy = e->mouse_dy;
+                if (dx >  MAX_PER_EVENT_PX) dx =  MAX_PER_EVENT_PX;
+                if (dx < -MAX_PER_EVENT_PX) dx = -MAX_PER_EVENT_PX;
+                if (dy >  MAX_PER_EVENT_PX) dy =  MAX_PER_EVENT_PX;
+                if (dy < -MAX_PER_EVENT_PX) dy = -MAX_PER_EVENT_PX;
+                S.pub.mouse_dx += dx;
+                S.pub.mouse_dy += dy;
             }
             break;
 

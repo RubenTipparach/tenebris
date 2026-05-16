@@ -1,5 +1,6 @@
 #include "client/chat.h"
 #include "client/net_client.h"
+#include "client/settings.h"
 
 #include "sokol_gfx.h"
 #include "sokol_app.h"
@@ -17,15 +18,29 @@
  * after it arrives, then fades over the last 15 seconds and drops off.
  * The compose box being open always shows the full retained scrollback
  * regardless of age. */
-#define CHAT_FADE_HOLD_S  (5.0 * 60.0)
+/* Hold + fade window for the floating chat panel. The HOLD half is
+ * runtime-tunable via the Settings menu so a player can shorten the
+ * "stuck on screen" duration (default 60 s; was 5 min). The fade
+ * tail stays a fixed short trailing curve so messages don't
+ * disappear abruptly. */
 #define CHAT_FADE_OUT_S   15.0
+static double chat_fade_hold_s(void) {
+    return (double)settings_chat_fade_s();
+}
 /* On a fresh connection the server replays the room's recent chat as
  * a flurry of MSG_CHATs. They reach the client with current-time
  * stamps and would otherwise look like brand-new traffic. Treat any
  * MSG_CHAT received in the first CHAT_JOIN_GRACE_S after
  * chat_begin_session as backlog: stored in scrollback (visible when
  * the compose box opens), suppressed from the floating live panel. */
-#define CHAT_JOIN_GRACE_S 1.5
+/* Server can take several seconds to deliver its chat backlog
+ * after WELCOME on a slow link; bumped from the original 1.5 s
+ * so a sluggish replay can't slip past the grace window and land
+ * on the floating live panel. Real-time chat from another player
+ * during the first 8 s is unlikely (they just joined too); when
+ * it does happen the message lands in scrollback and is visible
+ * via the compose box, just not the live popup. */
+#define CHAT_JOIN_GRACE_S 8.0
 
 typedef struct {
     char     name[CHAT_NAME_MAX];
@@ -58,7 +73,28 @@ void chat_shutdown(void) { }
 
 bool chat_is_active(void) { return C.active; }
 
+void chat_clear(void) {
+    /* Drop the retained history wholesale - the visible-row filter
+     * + compose-box scrollback both read from C.history, so once
+     * count is zero the floating panel can't show any pre-session
+     * messages. Keep session_grace_until_s alone here: callers that
+     * need a grace window (chat_begin_session) set it themselves
+     * AFTER this clear. */
+    C.head = 0;
+    C.count = 0;
+    C.active = false;
+    C.input_len = 0;
+    C.input_buf[0] = 0;
+}
+
 void chat_begin_session(void) {
+    /* Fresh session = no history. Anything that arrived before this
+     * point belongs to an earlier session and must not bleed into
+     * the new one. The server's first wave of MSG_CHAT replay then
+     * lands inside the join-grace window below and is marked
+     * backlog as it arrives - so the floating panel stays silent
+     * until a TRULY live message comes through. */
+    chat_clear();
     C.session_grace_until_s = stm_sec(stm_now()) + CHAT_JOIN_GRACE_S;
 }
 
@@ -262,6 +298,7 @@ void chat_draw(float screen_w, float screen_h) {
      * conditions (and without subtly diverging on interleaved
      * backlog vs real-time entries, which the previous index-stride
      * approach silently mis-rendered). */
+    const double fade_hold = chat_fade_hold_s();
     int visible_idx[CHAT_HISTORY_MAX];
     int visible = 0;
     for (int i = 0; i < C.count; ++i) {
@@ -270,7 +307,7 @@ void chat_draw(float screen_w, float screen_h) {
         if (!C.active) {
             if (m->is_backlog) continue;
             double age = now - m->recv_time_s;
-            if (age >= CHAT_FADE_HOLD_S + CHAT_FADE_OUT_S) break;
+            if (age >= fade_hold + CHAT_FADE_OUT_S) break;
         }
         visible_idx[visible++] = idx;
         if (visible >= CHAT_HISTORY_MAX) break;
@@ -310,8 +347,8 @@ void chat_draw(float screen_w, float screen_h) {
             const chat_msg_t* m = &C.history[visible_idx[i]];
             double age = now - m->recv_time_s;
             float alpha = 1.0f;
-            if (!C.active && age > CHAT_FADE_HOLD_S) {
-                alpha = (float)((CHAT_FADE_HOLD_S + CHAT_FADE_OUT_S - age)
+            if (!C.active && age > fade_hold) {
+                alpha = (float)((fade_hold + CHAT_FADE_OUT_S - age)
                                 / CHAT_FADE_OUT_S);
                 if (alpha < 0.0f) alpha = 0.0f;
             }

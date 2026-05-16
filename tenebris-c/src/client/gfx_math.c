@@ -81,3 +81,25 @@ mat4_t mat4_look_at(vec3_t eye, vec3_t target, vec3_t up) {
     r.m[14] =  vec3_dot(f, eye);
     return r;
 }
+
+/* Direction-input variant of mat4_look_at. Skips the `target - eye`
+ * step - look_dir IS the forward direction. The caller is expected to
+ * have built look_dir in doubles before casting to float so the
+ * orientation columns don't pick up subtraction noise at large eye
+ * magnitudes (planet centres at multiple km from world origin). The
+ * eye position still goes into the translation column at float
+ * precision, but its magnitude only shifts the world relative to the
+ * camera - it doesn't affect which way the camera is pointing. */
+mat4_t mat4_look_at_dir(vec3_t eye, vec3_t look_dir, vec3_t up) {
+    vec3_t f = vec3_normalize(look_dir);
+    vec3_t s = vec3_normalize(vec3_cross(f, up));
+    vec3_t u = vec3_cross(s, f);
+    mat4_t r = mat4_identity();
+    r.m[0] = s.x; r.m[4] = s.y; r.m[8]  = s.z;
+    r.m[1] = u.x; r.m[5] = u.y; r.m[9]  = u.z;
+    r.m[2] = -f.x; r.m[6] = -f.y; r.m[10] = -f.z;
+    r.m[12] = -vec3_dot(s, eye);
+    r.m[13] = -vec3_dot(u, eye);
+    r.m[14] =  vec3_dot(f, eye);
+    return r;
+}

@@ -2,6 +2,7 @@
 #include "core/world_light.h"
 #include "core/planet.h"
 #include "core/planet_gen.h"
+#include "core/config.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -18,8 +19,10 @@ world_t* world_create(const body_config_t* body, int subdivisions) {
     w->grid = goldberg_create(subdivisions);
     w->tile_count = goldberg_tile_count(w->grid);
     w->blocks = (uint8_t*)calloc((size_t)(w->tile_count * WORLD_MAX_DEPTH), 1);
-    w->dirty_bytes = (w->tile_count + 7) / 8;
-    w->dirty = (uint8_t*)calloc((size_t)w->dirty_bytes, 1);
+    w->dirty_bytes  = (w->tile_count + 7) / 8;
+    w->dirty        = (uint8_t*)calloc((size_t)w->dirty_bytes, 1);
+    w->edited_bytes = w->dirty_bytes;
+    w->edited       = (uint8_t*)calloc((size_t)w->edited_bytes, 1);
     w->gen_cursor = 0;
     w->light = world_light_create(w);
     return w;
@@ -32,6 +35,7 @@ void world_destroy(world_t* w) {
     free(w->blocks);
     free(w->dirty);
     free(w->saved);
+    free(w->edited);
     free(w);
 }
 
@@ -182,6 +186,15 @@ void world_set(world_t* w, int tile, int depth, block_t b) {
     if (w->blocks[idx] == (uint8_t)b) return;
     w->blocks[idx] = (uint8_t)b;
     w->dirty[tile >> 3] |= (uint8_t)(1 << (tile & 7));
+    /* Mark the column as edited from procgen so collision queries
+     * fall through to the voxel-scan path. Until set, the
+     * walkable-floor query short-circuits to the analytic surface
+     * (zero voxel lookup) - which is the right behaviour for the
+     * 99% of columns that still match procgen. The edited bit is
+     * never cleared; once a tile has been touched, future floor
+     * queries always read the voxel data so bridges over voids
+     * and dug-out caves stand. */
+    w->edited[tile >> 3] |= (uint8_t)(1 << (tile & 7));
     /* Dirty neighbors too so their seam faces rebuild. */
     const goldberg_tile_t* t = goldberg_tile(w->grid, tile);
     for (int i = 0; i < t->num_neighbors; ++i) {
@@ -305,20 +318,83 @@ static bool block_is_passable(uint8_t b) {
 }
 
 /* Vertical tolerance for "step me up onto a floor that's slightly
- * above where I asked". Matches player_ctrl.c's STEP_HEIGHT exactly -
- * it's the same physical concept: how far the player can be lifted
- * by ground-snap without it feeling like teleport. A bridge whose
- * top sits 1 cm above the player's feet (after one tick of gravity)
- * must be picked over the distant planet ground below, otherwise
- * the player falls through their own builds. Keep this in lock-step
- * with player_ctrl.c::STEP_HEIGHT. */
-#define WORLD_STEP_HEIGHT 0.6
+ * above where I asked". Sourced from lod.yaml's step_height_m - the
+ * same knob player_ctrl.c reads, so the two stay in lock-step without
+ * a duplicate define. It's the same physical concept: how far the
+ * player can be lifted by ground-snap without it feeling like
+ * teleport. A bridge whose top sits 1 cm above the player's feet
+ * (after one tick of gravity) must be picked over the distant planet
+ * ground below, otherwise the player falls through their own builds. */
+static double world_step_height(void) {
+    return (double)config_lod()->step_height_m;
+}
+
+/* Synthetic-surface fallback for tiles that haven't streamed yet.
+ * world_walkable_floor_near hands this back when the requested tile
+ * is past gen_cursor instead of returning the "no floor" sentinel,
+ * so the player's collision code can carry on as if the analytic
+ * proc-noise surface were there - the actual terrain will overwrite
+ * it the moment the tile generates a frame or two later.
+ *
+ * Without this, ungenerated tiles read as bottomless: try_horizontal_step
+ * lets the player drift in (per its "ungenerated = let the player
+ * drift" branch), the ground snap then can't find a floor, and the
+ * player falls all the way through the body until the MINIMUM LINE
+ * safety net catches them. The analytic surface keeps them on the
+ * presumptive ground while streaming catches up.
+ *
+ * Out-of-grid tile indices (truly invalid) still return -1e9; this
+ * only kicks in for valid-but-not-yet-generated columns. */
+static double world_analytic_surface_r(const world_t* w, int tile) {
+    if (!w || !w->grid || tile < 0 || tile >= w->tile_count) return -1e9;
+    const goldberg_tile_t* t = goldberg_tile(w->grid, tile);
+    if (!t) return -1e9;
+    float surface_m = planet_surface_altitude(w->body, t->center);
+    if (w->body->barren) surface_m *= 0.3f;
+    /* Snap to the same block boundary planet_gen writes the topmost
+     * solid block on. planet_gen computes:
+     *   surface_idx = floor(surface_m / BLOCK_HEIGHT) + SEA_LEVEL_IDX
+     *   topmost solid block lives at depth surface_idx
+     *   walkable floor radius = depth_to_radius(surface_idx + 1)
+     *                        = body.radius + floor(surface_m) + 1
+     * Returning body.radius + surface_m (the raw analytic float)
+     * left a 0..1 m mismatch with the actual mesh - depending on
+     * the fractional part of surface_m, the ground snap landed the
+     * player INSIDE the topmost solid block, looked grounded for a
+     * frame, then re-dropped because the next physics tick saw
+     * "feet in solid, no floor below" and reverted. Aligning here
+     * means analytic gr == mesh gr exactly. */
+    double floor_blocks = floor((double)surface_m) + 1.0;
+    return w->body->radius_m + floor_blocks;
+}
 
 double world_walkable_floor_near(const world_t* w, int tile,
                                  double target_radius_m,
                                  double body_height_m) {
-    if (!w || tile < 0 || tile >= w->tile_count || tile >= w->gen_cursor) {
+    if (!w || tile < 0 || tile >= w->tile_count) {
         return -1e9;
+    }
+    if (tile >= w->gen_cursor) {
+        /* Ungenerated tile - return the analytic surface so the
+         * player walks on the procgen's predicted ground instead of
+         * falling into a bottomless column. Headroom isn't
+         * meaningful here (there's nothing above the surface yet),
+         * so we ignore body_height_m. The real terrain will replace
+         * this value as soon as the tile streams. */
+        (void)body_height_m;
+        return world_analytic_surface_r(w, tile);
+    }
+    /* Fast path: untouched column. If world_set never modified this
+     * tile, the voxel data is bit-identical to what planet_gen wrote
+     * from the procgen noise - so we can skip the column scan and
+     * return the same answer the analytic surface would give. Zero
+     * lookups: one bit test + one noise eval. Edited columns
+     * (player-built bridges, dug-out caves) keep using the voxel
+     * scan below because their data has diverged from procgen. */
+    if (w->edited
+        && ((w->edited[tile >> 3] >> (tile & 7)) & 1u) == 0u) {
+        (void)body_height_m;
+        return world_analytic_surface_r(w, tile);
     }
     const uint8_t* col = &w->blocks[tile * WORLD_MAX_DEPTH];
 
@@ -397,13 +473,49 @@ double world_walkable_floor_near(const world_t* w, int tile,
      * needs to snap back. Only relevant when the above candidate is
      * physically close - bigger gaps (cave ceilings, terrain above an
      * overhang) keep the legacy "prefer below" behaviour. */
-    if (best_radius_above > -1e8 && best_dist_above <= WORLD_STEP_HEIGHT) {
+    const double step_h = world_step_height();
+    if (best_radius_above > -1e8 && best_dist_above <= step_h) {
         if (best_radius_below < -1e8 || best_dist_above < best_dist_below) {
             return best_radius_above;
         }
     }
     if (best_radius_below > -1e8) return best_radius_below;
     return best_radius_above;   /* may still be -1e9 if none */
+}
+
+dvec3_t world_safe_spawn_local(const world_t* w, dvec3_t unit_dir, double headroom_m) {
+    /* Fallback radius if there's no walkable floor to read - drop
+     * the player a couple of metres above the body's nominal
+     * surface so the next frame's gravity lands them on whatever's
+     * generated. */
+    double fallback_r = w->body->radius_m + headroom_m;
+    if (!w || w->tile_count <= 0) {
+        return dvec3_scale(unit_dir, fallback_r);
+    }
+    int tile = goldberg_find_tile(w->grid, unit_dir, -1);
+    if (tile < 0 || tile >= w->tile_count || tile >= w->gen_cursor) {
+        return dvec3_scale(unit_dir, fallback_r);
+    }
+    /* Scan the column top-down for the topmost walkable floor (solid
+     * with passable above). We want the SURFACE, not the closest
+     * floor to wherever the player ended up - the caller's r is
+     * presumed to be well below the world. */
+    const uint8_t* col = &w->blocks[tile * WORLD_MAX_DEPTH];
+    int top_floor_depth = -1;
+    for (int d = WORLD_MAX_DEPTH - 1; d >= 0; --d) {
+        uint8_t cur = col[d];
+        if (block_is_passable(cur)) continue;
+        uint8_t up = (d + 1 < WORLD_MAX_DEPTH) ? col[d + 1] : (uint8_t)BLOCK_AIR;
+        if (block_is_passable(up)) {
+            top_floor_depth = d;
+            break;
+        }
+    }
+    if (top_floor_depth < 0) {
+        return dvec3_scale(unit_dir, fallback_r);
+    }
+    double floor_r = world_depth_to_radius_m(w, top_floor_depth + 1);
+    return dvec3_scale(unit_dir, floor_r + headroom_m);
 }
 
 double world_ceiling_above(const world_t* w, int tile, double head_radius_m) {

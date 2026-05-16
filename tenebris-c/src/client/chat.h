@@ -23,6 +23,14 @@
 void chat_init(void);
 void chat_shutdown(void);
 
+/* Wipe every retained message + close the compose box. Called on
+ * any transition INTO a gameplay state (SP entry, MP welcome) so
+ * the floating live panel doesn't auto-open with stale chatter
+ * from a previous session - whether that's an old MP session that
+ * left messages behind on the way to SP, or simply the time
+ * between menu and re-entry to MP. */
+void chat_clear(void);
+
 /* Returns true if the chat compose box is open and consuming input.
  * main_web gates player look / movement input on this so typing doesn't
  * also strafe the camera. */

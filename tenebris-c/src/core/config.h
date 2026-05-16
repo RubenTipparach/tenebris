@@ -122,6 +122,23 @@ typedef struct {
      * Per-tileset so e.g. an icy planet's shoreline is shorter than
      * an Earth-like's. Zero → use a sane default at runtime. */
     float  tileset_water_full_depth_m[5];
+    /* Close-up water tinting. The water shader's Beer-Lambert model
+     * uses these instead of the global water_config_t defaults when
+     * the body the player is on has a per-tileset override. tinted
+     * green for Sequoia, blue-leaning for Frost, etc.
+     *   deep_color  — saturation colour at full attenuation (what
+     *                 the ocean looks like at infinite depth).
+     *   absorption  — per-channel Beer-Lambert sigma (1/m). Higher
+     *                 channel value = that wavelength dies faster
+     *                 with thickness, so the inverse channels
+     *                 dominate. Earth water has high red absorption
+     *                 so blue survives; sequoia water absorbs red
+     *                 AND blue so green survives.
+     * A field set to {0, 0, 0} falls back to the global water_config
+     * value at runtime so a tileset that doesn't override stays on
+     * the default. */
+    vec3_t tileset_water_deep_color[5];
+    vec3_t tileset_water_absorption[5];
 
     /* Gravity field — JS PlayerConfig.GRAVITY_FULL_RADIUS / FALLOFF_RADIUS
      * ported. Below body.radius * gravity_full_mult the player
@@ -166,6 +183,27 @@ typedef struct {
     /* Player capsule. height_m is foot-to-head; head collision uses
      * feet + height_m against the ceiling block bottom radius. */
     float player_height_m;
+
+    /* Maximum vertical "step up" the player can take in one frame -
+     * both for horizontal step-on-curb (walking into a tile whose
+     * floor sits this much above current feet) and for ground-snap
+     * pop-up (the bridge case where feet have dipped a hair below
+     * the floor through gravity, or the falling-into-a-narrow-hole
+     * case where horizontal drift puts feet inside a wall column).
+     * Larger = more permissive (climb taller steps without jumping,
+     * but also more risk of popping to the top of a tall column).
+     * 0.6 m is the historical Minecraft-style "auto-step half a
+     * block" feel. */
+    float step_height_m;
+
+    /* Camera-cylinder collider radius. The eye sits EYE_HEIGHT above
+     * the player's feet; when the eye gets closer than this distance
+     * to a solid voxel face at eye depth, the player is pushed back
+     * along the offending direction so the near plane doesn't clip
+     * through the wall. Must be >= the perspective near plane (0.3 m)
+     * with some margin. 0.4 m gives a 10 cm cushion. Set to 0 to
+     * disable the collider entirely. */
+    float camera_collider_radius_m;
 
     /* Water physics — ported from JS PlayerConfig WATER_* knobs.
      *   gravity_mult         — multiplier on body gravity while

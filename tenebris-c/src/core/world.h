@@ -66,6 +66,18 @@ typedef struct world_s {
     uint8_t*             saved;
     int                  saved_bytes;
 
+    /* "Column has been edited from the procgen baseline" bitset.
+     * Set the FIRST time any voxel in the column is mutated via
+     * world_set; never cleared. Lets the collision code skip the
+     * voxel scan and trust the analytic procgen surface for any
+     * column that's still pristine - i.e. the 99% case. The dirty
+     * bit can't be reused here because it's cleared on remesh and
+     * also gets set on neighbour-tile mesh-seam invalidations
+     * that aren't actually edits. The saved bit is null in SP and
+     * server-only in MP. Sized like dirty/saved. */
+    uint8_t*             edited;
+    int                  edited_bytes;
+
     /* Generation progress: how many tiles have had terrain computed so
      * far. Fill is streamed across frames; tiles past this cursor are
      * all BLOCK_AIR. */
@@ -162,5 +174,20 @@ double   world_walkable_floor_near(const world_t* w, int tile,
  * in the column. Returns +1e30 when no ceiling exists (open sky).
  * Used by the vertical integrator to clamp upward motion. */
 double   world_ceiling_above(const world_t* w, int tile, double head_radius_m);
+
+/* Find a safe body-local position above the topmost walkable floor
+ * in the direction `unit_dir` (must be normalised). Returns a vector
+ * pointing FROM the body centre to a point `headroom_m` above that
+ * floor. Used by the fall-through fail-safe so a player who somehow
+ * ended up beneath the planet's MINIMUM LINE (bedrock floor) gets
+ * placed back at the actual surface ABOVE wherever they fell from -
+ * not teleported across the planet to a prime-meridian spawn point.
+ *
+ * If the tile has no walkable floor at all (ungenerated, or
+ * pathological all-solid / all-air column), returns
+ * body.radius_m + headroom_m along unit_dir as a sane fallback.
+ * Never returns a zero vector. */
+dvec3_t  world_safe_spawn_local(const world_t* w, dvec3_t unit_dir,
+                                double headroom_m);
 
 #endif
