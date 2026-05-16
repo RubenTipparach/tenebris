@@ -987,6 +987,16 @@ static void on_close(net_conn_t* conn, net_close_reason_t reason, void* user) {
     (void)conn; (void)user;
     printf("[net-client] socket closed (reason=%d, state=%d)\n",
            (int)reason, (int)C.state);
+    /* Manual disconnect path: net_client_disconnect already set
+     * state=IDLE and zeroed C.conn before this async close callback
+     * fired. Promoting that to ERROR here would (a) leak a stale
+     * "lost connection to server" into error_message that the menu
+     * later reads on the next MP attempt, and (b) put the client
+     * into a state that doesn't reflect what the user did
+     * (intentional quit, not a failure). Stay in IDLE. */
+    if (C.state == NET_CLIENT_IDLE) {
+        return;
+    }
     /* Pick a message based on whether the handshake had completed. A
      * close before READY means we never reached the server (refused,
      * DNS, blocked); after READY means the link dropped mid-session. */

@@ -1180,8 +1180,19 @@ static void mark_sp_saves_applied(const world_t* w) {
 }
 
 static void maybe_apply_sp_resume(void) {
+    /* Reset the latch the moment we leave SP. Without this, a player
+     * who quits SP -> main menu -> re-enters SP (or quits MP -> SP)
+     * gets the early-return below and the resume side effects
+     * (chat_clear, per-body save apply, saved-pose teleport) never
+     * fire on the second entry. Symptom: the SP world appears to
+     * "not start" because the player is left at whatever MP / stale
+     * position they had on quit, the saved pose sits unconsumed in
+     * M.pending_sp_resume, and old chat lines bleed through. */
+    if (menu_state() != GAME_IN_GAME_SP) {
+        G_sp_resume_applied = false;
+        return;
+    }
     if (G_sp_resume_applied) return;
-    if (menu_state() != GAME_IN_GAME_SP) return;
 
     /* Wipe any chat history left over from a prior MP session. SP
      * has no chat at all so the floating-chat panel must stay
