@@ -1694,17 +1694,12 @@ void renderer_draw_moons(mat4_t view, mat4_t proj, vec3_t camera_world) {
     frustum_plane_t frustum[6];
     extract_frustum(vp_base, frustum);
 
-    /* renderer_draw_world already drew detailed (close-enough) bodies
-     * via their chunked meshes. This pass picks up bodies that are
-     * far away enough to swap to a single flat-shaded icosphere. The
-     * 0.30 angular-size threshold (= radius/dist; equivalent to
-     * "distance > 3.33 × radius") matches the cull check in the
-     * other two paths so a body is exclusively on either hexes OR
-     * icosphere, never both. The earlier value 0.12 (= dist > 8.3 R)
-     * was too lax — mid-distance planets like Sequoia at ~2.2 km
-     * from Tenebris kept rendering ~163k-tile hex meshes the player
-     * couldn't visually resolve. */
-    const float LOD_RATIO = 0.30f;
+    /* renderer_draw_world already drew the player's home body via
+     * its chunked mesh. This pass picks up EVERY other body as an
+     * icosphere - exactly one body is allowed to draw chunks at
+     * a time (the active one), so the angular-size threshold that
+     * used to gate close mid-distance non-active bodies is gone:
+     * non-active = LOD, always. */
 
     sg_apply_pipeline(R.pip_distant);
     for (int bi = 0; bi < R.body_count; ++bi) {
@@ -1728,15 +1723,12 @@ void renderer_draw_moons(mat4_t view, mat4_t proj, vec3_t camera_world) {
          * renders when chunked WOULDN'T. The active body uses ONLY
          * the 5 km hard cutoff (so a player standing on Tenebris
          * doesn't see an icosphere over the world they're walking
-         * on); non-active bodies use the radius/dist ratio too so
-         * mid-distance planets read as icospheres instead of full
-         * meshes. The dist > 5 km branch catches the home planet
-         * the moment the player flies out far enough that
-         * chunks are unloaded. */
+         * on). EVERY other body draws LOD here regardless of
+         * angular size - exactly one body is allowed to draw chunks
+         * at a time, and that's the active one. */
         const float MAX_DETAIL_DIST_M = 5000.0f;
         const bool is_active = (bi == R.active_body_idx);
-        const bool chunked_drew = (dist <= MAX_DETAIL_DIST_M)
-                              && (is_active || (body->radius_m / dist) >= LOD_RATIO);
+        const bool chunked_drew = is_active && (dist <= MAX_DETAIL_DIST_M);
         if (chunked_drew) continue;
 
         mat4_t model = mat4_mul(mat4_translate(body->world_pos),
@@ -2896,7 +2888,6 @@ void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world,
      * Threshold matches renderer_draw_moons (3.33 × radius cutoff). */
     frustum_plane_t frustum[6];
     extract_frustum(vp, frustum);
-    const float LOD_RATIO = 0.30f;
 
     for (int bi = 0; bi < R.body_count; ++bi) {
         chunked_body_t* body = &R.bodies[bi];
@@ -2931,12 +2922,12 @@ void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world,
          * planet that's a smudge on screen anyway. */
         const float MAX_DETAIL_DIST_M = 5000.0f;
         const bool too_far = (dist > MAX_DETAIL_DIST_M);
-        /* For non-active bodies the existing radius/dist ratio still
-         * gates close-LOD; for the active body we ONLY skip via the
-         * hard distance cutoff so a player exploring the home planet
-         * doesn't suddenly lose chunks on a hill. */
-        const bool distant = too_far
-                         || (!is_active && (body->radius_m / dist) < LOD_RATIO);
+        /* Only the ACTIVE body draws chunked terrain. Every other body
+         * goes to the icosphere LOD regardless of angular size - so a
+         * Sequoia floating a few hundred metres off Crag's surface
+         * doesn't keep its full 160k-tile mesh up. Active body still
+         * has to be within the 5 km hard cutoff. */
+        const bool distant = too_far || !is_active;
         if (distant) {
             /* Release the chunked mesh + GPU buffers once we cross
              * the cutoff so the memory footprint of a body the
@@ -3072,11 +3063,9 @@ void renderer_draw_water(mat4_t view, mat4_t proj, vec3_t camera_world) {
     mat4_t vp = mat4_mul(proj, view);
     frustum_plane_t frustum[6];
     extract_frustum(vp, frustum);
-    /* Match the terrain LOD cutoff so distant water (icosphere LOD
-     * shows the body as a flat sphere) doesn't also render its full
-     * cap mesh — it's invisible at that distance and triples the
-     * draw cost. */
-    const float LOD_RATIO = 0.30f;
+    /* Only the active body draws its water cap. Non-active bodies
+     * show the icosphere LOD only - the cap is invisible at that
+     * distance and triples the draw cost. */
 
     sg_apply_pipeline(R_PERF_MODE ? R.pip_water_mobile : R.pip_water);
     for (int bi = 0; bi < R.body_count; ++bi) {
@@ -3094,8 +3083,10 @@ void renderer_draw_water(mat4_t view, mat4_t proj, vec3_t camera_world) {
          * cap mesh either - the cap is invisible at that distance
          * and just burns frame time. */
         const float MAX_DETAIL_DIST_M = 5000.0f;
-        const bool distant = (dist > MAX_DETAIL_DIST_M)
-                         || (!is_active && (body->radius_m / dist) < LOD_RATIO);
+        /* Only the active body draws its water cap. Non-active
+         * bodies show their icosphere LOD only (no translucent
+         * water mesh) - matches the chunked-terrain rule. */
+        const bool distant = (dist > MAX_DETAIL_DIST_M) || !is_active;
         if (distant) continue;
         body_draw_water(body, vp, camera_world);
     }

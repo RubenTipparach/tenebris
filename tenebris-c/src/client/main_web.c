@@ -1934,6 +1934,18 @@ static void frame(void) {
         if (gq.body && gq.body != G.player.body) {
             player_set_body(&G.player, gq.body);
         }
+        /* Keep the renderer's "active body" in sync with whichever
+         * body the player is currently bound to. The active body is
+         * the ONLY one allowed to render its full chunked terrain;
+         * everything else swaps to the LOD icosphere regardless of
+         * angular size. Without this re-bind, whatever body was
+         * registered first (Tenebris by default) stayed active
+         * forever and kept its 160k-tile mesh in memory + on screen
+         * even when the player had flown a planet away. */
+        if (G.player.body) {
+            world_t* active_w = world_for_body(G.player.body);
+            if (active_w) renderer_set_active_world(active_w);
+        }
     }
     /* Route physics through the world that backs the player's
      * current body. player_update will re-query gravity internally
