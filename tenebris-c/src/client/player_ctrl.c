@@ -270,13 +270,14 @@ static dvec3_t try_horizontal_step(const world_t* w,
      * candidate tile is impassable from this elevation. */
     double  cand_gr   = world_walkable_floor_near(w, cand_tile, feet_r, body_height_m);
     if (cand_gr <= -1e8) {
-        /* No walkable+headroom-clear floor on the candidate tile.
-         * Check if the tile is ungenerated (in which case let the
-         * player drift) vs. genuinely blocked. */
-        if (cand_tile < 0 || cand_tile >= w->tile_count || cand_tile >= w->gen_cursor) {
-            return candidate;
-        }
-        return pos;  /* blocked — too tight or no floor */
+        /* No floor on the candidate tile - genuinely blocked (truly
+         * invalid tile index or a column the body_height_m headroom
+         * check rejected). Ungenerated tiles are no longer a
+         * fall-through hazard: world_walkable_floor_near returns
+         * the analytic procgen surface for them, which catches us
+         * here as a real cand_gr the step check below evaluates
+         * normally. */
+        return pos;
     }
     const double step_h = (double)config_lod()->step_height_m;
     if (cand_gr - feet_r > step_h) return pos;  /* wall — slide */

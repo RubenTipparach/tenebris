@@ -317,11 +317,46 @@ static double world_step_height(void) {
     return (double)config_lod()->step_height_m;
 }
 
+/* Synthetic-surface fallback for tiles that haven't streamed yet.
+ * world_walkable_floor_near hands this back when the requested tile
+ * is past gen_cursor instead of returning the "no floor" sentinel,
+ * so the player's collision code can carry on as if the analytic
+ * proc-noise surface were there - the actual terrain will overwrite
+ * it the moment the tile generates a frame or two later.
+ *
+ * Without this, ungenerated tiles read as bottomless: try_horizontal_step
+ * lets the player drift in (per its "ungenerated = let the player
+ * drift" branch), the ground snap then can't find a floor, and the
+ * player falls all the way through the body until the MINIMUM LINE
+ * safety net catches them. The analytic surface keeps them on the
+ * presumptive ground while streaming catches up.
+ *
+ * Out-of-grid tile indices (truly invalid) still return -1e9; this
+ * only kicks in for valid-but-not-yet-generated columns. */
+static double world_analytic_surface_r(const world_t* w, int tile) {
+    if (!w || !w->grid || tile < 0 || tile >= w->tile_count) return -1e9;
+    const goldberg_tile_t* t = goldberg_tile(w->grid, tile);
+    if (!t) return -1e9;
+    float surface_m = planet_surface_altitude(w->body, t->center);
+    if (w->body->barren) surface_m *= 0.3f;
+    return w->body->radius_m + (double)surface_m;
+}
+
 double world_walkable_floor_near(const world_t* w, int tile,
                                  double target_radius_m,
                                  double body_height_m) {
-    if (!w || tile < 0 || tile >= w->tile_count || tile >= w->gen_cursor) {
+    if (!w || tile < 0 || tile >= w->tile_count) {
         return -1e9;
+    }
+    if (tile >= w->gen_cursor) {
+        /* Ungenerated tile - return the analytic surface so the
+         * player walks on the procgen's predicted ground instead of
+         * falling into a bottomless column. Headroom isn't
+         * meaningful here (there's nothing above the surface yet),
+         * so we ignore body_height_m. The real terrain will replace
+         * this value as soon as the tile streams. */
+        (void)body_height_m;
+        return world_analytic_surface_r(w, tile);
     }
     const uint8_t* col = &w->blocks[tile * WORLD_MAX_DEPTH];
 
