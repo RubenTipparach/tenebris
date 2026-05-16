@@ -351,7 +351,21 @@ static double world_analytic_surface_r(const world_t* w, int tile) {
     if (!t) return -1e9;
     float surface_m = planet_surface_altitude(w->body, t->center);
     if (w->body->barren) surface_m *= 0.3f;
-    return w->body->radius_m + (double)surface_m;
+    /* Snap to the same block boundary planet_gen writes the topmost
+     * solid block on. planet_gen computes:
+     *   surface_idx = floor(surface_m / BLOCK_HEIGHT) + SEA_LEVEL_IDX
+     *   topmost solid block lives at depth surface_idx
+     *   walkable floor radius = depth_to_radius(surface_idx + 1)
+     *                        = body.radius + floor(surface_m) + 1
+     * Returning body.radius + surface_m (the raw analytic float)
+     * left a 0..1 m mismatch with the actual mesh - depending on
+     * the fractional part of surface_m, the ground snap landed the
+     * player INSIDE the topmost solid block, looked grounded for a
+     * frame, then re-dropped because the next physics tick saw
+     * "feet in solid, no floor below" and reverted. Aligning here
+     * means analytic gr == mesh gr exactly. */
+    double floor_blocks = floor((double)surface_m) + 1.0;
+    return w->body->radius_m + floor_blocks;
 }
 
 double world_walkable_floor_near(const world_t* w, int tile,

@@ -662,7 +662,7 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
             dvec3_t unit_dir = (r_now > 1e-6)
                 ? dvec3_scale(local, 1.0 / r_now)
                 : dvec3_make(1, 0, 0);
-            dvec3_t safe_local = world_safe_spawn_local(w, unit_dir, 2.0);
+            dvec3_t safe_local = world_safe_spawn_local(w, unit_dir, 5.0);
             dvec3_t center = dvec3_make(p->body->pos_x,
                                         p->body->pos_y,
                                         p->body->pos_z);
