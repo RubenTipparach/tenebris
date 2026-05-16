@@ -1571,6 +1571,39 @@ static void body_load_detail(chunked_body_t* body) {
     fflush(stdout);
 }
 
+/* Inverse of body_load_detail: release the per-chunk CPU mesh
+ * arrays + GPU buffers + tile->chunk assignment table so the body
+ * goes back to the same state it had at register time. The distant
+ * LOD icosphere + albedo/normal textures stay live so the far-LOD
+ * draw keeps working. Called from renderer_draw_world when a body
+ * the player has just flown 5+ km away from no longer needs its
+ * 160k-tile chunked mesh in memory; subsequent re-approach
+ * re-meshes via body_load_detail. */
+static void body_unload_detail(chunked_body_t* body) {
+    if (!body->meshed && !body->chunks_allocated) return;
+    for (int i = 0; i < CHUNK_COUNT; ++i) {
+        mesh_chunk_t* c = &body->chunks[i];
+        if (c->mesh.vertices)       hex_mesh_free(&c->mesh);
+        if (c->water_mesh.vertices) hex_mesh_free(&c->water_mesh);
+        if (c->vbuf.id)        { sg_destroy_buffer(c->vbuf);        c->vbuf = (sg_buffer){0}; }
+        if (c->ibuf.id)        { sg_destroy_buffer(c->ibuf);        c->ibuf = (sg_buffer){0}; }
+        if (c->water_vbuf.id)  { sg_destroy_buffer(c->water_vbuf);  c->water_vbuf = (sg_buffer){0}; }
+        if (c->water_ibuf.id)  { sg_destroy_buffer(c->water_ibuf);  c->water_ibuf = (sg_buffer){0}; }
+        c->last_uploaded_index_count       = 0;
+        c->last_uploaded_water_idx_count   = 0;
+        c->vbuf_capacity = c->ibuf_capacity = 0;
+        c->water_vbuf_capacity = c->water_ibuf_capacity = 0;
+    }
+    free(body->tile_to_chunk);
+    body->tile_to_chunk     = NULL;
+    body->chunks_allocated  = false;
+    body->meshed            = false;
+    printf("[renderer] unloaded detail for %s (body=%u) - far-LOD only now\n",
+           body->world && body->world->body ? body->world->body->name : "(unknown)",
+           body->world && body->world->body ? (unsigned)body->world->body->id : 0u);
+    fflush(stdout);
+}
+
 /* Backwards-compat shim — main_web.c still calls renderer_register_moon
  * for non-Tenebris bodies. Same behavior as renderer_register_world. */
 void renderer_register_moon(world_t* w) { renderer_register_world(w); }
@@ -1691,8 +1724,20 @@ void renderer_draw_moons(mat4_t view, mat4_t proj, vec3_t camera_world) {
         vec3_t delta = vec3_sub(body->world_pos, camera_world);
         float  dist  = vec3_length(delta);
         if (dist < 1.0f) dist = 1.0f;
-        const bool distant = (body->radius_m / dist) < LOD_RATIO;
-        if (!distant) continue;     /* close ones drew their chunks already */
+        /* Mirror the exact terrain-draw condition (inverted): LOD
+         * renders when chunked WOULDN'T. The active body uses ONLY
+         * the 5 km hard cutoff (so a player standing on Tenebris
+         * doesn't see an icosphere over the world they're walking
+         * on); non-active bodies use the radius/dist ratio too so
+         * mid-distance planets read as icospheres instead of full
+         * meshes. The dist > 5 km branch catches the home planet
+         * the moment the player flies out far enough that
+         * chunks are unloaded. */
+        const float MAX_DETAIL_DIST_M = 5000.0f;
+        const bool is_active = (bi == R.active_body_idx);
+        const bool chunked_drew = (dist <= MAX_DETAIL_DIST_M)
+                              && (is_active || (body->radius_m / dist) >= LOD_RATIO);
+        if (chunked_drew) continue;
 
         mat4_t model = mat4_mul(mat4_translate(body->world_pos),
                                 mat4_scale_uniform(body->radius_m));
@@ -2876,10 +2921,31 @@ void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world,
         vec3_t delta = vec3_sub(body->world_pos, camera_world);
         float  dist  = vec3_length(delta);
         if (dist < 1.0f) dist = 1.0f;
-        /* The active body is by definition close enough to count as
-         * detailed. For others, swap to the icosphere LOD when small. */
-        const bool distant = !is_active && (body->radius_m / dist) < LOD_RATIO;
-        if (distant) continue;
+        /* "Too far for chunked detail" hard cutoff. Applies to EVERY
+         * body, including the active one - lets the player fly clear
+         * of Tenebris into another body's gravity well (or just into
+         * deep space) and the home planet drops to its icosphere LOD
+         * the same way moons do. Without this, the active body kept
+         * rendering its full 160k-tile chunked mesh at 5+ km, fighting
+         * the LOD icosphere for the same pixels and burning CPU on a
+         * planet that's a smudge on screen anyway. */
+        const float MAX_DETAIL_DIST_M = 5000.0f;
+        const bool too_far = (dist > MAX_DETAIL_DIST_M);
+        /* For non-active bodies the existing radius/dist ratio still
+         * gates close-LOD; for the active body we ONLY skip via the
+         * hard distance cutoff so a player exploring the home planet
+         * doesn't suddenly lose chunks on a hill. */
+        const bool distant = too_far
+                         || (!is_active && (body->radius_m / dist) < LOD_RATIO);
+        if (distant) {
+            /* Release the chunked mesh + GPU buffers once we cross
+             * the cutoff so the memory footprint of a body the
+             * player has flown 5+ km away from doesn't linger.
+             * body_load_detail will rebuild from scratch on re-
+             * approach; the cost is the same as the initial mesh. */
+            if (body->meshed) body_unload_detail(body);
+            continue;
+        }
         if (!body->meshed) body_load_detail(body);
         body_draw_chunks(body, vp, R.env.camera_world);
     }
@@ -3023,7 +3089,13 @@ void renderer_draw_water(mat4_t view, mat4_t proj, vec3_t camera_world) {
         vec3_t delta = vec3_sub(body->world_pos, camera_world);
         float  dist  = vec3_length(delta);
         if (dist < 1.0f) dist = 1.0f;
-        const bool distant = !is_active && (body->radius_m / dist) < LOD_RATIO;
+        /* Mirror the terrain pass's hard 5 km cutoff so a body the
+         * player has flown clear of doesn't keep drawing its water
+         * cap mesh either - the cap is invisible at that distance
+         * and just burns frame time. */
+        const float MAX_DETAIL_DIST_M = 5000.0f;
+        const bool distant = (dist > MAX_DETAIL_DIST_M)
+                         || (!is_active && (body->radius_m / dist) < LOD_RATIO);
         if (distant) continue;
         body_draw_water(body, vp, camera_world);
     }

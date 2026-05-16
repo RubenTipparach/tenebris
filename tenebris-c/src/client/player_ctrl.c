@@ -816,24 +816,25 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
             p->basis.up = target_up;
             orthonormalise_basis(&p->basis);
             p->basis_ready = true;
-            /* Reset yaw/pitch to zero so the post-slerp basis is
-             * exactly the look direction the player ended up at. */
-            p->yaw = 0.0f;
-            p->pitch = 0.0f;
+            /* yaw/pitch scalars accumulated during the slerp stay -
+             * compute_look applies them on top of the now-aligned
+             * basis so the look direction is continuous across the
+             * slerp end. Previously we zeroed them here, which threw
+             * away mouse input that came in during the slerp. */
         }
-        /* During the slerp, mouse-look applies to the basis directly
-         * (so the player can keep looking around). The yaw/pitch
-         * scalars stay zero until the slerp ends; we'll re-key them
-         * after. */
-        if (yaw_delta != 0.0) {
-            p->basis.fwd   = rotate_axis_angle(p->basis.fwd,   p->basis.up, -yaw_delta);
-            p->basis.right = rotate_axis_angle(p->basis.right, p->basis.up, -yaw_delta);
-        }
-        if (pitch_delta != 0.0) {
-            p->basis.fwd = rotate_axis_angle(p->basis.fwd, p->basis.right, pitch_delta);
-            p->basis.up  = rotate_axis_angle(p->basis.up,  p->basis.right, pitch_delta);
-            orthonormalise_basis(&p->basis);
-        }
+        /* Mouse input during a slerp accumulates into the scalar
+         * yaw/pitch (same path as steady-state planet mode) instead
+         * of mutating basis directly. The old code rotated basis.up
+         * by pitch_delta which fought the slerp's basis.up target,
+         * and at slerp-end the forced p->basis.up = target_up was
+         * the visible rotation snap. Treating yaw/pitch as scalars
+         * here lets the slerp own basis.up exclusively while the
+         * player keeps a responsive look during the transition;
+         * compute_look layers the scalars on top each frame. */
+        p->yaw   += (float)yaw_delta;
+        p->pitch += (float)pitch_delta;
+        if (p->pitch >  PITCH_LIMIT) p->pitch =  PITCH_LIMIT;
+        if (p->pitch < -PITCH_LIMIT) p->pitch = -PITCH_LIMIT;
     } else {
         sync_basis_to_planet(p);
         /* Standard tangent-mouse-look — yaw rotates basis.fwd /

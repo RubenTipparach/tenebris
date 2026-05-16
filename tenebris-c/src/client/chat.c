@@ -60,6 +60,15 @@ bool chat_is_active(void) { return C.active; }
 
 void chat_begin_session(void) {
     C.session_grace_until_s = stm_sec(stm_now()) + CHAT_JOIN_GRACE_S;
+    /* Demote every retained message to backlog so the floating
+     * panel doesn't auto-open with stale chatter from a prior
+     * session (player rejoined an hour later but the last few
+     * messages still sit within the 5-minute live window of the
+     * monotonic clock). The compose box's full scrollback still
+     * shows them when the player explicitly opens chat. */
+    for (int i = 0; i < C.count; ++i) {
+        C.history[i].is_backlog = true;
+    }
 }
 
 void chat_post_recv(uint32_t player_id, const char* name, const char* text) {
