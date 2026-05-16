@@ -636,12 +636,55 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
         p->last_tile = -1;
     }
 
-    /* (Fall-through respawn fail-safe removed - the ground-snap
-     * vertical-overshoot rescue below catches the cases this used
-     * to handle, without the side-effect of teleporting the player
-     * radially when collision is working correctly. If a true fall-
-     * through resurfaces, fix the root cause in the snap above
-     * rather than re-adding a radial teleport here.) */
+    /* Hard fall-through safety net. The ground-snap overshoot rescue
+     * below handles 99% of "feet ended up below the floor" cases per
+     * frame, but if something slips past it (extreme lag spike,
+     * collision-solver edge case, dt clamp pile-up) the player can
+     * drop below the body's MINIMUM LINE - the bedrock floor at
+     * depth 0, i.e. body.radius_m - 64 m for a standard 128-deep
+     * shell. Below that radius is no longer "inside the world"; the
+     * column is meaningless and the snap rescue can't recover.
+     *
+     * Snap the player BACK UP to the surface ABOVE wherever they
+     * fell from (their current tangential direction), not to a
+     * fixed prime-meridian spawn point - preserves the spot the
+     * player was playing in. The threshold floors at 0.5 m so tiny
+     * asteroids (where body.radius - 64 m is negative) still get a
+     * non-degenerate check. */
+    if (p->body && !p->is_in_space && w && w->body == p->body) {
+        const double bedrock_r  = (double)p->body->radius_m - 64.0;
+        const double min_line_r = (bedrock_r > 0.5) ? bedrock_r : 0.5;
+        dvec3_t local = dvec3_sub(p->position,
+            dvec3_make(p->body->pos_x, p->body->pos_y, p->body->pos_z));
+        double r_now = dvec3_length(local);
+        if (r_now < min_line_r) {
+            dvec3_t unit_dir = (r_now > 1e-6)
+                ? dvec3_scale(local, 1.0 / r_now)
+                : dvec3_make(1, 0, 0);
+            dvec3_t safe_local = world_safe_spawn_local(w, unit_dir, 2.0);
+            dvec3_t center = dvec3_make(p->body->pos_x,
+                                        p->body->pos_y,
+                                        p->body->pos_z);
+            fprintf(stderr,
+                    "[player] WARN: fell through MINIMUM LINE on body=%s "
+                    "(r=%.2f < %.2f, body_radius=%.1f); popping back up to "
+                    "surface at this direction (new_r=%.2f)\n",
+                    p->body->name, r_now, min_line_r,
+                    (double)p->body->radius_m,
+                    dvec3_length(safe_local));
+            fflush(stderr);
+            p->position = dvec3_add(center, safe_local);
+            p->velocity = dvec3_make(0, 0, 0);
+            p->grounded = false;
+            p->basis_ready = false;
+            p->last_tile = -1;
+            p->transition_timer_s = L->roll_slerp_duration_s;
+            p->yaw = 0.0f;
+            p->pitch = 0.0f;
+            jerk_log(p, &before, w, dt);
+            return;
+        }
+    }
     /* Edge: planet → space. Bake the planet-mode yaw/pitch into the
      * basis so the look direction is preserved when compute_look
      * stops adding them on top, then drop into 6DOF mutation of the
