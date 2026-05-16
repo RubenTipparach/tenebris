@@ -2248,7 +2248,12 @@ static void frame(void) {
     renderer_draw_sun(view, proj);
     profiler_end("draw-sun");
     profiler_begin("draw-world");
-    renderer_draw_world(view, proj, G.world, cam_world, dt);
+    /* Pass the active body's world, not G.world. renderer_draw_world
+     * uses this arg to (re)mark the active body for chunked rendering
+     * - hardcoding G.world here was reverting active to Tenebris
+     * every single frame, fighting the gravity-tracker's per-frame
+     * sync above and producing the visible LOD flap on Crag. */
+    renderer_draw_world(view, proj, phys_world, cam_world, dt);
     profiler_end("draw-world");
     profiler_begin("draw-moons");
     renderer_draw_moons(view, proj, cam_world);
