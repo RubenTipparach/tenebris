@@ -1,37 +1,18 @@
 #include "core/world_water.h"
 #include "core/world.h"
 #include "core/blocks.h"
+#include "core/config.h"
 #include "core/goldberg.h"
 
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
-/* ---------------------------------------------------------------------
- * Step-1 defaults. Step 3 (water.yaml `flow:` section) replaces these
- * with config_water_flow() reads. Keeping them here as #defines, not
- * inline literals, so the swap is a one-line rename per usage.
- *
- * Per the CLAUDE.md "no magic numbers" rule, anything a designer might
- * want to turn lives in YAML. These are placeholders until that lands;
- * the comment above each documents the eventual YAML key.
- * ------------------------------------------------------------------- */
-
-/* water.yaml flow.queue_capacity */
-#define DEFAULT_QUEUE_CAPACITY      4096
-
-/* water.yaml flow.search_radius — BFS depth used by
- * choose_horizontal_targets when looking for the nearest cell with a
- * downward hole. MC uses 4. */
-#define DEFAULT_SEARCH_RADIUS       4
-
-/* water.yaml flow.source_min_neighbours — 2-of-N threshold for
- * flowing -> source promotion (section 6 of water.md). */
-#define DEFAULT_SOURCE_MIN_NBRS     2
-
-/* Local working-set caps for the per-tick BFS. Set high enough that a
- * radius-4 search on a hex grid (max ~61 visited cells) never needs to
- * truncate, low enough to stay on the stack. */
+/* Per-tick BFS working-set caps. These bound the stack-allocated search
+ * arrays in bfs_distance_to_hole; they're a function of the largest
+ * search_radius value the YAML knob could realistically take (a radius-
+ * 4 hex search visits ~61 cells worst case, radius-6 visits ~127), so
+ * they live as compile-time consts rather than YAML overrides. */
 #define BFS_MAX_VISITED             128
 #define BFS_MAX_FRONTIER            64
 
@@ -110,7 +91,14 @@ world_water_t* world_water_create(const world_t* w) {
     if (!ww) return NULL;
     ww->state_count = w->tile_count * WORLD_MAX_DEPTH;
     ww->state = (uint8_t*)calloc((size_t)ww->state_count, 1);
-    ww->cap   = DEFAULT_QUEUE_CAPACITY;
+    /* Queue capacity read at create time. If config_load_water hasn't
+     * fired yet the static default applies; runtime YAML reloads are
+     * not retroactively resized (the queue lives for the world's
+     * lifetime). Floor at 1 so a hostile YAML can't allocate zero
+     * bytes. */
+    int cap = config_water_flow()->queue_capacity;
+    if (cap < 1) cap = 1;
+    ww->cap   = cap;
     ww->queue = (uint32_t*)calloc((size_t)ww->cap, sizeof(uint32_t));
     ww->scheduled_bytes = (ww->state_count + 7) / 8;
     ww->scheduled = (uint8_t*)calloc((size_t)ww->scheduled_bytes, 1);
@@ -286,22 +274,27 @@ static int choose_horizontal_targets(const world_t* w, int tile, int depth,
     const goldberg_tile_t* t = goldberg_tile(w->grid, tile);
     if (!t || out_max <= 0) return 0;
     int n = t->num_neighbors;
+    /* search_radius is a runtime knob - clamped down so a pathological
+     * YAML value can't blow the stack-allocated BFS arrays. */
+    int radius = config_water_flow()->search_radius;
+    if (radius < 1) radius = 1;
+    if (radius > BFS_MAX_FRONTIER) radius = BFS_MAX_FRONTIER;
 
     int dist[GOLDBERG_MAX_NEIGHBORS];
-    int min_dist = DEFAULT_SEARCH_RADIUS + 1;
+    int min_dist = radius + 1;
     for (int k = 0; k < n; ++k) {
         int nb = t->edge_neighbours[k];
         if (nb < 0 || !is_passable_for_search(w, nb, depth)) {
             dist[k] = INT_MAX;
             continue;
         }
-        dist[k] = bfs_distance_to_hole(w, nb, depth, DEFAULT_SEARCH_RADIUS);
+        dist[k] = bfs_distance_to_hole(w, nb, depth, radius);
         if (dist[k] < min_dist) min_dist = dist[k];
     }
 
     int count = 0;
     /* No direction found a hole within range: spread to all passable. */
-    if (min_dist > DEFAULT_SEARCH_RADIUS) {
+    if (min_dist > radius) {
         for (int k = 0; k < n && count < out_max; ++k) {
             int nb = t->edge_neighbours[k];
             if (nb >= 0 && is_passable_for_search(w, nb, depth)) {
@@ -350,6 +343,10 @@ static bool should_promote_to_source(const world_t* w, int tile, int depth) {
 
     const goldberg_tile_t* t = goldberg_tile(w->grid, tile);
     if (!t) return false;
+    /* 2-of-N threshold is a YAML knob. Floor at 1 so a misconfigured
+     * value can't make every flowing cell instantly promote. */
+    int threshold = config_water_flow()->source_min_nbrs;
+    if (threshold < 1) threshold = 1;
     int sources = 0;
     for (int k = 0; k < t->num_neighbors; ++k) {
         int nb = t->edge_neighbours[k];
@@ -358,7 +355,7 @@ static bool should_promote_to_source(const world_t* w, int tile, int depth) {
         uint8_t ns = world_water_get_state(w, nb, depth);
         if (water_state_is_source(ns) || ns == 0u) {
             ++sources;
-            if (sources >= DEFAULT_SOURCE_MIN_NBRS) return true;
+            if (sources >= threshold) return true;
         }
     }
     return false;
@@ -396,8 +393,13 @@ static void try_propagate(world_t* w, int tile, int depth, int own_level) {
         }
     }
 
-    /* 3b. Horizontal: only if we have level budget left. */
-    if (own_level >= WATER_LEVEL_MAX) return;
+    /* 3b. Horizontal: only if we have level budget left. Same YAML
+     * cap as the drying check in tick_cell - keeps the two sides of
+     * the spread / decay rule in agreement. */
+    int max_level = config_water_flow()->max_level;
+    if (max_level < 0)               max_level = 0;
+    if (max_level > WATER_LEVEL_MAX) max_level = WATER_LEVEL_MAX;
+    if (own_level >= max_level) return;
     int targets[GOLDBERG_MAX_NEIGHBORS];
     int n = choose_horizontal_targets(w, tile, depth, targets,
                                        GOLDBERG_MAX_NEIGHBORS);
@@ -426,6 +428,14 @@ static void try_propagate(world_t* w, int tile, int depth, int own_level) {
 /* The per-cell tick. Section 5 of water.md, end-to-end. */
 static void tick_cell(world_t* w, int tile, int depth) {
     if (!cell_in_range(w, tile, depth)) return;
+
+    /* Effective spread-distance cap. YAML can set this lower than the
+     * bit-field's hard ceiling (7) to make streams shorter; values
+     * outside [0, WATER_LEVEL_MAX] are clamped so a hostile config
+     * can't break the state byte invariant. */
+    int max_level = config_water_flow()->max_level;
+    if (max_level < 0)               max_level = 0;
+    if (max_level > WATER_LEVEL_MAX) max_level = WATER_LEVEL_MAX;
 
     block_t blk = world_get(w, tile, depth);
     if (blk != BLOCK_WATER) {
@@ -487,8 +497,9 @@ static void tick_cell(world_t* w, int tile, int depth) {
         }
     }
 
-    /* No supplier in range -> dry up. */
-    if (supplier_level > WATER_LEVEL_MAX) {
+    /* No supplier in range -> dry up. Uses the YAML-configured cap so
+     * designers can dial stream length without touching code. */
+    if (supplier_level > max_level) {
         world_set(w, tile, depth, BLOCK_AIR);
         world_water_clear_state(w, tile, depth);
         schedule_neighbours(w, tile, depth);

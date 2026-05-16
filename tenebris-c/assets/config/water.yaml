@@ -176,3 +176,59 @@ water:
   #                               colour with sky_horizon at fade_m.
   horizon_fade_m:          600.0
   horizon_fade_strength:   0.55
+
+  # ---- Per-voxel water-flow automaton (water_flow_config_t).
+  # Separate from everything above - those knobs tune the planet-wide
+  # sea-level cap (shader / mesh); the ones below tune the cellular
+  # water in core/world_water.c, which moves around and reacts to edits.
+  # See tenebris-c/water.md for the full plan / algorithm.
+  #
+  # flow_max_level           int   max flowing level before drying up.
+  #                                Capped at 7 by the 3-bit state field
+  #                                regardless of YAML value; lower = shorter
+  #                                streams. 7 matches Minecraft's 8-step
+  #                                ladder.
+  # flow_search_radius       int   BFS depth (hex steps) used by the
+  #                                nearest-hole pathfinder when picking
+  #                                horizontal spread direction. 4 matches MC.
+  # flow_ticks_per_step      int   sim ticks between scheduler calls. 5
+  #                                matches MC's "5 game ticks per block".
+  # flow_max_ticks_per_step  int   per-call cap on cells popped from the
+  #                                queue. Bounds per-frame cost when a big
+  #                                body of water re-converges.
+  # flow_queue_capacity      int   ring-buffer size (cells). Overflow drops
+  #                                the oldest pending tick; the world re-
+  #                                converges as soon as something adjacent
+  #                                wakes the dropped cell again.
+  # flow_source_min_nbrs     int   2-of-N threshold for flowing -> source
+  #                                promotion. 2 = MC behaviour (renewable
+  #                                water from a 3-tile triangle on hex);
+  #                                3 = pentagons need a fuller basin.
+  # flow_persist_falling     int   0 = falling cells reconstruct from
+  #                                neighbours on reload (cheap I/O), 1 =
+  #                                falling cells round-trip to disk on
+  #                                every tick (no reload transient).
+  #
+  # ---- Visual / rendering knobs - read by the mesher (step 6) and
+  # shader (step 7). Defined here so simulation + look stay in one file.
+  #
+  # flow_uv_speed_falling    float V scroll speed on falling side faces
+  #                                (units / sec). Positive moves texels
+  #                                radially inward (down).
+  # flow_uv_speed_per_level  float cap UV scroll speed per level-diff
+  #                                between this cell and its lowest
+  #                                horizontal neighbour.
+  # flow_min_film_fraction   float min cap height as fraction of voxel
+  #                                height. Keeps the thinnest film visible
+  #                                instead of going to zero.
+  flow_max_level:           7
+  flow_search_radius:       4
+  flow_ticks_per_step:      5
+  flow_max_ticks_per_step:  256
+  flow_queue_capacity:      4096
+  flow_source_min_nbrs:     2
+  flow_persist_falling:     0
+
+  flow_uv_speed_falling:    1.0
+  flow_uv_speed_per_level:  0.25
+  flow_min_film_fraction:   0.12
