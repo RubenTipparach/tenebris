@@ -1,4 +1,5 @@
 #include "client/hotbar_ui.h"
+#include "client/input.h"          /* publishes slot hitboxes for touch hit-tests */
 #include "client/renderer.h"
 #include "client/hex_mesher.h"   /* HEX_ATLAS_TILES, HEX_ATLAS_U_STEP */
 #include "core/blocks.h"
@@ -11,13 +12,20 @@
 
 #include <stdio.h>
 
-/* Slot geometry (pixels). Slots are square; the bar sits centred
- * along the bottom edge with a small margin so it clears the mobile
- * joysticks at the corners. */
-#define SLOT_SIZE       48.0f
-#define SLOT_GAP        6.0f
-#define BOTTOM_MARGIN   18.0f
-#define ICON_PAD        4.0f
+/* Slot geometry (pixels). Desktop uses 48 px slots centred at the
+ * bottom; on mobile (perf mode) we shrink to 36 px so 9 slots fit a
+ * ~412 CSS-px phone width. Mobile layout puts the inventory at the
+ * VERY BOTTOM (so the player's thumb naturally reaches it) and
+ * stacks the joysticks + action buttons above. The joystick CSS
+ * (main_web.c) is positioned to sit just above this bar - keep the
+ * three stacks (hotbar / joysticks / action buttons) coordinated. */
+#define SLOT_SIZE_DESKTOP       48.0f
+#define SLOT_GAP_DESKTOP         6.0f
+#define BOTTOM_MARGIN_DESKTOP   18.0f
+#define SLOT_SIZE_MOBILE        36.0f
+#define SLOT_GAP_MOBILE          3.0f
+#define BOTTOM_MARGIN_MOBILE     8.0f
+#define ICON_PAD                4.0f
 
 static sgl_pipeline P_FRAME;     /* untextured alpha-blended frames + bg */
 static sgl_pipeline P_ICON;      /* textured alpha-blended icon quads    */
@@ -84,11 +92,37 @@ void hotbar_ui_draw(const inventory_t* inv) {
     const float h = sapp_heightf();
     if (w <= 0.0f || h <= 0.0f) return;
 
+    /* Mobile gets smaller slots + a higher bottom margin so the bar
+     * fits a phone screen and clears the virtual joysticks at the
+     * bottom corners. renderer_perf_mode_enabled() matches the same
+     * is-mobile gate the joysticks themselves use, so the two layouts
+     * stay consistent. */
+    const bool  mobile   = renderer_perf_mode_enabled();
+    const float SLOT_SIZE     = mobile ? SLOT_SIZE_MOBILE     : SLOT_SIZE_DESKTOP;
+    const float SLOT_GAP      = mobile ? SLOT_GAP_MOBILE      : SLOT_GAP_DESKTOP;
+    const float BOTTOM_MARGIN = mobile ? BOTTOM_MARGIN_MOBILE : BOTTOM_MARGIN_DESKTOP;
+
     const int   slots   = INV_HOTBAR_SLOTS;
     const float total_w = (float)slots * SLOT_SIZE
                         + (float)(slots - 1) * SLOT_GAP;
     const float x0 = (w - total_w) * 0.5f;
     const float y0 = h - BOTTOM_MARGIN - SLOT_SIZE;
+
+    /* Publish the slot hitboxes to input.c so a touch on a slot
+     * selects it. Mobile-only feature - desktop uses number keys /
+     * mouse wheel and doesn't need the touch dispatch (and we don't
+     * want a stray click on the canvas to clobber the keyboard
+     * selection). Setting slot_count = 0 deactivates the tap path. */
+    input_state_t* in_mut = input_state_mut();
+    if (mobile) {
+        in_mut->hotbar_x0         = x0;
+        in_mut->hotbar_y0         = y0;
+        in_mut->hotbar_slot_size  = SLOT_SIZE;
+        in_mut->hotbar_slot_pitch = SLOT_SIZE + SLOT_GAP;
+        in_mut->hotbar_slot_count = slots;
+    } else {
+        in_mut->hotbar_slot_count = 0;
+    }
 
     /* Open a fresh sgl frame at pixel coordinates: (0,0) top-left,
      * (w,h) bottom-right. mobile_ui_draw uses an identical setup; the

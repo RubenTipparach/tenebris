@@ -7,6 +7,7 @@
 #include <stdarg.h> /* va_list for the HTTP dashboard's JSON builder */
 #include <sys/resource.h>   /* getrusage for the /status CPU sampler */
 #include <unistd.h>         /* sysconf for clock ticks + core count */
+#include "core/config.h"
 #include "core/net_transport.h"
 #include "core/planet.h"
 #include "core/proto.h"
@@ -1045,6 +1046,12 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
             }
             /* Drop out-of-order packets — keep only the freshest pose. */
             if (cl->has_state && st.client_tick <= cl->last_client_tick) break;
+            /* (Server-side fall-through pose-correction removed - the
+             * client's collision now keeps the player on the surface
+             * via the ground-snap overshoot rescue, so a sub-surface
+             * pose arriving here is no longer expected. If one
+             * resurfaces it'll persist as-is and the diagnostic on
+             * the client side will surface the bug.) */
             bool first = !cl->has_state;
             cl->has_state        = true;
             cl->body_id          = st.body_id;

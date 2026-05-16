@@ -48,6 +48,18 @@ typedef struct {
     float btn_menu_ok_cx,    btn_menu_ok_cy,    btn_menu_ok_r;
     float btn_menu_close_cx, btn_menu_close_cy, btn_menu_close_r;
 
+    /* Hotbar slot row hit-rects (pixels). hotbar_ui_draw fills these
+     * every frame so a touch on the visible hotbar can be classified
+     * as a slot select. The row is a strip of slot_count equal-size
+     * square slots starting at (x0, y0), pitched by slot_pitch
+     * horizontally. slot_count = 0 deactivates the tap dispatch (e.g.
+     * on desktop where the keyboard handles selection). */
+    float hotbar_x0;
+    float hotbar_y0;
+    float hotbar_slot_size;
+    float hotbar_slot_pitch;
+    int   hotbar_slot_count;
+
     /* True while we have any touch input going; renderer uses this to
      * decide whether to draw the mobile overlay. */
     bool  touch_active;

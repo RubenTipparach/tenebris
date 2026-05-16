@@ -1,5 +1,6 @@
 #include "client/player_ctrl.h"
 #include "client/input.h"
+#include "client/settings.h"
 #include "core/config.h"
 #include <math.h>
 #include <stdio.h>
@@ -8,7 +9,6 @@
 #define M_PI 3.14159265358979323846
 #endif
 
-#define MOUSE_SENS       0.002f
 #define LOOK_STICK_SENS  2.4f
 #define WALK_SPEED       8.0f
 #define SPRINT_SPEED    14.0f
@@ -86,6 +86,29 @@ static void orthonormalise_basis(tangent_basis_t* b) {
     b->right = dvec3_normalize(dvec3_cross(b->fwd, b->up));
 }
 
+/* Maximum per-frame parallel-transport rotation in sync_basis_to_planet.
+ * Anything larger means the player has been teleported tangentially in
+ * a single frame (lag-spike + velocity*dt overshoot, residual
+ * spaceflight momentum during a slerp, a buggy collision response push
+ * — historical sources of the "random rotation snap" symptom). Rather
+ * than transporting fwd/right through a 10°+ rotation in one step,
+ * which the player perceives as a camera snap, arm the roll-slerp so
+ * the rotation eases across multiple frames. */
+#define ANTI_SNAP_MAX_RAD     0.0873   /* ~5° per frame */
+
+/* Total elapsed time the diagnostic has seen. Used to rate-limit
+ * chatty INFO transitions (body swap, space flip) AND the anti-snap
+ * warning so a long session can't flood the console. ERRORs aren't
+ * rate-limited — a real wild rotate is something we want every
+ * instance of. */
+static double s_jerk_clock_s     = 0.0;
+static double s_jerk_last_info_s = -1e9;
+
+/* Throttle for the anti-snap diagnostic print so a sustained source
+ * (e.g. the player physically standing on a violently-moving body)
+ * can't flood the console. */
+static double s_anti_snap_last_log_s = -1e9;
+
 /* Re-align the player's persistent tangent basis to the planet
  * radial up. Used in planet mode (after the transition slerp ends)
  * where basis.up must track the surface normal as the player walks
@@ -101,6 +124,61 @@ static void sync_basis_to_planet(player_ctrl_t* p) {
         return;
     }
     dvec3_t old_up = p->basis.up;
+    double up_dot = dvec3_dot(old_up, new_up);
+    if (up_dot >  1.0) up_dot =  1.0;
+    if (up_dot < -1.0) up_dot = -1.0;
+    double up_angle = acos(up_dot);
+    /* Anti-snap diagnostic: any rotation >5° in one frame is something
+     * we want to know about - it indicates an outside-of-physics
+     * position teleport (loaded-pose apply, body-swap that skipped
+     * the slerp arm, lag spike with surviving tangential velocity, etc.).
+     *
+     * The OLD behaviour here was to leave basis.up stale and arm the
+     * 3-second roll-slerp to "smooth" the rotation. That looked better
+     * on screen but broke physics: with basis.up pointing 30° off from
+     * the real radial, gravity decomposed wrong (~50% of g acted
+     * tangentially), the player accelerated sideways for the whole
+     * slerp window, drifted into wall columns the ground-snap couldn't
+     * rescue them from, and ended up below bedrock - the
+     * 'fell through MINIMUM LINE' chain. Correctness wins: update
+     * basis.up immediately, strip any inherited tangential velocity
+     * (the position teleport made it meaningless), and let the camera
+     * snap once. The visible snap is *unavoidable* given the position
+     * teleport that caused this - we just stop compounding it. */
+    if (up_angle > ANTI_SNAP_MAX_RAD) {
+        if (s_jerk_clock_s - s_anti_snap_last_log_s > 1.0) {
+            double vL = dvec3_length(p->velocity);
+            double vy = dvec3_dot(p->velocity, new_up);
+            fprintf(stderr,
+                    "[player] WARN: anti-snap fired - basis.up rotated "
+                    "%.2f deg in one frame (limit %.2f deg). "
+                    "body=%s pos=(%.2f,%.2f,%.2f) |v|=%.2f vy_new=%.2f "
+                    "trans=%.3fs space=%d. "
+                    "Forcing basis update + clearing tangential velocity "
+                    "to prevent physics runaway.\n",
+                    up_angle * (180.0 / M_PI),
+                    (double)ANTI_SNAP_MAX_RAD * (180.0 / M_PI),
+                    p->body ? p->body->name : "(null)",
+                    p->position.x, p->position.y, p->position.z,
+                    vL, vy,
+                    (double)p->transition_timer_s,
+                    p->is_in_space ? 1 : 0);
+            fflush(stderr);
+            s_anti_snap_last_log_s = s_jerk_clock_s;
+        }
+        /* Strip tangential velocity. After a tangential teleport the
+         * old vel_tan no longer points in a meaningful direction; if
+         * we kept it, gravity-decomposition-of-old-velocity along the
+         * NEW radial would compound the misalignment over the next
+         * frames. Keep the radial (vy) component so gravity / jump /
+         * jetpack carry over cleanly. */
+        double vy_new = dvec3_dot(p->velocity, new_up);
+        p->velocity = dvec3_scale(new_up, vy_new);
+    }
+    /* Fall through to the normal parallel-transport path. fwd/right
+     * rotate by the shortest-arc rotation from old_up to new_up so the
+     * look direction stays continuous; basis.up snaps to the radial
+     * exactly. */
     p->basis.fwd   = rotate_between(old_up, new_up, p->basis.fwd);
     p->basis.right = rotate_between(old_up, new_up, p->basis.right);
     p->basis.up    = new_up;
@@ -195,16 +273,16 @@ static dvec3_t walk_wish(const player_ctrl_t* p, const phys_input_t* in) {
     return wish;
 }
 
-/* Max step-up the player can take horizontally without jumping. Walking
- * onto a column whose floor exceeds (current feet radius + STEP_HEIGHT)
- * is treated as a vertical wall and blocked. Matches the Minecraft
- * "auto-step-up half a block" feel; tall walls require jump/jetpack. */
-#define STEP_HEIGHT 0.6
+/* Max step-up the player can take horizontally without jumping is
+ * sourced from lod.yaml's step_height_m. Walking onto a column whose
+ * floor exceeds (current feet radius + step_height) is treated as a
+ * vertical wall and blocked. Matches the Minecraft "auto-step-up half
+ * a block" feel; tall walls require jump/jetpack. */
 
 /* Try to apply `delta` to `pos` along the body's tangent plane. The
  * candidate tile is rejected (and the move slides) if either:
  *   - no walkable floor exists at or below the player's feet within
- *     STEP_HEIGHT (i.e. a wall blocks the move), or
+ *     step_height_m (i.e. a wall blocks the move), or
  *   - the headroom above the candidate floor is less than body_height
  *     (i.e. moving forward would push the player's head into the
  *     ceiling of a low passage). */
@@ -223,16 +301,101 @@ static dvec3_t try_horizontal_step(const world_t* w,
      * candidate tile is impassable from this elevation. */
     double  cand_gr   = world_walkable_floor_near(w, cand_tile, feet_r, body_height_m);
     if (cand_gr <= -1e8) {
-        /* No walkable+headroom-clear floor on the candidate tile.
-         * Check if the tile is ungenerated (in which case let the
-         * player drift) vs. genuinely blocked. */
-        if (cand_tile < 0 || cand_tile >= w->tile_count || cand_tile >= w->gen_cursor) {
-            return candidate;
-        }
-        return pos;  /* blocked — too tight or no floor */
+        /* No floor on the candidate tile - genuinely blocked (truly
+         * invalid tile index or a column the body_height_m headroom
+         * check rejected). Ungenerated tiles are no longer a
+         * fall-through hazard: world_walkable_floor_near returns
+         * the analytic procgen surface for them, which catches us
+         * here as a real cand_gr the step check below evaluates
+         * normally. */
+        return pos;
     }
-    if (cand_gr - feet_r > STEP_HEIGHT) return pos;  /* wall — slide */
+    const double step_h = (double)config_lod()->step_height_m;
+    if (cand_gr - feet_r > step_h) return pos;  /* wall — slide */
     return candidate;
+}
+
+/* ----------------------------------------------------------------------- */
+
+/* Push the player horizontally away from any solid voxel face whose
+ * boundary sits within camera_collider_radius_m of the eye (at eye
+ * depth). Acts as a "fat" cylinder around the eye/camera so the
+ * perspective near plane never finds itself on the wrong side of a
+ * wall.
+ *
+ * Each Goldberg tile has up to 6 edge-neighbours; the wall between
+ * tile A and tile B lies on the perpendicular bisector plane of the
+ * line A.center → B.center (extruded radially). Distance from the
+ * eye to that plane is the projection of (midpoint - eye) onto the
+ * normalised separation. If the neighbour's voxel at eye_depth is
+ * solid and that distance is less than the collider radius, we push
+ * the player back along the wall normal by the penetration amount,
+ * projected into the tangent plane so the radial position (and any
+ * ground-snap fixup above) stays untouched.
+ *
+ * The push contributions for the (up to) 6 walls sum, so a player
+ * wedged into a corner gets pushed diagonally away from BOTH walls
+ * in a single frame. */
+static void camera_collider_push(world_t* w, player_ctrl_t* p, int cur_tile) {
+    const lod_config_t* L = config_lod();
+    float radius_m = L->camera_collider_radius_m;
+    if (radius_m <= 0.0f) return;
+    if (!w || cur_tile < 0 || cur_tile >= w->tile_count) return;
+    const goldberg_tile_t* t = goldberg_tile(w->grid, cur_tile);
+    if (!t) return;
+
+    dvec3_t center  = dvec3_make(p->body->pos_x, p->body->pos_y, p->body->pos_z);
+    dvec3_t eye_pos = dvec3_add(p->position, dvec3_scale(p->basis.up, (double)EYE_HEIGHT));
+    dvec3_t eye_local = dvec3_sub(eye_pos, center);
+    double  eye_r   = dvec3_length(eye_local);
+    if (eye_r < 1e-6) return;
+    int     eye_depth = world_radius_to_depth(w, eye_r);
+    if (eye_depth < 0 || eye_depth >= WORLD_MAX_DEPTH) return;
+
+    dvec3_t total_push = dvec3_make(0, 0, 0);
+    for (int k = 0; k < t->num_neighbors; ++k) {
+        int nb = t->edge_neighbours[k];
+        if (nb < 0 || nb >= w->tile_count) continue;
+        /* Ungenerated columns read as all-air; nothing to collide with. */
+        if (nb >= w->gen_cursor) continue;
+        block_t nb_block = (block_t)w->blocks[(size_t)nb * WORLD_MAX_DEPTH + eye_depth];
+        if (!block_is_solid(nb_block)) continue;
+
+        const goldberg_tile_t* tn = goldberg_tile(w->grid, nb);
+        if (!tn) continue;
+
+        /* Wall plane: perpendicular bisector of (t.center → tn.center). */
+        dvec3_t to_nb = dvec3_sub(tn->center, t->center);
+        double  to_nb_len = dvec3_length(to_nb);
+        if (to_nb_len < 1e-9) continue;
+        dvec3_t n_norm = dvec3_scale(to_nb, 1.0 / to_nb_len);
+
+        /* Midpoint on the unit sphere, projected to eye radius so the
+         * comparison is in physical metres at the eye's depth. */
+        dvec3_t mid = dvec3_scale(dvec3_add(t->center, tn->center), 0.5);
+        double  mid_len = dvec3_length(mid);
+        if (mid_len < 1e-9) continue;
+        mid = dvec3_scale(mid, eye_r / mid_len);
+
+        /* Signed perpendicular distance from eye to the wall plane,
+         * positive when the wall is on the +n_norm (neighbour) side
+         * of the eye. */
+        dvec3_t to_mid = dvec3_sub(mid, eye_local);
+        double  dist = dvec3_dot(to_mid, n_norm);
+        if (dist >= (double)radius_m) continue;  /* far enough */
+
+        double penetration = (double)radius_m - dist;
+        /* Accumulate a horizontal push along -n_norm by the
+         * penetration amount, projected onto the tangent plane so
+         * radial position stays as the ground snap left it. */
+        dvec3_t push = dvec3_scale(n_norm, -penetration);
+        double  radial_part = dvec3_dot(push, p->basis.up);
+        push = dvec3_sub(push, dvec3_scale(p->basis.up, radial_part));
+        total_push = dvec3_add(total_push, push);
+    }
+    if (dvec3_dot(total_push, total_push) > 1e-9) {
+        p->position = dvec3_add(p->position, total_push);
+    }
 }
 
 /* ----------------------------------------------------------------------- */
@@ -293,22 +456,26 @@ typedef struct {
 
 /* Wild-rotation thresholds (steady-state planet mode only). Walking
  * smoothly produces basis changes of ~0.05° / frame at 60 fps; ground
- * snap can yield up to STEP_HEIGHT (0.6 m) of vertical pop on a step-
- * up; horizontal motion caps at SPRINT_SPEED * dt ≈ 0.23 m / frame.
- * The thresholds are well above those expected values so normal
- * gameplay stays silent. */
+ * snap can yield up to step_height_m (0.6 m) of vertical pop on a
+ * step-up; horizontal motion caps at SPRINT_SPEED * dt ≈ 0.23 m /
+ * frame. The thresholds are well above those expected values so
+ * normal gameplay stays silent.
+ *
+ * The basis-up threshold is intentionally separate from the position
+ * one because basis.up rotates by `tangent_dist / body_radius`
+ * radians: a 0.5 m tangent slide on a 10 m asteroid (small body)
+ * gives 2.9° even though the slide is below the position threshold.
+ * To keep the basis check meaningful on small bodies we compare the
+ * basis rotation against what the actual position change would
+ * expect - see jerk_log for the expected-rotation calc. */
 #define JERK_UP_DELTA_RAD       0.0349   /* ~2°  */
 #define JERK_FWD_DELTA_RAD      0.0349   /* ~2°  */
 #define JERK_POS_FUDGE_M        1.0      /* tolerance over velocity * dt */
 #define JERK_RATE_LIMIT_S       0.25     /* max one [INFO] line per quarter-second */
 
-/* Total elapsed time the diagnostic has seen. Used purely to rate-
- * limit chatty INFO transitions (body swap, space flip) so they
- * don't spam during a long flight that crosses several SOI edges.
- * ERRORs aren't rate-limited — a real wild rotate is something we
- * want every instance of. */
-static double s_jerk_clock_s = 0.0;
-static double s_jerk_last_info_s = -1e9;
+/* (s_jerk_clock_s + s_jerk_last_info_s declared near the top of the
+ * file so sync_basis_to_planet's anti-snap warning can rate-limit
+ * itself against the same shared clock without forward-declarations.) */
 
 static void jerk_log(const player_ctrl_t* p, const jerk_snapshot_t* prev,
                      world_t* w, float dt) {
@@ -322,10 +489,16 @@ static void jerk_log(const player_ctrl_t* p, const jerk_snapshot_t* prev,
     if (dvec3_dot(prev->basis_up, prev->basis_up) < 0.5) return;
 
     /* Snapshot deltas. */
-    double dx = p->position.x - prev->position.x;
-    double dy = p->position.y - prev->position.y;
-    double dz = p->position.z - prev->position.z;
-    double pos_jump = sqrt(dx*dx + dy*dy + dz*dz);
+    dvec3_t dpos = dvec3_sub(p->position, prev->position);
+    double pos_jump = dvec3_length(dpos);
+    /* Decompose Δpos into radial (along prev->basis.up - the planet
+     * up the player perceived ENTERING this frame) and tangential
+     * (perpendicular). On a planet, radial-only motion can't rotate
+     * basis.up; only tangential motion does. So when a rotation
+     * snap is reported, the tangential component is what to blame. */
+    double pos_radial   = dvec3_dot(dpos, prev->basis_up);
+    dvec3_t pos_tan_vec = dvec3_sub(dpos, dvec3_scale(prev->basis_up, pos_radial));
+    double pos_tangent  = dvec3_length(pos_tan_vec);
     double up_dot  = dvec3_dot(p->basis.up,  prev->basis_up);
     double fwd_dot = dvec3_dot(p->basis.fwd, prev->basis_fwd);
     if (up_dot  >  1.0) up_dot  =  1.0;
@@ -334,6 +507,14 @@ static void jerk_log(const player_ctrl_t* p, const jerk_snapshot_t* prev,
     if (fwd_dot < -1.0) fwd_dot = -1.0;
     double up_angle  = acos(up_dot);
     double fwd_angle = acos(fwd_dot);
+    /* Expected basis.up rotation: arc length pos_tangent traversed
+     * on the body sphere subtends pos_tangent / body_radius radians.
+     * If the actual rotation is much larger than this, the basis
+     * jumped without a corresponding position move - that's the bug
+     * symptom (basis re-init / parallel-transport from a stale up). */
+    double body_radius  = prev->body ? (double)prev->body->radius_m : 1.0;
+    double up_expected  = pos_tangent / (body_radius > 1e-3 ? body_radius : 1.0);
+    double up_excess    = up_angle - up_expected;
     double vL_prev   = dvec3_length(prev->velocity);
     bool   body_changed  = (p->body != prev->body);
     bool   space_flipped = (p->is_in_space != prev->is_in_space);
@@ -351,12 +532,21 @@ static void jerk_log(const player_ctrl_t* p, const jerk_snapshot_t* prev,
 
     /* ---- ERROR class: anomalies in steady-state planet mode that
      * the player would perceive as a snap. Logged unconditionally
-     * (no rate-limit) so a single occurrence shows up. */
+     * (no rate-limit) so a single occurrence shows up. The basis-up
+     * rotation check is compared against the EXPECTED rotation
+     * derived from the tangent-plane position move - that way a
+     * legitimate fast sprint on a small asteroid (which produces a
+     * geometrically large per-frame basis rotation) doesn't false-
+     * trigger, but a basis flip without a matching tangential move
+     * (the actual bug we're hunting) is still caught. */
     const char* err_reason = NULL;
     if (!transitioning) {
-        if (up_angle > JERK_UP_DELTA_RAD) {
-            err_reason = "wild basis.up rotation";
-        } else if (fwd_angle > JERK_FWD_DELTA_RAD) {
+        if (up_excess > JERK_UP_DELTA_RAD) {
+            err_reason = "wild basis.up rotation (exceeds tangent-move expectation)";
+        } else if (fwd_angle > JERK_FWD_DELTA_RAD && pos_tangent < 0.5) {
+            /* basis.fwd shouldn't rotate beyond yaw-input changes
+             * when the player is stationary. The pos_tangent gate
+             * catches the small-body case the same way. */
             err_reason = "wild basis.fwd rotation";
         } else {
             /* Position jump > what velocity*dt + ground-snap step
@@ -403,19 +593,33 @@ static void jerk_log(const player_ctrl_t* p, const jerk_snapshot_t* prev,
     }
     bool world_matches = (w && w->body == p->body);
 
-    printf("%s [jerk] %s :: dt=%.4fs body:%s->%s alt:%.1f->%.1f "
-           "Δpos=%.3fm Δup=%.2f° Δfwd=%.2f° "
+    /* Velocity decomposition matches the position one: radial vs
+     * tangential w.r.t. the entry basis.up. Tangential velocity is
+     * the bit that can legitimately move basis.up; a high tangential
+     * velocity with a small position move (or vice versa) hints at
+     * which solver step desynced. */
+    double vy_prev   = dvec3_dot(prev->velocity, prev->basis_up);
+    dvec3_t vt_prev  = dvec3_sub(prev->velocity, dvec3_scale(prev->basis_up, vy_prev));
+    double vL_tan    = dvec3_length(vt_prev);
+    printf("%s [jerk] %s :: dt=%.4fs body:%s->%s r=%.1fm alt:%.1f->%.1f "
+           "Δpos=%.3fm (radial=%+.3f tangent=%.3f) "
+           "Δup=%.2f° (expected %.2f° from tangent; excess %.2f°) "
+           "Δfwd=%.2f° "
            "is_space=%d->%d grounded=%d->%d trans=%.3fs->%.3fs "
-           "|v|=%.2f world_matches=%d\n",
+           "|v|=%.2f (radial=%+.2f tangent=%.2f) world_matches=%d\n",
            prefix, reason,
-           (double)dt, old_name, new_name, prev_alt, next_alt,
-           pos_jump, up_angle * (180.0 / M_PI),
+           (double)dt, old_name, new_name, body_radius, prev_alt, next_alt,
+           pos_jump, pos_radial, pos_tangent,
+           up_angle * (180.0 / M_PI),
+           up_expected * (180.0 / M_PI),
+           up_excess * (180.0 / M_PI),
            fwd_angle * (180.0 / M_PI),
            prev->is_in_space, p->is_in_space,
            prev->grounded, p->grounded,
            (double)prev->transition_timer_s,
            (double)p->transition_timer_s,
            dvec3_length(p->velocity),
+           vy_prev, vL_tan,
            world_matches ? 1 : 0);
     fflush(stdout);
 }
@@ -463,6 +667,73 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
         p->body = gq.body;
         p->last_tile = -1;
     }
+
+    /* Hard fall-through safety net. The ground-snap overshoot rescue
+     * below handles 99% of "feet ended up below the floor" cases per
+     * frame, but if something slips past it (extreme lag spike,
+     * collision-solver edge case, dt clamp pile-up) the player can
+     * drop below the body's MINIMUM LINE - the bedrock floor at
+     * depth 0, i.e. body.radius_m - 64 m for a standard 128-deep
+     * shell. Below that radius is no longer "inside the world"; the
+     * column is meaningless and the snap rescue can't recover.
+     *
+     * Snap the player BACK UP to the surface ABOVE wherever they
+     * fell from (their current tangential direction), not to a
+     * fixed prime-meridian spawn point - preserves the spot the
+     * player was playing in. The threshold floors at 0.5 m so tiny
+     * asteroids (where body.radius - 64 m is negative) still get a
+     * non-degenerate check. */
+    if (p->body && !p->is_in_space && w && w->body == p->body) {
+        const double bedrock_r  = (double)p->body->radius_m - 64.0;
+        const double min_line_r = (bedrock_r > 0.5) ? bedrock_r : 0.5;
+        dvec3_t local = dvec3_sub(p->position,
+            dvec3_make(p->body->pos_x, p->body->pos_y, p->body->pos_z));
+        double r_now = dvec3_length(local);
+        if (r_now < min_line_r) {
+            dvec3_t unit_dir = (r_now > 1e-6)
+                ? dvec3_scale(local, 1.0 / r_now)
+                : dvec3_make(1, 0, 0);
+            dvec3_t safe_local = world_safe_spawn_local(w, unit_dir, 5.0);
+            dvec3_t center = dvec3_make(p->body->pos_x,
+                                        p->body->pos_y,
+                                        p->body->pos_z);
+            fprintf(stderr,
+                    "[player] WARN: fell through MINIMUM LINE on body=%s "
+                    "(r=%.2f < %.2f, body_radius=%.1f); popping back up to "
+                    "surface at this direction (new_r=%.2f)\n",
+                    p->body->name, r_now, min_line_r,
+                    (double)p->body->radius_m,
+                    dvec3_length(safe_local));
+            fflush(stderr);
+            p->position = dvec3_add(center, safe_local);
+            p->velocity = dvec3_make(0, 0, 0);
+            p->grounded = false;
+            p->last_tile = -1;
+            /* Cold-rebuild the basis FROM the new position so basis.up
+             * is the radial at the surface we just teleported to.
+             * Critical: without this the basis kept whatever stale
+             * orientation it had during the fall (pointing toward
+             * the body's centre, the old radial), and the next
+             * frame's gravity decomposed against the wrong basis.up
+             * - velocity component along the wrong axis - so the
+             * player kept falling in the same wrong direction and
+             * tripped the safety net again. Same reason the
+             * ground-snap rescue couldn't catch them: its vy <= 0
+             * check is on dot(velocity, basis.up), which reads
+             * positive when basis.up points back where the player
+             * came from. Cold rebuild fixes both. */
+            player_rebuild_basis(p);
+            /* No slerp - this is a teleport, not a smooth body
+             * transition. Slerping would leave 3 s of stale-basis
+             * physics on top of an explicit "fix this now" action.
+             * Caller still hears the WARN print so the root cause
+             * (whatever produced the sub-bedrock state) is
+             * diagnosable. */
+            p->transition_timer_s = 0.0f;
+            jerk_log(p, &before, w, dt);
+            return;
+        }
+    }
     /* Edge: planet → space. Bake the planet-mode yaw/pitch into the
      * basis so the look direction is preserved when compute_look
      * stops adding them on top, then drop into 6DOF mutation of the
@@ -497,8 +768,11 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
     }
 
     /* Mouse / look-stick deltas — combined inputs in radians. */
-    double yaw_delta   =  (double)in->mouse_dx * MOUSE_SENS;
-    double pitch_delta = -(double)in->mouse_dy * MOUSE_SENS;
+    /* Mouse sensitivity is a runtime setting (Settings menu); fetch
+     * once per frame so a slider change takes effect immediately. */
+    const double mouse_sens = (double)settings_mouse_sensitivity();
+    double yaw_delta   =  (double)in->mouse_dx * mouse_sens;
+    double pitch_delta = -(double)in->mouse_dy * mouse_sens;
     if (in->look_stick_active) {
         yaw_delta   += (double)in->look_stick_x * LOOK_STICK_SENS * (double)dt;
         pitch_delta += (double)in->look_stick_y * LOOK_STICK_SENS * (double)dt;
@@ -590,24 +864,25 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
             p->basis.up = target_up;
             orthonormalise_basis(&p->basis);
             p->basis_ready = true;
-            /* Reset yaw/pitch to zero so the post-slerp basis is
-             * exactly the look direction the player ended up at. */
-            p->yaw = 0.0f;
-            p->pitch = 0.0f;
+            /* yaw/pitch scalars accumulated during the slerp stay -
+             * compute_look applies them on top of the now-aligned
+             * basis so the look direction is continuous across the
+             * slerp end. Previously we zeroed them here, which threw
+             * away mouse input that came in during the slerp. */
         }
-        /* During the slerp, mouse-look applies to the basis directly
-         * (so the player can keep looking around). The yaw/pitch
-         * scalars stay zero until the slerp ends; we'll re-key them
-         * after. */
-        if (yaw_delta != 0.0) {
-            p->basis.fwd   = rotate_axis_angle(p->basis.fwd,   p->basis.up, -yaw_delta);
-            p->basis.right = rotate_axis_angle(p->basis.right, p->basis.up, -yaw_delta);
-        }
-        if (pitch_delta != 0.0) {
-            p->basis.fwd = rotate_axis_angle(p->basis.fwd, p->basis.right, pitch_delta);
-            p->basis.up  = rotate_axis_angle(p->basis.up,  p->basis.right, pitch_delta);
-            orthonormalise_basis(&p->basis);
-        }
+        /* Mouse input during a slerp accumulates into the scalar
+         * yaw/pitch (same path as steady-state planet mode) instead
+         * of mutating basis directly. The old code rotated basis.up
+         * by pitch_delta which fought the slerp's basis.up target,
+         * and at slerp-end the forced p->basis.up = target_up was
+         * the visible rotation snap. Treating yaw/pitch as scalars
+         * here lets the slerp own basis.up exclusively while the
+         * player keeps a responsive look during the transition;
+         * compute_look layers the scalars on top each frame. */
+        p->yaw   += (float)yaw_delta;
+        p->pitch += (float)pitch_delta;
+        if (p->pitch >  PITCH_LIMIT) p->pitch =  PITCH_LIMIT;
+        if (p->pitch < -PITCH_LIMIT) p->pitch = -PITCH_LIMIT;
     } else {
         sync_basis_to_planet(p);
         /* Standard tangent-mouse-look — yaw rotates basis.fwd /
@@ -714,10 +989,16 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
             p->grounded = false;
             p->jump_consumed = true;
         }
-        /* Jetpack stays gated behind the hold threshold AND requires
-         * the player to be dry — swimming is the analogous mechanic
-         * underwater and we don't want both stacking. */
-        if (!body_in_water && p->jump_held_s > L->jetpack_hold_threshold_s && !p->grounded) {
+        /* Jetpack stays gated behind the hold threshold and requires
+         * the player's HEAD to be above water. Below water the swim
+         * thrust (the `eyes_in_water` branch above) is the analogous
+         * mechanic and we don't want both stacking. But when the
+         * player is half-submerged with body in water and head poking
+         * out, the swim thrust is off (eyes dry) and without jetpack
+         * they'd be stuck floating on the surface unable to climb out
+         * — so this branch fires the moment eyes_in_water flips false,
+         * letting them jetpack up out of the water. */
+        if (!eyes_in_water && p->jump_held_s > L->jetpack_hold_threshold_s && !p->grounded) {
             vy += (double)L->jetpack_accel_mps2 * (double)dt;
             if (vy > (double)L->jetpack_max_vy_mps) vy = (double)L->jetpack_max_vy_mps;
         }
@@ -756,8 +1037,13 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
         dvec3_t local_dir = dvec3_normalize(local);
         /* Re-resolve the tile under the player after the position
          * update so the cave-aware floor finder samples the column
-         * we actually moved into. */
-        int     cur_tile = goldberg_find_tile(w->grid, local_dir, p->last_tile);
+         * we actually moved into. The prev_tile snapshot is what
+         * distinguishes a "still in my own column, just overshot
+         * the floor" rescue (snap up regardless of distance) from
+         * a "drifted tangentially into a tall wall column"
+         * (cap snap at step_height to avoid the pop-to-top bug). */
+        int     prev_tile = p->last_tile;
+        int     cur_tile  = goldberg_find_tile(w->grid, local_dir, p->last_tile);
         p->last_tile = cur_tile;
 
         /* Ceiling collision first. If the player's head pokes into a
@@ -790,97 +1076,84 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
             }
         }
 
-        /* Sink-through detector. Scans a SINGLE cell at the player's
-         * body midpoint. The previous "feet up through head" scan
-         * tripped on cave ceilings (head pokes into the ceiling
-         * voxel when jumping inside a cave) and snapped the player
-         * to the top of the column above - aka teleporting them out
-         * of the cave on every jump. The midpoint check avoids that:
-         * a player walking around in a cave has clear air at their
-         * torso, a player who has fallen through a surface into a
-         * deeper cell has solid wrapped around their torso. The
-         * head-cell intersection gets handled by the existing
-         * ceiling clamp earlier in the frame. */
-        int   mid_depth = world_radius_to_depth(w, r + (double)player_height * 0.5);
-        if (mid_depth >= 0 && mid_depth < WORLD_MAX_DEPTH
-            && cur_tile >= 0 && cur_tile < w->tile_count) {
-            block_t mid_block = (block_t)w->blocks[
-                (size_t)cur_tile * WORLD_MAX_DEPTH + mid_depth];
-            int     intersect_depth = -1;
-            block_t intersect_block = BLOCK_AIR;
-            /* block_is_solid is true for everything that isn't air
-             * or water - exposed via blocks.h. Wading through water
-             * doesn't count as sink-through. */
-            if (block_is_solid(mid_block)) {
-                intersect_depth = mid_depth;
-                intersect_block = mid_block;
-            }
-            if (intersect_depth >= 0) {
-                /* Walk up the column for the first solid -> passable
-                 * transition AT OR ABOVE the intersection. The TOP of
-                 * that solid block is where the player should stand. */
-                int rescue_depth = -1;
-                for (int d = intersect_depth; d + 1 < WORLD_MAX_DEPTH; ++d) {
-                    block_t cur = (block_t)w->blocks[
-                        (size_t)cur_tile * WORLD_MAX_DEPTH + d];
-                    block_t up  = (block_t)w->blocks[
-                        (size_t)cur_tile * WORLD_MAX_DEPTH + d + 1];
-                    if (block_is_solid(cur) && !block_is_solid(up)) {
-                        rescue_depth = d;
-                        break;
-                    }
-                }
-                if (rescue_depth >= 0) {
-                    double rescue_r = world_depth_to_radius_m(w, rescue_depth + 1);
-                    fprintf(stderr,
-                            "[player] ERROR: sink-through detected on body=%u "
-                            "tile=%d mid_depth=%d block=%u r=%.3f "
-                            "(velocity_radial=%.3fm/s, dt=%.3fs) - snapping "
-                            "feet up to floor at depth=%d r=%.3f\n",
-                            (unsigned)p->body->id, cur_tile, mid_depth,
-                            (unsigned)intersect_block, r,
-                            dvec3_dot(p->velocity, p->basis.up),
-                            (double)dt,
-                            rescue_depth + 1, rescue_r);
-                    p->position = dvec3_add(
-                        dvec3_make(p->body->pos_x, p->body->pos_y, p->body->pos_z),
-                        dvec3_scale(local_dir, rescue_r));
-                    /* Zero radial velocity so the next frame doesn't
-                     * re-sink. Tangential motion preserved so the
-                     * correction doesn't feel like a hard teleport. */
-                    vy = 0.0;
-                    vel_tan = dvec3_sub(p->velocity,
-                                        dvec3_scale(p->basis.up,
-                                                    dvec3_dot(p->velocity, p->basis.up)));
-                    p->velocity = vel_tan;
-                    /* Refresh the locals the ground-snap below reads. */
-                    local = player_local_pos(p);
-                    r     = dvec3_length(local);
-                } else {
-                    fprintf(stderr,
-                            "[player] ERROR: sink-through detected on body=%u "
-                            "tile=%d mid_depth=%d block=%u r=%.3f but no "
-                            "walkable floor above - column is solid to the top, "
-                            "leaving player in place (will look stuck)\n",
-                            (unsigned)p->body->id, cur_tile, mid_depth,
-                            (unsigned)intersect_block, r);
-                }
-            }
-        }
+        /* (Sink-through detector removed - the per-frame ground snap
+         * + ceiling clamp + horizontal headroom check below cover the
+         * legitimate "feet ended up inside solid" cases without the
+         * aggressive radial teleport the detector used to issue, which
+         * over-corrected on cave ceilings and other edge cases. If
+         * sink-through resurfaces, prefer fixing the root cause in
+         * the collision solver above rather than re-adding a brute-
+         * force radial snap here.) */
 
         /* Cave-aware ground snap. The walkable floor closest to the
          * player's feet wins (preferring at-or-below over above), so
          * walking into a cave with an overhang above and a real floor
          * below resolves to the cave floor instead of the overhang
-         * top. */
+         * top.
+         *
+         * The "feet below floor" branch needs to handle four
+         * distinct situations:
+         *   1. BRIDGE DIP - feet slipped a hair under the floor they
+         *      were ON via gravity. (gr - r) is small. Snap up to
+         *      restore the player to the bridge top.
+         *   2. VERTICAL OVERSHOOT - feet were above THIS column's
+         *      floor at the start of the frame and have ended up
+         *      below it (lag spike, jetpack-fall hitting terrain,
+         *      a multi-tile descent crossing into a slightly-lower
+         *      tile, spawn placing them inside the procgen-vs-mesh
+         *      disagreement). Compared against the start-of-frame
+         *      position so the test works ACROSS tile boundaries -
+         *      the same_tile check we used to lean on missed the
+         *      common "walking + falling = constant tile changes"
+         *      case and let the player fall through.
+         *   3. WARPED - first frame after spawn / teleport / body
+         *      swap (prev_tile = -1). Snap regardless; the warp
+         *      target may have been below the surface.
+         *   4. TANGENTIAL DRIFT INTO A WALL - player was in a hole
+         *      adjacent to a tall column, drifted sideways into the
+         *      column tile. The column's only floor is far above
+         *      (the wall top) AND was above the player's feet at
+         *      frame start too. Do NOT snap - this is the pop-to-
+         *      top-of-wall bug; let the player keep falling so
+         *      gravity carries them clear of the wall column. */
         double gr = world_walkable_floor_near(w, cur_tile, r, 0.0);
+        const double step_h = (double)config_lod()->step_height_m;
         if (gr > -1e8) {
+            bool warped     = (prev_tile < 0);
+            bool small_step = ((gr - r) <= step_h);
+            /* Vertical-overshoot test: was the player AT OR ABOVE this
+             * floor at frame start, and below it now? The 0.05 m
+             * fudge picks up the case where they were grounded
+             * exactly at gr last frame and gravity dipped them under
+             * by less than that this frame. The radial component is
+             * compared against a slightly-conservative copy of gr,
+             * but using the SAME (current-frame) gr for both sides
+             * means a wall-drift case (where last frame's r was deep
+             * below the wall top) doesn't trip - the wall-top is
+             * still way above r_prev, so r_prev >= gr is false. */
+            dvec3_t prev_local = dvec3_sub(before.position,
+                dvec3_make(p->body->pos_x, p->body->pos_y, p->body->pos_z));
+            double r_prev = dvec3_length(prev_local);
+            bool overshoot = (r_prev >= gr - 0.05) && (r < gr);
+            bool rescue    = small_step || warped || overshoot;
             /* Standard wading state: feet under water but grounded
              * on the seabed. Allowed (player still counts as
              * grounded) so they can jump from the bottom. Fully
              * submerged swimming sets grounded=false even when
              * touching a floor — the JS reference does the same. */
-            if (r < gr && vy <= 0.0) {
+            if (r < gr && vy <= 0.0 && rescue) {
+                if (!small_step) {
+                    /* Big snap - log once per event so we can spot
+                     * the pattern in console (helps tell legitimate
+                     * spawn rescues from glitchy-physics events). */
+                    fprintf(stderr,
+                            "[player] INFO: vertical-overshoot rescue "
+                            "(body=%s r=%.2f r_prev=%.2f gr=%.2f Δ=%.2f "
+                            "warped=%d overshoot=%d)\n",
+                            p->body->name, r, r_prev, gr, gr - r,
+                            warped ? 1 : 0, overshoot ? 1 : 0);
+                    fflush(stderr);
+                }
                 dvec3_t snapped_local = dvec3_scale(local_dir, gr);
                 p->position = dvec3_add(
                     dvec3_make(p->body->pos_x, p->body->pos_y, p->body->pos_z),
@@ -898,6 +1171,14 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
         } else {
             p->grounded = false;
         }
+
+        /* Camera-cylinder collider. After all other position updates
+         * have settled, push the player horizontally away from any
+         * solid voxel face whose edge sits closer than
+         * camera_collider_radius_m from the eye at eye-depth. Keeps
+         * the perspective near plane (0.3 m) from clipping through
+         * walls when the player squeezes up against a column. */
+        camera_collider_push(w, p, cur_tile);
     } else {
         p->grounded = false;
     }
@@ -984,11 +1265,21 @@ mat4_t player_view(const player_ctrl_t* p) {
     compute_look(p, &look, &up);
     /* Eye sits EYE_HEIGHT along the body's surface normal — so the
      * camera's up stays aligned with the local "horizon level" of the
-     * body the player is on, matching JS PlanetPlayer.updateCamera. */
+     * body the player is on, matching JS PlanetPlayer.updateCamera.
+     *
+     * View matrix is built from (eye, look_dir, up) rather than
+     * (eye, eye+look, up) so the orientation columns aren't subject
+     * to `target - eye` float subtraction at large world distances.
+     * Bodies live anywhere in a multi-km world ring; at ~300 m
+     * camera-to-world-origin the float epsilon is ~0.005 m, which
+     * leaks into the look vector as ~0.3 deg of orientation noise
+     * per frame - just enough to read as a micro-snap. Computing
+     * the look in doubles (compute_look already does) and passing
+     * the direction directly skips that loss; only the translation
+     * column carries the eye magnitude, which is harmless. */
     dvec3_t eye = dvec3_add(p->position, dvec3_scale(p->basis.up, (double)EYE_HEIGHT));
-    dvec3_t target = dvec3_add(eye, look);
-    vec3_t eye_f = dvec3_to_vec3(eye);
-    vec3_t tgt_f = dvec3_to_vec3(target);
-    vec3_t up_f  = { (float)up.x, (float)up.y, (float)up.z };
-    return mat4_look_at(eye_f, tgt_f, up_f);
+    vec3_t eye_f  = dvec3_to_vec3(eye);
+    vec3_t look_f = { (float)look.x, (float)look.y, (float)look.z };
+    vec3_t up_f   = { (float)up.x,   (float)up.y,   (float)up.z   };
+    return mat4_look_at_dir(eye_f, look_f, up_f);
 }

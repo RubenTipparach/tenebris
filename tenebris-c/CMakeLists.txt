@@ -115,6 +115,7 @@ set(TENEBRIS_CLIENT_SOURCES
     src/client/profile.c
     src/client/client_kv.c
     src/client/remote_players.c
+    src/client/settings.c
 )
 
 # Browser client uses the emscripten/websocket.h bridge (linked with

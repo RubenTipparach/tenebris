@@ -31,6 +31,7 @@
 #include "client/menu.h"
 #include "client/net_client.h"
 #include "client/persistence.h"
+#include "client/settings.h"
 #include "client/profile.h"
 #include "client/remote_players.h"
 #include "client/teleport_menu.h"
@@ -140,6 +141,84 @@ EM_JS(void, tenebris_pause_button_set_visible, (int visible), {
     if (b) b.style.visibility = visible ? 'visible' : 'hidden';
 });
 
+/* Top-right fullscreen toggle. Tap goes to fullscreen via the
+ * Fullscreen API; the button hides itself the moment fullscreen
+ * actually engages (via fullscreenchange listener) since there's
+ * no UI to "exit" beyond the browser's own gesture / Esc key, and
+ * leaving a fullscreen-toggle button visible inside fullscreen is
+ * just chrome. The Fullscreen API isn't supported on iPhone
+ * Safari, so requestFullscreen may be undefined - we silently
+ * no-op there and the rest of the UI keeps working. Smaller than
+ * the pause button (40 px vs 60 px) since it's a secondary
+ * control. */
+EM_JS(void, tenebris_fullscreen_button_install, (void), {
+    if (document.getElementById('tenebris-fullscreen-btn')) return;
+    var btn = document.createElement('button');
+    btn.id = 'tenebris-fullscreen-btn';
+    btn.textContent = '⛶';  /* ⛶ square-four-corners */
+    btn.setAttribute('aria-label', 'Fullscreen');
+    btn.dataset.wantVisible = '0';  /* set by tenebris_fullscreen_button_set_visible */
+    btn.style.cssText =
+        'position:fixed;top:14px;right:14px;width:40px;height:40px;'
+      + 'border-radius:50%;border:2px solid #fff;'
+      + 'background:rgba(15,17,26,0.92);color:#fff;'
+      + 'font-size:20px;font-weight:bold;'
+      + 'display:flex;align-items:center;justify-content:center;'
+      + 'cursor:pointer;z-index:10;'
+      + 'touch-action:manipulation;'
+      + '-webkit-tap-highlight-color:transparent;'
+      + 'box-shadow:0 2px 6px rgba(0,0,0,0.5);'
+      + 'visibility:hidden;';
+    function isFullscreen() {
+        var doc = document;
+        return !!(doc.fullscreenElement
+               || doc.webkitFullscreenElement
+               || doc.mozFullScreenElement
+               || doc.msFullscreenElement);
+    }
+    function refreshVisibility() {
+        /* Show only when C asked for visible AND we are NOT already
+         * fullscreen - once the player is in fullscreen the button
+         * has nothing useful to do (browser gestures / Esc exit), so
+         * leaving it on-screen would just be clutter. */
+        var want = btn.dataset.wantVisible === '1';
+        btn.style.visibility = (want && !isFullscreen()) ? 'visible' : 'hidden';
+    }
+    btn._refresh = refreshVisibility;
+    function toggleFullscreen(ev) {
+        if (ev) ev.preventDefault();
+        try {
+            var doc = document;
+            if (isFullscreen()) {
+                if (doc.exitFullscreen) doc.exitFullscreen();
+                else if (doc.webkitExitFullscreen) doc.webkitExitFullscreen();
+                else if (doc.mozCancelFullScreen) doc.mozCancelFullScreen();
+                else if (doc.msExitFullscreen) doc.msExitFullscreen();
+            } else {
+                var el = doc.documentElement;
+                if (el.requestFullscreen) el.requestFullscreen();
+                else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
+                else if (el.mozRequestFullScreen) el.mozRequestFullScreen();
+                else if (el.msRequestFullscreen) el.msRequestFullscreen();
+            }
+        } catch (e) { /* Fullscreen unsupported (iPhone Safari); no-op */ }
+    }
+    btn.addEventListener('click',    toggleFullscreen);
+    btn.addEventListener('touchend', toggleFullscreen);
+    document.addEventListener('fullscreenchange',       refreshVisibility);
+    document.addEventListener('webkitfullscreenchange', refreshVisibility);
+    document.addEventListener('mozfullscreenchange',    refreshVisibility);
+    document.addEventListener('MSFullscreenChange',     refreshVisibility);
+    document.body.appendChild(btn);
+});
+
+EM_JS(void, tenebris_fullscreen_button_set_visible, (int visible), {
+    var b = document.getElementById('tenebris-fullscreen-btn');
+    if (!b) return;
+    b.dataset.wantVisible = visible ? '1' : '0';
+    if (b._refresh) b._refresh();
+});
+
 /* Full mobile control deck as DOM elements (two virtual joysticks +
  * Jump / Break / Place buttons). Same reason as the pause button:
  * sokol_gl on certain mobile browsers fails to render the sticks
@@ -148,31 +227,38 @@ EM_JS(void, tenebris_pause_button_set_visible, (int visible), {
  * tenebris_js_set_* hooks below. */
 EM_JS(void, tenebris_mobile_controls_install, (void), {
     if (document.getElementById('tenebris-mobile-controls')) return;
+    /* Layered stack (bottom -> top of screen):
+     *   - INVENTORY HOTBAR  (drawn in-canvas by hotbar_ui.c, mobile
+     *     bottom margin = 8 px, 36 px slot height)  → bottom 8..44
+     *   - JOYSTICKS         (these DOM elements, 70 px diameter)
+     *     bottom 56 = 8 + 36 + 12 (hotbar + small gap)  → 56..126
+     *   - ACTION BUTTONS    (44 px diameter, in a row above the
+     *     right joystick)  bottom 138 = 56 + 70 + 12  → 138..182
+     * Coordinate any change to these numbers with hotbar_ui.c's
+     * BOTTOM_MARGIN_MOBILE so the three stacks stay flush. */
     var style = document.createElement('style');
     style.textContent = ''
       + '#tenebris-mobile-controls { position:fixed; inset:0; pointer-events:none; z-index:5; visibility:hidden; }'
-      + '.tn-stick { position:absolute; width:140px; height:140px; border-radius:50%; '
+      + '.tn-stick { position:absolute; width:70px; height:70px; border-radius:50%; '
       +    'background:rgba(20,22,30,0.45); border:2px solid rgba(255,255,255,0.7); '
       +    'pointer-events:auto; touch-action:none; -webkit-tap-highlight-color:transparent; }'
-      + '.tn-stick .knob { position:absolute; left:50%; top:50%; width:56px; height:56px; '
+      + '.tn-stick .knob { position:absolute; left:50%; top:50%; width:28px; height:28px; '
       +    'border-radius:50%; background:rgba(255,255,255,0.85); transform:translate(-50%,-50%); pointer-events:none; }'
-      + '#tn-stick-left  { bottom:24px; left:24px; }'
-      + '#tn-stick-right { bottom:24px; right:24px; }'
-      + '.tn-btn { position:absolute; width:48px; height:48px; border-radius:50%; '
+      + '#tn-stick-left  { bottom:56px; left:18px; }'
+      + '#tn-stick-right { bottom:56px; right:18px; }'
+      + '.tn-btn { position:absolute; width:44px; height:44px; border-radius:50%; '
       +    'background:rgba(15,17,26,0.88); color:#fff; border:2px solid rgba(255,255,255,0.85); '
       +    'font:bold 11px sans-serif; display:flex; align-items:center; justify-content:center; '
       +    'pointer-events:auto; touch-action:none; -webkit-tap-highlight-color:transparent; '
       +    'box-shadow:0 2px 6px rgba(0,0,0,0.5); user-select:none; }'
       + '.tn-btn:active { background:rgba(80,90,110,0.95); }'
-      /* Action buttons sit in a tight row directly above the right
-       * look stick. Buttons are 48 px so three of them (3 * 48 = 144
-       * px) line up with the stick's 140 px footprint below - same
-       * cluster width, reads as one control unit under the right
-       * thumb. PLACE on the left, BREAK middle, JUMP on the right.
-       * `bottom:178` = 24 (margin) + 140 (stick) + 14 (gap). */
-      + '#tn-btn-jump  { bottom:178px; right: 22px; }'
-      + '#tn-btn-break { bottom:178px; right: 70px; }'
-      + '#tn-btn-place { bottom:178px; right:118px; }';
+      /* Action buttons sit in a row directly above the right
+       * look stick. bottom:138 = 56 (stick bottom) + 70 (stick) + 12
+       * (gap). The 3x44 px row overhangs the stick column on the
+       * right - fine, they're above the stick footprint not on top. */
+      + '#tn-btn-jump  { bottom:138px; right: 18px; }'
+      + '#tn-btn-break { bottom:138px; right: 66px; }'
+      + '#tn-btn-place { bottom:138px; right:114px; }';
     document.head.appendChild(style);
 
     function mk(tag, id, cls, text) {
@@ -495,6 +581,7 @@ static void init(void) {
     });
 
     input_init();
+    settings_init();   /* load mouse sensitivity etc. from client_kv */
     job_system_init(0);
 #ifdef __EMSCRIPTEN__
     /* Mobile / tablet browsers swap in the lite water + composite
@@ -521,6 +608,7 @@ static void init(void) {
      * the game's visual identity. */
     if (tenebris_is_mobile_device()) {
         tenebris_pause_button_install();
+        tenebris_fullscreen_button_install();
         tenebris_mobile_controls_install();
     }
 #endif
@@ -1077,32 +1165,99 @@ static void apply_sp_world_saves(world_t* w) {
     }
 }
 
-static void maybe_apply_sp_resume(void) {
-    if (G_sp_resume_applied) return;
-    if (menu_state() != GAME_IN_GAME_SP) return;
+/* Bitmap of body ids whose persisted columns + torches have already
+ * been replayed via apply_sp_world_saves(). Size matches the largest
+ * body_id_t value we ever issue; each entry is set the first time
+ * that body's saves are applied. Tracks SP-only state - MP's per-
+ * body HTTP fetch dedupes via net_client's body_fetch slot table. */
+#define SP_SAVES_APPLIED_MAX 256
+static bool G_sp_saves_applied[SP_SAVES_APPLIED_MAX] = {0};
 
-    /* Always replay saved tiles + torches when entering SP, even if
-     * the menu didn't hand us a one-shot pose resume (e.g. starting
-     * fresh on an existing world). World saves are independent of
-     * pose - the player wants their builds back regardless. */
-    apply_sp_world_saves(G.world);
-    for (int i = 0; i < G.moon_count; ++i) {
-        apply_sp_world_saves(G.moons[i]);
+static void mark_sp_saves_applied(const world_t* w) {
+    if (!w || !w->body) return;
+    uint32_t id = (uint32_t)w->body->id;
+    if (id < SP_SAVES_APPLIED_MAX) G_sp_saves_applied[id] = true;
+}
+
+static void maybe_apply_sp_resume(void) {
+    /* Reset the latch the moment we leave SP. Without this, a player
+     * who quits SP -> main menu -> re-enters SP (or quits MP -> SP)
+     * gets the early-return below and the resume side effects
+     * (chat_clear, per-body save apply, saved-pose teleport) never
+     * fire on the second entry. Symptom: the SP world appears to
+     * "not start" because the player is left at whatever MP / stale
+     * position they had on quit, the saved pose sits unconsumed in
+     * M.pending_sp_resume, and old chat lines bleed through. */
+    if (menu_state() != GAME_IN_GAME_SP) {
+        G_sp_resume_applied = false;
+        return;
     }
+    if (G_sp_resume_applied) return;
+
+    /* Wipe any chat history left over from a prior MP session. SP
+     * has no chat at all so the floating-chat panel must stay
+     * silent; without this clear, recent MP messages still sit
+     * inside the 5-minute live-fade window and pop the panel up
+     * the moment the player enters SP. */
+    chat_clear();
+
+    /* Apply persisted column + torch data for the SPAWN body only.
+     * Other bodies' saves are flushed lazily by apply_sp_saves_lazy()
+     * the first time each body is detail-meshed (i.e. the player
+     * approaches it). Doing all bodies up front used to flush
+     * thousands of synchronous localStorage reads in one frame -
+     * the chrome devtools profile showed it as a half-second stall
+     * on world entry for a well-built save. */
+    apply_sp_world_saves(G.world);
+    mark_sp_saves_applied(G.world);
 
     persistence_save_t s;
     if (!menu_take_sp_resume(&s)) { G_sp_resume_applied = true; return; }
 
     G.player.position = (dvec3_t){ .x = s.pos_x, .y = s.pos_y, .z = s.pos_z };
+    G.player.velocity = (dvec3_t){ 0, 0, 0 };
     G.player.yaw      = s.yaw;
     G.player.pitch    = s.pitch;
+    /* Cold-rebuild basis at the resumed position. Without this the
+     * basis stays anchored to whatever radial direction player_init
+     * picked at boot (the +x meridian on Tenebris), and the next
+     * sync_basis_to_planet sees up to 180° of disagreement between
+     * basis.up and the saved-position radial - the anti-snap path
+     * fires and the player perceives a wild rotation snap right
+     * after pressing RESUME. Rebuild + last_tile=-1 lets the very
+     * first physics tick after resume run from a known-good state. */
+    G.player.basis_ready = false;
+    G.player.last_tile   = -1;
+    G.player.transition_timer_s = 0.0f;
+    player_rebuild_basis(&G.player);
     /* roll lives in the save struct for forward-compat but the
-     * player_ctrl_t doesn't track it — basis re-slerp on body change
+     * player_ctrl_t doesn't track it - basis re-slerp on body change
      * is what levels the camera. Body resolution stays on Tenebris
      * for now; M4's SOI tracker handles re-anchoring on the fly. */
     (void)s.roll;
     (void)s.body_id;
     G_sp_resume_applied = true;
+}
+
+/* Per-frame lazy save loader. Walks the registered moons and, for
+ * each one whose chunked mesh has been built by the renderer (player
+ * got close enough to detail-mesh it) but whose persisted columns
+ * haven't been replayed yet, flushes its saves now. Each body is
+ * applied at most once per session via G_sp_saves_applied. Cheap
+ * when nothing's pending: a handful of bool checks. */
+static void apply_sp_saves_lazy(void) {
+    if (menu_state() != GAME_IN_GAME_SP) return;
+    if (!G_sp_resume_applied) return;
+    for (int i = 0; i < G.moon_count; ++i) {
+        world_t* w = G.moons[i];
+        if (!w || !w->body) continue;
+        uint32_t id = (uint32_t)w->body->id;
+        if (id >= SP_SAVES_APPLIED_MAX) continue;
+        if (G_sp_saves_applied[id]) continue;
+        if (!renderer_body_meshed(id)) continue;
+        apply_sp_world_saves(w);
+        G_sp_saves_applied[id] = true;
+    }
 }
 
 /* Apply the server-side saved pose on the FIRST MP entry only.
@@ -1697,6 +1852,7 @@ static void frame(void) {
     }
 
     maybe_apply_sp_resume();
+    apply_sp_saves_lazy();
     maybe_apply_mp_spawn();
     maybe_prime_mode_for_state();
 
@@ -1801,6 +1957,18 @@ static void frame(void) {
                                                L->gravity_falloff_mult);
         if (gq.body && gq.body != G.player.body) {
             player_set_body(&G.player, gq.body);
+        }
+        /* Keep the renderer's "active body" in sync with whichever
+         * body the player is currently bound to. The active body is
+         * the ONLY one allowed to render its full chunked terrain;
+         * everything else swaps to the LOD icosphere regardless of
+         * angular size. Without this re-bind, whatever body was
+         * registered first (Tenebris by default) stayed active
+         * forever and kept its 160k-tile mesh in memory + on screen
+         * even when the player had flown a planet away. */
+        if (G.player.body) {
+            world_t* active_w = world_for_body(G.player.body);
+            if (active_w) renderer_set_active_world(active_w);
         }
     }
     /* Route physics through the world that backs the player's
@@ -2104,7 +2272,12 @@ static void frame(void) {
     renderer_draw_sun(view, proj);
     profiler_end("draw-sun");
     profiler_begin("draw-world");
-    renderer_draw_world(view, proj, G.world, cam_world, dt);
+    /* Pass the active body's world, not G.world. renderer_draw_world
+     * uses this arg to (re)mark the active body for chunked rendering
+     * - hardcoding G.world here was reverting active to Tenebris
+     * every single frame, fighting the gravity-tracker's per-frame
+     * sync above and producing the visible LOD flap on Crag. */
+    renderer_draw_world(view, proj, phys_world, cam_world, dt);
     profiler_end("draw-world");
     profiler_begin("draw-moons");
     renderer_draw_moons(view, proj, cam_world);
@@ -2215,7 +2388,7 @@ static void frame(void) {
         game_state_t st = menu_state();
         bool in_game = (st == GAME_IN_GAME_SP || st == GAME_IN_GAME_MP);
         bool show_mobile_dom = in_game && !menu_pause_active();
-        static int last_pause_btn = -1, last_mobile = -1;
+        static int last_pause_btn = -1, last_mobile = -1, last_fullscreen_btn = -1;
         if ((int)show_mobile_dom != last_pause_btn) {
             tenebris_pause_button_set_visible(show_mobile_dom ? 1 : 0);
             last_pause_btn = (int)show_mobile_dom;
@@ -2223,6 +2396,10 @@ static void frame(void) {
         if ((int)show_mobile_dom != last_mobile) {
             tenebris_mobile_controls_set_visible(show_mobile_dom ? 1 : 0);
             last_mobile = (int)show_mobile_dom;
+        }
+        if ((int)show_mobile_dom != last_fullscreen_btn) {
+            tenebris_fullscreen_button_set_visible(show_mobile_dom ? 1 : 0);
+            last_fullscreen_btn = (int)show_mobile_dom;
         }
     }
 #endif
