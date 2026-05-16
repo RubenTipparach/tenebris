@@ -1165,18 +1165,33 @@ static void apply_sp_world_saves(world_t* w) {
     }
 }
 
+/* Bitmap of body ids whose persisted columns + torches have already
+ * been replayed via apply_sp_world_saves(). Size matches the largest
+ * body_id_t value we ever issue; each entry is set the first time
+ * that body's saves are applied. Tracks SP-only state - MP's per-
+ * body HTTP fetch dedupes via net_client's body_fetch slot table. */
+#define SP_SAVES_APPLIED_MAX 256
+static bool G_sp_saves_applied[SP_SAVES_APPLIED_MAX] = {0};
+
+static void mark_sp_saves_applied(const world_t* w) {
+    if (!w || !w->body) return;
+    uint32_t id = (uint32_t)w->body->id;
+    if (id < SP_SAVES_APPLIED_MAX) G_sp_saves_applied[id] = true;
+}
+
 static void maybe_apply_sp_resume(void) {
     if (G_sp_resume_applied) return;
     if (menu_state() != GAME_IN_GAME_SP) return;
 
-    /* Always replay saved tiles + torches when entering SP, even if
-     * the menu didn't hand us a one-shot pose resume (e.g. starting
-     * fresh on an existing world). World saves are independent of
-     * pose - the player wants their builds back regardless. */
+    /* Apply persisted column + torch data for the SPAWN body only.
+     * Other bodies' saves are flushed lazily by apply_sp_saves_lazy()
+     * the first time each body is detail-meshed (i.e. the player
+     * approaches it). Doing all bodies up front used to flush
+     * thousands of synchronous localStorage reads in one frame -
+     * the chrome devtools profile showed it as a half-second stall
+     * on world entry for a well-built save. */
     apply_sp_world_saves(G.world);
-    for (int i = 0; i < G.moon_count; ++i) {
-        apply_sp_world_saves(G.moons[i]);
-    }
+    mark_sp_saves_applied(G.world);
 
     persistence_save_t s;
     if (!menu_take_sp_resume(&s)) { G_sp_resume_applied = true; return; }
@@ -1191,6 +1206,27 @@ static void maybe_apply_sp_resume(void) {
     (void)s.roll;
     (void)s.body_id;
     G_sp_resume_applied = true;
+}
+
+/* Per-frame lazy save loader. Walks the registered moons and, for
+ * each one whose chunked mesh has been built by the renderer (player
+ * got close enough to detail-mesh it) but whose persisted columns
+ * haven't been replayed yet, flushes its saves now. Each body is
+ * applied at most once per session via G_sp_saves_applied. Cheap
+ * when nothing's pending: a handful of bool checks. */
+static void apply_sp_saves_lazy(void) {
+    if (menu_state() != GAME_IN_GAME_SP) return;
+    if (!G_sp_resume_applied) return;
+    for (int i = 0; i < G.moon_count; ++i) {
+        world_t* w = G.moons[i];
+        if (!w || !w->body) continue;
+        uint32_t id = (uint32_t)w->body->id;
+        if (id >= SP_SAVES_APPLIED_MAX) continue;
+        if (G_sp_saves_applied[id]) continue;
+        if (!renderer_body_meshed(id)) continue;
+        apply_sp_world_saves(w);
+        G_sp_saves_applied[id] = true;
+    }
 }
 
 /* Apply the server-side saved pose on the FIRST MP entry only.
@@ -1785,6 +1821,7 @@ static void frame(void) {
     }
 
     maybe_apply_sp_resume();
+    apply_sp_saves_lazy();
     maybe_apply_mp_spawn();
     maybe_prime_mode_for_state();
 

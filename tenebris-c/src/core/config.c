@@ -252,6 +252,25 @@ static lod_config_t S_LOD = {
         [3] = 4.0f,
         [4] = 4.0f,
     },
+    /* Per-tileset close-up water deep_color + absorption. EARTH stays
+     * on the global water_config_t defaults (zero sentinel). SEQUOIA
+     * gets a saturated alien-green saturation tone + green-leaning
+     * absorption (red AND blue absorbed, green survives) so its
+     * oceans read distinctly different from Tenebris's blue. */
+    .tileset_water_deep_color = {
+        [0] = { 0.0f, 0.0f, 0.0f },   /* EARTH    — use global default      */
+        [1] = { 0.04f, 0.20f, 0.10f },/* SEQUOIA  — saturated alien green   */
+        [2] = { 0.0f, 0.0f, 0.0f },   /* CRAG     — no water (use global)   */
+        [3] = { 0.0f, 0.0f, 0.0f },   /* FROST    — pale ice (use global)   */
+        [4] = { 0.0f, 0.0f, 0.0f },   /* ASTEROID — use global default      */
+    },
+    .tileset_water_absorption = {
+        [0] = { 0.0f, 0.0f, 0.0f },   /* EARTH    — use global (0.60, 0.20, 0.10) */
+        [1] = { 0.50f, 0.10f, 0.50f },/* SEQUOIA  — red+blue die, green survives  */
+        [2] = { 0.0f, 0.0f, 0.0f },   /* CRAG     — no water                       */
+        [3] = { 0.0f, 0.0f, 0.0f },   /* FROST    — use global                     */
+        [4] = { 0.0f, 0.0f, 0.0f },   /* ASTEROID — use global                     */
+    },
     .gravity_full_mult       = 1.4f,
     .gravity_falloff_mult    = 1.8f,
     .roll_slerp_duration_s   = 3.0f,
@@ -345,6 +364,10 @@ int config_load_lod(const char* path) {
                             if (!parse_vec3(val, &S_LOD.tileset_peak_tint[active_tileset])) parse_errors++;
                         } else if (strcmp(key, "water_full_depth_m") == 0) {
                             S_LOD.tileset_water_full_depth_m[active_tileset] = (float)strtod(val, NULL);
+                        } else if (strcmp(key, "water_deep_color") == 0) {
+                            if (!parse_vec3(val, &S_LOD.tileset_water_deep_color[active_tileset])) parse_errors++;
+                        } else if (strcmp(key, "water_absorption") == 0) {
+                            if (!parse_vec3(val, &S_LOD.tileset_water_absorption[active_tileset])) parse_errors++;
                         } else {
                             printf("[config] %s:%d: unknown palette key '%s'\n",
                                    path, line_no, key);

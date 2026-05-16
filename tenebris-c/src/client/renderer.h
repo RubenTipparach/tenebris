@@ -115,6 +115,14 @@ void renderer_set_active_world(world_t* w);
  * if no world for that body has been registered. */
 world_t* renderer_world_for_body(uint32_t body_id);
 
+/* True when the body has had its full chunked mesh built. Used by
+ * main_web to drive lazy SP-save application: localStorage reads
+ * are synchronous in the browser and applying every body's saves
+ * up front at SP entry stalls the frame; we wait until the body's
+ * mesh has actually been streamed (the player is near enough to
+ * see it) before flushing its persisted column data. */
+bool     renderer_body_meshed(uint32_t body_id);
+
 /* Debug toggle — when terrain is hidden, the chunked-terrain draw
  * passes are skipped (atmosphere + sky still render, distant body
  * icospheres still render). Useful for verifying the atmosphere

@@ -1583,6 +1583,16 @@ world_t* renderer_world_for_body(uint32_t body_id) {
     return NULL;
 }
 
+bool renderer_body_meshed(uint32_t body_id) {
+    for (int i = 0; i < R.body_count; ++i) {
+        const chunked_body_t* b = &R.bodies[i];
+        if (b->world && b->world->body && (uint32_t)b->world->body->id == body_id) {
+            return b->meshed;
+        }
+    }
+    return false;
+}
+
 int renderer_moon_count(void) {
     /* "moon count" historically meant non-active bodies. */
     if (R.body_count == 0) return 0;
@@ -1874,6 +1884,29 @@ void renderer_compose_to_swapchain(mat4_t view, mat4_t proj) {
      * Hoisted above the perf-mode branch so both pipelines reuse
      * the same flag. */
     const water_config_t* W_cu = config_water();
+    /* Composite-pass deep_color + absorption are tinted by the active
+     * body's tileset (Sequoia = green, others = global blue) so the
+     * underwater fog matches the body the camera is actually in,
+     * not whatever the global default is. Falls back to the global
+     * water_config when the tileset has no override. */
+    vec3_t comp_deep = W_cu->deep_color;
+    vec3_t comp_absorb = W_cu->absorption;
+    if (R.active_body_idx >= 0 && R.bodies[R.active_body_idx].world
+        && R.bodies[R.active_body_idx].world->body) {
+        const lod_config_t* LP = config_lod();
+        int ts = (int)R.bodies[R.active_body_idx].world->body->tileset;
+        if (ts < 0 || ts > 4) ts = 0;
+        if (LP->tileset_water_deep_color[ts].x > 0.0f
+         || LP->tileset_water_deep_color[ts].y > 0.0f
+         || LP->tileset_water_deep_color[ts].z > 0.0f) {
+            comp_deep = LP->tileset_water_deep_color[ts];
+        }
+        if (LP->tileset_water_absorption[ts].x > 0.0f
+         || LP->tileset_water_absorption[ts].y > 0.0f
+         || LP->tileset_water_absorption[ts].z > 0.0f) {
+            comp_absorb = LP->tileset_water_absorption[ts];
+        }
+    }
     bool cam_under_shared = false;
     if (R.active_body_idx >= 0) {
         chunked_body_t* ab = &R.bodies[R.active_body_idx];
@@ -1891,8 +1924,8 @@ void renderer_compose_to_swapchain(mat4_t view, mat4_t proj) {
     if (R_PERF_MODE) {
         sg_apply_pipeline(R.pip_composite_mobile);
         composite_mobile_fs_params_t fs_m = {
-            .deep_color  = { W_cu->deep_color.x, W_cu->deep_color.y, W_cu->deep_color.z, 0.0f },
-            .absorption  = { W_cu->absorption.x, W_cu->absorption.y, W_cu->absorption.z, 0.0f },
+            .deep_color  = { comp_deep.x,   comp_deep.y,   comp_deep.z,   0.0f },
+            .absorption  = { comp_absorb.x, comp_absorb.y, comp_absorb.z, 0.0f },
             .fog_params  = { 0.3f, 20000.0f, cam_under_shared ? 1.0f : 0.0f, 0.0f },
         };
         sg_apply_uniforms(UB_composite_mobile_fs_params, &SG_RANGE(fs_m));
@@ -1944,8 +1977,8 @@ void renderer_compose_to_swapchain(mat4_t view, mat4_t proj) {
     }
 
     composite_fs_params_t fs = {
-        .deep_color    = { W->deep_color.x,  W->deep_color.y,  W->deep_color.z,  0.0f },
-        .absorption    = { W->absorption.x,  W->absorption.y,  W->absorption.z,  0.0f },
+        .deep_color    = { comp_deep.x,   comp_deep.y,   comp_deep.z,   0.0f },
+        .absorption    = { comp_absorb.x, comp_absorb.y, comp_absorb.z, 0.0f },
         /* near_far.z is the wet-fade altitude window (m). The composite
          * gates the wet mask by smoothstep(-band, +band, pixel_alt) so
          * dry geometry above the cap (beach blocks at the depth-cell
@@ -2466,6 +2499,29 @@ static void body_draw_water(chunked_body_t* body, mat4_t vp,
     const water_config_t* W = config_water();
     const float t_scaled = R.time_seconds * W->time_scale;
     const lighting_config_t* L = config_lighting();
+    /* Per-tileset water tinting. lod_config exposes optional override
+     * vectors for deep_color + absorption; a zeroed entry falls back
+     * to the global water_config_t. Sequoia tileset overrides both
+     * for an alien-green ocean. The .x channel test is enough since
+     * a meaningful tint will always have a non-zero red component
+     * (zero red would be a pure-cyan / pure-green, both of which we
+     * still want to fail back to the global default rather than
+     * accept by accident). */
+    const lod_config_t* LP = config_lod();
+    int ts_idx = (body->world && body->world->body) ? (int)body->world->body->tileset : 0;
+    if (ts_idx < 0 || ts_idx > 4) ts_idx = 0;
+    vec3_t deep_c = W->deep_color;
+    vec3_t absorb = W->absorption;
+    if (LP->tileset_water_deep_color[ts_idx].x > 0.0f
+     || LP->tileset_water_deep_color[ts_idx].y > 0.0f
+     || LP->tileset_water_deep_color[ts_idx].z > 0.0f) {
+        deep_c = LP->tileset_water_deep_color[ts_idx];
+    }
+    if (LP->tileset_water_absorption[ts_idx].x > 0.0f
+     || LP->tileset_water_absorption[ts_idx].y > 0.0f
+     || LP->tileset_water_absorption[ts_idx].z > 0.0f) {
+        absorb = LP->tileset_water_absorption[ts_idx];
+    }
 
     /* Perf mode: feed water_mobile.glsl's smaller uniform blocks +
      * skip the offscreen scene-color/depth bindings entirely. The
@@ -2488,7 +2544,7 @@ static void body_draw_water(chunked_body_t* body, mat4_t vp,
             .u_camera_pos     = { camera_world.x, camera_world.y, camera_world.z },
             .u_sun_dir        = { R.env.sun_dir.x, R.env.sun_dir.y, R.env.sun_dir.z },
             .u_time           = t_scaled,
-            .u_deep_color     = { W->deep_color.x, W->deep_color.y, W->deep_color.z },
+            .u_deep_color     = { deep_c.x, deep_c.y, deep_c.z },
             .u_spec_intensity = W->specular_intensity,
             .u_spec_power     = W->specular_power,
             .u_sun_tint       = { W->sun_tint.x, W->sun_tint.y, W->sun_tint.z },
@@ -2563,8 +2619,8 @@ static void body_draw_water(chunked_body_t* body, mat4_t vp,
         .u_refract_amount  = W->refract_amount,
         .u_near            = 0.3f,
         .u_far             = 20000.0f,
-        .u_absorption      = { W->absorption.x, W->absorption.y, W->absorption.z },
-        .u_deep_color      = { W->deep_color.x, W->deep_color.y, W->deep_color.z },
+        .u_absorption      = { absorb.x, absorb.y, absorb.z },
+        .u_deep_color      = { deep_c.x, deep_c.y, deep_c.z },
         .u_spec_intensity  = W->specular_intensity,
         .u_spec_power      = W->specular_power,
         .u_sun_tint        = { W->sun_tint.x, W->sun_tint.y, W->sun_tint.z },

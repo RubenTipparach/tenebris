@@ -122,6 +122,23 @@ typedef struct {
      * Per-tileset so e.g. an icy planet's shoreline is shorter than
      * an Earth-like's. Zero → use a sane default at runtime. */
     float  tileset_water_full_depth_m[5];
+    /* Close-up water tinting. The water shader's Beer-Lambert model
+     * uses these instead of the global water_config_t defaults when
+     * the body the player is on has a per-tileset override. tinted
+     * green for Sequoia, blue-leaning for Frost, etc.
+     *   deep_color  — saturation colour at full attenuation (what
+     *                 the ocean looks like at infinite depth).
+     *   absorption  — per-channel Beer-Lambert sigma (1/m). Higher
+     *                 channel value = that wavelength dies faster
+     *                 with thickness, so the inverse channels
+     *                 dominate. Earth water has high red absorption
+     *                 so blue survives; sequoia water absorbs red
+     *                 AND blue so green survives.
+     * A field set to {0, 0, 0} falls back to the global water_config
+     * value at runtime so a tileset that doesn't override stays on
+     * the default. */
+    vec3_t tileset_water_deep_color[5];
+    vec3_t tileset_water_absorption[5];
 
     /* Gravity field — JS PlayerConfig.GRAVITY_FULL_RADIUS / FALLOFF_RADIUS
      * ported. Below body.radius * gravity_full_mult the player
