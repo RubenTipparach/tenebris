@@ -25,7 +25,14 @@
  * MSG_CHAT received in the first CHAT_JOIN_GRACE_S after
  * chat_begin_session as backlog: stored in scrollback (visible when
  * the compose box opens), suppressed from the floating live panel. */
-#define CHAT_JOIN_GRACE_S 1.5
+/* Server can take several seconds to deliver its chat backlog
+ * after WELCOME on a slow link; bumped from the original 1.5 s
+ * so a sluggish replay can't slip past the grace window and land
+ * on the floating live panel. Real-time chat from another player
+ * during the first 8 s is unlikely (they just joined too); when
+ * it does happen the message lands in scrollback and is visible
+ * via the compose box, just not the live popup. */
+#define CHAT_JOIN_GRACE_S 8.0
 
 typedef struct {
     char     name[CHAT_NAME_MAX];
@@ -58,17 +65,29 @@ void chat_shutdown(void) { }
 
 bool chat_is_active(void) { return C.active; }
 
+void chat_clear(void) {
+    /* Drop the retained history wholesale - the visible-row filter
+     * + compose-box scrollback both read from C.history, so once
+     * count is zero the floating panel can't show any pre-session
+     * messages. Keep session_grace_until_s alone here: callers that
+     * need a grace window (chat_begin_session) set it themselves
+     * AFTER this clear. */
+    C.head = 0;
+    C.count = 0;
+    C.active = false;
+    C.input_len = 0;
+    C.input_buf[0] = 0;
+}
+
 void chat_begin_session(void) {
+    /* Fresh session = no history. Anything that arrived before this
+     * point belongs to an earlier session and must not bleed into
+     * the new one. The server's first wave of MSG_CHAT replay then
+     * lands inside the join-grace window below and is marked
+     * backlog as it arrives - so the floating panel stays silent
+     * until a TRULY live message comes through. */
+    chat_clear();
     C.session_grace_until_s = stm_sec(stm_now()) + CHAT_JOIN_GRACE_S;
-    /* Demote every retained message to backlog so the floating
-     * panel doesn't auto-open with stale chatter from a prior
-     * session (player rejoined an hour later but the last few
-     * messages still sit within the 5-minute live window of the
-     * monotonic clock). The compose box's full scrollback still
-     * shows them when the player explicitly opens chat. */
-    for (int i = 0; i < C.count; ++i) {
-        C.history[i].is_backlog = true;
-    }
 }
 
 void chat_post_recv(uint32_t player_id, const char* name, const char* text) {

@@ -1183,6 +1183,13 @@ static void maybe_apply_sp_resume(void) {
     if (G_sp_resume_applied) return;
     if (menu_state() != GAME_IN_GAME_SP) return;
 
+    /* Wipe any chat history left over from a prior MP session. SP
+     * has no chat at all so the floating-chat panel must stay
+     * silent; without this clear, recent MP messages still sit
+     * inside the 5-minute live-fade window and pop the panel up
+     * the moment the player enters SP. */
+    chat_clear();
+
     /* Apply persisted column + torch data for the SPAWN body only.
      * Other bodies' saves are flushed lazily by apply_sp_saves_lazy()
      * the first time each body is detail-meshed (i.e. the player

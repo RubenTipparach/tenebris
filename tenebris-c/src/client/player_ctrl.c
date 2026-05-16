@@ -677,11 +677,28 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
             p->position = dvec3_add(center, safe_local);
             p->velocity = dvec3_make(0, 0, 0);
             p->grounded = false;
-            p->basis_ready = false;
             p->last_tile = -1;
-            p->transition_timer_s = L->roll_slerp_duration_s;
-            p->yaw = 0.0f;
-            p->pitch = 0.0f;
+            /* Cold-rebuild the basis FROM the new position so basis.up
+             * is the radial at the surface we just teleported to.
+             * Critical: without this the basis kept whatever stale
+             * orientation it had during the fall (pointing toward
+             * the body's centre, the old radial), and the next
+             * frame's gravity decomposed against the wrong basis.up
+             * - velocity component along the wrong axis - so the
+             * player kept falling in the same wrong direction and
+             * tripped the safety net again. Same reason the
+             * ground-snap rescue couldn't catch them: its vy <= 0
+             * check is on dot(velocity, basis.up), which reads
+             * positive when basis.up points back where the player
+             * came from. Cold rebuild fixes both. */
+            player_rebuild_basis(p);
+            /* No slerp - this is a teleport, not a smooth body
+             * transition. Slerping would leave 3 s of stale-basis
+             * physics on top of an explicit "fix this now" action.
+             * Caller still hears the WARN print so the root cause
+             * (whatever produced the sub-bedrock state) is
+             * diagnosable. */
+            p->transition_timer_s = 0.0f;
             jerk_log(p, &before, w, dt);
             return;
         }
