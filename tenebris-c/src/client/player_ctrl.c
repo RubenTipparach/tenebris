@@ -1,5 +1,6 @@
 #include "client/player_ctrl.h"
 #include "client/input.h"
+#include "client/settings.h"
 #include "core/config.h"
 #include <math.h>
 #include <stdio.h>
@@ -8,7 +9,6 @@
 #define M_PI 3.14159265358979323846
 #endif
 
-#define MOUSE_SENS       0.002f
 #define LOOK_STICK_SENS  2.4f
 #define WALK_SPEED       8.0f
 #define SPRINT_SPEED    14.0f
@@ -676,8 +676,11 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
     }
 
     /* Mouse / look-stick deltas — combined inputs in radians. */
-    double yaw_delta   =  (double)in->mouse_dx * MOUSE_SENS;
-    double pitch_delta = -(double)in->mouse_dy * MOUSE_SENS;
+    /* Mouse sensitivity is a runtime setting (Settings menu); fetch
+     * once per frame so a slider change takes effect immediately. */
+    const double mouse_sens = (double)settings_mouse_sensitivity();
+    double yaw_delta   =  (double)in->mouse_dx * mouse_sens;
+    double pitch_delta = -(double)in->mouse_dy * mouse_sens;
     if (in->look_stick_active) {
         yaw_delta   += (double)in->look_stick_x * LOOK_STICK_SENS * (double)dt;
         pitch_delta += (double)in->look_stick_y * LOOK_STICK_SENS * (double)dt;

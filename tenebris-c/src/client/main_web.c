@@ -31,6 +31,7 @@
 #include "client/menu.h"
 #include "client/net_client.h"
 #include "client/persistence.h"
+#include "client/settings.h"
 #include "client/profile.h"
 #include "client/remote_players.h"
 #include "client/teleport_menu.h"
@@ -580,6 +581,7 @@ static void init(void) {
     });
 
     input_init();
+    settings_init();   /* load mouse sensitivity etc. from client_kv */
     job_system_init(0);
 #ifdef __EMSCRIPTEN__
     /* Mobile / tablet browsers swap in the lite water + composite
