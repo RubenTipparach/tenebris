@@ -140,6 +140,84 @@ EM_JS(void, tenebris_pause_button_set_visible, (int visible), {
     if (b) b.style.visibility = visible ? 'visible' : 'hidden';
 });
 
+/* Top-right fullscreen toggle. Tap goes to fullscreen via the
+ * Fullscreen API; the button hides itself the moment fullscreen
+ * actually engages (via fullscreenchange listener) since there's
+ * no UI to "exit" beyond the browser's own gesture / Esc key, and
+ * leaving a fullscreen-toggle button visible inside fullscreen is
+ * just chrome. The Fullscreen API isn't supported on iPhone
+ * Safari, so requestFullscreen may be undefined - we silently
+ * no-op there and the rest of the UI keeps working. Smaller than
+ * the pause button (40 px vs 60 px) since it's a secondary
+ * control. */
+EM_JS(void, tenebris_fullscreen_button_install, (void), {
+    if (document.getElementById('tenebris-fullscreen-btn')) return;
+    var btn = document.createElement('button');
+    btn.id = 'tenebris-fullscreen-btn';
+    btn.textContent = '⛶';  /* ⛶ square-four-corners */
+    btn.setAttribute('aria-label', 'Fullscreen');
+    btn.dataset.wantVisible = '0';  /* set by tenebris_fullscreen_button_set_visible */
+    btn.style.cssText =
+        'position:fixed;top:14px;right:14px;width:40px;height:40px;'
+      + 'border-radius:50%;border:2px solid #fff;'
+      + 'background:rgba(15,17,26,0.92);color:#fff;'
+      + 'font-size:20px;font-weight:bold;'
+      + 'display:flex;align-items:center;justify-content:center;'
+      + 'cursor:pointer;z-index:10;'
+      + 'touch-action:manipulation;'
+      + '-webkit-tap-highlight-color:transparent;'
+      + 'box-shadow:0 2px 6px rgba(0,0,0,0.5);'
+      + 'visibility:hidden;';
+    function isFullscreen() {
+        var doc = document;
+        return !!(doc.fullscreenElement
+               || doc.webkitFullscreenElement
+               || doc.mozFullScreenElement
+               || doc.msFullscreenElement);
+    }
+    function refreshVisibility() {
+        /* Show only when C asked for visible AND we are NOT already
+         * fullscreen - once the player is in fullscreen the button
+         * has nothing useful to do (browser gestures / Esc exit), so
+         * leaving it on-screen would just be clutter. */
+        var want = btn.dataset.wantVisible === '1';
+        btn.style.visibility = (want && !isFullscreen()) ? 'visible' : 'hidden';
+    }
+    btn._refresh = refreshVisibility;
+    function toggleFullscreen(ev) {
+        if (ev) ev.preventDefault();
+        try {
+            var doc = document;
+            if (isFullscreen()) {
+                if (doc.exitFullscreen) doc.exitFullscreen();
+                else if (doc.webkitExitFullscreen) doc.webkitExitFullscreen();
+                else if (doc.mozCancelFullScreen) doc.mozCancelFullScreen();
+                else if (doc.msExitFullscreen) doc.msExitFullscreen();
+            } else {
+                var el = doc.documentElement;
+                if (el.requestFullscreen) el.requestFullscreen();
+                else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
+                else if (el.mozRequestFullScreen) el.mozRequestFullScreen();
+                else if (el.msRequestFullscreen) el.msRequestFullscreen();
+            }
+        } catch (e) { /* Fullscreen unsupported (iPhone Safari); no-op */ }
+    }
+    btn.addEventListener('click',    toggleFullscreen);
+    btn.addEventListener('touchend', toggleFullscreen);
+    document.addEventListener('fullscreenchange',       refreshVisibility);
+    document.addEventListener('webkitfullscreenchange', refreshVisibility);
+    document.addEventListener('mozfullscreenchange',    refreshVisibility);
+    document.addEventListener('MSFullscreenChange',     refreshVisibility);
+    document.body.appendChild(btn);
+});
+
+EM_JS(void, tenebris_fullscreen_button_set_visible, (int visible), {
+    var b = document.getElementById('tenebris-fullscreen-btn');
+    if (!b) return;
+    b.dataset.wantVisible = visible ? '1' : '0';
+    if (b._refresh) b._refresh();
+});
+
 /* Full mobile control deck as DOM elements (two virtual joysticks +
  * Jump / Break / Place buttons). Same reason as the pause button:
  * sokol_gl on certain mobile browsers fails to render the sticks
@@ -528,6 +606,7 @@ static void init(void) {
      * the game's visual identity. */
     if (tenebris_is_mobile_device()) {
         tenebris_pause_button_install();
+        tenebris_fullscreen_button_install();
         tenebris_mobile_controls_install();
     }
 #endif
@@ -2222,7 +2301,7 @@ static void frame(void) {
         game_state_t st = menu_state();
         bool in_game = (st == GAME_IN_GAME_SP || st == GAME_IN_GAME_MP);
         bool show_mobile_dom = in_game && !menu_pause_active();
-        static int last_pause_btn = -1, last_mobile = -1;
+        static int last_pause_btn = -1, last_mobile = -1, last_fullscreen_btn = -1;
         if ((int)show_mobile_dom != last_pause_btn) {
             tenebris_pause_button_set_visible(show_mobile_dom ? 1 : 0);
             last_pause_btn = (int)show_mobile_dom;
@@ -2230,6 +2309,10 @@ static void frame(void) {
         if ((int)show_mobile_dom != last_mobile) {
             tenebris_mobile_controls_set_visible(show_mobile_dom ? 1 : 0);
             last_mobile = (int)show_mobile_dom;
+        }
+        if ((int)show_mobile_dom != last_fullscreen_btn) {
+            tenebris_fullscreen_button_set_visible(show_mobile_dom ? 1 : 0);
+            last_fullscreen_btn = (int)show_mobile_dom;
         }
     }
 #endif
