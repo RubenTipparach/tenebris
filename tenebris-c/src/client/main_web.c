@@ -1204,10 +1204,23 @@ static void maybe_apply_sp_resume(void) {
     if (!menu_take_sp_resume(&s)) { G_sp_resume_applied = true; return; }
 
     G.player.position = (dvec3_t){ .x = s.pos_x, .y = s.pos_y, .z = s.pos_z };
+    G.player.velocity = (dvec3_t){ 0, 0, 0 };
     G.player.yaw      = s.yaw;
     G.player.pitch    = s.pitch;
+    /* Cold-rebuild basis at the resumed position. Without this the
+     * basis stays anchored to whatever radial direction player_init
+     * picked at boot (the +x meridian on Tenebris), and the next
+     * sync_basis_to_planet sees up to 180° of disagreement between
+     * basis.up and the saved-position radial - the anti-snap path
+     * fires and the player perceives a wild rotation snap right
+     * after pressing RESUME. Rebuild + last_tile=-1 lets the very
+     * first physics tick after resume run from a known-good state. */
+    G.player.basis_ready = false;
+    G.player.last_tile   = -1;
+    G.player.transition_timer_s = 0.0f;
+    player_rebuild_basis(&G.player);
     /* roll lives in the save struct for forward-compat but the
-     * player_ctrl_t doesn't track it — basis re-slerp on body change
+     * player_ctrl_t doesn't track it - basis re-slerp on body change
      * is what levels the camera. Body resolution stays on Tenebris
      * for now; M4's SOI tracker handles re-anchoring on the fly. */
     (void)s.roll;

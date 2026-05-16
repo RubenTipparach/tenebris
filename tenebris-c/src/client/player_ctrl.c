@@ -124,30 +124,61 @@ static void sync_basis_to_planet(player_ctrl_t* p) {
         return;
     }
     dvec3_t old_up = p->basis.up;
-    /* Anti-snap guard: if old_up and new_up disagree by more than
-     * ~5°, something delivered an oversized tangent jump this frame.
-     * Don't update the basis here - leave the camera in its current
-     * orientation for one frame and arm the roll-slerp instead, so
-     * the next several frames ease basis.up toward new_up rather
-     * than snapping it in one step. */
     double up_dot = dvec3_dot(old_up, new_up);
     if (up_dot >  1.0) up_dot =  1.0;
     if (up_dot < -1.0) up_dot = -1.0;
     double up_angle = acos(up_dot);
+    /* Anti-snap diagnostic: any rotation >5° in one frame is something
+     * we want to know about - it indicates an outside-of-physics
+     * position teleport (loaded-pose apply, body-swap that skipped
+     * the slerp arm, lag spike with surviving tangential velocity, etc.).
+     *
+     * The OLD behaviour here was to leave basis.up stale and arm the
+     * 3-second roll-slerp to "smooth" the rotation. That looked better
+     * on screen but broke physics: with basis.up pointing 30° off from
+     * the real radial, gravity decomposed wrong (~50% of g acted
+     * tangentially), the player accelerated sideways for the whole
+     * slerp window, drifted into wall columns the ground-snap couldn't
+     * rescue them from, and ended up below bedrock - the
+     * 'fell through MINIMUM LINE' chain. Correctness wins: update
+     * basis.up immediately, strip any inherited tangential velocity
+     * (the position teleport made it meaningless), and let the camera
+     * snap once. The visible snap is *unavoidable* given the position
+     * teleport that caused this - we just stop compounding it. */
     if (up_angle > ANTI_SNAP_MAX_RAD) {
         if (s_jerk_clock_s - s_anti_snap_last_log_s > 1.0) {
+            double vL = dvec3_length(p->velocity);
+            double vy = dvec3_dot(p->velocity, new_up);
             fprintf(stderr,
-                    "[player] WARN: anti-snap engaged - basis.up wanted to "
-                    "rotate %.2f deg in one frame (limit %.2f deg); arming "
-                    "roll-slerp to smooth it out\n",
+                    "[player] WARN: anti-snap fired - basis.up rotated "
+                    "%.2f deg in one frame (limit %.2f deg). "
+                    "body=%s pos=(%.2f,%.2f,%.2f) |v|=%.2f vy_new=%.2f "
+                    "trans=%.3fs space=%d. "
+                    "Forcing basis update + clearing tangential velocity "
+                    "to prevent physics runaway.\n",
                     up_angle * (180.0 / M_PI),
-                    (double)ANTI_SNAP_MAX_RAD * (180.0 / M_PI));
+                    (double)ANTI_SNAP_MAX_RAD * (180.0 / M_PI),
+                    p->body ? p->body->name : "(null)",
+                    p->position.x, p->position.y, p->position.z,
+                    vL, vy,
+                    (double)p->transition_timer_s,
+                    p->is_in_space ? 1 : 0);
             fflush(stderr);
             s_anti_snap_last_log_s = s_jerk_clock_s;
         }
-        p->transition_timer_s = config_lod()->roll_slerp_duration_s;
-        return;
+        /* Strip tangential velocity. After a tangential teleport the
+         * old vel_tan no longer points in a meaningful direction; if
+         * we kept it, gravity-decomposition-of-old-velocity along the
+         * NEW radial would compound the misalignment over the next
+         * frames. Keep the radial (vy) component so gravity / jump /
+         * jetpack carry over cleanly. */
+        double vy_new = dvec3_dot(p->velocity, new_up);
+        p->velocity = dvec3_scale(new_up, vy_new);
     }
+    /* Fall through to the normal parallel-transport path. fwd/right
+     * rotate by the shortest-arc rotation from old_up to new_up so the
+     * look direction stays continuous; basis.up snaps to the radial
+     * exactly. */
     p->basis.fwd   = rotate_between(old_up, new_up, p->basis.fwd);
     p->basis.right = rotate_between(old_up, new_up, p->basis.right);
     p->basis.up    = new_up;
