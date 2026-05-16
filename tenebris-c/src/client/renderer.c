@@ -1638,12 +1638,33 @@ void renderer_set_active_world(world_t* w) {
      * edit handling; if needed it'll get re-meshed on next reactivation. */
     for (int i = 0; i < R.body_count; ++i) {
         if (R.bodies[i].world == w) {
+            if (R.active_body_idx == i) return;   /* already active - no-op */
+            const char* old_name = (R.active_body_idx >= 0
+                                && R.bodies[R.active_body_idx].world
+                                && R.bodies[R.active_body_idx].world->body)
+                                ? R.bodies[R.active_body_idx].world->body->name
+                                : "(none)";
+            const char* new_name = (w->body) ? w->body->name : "(?)";
             if (R.active_body_idx >= 0) R.bodies[R.active_body_idx].is_active = false;
             R.active_body_idx = i;
             R.bodies[i].is_active = true;
+            printf("[renderer] active body: %s -> %s (slot %d)\n",
+                   old_name, new_name, i);
+            fflush(stdout);
             return;
         }
     }
+    /* No match - log it. This is the symptom the user reported: code
+     * thinks the player is on Crag (F2 readout, server pose) but the
+     * renderer never sees that world come through here, so the LOD
+     * pass keeps drawing the wrong body as the chunked one. */
+    fprintf(stderr,
+            "[renderer] WARN: renderer_set_active_world: world=%p body=%s "
+            "not found among %d registered bodies\n",
+            (void*)w,
+            (w && w->body) ? w->body->name : "(null)",
+            R.body_count);
+    fflush(stderr);
 }
 
 /* Extract 6 frustum planes from a view-projection matrix (column
