@@ -6,6 +6,14 @@
 
 static body_config_t BODIES[BODY_COUNT] = {
     /* ---- main planet ---- */
+    /* Layout (planets at least 10 km apart, moons at least 5 km from
+     * any other body): four planets at axis tips ~20 km from world
+     * origin, six moons at 6 km tangent offsets from their parent,
+     * ten asteroids scattered in an outer ring at 25-30 km. Pairwise
+     * planet distance is 20-28 km, moon-to-anything distance is 6-30
+     * km, no two bodies are closer than ~6 km.  Old layout had
+     * everything clustered within 3 km of origin which made every
+     * gravity well overlap and visually pancaked the system. */
     [BODY_TENEBRIS] = {
         .id = BODY_TENEBRIS, .name = "Tenebris",
         .radius_m = 300.0, .seed = 0x7e7e6815ULL,
@@ -19,14 +27,14 @@ static body_config_t BODIES[BODY_COUNT] = {
         .id = BODY_LUNA, .name = "Luna",
         .radius_m = 80.0, .seed = 0xCAFEBEEFULL,
         .subdivisions = 4, .gravity_g = 0.4f,
-        .pos_x = -840.0, .pos_y = 160.0, .pos_z = 0.0,
+        .pos_x = 0.0, .pos_y = 6000.0, .pos_z = 0.0,
         .barren = true,
     },
     [BODY_SELENE] = {
         .id = BODY_SELENE, .name = "Selene",
         .radius_m = 50.0, .seed = 0x12345678ULL,
         .subdivisions = 4, .gravity_g = 0.25f,
-        .pos_x = 640.0, .pos_y = -120.0, .pos_z = 760.0,
+        .pos_x = 0.0, .pos_y = -6000.0, .pos_z = 0.0,
         .barren = true,
     },
 
@@ -35,7 +43,7 @@ static body_config_t BODIES[BODY_COUNT] = {
         .id = BODY_SEQUOIA, .name = "Sequoia",
         .radius_m = 360.0, .seed = 0x5E9A01A1ULL,
         .subdivisions = 6, .gravity_g = 1.1f,
-        .pos_x = -1700.0, .pos_y = 240.0, .pos_z = -1400.0,
+        .pos_x = 20000.0, .pos_y = 0.0, .pos_z = 0.0,
         .has_water = true,
         .tileset = TILESET_SEQUOIA,
     },
@@ -43,14 +51,14 @@ static body_config_t BODIES[BODY_COUNT] = {
         .id = BODY_VERDANT, .name = "Verdant",
         .radius_m = 60.0, .seed = 0x0FACE001ULL,
         .subdivisions = 4, .gravity_g = 0.3f,
-        .pos_x = -1200.0, .pos_y = 320.0, .pos_z = -1480.0,
+        .pos_x = 20000.0, .pos_y = 6000.0, .pos_z = 0.0,
         .barren = true,
     },
     [BODY_SPROUT] = {
         .id = BODY_SPROUT, .name = "Sprout",
         .radius_m = 36.0, .seed = 0x59E0A710ULL,
         .subdivisions = 3, .gravity_g = 0.15f,
-        .pos_x = -1880.0, .pos_y = 520.0, .pos_z = -1040.0,
+        .pos_x = 20000.0, .pos_y = -6000.0, .pos_z = 0.0,
         .barren = true,
     },
 
@@ -59,7 +67,7 @@ static body_config_t BODIES[BODY_COUNT] = {
         .id = BODY_CRAG, .name = "Crag",
         .radius_m = 190.0, .seed = 0xC2A6B10CULL,
         .subdivisions = 5, .gravity_g = 0.6f,
-        .pos_x = 1560.0, .pos_y = -440.0, .pos_z = -1800.0,
+        .pos_x = -20000.0, .pos_y = 0.0, .pos_z = 0.0,
         .barren = true,
         .tileset = TILESET_CRAG,
     },
@@ -67,7 +75,7 @@ static body_config_t BODIES[BODY_COUNT] = {
         .id = BODY_QUARTZ, .name = "Quartz",
         .radius_m = 44.0, .seed = 0xC0BA17EDULL,
         .subdivisions = 4, .gravity_g = 0.2f,
-        .pos_x = 1920.0, .pos_y = -440.0, .pos_z = -1800.0,
+        .pos_x = -20000.0, .pos_y = 6000.0, .pos_z = 0.0,
         .barren = true,
     },
 
@@ -76,7 +84,7 @@ static body_config_t BODIES[BODY_COUNT] = {
         .id = BODY_FROSTBITE, .name = "Frostbite",
         .radius_m = 220.0, .seed = 0xF0057B17ULL,
         .subdivisions = 5, .gravity_g = 0.8f,
-        .pos_x = -480.0, .pos_y = -1700.0, .pos_z = 2600.0,
+        .pos_x = 0.0, .pos_y = 0.0, .pos_z = 20000.0,
         .icy = true,
         .tileset = TILESET_FROST,
     },
@@ -84,19 +92,19 @@ static body_config_t BODIES[BODY_COUNT] = {
         .id = BODY_RIME, .name = "Rime",
         .radius_m = 40.0, .seed = 0x21CE5001ULL,
         .subdivisions = 4, .gravity_g = 0.15f,
-        .pos_x = -680.0, .pos_y = -1400.0, .pos_z = 2600.0,
+        .pos_x = 0.0, .pos_y = 6000.0, .pos_z = 20000.0,
         .icy = true,
     },
 
-    /* ---- Asteroid belt: 10 tiny rocky bodies in a loose ring
-     * roughly 3000 m from the system origin, slightly scattered in Y
-     * so they don't look like a perfect circle. Seeds pulled from
-     * arbitrary bytes so each asteroid has its own bumpy shape. */
+    /* ---- Asteroid belt: scattered in an outer ring 25-30 km from
+     * the system origin, well clear of every moon's 5 km exclusion
+     * zone. Seeds pulled from arbitrary bytes so each asteroid has
+     * its own bumpy shape. */
     [BODY_ASTEROID_0] = {
         .id = BODY_ASTEROID_0, .name = "Asteroid A",
         .radius_m = 14.0, .seed = 0xA51E0010ULL,
         .subdivisions = 3, .gravity_g = 0.05f,
-        .pos_x = 3000.0, .pos_y = 80.0, .pos_z = 0.0,
+        .pos_x = 28000.0, .pos_y = 800.0, .pos_z = -3000.0,
         .barren = true, .is_asteroid = true,
         .tileset = TILESET_ASTEROID,
     },
@@ -104,7 +112,7 @@ static body_config_t BODIES[BODY_COUNT] = {
         .id = BODY_ASTEROID_1, .name = "Asteroid B",
         .radius_m = 18.0, .seed = 0xA51E0011ULL,
         .subdivisions = 3, .gravity_g = 0.05f,
-        .pos_x = 2360.0, .pos_y = -60.0, .pos_z = 1800.0,
+        .pos_x = -28000.0, .pos_y = 1200.0, .pos_z = 5000.0,
         .barren = true, .is_asteroid = true,
         .tileset = TILESET_ASTEROID,
     },
@@ -112,7 +120,7 @@ static body_config_t BODIES[BODY_COUNT] = {
         .id = BODY_ASTEROID_2, .name = "Asteroid C",
         .radius_m = 10.0, .seed = 0xA51E0012ULL,
         .subdivisions = 3, .gravity_g = 0.05f,
-        .pos_x = 1000.0, .pos_y = 40.0, .pos_z = 2800.0,
+        .pos_x = 5000.0, .pos_y = 800.0, .pos_z = 28000.0,
         .barren = true, .is_asteroid = true,
         .tileset = TILESET_ASTEROID,
     },
@@ -120,7 +128,7 @@ static body_config_t BODIES[BODY_COUNT] = {
         .id = BODY_ASTEROID_3, .name = "Asteroid D",
         .radius_m = 22.0, .seed = 0xA51E0013ULL,
         .subdivisions = 3, .gravity_g = 0.05f,
-        .pos_x = -800.0, .pos_y = 160.0, .pos_z = 2900.0,
+        .pos_x = -5000.0, .pos_y = 1600.0, .pos_z = 28000.0,
         .barren = true, .is_asteroid = true,
         .tileset = TILESET_ASTEROID,
     },
@@ -128,7 +136,7 @@ static body_config_t BODIES[BODY_COUNT] = {
         .id = BODY_ASTEROID_4, .name = "Asteroid E",
         .radius_m = 12.0, .seed = 0xA51E0014ULL,
         .subdivisions = 3, .gravity_g = 0.05f,
-        .pos_x = -2400.0, .pos_y = -20.0, .pos_z = 1600.0,
+        .pos_x = 22000.0, .pos_y = -2000.0, .pos_z = 14000.0,
         .barren = true, .is_asteroid = true,
         .tileset = TILESET_ASTEROID,
     },
@@ -136,7 +144,7 @@ static body_config_t BODIES[BODY_COUNT] = {
         .id = BODY_ASTEROID_5, .name = "Asteroid F",
         .radius_m = 16.0, .seed = 0xA51E0015ULL,
         .subdivisions = 3, .gravity_g = 0.05f,
-        .pos_x = -3000.0, .pos_y = 120.0, .pos_z = -300.0,
+        .pos_x = -22000.0, .pos_y = 1200.0, .pos_z = 14000.0,
         .barren = true, .is_asteroid = true,
         .tileset = TILESET_ASTEROID,
     },
@@ -144,7 +152,7 @@ static body_config_t BODIES[BODY_COUNT] = {
         .id = BODY_ASTEROID_6, .name = "Asteroid G",
         .radius_m = 20.0, .seed = 0xA51E0016ULL,
         .subdivisions = 3, .gravity_g = 0.05f,
-        .pos_x = -2200.0, .pos_y = -180.0, .pos_z = -2000.0,
+        .pos_x = 22000.0, .pos_y = -1800.0, .pos_z = -14000.0,
         .barren = true, .is_asteroid = true,
         .tileset = TILESET_ASTEROID,
     },
@@ -152,7 +160,7 @@ static body_config_t BODIES[BODY_COUNT] = {
         .id = BODY_ASTEROID_7, .name = "Asteroid H",
         .radius_m = 13.0, .seed = 0xA51E0017ULL,
         .subdivisions = 3, .gravity_g = 0.05f,
-        .pos_x = -400.0, .pos_y = 100.0, .pos_z = -3000.0,
+        .pos_x = -22000.0, .pos_y = 1000.0, .pos_z = -14000.0,
         .barren = true, .is_asteroid = true,
         .tileset = TILESET_ASTEROID,
     },
@@ -160,7 +168,7 @@ static body_config_t BODIES[BODY_COUNT] = {
         .id = BODY_ASTEROID_8, .name = "Asteroid I",
         .radius_m = 19.0, .seed = 0xA51E0018ULL,
         .subdivisions = 3, .gravity_g = 0.05f,
-        .pos_x = 1300.0, .pos_y = -80.0, .pos_z = -2700.0,
+        .pos_x = 14000.0, .pos_y = 8000.0, .pos_z = 26000.0,
         .barren = true, .is_asteroid = true,
         .tileset = TILESET_ASTEROID,
     },
@@ -168,7 +176,7 @@ static body_config_t BODIES[BODY_COUNT] = {
         .id = BODY_ASTEROID_9, .name = "Asteroid J",
         .radius_m = 15.0, .seed = 0xA51E0019ULL,
         .subdivisions = 3, .gravity_g = 0.05f,
-        .pos_x = 2600.0, .pos_y = 200.0, .pos_z = -1400.0,
+        .pos_x = -14000.0, .pos_y = 2000.0, .pos_z = 26000.0,
         .barren = true, .is_asteroid = true,
         .tileset = TILESET_ASTEROID,
     },
