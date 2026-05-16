@@ -320,6 +320,11 @@ static struct {
      * bounds. */
     float         sens_track_x, sens_track_y, sens_track_w, sens_track_h;
     bool          sens_dragging;
+    /* Chat-fade slider geometry + drag state. Same shape as the
+     * sens slider; maps [SETTINGS_CHAT_FADE_MIN..MAX_S] to
+     * settings_set_chat_fade_s(). */
+    float         chat_track_x, chat_track_y, chat_track_w, chat_track_h;
+    bool          chat_dragging;
     /* Toast under the INVITE FRIENDS button after a successful share.
      * pause_share_msg_until is a sokol_time stamp; the label fades
      * once stm_now() passes it. share_result is 1=shared via Web
@@ -2060,18 +2065,22 @@ static void pause_text_left(float screen_w, float screen_h,
 /* ------------------------------------------------------------------ */
 
 #define SETTINGS_PANEL_W   440.0f
-#define SETTINGS_PANEL_H   260.0f
+#define SETTINGS_PANEL_H   360.0f
 #define SETTINGS_TRACK_H    12.0f
 
 static void settings_layout(float w, float h) {
     const float px = (w - SETTINGS_PANEL_W) * 0.5f;
     const float py = (h - SETTINGS_PANEL_H) * 0.5f;
-    /* Mouse-sens slider track centred horizontally inside the panel,
-     * room for the value text to the right of the label above it. */
+    /* Two sliders stacked: mouse-sens then chat-fade. Each slider
+     * leaves room above for label + value text. */
     M.sens_track_x = px + 40.0f;
-    M.sens_track_y = py + 150.0f;
+    M.sens_track_y = py + 130.0f;
     M.sens_track_w = SETTINGS_PANEL_W - 80.0f;
     M.sens_track_h = SETTINGS_TRACK_H;
+    M.chat_track_x = px + 40.0f;
+    M.chat_track_y = py + 230.0f;
+    M.chat_track_w = SETTINGS_PANEL_W - 80.0f;
+    M.chat_track_h = SETTINGS_TRACK_H;
     /* BACK button anchored to the panel's bottom edge. */
     set_button(&M.btn_settings_back,
                  px + (SETTINGS_PANEL_W - 200.0f) * 0.5f,
@@ -2112,6 +2121,32 @@ static bool sens_track_hit(float x, float y) {
         && y <= M.sens_track_y + M.sens_track_h + pad;
 }
 
+/* Chat-fade slider helpers - mirror the sens versions exactly,
+ * just bound to settings_chat_fade_s instead of mouse sensitivity. */
+static float chat_value_to_handle_x(void) {
+    float v = settings_chat_fade_s();
+    float t = (v - SETTINGS_CHAT_FADE_MIN_S)
+            / (SETTINGS_CHAT_FADE_MAX_S - SETTINGS_CHAT_FADE_MIN_S);
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    return M.chat_track_x + t * M.chat_track_w;
+}
+static void chat_set_from_handle_x(float x) {
+    float t = (x - M.chat_track_x) / M.chat_track_w;
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    float v = SETTINGS_CHAT_FADE_MIN_S
+            + t * (SETTINGS_CHAT_FADE_MAX_S - SETTINGS_CHAT_FADE_MIN_S);
+    settings_set_chat_fade_s(v);
+}
+static bool chat_track_hit(float x, float y) {
+    const float pad = 12.0f;
+    return x >= M.chat_track_x
+        && x <= M.chat_track_x + M.chat_track_w
+        && y >= M.chat_track_y - pad
+        && y <= M.chat_track_y + M.chat_track_h + pad;
+}
+
 static void settings_draw(float w, float h) {
     settings_layout(w, h);
     const float px = (w - SETTINGS_PANEL_W) * 0.5f;
@@ -2134,29 +2169,51 @@ static void settings_draw(float w, float h) {
     mobile_ui_draw_rect_outline(px, py, SETTINGS_PANEL_W, SETTINGS_PANEL_H,
                                   2.0f, 0.85f, 0.90f, 1.00f, 1.0f);
 
-    /* Slider track + filled portion + handle. The fill on the left
-     * half of the track gives a glance read of "where the value
-     * sits"; the handle is the thumb-grabbable thing. */
-    float hx = sens_value_to_handle_x();
-    mobile_ui_draw_rect(M.sens_track_x, M.sens_track_y,
-                          M.sens_track_w, M.sens_track_h,
-                          0.18f, 0.20f, 0.26f, 1.0f);
-    mobile_ui_draw_rect(M.sens_track_x, M.sens_track_y,
-                          hx - M.sens_track_x, M.sens_track_h,
-                          0.45f, 0.65f, 0.95f, 1.0f);
-    mobile_ui_draw_rect_outline(M.sens_track_x, M.sens_track_y,
-                                  M.sens_track_w, M.sens_track_h, 1.5f,
-                                  0.85f, 0.90f, 1.00f, 1.0f);
-    /* Handle: 18 wide x (track + 14 tall) - sits centred on the
-     * track so finger taps don't have to be pixel-perfect. */
+    /* Two sliders stacked: mouse sens then chat fade. Same shape
+     * for both - track with filled left half + handle. Inline so
+     * the geometry batches in a single sgl pass. */
     const float handle_w = 18.0f;
-    const float handle_h = M.sens_track_h + 14.0f;
-    const float hx_l = hx - handle_w * 0.5f;
-    const float hy_l = M.sens_track_y - 7.0f;
-    mobile_ui_draw_rect(hx_l, hy_l, handle_w, handle_h,
-                          0.90f, 0.92f, 1.0f, 1.0f);
-    mobile_ui_draw_rect_outline(hx_l, hy_l, handle_w, handle_h, 2.0f,
-                                  0.30f, 0.40f, 0.60f, 1.0f);
+    const float handle_h_off = 14.0f;
+    /* --- mouse sens slider --- */
+    {
+        float hx = sens_value_to_handle_x();
+        mobile_ui_draw_rect(M.sens_track_x, M.sens_track_y,
+                              M.sens_track_w, M.sens_track_h,
+                              0.18f, 0.20f, 0.26f, 1.0f);
+        mobile_ui_draw_rect(M.sens_track_x, M.sens_track_y,
+                              hx - M.sens_track_x, M.sens_track_h,
+                              0.45f, 0.65f, 0.95f, 1.0f);
+        mobile_ui_draw_rect_outline(M.sens_track_x, M.sens_track_y,
+                                      M.sens_track_w, M.sens_track_h, 1.5f,
+                                      0.85f, 0.90f, 1.00f, 1.0f);
+        const float handle_h = M.sens_track_h + handle_h_off;
+        const float hx_l = hx - handle_w * 0.5f;
+        const float hy_l = M.sens_track_y - 7.0f;
+        mobile_ui_draw_rect(hx_l, hy_l, handle_w, handle_h,
+                              0.90f, 0.92f, 1.0f, 1.0f);
+        mobile_ui_draw_rect_outline(hx_l, hy_l, handle_w, handle_h, 2.0f,
+                                      0.30f, 0.40f, 0.60f, 1.0f);
+    }
+    /* --- chat fade slider --- */
+    {
+        float hx = chat_value_to_handle_x();
+        mobile_ui_draw_rect(M.chat_track_x, M.chat_track_y,
+                              M.chat_track_w, M.chat_track_h,
+                              0.18f, 0.20f, 0.26f, 1.0f);
+        mobile_ui_draw_rect(M.chat_track_x, M.chat_track_y,
+                              hx - M.chat_track_x, M.chat_track_h,
+                              0.45f, 0.65f, 0.95f, 1.0f);
+        mobile_ui_draw_rect_outline(M.chat_track_x, M.chat_track_y,
+                                      M.chat_track_w, M.chat_track_h, 1.5f,
+                                      0.85f, 0.90f, 1.00f, 1.0f);
+        const float handle_h = M.chat_track_h + handle_h_off;
+        const float hx_l = hx - handle_w * 0.5f;
+        const float hy_l = M.chat_track_y - 7.0f;
+        mobile_ui_draw_rect(hx_l, hy_l, handle_w, handle_h,
+                              0.90f, 0.92f, 1.0f, 1.0f);
+        mobile_ui_draw_rect_outline(hx_l, hy_l, handle_w, handle_h, 2.0f,
+                                      0.30f, 0.40f, 0.60f, 1.0f);
+    }
 
     /* BACK button - re-use the menu button visuals. */
     const bool back_hover = hit(&M.btn_settings_back, M.mouse_x, M.mouse_y);
@@ -2176,15 +2233,20 @@ static void settings_draw(float w, float h) {
     /* Text labels on top of the geometry. */
     const float cx = w * 0.5f;
     draw_text_centered("SETTINGS", cx, py + 22.0f, 3.5f, 0xff, 0xff, 0xff);
-    draw_text_centered("MOUSE SENSITIVITY", cx, py + 100.0f, 1.5f,
+    /* Mouse sens label + value. Internal value is small (0.0005..0.0080)
+     * so we display it x 1000 for a friendlier 0.5..8.0 readout. */
+    draw_text_centered("MOUSE SENSITIVITY", cx, py + 80.0f, 1.5f,
                          0xc0, 0xc8, 0xd8);
-    /* Value readout in mrad-per-pixel-ish units. The internal value
-     * is small (0.0005..0.0080) so multiply by 1000 for a friendlier
-     * 0.5..8.0 display. */
     char buf[32];
     snprintf(buf, sizeof buf, "%.2f",
              settings_mouse_sensitivity() * 1000.0f);
-    draw_text_centered(buf, cx, py + 124.0f, 1.5f, 0xff, 0xe0, 0x60);
+    draw_text_centered(buf, cx, py + 104.0f, 1.5f, 0xff, 0xe0, 0x60);
+    /* Chat fade label + value (whole seconds). */
+    draw_text_centered("CHAT FADE (SECONDS)", cx, py + 180.0f, 1.5f,
+                         0xc0, 0xc8, 0xd8);
+    snprintf(buf, sizeof buf, "%.0f", settings_chat_fade_s());
+    draw_text_centered(buf, cx, py + 204.0f, 1.5f, 0xff, 0xe0, 0x60);
+    /* BACK button label. */
     draw_text_centered(M.btn_settings_back.label,
                          M.btn_settings_back.x + M.btn_settings_back.w * 0.5f,
                          M.btn_settings_back.y
@@ -2201,12 +2263,14 @@ static bool settings_event(const sapp_event* e) {
         M.mouse_x = e->mouse_x;
         M.mouse_y = e->mouse_y;
         if (M.sens_dragging) sens_set_from_handle_x(e->mouse_x);
+        if (M.chat_dragging) chat_set_from_handle_x(e->mouse_x);
         return true;
     }
     if (e->type == SAPP_EVENTTYPE_TOUCHES_MOVED && e->num_touches > 0) {
         M.mouse_x = e->touches[0].pos_x;
         M.mouse_y = e->touches[0].pos_y;
         if (M.sens_dragging) sens_set_from_handle_x(e->touches[0].pos_x);
+        if (M.chat_dragging) chat_set_from_handle_x(e->touches[0].pos_x);
         return true;
     }
     /* Escape closes the overlay so the player isn't trapped if the
@@ -2215,6 +2279,7 @@ static bool settings_event(const sapp_event* e) {
         && e->key_code == SAPP_KEYCODE_ESCAPE) {
         M.settings_visible = false;
         M.sens_dragging = false;
+        M.chat_dragging = false;
         return true;
     }
 
@@ -2239,11 +2304,17 @@ static bool settings_event(const sapp_event* e) {
         if (hit(&M.btn_settings_back, cx, cy)) {
             M.settings_visible = false;
             M.sens_dragging = false;
+            M.chat_dragging = false;
             return true;
         }
         if (sens_track_hit(cx, cy)) {
             M.sens_dragging = true;
             sens_set_from_handle_x(cx);
+            return true;
+        }
+        if (chat_track_hit(cx, cy)) {
+            M.chat_dragging = true;
+            chat_set_from_handle_x(cx);
             return true;
         }
         /* Press elsewhere inside the modal does nothing but is
@@ -2253,6 +2324,7 @@ static bool settings_event(const sapp_event* e) {
     }
     if (release) {
         M.sens_dragging = false;
+        M.chat_dragging = false;
         return true;
     }
     /* Swallow every other event (keyboard, scroll, etc.) so chat /

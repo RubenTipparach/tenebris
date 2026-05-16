@@ -1,5 +1,6 @@
 #include "client/chat.h"
 #include "client/net_client.h"
+#include "client/settings.h"
 
 #include "sokol_gfx.h"
 #include "sokol_app.h"
@@ -17,8 +18,15 @@
  * after it arrives, then fades over the last 15 seconds and drops off.
  * The compose box being open always shows the full retained scrollback
  * regardless of age. */
-#define CHAT_FADE_HOLD_S  (5.0 * 60.0)
+/* Hold + fade window for the floating chat panel. The HOLD half is
+ * runtime-tunable via the Settings menu so a player can shorten the
+ * "stuck on screen" duration (default 60 s; was 5 min). The fade
+ * tail stays a fixed short trailing curve so messages don't
+ * disappear abruptly. */
 #define CHAT_FADE_OUT_S   15.0
+static double chat_fade_hold_s(void) {
+    return (double)settings_chat_fade_s();
+}
 /* On a fresh connection the server replays the room's recent chat as
  * a flurry of MSG_CHATs. They reach the client with current-time
  * stamps and would otherwise look like brand-new traffic. Treat any
@@ -290,6 +298,7 @@ void chat_draw(float screen_w, float screen_h) {
      * conditions (and without subtly diverging on interleaved
      * backlog vs real-time entries, which the previous index-stride
      * approach silently mis-rendered). */
+    const double fade_hold = chat_fade_hold_s();
     int visible_idx[CHAT_HISTORY_MAX];
     int visible = 0;
     for (int i = 0; i < C.count; ++i) {
@@ -298,7 +307,7 @@ void chat_draw(float screen_w, float screen_h) {
         if (!C.active) {
             if (m->is_backlog) continue;
             double age = now - m->recv_time_s;
-            if (age >= CHAT_FADE_HOLD_S + CHAT_FADE_OUT_S) break;
+            if (age >= fade_hold + CHAT_FADE_OUT_S) break;
         }
         visible_idx[visible++] = idx;
         if (visible >= CHAT_HISTORY_MAX) break;
@@ -338,8 +347,8 @@ void chat_draw(float screen_w, float screen_h) {
             const chat_msg_t* m = &C.history[visible_idx[i]];
             double age = now - m->recv_time_s;
             float alpha = 1.0f;
-            if (!C.active && age > CHAT_FADE_HOLD_S) {
-                alpha = (float)((CHAT_FADE_HOLD_S + CHAT_FADE_OUT_S - age)
+            if (!C.active && age > fade_hold) {
+                alpha = (float)((fade_hold + CHAT_FADE_OUT_S - age)
                                 / CHAT_FADE_OUT_S);
                 if (alpha < 0.0f) alpha = 0.0f;
             }

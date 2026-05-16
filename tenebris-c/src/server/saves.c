@@ -1426,6 +1426,14 @@ int saves_chat_load_backlog(const char* room,
     saves_chat_msg_t* ring = (saves_chat_msg_t*)calloc((size_t)cap, sizeof(*ring));
     if (!ring) { free(buf); return 0; }
     int head = 0, count = 0;
+    /* Filter out anything older than 12 hours so the join-time replay
+     * doesn't ship a player ancient logs that have no chance of being
+     * useful conversation context. 12 h matches the "if I haven't been
+     * here in half a day, those messages are irrelevant" intuition;
+     * could become configurable later. The timestamp field is the
+     * first \t-delimited field on each line. */
+    const long long now_ts = (long long)time(NULL);
+    const long long max_age_s = 12LL * 60LL * 60LL;
     char* line = buf;
     while (line < buf + r) {
         char* nl = (char*)memchr(line, '\n', (size_t)(buf + r - line));
@@ -1434,6 +1442,10 @@ int saves_chat_load_backlog(const char* room,
          * fields - bail on any line that doesn't have them. */
         char* tab1 = (char*)memchr(line, '\t', len);
         if (!tab1) goto next_line;
+        /* Parse the leading timestamp and skip stale entries. strtoll
+         * stops at the tab so we don't need a null terminator. */
+        long long ts = strtoll(line, NULL, 10);
+        if (ts > 0 && (now_ts - ts) > max_age_s) goto next_line;
         size_t rest_len = len - (size_t)(tab1 + 1 - line);
         char* tab2 = (char*)memchr(tab1 + 1, '\t', rest_len);
         if (!tab2) goto next_line;
