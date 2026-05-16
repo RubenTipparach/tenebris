@@ -1216,11 +1216,21 @@ mat4_t player_view(const player_ctrl_t* p) {
     compute_look(p, &look, &up);
     /* Eye sits EYE_HEIGHT along the body's surface normal — so the
      * camera's up stays aligned with the local "horizon level" of the
-     * body the player is on, matching JS PlanetPlayer.updateCamera. */
+     * body the player is on, matching JS PlanetPlayer.updateCamera.
+     *
+     * View matrix is built from (eye, look_dir, up) rather than
+     * (eye, eye+look, up) so the orientation columns aren't subject
+     * to `target - eye` float subtraction at large world distances.
+     * Bodies live anywhere in a multi-km world ring; at ~300 m
+     * camera-to-world-origin the float epsilon is ~0.005 m, which
+     * leaks into the look vector as ~0.3 deg of orientation noise
+     * per frame - just enough to read as a micro-snap. Computing
+     * the look in doubles (compute_look already does) and passing
+     * the direction directly skips that loss; only the translation
+     * column carries the eye magnitude, which is harmless. */
     dvec3_t eye = dvec3_add(p->position, dvec3_scale(p->basis.up, (double)EYE_HEIGHT));
-    dvec3_t target = dvec3_add(eye, look);
-    vec3_t eye_f = dvec3_to_vec3(eye);
-    vec3_t tgt_f = dvec3_to_vec3(target);
-    vec3_t up_f  = { (float)up.x, (float)up.y, (float)up.z };
-    return mat4_look_at(eye_f, tgt_f, up_f);
+    vec3_t eye_f  = dvec3_to_vec3(eye);
+    vec3_t look_f = { (float)look.x, (float)look.y, (float)look.z };
+    vec3_t up_f   = { (float)up.x,   (float)up.y,   (float)up.z   };
+    return mat4_look_at_dir(eye_f, look_f, up_f);
 }

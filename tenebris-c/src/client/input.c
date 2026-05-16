@@ -345,8 +345,29 @@ void input_event(const sapp_event* e) {
 
         case SAPP_EVENTTYPE_MOUSE_MOVE:
             if (S.pub.pointer_locked) {
-                S.pub.mouse_dx += e->mouse_dx;
-                S.pub.mouse_dy += e->mouse_dy;
+                /* Per-event delta clamp. Normal fast mouse motion at
+                 * 1000 Hz polling produces small per-event deltas
+                 * (tens of pixels at most); a single event with a
+                 * delta in the hundreds is almost always either a
+                 * browser pointer-lock-warp synthetic event or a
+                 * stalled-event burst the browser fused into one.
+                 * Clamping per event filters those out without
+                 * limiting legitimate fast flicks (which spread
+                 * across many sub-clamp events). The user-perceived
+                 * effect: snap-on-mouse rotation glitches disappear
+                 * but 360-degree wrist flicks still work normally.
+                 *
+                 * The look-stick path on mobile is naturally rate-
+                 * bounded so it doesn't need this gate. */
+                const float MAX_PER_EVENT_PX = 200.0f;
+                float dx = e->mouse_dx;
+                float dy = e->mouse_dy;
+                if (dx >  MAX_PER_EVENT_PX) dx =  MAX_PER_EVENT_PX;
+                if (dx < -MAX_PER_EVENT_PX) dx = -MAX_PER_EVENT_PX;
+                if (dy >  MAX_PER_EVENT_PX) dy =  MAX_PER_EVENT_PX;
+                if (dy < -MAX_PER_EVENT_PX) dy = -MAX_PER_EVENT_PX;
+                S.pub.mouse_dx += dx;
+                S.pub.mouse_dy += dy;
             }
             break;
 
