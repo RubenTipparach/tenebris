@@ -1,5 +1,6 @@
 #include "core/world.h"
 #include "core/world_light.h"
+#include "core/world_water.h"
 #include "core/planet.h"
 #include "core/planet_gen.h"
 #include "core/config.h"
@@ -25,12 +26,14 @@ world_t* world_create(const body_config_t* body, int subdivisions) {
     w->edited       = (uint8_t*)calloc((size_t)w->edited_bytes, 1);
     w->gen_cursor = 0;
     w->light = world_light_create(w);
+    w->water = world_water_create(w);
     return w;
 }
 
 void world_destroy(world_t* w) {
     if (!w) return;
     world_light_destroy(w->light);
+    world_water_destroy(w->water);
     goldberg_destroy(w->grid);
     free(w->blocks);
     free(w->dirty);
@@ -58,6 +61,10 @@ world_t* world_clone(const world_t* src) {
      * relit state without paying for another BFS. Torches reset; the
      * client that consumes this clone republishes its torch list. */
     world_light_clone_into(w->light, src->light);
+    /* Water flow state: copy the per-voxel byte array; the scheduler
+     * queue resets (clones inherit the settled snapshot, not pending
+     * ticks). */
+    world_water_clone_into(w->water, src->water);
     return w;
 }
 

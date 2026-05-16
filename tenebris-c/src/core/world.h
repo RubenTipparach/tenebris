@@ -14,6 +14,12 @@
  * pulling the BFS header into every world.h consumer. */
 struct world_light_s;
 
+/* Forward decl - world_water owns a parallel per-voxel water-flow
+ * state byte array + tick scheduler, lifecycle-tied to the world.
+ * Same opaque-pointer pattern as world_light so consumers don't have
+ * to pull the flow-algorithm header transitively. */
+struct world_water_s;
+
 /*
  * The whole world. Holds the Goldberg tile set + a column of voxels per
  * tile. Matches the src/planet/Planet.ts model: depth 0 = deepest
@@ -88,6 +94,12 @@ typedef struct world_s {
      * core/world_light. The mesher gates on config_lighting()->engine
      * to decide between this and the legacy column-based bake. */
     struct world_light_s* light;
+
+    /* Per-voxel water flow state + tick scheduler. State byte layout
+     * (source / falling / level) and queue semantics live in
+     * core/world_water. Allocated in world_create alongside `blocks`,
+     * cloned in world_clone, freed in world_destroy. */
+    struct world_water_s* water;
 } world_t;
 
 /* ----------------------------------------------------------------------- */
