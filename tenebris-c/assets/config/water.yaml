@@ -187,10 +187,16 @@ water:
   #                                Capped at 7 by the 3-bit state field
   #                                regardless of YAML value; lower = shorter
   #                                streams. 7 matches Minecraft's 8-step
-  #                                ladder.
+  #                                ladder; we run tighter (3) so a single
+  #                                placed source forms a small puddle
+  #                                rather than flooding the surrounding
+  #                                terrain a 7-hex radius out.
   # flow_search_radius       int   BFS depth (hex steps) used by the
   #                                nearest-hole pathfinder when picking
-  #                                horizontal spread direction. 4 matches MC.
+  #                                horizontal spread direction. 4 matches MC -
+  #                                kept slightly above flow_max_level so water
+  #                                routes toward a drop one step beyond its
+  #                                own dry-up range instead of pooling blindly.
   # flow_ticks_per_step      int   sim ticks between scheduler calls. 5
   #                                matches MC's "5 game ticks per block".
   # flow_max_ticks_per_step  int   per-call cap on cells popped from the
@@ -234,6 +240,17 @@ water:
   flow_queue_capacity:      4096
   flow_source_min_nbrs:     2
   flow_persist_falling:     0
+
+  # ---- Mesh rebuild budget. The renderer rebuilds a chunk's whole mesh
+  # (terrain + water + per-voxel water) when ANY tile in the chunk goes
+  # dirty. A busy water flow tick can dirty tiles across multiple chunks
+  # at once, and rebuilding all of them in the same frame stalls the
+  # mainloop visibly. This knob caps how many chunks each body remeshes
+  # per frame - extra dirty chunks stay dirty and roll over to the next
+  # frame, spreading the cost without losing any work. 1 = strictly one
+  # chunk per body per frame (smoothest framerate), higher = less latency
+  # to converge but more frametime variance during heavy flow.
+  flow_max_chunks_remesh_per_frame: 1
 
   flow_uv_speed_falling:    1.0
   flow_uv_speed_per_level:  0.25

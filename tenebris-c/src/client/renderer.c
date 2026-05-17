@@ -2804,9 +2804,20 @@ void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world,
             world_tile_clear_dirty(body->world, i);
             ++dirty_tiles;
         }
+        /* Spread chunk rebuilds across frames. A flow tick that dirties
+         * tiles in N chunks would otherwise stall the mainloop for the
+         * sum of N body_chunk_rebuild_full calls in a single frame -
+         * water flowing across a hillside hits a dozen chunks at once
+         * and visibly hitches. Cap to the YAML-configured budget; the
+         * remaining chunks keep their dirty flag and are picked up on
+         * the next frame's pass. Floor at 1 so a hostile config can't
+         * starve the queue. */
+        int remesh_budget = config_water_flow()->max_chunks_remesh_per_frame;
+        if (remesh_budget < 1) remesh_budget = 1;
         int chunks_rebuilt = 0;
         for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
             if (!body->chunks[ci].dirty) continue;
+            if (chunks_rebuilt >= remesh_budget) break;
             body_chunk_rebuild_full(body, ci);
             body->chunks[ci].dirty = false;
             body_grew[ci] = true;

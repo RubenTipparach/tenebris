@@ -503,16 +503,17 @@ static water_flow_config_t S_WATER_FLOW = {
     /* 3-hex spread radius - hex topology with 6-way neighbours
      * already covers 37 cells at radius 3, so going wider floods
      * the world from a single source. YAML can override up to 7. */
-    .max_level           = 3,
-    .search_radius       = 4,
-    .ticks_per_step      = 5,
-    .max_ticks_per_step  = 256,
-    .queue_capacity      = 4096,
-    .source_min_nbrs     = 2,
-    .persist_falling     = 0,
-    .uv_speed_falling    = 1.0f,
-    .uv_speed_per_level  = 0.25f,
-    .min_film_fraction   = 0.12f,
+    .max_level                   = 3,
+    .search_radius               = 4,
+    .ticks_per_step              = 5,
+    .max_ticks_per_step          = 256,
+    .queue_capacity              = 4096,
+    .source_min_nbrs             = 2,
+    .persist_falling             = 0,
+    .uv_speed_falling            = 1.0f,
+    .uv_speed_per_level          = 0.25f,
+    .min_film_fraction           = 0.12f,
+    .max_chunks_remesh_per_frame = 1,
 };
 
 const water_flow_config_t* config_water_flow(void) { return &S_WATER_FLOW; }
@@ -640,6 +641,8 @@ int config_load_water(const char* path) {
                         S_WATER_FLOW.uv_speed_per_level = (float)strtod(val, NULL);
                     } else if (strcmp(key, "flow_min_film_fraction") == 0) {
                         S_WATER_FLOW.min_film_fraction  = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "flow_max_chunks_remesh_per_frame") == 0) {
+                        S_WATER_FLOW.max_chunks_remesh_per_frame = (int)strtol(val, NULL, 10);
 
                     } else {
                         printf("[config] %s:%d: unknown key '%s'\n",

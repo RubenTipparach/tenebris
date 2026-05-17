@@ -443,6 +443,15 @@ typedef struct {
      * thinnest film (level == max) visible instead of degenerating to
      * a zero-height quad. */
     float min_film_fraction;
+
+    /* Per-body cap on chunk remeshes per frame. The renderer rebuilds a
+     * whole chunk when any of its tiles dirties, and a busy flow tick
+     * dirties many chunks at once - rebuilding them all in one frame
+     * stalls visibly. With this cap, extra dirty chunks stay dirty and
+     * roll over to subsequent frames. Floor at 1 so progress is always
+     * made; the per-edit fast path (single block placement) still
+     * resolves in one frame because it only ever dirties one chunk. */
+    int   max_chunks_remesh_per_frame;
 } water_flow_config_t;
 
 const water_flow_config_t* config_water_flow(void);
