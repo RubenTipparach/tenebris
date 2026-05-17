@@ -613,22 +613,28 @@ void hex_mesh_build_water_voxels(hex_mesh_t* out, const world_t* w, int tile_idx
 
     for (int d = 0; d < WORLD_MAX_DEPTH; ++d) {
         if (col[d] != (uint8_t)BLOCK_WATER) continue;
-        /* Sea-level row is owned by the planet-wide ocean cap in
-         * hex_mesh_build_water; rendering it again here would Z-fight
-         * with itself. */
-        if (d == SEA_LEVEL_DEPTH - 1) continue;
 
         uint8_t state = world_water_get_state(w, tile_idx, d);
         int level = water_render_level(state, cfg_max_level);
         float cap_offset = water_cap_offset_for_level(level, cfg_max_level, min_film);
 
+        /* Sea-level row's TOP cap is owned by the planet-wide ocean
+         * cap in hex_mesh_build_water - emitting it here too would
+         * Z-fight with the wave-displaced ocean surface. Side faces
+         * + bottom cap still come from this loop, otherwise an air
+         * pocket adjacent to the ocean at sea level shows no water
+         * walls (the bug: dig a tunnel right under the shoreline and
+         * the ocean appears to end mid-air against the dirt). */
+        const bool is_sea_level_row = (d == SEA_LEVEL_DEPTH - 1);
+
         /* ---- Top cap.
          * Skip when the cell above is itself water - the two cells
          * connect through the column and the upper cap is what the
          * player actually sees. Solid above also covers (no cap
-         * needed). Anything else (air, leaves) shows the cap. */
+         * needed). Anything else (air, leaves) shows the cap. The
+         * sea-level row defers its top to the ocean-cap path. */
         block_t above = (d + 1 < WORLD_MAX_DEPTH) ? (block_t)col[d + 1] : BLOCK_AIR;
-        if (above != BLOCK_WATER && !block_covers_face(above)) {
+        if (!is_sea_level_row && above != BLOCK_WATER && !block_covers_face(above)) {
             emit_cap(out, t, w, tile_idx, d, BLOCK_WATER, /*is_top=*/true,
                      /*width=*/1.0f, /*r_offset_m=*/cap_offset,
                      /*bake_lighting=*/true, /*wet=*/1.0f);
@@ -749,22 +755,40 @@ void hex_mesh_build_tile(hex_mesh_t* out, const world_t* w, int tile_idx) {
         }
     }
 
+    /* `near_water` is now used only as a coarse skip hint - the
+     * underwater-fog wet flag is computed per FACE below, based on
+     * the across-face neighbour. Old code blanket-marked every solid
+     * voxel in a near-water tile below sea level as wet on all 6
+     * faces, which painted the underwater tint onto faces that
+     * actually border AIR (e.g. the walls of a pit dug into the
+     * seabed - the player sees them through air, not water, so they
+     * should read dry). Per-face fixes that. */
+    (void)near_water;
+
     for (int d = 0; d < WORLD_MAX_DEPTH; ++d) {
         block_t b = (block_t)col[d];
         if (!block_is_solid(b)) continue;
 
         float width = block_hex_width(b, tile_idx, d);
-        float wet = (near_water && d < SEA_LEVEL_DEPTH) ? 1.0f : 0.0f;
 
         block_t above = (d + 1 < WORLD_MAX_DEPTH) ? (block_t)col[d + 1] : BLOCK_AIR;
         if (!block_covers_face(above)) {
-            emit_cap(out, t, w, tile_idx, d, b, true, width, 0.0f, true, wet);
+            /* Top cap is wet when the cell directly above is water -
+             * looking down through that cell hits this face through
+             * water, which is exactly what should trigger the
+             * Beer-Lambert dimming. */
+            float top_wet = (above == BLOCK_WATER) ? 1.0f : 0.0f;
+            emit_cap(out, t, w, tile_idx, d, b, true, width, 0.0f, true, top_wet);
         }
 
         if (d > 0) {
             block_t below = (block_t)col[d - 1];
             if (!block_covers_face(below)) {
-                emit_cap(out, t, w, tile_idx, d, b, false, width, 0.0f, true, wet);
+                /* Bottom cap rarely matters (most solid blocks sit on
+                 * solid), but the same rule applies: wet only when
+                 * the cell below is water. */
+                float bot_wet = (below == BLOCK_WATER) ? 1.0f : 0.0f;
+                emit_cap(out, t, w, tile_idx, d, b, false, width, 0.0f, true, bot_wet);
             }
         }
 
@@ -779,7 +803,19 @@ void hex_mesh_build_tile(hex_mesh_t* out, const world_t* w, int tile_idx) {
         double r_top = world_depth_to_radius_m(w, d + 1);
         for (int k = 0; k < n; ++k) {
             int next = (k + 1) % n;
-            emit_side_quad(out, t, w, tile_idx, d, k, next, r_bot, r_top, b, width, wet);
+            /* Side face wet: the across-edge neighbour at the same
+             * depth. edge_neighbours[k] is the tile across the edge
+             * spanning corners k -> k+1, which is exactly the
+             * neighbour emit_side_quad samples for AO. Water
+             * neighbour -> looking AT this face goes through water,
+             * so the underwater dimming fires. Air / solid neighbour
+             * -> dry face (the air-pocket-wall case). */
+            int nb_tile = t->edge_neighbours[k];
+            block_t nb_b = (nb_tile >= 0)
+                           ? world_get(w, nb_tile, d)
+                           : BLOCK_AIR;
+            float side_wet = (nb_b == BLOCK_WATER) ? 1.0f : 0.0f;
+            emit_side_quad(out, t, w, tile_idx, d, k, next, r_bot, r_top, b, width, side_wet);
         }
     }
 }

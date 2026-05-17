@@ -2585,6 +2585,11 @@ static void event(const sapp_event* e) {
      * still get back in. */
     if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_F2) {
         G_debug_ui_visible = !G_debug_ui_visible;
+        /* Debug-only water placement: the rightmost hotbar slot turns
+         * into an infinite water source while F2 is on, so the player
+         * can exercise the per-voxel flow simulator. Toggling F2 off
+         * restores the slot's previous contents. */
+        inventory_set_debug_water(&G.player.inventory, G_debug_ui_visible);
         return;
     }
     /* The remaining debug shortcuts are no-ops while the debug UI is
