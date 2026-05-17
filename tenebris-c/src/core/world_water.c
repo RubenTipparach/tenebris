@@ -590,11 +590,34 @@ static void tick_cell(world_t* w, int tile, int depth) {
     bool falling = false;
 
     /* Vertical supply: a water cell directly above feeds this one at
-     * full strength, with the FALLING flag latched on. */
+     * full strength. The FALLING flag latches on only if we can
+     * actually keep falling — air below, or non-source/non-sleeping
+     * flowing water. A solid floor (or source / sleeping ocean below)
+     * means we've LANDED; we stay supplied from above but become a
+     * non-falling level-0 supplier so the cells around us can pool
+     * outward. Without this transition, a falling cell with a solid
+     * floor spreads sideways via try_propagate, those level-1 spread
+     * cells find no horizontal supplier (the falling cell is skipped
+     * below) and dry up — which re-schedules the falling cell, which
+     * re-spreads. Result: a stuck waterfall pumps 64+ edits per frame
+     * forever, dirtying tiles and forcing per-frame remesh + relight. */
     if (depth + 1 < WORLD_MAX_DEPTH &&
         world_get(w, tile, depth + 1) == BLOCK_WATER) {
         supplier_level = 0;
-        falling = true;
+        bool can_keep_falling = false;
+        if (depth - 1 >= 0) {
+            block_t b_below = world_get(w, tile, depth - 1);
+            if (b_below == BLOCK_AIR) {
+                can_keep_falling = true;
+            } else if (b_below == BLOCK_WATER) {
+                uint8_t bs = world_water_get_state(w, tile, depth - 1);
+                /* Air-equivalent below: flowing / falling water that we
+                 * can overwrite as we fall through. Source / sleeping
+                 * water acts as a floor (we've landed in the pool). */
+                can_keep_falling = !water_state_is_source(bs) && bs != 0u;
+            }
+        }
+        falling = can_keep_falling;
     } else {
         const goldberg_tile_t* t = goldberg_tile(w->grid, tile);
         if (t) {
