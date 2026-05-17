@@ -235,7 +235,12 @@ water:
   # long streams, lower toward 2 for puddles only.
   flow_max_level:           3
   flow_search_radius:       4
-  flow_ticks_per_step:      5
+  # Halved the tick rate (was 5 = 4 Hz, now 10 = 2 Hz) so flow
+  # propagation paces out visibly instead of finishing inside the
+  # render-stall window. Each "spread step" now takes 500 ms which
+  # also halves the worst-case relight + remesh cost per simulated
+  # second.
+  flow_ticks_per_step:      10
   flow_max_ticks_per_step:  256
   flow_queue_capacity:      4096
   flow_source_min_nbrs:     2

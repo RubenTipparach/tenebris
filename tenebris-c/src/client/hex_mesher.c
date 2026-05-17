@@ -693,6 +693,19 @@ void hex_mesh_build_water_voxels(hex_mesh_t* out, const world_t* w, int tile_idx
                            : BLOCK_AIR;
 
             if (nb_b == BLOCK_WATER) {
+                /* Sea-level row: every water cell here visually
+                 * aligns with the planet-wide ocean cap regardless
+                 * of its flow level (cap_offset overridden above to
+                 * the ocean-cap drop). The partial-strip math below
+                 * recomputes the neighbour's cap from its raw level
+                 * WITHOUT that override, so it would emit a phantom
+                 * 5-10 cm tall vertical strip floating at the ocean
+                 * surface - visible as a dark wall in the middle of
+                 * what looks like flat water. Skip strips entirely
+                 * at sea level: all water there is one continuous
+                 * body, which is what MC does too. */
+                if (is_sea_level_row) continue;
+
                 /* Water-to-water: only emit a strip if WE'RE taller
                  * (our level < neighbour's level - lower level number =
                  * higher cap). Equal-or-shorter falls through to the

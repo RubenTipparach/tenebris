@@ -505,7 +505,9 @@ static water_flow_config_t S_WATER_FLOW = {
      * the world from a single source. YAML can override up to 7. */
     .max_level                   = 3,
     .search_radius               = 4,
-    .ticks_per_step              = 5,
+    /* 10 = 2 Hz at MP tick_hz=20. Visibly paced spread + lower
+     * per-second remesh churn than the MC-parity 5. */
+    .ticks_per_step              = 10,
     .max_ticks_per_step          = 256,
     .queue_capacity              = 4096,
     .source_min_nbrs             = 2,
