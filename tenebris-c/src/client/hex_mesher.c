@@ -558,19 +558,40 @@ void hex_mesh_build_water(hex_mesh_t* out, const world_t* w, int tile_idx) {
  * shrinking to film. */
 
 static float water_cap_offset_for_level(int level, int cfg_max_level,
-                                         float min_film_fraction) {
+                                         float min_film_fraction,
+                                         float curve_power,
+                                         float surface_off) {
     /* Map level (0..cfg_max_level) to a radial offset in metres,
-     * relative to the cell's nominal top radius. Level 0 → 0 m
-     * (cap at top), level cfg_max_level → -(1 - min_film) m (cap near
-     * bottom of the cell, with a min_film slice still visible). */
-    if (cfg_max_level <= 0) return 0.0f;
-    if (level <= 0) return 0.0f;
+     * relative to the cell's nominal top radius.
+     *
+     * Two stacked offsets:
+     *
+     *   surface_off       Always applied. Mirrors the planet ocean
+     *                     cap's -depth_offset_m + height_offset_m so
+     *                     wave-shader swell can't push crests above
+     *                     adjacent solid voxel tops. A level-0 source
+     *                     therefore renders just below the cell's
+     *                     nominal top, exactly like an ocean cell.
+     *
+     *   curve drop        Level-driven falloff. Linear (power=1) treats
+     *                     every step the same and makes near-source
+     *                     cells render near full height, which reads as
+     *                     a "mountain" piling up at the source. Power
+     *                     ~2 (the YAML default) gives each step a
+     *                     larger drop than the previous one - distant
+     *                     water reaches the thin-film floor quickly and
+     *                     visually cascades over edges instead.
+     *
+     * The film fraction keeps the level=max cap from collapsing to a
+     * zero-height quad. Block height is 1 m (BLOCK_HEIGHT in world.c)
+     * so the (1 - min_film) factor is in metres directly. */
+    if (cfg_max_level <= 0) return surface_off;
+    if (level <= 0) return surface_off;
     if (level > cfg_max_level) level = cfg_max_level;
     float frac = (float)level / (float)cfg_max_level;
-    /* Block height is 1 m (BLOCK_HEIGHT in world.c). The film fraction
-     * keeps the thinnest level visible instead of collapsing the cap
-     * onto the cell's bottom. */
-    return -frac * (1.0f - min_film_fraction);
+    if (curve_power < 1.0f) curve_power = 1.0f;
+    float curve = powf(frac, curve_power);
+    return surface_off - curve * (1.0f - min_film_fraction);
 }
 
 /* True when the (tile, depth) cell is BLOCK_WATER and should render
@@ -624,6 +645,16 @@ void hex_mesh_build_water_voxels(hex_mesh_t* out, const world_t* w, int tile_idx
     float min_film = wf->min_film_fraction;
     if (min_film < 0.0f) min_film = 0.0f;
     if (min_film > 1.0f) min_film = 1.0f;
+    float curve_power = wf->cap_curve_power;
+
+    /* Apply the same surface drop the planet-wide ocean cap uses, so
+     * the wave-shader swell can't push per-voxel water crests above
+     * adjacent solid voxel tops. depth_offset_m drops the surface;
+     * height_offset_m is the creative water-level knob layered on top
+     * (positive = raise water, negative = lower). Single read per
+     * call - read once outside the per-voxel loop. */
+    const water_config_t* wc = config_water();
+    const float surface_off = -wc->depth_offset_m + wc->height_offset_m;
 
     const int n = t->num_verts;
 
@@ -631,7 +662,8 @@ void hex_mesh_build_water_voxels(hex_mesh_t* out, const world_t* w, int tile_idx
         if (col[d] != (uint8_t)BLOCK_WATER) continue;
 
         int level = water_render_level_at(w, tile_idx, d, cfg_max_level);
-        float cap_offset = water_cap_offset_for_level(level, cfg_max_level, min_film);
+        float cap_offset = water_cap_offset_for_level(
+            level, cfg_max_level, min_film, curve_power, surface_off);
 
         /* Sea-level row's TOP cap is owned by the planet-wide ocean
          * cap in hex_mesh_build_water - emitting it here too would
@@ -641,17 +673,15 @@ void hex_mesh_build_water_voxels(hex_mesh_t* out, const world_t* w, int tile_idx
          * walls (the bug: dig a tunnel right under the shoreline and
          * the ocean appears to end mid-air against the dirt).
          *
-         * The side faces at the sea-level row must end at the SAME
-         * radius the ocean cap is drawn at, not at the voxel's
-         * nominal top - the ocean cap sits depth_offset_m below sea
-         * level to give the swell room, so emitting sides up to the
-         * full r_top leaves a visible (~0.5 m) gap between the water
-         * wall and the cap surface. Override cap_offset to match
-         * the ocean cap's vertical drop. */
+         * At the sea-level row the side faces must end at the SAME
+         * radius the ocean cap is drawn at. The cap helper already
+         * bakes surface_off into a level-0 cell, so a sleeping ocean
+         * cell here matches the ocean cap automatically; only flowing
+         * cells at this depth need the override so a flowing strip
+         * meeting the ocean doesn't pinch below the cap. */
         const bool is_sea_level_row = (d == SEA_LEVEL_DEPTH - 1);
         if (is_sea_level_row) {
-            const water_config_t* wc = config_water();
-            cap_offset = -wc->depth_offset_m + wc->height_offset_m;
+            cap_offset = surface_off;
         }
 
         /* ---- Top cap.
@@ -726,7 +756,7 @@ void hex_mesh_build_water_voxels(hex_mesh_t* out, const world_t* w, int tile_idx
                 uint8_t own_state = world_water_get_state(w, tile_idx, d);
                 if (own_state == 0u) continue;
                 float nb_cap_offset = water_cap_offset_for_level(
-                    nb_level, cfg_max_level, min_film);
+                    nb_level, cfg_max_level, min_film, curve_power, surface_off);
                 double r_strip_bot = r_top_full + (double)nb_cap_offset;
                 double r_strip_top = r_top_cap;
                 if (r_strip_top - r_strip_bot > 1e-4) {

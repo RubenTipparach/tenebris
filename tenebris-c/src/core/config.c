@@ -515,6 +515,7 @@ static water_flow_config_t S_WATER_FLOW = {
     .uv_speed_falling            = 1.0f,
     .uv_speed_per_level          = 0.25f,
     .min_film_fraction           = 0.12f,
+    .cap_curve_power             = 2.0f,
     .max_chunks_remesh_per_frame = 1,
 };
 
@@ -643,6 +644,8 @@ int config_load_water(const char* path) {
                         S_WATER_FLOW.uv_speed_per_level = (float)strtod(val, NULL);
                     } else if (strcmp(key, "flow_min_film_fraction") == 0) {
                         S_WATER_FLOW.min_film_fraction  = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "flow_cap_curve_power") == 0) {
+                        S_WATER_FLOW.cap_curve_power    = (float)strtod(val, NULL);
                     } else if (strcmp(key, "flow_max_chunks_remesh_per_frame") == 0) {
                         S_WATER_FLOW.max_chunks_remesh_per_frame = (int)strtol(val, NULL, 10);
 

@@ -444,6 +444,17 @@ typedef struct {
      * a zero-height quad. */
     float min_film_fraction;
 
+    /* Cap-height falloff curve exponent applied to (level / max_level)
+     * when computing per-voxel cap offset. 1.0 = linear (every step
+     * drops the cap by the same amount), 2.0 = quadratic (each step
+     * drops more than the last - simulates water accelerating downward
+     * the further it travels from its source), >2 = steeper still. The
+     * "mountain of water" visual happens with linear falloff because
+     * level-1/2 cells render near full height; quadratic plants the
+     * cap low quickly so distant water reads as a thin film cascading
+     * over the edge instead of a piled-up slab. */
+    float cap_curve_power;
+
     /* Per-body cap on chunk remeshes per frame. The renderer rebuilds a
      * whole chunk when any of its tiles dirties, and a busy flow tick
      * dirties many chunks at once - rebuilding them all in one frame

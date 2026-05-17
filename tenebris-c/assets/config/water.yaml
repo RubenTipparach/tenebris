@@ -227,6 +227,15 @@ water:
   # flow_min_film_fraction   float min cap height as fraction of voxel
   #                                height. Keeps the thinnest film visible
   #                                instead of going to zero.
+  # flow_cap_curve_power     float exponent on (level / max_level) when mapping
+  #                                a flowing cell's level to its cap height.
+  #                                1.0 = linear (constant drop per step;
+  #                                visually "piles up" because near-source
+  #                                cells render near full height), 2.0 =
+  #                                quadratic (each step drops more than the
+  #                                last - water reads as accelerating downward
+  #                                as it travels further from the source),
+  #                                higher = even more aggressive falloff.
   # 3 hexes of horizontal spread per source (default 3 = stronger
   # falloff than MC's 7). With the hex topology + 6-way spread, a
   # single source already reaches 19 cells at radius 2 and 37 at
@@ -260,3 +269,4 @@ water:
   flow_uv_speed_falling:    1.0
   flow_uv_speed_per_level:  0.25
   flow_min_film_fraction:   0.12
+  flow_cap_curve_power:     2.0
