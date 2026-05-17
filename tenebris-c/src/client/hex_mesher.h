@@ -71,6 +71,28 @@ void hex_mesh_build_tile(hex_mesh_t* out, const world_t* w, int tile_idx);
  * sin-based waves and alpha-blends it. */
 void hex_mesh_build_water(hex_mesh_t* out, const world_t* w, int tile_idx);
 
+/* Emit per-voxel water geometry for water cells in this tile's column
+ * that are NOT covered by the sea-level ocean cap (above-ground
+ * streams, cave pools, anywhere flowing water might settle outside the
+ * planet-wide ocean).
+ *
+ * Cap height drops with the flow level from world_water's state byte
+ * (sources / sleeping ocean / falling render at full height; flowing
+ * cells render shorter); side faces follow the section-9 table in
+ * water.md:
+ *   - air neighbour              -> full-height side face
+ *   - same-level water neighbour -> skip (caps connect)
+ *   - lower-level water neighbour
+ *     (this cell taller)         -> emit partial strip from neighbour's
+ *                                    cap up to ours
+ *   - higher-level water neighbour
+ *     (this cell shorter)        -> skip (neighbour emits the strip)
+ *   - solid neighbour            -> skip (hidden behind solid)
+ *
+ * Emits into the same mesh as hex_mesh_build_water so the renderer
+ * draws both through the water pipeline (translucent / animated). */
+void hex_mesh_build_water_voxels(hex_mesh_t* out, const world_t* w, int tile_idx);
+
 /* When config_lighting()->engine == "voxel", relight the world's
  * propagated light grid if it's marked dirty. Idempotent within a
  * frame: multiple chunk rebuilds hit the dirty flag once, run the

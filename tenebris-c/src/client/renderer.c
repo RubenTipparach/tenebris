@@ -2252,6 +2252,11 @@ static void body_chunk_rebuild_full(chunked_body_t* body, int chunk_idx) {
         if (i >= w->gen_cursor) continue;        /* not yet generated */
         hex_mesh_build_tile(&c->mesh, w, i);
         hex_mesh_build_water(&c->water_mesh, w, i);
+        /* Per-voxel water cells outside the sea-level ocean cap: cave
+         * pools, mountain streams, anywhere the flow simulator pushed
+         * water. Skipped on bodies with no water configured so we
+         * don't pay for an empty-column walk on barren / icy planets. */
+        if (body->has_water) hex_mesh_build_water_voxels(&c->water_mesh, w, i);
         R.tiles_remeshed++;
     }
     profiler_end("chunk-remesh");
@@ -2360,7 +2365,10 @@ static void body_full_mesh(chunked_body_t* body) {
         int ci = body->tile_to_chunk[i];
         mesh_chunk_t* c = &body->chunks[ci];
         hex_mesh_build_tile(&c->mesh, w, i);
-        if (body->has_water) hex_mesh_build_water(&c->water_mesh, w, i);
+        if (body->has_water) {
+            hex_mesh_build_water(&c->water_mesh, w, i);
+            hex_mesh_build_water_voxels(&c->water_mesh, w, i);
+        }
         world_tile_clear_dirty(w, i);
     }
     profiler_end("chunk-remesh");
