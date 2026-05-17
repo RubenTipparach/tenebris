@@ -21,13 +21,22 @@ layout(binding=0) uniform vs_params {
     float u_swell_speed;        // time multiplier in the sine swell (animation speed)
 };
 
-// a_normal / a_uv aren't read here (the radial wave normal is derived
-// from normalize(a_pos)). They're still in the shared hex_vertex_t
-// vbuf, but the water pipeline omits them from its vertex layout —
-// sokol's per-attribute offset arithmetic plus the shared stride
-// silently skips the extra bytes. Keeping the unused `in` decls would
-// trip GL_VERTEX_ATTRIBUTE_NOT_FOUND warnings whenever the GLSL
-// compiler dead-strips them.
+// a_normal carries the per-vertex world-space face normal baked at
+// mesh-build time. For the planet-wide ocean cap the side that reaches
+// here is radial-outward (parallel to normalize(a_pos)), so face-vs-
+// radial alignment reads as 1.0 - that's the "still surface" case.
+// For per-voxel water cells, side quads carry horizontal face normals,
+// so alignment reads as 0.0 and the fragment shader treats them as
+// vertical / falling surfaces. Used to bias the ripple-noise sample
+// position downward on falling water so it visibly streams.
+//
+// a_uv aren't read here (the radial wave normal is derived from
+// normalize(a_pos)). They're still in the shared hex_vertex_t vbuf,
+// but the water pipeline omits them from its vertex layout — sokol's
+// per-attribute offset arithmetic plus the shared stride silently
+// skips the extra bytes. Keeping unused `in` decls would trip
+// GL_VERTEX_ATTRIBUTE_NOT_FOUND warnings whenever the GLSL compiler
+// dead-strips them.
 //
 // a_sky_light / a_torch_light are baked at mesh time by the same
 // hex_mesher path the terrain uses (sky-occlusion sum + nearby torch
@@ -35,10 +44,12 @@ layout(binding=0) uniform vs_params {
 // over the water dims it like land, and a placed torch on the
 // shoreline spills its warm circle onto the water beside it.
 in vec3  a_pos;
+in vec3  a_normal;
 in float a_sky_light;
 in float a_torch_light;
 
 out vec3  v_wpos;
+out vec3  v_face_normal;       // world-space face normal, for falling-water bias
 out float v_sun_brightness;     // 0 on full-night side of the planet, 1 on full-day
 out float v_sky_light;          // 0..1 voxel-occlusion sky-reach
 out float v_torch_light;        // 0..3 sum of inverse-square torch contributions
@@ -70,6 +81,7 @@ void main() {
     vec3 p = a_pos + n * swell;
     gl_Position = u_vp * vec4(p, 1.0);
     v_wpos = p;
+    v_face_normal = a_normal;
     v_sky_light   = a_sky_light;
     v_torch_light = a_torch_light;
 
@@ -114,6 +126,13 @@ layout(binding=1) uniform fs_params {
                              // hex shader's torch contribution exactly so a torch
                              // placed at a shore reads continuously across the
                              // water/land seam).
+    // Per-voxel water-flow visual. Used only on vertical faces (per
+    // the face-vs-radial dot product test below) to shift the noise
+    // sample upward over time, making the surface pattern appear to
+    // stream downward - the visual cue for falling water. The ocean
+    // cap is horizontal so face_alignment ≈ 1 and the bias contributes
+    // nothing. water.yaml flow_uv_speed_falling drives this.
+    float u_flow_speed_falling;
 };
 
 // water_scene_color / water_scene_depth are texture views of the
@@ -133,6 +152,7 @@ layout(binding=1) uniform sampler   water_scene_depth_smp;
 precision highp int;
 
 in vec3  v_wpos;
+in vec3  v_face_normal;
 in float v_sun_brightness;
 in float v_sky_light;
 in float v_torch_light;
@@ -209,12 +229,32 @@ void main() {
     // across tile boundaries.
     vec3 radial = normalize(v_wpos);
 
+    // Per-voxel water falling-bias. abs(dot(face_n, radial)) is 1.0 on
+    // horizontal faces (ocean cap, top of a still pool) and 0.0 on
+    // vertical faces (the side of a waterfall column). vertical_factor
+    // gates a downward sample-position shift: positive radial offset =
+    // sampling noise from a position higher up the column, so the
+    // fragment sees what was above it a moment ago - i.e. the pattern
+    // visually scrolls toward the planet centre. Magnitude scaled by
+    // u_flow_speed_falling so designers can dial speed via YAML.
+    //
+    // Per-cell flow direction (horizontal streams scrolling along the
+    // surface) needs a per-vertex flow vector attribute and a more
+    // invasive mesher change; that's a follow-up. The vertical-face
+    // case alone catches the most visually important class - actual
+    // falling water.
+    vec3 face_n = (length(v_face_normal) > 0.0)
+                  ? normalize(v_face_normal) : radial;
+    float face_alignment  = abs(dot(face_n, radial));
+    float vertical_factor = 1.0 - face_alignment;
+    float fall_shift      = u_time * u_flow_speed_falling * vertical_factor;
+
     // Scalar height + 3-sample finite-difference world-space
     // gradient. Epsilon ~8 cm — small enough to stay inside the
     // smallest noise cell, big enough to dodge fp noise. Position is
     // pre-multiplied by u_ripple_scale (smaller scale → bigger ripple
     // cells; larger → finer / busier ripples), time by u_ripple_speed.
-    vec3  rp = v_wpos * u_ripple_scale;
+    vec3  rp = (v_wpos + radial * fall_shift) * u_ripple_scale;
     float rt = u_time * u_ripple_speed;
     float e  = 0.08;
     float h0 = fbm3(rp, rt);

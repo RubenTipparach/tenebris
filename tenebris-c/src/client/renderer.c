@@ -596,6 +596,14 @@ void renderer_init(void) {
                     .format = SG_VERTEXFORMAT_FLOAT3,
                     .offset = (int)offsetof(hex_vertex_t, pos),
                 },
+                /* a_normal drives the per-voxel water falling-bias.
+                 * The ocean cap's faces are radial-out (alignment=1,
+                 * bias suppressed); voxel water side quads carry
+                 * horizontal normals (alignment=0, bias active). */
+                [ATTR_water_a_normal] = {
+                    .format = SG_VERTEXFORMAT_FLOAT3,
+                    .offset = (int)offsetof(hex_vertex_t, normal),
+                },
                 [ATTR_water_a_sky_light] = {
                     .format = SG_VERTEXFORMAT_FLOAT,
                     .offset = (int)offsetof(hex_vertex_t, sky_light),
@@ -650,6 +658,12 @@ void renderer_init(void) {
                     [ATTR_water_mobile_a_pos] = {
                         .format = SG_VERTEXFORMAT_FLOAT3,
                         .offset = (int)offsetof(hex_vertex_t, pos),
+                    },
+                    /* a_normal drives the per-voxel water falling-bias
+                     * on mobile, same way as desktop water. */
+                    [ATTR_water_mobile_a_normal] = {
+                        .format = SG_VERTEXFORMAT_FLOAT3,
+                        .offset = (int)offsetof(hex_vertex_t, normal),
                     },
                     [ATTR_water_mobile_a_sky_light] = {
                         .format = SG_VERTEXFORMAT_FLOAT,
@@ -2631,6 +2645,12 @@ static void body_draw_water(chunked_body_t* body, mat4_t vp,
              * effect kicks in at ~300 m and saturates around 800 m. */
             .u_horizon_fade_m        = W->horizon_fade_m,
             .u_horizon_fade_strength = W->horizon_fade_strength,
+            /* Per-voxel water falling-bias. Multiplied by the
+             * vertical_factor derived from a_normal vs radial, so the
+             * ocean cap (alignment ≈ 1) gets zero contribution and the
+             * side of a waterfall column (alignment ≈ 0) gets the full
+             * scroll. Sourced from water.yaml flow_uv_speed_falling. */
+            .u_flow_speed_falling    = config_water_flow()->uv_speed_falling,
         };
         sg_apply_uniforms(UB_fs_params_mobile, &SG_RANGE(fs_mobile));
 
@@ -2705,6 +2725,12 @@ static void body_draw_water(chunked_body_t* body, mat4_t vp,
         .u_night_floor     = L->night_ambient_floor,
         .u_torch_color     = { L->torch_color.x, L->torch_color.y, L->torch_color.z,
                                L->torch_intensity },
+        /* Per-voxel water falling-bias. The water shader multiplies
+         * this by the vertical_factor it derives from a_normal vs
+         * radial, so the ocean cap (alignment ≈ 1) gets zero shift
+         * and the side of a waterfall column (alignment ≈ 0) gets the
+         * full scroll. Sourced from water.yaml flow_uv_speed_falling. */
+        .u_flow_speed_falling = config_water_flow()->uv_speed_falling,
     };
     sg_apply_uniforms(UB_fs_params, &SG_RANGE(fs_params));
 
