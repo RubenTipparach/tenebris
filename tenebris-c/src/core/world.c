@@ -191,6 +191,7 @@ void world_set(world_t* w, int tile, int depth, block_t b) {
      * change, no remesh needed. */
     int idx = tile * WORLD_MAX_DEPTH + depth;
     if (w->blocks[idx] == (uint8_t)b) return;
+    uint8_t old = w->blocks[idx];
     w->blocks[idx] = (uint8_t)b;
     w->dirty[tile >> 3] |= (uint8_t)(1 << (tile & 7));
     /* Mark the column as edited from procgen so collision queries
@@ -208,13 +209,23 @@ void world_set(world_t* w, int tile, int depth, block_t b) {
         int n = t->neighbors[i];
         w->dirty[n >> 3] |= (uint8_t)(1 << (n & 7));
     }
-    /* Mark the edited cell for incremental relight. The light grid
-     * runs a Minecraft-style removal-then-addition BFS bounded by
-     * sky_max steps, so a single block change only re-propagates the
-     * cells within roughly sky_max / lateral_loss tiles - not the
-     * whole planet. If the queue overflows the mark layer escalates
-     * to a full rebuild automatically. */
-    world_light_mark_dirty_at(w->light, tile, depth);
+    /* Mark the edited cell for incremental relight - but ONLY when
+     * the change actually affects light propagation. The lighting BFS
+     * gates on block_covers_face: a cell is opaque-to-light iff its
+     * block covers its face. Swapping between two non-covering blocks
+     * (AIR <-> WATER, AIR <-> LEAVES, etc.) leaves every light path
+     * through this cell unchanged, so no relight is needed.
+     *
+     * This is the dominant path for water-flow ticks - the simulator
+     * fires dozens of AIR <-> WATER swaps per frame and they used to
+     * queue a light edit each, eventually escalating to a 140 ms
+     * full-rebuild that stalled the frame. Skipping the mark drops
+     * the per-edit relight cost to zero for fluid motion while still
+     * relighting on real block edits (placing stone, breaking dirt,
+     * etc. all change covers_face). */
+    if (block_covers_face((block_t)old) != block_covers_face(b)) {
+        world_light_mark_dirty_at(w->light, tile, depth);
+    }
     /* Notify the water-flow scheduler about the edit. Wakes the cell
      * + its 5/6 horizontal + (up to) two vertical neighbours so the
      * flow rule re-derives their state next tick. Worldgen writes

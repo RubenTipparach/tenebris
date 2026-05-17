@@ -221,7 +221,13 @@ water:
   # flow_min_film_fraction   float min cap height as fraction of voxel
   #                                height. Keeps the thinnest film visible
   #                                instead of going to zero.
-  flow_max_level:           7
+  # 3 hexes of horizontal spread per source (default 3 = stronger
+  # falloff than MC's 7). With the hex topology + 6-way spread, a
+  # single source already reaches 19 cells at radius 2 and 37 at
+  # radius 3, so dropping the cap below 7 keeps placement intuitive
+  # without flooding the whole world. Raise toward 7 for MC-style
+  # long streams, lower toward 2 for puddles only.
+  flow_max_level:           3
   flow_search_radius:       4
   flow_ticks_per_step:      5
   flow_max_ticks_per_step:  256

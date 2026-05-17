@@ -474,7 +474,16 @@ static bool should_promote_to_source(const world_t* w, int tile, int depth) {
         if (nb < 0) continue;
         if (world_get(w, nb, depth) != BLOCK_WATER) continue;
         uint8_t ns = world_water_get_state(w, nb, depth);
-        if (water_state_is_source(ns) || ns == 0u) {
+        /* Only TRUE source blocks (bit 7 set) count toward the
+         * promotion threshold. The legacy seafloor fill (state == 0,
+         * "sleeping ocean") is INFINITE for propagation purposes but
+         * is NOT a source block - including it here would cascade-
+         * promote every flowing cell adjacent to the ocean into a
+         * fresh source, which then spawns its own 7-hex spread,
+         * which then promotes again, etc - one placed water block
+         * flooding the entire planet. MC's rule requires real source
+         * blocks for the same reason. */
+        if (water_state_is_source(ns)) {
             ++sources;
             if (sources >= threshold) return true;
         }

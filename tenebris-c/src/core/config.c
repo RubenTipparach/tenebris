@@ -500,7 +500,10 @@ const water_config_t* config_water(void) { return &S_WATER; }
  * when no YAML override is present; config_load_water() rewrites
  * these from water.yaml's flow_* keys. */
 static water_flow_config_t S_WATER_FLOW = {
-    .max_level           = 7,
+    /* 3-hex spread radius - hex topology with 6-way neighbours
+     * already covers 37 cells at radius 3, so going wider floods
+     * the world from a single source. YAML can override up to 7. */
+    .max_level           = 3,
     .search_radius       = 4,
     .ticks_per_step      = 5,
     .max_ticks_per_step  = 256,

@@ -639,8 +639,20 @@ void hex_mesh_build_water_voxels(hex_mesh_t* out, const world_t* w, int tile_idx
          * + bottom cap still come from this loop, otherwise an air
          * pocket adjacent to the ocean at sea level shows no water
          * walls (the bug: dig a tunnel right under the shoreline and
-         * the ocean appears to end mid-air against the dirt). */
+         * the ocean appears to end mid-air against the dirt).
+         *
+         * The side faces at the sea-level row must end at the SAME
+         * radius the ocean cap is drawn at, not at the voxel's
+         * nominal top - the ocean cap sits depth_offset_m below sea
+         * level to give the swell room, so emitting sides up to the
+         * full r_top leaves a visible (~0.5 m) gap between the water
+         * wall and the cap surface. Override cap_offset to match
+         * the ocean cap's vertical drop. */
         const bool is_sea_level_row = (d == SEA_LEVEL_DEPTH - 1);
+        if (is_sea_level_row) {
+            const water_config_t* wc = config_water();
+            cap_offset = -wc->depth_offset_m + wc->height_offset_m;
+        }
 
         /* ---- Top cap.
          * Skip when the cell above is itself water - the two cells
