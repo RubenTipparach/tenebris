@@ -215,6 +215,13 @@ void world_set(world_t* w, int tile, int depth, block_t b) {
      * whole planet. If the queue overflows the mark layer escalates
      * to a full rebuild automatically. */
     world_light_mark_dirty_at(w->light, tile, depth);
+    /* Notify the water-flow scheduler about the edit. Wakes the cell
+     * + its 5/6 horizontal + (up to) two vertical neighbours so the
+     * flow rule re-derives their state next tick. Worldgen writes
+     * the column directly without going through world_set, so the
+     * legacy seafloor stays "sleeping" - only player / network /
+     * simulator-driven edits land here. */
+    world_water_notify_edit(w, tile, depth);
 }
 
 bool world_tile_dirty(const world_t* w, int tile) {

@@ -18,6 +18,7 @@
 #include "core/planet.h"
 #include "core/planet_gen.h"
 #include "core/world.h"
+#include "core/world_water.h"
 #include "core/job_system.h"
 #include "core/config.h"
 #include "core/proto.h"
@@ -2139,6 +2140,38 @@ static void frame(void) {
     }
     profiler_end("interact");
     input_consume();
+
+    /* Water-flow tick. Steps the per-voxel flow scheduler on G.world
+     * + every moon world at a rate driven by flow_ticks_per_step. We
+     * accumulate dt (display refresh, ~16 ms at 60 fps) and fire when
+     * the configured period elapses; 0.05 s/tick matches the MP
+     * server's default 20 Hz cadence so SP and MP advance flow at the
+     * same speed. Idle worlds cost ~nothing - the scheduler returns
+     * immediately on an empty queue.
+     *
+     * Runs in BOTH SP and MP. In MP the server is authoritative on
+     * blocks; the local sim is best-effort visual prediction that
+     * stays in sync because the flow rule is deterministic and every
+     * client world_set goes through the same notify_edit path. A
+     * future per-tile water-state broadcast can replace the local
+     * sim if drift becomes visible. */
+    {
+        const water_flow_config_t* wf = config_water_flow();
+        const float TICK_PERIOD_S = 0.05f;     /* matches MP tick_hz=20 */
+        float period_s = (float)wf->ticks_per_step * TICK_PERIOD_S;
+        if (period_s < TICK_PERIOD_S) period_s = TICK_PERIOD_S;
+        static float water_accum_s = 0.0f;
+        water_accum_s += dt;
+        if (water_accum_s >= period_s) {
+            water_accum_s = 0.0f;
+            int budget = wf->max_ticks_per_step;
+            if (budget < 1) budget = 1;
+            if (G.world) world_water_step(G.world, budget);
+            for (int i = 0; i < G.moon_count; ++i) {
+                if (G.moons[i]) world_water_step(G.moons[i], budget);
+            }
+        }
+    }
 
     const float aspect = sapp_widthf() / sapp_heightf();
     mat4_t view = player_view(&G.player);

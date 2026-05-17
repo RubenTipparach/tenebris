@@ -113,6 +113,22 @@ void    world_water_clear_state(struct world_s* w, int tile, int depth);
 void world_water_enqueue(struct world_s* w, int tile, int depth);
 int  world_water_step   (struct world_s* w, int max_ticks);
 
+/* Notify the flow scheduler that a voxel at (tile, depth) was just
+ * edited. Enqueues the cell itself plus its 5/6 horizontal neighbours
+ * and (up to) two vertical neighbours in the same column - the cells
+ * whose flow state could be affected by the change.
+ *
+ * Called automatically from world_set, so every edit path (player
+ * input, network-applied PLAYER_CMD, future scripted mutations) wakes
+ * the simulator without each call site needing to remember. Worldgen
+ * writes the column directly bypassing world_set, which is the right
+ * call - the seafloor fill stays "sleeping" until something disturbs
+ * it.
+ *
+ * Pass-through no-op when the cell is out of range or the world has
+ * no water module attached. */
+void world_water_notify_edit(struct world_s* w, int tile, int depth);
+
 /* Queue depth for diagnostics / tests. */
 int  world_water_pending(const struct world_s* w);
 

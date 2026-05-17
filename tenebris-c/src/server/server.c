@@ -12,6 +12,7 @@
 #include "core/planet.h"
 #include "core/proto.h"
 #include "core/world.h"
+#include "core/world_water.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -2317,6 +2318,30 @@ void server_tick(server_t* s) {
             /* Throttled log (every ~10 s of saves) to keep stdout calm. */
             printf("[server] flush: %d player poses\n", saved_poses);
             fflush(stdout);
+        }
+    }
+
+    /* Water-flow simulation. Steps every flow_ticks_per_step server
+     * ticks, processing up to flow_max_ticks_per_step cells per world.
+     * Idle worlds with empty queues cost ~nothing. The schedule is
+     * coupled to the server's authoritative tick clock so an MP world
+     * advances flow at exactly the rate water.yaml prescribes - any
+     * future server-to-client water-state sync inherits that cadence. */
+    {
+        const water_flow_config_t* wf = config_water_flow();
+        int period = wf->ticks_per_step;
+        if (period < 1) period = 1;
+        if ((s->tick % (uint64_t)period) == 0) {
+            int budget = wf->max_ticks_per_step;
+            if (budget < 1) budget = 1;
+            for (int r = 0; r < SERVER_MAX_ROOMS; ++r) {
+                if (!s->rooms[r].in_use) continue;
+                server_room_t* room = &s->rooms[r];
+                for (int wi = 0; wi < room->world_count; ++wi) {
+                    world_t* w = room->worlds[wi];
+                    if (w) world_water_step(w, budget);
+                }
+            }
         }
     }
 

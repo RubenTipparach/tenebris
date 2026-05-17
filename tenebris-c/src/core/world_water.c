@@ -169,6 +169,27 @@ int world_water_pending(const world_t* w) {
     return w->water->count;
 }
 
+void world_water_notify_edit(world_t* w, int tile, int depth) {
+    if (!cell_in_range(w, tile, depth)) return;
+    /* The edited cell itself - it may have just become water or just
+     * lost water; either way the tick rule needs to re-derive. */
+    world_water_enqueue(w, tile, depth);
+    /* Vertical neighbours - the cell above may want to start falling
+     * through the new gap; the cell below may want to suck up
+     * surrounding water now that the supporting block is gone. */
+    if (depth + 1 < WORLD_MAX_DEPTH) world_water_enqueue(w, tile, depth + 1);
+    if (depth - 1 >= 0)              world_water_enqueue(w, tile, depth - 1);
+    /* Horizontal: every 5/6 edge-neighbour at the same depth. Water
+     * adjacent to the edit may want to flow into the new opening or
+     * re-derive its level after losing a neighbouring source. */
+    const goldberg_tile_t* t = goldberg_tile(w->grid, tile);
+    if (!t) return;
+    for (int k = 0; k < t->num_neighbors; ++k) {
+        int nb = t->edge_neighbours[k];
+        if (nb >= 0) world_water_enqueue(w, nb, depth);
+    }
+}
+
 /* ---------------------------------------------------------------------
  * Flow rule helpers. Section numbers refer to tenebris-c/water.md.
  * ------------------------------------------------------------------- */
