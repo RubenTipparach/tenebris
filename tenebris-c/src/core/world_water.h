@@ -132,4 +132,45 @@ void world_water_notify_edit(struct world_s* w, int tile, int depth);
 /* Queue depth for diagnostics / tests. */
 int  world_water_pending(const struct world_s* w);
 
+/* ---------------------------------------------------------------------
+ * Persistence support.
+ *
+ * Flow ticks mutate the per-voxel state byte (and sometimes the block
+ * itself); both need to round-trip to disk so a server stop / page
+ * reload restores the same view. The state-byte column is sized
+ * identically to the block column (WORLD_MAX_DEPTH bytes per tile),
+ * so the on-disk + localStorage layout mirrors the existing block
+ * persistence — one file / one key per (body, tile).
+ *
+ * Per-tick persistence would write a column hundreds of times per
+ * second under a busy waterfall, so the module tracks a "persist
+ * dirty" bitset (one bit per tile) instead: every state-byte change
+ * sets the bit, and the host (main_web.c in SP, server.c in MP)
+ * drains the bitset once per frame via world_water_drain_persist_dirty,
+ * writes the affected columns, and the cycle repeats. Falling-only
+ * cells skip the dirty mark when water.yaml's flow_persist_falling
+ * is 0 - they're reconstructible from neighbour state on reload.
+ * ------------------------------------------------------------------- */
+
+/* Read-only pointer to the WORLD_MAX_DEPTH-byte water-state column
+ * for a tile. Returns NULL when the tile is out of range or no water
+ * module is attached. Lifetime: as long as the world. */
+const uint8_t* world_water_state_column(const struct world_s* w, int tile);
+
+/* Overwrite the water-state column for a tile from `src` (must be
+ * WORLD_MAX_DEPTH bytes). Used by the load path to restore from
+ * disk / localStorage. Does NOT mark the column persist-dirty - it
+ * just came off disk, no need to write it back. */
+void world_water_load_state_column(struct world_s* w, int tile,
+                                    const uint8_t* src);
+
+/* Drain the persist-dirty bitset into `out_tiles` (up to `cap`
+ * entries). Returns the number of tile indices written. Drained
+ * tiles are removed from the bitset, so the next call only returns
+ * tiles dirtied since the last drain. The caller is expected to
+ * persist each returned column via persistence_save_water_state
+ * (SP) or saves_write_water_state (MP). */
+int world_water_drain_persist_dirty(struct world_s* w,
+                                     int* out_tiles, int cap);
+
 #endif

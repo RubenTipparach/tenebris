@@ -47,6 +47,17 @@
 #define SAVES_TILE_MAGIC       0x4C4F4354u   /* 'TCOL' little-endian */
 #define SAVES_TILE_HEADER_SIZE 16
 
+/* Companion .water file: the per-voxel water-flow state byte column
+ * (source / falling / level packed per cell, layout in
+ * core/world_water.h). Same size as the block column - one byte per
+ * voxel times WORLD_MAX_DEPTH - and the same atomic-swap + header
+ * conventions. Magic is 'TWAT' so a stray read of a .water file as a
+ * .col (or vice versa) is rejected up front rather than silently
+ * miscompiled. */
+#define SAVES_WATER_VERSION     1
+#define SAVES_WATER_MAGIC       0x54415754u   /* 'TWAT' little-endian */
+#define SAVES_WATER_HEADER_SIZE 16
+
 typedef struct {
     uint32_t version;
     uint32_t body_id;
@@ -90,6 +101,28 @@ bool saves_write_tile(world_t* w, const char* room, uint64_t seed, int tile_idx)
  * dirty bitmap — the server no longer calls it (immediate save
  * covers chunk edits). */
 int  saves_flush_world(world_t* w, const char* room, uint64_t seed);
+
+/* Per-tile water-flow state column persistence.
+ *
+ * Sibling files to the per-tile .col on disk: under
+ *   <saves_dir>/rooms/<room>/world-<seed>/body-<id>/<tile-id>.water
+ * with the same 16-byte header (magic = SAVES_WATER_MAGIC,
+ * version = SAVES_WATER_VERSION, depth = WORLD_MAX_DEPTH) followed
+ * by the raw state-byte column.
+ *
+ * Called from the per-tick flow flush in server.c with whatever
+ * tile indices world_water_drain_persist_dirty returns. Same atomic
+ * .tmp-swap semantics saves_write_tile uses, so a crash mid-write
+ * leaves the previous good copy intact. */
+bool saves_write_water_state(world_t* w, const char* room, uint64_t seed,
+                              int tile_idx);
+
+/* Apply every saved .water column for `(room, body)` onto `w`'s
+ * water-state buffer. Returns the count of tiles actually restored.
+ * Mirrors saves_load_world but for the parallel water byte array;
+ * call after saves_load_world at room boot so the simulator picks
+ * up exactly where the previous server stop left off. */
+int  saves_load_world_water(world_t* w, const char* room, uint64_t seed);
 
 /* ----------------------------------------------------------------- */
 /* Per-body torch lists. Stored at

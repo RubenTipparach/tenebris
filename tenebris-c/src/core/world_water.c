@@ -41,6 +41,14 @@ struct world_water_s {
      * of duplicates per step). */
     uint8_t* scheduled;
     int      scheduled_bytes;
+
+    /* Per-tile "needs persistence flush" bitset. 1 bit per tile (NOT
+     * per voxel - the unit of persistence is the whole 128-byte
+     * water-state column). Set when any cell in the column changes
+     * state; drained per-frame by the host via
+     * world_water_drain_persist_dirty. */
+    uint8_t* persist_dirty;
+    int      persist_dirty_bytes;
 };
 
 /* ---------------------------------------------------------------------
@@ -102,7 +110,9 @@ world_water_t* world_water_create(const world_t* w) {
     ww->queue = (uint32_t*)calloc((size_t)ww->cap, sizeof(uint32_t));
     ww->scheduled_bytes = (ww->state_count + 7) / 8;
     ww->scheduled = (uint8_t*)calloc((size_t)ww->scheduled_bytes, 1);
-    if (!ww->state || !ww->queue || !ww->scheduled) {
+    ww->persist_dirty_bytes = (w->tile_count + 7) / 8;
+    ww->persist_dirty = (uint8_t*)calloc((size_t)ww->persist_dirty_bytes, 1);
+    if (!ww->state || !ww->queue || !ww->scheduled || !ww->persist_dirty) {
         world_water_destroy(ww);
         return NULL;
     }
@@ -114,6 +124,7 @@ void world_water_destroy(world_water_t* ww) {
     free(ww->state);
     free(ww->queue);
     free(ww->scheduled);
+    free(ww->persist_dirty);
     free(ww);
 }
 
@@ -127,6 +138,9 @@ void world_water_clone_into(world_water_t* dst, const world_water_t* src) {
      * mark path will enqueue it from scratch. */
     dst->head = dst->tail = dst->count = 0;
     memset(dst->scheduled, 0, (size_t)dst->scheduled_bytes);
+    /* Persist-dirty also resets: the clone matches the source
+     * snapshot on disk - nothing to flush yet. */
+    memset(dst->persist_dirty, 0, (size_t)dst->persist_dirty_bytes);
 }
 
 /* ---------------------------------------------------------------------
@@ -138,14 +152,100 @@ uint8_t world_water_get_state(const world_t* w, int tile, int depth) {
     return w->water->state[cell_index(tile, depth)];
 }
 
+/* Should this state change wake the per-frame persist flush? Falling
+ * cells are reconstructible from neighbour state on reload, so the
+ * YAML knob flow_persist_falling lets the operator opt out of
+ * persisting them - the I/O budget under a busy waterfall drops to
+ * the cost of source / horizontal-level transitions only.
+ *
+ * A change that LEAVES a falling state (transitioning off the
+ * falling flag, e.g. landing in a pool and becoming a regular
+ * flowing cell) still triggers a flush — the "settled" state needs
+ * to round-trip. Only the case "falling stays falling, just the
+ * level / supplier shifted" is skipped. */
+static bool should_persist_state_change(uint8_t old_state, uint8_t new_state) {
+    /* Always persist when leaving / entering the FALLING flag. */
+    if ((old_state & WATER_FLAG_FALLING) != (new_state & WATER_FLAG_FALLING)) {
+        return true;
+    }
+    /* Persist when the SOURCE flag toggles (promotion / demotion). */
+    if ((old_state & WATER_FLAG_SOURCE) != (new_state & WATER_FLAG_SOURCE)) {
+        return true;
+    }
+    /* Persist when going to/from "empty" (state 0) - the cell drained
+     * or just appeared. */
+    if ((old_state == 0u) != (new_state == 0u)) return true;
+    /* Past this point, both states have the same FALLING + SOURCE
+     * flag. If they're falling and the knob says skip falling, no
+     * flush. */
+    if ((new_state & WATER_FLAG_FALLING) != 0u
+        && config_water_flow()->persist_falling == 0) {
+        return false;
+    }
+    /* Same flags, not falling-skipped: persist iff anything changed
+     * (level or future reserved bits). */
+    return old_state != new_state;
+}
+
 void world_water_set_state(world_t* w, int tile, int depth, uint8_t state) {
     if (!cell_in_range(w, tile, depth)) return;
-    w->water->state[cell_index(tile, depth)] = state;
+    int idx = cell_index(tile, depth);
+    uint8_t old = w->water->state[idx];
+    if (old == state) return;
+    w->water->state[idx] = state;
+    if (should_persist_state_change(old, state)) {
+        w->water->persist_dirty[tile >> 3] |= (uint8_t)(1u << (tile & 7));
+    }
 }
 
 void world_water_clear_state(world_t* w, int tile, int depth) {
     if (!cell_in_range(w, tile, depth)) return;
-    w->water->state[cell_index(tile, depth)] = 0u;
+    int idx = cell_index(tile, depth);
+    uint8_t old = w->water->state[idx];
+    if (old == 0u) return;
+    w->water->state[idx] = 0u;
+    /* Clearing always persists - we're saying "this column has a
+     * cell that's now empty water-state, the disk copy needs to
+     * agree." */
+    w->water->persist_dirty[tile >> 3] |= (uint8_t)(1u << (tile & 7));
+}
+
+const uint8_t* world_water_state_column(const world_t* w, int tile) {
+    if (!w || !w->water) return NULL;
+    if (tile < 0 || tile >= w->tile_count) return NULL;
+    return &w->water->state[(size_t)tile * WORLD_MAX_DEPTH];
+}
+
+void world_water_load_state_column(world_t* w, int tile, const uint8_t* src) {
+    if (!w || !w->water || !src) return;
+    if (tile < 0 || tile >= w->tile_count) return;
+    memcpy(&w->water->state[(size_t)tile * WORLD_MAX_DEPTH], src,
+           (size_t)WORLD_MAX_DEPTH);
+    /* Load path: the column matches disk, no need to flush. Also
+     * clear the persist-dirty bit if it was set incidentally. */
+    w->water->persist_dirty[tile >> 3] &= (uint8_t)~(1u << (tile & 7));
+}
+
+int world_water_drain_persist_dirty(world_t* w, int* out_tiles, int cap) {
+    if (!w || !w->water || !out_tiles || cap <= 0) return 0;
+    int count = 0;
+    /* Scan byte-by-byte then bit-by-bit. The bitset is small (one bit
+     * per tile - at sub=7 that's ~20 KB worst case) so the linear
+     * walk is fine; under busy waterfalls only a handful of bits per
+     * frame are usually set. */
+    for (int byte = 0; byte < w->water->persist_dirty_bytes && count < cap; ++byte) {
+        uint8_t b = w->water->persist_dirty[byte];
+        if (b == 0u) continue;
+        for (int bit = 0; bit < 8 && count < cap; ++bit) {
+            if ((b & (1u << bit)) == 0u) continue;
+            int tile = byte * 8 + bit;
+            if (tile >= w->tile_count) break;
+            out_tiles[count++] = tile;
+            b &= (uint8_t)~(1u << bit);
+        }
+        w->water->persist_dirty[byte] = b;
+    }
+    return count;
 }
 
 /* ---------------------------------------------------------------------

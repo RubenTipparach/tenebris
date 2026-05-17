@@ -1135,6 +1135,34 @@ static void apply_sp_world_saves(world_t* w) {
         fflush(stdout);
     }
 
+    /* Per-voxel water-flow state columns: parallel to the block
+     * columns above, sourced from tenebris-c:water:<world>:<body>:*.
+     * world_water_load_state_column writes directly into the byte
+     * buffer without re-queueing a flow tick - the saved state is
+     * already converged. Cells the simulator hasn't touched yet
+     * stay at byte 0 ("sleeping ocean") which the algorithm treats
+     * as a full source-equivalent supplier, so nothing breaks for
+     * worlds that pre-date the water-state persistence layer. */
+    int water_n = persistence_list_saved_water_tiles(
+        world_name, (uint32_t)w->body->id,
+        s_idx_buf,
+        (int)(sizeof(s_idx_buf) / sizeof(s_idx_buf[0])));
+    int water_tiles_applied = 0;
+    for (int i = 0; i < water_n; ++i) {
+        int tile = s_idx_buf[i];
+        if (tile < 0 || tile >= w->tile_count) continue;
+        uint8_t column[PERSISTENCE_COLUMN_BYTES];
+        if (!persistence_load_water_state(world_name, (uint32_t)w->body->id,
+                                            tile, column)) continue;
+        world_water_load_state_column(w, tile, column);
+        ++water_tiles_applied;
+    }
+    if (water_tiles_applied > 0) {
+        printf("[sp-saves] body=%d: %d water-state column(s) restored\n",
+               (int)w->body->id, water_tiles_applied);
+        fflush(stdout);
+    }
+
     /* Torch list: load + replay through torch_place. The runtime
      * list is global, so this body's torches accumulate alongside
      * any others restored earlier in the loop.
@@ -2154,7 +2182,14 @@ static void frame(void) {
      * stays in sync because the flow rule is deterministic and every
      * client world_set goes through the same notify_edit path. A
      * future per-tile water-state broadcast can replace the local
-     * sim if drift becomes visible. */
+     * sim if drift becomes visible.
+     *
+     * After each step we drain the per-world persist-dirty bitset
+     * and persist the touched water-state columns to localStorage
+     * via persistence_save_water_state. Gated on SP - the MP client
+     * doesn't write to localStorage so the local sim's transient
+     * state doesn't bleed across rejoins (the MP authoritative store
+     * lives server-side). */
     {
         const water_flow_config_t* wf = config_water_flow();
         const float TICK_PERIOD_S = 0.05f;     /* matches MP tick_hz=20 */
@@ -2166,9 +2201,29 @@ static void frame(void) {
             water_accum_s = 0.0f;
             int budget = wf->max_ticks_per_step;
             if (budget < 1) budget = 1;
-            if (G.world) world_water_step(G.world, budget);
-            for (int i = 0; i < G.moon_count; ++i) {
-                if (G.moons[i]) world_water_step(G.moons[i], budget);
+            const bool sp = (menu_state() == GAME_IN_GAME_SP);
+            const char* sp_world = sp ? menu_active_world() : NULL;
+            static int dirty_tiles[8192];
+            world_t* worlds[33] = { G.world };
+            int n_worlds = G.world ? 1 : 0;
+            for (int i = 0; i < G.moon_count && n_worlds < 33; ++i) {
+                if (G.moons[i]) worlds[n_worlds++] = G.moons[i];
+            }
+            for (int wi = 0; wi < n_worlds; ++wi) {
+                world_t* w = worlds[wi];
+                world_water_step(w, budget);
+                if (!sp || !sp_world || !*sp_world || !w->body) continue;
+                int n = world_water_drain_persist_dirty(
+                    w, dirty_tiles,
+                    (int)(sizeof dirty_tiles / sizeof dirty_tiles[0]));
+                for (int i = 0; i < n; ++i) {
+                    const uint8_t* col = world_water_state_column(w, dirty_tiles[i]);
+                    if (col) {
+                        persistence_save_water_state(sp_world,
+                                                      (uint32_t)w->body->id,
+                                                      dirty_tiles[i], col);
+                    }
+                }
             }
         }
     }

@@ -63,6 +63,12 @@ static void room_alloc_worlds(server_t* s, server_room_t* room) {
             continue;
         }
         int loaded = saves_load_world(w, room->code, s->cfg.seed);
+        /* Water-state columns: parallel .water files alongside .col,
+         * restored right after the block layer so the simulator
+         * picks up exactly where the previous server stop left off.
+         * Pre-existing rooms with only .col files report 0 loaded
+         * here; new water-state writes start on the next flush. */
+        saves_load_world_water(w, room->code, s->cfg.seed);
         total_tiles_loaded += loaded;
         room->worlds[room->world_count++] = w;
     }
@@ -98,8 +104,11 @@ static world_t* room_ensure_world_for_body(server_t* s, server_room_t* room,
     if (!w) return NULL;
     /* Load any persisted edits the first time we materialise this
      * body in-memory. Subsequent edits write through saves_write_tile
-     * directly so we don't re-walk the directory. */
+     * directly so we don't re-walk the directory. Same for the
+     * water-state companion files - the simulator inherits the
+     * settled state from disk. */
     saves_load_world(w, room->code, s->cfg.seed);
+    saves_load_world_water(w, room->code, s->cfg.seed);
     room->worlds[room->world_count++] = w;
     printf("[server] room '%s': lazy-cloned body %u\n",
            room->code[0] ? room->code : "(public)", body_id);
@@ -2326,7 +2335,14 @@ void server_tick(server_t* s) {
      * Idle worlds with empty queues cost ~nothing. The schedule is
      * coupled to the server's authoritative tick clock so an MP world
      * advances flow at exactly the rate water.yaml prescribes - any
-     * future server-to-client water-state sync inherits that cadence. */
+     * future server-to-client water-state sync inherits that cadence.
+     *
+     * Immediately after each step, drain the per-world persist-dirty
+     * bitset and flush touched water-state columns to disk via
+     * saves_write_water_state. The state changes pile up between
+     * scheduler calls so one drain per step is enough; the falling-
+     * cell skip lives inside world_water itself (gated on YAML
+     * flow_persist_falling) so this loop doesn't have to know. */
     {
         const water_flow_config_t* wf = config_water_flow();
         int period = wf->ticks_per_step;
@@ -2334,12 +2350,23 @@ void server_tick(server_t* s) {
         if ((s->tick % (uint64_t)period) == 0) {
             int budget = wf->max_ticks_per_step;
             if (budget < 1) budget = 1;
+            /* Per-flush tile-index buffer. Sized to handle the largest
+             * subdivision in flight (~164k tiles) without spilling. */
+            static int dirty_tiles[8192];
             for (int r = 0; r < SERVER_MAX_ROOMS; ++r) {
                 if (!s->rooms[r].in_use) continue;
                 server_room_t* room = &s->rooms[r];
                 for (int wi = 0; wi < room->world_count; ++wi) {
                     world_t* w = room->worlds[wi];
-                    if (w) world_water_step(w, budget);
+                    if (!w) continue;
+                    world_water_step(w, budget);
+                    int n = world_water_drain_persist_dirty(
+                        w, dirty_tiles,
+                        (int)(sizeof dirty_tiles / sizeof dirty_tiles[0]));
+                    for (int i = 0; i < n; ++i) {
+                        saves_write_water_state(w, room->code, s->cfg.seed,
+                                                 dirty_tiles[i]);
+                    }
                 }
             }
         }
