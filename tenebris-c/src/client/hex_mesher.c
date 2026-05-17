@@ -596,6 +596,22 @@ static int water_render_level(uint8_t state, int cfg_max_level) {
     return level;
 }
 
+/* Effective render level taking the column above into account. When the
+ * cell directly above is water, the surface lives up there, not within
+ * this cell — render us at full height so caps + walls meet the cell
+ * above seamlessly. Used for our own cell AND when comparing to a
+ * water neighbour, so both sides agree on where the wall strip belongs. */
+static int water_render_level_at(const world_t* w, int tile, int depth,
+                                 int cfg_max_level) {
+    uint8_t state = world_water_get_state(w, tile, depth);
+    if (depth + 1 < WORLD_MAX_DEPTH &&
+        w->blocks[(size_t)tile * WORLD_MAX_DEPTH + (depth + 1)]
+            == (uint8_t)BLOCK_WATER) {
+        return 0;
+    }
+    return water_render_level(state, cfg_max_level);
+}
+
 void hex_mesh_build_water_voxels(hex_mesh_t* out, const world_t* w, int tile_idx) {
     const goldberg_tile_t* t = goldberg_tile(w->grid, tile_idx);
     if (!t) return;
@@ -614,8 +630,7 @@ void hex_mesh_build_water_voxels(hex_mesh_t* out, const world_t* w, int tile_idx
     for (int d = 0; d < WORLD_MAX_DEPTH; ++d) {
         if (col[d] != (uint8_t)BLOCK_WATER) continue;
 
-        uint8_t state = world_water_get_state(w, tile_idx, d);
-        int level = water_render_level(state, cfg_max_level);
+        int level = water_render_level_at(w, tile_idx, d, cfg_max_level);
         float cap_offset = water_cap_offset_for_level(level, cfg_max_level, min_film);
 
         /* Sea-level row's TOP cap is owned by the planet-wide ocean
@@ -670,8 +685,7 @@ void hex_mesh_build_water_voxels(hex_mesh_t* out, const world_t* w, int tile_idx
                  * (our level < neighbour's level - lower level number =
                  * higher cap). Equal-or-shorter falls through to the
                  * "neighbour handles it" branch and we skip. */
-                uint8_t nb_state = world_water_get_state(w, nb, d);
-                int nb_level = water_render_level(nb_state, cfg_max_level);
+                int nb_level = water_render_level_at(w, nb, d, cfg_max_level);
                 if (level >= nb_level) continue;
                 float nb_cap_offset = water_cap_offset_for_level(
                     nb_level, cfg_max_level, min_film);
