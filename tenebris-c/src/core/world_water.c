@@ -492,12 +492,32 @@ static bool should_promote_to_source(const world_t* w, int tile, int depth) {
 }
 
 /* Section 5 rule 3a + 3b: try to spread water from (tile, depth) at
- * the given "own" level. Down first; if there's no downward hole,
- * spread horizontally to the chosen neighbours at own_level + 1. */
-static void try_propagate(world_t* w, int tile, int depth, int own_level) {
+ * the given "own" level. Down first; horizontal spread either replaces
+ * or complements it depending on the caller:
+ *
+ *   also_spread = false  (sources, sleeping ocean, flowing cells with
+ *                         horizontal supply) — fall-OR-spread. If the
+ *                         cell can fall it consumes its tick on the
+ *                         fall and leaves horizontal flow to its new
+ *                         falling-cell-below. Matches classic MC.
+ *
+ *   also_spread = true   (falling cells with vertical supply) — fall-
+ *                         AND-spread. The cell falls into the column
+ *                         below as usual but ALSO pushes a level+1
+ *                         flowing ring out to its side air neighbours.
+ *                         Each falling cell creeps one hex outward per
+ *                         tick this way, and because the side cells
+ *                         themselves become falling on the next tick
+ *                         (air below), the creep budget accumulates by
+ *                         one hex per fall step. The visible result is
+ *                         a bell-shape waterfall that widens as it
+ *                         descends, capped by max_level. */
+static void try_propagate(world_t* w, int tile, int depth, int own_level,
+                          bool also_spread) {
     /* 3a. Down: if depth-1 is air or non-source water, place a falling
-     *     cell there. Vertical drain takes priority and we don't spread
-     *     horizontally on the same tick. */
+     *     cell there. Vertical drain takes priority; with also_spread
+     *     false we stop here, with also_spread true we keep going into
+     *     the horizontal block below. */
     int below = depth - 1;
     if (below >= 0) {
         block_t b = world_get(w, tile, below);
@@ -519,7 +539,7 @@ static void try_propagate(world_t* w, int tile, int depth, int own_level) {
                 world_water_set_state(w, tile, below, new_state);
             }
             world_water_enqueue(w, tile, below);
-            return;
+            if (!also_spread) return;
         }
     }
 
@@ -578,9 +598,14 @@ static void tick_cell(world_t* w, int tile, int depth) {
 
     uint8_t s_before = world_water_get_state(w, tile, depth);
 
-    /* Sources never decay; just try to spread. */
+    /* Sources never decay; just try to spread. A source on air falls
+     * straight down (no source-level horizontal creep - that would be
+     * a wide ring at the spawner height, which doesn't match a real
+     * waterfall); on solid ground it pools out horizontally. The
+     * bell-shape widening is owned by the falling cells below, not
+     * the source itself. */
     if (water_state_is_source(s_before)) {
-        try_propagate(w, tile, depth, 0);
+        try_propagate(w, tile, depth, 0, /*also_spread=*/false);
         return;
     }
 
@@ -590,7 +615,7 @@ static void tick_cell(world_t* w, int tile, int depth) {
      * (preserves the "byte == 0 means sleeping" invariant); we just
      * give the algorithm something to push outward from. */
     if (s_before == 0u) {
-        try_propagate(w, tile, depth, 0);
+        try_propagate(w, tile, depth, 0, /*also_spread=*/false);
         return;
     }
 
@@ -667,18 +692,22 @@ static void tick_cell(world_t* w, int tile, int depth) {
             world_water_set_state(w, tile, depth, s_after);
             schedule_neighbours(w, tile, depth);
         }
-        try_propagate(w, tile, depth, 0);
+        try_propagate(w, tile, depth, 0, /*also_spread=*/false);
         return;
     }
 
     uint8_t s_after = water_state_pack(false, falling, supplier_level);
+
+    /* Falling cells fall AND creep outward (bell-shape waterfall);
+     * non-falling cells stick to the classic fall-OR-spread rule. */
+    const bool also_spread = falling;
 
     if (s_after == s_before) {
         /* Hot-tile guard: no observable change, no neighbour wakeup.
          * We still try to spread once - a neighbour may have just
          * opened up - but we don't re-schedule the unchanged cell's
          * neighbours. */
-        try_propagate(w, tile, depth, supplier_level);
+        try_propagate(w, tile, depth, supplier_level, also_spread);
         return;
     }
 
@@ -686,7 +715,7 @@ static void tick_cell(world_t* w, int tile, int depth) {
     /* Level dropped (more pressure from a closer source) or rose
      * (supplier weakened) - either way, neighbours need to re-derive. */
     schedule_neighbours(w, tile, depth);
-    try_propagate(w, tile, depth, supplier_level);
+    try_propagate(w, tile, depth, supplier_level, also_spread);
 }
 
 int world_water_step(world_t* w, int max_ticks) {
