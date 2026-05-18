@@ -269,4 +269,11 @@ water:
   flow_uv_speed_falling:    1.0
   flow_uv_speed_per_level:  0.25
   flow_min_film_fraction:   0.12
-  flow_cap_curve_power:     2.0
+  # Power < 1 puts the BIGGEST cap drop into the very first level step
+  # (source -> first ring), so the bell visibly steps down by one
+  # voxel-fraction at every hex ring instead of bunching levels 0 + 1
+  # near the same height. Was 2.0, which made the first step almost
+  # invisible and the bell read as 2-hex-wide rungs. 0.5 puts ~half
+  # the depth_offset drop into the first step alone, tightening the
+  # bell to one-ring-per-step.
+  flow_cap_curve_power:     0.5
