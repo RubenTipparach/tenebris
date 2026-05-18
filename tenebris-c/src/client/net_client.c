@@ -730,11 +730,29 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
              * with the next remesh pass on the affected chunk. */
             world_water_load_state_column(w, (int)wsd.tile_idx, wsd.state);
             /* Mark the tile dirty so the renderer rebuilds the
-             * chunk's water mesh. The block-level CHUNK_DIFF that
-             * landed in the same step usually already dirtied this
-             * tile, but a pure state-only change (level shift
-             * without a block toggle) wouldn't, so do it here. */
+             * chunk's water mesh. Also mark the 6 edge neighbours
+             * dirty - the water mesher reads neighbour state when
+             * computing step-strips, r_top_edge, and the bell-curve
+             * caps, so a state change on tile X requires X's
+             * neighbours to remesh too or their meshes stay locked
+             * to X's previous level.
+             *
+             * The bulk /saves/body path gets this for free because
+             * it goes through world_set per cell (world_set already
+             * neighbour-dirties for seam logic). The realtime
+             * state-diff path bypasses world_set, so we replicate
+             * the propagation manually here. Without this, fresh
+             * water broadcasts have visible seams that only clear
+             * up on relog (when the bulk fetch rebuilds everything),
+             * which is the exact symptom the user reported. */
             world_tile_mark_dirty(w, (int)wsd.tile_idx);
+            const goldberg_tile_t* gt = goldberg_tile(w->grid, (int)wsd.tile_idx);
+            if (gt) {
+                for (int i = 0; i < gt->num_neighbors; ++i) {
+                    int nb = gt->neighbors[i];
+                    if (nb >= 0) world_tile_mark_dirty(w, nb);
+                }
+            }
             break;
         }
         case MSG_SNAPSHOT: {
