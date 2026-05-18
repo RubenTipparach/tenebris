@@ -2556,12 +2556,56 @@ void server_tick(server_t* s) {
                     if (!w->body) {
                         n = 0;  /* no broadcasts without a body id */
                     }
+                    /* Cross-tile block-diff batcher. Each tile
+                     * contributes 128 entries (one per voxel depth)
+                     * and CHUNK_DIFF_MAX_EDITS is 64, so the previous
+                     * one-tile-at-a-time code sent 2 messages for the
+                     * blocks alone, regardless of how empty the wire
+                     * budget was. With N dirty tiles per step that's
+                     * 2N + N = 3N messages, and water flooding makes
+                     * N large - the resulting message storm is where
+                     * clients drop frames.
+                     *
+                     * Pack entries from multiple tiles into one
+                     * CHUNK_DIFF: the protocol already keys each entry
+                     * by tile_idx + depth so mixed-tile batching is a
+                     * one-line protocol change. We flush whenever the
+                     * buffer hits CHUNK_DIFF_MAX_EDITS. State-diff
+                     * messages stay per-tile (they carry a full 128-
+                     * byte state column, no protocol slot to share). */
+                    msg_chunk_diff_t batch_diff = { 0 };
+                    batch_diff.body_id = (uint32_t)w->body->id;
+                    int batch_count = 0;
+
+                    #define WATER_FLUSH_BATCH() do {                                       \
+                        if (batch_count > 0) {                                              \
+                            batch_diff.edit_count = (uint16_t)batch_count;                  \
+                            uint8_t bbuf[MSG_HEADER_SIZE + MSG_CHUNK_DIFF_HEADER_SIZE        \
+                                         + MSG_CHUNK_DIFF_ENTRY_SIZE * CHUNK_DIFF_MAX_EDITS];\
+                            size_t bbn = proto_write_chunk_diff(bbuf, sizeof bbuf,          \
+                                                                 &batch_diff);              \
+                            if (bbn > 0) {                                                   \
+                                for (int j = 0; j < SERVER_MAX_CLIENTS; ++j) {              \
+                                    const server_client_t* peer = &s->clients[j];           \
+                                    if (!peer->conn) continue;                              \
+                                    if (strcmp(peer->room, room->code) != 0) continue;     \
+                                    net_send(peer->conn, NET_CHANNEL_RELIABLE,              \
+                                             bbuf, bbn);                                    \
+                                }                                                            \
+                            }                                                                \
+                            batch_count = 0;                                                \
+                        }                                                                    \
+                    } while (0)
+
                     for (int i = 0; i < n; ++i) {
                         int tile = dirty_tiles[i];
                         saves_write_water_state(w, room->code, s->cfg.seed,
                                                  tile);
 
-                        /* 1. Water-state column broadcast. */
+                        /* 1. Water-state column broadcast (per-tile -
+                         * the message carries a full 128-byte state
+                         * column and the protocol has no slot to
+                         * combine columns from multiple tiles). */
                         const uint8_t* state_col =
                             world_water_state_column(w, tile);
                         if (state_col) {
@@ -2584,35 +2628,17 @@ void server_tick(server_t* s) {
                             }
                         }
 
-                        /* 2. Block-level column broadcast (two
-                         * CHUNK_DIFFs, 64 entries each). */
+                        /* 2. Block-level edits accumulated into the
+                         * cross-tile batcher. Flush whenever full. */
                         const uint8_t* col =
                             &w->blocks[(size_t)tile * WORLD_MAX_DEPTH];
-                        int depth = 0;
-                        while (depth < WORLD_MAX_DEPTH) {
-                            msg_chunk_diff_t diff = { 0 };
-                            diff.body_id = (uint32_t)w->body->id;
-                            int batch = WORLD_MAX_DEPTH - depth;
-                            if (batch > CHUNK_DIFF_MAX_EDITS) {
-                                batch = CHUNK_DIFF_MAX_EDITS;
-                            }
-                            diff.edit_count = (uint16_t)batch;
-                            for (int e = 0; e < batch; ++e) {
-                                diff.edits[e].tile_idx   = (uint32_t)tile;
-                                diff.edits[e].depth      = (uint16_t)(depth + e);
-                                diff.edits[e].block_type = (uint16_t)col[depth + e];
-                            }
-                            depth += batch;
-
-                            uint8_t buf[MSG_HEADER_SIZE + MSG_CHUNK_DIFF_HEADER_SIZE
-                                        + MSG_CHUNK_DIFF_ENTRY_SIZE * CHUNK_DIFF_MAX_EDITS];
-                            size_t bn = proto_write_chunk_diff(buf, sizeof buf, &diff);
-                            if (bn == 0) break;
-                            for (int j = 0; j < SERVER_MAX_CLIENTS; ++j) {
-                                const server_client_t* peer = &s->clients[j];
-                                if (!peer->conn) continue;
-                                if (strcmp(peer->room, room->code) != 0) continue;
-                                net_send(peer->conn, NET_CHANNEL_RELIABLE, buf, bn);
+                        for (int d = 0; d < WORLD_MAX_DEPTH; ++d) {
+                            batch_diff.edits[batch_count].tile_idx   = (uint32_t)tile;
+                            batch_diff.edits[batch_count].depth      = (uint16_t)d;
+                            batch_diff.edits[batch_count].block_type = (uint16_t)col[d];
+                            ++batch_count;
+                            if (batch_count >= CHUNK_DIFF_MAX_EDITS) {
+                                WATER_FLUSH_BATCH();
                             }
                         }
 
@@ -2627,6 +2653,10 @@ void server_tick(server_t* s) {
                          * never reads world_tile_dirty for rendering. */
                         world_tile_clear_dirty(w, tile);
                     }
+                    /* Flush any partial batch left over after the
+                     * last tile. */
+                    WATER_FLUSH_BATCH();
+                    #undef WATER_FLUSH_BATCH
                 }
             }
         }
