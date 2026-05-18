@@ -12,6 +12,7 @@
 #include "core/planet.h"
 #include "core/proto.h"
 #include "core/world.h"
+#include "core/world_water.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -62,6 +63,12 @@ static void room_alloc_worlds(server_t* s, server_room_t* room) {
             continue;
         }
         int loaded = saves_load_world(w, room->code, s->cfg.seed);
+        /* Water-state columns: parallel .water files alongside .col,
+         * restored right after the block layer so the simulator
+         * picks up exactly where the previous server stop left off.
+         * Pre-existing rooms with only .col files report 0 loaded
+         * here; new water-state writes start on the next flush. */
+        saves_load_world_water(w, room->code, s->cfg.seed);
         total_tiles_loaded += loaded;
         room->worlds[room->world_count++] = w;
     }
@@ -97,8 +104,11 @@ static world_t* room_ensure_world_for_body(server_t* s, server_room_t* room,
     if (!w) return NULL;
     /* Load any persisted edits the first time we materialise this
      * body in-memory. Subsequent edits write through saves_write_tile
-     * directly so we don't re-walk the directory. */
+     * directly so we don't re-walk the directory. Same for the
+     * water-state companion files - the simulator inherits the
+     * settled state from disk. */
     saves_load_world(w, room->code, s->cfg.seed);
+    saves_load_world_water(w, room->code, s->cfg.seed);
     room->worlds[room->world_count++] = w;
     printf("[server] room '%s': lazy-cloned body %u\n",
            room->code[0] ? room->code : "(public)", body_id);
@@ -809,6 +819,27 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
              * BREAK  = force BLOCK_AIR regardless of block_type. */
             block_t target = (cmd.cmd_kind == PLAYER_CMD_BREAK)
                 ? BLOCK_AIR : (block_t)cmd.block_type;
+            /* Place-on-flow override: mirror the client-side rule in
+             * interact.c so the server's authoritative state agrees.
+             * Placing water on an existing water cell (a flow cell)
+             * promotes that cell to a sleeping source - origins
+             * cleared, state = 0. world_set's WATER->WATER early-
+             * return would otherwise leave the cell as a flow cell
+             * still tied to whatever upstream source(s) created it,
+             * undoing the player's "I want this to be a source now"
+             * intent. */
+            if (cmd.cmd_kind == PLAYER_CMD_PLACE && target == BLOCK_WATER) {
+                block_t existing = (block_t)world_get(w, (int)cmd.tile_idx,
+                                                     (int)cmd.depth);
+                if (existing == BLOCK_WATER) {
+                    world_water_origin_clear(w, (int)cmd.tile_idx,
+                                              (int)cmd.depth);
+                    world_water_set_state(w, (int)cmd.tile_idx,
+                                          (int)cmd.depth, 0u);
+                    world_water_enqueue(w, (int)cmd.tile_idx,
+                                         (int)cmd.depth);
+                }
+            }
             world_set(w, (int)cmd.tile_idx, (int)cmd.depth, target);
             /* Persist immediately under the room's save path. world_set
              * marks the edited tile + neighbours dirty (for the
@@ -1060,6 +1091,8 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
             cl->pos_z            = st.pos_z;
             cl->yaw              = st.yaw;
             cl->pitch            = st.pitch;
+            cl->is_grounded      =
+                (st.flags & PLAYER_STATE_FLAG_GROUNDED) != 0;
             cl->last_client_tick = st.client_tick;
             if (first) {
                 printf("[server] first PLAYER_STATE from player_id=%u at "
@@ -1068,6 +1101,21 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
                 fflush(stdout);
             }
             check_for_desync(s, cl);
+            break;
+        }
+        case MSG_SYNC_ACK: {
+            if (hdr.version != MSG_SYNC_ACK_VERSION) break;
+            msg_sync_ack_t ack;
+            if (proto_read_sync_ack(payload, hdr.length, &ack) != 0) break;
+            /* Only count an ACK that matches the tick we most recently
+             * sent. Out-of-order or replayed ACKs (e.g. client retried
+             * a fetch with the same id) are ignored - the RTT sample
+             * would be meaningless. */
+            if (ack.seq_id != cl->sync_last_seq_id) break;
+            double now = (double)time(NULL);
+            cl->sync_last_rtt_s = now - cl->sync_last_sent_s;
+            if (cl->sync_last_rtt_s < 0.0) cl->sync_last_rtt_s = 0.0;
+            if (cl->sync_outstanding > 0) --cl->sync_outstanding;
             break;
         }
         default:
@@ -1088,8 +1136,13 @@ static void on_close(net_conn_t* conn, net_close_reason_t reason, void* user) {
      * Name-keyed (sanitized display name) so the same identity
      * always lands on the same file. Gated on cl->token[0] so
      * server-stamped 'guest-N' connections don't pollute the
-     * saves dir; only real profile-bearing sessions persist. */
-    if (cl->has_state && cl->token[0] && cl->name[0]) {
+     * saves dir; only real profile-bearing sessions persist.
+     * Also gated on cl->is_grounded so a tab-close during a fall /
+     * jetpack hop can't write an in-air pose - the next RESUME
+     * would drop the player back into the same fall, accumulating
+     * velocity over the join-time remesh stalls, until the bedrock
+     * rescue fires and lands them somewhere unrelated. */
+    if (cl->has_state && cl->token[0] && cl->name[0] && cl->is_grounded) {
         saves_player_pose_t pose = {
             .body_id = cl->body_id,
             .pos_x   = cl->pos_x,
@@ -1847,6 +1900,125 @@ static void server_chat_say(server_t* s, const char* room, const char* text) {
     fflush(stdout);
 }
 
+/* Operator action: wipe every BLOCK_WATER cell at depth >=
+ * WORLD_SEA_LEVEL_DEPTH (i.e. anywhere above the natural ocean
+ * column) across one or every room. Lets the operator reset the
+ * playfield while iterating on the water sim without restarting the
+ * dedicated server. Subsurface ocean / lake water (depth < sea level)
+ * is left alone so the planet's natural water cap isn't destroyed.
+ *
+ * For each cleared cell the helper also drops the per-voxel flow
+ * state byte to 0 (any pending falling / level metadata becomes
+ * meaningless once the cell is air), persists the affected tile
+ * columns to disk, and broadcasts the updates to every connected peer
+ * in the matching room as batched CHUNK_DIFFs. Same write path the
+ * PLAYER_CMD handler uses for normal block edits, so clients converge
+ * via the existing diff replay without any new wire format.
+ *
+ * room_param semantics (mirrors /chat/send for consistency):
+ *   ""        -> the public lobby (room code == "")
+ *   __public__ -> alias for the public lobby
+ *   __all__   -> fan out across every in-use room
+ *   anything else -> that exact private room code
+ *
+ * Counts are written through to the out_* pointers (any may be NULL)
+ * so the HTTP handler can put them in the JSON response. */
+static void admin_clear_water_above_sea(server_t* s, const char* room_param,
+                                         int* out_cleared, int* out_tiles,
+                                         int* out_worlds, int* out_rooms) {
+    int total_cleared = 0;
+    int total_tiles   = 0;
+    int total_worlds  = 0;
+    int total_rooms   = 0;
+    if (!s) {
+        if (out_cleared) *out_cleared = 0;
+        if (out_tiles)   *out_tiles   = 0;
+        if (out_worlds)  *out_worlds  = 0;
+        if (out_rooms)   *out_rooms   = 0;
+        return;
+    }
+    const bool fan_all = (room_param && strcmp(room_param, "__all__") == 0);
+    const char* room_target = NULL;
+    if (!fan_all) {
+        room_target =
+            (room_param && strcmp(room_param, "__public__") == 0)
+                ? "" : (room_param ? room_param : "");
+    }
+
+    for (int ri = 0; ri < SERVER_MAX_ROOMS; ++ri) {
+        server_room_t* room = &s->rooms[ri];
+        if (!room->in_use) continue;
+        if (!fan_all && strcmp(room->code, room_target) != 0) continue;
+        ++total_rooms;
+
+        for (int wi = 0; wi < room->world_count; ++wi) {
+            world_t* w = room->worlds[wi];
+            if (!w || !w->body) continue;
+            bool world_touched = false;
+
+            for (int tile = 0; tile < w->tile_count; ++tile) {
+                /* Collect every depth in this column that needs to
+                 * change. Per-tile CHUNK_DIFF batching needs the list
+                 * up front anyway, and skipping unchanged columns
+                 * saves a saves_write_tile call (the slow part). */
+                msg_chunk_diff_entry_t pending[CHUNK_DIFF_MAX_EDITS];
+                int pending_n = 0;
+                /* At most WORLD_MAX_DEPTH - WORLD_SEA_LEVEL_DEPTH = 64
+                 * cells per column, which equals CHUNK_DIFF_MAX_EDITS.
+                 * One CHUNK_DIFF can therefore carry an entire column's
+                 * worth of clearings in a single message - no need to
+                 * loop and flush mid-column. */
+                for (int d = WORLD_SEA_LEVEL_DEPTH; d < WORLD_MAX_DEPTH; ++d) {
+                    if (w->blocks[(size_t)tile * WORLD_MAX_DEPTH + d]
+                            != (uint8_t)BLOCK_WATER) continue;
+                    world_set(w, tile, d, BLOCK_AIR);
+                    world_water_clear_state(w, tile, d);
+                    if (pending_n < CHUNK_DIFF_MAX_EDITS) {
+                        pending[pending_n].tile_idx   = (uint32_t)tile;
+                        pending[pending_n].depth      = (uint16_t)d;
+                        pending[pending_n].block_type = (uint16_t)BLOCK_AIR;
+                        ++pending_n;
+                    }
+                    ++total_cleared;
+                }
+                if (pending_n == 0) continue;
+                ++total_tiles;
+                world_touched = true;
+
+                /* Persist the new column to disk so a server restart
+                 * (or a fresh client join) sees the cleared state. */
+                saves_write_tile(w, room->code, s->cfg.seed, tile);
+
+                /* Broadcast the column's worth of edits as one
+                 * CHUNK_DIFF to every connected peer in this room. */
+                msg_chunk_diff_t diff = { 0 };
+                diff.body_id    = (uint32_t)w->body->id;
+                diff.edit_count = (uint16_t)pending_n;
+                for (int e = 0; e < pending_n; ++e) {
+                    diff.edits[e] = pending[e];
+                }
+                uint8_t buf[MSG_HEADER_SIZE + MSG_CHUNK_DIFF_HEADER_SIZE
+                            + MSG_CHUNK_DIFF_ENTRY_SIZE * CHUNK_DIFF_MAX_EDITS];
+                size_t bn = proto_write_chunk_diff(buf, sizeof buf, &diff);
+                if (bn > 0) {
+                    for (int j = 0; j < SERVER_MAX_CLIENTS; ++j) {
+                        const server_client_t* peer = &s->clients[j];
+                        if (!peer->conn) continue;
+                        if (strcmp(peer->room, room->code) != 0) continue;
+                        net_send(peer->conn, NET_CHANNEL_RELIABLE, buf, bn);
+                    }
+                }
+            }
+            if (world_touched) ++total_worlds;
+        }
+    }
+
+    if (out_cleared) *out_cleared = total_cleared;
+    if (out_tiles)   *out_tiles   = total_tiles;
+    if (out_worlds)  *out_worlds  = total_worlds;
+    if (out_rooms)   *out_rooms   = total_rooms;
+}
+
 static int on_http(const char* path,
                     const uint8_t** out_body, size_t* out_body_len,
                     const char** out_mime, void* user) {
@@ -2039,6 +2211,34 @@ static int on_http(const char* path,
         *out_mime     = "application/octet-stream";
         return 1;
     }
+    if (strcmp(clean, "/admin/clear_water_above_sea") == 0) {
+        /* Open endpoint, same convention as /chat/send. If admin
+         * abuse becomes a problem, gate behind TENEBRIS_ADMIN_TOKEN
+         * the same way; until then operator convenience wins. */
+        char room[32];
+        room[0] = 0;
+        http_query_str(path, "room", room, sizeof room);
+        int cleared = 0, tiles_touched = 0, worlds_touched = 0, rooms_touched = 0;
+        admin_clear_water_above_sea(s, room,
+                                     &cleared, &tiles_touched,
+                                     &worlds_touched, &rooms_touched);
+        int n = snprintf(HTTP_RAW, HTTP_BODY_CAP,
+                         "{\"ok\":true,\"room\":\"%s\","
+                         "\"rooms_touched\":%d,\"worlds_touched\":%d,"
+                         "\"tiles_touched\":%d,\"cells_cleared\":%d}\n",
+                         room[0] ? room : "__public__",
+                         rooms_touched, worlds_touched,
+                         tiles_touched, cleared);
+        printf("[server] /admin/clear_water_above_sea room='%s' -> "
+               "%d rooms, %d worlds, %d tiles, %d cells\n",
+               room[0] ? room : "__public__",
+               rooms_touched, worlds_touched, tiles_touched, cleared);
+        fflush(stdout);
+        *out_body     = (const uint8_t*)HTTP_RAW;
+        *out_body_len = (size_t)(n > 0 ? n : 0);
+        *out_mime     = "application/json; charset=utf-8";
+        return 1;
+    }
     if (strcmp(clean, "/") == 0 || strcmp(clean, "/health") == 0) {
         static const char msg[] =
             "tenebris-server alive\n"
@@ -2055,7 +2255,12 @@ static int on_http(const char* path,
             "  GET /saves                - JSON: every persisted .col file on disk\n"
             "                              filter with ?room=ABC123 / ?body=0 / ?seed=N\n"
             "  GET /saves/body?body=N    - BINARY: every persisted column for one body\n"
-            "                              also ?room=ABC123 (default lobby) and ?seed=N\n";
+            "                              also ?room=ABC123 (default lobby) and ?seed=N\n"
+            "  GET /admin/clear_water_above_sea[?room=X] - clear every BLOCK_WATER\n"
+            "                              above sea level (depth >= 64). Default room is\n"
+            "                              the public lobby; pass &room=__all__ to fan\n"
+            "                              out across every in-use room. Persists +\n"
+            "                              broadcasts CHUNK_DIFFs to connected peers.\n";
         *out_body     = (const uint8_t*)msg;
         *out_body_len = sizeof msg - 1;
         *out_mime     = "text/plain; charset=utf-8";
@@ -2073,6 +2278,12 @@ bool server_init(server_t* s, const server_config_t* cfg) {
     s->cfg = *cfg;
     if (s->cfg.tick_hz <= 0.0) s->cfg.tick_hz = 20.0;
     if (s->cfg.log_every_n <= 0) s->cfg.log_every_n = (int)s->cfg.tick_hz;
+
+    /* Sync coordination defaults. Initial interval = 30 s per user
+     * spec; sync_next_seq starts at 1 so seq_id=0 stays reserved as
+     * "no tick yet seen" on the client side. */
+    s->sync_interval_s = 30.0;
+    s->sync_next_seq   = 1;
 
     job_system_init(0);
 
@@ -2272,6 +2483,141 @@ void server_tick(server_t* s) {
      * stops showing forever-live sessions. */
     if ((s->tick % (uint64_t)s->cfg.tick_hz) == 0) client_sweep_idle(s);
 
+    /* Sync coordination: push a SYNC_TICK to any client whose
+     * personal next-send timer has elapsed, and adapt the fleet-wide
+     * interval based on the previous round's RTT samples. Runs once
+     * per second - the interval itself is in tens of seconds, so a
+     * per-tick (50 ms) walk would be overkill. */
+    if ((s->tick % (uint64_t)s->cfg.tick_hz) == 0) {
+        const double now = (double)time(NULL);
+        /* First: average the last-seen RTT across handshaked clients
+         * to decide whether to bump the interval up or down. Skips
+         * clients without an RTT sample yet (sync_last_rtt_s == 0)
+         * so a single new joiner doesn't dominate the average. */
+        double rtt_sum = 0.0;
+        int    rtt_n   = 0;
+        int    behind  = 0;
+        for (int i = 0; i < SERVER_MAX_CLIENTS; ++i) {
+            const server_client_t* cl = &s->clients[i];
+            if (!cl->conn || !cl->handshaked) continue;
+            if (cl->sync_outstanding > 1) ++behind;
+            if (cl->sync_last_rtt_s > 0.0) {
+                rtt_sum += cl->sync_last_rtt_s;
+                ++rtt_n;
+            }
+        }
+        double avg_rtt = (rtt_n > 0) ? (rtt_sum / (double)rtt_n) : 0.0;
+        if (behind > 0 || (rtt_n > 0 && avg_rtt > s->sync_interval_s)) {
+            /* At least one client missed its deadline OR the fleet
+             * average RTT crept above the current interval. Step up
+             * by 30 s per user spec; cap at 10 min so the interval
+             * can't run away. */
+            if (s->sync_interval_s < 600.0) {
+                s->sync_interval_s += 30.0;
+                printf("[sync] interval up to %.0fs (behind=%d avg_rtt=%.1fs)\n",
+                       s->sync_interval_s, behind, avg_rtt);
+                fflush(stdout);
+            }
+        } else if (rtt_n > 0 && avg_rtt * 2.0 < s->sync_interval_s
+                   && s->sync_interval_s > 30.0) {
+            /* RTTs are comfortably under half the interval - the
+             * fleet has caught up, slowly step back down so a
+             * temporary blip doesn't pin the interval at minutes
+             * forever. Step down half as fast as we step up, so
+             * we converge cleanly without oscillation. */
+            s->sync_interval_s -= 15.0;
+            if (s->sync_interval_s < 30.0) s->sync_interval_s = 30.0;
+            printf("[sync] interval down to %.0fs (avg_rtt=%.1fs)\n",
+                   s->sync_interval_s, avg_rtt);
+            fflush(stdout);
+        }
+
+        /* Second: per-client, send a SYNC_TICK if the personal timer
+         * has elapsed. Each new client's first send happens one
+         * interval after handshake (initialized when sync_next_send_s
+         * is 0). The seq_id comes from the global generator so
+         * duplicate ACKs from a stale tick can be detected at the
+         * server.
+         *
+         * If the client still has an outstanding (unacked) tick,
+         * fire-and-forget anyway - the new tick supersedes the old
+         * (the client's ACK for the previous one will be dropped
+         * because seq_id won't match the most recent send). The
+         * outstanding counter is what pushes the interval upward. */
+        for (int i = 0; i < SERVER_MAX_CLIENTS; ++i) {
+            server_client_t* cl = &s->clients[i];
+            if (!cl->conn || !cl->handshaked) continue;
+            if (cl->sync_next_send_s == 0.0) {
+                cl->sync_next_send_s = now + s->sync_interval_s;
+                continue;
+            }
+            if (now < cl->sync_next_send_s) continue;
+            uint32_t seq = s->sync_next_seq++;
+            if (s->sync_next_seq == 0) s->sync_next_seq = 1;
+            msg_sync_tick_t tick = { .seq_id = seq };
+            uint8_t buf[MSG_HEADER_SIZE + MSG_SYNC_TICK_WIRE_SIZE];
+            size_t bn = proto_write_sync_tick(buf, sizeof buf, &tick);
+            if (bn > 0) {
+                net_send(cl->conn, NET_CHANNEL_RELIABLE, buf, bn);
+                cl->sync_last_seq_id   = seq;
+                cl->sync_last_sent_s   = now;
+                cl->sync_next_send_s   = now + s->sync_interval_s;
+                ++cl->sync_outstanding;
+
+                /* Origin join-sync: alongside each SYNC_TICK, flood
+                 * this client with one MSG_WATER_ORIGINS_DIFF per
+                 * tile in its room that has any active origin
+                 * entries. /saves/body only carries blocks (built
+                 * from disk .col files); origins live in server
+                 * memory and aren't persisted yet, so without this
+                 * push a freshly-joined client sees zero flow
+                 * direction on all pre-existing flow cells. The
+                 * SYNC_TICK timer fires within ~30 s of join (and
+                 * periodically thereafter), so the client converges
+                 * to the right view shortly after joining.
+                 *
+                 * Per-client targeting (not room broadcast) because
+                 * the cost is paid once per fresh client - other
+                 * clients in the room already have their origin
+                 * state caught up via the realtime PASS 3 broadcast. */
+                for (int wi = 0; cl->room[0] && wi < SERVER_MAX_ROOMS; ++wi) {
+                    if (!s->rooms[wi].in_use) continue;
+                    if (strcmp(s->rooms[wi].code, cl->room) != 0) continue;
+                    for (int rwi = 0; rwi < s->rooms[wi].world_count; ++rwi) {
+                        world_t* w = s->rooms[wi].worlds[rwi];
+                        if (!w || !w->body) continue;
+                        for (int t = 0; t < w->tile_count; ++t) {
+                            water_origin_diff_entry_t buf_entries[
+                                MSG_WATER_ORIGINS_DIFF_MAX_ENTRIES];
+                            int written = world_water_origin_enum_tile(
+                                w, t, buf_entries,
+                                MSG_WATER_ORIGINS_DIFF_MAX_ENTRIES);
+                            if (written <= 0) continue;
+                            if (written > MSG_WATER_ORIGINS_DIFF_MAX_ENTRIES) {
+                                written = MSG_WATER_ORIGINS_DIFF_MAX_ENTRIES;
+                            }
+                            msg_water_origins_diff_t od = { 0 };
+                            od.body_id  = (uint32_t)w->body->id;
+                            od.tile_idx = (uint32_t)t;
+                            od.entry_count = (uint16_t)written;
+                            memcpy(od.entries, buf_entries,
+                                   (size_t)written * sizeof buf_entries[0]);
+                            uint8_t obuf[MSG_HEADER_SIZE
+                                         + MSG_WATER_ORIGINS_DIFF_MAX_SIZE];
+                            size_t obn = proto_write_water_origins_diff(
+                                obuf, sizeof obuf, &od);
+                            if (obn > 0) {
+                                net_send(cl->conn, NET_CHANNEL_RELIABLE,
+                                         obuf, obn);
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
     /* M4 (position relay): broadcast every 3rd tick. At 20 Hz that's
      * ~6.7 snapshots/sec — visibly smooth with client-side interp
      * landing in a follow-up. */
@@ -2290,6 +2636,10 @@ void server_tick(server_t* s) {
         for (int i = 0; i < SERVER_MAX_CLIENTS; ++i) {
             server_client_t* cl = &s->clients[i];
             if (!cl->conn || !cl->has_state || !cl->token[0] || !cl->name[0]) continue;
+            /* Skip mid-fall / mid-jetpack saves. The "client says not
+             * grounded" gate means the next RESUME can always trust
+             * the saved pose to be a place the player can stand. */
+            if (!cl->is_grounded) continue;
             const double dx = cl->pos_x - cl->last_saved_pos_x;
             const double dy = cl->pos_y - cl->last_saved_pos_y;
             const double dz = cl->pos_z - cl->last_saved_pos_z;
@@ -2320,6 +2670,232 @@ void server_tick(server_t* s) {
         }
     }
 
+    /* Water-flow simulation. Steps every flow_ticks_per_step server
+     * ticks, processing up to flow_max_ticks_per_step cells per world.
+     * Idle worlds with empty queues cost ~nothing. The schedule is
+     * coupled to the server's authoritative tick clock so an MP world
+     * advances flow at exactly the rate water.yaml prescribes - any
+     * future server-to-client water-state sync inherits that cadence.
+     *
+     * Immediately after each step, drain the per-world persist-dirty
+     * bitset and flush touched water-state columns to disk via
+     * saves_write_water_state. The state changes pile up between
+     * scheduler calls so one drain per step is enough; the falling-
+     * cell skip lives inside world_water itself (gated on YAML
+     * flow_persist_falling) so this loop doesn't have to know. */
+    {
+        const water_flow_config_t* wf = config_water_flow();
+        int period = wf->ticks_per_step;
+        if (period < 1) period = 1;
+        if ((s->tick % (uint64_t)period) == 0) {
+            int budget = wf->max_ticks_per_step;
+            if (budget < 1) budget = 1;
+            /* Per-flush tile-index buffer. Sized to handle the largest
+             * subdivision in flight (~164k tiles) without spilling. */
+            static int dirty_tiles[8192];
+            for (int r = 0; r < SERVER_MAX_ROOMS; ++r) {
+                if (!s->rooms[r].in_use) continue;
+                server_room_t* room = &s->rooms[r];
+                for (int wi = 0; wi < room->world_count; ++wi) {
+                    world_t* w = room->worlds[wi];
+                    if (!w) continue;
+                    world_water_step(w, budget);
+                    /* persist_dirty is the list of tiles where the
+                     * water sim actually mutated state. That's the
+                     * authoritative list of "what changed this step".
+                     * The previous version of this broadcast loop
+                     * iterated world_tile_dirty instead, which gets
+                     * marked by world_set for the edited tile AND
+                     * its 5-6 neighbours (for renderer seam logic) -
+                     * so a single water cell change cascaded into 7
+                     * broadcasts, and clients ended up remeshing all
+                     * 32 chunks every step. Sticking to persist_dirty
+                     * collapses the storm down to actually-edited
+                     * tiles only.
+                     *
+                     * Per edited tile we send three things:
+                     *   1. saves_write_water_state - durable copy of
+                     *      the state-byte column.
+                     *   2. MSG_WATER_STATE_DIFF broadcast - so client
+                     *      cap heights / bell-curve / falling-flag
+                     *      visuals mirror the authoritative sim.
+                     *   3. MSG_CHUNK_DIFF broadcast + saves_write_tile -
+                     *      so the block-level AIR/WATER changes the
+                     *      sim drives reach clients and disk.
+                     *
+                     * neighbour tiles dirtied by world_set's seam
+                     * logic are left in tile_dirty on the server but
+                     * never iterated; that's harmless (the server
+                     * doesn't render). */
+                    int n = world_water_drain_persist_dirty(
+                        w, dirty_tiles,
+                        (int)(sizeof dirty_tiles / sizeof dirty_tiles[0]));
+                    if (!w->body) {
+                        n = 0;  /* no broadcasts without a body id */
+                    }
+                    /* Cross-tile block-diff batcher. Each tile
+                     * contributes 128 entries (one per voxel depth)
+                     * and CHUNK_DIFF_MAX_EDITS is 64, so the previous
+                     * one-tile-at-a-time code sent 2 messages for the
+                     * blocks alone, regardless of how empty the wire
+                     * budget was. With N dirty tiles per step that's
+                     * 2N + N = 3N messages, and water flooding makes
+                     * N large - the resulting message storm is where
+                     * clients drop frames.
+                     *
+                     * Pack entries from multiple tiles into one
+                     * CHUNK_DIFF: the protocol already keys each entry
+                     * by tile_idx + depth so mixed-tile batching is a
+                     * one-line protocol change. We flush whenever the
+                     * buffer hits CHUNK_DIFF_MAX_EDITS. State-diff
+                     * messages stay per-tile (they carry a full 128-
+                     * byte state column, no protocol slot to share). */
+                    msg_chunk_diff_t batch_diff = { 0 };
+                    batch_diff.body_id = (uint32_t)w->body->id;
+                    int batch_count = 0;
+
+                    #define WATER_FLUSH_BATCH() do {                                       \
+                        if (batch_count > 0) {                                              \
+                            batch_diff.edit_count = (uint16_t)batch_count;                  \
+                            uint8_t bbuf[MSG_HEADER_SIZE + MSG_CHUNK_DIFF_HEADER_SIZE        \
+                                         + MSG_CHUNK_DIFF_ENTRY_SIZE * CHUNK_DIFF_MAX_EDITS];\
+                            size_t bbn = proto_write_chunk_diff(bbuf, sizeof bbuf,          \
+                                                                 &batch_diff);              \
+                            if (bbn > 0) {                                                   \
+                                for (int j = 0; j < SERVER_MAX_CLIENTS; ++j) {              \
+                                    const server_client_t* peer = &s->clients[j];           \
+                                    if (!peer->conn) continue;                              \
+                                    if (strcmp(peer->room, room->code) != 0) continue;     \
+                                    net_send(peer->conn, NET_CHANNEL_RELIABLE,              \
+                                             bbuf, bbn);                                    \
+                                }                                                            \
+                            }                                                                \
+                            batch_count = 0;                                                \
+                        }                                                                    \
+                    } while (0)
+
+                    /* PASS 1: persist + accumulate block edits across
+                     * all dirty tiles, flushing the cross-tile batcher
+                     * to the wire as it fills up. State diffs are NOT
+                     * sent in this pass.
+                     *
+                     * The two passes are deliberate: state diffs sent
+                     * interleaved with block edits create a window where
+                     * the client has applied the new state column for a
+                     * tile but the block edits for the same tile are
+                     * still sitting in the batcher waiting for the
+                     * buffer to fill. The mesher rebuilds with new
+                     * state + old blocks and draws phantom walls that
+                     * vanish on relog (because /saves/body re-syncs
+                     * atomically). Sending blocks first guarantees
+                     * blocks-then-state ordering on the wire and the
+                     * client always sees a consistent (block, state)
+                     * pair when it remeshes. */
+                    for (int i = 0; i < n; ++i) {
+                        int tile = dirty_tiles[i];
+                        const uint8_t* col =
+                            &w->blocks[(size_t)tile * WORLD_MAX_DEPTH];
+                        for (int d = 0; d < WORLD_MAX_DEPTH; ++d) {
+                            batch_diff.edits[batch_count].tile_idx   = (uint32_t)tile;
+                            batch_diff.edits[batch_count].depth      = (uint16_t)d;
+                            batch_diff.edits[batch_count].block_type = (uint16_t)col[d];
+                            ++batch_count;
+                            if (batch_count >= CHUNK_DIFF_MAX_EDITS) {
+                                WATER_FLUSH_BATCH();
+                            }
+                        }
+                        saves_write_tile(w, room->code, s->cfg.seed, tile);
+                        world_tile_clear_dirty(w, tile);
+                    }
+                    /* Drain any partial batch before we move on to
+                     * state diffs - any state diff sent before this
+                     * flush could land on the client ahead of its
+                     * block updates. */
+                    WATER_FLUSH_BATCH();
+
+                    /* PASS 2: persist + broadcast state-column diffs.
+                     * Now that every dirty tile's block updates are on
+                     * the wire, the state diffs land on top of a
+                     * consistent block layout. State columns can't be
+                     * cross-tile batched - each diff carries the full
+                     * 128-byte column for a single tile - so this
+                     * stays one message per tile, but that's the
+                     * smaller of the two message types and only fires
+                     * once the block ordering invariant holds. */
+                    for (int i = 0; i < n; ++i) {
+                        int tile = dirty_tiles[i];
+                        saves_write_water_state(w, room->code, s->cfg.seed,
+                                                 tile);
+                        const uint8_t* state_col =
+                            world_water_state_column(w, tile);
+                        if (!state_col) continue;
+                        msg_water_state_diff_t wsd = { 0 };
+                        wsd.body_id  = (uint32_t)w->body->id;
+                        wsd.tile_idx = (uint32_t)tile;
+                        memcpy(wsd.state, state_col, sizeof wsd.state);
+                        uint8_t buf[MSG_HEADER_SIZE
+                                    + MSG_WATER_STATE_DIFF_WIRE_SIZE];
+                        size_t bn = proto_write_water_state_diff(buf,
+                                                                  sizeof buf,
+                                                                  &wsd);
+                        if (bn == 0) continue;
+                        for (int j = 0; j < SERVER_MAX_CLIENTS; ++j) {
+                            const server_client_t* peer = &s->clients[j];
+                            if (!peer->conn) continue;
+                            if (strcmp(peer->room, room->code) != 0) continue;
+                            net_send(peer->conn, NET_CHANNEL_RELIABLE, buf, bn);
+                        }
+                    }
+
+                    /* PASS 3: broadcast flow-origin entries for each
+                     * dirty tile so MP clients can compute the same
+                     * per-cell flow_direction the server has and pan
+                     * the top-cap UV accordingly. Without this, MP
+                     * clients see flow blocks with no recorded origin
+                     * and the top cap stays static, contradicting the
+                     * server's authoritative "flow points away from
+                     * spawn" rule. Same ordering invariant as PASS 2:
+                     * blocks (PASS 1) -> state (PASS 2) -> origins
+                     * (PASS 3) so the client's mesh always rebuilds
+                     * against a consistent (block, state, origins)
+                     * triple. */
+                    for (int i = 0; i < n; ++i) {
+                        int tile = dirty_tiles[i];
+                        msg_water_origins_diff_t od = { 0 };
+                        od.body_id  = (uint32_t)w->body->id;
+                        od.tile_idx = (uint32_t)tile;
+                        int written = world_water_origin_enum_tile(
+                            w, tile,
+                            (water_origin_diff_entry_t*)od.entries,
+                            MSG_WATER_ORIGINS_DIFF_MAX_ENTRIES);
+                        if (written < 0) written = 0;
+                        if (written > MSG_WATER_ORIGINS_DIFF_MAX_ENTRIES) {
+                            written = MSG_WATER_ORIGINS_DIFF_MAX_ENTRIES;
+                        }
+                        /* Always broadcast, even when written == 0, so
+                         * a tile whose last origin just got removed
+                         * (source destroyed -> downstream cells lost
+                         * their last origin entry) tells the client
+                         * to clear stale flow data for that tile. */
+                        od.entry_count = (uint16_t)written;
+                        uint8_t buf[MSG_HEADER_SIZE
+                                    + MSG_WATER_ORIGINS_DIFF_MAX_SIZE];
+                        size_t bn = proto_write_water_origins_diff(
+                            buf, sizeof buf, &od);
+                        if (bn == 0) continue;
+                        for (int j = 0; j < SERVER_MAX_CLIENTS; ++j) {
+                            const server_client_t* peer = &s->clients[j];
+                            if (!peer->conn) continue;
+                            if (strcmp(peer->room, room->code) != 0) continue;
+                            net_send(peer->conn, NET_CHANNEL_RELIABLE, buf, bn);
+                        }
+                    }
+                    #undef WATER_FLUSH_BATCH
+                }
+            }
+        }
+    }
+
     if ((s->tick % (uint64_t)s->cfg.log_every_n) == 0) {
         int connected = 0;
         for (int i = 0; i < SERVER_MAX_CLIENTS; ++i) {
@@ -2342,6 +2918,10 @@ void server_shutdown(server_t* s) {
     for (int i = 0; i < SERVER_MAX_CLIENTS; ++i) {
         server_client_t* cl = &s->clients[i];
         if (!cl->conn || !cl->has_state || !cl->token[0] || !cl->name[0]) continue;
+        /* Same grounded gate as the periodic flush. On SIGTERM during a
+         * fall we keep the previous good pose rather than overwriting
+         * it with a mid-air snapshot. */
+        if (!cl->is_grounded) continue;
         saves_player_pose_t pose = {
             .body_id = cl->body_id,
             .pos_x   = cl->pos_x, .pos_y = cl->pos_y, .pos_z = cl->pos_z,

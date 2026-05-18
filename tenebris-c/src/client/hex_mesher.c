@@ -3,6 +3,7 @@
 #include "core/blocks.h"
 #include "core/config.h"
 #include "core/world_light.h"
+#include "core/world_water.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -539,6 +540,349 @@ void hex_mesh_build_water(hex_mesh_t* out, const world_t* w, int tile_idx) {
 }
 
 /* ----------------------------------------------------------------------- */
+/* Per-voxel water mesher. Walks every BLOCK_WATER cell in the column
+ * (except the sea-level row, which the ocean cap above already owns)
+ * and emits cap + side faces according to the section 8/9 rules in
+ * water.md.
+ *
+ * Cap height drops with the configured flow level so a level-7 cell
+ * renders as a thin film while a source / falling / sleeping ocean
+ * cell renders at full height. Side faces follow the table in the
+ * .h doc-comment: emit against air, skip against same-or-taller
+ * water, emit a partial strip when neighbour water is shorter.
+ *
+ * Reads world_water_get_state(); cells with state == 0 (the legacy
+ * worldgen-filled ocean below sea level, anything the simulator
+ * hasn't touched yet) are treated as full sources for the height
+ * calc, so the deep ocean stays at full cell height instead of
+ * shrinking to film. */
+
+static float water_cap_offset_for_level(int level, int cfg_max_level,
+                                         float min_film_fraction,
+                                         float curve_power,
+                                         float surface_off) {
+    /* Map level (0..cfg_max_level) to a radial offset in metres,
+     * relative to the cell's nominal top radius.
+     *
+     * Two stacked offsets:
+     *
+     *   surface_off       Always applied. Mirrors the planet ocean
+     *                     cap's -depth_offset_m + height_offset_m so
+     *                     wave-shader swell can't push crests above
+     *                     adjacent solid voxel tops. A level-0 source
+     *                     therefore renders just below the cell's
+     *                     nominal top, exactly like an ocean cell.
+     *
+     *   curve drop        Level-driven falloff. Linear (power=1) treats
+     *                     every step the same and makes near-source
+     *                     cells render near full height, which reads as
+     *                     a "mountain" piling up at the source. Power
+     *                     ~2 (the YAML default) gives each step a
+     *                     larger drop than the previous one - distant
+     *                     water reaches the thin-film floor quickly and
+     *                     visually cascades over edges instead.
+     *
+     * The film fraction keeps the level=max cap from collapsing to a
+     * zero-height quad. Block height is 1 m (BLOCK_HEIGHT in world.c)
+     * so the (1 - min_film) factor is in metres directly. */
+    if (cfg_max_level <= 0) return surface_off;
+    if (level <= 0) return surface_off;
+    if (level > cfg_max_level) level = cfg_max_level;
+    float frac = (float)level / (float)cfg_max_level;
+    if (curve_power < 1.0f) curve_power = 1.0f;
+    float curve = powf(frac, curve_power);
+    return surface_off - curve * (1.0f - min_film_fraction);
+}
+
+/* True when the (tile, depth) cell is BLOCK_WATER and should render
+ * its sides / caps - i.e. it's an actual water voxel. */
+static bool water_voxel_at(const world_t* w, int tile, int depth) {
+    if (tile < 0 || tile >= w->tile_count) return false;
+    if (depth < 0 || depth >= WORLD_MAX_DEPTH) return false;
+    return w->blocks[tile * WORLD_MAX_DEPTH + depth] == (uint8_t)BLOCK_WATER;
+}
+
+/* Effective render level for a water cell. Source / falling / sleeping
+ * cells (state byte 0 or source flag set) render at level 0 (full
+ * height); falling water also renders full so a vertical stream looks
+ * continuous instead of pinching at every cell boundary. Flowing
+ * cells return their stored level, clamped to cfg_max_level. */
+static int water_render_level(uint8_t state, int cfg_max_level) {
+    if (state == 0u) return 0;
+    if (water_state_is_source(state))  return 0;
+    if (water_state_is_falling(state)) return 0;
+    int level = water_state_level(state);
+    if (level < 0) level = 0;
+    if (level > cfg_max_level) level = cfg_max_level;
+    return level;
+}
+
+/* Effective render level taking the column above into account. When the
+ * cell directly above is water, the surface lives up there, not within
+ * this cell — render us at full height so caps + walls meet the cell
+ * above seamlessly. Used for our own cell AND when comparing to a
+ * water neighbour, so both sides agree on where the wall strip belongs. */
+static int water_render_level_at(const world_t* w, int tile, int depth,
+                                 int cfg_max_level) {
+    uint8_t state = world_water_get_state(w, tile, depth);
+    if (depth + 1 < WORLD_MAX_DEPTH &&
+        w->blocks[(size_t)tile * WORLD_MAX_DEPTH + (depth + 1)]
+            == (uint8_t)BLOCK_WATER) {
+        return 0;
+    }
+    return water_render_level(state, cfg_max_level);
+}
+
+void hex_mesh_build_water_voxels(hex_mesh_t* out, const world_t* w, int tile_idx) {
+    const goldberg_tile_t* t = goldberg_tile(w->grid, tile_idx);
+    if (!t) return;
+    const uint8_t* col = &w->blocks[(size_t)tile_idx * WORLD_MAX_DEPTH];
+
+    const water_flow_config_t* wf = config_water_flow();
+    int cfg_max_level = wf->max_level;
+    if (cfg_max_level < 1)               cfg_max_level = 1;
+    if (cfg_max_level > WATER_LEVEL_MAX) cfg_max_level = WATER_LEVEL_MAX;
+    float min_film = wf->min_film_fraction;
+    if (min_film < 0.0f) min_film = 0.0f;
+    if (min_film > 1.0f) min_film = 1.0f;
+    float curve_power = wf->cap_curve_power;
+
+    /* Apply the same surface drop the planet-wide ocean cap uses, so
+     * the wave-shader swell can't push per-voxel water crests above
+     * adjacent solid voxel tops. depth_offset_m drops the surface;
+     * height_offset_m is the creative water-level knob layered on top
+     * (positive = raise water, negative = lower). Single read per
+     * call - read once outside the per-voxel loop. */
+    const water_config_t* wc = config_water();
+    const float surface_off = -wc->depth_offset_m + wc->height_offset_m;
+
+    const int n = t->num_verts;
+
+    for (int d = 0; d < WORLD_MAX_DEPTH; ++d) {
+        if (col[d] != (uint8_t)BLOCK_WATER) continue;
+
+        int level = water_render_level_at(w, tile_idx, d, cfg_max_level);
+        float cap_offset = water_cap_offset_for_level(
+            level, cfg_max_level, min_film, curve_power, surface_off);
+
+        /* Sea-level row's TOP cap is owned by the planet-wide ocean
+         * cap in hex_mesh_build_water - emitting it here too would
+         * Z-fight with the wave-displaced ocean surface. Side faces
+         * + bottom cap still come from this loop, otherwise an air
+         * pocket adjacent to the ocean at sea level shows no water
+         * walls (the bug: dig a tunnel right under the shoreline and
+         * the ocean appears to end mid-air against the dirt).
+         *
+         * At the sea-level row the side faces must end at the SAME
+         * radius the ocean cap is drawn at. The cap helper already
+         * bakes surface_off into a level-0 cell, so a sleeping ocean
+         * cell here matches the ocean cap automatically; only flowing
+         * cells at this depth need the override so a flowing strip
+         * meeting the ocean doesn't pinch below the cap. */
+        const bool is_sea_level_row = (d == SEA_LEVEL_DEPTH - 1);
+        if (is_sea_level_row) {
+            cap_offset = surface_off;
+        }
+
+        /* ---- Top cap.
+         * Skip when the cell above is itself water - the two cells
+         * connect through the column and the upper cap is what the
+         * player actually sees. Solid above also covers (no cap
+         * needed). Anything else (air, leaves) shows the cap. The
+         * sea-level row defers its top to the ocean-cap path. */
+        block_t above = (d + 1 < WORLD_MAX_DEPTH) ? (block_t)col[d + 1] : BLOCK_AIR;
+        if (!is_sea_level_row && above != BLOCK_WATER && !block_covers_face(above)) {
+            uint32_t v_before = (uint32_t)out->vertex_count;
+            emit_cap(out, t, w, tile_idx, d, BLOCK_WATER, /*is_top=*/true,
+                     /*width=*/1.0f, /*r_offset_m=*/cap_offset,
+                     /*bake_lighting=*/true, /*wet=*/1.0f);
+            /* Bake the flow direction into the UV channel of every
+             * vertex emit_cap just wrote. The water shader reads the
+             * UV as a per-vertex flow vector (tile-local 2D) and pans
+             * the noise sample along it, so the surface visibly
+             * streams away from the source. Source / sleeping cells
+             * have no origin entry -> flow_dir returns (0, 0, 0) and
+             * we write (0, 0) in UV, leaving the cell static. */
+            float flow_world[3];
+            float fu = 0.0f, fv = 0.0f;
+            if (world_water_flow_direction(w, tile_idx, d, flow_world)) {
+                /* Project onto the tile's tangent plane using the
+                 * same arbitrary basis the fragment shader builds
+                 * (any non-parallel axis crossed twice). The shader
+                 * picks its tangent basis from the face normal alone
+                 * and the same recipe here, so the 2D coords we bake
+                 * match the basis the shader reconstructs in world
+                 * space. Tile center IS the cap face normal. */
+                dvec3_t n_d = t->center;
+                dvec3_t tu = (fabs(n_d.x) > 0.9)
+                             ? dvec3_make(0, 1, 0)
+                             : dvec3_make(1, 0, 0);
+                double dot_un = tu.x * n_d.x + tu.y * n_d.y + tu.z * n_d.z;
+                tu = dvec3_sub(tu, dvec3_scale(n_d, dot_un));
+                tu = dvec3_normalize(tu);
+                dvec3_t tv = dvec3_cross(n_d, tu);
+                fu = (float)(flow_world[0] * tu.x + flow_world[1] * tu.y
+                             + flow_world[2] * tu.z);
+                fv = (float)(flow_world[0] * tv.x + flow_world[1] * tv.y
+                             + flow_world[2] * tv.z);
+            }
+            for (uint32_t vi = v_before; vi < out->vertex_count; ++vi) {
+                out->vertices[vi].uv[0] = fu;
+                out->vertices[vi].uv[1] = fv;
+            }
+        }
+
+        /* ---- Bottom cap.
+         * Emit only when the cell below is air - the underside of a
+         * suspended pool. Water-on-solid (the common case) hides the
+         * bottom; water-on-water connects through the column. */
+        if (d > 0) {
+            block_t below = (block_t)col[d - 1];
+            if (below == BLOCK_AIR) {
+                emit_cap(out, t, w, tile_idx, d, BLOCK_WATER, /*is_top=*/false,
+                         /*width=*/1.0f, /*r_offset_m=*/0.0f,
+                         /*bake_lighting=*/true, /*wet=*/1.0f);
+            }
+        }
+
+        /* ---- Side faces (section 9 table). */
+        double r_bot      = world_depth_to_radius_m(w, d);
+        double r_top_full = world_depth_to_radius_m(w, d + 1);
+        double r_top_cap  = r_top_full + (double)cap_offset;
+
+        /* When the cell directly above us is also water, the visible
+         * water surface is up there - not on us. Our side wall must
+         * extend all the way to the voxel boundary so it meets the
+         * cell above's wall without a gap. Using r_top_cap here
+         * (which sits cap_offset BELOW the boundary for any flowing
+         * level) leaves a 5-50 cm horizontal band of missing wall
+         * between every pair of stacked water cells - the "short
+         * wall segments along the column" symptom. The top-cap path
+         * already skips drawing a horizontal cap when above is water
+         * (line ~694); the side wall needs the same treatment.
+         *
+         * The step-strip math below uses r_top_cap to decide how
+         * tall our partial wall over a shorter neighbour is. When
+         * we're connected upward, that step is owned by whichever
+         * cell in our stack is actually at the surface, not by us -
+         * we just want a flush wall to the boundary. So promote
+         * r_top_cap to r_top_full for the whole side loop when above
+         * is water. */
+        if (above == BLOCK_WATER) {
+            r_top_cap = r_top_full;
+        }
+
+        for (int k = 0; k < n; ++k) {
+            int next = (k + 1) % n;
+            int nb = t->edge_neighbours[k];
+            block_t nb_b = (nb >= 0)
+                           ? (block_t)w->blocks[(size_t)nb * WORLD_MAX_DEPTH + d]
+                           : BLOCK_AIR;
+
+            /* Per-edge wall-top override. Normally our wall on this
+             * edge ends at r_top_cap (the dipped water surface). But
+             * if the neighbour ONE LAYER UP at this edge is water, its
+             * wall on this edge starts at the voxel boundary r_top_full
+             * - and our wall stopping below that boundary leaves an
+             * exposed band exactly cap_offset metres tall between the
+             * two cells. User report (annotated screenshot, two red
+             * arrows): "if a water block = flow and borders another
+             * water block that is height + 1, then generate that
+             * extra wall segment". This is that wall segment.
+             *
+             * Bridges the same way the above==WATER fix bridges
+             * stacked water in the same column - both cases boil down
+             * to "if the upper boundary is occupied by water, ride the
+             * wall up to the boundary so the joins are flush". */
+            double r_top_edge = r_top_cap;
+            if (nb >= 0 && d + 1 < WORLD_MAX_DEPTH) {
+                block_t nb_above = (block_t)w->blocks[
+                    (size_t)nb * WORLD_MAX_DEPTH + (d + 1)];
+                if (nb_above == BLOCK_WATER) {
+                    r_top_edge = r_top_full;
+                }
+            }
+
+            if (nb_b == BLOCK_WATER) {
+                /* Sea-level row: every water cell here visually
+                 * aligns with the planet-wide ocean cap regardless
+                 * of its flow level (cap_offset overridden above to
+                 * the ocean-cap drop). The partial-strip math below
+                 * recomputes the neighbour's cap from its raw level
+                 * WITHOUT that override, so it would emit a phantom
+                 * 5-10 cm tall vertical strip floating at the ocean
+                 * surface - visible as a dark wall in the middle of
+                 * what looks like flat water. Skip strips entirely
+                 * at sea level: all water there is one continuous
+                 * body, which is what MC does too. */
+                if (is_sea_level_row) continue;
+
+                /* Water-to-water: emit a strip when WE'RE taller
+                 * (our level < neighbour's level - lower level number =
+                 * higher cap). Equal-or-shorter normally falls through
+                 * to "neighbour handles it" - BUT if neither of us is
+                 * taller at depth d, AND the neighbour has water one
+                 * layer up (nb_above == WATER), then nb's wall at d+1
+                 * starts at the voxel boundary r_top_full while our
+                 * cap stops at r_top_cap below the boundary. Nobody
+                 * emits anything on either side at depth d and the
+                 * resulting cap_offset-tall band is exposed. Emit the
+                 * gap-filling strip ourselves before continuing. */
+                int nb_level = water_render_level_at(w, nb, d, cfg_max_level);
+                if (level >= nb_level) {
+                    if (r_top_edge > r_top_cap + 1e-4) {
+                        /* Swap k/next so the quad's outward normal
+                         * flips - the cross(edge, up) formula in
+                         * emit_side_quad reverses when the edge
+                         * direction reverses. The gap is in OUR
+                         * column's air pocket (above our cap, below
+                         * the boundary that nb's d+1 wall starts at),
+                         * so the visible water-air interface faces
+                         * INTO our column, not OUT toward nb. The
+                         * default outward normal (from us toward nb)
+                         * would back-face cull from a viewer standing
+                         * in our air looking sideways at the step -
+                         * exactly the angle the screenshot is taken
+                         * from, exactly the "is it backwards?" the
+                         * user called out. Inverted winding emits
+                         * the wall with normal pointing toward us
+                         * instead. */
+                        emit_side_quad(out, t, w, tile_idx, d, next, k,
+                                       r_top_cap, r_top_edge,
+                                       BLOCK_WATER, /*width=*/1.0f,
+                                       /*wet=*/1.0f);
+                    }
+                    continue;
+                }
+                float nb_cap_offset = water_cap_offset_for_level(
+                    nb_level, cfg_max_level, min_film, curve_power, surface_off);
+                double r_strip_bot = r_top_full + (double)nb_cap_offset;
+                double r_strip_top = r_top_edge;
+                if (r_strip_top - r_strip_bot > 1e-4) {
+                    emit_side_quad(out, t, w, tile_idx, d, k, next,
+                                   r_strip_bot, r_strip_top,
+                                   BLOCK_WATER, /*width=*/1.0f, /*wet=*/1.0f);
+                }
+                continue;
+            }
+
+            if (block_covers_face(nb_b)) {
+                /* Solid neighbour hides the side - water is behind it. */
+                continue;
+            }
+
+            /* Air (or transparent / non-covering): emit the full side
+             * face from r_bot up to our cap (or up to the voxel
+             * boundary if the cell one layer up at this edge has
+             * water - r_top_edge folded that case in already). */
+            emit_side_quad(out, t, w, tile_idx, d, k, next,
+                           r_bot, r_top_edge,
+                           BLOCK_WATER, /*width=*/1.0f, /*wet=*/1.0f);
+        }
+    }
+}
+
+/* ----------------------------------------------------------------------- */
 
 void hex_mesh_build_tile(hex_mesh_t* out, const world_t* w, int tile_idx) {
     const goldberg_tile_t* t = goldberg_tile(w->grid, tile_idx);
@@ -594,22 +938,40 @@ void hex_mesh_build_tile(hex_mesh_t* out, const world_t* w, int tile_idx) {
         }
     }
 
+    /* `near_water` is now used only as a coarse skip hint - the
+     * underwater-fog wet flag is computed per FACE below, based on
+     * the across-face neighbour. Old code blanket-marked every solid
+     * voxel in a near-water tile below sea level as wet on all 6
+     * faces, which painted the underwater tint onto faces that
+     * actually border AIR (e.g. the walls of a pit dug into the
+     * seabed - the player sees them through air, not water, so they
+     * should read dry). Per-face fixes that. */
+    (void)near_water;
+
     for (int d = 0; d < WORLD_MAX_DEPTH; ++d) {
         block_t b = (block_t)col[d];
         if (!block_is_solid(b)) continue;
 
         float width = block_hex_width(b, tile_idx, d);
-        float wet = (near_water && d < SEA_LEVEL_DEPTH) ? 1.0f : 0.0f;
 
         block_t above = (d + 1 < WORLD_MAX_DEPTH) ? (block_t)col[d + 1] : BLOCK_AIR;
         if (!block_covers_face(above)) {
-            emit_cap(out, t, w, tile_idx, d, b, true, width, 0.0f, true, wet);
+            /* Top cap is wet when the cell directly above is water -
+             * looking down through that cell hits this face through
+             * water, which is exactly what should trigger the
+             * Beer-Lambert dimming. */
+            float top_wet = (above == BLOCK_WATER) ? 1.0f : 0.0f;
+            emit_cap(out, t, w, tile_idx, d, b, true, width, 0.0f, true, top_wet);
         }
 
         if (d > 0) {
             block_t below = (block_t)col[d - 1];
             if (!block_covers_face(below)) {
-                emit_cap(out, t, w, tile_idx, d, b, false, width, 0.0f, true, wet);
+                /* Bottom cap rarely matters (most solid blocks sit on
+                 * solid), but the same rule applies: wet only when
+                 * the cell below is water. */
+                float bot_wet = (below == BLOCK_WATER) ? 1.0f : 0.0f;
+                emit_cap(out, t, w, tile_idx, d, b, false, width, 0.0f, true, bot_wet);
             }
         }
 
@@ -624,7 +986,19 @@ void hex_mesh_build_tile(hex_mesh_t* out, const world_t* w, int tile_idx) {
         double r_top = world_depth_to_radius_m(w, d + 1);
         for (int k = 0; k < n; ++k) {
             int next = (k + 1) % n;
-            emit_side_quad(out, t, w, tile_idx, d, k, next, r_bot, r_top, b, width, wet);
+            /* Side face wet: the across-edge neighbour at the same
+             * depth. edge_neighbours[k] is the tile across the edge
+             * spanning corners k -> k+1, which is exactly the
+             * neighbour emit_side_quad samples for AO. Water
+             * neighbour -> looking AT this face goes through water,
+             * so the underwater dimming fires. Air / solid neighbour
+             * -> dry face (the air-pocket-wall case). */
+            int nb_tile = t->edge_neighbours[k];
+            block_t nb_b = (nb_tile >= 0)
+                           ? world_get(w, nb_tile, d)
+                           : BLOCK_AIR;
+            float side_wet = (nb_b == BLOCK_WATER) ? 1.0f : 0.0f;
+            emit_side_quad(out, t, w, tile_idx, d, k, next, r_bot, r_top, b, width, side_wet);
         }
     }
 }

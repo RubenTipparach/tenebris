@@ -68,6 +68,11 @@ typedef struct {
     uint32_t    player_id;
     bool        handshaked;    /* HELLO received, WELCOME sent */
     bool        has_state;     /* received at least one PLAYER_STATE */
+    bool        is_grounded;   /* client-reported PLAYER_STATE_FLAG_GROUNDED
+                                * on the most recent PLAYER_STATE. Gates
+                                * the periodic + on-close pose save so a
+                                * mid-fall hard-refresh can't write an
+                                * in-air pose for the next WELCOME RESUME. */
     char        token[SERVER_TOKEN_LEN + 1];
     char        name [SERVER_NAME_MAX  + 1];
     /* Room code = visibility group. Empty string = public room. */
@@ -111,6 +116,42 @@ typedef struct {
      * gates the sweeper to one entry per session. */
     int64_t     last_msg_unix_s;
     bool        timed_out_logged;
+
+    /* Server-driven sync coordination. The server periodically pushes
+     * a MSG_SYNC_TICK to this client, which is supposed to fetch a
+     * fresh /saves/body for its active body and reply with MSG_SYNC_ACK
+     * carrying the same seq_id. RTT measures how long the full
+     * "tick out -> fetch -> apply -> ack back" loop took on the
+     * client side, and the server uses the most recent sample (plus
+     * an outstanding-tick count) to grow the interval if the client
+     * is falling behind.
+     *
+     * Per-client tracking keeps slow / disconnected peers from
+     * dragging fast clients down: each client has its own interval
+     * + last-sent timestamp + last-seen-RTT, and the server's
+     * adaptive logic averages across the connected fleet to set the
+     * next interval value broadcast to everyone.
+     *
+     * Units:
+     *   sync_next_send_s    stm_sec() target for the next outgoing
+     *                       SYNC_TICK on this client. 0 = unset,
+     *                       send on the first tick after handshake.
+     *   sync_last_seq_id    seq_id of the most recently sent tick;
+     *                       client echoes this back in ACK. Wraps at
+     *                       UINT32_MAX, but at 30+ s per tick that
+     *                       takes ~4000 years - no overflow handling.
+     *   sync_last_sent_s    stm_sec() of the most recent send. RTT =
+     *                       (ack_arrived_s - sync_last_sent_s).
+     *   sync_outstanding    Number of ticks sent without an ACK back.
+     *                       Used to detect a client that's behind
+     *                       and triggers the next interval step-up.
+     *   sync_last_rtt_s     Most recent measured RTT. Updated on each
+     *                       ACK; fed into the fleet-wide average. */
+    double      sync_next_send_s;
+    uint32_t    sync_last_seq_id;
+    double      sync_last_sent_s;
+    int         sync_outstanding;
+    double      sync_last_rtt_s;
 } server_client_t;
 
 typedef struct {
@@ -140,6 +181,22 @@ typedef struct {
     net_listener_t*  listener;
     server_client_t  clients[SERVER_MAX_CLIENTS];
     uint32_t         next_player_id;
+
+    /* Fleet-wide sync interval. Starts at 30 s; the server steps it
+     * up by 30 s whenever the rolling average client RTT for the
+     * previous round of SYNC_TICKs exceeded the current interval
+     * (i.e. at least one client couldn't ACK within the deadline).
+     * It also steps DOWN when RTTs stay comfortably under the
+     * deadline for a while, so a temporary network blip doesn't
+     * pin the interval at minutes forever.
+     *
+     * Per-client send timing is independent (each client has its
+     * own sync_next_send_s), but the interval value is global so
+     * the fleet stays roughly in sync. */
+    double    sync_interval_s;
+    /* Sequence id generator, monotonically increasing. Each SYNC_TICK
+     * gets the next value. */
+    uint32_t  sync_next_seq;
 } server_t;
 
 bool server_init(server_t* s, const server_config_t* cfg);

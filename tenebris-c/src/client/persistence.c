@@ -8,6 +8,7 @@
 #define KEY_PREFIX        "tenebris-c:world:"
 #define KEY_TILE_PREFIX   "tenebris-c:tile:"
 #define KEY_TORCH_PREFIX  "tenebris-c:torches:"
+#define KEY_WATER_PREFIX  "tenebris-c:water:"
 
 /* Hex encoding for the 128-byte column. localStorage values are
  * UTF-16 strings, so packing bytes "raw" runs into surrogate-pair
@@ -210,6 +211,71 @@ int persistence_list_saved_tiles(const char* world_name, uint32_t body_id,
     return count;
 }
 
+/* ----------------------------------------------------------------- */
+/* Per-voxel water-flow state column - same shape + storage path as
+ * persistence_save_tile (one hex-encoded 128-byte string per
+ * (world, body, tile)) but keyed under a separate prefix so a body
+ * with player edits but no flowing water doesn't pay the storage.
+ * Driven by the per-frame world_water_drain_persist_dirty pass in
+ * main_web.c. */
+
+static void build_water_key(const char* world, uint32_t body, int tile,
+                             char* out, size_t cap) {
+    snprintf(out, cap, "%s%s:%u:%d", KEY_WATER_PREFIX, world,
+             (unsigned)body, tile);
+}
+
+static void build_water_body_prefix(const char* world, uint32_t body,
+                                     char* out, size_t cap) {
+    snprintf(out, cap, "%s%s:%u:", KEY_WATER_PREFIX, world, (unsigned)body);
+}
+
+bool persistence_save_water_state(const char* world_name, uint32_t body_id,
+                                   int tile_idx, const uint8_t* column) {
+    if (!valid_name(world_name) || !column || tile_idx < 0) return false;
+    char key[128];
+    build_water_key(world_name, body_id, tile_idx, key, sizeof key);
+    char hex[PERSISTENCE_COLUMN_BYTES * 2 + 1];
+    hex_encode(column, PERSISTENCE_COLUMN_BYTES, hex);
+    client_kv_set(key, hex);
+    return true;
+}
+
+bool persistence_load_water_state(const char* world_name, uint32_t body_id,
+                                   int tile_idx, uint8_t* out_column) {
+    if (!valid_name(world_name) || !out_column || tile_idx < 0) return false;
+    char key[128];
+    build_water_key(world_name, body_id, tile_idx, key, sizeof key);
+    char* s = client_kv_get(key);
+    if (!s) return false;
+    bool ok = (strlen(s) == PERSISTENCE_COLUMN_BYTES * 2) &&
+              hex_decode(s, out_column, PERSISTENCE_COLUMN_BYTES);
+    free(s);
+    return ok;
+}
+
+int persistence_list_saved_water_tiles(const char* world_name, uint32_t body_id,
+                                        int* out_indices, int cap) {
+    if (!valid_name(world_name) || !out_indices || cap <= 0) return 0;
+    char prefix[128];
+    build_water_body_prefix(world_name, body_id, prefix, sizeof prefix);
+    char* list = client_kv_list_with_prefix(prefix);
+    if (!list) return 0;
+    int count = 0;
+    char* p = list;
+    while (*p && count < cap) {
+        char* nl = strchr(p, '\n');
+        if (nl) *nl = '\0';
+        char* endp = NULL;
+        long idx = strtol(p, &endp, 10);
+        if (endp != p && idx >= 0) out_indices[count++] = (int)idx;
+        if (!nl) break;
+        p = nl + 1;
+    }
+    free(list);
+    return count;
+}
+
 /* Torch CSV: "tile,px,py,pz,ux,uy,uz" per line, '\n'-separated.
  * Floats use a fixed-precision form so we round-trip cleanly after
  * a reload. */
@@ -306,6 +372,25 @@ void persistence_clear_world(const char* world_name) {
             if (nl) *nl = '\0';
             char full_key[160];
             snprintf(full_key, sizeof full_key, "%s%s", torch_pfx, p);
+            client_kv_remove(full_key);
+            if (!nl) break;
+            p = nl + 1;
+        }
+        free(list);
+    }
+
+    /* Per-voxel water-state columns. Same pattern as the tile-block
+     * sweep above. */
+    char water_pfx[96];
+    snprintf(water_pfx, sizeof water_pfx, "%s%s:", KEY_WATER_PREFIX, world_name);
+    list = client_kv_list_with_prefix(water_pfx);
+    if (list) {
+        char* p = list;
+        while (*p) {
+            char* nl = strchr(p, '\n');
+            if (nl) *nl = '\0';
+            char full_key[160];
+            snprintf(full_key, sizeof full_key, "%s%s", water_pfx, p);
             client_kv_remove(full_key);
             if (!nl) break;
             p = nl + 1;

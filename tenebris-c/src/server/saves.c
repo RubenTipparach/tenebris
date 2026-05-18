@@ -1,6 +1,7 @@
 #include "server/saves.h"
 #include "core/blocks.h"
 #include "core/world.h"
+#include "core/world_water.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -602,6 +603,14 @@ static void tile_path(char* out, size_t cap, const char* room,
              (unsigned)body_id, tile_idx);
 }
 
+static void water_path(char* out, size_t cap, const char* room,
+                         uint64_t seed, uint32_t body_id, int tile_idx) {
+    snprintf(out, cap, "%s/rooms/%s/world-%llx/body-%u/%d.water",
+             G_saves_dir, room_dir_name(room),
+             (unsigned long long)seed,
+             (unsigned)body_id, tile_idx);
+}
+
 /* Encode the .col file as [16-byte header][WORLD_MAX_DEPTH bytes].
  * Header layout (little-endian):
  *   u32 magic       = SAVES_TILE_MAGIC ('TCOL')
@@ -658,6 +667,104 @@ bool saves_write_tile(world_t* w, const char* room, uint64_t seed, int tile_idx)
      * time replay path picks it up on the next client connect. */
     if (ok) world_tile_mark_saved(w, tile_idx);
     return ok;
+}
+
+/* ----------------------------------------------------------------- */
+/* Per-voxel water-flow state column. Same atomic-swap + header
+ * pattern as saves_write_tile, sibling .water file in the same body
+ * directory. The state-byte column is parallel to the block column
+ * but lives in core/world_water's storage rather than world.blocks;
+ * world_water_state_column gives us a const pointer to the bytes. */
+bool saves_write_water_state(world_t* w, const char* room, uint64_t seed,
+                              int tile_idx) {
+    if (!G_saves_dir) return false;
+    if (!w || !w->body) return false;
+    if (tile_idx < 0 || tile_idx >= w->tile_count) return false;
+    const uint8_t* column = world_water_state_column(w, tile_idx);
+    if (!column) return false;
+
+    char dir[512];
+    body_dir(dir, sizeof dir, room, seed, (uint32_t)w->body->id);
+    if (!mkdir_p(dir)) {
+        fprintf(stderr, "[saves] write_water mkdir_p(%s) failed: %s\n",
+                dir, strerror(errno));
+        return false;
+    }
+    char path[512];
+    water_path(path, sizeof path, room, seed, (uint32_t)w->body->id, tile_idx);
+
+    uint8_t buf[SAVES_WATER_HEADER_SIZE + WORLD_MAX_DEPTH];
+    uint32_t magic = SAVES_WATER_MAGIC;
+    uint32_t ver   = SAVES_WATER_VERSION;
+    uint32_t depth = WORLD_MAX_DEPTH;
+    uint32_t rsv   = 0;
+    memcpy(buf + 0,  &magic, 4);
+    memcpy(buf + 4,  &ver,   4);
+    memcpy(buf + 8,  &depth, 4);
+    memcpy(buf + 12, &rsv,   4);
+    memcpy(buf + SAVES_WATER_HEADER_SIZE, column, WORLD_MAX_DEPTH);
+    bool ok = write_atomic(path, buf, sizeof buf);
+    if (!ok) {
+        fprintf(stderr, "[saves] write_water FAILED path=%s (room='%s' body=%u tile=%d)\n",
+                path, room && *room ? room : "(public)",
+                (unsigned)w->body->id, tile_idx);
+    }
+    return ok;
+}
+
+int saves_load_world_water(world_t* w, const char* room, uint64_t seed) {
+    if (!G_saves_dir || !w || !w->body) return 0;
+    char dir[512];
+    body_dir(dir, sizeof dir, room, seed, (uint32_t)w->body->id);
+    DIR* dh = opendir(dir);
+    if (!dh) return 0;     /* nothing persisted for this body yet */
+    int loaded = 0;
+    struct dirent* ent;
+    while ((ent = readdir(dh))) {
+        const char* name = ent->d_name;
+        const char* dot  = strrchr(name, '.');
+        if (!dot || strcmp(dot, ".water") != 0) continue;
+        /* Parse the tile index from "<int>.water". */
+        char* endp = NULL;
+        long tile_l = strtol(name, &endp, 10);
+        if (endp == name || tile_l < 0 || tile_l >= w->tile_count) continue;
+        if (endp != dot) continue;     /* "123x.water" -> reject */
+        int tile = (int)tile_l;
+
+        char path[512];
+        water_path(path, sizeof path, room, seed, (uint32_t)w->body->id, tile);
+        FILE* f = fopen(path, "rb");
+        if (!f) continue;
+
+        uint8_t head[SAVES_WATER_HEADER_SIZE];
+        size_t hn = fread(head, 1, sizeof head, f);
+        if (hn != sizeof head) { fclose(f); continue; }
+        uint32_t magic, ver, depth;
+        memcpy(&magic, head + 0, 4);
+        memcpy(&ver,   head + 4, 4);
+        memcpy(&depth, head + 8, 4);
+        if (magic != SAVES_WATER_MAGIC || ver != SAVES_WATER_VERSION ||
+            depth != WORLD_MAX_DEPTH) {
+            fprintf(stderr,
+                    "[saves] %s: water header mismatch (magic=%08x ver=%u depth=%u), skipping\n",
+                    path, magic, ver, depth);
+            fclose(f);
+            continue;
+        }
+        uint8_t column[WORLD_MAX_DEPTH];
+        size_t cn = fread(column, 1, WORLD_MAX_DEPTH, f);
+        fclose(f);
+        if (cn != WORLD_MAX_DEPTH) continue;
+        world_water_load_state_column(w, tile, column);
+        ++loaded;
+    }
+    closedir(dh);
+    if (loaded > 0) {
+        printf("[saves] body=%u: restored %d water-state column(s) from %s\n",
+               (unsigned)w->body->id, loaded, dir);
+        fflush(stdout);
+    }
+    return loaded;
 }
 
 /* ----------------------------------------------------------------- */

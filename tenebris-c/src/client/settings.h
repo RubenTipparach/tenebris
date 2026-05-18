@@ -1,6 +1,8 @@
 #ifndef TENEBRIS_CLIENT_SETTINGS_H
 #define TENEBRIS_CLIENT_SETTINGS_H
 
+#include <stdbool.h>
+
 /*
  * Player-tunable runtime settings. Single source of truth for values
  * exposed through the in-game Settings screen (menu.c). Backed by
@@ -35,5 +37,16 @@ void  settings_set_mouse_sensitivity(float v);
 
 float settings_chat_fade_s(void);
 void  settings_set_chat_fade_s(float v);
+
+/* Lite-graphics preference. Persistent across reloads via client_kv.
+ * Read once at boot by main_web (before renderer_init) so the lite
+ * water + composite pipelines get built when the user opted in last
+ * session. Toggling at runtime persists the new value but does NOT
+ * rebuild the renderer - the player has to reload for the visual
+ * change to land. Mobile-device auto-detection still wins regardless
+ * of this setting; the toggle only lets desktop users opt into the
+ * mobile shader path manually for older / integrated GPUs. */
+bool  settings_lite_graphics(void);
+void  settings_set_lite_graphics(bool enabled);
 
 #endif

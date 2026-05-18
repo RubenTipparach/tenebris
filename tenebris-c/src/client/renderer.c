@@ -596,6 +596,24 @@ void renderer_init(void) {
                     .format = SG_VERTEXFORMAT_FLOAT3,
                     .offset = (int)offsetof(hex_vertex_t, pos),
                 },
+                /* a_normal drives the per-voxel water falling-bias.
+                 * The ocean cap's faces are radial-out (alignment=1,
+                 * bias suppressed); voxel water side quads carry
+                 * horizontal normals (alignment=0, bias active). */
+                [ATTR_water_a_normal] = {
+                    .format = SG_VERTEXFORMAT_FLOAT3,
+                    .offset = (int)offsetof(hex_vertex_t, normal),
+                },
+                /* a_uv carries per-vertex flow direction baked by the
+                 * mesher (tile-local 2D, pointing away from the source
+                 * cell on a top cap; zero on side walls / bottom caps).
+                 * Fragment shader uses it as a horizontal noise-sample
+                 * pan offset so the surface pattern visibly streams
+                 * along the flow direction. */
+                [ATTR_water_a_uv] = {
+                    .format = SG_VERTEXFORMAT_FLOAT2,
+                    .offset = (int)offsetof(hex_vertex_t, uv),
+                },
                 [ATTR_water_a_sky_light] = {
                     .format = SG_VERTEXFORMAT_FLOAT,
                     .offset = (int)offsetof(hex_vertex_t, sky_light),
@@ -650,6 +668,12 @@ void renderer_init(void) {
                     [ATTR_water_mobile_a_pos] = {
                         .format = SG_VERTEXFORMAT_FLOAT3,
                         .offset = (int)offsetof(hex_vertex_t, pos),
+                    },
+                    /* a_normal drives the per-voxel water falling-bias
+                     * on mobile, same way as desktop water. */
+                    [ATTR_water_mobile_a_normal] = {
+                        .format = SG_VERTEXFORMAT_FLOAT3,
+                        .offset = (int)offsetof(hex_vertex_t, normal),
                     },
                     [ATTR_water_mobile_a_sky_light] = {
                         .format = SG_VERTEXFORMAT_FLOAT,
@@ -2252,6 +2276,11 @@ static void body_chunk_rebuild_full(chunked_body_t* body, int chunk_idx) {
         if (i >= w->gen_cursor) continue;        /* not yet generated */
         hex_mesh_build_tile(&c->mesh, w, i);
         hex_mesh_build_water(&c->water_mesh, w, i);
+        /* Per-voxel water cells outside the sea-level ocean cap: cave
+         * pools, mountain streams, anywhere the flow simulator pushed
+         * water. Skipped on bodies with no water configured so we
+         * don't pay for an empty-column walk on barren / icy planets. */
+        if (body->has_water) hex_mesh_build_water_voxels(&c->water_mesh, w, i);
         R.tiles_remeshed++;
     }
     profiler_end("chunk-remesh");
@@ -2360,7 +2389,10 @@ static void body_full_mesh(chunked_body_t* body) {
         int ci = body->tile_to_chunk[i];
         mesh_chunk_t* c = &body->chunks[ci];
         hex_mesh_build_tile(&c->mesh, w, i);
-        if (body->has_water) hex_mesh_build_water(&c->water_mesh, w, i);
+        if (body->has_water) {
+            hex_mesh_build_water(&c->water_mesh, w, i);
+            hex_mesh_build_water_voxels(&c->water_mesh, w, i);
+        }
         world_tile_clear_dirty(w, i);
     }
     profiler_end("chunk-remesh");
@@ -2623,6 +2655,12 @@ static void body_draw_water(chunked_body_t* body, mat4_t vp,
              * effect kicks in at ~300 m and saturates around 800 m. */
             .u_horizon_fade_m        = W->horizon_fade_m,
             .u_horizon_fade_strength = W->horizon_fade_strength,
+            /* Per-voxel water falling-bias. Multiplied by the
+             * vertical_factor derived from a_normal vs radial, so the
+             * ocean cap (alignment ≈ 1) gets zero contribution and the
+             * side of a waterfall column (alignment ≈ 0) gets the full
+             * scroll. Sourced from water.yaml flow_uv_speed_falling. */
+            .u_flow_speed_falling    = config_water_flow()->uv_speed_falling,
         };
         sg_apply_uniforms(UB_fs_params_mobile, &SG_RANGE(fs_mobile));
 
@@ -2697,6 +2735,12 @@ static void body_draw_water(chunked_body_t* body, mat4_t vp,
         .u_night_floor     = L->night_ambient_floor,
         .u_torch_color     = { L->torch_color.x, L->torch_color.y, L->torch_color.z,
                                L->torch_intensity },
+        /* Per-voxel water falling-bias. The water shader multiplies
+         * this by the vertical_factor it derives from a_normal vs
+         * radial, so the ocean cap (alignment ≈ 1) gets zero shift
+         * and the side of a waterfall column (alignment ≈ 0) gets the
+         * full scroll. Sourced from water.yaml flow_uv_speed_falling. */
+        .u_flow_speed_falling = config_water_flow()->uv_speed_falling,
     };
     sg_apply_uniforms(UB_fs_params, &SG_RANGE(fs_params));
 
@@ -2770,9 +2814,20 @@ void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world,
             world_tile_clear_dirty(body->world, i);
             ++dirty_tiles;
         }
+        /* Spread chunk rebuilds across frames. A flow tick that dirties
+         * tiles in N chunks would otherwise stall the mainloop for the
+         * sum of N body_chunk_rebuild_full calls in a single frame -
+         * water flowing across a hillside hits a dozen chunks at once
+         * and visibly hitches. Cap to the YAML-configured budget; the
+         * remaining chunks keep their dirty flag and are picked up on
+         * the next frame's pass. Floor at 1 so a hostile config can't
+         * starve the queue. */
+        int remesh_budget = config_water_flow()->max_chunks_remesh_per_frame;
+        if (remesh_budget < 1) remesh_budget = 1;
         int chunks_rebuilt = 0;
         for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
             if (!body->chunks[ci].dirty) continue;
+            if (chunks_rebuilt >= remesh_budget) break;
             body_chunk_rebuild_full(body, ci);
             body->chunks[ci].dirty = false;
             body_grew[ci] = true;

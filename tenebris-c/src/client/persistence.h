@@ -83,6 +83,31 @@ bool persistence_load_tile(const char* world_name, uint32_t body_id,
 int persistence_list_saved_tiles(const char* world_name, uint32_t body_id,
                                  int* out_indices, int cap);
 
+/* Per-voxel water-flow state column. Same shape as the block column
+ * (PERSISTENCE_COLUMN_BYTES bytes per tile) - one bit-packed state
+ * byte per voxel, layout per core/world_water.h. Stored under
+ *   tenebris-c:water:<world>:<body>:<tile>
+ * separately from the block column so a world that has player edits
+ * but never sees water flow doesn't pay the storage cost.
+ *
+ * Called from the per-frame flush pass in main_web.c with whatever
+ * tiles world_water_drain_persist_dirty returns. The contract is the
+ * same as persistence_save_tile: column must be exactly
+ * PERSISTENCE_COLUMN_BYTES bytes; returns false on validation
+ * failure. */
+bool persistence_save_water_state(const char* world_name, uint32_t body_id,
+                                   int tile_idx, const uint8_t* column);
+
+/* Read the water-state column for (world, body, tile) into
+ * out_column. Returns false if no save exists for that key. */
+bool persistence_load_water_state(const char* world_name, uint32_t body_id,
+                                   int tile_idx, uint8_t* out_column);
+
+/* Enumerate tile indices with a saved water-state column for
+ * (world, body). Mirror of persistence_list_saved_tiles. */
+int persistence_list_saved_water_tiles(const char* world_name, uint32_t body_id,
+                                        int* out_indices, int cap);
+
 /* Replace the torch list snapshot for (world, body). Pass count=0
  * (and any source pointer) to clear the snapshot when the last
  * torch on a body is removed. */

@@ -2,6 +2,7 @@
 #include "client/input.h"
 #include "client/settings.h"
 #include "core/config.h"
+#include "core/world_water.h"   /* world_water_flow_direction for current force */
 #include <math.h>
 #include <stdio.h>
 
@@ -301,14 +302,21 @@ static dvec3_t try_horizontal_step(const world_t* w,
      * candidate tile is impassable from this elevation. */
     double  cand_gr   = world_walkable_floor_near(w, cand_tile, feet_r, body_height_m);
     if (cand_gr <= -1e8) {
-        /* No floor on the candidate tile - genuinely blocked (truly
-         * invalid tile index or a column the body_height_m headroom
-         * check rejected). Ungenerated tiles are no longer a
-         * fall-through hazard: world_walkable_floor_near returns
-         * the analytic procgen surface for them, which catches us
-         * here as a real cand_gr the step check below evaluates
-         * normally. */
-        return pos;
+        /* Walkable-floor rejected (likely a column whose top solid
+         * voxel has another solid above, failing the headroom
+         * check). Fall back to the topmost-solid floor before
+         * declaring the move blocked - otherwise the player slides
+         * off perfectly visible terrain because the cell above the
+         * block they want to stand on happens to be solid too. */
+        cand_gr = world_topmost_solid_floor(w, cand_tile);
+        if (cand_gr <= -1e8) {
+            /* No solid voxels at all in this column - genuinely
+             * blocked (invalid tile index, or a fully-dug column).
+             * Ungenerated tiles are no longer a fall-through hazard:
+             * world_walkable_floor_near returns the analytic procgen
+             * surface for them. */
+            return pos;
+        }
     }
     const double step_h = (double)config_lod()->step_height_m;
     if (cand_gr - feet_r > step_h) return pos;  /* wall — slide */
@@ -419,6 +427,12 @@ void player_init(player_ctrl_t* p, const body_config_t* body) {
     /* Spawn ~2 m above body's prime meridian surface. */
     const double r0 = body->radius_m + 2.0;
     p->position = dvec3_make(body->pos_x + r0, body->pos_y, body->pos_z);
+    /* No "safe pose" recorded yet - first grounded frame will fill
+     * this in. Sentinel: last_good_body == NULL. */
+    p->last_good_position = (dvec3_t){0};
+    p->last_good_body     = NULL;
+    p->rescue_loop_count  = 0;
+    p->rescue_save_freeze_s = 0.0f;
 }
 
 dvec3_t player_world_pos(const player_ctrl_t* p) { return p->position; }
@@ -644,6 +658,23 @@ static void jerk_snapshot_take(jerk_snapshot_t* s, const player_ctrl_t* p) {
 
 void player_update(player_ctrl_t* p, world_t* w, float dt) {
     const input_state_t* in = input_state();
+    /* Post-rescue server-save freeze countdown. Stays positive for
+     * a few seconds after the bedrock-fall rescue so PLAYER_STATE
+     * sends grounded=false on the wire (which gates the server's
+     * pose persistence). Any intentional movement input from the
+     * player clears it immediately - they want their new position
+     * saved. */
+    if (p->rescue_save_freeze_s > 0.0f) {
+        p->rescue_save_freeze_s -= dt;
+        if (p->rescue_save_freeze_s < 0.0f) p->rescue_save_freeze_s = 0.0f;
+        if (in->phys.forward || in->phys.backward
+         || in->phys.left    || in->phys.right
+         || in->phys.fly_up  || in->phys.fly_down
+         || in->phys.jump)
+        {
+            p->rescue_save_freeze_s = 0.0f;
+        }
+    }
     /* Snapshot the BEFORE state for the camera-jerk diagnostic so
      * we can compare against it after the update. */
     jerk_snapshot_t before;
@@ -690,25 +721,118 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
             dvec3_make(p->body->pos_x, p->body->pos_y, p->body->pos_z));
         double r_now = dvec3_length(local);
         if (r_now < min_line_r) {
-            dvec3_t unit_dir = (r_now > 1e-6)
-                ? dvec3_scale(local, 1.0 / r_now)
-                : dvec3_make(1, 0, 0);
-            dvec3_t safe_local = world_safe_spawn_local(w, unit_dir, 5.0);
-            dvec3_t center = dvec3_make(p->body->pos_x,
-                                        p->body->pos_y,
-                                        p->body->pos_z);
-            fprintf(stderr,
-                    "[player] WARN: fell through MINIMUM LINE on body=%s "
-                    "(r=%.2f < %.2f, body_radius=%.1f); popping back up to "
-                    "surface at this direction (new_r=%.2f)\n",
-                    p->body->name, r_now, min_line_r,
-                    (double)p->body->radius_m,
-                    dvec3_length(safe_local));
-            fflush(stderr);
-            p->position = dvec3_add(center, safe_local);
+            /* Rescue-loop guard. If the rescue fires repeatedly without
+             * an intervening grounded frame, the recorded last_good
+             * pose is itself unsafe (e.g. it sits on a column the
+             * player was standing in for one frame but slid off in the
+             * next, or the pose got captured at marginal r right above
+             * the bedrock floor with nothing actually solid beneath).
+             * Counter is reset to zero in the bottom-of-update
+             * recorder whenever player_update completes with the
+             * player grounded on a real floor. */
+            const int RESCUE_LOOP_LIMIT = 2;
+            ++p->rescue_loop_count;
+
+            /* "Valid ground" predicate: the cell directly under
+             * last_good_position must be a solid voxel. Without this
+             * check the rescue happily teleports to a pose recorded
+             * one frame before the player slid off, and the next tick
+             * gravity drops them back below bedrock - i.e. a spawn
+             * loop. */
+            bool last_good_has_floor = false;
+            double lg_r = 0.0;
+            if (p->last_good_body == p->body) {
+                dvec3_t lg_local = dvec3_sub(p->last_good_position,
+                    dvec3_make(p->body->pos_x, p->body->pos_y, p->body->pos_z));
+                lg_r = dvec3_length(lg_local);
+                if (lg_r > min_line_r + 1.0) {
+                    dvec3_t lg_dir = dvec3_scale(lg_local, 1.0 / lg_r);
+                    int lg_tile = goldberg_find_tile(w->grid, lg_dir, -1);
+                    /* Check the voxel one block below the recorded
+                     * feet altitude. world_radius_to_depth maps
+                     * radius to (depth + SEA_LEVEL_IDX); the floor
+                     * block we want is at depth = current_depth - 1. */
+                    int feet_depth = world_radius_to_depth(w, lg_r);
+                    int floor_depth = feet_depth - 1;
+                    if (lg_tile >= 0
+                        && floor_depth >= 0
+                        && floor_depth < WORLD_MAX_DEPTH)
+                    {
+                        block_t below = world_get(w, lg_tile, floor_depth);
+                        last_good_has_floor = block_is_solid(below);
+                    }
+                }
+            }
+
+            bool used_last_good = false;
+            if (last_good_has_floor
+                && p->rescue_loop_count <= RESCUE_LOOP_LIMIT)
+            {
+                fprintf(stderr,
+                        "[player] WARN: fell through MINIMUM LINE on body=%s "
+                        "(r=%.2f < %.2f); restoring last safe pose at "
+                        "(%.2f, %.2f, %.2f) r=%.2f (rescue #%d, floor verified)\n",
+                        p->body->name, r_now, min_line_r,
+                        p->last_good_position.x, p->last_good_position.y,
+                        p->last_good_position.z, lg_r,
+                        p->rescue_loop_count);
+                fflush(stderr);
+                p->position = p->last_good_position;
+                used_last_good = true;
+            }
+            if (!used_last_good) {
+                /* Heavyweight fallback: walk the column under our
+                 * current direction looking for the topmost walkable
+                 * floor. world_safe_spawn_local returns floor_r +
+                 * headroom along that direction, which is always a
+                 * voxel above a real solid block (or the analytic
+                 * surface if the column isn't generated yet) - so it
+                 * can't loop the way last_good can. We also force-
+                 * INVALIDATE last_good so the next fall doesn't try
+                 * to use the broken pose again, and reset the rescue
+                 * counter so we get fresh budget once we land. */
+                p->last_good_body = NULL;
+                p->rescue_loop_count = 0;
+                dvec3_t unit_dir = (r_now > 1e-6)
+                    ? dvec3_scale(local, 1.0 / r_now)
+                    : dvec3_make(1, 0, 0);
+                /* Headroom raised to 50 m (was 5 m) so the
+                 * heavyweight rescue puts the player WELL above the
+                 * column's top, not 5 m above where they could re-
+                 * intersect terrain on the very next tick if procgen
+                 * disagrees with the mesh or chunks aren't rebuilt
+                 * yet. Gravity will land them on the actual surface
+                 * within a few hundred ms; a 50 m fall is the cost
+                 * of guaranteeing no further loop. */
+                dvec3_t safe_local = world_safe_spawn_local(w, unit_dir, 50.0);
+                dvec3_t center = dvec3_make(p->body->pos_x,
+                                            p->body->pos_y,
+                                            p->body->pos_z);
+                fprintf(stderr,
+                        "[player] WARN: fell through MINIMUM LINE on body=%s "
+                        "(r=%.2f < %.2f, body_radius=%.1f); last_good invalid "
+                        "(has_floor=%d, lg_r=%.2f), popping to surface "
+                        "via column scan (new_r=%.2f)\n",
+                        p->body->name, r_now, min_line_r,
+                        (double)p->body->radius_m,
+                        (int)last_good_has_floor, lg_r,
+                        dvec3_length(safe_local));
+                fflush(stderr);
+                p->position = dvec3_add(center, safe_local);
+            }
             p->velocity = dvec3_make(0, 0, 0);
             p->grounded = false;
             p->last_tile = -1;
+            /* Freeze server-save reporting for a few seconds so the
+             * rescue destination doesn't overwrite the player's
+             * pre-rescue saved pose. The PLAYER_STATE send path
+             * checks rescue_save_freeze_s and forces grounded=false
+             * on the wire while it's positive, which gates the
+             * server's persistence. The freeze clears when the
+             * player provides movement input (input.c flags) -
+             * intentionally moving means "yes, this is where I want
+             * to be, please save it". */
+            p->rescue_save_freeze_s = 5.0f;
             /* Cold-rebuild the basis FROM the new position so basis.up
              * is the radial at the surface we just teleported to.
              * Critical: without this the basis kept whatever stale
@@ -923,6 +1047,46 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
     if (body_in_water) speed *= L->water_movement_mult;
     dvec3_t wish = walk_wish(p, &in->phys);
 
+    /* Water current force. When the player's body is submerged in a
+     * flow cell (not a source or sleeping water - those have no flow
+     * direction), the cell's flow direction adds to the player's
+     * velocity. Project the world-space flow onto the player's
+     * tangent plane so the current is purely horizontal - no radial
+     * push that would shove the player up or down through the floor.
+     *
+     * The dt scaling makes this a force (velocity per second) rather
+     * than an impulse, so a player standing in a stream gets steadily
+     * pushed downstream regardless of framerate. Skipped entirely
+     * when not in water or when no flow direction is recorded for
+     * the cell (source cells, sleeping ocean, save-loaded legacy
+     * cells with empty origin lists). */
+    if (has_world && body_in_water) {
+        dvec3_t center = dvec3_make(p->body->pos_x, p->body->pos_y, p->body->pos_z);
+        dvec3_t local  = dvec3_sub(p->position, center);
+        double  feet_r = dvec3_length(local);
+        dvec3_t local_dir = dvec3_scale(local, 1.0 / (feet_r > 1e-9 ? feet_r : 1.0));
+        int feet_tile  = goldberg_find_tile(w->grid, local_dir, p->last_tile);
+        int feet_depth = world_radius_to_depth(w, feet_r);
+        if (feet_depth >= 0 && feet_depth < WORLD_MAX_DEPTH) {
+            float flow[3];
+            if (world_water_flow_direction(w, feet_tile, feet_depth, flow)) {
+                dvec3_t flow_d = dvec3_make(flow[0], flow[1], flow[2]);
+                /* Drop the radial component so we don't push the
+                 * player through the floor or ceiling. */
+                double radial = dvec3_dot(flow_d, p->basis.up);
+                flow_d = dvec3_sub(flow_d, dvec3_scale(p->basis.up, radial));
+                /* Per-second current strength. Roughly matches a
+                 * mild river drift - 1.5 m/s downstream pull at
+                 * steady state. Tunable in the future as a YAML
+                 * knob alongside the other water flow values. */
+                const double current_strength = 1.5;
+                p->velocity = dvec3_add(
+                    p->velocity,
+                    dvec3_scale(flow_d, current_strength * (double)dt));
+            }
+        }
+    }
+
     if (has_world) {
         const tangent_basis_t* b = &p->basis;
         double cy = cos((double)p->yaw), sy = sin((double)p->yaw);
@@ -1117,6 +1281,31 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
          *      top-of-wall bug; let the player keep falling so
          *      gravity carries them clear of the wall column. */
         double gr = world_walkable_floor_near(w, cur_tile, r, 0.0);
+        /* Safety net: if the walkable-floor query finds nothing in
+         * the current column (every solid voxel got rejected by the
+         * "passable cell above" rule - rare worldgen patterns, dug
+         * caverns capped by a single block, or the chunk-rebuild
+         * race where blocks were just cleared by the water sim but
+         * a stale neighbour reference made the column look unwalk-
+         * able), fall back to the top of the topmost solid voxel so
+         * the player at least lands on visible terrain instead of
+         * dropping into the void. Logs once per occurrence so we can
+         * tell whether the fallback is firing in normal play. */
+        if (gr <= -1e8) {
+            double topmost = world_topmost_solid_floor(w, cur_tile);
+            if (topmost > -1e8) {
+                static int s_fallback_logged = 0;
+                if (s_fallback_logged < 8) {
+                    fprintf(stderr,
+                            "[player] INFO: walkable-floor-near rejected "
+                            "every voxel on tile=%d - falling back to "
+                            "topmost-solid floor r=%.2f (event %d/8)\n",
+                            cur_tile, topmost, ++s_fallback_logged);
+                    fflush(stderr);
+                }
+                gr = topmost;
+            }
+        }
         const double step_h = (double)config_lod()->step_height_m;
         if (gr > -1e8) {
             bool warped     = (prev_tile < 0);
@@ -1183,6 +1372,79 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
         p->grounded = false;
     }
     (void)feet_in_water;   /* feet probe reserved for footstep / dive sound hooks */
+
+    /* Record this position as the "last safe" pose if we're solidly
+     * standing on a verified solid voxel above bedrock. The bedrock-
+     * fall rescue reads this to teleport the player back to where
+     * they were actually playing.
+     *
+     * Conditions for "safe":
+     *   - we have a body (not flying in deep space),
+     *   - we're grounded this frame,
+     *   - the player is at least SAFE_MARGIN_ABOVE_BEDROCK_M above
+     *     the body's minimum-line radius,
+     *   - AND the voxel directly under the player's feet is solid
+     *     (i.e. there's real ground beneath - not a stale grounded
+     *     flag carried over from the previous frame). Without this
+     *     final check, a player who was grounded for one frame on a
+     *     marginal column at r ~ min_line + 16 m can still loop:
+     *     the column gets dug out, the flag stays on for a tick,
+     *     the recorder snapshots the now-floorless pose, and the
+     *     next fall lands the rescue right back at the hole. */
+    if (p->body && !p->is_in_space && p->grounded
+        && w && w->body == p->body)
+    {
+        const double SAFE_MARGIN_ABOVE_BEDROCK_M = 16.0;
+        const double bedrock_r  = (double)p->body->radius_m - 64.0;
+        const double min_line_r = (bedrock_r > 0.5) ? bedrock_r : 0.5;
+        dvec3_t local = dvec3_sub(p->position, dvec3_make(p->body->pos_x,
+                                                            p->body->pos_y,
+                                                            p->body->pos_z));
+        double r_now = dvec3_length(local);
+        if (r_now >= min_line_r + SAFE_MARGIN_ABOVE_BEDROCK_M
+            && r_now > 1e-6)
+        {
+            dvec3_t feet_dir = dvec3_scale(local, 1.0 / r_now);
+            int feet_tile = goldberg_find_tile(w->grid, feet_dir,
+                                                p->last_tile);
+            int feet_depth = world_radius_to_depth(w, r_now);
+            int floor_depth = feet_depth - 1;
+            if (feet_tile >= 0
+                && floor_depth >= 0
+                && floor_depth < WORLD_MAX_DEPTH)
+            {
+                block_t below = world_get(w, feet_tile, floor_depth);
+                if (block_is_solid(below)) {
+                    p->last_good_position = p->position;
+                    p->last_good_body     = p->body;
+                    /* Clean grounded frame on real ground - the
+                     * rescue loop budget refreshes ONLY when the
+                     * post-rescue window has fully elapsed. Without
+                     * this gate, the recorder fires on the first
+                     * frame after a rescue (the rescue destination
+                     * was deliberately picked to have solid ground
+                     * underneath, so the single-frame check trivially
+                     * passes), resets the loop count to 0, and the
+                     * NEXT fall-through fires as "rescue #1" again -
+                     * so the player flickers in an infinite loop
+                     * between the rescue spot and bedrock with the
+                     * counter never crossing the limit.
+                     *
+                     * The save-freeze timer (set to 5 s on every
+                     * rescue, decremented per frame) is the natural
+                     * "we just rescued, don't trust transient ground"
+                     * window. While it's still active, count this
+                     * grounded frame but don't reset the loop budget.
+                     * Once it expires, the player has been on real
+                     * ground long enough to clear the budget for
+                     * real. */
+                    if (p->rescue_save_freeze_s <= 0.0f) {
+                        p->rescue_loop_count = 0;
+                    }
+                }
+            }
+        }
+    }
 
     /* End-of-frame jerk diagnostic. Compares current state against
      * the BEFORE snapshot taken at function entry; logs a single

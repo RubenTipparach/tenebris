@@ -385,6 +385,89 @@ typedef struct {
 const water_config_t* config_water(void);
 
 /*
+ * Per-voxel water-flow automaton tuning. Separate struct from
+ * water_config_t (which drives the planet-wide cap shader) because
+ * these knobs feed the simulation in core/world_water.c, not the
+ * renderer.
+ *
+ * Parsed out of the same water.yaml file so designers have one place
+ * to look. YAML keys are flat under the top `water:` header and
+ * prefixed `flow_*` to keep them visually grouped without leaning on
+ * the parser to understand nested sections (it doesn't).
+ */
+typedef struct {
+    /* Source / level mechanics. ----------------------------------- */
+
+    /* Max flow level a flowing cell can reach before drying up.
+     * Capped at 7 by the 3-bit field in the state byte; lower values
+     * make streams shorter. 7 matches Minecraft's 8-step ladder. */
+    int   max_level;
+    /* BFS depth (in hex steps) used by world_water.c's nearest-hole
+     * pathfinder to bias horizontal spread toward a downward exit.
+     * MC uses 4; raise for "smarter" rivers, lower for cheaper ticks. */
+    int   search_radius;
+    /* Sim ticks per logical spread step. The scheduler is called every
+     * `ticks_per_step` simulation ticks; below that, water sits idle.
+     * 5 matches MC's "5 game ticks per block" cadence. */
+    int   ticks_per_step;
+    /* Per-scheduler-call budget. The ring buffer pops at most this many
+     * cells per call - bounds the per-frame cost when a big body of
+     * water re-converges. */
+    int   max_ticks_per_step;
+    /* Ring buffer capacity (cells). Overflow drops the oldest pending
+     * tick - the world reconverges when something adjacent wakes it
+     * again. */
+    int   queue_capacity;
+    /* Source-promotion threshold: a flowing cell becomes a source when
+     * it has at least this many horizontal source neighbours + a solid
+     * floor below. 2 matches MC; 3 makes pentagons need a fuller basin. */
+    int   source_min_nbrs;
+    /* Persist falling-water state to disk on tick? 0 = no (reload
+     * re-derives from neighbours), 1 = yes (heavier I/O, no transient
+     * frames during reload). Default 0 keeps per-edit writes cheap. */
+    int   persist_falling;
+
+    /* Visual knobs - read by the mesher / shader in steps 6 / 7.
+     * Defined here so a designer tuning the simulation and its look
+     * stays in one config file. ----------------------------------- */
+
+    /* V-axis scroll speed on falling-water side faces (units / sec).
+     * V=0 is radially inward, so positive values make texels drift
+     * toward the planet centre. */
+    float uv_speed_falling;
+    /* Cap UV scroll speed per (level difference) between this cell and
+     * its lowest horizontal neighbour. Drives the streaming look on the
+     * top surface of a flowing river. */
+    float uv_speed_per_level;
+    /* Minimum cap height as a fraction of voxel height. Keeps even the
+     * thinnest film (level == max) visible instead of degenerating to
+     * a zero-height quad. */
+    float min_film_fraction;
+
+    /* Cap-height falloff curve exponent applied to (level / max_level)
+     * when computing per-voxel cap offset. 1.0 = linear (every step
+     * drops the cap by the same amount), 2.0 = quadratic (each step
+     * drops more than the last - simulates water accelerating downward
+     * the further it travels from its source), >2 = steeper still. The
+     * "mountain of water" visual happens with linear falloff because
+     * level-1/2 cells render near full height; quadratic plants the
+     * cap low quickly so distant water reads as a thin film cascading
+     * over the edge instead of a piled-up slab. */
+    float cap_curve_power;
+
+    /* Per-body cap on chunk remeshes per frame. The renderer rebuilds a
+     * whole chunk when any of its tiles dirties, and a busy flow tick
+     * dirties many chunks at once - rebuilding them all in one frame
+     * stalls visibly. With this cap, extra dirty chunks stay dirty and
+     * roll over to subsequent frames. Floor at 1 so progress is always
+     * made; the per-edit fast path (single block placement) still
+     * resolves in one frame because it only ever dirties one chunk. */
+    int   max_chunks_remesh_per_frame;
+} water_flow_config_t;
+
+const water_flow_config_t* config_water_flow(void);
+
+/*
  * Terrain lighting tuning. Drives the planet-aware day/night terminator
  * + ambient curve in hex.glsl. Underwater terrain dimming reuses the
  * Beer-Lambert absorption + deep_color from water_config_t so the

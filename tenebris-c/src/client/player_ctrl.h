@@ -62,6 +62,43 @@ typedef struct {
      * center, surface normal comes from (position - body.pos). Swapped
      * by player_teleport_to; defaults to Tenebris at player_init. */
     const body_config_t* body;
+
+    /* Last "safe" position - updated each frame the player is grounded
+     * and well above the bedrock floor. Read by the bedrock-fall
+     * rescue in player_update so a player who fell through the world
+     * gets teleported back to where they were actually standing
+     * instead of computing a surface point from a near-zero radial
+     * (which degenerates into the body's prime-meridian default,
+     * i.e. the spawn-at-origin bug the player keeps hitting).
+     *
+     * last_good_body tracks which body the last_good_position lives
+     * on - the player may have been standing on a moon and the
+     * rescue needs to teleport them back to that moon, not the
+     * current body. NULL = no recorded safe pose yet, fall back to
+     * the legacy unit-direction rescue. */
+    dvec3_t              last_good_position;
+    const body_config_t* last_good_body;
+    /* Number of bedrock-fall rescues that have fired without an
+     * intervening recorder hit. Incremented on each rescue, reset to
+     * zero when the recorder confirms the player landed on real solid
+     * ground. The rescue invalidates last_good_position after a small
+     * number of repeats to break out of spawn loops where the saved
+     * pose is itself unstable. */
+    int                  rescue_loop_count;
+    /* Seconds remaining on the post-rescue server-save freeze. After
+     * a bedrock-fall rescue teleports the player somewhere safe, we
+     * don't want the server to overwrite their pre-rescue pose with
+     * the rescue destination - otherwise a single fall-through
+     * permanently moves their saved spawn to wherever the rescue
+     * landed. While this counter is > 0, PLAYER_STATE is sent with
+     * grounded=false so the server's save gate (cl->is_grounded)
+     * keeps the previous pose on disk.
+     *
+     * Cleared the moment the player provides movement input
+     * (W/A/S/D/space/jetpack) - that signals "yes, this position is
+     * intentional, please save it now". Refreshing without moving
+     * leaves the original saved pose authoritative. */
+    float                rescue_save_freeze_s;
 } player_ctrl_t;
 
 void    player_init(player_ctrl_t* p, const body_config_t* body);

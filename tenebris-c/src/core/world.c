@@ -1,5 +1,6 @@
 #include "core/world.h"
 #include "core/world_light.h"
+#include "core/world_water.h"
 #include "core/planet.h"
 #include "core/planet_gen.h"
 #include "core/config.h"
@@ -11,7 +12,7 @@
 /* Sea level sits at layer 64 in a 128-deep shell — layers 0..63 are
  * solid planet (bedrock + stone + seabed + water column); 64..127 are
  * usable build space + mountains above sea. */
-#define SEA_LEVEL_IDX 64
+#define SEA_LEVEL_IDX WORLD_SEA_LEVEL_DEPTH
 
 world_t* world_create(const body_config_t* body, int subdivisions) {
     world_t* w = (world_t*)calloc(1, sizeof(world_t));
@@ -25,12 +26,14 @@ world_t* world_create(const body_config_t* body, int subdivisions) {
     w->edited       = (uint8_t*)calloc((size_t)w->edited_bytes, 1);
     w->gen_cursor = 0;
     w->light = world_light_create(w);
+    w->water = world_water_create(w);
     return w;
 }
 
 void world_destroy(world_t* w) {
     if (!w) return;
     world_light_destroy(w->light);
+    world_water_destroy(w->water);
     goldberg_destroy(w->grid);
     free(w->blocks);
     free(w->dirty);
@@ -58,6 +61,10 @@ world_t* world_clone(const world_t* src) {
      * relit state without paying for another BFS. Torches reset; the
      * client that consumes this clone republishes its torch list. */
     world_light_clone_into(w->light, src->light);
+    /* Water flow state: copy the per-voxel byte array; the scheduler
+     * queue resets (clones inherit the settled snapshot, not pending
+     * ticks). */
+    world_water_clone_into(w->water, src->water);
     return w;
 }
 
@@ -138,6 +145,20 @@ static void gen_tile(world_t* w, int tile_idx) {
                     if (d <= surface_idx) continue;
                     if (column[d] == BLOCK_AIR) column[d] = leaf_block;
                 }
+                /* Tree placement diverges this column from the bare
+                 * analytic surface - the wood/leaves voxels sit above
+                 * where world_analytic_surface_r predicts the floor is.
+                 * Mark the column edited so world_walkable_floor_near
+                 * takes the slow voxel-scan path instead of returning
+                 * the grass radius (which is BELOW the tree, making
+                 * the player fall straight through trunk and canopy).
+                 * Bug report: "I still cannot stand on top of natural
+                 * forming trees" - snapshot showed WOOD d=75..78 +
+                 * LEAVES d=79..80 but ground-snap was reporting the
+                 * grass top at d=74. */
+                if (w->edited) {
+                    w->edited[tile_idx >> 3] |= (uint8_t)(1u << (tile_idx & 7));
+                }
             }
         }
     }
@@ -184,8 +205,61 @@ void world_set(world_t* w, int tile, int depth, block_t b) {
      * change, no remesh needed. */
     int idx = tile * WORLD_MAX_DEPTH + depth;
     if (w->blocks[idx] == (uint8_t)b) return;
+    uint8_t old = w->blocks[idx];
     w->blocks[idx] = (uint8_t)b;
     w->dirty[tile >> 3] |= (uint8_t)(1 << (tile & 7));
+
+    /* Water-sim cleanup on block change.
+     *
+     * (a) WATER -> anything-else: the state byte still has whatever
+     * flags the sim left there (most importantly WATER_FLAG_SOURCE
+     * if this was a player-placed source). Adjacent flow cells scan
+     * neighbour state bytes when looking for a supplier - a stale
+     * SOURCE flag on an AIR cell makes them think the source is
+     * still alive, so they never dry up. Clear the state byte and
+     * re-enqueue the cell itself plus its column-up / column-down /
+     * 6 edge neighbours so the sim revisits them next step.
+     *
+     * Bug report: "if I kill a spawner block, that should propagate
+     * to adjacent chains of flow blocks" - this is the wiring.
+     *
+     * (b) anything-else -> WATER: a new water cell needs to be
+     * scheduled too so the sim ticks it (e.g. a player-placed source
+     * starts spreading immediately, or an AIR cell flooded by a
+     * world_set wasn't auto-scheduled). Same enqueue list.
+     *
+     * Both branches enqueue the same way, so collapse the test. */
+    if ((block_t)old == BLOCK_WATER || b == BLOCK_WATER) {
+        if ((block_t)old == BLOCK_WATER) {
+            /* Block leaving water. If this cell was a source, propagate
+             * the death to every downstream flow cell that listed it as
+             * an origin - those cells lose this origin reference and
+             * the standard tick-cell dry-up takes over once they have
+             * zero origins left. Done BEFORE clear_state so we can
+             * still read the SOURCE flag from the old state byte.
+             *
+             * Also drop this cell's own origin entry (if it had one as
+             * a flow cell) since the cell no longer exists. */
+            uint8_t old_state = world_water_get_state(w, tile, depth);
+            if (water_state_is_source(old_state)) {
+                water_origin_ref_t me = { (uint32_t)tile, (uint8_t)depth };
+                world_water_origin_remove_global(w, me);
+            }
+            world_water_origin_clear(w, tile, depth);
+            /* Drop the stale state byte. */
+            world_water_clear_state(w, tile, depth);
+        }
+        world_water_enqueue(w, tile, depth);
+        if (depth + 1 < WORLD_MAX_DEPTH) world_water_enqueue(w, tile, depth + 1);
+        if (depth - 1 >= 0)              world_water_enqueue(w, tile, depth - 1);
+        const goldberg_tile_t* tn = goldberg_tile(w->grid, tile);
+        if (tn) {
+            for (int i = 0; i < tn->num_neighbors; ++i) {
+                int nb = tn->neighbors[i];
+                if (nb >= 0) world_water_enqueue(w, nb, depth);
+            }
+        }
+    }
     /* Mark the column as edited from procgen so collision queries
      * fall through to the voxel-scan path. Until set, the
      * walkable-floor query short-circuits to the analytic surface
@@ -201,13 +275,35 @@ void world_set(world_t* w, int tile, int depth, block_t b) {
         int n = t->neighbors[i];
         w->dirty[n >> 3] |= (uint8_t)(1 << (n & 7));
     }
-    /* Mark the edited cell for incremental relight. The light grid
-     * runs a Minecraft-style removal-then-addition BFS bounded by
-     * sky_max steps, so a single block change only re-propagates the
-     * cells within roughly sky_max / lateral_loss tiles - not the
-     * whole planet. If the queue overflows the mark layer escalates
-     * to a full rebuild automatically. */
-    world_light_mark_dirty_at(w->light, tile, depth);
+    /* Mark the edited cell for incremental relight - but ONLY when
+     * the change actually affects light propagation. The lighting BFS
+     * gates on block_covers_face: a cell is opaque-to-light iff its
+     * block covers its face. Swapping between two non-covering blocks
+     * (AIR <-> WATER, AIR <-> LEAVES, etc.) leaves every light path
+     * through this cell unchanged, so no relight is needed.
+     *
+     * This is the dominant path for water-flow ticks - the simulator
+     * fires dozens of AIR <-> WATER swaps per frame and they used to
+     * queue a light edit each, eventually escalating to a 140 ms
+     * full-rebuild that stalled the frame. Skipping the mark drops
+     * the per-edit relight cost to zero for fluid motion while still
+     * relighting on real block edits (placing stone, breaking dirt,
+     * etc. all change covers_face). */
+    if (block_covers_face((block_t)old) != block_covers_face(b)) {
+        world_light_mark_dirty_at(w->light, tile, depth);
+    }
+    /* Notify the water-flow scheduler about the edit. Wakes the cell
+     * + its 5/6 horizontal + (up to) two vertical neighbours so the
+     * flow rule re-derives their state next tick. Worldgen writes
+     * the column directly without going through world_set, so the
+     * legacy seafloor stays "sleeping" - only player / network /
+     * simulator-driven edits land here. */
+    world_water_notify_edit(w, tile, depth);
+}
+
+void world_tile_mark_dirty(world_t* w, int tile) {
+    if (!w || tile < 0 || tile >= w->tile_count) return;
+    w->dirty[tile >> 3] |= (uint8_t)(1u << (tile & 7));
 }
 
 bool world_tile_dirty(const world_t* w, int tile) {
@@ -234,6 +330,14 @@ void world_tile_mark_saved(world_t* w, int tile) {
         if (!w->saved) { w->saved_bytes = 0; return; }
     }
     w->saved[tile >> 3] |= (uint8_t)(1 << (tile & 7));
+    /* A column persisted to disk diverges from procgen - otherwise
+     * we wouldn't have bothered saving it. Flip edited too so the
+     * walkable-floor fast path takes the slow voxel scan instead of
+     * returning the analytic surface (which sits below any saved
+     * tree, built bridge, or carved overhang). */
+    if (w->edited) {
+        w->edited[tile >> 3] |= (uint8_t)(1u << (tile & 7));
+    }
 }
 
 void world_dirty_in_range(world_t* w, vec3_t world_pos, float radius_m) {
@@ -481,6 +585,23 @@ double world_walkable_floor_near(const world_t* w, int tile,
     }
     if (best_radius_below > -1e8) return best_radius_below;
     return best_radius_above;   /* may still be -1e9 if none */
+}
+
+double world_topmost_solid_floor(const world_t* w, int tile) {
+    if (!w || tile < 0 || tile >= w->tile_count) return -1e9;
+    if (tile >= w->gen_cursor) return -1e9;
+    const uint8_t* col = &w->blocks[(size_t)tile * WORLD_MAX_DEPTH];
+    /* Scan top-down for the first non-passable voxel. Its top face
+     * sits at radius(d + 1). No "cell above must be passable" check
+     * because a player standing on a buried-in-stone block still
+     * needs a floor under their feet; the headroom-aware variant
+     * (world_walkable_floor_near) is the one that should reject
+     * unwalkable columns, this is the bare safety net. */
+    for (int d = WORLD_MAX_DEPTH - 1; d >= 0; --d) {
+        if (block_is_passable(col[d])) continue;
+        return world_depth_to_radius_m(w, d + 1);
+    }
+    return -1e9;
 }
 
 dvec3_t world_safe_spawn_local(const world_t* w, dvec3_t unit_dir, double headroom_m) {

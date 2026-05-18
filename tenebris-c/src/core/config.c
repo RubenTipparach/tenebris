@@ -495,6 +495,32 @@ static water_config_t S_WATER = {
 
 const water_config_t* config_water(void) { return &S_WATER; }
 
+/* Per-voxel water-flow automaton defaults. Mirror the constants the
+ * step-1 world_water module shipped with so behaviour is unchanged
+ * when no YAML override is present; config_load_water() rewrites
+ * these from water.yaml's flow_* keys. */
+static water_flow_config_t S_WATER_FLOW = {
+    /* 3-hex spread radius - hex topology with 6-way neighbours
+     * already covers 37 cells at radius 3, so going wider floods
+     * the world from a single source. YAML can override up to 7. */
+    .max_level                   = 3,
+    .search_radius               = 4,
+    /* 10 = 2 Hz at MP tick_hz=20. Visibly paced spread + lower
+     * per-second remesh churn than the MC-parity 5. */
+    .ticks_per_step              = 10,
+    .max_ticks_per_step          = 256,
+    .queue_capacity              = 4096,
+    .source_min_nbrs             = 2,
+    .persist_falling             = 0,
+    .uv_speed_falling            = 1.0f,
+    .uv_speed_per_level          = 0.25f,
+    .min_film_fraction           = 0.12f,
+    .cap_curve_power             = 2.0f,
+    .max_chunks_remesh_per_frame = 1,
+};
+
+const water_flow_config_t* config_water_flow(void) { return &S_WATER_FLOW; }
+
 int config_load_water(const char* path) {
     size_t fsize = 0;
     char* buf = slurp_file(path, &fsize);
@@ -594,6 +620,35 @@ int config_load_water(const char* path) {
                         S_WATER.horizon_fade_m    = (float)strtod(val, NULL);
                     } else if (strcmp(key, "horizon_fade_strength") == 0) {
                         S_WATER.horizon_fade_strength = (float)strtod(val, NULL);
+
+                    /* ---- Per-voxel water-flow automaton (water_flow_config_t).
+                     * Flat keys under the top water: header, prefixed flow_*
+                     * so they group visually with the existing shader knobs. */
+                    } else if (strcmp(key, "flow_max_level"        ) == 0) {
+                        S_WATER_FLOW.max_level          = (int)strtol(val, NULL, 10);
+                    } else if (strcmp(key, "flow_search_radius"    ) == 0) {
+                        S_WATER_FLOW.search_radius      = (int)strtol(val, NULL, 10);
+                    } else if (strcmp(key, "flow_ticks_per_step"   ) == 0) {
+                        S_WATER_FLOW.ticks_per_step     = (int)strtol(val, NULL, 10);
+                    } else if (strcmp(key, "flow_max_ticks_per_step") == 0) {
+                        S_WATER_FLOW.max_ticks_per_step = (int)strtol(val, NULL, 10);
+                    } else if (strcmp(key, "flow_queue_capacity"   ) == 0) {
+                        S_WATER_FLOW.queue_capacity     = (int)strtol(val, NULL, 10);
+                    } else if (strcmp(key, "flow_source_min_nbrs"  ) == 0) {
+                        S_WATER_FLOW.source_min_nbrs    = (int)strtol(val, NULL, 10);
+                    } else if (strcmp(key, "flow_persist_falling"  ) == 0) {
+                        S_WATER_FLOW.persist_falling    = (int)strtol(val, NULL, 10);
+                    } else if (strcmp(key, "flow_uv_speed_falling" ) == 0) {
+                        S_WATER_FLOW.uv_speed_falling   = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "flow_uv_speed_per_level") == 0) {
+                        S_WATER_FLOW.uv_speed_per_level = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "flow_min_film_fraction") == 0) {
+                        S_WATER_FLOW.min_film_fraction  = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "flow_cap_curve_power") == 0) {
+                        S_WATER_FLOW.cap_curve_power    = (float)strtod(val, NULL);
+                    } else if (strcmp(key, "flow_max_chunks_remesh_per_frame") == 0) {
+                        S_WATER_FLOW.max_chunks_remesh_per_frame = (int)strtol(val, NULL, 10);
+
                     } else {
                         printf("[config] %s:%d: unknown key '%s'\n",
                                path, line_no, key);

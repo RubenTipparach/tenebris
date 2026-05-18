@@ -5,6 +5,28 @@ the full plan.
 
 [**Join our test server here!**](https://rubentipparach.github.io/tenebris/wasm/?invite=T9VVPW)
 
+### Lite-graphics build
+
+Older laptops, integrated GPUs, and most phones run the full water +
+composite shaders far below 30 FPS. The same WASM bundle ships with a
+"lite" path that swaps in cheaper shaders (no vertex swell, no screen-
+space refraction, no underwater Beer-Lambert fog) and is on by default
+when the browser advertises a mobile / tablet userAgent.
+
+Force the lite path on desktop one of two ways:
+
+- **One-shot URL override** — append `?perf=lite` to the play URL:
+  [`https://rubentipparach.github.io/tenebris/wasm/?perf=lite`](https://rubentipparach.github.io/tenebris/wasm/?perf=lite).
+  Ephemeral, doesn't persist past the tab. Combine with `?invite=` to
+  drop into a private room: `?invite=T9VVPW&perf=lite`. `?perf=high`
+  or `?perf=desktop` forces the full path on a mobile device for
+  diagnostic purposes.
+- **In-game toggle** — open `Settings` (main menu or pause menu) and
+  flip `Graphics Quality: ON / OFF`. The choice is saved in local
+  storage and applied on every subsequent reload. Note that flipping
+  the toggle only takes visual effect after a page reload, because
+  the renderer picks pipelines at init time.
+
 ## Status
 
 **Tier 0**: hello triangle (in progress). Target is a browser-loadable
@@ -65,6 +87,7 @@ Raw JSON for `curl` / scripts:
 | [`GET /chat`](https://tenebris-c.fly.dev/chat) | JSON array of `{ts, name, room, text}` chat messages, server-wide, time-ordered. |
 | `GET /chat/send?text=...&room=...` | Broadcast a chat message to a room as `~server~` (sender renders with that name in-game). Authenticated by the `TENEBRIS_ADMIN_TOKEN` env var if set: append `&token=...`. Without the env var the endpoint is open (dev mode). |
 | [`GET /saves`](https://tenebris-c.fly.dev/saves) | JSON inventory of every persisted tile column (`.col` file) on the saves volume. Use this to confirm that block edits are actually hitting durable storage and to verify which room/seed/body they belong to. |
+| `GET /admin/clear_water_above_sea?room=X` | Operator action: replace every `BLOCK_WATER` voxel at depth `>= 64` (i.e. anywhere above the natural ocean column) with `BLOCK_AIR`. Subsurface ocean cells stay intact. Used while iterating on the water sim so the playfield can be reset without restarting the server. Optional `?room=ABC123` targets a single room; `?room=__all__` fans out across every in-use room; omitted = public lobby. Persists the affected columns and broadcasts `CHUNK_DIFF` messages to live clients. The dashboard's "Admin actions" panel exposes this with a confirm prompt. |
 
 ### Inspecting persisted block edits
 

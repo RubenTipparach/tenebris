@@ -150,6 +150,36 @@
     .send-status { color: #888; font-size: 12px; }
     .send-status.ok { color: #7fe28f; }
     .send-status.err { color: #e26b6b; }
+    /* Admin panel row - sits next to the chat broadcast form. Buttons
+     * here trigger destructive operator actions (wipe water, etc.) so
+     * the styling intentionally reads as a warning. */
+    .admin-row {
+      display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+      margin: 8px 0 24px;
+    }
+    .admin-row select.admin-room {
+      appearance: none;
+      background: #15171c;
+      color: #d8d8d8;
+      border: 1px solid #23262d;
+      border-radius: 4px;
+      padding: 6px 8px;
+      font: inherit;
+    }
+    .admin-row button {
+      background: #2a1f15;
+      color: #ffb37a;
+      border: 1px solid #5a3a22;
+      border-radius: 4px;
+      padding: 6px 14px;
+      font: inherit;
+      cursor: pointer;
+    }
+    .admin-row button:hover    { background: #3a2a1c; color: #ffd5a8; }
+    .admin-row button:disabled { opacity: .5; cursor: default; }
+    .admin-status { color: #888; font-size: 12px; }
+    .admin-status.ok  { color: #7fe28f; }
+    .admin-status.err { color: #e26b6b; }
     .more-row {
       margin: 8px 0 24px;
       display: flex;
@@ -229,6 +259,16 @@
       <span class="send-status" id="sendStatus"></span>
     </form>
 
+    <h2>Admin actions</h2>
+    <div class="admin-row">
+      <select class="admin-room" id="clearWaterRoom"></select>
+      <button type="button" id="clearWaterBtn"
+              title="Set every BLOCK_WATER above sea level (depth &gt;= 64) back to BLOCK_AIR. Subsurface ocean cells stay intact. Affected tiles are persisted and broadcast to connected clients.">
+        Clear water above sea level
+      </button>
+      <span class="admin-status" id="clearWaterStatus"></span>
+    </div>
+
     <h2>Recent chat (last 100)</h2>
     <div id="chat"></div>
     <div class="more-row">
@@ -242,7 +282,8 @@
       <a id="lnk-rooms"   target="_blank">/rooms</a> &middot;
       <a id="lnk-logins"  target="_blank">/logins</a> &middot;
       <a id="lnk-chat"    target="_blank">/chat</a> &middot;
-      <a id="lnk-health"  target="_blank">/health</a>
+      <a id="lnk-health"  target="_blank">/health</a> &middot;
+      <a id="lnk-clear-water" target="_blank">/admin/clear_water_above_sea</a>
       <br>
       Polling /status every 2 s, /logins + /chat every 5 s. Durations
       shown in 5-min increments (server snapshots roll up that way).
@@ -310,6 +351,7 @@
       for (const p of ["status", "rooms", "logins", "chat", "health"]) {
         $("lnk-" + p).href = HOST + "/" + p;
       }
+      $("lnk-clear-water").href = HOST + "/admin/clear_water_above_sea";
     }
 
     $("host") &&
@@ -815,6 +857,33 @@
           (c === want ? " selected" : "") + ">" + esc(label) + "</option>";
       }
       sel.innerHTML = html;
+
+      // Mirror the same options into the admin room dropdown so the
+      // operator picks where Clear-Water fires from the same room
+      // list they already use for chat. The two selects don't share
+      // saved state - admin actions default to the currently-active
+      // public room rather than the last broadcast target. Keep the
+      // existing admin selection if it's still valid; otherwise
+      // start on the same `want` value chat resolved to.
+      const adminSel = $("clearWaterRoom");
+      if (adminSel) {
+        const adminCurrent = adminSel.value;
+        const adminWant = (adminCurrent && (adminCurrent === "__all__"
+                                             || codeToClients.has(adminCurrent)))
+          ? adminCurrent : want;
+        let adminHtml =
+          '<option value="__all__"' +
+          (adminWant === "__all__" ? " selected" : "") +
+          ">all rooms (" + totalClients + ")</option>";
+        for (const c of sorted) {
+          const clients = codeToClients.get(c) || 0;
+          const label = c + " (" + clients + ")";
+          adminHtml +=
+            '<option value="' + esc(c) + '"' +
+            (c === adminWant ? " selected" : "") + ">" + esc(label) + "</option>";
+        }
+        adminSel.innerHTML = adminHtml;
+      }
     }
 
     $("sendForm").addEventListener("submit", async (e) => {
@@ -853,6 +922,57 @@
 
     $("sessionsMore").addEventListener("click", loadMoreSessions);
     $("chatMore")    .addEventListener("click", loadMoreChat);
+
+    // Admin: clear water above sea level. Destructive (wipes every
+    // placed water source + flow voxel in the picked room) so a
+    // confirm() gate stands in for an admin token until the endpoint
+    // gets a real auth gate. Same fetch shape as /chat/send.
+    $("clearWaterBtn").addEventListener("click", async () => {
+      const room = $("clearWaterRoom").value.trim();
+      const label = room === "__all__"
+        ? "EVERY in-use room"
+        : room === "__public__"
+          ? "the public lobby"
+          : "room '" + room + "'";
+      if (!confirm("Clear every BLOCK_WATER above sea level in "
+                    + label + "?\n\n"
+                    + "Subsurface ocean cells stay intact. Affected "
+                    + "tiles persist to disk and broadcast to live "
+                    + "clients immediately.")) {
+        return;
+      }
+      const status = $("clearWaterStatus");
+      status.textContent = "clearing...";
+      status.className = "admin-status";
+      const btn = $("clearWaterBtn");
+      btn.disabled = true;
+      try {
+        const qs = new URLSearchParams();
+        if (room) qs.set("room", room);
+        const r = await fetch(
+          HOST + "/admin/clear_water_above_sea"
+            + (qs.toString() ? "?" + qs.toString() : ""),
+          { method: "GET", cache: "no-store" }
+        );
+        const data = await r.json().catch(() => ({}));
+        if (data.ok) {
+          status.textContent =
+            "cleared " + (data.cells_cleared ?? 0) + " cell(s) across "
+            + (data.tiles_touched ?? 0) + " tile(s), "
+            + (data.worlds_touched ?? 0) + " world(s), "
+            + (data.rooms_touched ?? 0) + " room(s)";
+          status.className = "admin-status ok";
+        } else {
+          status.textContent = data.error || ("HTTP " + r.status);
+          status.className = "admin-status err";
+        }
+      } catch (err) {
+        status.textContent = err.message;
+        status.className = "admin-status err";
+      } finally {
+        btn.disabled = false;
+      }
+    });
 
     updateFooterLinks();
     refreshStatus();

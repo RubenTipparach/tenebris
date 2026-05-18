@@ -30,6 +30,29 @@ void inventory_ensure_reserved_torch(inventory_t* inv) {
     }
 }
 
+/* Debug-only water slot. Process-local memo of the slot's pre-debug
+ * contents so toggling F2 off restores the original (snow in the
+ * creative loadout, empty in survival) instead of dropping a creative
+ * snow stack into a survival inventory the player never asked for. */
+static inv_slot_t s_debug_water_saved;
+static bool       s_debug_water_active = false;
+
+void inventory_set_debug_water(inventory_t* inv, bool enabled) {
+    if (!inv) return;
+    const int slot = INV_HOTBAR_SLOTS - 1;
+    if (enabled) {
+        if (!s_debug_water_active) {
+            s_debug_water_saved = inv->slots[slot];
+            s_debug_water_active = true;
+        }
+        inv->slots[slot].type  = BLOCK_WATER;
+        inv->slots[slot].count = CREATIVE_COUNT;
+    } else if (s_debug_water_active) {
+        inv->slots[slot] = s_debug_water_saved;
+        s_debug_water_active = false;
+    }
+}
+
 void inventory_init_empty(inventory_t* inv) {
     memset(inv, 0, sizeof(*inv));
     /* Survival starts with an empty hotbar so every block has to be

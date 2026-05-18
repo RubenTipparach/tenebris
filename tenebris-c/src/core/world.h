@@ -14,6 +14,12 @@
  * pulling the BFS header into every world.h consumer. */
 struct world_light_s;
 
+/* Forward decl - world_water owns a parallel per-voxel water-flow
+ * state byte array + tick scheduler, lifecycle-tied to the world.
+ * Same opaque-pointer pattern as world_light so consumers don't have
+ * to pull the flow-algorithm header transitively. */
+struct world_water_s;
+
 /*
  * The whole world. Holds the Goldberg tile set + a column of voxels per
  * tile. Matches the src/planet/Planet.ts model: depth 0 = deepest
@@ -41,6 +47,16 @@ struct world_light_s;
  * for the largest planets to stay within the WASM heap budget.
  */
 #define WORLD_MAX_DEPTH   128
+
+/* Sea-level layer index. The planet shell is laid out so depth 64 is
+ * the first cell at-or-above sea level (layers 1..63 = subsurface +
+ * ocean column, layer 64 = sea-level surface, layers 65..127 = sky
+ * + player build space). Mirrors the static SEA_LEVEL_IDX in world.c
+ * - the .c keeps the original name for legacy callers while .h
+ * exposes the same value to other modules (server admin endpoints,
+ * mesher overlays, etc.) without each of them redefining the magic
+ * number. Tied to the worldgen profile, not a runtime knob. */
+#define WORLD_SEA_LEVEL_DEPTH 64
 
 typedef struct world_s {
     const body_config_t* body;
@@ -88,6 +104,12 @@ typedef struct world_s {
      * core/world_light. The mesher gates on config_lighting()->engine
      * to decide between this and the legacy column-based bake. */
     struct world_light_s* light;
+
+    /* Per-voxel water flow state + tick scheduler. State byte layout
+     * (source / falling / level) and queue semantics live in
+     * core/world_water. Allocated in world_create alongside `blocks`,
+     * cloned in world_clone, freed in world_destroy. */
+    struct world_water_s* water;
 } world_t;
 
 /* ----------------------------------------------------------------------- */
@@ -113,6 +135,11 @@ void     world_set(world_t* w, int tile, int depth, block_t b);
 
 bool     world_tile_dirty(const world_t* w, int tile);
 void     world_tile_clear_dirty(world_t* w, int tile);
+/* Mark a tile dirty without going through world_set. Used by the
+ * net-client path that applies a server-broadcast water-state diff:
+ * the state byte changed but no BLOCK changed, so we need to wake
+ * the renderer's remesh sweep manually. */
+void     world_tile_mark_dirty(world_t* w, int tile);
 
 /* "Saved" bitset: tracks which tiles have a persisted column on
  * disk so the server can replay them to a joining client. Lazily
@@ -169,6 +196,18 @@ bool     world_is_water_at(const world_t* w, int tile, double radius_m);
 double   world_walkable_floor_near(const world_t* w, int tile,
                                    double target_radius_m,
                                    double body_height_m);
+
+/* Top-face radius of the topmost solid voxel in the column. No
+ * headroom check, no "passable cell above" requirement - just "is
+ * there a solid voxel here, and where does its top face sit?".
+ * Returns -1e9 when the column is entirely passable (or ungenerated
+ * for a freshly-spawned body). Used by the player ground-snap as a
+ * safety-net floor when world_walkable_floor_near rejects every
+ * solid voxel - a single-cell-tall column with a solid block
+ * directly above is technically a wall, but a player standing on
+ * top of it shouldn't fall through; this lets ground-snap keep
+ * them on the surface even when no "walkable" floor matches. */
+double   world_topmost_solid_floor(const world_t* w, int tile);
 
 /* Bottom radius of the first solid voxel at or above `head_radius_m`
  * in the column. Returns +1e30 when no ceiling exists (open sky).

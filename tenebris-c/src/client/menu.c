@@ -325,6 +325,11 @@ static struct {
      * settings_set_chat_fade_s(). */
     float         chat_track_x, chat_track_y, chat_track_w, chat_track_h;
     bool          chat_dragging;
+    /* Lite-graphics toggle button. A click flips
+     * settings_set_lite_graphics; the change persists immediately but
+     * only takes visual effect on the next reload (perf mode is set
+     * before renderer_init). Drawn below the chat-fade slider. */
+    menu_button_t btn_lite_graphics;
     /* Toast under the INVITE FRIENDS button after a successful share.
      * pause_share_msg_until is a sokol_time stamp; the label fades
      * once stm_now() passes it. share_result is 1=shared via Web
@@ -2065,14 +2070,15 @@ static void pause_text_left(float screen_w, float screen_h,
 /* ------------------------------------------------------------------ */
 
 #define SETTINGS_PANEL_W   440.0f
-#define SETTINGS_PANEL_H   360.0f
+#define SETTINGS_PANEL_H   460.0f
 #define SETTINGS_TRACK_H    12.0f
 
 static void settings_layout(float w, float h) {
     const float px = (w - SETTINGS_PANEL_W) * 0.5f;
     const float py = (h - SETTINGS_PANEL_H) * 0.5f;
-    /* Two sliders stacked: mouse-sens then chat-fade. Each slider
-     * leaves room above for label + value text. */
+    /* Three rows stacked: mouse-sens slider, chat-fade slider, then
+     * lite-graphics toggle button. Each leaves room above for the
+     * label / value text. */
     M.sens_track_x = px + 40.0f;
     M.sens_track_y = py + 130.0f;
     M.sens_track_w = SETTINGS_PANEL_W - 80.0f;
@@ -2081,6 +2087,13 @@ static void settings_layout(float w, float h) {
     M.chat_track_y = py + 230.0f;
     M.chat_track_w = SETTINGS_PANEL_W - 80.0f;
     M.chat_track_h = SETTINGS_TRACK_H;
+    /* Lite-graphics toggle - same width as the slider tracks so the
+     * three rows visually line up; label drawn just above. */
+    set_button(&M.btn_lite_graphics,
+                 px + 40.0f, py + 310.0f,
+                 SETTINGS_PANEL_W - 80.0f, 40.0f,
+                 settings_lite_graphics() ? "LITE GRAPHICS: ON"
+                                          : "LITE GRAPHICS: OFF");
     /* BACK button anchored to the panel's bottom edge. */
     set_button(&M.btn_settings_back,
                  px + (SETTINGS_PANEL_W - 200.0f) * 0.5f,
@@ -2215,6 +2228,30 @@ static void settings_draw(float w, float h) {
                                       0.30f, 0.40f, 0.60f, 1.0f);
     }
 
+    /* Lite-graphics toggle. The button background is tinted green
+     * when ON, grey when OFF, so the state is readable at a glance
+     * before reading the label. */
+    {
+        const bool lite_hover = hit(&M.btn_lite_graphics, M.mouse_x, M.mouse_y);
+        const bool lite_on    = settings_lite_graphics();
+        float r, g, b;
+        if (lite_on) {
+            r = lite_hover ? 0.28f : 0.18f;
+            g = lite_hover ? 0.46f : 0.36f;
+            b = lite_hover ? 0.28f : 0.20f;
+        } else {
+            r = lite_hover ? 0.22f : 0.12f;
+            g = lite_hover ? 0.30f : 0.14f;
+            b = lite_hover ? 0.42f : 0.19f;
+        }
+        mobile_ui_draw_rect(M.btn_lite_graphics.x, M.btn_lite_graphics.y,
+                              M.btn_lite_graphics.w, M.btn_lite_graphics.h,
+                              r, g, b, 0.98f);
+        mobile_ui_draw_rect_outline(M.btn_lite_graphics.x, M.btn_lite_graphics.y,
+                                      M.btn_lite_graphics.w, M.btn_lite_graphics.h,
+                                      2.0f, 0.85f, 0.90f, 1.00f, 1.0f);
+    }
+
     /* BACK button - re-use the menu button visuals. */
     const bool back_hover = hit(&M.btn_settings_back, M.mouse_x, M.mouse_y);
     if (back_hover) {
@@ -2246,6 +2283,19 @@ static void settings_draw(float w, float h) {
                          0xc0, 0xc8, 0xd8);
     snprintf(buf, sizeof buf, "%.0f", settings_chat_fade_s());
     draw_text_centered(buf, cx, py + 204.0f, 1.5f, 0xff, 0xe0, 0x60);
+    /* Lite-graphics label + button text + reload hint. The toggle
+     * persists immediately but only takes visual effect on the next
+     * page reload (perf mode is locked in before renderer_init), so
+     * we surface that explicitly. */
+    draw_text_centered("GRAPHICS QUALITY", cx, py + 282.0f, 1.5f,
+                         0xc0, 0xc8, 0xd8);
+    draw_text_centered(M.btn_lite_graphics.label,
+                         M.btn_lite_graphics.x + M.btn_lite_graphics.w * 0.5f,
+                         M.btn_lite_graphics.y
+                             + (M.btn_lite_graphics.h - 8.0f * 1.6f) * 0.5f,
+                         1.6f, 0xff, 0xff, 0xff);
+    draw_text_centered("(RELOAD TO APPLY)", cx, py + 356.0f, 1.0f,
+                         0x90, 0x98, 0xa8);
     /* BACK button label. */
     draw_text_centered(M.btn_settings_back.label,
                          M.btn_settings_back.x + M.btn_settings_back.w * 0.5f,
@@ -2315,6 +2365,13 @@ static bool settings_event(const sapp_event* e) {
         if (chat_track_hit(cx, cy)) {
             M.chat_dragging = true;
             chat_set_from_handle_x(cx);
+            return true;
+        }
+        if (hit(&M.btn_lite_graphics, cx, cy)) {
+            /* Flip the persistent flag; the label updates on the
+             * next settings_layout() call (next draw). Doesn't
+             * rebuild pipelines - the player has to reload. */
+            settings_set_lite_graphics(!settings_lite_graphics());
             return true;
         }
         /* Press elsewhere inside the modal does nothing but is

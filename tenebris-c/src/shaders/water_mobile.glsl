@@ -42,10 +42,12 @@ layout(binding=0) uniform vs_params_mobile {
 };
 
 in vec3  a_pos;
+in vec3  a_normal;
 in float a_sky_light;
 in float a_torch_light;
 
 out vec3  v_wpos;
+out vec3  v_face_normal;
 out float v_sun_brightness;
 out float v_sky_light;
 out float v_torch_light;
@@ -53,6 +55,7 @@ out float v_torch_light;
 void main() {
     gl_Position = u_vp * vec4(a_pos, 1.0);
     v_wpos = a_pos;
+    v_face_normal = a_normal;
     v_sky_light   = a_sky_light;
     v_torch_light = a_torch_light;
 
@@ -86,6 +89,12 @@ layout(binding=1) uniform fs_params_mobile {
     // with depth), and a 0..1 strength scalar.
     float u_horizon_fade_m;
     float u_horizon_fade_strength;
+    // Per-voxel water falling-bias. Identical role to water.glsl's
+    // u_flow_speed_falling: drives the directional offset applied to
+    // the triplanar UV samples on vertical faces, so the side of a
+    // waterfall visibly streams downward. Ocean cap is horizontal so
+    // face_alignment ≈ 1 and the bias is suppressed.
+    float u_flow_speed_falling;
 };
 
 layout(binding=0) uniform texture2D water_normal_tex;
@@ -94,6 +103,7 @@ layout(binding=0) uniform sampler   water_normal_smp;
 precision highp int;
 
 in vec3  v_wpos;
+in vec3  v_face_normal;
 in float v_sun_brightness;
 in float v_sky_light;
 in float v_torch_light;
@@ -101,6 +111,20 @@ out vec4 frag_color;
 
 void main() {
     vec3 radial = normalize(v_wpos);
+
+    // Same per-voxel falling-water bias as water.glsl: vertical_factor
+    // is 1.0 on side faces, 0.0 on caps; fall_shift translates the
+    // sample position upward over time so the texture pattern appears
+    // to stream toward the planet centre. The mobile shader samples a
+    // triplanar normal map (instead of computing fbm in-shader), so we
+    // project the radial-direction shift into each of the three plane
+    // coords and add it to that plane's t_off.
+    vec3 face_n = (length(v_face_normal) > 0.0)
+                  ? normalize(v_face_normal) : radial;
+    float face_alignment  = abs(dot(face_n, radial));
+    float vertical_factor = 1.0 - face_alignment;
+    float fall_shift      = u_time * u_flow_speed_falling * vertical_factor;
+    vec3  shifted_pos     = v_wpos + radial * fall_shift;
 
     // Build a stable tangent basis at the body centre (NOT at the
     // fragment) so the basis is the same vector for every fragment in
@@ -117,9 +141,9 @@ void main() {
     // of the planet the player is on, the dominant projection plane
     // gives near-undistorted tiling, and the blend hides the seam where
     // two faces meet.
-    vec2 uv_xz = v_wpos.xz;
-    vec2 uv_xy = v_wpos.xy;
-    vec2 uv_zy = v_wpos.zy;
+    vec2 uv_xz = shifted_pos.xz;
+    vec2 uv_xy = shifted_pos.xy;
+    vec2 uv_zy = shifted_pos.zy;
 
     float scale_a = u_ripple_scale * 0.10;
     float scale_b = u_ripple_scale * 0.23;

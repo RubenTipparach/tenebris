@@ -18,6 +18,9 @@
 #include "core/planet.h"
 #include "core/planet_gen.h"
 #include "core/world.h"
+#include "core/goldberg.h"
+#include "core/blocks.h"
+#include "core/world_water.h"
 #include "core/job_system.h"
 #include "core/config.h"
 #include "core/proto.h"
@@ -586,11 +589,25 @@ static void init(void) {
 #ifdef __EMSCRIPTEN__
     /* Mobile / tablet browsers swap in the lite water + composite
      * shaders. Decision happens before renderer_init because the
-     * setter gates which pipelines get created. Native desktop
-     * builds always run the full path. */
+     * setter gates which pipelines get created. Three independent
+     * triggers:
+     *
+     *   1. tenebris_is_mobile_device() - userAgent match, OR the
+     *      ephemeral ?perf=lite / ?perf=mobile URL override for one-
+     *      shot testing on desktop (doesn't persist).
+     *   2. The settings.lite_graphics toggle - persisted in
+     *      client_kv, last value the player chose in the Settings
+     *      panel. Lets desktop users with older / integrated GPUs
+     *      opt into the mobile shader path across sessions.
+     *
+     * Any one being true flips perf mode on. Native desktop builds
+     * always run the full path (no __EMSCRIPTEN__ block runs). */
     if (tenebris_is_mobile_device()) {
         renderer_set_perf_mode(true);
-        printf("[renderer] perf mode enabled (mobile device detected)\n");
+        printf("[renderer] perf mode enabled (mobile device / ?perf=lite)\n");
+    } else if (settings_lite_graphics()) {
+        renderer_set_perf_mode(true);
+        printf("[renderer] perf mode enabled (lite-graphics setting)\n");
     }
 #endif
     renderer_init();
@@ -890,6 +907,12 @@ static void update_overlay(float dt) {
     sdtx_printf("frame: %s  radius: %.1f m\n", frame->name, frame->radius_m);
     sdtx_printf("alt: %.1f m  grav: %3.0f%%  %s\n",
                 alt, hud_gq.multiplier * 100.0f, status);
+    /* World-space player position. Useful when comparing a console
+     * log line (e.g. "fell through MINIMUM LINE on body=X r=...") to
+     * what the player is actually looking at on-screen, or when
+     * eyeballing whether a wild teleport report is for "near where
+     * I expect to be" vs "across the planet". */
+    sdtx_printf("pos: (%.2f, %.2f, %.2f)\n", pos.x, pos.y, pos.z);
     sdtx_printf("yaw: %.2f  pitch: %.2f  tile: %d\n",
                 G.player.yaw, G.player.pitch, G.player.last_tile);
     sdtx_printf("tris: %zu  tiles drawn: %zu  remeshed/f: %zu\n",
@@ -1131,6 +1154,34 @@ static void apply_sp_world_saves(world_t* w) {
     if (tiles_applied > 0) {
         printf("[sp-saves] body=%d: %d tile(s) restored, %d voxel(s) overwrote procgen\n",
                (int)w->body->id, tiles_applied, voxels_applied);
+        fflush(stdout);
+    }
+
+    /* Per-voxel water-flow state columns: parallel to the block
+     * columns above, sourced from tenebris-c:water:<world>:<body>:*.
+     * world_water_load_state_column writes directly into the byte
+     * buffer without re-queueing a flow tick - the saved state is
+     * already converged. Cells the simulator hasn't touched yet
+     * stay at byte 0 ("sleeping ocean") which the algorithm treats
+     * as a full source-equivalent supplier, so nothing breaks for
+     * worlds that pre-date the water-state persistence layer. */
+    int water_n = persistence_list_saved_water_tiles(
+        world_name, (uint32_t)w->body->id,
+        s_idx_buf,
+        (int)(sizeof(s_idx_buf) / sizeof(s_idx_buf[0])));
+    int water_tiles_applied = 0;
+    for (int i = 0; i < water_n; ++i) {
+        int tile = s_idx_buf[i];
+        if (tile < 0 || tile >= w->tile_count) continue;
+        uint8_t column[PERSISTENCE_COLUMN_BYTES];
+        if (!persistence_load_water_state(world_name, (uint32_t)w->body->id,
+                                            tile, column)) continue;
+        world_water_load_state_column(w, tile, column);
+        ++water_tiles_applied;
+    }
+    if (water_tiles_applied > 0) {
+        printf("[sp-saves] body=%d: %d water-state column(s) restored\n",
+               (int)w->body->id, water_tiles_applied);
         fflush(stdout);
     }
 
@@ -1414,6 +1465,24 @@ static void maybe_apply_mp_spawn(void) {
      * the planet-mode tick re-syncs the basis on its first frame
      * anyway. */
     player_rebuild_basis(&G.player);
+    /* Seed last_good_position with the MP spawn pose so the bedrock-
+     * fall rescue has a real anchor from frame 0. Without this, a
+     * player who falls through terrain during the join-time remesh
+     * storm (each /saves/body apply marks ~thousand tiles dirty; with
+     * the 1-chunk/frame remesh cap that's seconds of 100+ ms stalls
+     * during which gravity advances and the player can plunge through
+     * still-unmeshed columns) hits the rescue before player_update
+     * ever records a grounded frame. The rescue's legacy unit-dir
+     * fallback then collapses to the body's prime-meridian equator,
+     * which is the "always respawn at default origin even though the
+     * server-side WELCOME RESUME was correct" symptom. The MP-welcome
+     * pose IS the spot the player wants to come back to, so anchoring
+     * last_good there immediately makes any first-frame rescue land
+     * them at their actual spawn instead of across the planet. */
+    if (spawn_body) {
+        G.player.last_good_position = spawn;
+        G.player.last_good_body     = spawn_body;
+    }
     /* Loud diagnostic for the floating-spawn investigation. Reports
      * the WELCOME pose, the body, the final applied position, and
      * the altitude above that body's surface so we can tell exactly
@@ -1458,65 +1527,269 @@ static bool    G_last_sent_valid = false;
  * (or between the spawn line and the first 10 s sample after a
  * fresh join) tells us where the floating-spawn delta is coming
  * from. */
+/* Block-snapshot diagnostic. F4-bound. Captures the 7 hexagons around
+ * the player (own tile + 6 edge-neighbours) and prints, for each, the
+ * tile id, world-space centre, and the block type at the player's
+ * feet depth +/- 4 cells (so 9 depths per hex, 63 cells total). The
+ * matching Tenebris-JS tool was the user's go-to for "what's actually
+ * under me here?" diagnosis - this is the C port. */
+static const char* block_name(block_t b) {
+    switch (b) {
+        case BLOCK_AIR:            return "AIR";
+        case BLOCK_WATER:          return "WATER";
+        case BLOCK_SAND:           return "SAND";
+        case BLOCK_DIRT:           return "DIRT";
+        case BLOCK_GRASS:          return "GRASS";
+        case BLOCK_STONE:          return "STONE";
+        case BLOCK_ICE:            return "ICE";
+        case BLOCK_SNOW:           return "SNOW";
+        case BLOCK_DIRT_GRASS:     return "DIRT_GRASS";
+        case BLOCK_DIRT_SNOW:      return "DIRT_SNOW";
+        case BLOCK_TORCH:          return "TORCH";
+        case BLOCK_MOON:           return "MOON";
+        case BLOCK_SEQ_GRASS:      return "SEQ_GRASS";
+        case BLOCK_SEQ_DIRT:       return "SEQ_DIRT";
+        case BLOCK_SEQ_DIRT_GRASS: return "SEQ_DIRT_GRASS";
+        case BLOCK_SEQ_SAND:       return "SEQ_SAND";
+        case BLOCK_SEQ_SNOW:       return "SEQ_SNOW";
+        case BLOCK_SEQ_DIRT_SNOW:  return "SEQ_DIRT_SNOW";
+        case BLOCK_CRAG_ROCK:      return "CRAG_ROCK";
+        case BLOCK_FROST_ICE:      return "FROST_ICE";
+        case BLOCK_ASTEROID_ROCK:  return "ASTEROID_ROCK";
+        case BLOCK_WOOD:           return "WOOD";
+        case BLOCK_LEAVES:         return "LEAVES";
+        case BLOCK_BEDROCK:        return "BEDROCK";
+        case BLOCK_SEQ_LEAVES:     return "SEQ_LEAVES";
+        default:                   return "?";
+    }
+}
+/* One-letter glyph per block_t for the ASCII column dump. Chosen so
+ * the common terrain blocks read at a glance:
+ *   a = air        w = water       s = snow
+ *   S = sand       d = dirt        g = grass
+ *   #  = stone     i = ice         T = torch
+ *   W = wood       L = leaves      b = bedrock
+ *   D = dirt-grass / dirt-snow side variants
+ *   m = moon       . = unknown
+ * Sequoia + tinted variants reuse their base biome glyph so the grid
+ * stays readable - the full BLOCK_ name is still in the verbose
+ * per-tile list above the grid if precise type is needed. */
+static char block_glyph(block_t b) {
+    switch (b) {
+        case BLOCK_AIR:            return 'a';
+        case BLOCK_WATER:          return 'w';
+        case BLOCK_SAND:           return 'S';
+        case BLOCK_DIRT:           return 'd';
+        case BLOCK_GRASS:          return 'g';
+        case BLOCK_STONE:          return '#';
+        case BLOCK_ICE:            return 'i';
+        case BLOCK_SNOW:           return 's';
+        case BLOCK_DIRT_GRASS:     return 'D';
+        case BLOCK_DIRT_SNOW:      return 'D';
+        case BLOCK_TORCH:          return 'T';
+        case BLOCK_MOON:           return 'm';
+        case BLOCK_SEQ_GRASS:      return 'g';
+        case BLOCK_SEQ_DIRT:       return 'd';
+        case BLOCK_SEQ_DIRT_GRASS: return 'D';
+        case BLOCK_SEQ_SAND:       return 'S';
+        case BLOCK_SEQ_SNOW:       return 's';
+        case BLOCK_SEQ_DIRT_SNOW:  return 'D';
+        case BLOCK_CRAG_ROCK:      return '#';
+        case BLOCK_FROST_ICE:      return 'i';
+        case BLOCK_ASTEROID_ROCK:  return '#';
+        case BLOCK_WOOD:           return 'W';
+        case BLOCK_LEAVES:         return 'L';
+        case BLOCK_BEDROCK:        return 'b';
+        case BLOCK_SEQ_LEAVES:     return 'L';
+        default:                   return '.';
+    }
+}
+static void print_block_snapshot(void) {
+    world_t* w = G.player.body
+        ? world_for_body(G.player.body)
+        : G.world;
+    if (!w || !w->body) {
+        printf("[snapshot] no world for current body - aborting\n");
+        fflush(stdout);
+        return;
+    }
+    dvec3_t center = dvec3_make(w->body->pos_x, w->body->pos_y, w->body->pos_z);
+    dvec3_t local  = dvec3_sub(G.player.position, center);
+    double  r_now  = dvec3_length(local);
+    if (r_now < 1e-6) {
+        printf("[snapshot] degenerate radial - aborting\n");
+        fflush(stdout);
+        return;
+    }
+    dvec3_t feet_dir  = dvec3_scale(local, 1.0 / r_now);
+    int     own_tile  = goldberg_find_tile(w->grid, feet_dir, G.player.last_tile);
+    int     feet_depth = world_radius_to_depth(w, r_now);
+    if (own_tile < 0) {
+        printf("[snapshot] goldberg_find_tile returned -1\n");
+        fflush(stdout);
+        return;
+    }
+
+    printf("\n[snapshot] body=%s feet_tile=%d feet_depth=%d player_pos=(%.2f, %.2f, %.2f)\n",
+           w->body->name, own_tile, feet_depth,
+           G.player.position.x, G.player.position.y, G.player.position.z);
+
+    const goldberg_tile_t* own_t = goldberg_tile(w->grid, own_tile);
+    int  tile_ids[7];
+    int  n_ids = 1;
+    tile_ids[0] = own_tile;
+    if (own_t) {
+        for (int k = 0; k < own_t->num_neighbors && n_ids < 7; ++k) {
+            int nb = own_t->edge_neighbours[k];
+            if (nb >= 0) tile_ids[n_ids++] = nb;
+        }
+    }
+
+    const int RANGE = 4;
+    int d_lo = feet_depth - RANGE;
+    int d_hi = feet_depth + RANGE;
+    if (d_lo < 0)                  d_lo = 0;
+    if (d_hi >= WORLD_MAX_DEPTH)   d_hi = WORLD_MAX_DEPTH - 1;
+
+    for (int i = 0; i < n_ids; ++i) {
+        int tid = tile_ids[i];
+        const goldberg_tile_t* t = goldberg_tile(w->grid, tid);
+        if (!t) continue;
+        dvec3_t tc = dvec3_scale(t->center, w->body->radius_m);
+        dvec3_t wc = dvec3_add(center, tc);
+        const char* role = (i == 0) ? "FEET" : "NB  ";
+        printf("[snapshot] %s tile=%d center_world=(%.2f, %.2f, %.2f)\n",
+               role, tid, wc.x, wc.y, wc.z);
+        for (int d = d_hi; d >= d_lo; --d) {
+            block_t b = (block_t)w->blocks[(size_t)tid * WORLD_MAX_DEPTH + d];
+            const char* marker = (d == feet_depth) ? " <-- feet" : "";
+            printf("[snapshot]   d=%3d  block=%-14s (id=%2u)%s\n",
+                   d, block_name(b), (unsigned)b, marker);
+        }
+    }
+
+    /* Visual hex layout: 3 neighbours above the player tile, 3 below,
+     * with the per-depth block glyphs lined up under the headers so
+     * you can scan a single row to compare blocks across all 7 tiles
+     * at one altitude. Single-letter glyphs (block_glyph) trade type
+     * precision for read-at-a-glance density - the verbose list above
+     * has the full BLOCK_ name when you need it.
+     *
+     * The 6-neighbour ordering follows goldberg_tile's
+     * edge_neighbours[k] array, which winds around the tile in a
+     * consistent rotation but doesn't necessarily map to the
+     * compass-style 1/2/3/4/5/6 layout drawn here. The grid still
+     * shows all 6 neighbours, just not necessarily in a
+     * geometrically faithful arrangement - good enough for "which
+     * neighbour has which block where" diagnosis. */
+    char nb_label[7] = "1234560";
+    printf("[snapshot] hex layout (m = feet tile, 1-6 = edge neighbours):\n");
+    printf("[snapshot]     %c %c %c\n",
+           nb_label[0], nb_label[1], nb_label[2]);
+    printf("[snapshot]      [m]\n");
+    printf("[snapshot]     %c %c %c\n",
+           nb_label[3], nb_label[4], nb_label[5]);
+    /* Header for the column dump. Group neighbours into (1,2,3) and
+     * (4,5,6) clusters with a space between to match the hex
+     * arrangement above. */
+    printf("[snapshot] depth  m  123 456\n");
+    for (int d = d_hi; d >= d_lo; --d) {
+        char m_glyph = '.';
+        char nb_glyphs[6] = { '.', '.', '.', '.', '.', '.' };
+        /* m = feet tile */
+        m_glyph = block_glyph(
+            (block_t)w->blocks[(size_t)own_tile * WORLD_MAX_DEPTH + d]);
+        /* edge neighbours in tile_ids[1..n_ids-1], up to 6 */
+        int max_nb = n_ids - 1;
+        if (max_nb > 6) max_nb = 6;
+        for (int k = 0; k < max_nb; ++k) {
+            int nb = tile_ids[1 + k];
+            nb_glyphs[k] = block_glyph(
+                (block_t)w->blocks[(size_t)nb * WORLD_MAX_DEPTH + d]);
+        }
+        const char* marker = (d == feet_depth) ? " <-- feet" : "";
+        printf("[snapshot]  d=%3d %c  %c%c%c %c%c%c%s\n",
+               d, m_glyph,
+               nb_glyphs[0], nb_glyphs[1], nb_glyphs[2],
+               nb_glyphs[3], nb_glyphs[4], nb_glyphs[5],
+               marker);
+    }
+    printf("[snapshot] legend: a=air w=water S=sand d=dirt g=grass "
+           "#=stone i=ice s=snow D=dirt-side T=torch W=wood L=leaves "
+           "b=bedrock m=moon .=other\n");
+    printf("[snapshot] end\n\n");
+    fflush(stdout);
+}
+
 static void   periodic_pos_log(double dt) {
-    // Commented out per request: this 1 Hz position log floods the
-    // console during normal play and crowds out CHUNK_DIFF / AUDIT
-    // lines. Restore from git when the next spawn issue lands. The
-    // README's debug-log reference still documents the line shape so
-    // reading old captures stays meaningful.
-    (void)dt;
-    // static double accum_s = 0.0;
-    // accum_s += dt;
-    // if (accum_s < 1.0) return;
-    // accum_s = 0.0;
-    // const body_config_t* anchor = G.player.body;
-    // const body_config_t* b      = anchor ? anchor : G.body;
-    // double r = 0.0, alt = 0.0;
-    // if (b) {
-    //     double dx = G.player.position.x - b->pos_x;
-    //     double dy = G.player.position.y - b->pos_y;
-    //     double dz = G.player.position.z - b->pos_z;
-    //     r = sqrt(dx*dx + dy*dy + dz*dz);
-    //     alt = r - b->radius_m;
-    // }
-    // const char* mode = (menu_state() == GAME_IN_GAME_MP) ? "MP" :
-    //                    (menu_state() == GAME_IN_GAME_SP) ? "SP" : "menu";
-    // printf("[main] pos %s anchor=%s%s alt-vs=%s curr=(%.2f, %.2f, %.2f) "
-    //        "r=%.2f alt=%+.2f yaw=%.2f pitch=%.2f grounded=%d\n",
-    //        mode,
-    //        anchor ? anchor->name : "NONE",
-    //        G.player.is_in_space ? " (in-space)" : "",
-    //        b ? b->name : "?",
-    //        G.player.position.x, G.player.position.y, G.player.position.z,
-    //        r, alt, G.player.yaw, G.player.pitch, (int)G.player.grounded);
-    // if (G_last_sent_valid) {
-    //     double sr = 0.0, salt = 0.0;
-    //     if (b) {
-    //         double dx = G_last_sent_pos.x - b->pos_x;
-    //         double dy = G_last_sent_pos.y - b->pos_y;
-    //         double dz = G_last_sent_pos.z - b->pos_z;
-    //         sr = sqrt(dx*dx + dy*dy + dz*dz);
-    //         salt = sr - b->radius_m;
-    //     }
-    //     double ddx = G.player.position.x - G_last_sent_pos.x;
-    //     double ddy = G.player.position.y - G_last_sent_pos.y;
-    //     double ddz = G.player.position.z - G_last_sent_pos.z;
-    //     double delta = sqrt(ddx*ddx + ddy*ddy + ddz*ddz);
-    //     char body_str[32];
-    //     if (G_last_sent_body == BODY_ID_IN_SPACE) {
-    //         snprintf(body_str, sizeof body_str, "IN_SPACE");
-    //     } else {
-    //         snprintf(body_str, sizeof body_str, "%u", G_last_sent_body);
-    //     }
-    //     printf("[main] pos %s     sent=(%.2f, %.2f, %.2f) r=%.2f alt=%+.2f "
-    //            "body=%s yaw=%.2f pitch=%.2f  delta_from_curr=%.2fm\n",
-    //            mode,
-    //            G_last_sent_pos.x, G_last_sent_pos.y, G_last_sent_pos.z,
-    //            sr, salt, body_str,
-    //            G_last_sent_yaw, G_last_sent_pitch, delta);
-    // } else {
-    //     printf("[main] pos %s     sent=(none yet)\n", mode);
-    // }
+    /* 5-second cadence position trace. Re-enabled per spawn-bug
+     * investigation: the wild-teleport reports show position changing
+     * by 100+ m within frames of MP spawn while velocity stays near
+     * zero, and the only way to catch the actual transition is to
+     * log curr + last-sent-to-server side-by-side over a span. Five
+     * seconds is the same cadence as the SP autosave so console
+     * noise stays bounded.
+     *
+     * Per CLAUDE.md the on-screen text path is ASCII-only; this print
+     * goes to stdout (devtools console), not in-game text, so the
+     * float formatters are fine. */
+    static double accum_s = 0.0;
+    accum_s += dt;
+    if (accum_s < 5.0) return;
+    accum_s = 0.0;
+    const body_config_t* anchor = G.player.body;
+    const body_config_t* b      = anchor ? anchor : G.body;
+    double r = 0.0, alt = 0.0;
+    if (b) {
+        double dx = G.player.position.x - b->pos_x;
+        double dy = G.player.position.y - b->pos_y;
+        double dz = G.player.position.z - b->pos_z;
+        r = sqrt(dx*dx + dy*dy + dz*dz);
+        alt = r - b->radius_m;
+    }
+    const char* mode = (menu_state() == GAME_IN_GAME_MP) ? "MP" :
+                       (menu_state() == GAME_IN_GAME_SP) ? "SP" : "menu";
+    printf("[main] pos %s anchor=%s%s curr=(%.2f, %.2f, %.2f) "
+           "r=%.2f alt=%+.2f yaw=%.2f pitch=%.2f grounded=%d "
+           "lg=(%.2f, %.2f, %.2f) lg_body=%s\n",
+           mode,
+           anchor ? anchor->name : "NONE",
+           G.player.is_in_space ? " (in-space)" : "",
+           G.player.position.x, G.player.position.y, G.player.position.z,
+           r, alt, G.player.yaw, G.player.pitch, (int)G.player.grounded,
+           G.player.last_good_position.x,
+           G.player.last_good_position.y,
+           G.player.last_good_position.z,
+           G.player.last_good_body ? G.player.last_good_body->name : "(none)");
+    if (G_last_sent_valid) {
+        double sr = 0.0, salt = 0.0;
+        if (b) {
+            double dx = G_last_sent_pos.x - b->pos_x;
+            double dy = G_last_sent_pos.y - b->pos_y;
+            double dz = G_last_sent_pos.z - b->pos_z;
+            sr = sqrt(dx*dx + dy*dy + dz*dz);
+            salt = sr - b->radius_m;
+        }
+        double ddx = G.player.position.x - G_last_sent_pos.x;
+        double ddy = G.player.position.y - G_last_sent_pos.y;
+        double ddz = G.player.position.z - G_last_sent_pos.z;
+        double delta = sqrt(ddx*ddx + ddy*ddy + ddz*ddz);
+        char body_str[32];
+        if (G_last_sent_body == BODY_ID_IN_SPACE) {
+            snprintf(body_str, sizeof body_str, "IN-SPACE");
+        } else {
+            snprintf(body_str, sizeof body_str, "%u", G_last_sent_body);
+        }
+        printf("[main] pos %s     sent=(%.2f, %.2f, %.2f) r=%.2f alt=%+.2f "
+               "body=%s yaw=%.2f pitch=%.2f delta_from_curr=%.2fm\n",
+               mode,
+               G_last_sent_pos.x, G_last_sent_pos.y, G_last_sent_pos.z,
+               sr, salt, body_str,
+               G_last_sent_yaw, G_last_sent_pitch, delta);
+    } else {
+        printf("[main] pos %s     sent=(none yet)\n", mode);
+    }
+    fflush(stdout);
 }
 
 static double G_sp_save_accum = 0.0;
@@ -2008,7 +2281,23 @@ static void frame(void) {
      * frame the WELCOME arrives, and simulation resumes from there. */
     const bool mp_loading = (menu_state() == GAME_IN_GAME_MP
                              && net_client_state() != NET_CLIENT_READY);
-    if (!mp_loading) {
+    /* Worldgen freeze: until the player's body has finished streaming
+     * every tile, the column the player is standing on may still be
+     * past gen_cursor. world_walkable_floor_near falls back to the
+     * analytic procgen surface for ungenerated tiles, but that
+     * fallback assumes the player's CURRENT pose already sits at or
+     * above that surface - which isn't true on a cold load if the
+     * pose was saved on a tile that hasn't streamed in yet (the
+     * player ends up below the analytic floor and the bedrock-fall
+     * rescue fires, teleporting them to a random spot).
+     *
+     * Simplest fix: pause physics entirely while gen is still
+     * running. The loading-screen overlay already covers this time
+     * visually, so the player sees "loading world... 73%" then
+     * smoothly resumes from their saved pose the moment streaming
+     * finishes. No drift, no rescues, no through-the-world spawns. */
+    const bool worldgen_loading = (phys_world && !world_gen_complete(phys_world));
+    if (!mp_loading && !worldgen_loading) {
         player_update(&G.player, phys_world, dt);
     }
     profiler_end("player-update");
@@ -2017,6 +2306,22 @@ static void frame(void) {
      * browser. No-op in MP — server-side persistence lands in M6. */
     maybe_autosave_sp((double)dt);
     periodic_pos_log((double)dt);
+
+    /* MP water-resync is now server-driven: the server pushes a
+     * MSG_SYNC_TICK at an adaptive interval (start 30 s, grows when
+     * any client's RTT lags) and the client kicks off a /saves/body
+     * fetch + replies MSG_SYNC_ACK. The previous client-side 15 s
+     * timer is removed - the server's scheduler is the single source
+     * of truth for sync cadence so the fleet stays roughly aligned
+     * and laggy clients don't drag fast clients into thrashing. */
+    {
+        static double G_water_resync_accum = 0.0; (void)G_water_resync_accum;
+        if (menu_state() == GAME_IN_GAME_MP && net_client_state() == NET_CLIENT_READY) {
+            /* no-op: server drives via SYNC_TICK */
+        } else {
+            G_water_resync_accum = 0.0;
+        }
+    }
 
     /* M4 position relay: when MP is READY, ship our pose to the server
      * every 3rd frame (~20 Hz at 60 fps capped by the server tick).
@@ -2047,13 +2352,22 @@ static void frame(void) {
                     body_id = BODY_ID_IN_SPACE;
                 }
             }
+            /* Force grounded=false on the wire while the post-
+             * rescue freeze counts down. That gates the server's
+             * pose persistence so the rescue destination doesn't
+             * overwrite the player's pre-rescue saved spawn. The
+             * freeze clears when they intentionally move; until
+             * then the previous good pose stays on disk. */
+            bool send_grounded = G.player.grounded
+                                && G.player.rescue_save_freeze_s <= 0.0f;
             net_client_send_player_state(G_state_send_ctr,
                                             body_id,
                                             G.player.position.x,
                                             G.player.position.y,
                                             G.player.position.z,
                                             G.player.yaw,
-                                            G.player.pitch);
+                                            G.player.pitch,
+                                            send_grounded);
             /* Mirror what we just put on the wire so periodic_pos_log
              * can compare it against G.player.position later. */
             G_last_sent_pos.x   = G.player.position.x;
@@ -2139,6 +2453,74 @@ static void frame(void) {
     }
     profiler_end("interact");
     input_consume();
+
+    /* Water-flow tick. Steps the per-voxel flow scheduler on G.world
+     * + every moon world at a rate driven by flow_ticks_per_step.
+     *
+     * SP-only. In MP the server is authoritative on water blocks
+     * (and state) and broadcasts every change via CHUNK_DIFF; the
+     * client used to also run the sim locally as "best-effort visual
+     * prediction", but that caused two real bugs the audit logs
+     * surfaced:
+     *
+     *   1. Determinism drift. The local sim and the server's sim
+     *      shared rules but not tick alignment; transient mismatches
+     *      between "client predicted level=2" and "server replays
+     *      level=1" produced flicker and remesh churn.
+     *   2. Runaway remesh storm on login. Pulling 800+ saved tiles
+     *      via /saves/body enqueued thousands of cells for local
+     *      simulation; the per-frame step then mutated 100-200 tiles
+     *      every tick and the renderer's chunk-rebuild cap (1 chunk
+     *      per frame) couldn't keep up, producing 160-200 ms frame
+     *      stalls indefinitely.
+     *
+     * Skipping world_water_step in MP fixes both: block changes still
+     * arrive via CHUNK_DIFF and are applied to the world directly, no
+     * per-frame mutation cycle is needed. State-byte updates (cap
+     * heights, level field) follow the server snapshot if/when we
+     * broadcast them; until then MP cells render as flat sleeping-
+     * ocean-equivalent water, which is a visual regression we accept
+     * in exchange for stable framerate. */
+    {
+        const water_flow_config_t* wf = config_water_flow();
+        const float TICK_PERIOD_S = 0.05f;     /* matches MP tick_hz=20 */
+        float period_s = (float)wf->ticks_per_step * TICK_PERIOD_S;
+        if (period_s < TICK_PERIOD_S) period_s = TICK_PERIOD_S;
+        static float water_accum_s = 0.0f;
+        water_accum_s += dt;
+        const bool sp = (menu_state() == GAME_IN_GAME_SP);
+        if (sp && water_accum_s >= period_s) {
+            water_accum_s = 0.0f;
+            int budget = wf->max_ticks_per_step;
+            if (budget < 1) budget = 1;
+            const char* sp_world = menu_active_world();
+            static int dirty_tiles[8192];
+            world_t* worlds[33] = { G.world };
+            int n_worlds = G.world ? 1 : 0;
+            for (int i = 0; i < G.moon_count && n_worlds < 33; ++i) {
+                if (G.moons[i]) worlds[n_worlds++] = G.moons[i];
+            }
+            for (int wi = 0; wi < n_worlds; ++wi) {
+                world_t* w = worlds[wi];
+                world_water_step(w, budget);
+                /* Outer `if (sp && ...)` already gated the whole
+                 * block; here we only skip worlds without a body or
+                 * an active save key. */
+                if (!sp_world || !*sp_world || !w->body) continue;
+                int n = world_water_drain_persist_dirty(
+                    w, dirty_tiles,
+                    (int)(sizeof dirty_tiles / sizeof dirty_tiles[0]));
+                for (int i = 0; i < n; ++i) {
+                    const uint8_t* col = world_water_state_column(w, dirty_tiles[i]);
+                    if (col) {
+                        persistence_save_water_state(sp_world,
+                                                      (uint32_t)w->body->id,
+                                                      dirty_tiles[i], col);
+                    }
+                }
+            }
+        }
+    }
 
     const float aspect = sapp_widthf() / sapp_heightf();
     mat4_t view = player_view(&G.player);
@@ -2497,6 +2879,11 @@ static void event(const sapp_event* e) {
      * still get back in. */
     if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_F2) {
         G_debug_ui_visible = !G_debug_ui_visible;
+        /* Debug-only water placement: the rightmost hotbar slot turns
+         * into an infinite water source while F2 is on, so the player
+         * can exercise the per-voxel flow simulator. Toggling F2 off
+         * restores the slot's previous contents. */
+        inventory_set_debug_water(&G.player.inventory, G_debug_ui_visible);
         return;
     }
     /* The remaining debug shortcuts are no-ops while the debug UI is
@@ -2509,6 +2896,16 @@ static void event(const sapp_event* e) {
      * one keypress away. */
     if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_F1) {
         G_players_panel_visible = !G_players_panel_visible;
+        return;
+    }
+    if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_F4) {
+        /* Block snapshot: dump the player's tile + 6 hex neighbours,
+         * each with 9 depths centered on the player's feet, to the
+         * devtools console. Same diagnostic shape as the Tenebris-JS
+         * tool. Not gated on the F2 debug master - the console output
+         * is invisible to non-debug players, and the user explicitly
+         * asked for F4 to always work for this. */
+        print_block_snapshot();
         return;
     }
     if (G_debug_ui_visible) {

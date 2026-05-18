@@ -47,6 +47,24 @@ typedef enum {
     MSG_PLAYER_INFO_NACK    = 22, /* S->C: cannot fulfill PLAYER_INFO_REQUEST */
     MSG_INVENTORY_STATE     = 23, /* both ways: client uploads hotbar; server replays on rejoin */
     MSG_TORCH_DIFF          = 24, /* both ways: torch place / remove (single entry C->S, broadcast S->C, bulk on join) */
+    MSG_WATER_STATE_DIFF    = 25, /* S->C: per-voxel water flow state bytes for one tile column. Sent
+                                   * after server-driven world_water_step alongside the block-level
+                                   * CHUNK_DIFF so client cap heights / bell-curve / falling-flag visuals
+                                   * mirror the authoritative simulation. */
+    MSG_SYNC_TICK           = 26, /* S->C: "please fetch a fresh /saves/body for the body you're
+                                   * standing on and ACK when applied." Carries a uint32 seq_id
+                                   * the client echoes back in MSG_SYNC_ACK so the server can
+                                   * measure round-trip time and adapt the interval. Empty body
+                                   * beyond seq_id - the server doesn't tell the client what to
+                                   * sync, the client decides based on its current active body. */
+    MSG_SYNC_ACK            = 27, /* C->S: echoes the SYNC_TICK seq_id once the /saves/body
+                                   * apply path has finished. Server uses this to compute RTT
+                                   * per client and rebalance the next interval. */
+    MSG_WATER_ORIGINS_DIFF  = 28, /* S->C: flow-origin list for every active water cell in one tile.
+                                   * Sent alongside the MSG_WATER_STATE_DIFF for the same tile so
+                                   * the client knows which cells are flowing (have origins) vs.
+                                   * which are spawn sources (no origin entry). Origins drive the
+                                   * top-cap UV pan direction and the player-current force. */
 } msg_kind_t;
 
 /* Per-kind protocol versions. Bump on any wire change. */
@@ -65,6 +83,35 @@ typedef enum {
 #define MSG_PLAYER_INFO_NACK_VERSION     1
 #define MSG_INVENTORY_STATE_VERSION      1
 #define MSG_TORCH_DIFF_VERSION           1
+#define MSG_WATER_STATE_DIFF_VERSION     1
+#define MSG_SYNC_TICK_VERSION            1
+#define MSG_SYNC_ACK_VERSION             1
+/* Both sync messages carry a uint32 seq_id - 4 bytes total payload. */
+#define MSG_SYNC_TICK_WIRE_SIZE          4
+#define MSG_SYNC_ACK_WIRE_SIZE           4
+#define MSG_WATER_ORIGINS_DIFF_VERSION   1
+/* Header + body layout for MSG_WATER_ORIGINS_DIFF:
+ *   uint32  body_id
+ *   uint32  tile_idx
+ *   uint16  entry_count        (number of (depth, origins) records)
+ *   uint16  _pad
+ *   entries[entry_count]:
+ *     uint8  depth             (0..WORLD_MAX_DEPTH-1)
+ *     uint8  origin_count      (1..3)
+ *     uint8  _pad[2]
+ *     uint32 origin_tile[3]    (only first origin_count are meaningful)
+ *     uint8  origin_depth[3]
+ *     uint8  _pad2
+ *
+ * Each entry is 20 bytes. A tile carrying its theoretical max of
+ * WORLD_MAX_DEPTH=128 distinct flow cells = 2.5 KB which still
+ * fits comfortably in a single WebSocket message. Practical waterfall
+ * tiles carry <20 entries (~400 B). */
+#define MSG_WATER_ORIGINS_DIFF_HEADER_SIZE  12
+#define MSG_WATER_ORIGINS_DIFF_ENTRY_SIZE   20
+#define MSG_WATER_ORIGINS_DIFF_MAX_ENTRIES  128
+#define MSG_WATER_ORIGINS_DIFF_MAX_SIZE     (MSG_WATER_ORIGINS_DIFF_HEADER_SIZE \
+    + MSG_WATER_ORIGINS_DIFF_ENTRY_SIZE * MSG_WATER_ORIGINS_DIFF_MAX_ENTRIES)
 
 typedef struct {
     uint16_t kind;       /* msg_kind_t */
@@ -189,13 +236,36 @@ typedef struct {
 
 #define MSG_PLAYER_STATE_WIRE_SIZE  44   /* 4 + 4 + 24 + 8 + 4 */
 
+/* PLAYER_STATE.flags bits.
+ *
+ *   PLAYER_STATE_FLAG_GROUNDED: client physics reports the player is
+ *     standing on solid voxels this frame (not jumping, jet-packing,
+ *     swimming, or free-falling). The server uses this to gate pose
+ *     persistence - a save fires only when the player is in a stable,
+ *     repeatable pose. Without this gate, the periodic 0.5 s flush
+ *     would happily persist mid-fall poses, then the next session's
+ *     WELCOME RESUME would drop the player back into the middle of
+ *     the air, gravity ticks before the chunks settle, and they fall
+ *     through to the bedrock-rescue equator default - the "spawn at
+ *     same wrong place on every reconnect" symptom.
+ *
+ * Older clients (protocol v1) sent `reserved = 0` here; the server's
+ * unconditional save was the bug. Newer clients set the bit. Treat
+ * an unset bit on a recent stream as "client says I'm not grounded;
+ * don't save" - if a buggy client never sets the bit the server will
+ * stop persisting movement, which is a louder failure mode than the
+ * silent corruption it replaces. */
+#define PLAYER_STATE_FLAG_GROUNDED  0x0001
+
 typedef struct {
     uint32_t client_tick;    /* sender's tick — server uses for ordering */
     uint32_t body_id;        /* body the player is anchored to */
     double   pos_x, pos_y, pos_z;
     float    yaw, pitch;
     uint16_t buttons;        /* reserved (input bitfield, M4b) */
-    uint16_t reserved;
+    uint16_t flags;          /* PLAYER_STATE_FLAG_* bitset (was `reserved`;
+                              * server reads bit 0 = grounded to gate pose
+                              * persistence). */
 } msg_player_state_t;
 
 /* SNAPSHOT carries an array of remote-player poses. Sender's player
@@ -286,6 +356,69 @@ typedef enum {
 #define TORCH_DIFF_MAX_ENTRIES   64
 #define MSG_TORCH_ENTRY_SIZE     32  /* op(4) + tile(4) + pos(12) + up(12) */
 #define MSG_TORCH_DIFF_HEADER    8   /* body(4) + count(2) + reserved(2)   */
+
+/* ------------------------------------------------------------------
+ * Water-state diff. One message carries the WORLD_MAX_DEPTH-byte
+ * water-state column for a single (body, tile). Sent by the server
+ * after world_water_step whenever the tile got marked persist-dirty
+ * (via world_water_drain_persist_dirty), so the client's local
+ * state-byte view tracks the authoritative sim and the mesher's
+ * per-voxel cap-height / falling-flag visuals stay correct in MP.
+ *
+ * Wire layout:
+ *   uint32_t body_id
+ *   uint32_t tile_idx
+ *   uint8_t  state[WORLD_MAX_DEPTH]   (one byte per voxel)
+ *
+ * WORLD_MAX_DEPTH = 128, so MSG_WATER_STATE_DIFF_WIRE_SIZE = 136. */
+#define MSG_WATER_STATE_DIFF_WIRE_SIZE   (4 + 4 + 128)
+
+typedef struct {
+    uint32_t body_id;
+    uint32_t tile_idx;
+    uint8_t  state[128];      /* matches WORLD_MAX_DEPTH */
+} msg_water_state_diff_t;
+
+/* Flow-origin entries for one tile. Mirrors water_origin_diff_entry_t
+ * over the wire so the receive path can decode straight into the
+ * world_water apply call without an extra copy. */
+typedef struct {
+    uint8_t  depth;
+    uint8_t  origin_count;     /* 1..3 - cells with zero origins are not transmitted */
+    uint8_t  _pad[2];
+    uint32_t origin_tile [3];
+    uint8_t  origin_depth[3];
+    uint8_t  _pad2;
+} msg_water_origins_diff_entry_t;
+
+typedef struct {
+    uint32_t body_id;
+    uint32_t tile_idx;
+    uint16_t entry_count;
+    uint16_t _pad;
+    msg_water_origins_diff_entry_t entries[MSG_WATER_ORIGINS_DIFF_MAX_ENTRIES];
+} msg_water_origins_diff_t;
+
+/* Server-driven sync coordination. The server periodically tells each
+ * client "fetch a fresh world snapshot now" via MSG_SYNC_TICK, and
+ * the client echoes the same seq_id back in MSG_SYNC_ACK once the
+ * /saves/body apply path has finished overwriting its local view.
+ *
+ * The server uses the round-trip time + per-client outstanding
+ * unack'd tick count to grow the next interval (start at 30 s, step
+ * up by 30 s if the previous round didn't ACK in time). This keeps
+ * busy / laggy clients from drowning in resync work while still
+ * giving every client an authoritative-data refresh on a bounded
+ * schedule.
+ *
+ * Both directions carry just the uint32 seq_id. */
+typedef struct {
+    uint32_t seq_id;
+} msg_sync_tick_t;
+
+typedef struct {
+    uint32_t seq_id;
+} msg_sync_ack_t;
 
 typedef struct {
     uint8_t  op;          /* torch_op_t */
@@ -396,6 +529,22 @@ int    proto_read_chunk_diff (const uint8_t* payload, size_t len, msg_chunk_diff
 
 size_t proto_write_torch_diff(uint8_t* buf, size_t cap, const msg_torch_diff_t* m);
 int    proto_read_torch_diff (const uint8_t* payload, size_t len, msg_torch_diff_t* out);
+
+size_t proto_write_water_state_diff(uint8_t* buf, size_t cap,
+                                     const msg_water_state_diff_t* m);
+int    proto_read_water_state_diff (const uint8_t* payload, size_t len,
+                                     msg_water_state_diff_t* out);
+
+size_t proto_write_water_origins_diff(uint8_t* buf, size_t cap,
+                                       const msg_water_origins_diff_t* m);
+int    proto_read_water_origins_diff (const uint8_t* payload, size_t len,
+                                       msg_water_origins_diff_t* out);
+
+size_t proto_write_sync_tick(uint8_t* buf, size_t cap, const msg_sync_tick_t* m);
+int    proto_read_sync_tick (const uint8_t* payload, size_t len, msg_sync_tick_t* out);
+
+size_t proto_write_sync_ack (uint8_t* buf, size_t cap, const msg_sync_ack_t* m);
+int    proto_read_sync_ack  (const uint8_t* payload, size_t len, msg_sync_ack_t* out);
 
 size_t proto_write_player_info(uint8_t* buf, size_t cap, const msg_player_info_t* m);
 int    proto_read_player_info (const uint8_t* payload, size_t len, msg_player_info_t* out);

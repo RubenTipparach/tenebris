@@ -8,6 +8,7 @@
 #include "core/net_transport.h"
 #include "core/proto.h"
 #include "core/world.h"
+#include "core/world_water.h"
 
 #include "sokol_time.h"
 
@@ -202,6 +203,17 @@ typedef struct {
         uint8_t  state;            /* 0 idle, 1 in-flight, 2 done */
     }                    body_fetch[NET_BODY_COVERAGE_MAX];
     int                  body_fetch_count;
+
+    /* Server-driven sync coordination. The server sends MSG_SYNC_TICK
+     * with a seq_id; we kick off a /saves/body resync and remember
+     * the seq_id so we can echo it back in MSG_SYNC_ACK once the
+     * fetch response lands in net_client_apply_body_blob. Only the
+     * MOST RECENT pending seq is tracked - a fresh SYNC_TICK
+     * supersedes an in-flight one (the server measures the new RTT
+     * relative to the new send). pending_sync_active gates the ACK
+     * send so we don't double-ack a fetch that wasn't sync-triggered. */
+    uint32_t             pending_sync_seq;
+    bool                 pending_sync_active;
 } net_client_t;
 
 static net_client_t C;
@@ -710,6 +722,118 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
                    placed, removed, skipped);
             break;
         }
+        case MSG_WATER_STATE_DIFF: {
+            if (hdr.version != MSG_WATER_STATE_DIFF_VERSION) break;
+            msg_water_state_diff_t wsd;
+            if (proto_read_water_state_diff(payload, hdr.length, &wsd) != 0) {
+                fprintf(stderr, "[net-client] malformed WATER_STATE_DIFF\n");
+                break;
+            }
+            world_t* w = renderer_world_for_body(wsd.body_id);
+            if (!w) break;
+            /* Apply the column into the local state-byte array via
+             * the load-path helper, which is the same entry point
+             * the SP /persist code uses on world load - it copies
+             * straight into world_water's state without setting the
+             * persist-dirty bit (the data already round-tripped via
+             * the server). The mesher reads state next chunk-rebuild
+             * cycle, so the bell-curve / falling visuals catch up
+             * with the next remesh pass on the affected chunk. */
+            world_water_load_state_column(w, (int)wsd.tile_idx, wsd.state);
+            /* Mark the tile dirty so the renderer rebuilds the
+             * chunk's water mesh. Also mark the 6 edge neighbours
+             * dirty - the water mesher reads neighbour state when
+             * computing step-strips, r_top_edge, and the bell-curve
+             * caps, so a state change on tile X requires X's
+             * neighbours to remesh too or their meshes stay locked
+             * to X's previous level.
+             *
+             * The bulk /saves/body path gets this for free because
+             * it goes through world_set per cell (world_set already
+             * neighbour-dirties for seam logic). The realtime
+             * state-diff path bypasses world_set, so we replicate
+             * the propagation manually here. Without this, fresh
+             * water broadcasts have visible seams that only clear
+             * up on relog (when the bulk fetch rebuilds everything),
+             * which is the exact symptom the user reported. */
+            world_tile_mark_dirty(w, (int)wsd.tile_idx);
+            const goldberg_tile_t* gt = goldberg_tile(w->grid, (int)wsd.tile_idx);
+            if (gt) {
+                for (int i = 0; i < gt->num_neighbors; ++i) {
+                    int nb = gt->neighbors[i];
+                    if (nb >= 0) world_tile_mark_dirty(w, nb);
+                }
+            }
+            break;
+        }
+        case MSG_WATER_ORIGINS_DIFF: {
+            if (hdr.version != MSG_WATER_ORIGINS_DIFF_VERSION) break;
+            msg_water_origins_diff_t od;
+            if (proto_read_water_origins_diff(payload, hdr.length, &od) != 0) {
+                fprintf(stderr, "[net-client] malformed WATER_ORIGINS_DIFF\n");
+                break;
+            }
+            world_t* w = renderer_world_for_body(od.body_id);
+            if (!w) break;
+            /* Clear every origin entry currently recorded for this
+             * tile, then apply the entries the server sent. This is
+             * the "full snapshot per tile" pattern - any cell the
+             * server didn't include simply has no origins on the
+             * client. Cheaper than a per-cell diff and works for the
+             * source-death case (server stops including a cell whose
+             * origin list emptied -> client clears stale flow). */
+            const goldberg_tile_t* t_clear = goldberg_tile(w->grid, (int)od.tile_idx);
+            if (t_clear) {
+                /* Walk all 128 depths on this tile and drop any origin
+                 * entries; the apply loop below re-adds the ones the
+                 * server still considers active. Cheap (one hash
+                 * lookup per depth). */
+                for (int d = 0; d < WORLD_MAX_DEPTH; ++d) {
+                    world_water_origin_clear(w, (int)od.tile_idx, d);
+                }
+            }
+            for (int i = 0; i < od.entry_count; ++i) {
+                world_water_origin_apply_entry(
+                    w, (int)od.tile_idx,
+                    (const water_origin_diff_entry_t*)&od.entries[i]);
+            }
+            /* Mark the tile + edge neighbours dirty so the renderer
+             * remeshes the affected water top caps with the updated
+             * flow direction. Same fan-out as the state-diff handler
+             * because the water mesher reads neighbour state when
+             * deciding gap-band emission, and origin changes alter
+             * the per-cell UV. */
+            world_tile_mark_dirty(w, (int)od.tile_idx);
+            if (t_clear) {
+                for (int i = 0; i < t_clear->num_neighbors; ++i) {
+                    int nb = t_clear->neighbors[i];
+                    if (nb >= 0) world_tile_mark_dirty(w, nb);
+                }
+            }
+            break;
+        }
+        case MSG_SYNC_TICK: {
+            if (hdr.version != MSG_SYNC_TICK_VERSION) break;
+            msg_sync_tick_t tick;
+            if (proto_read_sync_tick(payload, hdr.length, &tick) != 0) {
+                fprintf(stderr, "[net-client] malformed SYNC_TICK\n");
+                break;
+            }
+            /* Find the player's active body so we know what to resync.
+             * The welcome holds a default body but the player may have
+             * moved to a moon since - net_client doesn't track the
+             * player state directly, so we resync the body the welcome
+             * spawned us into. Main is the common case; a future
+             * extension can plumb the live body_id in via the snapshot. */
+            uint32_t body_id = C.welcome.body_id;
+            C.pending_sync_seq    = tick.seq_id;
+            C.pending_sync_active = true;
+            /* Fire the resync. The fetch is async (HTTP); the response
+             * lands in net_client_apply_body_blob which is where we
+             * send the ACK with the matching seq_id. */
+            net_client_resync_body_saves(body_id);
+            break;
+        }
         case MSG_SNAPSHOT: {
             if (hdr.version != MSG_SNAPSHOT_VERSION) break;
             msg_snapshot_t snap;
@@ -964,7 +1088,8 @@ bool net_client_take_pending_inventory(uint16_t* out_slot_type,
 void net_client_send_player_state(uint32_t client_tick,
                                     uint32_t body_id,
                                     double pos_x, double pos_y, double pos_z,
-                                    float yaw, float pitch) {
+                                    float yaw, float pitch,
+                                    bool grounded) {
     if (C.state != NET_CLIENT_READY || !C.conn) return;
     msg_player_state_t st = {
         .client_tick = client_tick,
@@ -975,7 +1100,7 @@ void net_client_send_player_state(uint32_t client_tick,
         .yaw         = yaw,
         .pitch       = pitch,
         .buttons     = 0,
-        .reserved    = 0,
+        .flags       = grounded ? PLAYER_STATE_FLAG_GROUNDED : 0,
     };
     uint8_t buf[MSG_HEADER_SIZE + MSG_PLAYER_STATE_WIRE_SIZE];
     size_t n = proto_write_player_state(buf, sizeof buf, &st);
@@ -1358,22 +1483,31 @@ static void net_client_run_saves_audit(const char* json) {
             if (dist_m >= 0.0 && dist_m <= NET_AUDIT_NEAR_RADIUS_M) {
                 ++near_missing;
                 if (pb >= 0) ++per_body[pb].near_missing;
-                fprintf(stderr,
-                        "[net-client] AUDIT MISS body=%ld tile=%ld room='%s' "
-                        "distance=%.1fm - persisted on server but no CHUNK_DIFF "
-                        "received, blocks will appear missing\n",
-                        body, tile, room_buf, dist_m);
+                /* Per-tile "blocks will appear missing" trace silenced:
+                 * the audit's bitset only counts WebSocket CHUNK_DIFFs,
+                 * and the join path now pulls authoritative state via
+                 * the /saves/body HTTP bulk fetch (which doesn't touch
+                 * the bitset). Every tile "received via HTTP" therefore
+                 * shows up here as missing, flooding the console with
+                 * false negatives. Restore from git if a real CHUNK_DIFF
+                 * loss needs investigating. */
+                /* fprintf(stderr,
+                 *         "[net-client] AUDIT MISS body=%ld tile=%ld room='%s' "
+                 *         "distance=%.1fm - persisted on server but no CHUNK_DIFF "
+                 *         "received, blocks will appear missing\n",
+                 *         body, tile, room_buf, dist_m); */
             } else {
                 ++far_missing;
                 if (pb >= 0 && dist_m >= 0.0
                     && dist_m <= NET_AUDIT_NEAR_RADIUS_M * 4.0) {
                     /* Within 4x near-radius - log so the operator
                      * has some signal without listing every tile on
-                     * the far side of a planet. */
-                    fprintf(stderr,
-                            "[net-client] AUDIT MISS (distant) body=%ld tile=%ld "
-                            "room='%s' distance=%.1fm\n",
-                            body, tile, room_buf, dist_m);
+                     * the far side of a planet. Silenced for the same
+                     * reason as the near-miss line above. */
+                    /* fprintf(stderr,
+                     *         "[net-client] AUDIT MISS (distant) body=%ld tile=%ld "
+                     *         "room='%s' distance=%.1fm\n",
+                     *         body, tile, room_buf, dist_m); */
                 }
             }
         }
@@ -1562,6 +1696,23 @@ void net_client_fetch_body_saves(uint32_t body_id) {
     net_client_js_fetch_body(url, body_id);
 }
 
+void net_client_resync_body_saves(uint32_t body_id) {
+    if (C.state != NET_CLIENT_READY) return;
+    /* Find the dedup slot and force it back to idle, so the
+     * fetch_body_saves call below doesn't bail on "already done".
+     * If the body has never been fetched, the call will allocate
+     * a slot itself - nothing to reset here. */
+    for (int i = 0; i < C.body_fetch_count; ++i) {
+        if (C.body_fetch[i].body_id == body_id) {
+            /* Don't disturb in-flight fetches - the response will
+             * land naturally. Only reset done (state == 2) slots. */
+            if (C.body_fetch[i].state == 2) C.body_fetch[i].state = 0;
+            break;
+        }
+    }
+    net_client_fetch_body_saves(body_id);
+}
+
 static void net_client_apply_body_blob(uint32_t expected_body_id,
                                          const uint8_t* data, size_t len) {
     if (len < SAVES_BODY_BLOB_HEADER) {
@@ -1651,6 +1802,23 @@ static void net_client_apply_body_blob(uint32_t expected_body_id,
            "(%zu bytes received)\n",
            body_id_in, name, applied_tiles, applied_cells, len);
     fflush(stdout);
+
+    /* If this fetch was triggered by a server SYNC_TICK, echo the
+     * seq_id back so the server can measure the round-trip and feed
+     * its interval-adaptation logic. Sent on the reliable channel
+     * - dropping an ACK would let the server interval drift upward
+     * unnecessarily. Clear the pending flag so a subsequent fetch
+     * triggered by something else (re-approach to a body, manual
+     * refresh) doesn't accidentally re-ACK the same seq. */
+    if (C.pending_sync_active && C.state == NET_CLIENT_READY) {
+        msg_sync_ack_t ack = { .seq_id = C.pending_sync_seq };
+        uint8_t buf[MSG_HEADER_SIZE + MSG_SYNC_ACK_WIRE_SIZE];
+        size_t bn = proto_write_sync_ack(buf, sizeof buf, &ack);
+        if (bn > 0) {
+            net_send(C.conn, NET_CHANNEL_RELIABLE, buf, bn);
+        }
+        C.pending_sync_active = false;
+    }
 }
 
 void net_client_tick(void) {
