@@ -391,6 +391,7 @@ static int bfs_distance_to_hole(const world_t* w, int start_tile, int depth,
  * Writes up to out_max chosen neighbour tile indices into `out`,
  * returns how many were written. Always returns >= 0 and <= num_neighbors. */
 static int choose_horizontal_targets(const world_t* w, int tile, int depth,
+                                     bool allow_blind_spread,
                                      int* out, int out_max) {
     const goldberg_tile_t* t = goldberg_tile(w->grid, tile);
     if (!t || out_max <= 0) return 0;
@@ -414,8 +415,20 @@ static int choose_horizontal_targets(const world_t* w, int tile, int depth,
     }
 
     int count = 0;
-    /* No direction found a hole within range: spread to all passable. */
+    /* No direction found a hole within range. The "spread to all
+     * passable" fallback used to fire here unconditionally, which is
+     * what caused a single placed source on flat ground to flood a
+     * radius-N puddle around itself. Gate the fallback on the caller
+     * - cells with real downhill pressure (falling, supplied from
+     * above, flowing with horizontal supply) keep the blind spread so
+     * the floor-splash + bell creep chain still chains outward, while
+     * sources / sleeping ocean / promoted sources stop unless they
+     * actually find a hole to drain into. The flat-ground source is
+     * supposed to be a 1-cell water block, period; if the player
+     * wanted to flood, they'd dig a channel and the hole search
+     * would pick it up. */
     if (min_dist > radius) {
+        if (!allow_blind_spread) return 0;
         for (int k = 0; k < n && count < out_max; ++k) {
             int nb = t->edge_neighbours[k];
             if (nb >= 0 && is_passable_for_search(w, nb, depth)) {
@@ -511,9 +524,21 @@ static bool should_promote_to_source(const world_t* w, int tile, int depth) {
  *                         (air below), the creep budget accumulates by
  *                         one hex per fall step. The visible result is
  *                         a bell-shape waterfall that widens as it
- *                         descends, capped by max_level. */
+ *                         descends, capped by max_level.
+ *
+ *   allow_blind_spread   When the BFS finds no downward hole within
+ *                         search_radius, this flag decides whether the
+ *                         cell still spreads to all passable neighbours
+ *                         (true: keeps the flat-floor splash + bell
+ *                         chain working) or stops entirely (false:
+ *                         player-placed sources on flat ground stay a
+ *                         1-cell water block instead of flooding).
+ *                         Callers tied to vertical pressure (falling,
+ *                         supplied-from-above, horizontal-flow chain)
+ *                         pass true; sources / sleeping-ocean cells
+ *                         pass false. */
 static void try_propagate(world_t* w, int tile, int depth, int own_level,
-                          bool also_spread) {
+                          bool also_spread, bool allow_blind_spread) {
     /* 3a. Down: if depth-1 is air or non-source water, place a falling
      *     cell there. Vertical drain takes priority; with also_spread
      *     false we stop here, with also_spread true we keep going into
@@ -551,8 +576,8 @@ static void try_propagate(world_t* w, int tile, int depth, int own_level,
     if (max_level > WATER_LEVEL_MAX) max_level = WATER_LEVEL_MAX;
     if (own_level >= max_level) return;
     int targets[GOLDBERG_MAX_NEIGHBORS];
-    int n = choose_horizontal_targets(w, tile, depth, targets,
-                                       GOLDBERG_MAX_NEIGHBORS);
+    int n = choose_horizontal_targets(w, tile, depth, allow_blind_spread,
+                                       targets, GOLDBERG_MAX_NEIGHBORS);
     int new_level = own_level + 1;
     for (int i = 0; i < n; ++i) {
         int nb = targets[i];
@@ -599,23 +624,30 @@ static void tick_cell(world_t* w, int tile, int depth) {
     uint8_t s_before = world_water_get_state(w, tile, depth);
 
     /* Sources never decay; just try to spread. A source on air falls
-     * straight down (no source-level horizontal creep - that would be
-     * a wide ring at the spawner height, which doesn't match a real
-     * waterfall); on solid ground it pools out horizontally. The
+     * straight down. On solid ground with no downhill hole nearby it
+     * STAYS A 1-CELL BLOCK - the blind "spread to all neighbours"
+     * fallback is gated off for sources, so a player-placed source on
+     * flat terrain no longer creates a max_level-radius puddle. The
      * bell-shape widening is owned by the falling cells below, not
-     * the source itself. */
+     * the source itself; the floor splash is owned by the supplied-
+     * from-above floor cells, again not the source. Source still
+     * spreads toward any hole BFS finds within search_radius (e.g.
+     * source placed at a cliff edge flows over the edge). */
     if (water_state_is_source(s_before)) {
-        try_propagate(w, tile, depth, 0, /*also_spread=*/false);
+        try_propagate(w, tile, depth, 0,
+                       /*also_spread=*/false,
+                       /*allow_blind_spread=*/false);
         return;
     }
 
-    /* Legacy / sleeping ocean cell. Treat the bulk-water default as
-     * source-equivalent for propagation purposes - this is the seafloor
-     * fill from world_stream_gen. We don't promote it to a real source
-     * (preserves the "byte == 0 means sleeping" invariant); we just
-     * give the algorithm something to push outward from. */
+    /* Legacy / sleeping ocean cell. Same pressure rule as sources -
+     * the seabed isn't trying to actively flood new ground; only when
+     * a tunnel / dug shoreline opens up a hole does the BFS pick it
+     * up and the ocean drains in. */
     if (s_before == 0u) {
-        try_propagate(w, tile, depth, 0, /*also_spread=*/false);
+        try_propagate(w, tile, depth, 0,
+                       /*also_spread=*/false,
+                       /*allow_blind_spread=*/false);
         return;
     }
 
@@ -685,21 +717,30 @@ static void tick_cell(world_t* w, int tile, int depth) {
     }
 
     /* Promotion check (section 6). Only horizontally-supplied cells can
-     * promote - a falling stream is not a source candidate. */
+     * promote - a falling stream is not a source candidate. Promoted
+     * sources follow the same no-blind-spread rule as player-placed
+     * sources: they only push outward toward an actual hole. */
     if (!falling && should_promote_to_source(w, tile, depth)) {
         uint8_t s_after = water_state_pack(true, false, 0);
         if (s_after != s_before) {
             world_water_set_state(w, tile, depth, s_after);
             schedule_neighbours(w, tile, depth);
         }
-        try_propagate(w, tile, depth, 0, /*also_spread=*/false);
+        try_propagate(w, tile, depth, 0,
+                       /*also_spread=*/false,
+                       /*allow_blind_spread=*/false);
         return;
     }
 
     uint8_t s_after = water_state_pack(false, falling, supplier_level);
 
     /* Falling cells fall AND creep outward (bell-shape waterfall);
-     * non-falling cells stick to the classic fall-OR-spread rule. */
+     * non-falling cells stick to the classic fall-OR-spread rule.
+     * Both branches keep blind-spread allowed: falling cells need it
+     * for the bell creep, supplied flowing cells need it for the
+     * floor splash chain. The no-blind-spread gate only fires for
+     * sources / sleeping ocean / promoted sources at the top of this
+     * function. */
     const bool also_spread = falling;
 
     if (s_after == s_before) {
@@ -707,7 +748,8 @@ static void tick_cell(world_t* w, int tile, int depth) {
          * We still try to spread once - a neighbour may have just
          * opened up - but we don't re-schedule the unchanged cell's
          * neighbours. */
-        try_propagate(w, tile, depth, supplier_level, also_spread);
+        try_propagate(w, tile, depth, supplier_level, also_spread,
+                       /*allow_blind_spread=*/true);
         return;
     }
 
@@ -715,7 +757,8 @@ static void tick_cell(world_t* w, int tile, int depth) {
     /* Level dropped (more pressure from a closer source) or rose
      * (supplier weakened) - either way, neighbours need to re-derive. */
     schedule_neighbours(w, tile, depth);
-    try_propagate(w, tile, depth, supplier_level, also_spread);
+    try_propagate(w, tile, depth, supplier_level, also_spread,
+                   /*allow_blind_spread=*/true);
 }
 
 int world_water_step(world_t* w, int max_ticks) {
