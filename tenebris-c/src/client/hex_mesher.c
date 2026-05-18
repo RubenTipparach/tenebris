@@ -715,6 +715,28 @@ void hex_mesh_build_water_voxels(hex_mesh_t* out, const world_t* w, int tile_idx
         double r_top_full = world_depth_to_radius_m(w, d + 1);
         double r_top_cap  = r_top_full + (double)cap_offset;
 
+        /* When the cell directly above us is also water, the visible
+         * water surface is up there - not on us. Our side wall must
+         * extend all the way to the voxel boundary so it meets the
+         * cell above's wall without a gap. Using r_top_cap here
+         * (which sits cap_offset BELOW the boundary for any flowing
+         * level) leaves a 5-50 cm horizontal band of missing wall
+         * between every pair of stacked water cells - the "short
+         * wall segments along the column" symptom. The top-cap path
+         * already skips drawing a horizontal cap when above is water
+         * (line ~694); the side wall needs the same treatment.
+         *
+         * The step-strip math below uses r_top_cap to decide how
+         * tall our partial wall over a shorter neighbour is. When
+         * we're connected upward, that step is owned by whichever
+         * cell in our stack is actually at the surface, not by us -
+         * we just want a flush wall to the boundary. So promote
+         * r_top_cap to r_top_full for the whole side loop when above
+         * is water. */
+        if (above == BLOCK_WATER) {
+            r_top_cap = r_top_full;
+        }
+
         for (int k = 0; k < n; ++k) {
             int next = (k + 1) % n;
             int nb = t->edge_neighbours[k];
