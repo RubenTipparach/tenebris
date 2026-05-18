@@ -235,6 +235,11 @@ void world_set(world_t* w, int tile, int depth, block_t b) {
     world_water_notify_edit(w, tile, depth);
 }
 
+void world_tile_mark_dirty(world_t* w, int tile) {
+    if (!w || tile < 0 || tile >= w->tile_count) return;
+    w->dirty[tile >> 3] |= (uint8_t)(1u << (tile & 7));
+}
+
 bool world_tile_dirty(const world_t* w, int tile) {
     if (tile < 0 || tile >= w->tile_count) return false;
     return (w->dirty[tile >> 3] & (1 << (tile & 7))) != 0;

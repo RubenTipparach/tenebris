@@ -527,6 +527,29 @@ size_t proto_write_torch_diff(uint8_t* buf, size_t cap,
     return total;
 }
 
+size_t proto_write_water_state_diff(uint8_t* buf, size_t cap,
+                                     const msg_water_state_diff_t* m) {
+    const size_t total = MSG_HEADER_SIZE + MSG_WATER_STATE_DIFF_WIRE_SIZE;
+    if (cap < total) return 0;
+    proto_write_header(buf, MSG_WATER_STATE_DIFF,
+                         MSG_WATER_STATE_DIFF_VERSION,
+                         MSG_WATER_STATE_DIFF_WIRE_SIZE);
+    uint8_t* p = buf + MSG_HEADER_SIZE;
+    put_u32_le(p + 0, m->body_id);
+    put_u32_le(p + 4, m->tile_idx);
+    memcpy(p + 8, m->state, sizeof m->state);
+    return total;
+}
+
+int proto_read_water_state_diff(const uint8_t* payload, size_t len,
+                                 msg_water_state_diff_t* out) {
+    if (len < MSG_WATER_STATE_DIFF_WIRE_SIZE) return -1;
+    out->body_id  = get_u32_le(payload + 0);
+    out->tile_idx = get_u32_le(payload + 4);
+    memcpy(out->state, payload + 8, sizeof out->state);
+    return 0;
+}
+
 int proto_read_torch_diff(const uint8_t* payload, size_t len,
                             msg_torch_diff_t* out) {
     if (len < MSG_TORCH_DIFF_HEADER) return -1;

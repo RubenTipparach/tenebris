@@ -47,6 +47,10 @@ typedef enum {
     MSG_PLAYER_INFO_NACK    = 22, /* S->C: cannot fulfill PLAYER_INFO_REQUEST */
     MSG_INVENTORY_STATE     = 23, /* both ways: client uploads hotbar; server replays on rejoin */
     MSG_TORCH_DIFF          = 24, /* both ways: torch place / remove (single entry C->S, broadcast S->C, bulk on join) */
+    MSG_WATER_STATE_DIFF    = 25, /* S->C: per-voxel water flow state bytes for one tile column. Sent
+                                   * after server-driven world_water_step alongside the block-level
+                                   * CHUNK_DIFF so client cap heights / bell-curve / falling-flag visuals
+                                   * mirror the authoritative simulation. */
 } msg_kind_t;
 
 /* Per-kind protocol versions. Bump on any wire change. */
@@ -65,6 +69,7 @@ typedef enum {
 #define MSG_PLAYER_INFO_NACK_VERSION     1
 #define MSG_INVENTORY_STATE_VERSION      1
 #define MSG_TORCH_DIFF_VERSION           1
+#define MSG_WATER_STATE_DIFF_VERSION     1
 
 typedef struct {
     uint16_t kind;       /* msg_kind_t */
@@ -310,6 +315,28 @@ typedef enum {
 #define MSG_TORCH_ENTRY_SIZE     32  /* op(4) + tile(4) + pos(12) + up(12) */
 #define MSG_TORCH_DIFF_HEADER    8   /* body(4) + count(2) + reserved(2)   */
 
+/* ------------------------------------------------------------------
+ * Water-state diff. One message carries the WORLD_MAX_DEPTH-byte
+ * water-state column for a single (body, tile). Sent by the server
+ * after world_water_step whenever the tile got marked persist-dirty
+ * (via world_water_drain_persist_dirty), so the client's local
+ * state-byte view tracks the authoritative sim and the mesher's
+ * per-voxel cap-height / falling-flag visuals stay correct in MP.
+ *
+ * Wire layout:
+ *   uint32_t body_id
+ *   uint32_t tile_idx
+ *   uint8_t  state[WORLD_MAX_DEPTH]   (one byte per voxel)
+ *
+ * WORLD_MAX_DEPTH = 128, so MSG_WATER_STATE_DIFF_WIRE_SIZE = 136. */
+#define MSG_WATER_STATE_DIFF_WIRE_SIZE   (4 + 4 + 128)
+
+typedef struct {
+    uint32_t body_id;
+    uint32_t tile_idx;
+    uint8_t  state[128];      /* matches WORLD_MAX_DEPTH */
+} msg_water_state_diff_t;
+
 typedef struct {
     uint8_t  op;          /* torch_op_t */
     uint8_t  reserved8;
@@ -419,6 +446,11 @@ int    proto_read_chunk_diff (const uint8_t* payload, size_t len, msg_chunk_diff
 
 size_t proto_write_torch_diff(uint8_t* buf, size_t cap, const msg_torch_diff_t* m);
 int    proto_read_torch_diff (const uint8_t* payload, size_t len, msg_torch_diff_t* out);
+
+size_t proto_write_water_state_diff(uint8_t* buf, size_t cap,
+                                     const msg_water_state_diff_t* m);
+int    proto_read_water_state_diff (const uint8_t* payload, size_t len,
+                                     msg_water_state_diff_t* out);
 
 size_t proto_write_player_info(uint8_t* buf, size_t cap, const msg_player_info_t* m);
 int    proto_read_player_info (const uint8_t* payload, size_t len, msg_player_info_t* out);

@@ -2527,8 +2527,37 @@ void server_tick(server_t* s) {
                         w, dirty_tiles,
                         (int)(sizeof dirty_tiles / sizeof dirty_tiles[0]));
                     for (int i = 0; i < n; ++i) {
+                        int tile = dirty_tiles[i];
                         saves_write_water_state(w, room->code, s->cfg.seed,
-                                                 dirty_tiles[i]);
+                                                 tile);
+                        /* Broadcast the water-state column to peers in
+                         * the room so client-side cap heights / bell
+                         * curve / falling-flag visuals mirror the
+                         * authoritative sim. Without this, every MP
+                         * cell renders at state=0 (sleeping-ocean
+                         * equivalent, full voxel height) and no flow
+                         * visuals show. Sent alongside (not instead
+                         * of) the block-level CHUNK_DIFF below. */
+                        if (!w->body) continue;
+                        const uint8_t* state_col =
+                            world_water_state_column(w, tile);
+                        if (!state_col) continue;
+                        msg_water_state_diff_t wsd = { 0 };
+                        wsd.body_id  = (uint32_t)w->body->id;
+                        wsd.tile_idx = (uint32_t)tile;
+                        memcpy(wsd.state, state_col, sizeof wsd.state);
+                        uint8_t buf[MSG_HEADER_SIZE
+                                    + MSG_WATER_STATE_DIFF_WIRE_SIZE];
+                        size_t bn = proto_write_water_state_diff(buf,
+                                                                  sizeof buf,
+                                                                  &wsd);
+                        if (bn == 0) continue;
+                        for (int j = 0; j < SERVER_MAX_CLIENTS; ++j) {
+                            const server_client_t* peer = &s->clients[j];
+                            if (!peer->conn) continue;
+                            if (strcmp(peer->room, room->code) != 0) continue;
+                            net_send(peer->conn, NET_CHANNEL_RELIABLE, buf, bn);
+                        }
                     }
 
                     /* Broadcast block-level changes the sim made to

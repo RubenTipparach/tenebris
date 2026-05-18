@@ -135,6 +135,11 @@ void     world_set(world_t* w, int tile, int depth, block_t b);
 
 bool     world_tile_dirty(const world_t* w, int tile);
 void     world_tile_clear_dirty(world_t* w, int tile);
+/* Mark a tile dirty without going through world_set. Used by the
+ * net-client path that applies a server-broadcast water-state diff:
+ * the state byte changed but no BLOCK changed, so we need to wake
+ * the renderer's remesh sweep manually. */
+void     world_tile_mark_dirty(world_t* w, int tile);
 
 /* "Saved" bitset: tracks which tiles have a persisted column on
  * disk so the server can replay them to a joining client. Lazily

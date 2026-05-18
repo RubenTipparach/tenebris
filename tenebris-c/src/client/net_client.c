@@ -8,6 +8,7 @@
 #include "core/net_transport.h"
 #include "core/proto.h"
 #include "core/world.h"
+#include "core/world_water.h"
 
 #include "sokol_time.h"
 
@@ -708,6 +709,32 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
                    "placed=%d removed=%d echo/skip=%d\n",
                    diff.body_id, body_name, (unsigned)diff.entry_count,
                    placed, removed, skipped);
+            break;
+        }
+        case MSG_WATER_STATE_DIFF: {
+            if (hdr.version != MSG_WATER_STATE_DIFF_VERSION) break;
+            msg_water_state_diff_t wsd;
+            if (proto_read_water_state_diff(payload, hdr.length, &wsd) != 0) {
+                fprintf(stderr, "[net-client] malformed WATER_STATE_DIFF\n");
+                break;
+            }
+            world_t* w = renderer_world_for_body(wsd.body_id);
+            if (!w) break;
+            /* Apply the column into the local state-byte array via
+             * the load-path helper, which is the same entry point
+             * the SP /persist code uses on world load - it copies
+             * straight into world_water's state without setting the
+             * persist-dirty bit (the data already round-tripped via
+             * the server). The mesher reads state next chunk-rebuild
+             * cycle, so the bell-curve / falling visuals catch up
+             * with the next remesh pass on the affected chunk. */
+            world_water_load_state_column(w, (int)wsd.tile_idx, wsd.state);
+            /* Mark the tile dirty so the renderer rebuilds the
+             * chunk's water mesh. The block-level CHUNK_DIFF that
+             * landed in the same step usually already dirtied this
+             * tile, but a pure state-only change (level shift
+             * without a block toggle) wouldn't, so do it here. */
+            world_tile_mark_dirty(w, (int)wsd.tile_idx);
             break;
         }
         case MSG_SNAPSHOT: {
