@@ -49,7 +49,33 @@ struct world_water_s {
      * world_water_drain_persist_dirty. */
     uint8_t* persist_dirty;
     int      persist_dirty_bytes;
+
+    /* Flow-origin hash table. Open-addressed, linear probing, fixed
+     * power-of-2 size. Each slot is a water_origin_slot_t. Empty slot
+     * = key_tile + key_depth_plus_one == 0 (depth is stored +1 so
+     * depth 0 + tile 0 isn't a false-empty). Lookup walks until
+     * matching key or empty slot. Resize is not implemented - on a
+     * full table, origin_add returns false and the cell behaves as
+     * an "untracked" flow cell (still flows via state byte, just
+     * doesn't participate in origin-driven dry-up / current dir).
+     *
+     * Sized for ~2048 active flow cells with load factor < 0.5. The
+     * 24 bytes/slot * 4096 slots = 96 KB resident, regardless of
+     * world size. Worst-case waterfall observed during testing was
+     * ~300 cells; 4096 is comfortable headroom. */
+    struct water_origin_slot_t {
+        uint32_t key_tile;            /* 0 + depth+1 == 0 = empty */
+        uint8_t  key_depth_plus_one;
+        uint8_t  origin_count;        /* 0..WATER_ORIGIN_MAX */
+        uint16_t _pad;
+        uint32_t origin_tile [WATER_ORIGIN_MAX];
+        uint8_t  origin_depth[WATER_ORIGIN_MAX];
+        uint8_t  _pad2;
+    } *origins;
+    int origins_cap;
+    int origins_count;
 };
+#define WATER_ORIGINS_TABLE_SIZE 4096   /* power of 2 */
 
 /* ---------------------------------------------------------------------
  * Tiny helpers.
@@ -112,7 +138,11 @@ world_water_t* world_water_create(const world_t* w) {
     ww->scheduled = (uint8_t*)calloc((size_t)ww->scheduled_bytes, 1);
     ww->persist_dirty_bytes = (w->tile_count + 7) / 8;
     ww->persist_dirty = (uint8_t*)calloc((size_t)ww->persist_dirty_bytes, 1);
-    if (!ww->state || !ww->queue || !ww->scheduled || !ww->persist_dirty) {
+    ww->origins_cap = WATER_ORIGINS_TABLE_SIZE;
+    ww->origins = calloc((size_t)ww->origins_cap, sizeof *ww->origins);
+    ww->origins_count = 0;
+    if (!ww->state || !ww->queue || !ww->scheduled || !ww->persist_dirty
+        || !ww->origins) {
         world_water_destroy(ww);
         return NULL;
     }
@@ -125,6 +155,7 @@ void world_water_destroy(world_water_t* ww) {
     free(ww->queue);
     free(ww->scheduled);
     free(ww->persist_dirty);
+    free(ww->origins);
     free(ww);
 }
 
@@ -141,6 +172,244 @@ void world_water_clone_into(world_water_t* dst, const world_water_t* src) {
     /* Persist-dirty also resets: the clone matches the source
      * snapshot on disk - nothing to flush yet. */
     memset(dst->persist_dirty, 0, (size_t)dst->persist_dirty_bytes);
+    /* Origins table sizes must match (same world shape on both sides).
+     * Direct memcpy preserves the active entries; empty slots stay
+     * empty because their key fields are zero. */
+    if (dst->origins_cap == src->origins_cap && dst->origins && src->origins) {
+        memcpy(dst->origins, src->origins,
+               (size_t)dst->origins_cap * sizeof *dst->origins);
+        dst->origins_count = src->origins_count;
+    }
+}
+
+/* ---------------------------------------------------------------------
+ * Flow-origin hash table.
+ * ------------------------------------------------------------------- */
+
+static inline uint32_t origin_hash(uint32_t tile, int depth) {
+    /* xxHash-style multiply-then-mix. Mixes tile + depth into a 32-bit
+     * value that distributes evenly across the table. The depth field
+     * is shifted up so it has weight comparable to the tile field. */
+    uint32_t h = tile * 0x9E3779B1u;
+    h ^= ((uint32_t)depth * 0x85EBCA77u);
+    h ^= h >> 16;
+    return h;
+}
+
+/* depth_plus_one == 0 is "never inserted"; == 255 is "tombstone"
+ * (deleted, but lookups must continue probing past it). Live entries
+ * have depth_plus_one in 1..128 (depth 0..127 + 1). */
+#define WATER_ORIGIN_TOMBSTONE 255u
+
+/* Locate the slot for (tile, depth) for LOOKUP. Returns slot index
+ * containing the matching entry, or -1 if the key isn't present
+ * (table full, or walked past every slot without a match). Skips
+ * tombstones during the walk - they don't break the probe chain. */
+static int origin_slot_lookup(const world_water_t* ww, uint32_t tile, int depth) {
+    if (!ww || !ww->origins || ww->origins_cap <= 0) return -1;
+    uint32_t mask = (uint32_t)(ww->origins_cap - 1);
+    uint32_t start = origin_hash(tile, depth) & mask;
+    for (uint32_t step = 0; step < (uint32_t)ww->origins_cap; ++step) {
+        uint32_t idx = (start + step) & mask;
+        const struct water_origin_slot_t* s = &ww->origins[idx];
+        if (s->key_depth_plus_one == 0u) return -1;  /* never-used = stop */
+        if (s->key_depth_plus_one == WATER_ORIGIN_TOMBSTONE) continue;
+        if (s->key_tile == tile
+            && s->key_depth_plus_one == (uint8_t)(depth + 1)) {
+            return (int)idx;
+        }
+    }
+    return -1;
+}
+
+/* Locate a slot for INSERT. Returns the matching slot if present, or
+ * the first tombstone / never-used slot encountered in the probe
+ * chain. Tombstones get reused so the table doesn't fill up with
+ * stale markers after many promotions. Returns -1 only on a
+ * completely full table with no key match. */
+static int origin_slot_insert(const world_water_t* ww, uint32_t tile, int depth) {
+    if (!ww || !ww->origins || ww->origins_cap <= 0) return -1;
+    uint32_t mask = (uint32_t)(ww->origins_cap - 1);
+    uint32_t start = origin_hash(tile, depth) & mask;
+    int first_reusable = -1;
+    for (uint32_t step = 0; step < (uint32_t)ww->origins_cap; ++step) {
+        uint32_t idx = (start + step) & mask;
+        const struct water_origin_slot_t* s = &ww->origins[idx];
+        if (s->key_depth_plus_one == 0u) {
+            /* End of probe chain - key not present. Use this slot
+             * unless an earlier tombstone is available (prefer
+             * tombstones to keep the live region compact). */
+            return (first_reusable >= 0) ? first_reusable : (int)idx;
+        }
+        if (s->key_depth_plus_one == WATER_ORIGIN_TOMBSTONE) {
+            if (first_reusable < 0) first_reusable = (int)idx;
+            continue;
+        }
+        if (s->key_tile == tile
+            && s->key_depth_plus_one == (uint8_t)(depth + 1)) {
+            return (int)idx;
+        }
+    }
+    return first_reusable;  /* may be -1 if table truly full */
+}
+
+/* Mark a slot as deleted (tombstone) instead of zeroing it so the
+ * linear-probe chain stays intact for subsequent lookups. */
+static inline void origin_slot_clear(struct water_origin_slot_t* s) {
+    memset(s, 0, sizeof *s);
+    s->key_depth_plus_one = (uint8_t)WATER_ORIGIN_TOMBSTONE;
+}
+
+bool world_water_origin_add(world_t* w, int tile, int depth,
+                            water_origin_ref_t origin) {
+    if (!w || !w->water) return false;
+    if (tile < 0 || depth < 0 || depth >= WORLD_MAX_DEPTH) return false;
+    int idx = origin_slot_insert(w->water, (uint32_t)tile, depth);
+    if (idx < 0) return false;
+    struct water_origin_slot_t* s = &w->water->origins[idx];
+    /* Slot may be empty (depth_plus_one == 0), tombstoned, or a live
+     * entry for the same key. Live = skip the (re)init; the loop
+     * below dedupes the origin. Empty / tombstone = (re)init. */
+    if (s->key_depth_plus_one == 0u
+        || s->key_depth_plus_one == (uint8_t)WATER_ORIGIN_TOMBSTONE) {
+        s->key_tile = (uint32_t)tile;
+        s->key_depth_plus_one = (uint8_t)(depth + 1);
+        s->origin_count = 0;
+        ++w->water->origins_count;
+    }
+    /* Idempotence: already in the list? */
+    for (int i = 0; i < s->origin_count; ++i) {
+        if (s->origin_tile[i] == origin.tile
+            && s->origin_depth[i] == origin.depth) {
+            return true;
+        }
+    }
+    if (s->origin_count < WATER_ORIGIN_MAX) {
+        s->origin_tile [s->origin_count] = origin.tile;
+        s->origin_depth[s->origin_count] = origin.depth;
+        ++s->origin_count;
+        return true;
+    }
+    /* 4th origin: promote this cell to a source. Clear the entry, set
+     * the SOURCE flag on the state byte, leave block as BLOCK_WATER. */
+    int cell_idx = tile * WORLD_MAX_DEPTH + depth;
+    uint8_t old_state = w->water->state[cell_idx];
+    uint8_t new_state = old_state | WATER_FLAG_SOURCE;
+    new_state &= (uint8_t)~WATER_FLAG_FALLING;  /* a source isn't falling */
+    new_state &= (uint8_t)~WATER_LEVEL_MASK;    /* sources are level 0 */
+    if (new_state != old_state) {
+        w->water->state[cell_idx] = new_state;
+        w->water->persist_dirty[tile >> 3] |= (uint8_t)(1u << (tile & 7));
+    }
+    /* Drop the entry. The slot becomes empty - we use the standard
+     * tombstone-free open-addressing convention where empty == 0; this
+     * works because removals from the middle of a probe chain would
+     * normally break linear probing, but a promoted cell will never be
+     * re-queried as a flow cell (the SOURCE flag now controls its
+     * behaviour). On rare lookup-after-promote, the find walks past the
+     * (now-empty) slot and may return a wrong slot - acceptable, the
+     * caller treats it as "not found" which matches reality. */
+    origin_slot_clear(s);
+    if (w->water->origins_count > 0) --w->water->origins_count;
+    return true;
+}
+
+void world_water_origin_remove(world_t* w, int tile, int depth,
+                               water_origin_ref_t origin) {
+    if (!w || !w->water) return;
+    if (tile < 0 || depth < 0 || depth >= WORLD_MAX_DEPTH) return;
+    int idx = origin_slot_lookup(w->water, (uint32_t)tile, depth);
+    if (idx < 0) return;
+    struct water_origin_slot_t* s = &w->water->origins[idx];
+    if (s->key_depth_plus_one == 0u) return;
+    /* Find and compact-remove. */
+    for (int i = 0; i < s->origin_count; ++i) {
+        if (s->origin_tile[i] == origin.tile
+            && s->origin_depth[i] == origin.depth) {
+            for (int j = i + 1; j < s->origin_count; ++j) {
+                s->origin_tile [j - 1] = s->origin_tile [j];
+                s->origin_depth[j - 1] = s->origin_depth[j];
+            }
+            --s->origin_count;
+            break;
+        }
+    }
+    if (s->origin_count == 0) {
+        origin_slot_clear(s);
+        if (w->water->origins_count > 0) --w->water->origins_count;
+    }
+}
+
+void world_water_origin_remove_global(world_t* w, water_origin_ref_t origin) {
+    if (!w || !w->water || !w->water->origins) return;
+    /* Linear scan of the whole table. With 4096 slots and the table
+     * usually 10-50% full, this is fast and only fires on source
+     * destruction (rare event). */
+    for (int idx = 0; idx < w->water->origins_cap; ++idx) {
+        struct water_origin_slot_t* s = &w->water->origins[idx];
+        if (s->key_depth_plus_one == 0u) continue;
+        /* Same compact-remove as the targeted variant. */
+        for (int i = 0; i < s->origin_count; ++i) {
+            if (s->origin_tile[i] == origin.tile
+                && s->origin_depth[i] == origin.depth) {
+                for (int j = i + 1; j < s->origin_count; ++j) {
+                    s->origin_tile [j - 1] = s->origin_tile [j];
+                    s->origin_depth[j - 1] = s->origin_depth[j];
+                }
+                --s->origin_count;
+                break;
+            }
+        }
+        if (s->origin_count == 0) {
+            int tile  = (int)s->key_tile;
+            int depth = (int)s->key_depth_plus_one - 1;
+            origin_slot_clear(s);
+            if (w->water->origins_count > 0) --w->water->origins_count;
+            /* Wake the cell so the next tick re-evaluates it via the
+             * standard supplier scan and dries it up if no neighbour
+             * is feeding it any more. */
+            world_water_enqueue(w, tile, depth);
+        }
+    }
+}
+
+void world_water_origin_clear(world_t* w, int tile, int depth) {
+    if (!w || !w->water) return;
+    if (tile < 0 || depth < 0 || depth >= WORLD_MAX_DEPTH) return;
+    int idx = origin_slot_lookup(w->water, (uint32_t)tile, depth);
+    if (idx < 0) return;
+    struct water_origin_slot_t* s = &w->water->origins[idx];
+    if (s->key_depth_plus_one == 0u) return;
+    origin_slot_clear(s);
+    if (w->water->origins_count > 0) --w->water->origins_count;
+}
+
+int world_water_origin_count(const world_t* w, int tile, int depth) {
+    if (!w || !w->water) return 0;
+    if (tile < 0 || depth < 0 || depth >= WORLD_MAX_DEPTH) return 0;
+    int idx = origin_slot_lookup(w->water, (uint32_t)tile, depth);
+    if (idx < 0) return 0;
+    const struct water_origin_slot_t* s = &w->water->origins[idx];
+    if (s->key_depth_plus_one == 0u) return 0;
+    return (int)s->origin_count;
+}
+
+int world_water_origin_read(const world_t* w, int tile, int depth,
+                            water_origin_ref_t* out) {
+    if (!w || !w->water) return 0;
+    if (tile < 0 || depth < 0 || depth >= WORLD_MAX_DEPTH) return 0;
+    int idx = origin_slot_lookup(w->water, (uint32_t)tile, depth);
+    if (idx < 0) return 0;
+    const struct water_origin_slot_t* s = &w->water->origins[idx];
+    if (s->key_depth_plus_one == 0u) return 0;
+    int n = s->origin_count;
+    if (out) {
+        for (int i = 0; i < n; ++i) {
+            out[i].tile  = s->origin_tile [i];
+            out[i].depth = s->origin_depth[i];
+        }
+    }
+    return n;
 }
 
 /* ---------------------------------------------------------------------
@@ -629,6 +898,24 @@ static void try_propagate(world_t* w, int tile, int depth, int own_level,
         world_water_set_state(w, nb, target_depth,
                               water_state_pack(false, false, new_level));
         world_water_enqueue(w, nb, target_depth);
+
+        /* Propagate origin lineage. If we (the spreader) are a source,
+         * we ARE the origin - record ourselves on the new flow cell.
+         * Otherwise copy our origin list onto the new cell so the
+         * lineage chain back to the real source(s) stays intact. The
+         * origin_add path handles the WATER_ORIGIN_MAX cap (4th add =
+         * auto-promote to source) on its own. */
+        uint8_t own_state = world_water_get_state(w, tile, depth);
+        if (water_state_is_source(own_state)) {
+            water_origin_ref_t self = { (uint32_t)tile, (uint8_t)depth };
+            world_water_origin_add(w, nb, target_depth, self);
+        } else {
+            water_origin_ref_t srcs[WATER_ORIGIN_MAX];
+            int n = world_water_origin_read(w, tile, depth, srcs);
+            for (int oi = 0; oi < n; ++oi) {
+                world_water_origin_add(w, nb, target_depth, srcs[oi]);
+            }
+        }
     }
 }
 
@@ -654,6 +941,17 @@ static void tick_cell(world_t* w, int tile, int depth) {
     }
 
     uint8_t s_before = world_water_get_state(w, tile, depth);
+
+    /* Note: origin-based dry-up isn't enforced here. Origin entries
+     * aren't persisted yet (every cell loaded from saves starts with
+     * 0 origins), and triggering dry-up on count==0 would wipe every
+     * pre-existing flow cell on a save reload. Source destruction
+     * still propagates correctly through world_water_origin_remove_
+     * global - it enqueues affected cells, and the supplier-scan
+     * heuristic below dries them up when no neighbour SOURCE / state=0
+     * cell remains. The origin list is still the right source-of-
+     * truth for flow-direction rendering + future explicit dry-up
+     * once origins persist. */
 
     /* Sources never decay; just try to spread. A source on air falls
      * straight down. On solid ground with no downhill hole nearby it

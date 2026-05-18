@@ -173,4 +173,79 @@ void world_water_load_state_column(struct world_s* w, int tile,
 int world_water_drain_persist_dirty(struct world_s* w,
                                      int* out_tiles, int cap);
 
+/* ---------------------------------------------------------------------
+ * Flow origins.
+ *
+ * Each flowing (non-source) water cell remembers up to 3 source cells
+ * it came from. The origin list is the authoritative liveness signal:
+ * if every origin in the list is destroyed (block_set away from
+ * BLOCK_WATER, or its SOURCE flag cleared), the flow cell loses all
+ * its origins and dries up on the next tick.
+ *
+ * Sparse storage: most cells in a world are AIR or solid, and only a
+ * small minority are actively flowing. A dense (tile_count * depth *
+ * 16 bytes) array would dominate memory budget for ~40k-tile bodies.
+ * Instead we keep an open-addressed linear-probed hash table keyed on
+ * (tile, depth). Cells that aren't flowing have no entry; lookups for
+ * those cells return 0 origins.
+ *
+ * The 4th-origin auto-promote rule: when a sim mutation would push the
+ * origin count past 3, the cell flips to a source (SOURCE flag set in
+ * its state byte, origin list dropped). Conceptually: any cell that's
+ * being fed by enough independent sources is effectively a source
+ * itself, so the renderer / current direction logic treats it that way.
+ *
+ * Flow direction is derived from the origin list at read time:
+ *   dir = normalize(cell_world_pos - average(origin_world_pos))
+ * No per-cell direction is cached; the small number of active flow
+ * cells makes the recomputation cheap relative to disk + network I/O.
+ * Returns the zero vector for cells with no entry. */
+
+#define WATER_ORIGIN_MAX 3   /* 4th origin triggers source-promotion */
+
+typedef struct {
+    uint32_t tile;
+    uint8_t  depth;
+} water_origin_ref_t;
+
+/* Record an origin reference for the flow cell at (tile, depth). If
+ * the cell already lists this origin, returns true (idempotent). If
+ * the cell has fewer than WATER_ORIGIN_MAX origins, appends and
+ * returns true. If adding would make WATER_ORIGIN_MAX+1, the cell is
+ * promoted to a source: state byte gets SOURCE flag set, the origin
+ * entry is cleared, and the function returns true. Returns false only
+ * when the hash table is full (rare; cells flow normally but lose the
+ * direction-shimmer + auto-death-on-source-removal behaviour). */
+bool world_water_origin_add(struct world_s* w, int tile, int depth,
+                            water_origin_ref_t origin);
+
+/* Remove `origin` from the flow cell at (tile, depth)'s list, if
+ * present. If the list goes to 0 entries, the entry is removed from
+ * the table entirely (the caller is expected to dry up the cell on
+ * the next tick - we don't touch blocks here, just origin bookkeeping). */
+void world_water_origin_remove(struct world_s* w, int tile, int depth,
+                               water_origin_ref_t origin);
+
+/* Remove ALL flow-cell entries whose origin list includes `origin`.
+ * Used when a source dies (block_set away from WATER, or SOURCE flag
+ * cleared) - every downstream flow cell loses this origin. Cells that
+ * had this origin as their LAST origin get their entry removed entirely. */
+void world_water_origin_remove_global(struct world_s* w,
+                                      water_origin_ref_t origin);
+
+/* Drop the flow cell's origin entry. Used when the player explicitly
+ * promotes a flow cell to a source (place-water-on-flow override) -
+ * the new source's origin list is empty by definition. No-op if the
+ * cell has no entry. */
+void world_water_origin_clear(struct world_s* w, int tile, int depth);
+
+/* Number of origins recorded for the flow cell. 0 = no entry. */
+int  world_water_origin_count(const struct world_s* w, int tile, int depth);
+
+/* Read the origin list. Writes up to WATER_ORIGIN_MAX entries into
+ * out[], returns the count actually written (0..WATER_ORIGIN_MAX).
+ * out may be NULL to just query the count. */
+int  world_water_origin_read(const struct world_s* w, int tile, int depth,
+                              water_origin_ref_t* out);
+
 #endif

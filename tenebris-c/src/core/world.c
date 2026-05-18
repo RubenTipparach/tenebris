@@ -231,7 +231,22 @@ void world_set(world_t* w, int tile, int depth, block_t b) {
      * Both branches enqueue the same way, so collapse the test. */
     if ((block_t)old == BLOCK_WATER || b == BLOCK_WATER) {
         if ((block_t)old == BLOCK_WATER) {
-            /* Block leaving water - drop the stale state. */
+            /* Block leaving water. If this cell was a source, propagate
+             * the death to every downstream flow cell that listed it as
+             * an origin - those cells lose this origin reference and
+             * the standard tick-cell dry-up takes over once they have
+             * zero origins left. Done BEFORE clear_state so we can
+             * still read the SOURCE flag from the old state byte.
+             *
+             * Also drop this cell's own origin entry (if it had one as
+             * a flow cell) since the cell no longer exists. */
+            uint8_t old_state = world_water_get_state(w, tile, depth);
+            if (water_state_is_source(old_state)) {
+                water_origin_ref_t me = { (uint32_t)tile, (uint8_t)depth };
+                world_water_origin_remove_global(w, me);
+            }
+            world_water_origin_clear(w, tile, depth);
+            /* Drop the stale state byte. */
             world_water_clear_state(w, tile, depth);
         }
         world_water_enqueue(w, tile, depth);

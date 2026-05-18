@@ -819,6 +819,27 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
              * BREAK  = force BLOCK_AIR regardless of block_type. */
             block_t target = (cmd.cmd_kind == PLAYER_CMD_BREAK)
                 ? BLOCK_AIR : (block_t)cmd.block_type;
+            /* Place-on-flow override: mirror the client-side rule in
+             * interact.c so the server's authoritative state agrees.
+             * Placing water on an existing water cell (a flow cell)
+             * promotes that cell to a sleeping source - origins
+             * cleared, state = 0. world_set's WATER->WATER early-
+             * return would otherwise leave the cell as a flow cell
+             * still tied to whatever upstream source(s) created it,
+             * undoing the player's "I want this to be a source now"
+             * intent. */
+            if (cmd.cmd_kind == PLAYER_CMD_PLACE && target == BLOCK_WATER) {
+                block_t existing = (block_t)world_get(w, (int)cmd.tile_idx,
+                                                     (int)cmd.depth);
+                if (existing == BLOCK_WATER) {
+                    world_water_origin_clear(w, (int)cmd.tile_idx,
+                                              (int)cmd.depth);
+                    world_water_set_state(w, (int)cmd.tile_idx,
+                                          (int)cmd.depth, 0u);
+                    world_water_enqueue(w, (int)cmd.tile_idx,
+                                         (int)cmd.depth);
+                }
+            }
             world_set(w, (int)cmd.tile_idx, (int)cmd.depth, target);
             /* Persist immediately under the room's save path. world_set
              * marks the edited tile + neighbours dirty (for the

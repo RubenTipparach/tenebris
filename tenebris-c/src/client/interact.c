@@ -6,6 +6,7 @@
 #include "client/torch.h"
 #include "core/blocks.h"
 #include "core/proto.h"        /* PLAYER_CMD_PLACE / PLAYER_CMD_BREAK */
+#include "core/world_water.h"
 #include <math.h>
 #include <stdio.h>
 
@@ -402,6 +403,28 @@ void interact_update(interact_state_t* s, world_t* w, player_ctrl_t* p, float dt
                                     s->place_tile, s->place_depth, feet_depth);
                             fflush(stderr);
                         }
+                    }
+                }
+                /* Place-on-flow override: if the target cell is
+                 * already BLOCK_WATER (a flow cell from the sim) and
+                 * the player is placing water on it, world_set
+                 * early-returns because the block didn't change - so
+                 * we need to explicitly promote the cell to a source.
+                 * Clear its origin entry (a source has no origins
+                 * itself) and set state to 0 (sleeping source: the
+                 * sim treats state=0 BLOCK_WATER as a free-standing
+                 * source supplier). User ask: "I should easily be
+                 * able to override a flow block into a spawn block." */
+                if (to_place == BLOCK_WATER) {
+                    block_t existing = (block_t)world_get(
+                        w, s->place_tile, s->place_depth);
+                    if (existing == BLOCK_WATER) {
+                        world_water_origin_clear(w, s->place_tile,
+                                                  s->place_depth);
+                        world_water_set_state(w, s->place_tile,
+                                              s->place_depth, 0u);
+                        world_water_enqueue(w, s->place_tile,
+                                             s->place_depth);
                     }
                 }
                 world_set(w, s->place_tile, s->place_depth, to_place);
