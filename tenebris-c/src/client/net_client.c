@@ -1386,22 +1386,31 @@ static void net_client_run_saves_audit(const char* json) {
             if (dist_m >= 0.0 && dist_m <= NET_AUDIT_NEAR_RADIUS_M) {
                 ++near_missing;
                 if (pb >= 0) ++per_body[pb].near_missing;
-                fprintf(stderr,
-                        "[net-client] AUDIT MISS body=%ld tile=%ld room='%s' "
-                        "distance=%.1fm - persisted on server but no CHUNK_DIFF "
-                        "received, blocks will appear missing\n",
-                        body, tile, room_buf, dist_m);
+                /* Per-tile "blocks will appear missing" trace silenced:
+                 * the audit's bitset only counts WebSocket CHUNK_DIFFs,
+                 * and the join path now pulls authoritative state via
+                 * the /saves/body HTTP bulk fetch (which doesn't touch
+                 * the bitset). Every tile "received via HTTP" therefore
+                 * shows up here as missing, flooding the console with
+                 * false negatives. Restore from git if a real CHUNK_DIFF
+                 * loss needs investigating. */
+                /* fprintf(stderr,
+                 *         "[net-client] AUDIT MISS body=%ld tile=%ld room='%s' "
+                 *         "distance=%.1fm - persisted on server but no CHUNK_DIFF "
+                 *         "received, blocks will appear missing\n",
+                 *         body, tile, room_buf, dist_m); */
             } else {
                 ++far_missing;
                 if (pb >= 0 && dist_m >= 0.0
                     && dist_m <= NET_AUDIT_NEAR_RADIUS_M * 4.0) {
                     /* Within 4x near-radius - log so the operator
                      * has some signal without listing every tile on
-                     * the far side of a planet. */
-                    fprintf(stderr,
-                            "[net-client] AUDIT MISS (distant) body=%ld tile=%ld "
-                            "room='%s' distance=%.1fm\n",
-                            body, tile, room_buf, dist_m);
+                     * the far side of a planet. Silenced for the same
+                     * reason as the near-miss line above. */
+                    /* fprintf(stderr,
+                     *         "[net-client] AUDIT MISS (distant) body=%ld tile=%ld "
+                     *         "room='%s' distance=%.1fm\n",
+                     *         body, tile, room_buf, dist_m); */
                 }
             }
         }
