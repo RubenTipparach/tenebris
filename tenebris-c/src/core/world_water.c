@@ -5,6 +5,7 @@
 #include "core/goldberg.h"
 
 #include <limits.h>
+#include <math.h>     /* sqrt for flow-direction normalization */
 #include <stdlib.h>
 #include <string.h>
 
@@ -410,6 +411,54 @@ int world_water_origin_read(const world_t* w, int tile, int depth,
         }
     }
     return n;
+}
+
+bool world_water_flow_direction(const world_t* w, int tile, int depth,
+                                float out[3]) {
+    if (out) out[0] = out[1] = out[2] = 0.0f;
+    if (!w || !w->water) return false;
+    water_origin_ref_t origins[WATER_ORIGIN_MAX];
+    int n = world_water_origin_read(w, tile, depth, origins);
+    if (n <= 0) return false;
+
+    /* Cell world position = tile center * radius_at_depth. */
+    const goldberg_tile_t* t = goldberg_tile(w->grid, tile);
+    if (!t) return false;
+    double r_cell = world_depth_to_radius_m(w, depth);
+    double cx = t->center.x * r_cell;
+    double cy = t->center.y * r_cell;
+    double cz = t->center.z * r_cell;
+
+    /* Average origin position. Equal-weight as per user spec
+     * ("lets not worry about weighted averages yet"). */
+    double ox = 0.0, oy = 0.0, oz = 0.0;
+    int valid = 0;
+    for (int i = 0; i < n; ++i) {
+        const goldberg_tile_t* ot = goldberg_tile(w->grid, (int)origins[i].tile);
+        if (!ot) continue;
+        double r_o = world_depth_to_radius_m(w, (int)origins[i].depth);
+        ox += ot->center.x * r_o;
+        oy += ot->center.y * r_o;
+        oz += ot->center.z * r_o;
+        ++valid;
+    }
+    if (valid == 0) return false;
+    ox /= (double)valid;
+    oy /= (double)valid;
+    oz /= (double)valid;
+
+    /* Direction = cell - origin_avg, normalized. */
+    double dx = cx - ox;
+    double dy = cy - oy;
+    double dz = cz - oz;
+    double len = sqrt(dx * dx + dy * dy + dz * dz);
+    if (len < 1e-6) return false;
+    if (out) {
+        out[0] = (float)(dx / len);
+        out[1] = (float)(dy / len);
+        out[2] = (float)(dz / len);
+    }
+    return true;
 }
 
 /* ---------------------------------------------------------------------

@@ -248,4 +248,19 @@ int  world_water_origin_count(const struct world_s* w, int tile, int depth);
 int  world_water_origin_read(const struct world_s* w, int tile, int depth,
                               water_origin_ref_t* out);
 
+/* World-space flow direction for the cell at (tile, depth). Computed
+ * as:
+ *
+ *   dir = normalize(cell_world_pos - average(origin_world_pos))
+ *
+ * pointing FROM the average origin position TOWARD the cell. Zero
+ * vector when the cell has no origin entry (source, sleeping, or
+ * legacy save-loaded cell). out[0..2] receives the unit-length
+ * direction; returns true iff a non-zero direction was written. The
+ * caller projects the world-space vector onto the cell's local
+ * tangent plane (radial = up) when using it for UV pan or current
+ * physics. */
+bool world_water_flow_direction(const struct world_s* w, int tile, int depth,
+                                float out[3]);
+
 #endif
