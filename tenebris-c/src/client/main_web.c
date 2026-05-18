@@ -2184,26 +2184,32 @@ static void frame(void) {
     input_consume();
 
     /* Water-flow tick. Steps the per-voxel flow scheduler on G.world
-     * + every moon world at a rate driven by flow_ticks_per_step. We
-     * accumulate dt (display refresh, ~16 ms at 60 fps) and fire when
-     * the configured period elapses; 0.05 s/tick matches the MP
-     * server's default 20 Hz cadence so SP and MP advance flow at the
-     * same speed. Idle worlds cost ~nothing - the scheduler returns
-     * immediately on an empty queue.
+     * + every moon world at a rate driven by flow_ticks_per_step.
      *
-     * Runs in BOTH SP and MP. In MP the server is authoritative on
-     * blocks; the local sim is best-effort visual prediction that
-     * stays in sync because the flow rule is deterministic and every
-     * client world_set goes through the same notify_edit path. A
-     * future per-tile water-state broadcast can replace the local
-     * sim if drift becomes visible.
+     * SP-only. In MP the server is authoritative on water blocks
+     * (and state) and broadcasts every change via CHUNK_DIFF; the
+     * client used to also run the sim locally as "best-effort visual
+     * prediction", but that caused two real bugs the audit logs
+     * surfaced:
      *
-     * After each step we drain the per-world persist-dirty bitset
-     * and persist the touched water-state columns to localStorage
-     * via persistence_save_water_state. Gated on SP - the MP client
-     * doesn't write to localStorage so the local sim's transient
-     * state doesn't bleed across rejoins (the MP authoritative store
-     * lives server-side). */
+     *   1. Determinism drift. The local sim and the server's sim
+     *      shared rules but not tick alignment; transient mismatches
+     *      between "client predicted level=2" and "server replays
+     *      level=1" produced flicker and remesh churn.
+     *   2. Runaway remesh storm on login. Pulling 800+ saved tiles
+     *      via /saves/body enqueued thousands of cells for local
+     *      simulation; the per-frame step then mutated 100-200 tiles
+     *      every tick and the renderer's chunk-rebuild cap (1 chunk
+     *      per frame) couldn't keep up, producing 160-200 ms frame
+     *      stalls indefinitely.
+     *
+     * Skipping world_water_step in MP fixes both: block changes still
+     * arrive via CHUNK_DIFF and are applied to the world directly, no
+     * per-frame mutation cycle is needed. State-byte updates (cap
+     * heights, level field) follow the server snapshot if/when we
+     * broadcast them; until then MP cells render as flat sleeping-
+     * ocean-equivalent water, which is a visual regression we accept
+     * in exchange for stable framerate. */
     {
         const water_flow_config_t* wf = config_water_flow();
         const float TICK_PERIOD_S = 0.05f;     /* matches MP tick_hz=20 */
@@ -2211,12 +2217,12 @@ static void frame(void) {
         if (period_s < TICK_PERIOD_S) period_s = TICK_PERIOD_S;
         static float water_accum_s = 0.0f;
         water_accum_s += dt;
-        if (water_accum_s >= period_s) {
+        const bool sp = (menu_state() == GAME_IN_GAME_SP);
+        if (sp && water_accum_s >= period_s) {
             water_accum_s = 0.0f;
             int budget = wf->max_ticks_per_step;
             if (budget < 1) budget = 1;
-            const bool sp = (menu_state() == GAME_IN_GAME_SP);
-            const char* sp_world = sp ? menu_active_world() : NULL;
+            const char* sp_world = menu_active_world();
             static int dirty_tiles[8192];
             world_t* worlds[33] = { G.world };
             int n_worlds = G.world ? 1 : 0;
@@ -2226,7 +2232,10 @@ static void frame(void) {
             for (int wi = 0; wi < n_worlds; ++wi) {
                 world_t* w = worlds[wi];
                 world_water_step(w, budget);
-                if (!sp || !sp_world || !*sp_world || !w->body) continue;
+                /* Outer `if (sp && ...)` already gated the whole
+                 * block; here we only skip worlds without a body or
+                 * an active save key. */
+                if (!sp_world || !*sp_world || !w->body) continue;
                 int n = world_water_drain_persist_dirty(
                     w, dirty_tiles,
                     (int)(sizeof dirty_tiles / sizeof dirty_tiles[0]));
