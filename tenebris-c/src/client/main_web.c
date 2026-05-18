@@ -2281,7 +2281,23 @@ static void frame(void) {
      * frame the WELCOME arrives, and simulation resumes from there. */
     const bool mp_loading = (menu_state() == GAME_IN_GAME_MP
                              && net_client_state() != NET_CLIENT_READY);
-    if (!mp_loading) {
+    /* Worldgen freeze: until the player's body has finished streaming
+     * every tile, the column the player is standing on may still be
+     * past gen_cursor. world_walkable_floor_near falls back to the
+     * analytic procgen surface for ungenerated tiles, but that
+     * fallback assumes the player's CURRENT pose already sits at or
+     * above that surface - which isn't true on a cold load if the
+     * pose was saved on a tile that hasn't streamed in yet (the
+     * player ends up below the analytic floor and the bedrock-fall
+     * rescue fires, teleporting them to a random spot).
+     *
+     * Simplest fix: pause physics entirely while gen is still
+     * running. The loading-screen overlay already covers this time
+     * visually, so the player sees "loading world... 73%" then
+     * smoothly resumes from their saved pose the moment streaming
+     * finishes. No drift, no rescues, no through-the-world spawns. */
+    const bool worldgen_loading = (phys_world && !world_gen_complete(phys_world));
+    if (!mp_loading && !worldgen_loading) {
         player_update(&G.player, phys_world, dt);
     }
     profiler_end("player-update");
