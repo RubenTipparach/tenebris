@@ -2597,39 +2597,25 @@ void server_tick(server_t* s) {
                         }                                                                    \
                     } while (0)
 
+                    /* PASS 1: persist + accumulate block edits across
+                     * all dirty tiles, flushing the cross-tile batcher
+                     * to the wire as it fills up. State diffs are NOT
+                     * sent in this pass.
+                     *
+                     * The two passes are deliberate: state diffs sent
+                     * interleaved with block edits create a window where
+                     * the client has applied the new state column for a
+                     * tile but the block edits for the same tile are
+                     * still sitting in the batcher waiting for the
+                     * buffer to fill. The mesher rebuilds with new
+                     * state + old blocks and draws phantom walls that
+                     * vanish on relog (because /saves/body re-syncs
+                     * atomically). Sending blocks first guarantees
+                     * blocks-then-state ordering on the wire and the
+                     * client always sees a consistent (block, state)
+                     * pair when it remeshes. */
                     for (int i = 0; i < n; ++i) {
                         int tile = dirty_tiles[i];
-                        saves_write_water_state(w, room->code, s->cfg.seed,
-                                                 tile);
-
-                        /* 1. Water-state column broadcast (per-tile -
-                         * the message carries a full 128-byte state
-                         * column and the protocol has no slot to
-                         * combine columns from multiple tiles). */
-                        const uint8_t* state_col =
-                            world_water_state_column(w, tile);
-                        if (state_col) {
-                            msg_water_state_diff_t wsd = { 0 };
-                            wsd.body_id  = (uint32_t)w->body->id;
-                            wsd.tile_idx = (uint32_t)tile;
-                            memcpy(wsd.state, state_col, sizeof wsd.state);
-                            uint8_t buf[MSG_HEADER_SIZE
-                                        + MSG_WATER_STATE_DIFF_WIRE_SIZE];
-                            size_t bn = proto_write_water_state_diff(buf,
-                                                                      sizeof buf,
-                                                                      &wsd);
-                            if (bn > 0) {
-                                for (int j = 0; j < SERVER_MAX_CLIENTS; ++j) {
-                                    const server_client_t* peer = &s->clients[j];
-                                    if (!peer->conn) continue;
-                                    if (strcmp(peer->room, room->code) != 0) continue;
-                                    net_send(peer->conn, NET_CHANNEL_RELIABLE, buf, bn);
-                                }
-                            }
-                        }
-
-                        /* 2. Block-level edits accumulated into the
-                         * cross-tile batcher. Flush whenever full. */
                         const uint8_t* col =
                             &w->blocks[(size_t)tile * WORLD_MAX_DEPTH];
                         for (int d = 0; d < WORLD_MAX_DEPTH; ++d) {
@@ -2641,21 +2627,48 @@ void server_tick(server_t* s) {
                                 WATER_FLUSH_BATCH();
                             }
                         }
-
-                        /* 3. Persist the block column too. */
                         saves_write_tile(w, room->code, s->cfg.seed, tile);
-
-                        /* The world_set inside the sim marked this
-                         * tile's tile_dirty bit (plus its neighbours).
-                         * Clear THIS tile's bit so the bitset doesn't
-                         * accumulate indefinitely - neighbours stay
-                         * marked but harmlessly so since the server
-                         * never reads world_tile_dirty for rendering. */
                         world_tile_clear_dirty(w, tile);
                     }
-                    /* Flush any partial batch left over after the
-                     * last tile. */
+                    /* Drain any partial batch before we move on to
+                     * state diffs - any state diff sent before this
+                     * flush could land on the client ahead of its
+                     * block updates. */
                     WATER_FLUSH_BATCH();
+
+                    /* PASS 2: persist + broadcast state-column diffs.
+                     * Now that every dirty tile's block updates are on
+                     * the wire, the state diffs land on top of a
+                     * consistent block layout. State columns can't be
+                     * cross-tile batched - each diff carries the full
+                     * 128-byte column for a single tile - so this
+                     * stays one message per tile, but that's the
+                     * smaller of the two message types and only fires
+                     * once the block ordering invariant holds. */
+                    for (int i = 0; i < n; ++i) {
+                        int tile = dirty_tiles[i];
+                        saves_write_water_state(w, room->code, s->cfg.seed,
+                                                 tile);
+                        const uint8_t* state_col =
+                            world_water_state_column(w, tile);
+                        if (!state_col) continue;
+                        msg_water_state_diff_t wsd = { 0 };
+                        wsd.body_id  = (uint32_t)w->body->id;
+                        wsd.tile_idx = (uint32_t)tile;
+                        memcpy(wsd.state, state_col, sizeof wsd.state);
+                        uint8_t buf[MSG_HEADER_SIZE
+                                    + MSG_WATER_STATE_DIFF_WIRE_SIZE];
+                        size_t bn = proto_write_water_state_diff(buf,
+                                                                  sizeof buf,
+                                                                  &wsd);
+                        if (bn == 0) continue;
+                        for (int j = 0; j < SERVER_MAX_CLIENTS; ++j) {
+                            const server_client_t* peer = &s->clients[j];
+                            if (!peer->conn) continue;
+                            if (strcmp(peer->room, room->code) != 0) continue;
+                            net_send(peer->conn, NET_CHANNEL_RELIABLE, buf, bn);
+                        }
+                    }
                     #undef WATER_FLUSH_BATCH
                 }
             }
