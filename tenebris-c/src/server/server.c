@@ -2523,68 +2523,69 @@ void server_tick(server_t* s) {
                     world_t* w = room->worlds[wi];
                     if (!w) continue;
                     world_water_step(w, budget);
+                    /* persist_dirty is the list of tiles where the
+                     * water sim actually mutated state. That's the
+                     * authoritative list of "what changed this step".
+                     * The previous version of this broadcast loop
+                     * iterated world_tile_dirty instead, which gets
+                     * marked by world_set for the edited tile AND
+                     * its 5-6 neighbours (for renderer seam logic) -
+                     * so a single water cell change cascaded into 7
+                     * broadcasts, and clients ended up remeshing all
+                     * 32 chunks every step. Sticking to persist_dirty
+                     * collapses the storm down to actually-edited
+                     * tiles only.
+                     *
+                     * Per edited tile we send three things:
+                     *   1. saves_write_water_state - durable copy of
+                     *      the state-byte column.
+                     *   2. MSG_WATER_STATE_DIFF broadcast - so client
+                     *      cap heights / bell-curve / falling-flag
+                     *      visuals mirror the authoritative sim.
+                     *   3. MSG_CHUNK_DIFF broadcast + saves_write_tile -
+                     *      so the block-level AIR/WATER changes the
+                     *      sim drives reach clients and disk.
+                     *
+                     * neighbour tiles dirtied by world_set's seam
+                     * logic are left in tile_dirty on the server but
+                     * never iterated; that's harmless (the server
+                     * doesn't render). */
                     int n = world_water_drain_persist_dirty(
                         w, dirty_tiles,
                         (int)(sizeof dirty_tiles / sizeof dirty_tiles[0]));
+                    if (!w->body) {
+                        n = 0;  /* no broadcasts without a body id */
+                    }
                     for (int i = 0; i < n; ++i) {
                         int tile = dirty_tiles[i];
                         saves_write_water_state(w, room->code, s->cfg.seed,
                                                  tile);
-                        /* Broadcast the water-state column to peers in
-                         * the room so client-side cap heights / bell
-                         * curve / falling-flag visuals mirror the
-                         * authoritative sim. Without this, every MP
-                         * cell renders at state=0 (sleeping-ocean
-                         * equivalent, full voxel height) and no flow
-                         * visuals show. Sent alongside (not instead
-                         * of) the block-level CHUNK_DIFF below. */
-                        if (!w->body) continue;
+
+                        /* 1. Water-state column broadcast. */
                         const uint8_t* state_col =
                             world_water_state_column(w, tile);
-                        if (!state_col) continue;
-                        msg_water_state_diff_t wsd = { 0 };
-                        wsd.body_id  = (uint32_t)w->body->id;
-                        wsd.tile_idx = (uint32_t)tile;
-                        memcpy(wsd.state, state_col, sizeof wsd.state);
-                        uint8_t buf[MSG_HEADER_SIZE
-                                    + MSG_WATER_STATE_DIFF_WIRE_SIZE];
-                        size_t bn = proto_write_water_state_diff(buf,
-                                                                  sizeof buf,
-                                                                  &wsd);
-                        if (bn == 0) continue;
-                        for (int j = 0; j < SERVER_MAX_CLIENTS; ++j) {
-                            const server_client_t* peer = &s->clients[j];
-                            if (!peer->conn) continue;
-                            if (strcmp(peer->room, room->code) != 0) continue;
-                            net_send(peer->conn, NET_CHANNEL_RELIABLE, buf, bn);
+                        if (state_col) {
+                            msg_water_state_diff_t wsd = { 0 };
+                            wsd.body_id  = (uint32_t)w->body->id;
+                            wsd.tile_idx = (uint32_t)tile;
+                            memcpy(wsd.state, state_col, sizeof wsd.state);
+                            uint8_t buf[MSG_HEADER_SIZE
+                                        + MSG_WATER_STATE_DIFF_WIRE_SIZE];
+                            size_t bn = proto_write_water_state_diff(buf,
+                                                                      sizeof buf,
+                                                                      &wsd);
+                            if (bn > 0) {
+                                for (int j = 0; j < SERVER_MAX_CLIENTS; ++j) {
+                                    const server_client_t* peer = &s->clients[j];
+                                    if (!peer->conn) continue;
+                                    if (strcmp(peer->room, room->code) != 0) continue;
+                                    net_send(peer->conn, NET_CHANNEL_RELIABLE, buf, bn);
+                                }
+                            }
                         }
-                    }
 
-                    /* Broadcast block-level changes the sim made to
-                     * peers in this room. The water step calls
-                     * world_set inside try_propagate / tick_cell to
-                     * spawn falling cells and drain dried-up cells;
-                     * world_set marks the tile dirty via the same
-                     * bitset the renderer reads. Without this drain
-                     * the client never sees sim-driven block changes -
-                     * water looks frozen except for player-placed
-                     * sources (which still go out via the PLAYER_CMD
-                     * single-entry CHUNK_DIFF path).
-                     *
-                     * We send the full 128-cell column per dirty tile
-                     * (same shape send_chunk_replay uses on join).
-                     * Per-cell diffing would be cheaper on the wire
-                     * but requires extra tracking inside world_water;
-                     * acceptable trade for now since water settles
-                     * fast in practice. The two CHUNK_DIFFs needed
-                     * per tile (64 cells each) sum to ~640 bytes,
-                     * bounded by the per-tick budget so the network
-                     * cost stays predictable. */
-                    if (!w->body) continue;
-                    for (int tile = 0; tile < w->tile_count; ++tile) {
-                        if (!world_tile_dirty(w, tile)) continue;
-                        world_tile_clear_dirty(w, tile);
-
+                        /* 2. Block-level column broadcast (two
+                         * CHUNK_DIFFs, 64 entries each). */
                         const uint8_t* col =
                             &w->blocks[(size_t)tile * WORLD_MAX_DEPTH];
                         int depth = 0;
@@ -2596,10 +2597,10 @@ void server_tick(server_t* s) {
                                 batch = CHUNK_DIFF_MAX_EDITS;
                             }
                             diff.edit_count = (uint16_t)batch;
-                            for (int i = 0; i < batch; ++i) {
-                                diff.edits[i].tile_idx   = (uint32_t)tile;
-                                diff.edits[i].depth      = (uint16_t)(depth + i);
-                                diff.edits[i].block_type = (uint16_t)col[depth + i];
+                            for (int e = 0; e < batch; ++e) {
+                                diff.edits[e].tile_idx   = (uint32_t)tile;
+                                diff.edits[e].depth      = (uint16_t)(depth + e);
+                                diff.edits[e].block_type = (uint16_t)col[depth + e];
                             }
                             depth += batch;
 
@@ -2614,12 +2615,17 @@ void server_tick(server_t* s) {
                                 net_send(peer->conn, NET_CHANNEL_RELIABLE, buf, bn);
                             }
                         }
-                        /* Also persist the column to disk - water-
-                         * driven block changes need to survive a
-                         * server restart, exactly like player edits
-                         * do via saves_write_tile in the PLAYER_CMD
-                         * handler. */
+
+                        /* 3. Persist the block column too. */
                         saves_write_tile(w, room->code, s->cfg.seed, tile);
+
+                        /* The world_set inside the sim marked this
+                         * tile's tile_dirty bit (plus its neighbours).
+                         * Clear THIS tile's bit so the bitset doesn't
+                         * accumulate indefinitely - neighbours stay
+                         * marked but harmlessly so since the server
+                         * never reads world_tile_dirty for rendering. */
+                        world_tile_clear_dirty(w, tile);
                     }
                 }
             }

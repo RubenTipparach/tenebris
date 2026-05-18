@@ -711,7 +711,7 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
              * Counter is reset to zero in the bottom-of-update
              * recorder whenever player_update completes with the
              * player grounded on a real floor. */
-            const int RESCUE_LOOP_LIMIT = 3;
+            const int RESCUE_LOOP_LIMIT = 2;
             ++p->rescue_loop_count;
 
             /* "Valid ground" predicate: the cell directly under
@@ -777,7 +777,15 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
                 dvec3_t unit_dir = (r_now > 1e-6)
                     ? dvec3_scale(local, 1.0 / r_now)
                     : dvec3_make(1, 0, 0);
-                dvec3_t safe_local = world_safe_spawn_local(w, unit_dir, 5.0);
+                /* Headroom raised to 50 m (was 5 m) so the
+                 * heavyweight rescue puts the player WELL above the
+                 * column's top, not 5 m above where they could re-
+                 * intersect terrain on the very next tick if procgen
+                 * disagrees with the mesh or chunks aren't rebuilt
+                 * yet. Gravity will land them on the actual surface
+                 * within a few hundred ms; a 50 m fall is the cost
+                 * of guaranteeing no further loop. */
+                dvec3_t safe_local = world_safe_spawn_local(w, unit_dir, 50.0);
                 dvec3_t center = dvec3_make(p->body->pos_x,
                                             p->body->pos_y,
                                             p->body->pos_z);
