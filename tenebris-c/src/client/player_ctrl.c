@@ -419,6 +419,10 @@ void player_init(player_ctrl_t* p, const body_config_t* body) {
     /* Spawn ~2 m above body's prime meridian surface. */
     const double r0 = body->radius_m + 2.0;
     p->position = dvec3_make(body->pos_x + r0, body->pos_y, body->pos_z);
+    /* No "safe pose" recorded yet - first grounded frame will fill
+     * this in. Sentinel: last_good_body == NULL. */
+    p->last_good_position = (dvec3_t){0};
+    p->last_good_body     = NULL;
 }
 
 dvec3_t player_world_pos(const player_ctrl_t* p) { return p->position; }
@@ -690,22 +694,52 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
             dvec3_make(p->body->pos_x, p->body->pos_y, p->body->pos_z));
         double r_now = dvec3_length(local);
         if (r_now < min_line_r) {
-            dvec3_t unit_dir = (r_now > 1e-6)
-                ? dvec3_scale(local, 1.0 / r_now)
-                : dvec3_make(1, 0, 0);
-            dvec3_t safe_local = world_safe_spawn_local(w, unit_dir, 5.0);
-            dvec3_t center = dvec3_make(p->body->pos_x,
-                                        p->body->pos_y,
-                                        p->body->pos_z);
-            fprintf(stderr,
-                    "[player] WARN: fell through MINIMUM LINE on body=%s "
-                    "(r=%.2f < %.2f, body_radius=%.1f); popping back up to "
-                    "surface at this direction (new_r=%.2f)\n",
-                    p->body->name, r_now, min_line_r,
-                    (double)p->body->radius_m,
-                    dvec3_length(safe_local));
-            fflush(stderr);
-            p->position = dvec3_add(center, safe_local);
+            /* Preferred rescue: pop straight back to the last recorded
+             * safe position. Captured per-frame at the bottom of
+             * player_update while the player was grounded well above
+             * bedrock, so it's the spot they were actually playing
+             * in - not the prime-meridian spawn that the unit-dir
+             * fallback collapses to when r_now goes near zero. */
+            bool used_last_good = false;
+            if (p->last_good_body == p->body) {
+                /* Confirm the recorded pose is itself above the
+                 * danger zone before teleporting onto it; a stale
+                 * record from the moment before we fell could land
+                 * us straight back below bedrock. */
+                dvec3_t lg_local = dvec3_sub(p->last_good_position,
+                    dvec3_make(p->body->pos_x, p->body->pos_y, p->body->pos_z));
+                double lg_r = dvec3_length(lg_local);
+                if (lg_r > min_line_r + 1.0) {
+                    fprintf(stderr,
+                            "[player] WARN: fell through MINIMUM LINE on body=%s "
+                            "(r=%.2f < %.2f); restoring last safe pose at "
+                            "(%.2f, %.2f, %.2f) r=%.2f\n",
+                            p->body->name, r_now, min_line_r,
+                            p->last_good_position.x, p->last_good_position.y,
+                            p->last_good_position.z, lg_r);
+                    fflush(stderr);
+                    p->position = p->last_good_position;
+                    used_last_good = true;
+                }
+            }
+            if (!used_last_good) {
+                dvec3_t unit_dir = (r_now > 1e-6)
+                    ? dvec3_scale(local, 1.0 / r_now)
+                    : dvec3_make(1, 0, 0);
+                dvec3_t safe_local = world_safe_spawn_local(w, unit_dir, 5.0);
+                dvec3_t center = dvec3_make(p->body->pos_x,
+                                            p->body->pos_y,
+                                            p->body->pos_z);
+                fprintf(stderr,
+                        "[player] WARN: fell through MINIMUM LINE on body=%s "
+                        "(r=%.2f < %.2f, body_radius=%.1f); no last-good pose, "
+                        "popping back up to surface at current direction (new_r=%.2f)\n",
+                        p->body->name, r_now, min_line_r,
+                        (double)p->body->radius_m,
+                        dvec3_length(safe_local));
+                fflush(stderr);
+                p->position = dvec3_add(center, safe_local);
+            }
             p->velocity = dvec3_make(0, 0, 0);
             p->grounded = false;
             p->last_tile = -1;
@@ -1183,6 +1217,37 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
         p->grounded = false;
     }
     (void)feet_in_water;   /* feet probe reserved for footstep / dive sound hooks */
+
+    /* Record this position as the "last safe" pose if we're solidly
+     * standing on this body's surface, well above bedrock. The
+     * bedrock-fall rescue at the top of player_update reads this
+     * value to teleport the player back to the spot they were
+     * actually playing in, instead of computing a surface point
+     * from a degenerate near-zero radial (which collapses to the
+     * body's prime-meridian default - the "spawn at origin" the
+     * player kept hitting after every fall).
+     *
+     * Conditions for "safe":
+     *   - we have a body (not currently flying in deep space),
+     *   - we're grounded this frame (feet on solid voxels),
+     *   - the player is at least SAFE_MARGIN_ABOVE_BEDROCK_M above
+     *     the body's minimum-line radius (so we never persist a
+     *     pose that's itself in the danger zone).
+     *
+     * Updated lazily once per frame; cheap, no allocations. */
+    if (p->body && !p->is_in_space && p->grounded) {
+        const double SAFE_MARGIN_ABOVE_BEDROCK_M = 16.0;
+        const double bedrock_r  = (double)p->body->radius_m - 64.0;
+        const double min_line_r = (bedrock_r > 0.5) ? bedrock_r : 0.5;
+        dvec3_t local = dvec3_sub(p->position, dvec3_make(p->body->pos_x,
+                                                            p->body->pos_y,
+                                                            p->body->pos_z));
+        double r_now = dvec3_length(local);
+        if (r_now >= min_line_r + SAFE_MARGIN_ABOVE_BEDROCK_M) {
+            p->last_good_position = p->position;
+            p->last_good_body     = p->body;
+        }
+    }
 
     /* End-of-frame jerk diagnostic. Compares current state against
      * the BEFORE snapshot taken at function entry; logs a single

@@ -62,6 +62,22 @@ typedef struct {
      * center, surface normal comes from (position - body.pos). Swapped
      * by player_teleport_to; defaults to Tenebris at player_init. */
     const body_config_t* body;
+
+    /* Last "safe" position - updated each frame the player is grounded
+     * and well above the bedrock floor. Read by the bedrock-fall
+     * rescue in player_update so a player who fell through the world
+     * gets teleported back to where they were actually standing
+     * instead of computing a surface point from a near-zero radial
+     * (which degenerates into the body's prime-meridian default,
+     * i.e. the spawn-at-origin bug the player keeps hitting).
+     *
+     * last_good_body tracks which body the last_good_position lives
+     * on - the player may have been standing on a moon and the
+     * rescue needs to teleport them back to that moon, not the
+     * current body. NULL = no recorded safe pose yet, fall back to
+     * the legacy unit-direction rescue. */
+    dvec3_t              last_good_position;
+    const body_config_t* last_good_body;
 } player_ctrl_t;
 
 void    player_init(player_ctrl_t* p, const body_config_t* body);
