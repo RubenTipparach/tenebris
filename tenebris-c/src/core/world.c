@@ -145,6 +145,20 @@ static void gen_tile(world_t* w, int tile_idx) {
                     if (d <= surface_idx) continue;
                     if (column[d] == BLOCK_AIR) column[d] = leaf_block;
                 }
+                /* Tree placement diverges this column from the bare
+                 * analytic surface - the wood/leaves voxels sit above
+                 * where world_analytic_surface_r predicts the floor is.
+                 * Mark the column edited so world_walkable_floor_near
+                 * takes the slow voxel-scan path instead of returning
+                 * the grass radius (which is BELOW the tree, making
+                 * the player fall straight through trunk and canopy).
+                 * Bug report: "I still cannot stand on top of natural
+                 * forming trees" - snapshot showed WOOD d=75..78 +
+                 * LEAVES d=79..80 but ground-snap was reporting the
+                 * grass top at d=74. */
+                if (w->edited) {
+                    w->edited[tile_idx >> 3] |= (uint8_t)(1u << (tile_idx & 7));
+                }
             }
         }
     }
@@ -264,6 +278,14 @@ void world_tile_mark_saved(world_t* w, int tile) {
         if (!w->saved) { w->saved_bytes = 0; return; }
     }
     w->saved[tile >> 3] |= (uint8_t)(1 << (tile & 7));
+    /* A column persisted to disk diverges from procgen - otherwise
+     * we wouldn't have bothered saving it. Flip edited too so the
+     * walkable-floor fast path takes the slow voxel scan instead of
+     * returning the analytic surface (which sits below any saved
+     * tree, built bridge, or carved overhang). */
+    if (w->edited) {
+        w->edited[tile >> 3] |= (uint8_t)(1u << (tile & 7));
+    }
 }
 
 void world_dirty_in_range(world_t* w, vec3_t world_pos, float radius_m) {
