@@ -2530,6 +2530,68 @@ void server_tick(server_t* s) {
                         saves_write_water_state(w, room->code, s->cfg.seed,
                                                  dirty_tiles[i]);
                     }
+
+                    /* Broadcast block-level changes the sim made to
+                     * peers in this room. The water step calls
+                     * world_set inside try_propagate / tick_cell to
+                     * spawn falling cells and drain dried-up cells;
+                     * world_set marks the tile dirty via the same
+                     * bitset the renderer reads. Without this drain
+                     * the client never sees sim-driven block changes -
+                     * water looks frozen except for player-placed
+                     * sources (which still go out via the PLAYER_CMD
+                     * single-entry CHUNK_DIFF path).
+                     *
+                     * We send the full 128-cell column per dirty tile
+                     * (same shape send_chunk_replay uses on join).
+                     * Per-cell diffing would be cheaper on the wire
+                     * but requires extra tracking inside world_water;
+                     * acceptable trade for now since water settles
+                     * fast in practice. The two CHUNK_DIFFs needed
+                     * per tile (64 cells each) sum to ~640 bytes,
+                     * bounded by the per-tick budget so the network
+                     * cost stays predictable. */
+                    if (!w->body) continue;
+                    for (int tile = 0; tile < w->tile_count; ++tile) {
+                        if (!world_tile_dirty(w, tile)) continue;
+                        world_tile_clear_dirty(w, tile);
+
+                        const uint8_t* col =
+                            &w->blocks[(size_t)tile * WORLD_MAX_DEPTH];
+                        int depth = 0;
+                        while (depth < WORLD_MAX_DEPTH) {
+                            msg_chunk_diff_t diff = { 0 };
+                            diff.body_id = (uint32_t)w->body->id;
+                            int batch = WORLD_MAX_DEPTH - depth;
+                            if (batch > CHUNK_DIFF_MAX_EDITS) {
+                                batch = CHUNK_DIFF_MAX_EDITS;
+                            }
+                            diff.edit_count = (uint16_t)batch;
+                            for (int i = 0; i < batch; ++i) {
+                                diff.edits[i].tile_idx   = (uint32_t)tile;
+                                diff.edits[i].depth      = (uint16_t)(depth + i);
+                                diff.edits[i].block_type = (uint16_t)col[depth + i];
+                            }
+                            depth += batch;
+
+                            uint8_t buf[MSG_HEADER_SIZE + MSG_CHUNK_DIFF_HEADER_SIZE
+                                        + MSG_CHUNK_DIFF_ENTRY_SIZE * CHUNK_DIFF_MAX_EDITS];
+                            size_t bn = proto_write_chunk_diff(buf, sizeof buf, &diff);
+                            if (bn == 0) break;
+                            for (int j = 0; j < SERVER_MAX_CLIENTS; ++j) {
+                                const server_client_t* peer = &s->clients[j];
+                                if (!peer->conn) continue;
+                                if (strcmp(peer->room, room->code) != 0) continue;
+                                net_send(peer->conn, NET_CHANNEL_RELIABLE, buf, bn);
+                            }
+                        }
+                        /* Also persist the column to disk - water-
+                         * driven block changes need to survive a
+                         * server restart, exactly like player edits
+                         * do via saves_write_tile in the PLAYER_CMD
+                         * handler. */
+                        saves_write_tile(w, room->code, s->cfg.seed, tile);
+                    }
                 }
             }
         }
