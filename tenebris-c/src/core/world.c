@@ -208,6 +208,43 @@ void world_set(world_t* w, int tile, int depth, block_t b) {
     uint8_t old = w->blocks[idx];
     w->blocks[idx] = (uint8_t)b;
     w->dirty[tile >> 3] |= (uint8_t)(1 << (tile & 7));
+
+    /* Water-sim cleanup on block change.
+     *
+     * (a) WATER -> anything-else: the state byte still has whatever
+     * flags the sim left there (most importantly WATER_FLAG_SOURCE
+     * if this was a player-placed source). Adjacent flow cells scan
+     * neighbour state bytes when looking for a supplier - a stale
+     * SOURCE flag on an AIR cell makes them think the source is
+     * still alive, so they never dry up. Clear the state byte and
+     * re-enqueue the cell itself plus its column-up / column-down /
+     * 6 edge neighbours so the sim revisits them next step.
+     *
+     * Bug report: "if I kill a spawner block, that should propagate
+     * to adjacent chains of flow blocks" - this is the wiring.
+     *
+     * (b) anything-else -> WATER: a new water cell needs to be
+     * scheduled too so the sim ticks it (e.g. a player-placed source
+     * starts spreading immediately, or an AIR cell flooded by a
+     * world_set wasn't auto-scheduled). Same enqueue list.
+     *
+     * Both branches enqueue the same way, so collapse the test. */
+    if ((block_t)old == BLOCK_WATER || b == BLOCK_WATER) {
+        if ((block_t)old == BLOCK_WATER) {
+            /* Block leaving water - drop the stale state. */
+            world_water_clear_state(w, tile, depth);
+        }
+        world_water_enqueue(w, tile, depth);
+        if (depth + 1 < WORLD_MAX_DEPTH) world_water_enqueue(w, tile, depth + 1);
+        if (depth - 1 >= 0)              world_water_enqueue(w, tile, depth - 1);
+        const goldberg_tile_t* tn = goldberg_tile(w->grid, tile);
+        if (tn) {
+            for (int i = 0; i < tn->num_neighbors; ++i) {
+                int nb = tn->neighbors[i];
+                if (nb >= 0) world_water_enqueue(w, nb, depth);
+            }
+        }
+    }
     /* Mark the column as edited from procgen so collision queries
      * fall through to the voxel-scan path. Until set, the
      * walkable-floor query short-circuits to the analytic surface
