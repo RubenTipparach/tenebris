@@ -744,6 +744,30 @@ void hex_mesh_build_water_voxels(hex_mesh_t* out, const world_t* w, int tile_idx
                            ? (block_t)w->blocks[(size_t)nb * WORLD_MAX_DEPTH + d]
                            : BLOCK_AIR;
 
+            /* Per-edge wall-top override. Normally our wall on this
+             * edge ends at r_top_cap (the dipped water surface). But
+             * if the neighbour ONE LAYER UP at this edge is water, its
+             * wall on this edge starts at the voxel boundary r_top_full
+             * - and our wall stopping below that boundary leaves an
+             * exposed band exactly cap_offset metres tall between the
+             * two cells. User report (annotated screenshot, two red
+             * arrows): "if a water block = flow and borders another
+             * water block that is height + 1, then generate that
+             * extra wall segment". This is that wall segment.
+             *
+             * Bridges the same way the above==WATER fix bridges
+             * stacked water in the same column - both cases boil down
+             * to "if the upper boundary is occupied by water, ride the
+             * wall up to the boundary so the joins are flush". */
+            double r_top_edge = r_top_cap;
+            if (nb >= 0 && d + 1 < WORLD_MAX_DEPTH) {
+                block_t nb_above = (block_t)w->blocks[
+                    (size_t)nb * WORLD_MAX_DEPTH + (d + 1)];
+                if (nb_above == BLOCK_WATER) {
+                    r_top_edge = r_top_full;
+                }
+            }
+
             if (nb_b == BLOCK_WATER) {
                 /* Sea-level row: every water cell here visually
                  * aligns with the planet-wide ocean cap regardless
@@ -767,7 +791,7 @@ void hex_mesh_build_water_voxels(hex_mesh_t* out, const world_t* w, int tile_idx
                 float nb_cap_offset = water_cap_offset_for_level(
                     nb_level, cfg_max_level, min_film, curve_power, surface_off);
                 double r_strip_bot = r_top_full + (double)nb_cap_offset;
-                double r_strip_top = r_top_cap;
+                double r_strip_top = r_top_edge;
                 if (r_strip_top - r_strip_bot > 1e-4) {
                     emit_side_quad(out, t, w, tile_idx, d, k, next,
                                    r_strip_bot, r_strip_top,
@@ -782,9 +806,11 @@ void hex_mesh_build_water_voxels(hex_mesh_t* out, const world_t* w, int tile_idx
             }
 
             /* Air (or transparent / non-covering): emit the full side
-             * face from r_bot up to our cap. */
+             * face from r_bot up to our cap (or up to the voxel
+             * boundary if the cell one layer up at this edge has
+             * water - r_top_edge folded that case in already). */
             emit_side_quad(out, t, w, tile_idx, d, k, next,
-                           r_bot, r_top_cap,
+                           r_bot, r_top_edge,
                            BLOCK_WATER, /*width=*/1.0f, /*wet=*/1.0f);
         }
     }
