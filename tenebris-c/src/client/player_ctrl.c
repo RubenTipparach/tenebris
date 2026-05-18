@@ -1418,8 +1418,29 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
                     p->last_good_position = p->position;
                     p->last_good_body     = p->body;
                     /* Clean grounded frame on real ground - the
-                     * rescue loop budget refreshes. */
-                    p->rescue_loop_count  = 0;
+                     * rescue loop budget refreshes ONLY when the
+                     * post-rescue window has fully elapsed. Without
+                     * this gate, the recorder fires on the first
+                     * frame after a rescue (the rescue destination
+                     * was deliberately picked to have solid ground
+                     * underneath, so the single-frame check trivially
+                     * passes), resets the loop count to 0, and the
+                     * NEXT fall-through fires as "rescue #1" again -
+                     * so the player flickers in an infinite loop
+                     * between the rescue spot and bedrock with the
+                     * counter never crossing the limit.
+                     *
+                     * The save-freeze timer (set to 5 s on every
+                     * rescue, decremented per frame) is the natural
+                     * "we just rescued, don't trust transient ground"
+                     * window. While it's still active, count this
+                     * grounded frame but don't reset the loop budget.
+                     * Once it expires, the player has been on real
+                     * ground long enough to clear the budget for
+                     * real. */
+                    if (p->rescue_save_freeze_s <= 0.0f) {
+                        p->rescue_loop_count = 0;
+                    }
                 }
             }
         }
