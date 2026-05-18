@@ -2563,6 +2563,57 @@ void server_tick(server_t* s) {
                 cl->sync_last_sent_s   = now;
                 cl->sync_next_send_s   = now + s->sync_interval_s;
                 ++cl->sync_outstanding;
+
+                /* Origin join-sync: alongside each SYNC_TICK, flood
+                 * this client with one MSG_WATER_ORIGINS_DIFF per
+                 * tile in its room that has any active origin
+                 * entries. /saves/body only carries blocks (built
+                 * from disk .col files); origins live in server
+                 * memory and aren't persisted yet, so without this
+                 * push a freshly-joined client sees zero flow
+                 * direction on all pre-existing flow cells. The
+                 * SYNC_TICK timer fires within ~30 s of join (and
+                 * periodically thereafter), so the client converges
+                 * to the right view shortly after joining.
+                 *
+                 * Per-client targeting (not room broadcast) because
+                 * the cost is paid once per fresh client - other
+                 * clients in the room already have their origin
+                 * state caught up via the realtime PASS 3 broadcast. */
+                for (int wi = 0; cl->room[0] && wi < SERVER_MAX_ROOMS; ++wi) {
+                    if (!s->rooms[wi].in_use) continue;
+                    if (strcmp(s->rooms[wi].code, cl->room) != 0) continue;
+                    for (int rwi = 0; rwi < s->rooms[wi].world_count; ++rwi) {
+                        world_t* w = s->rooms[wi].worlds[rwi];
+                        if (!w || !w->body) continue;
+                        for (int t = 0; t < w->tile_count; ++t) {
+                            water_origin_diff_entry_t buf_entries[
+                                MSG_WATER_ORIGINS_DIFF_MAX_ENTRIES];
+                            int written = world_water_origin_enum_tile(
+                                w, t, buf_entries,
+                                MSG_WATER_ORIGINS_DIFF_MAX_ENTRIES);
+                            if (written <= 0) continue;
+                            if (written > MSG_WATER_ORIGINS_DIFF_MAX_ENTRIES) {
+                                written = MSG_WATER_ORIGINS_DIFF_MAX_ENTRIES;
+                            }
+                            msg_water_origins_diff_t od = { 0 };
+                            od.body_id  = (uint32_t)w->body->id;
+                            od.tile_idx = (uint32_t)t;
+                            od.entry_count = (uint16_t)written;
+                            memcpy(od.entries, buf_entries,
+                                   (size_t)written * sizeof buf_entries[0]);
+                            uint8_t obuf[MSG_HEADER_SIZE
+                                         + MSG_WATER_ORIGINS_DIFF_MAX_SIZE];
+                            size_t obn = proto_write_water_origins_diff(
+                                obuf, sizeof obuf, &od);
+                            if (obn > 0) {
+                                net_send(cl->conn, NET_CHANNEL_RELIABLE,
+                                         obuf, obn);
+                            }
+                        }
+                    }
+                    break;
+                }
             }
         }
     }
