@@ -152,4 +152,13 @@ void net_client_send_torch(bool place_op, uint32_t body_id, int tile_idx,
  * builds (no HTTP client). */
 void net_client_fetch_body_saves(uint32_t body_id);
 
+/* Force a re-fetch of /saves/body even if the per-body dedup table
+ * already has it marked done. Used by the periodic water-resync
+ * timer in main_web - the realtime CHUNK_DIFF / WATER_STATE_DIFF
+ * broadcast layer is known to drop messages under load, and a
+ * /saves/body bulk fetch is the verified-correct ground truth (the
+ * "refresh-and-it's-fine" behaviour). Resets the slot to idle and
+ * issues the fetch via the normal path. No-op pre-READY. */
+void net_client_resync_body_saves(uint32_t body_id);
+
 #endif

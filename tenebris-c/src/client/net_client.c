@@ -1599,6 +1599,23 @@ void net_client_fetch_body_saves(uint32_t body_id) {
     net_client_js_fetch_body(url, body_id);
 }
 
+void net_client_resync_body_saves(uint32_t body_id) {
+    if (C.state != NET_CLIENT_READY) return;
+    /* Find the dedup slot and force it back to idle, so the
+     * fetch_body_saves call below doesn't bail on "already done".
+     * If the body has never been fetched, the call will allocate
+     * a slot itself - nothing to reset here. */
+    for (int i = 0; i < C.body_fetch_count; ++i) {
+        if (C.body_fetch[i].body_id == body_id) {
+            /* Don't disturb in-flight fetches - the response will
+             * land naturally. Only reset done (state == 2) slots. */
+            if (C.body_fetch[i].state == 2) C.body_fetch[i].state = 0;
+            break;
+        }
+    }
+    net_client_fetch_body_saves(body_id);
+}
+
 static void net_client_apply_body_blob(uint32_t expected_body_id,
                                          const uint8_t* data, size_t len) {
     if (len < SAVES_BODY_BLOB_HEADER) {
