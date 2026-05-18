@@ -675,6 +675,15 @@ void renderer_init(void) {
                         .format = SG_VERTEXFORMAT_FLOAT3,
                         .offset = (int)offsetof(hex_vertex_t, normal),
                     },
+                    /* a_uv carries the per-vertex flow direction baked
+                     * by the mesher - same contract as the desktop
+                     * water pipeline. Drives the triplanar sample-
+                     * position pan in the mobile fragment shader so
+                     * mobile players see flow direction too. */
+                    [ATTR_water_mobile_a_uv] = {
+                        .format = SG_VERTEXFORMAT_FLOAT2,
+                        .offset = (int)offsetof(hex_vertex_t, uv),
+                    },
                     [ATTR_water_mobile_a_sky_light] = {
                         .format = SG_VERTEXFORMAT_FLOAT,
                         .offset = (int)offsetof(hex_vertex_t, sky_light),

@@ -43,6 +43,7 @@ layout(binding=0) uniform vs_params_mobile {
 
 in vec3  a_pos;
 in vec3  a_normal;
+in vec2  a_uv;
 in float a_sky_light;
 in float a_torch_light;
 
@@ -51,6 +52,7 @@ out vec3  v_face_normal;
 out float v_sun_brightness;
 out float v_sky_light;
 out float v_torch_light;
+out vec2  v_flow_uv;
 
 void main() {
     gl_Position = u_vp * vec4(a_pos, 1.0);
@@ -58,6 +60,7 @@ void main() {
     v_face_normal = a_normal;
     v_sky_light   = a_sky_light;
     v_torch_light = a_torch_light;
+    v_flow_uv     = a_uv;
 
     vec3 surface_dir = normalize(a_pos - u_planet.xyz);
     float sun_facing = dot(surface_dir, normalize(u_sun_dir.xyz));
@@ -107,6 +110,7 @@ in vec3  v_face_normal;
 in float v_sun_brightness;
 in float v_sky_light;
 in float v_torch_light;
+in vec2  v_flow_uv;
 out vec4 frag_color;
 
 void main() {
@@ -124,7 +128,21 @@ void main() {
     float face_alignment  = abs(dot(face_n, radial));
     float vertical_factor = 1.0 - face_alignment;
     float fall_shift      = u_time * u_flow_speed_falling * vertical_factor;
-    vec3  shifted_pos     = v_wpos + radial * fall_shift;
+
+    // Per-cell horizontal flow pan. v_flow_uv is the per-vertex flow
+    // direction baked at mesh time (unit-ish 2D on top caps, (0,0)
+    // elsewhere). Reconstruct world-space flow with a basis built off
+    // face_n (matches the desktop shader recipe), then shift the
+    // triplanar sample position OPPOSITE the flow direction so the
+    // surface texture appears to stream IN flow direction. Gated by
+    // horizontal_factor = face_alignment so vertical side walls get
+    // zero pan and stay static (user spec: walls unaffected).
+    vec3 ftan_u = (abs(face_n.x) > 0.9) ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    ftan_u = normalize(ftan_u - face_n * dot(ftan_u, face_n));
+    vec3 ftan_v = cross(face_n, ftan_u);
+    vec3 flow_world = ftan_u * v_flow_uv.x + ftan_v * v_flow_uv.y;
+    vec3  shifted_pos     = v_wpos + radial * fall_shift
+                            - flow_world * (u_time * 0.35 * face_alignment);
 
     // Build a stable tangent basis at the body centre (NOT at the
     // fragment) so the basis is the same vector for every fragment in
