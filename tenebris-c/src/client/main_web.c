@@ -1563,6 +1563,47 @@ static const char* block_name(block_t b) {
         default:                   return "?";
     }
 }
+/* One-letter glyph per block_t for the ASCII column dump. Chosen so
+ * the common terrain blocks read at a glance:
+ *   a = air        w = water       s = snow
+ *   S = sand       d = dirt        g = grass
+ *   #  = stone     i = ice         T = torch
+ *   W = wood       L = leaves      b = bedrock
+ *   D = dirt-grass / dirt-snow side variants
+ *   m = moon       . = unknown
+ * Sequoia + tinted variants reuse their base biome glyph so the grid
+ * stays readable - the full BLOCK_ name is still in the verbose
+ * per-tile list above the grid if precise type is needed. */
+static char block_glyph(block_t b) {
+    switch (b) {
+        case BLOCK_AIR:            return 'a';
+        case BLOCK_WATER:          return 'w';
+        case BLOCK_SAND:           return 'S';
+        case BLOCK_DIRT:           return 'd';
+        case BLOCK_GRASS:          return 'g';
+        case BLOCK_STONE:          return '#';
+        case BLOCK_ICE:            return 'i';
+        case BLOCK_SNOW:           return 's';
+        case BLOCK_DIRT_GRASS:     return 'D';
+        case BLOCK_DIRT_SNOW:      return 'D';
+        case BLOCK_TORCH:          return 'T';
+        case BLOCK_MOON:           return 'm';
+        case BLOCK_SEQ_GRASS:      return 'g';
+        case BLOCK_SEQ_DIRT:       return 'd';
+        case BLOCK_SEQ_DIRT_GRASS: return 'D';
+        case BLOCK_SEQ_SAND:       return 'S';
+        case BLOCK_SEQ_SNOW:       return 's';
+        case BLOCK_SEQ_DIRT_SNOW:  return 'D';
+        case BLOCK_CRAG_ROCK:      return '#';
+        case BLOCK_FROST_ICE:      return 'i';
+        case BLOCK_ASTEROID_ROCK:  return '#';
+        case BLOCK_WOOD:           return 'W';
+        case BLOCK_LEAVES:         return 'L';
+        case BLOCK_BEDROCK:        return 'b';
+        case BLOCK_SEQ_LEAVES:     return 'L';
+        default:                   return '.';
+    }
+}
 static void print_block_snapshot(void) {
     world_t* w = G.player.body
         ? world_for_body(G.player.body)
@@ -1626,6 +1667,56 @@ static void print_block_snapshot(void) {
                    d, block_name(b), (unsigned)b, marker);
         }
     }
+
+    /* Visual hex layout: 3 neighbours above the player tile, 3 below,
+     * with the per-depth block glyphs lined up under the headers so
+     * you can scan a single row to compare blocks across all 7 tiles
+     * at one altitude. Single-letter glyphs (block_glyph) trade type
+     * precision for read-at-a-glance density - the verbose list above
+     * has the full BLOCK_ name when you need it.
+     *
+     * The 6-neighbour ordering follows goldberg_tile's
+     * edge_neighbours[k] array, which winds around the tile in a
+     * consistent rotation but doesn't necessarily map to the
+     * compass-style 1/2/3/4/5/6 layout drawn here. The grid still
+     * shows all 6 neighbours, just not necessarily in a
+     * geometrically faithful arrangement - good enough for "which
+     * neighbour has which block where" diagnosis. */
+    char nb_label[7] = "1234560";
+    printf("[snapshot] hex layout (m = feet tile, 1-6 = edge neighbours):\n");
+    printf("[snapshot]     %c %c %c\n",
+           nb_label[0], nb_label[1], nb_label[2]);
+    printf("[snapshot]      [m]\n");
+    printf("[snapshot]     %c %c %c\n",
+           nb_label[3], nb_label[4], nb_label[5]);
+    /* Header for the column dump. Group neighbours into (1,2,3) and
+     * (4,5,6) clusters with a space between to match the hex
+     * arrangement above. */
+    printf("[snapshot] depth  m  123 456\n");
+    for (int d = d_hi; d >= d_lo; --d) {
+        char m_glyph = '.';
+        char nb_glyphs[6] = { '.', '.', '.', '.', '.', '.' };
+        /* m = feet tile */
+        m_glyph = block_glyph(
+            (block_t)w->blocks[(size_t)own_tile * WORLD_MAX_DEPTH + d]);
+        /* edge neighbours in tile_ids[1..n_ids-1], up to 6 */
+        int max_nb = n_ids - 1;
+        if (max_nb > 6) max_nb = 6;
+        for (int k = 0; k < max_nb; ++k) {
+            int nb = tile_ids[1 + k];
+            nb_glyphs[k] = block_glyph(
+                (block_t)w->blocks[(size_t)nb * WORLD_MAX_DEPTH + d]);
+        }
+        const char* marker = (d == feet_depth) ? " <-- feet" : "";
+        printf("[snapshot]  d=%3d %c  %c%c%c %c%c%c%s\n",
+               d, m_glyph,
+               nb_glyphs[0], nb_glyphs[1], nb_glyphs[2],
+               nb_glyphs[3], nb_glyphs[4], nb_glyphs[5],
+               marker);
+    }
+    printf("[snapshot] legend: a=air w=water S=sand d=dirt g=grass "
+           "#=stone i=ice s=snow D=dirt-side T=torch W=wood L=leaves "
+           "b=bedrock m=moon .=other\n");
     printf("[snapshot] end\n\n");
     fflush(stdout);
 }
