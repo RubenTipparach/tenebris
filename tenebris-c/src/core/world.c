@@ -12,7 +12,7 @@
 /* Sea level sits at layer 64 in a 128-deep shell — layers 0..63 are
  * solid planet (bedrock + stone + seabed + water column); 64..127 are
  * usable build space + mountains above sea. */
-#define SEA_LEVEL_IDX 64
+#define SEA_LEVEL_IDX WORLD_SEA_LEVEL_DEPTH
 
 world_t* world_create(const body_config_t* body, int subdivisions) {
     world_t* w = (world_t*)calloc(1, sizeof(world_t));

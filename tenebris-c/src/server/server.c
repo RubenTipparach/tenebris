@@ -1857,6 +1857,125 @@ static void server_chat_say(server_t* s, const char* room, const char* text) {
     fflush(stdout);
 }
 
+/* Operator action: wipe every BLOCK_WATER cell at depth >=
+ * WORLD_SEA_LEVEL_DEPTH (i.e. anywhere above the natural ocean
+ * column) across one or every room. Lets the operator reset the
+ * playfield while iterating on the water sim without restarting the
+ * dedicated server. Subsurface ocean / lake water (depth < sea level)
+ * is left alone so the planet's natural water cap isn't destroyed.
+ *
+ * For each cleared cell the helper also drops the per-voxel flow
+ * state byte to 0 (any pending falling / level metadata becomes
+ * meaningless once the cell is air), persists the affected tile
+ * columns to disk, and broadcasts the updates to every connected peer
+ * in the matching room as batched CHUNK_DIFFs. Same write path the
+ * PLAYER_CMD handler uses for normal block edits, so clients converge
+ * via the existing diff replay without any new wire format.
+ *
+ * room_param semantics (mirrors /chat/send for consistency):
+ *   ""        -> the public lobby (room code == "")
+ *   __public__ -> alias for the public lobby
+ *   __all__   -> fan out across every in-use room
+ *   anything else -> that exact private room code
+ *
+ * Counts are written through to the out_* pointers (any may be NULL)
+ * so the HTTP handler can put them in the JSON response. */
+static void admin_clear_water_above_sea(server_t* s, const char* room_param,
+                                         int* out_cleared, int* out_tiles,
+                                         int* out_worlds, int* out_rooms) {
+    int total_cleared = 0;
+    int total_tiles   = 0;
+    int total_worlds  = 0;
+    int total_rooms   = 0;
+    if (!s) {
+        if (out_cleared) *out_cleared = 0;
+        if (out_tiles)   *out_tiles   = 0;
+        if (out_worlds)  *out_worlds  = 0;
+        if (out_rooms)   *out_rooms   = 0;
+        return;
+    }
+    const bool fan_all = (room_param && strcmp(room_param, "__all__") == 0);
+    const char* room_target = NULL;
+    if (!fan_all) {
+        room_target =
+            (room_param && strcmp(room_param, "__public__") == 0)
+                ? "" : (room_param ? room_param : "");
+    }
+
+    for (int ri = 0; ri < SERVER_MAX_ROOMS; ++ri) {
+        server_room_t* room = &s->rooms[ri];
+        if (!room->in_use) continue;
+        if (!fan_all && strcmp(room->code, room_target) != 0) continue;
+        ++total_rooms;
+
+        for (int wi = 0; wi < room->world_count; ++wi) {
+            world_t* w = room->worlds[wi];
+            if (!w || !w->body) continue;
+            bool world_touched = false;
+
+            for (int tile = 0; tile < w->tile_count; ++tile) {
+                /* Collect every depth in this column that needs to
+                 * change. Per-tile CHUNK_DIFF batching needs the list
+                 * up front anyway, and skipping unchanged columns
+                 * saves a saves_write_tile call (the slow part). */
+                msg_chunk_diff_entry_t pending[CHUNK_DIFF_MAX_EDITS];
+                int pending_n = 0;
+                /* At most WORLD_MAX_DEPTH - WORLD_SEA_LEVEL_DEPTH = 64
+                 * cells per column, which equals CHUNK_DIFF_MAX_EDITS.
+                 * One CHUNK_DIFF can therefore carry an entire column's
+                 * worth of clearings in a single message - no need to
+                 * loop and flush mid-column. */
+                for (int d = WORLD_SEA_LEVEL_DEPTH; d < WORLD_MAX_DEPTH; ++d) {
+                    if (w->blocks[(size_t)tile * WORLD_MAX_DEPTH + d]
+                            != (uint8_t)BLOCK_WATER) continue;
+                    world_set(w, tile, d, BLOCK_AIR);
+                    world_water_clear_state(w, tile, d);
+                    if (pending_n < CHUNK_DIFF_MAX_EDITS) {
+                        pending[pending_n].tile_idx   = (uint32_t)tile;
+                        pending[pending_n].depth      = (uint16_t)d;
+                        pending[pending_n].block_type = (uint16_t)BLOCK_AIR;
+                        ++pending_n;
+                    }
+                    ++total_cleared;
+                }
+                if (pending_n == 0) continue;
+                ++total_tiles;
+                world_touched = true;
+
+                /* Persist the new column to disk so a server restart
+                 * (or a fresh client join) sees the cleared state. */
+                saves_write_tile(w, room->code, s->cfg.seed, tile);
+
+                /* Broadcast the column's worth of edits as one
+                 * CHUNK_DIFF to every connected peer in this room. */
+                msg_chunk_diff_t diff = { 0 };
+                diff.body_id    = (uint32_t)w->body->id;
+                diff.edit_count = (uint16_t)pending_n;
+                for (int e = 0; e < pending_n; ++e) {
+                    diff.edits[e] = pending[e];
+                }
+                uint8_t buf[MSG_HEADER_SIZE + MSG_CHUNK_DIFF_HEADER_SIZE
+                            + MSG_CHUNK_DIFF_ENTRY_SIZE * CHUNK_DIFF_MAX_EDITS];
+                size_t bn = proto_write_chunk_diff(buf, sizeof buf, &diff);
+                if (bn > 0) {
+                    for (int j = 0; j < SERVER_MAX_CLIENTS; ++j) {
+                        const server_client_t* peer = &s->clients[j];
+                        if (!peer->conn) continue;
+                        if (strcmp(peer->room, room->code) != 0) continue;
+                        net_send(peer->conn, NET_CHANNEL_RELIABLE, buf, bn);
+                    }
+                }
+            }
+            if (world_touched) ++total_worlds;
+        }
+    }
+
+    if (out_cleared) *out_cleared = total_cleared;
+    if (out_tiles)   *out_tiles   = total_tiles;
+    if (out_worlds)  *out_worlds  = total_worlds;
+    if (out_rooms)   *out_rooms   = total_rooms;
+}
+
 static int on_http(const char* path,
                     const uint8_t** out_body, size_t* out_body_len,
                     const char** out_mime, void* user) {
@@ -2049,6 +2168,34 @@ static int on_http(const char* path,
         *out_mime     = "application/octet-stream";
         return 1;
     }
+    if (strcmp(clean, "/admin/clear_water_above_sea") == 0) {
+        /* Open endpoint, same convention as /chat/send. If admin
+         * abuse becomes a problem, gate behind TENEBRIS_ADMIN_TOKEN
+         * the same way; until then operator convenience wins. */
+        char room[32];
+        room[0] = 0;
+        http_query_str(path, "room", room, sizeof room);
+        int cleared = 0, tiles_touched = 0, worlds_touched = 0, rooms_touched = 0;
+        admin_clear_water_above_sea(s, room,
+                                     &cleared, &tiles_touched,
+                                     &worlds_touched, &rooms_touched);
+        int n = snprintf(HTTP_RAW, HTTP_BODY_CAP,
+                         "{\"ok\":true,\"room\":\"%s\","
+                         "\"rooms_touched\":%d,\"worlds_touched\":%d,"
+                         "\"tiles_touched\":%d,\"cells_cleared\":%d}\n",
+                         room[0] ? room : "__public__",
+                         rooms_touched, worlds_touched,
+                         tiles_touched, cleared);
+        printf("[server] /admin/clear_water_above_sea room='%s' -> "
+               "%d rooms, %d worlds, %d tiles, %d cells\n",
+               room[0] ? room : "__public__",
+               rooms_touched, worlds_touched, tiles_touched, cleared);
+        fflush(stdout);
+        *out_body     = (const uint8_t*)HTTP_RAW;
+        *out_body_len = (size_t)(n > 0 ? n : 0);
+        *out_mime     = "application/json; charset=utf-8";
+        return 1;
+    }
     if (strcmp(clean, "/") == 0 || strcmp(clean, "/health") == 0) {
         static const char msg[] =
             "tenebris-server alive\n"
@@ -2065,7 +2212,12 @@ static int on_http(const char* path,
             "  GET /saves                - JSON: every persisted .col file on disk\n"
             "                              filter with ?room=ABC123 / ?body=0 / ?seed=N\n"
             "  GET /saves/body?body=N    - BINARY: every persisted column for one body\n"
-            "                              also ?room=ABC123 (default lobby) and ?seed=N\n";
+            "                              also ?room=ABC123 (default lobby) and ?seed=N\n"
+            "  GET /admin/clear_water_above_sea[?room=X] - clear every BLOCK_WATER\n"
+            "                              above sea level (depth >= 64). Default room is\n"
+            "                              the public lobby; pass &room=__all__ to fan\n"
+            "                              out across every in-use room. Persists +\n"
+            "                              broadcasts CHUNK_DIFFs to connected peers.\n";
         *out_body     = (const uint8_t*)msg;
         *out_body_len = sizeof msg - 1;
         *out_mime     = "text/plain; charset=utf-8";

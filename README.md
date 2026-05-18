@@ -87,6 +87,7 @@ Raw JSON for `curl` / scripts:
 | [`GET /chat`](https://tenebris-c.fly.dev/chat) | JSON array of `{ts, name, room, text}` chat messages, server-wide, time-ordered. |
 | `GET /chat/send?text=...&room=...` | Broadcast a chat message to a room as `~server~` (sender renders with that name in-game). Authenticated by the `TENEBRIS_ADMIN_TOKEN` env var if set: append `&token=...`. Without the env var the endpoint is open (dev mode). |
 | [`GET /saves`](https://tenebris-c.fly.dev/saves) | JSON inventory of every persisted tile column (`.col` file) on the saves volume. Use this to confirm that block edits are actually hitting durable storage and to verify which room/seed/body they belong to. |
+| `GET /admin/clear_water_above_sea?room=X` | Operator action: replace every `BLOCK_WATER` voxel at depth `>= 64` (i.e. anywhere above the natural ocean column) with `BLOCK_AIR`. Subsurface ocean cells stay intact. Used while iterating on the water sim so the playfield can be reset without restarting the server. Optional `?room=ABC123` targets a single room; `?room=__all__` fans out across every in-use room; omitted = public lobby. Persists the affected columns and broadcasts `CHUNK_DIFF` messages to live clients. The dashboard's "Admin actions" panel exposes this with a confirm prompt. |
 
 ### Inspecting persisted block edits
 

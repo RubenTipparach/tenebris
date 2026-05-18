@@ -48,6 +48,16 @@ struct world_water_s;
  */
 #define WORLD_MAX_DEPTH   128
 
+/* Sea-level layer index. The planet shell is laid out so depth 64 is
+ * the first cell at-or-above sea level (layers 1..63 = subsurface +
+ * ocean column, layer 64 = sea-level surface, layers 65..127 = sky
+ * + player build space). Mirrors the static SEA_LEVEL_IDX in world.c
+ * - the .c keeps the original name for legacy callers while .h
+ * exposes the same value to other modules (server admin endpoints,
+ * mesher overlays, etc.) without each of them redefining the magic
+ * number. Tied to the worldgen profile, not a runtime knob. */
+#define WORLD_SEA_LEVEL_DEPTH 64
+
 typedef struct world_s {
     const body_config_t* body;
     goldberg_t*          grid;
