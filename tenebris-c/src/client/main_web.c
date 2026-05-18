@@ -1457,6 +1457,24 @@ static void maybe_apply_mp_spawn(void) {
      * the planet-mode tick re-syncs the basis on its first frame
      * anyway. */
     player_rebuild_basis(&G.player);
+    /* Seed last_good_position with the MP spawn pose so the bedrock-
+     * fall rescue has a real anchor from frame 0. Without this, a
+     * player who falls through terrain during the join-time remesh
+     * storm (each /saves/body apply marks ~thousand tiles dirty; with
+     * the 1-chunk/frame remesh cap that's seconds of 100+ ms stalls
+     * during which gravity advances and the player can plunge through
+     * still-unmeshed columns) hits the rescue before player_update
+     * ever records a grounded frame. The rescue's legacy unit-dir
+     * fallback then collapses to the body's prime-meridian equator,
+     * which is the "always respawn at default origin even though the
+     * server-side WELCOME RESUME was correct" symptom. The MP-welcome
+     * pose IS the spot the player wants to come back to, so anchoring
+     * last_good there immediately makes any first-frame rescue land
+     * them at their actual spawn instead of across the planet. */
+    if (spawn_body) {
+        G.player.last_good_position = spawn;
+        G.player.last_good_body     = spawn_body;
+    }
     /* Loud diagnostic for the floating-spawn investigation. Reports
      * the WELCOME pose, the body, the final applied position, and
      * the altitude above that body's surface so we can tell exactly
