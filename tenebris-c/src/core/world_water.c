@@ -589,16 +589,26 @@ static void try_propagate(world_t* w, int tile, int depth, int own_level,
          * even on flat ground - source on a plateau radiates outward
          * AND downward instead of pooling flat at the source depth.
          *
-         * Fall back to same-depth placement when depth-1 isn't a
-         * legal target (already non-passable terrain there, or the
-         * descent would push past bedrock). The same-depth fallback
-         * keeps water from disappearing into solid ground and matches
-         * the old behaviour at terrain features that already have
-         * solid voxels immediately below the spreading cell. */
+         * Hard requirement: cascade ONLY when nb's same-depth cell is
+         * also air. Otherwise the water would tunnel through a solid
+         * voxel at nb's depth into an air pocket at nb's depth-1
+         * (cave under a hill, sand-encased gap, etc.) - which the
+         * user reported as "water flow blocks cannot exist in
+         * existing blocks". The same-depth passability is the
+         * physical "is the path open" check; the below-passability
+         * is the "is the cascade target empty" check. Both must
+         * hold or we fall back to same-depth placement.
+         *
+         * The fall back to same-depth ALSO requires the same air
+         * check (the cell loop below would skip a solid cell, but
+         * being explicit here makes the contract obvious). */
         int target_depth = depth;
         if (depth - 1 >= 0) {
+            block_t b_same  = world_get(w, nb, depth);
             block_t b_below = world_get(w, nb, depth - 1);
-            if (b_below == BLOCK_AIR || b_below == BLOCK_WATER) {
+            bool same_ok  = (b_same  == BLOCK_AIR || b_same  == BLOCK_WATER);
+            bool below_ok = (b_below == BLOCK_AIR || b_below == BLOCK_WATER);
+            if (same_ok && below_ok) {
                 target_depth = depth - 1;
             }
         }
