@@ -264,7 +264,15 @@ water:
   # frame, spreading the cost without losing any work. 1 = strictly one
   # chunk per body per frame (smoothest framerate), higher = less latency
   # to converge but more frametime variance during heavy flow.
-  flow_max_chunks_remesh_per_frame: 1
+  # 1 chunk per frame meant a single sim tick that dirtied 12 chunks
+  # (water cascading across a hillside hits ~that many at once) took
+  # 12 frames to fully converge, and the chunks waiting in queue
+  # rendered with their PREVIOUS mesh - visible as "stale walls
+  # poking up from the water" until each chunk's turn rolled around.
+  # 8 chunks per frame drains a 12-chunk dirty batch in 2 frames
+  # (~33 ms at 60 fps) which is well below human-noticeable lag,
+  # while still capping the worst-case frametime impact of a flood.
+  flow_max_chunks_remesh_per_frame: 8
 
   flow_uv_speed_falling:    1.0
   flow_uv_speed_per_level:  0.25
