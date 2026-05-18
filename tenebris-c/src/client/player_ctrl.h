@@ -78,6 +78,13 @@ typedef struct {
      * the legacy unit-direction rescue. */
     dvec3_t              last_good_position;
     const body_config_t* last_good_body;
+    /* Number of bedrock-fall rescues that have fired without an
+     * intervening recorder hit. Incremented on each rescue, reset to
+     * zero when the recorder confirms the player landed on real solid
+     * ground. The rescue invalidates last_good_position after a small
+     * number of repeats to break out of spawn loops where the saved
+     * pose is itself unstable. */
+    int                  rescue_loop_count;
 } player_ctrl_t;
 
 void    player_init(player_ctrl_t* p, const body_config_t* body);

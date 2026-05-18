@@ -423,6 +423,7 @@ void player_init(player_ctrl_t* p, const body_config_t* body) {
      * this in. Sentinel: last_good_body == NULL. */
     p->last_good_position = (dvec3_t){0};
     p->last_good_body     = NULL;
+    p->rescue_loop_count  = 0;
 }
 
 dvec3_t player_world_pos(const player_ctrl_t* p) { return p->position; }
@@ -694,35 +695,78 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
             dvec3_make(p->body->pos_x, p->body->pos_y, p->body->pos_z));
         double r_now = dvec3_length(local);
         if (r_now < min_line_r) {
-            /* Preferred rescue: pop straight back to the last recorded
-             * safe position. Captured per-frame at the bottom of
-             * player_update while the player was grounded well above
-             * bedrock, so it's the spot they were actually playing
-             * in - not the prime-meridian spawn that the unit-dir
-             * fallback collapses to when r_now goes near zero. */
-            bool used_last_good = false;
+            /* Rescue-loop guard. If the rescue fires repeatedly without
+             * an intervening grounded frame, the recorded last_good
+             * pose is itself unsafe (e.g. it sits on a column the
+             * player was standing in for one frame but slid off in the
+             * next, or the pose got captured at marginal r right above
+             * the bedrock floor with nothing actually solid beneath).
+             * Counter is reset to zero in the bottom-of-update
+             * recorder whenever player_update completes with the
+             * player grounded on a real floor. */
+            const int RESCUE_LOOP_LIMIT = 3;
+            ++p->rescue_loop_count;
+
+            /* "Valid ground" predicate: the cell directly under
+             * last_good_position must be a solid voxel. Without this
+             * check the rescue happily teleports to a pose recorded
+             * one frame before the player slid off, and the next tick
+             * gravity drops them back below bedrock - i.e. a spawn
+             * loop. */
+            bool last_good_has_floor = false;
+            double lg_r = 0.0;
             if (p->last_good_body == p->body) {
-                /* Confirm the recorded pose is itself above the
-                 * danger zone before teleporting onto it; a stale
-                 * record from the moment before we fell could land
-                 * us straight back below bedrock. */
                 dvec3_t lg_local = dvec3_sub(p->last_good_position,
                     dvec3_make(p->body->pos_x, p->body->pos_y, p->body->pos_z));
-                double lg_r = dvec3_length(lg_local);
+                lg_r = dvec3_length(lg_local);
                 if (lg_r > min_line_r + 1.0) {
-                    fprintf(stderr,
-                            "[player] WARN: fell through MINIMUM LINE on body=%s "
-                            "(r=%.2f < %.2f); restoring last safe pose at "
-                            "(%.2f, %.2f, %.2f) r=%.2f\n",
-                            p->body->name, r_now, min_line_r,
-                            p->last_good_position.x, p->last_good_position.y,
-                            p->last_good_position.z, lg_r);
-                    fflush(stderr);
-                    p->position = p->last_good_position;
-                    used_last_good = true;
+                    dvec3_t lg_dir = dvec3_scale(lg_local, 1.0 / lg_r);
+                    int lg_tile = goldberg_find_tile(w->grid, lg_dir, -1);
+                    /* Check the voxel one block below the recorded
+                     * feet altitude. world_radius_to_depth maps
+                     * radius to (depth + SEA_LEVEL_IDX); the floor
+                     * block we want is at depth = current_depth - 1. */
+                    int feet_depth = world_radius_to_depth(w, lg_r);
+                    int floor_depth = feet_depth - 1;
+                    if (lg_tile >= 0
+                        && floor_depth >= 0
+                        && floor_depth < WORLD_MAX_DEPTH)
+                    {
+                        block_t below = world_get(w, lg_tile, floor_depth);
+                        last_good_has_floor = block_is_solid(below);
+                    }
                 }
             }
+
+            bool used_last_good = false;
+            if (last_good_has_floor
+                && p->rescue_loop_count <= RESCUE_LOOP_LIMIT)
+            {
+                fprintf(stderr,
+                        "[player] WARN: fell through MINIMUM LINE on body=%s "
+                        "(r=%.2f < %.2f); restoring last safe pose at "
+                        "(%.2f, %.2f, %.2f) r=%.2f (rescue #%d, floor verified)\n",
+                        p->body->name, r_now, min_line_r,
+                        p->last_good_position.x, p->last_good_position.y,
+                        p->last_good_position.z, lg_r,
+                        p->rescue_loop_count);
+                fflush(stderr);
+                p->position = p->last_good_position;
+                used_last_good = true;
+            }
             if (!used_last_good) {
+                /* Heavyweight fallback: walk the column under our
+                 * current direction looking for the topmost walkable
+                 * floor. world_safe_spawn_local returns floor_r +
+                 * headroom along that direction, which is always a
+                 * voxel above a real solid block (or the analytic
+                 * surface if the column isn't generated yet) - so it
+                 * can't loop the way last_good can. We also force-
+                 * INVALIDATE last_good so the next fall doesn't try
+                 * to use the broken pose again, and reset the rescue
+                 * counter so we get fresh budget once we land. */
+                p->last_good_body = NULL;
+                p->rescue_loop_count = 0;
                 dvec3_t unit_dir = (r_now > 1e-6)
                     ? dvec3_scale(local, 1.0 / r_now)
                     : dvec3_make(1, 0, 0);
@@ -732,10 +776,12 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
                                             p->body->pos_z);
                 fprintf(stderr,
                         "[player] WARN: fell through MINIMUM LINE on body=%s "
-                        "(r=%.2f < %.2f, body_radius=%.1f); no last-good pose, "
-                        "popping back up to surface at current direction (new_r=%.2f)\n",
+                        "(r=%.2f < %.2f, body_radius=%.1f); last_good invalid "
+                        "(has_floor=%d, lg_r=%.2f), popping to surface "
+                        "via column scan (new_r=%.2f)\n",
                         p->body->name, r_now, min_line_r,
                         (double)p->body->radius_m,
+                        (int)last_good_has_floor, lg_r,
                         dvec3_length(safe_local));
                 fflush(stderr);
                 p->position = dvec3_add(center, safe_local);
@@ -1219,23 +1265,26 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
     (void)feet_in_water;   /* feet probe reserved for footstep / dive sound hooks */
 
     /* Record this position as the "last safe" pose if we're solidly
-     * standing on this body's surface, well above bedrock. The
-     * bedrock-fall rescue at the top of player_update reads this
-     * value to teleport the player back to the spot they were
-     * actually playing in, instead of computing a surface point
-     * from a degenerate near-zero radial (which collapses to the
-     * body's prime-meridian default - the "spawn at origin" the
-     * player kept hitting after every fall).
+     * standing on a verified solid voxel above bedrock. The bedrock-
+     * fall rescue reads this to teleport the player back to where
+     * they were actually playing.
      *
      * Conditions for "safe":
-     *   - we have a body (not currently flying in deep space),
-     *   - we're grounded this frame (feet on solid voxels),
+     *   - we have a body (not flying in deep space),
+     *   - we're grounded this frame,
      *   - the player is at least SAFE_MARGIN_ABOVE_BEDROCK_M above
-     *     the body's minimum-line radius (so we never persist a
-     *     pose that's itself in the danger zone).
-     *
-     * Updated lazily once per frame; cheap, no allocations. */
-    if (p->body && !p->is_in_space && p->grounded) {
+     *     the body's minimum-line radius,
+     *   - AND the voxel directly under the player's feet is solid
+     *     (i.e. there's real ground beneath - not a stale grounded
+     *     flag carried over from the previous frame). Without this
+     *     final check, a player who was grounded for one frame on a
+     *     marginal column at r ~ min_line + 16 m can still loop:
+     *     the column gets dug out, the flag stays on for a tick,
+     *     the recorder snapshots the now-floorless pose, and the
+     *     next fall lands the rescue right back at the hole. */
+    if (p->body && !p->is_in_space && p->grounded
+        && w && w->body == p->body)
+    {
         const double SAFE_MARGIN_ABOVE_BEDROCK_M = 16.0;
         const double bedrock_r  = (double)p->body->radius_m - 64.0;
         const double min_line_r = (bedrock_r > 0.5) ? bedrock_r : 0.5;
@@ -1243,9 +1292,27 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
                                                             p->body->pos_y,
                                                             p->body->pos_z));
         double r_now = dvec3_length(local);
-        if (r_now >= min_line_r + SAFE_MARGIN_ABOVE_BEDROCK_M) {
-            p->last_good_position = p->position;
-            p->last_good_body     = p->body;
+        if (r_now >= min_line_r + SAFE_MARGIN_ABOVE_BEDROCK_M
+            && r_now > 1e-6)
+        {
+            dvec3_t feet_dir = dvec3_scale(local, 1.0 / r_now);
+            int feet_tile = goldberg_find_tile(w->grid, feet_dir,
+                                                p->last_tile);
+            int feet_depth = world_radius_to_depth(w, r_now);
+            int floor_depth = feet_depth - 1;
+            if (feet_tile >= 0
+                && floor_depth >= 0
+                && floor_depth < WORLD_MAX_DEPTH)
+            {
+                block_t below = world_get(w, feet_tile, floor_depth);
+                if (block_is_solid(below)) {
+                    p->last_good_position = p->position;
+                    p->last_good_body     = p->body;
+                    /* Clean grounded frame on real ground - the
+                     * rescue loop budget refreshes. */
+                    p->rescue_loop_count  = 0;
+                }
+            }
         }
     }
 

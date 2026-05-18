@@ -357,6 +357,53 @@ void interact_update(interact_state_t* s, world_t* w, player_ctrl_t* p, float dt
                     }
                 }
             } else {
+                /* Self-fall-through guard. If the placement target
+                 * sits in the column the player is standing in AND at
+                 * a depth the player's body occupies (feet voxel or
+                 * head voxel), the new block would intersect the
+                 * collision capsule and the ground-snap + camera-
+                 * collider passes can spit the player downward
+                 * through the floor before the next frame's collision
+                 * resolves. Lift the player one voxel up first so the
+                 * block lands UNDER their feet, and they're standing
+                 * on top of the just-placed block instead of inside
+                 * it. Cheap; only fires when the click actually
+                 * targets the player's own column. */
+                if (w->body) {
+                    dvec3_t feet_local = dvec3_sub(p->position,
+                        dvec3_make(w->body->pos_x, w->body->pos_y, w->body->pos_z));
+                    double feet_r = dvec3_length(feet_local);
+                    if (feet_r > 1e-6) {
+                        dvec3_t feet_dir = dvec3_scale(feet_local, 1.0 / feet_r);
+                        int feet_tile = goldberg_find_tile(w->grid, feet_dir,
+                                                            p->last_tile);
+                        int feet_depth = world_radius_to_depth(w, feet_r);
+                        const int PLAYER_VOXEL_SPAN = 2;
+                        if (feet_tile == s->place_tile
+                            && s->place_depth >= feet_depth
+                            && s->place_depth <  feet_depth + PLAYER_VOXEL_SPAN)
+                        {
+                            const double BLOCK_HEIGHT_M = 1.0;
+                            p->position = dvec3_add(p->position,
+                                dvec3_scale(p->basis.up, BLOCK_HEIGHT_M));
+                            /* Clear vy so the lift doesn't get
+                             * immediately cancelled by the gravity
+                             * tick's "you fell, snap back" path. */
+                            double vy = dvec3_dot(p->velocity, p->basis.up);
+                            if (vy < 0.0) {
+                                p->velocity = dvec3_sub(p->velocity,
+                                    dvec3_scale(p->basis.up, vy));
+                            }
+                            p->grounded  = false;
+                            p->last_tile = -1;
+                            fprintf(stderr,
+                                    "[interact] self-place lift: tile=%d depth=%d "
+                                    "(feet=%d) - moved player up 1 voxel before placing\n",
+                                    s->place_tile, s->place_depth, feet_depth);
+                            fflush(stderr);
+                        }
+                    }
+                }
                 world_set(w, s->place_tile, s->place_depth, to_place);
                 net_client_send_edit(PLAYER_CMD_PLACE,
                                        (uint32_t)w->body->id,
