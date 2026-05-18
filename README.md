@@ -5,6 +5,28 @@ the full plan.
 
 [**Join our test server here!**](https://rubentipparach.github.io/tenebris/wasm/?invite=T9VVPW)
 
+### Lite-graphics build
+
+Older laptops, integrated GPUs, and most phones run the full water +
+composite shaders far below 30 FPS. The same WASM bundle ships with a
+"lite" path that swaps in cheaper shaders (no vertex swell, no screen-
+space refraction, no underwater Beer-Lambert fog) and is on by default
+when the browser advertises a mobile / tablet userAgent.
+
+Force the lite path on desktop one of two ways:
+
+- **One-shot URL override** — append `?perf=lite` to the play URL:
+  [`https://rubentipparach.github.io/tenebris/wasm/?perf=lite`](https://rubentipparach.github.io/tenebris/wasm/?perf=lite).
+  Ephemeral, doesn't persist past the tab. Combine with `?invite=` to
+  drop into a private room: `?invite=T9VVPW&perf=lite`. `?perf=high`
+  or `?perf=desktop` forces the full path on a mobile device for
+  diagnostic purposes.
+- **In-game toggle** — open `Settings` (main menu or pause menu) and
+  flip `Graphics Quality: ON / OFF`. The choice is saved in local
+  storage and applied on every subsequent reload. Note that flipping
+  the toggle only takes visual effect after a page reload, because
+  the renderer picks pipelines at init time.
+
 ## Status
 
 **Tier 0**: hello triangle (in progress). Target is a browser-loadable

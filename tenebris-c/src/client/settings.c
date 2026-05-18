@@ -4,15 +4,18 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define KV_KEY_MOUSE_SENS "tenebris-c:settings:mouse-sens"
-#define KV_KEY_CHAT_FADE  "tenebris-c:settings:chat-fade-s"
+#define KV_KEY_MOUSE_SENS     "tenebris-c:settings:mouse-sens"
+#define KV_KEY_CHAT_FADE      "tenebris-c:settings:chat-fade-s"
+#define KV_KEY_LITE_GRAPHICS  "tenebris-c:settings:lite-graphics"
 
 static struct {
     float mouse_sens;
     float chat_fade_s;
+    bool  lite_graphics;
 } S = {
-    .mouse_sens   = SETTINGS_MOUSE_SENS_DEFAULT,
-    .chat_fade_s  = SETTINGS_CHAT_FADE_DEFAULT_S,
+    .mouse_sens    = SETTINGS_MOUSE_SENS_DEFAULT,
+    .chat_fade_s   = SETTINGS_CHAT_FADE_DEFAULT_S,
+    .lite_graphics = false,
 };
 
 void settings_init(void) {
@@ -34,6 +37,13 @@ void settings_init(void) {
         if (f >= SETTINGS_CHAT_FADE_MIN_S && f <= SETTINGS_CHAT_FADE_MAX_S) {
             S.chat_fade_s = f;
         }
+        free(v);
+    }
+    v = client_kv_get(KV_KEY_LITE_GRAPHICS);
+    if (v) {
+        /* Stored as "1" or "0" - any other value falls back to the
+         * compiled default. */
+        S.lite_graphics = (strcmp(v, "1") == 0);
         free(v);
     }
 }
@@ -64,4 +74,14 @@ void settings_set_chat_fade_s(float v) {
     char buf[32];
     snprintf(buf, sizeof buf, "%.2f", v);
     client_kv_set(KV_KEY_CHAT_FADE, buf);
+}
+
+bool settings_lite_graphics(void) {
+    return S.lite_graphics;
+}
+
+void settings_set_lite_graphics(bool enabled) {
+    if (S.lite_graphics == enabled) return;
+    S.lite_graphics = enabled;
+    client_kv_set(KV_KEY_LITE_GRAPHICS, enabled ? "1" : "0");
 }

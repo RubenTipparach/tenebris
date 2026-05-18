@@ -587,11 +587,25 @@ static void init(void) {
 #ifdef __EMSCRIPTEN__
     /* Mobile / tablet browsers swap in the lite water + composite
      * shaders. Decision happens before renderer_init because the
-     * setter gates which pipelines get created. Native desktop
-     * builds always run the full path. */
+     * setter gates which pipelines get created. Three independent
+     * triggers:
+     *
+     *   1. tenebris_is_mobile_device() - userAgent match, OR the
+     *      ephemeral ?perf=lite / ?perf=mobile URL override for one-
+     *      shot testing on desktop (doesn't persist).
+     *   2. The settings.lite_graphics toggle - persisted in
+     *      client_kv, last value the player chose in the Settings
+     *      panel. Lets desktop users with older / integrated GPUs
+     *      opt into the mobile shader path across sessions.
+     *
+     * Any one being true flips perf mode on. Native desktop builds
+     * always run the full path (no __EMSCRIPTEN__ block runs). */
     if (tenebris_is_mobile_device()) {
         renderer_set_perf_mode(true);
-        printf("[renderer] perf mode enabled (mobile device detected)\n");
+        printf("[renderer] perf mode enabled (mobile device / ?perf=lite)\n");
+    } else if (settings_lite_graphics()) {
+        renderer_set_perf_mode(true);
+        printf("[renderer] perf mode enabled (lite-graphics setting)\n");
     }
 #endif
     renderer_init();
