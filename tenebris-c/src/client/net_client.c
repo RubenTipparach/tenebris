@@ -964,7 +964,8 @@ bool net_client_take_pending_inventory(uint16_t* out_slot_type,
 void net_client_send_player_state(uint32_t client_tick,
                                     uint32_t body_id,
                                     double pos_x, double pos_y, double pos_z,
-                                    float yaw, float pitch) {
+                                    float yaw, float pitch,
+                                    bool grounded) {
     if (C.state != NET_CLIENT_READY || !C.conn) return;
     msg_player_state_t st = {
         .client_tick = client_tick,
@@ -975,7 +976,7 @@ void net_client_send_player_state(uint32_t client_tick,
         .yaw         = yaw,
         .pitch       = pitch,
         .buttons     = 0,
-        .reserved    = 0,
+        .flags       = grounded ? PLAYER_STATE_FLAG_GROUNDED : 0,
     };
     uint8_t buf[MSG_HEADER_SIZE + MSG_PLAYER_STATE_WIRE_SIZE];
     size_t n = proto_write_player_state(buf, sizeof buf, &st);

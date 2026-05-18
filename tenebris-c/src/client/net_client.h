@@ -98,7 +98,8 @@ net_desync_kind_t net_client_last_desync(double* out_seconds_ago,
 void net_client_send_player_state(uint32_t client_tick,
                                     uint32_t body_id,
                                     double pos_x, double pos_y, double pos_z,
-                                    float yaw, float pitch);
+                                    float yaw, float pitch,
+                                    bool grounded);
 
 /* Tell the server about a block edit. Caller has already applied it
  * locally for snappy feedback; the server applies it to its own

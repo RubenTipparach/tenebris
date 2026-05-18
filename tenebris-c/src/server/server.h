@@ -68,6 +68,11 @@ typedef struct {
     uint32_t    player_id;
     bool        handshaked;    /* HELLO received, WELCOME sent */
     bool        has_state;     /* received at least one PLAYER_STATE */
+    bool        is_grounded;   /* client-reported PLAYER_STATE_FLAG_GROUNDED
+                                * on the most recent PLAYER_STATE. Gates
+                                * the periodic + on-close pose save so a
+                                * mid-fall hard-refresh can't write an
+                                * in-air pose for the next WELCOME RESUME. */
     char        token[SERVER_TOKEN_LEN + 1];
     char        name [SERVER_NAME_MAX  + 1];
     /* Room code = visibility group. Empty string = public room. */

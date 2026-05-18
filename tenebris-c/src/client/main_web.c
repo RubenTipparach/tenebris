@@ -1520,64 +1520,74 @@ static bool    G_last_sent_valid = false;
  * fresh join) tells us where the floating-spawn delta is coming
  * from. */
 static void   periodic_pos_log(double dt) {
-    // Commented out per request: this 1 Hz position log floods the
-    // console during normal play and crowds out CHUNK_DIFF / AUDIT
-    // lines. Restore from git when the next spawn issue lands. The
-    // README's debug-log reference still documents the line shape so
-    // reading old captures stays meaningful.
-    (void)dt;
-    // static double accum_s = 0.0;
-    // accum_s += dt;
-    // if (accum_s < 1.0) return;
-    // accum_s = 0.0;
-    // const body_config_t* anchor = G.player.body;
-    // const body_config_t* b      = anchor ? anchor : G.body;
-    // double r = 0.0, alt = 0.0;
-    // if (b) {
-    //     double dx = G.player.position.x - b->pos_x;
-    //     double dy = G.player.position.y - b->pos_y;
-    //     double dz = G.player.position.z - b->pos_z;
-    //     r = sqrt(dx*dx + dy*dy + dz*dz);
-    //     alt = r - b->radius_m;
-    // }
-    // const char* mode = (menu_state() == GAME_IN_GAME_MP) ? "MP" :
-    //                    (menu_state() == GAME_IN_GAME_SP) ? "SP" : "menu";
-    // printf("[main] pos %s anchor=%s%s alt-vs=%s curr=(%.2f, %.2f, %.2f) "
-    //        "r=%.2f alt=%+.2f yaw=%.2f pitch=%.2f grounded=%d\n",
-    //        mode,
-    //        anchor ? anchor->name : "NONE",
-    //        G.player.is_in_space ? " (in-space)" : "",
-    //        b ? b->name : "?",
-    //        G.player.position.x, G.player.position.y, G.player.position.z,
-    //        r, alt, G.player.yaw, G.player.pitch, (int)G.player.grounded);
-    // if (G_last_sent_valid) {
-    //     double sr = 0.0, salt = 0.0;
-    //     if (b) {
-    //         double dx = G_last_sent_pos.x - b->pos_x;
-    //         double dy = G_last_sent_pos.y - b->pos_y;
-    //         double dz = G_last_sent_pos.z - b->pos_z;
-    //         sr = sqrt(dx*dx + dy*dy + dz*dz);
-    //         salt = sr - b->radius_m;
-    //     }
-    //     double ddx = G.player.position.x - G_last_sent_pos.x;
-    //     double ddy = G.player.position.y - G_last_sent_pos.y;
-    //     double ddz = G.player.position.z - G_last_sent_pos.z;
-    //     double delta = sqrt(ddx*ddx + ddy*ddy + ddz*ddz);
-    //     char body_str[32];
-    //     if (G_last_sent_body == BODY_ID_IN_SPACE) {
-    //         snprintf(body_str, sizeof body_str, "IN_SPACE");
-    //     } else {
-    //         snprintf(body_str, sizeof body_str, "%u", G_last_sent_body);
-    //     }
-    //     printf("[main] pos %s     sent=(%.2f, %.2f, %.2f) r=%.2f alt=%+.2f "
-    //            "body=%s yaw=%.2f pitch=%.2f  delta_from_curr=%.2fm\n",
-    //            mode,
-    //            G_last_sent_pos.x, G_last_sent_pos.y, G_last_sent_pos.z,
-    //            sr, salt, body_str,
-    //            G_last_sent_yaw, G_last_sent_pitch, delta);
-    // } else {
-    //     printf("[main] pos %s     sent=(none yet)\n", mode);
-    // }
+    /* 5-second cadence position trace. Re-enabled per spawn-bug
+     * investigation: the wild-teleport reports show position changing
+     * by 100+ m within frames of MP spawn while velocity stays near
+     * zero, and the only way to catch the actual transition is to
+     * log curr + last-sent-to-server side-by-side over a span. Five
+     * seconds is the same cadence as the SP autosave so console
+     * noise stays bounded.
+     *
+     * Per CLAUDE.md the on-screen text path is ASCII-only; this print
+     * goes to stdout (devtools console), not in-game text, so the
+     * float formatters are fine. */
+    static double accum_s = 0.0;
+    accum_s += dt;
+    if (accum_s < 5.0) return;
+    accum_s = 0.0;
+    const body_config_t* anchor = G.player.body;
+    const body_config_t* b      = anchor ? anchor : G.body;
+    double r = 0.0, alt = 0.0;
+    if (b) {
+        double dx = G.player.position.x - b->pos_x;
+        double dy = G.player.position.y - b->pos_y;
+        double dz = G.player.position.z - b->pos_z;
+        r = sqrt(dx*dx + dy*dy + dz*dz);
+        alt = r - b->radius_m;
+    }
+    const char* mode = (menu_state() == GAME_IN_GAME_MP) ? "MP" :
+                       (menu_state() == GAME_IN_GAME_SP) ? "SP" : "menu";
+    printf("[main] pos %s anchor=%s%s curr=(%.2f, %.2f, %.2f) "
+           "r=%.2f alt=%+.2f yaw=%.2f pitch=%.2f grounded=%d "
+           "lg=(%.2f, %.2f, %.2f) lg_body=%s\n",
+           mode,
+           anchor ? anchor->name : "NONE",
+           G.player.is_in_space ? " (in-space)" : "",
+           G.player.position.x, G.player.position.y, G.player.position.z,
+           r, alt, G.player.yaw, G.player.pitch, (int)G.player.grounded,
+           G.player.last_good_position.x,
+           G.player.last_good_position.y,
+           G.player.last_good_position.z,
+           G.player.last_good_body ? G.player.last_good_body->name : "(none)");
+    if (G_last_sent_valid) {
+        double sr = 0.0, salt = 0.0;
+        if (b) {
+            double dx = G_last_sent_pos.x - b->pos_x;
+            double dy = G_last_sent_pos.y - b->pos_y;
+            double dz = G_last_sent_pos.z - b->pos_z;
+            sr = sqrt(dx*dx + dy*dy + dz*dz);
+            salt = sr - b->radius_m;
+        }
+        double ddx = G.player.position.x - G_last_sent_pos.x;
+        double ddy = G.player.position.y - G_last_sent_pos.y;
+        double ddz = G.player.position.z - G_last_sent_pos.z;
+        double delta = sqrt(ddx*ddx + ddy*ddy + ddz*ddz);
+        char body_str[32];
+        if (G_last_sent_body == BODY_ID_IN_SPACE) {
+            snprintf(body_str, sizeof body_str, "IN-SPACE");
+        } else {
+            snprintf(body_str, sizeof body_str, "%u", G_last_sent_body);
+        }
+        printf("[main] pos %s     sent=(%.2f, %.2f, %.2f) r=%.2f alt=%+.2f "
+               "body=%s yaw=%.2f pitch=%.2f delta_from_curr=%.2fm\n",
+               mode,
+               G_last_sent_pos.x, G_last_sent_pos.y, G_last_sent_pos.z,
+               sr, salt, body_str,
+               G_last_sent_yaw, G_last_sent_pitch, delta);
+    } else {
+        printf("[main] pos %s     sent=(none yet)\n", mode);
+    }
+    fflush(stdout);
 }
 
 static double G_sp_save_accum = 0.0;
@@ -2114,7 +2124,8 @@ static void frame(void) {
                                             G.player.position.y,
                                             G.player.position.z,
                                             G.player.yaw,
-                                            G.player.pitch);
+                                            G.player.pitch,
+                                            G.player.grounded);
             /* Mirror what we just put on the wire so periodic_pos_log
              * can compare it against G.player.position later. */
             G_last_sent_pos.x   = G.player.position.x;

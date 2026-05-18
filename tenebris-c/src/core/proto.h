@@ -189,13 +189,36 @@ typedef struct {
 
 #define MSG_PLAYER_STATE_WIRE_SIZE  44   /* 4 + 4 + 24 + 8 + 4 */
 
+/* PLAYER_STATE.flags bits.
+ *
+ *   PLAYER_STATE_FLAG_GROUNDED: client physics reports the player is
+ *     standing on solid voxels this frame (not jumping, jet-packing,
+ *     swimming, or free-falling). The server uses this to gate pose
+ *     persistence - a save fires only when the player is in a stable,
+ *     repeatable pose. Without this gate, the periodic 0.5 s flush
+ *     would happily persist mid-fall poses, then the next session's
+ *     WELCOME RESUME would drop the player back into the middle of
+ *     the air, gravity ticks before the chunks settle, and they fall
+ *     through to the bedrock-rescue equator default - the "spawn at
+ *     same wrong place on every reconnect" symptom.
+ *
+ * Older clients (protocol v1) sent `reserved = 0` here; the server's
+ * unconditional save was the bug. Newer clients set the bit. Treat
+ * an unset bit on a recent stream as "client says I'm not grounded;
+ * don't save" - if a buggy client never sets the bit the server will
+ * stop persisting movement, which is a louder failure mode than the
+ * silent corruption it replaces. */
+#define PLAYER_STATE_FLAG_GROUNDED  0x0001
+
 typedef struct {
     uint32_t client_tick;    /* sender's tick — server uses for ordering */
     uint32_t body_id;        /* body the player is anchored to */
     double   pos_x, pos_y, pos_z;
     float    yaw, pitch;
     uint16_t buttons;        /* reserved (input bitfield, M4b) */
-    uint16_t reserved;
+    uint16_t flags;          /* PLAYER_STATE_FLAG_* bitset (was `reserved`;
+                              * server reads bit 0 = grounded to gate pose
+                              * persistence). */
 } msg_player_state_t;
 
 /* SNAPSHOT carries an array of remote-player poses. Sender's player

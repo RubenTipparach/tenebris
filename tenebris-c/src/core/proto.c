@@ -293,7 +293,7 @@ size_t proto_write_player_state(uint8_t* buf, size_t cap,
     put_u32_le(p + 32, yb);
     put_u32_le(p + 36, pb);
     put_u16_le(p + 40, m->buttons);
-    put_u16_le(p + 42, m->reserved);
+    put_u16_le(p + 42, m->flags);
     return total;
 }
 
@@ -310,7 +310,7 @@ int proto_read_player_state(const uint8_t* payload, size_t len,
     memcpy(&out->yaw,   &yb, sizeof out->yaw);
     memcpy(&out->pitch, &pb, sizeof out->pitch);
     out->buttons  = get_u16_le(payload + 40);
-    out->reserved = get_u16_le(payload + 42);
+    out->flags    = get_u16_le(payload + 42);
     return 0;
 }
 

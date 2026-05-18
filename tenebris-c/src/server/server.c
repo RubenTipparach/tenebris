@@ -1070,6 +1070,8 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
             cl->pos_z            = st.pos_z;
             cl->yaw              = st.yaw;
             cl->pitch            = st.pitch;
+            cl->is_grounded      =
+                (st.flags & PLAYER_STATE_FLAG_GROUNDED) != 0;
             cl->last_client_tick = st.client_tick;
             if (first) {
                 printf("[server] first PLAYER_STATE from player_id=%u at "
@@ -1098,8 +1100,13 @@ static void on_close(net_conn_t* conn, net_close_reason_t reason, void* user) {
      * Name-keyed (sanitized display name) so the same identity
      * always lands on the same file. Gated on cl->token[0] so
      * server-stamped 'guest-N' connections don't pollute the
-     * saves dir; only real profile-bearing sessions persist. */
-    if (cl->has_state && cl->token[0] && cl->name[0]) {
+     * saves dir; only real profile-bearing sessions persist.
+     * Also gated on cl->is_grounded so a tab-close during a fall /
+     * jetpack hop can't write an in-air pose - the next RESUME
+     * would drop the player back into the same fall, accumulating
+     * velocity over the join-time remesh stalls, until the bedrock
+     * rescue fires and lands them somewhere unrelated. */
+    if (cl->has_state && cl->token[0] && cl->name[0] && cl->is_grounded) {
         saves_player_pose_t pose = {
             .body_id = cl->body_id,
             .pos_x   = cl->pos_x,
@@ -2452,6 +2459,10 @@ void server_tick(server_t* s) {
         for (int i = 0; i < SERVER_MAX_CLIENTS; ++i) {
             server_client_t* cl = &s->clients[i];
             if (!cl->conn || !cl->has_state || !cl->token[0] || !cl->name[0]) continue;
+            /* Skip mid-fall / mid-jetpack saves. The "client says not
+             * grounded" gate means the next RESUME can always trust
+             * the saved pose to be a place the player can stand. */
+            if (!cl->is_grounded) continue;
             const double dx = cl->pos_x - cl->last_saved_pos_x;
             const double dy = cl->pos_y - cl->last_saved_pos_y;
             const double dz = cl->pos_z - cl->last_saved_pos_z;
@@ -2546,6 +2557,10 @@ void server_shutdown(server_t* s) {
     for (int i = 0; i < SERVER_MAX_CLIENTS; ++i) {
         server_client_t* cl = &s->clients[i];
         if (!cl->conn || !cl->has_state || !cl->token[0] || !cl->name[0]) continue;
+        /* Same grounded gate as the periodic flush. On SIGTERM during a
+         * fall we keep the previous good pose rather than overwriting
+         * it with a mid-air snapshot. */
+        if (!cl->is_grounded) continue;
         saves_player_pose_t pose = {
             .body_id = cl->body_id,
             .pos_x   = cl->pos_x, .pos_y = cl->pos_y, .pos_z = cl->pos_z,
