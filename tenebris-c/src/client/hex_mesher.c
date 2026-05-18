@@ -796,7 +796,23 @@ void hex_mesh_build_water_voxels(hex_mesh_t* out, const world_t* w, int tile_idx
                 int nb_level = water_render_level_at(w, nb, d, cfg_max_level);
                 if (level >= nb_level) {
                     if (r_top_edge > r_top_cap + 1e-4) {
-                        emit_side_quad(out, t, w, tile_idx, d, k, next,
+                        /* Swap k/next so the quad's outward normal
+                         * flips - the cross(edge, up) formula in
+                         * emit_side_quad reverses when the edge
+                         * direction reverses. The gap is in OUR
+                         * column's air pocket (above our cap, below
+                         * the boundary that nb's d+1 wall starts at),
+                         * so the visible water-air interface faces
+                         * INTO our column, not OUT toward nb. The
+                         * default outward normal (from us toward nb)
+                         * would back-face cull from a viewer standing
+                         * in our air looking sideways at the step -
+                         * exactly the angle the screenshot is taken
+                         * from, exactly the "is it backwards?" the
+                         * user called out. Inverted winding emits
+                         * the wall with normal pointing toward us
+                         * instead. */
+                        emit_side_quad(out, t, w, tile_idx, d, next, k,
                                        r_top_cap, r_top_edge,
                                        BLOCK_WATER, /*width=*/1.0f,
                                        /*wet=*/1.0f);
