@@ -604,6 +604,16 @@ void renderer_init(void) {
                     .format = SG_VERTEXFORMAT_FLOAT3,
                     .offset = (int)offsetof(hex_vertex_t, normal),
                 },
+                /* a_uv carries per-vertex flow direction baked by the
+                 * mesher (tile-local 2D, pointing away from the source
+                 * cell on a top cap; zero on side walls / bottom caps).
+                 * Fragment shader uses it as a horizontal noise-sample
+                 * pan offset so the surface pattern visibly streams
+                 * along the flow direction. */
+                [ATTR_water_a_uv] = {
+                    .format = SG_VERTEXFORMAT_FLOAT2,
+                    .offset = (int)offsetof(hex_vertex_t, uv),
+                },
                 [ATTR_water_a_sky_light] = {
                     .format = SG_VERTEXFORMAT_FLOAT,
                     .offset = (int)offsetof(hex_vertex_t, sky_light),

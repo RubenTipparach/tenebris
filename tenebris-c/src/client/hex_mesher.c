@@ -692,9 +692,44 @@ void hex_mesh_build_water_voxels(hex_mesh_t* out, const world_t* w, int tile_idx
          * sea-level row defers its top to the ocean-cap path. */
         block_t above = (d + 1 < WORLD_MAX_DEPTH) ? (block_t)col[d + 1] : BLOCK_AIR;
         if (!is_sea_level_row && above != BLOCK_WATER && !block_covers_face(above)) {
+            uint32_t v_before = (uint32_t)out->vertex_count;
             emit_cap(out, t, w, tile_idx, d, BLOCK_WATER, /*is_top=*/true,
                      /*width=*/1.0f, /*r_offset_m=*/cap_offset,
                      /*bake_lighting=*/true, /*wet=*/1.0f);
+            /* Bake the flow direction into the UV channel of every
+             * vertex emit_cap just wrote. The water shader reads the
+             * UV as a per-vertex flow vector (tile-local 2D) and pans
+             * the noise sample along it, so the surface visibly
+             * streams away from the source. Source / sleeping cells
+             * have no origin entry -> flow_dir returns (0, 0, 0) and
+             * we write (0, 0) in UV, leaving the cell static. */
+            float flow_world[3];
+            float fu = 0.0f, fv = 0.0f;
+            if (world_water_flow_direction(w, tile_idx, d, flow_world)) {
+                /* Project onto the tile's tangent plane using the
+                 * same arbitrary basis the fragment shader builds
+                 * (any non-parallel axis crossed twice). The shader
+                 * picks its tangent basis from the face normal alone
+                 * and the same recipe here, so the 2D coords we bake
+                 * match the basis the shader reconstructs in world
+                 * space. Tile center IS the cap face normal. */
+                dvec3_t n_d = t->center;
+                dvec3_t tu = (fabs(n_d.x) > 0.9)
+                             ? dvec3_make(0, 1, 0)
+                             : dvec3_make(1, 0, 0);
+                double dot_un = tu.x * n_d.x + tu.y * n_d.y + tu.z * n_d.z;
+                tu = dvec3_sub(tu, dvec3_scale(n_d, dot_un));
+                tu = dvec3_normalize(tu);
+                dvec3_t tv = dvec3_cross(n_d, tu);
+                fu = (float)(flow_world[0] * tu.x + flow_world[1] * tu.y
+                             + flow_world[2] * tu.z);
+                fv = (float)(flow_world[0] * tv.x + flow_world[1] * tv.y
+                             + flow_world[2] * tv.z);
+            }
+            for (uint32_t vi = v_before; vi < out->vertex_count; ++vi) {
+                out->vertices[vi].uv[0] = fu;
+                out->vertices[vi].uv[1] = fv;
+            }
         }
 
         /* ---- Bottom cap.
