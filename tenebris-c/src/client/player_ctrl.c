@@ -301,14 +301,21 @@ static dvec3_t try_horizontal_step(const world_t* w,
      * candidate tile is impassable from this elevation. */
     double  cand_gr   = world_walkable_floor_near(w, cand_tile, feet_r, body_height_m);
     if (cand_gr <= -1e8) {
-        /* No floor on the candidate tile - genuinely blocked (truly
-         * invalid tile index or a column the body_height_m headroom
-         * check rejected). Ungenerated tiles are no longer a
-         * fall-through hazard: world_walkable_floor_near returns
-         * the analytic procgen surface for them, which catches us
-         * here as a real cand_gr the step check below evaluates
-         * normally. */
-        return pos;
+        /* Walkable-floor rejected (likely a column whose top solid
+         * voxel has another solid above, failing the headroom
+         * check). Fall back to the topmost-solid floor before
+         * declaring the move blocked - otherwise the player slides
+         * off perfectly visible terrain because the cell above the
+         * block they want to stand on happens to be solid too. */
+        cand_gr = world_topmost_solid_floor(w, cand_tile);
+        if (cand_gr <= -1e8) {
+            /* No solid voxels at all in this column - genuinely
+             * blocked (invalid tile index, or a fully-dug column).
+             * Ungenerated tiles are no longer a fall-through hazard:
+             * world_walkable_floor_near returns the analytic procgen
+             * surface for them. */
+            return pos;
+        }
     }
     const double step_h = (double)config_lod()->step_height_m;
     if (cand_gr - feet_r > step_h) return pos;  /* wall — slide */
@@ -1197,6 +1204,31 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
          *      top-of-wall bug; let the player keep falling so
          *      gravity carries them clear of the wall column. */
         double gr = world_walkable_floor_near(w, cur_tile, r, 0.0);
+        /* Safety net: if the walkable-floor query finds nothing in
+         * the current column (every solid voxel got rejected by the
+         * "passable cell above" rule - rare worldgen patterns, dug
+         * caverns capped by a single block, or the chunk-rebuild
+         * race where blocks were just cleared by the water sim but
+         * a stale neighbour reference made the column look unwalk-
+         * able), fall back to the top of the topmost solid voxel so
+         * the player at least lands on visible terrain instead of
+         * dropping into the void. Logs once per occurrence so we can
+         * tell whether the fallback is firing in normal play. */
+        if (gr <= -1e8) {
+            double topmost = world_topmost_solid_floor(w, cur_tile);
+            if (topmost > -1e8) {
+                static int s_fallback_logged = 0;
+                if (s_fallback_logged < 8) {
+                    fprintf(stderr,
+                            "[player] INFO: walkable-floor-near rejected "
+                            "every voxel on tile=%d - falling back to "
+                            "topmost-solid floor r=%.2f (event %d/8)\n",
+                            cur_tile, topmost, ++s_fallback_logged);
+                    fflush(stderr);
+                }
+                gr = topmost;
+            }
+        }
         const double step_h = (double)config_lod()->step_height_m;
         if (gr > -1e8) {
             bool warped     = (prev_tile < 0);

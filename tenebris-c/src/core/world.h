@@ -192,6 +192,18 @@ double   world_walkable_floor_near(const world_t* w, int tile,
                                    double target_radius_m,
                                    double body_height_m);
 
+/* Top-face radius of the topmost solid voxel in the column. No
+ * headroom check, no "passable cell above" requirement - just "is
+ * there a solid voxel here, and where does its top face sit?".
+ * Returns -1e9 when the column is entirely passable (or ungenerated
+ * for a freshly-spawned body). Used by the player ground-snap as a
+ * safety-net floor when world_walkable_floor_near rejects every
+ * solid voxel - a single-cell-tall column with a solid block
+ * directly above is technically a wall, but a player standing on
+ * top of it shouldn't fall through; this lets ground-snap keep
+ * them on the surface even when no "walkable" floor matches. */
+double   world_topmost_solid_floor(const world_t* w, int tile);
+
 /* Bottom radius of the first solid voxel at or above `head_radius_m`
  * in the column. Returns +1e30 when no ceiling exists (open sky).
  * Used by the vertical integrator to clamp upward motion. */

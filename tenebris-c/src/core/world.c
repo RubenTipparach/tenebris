@@ -508,6 +508,23 @@ double world_walkable_floor_near(const world_t* w, int tile,
     return best_radius_above;   /* may still be -1e9 if none */
 }
 
+double world_topmost_solid_floor(const world_t* w, int tile) {
+    if (!w || tile < 0 || tile >= w->tile_count) return -1e9;
+    if (tile >= w->gen_cursor) return -1e9;
+    const uint8_t* col = &w->blocks[(size_t)tile * WORLD_MAX_DEPTH];
+    /* Scan top-down for the first non-passable voxel. Its top face
+     * sits at radius(d + 1). No "cell above must be passable" check
+     * because a player standing on a buried-in-stone block still
+     * needs a floor under their feet; the headroom-aware variant
+     * (world_walkable_floor_near) is the one that should reject
+     * unwalkable columns, this is the bare safety net. */
+    for (int d = WORLD_MAX_DEPTH - 1; d >= 0; --d) {
+        if (block_is_passable(col[d])) continue;
+        return world_depth_to_radius_m(w, d + 1);
+    }
+    return -1e9;
+}
+
 dvec3_t world_safe_spawn_local(const world_t* w, dvec3_t unit_dir, double headroom_m) {
     /* Fallback radius if there's no walkable floor to read - drop
      * the player a couple of metres above the body's nominal
