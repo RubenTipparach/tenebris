@@ -764,19 +764,6 @@ void hex_mesh_build_water_voxels(hex_mesh_t* out, const world_t* w, int tile_idx
                  * "neighbour handles it" branch and we skip. */
                 int nb_level = water_render_level_at(w, nb, d, cfg_max_level);
                 if (level >= nb_level) continue;
-                /* Sleeping-ocean guard: if we (the "taller" side) are a
-                 * sleeping ocean cell, our top is owned by the planet-
-                 * wide wave cap, not by a flat per-voxel cap. Emitting
-                 * a step strip down from our notional cap would draw a
-                 * vertical wall floating in the middle of the ocean
-                 * surface every time a placed source flowed into the
-                 * sea and gave the bordering ocean cells flowing-level
-                 * neighbours. The ocean cap drapes over the boundary
-                 * visually; the neighbour's own top cap shows below it.
-                 * Same logic the is_sea_level_row top-cap skip above
-                 * relies on, extended to the side strip. */
-                uint8_t own_state = world_water_get_state(w, tile_idx, d);
-                if (own_state == 0u) continue;
                 float nb_cap_offset = water_cap_offset_for_level(
                     nb_level, cfg_max_level, min_film, curve_power, surface_off);
                 double r_strip_bot = r_top_full + (double)nb_cap_offset;
