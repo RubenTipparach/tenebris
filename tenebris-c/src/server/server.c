@@ -1082,6 +1082,21 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
             check_for_desync(s, cl);
             break;
         }
+        case MSG_SYNC_ACK: {
+            if (hdr.version != MSG_SYNC_ACK_VERSION) break;
+            msg_sync_ack_t ack;
+            if (proto_read_sync_ack(payload, hdr.length, &ack) != 0) break;
+            /* Only count an ACK that matches the tick we most recently
+             * sent. Out-of-order or replayed ACKs (e.g. client retried
+             * a fetch with the same id) are ignored - the RTT sample
+             * would be meaningless. */
+            if (ack.seq_id != cl->sync_last_seq_id) break;
+            double now = (double)time(NULL);
+            cl->sync_last_rtt_s = now - cl->sync_last_sent_s;
+            if (cl->sync_last_rtt_s < 0.0) cl->sync_last_rtt_s = 0.0;
+            if (cl->sync_outstanding > 0) --cl->sync_outstanding;
+            break;
+        }
         default:
             /* Unknown / not-yet-implemented kinds: log and skip rather
              * than disconnect, so the client can ship new messages
@@ -2243,6 +2258,12 @@ bool server_init(server_t* s, const server_config_t* cfg) {
     if (s->cfg.tick_hz <= 0.0) s->cfg.tick_hz = 20.0;
     if (s->cfg.log_every_n <= 0) s->cfg.log_every_n = (int)s->cfg.tick_hz;
 
+    /* Sync coordination defaults. Initial interval = 30 s per user
+     * spec; sync_next_seq starts at 1 so seq_id=0 stays reserved as
+     * "no tick yet seen" on the client side. */
+    s->sync_interval_s = 30.0;
+    s->sync_next_seq   = 1;
+
     job_system_init(0);
 
     /* Open the saves dir (creates if missing). Failures here are
@@ -2440,6 +2461,90 @@ void server_tick(server_t* s) {
      * The connection isn't closed - just logged, so the dashboard
      * stops showing forever-live sessions. */
     if ((s->tick % (uint64_t)s->cfg.tick_hz) == 0) client_sweep_idle(s);
+
+    /* Sync coordination: push a SYNC_TICK to any client whose
+     * personal next-send timer has elapsed, and adapt the fleet-wide
+     * interval based on the previous round's RTT samples. Runs once
+     * per second - the interval itself is in tens of seconds, so a
+     * per-tick (50 ms) walk would be overkill. */
+    if ((s->tick % (uint64_t)s->cfg.tick_hz) == 0) {
+        const double now = (double)time(NULL);
+        /* First: average the last-seen RTT across handshaked clients
+         * to decide whether to bump the interval up or down. Skips
+         * clients without an RTT sample yet (sync_last_rtt_s == 0)
+         * so a single new joiner doesn't dominate the average. */
+        double rtt_sum = 0.0;
+        int    rtt_n   = 0;
+        int    behind  = 0;
+        for (int i = 0; i < SERVER_MAX_CLIENTS; ++i) {
+            const server_client_t* cl = &s->clients[i];
+            if (!cl->conn || !cl->handshaked) continue;
+            if (cl->sync_outstanding > 1) ++behind;
+            if (cl->sync_last_rtt_s > 0.0) {
+                rtt_sum += cl->sync_last_rtt_s;
+                ++rtt_n;
+            }
+        }
+        double avg_rtt = (rtt_n > 0) ? (rtt_sum / (double)rtt_n) : 0.0;
+        if (behind > 0 || (rtt_n > 0 && avg_rtt > s->sync_interval_s)) {
+            /* At least one client missed its deadline OR the fleet
+             * average RTT crept above the current interval. Step up
+             * by 30 s per user spec; cap at 10 min so the interval
+             * can't run away. */
+            if (s->sync_interval_s < 600.0) {
+                s->sync_interval_s += 30.0;
+                printf("[sync] interval up to %.0fs (behind=%d avg_rtt=%.1fs)\n",
+                       s->sync_interval_s, behind, avg_rtt);
+                fflush(stdout);
+            }
+        } else if (rtt_n > 0 && avg_rtt * 2.0 < s->sync_interval_s
+                   && s->sync_interval_s > 30.0) {
+            /* RTTs are comfortably under half the interval - the
+             * fleet has caught up, slowly step back down so a
+             * temporary blip doesn't pin the interval at minutes
+             * forever. Step down half as fast as we step up, so
+             * we converge cleanly without oscillation. */
+            s->sync_interval_s -= 15.0;
+            if (s->sync_interval_s < 30.0) s->sync_interval_s = 30.0;
+            printf("[sync] interval down to %.0fs (avg_rtt=%.1fs)\n",
+                   s->sync_interval_s, avg_rtt);
+            fflush(stdout);
+        }
+
+        /* Second: per-client, send a SYNC_TICK if the personal timer
+         * has elapsed. Each new client's first send happens one
+         * interval after handshake (initialized when sync_next_send_s
+         * is 0). The seq_id comes from the global generator so
+         * duplicate ACKs from a stale tick can be detected at the
+         * server.
+         *
+         * If the client still has an outstanding (unacked) tick,
+         * fire-and-forget anyway - the new tick supersedes the old
+         * (the client's ACK for the previous one will be dropped
+         * because seq_id won't match the most recent send). The
+         * outstanding counter is what pushes the interval upward. */
+        for (int i = 0; i < SERVER_MAX_CLIENTS; ++i) {
+            server_client_t* cl = &s->clients[i];
+            if (!cl->conn || !cl->handshaked) continue;
+            if (cl->sync_next_send_s == 0.0) {
+                cl->sync_next_send_s = now + s->sync_interval_s;
+                continue;
+            }
+            if (now < cl->sync_next_send_s) continue;
+            uint32_t seq = s->sync_next_seq++;
+            if (s->sync_next_seq == 0) s->sync_next_seq = 1;
+            msg_sync_tick_t tick = { .seq_id = seq };
+            uint8_t buf[MSG_HEADER_SIZE + MSG_SYNC_TICK_WIRE_SIZE];
+            size_t bn = proto_write_sync_tick(buf, sizeof buf, &tick);
+            if (bn > 0) {
+                net_send(cl->conn, NET_CHANNEL_RELIABLE, buf, bn);
+                cl->sync_last_seq_id   = seq;
+                cl->sync_last_sent_s   = now;
+                cl->sync_next_send_s   = now + s->sync_interval_s;
+                ++cl->sync_outstanding;
+            }
+        }
+    }
 
     /* M4 (position relay): broadcast every 3rd tick. At 20 Hz that's
      * ~6.7 snapshots/sec — visibly smooth with client-side interp

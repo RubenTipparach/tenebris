@@ -2307,34 +2307,17 @@ static void frame(void) {
     maybe_autosave_sp((double)dt);
     periodic_pos_log((double)dt);
 
-    /* MP water-resync safety net: the realtime CHUNK_DIFF /
-     * WATER_STATE_DIFF broadcast layer has a couple of known leak
-     * paths (sim mutations that change a block without flipping the
-     * water-state byte don't flag persist_dirty; transport drops
-     * under load) that leave water voxels visibly missing on the
-     * client even though the server's on-disk state is correct -
-     * which is why a browser refresh, which re-fetches /saves/body,
-     * makes the gaps disappear.
-     *
-     * Rather than chase every individual leak, kick a /saves/body
-     * re-fetch for the player's active body on a slow timer. The
-     * fetch path is the one the user verified works (relog = correct
-     * water), and it overwrites the in-memory block + water-state
-     * columns with the server's authoritative copy. Period chosen
-     * long enough not to thrash the server (~bandwidth bounded by
-     * a single columnar dump every N seconds) but short enough that
-     * a desync resolves in less time than a player would tolerate. */
+    /* MP water-resync is now server-driven: the server pushes a
+     * MSG_SYNC_TICK at an adaptive interval (start 30 s, grows when
+     * any client's RTT lags) and the client kicks off a /saves/body
+     * fetch + replies MSG_SYNC_ACK. The previous client-side 15 s
+     * timer is removed - the server's scheduler is the single source
+     * of truth for sync cadence so the fleet stays roughly aligned
+     * and laggy clients don't drag fast clients into thrashing. */
     {
-        static double G_water_resync_accum = 0.0;
-        const double WATER_RESYNC_PERIOD_S = 15.0;
+        static double G_water_resync_accum = 0.0; (void)G_water_resync_accum;
         if (menu_state() == GAME_IN_GAME_MP && net_client_state() == NET_CLIENT_READY) {
-            G_water_resync_accum += (double)dt;
-            if (G_water_resync_accum >= WATER_RESYNC_PERIOD_S) {
-                G_water_resync_accum = 0.0;
-                if (G.player.body) {
-                    net_client_resync_body_saves((uint32_t)G.player.body->id);
-                }
-            }
+            /* no-op: server drives via SYNC_TICK */
         } else {
             G_water_resync_accum = 0.0;
         }

@@ -51,6 +51,15 @@ typedef enum {
                                    * after server-driven world_water_step alongside the block-level
                                    * CHUNK_DIFF so client cap heights / bell-curve / falling-flag visuals
                                    * mirror the authoritative simulation. */
+    MSG_SYNC_TICK           = 26, /* S->C: "please fetch a fresh /saves/body for the body you're
+                                   * standing on and ACK when applied." Carries a uint32 seq_id
+                                   * the client echoes back in MSG_SYNC_ACK so the server can
+                                   * measure round-trip time and adapt the interval. Empty body
+                                   * beyond seq_id - the server doesn't tell the client what to
+                                   * sync, the client decides based on its current active body. */
+    MSG_SYNC_ACK            = 27, /* C->S: echoes the SYNC_TICK seq_id once the /saves/body
+                                   * apply path has finished. Server uses this to compute RTT
+                                   * per client and rebalance the next interval. */
 } msg_kind_t;
 
 /* Per-kind protocol versions. Bump on any wire change. */
@@ -70,6 +79,11 @@ typedef enum {
 #define MSG_INVENTORY_STATE_VERSION      1
 #define MSG_TORCH_DIFF_VERSION           1
 #define MSG_WATER_STATE_DIFF_VERSION     1
+#define MSG_SYNC_TICK_VERSION            1
+#define MSG_SYNC_ACK_VERSION             1
+/* Both sync messages carry a uint32 seq_id - 4 bytes total payload. */
+#define MSG_SYNC_TICK_WIRE_SIZE          4
+#define MSG_SYNC_ACK_WIRE_SIZE           4
 
 typedef struct {
     uint16_t kind;       /* msg_kind_t */
@@ -337,6 +351,27 @@ typedef struct {
     uint8_t  state[128];      /* matches WORLD_MAX_DEPTH */
 } msg_water_state_diff_t;
 
+/* Server-driven sync coordination. The server periodically tells each
+ * client "fetch a fresh world snapshot now" via MSG_SYNC_TICK, and
+ * the client echoes the same seq_id back in MSG_SYNC_ACK once the
+ * /saves/body apply path has finished overwriting its local view.
+ *
+ * The server uses the round-trip time + per-client outstanding
+ * unack'd tick count to grow the next interval (start at 30 s, step
+ * up by 30 s if the previous round didn't ACK in time). This keeps
+ * busy / laggy clients from drowning in resync work while still
+ * giving every client an authoritative-data refresh on a bounded
+ * schedule.
+ *
+ * Both directions carry just the uint32 seq_id. */
+typedef struct {
+    uint32_t seq_id;
+} msg_sync_tick_t;
+
+typedef struct {
+    uint32_t seq_id;
+} msg_sync_ack_t;
+
 typedef struct {
     uint8_t  op;          /* torch_op_t */
     uint8_t  reserved8;
@@ -451,6 +486,12 @@ size_t proto_write_water_state_diff(uint8_t* buf, size_t cap,
                                      const msg_water_state_diff_t* m);
 int    proto_read_water_state_diff (const uint8_t* payload, size_t len,
                                      msg_water_state_diff_t* out);
+
+size_t proto_write_sync_tick(uint8_t* buf, size_t cap, const msg_sync_tick_t* m);
+int    proto_read_sync_tick (const uint8_t* payload, size_t len, msg_sync_tick_t* out);
+
+size_t proto_write_sync_ack (uint8_t* buf, size_t cap, const msg_sync_ack_t* m);
+int    proto_read_sync_ack  (const uint8_t* payload, size_t len, msg_sync_ack_t* out);
 
 size_t proto_write_player_info(uint8_t* buf, size_t cap, const msg_player_info_t* m);
 int    proto_read_player_info (const uint8_t* payload, size_t len, msg_player_info_t* out);

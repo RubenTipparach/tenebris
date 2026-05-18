@@ -550,6 +550,36 @@ int proto_read_water_state_diff(const uint8_t* payload, size_t len,
     return 0;
 }
 
+size_t proto_write_sync_tick(uint8_t* buf, size_t cap, const msg_sync_tick_t* m) {
+    const size_t total = MSG_HEADER_SIZE + MSG_SYNC_TICK_WIRE_SIZE;
+    if (cap < total) return 0;
+    proto_write_header(buf, MSG_SYNC_TICK, MSG_SYNC_TICK_VERSION,
+                       MSG_SYNC_TICK_WIRE_SIZE);
+    put_u32_le(buf + MSG_HEADER_SIZE, m->seq_id);
+    return total;
+}
+
+int proto_read_sync_tick(const uint8_t* payload, size_t len, msg_sync_tick_t* out) {
+    if (len < MSG_SYNC_TICK_WIRE_SIZE) return -1;
+    out->seq_id = get_u32_le(payload + 0);
+    return 0;
+}
+
+size_t proto_write_sync_ack(uint8_t* buf, size_t cap, const msg_sync_ack_t* m) {
+    const size_t total = MSG_HEADER_SIZE + MSG_SYNC_ACK_WIRE_SIZE;
+    if (cap < total) return 0;
+    proto_write_header(buf, MSG_SYNC_ACK, MSG_SYNC_ACK_VERSION,
+                       MSG_SYNC_ACK_WIRE_SIZE);
+    put_u32_le(buf + MSG_HEADER_SIZE, m->seq_id);
+    return total;
+}
+
+int proto_read_sync_ack(const uint8_t* payload, size_t len, msg_sync_ack_t* out) {
+    if (len < MSG_SYNC_ACK_WIRE_SIZE) return -1;
+    out->seq_id = get_u32_le(payload + 0);
+    return 0;
+}
+
 int proto_read_torch_diff(const uint8_t* payload, size_t len,
                             msg_torch_diff_t* out) {
     if (len < MSG_TORCH_DIFF_HEADER) return -1;

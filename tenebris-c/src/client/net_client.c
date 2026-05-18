@@ -203,6 +203,17 @@ typedef struct {
         uint8_t  state;            /* 0 idle, 1 in-flight, 2 done */
     }                    body_fetch[NET_BODY_COVERAGE_MAX];
     int                  body_fetch_count;
+
+    /* Server-driven sync coordination. The server sends MSG_SYNC_TICK
+     * with a seq_id; we kick off a /saves/body resync and remember
+     * the seq_id so we can echo it back in MSG_SYNC_ACK once the
+     * fetch response lands in net_client_apply_body_blob. Only the
+     * MOST RECENT pending seq is tracked - a fresh SYNC_TICK
+     * supersedes an in-flight one (the server measures the new RTT
+     * relative to the new send). pending_sync_active gates the ACK
+     * send so we don't double-ack a fetch that wasn't sync-triggered. */
+    uint32_t             pending_sync_seq;
+    bool                 pending_sync_active;
 } net_client_t;
 
 static net_client_t C;
@@ -753,6 +764,28 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
                     if (nb >= 0) world_tile_mark_dirty(w, nb);
                 }
             }
+            break;
+        }
+        case MSG_SYNC_TICK: {
+            if (hdr.version != MSG_SYNC_TICK_VERSION) break;
+            msg_sync_tick_t tick;
+            if (proto_read_sync_tick(payload, hdr.length, &tick) != 0) {
+                fprintf(stderr, "[net-client] malformed SYNC_TICK\n");
+                break;
+            }
+            /* Find the player's active body so we know what to resync.
+             * The welcome holds a default body but the player may have
+             * moved to a moon since - net_client doesn't track the
+             * player state directly, so we resync the body the welcome
+             * spawned us into. Main is the common case; a future
+             * extension can plumb the live body_id in via the snapshot. */
+            uint32_t body_id = C.welcome.body_id;
+            C.pending_sync_seq    = tick.seq_id;
+            C.pending_sync_active = true;
+            /* Fire the resync. The fetch is async (HTTP); the response
+             * lands in net_client_apply_body_blob which is where we
+             * send the ACK with the matching seq_id. */
+            net_client_resync_body_saves(body_id);
             break;
         }
         case MSG_SNAPSHOT: {
@@ -1723,6 +1756,23 @@ static void net_client_apply_body_blob(uint32_t expected_body_id,
            "(%zu bytes received)\n",
            body_id_in, name, applied_tiles, applied_cells, len);
     fflush(stdout);
+
+    /* If this fetch was triggered by a server SYNC_TICK, echo the
+     * seq_id back so the server can measure the round-trip and feed
+     * its interval-adaptation logic. Sent on the reliable channel
+     * - dropping an ACK would let the server interval drift upward
+     * unnecessarily. Clear the pending flag so a subsequent fetch
+     * triggered by something else (re-approach to a body, manual
+     * refresh) doesn't accidentally re-ACK the same seq. */
+    if (C.pending_sync_active && C.state == NET_CLIENT_READY) {
+        msg_sync_ack_t ack = { .seq_id = C.pending_sync_seq };
+        uint8_t buf[MSG_HEADER_SIZE + MSG_SYNC_ACK_WIRE_SIZE];
+        size_t bn = proto_write_sync_ack(buf, sizeof buf, &ack);
+        if (bn > 0) {
+            net_send(C.conn, NET_CHANNEL_RELIABLE, buf, bn);
+        }
+        C.pending_sync_active = false;
+    }
 }
 
 void net_client_tick(void) {
