@@ -2795,6 +2795,50 @@ void server_tick(server_t* s) {
                             net_send(peer->conn, NET_CHANNEL_RELIABLE, buf, bn);
                         }
                     }
+
+                    /* PASS 3: broadcast flow-origin entries for each
+                     * dirty tile so MP clients can compute the same
+                     * per-cell flow_direction the server has and pan
+                     * the top-cap UV accordingly. Without this, MP
+                     * clients see flow blocks with no recorded origin
+                     * and the top cap stays static, contradicting the
+                     * server's authoritative "flow points away from
+                     * spawn" rule. Same ordering invariant as PASS 2:
+                     * blocks (PASS 1) -> state (PASS 2) -> origins
+                     * (PASS 3) so the client's mesh always rebuilds
+                     * against a consistent (block, state, origins)
+                     * triple. */
+                    for (int i = 0; i < n; ++i) {
+                        int tile = dirty_tiles[i];
+                        msg_water_origins_diff_t od = { 0 };
+                        od.body_id  = (uint32_t)w->body->id;
+                        od.tile_idx = (uint32_t)tile;
+                        int written = world_water_origin_enum_tile(
+                            w, tile,
+                            (water_origin_diff_entry_t*)od.entries,
+                            MSG_WATER_ORIGINS_DIFF_MAX_ENTRIES);
+                        if (written < 0) written = 0;
+                        if (written > MSG_WATER_ORIGINS_DIFF_MAX_ENTRIES) {
+                            written = MSG_WATER_ORIGINS_DIFF_MAX_ENTRIES;
+                        }
+                        /* Always broadcast, even when written == 0, so
+                         * a tile whose last origin just got removed
+                         * (source destroyed -> downstream cells lost
+                         * their last origin entry) tells the client
+                         * to clear stale flow data for that tile. */
+                        od.entry_count = (uint16_t)written;
+                        uint8_t buf[MSG_HEADER_SIZE
+                                    + MSG_WATER_ORIGINS_DIFF_MAX_SIZE];
+                        size_t bn = proto_write_water_origins_diff(
+                            buf, sizeof buf, &od);
+                        if (bn == 0) continue;
+                        for (int j = 0; j < SERVER_MAX_CLIENTS; ++j) {
+                            const server_client_t* peer = &s->clients[j];
+                            if (!peer->conn) continue;
+                            if (strcmp(peer->room, room->code) != 0) continue;
+                            net_send(peer->conn, NET_CHANNEL_RELIABLE, buf, bn);
+                        }
+                    }
                     #undef WATER_FLUSH_BATCH
                 }
             }

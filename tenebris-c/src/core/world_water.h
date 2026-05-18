@@ -263,4 +263,41 @@ int  world_water_origin_read(const struct world_s* w, int tile, int depth,
 bool world_water_flow_direction(const struct world_s* w, int tile, int depth,
                                 float out[3]);
 
+/* Network-broadcast support: enumerate every origin entry attached to
+ * a single tile. Writes up to `cap` entries into out[]; returns the
+ * count actually written (or the count that would have been written
+ * if cap was high enough - caller can use that to detect truncation
+ * and grow the buffer).
+ *
+ * Each entry packs:
+ *   depth          - 0..WORLD_MAX_DEPTH-1
+ *   origin_count   - 1..WATER_ORIGIN_MAX (entries with 0 origins are
+ *                    never recorded in the hash, so this is always
+ *                    positive)
+ *   origin_tile[3] - up to origin_count valid tile indices
+ *   origin_depth[3]- corresponding depths
+ *
+ * The hash table is walked linearly; expect O(table_size) which is
+ * 4096 slots regardless of how many origins are actually set.  */
+typedef struct {
+    uint8_t  depth;
+    uint8_t  origin_count;
+    uint8_t  _pad[2];
+    uint32_t origin_tile [WATER_ORIGIN_MAX];
+    uint8_t  origin_depth[WATER_ORIGIN_MAX];
+    uint8_t  _pad2;
+} water_origin_diff_entry_t;
+
+int world_water_origin_enum_tile(const struct world_s* w, int tile,
+                                  water_origin_diff_entry_t* out, int cap);
+
+/* Apply a single origin entry on the client side. Wraps origin_add
+ * but takes the full origin list at once - clears any prior origins
+ * on (tile, depth) so the client's view exactly matches the server's
+ * snapshot (idempotent re-broadcasts overwrite, not append).
+ *
+ * Called by the MSG_WATER_ORIGINS_DIFF receive path in net_client. */
+void world_water_origin_apply_entry(struct world_s* w, int tile,
+                                     const water_origin_diff_entry_t* entry);
+
 #endif

@@ -60,6 +60,11 @@ typedef enum {
     MSG_SYNC_ACK            = 27, /* C->S: echoes the SYNC_TICK seq_id once the /saves/body
                                    * apply path has finished. Server uses this to compute RTT
                                    * per client and rebalance the next interval. */
+    MSG_WATER_ORIGINS_DIFF  = 28, /* S->C: flow-origin list for every active water cell in one tile.
+                                   * Sent alongside the MSG_WATER_STATE_DIFF for the same tile so
+                                   * the client knows which cells are flowing (have origins) vs.
+                                   * which are spawn sources (no origin entry). Origins drive the
+                                   * top-cap UV pan direction and the player-current force. */
 } msg_kind_t;
 
 /* Per-kind protocol versions. Bump on any wire change. */
@@ -84,6 +89,29 @@ typedef enum {
 /* Both sync messages carry a uint32 seq_id - 4 bytes total payload. */
 #define MSG_SYNC_TICK_WIRE_SIZE          4
 #define MSG_SYNC_ACK_WIRE_SIZE           4
+#define MSG_WATER_ORIGINS_DIFF_VERSION   1
+/* Header + body layout for MSG_WATER_ORIGINS_DIFF:
+ *   uint32  body_id
+ *   uint32  tile_idx
+ *   uint16  entry_count        (number of (depth, origins) records)
+ *   uint16  _pad
+ *   entries[entry_count]:
+ *     uint8  depth             (0..WORLD_MAX_DEPTH-1)
+ *     uint8  origin_count      (1..3)
+ *     uint8  _pad[2]
+ *     uint32 origin_tile[3]    (only first origin_count are meaningful)
+ *     uint8  origin_depth[3]
+ *     uint8  _pad2
+ *
+ * Each entry is 20 bytes. A tile carrying its theoretical max of
+ * WORLD_MAX_DEPTH=128 distinct flow cells = 2.5 KB which still
+ * fits comfortably in a single WebSocket message. Practical waterfall
+ * tiles carry <20 entries (~400 B). */
+#define MSG_WATER_ORIGINS_DIFF_HEADER_SIZE  12
+#define MSG_WATER_ORIGINS_DIFF_ENTRY_SIZE   20
+#define MSG_WATER_ORIGINS_DIFF_MAX_ENTRIES  128
+#define MSG_WATER_ORIGINS_DIFF_MAX_SIZE     (MSG_WATER_ORIGINS_DIFF_HEADER_SIZE \
+    + MSG_WATER_ORIGINS_DIFF_ENTRY_SIZE * MSG_WATER_ORIGINS_DIFF_MAX_ENTRIES)
 
 typedef struct {
     uint16_t kind;       /* msg_kind_t */
@@ -351,6 +379,26 @@ typedef struct {
     uint8_t  state[128];      /* matches WORLD_MAX_DEPTH */
 } msg_water_state_diff_t;
 
+/* Flow-origin entries for one tile. Mirrors water_origin_diff_entry_t
+ * over the wire so the receive path can decode straight into the
+ * world_water apply call without an extra copy. */
+typedef struct {
+    uint8_t  depth;
+    uint8_t  origin_count;     /* 1..3 - cells with zero origins are not transmitted */
+    uint8_t  _pad[2];
+    uint32_t origin_tile [3];
+    uint8_t  origin_depth[3];
+    uint8_t  _pad2;
+} msg_water_origins_diff_entry_t;
+
+typedef struct {
+    uint32_t body_id;
+    uint32_t tile_idx;
+    uint16_t entry_count;
+    uint16_t _pad;
+    msg_water_origins_diff_entry_t entries[MSG_WATER_ORIGINS_DIFF_MAX_ENTRIES];
+} msg_water_origins_diff_t;
+
 /* Server-driven sync coordination. The server periodically tells each
  * client "fetch a fresh world snapshot now" via MSG_SYNC_TICK, and
  * the client echoes the same seq_id back in MSG_SYNC_ACK once the
@@ -486,6 +534,11 @@ size_t proto_write_water_state_diff(uint8_t* buf, size_t cap,
                                      const msg_water_state_diff_t* m);
 int    proto_read_water_state_diff (const uint8_t* payload, size_t len,
                                      msg_water_state_diff_t* out);
+
+size_t proto_write_water_origins_diff(uint8_t* buf, size_t cap,
+                                       const msg_water_origins_diff_t* m);
+int    proto_read_water_origins_diff (const uint8_t* payload, size_t len,
+                                       msg_water_origins_diff_t* out);
 
 size_t proto_write_sync_tick(uint8_t* buf, size_t cap, const msg_sync_tick_t* m);
 int    proto_read_sync_tick (const uint8_t* payload, size_t len, msg_sync_tick_t* out);

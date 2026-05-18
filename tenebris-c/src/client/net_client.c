@@ -766,6 +766,52 @@ static void on_msg(net_conn_t* conn, net_channel_t ch,
             }
             break;
         }
+        case MSG_WATER_ORIGINS_DIFF: {
+            if (hdr.version != MSG_WATER_ORIGINS_DIFF_VERSION) break;
+            msg_water_origins_diff_t od;
+            if (proto_read_water_origins_diff(payload, hdr.length, &od) != 0) {
+                fprintf(stderr, "[net-client] malformed WATER_ORIGINS_DIFF\n");
+                break;
+            }
+            world_t* w = renderer_world_for_body(od.body_id);
+            if (!w) break;
+            /* Clear every origin entry currently recorded for this
+             * tile, then apply the entries the server sent. This is
+             * the "full snapshot per tile" pattern - any cell the
+             * server didn't include simply has no origins on the
+             * client. Cheaper than a per-cell diff and works for the
+             * source-death case (server stops including a cell whose
+             * origin list emptied -> client clears stale flow). */
+            const goldberg_tile_t* t_clear = goldberg_tile(w->grid, (int)od.tile_idx);
+            if (t_clear) {
+                /* Walk all 128 depths on this tile and drop any origin
+                 * entries; the apply loop below re-adds the ones the
+                 * server still considers active. Cheap (one hash
+                 * lookup per depth). */
+                for (int d = 0; d < WORLD_MAX_DEPTH; ++d) {
+                    world_water_origin_clear(w, (int)od.tile_idx, d);
+                }
+            }
+            for (int i = 0; i < od.entry_count; ++i) {
+                world_water_origin_apply_entry(
+                    w, (int)od.tile_idx,
+                    (const water_origin_diff_entry_t*)&od.entries[i]);
+            }
+            /* Mark the tile + edge neighbours dirty so the renderer
+             * remeshes the affected water top caps with the updated
+             * flow direction. Same fan-out as the state-diff handler
+             * because the water mesher reads neighbour state when
+             * deciding gap-band emission, and origin changes alter
+             * the per-cell UV. */
+            world_tile_mark_dirty(w, (int)od.tile_idx);
+            if (t_clear) {
+                for (int i = 0; i < t_clear->num_neighbors; ++i) {
+                    int nb = t_clear->neighbors[i];
+                    if (nb >= 0) world_tile_mark_dirty(w, nb);
+                }
+            }
+            break;
+        }
         case MSG_SYNC_TICK: {
             if (hdr.version != MSG_SYNC_TICK_VERSION) break;
             msg_sync_tick_t tick;

@@ -550,6 +550,72 @@ int proto_read_water_state_diff(const uint8_t* payload, size_t len,
     return 0;
 }
 
+size_t proto_write_water_origins_diff(uint8_t* buf, size_t cap,
+                                       const msg_water_origins_diff_t* m) {
+    int n = (int)m->entry_count;
+    if (n < 0) n = 0;
+    if (n > MSG_WATER_ORIGINS_DIFF_MAX_ENTRIES) {
+        n = MSG_WATER_ORIGINS_DIFF_MAX_ENTRIES;
+    }
+    const size_t body = MSG_WATER_ORIGINS_DIFF_HEADER_SIZE
+                       + (size_t)n * MSG_WATER_ORIGINS_DIFF_ENTRY_SIZE;
+    const size_t total = MSG_HEADER_SIZE + body;
+    if (cap < total) return 0;
+    proto_write_header(buf, MSG_WATER_ORIGINS_DIFF,
+                       MSG_WATER_ORIGINS_DIFF_VERSION, (uint16_t)body);
+    uint8_t* p = buf + MSG_HEADER_SIZE;
+    put_u32_le(p + 0, m->body_id);
+    put_u32_le(p + 4, m->tile_idx);
+    /* uint16 count + uint16 pad. */
+    p[8]  = (uint8_t)( n        & 0xFFu);
+    p[9]  = (uint8_t)((n >> 8)  & 0xFFu);
+    p[10] = 0;
+    p[11] = 0;
+    p += MSG_WATER_ORIGINS_DIFF_HEADER_SIZE;
+    for (int i = 0; i < n; ++i) {
+        const msg_water_origins_diff_entry_t* e = &m->entries[i];
+        p[0] = e->depth;
+        p[1] = e->origin_count;
+        p[2] = 0;
+        p[3] = 0;
+        for (int j = 0; j < 3; ++j) put_u32_le(p + 4 + j * 4, e->origin_tile[j]);
+        p[16] = e->origin_depth[0];
+        p[17] = e->origin_depth[1];
+        p[18] = e->origin_depth[2];
+        p[19] = 0;
+        p += MSG_WATER_ORIGINS_DIFF_ENTRY_SIZE;
+    }
+    return total;
+}
+
+int proto_read_water_origins_diff(const uint8_t* payload, size_t len,
+                                   msg_water_origins_diff_t* out) {
+    if (len < MSG_WATER_ORIGINS_DIFF_HEADER_SIZE) return -1;
+    out->body_id     = get_u32_le(payload + 0);
+    out->tile_idx    = get_u32_le(payload + 4);
+    out->entry_count = (uint16_t)(payload[8] | (payload[9] << 8));
+    out->_pad        = 0;
+    int n = (int)out->entry_count;
+    if (n < 0 || n > MSG_WATER_ORIGINS_DIFF_MAX_ENTRIES) return -1;
+    const size_t need = MSG_WATER_ORIGINS_DIFF_HEADER_SIZE
+                       + (size_t)n * MSG_WATER_ORIGINS_DIFF_ENTRY_SIZE;
+    if (len < need) return -1;
+    const uint8_t* p = payload + MSG_WATER_ORIGINS_DIFF_HEADER_SIZE;
+    for (int i = 0; i < n; ++i) {
+        msg_water_origins_diff_entry_t* e = &out->entries[i];
+        e->depth        = p[0];
+        e->origin_count = p[1];
+        e->_pad[0] = e->_pad[1] = 0;
+        for (int j = 0; j < 3; ++j) e->origin_tile[j] = get_u32_le(p + 4 + j * 4);
+        e->origin_depth[0] = p[16];
+        e->origin_depth[1] = p[17];
+        e->origin_depth[2] = p[18];
+        e->_pad2 = 0;
+        p += MSG_WATER_ORIGINS_DIFF_ENTRY_SIZE;
+    }
+    return 0;
+}
+
 size_t proto_write_sync_tick(uint8_t* buf, size_t cap, const msg_sync_tick_t* m) {
     const size_t total = MSG_HEADER_SIZE + MSG_SYNC_TICK_WIRE_SIZE;
     if (cap < total) return 0;

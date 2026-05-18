@@ -413,6 +413,53 @@ int world_water_origin_read(const world_t* w, int tile, int depth,
     return n;
 }
 
+int world_water_origin_enum_tile(const world_t* w, int tile,
+                                  water_origin_diff_entry_t* out, int cap) {
+    if (!w || !w->water || !w->water->origins) return 0;
+    int n = 0;
+    /* Linear table walk. The hash key is (tile, depth) so there's no
+     * grouping by tile - any slot might or might not match. With the
+     * fixed 4096-slot table this is a few microseconds per tile and
+     * only fires during broadcast (post-water-step). */
+    for (int idx = 0; idx < w->water->origins_cap; ++idx) {
+        const struct water_origin_slot_t* s = &w->water->origins[idx];
+        if (s->key_depth_plus_one == 0u
+            || s->key_depth_plus_one == (uint8_t)WATER_ORIGIN_TOMBSTONE) {
+            continue;
+        }
+        if ((int)s->key_tile != tile) continue;
+        if (out && n < cap) {
+            water_origin_diff_entry_t* e = &out[n];
+            e->depth        = (uint8_t)(s->key_depth_plus_one - 1);
+            e->origin_count = s->origin_count;
+            for (int i = 0; i < WATER_ORIGIN_MAX; ++i) {
+                e->origin_tile [i] = s->origin_tile [i];
+                e->origin_depth[i] = s->origin_depth[i];
+            }
+        }
+        ++n;
+    }
+    return n;
+}
+
+void world_water_origin_apply_entry(world_t* w, int tile,
+                                     const water_origin_diff_entry_t* entry) {
+    if (!w || !w->water || !entry) return;
+    if (tile < 0 || entry->depth >= WORLD_MAX_DEPTH) return;
+    /* Clear any prior origin entry for this cell so the server's
+     * snapshot fully replaces what we had locally. A no-op when no
+     * entry exists; idempotent when the entry already matches. */
+    world_water_origin_clear(w, tile, (int)entry->depth);
+    int n = entry->origin_count;
+    if (n > WATER_ORIGIN_MAX) n = WATER_ORIGIN_MAX;
+    for (int i = 0; i < n; ++i) {
+        water_origin_ref_t r;
+        r.tile  = entry->origin_tile [i];
+        r.depth = entry->origin_depth[i];
+        world_water_origin_add(w, tile, (int)entry->depth, r);
+    }
+}
+
 bool world_water_flow_direction(const world_t* w, int tile, int depth,
                                 float out[3]) {
     if (out) out[0] = out[1] = out[2] = 0.0f;
