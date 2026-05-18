@@ -18,6 +18,8 @@
 #include "core/planet.h"
 #include "core/planet_gen.h"
 #include "core/world.h"
+#include "core/goldberg.h"
+#include "core/blocks.h"
 #include "core/world_water.h"
 #include "core/job_system.h"
 #include "core/config.h"
@@ -905,6 +907,12 @@ static void update_overlay(float dt) {
     sdtx_printf("frame: %s  radius: %.1f m\n", frame->name, frame->radius_m);
     sdtx_printf("alt: %.1f m  grav: %3.0f%%  %s\n",
                 alt, hud_gq.multiplier * 100.0f, status);
+    /* World-space player position. Useful when comparing a console
+     * log line (e.g. "fell through MINIMUM LINE on body=X r=...") to
+     * what the player is actually looking at on-screen, or when
+     * eyeballing whether a wild teleport report is for "near where
+     * I expect to be" vs "across the planet". */
+    sdtx_printf("pos: (%.2f, %.2f, %.2f)\n", pos.x, pos.y, pos.z);
     sdtx_printf("yaw: %.2f  pitch: %.2f  tile: %d\n",
                 G.player.yaw, G.player.pitch, G.player.last_tile);
     sdtx_printf("tris: %zu  tiles drawn: %zu  remeshed/f: %zu\n",
@@ -1519,6 +1527,109 @@ static bool    G_last_sent_valid = false;
  * (or between the spawn line and the first 10 s sample after a
  * fresh join) tells us where the floating-spawn delta is coming
  * from. */
+/* Block-snapshot diagnostic. F4-bound. Captures the 7 hexagons around
+ * the player (own tile + 6 edge-neighbours) and prints, for each, the
+ * tile id, world-space centre, and the block type at the player's
+ * feet depth +/- 4 cells (so 9 depths per hex, 63 cells total). The
+ * matching Tenebris-JS tool was the user's go-to for "what's actually
+ * under me here?" diagnosis - this is the C port. */
+static const char* block_name(block_t b) {
+    switch (b) {
+        case BLOCK_AIR:            return "AIR";
+        case BLOCK_WATER:          return "WATER";
+        case BLOCK_SAND:           return "SAND";
+        case BLOCK_DIRT:           return "DIRT";
+        case BLOCK_GRASS:          return "GRASS";
+        case BLOCK_STONE:          return "STONE";
+        case BLOCK_ICE:            return "ICE";
+        case BLOCK_SNOW:           return "SNOW";
+        case BLOCK_DIRT_GRASS:     return "DIRT_GRASS";
+        case BLOCK_DIRT_SNOW:      return "DIRT_SNOW";
+        case BLOCK_TORCH:          return "TORCH";
+        case BLOCK_MOON:           return "MOON";
+        case BLOCK_SEQ_GRASS:      return "SEQ_GRASS";
+        case BLOCK_SEQ_DIRT:       return "SEQ_DIRT";
+        case BLOCK_SEQ_DIRT_GRASS: return "SEQ_DIRT_GRASS";
+        case BLOCK_SEQ_SAND:       return "SEQ_SAND";
+        case BLOCK_SEQ_SNOW:       return "SEQ_SNOW";
+        case BLOCK_SEQ_DIRT_SNOW:  return "SEQ_DIRT_SNOW";
+        case BLOCK_CRAG_ROCK:      return "CRAG_ROCK";
+        case BLOCK_FROST_ICE:      return "FROST_ICE";
+        case BLOCK_ASTEROID_ROCK:  return "ASTEROID_ROCK";
+        case BLOCK_WOOD:           return "WOOD";
+        case BLOCK_LEAVES:         return "LEAVES";
+        case BLOCK_BEDROCK:        return "BEDROCK";
+        case BLOCK_SEQ_LEAVES:     return "SEQ_LEAVES";
+        default:                   return "?";
+    }
+}
+static void print_block_snapshot(void) {
+    world_t* w = G.player.body
+        ? world_for_body(G.player.body)
+        : G.world;
+    if (!w || !w->body) {
+        printf("[snapshot] no world for current body - aborting\n");
+        fflush(stdout);
+        return;
+    }
+    dvec3_t center = dvec3_make(w->body->pos_x, w->body->pos_y, w->body->pos_z);
+    dvec3_t local  = dvec3_sub(G.player.position, center);
+    double  r_now  = dvec3_length(local);
+    if (r_now < 1e-6) {
+        printf("[snapshot] degenerate radial - aborting\n");
+        fflush(stdout);
+        return;
+    }
+    dvec3_t feet_dir  = dvec3_scale(local, 1.0 / r_now);
+    int     own_tile  = goldberg_find_tile(w->grid, feet_dir, G.player.last_tile);
+    int     feet_depth = world_radius_to_depth(w, r_now);
+    if (own_tile < 0) {
+        printf("[snapshot] goldberg_find_tile returned -1\n");
+        fflush(stdout);
+        return;
+    }
+
+    printf("\n[snapshot] body=%s feet_tile=%d feet_depth=%d player_pos=(%.2f, %.2f, %.2f)\n",
+           w->body->name, own_tile, feet_depth,
+           G.player.position.x, G.player.position.y, G.player.position.z);
+
+    const goldberg_tile_t* own_t = goldberg_tile(w->grid, own_tile);
+    int  tile_ids[7];
+    int  n_ids = 1;
+    tile_ids[0] = own_tile;
+    if (own_t) {
+        for (int k = 0; k < own_t->num_neighbors && n_ids < 7; ++k) {
+            int nb = own_t->edge_neighbours[k];
+            if (nb >= 0) tile_ids[n_ids++] = nb;
+        }
+    }
+
+    const int RANGE = 4;
+    int d_lo = feet_depth - RANGE;
+    int d_hi = feet_depth + RANGE;
+    if (d_lo < 0)                  d_lo = 0;
+    if (d_hi >= WORLD_MAX_DEPTH)   d_hi = WORLD_MAX_DEPTH - 1;
+
+    for (int i = 0; i < n_ids; ++i) {
+        int tid = tile_ids[i];
+        const goldberg_tile_t* t = goldberg_tile(w->grid, tid);
+        if (!t) continue;
+        dvec3_t tc = dvec3_scale(t->center, w->body->radius_m);
+        dvec3_t wc = dvec3_add(center, tc);
+        const char* role = (i == 0) ? "FEET" : "NB  ";
+        printf("[snapshot] %s tile=%d center_world=(%.2f, %.2f, %.2f)\n",
+               role, tid, wc.x, wc.y, wc.z);
+        for (int d = d_hi; d >= d_lo; --d) {
+            block_t b = (block_t)w->blocks[(size_t)tid * WORLD_MAX_DEPTH + d];
+            const char* marker = (d == feet_depth) ? " <-- feet" : "";
+            printf("[snapshot]   d=%3d  block=%-14s (id=%2u)%s\n",
+                   d, block_name(b), (unsigned)b, marker);
+        }
+    }
+    printf("[snapshot] end\n\n");
+    fflush(stdout);
+}
+
 static void   periodic_pos_log(double dt) {
     /* 5-second cadence position trace. Re-enabled per spawn-bug
      * investigation: the wild-teleport reports show position changing
@@ -2118,6 +2229,14 @@ static void frame(void) {
                     body_id = BODY_ID_IN_SPACE;
                 }
             }
+            /* Force grounded=false on the wire while the post-
+             * rescue freeze counts down. That gates the server's
+             * pose persistence so the rescue destination doesn't
+             * overwrite the player's pre-rescue saved spawn. The
+             * freeze clears when they intentionally move; until
+             * then the previous good pose stays on disk. */
+            bool send_grounded = G.player.grounded
+                                && G.player.rescue_save_freeze_s <= 0.0f;
             net_client_send_player_state(G_state_send_ctr,
                                             body_id,
                                             G.player.position.x,
@@ -2125,7 +2244,7 @@ static void frame(void) {
                                             G.player.position.z,
                                             G.player.yaw,
                                             G.player.pitch,
-                                            G.player.grounded);
+                                            send_grounded);
             /* Mirror what we just put on the wire so periodic_pos_log
              * can compare it against G.player.position later. */
             G_last_sent_pos.x   = G.player.position.x;
@@ -2654,6 +2773,16 @@ static void event(const sapp_event* e) {
      * one keypress away. */
     if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_F1) {
         G_players_panel_visible = !G_players_panel_visible;
+        return;
+    }
+    if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_F4) {
+        /* Block snapshot: dump the player's tile + 6 hex neighbours,
+         * each with 9 depths centered on the player's feet, to the
+         * devtools console. Same diagnostic shape as the Tenebris-JS
+         * tool. Not gated on the F2 debug master - the console output
+         * is invisible to non-debug players, and the user explicitly
+         * asked for F4 to always work for this. */
+        print_block_snapshot();
         return;
     }
     if (G_debug_ui_visible) {

@@ -431,6 +431,7 @@ void player_init(player_ctrl_t* p, const body_config_t* body) {
     p->last_good_position = (dvec3_t){0};
     p->last_good_body     = NULL;
     p->rescue_loop_count  = 0;
+    p->rescue_save_freeze_s = 0.0f;
 }
 
 dvec3_t player_world_pos(const player_ctrl_t* p) { return p->position; }
@@ -656,6 +657,23 @@ static void jerk_snapshot_take(jerk_snapshot_t* s, const player_ctrl_t* p) {
 
 void player_update(player_ctrl_t* p, world_t* w, float dt) {
     const input_state_t* in = input_state();
+    /* Post-rescue server-save freeze countdown. Stays positive for
+     * a few seconds after the bedrock-fall rescue so PLAYER_STATE
+     * sends grounded=false on the wire (which gates the server's
+     * pose persistence). Any intentional movement input from the
+     * player clears it immediately - they want their new position
+     * saved. */
+    if (p->rescue_save_freeze_s > 0.0f) {
+        p->rescue_save_freeze_s -= dt;
+        if (p->rescue_save_freeze_s < 0.0f) p->rescue_save_freeze_s = 0.0f;
+        if (in->phys.forward || in->phys.backward
+         || in->phys.left    || in->phys.right
+         || in->phys.fly_up  || in->phys.fly_down
+         || in->phys.jump)
+        {
+            p->rescue_save_freeze_s = 0.0f;
+        }
+    }
     /* Snapshot the BEFORE state for the camera-jerk diagnostic so
      * we can compare against it after the update. */
     jerk_snapshot_t before;
@@ -804,6 +822,16 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
             p->velocity = dvec3_make(0, 0, 0);
             p->grounded = false;
             p->last_tile = -1;
+            /* Freeze server-save reporting for a few seconds so the
+             * rescue destination doesn't overwrite the player's
+             * pre-rescue saved pose. The PLAYER_STATE send path
+             * checks rescue_save_freeze_s and forces grounded=false
+             * on the wire while it's positive, which gates the
+             * server's persistence. The freeze clears when the
+             * player provides movement input (input.c flags) -
+             * intentionally moving means "yes, this is where I want
+             * to be, please save it". */
+            p->rescue_save_freeze_s = 5.0f;
             /* Cold-rebuild the basis FROM the new position so basis.up
              * is the radial at the surface we just teleported to.
              * Critical: without this the basis kept whatever stale

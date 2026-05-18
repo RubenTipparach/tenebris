@@ -85,6 +85,20 @@ typedef struct {
      * number of repeats to break out of spawn loops where the saved
      * pose is itself unstable. */
     int                  rescue_loop_count;
+    /* Seconds remaining on the post-rescue server-save freeze. After
+     * a bedrock-fall rescue teleports the player somewhere safe, we
+     * don't want the server to overwrite their pre-rescue pose with
+     * the rescue destination - otherwise a single fall-through
+     * permanently moves their saved spawn to wherever the rescue
+     * landed. While this counter is > 0, PLAYER_STATE is sent with
+     * grounded=false so the server's save gate (cl->is_grounded)
+     * keeps the previous pose on disk.
+     *
+     * Cleared the moment the player provides movement input
+     * (W/A/S/D/space/jetpack) - that signals "yes, this position is
+     * intentional, please save it now". Refreshing without moving
+     * leaves the original saved pose authoritative. */
+    float                rescue_save_freeze_s;
 } player_ctrl_t;
 
 void    player_init(player_ctrl_t* p, const body_config_t* body);
