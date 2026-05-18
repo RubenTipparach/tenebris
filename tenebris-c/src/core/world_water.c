@@ -581,10 +581,32 @@ static void try_propagate(world_t* w, int tile, int depth, int own_level,
     int new_level = own_level + 1;
     for (int i = 0; i < n; ++i) {
         int nb = targets[i];
-        block_t b = world_get(w, nb, depth);
+
+        /* Cascade: prefer placing one voxel LOWER than us so the bell
+         * literally stair-steps down as it spreads outward. Each ring
+         * is then at a distinct world depth and the multi-voxel drop
+         * the user wants (1 m / 1.5 m / 2.5 m across rings) shows up
+         * even on flat ground - source on a plateau radiates outward
+         * AND downward instead of pooling flat at the source depth.
+         *
+         * Fall back to same-depth placement when depth-1 isn't a
+         * legal target (already non-passable terrain there, or the
+         * descent would push past bedrock). The same-depth fallback
+         * keeps water from disappearing into solid ground and matches
+         * the old behaviour at terrain features that already have
+         * solid voxels immediately below the spreading cell. */
+        int target_depth = depth;
+        if (depth - 1 >= 0) {
+            block_t b_below = world_get(w, nb, depth - 1);
+            if (b_below == BLOCK_AIR || b_below == BLOCK_WATER) {
+                target_depth = depth - 1;
+            }
+        }
+
+        block_t b = world_get(w, nb, target_depth);
         if (b != BLOCK_AIR && b != BLOCK_WATER) continue;
         if (b == BLOCK_WATER) {
-            uint8_t ns = world_water_get_state(w, nb, depth);
+            uint8_t ns = world_water_get_state(w, nb, target_depth);
             /* Never overwrite source / sleeping / falling, and don't
              * re-write a cell already at-or-better than what we'd
              * give it (avoids a hot-loop of equal-level re-flows). */
@@ -592,11 +614,11 @@ static void try_propagate(world_t* w, int tile, int depth, int own_level,
             if (water_state_is_falling(ns)) continue;
             if (water_state_level(ns) <= new_level) continue;
         } else {
-            world_set(w, nb, depth, BLOCK_WATER);
+            world_set(w, nb, target_depth, BLOCK_WATER);
         }
-        world_water_set_state(w, nb, depth,
+        world_water_set_state(w, nb, target_depth,
                               water_state_pack(false, false, new_level));
-        world_water_enqueue(w, nb, depth);
+        world_water_enqueue(w, nb, target_depth);
     }
 }
 
