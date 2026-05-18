@@ -2,6 +2,7 @@
 #include "client/input.h"
 #include "client/settings.h"
 #include "core/config.h"
+#include "core/world_water.h"   /* world_water_flow_direction for current force */
 #include <math.h>
 #include <stdio.h>
 
@@ -1045,6 +1046,46 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
     float speed = in->phys.sprint ? SPRINT_SPEED : WALK_SPEED;
     if (body_in_water) speed *= L->water_movement_mult;
     dvec3_t wish = walk_wish(p, &in->phys);
+
+    /* Water current force. When the player's body is submerged in a
+     * flow cell (not a source or sleeping water - those have no flow
+     * direction), the cell's flow direction adds to the player's
+     * velocity. Project the world-space flow onto the player's
+     * tangent plane so the current is purely horizontal - no radial
+     * push that would shove the player up or down through the floor.
+     *
+     * The dt scaling makes this a force (velocity per second) rather
+     * than an impulse, so a player standing in a stream gets steadily
+     * pushed downstream regardless of framerate. Skipped entirely
+     * when not in water or when no flow direction is recorded for
+     * the cell (source cells, sleeping ocean, save-loaded legacy
+     * cells with empty origin lists). */
+    if (has_world && body_in_water) {
+        dvec3_t center = dvec3_make(p->body->pos_x, p->body->pos_y, p->body->pos_z);
+        dvec3_t local  = dvec3_sub(p->position, center);
+        double  feet_r = dvec3_length(local);
+        dvec3_t local_dir = dvec3_scale(local, 1.0 / (feet_r > 1e-9 ? feet_r : 1.0));
+        int feet_tile  = goldberg_find_tile(w->grid, local_dir, p->last_tile);
+        int feet_depth = world_radius_to_depth(w, feet_r);
+        if (feet_depth >= 0 && feet_depth < WORLD_MAX_DEPTH) {
+            float flow[3];
+            if (world_water_flow_direction(w, feet_tile, feet_depth, flow)) {
+                dvec3_t flow_d = dvec3_make(flow[0], flow[1], flow[2]);
+                /* Drop the radial component so we don't push the
+                 * player through the floor or ceiling. */
+                double radial = dvec3_dot(flow_d, p->basis.up);
+                flow_d = dvec3_sub(flow_d, dvec3_scale(p->basis.up, radial));
+                /* Per-second current strength. Roughly matches a
+                 * mild river drift - 1.5 m/s downstream pull at
+                 * steady state. Tunable in the future as a YAML
+                 * knob alongside the other water flow values. */
+                const double current_strength = 1.5;
+                p->velocity = dvec3_add(
+                    p->velocity,
+                    dvec3_scale(flow_d, current_strength * (double)dt));
+            }
+        }
+    }
 
     if (has_world) {
         const tangent_basis_t* b = &p->basis;
