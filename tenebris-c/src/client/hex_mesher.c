@@ -782,12 +782,27 @@ void hex_mesh_build_water_voxels(hex_mesh_t* out, const world_t* w, int tile_idx
                  * body, which is what MC does too. */
                 if (is_sea_level_row) continue;
 
-                /* Water-to-water: only emit a strip if WE'RE taller
+                /* Water-to-water: emit a strip when WE'RE taller
                  * (our level < neighbour's level - lower level number =
-                 * higher cap). Equal-or-shorter falls through to the
-                 * "neighbour handles it" branch and we skip. */
+                 * higher cap). Equal-or-shorter normally falls through
+                 * to "neighbour handles it" - BUT if neither of us is
+                 * taller at depth d, AND the neighbour has water one
+                 * layer up (nb_above == WATER), then nb's wall at d+1
+                 * starts at the voxel boundary r_top_full while our
+                 * cap stops at r_top_cap below the boundary. Nobody
+                 * emits anything on either side at depth d and the
+                 * resulting cap_offset-tall band is exposed. Emit the
+                 * gap-filling strip ourselves before continuing. */
                 int nb_level = water_render_level_at(w, nb, d, cfg_max_level);
-                if (level >= nb_level) continue;
+                if (level >= nb_level) {
+                    if (r_top_edge > r_top_cap + 1e-4) {
+                        emit_side_quad(out, t, w, tile_idx, d, k, next,
+                                       r_top_cap, r_top_edge,
+                                       BLOCK_WATER, /*width=*/1.0f,
+                                       /*wet=*/1.0f);
+                    }
+                    continue;
+                }
                 float nb_cap_offset = water_cap_offset_for_level(
                     nb_level, cfg_max_level, min_film, curve_power, surface_off);
                 double r_strip_bot = r_top_full + (double)nb_cap_offset;
