@@ -768,6 +768,163 @@ int saves_load_world_water(world_t* w, const char* room, uint64_t seed) {
 }
 
 /* ----------------------------------------------------------------- */
+/* Per-tile flow-origin lineage. Sibling .origins file alongside the
+ * .col + .water entries. The on-disk format mirrors the wire format
+ * of MSG_WATER_ORIGINS_DIFF so the same encode/decode routines can
+ * be reused if we ever consolidate the formats - for now both sides
+ * use literal byte layouts. */
+static void origins_path(char* out, size_t cap, const char* room,
+                          uint64_t seed, uint32_t body_id, int tile_idx) {
+    snprintf(out, cap, "%s/rooms/%s/world-%llx/body-%u/%d.origins",
+             G_saves_dir, room_dir_name(room),
+             (unsigned long long)seed,
+             (unsigned)body_id, tile_idx);
+}
+
+bool saves_write_water_origins(world_t* w, const char* room, uint64_t seed,
+                                int tile_idx) {
+    if (!G_saves_dir) return false;
+    if (!w || !w->body) return false;
+    if (tile_idx < 0 || tile_idx >= w->tile_count) return false;
+
+    /* Enumerate all entries for this tile. Single hash-table walk;
+     * returns 0 when no flow cell on this tile has origins. */
+    water_origin_diff_entry_t entries[WORLD_MAX_DEPTH];
+    int n = world_water_origin_enum_tile(w, tile_idx, entries,
+                                          WORLD_MAX_DEPTH);
+    if (n < 0) n = 0;
+    if (n > WORLD_MAX_DEPTH) n = WORLD_MAX_DEPTH;
+
+    char dir[512];
+    body_dir(dir, sizeof dir, room, seed, (uint32_t)w->body->id);
+    char path[512];
+    origins_path(path, sizeof path, room, seed, (uint32_t)w->body->id, tile_idx);
+
+    if (n == 0) {
+        /* Zero-entry tile: remove any stale file so a previous
+         * non-empty state doesn't get resurrected on reload. unlink
+         * failure on ENOENT (already gone) is fine. */
+        if (unlink(path) != 0 && errno != ENOENT) {
+            /* Other errors are benign for our purposes; the next
+             * write will overwrite. */
+        }
+        return true;
+    }
+
+    if (!mkdir_p(dir)) {
+        fprintf(stderr, "[saves] write_origins mkdir_p(%s) failed: %s\n",
+                dir, strerror(errno));
+        return false;
+    }
+
+    size_t need = SAVES_ORIGINS_HEADER_SIZE
+                 + (size_t)n * SAVES_ORIGINS_ENTRY_SIZE;
+    uint8_t* buf = (uint8_t*)calloc(1, need);
+    if (!buf) return false;
+
+    uint32_t magic = SAVES_ORIGINS_MAGIC;
+    uint32_t ver   = SAVES_ORIGINS_VERSION;
+    memcpy(buf + 0, &magic, 4);
+    memcpy(buf + 4, &ver,   4);
+    buf[8]  = (uint8_t)( n        & 0xFFu);
+    buf[9]  = (uint8_t)((n >> 8)  & 0xFFu);
+    buf[10] = 0;
+    buf[11] = 0;
+    uint8_t* p = buf + SAVES_ORIGINS_HEADER_SIZE;
+    for (int i = 0; i < n; ++i) {
+        const water_origin_diff_entry_t* e = &entries[i];
+        p[0] = e->depth;
+        p[1] = e->origin_count;
+        p[2] = 0;
+        p[3] = 0;
+        for (int j = 0; j < 3; ++j) {
+            uint32_t v = e->origin_tile[j];
+            p[4 + j * 4 + 0] = (uint8_t)( v        & 0xFFu);
+            p[4 + j * 4 + 1] = (uint8_t)((v >>  8) & 0xFFu);
+            p[4 + j * 4 + 2] = (uint8_t)((v >> 16) & 0xFFu);
+            p[4 + j * 4 + 3] = (uint8_t)((v >> 24) & 0xFFu);
+        }
+        p[16] = e->origin_depth[0];
+        p[17] = e->origin_depth[1];
+        p[18] = e->origin_depth[2];
+        p[19] = 0;
+        p += SAVES_ORIGINS_ENTRY_SIZE;
+    }
+    bool ok = write_atomic(path, buf, need);
+    free(buf);
+    if (!ok) {
+        fprintf(stderr, "[saves] write_origins FAILED path=%s\n", path);
+    }
+    return ok;
+}
+
+int saves_load_world_origins(world_t* w, const char* room, uint64_t seed) {
+    if (!G_saves_dir || !w || !w->body) return 0;
+    char dir[512];
+    body_dir(dir, sizeof dir, room, seed, (uint32_t)w->body->id);
+    DIR* dh = opendir(dir);
+    if (!dh) return 0;
+    int loaded_entries = 0;
+    struct dirent* e;
+    while ((e = readdir(dh)) != NULL) {
+        if (e->d_name[0] == '.') continue;
+        const char* dot = strrchr(e->d_name, '.');
+        if (!dot || strcmp(dot, ".origins") != 0) continue;
+        int tile = atoi(e->d_name);
+        if (tile < 0 || tile >= w->tile_count) continue;
+
+        char path[512];
+        origins_path(path, sizeof path, room, seed,
+                      (uint32_t)w->body->id, tile);
+        FILE* f = fopen(path, "rb");
+        if (!f) continue;
+
+        uint8_t head[SAVES_ORIGINS_HEADER_SIZE];
+        if (fread(head, 1, sizeof head, f) != sizeof head) {
+            fclose(f);
+            continue;
+        }
+        uint32_t magic, ver;
+        memcpy(&magic, head + 0, 4);
+        memcpy(&ver,   head + 4, 4);
+        uint16_t entry_count = (uint16_t)(head[8] | (head[9] << 8));
+        if (magic != SAVES_ORIGINS_MAGIC || ver > SAVES_ORIGINS_VERSION
+            || entry_count > WORLD_MAX_DEPTH) {
+            fclose(f);
+            fprintf(stderr, "[saves] origins %s: header mismatch / bad count\n", path);
+            continue;
+        }
+        for (int i = 0; i < entry_count; ++i) {
+            uint8_t entry[SAVES_ORIGINS_ENTRY_SIZE];
+            if (fread(entry, 1, sizeof entry, f) != sizeof entry) break;
+            water_origin_diff_entry_t e_in = { 0 };
+            e_in.depth        = entry[0];
+            e_in.origin_count = entry[1];
+            for (int j = 0; j < 3; ++j) {
+                e_in.origin_tile[j] =
+                      ((uint32_t)entry[4 + j * 4 + 0]      )
+                    | ((uint32_t)entry[4 + j * 4 + 1] <<  8)
+                    | ((uint32_t)entry[4 + j * 4 + 2] << 16)
+                    | ((uint32_t)entry[4 + j * 4 + 3] << 24);
+            }
+            e_in.origin_depth[0] = entry[16];
+            e_in.origin_depth[1] = entry[17];
+            e_in.origin_depth[2] = entry[18];
+            world_water_origin_apply_entry(w, tile, &e_in);
+            ++loaded_entries;
+        }
+        fclose(f);
+    }
+    closedir(dh);
+    if (loaded_entries > 0) {
+        printf("[saves] body=%u: restored %d origin entry/entries from %s\n",
+               (unsigned)w->body->id, loaded_entries, dir);
+        fflush(stdout);
+    }
+    return loaded_entries;
+}
+
+/* ----------------------------------------------------------------- */
 /* Per-body torch list persistence. */
 
 static void torches_path(char* out, size_t cap, const char* room,

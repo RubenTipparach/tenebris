@@ -69,6 +69,12 @@ static void room_alloc_worlds(server_t* s, server_room_t* room) {
          * Pre-existing rooms with only .col files report 0 loaded
          * here; new water-state writes start on the next flush. */
         saves_load_world_water(w, room->code, s->cfg.seed);
+        /* Flow-origin lineage: .origins files. Without this load,
+         * server restart leaves the in-memory origin hash table
+         * empty -> existing flow cells render with static caps and
+         * no current force until the sim re-derives lineage on the
+         * next mutation. */
+        saves_load_world_origins(w, room->code, s->cfg.seed);
         total_tiles_loaded += loaded;
         room->worlds[room->world_count++] = w;
     }
@@ -109,6 +115,7 @@ static world_t* room_ensure_world_for_body(server_t* s, server_room_t* room,
      * settled state from disk. */
     saves_load_world(w, room->code, s->cfg.seed);
     saves_load_world_water(w, room->code, s->cfg.seed);
+    saves_load_world_origins(w, room->code, s->cfg.seed);
     room->worlds[room->world_count++] = w;
     printf("[server] room '%s': lazy-cloned body %u\n",
            room->code[0] ? room->code : "(public)", body_id);
@@ -2861,6 +2868,17 @@ void server_tick(server_t* s) {
                      * triple. */
                     for (int i = 0; i < n; ++i) {
                         int tile = dirty_tiles[i];
+                        /* Persist this tile's origin lineage. Writing
+                         * per-dirty-tile (alongside the existing
+                         * .col + .water saves) means server restart
+                         * reloads the lineage instead of starting
+                         * cold - settled flow cells keep their flow
+                         * direction across reboots. Zero-entry tiles
+                         * delete their .origins file inside
+                         * saves_write_water_origins. */
+                        saves_write_water_origins(w, room->code,
+                                                   s->cfg.seed, tile);
+
                         msg_water_origins_diff_t od = { 0 };
                         od.body_id  = (uint32_t)w->body->id;
                         od.tile_idx = (uint32_t)tile;

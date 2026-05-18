@@ -57,6 +57,10 @@
 #define SAVES_WATER_VERSION     1
 #define SAVES_WATER_MAGIC       0x54415754u   /* 'TWAT' little-endian */
 #define SAVES_WATER_HEADER_SIZE 16
+#define SAVES_ORIGINS_VERSION   1
+#define SAVES_ORIGINS_MAGIC     0x47524F54u   /* 'TORG' little-endian */
+#define SAVES_ORIGINS_HEADER_SIZE 12
+#define SAVES_ORIGINS_ENTRY_SIZE  20
 
 typedef struct {
     uint32_t version;
@@ -123,6 +127,34 @@ bool saves_write_water_state(world_t* w, const char* room, uint64_t seed,
  * call after saves_load_world at room boot so the simulator picks
  * up exactly where the previous server stop left off. */
 int  saves_load_world_water(world_t* w, const char* room, uint64_t seed);
+
+/* ----------------------------------------------------------------- */
+/* Per-tile flow-origin lineage. One .origins file per tile alongside
+ * the .col + .water siblings. Captures the origin hash table's
+ * contribution for that tile so a server restart can rebuild the
+ * lineage instead of starting from "no origins, all flow cells stay
+ * static until the sim disturbs them".
+ *
+ * Wire format:
+ *   uint32  magic           = SAVES_ORIGINS_MAGIC ('TORG')
+ *   uint32  version         = SAVES_ORIGINS_VERSION
+ *   uint16  entry_count     (number of (depth, origins) records)
+ *   uint16  _pad
+ *   entries[entry_count]: 20 bytes each (matches the wire format of
+ *                          msg_water_origins_diff_entry_t).
+ *
+ * Per-tile granularity matches saves_write_water_state - same drain
+ * cadence, same persist-dirty bitset gates both. A tile with zero
+ * origin entries gets its file removed (rather than left empty) so
+ * subsequent loads aren't tricked into thinking the tile has empty
+ * origins persistently. */
+bool saves_write_water_origins(world_t* w, const char* room, uint64_t seed,
+                                int tile_idx);
+
+/* Walk every .origins file in the body directory and apply each tile's
+ * entries to the in-memory world_water origin hash table. Returns the
+ * number of (tile, depth) entries actually loaded. */
+int  saves_load_world_origins(world_t* w, const char* room, uint64_t seed);
 
 /* ----------------------------------------------------------------- */
 /* Per-body torch lists. Stored at
