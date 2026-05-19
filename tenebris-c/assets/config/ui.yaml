@@ -1,0 +1,62 @@
+# Pixel-art UI sprite layout. Consumed by pixel_ui_init at boot through
+# config_load_ui in core/config.c. Every sprite is a rect inside a single
+# texture (default: assets/textures/ui/default.png), so swapping themes is
+# "drop in a different PNG with the same layout" - or update both this
+# file and the PNG and the module picks up the new geometry.
+#
+# Schema, per sprite section:
+#   rect:        [x, y, w, h]   sub-rect of the atlas, in texels
+#   nine_slice:  [l, r, t, b]   nine-slice margins, in texels. omit or set
+#                               to [0, 0, 0, 0] for a non-stretchable sprite
+#                               (the renderer blits it 1:1 at native size).
+#
+# All values are integers. The parser tolerates trailing whitespace and
+# inline `#` comments but not nested mappings beyond the per-sprite section.
+
+ui:
+
+  atlas: assets/textures/ui/default.png
+
+  panel:
+    rect: [0, 0, 32, 32]
+    nine_slice: [8, 8, 8, 8]
+
+  button_normal:
+    rect: [32, 0, 24, 16]
+    nine_slice: [4, 4, 4, 4]
+
+  button_hover:
+    rect: [56, 0, 24, 16]
+    nine_slice: [4, 4, 4, 4]
+
+  button_pressed:
+    rect: [80, 0, 24, 16]
+    nine_slice: [4, 4, 4, 4]
+
+  button_disabled:
+    rect: [104, 0, 24, 16]
+    nine_slice: [4, 4, 4, 4]
+
+  title_bar:
+    rect: [32, 16, 24, 16]
+    nine_slice: [4, 4, 4, 4]
+
+  close_x:
+    rect: [56, 16, 12, 12]
+    nine_slice: [0, 0, 0, 0]
+
+  slot_normal:
+    rect: [0, 32, 18, 18]
+    nine_slice: [3, 3, 3, 3]
+
+  slot_hover:
+    rect: [18, 32, 18, 18]
+    nine_slice: [3, 3, 3, 3]
+
+  slot_selected:
+    rect: [36, 32, 18, 18]
+    nine_slice: [3, 3, 3, 3]
+
+  slot_disabled:
+    rect: [54, 32, 18, 18]
+    nine_slice: [3, 3, 3, 3]

@@ -105,6 +105,7 @@ set(TENEBRIS_CLIENT_SOURCES
     src/client/inventory.c
     src/client/hotbar_ui.c
     src/client/mobile_ui.c
+    src/client/pixel_ui.c
     src/client/teleport_menu.c
     src/client/torch.c
     src/client/gfx_math.c

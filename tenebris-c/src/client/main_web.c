@@ -30,6 +30,7 @@
 #include "client/renderer.h"
 #include "client/interact.h"
 #include "client/mobile_ui.h"
+#include "client/pixel_ui.h"
 #include "client/chat.h"
 #include "client/menu.h"
 #include "client/net_client.h"
@@ -640,6 +641,12 @@ static void init(void) {
     config_load_lod("assets/config/lod.yaml");
     config_load_water("assets/config/water.yaml");
     config_load_lighting("assets/config/lighting.yaml");
+    config_load_ui("assets/config/ui.yaml");
+
+    /* pixel_ui_init reads the atlas path out of config_ui(), so it has
+     * to run AFTER config_load_ui — otherwise a themed ui.yaml that
+     * points at a non-default PNG would be ignored on first boot. */
+    pixel_ui_init();
     /* One-shot dump of Tenebris's effective atmosphere values so we
      * can sanity-check that the YAML actually landed (vs. defaults
      * from main_web.c being silently used). Comment out once the
@@ -2785,6 +2792,13 @@ static void frame(void) {
         }
     }
 #endif
+    /* Pixel-art UI demo. Drawn between the hotbar and the pause panel
+     * so it sits above gameplay HUD but below the modal pause overlay.
+     * No-op unless F8 has toggled the demo on. The future inventory /
+     * crafting screens will draw at the same callsite gated on their
+     * own visibility flags. */
+    pixel_ui_demo_draw();
+
     /* Pause overlay draws last so the dim backdrop + panel sit on
      * top of every HUD element. No-op when not active. */
     menu_pause_draw(sapp_width(), sapp_height());
@@ -2849,6 +2863,39 @@ static void event(const sapp_event* e) {
      * event handler swallows Escape while it's open. */
     if (menu_pause_active()) {
         if (menu_pause_event(e)) return;
+    }
+
+    /* F8: toggle the pixel-art UI demo panel. The demo exercises every
+     * widget (panel, button states, slot states, title bar, close X)
+     * so the swatch can be eyeballed live while iterating on art and
+     * ui.yaml. Wired here, not inside the G_debug_ui_visible block,
+     * because the future inventory / crafting screens that ride on
+     * this module aren't debug features. */
+    if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_F8) {
+        pixel_ui_demo_toggle();
+        return;
+    }
+
+    /* Pump mouse / touch state into the pixel UI even when nothing is
+     * open - keeps the cursor warm so a screen can open mid-frame and
+     * pick up an already-correct hot state. The pixel UI's widget
+     * functions are what actually decide whether to consume a click;
+     * pixel_ui_event itself never claims an event. When a UI screen
+     * (the demo for now, the inventory / crafting panels later) is
+     * visible, swallow the click below the widget layer so it doesn't
+     * also dig the world. */
+    pixel_ui_event(e);
+    if (pixel_ui_demo_visible()) {
+        switch (e->type) {
+            case SAPP_EVENTTYPE_MOUSE_DOWN:
+            case SAPP_EVENTTYPE_MOUSE_UP:
+            case SAPP_EVENTTYPE_TOUCHES_BEGAN:
+            case SAPP_EVENTTYPE_TOUCHES_ENDED:
+            case SAPP_EVENTTYPE_TOUCHES_CANCELLED:
+                return;
+            default:
+                break;
+        }
     }
     /* Escape: do nothing directly here. The browser intercepts Escape
      * to release pointer lock; the per-frame pointer-lock-loss
