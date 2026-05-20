@@ -69,6 +69,11 @@ static void room_alloc_worlds(server_t* s, server_room_t* room) {
          * Pre-existing rooms with only .col files report 0 loaded
          * here; new water-state writes start on the next flush. */
         saves_load_world_water(w, room->code, s->cfg.seed);
+        /* Restore the per-cell origin hashmap from .orig sibling
+         * files. Order doesn't strictly matter (origin_add is just
+         * a hashmap insert) but state first keeps the on-disk
+         * loading order consistent with the in-memory write order. */
+        saves_load_world_water_origins(w, room->code, s->cfg.seed);
         total_tiles_loaded += loaded;
         room->worlds[room->world_count++] = w;
     }
@@ -109,6 +114,7 @@ static world_t* room_ensure_world_for_body(server_t* s, server_room_t* room,
      * settled state from disk. */
     saves_load_world(w, room->code, s->cfg.seed);
     saves_load_world_water(w, room->code, s->cfg.seed);
+    saves_load_world_water_origins(w, room->code, s->cfg.seed);
     room->worlds[room->world_count++] = w;
     printf("[server] room '%s': lazy-cloned body %u\n",
            room->code[0] ? room->code : "(public)", body_id);
@@ -2874,6 +2880,14 @@ void server_tick(server_t* s) {
                         int tile = dirty_tiles[i];
                         saves_write_water_state(w, room->code, s->cfg.seed,
                                                  tile);
+                        /* Ride origin persistence along with the
+                         * state-byte write. Without it, the origin
+                         * hashmap was memory-only and every Fly
+                         * auto-stop / restart wiped flow direction
+                         * for every cell - F5 overlay + UV pan +
+                         * current force all saw no flow blocks. */
+                        saves_write_water_origins(w, room->code, s->cfg.seed,
+                                                   tile);
                         const uint8_t* state_col =
                             world_water_state_column(w, tile);
                         if (!state_col) continue;

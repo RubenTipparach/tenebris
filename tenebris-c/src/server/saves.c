@@ -603,6 +603,14 @@ static void tile_path(char* out, size_t cap, const char* room,
              (unsigned)body_id, tile_idx);
 }
 
+static void origins_path(char* out, size_t cap, const char* room,
+                           uint64_t seed, uint32_t body_id, int tile_idx) {
+    snprintf(out, cap, "%s/rooms/%s/world-%llx/body-%u/%d.orig",
+             G_saves_dir, room_dir_name(room),
+             (unsigned long long)seed,
+             (unsigned)body_id, tile_idx);
+}
+
 static void water_path(char* out, size_t cap, const char* room,
                          uint64_t seed, uint32_t body_id, int tile_idx) {
     snprintf(out, cap, "%s/rooms/%s/world-%llx/body-%u/%d.water",
@@ -765,6 +773,163 @@ int saves_load_world_water(world_t* w, const char* room, uint64_t seed) {
         fflush(stdout);
     }
     return loaded;
+}
+
+/* ----------------------------------------------------------------- */
+/* Per-tile flow-origin persistence. Sibling .orig file to .water.
+ * Without this, the origin hashmap was in-memory only; every server
+ * restart left state bytes intact but wiped origins, so the F5 flow
+ * overlay / UV pan / current force saw nothing on restored worlds. */
+
+bool saves_write_water_origins(world_t* w, const char* room, uint64_t seed,
+                                int tile_idx) {
+    if (!G_saves_dir) return false;
+    if (!w || !w->body) return false;
+    if (tile_idx < 0 || tile_idx >= w->tile_count) return false;
+
+    /* Pull the origin entries for this tile. enum_tile walks the
+     * hashmap O(table_size) once; cheap relative to the disk write
+     * we're about to do. Cap at WORLD_MAX_DEPTH - one entry per
+     * depth slot is the absolute max. */
+    water_origin_diff_entry_t entries[WORLD_MAX_DEPTH];
+    int n = world_water_origin_enum_tile(w, tile_idx, entries,
+                                          WORLD_MAX_DEPTH);
+    if (n > WORLD_MAX_DEPTH) n = WORLD_MAX_DEPTH;
+
+    char dir[512];
+    body_dir(dir, sizeof dir, room, seed, (uint32_t)w->body->id);
+    char path[512];
+    origins_path(path, sizeof path, room, seed,
+                 (uint32_t)w->body->id, tile_idx);
+
+    /* Zero entries -> remove any stale file from a prior session
+     * where this tile DID have flow blocks. Skipping the unlink
+     * would leave the old origins re-loaded next boot and out of
+     * sync with the current (now-empty) state. */
+    if (n <= 0) {
+        unlink(path);  /* tolerate ENOENT */
+        return true;
+    }
+
+    if (!mkdir_p(dir)) {
+        fprintf(stderr, "[saves] write_origins mkdir_p(%s) failed: %s\n",
+                dir, strerror(errno));
+        return false;
+    }
+
+    const size_t buf_len =
+        SAVES_ORIGINS_HEADER_SIZE + (size_t)n * SAVES_ORIGINS_ENTRY_SIZE;
+    uint8_t* buf = (uint8_t*)calloc(1, buf_len);
+    if (!buf) return false;
+
+    uint32_t magic = SAVES_ORIGINS_MAGIC;
+    uint32_t ver   = SAVES_ORIGINS_VERSION;
+    uint32_t count = (uint32_t)n;
+    uint32_t rsv   = 0;
+    memcpy(buf + 0,  &magic, 4);
+    memcpy(buf + 4,  &ver,   4);
+    memcpy(buf + 8,  &count, 4);
+    memcpy(buf + 12, &rsv,   4);
+
+    for (int i = 0; i < n; ++i) {
+        const water_origin_diff_entry_t* e = &entries[i];
+        uint8_t* p = buf + SAVES_ORIGINS_HEADER_SIZE
+                   + (size_t)i * SAVES_ORIGINS_ENTRY_SIZE;
+        p[0] = e->depth;
+        p[1] = e->origin_count;
+        /* p[2..3] padding stays zero from calloc */
+        for (int k = 0; k < WATER_ORIGIN_MAX; ++k) {
+            uint8_t* slot = p + 4 + (size_t)k * 8;
+            uint32_t ot = (k < e->origin_count) ? e->origin_tile[k]  : 0u;
+            uint8_t  od = (k < e->origin_count) ? e->origin_depth[k] : 0u;
+            memcpy(slot + 0, &ot, 4);
+            slot[4] = od;
+            /* slot[5..7] padding stays zero */
+        }
+    }
+    bool ok = write_atomic(path, buf, buf_len);
+    free(buf);
+    if (!ok) {
+        fprintf(stderr,
+                "[saves] write_origins FAILED path=%s (room='%s' body=%u tile=%d)\n",
+                path, room && *room ? room : "(public)",
+                (unsigned)w->body->id, tile_idx);
+    }
+    return ok;
+}
+
+int saves_load_world_water_origins(world_t* w, const char* room,
+                                     uint64_t seed) {
+    if (!G_saves_dir || !w || !w->body) return 0;
+    char dir[512];
+    body_dir(dir, sizeof dir, room, seed, (uint32_t)w->body->id);
+    DIR* dh = opendir(dir);
+    if (!dh) return 0;
+    int loaded_tiles = 0;
+    int loaded_entries = 0;
+    struct dirent* ent;
+    while ((ent = readdir(dh))) {
+        const char* name = ent->d_name;
+        const char* dot  = strrchr(name, '.');
+        if (!dot || strcmp(dot, ".orig") != 0) continue;
+        char* endp = NULL;
+        long tile_l = strtol(name, &endp, 10);
+        if (endp == name || tile_l < 0 || tile_l >= w->tile_count) continue;
+        if (endp != dot) continue;
+        int tile = (int)tile_l;
+
+        char path[512];
+        origins_path(path, sizeof path, room, seed,
+                     (uint32_t)w->body->id, tile);
+        FILE* f = fopen(path, "rb");
+        if (!f) continue;
+
+        uint8_t head[SAVES_ORIGINS_HEADER_SIZE];
+        if (fread(head, 1, sizeof head, f) != sizeof head) {
+            fclose(f);
+            continue;
+        }
+        uint32_t magic, ver, count;
+        memcpy(&magic, head + 0, 4);
+        memcpy(&ver,   head + 4, 4);
+        memcpy(&count, head + 8, 4);
+        if (magic != SAVES_ORIGINS_MAGIC ||
+            ver   != SAVES_ORIGINS_VERSION ||
+            count > WORLD_MAX_DEPTH) {
+            fprintf(stderr,
+                    "[saves] %s: origins header bad (magic=%08x ver=%u count=%u)\n",
+                    path, magic, ver, count);
+            fclose(f);
+            continue;
+        }
+
+        for (uint32_t i = 0; i < count; ++i) {
+            uint8_t entry[SAVES_ORIGINS_ENTRY_SIZE];
+            if (fread(entry, 1, sizeof entry, f) != sizeof entry) break;
+            uint8_t depth = entry[0];
+            uint8_t origin_count = entry[1];
+            if (depth >= WORLD_MAX_DEPTH) continue;
+            if (origin_count > WATER_ORIGIN_MAX) origin_count = WATER_ORIGIN_MAX;
+            for (uint8_t k = 0; k < origin_count; ++k) {
+                const uint8_t* slot = entry + 4 + (size_t)k * 8;
+                uint32_t ot;
+                memcpy(&ot, slot + 0, 4);
+                uint8_t  od = slot[4];
+                water_origin_ref_t ref = { .tile = ot, .depth = od };
+                world_water_origin_add(w, tile, (int)depth, ref);
+                ++loaded_entries;
+            }
+        }
+        fclose(f);
+        ++loaded_tiles;
+    }
+    closedir(dh);
+    if (loaded_tiles > 0) {
+        printf("[saves] body=%u: restored origins for %d tile(s) (%d entries) from %s\n",
+               (unsigned)w->body->id, loaded_tiles, loaded_entries, dir);
+        fflush(stdout);
+    }
+    return loaded_tiles;
 }
 
 /* ----------------------------------------------------------------- */

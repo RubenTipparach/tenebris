@@ -58,6 +58,25 @@
 #define SAVES_WATER_MAGIC       0x54415754u   /* 'TWAT' little-endian */
 #define SAVES_WATER_HEADER_SIZE 16
 
+/* Per-tile origins file format (.orig sibling to .water).
+ *   header = 16 bytes: magic, version, entry_count, reserved
+ *   each entry = 16 bytes:
+ *     u8  depth
+ *     u8  origin_count   (0..WATER_ORIGIN_MAX)
+ *     u16 reserved
+ *     3 x {u32 origin_tile, u8 origin_depth, 3 bytes pad}
+ *   = 4 + 3*8 = 28 bytes per entry. With WATER_ORIGIN_MAX = 3
+ *   slots * 8 bytes/slot = 24, plus 4-byte cell header = 28 bytes.
+ *
+ * Cells with zero origins are not emitted - empty entry list means
+ * "this tile has no flow blocks". WORLD_MAX_DEPTH = 128 cells max,
+ * so the upper bound per file is 16 + 128*28 = 3600 bytes. Most
+ * tiles have far fewer water cells than that. */
+#define SAVES_ORIGINS_VERSION     1
+#define SAVES_ORIGINS_MAGIC       0x4752494Fu   /* 'OIRG' little-endian */
+#define SAVES_ORIGINS_HEADER_SIZE 16
+#define SAVES_ORIGINS_ENTRY_SIZE  28
+
 typedef struct {
     uint32_t version;
     uint32_t body_id;
@@ -123,6 +142,30 @@ bool saves_write_water_state(world_t* w, const char* room, uint64_t seed,
  * call after saves_load_world at room boot so the simulator picks
  * up exactly where the previous server stop left off. */
 int  saves_load_world_water(world_t* w, const char* room, uint64_t seed);
+
+/* Per-tile flow-origin persistence. Sibling .orig file to .water.
+ * Without this, the origin hashmap is in-memory only and every
+ * server restart loses the "which sources fed this cell" data -
+ * cells reload with their state byte intact but with empty origins,
+ * so world_water_flow_direction returns false for everything and
+ * the F5 overlay / UV pan / current force see no flow blocks at
+ * all. Symptom from the user's snapshot session: every visible
+ * flow cell snapped back to "looks like ocean" after the Fly
+ * machine auto-stop / restart.
+ *
+ * saves_write_water_origins(): walks the origins hashmap for the
+ * given tile and writes every (depth, origin_count, origin_refs)
+ * cell to disk. Called next to saves_write_water_state in the
+ * per-tick persist flush so origins ride along with state.
+ *
+ * saves_load_world_water_origins(): scans the body directory for
+ * .orig files, parses them, replays world_water_origin_add for
+ * every entry. Returns the count of tiles restored. Call AFTER
+ * saves_load_world_water on room boot. */
+bool saves_write_water_origins(world_t* w, const char* room, uint64_t seed,
+                                int tile_idx);
+int  saves_load_world_water_origins(world_t* w, const char* room,
+                                     uint64_t seed);
 
 /* ----------------------------------------------------------------- */
 /* Per-body torch lists. Stored at
