@@ -2141,6 +2141,42 @@ static int on_http(const char* path,
         *out_mime     = "application/json; charset=utf-8";
         return 1;
     }
+    /* Path-based room filter: /saves/T9VVPW is shorthand for
+     * /saves?room=T9VVPW. User report: hitting /saves/T9VVPW returned
+     * "saves for all rooms" (actually a 404 falling through to the
+     * default landing page, but the effect to the user was "I can't
+     * scope this to one room without remembering the query syntax").
+     *
+     * Synthesize the equivalent ?room= request and dispatch to
+     * build_saves_json. Any extra query the user appended (e.g.
+     * /saves/T9VVPW?body=0) flows through unchanged - if both a
+     * path-room and a ?room= query are present, the path wins. */
+    if (strncmp(clean, "/saves/", 7) == 0
+        && strcmp(clean, "/saves/body") != 0) {
+        const char* room_in_path = clean + 7;
+        /* Build a synthetic path "?room=<X>[&<rest>]" so the existing
+         * query parser can consume it. Cap room length to the same
+         * 15-char window build_saves_json uses. */
+        char synth[256];
+        char room_only[16];
+        size_t i = 0;
+        while (room_in_path[i] && room_in_path[i] != '/'
+               && room_in_path[i] != '?' && i < sizeof room_only - 1) {
+            room_only[i] = room_in_path[i];
+            ++i;
+        }
+        room_only[i] = 0;
+        const char* extra_q = strchr(path, '?');
+        snprintf(synth, sizeof synth, "/saves?room=%s%s%s",
+                 room_only,
+                 extra_q ? "&" : "",
+                 extra_q ? extra_q + 1 : "");
+        size_t len = build_saves_json(synth);
+        *out_body     = (const uint8_t*)HTTP_BODY;
+        *out_body_len = len;
+        *out_mime     = "application/json; charset=utf-8";
+        return 1;
+    }
     if (strcmp(clean, "/saves/body") == 0) {
         /* Bulk binary download of one body's persisted tile columns.
          * Used by the client's lazy-per-body fetch path, which calls
@@ -2257,6 +2293,8 @@ static int on_http(const char* path,
             "                               &room=__all__ to fan out, default public)\n"
             "  GET /saves                - JSON: every persisted .col file on disk\n"
             "                              filter with ?room=ABC123 / ?body=0 / ?seed=N\n"
+            "  GET /saves/ABC123         - shorthand for /saves?room=ABC123\n"
+            "                              (extra ?body=N etc still works)\n"
             "  GET /saves/body?body=N    - BINARY: every persisted column for one body\n"
             "                              also ?room=ABC123 (default lobby) and ?seed=N\n"
             "  GET /admin/clear_water_above_sea[?room=X] - clear every BLOCK_WATER\n"

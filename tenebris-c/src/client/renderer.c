@@ -3249,65 +3249,27 @@ typedef struct {
     int            drawn;   /* incremented per arrow actually emitted */
 } flow_arrow_ctx_t;
 
-/* Per-cell line drawing for the F5 wireframe overlay. Emits:
- *   - A bright magenta hex outline at the cell's top-cap radius (one
- *     line segment per tile edge), so every flow cell shows up as a
- *     glowing hexagon over the water surface even when the arrow
- *     itself is tiny or aligned with the view direction.
- *   - A yellow arrow shaft from the hex centre out along the flow
- *     direction, plus two short head barbs at the tip.
+/* Per-cell line drawing for the F5 wireframe overlay. Emits ONE
+ * bright magenta arrow per flow cell: shaft from the hex centre out
+ * along the flow direction, plus two short barb lines at the tip.
  *
- * All geometry is line primitives, drawn through the existing
- * G_OUTLINE_PIP (depth-tested but write-disabled, alpha-blended). No
- * texture, no quad, no shader compilation - if F5 toggles and a flow
- * cell exists, these lines render. */
+ * Lines through G_OUTLINE_PIP (depth-tested but write-disabled,
+ * alpha-blended). No texture, no quad, no shader compilation. */
 static void flow_arrow_visit(int tile, int depth, void* user) {
     flow_arrow_ctx_t* ctx = (flow_arrow_ctx_t*)user;
     const world_t* w = ctx->w;
     const goldberg_tile_t* t = goldberg_tile(w->grid, tile);
     if (!t) return;
-    /* Belt-and-braces: an origin entry can outlive the BLOCK_WATER it
-     * tracks if a remesh fired between the simulator clearing the
-     * cell and the next origin sweep. Skip if the cell isn't water. */
     if (w->blocks[(size_t)tile * WORLD_MAX_DEPTH + depth] != (uint8_t)BLOCK_WATER) return;
     float flow_world[3];
-    bool have_flow = world_water_flow_direction(w, tile, depth, flow_world);
+    if (!world_water_flow_direction(w, tile, depth, flow_world)) return;
 
-    /* Cap centre + radius, lifted ~1 m along radial. Big lift so the
-     * lines clear even tall wave crests and any nearby terrain. */
+    /* Cap centre, lifted ~1 m along radial so the arrow sits above
+     * the wave crests and nearby terrain. */
     double r_cap = world_depth_to_radius_m(w, depth + 1) + (double)ctx->lift_m;
     float cx = (float)(t->center.x * r_cap);
     float cy = (float)(t->center.y * r_cap);
     float cz = (float)(t->center.z * r_cap);
-
-    /* Hex outline. t->verts[k] are unit direction vectors at each
-     * corner; scaling by r_cap places them on the lifted sphere.
-     * shrink_corner would pull them inward toward the tile centre,
-     * but using the raw verts gives us a hex that matches the tile
-     * boundary, which reads more clearly as "this whole hex is a
-     * flow block". */
-    const int n = t->num_verts;
-    if (n <= 0) return;
-    sgl_c4f(1.0f, 0.2f, 1.0f, 1.0f);  /* bright magenta hex outline */
-    for (int k = 0; k < n; ++k) {
-        int next = (k + 1) % n;
-        float ax = (float)(t->verts[k].x    * r_cap);
-        float ay = (float)(t->verts[k].y    * r_cap);
-        float az = (float)(t->verts[k].z    * r_cap);
-        float bx = (float)(t->verts[next].x * r_cap);
-        float by = (float)(t->verts[next].y * r_cap);
-        float bz = (float)(t->verts[next].z * r_cap);
-        sgl_v3f(ax, ay, az);
-        sgl_v3f(bx, by, bz);
-    }
-
-    if (!have_flow) {
-        /* No origins (shouldn't happen if we got here via origin
-         * visitor, but guard anyway). Hex alone is the diagnostic:
-         * "cell is in the origin map but flow_direction came back
-         * degenerate." */
-        return;
-    }
 
     /* Project flow onto tile tangent plane, normalise. */
     float nx = (float)t->center.x;
@@ -3324,18 +3286,18 @@ static void flow_arrow_visit(int tile, int depth, void* user) {
     float ry = nz*fx - nx*fz;
     float rz = nx*fy - ny*fx;
 
-    /* Arrow shaft + barbs. Shaft length ~0.4 m so it fits inside the
-     * hex; barbs are 0.18 m each, swept ~30 deg back from the tip. */
-    const float shaft = 0.40f;
-    const float barb  = 0.18f;
-    const float cs    = cosf(2.6f);  /* head_angle = 2.6 rad ~ 150 deg */
+    /* Shaft fills most of a hex (~0.6 m). Barbs are 0.22 m each
+     * swept ~30 deg back from the tip. */
+    const float shaft = 0.60f;
+    const float barb  = 0.22f;
+    const float cs    = cosf(2.6f);
     const float sn    = sinf(2.6f);
 
     float tipx = cx + fx * shaft;
     float tipy = cy + fy * shaft;
     float tipz = cz + fz * shaft;
 
-    sgl_c4f(1.0f, 0.95f, 0.1f, 1.0f);  /* bright yellow arrow */
+    sgl_c4f(1.0f, 0.2f, 1.0f, 1.0f);  /* bright magenta arrow */
     sgl_v3f(cx, cy, cz);
     sgl_v3f(tipx, tipy, tipz);
 
@@ -3353,6 +3315,44 @@ static void flow_arrow_visit(int tile, int depth, void* user) {
     ++ctx->drawn;
 }
 
+/* Draw a cyan 3D X (three short crossed segments) at the cell centre,
+ * marking it as a spawner / ocean block. Same line pipeline as the
+ * magenta arrow path. Two perpendicular line segments in the tile
+ * tangent plane, plus a small vertical tick for legibility from
+ * straight above. */
+static void draw_spawn_x(const goldberg_tile_t* t, double r_cap) {
+    float cx = (float)(t->center.x * r_cap);
+    float cy = (float)(t->center.y * r_cap);
+    float cz = (float)(t->center.z * r_cap);
+    /* Two arbitrary in-plane axes (same recipe as the water shader's
+     * tangent basis). */
+    float nx = (float)t->center.x, ny = (float)t->center.y, nz = (float)t->center.z;
+    float ux = (fabsf(nx) > 0.9f) ? 0.0f : 1.0f;
+    float uy = (fabsf(nx) > 0.9f) ? 1.0f : 0.0f;
+    float uz = 0.0f;
+    float dn = ux*nx + uy*ny + uz*nz;
+    ux -= nx*dn; uy -= ny*dn; uz -= nz*dn;
+    float ul = sqrtf(ux*ux + uy*uy + uz*uz);
+    if (ul < 1e-4f) return;
+    ux /= ul; uy /= ul; uz /= ul;
+    float vx = ny*uz - nz*uy;
+    float vy = nz*ux - nx*uz;
+    float vz = nx*uy - ny*ux;
+
+    /* Diagonal arms = (u + v)/sqrt2 and (u - v)/sqrt2 so the X reads
+     * as an X rather than a + sign. Length ~0.45 m (slightly smaller
+     * than the arrow shaft so the two glyphs look proportional). */
+    const float L = 0.45f * 0.70710678f;
+    float a1x = (ux + vx) * L, a1y = (uy + vy) * L, a1z = (uz + vz) * L;
+    float a2x = (ux - vx) * L, a2y = (uy - vy) * L, a2z = (uz - vz) * L;
+
+    sgl_c4f(0.2f, 1.0f, 1.0f, 1.0f);  /* bright cyan X for spawn */
+    sgl_v3f(cx - a1x, cy - a1y, cz - a1z);
+    sgl_v3f(cx + a1x, cy + a1y, cz + a1z);
+    sgl_v3f(cx - a2x, cy - a2y, cz - a2z);
+    sgl_v3f(cx + a2x, cy + a2y, cz + a2z);
+}
+
 void renderer_draw_water_flow_debug(mat4_t view, mat4_t proj) {
     if (!R_FLOW_DEBUG) return;
     if (R.active_body_idx < 0) return;
@@ -3360,11 +3360,6 @@ void renderer_draw_water_flow_debug(mat4_t view, mat4_t proj) {
     const world_t* w = body->world;
     if (!w || !w->grid) return;
 
-    /* Reuse the block-outline pipeline (lines, depth-test, alpha
-     * blend). Same one renderer_draw_face_outline uses for the
-     * block-select wireframe, so there's no doubt it actually
-     * renders - if the block selector shows up under your crosshair,
-     * this overlay will too. */
     ensure_outline_pip();
     sgl_defaults();
     sgl_matrix_mode_projection();
@@ -3377,16 +3372,61 @@ void renderer_draw_water_flow_debug(mat4_t view, mat4_t proj) {
     sgl_load_pipeline(G_OUTLINE_PIP);
 
     sgl_begin_lines();
+
+    /* Pass 1: magenta arrows on every cell that has an origin entry. */
     flow_arrow_ctx_t ctx = { .w = w, .lift_m = 1.0f, .drawn = 0 };
     world_water_origin_visit_all(w, flow_arrow_visit, &ctx);
+
+    /* Pass 2: cyan X on every spawn block (state==0 OR SOURCE-flagged)
+     * within ~80 m of the camera. The full-world walk would be O(tile
+     * * depth) = millions of cells per frame and tank perf with
+     * nothing to show for it - the camera-distance gate trims the
+     * work to the few tiles actually visible. */
+    vec3_t cw = R.env.camera_world;
+    vec3_t bw = body->world_pos;
+    double cam_lx = (double)(cw.x - bw.x);
+    double cam_ly = (double)(cw.y - bw.y);
+    double cam_lz = (double)(cw.z - bw.z);
+    const double max_d = 80.0;          /* metres */
+    const double max_d2 = max_d * max_d;
+    int x_drawn = 0;
+    for (int ti = 0; ti < w->tile_count; ++ti) {
+        const goldberg_tile_t* t = goldberg_tile(w->grid, ti);
+        if (!t) continue;
+        /* Tile centre at the planet's outer radius - cheap distance
+         * gate before the per-depth walk. */
+        double rs = w->body->radius_m;
+        double tx = t->center.x * rs;
+        double ty = t->center.y * rs;
+        double tz = t->center.z * rs;
+        double dx = tx - cam_lx, dy = ty - cam_ly, dz = tz - cam_lz;
+        if (dx*dx + dy*dy + dz*dz > max_d2) continue;
+        const uint8_t* col = &w->blocks[(size_t)ti * WORLD_MAX_DEPTH];
+        for (int d = 0; d < WORLD_MAX_DEPTH; ++d) {
+            if (col[d] != (uint8_t)BLOCK_WATER) continue;
+            uint8_t st = world_water_get_state(w, ti, d);
+            /* "Spawn block" per the user's mental model: state==0
+             * (worldgen / auto-promoted ocean) OR explicit SOURCE
+             * flag (placed source). Cells with origins are flow
+             * blocks and drew arrows above - skip them here. */
+            if (st != 0u && !water_state_is_source(st)) continue;
+            /* Skip cells covered by water directly above - their
+             * "top" is the upper cell's cap, not their own, so an
+             * X here would be buried inside the column. */
+            if (d + 1 < WORLD_MAX_DEPTH
+                && col[d + 1] == (uint8_t)BLOCK_WATER) continue;
+            double r_cap = world_depth_to_radius_m(w, d + 1) + 1.0;
+            draw_spawn_x(t, r_cap);
+            ++x_drawn;
+        }
+    }
+
     sgl_end();
 
-    /* One-line-per-second heartbeat in the console so the user can
-     * confirm the overlay is alive AND see the arrow count without
-     * spamming the log every frame. */
     static double s_last_log_s = 0.0;
     if (R.time_seconds - s_last_log_s > 1.0) {
-        printf("[flow-debug] drew %d arrow(s) this frame\n", ctx.drawn);
+        printf("[flow-debug] drew %d arrow(s) + %d spawn-X this frame\n",
+               ctx.drawn, x_drawn);
         fflush(stdout);
         s_last_log_s = R.time_seconds;
     }
