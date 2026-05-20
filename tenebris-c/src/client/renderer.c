@@ -3242,6 +3242,66 @@ void renderer_draw_face_outline(mat4_t view, mat4_t proj,
  * Cost: walks tile_count * WORLD_MAX_DEPTH cells. Most are air; the
  * BLOCK_WATER check + the origin-list lookup short-circuit quickly.
  * Only runs while R_FLOW_DEBUG is on. */
+/* Visitor callback state for the F5 overlay's flow-cell walk. */
+typedef struct {
+    const world_t* w;
+    float          half_m;
+    float          lift_m;
+} flow_arrow_ctx_t;
+
+static void flow_arrow_visit(int tile, int depth, void* user) {
+    flow_arrow_ctx_t* ctx = (flow_arrow_ctx_t*)user;
+    const world_t* w = ctx->w;
+    const goldberg_tile_t* t = goldberg_tile(w->grid, tile);
+    if (!t) return;
+    /* Belt-and-braces: an origin entry can outlive the BLOCK_WATER it
+     * tracks if a remesh fired between the simulator clearing the
+     * cell and the next origin sweep. Skip if the cell isn't water. */
+    if (w->blocks[(size_t)tile * WORLD_MAX_DEPTH + depth] != (uint8_t)BLOCK_WATER) return;
+    float flow_world[3];
+    if (!world_water_flow_direction(w, tile, depth, flow_world)) return;
+
+    /* Cap centre, lifted along radial. Lift has to clear the water
+     * cap's vertex-swell amplitude (0.36 m at swell=1) or the arrow
+     * sinks behind the wave crests and gets depth-killed by the
+     * water shader's manual discard. 0.6 m gives 240 mm of slack. */
+    double r_cap = world_depth_to_radius_m(w, depth + 1) + (double)ctx->lift_m;
+    float cx = (float)(t->center.x * r_cap);
+    float cy = (float)(t->center.y * r_cap);
+    float cz = (float)(t->center.z * r_cap);
+
+    /* Forward = flow projected onto tile tangent plane. */
+    float nx = (float)t->center.x;
+    float ny = (float)t->center.y;
+    float nz = (float)t->center.z;
+    float dn = flow_world[0]*nx + flow_world[1]*ny + flow_world[2]*nz;
+    float fx = flow_world[0] - nx * dn;
+    float fy = flow_world[1] - ny * dn;
+    float fz = flow_world[2] - nz * dn;
+    float fl = sqrtf(fx*fx + fy*fy + fz*fz);
+    if (fl < 1e-4f) return;
+    fx /= fl; fy /= fl; fz /= fl;
+
+    /* Right = cross(radial, forward). Both inputs unit + orthogonal -> result unit. */
+    float rx = ny*fz - nz*fy;
+    float ry = nz*fx - nx*fz;
+    float rz = nx*fy - ny*fx;
+
+    /* UV layout: arrow tip (texture u=1) on +forward side, so the
+     * arrow points DOWN the flow direction. */
+    float pfx = fx * ctx->half_m, pfy = fy * ctx->half_m, pfz = fz * ctx->half_m;
+    float prx = rx * ctx->half_m, pry = ry * ctx->half_m, prz = rz * ctx->half_m;
+    float blx = cx - pfx - prx, bly = cy - pfy - pry, blz = cz - pfz - prz;
+    float brx = cx + pfx - prx, bry = cy + pfy - pry, brz = cz + pfz - prz;
+    float trx = cx + pfx + prx, try_ = cy + pfy + pry, trz = cz + pfz + prz;
+    float tlx = cx - pfx + prx, tly = cy - pfy + pry, tlz = cz - pfz + prz;
+
+    sgl_v3f_t2f(blx, bly, blz, 0.0f, 1.0f);
+    sgl_v3f_t2f(brx, bry, brz, 1.0f, 1.0f);
+    sgl_v3f_t2f(trx, try_, trz, 1.0f, 0.0f);
+    sgl_v3f_t2f(tlx, tly, tlz, 0.0f, 0.0f);
+}
+
 void renderer_draw_water_flow_debug(mat4_t view, mat4_t proj) {
     if (!R_FLOW_DEBUG) return;
     if (R.active_body_idx < 0) return;
@@ -3263,66 +3323,17 @@ void renderer_draw_water_flow_debug(mat4_t view, mat4_t proj) {
     sgl_enable_texture();
     sgl_texture(R.flow_arrow_view, R.flow_arrow_smp);
 
-    /* Geometry knobs. Arrow fills most of a hex cell so it reads at
-     * eye height without being so big neighbours visually overlap.
-     * lift_m pushes the quad just above the water surface to avoid
-     * Z-fight against the cap mesh. */
-    const float half_m = 0.45f;
-    const float lift_m = 0.08f;
-
     sgl_begin_quads();
     sgl_c4f(1.0f, 1.0f, 1.0f, 1.0f);
 
-    for (int ti = 0; ti < w->tile_count; ++ti) {
-        const goldberg_tile_t* t = goldberg_tile(w->grid, ti);
-        if (!t) continue;
-        const uint8_t* col = &w->blocks[(size_t)ti * WORLD_MAX_DEPTH];
-        for (int d = 0; d < WORLD_MAX_DEPTH; ++d) {
-            if (col[d] != (uint8_t)BLOCK_WATER) continue;
-            float flow_world[3];
-            if (!world_water_flow_direction(w, ti, d, flow_world)) continue;
+    /* Walk the origin hashmap directly (~4 K slots) instead of the
+     * full tile_count * WORLD_MAX_DEPTH grid (millions of cells) -
+     * this was the source of the F5 lag spike. Only cells with
+     * origins matter; the simulator stores them in this hashmap, so
+     * one linear pass gives us every flow block exactly once. */
+    flow_arrow_ctx_t ctx = { .w = w, .half_m = 0.45f, .lift_m = 0.6f };
+    world_water_origin_visit_all(w, flow_arrow_visit, &ctx);
 
-            /* Cap surface centre, lifted along radial. */
-            double r_cap = world_depth_to_radius_m(w, d + 1) + (double)lift_m;
-            float cx = (float)(t->center.x * r_cap);
-            float cy = (float)(t->center.y * r_cap);
-            float cz = (float)(t->center.z * r_cap);
-
-            /* Forward = flow projected onto tile tangent plane. */
-            float nx = (float)t->center.x;
-            float ny = (float)t->center.y;
-            float nz = (float)t->center.z;
-            float dn = flow_world[0]*nx + flow_world[1]*ny + flow_world[2]*nz;
-            float fx = flow_world[0] - nx * dn;
-            float fy = flow_world[1] - ny * dn;
-            float fz = flow_world[2] - nz * dn;
-            float fl = sqrtf(fx*fx + fy*fy + fz*fz);
-            if (fl < 1e-4f) continue;
-            fx /= fl; fy /= fl; fz /= fl;
-
-            /* Right = cross(radial, forward). Forward and radial are
-             * orthogonal and unit, so right is also unit - no second
-             * normalize needed. */
-            float rx = ny*fz - nz*fy;
-            float ry = nz*fx - nx*fz;
-            float rz = nx*fy - ny*fx;
-
-            /* Corners. UV layout: tip (texture u=1) on +forward side,
-             * so the arrow points DOWN the flow direction. */
-            float pfx = fx * half_m, pfy = fy * half_m, pfz = fz * half_m;
-            float prx = rx * half_m, pry = ry * half_m, prz = rz * half_m;
-
-            float blx = cx - pfx - prx, bly = cy - pfy - pry, blz = cz - pfz - prz;
-            float brx = cx + pfx - prx, bry = cy + pfy - pry, brz = cz + pfz - prz;
-            float trx = cx + pfx + prx, try_ = cy + pfy + pry, trz = cz + pfz + prz;
-            float tlx = cx - pfx + prx, tly = cy - pfy + pry, tlz = cz - pfz + prz;
-
-            sgl_v3f_t2f(blx, bly, blz, 0.0f, 1.0f);
-            sgl_v3f_t2f(brx, bry, brz, 1.0f, 1.0f);
-            sgl_v3f_t2f(trx, try_, trz, 1.0f, 0.0f);
-            sgl_v3f_t2f(tlx, tly, tlz, 0.0f, 0.0f);
-        }
-    }
     sgl_end();
     sgl_disable_texture();
 }

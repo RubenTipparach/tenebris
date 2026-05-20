@@ -442,6 +442,20 @@ int world_water_origin_enum_tile(const world_t* w, int tile,
     return n;
 }
 
+void world_water_origin_visit_all(const world_t* w,
+                                   world_water_origin_visit_fn cb,
+                                   void* user) {
+    if (!w || !w->water || !w->water->origins || !cb) return;
+    for (int idx = 0; idx < w->water->origins_cap; ++idx) {
+        const struct water_origin_slot_t* s = &w->water->origins[idx];
+        if (s->key_depth_plus_one == 0u
+            || s->key_depth_plus_one == (uint8_t)WATER_ORIGIN_TOMBSTONE) {
+            continue;
+        }
+        cb((int)s->key_tile, (int)(s->key_depth_plus_one - 1u), user);
+    }
+}
+
 void world_water_origin_apply_entry(world_t* w, int tile,
                                      const water_origin_diff_entry_t* entry) {
     if (!w || !w->water || !entry) return;

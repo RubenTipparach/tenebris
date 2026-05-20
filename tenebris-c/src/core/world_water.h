@@ -291,6 +291,20 @@ typedef struct {
 int world_water_origin_enum_tile(const struct world_s* w, int tile,
                                   water_origin_diff_entry_t* out, int cap);
 
+/* Walk every (tile, depth) cell that has at least one origin entry,
+ * invoking the callback once per cell. Cheaper than walking
+ * tile_count * WORLD_MAX_DEPTH cells for renderers that only care
+ * about flow blocks (which are by definition the cells stored in the
+ * origin hashmap). Walks the table linearly - O(origins_cap) - so the
+ * cost is bounded regardless of how many cells actually have origins.
+ *
+ * Used by the F5 water-flow debug overlay to iterate exactly the cells
+ * that should display a flow arrow. */
+typedef void (*world_water_origin_visit_fn)(int tile, int depth, void* user);
+void world_water_origin_visit_all(const struct world_s* w,
+                                   world_water_origin_visit_fn cb,
+                                   void* user);
+
 /* Apply a single origin entry on the client side. Wraps origin_add
  * but takes the full origin list at once - clears any prior origins
  * on (tile, depth) so the client's view exactly matches the server's

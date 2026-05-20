@@ -1606,6 +1606,38 @@ static const char* block_name(block_t b) {
  * Sequoia + tinted variants reuse their base biome glyph so the grid
  * stays readable - the full BLOCK_ name is still in the verbose
  * per-tile list above the grid if precise type is needed. */
+/* Visitor used by the F5 toggle to count origin-tracked cells without
+ * leaking the water struct internals to main_web.c. Increments the
+ * int pointed to by `user`. */
+static void flow_count_visitor(int tile, int depth, void* user) {
+    (void)tile; (void)depth;
+    (*(int*)user)++;
+}
+
+/* Glyph for the F4 hex-layout snapshot grid. Water cells encode their
+ * simulator state in a separate state byte (source / falling / flow
+ * level) - rather than always returning 'w', sniff the state and pick
+ * a more informative glyph. The user complaint is the snapshot showed
+ * "all w" with no way to tell ocean (worldgen-spawned, state == 0)
+ * apart from a flow block (state has level + non-source non-falling).
+ *
+ *   O = ocean / worldgen spawn (state byte still zero)
+ *   $ = source flag (player-placed infinite source)
+ *   F = falling water (mid-column waterfall)
+ *   0..7 = flow level (lower = taller cap)
+ *   w = WATER block but no water-state struct loaded (legacy / fallback)
+ */
+static char water_glyph(const world_t* w, int tile, int depth) {
+    uint8_t s = world_water_get_state(w, tile, depth);
+    if (s == 0u) return 'O';
+    if (water_state_is_source(s))  return '$';
+    if (water_state_is_falling(s)) return 'F';
+    int level = water_state_level(s);
+    if (level < 0) level = 0;
+    if (level > 9) level = 9;
+    return (char)('0' + level);
+}
+
 static char block_glyph(block_t b) {
     switch (b) {
         case BLOCK_AIR:            return 'a';
@@ -1724,20 +1756,27 @@ static void print_block_snapshot(void) {
     /* Header for the column dump. Group neighbours into (1,2,3) and
      * (4,5,6) clusters with a space between to match the hex
      * arrangement above. */
+    /* Legend so the user doesn't have to memorize what each glyph
+     * means. Water gets special treatment - the per-cell simulator
+     * state distinguishes ocean (O), sources ($), falling water (F),
+     * and flow blocks (0-7 = level). */
+    printf("[snapshot] water: O=ocean(state==0) $=source F=falling 0-7=flow-level\n");
     printf("[snapshot] depth  m  123 456\n");
     for (int d = d_hi; d >= d_lo; --d) {
         char m_glyph = '.';
         char nb_glyphs[6] = { '.', '.', '.', '.', '.', '.' };
-        /* m = feet tile */
-        m_glyph = block_glyph(
-            (block_t)w->blocks[(size_t)own_tile * WORLD_MAX_DEPTH + d]);
-        /* edge neighbours in tile_ids[1..n_ids-1], up to 6 */
+        /* m = feet tile. Water cells route through water_glyph so the
+         * snapshot shows simulator state, not just "w". */
+        block_t mb = (block_t)w->blocks[(size_t)own_tile * WORLD_MAX_DEPTH + d];
+        m_glyph = (mb == BLOCK_WATER) ? water_glyph(w, own_tile, d)
+                                       : block_glyph(mb);
         int max_nb = n_ids - 1;
         if (max_nb > 6) max_nb = 6;
         for (int k = 0; k < max_nb; ++k) {
             int nb = tile_ids[1 + k];
-            nb_glyphs[k] = block_glyph(
-                (block_t)w->blocks[(size_t)nb * WORLD_MAX_DEPTH + d]);
+            block_t nbb = (block_t)w->blocks[(size_t)nb * WORLD_MAX_DEPTH + d];
+            nb_glyphs[k] = (nbb == BLOCK_WATER) ? water_glyph(w, nb, d)
+                                                  : block_glyph(nbb);
         }
         const char* marker = (d == feet_depth) ? " <-- feet" : "";
         printf("[snapshot]  d=%3d %c  %c%c%c %c%c%c%s\n",
@@ -2944,12 +2983,21 @@ static void event(const sapp_event* e) {
         return;
     }
     if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_F5) {
-        /* Water-flow debug overlay: yellow arrow on every cell whose
-         * world_water_flow_direction returns a non-zero vector. Use
-         * this to verify the simulator computed origins for the cells
-         * you'd expect to flow before assuming the renderer is the
-         * culprit for missing UV pan. */
-        renderer_set_flow_debug(!renderer_flow_debug());
+        /* Water-flow debug: textured arrow quad on every cell that
+         * has at least one origin entry, pointing along the flow
+         * direction. Toggle log lines so the console confirms F5 was
+         * actually received (rather than the browser eating it for
+         * page refresh) and reports how many flow cells exist. */
+        bool on = !renderer_flow_debug();
+        renderer_set_flow_debug(on);
+        int n_origins = 0;
+        if (G.world) {
+            world_water_origin_visit_all(G.world,
+                                          flow_count_visitor, &n_origins);
+        }
+        printf("[flow-debug] F5 toggled %s (origin cells in world: %d)\n",
+               on ? "ON" : "OFF", n_origins);
+        fflush(stdout);
         return;
     }
     if (G_debug_ui_visible) {
