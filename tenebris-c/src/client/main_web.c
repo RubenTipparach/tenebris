@@ -112,6 +112,31 @@ EM_JS(char*, tenebris_get_room_code, (void), {
  * canvas. CSS keeps it big, opaque, and unmistakable, plus the
  * browser handles touch / hover / focus for us. Click is forwarded
  * into C via Module.ccall onto tenebris_js_pause_pressed. */
+/* Stop the browser from intercepting F5 (page refresh). The F5 keydown
+ * event still reaches the canvas / sokol_app so our in-game handler can
+ * toggle the water-flow debug overlay; without this preventDefault the
+ * page just reloads and our handler never fires.
+ *
+ * Mounted on `window` in CAPTURE phase so the listener runs before any
+ * default browser behaviour - addEventListener's third arg `true`
+ * registers in the capture phase. We only preventDefault when the
+ * canvas has pointer focus (document.pointerLockElement matches the
+ * canvas), so the page can still be manually refreshed from the menu
+ * / pause state via F5.
+ *
+ * Keep this small - more browser-reserved keys (F11 fullscreen, Ctrl+R
+ * refresh) are intentionally left alone so the standard browser UX
+ * stays predictable. */
+EM_JS(void, tenebris_block_f5_refresh, (void), {
+    window.addEventListener('keydown', function(ev) {
+        if (ev.key === 'F5' &&
+            (document.pointerLockElement ||
+             document.activeElement && document.activeElement.id === 'canvas')) {
+            ev.preventDefault();
+        }
+    }, true);
+});
+
 EM_JS(void, tenebris_pause_button_install, (void), {
     if (document.getElementById('tenebris-pause-btn')) return;
     var btn = document.createElement('button');
@@ -619,6 +644,13 @@ static void init(void) {
     teleport_menu_set_player(&G.player);
 
 #ifdef __EMSCRIPTEN__
+    /* Stop the browser from refreshing the page when the player
+     * presses F5 (the water-flow debug overlay toggle). Without
+     * this the keydown still reaches our handler but the page
+     * reloads on top, so the user just sees "F5 does nothing".
+     * Installed on every device since desktop is the typical
+     * F5-user; mobile keyboards rarely have function keys. */
+    tenebris_block_f5_refresh();
     /* DOM overlays are mobile-only scaffolding per CLAUDE.md: the
      * pause button stands in for the Esc key, and the joystick +
      * action deck stand in for keyboard / mouse. The pause panel
@@ -1581,6 +1613,41 @@ static const char* block_name(block_t b) {
  * Sequoia + tinted variants reuse their base biome glyph so the grid
  * stays readable - the full BLOCK_ name is still in the verbose
  * per-tile list above the grid if precise type is needed. */
+/* Visitor used by the F5 toggle to count origin-tracked cells without
+ * leaking the water struct internals to main_web.c. Increments the
+ * int pointed to by `user`. */
+static void flow_count_visitor(int tile, int depth, void* user) {
+    (void)tile; (void)depth;
+    (*(int*)user)++;
+}
+
+/* Glyph for the F4 hex-layout snapshot grid. Per the user's spec
+ * "ocean blocks = spawner blocks, they should not be distinguished" -
+ * a state==0 cell is an ocean / spawner regardless of where it sits
+ * on the planet. The user can place ocean blocks anywhere; they
+ * generate flow blocks around them, and when a flow block borders
+ * two ocean blocks at the same height the simulator promotes it to
+ * an ocean block too. All three (worldgen ocean, player-placed
+ * ocean, auto-promoted flow-to-ocean) collapse to state==0 and
+ * render with the same 'O' glyph.
+ *
+ *   O = ocean / spawner block (state==0, anywhere)
+ *   $ = explicit source flag set (separate from state==0 sources)
+ *   F = falling water (mid-column waterfall)
+ *   0..7 = flow level (1 = closest to source / tallest cap;
+ *                       7 = furthest / thinnest film)
+ */
+static char water_glyph(const world_t* w, int tile, int depth) {
+    uint8_t s = world_water_get_state(w, tile, depth);
+    if (s == 0u) return 'O';
+    if (water_state_is_source(s))  return '$';
+    if (water_state_is_falling(s)) return 'F';
+    int level = water_state_level(s);
+    if (level < 0) level = 0;
+    if (level > 9) level = 9;
+    return (char)('0' + level);
+}
+
 static char block_glyph(block_t b) {
     switch (b) {
         case BLOCK_AIR:            return 'a';
@@ -1670,8 +1737,26 @@ static void print_block_snapshot(void) {
         for (int d = d_hi; d >= d_lo; --d) {
             block_t b = (block_t)w->blocks[(size_t)tid * WORLD_MAX_DEPTH + d];
             const char* marker = (d == feet_depth) ? " <-- feet" : "";
-            printf("[snapshot]   d=%3d  block=%-14s (id=%2u)%s\n",
-                   d, block_name(b), (unsigned)b, marker);
+            if (b == BLOCK_WATER) {
+                /* For water cells, the simulator state byte + origin
+                 * count is the diagnostic the user actually needs to
+                 * tell ocean (state==0, the spawner) apart from a flow
+                 * block (level + origins). Dump both alongside the
+                 * plain block name. */
+                uint8_t st = world_water_get_state(w, tid, d);
+                int n_org = world_water_origin_count(w, tid, d);
+                int level = water_state_level(st);
+                printf("[snapshot]   d=%3d  block=%-14s (id=%2u)  "
+                       "state=0x%02X (lvl=%d%s%s) origins=%d%s\n",
+                       d, block_name(b), (unsigned)b,
+                       (unsigned)st, level,
+                       water_state_is_source(st)  ? " SRC"     : "",
+                       water_state_is_falling(st) ? " FALLING" : "",
+                       n_org, marker);
+            } else {
+                printf("[snapshot]   d=%3d  block=%-14s (id=%2u)%s\n",
+                       d, block_name(b), (unsigned)b, marker);
+            }
         }
     }
 
@@ -1699,20 +1784,27 @@ static void print_block_snapshot(void) {
     /* Header for the column dump. Group neighbours into (1,2,3) and
      * (4,5,6) clusters with a space between to match the hex
      * arrangement above. */
+    /* Legend so the user doesn't have to memorize what each glyph
+     * means. Water gets special treatment - the per-cell simulator
+     * state distinguishes ocean (O), sources ($), falling water (F),
+     * and flow blocks (0-7 = level). */
+    printf("[snapshot] water: O=ocean/spawner $=source F=falling 0-7=flow-level\n");
     printf("[snapshot] depth  m  123 456\n");
     for (int d = d_hi; d >= d_lo; --d) {
         char m_glyph = '.';
         char nb_glyphs[6] = { '.', '.', '.', '.', '.', '.' };
-        /* m = feet tile */
-        m_glyph = block_glyph(
-            (block_t)w->blocks[(size_t)own_tile * WORLD_MAX_DEPTH + d]);
-        /* edge neighbours in tile_ids[1..n_ids-1], up to 6 */
+        /* m = feet tile. Water cells route through water_glyph so the
+         * snapshot shows simulator state, not just "w". */
+        block_t mb = (block_t)w->blocks[(size_t)own_tile * WORLD_MAX_DEPTH + d];
+        m_glyph = (mb == BLOCK_WATER) ? water_glyph(w, own_tile, d)
+                                       : block_glyph(mb);
         int max_nb = n_ids - 1;
         if (max_nb > 6) max_nb = 6;
         for (int k = 0; k < max_nb; ++k) {
             int nb = tile_ids[1 + k];
-            nb_glyphs[k] = block_glyph(
-                (block_t)w->blocks[(size_t)nb * WORLD_MAX_DEPTH + d]);
+            block_t nbb = (block_t)w->blocks[(size_t)nb * WORLD_MAX_DEPTH + d];
+            nb_glyphs[k] = (nbb == BLOCK_WATER) ? water_glyph(w, nb, d)
+                                                  : block_glyph(nbb);
         }
         const char* marker = (d == feet_depth) ? " <-- feet" : "";
         printf("[snapshot]  d=%3d %c  %c%c%c %c%c%c%s\n",
@@ -2705,6 +2797,9 @@ static void frame(void) {
      * screen-space refraction and manual depth-discard. */
     profiler_begin("draw-water");
     renderer_draw_water(view, proj, cam_world);
+    /* F5 toggle: yellow arrows on every water cell with non-zero
+     * flow direction. Runs after the cap so arrows sit on top. */
+    renderer_draw_water_flow_debug(view, proj);
     profiler_end("draw-water");
 
     /* UI overlays go on the swapchain on top of the water. */
@@ -2953,6 +3048,24 @@ static void event(const sapp_event* e) {
          * is invisible to non-debug players, and the user explicitly
          * asked for F4 to always work for this. */
         print_block_snapshot();
+        return;
+    }
+    if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_F5) {
+        /* Water-flow debug: textured arrow quad on every cell that
+         * has at least one origin entry, pointing along the flow
+         * direction. Toggle log lines so the console confirms F5 was
+         * actually received (rather than the browser eating it for
+         * page refresh) and reports how many flow cells exist. */
+        bool on = !renderer_flow_debug();
+        renderer_set_flow_debug(on);
+        int n_origins = 0;
+        if (G.world) {
+            world_water_origin_visit_all(G.world,
+                                          flow_count_visitor, &n_origins);
+        }
+        printf("[flow-debug] F5 toggled %s (origin cells in world: %d)\n",
+               on ? "ON" : "OFF", n_origins);
+        fflush(stdout);
         return;
     }
     if (G_debug_ui_visible) {

@@ -1635,6 +1635,29 @@ static void net_client_js_fetch_body(const char* url_cstr, uint32_t body_id) {
 }
 #endif
 
+bool net_client_spawn_body_ready(void) {
+    /* Pre-WELCOME: not connected to a server, so there's nothing to
+     * wait for. Returning true lets the SP / native path through
+     * (the player_update freeze gate is "block updates until ready"
+     * and SP needs to never freeze). */
+    if (C.state != NET_CLIENT_READY) return true;
+    /* WELCOME body_id of 0xFFFFFFFF means "no specific spawn body" -
+     * defensive, shouldn't happen in practice. Treat as ready. */
+    uint32_t bid = C.welcome.body_id;
+    if (bid == 0xFFFFFFFFu) return true;
+    /* Walk the per-body fetch table; slot state == 2 is "done". */
+    for (int i = 0; i < C.body_fetch_count; ++i) {
+        if (C.body_fetch[i].body_id == bid) {
+            return C.body_fetch[i].state == 2;
+        }
+    }
+    /* No slot yet - the WELCOME path enqueues the fetch synchronously
+     * so this only fires for one frame, but we treat "not enqueued"
+     * as not-ready so the player stays frozen until the fetch round-
+     * trips. */
+    return false;
+}
+
 void net_client_fetch_body_saves(uint32_t body_id) {
     if (C.state != NET_CLIENT_READY) {
         /* Pre-READY: stash nothing - the WELCOME path re-issues the

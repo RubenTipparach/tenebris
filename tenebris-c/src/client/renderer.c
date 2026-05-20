@@ -8,6 +8,7 @@
 #include "core/goldberg.h"
 #include "core/planet_gen.h"
 #include "core/world_light.h"
+#include "core/world_water.h"
 
 #include "sokol_gfx.h"
 #include "sokol_app.h"
@@ -201,6 +202,16 @@ static struct {
     sg_view     water_normal_view;
     sg_sampler  water_normal_smp;
 
+    /* Per-cell flow-direction arrow texture for the F5 debug overlay.
+     * Pixel-art arrow pointing in +U, baked by
+     * tools/gen-water-flow-arrow.py. The overlay draws one textured
+     * quad per water cell with non-zero flow direction, oriented so
+     * +U aligns with the flow vector. */
+    sg_image    flow_arrow_img;
+    sg_view     flow_arrow_view;
+    sg_sampler  flow_arrow_smp;
+    sgl_pipeline flow_arrow_pip;
+
     /* Shared linear-clamp sampler for the per-body distant LOD
      * textures (albedo + normal). One sampler binding satisfies both
      * texture slots; per-body image/view live in chunked_body_t. */
@@ -305,6 +316,15 @@ static bool R_WATER_VISIBLE = true;
  * off only skips the atmosphere overlay so the space backdrop
  * stays visible. */
 static bool R_SKYBOX_VISIBLE = true;
+
+/* Water-flow debug overlay. F5 toggles. When true, after the water
+ * cap draws each frame we iterate every water cell in the active body
+ * and draw a coloured 3D arrow from the cell centre along the cell's
+ * flow direction. Cells with no flow (worldgen ocean, sources, sleeping
+ * cells) get nothing - the absence of an arrow IS the diagnostic. Lets
+ * the operator see at a glance whether the simulator computed origins
+ * for the cell they're staring at. */
+static bool R_FLOW_DEBUG = false;
 
 /* Perf mode (mobile / low-power). When true the renderer:
  *   - draws the water cap with the stripped water_mobile shader: no
@@ -532,6 +552,71 @@ static void load_water_normal(void) {
         .wrap_u = SG_WRAP_REPEAT,
         .wrap_v = SG_WRAP_CLAMP_TO_EDGE,
         .label = "distant-lod-sampler",
+    });
+}
+
+/* Load the F5 flow-arrow overlay texture. Same pattern as
+ * load_water_normal: read the PNG, upload via sg_make_image, build a
+ * NEAREST sampler so the pixel-art arrow stays crisp instead of
+ * smearing when the quad is sampled at non-integer pixel ratios. */
+static void load_flow_arrow(void) {
+    stbi_set_flip_vertically_on_load(0);
+    int w = 0, h = 0, c = 0;
+    unsigned char* pix = stbi_load("assets/textures/water_flow_arrow.png",
+                                     &w, &h, &c, 4);
+    static const unsigned char fallback[4] = { 255, 255, 255, 0 };
+    const unsigned char* upload = pix;
+    if (!pix) {
+        printf("[renderer] WARNING: assets/textures/water_flow_arrow.png "
+               "missing; F5 flow-debug overlay will be invisible\n");
+        upload = fallback;
+        w = h = 1;
+    }
+    fflush(stdout);
+    R.flow_arrow_img = sg_make_image(&(sg_image_desc){
+        .width = w, .height = h,
+        .pixel_format = SG_PIXELFORMAT_RGBA8,
+        .data.mip_levels[0] = { .ptr = upload, .size = (size_t)(w * h * 4) },
+        .label = "flow-arrow",
+    });
+    R.flow_arrow_view = sg_make_view(&(sg_view_desc){
+        .texture.image = R.flow_arrow_img,
+        .label = "flow-arrow-view",
+    });
+    R.flow_arrow_smp = sg_make_sampler(&(sg_sampler_desc){
+        .min_filter = SG_FILTER_NEAREST,
+        .mag_filter = SG_FILTER_NEAREST,
+        .wrap_u = SG_WRAP_CLAMP_TO_EDGE,
+        .wrap_v = SG_WRAP_CLAMP_TO_EDGE,
+        .label = "flow-arrow-sampler",
+    });
+    if (pix) stbi_image_free(pix);
+    /* The sgl_pipeline for this texture is lazy-created on first
+     * F5 draw via ensure_flow_arrow_pip() - sgl_setup runs later
+     * than renderer_init in init_pipelines_and_data, so calling
+     * sgl_make_pipeline here would fire against an uninitialised
+     * sokol_gl context. */
+}
+
+/* Lazy-create the textured-quad pipeline used by the F5 flow-arrow
+ * overlay. Mirrors ensure_outline_pip() - only runs after sgl_setup
+ * has run (mobile_ui_init in main_web.c init()), so we can't make the
+ * pipeline up-front in load_flow_arrow alongside the texture / view /
+ * sampler. */
+static void ensure_flow_arrow_pip(void) {
+    if (R.flow_arrow_pip.id != 0) return;
+    R.flow_arrow_pip = sgl_make_pipeline(&(sg_pipeline_desc){
+        .depth = {
+            .compare       = SG_COMPAREFUNC_LESS_EQUAL,
+            .write_enabled = false,
+        },
+        .colors[0].blend = {
+            .enabled         = true,
+            .src_factor_rgb  = SG_BLENDFACTOR_SRC_ALPHA,
+            .dst_factor_rgb  = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+            .src_factor_alpha= SG_BLENDFACTOR_ONE,
+            .dst_factor_alpha= SG_BLENDFACTOR_ONE,
+        },
     });
 }
 
@@ -915,6 +1000,7 @@ void renderer_init(void) {
 
     bake_atlas();
     load_water_normal();
+    load_flow_arrow();
     /* Per-chunk meshes are allocated lazily by ensure_chunks() once we
      * see the world tile count — keeps init cheap when there's nothing
      * to mesh yet (Tenebris's first frame). */
@@ -3132,6 +3218,226 @@ void renderer_draw_face_outline(mat4_t view, mat4_t proj,
     sgl_end();
 }
 
+/* F5 water-flow debug overlay. Iterates every water cell in the active
+ * body's world, asks world_water_flow_direction for the simulator-
+ * computed direction, and draws ONE textured arrow quad lying flat on
+ * the cell's top cap, oriented so the texture's +U axis (arrow tip)
+ * points along the flow direction.
+ *
+ * Cells with no flow (worldgen ocean, sources, sleeping cells) return
+ * false from world_water_flow_direction and we draw nothing - the
+ * absence of an arrow IS the diagnostic. Use this to verify the
+ * simulator computed origins for the cells you'd expect to flow
+ * before assuming the renderer / shader is at fault.
+ *
+ * Per-quad math:
+ *   forward = flow direction projected onto the tile tangent plane.
+ *   right   = cross(radial, forward) - the in-plane axis perpendicular
+ *             to flow, used as the quad's lateral half-extent.
+ *   The four corners (BL, BR, TR, TL) are at center +/- forward*half
+ *   +/- right*half, with texture coords mapping +U -> forward, +V ->
+ *   right (so the arrow tip lands on the +U=1 edge as designed in
+ *   tools/gen-water-flow-arrow.py).
+ *
+ * Cost: walks tile_count * WORLD_MAX_DEPTH cells. Most are air; the
+ * BLOCK_WATER check + the origin-list lookup short-circuit quickly.
+ * Only runs while R_FLOW_DEBUG is on. */
+/* Visitor callback state for the F5 overlay's flow-cell walk. */
+typedef struct {
+    const world_t* w;
+    float          lift_m;
+    int            drawn;   /* incremented per arrow actually emitted */
+} flow_arrow_ctx_t;
+
+/* Per-cell line drawing for the F5 wireframe overlay. Emits ONE
+ * bright magenta arrow per flow cell: shaft from the hex centre out
+ * along the flow direction, plus two short barb lines at the tip.
+ *
+ * Lines through G_OUTLINE_PIP (depth-tested but write-disabled,
+ * alpha-blended). No texture, no quad, no shader compilation. */
+static void flow_arrow_visit(int tile, int depth, void* user) {
+    flow_arrow_ctx_t* ctx = (flow_arrow_ctx_t*)user;
+    const world_t* w = ctx->w;
+    const goldberg_tile_t* t = goldberg_tile(w->grid, tile);
+    if (!t) return;
+    if (w->blocks[(size_t)tile * WORLD_MAX_DEPTH + depth] != (uint8_t)BLOCK_WATER) return;
+    float flow_world[3];
+    if (!world_water_flow_direction(w, tile, depth, flow_world)) return;
+
+    /* Cap centre, lifted ~1 m along radial so the arrow sits above
+     * the wave crests and nearby terrain. */
+    double r_cap = world_depth_to_radius_m(w, depth + 1) + (double)ctx->lift_m;
+    float cx = (float)(t->center.x * r_cap);
+    float cy = (float)(t->center.y * r_cap);
+    float cz = (float)(t->center.z * r_cap);
+
+    /* Project flow onto tile tangent plane, normalise. */
+    float nx = (float)t->center.x;
+    float ny = (float)t->center.y;
+    float nz = (float)t->center.z;
+    float dn = flow_world[0]*nx + flow_world[1]*ny + flow_world[2]*nz;
+    float fx = flow_world[0] - nx * dn;
+    float fy = flow_world[1] - ny * dn;
+    float fz = flow_world[2] - nz * dn;
+    float fl = sqrtf(fx*fx + fy*fy + fz*fz);
+    if (fl < 1e-4f) return;
+    fx /= fl; fy /= fl; fz /= fl;
+    float rx = ny*fz - nz*fy;
+    float ry = nz*fx - nx*fz;
+    float rz = nx*fy - ny*fx;
+
+    /* Shaft fills most of a hex (~0.6 m). Barbs sweep ~30 deg back
+     * from the shaft tip - the barb vector is built as
+     *   -forward * cos(30 deg) +/- side * sin(30 deg)
+     * so both components stay in the back-half plane (cos positive
+     * times -forward goes BACK, side sin spreads the V).  Previous
+     * version used 2.6 rad whose cosine is negative, so the
+     * "-forward * cs" leg flipped to +forward and the arrowhead
+     * opened forward instead of trailing the tip. */
+    const float shaft = 0.60f;
+    const float barb  = 0.22f;
+    const float cs    = cosf(0.524f);   /* 30 deg */
+    const float sn    = sinf(0.524f);
+
+    float tipx = cx + fx * shaft;
+    float tipy = cy + fy * shaft;
+    float tipz = cz + fz * shaft;
+
+    sgl_c4f(1.0f, 0.15f, 0.15f, 1.0f);  /* bright red arrow = flow block */
+    sgl_v3f(cx, cy, cz);
+    sgl_v3f(tipx, tipy, tipz);
+
+    float bax = -fx * cs + rx * sn;
+    float bay = -fy * cs + ry * sn;
+    float baz = -fz * cs + rz * sn;
+    float bbx = -fx * cs - rx * sn;
+    float bby = -fy * cs - ry * sn;
+    float bbz = -fz * cs - rz * sn;
+    sgl_v3f(tipx, tipy, tipz);
+    sgl_v3f(tipx + bax * barb, tipy + bay * barb, tipz + baz * barb);
+    sgl_v3f(tipx, tipy, tipz);
+    sgl_v3f(tipx + bbx * barb, tipy + bby * barb, tipz + bbz * barb);
+
+    ++ctx->drawn;
+}
+
+/* Draw a cyan 3D X (three short crossed segments) at the cell centre,
+ * marking it as a spawner / ocean block. Same line pipeline as the
+ * magenta arrow path. Two perpendicular line segments in the tile
+ * tangent plane, plus a small vertical tick for legibility from
+ * straight above. */
+static void draw_spawn_x(const goldberg_tile_t* t, double r_cap) {
+    float cx = (float)(t->center.x * r_cap);
+    float cy = (float)(t->center.y * r_cap);
+    float cz = (float)(t->center.z * r_cap);
+    /* Two arbitrary in-plane axes (same recipe as the water shader's
+     * tangent basis). */
+    float nx = (float)t->center.x, ny = (float)t->center.y, nz = (float)t->center.z;
+    float ux = (fabsf(nx) > 0.9f) ? 0.0f : 1.0f;
+    float uy = (fabsf(nx) > 0.9f) ? 1.0f : 0.0f;
+    float uz = 0.0f;
+    float dn = ux*nx + uy*ny + uz*nz;
+    ux -= nx*dn; uy -= ny*dn; uz -= nz*dn;
+    float ul = sqrtf(ux*ux + uy*uy + uz*uz);
+    if (ul < 1e-4f) return;
+    ux /= ul; uy /= ul; uz /= ul;
+    float vx = ny*uz - nz*uy;
+    float vy = nz*ux - nx*uz;
+    float vz = nx*uy - ny*ux;
+
+    /* Diagonal arms = (u + v)/sqrt2 and (u - v)/sqrt2 so the X reads
+     * as an X rather than a + sign. Length ~0.45 m (slightly smaller
+     * than the arrow shaft so the two glyphs look proportional). */
+    const float L = 0.45f * 0.70710678f;
+    float a1x = (ux + vx) * L, a1y = (uy + vy) * L, a1z = (uz + vz) * L;
+    float a2x = (ux - vx) * L, a2y = (uy - vy) * L, a2z = (uz - vz) * L;
+
+    sgl_c4f(0.2f, 1.0f, 0.2f, 1.0f);  /* bright green X = ocean / spawn block */
+    sgl_v3f(cx - a1x, cy - a1y, cz - a1z);
+    sgl_v3f(cx + a1x, cy + a1y, cz + a1z);
+    sgl_v3f(cx - a2x, cy - a2y, cz - a2z);
+    sgl_v3f(cx + a2x, cy + a2y, cz + a2z);
+}
+
+void renderer_draw_water_flow_debug(mat4_t view, mat4_t proj) {
+    if (!R_FLOW_DEBUG) return;
+    if (R.active_body_idx < 0) return;
+    chunked_body_t* body = &R.bodies[R.active_body_idx];
+    const world_t* w = body->world;
+    if (!w || !w->grid) return;
+
+    ensure_outline_pip();
+    sgl_defaults();
+    sgl_matrix_mode_projection();
+    sgl_load_matrix(proj.m);
+    sgl_matrix_mode_modelview();
+    sgl_load_matrix(view.m);
+    sgl_translate((float)w->body->pos_x,
+                  (float)w->body->pos_y,
+                  (float)w->body->pos_z);
+    sgl_load_pipeline(G_OUTLINE_PIP);
+
+    sgl_begin_lines();
+
+    /* Pass 1: magenta arrows on every cell that has an origin entry. */
+    flow_arrow_ctx_t ctx = { .w = w, .lift_m = 1.0f, .drawn = 0 };
+    world_water_origin_visit_all(w, flow_arrow_visit, &ctx);
+
+    /* Pass 2: cyan X on every spawn block (state==0 OR SOURCE-flagged)
+     * within ~80 m of the camera. The full-world walk would be O(tile
+     * * depth) = millions of cells per frame and tank perf with
+     * nothing to show for it - the camera-distance gate trims the
+     * work to the few tiles actually visible. */
+    vec3_t cw = R.env.camera_world;
+    vec3_t bw = body->world_pos;
+    double cam_lx = (double)(cw.x - bw.x);
+    double cam_ly = (double)(cw.y - bw.y);
+    double cam_lz = (double)(cw.z - bw.z);
+    const double max_d = 80.0;          /* metres */
+    const double max_d2 = max_d * max_d;
+    int x_drawn = 0;
+    for (int ti = 0; ti < w->tile_count; ++ti) {
+        const goldberg_tile_t* t = goldberg_tile(w->grid, ti);
+        if (!t) continue;
+        /* Tile centre at the planet's outer radius - cheap distance
+         * gate before the per-depth walk. */
+        double rs = w->body->radius_m;
+        double tx = t->center.x * rs;
+        double ty = t->center.y * rs;
+        double tz = t->center.z * rs;
+        double dx = tx - cam_lx, dy = ty - cam_ly, dz = tz - cam_lz;
+        if (dx*dx + dy*dy + dz*dz > max_d2) continue;
+        const uint8_t* col = &w->blocks[(size_t)ti * WORLD_MAX_DEPTH];
+        for (int d = 0; d < WORLD_MAX_DEPTH; ++d) {
+            if (col[d] != (uint8_t)BLOCK_WATER) continue;
+            uint8_t st = world_water_get_state(w, ti, d);
+            /* "Spawn block" per the user's mental model: state==0
+             * (worldgen / auto-promoted ocean) OR explicit SOURCE
+             * flag (placed source). Cells with origins are flow
+             * blocks and drew arrows above - skip them here. */
+            if (st != 0u && !water_state_is_source(st)) continue;
+            /* Skip cells covered by water directly above - their
+             * "top" is the upper cell's cap, not their own, so an
+             * X here would be buried inside the column. */
+            if (d + 1 < WORLD_MAX_DEPTH
+                && col[d + 1] == (uint8_t)BLOCK_WATER) continue;
+            double r_cap = world_depth_to_radius_m(w, d + 1) + 1.0;
+            draw_spawn_x(t, r_cap);
+            ++x_drawn;
+        }
+    }
+
+    sgl_end();
+
+    static double s_last_log_s = 0.0;
+    if (R.time_seconds - s_last_log_s > 1.0) {
+        printf("[flow-debug] drew %d arrow(s) + %d spawn-X this frame\n",
+               ctx.drawn, x_drawn);
+        fflush(stdout);
+        s_last_log_s = R.time_seconds;
+    }
+}
+
 void renderer_draw_water(mat4_t view, mat4_t proj, vec3_t camera_world) {
     if (!R_TERRAIN_VISIBLE) return;
     if (!R_WATER_VISIBLE)   return;
@@ -3198,6 +3504,8 @@ void renderer_set_water_visible(bool v)   { R_WATER_VISIBLE = v;   }
 bool renderer_water_visible(void)          { return R_WATER_VISIBLE; }
 void renderer_set_skybox_visible(bool v)  { R_SKYBOX_VISIBLE = v;  }
 bool renderer_skybox_visible(void)         { return R_SKYBOX_VISIBLE; }
+void renderer_set_flow_debug(bool v)      { R_FLOW_DEBUG = v;     }
+bool renderer_flow_debug(void)             { return R_FLOW_DEBUG; }
 
 unsigned int renderer_atlas_view_id(void)    { return R.atlas_view.id; }
 unsigned int renderer_atlas_sampler_id(void) { return R.atlas_smp.id; }

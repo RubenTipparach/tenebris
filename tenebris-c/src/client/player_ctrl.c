@@ -1,5 +1,6 @@
 #include "client/player_ctrl.h"
 #include "client/input.h"
+#include "client/net_client.h"   /* net_client_spawn_body_ready for join-time freeze */
 #include "client/settings.h"
 #include "core/config.h"
 #include "core/world_water.h"   /* world_water_flow_direction for current force */
@@ -658,6 +659,30 @@ static void jerk_snapshot_take(jerk_snapshot_t* s, const player_ctrl_t* p) {
 
 void player_update(player_ctrl_t* p, world_t* w, float dt) {
     const input_state_t* in = input_state();
+    /* Spawn-time freeze: the WELCOME handler kicks an async /saves/body
+     * fetch for the spawn body, but the player's first frames run
+     * before that response lands. Without the freeze:
+     *   - Spawn coords land in air ABOVE the still-unloaded terrain
+     *     -> gravity drags the player straight down through what
+     *     will-be the ground, then the bedrock rescue snaps them
+     *     somewhere unrelated when the blocks finally arrive.
+     *   - Or the saved blocks arrive AFTER the player has moved a
+     *     few metres and materialise inside their hitbox.
+     *
+     * Zero out velocity + skip the rest of the tick until
+     * net_client_spawn_body_ready() returns true (slot state == 2
+     * for the WELCOME body_id, i.e. /saves/body fetch has been
+     * applied to the world). SP / native builds return true from
+     * that helper immediately - the freeze only ever holds during
+     * the MP join race.
+     *
+     * Position is intentionally NOT touched - just leave the player
+     * sitting at the server-provided spawn coords. The renderer can
+     * still draw them; the only thing on hold is movement. */
+    if (!net_client_spawn_body_ready()) {
+        p->velocity = dvec3_make(0, 0, 0);
+        return;
+    }
     /* Post-rescue server-save freeze countdown. Stays positive for
      * a few seconds after the bedrock-fall rescue so PLAYER_STATE
      * sends grounded=false on the wire (which gates the server's

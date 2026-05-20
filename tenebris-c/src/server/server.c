@@ -69,6 +69,25 @@ static void room_alloc_worlds(server_t* s, server_room_t* room) {
          * Pre-existing rooms with only .col files report 0 loaded
          * here; new water-state writes start on the next flush. */
         saves_load_world_water(w, room->code, s->cfg.seed);
+        /* Restore the per-cell origin hashmap from .orig sibling
+         * files. Order doesn't strictly matter (origin_add is just
+         * a hashmap insert) but state first keeps the on-disk
+         * loading order consistent with the in-memory write order. */
+        saves_load_world_water_origins(w, room->code, s->cfg.seed);
+        /* Retroactive repair for flow cells that pre-date origin
+         * persistence (or were created by a pre-fix simulator that
+         * didn't record state==0 spreaders). BFS-style walk that
+         * synthesises an origin from any spawn-or-already-repaired
+         * neighbour, so the F5 overlay / UV pan / current force
+         * work on legacy worlds without forcing the user to dig +
+         * re-place every flow block. */
+        int repaired = world_water_repair_missing_origins(w);
+        if (repaired > 0) {
+            printf("[server] room '%s' body=%u: repaired %d legacy flow cell(s) "
+                   "with synthetic origins\n",
+                   room->code[0] ? room->code : "(public)",
+                   (unsigned)w->body->id, repaired);
+        }
         total_tiles_loaded += loaded;
         room->worlds[room->world_count++] = w;
     }
@@ -109,6 +128,8 @@ static world_t* room_ensure_world_for_body(server_t* s, server_room_t* room,
      * settled state from disk. */
     saves_load_world(w, room->code, s->cfg.seed);
     saves_load_world_water(w, room->code, s->cfg.seed);
+    saves_load_world_water_origins(w, room->code, s->cfg.seed);
+    world_water_repair_missing_origins(w);
     room->worlds[room->world_count++] = w;
     printf("[server] room '%s': lazy-cloned body %u\n",
            room->code[0] ? room->code : "(public)", body_id);
@@ -1137,12 +1158,15 @@ static void on_close(net_conn_t* conn, net_close_reason_t reason, void* user) {
      * always lands on the same file. Gated on cl->token[0] so
      * server-stamped 'guest-N' connections don't pollute the
      * saves dir; only real profile-bearing sessions persist.
-     * Also gated on cl->is_grounded so a tab-close during a fall /
-     * jetpack hop can't write an in-air pose - the next RESUME
-     * would drop the player back into the same fall, accumulating
-     * velocity over the join-time remesh stalls, until the bedrock
-     * rescue fires and lands them somewhere unrelated. */
-    if (cl->has_state && cl->token[0] && cl->name[0] && cl->is_grounded) {
+     *
+     * Per-user spec: save even when the player is mid-air. A hard
+     * browser refresh during a jump shouldn't silently throw the
+     * pose away - resuming a half-second into a fall is a much
+     * smaller surprise than respawning at the previous saved
+     * point. The bedrock-rescue rescue path already handles the
+     * edge case where the resumed pose lands inside terrain after
+     * a join-time remesh stall. */
+    if (cl->has_state && cl->token[0] && cl->name[0]) {
         saves_player_pose_t pose = {
             .body_id = cl->body_id,
             .pos_x   = cl->pos_x,
@@ -2138,6 +2162,42 @@ static int on_http(const char* path,
         *out_mime     = "application/json; charset=utf-8";
         return 1;
     }
+    /* Path-based room filter: /saves/T9VVPW is shorthand for
+     * /saves?room=T9VVPW. User report: hitting /saves/T9VVPW returned
+     * "saves for all rooms" (actually a 404 falling through to the
+     * default landing page, but the effect to the user was "I can't
+     * scope this to one room without remembering the query syntax").
+     *
+     * Synthesize the equivalent ?room= request and dispatch to
+     * build_saves_json. Any extra query the user appended (e.g.
+     * /saves/T9VVPW?body=0) flows through unchanged - if both a
+     * path-room and a ?room= query are present, the path wins. */
+    if (strncmp(clean, "/saves/", 7) == 0
+        && strcmp(clean, "/saves/body") != 0) {
+        const char* room_in_path = clean + 7;
+        /* Build a synthetic path "?room=<X>[&<rest>]" so the existing
+         * query parser can consume it. Cap room length to the same
+         * 15-char window build_saves_json uses. */
+        char synth[256];
+        char room_only[16];
+        size_t i = 0;
+        while (room_in_path[i] && room_in_path[i] != '/'
+               && room_in_path[i] != '?' && i < sizeof room_only - 1) {
+            room_only[i] = room_in_path[i];
+            ++i;
+        }
+        room_only[i] = 0;
+        const char* extra_q = strchr(path, '?');
+        snprintf(synth, sizeof synth, "/saves?room=%s%s%s",
+                 room_only,
+                 extra_q ? "&" : "",
+                 extra_q ? extra_q + 1 : "");
+        size_t len = build_saves_json(synth);
+        *out_body     = (const uint8_t*)HTTP_BODY;
+        *out_body_len = len;
+        *out_mime     = "application/json; charset=utf-8";
+        return 1;
+    }
     if (strcmp(clean, "/saves/body") == 0) {
         /* Bulk binary download of one body's persisted tile columns.
          * Used by the client's lazy-per-body fetch path, which calls
@@ -2254,6 +2314,8 @@ static int on_http(const char* path,
             "                               &room=__all__ to fan out, default public)\n"
             "  GET /saves                - JSON: every persisted .col file on disk\n"
             "                              filter with ?room=ABC123 / ?body=0 / ?seed=N\n"
+            "  GET /saves/ABC123         - shorthand for /saves?room=ABC123\n"
+            "                              (extra ?body=N etc still works)\n"
             "  GET /saves/body?body=N    - BINARY: every persisted column for one body\n"
             "                              also ?room=ABC123 (default lobby) and ?seed=N\n"
             "  GET /admin/clear_water_above_sea[?room=X] - clear every BLOCK_WATER\n"
@@ -2636,10 +2698,17 @@ void server_tick(server_t* s) {
         for (int i = 0; i < SERVER_MAX_CLIENTS; ++i) {
             server_client_t* cl = &s->clients[i];
             if (!cl->conn || !cl->has_state || !cl->token[0] || !cl->name[0]) continue;
-            /* Skip mid-fall / mid-jetpack saves. The "client says not
-             * grounded" gate means the next RESUME can always trust
-             * the saved pose to be a place the player can stand. */
-            if (!cl->is_grounded) continue;
+            /* Per-user spec: save even mid-air. The previous
+             * !is_grounded skip was protecting against in-air
+             * resumes, but the cost was that a hard refresh during
+             * any jump / fall silently kept the stale prior pose -
+             * the player respawned wherever they were the LAST
+             * time they were grounded, which felt like position
+             * loss. Saving mid-fall means RESUME may drop them a
+             * fraction of a second into a fall; that's a smaller
+             * surprise than warping back to an old position. The
+             * bedrock-rescue path handles the rare case where the
+             * resumed pose lands inside remeshed terrain. */
             const double dx = cl->pos_x - cl->last_saved_pos_x;
             const double dy = cl->pos_y - cl->last_saved_pos_y;
             const double dz = cl->pos_z - cl->last_saved_pos_z;
@@ -2826,6 +2895,14 @@ void server_tick(server_t* s) {
                         int tile = dirty_tiles[i];
                         saves_write_water_state(w, room->code, s->cfg.seed,
                                                  tile);
+                        /* Ride origin persistence along with the
+                         * state-byte write. Without it, the origin
+                         * hashmap was memory-only and every Fly
+                         * auto-stop / restart wiped flow direction
+                         * for every cell - F5 overlay + UV pan +
+                         * current force all saw no flow blocks. */
+                        saves_write_water_origins(w, room->code, s->cfg.seed,
+                                                   tile);
                         const uint8_t* state_col =
                             world_water_state_column(w, tile);
                         if (!state_col) continue;
