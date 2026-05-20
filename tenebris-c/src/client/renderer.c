@@ -3245,10 +3245,22 @@ void renderer_draw_face_outline(mat4_t view, mat4_t proj,
 /* Visitor callback state for the F5 overlay's flow-cell walk. */
 typedef struct {
     const world_t* w;
-    float          half_m;
     float          lift_m;
+    int            drawn;   /* incremented per arrow actually emitted */
 } flow_arrow_ctx_t;
 
+/* Per-cell line drawing for the F5 wireframe overlay. Emits:
+ *   - A bright magenta hex outline at the cell's top-cap radius (one
+ *     line segment per tile edge), so every flow cell shows up as a
+ *     glowing hexagon over the water surface even when the arrow
+ *     itself is tiny or aligned with the view direction.
+ *   - A yellow arrow shaft from the hex centre out along the flow
+ *     direction, plus two short head barbs at the tip.
+ *
+ * All geometry is line primitives, drawn through the existing
+ * G_OUTLINE_PIP (depth-tested but write-disabled, alpha-blended). No
+ * texture, no quad, no shader compilation - if F5 toggles and a flow
+ * cell exists, these lines render. */
 static void flow_arrow_visit(int tile, int depth, void* user) {
     flow_arrow_ctx_t* ctx = (flow_arrow_ctx_t*)user;
     const world_t* w = ctx->w;
@@ -3259,18 +3271,45 @@ static void flow_arrow_visit(int tile, int depth, void* user) {
      * cell and the next origin sweep. Skip if the cell isn't water. */
     if (w->blocks[(size_t)tile * WORLD_MAX_DEPTH + depth] != (uint8_t)BLOCK_WATER) return;
     float flow_world[3];
-    if (!world_water_flow_direction(w, tile, depth, flow_world)) return;
+    bool have_flow = world_water_flow_direction(w, tile, depth, flow_world);
 
-    /* Cap centre, lifted along radial. Lift has to clear the water
-     * cap's vertex-swell amplitude (0.36 m at swell=1) or the arrow
-     * sinks behind the wave crests and gets depth-killed by the
-     * water shader's manual discard. 0.6 m gives 240 mm of slack. */
+    /* Cap centre + radius, lifted ~1 m along radial. Big lift so the
+     * lines clear even tall wave crests and any nearby terrain. */
     double r_cap = world_depth_to_radius_m(w, depth + 1) + (double)ctx->lift_m;
     float cx = (float)(t->center.x * r_cap);
     float cy = (float)(t->center.y * r_cap);
     float cz = (float)(t->center.z * r_cap);
 
-    /* Forward = flow projected onto tile tangent plane. */
+    /* Hex outline. t->verts[k] are unit direction vectors at each
+     * corner; scaling by r_cap places them on the lifted sphere.
+     * shrink_corner would pull them inward toward the tile centre,
+     * but using the raw verts gives us a hex that matches the tile
+     * boundary, which reads more clearly as "this whole hex is a
+     * flow block". */
+    const int n = t->num_verts;
+    if (n <= 0) return;
+    sgl_c4f(1.0f, 0.2f, 1.0f, 1.0f);  /* bright magenta hex outline */
+    for (int k = 0; k < n; ++k) {
+        int next = (k + 1) % n;
+        float ax = (float)(t->verts[k].x    * r_cap);
+        float ay = (float)(t->verts[k].y    * r_cap);
+        float az = (float)(t->verts[k].z    * r_cap);
+        float bx = (float)(t->verts[next].x * r_cap);
+        float by = (float)(t->verts[next].y * r_cap);
+        float bz = (float)(t->verts[next].z * r_cap);
+        sgl_v3f(ax, ay, az);
+        sgl_v3f(bx, by, bz);
+    }
+
+    if (!have_flow) {
+        /* No origins (shouldn't happen if we got here via origin
+         * visitor, but guard anyway). Hex alone is the diagnostic:
+         * "cell is in the origin map but flow_direction came back
+         * degenerate." */
+        return;
+    }
+
+    /* Project flow onto tile tangent plane, normalise. */
     float nx = (float)t->center.x;
     float ny = (float)t->center.y;
     float nz = (float)t->center.z;
@@ -3281,25 +3320,37 @@ static void flow_arrow_visit(int tile, int depth, void* user) {
     float fl = sqrtf(fx*fx + fy*fy + fz*fz);
     if (fl < 1e-4f) return;
     fx /= fl; fy /= fl; fz /= fl;
-
-    /* Right = cross(radial, forward). Both inputs unit + orthogonal -> result unit. */
     float rx = ny*fz - nz*fy;
     float ry = nz*fx - nx*fz;
     float rz = nx*fy - ny*fx;
 
-    /* UV layout: arrow tip (texture u=1) on +forward side, so the
-     * arrow points DOWN the flow direction. */
-    float pfx = fx * ctx->half_m, pfy = fy * ctx->half_m, pfz = fz * ctx->half_m;
-    float prx = rx * ctx->half_m, pry = ry * ctx->half_m, prz = rz * ctx->half_m;
-    float blx = cx - pfx - prx, bly = cy - pfy - pry, blz = cz - pfz - prz;
-    float brx = cx + pfx - prx, bry = cy + pfy - pry, brz = cz + pfz - prz;
-    float trx = cx + pfx + prx, try_ = cy + pfy + pry, trz = cz + pfz + prz;
-    float tlx = cx - pfx + prx, tly = cy - pfy + pry, tlz = cz - pfz + prz;
+    /* Arrow shaft + barbs. Shaft length ~0.4 m so it fits inside the
+     * hex; barbs are 0.18 m each, swept ~30 deg back from the tip. */
+    const float shaft = 0.40f;
+    const float barb  = 0.18f;
+    const float cs    = cosf(2.6f);  /* head_angle = 2.6 rad ~ 150 deg */
+    const float sn    = sinf(2.6f);
 
-    sgl_v3f_t2f(blx, bly, blz, 0.0f, 1.0f);
-    sgl_v3f_t2f(brx, bry, brz, 1.0f, 1.0f);
-    sgl_v3f_t2f(trx, try_, trz, 1.0f, 0.0f);
-    sgl_v3f_t2f(tlx, tly, tlz, 0.0f, 0.0f);
+    float tipx = cx + fx * shaft;
+    float tipy = cy + fy * shaft;
+    float tipz = cz + fz * shaft;
+
+    sgl_c4f(1.0f, 0.95f, 0.1f, 1.0f);  /* bright yellow arrow */
+    sgl_v3f(cx, cy, cz);
+    sgl_v3f(tipx, tipy, tipz);
+
+    float bax = -fx * cs + rx * sn;
+    float bay = -fy * cs + ry * sn;
+    float baz = -fz * cs + rz * sn;
+    float bbx = -fx * cs - rx * sn;
+    float bby = -fy * cs - ry * sn;
+    float bbz = -fz * cs - rz * sn;
+    sgl_v3f(tipx, tipy, tipz);
+    sgl_v3f(tipx + bax * barb, tipy + bay * barb, tipz + baz * barb);
+    sgl_v3f(tipx, tipy, tipz);
+    sgl_v3f(tipx + bbx * barb, tipy + bby * barb, tipz + bbz * barb);
+
+    ++ctx->drawn;
 }
 
 void renderer_draw_water_flow_debug(mat4_t view, mat4_t proj) {
@@ -3309,8 +3360,12 @@ void renderer_draw_water_flow_debug(mat4_t view, mat4_t proj) {
     const world_t* w = body->world;
     if (!w || !w->grid) return;
 
-    ensure_flow_arrow_pip();
-
+    /* Reuse the block-outline pipeline (lines, depth-test, alpha
+     * blend). Same one renderer_draw_face_outline uses for the
+     * block-select wireframe, so there's no doubt it actually
+     * renders - if the block selector shows up under your crosshair,
+     * this overlay will too. */
+    ensure_outline_pip();
     sgl_defaults();
     sgl_matrix_mode_projection();
     sgl_load_matrix(proj.m);
@@ -3319,23 +3374,22 @@ void renderer_draw_water_flow_debug(mat4_t view, mat4_t proj) {
     sgl_translate((float)w->body->pos_x,
                   (float)w->body->pos_y,
                   (float)w->body->pos_z);
-    sgl_load_pipeline(R.flow_arrow_pip);
-    sgl_enable_texture();
-    sgl_texture(R.flow_arrow_view, R.flow_arrow_smp);
+    sgl_load_pipeline(G_OUTLINE_PIP);
 
-    sgl_begin_quads();
-    sgl_c4f(1.0f, 1.0f, 1.0f, 1.0f);
-
-    /* Walk the origin hashmap directly (~4 K slots) instead of the
-     * full tile_count * WORLD_MAX_DEPTH grid (millions of cells) -
-     * this was the source of the F5 lag spike. Only cells with
-     * origins matter; the simulator stores them in this hashmap, so
-     * one linear pass gives us every flow block exactly once. */
-    flow_arrow_ctx_t ctx = { .w = w, .half_m = 0.45f, .lift_m = 0.6f };
+    sgl_begin_lines();
+    flow_arrow_ctx_t ctx = { .w = w, .lift_m = 1.0f, .drawn = 0 };
     world_water_origin_visit_all(w, flow_arrow_visit, &ctx);
-
     sgl_end();
-    sgl_disable_texture();
+
+    /* One-line-per-second heartbeat in the console so the user can
+     * confirm the overlay is alive AND see the arrow count without
+     * spamming the log every frame. */
+    static double s_last_log_s = 0.0;
+    if (R.time_seconds - s_last_log_s > 1.0) {
+        printf("[flow-debug] drew %d arrow(s) this frame\n", ctx.drawn);
+        fflush(stdout);
+        s_last_log_s = R.time_seconds;
+    }
 }
 
 void renderer_draw_water(mat4_t view, mat4_t proj, vec3_t camera_world) {
