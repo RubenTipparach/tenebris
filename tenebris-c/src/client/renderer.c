@@ -3286,12 +3286,18 @@ static void flow_arrow_visit(int tile, int depth, void* user) {
     float ry = nz*fx - nx*fz;
     float rz = nx*fy - ny*fx;
 
-    /* Shaft fills most of a hex (~0.6 m). Barbs are 0.22 m each
-     * swept ~30 deg back from the tip. */
+    /* Shaft fills most of a hex (~0.6 m). Barbs sweep ~30 deg back
+     * from the shaft tip - the barb vector is built as
+     *   -forward * cos(30 deg) +/- side * sin(30 deg)
+     * so both components stay in the back-half plane (cos positive
+     * times -forward goes BACK, side sin spreads the V).  Previous
+     * version used 2.6 rad whose cosine is negative, so the
+     * "-forward * cs" leg flipped to +forward and the arrowhead
+     * opened forward instead of trailing the tip. */
     const float shaft = 0.60f;
     const float barb  = 0.22f;
-    const float cs    = cosf(2.6f);
-    const float sn    = sinf(2.6f);
+    const float cs    = cosf(0.524f);   /* 30 deg */
+    const float sn    = sinf(0.524f);
 
     float tipx = cx + fx * shaft;
     float tipy = cy + fy * shaft;
