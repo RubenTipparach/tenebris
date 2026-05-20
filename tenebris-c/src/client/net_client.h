@@ -161,4 +161,16 @@ void net_client_fetch_body_saves(uint32_t body_id);
  * issues the fetch via the normal path. No-op pre-READY. */
 void net_client_resync_body_saves(uint32_t body_id);
 
+/* True once the WELCOME spawn body's /saves/body fetch has been
+ * applied to the world. Used by the player physics tick to gate
+ * the spawn-time freeze: until this returns true the server's
+ * persisted blocks haven't landed yet, so a player dropped in at
+ * the spawn coords would either fall through (terrain not yet
+ * meshed) or have blocks materialise on top of them mid-frame.
+ *
+ * Returns true in SP / native builds where there's no fetch at
+ * all - the saves layer there is synchronous, no race exists,
+ * and the freeze never triggers. */
+bool net_client_spawn_body_ready(void);
+
 #endif
