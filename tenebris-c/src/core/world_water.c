@@ -456,6 +456,73 @@ void world_water_origin_visit_all(const world_t* w,
     }
 }
 
+int world_water_repair_missing_origins(world_t* w) {
+    if (!w || !w->grid || !w->water) return 0;
+    int total_repaired = 0;
+    /* BFS-style: keep iterating until a full pass adds no new
+     * origins. Each pass walks every water cell once. An upper
+     * bound of WORLD_MAX_DEPTH passes catches the worst case (a
+     * long thin flow chain with the spawn at one end) without
+     * needing an explicit visited set. */
+    for (int pass = 0; pass < WORLD_MAX_DEPTH; ++pass) {
+        int repaired_this_pass = 0;
+        for (int ti = 0; ti < w->tile_count; ++ti) {
+            const goldberg_tile_t* t = goldberg_tile(w->grid, ti);
+            if (!t) continue;
+            const uint8_t* col = &w->blocks[(size_t)ti * WORLD_MAX_DEPTH];
+            for (int d = 0; d < WORLD_MAX_DEPTH; ++d) {
+                if (col[d] != (uint8_t)BLOCK_WATER) continue;
+                uint8_t s = world_water_get_state(w, ti, d);
+                /* Skip non-flow cells: state==0 ocean, sources,
+                 * falling water - none of these need origins. */
+                if (s == 0u) continue;
+                if (water_state_is_source(s)) continue;
+                if (water_state_is_falling(s)) continue;
+                if (water_state_level(s) <= 0) continue;
+                if (world_water_origin_count(w, ti, d) > 0) continue;
+
+                /* Look for an in-plane neighbour that's either a
+                 * spawn (state==0 OR SOURCE) or a flow cell that
+                 * already has its own origins (repaired in an
+                 * earlier pass). Same-depth only - the flow
+                 * graph travels horizontally; vertical
+                 * waterfalls are handled by the falling-flag
+                 * branch above. */
+                bool found = false;
+                for (int k = 0; k < t->num_neighbors && !found; ++k) {
+                    int nb = t->edge_neighbours[k];
+                    if (nb < 0) continue;
+                    if (w->blocks[(size_t)nb * WORLD_MAX_DEPTH + d]
+                        != (uint8_t)BLOCK_WATER) continue;
+                    uint8_t ns = world_water_get_state(w, nb, d);
+                    if (ns == 0u || water_state_is_source(ns)) {
+                        /* Spawn neighbour: record IT as our origin. */
+                        water_origin_ref_t r = {
+                            (uint32_t)nb, (uint8_t)d
+                        };
+                        world_water_origin_add(w, ti, d, r);
+                        found = true;
+                    } else if (world_water_origin_count(w, nb, d) > 0) {
+                        /* Flow neighbour with origins: inherit. */
+                        water_origin_ref_t srcs[WATER_ORIGIN_MAX];
+                        int n = world_water_origin_read(w, nb, d, srcs);
+                        for (int oi = 0; oi < n; ++oi) {
+                            world_water_origin_add(w, ti, d, srcs[oi]);
+                        }
+                        found = true;
+                    }
+                }
+                if (found) {
+                    ++repaired_this_pass;
+                    ++total_repaired;
+                }
+            }
+        }
+        if (repaired_this_pass == 0) break;
+    }
+    return total_repaired;
+}
+
 void world_water_origin_apply_entry(world_t* w, int tile,
                                      const water_origin_diff_entry_t* entry) {
     if (!w || !w->water || !entry) return;
@@ -1009,14 +1076,28 @@ static void try_propagate(world_t* w, int tile, int depth, int own_level,
                               water_state_pack(false, false, new_level));
         world_water_enqueue(w, nb, target_depth);
 
-        /* Propagate origin lineage. If we (the spreader) are a source,
-         * we ARE the origin - record ourselves on the new flow cell.
-         * Otherwise copy our origin list onto the new cell so the
-         * lineage chain back to the real source(s) stays intact. The
-         * origin_add path handles the WATER_ORIGIN_MAX cap (4th add =
-         * auto-promote to source) on its own. */
+        /* Propagate origin lineage. The spreader is a spawn point if
+         * it has the SOURCE flag explicitly OR if its state byte is
+         * still the worldgen sentinel (state==0). Per the user's
+         * "ocean = spawner, not distinguished" model, both cases are
+         * the same thing - record OURSELVES as the origin on the new
+         * flow cell.
+         *
+         * The original code only counted SOURCE-flagged spreaders,
+         * which left every flow cell created by worldgen ocean (the
+         * COMMON case - shoreline water spreading inland) with empty
+         * origins. Downstream effects: world_water_flow_direction
+         * returned false, the F5 overlay showed no arrows, the UV
+         * pan computed zero, and the player-current force was
+         * silently zero on the very flow blocks the user was
+         * looking at.
+         *
+         * Otherwise (we're a flow cell, propagating water further),
+         * copy OUR origin list onto the new cell so the lineage
+         * chain stays intact. The origin_add path enforces the
+         * WATER_ORIGIN_MAX cap and auto-promotes on the 4th add. */
         uint8_t own_state = world_water_get_state(w, tile, depth);
-        if (water_state_is_source(own_state)) {
+        if (water_state_is_source(own_state) || own_state == 0u) {
             water_origin_ref_t self = { (uint32_t)tile, (uint8_t)depth };
             world_water_origin_add(w, nb, target_depth, self);
         } else {

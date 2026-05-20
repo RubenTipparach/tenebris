@@ -74,6 +74,20 @@ static void room_alloc_worlds(server_t* s, server_room_t* room) {
          * a hashmap insert) but state first keeps the on-disk
          * loading order consistent with the in-memory write order. */
         saves_load_world_water_origins(w, room->code, s->cfg.seed);
+        /* Retroactive repair for flow cells that pre-date origin
+         * persistence (or were created by a pre-fix simulator that
+         * didn't record state==0 spreaders). BFS-style walk that
+         * synthesises an origin from any spawn-or-already-repaired
+         * neighbour, so the F5 overlay / UV pan / current force
+         * work on legacy worlds without forcing the user to dig +
+         * re-place every flow block. */
+        int repaired = world_water_repair_missing_origins(w);
+        if (repaired > 0) {
+            printf("[server] room '%s' body=%u: repaired %d legacy flow cell(s) "
+                   "with synthetic origins\n",
+                   room->code[0] ? room->code : "(public)",
+                   (unsigned)w->body->id, repaired);
+        }
         total_tiles_loaded += loaded;
         room->worlds[room->world_count++] = w;
     }
@@ -115,6 +129,7 @@ static world_t* room_ensure_world_for_body(server_t* s, server_room_t* room,
     saves_load_world(w, room->code, s->cfg.seed);
     saves_load_world_water(w, room->code, s->cfg.seed);
     saves_load_world_water_origins(w, room->code, s->cfg.seed);
+    world_water_repair_missing_origins(w);
     room->worlds[room->world_count++] = w;
     printf("[server] room '%s': lazy-cloned body %u\n",
            room->code[0] ? room->code : "(public)", body_id);

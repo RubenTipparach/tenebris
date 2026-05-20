@@ -305,6 +305,25 @@ void world_water_origin_visit_all(const struct world_s* w,
                                    world_water_origin_visit_fn cb,
                                    void* user);
 
+/* One-shot retroactive origin assignment for legacy flow cells whose
+ * state byte says "flowing" (level > 0, no SOURCE flag, not falling)
+ * but whose origin hashmap entry is empty. This was the pre-fix
+ * simulator path: state persisted to .water files but origins lived
+ * in memory only, so on every server restart every flow cell looked
+ * like a flow cell to the renderer but world_water_flow_direction
+ * came back false.
+ *
+ * Walks all water cells, finds those missing origins, and assigns
+ * any neighbouring SOURCE-flagged or state==0 (spawn / worldgen)
+ * cell as the synthetic origin. Multi-pass: cells with no direct
+ * spawn neighbour pick up an origin from a sibling flow cell that
+ * was repaired in an earlier pass, BFS-style. Bounded by total
+ * water-cell count.
+ *
+ * Safe to call repeatedly - cells with non-empty origins are
+ * skipped. Returns the count of cells repaired this call. */
+int world_water_repair_missing_origins(struct world_s* w);
+
 /* Apply a single origin entry on the client side. Wraps origin_add
  * but takes the full origin list at once - clears any prior origins
  * on (tile, depth) so the client's view exactly matches the server's

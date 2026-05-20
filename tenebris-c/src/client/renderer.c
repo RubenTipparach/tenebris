@@ -3346,7 +3346,7 @@ static void draw_spawn_x(const goldberg_tile_t* t, double r_cap) {
     float a1x = (ux + vx) * L, a1y = (uy + vy) * L, a1z = (uz + vz) * L;
     float a2x = (ux - vx) * L, a2y = (uy - vy) * L, a2z = (uz - vz) * L;
 
-    sgl_c4f(0.2f, 1.0f, 1.0f, 1.0f);  /* bright cyan X for spawn */
+    sgl_c4f(1.0f, 0.2f, 1.0f, 1.0f);  /* bright magenta X for spawn (matches arrow colour) */
     sgl_v3f(cx - a1x, cy - a1y, cz - a1z);
     sgl_v3f(cx + a1x, cy + a1y, cz + a1z);
     sgl_v3f(cx - a2x, cy - a2y, cz - a2z);
