@@ -942,6 +942,10 @@ static ui_config_t S_UI = {
         [UI_SPRITE_SLOT_HOVER]      = {  18, 32, 18, 18,  3, 3, 3, 3 },
         [UI_SPRITE_SLOT_SELECTED]   = {  36, 32, 18, 18,  3, 3, 3, 3 },
         [UI_SPRITE_SLOT_DISABLED]   = {  54, 32, 18, 18,  3, 3, 3, 3 },
+        [UI_SPRITE_SCROLLBAR_TRACK]   = {   0, 64,  8, 16,  0, 0, 4, 4 },
+        [UI_SPRITE_SCROLLBAR_THUMB]   = {   8, 64,  8, 16,  0, 0, 4, 4 },
+        [UI_SPRITE_SCROLL_ARROW_UP]   = {  16, 64,  8,  8,  0, 0, 0, 0 },
+        [UI_SPRITE_SCROLL_ARROW_DOWN] = {  24, 64,  8,  8,  0, 0, 0, 0 },
     },
 };
 
@@ -962,6 +966,10 @@ static int ui_sprite_section_index(const char* key) {
     if (strcmp(key, "slot_hover"     ) == 0) return UI_SPRITE_SLOT_HOVER;
     if (strcmp(key, "slot_selected"  ) == 0) return UI_SPRITE_SLOT_SELECTED;
     if (strcmp(key, "slot_disabled"  ) == 0) return UI_SPRITE_SLOT_DISABLED;
+    if (strcmp(key, "scrollbar_track"  ) == 0) return UI_SPRITE_SCROLLBAR_TRACK;
+    if (strcmp(key, "scrollbar_thumb"  ) == 0) return UI_SPRITE_SCROLLBAR_THUMB;
+    if (strcmp(key, "scroll_arrow_up"  ) == 0) return UI_SPRITE_SCROLL_ARROW_UP;
+    if (strcmp(key, "scroll_arrow_down") == 0) return UI_SPRITE_SCROLL_ARROW_DOWN;
     return -1;
 }
 

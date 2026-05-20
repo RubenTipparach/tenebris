@@ -51,17 +51,21 @@ ATLAS_H = S.ATLAS_H
 
 SPRITES = {
     # name -> (x, y, w, h, left, right, top, bottom)
-    "panel":           (  0,  0, 32, 32,  8, 8, 8, 8),
-    "button_normal":   ( 32,  0, 24, 16,  4, 4, 4, 4),
-    "button_hover":    ( 56,  0, 24, 16,  4, 4, 4, 4),
-    "button_pressed":  ( 80,  0, 24, 16,  4, 4, 4, 4),
-    "button_disabled": (104,  0, 24, 16,  4, 4, 4, 4),
-    "title_bar":       ( 32, 16, 24, 16,  4, 4, 4, 4),
-    "close_x":         ( 56, 16, 12, 12,  0, 0, 0, 0),
-    "slot_normal":     (  0, 32, 18, 18,  3, 3, 3, 3),
-    "slot_hover":      ( 18, 32, 18, 18,  3, 3, 3, 3),
-    "slot_selected":   ( 36, 32, 18, 18,  3, 3, 3, 3),
-    "slot_disabled":   ( 54, 32, 18, 18,  3, 3, 3, 3),
+    "panel":             (  0,  0, 32, 32,  8, 8, 8, 8),
+    "button_normal":     ( 32,  0, 24, 16,  4, 4, 4, 4),
+    "button_hover":      ( 56,  0, 24, 16,  4, 4, 4, 4),
+    "button_pressed":    ( 80,  0, 24, 16,  4, 4, 4, 4),
+    "button_disabled":   (104,  0, 24, 16,  4, 4, 4, 4),
+    "title_bar":         ( 32, 16, 24, 16,  4, 4, 4, 4),
+    "close_x":           ( 56, 16, 12, 12,  0, 0, 0, 0),
+    "slot_normal":       (  0, 32, 18, 18,  3, 3, 3, 3),
+    "slot_hover":        ( 18, 32, 18, 18,  3, 3, 3, 3),
+    "slot_selected":     ( 36, 32, 18, 18,  3, 3, 3, 3),
+    "slot_disabled":     ( 54, 32, 18, 18,  3, 3, 3, 3),
+    "scrollbar_track":   (  0, 64,  8, 16,  0, 0, 4, 4),
+    "scrollbar_thumb":   (  8, 64,  8, 16,  0, 0, 4, 4),
+    "scroll_arrow_up":   ( 16, 64,  8,  8,  0, 0, 0, 0),
+    "scroll_arrow_down": ( 24, 64,  8,  8,  0, 0, 0, 0),
 }
 
 
@@ -81,6 +85,10 @@ def build_atlas():
     S.blit(atlas,  18, 32, S.make_slot(18, 18, frame_idx=5, accent_idx=6))
     S.blit(atlas,  36, 32, S.make_slot(18, 18, frame_idx=5, accent_idx=9))
     S.blit(atlas,  54, 32, S.make_slot(18, 18, frame_idx=11, inner_dark=11, inner_mid=12))
+    S.blit(atlas,   0, 64, S.make_scrollbar_track(8, 16))
+    S.blit(atlas,   8, 64, S.make_scrollbar_thumb(8, 16))
+    S.blit(atlas,  16, 64, S.make_arrow(8, 8, "up"))
+    S.blit(atlas,  24, 64, S.make_arrow(8, 8, "down"))
     return atlas
 
 
@@ -394,12 +402,54 @@ def draw_tabs(canvas, atlas, active_idx):
         draw_button(canvas, atlas, x, TAB_Y, TAB_W, TAB_H, label, state=state)
 
 
+SCROLLBAR_W = 16
+SCROLLBAR_GAP = 6
+
+
+def draw_scrollbar(canvas, atlas, x, y, w, h,
+                   thumb_frac=1.0, thumb_pos=0.0):
+    """Vertical scrollbar at (x, y, w, h). The scrollbar reserves
+    `w`-tall square buttons at the top and bottom for the up/down
+    chevrons; the track and thumb fill the band between them.
+
+    thumb_frac (0..1) is the fraction of the underlying content that's
+    currently visible - a smaller value means more rows are scrolled
+    out of view and the thumb is shorter. thumb_pos (0..1) is how far
+    down we've scrolled, 0 = at the top, 1 = at the bottom. Both args
+    are pure visualisation - the runtime will compute them from the
+    inventory model."""
+    btn_h = w
+    # Up arrow (top button).
+    draw_nine_slice(canvas, atlas, "scroll_arrow_up", x, y, w, btn_h)
+    # Down arrow (bottom button).
+    draw_nine_slice(canvas, atlas, "scroll_arrow_down",
+                    x, y + h - btn_h, w, btn_h)
+    # Track between the arrow buttons.
+    track_y = y + btn_h
+    track_h = h - 2 * btn_h
+    draw_nine_slice(canvas, atlas, "scrollbar_track", x, track_y, w, track_h)
+    # Thumb. Clamp the height so a tiny inventory still has a grabbable
+    # handle, and clamp the position so the thumb can't drift past the
+    # ends of the track.
+    thumb_frac = max(0.0, min(1.0, thumb_frac))
+    thumb_pos  = max(0.0, min(1.0, thumb_pos))
+    thumb_h    = max(int(track_h * thumb_frac), 20)
+    thumb_h    = min(thumb_h, track_h)
+    max_offset = max(0, track_h - thumb_h)
+    thumb_y    = track_y + int(thumb_pos * max_offset)
+    draw_nine_slice(canvas, atlas, "scrollbar_thumb", x, thumb_y, w, thumb_h)
+
+
 def draw_compact_inventory(canvas, atlas, x, y, w, h, hover_idx=None,
                            selected_idx=None):
     """Inventory + hotbar block sized to fit inside the left half of a
     split screen (crafting / equipment). 4-col x 6-row grid + 9-slot
     hotbar below, both made of the same SLOT_PX-sized slots so the
     user reads them as one continuous bag.
+
+    The compact grid shows only the first 24 of the bag's 50 main slots,
+    so a vertical scrollbar sits flush to the right edge of the grid -
+    same atlas, nine-sliced to whatever height the grid happens to be.
 
     Returns the list of slot rects (x, y, w, h) so the caller can wire
     up tooltip / drag-source affordances later. Caller-side state
@@ -408,7 +458,11 @@ def draw_compact_inventory(canvas, atlas, x, y, w, h, hover_idx=None,
     gap = 6
     cols, rows = 4, 6
     grid_w = cols * SLOT_PX + (cols - 1) * gap
-    grid_x = x + (w - grid_w) // 2
+    grid_h = rows * SLOT_PX + (rows - 1) * gap
+    # Centre the (grid + scrollbar) pair as one block so the scrollbar
+    # always sits flush against the grid, regardless of pane width.
+    total_w = grid_w + SCROLLBAR_GAP + SCROLLBAR_W
+    grid_x = x + (w - total_w) // 2
     grid_y = y + 20
     # Representative item content - same shapes as the full-screen
     # inventory above so the player reads "this is the same bag".
@@ -437,8 +491,17 @@ def draw_compact_inventory(canvas, atlas, x, y, w, h, hover_idx=None,
             draw_slot(canvas, atlas, sx, sy, state=state, item=item, count=count)
             rects.append((sx, sy, SLOT_PX, SLOT_PX))
 
+    # Scrollbar flush to the right edge of the grid. Same height as the
+    # grid itself so the thumb's positions line up with grid rows. With
+    # 24 visible / 50 total main slots, the thumb covers ~48 % of the
+    # track height; in this mockup the user is at the top of the bag.
+    sb_x = grid_x + grid_w + SCROLLBAR_GAP
+    draw_scrollbar(canvas, atlas, sb_x, grid_y, SCROLLBAR_W, grid_h,
+                   thumb_frac=24.0 / 50.0, thumb_pos=0.0)
+
     # Hotbar below, same slot size, gap matches the grid so the eye
-    # reads them as one continuous bag of slots.
+    # reads them as one continuous bag of slots. Centred under the
+    # (grid + scrollbar) block so the alignment reads as deliberate.
     hb_y = grid_y + rows * (SLOT_PX + gap) + 12
     hb_cols = 9
     hb_w = hb_cols * SLOT_PX + (hb_cols - 1) * gap

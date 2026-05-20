@@ -60,3 +60,19 @@ ui:
   slot_disabled:
     rect: [54, 32, 18, 18]
     nine_slice: [3, 3, 3, 3]
+
+  scrollbar_track:
+    rect: [0, 64, 8, 16]
+    nine_slice: [0, 0, 4, 4]
+
+  scrollbar_thumb:
+    rect: [8, 64, 8, 16]
+    nine_slice: [0, 0, 4, 4]
+
+  scroll_arrow_up:
+    rect: [16, 64, 8, 8]
+    nine_slice: [0, 0, 0, 0]
+
+  scroll_arrow_down:
+    rect: [24, 64, 8, 8]
+    nine_slice: [0, 0, 0, 0]

@@ -8,7 +8,7 @@ sprite rects + nine-slice margins are listed in assets/config/ui.yaml so
 a different theme is just "drop in a different PNG with the same layout"
 (or, if you change the layout, update the YAML to match).
 
-Layout (128 x 64 atlas):
+Layout (128 x 80 atlas):
 
     ( 0,  0)-( 32,  32)  panel               nine-slice (8, 8, 8, 8)
     (32,  0)-( 56,  16)  button_normal       nine-slice (4, 4, 4, 4)
@@ -22,6 +22,11 @@ Layout (128 x 64 atlas):
     (18, 32)-( 36,  50)  slot_hover          nine-slice (3, 3, 3, 3)
     (36, 32)-( 54,  50)  slot_selected       nine-slice (3, 3, 3, 3)
     (54, 32)-( 72,  50)  slot_disabled       nine-slice (3, 3, 3, 3)
+
+    ( 0, 64)-(  8,  80)  scrollbar_track     nine-slice (0, 0, 4, 4)
+    ( 8, 64)-( 16,  80)  scrollbar_thumb     nine-slice (0, 0, 4, 4)
+    (16, 64)-( 24,  72)  scroll_arrow_up     solid sprite (no slice)
+    (24, 64)-( 32,  72)  scroll_arrow_down   solid sprite (no slice)
 
 Palette is a warm "wood + bronze + parchment" RPG-survival theme. Every
 sprite is built from the same ramp so a future re-tint to a different
@@ -39,7 +44,7 @@ import zlib
 # Atlas dimensions and the sprite rects above must match assets/config/ui.yaml.
 
 ATLAS_W = 128
-ATLAS_H = 64
+ATLAS_H = 80
 
 # RGBA palette. Index 0 is transparent so sprites can have non-rectangular
 # silhouettes (close X glyph) without a separate alpha channel logic path.
@@ -212,6 +217,72 @@ def make_title_bar(w, h):
     return c
 
 
+def make_scrollbar_track(w, h):
+    """Vertical scrollbar groove. A dark recessed fill bracketed by the
+    panel outline so the thumb (which uses the button palette) reads
+    as raised over it. nine-slice top=4 / bottom=4 preserves the
+    rounded caps; the middle stretches to any track height."""
+    c = make_canvas(w, h)
+    fill_rect(c, 0, 0, w, h, 1)                  # outer frame
+    fill_rect(c, 1, 1, w - 2, h - 2, 7)          # dark groove fill
+    # Subtle inner shadow on the left column so the groove reads as
+    # recessed under top-left lighting. Survives the nine-slice
+    # stretch because it spans every row.
+    for j in range(1, h - 1):
+        put_pixel(c, 1, j, 2)
+    return c
+
+
+def make_scrollbar_thumb(w, h):
+    """Vertical scrollbar thumb. Same warm bronze palette as a button
+    so it reads as a grabbable handle over the dark track. Top + bottom
+    bevels are preserved by the nine-slice; the middle band stretches
+    to any thumb height."""
+    c = make_canvas(w, h)
+    fill_rect(c, 0, 0, w, h, 1)                  # frame
+    fill_rect(c, 1, 1, w - 2, h - 2, 4)          # body
+    # Top bevel highlight + bottom bevel shadow.
+    for i in range(1, w - 1):
+        put_pixel(c, i, 1, 6)
+        put_pixel(c, i, h - 2, 2)
+    # Side bevels - bronze hi on the left, dark wood on the right.
+    for j in range(2, h - 2):
+        put_pixel(c, 1, j, 6)
+        put_pixel(c, w - 2, j, 2)
+    # Single horizontal grip line in the centre of the stretchable
+    # middle band. Stretches with the thumb but stays roughly central,
+    # so the affordance reads at any thumb height.
+    if h >= 8:
+        mid = h // 2
+        for i in range(2, w - 2):
+            put_pixel(c, i, mid, 2)
+    return c
+
+
+def make_arrow(w, h, direction):
+    """Small chevron-button glyph - 8x8 native. direction is 'up' or
+    'down'. Drawn as a bronze pyramid on a light-wood button body so
+    it reads at 1x at any UI scale. Non-stretchable (nine-slice all
+    zeros) so the renderer blits 1:1."""
+    c = make_canvas(w, h)
+    fill_rect(c, 0, 0, w, h, 1)                  # frame
+    fill_rect(c, 1, 1, w - 2, h - 2, 4)          # body
+    # Bottom bevel shadow so the button has dimensionality.
+    for i in range(1, w - 1):
+        put_pixel(c, i, h - 2, 2)
+
+    # Pyramid 3 rows tall, widening from 2 px to 6 px. Centred on cx.
+    cx = w // 2
+    rows = [(0, 1), (1, 2), (2, 3)]  # (offset, half-width)
+    if direction == "down":
+        rows = [(0, 3), (1, 2), (2, 1)]
+    base_y = 2
+    for offset, half in rows:
+        for dx in range(-half, half):
+            put_pixel(c, cx + dx, base_y + offset, 6)
+    return c
+
+
 def make_close_x(w, h):
     """Stylised X glyph as a standalone sprite. Drawn diagonally on a
     transparent background; the caller paints the underlying button
@@ -295,6 +366,15 @@ def main():
     blit(atlas,  36, 32, make_slot(18, 18, frame_idx=5, accent_idx=9))   # selected (gold)
     blit(atlas,  54, 32, make_slot(18, 18, frame_idx=11,                 # disabled
                                    inner_dark=11, inner_mid=12))
+
+    # Row 3: scrollbar pieces. Track + thumb live as 8x16 sprites with
+    # top/bottom nine-slice margins so the renderer can stretch them to
+    # any inventory pane height; the two arrow buttons are non-
+    # stretchable 8x8 chevrons.
+    blit(atlas,   0, 64, make_scrollbar_track(8, 16))
+    blit(atlas,   8, 64, make_scrollbar_thumb(8, 16))
+    blit(atlas,  16, 64, make_arrow(8, 8, "up"))
+    blit(atlas,  24, 64, make_arrow(8, 8, "down"))
 
     here = os.path.dirname(os.path.abspath(__file__))
     out = os.path.normpath(os.path.join(here, "..", "assets", "textures",

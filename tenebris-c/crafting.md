@@ -54,6 +54,15 @@ SWORD") use the greyed-out button sprite and stay un-clickable until
 you have the higher-tier station. Each entry in `recipes.yaml`
 becomes one row in this list.
 
+The compact grid shows only the first 24 of the bag's 50 main slots,
+so a vertical scrollbar sits flush against its right edge. Track +
+thumb are nine-sliced so they fit any pane height; the up / down
+chevron buttons sit at native size on top and bottom. The thumb
+height is the visible fraction of the bag (24 / 50 = 48 % in the
+mockup) and its position is the scroll offset (top in the mockup).
+Mouse wheel scrolls anywhere over the inventory pane; click + drag
+the thumb works too.
+
 ### Equipment
 
 ![Equipment mockup](docs/mockups/equipment.png)
