@@ -2698,6 +2698,9 @@ static void frame(void) {
      * screen-space refraction and manual depth-discard. */
     profiler_begin("draw-water");
     renderer_draw_water(view, proj, cam_world);
+    /* F5 toggle: yellow arrows on every water cell with non-zero
+     * flow direction. Runs after the cap so arrows sit on top. */
+    renderer_draw_water_flow_debug(view, proj);
     profiler_end("draw-water");
 
     /* UI overlays go on the swapchain on top of the water. */
@@ -2906,6 +2909,15 @@ static void event(const sapp_event* e) {
          * is invisible to non-debug players, and the user explicitly
          * asked for F4 to always work for this. */
         print_block_snapshot();
+        return;
+    }
+    if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_F5) {
+        /* Water-flow debug overlay: yellow arrow on every cell whose
+         * world_water_flow_direction returns a non-zero vector. Use
+         * this to verify the simulator computed origins for the cells
+         * you'd expect to flow before assuming the renderer is the
+         * culprit for missing UV pan. */
+        renderer_set_flow_debug(!renderer_flow_debug());
         return;
     }
     if (G_debug_ui_visible) {

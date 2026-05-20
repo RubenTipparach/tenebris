@@ -8,6 +8,7 @@
 #include "core/goldberg.h"
 #include "core/planet_gen.h"
 #include "core/world_light.h"
+#include "core/world_water.h"
 
 #include "sokol_gfx.h"
 #include "sokol_app.h"
@@ -305,6 +306,15 @@ static bool R_WATER_VISIBLE = true;
  * off only skips the atmosphere overlay so the space backdrop
  * stays visible. */
 static bool R_SKYBOX_VISIBLE = true;
+
+/* Water-flow debug overlay. F5 toggles. When true, after the water
+ * cap draws each frame we iterate every water cell in the active body
+ * and draw a coloured 3D arrow from the cell centre along the cell's
+ * flow direction. Cells with no flow (worldgen ocean, sources, sleeping
+ * cells) get nothing - the absence of an arrow IS the diagnostic. Lets
+ * the operator see at a glance whether the simulator computed origins
+ * for the cell they're staring at. */
+static bool R_FLOW_DEBUG = false;
 
 /* Perf mode (mobile / low-power). When true the renderer:
  *   - draws the water cap with the stripped water_mobile shader: no
@@ -3132,6 +3142,122 @@ void renderer_draw_face_outline(mat4_t view, mat4_t proj,
     sgl_end();
 }
 
+/* F5 water-flow debug overlay. Iterates every water cell in the active
+ * body's world, asks world_water_flow_direction for the simulator-
+ * computed direction, and draws a coloured arrow lying flat on the
+ * cell's top cap pointing along that direction. Cells with no flow
+ * (worldgen ocean, sources, sleeping cells) return false and we draw
+ * nothing - the absence of an arrow IS the diagnostic. Use this to
+ * verify that the simulator has actually populated origins for a cell
+ * you'd expect to flow before assuming the renderer is the culprit.
+ *
+ * Cost: walks tile_count * WORLD_MAX_DEPTH cells. Most are air; the
+ * BLOCK_WATER check + the origin-list lookup short-circuit quickly.
+ * Only flips on under F5 so the cost only lands when explicitly
+ * requested. */
+void renderer_draw_water_flow_debug(mat4_t view, mat4_t proj) {
+    if (!R_FLOW_DEBUG) return;
+    if (R.active_body_idx < 0) return;
+    chunked_body_t* body = &R.bodies[R.active_body_idx];
+    const world_t* w = body->world;
+    if (!w || !w->grid) return;
+
+    ensure_outline_pip();
+
+    sgl_defaults();
+    sgl_matrix_mode_projection();
+    sgl_load_matrix(proj.m);
+    sgl_matrix_mode_modelview();
+    sgl_load_matrix(view.m);
+    sgl_translate((float)w->body->pos_x,
+                  (float)w->body->pos_y,
+                  (float)w->body->pos_z);
+    sgl_load_pipeline(G_OUTLINE_PIP);
+
+    sgl_begin_lines();
+    /* Bright yellow against blue water - reads clearly through the
+     * translucent cap. */
+    sgl_c4f(1.0f, 0.95f, 0.1f, 1.0f);
+
+    const float arrow_len_m  = 0.45f;   /* shaft length (m) */
+    const float head_len_m   = 0.18f;   /* arrowhead barb length */
+    const float head_angle   = 2.6f;    /* radians, ~150 deg from shaft */
+    const float lift_m       = 0.08f;   /* push above cap to avoid Z-fight */
+
+    const float cs = cosf(head_angle);
+    const float sn = sinf(head_angle);
+
+    for (int ti = 0; ti < w->tile_count; ++ti) {
+        const goldberg_tile_t* t = goldberg_tile(w->grid, ti);
+        if (!t) continue;
+        const uint8_t* col = &w->blocks[(size_t)ti * WORLD_MAX_DEPTH];
+        for (int d = 0; d < WORLD_MAX_DEPTH; ++d) {
+            if (col[d] != (uint8_t)BLOCK_WATER) continue;
+            float flow_world[3];
+            if (!world_water_flow_direction(w, ti, d, flow_world)) continue;
+
+            /* Cap surface position: tile centre direction * radius at
+             * top-of-cell, lifted slightly along radial so the arrow
+             * floats just above the water surface. */
+            double r_cap = world_depth_to_radius_m(w, d + 1) + (double)lift_m;
+            float bx = (float)(t->center.x * r_cap);
+            float by = (float)(t->center.y * r_cap);
+            float bz = (float)(t->center.z * r_cap);
+
+            /* Project flow onto the tangent plane of t->center (already
+             * unit), then re-normalize for stable length. flow_world is
+             * a unit vector pointing from the origin centroid toward
+             * the cell, so post-projection it stays close to unit. */
+            float nx = (float)t->center.x;
+            float ny = (float)t->center.y;
+            float nz = (float)t->center.z;
+            float dn = flow_world[0]*nx + flow_world[1]*ny + flow_world[2]*nz;
+            float fx = flow_world[0] - nx * dn;
+            float fy = flow_world[1] - ny * dn;
+            float fz = flow_world[2] - nz * dn;
+            float fl = sqrtf(fx*fx + fy*fy + fz*fz);
+            if (fl < 1e-4f) continue;
+            fx /= fl; fy /= fl; fz /= fl;
+
+            /* Side vector for the arrowhead barbs - cross flow with
+             * radial. */
+            float sx = fy*nz - fz*ny;
+            float sy = fz*nx - fx*nz;
+            float sz = fx*ny - fy*nx;
+            float sl = sqrtf(sx*sx + sy*sy + sz*sz);
+            if (sl > 1e-4f) { sx /= sl; sy /= sl; sz /= sl; }
+
+            float tipx = bx + fx * arrow_len_m;
+            float tipy = by + fy * arrow_len_m;
+            float tipz = bz + fz * arrow_len_m;
+
+            /* Shaft. */
+            sgl_v3f(bx, by, bz);
+            sgl_v3f(tipx, tipy, tipz);
+
+            /* Two arrowhead barbs swept back from the tip. Each barb
+             * vector = -flow*cos(head_angle) + side*sin(head_angle),
+             * mirrored across the shaft for the second barb. */
+            float bax = -fx * cs + sx * sn;
+            float bay = -fy * cs + sy * sn;
+            float baz = -fz * cs + sz * sn;
+            float bbx = -fx * cs - sx * sn;
+            float bby = -fy * cs - sy * sn;
+            float bbz = -fz * cs - sz * sn;
+
+            sgl_v3f(tipx, tipy, tipz);
+            sgl_v3f(tipx + bax * head_len_m,
+                    tipy + bay * head_len_m,
+                    tipz + baz * head_len_m);
+            sgl_v3f(tipx, tipy, tipz);
+            sgl_v3f(tipx + bbx * head_len_m,
+                    tipy + bby * head_len_m,
+                    tipz + bbz * head_len_m);
+        }
+    }
+    sgl_end();
+}
+
 void renderer_draw_water(mat4_t view, mat4_t proj, vec3_t camera_world) {
     if (!R_TERRAIN_VISIBLE) return;
     if (!R_WATER_VISIBLE)   return;
@@ -3198,6 +3324,8 @@ void renderer_set_water_visible(bool v)   { R_WATER_VISIBLE = v;   }
 bool renderer_water_visible(void)          { return R_WATER_VISIBLE; }
 void renderer_set_skybox_visible(bool v)  { R_SKYBOX_VISIBLE = v;  }
 bool renderer_skybox_visible(void)         { return R_SKYBOX_VISIBLE; }
+void renderer_set_flow_debug(bool v)      { R_FLOW_DEBUG = v;     }
+bool renderer_flow_debug(void)             { return R_FLOW_DEBUG; }
 
 unsigned int renderer_atlas_view_id(void)    { return R.atlas_view.id; }
 unsigned int renderer_atlas_sampler_id(void) { return R.atlas_smp.id; }

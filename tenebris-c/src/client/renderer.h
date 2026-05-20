@@ -170,6 +170,15 @@ void renderer_draw_face_outline(mat4_t view, mat4_t proj,
                                   int nbr_tile, int nbr_depth,
                                   float r, float g, float b, float a);
 
+/* F5 water-flow debug overlay. When the flow-debug flag is on, draws a
+ * yellow arrow on every water cell whose world_water_flow_direction
+ * returns non-zero (i.e., has origins). Cells with no flow get nothing.
+ * No-op when the flag is off. Call from the main draw loop after the
+ * water cap pass so the arrows render on top of the surface. */
+void renderer_draw_water_flow_debug(mat4_t view, mat4_t proj);
+void renderer_set_flow_debug(bool v);
+bool renderer_flow_debug(void);
+
 int  renderer_moon_count(void);
 void renderer_end_frame(void);
 

@@ -478,6 +478,49 @@ static void emit_side_quad(hex_mesh_t* out,
     out->indices[out->index_count++] = base + 3;
 }
 
+/* Overwrite the UV channel of a span of just-emitted water cap vertices
+ * with the cell's flow direction projected into the tile's local tangent
+ * plane. The water shader reads the UV as a per-vertex flow vector and
+ * pans the surface noise along it, so the visible pattern streams away
+ * from the source.
+ *
+ * The projection uses the SAME arbitrary tangent basis the fragment
+ * shader builds (any non-parallel axis crossed twice with the face
+ * normal), so the 2D coords we bake here match the basis the shader
+ * reconstructs in world space. Tile center IS the cap face normal.
+ *
+ * Cells with no origin entry (worldgen-spawned ocean, player-placed
+ * sources, sleeping cells) cause world_water_flow_direction to return
+ * false; in that case we bake (0, 0) and the shader's flow_pan term
+ * collapses to zero. This is the SPAWN-vs-FLOW distinction the user
+ * spec calls out: spawn blocks stay static, flow blocks pan. */
+static void bake_water_flow_uv(hex_mesh_t* out,
+                               const goldberg_tile_t* t,
+                               const world_t* w,
+                               int tile_idx, int depth,
+                               uint32_t v_begin, uint32_t v_end) {
+    float flow_world[3];
+    float fu = 0.0f, fv = 0.0f;
+    if (world_water_flow_direction(w, tile_idx, depth, flow_world)) {
+        dvec3_t n_d = t->center;
+        dvec3_t tu = (fabs(n_d.x) > 0.9)
+                     ? dvec3_make(0, 1, 0)
+                     : dvec3_make(1, 0, 0);
+        double dot_un = tu.x * n_d.x + tu.y * n_d.y + tu.z * n_d.z;
+        tu = dvec3_sub(tu, dvec3_scale(n_d, dot_un));
+        tu = dvec3_normalize(tu);
+        dvec3_t tv = dvec3_cross(n_d, tu);
+        fu = (float)(flow_world[0] * tu.x + flow_world[1] * tu.y
+                     + flow_world[2] * tu.z);
+        fv = (float)(flow_world[0] * tv.x + flow_world[1] * tv.y
+                     + flow_world[2] * tv.z);
+    }
+    for (uint32_t vi = v_begin; vi < v_end; ++vi) {
+        out->vertices[vi].uv[0] = fu;
+        out->vertices[vi].uv[1] = fv;
+    }
+}
+
 /* ----------------------------------------------------------------------- */
 /* Water cap — one hexagon/pentagon drawn at sea level above tiles
  * whose voxel column actually has a water cell at sea level. Tile
@@ -538,21 +581,22 @@ void hex_mesh_build_water(hex_mesh_t* out, const world_t* w, int tile_idx) {
     emit_cap(out, t, w, tile_idx, SEA_LEVEL_DEPTH - 1, BLOCK_WATER, true, 1.0f,
              -depth_off + height_off, true /* bake sky/torch lighting */,
              1.0f /* the water cap IS water */);
-    /* Ocean cells are spawn blocks - they don't flow, they're the source
-     * the simulator pulls water from. The water shader reads the vertex
-     * UV channel as a per-cell flow direction and pans the surface noise
-     * along it; emit_cap writes atlas-tile UVs (different per corner
-     * around the hex) which the shader would misinterpret as a radially
-     * varying flow vector, causing the noise pattern to visibly stretch
-     * outward from each tile centre. Zero the UVs here so the shader's
-     * flow_pan term collapses to zero and the ocean reads as static.
-     * Flow UVs are only written by hex_mesh_build_water_voxels for cells
-     * that actually have origin entries (i.e. user-placed water that
-     * spread away from a source). */
-    for (uint32_t vi = v_before; vi < out->vertex_count; ++vi) {
-        out->vertices[vi].uv[0] = 0.0f;
-        out->vertices[vi].uv[1] = 0.0f;
-    }
+    /* emit_cap writes per-vertex atlas-tile UVs (uc/vc centre + cos/sin
+     * displaced corners around the hex), but the water shader reads the
+     * UV channel as a per-cell flow direction. Without overwriting, the
+     * shader reconstructs a radially varying "flow vector" across each
+     * tile centre and the noise pattern visibly stretches outward -
+     * the wrong-looking effect the user spec calls out.
+     *
+     * Bake the cell's actual flow direction here. Worldgen-spawned
+     * ocean cells have no origins, so flow_direction returns false and
+     * we write (0, 0) - the cap stays static, matching the "spawn
+     * blocks don't flow" rule. Cells the simulator marks as flowing
+     * (an ocean cap cell next to a player obstacle, water that flowed
+     * off a hill and landed at sea level) get a real direction baked
+     * and pan correctly. */
+    bake_water_flow_uv(out, t, w, tile_idx, SEA_LEVEL_DEPTH - 1,
+                       v_before, (uint32_t)out->vertex_count);
 }
 
 /* ----------------------------------------------------------------------- */
@@ -712,40 +756,8 @@ void hex_mesh_build_water_voxels(hex_mesh_t* out, const world_t* w, int tile_idx
             emit_cap(out, t, w, tile_idx, d, BLOCK_WATER, /*is_top=*/true,
                      /*width=*/1.0f, /*r_offset_m=*/cap_offset,
                      /*bake_lighting=*/true, /*wet=*/1.0f);
-            /* Bake the flow direction into the UV channel of every
-             * vertex emit_cap just wrote. The water shader reads the
-             * UV as a per-vertex flow vector (tile-local 2D) and pans
-             * the noise sample along it, so the surface visibly
-             * streams away from the source. Source / sleeping cells
-             * have no origin entry -> flow_dir returns (0, 0, 0) and
-             * we write (0, 0) in UV, leaving the cell static. */
-            float flow_world[3];
-            float fu = 0.0f, fv = 0.0f;
-            if (world_water_flow_direction(w, tile_idx, d, flow_world)) {
-                /* Project onto the tile's tangent plane using the
-                 * same arbitrary basis the fragment shader builds
-                 * (any non-parallel axis crossed twice). The shader
-                 * picks its tangent basis from the face normal alone
-                 * and the same recipe here, so the 2D coords we bake
-                 * match the basis the shader reconstructs in world
-                 * space. Tile center IS the cap face normal. */
-                dvec3_t n_d = t->center;
-                dvec3_t tu = (fabs(n_d.x) > 0.9)
-                             ? dvec3_make(0, 1, 0)
-                             : dvec3_make(1, 0, 0);
-                double dot_un = tu.x * n_d.x + tu.y * n_d.y + tu.z * n_d.z;
-                tu = dvec3_sub(tu, dvec3_scale(n_d, dot_un));
-                tu = dvec3_normalize(tu);
-                dvec3_t tv = dvec3_cross(n_d, tu);
-                fu = (float)(flow_world[0] * tu.x + flow_world[1] * tu.y
-                             + flow_world[2] * tu.z);
-                fv = (float)(flow_world[0] * tv.x + flow_world[1] * tv.y
-                             + flow_world[2] * tv.z);
-            }
-            for (uint32_t vi = v_before; vi < out->vertex_count; ++vi) {
-                out->vertices[vi].uv[0] = fu;
-                out->vertices[vi].uv[1] = fv;
-            }
+            bake_water_flow_uv(out, t, w, tile_idx, d,
+                               v_before, (uint32_t)out->vertex_count);
         }
 
         /* ---- Bottom cap.
