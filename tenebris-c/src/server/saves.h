@@ -13,14 +13,17 @@
  * Layout under saves_dir (default /data/saves on the Fly mount,
  * ./saves locally):
  *
- *   world-<seed>/
+ *   rooms/<room>/world-<seed>/
  *     body-<id>/
  *       <tile-id>.col     128 raw bytes — the tile's full block column.
  *                         Overlaid onto the procgen baseline at boot.
- *   players/
+ *   rooms/<room>/players/
  *     <name>.dat          binary blob: { body_id, x, y, z, yaw, pitch }.
  *                         Filename is the sanitized lowercase form
- *                         of the player's display name.
+ *                         of the player's display name. Scoped per
+ *                         room so a player who logs out in room A
+ *                         and joins room B gets a fresh server-side
+ *                         spawn, not a bleed-through pose.
  *
  * Files are written atomically by saves_write_*  via a *.tmp swap so a
  * crash mid-write leaves the previous good copy intact.
@@ -200,16 +203,23 @@ bool saves_torches_write(const char* room, uint64_t seed, uint32_t body_id,
 int  saves_torches_load (const char* room, uint64_t seed, uint32_t body_id,
                            saves_torch_t* out, int cap);
 
-/* Per-player pose. `name` is the player's display name; the file
- * key is a sanitized lowercase form (alnum + dash + underscore;
- * spaces become _). Same name -> same file across browser swaps,
- * profile re-creation, or localStorage wipes. The HELLO-time
- * unique-name check on the server prevents two simultaneous
- * connections from racing against the same file. Names that
- * sanitize to empty (all emoji etc.) return false rather than
- * writing to a zero-length path. */
-bool saves_write_player(const char* name, const saves_player_pose_t* pose);
-bool saves_load_player (const char* name, saves_player_pose_t* out);
+/* Per-player pose, scoped per room. Path is
+ *   <saves_dir>/rooms/<room_slug>/players/<name>.dat
+ * `room` is the 6-char (or 8-char) room code, or NULL/"" for the
+ * public room (stored on disk as __public__). `name` is the
+ * player's display name; the file key is a sanitized lowercase
+ * form (alnum + dash + underscore; spaces become _). Same (room,
+ * name) -> same file across browser swaps, profile re-creation,
+ * or localStorage wipes. Different room -> different file, so
+ * positions never bleed across rooms. The HELLO-time unique-name
+ * check on the server prevents two simultaneous connections from
+ * racing against the same file. Names that sanitize to empty (all
+ * emoji etc.) return false rather than writing to a zero-length
+ * path. */
+bool saves_write_player(const char* room, const char* name,
+                          const saves_player_pose_t* pose);
+bool saves_load_player (const char* room, const char* name,
+                          saves_player_pose_t* out);
 
 /* ----------------------------------------------------------------- */
 /* Chat log per room (M6+, but ships in the chat commit). */

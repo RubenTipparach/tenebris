@@ -484,13 +484,14 @@ static void send_welcome(server_t* s, server_client_t* cl) {
         .spawn_pitch = 0.0f,
     };
     /* Resume the player at their last known pose. The save key is
-     * the sanitized display name now (not the profile token), so
-     * the same name reliably finds the same save across browser
-     * swaps / profile re-creation / localStorage wipes. The server
-     * already enforces unique names at HELLO, so two simultaneous
-     * connections can't fight over the same file. */
+     * (room_code, sanitized display name). Same room + same name ->
+     * same save across browser swaps / profile re-creation /
+     * localStorage wipes; different room -> different save, so a
+     * pose never bleeds across rooms. The server already enforces
+     * unique names at HELLO, so two simultaneous connections can't
+     * fight over the same file. */
     saves_player_pose_t resume;
-    bool had_save = (cl->name[0] && saves_load_player(cl->name, &resume));
+    bool had_save = (cl->name[0] && saves_load_player(cl->room, cl->name, &resume));
     if (had_save) {
         w.spawn_x     = resume.pos_x;
         w.spawn_y     = resume.pos_y;
@@ -1154,10 +1155,11 @@ static void on_close(net_conn_t* conn, net_close_reason_t reason, void* user) {
     server_client_t* cl = find_client_by_conn(s, conn);
     if (!cl) return;
     /* Persist the pose so the player resumes here on reconnect.
-     * Name-keyed (sanitized display name) so the same identity
-     * always lands on the same file. Gated on cl->token[0] so
-     * server-stamped 'guest-N' connections don't pollute the
-     * saves dir; only real profile-bearing sessions persist.
+     * Scoped by (room, sanitized display name) so the same identity
+     * resumes only in the room they left, not whichever room they
+     * happen to join next. Gated on cl->token[0] so server-stamped
+     * 'guest-N' connections don't pollute the saves dir; only real
+     * profile-bearing sessions persist.
      *
      * Per-user spec: save even when the player is mid-air. A hard
      * browser refresh during a jump shouldn't silently throw the
@@ -1180,7 +1182,7 @@ static void on_close(net_conn_t* conn, net_close_reason_t reason, void* user) {
             memcpy(pose.inv_slot_count, cl->inv_slot_count, sizeof pose.inv_slot_count);
             pose.inv_selected = cl->inv_selected;
         }
-        saves_write_player(cl->name, &pose);
+        saves_write_player(cl->room, cl->name, &pose);
     }
     printf("[server] close: player_id=%u name=%s (reason=%d)\n",
            cl->player_id, cl->name[0] ? cl->name : "(unnamed)", (int)reason);
@@ -2724,7 +2726,7 @@ void server_tick(server_t* s) {
                 memcpy(pose.inv_slot_count, cl->inv_slot_count, sizeof pose.inv_slot_count);
                 pose.inv_selected = cl->inv_selected;
             }
-            if (saves_write_player(cl->name, &pose)) {
+            if (saves_write_player(cl->room, cl->name, &pose)) {
                 ++saved_poses;
                 cl->last_saved_pos_x = cl->pos_x;
                 cl->last_saved_pos_y = cl->pos_y;
@@ -3009,7 +3011,7 @@ void server_shutdown(server_t* s) {
             memcpy(pose.inv_slot_count, cl->inv_slot_count, sizeof pose.inv_slot_count);
             pose.inv_selected = cl->inv_selected;
         }
-        if (saves_write_player(cl->name, &pose)) ++final_poses;
+        if (saves_write_player(cl->room, cl->name, &pose)) ++final_poses;
     }
     printf("[server] final flush: %d poses\n", final_poses);
     fflush(stdout);

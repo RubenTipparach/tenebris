@@ -1137,7 +1137,19 @@ static void maybe_prime_mode_for_state(void) {
          * crafting system. */
         G.player.survival_mode = true;
         inventory_init_empty(&G.player.inventory);
-        printf("[main] entered MP - survival mode + empty hotbar (torches granted)\n");
+        /* Drop any stale pose left over from a prior session (SP world,
+         * previous MP server, boot default). MP spawn is fully
+         * server-authoritative: maybe_apply_mp_spawn overwrites this
+         * the frame WELCOME lands, and the mp_loading branch in frame()
+         * pauses physics + the loading overlay hides the canvas in the
+         * meantime, so the player never sees the sentinel. Without this
+         * reset, the brief window between menu->MP and WELCOME would
+         * leave the player at their previous position - the exact
+         * "local position carrying over" the user reported. */
+        G.player.position = (dvec3_t){0};
+        G.player.velocity = (dvec3_t){0};
+        printf("[main] entered MP - survival mode + empty hotbar (torches granted), "
+               "pose cleared pending server WELCOME\n");
     } else if (s == GAME_IN_GAME_SP) {
         /* SP stays creative by default; the G key still toggles
          * survival mid-session if the player wants the challenge. */
@@ -1364,15 +1376,14 @@ static void maybe_apply_mp_spawn(void) {
     if (net_client_state() != NET_CLIENT_READY) return;
     const net_client_welcome_t* w = net_client_welcome();
     if (!w) return;
-    /* Sentinel: server always fills spawn with either the default
-     * pole spawn or a persisted pose, both of which are non-zero
-     * in at least one axis. Zero on all three means the WELCOME
-     * arrived without a meaningful spawn - leave the player where
-     * the client already placed them. */
-    if (w->spawn_x == 0.0 && w->spawn_y == 0.0 && w->spawn_z == 0.0) {
-        G_mp_spawn_applied = true;
-        return;
-    }
+    /* MP is server-authoritative on spawn. Whatever the WELCOME packet
+     * carries IS the player's starting pose - no local fallback, no
+     * "leave the client where it was" branch. The previous (0,0,0)
+     * sentinel let stale local pose (from a prior MP session or SP
+     * world) survive into a fresh server connection, which is exactly
+     * the cross-server position-leak the user reported. The server
+     * always fills the spawn fields (default pole, or a per-room
+     * persisted pose); trust it unconditionally. */
 
     dvec3_t spawn = (dvec3_t){ .x = w->spawn_x, .y = w->spawn_y, .z = w->spawn_z };
     /* Ground-snap: if the saved pose lives above the surface (which
