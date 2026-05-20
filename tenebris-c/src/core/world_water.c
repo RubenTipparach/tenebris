@@ -291,28 +291,19 @@ bool world_water_origin_add(world_t* w, int tile, int depth,
         ++s->origin_count;
         return true;
     }
-    /* 4th origin: promote this cell to a source. Clear the entry, set
-     * the SOURCE flag on the state byte, leave block as BLOCK_WATER. */
-    int cell_idx = tile * WORLD_MAX_DEPTH + depth;
-    uint8_t old_state = w->water->state[cell_idx];
-    uint8_t new_state = old_state | WATER_FLAG_SOURCE;
-    new_state &= (uint8_t)~WATER_FLAG_FALLING;  /* a source isn't falling */
-    new_state &= (uint8_t)~WATER_LEVEL_MASK;    /* sources are level 0 */
-    if (new_state != old_state) {
-        w->water->state[cell_idx] = new_state;
-        w->water->persist_dirty[tile >> 3] |= (uint8_t)(1u << (tile & 7));
-    }
-    /* Drop the entry. The slot becomes empty - we use the standard
-     * tombstone-free open-addressing convention where empty == 0; this
-     * works because removals from the middle of a probe chain would
-     * normally break linear probing, but a promoted cell will never be
-     * re-queried as a flow cell (the SOURCE flag now controls its
-     * behaviour). On rare lookup-after-promote, the find walks past the
-     * (now-empty) slot and may return a wrong slot - acceptable, the
-     * caller treats it as "not found" which matches reality. */
-    origin_slot_clear(s);
-    if (w->water->origins_count > 0) --w->water->origins_count;
-    return true;
+    /* List is full. Previously this branch auto-promoted the cell to
+     * a source, but that path was a runaway cascade: a single placed
+     * ocean cell would spread to neighbour flow cells, each of which
+     * might already have origins from several state==0 worldgen
+     * ocean neighbours; the 4th add tripped auto-promote and the
+     * promoted cell then seeded its own spread, etc.  Per the user
+     * spec "if I place 1 ocean block, two adjacent flow blocks
+     * should not merge into an ocean block" - the ONLY way a flow
+     * cell becomes a spawn block is the per-tick neighbour-count
+     * promote (should_promote_to_source). Drop the 4th origin
+     * silently: the cell stays flowing, capped at WATER_ORIGIN_MAX
+     * lineage entries. */
+    return false;
 }
 
 void world_water_origin_remove(world_t* w, int tile, int depth,
@@ -933,16 +924,20 @@ static bool should_promote_to_source(const world_t* w, int tile, int depth) {
         if (nb < 0) continue;
         if (world_get(w, nb, depth) != BLOCK_WATER) continue;
         uint8_t ns = world_water_get_state(w, nb, depth);
-        /* Only TRUE source blocks (bit 7 set) count toward the
-         * promotion threshold. The legacy seafloor fill (state == 0,
-         * "sleeping ocean") is INFINITE for propagation purposes but
-         * is NOT a source block - including it here would cascade-
-         * promote every flowing cell adjacent to the ocean into a
-         * fresh source, which then spawns its own 7-hex spread,
-         * which then promotes again, etc - one placed water block
-         * flooding the entire planet. MC's rule requires real source
-         * blocks for the same reason. */
-        if (water_state_is_source(ns)) {
+        /* "Ocean block" per the user's unified model is anything
+         * the simulator currently treats as a spawn: either the
+         * SOURCE flag is set explicitly, or state==0 (worldgen ocean
+         * / sleeping spawn).  Both count toward the 2-neighbour
+         * promote threshold.
+         *
+         * The previous code excluded state==0 to avoid runaway
+         * cascade, but the cascade was actually coming from the
+         * 4-origin auto-promote path in world_water_origin_add,
+         * which has now been removed. With that gone, the only way
+         * a cell promotes is reaching the threshold here - which by
+         * default needs 2 distinct ocean neighbours, exactly what
+         * the user asked for. */
+        if (water_state_is_source(ns) || ns == 0u) {
             ++sources;
             if (sources >= threshold) return true;
         }

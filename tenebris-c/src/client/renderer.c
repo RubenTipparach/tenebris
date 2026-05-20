@@ -3303,7 +3303,7 @@ static void flow_arrow_visit(int tile, int depth, void* user) {
     float tipy = cy + fy * shaft;
     float tipz = cz + fz * shaft;
 
-    sgl_c4f(1.0f, 0.2f, 1.0f, 1.0f);  /* bright magenta arrow */
+    sgl_c4f(1.0f, 0.15f, 0.15f, 1.0f);  /* bright red arrow = flow block */
     sgl_v3f(cx, cy, cz);
     sgl_v3f(tipx, tipy, tipz);
 
@@ -3352,7 +3352,7 @@ static void draw_spawn_x(const goldberg_tile_t* t, double r_cap) {
     float a1x = (ux + vx) * L, a1y = (uy + vy) * L, a1z = (uz + vz) * L;
     float a2x = (ux - vx) * L, a2y = (uy - vy) * L, a2z = (uz - vz) * L;
 
-    sgl_c4f(1.0f, 0.2f, 1.0f, 1.0f);  /* bright magenta X for spawn (matches arrow colour) */
+    sgl_c4f(0.2f, 1.0f, 0.2f, 1.0f);  /* bright green X = ocean / spawn block */
     sgl_v3f(cx - a1x, cy - a1y, cz - a1z);
     sgl_v3f(cx + a1x, cy + a1y, cz + a1z);
     sgl_v3f(cx - a2x, cy - a2y, cz - a2z);
