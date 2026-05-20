@@ -1614,18 +1614,21 @@ static void flow_count_visitor(int tile, int depth, void* user) {
     (*(int*)user)++;
 }
 
-/* Glyph for the F4 hex-layout snapshot grid. Water cells encode their
- * simulator state in a separate state byte (source / falling / flow
- * level) - rather than always returning 'w', sniff the state and pick
- * a more informative glyph. The user complaint is the snapshot showed
- * "all w" with no way to tell ocean (worldgen-spawned, state == 0)
- * apart from a flow block (state has level + non-source non-falling).
+/* Glyph for the F4 hex-layout snapshot grid. Per the user's spec
+ * "ocean blocks = spawner blocks, they should not be distinguished" -
+ * a state==0 cell is an ocean / spawner regardless of where it sits
+ * on the planet. The user can place ocean blocks anywhere; they
+ * generate flow blocks around them, and when a flow block borders
+ * two ocean blocks at the same height the simulator promotes it to
+ * an ocean block too. All three (worldgen ocean, player-placed
+ * ocean, auto-promoted flow-to-ocean) collapse to state==0 and
+ * render with the same 'O' glyph.
  *
- *   O = ocean / worldgen spawn (state byte still zero)
- *   $ = source flag (player-placed infinite source)
+ *   O = ocean / spawner block (state==0, anywhere)
+ *   $ = explicit source flag set (separate from state==0 sources)
  *   F = falling water (mid-column waterfall)
- *   0..7 = flow level (lower = taller cap)
- *   w = WATER block but no water-state struct loaded (legacy / fallback)
+ *   0..7 = flow level (1 = closest to source / tallest cap;
+ *                       7 = furthest / thinnest film)
  */
 static char water_glyph(const world_t* w, int tile, int depth) {
     uint8_t s = world_water_get_state(w, tile, depth);
@@ -1727,8 +1730,26 @@ static void print_block_snapshot(void) {
         for (int d = d_hi; d >= d_lo; --d) {
             block_t b = (block_t)w->blocks[(size_t)tid * WORLD_MAX_DEPTH + d];
             const char* marker = (d == feet_depth) ? " <-- feet" : "";
-            printf("[snapshot]   d=%3d  block=%-14s (id=%2u)%s\n",
-                   d, block_name(b), (unsigned)b, marker);
+            if (b == BLOCK_WATER) {
+                /* For water cells, the simulator state byte + origin
+                 * count is the diagnostic the user actually needs to
+                 * tell ocean (state==0, the spawner) apart from a flow
+                 * block (level + origins). Dump both alongside the
+                 * plain block name. */
+                uint8_t st = world_water_get_state(w, tid, d);
+                int n_org = world_water_origin_count(w, tid, d);
+                int level = water_state_level(st);
+                printf("[snapshot]   d=%3d  block=%-14s (id=%2u)  "
+                       "state=0x%02X (lvl=%d%s%s) origins=%d%s\n",
+                       d, block_name(b), (unsigned)b,
+                       (unsigned)st, level,
+                       water_state_is_source(st)  ? " SRC"     : "",
+                       water_state_is_falling(st) ? " FALLING" : "",
+                       n_org, marker);
+            } else {
+                printf("[snapshot]   d=%3d  block=%-14s (id=%2u)%s\n",
+                       d, block_name(b), (unsigned)b, marker);
+            }
         }
     }
 
@@ -1760,7 +1781,7 @@ static void print_block_snapshot(void) {
      * means. Water gets special treatment - the per-cell simulator
      * state distinguishes ocean (O), sources ($), falling water (F),
      * and flow blocks (0-7 = level). */
-    printf("[snapshot] water: O=ocean(state==0) $=source F=falling 0-7=flow-level\n");
+    printf("[snapshot] water: O=ocean/spawner $=source F=falling 0-7=flow-level\n");
     printf("[snapshot] depth  m  123 456\n");
     for (int d = d_hi; d >= d_lo; --d) {
         char m_glyph = '.';
