@@ -3264,8 +3264,10 @@ static void flow_arrow_visit(int tile, int depth, void* user) {
     float flow_world[3];
     if (!world_water_flow_direction(w, tile, depth, flow_world)) return;
 
-    /* Cap centre, lifted ~1 m along radial so the arrow sits above
-     * the wave crests and nearby terrain. */
+    /* Cap centre, lifted a hair along radial so the arrow sits flush
+     * with the water surface without z-fighting the wave crests.
+     * BLOCK_HEIGHT is 1 m, so anything close to 1 puts the arrow a
+     * full hex above the water - keep this small. */
     double r_cap = world_depth_to_radius_m(w, depth + 1) + (double)ctx->lift_m;
     float cx = (float)(t->center.x * r_cap);
     float cy = (float)(t->center.y * r_cap);
@@ -3343,7 +3345,7 @@ void renderer_draw_water_flow_debug(mat4_t view, mat4_t proj) {
 
     /* Bright red arrow on every cell that has an origin entry,
      * pointing along the flow direction. */
-    flow_arrow_ctx_t ctx = { .w = w, .lift_m = 1.0f, .drawn = 0 };
+    flow_arrow_ctx_t ctx = { .w = w, .lift_m = 0.05f, .drawn = 0 };
     world_water_origin_visit_all(w, flow_arrow_visit, &ctx);
 
     sgl_end();
