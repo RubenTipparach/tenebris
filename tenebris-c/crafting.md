@@ -19,37 +19,50 @@ lands.
 
 ## Mockups
 
+Every screen shares the same chrome: panel + title bar + a four-tab
+navigation row across the top (INVENTORY / CRAFTING / EQUIPMENT /
+SKILLS). The active tab uses the hover sprite so it reads as "you are
+here"; the other three are live buttons that switch screens. The
+inventory screen's "three nav buttons" are simply the three inactive
+tabs while INVENTORY is selected - one consistent layer instead of
+four bespoke ones.
+
 ### Inventory
 
 ![Inventory mockup](docs/mockups/inventory.png)
 
-8 x 4 main grid + a 9-slot hotbar row, each cell using the slot sprite
-(four states: normal, hover, selected, disabled). The selected stick
-slot shows the gold accent, the ore slot shows the bronze hover ring,
-the disabled state is reserved for "you can't pick that up yet" cases
-like recipe-filter overlays. The two example tools in the hotbar
-(axe, pickaxe) read as item icons, not block icons - the inventory
-needs to hold items as well as blocks, which is foundation work
-(see below).
+Full 10 x 5 main grid + a 9-slot hotbar row underneath, both made of
+the same slot sprite (four states: normal, hover, selected, disabled).
+This is the only screen that shows the full bag at full size; the
+split-screen variants below show a compact 4 x 6 + hotbar so the
+function panel gets the other half. The two example tools in the
+hotbar (axe, pickaxe) read as item icons rather than block icons -
+the inventory has to hold items as well as blocks, which is the
+foundation work below.
 
 ### Crafting
 
 ![Crafting mockup](docs/mockups/crafting.png)
 
-Two-pane layout: vertical recipe list on the left (the highlighted row
-uses the hover sprite to read as "current selection"), recipe detail on
-the right with an output slot, input slots, an arrow, and CRAFT /
-CRAFT ALL / BACK action buttons. Disabled recipes use the greyed-out
-button sprite. Each entry in `recipes.yaml` becomes one row here.
+Split view: left half is the compact inventory (drag source), right
+half is the recipe list + detail. A vertical bronze rule down the
+middle is the visual cue that you can drag stacks across. Picking a
+recipe shows its output slot, ingredient slots (counts tell you what
+the recipe needs, not what you have), and the CRAFT / CRAFT ALL
+buttons at the bottom right. Disabled recipes ("IRON AXE", "STONE
+SWORD") use the greyed-out button sprite and stay un-clickable until
+you have the higher-tier station. Each entry in `recipes.yaml`
+becomes one row in this list.
 
 ### Equipment
 
 ![Equipment mockup](docs/mockups/equipment.png)
 
-Centre figure flanked by HEAD / CHEST / LEGS / BOOTS on the left and
-WEAPON / TOOL / OFFHAND / PACK on the right - empty slots stay
-recessed so a hand-painted item sprite would pop the moment it's
-equipped. Right-edge STATS readout sums the modifiers from every
+Same split shape as crafting. Left half is the inventory; right half
+is the character figure flanked by HEAD / CHEST / LEGS / BOOTS on the
+left and WEAPON / TOOL / OFFHAND / PACK on the right. Empty slots
+stay recessed so a hand-painted item icon pops the moment you drag
+one in. STATS readout under the figure sums modifiers from every
 equipped piece. The figure itself is a stand-in for the eventual
 character mesh.
 
@@ -57,12 +70,14 @@ character mesh.
 
 ![Skill tree mockup](docs/mockups/skills.png)
 
-Three branches (Mining, Crafting, Exploration) radiating from a root
-node. Each node is a small slot - selected nodes use the gold accent,
-locked nodes use the disabled sprite, links between nodes are drawn
-as direct line segments behind the slots. The "points available"
-counter and bottom-row RESPEC / CONFIRM buttons live in the same UI
-layer as the rest.
+Single-pane screen (skills don't consume inventory items, so the
+split layout isn't needed here). Three branches (Mining, Crafting,
+Exploration) radiate from a root node. Each node is a small slot -
+selected nodes use the gold accent, locked nodes use the disabled
+sprite, links between nodes are drawn as straight line segments
+behind the slots. The "3 POINTS AVAILABLE" counter and the bottom-
+row RESPEC / CONFIRM buttons all live in the same UI layer as the
+rest.
 
 ---
 

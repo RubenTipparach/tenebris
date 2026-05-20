@@ -359,6 +359,191 @@ def draw_item_icon(canvas, slot_x, slot_y, slot_w, slot_h, kind):
 UI_SCALE = 2
 SLOT_PX = 18 * UI_SCALE
 
+# Standard panel + tab geometry used by every screen so the mockups
+# read as a coherent UI rather than four unrelated layouts.
+MOCKUP_W = 1100
+MOCKUP_H = 620
+PANEL_X, PANEL_Y = 30, 30
+PANEL_W, PANEL_H = 1040, 560
+TITLE_BAR_X = PANEL_X + 20
+TITLE_BAR_Y = PANEL_Y + 16
+TITLE_BAR_W = PANEL_W - 40
+TITLE_BAR_H = 32
+TAB_Y       = PANEL_Y + 64
+TAB_H       = 36
+TAB_W       = 200
+TAB_GAP     = 12
+CONTENT_Y   = TAB_Y + TAB_H + 16
+
+TAB_LABELS = ["INVENTORY", "CRAFTING", "EQUIPMENT", "SKILLS"]
+
+
+def draw_tabs(canvas, atlas, active_idx):
+    """Four-tab navigation row centred under the title bar. The active
+    tab is rendered in the hover sprite (gloss strip + bronze tint) so
+    it reads as "you are here" without inventing a new sprite. The
+    other three tabs use the normal sprite and act as nav buttons -
+    this is how the inventory screen surfaces its 'go to crafting /
+    equipment / skills' selectors and how the function screens link
+    back."""
+    total = len(TAB_LABELS) * TAB_W + (len(TAB_LABELS) - 1) * TAB_GAP
+    start_x = PANEL_X + (PANEL_W - total) // 2
+    for i, label in enumerate(TAB_LABELS):
+        x = start_x + i * (TAB_W + TAB_GAP)
+        state = "hover" if i == active_idx else "normal"
+        draw_button(canvas, atlas, x, TAB_Y, TAB_W, TAB_H, label, state=state)
+
+
+def draw_compact_inventory(canvas, atlas, x, y, w, h, hover_idx=None,
+                           selected_idx=None):
+    """Inventory + hotbar block sized to fit inside the left half of a
+    split screen (crafting / equipment). 4-col x 6-row grid + 9-slot
+    hotbar below, both made of the same SLOT_PX-sized slots so the
+    user reads them as one continuous bag.
+
+    Returns the list of slot rects (x, y, w, h) so the caller can wire
+    up tooltip / drag-source affordances later. Caller-side state
+    (selected, hover) drives the highlight; the mockup just paints
+    representative values."""
+    gap = 6
+    cols, rows = 4, 6
+    grid_w = cols * SLOT_PX + (cols - 1) * gap
+    grid_x = x + (w - grid_w) // 2
+    grid_y = y + 20
+    # Representative item content - same shapes as the full-screen
+    # inventory above so the player reads "this is the same bag".
+    items = [
+        ("log", 12),  ("plank", 24), ("stick", 9),  ("stone", 32),
+        ("ore", 4),   ("grass", 1),  None,          ("fish", 2),
+        ("coal", 8),  ("iron", 3),   None,          ("torch", 16),
+        None,         None,          None,          None,
+        None,         None,          None,          None,
+        None,         None,          None,          None,
+    ]
+    rects = []
+    for r in range(rows):
+        for col in range(cols):
+            idx = r * cols + col
+            sx = grid_x + col * (SLOT_PX + gap)
+            sy = grid_y + r * (SLOT_PX + gap)
+            state = "normal"
+            if idx == hover_idx:
+                state = "hover"
+            elif idx == selected_idx:
+                state = "selected"
+            entry = items[idx] if idx < len(items) else None
+            item = entry[0] if entry else None
+            count = entry[1] if entry else 0
+            draw_slot(canvas, atlas, sx, sy, state=state, item=item, count=count)
+            rects.append((sx, sy, SLOT_PX, SLOT_PX))
+
+    # Hotbar below, same slot size, gap matches the grid so the eye
+    # reads them as one continuous bag of slots.
+    hb_y = grid_y + rows * (SLOT_PX + gap) + 12
+    hb_cols = 9
+    hb_w = hb_cols * SLOT_PX + (hb_cols - 1) * gap
+    hb_x = x + (w - hb_w) // 2
+    hb_items = [
+        ("axe", 1), ("pickaxe", 1), ("torch", 8), ("plank", 32),
+        None, None, None, None, None,
+    ]
+    draw_text(canvas, hb_x, hb_y - 14, "HOTBAR",
+              rgba=(180, 150, 100, 255), scale=1)
+    for col in range(hb_cols):
+        sx = hb_x + col * (SLOT_PX + gap)
+        state = "selected" if col == 0 else "normal"
+        entry = hb_items[col] if col < len(hb_items) else None
+        item = entry[0] if entry else None
+        count = entry[1] if entry else 0
+        draw_slot(canvas, atlas, sx, hb_y, state=state, item=item, count=count)
+        rects.append((sx, hb_y, SLOT_PX, SLOT_PX))
+
+    return rects
+
+
+def draw_split_divider(canvas, mid_x, y, h):
+    """Thin bronze rule between the inventory half and the function
+    half of a split screen. Single-pixel column so it doesn't crowd
+    either side."""
+    for j in range(y, y + h):
+        put_rgba(canvas, mid_x,     j, (107,  74, 43, 255))
+        put_rgba(canvas, mid_x + 1, j, ( 36,  24, 16, 255))
+
+
+def draw_chrome(canvas, atlas, title, active_tab):
+    """Backdrop + panel + title bar + tab bar shared by every screen."""
+    fill_backdrop(canvas)
+    dim_scene_behind(canvas, 0, 0, MOCKUP_W, MOCKUP_H, alpha=80)
+    draw_panel(canvas, atlas, PANEL_X, PANEL_Y, PANEL_W, PANEL_H)
+    draw_title_bar(canvas, atlas, TITLE_BAR_X, TITLE_BAR_Y,
+                   TITLE_BAR_W, TITLE_BAR_H, title)
+    draw_close_x(canvas, atlas, PANEL_X + PANEL_W - 36, PANEL_Y + 22, scale=2)
+    draw_tabs(canvas, atlas, active_tab)
+
+
+# ---------------------------------------------------------------------------
+# Screen 1: Inventory.
+
+def render_inventory(atlas):
+    W, H = MOCKUP_W, MOCKUP_H
+    c = make_rgba_canvas(W, H)
+    draw_chrome(c, atlas, "INVENTORY", active_tab=0)
+
+    # Main inventory grid: 10 cols x 5 rows = 50 slots. The standalone
+    # inventory tab is the only place we show the full bag at full
+    # size; the split-screen variants use a compact 4 x 6 layout.
+    cols, rows = 10, 5
+    gap = 6
+    grid_w = cols * SLOT_PX + (cols - 1) * gap
+    grid_x = PANEL_X + (PANEL_W - grid_w) // 2
+    grid_y = CONTENT_Y + 30
+
+    items = [
+        ("log", 12),    ("plank", 24),  ("stick", 9),   ("stone", 32),  ("ore", 4),
+        ("grass", 1),   None,           ("fish", 2),    ("coal", 8),    ("iron", 3),
+        None,           ("torch", 16),  None,           None,           None,
+    ] + [None] * (cols * rows)
+    for r in range(rows):
+        for col in range(cols):
+            idx = r * cols + col
+            x = grid_x + col * (SLOT_PX + gap)
+            y = grid_y + r * (SLOT_PX + gap)
+            state = "normal"
+            if idx == 4:
+                state = "hover"
+            if idx == 2:
+                state = "selected"
+            entry = items[idx] if idx < len(items) else None
+            item = entry[0] if entry else None
+            count = entry[1] if entry else 0
+            draw_slot(c, atlas, x, y, state=state, item=item, count=count)
+
+    # Hotbar label + row, anchored below the main grid.
+    hb_cols = 9
+    hb_w = hb_cols * SLOT_PX + (hb_cols - 1) * gap
+    hb_x = PANEL_X + (PANEL_W - hb_w) // 2
+    hb_y = grid_y + rows * (SLOT_PX + gap) + 32
+    draw_text(c, hb_x, hb_y - 16, "HOTBAR",
+              rgba=(180, 150, 100, 255), scale=2)
+    hb_items = [
+        ("axe", 1), ("pickaxe", 1), ("torch", 8), ("plank", 32),
+        None, None, None, None, None,
+    ]
+    for col in range(hb_cols):
+        x = hb_x + col * (SLOT_PX + gap)
+        state = "selected" if col == 0 else "normal"
+        entry = hb_items[col] if col < len(hb_items) else None
+        item = entry[0] if entry else None
+        count = entry[1] if entry else 0
+        draw_slot(c, atlas, x, hb_y, state=state, item=item, count=count)
+
+    # Hint text bottom-left.
+    draw_text(c, PANEL_X + 20, PANEL_Y + PANEL_H - 22,
+              "DRAG TO MOVE  /  RIGHT CLICK TO SPLIT  /  TAB SWITCHES SCREEN",
+              rgba=(160, 130, 90, 255), scale=1)
+
+    return W, H, c
+
 
 def draw_slot(canvas, atlas, x, y, state="normal", item=None, count=0):
     sprite = {
@@ -419,182 +604,99 @@ def draw_close_x(canvas, atlas, x, y, scale=2):
 
 
 # ---------------------------------------------------------------------------
-# Screen 1: Inventory.
-
-def render_inventory(atlas):
-    W, H = 800, 500
-    c = make_rgba_canvas(W, H)
-    fill_backdrop(c)
-
-    # Dim the area where the panel will sit so the panel stands out.
-    dim_scene_behind(c, 0, 0, W, H, alpha=80)
-
-    # Panel.
-    panel_x, panel_y = 80, 50
-    panel_w, panel_h = 640, 400
-    draw_panel(c, atlas, panel_x, panel_y, panel_w, panel_h)
-
-    # Title bar inside the panel.
-    bar_x = panel_x + 20
-    bar_y = panel_y + 16
-    bar_w = panel_w - 40
-    bar_h = 32
-    draw_title_bar(c, atlas, bar_x, bar_y, bar_w, bar_h, "INVENTORY")
-
-    # Close X top-right of the title bar.
-    draw_close_x(c, atlas, panel_x + panel_w - 36, panel_y + 22, scale=2)
-
-    # Main inventory grid: 8 cols x 4 rows.
-    cols, rows = 8, 4
-    gap = 6
-    grid_w = cols * SLOT_PX + (cols - 1) * gap
-    grid_x = panel_x + (panel_w - grid_w) // 2
-    grid_y = panel_y + 76
-
-    # Populate a representative inventory.
-    items = [
-        ("log", 12),     ("plank", 24),   ("stick", 9),    ("stone", 32),
-        ("ore", 4),      ("grass", 1),    None,            None,
-        ("fish", 2),     ("coal", 8),     ("iron", 3),     None,
-        ("torch", 16),   None,            None,            None,
-        None,            None,            None,            None,
-        None,            None,            None,            None,
-        None,            None,            None,            None,
-        None,            None,            None,            None,
-    ]
-    for r in range(rows):
-        for col in range(cols):
-            idx = r * cols + col
-            x = grid_x + col * (SLOT_PX + gap)
-            y = grid_y + r * (SLOT_PX + gap)
-            state = "normal"
-            if idx == 4:  # hover demo on the ore slot
-                state = "hover"
-            if idx == 2:  # selected demo on sticks
-                state = "selected"
-            entry = items[idx] if idx < len(items) else None
-            item = entry[0] if entry else None
-            count = entry[1] if entry else 0
-            draw_slot(c, atlas, x, y, state=state, item=item, count=count)
-
-    # Section label above the hotbar row.
-    draw_text(c, grid_x, grid_y + rows * (SLOT_PX + gap) + 8,
-              "HOTBAR", rgba=(180, 150, 100, 255), scale=2)
-
-    # Hotbar row: 9 slots, slot 0 is the selected one.
-    hb_cols = 9
-    hb_w = hb_cols * SLOT_PX + (hb_cols - 1) * gap
-    hb_x = panel_x + (panel_w - hb_w) // 2
-    hb_y = grid_y + rows * (SLOT_PX + gap) + 36
-    hb_items = [
-        ("axe", 1), ("pickaxe", 1), ("torch", 8), ("plank", 32),
-        None, None, None, None, None,
-    ]
-    for col in range(hb_cols):
-        x = hb_x + col * (SLOT_PX + gap)
-        state = "selected" if col == 0 else "normal"
-        entry = hb_items[col] if col < len(hb_items) else None
-        item = entry[0] if entry else None
-        count = entry[1] if entry else 0
-        draw_slot(c, atlas, x, hb_y, state=state, item=item, count=count)
-
-    # Hint text bottom-left.
-    draw_text(c, panel_x + 20, panel_y + panel_h - 22,
-              "DRAG TO MOVE  /  RIGHT CLICK TO SPLIT",
-              rgba=(160, 130, 90, 255), scale=1)
-
-    return W, H, c
-
-
-# ---------------------------------------------------------------------------
 # Screen 2: Crafting.
 
 def render_crafting(atlas):
-    W, H = 800, 500
+    W, H = MOCKUP_W, MOCKUP_H
     c = make_rgba_canvas(W, H)
-    fill_backdrop(c)
-    dim_scene_behind(c, 0, 0, W, H, alpha=80)
+    draw_chrome(c, atlas, "CRAFTING", active_tab=1)
 
-    panel_x, panel_y = 50, 40
-    panel_w, panel_h = 700, 420
-    draw_panel(c, atlas, panel_x, panel_y, panel_w, panel_h)
-    draw_title_bar(c, atlas, panel_x + 20, panel_y + 16, panel_w - 40, 32,
-                   "CRAFTING")
-    draw_close_x(c, atlas, panel_x + panel_w - 36, panel_y + 22, scale=2)
+    # Split: left half = compact inventory (drag source), right half =
+    # recipe list + detail. The vertical rule down the middle is the
+    # visual cue that you can drag from one side into the other.
+    half_w = (PANEL_W - 60) // 2
+    left_x  = PANEL_X + 20
+    right_x = PANEL_X + 30 + half_w + 10
+    split_y = CONTENT_Y
+    split_h = PANEL_H - (CONTENT_Y - PANEL_Y) - 30
 
-    # Left: recipe list (vertical buttons).
-    list_x = panel_x + 24
-    list_y = panel_y + 72
-    list_w = 220
-    list_btn_h = 32
+    draw_text(c, left_x, split_y, "INVENTORY",
+              rgba=(255, 240, 200, 255), scale=2)
+    draw_text(c, right_x, split_y, "RECIPES",
+              rgba=(255, 240, 200, 255), scale=2)
+
+    draw_compact_inventory(c, atlas, left_x, split_y + 20, half_w, split_h - 30,
+                           hover_idx=1, selected_idx=2)
+
+    draw_split_divider(c, PANEL_X + 20 + half_w + 14, split_y + 10,
+                       split_h - 20)
+
+    # Right side: recipe list column + detail panel.
+    list_x = right_x
+    list_y = split_y + 30
+    list_w = 200
+    list_btn_h = 30
     recipes = [
-        ("PLANKS",        "normal",   "log"),
-        ("STICKS",        "normal",   "stick"),
-        ("WOODEN AXE",    "selected", "axe"),
-        ("WOODEN PICK",   "normal",   "pickaxe"),
-        ("FISHING ROD",   "normal",   "rod"),
-        ("TORCH",         "normal",   "torch"),
-        ("IRON AXE",      "disabled", "axe"),
-        ("STONE SWORD",   "disabled", "stone"),
+        ("PLANKS",        "normal"),
+        ("STICKS",        "normal"),
+        ("WOODEN AXE",    "selected"),
+        ("WOODEN PICK",   "normal"),
+        ("FISHING ROD",   "normal"),
+        ("TORCH",         "normal"),
+        ("IRON AXE",      "disabled"),
+        ("STONE SWORD",   "disabled"),
     ]
-    for i, (label, state, _icon) in enumerate(recipes):
+    for i, (label, state) in enumerate(recipes):
         y = list_y + i * (list_btn_h + 4)
         # "selected" isn't a button state; the highlighted recipe uses
         # the hover sprite so the list reads as "this is the current
-        # selection" without inventing a new sprite.
+        # selection".
         sprite_state = "hover" if state == "selected" else state
         draw_button(c, atlas, list_x, y, list_w, list_btn_h,
                     label, state=sprite_state)
 
-    # Right column: recipe detail for the selected recipe (Wooden Axe).
-    detail_x = list_x + list_w + 28
+    # Detail area to the right of the recipe list.
+    detail_x = list_x + list_w + 20
     detail_y = list_y
-    detail_w = panel_w - (detail_x - panel_x) - 24
-
-    draw_text(c, detail_x, detail_y,
-              "WOODEN AXE", rgba=(255, 240, 200, 255), scale=2)
+    draw_text(c, detail_x, detail_y, "WOODEN AXE",
+              rgba=(255, 240, 200, 255), scale=2)
     draw_text(c, detail_x, detail_y + 22,
-              "STARTER TOOL  /  CHOPS WOOD AT 2X SPEED",
+              "CHOPS WOOD 2X FASTER",
               rgba=(180, 150, 100, 255), scale=1)
 
-    # Output slot (large) + inputs.
     out_x = detail_x
     out_y = detail_y + 56
-    draw_text(c, out_x, out_y - 12, "OUTPUT", rgba=(160, 130, 90, 255), scale=1)
+    draw_text(c, out_x, out_y - 12, "OUTPUT",
+              rgba=(160, 130, 90, 255), scale=1)
     draw_slot(c, atlas, out_x, out_y, state="normal", item="axe", count=1)
 
-    # Arrow.
-    arrow_x = out_x + SLOT_PX + 14
-    arrow_y = out_y + SLOT_PX // 2 - 4
-    draw_text(c, arrow_x, arrow_y, "<", rgba=(200, 170, 110, 255), scale=2)
+    arrow_x = out_x + SLOT_PX + 12
+    arrow_y = out_y + SLOT_PX // 2 - 7
+    draw_text(c, arrow_x, arrow_y, "<",
+              rgba=(200, 170, 110, 255), scale=2)
 
-    # Inputs.
-    inp_x = arrow_x + 30
+    inp_x = arrow_x + 26
     inp_y = out_y
-    draw_text(c, inp_x, inp_y - 12,
-              "INGREDIENTS", rgba=(160, 130, 90, 255), scale=1)
+    draw_text(c, inp_x, inp_y - 12, "INGREDIENTS",
+              rgba=(160, 130, 90, 255), scale=1)
     inputs = [("plank", 2), ("stick", 1)]
     for i, (item, qty) in enumerate(inputs):
-        x = inp_x + i * (SLOT_PX + 12)
+        x = inp_x + i * (SLOT_PX + 10)
         draw_slot(c, atlas, x, inp_y, state="normal", item=item, count=qty)
 
-    # Inventory check status text.
     draw_text(c, detail_x, out_y + SLOT_PX + 14,
-              "YOU HAVE 24 PLANKS  9 STICKS",
+              "INGREDIENTS PULLED FROM INVENTORY",
               rgba=(140, 200, 120, 255), scale=1)
 
-    # Bottom: craft + close buttons.
-    btn_y = panel_y + panel_h - 60
-    draw_button(c, atlas, detail_x, btn_y, 160, 36, "CRAFT", state="hover")
-    draw_button(c, atlas, detail_x + 176, btn_y, 160, 36,
+    btn_y = PANEL_Y + PANEL_H - 60
+    draw_button(c, atlas, detail_x, btn_y, 140, 36,
+                "CRAFT", state="hover")
+    draw_button(c, atlas, detail_x + 150, btn_y, 140, 36,
                 "CRAFT ALL", state="normal")
-    draw_button(c, atlas, detail_x + 352, btn_y, 100, 36,
-                "BACK", state="normal")
 
-    # Hint at the bottom of the recipe list.
-    draw_text(c, list_x, panel_y + panel_h - 30,
-              "GREY ENTRIES NEED A BETTER WORKBENCH",
-              rgba=(140, 110, 70, 255), scale=1)
+    draw_text(c, left_x, PANEL_Y + PANEL_H - 22,
+              "DRAG ITEMS INTO INGREDIENT SLOTS, OR CLICK CRAFT",
+              rgba=(160, 130, 90, 255), scale=1)
 
     return W, H, c
 
@@ -643,7 +745,6 @@ def draw_character_silhouette(canvas, x, y, w, h):
     fill_rgba_rect(canvas, leg_l_x, leg_y + leg_h, leg_w, 10, boot)
     fill_rgba_rect(canvas, leg_r_x, leg_y + leg_h, leg_w, 10, boot)
 
-    # Outline pass (just edges).
     def out(x0, y0, w0, h0):
         for i in range(x0, x0 + w0):
             put_rgba(canvas, i, y0, outline)
@@ -663,37 +764,44 @@ def draw_character_silhouette(canvas, x, y, w, h):
 
 
 def render_equipment(atlas):
-    W, H = 800, 500
+    W, H = MOCKUP_W, MOCKUP_H
     c = make_rgba_canvas(W, H)
-    fill_backdrop(c)
-    dim_scene_behind(c, 0, 0, W, H, alpha=80)
+    draw_chrome(c, atlas, "EQUIPMENT", active_tab=2)
 
-    panel_x, panel_y = 50, 40
-    panel_w, panel_h = 700, 420
-    draw_panel(c, atlas, panel_x, panel_y, panel_w, panel_h)
-    draw_title_bar(c, atlas, panel_x + 20, panel_y + 16, panel_w - 40, 32,
-                   "EQUIPMENT")
-    draw_close_x(c, atlas, panel_x + panel_w - 36, panel_y + 22, scale=2)
+    half_w = (PANEL_W - 60) // 2
+    left_x  = PANEL_X + 20
+    right_x = PANEL_X + 30 + half_w + 10
+    split_y = CONTENT_Y
+    split_h = PANEL_H - (CONTENT_Y - PANEL_Y) - 30
 
-    # Centre: character silhouette inside a sub-panel.
-    char_x = panel_x + panel_w // 2 - 110
-    char_y = panel_y + 72
-    char_w = 220
-    char_h = 280
+    draw_text(c, left_x, split_y, "INVENTORY",
+              rgba=(255, 240, 200, 255), scale=2)
+    draw_text(c, right_x, split_y, "EQUIPPED",
+              rgba=(255, 240, 200, 255), scale=2)
+
+    draw_compact_inventory(c, atlas, left_x, split_y + 20, half_w, split_h - 30,
+                           hover_idx=0)
+
+    draw_split_divider(c, PANEL_X + 20 + half_w + 14, split_y + 10,
+                       split_h - 20)
+
+    # Right side: character + equipment slots. Centre the figure in
+    # the right half so the side-slots have room to sit on either edge.
+    char_w = 180
+    char_h = 240
+    char_x = right_x + (half_w - char_w) // 2
+    char_y = split_y + 50
     draw_character_silhouette(c, char_x, char_y, char_w, char_h)
 
-    # Equipment slots around the figure. Each slot is 36 x 36 with a
-    # small caption beneath.
     slots = [
-        # (label, x, y, item)
-        ("HEAD",    char_x - 60, char_y + 30,  "helmet"),
-        ("CHEST",   char_x - 60, char_y + 90,  "chest"),
-        ("LEGS",    char_x - 60, char_y + 150, None),
-        ("BOOTS",   char_x - 60, char_y + 210, "boots"),
-        ("WEAPON",  char_x + char_w + 24, char_y + 30,  "axe"),
-        ("TOOL",    char_x + char_w + 24, char_y + 90,  "pickaxe"),
-        ("OFFHAND", char_x + char_w + 24, char_y + 150, "shield"),
-        ("PACK",    char_x + char_w + 24, char_y + 210, None),
+        ("HEAD",    char_x - 56, char_y + 10,  "helmet"),
+        ("CHEST",   char_x - 56, char_y + 70,  "chest"),
+        ("LEGS",    char_x - 56, char_y + 130, None),
+        ("BOOTS",   char_x - 56, char_y + 190, "boots"),
+        ("WEAPON",  char_x + char_w + 20, char_y + 10,  "axe"),
+        ("TOOL",    char_x + char_w + 20, char_y + 70,  "pickaxe"),
+        ("OFFHAND", char_x + char_w + 20, char_y + 130, "shield"),
+        ("PACK",    char_x + char_w + 20, char_y + 190, None),
     ]
     for label, sx, sy, item in slots:
         draw_slot(c, atlas, sx, sy, state="normal", item=item, count=0)
@@ -701,9 +809,9 @@ def render_equipment(atlas):
         draw_text(c, sx + (SLOT_PX - tw) // 2, sy + SLOT_PX + 4,
                   label, rgba=(160, 130, 90, 255), scale=1)
 
-    # Right-edge stat readouts inside the panel border.
-    stats_x = panel_x + panel_w - 180
-    stats_y = panel_y + 320
+    # Stats sub-panel under the character figure, inside the right half.
+    stats_x = right_x + 20
+    stats_y = char_y + char_h + 30
     draw_text(c, stats_x, stats_y, "STATS",
               rgba=(255, 240, 200, 255), scale=2)
     rows = [
@@ -713,15 +821,14 @@ def render_equipment(atlas):
         ("SPEED",   "1.0"),
     ]
     for i, (k, v) in enumerate(rows):
-        y = stats_y + 22 + i * 14
+        y = stats_y + 22 + i * 12
         draw_text(c, stats_x, y, k, rgba=(180, 150, 100, 255), scale=1)
         vw = text_width(v, scale=1)
-        draw_text(c, stats_x + 160 - vw, y, v,
+        draw_text(c, stats_x + 200 - vw, y, v,
                   rgba=(232, 210, 168, 255), scale=1)
 
-    # Bottom-left hint.
-    draw_text(c, panel_x + 20, panel_y + panel_h - 22,
-              "HOVER A SLOT TO COMPARE",
+    draw_text(c, left_x, PANEL_Y + PANEL_H - 22,
+              "DRAG ITEMS FROM INVENTORY INTO EQUIPMENT SLOTS",
               rgba=(160, 130, 90, 255), scale=1)
 
     return W, H, c
@@ -731,52 +838,49 @@ def render_equipment(atlas):
 # Screen 4: Skill Tree.
 
 def render_skills(atlas):
-    W, H = 800, 580
+    W, H = MOCKUP_W, MOCKUP_H
     c = make_rgba_canvas(W, H)
-    fill_backdrop(c)
-    dim_scene_behind(c, 0, 0, W, H, alpha=80)
+    draw_chrome(c, atlas, "SKILL TREE", active_tab=3)
 
-    panel_x, panel_y = 40, 40
-    panel_w, panel_h = 720, 500
-    draw_panel(c, atlas, panel_x, panel_y, panel_w, panel_h)
-    draw_title_bar(c, atlas, panel_x + 20, panel_y + 16, panel_w - 40, 32,
-                   "SKILL TREE")
-    draw_close_x(c, atlas, panel_x + panel_w - 36, panel_y + 22, scale=2)
-
-    # Header text: available points.
-    draw_text(c, panel_x + 24, panel_y + 64,
+    draw_text(c, PANEL_X + 24, CONTENT_Y,
               "3 POINTS AVAILABLE",
               rgba=(255, 240, 200, 255), scale=2)
 
-    # Node layout: three branches (MINING / CRAFTING / EXPLORATION)
-    # emanating from a central root node near the top of the work area.
-    # Each entry: id, label, x, y, state, links-to-ids.
+    tree_top_y = CONTENT_Y + 40
+    cx = PANEL_X + PANEL_W // 2 - SLOT_PX // 2
+
     nodes = [
-        ("root",      "BASICS",       panel_x + panel_w // 2 - SLOT_PX // 2, panel_y + 110, "selected", []),
+        ("root", "BASICS", cx, tree_top_y, "selected", []),
 
         # Mining branch (left).
-        ("m1", "STONE",     panel_x + 140, panel_y + 200, "selected", ["root"]),
-        ("m2", "ORE",       panel_x + 100, panel_y + 280, "normal",   ["m1"]),
-        ("m3", "IRON",      panel_x + 180, panel_y + 280, "selected", ["m1"]),
-        ("m4", "MASTER",    panel_x + 140, panel_y + 360, "disabled", ["m2", "m3"]),
+        ("m1", "STONE",  PANEL_X + 200, tree_top_y + 90,  "selected", ["root"]),
+        ("m2", "ORE",    PANEL_X + 150, tree_top_y + 180, "normal",   ["m1"]),
+        ("m3", "IRON",   PANEL_X + 250, tree_top_y + 180, "selected", ["m1"]),
+        ("m4", "MASTER", PANEL_X + 200, tree_top_y + 270, "disabled", ["m2", "m3"]),
 
         # Crafting branch (centre).
-        ("c1", "WORKBENCH", panel_x + panel_w // 2 - SLOT_PX // 2, panel_y + 200, "selected", ["root"]),
-        ("c2", "TOOLS",     panel_x + panel_w // 2 - SLOT_PX // 2 - 50, panel_y + 280, "normal",   ["c1"]),
-        ("c3", "FURNACE",   panel_x + panel_w // 2 - SLOT_PX // 2 + 50, panel_y + 280, "normal",   ["c1"]),
-        ("c4", "FORGE",     panel_x + panel_w // 2 - SLOT_PX // 2, panel_y + 360, "disabled", ["c2", "c3"]),
+        ("c1", "WORKBENCH", cx,        tree_top_y + 90,  "selected", ["root"]),
+        ("c2", "TOOLS",     cx - 60,   tree_top_y + 180, "normal",   ["c1"]),
+        ("c3", "FURNACE",   cx + 60,   tree_top_y + 180, "normal",   ["c1"]),
+        ("c4", "FORGE",     cx,        tree_top_y + 270, "disabled", ["c2", "c3"]),
 
-        # Exploration / fishing branch (right).
-        ("e1", "FISHING",   panel_x + panel_w - 200, panel_y + 200, "normal",   ["root"]),
-        ("e2", "BAITS",     panel_x + panel_w - 240, panel_y + 280, "disabled", ["e1"]),
-        ("e3", "NETS",      panel_x + panel_w - 160, panel_y + 280, "disabled", ["e1"]),
-        ("e4", "LEGENDS",   panel_x + panel_w - 200, panel_y + 360, "disabled", ["e2", "e3"]),
+        # Exploration branch (right).
+        ("e1", "FISHING", PANEL_X + PANEL_W - 240, tree_top_y + 90,  "normal",   ["root"]),
+        ("e2", "BAITS",   PANEL_X + PANEL_W - 290, tree_top_y + 180, "disabled", ["e1"]),
+        ("e3", "NETS",    PANEL_X + PANEL_W - 190, tree_top_y + 180, "disabled", ["e1"]),
+        ("e4", "LEGENDS", PANEL_X + PANEL_W - 240, tree_top_y + 270, "disabled", ["e2", "e3"]),
     ]
-
-    # Index by id for link lookup.
     by_id = {n[0]: n for n in nodes}
 
-    # Draw links first so they sit behind the node sprites.
+    # Branch headers between the root and the first row of branch nodes.
+    draw_text(c, PANEL_X + 160, tree_top_y + 60, "MINING",
+              rgba=(160, 130, 90, 255), scale=1)
+    draw_text(c, cx - 26, tree_top_y + 60, "CRAFTING",
+              rgba=(160, 130, 90, 255), scale=1)
+    draw_text(c, PANEL_X + PANEL_W - 290, tree_top_y + 60, "EXPLORATION",
+              rgba=(160, 130, 90, 255), scale=1)
+
+    # Links first so they sit behind the nodes.
     for n in nodes:
         _id, _label, nx, ny, state, links = n
         for lid in links:
@@ -785,8 +889,6 @@ def render_skills(atlas):
             ay = ln[3] + SLOT_PX // 2
             bx = nx + SLOT_PX // 2
             by_ = ny + SLOT_PX // 2
-            # Bresenham-ish line; colour reflects whether the downstream
-            # node is unlocked.
             colour = (180, 150, 90, 255) if state != "disabled" else (90, 78, 60, 255)
             steps = max(abs(bx - ax), abs(by_ - ay), 1)
             for s in range(steps + 1):
@@ -796,12 +898,10 @@ def render_skills(atlas):
                 put_rgba(c, px, py, colour)
                 put_rgba(c, px + 1, py, colour)
 
-    # Now the nodes themselves.
+    # Nodes.
     for n in nodes:
         _id, label, nx, ny, state, _links = n
         draw_slot(c, atlas, nx, ny, state=state, item=None, count=0)
-        # Inner glyph: paint a small coloured square to suggest the
-        # skill icon. Same trick as item slots in the inventory.
         glyph_colour = {
             "selected": (245, 212,  71, 255),
             "normal":   (180, 150,  90, 255),
@@ -810,26 +910,16 @@ def render_skills(atlas):
         pad = SLOT_PX // 4
         fill_rgba_rect(c, nx + pad, ny + pad,
                        SLOT_PX - pad * 2, SLOT_PX - pad * 2, glyph_colour)
-        # Label below.
         tw = text_width(label, scale=1)
         lcol = (255, 240, 200, 255) if state == "selected" else (160, 130, 90, 255)
         draw_text(c, nx + (SLOT_PX - tw) // 2, ny + SLOT_PX + 4,
                   label, rgba=lcol, scale=1)
 
-    # Bottom buttons.
-    btn_y = panel_y + panel_h - 60
-    draw_button(c, atlas, panel_x + 24, btn_y, 160, 36,
+    btn_y = PANEL_Y + PANEL_H - 60
+    draw_button(c, atlas, PANEL_X + 24, btn_y, 160, 36,
                 "RESPEC", state="normal")
-    draw_button(c, atlas, panel_x + panel_w - 184, btn_y, 160, 36,
+    draw_button(c, atlas, PANEL_X + PANEL_W - 184, btn_y, 160, 36,
                 "CONFIRM", state="hover")
-
-    # Branch headers under the root.
-    draw_text(c, panel_x + 100, panel_y + 170, "MINING",
-              rgba=(160, 130, 90, 255), scale=1)
-    draw_text(c, panel_x + panel_w // 2 - 30, panel_y + 170, "CRAFTING",
-              rgba=(160, 130, 90, 255), scale=1)
-    draw_text(c, panel_x + panel_w - 240, panel_y + 170, "EXPLORATION",
-              rgba=(160, 130, 90, 255), scale=1)
 
     return W, H, c
 
