@@ -1137,12 +1137,15 @@ static void on_close(net_conn_t* conn, net_close_reason_t reason, void* user) {
      * always lands on the same file. Gated on cl->token[0] so
      * server-stamped 'guest-N' connections don't pollute the
      * saves dir; only real profile-bearing sessions persist.
-     * Also gated on cl->is_grounded so a tab-close during a fall /
-     * jetpack hop can't write an in-air pose - the next RESUME
-     * would drop the player back into the same fall, accumulating
-     * velocity over the join-time remesh stalls, until the bedrock
-     * rescue fires and lands them somewhere unrelated. */
-    if (cl->has_state && cl->token[0] && cl->name[0] && cl->is_grounded) {
+     *
+     * Per-user spec: save even when the player is mid-air. A hard
+     * browser refresh during a jump shouldn't silently throw the
+     * pose away - resuming a half-second into a fall is a much
+     * smaller surprise than respawning at the previous saved
+     * point. The bedrock-rescue rescue path already handles the
+     * edge case where the resumed pose lands inside terrain after
+     * a join-time remesh stall. */
+    if (cl->has_state && cl->token[0] && cl->name[0]) {
         saves_player_pose_t pose = {
             .body_id = cl->body_id,
             .pos_x   = cl->pos_x,
@@ -2636,10 +2639,17 @@ void server_tick(server_t* s) {
         for (int i = 0; i < SERVER_MAX_CLIENTS; ++i) {
             server_client_t* cl = &s->clients[i];
             if (!cl->conn || !cl->has_state || !cl->token[0] || !cl->name[0]) continue;
-            /* Skip mid-fall / mid-jetpack saves. The "client says not
-             * grounded" gate means the next RESUME can always trust
-             * the saved pose to be a place the player can stand. */
-            if (!cl->is_grounded) continue;
+            /* Per-user spec: save even mid-air. The previous
+             * !is_grounded skip was protecting against in-air
+             * resumes, but the cost was that a hard refresh during
+             * any jump / fall silently kept the stale prior pose -
+             * the player respawned wherever they were the LAST
+             * time they were grounded, which felt like position
+             * loss. Saving mid-fall means RESUME may drop them a
+             * fraction of a second into a fall; that's a smaller
+             * surprise than warping back to an old position. The
+             * bedrock-rescue path handles the rare case where the
+             * resumed pose lands inside remeshed terrain. */
             const double dx = cl->pos_x - cl->last_saved_pos_x;
             const double dy = cl->pos_y - cl->last_saved_pos_y;
             const double dz = cl->pos_z - cl->last_saved_pos_z;

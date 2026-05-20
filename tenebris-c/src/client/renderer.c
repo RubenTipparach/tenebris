@@ -202,6 +202,16 @@ static struct {
     sg_view     water_normal_view;
     sg_sampler  water_normal_smp;
 
+    /* Per-cell flow-direction arrow texture for the F5 debug overlay.
+     * Pixel-art arrow pointing in +U, baked by
+     * tools/gen-water-flow-arrow.py. The overlay draws one textured
+     * quad per water cell with non-zero flow direction, oriented so
+     * +U aligns with the flow vector. */
+    sg_image    flow_arrow_img;
+    sg_view     flow_arrow_view;
+    sg_sampler  flow_arrow_smp;
+    sgl_pipeline flow_arrow_pip;
+
     /* Shared linear-clamp sampler for the per-body distant LOD
      * textures (albedo + normal). One sampler binding satisfies both
      * texture slots; per-body image/view live in chunked_body_t. */
@@ -542,6 +552,71 @@ static void load_water_normal(void) {
         .wrap_u = SG_WRAP_REPEAT,
         .wrap_v = SG_WRAP_CLAMP_TO_EDGE,
         .label = "distant-lod-sampler",
+    });
+}
+
+/* Load the F5 flow-arrow overlay texture. Same pattern as
+ * load_water_normal: read the PNG, upload via sg_make_image, build a
+ * NEAREST sampler so the pixel-art arrow stays crisp instead of
+ * smearing when the quad is sampled at non-integer pixel ratios. */
+static void load_flow_arrow(void) {
+    stbi_set_flip_vertically_on_load(0);
+    int w = 0, h = 0, c = 0;
+    unsigned char* pix = stbi_load("assets/textures/water_flow_arrow.png",
+                                     &w, &h, &c, 4);
+    static const unsigned char fallback[4] = { 255, 255, 255, 0 };
+    const unsigned char* upload = pix;
+    if (!pix) {
+        printf("[renderer] WARNING: assets/textures/water_flow_arrow.png "
+               "missing; F5 flow-debug overlay will be invisible\n");
+        upload = fallback;
+        w = h = 1;
+    }
+    fflush(stdout);
+    R.flow_arrow_img = sg_make_image(&(sg_image_desc){
+        .width = w, .height = h,
+        .pixel_format = SG_PIXELFORMAT_RGBA8,
+        .data.mip_levels[0] = { .ptr = upload, .size = (size_t)(w * h * 4) },
+        .label = "flow-arrow",
+    });
+    R.flow_arrow_view = sg_make_view(&(sg_view_desc){
+        .texture.image = R.flow_arrow_img,
+        .label = "flow-arrow-view",
+    });
+    R.flow_arrow_smp = sg_make_sampler(&(sg_sampler_desc){
+        .min_filter = SG_FILTER_NEAREST,
+        .mag_filter = SG_FILTER_NEAREST,
+        .wrap_u = SG_WRAP_CLAMP_TO_EDGE,
+        .wrap_v = SG_WRAP_CLAMP_TO_EDGE,
+        .label = "flow-arrow-sampler",
+    });
+    if (pix) stbi_image_free(pix);
+    /* The sgl_pipeline for this texture is lazy-created on first
+     * F5 draw via ensure_flow_arrow_pip() - sgl_setup runs later
+     * than renderer_init in init_pipelines_and_data, so calling
+     * sgl_make_pipeline here would fire against an uninitialised
+     * sokol_gl context. */
+}
+
+/* Lazy-create the textured-quad pipeline used by the F5 flow-arrow
+ * overlay. Mirrors ensure_outline_pip() - only runs after sgl_setup
+ * has run (mobile_ui_init in main_web.c init()), so we can't make the
+ * pipeline up-front in load_flow_arrow alongside the texture / view /
+ * sampler. */
+static void ensure_flow_arrow_pip(void) {
+    if (R.flow_arrow_pip.id != 0) return;
+    R.flow_arrow_pip = sgl_make_pipeline(&(sg_pipeline_desc){
+        .depth = {
+            .compare       = SG_COMPAREFUNC_LESS_EQUAL,
+            .write_enabled = false,
+        },
+        .colors[0].blend = {
+            .enabled         = true,
+            .src_factor_rgb  = SG_BLENDFACTOR_SRC_ALPHA,
+            .dst_factor_rgb  = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+            .src_factor_alpha= SG_BLENDFACTOR_ONE,
+            .dst_factor_alpha= SG_BLENDFACTOR_ONE,
+        },
     });
 }
 
@@ -925,6 +1000,7 @@ void renderer_init(void) {
 
     bake_atlas();
     load_water_normal();
+    load_flow_arrow();
     /* Per-chunk meshes are allocated lazily by ensure_chunks() once we
      * see the world tile count — keeps init cheap when there's nothing
      * to mesh yet (Tenebris's first frame). */
@@ -3144,17 +3220,28 @@ void renderer_draw_face_outline(mat4_t view, mat4_t proj,
 
 /* F5 water-flow debug overlay. Iterates every water cell in the active
  * body's world, asks world_water_flow_direction for the simulator-
- * computed direction, and draws a coloured arrow lying flat on the
- * cell's top cap pointing along that direction. Cells with no flow
- * (worldgen ocean, sources, sleeping cells) return false and we draw
- * nothing - the absence of an arrow IS the diagnostic. Use this to
- * verify that the simulator has actually populated origins for a cell
- * you'd expect to flow before assuming the renderer is the culprit.
+ * computed direction, and draws ONE textured arrow quad lying flat on
+ * the cell's top cap, oriented so the texture's +U axis (arrow tip)
+ * points along the flow direction.
+ *
+ * Cells with no flow (worldgen ocean, sources, sleeping cells) return
+ * false from world_water_flow_direction and we draw nothing - the
+ * absence of an arrow IS the diagnostic. Use this to verify the
+ * simulator computed origins for the cells you'd expect to flow
+ * before assuming the renderer / shader is at fault.
+ *
+ * Per-quad math:
+ *   forward = flow direction projected onto the tile tangent plane.
+ *   right   = cross(radial, forward) - the in-plane axis perpendicular
+ *             to flow, used as the quad's lateral half-extent.
+ *   The four corners (BL, BR, TR, TL) are at center +/- forward*half
+ *   +/- right*half, with texture coords mapping +U -> forward, +V ->
+ *   right (so the arrow tip lands on the +U=1 edge as designed in
+ *   tools/gen-water-flow-arrow.py).
  *
  * Cost: walks tile_count * WORLD_MAX_DEPTH cells. Most are air; the
  * BLOCK_WATER check + the origin-list lookup short-circuit quickly.
- * Only flips on under F5 so the cost only lands when explicitly
- * requested. */
+ * Only runs while R_FLOW_DEBUG is on. */
 void renderer_draw_water_flow_debug(mat4_t view, mat4_t proj) {
     if (!R_FLOW_DEBUG) return;
     if (R.active_body_idx < 0) return;
@@ -3162,7 +3249,7 @@ void renderer_draw_water_flow_debug(mat4_t view, mat4_t proj) {
     const world_t* w = body->world;
     if (!w || !w->grid) return;
 
-    ensure_outline_pip();
+    ensure_flow_arrow_pip();
 
     sgl_defaults();
     sgl_matrix_mode_projection();
@@ -3172,20 +3259,19 @@ void renderer_draw_water_flow_debug(mat4_t view, mat4_t proj) {
     sgl_translate((float)w->body->pos_x,
                   (float)w->body->pos_y,
                   (float)w->body->pos_z);
-    sgl_load_pipeline(G_OUTLINE_PIP);
+    sgl_load_pipeline(R.flow_arrow_pip);
+    sgl_enable_texture();
+    sgl_texture(R.flow_arrow_view, R.flow_arrow_smp);
 
-    sgl_begin_lines();
-    /* Bright yellow against blue water - reads clearly through the
-     * translucent cap. */
-    sgl_c4f(1.0f, 0.95f, 0.1f, 1.0f);
+    /* Geometry knobs. Arrow fills most of a hex cell so it reads at
+     * eye height without being so big neighbours visually overlap.
+     * lift_m pushes the quad just above the water surface to avoid
+     * Z-fight against the cap mesh. */
+    const float half_m = 0.45f;
+    const float lift_m = 0.08f;
 
-    const float arrow_len_m  = 0.45f;   /* shaft length (m) */
-    const float head_len_m   = 0.18f;   /* arrowhead barb length */
-    const float head_angle   = 2.6f;    /* radians, ~150 deg from shaft */
-    const float lift_m       = 0.08f;   /* push above cap to avoid Z-fight */
-
-    const float cs = cosf(head_angle);
-    const float sn = sinf(head_angle);
+    sgl_begin_quads();
+    sgl_c4f(1.0f, 1.0f, 1.0f, 1.0f);
 
     for (int ti = 0; ti < w->tile_count; ++ti) {
         const goldberg_tile_t* t = goldberg_tile(w->grid, ti);
@@ -3196,18 +3282,13 @@ void renderer_draw_water_flow_debug(mat4_t view, mat4_t proj) {
             float flow_world[3];
             if (!world_water_flow_direction(w, ti, d, flow_world)) continue;
 
-            /* Cap surface position: tile centre direction * radius at
-             * top-of-cell, lifted slightly along radial so the arrow
-             * floats just above the water surface. */
+            /* Cap surface centre, lifted along radial. */
             double r_cap = world_depth_to_radius_m(w, d + 1) + (double)lift_m;
-            float bx = (float)(t->center.x * r_cap);
-            float by = (float)(t->center.y * r_cap);
-            float bz = (float)(t->center.z * r_cap);
+            float cx = (float)(t->center.x * r_cap);
+            float cy = (float)(t->center.y * r_cap);
+            float cz = (float)(t->center.z * r_cap);
 
-            /* Project flow onto the tangent plane of t->center (already
-             * unit), then re-normalize for stable length. flow_world is
-             * a unit vector pointing from the origin centroid toward
-             * the cell, so post-projection it stays close to unit. */
+            /* Forward = flow projected onto tile tangent plane. */
             float nx = (float)t->center.x;
             float ny = (float)t->center.y;
             float nz = (float)t->center.z;
@@ -3219,43 +3300,31 @@ void renderer_draw_water_flow_debug(mat4_t view, mat4_t proj) {
             if (fl < 1e-4f) continue;
             fx /= fl; fy /= fl; fz /= fl;
 
-            /* Side vector for the arrowhead barbs - cross flow with
-             * radial. */
-            float sx = fy*nz - fz*ny;
-            float sy = fz*nx - fx*nz;
-            float sz = fx*ny - fy*nx;
-            float sl = sqrtf(sx*sx + sy*sy + sz*sz);
-            if (sl > 1e-4f) { sx /= sl; sy /= sl; sz /= sl; }
+            /* Right = cross(radial, forward). Forward and radial are
+             * orthogonal and unit, so right is also unit - no second
+             * normalize needed. */
+            float rx = ny*fz - nz*fy;
+            float ry = nz*fx - nx*fz;
+            float rz = nx*fy - ny*fx;
 
-            float tipx = bx + fx * arrow_len_m;
-            float tipy = by + fy * arrow_len_m;
-            float tipz = bz + fz * arrow_len_m;
+            /* Corners. UV layout: tip (texture u=1) on +forward side,
+             * so the arrow points DOWN the flow direction. */
+            float pfx = fx * half_m, pfy = fy * half_m, pfz = fz * half_m;
+            float prx = rx * half_m, pry = ry * half_m, prz = rz * half_m;
 
-            /* Shaft. */
-            sgl_v3f(bx, by, bz);
-            sgl_v3f(tipx, tipy, tipz);
+            float blx = cx - pfx - prx, bly = cy - pfy - pry, blz = cz - pfz - prz;
+            float brx = cx + pfx - prx, bry = cy + pfy - pry, brz = cz + pfz - prz;
+            float trx = cx + pfx + prx, try_ = cy + pfy + pry, trz = cz + pfz + prz;
+            float tlx = cx - pfx + prx, tly = cy - pfy + pry, tlz = cz - pfz + prz;
 
-            /* Two arrowhead barbs swept back from the tip. Each barb
-             * vector = -flow*cos(head_angle) + side*sin(head_angle),
-             * mirrored across the shaft for the second barb. */
-            float bax = -fx * cs + sx * sn;
-            float bay = -fy * cs + sy * sn;
-            float baz = -fz * cs + sz * sn;
-            float bbx = -fx * cs - sx * sn;
-            float bby = -fy * cs - sy * sn;
-            float bbz = -fz * cs - sz * sn;
-
-            sgl_v3f(tipx, tipy, tipz);
-            sgl_v3f(tipx + bax * head_len_m,
-                    tipy + bay * head_len_m,
-                    tipz + baz * head_len_m);
-            sgl_v3f(tipx, tipy, tipz);
-            sgl_v3f(tipx + bbx * head_len_m,
-                    tipy + bby * head_len_m,
-                    tipz + bbz * head_len_m);
+            sgl_v3f_t2f(blx, bly, blz, 0.0f, 1.0f);
+            sgl_v3f_t2f(brx, bry, brz, 1.0f, 1.0f);
+            sgl_v3f_t2f(trx, try_, trz, 1.0f, 0.0f);
+            sgl_v3f_t2f(tlx, tly, tlz, 0.0f, 0.0f);
         }
     }
     sgl_end();
+    sgl_disable_texture();
 }
 
 void renderer_draw_water(mat4_t view, mat4_t proj, vec3_t camera_world) {

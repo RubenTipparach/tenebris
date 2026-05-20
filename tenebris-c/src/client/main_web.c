@@ -111,6 +111,31 @@ EM_JS(char*, tenebris_get_room_code, (void), {
  * canvas. CSS keeps it big, opaque, and unmistakable, plus the
  * browser handles touch / hover / focus for us. Click is forwarded
  * into C via Module.ccall onto tenebris_js_pause_pressed. */
+/* Stop the browser from intercepting F5 (page refresh). The F5 keydown
+ * event still reaches the canvas / sokol_app so our in-game handler can
+ * toggle the water-flow debug overlay; without this preventDefault the
+ * page just reloads and our handler never fires.
+ *
+ * Mounted on `window` in CAPTURE phase so the listener runs before any
+ * default browser behaviour - addEventListener's third arg `true`
+ * registers in the capture phase. We only preventDefault when the
+ * canvas has pointer focus (document.pointerLockElement matches the
+ * canvas), so the page can still be manually refreshed from the menu
+ * / pause state via F5.
+ *
+ * Keep this small - more browser-reserved keys (F11 fullscreen, Ctrl+R
+ * refresh) are intentionally left alone so the standard browser UX
+ * stays predictable. */
+EM_JS(void, tenebris_block_f5_refresh, (void), {
+    window.addEventListener('keydown', function(ev) {
+        if (ev.key === 'F5' &&
+            (document.pointerLockElement ||
+             document.activeElement && document.activeElement.id === 'canvas')) {
+            ev.preventDefault();
+        }
+    }, true);
+});
+
 EM_JS(void, tenebris_pause_button_install, (void), {
     if (document.getElementById('tenebris-pause-btn')) return;
     var btn = document.createElement('button');
@@ -618,6 +643,13 @@ static void init(void) {
     teleport_menu_set_player(&G.player);
 
 #ifdef __EMSCRIPTEN__
+    /* Stop the browser from refreshing the page when the player
+     * presses F5 (the water-flow debug overlay toggle). Without
+     * this the keydown still reaches our handler but the page
+     * reloads on top, so the user just sees "F5 does nothing".
+     * Installed on every device since desktop is the typical
+     * F5-user; mobile keyboards rarely have function keys. */
+    tenebris_block_f5_refresh();
     /* DOM overlays are mobile-only scaffolding per CLAUDE.md: the
      * pause button stands in for the Esc key, and the joystick +
      * action deck stand in for keyboard / mouse. The pause panel
