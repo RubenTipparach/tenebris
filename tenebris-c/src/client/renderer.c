@@ -3264,8 +3264,10 @@ static void flow_arrow_visit(int tile, int depth, void* user) {
     float flow_world[3];
     if (!world_water_flow_direction(w, tile, depth, flow_world)) return;
 
-    /* Cap centre, lifted ~1 m along radial so the arrow sits above
-     * the wave crests and nearby terrain. */
+    /* Cap centre, lifted a hair along radial so the arrow sits flush
+     * with the water surface without z-fighting the wave crests.
+     * BLOCK_HEIGHT is 1 m, so anything close to 1 puts the arrow a
+     * full hex above the water - keep this small. */
     double r_cap = world_depth_to_radius_m(w, depth + 1) + (double)ctx->lift_m;
     float cx = (float)(t->center.x * r_cap);
     float cy = (float)(t->center.y * r_cap);
@@ -3321,44 +3323,6 @@ static void flow_arrow_visit(int tile, int depth, void* user) {
     ++ctx->drawn;
 }
 
-/* Draw a cyan 3D X (three short crossed segments) at the cell centre,
- * marking it as a spawner / ocean block. Same line pipeline as the
- * magenta arrow path. Two perpendicular line segments in the tile
- * tangent plane, plus a small vertical tick for legibility from
- * straight above. */
-static void draw_spawn_x(const goldberg_tile_t* t, double r_cap) {
-    float cx = (float)(t->center.x * r_cap);
-    float cy = (float)(t->center.y * r_cap);
-    float cz = (float)(t->center.z * r_cap);
-    /* Two arbitrary in-plane axes (same recipe as the water shader's
-     * tangent basis). */
-    float nx = (float)t->center.x, ny = (float)t->center.y, nz = (float)t->center.z;
-    float ux = (fabsf(nx) > 0.9f) ? 0.0f : 1.0f;
-    float uy = (fabsf(nx) > 0.9f) ? 1.0f : 0.0f;
-    float uz = 0.0f;
-    float dn = ux*nx + uy*ny + uz*nz;
-    ux -= nx*dn; uy -= ny*dn; uz -= nz*dn;
-    float ul = sqrtf(ux*ux + uy*uy + uz*uz);
-    if (ul < 1e-4f) return;
-    ux /= ul; uy /= ul; uz /= ul;
-    float vx = ny*uz - nz*uy;
-    float vy = nz*ux - nx*uz;
-    float vz = nx*uy - ny*ux;
-
-    /* Diagonal arms = (u + v)/sqrt2 and (u - v)/sqrt2 so the X reads
-     * as an X rather than a + sign. Length ~0.45 m (slightly smaller
-     * than the arrow shaft so the two glyphs look proportional). */
-    const float L = 0.45f * 0.70710678f;
-    float a1x = (ux + vx) * L, a1y = (uy + vy) * L, a1z = (uz + vz) * L;
-    float a2x = (ux - vx) * L, a2y = (uy - vy) * L, a2z = (uz - vz) * L;
-
-    sgl_c4f(0.2f, 1.0f, 0.2f, 1.0f);  /* bright green X = ocean / spawn block */
-    sgl_v3f(cx - a1x, cy - a1y, cz - a1z);
-    sgl_v3f(cx + a1x, cy + a1y, cz + a1z);
-    sgl_v3f(cx - a2x, cy - a2y, cz - a2z);
-    sgl_v3f(cx + a2x, cy + a2y, cz + a2z);
-}
-
 void renderer_draw_water_flow_debug(mat4_t view, mat4_t proj) {
     if (!R_FLOW_DEBUG) return;
     if (R.active_body_idx < 0) return;
@@ -3379,60 +3343,16 @@ void renderer_draw_water_flow_debug(mat4_t view, mat4_t proj) {
 
     sgl_begin_lines();
 
-    /* Pass 1: magenta arrows on every cell that has an origin entry. */
-    flow_arrow_ctx_t ctx = { .w = w, .lift_m = 1.0f, .drawn = 0 };
+    /* Bright red arrow on every cell that has an origin entry,
+     * pointing along the flow direction. */
+    flow_arrow_ctx_t ctx = { .w = w, .lift_m = 0.05f, .drawn = 0 };
     world_water_origin_visit_all(w, flow_arrow_visit, &ctx);
-
-    /* Pass 2: cyan X on every spawn block (state==0 OR SOURCE-flagged)
-     * within ~80 m of the camera. The full-world walk would be O(tile
-     * * depth) = millions of cells per frame and tank perf with
-     * nothing to show for it - the camera-distance gate trims the
-     * work to the few tiles actually visible. */
-    vec3_t cw = R.env.camera_world;
-    vec3_t bw = body->world_pos;
-    double cam_lx = (double)(cw.x - bw.x);
-    double cam_ly = (double)(cw.y - bw.y);
-    double cam_lz = (double)(cw.z - bw.z);
-    const double max_d = 80.0;          /* metres */
-    const double max_d2 = max_d * max_d;
-    int x_drawn = 0;
-    for (int ti = 0; ti < w->tile_count; ++ti) {
-        const goldberg_tile_t* t = goldberg_tile(w->grid, ti);
-        if (!t) continue;
-        /* Tile centre at the planet's outer radius - cheap distance
-         * gate before the per-depth walk. */
-        double rs = w->body->radius_m;
-        double tx = t->center.x * rs;
-        double ty = t->center.y * rs;
-        double tz = t->center.z * rs;
-        double dx = tx - cam_lx, dy = ty - cam_ly, dz = tz - cam_lz;
-        if (dx*dx + dy*dy + dz*dz > max_d2) continue;
-        const uint8_t* col = &w->blocks[(size_t)ti * WORLD_MAX_DEPTH];
-        for (int d = 0; d < WORLD_MAX_DEPTH; ++d) {
-            if (col[d] != (uint8_t)BLOCK_WATER) continue;
-            uint8_t st = world_water_get_state(w, ti, d);
-            /* "Spawn block" per the user's mental model: state==0
-             * (worldgen / auto-promoted ocean) OR explicit SOURCE
-             * flag (placed source). Cells with origins are flow
-             * blocks and drew arrows above - skip them here. */
-            if (st != 0u && !water_state_is_source(st)) continue;
-            /* Skip cells covered by water directly above - their
-             * "top" is the upper cell's cap, not their own, so an
-             * X here would be buried inside the column. */
-            if (d + 1 < WORLD_MAX_DEPTH
-                && col[d + 1] == (uint8_t)BLOCK_WATER) continue;
-            double r_cap = world_depth_to_radius_m(w, d + 1) + 1.0;
-            draw_spawn_x(t, r_cap);
-            ++x_drawn;
-        }
-    }
 
     sgl_end();
 
     static double s_last_log_s = 0.0;
     if (R.time_seconds - s_last_log_s > 1.0) {
-        printf("[flow-debug] drew %d arrow(s) + %d spawn-X this frame\n",
-               ctx.drawn, x_drawn);
+        printf("[flow-debug] drew %d arrow(s) this frame\n", ctx.drawn);
         fflush(stdout);
         s_last_log_s = R.time_seconds;
     }

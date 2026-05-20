@@ -1074,17 +1074,16 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
 
     /* Water current force. When the player's body is submerged in a
      * flow cell (not a source or sleeping water - those have no flow
-     * direction), the cell's flow direction adds to the player's
-     * velocity. Project the world-space flow onto the player's
-     * tangent plane so the current is purely horizontal - no radial
-     * push that would shove the player up or down through the floor.
-     *
-     * The dt scaling makes this a force (velocity per second) rather
-     * than an impulse, so a player standing in a stream gets steadily
-     * pushed downstream regardless of framerate. Skipped entirely
-     * when not in water or when no flow direction is recorded for
-     * the cell (source cells, sleeping ocean, save-loaded legacy
-     * cells with empty origin lists). */
+     * direction), the cell's flow direction contributes to the same
+     * horizontal-step path WASD uses. Project the world-space flow
+     * onto the tangent plane so the current is purely horizontal,
+     * then feed it through try_horizontal_step alongside WASD so
+     * collision against walls / blocks is checked. Going via
+     * p->velocity instead would skip try_horizontal_step (the
+     * integrator at the end of player_update writes velocity * dt
+     * straight to position) and let the current push the player
+     * through geometry. */
+    dvec3_t water_push = (dvec3_t){0.0, 0.0, 0.0};
     if (has_world && body_in_water) {
         dvec3_t center = dvec3_make(p->body->pos_x, p->body->pos_y, p->body->pos_z);
         dvec3_t local  = dvec3_sub(p->position, center);
@@ -1105,9 +1104,7 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
                  * steady state. Tunable in the future as a YAML
                  * knob alongside the other water flow values. */
                 const double current_strength = 1.5;
-                p->velocity = dvec3_add(
-                    p->velocity,
-                    dvec3_scale(flow_d, current_strength * (double)dt));
+                water_push = dvec3_scale(flow_d, current_strength * (double)dt);
             }
         }
     }
@@ -1126,6 +1123,12 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
         double horiz_height = body_in_water ? 0.0 : player_height;
         p->position = try_horizontal_step(w, p, p->position, dvec3_scale(walk_fwd, walk_amt), horiz_height);
         p->position = try_horizontal_step(w, p, p->position, dvec3_scale(strafe,   strafe_amt), horiz_height);
+        /* Water current rides the same collision path - applies even
+         * with no WASD input, so a drifting player gets carried by the
+         * stream without phasing through the bank. */
+        if (dvec3_dot(water_push, water_push) > 1e-12) {
+            p->position = try_horizontal_step(w, p, p->position, water_push, horiz_height);
+        }
         dvec3_t local_dir = dvec3_normalize(player_local_pos(p));
         p->last_tile = goldberg_find_tile(w->grid, local_dir, p->last_tile);
     } else {
