@@ -534,9 +534,25 @@ void hex_mesh_build_water(hex_mesh_t* out, const world_t* w, int tile_idx) {
      * a special path. Torch-light is the user-facing reason: a torch
      * placed on a pier or shoreline now spills its warm circle onto
      * the water beside it, exactly like it spills onto the land. */
+    uint32_t v_before = (uint32_t)out->vertex_count;
     emit_cap(out, t, w, tile_idx, SEA_LEVEL_DEPTH - 1, BLOCK_WATER, true, 1.0f,
              -depth_off + height_off, true /* bake sky/torch lighting */,
              1.0f /* the water cap IS water */);
+    /* Ocean cells are spawn blocks - they don't flow, they're the source
+     * the simulator pulls water from. The water shader reads the vertex
+     * UV channel as a per-cell flow direction and pans the surface noise
+     * along it; emit_cap writes atlas-tile UVs (different per corner
+     * around the hex) which the shader would misinterpret as a radially
+     * varying flow vector, causing the noise pattern to visibly stretch
+     * outward from each tile centre. Zero the UVs here so the shader's
+     * flow_pan term collapses to zero and the ocean reads as static.
+     * Flow UVs are only written by hex_mesh_build_water_voxels for cells
+     * that actually have origin entries (i.e. user-placed water that
+     * spread away from a source). */
+    for (uint32_t vi = v_before; vi < out->vertex_count; ++vi) {
+        out->vertices[vi].uv[0] = 0.0f;
+        out->vertices[vi].uv[1] = 0.0f;
+    }
 }
 
 /* ----------------------------------------------------------------------- */
