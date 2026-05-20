@@ -1,4 +1,5 @@
 build-*/
+saves/
 third_party/sokol/
 third_party/stb/
 third_party/HandmadeMath/
