@@ -22,8 +22,9 @@
  *         on_craft_planks();
  *     }
  *
- *     pixel_ui_slot("slot_0", sx, sy, icon_tile, count, selected,
- *                   PIXEL_UI_SLOT_NORMAL);
+ *     pixel_ui_slot("slot_0", sx, sy, slot_w, slot_h,
+ *                   atlas_view, atlas_sampler, u0, v0, u1, v1,
+ *                   count, PIXEL_UI_SLOT_NORMAL);
  *
  *     pixel_ui_end();
  *
@@ -104,14 +105,16 @@ typedef enum {
 bool pixel_ui_button(const char* id, int x, int y, int w, int h,
                      const char* label, pixel_ui_button_state_t state);
 
-/* A clickable inventory slot. `atlas_view_id` + `atlas_sampler_id`
- * point at the texture the icon is sampled from (pass the terrain
- * atlas for block icons via renderer_atlas_view_id() /
+/* A clickable inventory slot. (x, y, w, h) is the destination rect
+ * in screen pixels - the slot sprite nine-slices to fit, so any size
+ * >= ~12 reads as a slot. `atlas_view_id` + `atlas_sampler_id` point
+ * at the texture the icon is sampled from (pass the terrain atlas
+ * for block icons via renderer_atlas_view_id() /
  * renderer_atlas_sampler_id(), or the item atlas when that lands).
  * `u0..v1` is the icon sub-rect in normalised UVs. count <= 0 hides
  * the count badge; count > 9000 is treated as "infinite" and the
  * badge is suppressed too. Returns true on click. */
-bool pixel_ui_slot(const char* id, int x, int y,
+bool pixel_ui_slot(const char* id, int x, int y, int w, int h,
                    uint32_t atlas_view_id, uint32_t atlas_sampler_id,
                    float u0, float v0, float u1, float v1,
                    int count, pixel_ui_slot_state_t state);

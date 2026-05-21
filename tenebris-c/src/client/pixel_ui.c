@@ -417,20 +417,15 @@ bool pixel_ui_button(const char* id, int x, int y, int w, int h,
     return clicked;
 }
 
-bool pixel_ui_slot(const char* id, int x, int y,
+bool pixel_ui_slot(const char* id, int x, int y, int w, int h,
                    uint32_t atlas_view_id, uint32_t atlas_sampler_id,
                    float u0, float v0, float u1, float v1,
                    int count, pixel_ui_slot_state_t state) {
     if (!G.ready || !G.atlas_ok) return false;
 
     const float fx = (float)x, fy = (float)y;
-    /* Slot size follows the sprite's native pixel size — the inventory
-     * grid lays slots out at this pitch; if you want a bigger slot,
-     * author a bigger slot sprite (or tile a smaller one with this
-     * call from a grid helper). */
-    const ui_config_t* ui = config_ui();
-    const float fw = (float)ui->sprites[UI_SPRITE_SLOT_NORMAL].w;
-    const float fh = (float)ui->sprites[UI_SPRITE_SLOT_NORMAL].h;
+    const float fw = (float)w, fh = (float)h;
+    if (fw <= 0.0f || fh <= 0.0f) return false;
 
     const bool disabled = (state == PIXEL_UI_SLOT_DISABLED);
     const bool hovered = !disabled
@@ -454,10 +449,13 @@ bool pixel_ui_slot(const char* id, int x, int y,
     draw_sprite(sprite, fx, fy, fw, fh);
 
     /* Icon: sample the caller-provided atlas (terrain atlas for block
-     * icons today; item atlas later) over the slot's inner area, which
-     * sits inside the 3-px frame. */
+     * icons, item atlas for crafted items) over the slot's inner
+     * area. The pad scales with the slot so a 24 px slot keeps the
+     * icon proportionally inset; floor at 2 px so tiny slots still
+     * leave the frame visible. */
     if (atlas_view_id != 0) {
-        const float pad = 3.0f;
+        float pad = fw / 6.0f;
+        if (pad < 2.0f) pad = 2.0f;
         sgl_load_pipeline(G.pip_tex);
         sgl_enable_texture();
         sgl_texture((sg_view){ .id = atlas_view_id },
@@ -515,7 +513,10 @@ void pixel_ui_demo_draw(void) {
     pixel_ui_title_bar(panel_x + 16, panel_y + 12, panel_w - 32, 22);
     pixel_ui_label    (panel_x + 28, panel_y + 17, "pixel-ui demo");
 
-    /* Slot row. */
+    /* Slot row. Slots draw at 32 x 32 to give the demo something
+     * chunky enough to eyeball - the runtime inventory picks its own
+     * slot size based on screen width. */
+    const int slot_size  = 32;
     const int slot_pitch = 40;
     for (int i = 0; i < 6; ++i) {
         const int sx = panel_x + 24 + i * slot_pitch;
@@ -529,7 +530,7 @@ void pixel_ui_demo_draw(void) {
             "demo_slot_0", "demo_slot_1", "demo_slot_2",
             "demo_slot_3", "demo_slot_4", "demo_slot_5",
         };
-        pixel_ui_slot(slot_ids[i], sx, sy,
+        pixel_ui_slot(slot_ids[i], sx, sy, slot_size, slot_size,
                       0, 0,      /* no icon atlas in the demo */
                       0, 0, 0, 0,
                       i * 3,     /* a fake stack count */

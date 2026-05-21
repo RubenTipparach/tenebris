@@ -15,19 +15,57 @@
 #include <string.h>
 
 /* ----------------------------------------------------------------------- */
-/* Layout constants - match the geometry in tools/gen-ui-mockups.py so the
- * shipped screens line up with what was approved in the design pass.
- * The PANEL_* are nominal sizes; the runtime clamps them to fit a small
- * screen (mobile / windowed). */
+/* Layout. Two presets: a full-sized desktop layout that matches the
+ * geometry in tools/gen-ui-mockups.py, and a compact mobile layout
+ * that fits a ~360 wide screen. compute_layout() picks one based on
+ * screen width every frame so a window resize flips presets live. */
 
-#define NOM_PANEL_W   1040
-#define NOM_PANEL_H    560
-#define TITLE_BAR_H     32
-#define TAB_W          200
-#define TAB_H           36
-#define TAB_GAP         12
-#define SLOT_PX         36     /* matches gen-ui-mockups.py SLOT_PX */
-#define SLOT_GAP         6
+typedef struct {
+    int panel_w, panel_h;
+    int title_bar_h;
+    int tab_w, tab_h, tab_gap;
+    int slot_px, slot_gap;
+    int pad;            /* inset between panel edge + content */
+    int tab_y;          /* tab-row y offset inside the panel */
+    int content_pad_y;  /* gap between tab row + content area */
+    bool mobile;
+} layout_t;
+
+static layout_t compute_layout(float screen_w, float screen_h) {
+    layout_t L;
+    /* 900 px is the threshold: above it the desktop sizes fit
+     * comfortably with margin, below it we hit the compact preset
+     * which pulls tab + slot sizes down. */
+    L.mobile = (screen_w < 900.0f);
+    if (L.mobile) {
+        L.panel_w       = (int)screen_w - 16;
+        L.panel_h       = (int)screen_h - 16;
+        L.title_bar_h   = 24;
+        L.tab_w         = 76;
+        L.tab_h         = 28;
+        L.tab_gap       = 4;
+        L.slot_px       = 26;
+        L.slot_gap      = 3;
+        L.pad           = 8;
+        L.tab_y         = 46;
+        L.content_pad_y = 12;
+    } else {
+        L.panel_w       = 1040;
+        L.panel_h       = 560;
+        L.title_bar_h   = 32;
+        L.tab_w         = 200;
+        L.tab_h         = 36;
+        L.tab_gap       = 12;
+        L.slot_px       = 36;
+        L.slot_gap      = 6;
+        L.pad           = 20;
+        L.tab_y         = 64;
+        L.content_pad_y = 16;
+    }
+    if (L.panel_w > (int)screen_w - 16) L.panel_w = (int)screen_w - 16;
+    if (L.panel_h > (int)screen_h - 16) L.panel_h = (int)screen_h - 16;
+    return L;
+}
 
 /* Tab order. The active tab is rendered with the hover sprite via
  * PIXEL_UI_BUTTON_ACTIVE; disabled tabs show the greyed sprite and
@@ -131,7 +169,7 @@ bool inventory_screen_event(const sapp_event* e) {
  * atlas, empty slots paint just the frame). */
 
 static void draw_slot_for(const inv_slot_t* s, const char* id,
-                          int x, int y,
+                          int x, int y, int w, int h,
                           pixel_ui_slot_state_t state) {
     uint32_t view = 0, samp = 0;
     float u0 = 0.0f, v0 = 0.0f, u1 = 1.0f, v1 = 1.0f;
@@ -169,7 +207,7 @@ static void draw_slot_for(const inv_slot_t* s, const char* id,
         display_count = 0;
     }
 
-    pixel_ui_slot(id, x, y, view, samp, u0, v0, u1, v1,
+    pixel_ui_slot(id, x, y, w, h, view, samp, u0, v0, u1, v1,
                   display_count, state);
 }
 
@@ -180,22 +218,22 @@ static void draw_slot_for(const inv_slot_t* s, const char* id,
 static void draw_inventory_tab(inventory_t* inv,
                                int panel_x, int panel_y,
                                int panel_w, int panel_h,
-                               int content_y) {
+                               int content_y,
+                               const layout_t* L) {
     /* Main inventory grid: 10 cols x 5 rows, centred under the tabs. */
     const int cols = INV_MAIN_COLS;
     const int rows = INV_MAIN_ROWS;
-    const int grid_w = cols * SLOT_PX + (cols - 1) * SLOT_GAP;
-    const int grid_h = rows * SLOT_PX + (rows - 1) * SLOT_GAP;
+    const int grid_w = cols * L->slot_px + (cols - 1) * L->slot_gap;
     const int grid_x = panel_x + (panel_w - grid_w) / 2;
-    const int grid_y = content_y + 30;
+    const int grid_y = content_y + (L->mobile ? 12 : 30);
 
     for (int r = 0; r < rows; ++r) {
         for (int c = 0; c < cols; ++c) {
             const int idx = r * cols + c;
-            const int sx = grid_x + c * (SLOT_PX + SLOT_GAP);
-            const int sy = grid_y + r * (SLOT_PX + SLOT_GAP);
+            const int sx = grid_x + c * (L->slot_px + L->slot_gap);
+            const int sy = grid_y + r * (L->slot_px + L->slot_gap);
             draw_slot_for(&inv->main[idx], G.id_main[idx], sx, sy,
-                          PIXEL_UI_SLOT_NORMAL);
+                          L->slot_px, L->slot_px, PIXEL_UI_SLOT_NORMAL);
         }
     }
 
@@ -203,75 +241,90 @@ static void draw_inventory_tab(inventory_t* inv,
      * hotbar slot keeps the gold accent so the player can confirm
      * what's currently in their hand without leaving the screen. */
     const int hb_cols = INV_HOTBAR_SLOTS;
-    const int hb_w = hb_cols * SLOT_PX + (hb_cols - 1) * SLOT_GAP;
+    const int hb_w = hb_cols * L->slot_px + (hb_cols - 1) * L->slot_gap;
     const int hb_x = panel_x + (panel_w - hb_w) / 2;
-    const int hb_y = grid_y + rows * (SLOT_PX + SLOT_GAP) + 36;
-    pixel_ui_label(hb_x, hb_y - 16, "HOTBAR");
+    const int hb_y = grid_y + rows * (L->slot_px + L->slot_gap)
+                   + (L->mobile ? 18 : 36);
+    pixel_ui_label(hb_x, hb_y - 12, "HOTBAR");
 
     for (int c = 0; c < hb_cols; ++c) {
-        const int sx = hb_x + c * (SLOT_PX + SLOT_GAP);
+        const int sx = hb_x + c * (L->slot_px + L->slot_gap);
         const pixel_ui_slot_state_t state =
             (c == inv->selected) ? PIXEL_UI_SLOT_SELECTED
                                  : PIXEL_UI_SLOT_NORMAL;
-        draw_slot_for(&inv->slots[c], G.id_hotbar[c], sx, hb_y, state);
+        draw_slot_for(&inv->slots[c], G.id_hotbar[c], sx, hb_y,
+                      L->slot_px, L->slot_px, state);
     }
 
-    pixel_ui_label(panel_x + 20, panel_y + panel_h - 22,
-                   "DRAG TO MOVE  /  I CLOSES  /  TAB SWITCHES SCREEN");
+    if (!L->mobile) {
+        pixel_ui_label(panel_x + 20, panel_y + panel_h - 22,
+                       "DRAG TO MOVE  /  E CLOSES  /  TAB SWITCHES SCREEN");
+    }
 }
 
 
 static void draw_crafting_tab(inventory_t* inv,
                               int panel_x, int panel_y,
                               int panel_w, int panel_h,
-                              int content_y) {
+                              int content_y,
+                              const layout_t* L) {
     /* Split: left half = compact inventory, right half = 3x3 craft
      * grid + output. Mirrors the layout in the crafting mockup. */
-    const int half_w  = (panel_w - 60) / 2;
-    const int left_x  = panel_x + 20;
-    const int right_x = panel_x + 30 + half_w + 10;
+    const int gap_between = L->mobile ? 8 : 20;
+    const int half_w  = (panel_w - 2 * L->pad - gap_between) / 2;
+    const int left_x  = panel_x + L->pad;
+    const int right_x = panel_x + L->pad + half_w + gap_between;
     const int split_y = content_y;
 
     pixel_ui_label(left_x,  split_y, "INVENTORY");
     pixel_ui_label(right_x, split_y, "CRAFTING");
 
     /* ---- Left: compact inventory + hotbar. ----
-     * 4 cols x 6 rows of the main grid (24 slots) - the rest is
+     * 4 cols x 6 rows of the main grid (24 slots); the rest is
      * reachable via the scroll affordance the design doc calls out
      * (sprites exist; no scroll behaviour yet). Hotbar below uses
      * the same slot size so the eye reads them as one bag. */
     const int cols = 4;
     const int rows = 6;
-    const int grid_w = cols * SLOT_PX + (cols - 1) * SLOT_GAP;
-    const int grid_h = rows * SLOT_PX + (rows - 1) * SLOT_GAP;
+    const int grid_w = cols * L->slot_px + (cols - 1) * L->slot_gap;
+    const int grid_h = rows * L->slot_px + (rows - 1) * L->slot_gap;
     const int grid_x = left_x + (half_w - grid_w) / 2;
-    const int grid_y = split_y + 30;
+    const int grid_y = split_y + (L->mobile ? 14 : 30);
 
     for (int r = 0; r < rows; ++r) {
         for (int c = 0; c < cols; ++c) {
             const int idx = r * cols + c;
             if (idx >= INV_MAIN_SLOTS) break;
-            const int sx = grid_x + c * (SLOT_PX + SLOT_GAP);
-            const int sy = grid_y + r * (SLOT_PX + SLOT_GAP);
+            const int sx = grid_x + c * (L->slot_px + L->slot_gap);
+            const int sy = grid_y + r * (L->slot_px + L->slot_gap);
             draw_slot_for(&inv->main[idx], G.id_main[idx], sx, sy,
-                          PIXEL_UI_SLOT_NORMAL);
+                          L->slot_px, L->slot_px, PIXEL_UI_SLOT_NORMAL);
         }
     }
 
-    /* Hotbar row below the compact grid, centred under the left
-     * half so its 9 slots stay flush. */
+    /* Hotbar row.
+     *   Desktop: centred under the left half so the 9 slots stay
+     *     flush against the compact inventory grid above them.
+     *   Mobile: spans the full panel width below the split halves,
+     *     because the 9 slots don't fit inside the narrow left half
+     *     of a phone screen. */
     const int hb_cols = INV_HOTBAR_SLOTS;
-    const int hb_w = hb_cols * SLOT_PX + (hb_cols - 1) * SLOT_GAP;
-    const int hb_x = left_x + (half_w - hb_w) / 2;
-    const int hb_y = grid_y + grid_h + 30;
-    pixel_ui_label(hb_x, hb_y - 16, "HOTBAR");
+    const int hb_w = hb_cols * L->slot_px + (hb_cols - 1) * L->slot_gap;
+    const int hb_x = L->mobile
+        ? (panel_x + (panel_w - hb_w) / 2)
+        : (left_x + (half_w - hb_w) / 2);
+    const int hb_y = L->mobile
+        ? (panel_y + panel_h - L->pad - L->slot_px)
+        : (grid_y + grid_h + 30);
+    pixel_ui_label(hb_x, hb_y - 12, "HOTBAR");
 
     for (int c = 0; c < hb_cols; ++c) {
-        const int sx = hb_x + c * (SLOT_PX + SLOT_GAP);
+        const int sx = hb_x + c * (L->slot_px + L->slot_gap);
         const pixel_ui_slot_state_t state =
             (c == inv->selected) ? PIXEL_UI_SLOT_SELECTED
                                  : PIXEL_UI_SLOT_NORMAL;
-        draw_slot_for(&inv->slots[c], G.id_hotbar[c], sx, hb_y, state);
+        draw_slot_for(&inv->slots[c], G.id_hotbar[c], sx, hb_y,
+                      L->slot_px, L->slot_px, state);
     }
 
     /* ---- Right: 3x3 personal crafting grid + output. ----
@@ -279,41 +332,56 @@ static void draw_crafting_tab(inventory_t* inv,
      * craft slots is the next chunk to land. */
     const int cr_cols = INV_CRAFT_COLS;
     const int cr_rows = INV_CRAFT_ROWS;
-    const int cr_w = cr_cols * SLOT_PX + (cr_cols - 1) * SLOT_GAP;
-    const int cr_h = cr_rows * SLOT_PX + (cr_rows - 1) * SLOT_GAP;
-    const int cr_x = right_x + 20;
-    const int cr_y = split_y + 50;
+    const int cr_w = cr_cols * L->slot_px + (cr_cols - 1) * L->slot_gap;
+    const int cr_h = cr_rows * L->slot_px + (cr_rows - 1) * L->slot_gap;
+    const int cr_x = right_x + (L->mobile ? 4 : 20);
+    const int cr_y = split_y + (L->mobile ? 26 : 50);
 
-    pixel_ui_label(cr_x, cr_y - 18, "PLACE INGREDIENTS");
+    pixel_ui_label(cr_x, cr_y - 14, "INGREDIENTS");
     for (int r = 0; r < cr_rows; ++r) {
         for (int c = 0; c < cr_cols; ++c) {
             const int idx = r * cr_cols + c;
-            const int sx = cr_x + c * (SLOT_PX + SLOT_GAP);
-            const int sy = cr_y + r * (SLOT_PX + SLOT_GAP);
+            const int sx = cr_x + c * (L->slot_px + L->slot_gap);
+            const int sy = cr_y + r * (L->slot_px + L->slot_gap);
             draw_slot_for(&inv->craft[idx], G.id_craft[idx], sx, sy,
-                          PIXEL_UI_SLOT_NORMAL);
+                          L->slot_px, L->slot_px, PIXEL_UI_SLOT_NORMAL);
         }
     }
 
-    /* Arrow + output slot to the right of the grid. */
-    const int arrow_x = cr_x + cr_w + 16;
-    const int arrow_y = cr_y + (cr_h / 2) - 8;
-    pixel_ui_label(arrow_x, arrow_y, ">");
+    /* Arrow + output slot to the right of the 3x3 grid.
+     * On mobile we drop the arrow under the grid (vertical) so the
+     * output slot can sit below; on desktop it stays inline. */
+    if (L->mobile) {
+        const int out_x = cr_x + (cr_w - L->slot_px) / 2;
+        const int out_y = cr_y + cr_h + 12;
+        pixel_ui_label(out_x - 4, out_y - 12, "OUTPUT");
+        draw_slot_for(&inv->craft_output, G.id_craft_output,
+                      out_x, out_y, L->slot_px, L->slot_px,
+                      PIXEL_UI_SLOT_NORMAL);
+        const int btn_w = (L->slot_px * 3) + (L->slot_gap * 2);
+        const int btn_y = out_y + L->slot_px + 10;
+        pixel_ui_button(G.id_craft_button, cr_x, btn_y, btn_w, L->tab_h,
+                        "CRAFT", PIXEL_UI_BUTTON_DISABLED);
+    } else {
+        const int arrow_x = cr_x + cr_w + 16;
+        const int arrow_y = cr_y + (cr_h / 2) - 8;
+        pixel_ui_label(arrow_x, arrow_y, ">");
 
-    const int out_x = arrow_x + 24;
-    const int out_y = cr_y + (cr_h - SLOT_PX) / 2;
-    pixel_ui_label(out_x - 4, out_y - 18, "OUTPUT");
-    draw_slot_for(&inv->craft_output, G.id_craft_output, out_x, out_y,
-                  PIXEL_UI_SLOT_NORMAL);
+        const int out_x = arrow_x + 24;
+        const int out_y = cr_y + (cr_h - L->slot_px) / 2;
+        pixel_ui_label(out_x - 4, out_y - 18, "OUTPUT");
+        draw_slot_for(&inv->craft_output, G.id_craft_output, out_x, out_y,
+                      L->slot_px, L->slot_px, PIXEL_UI_SLOT_NORMAL);
 
-    /* CRAFT button under the grid. Disabled today because recipe
-     * matching doesn't ship in this commit. */
-    const int btn_y = cr_y + cr_h + 40;
-    pixel_ui_button(G.id_craft_button, cr_x, btn_y, 160, 36,
-                    "CRAFT", PIXEL_UI_BUTTON_DISABLED);
+        const int btn_y = cr_y + cr_h + 40;
+        pixel_ui_button(G.id_craft_button, cr_x, btn_y, 160, 36,
+                        "CRAFT", PIXEL_UI_BUTTON_DISABLED);
+    }
 
-    pixel_ui_label(right_x + 20, panel_y + panel_h - 22,
-                   "PLACE ITEMS IN THE 3X3 GRID TO CRAFT");
+    if (!L->mobile) {
+        pixel_ui_label(right_x + 20, panel_y + panel_h - 22,
+                       "PLACE ITEMS IN THE 3X3 GRID TO CRAFT");
+    }
 }
 
 
@@ -333,59 +401,51 @@ void inventory_screen_draw(inventory_t* inv) {
 
     pixel_ui_begin();
 
-    /* Clamp the panel to fit small / windowed screens. */
-    int panel_w = NOM_PANEL_W;
-    int panel_h = NOM_PANEL_H;
-    if (panel_w > (int)sw - 20) panel_w = (int)sw - 20;
-    if (panel_h > (int)sh - 20) panel_h = (int)sh - 20;
-    const int panel_x = ((int)sw - panel_w) / 2;
-    const int panel_y = ((int)sh - panel_h) / 2;
+    const layout_t L = compute_layout(sw, sh);
+    const int panel_x = ((int)sw - L.panel_w) / 2;
+    const int panel_y = ((int)sh - L.panel_h) / 2;
 
-    pixel_ui_panel(panel_x, panel_y, panel_w, panel_h);
+    pixel_ui_panel(panel_x, panel_y, L.panel_w, L.panel_h);
 
     /* Title bar centred along the top of the panel. */
-    const int bar_x = panel_x + 20;
-    const int bar_y = panel_y + 16;
-    const int bar_w = panel_w - 40;
-    pixel_ui_title_bar(bar_x, bar_y, bar_w, TITLE_BAR_H);
+    const int bar_x = panel_x + L.pad;
+    const int bar_y = panel_y + L.pad / 2;
+    const int bar_w = L.panel_w - 2 * L.pad;
+    pixel_ui_title_bar(bar_x, bar_y, bar_w, L.title_bar_h);
 
     /* Title text - uses the active tab's label so the header stays
      * in sync with what's below. */
     const char* title = TABS[G.active].label;
-    /* Roughly centre the title text inside the bar. sokol_debugtext
-     * glyphs are 8x8 at scale 1; the label is drawn at scale 2 by
-     * pixel_ui_button's helper, but pixel_ui_label uses scale 1
-     * directly. Place at left + small inset for readability. */
-    pixel_ui_label(bar_x + 16, bar_y + 12, title);
+    pixel_ui_label(bar_x + 10, bar_y + (L.title_bar_h - 8) / 2, title);
 
     /* Tab bar centred under the title. The active tab uses the
      * hover sprite via PIXEL_UI_BUTTON_ACTIVE; disabled tabs (the
      * not-yet-implemented destinations) show the greyed sprite. */
-    const int tab_total = TAB_COUNT * TAB_W + (TAB_COUNT - 1) * TAB_GAP;
-    const int tab_x0 = panel_x + (panel_w - tab_total) / 2;
-    const int tab_y  = panel_y + 64;
+    const int tab_total = TAB_COUNT * L.tab_w + (TAB_COUNT - 1) * L.tab_gap;
+    const int tab_x0 = panel_x + (L.panel_w - tab_total) / 2;
+    const int tab_y  = panel_y + L.tab_y;
     for (int i = 0; i < TAB_COUNT; ++i) {
         pixel_ui_button_state_t st = PIXEL_UI_BUTTON_NORMAL;
         if (!TABS[i].enabled)        st = PIXEL_UI_BUTTON_DISABLED;
         else if ((tab_id_t)i == G.active) st = PIXEL_UI_BUTTON_ACTIVE;
 
-        const int x = tab_x0 + i * (TAB_W + TAB_GAP);
-        if (pixel_ui_button(G.id_tab[i], x, tab_y, TAB_W, TAB_H,
+        const int x = tab_x0 + i * (L.tab_w + L.tab_gap);
+        if (pixel_ui_button(G.id_tab[i], x, tab_y, L.tab_w, L.tab_h,
                             TABS[i].label, st)) {
             if (TABS[i].enabled) G.active = (tab_id_t)i;
         }
     }
 
-    const int content_y = tab_y + TAB_H + 16;
+    const int content_y = tab_y + L.tab_h + L.content_pad_y;
 
     switch (G.active) {
         case TAB_INVENTORY:
-            draw_inventory_tab(inv, panel_x, panel_y, panel_w, panel_h,
-                               content_y);
+            draw_inventory_tab(inv, panel_x, panel_y, L.panel_w, L.panel_h,
+                               content_y, &L);
             break;
         case TAB_CRAFTING:
-            draw_crafting_tab(inv, panel_x, panel_y, panel_w, panel_h,
-                              content_y);
+            draw_crafting_tab(inv, panel_x, panel_y, L.panel_w, L.panel_h,
+                              content_y, &L);
             break;
         case TAB_EQUIPMENT:
         case TAB_SKILLS:
