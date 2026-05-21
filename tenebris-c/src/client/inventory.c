@@ -9,7 +9,10 @@ void inventory_init_creative(inventory_t* inv) {
      * fresh creative session always has light one keypress away,
      * and the persistence path enforces the same invariant on every
      * restore - see inventory_ensure_reserved_torch. The rest is a
-     * sensible terrain palette. */
+     * sensible terrain palette, with water in the rightmost slot
+     * so the per-voxel flow simulator is one keypress away without
+     * needing the F2 debug toggle. Snow is still placeable via
+     * mining (every other slot's block is too). */
     inv->slots[0] = (inv_slot_t){ BLOCK_TORCH,  CREATIVE_COUNT };
     inv->slots[1] = (inv_slot_t){ BLOCK_STONE,  CREATIVE_COUNT };
     inv->slots[2] = (inv_slot_t){ BLOCK_DIRT,   CREATIVE_COUNT };
@@ -18,7 +21,7 @@ void inventory_init_creative(inventory_t* inv) {
     inv->slots[5] = (inv_slot_t){ BLOCK_WOOD,   CREATIVE_COUNT };
     inv->slots[6] = (inv_slot_t){ BLOCK_LEAVES, CREATIVE_COUNT };
     inv->slots[7] = (inv_slot_t){ BLOCK_ICE,    CREATIVE_COUNT };
-    inv->slots[8] = (inv_slot_t){ BLOCK_SNOW,   CREATIVE_COUNT };
+    inv->slots[8] = (inv_slot_t){ BLOCK_WATER,  CREATIVE_COUNT };
     inv->selected = 0;
 }
 
@@ -30,37 +33,26 @@ void inventory_ensure_reserved_torch(inventory_t* inv) {
     }
 }
 
-/* Debug-only water slot. Process-local memo of the slot's pre-debug
- * contents so toggling F2 off restores the original (snow in the
- * creative loadout, empty in survival) instead of dropping a creative
- * snow stack into a survival inventory the player never asked for. */
-static inv_slot_t s_debug_water_saved;
-static bool       s_debug_water_active = false;
-
-void inventory_set_debug_water(inventory_t* inv, bool enabled) {
+void inventory_ensure_reserved_water(inventory_t* inv) {
     if (!inv) return;
-    const int slot = INV_HOTBAR_SLOTS - 1;
-    if (enabled) {
-        if (!s_debug_water_active) {
-            s_debug_water_saved = inv->slots[slot];
-            s_debug_water_active = true;
-        }
-        inv->slots[slot].type  = BLOCK_WATER;
-        inv->slots[slot].count = CREATIVE_COUNT;
-    } else if (s_debug_water_active) {
-        inv->slots[slot] = s_debug_water_saved;
-        s_debug_water_active = false;
+    inv_slot_t* s = &inv->slots[INV_HOTBAR_SLOTS - 1];
+    if (s->type != BLOCK_WATER || s->count <= 0) {
+        s->type  = BLOCK_WATER;
+        s->count = CREATIVE_COUNT;
     }
 }
 
 void inventory_init_empty(inventory_t* inv) {
     memset(inv, 0, sizeof(*inv));
-    /* Survival starts with an empty hotbar so every block has to be
-     * mined. The one exception is torches: there's no crafting system
-     * yet, so without an unlimited torch slot players have no way to
-     * light caves at all. Slotted at index 0 so a fresh joiner sees a
-     * usable item the moment they spawn. */
+    /* Survival starts with an otherwise-empty hotbar so every solid
+     * block has to be mined. Two infinite exceptions: torches at
+     * slot 0 (no crafting system yet, players need a way to light
+     * caves) and water at the rightmost slot (it's a fluid - there's
+     * no "mine a water block to add to inventory" path for it, so
+     * gating it on creative mode would mean MP players never get
+     * to use the flow simulator at all). */
     inv->slots[0] = (inv_slot_t){ BLOCK_TORCH, CREATIVE_COUNT };
+    inv->slots[INV_HOTBAR_SLOTS - 1] = (inv_slot_t){ BLOCK_WATER, CREATIVE_COUNT };
     inv->selected = 0;
 }
 

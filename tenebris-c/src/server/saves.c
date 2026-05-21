@@ -357,6 +357,86 @@ static void migrate_chat_per_room_to_global(void) {
     audit_truncate(global_path);
 }
 
+/* Forward-declared so the player migration above the path helpers
+ * can use it. Defined alongside the rest of the on-disk path helpers. */
+static const char* room_dir_name(const char* room);
+
+/* Move any pre-migration <saves_dir>/players/<name>.dat into
+ * <saves_dir>/rooms/__public__/players/<name>.dat. Idempotent via
+ * a .players_migrated marker. Before this change, all rooms shared
+ * one /players directory keyed only by display name, so a player
+ * who logged out in room A and joined room B was warped to their
+ * room-A position. Folding the legacy files under __public__
+ * preserves the position of anyone who'd been on the (default)
+ * public room without leaking it into private rooms going
+ * forward. */
+static void migrate_players_to_per_room(void) {
+    if (!G_saves_dir) return;
+    char marker[512];
+    snprintf(marker, sizeof marker, "%s/.players_migrated", G_saves_dir);
+    if (access(marker, F_OK) == 0) return;
+
+    char old_dir[512];
+    snprintf(old_dir, sizeof old_dir, "%s/players", G_saves_dir);
+    DIR* d = opendir(old_dir);
+    if (!d) {
+        FILE* f = fopen(marker, "wb");
+        if (f) { fputs("ok\n", f); fclose(f); }
+        return;
+    }
+
+    char new_dir[512];
+    snprintf(new_dir, sizeof new_dir, "%s/rooms/%s/players",
+             G_saves_dir, room_dir_name(NULL));
+    if (!mkdir_p(new_dir)) {
+        fprintf(stderr, "[saves] player migration: mkdir_p(%s) failed: %s\n",
+                new_dir, strerror(errno));
+        closedir(d);
+        return;
+    }
+
+    int moved = 0;
+    int skipped = 0;
+    struct dirent* e;
+    while ((e = readdir(d)) != NULL) {
+        if (e->d_name[0] == '.') continue;
+        const char* dot = strrchr(e->d_name, '.');
+        if (!dot || strcmp(dot, ".dat") != 0) continue;
+        char src[700];
+        char dst[700];
+        snprintf(src, sizeof src, "%s/%s", old_dir, e->d_name);
+        snprintf(dst, sizeof dst, "%s/%s", new_dir, e->d_name);
+        if (access(dst, F_OK) == 0) {
+            /* A per-room save already exists for this player in the
+             * public room - keep the newer one, drop the legacy one
+             * to avoid an unexpected pose revert. */
+            unlink(src);
+            ++skipped;
+            continue;
+        }
+        if (rename(src, dst) == 0) {
+            ++moved;
+        } else {
+            fprintf(stderr, "[saves] player migration: rename %s -> %s failed: %s\n",
+                    src, dst, strerror(errno));
+        }
+    }
+    closedir(d);
+
+    FILE* mf = fopen(marker, "wb");
+    if (mf) {
+        fprintf(mf, "moved=%d skipped=%d\n", moved, skipped);
+        fclose(mf);
+    }
+    printf("[saves] player migration: moved %d legacy player file(s) "
+           "into rooms/%s/players (skipped %d already-migrated)\n",
+           moved, room_dir_name(NULL), skipped);
+    fflush(stdout);
+    /* Try to drop the now-empty legacy dir. rmdir fails harmlessly
+     * if anything is still in it (e.g. a stale tmpfile). */
+    rmdir(old_dir);
+}
+
 /* On boot, walk sessions.log and write a "logout" event for any
  * (name, room) whose most recent event was a login - those sessions
  * never paired with a logout / timeout and would render forever as
@@ -535,13 +615,6 @@ bool saves_init(const char* saves_dir) {
         G_saves_dir = NULL;
         return false;
     }
-    char players[512];
-    snprintf(players, sizeof players, "%s/players", saves_dir);
-    if (!mkdir_p(players)) {
-        fprintf(stderr, "[saves] FATAL: cannot create players dir '%s'\n", players);
-        G_saves_dir = NULL;
-        return false;
-    }
     /* Writability probe. Round-trip a tiny sentinel through the same
      * write_atomic path the real saves use - if /data is mounted
      * read-only or the volume isn't actually attached, surface it
@@ -568,6 +641,11 @@ bool saves_init(const char* saves_dir) {
      * in-game backlog and the /chat endpoint agree. Idempotent and
      * gated on a marker file. */
     migrate_chat_per_room_to_global();
+    /* Fold any legacy global player saves into the public-room scope so
+     * existing players keep their position on the public lobby. New
+     * saves are written per-room from this point on; the marker file
+     * prevents the migration from re-running. */
+    migrate_players_to_per_room();
     /* Close any login events that never paired with a logout / timeout
      * before the previous shutdown. The dashboard would otherwise
      * keep showing them as "live" forever - the live server is fresh
@@ -1196,17 +1274,33 @@ static bool name_to_key(const char* name, char* out, size_t cap) {
     return o > 0;
 }
 
-static bool player_path_for_name(char* out, size_t cap, const char* name) {
-    char key[64];
-    if (!name_to_key(name, key, sizeof key)) return false;
-    int n = snprintf(out, cap, "%s/players/%s.dat", G_saves_dir, key);
+static bool player_dir_for_room(char* out, size_t cap, const char* room) {
+    int n = snprintf(out, cap, "%s/rooms/%s/players",
+                     G_saves_dir, room_dir_name(room));
     return n > 0 && (size_t)n < cap;
 }
 
-bool saves_write_player(const char* name, const saves_player_pose_t* pose) {
+static bool player_path_for(char* out, size_t cap,
+                              const char* room, const char* name) {
+    char key[64];
+    if (!name_to_key(name, key, sizeof key)) return false;
+    int n = snprintf(out, cap, "%s/rooms/%s/players/%s.dat",
+                     G_saves_dir, room_dir_name(room), key);
+    return n > 0 && (size_t)n < cap;
+}
+
+bool saves_write_player(const char* room, const char* name,
+                          const saves_player_pose_t* pose) {
     if (!G_saves_dir || !pose) return false;
+    char dir[512];
+    if (!player_dir_for_room(dir, sizeof dir, room)) return false;
+    if (!mkdir_p(dir)) {
+        fprintf(stderr, "[saves] write_player mkdir_p(%s) failed: %s\n",
+                dir, strerror(errno));
+        return false;
+    }
     char path[512];
-    if (!player_path_for_name(path, sizeof path, name)) return false;
+    if (!player_path_for(path, sizeof path, room, name)) return false;
     /* On-disk layout matches the in-memory struct; both server and
      * future loader see the same C ABI. Bump SAVES_PLAYER_VERSION
      * when fields shift. */
@@ -1215,10 +1309,11 @@ bool saves_write_player(const char* name, const saves_player_pose_t* pose) {
     return write_atomic(path, &out, sizeof out);
 }
 
-bool saves_load_player(const char* name, saves_player_pose_t* out) {
+bool saves_load_player(const char* room, const char* name,
+                         saves_player_pose_t* out) {
     if (!G_saves_dir || !out) return false;
     char path[512];
-    if (!player_path_for_name(path, sizeof path, name)) return false;
+    if (!player_path_for(path, sizeof path, room, name)) return false;
     FILE* f = fopen(path, "rb");
     if (!f) return false;
     saves_player_pose_t buf;

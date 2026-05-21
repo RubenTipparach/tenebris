@@ -1137,7 +1137,19 @@ static void maybe_prime_mode_for_state(void) {
          * crafting system. */
         G.player.survival_mode = true;
         inventory_init_empty(&G.player.inventory);
-        printf("[main] entered MP - survival mode + empty hotbar (torches granted)\n");
+        /* Drop any stale pose left over from a prior session (SP world,
+         * previous MP server, boot default). MP spawn is fully
+         * server-authoritative: maybe_apply_mp_spawn overwrites this
+         * the frame WELCOME lands, and the mp_loading branch in frame()
+         * pauses physics + the loading overlay hides the canvas in the
+         * meantime, so the player never sees the sentinel. Without this
+         * reset, the brief window between menu->MP and WELCOME would
+         * leave the player at their previous position - the exact
+         * "local position carrying over" the user reported. */
+        G.player.position = (dvec3_t){0};
+        G.player.velocity = (dvec3_t){0};
+        printf("[main] entered MP - survival mode + empty hotbar (torches granted), "
+               "pose cleared pending server WELCOME\n");
     } else if (s == GAME_IN_GAME_SP) {
         /* SP stays creative by default; the G key still toggles
          * survival mid-session if the player wants the challenge. */
@@ -1364,15 +1376,14 @@ static void maybe_apply_mp_spawn(void) {
     if (net_client_state() != NET_CLIENT_READY) return;
     const net_client_welcome_t* w = net_client_welcome();
     if (!w) return;
-    /* Sentinel: server always fills spawn with either the default
-     * pole spawn or a persisted pose, both of which are non-zero
-     * in at least one axis. Zero on all three means the WELCOME
-     * arrived without a meaningful spawn - leave the player where
-     * the client already placed them. */
-    if (w->spawn_x == 0.0 && w->spawn_y == 0.0 && w->spawn_z == 0.0) {
-        G_mp_spawn_applied = true;
-        return;
-    }
+    /* MP is server-authoritative on spawn. Whatever the WELCOME packet
+     * carries IS the player's starting pose - no local fallback, no
+     * "leave the client where it was" branch. The previous (0,0,0)
+     * sentinel let stale local pose (from a prior MP session or SP
+     * world) survive into a fresh server connection, which is exactly
+     * the cross-server position-leak the user reported. The server
+     * always fills the spawn fields (default pole, or a per-room
+     * persisted pose); trust it unconditionally. */
 
     dvec3_t spawn = (dvec3_t){ .x = w->spawn_x, .y = w->spawn_y, .z = w->spawn_z };
     /* Ground-snap: if the saved pose lives above the surface (which
@@ -2494,10 +2505,13 @@ static void frame(void) {
             if (pend_sel >= 0 && pend_sel < INV_HOTBAR_SLOTS) {
                 G.player.inventory.selected = pend_sel;
             }
-            /* Slot 0 (key "1") is the reserved torch slot - re-stamp
-             * it after any restore so a stale save can never leave
-             * the player without a light source. */
+            /* Slot 0 (key "1") is the reserved torch slot and the
+             * rightmost slot (key "9") is the reserved water spawner -
+             * re-stamp both after any restore so a stale save can never
+             * leave the player without a light source or fluid-sim
+             * placement tool. */
             inventory_ensure_reserved_torch(&G.player.inventory);
+            inventory_ensure_reserved_water(&G.player.inventory);
         }
         static uint16_t G_inv_last_type [9];
         static int16_t  G_inv_last_count[9];
@@ -2974,11 +2988,11 @@ static void event(const sapp_event* e) {
      * still get back in. */
     if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_F2) {
         G_debug_ui_visible = !G_debug_ui_visible;
-        /* Debug-only water placement: the rightmost hotbar slot turns
-         * into an infinite water source while F2 is on, so the player
-         * can exercise the per-voxel flow simulator. Toggling F2 off
-         * restores the slot's previous contents. */
-        inventory_set_debug_water(&G.player.inventory, G_debug_ui_visible);
+        /* Water placement is no longer gated on F2 - the inventory
+         * presets seat BLOCK_WATER in the rightmost slot for both
+         * creative and survival, so the flow simulator is always one
+         * keypress away. F2 still toggles the debug UI master so the
+         * dev panels / overlays stay hidden by default. */
         return;
     }
     /* The remaining debug shortcuts are no-ops while the debug UI is

@@ -717,11 +717,24 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
     bool was_in_space = p->is_in_space;
     p->is_in_space = (gq.body == NULL);
     if (gq.body && gq.body != p->body) {
-        /* Mid-flight body swap — keep the basis as-is and let the
-         * transition slerp align with the new planet's up. Reset
-         * basis_ready=false would yank the camera; we want smooth. */
+        /* Mid-flight body swap — keep the basis as-is and arm the
+         * transition slerp so the basis aligns smoothly with the new
+         * planet's up over the slerp window. Reset basis_ready=false
+         * would yank the camera; we want smooth.
+         *
+         * Without the arm, the next sync_basis_to_planet call would
+         * see a wildly different new_up (the new body's center could
+         * be thousands of metres away from the old one), exceed the
+         * 5 deg-per-frame anti-snap limit, fire the WARN log, strip
+         * tangential velocity, and snap the basis in one step. The
+         * user perceives that as an "occasional rotation correction
+         * snap" - happens any time the player is hovering at the
+         * boundary between two gravity wells (Tenebris <-> Luna)
+         * where small position changes flip the strongest-pull body
+         * back and forth. */
         p->body = gq.body;
         p->last_tile = -1;
+        p->transition_timer_s = L->roll_slerp_duration_s;
     }
 
     /* Hard fall-through safety net. The ground-snap overshoot rescue
@@ -1268,14 +1281,63 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
             }
         }
 
-        /* (Sink-through detector removed - the per-frame ground snap
-         * + ceiling clamp + horizontal headroom check below cover the
-         * legitimate "feet ended up inside solid" cases without the
-         * aggressive radial teleport the detector used to issue, which
-         * over-corrected on cave ceilings and other edge cases. If
-         * sink-through resurfaces, prefer fixing the root cause in
-         * the collision solver above rather than re-adding a brute-
-         * force radial snap here.) */
+        /* Voxel-containment resolve. If after all position updates the
+         * player's feet voxel is solid, terrain has penetrated the
+         * player (peer placed a block at their feet, lag-spike sank
+         * them, spawn warped them inside rock, etc). The four rescue
+         * gates below (small_step / warped / overshoot) try to predict
+         * WHY this happened. This check just asks "are you inside
+         * something?" directly, and if yes, pushes to the top of the
+         * run of stacked solids.
+         *
+         * Capped at step + body height (~2.4 m) so a player who drifted
+         * tangentially into a tall wall column doesn't get teleported
+         * to the wall top - we only resolve intersections the player
+         * could plausibly have stepped or dropped into. Larger ones
+         * fall through to the heuristic rescues.
+         *
+         * Replaces the placed_on branch we used to need below: that
+         * was a special case of "feet inside solid". This catches it
+         * and every cousin (lag, spawn-inside, etc) uniformly. */
+        {
+            const lod_config_t* L_v = config_lod();
+            const double VOXEL_RESOLVE_MAX_LIFT_M =
+                (double)L_v->step_height_m + (double)L_v->player_height_m;
+            int feet_depth = world_radius_to_depth(w, r);
+            if (feet_depth >= 0 && feet_depth < WORLD_MAX_DEPTH) {
+                block_t feet_block = world_get(w, cur_tile, feet_depth);
+                if (block_is_solid(feet_block)) {
+                    int d = feet_depth;
+                    while (d < WORLD_MAX_DEPTH
+                           && block_is_solid(world_get(w, cur_tile, d))) {
+                        ++d;
+                    }
+                    if (d < WORLD_MAX_DEPTH) {
+                        double new_r = world_depth_to_radius_m(w, d);
+                        double lift  = new_r - r;
+                        if (lift > 0.0 && lift <= VOXEL_RESOLVE_MAX_LIFT_M) {
+                            fprintf(stderr,
+                                    "[player] INFO: voxel-containment "
+                                    "resolve (body=%s tile=%d feet_d=%d "
+                                    "top_d=%d r=%.2f new_r=%.2f lift=%.2f)\n",
+                                    p->body->name, cur_tile, feet_depth,
+                                    d, r, new_r, lift);
+                            fflush(stderr);
+                            p->position = dvec3_add(
+                                dvec3_make(p->body->pos_x, p->body->pos_y, p->body->pos_z),
+                                dvec3_scale(local_dir, new_r));
+                            vel_tan = dvec3_sub(p->velocity,
+                                dvec3_scale(p->basis.up,
+                                    dvec3_dot(p->velocity, p->basis.up)));
+                            p->velocity = vel_tan;
+                            vy = 0.0;
+                            local = player_local_pos(p);
+                            r     = dvec3_length(local);
+                        }
+                    }
+                }
+            }
+        }
 
         /* Cave-aware ground snap. The walkable floor closest to the
          * player's feet wins (preferring at-or-below over above), so
@@ -1352,6 +1414,9 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
                 dvec3_make(p->body->pos_x, p->body->pos_y, p->body->pos_z));
             double r_prev = dvec3_length(prev_local);
             bool overshoot = (r_prev >= gr - 0.05) && (r < gr);
+            /* placed_on branch removed - the voxel-containment resolve
+             * above catches "block placed on me" and every other "feet
+             * ended up inside solid" case uniformly. */
             bool rescue    = small_step || warped || overshoot;
             /* Standard wading state: feet under water but grounded
              * on the seabed. Allowed (player still counts as
@@ -1365,7 +1430,7 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
                      * spawn rescues from glitchy-physics events). */
                     fprintf(stderr,
                             "[player] INFO: vertical-overshoot rescue "
-                            "(body=%s r=%.2f r_prev=%.2f gr=%.2f Δ=%.2f "
+                            "(body=%s r=%.2f r_prev=%.2f gr=%.2f delta=%.2f "
                             "warped=%d overshoot=%d)\n",
                             p->body->name, r, r_prev, gr, gr - r,
                             warped ? 1 : 0, overshoot ? 1 : 0);
