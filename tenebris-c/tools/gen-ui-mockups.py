@@ -323,23 +323,28 @@ def dim_scene_behind(canvas, x, y, w, h, alpha=120):
 # the slot helper paints as an inner cell + small accent stripe.
 
 ITEM_COLOURS = {
-    "log":      ((101,  64,  35, 255), (160, 110,  60, 255)),
-    "plank":    ((176, 134,  82, 255), (215, 175, 120, 255)),
-    "stick":    ((132,  92,  52, 255), (180, 140,  90, 255)),
-    "stone":    (( 96,  96,  98, 255), (160, 160, 162, 255)),
-    "ore":      ((205, 168,  73, 255), (245, 220, 140, 255)),
-    "iron":     ((140, 145, 150, 255), (210, 215, 220, 255)),
-    "grass":    (( 68, 130,  58, 255), (140, 195, 100, 255)),
-    "fish":     ((110, 150, 180, 255), (190, 220, 235, 255)),
-    "axe":      ((196, 198, 200, 255), (132,  92,  52, 255)),
-    "rod":      ((150, 110,  72, 255), (220, 220, 220, 255)),
-    "pickaxe":  ((200, 200, 210, 255), (132,  92,  52, 255)),
-    "helmet":   ((150, 152, 158, 255), (220, 220, 230, 255)),
-    "chest":    ((128, 100,  72, 255), (210, 175, 120, 255)),
-    "boots":    (( 80,  60,  44, 255), (160, 130,  90, 255)),
-    "shield":   ((110, 140, 170, 255), (220, 180,  80, 255)),
-    "torch":    ((230, 180,  80, 255), (255, 220, 140, 255)),
-    "coal":     (( 22,  22,  24, 255), ( 72,  72,  74, 255)),
+    "log":             ((101,  64,  35, 255), (160, 110,  60, 255)),
+    "plank":           ((176, 134,  82, 255), (215, 175, 120, 255)),
+    "stick":           ((132,  92,  52, 255), (180, 140,  90, 255)),
+    "stone":           (( 96,  96,  98, 255), (160, 160, 162, 255)),
+    "ore":             ((205, 168,  73, 255), (245, 220, 140, 255)),
+    "iron":            ((140, 145, 150, 255), (210, 215, 220, 255)),
+    "grass":           (( 68, 130,  58, 255), (140, 195, 100, 255)),
+    "fish":            ((110, 150, 180, 255), (190, 220, 235, 255)),
+    "axe":             ((196, 198, 200, 255), (132,  92,  52, 255)),
+    "rod":             ((150, 110,  72, 255), (220, 220, 220, 255)),
+    "pickaxe":         ((200, 200, 210, 255), (132,  92,  52, 255)),
+    "shovel":          ((180, 180, 184, 255), (132,  92,  52, 255)),
+    "prospecting_axe": ((180, 180, 184, 255), (245, 212,  71, 255)),
+    "helmet":          ((150, 152, 158, 255), (220, 220, 230, 255)),
+    "chest":           ((128, 100,  72, 255), (210, 175, 120, 255)),
+    "boots":           (( 80,  60,  44, 255), (160, 130,  90, 255)),
+    "shield":          ((110, 140, 170, 255), (220, 180,  80, 255)),
+    "torch":           ((230, 180,  80, 255), (255, 220, 140, 255)),
+    "coal":            (( 22,  22,  24, 255), ( 72,  72,  74, 255)),
+    "small_rock":      (( 96,  96,  98, 255), (170, 170, 174, 255)),
+    "grass_clip":      (( 68, 130,  58, 255), (140, 195, 100, 255)),
+    "flower":          ((220, 140, 200, 255), (240, 210,  80, 255)),
 }
 
 
@@ -384,21 +389,27 @@ TAB_GAP     = 12
 CONTENT_Y   = TAB_Y + TAB_H + 16
 
 TAB_LABELS = ["INVENTORY", "CRAFTING", "EQUIPMENT", "SKILLS"]
+# Which tabs are reachable today. Equipment + Skills are placeholders
+# rendered in the disabled sprite so the player can see they're coming
+# but can't click them yet. Mirrors the .enabled flag in
+# src/client/inventory_screen.c -- update both in lockstep.
+TAB_ENABLED = [True, True, False, False]
 
 
 def draw_tabs(canvas, atlas, active_idx):
     """Four-tab navigation row centred under the title bar. The active
-    tab is rendered in the hover sprite (gloss strip + bronze tint) so
-    it reads as "you are here" without inventing a new sprite. The
-    other three tabs use the normal sprite and act as nav buttons -
-    this is how the inventory screen surfaces its 'go to crafting /
-    equipment / skills' selectors and how the function screens link
-    back."""
+    tab uses the hover sprite, disabled tabs use the greyed sprite, the
+    rest use the normal sprite and act as live nav buttons."""
     total = len(TAB_LABELS) * TAB_W + (len(TAB_LABELS) - 1) * TAB_GAP
     start_x = PANEL_X + (PANEL_W - total) // 2
     for i, label in enumerate(TAB_LABELS):
         x = start_x + i * (TAB_W + TAB_GAP)
-        state = "hover" if i == active_idx else "normal"
+        if not TAB_ENABLED[i]:
+            state = "disabled"
+        elif i == active_idx:
+            state = "hover"
+        else:
+            state = "normal"
         draw_button(canvas, atlas, x, TAB_Y, TAB_W, TAB_H, label, state=state)
 
 
@@ -561,10 +572,14 @@ def render_inventory(atlas):
     grid_x = PANEL_X + (PANEL_W - grid_w) // 2
     grid_y = CONTENT_Y + 30
 
+    # First row showcases the new four starter tools; second row is raw
+    # / refined resources; third row is the clutter drops that'll land
+    # once the world clutter system ships.
     items = [
-        ("log", 12),    ("plank", 24),  ("stick", 9),   ("stone", 32),  ("ore", 4),
-        ("grass", 1),   None,           ("fish", 2),    ("coal", 8),    ("iron", 3),
-        None,           ("torch", 16),  None,           None,           None,
+        ("pickaxe", 1),    ("axe", 1),        ("shovel", 1),     ("prospecting_axe", 1),
+        ("torch", 16),     ("fish", 2),       ("ore", 4),        None,                   None,    None,
+        ("log", 12),       ("plank", 24),     ("stick", 9),      ("stone", 32),          ("coal", 8), ("iron", 3), None, None, None, None,
+        ("small_rock", 4), ("grass_clip", 3), ("flower", 2),     None,                   None,    None, None, None, None, None,
     ] + [None] * (cols * rows)
     for r in range(rows):
         for col in range(cols):
