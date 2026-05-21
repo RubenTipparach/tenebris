@@ -172,6 +172,46 @@ EM_JS(void, tenebris_pause_button_set_visible, (int visible), {
     if (b) b.style.visibility = visible ? 'visible' : 'hidden';
 });
 
+/* Mobile-only inventory button. Sits next to the pause button at the
+ * top-left corner so the player can reach both with the same thumb
+ * gesture. Uses the toolbox glyph as a stand-in chest emoji (Unicode
+ * doesn't ship a true treasure-chest character). Same DOM-only
+ * pattern as the pause button: tap fires through Module.ccall into
+ * tenebris_js_inventory_pressed which routes back into the
+ * inventory_screen module - same destination as Shift+E. */
+EM_JS(void, tenebris_inventory_button_install, (void), {
+    if (document.getElementById('tenebris-inventory-btn')) return;
+    var btn = document.createElement('button');
+    btn.id = 'tenebris-inventory-btn';
+    btn.textContent = '🧰';   /* U+1F9F0 toolbox emoji = chest stand-in */
+    btn.setAttribute('aria-label', 'Inventory');
+    btn.style.cssText =
+        'position:fixed;top:14px;left:86px;width:60px;height:60px;'
+      + 'border-radius:50%;border:3px solid #fff;'
+      + 'background:rgba(15,17,26,0.92);color:#fff;'
+      + 'font-size:30px;'
+      + 'display:flex;align-items:center;justify-content:center;'
+      + 'cursor:pointer;z-index:10;'
+      + 'touch-action:manipulation;'
+      + '-webkit-tap-highlight-color:transparent;'
+      + 'box-shadow:0 2px 6px rgba(0,0,0,0.5);'
+      + 'visibility:hidden;';
+    btn.addEventListener('click', function(ev) {
+        ev.preventDefault();
+        Module.ccall('tenebris_js_inventory_pressed', null, [], []);
+    });
+    btn.addEventListener('touchend', function(ev) {
+        ev.preventDefault();
+        Module.ccall('tenebris_js_inventory_pressed', null, [], []);
+    });
+    document.body.appendChild(btn);
+});
+
+EM_JS(void, tenebris_inventory_button_set_visible, (int visible), {
+    var b = document.getElementById('tenebris-inventory-btn');
+    if (b) b.style.visibility = visible ? 'visible' : 'hidden';
+});
+
 /* Top-right fullscreen toggle. Tap goes to fullscreen via the
  * Fullscreen API; the button hides itself the moment fullscreen
  * actually engages (via fullscreenchange listener) since there's
@@ -403,6 +443,19 @@ EMSCRIPTEN_KEEPALIVE
 void tenebris_js_pause_pressed(void) {
     menu_pause_toggle();
     if (menu_pause_active()) {
+        sapp_lock_mouse(false);
+        sapp_show_mouse(true);
+    }
+}
+
+/* JS-callable inventory toggle. Mirrors tenebris_js_pause_pressed:
+ * releases pointer lock when opening so the player can use the
+ * canvas-drawn slot widgets, restores it on close. Same destination
+ * the Shift+E keybind reaches, so the two input paths share state. */
+EMSCRIPTEN_KEEPALIVE
+void tenebris_js_inventory_pressed(void) {
+    inventory_screen_toggle();
+    if (inventory_screen_is_open()) {
         sapp_lock_mouse(false);
         sapp_show_mouse(true);
     }
@@ -660,6 +713,7 @@ static void init(void) {
      * the game's visual identity. */
     if (tenebris_is_mobile_device()) {
         tenebris_pause_button_install();
+        tenebris_inventory_button_install();
         tenebris_fullscreen_button_install();
         tenebris_mobile_controls_install();
     }
@@ -2876,10 +2930,14 @@ static void frame(void) {
         game_state_t st = menu_state();
         bool in_game = (st == GAME_IN_GAME_SP || st == GAME_IN_GAME_MP);
         bool show_mobile_dom = in_game && !menu_pause_active();
-        static int last_pause_btn = -1, last_mobile = -1, last_fullscreen_btn = -1;
+        static int last_pause_btn = -1, last_inventory_btn = -1, last_mobile = -1, last_fullscreen_btn = -1;
         if ((int)show_mobile_dom != last_pause_btn) {
             tenebris_pause_button_set_visible(show_mobile_dom ? 1 : 0);
             last_pause_btn = (int)show_mobile_dom;
+        }
+        if ((int)show_mobile_dom != last_inventory_btn) {
+            tenebris_inventory_button_set_visible(show_mobile_dom ? 1 : 0);
+            last_inventory_btn = (int)show_mobile_dom;
         }
         if ((int)show_mobile_dom != last_mobile) {
             tenebris_mobile_controls_set_visible(show_mobile_dom ? 1 : 0);
