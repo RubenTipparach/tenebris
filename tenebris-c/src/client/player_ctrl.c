@@ -717,11 +717,24 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
     bool was_in_space = p->is_in_space;
     p->is_in_space = (gq.body == NULL);
     if (gq.body && gq.body != p->body) {
-        /* Mid-flight body swap — keep the basis as-is and let the
-         * transition slerp align with the new planet's up. Reset
-         * basis_ready=false would yank the camera; we want smooth. */
+        /* Mid-flight body swap — keep the basis as-is and arm the
+         * transition slerp so the basis aligns smoothly with the new
+         * planet's up over the slerp window. Reset basis_ready=false
+         * would yank the camera; we want smooth.
+         *
+         * Without the arm, the next sync_basis_to_planet call would
+         * see a wildly different new_up (the new body's center could
+         * be thousands of metres away from the old one), exceed the
+         * 5 deg-per-frame anti-snap limit, fire the WARN log, strip
+         * tangential velocity, and snap the basis in one step. The
+         * user perceives that as an "occasional rotation correction
+         * snap" - happens any time the player is hovering at the
+         * boundary between two gravity wells (Tenebris <-> Luna)
+         * where small position changes flip the strongest-pull body
+         * back and forth. */
         p->body = gq.body;
         p->last_tile = -1;
+        p->transition_timer_s = L->roll_slerp_duration_s;
     }
 
     /* Hard fall-through safety net. The ground-snap overshoot rescue
