@@ -1352,7 +1352,26 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
                 dvec3_make(p->body->pos_x, p->body->pos_y, p->body->pos_z));
             double r_prev = dvec3_length(prev_local);
             bool overshoot = (r_prev >= gr - 0.05) && (r < gr);
-            bool rescue    = small_step || warped || overshoot;
+            /* Block-placed-on-me rescue: another player (or the local
+             * player, via a misclick) placed a block where this player
+             * was standing. The new block's floor sits one voxel up
+             * from where the player's feet were, which:
+             *   - fails small_step (a full voxel > step_height_m, the
+             *     0.6 m walk-up cap),
+             *   - fails overshoot (r_prev was AT the old floor, BELOW
+             *     the new one - r_prev >= gr - 0.05 is false),
+             * so without a dedicated branch the rescue doesn't fire,
+             * grounded flips false, and gravity drops the player
+             * straight through the world. Detection: the player was
+             * grounded last frame AND the new floor is meaningfully
+             * higher than current feet. Cap the lift at 2 voxels so a
+             * legitimate "fell into a deep pit" overshoot doesn't get
+             * teleported back up. */
+            const double PLACED_ON_MAX_LIFT_M = 2.0;
+            bool placed_on = before.valid && before.grounded
+                          && (gr - r) > step_h
+                          && (gr - r) < PLACED_ON_MAX_LIFT_M;
+            bool rescue    = small_step || warped || overshoot || placed_on;
             /* Standard wading state: feet under water but grounded
              * on the seabed. Allowed (player still counts as
              * grounded) so they can jump from the bottom. Fully
@@ -1366,9 +1385,10 @@ void player_update(player_ctrl_t* p, world_t* w, float dt) {
                     fprintf(stderr,
                             "[player] INFO: vertical-overshoot rescue "
                             "(body=%s r=%.2f r_prev=%.2f gr=%.2f Δ=%.2f "
-                            "warped=%d overshoot=%d)\n",
+                            "warped=%d overshoot=%d placed_on=%d)\n",
                             p->body->name, r, r_prev, gr, gr - r,
-                            warped ? 1 : 0, overshoot ? 1 : 0);
+                            warped ? 1 : 0, overshoot ? 1 : 0,
+                            placed_on ? 1 : 0);
                     fflush(stderr);
                 }
                 dvec3_t snapped_local = dvec3_scale(local_dir, gr);
