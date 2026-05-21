@@ -50,4 +50,11 @@ void   inventory_select(inventory_t* inv, int slot);
  * inventory restore so a stale save can never strip the torch slot. */
 void   inventory_ensure_reserved_torch(inventory_t* inv);
 
+/* Enforce the "rightmost slot is always the water spawner" invariant.
+ * Same reasoning as the torch reservation: water is the fluid-sim
+ * placement tool, there's no "mine a water block to add to inventory"
+ * path, so a restore that overwrote slot 8 with a picked-up block
+ * would leave the player with no way to use the flow simulator. */
+void   inventory_ensure_reserved_water(inventory_t* inv);
+
 #endif

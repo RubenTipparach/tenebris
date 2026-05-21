@@ -33,6 +33,15 @@ void inventory_ensure_reserved_torch(inventory_t* inv) {
     }
 }
 
+void inventory_ensure_reserved_water(inventory_t* inv) {
+    if (!inv) return;
+    inv_slot_t* s = &inv->slots[INV_HOTBAR_SLOTS - 1];
+    if (s->type != BLOCK_WATER || s->count <= 0) {
+        s->type  = BLOCK_WATER;
+        s->count = CREATIVE_COUNT;
+    }
+}
+
 void inventory_init_empty(inventory_t* inv) {
     memset(inv, 0, sizeof(*inv));
     /* Survival starts with an otherwise-empty hotbar so every solid

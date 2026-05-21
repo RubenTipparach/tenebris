@@ -2505,10 +2505,13 @@ static void frame(void) {
             if (pend_sel >= 0 && pend_sel < INV_HOTBAR_SLOTS) {
                 G.player.inventory.selected = pend_sel;
             }
-            /* Slot 0 (key "1") is the reserved torch slot - re-stamp
-             * it after any restore so a stale save can never leave
-             * the player without a light source. */
+            /* Slot 0 (key "1") is the reserved torch slot and the
+             * rightmost slot (key "9") is the reserved water spawner -
+             * re-stamp both after any restore so a stale save can never
+             * leave the player without a light source or fluid-sim
+             * placement tool. */
             inventory_ensure_reserved_torch(&G.player.inventory);
+            inventory_ensure_reserved_water(&G.player.inventory);
         }
         static uint16_t G_inv_last_type [9];
         static int16_t  G_inv_last_count[9];
