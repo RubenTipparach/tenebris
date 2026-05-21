@@ -183,12 +183,10 @@ EM_JS(void, tenebris_inventory_button_install, (void), {
     if (document.getElementById('tenebris-inventory-btn')) return;
     var btn = document.createElement('button');
     btn.id = 'tenebris-inventory-btn';
-    /* Package emoji (U+1F4E6) as the chest stand-in. Unicode doesn't
-     * ship a true treasure-chest character, and the toolbox emoji
-     * U+1F9F0 was Emoji 11.0 (2018) - older Androids fall back to
-     * tofu. The package is from Emoji 1.0 (2010) and lands on
-     * basically every device with a colour-emoji font. */
-    btn.textContent = '📦';
+    /* Toolbox emoji (U+1F9F0) as the chest stand-in - Unicode doesn't
+     * ship a true treasure-chest character, but the toolbox handle +
+     * front-latch render reads as "open this to find loot". */
+    btn.textContent = '🧰';
     btn.setAttribute('aria-label', 'Inventory');
     btn.style.cssText =
         'position:fixed;top:14px;left:86px;width:60px;height:60px;'

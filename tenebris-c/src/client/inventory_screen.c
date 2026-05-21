@@ -35,20 +35,35 @@ static layout_t compute_layout(float screen_w, float screen_h) {
     layout_t L;
     /* 900 px is the threshold: above it the desktop sizes fit
      * comfortably with margin, below it we hit the compact preset
-     * which pulls tab + slot sizes down. */
+     * which sizes slots + tabs to whatever the phone width allows. */
     L.mobile = (screen_w < 900.0f);
     if (L.mobile) {
         L.panel_w       = (int)screen_w - 16;
         L.panel_h       = (int)screen_h - 16;
         L.title_bar_h   = 24;
-        L.tab_w         = 76;
         L.tab_h         = 28;
         L.tab_gap       = 4;
-        L.slot_px       = 26;
         L.slot_gap      = 3;
         L.pad           = 8;
         L.tab_y         = 46;
         L.content_pad_y = 12;
+
+        /* Slot size on mobile is constrained by the 9-slot hotbar -
+         * the widest row. Pick the largest slot that still fits the
+         * hotbar inside the panel after padding + gaps, then clamp
+         * to 22..40 so tiny phones stay tappable and huge phablets
+         * don't get clown-shoes-sized cells. */
+        int hb_budget = L.panel_w - 2 * L.pad - 8 * L.slot_gap;
+        L.slot_px = hb_budget / 9;
+        if (L.slot_px < 22) L.slot_px = 22;
+        if (L.slot_px > 40) L.slot_px = 40;
+
+        /* Tab bar shrinks to whatever lets 4 tabs fit the panel width
+         * after pad+gap. Same idea as the hotbar - the row is the
+         * constraint, not a fixed number. */
+        int tab_budget = L.panel_w - 2 * L.pad - 3 * L.tab_gap;
+        L.tab_w = tab_budget / 4;
+        if (L.tab_w < 56) L.tab_w = 56;
     } else {
         L.panel_w       = 1040;
         L.panel_h       = 560;
@@ -220,21 +235,30 @@ static void draw_inventory_tab(inventory_t* inv,
                                int panel_w, int panel_h,
                                int content_y,
                                const layout_t* L) {
-    /* Main inventory grid: 10 cols x 5 rows, centred under the tabs. */
-    const int cols = INV_MAIN_COLS;
-    const int rows = INV_MAIN_ROWS;
+    /* Main inventory grid.
+     *
+     * Desktop: 10 cols x 5 rows fits the bag (50 slots) with a wide
+     * panel.
+     *
+     * Mobile: 6 cols x 9 rows. The 9-slot hotbar is the width
+     * constraint, so the main grid uses the same slot_px but fewer
+     * columns - the rows just stack taller. (6 * 9 = 54 cells with 4
+     * trailing empty; the data is still 50, draw_slot_for paints an
+     * empty frame for the overrun.) */
+    const int cols = L->mobile ? 6 : INV_MAIN_COLS;
+    const int rows = (INV_MAIN_SLOTS + cols - 1) / cols;
     const int grid_w = cols * L->slot_px + (cols - 1) * L->slot_gap;
     const int grid_x = panel_x + (panel_w - grid_w) / 2;
     const int grid_y = content_y + (L->mobile ? 12 : 30);
 
-    for (int r = 0; r < rows; ++r) {
-        for (int c = 0; c < cols; ++c) {
-            const int idx = r * cols + c;
-            const int sx = grid_x + c * (L->slot_px + L->slot_gap);
-            const int sy = grid_y + r * (L->slot_px + L->slot_gap);
-            draw_slot_for(&inv->main[idx], G.id_main[idx], sx, sy,
-                          L->slot_px, L->slot_px, PIXEL_UI_SLOT_NORMAL);
-        }
+    for (int idx = 0; idx < INV_MAIN_SLOTS; ++idx) {
+        const int r = idx / cols;
+        const int c = idx % cols;
+        if (r >= rows) break;
+        const int sx = grid_x + c * (L->slot_px + L->slot_gap);
+        const int sy = grid_y + r * (L->slot_px + L->slot_gap);
+        draw_slot_for(&inv->main[idx], G.id_main[idx], sx, sy,
+                      L->slot_px, L->slot_px, PIXEL_UI_SLOT_NORMAL);
     }
 
     /* HOTBAR label + 9-slot row below the main grid. The selected
