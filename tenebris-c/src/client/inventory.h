@@ -50,13 +50,4 @@ void   inventory_select(inventory_t* inv, int slot);
  * inventory restore so a stale save can never strip the torch slot. */
 void   inventory_ensure_reserved_torch(inventory_t* inv);
 
-/* Debug-only: swap the rightmost hotbar slot to BLOCK_WATER (enabled
- * = true) or back to whatever it was before (enabled = false). Wired
- * to the F2 debug-UI master toggle so casual players never see water
- * placement; toggling F2 on hands them an infinite water source they
- * can spawn from to exercise the per-voxel flow simulator. The
- * previous slot contents are remembered between toggles so a creative
- * loadout (snow by default) round-trips cleanly. */
-void   inventory_set_debug_water(inventory_t* inv, bool enabled);
-
 #endif
