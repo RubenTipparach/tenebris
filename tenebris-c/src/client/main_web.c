@@ -2898,11 +2898,19 @@ static void frame(void) {
      * own visibility flags. */
     pixel_ui_demo_draw();
 
-    /* Inventory + crafting overlay - opened with `I`, closed with
-     * `I` or Escape. Drawn after the gameplay HUD so it sits on top
-     * of the hotbar; before the pause panel so pause still wins when
-     * both are open. */
+    /* Inventory + crafting overlay - opened with `E` in gravity or
+     * Shift+E in space, closed with the same. Drawn after the
+     * gameplay HUD so it sits on top of the hotbar; before the pause
+     * panel so pause still wins when both are open. */
     inventory_screen_draw(&G.player.inventory);
+
+    /* Shift+E hint toast: paints over the HUD when the player has
+     * been mashing plain E in space without the overlay opening.
+     * Self-gates on the timer state, so calling unconditionally is
+     * cheap. Drawn after the overlay so it sits on top of any open
+     * panel - the only case where both would be visible at once is
+     * a player tapping E mid-overlay, which is unusual but harmless. */
+    inventory_screen_draw_hint();
 
     /* Pause overlay draws last so the dim backdrop + panel sit on
      * top of every HUD element. No-op when not active. */
@@ -2981,13 +2989,33 @@ static void event(const sapp_event* e) {
         return;
     }
 
-    /* I: toggle the inventory / crafting overlay. The screen owns
-     * its own event eat list (movement keys, scroll) so the world
-     * doesn't see input through the panel; mouse clicks still flow
-     * through to pixel_ui's widget hit-tests via the pump below. */
-    if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_I) {
-        inventory_screen_toggle();
-        return;
+    /* E: toggle the inventory / crafting overlay.
+     *
+     *   In gravity:        E              -> toggles
+     *   In space:          E              -> roll-right (legacy), and
+     *                                       a few rapid taps fires the
+     *                                       Shift+E hint toast.
+     *   Anywhere:          Shift+E        -> toggles
+     *   While overlay open: any E          -> closes
+     *
+     * The branching here is so the player who came in from a planet
+     * surface, where plain E worked, doesn't lose roll-control the
+     * moment they leave gravity - but also gets a visible nudge that
+     * the binding moved. The toggle path swallows the event; the
+     * roll path falls through to input.c's existing
+     * SAPP_KEYCODE_E -> roll_right wiring. */
+    if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_E) {
+        const bool shift_held = (e->modifiers & SAPP_MODIFIER_SHIFT) != 0;
+        const bool in_space   = G.player.is_in_space;
+        const bool inv_open   = inventory_screen_is_open();
+        if (inv_open || !in_space || shift_held) {
+            inventory_screen_toggle();
+            return;
+        }
+        /* In space, no shift, overlay closed: roll-right wants this
+         * key. Count the tap so a sustained run of unmodified Es
+         * surfaces the Shift+E hint toast. */
+        inventory_screen_note_e_tap_in_space();
     }
     if (inventory_screen_event(e)) {
         /* Still pump pixel_ui for mouse movement / clicks so the

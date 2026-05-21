@@ -105,12 +105,16 @@ Shipped on this branch so far:
   (10 x 5) + 3 x 3 craft grid + craft output on `inventory_t`.
   Creative-mode preset stocks the four tools and a starter resource
   pile so the screen has visible content.
-- Inventory + crafting overlay opened with `I` --
-  `src/client/inventory_screen.{c,h}`. Tab bar across the top with
-  INVENTORY active, CRAFTING reachable, EQUIPMENT + SKILLS disabled
-  (greyed sprite). Inventory tab shows the 10 x 5 grid + 9-slot
-  hotbar; crafting tab shows the split (compact inventory on the
-  left, 3 x 3 grid + output slot + CRAFT button on the right).
+- Inventory + crafting overlay opened with `E` in gravity, or
+  `Shift+E` in space (the unmodified `E` is roll-right while flying).
+  A few rapid plain-E taps in space paint a transient "PRESS SHIFT+E
+  TO OPEN INVENTORY" toast so the binding switch doesn't strand
+  anyone. Source: `src/client/inventory_screen.{c,h}`. Tab bar
+  across the top with INVENTORY active, CRAFTING reachable,
+  EQUIPMENT + SKILLS disabled (greyed sprite). Inventory tab shows
+  the 10 x 5 grid + 9-slot hotbar; crafting tab shows the split
+  (compact inventory on the left, 3 x 3 grid + output slot + CRAFT
+  button on the right).
 - The CRAFT button stays disabled today because recipe matching is
   next on the list.
 

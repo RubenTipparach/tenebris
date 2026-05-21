@@ -8,6 +8,7 @@
 
 #include "sokol_app.h"
 #include "sokol_debugtext.h"
+#include "sokol_time.h"
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -65,6 +66,16 @@ static struct {
     char id_craft  [INV_CRAFT_SLOTS][16];
     char id_craft_output[16];
     char id_craft_button[16];
+
+    /* Shift+E hint state. e_tap_count + e_last_tap_sec measure
+     * "tapped E recently in space"; once the count crosses the
+     * threshold the toast becomes visible until hint_until_sec, then
+     * gets suppressed until hint_suppress_until_sec so we don't
+     * re-fire every frame the player keeps mashing. */
+    int    e_tap_count;
+    double e_last_tap_sec;
+    double hint_until_sec;
+    double hint_suppress_until_sec;
 } G = {0};
 
 
@@ -385,4 +396,63 @@ void inventory_screen_draw(inventory_t* inv) {
     }
 
     pixel_ui_end();
+}
+
+
+/* ----------------------------------------------------------------------- */
+/* Shift+E hint. */
+
+void inventory_screen_note_e_tap_in_space(void) {
+    const double now = stm_sec(stm_now());
+
+    /* Already showing the hint, or inside the cool-down after a
+     * previous show - skip the count update so we don't spam the
+     * toast while it's already up. */
+    if (now < G.hint_suppress_until_sec) return;
+
+    /* Reset the run if the last tap was more than a beat ago - we
+     * only want to react to "deliberate repeated mashing". */
+    if (now - G.e_last_tap_sec > 1.5) {
+        G.e_tap_count = 0;
+    }
+    G.e_tap_count++;
+    G.e_last_tap_sec = now;
+
+    if (G.e_tap_count >= 3) {
+        G.hint_until_sec          = now + 4.0;
+        /* 4 s of visible toast + 8 s cool-down so the player has a
+         * chance to read it and try again without immediate re-fire. */
+        G.hint_suppress_until_sec = now + 12.0;
+        G.e_tap_count = 0;
+    }
+}
+
+void inventory_screen_draw_hint(void) {
+    const double now = stm_sec(stm_now());
+    if (now >= G.hint_until_sec) return;
+
+    static const char* msg = "PRESS SHIFT+E TO OPEN INVENTORY IN SPACE";
+
+    const float w = sapp_widthf();
+    const float h = sapp_heightf();
+    if (w <= 0.0f || h <= 0.0f) return;
+
+    /* 8 px per glyph at sdtx scale 1. Centre the line horizontally
+     * and place it just under the reticle so it doesn't crowd the
+     * hotbar. */
+    const float char_w  = 8.0f;
+    const float text_w  = char_w * (float)strlen(msg);
+    const float text_x  = (w - text_w) * 0.5f;
+    const float text_y  = h * 0.42f;
+
+    /* Backdrop strip for readability over varied scene colours. */
+    mobile_ui_draw_rect(text_x - 12.0f, text_y - 4.0f,
+                        text_w + 24.0f, 16.0f,
+                        0.0f, 0.0f, 0.0f, 0.75f);
+
+    sdtx_canvas(w, h);
+    sdtx_origin(0.0f, 0.0f);
+    sdtx_color3b(0xff, 0xe0, 0x40);    /* gold accent from the UI palette */
+    sdtx_pos(text_x / 8.0f, text_y / 8.0f);
+    sdtx_puts(msg);
 }
