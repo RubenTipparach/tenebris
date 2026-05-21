@@ -79,10 +79,13 @@ void pixel_ui_label(int x, int y, const char* label);
 
 /* Button states. PIXEL_UI_BUTTON_NORMAL is the default; pass
  * PIXEL_UI_BUTTON_DISABLED to render the greyed-out style AND
- * suppress hover / click handling. */
+ * suppress hover / click handling. PIXEL_UI_BUTTON_ACTIVE renders
+ * the hover sprite regardless of mouse position so a tab bar can
+ * highlight the active tab; the button still processes clicks. */
 typedef enum {
     PIXEL_UI_BUTTON_NORMAL = 0,
     PIXEL_UI_BUTTON_DISABLED,
+    PIXEL_UI_BUTTON_ACTIVE,
 } pixel_ui_button_state_t;
 
 /* Slot states. The visual treatment is independent of the contents:

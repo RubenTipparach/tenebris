@@ -90,6 +90,45 @@ rest.
 
 ---
 
+## Status
+
+Shipped on this branch so far:
+
+- Pixel-art UI module + atlas (panel, buttons, slots, scrollbar)
+  -- `src/client/pixel_ui.{c,h}`, `tools/gen-ui-sprites.py`
+- Item-icon atlas with 4 tools (pickaxe, axe, shovel, prospecting axe),
+  4 resources (log, plank, stick, stone), 3 clutter drops (small rock,
+  grass clip, flower) -- `tools/gen-item-sprites.py` ->
+  `assets/textures/items/atlas.png`. `src/client/item_atlas.{c,h}` loads
+  + samples it.
+- Item types in the inventory model: `inv_slot_t.item_id`, main grid
+  (10 x 5) + 3 x 3 craft grid + craft output on `inventory_t`.
+  Creative-mode preset stocks the four tools and a starter resource
+  pile so the screen has visible content.
+- Inventory + crafting overlay opened with `I` --
+  `src/client/inventory_screen.{c,h}`. Tab bar across the top with
+  INVENTORY active, CRAFTING reachable, EQUIPMENT + SKILLS disabled
+  (greyed sprite). Inventory tab shows the 10 x 5 grid + 9-slot
+  hotbar; crafting tab shows the split (compact inventory on the
+  left, 3 x 3 grid + output slot + CRAFT button on the right).
+- The CRAFT button stays disabled today because recipe matching is
+  next on the list.
+
+Next chunks (in order, each its own commit):
+
+1. Recipe matching against `assets/config/recipes.yaml` + 3x3 input
+   matrix shape patterns (so the four tool recipes actually craft).
+2. Click-to-pick-up / click-to-place between any two slots (lets the
+   player move items from main grid -> craft grid -> output ->
+   hotbar without the hardcoded creative preset).
+3. Hotbar UI renders item icons (today's hotbar only draws blocks
+   via the terrain atlas; item slots show empty).
+4. Clutter system: `core/clutter.{c,h}` with per-column persistence,
+   world-gen spawn on grass tiles, billboarded render, break-to-drop
+   wired through the existing interact path.
+5. Drop tables in `drops.yaml` so chopping wood drops `ITEM_LOG` and
+   leaves drop `ITEM_STICK`.
+
 ## Vertical-slice plan
 
 These ship in order on a single branch

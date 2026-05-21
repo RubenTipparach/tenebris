@@ -31,6 +31,8 @@
 #include "client/interact.h"
 #include "client/mobile_ui.h"
 #include "client/pixel_ui.h"
+#include "client/item_atlas.h"
+#include "client/inventory_screen.h"
 #include "client/chat.h"
 #include "client/menu.h"
 #include "client/net_client.h"
@@ -679,6 +681,8 @@ static void init(void) {
      * to run AFTER config_load_ui — otherwise a themed ui.yaml that
      * points at a non-default PNG would be ignored on first boot. */
     pixel_ui_init();
+    item_atlas_init();
+    inventory_screen_init();
     /* One-shot dump of Tenebris's effective atmosphere values so we
      * can sanity-check that the YAML actually landed (vs. defaults
      * from main_web.c being silently used). Comment out once the
@@ -2894,6 +2898,12 @@ static void frame(void) {
      * own visibility flags. */
     pixel_ui_demo_draw();
 
+    /* Inventory + crafting overlay - opened with `I`, closed with
+     * `I` or Escape. Drawn after the gameplay HUD so it sits on top
+     * of the hotbar; before the pause panel so pause still wins when
+     * both are open. */
+    inventory_screen_draw(&G.player.inventory);
+
     /* Pause overlay draws last so the dim backdrop + panel sit on
      * top of every HUD element. No-op when not active. */
     menu_pause_draw(sapp_width(), sapp_height());
@@ -2968,6 +2978,21 @@ static void event(const sapp_event* e) {
      * this module aren't debug features. */
     if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_F8) {
         pixel_ui_demo_toggle();
+        return;
+    }
+
+    /* I: toggle the inventory / crafting overlay. The screen owns
+     * its own event eat list (movement keys, scroll) so the world
+     * doesn't see input through the panel; mouse clicks still flow
+     * through to pixel_ui's widget hit-tests via the pump below. */
+    if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_I) {
+        inventory_screen_toggle();
+        return;
+    }
+    if (inventory_screen_event(e)) {
+        /* Still pump pixel_ui for mouse movement / clicks so the
+         * inventory's widgets stay live. */
+        pixel_ui_event(e);
         return;
     }
 

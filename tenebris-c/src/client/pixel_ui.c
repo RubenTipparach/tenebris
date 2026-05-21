@@ -363,6 +363,7 @@ bool pixel_ui_button(const char* id, int x, int y, int w, int h,
     if (!G.ready || !G.atlas_ok) return false;
 
     const bool disabled = (state == PIXEL_UI_BUTTON_DISABLED);
+    const bool active   = (state == PIXEL_UI_BUTTON_ACTIVE);
     const float fx = (float)x, fy = (float)y, fw = (float)w, fh = (float)h;
     const bool hovered = !disabled
                       && point_in_rect(G.mouse_x, G.mouse_y, fx, fy, fw, fh);
@@ -382,11 +383,12 @@ bool pixel_ui_button(const char* id, int x, int y, int w, int h,
     /* Pick the sprite. Pressed wins over hover when the user has
      * mouse-down on this button — including if they drag off and
      * back on, which gives the satisfying "still committed" feel
-     * desktop UIs have. */
+     * desktop UIs have. ACTIVE forces the hover sprite even without
+     * mouse-over, so tabs can read as selected. */
     ui_sprite_id_t sprite = UI_SPRITE_BUTTON_NORMAL;
-    if (disabled)                         sprite = UI_SPRITE_BUTTON_DISABLED;
+    if (disabled)                          sprite = UI_SPRITE_BUTTON_DISABLED;
     else if (G.active_id == id && hovered) sprite = UI_SPRITE_BUTTON_PRESSED;
-    else if (hovered)                     sprite = UI_SPRITE_BUTTON_HOVER;
+    else if (hovered || active)            sprite = UI_SPRITE_BUTTON_HOVER;
 
     draw_sprite(sprite, fx, fy, fw, fh);
 
@@ -405,9 +407,9 @@ bool pixel_ui_button(const char* id, int x, int y, int w, int h,
 
         sdtx_canvas(sapp_widthf(), sapp_heightf());
         sdtx_origin(0.0f, 0.0f);
-        if (disabled)        sdtx_color3b(0x6b, 0x60, 0x58);
-        else if (hovered)    sdtx_color3b(0xff, 0xff, 0xff);
-        else                 sdtx_color3b(0xe8, 0xd2, 0xa8);
+        if (disabled)               sdtx_color3b(0x6b, 0x60, 0x58);
+        else if (hovered || active) sdtx_color3b(0xff, 0xff, 0xff);
+        else                        sdtx_color3b(0xe8, 0xd2, 0xa8);
         sdtx_pos(tx / 8.0f, ty / 8.0f);
         sdtx_puts(label);
     }
