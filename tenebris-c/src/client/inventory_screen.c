@@ -152,6 +152,17 @@ void inventory_screen_init(void) {
 
 void inventory_screen_toggle(void) {
     G.open = !G.open;
+    /* Release pointer lock + show the cursor so the player can
+     * actually click slots and tabs. Both the E key path and the
+     * mobile DOM button reach this function, so the mouse-release
+     * lives here once instead of being duplicated at every caller.
+     * We never auto-re-lock on close - the browser requires a user
+     * gesture for sapp_lock_mouse(true) anyway, and the natural
+     * "click the canvas to re-engage" gesture handles it. */
+    if (G.open) {
+        sapp_lock_mouse(false);
+        sapp_show_mouse(true);
+    }
 }
 
 bool inventory_screen_is_open(void) {

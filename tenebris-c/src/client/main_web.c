@@ -451,17 +451,13 @@ void tenebris_js_pause_pressed(void) {
     }
 }
 
-/* JS-callable inventory toggle. Mirrors tenebris_js_pause_pressed:
- * releases pointer lock when opening so the player can use the
- * canvas-drawn slot widgets, restores it on close. Same destination
- * the Shift+E keybind reaches, so the two input paths share state. */
+/* JS-callable inventory toggle. inventory_screen_toggle owns the
+ * pointer-lock + cursor-show release so this stays a thin wrapper -
+ * same destination Shift+E reaches, so the two input paths share
+ * state with no second source of truth. */
 EMSCRIPTEN_KEEPALIVE
 void tenebris_js_inventory_pressed(void) {
     inventory_screen_toggle();
-    if (inventory_screen_is_open()) {
-        sapp_lock_mouse(false);
-        sapp_show_mouse(true);
-    }
 }
 
 EMSCRIPTEN_KEEPALIVE
