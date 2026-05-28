@@ -16,6 +16,15 @@ endif()
 option(TENEBRIS_BUILD_CLIENT "Build the WASM / native client" ON)
 option(TENEBRIS_BUILD_SERVER "Build the dedicated server" ON)
 
+# Opt-in WebGPU backend for the web client (Stage 0 of the compute-shader
+# track - see plan-webgpu-compute.md). OFF = the shipping WebGL2 path,
+# completely unchanged. ON = compile the Emscripten client against
+# SOKOL_WGPU + WGSL shaders + the emdawnwebgpu port. Compute passes (GPU
+# meshing / lighting) build on this, and WebGL2 has no compute, so the web
+# build must be WebGPU to use them. Kept default-off until render parity is
+# validated in-browser; the GL CI build is unaffected.
+option(TENEBRIS_WEBGPU "Build the web client on the WebGPU backend (experimental)" OFF)
+
 # sokol-shdc shader cross-compiler integration. Defines
 # add_sokol_shader(target path/to/shader.glsl) which attaches the
 # generated header to `target` and exposes its directory on the
@@ -157,7 +166,15 @@ endif()
 if (EMSCRIPTEN)
     add_executable(tenebris ${TENEBRIS_CLIENT_SOURCES})
     target_link_libraries(tenebris PRIVATE tenebris_core tenebris_third_party)
-    target_compile_definitions(tenebris PRIVATE CLIENT_BUILD SOKOL_GLES3)
+    # Backend select. The C render code is backend-agnostic (sokol_glue
+    # environment/swapchain + sokol-shdc reflection via _shader_desc), so
+    # only the define, the shader slang (cmake/sokol-shdc.cmake), and the
+    # emscripten graphics flags differ between WebGL2 and WebGPU.
+    if (TENEBRIS_WEBGPU)
+        target_compile_definitions(tenebris PRIVATE CLIENT_BUILD SOKOL_WGPU)
+    else()
+        target_compile_definitions(tenebris PRIVATE CLIENT_BUILD SOKOL_GLES3)
+    endif()
 
     # Shaders compiled by sokol-shdc into <name>.glsl.h next to the
     # build artefacts. renderer.c #includes the generated header and
@@ -174,9 +191,22 @@ if (EMSCRIPTEN)
     add_sokol_shader(tenebris src/shaders/sun.glsl)
     add_sokol_shader(tenebris src/shaders/torch.glsl)
 
+    # Graphics-backend flags. WebGL2 keeps its exact historical flags
+    # (link-only). WebGPU uses the emdawnwebgpu port, which sokol_app.h
+    # documents as the required WebGPU implementation - needed at BOTH
+    # compile (resolves <webgpu/webgpu.h> in sokol_impl.c) and link.
+    # NOTE: the WebGPU path is unvalidated in CI; render parity + the port
+    # flag need an in-browser pass (see plan-webgpu-compute.md). Default-off
+    # keeps this GL build unchanged.
+    if (TENEBRIS_WEBGPU)
+        set(EMCC_GFX_FLAGS "--use-port=emdawnwebgpu")
+        target_compile_options(tenebris PRIVATE ${EMCC_GFX_FLAGS})
+    else()
+        set(EMCC_GFX_FLAGS "-sUSE_WEBGL2=1" "-sFULL_ES3=1")
+    endif()
+
     set(EMCC_LINK_FLAGS
-        "-sUSE_WEBGL2=1"
-        "-sFULL_ES3=1"
+        ${EMCC_GFX_FLAGS}
         "-sALLOW_MEMORY_GROWTH=1"
         "-sSTACK_SIZE=1mb"
         "-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','UTF8ToString','stringToUTF8','lengthBytesUTF8']"
