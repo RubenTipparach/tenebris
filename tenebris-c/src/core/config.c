@@ -292,6 +292,9 @@ static lod_config_t S_LOD = {
     .water_surface_float_height_m = -0.8f,
     .water_body_check_height_m   = 0.50f,
     .water_submerged_jump_mult   = 0.30f,
+    .mesh_chunk_count            = 128,
+    .mesh_remesh_budget_ms       = 4.0f,
+    .mesh_cull_pad_factor        = 1.55f,
 };
 
 const lod_config_t* config_lod(void) { return &S_LOD; }
@@ -428,6 +431,12 @@ int config_load_lod(const char* path) {
                             S_LOD.water_body_check_height_m   = (float)strtod(val, NULL);
                         } else if (strcmp(key, "water_submerged_jump_mult") == 0) {
                             S_LOD.water_submerged_jump_mult   = (float)strtod(val, NULL);
+                        } else if (strcmp(key, "mesh_chunk_count"          ) == 0) {
+                            S_LOD.mesh_chunk_count            = (int)strtol(val, NULL, 10);
+                        } else if (strcmp(key, "mesh_remesh_budget_ms"     ) == 0) {
+                            S_LOD.mesh_remesh_budget_ms       = (float)strtod(val, NULL);
+                        } else if (strcmp(key, "mesh_cull_pad_factor"      ) == 0) {
+                            S_LOD.mesh_cull_pad_factor        = (float)strtod(val, NULL);
                         } else {
                             printf("[config] %s:%d: unknown key '%s'\n",
                                    path, line_no, key);
