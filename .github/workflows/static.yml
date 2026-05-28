@@ -116,6 +116,44 @@ jobs:
           fi
           flyctl deploy --remote-only --wait-timeout 900 --verbose
 
+  # Experimental WebGPU backend build - Stage 0 of the compute-shader
+  # track (tenebris-c/plan-webgpu-compute.md). Non-blocking: it has no
+  # dependents and the `deploy` job needs only `build`, so a failure here
+  # never gates the Pages / Fly deploy. Exists to catch compile + link
+  # regressions on the -DTENEBRIS_WEBGPU=ON path. Uses a newer Emscripten
+  # than the shipping build because the emdawnwebgpu port postdates 3.1.64.
+  webgpu-build:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch || github.ref }}
+
+      - name: Setup Emscripten (emdawnwebgpu-capable)
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: latest
+          actions-cache-folder: 'emsdk-cache-wgpu'
+
+      - name: Setup Ninja
+        uses: seanmiddleditch/gha-setup-ninja@v4
+
+      - name: Build WASM (WebGPU backend)
+        env:
+          TENEBRIS_WEBGPU: 'ON'
+        run: bash scripts/build-wasm.sh
+
+      - name: Upload WebGPU build artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tenebris-wgpu-${{ github.sha }}
+          path: tenebris-c/build-wasm-wgpu/tenebris.*
+          retention-days: 14
+          if-no-files-found: ignore
+
   deploy:
     needs: build
     environment:
