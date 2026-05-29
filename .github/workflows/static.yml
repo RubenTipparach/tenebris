@@ -150,7 +150,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: tenebris-wgpu-${{ github.sha }}
-          path: tenebris-c/build-wasm-wgpu/tenebris.*
+          # build-wasm.sh copies the linked client to dist/wasm/ (same as
+          # the WebGL2 build); the raw objects stay in tenebris-c/build-web/.
+          path: dist/wasm
           retention-days: 14
           if-no-files-found: ignore
 
