@@ -1,0 +1,10 @@
+[package]
+name = "tenebris-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tenebris-core = { path = "../tenebris-core" }
+
+[dev-dependencies]
