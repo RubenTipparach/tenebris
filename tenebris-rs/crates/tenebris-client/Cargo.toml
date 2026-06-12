@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+sokol = "0.3.0"
 tenebris-core = { path = "../tenebris-core" }
 
 [dev-dependencies]
