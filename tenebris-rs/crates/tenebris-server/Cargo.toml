@@ -6,5 +6,8 @@ license.workspace = true
 
 [dependencies]
 tenebris-core = { path = "../tenebris-core" }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "io-util", "sync", "macros", "signal"] }
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
 
 [dev-dependencies]

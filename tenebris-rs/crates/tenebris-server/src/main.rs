@@ -1,5 +1,9 @@
-//! Port of `tenebris-c/src/server/`. Placeholder until the server port lands.
+//! Port of `tenebris-c/src/server/`. See ../../PORTING.md for rules.
+
+mod saves;
+mod server;
+mod transport;
 
 fn main() {
-    println!("tenebris-server (rust port) - not yet implemented");
+    server::run();
 }
