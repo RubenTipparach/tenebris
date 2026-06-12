@@ -44,10 +44,13 @@ use crate::hotbar_ui;
 use crate::input;
 use crate::interact::{self, InteractState, MINING_TIME_S};
 use crate::inventory::{self, INV_HOTBAR_SLOTS};
+use crate::inventory_screen;
+use crate::item_atlas;
 use crate::menu::{self, GameState};
 use crate::mobile_ui;
 use crate::net_client::{self, NetClientState, NetDesyncKind};
 use crate::persistence::{self, PersistenceSave, COLUMN_BYTES};
+use crate::pixel_ui;
 use crate::player_ctrl::{self, PlayerCtrl};
 use crate::profile;
 use crate::profiler;
@@ -202,6 +205,8 @@ struct App {
      * unconditionally so App has one shape on every target. */
     #[allow(dead_code)]
     last_pause_btn: i32,
+    #[allow(dead_code)]
+    last_inventory_btn: i32,
     #[allow(dead_code)]
     last_mobile: i32,
     #[allow(dead_code)]
@@ -415,6 +420,7 @@ extern "C" fn init() {
          * itself is in-canvas (menu) on every platform. */
         if tenebris_is_mobile_device() != 0 {
             tenebris_pause_button_install();
+            tenebris_inventory_button_install();
             tenebris_fullscreen_button_install();
             tenebris_mobile_controls_install();
         }
@@ -428,6 +434,15 @@ extern "C" fn init() {
     config::load_lod("assets/config/lod.yaml");
     config::load_water("assets/config/water.yaml");
     config::load_lighting("assets/config/lighting.yaml");
+    config::load_ui("assets/config/ui.yaml");
+
+    /* pixel_ui::init reads the atlas path out of config::ui(), so it
+     * has to run AFTER config::load_ui - otherwise a themed ui.yaml
+     * that points at a non-default PNG would be ignored on first
+     * boot. */
+    pixel_ui::init();
+    item_atlas::init();
+    inventory_screen::init();
     /* One-shot dump of Tenebris's effective atmosphere values so we
      * can sanity-check that the YAML actually landed. */
     {
@@ -571,6 +586,7 @@ extern "C" fn init() {
             inv_last_sel: -1,
             inv_init: false,
             last_pause_btn: -1,
+            last_inventory_btn: -1,
             last_mobile: -1,
             last_fullscreen_btn: -1,
         });
@@ -2290,6 +2306,10 @@ fn frame_inner(app: &mut App) {
             unsafe { tenebris_pause_button_set_visible(v) };
             app.last_pause_btn = v;
         }
+        if v != app.last_inventory_btn {
+            unsafe { tenebris_inventory_button_set_visible(v) };
+            app.last_inventory_btn = v;
+        }
         if v != app.last_mobile {
             unsafe { tenebris_mobile_controls_set_visible(v) };
             app.last_mobile = v;
@@ -2299,6 +2319,25 @@ fn frame_inner(app: &mut App) {
             app.last_fullscreen_btn = v;
         }
     }
+    /* Pixel-art UI demo. Drawn between the hotbar and the pause panel
+     * so it sits above gameplay HUD but below the modal pause overlay.
+     * No-op unless F8 has toggled the demo on. */
+    pixel_ui::demo_draw();
+
+    /* Inventory + crafting overlay - opened with `E` in gravity or
+     * Shift+E in space, closed with the same. Drawn after the
+     * gameplay HUD so it sits on top of the hotbar; before the pause
+     * panel so pause still wins when both are open. */
+    inventory_screen::draw(&app.player.borrow().inventory);
+
+    /* Shift+E hint toast: paints over the HUD when the player has
+     * been mashing plain E in space without the overlay opening.
+     * Self-gates on the timer state, so calling unconditionally is
+     * cheap. Drawn after the overlay so it sits on top of any open
+     * panel - the only case where both would be visible at once is
+     * a player tapping E mid-overlay, which is unusual but harmless. */
+    inventory_screen::draw_hint();
+
     /* Pause overlay draws last so the dim backdrop + panel sit on top
      * of every HUD element. No-op when not active. */
     menu::pause_draw(sapp::width(), sapp::height());
@@ -2357,6 +2396,72 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
     if menu::pause_active() && menu::pause_event(e) {
         return;
     }
+
+    /* F8: toggle the pixel-art UI demo panel. The demo exercises every
+     * widget (panel, button states, slot states, title bar, close X)
+     * so the swatch can be eyeballed live while iterating on art and
+     * ui.yaml. Wired here, not inside the debug_ui_visible block,
+     * because the inventory / crafting screens that ride on this
+     * module aren't debug features. */
+    if e._type == sapp::EventType::KeyDown && e.key_code == sapp::Keycode::F8 {
+        pixel_ui::demo_toggle();
+        return;
+    }
+
+    /* E: toggle the inventory / crafting overlay.
+     *
+     *   In gravity:        E              -> toggles
+     *   In space:          E              -> roll-right (legacy), and
+     *                                       a few rapid taps fires the
+     *                                       Shift+E hint toast.
+     *   Anywhere:          Shift+E        -> toggles
+     *   While overlay open: any E          -> closes
+     *
+     * The branching here is so the player who came in from a planet
+     * surface, where plain E worked, doesn't lose roll-control the
+     * moment they leave gravity - but also gets a visible nudge that
+     * the binding moved. The toggle path swallows the event; the
+     * roll path falls through to input.rs's existing
+     * Keycode::E -> roll_right wiring. */
+    if e._type == sapp::EventType::KeyDown && e.key_code == sapp::Keycode::E {
+        let shift_held = (e.modifiers & sapp::MODIFIER_SHIFT) != 0;
+        let in_space = app.player.borrow().is_in_space;
+        let inv_open = inventory_screen::is_open();
+        if inv_open || !in_space || shift_held {
+            inventory_screen::toggle();
+            return;
+        }
+        /* In space, no shift, overlay closed: roll-right wants this
+         * key. Count the tap so a sustained run of unmodified Es
+         * surfaces the Shift+E hint toast. */
+        inventory_screen::note_e_tap_in_space();
+    }
+    if inventory_screen::event(e) {
+        /* Still pump pixel_ui for mouse movement / clicks so the
+         * inventory's widgets stay live. */
+        pixel_ui::event(e);
+        return;
+    }
+
+    /* Pump mouse / touch state into the pixel UI even when nothing is
+     * open - keeps the cursor warm so a screen can open mid-frame and
+     * pick up an already-correct hot state. The pixel UI's widget
+     * functions are what actually decide whether to consume a click;
+     * pixel_ui::event itself never claims an event. When a UI screen
+     * (the demo for now) is visible, swallow the click below the
+     * widget layer so it doesn't also dig the world. */
+    pixel_ui::event(e);
+    if pixel_ui::demo_visible() {
+        match e._type {
+            sapp::EventType::MouseDown
+            | sapp::EventType::MouseUp
+            | sapp::EventType::TouchesBegan
+            | sapp::EventType::TouchesEnded
+            | sapp::EventType::TouchesCancelled => return,
+            _ => {}
+        }
+    }
+
     /* Escape: do nothing directly - the per-frame pointer-lock-loss
      * detector opens the pause panel on the same gesture. */
     if e._type == sapp::EventType::KeyDown && e.key_code == sapp::Keycode::Escape {
@@ -2518,6 +2623,8 @@ extern "C" {
     fn tenebris_block_f5_refresh();
     fn tenebris_pause_button_install();
     fn tenebris_pause_button_set_visible(visible: i32);
+    fn tenebris_inventory_button_install();
+    fn tenebris_inventory_button_set_visible(visible: i32);
     fn tenebris_fullscreen_button_install();
     fn tenebris_fullscreen_button_set_visible(visible: i32);
     fn tenebris_mobile_controls_install();
@@ -2552,6 +2659,15 @@ mod js_callbacks {
             sapp::lock_mouse(false);
             sapp::show_mouse(true);
         }
+    }
+
+    /// JS inventory button tapped. inventory_screen::toggle owns the
+    /// pointer-lock + cursor-show release so this stays a thin
+    /// wrapper - same destination Shift+E reaches, so the two input
+    /// paths share state with no second source of truth.
+    #[no_mangle]
+    pub extern "C" fn tenebris_js_inventory_pressed() {
+        inventory_screen::toggle();
     }
 
     #[no_mangle]

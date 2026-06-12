@@ -180,13 +180,15 @@ pub struct RenderEnv {
 /* Image loading - stands in for stb_image. Decodes any 8/16-bit PNG
  * to tightly-packed RGBA8 exactly like stbi_load(path, .., 4). */
 
-struct LoadedImage {
-    w: i32,
-    h: i32,
-    rgba: Vec<u8>,
+pub(crate) struct LoadedImage {
+    pub(crate) w: i32,
+    pub(crate) h: i32,
+    pub(crate) rgba: Vec<u8>,
 }
 
-fn load_png_rgba(path: &str, flip_vertical: bool) -> Option<LoadedImage> {
+/// pub(crate): pixel_ui + item_atlas reuse this as their stb_image
+/// stand-in (same RGBA8 output as `stbi_load(path, .., 4)`).
+pub(crate) fn load_png_rgba(path: &str, flip_vertical: bool) -> Option<LoadedImage> {
     let file = std::fs::File::open(path).ok()?;
     let mut decoder = png::Decoder::new(std::io::BufReader::new(file));
     /* EXPAND promotes palette/1-2-4 bit to 8-bit; STRIP_16 matches

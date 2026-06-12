@@ -133,6 +133,48 @@ mergeInto(LibraryManager.library, {
     if (b) b.style.visibility = visible ? 'visible' : 'hidden';
   },
 
+  /* Mobile-only inventory button. Sits next to the pause button at the
+   * top-left corner so the player can reach both with the same thumb
+   * gesture. Same DOM-only pattern as the pause button: tap fires
+   * through Module.ccall into tenebris_js_inventory_pressed which
+   * routes back into the inventory_screen module - same destination
+   * as Shift+E. */
+  tenebris_inventory_button_install: function() {
+    if (document.getElementById('tenebris-inventory-btn')) return;
+    var btn = document.createElement('button');
+    btn.id = 'tenebris-inventory-btn';
+    /* Toolbox emoji (U+1F9F0) as the chest stand-in - Unicode doesn't
+     * ship a true treasure-chest character, but the toolbox handle +
+     * front-latch render reads as "open this to find loot". */
+    btn.textContent = '\u{1F9F0}';
+    btn.setAttribute('aria-label', 'Inventory');
+    btn.style.cssText =
+        'position:fixed;top:14px;left:86px;width:60px;height:60px;'
+      + 'border-radius:50%;border:3px solid #fff;'
+      + 'background:rgba(15,17,26,0.92);color:#fff;'
+      + 'font-size:30px;'
+      + 'display:flex;align-items:center;justify-content:center;'
+      + 'cursor:pointer;z-index:10;'
+      + 'touch-action:manipulation;'
+      + '-webkit-tap-highlight-color:transparent;'
+      + 'box-shadow:0 2px 6px rgba(0,0,0,0.5);'
+      + 'visibility:hidden;';
+    btn.addEventListener('click', function(ev) {
+      ev.preventDefault();
+      Module.ccall('tenebris_js_inventory_pressed', null, [], []);
+    });
+    btn.addEventListener('touchend', function(ev) {
+      ev.preventDefault();
+      Module.ccall('tenebris_js_inventory_pressed', null, [], []);
+    });
+    document.body.appendChild(btn);
+  },
+
+  tenebris_inventory_button_set_visible: function(visible) {
+    var b = document.getElementById('tenebris-inventory-btn');
+    if (b) b.style.visibility = visible ? 'visible' : 'hidden';
+  },
+
   /* Top-right fullscreen toggle. Hides itself once fullscreen engages
    * (browser gestures / Esc exit). requestFullscreen may be undefined
    * on iPhone Safari - silently no-op there. */

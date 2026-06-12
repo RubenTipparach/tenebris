@@ -42,7 +42,7 @@ WEB_DIR="$SCRIPT_DIR/crates/tenebris-client/web"
 ASSETS_DIR="$SCRIPT_DIR/../tenebris-c/assets"
 [ -d "$ASSETS_DIR" ] || { echo "[build-web] assets dir not found: $ASSETS_DIR"; exit 1; }
 
-EXPORTS="_main,_malloc,_free,_tenebris_js_pause_pressed,_tenebris_js_set_move_stick,_tenebris_js_set_look_stick,_tenebris_js_set_break,_tenebris_js_set_place,_tenebris_js_set_jump,_tenebris_js_input_char,_tenebris_js_input_backspace,_tenebris_js_input_submit,_tenebris_js_input_cancel,_tenebris_js_in_input_state,_net_client_saves_audit_cb,_net_client_body_blob_cb"
+EXPORTS="_main,_malloc,_free,_tenebris_js_pause_pressed,_tenebris_js_inventory_pressed,_tenebris_js_set_move_stick,_tenebris_js_set_look_stick,_tenebris_js_set_break,_tenebris_js_set_place,_tenebris_js_set_jump,_tenebris_js_input_char,_tenebris_js_input_backspace,_tenebris_js_input_submit,_tenebris_js_input_cancel,_tenebris_js_in_input_state,_net_client_saves_audit_cb,_net_client_body_blob_cb"
 
 RUSTFLAGS="\
  -C link-arg=-sUSE_WEBGL2=1\
