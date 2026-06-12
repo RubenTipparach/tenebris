@@ -30,6 +30,9 @@
 #include "client/renderer.h"
 #include "client/interact.h"
 #include "client/mobile_ui.h"
+#include "client/pixel_ui.h"
+#include "client/item_atlas.h"
+#include "client/inventory_screen.h"
 #include "client/chat.h"
 #include "client/menu.h"
 #include "client/net_client.h"
@@ -166,6 +169,49 @@ EM_JS(void, tenebris_pause_button_install, (void), {
 
 EM_JS(void, tenebris_pause_button_set_visible, (int visible), {
     var b = document.getElementById('tenebris-pause-btn');
+    if (b) b.style.visibility = visible ? 'visible' : 'hidden';
+});
+
+/* Mobile-only inventory button. Sits next to the pause button at the
+ * top-left corner so the player can reach both with the same thumb
+ * gesture. Uses the toolbox glyph as a stand-in chest emoji (Unicode
+ * doesn't ship a true treasure-chest character). Same DOM-only
+ * pattern as the pause button: tap fires through Module.ccall into
+ * tenebris_js_inventory_pressed which routes back into the
+ * inventory_screen module - same destination as Shift+E. */
+EM_JS(void, tenebris_inventory_button_install, (void), {
+    if (document.getElementById('tenebris-inventory-btn')) return;
+    var btn = document.createElement('button');
+    btn.id = 'tenebris-inventory-btn';
+    /* Toolbox emoji (U+1F9F0) as the chest stand-in - Unicode doesn't
+     * ship a true treasure-chest character, but the toolbox handle +
+     * front-latch render reads as "open this to find loot". */
+    btn.textContent = '🧰';
+    btn.setAttribute('aria-label', 'Inventory');
+    btn.style.cssText =
+        'position:fixed;top:14px;left:86px;width:60px;height:60px;'
+      + 'border-radius:50%;border:3px solid #fff;'
+      + 'background:rgba(15,17,26,0.92);color:#fff;'
+      + 'font-size:30px;'
+      + 'display:flex;align-items:center;justify-content:center;'
+      + 'cursor:pointer;z-index:10;'
+      + 'touch-action:manipulation;'
+      + '-webkit-tap-highlight-color:transparent;'
+      + 'box-shadow:0 2px 6px rgba(0,0,0,0.5);'
+      + 'visibility:hidden;';
+    btn.addEventListener('click', function(ev) {
+        ev.preventDefault();
+        Module.ccall('tenebris_js_inventory_pressed', null, [], []);
+    });
+    btn.addEventListener('touchend', function(ev) {
+        ev.preventDefault();
+        Module.ccall('tenebris_js_inventory_pressed', null, [], []);
+    });
+    document.body.appendChild(btn);
+});
+
+EM_JS(void, tenebris_inventory_button_set_visible, (int visible), {
+    var b = document.getElementById('tenebris-inventory-btn');
     if (b) b.style.visibility = visible ? 'visible' : 'hidden';
 });
 
@@ -403,6 +449,15 @@ void tenebris_js_pause_pressed(void) {
         sapp_lock_mouse(false);
         sapp_show_mouse(true);
     }
+}
+
+/* JS-callable inventory toggle. inventory_screen_toggle owns the
+ * pointer-lock + cursor-show release so this stays a thin wrapper -
+ * same destination Shift+E reaches, so the two input paths share
+ * state with no second source of truth. */
+EMSCRIPTEN_KEEPALIVE
+void tenebris_js_inventory_pressed(void) {
+    inventory_screen_toggle();
 }
 
 EMSCRIPTEN_KEEPALIVE
@@ -657,6 +712,7 @@ static void init(void) {
      * the game's visual identity. */
     if (tenebris_is_mobile_device()) {
         tenebris_pause_button_install();
+        tenebris_inventory_button_install();
         tenebris_fullscreen_button_install();
         tenebris_mobile_controls_install();
     }
@@ -672,6 +728,14 @@ static void init(void) {
     config_load_lod("assets/config/lod.yaml");
     config_load_water("assets/config/water.yaml");
     config_load_lighting("assets/config/lighting.yaml");
+    config_load_ui("assets/config/ui.yaml");
+
+    /* pixel_ui_init reads the atlas path out of config_ui(), so it has
+     * to run AFTER config_load_ui — otherwise a themed ui.yaml that
+     * points at a non-default PNG would be ignored on first boot. */
+    pixel_ui_init();
+    item_atlas_init();
+    inventory_screen_init();
     /* One-shot dump of Tenebris's effective atmosphere values so we
      * can sanity-check that the YAML actually landed (vs. defaults
      * from main_web.c being silently used). Comment out once the
@@ -2879,10 +2943,14 @@ static void frame(void) {
         game_state_t st = menu_state();
         bool in_game = (st == GAME_IN_GAME_SP || st == GAME_IN_GAME_MP);
         bool show_mobile_dom = in_game && !menu_pause_active();
-        static int last_pause_btn = -1, last_mobile = -1, last_fullscreen_btn = -1;
+        static int last_pause_btn = -1, last_inventory_btn = -1, last_mobile = -1, last_fullscreen_btn = -1;
         if ((int)show_mobile_dom != last_pause_btn) {
             tenebris_pause_button_set_visible(show_mobile_dom ? 1 : 0);
             last_pause_btn = (int)show_mobile_dom;
+        }
+        if ((int)show_mobile_dom != last_inventory_btn) {
+            tenebris_inventory_button_set_visible(show_mobile_dom ? 1 : 0);
+            last_inventory_btn = (int)show_mobile_dom;
         }
         if ((int)show_mobile_dom != last_mobile) {
             tenebris_mobile_controls_set_visible(show_mobile_dom ? 1 : 0);
@@ -2894,6 +2962,27 @@ static void frame(void) {
         }
     }
 #endif
+    /* Pixel-art UI demo. Drawn between the hotbar and the pause panel
+     * so it sits above gameplay HUD but below the modal pause overlay.
+     * No-op unless F8 has toggled the demo on. The future inventory /
+     * crafting screens will draw at the same callsite gated on their
+     * own visibility flags. */
+    pixel_ui_demo_draw();
+
+    /* Inventory + crafting overlay - opened with `E` in gravity or
+     * Shift+E in space, closed with the same. Drawn after the
+     * gameplay HUD so it sits on top of the hotbar; before the pause
+     * panel so pause still wins when both are open. */
+    inventory_screen_draw(&G.player.inventory);
+
+    /* Shift+E hint toast: paints over the HUD when the player has
+     * been mashing plain E in space without the overlay opening.
+     * Self-gates on the timer state, so calling unconditionally is
+     * cheap. Drawn after the overlay so it sits on top of any open
+     * panel - the only case where both would be visible at once is
+     * a player tapping E mid-overlay, which is unusual but harmless. */
+    inventory_screen_draw_hint();
+
     /* Pause overlay draws last so the dim backdrop + panel sit on
      * top of every HUD element. No-op when not active. */
     menu_pause_draw(sapp_width(), sapp_height());
@@ -2958,6 +3047,74 @@ static void event(const sapp_event* e) {
      * event handler swallows Escape while it's open. */
     if (menu_pause_active()) {
         if (menu_pause_event(e)) return;
+    }
+
+    /* F8: toggle the pixel-art UI demo panel. The demo exercises every
+     * widget (panel, button states, slot states, title bar, close X)
+     * so the swatch can be eyeballed live while iterating on art and
+     * ui.yaml. Wired here, not inside the G_debug_ui_visible block,
+     * because the future inventory / crafting screens that ride on
+     * this module aren't debug features. */
+    if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_F8) {
+        pixel_ui_demo_toggle();
+        return;
+    }
+
+    /* E: toggle the inventory / crafting overlay.
+     *
+     *   In gravity:        E              -> toggles
+     *   In space:          E              -> roll-right (legacy), and
+     *                                       a few rapid taps fires the
+     *                                       Shift+E hint toast.
+     *   Anywhere:          Shift+E        -> toggles
+     *   While overlay open: any E          -> closes
+     *
+     * The branching here is so the player who came in from a planet
+     * surface, where plain E worked, doesn't lose roll-control the
+     * moment they leave gravity - but also gets a visible nudge that
+     * the binding moved. The toggle path swallows the event; the
+     * roll path falls through to input.c's existing
+     * SAPP_KEYCODE_E -> roll_right wiring. */
+    if (e->type == SAPP_EVENTTYPE_KEY_DOWN && e->key_code == SAPP_KEYCODE_E) {
+        const bool shift_held = (e->modifiers & SAPP_MODIFIER_SHIFT) != 0;
+        const bool in_space   = G.player.is_in_space;
+        const bool inv_open   = inventory_screen_is_open();
+        if (inv_open || !in_space || shift_held) {
+            inventory_screen_toggle();
+            return;
+        }
+        /* In space, no shift, overlay closed: roll-right wants this
+         * key. Count the tap so a sustained run of unmodified Es
+         * surfaces the Shift+E hint toast. */
+        inventory_screen_note_e_tap_in_space();
+    }
+    if (inventory_screen_event(e)) {
+        /* Still pump pixel_ui for mouse movement / clicks so the
+         * inventory's widgets stay live. */
+        pixel_ui_event(e);
+        return;
+    }
+
+    /* Pump mouse / touch state into the pixel UI even when nothing is
+     * open - keeps the cursor warm so a screen can open mid-frame and
+     * pick up an already-correct hot state. The pixel UI's widget
+     * functions are what actually decide whether to consume a click;
+     * pixel_ui_event itself never claims an event. When a UI screen
+     * (the demo for now, the inventory / crafting panels later) is
+     * visible, swallow the click below the widget layer so it doesn't
+     * also dig the world. */
+    pixel_ui_event(e);
+    if (pixel_ui_demo_visible()) {
+        switch (e->type) {
+            case SAPP_EVENTTYPE_MOUSE_DOWN:
+            case SAPP_EVENTTYPE_MOUSE_UP:
+            case SAPP_EVENTTYPE_TOUCHES_BEGAN:
+            case SAPP_EVENTTYPE_TOUCHES_ENDED:
+            case SAPP_EVENTTYPE_TOUCHES_CANCELLED:
+                return;
+            default:
+                break;
+        }
     }
     /* Escape: do nothing directly here. The browser intercepts Escape
      * to release pointer lock; the per-frame pointer-lock-loss

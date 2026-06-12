@@ -105,6 +105,9 @@ set(TENEBRIS_CLIENT_SOURCES
     src/client/inventory.c
     src/client/hotbar_ui.c
     src/client/mobile_ui.c
+    src/client/pixel_ui.c
+    src/client/item_atlas.c
+    src/client/inventory_screen.c
     src/client/teleport_menu.c
     src/client/torch.c
     src/client/gfx_math.c
@@ -138,6 +141,7 @@ endif()
 # must match the bake_atlas block in renderer.c.
 set(TENEBRIS_PUBLIC_TEXTURES "${CMAKE_SOURCE_DIR}/../public/textures")
 if (EXISTS "${TENEBRIS_PUBLIC_TEXTURES}/rocks.png")
+    file(MAKE_DIRECTORY "${CMAKE_SOURCE_DIR}/assets/textures/items")
     file(MAKE_DIRECTORY "${CMAKE_SOURCE_DIR}/assets/textures")
     foreach(name water sand dirt grass rocks ice snow dirt_grass dirt_snow torch moon wood)
         if (EXISTS "${TENEBRIS_PUBLIC_TEXTURES}/${name}.png")
