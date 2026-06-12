@@ -1,7 +1,7 @@
 //! Port of `tenebris-c/src/client/main_web.c` + module tree.
-//! See ../../PORTING.md for rules. Entry point becomes real when the
-//! main_web port lands (final client wave).
+//! See ../../PORTING.md for rules.
 
+mod app;
 mod chat;
 mod client_kv;
 mod gfx_math;
@@ -26,5 +26,5 @@ mod teleport_menu;
 mod torch;
 
 fn main() {
-    println!("tenebris-client (rust port) - app loop pending");
+    app::run();
 }

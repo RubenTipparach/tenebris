@@ -47,12 +47,11 @@
 //!   net_client only reads), exactly like the C.
 //! - `tenebris_get_local_player_pos()` / `..._body_id()` - externs
 //!   provided by main_web.c. Ported as the provider registered via
-//!   [`set_local_player_provider`]; see the TODO(port-main) marker.
+//!   [`set_local_player_provider`] (app::init registers it at boot).
 //! - `EM_JS(net_client_js_fetch_saves)` / `EM_JS(net_client_js_fetch_body)`
-//!   - browser `fetch()` glue compiled by EM_JS in the C. Needs a
-//!   --js-library shim when the web-glue wave lands; see the
-//!   TODO(port-web) markers. Native builds are a no-op exactly like
-//!   the C `#else` branch.
+//!   - browser `fetch()` glue compiled by EM_JS in the C. The JS side
+//!   lives in `web/library_tenebris.js` (--js-library); native builds
+//!   are a no-op exactly like the C `#else` branch.
 //!
 //! `stm_now()` / `stm_sec()` are reached through the `now_sec()` seam
 //! (sokol time in production, settable clock in tests - same pattern
@@ -338,12 +337,12 @@ fn world_for_body(body_id: u32) -> Option<Rc<RefCell<World>>> {
     renderer::world_for_body(body_id)
 }
 
-/* TODO(port-main): extern dvec3_t tenebris_get_local_player_pos(void)
- * and extern uint32_t tenebris_get_local_player_body_id(void) are
- * provided by main_web.c so the /saves audit can score distance from
- * the camera to each persisted tile. Until the main_web wave lands,
- * the provider is registered here; unset = origin on body 0 (the
- * audit then buckets every miss as "other body" / far). */
+/* C: extern dvec3_t tenebris_get_local_player_pos(void) and extern
+ * uint32_t tenebris_get_local_player_body_id(void), provided by
+ * main_web.c so the /saves audit can score distance from the camera
+ * to each persisted tile. app::init registers the provider; unset =
+ * origin on body 0 (the audit then buckets every miss as "other
+ * body" / far). */
 type LocalPlayerFn = fn() -> (DVec3, u32);
 thread_local! {
     static LOCAL_PLAYER: Cell<Option<LocalPlayerFn>> = const { Cell::new(None) };
@@ -1638,21 +1637,41 @@ pub fn connect(url: &str) {
  * aimed at the deployed Fly server, not headless test environments). */
 
 /// Web fetch glue. In C this is `EM_JS(net_client_js_fetch_saves)` -
-/// a browser `fetch()` whose .then re-enters via `saves_audit_cb`.
-// TODO(port-web): provide the JS side (a --js-library shim mirroring
-// the EM_JS body in net_client.c) when the web-glue wave lands, and
-// call it here under #[cfg(target_os = "emscripten")]. Original C:
-//   net_client_js_fetch_saves(fetch_url);
-// Native: no-op, exactly like the C #else branch.
+/// a browser `fetch()` whose .then re-enters via `saves_audit_cb`. The
+/// JS body lives in `web/library_tenebris.js` (--js-library); its
+/// promise re-enters via the `net_client_saves_audit_cb` keepalive
+/// export in app.rs. Native: no-op, exactly like the C #else branch
+/// (no HTTP client in the native build).
+#[cfg(target_os = "emscripten")]
+fn js_fetch_saves(url: &str) {
+    use std::ffi::CString;
+    extern "C" {
+        fn net_client_js_fetch_saves(url_cstr: *const std::ffi::c_char);
+    }
+    let Ok(c) = CString::new(url) else { return };
+    unsafe { net_client_js_fetch_saves(c.as_ptr()) };
+}
+
+#[cfg(not(target_os = "emscripten"))]
 fn js_fetch_saves(url: &str) {
     let _ = url;
 }
 
 /// Web fetch glue for /saves/body. In C: `EM_JS(net_client_js_fetch_body)`
-/// re-entering via `body_blob_cb`.
-// TODO(port-web): same JS-library shim as js_fetch_saves. Original C:
-//   net_client_js_fetch_body(url, body_id);
-// Native: no-op, exactly like the C #else branch.
+/// re-entering via `body_blob_cb` (the `net_client_body_blob_cb`
+/// keepalive export in app.rs). Native: no-op, exactly like the C
+/// #else branch.
+#[cfg(target_os = "emscripten")]
+fn js_fetch_body(url: &str, body_id: u32) {
+    use std::ffi::CString;
+    extern "C" {
+        fn net_client_js_fetch_body(url_cstr: *const std::ffi::c_char, body_id: u32);
+    }
+    let Ok(c) = CString::new(url) else { return };
+    unsafe { net_client_js_fetch_body(c.as_ptr(), body_id) };
+}
+
+#[cfg(not(target_os = "emscripten"))]
 fn js_fetch_body(url: &str, body_id: u32) {
     let _ = (url, body_id);
 }

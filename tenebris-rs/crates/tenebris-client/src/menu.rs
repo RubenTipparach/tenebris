@@ -74,7 +74,7 @@
 //! net_client calls are wired directly; reads of the link state route
 //! through the `poll_net()` snapshot and the actual socket dial routes
 //! through `net_connect()` so headless tests can substitute doubles.
-//! main_web hooks carry `TODO(port-main)` markers.
+//! The main_web hooks are wired by app.rs (frame/event loop).
 //!
 //! # JS contract for the emscripten extern fns
 //!
@@ -1312,7 +1312,7 @@ thread_local! {
 /// returns). Calling sdtx_draw twice per frame triggers the
 /// once-per-frame buffer-upload guard inside sokol_debugtext and
 /// leaves later text reads pointing at stale GPU memory.
-/// TODO(port-main): main_web owns that single sdtx flush.
+/// app.rs (the main_web port) owns that single sdtx flush.
 pub fn draw(screen_w: i32, screen_h: i32) {
     with_menu(|m| draw_inner(m, screen_w, screen_h));
 }
@@ -2495,7 +2495,7 @@ pub fn room_code() -> String {
 /// saved pose to resume from, return it. One-shot: returns None on
 /// subsequent calls until the next SP transition. Caller (main_web)
 /// applies the pose to the player on entering IN_GAME_SP.
-/// TODO(port-main): main_web consumes this on the SP transition.
+/// app.rs consumes this on the SP transition (maybe_apply_sp_resume).
 pub fn take_sp_resume() -> Option<PersistenceSave> {
     with_menu(|m| m.resume.take())
 }
@@ -2686,7 +2686,7 @@ fn pause_draw_inner(m: &mut Menu, screen_w: i32, screen_h: i32) {
      * sokol_gl uploads its vertex buffer only on the first sgl_draw
      * of the frame; flushing here would freeze the GPU's view of the
      * buffer and drop every later UI module's quads.
-     * TODO(port-main): main_web owns the end-of-frame sgl flush. */
+     * app.rs (the main_web port) owns the end-of-frame sgl flush. */
 
     /* Text on top of the geometry. Title swaps to DISCONNECTED while
      * the reconnect window is open so the player understands why
@@ -2787,7 +2787,7 @@ pub fn connecting_draw(screen_w: i32, screen_h: i32, status_label: &str, room_la
 
 /// Port of `menu_pause_event()`. Route events here BEFORE input.c /
 /// chat / teleport_menu see them while the pause panel is up.
-/// TODO(port-main): main_web wires that routing order.
+/// app.rs wires that routing order (event_inner).
 pub fn pause_event(e: &sapp::Event) -> bool {
     with_menu(|m| pause_event_inner(m, e))
 }
