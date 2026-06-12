@@ -27,12 +27,13 @@
 //!                            -> config::load_atmosphere_with(path, find_body, set_atmo)
 //!
 //! The atmosphere loader differs in shape because it writes into the
-//! planet table (`planet_get` / `planet_set_atmosphere`), which is still
-//! a pending stub in this crate. The body lookup and the patch
-//! application are injected as callbacks; once `planet.rs` lands, a thin
-//! `load_atmosphere(path)` wrapper there (or here) wires them up.
-//! TODO(port): `BodyAtmo` is the port of `body_atmo_t` from `planet.h` -
-//! move/alias it into `planet.rs` when that module is ported.
+//! planet table (`planet_get` / `planet_set_atmosphere`). The body
+//! lookup and the patch application are injected as callbacks;
+//! `planet::load_atmosphere(path)` / `planet::parse_atmosphere(src,
+//! path)` wire them up (the C `find_body_by_key` lookup, which compares
+//! `normalise_name(body.name)` against the YAML section key, lives in
+//! planet.rs). `BodyAtmo` (the port of `body_atmo_t` from planet.h) is
+//! owned by `planet.rs` and re-exported here.
 //!
 //! New entry points for the WASM path (which preloads file bytes instead
 //! of reading from disk): `parse_skybox`, `parse_lod`, `parse_water`,
@@ -1329,49 +1330,12 @@ pub fn parse_lighting(src: &str, path: &str) -> i32 {
 /* ------------------------------------------------------------------------ */
 /* Atmosphere config - per-body patches applied to the planet table. */
 
-/// Port of `body_atmo_t` (planet.h). Atmosphere-only patch struct -
-/// same fields as `body_config_t.atmo_*`, one-for-one. Zero-valued
-/// fields are skipped by `planet_set_atmosphere` (so an empty patch is
-/// a no-op), letting the YAML express partial overrides.
-///
-/// TODO(port): move/alias this into `planet.rs` once that module is
-/// ported, and add a `load_atmosphere(path)` wrapper that wires
-/// `planet::get` / `planet::set_atmosphere` into the `_with` entry
-/// points below (matching the C `find_body_by_key` lookup, which
-/// compares `normalise_name(body.name)` against the YAML section key).
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct BodyAtmo {
-    pub radius_mult: f32,
-    pub lower_radius_mult: f32,
-    pub rayleigh_scale: f32,
-    pub mie_scale: f32,
-    pub sun_intensity: f32,
-    pub sunset_strength: f32,
-    pub scale_height: f32,
-    pub mie_g: f32,
-    pub wavelengths: Vec3,
-    pub sunset_tint: Vec3,
-    pub sunset_glow: Vec3,
-    pub sunset_horizon: Vec3,
-}
-
-impl BodyAtmo {
-    /// memset(&patch, 0, sizeof(patch)) equivalent.
-    pub const ZERO: BodyAtmo = BodyAtmo {
-        radius_mult: 0.0,
-        lower_radius_mult: 0.0,
-        rayleigh_scale: 0.0,
-        mie_scale: 0.0,
-        sun_intensity: 0.0,
-        sunset_strength: 0.0,
-        scale_height: 0.0,
-        mie_g: 0.0,
-        wavelengths: VEC3_ZERO,
-        sunset_tint: VEC3_ZERO,
-        sunset_glow: VEC3_ZERO,
-        sunset_horizon: VEC3_ZERO,
-    };
-}
+/// Port of `body_atmo_t` (planet.h) - owned by `planet.rs` (the module
+/// that ports planet.h), re-exported here because the atmosphere
+/// parser below traffics in it. Zero-valued fields are skipped by
+/// `planet::set_atmosphere` (so an empty patch is a no-op), letting
+/// the YAML express partial overrides.
+pub use crate::planet::BodyAtmo;
 
 /// Port of `config_load_atmosphere()` with the planet hooks injected:
 ///
