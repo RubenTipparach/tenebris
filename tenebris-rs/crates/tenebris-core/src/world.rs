@@ -53,10 +53,9 @@
 //! - `world_safe_spawn_local()`     -> `World::safe_spawn_local()`
 //! - `world_light_rebuild(w->light, w)` call shape -> `World::light_rebuild()`
 //!   (convenience wrapper that splits the light/blocks/grid borrows)
-//!
-//! The world_water module is NOT ported yet; every C call into
-//! world_water.h is kept in place below but commented out with a
-//! `TODO(port-water)` marker so the water port can grep + wire them in.
+//! - `world_water_*` call sites keep the C call shape via the
+//!   `world_water` free functions (`world_water_enqueue(w, ..)` ->
+//!   `world_water::enqueue(self, ..)`, etc.)
 
 use crate::blocks::{self, Block};
 use crate::config;
@@ -65,6 +64,7 @@ use crate::math::{dvec3_scale, DVec3, Vec3};
 use crate::planet::{self, BodyConfig};
 use crate::planet_gen;
 use crate::world_light::{self, WorldLight};
+use crate::world_water::{self, WorldWater};
 
 pub const WORLD_MAX_DEPTH: i32 = 128;
 
@@ -141,14 +141,11 @@ pub struct World {
     /// `world_light`. The mesher gates on `config::lighting().engine`
     /// to decide between this and the legacy column-based bake.
     pub light: WorldLight,
-    /* Per-voxel water flow state + tick scheduler. State byte layout
-     * (source / falling / level) and queue semantics live in
-     * core/world_water. Allocated in world_create alongside `blocks`,
-     * cloned in world_clone, freed in world_destroy.
-     *
-     * TODO(port-water): struct world_water_s* water; - placeholder
-     * unit field until world_water.rs is ported. */
-    pub water: (),
+    /// Per-voxel water flow state + tick scheduler. State byte layout
+    /// (source / falling / level) and queue semantics live in
+    /// `world_water`. Allocated in `create` alongside `blocks`, cloned
+    /// in `clone_world`, freed implicitly on drop.
+    pub water: WorldWater,
 }
 
 /* ----------------------------------------------------------------------- */
@@ -184,14 +181,14 @@ impl World {
             edited: vec![0u8; dirty_bytes],
             gen_cursor: 0,
             light: WorldLight::create(tile_count),
-            // TODO(port-water): w->water = world_water_create(w);
-            water: (),
+            /* C: w->water = world_water_create(w); (reads tile_count) */
+            water: WorldWater::create(tile_count),
         }
     }
 
     /* world_destroy(): Drop handles the frees; the C also calls
-     * world_light_destroy + goldberg_destroy here.
-     * TODO(port-water): world_water_destroy(w->water); */
+     * world_light_destroy + world_water_destroy + goldberg_destroy
+     * here. */
 
     /// Port of `world_clone()`. Deep-copy clone. The C builds a fresh
     /// goldberg grid for the clone (re-deriving subdivisions from the
@@ -224,7 +221,7 @@ impl World {
         /* Water flow state: copy the per-voxel byte array; the scheduler
          * queue resets (clones inherit the settled snapshot, not pending
          * ticks). */
-        // TODO(port-water): world_water_clone_into(w->water, src->water);
+        world_water::clone_into(&mut w.water, &self.water);
         w
     }
 
@@ -426,23 +423,36 @@ impl World {
                  *
                  * Also drop this cell's own origin entry (if it had one as
                  * a flow cell) since the cell no longer exists. */
-                // TODO(port-water): uint8_t old_state = world_water_get_state(w, tile, depth);
-                // TODO(port-water): if (water_state_is_source(old_state)) {
-                // TODO(port-water):     water_origin_ref_t me = { (uint32_t)tile, (uint8_t)depth };
-                // TODO(port-water):     world_water_origin_remove_global(w, me);
-                // TODO(port-water): }
-                // TODO(port-water): world_water_origin_clear(w, tile, depth);
+                let old_state = world_water::get_state(self, tile, depth);
+                if world_water::state_is_source(old_state) {
+                    let me = world_water::OriginRef {
+                        tile: tile as u32,
+                        depth: depth as u8,
+                    };
+                    world_water::origin_remove_global(self, me);
+                }
+                world_water::origin_clear(self, tile, depth);
                 /* Drop the stale state byte. */
-                // TODO(port-water): world_water_clear_state(w, tile, depth);
+                world_water::clear_state(self, tile, depth);
             }
-            // TODO(port-water): world_water_enqueue(w, tile, depth);
-            // TODO(port-water): if (depth + 1 < WORLD_MAX_DEPTH) world_water_enqueue(w, tile, depth + 1);
-            // TODO(port-water): if (depth - 1 >= 0)              world_water_enqueue(w, tile, depth - 1);
-            // TODO(port-water): const goldberg_tile_t* tn = goldberg_tile(w->grid, tile);
-            // TODO(port-water): if (tn) for (int i = 0; i < tn->num_neighbors; ++i) {
-            // TODO(port-water):     int nb = tn->neighbors[i];
-            // TODO(port-water):     if (nb >= 0) world_water_enqueue(w, nb, depth);
-            // TODO(port-water): }
+            world_water::enqueue(self, tile, depth);
+            if depth + 1 < WORLD_MAX_DEPTH {
+                world_water::enqueue(self, tile, depth + 1);
+            }
+            if depth - 1 >= 0 {
+                world_water::enqueue(self, tile, depth - 1);
+            }
+            /* NB: the C iterates tn->neighbors here (unordered list),
+             * not edge_neighbours - same membership, different order,
+             * and order matters for queue semantics. */
+            if let Some(tn) = self.grid.tile(tile).copied() {
+                for i in 0..tn.num_neighbors as usize {
+                    let nb = tn.neighbors[i];
+                    if nb >= 0 {
+                        world_water::enqueue(self, nb, depth);
+                    }
+                }
+            }
         }
         /* Mark the column as edited from procgen so collision queries
          * fall through to the voxel-scan path. Until set, the
@@ -485,7 +495,7 @@ impl World {
          * the column directly without going through world_set, so the
          * legacy seafloor stays "sleeping" - only player / network /
          * simulator-driven edits land here. */
-        // TODO(port-water): world_water_notify_edit(w, tile, depth);
+        world_water::notify_edit(self, tile, depth);
     }
 
     /// Port of `world_tile_mark_dirty()`. Mark a tile dirty without
