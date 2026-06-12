@@ -59,12 +59,14 @@
 //! - Send queue: 64 entries per connection (`NET_SEND_QUEUE_CAP`).
 //!   Queue full -> the message is dropped with the same stderr line
 //!   as C ("[net] send queue full, dropping N bytes").
-//! - Close: a server-initiated `close_conn` sends a WS close frame
-//!   with status 1000 (C: `LWS_CLOSE_STATUS_NORMAL`), drops any
-//!   queued outbound data (C frees the queue in `CALLBACK_CLOSED`)
-//!   and still emits a [`NetEvent::Close`] - in C, `CALLBACK_CLOSED`
-//!   fires `on_close` for local closes too. The server side only
-//!   ever reports `NetCloseReason::RemoteGone`, matching C.
+//! - Close: a server-initiated `close_conn` flushes any already-queued
+//!   outbound frames (in C, `net_close` only stages the close reason
+//!   via `lws_close_reason`, so a KICK queued just before the close
+//!   still drains through `SERVER_WRITEABLE`), then sends a WS close
+//!   frame with status 1000 (C: `LWS_CLOSE_STATUS_NORMAL`) and still
+//!   emits a [`NetEvent::Close`] - in C, `CALLBACK_CLOSED` fires
+//!   `on_close` for local closes too. The server side only ever
+//!   reports `NetCloseReason::RemoteGone`, matching C.
 //! - Channels: the WS backend has one channel. `send` ignores the
 //!   channel argument; inbound messages always report
 //!   `NetChannel::Reliable`. Binary frames carry the proto bytes
@@ -533,8 +535,17 @@ async fn pump_server_ws<S>(
                 None => break, // listener registry handle dropped
             },
             _ = close.notified() => {
-                // net_close on a server conn: LWS_CLOSE_STATUS_NORMAL,
-                // pending queue dropped without sending.
+                // net_close on a server conn: C only stages the close
+                // reason (lws_close_reason); messages already queued
+                // (e.g. the KICK that precedes a server-side kick)
+                // still drain through SERVER_WRITEABLE before the
+                // socket dies. Flush what's queued, then send the
+                // status-1000 close frame.
+                while let Ok(bytes) = out_rx.try_recv() {
+                    if sink.send(Message::Binary(bytes)).await.is_err() {
+                        break;
+                    }
+                }
                 let _ = sink
                     .send(Message::Close(Some(CloseFrame {
                         code: CloseCode::Normal,

@@ -128,6 +128,15 @@ pub struct ChatMsg {
 
 static G_SAVES_DIR: Mutex<Option<String>> = Mutex::new(None);
 
+/* Test-only: the saves dir is process-global (like the C static), so
+ * every test that calls init()/shutdown() - including the server
+ * integration tests - must serialize through this one lock. */
+#[cfg(test)]
+pub(crate) fn test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+    TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn saves_dir() -> Option<String> {
     G_SAVES_DIR
         .lock()
@@ -2146,11 +2155,9 @@ mod tests {
     const SEED: u64 = 0xDEADBEEF;
 
     /* saves module state is process-global (like the C static);
-     * serialize every test through one lock. */
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
-    fn lock() -> std::sync::MutexGuard<'static, ()> {
-        TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
-    }
+     * serialize every test through the crate-wide lock (shared with
+     * the server integration tests). */
+    use super::test_lock as lock;
 
     fn fwd(p: &Path) -> String {
         p.to_string_lossy().replace('\\', "/")
