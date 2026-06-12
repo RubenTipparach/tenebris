@@ -21,6 +21,7 @@ mod profiler;
 mod remote_players;
 mod renderer;
 mod settings;
+mod shaders;
 mod teleport_menu;
 mod torch;
 

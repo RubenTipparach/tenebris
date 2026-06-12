@@ -10,6 +10,11 @@ license.workspace = true
 sokol = { git = "https://github.com/floooh/sokol-rust", rev = "9e3db76ac4d090d04cca4fc10cc8a1336452f44d" }
 tenebris-core = { path = "../tenebris-core" }
 
+# PNG decode for the renderer's runtime texture loads (atlas tiles,
+# water normal map, flow-debug arrow). Stands in for the C tree's
+# stb_image; assets stay the raw PNGs under tenebris-c/assets/textures.
+png = "0.17"
+
 # Native-only client WebSocket transport (net_transport.rs). The C
 # native client links the libwebsockets backend (net_transport_ws.c in
 # client mode); the Rust port mirrors the server crate's tokio +
