@@ -5,7 +5,9 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-sokol = "0.3.0"
+# git rev pinned: crates.io 0.3.0 lacks the gl/debugtext/glue bindings
+# the client UI layer needs (sokol_gl panels + sdtx labels per repo rules)
+sokol = { git = "https://github.com/floooh/sokol-rust", rev = "9e3db76ac4d090d04cca4fc10cc8a1336452f44d" }
 tenebris-core = { path = "../tenebris-core" }
 
 [dev-dependencies]
