@@ -48,8 +48,22 @@ for f in planet_seq_grass planet_seq_dirt planet_seq_grass_dirt planet_seq_sand 
   fi
 done
 
-echo "==> configuring (cmake --preset=web)"
-cmake --preset=web -S "$C_ROOT"
+# Backend select (see tenebris-c/plan-webgpu-compute.md). Default is the
+# shipping WebGL2 path. Set TENEBRIS_WEBGPU=ON to build the experimental
+# WebGPU path (SOKOL_WGPU + WGSL + emdawnwebgpu) instead - needs an
+# Emscripten new enough for the emdawnwebgpu port (newer than the 3.1.64
+# the WebGL2 deploy build pins). The flag is passed on top of the preset;
+# a reconfigure regenerates the sokol-shdc headers for the chosen slang,
+# so reusing build-web across backends is safe.
+WEBGPU="${TENEBRIS_WEBGPU:-OFF}"
+if [ "$WEBGPU" = "ON" ]; then
+  echo "==> backend: WebGPU (SOKOL_WGPU + WGSL + emdawnwebgpu)"
+else
+  echo "==> backend: WebGL2 (SOKOL_GLES3)"
+fi
+
+echo "==> configuring (cmake --preset=web, TENEBRIS_WEBGPU=$WEBGPU)"
+cmake --preset=web -S "$C_ROOT" -DTENEBRIS_WEBGPU="$WEBGPU"
 
 echo "==> building"
 cmake --build "$C_ROOT/build-web"
