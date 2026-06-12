@@ -10,4 +10,15 @@ license.workspace = true
 sokol = { git = "https://github.com/floooh/sokol-rust", rev = "9e3db76ac4d090d04cca4fc10cc8a1336452f44d" }
 tenebris-core = { path = "../tenebris-core" }
 
+# Native-only client WebSocket transport (net_transport.rs). The C
+# native client links the libwebsockets backend (net_transport_ws.c in
+# client mode); the Rust port mirrors the server crate's tokio +
+# tokio-tungstenite replacement. The web build uses the emscripten
+# WebSocket C API instead (-lwebsocket.js at link time), so none of
+# this ships in the wasm binary.
+[target.'cfg(not(target_os = "emscripten"))'.dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "io-util", "sync", "macros"] }
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
+
 [dev-dependencies]
