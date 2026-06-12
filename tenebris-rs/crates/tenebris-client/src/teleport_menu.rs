@@ -44,18 +44,11 @@
 //! `draw()` / `draw_mobile_buttons()` / `draw_text_at()` are the only
 //! functions that submit sgl/sdtx commands.
 //!
-//! # Pending cross-module calls
-//!
-//! player_ctrl, renderer and mobile_ui are not ported yet. Where the C
-//! file calls into them the port leaves `// TODO(port-player)`,
-//! `// TODO(port-renderer)`, `// TODO(port-net)` and
-//! `// TODO(port-mobile-ui)` markers quoting the exact C call; the
-//! surrounding logic (selection, layout, colors, labels) is real.
-//!
 //! Most public items are unused until the main_web port lands:
 #![allow(dead_code)]
 
 use std::cell::RefCell;
+use std::rc::Rc;
 
 use sokol::app as sapp;
 use sokol::debugtext as sdtx;
@@ -63,6 +56,9 @@ use sokol::gl as sgl;
 use tenebris_core::planet;
 
 use crate::input;
+use crate::mobile_ui;
+use crate::player_ctrl::{self, PlayerCtrl};
+use crate::renderer;
 
 /* ----------------------------------------------------------------------- */
 
@@ -76,16 +72,14 @@ const ROW_PAD: f32 = 4.0;
 /// Mirrors the C `BODY_COUNT` uses in this file (int arithmetic).
 const BODY_COUNT: i32 = planet::BODY_COUNT as i32;
 
-/// Stand-in for the C `player_ctrl_t*` the menu keeps so mobile button
-/// taps - which can't pass a player through input.c - can still call
-/// player_teleport_to. The menu only ever null-checks the pointer.
-/// TODO(port-player): replace with a real handle once player_ctrl.rs
-/// lands.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PlayerHandle;
+/// The C menu keeps a raw `player_ctrl_t*` so mobile button taps -
+/// which can't pass a player through input.c - can still call
+/// player_teleport_to. The port's analogue of that long-lived pointer
+/// is a shared `Rc<RefCell<PlayerCtrl>>` handle.
+pub type PlayerHandle = Rc<RefCell<PlayerCtrl>>;
 
 /// Port of the C file's anonymous `static struct { ... } M`.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct Menu {
     open: bool,
     /// index into BODY_COUNT
@@ -220,12 +214,12 @@ fn action_down() {
 fn action_ok() {
     let (open, player, selected) = M.with(|cell| {
         let m = cell.borrow();
-        (m.open, m.player, m.selected)
+        (m.open, m.player.clone(), m.selected)
     });
     if !open {
         return;
     }
-    if player.is_some() {
+    if let Some(player) = player {
         if let Some(b) = planet::get_by_index(selected) {
             /* player_teleport_to drops the player ~3 m above the
              * destination's surface - comfortably inside its full-
@@ -234,19 +228,16 @@ fn action_ok() {
              * rather than letting them no-clip through. The roll-
              * slerp timer is armed at the same time so the camera
              * eases into level rather than popping. */
-            // TODO(port-player): player_teleport_to(M.player, b);
-            // TODO(port-net): in MP the teleported pose reaches the
-            //   server through the regular net_client pose stream that
-            //   player_teleport_to feeds; lands with those waves.
+            player_ctrl::teleport_to(&mut player.borrow_mut(), &b);
             /* Belt-and-suspenders: the per-frame body-sync in
              * main_web also catches this, but call it here too so
              * the renderer's chunked / LOD partition flips on the
              * SAME frame the teleport happens - no stale "previous
              * planet still meshed at full detail" window between
              * teleport and the next frame's gravity tick. */
-            // TODO(port-renderer): world_t* w = renderer_world_for_body((uint32_t)b->id);
-            //                      if (w) renderer_set_active_world(w);
-            let _ = b;
+            if let Some(w) = renderer::world_for_body(b.id as u32) {
+                renderer::set_active_world(&w);
+            }
         }
     }
     M.with(|cell| cell.borrow_mut().open = false);
@@ -520,15 +511,63 @@ pub fn draw_mobile_buttons() {
     if !is_open() {
         return;
     }
-    let _in = input::state();
-    // TODO(port-mobile-ui): mobile_ui_draw_button(in->btn_menu_close_cx, in->btn_menu_close_cy, MENU_BTN_R,
-    //                       0.50f, 0.15f, 0.15f, 0.55f, 1.00f, 0.55f, 0.55f, 0.80f, 'X');
-    // TODO(port-mobile-ui): mobile_ui_draw_button(in->btn_menu_up_cx,    in->btn_menu_up_cy,    MENU_BTN_R,
-    //                       0.20f, 0.25f, 0.40f, 0.55f, 0.70f, 0.85f, 1.00f, 0.80f, '^');
-    // TODO(port-mobile-ui): mobile_ui_draw_button(in->btn_menu_down_cx,  in->btn_menu_down_cy,  MENU_BTN_R,
-    //                       0.20f, 0.25f, 0.40f, 0.55f, 0.70f, 0.85f, 1.00f, 0.80f, 'v');
-    // TODO(port-mobile-ui): mobile_ui_draw_button(in->btn_menu_ok_cx,    in->btn_menu_ok_cy,    MENU_BTN_R,
-    //                       0.15f, 0.45f, 0.20f, 0.55f, 0.65f, 1.00f, 0.70f, 0.80f, 'O');
+    let inp = input::state();
+    mobile_ui::draw_button(
+        inp.btn_menu_close_cx,
+        inp.btn_menu_close_cy,
+        MENU_BTN_R,
+        0.50,
+        0.15,
+        0.15,
+        0.55,
+        1.00,
+        0.55,
+        0.55,
+        0.80,
+        'X',
+    );
+    mobile_ui::draw_button(
+        inp.btn_menu_up_cx,
+        inp.btn_menu_up_cy,
+        MENU_BTN_R,
+        0.20,
+        0.25,
+        0.40,
+        0.55,
+        0.70,
+        0.85,
+        1.00,
+        0.80,
+        '^',
+    );
+    mobile_ui::draw_button(
+        inp.btn_menu_down_cx,
+        inp.btn_menu_down_cy,
+        MENU_BTN_R,
+        0.20,
+        0.25,
+        0.40,
+        0.55,
+        0.70,
+        0.85,
+        1.00,
+        0.80,
+        'v',
+    );
+    mobile_ui::draw_button(
+        inp.btn_menu_ok_cx,
+        inp.btn_menu_ok_cy,
+        MENU_BTN_R,
+        0.15,
+        0.45,
+        0.20,
+        0.55,
+        0.65,
+        1.00,
+        0.70,
+        0.80,
+        'O',
+    );
 }
 
 /* ----------------------------------------------------------------------- */
@@ -630,17 +669,17 @@ pub fn draw() {
     sgl::ortho(0.0, w, h, 0.0, -1.0, 1.0);
     sgl::matrix_mode_modelview();
     sgl::load_identity();
-    // TODO(port-mobile-ui): sgl_pipeline pip = mobile_ui_alpha_pipeline();
-    //   if (pip.id == 0) {
-    //       /* mobile_ui_draw hasn't run yet this frame (rare - normally
-    //        * runs before us). Fall back to the legacy ASCII overlay so
-    //        * the menu still appears even if the shared pipeline isn't
-    //        * ready. */
-    //       sdtx_color3b(0xff, 0xff, 0xff);
-    //       sdtx_printf("[teleport] (drawing pipeline not ready yet)\n");
-    //       return;
-    //   }
-    //   sgl_load_pipeline(pip);
+    let pip = mobile_ui::alpha_pipeline();
+    if pip.id == 0 {
+        /* mobile_ui_draw hasn't run yet this frame (rare - normally
+         * runs before us). Fall back to the legacy ASCII overlay so
+         * the menu still appears even if the shared pipeline isn't
+         * ready. */
+        sdtx::color3b(0xff, 0xff, 0xff);
+        sdtx::puts("[teleport] (drawing pipeline not ready yet)\n");
+        return;
+    }
+    sgl::load_pipeline(pip);
 
     /* Compute + cache the layout so the click handler can hit-test
      * against the same rects we draw. */
@@ -657,23 +696,28 @@ pub fn draw() {
 
     /* Backdrop + panel + border. Same colour palette as menu_pause_draw
      * so the two overlays read as part of the same UI family. */
-    // TODO(port-mobile-ui): mobile_ui_draw_rect(0.0f, 0.0f, w, h, 0.02f, 0.03f, 0.07f, 0.55f);
-    // TODO(port-mobile-ui): mobile_ui_draw_rect(panel_x, panel_y, panel_w, panel_h,
-    //                                           0.10f, 0.12f, 0.18f, 0.96f);
-    // TODO(port-mobile-ui): mobile_ui_draw_rect_outline(panel_x, panel_y, panel_w, panel_h,
-    //                                                   2.0f, 0.85f, 0.90f, 1.00f, 1.0f);
+    mobile_ui::draw_rect(0.0, 0.0, w, h, 0.02, 0.03, 0.07, 0.55);
+    mobile_ui::draw_rect(panel_x, panel_y, panel_w, panel_h, 0.10, 0.12, 0.18, 0.96);
+    mobile_ui::draw_rect_outline(panel_x, panel_y, panel_w, panel_h, 2.0, 0.85, 0.90, 1.00, 1.0);
 
     /* Title bar separator (darker strip at the bottom of the title). */
-    // TODO(port-mobile-ui): mobile_ui_draw_rect(panel_x, panel_y + TITLE_H - 2.0f, panel_w, 2.0f,
-    //                                           0.85f, 0.90f, 1.00f, 0.50f);
+    mobile_ui::draw_rect(
+        panel_x,
+        panel_y + TITLE_H - 2.0,
+        panel_w,
+        2.0,
+        0.85,
+        0.90,
+        1.00,
+        0.50,
+    );
 
     /* Close button (red X) in the top-right of the panel. */
     let (cx, cy, cs) = close_btn_rect(panel_x, panel_y);
     let close_hovered = hit_rect(cx, cy, cs, cs, mouse_x, mouse_y);
-    let _close_fill = close_btn_fill_color(close_hovered);
-    // TODO(port-mobile-ui): mobile_ui_draw_rect(cx, cy, cs, cs, /* _close_fill */
-    //                                           close_hovered ? 0.70f : 0.50f, 0.15f, 0.15f, 0.95f);
-    // TODO(port-mobile-ui): mobile_ui_draw_rect_outline(cx, cy, cs, cs, 1.5f, 1.00f, 0.55f, 0.55f, 0.95f);
+    let (cr, cg, cb, ca) = close_btn_fill_color(close_hovered);
+    mobile_ui::draw_rect(cx, cy, cs, cs, cr, cg, cb, ca);
+    mobile_ui::draw_rect_outline(cx, cy, cs, cs, 1.5, 1.00, 0.55, 0.55, 0.95);
 
     /* Body rows. */
     for row in 0..VISIBLE_ROWS {
@@ -684,11 +728,10 @@ pub fn draw() {
         let (rx, ry, rw, rh) = row_rect(panel_x, panel_y, row);
         let selected = idx == sel;
         let hovered = hit_rect(rx, ry, rw, rh, mouse_x, mouse_y);
-        let _fill = row_fill_color(selected, hovered);
-        // TODO(port-mobile-ui): mobile_ui_draw_rect(rx, ry, rw, rh, /* _fill */ ...);
+        let (fr, fg, fb, fa) = row_fill_color(selected, hovered);
+        mobile_ui::draw_rect(rx, ry, rw, rh, fr, fg, fb, fa);
         if selected {
-            // TODO(port-mobile-ui): mobile_ui_draw_rect_outline(rx, ry, rw, rh, 1.5f,
-            //                                                   0.95f, 0.85f, 0.45f, 0.95f);
+            mobile_ui::draw_rect_outline(rx, ry, rw, rh, 1.5, 0.95, 0.85, 0.45, 0.95);
         }
     }
 
@@ -747,7 +790,13 @@ mod tests {
     }
 
     fn snapshot() -> Menu {
-        M.with(|cell| *cell.borrow())
+        M.with(|cell| cell.borrow().clone())
+    }
+
+    /// A live player handle, the test analogue of main_web's
+    /// `player_ctrl_t*`.
+    fn player() -> PlayerHandle {
+        Rc::new(RefCell::new(PlayerCtrl::default()))
     }
 
     fn key(k: Keycode) -> Event {
@@ -845,7 +894,7 @@ mod tests {
     fn enter_and_space_close_the_menu() {
         setup();
         toggle();
-        assert!(handle_event(&key(Keycode::Enter), Some(PlayerHandle)));
+        assert!(handle_event(&key(Keycode::Enter), Some(player())));
         assert!(!is_open());
         toggle();
         assert!(handle_event(&key(Keycode::Space), None));
@@ -938,7 +987,7 @@ mod tests {
         for _ in 0..3 {
             handle_event(&key(Keycode::Down), None);
         }
-        assert!(handle_event(&key(Keycode::Enter), Some(PlayerHandle)));
+        assert!(handle_event(&key(Keycode::Enter), Some(player())));
         let m = snapshot();
         assert_eq!(m.selected, 3); /* Sequoia */
         assert!(!m.open);
@@ -978,7 +1027,7 @@ mod tests {
         toggle();
         /* Exact top-left corner of row 5 (inclusive edge). */
         let (rx, ry, _, _) = row_rect(PANEL_X, PANEL_Y, 5);
-        assert!(handle_event(&click(rx, ry), Some(PlayerHandle)));
+        assert!(handle_event(&click(rx, ry), Some(player())));
         let m = snapshot();
         assert_eq!(m.selected, 5); /* Sprout */
         assert!(!m.open);

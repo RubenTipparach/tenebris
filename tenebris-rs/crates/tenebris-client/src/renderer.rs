@@ -2166,6 +2166,18 @@ fn register_world_record(r: &mut Renderer, w: &Rc<RefCell<World>>) -> Option<usi
     Some(slot)
 }
 
+/// Test-only registry hook for other modules' headless tests
+/// (net_client): take the bookkeeping half of `register_world()` only,
+/// skipping the GPU half (no sokol-gfx context under `cargo test`), so
+/// `world_for_body()` resolves.
+#[cfg(test)]
+pub(crate) fn test_register_world(w: &Rc<RefCell<World>>) {
+    R.with(|cell| {
+        let mut r = cell.borrow_mut();
+        let _ = register_world_record(&mut r, w);
+    });
+}
+
 /// Port of `renderer_register_world()`. The world must already be
 /// world_gen_complete. First registration becomes the active body
 /// (full mesh now); later ones defer chunk meshing until approach.

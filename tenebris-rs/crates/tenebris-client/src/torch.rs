@@ -40,6 +40,7 @@
 #![allow(dead_code)] // consumed by the interact/renderer/main waves of the port
 
 use crate::gfx_math::{mat4_mul, vec3_cross, Mat4};
+use crate::shaders;
 use sokol::gfx as sg;
 use std::cell::RefCell;
 use tenebris_core::math::{
@@ -102,14 +103,12 @@ pub struct Torch {
 
 /* ----------------------------------------------------------------------- */
 
-/* Generated-shader interface. These constants come from the sokol-shdc
- * output for src/shaders/torch.glsl (torch.glsl.h): attributes are
- * declared in-order (a_pos, a_color, a_anim_weight) and the single
- * uniform block binds at slot 0. */
-const ATTR_TORCH_A_POS: usize = 0;
-const ATTR_TORCH_A_COLOR: usize = 1;
-const ATTR_TORCH_A_ANIM_WEIGHT: usize = 2;
-const UB_TORCH_VS_PARAMS: usize = 0;
+/* Generated-shader interface: attributes are declared in-order
+ * (a_pos, a_color, a_anim_weight) and the single uniform block binds
+ * at slot 0. */
+use crate::shaders::torch::{
+    ATTR_TORCH_A_ANIM_WEIGHT, ATTR_TORCH_A_COLOR, ATTR_TORCH_A_POS, UB_TORCH_VS_PARAMS,
+};
 
 /// Port of the generated `torch_vs_params_t` (std140: mat4 at 0,
 /// floats at 64/68, padded to a 16-byte multiple).
@@ -327,50 +326,26 @@ fn build_geometry() {
 
 /// Port of `torch_init()`.
 pub fn init() {
-    /* TODO(port-render): pipeline creation needs the sokol-shdc
-     * generated shader for src/shaders/torch.glsl, which lands with
-     * the renderer/shader wave. Until then `T.pip` stays invalid and
-     * draw() early-outs. Original C:
-     *
-     *   sg_shader shd = sg_make_shader(torch_shader_desc(sg_query_backend()));
-     *   T.pip = sg_make_pipeline(&(sg_pipeline_desc){
-     *       .shader = shd,
-     *       .layout = {
-     *           .attrs = {
-     *               [ATTR_torch_a_pos]         = { .format = SG_VERTEXFORMAT_FLOAT3 },
-     *               [ATTR_torch_a_color]       = { .format = SG_VERTEXFORMAT_FLOAT3 },
-     *               [ATTR_torch_a_anim_weight] = { .format = SG_VERTEXFORMAT_FLOAT  },
-     *           },
-     *           .buffers[0].stride = sizeof(torch_vertex_t),
-     *       },
-     *       .index_type = SG_INDEXTYPE_UINT16,
-     *       .depth      = { .write_enabled = true, .compare = SG_COMPAREFUNC_LESS_EQUAL },
-     *       .cull_mode  = SG_CULLMODE_BACK,
-     *       .face_winding = SG_FACEWINDING_CCW,
-     *       .label = "torch-pipeline",
-     *   });
-     *
-     * Rust equivalent once `torch_shader_desc` exists:
-     *
-     *   let mut desc = sg::PipelineDesc {
-     *       shader: shd,
-     *       index_type: sg::IndexType::Uint16,
-     *       depth: sg::DepthState {
-     *           write_enabled: true,
-     *           compare: sg::CompareFunc::LessEqual,
-     *           ..Default::default()
-     *       },
-     *       cull_mode: sg::CullMode::Back,
-     *       face_winding: sg::FaceWinding::Ccw,
-     *       label: c"torch-pipeline".as_ptr(),
-     *       ..Default::default()
-     *   };
-     *   desc.layout.attrs[ATTR_TORCH_A_POS].format = sg::VertexFormat::Float3;
-     *   desc.layout.attrs[ATTR_TORCH_A_COLOR].format = sg::VertexFormat::Float3;
-     *   desc.layout.attrs[ATTR_TORCH_A_ANIM_WEIGHT].format = sg::VertexFormat::Float;
-     *   desc.layout.buffers[0].stride = std::mem::size_of::<TorchVertex>() as i32;
-     *   T.pip = sg::make_pipeline(&desc);
-     */
+    let shd = sg::make_shader(&shaders::torch::torch_shader_desc(sg::query_backend()));
+    let mut desc = sg::PipelineDesc {
+        shader: shd,
+        index_type: sg::IndexType::Uint16,
+        depth: sg::DepthState {
+            write_enabled: true,
+            compare: sg::CompareFunc::LessEqual,
+            ..Default::default()
+        },
+        cull_mode: sg::CullMode::Back,
+        face_winding: sg::FaceWinding::Ccw,
+        label: c"torch-pipeline".as_ptr(),
+        ..Default::default()
+    };
+    desc.layout.attrs[ATTR_TORCH_A_POS].format = sg::VertexFormat::Float3;
+    desc.layout.attrs[ATTR_TORCH_A_COLOR].format = sg::VertexFormat::Float3;
+    desc.layout.attrs[ATTR_TORCH_A_ANIM_WEIGHT].format = sg::VertexFormat::Float;
+    desc.layout.buffers[0].stride = std::mem::size_of::<TorchVertex>() as i32;
+    let pip = sg::make_pipeline(&desc);
+    T.with(|t| t.borrow_mut().pip = pip);
     build_geometry();
     T.with(|t| t.borrow_mut().count = 0);
 }
@@ -579,12 +554,6 @@ pub fn draw(vp: Mat4, time_seconds: f32) {
         (t.pip, t.vbuf, t.ibuf, t.index_count, t.count, t.list)
     });
     if count == 0 {
-        return;
-    }
-    /* TODO(port-render): the torch pipeline can't be created until the
-     * generated shader ports (see init()); skip GPU submission until
-     * then so draw() stays callable. */
-    if pip.id == sg::INVALID_ID {
         return;
     }
 

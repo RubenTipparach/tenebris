@@ -51,13 +51,11 @@
 //! `thread_local!` `Cell`s with the same names. They only gate log
 //! output - no sim state flows through them.
 //!
-//! # net_client (wave 3)
+//! # net_client
 //!
-//! `player_update` calls `net_client_spawn_body_ready()` to freeze
-//! movement during the MP join race. net_client is not ported yet; the
-//! call is left as a `TODO(port-net)` marker below. SP / native builds
-//! return `true` from that helper immediately in the C tree, so until
-//! the wave-3 agent wires it the port behaves like SP (no freeze).
+//! `player_update` calls `net_client::spawn_body_ready()` to freeze
+//! movement during the MP join race. SP / native builds (not connected)
+//! return `true` from that helper immediately, so SP never freezes.
 
 // Wired into the app loop when the main_web port lands (final client
 // wave); until then consumed by tests only.
@@ -68,6 +66,7 @@ use std::cell::Cell;
 use crate::gfx_math::{mat4_look_at_dir, Mat4};
 use crate::input;
 use crate::inventory::{self, Inventory, INV_HOTBAR_SLOTS};
+use crate::net_client;
 use crate::settings;
 use tenebris_core::blocks;
 use tenebris_core::config;
@@ -977,11 +976,10 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
      * Position is intentionally NOT touched - just leave the player
      * sitting at the server-provided spawn coords. The renderer can
      * still draw them; the only thing on hold is movement. */
-    // TODO(port-net): net_client_spawn_body_ready()
-    // if !net_client::spawn_body_ready() {
-    //     p.velocity = dvec3_make(0.0, 0.0, 0.0);
-    //     return;
-    // }
+    if !net_client::spawn_body_ready() {
+        p.velocity = dvec3_make(0.0, 0.0, 0.0);
+        return;
+    }
     /* Post-rescue server-save freeze countdown. Stays positive for
      * a few seconds after the bedrock-fall rescue so PLAYER_STATE
      * sends grounded=false on the wire (which gates the server's

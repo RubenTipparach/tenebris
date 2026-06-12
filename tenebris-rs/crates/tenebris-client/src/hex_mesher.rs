@@ -35,8 +35,7 @@
 //! - `hex_mesh_build_water_voxels()` -> `hex_mesher::build_water_voxels()`
 //! - `hex_mesher_relight_if_needed()`-> `hex_mesher::relight_if_needed()`
 //! - `HEX_ATLAS_TILES` / `HEX_ATLAS_U_STEP` keep their names (hotbar_ui
-//!   carries private mirrors until its TODO(port-hex-mesher) resolves
-//!   against these).
+//!   imports them from here, like the C includes hex_mesher.h).
 
 #![allow(dead_code)] // consumed by the renderer wave of the port
 

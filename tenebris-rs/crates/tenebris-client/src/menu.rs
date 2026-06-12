@@ -71,12 +71,10 @@
 //!
 //! # Pending cross-module calls
 //!
-//! net_client.rs is being ported in parallel; every call into it is a
-//! `// TODO(port-net): <original C call>` marker and the local logic
-//! routes through the `poll_net()` seam, which reports
-//! `NetLinkState::Other` (link healthy / not observable) until the
-//! port lands. renderer / main_web hooks carry `TODO(port-render)` /
-//! `TODO(port-main)` markers.
+//! net_client calls are wired directly; reads of the link state route
+//! through the `poll_net()` snapshot and the actual socket dial routes
+//! through `net_connect()` so headless tests can substitute doubles.
+//! main_web hooks carry `TODO(port-main)` markers.
 //!
 //! # JS contract for the emscripten extern fns
 //!
@@ -126,6 +124,7 @@ use sokol::gl as sgl;
 
 use crate::client_kv;
 use crate::mobile_ui;
+use crate::net_client;
 use crate::persistence::{self, PersistenceSave};
 use crate::profile::{self, Profile, PROFILE_MAX};
 use crate::settings;
@@ -468,10 +467,9 @@ mod test_doubles {
 }
 
 /* ------------------------------------------------------------------ */
-/* net_client seam. The net_client port is in flight in a parallel      */
-/* wave; the menu reads it through this snapshot so the reconnect       */
-/* state machine is fully ported + tested now and only the probe        */
-/* swaps in later.                                                      */
+/* net_client snapshot. The menu reads net_client through this          */
+/* snapshot so the reconnect state machine stays headless-testable      */
+/* (tests drive test_net instead of a live socket).                     */
 /* ------------------------------------------------------------------ */
 
 /// What `tick()` observes about the MP link. Mirrors the subset of
@@ -497,21 +495,27 @@ struct NetPoll {
 
 #[cfg(not(test))]
 fn poll_net() -> NetPoll {
-    // TODO(port-net): net_client_state_t ns = net_client_state();
-    // TODO(port-net): net_client_can_retry()
-    // TODO(port-net): net_client_error_message()
-    /* Until net_client.rs lands the link is reported as healthy /
-     * unobservable so tick() never falsely promotes to the error
-     * popup. */
     NetPoll {
-        state: NetLinkState::Other,
-        can_retry: true,
-        error_message: None,
+        state: match net_client::state() {
+            net_client::NetClientState::Ready => NetLinkState::Ready,
+            net_client::NetClientState::Error => NetLinkState::Error,
+            _ => NetLinkState::Other,
+        },
+        can_retry: net_client::can_retry(),
+        error_message: net_client::error_message(),
     }
 }
 
+/// `net_client_connect()` - seamed like `poll_net` so the headless
+/// menu tests don't dial a real socket (the native transport spawns a
+/// tokio runtime and a TCP connect per call).
+#[cfg(not(test))]
+fn net_connect(url: &str) {
+    net_client::connect(url);
+}
+
 #[cfg(test)]
-use test_net::poll_net;
+use test_net::{net_connect, poll_net};
 
 #[cfg(test)]
 mod test_net {
@@ -524,6 +528,8 @@ mod test_net {
             can_retry: true,
             error_message: None,
         });
+        /// URLs `net_connect` was called with, in order.
+        pub static CONNECTS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     }
 
     pub fn poll_net() -> NetPoll {
@@ -532,6 +538,14 @@ mod test_net {
 
     pub fn set(p: NetPoll) {
         POLL.with(|c| *c.borrow_mut() = p);
+    }
+
+    pub fn net_connect(url: &str) {
+        CONNECTS.with(|c| c.borrow_mut().push(url.to_string()));
+    }
+
+    pub fn reset_connects() {
+        CONNECTS.with(|c| c.borrow_mut().clear());
     }
 }
 
@@ -1754,7 +1768,7 @@ fn connect_to_room(m: &mut Menu, room_code: &str) {
     };
     let tok = active.token.as_str();
     let name = active.name.as_str();
-    // TODO(port-net): net_client_set_profile(tok, name, room_code ? room_code : "");
+    net_client::set_profile(tok, name, room_code);
     m.room_code = trunc(room_code, 8);
     println!(
         "[menu] MP: connect to {} (room='{}')",
@@ -1775,7 +1789,7 @@ fn connect_to_room(m: &mut Menu, room_code: &str) {
     m.reconnect_deadline_t = 0.0;
     m.reconnect_next_try_t = 0.0;
     m.reconnect_attempts = 0;
-    // TODO(port-net): net_client_connect(DEFAULT_MP_SERVER_URL);
+    net_connect(DEFAULT_MP_SERVER_URL);
     record_recent_room_inner(m, room_code);
     m.active_world.clear(); /* no SP save target while in MP */
     m.state = GameState::InGameMp;
@@ -1835,7 +1849,7 @@ fn consume_pending_invite_if_ready(m: &mut Menu) {
         DEFAULT_MP_SERVER_URL.to_string()
     };
 
-    // TODO(port-net): net_client_set_profile(active.token, active.name, room);
+    net_client::set_profile(&active.token, &active.name, &room);
     m.room_code = trunc(&room, 8);
     m.reconnect_url = trunc(&server, 127);
     m.reconnect_token = trunc(&active.token, 39);
@@ -1844,7 +1858,7 @@ fn consume_pending_invite_if_ready(m: &mut Menu) {
     m.reconnect_deadline_t = 0.0;
     m.reconnect_next_try_t = 0.0;
     m.reconnect_attempts = 0;
-    // TODO(port-net): net_client_connect(server);
+    net_connect(&server);
     record_recent_room_inner(m, &room);
     m.active_world.clear();
     m.state = GameState::InGameMp;
@@ -2045,7 +2059,7 @@ fn on_click_connect_error(m: &mut Menu, x: f32, y: f32) {
     }
     /* Tear down the dead socket so the next attempt starts clean,
      * then drop the player back to the top of the menu tree. */
-    // TODO(port-net): net_client_disconnect();
+    net_client::disconnect();
     m.error_msg.clear();
     m.room_code.clear();
     m.state = GameState::MainMenu;
@@ -2357,8 +2371,8 @@ fn launch_reconnect_attempt(m: &mut Menu) {
     );
     /* set_profile must come BEFORE connect - net_client_connect
      * memsets its state, so the profile has to land after that. */
-    // TODO(port-net): net_client_set_profile(M.reconnect_token, M.reconnect_name, M.reconnect_room);
-    // TODO(port-net): net_client_connect(M.reconnect_url);
+    net_client::set_profile(&m.reconnect_token, &m.reconnect_name, &m.reconnect_room);
+    net_connect(&m.reconnect_url);
 }
 
 /// Port of `menu_tick()`. Per-frame poll. Reads net_client state and
@@ -2491,6 +2505,15 @@ pub fn take_sp_resume() -> Option<PersistenceSave> {
 /// the throttled autosave in main_web.
 pub fn active_world() -> String {
     with_menu(|m| m.active_world.clone())
+}
+
+/// Test-only hook: set the SP active-world directly (the effect
+/// `start_sp_world` has) so other modules' tests can stand up the
+/// `menu_state() == GAME_IN_GAME_SP && menu_active_world()` persistence
+/// gate without driving the whole menu UI flow.
+#[cfg(test)]
+pub(crate) fn test_set_active_world(name: &str) {
+    with_menu(|m| m.active_world = name.to_string());
 }
 
 /* ------------------------------------------------------------------ */
@@ -2845,7 +2868,7 @@ fn pause_event_inner(m: &mut Menu, e: &sapp::Event) -> bool {
         }
         if pause_btn_hit(&pl.quit, cx, cy) {
             if m.state == GameState::InGameMp {
-                // TODO(port-net): net_client_disconnect();
+                net_client::disconnect();
                 m.room_code.clear();
             }
             m.active_world.clear();
@@ -3059,8 +3082,7 @@ fn settings_draw(m: &mut Menu, w: f32, h: f32) {
     /* Lite-graphics label + button text + reload hint. The toggle
      * persists immediately but only takes visual effect on the next
      * page reload (perf mode is locked in before renderer init), so
-     * we surface that explicitly. TODO(port-render): renderer reads
-     * the perf flag at init. */
+     * we surface that explicitly. */
     draw_text_centered(TXT_GFX_QUALITY, cx, py + 282.0, 1.5, 0xc0, 0xc8, 0xd8);
     draw_text_centered(
         &m.btn_lite_graphics.label,

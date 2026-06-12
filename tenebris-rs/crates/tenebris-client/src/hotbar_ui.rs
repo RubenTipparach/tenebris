@@ -35,21 +35,16 @@
 //! [`draw`] submits exactly what those helpers compute, in the same
 //! pass order as the C (frames, icons, badges, sdtx digits).
 //!
-//! # Pending cross-module seams
-//!
-//! renderer.rs is still a stub; the three renderer reads are module-
-//! local placeholders marked TODO(port-renderer) that return the C
-//! renderer's boot defaults. Swap them for the real calls when the
-//! renderer wave lands. HEX_ATLAS_TILES / HEX_ATLAS_U_STEP belong to
-//! hex_mesher (also a stub) and live here temporarily, marked
-//! TODO(port-hex-mesher).
-
 // Not wired into the app loop until the main_web port lands (final
 // client wave); exercised by unit tests.
 #![allow(dead_code)]
 
+#[cfg(test)]
+use crate::hex_mesher::HEX_ATLAS_TILES;
+use crate::hex_mesher::HEX_ATLAS_U_STEP;
 use crate::input;
 use crate::inventory::{Inventory, INV_HOTBAR_SLOTS};
+use crate::renderer;
 use sokol::app as sapp;
 use sokol::debugtext as sdtx;
 use sokol::gfx as sg;
@@ -73,34 +68,23 @@ const SLOT_GAP_MOBILE: f32 = 3.0;
 const BOTTOM_MARGIN_MOBILE: f32 = 8.0;
 const ICON_PAD: f32 = 4.0;
 
-/* TODO(port-hex-mesher): these mirror hex_mesher.h and move to
- * hex_mesher.rs when that module lands. Atlas column count (must match
- * the runtime bake in renderer.c). 12 default + 6 Sequoia + 3 tinted
- * variants + wood + leaves + bedrock + seq-leaves = 25 total. */
-const HEX_ATLAS_TILES: i32 = 25;
-const HEX_ATLAS_U_STEP: f32 = 1.0 / HEX_ATLAS_TILES as f32;
-
 /* --------------------------------------------------------------------- */
-/* Cross-module seams pending the renderer port wave. Call sites below
- * keep the exact C shape so swapping in the real module is a one-line
- * change per function. */
+/* Renderer reads, kept as module-local forwards so the call sites
+ * below keep the exact C names. */
 
-/// TODO(port-renderer): forward to `renderer::perf_mode_enabled()` once
-/// the renderer module lands. Placeholder returns the desktop default.
+/// Forward of `renderer_perf_mode_enabled()`.
 fn renderer_perf_mode_enabled() -> bool {
-    false
+    renderer::perf_mode_enabled()
 }
 
-/// TODO(port-renderer): forward to `renderer::atlas_view_id()`.
-/// Placeholder returns the invalid id (pass 2 samples nothing until
-/// the renderer bakes the atlas).
+/// Forward of `renderer_atlas_view_id()`.
 fn renderer_atlas_view_id() -> u32 {
-    0
+    renderer::atlas_view_id()
 }
 
-/// TODO(port-renderer): forward to `renderer::atlas_sampler_id()`.
+/// Forward of `renderer_atlas_sampler_id()`.
 fn renderer_atlas_sampler_id() -> u32 {
-    0
+    renderer::atlas_sampler_id()
 }
 
 /* --------------------------------------------------------------------- */

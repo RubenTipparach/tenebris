@@ -33,20 +33,18 @@
 //! - `net_client_send_torch()`         -> `send_torch()`
 //! - `net_client_fetch_body_saves()`   -> `fetch_body_saves()`
 //! - `net_client_resync_body_saves()`  -> `resync_body_saves()`
-//! - `net_client_spawn_body_ready()`   -> `spawn_body_ready()` (the
-//!   player_ctrl port carries a TODO(port-net) marker for this exact
-//!   call; a later wiring pass connects it)
+//! - `net_client_spawn_body_ready()`   -> `spawn_body_ready()` (called
+//!   by `player_ctrl::update` to freeze movement during the join race)
 //! - `net_client_saves_audit_cb()`     -> `saves_audit_cb()` (web fetch
 //!   re-entry; EMSCRIPTEN_KEEPALIVE drops out)
 //! - `net_client_body_blob_cb()`       -> `body_blob_cb()` (same)
 //!
 //! # Seams for not-yet-ported modules
 //!
-//! - `renderer_world_for_body()` - the renderer is not ported. Until
-//!   it lands, this module hosts the body_id -> World registry behind
-//!   [`register_world`] / `world_for_body`; the renderer wave should
-//!   take ownership of the map and turn the shim into a forward. See
-//!   the TODO(port-render) marker at the registry.
+//! - `renderer_world_for_body()` - forwarded to
+//!   `renderer::world_for_body()`; the renderer owns the
+//!   body_id -> World registry (`renderer::register_world` fills it,
+//!   net_client only reads), exactly like the C.
 //! - `tenebris_get_local_player_pos()` / `..._body_id()` - externs
 //!   provided by main_web.c. Ported as the provider registered via
 //!   [`set_local_player_provider`]; see the TODO(port-main) marker.
@@ -67,6 +65,7 @@
 
 use crate::chat;
 use crate::net_transport::{NetChannel, NetCloseReason, NetConn, NetEvent};
+use crate::renderer;
 use crate::remote_players::{self, RemotePose, MAX_PLAYERS as REMOTE_PLAYERS_MAX};
 use crate::torch;
 use std::cell::{Cell, RefCell};
@@ -332,37 +331,11 @@ thread_local! {
 /* Cross-module seams.                                                  */
 /* ------------------------------------------------------------------ */
 
-/* TODO(port-render): renderer_world_for_body(body_id). The renderer
- * owns the body_id -> world_t* registry in C (renderer_register_world
- * fills it; net_client only reads). Until the renderer wave lands,
- * net_client hosts the registry so the diff-application paths and the
- * tests have a real World to write into. The renderer port should
- * take ownership of the map and turn world_for_body into a forward. */
-thread_local! {
-    static WORLDS: RefCell<Vec<(u32, Rc<RefCell<World>>)>> = const { RefCell::new(Vec::new()) };
-}
-
-/// Stand-in for the C `renderer_register_world` side of the registry.
-/// Re-registering a body_id replaces the entry.
-pub fn register_world(body_id: u32, world: Rc<RefCell<World>>) {
-    WORLDS.with(|w| {
-        let mut w = w.borrow_mut();
-        if let Some(slot) = w.iter_mut().find(|(id, _)| *id == body_id) {
-            slot.1 = world;
-        } else {
-            w.push((body_id, world));
-        }
-    });
-}
-
-/// Port of the `renderer_world_for_body()` *call sites* in this file.
+/// Port of the `renderer_world_for_body()` call sites in this file.
+/// The renderer owns the body_id -> World registry
+/// (`renderer::register_world` fills it; net_client only reads).
 fn world_for_body(body_id: u32) -> Option<Rc<RefCell<World>>> {
-    WORLDS.with(|w| {
-        w.borrow()
-            .iter()
-            .find(|(id, _)| *id == body_id)
-            .map(|(_, rc)| rc.clone())
-    })
+    renderer::world_for_body(body_id)
 }
 
 /* TODO(port-main): extern dvec3_t tenebris_get_local_player_pos(void)
@@ -2788,7 +2761,7 @@ mod tests {
         pump_until(|| state() == NetClientState::Ready);
 
         let world = make_world();
-        register_world(0, world.clone());
+        renderer::test_register_world(&world);
 
         /* Our edit goes out as a PLAYER_CMD and lands in the pending
          * table. */
@@ -2840,7 +2813,7 @@ mod tests {
         let _hello = pump_recv(&srv);
         srv.tx.send(welcome_bytes(9, 0)).unwrap();
         pump_until(|| state() == NetClientState::Ready);
-        register_world(0, make_world());
+        renderer::test_register_world(&make_world());
 
         /* Two edits to the SAME cell; the first ack must release the
          * older slot, the second the newer. */
@@ -2874,7 +2847,7 @@ mod tests {
          * headless diff path needs. */
         torch::shutdown();
         make_ready(3, 0);
-        register_world(0, make_world());
+        renderer::test_register_world(&make_world());
 
         let place = torch_diff_bytes(
             0,
@@ -2921,7 +2894,7 @@ mod tests {
     fn water_state_diff_loads_column_and_dirties() {
         make_ready(3, 0);
         let world = make_world();
-        register_world(0, world.clone());
+        renderer::test_register_world(&world);
 
         let mut wsd = proto::MsgWaterStateDiff::default();
         wsd.body_id = 0;
@@ -3080,7 +3053,7 @@ mod tests {
         connect(&srv.url);
         let _hello = pump_recv(&srv);
         let world = make_world();
-        register_world(0, world.clone());
+        renderer::test_register_world(&world);
         srv.tx.send(welcome_bytes(7, 0)).unwrap();
         pump_until(|| state() == NetClientState::Ready);
 

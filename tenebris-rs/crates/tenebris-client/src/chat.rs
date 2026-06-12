@@ -60,6 +60,8 @@ use sokol::gl as sgl;
 
 use std::cell::{Cell, RefCell};
 
+use crate::net_client;
+
 const CHAT_NAME_MAX: usize = 32;
 
 /// Port of `CHAT_TEXT_MAX` (matches MSG_CHAT_TEXT_LEN-1).
@@ -288,10 +290,10 @@ fn submit_compose(s: &mut State) {
         return;
     }
     if !s.input_buf.is_empty() {
-        // TODO(port-net): net_client::send_chat(&s.input_buf) once the
-        // net_client port lands (wave 3). The server's broadcast comes
-        // back via MSG_CHAT and lands in post_recv just like any peer's
-        // message - no need to locally echo here.
+        net_client::send_chat(&s.input_buf);
+        /* The server's broadcast comes back via MSG_CHAT and lands
+         * in chat_post_recv just like any peer's message - no need
+         * to locally echo here. */
     }
     close_compose(s);
 }
@@ -836,7 +838,7 @@ mod tests {
         assert!(is_active());
         type_str("hello world");
         assert_eq!(input_buf(), "hello world");
-        /* Enter submits (send is TODO(port-net)) and closes */
+        /* Enter submits (send_chat is a no-op while disconnected) and closes */
         assert!(event(&key(Keycode::Enter)));
         assert!(!is_active());
         assert_eq!(input_buf(), "");

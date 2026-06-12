@@ -17,29 +17,18 @@
 //!   ray-stepping callers can keep the goldberg hint warm (`-1` when
 //!   the goldberg lookup itself failed - the C leaves the caller's
 //!   `-1` initializer untouched in that case).
-//!
-//! # In-flight module boundaries
-//!
-//! menu and net_client are being ported in parallel; their symbols
-//! are not referenced here. Where the C calls them:
-//!
-//! - `menu_state()` / `menu_active_world()` (the SP persistence gate)
-//!   are stood in by the module-local [`SP_ACTIVE_WORLD`] shim - see
-//!   `TODO(port-menu)` at [`sp_active_world_name`]. The wiring pass
-//!   replaces the shim's setter call sites with the real menu module.
-//! - `net_client_send_edit()` / `net_client_send_torch()` are left as
-//!   `TODO(port-net)` markers quoting the exact C call at the exact
-//!   call site (order preserved: mutate world -> persist -> notify).
 
 #![allow(dead_code)] // wired up by the main_web wave of the port
 
 use crate::input;
 use crate::inventory;
+use crate::menu;
+use crate::net_client;
 use crate::persistence::{self, PersistenceTorch, COLUMN_BYTES};
 use crate::player_ctrl::PlayerCtrl;
 use crate::torch;
-use std::cell::RefCell;
 use tenebris_core::blocks::{self, Block};
+use tenebris_core::proto;
 use tenebris_core::math::{
     dvec3_add, dvec3_dot, dvec3_length, dvec3_make, dvec3_normalize, dvec3_scale, dvec3_sub,
     vec3_make, vec3_scale, DVec3,
@@ -90,34 +79,14 @@ pub struct InteractState {
  * would diverge from the server's authoritative state on rejoin,
  * which is worse than no cache at all. */
 
-thread_local! {
-    /* TODO(port-menu): stand-in for the C gate
-     *     menu_state() == GAME_IN_GAME_SP && menu_active_world()
-     * while the menu module ports in parallel. `Some(name)` means
-     * "menu says we are GAME_IN_GAME_SP with this active world";
-     * `None` covers every other menu state (MP, main menu, ...).
-     * The wiring pass swaps `sp_active_world_name()` to read the
-     * real menu module and deletes this cell + its setter. */
-    static SP_ACTIVE_WORLD: RefCell<Option<String>> = const { RefCell::new(None) };
-}
-
-/// Wiring shim (see `TODO(port-menu)` above): tell interact which SP
-/// world is active, or `None` when not in `GAME_IN_GAME_SP`.
-pub fn set_sp_active_world(name: Option<&str>) {
-    SP_ACTIVE_WORLD.with(|w| *w.borrow_mut() = name.map(str::to_owned));
-}
-
-/// C: `menu_state() == GAME_IN_GAME_SP ? menu_active_world() : NULL`.
-fn sp_active_world_name() -> Option<String> {
-    // TODO(port-menu): if (menu_state() != GAME_IN_GAME_SP) return false;
-    //                  const char* name = menu_active_world();
-    SP_ACTIVE_WORLD.with(|w| w.borrow().clone())
-}
-
 /// Port of `sp_active_for_world()`. The C's `!w || !w->body` null
 /// checks drop out - a Rust `World` always carries its body.
+/// C: `menu_state() == GAME_IN_GAME_SP && menu_active_world()[0]`.
 fn sp_active_for_world(_w: &World) -> Option<String> {
-    sp_active_world_name().filter(|name| !name.is_empty())
+    if menu::state() != menu::GameState::InGameSp {
+        return None;
+    }
+    Some(menu::active_world()).filter(|name| !name.is_empty())
 }
 
 /// Port of `sp_save_tile_after_edit()`.
@@ -372,11 +341,17 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
             if tor_tile >= 0 {
                 /* C gate `w->body && tor_tile >= 0` - body is always
                  * present here. */
-                // TODO(port-net): net_client_send_torch(/* place_op */ false,
-                //                     (uint32_t)w->body->id, tor_tile,
-                //                     pos.x, pos.y, pos.z,
-                //                     up_v.x, up_v.y, up_v.z);
-                let _ = up_v;
+                net_client::send_torch(
+                    /* place_op */ false,
+                    w.body.id as u32,
+                    tor_tile,
+                    pos.x,
+                    pos.y,
+                    pos.z,
+                    up_v.x,
+                    up_v.y,
+                    up_v.z,
+                );
             }
             if p.survival_mode {
                 inventory::add(&mut p.inventory, Block::Torch);
@@ -408,9 +383,13 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
             s.mining_progress_s += dt;
             if s.mining_progress_s >= MINING_TIME_S {
                 w.set(s.hit_tile, s.hit_depth, Block::Air);
-                // TODO(port-net): net_client_send_edit(PLAYER_CMD_BREAK,
-                //                     (uint32_t)w->body->id,
-                //                     s->hit_tile, s->hit_depth, BLOCK_AIR);
+                net_client::send_edit(
+                    proto::PLAYER_CMD_BREAK,
+                    w.body.id as u32,
+                    s.hit_tile,
+                    s.hit_depth,
+                    Block::Air as i32,
+                );
                 sp_save_tile_after_edit(w, s.hit_tile);
                 inventory::add(&mut p.inventory, target_block);
                 s.mining_progress_s = 0.0;
@@ -422,9 +401,13 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
         /* Creative: instant break on the click edge, no inventory. */
         if inp.left_click {
             w.set(s.hit_tile, s.hit_depth, Block::Air);
-            // TODO(port-net): net_client_send_edit(PLAYER_CMD_BREAK,
-            //                     (uint32_t)w->body->id,
-            //                     s->hit_tile, s->hit_depth, BLOCK_AIR);
+            net_client::send_edit(
+                proto::PLAYER_CMD_BREAK,
+                w.body.id as u32,
+                s.hit_tile,
+                s.hit_depth,
+                Block::Air as i32,
+            );
             sp_save_tile_after_edit(w, s.hit_tile);
         }
         s.mining_progress_s = 0.0;
@@ -485,11 +468,17 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
                          * receives the echo too but the local list
                          * deduplicates by position. */
                         // C gate `if (w->body)` - body always present.
-                        // TODO(port-net): net_client_send_torch(/* place_op */ true,
-                        //                     (uint32_t)w->body->id,
-                        //                     s->hit_tile,
-                        //                     base_pos.x, base_pos.y, base_pos.z,
-                        //                     base_dir.x, base_dir.y, base_dir.z);
+                        net_client::send_torch(
+                            /* place_op */ true,
+                            w.body.id as u32,
+                            s.hit_tile,
+                            base_pos.x,
+                            base_pos.y,
+                            base_pos.z,
+                            base_dir.x,
+                            base_dir.y,
+                            base_dir.z,
+                        );
                         inventory::consume(&mut p.inventory);
                     }
                 }
@@ -562,9 +551,13 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
                     }
                 }
                 w.set(s.place_tile, s.place_depth, to_place);
-                // TODO(port-net): net_client_send_edit(PLAYER_CMD_PLACE,
-                //                     (uint32_t)w->body->id,
-                //                     s->place_tile, s->place_depth, to_place);
+                net_client::send_edit(
+                    proto::PLAYER_CMD_PLACE,
+                    w.body.id as u32,
+                    s.place_tile,
+                    s.place_depth,
+                    to_place as i32,
+                );
                 sp_save_tile_after_edit(w, s.place_tile);
                 inventory::consume(&mut p.inventory);
             }
@@ -624,6 +617,20 @@ mod tests {
         p.last_tile = -1;
         inventory::init_creative(&mut p.inventory);
         p
+    }
+
+    /// Drive the real menu module into the state the C harness ran
+    /// under: `menu_state() == GAME_IN_GAME_SP` with `name` as the
+    /// active world, so the SP persistence gate opens.
+    fn enter_sp_world(name: &str) {
+        menu::force_state(menu::GameState::InGameSp);
+        menu::test_set_active_world(name);
+    }
+
+    /// Park the menu outside GAME_IN_GAME_SP (gate closed).
+    fn leave_sp_world() {
+        menu::force_state(menu::GameState::MainMenu);
+        menu::test_set_active_world("");
     }
 
     fn left_click(on: bool) {
@@ -692,7 +699,7 @@ mod tests {
         let _g = test_support::begin("interact_suite");
         input::init();
         torch::shutdown();
-        set_sp_active_world(Some("pinhome"));
+        enter_sp_world("pinhome");
 
         let mut w = gen_world(BodyId::Tenebris);
         let mut p = player_on_x_axis(dvec3_make(302.0, 0.0, 0.0));
@@ -954,9 +961,9 @@ mod tests {
         let _g = test_support::begin("interact_gate_off");
         input::init();
         torch::shutdown();
-        /* Default shim state = None = "menu is not in GAME_IN_GAME_SP"
-         * (MP or menu): the world edit applies, nothing is persisted. */
-        set_sp_active_world(None);
+        /* Menu not in GAME_IN_GAME_SP (MP or menu screens): the world
+         * edit applies, nothing is persisted. */
+        leave_sp_world();
         let mut w = gen_world(BodyId::Tenebris);
         let mut p = player_on_x_axis(dvec3_make(302.0, 0.0, 0.0));
         p.pitch = PITCH_DOWN;
@@ -974,7 +981,7 @@ mod tests {
         let _g = test_support::begin("interact_bedrock");
         input::init();
         torch::shutdown();
-        set_sp_active_world(Some("pinhome"));
+        enter_sp_world("pinhome");
         let mut w = gen_world(BodyId::Tenebris);
         let mut p = player_on_x_axis(dvec3_make(302.0, 0.0, 0.0));
         p.pitch = PITCH_DOWN;
@@ -996,7 +1003,7 @@ mod tests {
         let _g = test_support::begin("interact_release_resets");
         input::init();
         torch::shutdown();
-        set_sp_active_world(Some("pinhome"));
+        enter_sp_world("pinhome");
         let mut w = gen_world(BodyId::Tenebris);
         let mut p = player_on_x_axis(dvec3_make(302.0, 0.0, 0.0));
         p.pitch = PITCH_DOWN;

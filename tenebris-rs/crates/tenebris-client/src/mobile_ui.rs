@@ -45,13 +45,6 @@
 //! `sapp_widthf` / `sapp_heightf` sit behind seams; tests swap in a
 //! settable screen size (no app context in the test runner), mirroring
 //! input.rs.
-//!
-//! # Pending cross-module seams
-//!
-//! renderer.rs is still a stub; its calls are module-local
-//! placeholders marked TODO(port-renderer) that mirror the C boot
-//! defaults (render layers visible) and drop writes. profiler and
-//! teleport_menu are already ported and called directly.
 
 // Not wired into the app loop until the main_web port lands (final
 // client wave); exercised by unit tests.
@@ -59,6 +52,7 @@
 
 use crate::input;
 use crate::profiler;
+use crate::renderer;
 use crate::teleport_menu;
 use sokol::gfx as sg;
 use sokol::gl as sgl;
@@ -117,31 +111,29 @@ mod test_doubles {
 }
 
 /* --------------------------------------------------------------------- */
-/* Cross-module seams pending later port waves. Call sites keep the
- * exact C shape so swapping in the real modules is mechanical. */
+/* Renderer layer-visibility reads/writes, kept as module-local
+ * forwards so the call sites keep the exact C names. */
 
-/// TODO(port-renderer): forward to `renderer::terrain_visible()` /
-/// `renderer::set_terrain_visible()` once the renderer module lands.
-/// Placeholders return the C renderer's boot default (visible) and
-/// drop writes.
 fn renderer_terrain_visible() -> bool {
-    true
+    renderer::terrain_visible()
 }
-fn renderer_set_terrain_visible(_visible: bool) {}
+fn renderer_set_terrain_visible(visible: bool) {
+    renderer::set_terrain_visible(visible);
+}
 
-/// TODO(port-renderer): forward to `renderer::water_visible()` /
-/// `renderer::set_water_visible()`.
 fn renderer_water_visible() -> bool {
-    true
+    renderer::water_visible()
 }
-fn renderer_set_water_visible(_visible: bool) {}
+fn renderer_set_water_visible(visible: bool) {
+    renderer::set_water_visible(visible);
+}
 
-/// TODO(port-renderer): forward to `renderer::skybox_visible()` /
-/// `renderer::set_skybox_visible()`.
 fn renderer_skybox_visible() -> bool {
-    true
+    renderer::skybox_visible()
 }
-fn renderer_set_skybox_visible(_visible: bool) {}
+fn renderer_set_skybox_visible(visible: bool) {
+    renderer::set_skybox_visible(visible);
+}
 
 /* ----------------------------------------------------------------------- */
 
@@ -898,7 +890,7 @@ mod tests {
         /* closed: item tap falls through to the game */
         assert!(!handle_touch(764.0, 144.0));
         /* open it, then the same tap is consumed (item 1 = water,
-         * dispatch is a TODO(port-renderer) seam) */
+         * dispatch flips renderer::water_visible) */
         assert!(handle_touch(764.0, 36.0));
         assert!(handle_touch(764.0, 144.0));
         /* teleport item consumed AND toggles the (thread-local)
