@@ -518,6 +518,30 @@ pub struct LodConfig {
     pub water_surface_float_height_m: f32,
     pub water_body_check_height_m: f32,
     pub water_submerged_jump_mult: f32,
+
+    /* ---- Renderer mesh / chunking budget. --------------------------
+     * The surface mesh of every body is split into `mesh_chunk_count`
+     * GPU chunks. A block edit only re-meshes the chunk(s) it touches,
+     * so more chunks = fewer tiles rebuilt per edit (= less hitch when
+     * placing / breaking blocks, and when a peer's edit or a water-flow
+     * tick arrives over the network) in exchange for a few more draw
+     * calls. 32 is the historical baseline; 128 cuts per-edit mesh work
+     * roughly 4x. Clamped to [1, RENDER_CHUNK_COUNT_MAX] at load. */
+    pub mesh_chunk_count: i32,
+    /* Wall-clock budget, in milliseconds, for rebuilding dirty chunks
+     * per frame. A flood of edits (a peer carpet-building, water
+     * flooding across many chunks) rebuilds at most this many ms worth
+     * of chunks per frame and rolls the rest to subsequent frames, so
+     * the frame never stalls. At least one chunk is always rebuilt, so
+     * progress is guaranteed no matter how small this is. */
+    pub mesh_remesh_budget_ms: f32,
+    /* Multiplier on each chunk's angular radius when deciding chunk
+     * visibility on the sphere. 1.0 culls exactly at the chunk's
+     * Voronoi cap; >1 pads the kept region so chunks straddling the
+     * horizon don't pop out. The cap half-angle is derived from
+     * mesh_chunk_count, so this factor stays constant as granularity
+     * changes. */
+    pub mesh_cull_pad_factor: f32,
 }
 
 /* Per-tileset distant-LOD palette defaults. Index order matches
@@ -591,6 +615,9 @@ pub const LOD_DEFAULTS: LodConfig = LodConfig {
     water_surface_float_height_m: -0.8,
     water_body_check_height_m: 0.50,
     water_submerged_jump_mult: 0.30,
+    mesh_chunk_count: 128,
+    mesh_remesh_budget_ms: 4.0,
+    mesh_cull_pad_factor: 1.55,
 };
 
 impl Default for LodConfig {
@@ -774,6 +801,18 @@ pub fn parse_lod(src: &str, path: &str) -> i32 {
             }
             "water_submerged_jump_mult" => {
                 cfg.water_submerged_jump_mult = fval(val);
+                0
+            }
+            "mesh_chunk_count" => {
+                cfg.mesh_chunk_count = ival(val);
+                0
+            }
+            "mesh_remesh_budget_ms" => {
+                cfg.mesh_remesh_budget_ms = fval(val);
+                0
+            }
+            "mesh_cull_pad_factor" => {
+                cfg.mesh_cull_pad_factor = fval(val);
                 0
             }
             _ => {
@@ -1627,6 +1666,9 @@ sequoia:
 
 lod:
   space_thrust: 25.0
+  mesh_chunk_count: 64
+  mesh_remesh_budget_ms: 2.5
+  mesh_cull_pad_factor: 1.2
 ";
         assert_eq!(parse_lod(src, "lod.yaml"), 0);
         let cfg = lod();
@@ -1636,6 +1678,11 @@ lod:
         assert_eq!(cfg.water_drag_per_s, 4.5);
         // A second "lod:" header exits palette mode.
         assert_eq!(cfg.space_thrust, 25.0);
+        // Renderer mesh / chunking knobs (clamping to [1, 256] happens
+        // at the renderer's first read, like the C).
+        assert_eq!(cfg.mesh_chunk_count, 64);
+        assert_eq!(cfg.mesh_remesh_budget_ms, 2.5);
+        assert_eq!(cfg.mesh_cull_pad_factor, 1.2);
         // Palette section wrote only the SEQUOIA slot.
         assert_vec3(cfg.tileset_water_color[1], 0.1, 0.2, 0.3);
         assert_eq!(cfg.tileset_water_full_depth_m[1], 9.0);

@@ -594,7 +594,12 @@ pub fn subdivisions_for_radius(radius_m: f64) -> i32 {
      *   - Lower bound keeps tiny asteroids from collapsing to a
      *     92-tile pentakis dodecahedron silhouette.
      *   - Upper bound is a vertex-shader-bandwidth limit, NOT a
-     *     memory limit (see planet.c for the full rationale). */
+     *     memory limit. Visible vertex count is bounded by the
+     *     chunk-level backface cull, whose granularity is the
+     *     renderer's mesh_chunk_count knob (lod.yaml). Raising that
+     *     (finer chunks, tighter cull) is what would let the
+     *     subdivision cap climb past 7 without flooding the VS; until
+     *     then, big planets cap at ~2.5 m hex width. */
     if radius_m < 1.0 {
         return 3;
     }

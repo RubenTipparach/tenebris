@@ -40,6 +40,10 @@
 //! - `world_tile_dirty()`           -> `World::tile_dirty()`
 //! - `world_tile_clear_dirty()`     -> `World::tile_clear_dirty()`
 //! - `world_tile_mark_dirty()`      -> `World::tile_mark_dirty()`
+//! - `world_dirty_tiles()`          -> `World::dirty_tiles()` (returns a
+//!                                     slice; the C returns count + an
+//!                                     out-pointer at the internal array)
+//! - `world_dirty_consume()`        -> `World::dirty_consume()`
 //! - `world_tile_saved()`           -> `World::tile_saved()`
 //! - `world_tile_mark_saved()`      -> `World::tile_mark_saved()`
 //! - `world_dirty_in_range()`       -> `World::dirty_in_range()`
@@ -110,6 +114,18 @@ pub struct World {
     /// renderer after remeshing.
     pub dirty: Vec<u8>,
 
+    /// Compact FIFO of tiles whose dirty bit transitioned 0->1 since
+    /// the last drain. Lets the renderer process only the tiles that
+    /// actually changed instead of scanning all tile_count bits every
+    /// frame - the difference between "one peer edit costs a full-grid
+    /// sweep" and "one peer edit costs one queue push". Deduped via the
+    /// dirty bit (a tile is pushed only on the 0->1 edge), so each tile
+    /// appears at most once between drains and the queue is bounded by
+    /// tile_count - it is sized to tile_count up front and never
+    /// overflows. (C: `int* dirty_queue` + `dirty_queue_count`; the Vec
+    /// carries the count.)
+    pub dirty_queue: Vec<i32>,
+
     /// "Has a persisted column on disk" bitset - one bit per tile.
     /// Set by saves_load_world (on the server, after reading a tile's
     /// .col file off disk) and by saves_write_tile (when the server
@@ -177,6 +193,10 @@ impl World {
             blocks: vec![0u8; (tile_count * WORLD_MAX_DEPTH) as usize],
             tile_count,
             dirty: vec![0u8; dirty_bytes],
+            /* Dirty queue sized to tile_count: the bit-dedup guarantees
+             * at most one entry per tile between drains, so this never
+             * overflows. */
+            dirty_queue: Vec::with_capacity(tile_count as usize),
             saved: None,
             edited: vec![0u8; dirty_bytes],
             gen_cursor: 0,
@@ -223,6 +243,28 @@ impl World {
          * ticks). */
         world_water::clone_into(&mut w.water, &self.water);
         w
+    }
+
+    /// Port of `world_dirty_enqueue()`. Set a tile's dirty bit and, on
+    /// the 0->1 transition only, push it onto the dirty queue. Every
+    /// site that dirties a tile routes through here so the renderer's
+    /// drain stays in sync with the bitset: the invariant is "every set
+    /// dirty bit is present exactly once in the queue (until
+    /// consumed)". The bit-dedup keeps the queue bounded by tile_count,
+    /// which is how it was sized in `create`.
+    fn dirty_enqueue(&mut self, tile: i32) {
+        if tile < 0 || tile >= self.tile_count {
+            return;
+        }
+        let byte = (tile >> 3) as usize;
+        let bit = 1u8 << (tile & 7);
+        if self.dirty[byte] & bit != 0 {
+            return; /* already queued */
+        }
+        self.dirty[byte] |= bit;
+        if (self.dirty_queue.len() as i32) < self.tile_count {
+            self.dirty_queue.push(tile);
+        }
     }
 
     fn gen_tile(&mut self, tile_idx: i32) {
@@ -318,7 +360,7 @@ impl World {
         }
 
         /* Mark this tile dirty so the renderer builds its geometry. */
-        self.dirty[(tile_idx >> 3) as usize] |= 1u8 << (tile_idx & 7);
+        self.dirty_enqueue(tile_idx);
     }
 
     /// Port of `world_stream_gen()`. Generate terrain for up to
@@ -390,7 +432,7 @@ impl World {
         }
         let old = self.blocks[idx];
         self.blocks[idx] = b.raw();
-        self.dirty[(tile >> 3) as usize] |= 1u8 << (tile & 7);
+        self.dirty_enqueue(tile);
 
         /* Water-sim cleanup on block change.
          *
@@ -469,8 +511,7 @@ impl World {
             .tile(tile)
             .expect("tile index validated above");
         for i in 0..t.num_neighbors as usize {
-            let n = t.neighbors[i];
-            self.dirty[(n >> 3) as usize] |= 1u8 << (n & 7);
+            self.dirty_enqueue(t.neighbors[i]);
         }
         /* Mark the edited cell for incremental relight - but ONLY when
          * the change actually affects light propagation. The lighting BFS
@@ -507,7 +548,7 @@ impl World {
         if tile < 0 || tile >= self.tile_count {
             return;
         }
-        self.dirty[(tile >> 3) as usize] |= 1u8 << (tile & 7);
+        self.dirty_enqueue(tile);
     }
 
     /// Port of `world_tile_dirty()`.
@@ -524,6 +565,31 @@ impl World {
             return;
         }
         self.dirty[(tile >> 3) as usize] &= !(1u8 << (tile & 7));
+    }
+
+    /// Port of `world_dirty_tiles()`. Renderer drain interface for the
+    /// dirty-tile queue: returns the tiles dirtied since the last
+    /// consume (the C returns a count + an out-pointer at the internal
+    /// index array; the slice borrow enforces the same "valid until the
+    /// next set / mark / consume" lifetime). The caller maps each tile
+    /// to its render chunk, then calls `dirty_consume` once to clear
+    /// those tiles' dirty bits and empty the queue in a single pass.
+    /// This replaces the per-frame "scan every tile's dirty bit" sweep.
+    pub fn dirty_tiles(&self) -> &[i32] {
+        &self.dirty_queue
+    }
+
+    /// Port of `world_dirty_consume()`.
+    pub fn dirty_consume(&mut self) {
+        /* Clear the dirty bit for every queued tile, then empty the
+         * queue. Because every set bit is queued (the dirty_enqueue
+         * invariant), this leaves the bitset fully clean in one pass -
+         * no tile_count-wide sweep needed. */
+        for k in 0..self.dirty_queue.len() {
+            let tile = self.dirty_queue[k];
+            self.dirty[(tile >> 3) as usize] &= !(1u8 << (tile & 7));
+        }
+        self.dirty_queue.clear();
     }
 
     /// Port of `world_tile_saved()`. "Saved" bitset: tracks which tiles
@@ -592,15 +658,17 @@ impl World {
         let pz = world_pos.z * scale;
         let r2 = radius_m * radius_m;
         for i in 0..self.tile_count {
-            let t = match self.grid.tile(i) {
-                Some(t) => t,
+            /* (Copy the centre out so the grid borrow ends before the
+             * enqueue's &mut self - same math as the C either way.) */
+            let center = match self.grid.tile(i) {
+                Some(t) => t.center,
                 None => continue,
             };
-            let cx = (t.center.x * r) as f32 - px;
-            let cy = (t.center.y * r) as f32 - py;
-            let cz = (t.center.z * r) as f32 - pz;
+            let cx = (center.x * r) as f32 - px;
+            let cy = (center.y * r) as f32 - py;
+            let cz = (center.z * r) as f32 - pz;
             if cx * cx + cy * cy + cz * cz <= r2 {
-                self.dirty[(i >> 3) as usize] |= 1u8 << (i & 7);
+                self.dirty_enqueue(i);
             }
         }
         /* DO NOT mark the light grid full-dirty here. world_light's
@@ -1390,5 +1458,80 @@ mod tests {
          * tiles. */
         let s = w.safe_spawn_local(dvec3_make(0.0, 1.0, 0.0), 2.0);
         assert_eq!((s.x, s.y, s.z), (0.0, 302.0, 0.0));
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Dirty-tile queue invariants (C: world_dirty_enqueue /
+     * world_dirty_tiles / world_dirty_consume). */
+
+    #[test]
+    fn dirty_queue_dedup_fifo_and_bounds() {
+        let body = planet::get(BodyId::Tenebris);
+        let mut w = World::create(&body, 3); /* nothing streamed - queue empty */
+        assert!(w.dirty_tiles().is_empty());
+
+        /* FIFO: tiles come back in mark order, not index order. */
+        w.tile_mark_dirty(5);
+        w.tile_mark_dirty(3);
+        w.tile_mark_dirty(9);
+        assert_eq!(w.dirty_tiles(), &[5, 3, 9]);
+
+        /* Dedup: re-marking an already-dirty tile is a no-op push
+         * (the bit-dedup only queues on the 0->1 edge). */
+        w.tile_mark_dirty(5);
+        w.tile_mark_dirty(3);
+        assert_eq!(w.dirty_tiles(), &[5, 3, 9]);
+
+        /* Bounds guard: out-of-range tiles touch neither bits nor
+         * queue. */
+        w.tile_mark_dirty(-1);
+        w.tile_mark_dirty(w.tile_count);
+        assert_eq!(w.dirty_tiles(), &[5, 3, 9]);
+        assert!(!w.tile_dirty(-1));
+        assert!(!w.tile_dirty(w.tile_count));
+
+        /* Consume clears the queued tiles' bits and empties the queue
+         * in one pass. */
+        w.dirty_consume();
+        assert!(w.dirty_tiles().is_empty());
+        assert!(!w.tile_dirty(5));
+        assert!(!w.tile_dirty(3));
+        assert!(!w.tile_dirty(9));
+
+        /* After a consume the 0->1 edge fires again. */
+        w.tile_mark_dirty(3);
+        assert_eq!(w.dirty_tiles(), &[3]);
+        assert!(w.tile_dirty(3));
+    }
+
+    #[test]
+    fn dirty_queue_tracks_gen_set_and_consume() {
+        let mut w = tenebris_world();
+        /* Worldgen dirtied every tile exactly once, in gen order - the
+         * queue is full but never overflows its tile_count sizing. */
+        assert_eq!(w.dirty_tiles().len(), w.tile_count as usize);
+        for (k, &t) in w.dirty_tiles().iter().enumerate() {
+            assert_eq!(t, k as i32);
+        }
+        w.dirty_consume();
+        assert!(w.dirty_tiles().is_empty());
+        for t in 0..w.tile_count {
+            assert!(!w.tile_dirty(t), "tile {} still dirty after consume", t);
+        }
+
+        /* world_set queues the edited tile first, then its neighbours
+         * (seam rebuilds), each exactly once. */
+        w.set(100, 66, Block::Stone);
+        let t100 = *w.grid.tile(100).unwrap();
+        let q = w.dirty_tiles();
+        assert_eq!(q.len(), 1 + t100.num_neighbors as usize);
+        assert_eq!(q[0], 100);
+        for i in 0..t100.num_neighbors as usize {
+            assert_eq!(q[1 + i], t100.neighbors[i]);
+        }
+        /* Editing the same tile again adds nothing new - every queued
+         * tile's bit is already set. */
+        w.set(100, 67, Block::Stone);
+        assert_eq!(w.dirty_tiles().len(), 1 + t100.num_neighbors as usize);
     }
 }

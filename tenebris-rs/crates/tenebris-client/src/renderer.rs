@@ -1,8 +1,9 @@
 //! Port of `tenebris-c/src/client/renderer.{c,h}`.
 //!
 //! Chunked-planet renderer. Every celestial body shares the same
-//! 32-chunk mesh layout; the active body streams edits (dirty tiles ->
-//! chunk rebuilds), inactive bodies render a far-LOD icosphere until
+//! chunked mesh layout (lod.yaml mesh_chunk_count chunks); the active
+//! body streams edits (the world's dirty-tile queue -> wall-clock
+//! budgeted chunk rebuilds), inactive bodies render a far-LOD icosphere until
 //! the player approaches. Frame structure: offscreen opaque pass
 //! (skybox, sun, terrain, moons, torches) -> composite blit to the
 //! swapchain (underwater post-process) -> water cap pass sampling the
@@ -59,7 +60,7 @@
 //!   [`sun_mvp`] vs `draw_skybox()` / `draw_sun()`
 //! - [`chunk_anchors`], [`classify_tile`], [`compute_chunk_cull`],
 //!   [`chunk_visible`], [`extract_frustum`], [`sphere_visible`],
-//!   [`body_draws_chunked`], [`chunks_to_rebuild`], [`grow_capacity`]
+//!   [`body_draws_chunked`], [`remesh_budget_allows`], [`grow_capacity`]
 //!   vs the draw / upload paths
 //! - `register_world_record()` (registry bookkeeping) vs
 //!   `register_world()` (registry + GPU mesh/texture build)
@@ -83,9 +84,10 @@ use std::rc::Rc;
 use tenebris_core::blocks::{self, Block, FaceCap};
 use tenebris_core::config;
 use tenebris_core::math::{
-    dvec3_add, dvec3_dot, dvec3_normalize, dvec3_scale, vec3_add, vec3_length, vec3_sub, DVec3,
-    Vec3,
+    dvec3_dot, dvec3_scale, vec3_add, vec3_length, vec3_sub, DVec3, Vec3,
 };
+#[cfg(test)]
+use tenebris_core::math::dvec3_normalize;
 use tenebris_core::planet::{BodyConfig, Tileset};
 use tenebris_core::planet_gen;
 use tenebris_core::world::{World, WORLD_MAX_DEPTH};
@@ -94,8 +96,9 @@ use tenebris_core::world_water;
 /* ----------------------------------------------------------------------- */
 /* Goldberg @ subs=6 = 40,962 tiles. Per-tile draw calls would cost
  * ~400 ms/frame just in binding overhead. Instead we build merged
- * chunk meshes on CPU, upload per chunk, and render the planet in 32
- * draw calls. See renderer.c for the full design commentary. */
+ * chunk meshes on CPU, upload per chunk, and render the planet in
+ * chunk_n() draw calls. See renderer.c for the full design
+ * commentary. */
 
 /* 2048 tiles/frame finishes Tenebris (40 962 tiles) in ~20 frames.
  * (Kept for parity with the C header constant; the current code path
@@ -109,10 +112,32 @@ const INIT_INDICES: i32 = 96 << 10;
 const INIT_WATER_VERTICES: i32 = 8 << 10;
 const INIT_WATER_INDICES: i32 = 24 << 10;
 
-/* Number of mesh chunks each planet is split into. Anchors are the 12
- * icosahedron vertices + 20 face centres -> 32 well-spread sphere
- * points; each tile is assigned to its nearest anchor. */
-pub const CHUNK_COUNT: usize = 32;
+/* Number of mesh chunks the planet is split into. Anchors are spread
+ * evenly over the sphere (Fibonacci lattice); each tile is assigned to
+ * its nearest anchor, giving roughly equal partitions.
+ *
+ * Block edits dirty only the chunks containing edited tiles, so a
+ * single mine/place rebuild touches one chunk's worth of tiles instead
+ * of the whole planet. The count is a runtime knob (lod.yaml
+ * mesh_chunk_count): more chunks = fewer tiles re-meshed per edit
+ * (= less hitch placing blocks and applying peer / water edits) at the
+ * cost of a few more draw calls. RENDER_CHUNK_COUNT_MAX is the
+ * compile-time upper bound the per-body arrays are sized to; the live
+ * count clamps into it. */
+pub const RENDER_CHUNK_COUNT_MAX: usize = 256;
+
+/* Live chunk count, read once from lod.yaml's mesh_chunk_count (loaded
+ * at boot, never reloaded) and clamped into [1, RENDER_CHUNK_COUNT_MAX].
+ * Cached on first use so allocate / free / draw loops always agree on
+ * the same count for the life of the process. (C: static int g_chunk_n
+ * + chunk_n().) */
+fn chunk_n() -> usize {
+    static G_CHUNK_N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *G_CHUNK_N.get_or_init(|| {
+        let n = config::lod().mesh_chunk_count;
+        n.clamp(1, RENDER_CHUNK_COUNT_MAX as i32) as usize
+    })
+}
 
 /* Maximum number of registered bodies (C: sizeof(R.bodies)/sizeof). */
 const MAX_BODIES: usize = 32;
@@ -750,46 +775,29 @@ fn sun_mvp(view: Mat4, proj: Mat4, sun_pos: Vec3, sun_radius: f32) -> Mat4 {
 }
 
 /* ----------------------------------------------------------------------- */
-/* Chunk assignment - 32 well-spread sphere anchors: 12 icosahedron
- * vertices + 20 face centres. Tile -> chunk mapping is "nearest anchor
- * by dot product". */
+/* Chunk assignment - chunk_n() well-spread sphere anchors (Fibonacci
+ * lattice). Tile -> chunk mapping is "nearest anchor by dot product". */
 
 /// Port of `build_chunk_anchors()` + the CHUNK_ANCHORS static. Built
 /// once on first use.
-fn chunk_anchors() -> &'static [DVec3; CHUNK_COUNT] {
-    static ANCHORS: std::sync::OnceLock<[DVec3; CHUNK_COUNT]> = std::sync::OnceLock::new();
+fn chunk_anchors() -> &'static [DVec3] {
+    static ANCHORS: std::sync::OnceLock<Vec<DVec3>> = std::sync::OnceLock::new();
     ANCHORS.get_or_init(|| {
-        /* Icosahedron - same constants used in goldberg's seed mesh. */
-        let t = (1.0 + 5.0f64.sqrt()) / 2.0;
-        let n = 1.0 / (1.0 + t * t).sqrt();
-        let tt = t * n;
-        let v: [DVec3; 12] = [
-            DVec3 { x: -n, y: tt, z: 0.0 },
-            DVec3 { x: n, y: tt, z: 0.0 },
-            DVec3 { x: -n, y: -tt, z: 0.0 },
-            DVec3 { x: n, y: -tt, z: 0.0 },
-            DVec3 { x: 0.0, y: -n, z: tt },
-            DVec3 { x: 0.0, y: n, z: tt },
-            DVec3 { x: 0.0, y: -n, z: -tt },
-            DVec3 { x: 0.0, y: n, z: -tt },
-            DVec3 { x: tt, y: 0.0, z: -n },
-            DVec3 { x: tt, y: 0.0, z: n },
-            DVec3 { x: -tt, y: 0.0, z: -n },
-            DVec3 { x: -tt, y: 0.0, z: n },
-        ];
-        const F: [[usize; 3]; 20] = [
-            [0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11],
-            [1, 5, 9], [5, 11, 4], [11, 10, 2], [10, 7, 6], [7, 1, 8],
-            [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8], [3, 8, 9],
-            [4, 9, 5], [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1],
-        ];
-        let mut anchors = [DVec3::default(); CHUNK_COUNT];
-        anchors[..12].copy_from_slice(&v);
-        for (fi, f) in F.iter().enumerate() {
-            let c = dvec3_scale(dvec3_add(dvec3_add(v[f[0]], v[f[1]]), v[f[2]]), 1.0 / 3.0);
-            anchors[12 + fi] = dvec3_normalize(c);
-        }
-        anchors
+        /* Fibonacci lattice: a near-uniform spread of N points on the
+         * unit sphere for any N (the old set was fixed at 32 =
+         * icosahedron verts + face centres). Tile->chunk assignment is
+         * nearest-anchor, so an even spread keeps each chunk's tile
+         * count roughly balanced. */
+        let n = chunk_n();
+        let golden = std::f64::consts::PI * (3.0 - 5.0f64.sqrt()); /* golden angle */
+        (0..n)
+            .map(|i| {
+                let y = 1.0 - 2.0 * (i as f64 + 0.5) / n as f64; /* -1..1 */
+                let r = (1.0 - y * y).max(0.0).sqrt();
+                let th = golden * i as f64;
+                DVec3 { x: th.cos() * r, y, z: th.sin() * r }
+            })
+            .collect()
     })
 }
 
@@ -837,10 +845,26 @@ fn compute_chunk_cull(world_pos: Vec3, radius_m: f32, camera_world: Vec3) -> Chu
     let cuz = cz / cd;
     let cos_h = if cd > radius_m as f64 { radius_m as f64 / cd } else { 0.0 };
     let theta_h = cos_h.acos();
-    /* Chunk angular padding: ~31 deg keeps horizon-straddling chunks
-     * visible (Voronoi regions extend past the nominal cap angle). */
-    let theta_chunk = 0.55f64;
-    ChunkCull { cux, cuy, cuz, cull_cos: (theta_h + theta_chunk).cos() }
+    /* Per-chunk angular padding, derived from the live chunk count so
+     * it auto-scales with granularity: each of N evenly-spread anchors
+     * owns a spherical cap of solid angle 4*pi/N, i.e. half-angle
+     * acos(1 - 2/N). Voronoi boundaries reach slightly past the bare
+     * cap, so pad by mesh_cull_pad_factor to keep horizon-straddling
+     * chunks visible. (At N=32 the default factor 1.55 reproduces the
+     * historical ~0.55 rad / ~31 degrees.) */
+    let nchunks = chunk_n();
+    let cap_half = (1.0 - 2.0 / nchunks as f64).acos();
+    let theta_chunk = config::lod().mesh_cull_pad_factor as f64 * cap_half;
+    /* Clamp the kept half-angle to pi. Past pi the cos() is no longer
+     * monotonic, so without this a coarse chunk count (large cap_half)
+     * would start spuriously culling; pinning at pi gives cull_cos =
+     * -1, i.e. "keep everything", which is the correct coarse-grid
+     * limit. */
+    let mut keep = theta_h + theta_chunk;
+    if keep > std::f64::consts::PI {
+        keep = std::f64::consts::PI;
+    }
+    ChunkCull { cux, cuy, cuz, cull_cos: keep.cos() }
 }
 
 /// Port of `chunk_visible()`.
@@ -1014,22 +1038,13 @@ fn body_draws_chunked(is_active: bool, dist: f32) -> bool {
     is_active && dist <= MAX_DETAIL_DIST_M
 }
 
-/// Which dirty chunks rebuild this frame: ascending chunk order,
-/// capped at the YAML remesh budget (floored at 1 so a hostile config
-/// can't starve the queue). Mirrors the loop in renderer_draw_world.
-fn chunks_to_rebuild(dirty: &[bool], budget: i32) -> Vec<usize> {
-    let budget = if budget < 1 { 1 } else { budget };
-    let mut out = Vec::new();
-    for (ci, &d) in dirty.iter().enumerate() {
-        if !d {
-            continue;
-        }
-        if out.len() as i32 >= budget {
-            break;
-        }
-        out.push(ci);
-    }
-    out
+/// The wall-clock remesh budget gate from renderer_draw_world: rebuild
+/// the next dirty chunk when nothing has been rebuilt yet (so progress
+/// is guaranteed no matter how small the budget) or when the budget
+/// hasn't been spent. Mirrors the C's `chunks_rebuilt >= 1 &&
+/// elapsed >= budget_ms -> break` inverted.
+fn remesh_budget_allows(chunks_rebuilt: i32, elapsed_ms: f64, budget_ms: f64) -> bool {
+    chunks_rebuilt < 1 || elapsed_ms < budget_ms
 }
 
 /// Port of the regrow_buffer() capacity walk: double until it fits.
@@ -1114,12 +1129,21 @@ impl Default for MeshChunk {
 }
 
 /// Port of `chunked_body_t`. A whole celestial body; every body shares
-/// the same 32-chunk layout. active = streams edits; inactive = far
-/// LOD until demand-loaded on approach.
+/// the same chunk_n()-chunk layout (arrays sized to the compile-time
+/// max). active = streams edits; inactive = far LOD until
+/// demand-loaded on approach.
 struct ChunkedBody {
     world: Rc<RefCell<World>>,
-    chunks: [MeshChunk; CHUNK_COUNT],
+    chunks: [MeshChunk; RENDER_CHUNK_COUNT_MAX],
     tile_to_chunk: Vec<i32>, /* empty = the C's NULL (not allocated) */
+    /* Per-chunk tile membership, built once in body_alloc_chunks. The
+     * flat array holds every tile index grouped by chunk; off/cnt give
+     * each chunk's slice. Lets body_chunk_rebuild_full iterate only
+     * its own tiles instead of scanning all tile_count of them per
+     * rebuild. (empty Vec = the C's NULL.) */
+    chunk_tile_flat: Vec<i32>,
+    chunk_tile_off: [i32; RENDER_CHUNK_COUNT_MAX],
+    chunk_tile_cnt: [i32; RENDER_CHUNK_COUNT_MAX],
     mesh_cursor: i32,
     streamed_complete: bool,
     is_active: bool,
@@ -1144,6 +1168,9 @@ impl ChunkedBody {
             world,
             chunks: std::array::from_fn(|_| MeshChunk::default()),
             tile_to_chunk: Vec::new(),
+            chunk_tile_flat: Vec::new(),
+            chunk_tile_off: [0; RENDER_CHUNK_COUNT_MAX],
+            chunk_tile_cnt: [0; RENDER_CHUNK_COUNT_MAX],
             mesh_cursor: 0,
             streamed_complete: false,
             is_active: false,
@@ -1907,7 +1934,7 @@ pub fn shutdown() {
     R.with(|cell| {
         let mut r = cell.borrow_mut();
         for body in &mut r.bodies {
-            for c in &mut body.chunks {
+            for c in &mut body.chunks[..chunk_n()] {
                 c.mesh = HexMesh::new();
                 c.water_mesh = HexMesh::new();
                 if c.vbuf.id != 0 {
@@ -1942,6 +1969,7 @@ pub fn shutdown() {
                 sg::destroy_image(body.distant_tex_normal);
             }
             body.tile_to_chunk = Vec::new();
+            body.chunk_tile_flat = Vec::new();
         }
         r.bodies.clear();
         r.active_body_idx = -1;
@@ -2198,7 +2226,7 @@ pub fn register_world(w: &Rc<RefCell<World>>) {
         if r.bodies[slot].is_active {
             body_alloc_chunks(&mut r.bodies[slot]);
             body_full_mesh(&mut r, slot);
-            for ci in 0..CHUNK_COUNT {
+            for ci in 0..chunk_n() {
                 chunk_upload(&mut r.bodies[slot].chunks[ci]);
             }
             r.bodies[slot].chunks_allocated = true;
@@ -2311,6 +2339,7 @@ fn body_alloc_chunks(body: &mut ChunkedBody) {
         let w = body.world.borrow();
         (w.tile_count, w.body.name)
     };
+    let nchunks = chunk_n();
     {
         let w = body.world.borrow();
         body.tile_to_chunk = Vec::with_capacity(tile_count as usize);
@@ -2320,13 +2349,63 @@ fn body_alloc_chunks(body: &mut ChunkedBody) {
         }
     }
 
-    for (i, c) in body.chunks.iter_mut().enumerate() {
+    /* Group tiles by chunk into a flat list (counting sort / prefix
+     * sum) so body_chunk_rebuild_full walks only the ~tile_count/nchunks
+     * tiles it owns instead of scanning all tile_count of them on every
+     * single edit. */
+    for ci in 0..nchunks {
+        body.chunk_tile_cnt[ci] = 0;
+    }
+    for i in 0..tile_count as usize {
+        body.chunk_tile_cnt[body.tile_to_chunk[i] as usize] += 1;
+    }
+    let mut acc = 0;
+    for ci in 0..nchunks {
+        body.chunk_tile_off[ci] = acc;
+        acc += body.chunk_tile_cnt[ci];
+    }
+    body.chunk_tile_flat = vec![0i32; tile_count as usize];
+    {
+        let mut cursor = [0i32; RENDER_CHUNK_COUNT_MAX];
+        cursor[..nchunks].copy_from_slice(&body.chunk_tile_off[..nchunks]);
+        for i in 0..tile_count {
+            let ci = body.tile_to_chunk[i as usize] as usize;
+            body.chunk_tile_flat[cursor[ci] as usize] = i;
+            cursor[ci] += 1;
+        }
+    }
+
+    /* INIT_* are calibrated for a 32-chunk planet. Keep the *total*
+     * starting buffer budget constant as the chunk count changes - with
+     * more, smaller chunks each one needs proportionally less - so mesh
+     * memory tracks content, not chunk count. regrow_buffer doubles any
+     * chunk that outgrows its start, and the floors stop a very high
+     * count from creating uselessly tiny buffers. */
+    const INIT_CALIB_CHUNKS: i32 = 32;
+    let mut init_v = INIT_VERTICES * INIT_CALIB_CHUNKS / nchunks as i32;
+    let mut init_i = INIT_INDICES * INIT_CALIB_CHUNKS / nchunks as i32;
+    let mut init_wv = INIT_WATER_VERTICES * INIT_CALIB_CHUNKS / nchunks as i32;
+    let mut init_wi = INIT_WATER_INDICES * INIT_CALIB_CHUNKS / nchunks as i32;
+    if init_v < 1024 {
+        init_v = 1024;
+    }
+    if init_i < 3072 {
+        init_i = 3072;
+    }
+    if init_wv < 256 {
+        init_wv = 256;
+    }
+    if init_wi < 768 {
+        init_wi = 768;
+    }
+
+    for (i, c) in body.chunks.iter_mut().take(nchunks).enumerate() {
         c.mesh.reset();
         c.water_mesh.reset();
-        c.vbuf_capacity = INIT_VERTICES;
-        c.ibuf_capacity = INIT_INDICES;
-        c.water_vbuf_capacity = INIT_WATER_VERTICES;
-        c.water_ibuf_capacity = INIT_WATER_INDICES;
+        c.vbuf_capacity = init_v;
+        c.ibuf_capacity = init_i;
+        c.water_vbuf_capacity = init_wv;
+        c.water_ibuf_capacity = init_wi;
 
         let label = CString::new(format!("{}-vbuf-{}", name, i)).unwrap();
         c.vbuf = sg::make_buffer(&sg::BufferDesc {
@@ -2502,14 +2581,18 @@ fn body_chunk_rebuild_full(r: &mut Renderer, bi: usize, chunk_idx: usize) {
     {
         let body = &mut r.bodies[bi];
         let has_water = body.has_water;
-        let t2c = &body.tile_to_chunk;
+        /* Walk only this chunk's tiles (built in body_alloc_chunks)
+         * rather than scanning all tile_count - the difference between
+         * a per-edit full-grid sweep and touching just the
+         * ~tile_count/nchunks tiles the chunk actually owns. */
+        let off = body.chunk_tile_off[chunk_idx] as usize;
+        let cnt = body.chunk_tile_cnt[chunk_idx] as usize;
+        let flat = &body.chunk_tile_flat;
         let c = &mut body.chunks[chunk_idx];
         c.mesh.reset();
         c.water_mesh.reset();
-        for i in 0..w.tile_count {
-            if t2c[i as usize] != chunk_idx as i32 {
-                continue;
-            }
+        for k in 0..cnt {
+            let i = flat[off + k];
             if i >= w.gen_cursor {
                 continue; /* not yet generated */
             }
@@ -2601,7 +2684,7 @@ fn body_full_mesh(r: &mut Renderer, bi: usize) {
     profiler::begin("chunk-remesh");
     {
         let body = &mut r.bodies[bi];
-        for c in &mut body.chunks {
+        for c in &mut body.chunks[..chunk_n()] {
             c.mesh.reset();
             c.water_mesh.reset();
         }
@@ -2617,8 +2700,12 @@ fn body_full_mesh(r: &mut Renderer, bi: usize) {
                 hex_mesher::build_water(&mut c.water_mesh, &w, i);
                 hex_mesher::build_water_voxels(&mut c.water_mesh, &w, i);
             }
-            w.tile_clear_dirty(i);
         }
+        /* This pass meshed every generated tile, so every dirty tile is
+         * now resolved: drain the whole dirty queue (clears the bits +
+         * empties it) in one shot rather than clearing per-tile inside
+         * the loop. */
+        w.dirty_consume();
     }
     profiler::end("chunk-remesh");
     r.mesh_rebuild_ms_this_frame += ticks_ms(ticks_diff(now_ticks(), t_mesh_start));
@@ -2655,7 +2742,7 @@ fn body_load_detail(r: &mut Renderer, bi: usize) {
         r.bodies[bi].chunks_allocated = true;
     }
     body_full_mesh(r, bi);
-    for ci in 0..CHUNK_COUNT {
+    for ci in 0..chunk_n() {
         chunk_upload(&mut r.bodies[bi].chunks[ci]);
     }
     r.bodies[bi].meshed = true;
@@ -2677,7 +2764,7 @@ fn body_unload_detail(body: &mut ChunkedBody) {
     if !body.meshed && !body.chunks_allocated {
         return;
     }
-    for c in &mut body.chunks {
+    for c in &mut body.chunks[..chunk_n()] {
         c.mesh = HexMesh::new();
         c.water_mesh = HexMesh::new();
         if c.vbuf.id != 0 {
@@ -2704,6 +2791,7 @@ fn body_unload_detail(body: &mut ChunkedBody) {
         c.water_ibuf_capacity = 0;
     }
     body.tile_to_chunk = Vec::new();
+    body.chunk_tile_flat = Vec::new();
     body.chunks_allocated = false;
     body.meshed = false;
     let (name, id) = {
@@ -3090,7 +3178,7 @@ fn body_draw_chunks(
     sg::apply_uniforms(shaders::hex::UB_HEX_VS_PARAMS, &sg::value_as_range(&hvp));
     let cc = compute_chunk_cull(body.world_pos, body.radius_m, camera_world);
     let mut tris = 0usize;
-    for (ci, c) in body.chunks.iter().enumerate() {
+    for (ci, c) in body.chunks[..chunk_n()].iter().enumerate() {
         if c.last_uploaded_index_count <= 0 {
             continue;
         }
@@ -3118,7 +3206,9 @@ fn body_draw_water(r: &Renderer, bi: usize, vp: Mat4, camera_world: Vec3) -> usi
     if !body.has_water {
         return 0;
     }
-    let any = body.chunks.iter().any(|c| c.last_uploaded_water_idx_count > 0);
+    let any = body.chunks[..chunk_n()]
+        .iter()
+        .any(|c| c.last_uploaded_water_idx_count > 0);
     if !any {
         return 0;
     }
@@ -3205,7 +3295,7 @@ fn body_draw_water(r: &Renderer, bi: usize, vp: Mat4, camera_world: Vec3) -> usi
         );
 
         let cc = compute_chunk_cull(body.world_pos, body.radius_m, camera_world);
-        for (ci, c) in body.chunks.iter().enumerate() {
+        for (ci, c) in body.chunks[..chunk_n()].iter().enumerate() {
             if c.last_uploaded_water_idx_count <= 0 {
                 continue;
             }
@@ -3276,7 +3366,7 @@ fn body_draw_water(r: &Renderer, bi: usize, vp: Mat4, camera_world: Vec3) -> usi
     sg::apply_uniforms(shaders::water::UB_FS_PARAMS, &sg::value_as_range(&fs_params));
 
     let cc = compute_chunk_cull(body.world_pos, body.radius_m, camera_world);
-    for (ci, c) in body.chunks.iter().enumerate() {
+    for (ci, c) in body.chunks[..chunk_n()].iter().enumerate() {
         if c.last_uploaded_water_idx_count <= 0 {
             continue;
         }
@@ -3346,38 +3436,67 @@ pub fn draw_world(
         /* Edit handling - every meshed body. Bodies not demand-loaded
          * yet have an empty tile_to_chunk; skip them (body_load_detail
          * meshes from scratch when they come into range). */
+        let budget_ms = {
+            let b = config::lod().mesh_remesh_budget_ms as f64;
+            if b < 0.0 {
+                0.0
+            } else {
+                b
+            }
+        };
+        let nchunks = chunk_n();
         for bi in 0..r.bodies.len() {
             if !r.bodies[bi].meshed || r.bodies[bi].tile_to_chunk.is_empty() {
                 continue;
             }
             let world_rc = r.bodies[bi].world.clone();
-            let mut dirty_tiles = 0;
+            let dirty_tiles;
             {
                 let mut w = world_rc.borrow_mut();
                 let body = &mut r.bodies[bi];
-                for i in 0..w.tile_count {
-                    if !w.tile_dirty(i) {
-                        continue;
-                    }
-                    let ci = body.tile_to_chunk[i as usize] as usize;
+                /* Drain the dirty-tile queue: map each changed tile to
+                 * its chunk and flag that chunk for rebuild. Replaces
+                 * the old "scan every tile's dirty bit each frame"
+                 * sweep, so an idle frame - or a frame carrying just
+                 * one peer edit - costs O(changed tiles) instead of
+                 * O(tile_count). dirty_consume then clears the bits +
+                 * empties the queue in one pass. */
+                dirty_tiles = w.dirty_tiles().len();
+                for &tile in w.dirty_tiles() {
+                    let ci = body.tile_to_chunk[tile as usize] as usize;
                     body.chunks[ci].dirty = true;
-                    w.tile_clear_dirty(i);
-                    dirty_tiles += 1;
                 }
+                w.dirty_consume();
             }
-            /* Spread chunk rebuilds across frames - cap to the YAML
-             * budget so a flow tick dirtying N chunks doesn't stall a
-             * single frame; the rest keep their dirty flag. */
-            let remesh_budget = config::water_flow().max_chunks_remesh_per_frame;
-            let dirty_flags: Vec<bool> =
-                r.bodies[bi].chunks.iter().map(|c| c.dirty).collect();
-            let rebuild = chunks_to_rebuild(&dirty_flags, remesh_budget);
-            let chunks_rebuilt = rebuild.len();
-            for &ci in &rebuild {
+            /* Rebuild dirty chunks under a wall-clock budget so neither
+             * a local placement, a burst of peer edits, nor a water
+             * flood that dirties many chunks at once can stall the
+             * frame. Always rebuild at least one chunk so progress is
+             * guaranteed; past that, stop once the budget is spent and
+             * let the remaining dirty chunks roll over to the next
+             * frame. (The first rebuild also drives the global relight
+             * BFS to convergence; later chunks in the same frame find
+             * light already clean, so the budget mostly governs raw
+             * mesh-build cost.) */
+            let t_budget_start = now_ticks();
+            let mut rebuilt: Vec<usize> = Vec::new();
+            for ci in 0..nchunks {
+                if !r.bodies[bi].chunks[ci].dirty {
+                    continue;
+                }
+                if !remesh_budget_allows(
+                    rebuilt.len() as i32,
+                    ticks_ms(ticks_diff(now_ticks(), t_budget_start)),
+                    budget_ms,
+                ) {
+                    break;
+                }
                 body_chunk_rebuild_full(r, bi, ci);
                 r.bodies[bi].chunks[ci].dirty = false;
+                rebuilt.push(ci);
             }
-            for &ci in &rebuild {
+            let chunks_rebuilt = rebuilt.len();
+            for &ci in &rebuilt {
                 chunk_upload(&mut r.bodies[bi].chunks[ci]);
             }
             /* Trace per-frame remesh activity (silence here when diffs
@@ -3399,7 +3518,7 @@ pub fn draw_world(
             r.log_accum_s = 0.0;
             let active = &r.bodies[r.active_body_idx as usize];
             let w = active.world.borrow();
-            for ci in 0..CHUNK_COUNT {
+            for ci in 0..chunk_n() {
                 let c = &active.chunks[ci];
                 if c.last_uploaded_index_count > 0 {
                     continue;
@@ -3412,14 +3531,7 @@ pub fn draw_world(
                 };
                 let anchor_world = vec3_add(anchor_local, active.world_pos);
                 let dist = vec3_length(vec3_sub(anchor_world, camera_world));
-                let mut tile_count = 0;
-                if !active.tile_to_chunk.is_empty() {
-                    for i in 0..w.tile_count {
-                        if active.tile_to_chunk[i as usize] == ci as i32 {
-                            tile_count += 1;
-                        }
-                    }
-                }
+                let tile_count = active.chunk_tile_cnt[ci];
                 println!(
                     "[renderer] MISSING chunk {} on {}: {} tiles, dist={:.1}m, idx_count={}",
                     ci, w.body.name, tile_count, dist, c.last_uploaded_index_count
@@ -3908,7 +4020,7 @@ pub fn chunk_count() -> (i32, i32) {
         } else {
             0
         };
-        (CHUNK_COUNT as i32, tiles_meshed)
+        (chunk_n() as i32, tiles_meshed)
     })
 }
 
@@ -3939,28 +4051,36 @@ mod tests {
 
     #[test]
     fn chunk_anchors_pinned() {
+        /* No lod.yaml is loaded in the test binary, so the live count
+         * is the compiled-in mesh_chunk_count default. */
+        assert_eq!(chunk_n(), 128);
         let anchors = chunk_anchors();
-        assert_eq!(anchors.len(), CHUNK_COUNT);
-        /* Every anchor is unit length. */
+        assert_eq!(anchors.len(), chunk_n());
+        /* Every anchor is unit length (the Fibonacci lattice generates
+         * points directly on the unit sphere). */
         for a in anchors.iter() {
             let len = (a.x * a.x + a.y * a.y + a.z * a.z).sqrt();
             assert!((len - 1.0).abs() < 1e-12, "len = {len}");
         }
-        /* First 12 = icosahedron vertices: anchor[0] = (-n, T, 0). */
-        let t = (1.0 + 5.0f64.sqrt()) / 2.0;
-        let n = 1.0 / (1.0 + t * t).sqrt();
-        let tt = t * n;
-        assert!((anchors[0].x - (-n)).abs() < 1e-15);
-        assert!((anchors[0].y - tt).abs() < 1e-15);
-        assert_eq!(anchors[0].z, 0.0);
-        /* anchor[12] = normalised centroid of face {0, 11, 5}. */
-        let c = dvec3_normalize(dvec3_scale(
-            dvec3_add(dvec3_add(anchors[0], anchors[11]), anchors[5]),
-            1.0 / 3.0,
-        ));
-        assert!((anchors[12].x - c.x).abs() < 1e-15);
-        assert!((anchors[12].y - c.y).abs() < 1e-15);
-        assert!((anchors[12].z - c.z).abs() < 1e-15);
+        /* y descends monotonically from ~+1 to ~-1 (the lattice's
+         * latitude sequence y_i = 1 - 2(i + 0.5)/N). */
+        let n = anchors.len() as f64;
+        for (i, a) in anchors.iter().enumerate() {
+            let want_y = 1.0 - 2.0 * (i as f64 + 0.5) / n;
+            assert!((a.y - want_y).abs() < 1e-15, "anchor {i} y = {}", a.y);
+        }
+        /* Pin anchor[0] and anchor[1] against the golden-angle
+         * construction: th_i = pi * (3 - sqrt(5)) * i,
+         * anchor = (cos(th) * r, y, sin(th) * r). */
+        let golden = std::f64::consts::PI * (3.0 - 5.0f64.sqrt());
+        let y0 = 1.0 - 1.0 / n;
+        let r0 = (1.0 - y0 * y0).max(0.0).sqrt();
+        assert!((anchors[0].x - r0).abs() < 1e-15);
+        assert_eq!(anchors[0].z, 0.0); /* sin(0) * r0 */
+        let y1 = 1.0 - 3.0 / n;
+        let r1 = (1.0 - y1 * y1).max(0.0).sqrt();
+        assert!((anchors[1].x - golden.cos() * r1).abs() < 1e-15);
+        assert!((anchors[1].z - golden.sin() * r1).abs() < 1e-15);
     }
 
     #[test]
@@ -3980,21 +4100,19 @@ mod tests {
     /* Rebuild scheduling.                                               */
 
     #[test]
-    fn chunks_to_rebuild_respects_budget_and_order() {
-        let mut dirty = [false; CHUNK_COUNT];
-        dirty[3] = true;
-        dirty[7] = true;
-        dirty[8] = true;
-        dirty[31] = true;
-        /* Budget 2: first two dirty chunks in ascending order. */
-        assert_eq!(chunks_to_rebuild(&dirty, 2), vec![3, 7]);
-        /* Budget covers all. */
-        assert_eq!(chunks_to_rebuild(&dirty, 32), vec![3, 7, 8, 31]);
-        /* Hostile budget floors at 1 (C: "if < 1 = 1"). */
-        assert_eq!(chunks_to_rebuild(&dirty, 0), vec![3]);
-        assert_eq!(chunks_to_rebuild(&dirty, -5), vec![3]);
-        /* Nothing dirty - nothing scheduled. */
-        assert!(chunks_to_rebuild(&[false; CHUNK_COUNT], 4).is_empty());
+    fn remesh_budget_always_rebuilds_one_chunk() {
+        /* Progress guarantee: the first dirty chunk rebuilds no matter
+         * how small (or already-blown) the budget is, so a hostile
+         * config can't starve the queue. */
+        assert!(remesh_budget_allows(0, 0.0, 0.0));
+        assert!(remesh_budget_allows(0, 100.0, 0.0));
+        assert!(remesh_budget_allows(0, 100.0, 4.0));
+        /* Past the first chunk the wall-clock budget gates (C: break
+         * when chunks_rebuilt >= 1 && elapsed >= budget). */
+        assert!(remesh_budget_allows(1, 3.9, 4.0));
+        assert!(!remesh_budget_allows(1, 4.0, 4.0));
+        assert!(!remesh_budget_allows(5, 100.0, 4.0));
+        assert!(remesh_budget_allows(5, 0.5, 4.0));
     }
 
     #[test]
@@ -4046,22 +4164,35 @@ mod tests {
         /* Camera exactly at body centre: pathological, no cull. */
         let cc = compute_chunk_cull(vec3_make(0.0, 0.0, 0.0), 100.0, vec3_make(0.0, 0.0, 0.0));
         assert_eq!(cc.cull_cos, -2.0);
-        for ci in 0..CHUNK_COUNT {
+        for ci in 0..chunk_n() {
             assert!(chunk_visible(&cc, ci));
         }
         /* Camera at 2x radius along +X: cos_h = 0.5, theta_h = pi/3,
-         * cull_cos = cos(pi/3 + 0.55) ~ -0.026283. */
+         * cull_cos = cos(pi/3 + pad * acos(1 - 2/N)) with the
+         * compiled-in pad factor (1.55) and chunk count (128). */
         let cc = compute_chunk_cull(vec3_make(0.0, 0.0, 0.0), 100.0, vec3_make(200.0, 0.0, 0.0));
         assert!((cc.cux - 1.0).abs() < 1e-12);
         assert_eq!(cc.cuy, 0.0);
         assert_eq!(cc.cuz, 0.0);
-        let want = (std::f64::consts::FRAC_PI_3 + 0.55).cos();
+        let cap_half = (1.0 - 2.0 / chunk_n() as f64).acos();
+        let theta_chunk = config::lod().mesh_cull_pad_factor as f64 * cap_half;
+        let want = (std::f64::consts::FRAC_PI_3 + theta_chunk).cos();
         assert!((cc.cull_cos - want).abs() < 1e-12, "cull_cos = {}", cc.cull_cos);
-        /* Anchor 8 = (T, 0, -n) points roughly at the camera (+X):
-         * dot ~ 0.851 -> visible. Anchor 10 = (-T, 0, -n) faces away:
-         * dot ~ -0.851 -> culled. */
-        assert!(chunk_visible(&cc, 8));
-        assert!(!chunk_visible(&cc, 10));
+        /* The anchor best aligned with the camera direction (+X) is
+         * kept; the one facing directly away is culled. */
+        let anchors = chunk_anchors();
+        let mut best_i = 0;
+        let mut worst_i = 0;
+        for (i, a) in anchors.iter().enumerate() {
+            if a.x > anchors[best_i].x {
+                best_i = i;
+            }
+            if a.x < anchors[worst_i].x {
+                worst_i = i;
+            }
+        }
+        assert!(chunk_visible(&cc, best_i));
+        assert!(!chunk_visible(&cc, worst_i));
     }
 
     /* --------------------------------------------------------------- */
@@ -4415,7 +4546,7 @@ mod tests {
 
         /* tiles_drawn / chunk_count read the active body's cursor. */
         assert_eq!(tiles_drawn_this_frame(), 0);
-        assert_eq!(chunk_count(), (CHUNK_COUNT as i32, 0));
+        assert_eq!(chunk_count(), (chunk_n() as i32, 0));
     }
 
     #[test]
