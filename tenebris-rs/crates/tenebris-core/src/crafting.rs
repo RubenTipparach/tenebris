@@ -18,6 +18,7 @@
 //! ```
 
 use crate::items::{self, ItemId, ItemStack};
+use std::sync::Mutex;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Recipe {
@@ -96,6 +97,32 @@ pub fn parse_recipes(src: &str, path: &str) -> Vec<Recipe> {
     }
     flush(&mut cur, &mut out);
     out
+}
+
+/* Global recipe registry. Mirrors the `config::S_*` statics: loaded once
+ * at boot from recipes.yaml, then read by the crafting UI and the client
+ * craft bridge. `Vec::new()` is const, so the static needs no lazy init. */
+static S_RECIPES: Mutex<Vec<Recipe>> = Mutex::new(Vec::new());
+
+/// Install the global recipe table (call once after `load_recipes`).
+pub fn set_recipes(rs: Vec<Recipe>) {
+    *S_RECIPES.lock().unwrap() = rs;
+}
+
+/// Run `f` over the installed recipe table (lock held for the call).
+pub fn with_recipes<R>(f: impl FnOnce(&[Recipe]) -> R) -> R {
+    f(&S_RECIPES.lock().unwrap())
+}
+
+/// Number of installed recipes.
+pub fn recipe_count() -> usize {
+    S_RECIPES.lock().unwrap().len()
+}
+
+/// Clone the nth installed recipe, if present (so callers can craft
+/// without holding the registry lock across an inventory mutation).
+pub fn recipe_nth(idx: usize) -> Option<Recipe> {
+    S_RECIPES.lock().unwrap().get(idx).cloned()
 }
 
 /// Load + parse the recipe table from disk (native). Returns an empty

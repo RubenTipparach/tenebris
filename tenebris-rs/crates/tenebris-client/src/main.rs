@@ -2,6 +2,7 @@
 //! See ../../PORTING.md for rules.
 
 mod app;
+mod bag;
 mod chat;
 mod client_kv;
 mod gfx_math;

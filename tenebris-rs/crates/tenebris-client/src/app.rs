@@ -389,6 +389,11 @@ extern "C" fn init() {
     config::load_lod("assets/config/lod.yaml");
     config::load_water("assets/config/water.yaml");
     config::load_lighting("assets/config/lighting.yaml");
+    /* Install the crafting recipe table from data so the craft screen
+     * and the bag bridge can read it (see core::crafting). */
+    tenebris_core::crafting::set_recipes(tenebris_core::crafting::load_recipes(
+        "assets/config/recipes.yaml",
+    ));
     /* One-shot dump of Tenebris's effective atmosphere values so we
      * can sanity-check that the YAML actually landed. */
     {

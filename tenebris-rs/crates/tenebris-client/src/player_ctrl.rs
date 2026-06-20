@@ -65,6 +65,7 @@ use std::cell::Cell;
 
 use crate::gfx_math::{mat4_look_at_dir, Mat4};
 use crate::input;
+use crate::bag::Bag;
 use crate::inventory::{self, Inventory, INV_HOTBAR_SLOTS};
 use crate::net_client;
 use crate::settings;
@@ -133,6 +134,10 @@ pub struct PlayerCtrl {
      * pickups + costs time, or is instantaneous + free (creative). */
     pub inventory: Inventory,
     pub survival_mode: bool,
+    /* Survival item bag: the general store behind the hotbar where
+     * crafted resources, tools, and tech-tree items live. Empty in
+     * creative; filled by crafting (and later by resource drops). */
+    pub bag: Bag,
     /* Fractional accumulator for mouse-wheel hotbar cycling. Trackpad
      * scrolls send small per-frame deltas; we only step a slot per
      * unit of accumulated scroll so high-resolution input doesn't
