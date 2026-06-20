@@ -1,0 +1,168 @@
+# Level-of-detail tuning for the renderer.
+#
+# Currently covers two things:
+#   1. The distant-body icosphere — the cheap mesh the renderer swaps
+#      in for any body whose angular size on screen drops below the
+#      close-LOD threshold. Per-vertex colours are sampled from the
+#      body's terrain (water hue when over an ocean, biome atlas
+#      colour over land), then shaded by elevation and tinted by
+#      tileset to give each planet its own colour grade from space.
+#   2. Sphere-of-influence radius — the radius (in planet radii) at
+#      which the player's "frame of reference" snaps to a given
+#      body. Used by the per-frame SOI tracker so flying near a moon
+#      hands the gravity / surface-basis / atmosphere shell to that
+#      moon without needing an explicit teleport.
+#
+# Loaded at boot by config_load_lod(); fields default per
+# core/config.c if omitted.
+#
+# Top-level fields:
+#   distant_subdivisions    int    icosphere subdivision levels for far-LOD
+#                                  bodies. 0 = 20 tris, 1 = 80, 2 = 320
+#                                  (= 16× the base icosa), 3 = 1280.
+#                                  Higher = rounder distant-body
+#                                  silhouette and a finer-grained
+#                                  terrain-colour mosaic at the cost
+#                                  of mesh build time + memory.
+#   distant_shade_floor     float  vertex-colour multiplier at deepest
+#                                  sampled altitude (-range_m below sea).
+#                                  <1 darkens lowlands.
+#   distant_shade_ceiling   float  vertex-colour multiplier at highest
+#                                  sampled altitude (+range_m above sea).
+#                                  >1 lightens peaks.
+#   distant_shade_range_m   float  altitude in metres above/below sea
+#                                  level that maps to the ceiling/floor
+#                                  shade. Smaller = more dramatic
+#                                  contrast over the same elevation.
+#   gravity_full_mult       float  body radius multiplier inside which
+#                                  gravity is at 100%. Default 1.4 =
+#                                  full pull from the surface up to
+#                                  40% of a planet radius above it.
+#   gravity_falloff_mult    float  body radius multiplier at which
+#                                  gravity has tapered to 0%. Outside
+#                                  this radius the player is "in
+#                                  space" and switches to 6DOF flight.
+#                                  Default 1.8 (=80% above surface).
+#   roll_slerp_duration_s   float  seconds the camera-roll-to-level
+#                                  slerp runs after a space → planet
+#                                  transition. Default 3.0.
+#   roll_slerp_speed        float  per-second exponential approach
+#                                  factor for the slerp; lower =
+#                                  smoother / slower. Default 0.8.
+#   space_thrust            float  m/s² of acceleration while a
+#                                  movement key is held in space.
+#   space_drag              float  per-second damping coefficient on
+#                                  the space velocity vector.
+#   space_roll_speed        float  rad/s for Q/E roll keys in space.
+#
+# Per-tileset palette sections (earth / sequoia / crag / frost /
+# asteroid). Each may set:
+#   water_color         vec3   open-ocean colour the distant LOD reads
+#                              when sampling a tile whose column has a
+#                              water layer above the topmost solid
+#                              block. Mixed with the seabed atlas
+#                              colour by water-column thickness so
+#                              shorelines stay sandy.
+#   lowland_tint        vec3   colour multiplier at -shade_range_m
+#                              altitude. Combines with distant_shade
+#                              to colour-grade basins per tileset.
+#   peak_tint           vec3   colour multiplier at +shade_range_m.
+#                              Same treatment for ridges / peaks.
+#   water_full_depth_m  float  water-column thickness at which
+#                              water_color fully dominates the seabed.
+#                              Below this the shore reads sandy /
+#                              muddy; above it the open ocean reads
+#                              pure water hue.
+
+lod:
+  distant_subdivisions:   2
+  distant_shade_floor:    0.65
+  distant_shade_ceiling:  1.20
+  distant_shade_range_m:  50.0
+  gravity_full_mult:      1.4
+  gravity_falloff_mult:   1.8
+  roll_slerp_duration_s:  3.0
+  roll_slerp_speed:       0.8
+  space_thrust:           15.0
+  space_drag:             1.21
+  space_roll_speed:       2.0
+  # Tap-to-jump vs hold-for-jetpack discrimination. A jump press is
+  # treated as a tap (one strong impulse, scaled by jump_velocity_mps)
+  # when released within jetpack_hold_threshold_s seconds; holding
+  # past the threshold continuously fires the jetpack at
+  # jetpack_accel_mps2 up to jetpack_max_vy_mps terminal velocity.
+  jump_velocity_mps:           12.0
+  jetpack_hold_threshold_s:    0.5
+  jetpack_accel_mps2:          42.0
+  jetpack_max_vy_mps:          14.0
+
+  # Player capsule. height_m is foot-to-head distance - the ceiling
+  # collision rejects any tile whose first overhead solid block sits
+  # within feet + height_m. Set this to match EYE_HEIGHT plus a bit
+  # of head clearance.
+  player_height_m:             1.8
+
+  # Maximum vertical step-up in one frame. Used both for horizontal
+  # step-on-curb (walking into a tile whose floor sits this much above
+  # current feet) AND for ground-snap pop-up (bridge case, or feet
+  # below a near floor). Larger = climb taller steps without jumping,
+  # but more risk of popping to the top of a tall column after a fall.
+  # 0.6 is the historical "auto-step half a block" feel.
+  step_height_m:               0.6
+
+  # Camera-cylinder collider radius. The eye sits EYE_HEIGHT above the
+  # player's feet; when it gets closer than this to a solid voxel face
+  # at eye depth, the player is pushed back so the near plane doesn't
+  # clip through the wall. Must be >= 0.3 m (the perspective near
+  # plane) with some margin. Set to 0 to disable.
+  camera_collider_radius_m:    0.5
+
+  # Water physics. The player has three "water" gates:
+  #   - feet in water  (feet_radius is inside a water voxel)
+  #   - body in water  (feet + water_body_check_height_m is in water)
+  #   - eyes in water  (feet + EYE_HEIGHT is in water)
+  # Slow movement + reduced gravity + drag apply while the body is
+  # submerged; the swim jump model engages once the eyes go under.
+  water_gravity_mult:           0.30
+  water_drag_per_s:             3.0
+  water_movement_mult:          0.50
+  water_swim_force_mps2:        20.0
+  water_surface_float_height_m: -0.8
+  water_body_check_height_m:    0.50
+  water_submerged_jump_mult:    0.30
+
+earth:
+  water_color:        [0.10, 0.28, 0.55]
+  lowland_tint:       [0.85, 0.80, 0.65]
+  peak_tint:          [1.05, 1.05, 1.10]
+  water_full_depth_m: 4.0
+
+sequoia:
+  water_color:        [0.16, 0.42, 0.34]
+  lowland_tint:       [0.75, 0.85, 0.55]
+  peak_tint:          [1.00, 0.95, 0.80]
+  water_full_depth_m: 4.0
+  # Close-up water gets a saturated alien-green tint via Beer-Lambert.
+  # absorption tuned so red AND blue die fast with thickness, leaving
+  # green to dominate; deep_color is the saturation tint at infinite
+  # depth. Leave both at [0,0,0] to fall back to the global blue water.
+  water_deep_color:   [0.04, 0.20, 0.10]
+  water_absorption:   [0.50, 0.10, 0.50]
+
+crag:
+  water_color:        [0.55, 0.30, 0.18]
+  lowland_tint:       [0.95, 0.55, 0.35]
+  peak_tint:          [0.70, 0.45, 0.35]
+  water_full_depth_m: 4.0
+
+frost:
+  water_color:        [0.45, 0.65, 0.85]
+  lowland_tint:       [0.85, 0.95, 1.00]
+  peak_tint:          [1.10, 1.15, 1.20]
+  water_full_depth_m: 4.0
+
+asteroid:
+  water_color:        [0.20, 0.20, 0.22]
+  lowland_tint:       [0.60, 0.55, 0.50]
+  peak_tint:          [0.75, 0.72, 0.70]
+  water_full_depth_m: 4.0
