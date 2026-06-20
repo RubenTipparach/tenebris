@@ -39,6 +39,7 @@ use tenebris_core::world::{World, WORLD_MAX_DEPTH};
 use tenebris_core::world_water;
 
 use crate::chat;
+use crate::crafting_screen;
 use crate::gfx_math::{mat4_perspective, Mat4};
 use crate::hotbar_ui;
 use crate::input;
@@ -375,6 +376,7 @@ extern "C" fn init() {
     mobile_ui::init();
     hotbar_ui::init();
     teleport_menu::init();
+    crafting_screen::init();
 
     /* net_client's /saves audit scores distance from the camera to
      * each persisted tile via this provider (C: the two exported
@@ -435,6 +437,7 @@ extern "C" fn init() {
     let player = Rc::new(RefCell::new(PlayerCtrl::default()));
     player_ctrl::init(&mut player.borrow_mut(), &body);
     teleport_menu::set_player(Some(player.clone()));
+    crafting_screen::set_player(Some(player.clone()));
 
     /* Drain Tenebris gen synchronously at init so the spawn tile has
      * terrain the moment the first frame lands. */
@@ -2183,6 +2186,7 @@ fn frame_inner(app: &mut App) {
     /* Teleport overlay is creative/debug-only. */
     if app.debug_ui_visible {
         teleport_menu::draw();
+    crafting_screen::draw();
     }
     if app.debug_ui_visible {
         draw_error_overlay();
@@ -2285,6 +2289,12 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
     if menu::pause_active() && menu::pause_event(e) {
         return;
     }
+    /* Survival craft screen: first crack after pause so B toggles it and,
+     * while open, it owns clicks + Esc (closed, it ignores everything and
+     * falls through). Always available - not gated on the F2 debug UI. */
+    if crafting_screen::handle_event(e, Some(app.player.clone())) {
+        return;
+    }
     /* Escape: do nothing directly - the per-frame pointer-lock-loss
      * detector opens the pause panel on the same gesture. */
     if e._type == sapp::EventType::KeyDown && e.key_code == sapp::Keycode::Escape {
@@ -2381,6 +2391,7 @@ extern "C" fn cleanup() {
     remote_players::shutdown();
     menu::shutdown();
     teleport_menu::shutdown();
+    crafting_screen::shutdown();
     hotbar_ui::shutdown();
     mobile_ui::shutdown();
     torch::shutdown();
