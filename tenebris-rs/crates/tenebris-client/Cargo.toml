@@ -23,4 +23,10 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "io-util"
 tokio-tungstenite = "0.24"
 futures-util = "0.3"
 
+# Data-parallel terrain meshing. body_full_mesh builds each chunk's CPU
+# mesh independently (reads &World, writes only its own HexMesh), so the
+# per-chunk build fans out across a rayon work-stealing pool; the main
+# (GL) thread keeps ownership of all sokol_gfx buffer uploads.
+rayon = "1"
+
 [dev-dependencies]

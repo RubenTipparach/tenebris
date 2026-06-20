@@ -2600,25 +2600,47 @@ fn body_full_mesh(r: &mut Renderer, bi: usize) {
     let t_mesh_start = now_ticks();
     profiler::begin("chunk-remesh");
     {
+        use rayon::prelude::*;
         let body = &mut r.bodies[bi];
-        for c in &mut body.chunks {
-            c.mesh.reset();
-            c.water_mesh.reset();
-        }
         let has_water = body.has_water;
-        for i in 0..w.tile_count {
-            if i >= w.gen_cursor {
-                continue;
-            }
+        let gen = w.gen_cursor.min(w.tile_count);
+
+        /* Bucket generated tiles into their owning chunk, ascending tile
+         * order preserved so each chunk's mesh-append order is identical
+         * to the old sequential path (mesh output stays byte-for-byte
+         * stable - the pinned hex_mesher hashes still hold). */
+        let mut buckets: Vec<Vec<i32>> = vec![Vec::new(); body.chunks.len()];
+        for i in 0..gen {
             let ci = body.tile_to_chunk[i as usize] as usize;
-            let c = &mut body.chunks[ci];
-            hex_mesher::build_tile(&mut c.mesh, &w, i);
-            if has_water {
-                hex_mesher::build_water(&mut c.water_mesh, &w, i);
-                hex_mesher::build_water_voxels(&mut c.water_mesh, &w, i);
-            }
-            w.tile_clear_dirty(i);
+            buckets[ci].push(i);
         }
+
+        /* Fan the per-chunk CPU mesh build across the rayon pool. Each
+         * closure writes only its own chunk's HexMesh and reads &World
+         * immutably; World is plain Vec storage (Send + Sync), so the
+         * shared borrow is race-free. GL uploads stay on the caller
+         * (GL) thread - see the chunk_upload loop at the call site. */
+        let w_ref: &World = &w;
+        body
+            .chunks
+            .par_iter_mut()
+            .zip(buckets.into_par_iter())
+            .for_each(|(c, tiles)| {
+                c.mesh.reset();
+                c.water_mesh.reset();
+                for i in tiles {
+                    hex_mesher::build_tile(&mut c.mesh, w_ref, i);
+                    if has_water {
+                        hex_mesher::build_water(&mut c.water_mesh, w_ref, i);
+                        hex_mesher::build_water_voxels(&mut c.water_mesh, w_ref, i);
+                    }
+                }
+            });
+    }
+    /* Dirty bits cleared in a sequential pass after the immutable-borrow
+     * mesh phase (tile_clear_dirty mutates the world). */
+    for i in 0..w.gen_cursor.min(w.tile_count) {
+        w.tile_clear_dirty(i);
     }
     profiler::end("chunk-remesh");
     r.mesh_rebuild_ms_this_frame += ticks_ms(ticks_diff(now_ticks(), t_mesh_start));
