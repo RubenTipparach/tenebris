@@ -533,7 +533,7 @@ pub fn clear_world(world_name: &str) {
     }
 }
 
-#[cfg(all(test, not(target_os = "emscripten")))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::client_kv::test_support;

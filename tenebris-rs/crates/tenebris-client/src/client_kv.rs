@@ -1,24 +1,18 @@
 //! Port of `tenebris-c/src/client/client_kv.{c,h}`.
 //!
 //! Tiny key/value store the client side uses for profile and SP world
-//! persistence. Two backends, same API:
-//!
-//! - Web build (`target_os = "emscripten"`): bridged to
-//!   `window.localStorage` via four extern JS functions (see the JS
-//!   contract below). Same per-origin storage browsers have always
-//!   provided.
-//! - Native build: in-process map written through to a single text
-//!   file under the user's data directory:
+//! persistence. In-process map written through to a single text file
+//! under the user's data directory:
 //!
 //!   - Linux/BSD: `$XDG_DATA_HOME/tenebris-c/kv.txt` (fallback
 //!     `~/.local/share/tenebris-c/kv.txt`)
 //!   - macOS: `~/Library/Application Support/tenebris-c/kv.txt`
 //!   - Windows: `%APPDATA%\tenebris-c\kv.txt`
 //!
-//!   File format: one `key=value` per line, both fields sanitised so
-//!   the framing chars (`\n`, `=`) never appear inside them. Loaded at
-//!   first use, rewritten in full (atomic tmp+rename) on every
-//!   mutation.
+//! File format: one `key=value` per line, both fields sanitised so
+//! the framing chars (`\n`, `=`) never appear inside them. Loaded at
+//! first use, rewritten in full (atomic tmp+rename) on every
+//! mutation.
 //!
 //! Values are always strings. No quoting / escaping beyond the
 //! sanitisation above. Keys should use the project's existing prefixes
@@ -33,33 +27,9 @@
 //! `get` / `list_with_prefix` return `Option<String>` instead of a
 //! malloc'd `char*` / NULL.
 //!
-//! # JS contract for the emscripten extern fns
-//!
-//! The implementations live in a `--js-library` file shipped in a later
-//! wave; they must replicate the C tree's `EM_JS` bodies exactly:
-//!
-//! - `kv_js_set(key, val)`: both args are pointers to NUL-terminated
-//!   UTF-8 C strings; decode with `UTF8ToString` and call
-//!   `window.localStorage.setItem(key, val)`. Exceptions (storage
-//!   disabled / quota exceeded) are swallowed.
-//! - `kv_js_get(key) -> char*`: `localStorage.getItem(key)`. Returns 0
-//!   when the key is absent or on exception. Otherwise allocates
-//!   `lengthBytesUTF8(s) + 1` bytes with `_malloc`, copies the value in
-//!   with `stringToUTF8`, and returns the pointer. Ownership transfers
-//!   to the caller, which must release it with `free()` (the
-//!   emscripten heap allocator, not Rust's).
-//! - `kv_js_remove(key)`: `localStorage.removeItem(key)`, exceptions
-//!   swallowed.
-//! - `kv_js_list_prefix(prefix) -> char*`: iterates every localStorage
-//!   key, collects those that start with `prefix`, strips the prefix,
-//!   sorts the remainders lexicographically, joins them with `'\n'`,
-//!   and returns the result as a `_malloc`'d NUL-terminated UTF-8
-//!   string. Returns 0 when there are no matches or on exception.
-//!   Caller frees with `free()`.
-//!
-//! Note (carried over from the C tree): the web backend sorts
-//! `list_with_prefix` results; the native backend returns them in
-//! storage order. Callers that need a defined order sort themselves.
+//! Note (carried over from the C tree): the native backend returns
+//! `list_with_prefix` results in storage order. Callers that need a
+//! defined order sort themselves.
 //!
 //! # Global state
 //!
@@ -67,64 +37,8 @@
 //! (`G_KV`), matching the single-threaded sokol app's C globals while
 //! staying sound if a test runner calls in from multiple threads.
 
-// Not wired into the app loop until the main_web port lands (final
-// client wave); exercised by unit tests + the storage-layer siblings.
+// Exercised by unit tests + the storage-layer siblings.
 #![allow(dead_code)]
-
-/* ====================================================================
- * Web backend - straight passthrough to window.localStorage via the
- * extern JS functions declared above. */
-
-#[cfg(target_os = "emscripten")]
-mod backend {
-    use std::ffi::{c_char, c_void, CStr, CString};
-
-    extern "C" {
-        fn kv_js_set(key: *const c_char, val: *const c_char);
-        fn kv_js_get(key: *const c_char) -> *mut c_char;
-        fn kv_js_remove(key: *const c_char);
-        fn kv_js_list_prefix(prefix: *const c_char) -> *mut c_char;
-        /// Emscripten heap `free` - releases the `_malloc` buffers the
-        /// JS side hands back.
-        fn free(ptr: *mut c_void);
-    }
-
-    /// Take ownership of a `_malloc`'d NUL-terminated UTF-8 string
-    /// returned by the JS side: copy it into a Rust `String` and free
-    /// the emscripten buffer. `None` for the JS null (0) return.
-    unsafe fn take_js_string(p: *mut c_char) -> Option<String> {
-        if p.is_null() {
-            return None;
-        }
-        let s = CStr::from_ptr(p).to_string_lossy().into_owned();
-        free(p as *mut c_void);
-        Some(s)
-    }
-
-    pub fn set(key: &str, val: &str) {
-        // C: client_kv_set passes the key straight through (NULL val
-        // becomes ""); &str has no NULL case.
-        let (Ok(k), Ok(v)) = (CString::new(key), CString::new(val)) else {
-            return; // interior NUL: unrepresentable as a C string
-        };
-        unsafe { kv_js_set(k.as_ptr(), v.as_ptr()) };
-    }
-
-    pub fn get(key: &str) -> Option<String> {
-        let k = CString::new(key).ok()?;
-        unsafe { take_js_string(kv_js_get(k.as_ptr())) }
-    }
-
-    pub fn remove(key: &str) {
-        let Ok(k) = CString::new(key) else { return };
-        unsafe { kv_js_remove(k.as_ptr()) };
-    }
-
-    pub fn list_with_prefix(prefix: &str) -> Option<String> {
-        let p = CString::new(prefix).ok()?;
-        unsafe { take_js_string(kv_js_list_prefix(p.as_ptr())) }
-    }
-}
 
 /* ====================================================================
  * Native backend - in-process map with write-through to a single file.
@@ -134,7 +48,6 @@ mod backend {
  * profile + SP-world usage that's a hard ceiling of well under 100
  * entries even on a busy install. */
 
-#[cfg(not(target_os = "emscripten"))]
 mod backend {
     use std::fs;
     use std::path::PathBuf;
@@ -388,7 +301,7 @@ pub use backend::{get, list_with_prefix, remove, set};
  * it (here, settings.rs, profile.rs, persistence.rs) serializes on
  * TEST_LOCK and redirects the backing file to a per-test temp path. */
 
-#[cfg(all(test, not(target_os = "emscripten")))]
+#[cfg(test)]
 pub(crate) mod test_support {
     use std::path::PathBuf;
     use std::sync::{Mutex, MutexGuard};
@@ -429,7 +342,7 @@ pub(crate) mod test_support {
     }
 }
 
-#[cfg(all(test, not(target_os = "emscripten")))]
+#[cfg(test)]
 mod tests {
     use super::*;
 

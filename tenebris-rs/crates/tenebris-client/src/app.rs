@@ -197,15 +197,6 @@ struct App {
     inv_last_count: [i16; 9],
     inv_last_sel: i32,
     inv_init: bool,
-
-    /* DOM-overlay visibility caches (emscripten frame block). Kept
-     * unconditionally so App has one shape on every target. */
-    #[allow(dead_code)]
-    last_pause_btn: i32,
-    #[allow(dead_code)]
-    last_mobile: i32,
-    #[allow(dead_code)]
-    last_fullscreen_btn: i32,
 }
 
 thread_local! {
@@ -278,7 +269,7 @@ fn accum_fire(accum: &mut f64, dt: f64, period: f64) -> bool {
 /// Mirrors the room-code normalisation the JS query-param reader does
 /// (`s.toUpperCase().substring(0, 8)`). Idempotent on the JS output;
 /// applied again on the Rust side so the contract is pinned by a test.
-#[cfg_attr(not(target_os = "emscripten"), allow(dead_code))]
+#[allow(dead_code)]
 fn normalize_room_code(s: &str) -> String {
     s.to_uppercase().chars().take(8).collect()
 }
@@ -379,20 +370,6 @@ extern "C" fn init() {
     input::init();
     settings::init(); /* load mouse sensitivity etc. from client_kv */
     job_system::init(0);
-    #[cfg(target_os = "emscripten")]
-    {
-        /* Mobile / tablet browsers swap in the lite water + composite
-         * shaders. Decision happens before renderer_init because the
-         * setter gates which pipelines get created. Native desktop
-         * builds always run the full path. */
-        if unsafe { tenebris_is_mobile_device() } != 0 {
-            renderer::set_perf_mode(true);
-            println!("[renderer] perf mode enabled (mobile device / ?perf=lite)");
-        } else if settings::lite_graphics() {
-            renderer::set_perf_mode(true);
-            println!("[renderer] perf mode enabled (lite-graphics setting)");
-        }
-    }
     renderer::init();
     torch::init();
     mobile_ui::init();
@@ -403,22 +380,6 @@ extern "C" fn init() {
      * each persisted tile via this provider (C: the two exported
      * tenebris_get_local_player_* symbols). */
     net_client::set_local_player_provider(local_player_provider);
-
-    #[cfg(target_os = "emscripten")]
-    unsafe {
-        /* Stop the browser from refreshing the page when the player
-         * presses F5 (the water-flow debug overlay toggle). */
-        tenebris_block_f5_refresh();
-        /* DOM overlays are mobile-only scaffolding per CLAUDE.md: the
-         * pause button stands in for the Esc key, and the joystick +
-         * action deck stand in for keyboard / mouse. The pause panel
-         * itself is in-canvas (menu) on every platform. */
-        if tenebris_is_mobile_device() != 0 {
-            tenebris_pause_button_install();
-            tenebris_fullscreen_button_install();
-            tenebris_mobile_controls_install();
-        }
-    }
 
     /* Load atmosphere overrides from YAML before creating any worlds -
      * planet::set_atmosphere mutates BODIES[] and the renderer reads
@@ -526,20 +487,6 @@ extern "C" fn init() {
     remote_players::init();
     chat::init();
 
-    #[cfg(target_os = "emscripten")]
-    {
-        /* ?room=ABCD23 / ?invite=ABCD23 - stash the room (and optional
-         * ?server= override) on the menu module so the boot flow Just
-         * Works for first-time visitors too. ?server= alone (no room)
-         * drops the user on the regular menu. */
-        let room = unsafe { take_js_cstring(tenebris_get_room_code()) };
-        let server_url = unsafe { take_js_cstring(tenebris_get_server_url()) };
-        if let Some(room) = room {
-            let room = normalize_room_code(&room);
-            menu::set_pending_invite(&room, server_url.as_deref().unwrap_or(""));
-        }
-    }
-
     APP.with(|cell| {
         *cell.borrow_mut() = Some(App {
             body,
@@ -570,9 +517,6 @@ extern "C" fn init() {
             inv_last_count: [0; 9],
             inv_last_sel: -1,
             inv_init: false,
-            last_pause_btn: -1,
-            last_mobile: -1,
-            last_fullscreen_btn: -1,
         });
     });
 }
@@ -658,7 +602,7 @@ fn update_overlay(app: &mut App, dt: f32) {
     sdtx::origin(1.0, 1.0);
     sdtx::color3b(0xff, 0xff, 0xff);
     sdtx::puts(&format!(
-        "Tenebris WASM Preview (Goldberg {} tiles, {} moons)\n",
+        "Tenebris (Goldberg {} tiles, {} moons)\n",
         app.world.borrow().tile_count,
         renderer::moon_count()
     ));
@@ -2278,27 +2222,6 @@ fn frame_inner(app: &mut App) {
             );
         }
     }
-    /* DOM overlays are mobile-only scaffolding; hide them while the
-     * in-canvas pause panel is up so taps don't pass behind it. */
-    #[cfg(target_os = "emscripten")]
-    {
-        let st = menu::state();
-        let in_game = st == GameState::InGameSp || st == GameState::InGameMp;
-        let show_mobile_dom = in_game && !menu::pause_active();
-        let v = show_mobile_dom as i32;
-        if v != app.last_pause_btn {
-            unsafe { tenebris_pause_button_set_visible(v) };
-            app.last_pause_btn = v;
-        }
-        if v != app.last_mobile {
-            unsafe { tenebris_mobile_controls_set_visible(v) };
-            app.last_mobile = v;
-        }
-        if v != app.last_fullscreen_btn {
-            unsafe { tenebris_fullscreen_button_set_visible(v) };
-            app.last_fullscreen_btn = v;
-        }
-    }
     /* Pause overlay draws last so the dim backdrop + panel sit on top
      * of every HUD element. No-op when not active. */
     menu::pause_draw(sapp::width(), sapp::height());
@@ -2482,7 +2405,7 @@ pub fn run() {
         cleanup_cb: Some(cleanup),
         width: 1280,
         height: 720,
-        window_title: c"Tenebris (WASM Preview)".as_ptr(),
+        window_title: c"Tenebris".as_ptr(),
         icon: sapp::IconDesc {
             sokol_default: true,
             ..Default::default()
@@ -2491,116 +2414,8 @@ pub fn run() {
             func: Some(sokol::log::slog_func),
             ..Default::default()
         },
-        html5: sapp::Html5Desc {
-            canvas_selector: c"#canvas".as_ptr(),
-            ..Default::default()
-        },
         ..Default::default()
     });
-}
-
-/* --------------------------------------------------------------------- */
-/* Web glue: extern declarations for the EM_JS bodies that moved to
- * web/library_tenebris.js, plus the EMSCRIPTEN_KEEPALIVE re-entry
- * points the JS side invokes via Module.ccall. Keep the signatures in
- * lockstep with the JS library (and the EXPORTED_FUNCTIONS list in
- * build-web.*). */
-/* --------------------------------------------------------------------- */
-
-#[cfg(target_os = "emscripten")]
-extern "C" {
-    /// `?server=` query param; malloc'd C string or NULL.
-    fn tenebris_get_server_url() -> *mut core::ffi::c_char;
-    /// 1 on mobile/tablet (or ?perf=lite override), else 0.
-    fn tenebris_is_mobile_device() -> i32;
-    /// `?room=` / `?invite=` query param; malloc'd C string or NULL.
-    fn tenebris_get_room_code() -> *mut core::ffi::c_char;
-    fn tenebris_block_f5_refresh();
-    fn tenebris_pause_button_install();
-    fn tenebris_pause_button_set_visible(visible: i32);
-    fn tenebris_fullscreen_button_install();
-    fn tenebris_fullscreen_button_set_visible(visible: i32);
-    fn tenebris_mobile_controls_install();
-    fn tenebris_mobile_controls_set_visible(visible: i32);
-    /// Emscripten heap free - releases the JS-side `_malloc` buffers.
-    fn free(ptr: *mut core::ffi::c_void);
-}
-
-/// Take ownership of a `_malloc`'d NUL-terminated UTF-8 string handed
-/// back by the JS library (same helper shape as client_kv's).
-#[cfg(target_os = "emscripten")]
-unsafe fn take_js_cstring(p: *mut core::ffi::c_char) -> Option<String> {
-    if p.is_null() {
-        return None;
-    }
-    let s = core::ffi::CStr::from_ptr(p).to_string_lossy().into_owned();
-    free(p as *mut core::ffi::c_void);
-    Some(s)
-}
-
-/* EMSCRIPTEN_KEEPALIVE callbacks. JS calls these via Module.ccall;
- * they must appear in -sEXPORTED_FUNCTIONS at link time. */
-#[cfg(target_os = "emscripten")]
-mod js_callbacks {
-    use super::*;
-
-    /// JS pause button tapped. Same effect as Escape on desktop.
-    #[no_mangle]
-    pub extern "C" fn tenebris_js_pause_pressed() {
-        menu::pause_toggle();
-        if menu::pause_active() {
-            sapp::lock_mouse(false);
-            sapp::show_mouse(true);
-        }
-    }
-
-    #[no_mangle]
-    pub extern "C" fn tenebris_js_set_move_stick(x: f64, y: f64, active: i32) {
-        input::js_set_move_stick(x, y, active != 0);
-    }
-
-    #[no_mangle]
-    pub extern "C" fn tenebris_js_set_look_stick(x: f64, y: f64, active: i32) {
-        input::js_set_look_stick(x, y, active != 0);
-    }
-
-    #[no_mangle]
-    pub extern "C" fn tenebris_js_set_break(held: i32) {
-        input::js_set_break(held != 0);
-    }
-
-    #[no_mangle]
-    pub extern "C" fn tenebris_js_set_place(held: i32) {
-        input::js_set_place(held != 0);
-    }
-
-    #[no_mangle]
-    pub extern "C" fn tenebris_js_set_jump(held: i32) {
-        input::js_set_jump(held != 0);
-    }
-
-    /// Re-entry from the /saves fetch promise (C:
-    /// `net_client_saves_audit_cb`).
-    #[no_mangle]
-    pub extern "C" fn net_client_saves_audit_cb(json: *const core::ffi::c_char) {
-        if json.is_null() {
-            return;
-        }
-        let s = unsafe { core::ffi::CStr::from_ptr(json) }.to_string_lossy();
-        net_client::saves_audit_cb(&s);
-    }
-
-    /// Re-entry from the /saves/body fetch promise (C:
-    /// `net_client_body_blob_cb`).
-    #[no_mangle]
-    pub extern "C" fn net_client_body_blob_cb(body_id: u32, data: *const u8, len: i32) {
-        if data.is_null() || len <= 0 {
-            net_client::body_blob_cb(body_id, &[]);
-            return;
-        }
-        let slice = unsafe { std::slice::from_raw_parts(data, len as usize) };
-        net_client::body_blob_cb(body_id, slice);
-    }
 }
 
 /* --------------------------------------------------------------------- */

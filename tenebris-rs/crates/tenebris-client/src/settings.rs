@@ -156,7 +156,7 @@ pub fn set_lite_graphics(enabled: bool) {
     client_kv::set(KV_KEY_LITE_GRAPHICS, if enabled { "1" } else { "0" });
 }
 
-#[cfg(all(test, not(target_os = "emscripten")))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::client_kv::test_support;

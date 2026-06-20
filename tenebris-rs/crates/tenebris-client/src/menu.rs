@@ -74,45 +74,10 @@
 //! net_client calls are wired directly; reads of the link state route
 //! through the `poll_net()` snapshot and the actual socket dial routes
 //! through `net_connect()` so headless tests can substitute doubles.
-//! The main_web hooks are wired by app.rs (frame/event loop).
+//! The hooks are wired by app.rs (frame/event loop).
 //!
-//! # JS contract for the emscripten extern fns
-//!
-//! The implementations live in the `--js-library` file shipped with the
-//! web-build wave; they must replicate the C tree's `EM_JS` bodies
-//! exactly:
-//!
-//! - `menu_js_new_room_code() -> char*`: generate a 6-char room code
-//!   from the safe alphabet `'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'` (no
-//!   ambiguous 0/O, 1/I; 32^6 combinations): fill a `Uint8Array(6)` via
-//!   `crypto.getRandomValues`, map each byte through `A[b[i] & 31]`,
-//!   then return the string as a `_malloc`'d NUL-terminated UTF-8
-//!   buffer (`lengthBytesUTF8 + 1`, `stringToUTF8`). Caller frees with
-//!   the emscripten `free()`.
-//! - `menu_js_focus_text_input()`: mobile soft-keyboard shim. Mounts a
-//!   1x1 px opacity-0 offscreen `<input id="tenebris-text-input-shim">`
-//!   (autocapitalize/autocomplete/autocorrect/spellcheck off,
-//!   aria-hidden), forwards its `input` diffs char-by-char to
-//!   `Module.ccall('tenebris_js_input_char')` / shrinks to
-//!   `tenebris_js_input_backspace`, Enter -> `tenebris_js_input_submit`,
-//!   Escape -> `tenebris_js_input_cancel`, and re-focuses on blur while
-//!   `tenebris_js_in_input_state()` returns nonzero (iOS Safari hides
-//!   the keyboard on focus loss). Resets the shim value, then calls
-//!   `inp.focus()` synchronously inside the user gesture. The visible
-//!   UI stays in the canvas - the DOM input exists only because mobile
-//!   browsers won't open the keyboard without a focused DOM input.
-//! - `menu_js_blur_text_input()`: blurs the shim if present.
-//! - `menu_js_share_invite(room_code) -> int`: builds
-//!   `location.origin + location.pathname + '?invite=' + code` and
-//!   dispatches via `navigator.share({title:'Tenebris', text:'Join my
-//!   Tenebris room', url})` (returns 1) or falls back to
-//!   `navigator.clipboard.writeText(url)` (returns 2); 0 when neither
-//!   API exists. Exceptions swallowed.
-//!
-//! The native fallbacks replicate the C `#else` branch: room code
-//! "AAAAAA", focus/blur no-ops, share returns 0.
-//!
-//! Most public items are unused until the main_web port lands:
+//! Native room code / share behaviour replicates the C `#else` branch:
+//! room code "AAAAAA", focus/blur no-ops, share returns 0.
 #![allow(dead_code)]
 
 use std::cell::RefCell;
@@ -550,52 +515,9 @@ mod test_net {
 }
 
 /* ------------------------------------------------------------------ */
-/* EM_JS bridge (see the JS contract in the module docs).               */
+/* Room code / text-input / share helpers (native).                     */
 /* ------------------------------------------------------------------ */
 
-#[cfg(target_os = "emscripten")]
-mod js {
-    use std::ffi::{c_char, c_void, CStr, CString};
-
-    extern "C" {
-        fn menu_js_new_room_code() -> *mut c_char;
-        fn menu_js_focus_text_input();
-        fn menu_js_blur_text_input();
-        fn menu_js_share_invite(room_code: *const c_char) -> i32;
-        /// Emscripten heap `free` - releases the `_malloc` buffer the
-        /// JS side hands back.
-        fn free(ptr: *mut c_void);
-    }
-
-    pub fn new_room_code() -> Option<String> {
-        unsafe {
-            let p = menu_js_new_room_code();
-            if p.is_null() {
-                return None;
-            }
-            let s = CStr::from_ptr(p).to_string_lossy().into_owned();
-            free(p as *mut c_void);
-            Some(s)
-        }
-    }
-
-    pub fn focus_text_input() {
-        unsafe { menu_js_focus_text_input() };
-    }
-
-    pub fn blur_text_input() {
-        unsafe { menu_js_blur_text_input() };
-    }
-
-    pub fn share_invite(room_code: &str) -> i32 {
-        let Ok(c) = CString::new(room_code) else {
-            return 0;
-        };
-        unsafe { menu_js_share_invite(c.as_ptr()) }
-    }
-}
-
-#[cfg(not(target_os = "emscripten"))]
 mod js {
     /// Port of the native `menu_js_new_room_code` fallback: a fixed
     /// "AAAAAA" so native test sessions are deterministic.
@@ -2186,50 +2108,6 @@ fn input_cancel(m: &mut Menu) {
     js::blur_text_input();
 }
 
-/* JS-side bridge for the mobile soft-keyboard shim. Each typed char on
- * the hidden <input> ends up here, forwarded to the same handlers the
- * SAPP CHAR / KEY_DOWN events feed on desktop. The C versions are
- * EMSCRIPTEN_KEEPALIVE; #[no_mangle] pub extern "C" plus
- * EXPORTED_FUNCTIONS in the link flags keeps them alive for
- * Module.ccall. */
-#[cfg(target_os = "emscripten")]
-mod js_input_bridge {
-    use super::*;
-
-    #[no_mangle]
-    pub extern "C" fn tenebris_js_input_char(ch: i32) {
-        if ch <= 0 {
-            return;
-        }
-        with_menu(|m| input_append_char(m, ch as u32));
-    }
-
-    #[no_mangle]
-    pub extern "C" fn tenebris_js_input_backspace() {
-        with_menu(input_backspace);
-    }
-
-    #[no_mangle]
-    pub extern "C" fn tenebris_js_input_submit() {
-        with_menu(input_submit);
-        js::blur_text_input();
-    }
-
-    #[no_mangle]
-    pub extern "C" fn tenebris_js_input_cancel() {
-        with_menu(input_cancel);
-    }
-
-    #[no_mangle]
-    pub extern "C" fn tenebris_js_in_input_state() -> i32 {
-        if state_is_input(state()) {
-            1
-        } else {
-            0
-        }
-    }
-}
-
 /* ------------------------------------------------------------------ */
 /* Event handling                                                       */
 /* ------------------------------------------------------------------ */
@@ -3209,7 +3087,7 @@ fn settings_event(m: &mut Menu, e: &sapp::Event) -> bool {
 /* Tests                                                                */
 /* ------------------------------------------------------------------ */
 
-#[cfg(all(test, not(target_os = "emscripten")))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::client_kv::test_support;

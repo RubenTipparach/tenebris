@@ -15,13 +15,10 @@ tenebris-core = { path = "../tenebris-core" }
 # stb_image; assets stay the raw PNGs under tenebris-c/assets/textures.
 png = "0.17"
 
-# Native-only client WebSocket transport (net_transport.rs). The C
-# native client links the libwebsockets backend (net_transport_ws.c in
-# client mode); the Rust port mirrors the server crate's tokio +
-# tokio-tungstenite replacement. The web build uses the emscripten
-# WebSocket C API instead (-lwebsocket.js at link time), so none of
-# this ships in the wasm binary.
-[target.'cfg(not(target_os = "emscripten"))'.dependencies]
+# Client WebSocket transport (net_transport.rs). The C native client
+# links the libwebsockets backend (net_transport_ws.c in client mode);
+# the Rust port mirrors the server crate's tokio + tokio-tungstenite
+# replacement.
 tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "io-util", "sync", "macros"] }
 tokio-tungstenite = "0.24"
 futures-util = "0.3"

@@ -1500,7 +1500,7 @@ pub fn relight_if_needed(w: &mut World) {
 
 /* ----------------------------------------------------------------------- */
 
-#[cfg(all(test, not(target_os = "emscripten")))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::client_kv::test_support;
