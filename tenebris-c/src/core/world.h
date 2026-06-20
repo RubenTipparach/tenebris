@@ -71,6 +71,18 @@ typedef struct world_s {
     uint8_t*             dirty;
     int                  dirty_bytes;
 
+    /* Compact FIFO of tiles whose dirty bit transitioned 0->1 since
+     * the last drain. Lets the renderer process only the tiles that
+     * actually changed instead of scanning all tile_count bits every
+     * frame - the difference between "one peer edit costs a full-grid
+     * sweep" and "one peer edit costs one queue push". Deduped via the
+     * dirty bit (a tile is pushed only on the 0->1 edge), so each tile
+     * appears at most once between drains and the queue is bounded by
+     * tile_count - it is sized to tile_count up front and never
+     * overflows. */
+    int*                 dirty_queue;
+    int                  dirty_queue_count;
+
     /* "Has a persisted column on disk" bitset — one bit per tile.
      * Set by saves_load_world (on the server, after reading a tile's
      * .col file off disk) and by saves_write_tile (when the server
@@ -140,6 +152,16 @@ void     world_tile_clear_dirty(world_t* w, int tile);
  * the state byte changed but no BLOCK changed, so we need to wake
  * the renderer's remesh sweep manually. */
 void     world_tile_mark_dirty(world_t* w, int tile);
+
+/* Renderer drain interface for the dirty-tile queue. world_dirty_tiles
+ * returns the number of tiles dirtied since the last consume and points
+ * *out_tiles at the internal index array (valid until the next
+ * world_set / mark / consume on this world). The caller maps each tile
+ * to its render chunk, then calls world_dirty_consume once to clear
+ * those tiles' dirty bits and empty the queue in a single pass. This
+ * replaces the per-frame "scan every tile's dirty bit" sweep. */
+int      world_dirty_tiles(const world_t* w, const int** out_tiles);
+void     world_dirty_consume(world_t* w);
 
 /* "Saved" bitset: tracks which tiles have a persisted column on
  * disk so the server can replay them to a joining client. Lazily

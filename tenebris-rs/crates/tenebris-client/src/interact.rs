@@ -1,0 +1,1025 @@
+//! Port of `tenebris-c/src/client/interact.{c,h}`.
+//!
+//! Block place / break interaction: fixed-step voxel raycast along the
+//! player's look direction, survival mining timer, target highlight
+//! data for the HUD, torch place / remove, inventory consume / add,
+//! and the same-frame SP persistence calls (CLAUDE.md hard rule:
+//! every world mutation persists on the input frame it happens).
+//!
+//! Renames (per PORTING.md rule 4 - module prefix dropped):
+//! - `interact_state_t`   -> `interact::InteractState`
+//! - `interact_update()`  -> `interact::update()`
+//! - `INTERACT_MAX_DIST`  -> `interact::MAX_DIST`
+//! - `MINING_TIME_S`      -> `interact::MINING_TIME_S` (unchanged)
+//! - `world_to_tile_depth()` keeps its name; the C out-params become
+//!   the return tuple `(resolved_tile, Option<depth>)`. Like the C,
+//!   the resolved tile is returned EVEN WHEN the depth check fails so
+//!   ray-stepping callers can keep the goldberg hint warm (`-1` when
+//!   the goldberg lookup itself failed - the C leaves the caller's
+//!   `-1` initializer untouched in that case).
+
+#![allow(dead_code)] // wired up by the main_web wave of the port
+
+use crate::input;
+use crate::inventory;
+use crate::menu;
+use crate::net_client;
+use crate::persistence::{self, PersistenceTorch, COLUMN_BYTES};
+use crate::player_ctrl::PlayerCtrl;
+use crate::torch;
+use tenebris_core::blocks::{self, Block};
+use tenebris_core::proto;
+use tenebris_core::math::{
+    dvec3_add, dvec3_dot, dvec3_length, dvec3_make, dvec3_normalize, dvec3_scale, dvec3_sub,
+    vec3_make, vec3_scale, DVec3,
+};
+use tenebris_core::world::{World, WORLD_MAX_DEPTH, WORLD_SEA_LEVEL_DEPTH};
+use tenebris_core::world_water;
+
+/// Port of `INTERACT_MAX_DIST`.
+pub const MAX_DIST: f64 = 8.0;
+/// Port of `MINING_TIME_S`. Survival mining time per block, seconds.
+/// Holding LMB on a target for this long breaks it and adds it to
+/// inventory.
+pub const MINING_TIME_S: f32 = 0.8;
+
+/// Port of `interact_state_t`. The C caller zero-initializes; `Default`
+/// matches that ({0} - all flags false, indices 0, distances 0.0).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct InteractState {
+    pub has_target: bool,
+    /// When true, the target is a placed torch entity rather than a
+    /// voxel - `torch_idx` identifies it. Block fields (`hit_tile`
+    /// etc.) are unused in this case. The HUD reads this to label the
+    /// target and the click path branches off it.
+    pub is_torch_target: bool,
+    pub torch_idx: i32,
+    pub hit_tile: i32,
+    pub hit_depth: i32,
+    pub place_tile: i32,
+    pub place_depth: i32,
+    pub distance: f64,
+
+    /// Mining progress (survival only). Starts at 0, fills to
+    /// `MINING_TIME_S` while LMB is held on the same target. Resets to
+    /// 0 when the target changes or the button releases.
+    pub mining_progress_s: f32,
+    pub mining_tile: i32,
+    pub mining_depth: i32,
+}
+
+/* ----------------------------------------------------------------- */
+/* SP per-edit persistence helpers. CLAUDE.md mandates that every
+ * block place/break and every torch place/remove write to durable
+ * storage on the same input frame. MP routes the edit through the
+ * server (saves_write_tile fires there); SP has no server, so the
+ * call lands here.
+ *
+ * Gated on menu_state() == GAME_IN_GAME_SP - in MP the local cache
+ * would diverge from the server's authoritative state on rejoin,
+ * which is worse than no cache at all. */
+
+/// Port of `sp_active_for_world()`. The C's `!w || !w->body` null
+/// checks drop out - a Rust `World` always carries its body.
+/// C: `menu_state() == GAME_IN_GAME_SP && menu_active_world()[0]`.
+fn sp_active_for_world(_w: &World) -> Option<String> {
+    if menu::state() != menu::GameState::InGameSp {
+        return None;
+    }
+    Some(menu::active_world()).filter(|name| !name.is_empty())
+}
+
+/// Port of `sp_save_tile_after_edit()`.
+fn sp_save_tile_after_edit(w: &World, tile_idx: i32) {
+    let Some(name) = sp_active_for_world(w) else {
+        return;
+    };
+    if tile_idx < 0 || tile_idx >= w.tile_count {
+        return;
+    }
+    let start = tile_idx as usize * WORLD_MAX_DEPTH as usize;
+    let col: &[u8; COLUMN_BYTES] = w.blocks[start..start + COLUMN_BYTES]
+        .try_into()
+        .expect("column slice is exactly COLUMN_BYTES");
+    persistence::save_tile(&name, w.body.id as u32, tile_idx, col);
+}
+
+/// Port of `sp_save_torches_after_change()`.
+fn sp_save_torches_after_change(w: &World) {
+    let Some(name) = sp_active_for_world(w) else {
+        return;
+    };
+    /* Snapshot every torch anchored on THIS body. The torch list is
+     * one global array; filter by tile_idx range under the body's
+     * goldberg grid using the position projection torch_position_at
+     * already exposes. Cheap (~256 entries max). */
+    let list = torch::list();
+    let mut buf: Vec<PersistenceTorch> = Vec::with_capacity(torch::MAX_COUNT);
+    for t in &list {
+        if buf.len() >= torch::MAX_COUNT {
+            break;
+        }
+        if t.tile_idx < 0 || t.tile_idx >= w.tile_count {
+            continue;
+        }
+        buf.push(PersistenceTorch {
+            tile_idx: t.tile_idx,
+            pos: [t.position.x, t.position.y, t.position.z],
+            up: [t.up.x, t.up.y, t.up.z],
+        });
+    }
+    persistence::save_torches(&name, w.body.id as u32, &buf);
+}
+
+/* ----------------------------------------------------------------------- */
+
+/// Port of `player_look_dir()`. Use the player's parallel-transported
+/// basis (same one as player_view), not a fresh phys_tangent_basis.
+/// The latter has a discontinuity near |up.y| = 0.9 that was jerking
+/// the raycast and crosshair in the same pattern that made the camera
+/// flip.
+fn player_look_dir(p: &PlayerCtrl) -> DVec3 {
+    let b = &p.basis;
+    let (cy, sy) = ((p.yaw as f64).cos(), (p.yaw as f64).sin());
+    let (cp, sp) = ((p.pitch as f64).cos(), (p.pitch as f64).sin());
+    let fwd = dvec3_add(dvec3_scale(b.fwd, cy), dvec3_scale(b.right, sy));
+    let look = dvec3_add(dvec3_scale(fwd, cp), dvec3_scale(b.up, sp));
+    dvec3_normalize(look)
+}
+
+/// Port of `world_to_tile_depth()`. Convert a world position to
+/// (tile, depth). Tile lookup uses the player's last-known tile as a
+/// hint for speed. The resolved tile is returned EVEN WHEN the depth
+/// check fails, so callers stepping along a ray can keep the goldberg
+/// hint warm across iterations - without that, an out-of-bounds
+/// raycast (player above the planet's voxel column range) hands a
+/// stale -1 hint into every step, blowing the search back into a slow
+/// path.
+fn world_to_tile_depth(w: &World, pos: DVec3, hint: i32) -> (i32, Option<i32>) {
+    /* pos is in WORLD space (same frame as p->position) but the
+     * goldberg grid + body radius are body-local. Subtract the
+     * body's centre so the raycast lines up on planets that don't
+     * sit at the origin (Tenebris is at 0,0,0 but Sequoia / Crag /
+     * Frostbite all sit elsewhere). Without this fix, mining +
+     * placement only worked on Tenebris - the raycast normalised
+     * a world-space vector that pointed somewhere unrelated to
+     * the planet beneath the player. */
+    let local = dvec3_make(
+        pos.x - w.body.pos_x,
+        pos.y - w.body.pos_y,
+        pos.z - w.body.pos_z,
+    );
+    let dir = dvec3_normalize(local);
+    let tile = w.grid.find_tile(dir, hint);
+    if tile < 0 {
+        return (-1, None);
+    }
+    let r = dvec3_length(local);
+    /* Invert world_depth_to_radius_m: r = body_r - (SEA_LEVEL_IDX - d)
+     * with block height = 1m. So depth = (r - body_r) + SEA_LEVEL_IDX.
+     * Must match world.c's SEA_LEVEL_IDX (64). With the wrong value (12),
+     * mining/placing modified a block 52 layers below where the player
+     * was looking, so terrain seemed not to react to clicks. */
+    const SEA_LEVEL_IDX: i32 = WORLD_SEA_LEVEL_DEPTH;
+    let depth = (r - w.body.radius_m).floor() as i32 + SEA_LEVEL_IDX;
+    if depth < 0 || depth >= WORLD_MAX_DEPTH {
+        return (tile, None);
+    }
+    (tile, Some(depth))
+}
+
+/* ----------------------------------------------------------------------- */
+
+/// Port of `interact_update()`. `dt` is needed for mining-timer
+/// accumulation. Mutable player so we can write inventory pickups +
+/// drains (and the self-place lift).
+pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32) {
+    s.has_target = false;
+    s.is_torch_target = false;
+    s.torch_idx = -1;
+
+    /* In space mode there are no blocks within reach - no point
+     * raycasting. Skip the whole pass; mining_progress stays at 0
+     * so the existing reset-on-target-change branch still does the
+     * right thing on landing. This is the dominant fix for the
+     * "framerate tanks in space" report - interact_update was
+     * burning ~140 ms / frame when the raycast couldn't find a tile
+     * column inside its 8 m reach (every step's depth check failed
+     * with an out-of-range result, but the goldberg lookup still
+     * ran on every iteration). */
+    if p.is_in_space {
+        return;
+    }
+
+    /* Eye position from the player's carried basis. */
+    let eye = dvec3_add(p.position, dvec3_scale(p.basis.up, 1.6));
+    let dir = player_look_dir(p);
+
+    /* Fixed-step voxel raycast. */
+    const STEP_M: f64 = 0.25;
+    let mut prev_tile: i32 = -1;
+    let mut prev_depth: i32 = -1;
+    let mut prev_valid = false;
+    let mut hint = p.last_tile;
+    let mut block_dist = MAX_DIST + 1.0;
+    let mut block_hit = false;
+    let (mut block_tile, mut block_depth, mut block_place_tile, mut block_place_depth) =
+        (0i32, 0i32, 0i32, 0i32);
+
+    /* C: for (double dd = 0.0; dd <= INTERACT_MAX_DIST; dd += step_m).
+     * The increment lives at the loop tail so the C `continue` (depth
+     * out of range) still advances dd. 0.25 accumulates exactly in
+     * binary, so the sequence is bit-identical to the C. */
+    let mut dd = 0.0f64;
+    while dd <= MAX_DIST {
+        let cur = dvec3_add(eye, dvec3_scale(dir, dd));
+        let (tile, depth_opt) = world_to_tile_depth(w, cur, hint);
+        /* Keep the hint warm even when depth was out of range -
+         * world_to_tile_depth still resolved the tile, so subsequent
+         * iterations get a fresh greedy starting point instead of
+         * falling back to an O(N) scan. */
+        if tile >= 0 {
+            hint = tile;
+        }
+        if let Some(depth) = depth_opt {
+            let blk = w.get(tile, depth);
+            if blocks::is_solid(blk) {
+                block_hit = true;
+                block_tile = tile;
+                block_depth = depth;
+                block_place_tile = if prev_valid { prev_tile } else { tile };
+                block_place_depth = if prev_valid { prev_depth } else { depth + 1 };
+                block_dist = dd;
+                break;
+            }
+            prev_tile = tile;
+            prev_depth = depth;
+            prev_valid = true;
+        }
+        dd += STEP_M;
+    }
+
+    /* Torch raycast - placed-torch entities are NOT in the voxel grid,
+     * so they need their own intersection pass. Whichever target sits
+     * closer along the look ray wins; the torch path short-circuits
+     * the block path so a torch always takes precedence on a tie. */
+    let eye_f = vec3_make(eye.x as f32, eye.y as f32, eye.z as f32);
+    let dir_f = vec3_make(dir.x as f32, dir.y as f32, dir.z as f32);
+    let (torch_hit, torch_dist_f) = torch::raycast(eye_f, dir_f, MAX_DIST as f32);
+    let target_torch = torch_hit >= 0 && (!block_hit || torch_dist_f as f64 <= block_dist);
+
+    if target_torch {
+        s.has_target = true;
+        s.is_torch_target = true;
+        s.torch_idx = torch_hit;
+        s.distance = torch_dist_f as f64;
+        /* Block fields stay zero - caller branches on is_torch_target. */
+    } else if block_hit {
+        s.has_target = true;
+        s.hit_tile = block_tile;
+        s.hit_depth = block_depth;
+        s.place_tile = block_place_tile;
+        s.place_depth = block_place_depth;
+        s.distance = block_dist;
+    }
+
+    /* Reset mining timer when the block target changes (or there
+     * isn't one). Mining progress is block-only - torches are
+     * removed instantly on click in either mode. */
+    let inp = input::state();
+    let block_target_changed = target_torch
+        || !block_hit
+        || block_tile != s.mining_tile
+        || block_depth != s.mining_depth;
+    if block_target_changed {
+        s.mining_progress_s = 0.0;
+        s.mining_tile = if block_hit && !target_torch { block_tile } else { -1 };
+        s.mining_depth = if block_hit && !target_torch { block_depth } else { -1 };
+    }
+
+    /* ---- Torch target click handling ----
+     * Both creative and survival break torches instantly on the
+     * left-click edge. Survival recovers a TORCH item back into
+     * inventory; creative drops the torch on the floor (it was
+     * effectively free anyway). The dirty-in-range walk re-bakes
+     * per-vertex torch_light on every tile whose terrain was lit
+     * by the removed torch. */
+    if target_torch {
+        if inp.left_click {
+            /* Capture the full torch record BEFORE removing - we need
+             * the body-local position + up vector + anchor tile so the
+             * server's TORCH_DIFF REMOVE message can identify which
+             * torch in its authoritative list to drop. After
+             * torch_remove the slot is swap-overwritten and the data
+             * is gone. */
+            let slist = torch::list();
+            let in_range = s.torch_idx >= 0 && s.torch_idx < torch::count();
+            let tor_tile = if in_range {
+                slist[s.torch_idx as usize].tile_idx
+            } else {
+                -1
+            };
+            let pos = torch::position_at(s.torch_idx);
+            let up_v = if in_range {
+                slist[s.torch_idx as usize].up
+            } else {
+                vec3_make(0.0, 1.0, 0.0)
+            };
+            println!(
+                "[light] torch removed at tile {} - kicking relight; \
+                 wall-clock blocking cost to follow on session-done line",
+                s.torch_idx
+            );
+            torch::remove(s.torch_idx);
+            w.dirty_in_range(pos, torch::LIGHT_RANGE_M);
+            /* SP: same-frame persistence of the updated torch list.
+             * MP: also forward the remove to the server so it can drop
+             * the torch from its authoritative list, persist the
+             * change, and broadcast a TORCH_DIFF to all room peers.
+             * CLAUDE.md persistence rule applies to both modes. */
+            sp_save_torches_after_change(w);
+            if tor_tile >= 0 {
+                /* C gate `w->body && tor_tile >= 0` - body is always
+                 * present here. */
+                net_client::send_torch(
+                    /* place_op */ false,
+                    w.body.id as u32,
+                    tor_tile,
+                    pos.x,
+                    pos.y,
+                    pos.z,
+                    up_v.x,
+                    up_v.y,
+                    up_v.z,
+                );
+            }
+            if p.survival_mode {
+                inventory::add(&mut p.inventory, Block::Torch);
+            }
+            /* Index is now invalid (swap-removed); clear it so the
+             * HUD doesn't print stale state for the rest of this
+             * frame. */
+            s.is_torch_target = false;
+            s.torch_idx = -1;
+            s.has_target = false;
+        }
+        return;
+    }
+
+    if !s.has_target {
+        return;
+    }
+
+    /* ---- Block target click handling (unchanged from before) ---- */
+    let target_block = w.get(s.hit_tile, s.hit_depth);
+
+    /* SURVIVAL: hold LMB on a block to mine it over MINING_TIME_S. The
+     * mouse-held flag keeps the timer running across frames; releasing
+     * resets progress so partial breaks don't carry to the next swing. */
+    if blocks::is_unbreakable(target_block) {
+        s.mining_progress_s = 0.0;
+    } else if p.survival_mode {
+        if inp.left_held {
+            s.mining_progress_s += dt;
+            if s.mining_progress_s >= MINING_TIME_S {
+                w.set(s.hit_tile, s.hit_depth, Block::Air);
+                net_client::send_edit(
+                    proto::PLAYER_CMD_BREAK,
+                    w.body.id as u32,
+                    s.hit_tile,
+                    s.hit_depth,
+                    Block::Air as i32,
+                );
+                sp_save_tile_after_edit(w, s.hit_tile);
+                inventory::add(&mut p.inventory, target_block);
+                s.mining_progress_s = 0.0;
+            }
+        } else {
+            s.mining_progress_s = 0.0;
+        }
+    } else {
+        /* Creative: instant break on the click edge, no inventory. */
+        if inp.left_click {
+            w.set(s.hit_tile, s.hit_depth, Block::Air);
+            net_client::send_edit(
+                proto::PLAYER_CMD_BREAK,
+                w.body.id as u32,
+                s.hit_tile,
+                s.hit_depth,
+                Block::Air as i32,
+            );
+            sp_save_tile_after_edit(w, s.hit_tile);
+        }
+        s.mining_progress_s = 0.0;
+    }
+
+    if inp.right_click {
+        /* The topmost cell (depth = WORLD_MAX_DEPTH - 1) is reserved
+         * as the planet's build cap - the layer above it is the
+         * implicit-air sky boundary the floor / ceiling helpers
+         * rely on, and placing a block here would put it flush
+         * against that boundary with no air gap, breaking collision
+         * (a player on top of such a block would have their head
+         * past the cap). Reject the placement entirely; the click
+         * is consumed as a no-op so the inventory keeps the block,
+         * exactly as the user requested. */
+        const MAX_BUILD_DEPTH: i32 = WORLD_MAX_DEPTH - 1;
+        if s.place_depth >= 0
+            && s.place_depth < MAX_BUILD_DEPTH
+            && inventory::can_place(&p.inventory)
+        {
+            let to_place = inventory::selected(&p.inventory);
+            if to_place == Block::Torch {
+                /* A torch is NOT a hex block - it's an entity drawn
+                 * by torch.rs. Place it sitting on top of the targeted
+                 * solid block (s.hit_tile / s.hit_depth) with its
+                 * up vector aligned to the local surface normal so it
+                 * stands "up" everywhere on the sphere. The block
+                 * grid stays untouched. */
+                if let Some(tt) = w.grid.tile(s.hit_tile) {
+                    /* Top face of the hit block sits at radius
+                     * world_depth_to_radius_m(hit_depth + 1). */
+                    let r_top = w.depth_to_radius_m(s.hit_depth + 1);
+                    let base_dir = vec3_make(
+                        tt.center.x as f32,
+                        tt.center.y as f32,
+                        tt.center.z as f32,
+                    );
+                    let base_pos = vec3_scale(base_dir, r_top as f32);
+                    if torch::place(base_pos, base_dir, s.hit_tile) {
+                        println!(
+                            "[light] torch placed on tile {} - kicking \
+                             relight; blocking cost to follow on \
+                             session-done line",
+                            s.hit_tile
+                        );
+                        /* Dirty every tile whose centre sits within
+                         * the torch's light range - they need their
+                         * per-vertex torch_light re-baked. The
+                         * renderer's per-frame dirty sweep will
+                         * remesh + re-upload affected chunks. */
+                        w.dirty_in_range(base_pos, torch::LIGHT_RANGE_M);
+                        sp_save_torches_after_change(w);
+                        /* MP: tell the server. It applies to its
+                         * authoritative torch list, persists to
+                         * world-<seed>/body-<id>/torches.dat, and
+                         * broadcasts a TORCH_DIFF to every room peer
+                         * so other players see this torch. Sender
+                         * receives the echo too but the local list
+                         * deduplicates by position. */
+                        // C gate `if (w->body)` - body always present.
+                        net_client::send_torch(
+                            /* place_op */ true,
+                            w.body.id as u32,
+                            s.hit_tile,
+                            base_pos.x,
+                            base_pos.y,
+                            base_pos.z,
+                            base_dir.x,
+                            base_dir.y,
+                            base_dir.z,
+                        );
+                        inventory::consume(&mut p.inventory);
+                    }
+                }
+            } else {
+                /* Self-fall-through guard. If the placement target
+                 * sits in the column the player is standing in AND at
+                 * a depth the player's body occupies (feet voxel or
+                 * head voxel), the new block would intersect the
+                 * collision capsule and the ground-snap + camera-
+                 * collider passes can spit the player downward
+                 * through the floor before the next frame's collision
+                 * resolves. Lift the player one voxel up first so the
+                 * block lands UNDER their feet, and they're standing
+                 * on top of the just-placed block instead of inside
+                 * it. Cheap; only fires when the click actually
+                 * targets the player's own column. */
+                {
+                    /* C gate `if (w->body)` - body always present. */
+                    let feet_local = dvec3_sub(
+                        p.position,
+                        dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z),
+                    );
+                    let feet_r = dvec3_length(feet_local);
+                    if feet_r > 1e-6 {
+                        let feet_dir = dvec3_scale(feet_local, 1.0 / feet_r);
+                        let feet_tile = w.grid.find_tile(feet_dir, p.last_tile);
+                        let feet_depth = w.radius_to_depth(feet_r);
+                        const PLAYER_VOXEL_SPAN: i32 = 2;
+                        if feet_tile == s.place_tile
+                            && s.place_depth >= feet_depth
+                            && s.place_depth < feet_depth + PLAYER_VOXEL_SPAN
+                        {
+                            const BLOCK_HEIGHT_M: f64 = 1.0;
+                            p.position =
+                                dvec3_add(p.position, dvec3_scale(p.basis.up, BLOCK_HEIGHT_M));
+                            /* Clear vy so the lift doesn't get
+                             * immediately cancelled by the gravity
+                             * tick's "you fell, snap back" path. */
+                            let vy = dvec3_dot(p.velocity, p.basis.up);
+                            if vy < 0.0 {
+                                p.velocity =
+                                    dvec3_sub(p.velocity, dvec3_scale(p.basis.up, vy));
+                            }
+                            p.grounded = false;
+                            p.last_tile = -1;
+                            eprintln!(
+                                "[interact] self-place lift: tile={} depth={} \
+                                 (feet={}) - moved player up 1 voxel before placing",
+                                s.place_tile, s.place_depth, feet_depth
+                            );
+                        }
+                    }
+                }
+                /* Place-on-flow override: if the target cell is
+                 * already BLOCK_WATER (a flow cell from the sim) and
+                 * the player is placing water on it, world_set
+                 * early-returns because the block didn't change - so
+                 * we need to explicitly promote the cell to a source.
+                 * Clear its origin entry (a source has no origins
+                 * itself) and set state to 0 (sleeping source: the
+                 * sim treats state=0 BLOCK_WATER as a free-standing
+                 * source supplier). User ask: "I should easily be
+                 * able to override a flow block into a spawn block." */
+                if to_place == Block::Water {
+                    let existing = w.get(s.place_tile, s.place_depth);
+                    if existing == Block::Water {
+                        world_water::origin_clear(w, s.place_tile, s.place_depth);
+                        world_water::set_state(w, s.place_tile, s.place_depth, 0u8);
+                        world_water::enqueue(w, s.place_tile, s.place_depth);
+                    }
+                }
+                w.set(s.place_tile, s.place_depth, to_place);
+                net_client::send_edit(
+                    proto::PLAYER_CMD_PLACE,
+                    w.body.id as u32,
+                    s.place_tile,
+                    s.place_depth,
+                    to_place as i32,
+                );
+                sp_save_tile_after_edit(w, s.place_tile);
+                inventory::consume(&mut p.inventory);
+            }
+        }
+    }
+}
+
+#[cfg(all(test, not(target_os = "emscripten")))]
+mod tests {
+    use super::*;
+    use crate::client_kv::test_support;
+    use tenebris_core::math::dvec3_cross;
+    use tenebris_core::planet::{self, BodyId};
+
+    /* Pins generated from the C build: target/c-harness/
+     * interact_harness.c + interact_stub.c compiled with gcc 13.2
+     * against the verbatim interact.c / inventory.c / core tree
+     * (output: target/c-harness/interact_pins.txt). The scenario
+     * script in `pinned_interact_suite` runs in LOCKSTEP with the
+     * harness main() - same world (Tenebris, subdiv 3, full gen,
+     * compiled-in config defaults), same pose edits, same input
+     * edges, same order. Distances are pinned as f64 bit patterns -
+     * the raycast step is 0.25 m (exact in binary) so distances are
+     * step-quantized and bit-stable across libms. */
+
+    const DT: f32 = 1.0 / 60.0;
+    /// C: `-(float)1.57079632679489661923` (pi/2 rounded to f32).
+    const PITCH_DOWN: f32 = -(std::f64::consts::FRAC_PI_2 as f32);
+
+    fn fnv1a64(bytes: &[u8]) -> u64 {
+        let mut h: u64 = 14695981039346656037;
+        for &b in bytes {
+            h ^= b as u64;
+            h = h.wrapping_mul(1099511628211);
+        }
+        h
+    }
+
+    fn gen_world(id: BodyId) -> World {
+        let body = planet::get(id);
+        let mut w = World::create(&body, 3);
+        while !w.gen_complete() {
+            w.stream_gen(4096);
+        }
+        w
+    }
+
+    /// Player pose matching the harness: standing on the +X prime
+    /// meridian with an axis-aligned tangent basis.
+    fn player_on_x_axis(pos: DVec3) -> PlayerCtrl {
+        let mut p = PlayerCtrl::default();
+        p.position = pos;
+        p.basis.up = dvec3_make(1.0, 0.0, 0.0);
+        p.basis.fwd = dvec3_make(0.0, 1.0, 0.0);
+        p.basis.right = dvec3_make(0.0, 0.0, 1.0);
+        p.basis_ready = true;
+        p.last_tile = -1;
+        inventory::init_creative(&mut p.inventory);
+        p
+    }
+
+    /// Drive the real menu module into the state the C harness ran
+    /// under: `menu_state() == GAME_IN_GAME_SP` with `name` as the
+    /// active world, so the SP persistence gate opens.
+    fn enter_sp_world(name: &str) {
+        menu::force_state(menu::GameState::InGameSp);
+        menu::test_set_active_world(name);
+    }
+
+    /// Park the menu outside GAME_IN_GAME_SP (gate closed).
+    fn leave_sp_world() {
+        menu::force_state(menu::GameState::MainMenu);
+        menu::test_set_active_world("");
+    }
+
+    fn left_click(on: bool) {
+        input::state_mut(|i| i.left_click = on);
+    }
+    fn left_held(on: bool) {
+        input::state_mut(|i| i.left_held = on);
+    }
+    fn right_click(on: bool) {
+        input::state_mut(|i| i.right_click = on);
+    }
+
+    /// One frame with a one-frame right-click edge.
+    fn place_frame(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl) {
+        right_click(true);
+        update(s, w, p, DT);
+        right_click(false);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn assert_target(
+        s: &InteractState,
+        has: bool,
+        torch: bool,
+        hit_tile: i32,
+        hit_depth: i32,
+        place_tile: i32,
+        place_depth: i32,
+        dist_bits: u64,
+        mining_tile: i32,
+        mining_depth: i32,
+        tag: &str,
+    ) {
+        assert_eq!(s.has_target, has, "{tag}: has_target");
+        assert_eq!(s.is_torch_target, torch, "{tag}: is_torch_target");
+        assert_eq!(s.hit_tile, hit_tile, "{tag}: hit_tile");
+        assert_eq!(s.hit_depth, hit_depth, "{tag}: hit_depth");
+        assert_eq!(s.place_tile, place_tile, "{tag}: place_tile");
+        assert_eq!(s.place_depth, place_depth, "{tag}: place_depth");
+        assert_eq!(
+            s.distance.to_bits(),
+            dist_bits,
+            "{tag}: distance {} (bits {:016x} vs {:016x})",
+            s.distance,
+            s.distance.to_bits(),
+            dist_bits
+        );
+        assert_eq!(s.mining_tile, mining_tile, "{tag}: mining_tile");
+        assert_eq!(s.mining_depth, mining_depth, "{tag}: mining_depth");
+    }
+
+    /// FNV over the persisted column for (pinhome, body 0, tile),
+    /// straight out of the kv store the same way the C recorder
+    /// hashed the column it was handed.
+    fn saved_tile_fnv(tile: i32) -> u64 {
+        let col = persistence::load_tile("pinhome", 0, tile)
+            .expect("tile column persisted same-frame");
+        fnv1a64(&col)
+    }
+
+    /* One sequential test mirroring the C harness running A..L in a
+     * single process so world + inventory + torch state evolve
+     * identically. */
+    #[test]
+    fn pinned_interact_suite() {
+        let _g = test_support::begin("interact_suite");
+        input::init();
+        torch::shutdown();
+        enter_sp_world("pinhome");
+
+        let mut w = gen_world(BodyId::Tenebris);
+        let mut p = player_on_x_axis(dvec3_make(302.0, 0.0, 0.0));
+        let mut s = InteractState::default();
+
+        /* ---- A: look straight down ----
+         * C pin: a=1,0,41,63,41,64,400e000000000000,41,63 (3.75 m). */
+        p.pitch = PITCH_DOWN;
+        update(&mut s, &mut w, &mut p, DT);
+        assert_target(&s, true, false, 41, 63, 41, 64, 0x400e000000000000, 41, 63, "a");
+
+        /* ---- B: horizon - no target within 8 m; block fields keep
+         * their stale A values, mining target resets.
+         * C pin: b=0,0,41,63,41,64,400e000000000000,-1,-1. */
+        p.pitch = 0.0;
+        update(&mut s, &mut w, &mut p, DT);
+        assert_target(&s, false, false, 41, 63, 41, 64, 0x400e000000000000, -1, -1, "b");
+
+        /* ---- C: down-forward at -0.5 rad.
+         * C pin: c=1,0,41,63,41,64,401f000000000000,41,63 (7.75 m). */
+        p.pitch = -0.5;
+        update(&mut s, &mut w, &mut p, DT);
+        assert_target(&s, true, false, 41, 63, 41, 64, 0x401f000000000000, 41, 63, "c");
+
+        /* ---- D: creative instant break on the click edge.
+         * C pin: d=41,63,2,0 (Sand -> Air);
+         *        d_save=pinhome,0,41,336acbf5ad2e8a32. */
+        p.pitch = PITCH_DOWN;
+        update(&mut s, &mut w, &mut p, DT); /* re-acquire the down target */
+        let (d_tile, d_depth) = (s.hit_tile, s.hit_depth);
+        assert_eq!((d_tile, d_depth), (41, 63), "d: target");
+        assert_eq!(w.get(d_tile, d_depth), Block::Sand, "d: block before");
+        left_click(true);
+        update(&mut s, &mut w, &mut p, DT);
+        left_click(false);
+        assert_eq!(w.get(d_tile, d_depth), Block::Air, "d: block after");
+        assert_eq!(saved_tile_fnv(41), 0x336acbf5ad2e8a32, "d_save: column fnv");
+
+        /* ---- E: survival mining - hold LMB until the break fires.
+         * C pin: e=41,62,3,49 (Dirt broken on frame 49);
+         *        e_save fnv c63f3e5d48ddbe09; pickup stacks Dirt to
+         *        10000 on slot 2, everything else untouched. */
+        p.survival_mode = true;
+        left_held(true);
+        let mut e_frames = 0;
+        let (mut e_tile, mut e_depth) = (-1, -1);
+        loop {
+            update(&mut s, &mut w, &mut p, DT);
+            e_frames += 1;
+            if e_frames == 1 {
+                e_tile = s.hit_tile;
+                e_depth = s.hit_depth;
+                assert_eq!((e_tile, e_depth), (41, 62), "e: target");
+                assert_eq!(w.get(e_tile, e_depth), Block::Dirt, "e: block");
+            }
+            if w.get(e_tile, e_depth) == Block::Air || e_frames > 300 {
+                break;
+            }
+        }
+        left_held(false);
+        assert_eq!(e_frames, 49, "e: frames to mine (f32 dt accumulation)");
+        assert_eq!(saved_tile_fnv(41), 0xc63f3e5d48ddbe09, "e_save: column fnv");
+        let want_inv: [(Block, i32); 9] = [
+            (Block::Torch, 9999),
+            (Block::Stone, 9999),
+            (Block::Dirt, 10000), /* the pickup */
+            (Block::Grass, 9999),
+            (Block::Sand, 9999),
+            (Block::Wood, 9999),
+            (Block::Leaves, 9999),
+            (Block::Ice, 9999),
+            (Block::Water, 9999),
+        ];
+        for (i, (ty, n)) in want_inv.iter().enumerate() {
+            assert_eq!(p.inventory.slots[i].block_type, *ty, "e_inv{i}: type");
+            assert_eq!(p.inventory.slots[i].count, *n, "e_inv{i}: count");
+        }
+
+        /* ---- F: place stone into the dug hole.
+         * C pin: f=41,62,5,9998 (placed at the prev-air cell, slot 1
+         * decrements - the C consume guard is strict `> 9999`);
+         * f_save fnv 0dc1e72675d02284. */
+        inventory::select(&mut p.inventory, 1);
+        place_frame(&mut s, &mut w, &mut p);
+        assert_eq!((s.place_tile, s.place_depth), (41, 62), "f: place cell");
+        assert_eq!(w.get(41, 62), Block::Stone, "f: placed");
+        assert_eq!(p.inventory.slots[1].count, 9998, "f: consumed");
+        assert_eq!(saved_tile_fnv(41), 0x0dc1e72675d02284, "f_save: column fnv");
+
+        /* ---- G: keep placing straight down; placements walk up the
+         * column (63,64,65) until the place cell reaches the feet
+         * voxel, then the self-place lift fires twice (66 -> x=303,
+         * 67 -> x=304). C pins g0..g4. */
+        let g_pins: [(i32, u64); 5] = [
+            (63, 0x4072e00000000000), /* 302.0 - no lift   */
+            (64, 0x4072e00000000000),
+            (65, 0x4072e00000000000),
+            (66, 0x4072f00000000000), /* 303.0 - lift #1   */
+            (67, 0x4073000000000000), /* 304.0 - lift #2   */
+        ];
+        for (k, (want_depth, want_x)) in g_pins.iter().enumerate() {
+            place_frame(&mut s, &mut w, &mut p);
+            assert_eq!(s.place_depth, *want_depth, "g{k}: place_depth");
+            assert_eq!(w.get(s.place_tile, s.place_depth), Block::Stone, "g{k}: placed");
+            assert_eq!(p.position.x.to_bits(), *want_x, "g{k}: pos.x");
+            assert!(!p.grounded, "g{k}: grounded");
+            assert_eq!(p.last_tile, -1, "g{k}: last_tile");
+        }
+
+        /* ---- H: water-on-flow source promotion. Re-anchor at 302
+         * (eye inside the depth-67 tower top -> immediate hit, place
+         * cell = 68 above it), seed a level-3 flow cell with one
+         * origin at (41,68), then place water on it.
+         * C pins: h0=3,1,51 -> h=41,67,41,68,1,0,0,51 (still WATER,
+         * state promoted to 0 = sleeping source, origins cleared,
+         * already-queued cell dedups); h_save fnv 839673e9a82ba4f6;
+         * slot 8 consumed to 9998. */
+        p.position = dvec3_make(302.0, 0.0, 0.0);
+        p.last_tile = -1;
+        let ptile = s.place_tile;
+        assert_eq!(ptile, 41, "h: column under test");
+        w.set(ptile, 68, Block::Water);
+        world_water::set_state(&mut w, ptile, 68, 0x03); /* flow, level 3 */
+        world_water::origin_add(
+            &mut w,
+            ptile,
+            68,
+            world_water::OriginRef { tile: ptile as u32, depth: 67 },
+        );
+        assert_eq!(world_water::get_state(&w, ptile, 68), 0x03, "h0: state");
+        assert_eq!(world_water::origin_count(&w, ptile, 68), 1, "h0: origins");
+        assert_eq!(world_water::pending(&w), 51, "h0: pending");
+        inventory::select(&mut p.inventory, 8);
+        place_frame(&mut s, &mut w, &mut p);
+        assert_eq!((s.hit_tile, s.hit_depth), (41, 67), "h: hit");
+        assert_eq!((s.place_tile, s.place_depth), (41, 68), "h: place");
+        assert_eq!(w.get(ptile, 68), Block::Water, "h: still water");
+        assert_eq!(world_water::get_state(&w, ptile, 68), 0, "h: promoted to source");
+        assert_eq!(world_water::origin_count(&w, ptile, 68), 0, "h: origins cleared");
+        assert_eq!(world_water::pending(&w), 51, "h: pending");
+        assert_eq!(p.inventory.slots[8].count, 9998, "h: water consumed");
+        assert_eq!(saved_tile_fnv(41), 0x839673e9a82ba4f6, "h_save: column fnv");
+
+        /* ---- I: torch placement on the tower top. Base sits on the
+         * top face of hit block 67 (r_top = 304) along the f32 tile
+         * centre - tile 41's centre is exactly (1,0,0).
+         * C pin: i=1,41,43980000,0,0,3f800000,0,0,3f38240b,9998;
+         * i_tsave=1,0,46f62f6d2dc76670,1. */
+        inventory::select(&mut p.inventory, 0);
+        place_frame(&mut s, &mut w, &mut p);
+        assert_eq!(torch::count(), 1, "i: torch placed");
+        let t0 = torch::list()[0];
+        assert_eq!(t0.tile_idx, 41, "i: anchor tile");
+        assert_eq!(t0.position.x.to_bits(), 0x43980000, "i: base x (304.0)");
+        assert_eq!(t0.position.y.to_bits(), 0, "i: base y");
+        assert_eq!(t0.position.z.to_bits(), 0, "i: base z");
+        assert_eq!(t0.up.x.to_bits(), 0x3f800000, "i: up x");
+        assert_eq!(t0.up.y.to_bits(), 0, "i: up y");
+        assert_eq!(t0.up.z.to_bits(), 0, "i: up z");
+        assert_eq!(t0.flicker_phase.to_bits(), 0x3f38240b, "i: flicker");
+        assert_eq!(p.inventory.slots[0].count, 9998, "i: torch consumed");
+        /* Same-frame torch snapshot: hash the persisted entries in
+         * the C recorder's layout (tile i32 LE + pos[3] + up[3] f32
+         * LE). */
+        let saved = persistence::load_torches("pinhome", 0);
+        assert_eq!(saved.len(), 1, "i_tsave: one torch persisted");
+        let mut bytes = Vec::new();
+        for t in &saved {
+            bytes.extend_from_slice(&t.tile_idx.to_le_bytes());
+            for v in t.pos {
+                bytes.extend_from_slice(&v.to_le_bytes());
+            }
+            for v in t.up {
+                bytes.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        assert_eq!(fnv1a64(&bytes), 0x46f62f6d2dc76670, "i_tsave: fnv");
+
+        /* ---- J: re-anchor 2 m above the torch; the torch raycast
+         * wins over the block hit; left-click removes it, survival
+         * recovers a TORCH item, snapshot clears.
+         * C pins: j0=1,0,3ff3ae0d00000000; j=0,0,2,9999,0. */
+        let centre = w.grid.tile(ptile).expect("tile 41").center;
+        let r_top = w.depth_to_radius_m(68);
+        p.position = dvec3_scale(centre, r_top + 0.4);
+        p.basis.up = centre;
+        p.basis.fwd = dvec3_normalize(dvec3_cross(centre, dvec3_make(0.0, 0.0, 1.0)));
+        p.basis.right = dvec3_cross(p.basis.fwd, p.basis.up);
+        p.pitch = PITCH_DOWN;
+        p.yaw = 0.0;
+        p.last_tile = -1;
+        update(&mut s, &mut w, &mut p, DT);
+        assert!(s.is_torch_target, "j0: torch target");
+        assert_eq!(s.torch_idx, 0, "j0: torch idx");
+        assert_eq!(s.distance.to_bits(), 0x3ff3ae0d00000000, "j0: torch dist");
+        left_click(true);
+        update(&mut s, &mut w, &mut p, DT);
+        left_click(false);
+        assert_eq!(torch::count(), 0, "j: torch removed");
+        assert!(persistence::load_torches("pinhome", 0).is_empty(), "j: snapshot cleared");
+        assert_eq!(p.inventory.slots[0].count, 9999, "j: TORCH recovered");
+        assert!(!s.has_target, "j: target cleared same frame");
+    }
+
+    /* Off-origin body: the raycast must subtract the body centre.
+     * C pins: l=1,0,41,66,41,67,3fe8000000000000,41,66 with Luna at
+     * (0, 6000, 0), radius 80, id 1. */
+    #[test]
+    fn pinned_raycast_off_origin_body() {
+        let _g = test_support::begin("interact_luna");
+        input::init();
+        torch::shutdown();
+
+        let luna = planet::get(BodyId::Luna);
+        assert_eq!(luna.id as u32, 1, "l_body: id");
+        assert_eq!(luna.pos_x.to_bits(), 0, "l_body: pos_x");
+        assert_eq!(luna.pos_y.to_bits(), 0x40b7700000000000, "l_body: pos_y (6000)");
+        assert_eq!(luna.pos_z.to_bits(), 0, "l_body: pos_z");
+        assert_eq!(luna.radius_m.to_bits(), 0x4054000000000000, "l_body: radius (80)");
+
+        let mut w = gen_world(BodyId::Luna);
+        let mut p = player_on_x_axis(dvec3_make(
+            luna.pos_x + luna.radius_m + 2.0,
+            luna.pos_y,
+            luna.pos_z,
+        ));
+        p.pitch = PITCH_DOWN;
+        let mut s = InteractState::default();
+        update(&mut s, &mut w, &mut p, DT);
+        assert_target(&s, true, false, 41, 66, 41, 67, 0x3fe8000000000000, 41, 66, "l");
+    }
+
+    /* ---- Behavioral (non-pin) coverage ---- */
+
+    #[test]
+    fn space_mode_skips_raycast() {
+        let _g = test_support::begin("interact_space");
+        input::init();
+        torch::shutdown();
+        let mut w = gen_world(BodyId::Tenebris);
+        let mut p = player_on_x_axis(dvec3_make(302.0, 0.0, 0.0));
+        p.pitch = PITCH_DOWN;
+        p.is_in_space = true;
+        let mut s = InteractState {
+            mining_progress_s: 0.5,
+            ..Default::default()
+        };
+        update(&mut s, &mut w, &mut p, DT);
+        assert!(!s.has_target);
+        assert!(!s.is_torch_target);
+        assert_eq!(s.torch_idx, -1);
+        /* Early return: mining progress is left for the
+         * reset-on-target-change branch after landing. */
+        assert_eq!(s.mining_progress_s, 0.5);
+    }
+
+    #[test]
+    fn sp_gate_off_skips_persistence_but_still_edits() {
+        let _g = test_support::begin("interact_gate_off");
+        input::init();
+        torch::shutdown();
+        /* Menu not in GAME_IN_GAME_SP (MP or menu screens): the world
+         * edit applies, nothing is persisted. */
+        leave_sp_world();
+        let mut w = gen_world(BodyId::Tenebris);
+        let mut p = player_on_x_axis(dvec3_make(302.0, 0.0, 0.0));
+        p.pitch = PITCH_DOWN;
+        let mut s = InteractState::default();
+        left_click(true);
+        update(&mut s, &mut w, &mut p, DT);
+        left_click(false);
+        assert_eq!(w.get(41, 63), Block::Air, "edit applied");
+        assert!(persistence::load_tile("pinhome", 0, 41).is_none(), "no SP write");
+        assert!(persistence::list_saved_tiles("pinhome", 0).is_empty());
+    }
+
+    #[test]
+    fn unbreakable_block_resets_mining() {
+        let _g = test_support::begin("interact_bedrock");
+        input::init();
+        torch::shutdown();
+        enter_sp_world("pinhome");
+        let mut w = gen_world(BodyId::Tenebris);
+        let mut p = player_on_x_axis(dvec3_make(302.0, 0.0, 0.0));
+        p.pitch = PITCH_DOWN;
+        p.survival_mode = true;
+        /* Swap the down-target for bedrock. */
+        w.set(41, 63, Block::Bedrock);
+        let mut s = InteractState::default();
+        left_held(true);
+        for _ in 0..120 {
+            update(&mut s, &mut w, &mut p, DT);
+            assert_eq!(s.mining_progress_s, 0.0, "progress pinned at 0");
+        }
+        left_held(false);
+        assert_eq!(w.get(41, 63), Block::Bedrock, "bedrock survives");
+    }
+
+    #[test]
+    fn releasing_lmb_resets_mining_progress() {
+        let _g = test_support::begin("interact_release_resets");
+        input::init();
+        torch::shutdown();
+        enter_sp_world("pinhome");
+        let mut w = gen_world(BodyId::Tenebris);
+        let mut p = player_on_x_axis(dvec3_make(302.0, 0.0, 0.0));
+        p.pitch = PITCH_DOWN;
+        p.survival_mode = true;
+        let mut s = InteractState::default();
+        /* 30 held frames: progress accumulates but no break (< 0.8 s). */
+        left_held(true);
+        for _ in 0..30 {
+            update(&mut s, &mut w, &mut p, DT);
+        }
+        assert!(s.mining_progress_s > 0.0);
+        assert_eq!(w.get(41, 63), Block::Sand, "not broken yet");
+        /* Release: progress resets, partial breaks don't carry. */
+        left_held(false);
+        update(&mut s, &mut w, &mut p, DT);
+        assert_eq!(s.mining_progress_s, 0.0, "reset on release");
+        assert_eq!(w.get(41, 63), Block::Sand);
+    }
+}

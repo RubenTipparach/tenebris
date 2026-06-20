@@ -131,6 +131,25 @@ lod:
   water_body_check_height_m:    0.50
   water_submerged_jump_mult:    0.30
 
+  # Renderer mesh / chunking budget. The surface mesh of each body is
+  # split into mesh_chunk_count GPU chunks; a block edit only re-meshes
+  # the chunk(s) it touches. More chunks = fewer tiles rebuilt per edit
+  # (less hitch placing/breaking blocks, and when a peer edit or a water
+  # tick arrives over the network) at the cost of a few more draw calls.
+  # 32 was the historical baseline; 128 cuts per-edit mesh work ~4x.
+  # Clamped to [1, 256] at load.
+  mesh_chunk_count:             128
+  # Per-frame wall-clock cap (ms) for rebuilding dirty chunks. A flood
+  # of edits rebuilds at most this many ms of chunks per frame and rolls
+  # the rest to later frames, so the frame never stalls. At least one
+  # chunk always rebuilds, so progress is guaranteed.
+  mesh_remesh_budget_ms:        4.0
+  # Padding multiplier on each chunk's angular radius for sphere
+  # visibility culling. 1.0 culls exactly at the chunk cap; >1 keeps
+  # horizon-straddling chunks from popping out. Auto-scales with
+  # mesh_chunk_count.
+  mesh_cull_pad_factor:         1.55
+
 earth:
   water_color:        [0.10, 0.28, 0.55]
   lowland_tint:       [0.85, 0.80, 0.65]

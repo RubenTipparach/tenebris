@@ -11,6 +11,9 @@ tenebris-itch.zip
 # WASM / CMake build products
 tenebris-c/build-*/
 
+# Python bytecode caches from the tools/ generators
+tenebris-c/tools/__pycache__/
+
 # Staged runtime assets for tenebris-c. The atlas PNGs get copied
 # from ../public/textures/ by the CMake step, so they're regenerated
 # on every fresh checkout - no need to track them. The water normal

@@ -1,0 +1,29 @@
+[package]
+name = "tenebris-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# git rev pinned: crates.io 0.3.0 lacks the gl/debugtext/glue bindings
+# the client UI layer needs (sokol_gl panels + sdtx labels per repo rules)
+sokol = { git = "https://github.com/floooh/sokol-rust", rev = "9e3db76ac4d090d04cca4fc10cc8a1336452f44d" }
+tenebris-core = { path = "../tenebris-core" }
+
+# PNG decode for the renderer's runtime texture loads (atlas tiles,
+# water normal map, flow-debug arrow). Stands in for the C tree's
+# stb_image; assets stay the raw PNGs under tenebris-c/assets/textures.
+png = "0.17"
+
+# Native-only client WebSocket transport (net_transport.rs). The C
+# native client links the libwebsockets backend (net_transport_ws.c in
+# client mode); the Rust port mirrors the server crate's tokio +
+# tokio-tungstenite replacement. The web build uses the emscripten
+# WebSocket C API instead (-lwebsocket.js at link time), so none of
+# this ships in the wasm binary.
+[target.'cfg(not(target_os = "emscripten"))'.dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "io-util", "sync", "macros"] }
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
+
+[dev-dependencies]

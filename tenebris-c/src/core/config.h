@@ -25,6 +25,7 @@ int config_load_skybox(const char* path);
 int config_load_lod(const char* path);
 int config_load_water(const char* path);
 int config_load_lighting(const char* path);
+int config_load_ui(const char* path);
 
 /*
  * Global skybox tuning — read by renderer_draw_skybox each frame and
@@ -241,6 +242,30 @@ typedef struct {
     float water_surface_float_height_m;
     float water_body_check_height_m;
     float water_submerged_jump_mult;
+
+    /* ---- Renderer mesh / chunking budget. --------------------------
+     * The surface mesh of every body is split into `mesh_chunk_count`
+     * GPU chunks. A block edit only re-meshes the chunk(s) it touches,
+     * so more chunks = fewer tiles rebuilt per edit (= less hitch when
+     * placing / breaking blocks, and when a peer's edit or a water-flow
+     * tick arrives over the network) in exchange for a few more draw
+     * calls. 32 is the historical baseline; 128 cuts per-edit mesh work
+     * roughly 4x. Clamped to [1, RENDER_CHUNK_COUNT_MAX] at load. */
+    int   mesh_chunk_count;
+    /* Wall-clock budget, in milliseconds, for rebuilding dirty chunks
+     * per frame. A flood of edits (a peer carpet-building, water
+     * flooding across many chunks) rebuilds at most this many ms worth
+     * of chunks per frame and rolls the rest to subsequent frames, so
+     * the frame never stalls. At least one chunk is always rebuilt, so
+     * progress is guaranteed no matter how small this is. */
+    float mesh_remesh_budget_ms;
+    /* Multiplier on each chunk's angular radius when deciding chunk
+     * visibility on the sphere. 1.0 culls exactly at the chunk's
+     * Voronoi cap; >1 pads the kept region so chunks straddling the
+     * horizon don't pop out. The cap half-angle is derived from
+     * mesh_chunk_count, so this factor stays constant as granularity
+     * changes. */
+    float mesh_cull_pad_factor;
 } lod_config_t;
 
 const lod_config_t* config_lod(void);
@@ -543,5 +568,60 @@ typedef struct {
 } lighting_config_t;
 
 const lighting_config_t* config_lighting(void);
+
+/*
+ * Pixel-art UI sprite layout. Consumed by client/pixel_ui.c — every
+ * widget (panel, button-in-four-states, slot-in-four-states, title
+ * bar, close glyph) is a sub-rect of a single PNG, with optional
+ * nine-slice margins. Stored as a flat table here so the module is
+ * theme-swappable: drop in a different PNG + a different ui.yaml and
+ * the same widget calls render the new theme.
+ *
+ * Sprite ids are dense integers so callers can hold one alongside a
+ * style struct without paying a name lookup per frame. Add new sprites
+ * by extending the enum + the parser switch in config.c; the YAML
+ * tolerates unknown sections so adding a sprite to the file before
+ * adding the enum entry is non-fatal (it just won't be reachable from
+ * code yet).
+ */
+typedef enum {
+    UI_SPRITE_PANEL = 0,
+    UI_SPRITE_BUTTON_NORMAL,
+    UI_SPRITE_BUTTON_HOVER,
+    UI_SPRITE_BUTTON_PRESSED,
+    UI_SPRITE_BUTTON_DISABLED,
+    UI_SPRITE_TITLE_BAR,
+    UI_SPRITE_CLOSE_X,
+    UI_SPRITE_SLOT_NORMAL,
+    UI_SPRITE_SLOT_HOVER,
+    UI_SPRITE_SLOT_SELECTED,
+    UI_SPRITE_SLOT_DISABLED,
+    UI_SPRITE_SCROLLBAR_TRACK,
+    UI_SPRITE_SCROLLBAR_THUMB,
+    UI_SPRITE_SCROLL_ARROW_UP,
+    UI_SPRITE_SCROLL_ARROW_DOWN,
+    UI_SPRITE_COUNT
+} ui_sprite_id_t;
+
+typedef struct {
+    /* Sub-rect of the atlas, in texels (x, y, w, h). */
+    int x, y, w, h;
+    /* Nine-slice margins in texels: left, right, top, bottom. All zero
+     * means "blit 1:1 at native size", which the renderer treats as a
+     * non-stretchable sprite (used for the close-X glyph). */
+    int left, right, top, bottom;
+} ui_sprite_t;
+
+#define UI_ATLAS_PATH_MAX 128
+
+typedef struct {
+    /* Relative path of the sprite atlas PNG. Default is
+     * "assets/textures/ui/default.png" — themed packs override it
+     * here. */
+    char atlas_path[UI_ATLAS_PATH_MAX];
+    ui_sprite_t sprites[UI_SPRITE_COUNT];
+} ui_config_t;
+
+const ui_config_t* config_ui(void);
 
 #endif
