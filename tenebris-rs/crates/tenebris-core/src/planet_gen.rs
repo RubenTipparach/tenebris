@@ -1,0 +1,462 @@
+//! Port of `tenebris-c/src/core/planet_gen.{c,h}`.
+//!
+//! Deterministic planet surface generator. Given a unit direction on
+//! the sphere, returns the surface altitude in meters relative to the
+//! body's base radius. Lives in core/ because client and server must
+//! agree byte-for-byte.
+//!
+//! Surface generator: direct port of src/workers/terrainGenerationWorker.ts
+//! - same four layers (continental / mountain / hill / detail), same
+//! octave counts, same weights. The underlying primitive is 3D gradient
+//! (Perlin) noise (`rng::gnoise3d_seed`).
+//!
+//! Every function must produce bit-identical output to the C build for
+//! the same inputs - world content depends on it. All float math stays
+//! in f32 with the same order of operations; the two `pow` calls go
+//! through f64 exactly like the C `(float)pow((double)x, e)` casts.
+//!
+//! Renames (per PORTING.md rule 4 - module prefix dropped):
+//! - `planet_surface_altitude()`     -> `planet_gen::surface_altitude()`
+//! - `planet_profile()`              -> `planet_gen::profile()`
+//! - `planet_sample()`               -> `planet_gen::sample()`
+//! - `planet_sample_with_profile()`  -> `planet_gen::sample_with_profile()`
+//! - `column_profile_t`              -> `planet_gen::ColumnProfile`
+//!
+//! The tuning constants below are ported verbatim from the C #defines
+//! (which in turn mirror the JS reference); they are part of the
+//! generator's identity - changing any of them regenerates every world.
+
+use crate::blocks::Block;
+use crate::math::DVec3;
+use crate::planet::{BodyConfig, Tileset};
+use crate::rng::gnoise3d_seed;
+
+/* Scale values are JS literals since we're now matching Tenebris JS
+ * planet proportions (radius ~= 150 m with one full Goldberg mesh). */
+const CONTINENT_SCALE: f32 = 0.8;
+const MOUNTAIN_SCALE: f32 = 2.5;
+const HILL_SCALE: f32 = 5.0;
+const DETAIL_SCALE: f32 = 12.0;
+
+const CONTINENT_WEIGHT: f32 = 0.7;
+const MOUNTAIN_HEIGHT: f32 = 0.8;
+const HILL_WEIGHT: f32 = 0.15;
+const DETAIL_WEIGHT: f32 = 0.05;
+const OCEAN_DEPTH_POWER: f32 = 1.3;
+
+/* Heights in voxel blocks (1 m each). With WORLD_MAX_DEPTH = 128 and
+ * SEA_LEVEL_IDX = 64, the column has 64 layers below sea (soil + ocean)
+ * and 64 layers above. Tunables fit within those budgets. */
+/// tallest peak - 40 m above sea
+const MAX_LAND_HEIGHT: f32 = 40.0;
+/// deepest trench - 24 m below sea
+const MAX_OCEAN_DEPTH: f32 = 24.0;
+const LAND_BIAS: f32 = 0.20;
+
+/* Biome thresholds (meters relative to body surface). Snow/stone bands
+ * scaled up to match the bigger height range. */
+const SEA_LEVEL: f32 = 0.0;
+const BEACH_BAND: f32 = 2.0;
+const SNOW_ELEV: f32 = 22.0;
+const STONE_ELEV: f32 = 32.0;
+/* Latitude threshold (|sin(lat)|) above which the surface gets the
+ * polar / ice-cap treatment. 0.90 caps at ~64 deg latitude;
+ * 0.95 caps at ~72 deg, which halves the spherical-cap area
+ * (cap area = 2*pi*(1 - sin(lat)), so going from 0.10 to 0.05
+ * is the requested "50% smaller ice cap"). */
+const POLAR_LATITUDE: f32 = 0.95;
+const COLD_LATITUDE: f32 = 0.75;
+
+/* ----------------------------------------------------------------------- */
+/* fBm and ridge noise. Octave structure is the same as the JS reference
+ * (terrainGenerationWorker.ts), but the underlying primitive is 3D
+ * gradient (Perlin) noise - see gnoise3d_seed in rng.rs. Seed is
+ * stirred per-octave so octaves don't correlate. gnoise3d_seed already
+ * returns [-1, +1]. */
+
+fn fractal3d(
+    seed: u64,
+    x: f32,
+    y: f32,
+    z: f32,
+    period: f32,
+    octaves: i32,
+    persistence: f32,
+    lacunarity: f32,
+) -> f32 {
+    let mut value = 0.0f32;
+    let mut max_value = 0.0f32;
+    let mut amplitude = 1.0f32;
+    let mut frequency = period;
+    for i in 0..octaves {
+        let n = gnoise3d_seed(
+            seed.wrapping_add(i as u64 * 1117),
+            x * frequency,
+            y * frequency,
+            z * frequency,
+        );
+        value += n * amplitude;
+        max_value += amplitude;
+        amplitude *= persistence;
+        frequency *= lacunarity;
+    }
+    value / max_value
+}
+
+fn ridge3d(
+    seed: u64,
+    x: f32,
+    y: f32,
+    z: f32,
+    period: f32,
+    octaves: i32,
+    persistence: f32,
+    lacunarity: f32,
+) -> f32 {
+    let mut value = 0.0f32;
+    let mut max_value = 0.0f32;
+    let mut amplitude = 1.0f32;
+    let mut frequency = period;
+    for i in 0..octaves {
+        let n = gnoise3d_seed(
+            seed.wrapping_add(i as u64 * 1117),
+            x * frequency,
+            y * frequency,
+            z * frequency,
+        );
+        /* C: 1.0f - (float)fabs(n) - fabs promotes to double and the
+         * absolute value of an exact f32 is exact, so f32 abs is
+         * bit-identical. */
+        let ridge = 1.0f32 - n.abs();
+        value += ridge * ridge * amplitude;
+        max_value += amplitude;
+        amplitude *= persistence;
+        frequency *= lacunarity;
+    }
+    value / max_value
+}
+
+/* ----------------------------------------------------------------------- */
+
+/// Port of `planet_surface_altitude()`. Surface altitude at a given
+/// unit direction. Positive = above base radius, negative = below.
+pub fn surface_altitude(body: &BodyConfig, unit_dir: DVec3) -> f32 {
+    let x = unit_dir.x as f32;
+    let y = unit_dir.y as f32;
+    let z = unit_dir.z as f32;
+
+    /* Continental base - six octaves. sign(n) * |n|^0.8 pushes values
+     * toward the extremes so the land/ocean mask has crisp boundaries. */
+    let mut continent = fractal3d(body.seed, x, y, z, CONTINENT_SCALE, 6, 0.5, 2.0);
+    continent += LAND_BIAS;
+    /* C: (float)pow((double)fabs(continent), 0.8) */
+    let continent_value = (if continent >= 0.0 { 1.0f32 } else { -1.0f32 })
+        * ((continent as f64).abs().powf(0.8) as f32);
+
+    /* Mountain ridges on top of land. */
+    let mountain_noise = ridge3d(body.seed, x, y, z, MOUNTAIN_SCALE, 4, 0.5, 2.2);
+    let land_factor = if continent_value > 0.0 {
+        continent_value
+    } else {
+        0.0
+    };
+    let mountain_height = mountain_noise * land_factor * MOUNTAIN_HEIGHT;
+
+    /* Hills + detail. Hills are dampened outside land. */
+    let hill_noise = fractal3d(body.seed, x, y, z, HILL_SCALE, 3, 0.5, 2.0);
+    let detail_noise = fractal3d(body.seed, x, y, z, DETAIL_SCALE, 2, 0.5, 2.0);
+
+    let mut height = continent_value * CONTINENT_WEIGHT;
+    height += mountain_height;
+    height += hill_noise * HILL_WEIGHT * (if land_factor > 0.1 { 1.0f32 } else { 0.3f32 });
+    height += detail_noise * DETAIL_WEIGHT;
+
+    /* Convert normalized height in [-1, +1] to meters. Use a power curve
+     * on the ocean side so sea floors get naturally deeper offshore. */
+    if height >= 0.0 {
+        height * MAX_LAND_HEIGHT
+    } else {
+        /* C: (float)pow((double)fabs(height), (double)OCEAN_DEPTH_POWER) */
+        let ocean_factor = (height as f64).abs().powf(OCEAN_DEPTH_POWER as f64) as f32;
+        -ocean_factor * MAX_OCEAN_DEPTH
+    }
+}
+
+/* ----------------------------------------------------------------------- */
+
+/// Port of `column_profile_t`. Precomputed per-column biome info.
+/// Build once per column in the fill loop, then call
+/// `sample_with_profile` for each layer - avoids repeating the
+/// surface-noise lookup per voxel.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ColumnProfile {
+    pub surface_m: f32,
+    pub latitude: f32,
+    pub snow_line: f32,
+    pub polar: bool,
+    /// moon-like: skip grass/sand/water biomes
+    pub barren: bool,
+    /// all snow + ice surface, no grass / sand / dirt
+    pub icy: bool,
+    /// emit SEQ_* tileset variants instead of defaults
+    pub sequoia: bool,
+    /// emit CRAG_ROCK for barren fills
+    pub crag: bool,
+    /// emit FROST_ICE + colder snow
+    pub frost: bool,
+    /// emit ASTEROID_ROCK for barren fills
+    pub asteroid: bool,
+}
+
+/// Port of `planet_profile()`.
+pub fn profile(body: &BodyConfig, unit_dir: DVec3) -> ColumnProfile {
+    let mut surface_m = surface_altitude(body, unit_dir);
+    /* Moons + asteroids look flatter - scale the amplitude so they're
+     * visibly different from main planets. Icy worlds keep full height. */
+    if body.barren {
+        surface_m *= 0.3;
+    }
+    /* C: (float)fabs(unit_dir.y) - f64 abs, then truncate to f32. */
+    let latitude = unit_dir.y.abs() as f32;
+    let polar = latitude > POLAR_LATITUDE;
+    let cold = latitude > COLD_LATITUDE;
+    let snow_line = if cold { SNOW_ELEV * 0.5 } else { SNOW_ELEV };
+    ColumnProfile {
+        surface_m,
+        latitude,
+        snow_line,
+        polar,
+        barren: body.barren,
+        icy: body.icy,
+        sequoia: body.tileset == Tileset::Sequoia,
+        crag: body.tileset == Tileset::Crag,
+        frost: body.tileset == Tileset::Frost,
+        asteroid: body.tileset == Tileset::Asteroid,
+    }
+}
+
+/// Port of `planet_sample_with_profile()`.
+pub fn sample_with_profile(prof: &ColumnProfile, altitude_m: f32) -> Block {
+    let surface = prof.surface_m;
+
+    /* Barren (moon-like) bodies. Tileset chooses the surface tint so
+     * the three kinds of barren body don't all look like Luna. */
+    if prof.barren {
+        if altitude_m > surface {
+            return Block::Air;
+        }
+        if prof.crag {
+            return Block::CragRock;
+        }
+        if prof.asteroid {
+            return Block::AsteroidRock;
+        }
+        return Block::Moon;
+    }
+
+    /* Icy bodies: snow crust on top, ice below. Frostbite swaps the
+     * ice layer to a deeper glacial tint via Tileset::Frost. */
+    if prof.icy {
+        if altitude_m > surface {
+            return Block::Air;
+        }
+        if altitude_m > surface - 1.0 {
+            return Block::Snow;
+        }
+        return if prof.frost {
+            Block::FrostIce
+        } else {
+            Block::Ice
+        };
+    }
+
+    /* Air/water above the ground. */
+    if altitude_m > surface {
+        if altitude_m < SEA_LEVEL {
+            return if prof.polar { Block::Ice } else { Block::Water };
+        }
+        return Block::Air;
+    }
+
+    /* Top voxel - biome decision layer. Tileset::Sequoia bodies emit
+     * the SEQ_* variants so they pick different atlas columns. */
+    if altitude_m > surface - 1.0 {
+        if surface > SEA_LEVEL - BEACH_BAND && surface < SEA_LEVEL + BEACH_BAND {
+            return if prof.sequoia { Block::SeqSand } else { Block::Sand };
+        }
+        if surface < SEA_LEVEL {
+            if surface > SEA_LEVEL - 4.0 {
+                return if prof.sequoia { Block::SeqSand } else { Block::Sand };
+            }
+            return Block::Stone;
+        }
+        if surface > STONE_ELEV {
+            return Block::Stone;
+        }
+        if surface > prof.snow_line || prof.polar {
+            return if prof.sequoia { Block::SeqSnow } else { Block::Snow };
+        }
+        return if prof.sequoia { Block::SeqGrass } else { Block::Grass };
+    }
+
+    if altitude_m > surface - 4.0 {
+        return if prof.sequoia { Block::SeqDirt } else { Block::Dirt };
+    }
+    Block::Stone
+}
+
+/// Port of `planet_sample()`. Block at a world position specified by
+/// (unit_dir, altitude_m). altitude_m = 0 is the body's base radius
+/// (equal to radius_m).
+pub fn sample(body: &BodyConfig, unit_dir: DVec3, altitude_m: f32) -> Block {
+    let p = profile(body, unit_dir);
+    sample_with_profile(&p, altitude_m)
+}
+
+/* ----------------------------------------------------------------------- */
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::goldberg;
+    use crate::math::{dvec3_make, dvec3_normalize};
+    use crate::planet::{self, BodyId};
+
+    /* Pinned values generated from the C source of truth (planet_gen.c
+     * + rng.c + goldberg.c compiled with gcc -O2 -fwrapv, x86-64/SSE2)
+     * and dumped as f32 bit patterns / block-id bytes. Comparisons are
+     * bit-exact. */
+
+    /// Bodies for the surface / profile pins, in pin-row order.
+    const SURF_BODIES: [BodyId; 6] = [
+        BodyId::Tenebris,
+        BodyId::Sequoia,
+        BodyId::Luna,
+        BodyId::Crag,
+        BodyId::Frostbite,
+        BodyId::Asteroid2,
+    ];
+
+    /// Raw (pre-normalize) directions for the surface / profile pins.
+    const SURF_DIRS: [(f64, f64, f64); 6] = [
+        (1.0, 2.0, 3.0),
+        (-0.5, 0.8, 0.1),
+        (0.1, 5.0, 0.1),
+        (0.3, -0.95, 0.2),
+        (-1.0, -1.0, -1.0),
+        (0.9, 0.05, -0.4),
+    ];
+
+    // surface_altitude bits, [body][dir]
+    const SURFACE_PINS: [[u32; 6]; 6] = [
+        [0xbfb9bf39, 0x419e24af, 0x4193fcb2, 0x415b9536, 0x41872749, 0xbf9b90aa],
+        [0x412d6de5, 0x4187ce13, 0x4161c3fe, 0x40f6fb7f, 0x414cf0fa, 0x41b982bd],
+        [0x40468054, 0x412ebc62, 0x41450809, 0x41a98596, 0x4199ba41, 0x4160f086],
+        [0x41e269ce, 0x3fc899d4, 0x414864cc, 0x4192077e, 0x40f1269d, 0x41b05bdf],
+        [0x41a325de, 0x41efd5fc, 0x40a4153b, 0x419604f0, 0x40c4e7f9, 0xc08ce82e],
+        [0x416241f5, 0x419492a9, 0x413dd78c, 0xbf0c05e8, 0x41972876, 0x41ddcaa7],
+    ];
+
+    #[test]
+    fn surface_altitude_matches_c() {
+        for (bi, body_id) in SURF_BODIES.iter().enumerate() {
+            let body = planet::get(*body_id);
+            for (di, (x, y, z)) in SURF_DIRS.iter().enumerate() {
+                let dir = dvec3_normalize(dvec3_make(*x, *y, *z));
+                let got = surface_altitude(&body, dir);
+                assert_eq!(
+                    got.to_bits(),
+                    SURFACE_PINS[bi][di],
+                    "body {:?} dir {} - got {:?} (0x{:08x})",
+                    body_id,
+                    di,
+                    got,
+                    got.to_bits()
+                );
+            }
+        }
+    }
+
+    // (surface_bits, latitude_bits, snow_line_bits, bool_flags) for
+    // body i paired with dir i. flags = polar | barren<<1 | icy<<2 |
+    // sequoia<<3 | crag<<4 | frost<<5 | asteroid<<6.
+    const PROFILE_PINS: [(u32, u32, u32, u32); 6] = [
+        (0xbfb9bf39, 0x3f08d677, 0x41b00000, 0),
+        (0x4187ce13, 0x3f57e0cf, 0x41300000, 8),
+        (0x406c700b, 0x3f7fe5cd, 0x41300000, 3),
+        (0x40af3c31, 0x3f6f5780, 0x41300000, 18),
+        (0x40c4e7f9, 0x3f13cd3a, 0x41b00000, 36),
+        (0x41051331, 0x3d4facea, 0x41b00000, 66),
+    ];
+
+    #[test]
+    fn profile_matches_c() {
+        for (i, body_id) in SURF_BODIES.iter().enumerate() {
+            let body = planet::get(*body_id);
+            let (x, y, z) = SURF_DIRS[i];
+            let dir = dvec3_normalize(dvec3_make(x, y, z));
+            let p = profile(&body, dir);
+            let (surface, latitude, snow_line, flags) = PROFILE_PINS[i];
+            assert_eq!(p.surface_m.to_bits(), surface, "surface_m, body {:?}", body_id);
+            assert_eq!(p.latitude.to_bits(), latitude, "latitude, body {:?}", body_id);
+            assert_eq!(p.snow_line.to_bits(), snow_line, "snow_line, body {:?}", body_id);
+            let got_flags = (p.polar as u32)
+                | ((p.barren as u32) << 1)
+                | ((p.icy as u32) << 2)
+                | ((p.sequoia as u32) << 3)
+                | ((p.crag as u32) << 4)
+                | ((p.frost as u32) << 5)
+                | ((p.asteroid as u32) << 6);
+            assert_eq!(got_flags, flags, "flags, body {:?}", body_id);
+        }
+    }
+
+    /// (body, goldberg subdivisions, tile index) for COLUMN_PINS.
+    const COLUMNS: [(BodyId, i32, i32); 7] = [
+        (BodyId::Tenebris, 5, 0),
+        (BodyId::Tenebris, 5, 4321),
+        (BodyId::Tenebris, 5, 9000),
+        (BodyId::Sequoia, 5, 777),
+        (BodyId::Frostbite, 4, 100),
+        (BodyId::Luna, 4, 2000),
+        (BodyId::Asteroid3, 3, 50),
+    ];
+    const COL_LO: i32 = -32;
+    const COL_HI: i32 = 47;
+
+    // block ids for altitude_m = -32..=47 at the given tile center
+    const COLUMN_PINS: [[u8; 80]; 7] = [
+        [5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 3, 3, 3, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 3, 3, 3, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 3, 3, 3, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 13, 13, 13, 12, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    ];
+
+    #[test]
+    fn terrain_columns_match_c() {
+        for (ci, (body_id, subdiv, tile_idx)) in COLUMNS.iter().enumerate() {
+            let body = planet::get(*body_id);
+            let g = goldberg::create(*subdiv);
+            let tile = g.tile(*tile_idx).expect("pin tile index in range");
+            let p = profile(&body, tile.center);
+            for (li, lvl) in (COL_LO..=COL_HI).enumerate() {
+                let got = sample_with_profile(&p, lvl as f32);
+                assert_eq!(
+                    got.raw(),
+                    COLUMN_PINS[ci][li],
+                    "column {} ({:?} tile {}), level {}",
+                    ci,
+                    body_id,
+                    tile_idx,
+                    lvl
+                );
+                /* The convenience wrapper must agree with the profile
+                 * fast path (cross-checked in the C pin run too). */
+                assert_eq!(got, sample(&body, tile.center, lvl as f32));
+            }
+        }
+    }
+}

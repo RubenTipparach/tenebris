@@ -1,0 +1,14 @@
+# Per-Dockerfile ignore for tenebris-rs/Dockerfile (BuildKit prefers
+# <Dockerfile>.dockerignore over <context>/.dockerignore). The build
+# context is the repo root; whitelist only what the build copies so
+# the JS tree, the C build dirs, third_party vendors, and the local
+# cargo target/ never get shipped to the builder.
+*
+!tenebris-rs/Cargo.toml
+!tenebris-rs/Cargo.lock
+!tenebris-rs/crates
+!tenebris-c/assets/config
+
+# Belt and braces: never let local build output inside crates/ ride
+# along even if one appears there.
+tenebris-rs/crates/**/target

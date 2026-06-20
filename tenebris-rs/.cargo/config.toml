@@ -1,0 +1,16 @@
+# Workspace build configuration.
+#
+# SOKOL_BACKEND drives the sokol crate's build.rs backend selection.
+# The client's shaders are sokol-shdc outputs for glsl410 (native
+# desktop GL - the same SOKOL_GLCORE the C native build uses on every
+# platform, including Windows) and glsl300es (WebGL2). The crate's
+# Windows default is D3D11, which has no HLSL in the generated shader
+# modules - so pin GL here.
+#
+# Cargo's [env] does NOT override an already-set environment variable,
+# so build-web.bat / build-web.sh remain free to export
+# SOKOL_BACKEND=GLES3 for the wasm32-unknown-emscripten build (and
+# the sokol build.rs picks GLES3 for emscripten automatically when
+# the var is AUTO/unset anyway).
+[env]
+SOKOL_BACKEND = "GL"
