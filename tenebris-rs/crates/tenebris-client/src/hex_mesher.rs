@@ -117,6 +117,18 @@ impl HexMesh {
         self.indices.clear();
     }
 
+    /// Append another mesh's geometry, rebasing its indices onto this
+    /// mesh's current vertex count. Used to stitch the partial meshes
+    /// produced when a chunk's tiles are meshed in parallel back into a
+    /// single chunk mesh: each partial builds with self-relative indices,
+    /// so concatenating partials in tile order with this offset yields the
+    /// exact buffer a single sequential build would have produced.
+    pub fn append(&mut self, other: &HexMesh) {
+        let base = self.vertices.len() as u32;
+        self.vertices.extend_from_slice(&other.vertices);
+        self.indices.extend(other.indices.iter().map(|i| i + base));
+    }
+
     /* hex_mesh_free(): Drop handles the frees. */
 }
 
@@ -1589,6 +1601,55 @@ mod tests {
     fn assert_vertex(tag: &str, v: &HexVertex, want: [u32; 11]) {
         let got = vbits(v);
         assert_eq!(got, want, "{tag}: vertex bits {got:08x?} vs {want:08x?}");
+    }
+
+    #[test]
+    fn append_merge_matches_sequential_build() {
+        /* The renderer's parallel chunk mesher splits a chunk's tiles
+         * into contiguous ranges, builds a partial mesh per range, then
+         * stitches them with HexMesh::append. This pins the invariant
+         * that makes that safe: partials built independently and appended
+         * in tile order reproduce the exact buffer a single sequential
+         * build emits (same vertices, same rebased indices). */
+        /* Serialize with the other lighting-config-sensitive tests: the
+         * engine setting is global, so a concurrent test flipping it
+         * between the sequential and parallel builds would skew the
+         * baked per-vertex light and produce a false divergence. */
+        let _g = test_support::begin("append_merge");
+        config::parse_lighting("engine: column\n", "append-merge");
+        let body = planet::get(BodyId::Tenebris);
+        let mut w = World::create(&body, 3);
+        while !w.gen_complete() {
+            w.stream_gen(4096);
+        }
+
+        let tiles: Vec<i32> = (0..200).collect();
+
+        let mut seq = HexMesh::new();
+        let mut seq_w = HexMesh::new();
+        for &i in &tiles {
+            build_tile(&mut seq, &w, i);
+            build_water(&mut seq_w, &w, i);
+        }
+
+        /* Split into 3 uneven contiguous ranges and merge in order. */
+        let mut par = HexMesh::new();
+        let mut par_w = HexMesh::new();
+        for range in tiles.chunks(67) {
+            let mut m = HexMesh::new();
+            let mut mw = HexMesh::new();
+            for &i in range {
+                build_tile(&mut m, &w, i);
+                build_water(&mut mw, &w, i);
+            }
+            par.append(&m);
+            par_w.append(&mw);
+        }
+
+        assert_eq!(seq.vertices, par.vertices, "terrain vertices diverge");
+        assert_eq!(seq.indices, par.indices, "terrain indices diverge");
+        assert_eq!(seq_w.vertices, par_w.vertices, "water vertices diverge");
+        assert_eq!(seq_w.indices, par_w.indices, "water indices diverge");
     }
 
     #[test]

@@ -2452,6 +2452,60 @@ fn chunk_upload(c: &mut MeshChunk) {
     c.last_uploaded_water_idx_count = c.water_mesh.indices.len() as i32;
 }
 
+/// Build one chunk's terrain + water meshes from its ordered tile list.
+///
+/// A chunk holds ~`tile_count / CHUNK_COUNT` tiles (≈5k on a subs=6 body),
+/// so a single edit-triggered chunk rebuild meshes thousands of tiles on
+/// the main thread. Each tile's geometry is independent (reads `&World`,
+/// emits self-relative indices), so for a large chunk we split the tile
+/// list into contiguous ascending ranges, build a partial mesh per range
+/// across the rayon pool, then stitch the partials back in range order
+/// with `HexMesh::append`. Contiguous ranges + ordered append make the
+/// result byte-identical to the sequential build (pinned mesh hashes
+/// hold). Small chunks build inline to dodge the fan-out overhead.
+fn build_chunk_mesh(c: &mut MeshChunk, w: &World, tiles: &[i32], has_water: bool) {
+    use rayon::prelude::*;
+
+    c.mesh.reset();
+    c.water_mesh.reset();
+
+    /* Below this, the rayon split + merge costs more than it saves. */
+    const PARALLEL_MIN_TILES: usize = 512;
+    let nthreads = rayon::current_num_threads();
+    if tiles.len() < PARALLEL_MIN_TILES || nthreads < 2 {
+        for &i in tiles {
+            hex_mesher::build_tile(&mut c.mesh, w, i);
+            hex_mesher::build_water(&mut c.water_mesh, w, i);
+            if has_water {
+                hex_mesher::build_water_voxels(&mut c.water_mesh, w, i);
+            }
+        }
+        return;
+    }
+
+    let range_len = tiles.len().div_ceil(nthreads);
+    let partials: Vec<(HexMesh, HexMesh)> = tiles
+        .par_chunks(range_len)
+        .map(|range| {
+            let mut mesh = HexMesh::new();
+            let mut water = HexMesh::new();
+            for &i in range {
+                hex_mesher::build_tile(&mut mesh, w, i);
+                hex_mesher::build_water(&mut water, w, i);
+                if has_water {
+                    hex_mesher::build_water_voxels(&mut water, w, i);
+                }
+            }
+            (mesh, water)
+        })
+        .collect();
+
+    for (mesh, water) in &partials {
+        c.mesh.append(mesh);
+        c.water_mesh.append(water);
+    }
+}
+
 /// Port of `body_chunk_rebuild_full()`. Drives the lighting BFS to
 /// completion BEFORE meshing this chunk so the per-vertex sky/torch
 /// values reflect a fully converged grid, then rebuilds the chunk's
@@ -2498,30 +2552,18 @@ fn body_chunk_rebuild_full(r: &mut Renderer, bi: usize, chunk_idx: usize) {
 
     let t_mesh_start = now_ticks();
     profiler::begin("chunk-remesh");
-    let mut tiles_remeshed = 0usize;
+    let tiles_remeshed;
     {
         let body = &mut r.bodies[bi];
         let has_water = body.has_water;
-        let t2c = &body.tile_to_chunk;
+        /* This chunk's generated tiles, ascending - the order a
+         * sequential build would visit them. */
+        let tiles: Vec<i32> = (0..w.tile_count.min(w.gen_cursor))
+            .filter(|&i| body.tile_to_chunk[i as usize] == chunk_idx as i32)
+            .collect();
+        tiles_remeshed = tiles.len();
         let c = &mut body.chunks[chunk_idx];
-        c.mesh.reset();
-        c.water_mesh.reset();
-        for i in 0..w.tile_count {
-            if t2c[i as usize] != chunk_idx as i32 {
-                continue;
-            }
-            if i >= w.gen_cursor {
-                continue; /* not yet generated */
-            }
-            hex_mesher::build_tile(&mut c.mesh, &w, i);
-            hex_mesher::build_water(&mut c.water_mesh, &w, i);
-            /* Per-voxel water cells outside the sea-level ocean cap;
-             * skipped on bodies with no water configured. */
-            if has_water {
-                hex_mesher::build_water_voxels(&mut c.water_mesh, &w, i);
-            }
-            tiles_remeshed += 1;
-        }
+        build_chunk_mesh(c, &w, &tiles, has_water);
     }
     profiler::end("chunk-remesh");
     r.tiles_remeshed += tiles_remeshed;
