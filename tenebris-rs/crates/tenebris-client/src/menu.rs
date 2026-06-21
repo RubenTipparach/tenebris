@@ -3954,8 +3954,13 @@ mod tests {
         let _g = setup("menu_pause_resume");
         force_state(GameState::InGameSp);
         pause_toggle();
-        /* Escape inside pause is swallowed WITHOUT closing. */
+        assert!(pause_active());
+        /* Escape inside pause now resumes (closes) it - symmetric with the
+         * Escape that opened it. */
         assert!(pause_event(&key(Keycode::Escape)));
+        assert!(!pause_active());
+        /* Re-open to exercise the click-resume button + cursor show. */
+        pause_toggle();
         assert!(pause_active());
         /* SP resume button center: (640, 319). */
         assert!(pause_event(&click(640.0, 319.0)));
