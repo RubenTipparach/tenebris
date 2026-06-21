@@ -343,6 +343,50 @@ in: stick 2
     }
 
     #[test]
+    fn smelting_consumes_ore_plus_coal_fuel() {
+        use crate::items::{COAL, COPPER, COPPER_INGOT};
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/config/recipes.yaml");
+        let rs = load_recipes(path);
+        let smelt = rs.iter().find(|r| r.name == "copper-ingot").cloned().unwrap();
+        // 1 raw copper + 1 coal -> 1 copper ingot.
+        assert_eq!(smelt.output, ItemStack { item: COPPER_INGOT, count: 1 });
+
+        let mut bag = vec![ItemStack::default(); 9];
+        bag[0] = ItemStack { item: COPPER, count: 3 };
+        bag[1] = ItemStack { item: COAL, count: 1 };
+        assert!(craft(&mut bag, &smelt));
+        // One copper + the coal fuel consumed, one ingot produced.
+        assert_eq!(have(&bag, COPPER), 2, "one raw copper smelted");
+        assert_eq!(have(&bag, COAL), 0, "coal burned as fuel");
+        assert_eq!(have(&bag, COPPER_INGOT), 1, "ingot produced");
+
+        // No fuel left -> a second smelt fails atomically.
+        let before = bag.clone();
+        assert!(!craft(&mut bag, &smelt), "no coal, no smelt");
+        assert_eq!(bag, before, "failed smelt leaves the bag untouched");
+    }
+
+    #[test]
+    fn bronze_alloys_copper_and_tin_ingots() {
+        use crate::items::{BRONZE_INGOT, COAL, COPPER_INGOT, TIN_INGOT};
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/config/recipes.yaml");
+        let rs = load_recipes(path);
+        let bronze = rs.iter().find(|r| r.name == "bronze-ingot").cloned().unwrap();
+        // Alloy: copper ingot + tin ingot + coal -> 2 bronze.
+        assert_eq!(bronze.output, ItemStack { item: BRONZE_INGOT, count: 2 });
+
+        let mut bag = vec![ItemStack::default(); 9];
+        bag[0] = ItemStack { item: COPPER_INGOT, count: 1 };
+        bag[1] = ItemStack { item: TIN_INGOT, count: 1 };
+        bag[2] = ItemStack { item: COAL, count: 1 };
+        assert!(craft(&mut bag, &bronze));
+        assert_eq!(have(&bag, COPPER_INGOT), 0);
+        assert_eq!(have(&bag, TIN_INGOT), 0);
+        assert_eq!(have(&bag, COAL), 0);
+        assert_eq!(have(&bag, BRONZE_INGOT), 2, "alloy yields 2 bars");
+    }
+
+    #[test]
     fn unknown_item_name_drops_only_that_recipe() {
         let src = "[bad]\nout: plank 4\nin: unobtanium 1\n[good]\nout: stick 4\nin: plank 2\n";
         let rs = parse_recipes(src, "t");

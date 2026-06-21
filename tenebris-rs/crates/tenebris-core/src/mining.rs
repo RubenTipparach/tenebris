@@ -47,8 +47,9 @@ pub fn can_harvest(b: Block, tier: u8) -> bool {
 }
 
 /// Items dropped by breaking `b` with `tier`. Empty when the tool tier is
-/// too low. Ore blocks drop their raw resource (smelted to ingots later);
-/// everything else drops itself as a placeable.
+/// too low. Ore blocks drop their raw resource (smelted to ingots via the
+/// coal-fuelled recipes in recipes.yaml); everything else drops itself as
+/// a placeable.
 pub fn drops(b: Block, tier: u8) -> Vec<ItemStack> {
     if !can_harvest(b, tier) {
         return Vec::new();

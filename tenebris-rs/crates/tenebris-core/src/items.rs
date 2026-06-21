@@ -27,10 +27,16 @@ pub const STICK: ItemId = ITEM_BASE + 1; // 101
 pub const COAL: ItemId = ITEM_BASE + 2; // 102
 pub const WOOD_PICKAXE: ItemId = ITEM_BASE + 3; // 103
 pub const WOOD_AXE: ItemId = ITEM_BASE + 4; // 104
-/* Raw ore chunks dropped by the ore blocks; smelted into ingots later. */
+/* Raw ore chunks dropped by the ore blocks; smelted into ingots. */
 pub const COPPER: ItemId = ITEM_BASE + 5; // 105
 pub const TIN: ItemId = ITEM_BASE + 6; // 106
 pub const IRON: ItemId = ITEM_BASE + 7; // 107
+/* Refined metal bars, the output of coal-fuelled smelting. Bronze is the
+ * copper + tin alloy - the reason tin isn't a dead-end resource. */
+pub const COPPER_INGOT: ItemId = ITEM_BASE + 8; // 108
+pub const TIN_INGOT: ItemId = ITEM_BASE + 9; // 109
+pub const IRON_INGOT: ItemId = ITEM_BASE + 10; // 110
+pub const BRONZE_INGOT: ItemId = ITEM_BASE + 11; // 111
 
 /// What an item *is*, for stacking / placement / tool-gating rules. Grows
 /// as the tech tree lands (Component, Ingot, Ammo, ...).
@@ -90,6 +96,10 @@ const ITEMS: &[ItemDef] = &[
     ItemDef { id: COPPER, name: "copper", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: TIN, name: "tin", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: IRON, name: "iron", kind: ItemKind::Resource, stack: 64 },
+    ItemDef { id: COPPER_INGOT, name: "copper-ingot", kind: ItemKind::Resource, stack: 64 },
+    ItemDef { id: TIN_INGOT, name: "tin-ingot", kind: ItemKind::Resource, stack: 64 },
+    ItemDef { id: IRON_INGOT, name: "iron-ingot", kind: ItemKind::Resource, stack: 64 },
+    ItemDef { id: BRONZE_INGOT, name: "bronze-ingot", kind: ItemKind::Resource, stack: 64 },
 ];
 
 /// Names accepted in recipes.yaml for the blocks the recipes reference.
@@ -173,6 +183,22 @@ mod tests {
         assert_eq!(id_by_name("stick"), Some(STICK));
         assert_eq!(id_by_name("wood-pickaxe"), Some(WOOD_PICKAXE));
         assert_eq!(id_by_name("nonsense"), None);
+    }
+
+    #[test]
+    fn smelted_ingots_round_trip_names_and_kinds() {
+        for (name, id) in [
+            ("copper-ingot", COPPER_INGOT),
+            ("tin-ingot", TIN_INGOT),
+            ("iron-ingot", IRON_INGOT),
+            ("bronze-ingot", BRONZE_INGOT),
+        ] {
+            assert_eq!(id_by_name(name), Some(id), "name {name} resolves");
+            assert_eq!(kind(id), ItemKind::Resource, "{name} is a Resource");
+            assert_eq!(stack_size(id), 64, "{name} stacks to 64");
+            // Ingots live past the block palette and never collide with one.
+            assert!(!is_block(id));
+        }
     }
 
     #[test]
