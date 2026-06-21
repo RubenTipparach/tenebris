@@ -1547,6 +1547,10 @@ fn block_name(b: Block) -> &'static str {
         Block::Leaves => "LEAVES",
         Block::Bedrock => "BEDROCK",
         Block::SeqLeaves => "SEQ_LEAVES",
+        Block::CoalOre => "COAL_ORE",
+        Block::CopperOre => "COPPER_ORE",
+        Block::TinOre => "TIN_ORE",
+        Block::IronOre => "IRON_ORE",
     }
 }
 
@@ -1568,6 +1572,10 @@ fn block_glyph(b: Block) -> char {
         Block::Wood => 'W',
         Block::Leaves | Block::SeqLeaves => 'L',
         Block::Bedrock => 'b',
+        Block::CoalOre => 'c',
+        Block::CopperOre => 'o',
+        Block::TinOre => 't',
+        Block::IronOre => 'r',
     }
 }
 

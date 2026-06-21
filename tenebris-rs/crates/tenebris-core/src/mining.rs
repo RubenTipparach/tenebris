@@ -24,7 +24,11 @@ pub fn required_tier(b: Block) -> u8 {
         | Block::FrostIce
         | Block::AsteroidRock
         | Block::Moon
-        | Block::Bedrock => 1,
+        | Block::Bedrock
+        | Block::CoalOre
+        | Block::CopperOre
+        | Block::TinOre
+        | Block::IronOre => 1,
         _ => 0,
     }
 }
@@ -53,7 +57,19 @@ pub fn drops(b: Block, tier: u8, roll: f32) -> Vec<ItemStack> {
     if !can_harvest(b, tier) {
         return Vec::new();
     }
-    let mut out = vec![ItemStack { item: items::from_block(b), count: 1 }];
+    /* Ore blocks drop their raw resource (smelted to ingots later), not
+     * the ore block itself. Everything else drops itself as a placeable. */
+    let item = match b {
+        Block::CoalOre => items::COAL,
+        Block::CopperOre => items::COPPER,
+        Block::TinOre => items::TIN,
+        Block::IronOre => items::IRON,
+        _ => items::from_block(b),
+    };
+    let mut out = vec![ItemStack { item, count: 1 }];
+    /* Transitional: plain stone still has a coal_chance of a coal lump
+     * until ore-vein worldgen lands, so torches stay craftable. Removed
+     * once veins place CoalOre in the world. */
     if b == Block::Stone && roll < config().coal_chance {
         out.push(ItemStack { item: items::COAL, count: 1 });
     }
@@ -155,6 +171,17 @@ mod tests {
         assert_eq!(lucky[1].item, COAL);
         let plain = drops(Block::Stone, 1, 0.9);
         assert_eq!(plain, vec![ItemStack { item: items::from_block(Block::Stone), count: 1 }]);
+    }
+
+    #[test]
+    fn ore_blocks_drop_their_raw_resource() {
+        use crate::items::{COPPER, IRON, TIN};
+        // ores need tier 1 and drop the resource item, not the ore block
+        assert!(drops(Block::CoalOre, 0, 0.0).is_empty());
+        assert_eq!(drops(Block::CoalOre, 1, 0.9), vec![ItemStack { item: COAL, count: 1 }]);
+        assert_eq!(drops(Block::CopperOre, 1, 0.9), vec![ItemStack { item: COPPER, count: 1 }]);
+        assert_eq!(drops(Block::TinOre, 1, 0.9), vec![ItemStack { item: TIN, count: 1 }]);
+        assert_eq!(drops(Block::IronOre, 1, 0.9), vec![ItemStack { item: IRON, count: 1 }]);
     }
 
     #[test]

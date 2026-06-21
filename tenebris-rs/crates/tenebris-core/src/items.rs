@@ -27,6 +27,10 @@ pub const STICK: ItemId = ITEM_BASE + 1; // 101
 pub const COAL: ItemId = ITEM_BASE + 2; // 102
 pub const WOOD_PICKAXE: ItemId = ITEM_BASE + 3; // 103
 pub const WOOD_AXE: ItemId = ITEM_BASE + 4; // 104
+/* Raw ore chunks dropped by the ore blocks; smelted into ingots later. */
+pub const COPPER: ItemId = ITEM_BASE + 5; // 105
+pub const TIN: ItemId = ITEM_BASE + 6; // 106
+pub const IRON: ItemId = ITEM_BASE + 7; // 107
 
 /// What an item *is*, for stacking / placement / tool-gating rules. Grows
 /// as the tech tree lands (Component, Ingot, Ammo, ...).
@@ -83,6 +87,9 @@ const ITEMS: &[ItemDef] = &[
     ItemDef { id: COAL, name: "coal", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: WOOD_PICKAXE, name: "wood-pickaxe", kind: ItemKind::Tool, stack: 1 },
     ItemDef { id: WOOD_AXE, name: "wood-axe", kind: ItemKind::Tool, stack: 1 },
+    ItemDef { id: COPPER, name: "copper", kind: ItemKind::Resource, stack: 64 },
+    ItemDef { id: TIN, name: "tin", kind: ItemKind::Resource, stack: 64 },
+    ItemDef { id: IRON, name: "iron", kind: ItemKind::Resource, stack: 64 },
 ];
 
 /// Names accepted in recipes.yaml for the blocks the recipes reference.

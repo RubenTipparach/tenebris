@@ -243,6 +243,10 @@ const ATLAS_PATHS: [Option<&str>; ATLAS_TILES] = [
     Some("assets/textures/grass.png"),                       /* 22 LEAVES */
     Some("assets/textures/rocks.png"),                       /* 23 BEDROCK */
     Some("assets/textures/grass.png"),                       /* 24 SEQ_LEAVES */
+    Some("assets/textures/rocks.png"),                       /* 25 COAL_ORE */
+    Some("assets/textures/rocks.png"),                       /* 26 COPPER_ORE */
+    Some("assets/textures/rocks.png"),                       /* 27 TIN_ORE */
+    Some("assets/textures/rocks.png"),                       /* 28 IRON_ORE */
 ];
 
 /// Per-channel multiplier applied to each loaded tile. {1,1,1} =
@@ -273,6 +277,10 @@ const ATLAS_TINTS: [[f32; 3]; ATLAS_TILES] = [
     [0.65, 1.05, 0.50], /* LEAVES   - saturated green    */
     [0.30, 0.30, 0.32], /* BEDROCK  - near-black slate   */
     [1.45, 0.30, 0.30], /* SEQ_LEAVES - Sequoia red foliage */
+    [0.40, 0.40, 0.45], /* COAL_ORE   - dark blue-gray   */
+    [1.35, 0.75, 0.40], /* COPPER_ORE - orange rust      */
+    [0.90, 0.95, 1.00], /* TIN_ORE    - pale silver      */
+    [1.15, 0.85, 0.55], /* IRON_ORE   - tan / buff       */
 ];
 
 struct AtlasBake {
