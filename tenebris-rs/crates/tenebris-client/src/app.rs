@@ -429,6 +429,11 @@ extern "C" fn init() {
     ));
     /* Survival mining + ore-drop tuning. */
     tenebris_core::mining::load_config("assets/config/mining.yaml");
+    /* Rocket part stats + flight constants (consumed by the rocket
+     * assembly + flight port). */
+    tenebris_core::rocket::set_config(tenebris_core::rocket::load_rocket_config(
+        "assets/config/rocket.yaml",
+    ));
     config::load_ui("assets/config/ui.yaml");
 
     /* pixel_ui::init reads the atlas path out of config::ui(), so it

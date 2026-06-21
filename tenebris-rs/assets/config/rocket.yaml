@@ -1,0 +1,29 @@
+# rocket.yaml - rocket part stats + flight constants, parsed by
+# core/rocket.rs. Ported from the JS RocketConfig
+# (src/config/RocketConfig.ts), MEDIUM_* parts.
+#
+# Format (tiny subset): [section] headers + `key: value` floats, with
+# `#` comments. Any omitted field keeps the compiled-in default in
+# core/rocket.rs (DEFAULT_ROCKET_CONFIG), so partial overrides are fine.
+
+[engine]
+thrust_n: 39000        # newtons at full throttle
+fuel_per_sec: 10       # fuel units burned per second at full throttle
+mass_kg: 100
+
+[fuel_tank]
+capacity: 100          # fuel units when full
+wet_mass_kg: 500       # mass when full
+dry_mass_kg: 50        # mass when empty
+
+[command_module]
+mass_kg: 200
+parachute_alt_m: 50    # parachute deploys below this altitude
+max_impact_mps: 10     # survivable landing speed
+
+[flight]
+gravity_mps2: 9.81
+launch_alt_m: 5         # LAUNCHING -> IN_FLIGHT threshold altitude
+safe_landing_mps: 2
+drag_coef: 0.5
+parachute_drag: 0.95

@@ -11,6 +11,7 @@
 //! `rocket.yaml`; those are tunables, not hard-coded here.
 
 use crate::items::{ItemId, COMMAND_MODULE, FUEL_TANK, ROCKET_ENGINE};
+use std::sync::Mutex;
 
 /// What a part does in an assembly. Mirrors the JS `RocketPartType`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -106,6 +107,197 @@ pub fn is_flyable(stack: &[ItemId]) -> bool {
     validate(stack).is_empty()
 }
 
+/* ------------------------------------------------------------------ */
+/* Flight spec: per-part stats + the totals an assembled stack yields. */
+/* Ported from the JS RocketConfig (src/config/RocketConfig.ts). The   */
+/* numbers are tunables, so they live in assets/config/rocket.yaml,    */
+/* parsed below; the compiled-in defaults mirror the JS so a missing   */
+/* or partial yaml still flies (the config-merge convention).          */
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EngineStats {
+    pub thrust_n: f32,
+    pub fuel_per_sec: f32,
+    pub mass_kg: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FuelTankStats {
+    pub capacity: f32,
+    pub wet_mass_kg: f32,
+    pub dry_mass_kg: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CommandModuleStats {
+    pub mass_kg: f32,
+    pub parachute_alt_m: f32,
+    pub max_impact_mps: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FlightConstants {
+    pub gravity_mps2: f32,
+    pub launch_alt_m: f32,
+    pub safe_landing_mps: f32,
+    pub drag_coef: f32,
+    pub parachute_drag: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RocketConfig {
+    pub engine: EngineStats,
+    pub fuel_tank: FuelTankStats,
+    pub command_module: CommandModuleStats,
+    pub flight: FlightConstants,
+}
+
+/// Compiled-in defaults = the JS RocketConfig (MEDIUM_* parts).
+pub const DEFAULT_ROCKET_CONFIG: RocketConfig = RocketConfig {
+    engine: EngineStats { thrust_n: 39000.0, fuel_per_sec: 10.0, mass_kg: 100.0 },
+    fuel_tank: FuelTankStats { capacity: 100.0, wet_mass_kg: 500.0, dry_mass_kg: 50.0 },
+    command_module: CommandModuleStats { mass_kg: 200.0, parachute_alt_m: 50.0, max_impact_mps: 10.0 },
+    flight: FlightConstants {
+        gravity_mps2: 9.81,
+        launch_alt_m: 5.0,
+        safe_landing_mps: 2.0,
+        drag_coef: 0.5,
+        parachute_drag: 0.95,
+    },
+};
+
+impl Default for RocketConfig {
+    fn default() -> Self {
+        DEFAULT_ROCKET_CONFIG
+    }
+}
+
+static S_ROCKET_CONFIG: Mutex<RocketConfig> = Mutex::new(DEFAULT_ROCKET_CONFIG);
+
+/// The installed rocket config (a cheap Copy).
+pub fn config() -> RocketConfig {
+    *S_ROCKET_CONFIG.lock().unwrap()
+}
+
+/// Install the global rocket config (call once after `load_rocket_config`).
+pub fn set_config(c: RocketConfig) {
+    *S_ROCKET_CONFIG.lock().unwrap() = c;
+}
+
+/// Parse rocket.yaml: `[section]` headers + `key: value` floats, `#`
+/// comments. Unknown sections/keys are ignored; a field that doesn't
+/// parse keeps its compiled-in default (overwrite only on a clean parse).
+pub fn parse_rocket_config(src: &str) -> RocketConfig {
+    let mut c = RocketConfig::default();
+    let mut section = String::new();
+    for raw in src.split('\n') {
+        let line = match raw.find('#') {
+            Some(h) => &raw[..h],
+            None => raw,
+        }
+        .trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(name) = line.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+            section = name.trim().to_string();
+            continue;
+        }
+        let Some(colon) = line.find(':') else { continue };
+        let key = line[..colon].trim();
+        let Ok(val) = line[colon + 1..].trim().parse::<f32>() else { continue };
+        match (section.as_str(), key) {
+            ("engine", "thrust_n") => c.engine.thrust_n = val,
+            ("engine", "fuel_per_sec") => c.engine.fuel_per_sec = val,
+            ("engine", "mass_kg") => c.engine.mass_kg = val,
+            ("fuel_tank", "capacity") => c.fuel_tank.capacity = val,
+            ("fuel_tank", "wet_mass_kg") => c.fuel_tank.wet_mass_kg = val,
+            ("fuel_tank", "dry_mass_kg") => c.fuel_tank.dry_mass_kg = val,
+            ("command_module", "mass_kg") => c.command_module.mass_kg = val,
+            ("command_module", "parachute_alt_m") => c.command_module.parachute_alt_m = val,
+            ("command_module", "max_impact_mps") => c.command_module.max_impact_mps = val,
+            ("flight", "gravity_mps2") => c.flight.gravity_mps2 = val,
+            ("flight", "launch_alt_m") => c.flight.launch_alt_m = val,
+            ("flight", "safe_landing_mps") => c.flight.safe_landing_mps = val,
+            ("flight", "drag_coef") => c.flight.drag_coef = val,
+            ("flight", "parachute_drag") => c.flight.parachute_drag = val,
+            _ => {}
+        }
+    }
+    c
+}
+
+/// Load + parse rocket.yaml from disk (native), defaults if missing.
+pub fn load_rocket_config(path: &str) -> RocketConfig {
+    match std::fs::read_to_string(path) {
+        Ok(src) => parse_rocket_config(&src),
+        Err(_) => {
+            println!("[rocket] {} not found, using compiled defaults", path);
+            RocketConfig::default()
+        }
+    }
+}
+
+/// The aggregate flight characteristics of an assembled part stack -
+/// what the flight controller integrates over. Summed from the per-part
+/// stats in [`RocketConfig`].
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RocketSpec {
+    pub engines: u32,
+    pub tanks: u32,
+    pub capsules: u32,
+    pub total_thrust_n: f32,
+    pub fuel_per_sec: f32,
+    pub fuel_capacity: f32,
+    /// Mass with empty tanks.
+    pub dry_mass_kg: f32,
+    /// Mass with full tanks (dry + fuel).
+    pub wet_mass_kg: f32,
+}
+
+impl RocketSpec {
+    /// Sum a bottom -> top part stack into its flight spec. Non-part
+    /// entries are ignored (validation rejects them separately).
+    pub fn from_parts(stack: &[ItemId], cfg: &RocketConfig) -> RocketSpec {
+        let mut s = RocketSpec::default();
+        for &id in stack {
+            match part_role(id) {
+                Some(PartRole::Engine) => {
+                    s.engines += 1;
+                    s.total_thrust_n += cfg.engine.thrust_n;
+                    s.fuel_per_sec += cfg.engine.fuel_per_sec;
+                    s.dry_mass_kg += cfg.engine.mass_kg;
+                    s.wet_mass_kg += cfg.engine.mass_kg;
+                }
+                Some(PartRole::FuelTank) => {
+                    s.tanks += 1;
+                    s.fuel_capacity += cfg.fuel_tank.capacity;
+                    s.dry_mass_kg += cfg.fuel_tank.dry_mass_kg;
+                    s.wet_mass_kg += cfg.fuel_tank.wet_mass_kg;
+                }
+                Some(PartRole::Capsule) => {
+                    s.capsules += 1;
+                    s.dry_mass_kg += cfg.command_module.mass_kg;
+                    s.wet_mass_kg += cfg.command_module.mass_kg;
+                }
+                None => {}
+            }
+        }
+        s
+    }
+
+    /// Thrust-to-weight ratio at full fuel (wet mass). > 1 can lift off
+    /// against `gravity_mps2`. 0 when the rocket has no mass.
+    pub fn twr(&self, gravity_mps2: f32) -> f32 {
+        let weight = self.wet_mass_kg * gravity_mps2;
+        if weight > 0.0 {
+            self.total_thrust_n / weight
+        } else {
+            0.0
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,5 +375,59 @@ mod tests {
             assert!(f.message().is_ascii(), "{:?} message must be 7-bit ASCII", f);
             assert!(!f.message().contains('_'), "{:?} message must not use underscores", f);
         }
+    }
+
+    #[test]
+    fn config_parses_sections_and_keeps_defaults() {
+        let src = "\
+# tweak two values, leave the rest default
+[engine]
+thrust_n: 50000
+[flight]
+gravity_mps2: 3.7
+";
+        let c = parse_rocket_config(src);
+        assert_eq!(c.engine.thrust_n, 50000.0); // overridden
+        assert_eq!(c.engine.fuel_per_sec, 10.0); // default kept
+        assert_eq!(c.flight.gravity_mps2, 3.7); // overridden
+        assert_eq!(c.fuel_tank.capacity, 100.0); // default kept
+    }
+
+    #[test]
+    fn spec_sums_an_assembled_stack() {
+        let cfg = RocketConfig::default();
+        let spec = RocketSpec::from_parts(&MIN_ROCKET, &cfg);
+        assert_eq!(spec.engines, 1);
+        assert_eq!(spec.tanks, 1);
+        assert_eq!(spec.capsules, 1);
+        assert_eq!(spec.total_thrust_n, 39000.0);
+        assert_eq!(spec.fuel_capacity, 100.0);
+        assert_eq!(spec.fuel_per_sec, 10.0);
+        // dry = engine 100 + tank 50 + capsule 200
+        assert_eq!(spec.dry_mass_kg, 350.0);
+        // wet = engine 100 + tank 500 + capsule 200
+        assert_eq!(spec.wet_mass_kg, 800.0);
+    }
+
+    #[test]
+    fn twr_is_above_one_for_the_minimal_rocket() {
+        let cfg = RocketConfig::default();
+        let spec = RocketSpec::from_parts(&MIN_ROCKET, &cfg);
+        // 39000 N vs 800 kg * 9.81 ~= 7848 N -> TWR ~5.
+        assert!(spec.twr(cfg.flight.gravity_mps2) > 1.0);
+        // An empty spec has no weight and a 0 TWR (no divide-by-zero).
+        assert_eq!(RocketSpec::default().twr(9.81), 0.0);
+    }
+
+    #[test]
+    fn shipped_rocket_yaml_parses_when_present() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/config/rocket.yaml");
+        if std::fs::read_to_string(path).is_err() {
+            return; // asset tree not in this checkout layout
+        }
+        let c = load_rocket_config(path);
+        assert!(c.engine.thrust_n > 0.0);
+        assert!(c.fuel_tank.capacity > 0.0);
+        assert!(c.flight.gravity_mps2 > 0.0);
     }
 }
