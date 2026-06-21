@@ -399,8 +399,8 @@ fn dev_maybe_place(app: &mut App) {
                 Block::CopperOre,
                 Block::TinOre,
                 Block::IronOre,
-                Block::Stone,
-                Block::LaunchPad,
+                Block::CopperOre,
+                Block::IronOre,
             ];
             dev_set_surface(&app.world, center, Block::LaunchPad);
             dev_for_each_neighbor(&app.world, center, |w, i, n| {
