@@ -367,6 +367,30 @@ pub fn draw() {
             draw_text_at(rx + 8.0, ry + 6.0, 1.75, tr, tg, tb, &recipe_label(r));
         }
     });
+
+    /* Footer: what the player currently holds, so it's obvious why a
+     * recipe row is green or grey. Reads the bag (mined drops + crafted
+     * output) via the unified core item table. Capped so a long list
+     * can't overflow the panel. */
+    let summary = S.with(|c| {
+        c.borrow().player.as_ref().map(|p| {
+            let p = p.borrow();
+            let mut parts: Vec<String> = Vec::new();
+            for s in p.bag.slots.iter() {
+                if s.count == 0 || parts.len() >= 8 {
+                    continue;
+                }
+                let name = items::def(s.item).map(|d| d.name).unwrap_or("?");
+                parts.push(format!("{} x{}", name, s.count));
+            }
+            parts
+        })
+    });
+    let line = match summary {
+        Some(parts) if !parts.is_empty() => format!("HAVE: {}", parts.join(", ")),
+        _ => "HAVE: nothing yet - mine wood and ore to gather resources".to_string(),
+    };
+    draw_text_at(panel_x + 16.0, panel_y + panel_h - 18.0, 1.25, 0xb0, 0xc0, 0xe0, &line);
 }
 
 #[cfg(test)]
