@@ -112,3 +112,13 @@ out: command-module 1
 in: copper-ingot 4
 in: iron-ingot 3
 in: circuit-board 1
+
+# Tier 2 - launch pad. A placeable structure block: stand it on the
+# ground, interact (E) on it, and the rocket-assembly screen opens so you
+# can stack the crafted parts and fly. The metal frame is the gate.
+
+[launch-pad]
+tier: 2
+out: launch-pad 1
+in: iron-ingot 4
+in: bronze-ingot 2

@@ -349,6 +349,40 @@ fn player_lat_lon_deg(world_pos: DVec3, body: &BodyConfig) -> (f64, f64, f64) {
 /* init                                                                    */
 /* --------------------------------------------------------------------- */
 
+/// Dev-only: drop a hex launch-pad patch on the surface under `dir` so a
+/// fresh headless boot has the new block to look at / screenshot.
+/// Replaces the topmost solid voxel of the centre tile and its neighbours
+/// with `Block::LaunchPad`. Not a gameplay path - no persistence, no tool
+/// gating; reached only via the `TENEBRIS_DEV_PAD` env var.
+fn dev_place_launch_pad(world: &Rc<RefCell<World>>, dir: DVec3) {
+    let mut w = world.borrow_mut();
+    let center = w.grid.find_tile(dir, 0);
+    if center < 0 {
+        return;
+    }
+    let mut tiles = vec![center];
+    if let Some(t) = w.grid.tile(center) {
+        for &n in t.neighbors.iter() {
+            if n >= 0 {
+                tiles.push(n);
+            }
+        }
+    }
+    for tile in tiles {
+        /* Topmost solid voxel = the surface this column presents. */
+        let mut top = -1;
+        for d in (0..tenebris_core::world::WORLD_MAX_DEPTH).rev() {
+            if tenebris_core::blocks::is_solid(w.get(tile, d)) {
+                top = d;
+                break;
+            }
+        }
+        if top >= 0 {
+            w.set(tile, top, Block::LaunchPad);
+        }
+    }
+}
+
 extern "C" fn init() {
     /* Bump sokol's buffer pool way above the default 128 (see the long
      * rationale in the C file: 4 buffers per chunk x 32 chunks x ~20
@@ -544,6 +578,33 @@ extern "C" fn init() {
     menu::init();
     remote_players::init();
     chat::init();
+
+    /* Dev fast-path for headless iteration / screenshots, gated entirely
+     * on env vars so normal play never sees any of it:
+     *   TENEBRIS_DEV_PAD=1     -> drop a launch pad on the spawn surface
+     *   TENEBRIS_DEV_KIT=1     -> stock a rocket-build kit (pad + parts)
+     *   TENEBRIS_DEV_SP[=name] -> boot straight into an SP world
+     *   TENEBRIS_DEV_ROCKET=1  -> open the rocket-assembly screen
+     */
+    if std::env::var("TENEBRIS_DEV_PAD").is_ok() {
+        dev_place_launch_pad(&world, dvec3_make(1.0, 0.0, 0.0));
+    }
+    if std::env::var("TENEBRIS_DEV_KIT").is_ok() {
+        let mut p = player.borrow_mut();
+        inventory::add(&mut p.inventory, Block::LaunchPad);
+        p.bag.add(tenebris_core::items::ROCKET_ENGINE, 1);
+        p.bag.add(tenebris_core::items::FUEL_TANK, 2);
+        p.bag.add(tenebris_core::items::COMMAND_MODULE, 1);
+        p.bag.add(tenebris_core::items::IRON_INGOT, 16);
+        p.bag.add(tenebris_core::items::BRONZE_INGOT, 8);
+    }
+    if let Ok(v) = std::env::var("TENEBRIS_DEV_SP") {
+        let name = if v.is_empty() { "devworld" } else { v.as_str() };
+        menu::dev_start_sp(name);
+    }
+    if std::env::var("TENEBRIS_DEV_ROCKET").is_ok() {
+        rocket_screen::open(Some(player.clone()));
+    }
 
     APP.with(|cell| {
         *cell.borrow_mut() = Some(App {
@@ -1702,6 +1763,7 @@ fn block_name(b: Block) -> &'static str {
         Block::CopperOre => "COPPER_ORE",
         Block::TinOre => "TIN_ORE",
         Block::IronOre => "IRON_ORE",
+        Block::LaunchPad => "LAUNCH_PAD",
     }
 }
 
@@ -1727,6 +1789,7 @@ fn block_glyph(b: Block) -> char {
         Block::CopperOre => 'o',
         Block::TinOre => 't',
         Block::IronOre => 'r',
+        Block::LaunchPad => 'P',
     }
 }
 
@@ -2553,6 +2616,27 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
     if e._type == sapp::EventType::KeyDown && e.key_code == sapp::Keycode::F8 {
         pixel_ui::demo_toggle();
         return;
+    }
+
+    /* Launch pad: plain E while looking at a placed LaunchPad block opens
+     * the rocket-assembly screen. Checked before the inventory toggle so
+     * the pad is the in-world entry point to building a rocket; Shift+E
+     * stays the inventory binding, and a pad that isn't targeted falls
+     * through to the normal E behaviour below. */
+    if e._type == sapp::EventType::KeyDown
+        && e.key_code == sapp::Keycode::E
+        && (e.modifiers & sapp::MODIFIER_SHIFT) == 0
+        && app.interact.has_target
+        && !app.interact.is_torch_target
+    {
+        let targeted = app
+            .world
+            .borrow()
+            .get(app.interact.hit_tile, app.interact.hit_depth);
+        if targeted == Block::LaunchPad {
+            rocket_screen::open(Some(app.player.clone()));
+            return;
+        }
     }
 
     /* E: toggle the inventory / crafting overlay.

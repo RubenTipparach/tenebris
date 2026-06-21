@@ -79,10 +79,19 @@ pub enum Block {
     CopperOre = 26,
     TinOre = 27,
     IronOre = 28,
+
+    /* Crafted structure block. The launch pad the player builds a rocket
+     * on: interact (E) on a placed pad opens the rocket-assembly screen
+     * (see client::rocket_screen). Runtime-tinted rock - no new source
+     * art. Rust-port-only block (the canonical native target); the legacy
+     * C tree never had it. */
+    LaunchPad = 29,
 }
 
-/// Mirrors C's `BLOCK_COUNT` (the implicit trailing enum member).
-pub const BLOCK_COUNT: u8 = 29;
+/// Mirrors C's `BLOCK_COUNT` (the implicit trailing enum member). The
+/// Rust port adds `LaunchPad` (29) past the C palette - the native port
+/// is the canonical target now, so the palette can grow here.
+pub const BLOCK_COUNT: u8 = 30;
 
 impl Block {
     /// Fallible conversion from the raw byte stored in voxel arrays /
@@ -193,6 +202,15 @@ pub fn face_tile(b: Block, cap: FaceCap) -> u8 {
             FaceCap::Side => Block::SeqDirtSnow as u8,
         };
     }
+    /* The LaunchPad is a Rust-port-only block past the C atlas (29 cols),
+     * so it has no atlas column of its own. Borrow Bedrock's near-black
+     * slate tile on every face - it reads as a dark, artificial platform
+     * distinct from natural terrain, and keeps the atlas width (and every
+     * existing block's pinned UVs) unchanged. A bespoke tile is a future
+     * art pass. */
+    if b == Block::LaunchPad {
+        return Block::Bedrock as u8;
+    }
     b as u8
 }
 
@@ -231,7 +249,8 @@ mod tests {
         assert_eq!(Block::CopperOre as u8, 26);
         assert_eq!(Block::TinOre as u8, 27);
         assert_eq!(Block::IronOre as u8, 28);
-        assert_eq!(BLOCK_COUNT, 29);
+        assert_eq!(Block::LaunchPad as u8, 29);
+        assert_eq!(BLOCK_COUNT, 30);
     }
 
     #[test]

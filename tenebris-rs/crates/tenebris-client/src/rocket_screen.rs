@@ -69,6 +69,21 @@ pub fn set_player(player: Option<PlayerHandle>) {
     S.with(|c| c.borrow_mut().player = player);
 }
 
+/// Force the assembly screen open for `player`. Used by the world
+/// interaction path (interact E on a placed LaunchPad block) so the pad
+/// is the in-world entry point, parallel to the standalone `G` toggle.
+/// Mutually exclusive with the other survival overlays, like the G path.
+pub fn open(player: Option<PlayerHandle>) {
+    S.with(|c| {
+        let s = &mut *c.borrow_mut();
+        s.player = player;
+        s.open = true;
+    });
+    crate::crafting_screen::close();
+    crate::inventory_screen::close();
+    release_pointer();
+}
+
 #[cfg(not(test))]
 fn screen_sizef() -> (f32, f32) {
     (sapp::widthf(), sapp::heightf())

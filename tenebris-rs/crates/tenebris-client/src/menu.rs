@@ -368,6 +368,15 @@ fn with_menu<R>(f: impl FnOnce(&mut Menu) -> R) -> R {
     M.with(|cell| f(&mut cell.borrow_mut()))
 }
 
+/// Dev-only fast path: jump straight into a single-player world, skipping
+/// the profile / menu navigation. Drives the same `start_sp_for_world`
+/// the menu button does, so the in-game state is identical. Gated by the
+/// caller behind an env var (see `app::init`); never reached in normal
+/// play.
+pub fn dev_start_sp(world_name: &str) {
+    with_menu(|m| start_sp_for_world(m, world_name));
+}
+
 /// snprintf-style byte truncation (C buffers cut at `cap` bytes). All
 /// strings that reach these buffers are ASCII; back off to a char
 /// boundary so the String invariant holds for any straggler.
