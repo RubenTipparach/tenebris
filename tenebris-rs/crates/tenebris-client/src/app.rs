@@ -406,6 +406,24 @@ fn dev_maybe_place(app: &mut App) {
             dev_for_each_neighbor(&app.world, center, |w, i, n| {
                 dev_set_surface_w(w, n, ring[i % ring.len()]);
             });
+            /* Curate the hotbar so one shot labels every ore + the tech
+             * block as clean icons (runs after the SP creative prime, so
+             * these writes stick). */
+            let mut p = app.player.borrow_mut();
+            let kit = [
+                Block::LaunchPad,
+                Block::CoalOre,
+                Block::CopperOre,
+                Block::TinOre,
+                Block::IronOre,
+                Block::Wood,
+                Block::Stone,
+            ];
+            for (i, b) in kit.iter().enumerate() {
+                if i < crate::inventory::INV_HOTBAR_SLOTS as usize {
+                    p.inventory.slots[i] = crate::inventory::InvSlot::block(*b, 1);
+                }
+            }
         }
         _ => {
             /* Launch pad: centre tile + its ring all become the pad. */
