@@ -31,7 +31,6 @@ use tenebris_core::blocks::{self, Block};
 use tenebris_core::items;
 use tenebris_core::mining;
 use tenebris_core::proto;
-use tenebris_core::rng;
 use tenebris_core::math::{
     dvec3_add, dvec3_dot, dvec3_length, dvec3_make, dvec3_normalize, dvec3_scale, dvec3_sub,
     vec3_make, vec3_scale, DVec3,
@@ -45,11 +44,6 @@ pub const MAX_DIST: f64 = 8.0;
 /// Holding LMB on a target for this long breaks it and adds it to
 /// inventory.
 pub const MINING_TIME_S: f32 = 0.8;
-
-/// Fixed salt mixed into the per-voxel coal roll so it doesn't alias the
-/// hash's other uses (terrain noise). Part of the hash's identity, not a
-/// designer knob - stays inline per the "no magic numbers" exception.
-const COAL_ROLL_SALT: i32 = 0x6c61;
 
 /// Port of `interact_state_t`. The C caller zero-initializes; `Default`
 /// matches that ({0} - all flags false, indices 0, distances 0.0).
@@ -410,12 +404,10 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
                     Block::Air as i32,
                 );
                 sp_save_tile_after_edit(w, s.hit_tile);
-                /* Deterministic per-voxel roll so a given block always
-                 * drops the same thing (no save-scumming, testable).
-                 * Block drops -> hotbar (placeable); resource drops
-                 * (coal) -> bag. */
-                let roll = rng::hash3(s.hit_tile, s.hit_depth, COAL_ROLL_SALT);
-                for d in mining::drops(target_block, tier, roll) {
+                /* Route drops: placeable blocks -> hotbar, resources
+                 * (coal / raw ore) -> bag. Ores are already distinct
+                 * blocks in the world, so the drop is deterministic. */
+                for d in mining::drops(target_block, tier) {
                     if let Some(b) = items::to_block(d.item) {
                         for _ in 0..d.count {
                             inventory::add(&mut p.inventory, b);
@@ -768,7 +760,7 @@ mod tests {
         update(&mut s, &mut w, &mut p, DT);
         left_click(false);
         assert_eq!(w.get(d_tile, d_depth), Block::Air, "d: block after");
-        assert_eq!(saved_tile_fnv(41), 0x336acbf5ad2e8a32, "d_save: column fnv");
+        assert_eq!(saved_tile_fnv(41), 0xea66e26d5b68c367, "d_save: column fnv");
 
         /* ---- E: survival mining - hold LMB until the break fires.
          * C pin: e=41,62,3,49 (Dirt broken on frame 49);
@@ -793,7 +785,7 @@ mod tests {
         }
         left_held(false);
         assert_eq!(e_frames, 49, "e: frames to mine (f32 dt accumulation)");
-        assert_eq!(saved_tile_fnv(41), 0xc63f3e5d48ddbe09, "e_save: column fnv");
+        assert_eq!(saved_tile_fnv(41), 0xa2e439a42e765eec, "e_save: column fnv");
         let want_inv: [(Block, i32); 9] = [
             (Block::Torch, 9999),
             (Block::Stone, 9999),
@@ -819,7 +811,7 @@ mod tests {
         assert_eq!((s.place_tile, s.place_depth), (41, 62), "f: place cell");
         assert_eq!(w.get(41, 62), Block::Stone, "f: placed");
         assert_eq!(p.inventory.slots[1].count, 9998, "f: consumed");
-        assert_eq!(saved_tile_fnv(41), 0x0dc1e72675d02284, "f_save: column fnv");
+        assert_eq!(saved_tile_fnv(41), 0x5b6190db0183fa71, "f_save: column fnv");
 
         /* ---- G: keep placing straight down; placements walk up the
          * column (63,64,65) until the place cell reaches the feet
@@ -873,7 +865,7 @@ mod tests {
         assert_eq!(world_water::origin_count(&w, ptile, 68), 0, "h: origins cleared");
         assert_eq!(world_water::pending(&w), 51, "h: pending");
         assert_eq!(p.inventory.slots[8].count, 9998, "h: water consumed");
-        assert_eq!(saved_tile_fnv(41), 0x839673e9a82ba4f6, "h_save: column fnv");
+        assert_eq!(saved_tile_fnv(41), 0x5a6c1692308e8007, "h_save: column fnv");
 
         /* ---- I: torch placement on the tower top. Base sits on the
          * top face of hit block 67 (r_top = 304) along the f32 tile

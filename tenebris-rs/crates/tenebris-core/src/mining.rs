@@ -3,11 +3,9 @@
 //!
 //! Tier 0 of the survival loop: hand-breakable surface blocks (dirt,
 //! grass, sand, wood) versus pickaxe-gated rock (stone and its tinted
-//! variants). Mining stone with a pickaxe has a tunable chance to also
-//! yield coal - "ore embedded in stone", so the torch recipe is reachable
-//! before any dedicated ore-vein blocks exist (those land with their own
-//! art + worldgen later). The drop chance is a designer knob, so it lives
-//! in `assets/config/mining.yaml`, not inline.
+//! variants, including the ore blocks). Ore blocks are scattered through
+//! underground stone by worldgen (`ore_for_stone`, tuned via
+//! `assets/config/mining.yaml`) and drop their raw resource when mined.
 
 use crate::blocks::Block;
 use crate::items::{self, ItemId, ItemStack};
@@ -48,17 +46,13 @@ pub fn can_harvest(b: Block, tier: u8) -> bool {
     b != Block::Bedrock && tier >= required_tier(b)
 }
 
-/// Items dropped by breaking `b` with `tier`, given a deterministic
-/// per-voxel `roll` in [0,1] (use `rng::hash3(tile, depth, salt)` so a
-/// given block always drops the same thing). Empty when the tool tier is
-/// too low. Blocks drop themselves; stone has a `coal_chance` of also
-/// dropping a lump of coal.
-pub fn drops(b: Block, tier: u8, roll: f32) -> Vec<ItemStack> {
+/// Items dropped by breaking `b` with `tier`. Empty when the tool tier is
+/// too low. Ore blocks drop their raw resource (smelted to ingots later);
+/// everything else drops itself as a placeable.
+pub fn drops(b: Block, tier: u8) -> Vec<ItemStack> {
     if !can_harvest(b, tier) {
         return Vec::new();
     }
-    /* Ore blocks drop their raw resource (smelted to ingots later), not
-     * the ore block itself. Everything else drops itself as a placeable. */
     let item = match b {
         Block::CoalOre => items::COAL,
         Block::CopperOre => items::COPPER,
@@ -66,26 +60,64 @@ pub fn drops(b: Block, tier: u8, roll: f32) -> Vec<ItemStack> {
         Block::IronOre => items::IRON,
         _ => items::from_block(b),
     };
-    let mut out = vec![ItemStack { item, count: 1 }];
-    /* Transitional: plain stone still has a coal_chance of a coal lump
-     * until ore-vein worldgen lands, so torches stay craftable. Removed
-     * once veins place CoalOre in the world. */
-    if b == Block::Stone && roll < config().coal_chance {
-        out.push(ItemStack { item: items::COAL, count: 1 });
+    vec![ItemStack { item, count: 1 }]
+}
+
+/// Worldgen hook: given a deterministic per-voxel `roll` in [0,1] for an
+/// underground stone voxel, return the ore block it should become, or
+/// `None` to leave it as stone. Independent probability bands per ore
+/// (coal first), so the chances don't have to sum to <= 1.
+pub fn ore_for_stone(roll: f32) -> Option<Block> {
+    let c = config();
+    let mut hi = c.coal_ore_chance;
+    if roll < hi {
+        return Some(Block::CoalOre);
     }
-    out
+    hi += c.copper_ore_chance;
+    if roll < hi {
+        return Some(Block::CopperOre);
+    }
+    hi += c.tin_ore_chance;
+    if roll < hi {
+        return Some(Block::TinOre);
+    }
+    hi += c.iron_ore_chance;
+    if roll < hi {
+        return Some(Block::IronOre);
+    }
+    None
 }
 
 /* --------------------------- config ----------------------------------- */
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MiningConfig {
-    /// P(a stone block mined with a pickaxe also drops a coal lump).
-    pub coal_chance: f32,
+    /// Per-voxel probability that an underground stone block is replaced
+    /// by each ore during worldgen. Independent rolls, so larger numbers
+    /// mean denser deposits.
+    pub coal_ore_chance: f32,
+    pub copper_ore_chance: f32,
+    pub tin_ore_chance: f32,
+    pub iron_ore_chance: f32,
 }
 
 impl MiningConfig {
-    const DEFAULT: MiningConfig = MiningConfig { coal_chance: 0.15 };
+    const DEFAULT: MiningConfig = MiningConfig {
+        coal_ore_chance: 0.040,
+        copper_ore_chance: 0.022,
+        tin_ore_chance: 0.018,
+        iron_ore_chance: 0.030,
+    };
+
+    /// All-zero ore chances: worldgen places no ore. Used by the save
+    /// byte-compat harness to match the frozen C reference gen (which
+    /// predates ore), isolating save-format parity from ore content.
+    pub const ORE_FREE: MiningConfig = MiningConfig {
+        coal_ore_chance: 0.0,
+        copper_ore_chance: 0.0,
+        tin_ore_chance: 0.0,
+        iron_ore_chance: 0.0,
+    };
 }
 
 static S_MINING: Mutex<MiningConfig> = Mutex::new(MiningConfig::DEFAULT);
@@ -93,6 +125,13 @@ static S_MINING: Mutex<MiningConfig> = Mutex::new(MiningConfig::DEFAULT);
 /// Current mining tuning (compiled-in defaults until `load_config`).
 pub fn config() -> MiningConfig {
     *S_MINING.lock().unwrap()
+}
+
+/// Install a config directly. Unlike `parse_config`, this bypasses the
+/// "zero keeps the default" yaml merge, so callers can force exact values
+/// (e.g. `MiningConfig::ORE_FREE` for the save byte-compat harness).
+pub fn set_config(cfg: MiningConfig) {
+    *S_MINING.lock().unwrap() = cfg;
 }
 
 /// Parse mining.yaml (tiny key/value subset). Fields left at / set to
@@ -109,12 +148,16 @@ pub fn parse_config(src: &str, _path: &str) -> MiningConfig {
         let Some(colon) = line.find(':') else { continue };
         let key = line[..colon].trim();
         let val = line[colon + 1..].trim();
-        if key == "coal_chance" {
-            if let Ok(v) = val.parse::<f32>() {
-                if v > 0.0 {
-                    cfg.coal_chance = v;
-                }
-            }
+        let Ok(v) = val.parse::<f32>() else { continue };
+        if v <= 0.0 {
+            continue; /* zero / negative keeps the compiled-in default */
+        }
+        match key {
+            "coal_ore_chance" => cfg.coal_ore_chance = v,
+            "copper_ore_chance" => cfg.copper_ore_chance = v,
+            "tin_ore_chance" => cfg.tin_ore_chance = v,
+            "iron_ore_chance" => cfg.iron_ore_chance = v,
+            _ => {}
         }
     }
     *S_MINING.lock().unwrap() = cfg;
@@ -152,44 +195,53 @@ mod tests {
 
     #[test]
     fn hand_breaks_wood_and_drops_it() {
-        let d = drops(Block::Wood, 0, 0.99);
+        let d = drops(Block::Wood, 0);
         assert_eq!(d, vec![ItemStack { item: items::from_block(Block::Wood), count: 1 }]);
     }
 
     #[test]
     fn stone_without_pickaxe_drops_nothing() {
-        assert!(drops(Block::Stone, 0, 0.0).is_empty());
+        assert!(drops(Block::Stone, 0).is_empty());
+        assert!(drops(Block::CoalOre, 0).is_empty());
     }
 
     #[test]
-    fn stone_with_pickaxe_drops_stone_and_maybe_coal() {
-        // default coal_chance 0.15
-        parse_config("", "t"); // reset to default
-        let lucky = drops(Block::Stone, 1, 0.05);
-        assert_eq!(lucky.len(), 2);
-        assert_eq!(lucky[0].item, items::from_block(Block::Stone));
-        assert_eq!(lucky[1].item, COAL);
-        let plain = drops(Block::Stone, 1, 0.9);
-        assert_eq!(plain, vec![ItemStack { item: items::from_block(Block::Stone), count: 1 }]);
+    fn stone_with_pickaxe_drops_just_stone() {
+        assert_eq!(
+            drops(Block::Stone, 1),
+            vec![ItemStack { item: items::from_block(Block::Stone), count: 1 }]
+        );
     }
 
     #[test]
     fn ore_blocks_drop_their_raw_resource() {
         use crate::items::{COPPER, IRON, TIN};
-        // ores need tier 1 and drop the resource item, not the ore block
-        assert!(drops(Block::CoalOre, 0, 0.0).is_empty());
-        assert_eq!(drops(Block::CoalOre, 1, 0.9), vec![ItemStack { item: COAL, count: 1 }]);
-        assert_eq!(drops(Block::CopperOre, 1, 0.9), vec![ItemStack { item: COPPER, count: 1 }]);
-        assert_eq!(drops(Block::TinOre, 1, 0.9), vec![ItemStack { item: TIN, count: 1 }]);
-        assert_eq!(drops(Block::IronOre, 1, 0.9), vec![ItemStack { item: IRON, count: 1 }]);
+        assert_eq!(drops(Block::CoalOre, 1), vec![ItemStack { item: COAL, count: 1 }]);
+        assert_eq!(drops(Block::CopperOre, 1), vec![ItemStack { item: COPPER, count: 1 }]);
+        assert_eq!(drops(Block::TinOre, 1), vec![ItemStack { item: TIN, count: 1 }]);
+        assert_eq!(drops(Block::IronOre, 1), vec![ItemStack { item: IRON, count: 1 }]);
+    }
+
+    #[test]
+    fn ore_for_stone_bands_by_roll() {
+        // restore defaults (a sibling test may have changed the global)
+        parse_config(
+            "coal_ore_chance: 0.04\ncopper_ore_chance: 0.022\ntin_ore_chance: 0.018\niron_ore_chance: 0.03\n",
+            "t",
+        );
+        assert_eq!(ore_for_stone(0.01), Some(Block::CoalOre)); // < 0.04
+        assert_eq!(ore_for_stone(0.05), Some(Block::CopperOre)); // < 0.062
+        assert_eq!(ore_for_stone(0.07), Some(Block::TinOre)); // < 0.08
+        assert_eq!(ore_for_stone(0.09), Some(Block::IronOre)); // < 0.11
+        assert_eq!(ore_for_stone(0.5), None); // mostly stays stone
     }
 
     #[test]
     fn config_parses_and_zero_keeps_default() {
-        let c = parse_config("coal_chance: 0.4\n", "t");
-        assert_eq!(c.coal_chance, 0.4);
-        // zero / blank keeps the previous (default) - restore for other tests
-        let d = parse_config("coal_chance: 0\n", "t");
-        assert_eq!(d.coal_chance, MiningConfig::DEFAULT.coal_chance);
+        let c = parse_config("coal_ore_chance: 0.4\n", "t");
+        assert_eq!(c.coal_ore_chance, 0.4);
+        // zero / blank keeps the compiled-in default
+        let d = parse_config("coal_ore_chance: 0\n", "t");
+        assert_eq!(d.coal_ore_chance, MiningConfig::DEFAULT.coal_ore_chance);
     }
 }

@@ -61,6 +61,7 @@ use crate::blocks::{self, Block};
 use crate::config;
 use crate::goldberg::{self, Goldberg};
 use crate::math::{dvec3_scale, DVec3, Vec3};
+use crate::mining;
 use crate::planet::{self, BodyConfig};
 use crate::planet_gen;
 use crate::world_light::{self, WorldLight};
@@ -174,6 +175,12 @@ fn tile_hash(seed: u64, tile_idx: i32, salt: u32) -> u32 {
 /// grid and an exclusive borrow of each tile's own `blocks` slice. The
 /// logic is the per-column half of the old `gen_tile`; bitset writes are
 /// the caller's job (they share bytes across tiles and can't be threaded).
+/* Fixed salts for the deterministic per-voxel ore hash. Part of the
+ * hash's identity (not designer knobs), so they stay inline per the
+ * "no magic numbers" exception. */
+const ORE_SALT: u32 = 0x0_0_E_0; // "ore"
+const ORE_DEPTH_MIX: u32 = 0x9E3779B1; // golden-ratio odd multiplier
+
 fn gen_column(body: &BodyConfig, grid: &Goldberg, tile_idx: i32, col: &mut [u8]) -> bool {
     let t = match grid.tile(tile_idx) {
         Some(t) => *t,
@@ -200,6 +207,24 @@ fn gen_column(body: &BodyConfig, grid: &Goldberg, tile_idx: i32, col: &mut [u8])
     /* Bedrock floor - never overwrite, never mineable, and the renderer
      * skips its bottom cap so we don't see the inside of the planet. */
     col[0] = Block::Bedrock.raw();
+
+    /* ---- Ore scatter -----------------------------------------------
+     * Replace some underground stone with ore. Deterministic per
+     * (tile, depth) so the same seed regenerates identical deposits;
+     * the depth is folded into the hash salt so ore varies down a
+     * column, not just between columns. Confined to stone below the
+     * dirt layer (>= 4 m under the surface) and above bedrock. */
+    let ore_top = (surface_idx - 4).max(1);
+    for d in 1..ore_top {
+        if col[d as usize] != Block::Stone.raw() {
+            continue;
+        }
+        let salt = ORE_SALT ^ (d as u32).wrapping_mul(ORE_DEPTH_MIX);
+        let roll = (tile_hash(body.seed, tile_idx, salt) & 0xFFFF) as f32 / 65535.0;
+        if let Some(ore) = mining::ore_for_stone(roll) {
+            col[d as usize] = ore.raw();
+        }
+    }
 
     /* ---- Tree scatter ----------------------------------------------
      * Plant a small tree on grass-topped land tiles with low slope.
@@ -1101,48 +1126,12 @@ mod tests {
     const TREE_TILE: i32 = 73;
     const WATER_TILE: i32 = 2;
 
-    const COL_0: [u8; 128] = [
-        23, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-        5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-        5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 3, 3, 3, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0,
-    ];
-    const COL_100: [u8; 128] = [
-        23, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-        5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-        3, 3, 3, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0,
-    ];
-    const COL_333: [u8; 128] = [
-        23, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-        5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-        5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 3, 3, 3, 4, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0,
-    ];
-    const COL_641: [u8; 128] = [
-        23, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-        5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 3, 3,
-        3, 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0,
-    ];
-    const COL_TREE: [u8; 128] = [
-        23, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-        5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-        5, 5, 5, 5, 5, 5, 5, 5, 3, 3, 3, 4, 21, 21, 21, 22, 22, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    ];
-    const COL_WATER: [u8; 128] = [
-        23, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-        5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 3, 3, 3,
-        2, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0,
-    ];
+        const COL_0: [u8; 128] = [23, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 27, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 28, 5, 5, 5, 5, 5, 5, 28, 5, 5, 5, 5, 5, 5, 5, 5, 5, 25, 5, 26, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 3, 3, 3, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        const COL_100: [u8; 128] = [23, 5, 28, 5, 5, 5, 25, 27, 25, 5, 5, 5, 26, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 27, 5, 5, 5, 5, 5, 5, 26, 5, 5, 5, 5, 5, 5, 5, 5, 25, 5, 5, 5, 5, 5, 5, 5, 3, 3, 3, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        const COL_333: [u8; 128] = [23, 5, 25, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 28, 5, 5, 5, 5, 26, 5, 5, 5, 5, 5, 26, 5, 5, 28, 5, 25, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 3, 3, 3, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        const COL_641: [u8; 128] = [23, 5, 5, 25, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 28, 5, 5, 5, 5, 5, 26, 5, 5, 5, 5, 5, 28, 5, 25, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 27, 5, 5, 5, 5, 5, 3, 3, 3, 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        const COL_TREE: [u8; 128] = [23, 5, 5, 5, 5, 5, 5, 25, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 25, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 28, 5, 5, 5, 5, 5, 5, 25, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 3, 3, 3, 4, 21, 21, 21, 22, 22, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        const COL_WATER: [u8; 128] = [23, 5, 28, 5, 5, 5, 5, 5, 5, 5, 5, 26, 5, 27, 5, 5, 5, 5, 5, 5, 5, 25, 5, 5, 5, 5, 28, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 28, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 3, 3, 3, 2, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 
     #[test]
     fn pin_worldgen_tenebris_subdiv3() {
@@ -1156,12 +1145,12 @@ mod tests {
         w.stream_gen(100);
         assert_eq!(w.gen_progress_pct(), 15);
         assert!(!w.gen_complete());
-        assert_eq!(fnv1a64(&w.blocks), 7829992951182889948);
+        assert_eq!(fnv1a64(&w.blocks), 18417547801711035607);
         while !w.gen_complete() {
             w.stream_gen(100);
         }
         assert_eq!(w.gen_progress_pct(), 100);
-        assert_eq!(fnv1a64(&w.blocks), 4329271328615019421);
+        assert_eq!(fnv1a64(&w.blocks), 11860692157470117177);
         assert_eq!(fnv1a64(&w.dirty), 13535398748077020770);
         assert_eq!(fnv1a64(&w.edited), 2765778263781656134);
 
@@ -1279,7 +1268,7 @@ mod tests {
         assert!(w.tile_dirty(100));
         assert_eq!(w.get(100, top100 + 3), Block::Stone);
         assert_eq!(w.get(100, top100), Block::Air);
-        assert_eq!(fnv1a64(&w.blocks), 18365109157805283286);
+        assert_eq!(fnv1a64(&w.blocks), 3353865708915105722);
         assert_eq!(fnv1a64(&w.edited), 12021992615667686486);
 
         /* Tile 100 is edited now -> voxel-scan floor path. */
