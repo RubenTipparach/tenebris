@@ -53,6 +53,7 @@ use crate::net_client::{self, NetClientState, NetDesyncKind};
 use crate::persistence::{self, PersistenceSave, COLUMN_BYTES};
 use crate::pixel_ui;
 use crate::player_ctrl::{self, PlayerCtrl};
+use crate::rocket_screen;
 use crate::profile;
 use crate::profiler;
 use crate::remote_players;
@@ -391,6 +392,7 @@ extern "C" fn init() {
     hotbar_ui::init();
     teleport_menu::init();
     crafting_screen::init();
+    rocket_screen::init();
 
     /* net_client's /saves audit scores distance from the camera to
      * each persisted tile via this provider (C: the two exported
@@ -485,6 +487,7 @@ extern "C" fn init() {
     player_ctrl::init(&mut player.borrow_mut(), &body);
     teleport_menu::set_player(Some(player.clone()));
     crafting_screen::set_player(Some(player.clone()));
+    rocket_screen::set_player(Some(player.clone()));
 
     /* Drain Tenebris gen synchronously at init so the spawn tile has
      * terrain the moment the first frame lands. */
@@ -2368,6 +2371,10 @@ fn frame_inner(app: &mut App) {
      * whenever the player has it open, independent of the F2 toggle.
      * (draw() self-gates on is_open(), so this is a no-op when closed.) */
     crafting_screen::draw();
+    /* Rocket assembly + test-flight screen (G). update() steps the live
+     * flight sim; draw() is a no-op when closed. */
+    rocket_screen::update(dt);
+    rocket_screen::draw();
     if app.debug_ui_visible {
         draw_error_overlay();
         profiler::draw();
@@ -2385,7 +2392,7 @@ fn frame_inner(app: &mut App) {
      * geometry and would bleed over the modal. Inventory: it draws its
      * own hotbar row, so showing the HUD hotbar too would put two
      * hotbars on screen. */
-    if !menu::pause_active() && !inventory_screen::is_open() {
+    if !menu::pause_active() && !inventory_screen::is_open() && !rocket_screen::is_open() {
         /* No sdtx_draw here - single flush at the end of the UI block. */
         hotbar_ui::draw(&app.player.borrow().inventory);
         /* Real (non-ASCII) mining progress bar. */
@@ -2531,6 +2538,11 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
     if crafting_screen::handle_event(e, Some(app.player.clone())) {
         return;
     }
+    /* Rocket assembly screen (G): first crack after crafting so G toggles
+     * it and, while open, it owns clicks. */
+    if rocket_screen::handle_event(e, Some(app.player.clone())) {
+        return;
+    }
 
     /* F8: toggle the pixel-art UI demo panel. The demo exercises every
      * widget (panel, button states, slot states, title bar, close X)
@@ -2569,6 +2581,7 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
              * never collide. */
             if inventory_screen::is_open() {
                 crafting_screen::close();
+                rocket_screen::close();
             }
             return;
         }

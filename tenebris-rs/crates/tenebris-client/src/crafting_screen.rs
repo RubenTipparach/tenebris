@@ -224,6 +224,7 @@ pub fn handle_event(e: &sapp::Event, player: Option<PlayerHandle>) -> bool {
                  * one survival panel up at a time so their inputs and
                  * sdtx text never overlap. */
                 crate::inventory_screen::close();
+                crate::rocket_screen::close();
                 release_pointer();
             }
             true
