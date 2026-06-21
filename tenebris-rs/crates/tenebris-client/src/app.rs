@@ -2375,10 +2375,12 @@ fn frame_inner(app: &mut App) {
     remote_players::draw_nameplates(view, proj, sapp::widthf(), sapp::heightf(), &|id| {
         net_client::name_for_id(id)
     });
-    /* Gameplay HUD - hidden while the pause panel is up so its sdtx text
-     * (which flushes on top of ALL sgl geometry, including the pause
-     * backdrop) doesn't bleed over the modal. */
-    if !menu::pause_active() {
+    /* Gameplay HUD - hidden while the pause panel OR the inventory
+     * overlay is up. Pause: its sdtx text flushes on top of ALL sgl
+     * geometry and would bleed over the modal. Inventory: it draws its
+     * own hotbar row, so showing the HUD hotbar too would put two
+     * hotbars on screen. */
+    if !menu::pause_active() && !inventory_screen::is_open() {
         /* No sdtx_draw here - single flush at the end of the UI block. */
         hotbar_ui::draw(&app.player.borrow().inventory);
         /* Real (non-ASCII) mining progress bar. */
@@ -2445,7 +2447,7 @@ fn frame_inner(app: &mut App) {
      * Shift+E in space, closed with the same. Drawn after the
      * gameplay HUD so it sits on top of the hotbar; before the pause
      * panel so pause still wins when both are open. */
-    inventory_screen::draw(&app.player.borrow().inventory);
+    inventory_screen::draw(&mut app.player.borrow_mut().inventory);
 
     /* Shift+E hint toast: paints over the HUD when the player has
      * been mashing plain E in space without the overlay opening.

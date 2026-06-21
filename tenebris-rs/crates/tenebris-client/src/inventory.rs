@@ -120,6 +120,11 @@ pub struct Inventory {
      * matcher writes into. Both live on the crafting tab. */
     pub craft: [InvSlot; INV_CRAFT_SLOTS],
     pub craft_output: InvSlot,
+
+    /* The stack the player is "holding" while dragging between slots on
+     * the inventory screen (Minecraft-style cursor item). count == 0
+     * means nothing held. Not persisted - reset on every init. */
+    pub cursor: InvSlot,
 }
 
 impl Default for Inventory {
@@ -133,6 +138,7 @@ impl Default for Inventory {
             main: [EMPTY_SLOT; INV_MAIN_SLOTS],
             craft: [EMPTY_SLOT; INV_CRAFT_SLOTS],
             craft_output: EMPTY_SLOT,
+            cursor: EMPTY_SLOT,
         }
     }
 }

@@ -725,6 +725,61 @@ pub fn slot(
     })
 }
 
+/// Draw an item icon + count badge at (x,y,w,h) with NO slot frame and
+/// NO hit-testing. Used to render the "held" stack following the cursor
+/// on the inventory screen: hit-testing here would steal pixel_ui's
+/// single active-widget from the slot underneath and break click-to-
+/// place, and the frame sprite would look wrong floating on the cursor.
+#[allow(clippy::too_many_arguments)]
+pub fn slot_ghost(
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    atlas_view_id: u32,
+    atlas_sampler_id: u32,
+    u0: f32,
+    v0: f32,
+    u1: f32,
+    v1: f32,
+    count: i32,
+) {
+    G.with(|cell| {
+        let g = cell.borrow();
+        if !g.ready || !g.atlas_ok {
+            return;
+        }
+        let (fx, fy, fw, fh) = (x as f32, y as f32, w as f32, h as f32);
+        if fw <= 0.0 || fh <= 0.0 || atlas_view_id == 0 {
+            return;
+        }
+        let mut pad = fw / 6.0;
+        if pad < 2.0 {
+            pad = 2.0;
+        }
+        sgl::load_pipeline(sgl::Pipeline { id: g.pip_tex });
+        sgl::enable_texture();
+        sgl::texture(sg::View { id: atlas_view_id }, sg::Sampler { id: atlas_sampler_id });
+        sgl::begin_quads();
+        sgl::c4f(1.0, 1.0, 1.0, 1.0);
+        sgl::v2f_t2f(fx + pad, fy + pad, u0, v0);
+        sgl::v2f_t2f(fx + fw - pad, fy + pad, u1, v0);
+        sgl::v2f_t2f(fx + fw - pad, fy + fh - pad, u1, v1);
+        sgl::v2f_t2f(fx + pad, fy + fh - pad, u0, v1);
+        sgl::end();
+        sgl::disable_texture();
+
+        if let Some(buf) = slot_count_text(count) {
+            let n = buf.len();
+            sdtx::canvas(sapp::widthf(), sapp::heightf());
+            sdtx::origin(0.0, 0.0);
+            sdtx::color3b(0xff, 0xff, 0xff);
+            sdtx::pos((fx + fw - 8.0 * n as f32 - 1.0) / 8.0, (fy + fh - 9.0) / 8.0);
+            sdtx::puts(&buf);
+        }
+    })
+}
+
 /* ----------------------------------------------------------------------- */
 /* Demo: a small overlay panel that draws every widget so the look is
  * visible end-to-end without a real inventory screen wired up yet.

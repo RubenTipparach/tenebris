@@ -220,6 +220,11 @@ struct InvScreen {
     id_craft_button: String,
 
     hint: HintState,
+
+    /* Cursor position in pixels, tracked from sapp events so the held
+     * drag stack can be drawn following the mouse. */
+    mouse_x: f32,
+    mouse_y: f32,
 }
 
 impl Default for InvScreen {
@@ -234,6 +239,8 @@ impl Default for InvScreen {
             id_craft_output: String::new(),
             id_craft_button: String::new(),
             hint: HintState::default(),
+            mouse_x: 0.0,
+            mouse_y: 0.0,
         }
     }
 }
@@ -300,6 +307,23 @@ pub fn event(e: &sapp::Event) -> bool {
             return false;
         }
 
+        /* Track the cursor so the held drag stack can follow it. */
+        match e._type {
+            sapp::EventType::MouseMove
+            | sapp::EventType::MouseDown
+            | sapp::EventType::MouseUp => {
+                g.mouse_x = e.mouse_x;
+                g.mouse_y = e.mouse_y;
+            }
+            sapp::EventType::TouchesBegan | sapp::EventType::TouchesMoved => {
+                if e.num_touches > 0 {
+                    g.mouse_x = e.touches[0].pos_x;
+                    g.mouse_y = e.touches[0].pos_y;
+                }
+            }
+            _ => {}
+        }
+
         /* Escape closes the overlay. */
         if e._type == sapp::EventType::KeyDown && e.key_code == sapp::Keycode::Escape {
             g.open = false;
@@ -320,8 +344,13 @@ pub fn event(e: &sapp::Event) -> bool {
  * (block icons sample the terrain atlas, item icons sample the item
  * atlas, empty slots paint just the frame). */
 
-/// Port of `draw_slot_for()`.
-fn draw_slot_for(s: &InvSlot, id: &str, x: i32, y: i32, w: i32, h: i32, state: SlotState) {
+/// An empty slot, for clearing during drag moves.
+const EMPTY: InvSlot = InvSlot::block(Block::Air, 0);
+
+/// Atlas view/sampler, UV rect, and display count for a slot's icon.
+/// Shared by the hit-tested slot draw and the floating cursor draw so
+/// both render an item identically.
+fn slot_icon_params(s: &InvSlot) -> (u32, u32, f32, f32, f32, f32, i32) {
     let mut view = 0u32;
     let mut samp = 0u32;
     let (mut u0, mut v0, mut u1, mut v1) = (0.0f32, 0.0f32, 1.0f32, 1.0f32);
@@ -363,8 +392,76 @@ fn draw_slot_for(s: &InvSlot, id: &str, x: i32, y: i32, w: i32, h: i32, state: S
     if count == 1 && s.item_id >= ItemId::Pickaxe && s.item_id <= ItemId::ProspectingAxe {
         display_count = 0;
     }
+    (view, samp, u0, v0, u1, v1, display_count)
+}
 
-    pixel_ui::slot(id, x, y, w, h, view, samp, u0, v0, u1, v1, display_count, state);
+/// Port of `draw_slot_for()`. Returns whether the slot was clicked this
+/// frame so the caller can run the drag (pick up / place) logic.
+fn draw_slot_for(s: &InvSlot, id: &str, x: i32, y: i32, w: i32, h: i32, state: SlotState) -> bool {
+    let (view, samp, u0, v0, u1, v1, display_count) = slot_icon_params(s);
+    pixel_ui::slot(id, x, y, w, h, view, samp, u0, v0, u1, v1, display_count, state)
+}
+
+/// Draw a stack as the floating "held" cursor item: icon + count only,
+/// no slot frame and (crucially) NO hit-test. Hit-testing here would
+/// steal pixel_ui's single active widget from the slot underneath and
+/// break click-to-place.
+fn draw_cursor_stack(s: &InvSlot, x: i32, y: i32, w: i32, h: i32) {
+    let (view, samp, u0, v0, u1, v1, display_count) = slot_icon_params(s);
+    pixel_ui::slot_ghost(x, y, w, h, view, samp, u0, v0, u1, v1, display_count);
+}
+
+/// True when two slots hold the same kind, so a held stack merges onto
+/// a matching slot instead of swapping.
+fn same_kind(a: &InvSlot, b: &InvSlot) -> bool {
+    if a.item_id != ItemId::None || b.item_id != ItemId::None {
+        a.item_id == b.item_id
+    } else {
+        a.block_type == b.block_type
+    }
+}
+
+/// Minecraft left-click semantics between the held cursor stack and a
+/// clicked slot: an empty cursor picks the slot up; a held stack drops
+/// into an empty slot, merges onto a matching one, or swaps otherwise.
+fn apply_slot_click(cursor: &mut InvSlot, slot: &mut InvSlot) {
+    if cursor.count <= 0 {
+        *cursor = *slot;
+        *slot = EMPTY;
+    } else if slot.count <= 0 {
+        *slot = *cursor;
+        *cursor = EMPTY;
+    } else if same_kind(cursor, slot) {
+        slot.count += cursor.count;
+        *cursor = EMPTY;
+    } else {
+        std::mem::swap(cursor, slot);
+    }
+}
+
+/// Return a held stack to the bag (first empty hotbar then main slot)
+/// when the screen closes, so it isn't stranded on the hidden cursor.
+fn stash_cursor(inv: &mut Inventory) {
+    let held = inv.cursor;
+    if held.count <= 0 {
+        inv.cursor = EMPTY;
+        return;
+    }
+    for i in 0..INV_HOTBAR_SLOTS {
+        if inv.slots[i].count <= 0 {
+            inv.slots[i] = held;
+            inv.cursor = EMPTY;
+            return;
+        }
+    }
+    for i in 0..INV_MAIN_SLOTS {
+        if inv.main[i].count <= 0 {
+            inv.main[i] = held;
+            inv.cursor = EMPTY;
+            return;
+        }
+    }
+    /* No room anywhere - keep it on the cursor for the next open. */
 }
 
 /* ----------------------------------------------------------------------- */
@@ -374,7 +471,7 @@ fn draw_slot_for(s: &InvSlot, id: &str, x: i32, y: i32, w: i32, h: i32, state: S
 #[allow(clippy::too_many_arguments)]
 fn draw_inventory_tab(
     g: &InvScreen,
-    inv: &Inventory,
+    inv: &mut Inventory,
     panel_x: i32,
     panel_y: i32,
     panel_w: i32,
@@ -404,7 +501,9 @@ fn draw_inventory_tab(
         }
         let sx = grid_x + c * (l.slot_px + l.slot_gap);
         let sy = grid_y + r * (l.slot_px + l.slot_gap);
-        draw_slot_for(&inv.main[idx], &g.id_main[idx], sx, sy, l.slot_px, l.slot_px, SlotState::Normal);
+        if draw_slot_for(&inv.main[idx], &g.id_main[idx], sx, sy, l.slot_px, l.slot_px, SlotState::Normal) {
+            apply_slot_click(&mut inv.cursor, &mut inv.main[idx]);
+        }
     }
 
     /* HOTBAR label + 9-slot row below the main grid. The selected
@@ -419,7 +518,9 @@ fn draw_inventory_tab(
     for c in 0..INV_HOTBAR_SLOTS {
         let sx = hb_x + c as i32 * (l.slot_px + l.slot_gap);
         let state = if c as i32 == inv.selected { SlotState::Selected } else { SlotState::Normal };
-        draw_slot_for(&inv.slots[c], &g.id_hotbar[c], sx, hb_y, l.slot_px, l.slot_px, state);
+        if draw_slot_for(&inv.slots[c], &g.id_hotbar[c], sx, hb_y, l.slot_px, l.slot_px, state) {
+            apply_slot_click(&mut inv.cursor, &mut inv.slots[c]);
+        }
     }
 
     if !l.mobile {
@@ -435,7 +536,7 @@ fn draw_inventory_tab(
 #[allow(clippy::too_many_arguments)]
 fn draw_crafting_tab(
     g: &InvScreen,
-    inv: &Inventory,
+    inv: &mut Inventory,
     panel_x: i32,
     panel_y: i32,
     panel_w: i32,
@@ -474,7 +575,9 @@ fn draw_crafting_tab(
             }
             let sx = grid_x + c * (l.slot_px + l.slot_gap);
             let sy = grid_y + r * (l.slot_px + l.slot_gap);
-            draw_slot_for(&inv.main[idx], &g.id_main[idx], sx, sy, l.slot_px, l.slot_px, SlotState::Normal);
+            if draw_slot_for(&inv.main[idx], &g.id_main[idx], sx, sy, l.slot_px, l.slot_px, SlotState::Normal) {
+                apply_slot_click(&mut inv.cursor, &mut inv.main[idx]);
+            }
         }
     }
 
@@ -501,7 +604,9 @@ fn draw_crafting_tab(
     for c in 0..INV_HOTBAR_SLOTS {
         let sx = hb_x + c as i32 * (l.slot_px + l.slot_gap);
         let state = if c as i32 == inv.selected { SlotState::Selected } else { SlotState::Normal };
-        draw_slot_for(&inv.slots[c], &g.id_hotbar[c], sx, hb_y, l.slot_px, l.slot_px, state);
+        if draw_slot_for(&inv.slots[c], &g.id_hotbar[c], sx, hb_y, l.slot_px, l.slot_px, state) {
+            apply_slot_click(&mut inv.cursor, &mut inv.slots[c]);
+        }
     }
 
     /* ---- Right: 3x3 personal crafting grid + output. ----
@@ -520,7 +625,9 @@ fn draw_crafting_tab(
             let idx = (r * cr_cols + c) as usize;
             let sx = cr_x + c * (l.slot_px + l.slot_gap);
             let sy = cr_y + r * (l.slot_px + l.slot_gap);
-            draw_slot_for(&inv.craft[idx], &g.id_craft[idx], sx, sy, l.slot_px, l.slot_px, SlotState::Normal);
+            if draw_slot_for(&inv.craft[idx], &g.id_craft[idx], sx, sy, l.slot_px, l.slot_px, SlotState::Normal) {
+                apply_slot_click(&mut inv.cursor, &mut inv.craft[idx]);
+            }
         }
     }
 
@@ -578,8 +685,11 @@ fn draw_crafting_tab(
 
 /// Port of `inventory_screen_draw()`. Per-frame draw call; no-op when
 /// the overlay isn't open.
-pub fn draw(inv: &Inventory) {
+pub fn draw(inv: &mut Inventory) {
     if !is_open() {
+        /* Closed while holding a stack: return it to the bag so it
+         * isn't stranded on the hidden cursor. No-op when nothing held. */
+        stash_cursor(inv);
         return;
     }
 
@@ -652,6 +762,15 @@ pub fn draw(inv: &Inventory) {
             }
             /* Unreachable - disabled tabs swallow clicks. */
             _ => {}
+        }
+
+        /* The held stack rides the cursor, drawn last (on top) with no
+         * frame and no hit-test. */
+        if inv.cursor.count > 0 {
+            let cw = l.slot_px;
+            let cx = g.mouse_x as i32 - cw / 2;
+            let cy = g.mouse_y as i32 - cw / 2;
+            draw_cursor_stack(&inv.cursor, cx, cy, cw, cw);
         }
     });
 
