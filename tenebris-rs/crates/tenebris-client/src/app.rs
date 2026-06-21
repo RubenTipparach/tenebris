@@ -350,62 +350,111 @@ fn player_lat_lon_deg(world_pos: DVec3, body: &BodyConfig) -> (f64, f64, f64) {
 /* --------------------------------------------------------------------- */
 
 thread_local! {
-    /// Dev-only: frames to wait before dropping the `TENEBRIS_DEV_PAD`
-    /// pad. Placement must happen during steady gameplay, not at init:
-    /// editing the world before the first frame double-updates a chunk's
-    /// GPU buffer in one frame (sokol's one-update-per-buffer-per-frame
-    /// rule), which aborts. -1 = disabled.
-    static DEV_PAD_COUNTDOWN: std::cell::Cell<i32> = const { std::cell::Cell::new(-1) };
+    /// Dev-only: frames to wait before dropping the dev showcase blocks.
+    /// Placement must happen during steady gameplay, not at init: editing
+    /// the world before the first frame double-updates a chunk's GPU
+    /// buffer in one frame (sokol's one-update-per-buffer-per-frame rule),
+    /// which aborts. -1 = disabled. Mode: 1 = launch pad, 2 = ore/tech
+    /// showcase ring.
+    static DEV_PLACE_COUNTDOWN: std::cell::Cell<i32> = const { std::cell::Cell::new(-1) };
+    static DEV_PLACE_MODE: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
 }
 
-/// Dev-only: once in-game and a few frames settled, drop the launch-pad
-/// patch and look down at it. Self-disables after firing.
-fn dev_maybe_place_pad(app: &mut App) {
-    let n = DEV_PAD_COUNTDOWN.with(|c| c.get());
+/// Dev-only: once in-game and a few frames settled, drop the requested dev
+/// blocks and angle the camera down at them. Self-disables after firing.
+fn dev_maybe_place(app: &mut App) {
+    let n = DEV_PLACE_COUNTDOWN.with(|c| c.get());
     if n < 0 || menu::state() != GameState::InGameSp {
         return;
     }
     if n > 0 {
-        DEV_PAD_COUNTDOWN.with(|c| c.set(n - 1));
+        DEV_PLACE_COUNTDOWN.with(|c| c.set(n - 1));
         return;
     }
-    DEV_PAD_COUNTDOWN.with(|c| c.set(-1));
-    dev_place_launch_pad(&app.world, dvec3_make(1.0, 0.0, 0.0));
-    /* Tilt the camera down so the pad at the player's feet is in frame. */
-    app.player.borrow_mut().pitch = -0.6;
+    DEV_PLACE_COUNTDOWN.with(|c| c.set(-1));
+    let mode = DEV_PLACE_MODE.with(|c| c.get());
+    let center = dev_player_tile(app);
+    match mode {
+        2 => {
+            /* Ore + tech-block showcase: the centre tile becomes the
+             * launch pad, the ring of neighbours each becomes a different
+             * ore / reference block so one downward shot shows every
+             * tint. */
+            let ring = [
+                Block::CoalOre,
+                Block::CopperOre,
+                Block::TinOre,
+                Block::IronOre,
+                Block::Stone,
+                Block::LaunchPad,
+            ];
+            dev_set_surface(&app.world, center, Block::LaunchPad);
+            dev_for_each_neighbor(&app.world, center, |w, i, n| {
+                dev_set_surface_w(w, n, ring[i % ring.len()]);
+            });
+            /* Look almost straight down so the whole hex flower is framed. */
+            app.player.borrow_mut().pitch = -1.25;
+        }
+        _ => {
+            /* Launch pad: centre tile + its ring all become the pad. */
+            dev_set_surface(&app.world, center, Block::LaunchPad);
+            dev_for_each_neighbor(&app.world, center, |w, _, n| {
+                dev_set_surface_w(w, n, Block::LaunchPad);
+            });
+            app.player.borrow_mut().pitch = -0.6;
+        }
+    }
 }
 
-/// Dev-only: drop a hex launch-pad patch on the surface under `dir` so a
-/// fresh headless boot has the new block to look at / screenshot.
-/// Replaces the topmost solid voxel of the centre tile and its neighbours
-/// with `Block::LaunchPad`. Not a gameplay path - no persistence, no tool
-/// gating; reached only via the `TENEBRIS_DEV_PAD` env var.
-fn dev_place_launch_pad(world: &Rc<RefCell<World>>, dir: DVec3) {
-    let mut w = world.borrow_mut();
-    let center = w.grid.find_tile(dir, 0);
+/// Tile the player is standing on (nearest tile to the camera direction).
+fn dev_player_tile(app: &App) -> i32 {
+    let pos = app.player.borrow().position;
+    app.world
+        .borrow()
+        .grid
+        .find_tile(tenebris_core::math::dvec3_normalize(pos), 0)
+}
+
+/// Run `f(world, neighbor_index, neighbor_tile)` over each valid neighbour
+/// of `center`. Collects the neighbour list first so the closure can hold
+/// the world borrow without aliasing the grid read.
+fn dev_for_each_neighbor(world: &Rc<RefCell<World>>, center: i32, mut f: impl FnMut(&mut World, usize, i32)) {
     if center < 0 {
         return;
     }
-    let mut tiles = vec![center];
-    if let Some(t) = w.grid.tile(center) {
-        for &n in t.neighbors.iter() {
-            if n >= 0 {
-                tiles.push(n);
-            }
+    let neighbors: Vec<i32> = {
+        let w = world.borrow();
+        match w.grid.tile(center) {
+            Some(t) => t.neighbors.iter().copied().filter(|&n| n >= 0).collect(),
+            None => Vec::new(),
+        }
+    };
+    let mut w = world.borrow_mut();
+    for (i, n) in neighbors.into_iter().enumerate() {
+        f(&mut w, i, n);
+    }
+}
+
+/// Replace `tile`'s topmost solid voxel (its presented surface) with `b`.
+fn dev_set_surface(world: &Rc<RefCell<World>>, tile: i32, b: Block) {
+    let mut w = world.borrow_mut();
+    dev_set_surface_w(&mut w, tile, b);
+}
+
+/// Same as [`dev_set_surface`] but on an already-borrowed world.
+fn dev_set_surface_w(w: &mut World, tile: i32, b: Block) {
+    if tile < 0 {
+        return;
+    }
+    let mut top = -1;
+    for d in (0..tenebris_core::world::WORLD_MAX_DEPTH).rev() {
+        if tenebris_core::blocks::is_solid(w.get(tile, d)) {
+            top = d;
+            break;
         }
     }
-    for tile in tiles {
-        /* Topmost solid voxel = the surface this column presents. */
-        let mut top = -1;
-        for d in (0..tenebris_core::world::WORLD_MAX_DEPTH).rev() {
-            if tenebris_core::blocks::is_solid(w.get(tile, d)) {
-                top = d;
-                break;
-            }
-        }
-        if top >= 0 {
-            w.set(tile, top, Block::LaunchPad);
-        }
+    if top >= 0 {
+        w.set(tile, top, b);
     }
 }
 
@@ -612,10 +661,15 @@ extern "C" fn init() {
      *   TENEBRIS_DEV_SP[=name] -> boot straight into an SP world
      *   TENEBRIS_DEV_ROCKET=1  -> open the rocket-assembly screen
      */
-    if std::env::var("TENEBRIS_DEV_PAD").is_ok() {
-        /* Deferred to a few in-game frames in (see dev_maybe_place_pad);
-         * placing at init double-updates a GPU buffer and aborts. */
-        DEV_PAD_COUNTDOWN.with(|c| c.set(15));
+    /* Deferred to a few in-game frames in (see dev_maybe_place); placing
+     * at init double-updates a GPU buffer and aborts. SHOWCASE wins if
+     * both are set. */
+    if std::env::var("TENEBRIS_DEV_SHOWCASE").is_ok() {
+        DEV_PLACE_MODE.with(|c| c.set(2));
+        DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
+    } else if std::env::var("TENEBRIS_DEV_PAD").is_ok() {
+        DEV_PLACE_MODE.with(|c| c.set(1));
+        DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
     }
     if std::env::var("TENEBRIS_DEV_KIT").is_ok() {
         let mut p = player.borrow_mut();
@@ -2016,7 +2070,7 @@ extern "C" fn frame() {
 
 fn frame_inner(app: &mut App) {
     maybe_apply_sp_resume(app);
-    dev_maybe_place_pad(app);
+    dev_maybe_place(app);
     apply_sp_saves_lazy(app);
     maybe_apply_mp_spawn(app);
     maybe_prime_mode_for_state(app);
