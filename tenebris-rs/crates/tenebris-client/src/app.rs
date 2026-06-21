@@ -689,6 +689,9 @@ extern "C" fn init() {
     if std::env::var("TENEBRIS_DEV_ROCKET").is_ok() {
         rocket_screen::open(Some(player.clone()));
     }
+    if std::env::var("TENEBRIS_DEV_CRAFT").is_ok() {
+        crafting_screen::open(Some(player.clone()));
+    }
 
     APP.with(|cell| {
         *cell.borrow_mut() = Some(App {

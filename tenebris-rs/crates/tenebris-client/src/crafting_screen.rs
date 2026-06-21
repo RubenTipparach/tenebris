@@ -61,6 +61,20 @@ pub fn close() {
     S.with(|c| c.borrow_mut().open = false);
 }
 
+/// Force the craft screen open for `player` (dev / headless entry point,
+/// parallel to the `B` toggle). Mutually exclusive with the other
+/// survival overlays, like the key path.
+pub fn open(player: Option<PlayerHandle>) {
+    S.with(|c| {
+        let s = &mut *c.borrow_mut();
+        s.player = player;
+        s.open = true;
+    });
+    crate::inventory_screen::close();
+    crate::rocket_screen::close();
+    release_pointer();
+}
+
 pub fn set_player(player: Option<PlayerHandle>) {
     S.with(|c| c.borrow_mut().player = player);
 }
