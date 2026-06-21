@@ -2134,6 +2134,7 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
     use std::process::Command;
+    use tenebris_core::mining;
     use tenebris_core::planet::{self, BodyId};
 
     /* The byte-compat methodology mirrors the world_water pin
@@ -2292,11 +2293,19 @@ mod tests {
     /* ---- scripted content, mirrored from saves_harness.c ---- */
 
     fn make_world() -> World {
+        /* The C harness compiles the frozen tenebris-c worldgen, which
+         * predates ore blocks. Gen ore-free here so the save byte-compat
+         * comparison isolates the on-disk format from the Rust-only ore
+         * content (tiles 7 + 123 are written straight from gen). Restore
+         * the prior config afterward to avoid leaking into sibling tests. */
+        let saved = mining::config();
+        mining::set_config(mining::MiningConfig::ORE_FREE);
         let body = planet::get(BodyId::Tenebris);
         let mut w = World::create(&body, 3);
         while !w.gen_complete() {
             w.stream_gen(100);
         }
+        mining::set_config(saved);
         w
     }
 

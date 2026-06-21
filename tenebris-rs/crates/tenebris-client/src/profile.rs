@@ -63,31 +63,11 @@ pub struct Profile {
 }
 
 /* ------------------------------------------------------------------ */
-/* Token generation. On the web build we go through crypto.getRandom-
- * Values; on native we mix /dev/urandom (or the process PID + time as
- * a fallback) into a 16-byte buffer and hex-encode it. Same output
- * shape both sides - a lowercase 32-char hex string. */
+/* Token generation. We mix /dev/urandom (or the process PID + time as
+ * a fallback) into a 16-byte buffer and hex-encode it, producing a
+ * lowercase 32-char hex string. */
 /* ------------------------------------------------------------------ */
 
-#[cfg(target_os = "emscripten")]
-fn new_token() -> Option<String> {
-    use std::ffi::{c_char, c_void, CStr};
-    extern "C" {
-        fn profile_js_new_token() -> *mut c_char;
-        fn free(ptr: *mut c_void);
-    }
-    unsafe {
-        let p = profile_js_new_token();
-        if p.is_null() {
-            return None;
-        }
-        let s = CStr::from_ptr(p).to_string_lossy().into_owned();
-        free(p as *mut c_void);
-        Some(s)
-    }
-}
-
-#[cfg(not(target_os = "emscripten"))]
 fn new_token() -> Option<String> {
     use std::io::Read;
 
@@ -260,7 +240,7 @@ pub fn delete(token: &str) {
     }
 }
 
-#[cfg(all(test, not(target_os = "emscripten")))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::client_kv::test_support;

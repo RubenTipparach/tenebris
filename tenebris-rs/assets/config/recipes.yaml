@@ -1,0 +1,74 @@
+# recipes.yaml - crafting recipes, parsed by core/crafting.rs
+#
+# Format (tiny hand-parsed subset):
+#   [name]            section header = recipe id / display name
+#   tier: N           optional progression tier (default 0)
+#   station: <item>   optional station that must be open (default none)
+#   out: <item> N     output item + count
+#   in: <item> N      one or more input lines
+#
+# Item names: block names (log, torch, stone, ...) or item names from
+# core/items.rs (plank, stick, coal, wood-pickaxe, wood-axe, raw ores
+# copper/tin/iron, and the smelted bars copper-ingot/tin-ingot/
+# iron-ingot/bronze-ingot). "log" is a Wood block in the bag.
+#
+# Tier 0 - hand-crafted from trees (the gather -> craft starter loop).
+
+[planks]
+tier: 0
+out: plank 4
+in: log 1
+
+[sticks]
+tier: 0
+out: stick 4
+in: plank 2
+
+[torch]
+tier: 0
+out: torch 4
+in: stick 1
+in: coal 1
+
+[wood-pickaxe]
+tier: 0
+out: wood-pickaxe 1
+in: plank 3
+in: stick 2
+
+[wood-axe]
+tier: 0
+out: wood-axe 1
+in: plank 3
+in: stick 2
+
+# Tier 1 - smelting. Raw ore mined underground is inert until it is
+# smelted with coal as fuel: every bar costs one coal. Bronze is the
+# copper + tin alloy, so tin earns its keep. (A dedicated furnace
+# station is a later tier; for now these are bench recipes and the
+# coal cost is the gameplay gate.)
+
+[copper-ingot]
+tier: 1
+out: copper-ingot 1
+in: copper 1
+in: coal 1
+
+[tin-ingot]
+tier: 1
+out: tin-ingot 1
+in: tin 1
+in: coal 1
+
+[iron-ingot]
+tier: 1
+out: iron-ingot 1
+in: iron 1
+in: coal 1
+
+[bronze-ingot]
+tier: 1
+out: bronze-ingot 2
+in: copper-ingot 1
+in: tin-ingot 1
+in: coal 1

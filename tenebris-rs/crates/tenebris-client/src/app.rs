@@ -39,6 +39,7 @@ use tenebris_core::world::{World, WORLD_MAX_DEPTH};
 use tenebris_core::world_water;
 
 use crate::chat;
+use crate::crafting_screen;
 use crate::gfx_math::{mat4_perspective, Mat4};
 use crate::hotbar_ui;
 use crate::input;
@@ -283,7 +284,7 @@ fn accum_fire(accum: &mut f64, dt: f64, period: f64) -> bool {
 /// Mirrors the room-code normalisation the JS query-param reader does
 /// (`s.toUpperCase().substring(0, 8)`). Idempotent on the JS output;
 /// applied again on the Rust side so the contract is pinned by a test.
-#[cfg_attr(not(target_os = "emscripten"), allow(dead_code))]
+#[allow(dead_code)]
 fn normalize_room_code(s: &str) -> String {
     s.to_uppercase().chars().take(8).collect()
 }
@@ -384,25 +385,12 @@ extern "C" fn init() {
     input::init();
     settings::init(); /* load mouse sensitivity etc. from client_kv */
     job_system::init(0);
-    #[cfg(target_os = "emscripten")]
-    {
-        /* Mobile / tablet browsers swap in the lite water + composite
-         * shaders. Decision happens before renderer_init because the
-         * setter gates which pipelines get created. Native desktop
-         * builds always run the full path. */
-        if unsafe { tenebris_is_mobile_device() } != 0 {
-            renderer::set_perf_mode(true);
-            println!("[renderer] perf mode enabled (mobile device / ?perf=lite)");
-        } else if settings::lite_graphics() {
-            renderer::set_perf_mode(true);
-            println!("[renderer] perf mode enabled (lite-graphics setting)");
-        }
-    }
     renderer::init();
     torch::init();
     mobile_ui::init();
     hotbar_ui::init();
     teleport_menu::init();
+    crafting_screen::init();
 
     /* net_client's /saves audit scores distance from the camera to
      * each persisted tile via this provider (C: the two exported
@@ -434,6 +422,13 @@ extern "C" fn init() {
     config::load_lod("assets/config/lod.yaml");
     config::load_water("assets/config/water.yaml");
     config::load_lighting("assets/config/lighting.yaml");
+    /* Install the crafting recipe table from data so the craft screen
+     * and the bag bridge can read it (see core::crafting). */
+    tenebris_core::crafting::set_recipes(tenebris_core::crafting::load_recipes(
+        "assets/config/recipes.yaml",
+    ));
+    /* Survival mining + ore-drop tuning. */
+    tenebris_core::mining::load_config("assets/config/mining.yaml");
     config::load_ui("assets/config/ui.yaml");
 
     /* pixel_ui::init reads the atlas path out of config::ui(), so it
@@ -484,6 +479,7 @@ extern "C" fn init() {
     let player = Rc::new(RefCell::new(PlayerCtrl::default()));
     player_ctrl::init(&mut player.borrow_mut(), &body);
     teleport_menu::set_player(Some(player.clone()));
+    crafting_screen::set_player(Some(player.clone()));
 
     /* Drain Tenebris gen synchronously at init so the spawn tile has
      * terrain the moment the first frame lands. */
@@ -540,20 +536,6 @@ extern "C" fn init() {
     menu::init();
     remote_players::init();
     chat::init();
-
-    #[cfg(target_os = "emscripten")]
-    {
-        /* ?room=ABCD23 / ?invite=ABCD23 - stash the room (and optional
-         * ?server= override) on the menu module so the boot flow Just
-         * Works for first-time visitors too. ?server= alone (no room)
-         * drops the user on the regular menu. */
-        let room = unsafe { take_js_cstring(tenebris_get_room_code()) };
-        let server_url = unsafe { take_js_cstring(tenebris_get_server_url()) };
-        if let Some(room) = room {
-            let room = normalize_room_code(&room);
-            menu::set_pending_invite(&room, server_url.as_deref().unwrap_or(""));
-        }
-    }
 
     APP.with(|cell| {
         *cell.borrow_mut() = Some(App {
@@ -674,7 +656,7 @@ fn update_overlay(app: &mut App, dt: f32) {
     sdtx::origin(1.0, 1.0);
     sdtx::color3b(0xff, 0xff, 0xff);
     sdtx::puts(&format!(
-        "Tenebris WASM Preview (Goldberg {} tiles, {} moons)\n",
+        "Tenebris (Goldberg {} tiles, {} moons)\n",
         app.world.borrow().tile_count,
         renderer::moon_count()
     ));
@@ -1609,6 +1591,10 @@ fn block_name(b: Block) -> &'static str {
         Block::Leaves => "LEAVES",
         Block::Bedrock => "BEDROCK",
         Block::SeqLeaves => "SEQ_LEAVES",
+        Block::CoalOre => "COAL_ORE",
+        Block::CopperOre => "COPPER_ORE",
+        Block::TinOre => "TIN_ORE",
+        Block::IronOre => "IRON_ORE",
     }
 }
 
@@ -1630,6 +1616,10 @@ fn block_glyph(b: Block) -> char {
         Block::Wood => 'W',
         Block::Leaves | Block::SeqLeaves => 'L',
         Block::Bedrock => 'b',
+        Block::CoalOre => 'c',
+        Block::CopperOre => 'o',
+        Block::TinOre => 't',
+        Block::IronOre => 'r',
     }
 }
 
@@ -2250,6 +2240,7 @@ fn frame_inner(app: &mut App) {
     /* Teleport overlay is creative/debug-only. */
     if app.debug_ui_visible {
         teleport_menu::draw();
+    crafting_screen::draw();
     }
     if app.debug_ui_visible {
         draw_error_overlay();
@@ -2394,6 +2385,12 @@ extern "C" fn event(e: *const sapp::Event) {
 fn event_inner(app: &mut App, e: &sapp::Event) {
     /* In-game pause overlay: swallow every event it owns. */
     if menu::pause_active() && menu::pause_event(e) {
+        return;
+    }
+    /* Survival craft screen: first crack after pause so B toggles it and,
+     * while open, it owns clicks + Esc (closed, it ignores everything and
+     * falls through). Always available - not gated on the F2 debug UI. */
+    if crafting_screen::handle_event(e, Some(app.player.clone())) {
         return;
     }
 
@@ -2558,6 +2555,7 @@ extern "C" fn cleanup() {
     remote_players::shutdown();
     menu::shutdown();
     teleport_menu::shutdown();
+    crafting_screen::shutdown();
     hotbar_ui::shutdown();
     mobile_ui::shutdown();
     torch::shutdown();
@@ -2587,17 +2585,13 @@ pub fn run() {
         cleanup_cb: Some(cleanup),
         width: 1280,
         height: 720,
-        window_title: c"Tenebris (WASM Preview)".as_ptr(),
+        window_title: c"Tenebris".as_ptr(),
         icon: sapp::IconDesc {
             sokol_default: true,
             ..Default::default()
         },
         logger: sapp::Logger {
             func: Some(sokol::log::slog_func),
-            ..Default::default()
-        },
-        html5: sapp::Html5Desc {
-            canvas_selector: c"#canvas".as_ptr(),
             ..Default::default()
         },
         ..Default::default()

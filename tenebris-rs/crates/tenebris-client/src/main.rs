@@ -2,8 +2,10 @@
 //! See ../../PORTING.md for rules.
 
 mod app;
+mod bag;
 mod chat;
 mod client_kv;
+mod crafting_screen;
 mod gfx_math;
 mod hex_mesher;
 mod hotbar_ui;

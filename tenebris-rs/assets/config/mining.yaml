@@ -1,0 +1,11 @@
+# mining.yaml - survival mining + ore-vein tuning, parsed by core/mining.rs
+#
+# A field set to 0 (or omitted) keeps the compiled-in default, matching
+# the other config files.
+#
+# Per-voxel probability that an underground stone block becomes each ore
+# during worldgen (independent rolls - bigger = denser deposits).
+coal_ore_chance: 0.040
+copper_ore_chance: 0.022
+tin_ore_chance: 0.018
+iron_ore_chance: 0.030

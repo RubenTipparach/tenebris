@@ -1,0 +1,71 @@
+# Per-body atmosphere config.
+#
+# Loaded at boot by config_load_atmosphere() and applied to each
+# matching body_config_t before the renderer reads it. Any field
+# omitted falls back to the renderer default in main_web.c — set only
+# what you want to override per planet.
+#
+# Sections are matched case-insensitively against body names (the
+# `name` field in planet.c). Spaces in body names ("Asteroid A") get
+# folded to underscores for the YAML key.
+#
+# Fields:
+#   radius_mult         float  outer shell radius / planet radius
+#   lower_radius_mult   float  atmosphere lower bound / planet radius
+#                              (1.0 = atmosphere starts at the ground;
+#                              >1.0 lifts the bottom up, thinning the
+#                              shell; <1.0 sinks it under the surface.
+#                              Also moves the planet-clip sphere used
+#                              by the ray-march, so this is the knob
+#                              for "how prominent is the limb halo".)
+#   rayleigh_scale    float  main blue-sky knob, 1.0 = Earth
+#   mie_scale         float  haze / forward sun-glow strength
+#   sun_intensity     float  overall sky brightness multiplier
+#   sunset_strength   float  warm-tint multiplier near horizon (0..1)
+#   scale_height      float  density falloff in normalised altitude
+#   mie_g             float  Mie phase asymmetry (-1..1)
+#   wavelengths       vec3   (1/λ⁴) RGB ratios, RGB
+#   sunset_tint       vec3   sky multiplier near horizon
+#   sunset_glow       vec3   sun-direction glow at sunset
+#   sunset_horizon    vec3   horizon-band tint at sunset
+
+tenebris:
+  # Outer shell at 1.6 × planet radius — taller atmosphere column
+  # so ground-level views have more sky overhead and orbital views
+  # show a thicker atmosphere ring.
+  radius_mult: 1.6
+  # Sink the planet-clip sphere 10 % below the actual ground so the
+  # atmosphere ray-march continues a bit past the visible horizon —
+  # softens the harsh dark band where atmosphere meets the planet
+  # silhouette in orbital views. Real terrain still occludes via
+  # depth test so this only affects the band BEYOND the visible
+  # terrain horizon.
+  lower_radius_mult: 0.9
+  # Aligned with Caelum's stated 'Tenebris default (scale-independent
+  # with normalized steps)' values from src/atmosphere.c. Our shader
+  # is now a faithful Caelum port (atmosphere.glsl), so the same
+  # coefficients should produce the same look.
+  sun_intensity: 9.0
+  rayleigh_scale: 0.015
+  mie_scale: 0.01
+  mie_g: 0.85
+  sunset_strength: 0.25
+  scale_height: 0.25
+  # Wavelengths + sunset vec3s are baked as literals in the new
+  # Caelum-style atmosphere.glsl shader and ignored by the renderer
+  # — kept here for back-compat in case we re-introduce per-body
+  # tinting later.
+  wavelengths: [5.602, 9.473, 19.644]
+  sunset_tint: [1.3, 1.0, 0.6]
+  sunset_glow: [1.0, 0.65, 0.25]
+  sunset_horizon: [0.8, 0.4, 0.15]
+
+# Sequoia — sister Earth-like, slightly greener tint.
+sequoia:
+  sun_intensity: 15.0
+  rayleigh_scale: 0.8
+  sunset_tint: [1.1, 1.3, 0.7]
+  sunset_glow: [0.9, 1.0, 0.45]
+
+# Add other has_water=true bodies here. Bodies without atmosphere
+# (moons, asteroids, icy planets) ignore this file entirely.

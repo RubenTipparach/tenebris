@@ -270,6 +270,10 @@ const ATLAS_PATHS: [Option<&str>; ATLAS_TILES] = [
     Some("assets/textures/grass.png"),                       /* 22 LEAVES */
     Some("assets/textures/rocks.png"),                       /* 23 BEDROCK */
     Some("assets/textures/grass.png"),                       /* 24 SEQ_LEAVES */
+    Some("assets/textures/rocks.png"),                       /* 25 COAL_ORE */
+    Some("assets/textures/rocks.png"),                       /* 26 COPPER_ORE */
+    Some("assets/textures/rocks.png"),                       /* 27 TIN_ORE */
+    Some("assets/textures/rocks.png"),                       /* 28 IRON_ORE */
 ];
 
 /// Per-channel multiplier applied to each loaded tile. {1,1,1} =
@@ -300,6 +304,10 @@ const ATLAS_TINTS: [[f32; 3]; ATLAS_TILES] = [
     [0.65, 1.05, 0.50], /* LEAVES   - saturated green    */
     [0.30, 0.30, 0.32], /* BEDROCK  - near-black slate   */
     [1.45, 0.30, 0.30], /* SEQ_LEAVES - Sequoia red foliage */
+    [0.40, 0.40, 0.45], /* COAL_ORE   - dark blue-gray   */
+    [1.35, 0.75, 0.40], /* COPPER_ORE - orange rust      */
+    [0.90, 0.95, 1.00], /* TIN_ORE    - pale silver      */
+    [1.15, 0.85, 0.55], /* IRON_ORE   - tan / buff       */
 ];
 
 struct AtlasBake {
@@ -2533,6 +2541,60 @@ fn chunk_upload(c: &mut MeshChunk) {
     c.last_uploaded_water_idx_count = c.water_mesh.indices.len() as i32;
 }
 
+/// Build one chunk's terrain + water meshes from its ordered tile list.
+///
+/// A chunk holds ~`tile_count / CHUNK_COUNT` tiles (≈5k on a subs=6 body),
+/// so a single edit-triggered chunk rebuild meshes thousands of tiles on
+/// the main thread. Each tile's geometry is independent (reads `&World`,
+/// emits self-relative indices), so for a large chunk we split the tile
+/// list into contiguous ascending ranges, build a partial mesh per range
+/// across the rayon pool, then stitch the partials back in range order
+/// with `HexMesh::append`. Contiguous ranges + ordered append make the
+/// result byte-identical to the sequential build (pinned mesh hashes
+/// hold). Small chunks build inline to dodge the fan-out overhead.
+fn build_chunk_mesh(c: &mut MeshChunk, w: &World, tiles: &[i32], has_water: bool) {
+    use rayon::prelude::*;
+
+    c.mesh.reset();
+    c.water_mesh.reset();
+
+    /* Below this, the rayon split + merge costs more than it saves. */
+    const PARALLEL_MIN_TILES: usize = 512;
+    let nthreads = rayon::current_num_threads();
+    if tiles.len() < PARALLEL_MIN_TILES || nthreads < 2 {
+        for &i in tiles {
+            hex_mesher::build_tile(&mut c.mesh, w, i);
+            hex_mesher::build_water(&mut c.water_mesh, w, i);
+            if has_water {
+                hex_mesher::build_water_voxels(&mut c.water_mesh, w, i);
+            }
+        }
+        return;
+    }
+
+    let range_len = tiles.len().div_ceil(nthreads);
+    let partials: Vec<(HexMesh, HexMesh)> = tiles
+        .par_chunks(range_len)
+        .map(|range| {
+            let mut mesh = HexMesh::new();
+            let mut water = HexMesh::new();
+            for &i in range {
+                hex_mesher::build_tile(&mut mesh, w, i);
+                hex_mesher::build_water(&mut water, w, i);
+                if has_water {
+                    hex_mesher::build_water_voxels(&mut water, w, i);
+                }
+            }
+            (mesh, water)
+        })
+        .collect();
+
+    for (mesh, water) in &partials {
+        c.mesh.append(mesh);
+        c.water_mesh.append(water);
+    }
+}
+
 /// Port of `body_chunk_rebuild_full()`. Drives the lighting BFS to
 /// completion BEFORE meshing this chunk so the per-vertex sky/torch
 /// values reflect a fully converged grid, then rebuilds the chunk's
@@ -2579,34 +2641,25 @@ fn body_chunk_rebuild_full(r: &mut Renderer, bi: usize, chunk_idx: usize) {
 
     let t_mesh_start = now_ticks();
     profiler::begin("chunk-remesh");
-    let mut tiles_remeshed = 0usize;
+    let tiles_remeshed;
     {
         let body = &mut r.bodies[bi];
         let has_water = body.has_water;
-        /* Walk only this chunk's tiles (built in body_alloc_chunks)
-         * rather than scanning all tile_count - the difference between
-         * a per-edit full-grid sweep and touching just the
-         * ~tile_count/nchunks tiles the chunk actually owns. */
+        /* Gather this chunk's own tiles via the precomputed per-chunk
+         * flat list (PR#39 perf: O(chunk tiles), not an O(tile_count)
+         * full-grid scan), then hand the ascending list to the parallel
+         * chunk mesher. Combines main's fast gather with the branch's
+         * multithreaded build. */
         let off = body.chunk_tile_off[chunk_idx] as usize;
         let cnt = body.chunk_tile_cnt[chunk_idx] as usize;
-        let flat = &body.chunk_tile_flat;
+        let tiles: Vec<i32> = body.chunk_tile_flat[off..off + cnt]
+            .iter()
+            .copied()
+            .filter(|&i| i < w.gen_cursor)
+            .collect();
+        tiles_remeshed = tiles.len();
         let c = &mut body.chunks[chunk_idx];
-        c.mesh.reset();
-        c.water_mesh.reset();
-        for k in 0..cnt {
-            let i = flat[off + k];
-            if i >= w.gen_cursor {
-                continue; /* not yet generated */
-            }
-            hex_mesher::build_tile(&mut c.mesh, &w, i);
-            hex_mesher::build_water(&mut c.water_mesh, &w, i);
-            /* Per-voxel water cells outside the sea-level ocean cap;
-             * skipped on bodies with no water configured. */
-            if has_water {
-                hex_mesher::build_water_voxels(&mut c.water_mesh, &w, i);
-            }
-            tiles_remeshed += 1;
-        }
+        build_chunk_mesh(c, &w, &tiles, has_water);
     }
     profiler::end("chunk-remesh");
     r.tiles_remeshed += tiles_remeshed;
@@ -2685,30 +2738,49 @@ fn body_full_mesh(r: &mut Renderer, bi: usize) {
     let t_mesh_start = now_ticks();
     profiler::begin("chunk-remesh");
     {
+        use rayon::prelude::*;
         let body = &mut r.bodies[bi];
-        for c in &mut body.chunks[..chunk_n()] {
-            c.mesh.reset();
-            c.water_mesh.reset();
-        }
         let has_water = body.has_water;
-        for i in 0..w.tile_count {
-            if i >= w.gen_cursor {
-                continue;
-            }
+        let gen = w.gen_cursor.min(w.tile_count);
+
+        /* Bucket generated tiles into their owning chunk, ascending tile
+         * order preserved so each chunk's mesh-append order is identical
+         * to the old sequential path (mesh output stays byte-for-byte
+         * stable - the pinned hex_mesher hashes still hold). */
+        let mut buckets: Vec<Vec<i32>> = vec![Vec::new(); body.chunks.len()];
+        for i in 0..gen {
             let ci = body.tile_to_chunk[i as usize] as usize;
-            let c = &mut body.chunks[ci];
-            hex_mesher::build_tile(&mut c.mesh, &w, i);
-            if has_water {
-                hex_mesher::build_water(&mut c.water_mesh, &w, i);
-                hex_mesher::build_water_voxels(&mut c.water_mesh, &w, i);
-            }
+            buckets[ci].push(i);
         }
-        /* This pass meshed every generated tile, so every dirty tile is
-         * now resolved: drain the whole dirty queue (clears the bits +
-         * empties it) in one shot rather than clearing per-tile inside
-         * the loop. */
-        w.dirty_consume();
+
+        /* Fan the per-chunk CPU mesh build across the rayon pool. Each
+         * closure writes only its own chunk's HexMesh and reads &World
+         * immutably; World is plain Vec storage (Send + Sync), so the
+         * shared borrow is race-free. GL uploads stay on the caller
+         * (GL) thread - see the chunk_upload loop at the call site. */
+        let w_ref: &World = &w;
+        body
+            .chunks
+            .par_iter_mut()
+            .zip(buckets.into_par_iter())
+            .for_each(|(c, tiles)| {
+                c.mesh.reset();
+                c.water_mesh.reset();
+                for i in tiles {
+                    hex_mesher::build_tile(&mut c.mesh, w_ref, i);
+                    if has_water {
+                        hex_mesher::build_water(&mut c.water_mesh, w_ref, i);
+                        hex_mesher::build_water_voxels(&mut c.water_mesh, w_ref, i);
+                    }
+                }
+            });
     }
+    /* This pass meshed every generated tile, so every dirty tile is now
+     * resolved: drain the whole dirty queue (clears the bits + empties
+     * it) in one shot. Routes through dirty_consume - not a per-tile
+     * tile_clear_dirty loop - so the dirty_queue the per-frame remesh
+     * path drains doesn't keep stale entries after a full mesh. */
+    w.dirty_consume();
     profiler::end("chunk-remesh");
     r.mesh_rebuild_ms_this_frame += ticks_ms(ticks_diff(now_ticks(), t_mesh_start));
     r.bodies[bi].streamed_complete = true;

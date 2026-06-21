@@ -1,0 +1,79 @@
+# Terrain lighting tuning — drives the planet-aware day/night terminator
+# in hex.glsl. Loaded at boot by config_load_lighting() and applied to
+# every chunked terrain draw.
+#
+# Underwater terrain dimming is NOT tuned here — it reuses water.yaml's
+# absorption + deep_color so the terrain visible under the cap reads
+# continuously with the cap colour above it. Adjust those in water.yaml
+# if you want the underwater look to change.
+#
+# Fields:
+#   night_ambient_floor  float  Ambient brightness on the night side
+#                               of the terminator, as a fraction of
+#                               the full-day ambient. 0.10 = 10 % at
+#                               midnight; 0.0 = pitch-black; 1.0 =
+#                               no day/night cycle.
+#   terminator_lo        float  Smoothstep lo edge on surface-dir·sun
+#                               (the dot product of the per-tile
+#                               radial vector with the sun direction).
+#                               Below this value the tile is fully
+#                               shaded.
+#   terminator_hi        float  Smoothstep hi edge. Above this value
+#                               the tile is fully lit. The gap between
+#                               lo and hi is the dawn/dusk band — the
+#                               JS reference uses (-0.1, 0.3) which
+#                               reads as a soft ~25° twilight zone
+#                               straddling the geometric terminator.
+
+#   torch_color          vec3   warm-tint multiplier for the additive
+#                               torch contribution baked per-vertex
+#                               on terrain. (1.0, 0.7, 0.3) = JS
+#                               reference's wood-fire orange. Push
+#                               red for embers, push white for a
+#                               cleaner magic-glow.
+#   torch_intensity      float  global scalar on top of torch_color.
+#                               Lets designers dim/boost all torches
+#                               without re-baking the per-vertex
+#                               inverse-square sums.
+#
+#   engine               str    Per-vertex lighting backend.
+#                               'column' = legacy path (sky_light_at
+#                               counts solid voxels stacked above the
+#                               column, torch_light_at sums inverse-
+#                               square through walls). 'voxel' = new
+#                               propagated grid in core/world_light:
+#                               6-neighbour BFS with straight-down-
+#                               through-air sky shafts + per-step
+#                               attenuation. Defaults to 'column'
+#                               for visual parity with previous builds.
+#   voxel_sky_max        int    Max sky value seeded into open-sky air
+#                               voxels before propagation. 15 matches
+#                               the nibble range the mesher normalises
+#                               against. Lower = darker daylight.
+#   voxel_torch_emission int    Block light at each torch's anchor
+#                               voxel before propagation. 14 leaves
+#                               one step of headroom under the 15-cap;
+#                               0 disables torch propagation entirely
+#                               (useful when isolating sky tuning).
+
+lighting:
+  night_ambient_floor: 0.20
+  terminator_lo:      -0.10
+  terminator_hi:       0.30
+
+  torch_color:         [1.00, 0.70, 0.30]
+  torch_intensity:     1.00
+
+  engine:               voxel
+  voxel_sky_max:        15
+  voxel_torch_emission: 14
+  # Lateral BFS step attenuation. Vertical-down stays implicit -1
+  # (preserves the daylight-shaft effect). 1 matches Minecraft's
+  # behaviour: cavities and under-overhang interiors only darken
+  # at the boundary, not several tiles into the open ground. Bump
+  # to 2-3 if shadows feel too soft.
+  voxel_sky_lateral_loss: 1
+  # Per-frame BFS pop budget. Keeps a heavy relight from stalling
+  # the frame after a chunk edit; the BFS resumes the following
+  # frame from where it left off.
+  voxel_rebuild_ops_per_frame: 50000

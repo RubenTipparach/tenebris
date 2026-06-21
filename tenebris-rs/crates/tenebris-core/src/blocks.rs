@@ -70,10 +70,19 @@ pub enum Block {
      * Treated identically to Block::Leaves everywhere else (covering,
      * width, mining loot). */
     SeqLeaves = 24,
+
+    /* Ore-bearing rock. Runtime-tinted variants of the stone texture
+     * (like CragRock / FrostIce / AsteroidRock) - no new source art.
+     * Scattered through underground stone by worldgen; mining each with
+     * a pickaxe drops its raw resource (see core::mining::drops). */
+    CoalOre = 25,
+    CopperOre = 26,
+    TinOre = 27,
+    IronOre = 28,
 }
 
 /// Mirrors C's `BLOCK_COUNT` (the implicit trailing enum member).
-pub const BLOCK_COUNT: u8 = 25;
+pub const BLOCK_COUNT: u8 = 29;
 
 impl Block {
     /// Fallible conversion from the raw byte stored in voxel arrays /
@@ -218,7 +227,11 @@ mod tests {
         assert_eq!(Block::Leaves as u8, 22);
         assert_eq!(Block::Bedrock as u8, 23);
         assert_eq!(Block::SeqLeaves as u8, 24);
-        assert_eq!(BLOCK_COUNT, 25);
+        assert_eq!(Block::CoalOre as u8, 25);
+        assert_eq!(Block::CopperOre as u8, 26);
+        assert_eq!(Block::TinOre as u8, 27);
+        assert_eq!(Block::IronOre as u8, 28);
+        assert_eq!(BLOCK_COUNT, 29);
     }
 
     #[test]

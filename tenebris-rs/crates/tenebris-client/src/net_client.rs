@@ -1631,47 +1631,19 @@ pub fn connect(url: &str) {
  * misses outside that radius are summarised so a 160k-tile planet's
  * far side doesn't drown the console.
  *
- * The fetch lives in the JS half because the C side has no HTTP
- * client - sockets-only via libwebsockets in native, browser-side WS
- * in WASM. Native builds skip the audit (the audit's a debugging tool
- * aimed at the deployed Fly server, not headless test environments). */
+ * The fetch lived in the JS half because the C side has no HTTP
+ * client - sockets-only via libwebsockets in native. Native builds
+ * skip the audit (the audit's a debugging tool aimed at the deployed
+ * Fly server, not headless test environments). */
 
-/// Web fetch glue. In C this is `EM_JS(net_client_js_fetch_saves)` -
-/// a browser `fetch()` whose .then re-enters via `saves_audit_cb`. The
-/// JS body lives in `web/library_tenebris.js` (--js-library); its
-/// promise re-enters via the `net_client_saves_audit_cb` keepalive
-/// export in app.rs. Native: no-op, exactly like the C #else branch
-/// (no HTTP client in the native build).
-#[cfg(target_os = "emscripten")]
-fn js_fetch_saves(url: &str) {
-    use std::ffi::CString;
-    extern "C" {
-        fn net_client_js_fetch_saves(url_cstr: *const std::ffi::c_char);
-    }
-    let Ok(c) = CString::new(url) else { return };
-    unsafe { net_client_js_fetch_saves(c.as_ptr()) };
-}
-
-#[cfg(not(target_os = "emscripten"))]
+/// Saves-audit fetch glue. Native: no-op, exactly like the C #else
+/// branch (no HTTP client in the native build).
 fn js_fetch_saves(url: &str) {
     let _ = url;
 }
 
-/// Web fetch glue for /saves/body. In C: `EM_JS(net_client_js_fetch_body)`
-/// re-entering via `body_blob_cb` (the `net_client_body_blob_cb`
-/// keepalive export in app.rs). Native: no-op, exactly like the C
-/// #else branch.
-#[cfg(target_os = "emscripten")]
-fn js_fetch_body(url: &str, body_id: u32) {
-    use std::ffi::CString;
-    extern "C" {
-        fn net_client_js_fetch_body(url_cstr: *const std::ffi::c_char, body_id: u32);
-    }
-    let Ok(c) = CString::new(url) else { return };
-    unsafe { net_client_js_fetch_body(c.as_ptr(), body_id) };
-}
-
-#[cfg(not(target_os = "emscripten"))]
+/// /saves/body fetch glue. Native: no-op, exactly like the C #else
+/// branch.
 fn js_fetch_body(url: &str, body_id: u32) {
     let _ = (url, body_id);
 }

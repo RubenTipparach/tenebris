@@ -52,8 +52,8 @@ use tenebris_core::world_water;
 
 /* Atlas column count (must match the runtime bake in renderer.c).
  * 12 default + 6 Sequoia + 3 tinted variants + wood + leaves + bedrock
- * + seq-leaves = 25 total. */
-pub const HEX_ATLAS_TILES: i32 = 25;
+ * + seq-leaves = 25, + 4 ore tints (coal/copper/tin/iron) = 29 total. */
+pub const HEX_ATLAS_TILES: i32 = 29;
 pub const HEX_ATLAS_U_STEP: f32 = 1.0 / HEX_ATLAS_TILES as f32;
 
 /*
@@ -115,6 +115,18 @@ impl HexMesh {
     pub fn reset(&mut self) {
         self.vertices.clear();
         self.indices.clear();
+    }
+
+    /// Append another mesh's geometry, rebasing its indices onto this
+    /// mesh's current vertex count. Used to stitch the partial meshes
+    /// produced when a chunk's tiles are meshed in parallel back into a
+    /// single chunk mesh: each partial builds with self-relative indices,
+    /// so concatenating partials in tile order with this offset yields the
+    /// exact buffer a single sequential build would have produced.
+    pub fn append(&mut self, other: &HexMesh) {
+        let base = self.vertices.len() as u32;
+        self.vertices.extend_from_slice(&other.vertices);
+        self.indices.extend(other.indices.iter().map(|i| i + base));
     }
 
     /* hex_mesh_free(): Drop handles the frees. */
@@ -1500,7 +1512,7 @@ pub fn relight_if_needed(w: &mut World) {
 
 /* ----------------------------------------------------------------------- */
 
-#[cfg(all(test, not(target_os = "emscripten")))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::client_kv::test_support;
@@ -1592,10 +1604,59 @@ mod tests {
     }
 
     #[test]
+    fn append_merge_matches_sequential_build() {
+        /* The renderer's parallel chunk mesher splits a chunk's tiles
+         * into contiguous ranges, builds a partial mesh per range, then
+         * stitches them with HexMesh::append. This pins the invariant
+         * that makes that safe: partials built independently and appended
+         * in tile order reproduce the exact buffer a single sequential
+         * build emits (same vertices, same rebased indices). */
+        /* Serialize with the other lighting-config-sensitive tests: the
+         * engine setting is global, so a concurrent test flipping it
+         * between the sequential and parallel builds would skew the
+         * baked per-vertex light and produce a false divergence. */
+        let _g = test_support::begin("append_merge");
+        config::parse_lighting("engine: column\n", "append-merge");
+        let body = planet::get(BodyId::Tenebris);
+        let mut w = World::create(&body, 3);
+        while !w.gen_complete() {
+            w.stream_gen(4096);
+        }
+
+        let tiles: Vec<i32> = (0..200).collect();
+
+        let mut seq = HexMesh::new();
+        let mut seq_w = HexMesh::new();
+        for &i in &tiles {
+            build_tile(&mut seq, &w, i);
+            build_water(&mut seq_w, &w, i);
+        }
+
+        /* Split into 3 uneven contiguous ranges and merge in order. */
+        let mut par = HexMesh::new();
+        let mut par_w = HexMesh::new();
+        for range in tiles.chunks(67) {
+            let mut m = HexMesh::new();
+            let mut mw = HexMesh::new();
+            for &i in range {
+                build_tile(&mut m, &w, i);
+                build_water(&mut mw, &w, i);
+            }
+            par.append(&m);
+            par_w.append(&mw);
+        }
+
+        assert_eq!(seq.vertices, par.vertices, "terrain vertices diverge");
+        assert_eq!(seq.indices, par.indices, "terrain indices diverge");
+        assert_eq!(seq_w.vertices, par_w.vertices, "water vertices diverge");
+        assert_eq!(seq_w.indices, par_w.indices, "water indices diverge");
+    }
+
+    #[test]
     fn atlas_consts_pinned() {
-        assert_eq!(HEX_ATLAS_TILES, 25);
-        /* C: (1.0f / (float)HEX_ATLAS_TILES) - 0.04f. */
-        assert_eq!(HEX_ATLAS_U_STEP.to_bits(), 0.04f32.to_bits());
+        assert_eq!(HEX_ATLAS_TILES, 29);
+        /* 1.0 / HEX_ATLAS_TILES (widened from 25 to 29 for the ore tints). */
+        assert_eq!(HEX_ATLAS_U_STEP.to_bits(), (1.0f32 / 29.0).to_bits());
         /* Vertex layout: 44-byte stride, field offsets as the
          * pipelines bind them. */
         assert_eq!(std::mem::size_of::<HexVertex>(), 44);
@@ -1770,119 +1831,83 @@ mod tests {
 
     const S1_VC: usize = 55;
     const S1_IC: usize = 90;
-    const S1_VH: u64 = 0x737842abc6482be5;
+        const S1_VH: u64 = 0x86a0392ed5659680;
     const S1_IH: u64 = 0x489c92b4ebb0bd85;
-    const S1_V0: [u32; 11] = [
-        0x43947274, 0xc15441cf, 0xc1af9cc9, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3df5c28f,
-        0x00000000, 0x3f13b2fb, 0x00000000, 0x00000000,
-    ];
-    const S1_V1: [u32; 11] = [
-        0x43947274, 0x415441cf, 0xc1af9cc9, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3e23d70a,
-        0x00000000, 0x3f13b2fb, 0x00000000, 0x00000000,
-    ];
-    const S1_VMID: [u32; 11] = [
-        0x4395674c, 0x41d5d274, 0x00000000, 0x3f800000, 0x00000000, 0x00000000, 0x3df045bb,
-        0x3f400000, 0x3f800000, 0x00000000, 0x00000000,
-    ];
-    const S1_VLAST: [u32; 11] = [
-        0x4395674c, 0xc1d5d274, 0x00000000, 0xbd9c3fd0, 0xbf5a59fd, 0xbf043380, 0x3da3d70a,
-        0x3f800000, 0x3f800000, 0x00000000, 0x00000000,
-    ];
+        const S1_V0: [u32; 11] = [0x43947274, 0xc15441cf, 0xc1af9cc9, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3dd3dcb0, 0x00000000, 0x3f13b2fb, 0x00000000, 0x00000000];
+        const S1_V1: [u32; 11] = [0x43947274, 0x415441cf, 0xc1af9cc9, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3e0d3dcb, 0x00000000, 0x3f13b2fb, 0x00000000, 0x00000000];
+        const S1_VMID: [u32; 11] = [0x4395674c, 0x41d5d274, 0x00000000, 0x3f800000, 0x00000000, 0x00000000, 0x3dcf21a2, 0x3f400000, 0x3f800000, 0x00000000, 0x00000000];
+        const S1_VLAST: [u32; 11] = [0x4395674c, 0xc1d5d274, 0x00000000, 0xbd9c3fd0, 0xbf5a59fd, 0xbf043380, 0x3d8d3dcb, 0x3f800000, 0x3f800000, 0x00000000, 0x00000000];
 
     const S2_VC: usize = 142;
     const S2_IC: usize = 288;
-    const S2_VH: u64 = 0x55d25523a42bf19d;
+        const S2_VH: u64 = 0x98e49a781f3160e5;
     const S2_IH: u64 = 0x87cd063e4fdf9205;
-    const S2_VMID: [u32; 11] = [
-        0xc3927eaf, 0xc14aa9c7, 0xc2d476f9, 0xbf764198, 0x00000000, 0xbe8be997, 0x3f61f748,
-        0x3f400000, 0x3f800000, 0x00000000, 0x00000000,
-    ];
+        const S2_VMID: [u32; 11] = [0xc3927eaf, 0xc14aa9c7, 0xc2d476f9, 0xbf764198, 0x00000000, 0xbe8be997, 0x3f42cc58, 0x3f400000, 0x3f800000, 0x00000000, 0x00000000];
 
     const S3_VC: usize = 66;
     const S3_IC: usize = 105;
-    const S3_VH: u64 = 0xd2d242015305ec64;
+        const S3_VH: u64 = 0x63c8aed7f363a458;
     const S3_IH: u64 = 0xf8c0595555ef4e63;
-    const S3_V0: [u32; 11] = [
-        0xc337636b, 0x437c69ed, 0x00000000, 0xbf27b753, 0xbef3b458, 0x3f16329a, 0x3df5c28f,
-        0x00000000, 0x3eaa6e14, 0x00000000, 0x00000000,
-    ];
+        const S3_V0: [u32; 11] = [0xc337636b, 0x437c69ed, 0x00000000, 0xbf27b753, 0xbef3b458, 0x3f16329a, 0x3dd3dcb0, 0x00000000, 0x3eaa6e14, 0x00000000, 0x00000000];
 
     const S4_VC: usize = 6;
     const S4_IC: usize = 15;
-    const S4_VH: u64 = 0xcaa1045ab8bd3bf2;
+        const S4_VH: u64 = 0xcaa1045ab8bd3bf2;
     const S4_IH: u64 = 0x7943df7f421941c5;
-    const S4_V0: [u32; 11] = [
-        0xc31d74db, 0xc37ec519, 0x00000000, 0xbf069650, 0xbf59c440, 0x00000000, 0x00000000,
-        0x00000000, 0x3f800000, 0x00000000, 0x3f800000,
-    ];
+        const S4_V0: [u32; 11] = [0xc31d74db, 0xc37ec519, 0x00000000, 0xbf069650, 0xbf59c440, 0x00000000, 0x00000000, 0x00000000, 0x3f800000, 0x00000000, 0x3f800000];
 
     /* The deep-ocean column is fully culled (caps connect through the
      * column, neighbours are water or solid) - zero geometry; hashes
      * are the FNV-1a64 offset basis over empty buffers. */
     const S5_VC: usize = 0;
     const S5_IC: usize = 0;
-    const S5_VH: u64 = 0xcbf29ce484222325;
+        const S5_VH: u64 = 0xcbf29ce484222325;
     const S5_IH: u64 = 0xcbf29ce484222325;
 
     const CAVE_NB: i32 = 539;
     const S6A_VC: usize = 103;
     const S6A_IC: usize = 162;
-    const S6A_VH: u64 = 0xdcfc92973c07a405;
+        const S6A_VH: u64 = 0x8a286d7b9ceaf290;
     const S6A_IH: u64 = 0x547c88d534b4f325;
-    const S6A_VMID: [u32; 11] = [
-        0x4394f1fa, 0xc154f826, 0xc1b033a5, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3df5c28f,
-        0x3f800000, 0x3f13b2fb, 0x00000000, 0x00000000,
-    ];
+        const S6A_VMID: [u32; 11] = [0x4394f1fa, 0xc154f826, 0xc1b033a5, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3dd3dcb0, 0x3f800000, 0x3f13b2fb, 0x00000000, 0x00000000];
     const S6B_VC: usize = 117;
     const S6B_IC: usize = 198;
-    const S6B_VH: u64 = 0x92c12e77db874d58;
+        const S6B_VH: u64 = 0xc9ecb45fc1498ad1;
     const S6B_IH: u64 = 0xf4c2850a72d89205;
 
     const FLOW_NB: i32 = 279;
     const S7A_VC: usize = 38;
     const S7A_IC: usize = 72;
-    const S7A_VH: u64 = 0x7447a8e81830f70b;
+        const S7A_VH: u64 = 0xe9a7c7e3ed159088;
     const S7A_IH: u64 = 0xf5363b05eb547fdd;
-    const S7A_V0: [u32; 11] = [
-        0xc39cd92c, 0x00000000, 0xc2b23ab3, 0xbf764198, 0x00000000, 0xbe8be997, 0x00000000,
-        0x3f7f632a, 0x3f800000, 0x00000000, 0x3f800000,
-    ];
+        const S7A_V0: [u32; 11] = [0xc39cd92c, 0x00000000, 0xc2b23ab3, 0xbf764198, 0x00000000, 0xbe8be997, 0x00000000, 0x3f7f632a, 0x3f800000, 0x00000000, 0x3f800000];
     const S7B_VC: usize = 62;
     const S7B_IC: usize = 108;
-    const S7B_VH: u64 = 0x3af30386f85ed705;
+        const S7B_VH: u64 = 0x23cb7d395de09872;
     const S7B_IH: u64 = 0x4eb7dd0a224605ed;
 
     const S8_VC: usize = 103;
     const S8_IC: usize = 162;
-    const S8_VH: u64 = 0xa04dc66307c45073;
+        const S8_VH: u64 = 0xa68646656ec679a2;
     const S8_IH: u64 = 0x547c88d534b4f325;
-    const S8_V0: [u32; 11] = [
-        0x4391754d, 0xc14ffbc2, 0xc1ac139d, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3e4ccccc,
-        0x00000000, 0x3cae52d6, 0x00000000, 0x00000000,
-    ];
+        const S8_V0: [u32; 11] = [0x4391754d, 0xc14ffbc2, 0xc1ac139d, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3e308d3e, 0x00000000, 0x3cae52d6, 0x00000000, 0x00000000];
 
     const S9A_VC: usize = 103;
     const S9A_IC: usize = 162;
-    const S9A_VH: u64 = 0xdea1442fcb4e11c3;
+        const S9A_VH: u64 = 0x66275fa03ddc74ea;
     const S9A_IH: u64 = 0x547c88d534b4f325;
-    const S9A_V0: [u32; 11] = [
-        0x4391754d, 0xc14ffbc2, 0xc1ac139d, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3e4ccccc,
-        0x00000000, 0x00000000, 0x00000000, 0x00000000,
-    ];
-    const S9A_VMID: [u32; 11] = [
-        0x4394f1fa, 0xc154f826, 0xc1b033a5, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3df5c28f,
-        0x3f800000, 0x00000000, 0x00000000, 0x00000000,
-    ];
+        const S9A_V0: [u32; 11] = [0x4391754d, 0xc14ffbc2, 0xc1ac139d, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3e308d3e, 0x00000000, 0x00000000, 0x00000000, 0x00000000];
+        const S9A_VMID: [u32; 11] = [0x4394f1fa, 0xc154f826, 0xc1b033a5, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3dd3dcb0, 0x3f800000, 0x00000000, 0x00000000, 0x00000000];
     const S9B_VC: usize = 66;
     const S9B_IC: usize = 105;
-    const S9B_VH: u64 = 0x0fea955b60282251;
+        const S9B_VH: u64 = 0xd6d2421444798a19;
     const S9B_IH: u64 = 0xf8c0595555ef4e63;
     const S9C_VC: usize = 38;
     const S9C_IC: usize = 72;
-    const S9C_VH: u64 = 0x7447a8e81830f70b;
+        const S9C_VH: u64 = 0xe9a7c7e3ed159088;
     const S9C_IH: u64 = 0xf5363b05eb547fdd;
     const S9D_VC: usize = 6;
     const S9D_IC: usize = 15;
-    const S9D_VH: u64 = 0xcaa1045ab8bd3bf2;
+        const S9D_VH: u64 = 0xcaa1045ab8bd3bf2;
     const S9D_IH: u64 = 0x7943df7f421941c5;
 }

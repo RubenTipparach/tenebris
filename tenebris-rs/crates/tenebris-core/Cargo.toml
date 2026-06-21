@@ -6,4 +6,10 @@ license.workspace = true
 
 [dependencies]
 
+# Data-parallel terrain streaming. World::stream_gen generates each tile's
+# voxel column independently (own slice of `blocks`, pure noise eval), so
+# the batch fans out across a rayon work-stealing pool; the cheap dirty/
+# edited bitset writes (8 tiles share a byte) stay on a sequential pass.
+rayon = "1"
+
 [dev-dependencies]

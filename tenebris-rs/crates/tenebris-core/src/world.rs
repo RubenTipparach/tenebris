@@ -65,6 +65,7 @@ use crate::blocks::{self, Block};
 use crate::config;
 use crate::goldberg::{self, Goldberg};
 use crate::math::{dvec3_scale, DVec3, Vec3};
+use crate::mining;
 use crate::planet::{self, BodyConfig};
 use crate::planet_gen;
 use crate::world_light::{self, WorldLight};
@@ -181,6 +182,129 @@ fn tile_hash(seed: u64, tile_idx: i32, salt: u32) -> u32 {
     h ^ (h >> 16)
 }
 
+/// Generate one tile's voxel column into `col` (length `WORLD_MAX_DEPTH`)
+/// and return whether the column diverges from the bare analytic surface
+/// (a tree was planted) so the caller can set the `edited` bit.
+///
+/// Free function (no `&self`) so `World::stream_gen` can fan the column
+/// build across rayon while holding only a shared borrow of the body /
+/// grid and an exclusive borrow of each tile's own `blocks` slice. The
+/// logic is the per-column half of the old `gen_tile`; bitset writes are
+/// the caller's job (they share bytes across tiles and can't be threaded).
+/* Fixed salts for the deterministic per-voxel ore hash. Part of the
+ * hash's identity (not designer knobs), so they stay inline per the
+ * "no magic numbers" exception. */
+const ORE_SALT: u32 = 0x0_0_E_0; // "ore"
+const ORE_DEPTH_MIX: u32 = 0x9E3779B1; // golden-ratio odd multiplier
+
+fn gen_column(body: &BodyConfig, grid: &Goldberg, tile_idx: i32, col: &mut [u8]) -> bool {
+    let t = match grid.tile(tile_idx) {
+        Some(t) => *t,
+        None => return false,
+    };
+
+    /* Per-column biome profile + surface height (meters above base). */
+    let prof = planet_gen::profile(body, t.center);
+
+    /* Map meters -> block depth. */
+    let mut surface_idx = (prof.surface_m as f64 / BLOCK_HEIGHT).floor() as i32 + SEA_LEVEL_IDX;
+    if surface_idx < 2 {
+        surface_idx = 2;
+    }
+    if surface_idx > WORLD_MAX_DEPTH - 1 {
+        surface_idx = WORLD_MAX_DEPTH - 1;
+    }
+
+    for d in 0..WORLD_MAX_DEPTH {
+        let altitude_m = ((d - SEA_LEVEL_IDX) as f64 * BLOCK_HEIGHT) as f32;
+        let b = planet_gen::sample_with_profile(&prof, altitude_m);
+        col[d as usize] = b.raw();
+    }
+    /* Bedrock floor - never overwrite, never mineable, and the renderer
+     * skips its bottom cap so we don't see the inside of the planet. */
+    col[0] = Block::Bedrock.raw();
+
+    /* ---- Ore scatter -----------------------------------------------
+     * Replace some underground stone with ore. Deterministic per
+     * (tile, depth) so the same seed regenerates identical deposits;
+     * the depth is folded into the hash salt so ore varies down a
+     * column, not just between columns. Confined to stone below the
+     * dirt layer (>= 4 m under the surface) and above bedrock. */
+    let ore_top = (surface_idx - 4).max(1);
+    for d in 1..ore_top {
+        if col[d as usize] != Block::Stone.raw() {
+            continue;
+        }
+        let salt = ORE_SALT ^ (d as u32).wrapping_mul(ORE_DEPTH_MIX);
+        let roll = (tile_hash(body.seed, tile_idx, salt) & 0xFFFF) as f32 / 65535.0;
+        if let Some(ore) = mining::ore_for_stone(roll) {
+            col[d as usize] = ore.raw();
+        }
+    }
+
+    /* ---- Tree scatter ----------------------------------------------
+     * Plant a small tree on grass-topped land tiles with low slope.
+     * Hex-based: trunk = 4 wood blocks stacked above the surface, top
+     * 2 layers = leaves block. Probability per qualifying tile ~5 %,
+     * gated by a deterministic per-tile + per-body hash so the layout
+     * is identical for the same seed. Tropical / Sequoia / barren /
+     * icy bodies skip trees entirely. */
+    /* Eligibility: dry land between the shoreline (above SEA_LEVEL+1 m)
+     * and the alpine snow line (below ~22 m). Mirrors planet_gen's
+     * thresholds without re-exposing them as a header constant. */
+    if !prof.barren && !prof.icy && prof.surface_m > 1.0 && prof.surface_m < 22.0 {
+        let top = col[surface_idx as usize];
+        let is_sequoia_grass = top == Block::SeqGrass.raw();
+        let is_grass = top == Block::Grass.raw() || is_sequoia_grass;
+        if is_grass {
+            let h = tile_hash(body.seed, tile_idx, 0xA1B2C3D4);
+            /* ~5% of qualifying tiles get a tree. */
+            if (h & 0xFF) < 13 {
+                /* Vary trunk height 3..5 by a separate hash bit. */
+                let trunk = 3 + ((h >> 8) & 1) as i32;
+                let trunk_top = surface_idx + trunk;
+                let leaf_lo = trunk_top - 1;
+                let mut leaf_hi = trunk_top + 2;
+                if leaf_hi >= WORLD_MAX_DEPTH {
+                    leaf_hi = WORLD_MAX_DEPTH - 1;
+                }
+                /* Trunk: stack BLOCK_WOOD above the grass top. */
+                let mut d = surface_idx + 1;
+                while d <= trunk_top && d < WORLD_MAX_DEPTH {
+                    col[d as usize] = Block::Wood.raw();
+                    d += 1;
+                }
+                /* Leafy crown spread vertically over the trunk top.
+                 * Sequoia uses its own red-tinted leaf block so the
+                 * biome reads as alien even before you land. */
+                let leaf_block = if is_sequoia_grass {
+                    Block::SeqLeaves.raw()
+                } else {
+                    Block::Leaves.raw()
+                };
+                for d in leaf_lo..=leaf_hi {
+                    if d <= surface_idx {
+                        continue;
+                    }
+                    if col[d as usize] == Block::Air.raw() {
+                        col[d as usize] = leaf_block;
+                    }
+                }
+                /* Tree placement diverges this column from the bare
+                 * analytic surface - the wood/leaves voxels sit above
+                 * where analytic_surface_r predicts the floor is. The
+                 * caller marks the column edited so walkable_floor_near
+                 * takes the slow voxel-scan path instead of returning
+                 * the grass radius (which is BELOW the tree, making the
+                 * player fall straight through trunk and canopy). */
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
 impl World {
     /// Port of `world_create()`.
     pub fn create(body: &BodyConfig, subdivisions: i32) -> World {
@@ -267,112 +391,51 @@ impl World {
         }
     }
 
-    fn gen_tile(&mut self, tile_idx: i32) {
-        let t = match self.grid.tile(tile_idx) {
-            Some(t) => *t,
-            None => return,
-        };
-
-        /* Per-column biome profile + surface height (meters above base). */
-        let prof = planet_gen::profile(&self.body, t.center);
-
-        /* Map meters -> block depth. */
-        let mut surface_idx = (prof.surface_m as f64 / BLOCK_HEIGHT).floor() as i32 + SEA_LEVEL_IDX;
-        if surface_idx < 2 {
-            surface_idx = 2;
-        }
-        if surface_idx > WORLD_MAX_DEPTH - 1 {
-            surface_idx = WORLD_MAX_DEPTH - 1;
-        }
-
-        let col_base = (tile_idx * WORLD_MAX_DEPTH) as usize;
-        for d in 0..WORLD_MAX_DEPTH {
-            let altitude_m = ((d - SEA_LEVEL_IDX) as f64 * BLOCK_HEIGHT) as f32;
-            let b = planet_gen::sample_with_profile(&prof, altitude_m);
-            self.blocks[col_base + d as usize] = b.raw();
-        }
-        /* Bedrock floor - never overwrite, never mineable, and the renderer
-         * skips its bottom cap so we don't see the inside of the planet. */
-        self.blocks[col_base] = Block::Bedrock.raw();
-
-        /* ---- Tree scatter ----------------------------------------------
-         * Plant a small tree on grass-topped land tiles with low slope.
-         * Hex-based: trunk = 4 wood blocks stacked above the surface, top
-         * 2 layers = leaves block. Probability per qualifying tile ~5 %,
-         * gated by a deterministic per-tile + per-body hash so the layout
-         * is identical for the same seed. Tropical / Sequoia / barren /
-         * icy bodies skip trees entirely. */
-        /* Eligibility: dry land between the shoreline (above SEA_LEVEL+1 m)
-         * and the alpine snow line (below ~22 m). Mirrors planet_gen's
-         * thresholds without re-exposing them as a header constant. */
-        if !prof.barren && !prof.icy && prof.surface_m > 1.0 && prof.surface_m < 22.0 {
-            let top = self.blocks[col_base + surface_idx as usize];
-            let is_sequoia_grass = top == Block::SeqGrass.raw();
-            let is_grass = top == Block::Grass.raw() || is_sequoia_grass;
-            if is_grass {
-                let h = tile_hash(self.body.seed, tile_idx, 0xA1B2C3D4);
-                /* ~5% of qualifying tiles get a tree. */
-                if (h & 0xFF) < 13 {
-                    /* Vary trunk height 3..5 by a separate hash bit. */
-                    let trunk = 3 + ((h >> 8) & 1) as i32;
-                    let trunk_top = surface_idx + trunk;
-                    let leaf_lo = trunk_top - 1;
-                    let mut leaf_hi = trunk_top + 2;
-                    if leaf_hi >= WORLD_MAX_DEPTH {
-                        leaf_hi = WORLD_MAX_DEPTH - 1;
-                    }
-                    /* Trunk: stack BLOCK_WOOD above the grass top. */
-                    let mut d = surface_idx + 1;
-                    while d <= trunk_top && d < WORLD_MAX_DEPTH {
-                        self.blocks[col_base + d as usize] = Block::Wood.raw();
-                        d += 1;
-                    }
-                    /* Leafy crown spread vertically over the trunk top.
-                     * Sequoia uses its own red-tinted leaf block so the
-                     * biome reads as alien even before you land. */
-                    let leaf_block = if is_sequoia_grass {
-                        Block::SeqLeaves.raw()
-                    } else {
-                        Block::Leaves.raw()
-                    };
-                    for d in leaf_lo..=leaf_hi {
-                        if d <= surface_idx {
-                            continue;
-                        }
-                        if self.blocks[col_base + d as usize] == Block::Air.raw() {
-                            self.blocks[col_base + d as usize] = leaf_block;
-                        }
-                    }
-                    /* Tree placement diverges this column from the bare
-                     * analytic surface - the wood/leaves voxels sit above
-                     * where analytic_surface_r predicts the floor is.
-                     * Mark the column edited so walkable_floor_near
-                     * takes the slow voxel-scan path instead of returning
-                     * the grass radius (which is BELOW the tree, making
-                     * the player fall straight through trunk and canopy).
-                     * Bug report: "I still cannot stand on top of natural
-                     * forming trees" - snapshot showed WOOD d=75..78 +
-                     * LEAVES d=79..80 but ground-snap was reporting the
-                     * grass top at d=74. */
-                    self.edited[(tile_idx >> 3) as usize] |= 1u8 << (tile_idx & 7);
-                }
-            }
-        }
-
-        /* Mark this tile dirty so the renderer builds its geometry. */
-        self.dirty_enqueue(tile_idx);
-    }
-
     /// Port of `world_stream_gen()`. Generate terrain for up to
     /// `max_tiles` tiles of the pending pool. Call each frame until
     /// `gen_complete` returns true.
+    ///
+    /// Each tile's voxel column is generated independently (its own
+    /// `blocks` slice, pure per-column noise eval), so the batch fans
+    /// out across the rayon pool. Output is identical to the old
+    /// sequential fill regardless of completion order - the pinned
+    /// worldgen hash (`blocks`/`dirty`/`edited`) still holds. The
+    /// dirty/edited bitsets pack 8 tiles per byte, so their writes run
+    /// in a single-threaded pass after the parallel column build to
+    /// avoid a racing read-modify-write on a shared byte.
     pub fn stream_gen(&mut self, max_tiles: i32) {
-        let mut end = self.gen_cursor + max_tiles;
+        use rayon::prelude::*;
+
+        let start = self.gen_cursor;
+        let mut end = start + max_tiles;
         if end > self.tile_count {
             end = self.tile_count;
         }
-        for i in self.gen_cursor..end {
-            self.gen_tile(i);
+        if end <= start {
+            return;
+        }
+
+        let depth = WORLD_MAX_DEPTH as usize;
+        /* Disjoint field borrows: &self.body / &self.grid (shared) are a
+         * different field than &mut self.blocks (exclusive), so the
+         * borrow checker permits them simultaneously. */
+        let body = &self.body;
+        let grid = &self.grid;
+        let sub = &mut self.blocks[(start as usize) * depth..(end as usize) * depth];
+        let edited_flags: Vec<bool> = sub
+            .par_chunks_mut(depth)
+            .enumerate()
+            .map(|(k, col)| gen_column(body, grid, start + k as i32, col))
+            .collect();
+
+        for i in start..end {
+            /* Route through dirty_enqueue (not a raw bit-set) so each
+             * generated tile lands on the dirty_queue the renderer drains;
+             * the bit-dedup keeps the queue bounded. */
+            self.dirty_enqueue(i);
+            if edited_flags[(i - start) as usize] {
+                self.edited[(i >> 3) as usize] |= 1u8 << (i & 7);
+            }
         }
         self.gen_cursor = end;
     }
@@ -1134,48 +1197,12 @@ mod tests {
     const TREE_TILE: i32 = 73;
     const WATER_TILE: i32 = 2;
 
-    const COL_0: [u8; 128] = [
-        23, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-        5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-        5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 3, 3, 3, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0,
-    ];
-    const COL_100: [u8; 128] = [
-        23, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-        5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-        3, 3, 3, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0,
-    ];
-    const COL_333: [u8; 128] = [
-        23, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-        5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-        5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 3, 3, 3, 4, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0,
-    ];
-    const COL_641: [u8; 128] = [
-        23, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-        5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 3, 3,
-        3, 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0,
-    ];
-    const COL_TREE: [u8; 128] = [
-        23, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-        5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-        5, 5, 5, 5, 5, 5, 5, 5, 3, 3, 3, 4, 21, 21, 21, 22, 22, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    ];
-    const COL_WATER: [u8; 128] = [
-        23, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-        5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 3, 3, 3,
-        2, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0,
-    ];
+        const COL_0: [u8; 128] = [23, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 27, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 28, 5, 5, 5, 5, 5, 5, 28, 5, 5, 5, 5, 5, 5, 5, 5, 5, 25, 5, 26, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 3, 3, 3, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        const COL_100: [u8; 128] = [23, 5, 28, 5, 5, 5, 25, 27, 25, 5, 5, 5, 26, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 27, 5, 5, 5, 5, 5, 5, 26, 5, 5, 5, 5, 5, 5, 5, 5, 25, 5, 5, 5, 5, 5, 5, 5, 3, 3, 3, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        const COL_333: [u8; 128] = [23, 5, 25, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 28, 5, 5, 5, 5, 26, 5, 5, 5, 5, 5, 26, 5, 5, 28, 5, 25, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 3, 3, 3, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        const COL_641: [u8; 128] = [23, 5, 5, 25, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 28, 5, 5, 5, 5, 5, 26, 5, 5, 5, 5, 5, 28, 5, 25, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 27, 5, 5, 5, 5, 5, 3, 3, 3, 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        const COL_TREE: [u8; 128] = [23, 5, 5, 5, 5, 5, 5, 25, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 25, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 28, 5, 5, 5, 5, 5, 5, 25, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 3, 3, 3, 4, 21, 21, 21, 22, 22, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        const COL_WATER: [u8; 128] = [23, 5, 28, 5, 5, 5, 5, 5, 5, 5, 5, 26, 5, 27, 5, 5, 5, 5, 5, 5, 5, 25, 5, 5, 5, 5, 28, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 28, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 3, 3, 3, 2, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 
     #[test]
     fn pin_worldgen_tenebris_subdiv3() {
@@ -1189,12 +1216,12 @@ mod tests {
         w.stream_gen(100);
         assert_eq!(w.gen_progress_pct(), 15);
         assert!(!w.gen_complete());
-        assert_eq!(fnv1a64(&w.blocks), 7829992951182889948);
+        assert_eq!(fnv1a64(&w.blocks), 18417547801711035607);
         while !w.gen_complete() {
             w.stream_gen(100);
         }
         assert_eq!(w.gen_progress_pct(), 100);
-        assert_eq!(fnv1a64(&w.blocks), 4329271328615019421);
+        assert_eq!(fnv1a64(&w.blocks), 11860692157470117177);
         assert_eq!(fnv1a64(&w.dirty), 13535398748077020770);
         assert_eq!(fnv1a64(&w.edited), 2765778263781656134);
 
@@ -1312,7 +1339,7 @@ mod tests {
         assert!(w.tile_dirty(100));
         assert_eq!(w.get(100, top100 + 3), Block::Stone);
         assert_eq!(w.get(100, top100), Block::Air);
-        assert_eq!(fnv1a64(&w.blocks), 18365109157805283286);
+        assert_eq!(fnv1a64(&w.blocks), 3353865708915105722);
         assert_eq!(fnv1a64(&w.edited), 12021992615667686486);
 
         /* Tile 100 is edited now -> voxel-scan floor path. */

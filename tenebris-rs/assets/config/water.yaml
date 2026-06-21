@@ -1,0 +1,287 @@
+# Water surface + refraction tuning.
+#
+# Loaded at boot by config_load_water() and applied to body_draw_water
+# every frame + read once at mesh-build time by hex_mesher.c for the
+# cap depth offset. Single global config — the same knobs apply to
+# every has_water body.
+#
+# Fields:
+#   time_scale          float  multiplier on R.time_seconds before it
+#                              reaches u_time. Higher = faster ripples.
+#   depth_offset_m      float  vertical drop of the cap below sea
+#                              level (metres). Has to exceed the max
+#                              swell or wave crests poke above sand.
+#   height_offset_m     float  creative water-level offset, additive
+#                              on top of depth_offset_m. Positive
+#                              raises the cap (water deeper / floods
+#                              further inland), negative lowers it.
+#                              0.0 = current sea level.
+#   refract_amount      float  surface gradient → screen UV
+#                              perturbation scale. 0 = no refraction,
+#                              ~0.04 = noticeable shimmer without
+#                              warping the view.
+#   absorption          vec3   Beer-Lambert sigma per RGB channel
+#                              (1/m). Higher = water saturates
+#                              faster. Real ocean has red ~6× blue.
+#   deep_color          vec3   saturation tint where view ray has
+#                              fully attenuated. Limit colour of
+#                              deep water.
+#   shoreline_fade_m    float  alpha smoothstep upper edge (m).
+#                              At thickness 0 the cap goes
+#                              transparent, by this much water it's
+#                              back to the Fresnel-driven alpha.
+#                              Hides the hex-mesh edge at the beach.
+#   specular_intensity  float  sun-highlight strength multiplier.
+#                              Higher = brighter glints / glossier;
+#                              lower = matte.
+#   specular_power      float  Blinn-Phong specular exponent.
+#                              Higher = tighter / smaller highlight,
+#                              lower = broader / softer.
+#   sun_tint            vec3   warm tint of the sun-highlight,
+#                              multiplied with specular_intensity.
+#                              >1.0 in any channel pushes brighter
+#                              than white.
+#
+#   --- Wave-crest + slope foam (the bright flecks across the wave
+#   surface). Two smoothstep ranges feed a max() blend with per-
+#   source weights; the combined mass tints toward foam_color at
+#   foam_intensity. Raise foam_crest_lo to ~0.55 if open water has
+#   too many flecks.
+#   foam_crest_lo       float  smoothstep lo on fbm height [-1, +1]
+#   foam_crest_hi       float  smoothstep hi
+#   foam_crest_weight   float  weight in max(crest, slope) blend
+#   foam_slope_lo       float  smoothstep lo on |tangent gradient|
+#   foam_slope_hi       float  smoothstep hi
+#   foam_slope_weight   float
+#   foam_intensity      float  final mix strength toward foam_color
+#   foam_color          vec3
+#
+#   --- Sky reflection. Water reflects the upper hemisphere via
+#   reflect(view, n); the result blends between two tones based on
+#   the reflected ray's vertical component.
+#   sky_horizon_color   vec3   bright tone, reflected ray ~horizontal
+#   sky_zenith_color    vec3   darker tone, reflected ray ~vertical
+#   sky_horizon_strength float opacity of the horizon-direction sky
+#                              reflection on the final water colour.
+#                              Scales the Fresnel sky→base blend
+#                              factor, but only where the reflected
+#                              ray skims horizontal — zenith-direction
+#                              reflections are unaffected at any
+#                              value. 1.0 = unchanged Fresnel mix,
+#                              0.0 = horizon reflection disappears
+#                              entirely (water shows the refracted /
+#                              deep colour even at glancing angles).
+#
+#   --- Wave shape. Two independent stages:
+#     * Swell  — vertex-shader sine sum, displaces the cap mesh.
+#                Geometric height of the waves; visible silhouette.
+#     * Ripple — fragment-shader fbm noise, perturbs the surface
+#                normal. Drives where the highlights and refraction
+#                go without changing the geometry.
+#   swell_amplitude     float  vertex-displacement multiplier (wave
+#                              height). 1.0 keeps the historical
+#                              0.36 m peak; >~1.39 starts poking
+#                              crests through depth_offset_m into
+#                              beach geometry.
+#   swell_frequency     float  spatial-frequency multiplier on the
+#                              sine swell. Higher = shorter wavelength
+#                              (more, smaller waves).
+#   swell_speed         float  time multiplier on the sine swell
+#                              (animation speed). Stacks with
+#                              time_scale.
+#   ripple_scale        float  spatial multiplier inside the fbm
+#                              normal noise. Higher = finer / busier
+#                              ripple cells; gradient sharpens too,
+#                              so the surface looks bumpier unless
+#                              you also drop wave_steepness.
+#   ripple_speed        float  time-advection multiplier inside fbm.
+#                              Stacks with time_scale.
+#   wave_steepness      float  magnitude with which the tangent
+#                              gradient perturbs the radial normal.
+#                              Higher = choppier-looking surface;
+#                              0.0 = perfect mirror sphere. Replaces
+#                              the historical 0.65 literal.
+
+water:
+  time_scale:         0.75
+  depth_offset_m:     0.50
+  height_offset_m:    0.00
+  refract_amount:     0.04
+  absorption:         [0.60, 0.20, 0.10]
+  deep_color:         [0.02, 0.10, 0.22]
+  shoreline_fade_m:   0.50
+  specular_intensity: 0.30
+  specular_power:     140.0
+  sun_tint:           [1.35, 1.25, 1.10]
+
+  foam_crest_lo:      0.35
+  foam_crest_hi:      0.60
+  foam_crest_weight:  0.55
+  foam_slope_lo:      0.50
+  foam_slope_hi:      1.20
+  foam_slope_weight:  0.26
+  foam_intensity:     0.10
+  foam_color:         [0.95, 0.97, 1.00]
+
+  sky_horizon_color:    [0.85, 0.92, 0.98]
+  sky_zenith_color:     [0.35, 0.55, 0.85]
+  sky_horizon_strength: 0.5
+
+  swell_amplitude:    0.5
+  swell_frequency:    2.0
+  swell_speed:        1.0
+  ripple_scale:       1.5
+  ripple_speed:       1.0
+  wave_steepness:     0.65
+
+  # ---- Underwater post-process (fires when the camera is below sea
+  # level; per-pixel masked so a half-submerged camera leaves dry-side
+  # pixels untouched).
+  #
+  # The fog itself reuses the same Beer-Lambert formula the water cap
+  # uses when looking down through water from above (absorption +
+  # deep_color above), so above-water and below-water views read as
+  # the same body of water. Only the screen-space distortion has its
+  # own knob — it has no above-water analogue.
+  #
+  # underwater_distortion  float  amplitude (in screen-UV units) of the
+  #                               sin-perturbation applied to the scene
+  #                               sample on underwater pixels. ~0.005
+  #                               is a subtle shimmer; 0.0 disables it.
+  # wet_fade_band_m        float  soft fade either side of the actual
+  #                               water-cap altitude (m) where the
+  #                               composite gates the wet mask. Wider =
+  #                               longer crossfade across the waterline;
+  #                               keeps dry portions of beach blocks
+  #                               (whose tops sit above the cap by
+  #                               depth_offset_m) from picking up the
+  #                               distortion shimmer.
+  underwater_distortion:   0.0015
+  wet_fade_band_m:         0.5
+
+  # Mobile-only horizon haze. The mobile water shader can't sample the
+  # offscreen scene (no FBO on phones), so it can't reproduce the
+  # desktop Beer-Lambert thickness fog. Instead it blends the base
+  # tone toward sky_horizon_color with view distance, faking the
+  # "deep ocean fades into atmosphere" feel.
+  #
+  # horizon_fade_m         float  view-distance (m) at which the haze
+  #                               saturates. Closer = haze kicks in
+  #                               faster (busier-looking water in the
+  #                               middle distance), farther = surface
+  #                               stays the deep colour for longer.
+  # horizon_fade_strength  float  final mix scalar. 0 disables the
+  #                               effect (mobile reads like a flat
+  #                               slab again); 1 fully replaces deep
+  #                               colour with sky_horizon at fade_m.
+  horizon_fade_m:          600.0
+  horizon_fade_strength:   0.55
+
+  # ---- Per-voxel water-flow automaton (water_flow_config_t).
+  # Separate from everything above - those knobs tune the planet-wide
+  # sea-level cap (shader / mesh); the ones below tune the cellular
+  # water in core/world_water.c, which moves around and reacts to edits.
+  # See tenebris-c/water.md for the full plan / algorithm.
+  #
+  # flow_max_level           int   max flowing level before drying up.
+  #                                Capped at 7 by the 3-bit state field
+  #                                regardless of YAML value; lower = shorter
+  #                                streams. 7 matches Minecraft's 8-step
+  #                                ladder; we run tighter (3) so a single
+  #                                placed source forms a small puddle
+  #                                rather than flooding the surrounding
+  #                                terrain a 7-hex radius out.
+  # flow_search_radius       int   BFS depth (hex steps) used by the
+  #                                nearest-hole pathfinder when picking
+  #                                horizontal spread direction. 4 matches MC -
+  #                                kept slightly above flow_max_level so water
+  #                                routes toward a drop one step beyond its
+  #                                own dry-up range instead of pooling blindly.
+  # flow_ticks_per_step      int   sim ticks between scheduler calls. 5
+  #                                matches MC's "5 game ticks per block".
+  # flow_max_ticks_per_step  int   per-call cap on cells popped from the
+  #                                queue. Bounds per-frame cost when a big
+  #                                body of water re-converges.
+  # flow_queue_capacity      int   ring-buffer size (cells). Overflow drops
+  #                                the oldest pending tick; the world re-
+  #                                converges as soon as something adjacent
+  #                                wakes the dropped cell again.
+  # flow_source_min_nbrs     int   2-of-N threshold for flowing -> source
+  #                                promotion. 2 = MC behaviour (renewable
+  #                                water from a 3-tile triangle on hex);
+  #                                3 = pentagons need a fuller basin.
+  # flow_persist_falling     int   0 = falling cells reconstruct from
+  #                                neighbours on reload (cheap I/O), 1 =
+  #                                falling cells round-trip to disk on
+  #                                every tick (no reload transient).
+  #
+  # ---- Visual / rendering knobs - read by the mesher (step 6) and
+  # shader (step 7). Defined here so simulation + look stay in one file.
+  #
+  # flow_uv_speed_falling    float V scroll speed on falling side faces
+  #                                (units / sec). Positive moves texels
+  #                                radially inward (down).
+  # flow_uv_speed_per_level  float cap UV scroll speed per level-diff
+  #                                between this cell and its lowest
+  #                                horizontal neighbour.
+  # flow_min_film_fraction   float min cap height as fraction of voxel
+  #                                height. Keeps the thinnest film visible
+  #                                instead of going to zero.
+  # flow_cap_curve_power     float exponent on (level / max_level) when mapping
+  #                                a flowing cell's level to its cap height.
+  #                                1.0 = linear (constant drop per step;
+  #                                visually "piles up" because near-source
+  #                                cells render near full height), 2.0 =
+  #                                quadratic (each step drops more than the
+  #                                last - water reads as accelerating downward
+  #                                as it travels further from the source),
+  #                                higher = even more aggressive falloff.
+  # 3 hexes of horizontal spread per source (default 3 = stronger
+  # falloff than MC's 7). With the hex topology + 6-way spread, a
+  # single source already reaches 19 cells at radius 2 and 37 at
+  # radius 3, so dropping the cap below 7 keeps placement intuitive
+  # without flooding the whole world. Raise toward 7 for MC-style
+  # long streams, lower toward 2 for puddles only.
+  flow_max_level:           3
+  flow_search_radius:       4
+  # Halved the tick rate (was 5 = 4 Hz, now 10 = 2 Hz) so flow
+  # propagation paces out visibly instead of finishing inside the
+  # render-stall window. Each "spread step" now takes 500 ms which
+  # also halves the worst-case relight + remesh cost per simulated
+  # second.
+  flow_ticks_per_step:      10
+  flow_max_ticks_per_step:  256
+  flow_queue_capacity:      4096
+  flow_source_min_nbrs:     2
+  flow_persist_falling:     0
+
+  # ---- Mesh rebuild budget. The renderer rebuilds a chunk's whole mesh
+  # (terrain + water + per-voxel water) when ANY tile in the chunk goes
+  # dirty. A busy water flow tick can dirty tiles across multiple chunks
+  # at once, and rebuilding all of them in the same frame stalls the
+  # mainloop visibly. This knob caps how many chunks each body remeshes
+  # per frame - extra dirty chunks stay dirty and roll over to the next
+  # frame, spreading the cost without losing any work. 1 = strictly one
+  # chunk per body per frame (smoothest framerate), higher = less latency
+  # to converge but more frametime variance during heavy flow.
+  # 1 chunk per frame meant a single sim tick that dirtied 12 chunks
+  # (water cascading across a hillside hits ~that many at once) took
+  # 12 frames to fully converge, and the chunks waiting in queue
+  # rendered with their PREVIOUS mesh - visible as "stale walls
+  # poking up from the water" until each chunk's turn rolled around.
+  # 8 chunks per frame drains a 12-chunk dirty batch in 2 frames
+  # (~33 ms at 60 fps) which is well below human-noticeable lag,
+  # while still capping the worst-case frametime impact of a flood.
+  flow_max_chunks_remesh_per_frame: 8
+
+  flow_uv_speed_falling:    1.0
+  flow_uv_speed_per_level:  0.25
+  flow_min_film_fraction:   0.12
+  # Power < 1 puts the BIGGEST cap drop into the very first level step
+  # (source -> first ring), so the bell visibly steps down by one
+  # voxel-fraction at every hex ring instead of bunching levels 0 + 1
+  # near the same height. Was 2.0, which made the first step almost
+  # invisible and the bell read as 2-hex-wide rungs. 0.5 puts ~half
+  # the depth_offset drop into the first step alone, tightening the
+  # bell to one-ring-per-step.
+  flow_cap_curve_power:     0.5

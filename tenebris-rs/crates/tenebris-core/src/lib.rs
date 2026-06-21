@@ -2,9 +2,12 @@
 
 pub mod blocks;
 pub mod config;
+pub mod crafting;
 pub mod goldberg;
+pub mod items;
 pub mod job_system;
 pub mod math;
+pub mod mining;
 pub mod physics;
 pub mod planet;
 pub mod planet_gen;

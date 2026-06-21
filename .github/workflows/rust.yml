@@ -1,0 +1,51 @@
+# Native Rust port CI. The existing static.yml builds the deprecated
+# JS/WASM tree + deploys; it never touches tenebris-rs. Now that the
+# native Rust port is the canonical target, build + test all three
+# crates so regressions are caught on every push/PR.
+name: Rust (tenebris-rs)
+
+on:
+  push:
+    paths:
+      - 'tenebris-rs/**'
+      - '.github/workflows/rust.yml'
+  pull_request:
+    paths:
+      - 'tenebris-rs/**'
+      - '.github/workflows/rust.yml'
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tenebris-rs
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install native deps (X11 / GL / ALSA for the sokol client)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libx11-dev libxi-dev libxcursor-dev \
+            libgl1-mesa-dev libegl1-mesa-dev libasound2-dev
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            tenebris-rs/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('tenebris-rs/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Build (workspace)
+        run: cargo build --workspace --locked
+
+      - name: Test (workspace)
+        run: cargo test --workspace --locked

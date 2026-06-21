@@ -1,0 +1,59 @@
+# Global skybox tuning: 3-layer Voronoi starfield + fbm nebula +
+# deep-space backdrop. Read each frame by renderer_draw_skybox and
+# uploaded to FS_SKY as uniforms.
+#
+# Loaded at boot by config_load_skybox(). Anything omitted falls back
+# to the compiled-in default in core/config.c — set only what you want
+# to override.
+#
+# Fields (all optional):
+#   star_densities             vec3   per-layer cell density (cells per
+#                                     unit-sphere chunk). Higher = more,
+#                                     smaller stars. Default [100, 200, 300].
+#   star_intensities           vec3   per-layer brightness weights. Default
+#                                     [1.0, 0.8, 0.6].
+#   star_sharpness             float  smoothstep upper bound on squared
+#                                     cell-distance — smaller = tighter
+#                                     points. Default 0.02.
+#   star_brightness_threshold  float  cells dimmer than this stay dark.
+#                                     Higher = sparser sky. Default 0.7.
+#   star_color                 vec3   RGB tint applied to all stars.
+#
+#   nebula_warm_color          vec3   warm-tint colour (magenta-rose).
+#   nebula_cool_color          vec3   cool-tint colour (deep blue).
+#   nebula_intensity           float  overall nebula opacity multiplier.
+#                                     Default 0.20. 0 = no nebula at all.
+#   nebula_drift_speed         float  time-based drift rate (rad/sec-ish).
+#                                     Default 0.005 — barely-moving wash.
+#   nebula_scale1              float  fbm sampling scale for cloud cover.
+#                                     Bigger = finer-grained clouds.
+#   nebula_scale2              float  fbm sampling scale for warm/cool mix.
+#   nebula_cloud_lo, _hi       float  smoothstep window over cloud fbm —
+#                                     gates where clouds appear at all.
+#   nebula_warm_blend_lo, _hi  float  smoothstep window over the second
+#                                     fbm — drives the warm/cool blend.
+#
+#   space_color                vec3   RGB added under everything. Not
+#                                     pure black by default; a touch of
+#                                     cool blue keeps the void from
+#                                     looking dead.
+
+skybox:
+  star_densities:            [100.0, 200.0, 300.0]
+  star_intensities:          [1.0, 0.8, 0.6]
+  star_sharpness:            0.02
+  star_brightness_threshold: 0.7
+  star_color:                [1.0, 0.98, 0.95]
+
+  nebula_warm_color:         [0.55, 0.18, 0.38]
+  nebula_cool_color:         [0.10, 0.20, 0.50]
+  nebula_intensity:          0.20
+  nebula_drift_speed:        0.005
+  nebula_scale1:             1.4
+  nebula_scale2:             3.1
+  nebula_cloud_lo:           0.45
+  nebula_cloud_hi:           0.78
+  nebula_warm_blend_lo:      0.3
+  nebula_warm_blend_hi:      0.8
+
+  space_color:               [0.005, 0.007, 0.018]
