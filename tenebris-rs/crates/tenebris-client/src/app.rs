@@ -396,6 +396,8 @@ extern "C" fn init() {
     tenebris_core::crafting::set_recipes(tenebris_core::crafting::load_recipes(
         "assets/config/recipes.yaml",
     ));
+    /* Survival mining + ore-drop tuning. */
+    tenebris_core::mining::load_config("assets/config/mining.yaml");
     /* One-shot dump of Tenebris's effective atmosphere values so we
      * can sanity-check that the YAML actually landed. */
     {

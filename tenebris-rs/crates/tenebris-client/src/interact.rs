@@ -28,7 +28,10 @@ use crate::persistence::{self, PersistenceTorch, COLUMN_BYTES};
 use crate::player_ctrl::PlayerCtrl;
 use crate::torch;
 use tenebris_core::blocks::{self, Block};
+use tenebris_core::items;
+use tenebris_core::mining;
 use tenebris_core::proto;
+use tenebris_core::rng;
 use tenebris_core::math::{
     dvec3_add, dvec3_dot, dvec3_length, dvec3_make, dvec3_normalize, dvec3_scale, dvec3_sub,
     vec3_make, vec3_scale, DVec3,
@@ -42,6 +45,11 @@ pub const MAX_DIST: f64 = 8.0;
 /// Holding LMB on a target for this long breaks it and adds it to
 /// inventory.
 pub const MINING_TIME_S: f32 = 0.8;
+
+/// Fixed salt mixed into the per-voxel coal roll so it doesn't alias the
+/// hash's other uses (terrain noise). Part of the hash's identity, not a
+/// designer knob - stays inline per the "no magic numbers" exception.
+const COAL_ROLL_SALT: i32 = 0x6c61;
 
 /// Port of `interact_state_t`. The C caller zero-initializes; `Default`
 /// matches that ({0} - all flags false, indices 0, distances 0.0).
@@ -379,7 +387,18 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
     if blocks::is_unbreakable(target_block) {
         s.mining_progress_s = 0.0;
     } else if p.survival_mode {
-        if inp.left_held {
+        /* Tool-gating: rock (stone + tinted variants) needs a pickaxe.
+         * Best pickaxe in the bag sets the mining tier; a block whose
+         * required tier exceeds it can't be mined at all - that's what
+         * makes the wood -> pickaxe -> stone progression matter. */
+        let tier = if p.bag.count_of(items::WOOD_PICKAXE) > 0 {
+            mining::tool_tier(Some(items::WOOD_PICKAXE))
+        } else {
+            0
+        };
+        if !mining::can_harvest(target_block, tier) {
+            s.mining_progress_s = 0.0;
+        } else if inp.left_held {
             s.mining_progress_s += dt;
             if s.mining_progress_s >= MINING_TIME_S {
                 w.set(s.hit_tile, s.hit_depth, Block::Air);
@@ -391,7 +410,20 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
                     Block::Air as i32,
                 );
                 sp_save_tile_after_edit(w, s.hit_tile);
-                inventory::add(&mut p.inventory, target_block);
+                /* Deterministic per-voxel roll so a given block always
+                 * drops the same thing (no save-scumming, testable).
+                 * Block drops -> hotbar (placeable); resource drops
+                 * (coal) -> bag. */
+                let roll = rng::hash3(s.hit_tile, s.hit_depth, COAL_ROLL_SALT);
+                for d in mining::drops(target_block, tier, roll) {
+                    if let Some(b) = items::to_block(d.item) {
+                        for _ in 0..d.count {
+                            inventory::add(&mut p.inventory, b);
+                        }
+                    } else {
+                        p.bag.add(d.item, d.count);
+                    }
+                }
                 s.mining_progress_s = 0.0;
             }
         } else {

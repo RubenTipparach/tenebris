@@ -1,0 +1,9 @@
+# mining.yaml - survival mining + ore drop tuning, parsed by core/mining.rs
+#
+# A field set to 0 (or omitted) keeps the compiled-in default, matching
+# the other config files.
+
+# P(a stone block mined with a pickaxe also drops a lump of coal). This is
+# "ore embedded in stone" - the torch recipe needs coal, and this makes it
+# reachable before dedicated ore-vein blocks (with their own art) exist.
+coal_chance: 0.15
