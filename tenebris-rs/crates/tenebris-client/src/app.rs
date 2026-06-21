@@ -45,10 +45,13 @@ use crate::hotbar_ui;
 use crate::input;
 use crate::interact::{self, InteractState, MINING_TIME_S};
 use crate::inventory::{self, INV_HOTBAR_SLOTS};
+use crate::inventory_screen;
+use crate::item_atlas;
 use crate::menu::{self, GameState};
 use crate::mobile_ui;
 use crate::net_client::{self, NetClientState, NetDesyncKind};
 use crate::persistence::{self, PersistenceSave, COLUMN_BYTES};
+use crate::pixel_ui;
 use crate::player_ctrl::{self, PlayerCtrl};
 use crate::profile;
 use crate::profiler;
@@ -198,6 +201,17 @@ struct App {
     inv_last_count: [i16; 9],
     inv_last_sel: i32,
     inv_init: bool,
+
+    /* DOM-overlay visibility caches (emscripten frame block). Kept
+     * unconditionally so App has one shape on every target. */
+    #[allow(dead_code)]
+    last_pause_btn: i32,
+    #[allow(dead_code)]
+    last_inventory_btn: i32,
+    #[allow(dead_code)]
+    last_mobile: i32,
+    #[allow(dead_code)]
+    last_fullscreen_btn: i32,
 }
 
 thread_local! {
@@ -383,6 +397,23 @@ extern "C" fn init() {
      * tenebris_get_local_player_* symbols). */
     net_client::set_local_player_provider(local_player_provider);
 
+    #[cfg(target_os = "emscripten")]
+    unsafe {
+        /* Stop the browser from refreshing the page when the player
+         * presses F5 (the water-flow debug overlay toggle). */
+        tenebris_block_f5_refresh();
+        /* DOM overlays are mobile-only scaffolding per CLAUDE.md: the
+         * pause button stands in for the Esc key, and the joystick +
+         * action deck stand in for keyboard / mouse. The pause panel
+         * itself is in-canvas (menu) on every platform. */
+        if tenebris_is_mobile_device() != 0 {
+            tenebris_pause_button_install();
+            tenebris_inventory_button_install();
+            tenebris_fullscreen_button_install();
+            tenebris_mobile_controls_install();
+        }
+    }
+
     /* Load atmosphere overrides from YAML before creating any worlds -
      * planet::set_atmosphere mutates BODIES[] and the renderer reads
      * body atmo fields every frame. */
@@ -398,6 +429,15 @@ extern "C" fn init() {
     ));
     /* Survival mining + ore-drop tuning. */
     tenebris_core::mining::load_config("assets/config/mining.yaml");
+    config::load_ui("assets/config/ui.yaml");
+
+    /* pixel_ui::init reads the atlas path out of config::ui(), so it
+     * has to run AFTER config::load_ui - otherwise a themed ui.yaml
+     * that points at a non-default PNG would be ignored on first
+     * boot. */
+    pixel_ui::init();
+    item_atlas::init();
+    inventory_screen::init();
     /* One-shot dump of Tenebris's effective atmosphere values so we
      * can sanity-check that the YAML actually landed. */
     {
@@ -527,6 +567,10 @@ extern "C" fn init() {
             inv_last_count: [0; 9],
             inv_last_sel: -1,
             inv_init: false,
+            last_pause_btn: -1,
+            last_inventory_btn: -1,
+            last_mobile: -1,
+            last_fullscreen_btn: -1,
         });
     });
 }
@@ -2241,6 +2285,50 @@ fn frame_inner(app: &mut App) {
             );
         }
     }
+    /* DOM overlays are mobile-only scaffolding; hide them while the
+     * in-canvas pause panel is up so taps don't pass behind it. */
+    #[cfg(target_os = "emscripten")]
+    {
+        let st = menu::state();
+        let in_game = st == GameState::InGameSp || st == GameState::InGameMp;
+        let show_mobile_dom = in_game && !menu::pause_active();
+        let v = show_mobile_dom as i32;
+        if v != app.last_pause_btn {
+            unsafe { tenebris_pause_button_set_visible(v) };
+            app.last_pause_btn = v;
+        }
+        if v != app.last_inventory_btn {
+            unsafe { tenebris_inventory_button_set_visible(v) };
+            app.last_inventory_btn = v;
+        }
+        if v != app.last_mobile {
+            unsafe { tenebris_mobile_controls_set_visible(v) };
+            app.last_mobile = v;
+        }
+        if v != app.last_fullscreen_btn {
+            unsafe { tenebris_fullscreen_button_set_visible(v) };
+            app.last_fullscreen_btn = v;
+        }
+    }
+    /* Pixel-art UI demo. Drawn between the hotbar and the pause panel
+     * so it sits above gameplay HUD but below the modal pause overlay.
+     * No-op unless F8 has toggled the demo on. */
+    pixel_ui::demo_draw();
+
+    /* Inventory + crafting overlay - opened with `E` in gravity or
+     * Shift+E in space, closed with the same. Drawn after the
+     * gameplay HUD so it sits on top of the hotbar; before the pause
+     * panel so pause still wins when both are open. */
+    inventory_screen::draw(&app.player.borrow().inventory);
+
+    /* Shift+E hint toast: paints over the HUD when the player has
+     * been mashing plain E in space without the overlay opening.
+     * Self-gates on the timer state, so calling unconditionally is
+     * cheap. Drawn after the overlay so it sits on top of any open
+     * panel - the only case where both would be visible at once is
+     * a player tapping E mid-overlay, which is unusual but harmless. */
+    inventory_screen::draw_hint();
+
     /* Pause overlay draws last so the dim backdrop + panel sit on top
      * of every HUD element. No-op when not active. */
     menu::pause_draw(sapp::width(), sapp::height());
@@ -2305,6 +2393,72 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
     if crafting_screen::handle_event(e, Some(app.player.clone())) {
         return;
     }
+
+    /* F8: toggle the pixel-art UI demo panel. The demo exercises every
+     * widget (panel, button states, slot states, title bar, close X)
+     * so the swatch can be eyeballed live while iterating on art and
+     * ui.yaml. Wired here, not inside the debug_ui_visible block,
+     * because the inventory / crafting screens that ride on this
+     * module aren't debug features. */
+    if e._type == sapp::EventType::KeyDown && e.key_code == sapp::Keycode::F8 {
+        pixel_ui::demo_toggle();
+        return;
+    }
+
+    /* E: toggle the inventory / crafting overlay.
+     *
+     *   In gravity:        E              -> toggles
+     *   In space:          E              -> roll-right (legacy), and
+     *                                       a few rapid taps fires the
+     *                                       Shift+E hint toast.
+     *   Anywhere:          Shift+E        -> toggles
+     *   While overlay open: any E          -> closes
+     *
+     * The branching here is so the player who came in from a planet
+     * surface, where plain E worked, doesn't lose roll-control the
+     * moment they leave gravity - but also gets a visible nudge that
+     * the binding moved. The toggle path swallows the event; the
+     * roll path falls through to input.rs's existing
+     * Keycode::E -> roll_right wiring. */
+    if e._type == sapp::EventType::KeyDown && e.key_code == sapp::Keycode::E {
+        let shift_held = (e.modifiers & sapp::MODIFIER_SHIFT) != 0;
+        let in_space = app.player.borrow().is_in_space;
+        let inv_open = inventory_screen::is_open();
+        if inv_open || !in_space || shift_held {
+            inventory_screen::toggle();
+            return;
+        }
+        /* In space, no shift, overlay closed: roll-right wants this
+         * key. Count the tap so a sustained run of unmodified Es
+         * surfaces the Shift+E hint toast. */
+        inventory_screen::note_e_tap_in_space();
+    }
+    if inventory_screen::event(e) {
+        /* Still pump pixel_ui for mouse movement / clicks so the
+         * inventory's widgets stay live. */
+        pixel_ui::event(e);
+        return;
+    }
+
+    /* Pump mouse / touch state into the pixel UI even when nothing is
+     * open - keeps the cursor warm so a screen can open mid-frame and
+     * pick up an already-correct hot state. The pixel UI's widget
+     * functions are what actually decide whether to consume a click;
+     * pixel_ui::event itself never claims an event. When a UI screen
+     * (the demo for now) is visible, swallow the click below the
+     * widget layer so it doesn't also dig the world. */
+    pixel_ui::event(e);
+    if pixel_ui::demo_visible() {
+        match e._type {
+            sapp::EventType::MouseDown
+            | sapp::EventType::MouseUp
+            | sapp::EventType::TouchesBegan
+            | sapp::EventType::TouchesEnded
+            | sapp::EventType::TouchesCancelled => return,
+            _ => {}
+        }
+    }
+
     /* Escape: do nothing directly - the per-frame pointer-lock-loss
      * detector opens the pause panel on the same gesture. */
     if e._type == sapp::EventType::KeyDown && e.key_code == sapp::Keycode::Escape {
@@ -2442,6 +2596,121 @@ pub fn run() {
         },
         ..Default::default()
     });
+}
+
+/* --------------------------------------------------------------------- */
+/* Web glue: extern declarations for the EM_JS bodies that moved to
+ * web/library_tenebris.js, plus the EMSCRIPTEN_KEEPALIVE re-entry
+ * points the JS side invokes via Module.ccall. Keep the signatures in
+ * lockstep with the JS library (and the EXPORTED_FUNCTIONS list in
+ * build-web.*). */
+/* --------------------------------------------------------------------- */
+
+#[cfg(target_os = "emscripten")]
+extern "C" {
+    /// `?server=` query param; malloc'd C string or NULL.
+    fn tenebris_get_server_url() -> *mut core::ffi::c_char;
+    /// 1 on mobile/tablet (or ?perf=lite override), else 0.
+    fn tenebris_is_mobile_device() -> i32;
+    /// `?room=` / `?invite=` query param; malloc'd C string or NULL.
+    fn tenebris_get_room_code() -> *mut core::ffi::c_char;
+    fn tenebris_block_f5_refresh();
+    fn tenebris_pause_button_install();
+    fn tenebris_pause_button_set_visible(visible: i32);
+    fn tenebris_inventory_button_install();
+    fn tenebris_inventory_button_set_visible(visible: i32);
+    fn tenebris_fullscreen_button_install();
+    fn tenebris_fullscreen_button_set_visible(visible: i32);
+    fn tenebris_mobile_controls_install();
+    fn tenebris_mobile_controls_set_visible(visible: i32);
+    /// Emscripten heap free - releases the JS-side `_malloc` buffers.
+    fn free(ptr: *mut core::ffi::c_void);
+}
+
+/// Take ownership of a `_malloc`'d NUL-terminated UTF-8 string handed
+/// back by the JS library (same helper shape as client_kv's).
+#[cfg(target_os = "emscripten")]
+unsafe fn take_js_cstring(p: *mut core::ffi::c_char) -> Option<String> {
+    if p.is_null() {
+        return None;
+    }
+    let s = core::ffi::CStr::from_ptr(p).to_string_lossy().into_owned();
+    free(p as *mut core::ffi::c_void);
+    Some(s)
+}
+
+/* EMSCRIPTEN_KEEPALIVE callbacks. JS calls these via Module.ccall;
+ * they must appear in -sEXPORTED_FUNCTIONS at link time. */
+#[cfg(target_os = "emscripten")]
+mod js_callbacks {
+    use super::*;
+
+    /// JS pause button tapped. Same effect as Escape on desktop.
+    #[no_mangle]
+    pub extern "C" fn tenebris_js_pause_pressed() {
+        menu::pause_toggle();
+        if menu::pause_active() {
+            sapp::lock_mouse(false);
+            sapp::show_mouse(true);
+        }
+    }
+
+    /// JS inventory button tapped. inventory_screen::toggle owns the
+    /// pointer-lock + cursor-show release so this stays a thin
+    /// wrapper - same destination Shift+E reaches, so the two input
+    /// paths share state with no second source of truth.
+    #[no_mangle]
+    pub extern "C" fn tenebris_js_inventory_pressed() {
+        inventory_screen::toggle();
+    }
+
+    #[no_mangle]
+    pub extern "C" fn tenebris_js_set_move_stick(x: f64, y: f64, active: i32) {
+        input::js_set_move_stick(x, y, active != 0);
+    }
+
+    #[no_mangle]
+    pub extern "C" fn tenebris_js_set_look_stick(x: f64, y: f64, active: i32) {
+        input::js_set_look_stick(x, y, active != 0);
+    }
+
+    #[no_mangle]
+    pub extern "C" fn tenebris_js_set_break(held: i32) {
+        input::js_set_break(held != 0);
+    }
+
+    #[no_mangle]
+    pub extern "C" fn tenebris_js_set_place(held: i32) {
+        input::js_set_place(held != 0);
+    }
+
+    #[no_mangle]
+    pub extern "C" fn tenebris_js_set_jump(held: i32) {
+        input::js_set_jump(held != 0);
+    }
+
+    /// Re-entry from the /saves fetch promise (C:
+    /// `net_client_saves_audit_cb`).
+    #[no_mangle]
+    pub extern "C" fn net_client_saves_audit_cb(json: *const core::ffi::c_char) {
+        if json.is_null() {
+            return;
+        }
+        let s = unsafe { core::ffi::CStr::from_ptr(json) }.to_string_lossy();
+        net_client::saves_audit_cb(&s);
+    }
+
+    /// Re-entry from the /saves/body fetch promise (C:
+    /// `net_client_body_blob_cb`).
+    #[no_mangle]
+    pub extern "C" fn net_client_body_blob_cb(body_id: u32, data: *const u8, len: i32) {
+        if data.is_null() || len <= 0 {
+            net_client::body_blob_cb(body_id, &[]);
+            return;
+        }
+        let slice = unsafe { std::slice::from_raw_parts(data, len as usize) };
+        net_client::body_blob_cb(body_id, slice);
+    }
 }
 
 /* --------------------------------------------------------------------- */

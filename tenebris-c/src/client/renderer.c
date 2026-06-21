@@ -76,16 +76,33 @@
 #define INIT_WATER_VERTICES   (8u   << 10)
 #define INIT_WATER_INDICES    (24u  << 10)
 
-/* Number of mesh chunks the planet is split into. Anchors are the 12
- * icosahedron vertices + 20 face centres → 32 well-spread sphere points.
- * Each tile is assigned to its nearest anchor, giving roughly equal
- * partitions of ~1300 tiles per chunk at subs=6 (40 962 tiles total).
+/* Number of mesh chunks the planet is split into. Anchors are spread
+ * evenly over the sphere (Fibonacci lattice); each tile is assigned to
+ * its nearest anchor, giving roughly equal partitions.
  *
  * Block edits dirty only the chunks containing edited tiles, so a single
- * mine/place rebuild touches ≤ 1300 tiles instead of the whole 40 K.
- * With one draw call per chunk we trade ~32 binds per frame for ~30×
- * faster terrain edits — a clear win on modern GPUs. */
-#define CHUNK_COUNT  32
+ * mine/place rebuild touches one chunk's worth of tiles instead of the
+ * whole planet. The count is a runtime knob (lod.yaml mesh_chunk_count):
+ * more chunks = fewer tiles re-meshed per edit (= less hitch placing
+ * blocks and applying peer / water edits) at the cost of a few more
+ * draw calls. RENDER_CHUNK_COUNT_MAX is the compile-time upper bound the
+ * per-body arrays are sized to; the live count clamps into it. */
+#define RENDER_CHUNK_COUNT_MAX  256
+
+/* Live chunk count, read once from lod.yaml's mesh_chunk_count (loaded
+ * at boot, never reloaded) and clamped into [1, RENDER_CHUNK_COUNT_MAX].
+ * Cached on first use so allocate / free / draw loops always agree on
+ * the same count for the life of the process. */
+static int g_chunk_n = 0;
+static inline int chunk_n(void) {
+    if (g_chunk_n == 0) {
+        int n = config_lod()->mesh_chunk_count;
+        if (n < 1) n = 1;
+        if (n > RENDER_CHUNK_COUNT_MAX) n = RENDER_CHUNK_COUNT_MAX;
+        g_chunk_n = n;
+    }
+    return g_chunk_n;
+}
 
 /* Per-chunk mesh state. Each chunk owns its own GPU buffer pair so a
  * dirty chunk can be re-uploaded in isolation. The *_capacity fields
@@ -126,8 +143,15 @@ typedef struct {
  * with a model translate to body world_pos. */
 typedef struct {
     world_t*     world;
-    mesh_chunk_t chunks[CHUNK_COUNT];
+    mesh_chunk_t chunks[RENDER_CHUNK_COUNT_MAX];
     int*         tile_to_chunk;          /* tile_idx -> chunk index */
+    /* Per-chunk tile membership, built once in body_alloc_chunks. The
+     * flat array holds every tile index grouped by chunk; off/cnt give
+     * each chunk's slice. Lets body_chunk_rebuild_full iterate only its
+     * own tiles instead of scanning all tile_count of them per rebuild. */
+    int*         chunk_tile_flat;
+    int          chunk_tile_off[RENDER_CHUNK_COUNT_MAX];
+    int          chunk_tile_cnt[RENDER_CHUNK_COUNT_MAX];
     int          mesh_cursor;            /* tiles meshed so far     */
     bool         streamed_complete;
     bool         is_active;              /* receives streaming + edit handling */
@@ -1009,7 +1033,7 @@ void renderer_init(void) {
 void renderer_shutdown(void) {
     for (int bi = 0; bi < R.body_count; ++bi) {
         chunked_body_t* body = &R.bodies[bi];
-        for (int i = 0; i < CHUNK_COUNT; ++i) {
+        for (int i = 0; i < chunk_n(); ++i) {
             mesh_chunk_t* c = &body->chunks[i];
             if (c->mesh.vertices)       hex_mesh_free(&c->mesh);
             if (c->water_mesh.vertices) hex_mesh_free(&c->water_mesh);
@@ -1024,7 +1048,8 @@ void renderer_shutdown(void) {
         if (body->distant_view_normal.id) sg_destroy_view(body->distant_view_normal);
         if (body->distant_tex_albedo.id)  sg_destroy_image(body->distant_tex_albedo);
         if (body->distant_tex_normal.id)  sg_destroy_image(body->distant_tex_normal);
-        free(body->tile_to_chunk); body->tile_to_chunk = NULL;
+        free(body->tile_to_chunk);  body->tile_to_chunk  = NULL;
+        free(body->chunk_tile_flat); body->chunk_tile_flat = NULL;
     }
     R.body_count = 0;
     R.active_body_idx = -1;
@@ -1609,7 +1634,7 @@ void renderer_register_world(world_t* w) {
         body->is_active   = true;
         body_alloc_chunks(body);
         body_full_mesh(body);
-        for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
+        for (int ci = 0; ci < chunk_n(); ++ci) {
             chunk_upload(&body->chunks[ci]);
         }
         body->chunks_allocated = true;
@@ -1663,7 +1688,7 @@ static void body_load_detail(chunked_body_t* body) {
         body->chunks_allocated = true;
     }
     body_full_mesh(body);
-    for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
+    for (int ci = 0; ci < chunk_n(); ++ci) {
         chunk_upload(&body->chunks[ci]);
     }
     body->meshed = true;
@@ -1691,7 +1716,7 @@ static void body_load_detail(chunked_body_t* body) {
  * re-meshes via body_load_detail. */
 static void body_unload_detail(chunked_body_t* body) {
     if (!body->meshed && !body->chunks_allocated) return;
-    for (int i = 0; i < CHUNK_COUNT; ++i) {
+    for (int i = 0; i < chunk_n(); ++i) {
         mesh_chunk_t* c = &body->chunks[i];
         if (c->mesh.vertices)       hex_mesh_free(&c->mesh);
         if (c->water_mesh.vertices) hex_mesh_free(&c->water_mesh);
@@ -1706,6 +1731,8 @@ static void body_unload_detail(chunked_body_t* body) {
     }
     free(body->tile_to_chunk);
     body->tile_to_chunk     = NULL;
+    free(body->chunk_tile_flat);
+    body->chunk_tile_flat   = NULL;
     body->chunks_allocated  = false;
     body->meshed            = false;
     printf("[renderer] unloaded detail for %s (body=%u) - far-LOD only now\n",
@@ -2177,31 +2204,22 @@ void renderer_compose_to_swapchain(mat4_t view, mat4_t proj) {
  * Filled at first use by build_chunk_anchors(). Tile -> chunk mapping is
  * "nearest anchor by dot product" — equivalent to nearest neighbor on the
  * unit sphere. */
-static dvec3_t CHUNK_ANCHORS[CHUNK_COUNT];
+static dvec3_t CHUNK_ANCHORS[RENDER_CHUNK_COUNT_MAX];
 static bool    CHUNK_ANCHORS_BUILT = false;
 
 static void build_chunk_anchors(void) {
-    /* Icosahedron — same constants used in goldberg.c's seed mesh. */
-    const double t = (1.0 + sqrt(5.0)) / 2.0;
-    const double n = 1.0 / sqrt(1.0 + t * t);
-    const double T = t * n;
-    const dvec3_t V[12] = {
-        {-n,  T, 0}, { n,  T, 0}, {-n, -T, 0}, { n, -T, 0},
-        { 0, -n,  T}, { 0,  n,  T}, { 0, -n, -T}, { 0,  n, -T},
-        { T, 0, -n}, { T, 0,  n}, {-T, 0, -n}, {-T, 0,  n},
-    };
-    static const int F[20][3] = {
-        {0,11,5},{0,5,1},{0,1,7},{0,7,10},{0,10,11},
-        {1,5,9},{5,11,4},{11,10,2},{10,7,6},{7,1,8},
-        {3,9,4},{3,4,2},{3,2,6},{3,6,8},{3,8,9},
-        {4,9,5},{2,4,11},{6,2,10},{8,6,7},{9,8,1},
-    };
-    for (int i = 0; i < 12; ++i) CHUNK_ANCHORS[i] = V[i];
-    for (int fi = 0; fi < 20; ++fi) {
-        dvec3_t c = dvec3_scale(
-            dvec3_add(dvec3_add(V[F[fi][0]], V[F[fi][1]]), V[F[fi][2]]),
-            1.0 / 3.0);
-        CHUNK_ANCHORS[12 + fi] = dvec3_normalize(c);
+    /* Fibonacci lattice: a near-uniform spread of N points on the unit
+     * sphere for any N (the old set was fixed at 32 = icosahedron verts
+     * + face centres). Tile->chunk assignment is nearest-anchor, so an
+     * even spread keeps each chunk's tile count roughly balanced. */
+    const int N = chunk_n();
+    const double PI = 3.14159265358979323846;
+    const double golden = PI * (3.0 - sqrt(5.0));   /* golden angle */
+    for (int i = 0; i < N; ++i) {
+        double y  = 1.0 - 2.0 * ((double)i + 0.5) / (double)N;  /* -1..1 */
+        double r  = sqrt(fmax(0.0, 1.0 - y * y));
+        double th = golden * (double)i;
+        CHUNK_ANCHORS[i] = (dvec3_t){ cos(th) * r, y, sin(th) * r };
     }
     CHUNK_ANCHORS_BUILT = true;
 }
@@ -2210,7 +2228,8 @@ static int classify_tile(dvec3_t center) {
     /* Largest dot product = closest anchor on the unit sphere. */
     double best = -1e30;
     int    best_i = 0;
-    for (int i = 0; i < CHUNK_COUNT; ++i) {
+    int    n = chunk_n();
+    for (int i = 0; i < n; ++i) {
         double d = dvec3_dot(center, CHUNK_ANCHORS[i]);
         if (d > best) { best = d; best_i = i; }
     }
@@ -2224,30 +2243,68 @@ static void body_alloc_chunks(chunked_body_t* body) {
     if (!CHUNK_ANCHORS_BUILT) build_chunk_anchors();
 
     world_t* w = body->world;
+    int nchunks = chunk_n();
     body->tile_to_chunk = (int*)malloc((size_t)w->tile_count * sizeof(int));
     for (int i = 0; i < w->tile_count; ++i) {
         const goldberg_tile_t* t = goldberg_tile(w->grid, i);
         body->tile_to_chunk[i] = classify_tile(t->center);
     }
 
+    /* Group tiles by chunk into a flat list (counting sort / prefix
+     * sum) so body_chunk_rebuild_full walks only the ~tile_count/nchunks
+     * tiles it owns instead of scanning all tile_count of them on every
+     * single edit. */
+    for (int ci = 0; ci < nchunks; ++ci) body->chunk_tile_cnt[ci] = 0;
+    for (int i = 0; i < w->tile_count; ++i) body->chunk_tile_cnt[body->tile_to_chunk[i]]++;
+    int acc = 0;
+    for (int ci = 0; ci < nchunks; ++ci) {
+        body->chunk_tile_off[ci] = acc;
+        acc += body->chunk_tile_cnt[ci];
+    }
+    body->chunk_tile_flat = (int*)malloc((size_t)w->tile_count * sizeof(int));
+    {
+        int cursor[RENDER_CHUNK_COUNT_MAX];
+        for (int ci = 0; ci < nchunks; ++ci) cursor[ci] = body->chunk_tile_off[ci];
+        for (int i = 0; i < w->tile_count; ++i) {
+            int ci = body->tile_to_chunk[i];
+            body->chunk_tile_flat[cursor[ci]++] = i;
+        }
+    }
+
+    /* INIT_* are calibrated for a 32-chunk planet. Keep the *total*
+     * starting buffer budget constant as the chunk count changes - with
+     * more, smaller chunks each one needs proportionally less - so mesh
+     * memory tracks content, not chunk count. regrow_buffer doubles any
+     * chunk that outgrows its start, and the floors stop a very high
+     * count from creating uselessly tiny buffers. */
+    enum { INIT_CALIB_CHUNKS = 32 };
+    int init_v  = INIT_VERTICES       * INIT_CALIB_CHUNKS / nchunks;
+    int init_i  = INIT_INDICES        * INIT_CALIB_CHUNKS / nchunks;
+    int init_wv = INIT_WATER_VERTICES * INIT_CALIB_CHUNKS / nchunks;
+    int init_wi = INIT_WATER_INDICES  * INIT_CALIB_CHUNKS / nchunks;
+    if (init_v  < 1024) init_v  = 1024;
+    if (init_i  < 3072) init_i  = 3072;
+    if (init_wv < 256)  init_wv = 256;
+    if (init_wi < 768)  init_wi = 768;
+
     char label[48];
-    for (int i = 0; i < CHUNK_COUNT; ++i) {
+    for (int i = 0; i < nchunks; ++i) {
         mesh_chunk_t* c = &body->chunks[i];
         hex_mesh_init(&c->mesh);
         hex_mesh_init(&c->water_mesh);
-        c->mesh.vertex_cap = INIT_VERTICES;
+        c->mesh.vertex_cap = init_v;
         c->mesh.vertices = (hex_vertex_t*)malloc(c->mesh.vertex_cap * sizeof(hex_vertex_t));
-        c->mesh.index_cap = INIT_INDICES;
+        c->mesh.index_cap = init_i;
         c->mesh.indices = (uint32_t*)malloc(c->mesh.index_cap * sizeof(uint32_t));
-        c->water_mesh.vertex_cap = INIT_WATER_VERTICES;
+        c->water_mesh.vertex_cap = init_wv;
         c->water_mesh.vertices = (hex_vertex_t*)malloc(c->water_mesh.vertex_cap * sizeof(hex_vertex_t));
-        c->water_mesh.index_cap = INIT_WATER_INDICES;
+        c->water_mesh.index_cap = init_wi;
         c->water_mesh.indices = (uint32_t*)malloc(c->water_mesh.index_cap * sizeof(uint32_t));
 
-        c->vbuf_capacity        = INIT_VERTICES;
-        c->ibuf_capacity        = INIT_INDICES;
-        c->water_vbuf_capacity  = INIT_WATER_VERTICES;
-        c->water_ibuf_capacity  = INIT_WATER_INDICES;
+        c->vbuf_capacity        = init_v;
+        c->ibuf_capacity        = init_i;
+        c->water_vbuf_capacity  = init_wv;
+        c->water_ibuf_capacity  = init_wi;
 
         snprintf(label, sizeof(label), "%s-vbuf-%d", w->body->name, i);
         c->vbuf = sg_make_buffer(&(sg_buffer_desc){
@@ -2357,8 +2414,14 @@ static void body_chunk_rebuild_full(chunked_body_t* body, int chunk_idx) {
     mesh_chunk_t* c = &body->chunks[chunk_idx];
     hex_mesh_reset(&c->mesh);
     hex_mesh_reset(&c->water_mesh);
-    for (int i = 0; i < w->tile_count; ++i) {
-        if (body->tile_to_chunk[i] != chunk_idx) continue;
+    /* Walk only this chunk's tiles (built in body_alloc_chunks) rather
+     * than scanning all tile_count - the difference between a per-edit
+     * full-grid sweep and touching just the ~tile_count/nchunks tiles
+     * the chunk actually owns. */
+    int off = body->chunk_tile_off[chunk_idx];
+    int cnt = body->chunk_tile_cnt[chunk_idx];
+    for (int k = 0; k < cnt; ++k) {
+        int i = body->chunk_tile_flat[off + k];
         if (i >= w->gen_cursor) continue;        /* not yet generated */
         hex_mesh_build_tile(&c->mesh, w, i);
         hex_mesh_build_water(&c->water_mesh, w, i);
@@ -2465,7 +2528,8 @@ static void body_full_mesh(chunked_body_t* body) {
 
     uint64_t t_mesh_start = stm_now();
     profiler_begin("chunk-remesh");
-    for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
+    int nchunks = chunk_n();
+    for (int ci = 0; ci < nchunks; ++ci) {
         mesh_chunk_t* c = &body->chunks[ci];
         hex_mesh_reset(&c->mesh);
         hex_mesh_reset(&c->water_mesh);
@@ -2479,8 +2543,11 @@ static void body_full_mesh(chunked_body_t* body) {
             hex_mesh_build_water(&c->water_mesh, w, i);
             hex_mesh_build_water_voxels(&c->water_mesh, w, i);
         }
-        world_tile_clear_dirty(w, i);
     }
+    /* This pass meshed every generated tile, so every dirty tile is now
+     * resolved: drain the whole dirty queue (clears the bits + empties
+     * it) in one shot rather than clearing per-tile inside the loop. */
+    world_dirty_consume(w);
     profiler_end("chunk-remesh");
     R.mesh_rebuild_ms_this_frame += stm_ms(stm_diff(stm_now(), t_mesh_start));
     body->streamed_complete = true;
@@ -2597,12 +2664,24 @@ static chunk_cull_t compute_chunk_cull(const chunked_body_t* body,
     cc.cuz = cz / cd;
     double cos_h = (cd > body->radius_m) ? (body->radius_m / cd) : 0.0;
     double theta_h = acos(cos_h);
-    /* Chunk angular padding. 32 anchors split 4π sr ⇒ each anchor
-     * region ≈ π/8 sr, sphere-cap half-angle acos(15/16) ≈ 20°.
-     * Voronoi-on-sphere boundaries extend slightly past the cap,
-     * so pad to ~31° to keep horizon-straddling chunks visible. */
-    const double theta_chunk = 0.55;
-    cc.cull_cos = cos(theta_h + theta_chunk);
+    /* Per-chunk angular padding, derived from the live chunk count so it
+     * auto-scales with granularity: each of N evenly-spread anchors owns
+     * a spherical cap of solid angle 4*pi/N, i.e. half-angle
+     * acos(1 - 2/N). Voronoi boundaries reach slightly past the bare
+     * cap, so pad by mesh_cull_pad_factor to keep horizon-straddling
+     * chunks visible. (At N=32 the default factor 1.55 reproduces the
+     * historical ~0.55 rad / ~31 degrees.) */
+    int    nchunks = chunk_n();
+    double cap_half = acos(1.0 - 2.0 / (double)nchunks);
+    double theta_chunk = config_lod()->mesh_cull_pad_factor * cap_half;
+    /* Clamp the kept half-angle to pi. Past pi the cos() is no longer
+     * monotonic, so without this a coarse chunk count (large cap_half)
+     * would start spuriously culling; pinning at pi gives cull_cos = -1,
+     * i.e. "keep everything", which is the correct coarse-grid limit. */
+    double keep = theta_h + theta_chunk;
+    const double PI = 3.14159265358979323846;
+    if (keep > PI) keep = PI;
+    cc.cull_cos = cos(keep);
     return cc;
 }
 
@@ -2639,7 +2718,7 @@ static void body_draw_chunks(chunked_body_t* body, mat4_t vp,
     hvp.u_planet[3] = body->has_water ? sea_radius : 0.0f;
     sg_apply_uniforms(UB_hex_vs_params, &SG_RANGE(hvp));
     chunk_cull_t cc = compute_chunk_cull(body, camera_world);
-    for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
+    for (int ci = 0; ci < chunk_n(); ++ci) {
         mesh_chunk_t* c = &body->chunks[ci];
         if (c->last_uploaded_index_count <= 0) continue;
         if (!chunk_visible(&cc, ci)) continue;
@@ -2658,7 +2737,7 @@ static void body_draw_water(chunked_body_t* body, mat4_t vp,
                             vec3_t camera_world) {
     if (!body->has_water) return;
     bool any = false;
-    for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
+    for (int ci = 0; ci < chunk_n(); ++ci) {
         if (body->chunks[ci].last_uploaded_water_idx_count > 0) { any = true; break; }
     }
     if (!any) return;
@@ -2751,7 +2830,7 @@ static void body_draw_water(chunked_body_t* body, mat4_t vp,
         sg_apply_uniforms(UB_fs_params_mobile, &SG_RANGE(fs_mobile));
 
         chunk_cull_t cc = compute_chunk_cull(body, camera_world);
-        for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
+        for (int ci = 0; ci < chunk_n(); ++ci) {
             mesh_chunk_t* c = &body->chunks[ci];
             if (c->last_uploaded_water_idx_count <= 0) continue;
             if (!chunk_visible(&cc, ci)) continue;
@@ -2831,7 +2910,7 @@ static void body_draw_water(chunked_body_t* body, mat4_t vp,
     sg_apply_uniforms(UB_fs_params, &SG_RANGE(fs_params));
 
     chunk_cull_t cc = compute_chunk_cull(body, camera_world);
-    for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
+    for (int ci = 0; ci < chunk_n(); ++ci) {
         mesh_chunk_t* c = &body->chunks[ci];
         if (c->last_uploaded_water_idx_count <= 0) continue;
         if (!chunk_visible(&cc, ci)) continue;
@@ -2889,38 +2968,49 @@ void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world,
      * body_load_detail will mesh from scratch when the body comes
      * into LOD range. */
     bool any_grew = false;
+    double budget_ms = config_lod()->mesh_remesh_budget_ms;
+    if (budget_ms < 0.0) budget_ms = 0.0;
+    int nchunks = chunk_n();
     for (int bi = 0; bi < R.body_count; ++bi) {
         chunked_body_t* body = &R.bodies[bi];
         if (!body->meshed || !body->tile_to_chunk) continue;
-        bool body_grew[CHUNK_COUNT] = { 0 };
-        int dirty_tiles = 0;
-        for (int i = 0; i < body->world->tile_count; ++i) {
-            if (!world_tile_dirty(body->world, i)) continue;
-            body->chunks[body->tile_to_chunk[i]].dirty = true;
-            world_tile_clear_dirty(body->world, i);
-            ++dirty_tiles;
+        bool body_grew[RENDER_CHUNK_COUNT_MAX] = { 0 };
+
+        /* Drain the dirty-tile queue: map each changed tile to its chunk
+         * and flag that chunk for rebuild. Replaces the old "scan every
+         * tile's dirty bit each frame" sweep, so an idle frame - or a
+         * frame carrying just one peer edit - costs O(changed tiles)
+         * instead of O(tile_count). world_dirty_consume then clears the
+         * bits + empties the queue in one pass. */
+        const int* dq = NULL;
+        int dirty_tiles = world_dirty_tiles(body->world, &dq);
+        for (int k = 0; k < dirty_tiles; ++k) {
+            body->chunks[body->tile_to_chunk[dq[k]]].dirty = true;
         }
-        /* Spread chunk rebuilds across frames. A flow tick that dirties
-         * tiles in N chunks would otherwise stall the mainloop for the
-         * sum of N body_chunk_rebuild_full calls in a single frame -
-         * water flowing across a hillside hits a dozen chunks at once
-         * and visibly hitches. Cap to the YAML-configured budget; the
-         * remaining chunks keep their dirty flag and are picked up on
-         * the next frame's pass. Floor at 1 so a hostile config can't
-         * starve the queue. */
-        int remesh_budget = config_water_flow()->max_chunks_remesh_per_frame;
-        if (remesh_budget < 1) remesh_budget = 1;
+        world_dirty_consume(body->world);
+
+        /* Rebuild dirty chunks under a wall-clock budget so neither a
+         * local placement, a burst of peer edits, nor a water flood that
+         * dirties many chunks at once can stall the frame. Always rebuild
+         * at least one chunk so progress is guaranteed; past that, stop
+         * once the budget is spent and let the remaining dirty chunks
+         * roll over to the next frame. (The first rebuild also drives the
+         * global relight BFS to convergence; later chunks in the same
+         * frame find light already clean, so the budget mostly governs
+         * raw mesh-build cost.) */
+        uint64_t t_budget_start = stm_now();
         int chunks_rebuilt = 0;
-        for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
+        for (int ci = 0; ci < nchunks; ++ci) {
             if (!body->chunks[ci].dirty) continue;
-            if (chunks_rebuilt >= remesh_budget) break;
+            if (chunks_rebuilt >= 1 &&
+                stm_ms(stm_diff(stm_now(), t_budget_start)) >= budget_ms) break;
             body_chunk_rebuild_full(body, ci);
             body->chunks[ci].dirty = false;
             body_grew[ci] = true;
             ++chunks_rebuilt;
             any_grew = true;
         }
-        for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
+        for (int ci = 0; ci < nchunks; ++ci) {
             if (body_grew[ci]) chunk_upload(&body->chunks[ci]);
         }
         /* Loudly trace the per-frame remesh activity on the active +
@@ -2951,7 +3041,7 @@ void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world,
         s_log_accum = 0.0;
         chunked_body_t* active = &R.bodies[R.active_body_idx];
         int missing = 0;
-        for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
+        for (int ci = 0; ci < chunk_n(); ++ci) {
             mesh_chunk_t* c = &active->chunks[ci];
             if (c->last_uploaded_index_count > 0) continue;
             ++missing;
@@ -2963,10 +3053,7 @@ void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world,
             vec3_t anchor_world = vec3_add(anchor_local, active->world_pos);
             vec3_t delta = vec3_sub(anchor_world, camera_world);
             float dist = vec3_length(delta);
-            int tile_count = 0;
-            for (int i = 0; i < active->world->tile_count; ++i) {
-                if (active->tile_to_chunk[i] == ci) ++tile_count;
-            }
+            int tile_count = active->chunk_tile_cnt[ci];
             printf("[renderer] MISSING chunk %d on %s: %d tiles, dist=%.1fm, idx_count=%d\n",
                    ci, active->world->body->name, tile_count, dist,
                    c->last_uploaded_index_count);
@@ -2975,11 +3062,11 @@ void renderer_draw_world(mat4_t view, mat4_t proj, world_t* world,
             /* Once-per-2s heartbeat so we can confirm the diagnostic is
              * still running and chunks are still loaded. */
             int total_idx = 0;
-            for (int ci = 0; ci < CHUNK_COUNT; ++ci) {
+            for (int ci = 0; ci < chunk_n(); ++ci) {
                 total_idx += R.bodies[R.active_body_idx].chunks[ci].last_uploaded_index_count;
             }
             /* printf("[renderer] all %d chunks loaded on %s (%d total indices)\n",
-             *        CHUNK_COUNT, active->world->body->name, total_idx); */
+             *        chunk_n(), active->world->body->name, total_idx); */
             (void)total_idx;
         }
         fflush(stdout);
@@ -3407,7 +3494,7 @@ size_t renderer_tiles_drawn_this_frame(void)     {
 size_t renderer_tiles_remeshed_this_frame(void)  { return R.tiles_remeshed; }
 
 void renderer_chunk_count(int* out_chunks, int* out_tiles_meshed) {
-    if (out_chunks) *out_chunks = CHUNK_COUNT;
+    if (out_chunks) *out_chunks = chunk_n();
     if (out_tiles_meshed) {
         *out_tiles_meshed = (R.active_body_idx >= 0)
             ? R.bodies[R.active_body_idx].mesh_cursor : 0;

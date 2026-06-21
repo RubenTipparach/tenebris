@@ -404,7 +404,7 @@ in: plank 2
     fn player_with_logs(n: i32) -> PlayerHandle {
         let mut pc = PlayerCtrl::default();
         inventory::init_empty(&mut pc.inventory);
-        pc.inventory.slots[1] = InvSlot { block_type: Block::Wood, count: n };
+        pc.inventory.slots[1] = InvSlot::block(Block::Wood, n);
         Rc::new(RefCell::new(pc))
     }
 

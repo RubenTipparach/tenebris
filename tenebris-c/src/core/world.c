@@ -22,6 +22,10 @@ world_t* world_create(const body_config_t* body, int subdivisions) {
     w->blocks = (uint8_t*)calloc((size_t)(w->tile_count * WORLD_MAX_DEPTH), 1);
     w->dirty_bytes  = (w->tile_count + 7) / 8;
     w->dirty        = (uint8_t*)calloc((size_t)w->dirty_bytes, 1);
+    /* Dirty queue sized to tile_count: the bit-dedup guarantees at most
+     * one entry per tile between drains, so this never overflows. */
+    w->dirty_queue       = (int*)malloc((size_t)w->tile_count * sizeof(int));
+    w->dirty_queue_count = 0;
     w->edited_bytes = w->dirty_bytes;
     w->edited       = (uint8_t*)calloc((size_t)w->edited_bytes, 1);
     w->gen_cursor = 0;
@@ -37,6 +41,7 @@ void world_destroy(world_t* w) {
     goldberg_destroy(w->grid);
     free(w->blocks);
     free(w->dirty);
+    free(w->dirty_queue);
     free(w->saved);
     free(w->edited);
     free(w);
@@ -66,6 +71,23 @@ world_t* world_clone(const world_t* src) {
      * ticks). */
     world_water_clone_into(w->water, src->water);
     return w;
+}
+
+/* Set a tile's dirty bit and, on the 0->1 transition only, push it
+ * onto the dirty queue. Every site that dirties a tile routes through
+ * here so the renderer's drain stays in sync with the bitset: the
+ * invariant is "every set dirty bit is present exactly once in the
+ * queue (until consumed)". The bit-dedup keeps the queue bounded by
+ * tile_count, which is how it was sized in world_create. */
+static inline void world_dirty_enqueue(world_t* w, int tile) {
+    if (tile < 0 || tile >= w->tile_count) return;
+    int byte = tile >> 3;
+    uint8_t bit = (uint8_t)(1 << (tile & 7));
+    if (w->dirty[byte] & bit) return;               /* already queued */
+    w->dirty[byte] |= bit;
+    if (w->dirty_queue && w->dirty_queue_count < w->tile_count) {
+        w->dirty_queue[w->dirty_queue_count++] = tile;
+    }
 }
 
 /* ----------------------------------------------------------------------- */
@@ -164,7 +186,7 @@ static void gen_tile(world_t* w, int tile_idx) {
     }
 
     /* Mark this tile dirty so the renderer builds its geometry. */
-    w->dirty[tile_idx >> 3] |= (uint8_t)(1 << (tile_idx & 7));
+    world_dirty_enqueue(w, tile_idx);
 }
 
 void world_stream_gen(world_t* w, int max_tiles) {
@@ -207,7 +229,7 @@ void world_set(world_t* w, int tile, int depth, block_t b) {
     if (w->blocks[idx] == (uint8_t)b) return;
     uint8_t old = w->blocks[idx];
     w->blocks[idx] = (uint8_t)b;
-    w->dirty[tile >> 3] |= (uint8_t)(1 << (tile & 7));
+    world_dirty_enqueue(w, tile);
 
     /* Water-sim cleanup on block change.
      *
@@ -272,8 +294,7 @@ void world_set(world_t* w, int tile, int depth, block_t b) {
     /* Dirty neighbors too so their seam faces rebuild. */
     const goldberg_tile_t* t = goldberg_tile(w->grid, tile);
     for (int i = 0; i < t->num_neighbors; ++i) {
-        int n = t->neighbors[i];
-        w->dirty[n >> 3] |= (uint8_t)(1 << (n & 7));
+        world_dirty_enqueue(w, t->neighbors[i]);
     }
     /* Mark the edited cell for incremental relight - but ONLY when
      * the change actually affects light propagation. The lighting BFS
@@ -303,7 +324,7 @@ void world_set(world_t* w, int tile, int depth, block_t b) {
 
 void world_tile_mark_dirty(world_t* w, int tile) {
     if (!w || tile < 0 || tile >= w->tile_count) return;
-    w->dirty[tile >> 3] |= (uint8_t)(1u << (tile & 7));
+    world_dirty_enqueue(w, tile);
 }
 
 bool world_tile_dirty(const world_t* w, int tile) {
@@ -314,6 +335,23 @@ bool world_tile_dirty(const world_t* w, int tile) {
 void world_tile_clear_dirty(world_t* w, int tile) {
     if (tile < 0 || tile >= w->tile_count) return;
     w->dirty[tile >> 3] &= (uint8_t)~(1 << (tile & 7));
+}
+
+int world_dirty_tiles(const world_t* w, const int** out_tiles) {
+    if (out_tiles) *out_tiles = w->dirty_queue;
+    return w->dirty_queue_count;
+}
+
+void world_dirty_consume(world_t* w) {
+    /* Clear the dirty bit for every queued tile, then empty the queue.
+     * Because every set bit is queued (the world_dirty_enqueue
+     * invariant), this leaves the bitset fully clean in one pass -
+     * no tile_count-wide sweep needed. */
+    for (int k = 0; k < w->dirty_queue_count; ++k) {
+        int tile = w->dirty_queue[k];
+        w->dirty[tile >> 3] &= (uint8_t)~(1 << (tile & 7));
+    }
+    w->dirty_queue_count = 0;
 }
 
 bool world_tile_saved(const world_t* w, int tile) {
@@ -371,7 +409,7 @@ void world_dirty_in_range(world_t* w, vec3_t world_pos, float radius_m) {
         float cy = (float)(t->center.y * R) - py;
         float cz = (float)(t->center.z * R) - pz;
         if (cx*cx + cy*cy + cz*cz <= r2) {
-            w->dirty[i >> 3] |= (uint8_t)(1 << (i & 7));
+            world_dirty_enqueue(w, i);
         }
     }
     /* DO NOT mark the light grid full-dirty here. world_light_mark_dirty

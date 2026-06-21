@@ -30,7 +30,13 @@ endif()
 # uses GLES3 / WebGL2; native desktop uses Metal on Apple, D3D11 on
 # Windows, GL 4.1+ elsewhere.
 if (EMSCRIPTEN)
-    set(SOKOL_SHDC_SLANG "glsl300es")
+    if (TENEBRIS_WEBGPU)
+        # WebGPU backend: emit WGSL. All shaders cross-compile cleanly
+        # (verified against the vendored sokol-shdc).
+        set(SOKOL_SHDC_SLANG "wgsl")
+    else()
+        set(SOKOL_SHDC_SLANG "glsl300es")
+    endif()
 elseif (APPLE)
     set(SOKOL_SHDC_SLANG "metal_macos")
 elseif (WIN32)

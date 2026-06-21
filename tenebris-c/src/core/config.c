@@ -47,6 +47,23 @@ static char* trim_strip(char* s) {
     return s;
 }
 
+/* Parse "[ a, b, c, d ]" into out[0..3] as integers. Returns true on
+ * success. Used by the UI config for sprite rects + nine-slice
+ * margins, which are integer texel counts. */
+static bool parse_int4(const char* val, int* out) {
+    while (*val && isspace((unsigned char)*val)) ++val;
+    if (*val != '[') return false;
+    ++val;
+    char* end = NULL;
+    for (int i = 0; i < 4; ++i) {
+        while (*val && (*val == ',' || isspace((unsigned char)*val))) ++val;
+        out[i] = (int)strtol(val, &end, 10);
+        if (end == val) return false;
+        val = end;
+    }
+    return true;
+}
+
 /* Parse "[ a, b, c ]" into out[0..2]. Returns true on success. */
 static bool parse_vec3(const char* val, vec3_t* out) {
     while (*val && isspace((unsigned char)*val)) ++val;
@@ -292,6 +309,9 @@ static lod_config_t S_LOD = {
     .water_surface_float_height_m = -0.8f,
     .water_body_check_height_m   = 0.50f,
     .water_submerged_jump_mult   = 0.30f,
+    .mesh_chunk_count            = 128,
+    .mesh_remesh_budget_ms       = 4.0f,
+    .mesh_cull_pad_factor        = 1.55f,
 };
 
 const lod_config_t* config_lod(void) { return &S_LOD; }
@@ -428,6 +448,12 @@ int config_load_lod(const char* path) {
                             S_LOD.water_body_check_height_m   = (float)strtod(val, NULL);
                         } else if (strcmp(key, "water_submerged_jump_mult") == 0) {
                             S_LOD.water_submerged_jump_mult   = (float)strtod(val, NULL);
+                        } else if (strcmp(key, "mesh_chunk_count"          ) == 0) {
+                            S_LOD.mesh_chunk_count            = (int)strtol(val, NULL, 10);
+                        } else if (strcmp(key, "mesh_remesh_budget_ms"     ) == 0) {
+                            S_LOD.mesh_remesh_budget_ms       = (float)strtod(val, NULL);
+                        } else if (strcmp(key, "mesh_cull_pad_factor"      ) == 0) {
+                            S_LOD.mesh_cull_pad_factor        = (float)strtod(val, NULL);
                         } else {
                             printf("[config] %s:%d: unknown key '%s'\n",
                                    path, line_no, key);
@@ -891,6 +917,166 @@ int config_load_atmosphere(const char* path) {
     /* Flush the last body's patch. */
     if (active_body >= 0) {
         planet_set_atmosphere((body_id_t)active_body, &patch);
+    }
+
+    free(buf);
+    if (parse_errors > 0) {
+        printf("[config] %s loaded with %d parse error(s)\n",
+               path, parse_errors);
+        return -2;
+    }
+    printf("[config] loaded %s\n", path);
+    fflush(stdout);
+    return 0;
+}
+
+/* ------------------------------------------------------------------------ */
+/* UI config — pixel-art sprite atlas layout consumed by client/pixel_ui.c.
+ * Defaults mirror the layout baked by tools/gen-ui-sprites.py so the
+ * compiled-in values are usable even if assets/config/ui.yaml is missing
+ * (and so the YAML can express partial overrides — any sprite whose
+ * section is omitted falls back to the default below). */
+
+static ui_config_t S_UI = {
+    .atlas_path = "assets/textures/ui/default.png",
+    .sprites = {
+        [UI_SPRITE_PANEL]           = {   0,  0, 32, 32,  8, 8, 8, 8 },
+        [UI_SPRITE_BUTTON_NORMAL]   = {  32,  0, 24, 16,  4, 4, 4, 4 },
+        [UI_SPRITE_BUTTON_HOVER]    = {  56,  0, 24, 16,  4, 4, 4, 4 },
+        [UI_SPRITE_BUTTON_PRESSED]  = {  80,  0, 24, 16,  4, 4, 4, 4 },
+        [UI_SPRITE_BUTTON_DISABLED] = { 104,  0, 24, 16,  4, 4, 4, 4 },
+        [UI_SPRITE_TITLE_BAR]       = {  32, 16, 24, 16,  4, 4, 4, 4 },
+        [UI_SPRITE_CLOSE_X]         = {  56, 16, 12, 12,  0, 0, 0, 0 },
+        [UI_SPRITE_SLOT_NORMAL]     = {   0, 32, 18, 18,  3, 3, 3, 3 },
+        [UI_SPRITE_SLOT_HOVER]      = {  18, 32, 18, 18,  3, 3, 3, 3 },
+        [UI_SPRITE_SLOT_SELECTED]   = {  36, 32, 18, 18,  3, 3, 3, 3 },
+        [UI_SPRITE_SLOT_DISABLED]   = {  54, 32, 18, 18,  3, 3, 3, 3 },
+        [UI_SPRITE_SCROLLBAR_TRACK]   = {   0, 64,  8, 16,  0, 0, 4, 4 },
+        [UI_SPRITE_SCROLLBAR_THUMB]   = {   8, 64,  8, 16,  0, 0, 4, 4 },
+        [UI_SPRITE_SCROLL_ARROW_UP]   = {  16, 64,  8,  8,  0, 0, 0, 0 },
+        [UI_SPRITE_SCROLL_ARROW_DOWN] = {  24, 64,  8,  8,  0, 0, 0, 0 },
+    },
+};
+
+const ui_config_t* config_ui(void) { return &S_UI; }
+
+/* Sprite-section name -> enum id. Returns -1 for non-sprite sections
+ * (the top-level "ui:" wrapper) so the parser can route field
+ * assignments correctly. */
+static int ui_sprite_section_index(const char* key) {
+    if (strcmp(key, "panel"          ) == 0) return UI_SPRITE_PANEL;
+    if (strcmp(key, "button_normal"  ) == 0) return UI_SPRITE_BUTTON_NORMAL;
+    if (strcmp(key, "button_hover"   ) == 0) return UI_SPRITE_BUTTON_HOVER;
+    if (strcmp(key, "button_pressed" ) == 0) return UI_SPRITE_BUTTON_PRESSED;
+    if (strcmp(key, "button_disabled") == 0) return UI_SPRITE_BUTTON_DISABLED;
+    if (strcmp(key, "title_bar"      ) == 0) return UI_SPRITE_TITLE_BAR;
+    if (strcmp(key, "close_x"        ) == 0) return UI_SPRITE_CLOSE_X;
+    if (strcmp(key, "slot_normal"    ) == 0) return UI_SPRITE_SLOT_NORMAL;
+    if (strcmp(key, "slot_hover"     ) == 0) return UI_SPRITE_SLOT_HOVER;
+    if (strcmp(key, "slot_selected"  ) == 0) return UI_SPRITE_SLOT_SELECTED;
+    if (strcmp(key, "slot_disabled"  ) == 0) return UI_SPRITE_SLOT_DISABLED;
+    if (strcmp(key, "scrollbar_track"  ) == 0) return UI_SPRITE_SCROLLBAR_TRACK;
+    if (strcmp(key, "scrollbar_thumb"  ) == 0) return UI_SPRITE_SCROLLBAR_THUMB;
+    if (strcmp(key, "scroll_arrow_up"  ) == 0) return UI_SPRITE_SCROLL_ARROW_UP;
+    if (strcmp(key, "scroll_arrow_down") == 0) return UI_SPRITE_SCROLL_ARROW_DOWN;
+    return -1;
+}
+
+int config_load_ui(const char* path) {
+    size_t fsize = 0;
+    char* buf = slurp_file(path, &fsize);
+    if (!buf) {
+        printf("[config] %s not found, using compiled-in ui defaults\n",
+               path);
+        fflush(stdout);
+        return -1;
+    }
+
+    int line_no = 0;
+    int parse_errors = 0;
+    /* active_sprite >= 0 means subsequent key/value lines apply to that
+     * sprite. -1 means we're at the top level (the "ui:" wrapper). */
+    int active_sprite = -1;
+    char* p = buf;
+    char* line_start = buf;
+    while (1) {
+        if (*p == '\n' || *p == '\0') {
+            char saved = *p;
+            *p = '\0';
+            ++line_no;
+            char* line = trim_strip(line_start);
+            if (*line == '\0') {
+                /* skip */
+            } else {
+                char* colon = strchr(line, ':');
+                if (!colon) {
+                    printf("[config] %s:%d: missing ':' in '%s'\n",
+                           path, line_no, line);
+                    parse_errors++;
+                } else {
+                    *colon = '\0';
+                    char* key = line;
+                    char* val = trim_strip(colon + 1);
+                    size_t kn = strlen(key);
+                    while (kn > 0 && isspace((unsigned char)key[kn - 1])) key[--kn] = '\0';
+
+                    if (*val == '\0') {
+                        /* Section header — either "ui:" (top-level) or
+                         * a per-sprite section. */
+                        active_sprite = ui_sprite_section_index(key);
+                        if (active_sprite < 0 && strcmp(key, "ui") != 0) {
+                            printf("[config] %s:%d: unknown ui section '%s'\n",
+                                   path, line_no, key);
+                        }
+                    } else if (active_sprite >= 0) {
+                        /* Per-sprite field. */
+                        ui_sprite_t* s = &S_UI.sprites[active_sprite];
+                        if (strcmp(key, "rect") == 0) {
+                            int v[4];
+                            if (parse_int4(val, v)) {
+                                s->x = v[0]; s->y = v[1];
+                                s->w = v[2]; s->h = v[3];
+                            } else {
+                                parse_errors++;
+                            }
+                        } else if (strcmp(key, "nine_slice") == 0) {
+                            int v[4];
+                            if (parse_int4(val, v)) {
+                                s->left = v[0]; s->right  = v[1];
+                                s->top  = v[2]; s->bottom = v[3];
+                            } else {
+                                parse_errors++;
+                            }
+                        } else {
+                            printf("[config] %s:%d: unknown sprite key '%s'\n",
+                                   path, line_no, key);
+                        }
+                    } else {
+                        /* Top-level field (only "atlas" is defined). */
+                        if (strcmp(key, "atlas") == 0) {
+                            /* Strip any wrapping quotes a YAML editor
+                             * might have added. */
+                            char* v = val;
+                            if (*v == '"' || *v == '\'') ++v;
+                            size_t vn = strlen(v);
+                            if (vn > 0 && (v[vn - 1] == '"' || v[vn - 1] == '\'')) {
+                                v[vn - 1] = '\0';
+                            }
+                            size_t cap = sizeof(S_UI.atlas_path);
+                            strncpy(S_UI.atlas_path, v, cap - 1);
+                            S_UI.atlas_path[cap - 1] = '\0';
+                        } else {
+                            printf("[config] %s:%d: unknown ui key '%s'\n",
+                                   path, line_no, key);
+                        }
+                    }
+                }
+            }
+            *p = saved;
+            if (saved == '\0') break;
+            line_start = p + 1;
+        }
+        ++p;
     }
 
     free(buf);

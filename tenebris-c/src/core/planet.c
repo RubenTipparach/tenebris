@@ -197,15 +197,12 @@ int planet_subdivisions_for_radius(double radius_m) {
      *     92-tile pentakis dodecahedron silhouette.
      *   - Upper bound is a vertex-shader-bandwidth limit, NOT a
      *     memory limit. Memory-wise subdiv 8 is fine (84 MB per
-     *     body), but with the current CHUNK_COUNT=32, each chunk
-     *     holds ~20k tiles. The chunk-level backface cull keeps
-     *     ~5-6 chunks visible at ground level, which means ~840k
-     *     vertices/frame submitted to the VS — enough to drop
-     *     a 165 fps build to 55 fps on integrated GPUs. To raise
-     *     the cap above 7 we'd need to bump CHUNK_COUNT (smaller
-     *     chunks, finer cull granularity) so visible vertex count
-     *     stays bounded. Until then, big planets cap at ~2.5 m
-     *     hex width. */
+     *     body). Visible vertex count is bounded by the chunk-level
+     *     backface cull, whose granularity is the renderer's
+     *     mesh_chunk_count knob (lod.yaml). Raising that (finer
+     *     chunks, tighter cull) is what would let the subdivision cap
+     *     climb past 7 without flooding the VS; until then, big
+     *     planets cap at ~2.5 m hex width. */
     if (radius_m < 1.0) return 3;
     double m_target = 1.05 * radius_m;
     int subdiv = (int)ceil(log2(m_target));

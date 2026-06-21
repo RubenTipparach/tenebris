@@ -229,6 +229,57 @@ fn vec3_or_err(val: &str, out: &mut Vec3) -> i32 {
     }
 }
 
+/// Mirror of C `strtol(s, &end, 10)` for the int forms the UI config
+/// uses: optional leading whitespace, optional sign, decimal digits.
+/// Returns `(value, bytes_consumed)`; `bytes_consumed == 0` means no
+/// conversion happened (C leaves `end == start`).
+fn strtol_prefix(s: &str) -> (i64, usize) {
+    let b = s.as_bytes();
+    let mut i = 0usize;
+    while i < b.len() && c_isspace(b[i] as char) {
+        i += 1;
+    }
+    let mut neg = false;
+    if i < b.len() && (b[i] == b'+' || b[i] == b'-') {
+        neg = b[i] == b'-';
+        i += 1;
+    }
+    let mut any = false;
+    let mut v: i64 = 0;
+    while i < b.len() && b[i].is_ascii_digit() {
+        any = true;
+        v = v.saturating_mul(10).saturating_add((b[i] - b'0') as i64);
+        i += 1;
+    }
+    if !any {
+        return (0, 0);
+    }
+    (if neg { -v } else { v }, i)
+}
+
+/// Port of `parse_int4`: parse "[ a, b, c, d ]" into `out[0..3]` as
+/// integers. Returns true on success. Used by the UI config for sprite
+/// rects + nine-slice margins, which are integer texel counts. Quirks
+/// preserved from C: components already scanned are written even when
+/// a later one fails; separators between numbers are any mix of commas
+/// and whitespace; the closing ']' is never checked.
+fn parse_int4(val: &str, out: &mut [i32; 4]) -> bool {
+    let s = val.trim_start_matches(|c: char| c_isspace(c));
+    let Some(mut s) = s.strip_prefix('[') else {
+        return false;
+    };
+    for slot in out.iter_mut() {
+        s = s.trim_start_matches(|c: char| c == ',' || c_isspace(c));
+        let (v, n) = strtol_prefix(s);
+        *slot = v as i32;
+        if n == 0 {
+            return false;
+        }
+        s = &s[n..];
+    }
+    true
+}
+
 /// Shared line scanner - the C version inlines this loop in each
 /// `config_load_*`, byte-for-byte identical across the five loaders, so
 /// it is factored here. Splits `src` into lines, strips comments and
@@ -518,6 +569,30 @@ pub struct LodConfig {
     pub water_surface_float_height_m: f32,
     pub water_body_check_height_m: f32,
     pub water_submerged_jump_mult: f32,
+
+    /* ---- Renderer mesh / chunking budget. --------------------------
+     * The surface mesh of every body is split into `mesh_chunk_count`
+     * GPU chunks. A block edit only re-meshes the chunk(s) it touches,
+     * so more chunks = fewer tiles rebuilt per edit (= less hitch when
+     * placing / breaking blocks, and when a peer's edit or a water-flow
+     * tick arrives over the network) in exchange for a few more draw
+     * calls. 32 is the historical baseline; 128 cuts per-edit mesh work
+     * roughly 4x. Clamped to [1, RENDER_CHUNK_COUNT_MAX] at load. */
+    pub mesh_chunk_count: i32,
+    /* Wall-clock budget, in milliseconds, for rebuilding dirty chunks
+     * per frame. A flood of edits (a peer carpet-building, water
+     * flooding across many chunks) rebuilds at most this many ms worth
+     * of chunks per frame and rolls the rest to subsequent frames, so
+     * the frame never stalls. At least one chunk is always rebuilt, so
+     * progress is guaranteed no matter how small this is. */
+    pub mesh_remesh_budget_ms: f32,
+    /* Multiplier on each chunk's angular radius when deciding chunk
+     * visibility on the sphere. 1.0 culls exactly at the chunk's
+     * Voronoi cap; >1 pads the kept region so chunks straddling the
+     * horizon don't pop out. The cap half-angle is derived from
+     * mesh_chunk_count, so this factor stays constant as granularity
+     * changes. */
+    pub mesh_cull_pad_factor: f32,
 }
 
 /* Per-tileset distant-LOD palette defaults. Index order matches
@@ -591,6 +666,9 @@ pub const LOD_DEFAULTS: LodConfig = LodConfig {
     water_surface_float_height_m: -0.8,
     water_body_check_height_m: 0.50,
     water_submerged_jump_mult: 0.30,
+    mesh_chunk_count: 128,
+    mesh_remesh_budget_ms: 4.0,
+    mesh_cull_pad_factor: 1.55,
 };
 
 impl Default for LodConfig {
@@ -774,6 +852,18 @@ pub fn parse_lod(src: &str, path: &str) -> i32 {
             }
             "water_submerged_jump_mult" => {
                 cfg.water_submerged_jump_mult = fval(val);
+                0
+            }
+            "mesh_chunk_count" => {
+                cfg.mesh_chunk_count = ival(val);
+                0
+            }
+            "mesh_remesh_budget_ms" => {
+                cfg.mesh_remesh_budget_ms = fval(val);
+                0
+            }
+            "mesh_cull_pad_factor" => {
+                cfg.mesh_cull_pad_factor = fval(val);
                 0
             }
             _ => {
@@ -1445,6 +1535,220 @@ pub fn parse_atmosphere_with(
 }
 
 /* ------------------------------------------------------------------------ */
+/* UI config — pixel-art sprite atlas layout consumed by client pixel_ui.
+ * Defaults mirror the layout baked by tools/gen-ui-sprites.py so the
+ * compiled-in values are usable even if assets/config/ui.yaml is missing
+ * (and so the YAML can express partial overrides — any sprite whose
+ * section is omitted falls back to the default below). */
+
+/// Port of `ui_sprite_id_t`. Sprite ids are dense integers so callers
+/// can hold one alongside a style struct without paying a name lookup
+/// per frame. Add new sprites by extending the enum + the parser match
+/// below; the YAML tolerates unknown sections so adding a sprite to the
+/// file before adding the enum entry is non-fatal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UiSpriteId {
+    Panel = 0,
+    ButtonNormal,
+    ButtonHover,
+    ButtonPressed,
+    ButtonDisabled,
+    TitleBar,
+    CloseX,
+    SlotNormal,
+    SlotHover,
+    SlotSelected,
+    SlotDisabled,
+    ScrollbarTrack,
+    ScrollbarThumb,
+    ScrollArrowUp,
+    ScrollArrowDown,
+}
+
+/// Port of `UI_SPRITE_COUNT`.
+pub const UI_SPRITE_COUNT: usize = 15;
+
+/// Port of `ui_sprite_t`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct UiSprite {
+    /* Sub-rect of the atlas, in texels (x, y, w, h). */
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+    /* Nine-slice margins in texels: left, right, top, bottom. All zero
+     * means "blit 1:1 at native size", which the renderer treats as a
+     * non-stretchable sprite (used for the close-X glyph). */
+    pub left: i32,
+    pub right: i32,
+    pub top: i32,
+    pub bottom: i32,
+}
+
+/// Shorthand for the default sprite table below (x, y, w, h, l, r, t, b).
+#[allow(clippy::too_many_arguments)]
+const fn spr(x: i32, y: i32, w: i32, h: i32, l: i32, r: i32, t: i32, b: i32) -> UiSprite {
+    UiSprite { x, y, w, h, left: l, right: r, top: t, bottom: b }
+}
+
+/// Port of `ui_config_t`. The C `atlas_path` is a `char[128]` buffer;
+/// the port uses a `String` (the parser still truncates writes at 127
+/// bytes to keep the accepted surface identical).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UiConfig {
+    /// Relative path of the sprite atlas PNG. Default is
+    /// "assets/textures/ui/default.png" — themed packs override it
+    /// here.
+    pub atlas_path: String,
+    pub sprites: [UiSprite; UI_SPRITE_COUNT],
+}
+
+/// Port of `UI_ATLAS_PATH_MAX`.
+pub const UI_ATLAS_PATH_MAX: usize = 128;
+
+/// Port of the compiled-in `S_UI` initialiser (config.c). Index order
+/// matches [`UiSpriteId`].
+pub fn ui_defaults() -> UiConfig {
+    UiConfig {
+        atlas_path: "assets/textures/ui/default.png".to_string(),
+        sprites: [
+            spr(0, 0, 32, 32, 8, 8, 8, 8),     /* PANEL             */
+            spr(32, 0, 24, 16, 4, 4, 4, 4),    /* BUTTON_NORMAL     */
+            spr(56, 0, 24, 16, 4, 4, 4, 4),    /* BUTTON_HOVER      */
+            spr(80, 0, 24, 16, 4, 4, 4, 4),    /* BUTTON_PRESSED    */
+            spr(104, 0, 24, 16, 4, 4, 4, 4),   /* BUTTON_DISABLED   */
+            spr(32, 16, 24, 16, 4, 4, 4, 4),   /* TITLE_BAR         */
+            spr(56, 16, 12, 12, 0, 0, 0, 0),   /* CLOSE_X           */
+            spr(0, 32, 18, 18, 3, 3, 3, 3),    /* SLOT_NORMAL       */
+            spr(18, 32, 18, 18, 3, 3, 3, 3),   /* SLOT_HOVER        */
+            spr(36, 32, 18, 18, 3, 3, 3, 3),   /* SLOT_SELECTED     */
+            spr(54, 32, 18, 18, 3, 3, 3, 3),   /* SLOT_DISABLED     */
+            spr(0, 64, 8, 16, 0, 0, 4, 4),     /* SCROLLBAR_TRACK   */
+            spr(8, 64, 8, 16, 0, 0, 4, 4),     /* SCROLLBAR_THUMB   */
+            spr(16, 64, 8, 8, 0, 0, 0, 0),     /* SCROLL_ARROW_UP   */
+            spr(24, 64, 8, 8, 0, 0, 0, 0),     /* SCROLL_ARROW_DOWN */
+        ],
+    }
+}
+
+static S_UI: std::sync::LazyLock<Mutex<UiConfig>> =
+    std::sync::LazyLock::new(|| Mutex::new(ui_defaults()));
+
+/// Port of `config_ui()`. (The C API returns a stable pointer; here
+/// callers get a snapshot clone, like the other config getters.)
+pub fn ui() -> UiConfig {
+    S_UI.lock().unwrap().clone()
+}
+
+/// Port of `ui_sprite_section_index`: sprite-section name -> dense
+/// index. Returns -1 for non-sprite sections (the top-level "ui:"
+/// wrapper) so the parser can route field assignments correctly.
+fn ui_sprite_section_index(key: &str) -> i32 {
+    match key {
+        "panel" => UiSpriteId::Panel as i32,
+        "button_normal" => UiSpriteId::ButtonNormal as i32,
+        "button_hover" => UiSpriteId::ButtonHover as i32,
+        "button_pressed" => UiSpriteId::ButtonPressed as i32,
+        "button_disabled" => UiSpriteId::ButtonDisabled as i32,
+        "title_bar" => UiSpriteId::TitleBar as i32,
+        "close_x" => UiSpriteId::CloseX as i32,
+        "slot_normal" => UiSpriteId::SlotNormal as i32,
+        "slot_hover" => UiSpriteId::SlotHover as i32,
+        "slot_selected" => UiSpriteId::SlotSelected as i32,
+        "slot_disabled" => UiSpriteId::SlotDisabled as i32,
+        "scrollbar_track" => UiSpriteId::ScrollbarTrack as i32,
+        "scrollbar_thumb" => UiSpriteId::ScrollbarThumb as i32,
+        "scroll_arrow_up" => UiSpriteId::ScrollArrowUp as i32,
+        "scroll_arrow_down" => UiSpriteId::ScrollArrowDown as i32,
+        _ => -1,
+    }
+}
+
+/// Port of `config_load_ui()`.
+pub fn load_ui(path: &str) -> i32 {
+    match slurp_file(path) {
+        None => {
+            println!("[config] {} not found, using compiled-in ui defaults", path);
+            -1
+        }
+        Some(src) => parse_ui(&src, path),
+    }
+}
+
+/// Body of `config_load_ui()` after the file slurp.
+pub fn parse_ui(src: &str, path: &str) -> i32 {
+    let mut cfg = S_UI.lock().unwrap();
+    /* active_sprite >= 0 means subsequent key/value lines apply to that
+     * sprite. -1 means we're at the top level (the "ui:" wrapper). */
+    let mut active_sprite: i32 = -1;
+    let parse_errors = scan(src, path, |line_no, key, val| {
+        if val.is_empty() {
+            /* Section header — either "ui:" (top-level) or a per-sprite
+             * section. */
+            active_sprite = ui_sprite_section_index(key);
+            if active_sprite < 0 && key != "ui" {
+                println!("[config] {}:{}: unknown ui section '{}'", path, line_no, key);
+            }
+            0
+        } else if active_sprite >= 0 {
+            /* Per-sprite field. */
+            let s = &mut cfg.sprites[active_sprite as usize];
+            match key {
+                "rect" => {
+                    let mut v = [0i32; 4];
+                    if parse_int4(val, &mut v) {
+                        s.x = v[0];
+                        s.y = v[1];
+                        s.w = v[2];
+                        s.h = v[3];
+                        0
+                    } else {
+                        1
+                    }
+                }
+                "nine_slice" => {
+                    let mut v = [0i32; 4];
+                    if parse_int4(val, &mut v) {
+                        s.left = v[0];
+                        s.right = v[1];
+                        s.top = v[2];
+                        s.bottom = v[3];
+                        0
+                    } else {
+                        1
+                    }
+                }
+                _ => {
+                    println!("[config] {}:{}: unknown sprite key '{}'", path, line_no, key);
+                    0
+                }
+            }
+        } else {
+            /* Top-level field (only "atlas" is defined). */
+            if key == "atlas" {
+                /* Strip any wrapping quotes a YAML editor might have
+                 * added. */
+                let mut v = val;
+                if v.starts_with('"') || v.starts_with('\'') {
+                    v = &v[1..];
+                }
+                if v.ends_with('"') || v.ends_with('\'') {
+                    v = &v[..v.len() - 1];
+                }
+                /* C strncpy caps at UI_ATLAS_PATH_MAX - 1 bytes. */
+                let n = v.len().min(UI_ATLAS_PATH_MAX - 1);
+                cfg.atlas_path = v[..n].to_string();
+            } else {
+                println!("[config] {}:{}: unknown ui key '{}'", path, line_no, key);
+            }
+            0
+        }
+    });
+    drop(cfg);
+    finish(path, parse_errors)
+}
+
+/* ------------------------------------------------------------------------ */
 
 #[cfg(test)]
 mod tests {
@@ -1461,6 +1765,7 @@ mod tests {
         *S_WATER.lock().unwrap() = WATER_DEFAULTS;
         *S_WATER_FLOW.lock().unwrap() = WATER_FLOW_DEFAULTS;
         *S_LIGHTING.lock().unwrap() = LIGHTING_DEFAULTS;
+        *S_UI.lock().unwrap() = ui_defaults();
         guard
     }
 
@@ -1627,6 +1932,9 @@ sequoia:
 
 lod:
   space_thrust: 25.0
+  mesh_chunk_count: 64
+  mesh_remesh_budget_ms: 2.5
+  mesh_cull_pad_factor: 1.2
 ";
         assert_eq!(parse_lod(src, "lod.yaml"), 0);
         let cfg = lod();
@@ -1636,6 +1944,11 @@ lod:
         assert_eq!(cfg.water_drag_per_s, 4.5);
         // A second "lod:" header exits palette mode.
         assert_eq!(cfg.space_thrust, 25.0);
+        // Renderer mesh / chunking knobs (clamping to [1, 256] happens
+        // at the renderer's first read, like the C).
+        assert_eq!(cfg.mesh_chunk_count, 64);
+        assert_eq!(cfg.mesh_remesh_budget_ms, 2.5);
+        assert_eq!(cfg.mesh_cull_pad_factor, 1.2);
         // Palette section wrote only the SEQUOIA slot.
         assert_vec3(cfg.tileset_water_color[1], 0.1, 0.2, 0.3);
         assert_eq!(cfg.tileset_water_full_depth_m[1], 9.0);
@@ -1769,6 +2082,101 @@ lighting:
         // normalise_name: spaces -> underscores, lowercase.
         assert_eq!(normalise_name("Asteroid A"), "asteroid_a");
         assert_eq!(normalise_name("Tenebris"), "tenebris");
+    }
+
+    #[test]
+    fn ui_partial_override_keeps_defaults() {
+        let _g = lock_and_reset();
+        let src = "\
+ui:
+
+  atlas: assets/textures/ui/steel.png
+
+  panel:
+    rect: [64, 0, 48, 48]
+    nine_slice: [12, 12, 12, 12]
+
+  close_x:
+    rect: [56, 16, 14, 14]
+";
+        assert_eq!(parse_ui(src, "ui.yaml"), 0);
+        let cfg = ui();
+        assert_eq!(cfg.atlas_path, "assets/textures/ui/steel.png");
+        // Overridden sprite sections.
+        assert_eq!(cfg.sprites[UiSpriteId::Panel as usize], spr(64, 0, 48, 48, 12, 12, 12, 12));
+        // close_x updated only its rect; the nine-slice margins keep
+        // the compiled-in zeros.
+        assert_eq!(cfg.sprites[UiSpriteId::CloseX as usize], spr(56, 16, 14, 14, 0, 0, 0, 0));
+        // Omitted sections keep defaults entirely.
+        assert_eq!(
+            cfg.sprites[UiSpriteId::ButtonHover as usize],
+            spr(56, 0, 24, 16, 4, 4, 4, 4)
+        );
+        assert_eq!(
+            cfg.sprites[UiSpriteId::ScrollbarThumb as usize],
+            spr(8, 64, 8, 16, 0, 0, 4, 4)
+        );
+    }
+
+    #[test]
+    fn ui_atlas_quotes_stripped_and_truncated() {
+        let _g = lock_and_reset();
+        assert_eq!(parse_ui("ui:\n  atlas: \"quoted/path.png\"\n", "ui.yaml"), 0);
+        assert_eq!(ui().atlas_path, "quoted/path.png");
+        // C strncpy caps the stored path at UI_ATLAS_PATH_MAX - 1.
+        let long = format!("ui:\n  atlas: {}\n", "x".repeat(300));
+        assert_eq!(parse_ui(&long, "ui.yaml"), 0);
+        assert_eq!(ui().atlas_path.len(), UI_ATLAS_PATH_MAX - 1);
+    }
+
+    #[test]
+    fn ui_bad_int4_is_parse_error_unknown_section_is_not() {
+        let _g = lock_and_reset();
+        // Unknown section: warning only; its fields are routed to the
+        // top level where "rect" is an unknown ui key (also a warning).
+        assert_eq!(parse_ui("ui:\nmystery_widget:\n  rect: [1, 2, 3, 4]\n", "ui.yaml"), 0);
+        // Bad rect under a known sprite section is a parse error. The
+        // partial parse lands in a local buffer (C: `int v[4]`), so the
+        // sprite keeps its compiled-in default.
+        assert_eq!(parse_ui("panel:\n  rect: [1, oops, 3, 4]\n", "ui.yaml"), -2);
+        assert_eq!(ui().sprites[UiSpriteId::Panel as usize].x, 0);
+    }
+
+    #[test]
+    fn parse_int4_primitives() {
+        let mut v = [9i32; 4];
+        assert!(parse_int4("[ 0, 32, 18, 18 ]", &mut v));
+        assert_eq!(v, [0, 32, 18, 18]);
+        // Commas/whitespace interchangeable, ']' unchecked, negatives ok.
+        let mut v = [9i32; 4];
+        assert!(parse_int4("[1 2,3  -4", &mut v));
+        assert_eq!(v, [1, 2, 3, -4]);
+        // Missing '[' fails before any write.
+        let mut v = [9i32; 4];
+        assert!(!parse_int4("1, 2, 3, 4]", &mut v));
+        assert_eq!(v, [9, 9, 9, 9]);
+        // Too few components: prior writes persist (C quirk).
+        let mut v = [9i32; 4];
+        assert!(!parse_int4("[5, 6]", &mut v));
+        assert_eq!(v[0], 5);
+        assert_eq!(v[1], 6);
+    }
+
+    #[test]
+    fn real_ui_yaml_matches_compiled_defaults() {
+        let _g = lock_and_reset();
+        // The shipped ui.yaml mirrors the compiled-in table, so loading
+        // it must be a no-op relative to the defaults (and parse clean).
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../tenebris-c/assets/config/ui.yaml"
+        );
+        let rc = load_ui(path);
+        if rc == -1 {
+            return; /* asset tree not present in this checkout layout */
+        }
+        assert_eq!(rc, 0, "ui.yaml should parse without errors");
+        assert_eq!(ui(), ui_defaults());
     }
 
     #[test]

@@ -23,6 +23,26 @@ void inventory_init_creative(inventory_t* inv) {
     inv->slots[7] = (inv_slot_t){ BLOCK_ICE,    CREATIVE_COUNT };
     inv->slots[8] = (inv_slot_t){ BLOCK_WATER,  CREATIVE_COUNT };
     inv->selected = 0;
+
+    /* Main inventory pre-stock: four starter tools + a small stash of
+     * raw / refined resources so the inventory + crafting screens
+     * have something visible to render until the survival drop path
+     * lands. The hotbar's still block-only (block placement is the
+     * only verb wired up today); items show up on the I-screen and
+     * inside the 3x3 crafting grid. Field 1 is `type` (block) — left
+     * BLOCK_AIR for item slots — field 2 is `count`, field 3 is
+     * `item_id`. */
+    inv->main[0]  = (inv_slot_t){ BLOCK_AIR, 1,  ITEM_PICKAXE         };
+    inv->main[1]  = (inv_slot_t){ BLOCK_AIR, 1,  ITEM_AXE             };
+    inv->main[2]  = (inv_slot_t){ BLOCK_AIR, 1,  ITEM_SHOVEL          };
+    inv->main[3]  = (inv_slot_t){ BLOCK_AIR, 1,  ITEM_PROSPECTING_AXE };
+    inv->main[10] = (inv_slot_t){ BLOCK_AIR, 8,  ITEM_LOG             };
+    inv->main[11] = (inv_slot_t){ BLOCK_AIR, 32, ITEM_PLANK           };
+    inv->main[12] = (inv_slot_t){ BLOCK_AIR, 16, ITEM_STICK           };
+    inv->main[13] = (inv_slot_t){ BLOCK_AIR, 12, ITEM_STONE           };
+    inv->main[20] = (inv_slot_t){ BLOCK_AIR, 4,  ITEM_SMALL_ROCK      };
+    inv->main[21] = (inv_slot_t){ BLOCK_AIR, 3,  ITEM_GRASS_CLIP      };
+    inv->main[22] = (inv_slot_t){ BLOCK_AIR, 2,  ITEM_FLOWER          };
 }
 
 void inventory_ensure_reserved_torch(inventory_t* inv) {

@@ -226,7 +226,7 @@ in: stick 2
         let mut inv = Inventory::default();
         inventory::init_empty(&mut inv);
         // 5 logs in a hotbar slot (as Wood blocks, like a tree chop)
-        inv.slots[1] = crate::inventory::InvSlot { block_type: Block::Wood, count: 5 };
+        inv.slots[1] = crate::inventory::InvSlot::block(Block::Wood, 5);
         let mut bag = Bag::default();
 
         assert!(try_craft(&mut inv, &mut bag, &recipe("planks")));
@@ -238,7 +238,7 @@ in: stick 2
     fn full_wood_line_planks_sticks_pickaxe() {
         let mut inv = Inventory::default();
         inventory::init_empty(&mut inv);
-        inv.slots[1] = crate::inventory::InvSlot { block_type: Block::Wood, count: 8 };
+        inv.slots[1] = crate::inventory::InvSlot::block(Block::Wood, 8);
         let mut bag = Bag::default();
 
         // 2 logs -> 8 planks
@@ -273,7 +273,7 @@ in: stick 2
     fn available_sums_hotbar_and_bag() {
         let mut inv = Inventory::default();
         inventory::init_empty(&mut inv);
-        inv.slots[1] = crate::inventory::InvSlot { block_type: Block::Wood, count: 3 };
+        inv.slots[1] = crate::inventory::InvSlot::block(Block::Wood, 3);
         let mut bag = Bag::default();
         bag.add(wood_id(), 2); // a log can also sit in the bag
         assert_eq!(available(&inv, &bag, wood_id()), 5);
