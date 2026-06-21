@@ -361,25 +361,43 @@ thread_local! {
 }
 
 /// Dev-only: once in-game and a few frames settled, drop the requested dev
-/// blocks and angle the camera down at them. Self-disables after firing.
+/// blocks at the tile under the reticle and frame them. Self-disables
+/// after firing.
 fn dev_maybe_place(app: &mut App) {
     let n = DEV_PLACE_COUNTDOWN.with(|c| c.get());
     if n < 0 || menu::state() != GameState::InGameSp {
         return;
     }
+    /* Hold the camera looking almost straight down while we wait, so the
+     * interact raycast settles onto the ground tile right under the
+     * reticle - that's the tile we then build on, guaranteeing the blocks
+     * land in frame (the player's position-tile drifts off-camera). */
+    app.player.borrow_mut().pitch = -1.30;
     if n > 0 {
         DEV_PLACE_COUNTDOWN.with(|c| c.set(n - 1));
         return;
     }
     DEV_PLACE_COUNTDOWN.with(|c| c.set(-1));
+
+    /* The tile the reticle points at (populated by the prior frame's
+     * interact pass). Fall back to the player's own tile if somehow
+     * untargeted. */
+    let center = if app.interact.has_target && !app.interact.is_torch_target {
+        app.interact.hit_tile
+    } else {
+        let pos = app.player.borrow().position;
+        app.world
+            .borrow()
+            .grid
+            .find_tile(tenebris_core::math::dvec3_normalize(pos), 0)
+    };
+
     let mode = DEV_PLACE_MODE.with(|c| c.get());
-    let center = dev_player_tile(app);
     match mode {
         2 => {
             /* Ore + tech-block showcase: the centre tile becomes the
              * launch pad, the ring of neighbours each becomes a different
-             * ore / reference block so one downward shot shows every
-             * tint. */
+             * ore / reference block so one shot shows every tint. */
             let ring = [
                 Block::CoalOre,
                 Block::CopperOre,
@@ -392,8 +410,6 @@ fn dev_maybe_place(app: &mut App) {
             dev_for_each_neighbor(&app.world, center, |w, i, n| {
                 dev_set_surface_w(w, n, ring[i % ring.len()]);
             });
-            /* Look almost straight down so the whole hex flower is framed. */
-            app.player.borrow_mut().pitch = -1.25;
         }
         _ => {
             /* Launch pad: centre tile + its ring all become the pad. */
@@ -401,18 +417,8 @@ fn dev_maybe_place(app: &mut App) {
             dev_for_each_neighbor(&app.world, center, |w, _, n| {
                 dev_set_surface_w(w, n, Block::LaunchPad);
             });
-            app.player.borrow_mut().pitch = -0.6;
         }
     }
-}
-
-/// Tile the player is standing on (nearest tile to the camera direction).
-fn dev_player_tile(app: &App) -> i32 {
-    let pos = app.player.borrow().position;
-    app.world
-        .borrow()
-        .grid
-        .find_tile(tenebris_core::math::dvec3_normalize(pos), 0)
 }
 
 /// Run `f(world, neighbor_index, neighbor_tile)` over each valid neighbour
