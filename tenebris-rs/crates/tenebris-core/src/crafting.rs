@@ -411,6 +411,35 @@ in: stick 2
     }
 
     #[test]
+    fn electronics_chain_crafts_and_gates_the_capsule() {
+        use crate::items::{CIRCUIT_BOARD, COPPER_INGOT, IRON_INGOT, WIRE};
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/config/recipes.yaml");
+        let rs = load_recipes(path);
+
+        // copper ingot -> 2 wire
+        let wire = rs.iter().find(|r| r.name == "wire").cloned().unwrap();
+        let mut bag = vec![ItemStack::default(); 9];
+        bag[0] = ItemStack { item: COPPER_INGOT, count: 1 };
+        assert!(craft(&mut bag, &wire));
+        assert_eq!(have(&bag, WIRE), 2);
+
+        // 2 wire + 1 iron -> 1 circuit board
+        let board = rs.iter().find(|r| r.name == "circuit-board").cloned().unwrap();
+        let mut bag = vec![ItemStack::default(); 9];
+        bag[0] = ItemStack { item: WIRE, count: 2 };
+        bag[1] = ItemStack { item: IRON_INGOT, count: 1 };
+        assert!(craft(&mut bag, &board));
+        assert_eq!(have(&bag, CIRCUIT_BOARD), 1);
+
+        // the command module now requires a circuit board
+        let cmd = rs.iter().find(|r| r.name == "command-module").cloned().unwrap();
+        assert!(
+            cmd.inputs.iter().any(|i| i.item == CIRCUIT_BOARD),
+            "capsule should require electronics"
+        );
+    }
+
+    #[test]
     fn unknown_item_name_drops_only_that_recipe() {
         let src = "[bad]\nout: plank 4\nin: unobtanium 1\n[good]\nout: stick 4\nin: plank 2\n";
         let rs = parse_recipes(src, "t");

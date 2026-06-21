@@ -73,6 +73,21 @@ in: copper-ingot 1
 in: tin-ingot 1
 in: coal 1
 
+# Tier 2 - electronics. Copper drawn into wire, wire + iron pressed into
+# a circuit board: the control gear the command module needs (a
+# simplified nod to the JS command-module's RAM/CPU/motherboard).
+
+[wire]
+tier: 2
+out: wire 2
+in: copper-ingot 1
+
+[circuit-board]
+tier: 2
+out: circuit-board 1
+in: wire 2
+in: iron-ingot 1
+
 # Tier 2 - rocket parts. The payoff of the smelting chain: refined metal
 # becomes the three parts a rocket needs (engine, fuel tank, command
 # module). Hand-crafted for now; a 3D-printer station gates these in a
@@ -92,7 +107,8 @@ in: bronze-ingot 3
 in: iron-ingot 2
 
 [command-module]
-tier: 2
+tier: 3
 out: command-module 1
 in: copper-ingot 4
 in: iron-ingot 3
+in: circuit-board 1

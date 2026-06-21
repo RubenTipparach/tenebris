@@ -45,6 +45,11 @@ pub const BRONZE_INGOT: ItemId = ITEM_BASE + 11; // 111
 pub const ROCKET_ENGINE: ItemId = ITEM_BASE + 12; // 112
 pub const FUEL_TANK: ItemId = ITEM_BASE + 13; // 113
 pub const COMMAND_MODULE: ItemId = ITEM_BASE + 14; // 114
+/* Electronics: the control gear the command module needs. A simplified
+ * nod to the JS command-module recipe (RAM / CPU / motherboard / power
+ * supply), one component chain for now. */
+pub const WIRE: ItemId = ITEM_BASE + 15; // 115
+pub const CIRCUIT_BOARD: ItemId = ITEM_BASE + 16; // 116
 
 /// What an item *is*, for stacking / placement / tool-gating rules. Grows
 /// as the tech tree lands (Component, Ingot, Ammo, ...).
@@ -114,6 +119,8 @@ const ITEMS: &[ItemDef] = &[
     ItemDef { id: ROCKET_ENGINE, name: "rocket-engine", kind: ItemKind::Resource, stack: 8 },
     ItemDef { id: FUEL_TANK, name: "fuel-tank", kind: ItemKind::Resource, stack: 8 },
     ItemDef { id: COMMAND_MODULE, name: "command-module", kind: ItemKind::Resource, stack: 8 },
+    ItemDef { id: WIRE, name: "wire", kind: ItemKind::Resource, stack: 64 },
+    ItemDef { id: CIRCUIT_BOARD, name: "circuit-board", kind: ItemKind::Resource, stack: 64 },
 ];
 
 /// Names accepted in recipes.yaml for the blocks the recipes reference.
@@ -213,6 +220,14 @@ mod tests {
             // Ingots live past the block palette and never collide with one.
             assert!(!is_block(id));
         }
+    }
+
+    #[test]
+    fn electronics_resolve_names() {
+        assert_eq!(id_by_name("wire"), Some(WIRE));
+        assert_eq!(id_by_name("circuit-board"), Some(CIRCUIT_BOARD));
+        assert!(!is_block(WIRE));
+        assert!(!is_block(CIRCUIT_BOARD));
     }
 
     #[test]
