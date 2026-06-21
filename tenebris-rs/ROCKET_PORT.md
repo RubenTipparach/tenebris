@@ -27,39 +27,50 @@ investigation; the key modules are:
 
 ## Build order (foundational first)
 
-1. **Rocket-part items + recipes** -- DONE (this branch).
-   `rocket-engine`, `fuel-tank`, `command-module` exist as core item ids
-   and hand-craft from ingots (`core/items.rs`, `assets/config/recipes.yaml`).
-   Visible/craftable in the B-key craft screen.
+The pure-core backend is DONE - everything in `core/rocket.rs` (items,
+recipes, validation, flight spec/config, the flight state machine +
+integrator, and the launch-pad assembly model), 18 unit tests. The core
+can already: craft parts -> assemble a part stack on a `LaunchPad` ->
+validate -> `board()` -> fly the `RocketFlight` from launch to landing.
+What remains is CLIENT integration (placement, UI, rendering, input).
+
+1. **Rocket-part items + recipes** -- DONE.
+   `rocket-engine`, `fuel-tank`, `command-module` are core item ids and
+   hand-craft from ingots; craftable in the B-key screen.
 
 2. **Deepen the tech tree toward JS parity** -- TODO.
    JS uses aluminium/cobalt/gold/lithium ores + RAM/CPU/motherboard/
    power-supply for the command module, and an electric furnace for the
-   advanced ores. Add those ores (worldgen veins + drops + smelting) and
-   the printed sub-components. Until then, parts use the simplified
-   ingot costs from step 1.
+   advanced ores. Until then, parts use the simplified ingot costs.
 
-3. **3D-printer station** -- TODO.
-   Placeable building (`Block` + placement), a print QUEUE with timed
-   jobs and a 6-slot output (`src/planet/Printer3D.ts`). Recipes move
-   behind `station: printer` (the `Recipe.station` field already exists).
-   Needs a station-open check at the craft call site.
+3. **3D-printer station** -- TODO (client + recipe gating).
+   Placeable building, a print QUEUE with timed jobs and a 6-slot
+   output. Recipes move behind `station: printer` (the `Recipe.station`
+   field already exists). Needs a station-open check at the craft site.
 
-4. **Launch pad + assembly** -- TODO.
-   Placeable pad; stack parts vertically (engine at heightIndex 0, then
-   fuel tanks, command module on top). `validateRocket()`: >=1 engine at
-   bottom, >=1 fuel tank, >=1 command module. Parts consumed from
-   inventory into the pad's part list.
+4. **Launch pad + assembly** -- core DONE (`LaunchPad`), client TODO.
+   Core: stack parts bottom->top, validate, board. Client: a placeable
+   pad block, an assembly UI that adds/removes parts (consuming from the
+   bag), and part rendering.
 
-5. **Rocket physics + flight** -- TODO.
-   State machine (BOARDED_GROUNDED -> LAUNCHING -> IN_FLIGHT -> LANDING
-   -> LANDED), thrust/fuel/mass model (`RocketConfig`: ~39 kN thrust,
-   10 fuel/s, capsule parachute at 50 m). Reuse the existing space-mode
-   camera/controls where possible.
+5. **Rocket physics + flight** -- core DONE (`RocketFlight`), client TODO.
+   Core: vertical thrust/gravity/fuel/parachute state machine. Client: a
+   flight controller that feeds throttle input, a camera, and renders
+   the rocket; later, full 3-D pose/steering.
 
 6. **Flight integration + travel** -- TODO.
    Board/eject, exhaust VFX, landing on another body, persistence of a
    landed rocket. This is what makes "go explore planets" real.
+
+## Next client steps (in order)
+
+1. `LAUNCH_PAD` placeable block (blocks.rs + texture + place/persist).
+2. Interact (E) on a pad -> assembly screen (drives `LaunchPad::add_part`
+   from the bag, shows `faults()`).
+3. Board a valid pad -> a client rocket controller owning a
+   `RocketFlight`, throttle input, and a chase camera.
+4. Procedural part meshes (cone nozzle, cylinder tank, capsule) for the
+   pad + the flying rocket.
 
 ## Assets
 

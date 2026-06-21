@@ -439,6 +439,88 @@ impl RocketFlight {
     }
 }
 
+/* ------------------------------------------------------------------ */
+/* Launch pad: the assembly that turns crafted parts into a flyable     */
+/* rocket. Ports the JS PlacedLaunchPad part-stacking (LaunchPad.ts) as  */
+/* a pure model: parts stack bottom -> top, the client UI drives        */
+/* add/remove (consuming from the bag) and calls board() to fly. Where  */
+/* a pad lives in the world + its rendering are the client's job.       */
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LaunchPad {
+    /// Stacked parts, bottom -> top (engine at index 0 when valid).
+    parts: Vec<ItemId>,
+}
+
+impl LaunchPad {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The stacked parts, bottom -> top.
+    pub fn parts(&self) -> &[ItemId] {
+        &self.parts
+    }
+
+    pub fn len(&self) -> usize {
+        self.parts.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.parts.is_empty()
+    }
+
+    /// Add a part on top of the stack. Rejects non-rocket-part ids
+    /// (returns false); the caller deducts the item from the bag only on
+    /// success.
+    pub fn add_part(&mut self, id: ItemId) -> bool {
+        if is_rocket_part(id) {
+            self.parts.push(id);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Remove and return the topmost part (e.g. to put it back in the bag).
+    pub fn remove_top(&mut self) -> Option<ItemId> {
+        self.parts.pop()
+    }
+
+    /// Remove the part at `index` (0 = bottom), shifting the rest down.
+    pub fn remove_at(&mut self, index: usize) -> Option<ItemId> {
+        if index < self.parts.len() {
+            Some(self.parts.remove(index))
+        } else {
+            None
+        }
+    }
+
+    /// Structural faults of the current stack (empty == a flyable rocket).
+    pub fn faults(&self) -> Vec<RocketFault> {
+        validate(&self.parts)
+    }
+
+    pub fn is_flyable(&self) -> bool {
+        is_flyable(&self.parts)
+    }
+
+    /// Aggregate flight spec of the assembled stack.
+    pub fn spec(&self, cfg: &RocketConfig) -> RocketSpec {
+        RocketSpec::from_parts(&self.parts, cfg)
+    }
+
+    /// Board the assembled rocket: returns a fresh flight (full tanks, on
+    /// the pad) only when the stack is a valid, flyable rocket.
+    pub fn board(&self, cfg: &RocketConfig) -> Option<RocketFlight> {
+        if self.is_flyable() {
+            Some(RocketFlight::new(self.spec(cfg)))
+        } else {
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -641,5 +723,51 @@ gravity_mps2: 3.7
         }
         assert_eq!(f.state, FlightState::Landed);
         assert!(f.crashed, "a 40 m/s impact exceeds the 10 m/s limit");
+    }
+
+    #[test]
+    fn launchpad_assembles_validates_and_boards() {
+        let cfg = RocketConfig::default();
+        let mut pad = LaunchPad::new();
+        assert!(pad.is_empty());
+        assert!(!pad.is_flyable());
+        assert!(pad.board(&cfg).is_none());
+
+        // Non-parts are rejected and don't change the stack.
+        assert!(!pad.add_part(from_block(Block::Stone)));
+        assert_eq!(pad.len(), 0);
+
+        // Stack bottom -> top: engine, tank, capsule.
+        assert!(pad.add_part(ROCKET_ENGINE));
+        assert!(pad.add_part(FUEL_TANK));
+        assert!(!pad.is_flyable()); // no capsule yet
+        assert!(pad.add_part(COMMAND_MODULE));
+
+        assert!(pad.is_flyable());
+        assert!(pad.faults().is_empty());
+        assert_eq!(pad.parts(), &[ROCKET_ENGINE, FUEL_TANK, COMMAND_MODULE]);
+
+        let flight = pad.board(&cfg).expect("valid rocket boards");
+        assert_eq!(flight.state, FlightState::Grounded);
+        assert_eq!(flight.fuel, pad.spec(&cfg).fuel_capacity);
+    }
+
+    #[test]
+    fn launchpad_removal_can_break_and_restore_validity() {
+        let mut pad = LaunchPad::new();
+        pad.add_part(ROCKET_ENGINE);
+        pad.add_part(FUEL_TANK);
+        pad.add_part(COMMAND_MODULE);
+        assert!(pad.is_flyable());
+
+        // Pull the capsule off the top -> no longer flyable.
+        assert_eq!(pad.remove_top(), Some(COMMAND_MODULE));
+        assert!(!pad.is_flyable());
+        assert!(pad.faults().contains(&RocketFault::NoCommandModule));
+
+        // Remove the bottom engine by index -> engine fault.
+        assert_eq!(pad.remove_at(0), Some(ROCKET_ENGINE));
+        assert_eq!(pad.parts(), &[FUEL_TANK]);
+        assert!(pad.faults().contains(&RocketFault::NoEngine));
     }
 }
