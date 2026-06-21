@@ -18,8 +18,9 @@ dry_mass_kg: 50        # mass when empty
 
 [command_module]
 mass_kg: 200
-parachute_alt_m: 50    # parachute deploys below this altitude
-max_impact_mps: 10     # survivable landing speed
+parachute_alt_m: 50          # parachute deploys below this altitude
+max_impact_mps: 10           # survivable landing speed
+parachute_terminal_mps: 5    # descent speed once the chute is open
 
 [flight]
 gravity_mps2: 9.81

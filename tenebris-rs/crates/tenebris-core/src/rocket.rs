@@ -133,6 +133,8 @@ pub struct CommandModuleStats {
     pub mass_kg: f32,
     pub parachute_alt_m: f32,
     pub max_impact_mps: f32,
+    /// Descent speed the chute clamps to once deployed.
+    pub parachute_terminal_mps: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -156,7 +158,12 @@ pub struct RocketConfig {
 pub const DEFAULT_ROCKET_CONFIG: RocketConfig = RocketConfig {
     engine: EngineStats { thrust_n: 39000.0, fuel_per_sec: 10.0, mass_kg: 100.0 },
     fuel_tank: FuelTankStats { capacity: 100.0, wet_mass_kg: 500.0, dry_mass_kg: 50.0 },
-    command_module: CommandModuleStats { mass_kg: 200.0, parachute_alt_m: 50.0, max_impact_mps: 10.0 },
+    command_module: CommandModuleStats {
+        mass_kg: 200.0,
+        parachute_alt_m: 50.0,
+        max_impact_mps: 10.0,
+        parachute_terminal_mps: 5.0,
+    },
     flight: FlightConstants {
         gravity_mps2: 9.81,
         launch_alt_m: 5.0,
@@ -216,6 +223,9 @@ pub fn parse_rocket_config(src: &str) -> RocketConfig {
             ("command_module", "mass_kg") => c.command_module.mass_kg = val,
             ("command_module", "parachute_alt_m") => c.command_module.parachute_alt_m = val,
             ("command_module", "max_impact_mps") => c.command_module.max_impact_mps = val,
+            ("command_module", "parachute_terminal_mps") => {
+                c.command_module.parachute_terminal_mps = val
+            }
             ("flight", "gravity_mps2") => c.flight.gravity_mps2 = val,
             ("flight", "launch_alt_m") => c.flight.launch_alt_m = val,
             ("flight", "safe_landing_mps") => c.flight.safe_landing_mps = val,
@@ -294,6 +304,137 @@ impl RocketSpec {
             self.total_thrust_n / weight
         } else {
             0.0
+        }
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Flight: a runtime state machine + a simple vertical integrator.     */
+/* Ports the JS RocketState (src/rocket/RocketState.ts) and the launch  */
+/* -> ascend -> coast -> descend -> land arc of RocketController. This  */
+/* is a 1-D (vertical) model: enough to drive the state machine, fuel   */
+/* burn, and parachute landing; full 3-D pose/steering lands with the   */
+/* client-side controller + camera that consume this core state.       */
+
+/// Flight phase. Mirrors the JS RocketState machine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FlightState {
+    /// Boarded, sitting on the pad.
+    Grounded,
+    /// Engine lit, still below the launch altitude.
+    Launching,
+    /// Above the launch altitude - ascending or coasting.
+    InFlight,
+    /// Descending under the parachute, below the deploy altitude.
+    Landing,
+    /// Back on a surface (`crashed` says whether it survived).
+    Landed,
+}
+
+/// Live flight state of one rocket. Fields are public so the client
+/// controller can read them for rendering / HUD and write throttle.
+#[derive(Clone, Copy, Debug)]
+pub struct RocketFlight {
+    pub state: FlightState,
+    /// Metres above the launch surface.
+    pub altitude_m: f32,
+    /// Vertical velocity, up positive.
+    pub vel_mps: f32,
+    /// Remaining fuel units.
+    pub fuel: f32,
+    /// Throttle 0..1.
+    pub throttle: f32,
+    /// Set on a hard (over `max_impact_mps`) landing.
+    pub crashed: bool,
+    pub spec: RocketSpec,
+}
+
+impl RocketFlight {
+    /// A freshly-boarded rocket on the pad with full tanks.
+    pub fn new(spec: RocketSpec) -> RocketFlight {
+        RocketFlight {
+            state: FlightState::Grounded,
+            altitude_m: 0.0,
+            vel_mps: 0.0,
+            fuel: spec.fuel_capacity,
+            throttle: 0.0,
+            crashed: false,
+            spec,
+        }
+    }
+
+    pub fn set_throttle(&mut self, t: f32) {
+        self.throttle = t.clamp(0.0, 1.0);
+    }
+
+    /// Current mass: dry mass + the mass of the remaining fuel.
+    pub fn mass_kg(&self) -> f32 {
+        let full_fuel_mass = self.spec.wet_mass_kg - self.spec.dry_mass_kg;
+        let per_unit = if self.spec.fuel_capacity > 0.0 {
+            full_fuel_mass / self.spec.fuel_capacity
+        } else {
+            0.0
+        };
+        self.spec.dry_mass_kg + self.fuel * per_unit
+    }
+
+    /// Advance one physics + state-machine step of `dt` seconds.
+    pub fn step(&mut self, dt: f32, cfg: &RocketConfig) {
+        if self.state == FlightState::Landed || dt <= 0.0 {
+            return;
+        }
+        let g = cfg.flight.gravity_mps2;
+
+        // Throttle ignites the engine: grounded -> launching.
+        if self.state == FlightState::Grounded && self.throttle > 0.0 && self.fuel > 0.0 {
+            self.state = FlightState::Launching;
+        }
+
+        // Thrust only while there's fuel to burn.
+        let burning = self.throttle > 0.0 && self.fuel > 0.0;
+        let thrust_n = if burning { self.spec.total_thrust_n * self.throttle } else { 0.0 };
+        if burning {
+            self.fuel = (self.fuel - self.spec.fuel_per_sec * self.throttle * dt).max(0.0);
+        }
+
+        let mass = self.mass_kg().max(1.0);
+        let accel = thrust_n / mass - g; // thrust up, gravity down
+        self.vel_mps += accel * dt;
+
+        // Parachute: once descending below the deploy altitude the chute
+        // clamps descent to a survivable terminal speed. (Aerodynamic
+        // drag is a later refinement; cfg.flight.drag_coef is reserved
+        // for it.)
+        let parachute =
+            self.vel_mps < 0.0 && self.altitude_m <= cfg.command_module.parachute_alt_m;
+        if parachute && self.vel_mps < -cfg.command_module.parachute_terminal_mps {
+            self.vel_mps = -cfg.command_module.parachute_terminal_mps;
+        }
+
+        self.altitude_m += self.vel_mps * dt;
+
+        // Ground contact.
+        if self.altitude_m <= 0.0 {
+            self.altitude_m = 0.0;
+            if matches!(self.state, FlightState::InFlight | FlightState::Landing) {
+                self.crashed = self.vel_mps.abs() > cfg.command_module.max_impact_mps;
+                self.state = FlightState::Landed;
+            }
+            if self.vel_mps < 0.0 {
+                self.vel_mps = 0.0;
+            }
+            return;
+        }
+
+        // Altitude-driven transitions.
+        match self.state {
+            FlightState::Launching if self.altitude_m > cfg.flight.launch_alt_m => {
+                self.state = FlightState::InFlight;
+            }
+            FlightState::InFlight if parachute => {
+                self.state = FlightState::Landing;
+            }
+            _ => {}
         }
     }
 }
@@ -429,5 +570,76 @@ gravity_mps2: 3.7
         assert!(c.engine.thrust_n > 0.0);
         assert!(c.fuel_tank.capacity > 0.0);
         assert!(c.flight.gravity_mps2 > 0.0);
+    }
+
+    fn min_flight() -> RocketFlight {
+        let cfg = RocketConfig::default();
+        RocketFlight::new(RocketSpec::from_parts(&MIN_ROCKET, &cfg))
+    }
+
+    #[test]
+    fn new_flight_is_grounded_with_full_fuel() {
+        let f = min_flight();
+        assert_eq!(f.state, FlightState::Grounded);
+        assert_eq!(f.fuel, 100.0);
+        assert_eq!(f.altitude_m, 0.0);
+    }
+
+    #[test]
+    fn full_throttle_launches_and_reaches_flight() {
+        let cfg = RocketConfig::default();
+        let mut f = min_flight();
+        f.set_throttle(1.0);
+        // First step ignites -> Launching.
+        f.step(0.1, &cfg);
+        assert_eq!(f.state, FlightState::Launching);
+        // A few seconds of burn climbs past the launch altitude.
+        for _ in 0..40 {
+            f.step(0.1, &cfg);
+        }
+        assert_eq!(f.state, FlightState::InFlight);
+        assert!(f.altitude_m > cfg.flight.launch_alt_m);
+        assert!(f.fuel < 100.0, "fuel was burned");
+    }
+
+    #[test]
+    fn burns_out_then_parachutes_to_a_safe_landing() {
+        let cfg = RocketConfig::default();
+        let mut f = min_flight();
+        f.set_throttle(1.0);
+        // Whole flight: burn, coast, fall, chute, land. Loop is capped so
+        // a logic bug can't spin forever.
+        let mut steps = 0;
+        while f.state != FlightState::Landed && steps < 100_000 {
+            f.step(0.05, &cfg);
+            steps += 1;
+        }
+        assert_eq!(f.state, FlightState::Landed);
+        assert_eq!(f.altitude_m, 0.0);
+        assert!(!f.crashed, "the chute should bring it down survivably");
+        assert_eq!(f.fuel, 0.0, "all fuel burned over the flight");
+    }
+
+    #[test]
+    fn a_hard_impact_crashes() {
+        // A config where the chute can't slow the descent below the
+        // survivable impact speed -> a hard landing crashes.
+        let mut cfg = RocketConfig::default();
+        cfg.command_module.parachute_terminal_mps = 100.0;
+        cfg.command_module.max_impact_mps = 10.0;
+        let mut f = min_flight();
+        // Already aloft, low and falling fast, engine off.
+        f.state = FlightState::InFlight;
+        f.altitude_m = 5.0;
+        f.vel_mps = -40.0;
+        f.set_throttle(0.0);
+        for _ in 0..20 {
+            f.step(0.05, &cfg);
+            if f.state == FlightState::Landed {
+                break;
+            }
+        }
+        assert_eq!(f.state, FlightState::Landed);
+        assert!(f.crashed, "a 40 m/s impact exceeds the 10 m/s limit");
     }
 }
