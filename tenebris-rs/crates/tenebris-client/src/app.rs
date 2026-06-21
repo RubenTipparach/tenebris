@@ -379,21 +379,17 @@ fn dev_maybe_place(app: &mut App) {
     }
     DEV_PLACE_COUNTDOWN.with(|c| c.set(-1));
 
-    /* The tile the reticle points at (populated by the prior frame's
-     * interact pass). Fall back to the player's own tile if somehow
-     * untargeted. */
-    let center = if app.interact.has_target && !app.interact.is_torch_target {
-        app.interact.hit_tile
-    } else {
-        let pos = app.player.borrow().position;
-        app.world
-            .borrow()
-            .grid
-            .find_tile(tenebris_core::math::dvec3_normalize(pos), 0)
-    };
+    /* The tile the player is standing on, cached by the physics step each
+     * frame (find_tile seeded with last_tile, which converges; a cold
+     * find_tile from hint 0 stalls on the far side of the planet). This
+     * is directly under the downward-looking camera, so the blocks land
+     * in frame. */
+    let center = app.player.borrow().last_tile;
+    if center < 0 {
+        return;
+    }
 
-    let mode = DEV_PLACE_MODE.with(|c| c.get());
-    match mode {
+    match DEV_PLACE_MODE.with(|c| c.get()) {
         2 => {
             /* Ore + tech-block showcase: the centre tile becomes the
              * launch pad, the ring of neighbours each becomes a different
