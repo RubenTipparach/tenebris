@@ -387,6 +387,30 @@ in: stick 2
     }
 
     #[test]
+    fn rocket_parts_craft_from_ingots() {
+        use crate::items::{
+            COMMAND_MODULE, COPPER_INGOT, FUEL_TANK, IRON_INGOT, ROCKET_ENGINE,
+        };
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/config/recipes.yaml");
+        let rs = load_recipes(path);
+
+        // Fuel tank: 5 iron ingots -> 1 tank.
+        let tank = rs.iter().find(|r| r.name == "fuel-tank").cloned().unwrap();
+        assert_eq!(tank.output, ItemStack { item: FUEL_TANK, count: 1 });
+        let mut bag = vec![ItemStack::default(); 9];
+        bag[0] = ItemStack { item: IRON_INGOT, count: 5 };
+        assert!(craft(&mut bag, &tank));
+        assert_eq!(have(&bag, FUEL_TANK), 1);
+        assert_eq!(have(&bag, IRON_INGOT), 0);
+
+        // Engine + command module exist with the right outputs.
+        assert!(rs.iter().any(|r| r.name == "rocket-engine" && r.output.item == ROCKET_ENGINE));
+        let cmd = rs.iter().find(|r| r.name == "command-module").cloned().unwrap();
+        assert_eq!(cmd.output, ItemStack { item: COMMAND_MODULE, count: 1 });
+        assert!(cmd.inputs.iter().any(|i| i.item == COPPER_INGOT));
+    }
+
+    #[test]
     fn unknown_item_name_drops_only_that_recipe() {
         let src = "[bad]\nout: plank 4\nin: unobtanium 1\n[good]\nout: stick 4\nin: plank 2\n";
         let rs = parse_recipes(src, "t");

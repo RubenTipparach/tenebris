@@ -72,3 +72,27 @@ out: bronze-ingot 2
 in: copper-ingot 1
 in: tin-ingot 1
 in: coal 1
+
+# Tier 2 - rocket parts. The payoff of the smelting chain: refined metal
+# becomes the three parts a rocket needs (engine, fuel tank, command
+# module). Hand-crafted for now; a 3D-printer station gates these in a
+# later tier (see the JS Printer3D recipes), and the full
+# aluminium/cobalt/gold tree lands alongside it. Costs are a first pass
+# over the existing ingots so the chain is playable now.
+
+[fuel-tank]
+tier: 2
+out: fuel-tank 1
+in: iron-ingot 5
+
+[rocket-engine]
+tier: 2
+out: rocket-engine 1
+in: bronze-ingot 3
+in: iron-ingot 2
+
+[command-module]
+tier: 2
+out: command-module 1
+in: copper-ingot 4
+in: iron-ingot 3

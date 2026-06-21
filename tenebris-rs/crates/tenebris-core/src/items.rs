@@ -37,6 +37,14 @@ pub const COPPER_INGOT: ItemId = ITEM_BASE + 8; // 108
 pub const TIN_INGOT: ItemId = ITEM_BASE + 9; // 109
 pub const IRON_INGOT: ItemId = ITEM_BASE + 10; // 110
 pub const BRONZE_INGOT: ItemId = ITEM_BASE + 11; // 111
+/* Tier 2 - rocket parts. The three parts a rocket needs (engine, fuel
+ * tank, command module). Crafted from refined metal; a 3D-printer
+ * station will gate these in a later tier (see the JS Printer3D), but
+ * for now they hand-craft from ingots so the gather -> smelt -> build
+ * chain is playable end to end. */
+pub const ROCKET_ENGINE: ItemId = ITEM_BASE + 12; // 112
+pub const FUEL_TANK: ItemId = ITEM_BASE + 13; // 113
+pub const COMMAND_MODULE: ItemId = ITEM_BASE + 14; // 114
 
 /// What an item *is*, for stacking / placement / tool-gating rules. Grows
 /// as the tech tree lands (Component, Ingot, Ammo, ...).
@@ -100,6 +108,12 @@ const ITEMS: &[ItemDef] = &[
     ItemDef { id: TIN_INGOT, name: "tin-ingot", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: IRON_INGOT, name: "iron-ingot", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: BRONZE_INGOT, name: "bronze-ingot", kind: ItemKind::Resource, stack: 64 },
+    /* Rocket parts: placed on the launch pad to assemble a rocket, so
+     * they stack small. Kept as Resource for now; a Component kind lands
+     * with the launch-pad assembly that needs to tell part types apart. */
+    ItemDef { id: ROCKET_ENGINE, name: "rocket-engine", kind: ItemKind::Resource, stack: 8 },
+    ItemDef { id: FUEL_TANK, name: "fuel-tank", kind: ItemKind::Resource, stack: 8 },
+    ItemDef { id: COMMAND_MODULE, name: "command-module", kind: ItemKind::Resource, stack: 8 },
 ];
 
 /// Names accepted in recipes.yaml for the blocks the recipes reference.
@@ -198,6 +212,19 @@ mod tests {
             assert_eq!(stack_size(id), 64, "{name} stacks to 64");
             // Ingots live past the block palette and never collide with one.
             assert!(!is_block(id));
+        }
+    }
+
+    #[test]
+    fn rocket_parts_resolve_names_and_stack_small() {
+        for (name, id) in [
+            ("rocket-engine", ROCKET_ENGINE),
+            ("fuel-tank", FUEL_TANK),
+            ("command-module", COMMAND_MODULE),
+        ] {
+            assert_eq!(id_by_name(name), Some(id), "name {name} resolves");
+            assert!(!is_block(id), "{name} is not a block");
+            assert_eq!(stack_size(id), 8, "{name} stacks to 8");
         }
     }
 
