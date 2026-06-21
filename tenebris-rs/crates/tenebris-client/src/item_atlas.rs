@@ -219,12 +219,12 @@ mod tests {
 
     #[test]
     fn shipped_atlas_png_dims_match_constants() {
-        /* Cross-check the baked asset (shared C asset tree) against
-         * the compiled-in grid constants - skip when the asset tree
-         * isn't present in this checkout layout. */
+        /* Cross-check the baked asset (tenebris-rs/assets) against the
+         * compiled-in grid constants - skip when the asset tree isn't
+         * present in this checkout layout. */
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../../tenebris-c/assets/textures/items/atlas.png"
+            "/../../assets/textures/items/atlas.png"
         );
         let Some(img) = load_png_rgba(path, false) else {
             return;

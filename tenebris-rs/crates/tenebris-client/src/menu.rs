@@ -2700,6 +2700,14 @@ fn pause_event_inner(m: &mut Menu, e: &sapp::Event) -> bool {
      * turns that into a pause_toggle), and the close action is a
      * deliberate click on the resume button. */
     if e._type == sapp::EventType::KeyDown && e.key_code == sapp::Keycode::Escape {
+        /* Esc closes the pause panel (resume) - symmetric with the Esc
+         * that opened it. While MP is reconnecting, resume is disabled,
+         * so keep the panel up until the socket is back. */
+        if m.reconnect_deadline_t <= 0.0 {
+            set_pause_visible(m, false, "esc-resume");
+            m.pause_auto_disconnect = false;
+            show_mouse(true);
+        }
         return true;
     }
 

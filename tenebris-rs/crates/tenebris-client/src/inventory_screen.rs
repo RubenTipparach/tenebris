@@ -282,6 +282,12 @@ pub fn is_open() -> bool {
     G.with(|cell| cell.borrow().open)
 }
 
+/// Force the overlay closed (e.g. when the craft panel or the pause
+/// modal takes over).
+pub fn close() {
+    G.with(|cell| cell.borrow_mut().open = false);
+}
+
 /// Port of `inventory_screen_event()`. Forward every sapp event while
 /// the overlay is open so movement / mouse-look events get swallowed
 /// instead of leaking through to the player controller. Returns true

@@ -42,6 +42,12 @@ use std::sync::Mutex;
 
 const MAX_SLOTS: usize = 32;
 
+/// Rolling frame-time history backing the on-screen frame-time graph.
+/// 1024 samples covers a 10 s window down to ~100 fps; above that the
+/// windowed view (which trims by accumulated wall time) just shows the
+/// most recent < 10 s, which is the honest thing to do.
+const FRAME_HIST_CAP: usize = 1024;
+
 /// Port of `prof_slot_t`.
 #[derive(Clone, Copy, Debug)]
 struct ProfSlot {
@@ -79,6 +85,11 @@ struct ProfilerState {
     frame_start_t: u64,
     frame_ms_last: f64,
     frame_ms_avg: f64,
+    /// Ring buffer of recent whole-frame times in ms (newest written at
+    /// `frame_hist_head - 1`). Feeds `frame_graph()`.
+    frame_hist: [f32; FRAME_HIST_CAP],
+    frame_hist_head: usize,
+    frame_hist_len: usize,
 }
 
 const INITIAL_STATE: ProfilerState = ProfilerState {
@@ -88,6 +99,9 @@ const INITIAL_STATE: ProfilerState = ProfilerState {
     frame_start_t: 0,
     frame_ms_last: 0.0,
     frame_ms_avg: 0.0,
+    frame_hist: [0.0; FRAME_HIST_CAP],
+    frame_hist_head: 0,
+    frame_hist_len: 0,
 };
 
 static P: Mutex<ProfilerState> = Mutex::new(INITIAL_STATE);
@@ -122,6 +136,16 @@ fn ema(avg: f64, last: f64) -> f64 {
     }
 }
 
+/// Append one whole-frame sample (ms) to the ring buffer.
+fn push_frame_sample(p: &mut ProfilerState, ms: f32) {
+    let head = p.frame_hist_head;
+    p.frame_hist[head] = ms;
+    p.frame_hist_head = (head + 1) % FRAME_HIST_CAP;
+    if p.frame_hist_len < FRAME_HIST_CAP {
+        p.frame_hist_len += 1;
+    }
+}
+
 pub fn begin_frame() {
     let mut p = P.lock().unwrap();
     p.frame_start_t = stm_now();
@@ -139,6 +163,9 @@ pub fn end_frame() {
     /* Slow-EMA the totals so the readout is stable but still reacts
      * when something starts spiking. */
     p.frame_ms_avg = ema(p.frame_ms_avg, p.frame_ms_last);
+    /* Record the raw (un-smoothed) frame time for the spike graph. */
+    let frame_ms = p.frame_ms_last as f32;
+    push_frame_sample(&mut p, frame_ms);
     for i in 0..p.slot_count {
         let s = &mut p.slots[i];
         s.ms_last = s.ms_curr;
@@ -171,6 +198,41 @@ pub fn toggle_visible() {
 
 pub fn visible() -> bool {
     P.lock().unwrap().visible
+}
+
+/// A windowed view of the frame-time history for the on-screen graph.
+/// `samples` runs oldest -> newest in milliseconds; `max_ms` is the
+/// peak in the window (vertical scale); `span_s` is the wall time the
+/// returned samples actually cover (<= the requested window).
+pub struct FrameGraph {
+    pub samples: Vec<f32>,
+    pub max_ms: f32,
+    pub span_s: f32,
+}
+
+/// Most recent frame samples spanning up to `window_s` seconds of wall
+/// time, newest-anchored, returned oldest -> newest. Used by the HUD
+/// frame-time graph to spot spikes (e.g. the single-threaded water sim
+/// stalling the main thread).
+pub fn frame_graph(window_s: f32) -> FrameGraph {
+    let p = P.lock().unwrap();
+    let cap = FRAME_HIST_CAP;
+    let budget_ms = window_s.max(0.0) * 1000.0;
+    let mut samples: Vec<f32> = Vec::with_capacity(p.frame_hist_len);
+    let mut acc = 0.0f32;
+    /* Walk newest -> oldest until the window is covered. */
+    for k in 0..p.frame_hist_len {
+        let idx = (p.frame_hist_head + cap - 1 - k) % cap;
+        let ms = p.frame_hist[idx];
+        samples.push(ms);
+        acc += ms;
+        if acc >= budget_ms {
+            break;
+        }
+    }
+    samples.reverse();
+    let max_ms = samples.iter().copied().fold(0.0f32, f32::max);
+    FrameGraph { samples, max_ms, span_s: acc / 1000.0 }
 }
 
 /// One `sdtx_color3b` + `sdtx_printf` pair from the C draw path.
@@ -274,6 +336,27 @@ mod tests {
         static ONCE: std::sync::Once = std::sync::Once::new();
         ONCE.call_once(sokol::time::setup);
         guard
+    }
+
+    #[test]
+    fn frame_graph_windows_by_wall_time() {
+        let _g = lock_and_reset();
+        {
+            let mut p = P.lock().unwrap();
+            // Five 1000 ms frames pushed through the ring buffer.
+            for _ in 0..5 {
+                push_frame_sample(&mut p, 1000.0);
+            }
+        }
+        // A 2.5 s window over 1 s frames stops after 3 samples
+        // (1000 * 3 = 3000 ms >= 2500 ms).
+        let g = frame_graph(2.5);
+        assert_eq!(g.samples.len(), 3);
+        assert_eq!(g.max_ms, 1000.0);
+        assert!((g.span_s - 3.0).abs() < 1e-6);
+        // A window larger than the history returns the whole buffer.
+        let all = frame_graph(1000.0);
+        assert_eq!(all.samples.len(), 5);
     }
 
     #[test]

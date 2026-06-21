@@ -2169,7 +2169,7 @@ ui:
         // it must be a no-op relative to the defaults (and parse clean).
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../../tenebris-c/assets/config/ui.yaml"
+            "/../../assets/config/ui.yaml"
         );
         let rc = load_ui(path);
         if rc == -1 {
@@ -2182,12 +2182,12 @@ ui:
     #[test]
     fn real_yaml_files_parse_clean_when_present() {
         let _g = lock_and_reset();
-        // The shared asset tree lives in the C source tree (PORTING.md:
-        // configs are not duplicated). Skip silently when the layout
-        // differs (e.g. crate vendored elsewhere) - load returns -1.
+        // The Rust port owns its asset tree under tenebris-rs/assets.
+        // Skip silently when the layout differs (e.g. crate vendored
+        // elsewhere) - load returns -1.
         let base = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../../tenebris-c/assets/config"
+            "/../../assets/config"
         );
         for (file, rc) in [
             ("skybox.yaml", load_skybox(&format!("{}/skybox.yaml", base))),

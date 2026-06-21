@@ -1706,12 +1706,23 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
                         let new_r = w.depth_to_radius_m(d);
                         let lift = new_r - r;
                         if lift > 0.0 && lift <= voxel_resolve_max_lift_m {
-                            eprintln!(
-                                "[player] INFO: voxel-containment \
-                                 resolve (body={} tile={} feet_d={} \
-                                 top_d={} r={:.2} new_r={:.2} lift={:.2})",
-                                body.name, cur_tile, feet_depth, d, r, new_r, lift
-                            );
+                            /* Only log meaningful corrections. A grounded
+                             * player's feet voxel reads solid every frame
+                             * and resolves with a sub-centimetre lift that
+                             * rounds to 0.00 - logging those floods the
+                             * console. Real containment events (a peer
+                             * drops a block on you, a lag-sink) lift far
+                             * more. Pure log-noise gate; the resolve below
+                             * still runs for any positive lift. */
+                            const VOXEL_CONTAINMENT_LOG_MIN_LIFT_M: f64 = 0.05;
+                            if lift >= VOXEL_CONTAINMENT_LOG_MIN_LIFT_M {
+                                eprintln!(
+                                    "[player] INFO: voxel-containment \
+                                     resolve (body={} tile={} feet_d={} \
+                                     top_d={} r={:.2} new_r={:.2} lift={:.2})",
+                                    body.name, cur_tile, feet_depth, d, r, new_r, lift
+                                );
+                            }
                             p.position = dvec3_add(
                                 dvec3_make(body.pos_x, body.pos_y, body.pos_z),
                                 dvec3_scale(local_dir, new_r),

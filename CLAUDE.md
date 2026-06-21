@@ -73,6 +73,42 @@ something feels like it should change in the JS, instead change the C port
 to no longer depend on the JS shape — or surface the question and let the
 user decide.
 
+## The Rust port (`tenebris-rs/`) is self-contained — never reference the C or JS trees
+
+The Rust port under `tenebris-rs/` is a standalone target that owns its
+own source, assets, and build scripts. **Rust code and Rust build
+scripts must NEVER reference the C tree (`tenebris-c/`) or the
+deprecated JS tree (`src/`, `public/`, ...) as a build-time or runtime
+dependency** — no `..\tenebris-c` paths, no `../../../tenebris-c/...`
+in `concat!` / `include_*` / test fixtures, no cd-ing into a sibling
+tree, no borrowing its assets.
+
+- **Build / run scripts** (`run-rust.bat`, any future Rust tooling) may
+  only touch paths under `tenebris-rs/`. The binary builds and runs from
+  `tenebris-rs/` and loads assets from `tenebris-rs/assets/`.
+- **Assets** the Rust build needs live under `tenebris-rs/assets/` and
+  are the Rust port's own copy. When the port needs an asset that only
+  exists in the C tree, COPY it into `tenebris-rs/assets/` — never point
+  at the C copy. (This supersedes the older "shared asset tree, not
+  duplicated" note in `tenebris-rs/PORTING.md`.)
+- **Rust source, including tests**, must not open, include, or hard-code
+  a filesystem path into `tenebris-c/` or the JS tree.
+
+Two things are explicitly NOT covered by this rule:
+
+1. **`//! Port of tenebris-c/...` attribution comments** and any other
+   prose that merely *names* the C file a module was ported from. Those
+   are documentation, not a dependency — reading the C / JS to learn how
+   a feature works stays fine and encouraged.
+2. **Save / wire-compat string literals** that happen to contain the
+   text `tenebris-c` — the `tenebris-c:` localStorage / KV key
+   namespaces, the `wss://tenebris-c.fly.dev/` server URL, the
+   `tenebris-c` config dir name under `%APPDATA%`. These are on-disk /
+   on-wire identifiers; changing them breaks existing saves and MP
+   interop, so they stay exactly as-is (see PORTING.md hard rule 1).
+
+This rule stays in force until the user says otherwise.
+
 ## Tunable values live in `tenebris-c/assets/config/*.yaml`
 
 Anything that's "a knob a designer or modder might want to turn without

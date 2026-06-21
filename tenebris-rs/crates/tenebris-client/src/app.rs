@@ -643,6 +643,105 @@ fn draw_version_strip() {
     sdtx::puts(&line);
 }
 
+/// Frame-time graph: a rolling wall-clock window plus two reference
+/// frame budgets drawn as guide lines (60 fps and 30 fps). Dev-HUD
+/// reference values, not gameplay tunables.
+const FRAME_GRAPH_WINDOW_S: f32 = 10.0;
+const FRAME_BUDGET_60_MS: f32 = 1000.0 / 60.0;
+const FRAME_BUDGET_30_MS: f32 = 1000.0 / 30.0;
+
+/// Draw the frame-time graph (top-right) when the profiler is toggled
+/// on (F3 / P). Each column is one frame, coloured green / yellow / red
+/// by the 60 / 30 fps budgets, so a main-thread stall (e.g. the water
+/// sim) shows up as a tall red spike. Queues sgl quads + sdtx labels
+/// into the frame's single flush.
+fn draw_frame_graph() {
+    if !profiler::visible() {
+        return;
+    }
+    let w = sapp::widthf();
+    let h = sapp::heightf();
+    if w < 200.0 || h < 140.0 {
+        return;
+    }
+    /* The shared 2D pipeline is created on the first mobile_ui::draw();
+     * bail until it exists rather than drawing with no blending. */
+    let pip = mobile_ui::alpha_pipeline();
+    if pip.id == 0 {
+        return;
+    }
+
+    let fg = profiler::frame_graph(FRAME_GRAPH_WINDOW_S);
+
+    let pad = 8.0f32;
+    let panel_w = 360.0f32.min(w - 2.0 * pad);
+    let panel_h = 120.0f32;
+    let x0 = w - panel_w - pad;
+    let y0 = pad;
+    let plot_x = x0 + 6.0;
+    let plot_y = y0 + 20.0;
+    let plot_w = panel_w - 12.0;
+    let plot_h = panel_h - 28.0;
+
+    /* Auto-scale to the worst spike in the window (10% headroom), but
+     * never below the 30 fps line so the guides stay meaningful. */
+    let y_max = (fg.max_ms * 1.1).max(FRAME_BUDGET_30_MS * 1.2);
+    let ms_to_y = |ms: f32| plot_y + plot_h - (ms / y_max).clamp(0.0, 1.0) * plot_h;
+
+    /* Bind a fresh ortho + the shared alpha pipeline so we don't depend
+     * on whatever UI module queued geometry last. */
+    sgl::defaults();
+    sgl::matrix_mode_projection();
+    sgl::load_identity();
+    sgl::ortho(0.0, w, h, 0.0, -1.0, 1.0);
+    sgl::matrix_mode_modelview();
+    sgl::load_identity();
+    sgl::load_pipeline(pip);
+
+    /* Panel + plot backdrop. */
+    mobile_ui::draw_rect(x0, y0, panel_w, panel_h, 0.04, 0.05, 0.08, 0.80);
+    mobile_ui::draw_rect(plot_x, plot_y, plot_w, plot_h, 0.10, 0.11, 0.15, 0.70);
+
+    /* 60 fps (green) + 30 fps (orange) budget guide lines. */
+    mobile_ui::draw_rect(plot_x, ms_to_y(FRAME_BUDGET_60_MS), plot_w, 1.0, 0.30, 0.80, 0.40, 0.55);
+    mobile_ui::draw_rect(plot_x, ms_to_y(FRAME_BUDGET_30_MS), plot_w, 1.0, 0.95, 0.65, 0.25, 0.55);
+
+    /* One column per frame, coloured by which budget it blew. */
+    let n = fg.samples.len();
+    if n > 0 {
+        let step = plot_w / n as f32;
+        let bar_w = step.max(1.0);
+        for (i, &ms) in fg.samples.iter().enumerate() {
+            let bx = plot_x + i as f32 * step;
+            let bh = ((ms / y_max).clamp(0.0, 1.0) * plot_h).max(1.0);
+            let by = plot_y + plot_h - bh;
+            let (r, g, b) = if ms >= FRAME_BUDGET_30_MS {
+                (0.95, 0.30, 0.30)
+            } else if ms >= FRAME_BUDGET_60_MS {
+                (0.95, 0.80, 0.30)
+            } else {
+                (0.40, 0.80, 0.45)
+            };
+            mobile_ui::draw_rect(bx, by, bar_w, bh, r, g, b, 0.95);
+        }
+    }
+
+    /* Label row: window span, window-averaged ms, peak ms, fps. ASCII
+     * only per the in-game text rules. */
+    let avg_ms = if n > 0 && fg.span_s > 0.0 { fg.span_s * 1000.0 / n as f32 } else { 0.0 };
+    let fps = if fg.span_s > 0.0 { n as f32 / fg.span_s } else { 0.0 };
+    sdtx::canvas(w, h);
+    sdtx::font(0);
+    sdtx::origin((x0 + 6.0) / 8.0, (y0 + 6.0) / 8.0);
+    sdtx::home();
+    sdtx::color3b(0xc0, 0xd0, 0xff);
+    sdtx::puts(&format!(
+        "FRAME {:.0}s  avg {:.1}ms  max {:.1}ms  fps {:.0}",
+        fg.span_s, avg_ms, fg.max_ms, fps
+    ));
+    sdtx::color3b(0xff, 0xff, 0xff);
+}
+
 fn update_overlay(app: &mut App, dt: f32) {
     app.smoothed_fps = smoothed_fps_next(app.smoothed_fps, dt);
 
@@ -1829,7 +1928,20 @@ fn frame_inner(app: &mut App) {
         let now_locked = sapp::mouse_locked();
         let st = menu::state();
         let in_gameplay = st == GameState::InGameSp || st == GameState::InGameMp;
-        if in_gameplay && app.was_mouse_locked && !now_locked && !menu::pause_active() {
+        /* Web pointer-lock-loss fallback: the browser eats the Esc that
+         * releases pointer lock, so we synthesize the pause-open from the
+         * lock-state transition. Guard against overlays that legitimately
+         * release the mouse (inventory / crafting) - opening the
+         * inventory unlocks the mouse and must NOT trip the pause panel.
+         * On native, the direct Esc handler in event_inner is the real
+         * opener; this stays for the web Esc path. */
+        let overlay_open = inventory_screen::is_open() || crafting_screen::is_open();
+        if in_gameplay
+            && app.was_mouse_locked
+            && !now_locked
+            && !menu::pause_active()
+            && !overlay_open
+        {
             menu::pause_toggle();
             sapp::show_mouse(true);
         }
@@ -2066,6 +2178,11 @@ fn frame_inner(app: &mut App) {
         let sp = menu::state() == GameState::InGameSp;
         if sp && app.water_accum_s >= period_s {
             app.water_accum_s = 0.0;
+            /* Water steps synchronously on the main (GL) thread, so a
+             * heavy step shows up directly as a frame spike. Profile it
+             * under its own slot so the frame-time graph can attribute
+             * the stall. */
+            profiler::begin("water-sim");
             let budget = wf.max_ticks_per_step.max(1);
             let sp_world = menu::active_world();
             let mut dirty_tiles = vec![0i32; 8192];
@@ -2093,6 +2210,7 @@ fn frame_inner(app: &mut App) {
                     }
                 }
             }
+            profiler::end("water-sim");
         }
     }
 
@@ -2240,8 +2358,11 @@ fn frame_inner(app: &mut App) {
     /* Teleport overlay is creative/debug-only. */
     if app.debug_ui_visible {
         teleport_menu::draw();
-    crafting_screen::draw();
     }
+    /* Crafting is gameplay UI, not a debug overlay: it must render
+     * whenever the player has it open, independent of the F2 toggle.
+     * (draw() self-gates on is_open(), so this is a no-op when closed.) */
+    crafting_screen::draw();
     if app.debug_ui_visible {
         draw_error_overlay();
         profiler::draw();
@@ -2254,10 +2375,15 @@ fn frame_inner(app: &mut App) {
     remote_players::draw_nameplates(view, proj, sapp::widthf(), sapp::heightf(), &|id| {
         net_client::name_for_id(id)
     });
-    /* No sdtx_draw here - single flush at the end of the UI block. */
-    hotbar_ui::draw(&app.player.borrow().inventory);
-    /* Real (non-ASCII) mining progress bar. */
-    draw_mining_bar(app, sapp::widthf(), sapp::heightf());
+    /* Gameplay HUD - hidden while the pause panel is up so its sdtx text
+     * (which flushes on top of ALL sgl geometry, including the pause
+     * backdrop) doesn't bleed over the modal. */
+    if !menu::pause_active() {
+        /* No sdtx_draw here - single flush at the end of the UI block. */
+        hotbar_ui::draw(&app.player.borrow().inventory);
+        /* Real (non-ASCII) mining progress bar. */
+        draw_mining_bar(app, sapp::widthf(), sapp::heightf());
+    }
     /* Sync the hamburger debug-menu + teleport-button visibility with
      * the master F2 toggle every frame. */
     mobile_ui::set_debug_menu_visible(app.debug_ui_visible);
@@ -2355,6 +2481,11 @@ fn frame_inner(app: &mut App) {
         menu::connecting_draw(sapp::width(), sapp::height(), status, &room_buf);
     }
 
+    /* Frame-time graph (toggle with the profiler key, F3 / P). Drawn
+     * last so it sits on top of every HUD element; queues into the same
+     * sgl / sdtx batches flushed just below. */
+    draw_frame_graph();
+
     /* ONE sgl_draw per frame, at the very end after every UI module
      * has queued its geometry (sokol_gl uploads its vertex buffer only
      * on the first draw of the frame - see the C comment). */
@@ -2426,6 +2557,12 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
         let inv_open = inventory_screen::is_open();
         if inv_open || !in_space || shift_held {
             inventory_screen::toggle();
+            /* Mutually exclusive with the craft panel - only one
+             * survival overlay up at a time so their input + sdtx text
+             * never collide. */
+            if inventory_screen::is_open() {
+                crafting_screen::close();
+            }
             return;
         }
         /* In space, no shift, overlay closed: roll-right wants this
@@ -2459,9 +2596,20 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
         }
     }
 
-    /* Escape: do nothing directly - the per-frame pointer-lock-loss
-     * detector opens the pause panel on the same gesture. */
+    /* Escape opens the pause panel directly. Reliable on native, where
+     * nothing releases pointer lock for the web detector above to catch.
+     * crafting / inventory get first crack earlier and close themselves
+     * on Esc, so reaching here means none are open - bring up pause as a
+     * modal, defensively closing any HUD overlay first so nothing draws
+     * over it. */
     if e._type == sapp::EventType::KeyDown && e.key_code == sapp::Keycode::Escape {
+        let st = menu::state();
+        if (st == GameState::InGameSp || st == GameState::InGameMp) && !menu::pause_active() {
+            crafting_screen::close();
+            inventory_screen::close();
+            menu::pause_toggle();
+            sapp::show_mouse(true);
+        }
         return;
     }
     /* Chat takes Enter (open compose) + every keystroke while

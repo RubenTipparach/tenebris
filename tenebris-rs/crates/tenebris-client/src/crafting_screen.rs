@@ -55,6 +55,12 @@ pub fn is_open() -> bool {
     S.with(|c| c.borrow().open)
 }
 
+/// Force the craft screen closed (e.g. when the inventory or the pause
+/// modal takes over).
+pub fn close() {
+    S.with(|c| c.borrow_mut().open = false);
+}
+
 pub fn set_player(player: Option<PlayerHandle>) {
     S.with(|c| c.borrow_mut().player = player);
 }
@@ -214,6 +220,10 @@ pub fn handle_event(e: &sapp::Event, player: Option<PlayerHandle>) -> bool {
                 s.open
             });
             if now_open {
+                /* Mutually exclusive with the inventory overlay - only
+                 * one survival panel up at a time so their inputs and
+                 * sdtx text never overlap. */
+                crate::inventory_screen::close();
                 release_pointer();
             }
             true
@@ -276,8 +286,9 @@ fn draw_text_at(x: f32, y: f32, scale: f32, r: u8, g: u8, b: u8, text: &str) {
 
 pub fn draw() {
     if !is_open() {
-        sdtx::color3b(0xa0, 0xa0, 0xc0);
-        sdtx::puts("[B] craft\n");
+        /* Closed: nothing to draw. The old "[B] craft" sdtx hint printed
+         * at an undefined cursor and only showed under F2; discoverability
+         * belongs in the inventory/crafting menu, not a stray HUD line. */
         return;
     }
 

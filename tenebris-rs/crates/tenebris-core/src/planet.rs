@@ -972,7 +972,7 @@ phantom:
         let _g = lock_and_reset();
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../../tenebris-c/assets/config/atmosphere.yaml"
+            "/../../assets/config/atmosphere.yaml"
         );
         let rc = load_atmosphere(path);
         assert_ne!(rc, -2, "atmosphere.yaml should parse without errors");
