@@ -349,6 +349,32 @@ fn player_lat_lon_deg(world_pos: DVec3, body: &BodyConfig) -> (f64, f64, f64) {
 /* init                                                                    */
 /* --------------------------------------------------------------------- */
 
+thread_local! {
+    /// Dev-only: frames to wait before dropping the `TENEBRIS_DEV_PAD`
+    /// pad. Placement must happen during steady gameplay, not at init:
+    /// editing the world before the first frame double-updates a chunk's
+    /// GPU buffer in one frame (sokol's one-update-per-buffer-per-frame
+    /// rule), which aborts. -1 = disabled.
+    static DEV_PAD_COUNTDOWN: std::cell::Cell<i32> = const { std::cell::Cell::new(-1) };
+}
+
+/// Dev-only: once in-game and a few frames settled, drop the launch-pad
+/// patch and look down at it. Self-disables after firing.
+fn dev_maybe_place_pad(app: &mut App) {
+    let n = DEV_PAD_COUNTDOWN.with(|c| c.get());
+    if n < 0 || menu::state() != GameState::InGameSp {
+        return;
+    }
+    if n > 0 {
+        DEV_PAD_COUNTDOWN.with(|c| c.set(n - 1));
+        return;
+    }
+    DEV_PAD_COUNTDOWN.with(|c| c.set(-1));
+    dev_place_launch_pad(&app.world, dvec3_make(1.0, 0.0, 0.0));
+    /* Tilt the camera down so the pad at the player's feet is in frame. */
+    app.player.borrow_mut().pitch = -0.6;
+}
+
 /// Dev-only: drop a hex launch-pad patch on the surface under `dir` so a
 /// fresh headless boot has the new block to look at / screenshot.
 /// Replaces the topmost solid voxel of the centre tile and its neighbours
@@ -587,7 +613,9 @@ extern "C" fn init() {
      *   TENEBRIS_DEV_ROCKET=1  -> open the rocket-assembly screen
      */
     if std::env::var("TENEBRIS_DEV_PAD").is_ok() {
-        dev_place_launch_pad(&world, dvec3_make(1.0, 0.0, 0.0));
+        /* Deferred to a few in-game frames in (see dev_maybe_place_pad);
+         * placing at init double-updates a GPU buffer and aborts. */
+        DEV_PAD_COUNTDOWN.with(|c| c.set(15));
     }
     if std::env::var("TENEBRIS_DEV_KIT").is_ok() {
         let mut p = player.borrow_mut();
@@ -1988,6 +2016,7 @@ extern "C" fn frame() {
 
 fn frame_inner(app: &mut App) {
     maybe_apply_sp_resume(app);
+    dev_maybe_place_pad(app);
     apply_sp_saves_lazy(app);
     maybe_apply_mp_spawn(app);
     maybe_prime_mode_for_state(app);
