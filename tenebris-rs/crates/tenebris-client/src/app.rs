@@ -2163,20 +2163,10 @@ extern "C" fn frame() {
 }
 
 /// Build this frame's egui UI. Dispatches to each screen's egui builder.
-/// (Proof window for now; screens port over one at a time.)
-fn egui_ui(_app: &mut App, ctx: &egui::Context) {
-    egui::Window::new("Tenebris (egui)")
-        .default_pos(egui::pos2(60.0, 80.0))
-        .show(ctx, |ui| {
-            ui.label("egui is rendering through the sokol_gl bridge.");
-            ui.separator();
-            ui.horizontal(|ui| {
-                let _ = ui.button("Smelt");
-                let _ = ui.button("Craft");
-                let _ = ui.button("Assemble");
-            });
-            ui.label("If you can read this, the backend works.");
-        });
+/// Screens port from sokol_gl to egui one at a time.
+fn egui_ui(app: &mut App, ctx: &egui::Context) {
+    crafting_screen::set_player(Some(app.player.clone()));
+    crafting_screen::egui_ui(ctx);
 }
 
 fn frame_inner(app: &mut App) {

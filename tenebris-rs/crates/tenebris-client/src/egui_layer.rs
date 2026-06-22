@@ -75,11 +75,6 @@ pub fn init() {
     });
 }
 
-/// True once `init` has run (so callers can guard).
-pub fn ready() -> bool {
-    LAYER.with(|c| c.borrow().is_some())
-}
-
 fn map_key(k: sapp::Keycode) -> Option<egui::Key> {
     use egui::Key as E;
     use sapp::Keycode as K;
@@ -155,18 +150,14 @@ pub fn handle_event(e: &sapp::Event) -> bool {
             }
             _ => {}
         }
-        l.ctx.wants_pointer_input() || l.ctx.wants_keyboard_input()
+        // (Per-screen pointer/keyboard claiming is wired as screens port;
+        // for now events are forwarded and gameplay keeps its own paths.)
+        false
     })
 }
 
-/// True if egui currently wants pointer input (a panel is under the mouse),
-/// so gameplay can ignore the click. Valid after the first `run`.
-pub fn wants_pointer() -> bool {
-    LAYER.with(|c| c.borrow().as_ref().map(|l| l.ctx.wants_pointer_input()).unwrap_or(false))
-}
-
 /// Run the egui frame: feed input, run `ui`, stash the paint output.
-pub fn run(screen_w: f32, screen_h: f32, ui: impl FnMut(&egui::Context)) {
+pub fn run(screen_w: f32, screen_h: f32, mut ui: impl FnMut(&egui::Context)) {
     LAYER.with(|c| {
         let mut b = c.borrow_mut();
         let Some(l) = b.as_mut() else { return };
@@ -180,10 +171,15 @@ pub fn run(screen_w: f32, screen_h: f32, ui: impl FnMut(&egui::Context)) {
             events: std::mem::take(&mut l.events),
             ..Default::default()
         };
-        let out = l.ctx.run(raw, ui);
+        // egui::Context is Arc-backed; clone to avoid borrowing `l` across
+        // the UI closure.
+        let ctx = l.ctx.clone();
+        ctx.begin_pass(raw);
+        ui(&ctx);
+        let out = ctx.end_pass();
         l.ppp = out.pixels_per_point;
         apply_texture_deltas(l, &out.textures_delta);
-        l.prims = l.ctx.tessellate(out.shapes, out.pixels_per_point);
+        l.prims = ctx.tessellate(out.shapes, out.pixels_per_point);
     });
 }
 

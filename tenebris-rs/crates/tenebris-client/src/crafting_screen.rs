@@ -12,11 +12,8 @@
 use std::cell::RefCell;
 
 use sokol::app as sapp;
-use sokol::debugtext as sdtx;
-use sokol::gl as sgl;
 
 use crate::bag;
-use crate::mobile_ui;
 use crate::player_ctrl::PlayerCtrl;
 use std::rc::Rc;
 use tenebris_core::crafting::{self, Recipe};
@@ -24,11 +21,6 @@ use tenebris_core::items;
 
 pub type PlayerHandle = Rc<RefCell<PlayerCtrl>>;
 
-const PANEL_W: f32 = 480.0;
-const TITLE_H: f32 = 46.0;
-const ROW_H: f32 = 30.0;
-const ROW_PAD: f32 = 4.0;
-const CLOSE_BTN_PX: f32 = 26.0;
 /// Hard cap on rows drawn (no scroll yet; Tier 0 has a handful).
 const MAX_ROWS: usize = 16;
 
@@ -37,8 +29,6 @@ struct Screen {
     open: bool,
     selected: i32,
     player: Option<PlayerHandle>,
-    mouse_x: f32,
-    mouse_y: f32,
     /// Which recipes this surface offers: `None` = the hand bench (`B`),
     /// `Some(block_item_id)` = a placed station (furnace, ...). Only
     /// recipes whose `station` matches are listed / craftable.
@@ -101,14 +91,6 @@ pub fn set_player(player: Option<PlayerHandle>) {
     S.with(|c| c.borrow_mut().player = player);
 }
 
-/* sokol runtime seam - real app forwards to sapp; tests swap a double. */
-#[cfg(not(test))]
-fn screen_sizef() -> (f32, f32) {
-    (sapp::widthf(), sapp::heightf())
-}
-#[cfg(test)]
-use test_doubles::screen_sizef;
-
 /// Free the pointer + show the cursor when the screen opens so rows are
 /// clickable (gameplay keeps the mouse locked for look). On close, the
 /// next canvas click re-locks via the normal input path.
@@ -125,31 +107,9 @@ fn row_count() -> usize {
     cur_recipes().len().min(MAX_ROWS)
 }
 
-fn hit_rect(x: f32, y: f32, w: f32, h: f32, px: f32, py: f32) -> bool {
-    px >= x && px < x + w && py >= y && py < y + h
-}
 
-/// Panel geometry (pixel coords, origin top-left).
-fn compute_layout(screen_w: f32, screen_h: f32) -> (f32, f32, f32, f32) {
-    let rows = row_count().max(1) as f32;
-    let panel_h = TITLE_H + rows * ROW_H + 16.0;
-    let panel_x = (screen_w - PANEL_W) * 0.5;
-    let panel_y = (screen_h - panel_h) * 0.5;
-    (panel_x, panel_y, PANEL_W, panel_h)
-}
 
-fn close_btn_rect(panel_x: f32, panel_y: f32) -> (f32, f32, f32) {
-    (panel_x + PANEL_W - CLOSE_BTN_PX - 8.0, panel_y + 10.0, CLOSE_BTN_PX)
-}
 
-fn row_rect(panel_x: f32, panel_y: f32, row: usize) -> (f32, f32, f32, f32) {
-    (
-        panel_x + 10.0,
-        panel_y + TITLE_H + row as f32 * ROW_H + ROW_PAD * 0.5,
-        PANEL_W - 20.0,
-        ROW_H - ROW_PAD,
-    )
-}
 
 /// Item display name (ASCII, no underscores - safe for the Oric font).
 fn item_name(id: items::ItemId) -> &'static str {
@@ -194,62 +154,13 @@ fn craft_row(idx: usize) -> bool {
      * sync wave - the hotbar follows the existing inventory path. */
 }
 
-/// Translate a click into a craft / close / select action. Returns true
-/// when the click was inside the panel (consume it).
-fn handle_click(px: f32, py: f32) -> bool {
-    if !is_open() {
-        return false;
-    }
-    let (sw, sh) = screen_sizef();
-    let (panel_x, panel_y, panel_w, panel_h) = compute_layout(sw, sh);
-
-    let (cx, cy, cs) = close_btn_rect(panel_x, panel_y);
-    if hit_rect(cx, cy, cs, cs, px, py) {
-        S.with(|c| c.borrow_mut().open = false);
-        return true;
-    }
-    for row in 0..row_count() {
-        let (rx, ry, rw, rh) = row_rect(panel_x, panel_y, row);
-        if hit_rect(rx, ry, rw, rh, px, py) {
-            S.with(|c| c.borrow_mut().selected = row as i32);
-            craft_row(row);
-            return true;
-        }
-    }
-    hit_rect(panel_x, panel_y, panel_w, panel_h, px, py)
-}
 
 /// Intercept toggle / nav / craft / close input. Returns true if consumed.
 pub fn handle_event(e: &sapp::Event, player: Option<PlayerHandle>) -> bool {
     S.with(|c| c.borrow_mut().player = player);
 
-    if is_open() {
-        if e._type == sapp::EventType::MouseMove {
-            S.with(|c| {
-                let s = &mut *c.borrow_mut();
-                s.mouse_x = e.mouse_x;
-                s.mouse_y = e.mouse_y;
-            });
-        } else if (e._type == sapp::EventType::TouchesBegan
-            || e._type == sapp::EventType::TouchesMoved)
-            && e.num_touches > 0
-        {
-            S.with(|c| {
-                let s = &mut *c.borrow_mut();
-                s.mouse_x = e.touches[0].pos_x;
-                s.mouse_y = e.touches[0].pos_y;
-            });
-        }
-        if e._type == sapp::EventType::MouseDown && e.mouse_button == sapp::Mousebutton::Left {
-            return handle_click(e.mouse_x, e.mouse_y);
-        }
-        if e._type == sapp::EventType::TouchesBegan && e.num_touches > 0 {
-            if handle_click(e.touches[0].pos_x, e.touches[0].pos_y) {
-                return true;
-            }
-        }
-    }
-
+    /* Mouse / touch interaction belongs to egui now (see egui_ui); only
+     * the B / Esc toggle + keyboard nav stay on the sokol key path. */
     if e._type != sapp::EventType::KeyDown {
         return false;
     }
@@ -314,105 +225,16 @@ pub fn handle_event(e: &sapp::Event, player: Option<PlayerHandle>) -> bool {
     }
 }
 
-fn draw_text_at(x: f32, y: f32, scale: f32, r: u8, g: u8, b: u8, text: &str) {
-    let cell_px = 8.0 * scale;
-    let (sw, sh) = screen_sizef();
-    sdtx::canvas(sw / scale, sh / scale);
-    sdtx::font(1);
-    sdtx::origin(x / cell_px, y / cell_px);
-    sdtx::color3b(r, g, b);
-    sdtx::home();
-    sdtx::puts(text);
-    sdtx::font(0);
-}
 
-pub fn draw() {
-    if !is_open() {
-        /* Closed: nothing to draw. The old "[B] craft" sdtx hint printed
-         * at an undefined cursor and only showed under F2; discoverability
-         * belongs in the inventory/crafting menu, not a stray HUD line. */
-        return;
-    }
+/// The craft / smelt panel renders via egui now (see `egui_ui`); the old
+/// sokol_gl panel is gone. Kept as a no-op so the frame's sgl pass call
+/// site stays valid until that call is removed.
+pub fn draw() {}
 
-    let (w, h) = screen_sizef();
-    sgl::defaults();
-    sgl::matrix_mode_projection();
-    sgl::load_identity();
-    sgl::ortho(0.0, w, h, 0.0, -1.0, 1.0);
-    sgl::matrix_mode_modelview();
-    sgl::load_identity();
-    let pip = mobile_ui::alpha_pipeline();
-    if pip.id == 0 {
-        sdtx::color3b(0xff, 0xff, 0xff);
-        sdtx::puts("[craft] (drawing pipeline not ready yet)\n");
-        return;
-    }
-    sgl::load_pipeline(pip);
-
-    let (panel_x, panel_y, panel_w, panel_h) = compute_layout(w, h);
-    let (mouse_x, mouse_y, sel) = S.with(|c| {
-        let s = c.borrow();
-        (s.mouse_x, s.mouse_y, s.selected)
-    });
-
-    /* Backdrop + panel + border, same palette family as the other menus. */
-    mobile_ui::draw_rect(0.0, 0.0, w, h, 0.02, 0.03, 0.07, 0.55);
-    mobile_ui::draw_rect(panel_x, panel_y, panel_w, panel_h, 0.10, 0.12, 0.18, 0.96);
-    mobile_ui::draw_rect_outline(panel_x, panel_y, panel_w, panel_h, 2.0, 0.85, 0.90, 1.00, 1.0);
-    mobile_ui::draw_rect(panel_x, panel_y + TITLE_H - 2.0, panel_w, 2.0, 0.85, 0.90, 1.00, 0.50);
-
-    let (cx, cy, cs) = close_btn_rect(panel_x, panel_y);
-    let close_hover = hit_rect(cx, cy, cs, cs, mouse_x, mouse_y);
-    let ca = if close_hover { 0.85 } else { 0.55 };
-    mobile_ui::draw_rect(cx, cy, cs, cs, 0.45, 0.10, 0.12, ca);
-    mobile_ui::draw_rect_outline(cx, cy, cs, cs, 1.5, 1.00, 0.55, 0.55, 0.95);
-
-    let flags = affordable_flags();
-
-    /* Row backgrounds (selected / hovered highlight). */
-    for row in 0..row_count() {
-        let (rx, ry, rw, rh) = row_rect(panel_x, panel_y, row);
-        let selected = row as i32 == sel;
-        let hovered = hit_rect(rx, ry, rw, rh, mouse_x, mouse_y);
-        let (fr, fg, fb, fa) = if selected {
-            (0.20, 0.24, 0.16, 0.95)
-        } else if hovered {
-            (0.16, 0.18, 0.24, 0.90)
-        } else {
-            (0.13, 0.15, 0.20, 0.80)
-        };
-        mobile_ui::draw_rect(rx, ry, rw, rh, fr, fg, fb, fa);
-        if selected {
-            mobile_ui::draw_rect_outline(rx, ry, rw, rh, 1.5, 0.95, 0.85, 0.45, 0.95);
-        }
-    }
-
-    /* Text layer. Title names the surface (a station shows its own verb). */
-    let title = if cur_station().is_some() { "SMELT" } else { "CRAFT" };
-    draw_text_at(panel_x + 16.0, panel_y + 12.0, 3.0, 0xff, 0xff, 0xff, title);
-    draw_text_at(
-        panel_x + 16.0,
-        panel_y + TITLE_H - 16.0,
-        1.5,
-        0xa0,
-        0xa8,
-        0xc0,
-        "click a recipe to craft - green = ready",
-    );
-    draw_text_at(cx + 7.0, cy + 5.0, 2.0, 0xff, 0xff, 0xff, "X");
-
-    for (row, r) in cur_recipes().iter().take(row_count()).enumerate() {
-        let (rx, ry, _rw, _rh) = row_rect(panel_x, panel_y, row);
-        let ready = flags.get(row).copied().unwrap_or(false);
-        let (tr, tg, tb) = if ready { (0x66, 0xff, 0x88) } else { (0x88, 0x88, 0x90) };
-        draw_text_at(rx + 8.0, ry + 6.0, 1.75, tr, tg, tb, &recipe_label(r));
-    }
-
-    /* Footer: what the player currently holds, so it's obvious why a
-     * recipe row is green or grey. Reads the bag (mined drops + crafted
-     * output) via the unified core item table. Capped so a long list
-     * can't overflow the panel. */
-    let summary = S.with(|c| {
+/// Footer line: what the player currently holds (bag contents), so it is
+/// obvious why a recipe row is ready or not.
+fn have_summary() -> String {
+    let parts = S.with(|c| {
         c.borrow().player.as_ref().map(|p| {
             let p = p.borrow();
             let mut parts: Vec<String> = Vec::new();
@@ -426,21 +248,65 @@ pub fn draw() {
             parts
         })
     });
-    let line = match summary {
-        Some(parts) if !parts.is_empty() => format!("HAVE: {}", parts.join(", ")),
-        _ => "HAVE: nothing yet - mine wood and ore to gather resources".to_string(),
-    };
-    draw_text_at(panel_x + 16.0, panel_y + panel_h - 18.0, 1.25, 0xb0, 0xc0, 0xe0, &line);
+    match parts {
+        Some(parts) if !parts.is_empty() => format!("Have: {}", parts.join(", ")),
+        _ => "Have: nothing yet - mine wood and ore to gather resources".to_string(),
+    }
 }
 
-#[cfg(test)]
-mod test_doubles {
-    use std::cell::Cell;
-    thread_local! {
-        pub static SCREEN: Cell<(f32, f32)> = const { Cell::new((1280.0, 720.0)) };
+/// Draw the craft / smelt panel in egui when open. Replaces the sokol_gl
+/// panel: a centred window of recipe rows (green = craftable), the held
+/// resources, and a close button. Clicking a ready row crafts it.
+pub fn egui_ui(ctx: &egui::Context) {
+    if !is_open() {
+        return;
     }
-    pub fn screen_sizef() -> (f32, f32) {
-        SCREEN.with(|c| c.get())
+    let recipes = cur_recipes();
+    let flags = affordable_flags();
+    let title = if cur_station().is_some() { "Smelt" } else { "Craft" };
+    let mut craft_idx: Option<usize> = None;
+    let mut do_close = false;
+
+    egui::Window::new(title)
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .show(ctx, |ui| {
+            ui.label(
+                egui::RichText::new("Click a recipe to craft - green = ready")
+                    .color(egui::Color32::from_rgb(0xa0, 0xa8, 0xc0)),
+            );
+            ui.separator();
+            for (i, r) in recipes.iter().enumerate() {
+                let ready = flags.get(i).copied().unwrap_or(false);
+                let color = if ready {
+                    egui::Color32::from_rgb(0x66, 0xff, 0x88)
+                } else {
+                    egui::Color32::from_rgb(0x88, 0x88, 0x90)
+                };
+                let resp = ui.add_sized(
+                    [380.0, 24.0],
+                    egui::Button::new(egui::RichText::new(recipe_label(r)).color(color)),
+                );
+                if resp.clicked() && ready {
+                    craft_idx = Some(i);
+                }
+            }
+            ui.separator();
+            ui.label(
+                egui::RichText::new(have_summary())
+                    .color(egui::Color32::from_rgb(0xb0, 0xc0, 0xe0)),
+            );
+            if ui.button("Close").clicked() {
+                do_close = true;
+            }
+        });
+
+    if let Some(i) = craft_idx {
+        craft_row(i);
+    }
+    if do_close {
+        close();
     }
 }
 
@@ -465,14 +331,6 @@ in: plank 2
     fn key(t: EventType, k: Keycode) -> Event {
         let mut e = Event { _type: t, ..Default::default() };
         e.key_code = k;
-        e
-    }
-
-    fn click(x: f32, y: f32) -> Event {
-        let mut e = Event { _type: EventType::MouseDown, ..Default::default() };
-        e.mouse_button = Mousebutton::Left;
-        e.mouse_x = x;
-        e.mouse_y = y;
         e
     }
 
@@ -510,14 +368,13 @@ in: plank 2
     }
 
     #[test]
-    fn click_on_planks_row_crafts_it() {
+    fn craft_row_crafts_the_recipe() {
+        // egui owns clicks now; a row click calls craft_row(idx). Pin that
+        // path directly (the row->recipe mapping + the bag bridge).
         setup();
         let p = player_with_logs(1);
-        handle_event(&key(EventType::KeyDown, Keycode::B), Some(p.clone()));
-        let (sw, sh) = screen_sizef();
-        let (px, py, _, _) = compute_layout(sw, sh);
-        let (rx, ry, rw, rh) = row_rect(px, py, 0);
-        assert!(handle_event(&click(rx + rw * 0.5, ry + rh * 0.5), Some(p.clone())));
+        set_player(Some(p.clone()));
+        assert!(craft_row(0)); // row 0 = planks
         assert_eq!(p.borrow().bag.count_of(PLANK), 4);
     }
 
