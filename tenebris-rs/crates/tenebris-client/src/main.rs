@@ -7,6 +7,7 @@ mod chat;
 mod client_kv;
 mod crafting_screen;
 mod rocket_screen;
+mod egui_layer;
 mod gfx_math;
 mod hex_mesher;
 mod hotbar_ui;

@@ -44,6 +44,7 @@ use crate::gfx_math::{mat4_perspective, Mat4};
 use crate::hotbar_ui;
 use crate::input;
 use crate::interact::{self, InteractState, MINING_TIME_S};
+use crate::egui_layer;
 use crate::inventory::{self, INV_HOTBAR_SLOTS};
 use crate::inventory_screen;
 use crate::item_atlas;
@@ -583,6 +584,7 @@ extern "C" fn init() {
     teleport_menu::init();
     crafting_screen::init();
     rocket_screen::init();
+    egui_layer::init();
 
     /* net_client's /saves audit scores distance from the camera to
      * each persisted tile via this provider (C: the two exported
@@ -2160,6 +2162,23 @@ extern "C" fn frame() {
     with_app(frame_inner);
 }
 
+/// Build this frame's egui UI. Dispatches to each screen's egui builder.
+/// (Proof window for now; screens port over one at a time.)
+fn egui_ui(_app: &mut App, ctx: &egui::Context) {
+    egui::Window::new("Tenebris (egui)")
+        .default_pos(egui::pos2(60.0, 80.0))
+        .show(ctx, |ui| {
+            ui.label("egui is rendering through the sokol_gl bridge.");
+            ui.separator();
+            ui.horizontal(|ui| {
+                let _ = ui.button("Smelt");
+                let _ = ui.button("Craft");
+                let _ = ui.button("Assemble");
+            });
+            ui.label("If you can read this, the backend works.");
+        });
+}
+
 fn frame_inner(app: &mut App) {
     maybe_apply_sp_resume(app);
     dev_maybe_place(app);
@@ -2738,6 +2757,14 @@ fn frame_inner(app: &mut App) {
      * sgl / sdtx batches flushed just below. */
     draw_frame_graph();
 
+    /* egui overlay: build this frame's UI, then record its meshes into the
+     * sgl batch so the single sgl_draw below flushes them on top of the
+     * sokol HUD. */
+    egui_layer::run(sapp::widthf(), sapp::heightf(), |ctx| {
+        egui_ui(app, ctx);
+    });
+    egui_layer::draw();
+
     /* ONE sgl_draw per frame, at the very end after every UI module
      * has queued its geometry (sokol_gl uploads its vertex buffer only
      * on the first draw of the frame - see the C comment). */
@@ -2766,6 +2793,10 @@ extern "C" fn event(e: *const sapp::Event) {
 }
 
 fn event_inner(app: &mut App, e: &sapp::Event) {
+    /* Feed every event to egui so its panels see the mouse / keyboard.
+     * (Swallowing from gameplay is added per-screen as each ports over.) */
+    egui_layer::handle_event(e);
+
     /* In-game pause overlay: swallow every event it owns. */
     if menu::pause_active() && menu::pause_event(e) {
         return;
