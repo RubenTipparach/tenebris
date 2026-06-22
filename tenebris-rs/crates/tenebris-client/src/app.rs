@@ -1939,6 +1939,16 @@ fn block_name(b: Block) -> &'static str {
         Block::IronOre => "IRON_ORE",
         Block::LaunchPad => "LAUNCH_PAD",
         Block::Furnace => "FURNACE",
+        Block::ElectricFurnace => "ELECTRIC_FURNACE",
+        Block::Printer3D => "3D_PRINTER",
+        Block::Computer => "COMPUTER",
+        Block::ElectronicsWorkbench => "ELECTRONICS_WORKBENCH",
+        Block::HydroGenerator => "HYDRO_GENERATOR",
+        Block::SteamEngine => "STEAM_ENGINE",
+        Block::StorageChest => "STORAGE_CHEST",
+        Block::LaunchTower => "LAUNCH_TOWER",
+        Block::Cable => "CABLE",
+        Block::CopperPipe => "COPPER_PIPE",
     }
 }
 
@@ -1966,6 +1976,17 @@ fn block_glyph(b: Block) -> char {
         Block::IronOre => 'r',
         Block::LaunchPad => 'P',
         Block::Furnace => 'F',
+        /* Ported tech blocks share one glyph in the devtools dump. */
+        Block::ElectricFurnace
+        | Block::Printer3D
+        | Block::Computer
+        | Block::ElectronicsWorkbench
+        | Block::HydroGenerator
+        | Block::SteamEngine
+        | Block::StorageChest
+        | Block::LaunchTower
+        | Block::Cable
+        | Block::CopperPipe => 'E',
     }
 }
 
@@ -2838,6 +2859,16 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
                 crafting_screen::open_station(
                     Some(app.player.clone()),
                     Some(tenebris_core::items::from_block(Block::Furnace)),
+                );
+                return;
+            }
+            /* The electronics workbench opens the crafting screen scoped to
+             * its own station (cpu chip / ram / motherboard / power supply /
+             * print nozzle), the same way the furnace gates smelting. */
+            Block::ElectronicsWorkbench => {
+                crafting_screen::open_station(
+                    Some(app.player.clone()),
+                    Some(tenebris_core::items::from_block(Block::ElectronicsWorkbench)),
                 );
                 return;
             }

@@ -51,6 +51,15 @@ pub const COMMAND_MODULE: ItemId = ITEM_BASE + 14; // 114
 pub const WIRE: ItemId = ITEM_BASE + 15; // 115
 pub const CIRCUIT_BOARD: ItemId = ITEM_BASE + 16; // 116
 
+/* Electronics components crafted at the workbench / printer (JS
+ * src/planet/ElectronicsWorkbench.ts + Printer3D.ts). Ingredients for
+ * the computer, 3D printer, and command module. */
+pub const CPU_CHIP: ItemId = ITEM_BASE + 17; // 117
+pub const RAM_MODULE: ItemId = ITEM_BASE + 18; // 118
+pub const MOTHERBOARD: ItemId = ITEM_BASE + 19; // 119
+pub const POWER_SUPPLY: ItemId = ITEM_BASE + 20; // 120
+pub const PRINT_NOZZLE: ItemId = ITEM_BASE + 21; // 121
+
 /// What an item *is*, for stacking / placement / tool-gating rules. Grows
 /// as the tech tree lands (Component, Ingot, Ammo, ...).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -121,6 +130,11 @@ const ITEMS: &[ItemDef] = &[
     ItemDef { id: COMMAND_MODULE, name: "command-module", kind: ItemKind::Resource, stack: 8 },
     ItemDef { id: WIRE, name: "wire", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: CIRCUIT_BOARD, name: "circuit-board", kind: ItemKind::Resource, stack: 64 },
+    ItemDef { id: CPU_CHIP, name: "cpu-chip", kind: ItemKind::Resource, stack: 64 },
+    ItemDef { id: RAM_MODULE, name: "ram-module", kind: ItemKind::Resource, stack: 64 },
+    ItemDef { id: MOTHERBOARD, name: "motherboard", kind: ItemKind::Resource, stack: 64 },
+    ItemDef { id: POWER_SUPPLY, name: "power-supply", kind: ItemKind::Resource, stack: 64 },
+    ItemDef { id: PRINT_NOZZLE, name: "print-nozzle", kind: ItemKind::Resource, stack: 64 },
 ];
 
 /// Names accepted in recipes.yaml for the blocks the recipes reference.
@@ -136,6 +150,16 @@ fn block_id_by_name(name: &str) -> Option<ItemId> {
         "leaves" => Block::Leaves,
         "launch-pad" => Block::LaunchPad,
         "furnace" => Block::Furnace,
+        "electric-furnace" => Block::ElectricFurnace,
+        "3d-printer" => Block::Printer3D,
+        "computer" => Block::Computer,
+        "electronics-workbench" => Block::ElectronicsWorkbench,
+        "hydro-generator" => Block::HydroGenerator,
+        "steam-engine" => Block::SteamEngine,
+        "storage-chest" => Block::StorageChest,
+        "launch-tower" => Block::LaunchTower,
+        "cable" => Block::Cable,
+        "copper-pipe" => Block::CopperPipe,
         _ => return None,
     };
     Some(from_block(b))
@@ -152,6 +176,16 @@ fn block_name(b: Block) -> &'static str {
         Block::Leaves => "leaves",
         Block::LaunchPad => "launch-pad",
         Block::Furnace => "furnace",
+        Block::ElectricFurnace => "electric-furnace",
+        Block::Printer3D => "3d-printer",
+        Block::Computer => "computer",
+        Block::ElectronicsWorkbench => "electronics-workbench",
+        Block::HydroGenerator => "hydro-generator",
+        Block::SteamEngine => "steam-engine",
+        Block::StorageChest => "storage-chest",
+        Block::LaunchTower => "launch-tower",
+        Block::Cable => "cable",
+        Block::CopperPipe => "copper-pipe",
         _ => "block",
     }
 }

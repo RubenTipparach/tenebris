@@ -92,13 +92,31 @@ pub enum Block {
      * palette. Borrows an existing atlas tile for now (see face_tile) -
      * dedicated tech-block art is a later pass. */
     Furnace = 30,
+
+    /* Tech blocks ported from the JS planet machine modules. All
+     * Rust-port-only, past the C palette. They borrow existing atlas
+     * tiles for now (see
+     * face_tile); the dedicated tech-block art + multi-face fronts land in
+     * the texture pass. Interact behaviour is wired per machine in core. */
+    ElectricFurnace = 31,
+    Printer3D = 32,
+    Computer = 33,
+    ElectronicsWorkbench = 34,
+    HydroGenerator = 35,
+    SteamEngine = 36,
+    StorageChest = 37,
+    /// `launch_pad_segment` in the JS - the tower piece atop a launch pad.
+    LaunchTower = 38,
+    /// Power-network link blocks (thin placeable connectors).
+    Cable = 39,
+    CopperPipe = 40,
 }
 
 /// Mirrors C's `BLOCK_COUNT` (the implicit trailing enum member). The
-/// Rust port adds tech blocks (LaunchPad 29, Furnace 30) past the C
-/// palette - the native port is the canonical target now, so the palette
+/// Rust port adds the tech blocks (LaunchPad 29 .. CopperPipe 40) past the
+/// C palette - the native port is the canonical target now, so the palette
 /// can grow here.
-pub const BLOCK_COUNT: u8 = 31;
+pub const BLOCK_COUNT: u8 = 41;
 
 impl Block {
     /// Fallible conversion from the raw byte stored in voxel arrays /
@@ -224,6 +242,22 @@ pub fn face_tile(b: Block, cap: FaceCap) -> u8 {
     if b == Block::Furnace {
         return Block::CragRock as u8;
     }
+    /* The rest of the ported tech blocks borrow a thematically-close
+     * existing tile for now (chest=wood, copper pipe=copper ore, the
+     * metal machines=crag rock, the dark electronics=bedrock). The
+     * texture pass replaces these with the JS art + multi-face fronts. */
+    match b {
+        Block::ElectricFurnace
+        | Block::ElectronicsWorkbench
+        | Block::SteamEngine
+        | Block::HydroGenerator => return Block::CragRock as u8,
+        Block::Printer3D | Block::Computer | Block::LaunchTower | Block::Cable => {
+            return Block::Bedrock as u8
+        }
+        Block::StorageChest => return Block::Wood as u8,
+        Block::CopperPipe => return Block::CopperOre as u8,
+        _ => {}
+    }
     b as u8
 }
 
@@ -264,7 +298,17 @@ mod tests {
         assert_eq!(Block::IronOre as u8, 28);
         assert_eq!(Block::LaunchPad as u8, 29);
         assert_eq!(Block::Furnace as u8, 30);
-        assert_eq!(BLOCK_COUNT, 31);
+        assert_eq!(Block::ElectricFurnace as u8, 31);
+        assert_eq!(Block::Printer3D as u8, 32);
+        assert_eq!(Block::Computer as u8, 33);
+        assert_eq!(Block::ElectronicsWorkbench as u8, 34);
+        assert_eq!(Block::HydroGenerator as u8, 35);
+        assert_eq!(Block::SteamEngine as u8, 36);
+        assert_eq!(Block::StorageChest as u8, 37);
+        assert_eq!(Block::LaunchTower as u8, 38);
+        assert_eq!(Block::Cable as u8, 39);
+        assert_eq!(Block::CopperPipe as u8, 40);
+        assert_eq!(BLOCK_COUNT, 41);
     }
 
     #[test]

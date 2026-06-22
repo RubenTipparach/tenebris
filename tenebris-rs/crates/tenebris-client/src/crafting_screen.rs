@@ -263,7 +263,14 @@ pub fn egui_ui(ctx: &egui::Context) {
     }
     let recipes = cur_recipes();
     let flags = affordable_flags();
-    let title = if cur_station().is_some() { "Smelt" } else { "Craft" };
+    let furnace = items::from_block(tenebris_core::blocks::Block::Furnace);
+    let title = if cur_station() == Some(furnace) {
+        "Smelt"
+    } else if cur_station().is_some() {
+        "Assemble"
+    } else {
+        "Craft"
+    };
     let mut craft_idx: Option<usize> = None;
     let mut do_close = false;
 
