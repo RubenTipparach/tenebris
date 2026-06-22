@@ -135,6 +135,7 @@ fn block_id_by_name(name: &str) -> Option<ItemId> {
         "grass" => Block::Grass,
         "leaves" => Block::Leaves,
         "launch-pad" => Block::LaunchPad,
+        "furnace" => Block::Furnace,
         _ => return None,
     };
     Some(from_block(b))
@@ -150,6 +151,7 @@ fn block_name(b: Block) -> &'static str {
         Block::Grass => "grass",
         Block::Leaves => "leaves",
         Block::LaunchPad => "launch-pad",
+        Block::Furnace => "furnace",
         _ => "block",
     }
 }

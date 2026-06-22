@@ -39,6 +39,10 @@ struct Screen {
     player: Option<PlayerHandle>,
     mouse_x: f32,
     mouse_y: f32,
+    /// Which recipes this surface offers: `None` = the hand bench (`B`),
+    /// `Some(block_item_id)` = a placed station (furnace, ...). Only
+    /// recipes whose `station` matches are listed / craftable.
+    station: Option<items::ItemId>,
 }
 
 thread_local! {
@@ -65,14 +69,32 @@ pub fn close() {
 /// parallel to the `B` toggle). Mutually exclusive with the other
 /// survival overlays, like the key path.
 pub fn open(player: Option<PlayerHandle>) {
+    open_station(player, None);
+}
+
+/// Open the craft screen scoped to a station (`None` = hand bench). A
+/// placed furnace etc. passes its block item id so only its recipes show.
+pub fn open_station(player: Option<PlayerHandle>, station: Option<items::ItemId>) {
     S.with(|c| {
         let s = &mut *c.borrow_mut();
         s.player = player;
         s.open = true;
+        s.station = station;
+        s.selected = 0;
     });
     crate::inventory_screen::close();
     crate::rocket_screen::close();
     release_pointer();
+}
+
+/// The station the screen is currently scoped to.
+fn cur_station() -> Option<items::ItemId> {
+    S.with(|c| c.borrow().station)
+}
+
+/// Recipes offered by the currently-open surface (station-filtered).
+fn cur_recipes() -> Vec<Recipe> {
+    crafting::recipes_for_station(cur_station())
 }
 
 pub fn set_player(player: Option<PlayerHandle>) {
@@ -100,7 +122,7 @@ fn release_pointer() {}
 
 /// Number of recipe rows that will be drawn.
 fn row_count() -> usize {
-    crafting::recipe_count().min(MAX_ROWS)
+    cur_recipes().len().min(MAX_ROWS)
 }
 
 fn hit_rect(x: f32, y: f32, w: f32, h: f32, px: f32, py: f32) -> bool {
@@ -151,18 +173,23 @@ fn affordable_flags() -> Vec<bool> {
         })
     });
     let Some((inv, bag)) = snap else { return Vec::new() };
-    crafting::with_recipes(|rs| {
-        rs.iter().take(MAX_ROWS).map(|r| bag::can_craft(&inv, &bag, r)).collect()
-    })
+    cur_recipes()
+        .iter()
+        .take(MAX_ROWS)
+        .map(|r| bag::can_craft(&inv, &bag, r))
+        .collect()
 }
 
-/// Craft recipe `idx` for the bound player. Returns true if it happened.
+/// Craft recipe `idx` (within the current station's filtered list) for the
+/// bound player. Returns true if it happened.
 fn craft_row(idx: usize) -> bool {
     let player = S.with(|c| c.borrow().player.clone());
     let Some(player) = player else { return false };
+    let recipes = cur_recipes();
+    let Some(recipe) = recipes.get(idx) else { return false };
     let mut p = player.borrow_mut();
     let p = &mut *p;
-    bag::try_craft_nth(&mut p.inventory, &mut p.bag, idx)
+    bag::try_craft(&mut p.inventory, &mut p.bag, recipe)
     /* NOTE: bag persistence (same-frame save) lands with the SP/MP bag
      * sync wave - the hotbar follows the existing inventory path. */
 }
@@ -360,8 +387,9 @@ pub fn draw() {
         }
     }
 
-    /* Text layer. */
-    draw_text_at(panel_x + 16.0, panel_y + 12.0, 3.0, 0xff, 0xff, 0xff, "CRAFT");
+    /* Text layer. Title names the surface (a station shows its own verb). */
+    let title = if cur_station().is_some() { "SMELT" } else { "CRAFT" };
+    draw_text_at(panel_x + 16.0, panel_y + 12.0, 3.0, 0xff, 0xff, 0xff, title);
     draw_text_at(
         panel_x + 16.0,
         panel_y + TITLE_H - 16.0,
@@ -373,15 +401,12 @@ pub fn draw() {
     );
     draw_text_at(cx + 7.0, cy + 5.0, 2.0, 0xff, 0xff, 0xff, "X");
 
-    crafting::with_recipes(|rs| {
-        for (row, r) in rs.iter().take(row_count()).enumerate() {
-            let (rx, ry, _rw, _rh) = row_rect(panel_x, panel_y, row);
-            let ready = flags.get(row).copied().unwrap_or(false);
-            let (tr, tg, tb) =
-                if ready { (0x66, 0xff, 0x88) } else { (0x88, 0x88, 0x90) };
-            draw_text_at(rx + 8.0, ry + 6.0, 1.75, tr, tg, tb, &recipe_label(r));
-        }
-    });
+    for (row, r) in cur_recipes().iter().take(row_count()).enumerate() {
+        let (rx, ry, _rw, _rh) = row_rect(panel_x, panel_y, row);
+        let ready = flags.get(row).copied().unwrap_or(false);
+        let (tr, tg, tb) = if ready { (0x66, 0xff, 0x88) } else { (0x88, 0x88, 0x90) };
+        draw_text_at(rx + 8.0, ry + 6.0, 1.75, tr, tg, tb, &recipe_label(r));
+    }
 
     /* Footer: what the player currently holds, so it's obvious why a
      * recipe row is green or grey. Reads the bag (mined drops + crafted

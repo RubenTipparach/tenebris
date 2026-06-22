@@ -125,6 +125,19 @@ pub fn recipe_nth(idx: usize) -> Option<Recipe> {
     S_RECIPES.lock().unwrap().get(idx).cloned()
 }
 
+/// Clone every installed recipe whose `station` matches `station`. The
+/// hand bench passes `None`; a placed station (furnace, printer, ...)
+/// passes its block/item id, so each surface only offers its own recipes.
+pub fn recipes_for_station(station: Option<ItemId>) -> Vec<Recipe> {
+    S_RECIPES
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|r| r.station == station)
+        .cloned()
+        .collect()
+}
+
 /// Load + parse the recipe table from disk (native). Returns an empty
 /// table if the file is missing, mirroring the `config::load_*` pattern.
 pub fn load_recipes(path: &str) -> Vec<Recipe> {
@@ -340,6 +353,34 @@ in: stick 2
         for r in &rs {
             assert!(r.output.count > 0 && !r.inputs.is_empty(), "recipe {} malformed", r.name);
         }
+    }
+
+    #[test]
+    fn smelting_recipes_gate_on_the_furnace_station() {
+        use crate::blocks::Block;
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/config/recipes.yaml");
+        let rs = parse_recipes(&std::fs::read_to_string(path).unwrap(), path);
+        let furnace = items::from_block(Block::Furnace);
+
+        // The ingot recipes require the furnace; the bench (None) does not
+        // offer them, so smelting is only reachable at a placed furnace.
+        for name in ["copper-ingot", "tin-ingot", "iron-ingot", "bronze-ingot"] {
+            let r = rs.iter().find(|r| r.name == name).unwrap();
+            assert_eq!(r.station, Some(furnace), "{name} gated on furnace");
+        }
+        // The furnace block itself + the tier-0 staples hand-craft (None).
+        for name in ["furnace", "planks", "wood-pickaxe"] {
+            let r = rs.iter().find(|r| r.name == name).unwrap();
+            assert_eq!(r.station, None, "{name} is a hand-bench recipe");
+        }
+        // recipes_for_station partitions them cleanly via the registry.
+        set_recipes(rs);
+        let bench = recipes_for_station(None);
+        let smelt = recipes_for_station(Some(furnace));
+        assert!(bench.iter().any(|r| r.name == "furnace"));
+        assert!(!bench.iter().any(|r| r.name == "copper-ingot"));
+        assert!(smelt.iter().all(|r| r.station == Some(furnace)));
+        assert!(smelt.iter().any(|r| r.name == "iron-ingot"));
     }
 
     #[test]

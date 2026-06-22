@@ -1918,6 +1918,7 @@ fn block_name(b: Block) -> &'static str {
         Block::TinOre => "TIN_ORE",
         Block::IronOre => "IRON_ORE",
         Block::LaunchPad => "LAUNCH_PAD",
+        Block::Furnace => "FURNACE",
     }
 }
 
@@ -1944,6 +1945,7 @@ fn block_glyph(b: Block) -> char {
         Block::TinOre => 't',
         Block::IronOre => 'r',
         Block::LaunchPad => 'P',
+        Block::Furnace => 'F',
     }
 }
 
@@ -2773,11 +2775,11 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
         return;
     }
 
-    /* Launch pad: plain E while looking at a placed LaunchPad block opens
-     * the rocket-assembly screen. Checked before the inventory toggle so
-     * the pad is the in-world entry point to building a rocket; Shift+E
-     * stays the inventory binding, and a pad that isn't targeted falls
-     * through to the normal E behaviour below. */
+    /* Tech-block interaction: plain E while looking at a placed station
+     * opens that station's screen (launch pad -> rocket assembly, furnace
+     * -> smelting). Checked before the inventory toggle so the block is
+     * the in-world entry point; Shift+E stays the inventory binding, and
+     * a non-station target falls through to the normal E behaviour. */
     if e._type == sapp::EventType::KeyDown
         && e.key_code == sapp::Keycode::E
         && (e.modifiers & sapp::MODIFIER_SHIFT) == 0
@@ -2788,9 +2790,19 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
             .world
             .borrow()
             .get(app.interact.hit_tile, app.interact.hit_depth);
-        if targeted == Block::LaunchPad {
-            rocket_screen::open(Some(app.player.clone()));
-            return;
+        match targeted {
+            Block::LaunchPad => {
+                rocket_screen::open(Some(app.player.clone()));
+                return;
+            }
+            Block::Furnace => {
+                crafting_screen::open_station(
+                    Some(app.player.clone()),
+                    Some(tenebris_core::items::from_block(Block::Furnace)),
+                );
+                return;
+            }
+            _ => {}
         }
     }
 

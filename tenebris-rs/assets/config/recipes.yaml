@@ -42,32 +42,44 @@ out: wood-axe 1
 in: plank 3
 in: stick 2
 
+# The furnace: a placeable crafting station built from stone. Interact
+# (E) on it to open the smelting screen. Hand-crafted at the bench.
+
+[furnace]
+tier: 1
+out: furnace 1
+in: stone 8
+
 # Tier 1 - smelting. Raw ore mined underground is inert until it is
 # smelted with coal as fuel: every bar costs one coal. Bronze is the
-# copper + tin alloy, so tin earns its keep. (A dedicated furnace
-# station is a later tier; for now these are bench recipes and the
-# coal cost is the gameplay gate.)
+# copper + tin alloy, so tin earns its keep. These are gated on the
+# furnace station (station: furnace) - you must place a furnace and
+# interact with it; they no longer hand-craft at the bench.
 
 [copper-ingot]
 tier: 1
+station: furnace
 out: copper-ingot 1
 in: copper 1
 in: coal 1
 
 [tin-ingot]
 tier: 1
+station: furnace
 out: tin-ingot 1
 in: tin 1
 in: coal 1
 
 [iron-ingot]
 tier: 1
+station: furnace
 out: iron-ingot 1
 in: iron 1
 in: coal 1
 
 [bronze-ingot]
 tier: 1
+station: furnace
 out: bronze-ingot 2
 in: copper-ingot 1
 in: tin-ingot 1

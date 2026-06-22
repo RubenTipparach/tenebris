@@ -86,12 +86,19 @@ pub enum Block {
      * art. Rust-port-only block (the canonical native target); the legacy
      * C tree never had it. */
     LaunchPad = 29,
+
+    /* Crafting-station block. Interact (E) on a placed furnace opens the
+     * smelting UI (ore + coal fuel -> ingots). Rust-port-only, past the C
+     * palette. Borrows an existing atlas tile for now (see face_tile) -
+     * dedicated tech-block art is a later pass. */
+    Furnace = 30,
 }
 
 /// Mirrors C's `BLOCK_COUNT` (the implicit trailing enum member). The
-/// Rust port adds `LaunchPad` (29) past the C palette - the native port
-/// is the canonical target now, so the palette can grow here.
-pub const BLOCK_COUNT: u8 = 30;
+/// Rust port adds tech blocks (LaunchPad 29, Furnace 30) past the C
+/// palette - the native port is the canonical target now, so the palette
+/// can grow here.
+pub const BLOCK_COUNT: u8 = 31;
 
 impl Block {
     /// Fallible conversion from the raw byte stored in voxel arrays /
@@ -211,6 +218,12 @@ pub fn face_tile(b: Block, cap: FaceCap) -> u8 {
     if b == Block::LaunchPad {
         return Block::Bedrock as u8;
     }
+    /* Furnace borrows CragRock's rusty-rock tile so it reads as a warm,
+     * industrial block distinct from the near-black launch pad - until
+     * the dedicated tech-block texture pass widens the atlas. */
+    if b == Block::Furnace {
+        return Block::CragRock as u8;
+    }
     b as u8
 }
 
@@ -250,7 +263,8 @@ mod tests {
         assert_eq!(Block::TinOre as u8, 27);
         assert_eq!(Block::IronOre as u8, 28);
         assert_eq!(Block::LaunchPad as u8, 29);
-        assert_eq!(BLOCK_COUNT, 30);
+        assert_eq!(Block::Furnace as u8, 30);
+        assert_eq!(BLOCK_COUNT, 31);
     }
 
     #[test]
