@@ -390,6 +390,52 @@ fn dev_maybe_place(app: &mut App) {
     }
 
     match DEV_PLACE_MODE.with(|c| c.get()) {
+        4 => {
+            /* Open-pit mine: dig the player's tile + its ring down a few
+             * blocks (open to the sky for light) and tile the pit floor
+             * with the four ore types, so digging down reveals speckled
+             * ore in a stone matrix. The player falls into the pit and
+             * looks down at the seam. */
+            let depth = tenebris_core::world::WORLD_MAX_DEPTH;
+            let surf = {
+                let w = app.world.borrow();
+                let mut top = -1;
+                for d in (0..depth).rev() {
+                    if tenebris_core::blocks::is_solid(w.get(center, d)) {
+                        top = d;
+                        break;
+                    }
+                }
+                top
+            };
+            if surf < 0 {
+                return;
+            }
+            let floor = (surf - 5).max(1);
+            let ores = [
+                Block::CopperOre,
+                Block::TinOre,
+                Block::IronOre,
+                Block::CoalOre,
+                Block::CopperOre,
+                Block::IronOre,
+            ];
+            {
+                let mut w = app.world.borrow_mut();
+                /* Centre column: hollow out, ore on the floor. */
+                for d in (floor + 1)..=surf {
+                    w.set(center, d, Block::Air);
+                }
+                w.set(center, floor, Block::CoalOre);
+            }
+            dev_for_each_neighbor(&app.world, center, |w, i, n| {
+                for d in (floor + 1)..=surf {
+                    w.set(n, d, Block::Air);
+                }
+                w.set(n, floor, ores[i % ores.len()]);
+            });
+            app.player.borrow_mut().pitch = -0.85;
+        }
         2 => {
             /* Ore + tech-block showcase: the centre tile becomes the
              * launch pad, the ring of neighbours each becomes a different
@@ -684,7 +730,10 @@ extern "C" fn init() {
     /* Deferred to a few in-game frames in (see dev_maybe_place); placing
      * at init double-updates a GPU buffer and aborts. SHOWCASE wins if
      * both are set. */
-    if std::env::var("TENEBRIS_DEV_SHOWCASE").is_ok() {
+    if std::env::var("TENEBRIS_DEV_MINE").is_ok() {
+        DEV_PLACE_MODE.with(|c| c.set(4));
+        DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
+    } else if std::env::var("TENEBRIS_DEV_SHOWCASE").is_ok() {
         DEV_PLACE_MODE.with(|c| c.set(2));
         DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
     } else if std::env::var("TENEBRIS_DEV_PAD").is_ok() {
