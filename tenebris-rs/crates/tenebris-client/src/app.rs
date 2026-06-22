@@ -390,6 +390,21 @@ fn dev_maybe_place(app: &mut App) {
     }
 
     match DEV_PLACE_MODE.with(|c| c.get()) {
+        5 => {
+            /* Furnace UI shot: stock the bag with ore + coal fuel and open
+             * the smelt station so the screenshot shows craftable rows. */
+            {
+                let mut p = app.player.borrow_mut();
+                p.bag.add(tenebris_core::items::COPPER, 8);
+                p.bag.add(tenebris_core::items::TIN, 8);
+                p.bag.add(tenebris_core::items::IRON, 8);
+                p.bag.add(tenebris_core::items::COAL, 16);
+            }
+            crafting_screen::open_station(
+                Some(app.player.clone()),
+                Some(tenebris_core::items::from_block(Block::Furnace)),
+            );
+        }
         4 => {
             /* Open-pit mine: dig the player's tile + its ring down a few
              * blocks (open to the sky for light) and tile the pit floor
@@ -730,7 +745,10 @@ extern "C" fn init() {
     /* Deferred to a few in-game frames in (see dev_maybe_place); placing
      * at init double-updates a GPU buffer and aborts. SHOWCASE wins if
      * both are set. */
-    if std::env::var("TENEBRIS_DEV_MINE").is_ok() {
+    if std::env::var("TENEBRIS_DEV_FURNACE").is_ok() {
+        DEV_PLACE_MODE.with(|c| c.set(5));
+        DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
+    } else if std::env::var("TENEBRIS_DEV_MINE").is_ok() {
         DEV_PLACE_MODE.with(|c| c.set(4));
         DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
     } else if std::env::var("TENEBRIS_DEV_SHOWCASE").is_ok() {
