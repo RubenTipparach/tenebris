@@ -46,6 +46,7 @@ use crate::input;
 use crate::interact::{self, InteractState, MINING_TIME_S};
 use crate::chest_screen;
 use crate::egui_layer;
+use crate::ui_icons;
 use crate::inventory::{self, INV_HOTBAR_SLOTS};
 use crate::inventory_screen;
 use crate::item_atlas;
@@ -541,33 +542,48 @@ fn dev_maybe_place(app: &mut App) {
             p.pitch = -0.18;
         }
         7 => {
-            /* Storage-chest UI shot: place a chest in the air above the
-             * centre surface, pre-load it + the bag, then open the panel. */
-            let depth = {
-                let mut w = app.world.borrow_mut();
+            /* Storage-chest UI shot: a ring of chest cubes around the
+             * player (so the placed tech block is visible in-world), with
+             * the first one stocked + its panel opened. */
+            use tenebris_core::block_entity::chest_add;
+            use tenebris_core::items;
+            let player_pos = app.player.borrow().position;
+            let mut opened: Option<(i32, i32)> = None;
+            dev_for_each_neighbor(&app.world, center, |w, _, n| {
                 let mut top = -1;
-                for d in (0..tenebris_core::world::WORLD_MAX_DEPTH).rev() {
-                    if tenebris_core::blocks::is_solid(w.get(center, d)) {
-                        top = d;
+                for dd in (0..tenebris_core::world::WORLD_MAX_DEPTH).rev() {
+                    if tenebris_core::blocks::is_solid(w.get(n, dd)) {
+                        top = dd;
                         break;
                     }
                 }
                 if top < 0 || top + 1 >= tenebris_core::world::WORLD_MAX_DEPTH {
                     return;
                 }
-                let d = top + 1;
-                w.set(center, d, Block::StorageChest);
-                let chest = w.block_entities.entry(center, d).chest_mut();
-                tenebris_core::block_entity::chest_add(chest, tenebris_core::items::IRON_INGOT, 12, 64);
-                tenebris_core::block_entity::chest_add(chest, tenebris_core::items::COPPER, 30, 64);
-                d
-            };
+                let nd = top + 1;
+                w.set(n, nd, Block::StorageChest);
+                let f = w.facing_toward(n, nd, player_pos);
+                let e = w.block_entities.entry(n, nd);
+                e.facing = f;
+                if opened.is_none() {
+                    let chest = e.chest_mut();
+                    chest_add(chest, items::IRON_INGOT, 12, 64);
+                    chest_add(chest, items::COPPER, 30, 64);
+                    chest_add(chest, items::COAL, 5, 64);
+                    opened = Some((n, nd));
+                }
+            });
             {
                 let mut p = app.player.borrow_mut();
-                p.bag.add(tenebris_core::items::PLANK, 20);
-                p.bag.add(tenebris_core::items::COAL, 16);
+                p.bag.add(items::PLANK, 20);
+                p.bag.add(items::IRON_INGOT, 8);
+                p.bag.add(items::COPPER_INGOT, 12);
+                p.bag.add(items::CPU_CHIP, 3);
+                p.pitch = -0.25;
             }
-            chest_screen::open(app.world.clone(), app.player.clone(), center, depth);
+            if let Some((t, d)) = opened {
+                chest_screen::open(app.world.clone(), app.player.clone(), t, d);
+            }
         }
         _ => {
             /* Launch pad: centre tile + its ring all become the pad. */
@@ -718,6 +734,7 @@ extern "C" fn init() {
      * boot. */
     pixel_ui::init();
     item_atlas::init();
+    ui_icons::init();
     inventory_screen::init();
     /* One-shot dump of Tenebris's effective atmosphere values so we
      * can sanity-check that the YAML actually landed. */

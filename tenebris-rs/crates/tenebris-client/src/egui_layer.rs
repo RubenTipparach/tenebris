@@ -23,6 +23,12 @@ use sokol::app as sapp;
 use sokol::gfx as sg;
 use sokol::gl as sgl;
 
+use crate::ui_icons;
+
+/// egui `TextureId` the inventory/crafting/chest grids use for item
+/// thumbnails; the draw loop binds the `ui_icons` atlas for it.
+pub const ICON_TEX: egui::TextureId = egui::TextureId::User(1);
+
 struct Layer {
     ctx: egui::Context,
     /// egui input events accumulated between `run` calls.
@@ -275,7 +281,6 @@ pub fn draw() {
         sgl::push_pipeline();
         sgl::load_pipeline(l.pip);
         sgl::enable_texture();
-        sgl::texture(l.view, l.smp);
         sgl::matrix_mode_projection();
         sgl::load_identity();
         sgl::ortho(0.0, sw, sh, 0.0, -1.0, 1.0);
@@ -287,6 +292,16 @@ pub fn draw() {
             let egui::epaint::Primitive::Mesh(mesh) = &prim.primitive else {
                 continue;
             };
+            /* Pick the texture for this batch: egui's own font/solid atlas
+             * (Managed) or our item-icon atlas (the ICON_TEX user id). */
+            let (view, smp) = match mesh.texture_id {
+                ICON_TEX if ui_icons::view_id() != 0 => (
+                    sg::View { id: ui_icons::view_id() },
+                    sg::Sampler { id: ui_icons::sampler_id() },
+                ),
+                _ => (l.view, l.smp),
+            };
+            sgl::texture(view, smp);
             let r = prim.clip_rect;
             let x = r.min.x.max(0.0);
             let y = r.min.y.max(0.0);

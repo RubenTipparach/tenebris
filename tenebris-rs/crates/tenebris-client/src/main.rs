@@ -32,6 +32,7 @@ mod settings;
 mod shaders;
 mod teleport_menu;
 mod torch;
+mod ui_icons;
 
 fn main() {
     app::run();

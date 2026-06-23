@@ -164,6 +164,36 @@ because exposing them would invite breakage rather than tuning.
 
 ## UI guidelines
 
+### Item visuals and slot grids are a PRIORITY (not optional)
+
+Inventories, the crafting screen, storage chests, the hotbar, and any
+panel that shows items **must render a grid of slots with item
+thumbnails** — a real icon per item, drawn from the item's texture —
+**never a text list of "name xN" rows**. Every item must have a visual;
+giving an item an icon is treated as part of adding the item, not a
+later polish pass. A panel that lists items as text instead of a
+thumbnail grid is a bug, not a deliverable.
+
+Concretely:
+
+- **Grid, not list.** Inventory / crafting / chest contents are laid out
+  as a 2D grid of fixed-size square slots (the Minecraft-style cell:
+  border, item icon centred, stack count in the corner). Recipes show
+  their inputs/outputs as icons, not "1 copper, 1 coal" text.
+- **Thumbnails, not labels.** The slot shows the item's texture. Text is
+  only a small stack-count badge and optional hover tooltip — not the
+  primary representation.
+- **Item visuals come first.** When a new item or block is added, it
+  gets an icon in the same change. No item ships icon-less; no UI ships
+  showing an item as a bare name.
+
+Do **not** hand back a text-mockup UI or default-framework widgets
+slapped over the canvas and call it done. If you cannot draw the icons
+yet, surface that as the blocking task and solve it (item-icon atlas,
+texture sampling in the UI layer) — do not substitute a text list.
+
+### General
+
 When the user asks for UI — menus, dialogs, popups, debug panels,
 HUD readouts — **do not generate low-effort ASCII art** as the
 default. Tenebris already has a sokol_gl helper layer with rounded

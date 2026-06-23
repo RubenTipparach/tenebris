@@ -12,8 +12,10 @@ use std::rc::Rc;
 
 use sokol::app as sapp;
 
+use crate::egui_layer;
 use crate::persistence;
 use crate::player_ctrl::PlayerCtrl;
+use crate::ui_icons;
 use tenebris_core::block_entity;
 use tenebris_core::items;
 use tenebris_core::world::World;
@@ -97,6 +99,65 @@ fn persist(w: &World) {
     persistence::save_block_entities(&name, w.body.id as u32, &w.block_entities);
 }
 
+const SLOT_PX: f32 = 44.0;
+const GRID_COLS: usize = 9;
+
+/// Draw one inventory slot: a framed cell with the item thumbnail (from the
+/// `ui_icons` atlas) and a stack-count badge. Returns its click Response.
+fn slot_widget(ui: &mut egui::Ui, item: u16, count: u16) -> egui::Response {
+    let size = egui::vec2(SLOT_PX, SLOT_PX);
+    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+    let p = ui.painter();
+    let bg = if resp.hovered() {
+        egui::Color32::from_rgb(0x3a, 0x40, 0x4e)
+    } else {
+        egui::Color32::from_rgb(0x26, 0x2a, 0x33)
+    };
+    p.rect_filled(rect, 3.0, bg);
+    p.rect_stroke(
+        rect,
+        3.0,
+        egui::Stroke::new(1.0, egui::Color32::from_rgb(0x4a, 0x50, 0x5e)),
+        egui::StrokeKind::Inside,
+    );
+    if count > 0 {
+        if let Some([u0, v0, u1, v1]) = ui_icons::uv(item) {
+            let uv = egui::Rect::from_min_max(egui::pos2(u0, v0), egui::pos2(u1, v1));
+            p.image(egui_layer::ICON_TEX, rect.shrink(5.0), uv, egui::Color32::WHITE);
+        } else {
+            // No icon yet: a coloured chip so the slot still reads as full.
+            p.rect_filled(rect.shrink(10.0), 2.0, egui::Color32::from_rgb(0x88, 0x88, 0x90));
+        }
+        if count > 1 {
+            p.text(
+                rect.max - egui::vec2(3.0, 1.0),
+                egui::Align2::RIGHT_BOTTOM,
+                count.to_string(),
+                egui::FontId::proportional(13.0),
+                egui::Color32::WHITE,
+            );
+        }
+    }
+    resp
+}
+
+/// Draw `slots` as a grid of thumbnails; returns the index clicked (if any
+/// non-empty slot was clicked this frame).
+fn slot_grid(ui: &mut egui::Ui, id: &str, slots: &[(u16, u16)]) -> Option<usize> {
+    let mut clicked = None;
+    egui::Grid::new(id).spacing(egui::vec2(3.0, 3.0)).show(ui, |ui| {
+        for (i, &(item, count)) in slots.iter().enumerate() {
+            if slot_widget(ui, item, count).clicked() && count > 0 {
+                clicked = Some(i);
+            }
+            if (i + 1) % GRID_COLS == 0 {
+                ui.end_row();
+            }
+        }
+    });
+    clicked
+}
+
 /// Draw the chest panel and apply any click this frame.
 pub fn egui_ui(ctx: &egui::Context) {
     if !is_open() {
@@ -110,31 +171,18 @@ pub fn egui_ui(ctx: &egui::Context) {
         return;
     };
 
-    /* Snapshot non-empty chest + bag stacks for display (read-only borrow
-     * dropped before any mutation). */
-    let chest_rows: Vec<(usize, u16, u16)> = {
+    /* Snapshot every slot (incl. empty) so the panel draws a full grid -
+     * chest (27) and bag, read-only borrows dropped before any mutation. */
+    let chest_slots: Vec<(u16, u16)> = {
         let w = world.borrow();
-        w.block_entities
-            .get(tile, depth)
-            .and_then(|e| e.chest().copied())
-            .map(|c| {
-                c.iter()
-                    .enumerate()
-                    .filter(|(_, s)| s.count > 0)
-                    .map(|(i, s)| (i, s.item, s.count))
-                    .collect()
-            })
-            .unwrap_or_default()
+        match w.block_entities.get(tile, depth).and_then(|e| e.chest().copied()) {
+            Some(c) => c.iter().map(|s| (s.item, s.count)).collect(),
+            None => vec![(0, 0); block_entity::CHEST_SLOTS],
+        }
     };
-    let bag_rows: Vec<(usize, u16, u16)> = {
+    let bag_slots: Vec<(u16, u16)> = {
         let p = player.borrow();
-        p.bag
-            .slots
-            .iter()
-            .enumerate()
-            .filter(|(_, s)| s.count > 0)
-            .map(|(i, s)| (i, s.item, s.count))
-            .collect()
+        p.bag.slots.iter().map(|s| (s.item, s.count)).collect()
     };
 
     let mut withdraw: Option<usize> = None;
@@ -147,33 +195,19 @@ pub fn egui_ui(ctx: &egui::Context) {
         .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
         .show(ctx, |ui| {
             ui.label(
-                egui::RichText::new("Chest - click a stack to take it")
-                    .color(egui::Color32::from_rgb(0xc8, 0xd0, 0xe0)),
+                egui::RichText::new("Chest")
+                    .color(egui::Color32::from_rgb(0xc8, 0xd0, 0xe0))
+                    .strong(),
             );
-            if chest_rows.is_empty() {
-                ui.label(egui::RichText::new("(empty)").weak());
-            }
-            for (idx, item, count) in &chest_rows {
-                let name = items::def(*item).map(|d| d.name).unwrap_or("?");
-                if ui.add_sized([240.0, 22.0], egui::Button::new(format!("{name}  x{count}"))).clicked() {
-                    withdraw = Some(*idx);
-                }
-            }
-            ui.separator();
+            if slot_grid(ui, "chest", &chest_slots).map(|i| withdraw = Some(i)).is_some() {}
+            ui.add_space(6.0);
             ui.label(
-                egui::RichText::new("Your bag - click a stack to store it")
-                    .color(egui::Color32::from_rgb(0xa8, 0xc8, 0xa0)),
+                egui::RichText::new("Bag")
+                    .color(egui::Color32::from_rgb(0xa8, 0xc8, 0xa0))
+                    .strong(),
             );
-            if bag_rows.is_empty() {
-                ui.label(egui::RichText::new("(empty)").weak());
-            }
-            for (idx, item, count) in &bag_rows {
-                let name = items::def(*item).map(|d| d.name).unwrap_or("?");
-                if ui.add_sized([240.0, 22.0], egui::Button::new(format!("{name}  x{count}"))).clicked() {
-                    deposit = Some(*idx);
-                }
-            }
-            ui.separator();
+            if slot_grid(ui, "bag", &bag_slots).map(|i| deposit = Some(i)).is_some() {}
+            ui.add_space(4.0);
             if ui.button("Close").clicked() {
                 do_close = true;
             }
