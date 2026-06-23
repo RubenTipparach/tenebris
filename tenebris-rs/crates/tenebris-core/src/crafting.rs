@@ -362,14 +362,16 @@ in: stick 2
         let rs = parse_recipes(&std::fs::read_to_string(path).unwrap(), path);
         let furnace = items::from_block(Block::Furnace);
 
-        // The ingot recipes require the furnace; the bench (None) does not
-        // offer them, so smelting is only reachable at a placed furnace.
-        for name in ["copper-ingot", "tin-ingot", "iron-ingot", "bronze-ingot"] {
+        // The ore-smelt recipes gate on the furnace station (these back the
+        // legacy craft() smelt path; the placed furnace also smelts them
+        // over time via the machine tick).
+        for name in ["copper-ingot", "tin-ingot", "iron-ingot"] {
             let r = rs.iter().find(|r| r.name == name).unwrap();
             assert_eq!(r.station, Some(furnace), "{name} gated on furnace");
         }
-        // The furnace block itself + the tier-0 staples hand-craft (None).
-        for name in ["furnace", "planks", "wood-pickaxe"] {
+        // The furnace block, the tier-0 staples, and bronze (an alloy, not
+        // a smelt) hand-craft at the bench (None).
+        for name in ["furnace", "planks", "wood-pickaxe", "bronze-ingot"] {
             let r = rs.iter().find(|r| r.name == name).unwrap();
             assert_eq!(r.station, None, "{name} is a hand-bench recipe");
         }
@@ -409,21 +411,19 @@ in: stick 2
 
     #[test]
     fn bronze_alloys_copper_and_tin_ingots() {
-        use crate::items::{BRONZE_INGOT, COAL, COPPER_INGOT, TIN_INGOT};
+        use crate::items::{BRONZE_INGOT, COPPER_INGOT, TIN_INGOT};
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/config/recipes.yaml");
         let rs = load_recipes(path);
         let bronze = rs.iter().find(|r| r.name == "bronze-ingot").cloned().unwrap();
-        // Alloy: copper ingot + tin ingot + coal -> 2 bronze.
+        // Alloy (hand-crafted): copper ingot + tin ingot -> 2 bronze.
         assert_eq!(bronze.output, ItemStack { item: BRONZE_INGOT, count: 2 });
 
         let mut bag = vec![ItemStack::default(); 9];
         bag[0] = ItemStack { item: COPPER_INGOT, count: 1 };
         bag[1] = ItemStack { item: TIN_INGOT, count: 1 };
-        bag[2] = ItemStack { item: COAL, count: 1 };
         assert!(craft(&mut bag, &bronze));
         assert_eq!(have(&bag, COPPER_INGOT), 0);
         assert_eq!(have(&bag, TIN_INGOT), 0);
-        assert_eq!(have(&bag, COAL), 0);
         assert_eq!(have(&bag, BRONZE_INGOT), 2, "alloy yields 2 bars");
     }
 

@@ -477,6 +477,13 @@ impl World {
             .unwrap_or(Block::Air)
     }
 
+    /// Advance placed-machine behavior (furnace smelt, later generators /
+    /// printer) by `dt` seconds. Returns true if a durable change happened
+    /// (a smelt completed) so the caller can persist the store.
+    pub fn tick_machines(&mut self, dt: f32) -> bool {
+        self.block_entities.tick(dt)
+    }
+
     /// Tile-edge index (0..num_verts) whose outward midpoint direction
     /// best points at `target` (a world position), projected into the
     /// tile's tangent plane. Used to record a placed tech block's facing

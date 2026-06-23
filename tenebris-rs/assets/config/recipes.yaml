@@ -77,13 +77,13 @@ out: iron-ingot 1
 in: iron 1
 in: coal 1
 
+# Bronze is an alloy, not a smelt - the furnace only does ore -> ingot
+# now (timed smelter), so bronze is hand-crafted from the two ingots.
 [bronze-ingot]
 tier: 1
-station: furnace
 out: bronze-ingot 2
 in: copper-ingot 1
 in: tin-ingot 1
-in: coal 1
 
 # Tier 2 - electronics. Copper drawn into wire, wire + iron pressed into
 # a circuit board: the control gear the command module needs (a

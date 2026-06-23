@@ -211,6 +211,24 @@ pub fn stack_size(id: ItemId) -> u16 {
     def(id).map(|d| d.stack).unwrap_or(64)
 }
 
+/// Smelting result for a furnace input, or `None` if the item can't be
+/// smelted. Mirrors the JS `SMELTING_RECIPES` (raw ore -> ingot). Returns
+/// `(output item, output count)`.
+pub fn smelt_output(id: ItemId) -> Option<(ItemId, u16)> {
+    match id {
+        COPPER => Some((COPPER_INGOT, 1)),
+        TIN => Some((TIN_INGOT, 1)),
+        IRON => Some((IRON_INGOT, 1)),
+        _ => None,
+    }
+}
+
+/// True if `id` can fuel a furnace (coal). One coal = 8 smelts (JS
+/// `FUEL_PER_COAL`).
+pub fn is_fuel(id: ItemId) -> bool {
+    id == COAL
+}
+
 /// Item classification (defaults to Resource for unknown ids).
 pub fn kind(id: ItemId) -> ItemKind {
     def(id).map(|d| d.kind).unwrap_or(ItemKind::Resource)

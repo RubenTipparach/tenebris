@@ -7,6 +7,7 @@ mod chat;
 mod chest_screen;
 mod client_kv;
 mod crafting_screen;
+mod furnace_screen;
 mod rocket_screen;
 mod egui_layer;
 mod gfx_math;

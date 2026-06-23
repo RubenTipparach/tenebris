@@ -295,15 +295,18 @@ fn build_bentity_key(world: &str, body: u32) -> String {
 /// store is small (one entry per placed machine).
 ///
 /// Format: ';'-separated records (the kv backend scrubs '\n'/'='/'\r' to
-/// '_', so ';' ':' ',' are used as the safe separators that round-trip on
-/// both backends). Each record is `tile:depth:facing` for a plain block,
-/// or `tile:depth:facing:idx,item,count,idx,item,count,...` for a chest
-/// (only non-empty slots; a trailing empty 4th field marks an empty chest).
+/// '_', so ';' ':' ',' are the safe separators that round-trip on both
+/// backends). Each record is:
+///   - `tile:depth:facing`                       - plain block
+///   - `tile:depth:facing:c:idx,item,count,...`   - chest (non-empty slots)
+///   - `tile:depth:facing:f:in,inc,fl,flc,o,oc,fr` - furnace slots + fuel
+///     charge (smelt progress is transient and not persisted).
 pub fn save_block_entities(
     world_name: &str,
     body_id: u32,
     store: &BlockEntityStore,
 ) -> bool {
+    use tenebris_core::block_entity::MachineState;
     if !valid_name(world_name) {
         return false;
     }
@@ -315,17 +318,32 @@ pub fn save_block_entities(
     let mut recs: Vec<String> = Vec::new();
     for (tile, depth, e) in store.iter() {
         let mut rec = format!("{tile}:{depth}:{}", e.facing);
-        if let Some(chest) = e.chest() {
-            rec.push(':');
-            let mut first = true;
-            for (i, s) in chest.iter().enumerate() {
-                if s.count > 0 {
-                    if !first {
-                        rec.push(',');
+        match &e.state {
+            MachineState::None => {}
+            MachineState::Chest(chest) => {
+                rec.push_str(":c:");
+                let mut first = true;
+                for (i, s) in chest.iter().enumerate() {
+                    if s.count > 0 {
+                        if !first {
+                            rec.push(',');
+                        }
+                        rec.push_str(&format!("{i},{},{}", s.item, s.count));
+                        first = false;
                     }
-                    rec.push_str(&format!("{i},{},{}", s.item, s.count));
-                    first = false;
                 }
+            }
+            MachineState::Furnace(f) => {
+                rec.push_str(&format!(
+                    ":f:{},{},{},{},{},{},{}",
+                    f.input.item,
+                    f.input.count,
+                    f.fuel.item,
+                    f.fuel.count,
+                    f.output.item,
+                    f.output.count,
+                    f.fuel_remaining
+                ));
             }
         }
         recs.push(rec);
@@ -343,6 +361,9 @@ pub fn load_block_entities(world_name: &str, body_id: u32) -> Vec<(i32, i32, Blo
     let Some(s) = client_kv::get(&build_bentity_key(world_name, body_id)) else {
         return Vec::new();
     };
+    let nums = |s: &str| -> Vec<u32> {
+        s.split(',').filter_map(|x| x.trim().parse::<u32>().ok()).collect()
+    };
     let mut out = Vec::new();
     for rec in s.split(';') {
         let parts: Vec<&str> = rec.split(':').collect();
@@ -357,17 +378,27 @@ pub fn load_block_entities(world_name: &str, body_id: u32) -> Vec<(i32, i32, Blo
             continue;
         };
         let mut e = BlockEntity::with_facing(facing);
-        if parts.len() >= 4 {
-            // A 4th field (even empty) means this is a chest.
-            let chest = e.chest_mut();
-            let nums: Vec<u32> =
-                parts[3].split(',').filter_map(|x| x.trim().parse::<u32>().ok()).collect();
-            for triple in nums.chunks_exact(3) {
-                let idx = triple[0] as usize;
-                if idx < CHEST_SLOTS {
-                    chest[idx] = ChestSlot { item: triple[1] as u16, count: triple[2] as u16 };
+        match parts.get(3).copied() {
+            Some("c") => {
+                let chest = e.chest_mut();
+                for triple in nums(parts.get(4).copied().unwrap_or("")).chunks_exact(3) {
+                    let idx = triple[0] as usize;
+                    if idx < CHEST_SLOTS {
+                        chest[idx] = ChestSlot { item: triple[1] as u16, count: triple[2] as u16 };
+                    }
                 }
             }
+            Some("f") => {
+                let v = nums(parts.get(4).copied().unwrap_or(""));
+                if v.len() >= 7 {
+                    let f = e.furnace_mut();
+                    f.input = ChestSlot { item: v[0] as u16, count: v[1] as u16 };
+                    f.fuel = ChestSlot { item: v[2] as u16, count: v[3] as u16 };
+                    f.output = ChestSlot { item: v[4] as u16, count: v[5] as u16 };
+                    f.fuel_remaining = v[6] as u16;
+                }
+            }
+            _ => {}
         }
         out.push((tile, depth, e));
     }

@@ -33,16 +33,36 @@ pub struct ChestSlot {
 /// A chest's storage grid.
 pub type ChestInv = [ChestSlot; CHEST_SLOTS];
 
+/// Seconds to smelt one item (JS `SMELT_TIME`).
+pub const FURNACE_SMELT_TIME_S: f32 = 10.0;
+/// Smelts produced per unit of fuel (JS `FUEL_PER_COAL`).
+pub const FUEL_PER_COAL: u16 = 8;
+
+/// Furnace slots + smelt progress. Mirrors the JS `PlacedFurnace`: an input
+/// stack (raw ore), a fuel stack (coal), an output stack (ingots), the
+/// 0..1 progress of the current smelt, and how many smelts the currently
+/// burning fuel still covers.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FurnaceState {
+    pub input: ChestSlot,
+    pub fuel: ChestSlot,
+    pub output: ChestSlot,
+    pub progress: f32,
+    pub fuel_remaining: u16,
+}
+
 /// Machine-specific placed state. `Copy` (every variant is fixed-size) so
-/// the whole `BlockEntity` stays cheap to store/return. Furnace smelt
-/// progress, generator power, printer jobs append as variants here.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// the whole `BlockEntity` stays cheap to store/return. Generator power,
+/// printer jobs append as variants here.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum MachineState {
     /// Plain block - no machine state (most tech blocks until their
     /// behavior lands).
     None,
     /// Storage chest contents.
     Chest(ChestInv),
+    /// Furnace input/fuel/output + smelt progress.
+    Furnace(FurnaceState),
 }
 
 impl Default for MachineState {
@@ -53,7 +73,7 @@ impl Default for MachineState {
 
 /// Placed-state for one cell. `Copy` + small-ish: the store holds these by
 /// value.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BlockEntity {
     /// Tile edge index (0..`num_neighbors`) the block's front faces, or
     /// [`FACING_UNSET`]. Tech-block cubes orient their front to this so a
@@ -94,6 +114,78 @@ impl BlockEntity {
             _ => unreachable!(),
         }
     }
+
+    /// Borrow the furnace state if this entity is a furnace.
+    pub fn furnace(&self) -> Option<&FurnaceState> {
+        match &self.state {
+            MachineState::Furnace(f) => Some(f),
+            _ => None,
+        }
+    }
+
+    /// Promote this entity to a furnace (if it isn't already) and return
+    /// its state for mutation.
+    pub fn furnace_mut(&mut self) -> &mut FurnaceState {
+        if !matches!(self.state, MachineState::Furnace(_)) {
+            self.state = MachineState::Furnace(FurnaceState::default());
+        }
+        match &mut self.state {
+            MachineState::Furnace(f) => f,
+            _ => unreachable!(),
+        }
+    }
+}
+
+/// Advance one furnace by `dt` seconds. Burns a unit of fuel when the
+/// current charge runs out (and there is something to smelt), advances the
+/// smelt, and on completion consumes one input + emits the smelt output.
+/// Returns true when a durable change happened (a smelt completed), so the
+/// caller can persist. Mirrors the JS `FurnaceManager.update`.
+pub fn furnace_tick(f: &mut FurnaceState, dt: f32) -> bool {
+    use crate::items;
+    // Nothing valid to smelt -> idle, progress resets.
+    let Some((out_item, out_qty)) = items::smelt_output(f.input.item) else {
+        f.progress = 0.0;
+        return false;
+    };
+    if f.input.count == 0 {
+        f.progress = 0.0;
+        return false;
+    }
+    // Output must be empty or the same item with room.
+    let out_ok =
+        f.output.count == 0 || (f.output.item == out_item && f.output.count < items::stack_size(out_item));
+    if !out_ok {
+        return false;
+    }
+    // Light fresh fuel when the current charge is spent.
+    if f.fuel_remaining == 0 {
+        if f.fuel.count > 0 && items::is_fuel(f.fuel.item) {
+            f.fuel.count -= 1;
+            if f.fuel.count == 0 {
+                f.fuel.item = 0;
+            }
+            f.fuel_remaining = FUEL_PER_COAL;
+        } else {
+            f.progress = 0.0;
+            return false;
+        }
+    }
+    f.progress += dt / FURNACE_SMELT_TIME_S;
+    if f.progress >= 1.0 {
+        f.progress = 0.0;
+        f.input.count -= 1;
+        if f.input.count == 0 {
+            f.input.item = 0;
+        }
+        if f.output.count == 0 {
+            f.output.item = out_item;
+        }
+        f.output.count += out_qty;
+        f.fuel_remaining -= 1;
+        return true;
+    }
+    false
 }
 
 /// Add `count` of `item` to a chest, topping up matching stacks first then
@@ -190,6 +282,19 @@ impl BlockEntityStore {
         self.map.get(&Self::key(tile, depth)).map(|e| e.facing).unwrap_or(FACING_UNSET)
     }
 
+    /// Advance every machine by `dt` seconds (furnace smelt, later
+    /// generators / printer). Returns true if any furnace completed a
+    /// smelt this tick, so the caller can persist the durable change.
+    pub fn tick(&mut self, dt: f32) -> bool {
+        let mut changed = false;
+        for e in self.map.values_mut() {
+            if let MachineState::Furnace(f) = &mut e.state {
+                changed |= furnace_tick(f, dt);
+            }
+        }
+        changed
+    }
+
     /// Iterate `(tile, depth, entity)` - used by the save path to
     /// serialise the whole store.
     pub fn iter(&self) -> impl Iterator<Item = (i32, i32, BlockEntity)> + '_ {
@@ -253,6 +358,42 @@ mod tests {
         assert_eq!(inv[4].count, 0);
         assert_eq!(chest_take(&mut inv, 4), None);
         assert_eq!(chest_take(&mut inv, 999), None);
+    }
+
+    #[test]
+    fn furnace_smelts_over_time_consuming_fuel() {
+        use crate::items::{COAL, COPPER, COPPER_INGOT};
+        let mut f = FurnaceState::default();
+        f.input = ChestSlot { item: COPPER, count: 2 };
+        f.fuel = ChestSlot { item: COAL, count: 1 };
+        // Half the smelt time -> in progress, no output yet, one coal lit.
+        assert!(!furnace_tick(&mut f, FURNACE_SMELT_TIME_S * 0.5));
+        assert_eq!(f.output.count, 0);
+        assert_eq!(f.fuel.count, 0); // coal consumed into the burn charge
+        assert_eq!(f.fuel_remaining, FUEL_PER_COAL);
+        assert!(f.progress > 0.0);
+        // Finish the smelt: one ingot out, one ore consumed, charge -1.
+        assert!(furnace_tick(&mut f, FURNACE_SMELT_TIME_S * 0.6));
+        assert_eq!(f.output, ChestSlot { item: COPPER_INGOT, count: 1 });
+        assert_eq!(f.input.count, 1);
+        assert_eq!(f.fuel_remaining, FUEL_PER_COAL - 1);
+    }
+
+    #[test]
+    fn furnace_idles_without_fuel_or_input() {
+        use crate::items::COPPER;
+        let mut f = FurnaceState::default();
+        // Input but no fuel -> no progress.
+        f.input = ChestSlot { item: COPPER, count: 1 };
+        assert!(!furnace_tick(&mut f, FURNACE_SMELT_TIME_S));
+        assert_eq!(f.output.count, 0);
+        assert_eq!(f.progress, 0.0);
+        // Non-smeltable input -> idle.
+        let mut g = FurnaceState::default();
+        g.input = ChestSlot { item: 9999, count: 5 };
+        g.fuel = ChestSlot { item: crate::items::COAL, count: 1 };
+        assert!(!furnace_tick(&mut g, FURNACE_SMELT_TIME_S));
+        assert_eq!(g.fuel.count, 1); // no fuel wasted with nothing to smelt
     }
 
     #[test]

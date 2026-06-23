@@ -146,6 +146,56 @@ pub fn uv(item: ItemId) -> Option<[f32; 4]> {
     Some([col / n, 0.0, (col + 1.0) / n, 1.0])
 }
 
+/// Draw `item`'s thumbnail into `rect` (from the icon atlas) with a
+/// stack-count badge. Shared by every grid UI (chest / crafting / furnace
+/// / inventory) per the CLAUDE.md thumbnail rule.
+pub fn draw_icon(p: &egui::Painter, item: u16, count: u16, rect: egui::Rect) {
+    match uv(item) {
+        Some([u0, v0, u1, v1]) => {
+            let uvr = egui::Rect::from_min_max(egui::pos2(u0, v0), egui::pos2(u1, v1));
+            p.image(crate::egui_layer::ICON_TEX, rect, uvr, egui::Color32::WHITE);
+        }
+        None => {
+            p.rect_filled(rect, 2.0, egui::Color32::from_rgb(0x80, 0x80, 0x88));
+        }
+    }
+    if count > 1 {
+        p.text(
+            rect.max,
+            egui::Align2::RIGHT_BOTTOM,
+            count.to_string(),
+            egui::FontId::proportional(13.0),
+            egui::Color32::WHITE,
+        );
+    }
+}
+
+/// A clickable, framed inventory slot showing the item thumbnail + count.
+/// `accent` tints the border (e.g. fuel/output highlight); pass `None` for
+/// the default. Returns the click Response.
+pub fn slot(
+    ui: &mut egui::Ui,
+    item: u16,
+    count: u16,
+    size: f32,
+    accent: Option<egui::Color32>,
+) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::click());
+    let p = ui.painter();
+    let bg = if resp.hovered() {
+        egui::Color32::from_rgb(0x3a, 0x40, 0x4e)
+    } else {
+        egui::Color32::from_rgb(0x26, 0x2a, 0x33)
+    };
+    p.rect_filled(rect, 3.0, bg);
+    let border = accent.unwrap_or(egui::Color32::from_rgb(0x4a, 0x50, 0x5e));
+    p.rect_stroke(rect, 3.0, egui::Stroke::new(1.0, border), egui::StrokeKind::Inside);
+    if count > 0 {
+        draw_icon(p, item, count, rect.shrink(5.0));
+    }
+    resp
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

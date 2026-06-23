@@ -46,6 +46,7 @@ use crate::input;
 use crate::interact::{self, InteractState, MINING_TIME_S};
 use crate::chest_screen;
 use crate::egui_layer;
+use crate::furnace_screen;
 use crate::ui_icons;
 use crate::inventory::{self, INV_HOTBAR_SLOTS};
 use crate::inventory_screen;
@@ -394,8 +395,24 @@ fn dev_maybe_place(app: &mut App) {
 
     match DEV_PLACE_MODE.with(|c| c.get()) {
         5 => {
-            /* Furnace UI shot: stock the bag with ore + coal fuel and open
-             * the smelt station so the screenshot shows craftable rows. */
+            /* Furnace UI shot: place a furnace on a front tile, stock the
+             * bag with ore + coal, and open the smelter panel. */
+            let depth = {
+                let mut w = app.world.borrow_mut();
+                let mut top = -1;
+                for d in (0..tenebris_core::world::WORLD_MAX_DEPTH).rev() {
+                    if tenebris_core::blocks::is_solid(w.get(center, d)) {
+                        top = d;
+                        break;
+                    }
+                }
+                if top < 0 || top + 1 >= tenebris_core::world::WORLD_MAX_DEPTH {
+                    return;
+                }
+                let d = top + 1;
+                w.set(center, d, Block::Furnace);
+                d
+            };
             {
                 let mut p = app.player.borrow_mut();
                 p.bag.add(tenebris_core::items::COPPER, 8);
@@ -403,10 +420,7 @@ fn dev_maybe_place(app: &mut App) {
                 p.bag.add(tenebris_core::items::IRON, 8);
                 p.bag.add(tenebris_core::items::COAL, 16);
             }
-            crafting_screen::open_station(
-                Some(app.player.clone()),
-                Some(tenebris_core::items::from_block(Block::Furnace)),
-            );
+            furnace_screen::open(app.world.clone(), app.player.clone(), center, depth);
         }
         4 => {
             /* Open-pit mine: dig the player's tile + its ring down a few
@@ -2307,6 +2321,7 @@ fn egui_ui(app: &mut App, ctx: &egui::Context) {
     crafting_screen::set_player(Some(app.player.clone()));
     crafting_screen::egui_ui(ctx);
     chest_screen::egui_ui(ctx);
+    furnace_screen::egui_ui(ctx);
 }
 
 fn frame_inner(app: &mut App) {
@@ -2592,6 +2607,13 @@ fn frame_inner(app: &mut App) {
             for w_rc in &worlds {
                 let mut w = w_rc.borrow_mut();
                 world_water::step(&mut w, budget);
+                /* Placed-machine behavior (furnace smelt, later generators
+                 * / printer). Persist same-frame in SP when a smelt
+                 * completes (a durable output change). */
+                let machines_changed = w.tick_machines(dt);
+                if machines_changed && !sp_world.is_empty() {
+                    persistence::save_block_entities(&sp_world, w.body.id as u32, &w.block_entities);
+                }
                 if sp_world.is_empty() {
                     continue;
                 }
@@ -2931,9 +2953,12 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
     if menu::pause_active() && menu::pause_event(e) {
         return;
     }
-    /* Storage chest panel: while open it owns Esc (its rows are egui
-     * buttons, handled in the egui layer). */
+    /* Storage chest + furnace panels: while open they own Esc (their
+     * slots are egui widgets, handled in the egui layer). */
     if chest_screen::handle_event(e) {
+        return;
+    }
+    if furnace_screen::handle_event(e) {
         return;
     }
     /* Survival craft screen: first crack after pause so B toggles it and,
@@ -2980,9 +3005,11 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
                 return;
             }
             Block::Furnace => {
-                crafting_screen::open_station(
-                    Some(app.player.clone()),
-                    Some(tenebris_core::items::from_block(Block::Furnace)),
+                furnace_screen::open(
+                    app.world.clone(),
+                    app.player.clone(),
+                    app.interact.hit_tile,
+                    app.interact.hit_depth,
                 );
                 return;
             }
