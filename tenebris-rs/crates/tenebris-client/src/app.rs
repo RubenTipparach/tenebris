@@ -648,19 +648,29 @@ fn dev_maybe_place(app: &mut App) {
                 }
                 top + 1
             };
-            /* Cable on the CENTRE tile (adjacent to every neighbour, so the
-             * network reliably links them regardless of neighbour-array
-             * order), engine + furnace on two neighbours. */
-            let (eng, fur) = (ring[0], ring[1]);
+            let _ = ring;
+            /* Full modular chain as a vertical stack on the centre tile, so
+             * depth-adjacency links every node regardless of neighbour
+             * order: water -> hydro -> pipe -> steam engine -> cable ->
+             * electric furnace. The engine then has BOTH water (pipes) and
+             * coal, so it runs and powers the furnace. */
+            let max = tenebris_core::world::WORLD_MAX_DEPTH;
+            let fur_depth = (depth + 5).min(max - 1);
+            if depth + 5 >= max {
+                return;
+            }
             {
                 let mut w = app.world.borrow_mut();
-                w.set(center, depth, Block::Cable);
-                w.set(eng, depth, Block::SteamEngine);
-                let s = w.block_entities.entry(eng, depth).steam_engine_mut();
+                w.set(center, depth, Block::Water); // hydro sits on this
+                w.set(center, depth + 1, Block::HydroGenerator);
+                w.set(center, depth + 2, Block::CopperPipe);
+                w.set(center, depth + 3, Block::SteamEngine);
+                let s = w.block_entities.entry(center, depth + 3).steam_engine_mut();
                 s.fuel = ChestSlot { item: items::COAL, count: 4 };
                 s.burn_time = STEAM_BURN_S_PER_COAL;
-                w.set(fur, depth, Block::ElectricFurnace);
-                let ef = w.block_entities.entry(fur, depth).electric_furnace_mut();
+                w.set(center, depth + 4, Block::Cable);
+                w.set(center, depth + 5, Block::ElectricFurnace);
+                let ef = w.block_entities.entry(center, depth + 5).electric_furnace_mut();
                 ef.input = ChestSlot { item: items::IRON, count: 5 };
                 ef.progress = 0.5;
             }
@@ -668,9 +678,9 @@ fn dev_maybe_place(app: &mut App) {
                 let mut p = app.player.borrow_mut();
                 p.bag.add(items::IRON, 8);
                 p.bag.add(items::COAL, 16);
-                p.pitch = -0.2;
+                p.pitch = 0.25;
             }
-            power_ui::open_electric(app.world.clone(), app.player.clone(), fur, depth);
+            power_ui::open_electric(app.world.clone(), app.player.clone(), center, fur_depth);
         }
         _ => {
             /* Launch pad: centre tile + its ring all become the pad. */
@@ -3125,6 +3135,15 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
             }
             Block::ElectricFurnace => {
                 power_ui::open_electric(
+                    app.world.clone(),
+                    app.player.clone(),
+                    app.interact.hit_tile,
+                    app.interact.hit_depth,
+                );
+                return;
+            }
+            Block::HydroGenerator => {
+                power_ui::open_hydro(
                     app.world.clone(),
                     app.player.clone(),
                     app.interact.hit_tile,

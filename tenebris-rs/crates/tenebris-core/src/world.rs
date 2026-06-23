@@ -499,6 +499,44 @@ impl World {
         v
     }
 
+    /// Flood-fill from (tile, depth) over a connected run of `link` blocks
+    /// (the modular cable / pipe network), returning true if any visited
+    /// node - or the start cell itself - satisfies `target`. Direct
+    /// adjacency (no link block) also counts.
+    fn network_reaches(
+        &self,
+        tile: i32,
+        depth: i32,
+        link: Block,
+        target: impl Fn(&Self, i32, i32) -> bool,
+    ) -> bool {
+        if target(self, tile, depth) {
+            return true;
+        }
+        let mut stack: Vec<(i32, i32)> = Vec::new();
+        let mut seen: Vec<(i32, i32)> = Vec::new();
+        for (nt, nd) in self.power_neighbors(tile, depth) {
+            if self.get(nt, nd) == link {
+                stack.push((nt, nd));
+            }
+        }
+        while let Some((ct, cd)) = stack.pop() {
+            if seen.contains(&(ct, cd)) {
+                continue;
+            }
+            seen.push((ct, cd));
+            if target(self, ct, cd) {
+                return true;
+            }
+            for (nt, nd) in self.power_neighbors(ct, cd) {
+                if self.get(nt, nd) == link && !seen.contains(&(nt, nd)) {
+                    stack.push((nt, nd));
+                }
+            }
+        }
+        false
+    }
+
     /// True if a *running* steam engine is adjacent to (tile, depth).
     fn running_engine_adjacent(&self, tile: i32, depth: i32) -> bool {
         for (nt, nd) in self.power_neighbors(tile, depth) {
@@ -515,44 +553,67 @@ impl World {
         false
     }
 
-    /// Whether an electric furnace at (tile, depth) has power: a running
-    /// steam engine directly adjacent, or reachable through a connected run
-    /// of cable blocks (flood fill, JS cable-network model).
-    fn electric_powered(&self, tile: i32, depth: i32) -> bool {
-        if self.running_engine_adjacent(tile, depth) {
-            return true;
-        }
-        let mut stack: Vec<(i32, i32)> = Vec::new();
-        let mut seen: Vec<(i32, i32)> = Vec::new();
+    /// A hydro generator is active when it sits directly on water (the JS
+    /// `waterDepth > 0`): the cell one layer below is water.
+    fn hydro_active(&self, tile: i32, depth: i32) -> bool {
+        depth - 1 >= 0 && self.get(tile, depth - 1) == Block::Water
+    }
+
+    /// Public query for the hydro-generator UI: is it pumping (on water)?
+    pub fn hydro_is_active(&self, tile: i32, depth: i32) -> bool {
+        self.hydro_active(tile, depth)
+    }
+
+    /// True if an active hydro generator is adjacent to (tile, depth).
+    fn active_hydro_adjacent(&self, tile: i32, depth: i32) -> bool {
         for (nt, nd) in self.power_neighbors(tile, depth) {
-            if self.get(nt, nd) == Block::Cable {
-                stack.push((nt, nd));
-            }
-        }
-        while let Some((ct, cd)) = stack.pop() {
-            if seen.contains(&(ct, cd)) {
-                continue;
-            }
-            seen.push((ct, cd));
-            if self.running_engine_adjacent(ct, cd) {
+            if self.get(nt, nd) == Block::HydroGenerator && self.hydro_active(nt, nd) {
                 return true;
-            }
-            for (nt, nd) in self.power_neighbors(ct, cd) {
-                if self.get(nt, nd) == Block::Cable && !seen.contains(&(nt, nd)) {
-                    stack.push((nt, nd));
-                }
             }
         }
         false
     }
 
-    /// Advance placed-machine behavior by `dt` seconds: refresh electric-
-    /// furnace power from the cable network, then tick every machine
-    /// (furnace + electric smelt, steam-engine fuel burn). Returns true if a
-    /// durable change happened (a smelt completed / coal consumed) so the
-    /// caller can persist the store.
+    /// Electric furnace power: cable-network reach to a running steam engine.
+    fn electric_powered(&self, tile: i32, depth: i32) -> bool {
+        self.network_reaches(tile, depth, Block::Cable, |s, t, d| s.running_engine_adjacent(t, d))
+    }
+
+    /// Steam engine water: copper-pipe-network reach to an active hydro
+    /// generator.
+    fn steam_has_water(&self, tile: i32, depth: i32) -> bool {
+        self.network_reaches(tile, depth, Block::CopperPipe, |s, t, d| {
+            s.active_hydro_adjacent(t, d)
+        })
+    }
+
+    /// Advance placed-machine behavior by `dt` seconds. Refreshes the two
+    /// modular networks first - copper pipes carry water from hydro
+    /// generators to steam engines, cables carry power from running steam
+    /// engines to electric furnaces - then ticks every machine. Returns true
+    /// on a durable change (smelt completed / coal consumed) to persist.
     pub fn tick_machines(&mut self, dt: f32) -> bool {
-        /* Phase 1: which electric furnaces are powered (read-only). */
+        /* Phase 1 (water): which steam engines are pipe-fed by an active
+         * hydro generator. Apply before computing power, since a steam
+         * engine only "runs" with both water and coal. */
+        let engines: Vec<(i32, i32)> = self
+            .block_entities
+            .iter()
+            .filter(|(_, _, e)| e.steam_engine().is_some())
+            .map(|(t, d, _)| (t, d))
+            .collect();
+        let watered: Vec<(i32, i32, bool)> =
+            engines.iter().map(|&(t, d)| (t, d, self.steam_has_water(t, d))).collect();
+        for (t, d, wtr) in watered {
+            if let Some(e) = self.block_entities.get_mut(t, d) {
+                if let crate::block_entity::MachineState::SteamEngine(s) = &mut e.state {
+                    s.has_water = wtr;
+                }
+            }
+        }
+
+        /* Phase 2 (power): which electric furnaces a cable network links to
+         * a now-running steam engine. */
         let furnaces: Vec<(i32, i32)> = self
             .block_entities
             .iter()
@@ -561,7 +622,6 @@ impl World {
             .collect();
         let powered: Vec<(i32, i32, bool)> =
             furnaces.iter().map(|&(t, d)| (t, d, self.electric_powered(t, d))).collect();
-        /* Phase 2: apply the power flag. */
         for (t, d, p) in powered {
             if let Some(e) = self.block_entities.get_mut(t, d) {
                 if let crate::block_entity::MachineState::ElectricFurnace(ef) = &mut e.state {
@@ -569,6 +629,7 @@ impl World {
                 }
             }
         }
+
         /* Phase 3: tick every machine. */
         self.block_entities.tick(dt)
     }

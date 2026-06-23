@@ -26,6 +26,7 @@ pub type WorldHandle = Rc<RefCell<World>>;
 enum Kind {
     Steam,
     Electric,
+    Hydro,
 }
 
 struct Screen {
@@ -80,6 +81,10 @@ pub fn open_steam(world: WorldHandle, player: PlayerHandle, tile: i32, depth: i3
 
 pub fn open_electric(world: WorldHandle, player: PlayerHandle, tile: i32, depth: i32) {
     open(Kind::Electric, world, player, tile, depth);
+}
+
+pub fn open_hydro(world: WorldHandle, player: PlayerHandle, tile: i32, depth: i32) {
+    open(Kind::Hydro, world, player, tile, depth);
 }
 
 #[cfg(not(test))]
@@ -164,11 +169,16 @@ pub fn egui_ui(ctx: &egui::Context) {
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .show(ctx, |ui| {
-                    if s.running() {
-                        ui.label(egui::RichText::new("RUNNING - powering the cable network").color(GREEN).strong());
+                    let (txt, col) = if s.running() {
+                        ("RUNNING - powering the cable network", GREEN)
+                    } else if s.fuel.count == 0 && s.burn_time <= 0.0 {
+                        ("IDLE - add coal", RED)
+                    } else if !s.has_water {
+                        ("NO WATER - pipe in an active hydro generator", RED)
                     } else {
-                        ui.label(egui::RichText::new("IDLE - add coal to run").color(RED).strong());
-                    }
+                        ("IDLE", RED)
+                    };
+                    ui.label(egui::RichText::new(txt).color(col).strong());
                     ui.horizontal(|ui| {
                         ui.vertical(|ui| {
                             ui.label(egui::RichText::new("Fuel (coal)").weak());
@@ -233,6 +243,25 @@ pub fn egui_ui(ctx: &egui::Context) {
                     ui.label(egui::RichText::new("Bag - click ore to smelt").weak());
                     bag_grid(ui, &bag_rows, &mut action, false);
                     ui.add_space(4.0);
+                    if ui.button("Close").clicked() {
+                        do_close = true;
+                    }
+                });
+        }
+        Kind::Hydro => {
+            let active = world.borrow().hydro_is_active(tile, depth);
+            egui::Window::new("Hydro Generator")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(ctx, |ui| {
+                    if active {
+                        ui.label(egui::RichText::new("ACTIVE - pumping water").color(GREEN).strong());
+                        ui.label(egui::RichText::new("Pipe this to a steam engine to feed it water.").weak());
+                    } else {
+                        ui.label(egui::RichText::new("DRY - place it on water").color(RED).strong());
+                    }
+                    ui.add_space(6.0);
                     if ui.button("Close").clicked() {
                         do_close = true;
                     }
@@ -310,6 +339,7 @@ fn apply(kind: Kind, world: &WorldHandle, player: &PlayerHandle, tile: i32, dept
                 _ => {}
             }
         }
+        Kind::Hydro => {}
     }
     persist(&w);
 }

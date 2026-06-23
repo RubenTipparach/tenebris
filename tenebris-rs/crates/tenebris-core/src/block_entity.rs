@@ -57,18 +57,23 @@ pub struct FurnaceState {
     pub fuel_remaining: u16,
 }
 
-/// A steam engine: a generator that burns coal. While `burn_time > 0` it
-/// is "running" and powers the cable network it touches.
+/// A steam engine: burns coal AND needs water piped in from an active
+/// hydro generator (the JS `hasFuel && fuelAmount > 0 && waterInput > 0`).
+/// While running it powers the cable network it touches. `has_water` is
+/// refreshed each tick from the copper-pipe network before the burn.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct SteamEngineState {
     pub fuel: ChestSlot,
     /// Seconds of fuel left in the current burn.
     pub burn_time: f32,
+    /// Set each tick: pipe-connected to an active hydro generator.
+    pub has_water: bool,
 }
 
 impl SteamEngineState {
+    /// Running needs both an active burn (coal) and water.
     pub fn running(&self) -> bool {
-        self.burn_time > 0.0
+        self.burn_time > 0.0 && self.has_water
     }
 }
 
@@ -211,6 +216,10 @@ impl BlockEntity {
 /// worth persisting (a coal consumed).
 pub fn steam_engine_tick(s: &mut SteamEngineState, dt: f32) -> bool {
     use crate::items;
+    // No water -> idle: don't burn coal (the burn is frozen, not wasted).
+    if !s.has_water {
+        return false;
+    }
     let mut changed = false;
     if s.burn_time <= 0.0 && s.fuel.count > 0 && items::is_fuel(s.fuel.item) {
         s.fuel.count -= 1;
@@ -514,7 +523,12 @@ mod tests {
         let mut s = SteamEngineState::default();
         assert!(!s.running());
         s.fuel = ChestSlot { item: COAL, count: 2 };
-        // Lights a unit of coal -> running.
+        // Coal but no water -> stays idle, no coal burned.
+        assert!(!steam_engine_tick(&mut s, 1.0));
+        assert_eq!(s.fuel.count, 2);
+        assert!(!s.running());
+        // With water, lights a unit of coal -> running.
+        s.has_water = true;
         assert!(steam_engine_tick(&mut s, 1.0));
         assert_eq!(s.fuel.count, 1);
         assert!(s.running());
