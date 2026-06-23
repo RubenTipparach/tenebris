@@ -345,6 +345,15 @@ pub fn save_block_entities(
                     f.fuel_remaining
                 ));
             }
+            MachineState::SteamEngine(s) => {
+                rec.push_str(&format!(":s:{},{}", s.fuel.item, s.fuel.count));
+            }
+            MachineState::ElectricFurnace(e) => {
+                rec.push_str(&format!(
+                    ":e:{},{},{},{}",
+                    e.input.item, e.input.count, e.output.item, e.output.count
+                ));
+            }
         }
         recs.push(rec);
     }
@@ -396,6 +405,20 @@ pub fn load_block_entities(world_name: &str, body_id: u32) -> Vec<(i32, i32, Blo
                     f.fuel = ChestSlot { item: v[2] as u16, count: v[3] as u16 };
                     f.output = ChestSlot { item: v[4] as u16, count: v[5] as u16 };
                     f.fuel_remaining = v[6] as u16;
+                }
+            }
+            Some("s") => {
+                let v = nums(parts.get(4).copied().unwrap_or(""));
+                if v.len() >= 2 {
+                    e.steam_engine_mut().fuel = ChestSlot { item: v[0] as u16, count: v[1] as u16 };
+                }
+            }
+            Some("e") => {
+                let v = nums(parts.get(4).copied().unwrap_or(""));
+                if v.len() >= 4 {
+                    let ef = e.electric_furnace_mut();
+                    ef.input = ChestSlot { item: v[0] as u16, count: v[1] as u16 };
+                    ef.output = ChestSlot { item: v[2] as u16, count: v[3] as u16 };
                 }
             }
             _ => {}

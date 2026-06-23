@@ -37,6 +37,12 @@ pub type ChestInv = [ChestSlot; CHEST_SLOTS];
 pub const FURNACE_SMELT_TIME_S: f32 = 10.0;
 /// Smelts produced per unit of fuel (JS `FUEL_PER_COAL`).
 pub const FUEL_PER_COAL: u16 = 8;
+/// Electric furnace smelt time (JS: 5x faster than the coal furnace).
+pub const ELEC_SMELT_TIME_S: f32 = 2.0;
+/// Electric furnace yield per smelt (JS: double the coal furnace).
+pub const ELEC_YIELD_MULT: u16 = 2;
+/// Seconds a steam engine burns per unit of coal.
+pub const STEAM_BURN_S_PER_COAL: f32 = 16.0;
 
 /// Furnace slots + smelt progress. Mirrors the JS `PlacedFurnace`: an input
 /// stack (raw ore), a fuel stack (coal), an output stack (ingots), the
@@ -51,9 +57,35 @@ pub struct FurnaceState {
     pub fuel_remaining: u16,
 }
 
+/// A steam engine: a generator that burns coal. While `burn_time > 0` it
+/// is "running" and powers the cable network it touches.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SteamEngineState {
+    pub fuel: ChestSlot,
+    /// Seconds of fuel left in the current burn.
+    pub burn_time: f32,
+}
+
+impl SteamEngineState {
+    pub fn running(&self) -> bool {
+        self.burn_time > 0.0
+    }
+}
+
+/// An electric furnace: smelts ore -> ingot with no fuel, but only while
+/// `powered` (connected by cables to a running steam engine). Faster +
+/// higher yield than the coal furnace (JS).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ElectricFurnaceState {
+    pub input: ChestSlot,
+    pub output: ChestSlot,
+    pub progress: f32,
+    pub powered: bool,
+}
+
 /// Machine-specific placed state. `Copy` (every variant is fixed-size) so
-/// the whole `BlockEntity` stays cheap to store/return. Generator power,
-/// printer jobs append as variants here.
+/// the whole `BlockEntity` stays cheap to store/return. Printer jobs append
+/// as variants here.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum MachineState {
     /// Plain block - no machine state (most tech blocks until their
@@ -63,6 +95,10 @@ pub enum MachineState {
     Chest(ChestInv),
     /// Furnace input/fuel/output + smelt progress.
     Furnace(FurnaceState),
+    /// Steam engine generator (burns coal -> powers its network).
+    SteamEngine(SteamEngineState),
+    /// Electric furnace consumer (smelts while powered).
+    ElectricFurnace(ElectricFurnaceState),
 }
 
 impl Default for MachineState {
@@ -134,6 +170,96 @@ impl BlockEntity {
             _ => unreachable!(),
         }
     }
+
+    pub fn steam_engine(&self) -> Option<&SteamEngineState> {
+        match &self.state {
+            MachineState::SteamEngine(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    pub fn steam_engine_mut(&mut self) -> &mut SteamEngineState {
+        if !matches!(self.state, MachineState::SteamEngine(_)) {
+            self.state = MachineState::SteamEngine(SteamEngineState::default());
+        }
+        match &mut self.state {
+            MachineState::SteamEngine(s) => s,
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn electric_furnace(&self) -> Option<&ElectricFurnaceState> {
+        match &self.state {
+            MachineState::ElectricFurnace(e) => Some(e),
+            _ => None,
+        }
+    }
+
+    pub fn electric_furnace_mut(&mut self) -> &mut ElectricFurnaceState {
+        if !matches!(self.state, MachineState::ElectricFurnace(_)) {
+            self.state = MachineState::ElectricFurnace(ElectricFurnaceState::default());
+        }
+        match &mut self.state {
+            MachineState::ElectricFurnace(e) => e,
+            _ => unreachable!(),
+        }
+    }
+}
+
+/// Advance a steam engine: burn coal to stay "running". Lights a fresh unit
+/// of coal when the current burn runs out. Returns true on a state change
+/// worth persisting (a coal consumed).
+pub fn steam_engine_tick(s: &mut SteamEngineState, dt: f32) -> bool {
+    use crate::items;
+    let mut changed = false;
+    if s.burn_time <= 0.0 && s.fuel.count > 0 && items::is_fuel(s.fuel.item) {
+        s.fuel.count -= 1;
+        if s.fuel.count == 0 {
+            s.fuel.item = 0;
+        }
+        s.burn_time = STEAM_BURN_S_PER_COAL;
+        changed = true;
+    }
+    if s.burn_time > 0.0 {
+        s.burn_time -= dt;
+        if s.burn_time < 0.0 {
+            s.burn_time = 0.0;
+        }
+    }
+    changed
+}
+
+/// Advance an electric furnace: smelt while `powered`, no fuel. Returns
+/// true when a smelt completes (durable change).
+pub fn electric_furnace_tick(e: &mut ElectricFurnaceState, dt: f32) -> bool {
+    use crate::items;
+    let Some((out_item, out_qty)) = items::smelt_output(e.input.item) else {
+        e.progress = 0.0;
+        return false;
+    };
+    if !e.powered || e.input.count == 0 {
+        e.progress = 0.0;
+        return false;
+    }
+    let out_ok = e.output.count == 0
+        || (e.output.item == out_item && e.output.count < items::stack_size(out_item));
+    if !out_ok {
+        return false;
+    }
+    e.progress += dt / ELEC_SMELT_TIME_S;
+    if e.progress >= 1.0 {
+        e.progress = 0.0;
+        e.input.count -= 1;
+        if e.input.count == 0 {
+            e.input.item = 0;
+        }
+        if e.output.count == 0 {
+            e.output.item = out_item;
+        }
+        e.output.count = e.output.count.saturating_add(out_qty * ELEC_YIELD_MULT);
+        return true;
+    }
+    false
 }
 
 /// Advance one furnace by `dt` seconds. Burns a unit of fuel when the
@@ -288,8 +414,11 @@ impl BlockEntityStore {
     pub fn tick(&mut self, dt: f32) -> bool {
         let mut changed = false;
         for e in self.map.values_mut() {
-            if let MachineState::Furnace(f) = &mut e.state {
-                changed |= furnace_tick(f, dt);
+            match &mut e.state {
+                MachineState::Furnace(f) => changed |= furnace_tick(f, dt),
+                MachineState::SteamEngine(s) => changed |= steam_engine_tick(s, dt),
+                MachineState::ElectricFurnace(ef) => changed |= electric_furnace_tick(ef, dt),
+                _ => {}
             }
         }
         changed
@@ -377,6 +506,39 @@ mod tests {
         assert_eq!(f.output, ChestSlot { item: COPPER_INGOT, count: 1 });
         assert_eq!(f.input.count, 1);
         assert_eq!(f.fuel_remaining, FUEL_PER_COAL - 1);
+    }
+
+    #[test]
+    fn steam_engine_burns_coal_to_run() {
+        use crate::items::COAL;
+        let mut s = SteamEngineState::default();
+        assert!(!s.running());
+        s.fuel = ChestSlot { item: COAL, count: 2 };
+        // Lights a unit of coal -> running.
+        assert!(steam_engine_tick(&mut s, 1.0));
+        assert_eq!(s.fuel.count, 1);
+        assert!(s.running());
+        assert!((s.burn_time - (STEAM_BURN_S_PER_COAL - 1.0)).abs() < 1e-3);
+        // Burns down without lighting more until empty.
+        let _ = steam_engine_tick(&mut s, STEAM_BURN_S_PER_COAL); // exhaust current
+        // next tick lights the last coal
+        assert!(steam_engine_tick(&mut s, 0.0));
+        assert_eq!(s.fuel.count, 0);
+    }
+
+    #[test]
+    fn electric_furnace_smelts_only_when_powered() {
+        use crate::items::{COPPER, COPPER_INGOT};
+        let mut e = ElectricFurnaceState::default();
+        e.input = ChestSlot { item: COPPER, count: 1 };
+        // Unpowered -> no progress.
+        assert!(!electric_furnace_tick(&mut e, ELEC_SMELT_TIME_S));
+        assert_eq!(e.output.count, 0);
+        // Powered -> smelts (double yield, no fuel).
+        e.powered = true;
+        assert!(electric_furnace_tick(&mut e, ELEC_SMELT_TIME_S));
+        assert_eq!(e.output, ChestSlot { item: COPPER_INGOT, count: ELEC_YIELD_MULT });
+        assert_eq!(e.input.count, 0);
     }
 
     #[test]

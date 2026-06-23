@@ -47,6 +47,7 @@ use crate::interact::{self, InteractState, MINING_TIME_S};
 use crate::chest_screen;
 use crate::egui_layer;
 use crate::furnace_screen;
+use crate::power_ui;
 use crate::ui_icons;
 use crate::inventory::{self, INV_HOTBAR_SLOTS};
 use crate::inventory_screen;
@@ -616,6 +617,58 @@ fn dev_maybe_place(app: &mut App) {
                 chest_screen::open(app.world.clone(), app.player.clone(), t, d);
             }
         }
+        8 => {
+            /* Power chain: steam engine -> cable -> electric furnace on
+             * three consecutive ring tiles (mutually adjacent), all at the
+             * centre's surface depth so the cable network connects. Engine
+             * burning, furnace fed -> the furnace reads POWERED + smelts. */
+            use tenebris_core::block_entity::{ChestSlot, STEAM_BURN_S_PER_COAL};
+            use tenebris_core::items;
+            let ring: Vec<i32> = {
+                let w = app.world.borrow();
+                match w.grid.tile(center) {
+                    Some(t) => t.neighbors.iter().copied().filter(|&n| n >= 0).collect(),
+                    None => Vec::new(),
+                }
+            };
+            if ring.len() < 3 {
+                return;
+            }
+            let depth = {
+                let w = app.world.borrow();
+                let mut top = -1;
+                for d in (0..tenebris_core::world::WORLD_MAX_DEPTH).rev() {
+                    if tenebris_core::blocks::is_solid(w.get(center, d)) {
+                        top = d;
+                        break;
+                    }
+                }
+                if top < 0 || top + 1 >= tenebris_core::world::WORLD_MAX_DEPTH {
+                    return;
+                }
+                top + 1
+            };
+            let (eng, cab, fur) = (ring[0], ring[1], ring[2]);
+            {
+                let mut w = app.world.borrow_mut();
+                w.set(eng, depth, Block::SteamEngine);
+                let s = w.block_entities.entry(eng, depth).steam_engine_mut();
+                s.fuel = ChestSlot { item: items::COAL, count: 4 };
+                s.burn_time = STEAM_BURN_S_PER_COAL;
+                w.set(cab, depth, Block::Cable);
+                w.set(fur, depth, Block::ElectricFurnace);
+                let ef = w.block_entities.entry(fur, depth).electric_furnace_mut();
+                ef.input = ChestSlot { item: items::IRON, count: 5 };
+                ef.progress = 0.5;
+            }
+            {
+                let mut p = app.player.borrow_mut();
+                p.bag.add(items::IRON, 8);
+                p.bag.add(items::COAL, 16);
+                p.pitch = -0.2;
+            }
+            power_ui::open_electric(app.world.clone(), app.player.clone(), fur, depth);
+        }
         _ => {
             /* Launch pad: centre tile + its ring all become the pad. */
             dev_set_surface(&app.world, center, Block::LaunchPad);
@@ -894,6 +947,9 @@ extern "C" fn init() {
         DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
     } else if std::env::var("TENEBRIS_DEV_CHEST").is_ok() {
         DEV_PLACE_MODE.with(|c| c.set(7));
+        DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
+    } else if std::env::var("TENEBRIS_DEV_POWER").is_ok() {
+        DEV_PLACE_MODE.with(|c| c.set(8));
         DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
     }
     if std::env::var("TENEBRIS_DEV_KIT").is_ok() {
@@ -2339,6 +2395,7 @@ fn egui_ui(app: &mut App, ctx: &egui::Context) {
     crafting_screen::egui_ui(ctx);
     chest_screen::egui_ui(ctx);
     furnace_screen::egui_ui(ctx);
+    power_ui::egui_ui(ctx);
 }
 
 fn frame_inner(app: &mut App) {
@@ -2978,6 +3035,9 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
     if furnace_screen::handle_event(e) {
         return;
     }
+    if power_ui::handle_event(e) {
+        return;
+    }
     /* Survival craft screen: first crack after pause so B toggles it and,
      * while open, it owns clicks + Esc (closed, it ignores everything and
      * falls through). Always available - not gated on the F2 debug UI. */
@@ -3043,6 +3103,25 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
             /* A placed storage chest opens its 27-slot inventory panel. */
             Block::StorageChest => {
                 chest_screen::open(
+                    app.world.clone(),
+                    app.player.clone(),
+                    app.interact.hit_tile,
+                    app.interact.hit_depth,
+                );
+                return;
+            }
+            /* Powered machines. */
+            Block::SteamEngine => {
+                power_ui::open_steam(
+                    app.world.clone(),
+                    app.player.clone(),
+                    app.interact.hit_tile,
+                    app.interact.hit_depth,
+                );
+                return;
+            }
+            Block::ElectricFurnace => {
+                power_ui::open_electric(
                     app.world.clone(),
                     app.player.clone(),
                     app.interact.hit_tile,

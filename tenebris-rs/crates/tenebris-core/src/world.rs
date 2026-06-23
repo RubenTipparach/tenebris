@@ -477,10 +477,99 @@ impl World {
             .unwrap_or(Block::Air)
     }
 
-    /// Advance placed-machine behavior (furnace smelt, later generators /
-    /// printer) by `dt` seconds. Returns true if a durable change happened
-    /// (a smelt completed) so the caller can persist the store.
+    /// Cells adjacent to (tile, depth) for the power graph: the hex
+    /// edge-neighbours at the same depth, plus the same tile one layer up
+    /// and down (mirrors the JS cable connection rules).
+    fn power_neighbors(&self, tile: i32, depth: i32) -> Vec<(i32, i32)> {
+        let mut v = Vec::with_capacity(8);
+        if let Some(t) = self.grid.tile(tile) {
+            for i in 0..t.num_neighbors as usize {
+                let n = t.neighbors[i];
+                if n >= 0 {
+                    v.push((n, depth));
+                }
+            }
+        }
+        if depth + 1 < WORLD_MAX_DEPTH {
+            v.push((tile, depth + 1));
+        }
+        if depth - 1 >= 0 {
+            v.push((tile, depth - 1));
+        }
+        v
+    }
+
+    /// True if a *running* steam engine is adjacent to (tile, depth).
+    fn running_engine_adjacent(&self, tile: i32, depth: i32) -> bool {
+        for (nt, nd) in self.power_neighbors(tile, depth) {
+            if self.get(nt, nd) == Block::SteamEngine {
+                if let Some(be) = self.block_entities.get(nt, nd) {
+                    if let crate::block_entity::MachineState::SteamEngine(s) = be.state {
+                        if s.running() {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Whether an electric furnace at (tile, depth) has power: a running
+    /// steam engine directly adjacent, or reachable through a connected run
+    /// of cable blocks (flood fill, JS cable-network model).
+    fn electric_powered(&self, tile: i32, depth: i32) -> bool {
+        if self.running_engine_adjacent(tile, depth) {
+            return true;
+        }
+        let mut stack: Vec<(i32, i32)> = Vec::new();
+        let mut seen: Vec<(i32, i32)> = Vec::new();
+        for (nt, nd) in self.power_neighbors(tile, depth) {
+            if self.get(nt, nd) == Block::Cable {
+                stack.push((nt, nd));
+            }
+        }
+        while let Some((ct, cd)) = stack.pop() {
+            if seen.contains(&(ct, cd)) {
+                continue;
+            }
+            seen.push((ct, cd));
+            if self.running_engine_adjacent(ct, cd) {
+                return true;
+            }
+            for (nt, nd) in self.power_neighbors(ct, cd) {
+                if self.get(nt, nd) == Block::Cable && !seen.contains(&(nt, nd)) {
+                    stack.push((nt, nd));
+                }
+            }
+        }
+        false
+    }
+
+    /// Advance placed-machine behavior by `dt` seconds: refresh electric-
+    /// furnace power from the cable network, then tick every machine
+    /// (furnace + electric smelt, steam-engine fuel burn). Returns true if a
+    /// durable change happened (a smelt completed / coal consumed) so the
+    /// caller can persist the store.
     pub fn tick_machines(&mut self, dt: f32) -> bool {
+        /* Phase 1: which electric furnaces are powered (read-only). */
+        let furnaces: Vec<(i32, i32)> = self
+            .block_entities
+            .iter()
+            .filter(|(_, _, e)| e.electric_furnace().is_some())
+            .map(|(t, d, _)| (t, d))
+            .collect();
+        let powered: Vec<(i32, i32, bool)> =
+            furnaces.iter().map(|&(t, d)| (t, d, self.electric_powered(t, d))).collect();
+        /* Phase 2: apply the power flag. */
+        for (t, d, p) in powered {
+            if let Some(e) = self.block_entities.get_mut(t, d) {
+                if let crate::block_entity::MachineState::ElectricFurnace(ef) = &mut e.state {
+                    ef.powered = p;
+                }
+            }
+        }
+        /* Phase 3: tick every machine. */
         self.block_entities.tick(dt)
     }
 
