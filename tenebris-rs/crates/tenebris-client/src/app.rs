@@ -487,6 +487,41 @@ fn dev_maybe_place(app: &mut App) {
                 }
             }
         }
+        6 => {
+            /* Tech-block showcase: centre = furnace, ring = a different
+             * machine each, so one shot shows the ported JS _face art on
+             * placed blocks. Pitch down so they fill frame. */
+            let ring = [
+                Block::ElectricFurnace,
+                Block::Computer,
+                Block::Printer3D,
+                Block::SteamEngine,
+                Block::HydroGenerator,
+                Block::StorageChest,
+            ];
+            dev_set_surface(&app.world, center, Block::Furnace);
+            dev_for_each_neighbor(&app.world, center, |w, i, n| {
+                dev_set_surface_w(w, n, ring[i % ring.len()]);
+            });
+            let mut p = app.player.borrow_mut();
+            let kit = [
+                Block::Furnace,
+                Block::ElectricFurnace,
+                Block::Computer,
+                Block::Printer3D,
+                Block::SteamEngine,
+                Block::HydroGenerator,
+                Block::StorageChest,
+                Block::ElectronicsWorkbench,
+                Block::LaunchTower,
+            ];
+            for (i, b) in kit.iter().enumerate() {
+                if i < crate::inventory::INV_HOTBAR_SLOTS as usize {
+                    p.inventory.slots[i] = crate::inventory::InvSlot::block(*b, 1);
+                }
+            }
+            p.pitch = -0.55;
+        }
         _ => {
             /* Launch pad: centre tile + its ring all become the pad. */
             dev_set_surface(&app.world, center, Block::LaunchPad);
@@ -758,6 +793,9 @@ extern "C" fn init() {
         DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
     } else if std::env::var("TENEBRIS_DEV_PAD").is_ok() {
         DEV_PLACE_MODE.with(|c| c.set(1));
+        DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
+    } else if std::env::var("TENEBRIS_DEV_TECH").is_ok() {
+        DEV_PLACE_MODE.with(|c| c.set(6));
         DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
     }
     if std::env::var("TENEBRIS_DEV_KIT").is_ok() {

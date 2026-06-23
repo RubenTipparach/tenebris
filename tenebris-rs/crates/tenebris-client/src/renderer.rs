@@ -277,6 +277,29 @@ const ATLAS_PATHS: [Option<&str>; ATLAS_TILES] = [
     Some("assets/textures/minerals/rocks_copper.png"),       /* 26 COPPER_ORE */
     Some("assets/textures/minerals/rocks_tin.png"),          /* 27 TIN_ORE */
     Some("assets/textures/minerals/rocks_iron.png"),         /* 28 IRON_ORE */
+    /* Tech-block tiles (ported JS art). Each placed machine shows its
+     * 16x16 _face on every face - the same icon the JS uses for the
+     * block - so it reads as that machine without a per-face cube net.
+     * face_tile() maps each tech Block to one of these columns. */
+    Some("assets/textures/technology/furnace_face.png"),               /* 29 Furnace */
+    Some("assets/textures/technology/electric_furnace_face.png"),      /* 30 ElectricFurnace */
+    Some("assets/textures/technology/3d_printer_face.png"),            /* 31 Printer3D */
+    Some("assets/textures/technology/computer_face.png"),              /* 32 Computer */
+    Some("assets/textures/technology/electronics_workbench_face.png"), /* 33 Workbench */
+    Some("assets/textures/technology/hydro_generator_face.png"),       /* 34 HydroGenerator */
+    Some("assets/textures/technology/steam_engine_face.png"),          /* 35 SteamEngine */
+    Some("assets/textures/technology/storage_face.png"),               /* 36 StorageChest */
+    Some("assets/textures/technology/launch_pad_face.png"),            /* 37 LaunchPad */
+    Some("assets/textures/technology/launch_tower_face.png"),          /* 38 LaunchTower */
+    Some("assets/textures/technology/cable.png"),                      /* 39 Cable */
+    Some("assets/textures/technology/copper_pipe.png"),                /* 40 CopperPipe */
+    Some("assets/textures/technology/landing_pad_side.png"),           /* 41 landing pad (spare) */
+    None,                                                              /* 42 headroom */
+    None,                                                              /* 43 headroom */
+    None,                                                              /* 44 headroom */
+    None,                                                              /* 45 headroom */
+    None,                                                              /* 46 headroom */
+    None,                                                              /* 47 headroom */
 ];
 
 /// Per-channel multiplier applied to each loaded tile. {1,1,1} =
@@ -313,6 +336,26 @@ const ATLAS_TINTS: [[f32; 3]; ATLAS_TILES] = [
     [1.0, 1.0, 1.0], /* COPPER_ORE */
     [1.0, 1.0, 1.0], /* TIN_ORE    */
     [1.0, 1.0, 1.0], /* IRON_ORE   */
+    /* Tech tiles 29..47 are pre-coloured pixel art - no tint. */
+    [1.0, 1.0, 1.0], /* 29 Furnace */
+    [1.0, 1.0, 1.0], /* 30 ElectricFurnace */
+    [1.0, 1.0, 1.0], /* 31 Printer3D */
+    [1.0, 1.0, 1.0], /* 32 Computer */
+    [1.0, 1.0, 1.0], /* 33 Workbench */
+    [1.0, 1.0, 1.0], /* 34 HydroGenerator */
+    [1.0, 1.0, 1.0], /* 35 SteamEngine */
+    [1.0, 1.0, 1.0], /* 36 StorageChest */
+    [1.0, 1.0, 1.0], /* 37 LaunchPad */
+    [1.0, 1.0, 1.0], /* 38 LaunchTower */
+    [1.0, 1.0, 1.0], /* 39 Cable */
+    [1.0, 1.0, 1.0], /* 40 CopperPipe */
+    [1.0, 1.0, 1.0], /* 41 landing pad */
+    [1.0, 1.0, 1.0], /* 42 */
+    [1.0, 1.0, 1.0], /* 43 */
+    [1.0, 1.0, 1.0], /* 44 */
+    [1.0, 1.0, 1.0], /* 45 */
+    [1.0, 1.0, 1.0], /* 46 */
+    [1.0, 1.0, 1.0], /* 47 */
 ];
 
 struct AtlasBake {

@@ -53,7 +53,7 @@ use tenebris_core::world_water;
 /* Atlas column count (must match the runtime bake in renderer.c).
  * 12 default + 6 Sequoia + 3 tinted variants + wood + leaves + bedrock
  * + seq-leaves = 25, + 4 ore tints (coal/copper/tin/iron) = 29 total. */
-pub const HEX_ATLAS_TILES: i32 = 29;
+pub const HEX_ATLAS_TILES: i32 = 48;
 pub const HEX_ATLAS_U_STEP: f32 = 1.0 / HEX_ATLAS_TILES as f32;
 
 /*
@@ -1654,9 +1654,10 @@ mod tests {
 
     #[test]
     fn atlas_consts_pinned() {
-        assert_eq!(HEX_ATLAS_TILES, 29);
-        /* 1.0 / HEX_ATLAS_TILES (widened from 25 to 29 for the ore tints). */
-        assert_eq!(HEX_ATLAS_U_STEP.to_bits(), (1.0f32 / 29.0).to_bits());
+        assert_eq!(HEX_ATLAS_TILES, 48);
+        /* 1.0 / HEX_ATLAS_TILES (widened to 48 for the ported tech-block
+         * tiles at columns 29..41, plus headroom). */
+        assert_eq!(HEX_ATLAS_U_STEP.to_bits(), (1.0f32 / 48.0).to_bits());
         /* Vertex layout: 44-byte stride, field offsets as the
          * pipelines bind them. */
         assert_eq!(std::mem::size_of::<HexVertex>(), 44);
@@ -1831,24 +1832,24 @@ mod tests {
 
     const S1_VC: usize = 55;
     const S1_IC: usize = 90;
-        const S1_VH: u64 = 0x86a0392ed5659680;
+        const S1_VH: u64 = 0xfca21c9896a1b5f9;
     const S1_IH: u64 = 0x489c92b4ebb0bd85;
-        const S1_V0: [u32; 11] = [0x43947274, 0xc15441cf, 0xc1af9cc9, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3dd3dcb0, 0x00000000, 0x3f13b2fb, 0x00000000, 0x00000000];
-        const S1_V1: [u32; 11] = [0x43947274, 0x415441cf, 0xc1af9cc9, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3e0d3dcb, 0x00000000, 0x3f13b2fb, 0x00000000, 0x00000000];
-        const S1_VMID: [u32; 11] = [0x4395674c, 0x41d5d274, 0x00000000, 0x3f800000, 0x00000000, 0x00000000, 0x3dcf21a2, 0x3f400000, 0x3f800000, 0x00000000, 0x00000000];
-        const S1_VLAST: [u32; 11] = [0x4395674c, 0xc1d5d274, 0x00000000, 0xbd9c3fd0, 0xbf5a59fd, 0xbf043380, 0x3d8d3dcb, 0x3f800000, 0x3f800000, 0x00000000, 0x00000000];
+        const S1_V0: [u32; 11] = [0x43947274, 0xc15441cf, 0xc1af9cc9, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3d800000, 0x00000000, 0x3f13b2fb, 0x00000000, 0x00000000];
+        const S1_V1: [u32; 11] = [0x43947274, 0x415441cf, 0xc1af9cc9, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3daaaaab, 0x00000000, 0x3f13b2fb, 0x00000000, 0x00000000];
+        const S1_VMID: [u32; 11] = [0x4395674c, 0x41d5d274, 0x00000000, 0x3f800000, 0x00000000, 0x00000000, 0x3d7a48a4, 0x3f400000, 0x3f800000, 0x00000000, 0x00000000];
+        const S1_VLAST: [u32; 11] = [0x4395674c, 0xc1d5d274, 0x00000000, 0xbd9c3fd0, 0xbf5a59fd, 0xbf043380, 0x3d2aaaab, 0x3f800000, 0x3f800000, 0x00000000, 0x00000000];
 
     const S2_VC: usize = 142;
     const S2_IC: usize = 288;
-        const S2_VH: u64 = 0x98e49a781f3160e5;
+        const S2_VH: u64 = 0x05778fe8461a8d81;
     const S2_IH: u64 = 0x87cd063e4fdf9205;
-        const S2_VMID: [u32; 11] = [0xc3927eaf, 0xc14aa9c7, 0xc2d476f9, 0xbf764198, 0x00000000, 0xbe8be997, 0x3f42cc58, 0x3f400000, 0x3f800000, 0x00000000, 0x00000000];
+        const S2_VMID: [u32; 11] = [0xc3927eaf, 0xc14aa9c7, 0xc2d476f9, 0xbf764198, 0x00000000, 0xbe8be997, 0x3eeb6196, 0x3f400000, 0x3f800000, 0x00000000, 0x00000000];
 
     const S3_VC: usize = 66;
     const S3_IC: usize = 105;
-        const S3_VH: u64 = 0x63c8aed7f363a458;
+        const S3_VH: u64 = 0x173250cd8d3eee30;
     const S3_IH: u64 = 0xf8c0595555ef4e63;
-        const S3_V0: [u32; 11] = [0xc337636b, 0x437c69ed, 0x00000000, 0xbf27b753, 0xbef3b458, 0x3f16329a, 0x3dd3dcb0, 0x00000000, 0x3eaa6e14, 0x00000000, 0x00000000];
+        const S3_V0: [u32; 11] = [0xc337636b, 0x437c69ed, 0x00000000, 0xbf27b753, 0xbef3b458, 0x3f16329a, 0x3d800000, 0x00000000, 0x3eaa6e14, 0x00000000, 0x00000000];
 
     const S4_VC: usize = 6;
     const S4_IC: usize = 15;
@@ -1867,44 +1868,44 @@ mod tests {
     const CAVE_NB: i32 = 539;
     const S6A_VC: usize = 103;
     const S6A_IC: usize = 162;
-        const S6A_VH: u64 = 0x8a286d7b9ceaf290;
+        const S6A_VH: u64 = 0xe29a81fa0f5588b9;
     const S6A_IH: u64 = 0x547c88d534b4f325;
-        const S6A_VMID: [u32; 11] = [0x4394f1fa, 0xc154f826, 0xc1b033a5, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3dd3dcb0, 0x3f800000, 0x3f13b2fb, 0x00000000, 0x00000000];
+        const S6A_VMID: [u32; 11] = [0x4394f1fa, 0xc154f826, 0xc1b033a5, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3d800000, 0x3f800000, 0x3f13b2fb, 0x00000000, 0x00000000];
     const S6B_VC: usize = 117;
     const S6B_IC: usize = 198;
-        const S6B_VH: u64 = 0xc9ecb45fc1498ad1;
+        const S6B_VH: u64 = 0xf31aa854cfaf4bdd;
     const S6B_IH: u64 = 0xf4c2850a72d89205;
 
     const FLOW_NB: i32 = 279;
     const S7A_VC: usize = 38;
     const S7A_IC: usize = 72;
-        const S7A_VH: u64 = 0xe9a7c7e3ed159088;
+        const S7A_VH: u64 = 0xcdffa1ca50a6dec7;
     const S7A_IH: u64 = 0xf5363b05eb547fdd;
         const S7A_V0: [u32; 11] = [0xc39cd92c, 0x00000000, 0xc2b23ab3, 0xbf764198, 0x00000000, 0xbe8be997, 0x00000000, 0x3f7f632a, 0x3f800000, 0x00000000, 0x3f800000];
     const S7B_VC: usize = 62;
     const S7B_IC: usize = 108;
-        const S7B_VH: u64 = 0x23cb7d395de09872;
+        const S7B_VH: u64 = 0x973fb4100839a839;
     const S7B_IH: u64 = 0x4eb7dd0a224605ed;
 
     const S8_VC: usize = 103;
     const S8_IC: usize = 162;
-        const S8_VH: u64 = 0xa68646656ec679a2;
+        const S8_VH: u64 = 0xed88a81d32fa329f;
     const S8_IH: u64 = 0x547c88d534b4f325;
-        const S8_V0: [u32; 11] = [0x4391754d, 0xc14ffbc2, 0xc1ac139d, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3e308d3e, 0x00000000, 0x3cae52d6, 0x00000000, 0x00000000];
+        const S8_V0: [u32; 11] = [0x4391754d, 0xc14ffbc2, 0xc1ac139d, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3dd55556, 0x00000000, 0x3cae52d6, 0x00000000, 0x00000000];
 
     const S9A_VC: usize = 103;
     const S9A_IC: usize = 162;
-        const S9A_VH: u64 = 0x66275fa03ddc74ea;
+        const S9A_VH: u64 = 0x66afc0700e5f4a5f;
     const S9A_IH: u64 = 0x547c88d534b4f325;
-        const S9A_V0: [u32; 11] = [0x4391754d, 0xc14ffbc2, 0xc1ac139d, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3e308d3e, 0x00000000, 0x00000000, 0x00000000, 0x00000000];
-        const S9A_VMID: [u32; 11] = [0x4394f1fa, 0xc154f826, 0xc1b033a5, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3dd3dcb0, 0x3f800000, 0x00000000, 0x00000000, 0x00000000];
+        const S9A_V0: [u32; 11] = [0x4391754d, 0xc14ffbc2, 0xc1ac139d, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3dd55556, 0x00000000, 0x00000000, 0x00000000, 0x00000000];
+        const S9A_VMID: [u32; 11] = [0x4394f1fa, 0xc154f826, 0xc1b033a5, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3d800000, 0x3f800000, 0x00000000, 0x00000000, 0x00000000];
     const S9B_VC: usize = 66;
     const S9B_IC: usize = 105;
-        const S9B_VH: u64 = 0xd6d2421444798a19;
+        const S9B_VH: u64 = 0x621b984962a206a9;
     const S9B_IH: u64 = 0xf8c0595555ef4e63;
     const S9C_VC: usize = 38;
     const S9C_IC: usize = 72;
-        const S9C_VH: u64 = 0xe9a7c7e3ed159088;
+        const S9C_VH: u64 = 0xcdffa1ca50a6dec7;
     const S9C_IH: u64 = 0xf5363b05eb547fdd;
     const S9D_VC: usize = 6;
     const S9D_IC: usize = 15;

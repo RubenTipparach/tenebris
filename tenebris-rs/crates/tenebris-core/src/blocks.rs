@@ -227,38 +227,37 @@ pub fn face_tile(b: Block, cap: FaceCap) -> u8 {
             FaceCap::Side => Block::SeqDirtSnow as u8,
         };
     }
-    /* The LaunchPad is a Rust-port-only block past the C atlas (29 cols),
-     * so it has no atlas column of its own. Borrow Bedrock's near-black
-     * slate tile on every face - it reads as a dark, artificial platform
-     * distinct from natural terrain, and keeps the atlas width (and every
-     * existing block's pinned UVs) unchanged. A bespoke tile is a future
-     * art pass. */
-    if b == Block::LaunchPad {
-        return Block::Bedrock as u8;
-    }
-    /* Furnace borrows CragRock's rusty-rock tile so it reads as a warm,
-     * industrial block distinct from the near-black launch pad - until
-     * the dedicated tech-block texture pass widens the atlas. */
-    if b == Block::Furnace {
-        return Block::CragRock as u8;
-    }
-    /* The rest of the ported tech blocks borrow a thematically-close
-     * existing tile for now (chest=wood, copper pipe=copper ore, the
-     * metal machines=crag rock, the dark electronics=bedrock). The
-     * texture pass replaces these with the JS art + multi-face fronts. */
-    match b {
-        Block::ElectricFurnace
-        | Block::ElectronicsWorkbench
-        | Block::SteamEngine
-        | Block::HydroGenerator => return Block::CragRock as u8,
-        Block::Printer3D | Block::Computer | Block::LaunchTower | Block::Cable => {
-            return Block::Bedrock as u8
-        }
-        Block::StorageChest => return Block::Wood as u8,
-        Block::CopperPipe => return Block::CopperOre as u8,
-        _ => {}
+    /* Tech blocks render their dedicated JS art (ported into the atlas at
+     * columns 29..41 - see renderer::ATLAS_PATHS). Each shows its 16x16
+     * _face tile on every face: the same icon the JS uses for the block,
+     * so a placed machine reads as that machine. These atlas columns are
+     * past the block-id range, mapped explicitly here. */
+    const TECH_ATLAS_BASE: u8 = 29;
+    if let Some(off) = tech_atlas_offset(b) {
+        return TECH_ATLAS_BASE + off;
     }
     b as u8
+}
+
+/// Atlas-column offset (from `TECH_ATLAS_BASE` 29) for a tech block's
+/// `_face` tile, or `None` for non-tech blocks. The order matches the
+/// `ATLAS_PATHS` tech section in the renderer.
+fn tech_atlas_offset(b: Block) -> Option<u8> {
+    Some(match b {
+        Block::Furnace => 0,
+        Block::ElectricFurnace => 1,
+        Block::Printer3D => 2,
+        Block::Computer => 3,
+        Block::ElectronicsWorkbench => 4,
+        Block::HydroGenerator => 5,
+        Block::SteamEngine => 6,
+        Block::StorageChest => 7,
+        Block::LaunchPad => 8,
+        Block::LaunchTower => 9,
+        Block::Cable => 10,
+        Block::CopperPipe => 11,
+        _ => return None,
+    })
 }
 
 #[cfg(test)]
