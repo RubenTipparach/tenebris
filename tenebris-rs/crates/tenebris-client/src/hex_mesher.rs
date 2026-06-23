@@ -638,7 +638,7 @@ fn emit_tech_cube(
     let c0 = shrink_corner(t, 0, 1.0);
     let d_up = up.x * c0.x + up.y * c0.y + up.z * c0.z;
     let horiz_r = (1.0 - d_up * d_up).max(0.0).sqrt() * r_bot;
-    let half = (horiz_r * 0.78).max(0.05);
+    let half = (horiz_r * 0.6).max(0.05);
 
     /* Tile tangent frame: up = radial; {tangent, bitangent, up} is
      * right-handed (cross(tangent, bitangent) == up). */

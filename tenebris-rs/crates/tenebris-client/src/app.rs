@@ -488,9 +488,9 @@ fn dev_maybe_place(app: &mut App) {
             }
         }
         6 => {
-            /* Tech-block showcase: centre = furnace, ring = a different
-             * machine each, so one shot shows the ported JS _face art on
-             * placed blocks. Pitch down so they fill frame. */
+            /* Tech-block showcase: the player stands on bare terrain and the
+             * ring of neighbours each becomes a different machine cube, so
+             * one shot shows the cube geometry + ported JS net faces. */
             let ring = [
                 Block::Furnace,
                 Block::ElectricFurnace,
@@ -499,7 +499,6 @@ fn dev_maybe_place(app: &mut App) {
                 Block::SteamEngine,
                 Block::HydroGenerator,
             ];
-            dev_set_surface(&app.world, center, Block::Furnace);
             dev_for_each_neighbor(&app.world, center, |w, i, n| {
                 dev_set_surface_w(w, n, ring[i % ring.len()]);
             });
@@ -520,7 +519,7 @@ fn dev_maybe_place(app: &mut App) {
                     p.inventory.slots[i] = crate::inventory::InvSlot::block(*b, 1);
                 }
             }
-            p.pitch = -0.30;
+            p.pitch = -0.18;
         }
         _ => {
             /* Launch pad: centre tile + its ring all become the pad. */
