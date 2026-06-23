@@ -45,6 +45,8 @@ const KEY_PREFIX: &str = "tenebris-c:world:";
 const KEY_TILE_PREFIX: &str = "tenebris-c:tile:";
 const KEY_TORCH_PREFIX: &str = "tenebris-c:torches:";
 const KEY_WATER_PREFIX: &str = "tenebris-c:water:";
+/// Per-placed-block state (tech facing etc.), one CSV line per entity.
+const KEY_BENTITY_PREFIX: &str = "tenebris-c:bentities:";
 
 pub const NAME_MAX: usize = 31; // bytes, excluding terminator
 pub const MAX_WORLDS: usize = 32;
@@ -281,6 +283,63 @@ fn build_tile_body_prefix(world: &str, body: u32) -> String {
 
 fn build_torch_key(world: &str, body: u32) -> String {
     format!("{KEY_TORCH_PREFIX}{world}:{body}")
+}
+
+fn build_bentity_key(world: &str, body: u32) -> String {
+    format!("{KEY_BENTITY_PREFIX}{world}:{body}")
+}
+
+/// Write the whole block-entity store for (world, body) as CSV lines
+/// `tile,depth,facing`. Called on the SAME input frame as the placement
+/// (CLAUDE.md hard rule) - the store is small (one entry per placed
+/// machine), so re-serialising it on each edit is cheap, mirroring the
+/// torch-list save. Empty store removes the key.
+pub fn save_block_entities(world_name: &str, body_id: u32, entities: &[(i32, i32, u8)]) -> bool {
+    if !valid_name(world_name) {
+        return false;
+    }
+    let key = build_bentity_key(world_name, body_id);
+    if entities.is_empty() {
+        client_kv::remove(&key);
+        return true;
+    }
+    /* One line, ';'-separated records (the kv backend scrubs '\n' to '_'
+     * on native, so a newline-framed list would lose all but the first
+     * entry there; ';' survives both backends). Each record is
+     * `tile,depth,facing`. */
+    let mut buf = String::with_capacity(entities.len() * 12);
+    for (i, (tile, depth, facing)) in entities.iter().enumerate() {
+        if i > 0 {
+            buf.push(';');
+        }
+        buf.push_str(&format!("{tile},{depth},{facing}"));
+    }
+    client_kv::set(&key, &buf);
+    true
+}
+
+/// Read the block-entity store for (world, body). Malformed lines are
+/// skipped, the rest still load.
+pub fn load_block_entities(world_name: &str, body_id: u32) -> Vec<(i32, i32, u8)> {
+    if !valid_name(world_name) {
+        return Vec::new();
+    }
+    let Some(s) = client_kv::get(&build_bentity_key(world_name, body_id)) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for line in s.split(';') {
+        let mut it = line.split(',');
+        let (Some(t), Some(d), Some(f)) = (it.next(), it.next(), it.next()) else {
+            continue;
+        };
+        if let (Ok(tile), Ok(depth), Ok(facing)) =
+            (t.trim().parse::<i32>(), d.trim().parse::<i32>(), f.trim().parse::<u8>())
+        {
+            out.push((tile, depth, facing));
+        }
+    }
+    out
 }
 
 /// Write the given column under tenebris-c:tile:<world>:<body>:<tile>.
@@ -710,6 +769,22 @@ mod tests {
                 tile_idx: 7,
             },
         ]
+    }
+
+    #[test]
+    fn block_entities_round_trip_and_clear() {
+        let _g = test_support::begin("persist_bentities");
+        let ents = [(5, 3, 2u8), (40, 0, 4u8)];
+        assert!(save_block_entities("home", 1, &ents));
+        assert_eq!(
+            client_kv::get("tenebris-c:bentities:home:1").as_deref(),
+            Some("5,3,2;40,0,4")
+        );
+        assert_eq!(load_block_entities("home", 1), ents.to_vec());
+        assert!(load_block_entities("home", 2).is_empty());
+        // Empty store removes the key.
+        assert!(save_block_entities("home", 1, &[]));
+        assert_eq!(client_kv::get("tenebris-c:bentities:home:1"), None);
     }
 
     #[test]

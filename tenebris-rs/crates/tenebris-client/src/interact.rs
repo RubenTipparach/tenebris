@@ -104,6 +104,14 @@ fn sp_save_tile_after_edit(w: &World, tile_idx: i32) {
         .try_into()
         .expect("column slice is exactly COLUMN_BYTES");
     persistence::save_tile(&name, w.body.id as u32, tile_idx, col);
+    /* Per-placed-block state (tech facing, later machine state) rides the
+     * same edit frame as the column save. The store is small (one entry
+     * per placed machine), so re-serialising it per edit is cheap and
+     * covers both placement (entity added) and mining (World::set dropped
+     * it). Same-frame, per the CLAUDE.md persistence rule. */
+    let entities: Vec<(i32, i32, u8)> =
+        w.block_entities.iter().map(|(t, d, e)| (t, d, e.facing)).collect();
+    persistence::save_block_entities(&name, w.body.id as u32, &entities);
 }
 
 /// Port of `sp_save_torches_after_change()`.

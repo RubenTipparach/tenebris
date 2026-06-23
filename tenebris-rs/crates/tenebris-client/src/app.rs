@@ -1615,6 +1615,19 @@ fn apply_sp_world_saves(w_rc: &Rc<RefCell<World>>) {
     if placed > 0 {
         println!("[sp-saves] body={}: {} torch(es) restored", body_id, placed);
     }
+
+    /* Per-placed-block state (tech-block facing now; machine state later).
+     * The blocks themselves loaded above; this layers their placed state
+     * back on so cubes keep their orientation across reload. */
+    let bents = persistence::load_block_entities(&world_name, body_id);
+    if !bents.is_empty() {
+        let mut w = w_rc.borrow_mut();
+        for (tile, depth, facing) in &bents {
+            w.block_entities
+                .set(*tile, *depth, tenebris_core::block_entity::BlockEntity { facing: *facing });
+        }
+        println!("[sp-saves] body={}: {} block-entit(ies) restored", body_id, bents.len());
+    }
 }
 
 fn mark_sp_saves_applied(app: &mut App, w_rc: &Rc<RefCell<World>>) {
