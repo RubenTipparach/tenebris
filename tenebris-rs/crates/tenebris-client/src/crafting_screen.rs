@@ -14,7 +14,9 @@ use std::cell::RefCell;
 use sokol::app as sapp;
 
 use crate::bag;
+use crate::egui_layer;
 use crate::player_ctrl::PlayerCtrl;
+use crate::ui_icons;
 use std::rc::Rc;
 use tenebris_core::crafting::{self, Recipe};
 use tenebris_core::items;
@@ -110,18 +112,6 @@ fn row_count() -> usize {
 
 
 
-
-/// Item display name (ASCII, no underscores - safe for the Oric font).
-fn item_name(id: items::ItemId) -> &'static str {
-    items::def(id).map(|d| d.name).unwrap_or("?")
-}
-
-/// "4 plank   <-   1 log, 0 coal" style summary of a recipe.
-fn recipe_label(r: &Recipe) -> String {
-    let ins: Vec<String> =
-        r.inputs.iter().map(|i| format!("{} {}", i.count, item_name(i.item))).collect();
-    format!("{} {}   <-   {}", r.output.count, item_name(r.output.item), ins.join(", "))
-}
 
 /// Snapshot the player's affordability for each visible recipe (Inventory
 /// and Bag are both `Copy`, so this is a cheap borrow-and-drop).
@@ -231,32 +221,37 @@ pub fn handle_event(e: &sapp::Event, player: Option<PlayerHandle>) -> bool {
 /// site stays valid until that call is removed.
 pub fn draw() {}
 
-/// Footer line: what the player currently holds (bag contents), so it is
-/// obvious why a recipe row is ready or not.
-fn have_summary() -> String {
-    let parts = S.with(|c| {
-        c.borrow().player.as_ref().map(|p| {
-            let p = p.borrow();
-            let mut parts: Vec<String> = Vec::new();
-            for s in p.bag.slots.iter() {
-                if s.count == 0 || parts.len() >= 8 {
-                    continue;
-                }
-                let name = items::def(s.item).map(|d| d.name).unwrap_or("?");
-                parts.push(format!("{} x{}", name, s.count));
-            }
-            parts
-        })
-    });
-    match parts {
-        Some(parts) if !parts.is_empty() => format!("Have: {}", parts.join(", ")),
-        _ => "Have: nothing yet - mine wood and ore to gather resources".to_string(),
+const RECIPE_W: f32 = 412.0;
+const RECIPE_H: f32 = 40.0;
+const RECIPE_ICON: f32 = 32.0;
+
+/// Draw an item icon (from the UI icon atlas) into `rect`, with a
+/// stack-count badge. Shared look with the chest grid.
+fn draw_icon(p: &egui::Painter, item: u16, count: u16, rect: egui::Rect) {
+    match ui_icons::uv(item) {
+        Some([u0, v0, u1, v1]) => {
+            let uv = egui::Rect::from_min_max(egui::pos2(u0, v0), egui::pos2(u1, v1));
+            p.image(egui_layer::ICON_TEX, rect, uv, egui::Color32::WHITE);
+        }
+        None => {
+            p.rect_filled(rect, 2.0, egui::Color32::from_rgb(0x80, 0x80, 0x88));
+        }
+    }
+    if count > 1 {
+        p.text(
+            rect.max,
+            egui::Align2::RIGHT_BOTTOM,
+            count.to_string(),
+            egui::FontId::proportional(12.0),
+            egui::Color32::WHITE,
+        );
     }
 }
 
-/// Draw the craft / smelt panel in egui when open. Replaces the sokol_gl
-/// panel: a centred window of recipe rows (green = craftable), the held
-/// resources, and a close button. Clicking a ready row crafts it.
+/// Draw the craft / smelt panel in egui. Each recipe is a clickable row:
+/// the output icon, an arrow, and the input icons (a craftable row is lit
+/// with a green border; a non-affordable one stays dim). Per the CLAUDE.md
+/// rule, recipes are shown as item thumbnails, not text.
 pub fn egui_ui(ctx: &egui::Context) {
     if !is_open() {
         return;
@@ -280,30 +275,68 @@ pub fn egui_ui(ctx: &egui::Context) {
         .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
         .show(ctx, |ui| {
             ui.label(
-                egui::RichText::new("Click a recipe to craft - green = ready")
+                egui::RichText::new("Click a recipe to craft - lit rows are ready")
                     .color(egui::Color32::from_rgb(0xa0, 0xa8, 0xc0)),
             );
-            ui.separator();
+            ui.add_space(4.0);
             for (i, r) in recipes.iter().enumerate() {
                 let ready = flags.get(i).copied().unwrap_or(false);
-                let color = if ready {
-                    egui::Color32::from_rgb(0x66, 0xff, 0x88)
-                } else {
-                    egui::Color32::from_rgb(0x88, 0x88, 0x90)
+                let (rect, resp) =
+                    ui.allocate_exact_size(egui::vec2(RECIPE_W, RECIPE_H), egui::Sense::click());
+                let bg = match (ready, resp.hovered()) {
+                    (true, true) => egui::Color32::from_rgb(0x26, 0x3c, 0x2a),
+                    (true, false) => egui::Color32::from_rgb(0x1d, 0x2e, 0x20),
+                    (false, true) => egui::Color32::from_rgb(0x2c, 0x2e, 0x36),
+                    (false, false) => egui::Color32::from_rgb(0x20, 0x22, 0x29),
                 };
-                let resp = ui.add_sized(
-                    [380.0, 24.0],
-                    egui::Button::new(egui::RichText::new(recipe_label(r)).color(color)),
-                );
+                {
+                    let p = ui.painter();
+                    p.rect_filled(rect, 4.0, bg);
+                    if ready {
+                        p.rect_stroke(
+                            rect,
+                            4.0,
+                            egui::Stroke::new(1.5, egui::Color32::from_rgb(0x5a, 0xc8, 0x6e)),
+                            egui::StrokeKind::Inside,
+                        );
+                    }
+                    let cy = rect.center().y;
+                    let mut x = rect.min.x + 8.0;
+                    let cell = egui::vec2(RECIPE_ICON, RECIPE_ICON);
+                    draw_icon(
+                        p,
+                        r.output.item,
+                        r.output.count,
+                        egui::Rect::from_center_size(egui::pos2(x + RECIPE_ICON * 0.5, cy), cell),
+                    );
+                    x += RECIPE_ICON + 12.0;
+                    p.text(
+                        egui::pos2(x, cy),
+                        egui::Align2::LEFT_CENTER,
+                        "<-",
+                        egui::FontId::proportional(16.0),
+                        egui::Color32::from_rgb(0xc0, 0xc6, 0xd2),
+                    );
+                    x += 26.0;
+                    for inp in &r.inputs {
+                        draw_icon(
+                            p,
+                            inp.item,
+                            inp.count,
+                            egui::Rect::from_center_size(
+                                egui::pos2(x + RECIPE_ICON * 0.5, cy),
+                                cell,
+                            ),
+                        );
+                        x += RECIPE_ICON + 6.0;
+                    }
+                }
                 if resp.clicked() && ready {
                     craft_idx = Some(i);
                 }
+                ui.add_space(3.0);
             }
-            ui.separator();
-            ui.label(
-                egui::RichText::new(have_summary())
-                    .color(egui::Color32::from_rgb(0xb0, 0xc0, 0xe0)),
-            );
+            ui.add_space(4.0);
             if ui.button("Close").clicked() {
                 do_close = true;
             }
