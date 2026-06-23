@@ -589,6 +589,96 @@ fn emit_cap(
     }
 }
 
+/// Atlas columns (front, side, top, bottom) for a tech block drawn as a
+/// cube with its ported JS net texture, or `None` for blocks that aren't
+/// cube-rendered yet. Cells are sliced from the 48x32 JS net.
+fn tech_cube_cols(b: Block) -> Option<[u8; 4]> {
+    match b {
+        Block::Furnace => Some([42, 43, 44, 45]),
+        _ => None,
+    }
+}
+
+/// Emit a cube for a tech block sitting on the hex tile - the JS
+/// BoxGeometry look. Each cube face is UV-mapped to a cell of the ported
+/// net texture (front faces a fixed tile tangent for now; player-facing
+/// needs stored facing, a later pass). Reuses the terrain vertex format +
+/// per-vertex lighting so it draws in the same pass / shader as the world.
+fn emit_tech_cube(
+    out: &mut HexMesh,
+    t: &Tile,
+    w: &World,
+    tile_idx: i32,
+    depth: i32,
+    cols: [u8; 4],
+    bake_lighting: bool,
+) {
+    let r_bot = w.depth_to_radius_m(depth);
+    let r_top = w.depth_to_radius_m(depth + 1);
+    let half = ((r_top - r_bot) * 0.5).max(0.01);
+
+    /* Tile tangent frame: up = radial; {tangent, bitangent, up} is
+     * right-handed (cross(tangent, bitangent) == up). */
+    let up = dvec3_normalize(t.center);
+    let reference = if up.y.abs() < 0.9 {
+        dvec3_make(0.0, 1.0, 0.0)
+    } else {
+        dvec3_make(1.0, 0.0, 0.0)
+    };
+    let tangent = dvec3_normalize(dvec3_cross(reference, up));
+    let bitangent = dvec3_cross(up, tangent);
+
+    /* Cube sits on the tile surface (bottom face at r_bot). */
+    let center = dvec3_scale(up, r_bot + half);
+
+    let sky = if bake_lighting {
+        let d_air = (depth + 1).min(WORLD_MAX_DEPTH - 1);
+        if use_voxel_engine() {
+            sky_light_voxel(w, tile_idx, d_air)
+        } else {
+            sky_light_at(w, tile_idx, d_air)
+        }
+    } else {
+        0.0
+    };
+
+    /* One outward quad per face. `a`,`b` span the face with
+     * cross(a, b) == normal, so corners wind CCW seen from outside
+     * (matches the terrain pipeline's back-cull + CCW front). */
+    let quad = |out: &mut HexMesh, normal: DVec3, a: DVec3, b: DVec3, col: u8| {
+        let u0 = col as f32 * HEX_ATLAS_U_STEP;
+        let u1 = u0 + HEX_ATLAS_U_STEP;
+        let fc = dvec3_add(center, dvec3_scale(normal, half));
+        let ah = dvec3_scale(a, half);
+        let bh = dvec3_scale(b, half);
+        let p00 = dvec3_sub(dvec3_sub(fc, ah), bh);
+        let p10 = dvec3_sub(dvec3_add(fc, ah), bh);
+        let p11 = dvec3_add(dvec3_add(fc, ah), bh);
+        let p01 = dvec3_add(dvec3_sub(fc, ah), bh);
+        let base = out.vertices.len() as u32;
+        for (p, uu, vv) in [(p00, u0, 0.0), (p10, u1, 0.0), (p11, u1, 1.0), (p01, u0, 1.0)] {
+            let torch = if bake_lighting { torch_light_at(dvec3_to_vec3(p)) } else { 0.0 };
+            push_vertex(out, p, normal, uu, vv, sky, torch, 0.0);
+        }
+        out.indices.push(base);
+        out.indices.push(base + 1);
+        out.indices.push(base + 2);
+        out.indices.push(base);
+        out.indices.push(base + 2);
+        out.indices.push(base + 3);
+    };
+
+    reserve(out, 24, 36);
+    let [c_front, c_side, c_top, c_bottom] = cols;
+    let neg = |v: DVec3| dvec3_scale(v, -1.0);
+    quad(out, tangent, bitangent, up, c_front); /* +tangent front */
+    quad(out, neg(tangent), up, bitangent, c_side); /* -tangent back */
+    quad(out, bitangent, up, tangent, c_side); /* +bitangent right */
+    quad(out, neg(bitangent), tangent, up, c_side); /* -bitangent left */
+    quad(out, up, tangent, bitangent, c_top); /* +up top */
+    quad(out, neg(up), bitangent, tangent, c_bottom); /* -up bottom */
+}
+
 /* Side quad between inner and outer radius across two adjacent corners.
  * One quad per tile edge per exposed depth. `width` shrinks the corners
  * inward toward t->center so partial-width blocks (trunks) get a
@@ -1397,6 +1487,13 @@ pub fn build_tile(out: &mut HexMesh, w: &World, tile_idx: i32) {
          * bytes); Air fallback mirrors World::get's defined-behavior
          * stand-in for the C's raw enum cast. */
         let b = Block::from_raw(braw).unwrap_or(Block::Air);
+
+        /* Tech blocks render as cubes with their ported JS net texture
+         * (the JS placed separate BoxGeometry meshes), not hex prisms. */
+        if let Some(cols) = tech_cube_cols(b) {
+            emit_tech_cube(out, t, w, tile_idx, d, cols, true);
+            continue;
+        }
 
         let width = block_hex_width(b, tile_idx, d);
 

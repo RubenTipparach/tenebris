@@ -294,10 +294,12 @@ const ATLAS_PATHS: [Option<&str>; ATLAS_TILES] = [
     Some("assets/textures/technology/cable.png"),                      /* 39 Cable */
     Some("assets/textures/technology/copper_pipe.png"),                /* 40 CopperPipe */
     Some("assets/textures/technology/landing_pad_side.png"),           /* 41 landing pad (spare) */
-    None,                                                              /* 42 headroom */
-    None,                                                              /* 43 headroom */
-    None,                                                              /* 44 headroom */
-    None,                                                              /* 45 headroom */
+    /* Furnace cube cells, sliced from the 48x32 JS net (front/side/top/
+     * bottom) - the mesher maps these per cube face. */
+    Some("assets/textures/technology/furnace_front.png"),              /* 42 furnace front */
+    Some("assets/textures/technology/furnace_side.png"),               /* 43 furnace side */
+    Some("assets/textures/technology/furnace_top.png"),                /* 44 furnace top */
+    Some("assets/textures/technology/furnace_bottom.png"),             /* 45 furnace bottom */
     None,                                                              /* 46 headroom */
     None,                                                              /* 47 headroom */
 ];
