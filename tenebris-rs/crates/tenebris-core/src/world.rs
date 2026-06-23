@@ -111,6 +111,10 @@ pub struct World {
     pub blocks: Vec<u8>,
     pub tile_count: i32,
 
+    /// Per-placed-block state (tech-block facing now; machine state later),
+    /// keyed by (tile, depth). Parallel to `blocks`. See `block_entity`.
+    pub block_entities: crate::block_entity::BlockEntityStore,
+
     /// Dirty bitset - one bit per tile. Set by edits, cleared by the
     /// renderer after remeshing.
     pub dirty: Vec<u8>,
@@ -316,6 +320,7 @@ impl World {
             grid,
             blocks: vec![0u8; (tile_count * WORLD_MAX_DEPTH) as usize],
             tile_count,
+            block_entities: crate::block_entity::BlockEntityStore::new(),
             dirty: vec![0u8; dirty_bytes],
             /* Dirty queue sized to tile_count: the bit-dedup guarantees
              * at most one entry per tile between drains, so this never
@@ -355,6 +360,8 @@ impl World {
          * plus-edits state we want the clone to inherit. */
         let n = w.blocks.len();
         w.blocks.copy_from_slice(&self.blocks[..n]);
+        /* Per-placed-block state travels with the snapshot. */
+        w.block_entities = self.block_entities.clone();
         /* Mark gen as complete so callers don't re-run stream_gen. */
         w.gen_cursor = w.tile_count;
         /* Dirty bits start clean - the clone is a snapshot. */
@@ -470,6 +477,56 @@ impl World {
             .unwrap_or(Block::Air)
     }
 
+    /// Tile-edge index (0..num_verts) whose outward midpoint direction
+    /// best points at `target` (a world position), projected into the
+    /// tile's tangent plane. Used to record a placed tech block's facing
+    /// so its cube front turns toward the player (mirrors the JS
+    /// "front faces towards player" placement). Returns
+    /// `block_entity::FACING_UNSET` if the tile is invalid.
+    pub fn facing_toward(&self, tile: i32, depth: i32, target: DVec3) -> u8 {
+        let Some(t) = self.grid.tile(tile) else {
+            return crate::block_entity::FACING_UNSET;
+        };
+        let up = t.center;
+        let r = self.depth_to_radius_m(depth);
+        let (bx, by, bz) = (up.x * r, up.y * r, up.z * r);
+        /* Direction block -> target, flattened into the tangent plane. */
+        let (mut tx, mut ty, mut tz) = (target.x - bx, target.y - by, target.z - bz);
+        let d = tx * up.x + ty * up.y + tz * up.z;
+        tx -= up.x * d;
+        ty -= up.y * d;
+        tz -= up.z * d;
+        let tl = (tx * tx + ty * ty + tz * tz).sqrt();
+        if tl < 1e-9 {
+            return 0;
+        }
+        tx /= tl;
+        ty /= tl;
+        tz /= tl;
+        let n = t.num_verts as i32;
+        let mut best_k = 0i32;
+        let mut best = f64::NEG_INFINITY;
+        for k in 0..n {
+            let a = t.verts[k as usize];
+            let b = t.verts[((k + 1) % n) as usize];
+            let (mut mx, mut my, mut mz) = ((a.x + b.x) * 0.5, (a.y + b.y) * 0.5, (a.z + b.z) * 0.5);
+            let md = mx * up.x + my * up.y + mz * up.z;
+            mx -= up.x * md;
+            my -= up.y * md;
+            mz -= up.z * md;
+            let ml = (mx * mx + my * my + mz * mz).sqrt();
+            if ml < 1e-9 {
+                continue;
+            }
+            let dot = (mx * tx + my * ty + mz * tz) / ml;
+            if dot > best {
+                best = dot;
+                best_k = k;
+            }
+        }
+        best_k as u8
+    }
+
     /// Port of `world_set()`.
     pub fn set(&mut self, tile: i32, depth: i32, b: Block) {
         if tile < 0 || tile >= self.tile_count {
@@ -496,6 +553,13 @@ impl World {
         let old = self.blocks[idx];
         self.blocks[idx] = b.raw();
         self.dirty_enqueue(tile);
+
+        /* The cell's contents changed, so any placed-block state (tech
+         * facing, machine state) for the old occupant is stale - drop it.
+         * The placement path writes a fresh entity after this set(). */
+        if old != b.raw() && !self.block_entities.is_empty() {
+            self.block_entities.remove(tile, depth);
+        }
 
         /* Water-sim cleanup on block change.
          *

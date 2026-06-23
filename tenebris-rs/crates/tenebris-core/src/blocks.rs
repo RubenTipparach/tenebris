@@ -239,6 +239,12 @@ pub fn face_tile(b: Block, cap: FaceCap) -> u8 {
     b as u8
 }
 
+/// True for the ported tech blocks (machines, structures, connectors) -
+/// the ones with dedicated JS art and, where applicable, a facing.
+pub fn is_tech_block(b: Block) -> bool {
+    tech_atlas_offset(b).is_some()
+}
+
 /// Atlas-column offset (from `TECH_ATLAS_BASE` 29) for a tech block's
 /// `_face` tile, or `None` for non-tech blocks. The order matches the
 /// `ATLAS_PATHS` tech section in the renderer.

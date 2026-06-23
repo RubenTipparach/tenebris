@@ -641,13 +641,28 @@ fn emit_tech_cube(
     let half = (horiz_r * 0.6).max(0.05);
 
     /* Tile tangent frame: up = radial; {tangent, bitangent, up} is
-     * right-handed (cross(tangent, bitangent) == up). */
-    let reference = if up.y.abs() < 0.9 {
-        dvec3_make(0.0, 1.0, 0.0)
+     * right-handed (cross(tangent, bitangent) == up). When a facing is
+     * stored, the +tangent (front) face points at that tile edge so the
+     * machine faces the player who placed it; otherwise a stable default. */
+    let nverts = t.num_verts as i32;
+    let facing = w.block_entities.facing(tile_idx, depth);
+    let tangent = if facing != tenebris_core::block_entity::FACING_UNSET
+        && (facing as i32) < nverts
+    {
+        let k = facing as i32;
+        let ca = shrink_corner(t, k, 1.0);
+        let cb = shrink_corner(t, (k + 1) % nverts, 1.0);
+        let mid = dvec3_scale(dvec3_add(ca, cb), 0.5);
+        let d = mid.x * up.x + mid.y * up.y + mid.z * up.z;
+        dvec3_normalize(dvec3_sub(mid, dvec3_scale(up, d)))
     } else {
-        dvec3_make(1.0, 0.0, 0.0)
+        let reference = if up.y.abs() < 0.9 {
+            dvec3_make(0.0, 1.0, 0.0)
+        } else {
+            dvec3_make(1.0, 0.0, 0.0)
+        };
+        dvec3_normalize(dvec3_cross(reference, up))
     };
-    let tangent = dvec3_normalize(dvec3_cross(reference, up));
     let bitangent = dvec3_cross(up, tangent);
 
     /* Cube sits on the tile surface (bottom face at r_bot). */

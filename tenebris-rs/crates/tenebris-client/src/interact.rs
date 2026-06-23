@@ -575,6 +575,18 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
                     }
                 }
                 w.set(s.place_tile, s.place_depth, to_place);
+                /* Tech blocks record which tile edge their front faces so
+                 * the cube renders turned toward the player who placed it
+                 * (mirrors the JS placement). Recorded right next to the
+                 * world_set, same frame as the tile save. */
+                if tenebris_core::blocks::is_tech_block(to_place) {
+                    let facing = w.facing_toward(s.place_tile, s.place_depth, p.position);
+                    w.block_entities.set(
+                        s.place_tile,
+                        s.place_depth,
+                        tenebris_core::block_entity::BlockEntity { facing },
+                    );
+                }
                 net_client::send_edit(
                     proto::PLAYER_CMD_PLACE,
                     w.body.id as u32,

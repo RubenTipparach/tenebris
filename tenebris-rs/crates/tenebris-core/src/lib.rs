@@ -1,5 +1,6 @@
 //! Port of `tenebris-c/src/core/`. See ../../PORTING.md for rules.
 
+pub mod block_entity;
 pub mod blocks;
 pub mod config;
 pub mod crafting;

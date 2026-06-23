@@ -499,6 +499,7 @@ fn dev_maybe_place(app: &mut App) {
                 Block::SteamEngine,
                 Block::HydroGenerator,
             ];
+            let player_pos = app.player.borrow().position;
             dev_for_each_neighbor(&app.world, center, |w, i, n| {
                 /* Place the machine in the AIR voxel above the surface (the
                  * way a real player placement does), so the cube sits ON
@@ -511,7 +512,12 @@ fn dev_maybe_place(app: &mut App) {
                     }
                 }
                 if top >= 0 && top + 1 < tenebris_core::world::WORLD_MAX_DEPTH {
-                    w.set(n, top + 1, ring[i % ring.len()]);
+                    let d = top + 1;
+                    w.set(n, d, ring[i % ring.len()]);
+                    /* Face each machine toward the player at the centre. */
+                    let facing = w.facing_toward(n, d, player_pos);
+                    w.block_entities
+                        .set(n, d, tenebris_core::block_entity::BlockEntity { facing });
                 }
             });
             let mut p = app.player.borrow_mut();
