@@ -411,6 +411,23 @@ fn dev_maybe_place(app: &mut App) {
                 }
                 let d = top + 1;
                 w.set(center, d, Block::Furnace);
+                /* Pre-load the furnace so the shot shows it mid-smelt:
+                 * input copper, coal lit, one ingot already produced. */
+                let f = w.block_entities.entry(center, d).furnace_mut();
+                f.input = tenebris_core::block_entity::ChestSlot {
+                    item: tenebris_core::items::COPPER,
+                    count: 6,
+                };
+                f.fuel = tenebris_core::block_entity::ChestSlot {
+                    item: tenebris_core::items::COAL,
+                    count: 2,
+                };
+                f.output = tenebris_core::block_entity::ChestSlot {
+                    item: tenebris_core::items::COPPER_INGOT,
+                    count: 2,
+                };
+                f.fuel_remaining = 5;
+                f.progress = 0.45;
                 d
             };
             {
