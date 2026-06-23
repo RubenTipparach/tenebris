@@ -187,6 +187,13 @@ pub fn covers_face(b: Block) -> bool {
     if b == Block::Wood || b == Block::Leaves || b == Block::SeqLeaves {
         return false;
     }
+    /* Tech blocks render as a cube (or thin connector) sitting in the
+     * voxel, not a full hex prism, so they must NOT occlude the faces of
+     * the terrain below / beside them - otherwise the ground under a
+     * placed machine gets culled and leaves a hole around the cube. */
+    if is_tech_block(b) {
+        return false;
+    }
     true
 }
 
