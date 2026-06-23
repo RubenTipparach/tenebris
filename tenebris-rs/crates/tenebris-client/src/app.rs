@@ -500,7 +500,19 @@ fn dev_maybe_place(app: &mut App) {
                 Block::HydroGenerator,
             ];
             dev_for_each_neighbor(&app.world, center, |w, i, n| {
-                dev_set_surface_w(w, n, ring[i % ring.len()]);
+                /* Place the machine in the AIR voxel above the surface (the
+                 * way a real player placement does), so the cube sits ON
+                 * the ground instead of sinking into the top terrain layer. */
+                let mut top = -1;
+                for d in (0..tenebris_core::world::WORLD_MAX_DEPTH).rev() {
+                    if tenebris_core::blocks::is_solid(w.get(n, d)) {
+                        top = d;
+                        break;
+                    }
+                }
+                if top >= 0 && top + 1 < tenebris_core::world::WORLD_MAX_DEPTH {
+                    w.set(n, top + 1, ring[i % ring.len()]);
+                }
             });
             let mut p = app.player.borrow_mut();
             let kit = [
