@@ -53,7 +53,7 @@ use tenebris_core::world_water;
 /* Atlas column count (must match the runtime bake in renderer.c).
  * 12 default + 6 Sequoia + 3 tinted variants + wood + leaves + bedrock
  * + seq-leaves = 25, + 4 ore tints (coal/copper/tin/iron) = 29 total. */
-pub const HEX_ATLAS_TILES: i32 = 48;
+pub const HEX_ATLAS_TILES: i32 = 90;
 pub const HEX_ATLAS_U_STEP: f32 = 1.0 / HEX_ATLAS_TILES as f32;
 
 /*
@@ -589,37 +589,59 @@ fn emit_cap(
     }
 }
 
-/// Atlas columns (front, side, top, bottom) for a tech block drawn as a
-/// cube with its ported JS net texture, or `None` for blocks that aren't
-/// cube-rendered yet. Cells are sliced from the 48x32 JS net.
-fn tech_cube_cols(b: Block) -> Option<[u8; 4]> {
-    match b {
-        Block::Furnace => Some([42, 43, 44, 45]),
-        _ => None,
-    }
+/// Atlas columns `[front, left, right, back, top, bottom]` for a tech
+/// block drawn as a cube with its ported JS net texture, or `None` for
+/// blocks that aren't cube-rendered. Six 16x16 cells sliced from the
+/// 48x32 JS net (same cell layout across every machine - verified against
+/// the src/planet machine modules). Each machine gets 6 contiguous atlas
+/// columns starting at 42.
+fn tech_cube_cols(b: Block) -> Option<[u8; 6]> {
+    /* Machine order matches the ATLAS_PATHS cube-cell section. */
+    let slot = match b {
+        Block::Furnace => 0,
+        Block::ElectricFurnace => 1,
+        Block::Printer3D => 2,
+        Block::Computer => 3,
+        Block::ElectronicsWorkbench => 4,
+        Block::HydroGenerator => 5,
+        Block::SteamEngine => 6,
+        Block::StorageChest => 7,
+        _ => return None,
+    };
+    let base = 42 + slot * 6;
+    Some([base, base + 1, base + 2, base + 3, base + 4, base + 5])
 }
 
 /// Emit a cube for a tech block sitting on the hex tile - the JS
-/// BoxGeometry look. Each cube face is UV-mapped to a cell of the ported
-/// net texture (front faces a fixed tile tangent for now; player-facing
-/// needs stored facing, a later pass). Reuses the terrain vertex format +
-/// per-vertex lighting so it draws in the same pass / shader as the world.
+/// BoxGeometry look. It is a *true cube* sized to the tile footprint,
+/// sitting ON the surface (the JS placed a fixed 0.8 box at
+/// `worldPos + up*size/2`), not a slab squashed into the thin voxel layer.
+/// Each cube face is UV-mapped to a cell of the ported net texture (front
+/// faces a fixed tile tangent for now; player-facing needs stored facing,
+/// a later pass). Reuses the terrain vertex format + per-vertex lighting
+/// so it draws in the same pass / shader as the world.
 fn emit_tech_cube(
     out: &mut HexMesh,
     t: &Tile,
     w: &World,
     tile_idx: i32,
     depth: i32,
-    cols: [u8; 4],
+    cols: [u8; 6],
     bake_lighting: bool,
 ) {
+    let up = dvec3_normalize(t.center);
     let r_bot = w.depth_to_radius_m(depth);
-    let r_top = w.depth_to_radius_m(depth + 1);
-    let half = ((r_top - r_bot) * 0.5).max(0.01);
+
+    /* Cube edge sized from the hex circumradius at the surface (the
+     * perpendicular distance from the radial axis to a corner), so the
+     * block reads at terrain scale instead of a thin wafer. */
+    let c0 = shrink_corner(t, 0, 1.0);
+    let d_up = up.x * c0.x + up.y * c0.y + up.z * c0.z;
+    let horiz_r = (1.0 - d_up * d_up).max(0.0).sqrt() * r_bot;
+    let half = (horiz_r * 0.78).max(0.05);
 
     /* Tile tangent frame: up = radial; {tangent, bitangent, up} is
      * right-handed (cross(tangent, bitangent) == up). */
-    let up = dvec3_normalize(t.center);
     let reference = if up.y.abs() < 0.9 {
         dvec3_make(0.0, 1.0, 0.0)
     } else {
@@ -656,7 +678,7 @@ fn emit_tech_cube(
         let p11 = dvec3_add(dvec3_add(fc, ah), bh);
         let p01 = dvec3_add(dvec3_sub(fc, ah), bh);
         let base = out.vertices.len() as u32;
-        for (p, uu, vv) in [(p00, u0, 0.0), (p10, u1, 0.0), (p11, u1, 1.0), (p01, u0, 1.0)] {
+        for (p, uu, vv) in [(p00, u0, 1.0), (p10, u1, 1.0), (p11, u1, 0.0), (p01, u0, 0.0)] {
             let torch = if bake_lighting { torch_light_at(dvec3_to_vec3(p)) } else { 0.0 };
             push_vertex(out, p, normal, uu, vv, sky, torch, 0.0);
         }
@@ -669,12 +691,12 @@ fn emit_tech_cube(
     };
 
     reserve(out, 24, 36);
-    let [c_front, c_side, c_top, c_bottom] = cols;
+    let [c_front, c_left, c_right, c_back, c_top, c_bottom] = cols;
     let neg = |v: DVec3| dvec3_scale(v, -1.0);
     quad(out, tangent, bitangent, up, c_front); /* +tangent front */
-    quad(out, neg(tangent), up, bitangent, c_side); /* -tangent back */
-    quad(out, bitangent, up, tangent, c_side); /* +bitangent right */
-    quad(out, neg(bitangent), tangent, up, c_side); /* -bitangent left */
+    quad(out, neg(tangent), up, bitangent, c_back); /* -tangent back */
+    quad(out, bitangent, up, tangent, c_right); /* +bitangent right */
+    quad(out, neg(bitangent), tangent, up, c_left); /* -bitangent left */
     quad(out, up, tangent, bitangent, c_top); /* +up top */
     quad(out, neg(up), bitangent, tangent, c_bottom); /* -up bottom */
 }
@@ -1751,10 +1773,10 @@ mod tests {
 
     #[test]
     fn atlas_consts_pinned() {
-        assert_eq!(HEX_ATLAS_TILES, 48);
-        /* 1.0 / HEX_ATLAS_TILES (widened to 48 for the ported tech-block
+        assert_eq!(HEX_ATLAS_TILES, 90);
+        /* 1.0 / HEX_ATLAS_TILES (widened to 90 for the ported tech-block cube cells +
          * tiles at columns 29..41, plus headroom). */
-        assert_eq!(HEX_ATLAS_U_STEP.to_bits(), (1.0f32 / 48.0).to_bits());
+        assert_eq!(HEX_ATLAS_U_STEP.to_bits(), (1.0f32 / 90.0).to_bits());
         /* Vertex layout: 44-byte stride, field offsets as the
          * pipelines bind them. */
         assert_eq!(std::mem::size_of::<HexVertex>(), 44);
@@ -1929,24 +1951,24 @@ mod tests {
 
     const S1_VC: usize = 55;
     const S1_IC: usize = 90;
-        const S1_VH: u64 = 0xfca21c9896a1b5f9;
+        const S1_VH: u64 = 0xc2a6a0d1f250ae9e;
     const S1_IH: u64 = 0x489c92b4ebb0bd85;
-        const S1_V0: [u32; 11] = [0x43947274, 0xc15441cf, 0xc1af9cc9, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3d800000, 0x00000000, 0x3f13b2fb, 0x00000000, 0x00000000];
-        const S1_V1: [u32; 11] = [0x43947274, 0x415441cf, 0xc1af9cc9, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3daaaaab, 0x00000000, 0x3f13b2fb, 0x00000000, 0x00000000];
-        const S1_VMID: [u32; 11] = [0x4395674c, 0x41d5d274, 0x00000000, 0x3f800000, 0x00000000, 0x00000000, 0x3d7a48a4, 0x3f400000, 0x3f800000, 0x00000000, 0x00000000];
-        const S1_VLAST: [u32; 11] = [0x4395674c, 0xc1d5d274, 0x00000000, 0xbd9c3fd0, 0xbf5a59fd, 0xbf043380, 0x3d2aaaab, 0x3f800000, 0x3f800000, 0x00000000, 0x00000000];
+        const S1_V0: [u32; 11] = [0x43947274, 0xc15441cf, 0xc1af9cc9, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3d088889, 0x00000000, 0x3f13b2fb, 0x00000000, 0x00000000];
+        const S1_V1: [u32; 11] = [0x43947274, 0x415441cf, 0xc1af9cc9, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3d360b61, 0x00000000, 0x3f13b2fb, 0x00000000, 0x00000000];
+        const S1_VMID: [u32; 11] = [0x4395674c, 0x41d5d274, 0x00000000, 0x3f800000, 0x00000000, 0x00000000, 0x3d057c13, 0x3f400000, 0x3f800000, 0x00000000, 0x00000000];
+        const S1_VLAST: [u32; 11] = [0x4395674c, 0xc1d5d274, 0x00000000, 0xbd9c3fd0, 0xbf5a59fd, 0xbf043380, 0x3cb60b61, 0x3f800000, 0x3f800000, 0x00000000, 0x00000000];
 
     const S2_VC: usize = 142;
     const S2_IC: usize = 288;
-        const S2_VH: u64 = 0x05778fe8461a8d81;
+        const S2_VH: u64 = 0x48737406d939b6c4;
     const S2_IH: u64 = 0x87cd063e4fdf9205;
-        const S2_VMID: [u32; 11] = [0xc3927eaf, 0xc14aa9c7, 0xc2d476f9, 0xbf764198, 0x00000000, 0xbe8be997, 0x3eeb6196, 0x3f400000, 0x3f800000, 0x00000000, 0x00000000];
+        const S2_VMID: [u32; 11] = [0xc3927eaf, 0xc14aa9c7, 0xc2d476f9, 0xbf764198, 0x00000000, 0xbe8be997, 0x3e7b12c2, 0x3f400000, 0x3f800000, 0x00000000, 0x00000000];
 
     const S3_VC: usize = 66;
     const S3_IC: usize = 105;
-        const S3_VH: u64 = 0x173250cd8d3eee30;
+        const S3_VH: u64 = 0xbedfede2cfc58204;
     const S3_IH: u64 = 0xf8c0595555ef4e63;
-        const S3_V0: [u32; 11] = [0xc337636b, 0x437c69ed, 0x00000000, 0xbf27b753, 0xbef3b458, 0x3f16329a, 0x3d800000, 0x00000000, 0x3eaa6e14, 0x00000000, 0x00000000];
+        const S3_V0: [u32; 11] = [0xc337636b, 0x437c69ed, 0x00000000, 0xbf27b753, 0xbef3b458, 0x3f16329a, 0x3d088889, 0x00000000, 0x3eaa6e14, 0x00000000, 0x00000000];
 
     const S4_VC: usize = 6;
     const S4_IC: usize = 15;
@@ -1965,44 +1987,44 @@ mod tests {
     const CAVE_NB: i32 = 539;
     const S6A_VC: usize = 103;
     const S6A_IC: usize = 162;
-        const S6A_VH: u64 = 0xe29a81fa0f5588b9;
+        const S6A_VH: u64 = 0xe5dee871da7fe976;
     const S6A_IH: u64 = 0x547c88d534b4f325;
-        const S6A_VMID: [u32; 11] = [0x4394f1fa, 0xc154f826, 0xc1b033a5, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3d800000, 0x3f800000, 0x3f13b2fb, 0x00000000, 0x00000000];
+        const S6A_VMID: [u32; 11] = [0x4394f1fa, 0xc154f826, 0xc1b033a5, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3d088889, 0x3f800000, 0x3f13b2fb, 0x00000000, 0x00000000];
     const S6B_VC: usize = 117;
     const S6B_IC: usize = 198;
-        const S6B_VH: u64 = 0xf31aa854cfaf4bdd;
+        const S6B_VH: u64 = 0xa7abbd9a9c625478;
     const S6B_IH: u64 = 0xf4c2850a72d89205;
 
     const FLOW_NB: i32 = 279;
     const S7A_VC: usize = 38;
     const S7A_IC: usize = 72;
-        const S7A_VH: u64 = 0xcdffa1ca50a6dec7;
+        const S7A_VH: u64 = 0x3c1d0048586eac49;
     const S7A_IH: u64 = 0xf5363b05eb547fdd;
         const S7A_V0: [u32; 11] = [0xc39cd92c, 0x00000000, 0xc2b23ab3, 0xbf764198, 0x00000000, 0xbe8be997, 0x00000000, 0x3f7f632a, 0x3f800000, 0x00000000, 0x3f800000];
     const S7B_VC: usize = 62;
     const S7B_IC: usize = 108;
-        const S7B_VH: u64 = 0x973fb4100839a839;
+        const S7B_VH: u64 = 0x5a31e46734d2997b;
     const S7B_IH: u64 = 0x4eb7dd0a224605ed;
 
     const S8_VC: usize = 103;
     const S8_IC: usize = 162;
-        const S8_VH: u64 = 0xed88a81d32fa329f;
+        const S8_VH: u64 = 0xc3aa5107ad382f78;
     const S8_IH: u64 = 0x547c88d534b4f325;
-        const S8_V0: [u32; 11] = [0x4391754d, 0xc14ffbc2, 0xc1ac139d, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3dd55556, 0x00000000, 0x3cae52d6, 0x00000000, 0x00000000];
+        const S8_V0: [u32; 11] = [0x4391754d, 0xc14ffbc2, 0xc1ac139d, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3d638e39, 0x00000000, 0x3cae52d6, 0x00000000, 0x00000000];
 
     const S9A_VC: usize = 103;
     const S9A_IC: usize = 162;
-        const S9A_VH: u64 = 0x66afc0700e5f4a5f;
+        const S9A_VH: u64 = 0xf99d1efd89e4c920;
     const S9A_IH: u64 = 0x547c88d534b4f325;
-        const S9A_V0: [u32; 11] = [0x4391754d, 0xc14ffbc2, 0xc1ac139d, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3dd55556, 0x00000000, 0x00000000, 0x00000000, 0x00000000];
-        const S9A_VMID: [u32; 11] = [0x4394f1fa, 0xc154f826, 0xc1b033a5, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3d800000, 0x3f800000, 0x00000000, 0x00000000, 0x00000000];
+        const S9A_V0: [u32; 11] = [0x4391754d, 0xc14ffbc2, 0xc1ac139d, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3d638e39, 0x00000000, 0x00000000, 0x00000000, 0x00000000];
+        const S9A_VMID: [u32; 11] = [0x4394f1fa, 0xc154f826, 0xc1b033a5, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3d088889, 0x3f800000, 0x00000000, 0x00000000, 0x00000000];
     const S9B_VC: usize = 66;
     const S9B_IC: usize = 105;
-        const S9B_VH: u64 = 0x621b984962a206a9;
+        const S9B_VH: u64 = 0x6970a1db5012d509;
     const S9B_IH: u64 = 0xf8c0595555ef4e63;
     const S9C_VC: usize = 38;
     const S9C_IC: usize = 72;
-        const S9C_VH: u64 = 0xcdffa1ca50a6dec7;
+        const S9C_VH: u64 = 0x3c1d0048586eac49;
     const S9C_IH: u64 = 0xf5363b05eb547fdd;
     const S9D_VC: usize = 6;
     const S9D_IC: usize = 15;

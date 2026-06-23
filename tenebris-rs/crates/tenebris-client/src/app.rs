@@ -492,12 +492,12 @@ fn dev_maybe_place(app: &mut App) {
              * machine each, so one shot shows the ported JS _face art on
              * placed blocks. Pitch down so they fill frame. */
             let ring = [
+                Block::Furnace,
                 Block::ElectricFurnace,
                 Block::Computer,
                 Block::Printer3D,
                 Block::SteamEngine,
                 Block::HydroGenerator,
-                Block::StorageChest,
             ];
             dev_set_surface(&app.world, center, Block::Furnace);
             dev_for_each_neighbor(&app.world, center, |w, i, n| {
@@ -520,7 +520,7 @@ fn dev_maybe_place(app: &mut App) {
                     p.inventory.slots[i] = crate::inventory::InvSlot::block(*b, 1);
                 }
             }
-            p.pitch = -0.55;
+            p.pitch = -0.30;
         }
         _ => {
             /* Launch pad: centre tile + its ring all become the pad. */

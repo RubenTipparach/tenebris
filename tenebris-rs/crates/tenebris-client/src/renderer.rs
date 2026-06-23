@@ -294,14 +294,57 @@ const ATLAS_PATHS: [Option<&str>; ATLAS_TILES] = [
     Some("assets/textures/technology/cable.png"),                      /* 39 Cable */
     Some("assets/textures/technology/copper_pipe.png"),                /* 40 CopperPipe */
     Some("assets/textures/technology/landing_pad_side.png"),           /* 41 landing pad (spare) */
-    /* Furnace cube cells, sliced from the 48x32 JS net (front/side/top/
-     * bottom) - the mesher maps these per cube face. */
-    Some("assets/textures/technology/furnace_front.png"),              /* 42 furnace front */
-    Some("assets/textures/technology/furnace_side.png"),               /* 43 furnace side */
-    Some("assets/textures/technology/furnace_top.png"),                /* 44 furnace top */
-    Some("assets/textures/technology/furnace_bottom.png"),             /* 45 furnace bottom */
-    None,                                                              /* 46 headroom */
-    None,                                                              /* 47 headroom */
+    /* Tech-block cube cells, sliced from each 48x32 JS net
+     * (front/left/right/back/top/bottom). emit_tech_cube maps these
+     * per cube face; 6 contiguous columns per machine from col 42. */
+    Some("assets/textures/technology/furnace__front.png"), /* 42 furnace front */
+    Some("assets/textures/technology/furnace__left.png"), /* 43 furnace left */
+    Some("assets/textures/technology/furnace__right.png"), /* 44 furnace right */
+    Some("assets/textures/technology/furnace__back.png"), /* 45 furnace back */
+    Some("assets/textures/technology/furnace__top.png"), /* 46 furnace top */
+    Some("assets/textures/technology/furnace__bottom.png"), /* 47 furnace bottom */
+    Some("assets/textures/technology/electric_furnace__front.png"), /* 48 electric_furnace front */
+    Some("assets/textures/technology/electric_furnace__left.png"), /* 49 electric_furnace left */
+    Some("assets/textures/technology/electric_furnace__right.png"), /* 50 electric_furnace right */
+    Some("assets/textures/technology/electric_furnace__back.png"), /* 51 electric_furnace back */
+    Some("assets/textures/technology/electric_furnace__top.png"), /* 52 electric_furnace top */
+    Some("assets/textures/technology/electric_furnace__bottom.png"), /* 53 electric_furnace bottom */
+    Some("assets/textures/technology/3d_printer__front.png"), /* 54 3d_printer front */
+    Some("assets/textures/technology/3d_printer__left.png"), /* 55 3d_printer left */
+    Some("assets/textures/technology/3d_printer__right.png"), /* 56 3d_printer right */
+    Some("assets/textures/technology/3d_printer__back.png"), /* 57 3d_printer back */
+    Some("assets/textures/technology/3d_printer__top.png"), /* 58 3d_printer top */
+    Some("assets/textures/technology/3d_printer__bottom.png"), /* 59 3d_printer bottom */
+    Some("assets/textures/technology/computer__front.png"), /* 60 computer front */
+    Some("assets/textures/technology/computer__left.png"), /* 61 computer left */
+    Some("assets/textures/technology/computer__right.png"), /* 62 computer right */
+    Some("assets/textures/technology/computer__back.png"), /* 63 computer back */
+    Some("assets/textures/technology/computer__top.png"), /* 64 computer top */
+    Some("assets/textures/technology/computer__bottom.png"), /* 65 computer bottom */
+    Some("assets/textures/technology/electronics_workbench__front.png"), /* 66 electronics_workbench front */
+    Some("assets/textures/technology/electronics_workbench__left.png"), /* 67 electronics_workbench left */
+    Some("assets/textures/technology/electronics_workbench__right.png"), /* 68 electronics_workbench right */
+    Some("assets/textures/technology/electronics_workbench__back.png"), /* 69 electronics_workbench back */
+    Some("assets/textures/technology/electronics_workbench__top.png"), /* 70 electronics_workbench top */
+    Some("assets/textures/technology/electronics_workbench__bottom.png"), /* 71 electronics_workbench bottom */
+    Some("assets/textures/technology/hydro_generator__front.png"), /* 72 hydro_generator front */
+    Some("assets/textures/technology/hydro_generator__left.png"), /* 73 hydro_generator left */
+    Some("assets/textures/technology/hydro_generator__right.png"), /* 74 hydro_generator right */
+    Some("assets/textures/technology/hydro_generator__back.png"), /* 75 hydro_generator back */
+    Some("assets/textures/technology/hydro_generator__top.png"), /* 76 hydro_generator top */
+    Some("assets/textures/technology/hydro_generator__bottom.png"), /* 77 hydro_generator bottom */
+    Some("assets/textures/technology/steam_engine__front.png"), /* 78 steam_engine front */
+    Some("assets/textures/technology/steam_engine__left.png"), /* 79 steam_engine left */
+    Some("assets/textures/technology/steam_engine__right.png"), /* 80 steam_engine right */
+    Some("assets/textures/technology/steam_engine__back.png"), /* 81 steam_engine back */
+    Some("assets/textures/technology/steam_engine__top.png"), /* 82 steam_engine top */
+    Some("assets/textures/technology/steam_engine__bottom.png"), /* 83 steam_engine bottom */
+    Some("assets/textures/technology/storage_chest__front.png"), /* 84 storage_chest front */
+    Some("assets/textures/technology/storage_chest__left.png"), /* 85 storage_chest left */
+    Some("assets/textures/technology/storage_chest__right.png"), /* 86 storage_chest right */
+    Some("assets/textures/technology/storage_chest__back.png"), /* 87 storage_chest back */
+    Some("assets/textures/technology/storage_chest__top.png"), /* 88 storage_chest top */
+    Some("assets/textures/technology/storage_chest__bottom.png"), /* 89 storage_chest bottom */
 ];
 
 /// Per-channel multiplier applied to each loaded tile. {1,1,1} =
@@ -338,26 +381,68 @@ const ATLAS_TINTS: [[f32; 3]; ATLAS_TILES] = [
     [1.0, 1.0, 1.0], /* COPPER_ORE */
     [1.0, 1.0, 1.0], /* TIN_ORE    */
     [1.0, 1.0, 1.0], /* IRON_ORE   */
-    /* Tech tiles 29..47 are pre-coloured pixel art - no tint. */
-    [1.0, 1.0, 1.0], /* 29 Furnace */
-    [1.0, 1.0, 1.0], /* 30 ElectricFurnace */
-    [1.0, 1.0, 1.0], /* 31 Printer3D */
-    [1.0, 1.0, 1.0], /* 32 Computer */
-    [1.0, 1.0, 1.0], /* 33 Workbench */
-    [1.0, 1.0, 1.0], /* 34 HydroGenerator */
-    [1.0, 1.0, 1.0], /* 35 SteamEngine */
-    [1.0, 1.0, 1.0], /* 36 StorageChest */
-    [1.0, 1.0, 1.0], /* 37 LaunchPad */
-    [1.0, 1.0, 1.0], /* 38 LaunchTower */
-    [1.0, 1.0, 1.0], /* 39 Cable */
-    [1.0, 1.0, 1.0], /* 40 CopperPipe */
-    [1.0, 1.0, 1.0], /* 41 landing pad */
-    [1.0, 1.0, 1.0], /* 42 */
-    [1.0, 1.0, 1.0], /* 43 */
-    [1.0, 1.0, 1.0], /* 44 */
-    [1.0, 1.0, 1.0], /* 45 */
-    [1.0, 1.0, 1.0], /* 46 */
-    [1.0, 1.0, 1.0], /* 47 */
+    /* Tech tiles 29..89 are pre-coloured pixel art - no tint. */
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
 ];
 
 struct AtlasBake {
