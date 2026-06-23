@@ -648,14 +648,17 @@ fn dev_maybe_place(app: &mut App) {
                 }
                 top + 1
             };
-            let (eng, cab, fur) = (ring[0], ring[1], ring[2]);
+            /* Cable on the CENTRE tile (adjacent to every neighbour, so the
+             * network reliably links them regardless of neighbour-array
+             * order), engine + furnace on two neighbours. */
+            let (eng, fur) = (ring[0], ring[1]);
             {
                 let mut w = app.world.borrow_mut();
+                w.set(center, depth, Block::Cable);
                 w.set(eng, depth, Block::SteamEngine);
                 let s = w.block_entities.entry(eng, depth).steam_engine_mut();
                 s.fuel = ChestSlot { item: items::COAL, count: 4 };
                 s.burn_time = STEAM_BURN_S_PER_COAL;
-                w.set(cab, depth, Block::Cable);
                 w.set(fur, depth, Block::ElectricFurnace);
                 let ef = w.block_entities.entry(fur, depth).electric_furnace_mut();
                 ef.input = ChestSlot { item: items::IRON, count: 5 };
