@@ -4,6 +4,7 @@
 mod app;
 mod bag;
 mod chat;
+mod chest_screen;
 mod client_kv;
 mod crafting_screen;
 mod rocket_screen;

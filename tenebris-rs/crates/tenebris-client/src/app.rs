@@ -44,6 +44,7 @@ use crate::gfx_math::{mat4_perspective, Mat4};
 use crate::hotbar_ui;
 use crate::input;
 use crate::interact::{self, InteractState, MINING_TIME_S};
+use crate::chest_screen;
 use crate::egui_layer;
 use crate::inventory::{self, INV_HOTBAR_SLOTS};
 use crate::inventory_screen;
@@ -517,7 +518,7 @@ fn dev_maybe_place(app: &mut App) {
                     /* Face each machine toward the player at the centre. */
                     let facing = w.facing_toward(n, d, player_pos);
                     w.block_entities
-                        .set(n, d, tenebris_core::block_entity::BlockEntity { facing });
+                        .set(n, d, tenebris_core::block_entity::BlockEntity::with_facing(facing));
                 }
             });
             let mut p = app.player.borrow_mut();
@@ -538,6 +539,35 @@ fn dev_maybe_place(app: &mut App) {
                 }
             }
             p.pitch = -0.18;
+        }
+        7 => {
+            /* Storage-chest UI shot: place a chest in the air above the
+             * centre surface, pre-load it + the bag, then open the panel. */
+            let depth = {
+                let mut w = app.world.borrow_mut();
+                let mut top = -1;
+                for d in (0..tenebris_core::world::WORLD_MAX_DEPTH).rev() {
+                    if tenebris_core::blocks::is_solid(w.get(center, d)) {
+                        top = d;
+                        break;
+                    }
+                }
+                if top < 0 || top + 1 >= tenebris_core::world::WORLD_MAX_DEPTH {
+                    return;
+                }
+                let d = top + 1;
+                w.set(center, d, Block::StorageChest);
+                let chest = w.block_entities.entry(center, d).chest_mut();
+                tenebris_core::block_entity::chest_add(chest, tenebris_core::items::IRON_INGOT, 12, 64);
+                tenebris_core::block_entity::chest_add(chest, tenebris_core::items::COPPER, 30, 64);
+                d
+            };
+            {
+                let mut p = app.player.borrow_mut();
+                p.bag.add(tenebris_core::items::PLANK, 20);
+                p.bag.add(tenebris_core::items::COAL, 16);
+            }
+            chest_screen::open(app.world.clone(), app.player.clone(), center, depth);
         }
         _ => {
             /* Launch pad: centre tile + its ring all become the pad. */
@@ -813,6 +843,9 @@ extern "C" fn init() {
         DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
     } else if std::env::var("TENEBRIS_DEV_TECH").is_ok() {
         DEV_PLACE_MODE.with(|c| c.set(6));
+        DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
+    } else if std::env::var("TENEBRIS_DEV_CHEST").is_ok() {
+        DEV_PLACE_MODE.with(|c| c.set(7));
         DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
     }
     if std::env::var("TENEBRIS_DEV_KIT").is_ok() {
@@ -1622,11 +1655,11 @@ fn apply_sp_world_saves(w_rc: &Rc<RefCell<World>>) {
     let bents = persistence::load_block_entities(&world_name, body_id);
     if !bents.is_empty() {
         let mut w = w_rc.borrow_mut();
-        for (tile, depth, facing) in &bents {
-            w.block_entities
-                .set(*tile, *depth, tenebris_core::block_entity::BlockEntity { facing: *facing });
+        let n = bents.len();
+        for (tile, depth, e) in bents {
+            w.block_entities.set(tile, depth, e);
         }
-        println!("[sp-saves] body={}: {} block-entit(ies) restored", body_id, bents.len());
+        println!("[sp-saves] body={}: {} block-entit(ies) restored", body_id, n);
     }
 }
 
@@ -2256,6 +2289,7 @@ extern "C" fn frame() {
 fn egui_ui(app: &mut App, ctx: &egui::Context) {
     crafting_screen::set_player(Some(app.player.clone()));
     crafting_screen::egui_ui(ctx);
+    chest_screen::egui_ui(ctx);
 }
 
 fn frame_inner(app: &mut App) {
@@ -2880,6 +2914,11 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
     if menu::pause_active() && menu::pause_event(e) {
         return;
     }
+    /* Storage chest panel: while open it owns Esc (its rows are egui
+     * buttons, handled in the egui layer). */
+    if chest_screen::handle_event(e) {
+        return;
+    }
     /* Survival craft screen: first crack after pause so B toggles it and,
      * while open, it owns clicks + Esc (closed, it ignores everything and
      * falls through). Always available - not gated on the F2 debug UI. */
@@ -2937,6 +2976,16 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
                 crafting_screen::open_station(
                     Some(app.player.clone()),
                     Some(tenebris_core::items::from_block(Block::ElectronicsWorkbench)),
+                );
+                return;
+            }
+            /* A placed storage chest opens its 27-slot inventory panel. */
+            Block::StorageChest => {
+                chest_screen::open(
+                    app.world.clone(),
+                    app.player.clone(),
+                    app.interact.hit_tile,
+                    app.interact.hit_depth,
                 );
                 return;
             }

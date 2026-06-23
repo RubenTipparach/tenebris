@@ -20,21 +20,121 @@ use crate::world::WORLD_MAX_DEPTH;
 /// `facing` sentinel: no facing recorded, use the default cube orientation.
 pub const FACING_UNSET: u8 = 0xFF;
 
-/// Placed-state for one cell. `Copy` + small: the store holds these by
-/// value. New machine-state fields append here (kept zero-cost for the
-/// common tech block that only needs facing).
+/// Storage-chest capacity (matches the JS `CHEST_SLOTS`).
+pub const CHEST_SLOTS: usize = 27;
+
+/// One chest slot. `count == 0` means empty (item ignored).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ChestSlot {
+    pub item: u16,
+    pub count: u16,
+}
+
+/// A chest's storage grid.
+pub type ChestInv = [ChestSlot; CHEST_SLOTS];
+
+/// Machine-specific placed state. `Copy` (every variant is fixed-size) so
+/// the whole `BlockEntity` stays cheap to store/return. Furnace smelt
+/// progress, generator power, printer jobs append as variants here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MachineState {
+    /// Plain block - no machine state (most tech blocks until their
+    /// behavior lands).
+    None,
+    /// Storage chest contents.
+    Chest(ChestInv),
+}
+
+impl Default for MachineState {
+    fn default() -> Self {
+        MachineState::None
+    }
+}
+
+/// Placed-state for one cell. `Copy` + small-ish: the store holds these by
+/// value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BlockEntity {
     /// Tile edge index (0..`num_neighbors`) the block's front faces, or
     /// [`FACING_UNSET`]. Tech-block cubes orient their front to this so a
     /// placed machine faces the player.
     pub facing: u8,
+    /// Machine behavior state (chest contents, etc.).
+    pub state: MachineState,
 }
 
 impl Default for BlockEntity {
     fn default() -> Self {
-        Self { facing: FACING_UNSET }
+        Self { facing: FACING_UNSET, state: MachineState::None }
     }
+}
+
+impl BlockEntity {
+    /// A facing-only entity (no machine state).
+    pub fn with_facing(facing: u8) -> Self {
+        Self { facing, state: MachineState::None }
+    }
+
+    /// Borrow the chest inventory if this entity is a chest.
+    pub fn chest(&self) -> Option<&ChestInv> {
+        match &self.state {
+            MachineState::Chest(c) => Some(c),
+            _ => None,
+        }
+    }
+
+    /// Promote this entity to a chest (if it isn't already) and return the
+    /// inventory for mutation.
+    pub fn chest_mut(&mut self) -> &mut ChestInv {
+        if !matches!(self.state, MachineState::Chest(_)) {
+            self.state = MachineState::Chest([ChestSlot::default(); CHEST_SLOTS]);
+        }
+        match &mut self.state {
+            MachineState::Chest(c) => c,
+            _ => unreachable!(),
+        }
+    }
+}
+
+/// Add `count` of `item` to a chest, topping up matching stacks first then
+/// filling empty slots. Returns the leftover that didn't fit.
+pub fn chest_add(inv: &mut ChestInv, item: u16, count: u16, stack_max: u16) -> u16 {
+    let mut remaining = count;
+    let stack_max = stack_max.max(1);
+    for s in inv.iter_mut() {
+        if remaining == 0 {
+            break;
+        }
+        if s.count > 0 && s.item == item && s.count < stack_max {
+            let add = (stack_max - s.count).min(remaining);
+            s.count += add;
+            remaining -= add;
+        }
+    }
+    for s in inv.iter_mut() {
+        if remaining == 0 {
+            break;
+        }
+        if s.count == 0 {
+            s.item = item;
+            let add = stack_max.min(remaining);
+            s.count = add;
+            remaining -= add;
+        }
+    }
+    remaining
+}
+
+/// Take the whole stack from chest slot `idx`, clearing it. Returns
+/// `(item, count)` or `None` if the slot is empty / out of range.
+pub fn chest_take(inv: &mut ChestInv, idx: usize) -> Option<(u16, u16)> {
+    let s = inv.get_mut(idx)?;
+    if s.count == 0 {
+        return None;
+    }
+    let out = (s.item, s.count);
+    *s = ChestSlot::default();
+    Some(out)
 }
 
 /// Sparse map of placed-block state, keyed by `tile * WORLD_MAX_DEPTH +
@@ -66,6 +166,17 @@ impl BlockEntityStore {
         self.map.get(&Self::key(tile, depth)).copied()
     }
 
+    /// Mutable borrow of an existing entity.
+    pub fn get_mut(&mut self, tile: i32, depth: i32) -> Option<&mut BlockEntity> {
+        self.map.get_mut(&Self::key(tile, depth))
+    }
+
+    /// Get the entity for a cell, inserting a default one if absent (used
+    /// when a machine first needs state, e.g. opening a fresh chest).
+    pub fn entry(&mut self, tile: i32, depth: i32) -> &mut BlockEntity {
+        self.map.entry(Self::key(tile, depth)).or_default()
+    }
+
     pub fn set(&mut self, tile: i32, depth: i32, e: BlockEntity) {
         self.map.insert(Self::key(tile, depth), e);
     }
@@ -76,7 +187,7 @@ impl BlockEntityStore {
 
     /// Facing for a cell, or [`FACING_UNSET`] if it has no entity.
     pub fn facing(&self, tile: i32, depth: i32) -> u8 {
-        self.get(tile, depth).map(|e| e.facing).unwrap_or(FACING_UNSET)
+        self.map.get(&Self::key(tile, depth)).map(|e| e.facing).unwrap_or(FACING_UNSET)
     }
 
     /// Iterate `(tile, depth, entity)` - used by the save path to
@@ -100,10 +211,10 @@ mod tests {
         assert!(s.is_empty());
         assert_eq!(s.facing(5, 3), FACING_UNSET);
 
-        s.set(5, 3, BlockEntity { facing: 2 });
+        s.set(5, 3, BlockEntity::with_facing(2));
         assert_eq!(s.len(), 1);
         assert_eq!(s.facing(5, 3), 2);
-        assert_eq!(s.get(5, 3), Some(BlockEntity { facing: 2 }));
+        assert_eq!(s.get(5, 3), Some(BlockEntity::with_facing(2)));
         // A different cell is independent.
         assert_eq!(s.facing(5, 4), FACING_UNSET);
 
@@ -113,12 +224,53 @@ mod tests {
     }
 
     #[test]
+    fn chest_add_tops_up_then_fills_and_overflows() {
+        let mut inv: ChestInv = [ChestSlot::default(); CHEST_SLOTS];
+        // First add lands in slot 0.
+        assert_eq!(chest_add(&mut inv, 7, 10, 64), 0);
+        assert_eq!(inv[0], ChestSlot { item: 7, count: 10 });
+        // Same item tops up the existing stack, not a new slot.
+        assert_eq!(chest_add(&mut inv, 7, 5, 64), 0);
+        assert_eq!(inv[0], ChestSlot { item: 7, count: 15 });
+        assert_eq!(inv[1].count, 0);
+        // A different item takes the next empty slot.
+        assert_eq!(chest_add(&mut inv, 9, 3, 64), 0);
+        assert_eq!(inv[1], ChestSlot { item: 9, count: 3 });
+    }
+
+    #[test]
+    fn chest_add_returns_overflow_when_full() {
+        let mut inv: ChestInv = [ChestSlot { item: 1, count: 1 }; CHEST_SLOTS];
+        // Every slot holds item 1 at 1/1 stack-max -> no room for item 2.
+        assert_eq!(chest_add(&mut inv, 2, 5, 1), 5);
+    }
+
+    #[test]
+    fn chest_take_clears_slot() {
+        let mut inv: ChestInv = [ChestSlot::default(); CHEST_SLOTS];
+        inv[4] = ChestSlot { item: 3, count: 12 };
+        assert_eq!(chest_take(&mut inv, 4), Some((3, 12)));
+        assert_eq!(inv[4].count, 0);
+        assert_eq!(chest_take(&mut inv, 4), None);
+        assert_eq!(chest_take(&mut inv, 999), None);
+    }
+
+    #[test]
+    fn chest_mut_promotes_none_to_chest() {
+        let mut e = BlockEntity::with_facing(2);
+        assert!(e.chest().is_none());
+        e.chest_mut()[0] = ChestSlot { item: 5, count: 1 };
+        assert_eq!(e.facing, 2);
+        assert_eq!(e.chest().unwrap()[0], ChestSlot { item: 5, count: 1 });
+    }
+
+    #[test]
     fn distinct_cells_dont_alias_in_key() {
         let mut s = BlockEntityStore::new();
         // (tile=1, depth=0) and (tile=0, depth=WORLD_MAX_DEPTH-1) must not
         // collide - the key is tile*MAX_DEPTH + depth.
-        s.set(1, 0, BlockEntity { facing: 1 });
-        s.set(0, WORLD_MAX_DEPTH - 1, BlockEntity { facing: 4 });
+        s.set(1, 0, BlockEntity::with_facing(1));
+        s.set(0, WORLD_MAX_DEPTH - 1, BlockEntity::with_facing(4));
         assert_eq!(s.facing(1, 0), 1);
         assert_eq!(s.facing(0, WORLD_MAX_DEPTH - 1), 4);
         assert_eq!(s.len(), 2);
@@ -127,8 +279,8 @@ mod tests {
     #[test]
     fn iter_yields_decoded_coords() {
         let mut s = BlockEntityStore::new();
-        s.set(7, 2, BlockEntity { facing: 3 });
+        s.set(7, 2, BlockEntity::with_facing(3));
         let v: Vec<_> = s.iter().collect();
-        assert_eq!(v, vec![(7, 2, BlockEntity { facing: 3 })]);
+        assert_eq!(v, vec![(7, 2, BlockEntity::with_facing(3))]);
     }
 }

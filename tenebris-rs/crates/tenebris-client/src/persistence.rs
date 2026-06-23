@@ -40,6 +40,7 @@
 #![allow(dead_code)]
 
 use crate::client_kv;
+use tenebris_core::block_entity::{BlockEntity, BlockEntityStore, ChestSlot, CHEST_SLOTS};
 
 const KEY_PREFIX: &str = "tenebris-c:world:";
 const KEY_TILE_PREFIX: &str = "tenebris-c:tile:";
@@ -289,38 +290,53 @@ fn build_bentity_key(world: &str, body: u32) -> String {
     format!("{KEY_BENTITY_PREFIX}{world}:{body}")
 }
 
-/// Write the whole block-entity store for (world, body) as CSV lines
-/// `tile,depth,facing`. Called on the SAME input frame as the placement
-/// (CLAUDE.md hard rule) - the store is small (one entry per placed
-/// machine), so re-serialising it on each edit is cheap, mirroring the
-/// torch-list save. Empty store removes the key.
-pub fn save_block_entities(world_name: &str, body_id: u32, entities: &[(i32, i32, u8)]) -> bool {
+/// Serialise the whole block-entity store for (world, body). Called on the
+/// SAME input frame as the placement / edit (CLAUDE.md hard rule); the
+/// store is small (one entry per placed machine).
+///
+/// Format: ';'-separated records (the kv backend scrubs '\n'/'='/'\r' to
+/// '_', so ';' ':' ',' are used as the safe separators that round-trip on
+/// both backends). Each record is `tile:depth:facing` for a plain block,
+/// or `tile:depth:facing:idx,item,count,idx,item,count,...` for a chest
+/// (only non-empty slots; a trailing empty 4th field marks an empty chest).
+pub fn save_block_entities(
+    world_name: &str,
+    body_id: u32,
+    store: &BlockEntityStore,
+) -> bool {
     if !valid_name(world_name) {
         return false;
     }
     let key = build_bentity_key(world_name, body_id);
-    if entities.is_empty() {
+    if store.is_empty() {
         client_kv::remove(&key);
         return true;
     }
-    /* One line, ';'-separated records (the kv backend scrubs '\n' to '_'
-     * on native, so a newline-framed list would lose all but the first
-     * entry there; ';' survives both backends). Each record is
-     * `tile,depth,facing`. */
-    let mut buf = String::with_capacity(entities.len() * 12);
-    for (i, (tile, depth, facing)) in entities.iter().enumerate() {
-        if i > 0 {
-            buf.push(';');
+    let mut recs: Vec<String> = Vec::new();
+    for (tile, depth, e) in store.iter() {
+        let mut rec = format!("{tile}:{depth}:{}", e.facing);
+        if let Some(chest) = e.chest() {
+            rec.push(':');
+            let mut first = true;
+            for (i, s) in chest.iter().enumerate() {
+                if s.count > 0 {
+                    if !first {
+                        rec.push(',');
+                    }
+                    rec.push_str(&format!("{i},{},{}", s.item, s.count));
+                    first = false;
+                }
+            }
         }
-        buf.push_str(&format!("{tile},{depth},{facing}"));
+        recs.push(rec);
     }
-    client_kv::set(&key, &buf);
+    client_kv::set(&key, &recs.join(";"));
     true
 }
 
-/// Read the block-entity store for (world, body). Malformed lines are
+/// Read the block-entity store for (world, body). Malformed records are
 /// skipped, the rest still load.
-pub fn load_block_entities(world_name: &str, body_id: u32) -> Vec<(i32, i32, u8)> {
+pub fn load_block_entities(world_name: &str, body_id: u32) -> Vec<(i32, i32, BlockEntity)> {
     if !valid_name(world_name) {
         return Vec::new();
     }
@@ -328,16 +344,32 @@ pub fn load_block_entities(world_name: &str, body_id: u32) -> Vec<(i32, i32, u8)
         return Vec::new();
     };
     let mut out = Vec::new();
-    for line in s.split(';') {
-        let mut it = line.split(',');
-        let (Some(t), Some(d), Some(f)) = (it.next(), it.next(), it.next()) else {
+    for rec in s.split(';') {
+        let parts: Vec<&str> = rec.split(':').collect();
+        if parts.len() < 3 {
+            continue;
+        }
+        let (Ok(tile), Ok(depth), Ok(facing)) = (
+            parts[0].trim().parse::<i32>(),
+            parts[1].trim().parse::<i32>(),
+            parts[2].trim().parse::<u8>(),
+        ) else {
             continue;
         };
-        if let (Ok(tile), Ok(depth), Ok(facing)) =
-            (t.trim().parse::<i32>(), d.trim().parse::<i32>(), f.trim().parse::<u8>())
-        {
-            out.push((tile, depth, facing));
+        let mut e = BlockEntity::with_facing(facing);
+        if parts.len() >= 4 {
+            // A 4th field (even empty) means this is a chest.
+            let chest = e.chest_mut();
+            let nums: Vec<u32> =
+                parts[3].split(',').filter_map(|x| x.trim().parse::<u32>().ok()).collect();
+            for triple in nums.chunks_exact(3) {
+                let idx = triple[0] as usize;
+                if idx < CHEST_SLOTS {
+                    chest[idx] = ChestSlot { item: triple[1] as u16, count: triple[2] as u16 };
+                }
+            }
         }
+        out.push((tile, depth, e));
     }
     out
 }
@@ -773,17 +805,35 @@ mod tests {
 
     #[test]
     fn block_entities_round_trip_and_clear() {
+        use tenebris_core::block_entity::MachineState;
         let _g = test_support::begin("persist_bentities");
-        let ents = [(5, 3, 2u8), (40, 0, 4u8)];
-        assert!(save_block_entities("home", 1, &ents));
-        assert_eq!(
-            client_kv::get("tenebris-c:bentities:home:1").as_deref(),
-            Some("5,3,2;40,0,4")
-        );
-        assert_eq!(load_block_entities("home", 1), ents.to_vec());
+        let mut store = BlockEntityStore::new();
+        // A plain facing-only entity and a chest with two non-empty slots.
+        store.set(5, 3, BlockEntity::with_facing(2));
+        let chest = store.entry(40, 0);
+        chest.facing = 4;
+        chest.chest_mut()[0] = ChestSlot { item: 7, count: 10 };
+        chest.chest_mut()[2] = ChestSlot { item: 9, count: 3 };
+
+        assert!(save_block_entities("home", 1, &store));
+        // Reload into a fresh store and compare cell-by-cell (HashMap
+        // iteration order isn't stable, so don't compare the raw string).
+        let loaded = load_block_entities("home", 1);
+        let mut back = BlockEntityStore::new();
+        for (t, d, e) in loaded {
+            back.set(t, d, e);
+        }
+        assert_eq!(back.facing(5, 3), 2);
+        assert!(matches!(back.get(5, 3).unwrap().state, MachineState::None));
+        let c = back.get(40, 0).unwrap();
+        assert_eq!(c.facing, 4);
+        assert_eq!(c.chest().unwrap()[0], ChestSlot { item: 7, count: 10 });
+        assert_eq!(c.chest().unwrap()[2], ChestSlot { item: 9, count: 3 });
+        assert_eq!(c.chest().unwrap()[1].count, 0);
+
         assert!(load_block_entities("home", 2).is_empty());
         // Empty store removes the key.
-        assert!(save_block_entities("home", 1, &[]));
+        assert!(save_block_entities("home", 1, &BlockEntityStore::new()));
         assert_eq!(client_kv::get("tenebris-c:bentities:home:1"), None);
     }
 

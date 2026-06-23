@@ -109,9 +109,7 @@ fn sp_save_tile_after_edit(w: &World, tile_idx: i32) {
      * per placed machine), so re-serialising it per edit is cheap and
      * covers both placement (entity added) and mining (World::set dropped
      * it). Same-frame, per the CLAUDE.md persistence rule. */
-    let entities: Vec<(i32, i32, u8)> =
-        w.block_entities.iter().map(|(t, d, e)| (t, d, e.facing)).collect();
-    persistence::save_block_entities(&name, w.body.id as u32, &entities);
+    persistence::save_block_entities(&name, w.body.id as u32, &w.block_entities);
 }
 
 /// Port of `sp_save_torches_after_change()`.
@@ -592,7 +590,7 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
                     w.block_entities.set(
                         s.place_tile,
                         s.place_depth,
-                        tenebris_core::block_entity::BlockEntity { facing },
+                        tenebris_core::block_entity::BlockEntity::with_facing(facing),
                     );
                 }
                 net_client::send_edit(
