@@ -733,6 +733,131 @@ fn dev_maybe_place(app: &mut App) {
             }
             power_ui::open_printer(app.world.clone(), app.player.clone(), center, printer_depth);
         }
+        10 => {
+            /* Wiring showcase (geometry, no UI panel): build the full
+             * modular chain as a vertical tower on a NEIGHBOURING tile (so it
+             * isn't under the camera) and aim the view at it. Depth adjacency
+             * links every node, so the connectors read clearly:
+             *   hydro -> copper pipe -> steam engine -> cable -> computer
+             *   -> cable -> electric furnace.
+             * Each pipe / cable cell renders as a thin node + connector arms
+             * to the machine cubes above and below - the modular look. */
+            let max = tenebris_core::world::WORLD_MAX_DEPTH;
+            /* Walk the neighbour graph a few hops away from the player so the
+             * whole tower fits in frame (the player stays grounded on
+             * `center`, which is stable across the settle frames). Each hop
+             * picks the neighbour farthest from the start tile. */
+            let target = {
+                let w = app.world.borrow();
+                let c_dir = match w.grid.tile(center) {
+                    Some(t) => t.center,
+                    None => return,
+                };
+                let dot = |a: DVec3, b: DVec3| a.x * b.x + a.y * b.y + a.z * b.z;
+                let mut cur = center;
+                for _ in 0..2 {
+                    let nb: Vec<i32> = match w.grid.tile(cur) {
+                        Some(t) => t.neighbors.iter().copied().filter(|&n| n >= 0).collect(),
+                        None => Vec::new(),
+                    };
+                    let mut best = cur;
+                    let mut best_dot = f64::INFINITY;
+                    for n in nb {
+                        if let Some(t) = w.grid.tile(n) {
+                            let d = dot(t.center, c_dir);
+                            if d < best_dot {
+                                best_dot = d;
+                                best = n;
+                            }
+                        }
+                    }
+                    cur = best;
+                }
+                cur
+            };
+            let depth = {
+                let w = app.world.borrow();
+                let mut top = -1;
+                for d in (0..max).rev() {
+                    if tenebris_core::blocks::is_solid(w.get(target, d)) {
+                        top = d;
+                        break;
+                    }
+                }
+                top + 1
+            };
+            if depth < 1 || depth + 6 >= max {
+                return;
+            }
+            let player_pos = app.player.borrow().position;
+            let stack = [
+                Block::HydroGenerator,
+                Block::CopperPipe,
+                Block::SteamEngine,
+                Block::Cable,
+                Block::Computer,
+                Block::Cable,
+                Block::ElectricFurnace,
+            ];
+            {
+                let mut w = app.world.borrow_mut();
+                for (i, b) in stack.iter().enumerate() {
+                    let d = depth + i as i32;
+                    w.set(target, d, *b);
+                    if tenebris_core::blocks::is_tech_block(*b)
+                        && *b != Block::Cable
+                        && *b != Block::CopperPipe
+                    {
+                        let facing = w.facing_toward(target, d, player_pos);
+                        w.block_entities.set(
+                            target,
+                            d,
+                            tenebris_core::block_entity::BlockEntity::with_facing(facing),
+                        );
+                    }
+                }
+            }
+            /* Aim the camera at the tower's vertical middle. */
+            let (tdir, r_mid) = {
+                let w = app.world.borrow();
+                let r0 = w.depth_to_radius_m(depth);
+                let r_top = w.depth_to_radius_m(depth + stack.len() as i32);
+                (w.grid.tile(target).map(|t| t.center), (r0 + r_top) * 0.5)
+            };
+            let mut p = app.player.borrow_mut();
+            if let Some(tc) = tdir {
+                let tlen = dvec3_length(tc);
+                let mid_world = if tlen > 1e-9 {
+                    dvec3_scale(tc, r_mid / tlen)
+                } else {
+                    tc
+                };
+                let to = dvec3_sub(mid_world, p.position);
+                let to_len = dvec3_length(to).max(1e-9);
+                let look = dvec3_scale(to, 1.0 / to_len);
+                let up = p.basis.up;
+                let fwd = p.basis.fwd;
+                let right = p.basis.right;
+                let dot = |a: DVec3, b: DVec3| a.x * b.x + a.y * b.y + a.z * b.z;
+                let to_t = dvec3_sub(look, dvec3_scale(up, dot(look, up)));
+                p.yaw = (dot(to_t, right)).atan2(dot(to_t, fwd)) as f32;
+                /* pitch = angle above the tangent plane (look . up). */
+                p.pitch = dot(look, up).clamp(-1.0, 1.0).asin() as f32;
+            }
+            let kit = [
+                Block::CopperPipe,
+                Block::Cable,
+                Block::HydroGenerator,
+                Block::SteamEngine,
+                Block::Computer,
+                Block::ElectricFurnace,
+            ];
+            for (i, b) in kit.iter().enumerate() {
+                if i < crate::inventory::INV_HOTBAR_SLOTS as usize {
+                    p.inventory.slots[i] = crate::inventory::InvSlot::block(*b, 1);
+                }
+            }
+        }
         _ => {
             /* Launch pad: centre tile + its ring all become the pad. */
             dev_set_surface(&app.world, center, Block::LaunchPad);
@@ -1017,6 +1142,9 @@ extern "C" fn init() {
         DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
     } else if std::env::var("TENEBRIS_DEV_PRINTER").is_ok() {
         DEV_PLACE_MODE.with(|c| c.set(9));
+        DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
+    } else if std::env::var("TENEBRIS_DEV_WIRES").is_ok() {
+        DEV_PLACE_MODE.with(|c| c.set(10));
         DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
     }
     if std::env::var("TENEBRIS_DEV_KIT").is_ok() {

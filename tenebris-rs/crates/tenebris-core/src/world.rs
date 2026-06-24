@@ -480,7 +480,7 @@ impl World {
     /// Cells adjacent to (tile, depth) for the power graph: the hex
     /// edge-neighbours at the same depth, plus the same tile one layer up
     /// and down (mirrors the JS cable connection rules).
-    fn power_neighbors(&self, tile: i32, depth: i32) -> Vec<(i32, i32)> {
+    pub fn power_neighbors(&self, tile: i32, depth: i32) -> Vec<(i32, i32)> {
         let mut v = Vec::with_capacity(8);
         if let Some(t) = self.grid.tile(tile) {
             for i in 0..t.num_neighbors as usize {

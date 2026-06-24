@@ -716,6 +716,152 @@ fn emit_tech_cube(
     quad(out, neg(up), bitangent, tangent, c_bottom); /* -up bottom */
 }
 
+/// Emit a textured box from an orthonormal right-handed frame
+/// (`cross(u, v) == ww`) with per-axis half-extents. Every face samples the
+/// same atlas column `col`. The building block for the modular wire / pipe
+/// connectors: one of these for the central node, one (thin) per arm.
+#[allow(clippy::too_many_arguments)]
+fn emit_box(
+    out: &mut HexMesh,
+    center: DVec3,
+    u: DVec3,
+    v: DVec3,
+    ww: DVec3,
+    hu: f64,
+    hv: f64,
+    hw: f64,
+    col: u8,
+    sky: f32,
+    bake_lighting: bool,
+) {
+    /* `normal` is the outward face axis, `a`,`b` span the face with
+     * cross(a, b) == normal (CCW seen from outside, matching the terrain
+     * back-cull pipeline). `ext_n` is the half-extent along the normal,
+     * `ha`/`hb` the half-extents along a/b. */
+    let face =
+        |out: &mut HexMesh, normal: DVec3, a: DVec3, b: DVec3, ext_n: f64, ha: f64, hb: f64| {
+            let u0 = col as f32 * HEX_ATLAS_U_STEP;
+            let u1 = u0 + HEX_ATLAS_U_STEP;
+            let fc = dvec3_add(center, dvec3_scale(normal, ext_n));
+            let ah = dvec3_scale(a, ha);
+            let bh = dvec3_scale(b, hb);
+            let p00 = dvec3_sub(dvec3_sub(fc, ah), bh);
+            let p10 = dvec3_sub(dvec3_add(fc, ah), bh);
+            let p11 = dvec3_add(dvec3_add(fc, ah), bh);
+            let p01 = dvec3_add(dvec3_sub(fc, ah), bh);
+            let base = out.vertices.len() as u32;
+            for (p, uu, vv) in [(p00, u0, 1.0), (p10, u1, 1.0), (p11, u1, 0.0), (p01, u0, 0.0)] {
+                let torch = if bake_lighting { torch_light_at(dvec3_to_vec3(p)) } else { 0.0 };
+                push_vertex(out, p, normal, uu, vv, sky, torch, 0.0);
+            }
+            out.indices.push(base);
+            out.indices.push(base + 1);
+            out.indices.push(base + 2);
+            out.indices.push(base);
+            out.indices.push(base + 2);
+            out.indices.push(base + 3);
+        };
+    let neg = |x: DVec3| dvec3_scale(x, -1.0);
+    reserve(out, 24, 36);
+    face(out, u, v, ww, hu, hv, hw); /* +u: cross(v,ww)=u   */
+    face(out, neg(u), ww, v, hu, hw, hv); /* -u: cross(ww,v)=-u  */
+    face(out, v, ww, u, hv, hw, hu); /* +v: cross(ww,u)=v   */
+    face(out, neg(v), u, ww, hv, hu, hw); /* -v: cross(u,ww)=-v  */
+    face(out, ww, u, v, hw, hu, hv); /* +ww: cross(u,v)=ww  */
+    face(out, neg(ww), v, u, hw, hv, hu); /* -ww: cross(v,u)=-ww */
+}
+
+/// Render a modular wire / pipe block (cable or copper pipe) as a small
+/// central node plus a thin arm toward every adjacent cell that continues the
+/// network - another of the same link block, or any tech machine it abuts.
+/// Mirrors the JS `createConnectorMesh` look (node box + connector boxes)
+/// rather than a full hex prism, so a run of cables / pipes reads as wiring.
+/// `node_frac` scales the node off the tile circumradius (pipes are fatter
+/// than cables); each arm reaches the shared face (half the cell gap) so two
+/// adjacent connectors meet in the middle without overlapping.
+#[allow(clippy::too_many_arguments)]
+fn emit_wire(
+    out: &mut HexMesh,
+    t: &Tile,
+    w: &World,
+    tile_idx: i32,
+    depth: i32,
+    link: Block,
+    col: u8,
+    node_frac: f64,
+    bake_lighting: bool,
+) {
+    let up = dvec3_normalize(t.center);
+    let r_bot = w.depth_to_radius_m(depth);
+
+    let c0 = shrink_corner(t, 0, 1.0);
+    let d_up = up.x * c0.x + up.y * c0.y + up.z * c0.z;
+    let horiz_r = (1.0 - d_up * d_up).max(0.0).sqrt() * r_bot;
+    let node = (horiz_r * node_frac).max(0.03);
+
+    /* Node sits on the tile surface, centred a node-height above r_bot so it
+     * shares the resting plane with the cube machines it links to. */
+    let center = dvec3_scale(up, r_bot + node);
+
+    let sky = if bake_lighting {
+        let d_air = (depth + 1).min(WORLD_MAX_DEPTH - 1);
+        if use_voxel_engine() {
+            sky_light_voxel(w, tile_idx, d_air)
+        } else {
+            sky_light_at(w, tile_idx, d_air)
+        }
+    } else {
+        0.0
+    };
+
+    /* Stable tile-tangent frame for the node cube (wires have no facing). */
+    let reference = if up.y.abs() < 0.9 {
+        dvec3_make(0.0, 1.0, 0.0)
+    } else {
+        dvec3_make(1.0, 0.0, 0.0)
+    };
+    let tangent = dvec3_normalize(dvec3_cross(reference, up));
+    let bitangent = dvec3_cross(up, tangent);
+    emit_box(out, center, tangent, bitangent, up, node, node, node, col, sky, bake_lighting);
+
+    /* Thin arm to each connected neighbour. */
+    let arm_r = node * 0.5;
+    for (nt, nd) in w.power_neighbors(tile_idx, depth) {
+        let nb = w.get(nt, nd);
+        if nb != link && !blocks::is_tech_block(nb) {
+            continue;
+        }
+        /* Neighbour node centre: radial for a depth change (same tile),
+         * the neighbour tile-centre direction for a same-depth hex link. */
+        let target = if nt == tile_idx {
+            let nr = w.depth_to_radius_m(nd);
+            dvec3_scale(up, nr + node)
+        } else if let Some(ntile) = w.grid.tile(nt) {
+            let ndir = dvec3_normalize(ntile.center);
+            dvec3_scale(ndir, r_bot + node)
+        } else {
+            continue;
+        };
+        let to = dvec3_sub(target, center);
+        let len = (to.x * to.x + to.y * to.y + to.z * to.z).sqrt();
+        if len < 1e-6 {
+            continue;
+        }
+        let dir = dvec3_scale(to, 1.0 / len);
+        /* Reach to the shared face (quarter-gap centre, quarter-gap half). */
+        let mid = dvec3_add(center, dvec3_scale(dir, len * 0.25));
+        let arm_half = len * 0.25;
+        let ref2 = if dir.y.abs() < 0.9 {
+            dvec3_make(0.0, 1.0, 0.0)
+        } else {
+            dvec3_make(1.0, 0.0, 0.0)
+        };
+        let p1 = dvec3_normalize(dvec3_cross(ref2, dir));
+        let p2 = dvec3_cross(dir, p1);
+        emit_box(out, mid, dir, p1, p2, arm_half, arm_r, arm_r, col, sky, bake_lighting);
+    }
+}
+
 /* Side quad between inner and outer radius across two adjacent corners.
  * One quad per tile edge per exposed depth. `width` shrinks the corners
  * inward toward t->center so partial-width blocks (trunks) get a
@@ -1529,6 +1675,16 @@ pub fn build_tile(out: &mut HexMesh, w: &World, tile_idx: i32) {
          * (the JS placed separate BoxGeometry meshes), not hex prisms. */
         if let Some(cols) = tech_cube_cols(b) {
             emit_tech_cube(out, t, w, tile_idx, d, cols, true);
+            continue;
+        }
+
+        /* Cables / copper pipes are the modular wiring network: render as a
+         * thin node + connector arms toward each linked cell, not a hex
+         * prism. Cable is the slimmer of the two; copper pipe is fatter. */
+        if b == Block::Cable || b == Block::CopperPipe {
+            let col = blocks::face_tile(b, FaceCap::Side);
+            let node_frac = if b == Block::CopperPipe { 0.22 } else { 0.16 };
+            emit_wire(out, t, w, tile_idx, d, b, col, node_frac, true);
             continue;
         }
 
