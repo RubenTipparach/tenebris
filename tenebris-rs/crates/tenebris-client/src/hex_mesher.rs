@@ -53,7 +53,7 @@ use tenebris_core::world_water;
 /* Atlas column count (must match the runtime bake in renderer.c).
  * 12 default + 6 Sequoia + 3 tinted variants + wood + leaves + bedrock
  * + seq-leaves = 25, + 4 ore tints (coal/copper/tin/iron) = 29 total. */
-pub const HEX_ATLAS_TILES: i32 = 90;
+pub const HEX_ATLAS_TILES: i32 = 93;
 pub const HEX_ATLAS_U_STEP: f32 = 1.0 / HEX_ATLAS_TILES as f32;
 
 /*
@@ -859,6 +859,69 @@ fn emit_wire(
         let p1 = dvec3_normalize(dvec3_cross(ref2, dir));
         let p2 = dvec3_cross(dir, p1);
         emit_box(out, mid, dir, p1, p2, arm_half, arm_r, arm_r, col, sky, bake_lighting);
+    }
+}
+
+/// Atlas column for a rocket part's in-world cube (the part's item icon on
+/// every face). Columns 90..92 hold the three part icons.
+fn rocket_part_col(id: u16) -> u8 {
+    use tenebris_core::rocket::PartRole;
+    match tenebris_core::rocket::part_role(id) {
+        Some(PartRole::Engine) => 90,
+        Some(PartRole::FuelTank) => 91,
+        Some(PartRole::Capsule) => 92,
+        None => 90,
+    }
+}
+
+/// Emit the assembled rocket as a column of cubes sitting ON TOP of a launch
+/// pad (bottom part first), mirroring the JS stacked BoxGeometry parts. Each
+/// part is a cube textured with its item icon; they rise radially from the
+/// pad's top surface.
+fn emit_rocket_stack(
+    out: &mut HexMesh,
+    t: &Tile,
+    w: &World,
+    tile_idx: i32,
+    depth: i32,
+    parts: &[u16],
+    bake_lighting: bool,
+) {
+    let up = dvec3_normalize(t.center);
+    /* Pad top surface = top of the pad voxel. */
+    let r_pad_top = w.depth_to_radius_m(depth + 1);
+
+    let c0 = shrink_corner(t, 0, 1.0);
+    let d_up = up.x * c0.x + up.y * c0.y + up.z * c0.z;
+    let horiz_r = (1.0 - d_up * d_up).max(0.0).sqrt() * r_pad_top;
+    let half = (horiz_r * 0.42).max(0.05);
+
+    /* Stable tile-tangent frame (parts have no facing of their own). */
+    let reference = if up.y.abs() < 0.9 {
+        dvec3_make(0.0, 1.0, 0.0)
+    } else {
+        dvec3_make(1.0, 0.0, 0.0)
+    };
+    let tangent = dvec3_normalize(dvec3_cross(reference, up));
+    let bitangent = dvec3_cross(up, tangent);
+
+    let sky = if bake_lighting {
+        let d_air = (depth + 1).min(WORLD_MAX_DEPTH - 1);
+        if use_voxel_engine() {
+            sky_light_voxel(w, tile_idx, d_air)
+        } else {
+            sky_light_at(w, tile_idx, d_air)
+        }
+    } else {
+        0.0
+    };
+
+    for (i, &id) in parts.iter().enumerate() {
+        let col = rocket_part_col(id);
+        /* Stack centre: pad top + half + 2*half per part below this one. */
+        let cz = r_pad_top + half + (2.0 * half) * (i as f64);
+        let center = dvec3_scale(up, cz);
+        emit_box(out, center, tangent, bitangent, up, half, half, half, col, sky, bake_lighting);
     }
 }
 
@@ -1688,6 +1751,20 @@ pub fn build_tile(out: &mut HexMesh, w: &World, tile_idx: i32) {
             continue;
         }
 
+        /* A launch pad renders as its normal cell (below); additionally,
+         * any assembled rocket parts stack up as cubes ON TOP of it. */
+        if b == Block::LaunchPad {
+            let stack = w
+                .block_entities
+                .get(tile_idx, d)
+                .and_then(|e| e.launch_pad().map(|p| p.parts().to_vec()));
+            if let Some(parts) = stack {
+                if !parts.is_empty() {
+                    emit_rocket_stack(out, t, w, tile_idx, d, &parts, true);
+                }
+            }
+        }
+
         let width = block_hex_width(b, tile_idx, d);
 
         let above = if d + 1 < WORLD_MAX_DEPTH {
@@ -1944,10 +2021,10 @@ mod tests {
 
     #[test]
     fn atlas_consts_pinned() {
-        assert_eq!(HEX_ATLAS_TILES, 90);
-        /* 1.0 / HEX_ATLAS_TILES (widened to 90 for the ported tech-block cube cells +
-         * tiles at columns 29..41, plus headroom). */
-        assert_eq!(HEX_ATLAS_U_STEP.to_bits(), (1.0f32 / 90.0).to_bits());
+        assert_eq!(HEX_ATLAS_TILES, 93);
+        /* 1.0 / HEX_ATLAS_TILES (widened to 93: tech-block face tiles at 29..41,
+         * tech cube cells at 42..89, rocket-part cube cells at 90..92). */
+        assert_eq!(HEX_ATLAS_U_STEP.to_bits(), (1.0f32 / 93.0).to_bits());
         /* Vertex layout: 44-byte stride, field offsets as the
          * pipelines bind them. */
         assert_eq!(std::mem::size_of::<HexVertex>(), 44);
@@ -2122,24 +2199,24 @@ mod tests {
 
     const S1_VC: usize = 55;
     const S1_IC: usize = 90;
-        const S1_VH: u64 = 0xc2a6a0d1f250ae9e;
+        const S1_VH: u64 = 0x1792b0dead1bb615;
     const S1_IH: u64 = 0x489c92b4ebb0bd85;
-        const S1_V0: [u32; 11] = [0x43947274, 0xc15441cf, 0xc1af9cc9, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3d088889, 0x00000000, 0x3f13b2fb, 0x00000000, 0x00000000];
-        const S1_V1: [u32; 11] = [0x43947274, 0x415441cf, 0xc1af9cc9, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3d360b61, 0x00000000, 0x3f13b2fb, 0x00000000, 0x00000000];
-        const S1_VMID: [u32; 11] = [0x4395674c, 0x41d5d274, 0x00000000, 0x3f800000, 0x00000000, 0x00000000, 0x3d057c13, 0x3f400000, 0x3f800000, 0x00000000, 0x00000000];
-        const S1_VLAST: [u32; 11] = [0x4395674c, 0xc1d5d274, 0x00000000, 0xbd9c3fd0, 0xbf5a59fd, 0xbf043380, 0x3cb60b61, 0x3f800000, 0x3f800000, 0x00000000, 0x00000000];
+        const S1_V0: [u32; 11] = [0x43947274, 0xc15441cf, 0xc1af9cc9, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3d042108, 0x00000000, 0x3f13b2fb, 0x00000000, 0x00000000];
+        const S1_V1: [u32; 11] = [0x43947274, 0x415441cf, 0xc1af9cc9, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3d302c0b, 0x00000000, 0x3f13b2fb, 0x00000000, 0x00000000];
+        const S1_VMID: [u32; 11] = [0x4395674c, 0x41d5d274, 0x00000000, 0x3f800000, 0x00000000, 0x00000000, 0x3d012dc0, 0x3f400000, 0x3f800000, 0x00000000, 0x00000000];
+        const S1_VLAST: [u32; 11] = [0x4395674c, 0xc1d5d274, 0x00000000, 0xbd9c3fd0, 0xbf5a59fd, 0xbf043380, 0x3cb02c0b, 0x3f800000, 0x3f800000, 0x00000000, 0x00000000];
 
     const S2_VC: usize = 142;
     const S2_IC: usize = 288;
-        const S2_VH: u64 = 0x48737406d939b6c4;
+        const S2_VH: u64 = 0xf40aea7957e2094c;
     const S2_IH: u64 = 0x87cd063e4fdf9205;
-        const S2_VMID: [u32; 11] = [0xc3927eaf, 0xc14aa9c7, 0xc2d476f9, 0xbf764198, 0x00000000, 0xbe8be997, 0x3e7b12c2, 0x3f400000, 0x3f800000, 0x00000000, 0x00000000];
+        const S2_VMID: [u32; 11] = [0xc3927eaf, 0xc14aa9c7, 0xc2d476f9, 0xbf764198, 0x00000000, 0xbe8be997, 0x3e72f961, 0x3f400000, 0x3f800000, 0x00000000, 0x00000000];
 
     const S3_VC: usize = 66;
     const S3_IC: usize = 105;
-        const S3_VH: u64 = 0xbedfede2cfc58204;
+        const S3_VH: u64 = 0xeb2d268065c66ffc;
     const S3_IH: u64 = 0xf8c0595555ef4e63;
-        const S3_V0: [u32; 11] = [0xc337636b, 0x437c69ed, 0x00000000, 0xbf27b753, 0xbef3b458, 0x3f16329a, 0x3d088889, 0x00000000, 0x3eaa6e14, 0x00000000, 0x00000000];
+        const S3_V0: [u32; 11] = [0xc337636b, 0x437c69ed, 0x00000000, 0xbf27b753, 0xbef3b458, 0x3f16329a, 0x3d042108, 0x00000000, 0x3eaa6e14, 0x00000000, 0x00000000];
 
     const S4_VC: usize = 6;
     const S4_IC: usize = 15;
@@ -2158,44 +2235,44 @@ mod tests {
     const CAVE_NB: i32 = 539;
     const S6A_VC: usize = 103;
     const S6A_IC: usize = 162;
-        const S6A_VH: u64 = 0xe5dee871da7fe976;
+        const S6A_VH: u64 = 0xaeee9eb4362352d5;
     const S6A_IH: u64 = 0x547c88d534b4f325;
-        const S6A_VMID: [u32; 11] = [0x4394f1fa, 0xc154f826, 0xc1b033a5, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3d088889, 0x3f800000, 0x3f13b2fb, 0x00000000, 0x00000000];
+        const S6A_VMID: [u32; 11] = [0x4394f1fa, 0xc154f826, 0xc1b033a5, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3d042108, 0x3f800000, 0x3f13b2fb, 0x00000000, 0x00000000];
     const S6B_VC: usize = 117;
     const S6B_IC: usize = 198;
-        const S6B_VH: u64 = 0xa7abbd9a9c625478;
+        const S6B_VH: u64 = 0xfe29836fc011b02c;
     const S6B_IH: u64 = 0xf4c2850a72d89205;
 
     const FLOW_NB: i32 = 279;
     const S7A_VC: usize = 38;
     const S7A_IC: usize = 72;
-        const S7A_VH: u64 = 0x3c1d0048586eac49;
+        const S7A_VH: u64 = 0xea933bd5b5709bb7;
     const S7A_IH: u64 = 0xf5363b05eb547fdd;
         const S7A_V0: [u32; 11] = [0xc39cd92c, 0x00000000, 0xc2b23ab3, 0xbf764198, 0x00000000, 0xbe8be997, 0x00000000, 0x3f7f632a, 0x3f800000, 0x00000000, 0x3f800000];
     const S7B_VC: usize = 62;
     const S7B_IC: usize = 108;
-        const S7B_VH: u64 = 0x5a31e46734d2997b;
+        const S7B_VH: u64 = 0x58916c60a3a47f0d;
     const S7B_IH: u64 = 0x4eb7dd0a224605ed;
 
     const S8_VC: usize = 103;
     const S8_IC: usize = 162;
-        const S8_VH: u64 = 0xc3aa5107ad382f78;
+        const S8_VH: u64 = 0x6c427d2f47e41eb3;
     const S8_IH: u64 = 0x547c88d534b4f325;
-        const S8_V0: [u32; 11] = [0x4391754d, 0xc14ffbc2, 0xc1ac139d, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3d638e39, 0x00000000, 0x3cae52d6, 0x00000000, 0x00000000];
+        const S8_V0: [u32; 11] = [0x4391754d, 0xc14ffbc2, 0xc1ac139d, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3d5c370e, 0x00000000, 0x3cae52d6, 0x00000000, 0x00000000];
 
     const S9A_VC: usize = 103;
     const S9A_IC: usize = 162;
-        const S9A_VH: u64 = 0xf99d1efd89e4c920;
+        const S9A_VH: u64 = 0xbf16b9fad06ea54b;
     const S9A_IH: u64 = 0x547c88d534b4f325;
-        const S9A_V0: [u32; 11] = [0x4391754d, 0xc14ffbc2, 0xc1ac139d, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3d638e39, 0x00000000, 0x00000000, 0x00000000, 0x00000000];
-        const S9A_VMID: [u32; 11] = [0x4394f1fa, 0xc154f826, 0xc1b033a5, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3d088889, 0x3f800000, 0x00000000, 0x00000000, 0x00000000];
+        const S9A_V0: [u32; 11] = [0x4391754d, 0xc14ffbc2, 0xc1ac139d, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3d5c370e, 0x00000000, 0x00000000, 0x00000000, 0x00000000];
+        const S9A_VMID: [u32; 11] = [0x4394f1fa, 0xc154f826, 0xc1b033a5, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3d042108, 0x3f800000, 0x00000000, 0x00000000, 0x00000000];
     const S9B_VC: usize = 66;
     const S9B_IC: usize = 105;
-        const S9B_VH: u64 = 0x6970a1db5012d509;
+        const S9B_VH: u64 = 0xd1d3f02632a578d9;
     const S9B_IH: u64 = 0xf8c0595555ef4e63;
     const S9C_VC: usize = 38;
     const S9C_IC: usize = 72;
-        const S9C_VH: u64 = 0x3c1d0048586eac49;
+        const S9C_VH: u64 = 0xea933bd5b5709bb7;
     const S9C_IH: u64 = 0xf5363b05eb547fdd;
     const S9D_VC: usize = 6;
     const S9D_IC: usize = 15;

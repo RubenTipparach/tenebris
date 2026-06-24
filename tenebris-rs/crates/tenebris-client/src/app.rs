@@ -1024,6 +1024,123 @@ fn dev_maybe_place(app: &mut App) {
                 }
             }
         }
+        11 => {
+            /* Rocket-stacking showcase: place a launch pad on the player's
+             * tile and pre-assemble a flyable stack (engine -> 2 tanks ->
+             * capsule) so the parts render in-world AND the assembly panel
+             * opens populated. Stock the bag with spares + craft mats. */
+            use tenebris_core::items;
+            let depth = {
+                let w = app.world.borrow();
+                let mut top = -1;
+                for d in (0..tenebris_core::world::WORLD_MAX_DEPTH).rev() {
+                    if tenebris_core::blocks::is_solid(w.get(center, d)) {
+                        top = d;
+                        break;
+                    }
+                }
+                if top < 0 || top + 1 >= tenebris_core::world::WORLD_MAX_DEPTH {
+                    return;
+                }
+                top + 1
+            };
+            {
+                let mut w = app.world.borrow_mut();
+                w.set(center, depth, Block::LaunchPad);
+                let pad = w.block_entities.entry(center, depth).launch_pad_mut();
+                pad.push(items::ROCKET_ENGINE);
+                pad.push(items::FUEL_TANK);
+                pad.push(items::FUEL_TANK);
+                pad.push(items::COMMAND_MODULE);
+            }
+            {
+                let mut p = app.player.borrow_mut();
+                p.bag.add(items::ROCKET_ENGINE, 2);
+                p.bag.add(items::FUEL_TANK, 4);
+                p.bag.add(items::COMMAND_MODULE, 2);
+                p.bag.add(items::IRON_INGOT, 16);
+                p.bag.add(items::BRONZE_INGOT, 8);
+                p.pitch = 0.12;
+            }
+            rocket_screen::open(app.world.clone(), app.player.clone(), center, depth);
+        }
+        12 => {
+            /* Rocket-stacking in-world view (no panel): build a pad + flyable
+             * stack on a tile a few hops out and aim the camera at it, so the
+             * stacked part cubes read against the sky. */
+            use tenebris_core::items;
+            let dot = |a: DVec3, b: DVec3| a.x * b.x + a.y * b.y + a.z * b.z;
+            let target = {
+                let w = app.world.borrow();
+                let c_dir = match w.grid.tile(center) {
+                    Some(t) => t.center,
+                    None => return,
+                };
+                let mut cur = center;
+                for _ in 0..2 {
+                    let nb: Vec<i32> = match w.grid.tile(cur) {
+                        Some(t) => t.neighbors.iter().copied().filter(|&n| n >= 0).collect(),
+                        None => Vec::new(),
+                    };
+                    let mut best = cur;
+                    let mut best_dot = f64::INFINITY;
+                    for n in nb {
+                        if let Some(t) = w.grid.tile(n) {
+                            let d = dot(t.center, c_dir);
+                            if d < best_dot {
+                                best_dot = d;
+                                best = n;
+                            }
+                        }
+                    }
+                    cur = best;
+                }
+                cur
+            };
+            let depth = {
+                let w = app.world.borrow();
+                let mut top = -1;
+                for d in (0..tenebris_core::world::WORLD_MAX_DEPTH).rev() {
+                    if tenebris_core::blocks::is_solid(w.get(target, d)) {
+                        top = d;
+                        break;
+                    }
+                }
+                if top < 0 || top + 1 >= tenebris_core::world::WORLD_MAX_DEPTH {
+                    return;
+                }
+                top + 1
+            };
+            {
+                let mut w = app.world.borrow_mut();
+                w.set(target, depth, Block::LaunchPad);
+                let pad = w.block_entities.entry(target, depth).launch_pad_mut();
+                pad.push(items::ROCKET_ENGINE);
+                pad.push(items::FUEL_TANK);
+                pad.push(items::FUEL_TANK);
+                pad.push(items::COMMAND_MODULE);
+            }
+            /* Aim at the middle of the stack. */
+            let (tdir, r_mid) = {
+                let w = app.world.borrow();
+                let r0 = w.depth_to_radius_m(depth + 1);
+                (w.grid.tile(target).map(|t| t.center), r0 + 3.0)
+            };
+            let mut p = app.player.borrow_mut();
+            if let Some(tc) = tdir {
+                let tlen = dvec3_length(tc);
+                let mid_world = if tlen > 1e-9 { dvec3_scale(tc, r_mid / tlen) } else { tc };
+                let to = dvec3_sub(mid_world, p.position);
+                let to_len = dvec3_length(to).max(1e-9);
+                let look = dvec3_scale(to, 1.0 / to_len);
+                let up = p.basis.up;
+                let fwd = p.basis.fwd;
+                let right = p.basis.right;
+                let to_t = dvec3_sub(look, dvec3_scale(up, dot(look, up)));
+                p.yaw = (dot(to_t, right)).atan2(dot(to_t, fwd)) as f32;
+                p.pitch = dot(look, up).clamp(-1.0, 1.0).asin() as f32;
+            }
+        }
         _ => {
             /* Launch pad: centre tile + its ring all become the pad. */
             dev_set_surface(&app.world, center, Block::LaunchPad);
@@ -1217,7 +1334,6 @@ extern "C" fn init() {
     player_ctrl::init(&mut player.borrow_mut(), &body);
     teleport_menu::set_player(Some(player.clone()));
     crafting_screen::set_player(Some(player.clone()));
-    rocket_screen::set_player(Some(player.clone()));
 
     /* Drain Tenebris gen synchronously at init so the spawn tile has
      * terrain the moment the first frame lands. */
@@ -1312,6 +1428,12 @@ extern "C" fn init() {
     } else if std::env::var("TENEBRIS_DEV_WIRES").is_ok() {
         DEV_PLACE_MODE.with(|c| c.set(10));
         DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
+    } else if std::env::var("TENEBRIS_DEV_ROCKET").is_ok() {
+        DEV_PLACE_MODE.with(|c| c.set(11));
+        DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
+    } else if std::env::var("TENEBRIS_DEV_ROCKET_WORLD").is_ok() {
+        DEV_PLACE_MODE.with(|c| c.set(12));
+        DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
     }
     if std::env::var("TENEBRIS_DEV_KIT").is_ok() {
         let mut p = player.borrow_mut();
@@ -1325,9 +1447,6 @@ extern "C" fn init() {
     if let Ok(v) = std::env::var("TENEBRIS_DEV_SP") {
         let name = if v.is_empty() { "devworld" } else { v.as_str() };
         menu::dev_start_sp(name);
-    }
-    if std::env::var("TENEBRIS_DEV_ROCKET").is_ok() {
-        rocket_screen::open(Some(player.clone()));
     }
     if std::env::var("TENEBRIS_DEV_CRAFT").is_ok() {
         crafting_screen::open(Some(player.clone()));
@@ -2757,6 +2876,7 @@ fn egui_ui(app: &mut App, ctx: &egui::Context) {
     chest_screen::egui_ui(ctx);
     furnace_screen::egui_ui(ctx);
     power_ui::egui_ui(ctx);
+    rocket_screen::egui_ui(ctx);
 }
 
 fn frame_inner(app: &mut App) {
@@ -3215,10 +3335,9 @@ fn frame_inner(app: &mut App) {
      * whenever the player has it open, independent of the F2 toggle.
      * (draw() self-gates on is_open(), so this is a no-op when closed.) */
     crafting_screen::draw();
-    /* Rocket assembly + test-flight screen (G). update() steps the live
-     * flight sim; draw() is a no-op when closed. */
+    /* Rocket assembly + test-flight screen. update() steps the live test
+     * flight; the panel itself draws via egui_ui(). */
     rocket_screen::update(dt);
-    rocket_screen::draw();
     if app.debug_ui_visible {
         draw_error_overlay();
         profiler::draw();
@@ -3405,9 +3524,8 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
     if crafting_screen::handle_event(e, Some(app.player.clone())) {
         return;
     }
-    /* Rocket assembly screen (G): first crack after crafting so G toggles
-     * it and, while open, it owns clicks. */
-    if rocket_screen::handle_event(e, Some(app.player.clone())) {
+    /* Rocket assembly screen: Esc closes it while it owns the pointer. */
+    if rocket_screen::handle_event(e) {
         return;
     }
 
@@ -3439,7 +3557,12 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
             .get(app.interact.hit_tile, app.interact.hit_depth);
         match targeted {
             Block::LaunchPad => {
-                rocket_screen::open(Some(app.player.clone()));
+                rocket_screen::open(
+                    app.world.clone(),
+                    app.player.clone(),
+                    app.interact.hit_tile,
+                    app.interact.hit_depth,
+                );
                 return;
             }
             Block::Furnace => {

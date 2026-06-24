@@ -44,6 +44,10 @@ pub const ELEC_YIELD_MULT: u16 = 2;
 /// Seconds a steam engine burns per unit of coal.
 pub const STEAM_BURN_S_PER_COAL: f32 = 16.0;
 
+/// Maximum rocket parts stacked on a launch pad (mirrors the JS 8-segment
+/// tower cap). Fixed-size so [`LaunchPadState`] stays `Copy`.
+pub const ROCKET_STACK_MAX: usize = 8;
+
 /// Furnace slots + smelt progress. Mirrors the JS `PlacedFurnace`: an input
 /// stack (raw ore), a fuel stack (coal), an output stack (ingots), the
 /// 0..1 progress of the current smelt, and how many smelts the currently
@@ -108,6 +112,79 @@ pub struct PrinterState {
     pub powered: bool,
 }
 
+/// A launch pad's assembled rocket: an ordered bottom -> top stack of part
+/// item ids (engine at index 0 when flyable). Fixed-capacity so it stays
+/// `Copy`; `segments` is the built tower height that caps the stack (JS
+/// `segmentCount`). The flight stats / validation live in `core::rocket`,
+/// which works on the `parts()` slice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LaunchPadState {
+    parts: [u16; ROCKET_STACK_MAX],
+    len: u8,
+    /// Built tower segments (1..=ROCKET_STACK_MAX); caps how many parts can
+    /// stack. A fresh pad starts with one segment so a minimal rocket fits.
+    pub segments: u8,
+}
+
+impl Default for LaunchPadState {
+    fn default() -> Self {
+        Self { parts: [0; ROCKET_STACK_MAX], len: 0, segments: ROCKET_STACK_MAX as u8 }
+    }
+}
+
+impl LaunchPadState {
+    /// The assembled stack, bottom -> top.
+    pub fn parts(&self) -> &[u16] {
+        &self.parts[..self.len as usize]
+    }
+
+    /// Number of parts on the pad.
+    pub fn len(&self) -> usize {
+        self.len as usize
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Maximum parts this pad can hold right now (its tower height).
+    pub fn capacity(&self) -> usize {
+        (self.segments as usize).min(ROCKET_STACK_MAX)
+    }
+
+    /// Push a part on top. Returns false if the pad is at its tower cap.
+    pub fn push(&mut self, id: u16) -> bool {
+        if self.len as usize >= self.capacity() {
+            return false;
+        }
+        self.parts[self.len as usize] = id;
+        self.len += 1;
+        true
+    }
+
+    /// Pop the top part, or `None` if empty.
+    pub fn pop(&mut self) -> Option<u16> {
+        if self.len == 0 {
+            return None;
+        }
+        self.len -= 1;
+        let id = self.parts[self.len as usize];
+        self.parts[self.len as usize] = 0;
+        Some(id)
+    }
+
+    /// Replace the whole stack from a slice (used on load). Truncates to
+    /// capacity.
+    pub fn set_parts(&mut self, ids: &[u16]) {
+        self.len = 0;
+        for &id in ids {
+            if !self.push(id) {
+                break;
+            }
+        }
+    }
+}
+
 /// Machine-specific placed state. `Copy` (every variant is fixed-size) so
 /// the whole `BlockEntity` stays cheap to store/return.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -127,6 +204,8 @@ pub enum MachineState {
     Computer(ComputerState),
     /// 3D printer (prints a job while powered).
     Printer(PrinterState),
+    /// Launch pad with an assembled rocket-part stack.
+    LaunchPad(LaunchPadState),
 }
 
 impl Default for MachineState {
@@ -259,6 +338,26 @@ impl BlockEntity {
             _ => unreachable!(),
         }
     }
+
+    /// Borrow the launch-pad assembly if this entity is a launch pad.
+    pub fn launch_pad(&self) -> Option<&LaunchPadState> {
+        match &self.state {
+            MachineState::LaunchPad(l) => Some(l),
+            _ => None,
+        }
+    }
+
+    /// Promote this entity to a launch pad (if it isn't already) and return
+    /// the assembly for mutation.
+    pub fn launch_pad_mut(&mut self) -> &mut LaunchPadState {
+        if !matches!(self.state, MachineState::LaunchPad(_)) {
+            self.state = MachineState::LaunchPad(LaunchPadState::default());
+        }
+        match &mut self.state {
+            MachineState::LaunchPad(l) => l,
+            _ => unreachable!(),
+        }
+    }
 }
 
 /// Advance a 3D printer: while powered with an active job, fill the
@@ -313,6 +412,9 @@ pub fn init_machine_state(e: &mut BlockEntity, b: crate::blocks::Block) {
         }
         Block::StorageChest => {
             e.chest_mut();
+        }
+        Block::LaunchPad => {
+            e.launch_pad_mut();
         }
         _ => {}
     }

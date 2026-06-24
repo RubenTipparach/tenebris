@@ -40,7 +40,9 @@
 #![allow(dead_code)]
 
 use crate::client_kv;
-use tenebris_core::block_entity::{BlockEntity, BlockEntityStore, ChestSlot, CHEST_SLOTS};
+use tenebris_core::block_entity::{
+    BlockEntity, BlockEntityStore, ChestSlot, CHEST_SLOTS, ROCKET_STACK_MAX,
+};
 
 const KEY_PREFIX: &str = "tenebris-c:world:";
 const KEY_TILE_PREFIX: &str = "tenebris-c:tile:";
@@ -367,6 +369,13 @@ pub fn save_block_entities(
                     pr.output.count
                 ));
             }
+            MachineState::LaunchPad(l) => {
+                /* segments, then the bottom -> top part ids. */
+                rec.push_str(&format!(":l:{}", l.segments));
+                for &id in l.parts() {
+                    rec.push_str(&format!(",{id}"));
+                }
+            }
         }
         recs.push(rec);
     }
@@ -446,6 +455,16 @@ pub fn load_block_entities(world_name: &str, body_id: u32) -> Vec<(i32, i32, Blo
                     pr.total = v[2] as f32;
                     pr.output = ChestSlot { item: v[3] as u16, count: v[4] as u16 };
                 }
+            }
+            Some("l") => {
+                /* segments, then the part ids bottom -> top. */
+                let v = nums(parts.get(4).copied().unwrap_or(""));
+                let pad = e.launch_pad_mut();
+                if let Some(&seg) = v.first() {
+                    pad.segments = (seg as u8).clamp(1, ROCKET_STACK_MAX as u8);
+                }
+                let ids: Vec<u16> = v.iter().skip(1).map(|&n| n as u16).collect();
+                pad.set_parts(&ids);
             }
             _ => {}
         }
@@ -915,6 +934,30 @@ mod tests {
         // Empty store removes the key.
         assert!(save_block_entities("home", 1, &BlockEntityStore::new()));
         assert_eq!(client_kv::get("tenebris-c:bentities:home:1"), None);
+    }
+
+    #[test]
+    fn launch_pad_stack_round_trips() {
+        use tenebris_core::items::{COMMAND_MODULE, FUEL_TANK, ROCKET_ENGINE};
+        let _g = test_support::begin("persist_launchpad");
+        let mut store = BlockEntityStore::new();
+        let pad = store.entry(12, 7).launch_pad_mut();
+        pad.push(ROCKET_ENGINE);
+        pad.push(FUEL_TANK);
+        pad.push(FUEL_TANK);
+        pad.push(COMMAND_MODULE);
+
+        assert!(save_block_entities("home", 5, &store));
+        let mut back = BlockEntityStore::new();
+        for (t, d, e) in load_block_entities("home", 5) {
+            back.set(t, d, e);
+        }
+        let loaded = back.get(12, 7).unwrap();
+        let lp = loaded.launch_pad().expect("launch pad state");
+        assert_eq!(
+            lp.parts(),
+            &[ROCKET_ENGINE, FUEL_TANK, FUEL_TANK, COMMAND_MODULE]
+        );
     }
 
     #[test]

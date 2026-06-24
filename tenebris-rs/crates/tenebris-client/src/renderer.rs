@@ -345,6 +345,11 @@ const ATLAS_PATHS: [Option<&str>; ATLAS_TILES] = [
     Some("assets/textures/technology/storage_chest__back.png"), /* 87 storage_chest back */
     Some("assets/textures/technology/storage_chest__top.png"), /* 88 storage_chest top */
     Some("assets/textures/technology/storage_chest__bottom.png"), /* 89 storage_chest bottom */
+    /* Rocket parts, rendered as stacked cubes on a launch pad. Each shows
+     * its item icon on every face (downscaled to 16x16 by the loader). */
+    Some("assets/textures/items/rocket_engine.png"),  /* 90 rocket engine */
+    Some("assets/textures/items/fuel_tank.png"),      /* 91 fuel tank */
+    Some("assets/textures/items/command_module.png"), /* 92 command module */
 ];
 
 /// Per-channel multiplier applied to each loaded tile. {1,1,1} =
@@ -440,6 +445,10 @@ const ATLAS_TINTS: [[f32; 3]; ATLAS_TILES] = [
     [1.0, 1.0, 1.0],
     [1.0, 1.0, 1.0],
     [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    /* 90-92 rocket parts (engine, fuel tank, command module). */
     [1.0, 1.0, 1.0],
     [1.0, 1.0, 1.0],
     [1.0, 1.0, 1.0],
