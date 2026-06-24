@@ -587,6 +587,30 @@ impl World {
         })
     }
 
+    /// True if a *powered* computer is adjacent to (tile, depth).
+    fn powered_computer_adjacent(&self, tile: i32, depth: i32) -> bool {
+        for (nt, nd) in self.power_neighbors(tile, depth) {
+            if self.get(nt, nd) == Block::Computer {
+                if let Some(be) = self.block_entities.get(nt, nd) {
+                    if let crate::block_entity::MachineState::Computer(c) = be.state {
+                        if c.powered {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// 3D printer power: cable-network reach to a powered computer (the JS
+    /// printer-needs-a-computer gate).
+    fn printer_powered(&self, tile: i32, depth: i32) -> bool {
+        self.network_reaches(tile, depth, Block::Cable, |s, t, d| {
+            s.powered_computer_adjacent(t, d)
+        })
+    }
+
     /// Advance placed-machine behavior by `dt` seconds. Refreshes the two
     /// modular networks first - copper pipes carry water from hydro
     /// generators to steam engines, cables carry power from running steam
@@ -612,25 +636,55 @@ impl World {
             }
         }
 
-        /* Phase 2 (power): which electric furnaces a cable network links to
-         * a now-running steam engine. */
-        let furnaces: Vec<(i32, i32)> = self
+        use crate::block_entity::MachineState;
+
+        /* Phase 2 (power): computers light up from the cable network first
+         * (a running engine), since printers gate on a powered computer. */
+        let computers: Vec<(i32, i32)> = self
             .block_entities
             .iter()
-            .filter(|(_, _, e)| e.electric_furnace().is_some())
+            .filter(|(_, _, e)| matches!(e.state, MachineState::Computer(_)))
             .map(|(t, d, _)| (t, d))
             .collect();
-        let powered: Vec<(i32, i32, bool)> =
-            furnaces.iter().map(|&(t, d)| (t, d, self.electric_powered(t, d))).collect();
-        for (t, d, p) in powered {
+        let comp_pow: Vec<(i32, i32, bool)> =
+            computers.iter().map(|&(t, d)| (t, d, self.electric_powered(t, d))).collect();
+        for (t, d, p) in comp_pow {
             if let Some(e) = self.block_entities.get_mut(t, d) {
-                if let crate::block_entity::MachineState::ElectricFurnace(ef) = &mut e.state {
-                    ef.powered = p;
+                if let MachineState::Computer(c) = &mut e.state {
+                    c.powered = p;
                 }
             }
         }
 
-        /* Phase 3: tick every machine. */
+        /* Phase 3: electric furnaces (cable -> running engine) and printers
+         * (cable -> powered computer). */
+        let consumers: Vec<(i32, i32, bool, bool)> = self
+            .block_entities
+            .iter()
+            .filter_map(|(t, d, e)| match e.state {
+                MachineState::ElectricFurnace(_) => Some((t, d, true, false)),
+                MachineState::Printer(_) => Some((t, d, false, true)),
+                _ => None,
+            })
+            .collect();
+        let resolved: Vec<(i32, i32, bool)> = consumers
+            .iter()
+            .map(|&(t, d, is_furnace, _)| {
+                let p = if is_furnace { self.electric_powered(t, d) } else { self.printer_powered(t, d) };
+                (t, d, p)
+            })
+            .collect();
+        for (t, d, p) in resolved {
+            if let Some(e) = self.block_entities.get_mut(t, d) {
+                match &mut e.state {
+                    MachineState::ElectricFurnace(ef) => ef.powered = p,
+                    MachineState::Printer(pr) => pr.powered = p,
+                    _ => {}
+                }
+            }
+        }
+
+        /* Phase 4: tick every machine. */
         self.block_entities.tick(dt)
     }
 

@@ -354,6 +354,19 @@ pub fn save_block_entities(
                     e.input.item, e.input.count, e.output.item, e.output.count
                 ));
             }
+            MachineState::Computer(_) => {
+                rec.push_str(":k:");
+            }
+            MachineState::Printer(pr) => {
+                rec.push_str(&format!(
+                    ":p:{},{},{},{},{}",
+                    pr.out_item,
+                    pr.out_qty,
+                    pr.total as u32,
+                    pr.output.item,
+                    pr.output.count
+                ));
+            }
         }
         recs.push(rec);
     }
@@ -419,6 +432,19 @@ pub fn load_block_entities(world_name: &str, body_id: u32) -> Vec<(i32, i32, Blo
                     let ef = e.electric_furnace_mut();
                     ef.input = ChestSlot { item: v[0] as u16, count: v[1] as u16 };
                     ef.output = ChestSlot { item: v[2] as u16, count: v[3] as u16 };
+                }
+            }
+            Some("k") => {
+                e.computer_mut();
+            }
+            Some("p") => {
+                let v = nums(parts.get(4).copied().unwrap_or(""));
+                if v.len() >= 5 {
+                    let pr = e.printer_mut();
+                    pr.out_item = v[0] as u16;
+                    pr.out_qty = v[1] as u16;
+                    pr.total = v[2] as f32;
+                    pr.output = ChestSlot { item: v[3] as u16, count: v[4] as u16 };
                 }
             }
             _ => {}

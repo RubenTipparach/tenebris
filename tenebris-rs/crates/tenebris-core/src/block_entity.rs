@@ -88,9 +88,28 @@ pub struct ElectricFurnaceState {
     pub powered: bool,
 }
 
+/// A computer: a passive cable consumer that, while powered (cable-
+/// connected to a running steam engine), enables the 3D printers cabled
+/// to it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ComputerState {
+    pub powered: bool,
+}
+
+/// A 3D printer: prints one recipe over time while `powered` (cable-
+/// connected to a *powered computer*, the JS gate). `out_item == 0` is idle.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PrinterState {
+    pub out_item: u16,
+    pub out_qty: u16,
+    pub progress: f32,
+    pub total: f32,
+    pub output: ChestSlot,
+    pub powered: bool,
+}
+
 /// Machine-specific placed state. `Copy` (every variant is fixed-size) so
-/// the whole `BlockEntity` stays cheap to store/return. Printer jobs append
-/// as variants here.
+/// the whole `BlockEntity` stays cheap to store/return.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum MachineState {
     /// Plain block - no machine state (most tech blocks until their
@@ -100,10 +119,14 @@ pub enum MachineState {
     Chest(ChestInv),
     /// Furnace input/fuel/output + smelt progress.
     Furnace(FurnaceState),
-    /// Steam engine generator (burns coal -> powers its network).
+    /// Steam engine generator (burns coal + needs water -> powers cables).
     SteamEngine(SteamEngineState),
     /// Electric furnace consumer (smelts while powered).
     ElectricFurnace(ElectricFurnaceState),
+    /// Computer (enables connected printers while powered).
+    Computer(ComputerState),
+    /// 3D printer (prints a job while powered).
+    Printer(PrinterState),
 }
 
 impl Default for MachineState {
@@ -208,6 +231,90 @@ impl BlockEntity {
             MachineState::ElectricFurnace(e) => e,
             _ => unreachable!(),
         }
+    }
+
+    pub fn computer_mut(&mut self) -> &mut ComputerState {
+        if !matches!(self.state, MachineState::Computer(_)) {
+            self.state = MachineState::Computer(ComputerState::default());
+        }
+        match &mut self.state {
+            MachineState::Computer(c) => c,
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn printer(&self) -> Option<&PrinterState> {
+        match &self.state {
+            MachineState::Printer(p) => Some(p),
+            _ => None,
+        }
+    }
+
+    pub fn printer_mut(&mut self) -> &mut PrinterState {
+        if !matches!(self.state, MachineState::Printer(_)) {
+            self.state = MachineState::Printer(PrinterState::default());
+        }
+        match &mut self.state {
+            MachineState::Printer(p) => p,
+            _ => unreachable!(),
+        }
+    }
+}
+
+/// Advance a 3D printer: while powered with an active job, fill the
+/// progress; on completion emit the output and clear the job. Returns true
+/// when a print finishes (durable change).
+pub fn printer_tick(p: &mut PrinterState, dt: f32) -> bool {
+    use crate::items;
+    if !p.powered || p.out_item == 0 || p.total <= 0.0 {
+        return false;
+    }
+    // Output must be empty or the same item with room.
+    let out_ok = p.output.count == 0
+        || (p.output.item == p.out_item && p.output.count < items::stack_size(p.out_item));
+    if !out_ok {
+        return false;
+    }
+    p.progress += dt / p.total;
+    if p.progress >= 1.0 {
+        if p.output.count == 0 {
+            p.output.item = p.out_item;
+        }
+        p.output.count = p.output.count.saturating_add(p.out_qty);
+        p.out_item = 0;
+        p.out_qty = 0;
+        p.progress = 0.0;
+        p.total = 0.0;
+        return true;
+    }
+    false
+}
+
+/// Initialise the machine state for a freshly-placed tech block, so the
+/// machine tick processes it (computers/printers especially must exist as
+/// their own state for the power graph). No-op for blocks without state.
+pub fn init_machine_state(e: &mut BlockEntity, b: crate::blocks::Block) {
+    use crate::blocks::Block;
+    match b {
+        Block::Furnace => {
+            e.furnace_mut();
+        }
+        Block::SteamEngine => {
+            e.steam_engine_mut();
+        }
+        Block::ElectricFurnace => {
+            e.electric_furnace_mut();
+        }
+        Block::Computer => {
+            e.computer_mut();
+        }
+        Block::Printer3D => {
+            e.printer_mut();
+        }
+        Block::StorageChest => {
+            e.chest_mut();
+        }
+        _ => {}
     }
 }
 
@@ -427,6 +534,7 @@ impl BlockEntityStore {
                 MachineState::Furnace(f) => changed |= furnace_tick(f, dt),
                 MachineState::SteamEngine(s) => changed |= steam_engine_tick(s, dt),
                 MachineState::ElectricFurnace(ef) => changed |= electric_furnace_tick(ef, dt),
+                MachineState::Printer(p) => changed |= printer_tick(p, dt),
                 _ => {}
             }
         }

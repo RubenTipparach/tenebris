@@ -27,6 +27,8 @@ enum Kind {
     Steam,
     Electric,
     Hydro,
+    Computer,
+    Printer,
 }
 
 struct Screen {
@@ -87,6 +89,14 @@ pub fn open_hydro(world: WorldHandle, player: PlayerHandle, tile: i32, depth: i3
     open(Kind::Hydro, world, player, tile, depth);
 }
 
+pub fn open_computer(world: WorldHandle, player: PlayerHandle, tile: i32, depth: i32) {
+    open(Kind::Computer, world, player, tile, depth);
+}
+
+pub fn open_printer(world: WorldHandle, player: PlayerHandle, tile: i32, depth: i32) {
+    open(Kind::Printer, world, player, tile, depth);
+}
+
 #[cfg(not(test))]
 fn release_pointer() {
     sapp::lock_mouse(false);
@@ -127,6 +137,8 @@ enum Action {
     TakeInput,
     TakeFuel,
     TakeOutput,
+    StartPrint(usize),
+    TakePrint,
 }
 
 /// Progress / fuel bar in `rect` filled to `frac`.
@@ -267,6 +279,82 @@ pub fn egui_ui(ctx: &egui::Context) {
                     }
                 });
         }
+        Kind::Computer => {
+            let powered = {
+                let w = world.borrow();
+                w.block_entities.get(tile, depth).and_then(|e| match e.state {
+                    tenebris_core::block_entity::MachineState::Computer(c) => Some(c.powered),
+                    _ => None,
+                }).unwrap_or(false)
+            };
+            egui::Window::new("Computer")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(ctx, |ui| {
+                    if powered {
+                        ui.label(egui::RichText::new("POWERED - enables connected 3D printers").color(GREEN).strong());
+                    } else {
+                        ui.label(egui::RichText::new("NO POWER - cable it to a running steam engine").color(RED).strong());
+                    }
+                    ui.add_space(6.0);
+                    if ui.button("Close").clicked() {
+                        do_close = true;
+                    }
+                });
+        }
+        Kind::Printer => {
+            let pr = {
+                let w = world.borrow();
+                w.block_entities.get(tile, depth).and_then(|e| e.printer().copied()).unwrap_or_default()
+            };
+            let recipes = items::print_recipes();
+            egui::Window::new("3D Printer")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(ctx, |ui| {
+                    if pr.powered {
+                        ui.label(egui::RichText::new("POWERED").color(GREEN).strong());
+                    } else {
+                        ui.label(egui::RichText::new("NO POWER - cable it to a powered computer").color(RED).strong());
+                    }
+                    ui.horizontal(|ui| {
+                        if pr.out_item != 0 {
+                            ui.label("Printing");
+                            let (r, _) = ui.allocate_exact_size(egui::vec2(150.0, 12.0), egui::Sense::hover());
+                            bar(ui.painter(), r, pr.progress, egui::Color32::from_rgb(0xc0, 0x80, 0xe0));
+                        } else {
+                            ui.label(egui::RichText::new("Idle - pick a recipe").weak());
+                        }
+                        ui.add_space(10.0);
+                        ui.label(egui::RichText::new("Out").weak());
+                        if ui_icons::slot(ui, pr.output.item, pr.output.count, SLOT, Some(GREEN)).clicked() {
+                            action = Some(Action::TakePrint);
+                        }
+                    });
+                    ui.separator();
+                    ui.label(egui::RichText::new("Recipes - click to print (consumes ingredients)").weak());
+                    for (i, r) in recipes.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            ui_icons::slot(ui, r.output, r.qty, 40.0, None);
+                            ui.label(r.name);
+                            // inputs
+                            for &(item, count) in &r.inputs {
+                                ui_icons::slot(ui, item, count, 30.0, None);
+                            }
+                            let can = pr.powered && pr.out_item == 0;
+                            if ui.add_enabled(can, egui::Button::new("Print")).clicked() {
+                                action = Some(Action::StartPrint(i));
+                            }
+                        });
+                    }
+                    ui.add_space(4.0);
+                    if ui.button("Close").clicked() {
+                        do_close = true;
+                    }
+                });
+        }
     }
 
     if let Some(act) = action {
@@ -339,7 +427,31 @@ fn apply(kind: Kind, world: &WorldHandle, player: &PlayerHandle, tile: i32, dept
                 _ => {}
             }
         }
-        Kind::Hydro => {}
+        Kind::Hydro | Kind::Computer => {}
+        Kind::Printer => match act {
+            Action::StartPrint(i) => {
+                let recipes = items::print_recipes();
+                if let Some(r) = recipes.get(i) {
+                    let has_all =
+                        r.inputs.iter().all(|&(item, c)| p.bag.count_of(item) >= c as u32);
+                    let pr = w.block_entities.entry(tile, depth).printer_mut();
+                    if has_all && pr.powered && pr.out_item == 0 {
+                        for &(item, c) in &r.inputs {
+                            p.bag.take(item, c as u32);
+                        }
+                        pr.out_item = r.output;
+                        pr.out_qty = r.qty;
+                        pr.total = r.time_s;
+                        pr.progress = 0.0;
+                    }
+                }
+            }
+            Action::TakePrint => {
+                let pr = w.block_entities.entry(tile, depth).printer_mut();
+                give_back(&mut pr.output, &mut p.bag);
+            }
+            _ => {}
+        },
     }
     persist(&w);
 }

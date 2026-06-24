@@ -682,6 +682,57 @@ fn dev_maybe_place(app: &mut App) {
             }
             power_ui::open_electric(app.world.clone(), app.player.clone(), center, fur_depth);
         }
+        9 => {
+            /* Printer chain (vertical stack): water -> hydro -> pipe ->
+             * engine -> cable -> computer -> cable -> printer. The printer
+             * is powered only via a powered computer (the JS gate). */
+            use tenebris_core::block_entity::{ChestSlot, STEAM_BURN_S_PER_COAL};
+            use tenebris_core::items;
+            let max = tenebris_core::world::WORLD_MAX_DEPTH;
+            let depth = {
+                let w = app.world.borrow();
+                let mut top = -1;
+                for d in (0..max).rev() {
+                    if tenebris_core::blocks::is_solid(w.get(center, d)) {
+                        top = d;
+                        break;
+                    }
+                }
+                top + 1
+            };
+            if depth < 1 || depth + 7 >= max {
+                return;
+            }
+            let printer_depth = depth + 7;
+            {
+                let mut w = app.world.borrow_mut();
+                w.set(center, depth, Block::Water);
+                w.set(center, depth + 1, Block::HydroGenerator);
+                w.set(center, depth + 2, Block::CopperPipe);
+                w.set(center, depth + 3, Block::SteamEngine);
+                let s = w.block_entities.entry(center, depth + 3).steam_engine_mut();
+                s.fuel = ChestSlot { item: items::COAL, count: 4 };
+                s.burn_time = STEAM_BURN_S_PER_COAL;
+                w.set(center, depth + 4, Block::Cable);
+                w.set(center, depth + 5, Block::Computer);
+                w.block_entities.entry(center, depth + 5).computer_mut();
+                w.set(center, depth + 6, Block::Cable);
+                w.set(center, printer_depth, Block::Printer3D);
+                let pr = w.block_entities.entry(center, printer_depth).printer_mut();
+                pr.out_item = tenebris_core::items::from_block(Block::LaunchTower);
+                pr.out_qty = 1;
+                pr.total = 10.0;
+                pr.progress = 0.45;
+            }
+            {
+                let mut p = app.player.borrow_mut();
+                p.bag.add(items::IRON_INGOT, 20);
+                p.bag.add(items::BRONZE_INGOT, 8);
+                p.bag.add(items::COAL, 16);
+                p.pitch = 0.35;
+            }
+            power_ui::open_printer(app.world.clone(), app.player.clone(), center, printer_depth);
+        }
         _ => {
             /* Launch pad: centre tile + its ring all become the pad. */
             dev_set_surface(&app.world, center, Block::LaunchPad);
@@ -963,6 +1014,9 @@ extern "C" fn init() {
         DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
     } else if std::env::var("TENEBRIS_DEV_POWER").is_ok() {
         DEV_PLACE_MODE.with(|c| c.set(8));
+        DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
+    } else if std::env::var("TENEBRIS_DEV_PRINTER").is_ok() {
+        DEV_PLACE_MODE.with(|c| c.set(9));
         DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
     }
     if std::env::var("TENEBRIS_DEV_KIT").is_ok() {
@@ -3144,6 +3198,24 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
             }
             Block::HydroGenerator => {
                 power_ui::open_hydro(
+                    app.world.clone(),
+                    app.player.clone(),
+                    app.interact.hit_tile,
+                    app.interact.hit_depth,
+                );
+                return;
+            }
+            Block::Computer => {
+                power_ui::open_computer(
+                    app.world.clone(),
+                    app.player.clone(),
+                    app.interact.hit_tile,
+                    app.interact.hit_depth,
+                );
+                return;
+            }
+            Block::Printer3D => {
+                power_ui::open_printer(
                     app.world.clone(),
                     app.player.clone(),
                     app.interact.hit_tile,

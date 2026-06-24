@@ -587,11 +587,12 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
                  * world_set, same frame as the tile save. */
                 if tenebris_core::blocks::is_tech_block(to_place) {
                     let facing = w.facing_toward(s.place_tile, s.place_depth, p.position);
-                    w.block_entities.set(
-                        s.place_tile,
-                        s.place_depth,
-                        tenebris_core::block_entity::BlockEntity::with_facing(facing),
-                    );
+                    let e = w.block_entities.entry(s.place_tile, s.place_depth);
+                    e.facing = facing;
+                    /* Give machines their state up front so the machine
+                     * tick + power graph see them (computers/printers must
+                     * exist for the power gating). */
+                    tenebris_core::block_entity::init_machine_state(e, to_place);
                 }
                 net_client::send_edit(
                     proto::PLAYER_CMD_PLACE,

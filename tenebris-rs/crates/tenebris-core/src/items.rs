@@ -229,6 +229,51 @@ pub fn is_fuel(id: ItemId) -> bool {
     id == COAL
 }
 
+/// A 3D-printer recipe: timed print of `output` x `qty` from `inputs`.
+pub struct PrintRecipe {
+    pub name: &'static str,
+    pub output: ItemId,
+    pub qty: u16,
+    pub inputs: Vec<(ItemId, u16)>,
+    pub time_s: f32,
+}
+
+/// What the 3D printer can print (JS `PRINTER_RECIPES`, simplified - the
+/// big structural / rocket parts). Built per call; the set is tiny.
+pub fn print_recipes() -> Vec<PrintRecipe> {
+    use crate::blocks::Block;
+    vec![
+        PrintRecipe {
+            name: "Launch Pad",
+            output: from_block(Block::LaunchPad),
+            qty: 1,
+            inputs: vec![(IRON_INGOT, 4), (Block::Stone as u16, 4)],
+            time_s: 8.0,
+        },
+        PrintRecipe {
+            name: "Launch Tower",
+            output: from_block(Block::LaunchTower),
+            qty: 1,
+            inputs: vec![(IRON_INGOT, 9)],
+            time_s: 10.0,
+        },
+        PrintRecipe {
+            name: "Rocket Engine",
+            output: ROCKET_ENGINE,
+            qty: 1,
+            inputs: vec![(BRONZE_INGOT, 4), (IRON_INGOT, 2)],
+            time_s: 12.0,
+        },
+        PrintRecipe {
+            name: "Fuel Tank",
+            output: FUEL_TANK,
+            qty: 1,
+            inputs: vec![(IRON_INGOT, 6)],
+            time_s: 10.0,
+        },
+    ]
+}
+
 /// Item classification (defaults to Resource for unknown ids).
 pub fn kind(id: ItemId) -> ItemKind {
     def(id).map(|d| d.kind).unwrap_or(ItemKind::Resource)
