@@ -734,115 +734,281 @@ fn dev_maybe_place(app: &mut App) {
             power_ui::open_printer(app.world.clone(), app.player.clone(), center, printer_depth);
         }
         10 => {
-            /* Wiring showcase (geometry, no UI panel): build the full
-             * modular chain as a vertical tower on a NEIGHBOURING tile (so it
-             * isn't under the camera) and aim the view at it. Depth adjacency
-             * links every node, so the connectors read clearly:
-             *   hydro -> copper pipe -> steam engine -> cable -> computer
-             *   -> cable -> electric furnace.
-             * Each pipe / cable cell renders as a thin node + connector arms
-             * to the machine cubes above and below - the modular look. */
+            /* Wiring showcase (geometry, no UI panel): lay the copper-pipe /
+             * cable network out HORIZONTALLY along the ground so the modular
+             * connectors - not the machine cubes - are the subject.
+             *
+             * A path is built by walking the neighbour graph outward from the
+             * player; consecutive tiles are mutually adjacent (each is a
+             * neighbour of the previous), so a pipe / cable laid along the
+             * path connects end to end. Layout along the path:
+             *   hydro -> pipe -> pipe -> pipe -> steam engine
+             *         -> cable -> cable -> computer
+             * The long pipe and cable runs read as a pipeline on the terrain;
+             * cable arms are slimmer than copper-pipe arms. */
             let max = tenebris_core::world::WORLD_MAX_DEPTH;
-            /* Walk the neighbour graph a few hops away from the player so the
-             * whole tower fits in frame (the player stays grounded on
-             * `center`, which is stable across the settle frames). Each hop
-             * picks the neighbour farthest from the start tile. */
-            let target = {
+            let dot = |a: DVec3, b: DVec3| a.x * b.x + a.y * b.y + a.z * b.z;
+            let path: Vec<i32> = {
                 let w = app.world.borrow();
-                let c_dir = match w.grid.tile(center) {
-                    Some(t) => t.center,
+                let tc = |t: i32| w.grid.tile(t).map(|x| x.center);
+                let norm = |a: DVec3| {
+                    let l = dvec3_length(a);
+                    if l > 1e-12 {
+                        dvec3_scale(a, 1.0 / l)
+                    } else {
+                        a
+                    }
+                };
+                let neighbors = |t: i32| -> Vec<i32> {
+                    match w.grid.tile(t) {
+                        Some(x) => x.neighbors.iter().copied().filter(|&n| n >= 0).collect(),
+                        None => Vec::new(),
+                    }
+                };
+                let c0 = match tc(center) {
+                    Some(c) => c,
                     None => return,
                 };
-                let dot = |a: DVec3, b: DVec3| a.x * b.x + a.y * b.y + a.z * b.z;
-                let mut cur = center;
-                for _ in 0..2 {
-                    let nb: Vec<i32> = match w.grid.tile(cur) {
-                        Some(t) => t.neighbors.iter().copied().filter(|&n| n >= 0).collect(),
-                        None => Vec::new(),
-                    };
-                    let mut best = cur;
-                    let mut best_dot = f64::INFINITY;
-                    for n in nb {
-                        if let Some(t) = w.grid.tile(n) {
-                            let d = dot(t.center, c_dir);
-                            if d < best_dot {
-                                best_dot = d;
+                let mut path = vec![center];
+                /* First hop: head outward (neighbour farthest from centre). */
+                let mut cur;
+                {
+                    let mut best = -1;
+                    let mut bd = f64::INFINITY;
+                    for n in neighbors(center) {
+                        if let Some(c) = tc(n) {
+                            let d = dot(c, c0);
+                            if d < bd {
+                                bd = d;
                                 best = n;
                             }
                         }
                     }
+                    if best < 0 {
+                        return;
+                    }
+                    path.push(best);
                     cur = best;
                 }
-                cur
+                /* Keep going straight: each step picks the neighbour whose
+                 * direction best continues the previous step. */
+                let mut dir = norm(dvec3_sub(tc(cur).unwrap_or(c0), c0));
+                for _ in 0..8 {
+                    let cc = match tc(cur) {
+                        Some(c) => c,
+                        None => break,
+                    };
+                    let mut best = -1;
+                    let mut bd = -2.0;
+                    for n in neighbors(cur) {
+                        if path.contains(&n) {
+                            continue;
+                        }
+                        if let Some(c) = tc(n) {
+                            let d = dot(norm(dvec3_sub(c, cc)), dir);
+                            if d > bd {
+                                bd = d;
+                                best = n;
+                            }
+                        }
+                    }
+                    if best < 0 {
+                        break;
+                    }
+                    dir = norm(dvec3_sub(tc(best).unwrap_or(cc), cc));
+                    path.push(best);
+                    cur = best;
+                }
+                path
             };
-            let depth = {
+            if path.len() < 8 {
+                return;
+            }
+            let player_pos = app.player.borrow().position;
+            /* Common ground level for the whole strip = the surface depth at
+             * the run's middle. Levelling to one depth makes the run a clean,
+             * aligned horizontal line (and the connector arms join cleanly,
+             * since every node shares a depth). */
+            let level_top = {
                 let w = app.world.borrow();
                 let mut top = -1;
                 for d in (0..max).rev() {
-                    if tenebris_core::blocks::is_solid(w.get(target, d)) {
+                    if tenebris_core::blocks::is_solid(w.get(path[3], d)) {
                         top = d;
                         break;
                     }
                 }
-                top + 1
+                top
             };
-            if depth < 1 || depth + 6 >= max {
+            if level_top < 1 || level_top + 2 >= max {
                 return;
             }
-            let player_pos = app.player.borrow().position;
-            let stack = [
-                Block::HydroGenerator,
-                Block::CopperPipe,
-                Block::SteamEngine,
-                Block::Cable,
-                Block::Computer,
-                Block::Cable,
-                Block::ElectricFurnace,
+            /* (path index, block). Index 0 is under the player, left bare.
+             * A long copper-pipe run then a cable run, with the only machine
+             * pushed to the far end so the connector geometry - not the
+             * cubes - fills the frame. */
+            let layout = [
+                (1usize, Block::CopperPipe),
+                (2, Block::CopperPipe),
+                (3, Block::CopperPipe),
+                (4, Block::Cable),
+                (5, Block::Cable),
+                (6, Block::Cable),
+                (7, Block::SteamEngine),
             ];
             {
                 let mut w = app.world.borrow_mut();
-                for (i, b) in stack.iter().enumerate() {
-                    let d = depth + i as i32;
-                    w.set(target, d, *b);
+                /* Flatten a shelf along the path + a one-tile skirt so the run
+                 * isn't occluded by terrain bumps: clear everything above the
+                 * level, make the level itself solid. */
+                let mut shelf: Vec<i32> = Vec::new();
+                for &t in path.iter().take(9) {
+                    shelf.push(t);
+                    if let Some(tile) = w.grid.tile(t) {
+                        for k in 0..tile.num_neighbors as usize {
+                            let n = tile.neighbors[k];
+                            if n >= 0 && !shelf.contains(&n) {
+                                shelf.push(n);
+                            }
+                        }
+                    }
+                }
+                for &t in shelf.iter() {
+                    for d in (level_top + 1)..max {
+                        if w.get(t, d) != Block::Air {
+                            w.set(t, d, Block::Air);
+                        }
+                    }
+                    if !tenebris_core::blocks::is_solid(w.get(t, level_top)) {
+                        w.set(t, level_top, Block::Stone);
+                    }
+                }
+                let d = level_top + 1;
+                for (idx, b) in layout.iter() {
+                    let t = path[*idx];
+                    w.set(t, d, *b);
                     if tenebris_core::blocks::is_tech_block(*b)
                         && *b != Block::Cable
                         && *b != Block::CopperPipe
                     {
-                        let facing = w.facing_toward(target, d, player_pos);
+                        let facing = w.facing_toward(t, d, player_pos);
                         w.block_entities.set(
-                            target,
+                            t,
                             d,
                             tenebris_core::block_entity::BlockEntity::with_facing(facing),
                         );
                     }
                 }
             }
-            /* Aim the camera at the tower's vertical middle. */
-            let (tdir, r_mid) = {
+            /* Move the camera to a viewpoint OFF TO THE SIDE of the run so it
+             * reads broadside (segments spread left-to-right), not collapsed
+             * down the line. Walk perpendicular to the run from its middle a
+             * few tiles, stand the player on that tile's surface (grounded so
+             * physics doesn't drop it), then aim at the run middle. */
+            let norm = |a: DVec3| {
+                let l = dvec3_length(a);
+                if l > 1e-12 {
+                    dvec3_scale(a, 1.0 / l)
+                } else {
+                    a
+                }
+            };
+            let cross = |a: DVec3, b: DVec3| {
+                dvec3_make(
+                    a.y * b.z - a.z * b.y,
+                    a.z * b.x - a.x * b.z,
+                    a.x * b.y - a.y * b.x,
+                )
+            };
+            let mid_idx = 3usize;
+            let mid_tile = path[mid_idx];
+            /* Surface world position of any tile (feet height). */
+            let surf_world = |w: &World, t: i32| -> Option<(DVec3, i32)> {
+                let mut top = -1;
+                for d in (0..max).rev() {
+                    if tenebris_core::blocks::is_solid(w.get(t, d)) {
+                        top = d;
+                        break;
+                    }
+                }
+                w.grid
+                    .tile(t)
+                    .map(|x| (dvec3_scale(norm(x.center), w.depth_to_radius_m(top.max(0) + 1)), top))
+            };
+            /* Find the side viewpoint tile. */
+            let view_tile = {
                 let w = app.world.borrow();
-                let r0 = w.depth_to_radius_m(depth);
-                let r_top = w.depth_to_radius_m(depth + stack.len() as i32);
-                (w.grid.tile(target).map(|t| t.center), (r0 + r_top) * 0.5)
+                let up_m = match w.grid.tile(mid_tile) {
+                    Some(t) => norm(t.center),
+                    None => return,
+                };
+                let run_dir = match (w.grid.tile(path[mid_idx + 1]), w.grid.tile(path[mid_idx - 1]))
+                {
+                    (Some(a), Some(b)) => norm(dvec3_sub(a.center, b.center)),
+                    _ => return,
+                };
+                let side = norm(cross(up_m, run_dir));
+                let mut cur = mid_tile;
+                for _ in 0..1 {
+                    let cc = match w.grid.tile(cur) {
+                        Some(t) => t.center,
+                        None => break,
+                    };
+                    let nb: Vec<i32> = match w.grid.tile(cur) {
+                        Some(t) => t.neighbors.iter().copied().filter(|&n| n >= 0).collect(),
+                        None => Vec::new(),
+                    };
+                    let mut best = -1;
+                    let mut bd = -2.0;
+                    for n in nb {
+                        if path.contains(&n) {
+                            continue;
+                        }
+                        if let Some(t) = w.grid.tile(n) {
+                            let d = dot(norm(dvec3_sub(t.center, cc)), side);
+                            if d > bd {
+                                bd = d;
+                                best = n;
+                            }
+                        }
+                    }
+                    if best < 0 {
+                        break;
+                    }
+                    cur = best;
+                }
+                cur
+            };
+            /* Compute the new camera position + aim target. */
+            let (view_pos, mid_world) = {
+                let w = app.world.borrow();
+                let v = surf_world(&w, view_tile);
+                let m = surf_world(&w, mid_tile);
+                match (v, m) {
+                    (Some((vp, _)), Some((mp, _))) => (vp, mp),
+                    _ => return,
+                }
             };
             let mut p = app.player.borrow_mut();
-            if let Some(tc) = tdir {
-                let tlen = dvec3_length(tc);
-                let mid_world = if tlen > 1e-9 {
-                    dvec3_scale(tc, r_mid / tlen)
-                } else {
-                    tc
-                };
-                let to = dvec3_sub(mid_world, p.position);
+            /* Stand the player on the viewpoint tile, just above the surface
+             * so physics settles the feet onto it. Rebuild the basis for the
+             * new location before deriving yaw/pitch. */
+            let up = norm(view_pos);
+            p.position = dvec3_add(view_pos, dvec3_scale(up, 0.5));
+            p.velocity = dvec3_make(0.0, 0.0, 0.0);
+            p.basis = tenebris_core::physics::tangent_basis(p.position);
+            p.basis_ready = true;
+            {
+                let eye = dvec3_add(p.position, dvec3_scale(p.basis.up, 1.6));
+                let to = dvec3_sub(mid_world, eye);
                 let to_len = dvec3_length(to).max(1e-9);
                 let look = dvec3_scale(to, 1.0 / to_len);
-                let up = p.basis.up;
+                let bu = p.basis.up;
                 let fwd = p.basis.fwd;
                 let right = p.basis.right;
-                let dot = |a: DVec3, b: DVec3| a.x * b.x + a.y * b.y + a.z * b.z;
-                let to_t = dvec3_sub(look, dvec3_scale(up, dot(look, up)));
+                let to_t = dvec3_sub(look, dvec3_scale(bu, dot(look, bu)));
                 p.yaw = (dot(to_t, right)).atan2(dot(to_t, fwd)) as f32;
-                /* pitch = angle above the tangent plane (look . up). */
-                p.pitch = dot(look, up).clamp(-1.0, 1.0).asin() as f32;
+                p.pitch = dot(look, bu).clamp(-1.0, 1.0).asin() as f32;
             }
             let kit = [
                 Block::CopperPipe,
