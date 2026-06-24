@@ -21,6 +21,46 @@ world state (mining, placement, physics) and a Client bug if it
 touches rendering or input. When in doubt, fix it in Core so SP and
 MP share the same code path.
 
+## Never rebuild an existing feature - find it and extend it
+
+Before writing a new system, **search for the one that already does the
+job and grow it.** This codebase has years of working machinery; the
+default assumption for any "add X" task is that something X-shaped (or
+X-adjacent) already exists and the change is an extension, not a
+green-field build.
+
+The discipline, in order:
+
+1. **Find it first.** Grep / read for the feature, its data, its state,
+   its UI, its persistence, its tests. Look in `core/` (shared SP+MP
+   state), in the client screens, in the save/load format, and in the
+   JS reference tree for how it worked originally. Spend the search
+   budget *before* the keyboard.
+2. **Extend or parameterize, don't fork.** If the existing thing is
+   close, add a field / variant / config knob / function parameter so
+   the new case flows through the *same* code path. A new enum variant
+   on an existing state machine beats a parallel state machine. A new
+   YAML field beats a hard-coded second copy. One mutator wired into the
+   existing persistence point beats a second save path.
+3. **Generalize only as far as the second caller needs.** Make the
+   shared code handle both cases cleanly; don't over-abstract for
+   hypothetical third callers that don't exist yet.
+4. **If you must add something new, say why.** When no existing system
+   fits, state explicitly what you searched for and why extension was
+   the wrong call, then build the new thing where its siblings live
+   (the new mutator next to the other mutators, the new screen next to
+   the other screens) so the *next* person finds it.
+
+Concretely, a parallel implementation of something that already exists -
+a second inventory store, a duplicate save path, a copy-pasted UI panel,
+a re-derived flight sim - is a bug, not a feature. Two code paths that
+must agree will drift; the SP/MP split in the Terminology section is the
+whole reason we keep one path. If you catch yourself typing a struct,
+function, or file whose shape mirrors one already in the tree, stop and
+extend the original instead.
+
+This rule stays in force until the user says otherwise.
+
 ## All world edits must persist immediately
 
 Every block placement, every block break, every torch placement,
