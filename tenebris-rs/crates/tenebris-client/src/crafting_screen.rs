@@ -350,6 +350,88 @@ pub fn egui_ui(ctx: &egui::Context) {
     }
 }
 
+/// Render the hand-craft recipe list into an EXISTING egui panel (no own
+/// window) and apply a click this frame. Lets the inventory overlay host
+/// crafting inline without a second, mutually-exclusive window. Station is
+/// the hand bench (None); crafts operate directly on `player`.
+pub fn hand_craft_panel(ui: &mut egui::Ui, player: &PlayerHandle) {
+    let recipes = crafting::recipes_for_station(None);
+    let flags: Vec<bool> = {
+        let p = player.borrow();
+        recipes.iter().map(|r| bag::can_craft(&p.inventory, &p.bag, r)).collect()
+    };
+    let mut craft_idx: Option<usize> = None;
+
+    ui.label(
+        egui::RichText::new("Click a recipe to craft - lit rows are ready")
+            .color(egui::Color32::from_rgb(0xa0, 0xa8, 0xc0)),
+    );
+    ui.add_space(4.0);
+    egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+        for (i, r) in recipes.iter().enumerate() {
+            let ready = flags.get(i).copied().unwrap_or(false);
+            let (rect, resp) =
+                ui.allocate_exact_size(egui::vec2(RECIPE_W, RECIPE_H), egui::Sense::click());
+            let bg = match (ready, resp.hovered()) {
+                (true, true) => egui::Color32::from_rgb(0x26, 0x3c, 0x2a),
+                (true, false) => egui::Color32::from_rgb(0x1d, 0x2e, 0x20),
+                (false, true) => egui::Color32::from_rgb(0x2c, 0x2e, 0x36),
+                (false, false) => egui::Color32::from_rgb(0x20, 0x22, 0x29),
+            };
+            {
+                let p = ui.painter();
+                p.rect_filled(rect, 4.0, bg);
+                if ready {
+                    p.rect_stroke(
+                        rect,
+                        4.0,
+                        egui::Stroke::new(1.5, egui::Color32::from_rgb(0x5a, 0xc8, 0x6e)),
+                        egui::StrokeKind::Inside,
+                    );
+                }
+                let cy = rect.center().y;
+                let mut x = rect.min.x + 8.0;
+                let cell = egui::vec2(RECIPE_ICON, RECIPE_ICON);
+                draw_icon(
+                    p,
+                    r.output.item,
+                    r.output.count,
+                    egui::Rect::from_center_size(egui::pos2(x + RECIPE_ICON * 0.5, cy), cell),
+                );
+                x += RECIPE_ICON + 12.0;
+                p.text(
+                    egui::pos2(x, cy),
+                    egui::Align2::LEFT_CENTER,
+                    "<-",
+                    egui::FontId::proportional(16.0),
+                    egui::Color32::from_rgb(0xc0, 0xc6, 0xd2),
+                );
+                x += 26.0;
+                for inp in &r.inputs {
+                    draw_icon(
+                        p,
+                        inp.item,
+                        inp.count,
+                        egui::Rect::from_center_size(egui::pos2(x + RECIPE_ICON * 0.5, cy), cell),
+                    );
+                    x += RECIPE_ICON + 6.0;
+                }
+            }
+            if resp.clicked() && ready {
+                craft_idx = Some(i);
+            }
+            ui.add_space(3.0);
+        }
+    });
+
+    if let Some(i) = craft_idx {
+        let r = recipes[i].clone();
+        let mut pc = player.borrow_mut();
+        let p = &mut *pc;
+        bag::try_craft(&mut p.inventory, &mut p.bag, &r);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

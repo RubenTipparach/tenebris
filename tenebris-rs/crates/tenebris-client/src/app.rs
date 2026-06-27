@@ -1476,6 +1476,28 @@ extern "C" fn init() {
     if std::env::var("TENEBRIS_DEV_CRAFT").is_ok() {
         crafting_screen::open(Some(player.clone()));
     }
+    if std::env::var("TENEBRIS_DEV_INV").is_ok() {
+        /* Stock the inventory + bag so the grid shows real thumbnails and
+         * recipes light up, then open the egui inventory overlay. */
+        use tenebris_core::items;
+        {
+            let mut p = player.borrow_mut();
+            let blocks = [
+                Block::Stone, Block::Dirt, Block::Grass, Block::Sand, Block::Wood,
+                Block::CoalOre, Block::CopperOre, Block::TinOre, Block::IronOre,
+                Block::Furnace, Block::StorageChest, Block::SteamEngine, Block::Cable,
+                Block::LaunchPad,
+            ];
+            for (i, b) in blocks.iter().enumerate() {
+                p.inventory.main[i] = crate::inventory::InvSlot::block(*b, 32);
+            }
+            p.bag.add(items::COPPER_INGOT, 8);
+            p.bag.add(items::TIN_INGOT, 8);
+            p.bag.add(items::IRON_INGOT, 8);
+            p.bag.add(items::COAL, 16);
+        }
+        inventory_screen::toggle();
+    }
 
     APP.with(|cell| {
         *cell.borrow_mut() = Some(App {
@@ -2898,6 +2920,8 @@ extern "C" fn frame() {
 fn egui_ui(app: &mut App, ctx: &egui::Context) {
     crafting_screen::set_player(Some(app.player.clone()));
     crafting_screen::egui_ui(ctx);
+    inventory_screen::set_player(Some(app.player.clone()));
+    inventory_screen::egui_ui(ctx);
     chest_screen::egui_ui(ctx);
     furnace_screen::egui_ui(ctx);
     power_ui::egui_ui(ctx);
@@ -3464,10 +3488,8 @@ fn frame_inner(app: &mut App) {
     pixel_ui::demo_draw();
 
     /* Inventory + crafting overlay - opened with `E` in gravity or
-     * Shift+E in space, closed with the same. Drawn after the
-     * gameplay HUD so it sits on top of the hotbar; before the pause
-     * panel so pause still wins when both are open. */
-    inventory_screen::draw(&mut app.player.borrow_mut().inventory);
+     * Shift+E in space. The panel itself now renders via egui_ui()
+     * (thumbnail grid + crafting); the old sokol panel is retired. */
 
     /* Shift+E hint toast: paints over the HUD when the player has
      * been mashing plain E in space without the overlay opening.
