@@ -3419,12 +3419,13 @@ fn frame_inner(app: &mut App) {
     remote_players::draw_nameplates(view, proj, sapp::widthf(), sapp::heightf(), &|id| {
         net_client::name_for_id(id)
     });
-    /* Gameplay HUD - hidden while the pause panel OR the inventory
-     * overlay is up. Pause: its sdtx text flushes on top of ALL sgl
-     * geometry and would bleed over the modal. Inventory: it draws its
-     * own hotbar row, so showing the HUD hotbar too would put two
-     * hotbars on screen. */
-    if !menu::pause_active() && !inventory_screen::is_open() && !rocket_screen::is_open() {
+    /* Gameplay HUD - hidden while the pause panel is up (its sdtx text
+     * flushes on top of ALL sgl geometry and would bleed over the modal).
+     * The inventory overlay now anchors to the top of the screen, so the
+     * live HUD hotbar (toolbar) stays visible along the bottom while it's
+     * open - the player can see what they have equipped while managing
+     * items above. */
+    if !menu::pause_active() && !rocket_screen::is_open() {
         /* No sdtx_draw here - single flush at the end of the UI block. */
         hotbar_ui::draw(&app.player.borrow().inventory);
         /* Real (non-ASCII) mining progress bar. */

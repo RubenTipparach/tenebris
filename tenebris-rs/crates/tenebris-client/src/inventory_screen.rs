@@ -927,7 +927,9 @@ pub fn egui_ui(ctx: &egui::Context) {
     egui::Window::new("Inventory")
         .collapsible(false)
         .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        /* Anchor near the top so the panel never covers the HUD hotbar
+         * (toolbar) along the bottom edge of the screen. */
+        .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 24.0))
         .show(ctx, |ui| {
             ui.horizontal_top(|ui| {
                 /* ---- Left: inventory grid + hotbar ---- */
