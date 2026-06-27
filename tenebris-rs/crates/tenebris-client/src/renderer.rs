@@ -84,11 +84,12 @@ use std::rc::Rc;
 use tenebris_core::blocks::{self, Block, FaceCap};
 use tenebris_core::config;
 use tenebris_core::math::{
-    dvec3_dot, dvec3_scale, vec3_add, vec3_length, vec3_sub, DVec3, Vec3,
+    dvec3_dot, dvec3_scale, dvec3_to_vec3, vec3_add, vec3_length, vec3_sub, DVec3, Vec3,
 };
 #[cfg(test)]
 use tenebris_core::math::dvec3_normalize;
-use tenebris_core::planet::{BodyConfig, Tileset};
+use tenebris_core::orbit;
+use tenebris_core::planet::{BodyConfig, BodyId, Tileset};
 use tenebris_core::planet_gen;
 use tenebris_core::world::{World, WORLD_MAX_DEPTH};
 use tenebris_core::world_water;
@@ -3026,6 +3027,22 @@ fn body_unload_detail(body: &mut ChunkedBody) {
 /// drawing chunks as a textured icosphere. Exactly one body is allowed
 /// to draw chunks at a time (the active one within 5 km), so this is
 /// the exact inverse of the terrain pass's condition.
+/// Re-place every registered body for this frame from the on-rails orbit
+/// sim: each body is drawn where it appears in the `active` body's rotating
+/// surface frame at sim-time `t`. The active body maps to its own static
+/// centre (the player never moves), so the call is uniform over all bodies.
+/// Drives the in-sky motion of moons + planets; the sun direction is
+/// computed alongside in app.rs from `orbit::sun_direction`.
+pub fn update_celestial(active: BodyId, t: f64) {
+    R.with(|cell| {
+        let r = &mut *cell.borrow_mut();
+        for b in &mut r.bodies {
+            let id = b.world.borrow().body.id;
+            b.world_pos = dvec3_to_vec3(orbit::apparent_pos(active, id, t));
+        }
+    });
+}
+
 pub fn draw_moons(view: Mat4, proj: Mat4, camera_world: Vec3) {
     R.with(|cell| {
         let mut r = cell.borrow_mut();

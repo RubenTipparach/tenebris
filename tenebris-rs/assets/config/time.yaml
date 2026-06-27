@@ -1,0 +1,24 @@
+# time.yaml - global clock + on-rails orbit / day-night tuning.
+#
+# The world runs a single simulation clock (core/world_time.rs). The sun,
+# moons and planets are all on rails: their sky positions are a pure
+# function of that clock, so there is no physics to drift. This file sets
+# the PACE of the whole sky; the per-body rotation/orbit periods live in
+# core/orbit.rs as multiples of the day / year lengths below.
+#
+# Durations are in SIMULATION seconds.
+#   time_scale         - sim seconds advanced per real second (1.0 = real).
+#                        Raise it to watch orbits sweep; lower for a calm
+#                        day/night.
+#   day_length_s       - sim seconds for one full Tenebris rotation
+#                        (one day/night cycle on the home world).
+#   year_length_s      - sim seconds for Tenebris to orbit the star once.
+#   start_day_fraction - time of day (0..1) a fresh world opens at, so it
+#                        starts in daylight. 0.0 = dawn, 0.25 = mid-morning,
+#                        0.5 = dusk, 0.75 = midnight.
+
+time:
+  time_scale: 1.0
+  day_length_s: 120.0
+  year_length_s: 2400.0
+  start_day_fraction: 0.46

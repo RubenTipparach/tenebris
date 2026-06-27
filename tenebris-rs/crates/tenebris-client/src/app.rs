@@ -32,6 +32,7 @@ use tenebris_core::math::{
     dvec3_add, dvec3_length, dvec3_make, dvec3_scale, dvec3_sub, dvec3_to_vec3, vec3_normalize,
     DVec3, Vec3,
 };
+use tenebris_core::orbit;
 use tenebris_core::planet::{self, BodyConfig, BodyId, BODY_COUNT};
 use tenebris_core::planet_gen;
 use tenebris_core::proto::{BODY_ID_IN_SPACE, TENEBRIS_PROTOCOL_VERSION};
@@ -363,6 +364,9 @@ thread_local! {
     /// showcase ring.
     static DEV_PLACE_COUNTDOWN: std::cell::Cell<i32> = const { std::cell::Cell::new(-1) };
     static DEV_PLACE_MODE: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+    /// Dev: freeze the world clock at a fixed time of day (TENEBRIS_DEV_TIME)
+    /// so a screenshot captures a chosen sun angle. -1 unknown, 0 run, 1 freeze.
+    static DEV_TIME_FROZEN: std::cell::Cell<i8> = const { std::cell::Cell::new(-1) };
 }
 
 /// Dev-only: once in-game and a few frames settled, drop the requested dev
@@ -395,6 +399,13 @@ fn dev_maybe_place(app: &mut App) {
     }
 
     match DEV_PLACE_MODE.with(|c| c.get()) {
+        13 => {
+            /* Sky view: pitch the camera up so the sun (and any moons /
+             * planets that are above the horizon) frame against the sky -
+             * a still of the on-rails orbit sim from the surface. */
+            let mut p = app.player.borrow_mut();
+            p.pitch = 0.95;
+        }
         5 => {
             /* Furnace UI shot: place a furnace on a front tile, stock the
              * bag with ore + coal, and open the smelter panel. */
@@ -1270,6 +1281,17 @@ extern "C" fn init() {
     config::load_lod("assets/config/lod.yaml");
     config::load_water("assets/config/water.yaml");
     config::load_lighting("assets/config/lighting.yaml");
+    config::load_time("assets/config/time.yaml");
+    /* Start the world clock in daylight (start_day_fraction of a day),
+     * unless a dev override pins the time of day. */
+    {
+        let tc = config::time();
+        let frac = match std::env::var("TENEBRIS_DEV_TIME") {
+            Ok(v) => v.parse::<f32>().unwrap_or(tc.start_day_fraction),
+            Err(_) => tc.start_day_fraction,
+        };
+        tenebris_core::world_time::set_seconds((frac as f64) * tc.day_length_s as f64);
+    }
     /* Install the crafting recipe table from data so the craft screen
      * and the bag bridge can read it (see core::crafting). */
     tenebris_core::crafting::set_recipes(tenebris_core::crafting::load_recipes(
@@ -1433,6 +1455,9 @@ extern "C" fn init() {
         DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
     } else if std::env::var("TENEBRIS_DEV_ROCKET_WORLD").is_ok() {
         DEV_PLACE_MODE.with(|c| c.set(12));
+        DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
+    } else if std::env::var("TENEBRIS_DEV_SKY").is_ok() {
+        DEV_PLACE_MODE.with(|c| c.set(13));
         DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
     }
     if std::env::var("TENEBRIS_DEV_KIT").is_ok() {
@@ -2935,6 +2960,20 @@ fn frame_inner(app: &mut App) {
     }
     dt = clamped;
     app.tick = app.tick.wrapping_add(1);
+
+    /* Advance the world clock (drives the on-rails orbit + day/night sim).
+     * Frozen when a dev time-of-day is pinned for screenshots. */
+    let time_frozen = DEV_TIME_FROZEN.with(|c| {
+        if c.get() < 0 {
+            c.set(if std::env::var("TENEBRIS_DEV_TIME").is_ok() { 1 } else { 0 });
+        }
+        c.get() == 1
+    });
+    if !time_frozen {
+        let scale = config::time().time_scale as f64;
+        tenebris_core::world_time::advance(dt as f64 * scale);
+    }
+
     profiler::begin_frame();
 
     /* Stream a few tiles of terrain per frame. (Profiler slot names
@@ -3193,20 +3232,23 @@ fn frame_inner(app: &mut App) {
     let zfar = 20000.0f32;
     let proj = mat4_perspective(60.0 * (std::f32::consts::PI / 180.0), aspect, 0.3, zfar);
 
-    /* Sun lives along the canonical sky-light direction at a far fixed
-     * position. */
-    const SUN_DIST: f32 = 8000.0;
-    const SUN_RADIUS: f32 = 240.0;
-    let sun_dir = vec3_normalize(Vec3 { x: 0.5, y: 0.9, z: 0.3 });
-    let sun_pos = Vec3 {
-        x: sun_dir.x * SUN_DIST,
-        y: sun_dir.y * SUN_DIST,
-        z: sun_dir.z * SUN_DIST,
-    };
-    /* Atmosphere is anchored to whatever body the player is currently
-     * standing on. Zeroed per-body fields fall back to the tuned
+    /* Atmosphere + sky are anchored to whatever body the player is
+     * currently standing on. Zeroed per-body fields fall back to the tuned
      * defaults (see the C commentary). */
     let active_body = app.player.borrow().body.unwrap_or(app.body);
+
+    /* Sun direction comes from the on-rails sky sim: it circles the sky as
+     * the active body spins (day/night) and drifts with its orbit. The disc
+     * sits far along that direction from the body's render centre. */
+    const SUN_DIST: f32 = 8000.0;
+    const SUN_RADIUS: f32 = 240.0;
+    let sim_t = tenebris_core::world_time::seconds();
+    let sun_dir = vec3_normalize(dvec3_to_vec3(orbit::sun_direction(active_body.id, sim_t)));
+    let sun_pos = Vec3 {
+        x: active_body.pos_x as f32 + sun_dir.x * SUN_DIST,
+        y: active_body.pos_y as f32 + sun_dir.y * SUN_DIST,
+        z: active_body.pos_z as f32 + sun_dir.z * SUN_DIST,
+    };
     let has_atmo = active_body.has_water;
     let planet_r = active_body.radius_m as f32;
     let radius_mult = if active_body.atmo_radius_mult > 0.0 { active_body.atmo_radius_mult } else { 1.3 };
@@ -3280,6 +3322,9 @@ fn frame_inner(app: &mut App) {
     renderer::draw_world(view, proj, &phys_world, cam_world, dt);
     profiler::end("draw-world");
     profiler::begin("draw-moons");
+    /* Place every body for this frame from the on-rails orbit sim, then
+     * draw them sweeping across the active body's sky. */
+    renderer::update_celestial(active_body.id, sim_t);
     renderer::draw_moons(view, proj, cam_world);
     profiler::end("draw-moons");
     profiler::begin("draw-torches");
