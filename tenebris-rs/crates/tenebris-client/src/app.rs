@@ -1412,6 +1412,11 @@ extern "C" fn init() {
     menu::init();
     remote_players::init();
     chat::init();
+    /* Dev: jump straight to an egui menu screen for screenshots /
+     * iteration (skips the sokol profile picker). */
+    if let Ok(v) = std::env::var("TENEBRIS_DEV_MENU") {
+        menu::dev_show_menu(&v);
+    }
 
     /* Dev fast-path for headless iteration / screenshots, gated entirely
      * on env vars so normal play never sees any of it:
@@ -2514,10 +2519,16 @@ fn maybe_prime_mode_for_state(app: &mut App) {
             );
         }
         Some(PrimeAction::EnterSp) => {
-            /* SP stays creative by default; G still toggles. */
+            /* Mode chosen on the New World screen (default creative);
+             * G still toggles in-game. */
+            let survival = menu::pending_survival();
             let mut p = app.player.borrow_mut();
-            p.survival_mode = false;
-            inventory::init_creative(&mut p.inventory);
+            p.survival_mode = survival;
+            if survival {
+                inventory::init_empty(&mut p.inventory);
+            } else {
+                inventory::init_creative(&mut p.inventory);
+            }
         }
         None => {
             if s == app.inv_primed_for_state {
@@ -2905,7 +2916,15 @@ extern "C" fn frame() {
         };
         sg::begin_pass(&pass);
         sdtx::canvas(sapp::widthf(), sapp::heightf());
-        menu::draw(sapp::widthf() as i32, sapp::heightf() as i32);
+        if menu::state_is_egui() {
+            /* SP menu screens render in egui (main menu / world list /
+             * new world); the rest stay on the sokol path. */
+            egui_layer::run(sapp::widthf(), sapp::heightf(), |ctx| menu::egui_ui(ctx));
+            egui_layer::draw();
+            sgl::draw();
+        } else {
+            menu::draw(sapp::widthf() as i32, sapp::heightf() as i32);
+        }
         sdtx::draw();
         sg::end_pass();
         sg::commit();
@@ -3558,9 +3577,15 @@ fn frame_inner(app: &mut App) {
 
 extern "C" fn event(e: *const sapp::Event) {
     let e = unsafe { &*e };
-    /* The main menu owns input while it's up. */
+    /* The main menu owns input while it's up. The egui-rendered SP
+     * screens route through the egui layer; the rest use the sokol
+     * menu's own hit-testing. */
     if menu::is_overlay() {
-        menu::handle_event(e);
+        if menu::state_is_egui() {
+            egui_layer::handle_event(e);
+        } else {
+            menu::handle_event(e);
+        }
         return;
     }
     with_app(|app| event_inner(app, e));

@@ -241,6 +241,10 @@ struct Menu {
     input_buf: String,
     input_cursor_blink_start: f64,
 
+    /* Mode chosen on the New World screen, consumed when the SP world
+     * boots (false = creative/sandbox, true = survival). */
+    new_world_survival: bool,
+
     mouse_x: f32,
     mouse_y: f32,
 
@@ -375,6 +379,200 @@ fn with_menu<R>(f: impl FnOnce(&mut Menu) -> R) -> R {
 /// play.
 pub fn dev_start_sp(world_name: &str) {
     with_menu(|m| start_sp_for_world(m, world_name));
+}
+
+/// Dev-only: jump straight to one of the egui menu screens (skipping the
+/// sokol profile picker) for screenshots / iteration. `which` is "main"
+/// (default), "worlds", or "new".
+pub fn dev_show_menu(which: &str) {
+    with_menu(|m| match which {
+        "worlds" => enter_world_list(m),
+        "new" => start_sp_new_world(m),
+        _ => m.state = GameState::MainMenu,
+    });
+}
+
+/* ===================================================================== */
+/* egui front-end for the single-player menu screens (main menu, world   */
+/* list, new-world). Profile-select + multiplayer stay on the sokol path */
+/* below; these three render in egui and drive the SAME state machine /  */
+/* start_* actions, so nothing forks.                                    */
+
+/// True when the current state renders via [`egui_ui`] (so app.rs routes
+/// events to egui and skips the sokol `draw` / `handle_event`).
+pub fn state_is_egui() -> bool {
+    matches!(
+        state(),
+        GameState::MainMenu | GameState::SpWorldList | GameState::SpNewWorldInput
+    )
+}
+
+/// Mode the next SP world should boot in (chosen on the New World screen):
+/// true = survival, false = creative/sandbox. Read by the SP-entry inventory
+/// priming in app.rs.
+pub fn pending_survival() -> bool {
+    with_menu(|m| m.new_world_survival)
+}
+
+/// A consistent full-width menu button.
+fn menu_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
+    ui.add_sized(
+        [280.0, 42.0],
+        egui::Button::new(egui::RichText::new(text).size(20.0)),
+    )
+}
+
+/// Render the active SP menu screen in egui. No-op for non-egui states.
+pub fn egui_ui(ctx: &egui::Context) {
+    match state() {
+        GameState::MainMenu => {
+            egui::Window::new("tenebris-menu")
+                .title_bar(false)
+                .resizable(false)
+                .collapsible(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .frame(egui::Frame::NONE)
+                .show(ctx, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(96.0);
+                    ui.label(
+                        egui::RichText::new("TENEBRIS")
+                            .size(64.0)
+                            .strong()
+                            .color(egui::Color32::from_rgb(0xe6, 0xcf, 0x73)),
+                    );
+                    ui.label(
+                        egui::RichText::new("a procedural planet sandbox")
+                            .size(16.0)
+                            .color(egui::Color32::from_rgb(0x90, 0x9a, 0xb0)),
+                    );
+                    ui.add_space(44.0);
+                    with_menu(|m| {
+                        if menu_button(ui, "Singleplayer").clicked() {
+                            enter_world_list(m);
+                        }
+                        ui.add_space(8.0);
+                        if menu_button(ui, "Multiplayer").clicked() {
+                            m.state = GameState::MpSubmenu;
+                        }
+                        ui.add_space(8.0);
+                        if menu_button(ui, "Quit").clicked() {
+                            sapp::quit();
+                        }
+                    });
+                });
+            });
+        }
+        GameState::SpWorldList => {
+            egui::Window::new("tenebris-menu")
+                .title_bar(false)
+                .resizable(false)
+                .collapsible(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .frame(egui::Frame::NONE)
+                .show(ctx, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(56.0);
+                    ui.label(
+                        egui::RichText::new("Select World")
+                            .size(34.0)
+                            .strong()
+                            .color(egui::Color32::from_rgb(0xc8, 0xd0, 0xe0)),
+                    );
+                    ui.add_space(20.0);
+                    with_menu(|m| {
+                        let worlds = m.worlds.clone();
+                        if worlds.is_empty() {
+                            ui.label(
+                                egui::RichText::new("No worlds yet - create one below.")
+                                    .color(egui::Color32::from_rgb(0x90, 0x98, 0xa8)),
+                            );
+                            ui.add_space(8.0);
+                        }
+                        egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+                            for w in &worlds {
+                                if menu_button(ui, w).clicked() {
+                                    start_sp_for_world(m, w);
+                                }
+                                ui.add_space(4.0);
+                            }
+                        });
+                        ui.add_space(12.0);
+                        if menu_button(ui, "+ New World").clicked() {
+                            start_sp_new_world(m);
+                        }
+                        ui.add_space(8.0);
+                        if menu_button(ui, "Back").clicked() {
+                            m.state = GameState::MainMenu;
+                        }
+                    });
+                });
+            });
+        }
+        GameState::SpNewWorldInput => {
+            egui::Window::new("tenebris-menu")
+                .title_bar(false)
+                .resizable(false)
+                .collapsible(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .frame(egui::Frame::NONE)
+                .show(ctx, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(80.0);
+                    ui.label(
+                        egui::RichText::new("New World")
+                            .size(34.0)
+                            .strong()
+                            .color(egui::Color32::from_rgb(0xc8, 0xd0, 0xe0)),
+                    );
+                    ui.add_space(20.0);
+                    with_menu(|m| {
+                        ui.label("World name");
+                        let resp = ui.add(
+                            egui::TextEdit::singleline(&mut m.input_buf)
+                                .hint_text("my world")
+                                .desired_width(280.0)
+                                .font(egui::TextStyle::Heading),
+                        );
+                        /* Keep the field focused so typing lands here. */
+                        if !resp.has_focus() && !resp.lost_focus() {
+                            resp.request_focus();
+                        }
+                        ui.add_space(16.0);
+                        ui.label("Mode");
+                        ui.horizontal(|ui| {
+                            ui.selectable_value(
+                                &mut m.new_world_survival,
+                                false,
+                                "Creative / Sandbox",
+                            );
+                            ui.selectable_value(&mut m.new_world_survival, true, "Survival");
+                        });
+                        ui.add_space(20.0);
+
+                        let name = m.input_buf.trim().to_string();
+                        let name_ok = !name.is_empty();
+                        let enter = resp.lost_focus()
+                            && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        let create = ui
+                            .add_enabled(name_ok, egui::Button::new(
+                                egui::RichText::new("Create").size(20.0),
+                            ).min_size(egui::vec2(280.0, 42.0)))
+                            .clicked();
+                        ui.add_space(8.0);
+                        let back = menu_button(ui, "Back").clicked();
+
+                        if (create || (enter && name_ok)) && name_ok {
+                            start_sp_for_world(m, &name);
+                        } else if back {
+                            enter_world_list(m);
+                        }
+                    });
+                });
+            });
+        }
+        _ => {}
+    }
 }
 
 /// snprintf-style byte truncation (C buffers cut at `cap` bytes). All
