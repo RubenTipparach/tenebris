@@ -915,13 +915,14 @@ pub fn egui_ui(ctx: &egui::Context) {
         return;
     };
 
-    let (hotbar, main, selected) = {
+    let (hotbar, main, selected, survival) = {
         let p = player.borrow();
-        (p.inventory.slots, p.inventory.main, p.inventory.selected)
+        (p.inventory.slots, p.inventory.main, p.inventory.selected, p.survival_mode)
     };
 
     let mut click_main: Option<usize> = None;
     let mut click_hotbar: Option<usize> = None;
+    let mut toggle_mode = false;
     let mut do_close = false;
 
     egui::Window::new("Inventory")
@@ -931,6 +932,27 @@ pub fn egui_ui(ctx: &egui::Context) {
          * (toolbar) along the bottom edge of the screen. */
         .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 24.0))
         .show(ctx, |ui| {
+            /* ---- Mode toggle: Creative/Sandbox <-> Survival ---- */
+            ui.horizontal(|ui| {
+                let (label, col) = if survival {
+                    ("Mode: Survival", egui::Color32::from_rgb(0x7a, 0xc8, 0x88))
+                } else {
+                    ("Mode: Creative / Sandbox", egui::Color32::from_rgb(0xe0, 0xc8, 0x60))
+                };
+                if ui.button(egui::RichText::new(label).strong().color(col)).clicked() {
+                    toggle_mode = true;
+                }
+                ui.label(
+                    egui::RichText::new(if survival {
+                        "gather + craft to build (click to switch, also G)"
+                    } else {
+                        "all blocks, unlimited (click to switch, also G)"
+                    })
+                    .small()
+                    .color(egui::Color32::from_rgb(0x90, 0x98, 0xa8)),
+                );
+            });
+            ui.separator();
             ui.horizontal_top(|ui| {
                 /* ---- Left: inventory grid + hotbar ---- */
                 ui.vertical(|ui| {
@@ -990,6 +1012,20 @@ pub fn egui_ui(ctx: &egui::Context) {
                 do_close = true;
             }
         });
+
+    /* Mode toggle: flip survival/creative and re-stock the inventory to
+     * match (same effect as the G key). Mutually exclusive with item
+     * clicks this frame since the inventory is about to be replaced. */
+    if toggle_mode {
+        let mut p = player.borrow_mut();
+        p.survival_mode = !p.survival_mode;
+        if p.survival_mode {
+            crate::inventory::init_empty(&mut p.inventory);
+        } else {
+            crate::inventory::init_creative(&mut p.inventory);
+        }
+        return;
+    }
 
     /* Click a main slot -> swap it into the selected hotbar slot (equip);
      * click a hotbar slot -> make it the active one. */
