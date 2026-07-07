@@ -2708,6 +2708,129 @@ pub fn pause_draw(screen_w: i32, screen_h: i32) {
     with_menu(|m| pause_draw_inner(m, screen_w, screen_h));
 }
 
+/// The main pause panel, rendered in egui (RETURN TO GAME / SETTINGS /
+/// INVITE(MP) / QUIT). Self-gates on pause being visible with the Settings
+/// sub-panel closed (that sub-panel stays on the sokol `pause_draw` path).
+/// Added to the in-game egui dispatch in app.rs.
+pub fn pause_egui_ui(ctx: &egui::Context) {
+    let (show, is_mp, reconnecting) = with_menu(|m| {
+        (
+            m.pause_visible && !m.settings_visible,
+            m.state == GameState::InGameMp,
+            m.reconnect_deadline_t > 0.0,
+        )
+    });
+    if !show {
+        return;
+    }
+
+    let mut do_resume = false;
+    let mut do_settings = false;
+    let mut do_invite = false;
+    let mut do_quit = false;
+
+    egui::Window::new("tenebris-pause")
+        .title_bar(false)
+        .resizable(false)
+        .collapsible(false)
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .show(ctx, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.add_space(6.0);
+                if reconnecting {
+                    ui.label(
+                        egui::RichText::new("DISCONNECTED")
+                            .size(30.0)
+                            .strong()
+                            .color(egui::Color32::from_rgb(0xff, 0xc0, 0x60)),
+                    );
+                    ui.label(
+                        egui::RichText::new("reconnecting...")
+                            .color(egui::Color32::from_rgb(0xc0, 0xc0, 0xff)),
+                    );
+                } else {
+                    ui.label(
+                        egui::RichText::new("PAUSED")
+                            .size(34.0)
+                            .strong()
+                            .color(egui::Color32::from_rgb(0xe6, 0xea, 0xf2)),
+                    );
+                }
+                ui.add_space(16.0);
+                if ui
+                    .add_enabled(!reconnecting, egui::Button::new(
+                        egui::RichText::new("Return to Game").size(20.0),
+                    ).min_size(egui::vec2(280.0, 42.0)))
+                    .clicked()
+                {
+                    do_resume = true;
+                }
+                ui.add_space(8.0);
+                if menu_button(ui, "Settings").clicked() {
+                    do_settings = true;
+                }
+                if is_mp {
+                    ui.add_space(8.0);
+                    if menu_button(ui, "Invite Players").clicked() {
+                        do_invite = true;
+                    }
+                }
+                ui.add_space(8.0);
+                if menu_button(ui, "Quit to Menu").clicked() {
+                    do_quit = true;
+                }
+            });
+        });
+
+    with_menu(|m| {
+        if do_resume && !reconnecting {
+            pause_apply(m, PauseAction::Resume);
+        } else if do_settings {
+            pause_apply(m, PauseAction::Settings);
+        } else if do_invite {
+            pause_apply(m, PauseAction::Invite);
+        } else if do_quit {
+            pause_apply(m, PauseAction::Quit);
+        }
+    });
+}
+
+/// A pause-panel button action, factored out of `pause_egui_ui` so both the
+/// egui buttons and the unit tests drive the exact same state transitions.
+enum PauseAction {
+    Resume,
+    Settings,
+    Invite,
+    Quit,
+}
+
+fn pause_apply(m: &mut Menu, action: PauseAction) {
+    match action {
+        PauseAction::Resume => {
+            set_pause_visible(m, false, "resume");
+            m.pause_auto_disconnect = false;
+        }
+        PauseAction::Settings => {
+            m.settings_visible = true;
+        }
+        PauseAction::Invite => {
+            let room = m.room_code.clone();
+            let rc = js::share_invite(&room);
+            m.pause_share_result = if rc == 0 { 3 } else { rc };
+            m.pause_share_msg_until = now_s() + 2.5;
+        }
+        PauseAction::Quit => {
+            if m.state == GameState::InGameMp {
+                net_client::disconnect();
+                m.room_code.clear();
+            }
+            m.active_world.clear();
+            set_pause_visible(m, false, "quit");
+            m.state = GameState::MainMenu;
+        }
+    }
+}
+
 fn pause_draw_inner(m: &mut Menu, screen_w: i32, screen_h: i32) {
     if !m.pause_visible {
         return;
@@ -2721,92 +2844,8 @@ fn pause_draw_inner(m: &mut Menu, screen_w: i32, screen_h: i32) {
         settings_draw(m, screen_w as f32, screen_h as f32);
         return;
     }
-
-    let w = screen_w as f32;
-    let h = screen_h as f32;
-    let pl = compute_pause_layout(m.state == GameState::InGameMp, w, h);
-
-    /* Use mobile_ui's shared alpha pipeline - it draws the joystick +
-     * buttons every frame so we know it lands on the swapchain across
-     * browser / driver combos. */
-    sgl::defaults();
-    sgl::matrix_mode_projection();
-    sgl::load_identity();
-    sgl::ortho(0.0, w, h, 0.0, -1.0, 1.0);
-    sgl::matrix_mode_modelview();
-    sgl::load_identity();
-    let pause_pip = mobile_ui::alpha_pipeline();
-    sgl::load_pipeline(pause_pip);
-
-    /* Full-screen dim backdrop. */
-    mobile_ui::draw_rect(0.0, 0.0, w, h, 0.02, 0.03, 0.07, 0.75);
-    /* Panel + border. */
-    mobile_ui::draw_rect(pl.panel_x, pl.panel_y, pl.panel_w, pl.panel_h, 0.10, 0.12, 0.18, 0.96);
-    mobile_ui::draw_rect_outline(
-        pl.panel_x, pl.panel_y, pl.panel_w, pl.panel_h, 2.0, 0.85, 0.90, 1.00, 1.0,
-    );
-    /* Buttons - hover-aware. RETURN TO GAME is greyed out while the
-     * MP reconnect window is open: the game isn't actually playable
-     * until the socket is back, and pretending it is would let the
-     * player click resume into an empty world. */
-    let reconnecting = m.reconnect_deadline_t > 0.0;
-    let btns = [&pl.resume, &pl.settings, &pl.invite, &pl.quit];
-    for (i, b) in btns.iter().enumerate() {
-        if b.label.is_none() {
-            continue;
-        }
-        let disabled = i == 0 && reconnecting; /* b == &G_pl.resume */
-        let hovered = !disabled && pause_btn_hit(b, m.mouse_x, m.mouse_y);
-        if disabled {
-            mobile_ui::draw_rect(b.x, b.y, b.w, b.h, 0.08, 0.09, 0.12, 0.85);
-        } else if hovered {
-            mobile_ui::draw_rect(b.x, b.y, b.w, b.h, 0.22, 0.30, 0.42, 0.98);
-        } else {
-            mobile_ui::draw_rect(b.x, b.y, b.w, b.h, 0.14, 0.16, 0.22, 0.95);
-        }
-        let oa = if disabled { 0.35 } else { 1.0 };
-        mobile_ui::draw_rect_outline(b.x, b.y, b.w, b.h, 2.0, 0.85, 0.90, 1.00, oa);
-    }
-    /* No sgl_draw - centralised flush at end of main_web's frame.
-     * sokol_gl uploads its vertex buffer only on the first sgl_draw
-     * of the frame; flushing here would freeze the GPU's view of the
-     * buffer and drop every later UI module's quads.
-     * app.rs (the main_web port) owns the end-of-frame sgl flush. */
-
-    /* Text on top of the geometry. Title swaps to DISCONNECTED while
-     * the reconnect window is open so the player understands why
-     * RETURN TO GAME is greyed out. */
-    let cx = w * 0.5;
-    if reconnecting {
-        draw_text_centered(TXT_DISCONNECTED, cx, pl.panel_y + 20.0, 4.0, 0xff, 0xc0, 0x60);
-        /* Animated trailing dots + attempt / countdown line. */
-        let rt = now_s();
-        let status = header_with_dots("RECONNECTING", dot_phase(rt));
-        draw_text_centered(&status, cx, pl.panel_y + 60.0, 2.0, 0xff, 0xff, 0xff);
-        let line = reconnect_attempt_line(m.reconnect_attempts, m.reconnect_deadline_t - rt);
-        draw_text_centered(&line, cx, pl.panel_y + 86.0, 1.5, 0xc0, 0xc0, 0xff);
-    } else {
-        draw_text_centered(TXT_PAUSED, cx, pl.panel_y + 20.0, 4.0, 0xff, 0xff, 0xff);
-    }
-    for (i, b) in btns.iter().enumerate() {
-        let Some(label) = b.label else { continue };
-        let disabled = i == 0 && reconnecting;
-        let tc: u8 = if disabled { 0x60 } else { 0xff };
-        let bx = b.x + b.w * 0.5;
-        let by = b.y + (b.h - 8.0 * 2.0) * 0.5;
-        draw_text_centered(label, bx, by, 2.0, tc, tc, tc);
-    }
-
-    /* Share-result toast under the INVITE button (MP only). */
-    let t_now = now_s();
-    if pl.invite.label.is_some() && m.pause_share_msg_until > t_now {
-        let (msg, (r, g, bl)) = share_toast(m.pause_share_result);
-        let ty = pl.invite.y + pl.invite.h + 8.0;
-        draw_text_centered(msg, cx, ty, 1.0, r, g, bl);
-    }
-
-    /* (Settings overlay short-circuits at the top of this function -
-     * see the early-return there.) */
+    /* The main pause panel now renders in egui (see `pause_egui_ui`);
+     * this sokol path only owns the Settings sub-panel above. */
 }
 
 /// Port of `menu_connecting_draw()`. Cross-platform connecting overlay
@@ -2918,62 +2957,10 @@ fn pause_event_inner(m: &mut Menu, e: &sapp::Event) -> bool {
         return true;
     }
 
-    /* Click / touch hit-test against the same rects the draw path
-     * computed. */
-    let mut click = false;
-    let mut cx = 0.0;
-    let mut cy = 0.0;
-    if e._type == sapp::EventType::MouseDown && e.mouse_button == sapp::Mousebutton::Left {
-        click = true;
-        cx = e.mouse_x;
-        cy = e.mouse_y;
-    } else if e._type == sapp::EventType::TouchesBegan && e.num_touches > 0 {
-        click = true;
-        cx = e.touches[0].pos_x;
-        cy = e.touches[0].pos_y;
-    }
-    if click {
-        let (sw, sh) = screen_sizef();
-        let pl = compute_pause_layout(m.state == GameState::InGameMp, sw, sh);
-        let reconnecting = m.reconnect_deadline_t > 0.0;
-        if !reconnecting && pause_btn_hit(&pl.resume, cx, cy) {
-            set_pause_visible(m, false, "click-resume");
-            m.pause_auto_disconnect = false;
-            show_mouse(true);
-            return true;
-        }
-        if reconnecting && pause_btn_hit(&pl.resume, cx, cy) {
-            /* RETURN TO GAME is disabled while retrying - swallow the
-             * click so it can't fall through to the QUIT button
-             * below. */
-            return true;
-        }
-        if pause_btn_hit(&pl.settings, cx, cy) {
-            m.settings_visible = true;
-            return true;
-        }
-        if pause_btn_hit(&pl.invite, cx, cy) {
-            let room = m.room_code.clone();
-            let rc = js::share_invite(&room);
-            m.pause_share_result = if rc == 0 { 3 } else { rc };
-            m.pause_share_msg_until = now_s() + 2.5;
-            return true;
-        }
-        if pause_btn_hit(&pl.quit, cx, cy) {
-            if m.state == GameState::InGameMp {
-                net_client::disconnect();
-                m.room_code.clear();
-            }
-            m.active_world.clear();
-            set_pause_visible(m, false, "click-quit");
-            m.state = GameState::MainMenu;
-            return true;
-        }
-        return true; /* swallow clicks inside the dim backdrop */
-    }
-
-    /* Swallow everything else (keyboard movement, scroll, etc.) so
-     * the player doesn't keep walking / mining behind the panel. */
+    /* The pause panel's buttons live in egui now (`pause_egui_ui`), which
+     * consumes its own clicks via egui_layer::handle_event (run before
+     * this). Everything else - clicks on the dim backdrop, movement keys,
+     * scroll - is swallowed here so the player can't act behind the panel. */
     true
 }
 
@@ -4162,21 +4149,17 @@ mod tests {
         force_state(GameState::InGameSp);
         pause_toggle();
         assert!(pause_active());
-        /* Escape inside pause now resumes (closes) it - symmetric with the
+        /* Escape inside pause resumes (closes) it - symmetric with the
          * Escape that opened it. */
         assert!(pause_event(&key(Keycode::Escape)));
         assert!(!pause_active());
-        /* Re-open to exercise the click-resume button + cursor show. */
+        /* Re-open and exercise the RESUME action (the egui button drives
+         * this same `pause_apply`). */
         pause_toggle();
         assert!(pause_active());
-        /* SP resume button center: (640, 319). */
-        assert!(pause_event(&click(640.0, 319.0)));
+        with_menu(|m| pause_apply(m, PauseAction::Resume));
         assert!(!pause_active());
-        assert_eq!(
-            test_doubles::MOUSE_SHOWN.with(|c| c.get()),
-            Some(true)
-        );
-        /* Backdrop clicks + keys are swallowed while open. */
+        /* Backdrop clicks + movement keys are swallowed while open. */
         pause_toggle();
         assert!(pause_event(&click(10.0, 10.0)));
         assert!(pause_active());
@@ -4190,8 +4173,7 @@ mod tests {
         with_menu(|m| start_sp_for_world(m, "alpha"));
         assert_eq!(active_world(), "alpha");
         pause_toggle();
-        /* SP quit button at (480, 451). */
-        assert!(pause_event(&click(640.0, 480.0)));
+        with_menu(|m| pause_apply(m, PauseAction::Quit));
         assert_eq!(state(), GameState::MainMenu);
         assert_eq!(active_world(), "");
         assert!(!pause_active());
@@ -4204,8 +4186,7 @@ mod tests {
         with_menu(|m| connect_to_room(m, "ABC123"));
         assert_eq!(state(), GameState::InGameMp);
         pause_toggle();
-        /* MP quit button at (480, 492). */
-        assert!(pause_event(&click(640.0, 520.0)));
+        with_menu(|m| pause_apply(m, PauseAction::Quit));
         assert_eq!(state(), GameState::MainMenu);
         assert_eq!(room_code(), "");
         assert!(!pause_active());
@@ -4221,8 +4202,7 @@ mod tests {
         with_menu(|m| connect_to_room(m, "ABC123"));
         pause_toggle();
         test_doubles::set_now(100.0);
-        /* MP invite button at (480, 410). */
-        assert!(pause_event(&click(640.0, 440.0)));
+        with_menu(|m| pause_apply(m, PauseAction::Invite));
         /* Native share fallback returns 0 -> stored as 3 (failed). */
         assert_eq!(snap(|m| m.pause_share_result), 3);
         assert_eq!(snap(|m| m.pause_share_msg_until), 102.5);
@@ -4234,8 +4214,7 @@ mod tests {
         let _g = setup("menu_pause_settings");
         force_state(GameState::InGameSp);
         pause_toggle();
-        /* SP settings button at (480, 369). */
-        assert!(pause_event(&click(640.0, 400.0)));
+        with_menu(|m| pause_apply(m, PauseAction::Settings));
         assert!(snap(|m| m.settings_visible));
         /* Settings is modal over pause: Escape closes settings only. */
         assert!(pause_event(&key(Keycode::Escape)));

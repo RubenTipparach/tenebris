@@ -212,15 +212,9 @@ pub fn ensure_reserved_water(inv: &mut Inventory) {
 /// slot or the first empty one.
 pub fn init_empty(inv: &mut Inventory) {
     *inv = Inventory::default();
-    /* Survival starts with an otherwise-empty hotbar so every solid
-     * block has to be mined. Two infinite exceptions: torches at
-     * slot 0 (no crafting system yet, players need a way to light
-     * caves) and water at the rightmost slot (it's a fluid - there's
-     * no "mine a water block to add to inventory" path for it, so
-     * gating it on creative mode would mean MP players never get
-     * to use the flow simulator at all). */
-    inv.slots[0] = InvSlot::block(Block::Torch, CREATIVE_COUNT);
-    inv.slots[INV_HOTBAR_SLOTS - 1] = InvSlot::block(Block::Water, CREATIVE_COUNT);
+    /* Survival spawns with a fully empty hotbar - every block has to be
+     * mined and every tool / torch crafted (torches now have a recipe).
+     * Nothing is reserved. */
     inv.selected = 0;
 }
 
@@ -387,12 +381,10 @@ mod tests {
     }
 
     #[test]
-    fn empty_layout_keeps_reserved_torch_and_water() {
+    fn empty_layout_is_fully_empty() {
         let mut inv = Inventory::default();
         init_empty(&mut inv);
-        assert_eq!(inv.slots[0], InvSlot::block(Block::Torch, 9999));
-        assert_eq!(inv.slots[8], InvSlot::block(Block::Water, 9999));
-        for i in 1..8 {
+        for i in 0..INV_HOTBAR_SLOTS {
             assert_eq!(inv.slots[i], InvSlot::block(Block::Air, 0), "slot {}", i);
         }
         assert_eq!(inv.selected, 0);
@@ -448,25 +440,27 @@ mod tests {
     fn add_stacks_then_fills_first_empty() {
         let mut inv = Inventory::default();
         init_empty(&mut inv);
-        // new type -> first empty slot (slot 1; 0 is torch)
+        // new type -> first empty slot (the whole hotbar starts empty)
         assert!(add(&mut inv, Block::Stone));
-        assert_eq!(inv.slots[1], InvSlot::block(Block::Stone, 1));
+        assert_eq!(inv.slots[0], InvSlot::block(Block::Stone, 1));
         // same type stacks instead of opening a new slot
         assert!(add(&mut inv, Block::Stone));
-        assert_eq!(inv.slots[1], InvSlot::block(Block::Stone, 2));
-        assert_eq!(inv.slots[2], InvSlot::block(Block::Air, 0));
-        // stacking matches existing reserved slots too (torch at slot 0)
-        assert!(add(&mut inv, Block::Torch));
-        assert_eq!(inv.slots[0].count, 10000);
+        assert_eq!(inv.slots[0], InvSlot::block(Block::Stone, 2));
+        assert_eq!(inv.slots[1], InvSlot::block(Block::Air, 0));
+        // a different type opens the next empty slot
+        assert!(add(&mut inv, Block::Dirt));
+        assert_eq!(inv.slots[1], InvSlot::block(Block::Dirt, 1));
     }
 
     #[test]
     fn add_treats_zero_count_slot_as_empty() {
         let mut inv = Inventory::default();
         init_empty(&mut inv);
-        // a drained slot (type set, count 0) is not a stacking target,
-        // but IS a fill target for a different type
+        // occupy slot 0, drain slot 1 (type set, count 0)
+        inv.slots[0] = InvSlot::block(Block::Stone, 2);
         inv.slots[1] = InvSlot::block(Block::Stone, 0);
+        // a drained slot is not a stacking target, but IS a fill target
+        // for a different type
         assert!(add(&mut inv, Block::Dirt));
         assert_eq!(inv.slots[1], InvSlot::block(Block::Dirt, 1));
     }
@@ -486,19 +480,20 @@ mod tests {
     fn can_place_and_selected() {
         let mut inv = Inventory::default();
         init_empty(&mut inv);
-        // slot 0: torch, placeable
+        // empty spawn: selected slot 0 is empty, nothing to place
+        assert!(!can_place(&inv));
+        assert_eq!(selected(&inv), Block::Air);
+        // put a block in the selected slot -> placeable
+        inv.slots[0] = InvSlot::block(Block::Stone, 5);
         assert!(can_place(&inv));
-        assert_eq!(selected(&inv), Block::Torch);
+        assert_eq!(selected(&inv), Block::Stone);
         // empty mid slot: not placeable, reads Air
         select(&mut inv, 4);
         assert!(!can_place(&inv));
         assert_eq!(selected(&inv), Block::Air);
-        // reserved water slot
-        select(&mut inv, 8);
-        assert!(can_place(&inv));
-        assert_eq!(selected(&inv), Block::Water);
         // type set but count drained -> not placeable
-        inv.slots[8].count = 0;
+        select(&mut inv, 0);
+        inv.slots[0].count = 0;
         assert!(!can_place(&inv));
         assert_eq!(selected(&inv), Block::Air);
     }

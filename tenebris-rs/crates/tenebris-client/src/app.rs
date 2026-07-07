@@ -1478,6 +1478,10 @@ extern "C" fn init() {
         let name = if v.is_empty() { "devworld" } else { v.as_str() };
         menu::dev_start_sp(name);
     }
+    if std::env::var("TENEBRIS_DEV_PAUSE").is_ok() {
+        /* Screenshot aid: open the pause overlay at spawn. */
+        menu::pause_toggle();
+    }
     if std::env::var("TENEBRIS_DEV_CRAFT").is_ok() {
         crafting_screen::open(Some(player.clone()));
     }
@@ -2945,6 +2949,7 @@ fn egui_ui(app: &mut App, ctx: &egui::Context) {
     furnace_screen::egui_ui(ctx);
     power_ui::egui_ui(ctx);
     rocket_screen::egui_ui(ctx);
+    menu::pause_egui_ui(ctx);
 }
 
 fn frame_inner(app: &mut App) {
@@ -2976,6 +2981,10 @@ fn frame_inner(app: &mut App) {
             && !overlay_open
         {
             menu::pause_toggle();
+            /* Release the pointer lock so the cursor actually appears over
+             * the (egui) pause panel - show_mouse alone can't reveal a
+             * captured pointer. */
+            sapp::lock_mouse(false);
             sapp::show_mouse(true);
         }
         app.was_mouse_locked = now_locked;
@@ -3350,6 +3359,9 @@ fn frame_inner(app: &mut App) {
     };
     let cam_world = dvec3_to_vec3(cam_world_d);
     env.camera_world = cam_world;
+    /* Spin the starfield with the planet's rotation so the sky wheels
+     * overhead with the day, matching the sun + moons. */
+    env.star_spin_angle = orbit::spin_angle(active_body.id, sim_t) as f32;
 
     renderer::begin_frame(sapp::width(), sapp::height(), env);
     /* Opaque scene -> offscreen colour + depth attachments. */
@@ -3810,6 +3822,10 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
             crafting_screen::close();
             inventory_screen::close();
             menu::pause_toggle();
+            /* Release the pointer lock so the cursor actually appears over
+             * the (egui) pause panel - show_mouse alone can't reveal a
+             * captured pointer. */
+            sapp::lock_mouse(false);
             sapp::show_mouse(true);
         }
         return;

@@ -175,6 +175,11 @@ pub struct RenderEnv {
     pub atmo_sunset_glow: Vec3,
     pub atmo_sunset_horizon: Vec3,
     pub camera_world: Vec3,
+    /// Active body's spin angle (radians) about its +Y axis at the current
+    /// sim time. The starfield samples through a basis counter-rotated by
+    /// this, so the stars wheel across the sky with the day exactly like
+    /// the sun + moons do. 0 = no rotation.
+    pub star_spin_angle: f32,
 }
 
 /* ----------------------------------------------------------------------- */
@@ -1043,6 +1048,20 @@ struct CameraBasis {
     fwd: [f32; 3],
     tan_half: f32,
     aspect: f32,
+}
+
+/// Rotate a camera basis about the world +Y axis by `angle` radians.
+/// Used to spin the starfield sampling frame with the planet's rotation.
+fn spin_basis_y(b: &CameraBasis, angle: f32) -> CameraBasis {
+    let (s, c) = angle.sin_cos();
+    let roty = |v: [f32; 3]| [v[0] * c + v[2] * s, v[1], -v[0] * s + v[2] * c];
+    CameraBasis {
+        right: roty(b.right),
+        up: roty(b.up),
+        fwd: roty(b.fwd),
+        tan_half: b.tan_half,
+        aspect: b.aspect,
+    }
 }
 
 fn camera_basis(view: Mat4, proj: Mat4) -> CameraBasis {
@@ -2191,7 +2210,12 @@ pub fn draw_skybox(view: Mat4, proj: Mat4) {
 
         /* ---- Pass A: starfield + nebula (opaque) ---- */
         sg::apply_pipeline(r.pip_starfield);
-        let sp = build_starfield_params(&sky, &basis, r.time_seconds, bg_atten);
+        /* Counter-rotate the sampling basis by the body's spin so the star
+         * field wheels overhead with the day, matching the sun + moons
+         * (which are placed via +spin). Only the starfield is rotated;
+         * the atmosphere below keeps the true camera basis. */
+        let star_basis = spin_basis_y(&basis, -r.env.star_spin_angle);
+        let sp = build_starfield_params(&sky, &star_basis, r.time_seconds, bg_atten);
         sg::apply_uniforms(shaders::starfield::UB_STARFIELD_PARAMS, &sg::value_as_range(&sp));
         /* No apply_bindings: the starfield pipeline has no vertex
          * layout and no textures (positions from gl_VertexIndex). */

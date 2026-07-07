@@ -1277,7 +1277,7 @@ pub const LIGHTING_DEFAULTS: LightingConfig = LightingConfig {
     terminator_lo: -0.10,
     terminator_hi: 0.30,
     torch_color: v3(1.00, 0.70, 0.30),
-    torch_intensity: 1.00,
+    torch_intensity: 2.50,
     engine: 0, /* "column" - legacy path, no behaviour change */
     voxel_sky_max: 15,
     voxel_torch_emission: 14,
@@ -1771,8 +1771,8 @@ pub struct TimeConfig {
 
 const TIME_DEFAULTS: TimeConfig = TimeConfig {
     time_scale: 1.0,
-    day_length_s: 120.0,
-    year_length_s: 2400.0,
+    day_length_s: 480.0,
+    year_length_s: 9600.0,
     /* The home spawn sits on the equator at world +X, so midday (sun
      * overhead) falls near 0.46 of the day - open the world there so a
      * fresh load greets the player in bright daylight, not twilight. */
