@@ -79,10 +79,44 @@ pub enum Block {
     CopperOre = 26,
     TinOre = 27,
     IronOre = 28,
+
+    /* Crafted structure block. The launch pad the player builds a rocket
+     * on: interact (E) on a placed pad opens the rocket-assembly screen
+     * (see client::rocket_screen). Runtime-tinted rock - no new source
+     * art. Rust-port-only block (the canonical native target); the legacy
+     * C tree never had it. */
+    LaunchPad = 29,
+
+    /* Crafting-station block. Interact (E) on a placed furnace opens the
+     * smelting UI (ore + coal fuel -> ingots). Rust-port-only, past the C
+     * palette. Borrows an existing atlas tile for now (see face_tile) -
+     * dedicated tech-block art is a later pass. */
+    Furnace = 30,
+
+    /* Tech blocks ported from the JS planet machine modules. All
+     * Rust-port-only, past the C palette. They borrow existing atlas
+     * tiles for now (see
+     * face_tile); the dedicated tech-block art + multi-face fronts land in
+     * the texture pass. Interact behaviour is wired per machine in core. */
+    ElectricFurnace = 31,
+    Printer3D = 32,
+    Computer = 33,
+    ElectronicsWorkbench = 34,
+    HydroGenerator = 35,
+    SteamEngine = 36,
+    StorageChest = 37,
+    /// `launch_pad_segment` in the JS - the tower piece atop a launch pad.
+    LaunchTower = 38,
+    /// Power-network link blocks (thin placeable connectors).
+    Cable = 39,
+    CopperPipe = 40,
 }
 
-/// Mirrors C's `BLOCK_COUNT` (the implicit trailing enum member).
-pub const BLOCK_COUNT: u8 = 29;
+/// Mirrors C's `BLOCK_COUNT` (the implicit trailing enum member). The
+/// Rust port adds the tech blocks (LaunchPad 29 .. CopperPipe 40) past the
+/// C palette - the native port is the canonical target now, so the palette
+/// can grow here.
+pub const BLOCK_COUNT: u8 = 41;
 
 impl Block {
     /// Fallible conversion from the raw byte stored in voxel arrays /
@@ -153,6 +187,13 @@ pub fn covers_face(b: Block) -> bool {
     if b == Block::Wood || b == Block::Leaves || b == Block::SeqLeaves {
         return false;
     }
+    /* Tech blocks render as a cube (or thin connector) sitting in the
+     * voxel, not a full hex prism, so they must NOT occlude the faces of
+     * the terrain below / beside them - otherwise the ground under a
+     * placed machine gets culled and leaves a hole around the cube. */
+    if is_tech_block(b) {
+        return false;
+    }
     true
 }
 
@@ -193,7 +234,43 @@ pub fn face_tile(b: Block, cap: FaceCap) -> u8 {
             FaceCap::Side => Block::SeqDirtSnow as u8,
         };
     }
+    /* Tech blocks render their dedicated JS art (ported into the atlas at
+     * columns 29..41 - see renderer::ATLAS_PATHS). Each shows its 16x16
+     * _face tile on every face: the same icon the JS uses for the block,
+     * so a placed machine reads as that machine. These atlas columns are
+     * past the block-id range, mapped explicitly here. */
+    const TECH_ATLAS_BASE: u8 = 29;
+    if let Some(off) = tech_atlas_offset(b) {
+        return TECH_ATLAS_BASE + off;
+    }
     b as u8
+}
+
+/// True for the ported tech blocks (machines, structures, connectors) -
+/// the ones with dedicated JS art and, where applicable, a facing.
+pub fn is_tech_block(b: Block) -> bool {
+    tech_atlas_offset(b).is_some()
+}
+
+/// Atlas-column offset (from `TECH_ATLAS_BASE` 29) for a tech block's
+/// `_face` tile, or `None` for non-tech blocks. The order matches the
+/// `ATLAS_PATHS` tech section in the renderer.
+fn tech_atlas_offset(b: Block) -> Option<u8> {
+    Some(match b {
+        Block::Furnace => 0,
+        Block::ElectricFurnace => 1,
+        Block::Printer3D => 2,
+        Block::Computer => 3,
+        Block::ElectronicsWorkbench => 4,
+        Block::HydroGenerator => 5,
+        Block::SteamEngine => 6,
+        Block::StorageChest => 7,
+        Block::LaunchPad => 8,
+        Block::LaunchTower => 9,
+        Block::Cable => 10,
+        Block::CopperPipe => 11,
+        _ => return None,
+    })
 }
 
 #[cfg(test)]
@@ -231,7 +308,19 @@ mod tests {
         assert_eq!(Block::CopperOre as u8, 26);
         assert_eq!(Block::TinOre as u8, 27);
         assert_eq!(Block::IronOre as u8, 28);
-        assert_eq!(BLOCK_COUNT, 29);
+        assert_eq!(Block::LaunchPad as u8, 29);
+        assert_eq!(Block::Furnace as u8, 30);
+        assert_eq!(Block::ElectricFurnace as u8, 31);
+        assert_eq!(Block::Printer3D as u8, 32);
+        assert_eq!(Block::Computer as u8, 33);
+        assert_eq!(Block::ElectronicsWorkbench as u8, 34);
+        assert_eq!(Block::HydroGenerator as u8, 35);
+        assert_eq!(Block::SteamEngine as u8, 36);
+        assert_eq!(Block::StorageChest as u8, 37);
+        assert_eq!(Block::LaunchTower as u8, 38);
+        assert_eq!(Block::Cable as u8, 39);
+        assert_eq!(Block::CopperPipe as u8, 40);
+        assert_eq!(BLOCK_COUNT, 41);
     }
 
     #[test]

@@ -40,11 +40,16 @@
 #![allow(dead_code)]
 
 use crate::client_kv;
+use tenebris_core::block_entity::{
+    BlockEntity, BlockEntityStore, ChestSlot, CHEST_SLOTS, ROCKET_STACK_MAX,
+};
 
 const KEY_PREFIX: &str = "tenebris-c:world:";
 const KEY_TILE_PREFIX: &str = "tenebris-c:tile:";
 const KEY_TORCH_PREFIX: &str = "tenebris-c:torches:";
 const KEY_WATER_PREFIX: &str = "tenebris-c:water:";
+/// Per-placed-block state (tech facing etc.), one CSV line per entity.
+const KEY_BENTITY_PREFIX: &str = "tenebris-c:bentities:";
 
 pub const NAME_MAX: usize = 31; // bytes, excluding terminator
 pub const MAX_WORLDS: usize = 32;
@@ -281,6 +286,191 @@ fn build_tile_body_prefix(world: &str, body: u32) -> String {
 
 fn build_torch_key(world: &str, body: u32) -> String {
     format!("{KEY_TORCH_PREFIX}{world}:{body}")
+}
+
+fn build_bentity_key(world: &str, body: u32) -> String {
+    format!("{KEY_BENTITY_PREFIX}{world}:{body}")
+}
+
+/// Serialise the whole block-entity store for (world, body). Called on the
+/// SAME input frame as the placement / edit (CLAUDE.md hard rule); the
+/// store is small (one entry per placed machine).
+///
+/// Format: ';'-separated records (the kv backend scrubs '\n'/'='/'\r' to
+/// '_', so ';' ':' ',' are the safe separators that round-trip on both
+/// backends). Each record is:
+///   - `tile:depth:facing`                       - plain block
+///   - `tile:depth:facing:c:idx,item,count,...`   - chest (non-empty slots)
+///   - `tile:depth:facing:f:in,inc,fl,flc,o,oc,fr` - furnace slots + fuel
+///     charge (smelt progress is transient and not persisted).
+pub fn save_block_entities(
+    world_name: &str,
+    body_id: u32,
+    store: &BlockEntityStore,
+) -> bool {
+    use tenebris_core::block_entity::MachineState;
+    if !valid_name(world_name) {
+        return false;
+    }
+    let key = build_bentity_key(world_name, body_id);
+    if store.is_empty() {
+        client_kv::remove(&key);
+        return true;
+    }
+    let mut recs: Vec<String> = Vec::new();
+    for (tile, depth, e) in store.iter() {
+        let mut rec = format!("{tile}:{depth}:{}", e.facing);
+        match &e.state {
+            MachineState::None => {}
+            MachineState::Chest(chest) => {
+                rec.push_str(":c:");
+                let mut first = true;
+                for (i, s) in chest.iter().enumerate() {
+                    if s.count > 0 {
+                        if !first {
+                            rec.push(',');
+                        }
+                        rec.push_str(&format!("{i},{},{}", s.item, s.count));
+                        first = false;
+                    }
+                }
+            }
+            MachineState::Furnace(f) => {
+                rec.push_str(&format!(
+                    ":f:{},{},{},{},{},{},{}",
+                    f.input.item,
+                    f.input.count,
+                    f.fuel.item,
+                    f.fuel.count,
+                    f.output.item,
+                    f.output.count,
+                    f.fuel_remaining
+                ));
+            }
+            MachineState::SteamEngine(s) => {
+                rec.push_str(&format!(":s:{},{}", s.fuel.item, s.fuel.count));
+            }
+            MachineState::ElectricFurnace(e) => {
+                rec.push_str(&format!(
+                    ":e:{},{},{},{}",
+                    e.input.item, e.input.count, e.output.item, e.output.count
+                ));
+            }
+            MachineState::Computer(_) => {
+                rec.push_str(":k:");
+            }
+            MachineState::Printer(pr) => {
+                rec.push_str(&format!(
+                    ":p:{},{},{},{},{}",
+                    pr.out_item,
+                    pr.out_qty,
+                    pr.total as u32,
+                    pr.output.item,
+                    pr.output.count
+                ));
+            }
+            MachineState::LaunchPad(l) => {
+                /* segments, then the bottom -> top part ids. */
+                rec.push_str(&format!(":l:{}", l.segments));
+                for &id in l.parts() {
+                    rec.push_str(&format!(",{id}"));
+                }
+            }
+        }
+        recs.push(rec);
+    }
+    client_kv::set(&key, &recs.join(";"));
+    true
+}
+
+/// Read the block-entity store for (world, body). Malformed records are
+/// skipped, the rest still load.
+pub fn load_block_entities(world_name: &str, body_id: u32) -> Vec<(i32, i32, BlockEntity)> {
+    if !valid_name(world_name) {
+        return Vec::new();
+    }
+    let Some(s) = client_kv::get(&build_bentity_key(world_name, body_id)) else {
+        return Vec::new();
+    };
+    let nums = |s: &str| -> Vec<u32> {
+        s.split(',').filter_map(|x| x.trim().parse::<u32>().ok()).collect()
+    };
+    let mut out = Vec::new();
+    for rec in s.split(';') {
+        let parts: Vec<&str> = rec.split(':').collect();
+        if parts.len() < 3 {
+            continue;
+        }
+        let (Ok(tile), Ok(depth), Ok(facing)) = (
+            parts[0].trim().parse::<i32>(),
+            parts[1].trim().parse::<i32>(),
+            parts[2].trim().parse::<u8>(),
+        ) else {
+            continue;
+        };
+        let mut e = BlockEntity::with_facing(facing);
+        match parts.get(3).copied() {
+            Some("c") => {
+                let chest = e.chest_mut();
+                for triple in nums(parts.get(4).copied().unwrap_or("")).chunks_exact(3) {
+                    let idx = triple[0] as usize;
+                    if idx < CHEST_SLOTS {
+                        chest[idx] = ChestSlot { item: triple[1] as u16, count: triple[2] as u16 };
+                    }
+                }
+            }
+            Some("f") => {
+                let v = nums(parts.get(4).copied().unwrap_or(""));
+                if v.len() >= 7 {
+                    let f = e.furnace_mut();
+                    f.input = ChestSlot { item: v[0] as u16, count: v[1] as u16 };
+                    f.fuel = ChestSlot { item: v[2] as u16, count: v[3] as u16 };
+                    f.output = ChestSlot { item: v[4] as u16, count: v[5] as u16 };
+                    f.fuel_remaining = v[6] as u16;
+                }
+            }
+            Some("s") => {
+                let v = nums(parts.get(4).copied().unwrap_or(""));
+                if v.len() >= 2 {
+                    e.steam_engine_mut().fuel = ChestSlot { item: v[0] as u16, count: v[1] as u16 };
+                }
+            }
+            Some("e") => {
+                let v = nums(parts.get(4).copied().unwrap_or(""));
+                if v.len() >= 4 {
+                    let ef = e.electric_furnace_mut();
+                    ef.input = ChestSlot { item: v[0] as u16, count: v[1] as u16 };
+                    ef.output = ChestSlot { item: v[2] as u16, count: v[3] as u16 };
+                }
+            }
+            Some("k") => {
+                e.computer_mut();
+            }
+            Some("p") => {
+                let v = nums(parts.get(4).copied().unwrap_or(""));
+                if v.len() >= 5 {
+                    let pr = e.printer_mut();
+                    pr.out_item = v[0] as u16;
+                    pr.out_qty = v[1] as u16;
+                    pr.total = v[2] as f32;
+                    pr.output = ChestSlot { item: v[3] as u16, count: v[4] as u16 };
+                }
+            }
+            Some("l") => {
+                /* segments, then the part ids bottom -> top. */
+                let v = nums(parts.get(4).copied().unwrap_or(""));
+                let pad = e.launch_pad_mut();
+                if let Some(&seg) = v.first() {
+                    pad.segments = (seg as u8).clamp(1, ROCKET_STACK_MAX as u8);
+                }
+                let ids: Vec<u16> = v.iter().skip(1).map(|&n| n as u16).collect();
+                pad.set_parts(&ids);
+            }
+            _ => {}
+        }
+        out.push((tile, depth, e));
+    }
+    out
 }
 
 /// Write the given column under tenebris-c:tile:<world>:<body>:<tile>.
@@ -710,6 +900,64 @@ mod tests {
                 tile_idx: 7,
             },
         ]
+    }
+
+    #[test]
+    fn block_entities_round_trip_and_clear() {
+        use tenebris_core::block_entity::MachineState;
+        let _g = test_support::begin("persist_bentities");
+        let mut store = BlockEntityStore::new();
+        // A plain facing-only entity and a chest with two non-empty slots.
+        store.set(5, 3, BlockEntity::with_facing(2));
+        let chest = store.entry(40, 0);
+        chest.facing = 4;
+        chest.chest_mut()[0] = ChestSlot { item: 7, count: 10 };
+        chest.chest_mut()[2] = ChestSlot { item: 9, count: 3 };
+
+        assert!(save_block_entities("home", 1, &store));
+        // Reload into a fresh store and compare cell-by-cell (HashMap
+        // iteration order isn't stable, so don't compare the raw string).
+        let loaded = load_block_entities("home", 1);
+        let mut back = BlockEntityStore::new();
+        for (t, d, e) in loaded {
+            back.set(t, d, e);
+        }
+        assert_eq!(back.facing(5, 3), 2);
+        assert!(matches!(back.get(5, 3).unwrap().state, MachineState::None));
+        let c = back.get(40, 0).unwrap();
+        assert_eq!(c.facing, 4);
+        assert_eq!(c.chest().unwrap()[0], ChestSlot { item: 7, count: 10 });
+        assert_eq!(c.chest().unwrap()[2], ChestSlot { item: 9, count: 3 });
+        assert_eq!(c.chest().unwrap()[1].count, 0);
+
+        assert!(load_block_entities("home", 2).is_empty());
+        // Empty store removes the key.
+        assert!(save_block_entities("home", 1, &BlockEntityStore::new()));
+        assert_eq!(client_kv::get("tenebris-c:bentities:home:1"), None);
+    }
+
+    #[test]
+    fn launch_pad_stack_round_trips() {
+        use tenebris_core::items::{COMMAND_MODULE, FUEL_TANK, ROCKET_ENGINE};
+        let _g = test_support::begin("persist_launchpad");
+        let mut store = BlockEntityStore::new();
+        let pad = store.entry(12, 7).launch_pad_mut();
+        pad.push(ROCKET_ENGINE);
+        pad.push(FUEL_TANK);
+        pad.push(FUEL_TANK);
+        pad.push(COMMAND_MODULE);
+
+        assert!(save_block_entities("home", 5, &store));
+        let mut back = BlockEntityStore::new();
+        for (t, d, e) in load_block_entities("home", 5) {
+            back.set(t, d, e);
+        }
+        let loaded = back.get(12, 7).unwrap();
+        let lp = loaded.launch_pad().expect("launch pad state");
+        assert_eq!(
+            lp.parts(),
+            &[ROCKET_ENGINE, FUEL_TANK, FUEL_TANK, COMMAND_MODULE]
+        );
     }
 
     #[test]

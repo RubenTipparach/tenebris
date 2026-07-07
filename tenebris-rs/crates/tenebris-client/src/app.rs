@@ -32,6 +32,7 @@ use tenebris_core::math::{
     dvec3_add, dvec3_length, dvec3_make, dvec3_scale, dvec3_sub, dvec3_to_vec3, vec3_normalize,
     DVec3, Vec3,
 };
+use tenebris_core::orbit;
 use tenebris_core::planet::{self, BodyConfig, BodyId, BODY_COUNT};
 use tenebris_core::planet_gen;
 use tenebris_core::proto::{BODY_ID_IN_SPACE, TENEBRIS_PROTOCOL_VERSION};
@@ -44,6 +45,11 @@ use crate::gfx_math::{mat4_perspective, Mat4};
 use crate::hotbar_ui;
 use crate::input;
 use crate::interact::{self, InteractState, MINING_TIME_S};
+use crate::chest_screen;
+use crate::egui_layer;
+use crate::furnace_screen;
+use crate::power_ui;
+use crate::ui_icons;
 use crate::inventory::{self, INV_HOTBAR_SLOTS};
 use crate::inventory_screen;
 use crate::item_atlas;
@@ -349,6 +355,856 @@ fn player_lat_lon_deg(world_pos: DVec3, body: &BodyConfig) -> (f64, f64, f64) {
 /* init                                                                    */
 /* --------------------------------------------------------------------- */
 
+thread_local! {
+    /// Dev-only: frames to wait before dropping the dev showcase blocks.
+    /// Placement must happen during steady gameplay, not at init: editing
+    /// the world before the first frame double-updates a chunk's GPU
+    /// buffer in one frame (sokol's one-update-per-buffer-per-frame rule),
+    /// which aborts. -1 = disabled. Mode: 1 = launch pad, 2 = ore/tech
+    /// showcase ring.
+    static DEV_PLACE_COUNTDOWN: std::cell::Cell<i32> = const { std::cell::Cell::new(-1) };
+    static DEV_PLACE_MODE: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+    /// Dev: freeze the world clock at a fixed time of day (TENEBRIS_DEV_TIME)
+    /// so a screenshot captures a chosen sun angle. -1 unknown, 0 run, 1 freeze.
+    static DEV_TIME_FROZEN: std::cell::Cell<i8> = const { std::cell::Cell::new(-1) };
+}
+
+/// Dev-only: once in-game and a few frames settled, drop the requested dev
+/// blocks at the tile under the reticle and frame them. Self-disables
+/// after firing.
+fn dev_maybe_place(app: &mut App) {
+    let n = DEV_PLACE_COUNTDOWN.with(|c| c.get());
+    if n < 0 || menu::state() != GameState::InGameSp {
+        return;
+    }
+    /* Hold the camera looking almost straight down while we wait, so the
+     * interact raycast settles onto the ground tile right under the
+     * reticle - that's the tile we then build on, guaranteeing the blocks
+     * land in frame (the player's position-tile drifts off-camera). */
+    app.player.borrow_mut().pitch = -1.30;
+    if n > 0 {
+        DEV_PLACE_COUNTDOWN.with(|c| c.set(n - 1));
+        return;
+    }
+    DEV_PLACE_COUNTDOWN.with(|c| c.set(-1));
+
+    /* The tile the player is standing on, cached by the physics step each
+     * frame (find_tile seeded with last_tile, which converges; a cold
+     * find_tile from hint 0 stalls on the far side of the planet). This
+     * is directly under the downward-looking camera, so the blocks land
+     * in frame. */
+    let center = app.player.borrow().last_tile;
+    if center < 0 {
+        return;
+    }
+
+    match DEV_PLACE_MODE.with(|c| c.get()) {
+        13 => {
+            /* Sky view: pitch the camera up so the sun (and any moons /
+             * planets that are above the horizon) frame against the sky -
+             * a still of the on-rails orbit sim from the surface. */
+            let mut p = app.player.borrow_mut();
+            p.pitch = 0.95;
+        }
+        5 => {
+            /* Furnace UI shot: place a furnace on a front tile, stock the
+             * bag with ore + coal, and open the smelter panel. */
+            let depth = {
+                let mut w = app.world.borrow_mut();
+                let mut top = -1;
+                for d in (0..tenebris_core::world::WORLD_MAX_DEPTH).rev() {
+                    if tenebris_core::blocks::is_solid(w.get(center, d)) {
+                        top = d;
+                        break;
+                    }
+                }
+                if top < 0 || top + 1 >= tenebris_core::world::WORLD_MAX_DEPTH {
+                    return;
+                }
+                let d = top + 1;
+                w.set(center, d, Block::Furnace);
+                /* Pre-load the furnace so the shot shows it mid-smelt:
+                 * input copper, coal lit, one ingot already produced. */
+                let f = w.block_entities.entry(center, d).furnace_mut();
+                f.input = tenebris_core::block_entity::ChestSlot {
+                    item: tenebris_core::items::COPPER,
+                    count: 6,
+                };
+                f.fuel = tenebris_core::block_entity::ChestSlot {
+                    item: tenebris_core::items::COAL,
+                    count: 2,
+                };
+                f.output = tenebris_core::block_entity::ChestSlot {
+                    item: tenebris_core::items::COPPER_INGOT,
+                    count: 2,
+                };
+                f.fuel_remaining = 5;
+                f.progress = 0.45;
+                d
+            };
+            {
+                let mut p = app.player.borrow_mut();
+                p.bag.add(tenebris_core::items::COPPER, 8);
+                p.bag.add(tenebris_core::items::TIN, 8);
+                p.bag.add(tenebris_core::items::IRON, 8);
+                p.bag.add(tenebris_core::items::COAL, 16);
+            }
+            furnace_screen::open(app.world.clone(), app.player.clone(), center, depth);
+        }
+        4 => {
+            /* Open-pit mine: dig the player's tile + its ring down a few
+             * blocks (open to the sky for light) and tile the pit floor
+             * with the four ore types, so digging down reveals speckled
+             * ore in a stone matrix. The player falls into the pit and
+             * looks down at the seam. */
+            let depth = tenebris_core::world::WORLD_MAX_DEPTH;
+            let surf = {
+                let w = app.world.borrow();
+                let mut top = -1;
+                for d in (0..depth).rev() {
+                    if tenebris_core::blocks::is_solid(w.get(center, d)) {
+                        top = d;
+                        break;
+                    }
+                }
+                top
+            };
+            if surf < 0 {
+                return;
+            }
+            let floor = (surf - 5).max(1);
+            let ores = [
+                Block::CopperOre,
+                Block::TinOre,
+                Block::IronOre,
+                Block::CoalOre,
+                Block::CopperOre,
+                Block::IronOre,
+            ];
+            {
+                let mut w = app.world.borrow_mut();
+                /* Centre column: hollow out, ore on the floor. */
+                for d in (floor + 1)..=surf {
+                    w.set(center, d, Block::Air);
+                }
+                w.set(center, floor, Block::CoalOre);
+            }
+            dev_for_each_neighbor(&app.world, center, |w, i, n| {
+                for d in (floor + 1)..=surf {
+                    w.set(n, d, Block::Air);
+                }
+                w.set(n, floor, ores[i % ores.len()]);
+            });
+            app.player.borrow_mut().pitch = -0.85;
+        }
+        2 => {
+            /* Ore + tech-block showcase: the centre tile becomes the
+             * launch pad, the ring of neighbours each becomes a different
+             * ore / reference block so one shot shows every tint. */
+            let ring = [
+                Block::CoalOre,
+                Block::CopperOre,
+                Block::TinOre,
+                Block::IronOre,
+                Block::CopperOre,
+                Block::IronOre,
+            ];
+            dev_set_surface(&app.world, center, Block::LaunchPad);
+            dev_for_each_neighbor(&app.world, center, |w, i, n| {
+                dev_set_surface_w(w, n, ring[i % ring.len()]);
+            });
+            /* Curate the hotbar so one shot labels every ore + the tech
+             * block as clean icons (runs after the SP creative prime, so
+             * these writes stick). */
+            let mut p = app.player.borrow_mut();
+            let kit = [
+                Block::LaunchPad,
+                Block::CoalOre,
+                Block::CopperOre,
+                Block::TinOre,
+                Block::IronOre,
+                Block::Wood,
+                Block::Stone,
+            ];
+            for (i, b) in kit.iter().enumerate() {
+                if i < crate::inventory::INV_HOTBAR_SLOTS as usize {
+                    p.inventory.slots[i] = crate::inventory::InvSlot::block(*b, 1);
+                }
+            }
+        }
+        6 => {
+            /* Tech-block showcase: the player stands on bare terrain and the
+             * ring of neighbours each becomes a different machine cube, so
+             * one shot shows the cube geometry + ported JS net faces. */
+            let ring = [
+                Block::Furnace,
+                Block::ElectricFurnace,
+                Block::Computer,
+                Block::Printer3D,
+                Block::SteamEngine,
+                Block::HydroGenerator,
+            ];
+            let player_pos = app.player.borrow().position;
+            dev_for_each_neighbor(&app.world, center, |w, i, n| {
+                /* Place the machine in the AIR voxel above the surface (the
+                 * way a real player placement does), so the cube sits ON
+                 * the ground instead of sinking into the top terrain layer. */
+                let mut top = -1;
+                for d in (0..tenebris_core::world::WORLD_MAX_DEPTH).rev() {
+                    if tenebris_core::blocks::is_solid(w.get(n, d)) {
+                        top = d;
+                        break;
+                    }
+                }
+                if top >= 0 && top + 1 < tenebris_core::world::WORLD_MAX_DEPTH {
+                    let d = top + 1;
+                    w.set(n, d, ring[i % ring.len()]);
+                    /* Face each machine toward the player at the centre. */
+                    let facing = w.facing_toward(n, d, player_pos);
+                    w.block_entities
+                        .set(n, d, tenebris_core::block_entity::BlockEntity::with_facing(facing));
+                }
+            });
+            let mut p = app.player.borrow_mut();
+            let kit = [
+                Block::Furnace,
+                Block::ElectricFurnace,
+                Block::Computer,
+                Block::Printer3D,
+                Block::SteamEngine,
+                Block::HydroGenerator,
+                Block::StorageChest,
+                Block::ElectronicsWorkbench,
+                Block::LaunchTower,
+            ];
+            for (i, b) in kit.iter().enumerate() {
+                if i < crate::inventory::INV_HOTBAR_SLOTS as usize {
+                    p.inventory.slots[i] = crate::inventory::InvSlot::block(*b, 1);
+                }
+            }
+            p.pitch = -0.18;
+        }
+        7 => {
+            /* Storage-chest UI shot: a ring of chest cubes around the
+             * player (so the placed tech block is visible in-world), with
+             * the first one stocked + its panel opened. */
+            use tenebris_core::block_entity::chest_add;
+            use tenebris_core::items;
+            let player_pos = app.player.borrow().position;
+            let mut opened: Option<(i32, i32)> = None;
+            dev_for_each_neighbor(&app.world, center, |w, _, n| {
+                let mut top = -1;
+                for dd in (0..tenebris_core::world::WORLD_MAX_DEPTH).rev() {
+                    if tenebris_core::blocks::is_solid(w.get(n, dd)) {
+                        top = dd;
+                        break;
+                    }
+                }
+                if top < 0 || top + 1 >= tenebris_core::world::WORLD_MAX_DEPTH {
+                    return;
+                }
+                let nd = top + 1;
+                w.set(n, nd, Block::StorageChest);
+                let f = w.facing_toward(n, nd, player_pos);
+                let e = w.block_entities.entry(n, nd);
+                e.facing = f;
+                if opened.is_none() {
+                    let chest = e.chest_mut();
+                    chest_add(chest, items::IRON_INGOT, 12, 64);
+                    chest_add(chest, items::COPPER, 30, 64);
+                    chest_add(chest, items::COAL, 5, 64);
+                    opened = Some((n, nd));
+                }
+            });
+            {
+                let mut p = app.player.borrow_mut();
+                p.bag.add(items::PLANK, 20);
+                p.bag.add(items::IRON_INGOT, 8);
+                p.bag.add(items::COPPER_INGOT, 12);
+                p.bag.add(items::CPU_CHIP, 3);
+                p.pitch = -0.25;
+            }
+            if let Some((t, d)) = opened {
+                chest_screen::open(app.world.clone(), app.player.clone(), t, d);
+            }
+        }
+        8 => {
+            /* Power chain: steam engine -> cable -> electric furnace on
+             * three consecutive ring tiles (mutually adjacent), all at the
+             * centre's surface depth so the cable network connects. Engine
+             * burning, furnace fed -> the furnace reads POWERED + smelts. */
+            use tenebris_core::block_entity::{ChestSlot, STEAM_BURN_S_PER_COAL};
+            use tenebris_core::items;
+            let ring: Vec<i32> = {
+                let w = app.world.borrow();
+                match w.grid.tile(center) {
+                    Some(t) => t.neighbors.iter().copied().filter(|&n| n >= 0).collect(),
+                    None => Vec::new(),
+                }
+            };
+            if ring.len() < 3 {
+                return;
+            }
+            let depth = {
+                let w = app.world.borrow();
+                let mut top = -1;
+                for d in (0..tenebris_core::world::WORLD_MAX_DEPTH).rev() {
+                    if tenebris_core::blocks::is_solid(w.get(center, d)) {
+                        top = d;
+                        break;
+                    }
+                }
+                if top < 0 || top + 1 >= tenebris_core::world::WORLD_MAX_DEPTH {
+                    return;
+                }
+                top + 1
+            };
+            let _ = ring;
+            /* Full modular chain as a vertical stack on the centre tile, so
+             * depth-adjacency links every node regardless of neighbour
+             * order: water -> hydro -> pipe -> steam engine -> cable ->
+             * electric furnace. The engine then has BOTH water (pipes) and
+             * coal, so it runs and powers the furnace. */
+            let max = tenebris_core::world::WORLD_MAX_DEPTH;
+            let fur_depth = (depth + 5).min(max - 1);
+            if depth + 5 >= max {
+                return;
+            }
+            {
+                let mut w = app.world.borrow_mut();
+                w.set(center, depth, Block::Water); // hydro sits on this
+                w.set(center, depth + 1, Block::HydroGenerator);
+                w.set(center, depth + 2, Block::CopperPipe);
+                w.set(center, depth + 3, Block::SteamEngine);
+                let s = w.block_entities.entry(center, depth + 3).steam_engine_mut();
+                s.fuel = ChestSlot { item: items::COAL, count: 4 };
+                s.burn_time = STEAM_BURN_S_PER_COAL;
+                w.set(center, depth + 4, Block::Cable);
+                w.set(center, depth + 5, Block::ElectricFurnace);
+                let ef = w.block_entities.entry(center, depth + 5).electric_furnace_mut();
+                ef.input = ChestSlot { item: items::IRON, count: 5 };
+                ef.progress = 0.5;
+            }
+            {
+                let mut p = app.player.borrow_mut();
+                p.bag.add(items::IRON, 8);
+                p.bag.add(items::COAL, 16);
+                p.pitch = 0.25;
+            }
+            power_ui::open_electric(app.world.clone(), app.player.clone(), center, fur_depth);
+        }
+        9 => {
+            /* Printer chain (vertical stack): water -> hydro -> pipe ->
+             * engine -> cable -> computer -> cable -> printer. The printer
+             * is powered only via a powered computer (the JS gate). */
+            use tenebris_core::block_entity::{ChestSlot, STEAM_BURN_S_PER_COAL};
+            use tenebris_core::items;
+            let max = tenebris_core::world::WORLD_MAX_DEPTH;
+            let depth = {
+                let w = app.world.borrow();
+                let mut top = -1;
+                for d in (0..max).rev() {
+                    if tenebris_core::blocks::is_solid(w.get(center, d)) {
+                        top = d;
+                        break;
+                    }
+                }
+                top + 1
+            };
+            if depth < 1 || depth + 7 >= max {
+                return;
+            }
+            let printer_depth = depth + 7;
+            {
+                let mut w = app.world.borrow_mut();
+                w.set(center, depth, Block::Water);
+                w.set(center, depth + 1, Block::HydroGenerator);
+                w.set(center, depth + 2, Block::CopperPipe);
+                w.set(center, depth + 3, Block::SteamEngine);
+                let s = w.block_entities.entry(center, depth + 3).steam_engine_mut();
+                s.fuel = ChestSlot { item: items::COAL, count: 4 };
+                s.burn_time = STEAM_BURN_S_PER_COAL;
+                w.set(center, depth + 4, Block::Cable);
+                w.set(center, depth + 5, Block::Computer);
+                w.block_entities.entry(center, depth + 5).computer_mut();
+                w.set(center, depth + 6, Block::Cable);
+                w.set(center, printer_depth, Block::Printer3D);
+                let pr = w.block_entities.entry(center, printer_depth).printer_mut();
+                pr.out_item = tenebris_core::items::from_block(Block::LaunchTower);
+                pr.out_qty = 1;
+                pr.total = 10.0;
+                pr.progress = 0.45;
+            }
+            {
+                let mut p = app.player.borrow_mut();
+                p.bag.add(items::IRON_INGOT, 20);
+                p.bag.add(items::BRONZE_INGOT, 8);
+                p.bag.add(items::COAL, 16);
+                p.pitch = 0.35;
+            }
+            power_ui::open_printer(app.world.clone(), app.player.clone(), center, printer_depth);
+        }
+        10 => {
+            /* Wiring showcase (geometry, no UI panel): lay the copper-pipe /
+             * cable network out HORIZONTALLY along the ground so the modular
+             * connectors - not the machine cubes - are the subject.
+             *
+             * A path is built by walking the neighbour graph outward from the
+             * player; consecutive tiles are mutually adjacent (each is a
+             * neighbour of the previous), so a pipe / cable laid along the
+             * path connects end to end. Layout along the path:
+             *   hydro -> pipe -> pipe -> pipe -> steam engine
+             *         -> cable -> cable -> computer
+             * The long pipe and cable runs read as a pipeline on the terrain;
+             * cable arms are slimmer than copper-pipe arms. */
+            let max = tenebris_core::world::WORLD_MAX_DEPTH;
+            let dot = |a: DVec3, b: DVec3| a.x * b.x + a.y * b.y + a.z * b.z;
+            let path: Vec<i32> = {
+                let w = app.world.borrow();
+                let tc = |t: i32| w.grid.tile(t).map(|x| x.center);
+                let norm = |a: DVec3| {
+                    let l = dvec3_length(a);
+                    if l > 1e-12 {
+                        dvec3_scale(a, 1.0 / l)
+                    } else {
+                        a
+                    }
+                };
+                let neighbors = |t: i32| -> Vec<i32> {
+                    match w.grid.tile(t) {
+                        Some(x) => x.neighbors.iter().copied().filter(|&n| n >= 0).collect(),
+                        None => Vec::new(),
+                    }
+                };
+                let c0 = match tc(center) {
+                    Some(c) => c,
+                    None => return,
+                };
+                let mut path = vec![center];
+                /* First hop: head outward (neighbour farthest from centre). */
+                let mut cur;
+                {
+                    let mut best = -1;
+                    let mut bd = f64::INFINITY;
+                    for n in neighbors(center) {
+                        if let Some(c) = tc(n) {
+                            let d = dot(c, c0);
+                            if d < bd {
+                                bd = d;
+                                best = n;
+                            }
+                        }
+                    }
+                    if best < 0 {
+                        return;
+                    }
+                    path.push(best);
+                    cur = best;
+                }
+                /* Keep going straight: each step picks the neighbour whose
+                 * direction best continues the previous step. */
+                let mut dir = norm(dvec3_sub(tc(cur).unwrap_or(c0), c0));
+                for _ in 0..8 {
+                    let cc = match tc(cur) {
+                        Some(c) => c,
+                        None => break,
+                    };
+                    let mut best = -1;
+                    let mut bd = -2.0;
+                    for n in neighbors(cur) {
+                        if path.contains(&n) {
+                            continue;
+                        }
+                        if let Some(c) = tc(n) {
+                            let d = dot(norm(dvec3_sub(c, cc)), dir);
+                            if d > bd {
+                                bd = d;
+                                best = n;
+                            }
+                        }
+                    }
+                    if best < 0 {
+                        break;
+                    }
+                    dir = norm(dvec3_sub(tc(best).unwrap_or(cc), cc));
+                    path.push(best);
+                    cur = best;
+                }
+                path
+            };
+            if path.len() < 8 {
+                return;
+            }
+            let player_pos = app.player.borrow().position;
+            /* Common ground level for the whole strip = the surface depth at
+             * the run's middle. Levelling to one depth makes the run a clean,
+             * aligned horizontal line (and the connector arms join cleanly,
+             * since every node shares a depth). */
+            let level_top = {
+                let w = app.world.borrow();
+                let mut top = -1;
+                for d in (0..max).rev() {
+                    if tenebris_core::blocks::is_solid(w.get(path[3], d)) {
+                        top = d;
+                        break;
+                    }
+                }
+                top
+            };
+            if level_top < 1 || level_top + 2 >= max {
+                return;
+            }
+            /* (path index, block). Index 0 is under the player, left bare.
+             * A long copper-pipe run then a cable run, with the only machine
+             * pushed to the far end so the connector geometry - not the
+             * cubes - fills the frame. */
+            let layout = [
+                (1usize, Block::CopperPipe),
+                (2, Block::CopperPipe),
+                (3, Block::CopperPipe),
+                (4, Block::Cable),
+                (5, Block::Cable),
+                (6, Block::Cable),
+                (7, Block::SteamEngine),
+            ];
+            {
+                let mut w = app.world.borrow_mut();
+                /* Flatten a shelf along the path + a one-tile skirt so the run
+                 * isn't occluded by terrain bumps: clear everything above the
+                 * level, make the level itself solid. */
+                let mut shelf: Vec<i32> = Vec::new();
+                for &t in path.iter().take(9) {
+                    shelf.push(t);
+                    if let Some(tile) = w.grid.tile(t) {
+                        for k in 0..tile.num_neighbors as usize {
+                            let n = tile.neighbors[k];
+                            if n >= 0 && !shelf.contains(&n) {
+                                shelf.push(n);
+                            }
+                        }
+                    }
+                }
+                for &t in shelf.iter() {
+                    for d in (level_top + 1)..max {
+                        if w.get(t, d) != Block::Air {
+                            w.set(t, d, Block::Air);
+                        }
+                    }
+                    if !tenebris_core::blocks::is_solid(w.get(t, level_top)) {
+                        w.set(t, level_top, Block::Stone);
+                    }
+                }
+                let d = level_top + 1;
+                for (idx, b) in layout.iter() {
+                    let t = path[*idx];
+                    w.set(t, d, *b);
+                    if tenebris_core::blocks::is_tech_block(*b)
+                        && *b != Block::Cable
+                        && *b != Block::CopperPipe
+                    {
+                        let facing = w.facing_toward(t, d, player_pos);
+                        w.block_entities.set(
+                            t,
+                            d,
+                            tenebris_core::block_entity::BlockEntity::with_facing(facing),
+                        );
+                    }
+                }
+            }
+            /* Move the camera to a viewpoint OFF TO THE SIDE of the run so it
+             * reads broadside (segments spread left-to-right), not collapsed
+             * down the line. Walk perpendicular to the run from its middle a
+             * few tiles, stand the player on that tile's surface (grounded so
+             * physics doesn't drop it), then aim at the run middle. */
+            let norm = |a: DVec3| {
+                let l = dvec3_length(a);
+                if l > 1e-12 {
+                    dvec3_scale(a, 1.0 / l)
+                } else {
+                    a
+                }
+            };
+            let cross = |a: DVec3, b: DVec3| {
+                dvec3_make(
+                    a.y * b.z - a.z * b.y,
+                    a.z * b.x - a.x * b.z,
+                    a.x * b.y - a.y * b.x,
+                )
+            };
+            let mid_idx = 3usize;
+            let mid_tile = path[mid_idx];
+            /* Surface world position of any tile (feet height). */
+            let surf_world = |w: &World, t: i32| -> Option<(DVec3, i32)> {
+                let mut top = -1;
+                for d in (0..max).rev() {
+                    if tenebris_core::blocks::is_solid(w.get(t, d)) {
+                        top = d;
+                        break;
+                    }
+                }
+                w.grid
+                    .tile(t)
+                    .map(|x| (dvec3_scale(norm(x.center), w.depth_to_radius_m(top.max(0) + 1)), top))
+            };
+            /* Find the side viewpoint tile. */
+            let view_tile = {
+                let w = app.world.borrow();
+                let up_m = match w.grid.tile(mid_tile) {
+                    Some(t) => norm(t.center),
+                    None => return,
+                };
+                let run_dir = match (w.grid.tile(path[mid_idx + 1]), w.grid.tile(path[mid_idx - 1]))
+                {
+                    (Some(a), Some(b)) => norm(dvec3_sub(a.center, b.center)),
+                    _ => return,
+                };
+                let side = norm(cross(up_m, run_dir));
+                let mut cur = mid_tile;
+                for _ in 0..1 {
+                    let cc = match w.grid.tile(cur) {
+                        Some(t) => t.center,
+                        None => break,
+                    };
+                    let nb: Vec<i32> = match w.grid.tile(cur) {
+                        Some(t) => t.neighbors.iter().copied().filter(|&n| n >= 0).collect(),
+                        None => Vec::new(),
+                    };
+                    let mut best = -1;
+                    let mut bd = -2.0;
+                    for n in nb {
+                        if path.contains(&n) {
+                            continue;
+                        }
+                        if let Some(t) = w.grid.tile(n) {
+                            let d = dot(norm(dvec3_sub(t.center, cc)), side);
+                            if d > bd {
+                                bd = d;
+                                best = n;
+                            }
+                        }
+                    }
+                    if best < 0 {
+                        break;
+                    }
+                    cur = best;
+                }
+                cur
+            };
+            /* Compute the new camera position + aim target. */
+            let (view_pos, mid_world) = {
+                let w = app.world.borrow();
+                let v = surf_world(&w, view_tile);
+                let m = surf_world(&w, mid_tile);
+                match (v, m) {
+                    (Some((vp, _)), Some((mp, _))) => (vp, mp),
+                    _ => return,
+                }
+            };
+            let mut p = app.player.borrow_mut();
+            /* Stand the player on the viewpoint tile, just above the surface
+             * so physics settles the feet onto it. Rebuild the basis for the
+             * new location before deriving yaw/pitch. */
+            let up = norm(view_pos);
+            p.position = dvec3_add(view_pos, dvec3_scale(up, 0.5));
+            p.velocity = dvec3_make(0.0, 0.0, 0.0);
+            p.basis = tenebris_core::physics::tangent_basis(p.position);
+            p.basis_ready = true;
+            {
+                let eye = dvec3_add(p.position, dvec3_scale(p.basis.up, 1.6));
+                let to = dvec3_sub(mid_world, eye);
+                let to_len = dvec3_length(to).max(1e-9);
+                let look = dvec3_scale(to, 1.0 / to_len);
+                let bu = p.basis.up;
+                let fwd = p.basis.fwd;
+                let right = p.basis.right;
+                let to_t = dvec3_sub(look, dvec3_scale(bu, dot(look, bu)));
+                p.yaw = (dot(to_t, right)).atan2(dot(to_t, fwd)) as f32;
+                p.pitch = dot(look, bu).clamp(-1.0, 1.0).asin() as f32;
+            }
+            let kit = [
+                Block::CopperPipe,
+                Block::Cable,
+                Block::HydroGenerator,
+                Block::SteamEngine,
+                Block::Computer,
+                Block::ElectricFurnace,
+            ];
+            for (i, b) in kit.iter().enumerate() {
+                if i < crate::inventory::INV_HOTBAR_SLOTS as usize {
+                    p.inventory.slots[i] = crate::inventory::InvSlot::block(*b, 1);
+                }
+            }
+        }
+        11 => {
+            /* Rocket-stacking showcase: place a launch pad on the player's
+             * tile and pre-assemble a flyable stack (engine -> 2 tanks ->
+             * capsule) so the parts render in-world AND the assembly panel
+             * opens populated. Stock the bag with spares + craft mats. */
+            use tenebris_core::items;
+            let depth = {
+                let w = app.world.borrow();
+                let mut top = -1;
+                for d in (0..tenebris_core::world::WORLD_MAX_DEPTH).rev() {
+                    if tenebris_core::blocks::is_solid(w.get(center, d)) {
+                        top = d;
+                        break;
+                    }
+                }
+                if top < 0 || top + 1 >= tenebris_core::world::WORLD_MAX_DEPTH {
+                    return;
+                }
+                top + 1
+            };
+            {
+                let mut w = app.world.borrow_mut();
+                w.set(center, depth, Block::LaunchPad);
+                let pad = w.block_entities.entry(center, depth).launch_pad_mut();
+                pad.push(items::ROCKET_ENGINE);
+                pad.push(items::FUEL_TANK);
+                pad.push(items::FUEL_TANK);
+                pad.push(items::COMMAND_MODULE);
+            }
+            {
+                let mut p = app.player.borrow_mut();
+                p.bag.add(items::ROCKET_ENGINE, 2);
+                p.bag.add(items::FUEL_TANK, 4);
+                p.bag.add(items::COMMAND_MODULE, 2);
+                p.bag.add(items::IRON_INGOT, 16);
+                p.bag.add(items::BRONZE_INGOT, 8);
+                p.pitch = 0.12;
+            }
+            rocket_screen::open(app.world.clone(), app.player.clone(), center, depth);
+        }
+        12 => {
+            /* Rocket-stacking in-world view (no panel): build a pad + flyable
+             * stack on a tile a few hops out and aim the camera at it, so the
+             * stacked part cubes read against the sky. */
+            use tenebris_core::items;
+            let dot = |a: DVec3, b: DVec3| a.x * b.x + a.y * b.y + a.z * b.z;
+            let target = {
+                let w = app.world.borrow();
+                let c_dir = match w.grid.tile(center) {
+                    Some(t) => t.center,
+                    None => return,
+                };
+                let mut cur = center;
+                for _ in 0..2 {
+                    let nb: Vec<i32> = match w.grid.tile(cur) {
+                        Some(t) => t.neighbors.iter().copied().filter(|&n| n >= 0).collect(),
+                        None => Vec::new(),
+                    };
+                    let mut best = cur;
+                    let mut best_dot = f64::INFINITY;
+                    for n in nb {
+                        if let Some(t) = w.grid.tile(n) {
+                            let d = dot(t.center, c_dir);
+                            if d < best_dot {
+                                best_dot = d;
+                                best = n;
+                            }
+                        }
+                    }
+                    cur = best;
+                }
+                cur
+            };
+            let depth = {
+                let w = app.world.borrow();
+                let mut top = -1;
+                for d in (0..tenebris_core::world::WORLD_MAX_DEPTH).rev() {
+                    if tenebris_core::blocks::is_solid(w.get(target, d)) {
+                        top = d;
+                        break;
+                    }
+                }
+                if top < 0 || top + 1 >= tenebris_core::world::WORLD_MAX_DEPTH {
+                    return;
+                }
+                top + 1
+            };
+            {
+                let mut w = app.world.borrow_mut();
+                w.set(target, depth, Block::LaunchPad);
+                let pad = w.block_entities.entry(target, depth).launch_pad_mut();
+                pad.push(items::ROCKET_ENGINE);
+                pad.push(items::FUEL_TANK);
+                pad.push(items::FUEL_TANK);
+                pad.push(items::COMMAND_MODULE);
+            }
+            /* Aim at the middle of the stack. */
+            let (tdir, r_mid) = {
+                let w = app.world.borrow();
+                let r0 = w.depth_to_radius_m(depth + 1);
+                (w.grid.tile(target).map(|t| t.center), r0 + 3.0)
+            };
+            let mut p = app.player.borrow_mut();
+            if let Some(tc) = tdir {
+                let tlen = dvec3_length(tc);
+                let mid_world = if tlen > 1e-9 { dvec3_scale(tc, r_mid / tlen) } else { tc };
+                let to = dvec3_sub(mid_world, p.position);
+                let to_len = dvec3_length(to).max(1e-9);
+                let look = dvec3_scale(to, 1.0 / to_len);
+                let up = p.basis.up;
+                let fwd = p.basis.fwd;
+                let right = p.basis.right;
+                let to_t = dvec3_sub(look, dvec3_scale(up, dot(look, up)));
+                p.yaw = (dot(to_t, right)).atan2(dot(to_t, fwd)) as f32;
+                p.pitch = dot(look, up).clamp(-1.0, 1.0).asin() as f32;
+            }
+        }
+        _ => {
+            /* Launch pad: centre tile + its ring all become the pad. */
+            dev_set_surface(&app.world, center, Block::LaunchPad);
+            dev_for_each_neighbor(&app.world, center, |w, _, n| {
+                dev_set_surface_w(w, n, Block::LaunchPad);
+            });
+        }
+    }
+}
+
+/// Run `f(world, neighbor_index, neighbor_tile)` over each valid neighbour
+/// of `center`. Collects the neighbour list first so the closure can hold
+/// the world borrow without aliasing the grid read.
+fn dev_for_each_neighbor(world: &Rc<RefCell<World>>, center: i32, mut f: impl FnMut(&mut World, usize, i32)) {
+    if center < 0 {
+        return;
+    }
+    let neighbors: Vec<i32> = {
+        let w = world.borrow();
+        match w.grid.tile(center) {
+            Some(t) => t.neighbors.iter().copied().filter(|&n| n >= 0).collect(),
+            None => Vec::new(),
+        }
+    };
+    let mut w = world.borrow_mut();
+    for (i, n) in neighbors.into_iter().enumerate() {
+        f(&mut w, i, n);
+    }
+}
+
+/// Replace `tile`'s topmost solid voxel (its presented surface) with `b`.
+fn dev_set_surface(world: &Rc<RefCell<World>>, tile: i32, b: Block) {
+    let mut w = world.borrow_mut();
+    dev_set_surface_w(&mut w, tile, b);
+}
+
+/// Same as [`dev_set_surface`] but on an already-borrowed world.
+fn dev_set_surface_w(w: &mut World, tile: i32, b: Block) {
+    if tile < 0 {
+        return;
+    }
+    let mut top = -1;
+    for d in (0..tenebris_core::world::WORLD_MAX_DEPTH).rev() {
+        if tenebris_core::blocks::is_solid(w.get(tile, d)) {
+            top = d;
+            break;
+        }
+    }
+    if top >= 0 {
+        w.set(tile, top, b);
+    }
+}
+
 extern "C" fn init() {
     /* Bump sokol's buffer pool way above the default 128 (see the long
      * rationale in the C file: 4 buffers per chunk x 32 chunks x ~20
@@ -393,6 +1249,7 @@ extern "C" fn init() {
     teleport_menu::init();
     crafting_screen::init();
     rocket_screen::init();
+    egui_layer::init();
 
     /* net_client's /saves audit scores distance from the camera to
      * each persisted tile via this provider (C: the two exported
@@ -424,6 +1281,17 @@ extern "C" fn init() {
     config::load_lod("assets/config/lod.yaml");
     config::load_water("assets/config/water.yaml");
     config::load_lighting("assets/config/lighting.yaml");
+    config::load_time("assets/config/time.yaml");
+    /* Start the world clock in daylight (start_day_fraction of a day),
+     * unless a dev override pins the time of day. */
+    {
+        let tc = config::time();
+        let frac = match std::env::var("TENEBRIS_DEV_TIME") {
+            Ok(v) => v.parse::<f32>().unwrap_or(tc.start_day_fraction),
+            Err(_) => tc.start_day_fraction,
+        };
+        tenebris_core::world_time::set_seconds((frac as f64) * tc.day_length_s as f64);
+    }
     /* Install the crafting recipe table from data so the craft screen
      * and the bag bridge can read it (see core::crafting). */
     tenebris_core::crafting::set_recipes(tenebris_core::crafting::load_recipes(
@@ -444,6 +1312,7 @@ extern "C" fn init() {
      * boot. */
     pixel_ui::init();
     item_atlas::init();
+    ui_icons::init();
     inventory_screen::init();
     /* One-shot dump of Tenebris's effective atmosphere values so we
      * can sanity-check that the YAML actually landed. */
@@ -487,7 +1356,6 @@ extern "C" fn init() {
     player_ctrl::init(&mut player.borrow_mut(), &body);
     teleport_menu::set_player(Some(player.clone()));
     crafting_screen::set_player(Some(player.clone()));
-    rocket_screen::set_player(Some(player.clone()));
 
     /* Drain Tenebris gen synchronously at init so the spawn tile has
      * terrain the moment the first frame lands. */
@@ -544,6 +1412,97 @@ extern "C" fn init() {
     menu::init();
     remote_players::init();
     chat::init();
+    /* Dev: jump straight to an egui menu screen for screenshots /
+     * iteration (skips the sokol profile picker). */
+    if let Ok(v) = std::env::var("TENEBRIS_DEV_MENU") {
+        menu::dev_show_menu(&v);
+    }
+
+    /* Dev fast-path for headless iteration / screenshots, gated entirely
+     * on env vars so normal play never sees any of it:
+     *   TENEBRIS_DEV_PAD=1     -> drop a launch pad on the spawn surface
+     *   TENEBRIS_DEV_KIT=1     -> stock a rocket-build kit (pad + parts)
+     *   TENEBRIS_DEV_SP[=name] -> boot straight into an SP world
+     *   TENEBRIS_DEV_ROCKET=1  -> open the rocket-assembly screen
+     */
+    /* Deferred to a few in-game frames in (see dev_maybe_place); placing
+     * at init double-updates a GPU buffer and aborts. SHOWCASE wins if
+     * both are set. */
+    if std::env::var("TENEBRIS_DEV_FURNACE").is_ok() {
+        DEV_PLACE_MODE.with(|c| c.set(5));
+        DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
+    } else if std::env::var("TENEBRIS_DEV_MINE").is_ok() {
+        DEV_PLACE_MODE.with(|c| c.set(4));
+        DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
+    } else if std::env::var("TENEBRIS_DEV_SHOWCASE").is_ok() {
+        DEV_PLACE_MODE.with(|c| c.set(2));
+        DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
+    } else if std::env::var("TENEBRIS_DEV_PAD").is_ok() {
+        DEV_PLACE_MODE.with(|c| c.set(1));
+        DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
+    } else if std::env::var("TENEBRIS_DEV_TECH").is_ok() {
+        DEV_PLACE_MODE.with(|c| c.set(6));
+        DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
+    } else if std::env::var("TENEBRIS_DEV_CHEST").is_ok() {
+        DEV_PLACE_MODE.with(|c| c.set(7));
+        DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
+    } else if std::env::var("TENEBRIS_DEV_POWER").is_ok() {
+        DEV_PLACE_MODE.with(|c| c.set(8));
+        DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
+    } else if std::env::var("TENEBRIS_DEV_PRINTER").is_ok() {
+        DEV_PLACE_MODE.with(|c| c.set(9));
+        DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
+    } else if std::env::var("TENEBRIS_DEV_WIRES").is_ok() {
+        DEV_PLACE_MODE.with(|c| c.set(10));
+        DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
+    } else if std::env::var("TENEBRIS_DEV_ROCKET").is_ok() {
+        DEV_PLACE_MODE.with(|c| c.set(11));
+        DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
+    } else if std::env::var("TENEBRIS_DEV_ROCKET_WORLD").is_ok() {
+        DEV_PLACE_MODE.with(|c| c.set(12));
+        DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
+    } else if std::env::var("TENEBRIS_DEV_SKY").is_ok() {
+        DEV_PLACE_MODE.with(|c| c.set(13));
+        DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
+    }
+    if std::env::var("TENEBRIS_DEV_KIT").is_ok() {
+        let mut p = player.borrow_mut();
+        inventory::add(&mut p.inventory, Block::LaunchPad);
+        p.bag.add(tenebris_core::items::ROCKET_ENGINE, 1);
+        p.bag.add(tenebris_core::items::FUEL_TANK, 2);
+        p.bag.add(tenebris_core::items::COMMAND_MODULE, 1);
+        p.bag.add(tenebris_core::items::IRON_INGOT, 16);
+        p.bag.add(tenebris_core::items::BRONZE_INGOT, 8);
+    }
+    if let Ok(v) = std::env::var("TENEBRIS_DEV_SP") {
+        let name = if v.is_empty() { "devworld" } else { v.as_str() };
+        menu::dev_start_sp(name);
+    }
+    if std::env::var("TENEBRIS_DEV_CRAFT").is_ok() {
+        crafting_screen::open(Some(player.clone()));
+    }
+    if std::env::var("TENEBRIS_DEV_INV").is_ok() {
+        /* Stock the inventory + bag so the grid shows real thumbnails and
+         * recipes light up, then open the egui inventory overlay. */
+        use tenebris_core::items;
+        {
+            let mut p = player.borrow_mut();
+            let blocks = [
+                Block::Stone, Block::Dirt, Block::Grass, Block::Sand, Block::Wood,
+                Block::CoalOre, Block::CopperOre, Block::TinOre, Block::IronOre,
+                Block::Furnace, Block::StorageChest, Block::SteamEngine, Block::Cable,
+                Block::LaunchPad,
+            ];
+            for (i, b) in blocks.iter().enumerate() {
+                p.inventory.main[i] = crate::inventory::InvSlot::block(*b, 32);
+            }
+            p.bag.add(items::COPPER_INGOT, 8);
+            p.bag.add(items::TIN_INGOT, 8);
+            p.bag.add(items::IRON_INGOT, 8);
+            p.bag.add(items::COAL, 16);
+        }
+        inventory_screen::toggle();
+    }
 
     APP.with(|cell| {
         *cell.borrow_mut() = Some(App {
@@ -1325,6 +2284,19 @@ fn apply_sp_world_saves(w_rc: &Rc<RefCell<World>>) {
     if placed > 0 {
         println!("[sp-saves] body={}: {} torch(es) restored", body_id, placed);
     }
+
+    /* Per-placed-block state (tech-block facing now; machine state later).
+     * The blocks themselves loaded above; this layers their placed state
+     * back on so cubes keep their orientation across reload. */
+    let bents = persistence::load_block_entities(&world_name, body_id);
+    if !bents.is_empty() {
+        let mut w = w_rc.borrow_mut();
+        let n = bents.len();
+        for (tile, depth, e) in bents {
+            w.block_entities.set(tile, depth, e);
+        }
+        println!("[sp-saves] body={}: {} block-entit(ies) restored", body_id, n);
+    }
 }
 
 fn mark_sp_saves_applied(app: &mut App, w_rc: &Rc<RefCell<World>>) {
@@ -1547,10 +2519,16 @@ fn maybe_prime_mode_for_state(app: &mut App) {
             );
         }
         Some(PrimeAction::EnterSp) => {
-            /* SP stays creative by default; G still toggles. */
+            /* Mode chosen on the New World screen (default creative);
+             * G still toggles in-game. */
+            let survival = menu::pending_survival();
             let mut p = app.player.borrow_mut();
-            p.survival_mode = false;
-            inventory::init_creative(&mut p.inventory);
+            p.survival_mode = survival;
+            if survival {
+                inventory::init_empty(&mut p.inventory);
+            } else {
+                inventory::init_creative(&mut p.inventory);
+            }
         }
         None => {
             if s == app.inv_primed_for_state {
@@ -1702,6 +2680,18 @@ fn block_name(b: Block) -> &'static str {
         Block::CopperOre => "COPPER_ORE",
         Block::TinOre => "TIN_ORE",
         Block::IronOre => "IRON_ORE",
+        Block::LaunchPad => "LAUNCH_PAD",
+        Block::Furnace => "FURNACE",
+        Block::ElectricFurnace => "ELECTRIC_FURNACE",
+        Block::Printer3D => "3D_PRINTER",
+        Block::Computer => "COMPUTER",
+        Block::ElectronicsWorkbench => "ELECTRONICS_WORKBENCH",
+        Block::HydroGenerator => "HYDRO_GENERATOR",
+        Block::SteamEngine => "STEAM_ENGINE",
+        Block::StorageChest => "STORAGE_CHEST",
+        Block::LaunchTower => "LAUNCH_TOWER",
+        Block::Cable => "CABLE",
+        Block::CopperPipe => "COPPER_PIPE",
     }
 }
 
@@ -1727,6 +2717,19 @@ fn block_glyph(b: Block) -> char {
         Block::CopperOre => 'o',
         Block::TinOre => 't',
         Block::IronOre => 'r',
+        Block::LaunchPad => 'P',
+        Block::Furnace => 'F',
+        /* Ported tech blocks share one glyph in the devtools dump. */
+        Block::ElectricFurnace
+        | Block::Printer3D
+        | Block::Computer
+        | Block::ElectronicsWorkbench
+        | Block::HydroGenerator
+        | Block::SteamEngine
+        | Block::StorageChest
+        | Block::LaunchTower
+        | Block::Cable
+        | Block::CopperPipe => 'E',
     }
 }
 
@@ -1913,7 +2916,15 @@ extern "C" fn frame() {
         };
         sg::begin_pass(&pass);
         sdtx::canvas(sapp::widthf(), sapp::heightf());
-        menu::draw(sapp::widthf() as i32, sapp::heightf() as i32);
+        if menu::state_is_egui() {
+            /* SP menu screens render in egui (main menu / world list /
+             * new world); the rest stay on the sokol path. */
+            egui_layer::run(sapp::widthf(), sapp::heightf(), |ctx| menu::egui_ui(ctx));
+            egui_layer::draw();
+            sgl::draw();
+        } else {
+            menu::draw(sapp::widthf() as i32, sapp::heightf() as i32);
+        }
         sdtx::draw();
         sg::end_pass();
         sg::commit();
@@ -1923,8 +2934,22 @@ extern "C" fn frame() {
     with_app(frame_inner);
 }
 
+/// Build this frame's egui UI. Dispatches to each screen's egui builder.
+/// Screens port from sokol_gl to egui one at a time.
+fn egui_ui(app: &mut App, ctx: &egui::Context) {
+    crafting_screen::set_player(Some(app.player.clone()));
+    crafting_screen::egui_ui(ctx);
+    inventory_screen::set_player(Some(app.player.clone()));
+    inventory_screen::egui_ui(ctx);
+    chest_screen::egui_ui(ctx);
+    furnace_screen::egui_ui(ctx);
+    power_ui::egui_ui(ctx);
+    rocket_screen::egui_ui(ctx);
+}
+
 fn frame_inner(app: &mut App) {
     maybe_apply_sp_resume(app);
+    dev_maybe_place(app);
     apply_sp_saves_lazy(app);
     maybe_apply_mp_spawn(app);
     maybe_prime_mode_for_state(app);
@@ -1978,6 +3003,20 @@ fn frame_inner(app: &mut App) {
     }
     dt = clamped;
     app.tick = app.tick.wrapping_add(1);
+
+    /* Advance the world clock (drives the on-rails orbit + day/night sim).
+     * Frozen when a dev time-of-day is pinned for screenshots. */
+    let time_frozen = DEV_TIME_FROZEN.with(|c| {
+        if c.get() < 0 {
+            c.set(if std::env::var("TENEBRIS_DEV_TIME").is_ok() { 1 } else { 0 });
+        }
+        c.get() == 1
+    });
+    if !time_frozen {
+        let scale = config::time().time_scale as f64;
+        tenebris_core::world_time::advance(dt as f64 * scale);
+    }
+
     profiler::begin_frame();
 
     /* Stream a few tiles of terrain per frame. (Profiler slot names
@@ -2205,6 +3244,13 @@ fn frame_inner(app: &mut App) {
             for w_rc in &worlds {
                 let mut w = w_rc.borrow_mut();
                 world_water::step(&mut w, budget);
+                /* Placed-machine behavior (furnace smelt, later generators
+                 * / printer). Persist same-frame in SP when a smelt
+                 * completes (a durable output change). */
+                let machines_changed = w.tick_machines(dt);
+                if machines_changed && !sp_world.is_empty() {
+                    persistence::save_block_entities(&sp_world, w.body.id as u32, &w.block_entities);
+                }
                 if sp_world.is_empty() {
                     continue;
                 }
@@ -2229,20 +3275,23 @@ fn frame_inner(app: &mut App) {
     let zfar = 20000.0f32;
     let proj = mat4_perspective(60.0 * (std::f32::consts::PI / 180.0), aspect, 0.3, zfar);
 
-    /* Sun lives along the canonical sky-light direction at a far fixed
-     * position. */
-    const SUN_DIST: f32 = 8000.0;
-    const SUN_RADIUS: f32 = 240.0;
-    let sun_dir = vec3_normalize(Vec3 { x: 0.5, y: 0.9, z: 0.3 });
-    let sun_pos = Vec3 {
-        x: sun_dir.x * SUN_DIST,
-        y: sun_dir.y * SUN_DIST,
-        z: sun_dir.z * SUN_DIST,
-    };
-    /* Atmosphere is anchored to whatever body the player is currently
-     * standing on. Zeroed per-body fields fall back to the tuned
+    /* Atmosphere + sky are anchored to whatever body the player is
+     * currently standing on. Zeroed per-body fields fall back to the tuned
      * defaults (see the C commentary). */
     let active_body = app.player.borrow().body.unwrap_or(app.body);
+
+    /* Sun direction comes from the on-rails sky sim: it circles the sky as
+     * the active body spins (day/night) and drifts with its orbit. The disc
+     * sits far along that direction from the body's render centre. */
+    const SUN_DIST: f32 = 8000.0;
+    const SUN_RADIUS: f32 = 240.0;
+    let sim_t = tenebris_core::world_time::seconds();
+    let sun_dir = vec3_normalize(dvec3_to_vec3(orbit::sun_direction(active_body.id, sim_t)));
+    let sun_pos = Vec3 {
+        x: active_body.pos_x as f32 + sun_dir.x * SUN_DIST,
+        y: active_body.pos_y as f32 + sun_dir.y * SUN_DIST,
+        z: active_body.pos_z as f32 + sun_dir.z * SUN_DIST,
+    };
     let has_atmo = active_body.has_water;
     let planet_r = active_body.radius_m as f32;
     let radius_mult = if active_body.atmo_radius_mult > 0.0 { active_body.atmo_radius_mult } else { 1.3 };
@@ -2316,6 +3365,9 @@ fn frame_inner(app: &mut App) {
     renderer::draw_world(view, proj, &phys_world, cam_world, dt);
     profiler::end("draw-world");
     profiler::begin("draw-moons");
+    /* Place every body for this frame from the on-rails orbit sim, then
+     * draw them sweeping across the active body's sky. */
+    renderer::update_celestial(active_body.id, sim_t);
     renderer::draw_moons(view, proj, cam_world);
     profiler::end("draw-moons");
     profiler::begin("draw-torches");
@@ -2371,10 +3423,9 @@ fn frame_inner(app: &mut App) {
      * whenever the player has it open, independent of the F2 toggle.
      * (draw() self-gates on is_open(), so this is a no-op when closed.) */
     crafting_screen::draw();
-    /* Rocket assembly + test-flight screen (G). update() steps the live
-     * flight sim; draw() is a no-op when closed. */
+    /* Rocket assembly + test-flight screen. update() steps the live test
+     * flight; the panel itself draws via egui_ui(). */
     rocket_screen::update(dt);
-    rocket_screen::draw();
     if app.debug_ui_visible {
         draw_error_overlay();
         profiler::draw();
@@ -2387,12 +3438,13 @@ fn frame_inner(app: &mut App) {
     remote_players::draw_nameplates(view, proj, sapp::widthf(), sapp::heightf(), &|id| {
         net_client::name_for_id(id)
     });
-    /* Gameplay HUD - hidden while the pause panel OR the inventory
-     * overlay is up. Pause: its sdtx text flushes on top of ALL sgl
-     * geometry and would bleed over the modal. Inventory: it draws its
-     * own hotbar row, so showing the HUD hotbar too would put two
-     * hotbars on screen. */
-    if !menu::pause_active() && !inventory_screen::is_open() && !rocket_screen::is_open() {
+    /* Gameplay HUD - hidden while the pause panel is up (its sdtx text
+     * flushes on top of ALL sgl geometry and would bleed over the modal).
+     * The inventory overlay now anchors to the top of the screen, so the
+     * live HUD hotbar (toolbar) stays visible along the bottom while it's
+     * open - the player can see what they have equipped while managing
+     * items above. */
+    if !menu::pause_active() && !rocket_screen::is_open() {
         /* No sdtx_draw here - single flush at the end of the UI block. */
         hotbar_ui::draw(&app.player.borrow().inventory);
         /* Real (non-ASCII) mining progress bar. */
@@ -2456,10 +3508,8 @@ fn frame_inner(app: &mut App) {
     pixel_ui::demo_draw();
 
     /* Inventory + crafting overlay - opened with `E` in gravity or
-     * Shift+E in space, closed with the same. Drawn after the
-     * gameplay HUD so it sits on top of the hotbar; before the pause
-     * panel so pause still wins when both are open. */
-    inventory_screen::draw(&mut app.player.borrow_mut().inventory);
+     * Shift+E in space. The panel itself now renders via egui_ui()
+     * (thumbnail grid + crafting); the old sokol panel is retired. */
 
     /* Shift+E hint toast: paints over the HUD when the player has
      * been mashing plain E in space without the overlay opening.
@@ -2500,6 +3550,14 @@ fn frame_inner(app: &mut App) {
      * sgl / sdtx batches flushed just below. */
     draw_frame_graph();
 
+    /* egui overlay: build this frame's UI, then record its meshes into the
+     * sgl batch so the single sgl_draw below flushes them on top of the
+     * sokol HUD. */
+    egui_layer::run(sapp::widthf(), sapp::heightf(), |ctx| {
+        egui_ui(app, ctx);
+    });
+    egui_layer::draw();
+
     /* ONE sgl_draw per frame, at the very end after every UI module
      * has queued its geometry (sokol_gl uploads its vertex buffer only
      * on the first draw of the frame - see the C comment). */
@@ -2519,17 +3577,38 @@ fn frame_inner(app: &mut App) {
 
 extern "C" fn event(e: *const sapp::Event) {
     let e = unsafe { &*e };
-    /* The main menu owns input while it's up. */
+    /* The main menu owns input while it's up. The egui-rendered SP
+     * screens route through the egui layer; the rest use the sokol
+     * menu's own hit-testing. */
     if menu::is_overlay() {
-        menu::handle_event(e);
+        if menu::state_is_egui() {
+            egui_layer::handle_event(e);
+        } else {
+            menu::handle_event(e);
+        }
         return;
     }
     with_app(|app| event_inner(app, e));
 }
 
 fn event_inner(app: &mut App, e: &sapp::Event) {
+    /* Feed every event to egui so its panels see the mouse / keyboard.
+     * (Swallowing from gameplay is added per-screen as each ports over.) */
+    egui_layer::handle_event(e);
+
     /* In-game pause overlay: swallow every event it owns. */
     if menu::pause_active() && menu::pause_event(e) {
+        return;
+    }
+    /* Storage chest + furnace panels: while open they own Esc (their
+     * slots are egui widgets, handled in the egui layer). */
+    if chest_screen::handle_event(e) {
+        return;
+    }
+    if furnace_screen::handle_event(e) {
+        return;
+    }
+    if power_ui::handle_event(e) {
         return;
     }
     /* Survival craft screen: first crack after pause so B toggles it and,
@@ -2538,9 +3617,8 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
     if crafting_screen::handle_event(e, Some(app.player.clone())) {
         return;
     }
-    /* Rocket assembly screen (G): first crack after crafting so G toggles
-     * it and, while open, it owns clicks. */
-    if rocket_screen::handle_event(e, Some(app.player.clone())) {
+    /* Rocket assembly screen: Esc closes it while it owns the pointer. */
+    if rocket_screen::handle_event(e) {
         return;
     }
 
@@ -2553,6 +3631,110 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
     if e._type == sapp::EventType::KeyDown && e.key_code == sapp::Keycode::F8 {
         pixel_ui::demo_toggle();
         return;
+    }
+
+    /* Tech-block interaction: plain E while looking at a placed station
+     * opens that station's screen (launch pad -> rocket assembly, furnace
+     * -> smelting). Checked before the inventory toggle so the block is
+     * the in-world entry point; Shift+E stays the inventory binding, and
+     * a non-station target falls through to the normal E behaviour. */
+    if e._type == sapp::EventType::KeyDown
+        && e.key_code == sapp::Keycode::E
+        && (e.modifiers & sapp::MODIFIER_SHIFT) == 0
+        && app.interact.has_target
+        && !app.interact.is_torch_target
+    {
+        let targeted = app
+            .world
+            .borrow()
+            .get(app.interact.hit_tile, app.interact.hit_depth);
+        match targeted {
+            Block::LaunchPad => {
+                rocket_screen::open(
+                    app.world.clone(),
+                    app.player.clone(),
+                    app.interact.hit_tile,
+                    app.interact.hit_depth,
+                );
+                return;
+            }
+            Block::Furnace => {
+                furnace_screen::open(
+                    app.world.clone(),
+                    app.player.clone(),
+                    app.interact.hit_tile,
+                    app.interact.hit_depth,
+                );
+                return;
+            }
+            /* The electronics workbench opens the crafting screen scoped to
+             * its own station (cpu chip / ram / motherboard / power supply /
+             * print nozzle), the same way the furnace gates smelting. */
+            Block::ElectronicsWorkbench => {
+                crafting_screen::open_station(
+                    Some(app.player.clone()),
+                    Some(tenebris_core::items::from_block(Block::ElectronicsWorkbench)),
+                );
+                return;
+            }
+            /* A placed storage chest opens its 27-slot inventory panel. */
+            Block::StorageChest => {
+                chest_screen::open(
+                    app.world.clone(),
+                    app.player.clone(),
+                    app.interact.hit_tile,
+                    app.interact.hit_depth,
+                );
+                return;
+            }
+            /* Powered machines. */
+            Block::SteamEngine => {
+                power_ui::open_steam(
+                    app.world.clone(),
+                    app.player.clone(),
+                    app.interact.hit_tile,
+                    app.interact.hit_depth,
+                );
+                return;
+            }
+            Block::ElectricFurnace => {
+                power_ui::open_electric(
+                    app.world.clone(),
+                    app.player.clone(),
+                    app.interact.hit_tile,
+                    app.interact.hit_depth,
+                );
+                return;
+            }
+            Block::HydroGenerator => {
+                power_ui::open_hydro(
+                    app.world.clone(),
+                    app.player.clone(),
+                    app.interact.hit_tile,
+                    app.interact.hit_depth,
+                );
+                return;
+            }
+            Block::Computer => {
+                power_ui::open_computer(
+                    app.world.clone(),
+                    app.player.clone(),
+                    app.interact.hit_tile,
+                    app.interact.hit_depth,
+                );
+                return;
+            }
+            Block::Printer3D => {
+                power_ui::open_printer(
+                    app.world.clone(),
+                    app.player.clone(),
+                    app.interact.hit_tile,
+                    app.interact.hit_depth,
+                );
+                return;
+            }
+            _ => {}
+        }
     }
 
     /* E: toggle the inventory / crafting overlay.

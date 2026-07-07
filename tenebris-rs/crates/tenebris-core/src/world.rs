@@ -111,6 +111,10 @@ pub struct World {
     pub blocks: Vec<u8>,
     pub tile_count: i32,
 
+    /// Per-placed-block state (tech-block facing now; machine state later),
+    /// keyed by (tile, depth). Parallel to `blocks`. See `block_entity`.
+    pub block_entities: crate::block_entity::BlockEntityStore,
+
     /// Dirty bitset - one bit per tile. Set by edits, cleared by the
     /// renderer after remeshing.
     pub dirty: Vec<u8>,
@@ -316,6 +320,7 @@ impl World {
             grid,
             blocks: vec![0u8; (tile_count * WORLD_MAX_DEPTH) as usize],
             tile_count,
+            block_entities: crate::block_entity::BlockEntityStore::new(),
             dirty: vec![0u8; dirty_bytes],
             /* Dirty queue sized to tile_count: the bit-dedup guarantees
              * at most one entry per tile between drains, so this never
@@ -355,6 +360,8 @@ impl World {
          * plus-edits state we want the clone to inherit. */
         let n = w.blocks.len();
         w.blocks.copy_from_slice(&self.blocks[..n]);
+        /* Per-placed-block state travels with the snapshot. */
+        w.block_entities = self.block_entities.clone();
         /* Mark gen as complete so callers don't re-run stream_gen. */
         w.gen_cursor = w.tile_count;
         /* Dirty bits start clean - the clone is a snapshot. */
@@ -470,6 +477,267 @@ impl World {
             .unwrap_or(Block::Air)
     }
 
+    /// Cells adjacent to (tile, depth) for the power graph: the hex
+    /// edge-neighbours at the same depth, plus the same tile one layer up
+    /// and down (mirrors the JS cable connection rules).
+    pub fn power_neighbors(&self, tile: i32, depth: i32) -> Vec<(i32, i32)> {
+        let mut v = Vec::with_capacity(8);
+        if let Some(t) = self.grid.tile(tile) {
+            for i in 0..t.num_neighbors as usize {
+                let n = t.neighbors[i];
+                if n >= 0 {
+                    v.push((n, depth));
+                }
+            }
+        }
+        if depth + 1 < WORLD_MAX_DEPTH {
+            v.push((tile, depth + 1));
+        }
+        if depth - 1 >= 0 {
+            v.push((tile, depth - 1));
+        }
+        v
+    }
+
+    /// Flood-fill from (tile, depth) over a connected run of `link` blocks
+    /// (the modular cable / pipe network), returning true if any visited
+    /// node - or the start cell itself - satisfies `target`. Direct
+    /// adjacency (no link block) also counts.
+    fn network_reaches(
+        &self,
+        tile: i32,
+        depth: i32,
+        link: Block,
+        target: impl Fn(&Self, i32, i32) -> bool,
+    ) -> bool {
+        if target(self, tile, depth) {
+            return true;
+        }
+        let mut stack: Vec<(i32, i32)> = Vec::new();
+        let mut seen: Vec<(i32, i32)> = Vec::new();
+        for (nt, nd) in self.power_neighbors(tile, depth) {
+            if self.get(nt, nd) == link {
+                stack.push((nt, nd));
+            }
+        }
+        while let Some((ct, cd)) = stack.pop() {
+            if seen.contains(&(ct, cd)) {
+                continue;
+            }
+            seen.push((ct, cd));
+            if target(self, ct, cd) {
+                return true;
+            }
+            for (nt, nd) in self.power_neighbors(ct, cd) {
+                if self.get(nt, nd) == link && !seen.contains(&(nt, nd)) {
+                    stack.push((nt, nd));
+                }
+            }
+        }
+        false
+    }
+
+    /// True if a *running* steam engine is adjacent to (tile, depth).
+    fn running_engine_adjacent(&self, tile: i32, depth: i32) -> bool {
+        for (nt, nd) in self.power_neighbors(tile, depth) {
+            if self.get(nt, nd) == Block::SteamEngine {
+                if let Some(be) = self.block_entities.get(nt, nd) {
+                    if let crate::block_entity::MachineState::SteamEngine(s) = be.state {
+                        if s.running() {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// A hydro generator is active when it sits directly on water (the JS
+    /// `waterDepth > 0`): the cell one layer below is water.
+    fn hydro_active(&self, tile: i32, depth: i32) -> bool {
+        depth - 1 >= 0 && self.get(tile, depth - 1) == Block::Water
+    }
+
+    /// Public query for the hydro-generator UI: is it pumping (on water)?
+    pub fn hydro_is_active(&self, tile: i32, depth: i32) -> bool {
+        self.hydro_active(tile, depth)
+    }
+
+    /// True if an active hydro generator is adjacent to (tile, depth).
+    fn active_hydro_adjacent(&self, tile: i32, depth: i32) -> bool {
+        for (nt, nd) in self.power_neighbors(tile, depth) {
+            if self.get(nt, nd) == Block::HydroGenerator && self.hydro_active(nt, nd) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Electric furnace power: cable-network reach to a running steam engine.
+    fn electric_powered(&self, tile: i32, depth: i32) -> bool {
+        self.network_reaches(tile, depth, Block::Cable, |s, t, d| s.running_engine_adjacent(t, d))
+    }
+
+    /// Steam engine water: copper-pipe-network reach to an active hydro
+    /// generator.
+    fn steam_has_water(&self, tile: i32, depth: i32) -> bool {
+        self.network_reaches(tile, depth, Block::CopperPipe, |s, t, d| {
+            s.active_hydro_adjacent(t, d)
+        })
+    }
+
+    /// True if a *powered* computer is adjacent to (tile, depth).
+    fn powered_computer_adjacent(&self, tile: i32, depth: i32) -> bool {
+        for (nt, nd) in self.power_neighbors(tile, depth) {
+            if self.get(nt, nd) == Block::Computer {
+                if let Some(be) = self.block_entities.get(nt, nd) {
+                    if let crate::block_entity::MachineState::Computer(c) = be.state {
+                        if c.powered {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// 3D printer power: cable-network reach to a powered computer (the JS
+    /// printer-needs-a-computer gate).
+    fn printer_powered(&self, tile: i32, depth: i32) -> bool {
+        self.network_reaches(tile, depth, Block::Cable, |s, t, d| {
+            s.powered_computer_adjacent(t, d)
+        })
+    }
+
+    /// Advance placed-machine behavior by `dt` seconds. Refreshes the two
+    /// modular networks first - copper pipes carry water from hydro
+    /// generators to steam engines, cables carry power from running steam
+    /// engines to electric furnaces - then ticks every machine. Returns true
+    /// on a durable change (smelt completed / coal consumed) to persist.
+    pub fn tick_machines(&mut self, dt: f32) -> bool {
+        /* Phase 1 (water): which steam engines are pipe-fed by an active
+         * hydro generator. Apply before computing power, since a steam
+         * engine only "runs" with both water and coal. */
+        let engines: Vec<(i32, i32)> = self
+            .block_entities
+            .iter()
+            .filter(|(_, _, e)| e.steam_engine().is_some())
+            .map(|(t, d, _)| (t, d))
+            .collect();
+        let watered: Vec<(i32, i32, bool)> =
+            engines.iter().map(|&(t, d)| (t, d, self.steam_has_water(t, d))).collect();
+        for (t, d, wtr) in watered {
+            if let Some(e) = self.block_entities.get_mut(t, d) {
+                if let crate::block_entity::MachineState::SteamEngine(s) = &mut e.state {
+                    s.has_water = wtr;
+                }
+            }
+        }
+
+        use crate::block_entity::MachineState;
+
+        /* Phase 2 (power): computers light up from the cable network first
+         * (a running engine), since printers gate on a powered computer. */
+        let computers: Vec<(i32, i32)> = self
+            .block_entities
+            .iter()
+            .filter(|(_, _, e)| matches!(e.state, MachineState::Computer(_)))
+            .map(|(t, d, _)| (t, d))
+            .collect();
+        let comp_pow: Vec<(i32, i32, bool)> =
+            computers.iter().map(|&(t, d)| (t, d, self.electric_powered(t, d))).collect();
+        for (t, d, p) in comp_pow {
+            if let Some(e) = self.block_entities.get_mut(t, d) {
+                if let MachineState::Computer(c) = &mut e.state {
+                    c.powered = p;
+                }
+            }
+        }
+
+        /* Phase 3: electric furnaces (cable -> running engine) and printers
+         * (cable -> powered computer). */
+        let consumers: Vec<(i32, i32, bool, bool)> = self
+            .block_entities
+            .iter()
+            .filter_map(|(t, d, e)| match e.state {
+                MachineState::ElectricFurnace(_) => Some((t, d, true, false)),
+                MachineState::Printer(_) => Some((t, d, false, true)),
+                _ => None,
+            })
+            .collect();
+        let resolved: Vec<(i32, i32, bool)> = consumers
+            .iter()
+            .map(|&(t, d, is_furnace, _)| {
+                let p = if is_furnace { self.electric_powered(t, d) } else { self.printer_powered(t, d) };
+                (t, d, p)
+            })
+            .collect();
+        for (t, d, p) in resolved {
+            if let Some(e) = self.block_entities.get_mut(t, d) {
+                match &mut e.state {
+                    MachineState::ElectricFurnace(ef) => ef.powered = p,
+                    MachineState::Printer(pr) => pr.powered = p,
+                    _ => {}
+                }
+            }
+        }
+
+        /* Phase 4: tick every machine. */
+        self.block_entities.tick(dt)
+    }
+
+    /// Tile-edge index (0..num_verts) whose outward midpoint direction
+    /// best points at `target` (a world position), projected into the
+    /// tile's tangent plane. Used to record a placed tech block's facing
+    /// so its cube front turns toward the player (mirrors the JS
+    /// "front faces towards player" placement). Returns
+    /// `block_entity::FACING_UNSET` if the tile is invalid.
+    pub fn facing_toward(&self, tile: i32, depth: i32, target: DVec3) -> u8 {
+        let Some(t) = self.grid.tile(tile) else {
+            return crate::block_entity::FACING_UNSET;
+        };
+        let up = t.center;
+        let r = self.depth_to_radius_m(depth);
+        let (bx, by, bz) = (up.x * r, up.y * r, up.z * r);
+        /* Direction block -> target, flattened into the tangent plane. */
+        let (mut tx, mut ty, mut tz) = (target.x - bx, target.y - by, target.z - bz);
+        let d = tx * up.x + ty * up.y + tz * up.z;
+        tx -= up.x * d;
+        ty -= up.y * d;
+        tz -= up.z * d;
+        let tl = (tx * tx + ty * ty + tz * tz).sqrt();
+        if tl < 1e-9 {
+            return 0;
+        }
+        tx /= tl;
+        ty /= tl;
+        tz /= tl;
+        let n = t.num_verts as i32;
+        let mut best_k = 0i32;
+        let mut best = f64::NEG_INFINITY;
+        for k in 0..n {
+            let a = t.verts[k as usize];
+            let b = t.verts[((k + 1) % n) as usize];
+            let (mut mx, mut my, mut mz) = ((a.x + b.x) * 0.5, (a.y + b.y) * 0.5, (a.z + b.z) * 0.5);
+            let md = mx * up.x + my * up.y + mz * up.z;
+            mx -= up.x * md;
+            my -= up.y * md;
+            mz -= up.z * md;
+            let ml = (mx * mx + my * my + mz * mz).sqrt();
+            if ml < 1e-9 {
+                continue;
+            }
+            let dot = (mx * tx + my * ty + mz * tz) / ml;
+            if dot > best {
+                best = dot;
+                best_k = k;
+            }
+        }
+        best_k as u8
+    }
+
     /// Port of `world_set()`.
     pub fn set(&mut self, tile: i32, depth: i32, b: Block) {
         if tile < 0 || tile >= self.tile_count {
@@ -496,6 +764,13 @@ impl World {
         let old = self.blocks[idx];
         self.blocks[idx] = b.raw();
         self.dirty_enqueue(tile);
+
+        /* The cell's contents changed, so any placed-block state (tech
+         * facing, machine state) for the old occupant is stale - drop it.
+         * The placement path writes a fresh entity after this set(). */
+        if old != b.raw() && !self.block_entities.is_empty() {
+            self.block_entities.remove(tile, depth);
+        }
 
         /* Water-sim cleanup on block change.
          *

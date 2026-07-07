@@ -51,6 +51,15 @@ pub const COMMAND_MODULE: ItemId = ITEM_BASE + 14; // 114
 pub const WIRE: ItemId = ITEM_BASE + 15; // 115
 pub const CIRCUIT_BOARD: ItemId = ITEM_BASE + 16; // 116
 
+/* Electronics components crafted at the workbench / printer (JS
+ * src/planet/ElectronicsWorkbench.ts + Printer3D.ts). Ingredients for
+ * the computer, 3D printer, and command module. */
+pub const CPU_CHIP: ItemId = ITEM_BASE + 17; // 117
+pub const RAM_MODULE: ItemId = ITEM_BASE + 18; // 118
+pub const MOTHERBOARD: ItemId = ITEM_BASE + 19; // 119
+pub const POWER_SUPPLY: ItemId = ITEM_BASE + 20; // 120
+pub const PRINT_NOZZLE: ItemId = ITEM_BASE + 21; // 121
+
 /// What an item *is*, for stacking / placement / tool-gating rules. Grows
 /// as the tech tree lands (Component, Ingot, Ammo, ...).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -121,6 +130,11 @@ const ITEMS: &[ItemDef] = &[
     ItemDef { id: COMMAND_MODULE, name: "command-module", kind: ItemKind::Resource, stack: 8 },
     ItemDef { id: WIRE, name: "wire", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: CIRCUIT_BOARD, name: "circuit-board", kind: ItemKind::Resource, stack: 64 },
+    ItemDef { id: CPU_CHIP, name: "cpu-chip", kind: ItemKind::Resource, stack: 64 },
+    ItemDef { id: RAM_MODULE, name: "ram-module", kind: ItemKind::Resource, stack: 64 },
+    ItemDef { id: MOTHERBOARD, name: "motherboard", kind: ItemKind::Resource, stack: 64 },
+    ItemDef { id: POWER_SUPPLY, name: "power-supply", kind: ItemKind::Resource, stack: 64 },
+    ItemDef { id: PRINT_NOZZLE, name: "print-nozzle", kind: ItemKind::Resource, stack: 64 },
 ];
 
 /// Names accepted in recipes.yaml for the blocks the recipes reference.
@@ -134,6 +148,18 @@ fn block_id_by_name(name: &str) -> Option<ItemId> {
         "sand" => Block::Sand,
         "grass" => Block::Grass,
         "leaves" => Block::Leaves,
+        "launch-pad" => Block::LaunchPad,
+        "furnace" => Block::Furnace,
+        "electric-furnace" => Block::ElectricFurnace,
+        "3d-printer" => Block::Printer3D,
+        "computer" => Block::Computer,
+        "electronics-workbench" => Block::ElectronicsWorkbench,
+        "hydro-generator" => Block::HydroGenerator,
+        "steam-engine" => Block::SteamEngine,
+        "storage-chest" => Block::StorageChest,
+        "launch-tower" => Block::LaunchTower,
+        "cable" => Block::Cable,
+        "copper-pipe" => Block::CopperPipe,
         _ => return None,
     };
     Some(from_block(b))
@@ -148,6 +174,18 @@ fn block_name(b: Block) -> &'static str {
         Block::Sand => "sand",
         Block::Grass => "grass",
         Block::Leaves => "leaves",
+        Block::LaunchPad => "launch-pad",
+        Block::Furnace => "furnace",
+        Block::ElectricFurnace => "electric-furnace",
+        Block::Printer3D => "3d-printer",
+        Block::Computer => "computer",
+        Block::ElectronicsWorkbench => "electronics-workbench",
+        Block::HydroGenerator => "hydro-generator",
+        Block::SteamEngine => "steam-engine",
+        Block::StorageChest => "storage-chest",
+        Block::LaunchTower => "launch-tower",
+        Block::Cable => "cable",
+        Block::CopperPipe => "copper-pipe",
         _ => "block",
     }
 }
@@ -171,6 +209,69 @@ pub fn id_by_name(name: &str) -> Option<ItemId> {
 /// Max stack for an item (1 for tools, 64 default).
 pub fn stack_size(id: ItemId) -> u16 {
     def(id).map(|d| d.stack).unwrap_or(64)
+}
+
+/// Smelting result for a furnace input, or `None` if the item can't be
+/// smelted. Mirrors the JS `SMELTING_RECIPES` (raw ore -> ingot). Returns
+/// `(output item, output count)`.
+pub fn smelt_output(id: ItemId) -> Option<(ItemId, u16)> {
+    match id {
+        COPPER => Some((COPPER_INGOT, 1)),
+        TIN => Some((TIN_INGOT, 1)),
+        IRON => Some((IRON_INGOT, 1)),
+        _ => None,
+    }
+}
+
+/// True if `id` can fuel a furnace (coal). One coal = 8 smelts (JS
+/// `FUEL_PER_COAL`).
+pub fn is_fuel(id: ItemId) -> bool {
+    id == COAL
+}
+
+/// A 3D-printer recipe: timed print of `output` x `qty` from `inputs`.
+pub struct PrintRecipe {
+    pub name: &'static str,
+    pub output: ItemId,
+    pub qty: u16,
+    pub inputs: Vec<(ItemId, u16)>,
+    pub time_s: f32,
+}
+
+/// What the 3D printer can print (JS `PRINTER_RECIPES`, simplified - the
+/// big structural / rocket parts). Built per call; the set is tiny.
+pub fn print_recipes() -> Vec<PrintRecipe> {
+    use crate::blocks::Block;
+    vec![
+        PrintRecipe {
+            name: "Launch Pad",
+            output: from_block(Block::LaunchPad),
+            qty: 1,
+            inputs: vec![(IRON_INGOT, 4), (Block::Stone as u16, 4)],
+            time_s: 8.0,
+        },
+        PrintRecipe {
+            name: "Launch Tower",
+            output: from_block(Block::LaunchTower),
+            qty: 1,
+            inputs: vec![(IRON_INGOT, 9)],
+            time_s: 10.0,
+        },
+        PrintRecipe {
+            name: "Rocket Engine",
+            output: ROCKET_ENGINE,
+            qty: 1,
+            inputs: vec![(BRONZE_INGOT, 4), (IRON_INGOT, 2)],
+            time_s: 12.0,
+        },
+        PrintRecipe {
+            name: "Fuel Tank",
+            output: FUEL_TANK,
+            qty: 1,
+            inputs: vec![(IRON_INGOT, 6)],
+            time_s: 10.0,
+        },
+    ]
 }
 
 /// Item classification (defaults to Resource for unknown ids).

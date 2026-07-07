@@ -42,36 +42,48 @@ out: wood-axe 1
 in: plank 3
 in: stick 2
 
+# The furnace: a placeable crafting station built from stone. Interact
+# (E) on it to open the smelting screen. Hand-crafted at the bench.
+
+[furnace]
+tier: 1
+out: furnace 1
+in: stone 8
+
 # Tier 1 - smelting. Raw ore mined underground is inert until it is
 # smelted with coal as fuel: every bar costs one coal. Bronze is the
-# copper + tin alloy, so tin earns its keep. (A dedicated furnace
-# station is a later tier; for now these are bench recipes and the
-# coal cost is the gameplay gate.)
+# copper + tin alloy, so tin earns its keep. These are gated on the
+# furnace station (station: furnace) - you must place a furnace and
+# interact with it; they no longer hand-craft at the bench.
 
 [copper-ingot]
 tier: 1
+station: furnace
 out: copper-ingot 1
 in: copper 1
 in: coal 1
 
 [tin-ingot]
 tier: 1
+station: furnace
 out: tin-ingot 1
 in: tin 1
 in: coal 1
 
 [iron-ingot]
 tier: 1
+station: furnace
 out: iron-ingot 1
 in: iron 1
 in: coal 1
 
+# Bronze is an alloy, not a smelt - the furnace only does ore -> ingot
+# now (timed smelter), so bronze is hand-crafted from the two ingots.
 [bronze-ingot]
 tier: 1
 out: bronze-ingot 2
 in: copper-ingot 1
 in: tin-ingot 1
-in: coal 1
 
 # Tier 2 - electronics. Copper drawn into wire, wire + iron pressed into
 # a circuit board: the control gear the command module needs (a
@@ -112,3 +124,129 @@ out: command-module 1
 in: copper-ingot 4
 in: iron-ingot 3
 in: circuit-board 1
+
+# Tier 2 - launch pad. A placeable structure block: stand it on the
+# ground, interact (E) on it, and the rocket-assembly screen opens so you
+# can stack the crafted parts and fly. The metal frame is the gate.
+
+[launch-pad]
+tier: 2
+out: launch-pad 1
+in: iron-ingot 4
+in: bronze-ingot 2
+
+# ---------------------------------------------------------------------------
+# Tech blocks ported from the JS (src/planet machine modules +
+# CraftingSystem.ts). Recipes simplified from the JS shaped 3x3 grid to
+# the unshaped count form. Where the JS used aluminium (no ore in the
+# Rust port yet) the cost is substituted with iron/copper for now.
+# ---------------------------------------------------------------------------
+
+# Hand-bench placeables.
+
+[storage-chest]
+tier: 1
+out: storage-chest 1
+in: log 8
+
+[electronics-workbench]
+tier: 2
+out: electronics-workbench 1
+in: iron-ingot 2
+in: copper-ingot 2
+
+[cable]
+tier: 2
+out: cable 4
+in: copper-ingot 1
+
+[copper-pipe]
+tier: 2
+out: copper-pipe 4
+in: copper-ingot 1
+
+# Electronics components, crafted at the electronics workbench (the JS
+# ElectronicsWorkbench). These feed the computer / printer / command
+# module instead of the single circuit-board stand-in.
+
+[power-supply]
+tier: 2
+station: electronics-workbench
+out: power-supply 1
+in: copper-ingot 2
+in: wire 2
+
+[cpu-chip]
+tier: 2
+station: electronics-workbench
+out: cpu-chip 1
+in: circuit-board 1
+in: copper-ingot 1
+
+[ram-module]
+tier: 2
+station: electronics-workbench
+out: ram-module 1
+in: circuit-board 1
+in: wire 2
+
+[motherboard]
+tier: 2
+station: electronics-workbench
+out: motherboard 1
+in: circuit-board 2
+in: wire 2
+
+[print-nozzle]
+tier: 2
+station: electronics-workbench
+out: print-nozzle 1
+in: copper-ingot 2
+in: iron-ingot 1
+
+# Power machines (hand bench, built from metal + a little wiring).
+
+[steam-engine]
+tier: 2
+out: steam-engine 1
+in: iron-ingot 6
+in: copper-ingot 2
+in: bronze-ingot 1
+
+[hydro-generator]
+tier: 2
+out: hydro-generator 1
+in: iron-ingot 5
+in: copper-ingot 3
+
+[electric-furnace]
+tier: 2
+out: electric-furnace 1
+in: iron-ingot 4
+in: copper-ingot 2
+in: wire 2
+
+# Tier 3 - the computer and 3D printer, built from the workbench
+# components, plus the launch tower segment.
+
+[computer]
+tier: 3
+out: computer 1
+in: motherboard 1
+in: cpu-chip 1
+in: ram-module 2
+in: power-supply 1
+
+[3d-printer]
+tier: 3
+out: 3d-printer 1
+in: motherboard 1
+in: print-nozzle 1
+in: power-supply 1
+in: iron-ingot 4
+
+[launch-tower]
+tier: 3
+out: launch-tower 1
+in: iron-ingot 6
+in: bronze-ingot 2

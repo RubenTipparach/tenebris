@@ -1749,6 +1749,81 @@ pub fn parse_ui(src: &str, path: &str) -> i32 {
 }
 
 /* ------------------------------------------------------------------------ */
+/* time.yaml - global clock + on-rails orbit/day-night tuning.              */
+
+/// Global time + orbit knobs (assets/config/time.yaml). All durations are
+/// in *simulation* seconds; per-body rotation/orbit periods (in orbit.rs)
+/// are expressed as multiples of `day_length_s` / `year_length_s` so this
+/// one file sets the pace of the whole sky.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TimeConfig {
+    /// Simulation seconds advanced per real second (1.0 = real-time).
+    pub time_scale: f32,
+    /// Simulation seconds for one full rotation of the reference body
+    /// (Tenebris) - i.e. one day/night cycle on the home world.
+    pub day_length_s: f32,
+    /// Simulation seconds for the reference body to orbit the star once.
+    pub year_length_s: f32,
+    /// Fraction of the day (0..1) the clock starts at on world load, so a
+    /// fresh world opens in daylight rather than midnight. 0.25 ~ morning.
+    pub start_day_fraction: f32,
+}
+
+const TIME_DEFAULTS: TimeConfig = TimeConfig {
+    time_scale: 1.0,
+    day_length_s: 120.0,
+    year_length_s: 2400.0,
+    /* The home spawn sits on the equator at world +X, so midday (sun
+     * overhead) falls near 0.46 of the day - open the world there so a
+     * fresh load greets the player in bright daylight, not twilight. */
+    start_day_fraction: 0.46,
+};
+
+impl Default for TimeConfig {
+    fn default() -> Self {
+        TIME_DEFAULTS
+    }
+}
+
+static S_TIME: Mutex<TimeConfig> = Mutex::new(TIME_DEFAULTS);
+
+/// Current time/orbit config (a copy, like the other getters).
+pub fn time() -> TimeConfig {
+    *S_TIME.lock().unwrap()
+}
+
+/// Load time.yaml from disk (native). Missing file keeps the defaults.
+pub fn load_time(path: &str) -> i32 {
+    match slurp_file(path) {
+        None => {
+            println!("[config] {} not found, using compiled-in time defaults", path);
+            -1
+        }
+        Some(src) => parse_time(&src, path),
+    }
+}
+
+/// Parse time.yaml content (WASM preload path / tests).
+pub fn parse_time(src: &str, path: &str) -> i32 {
+    let mut cfg = S_TIME.lock().unwrap();
+    let parse_errors = scan(src, path, |line_no, key, val| {
+        if val.is_empty() {
+            return 0; /* "time:" section header */
+        }
+        match key {
+            "time_scale" => cfg.time_scale = fval(val),
+            "day_length_s" => cfg.day_length_s = fval(val),
+            "year_length_s" => cfg.year_length_s = fval(val),
+            "start_day_fraction" => cfg.start_day_fraction = fval(val),
+            _ => println!("[config] {}:{}: unknown time key '{}'", path, line_no, key),
+        }
+        0
+    });
+    drop(cfg);
+    finish(path, parse_errors)
+}
+
+/* ------------------------------------------------------------------------ */
 
 #[cfg(test)]
 mod tests {

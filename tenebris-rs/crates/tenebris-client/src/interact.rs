@@ -104,6 +104,12 @@ fn sp_save_tile_after_edit(w: &World, tile_idx: i32) {
         .try_into()
         .expect("column slice is exactly COLUMN_BYTES");
     persistence::save_tile(&name, w.body.id as u32, tile_idx, col);
+    /* Per-placed-block state (tech facing, later machine state) rides the
+     * same edit frame as the column save. The store is small (one entry
+     * per placed machine), so re-serialising it per edit is cheap and
+     * covers both placement (entity added) and mining (World::set dropped
+     * it). Same-frame, per the CLAUDE.md persistence rule. */
+    persistence::save_block_entities(&name, w.body.id as u32, &w.block_entities);
 }
 
 /// Port of `sp_save_torches_after_change()`.
@@ -575,6 +581,19 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
                     }
                 }
                 w.set(s.place_tile, s.place_depth, to_place);
+                /* Tech blocks record which tile edge their front faces so
+                 * the cube renders turned toward the player who placed it
+                 * (mirrors the JS placement). Recorded right next to the
+                 * world_set, same frame as the tile save. */
+                if tenebris_core::blocks::is_tech_block(to_place) {
+                    let facing = w.facing_toward(s.place_tile, s.place_depth, p.position);
+                    let e = w.block_entities.entry(s.place_tile, s.place_depth);
+                    e.facing = facing;
+                    /* Give machines their state up front so the machine
+                     * tick + power graph see them (computers/printers must
+                     * exist for the power gating). */
+                    tenebris_core::block_entity::init_machine_state(e, to_place);
+                }
                 net_client::send_edit(
                     proto::PLAYER_CMD_PLACE,
                     w.body.id as u32,

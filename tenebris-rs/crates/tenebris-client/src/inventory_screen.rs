@@ -825,6 +825,225 @@ pub fn draw_hint() {
     sdtx::puts(MSG);
 }
 
+/* ===================================================================== */
+/* egui inventory + crafting overlay.                                    */
+/*                                                                       */
+/* Replaces the legacy sokol panel above: pressing E now opens this real */
+/* thumbnail-grid UI (inventory + hotbar as item icons) with the craft   */
+/* recipe list embedded on the right, so the player can craft / smelt    */
+/* and equip without the old text panel. Mirrors the chest / crafting    */
+/* egui screens; the craft list is reused via crafting_screen.           */
+
+use crate::player_ctrl::PlayerCtrl;
+use std::rc::Rc;
+
+pub type PlayerHandle = Rc<RefCell<PlayerCtrl>>;
+
+thread_local! {
+    static PLAYER: RefCell<Option<PlayerHandle>> = const { RefCell::new(None) };
+}
+
+/// Provide the player handle the egui overlay reads/mutates (called each
+/// frame from the egui dispatch, like the other survival screens).
+pub fn set_player(p: Option<PlayerHandle>) {
+    PLAYER.with(|c| *c.borrow_mut() = p);
+}
+
+const EGUI_SLOT_PX: f32 = 42.0;
+
+/// Atlas key for a slot's icon, or `None` to draw it as a plain chip.
+/// Block slots map straight to the block icon; tool/item slots (the local
+/// `ItemId` enum) have no egui icon yet, so they fall back to a chip.
+fn slot_icon_key(s: &InvSlot) -> Option<u16> {
+    if s.count <= 0 {
+        return None;
+    }
+    if s.block_type != Block::Air {
+        return Some(s.block_type as u16);
+    }
+    None
+}
+
+/// One inventory cell: framed slot + item thumbnail + stack-count badge.
+fn egui_slot(ui: &mut egui::Ui, s: &InvSlot, selected: bool) -> egui::Response {
+    let size = egui::vec2(EGUI_SLOT_PX, EGUI_SLOT_PX);
+    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+    let p = ui.painter();
+    let bg = if selected {
+        egui::Color32::from_rgb(0x3c, 0x46, 0x5a)
+    } else if resp.hovered() {
+        egui::Color32::from_rgb(0x3a, 0x40, 0x4e)
+    } else {
+        egui::Color32::from_rgb(0x26, 0x2a, 0x33)
+    };
+    p.rect_filled(rect, 3.0, bg);
+    let (bw, bc) = if selected {
+        (2.0, egui::Color32::from_rgb(0xc8, 0xb0, 0x50))
+    } else {
+        (1.0, egui::Color32::from_rgb(0x4a, 0x50, 0x5e))
+    };
+    p.rect_stroke(rect, 3.0, egui::Stroke::new(bw, bc), egui::StrokeKind::Inside);
+    if s.count > 0 {
+        match slot_icon_key(s).and_then(crate::ui_icons::uv) {
+            Some([u0, v0, u1, v1]) => {
+                let uv = egui::Rect::from_min_max(egui::pos2(u0, v0), egui::pos2(u1, v1));
+                p.image(crate::egui_layer::ICON_TEX, rect.shrink(4.0), uv, egui::Color32::WHITE);
+            }
+            None => {
+                p.rect_filled(rect.shrink(9.0), 2.0, egui::Color32::from_rgb(0x78, 0x80, 0x90));
+            }
+        }
+        if s.count > 1 {
+            p.text(
+                rect.max - egui::vec2(3.0, 1.0),
+                egui::Align2::RIGHT_BOTTOM,
+                s.count.to_string(),
+                egui::FontId::proportional(12.0),
+                egui::Color32::WHITE,
+            );
+        }
+    }
+    resp
+}
+
+/// Draw the inventory + crafting overlay and apply this frame's click.
+pub fn egui_ui(ctx: &egui::Context) {
+    if !is_open() {
+        return;
+    }
+    let Some(player) = PLAYER.with(|c| c.borrow().clone()) else {
+        return;
+    };
+
+    let (hotbar, main, selected, survival) = {
+        let p = player.borrow();
+        (p.inventory.slots, p.inventory.main, p.inventory.selected, p.survival_mode)
+    };
+
+    let mut click_main: Option<usize> = None;
+    let mut click_hotbar: Option<usize> = None;
+    let mut toggle_mode = false;
+    let mut do_close = false;
+
+    egui::Window::new("Inventory")
+        .collapsible(false)
+        .resizable(false)
+        /* Anchor near the top so the panel never covers the HUD hotbar
+         * (toolbar) along the bottom edge of the screen. */
+        .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 24.0))
+        .show(ctx, |ui| {
+            /* ---- Mode toggle: Creative/Sandbox <-> Survival ---- */
+            ui.horizontal(|ui| {
+                let (label, col) = if survival {
+                    ("Mode: Survival", egui::Color32::from_rgb(0x7a, 0xc8, 0x88))
+                } else {
+                    ("Mode: Creative / Sandbox", egui::Color32::from_rgb(0xe0, 0xc8, 0x60))
+                };
+                if ui.button(egui::RichText::new(label).strong().color(col)).clicked() {
+                    toggle_mode = true;
+                }
+                ui.label(
+                    egui::RichText::new(if survival {
+                        "gather + craft to build (click to switch, also G)"
+                    } else {
+                        "all blocks, unlimited (click to switch, also G)"
+                    })
+                    .small()
+                    .color(egui::Color32::from_rgb(0x90, 0x98, 0xa8)),
+                );
+            });
+            ui.separator();
+            ui.horizontal_top(|ui| {
+                /* ---- Left: inventory grid + hotbar ---- */
+                ui.vertical(|ui| {
+                    ui.label(
+                        egui::RichText::new("Inventory")
+                            .strong()
+                            .color(egui::Color32::from_rgb(0xc8, 0xd0, 0xe0)),
+                    );
+                    egui::Grid::new("inv_main").spacing(egui::vec2(3.0, 3.0)).show(ui, |ui| {
+                        for (i, s) in main.iter().enumerate() {
+                            if egui_slot(ui, s, false).clicked() {
+                                click_main = Some(i);
+                            }
+                            if (i + 1) % INV_MAIN_COLS == 0 {
+                                ui.end_row();
+                            }
+                        }
+                    });
+                    ui.add_space(8.0);
+                    ui.label(
+                        egui::RichText::new("Hotbar")
+                            .strong()
+                            .color(egui::Color32::from_rgb(0xa8, 0xc8, 0xa0)),
+                    );
+                    egui::Grid::new("inv_hotbar").spacing(egui::vec2(3.0, 3.0)).show(ui, |ui| {
+                        for (i, s) in hotbar.iter().enumerate() {
+                            if egui_slot(ui, s, i as i32 == selected).clicked() {
+                                click_hotbar = Some(i);
+                            }
+                        }
+                    });
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new(
+                            "Pick the hotbar slot you want, then click an item to move it there.",
+                        )
+                        .small()
+                        .color(egui::Color32::from_rgb(0x90, 0x98, 0xa8)),
+                    );
+                });
+
+                ui.separator();
+
+                /* ---- Right: crafting (reused from crafting_screen) ---- */
+                ui.vertical(|ui| {
+                    ui.label(
+                        egui::RichText::new("Craft")
+                            .strong()
+                            .color(egui::Color32::from_rgb(0xe0, 0xd0, 0x90)),
+                    );
+                    crate::crafting_screen::hand_craft_panel(ui, &player);
+                });
+            });
+
+            ui.add_space(4.0);
+            if ui.button("Close").clicked() {
+                do_close = true;
+            }
+        });
+
+    /* Mode toggle: flip survival/creative and re-stock the inventory to
+     * match (same effect as the G key). Mutually exclusive with item
+     * clicks this frame since the inventory is about to be replaced. */
+    if toggle_mode {
+        let mut p = player.borrow_mut();
+        p.survival_mode = !p.survival_mode;
+        if p.survival_mode {
+            crate::inventory::init_empty(&mut p.inventory);
+        } else {
+            crate::inventory::init_creative(&mut p.inventory);
+        }
+        return;
+    }
+
+    /* Click a main slot -> swap it into the selected hotbar slot (equip);
+     * click a hotbar slot -> make it the active one. */
+    if let Some(i) = click_main {
+        let mut p = player.borrow_mut();
+        let sel = p.inventory.selected.clamp(0, INV_HOTBAR_SLOTS as i32 - 1) as usize;
+        let tmp = p.inventory.slots[sel];
+        p.inventory.slots[sel] = p.inventory.main[i];
+        p.inventory.main[i] = tmp;
+    } else if let Some(i) = click_hotbar {
+        player.borrow_mut().inventory.selected = i as i32;
+    }
+
+    if do_close {
+        close();
+    }
+}
+
 /* ----------------------------------------------------------------------- */
 
 #[cfg(test)]

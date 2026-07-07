@@ -21,6 +21,46 @@ world state (mining, placement, physics) and a Client bug if it
 touches rendering or input. When in doubt, fix it in Core so SP and
 MP share the same code path.
 
+## Never rebuild an existing feature - find it and extend it
+
+Before writing a new system, **search for the one that already does the
+job and grow it.** This codebase has years of working machinery; the
+default assumption for any "add X" task is that something X-shaped (or
+X-adjacent) already exists and the change is an extension, not a
+green-field build.
+
+The discipline, in order:
+
+1. **Find it first.** Grep / read for the feature, its data, its state,
+   its UI, its persistence, its tests. Look in `core/` (shared SP+MP
+   state), in the client screens, in the save/load format, and in the
+   JS reference tree for how it worked originally. Spend the search
+   budget *before* the keyboard.
+2. **Extend or parameterize, don't fork.** If the existing thing is
+   close, add a field / variant / config knob / function parameter so
+   the new case flows through the *same* code path. A new enum variant
+   on an existing state machine beats a parallel state machine. A new
+   YAML field beats a hard-coded second copy. One mutator wired into the
+   existing persistence point beats a second save path.
+3. **Generalize only as far as the second caller needs.** Make the
+   shared code handle both cases cleanly; don't over-abstract for
+   hypothetical third callers that don't exist yet.
+4. **If you must add something new, say why.** When no existing system
+   fits, state explicitly what you searched for and why extension was
+   the wrong call, then build the new thing where its siblings live
+   (the new mutator next to the other mutators, the new screen next to
+   the other screens) so the *next* person finds it.
+
+Concretely, a parallel implementation of something that already exists -
+a second inventory store, a duplicate save path, a copy-pasted UI panel,
+a re-derived flight sim - is a bug, not a feature. Two code paths that
+must agree will drift; the SP/MP split in the Terminology section is the
+whole reason we keep one path. If you catch yourself typing a struct,
+function, or file whose shape mirrors one already in the tree, stop and
+extend the original instead.
+
+This rule stays in force until the user says otherwise.
+
 ## All world edits must persist immediately
 
 Every block placement, every block break, every torch placement,
@@ -163,6 +203,36 @@ semantic meaning, it just makes the hash work. Those stay inline,
 because exposing them would invite breakage rather than tuning.
 
 ## UI guidelines
+
+### Item visuals and slot grids are a PRIORITY (not optional)
+
+Inventories, the crafting screen, storage chests, the hotbar, and any
+panel that shows items **must render a grid of slots with item
+thumbnails** — a real icon per item, drawn from the item's texture —
+**never a text list of "name xN" rows**. Every item must have a visual;
+giving an item an icon is treated as part of adding the item, not a
+later polish pass. A panel that lists items as text instead of a
+thumbnail grid is a bug, not a deliverable.
+
+Concretely:
+
+- **Grid, not list.** Inventory / crafting / chest contents are laid out
+  as a 2D grid of fixed-size square slots (the Minecraft-style cell:
+  border, item icon centred, stack count in the corner). Recipes show
+  their inputs/outputs as icons, not "1 copper, 1 coal" text.
+- **Thumbnails, not labels.** The slot shows the item's texture. Text is
+  only a small stack-count badge and optional hover tooltip — not the
+  primary representation.
+- **Item visuals come first.** When a new item or block is added, it
+  gets an icon in the same change. No item ships icon-less; no UI ships
+  showing an item as a bare name.
+
+Do **not** hand back a text-mockup UI or default-framework widgets
+slapped over the canvas and call it done. If you cannot draw the icons
+yet, surface that as the blocking task and solve it (item-icon atlas,
+texture sampling in the UI layer) — do not substitute a text list.
+
+### General
 
 When the user asks for UI — menus, dialogs, popups, debug panels,
 HUD readouts — **do not generate low-effort ASCII art** as the

@@ -1,60 +1,67 @@
-//! Rocket assembly + test-flight screen - a drawn `sokol_gl` panel (real
-//! geometry + hit-tested buttons, labels via `sokol_debugtext`), modelled
-//! on `crafting_screen`.
+//! Rocket assembly + test-flight screen (egui).
 //!
-//! Opened with `G`. Lets the player stack crafted rocket parts (from the
-//! bag) into a `core::rocket::LaunchPad`, shows the assembly's validity +
-//! flight spec, and on LAUNCH runs the core flight simulation live,
-//! streaming telemetry (state / altitude / velocity / fuel). This is the
-//! text-telemetry stand-in for the 3-D flight controller + camera that
-//! land next; the assembly logic and physics are the same core path the
-//! 3-D version will use.
+//! E on a placed launch pad opens this panel. The assembled stack lives in
+//! the world's block-entity store at the pad's (tile, depth) as a
+//! `LaunchPadState`, so it is shared by SP/MP and persists same-frame (the
+//! CLAUDE.md world-edit rule); the parts also render as stacked cubes on the
+//! pad in-world. ADD pulls a crafted part from the bag onto the stack; REMOVE
+//! TOP returns the top part to the bag. LAUNCH boards a flyable stack and
+//! runs the core flight sim, streaming telemetry.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use sokol::app as sapp;
-use sokol::debugtext as sdtx;
-use sokol::gl as sgl;
 
-use crate::mobile_ui;
+use crate::egui_layer;
+use crate::persistence;
 use crate::player_ctrl::PlayerCtrl;
-use tenebris_core::items::{ItemId, COMMAND_MODULE, FUEL_TANK, ROCKET_ENGINE};
-use tenebris_core::rocket::{self, FlightState, LaunchPad, PartRole, RocketFlight};
+use crate::ui_icons;
+use tenebris_core::items::{self, ItemId, COMMAND_MODULE, FUEL_TANK, ROCKET_ENGINE};
+use tenebris_core::rocket::{self, FlightState, RocketFlight, RocketSpec};
+use tenebris_core::world::World;
 
 pub type PlayerHandle = Rc<RefCell<PlayerCtrl>>;
+pub type WorldHandle = Rc<RefCell<World>>;
 
-const PANEL_W: f32 = 460.0;
-const PANEL_H: f32 = 380.0;
-const TITLE_H: f32 = 44.0;
-const CLOSE_PX: f32 = 26.0;
-const ROW_H: f32 = 34.0;
-const BTN_W: f32 = 70.0;
-
-/// The three buildable part types, in stack order (engine first).
+/// The three buildable parts, in stack order (engine first).
 const PART_ROWS: [(ItemId, &str); 3] = [
-    (ROCKET_ENGINE, "ENGINE"),
-    (FUEL_TANK, "FUEL TANK"),
-    (COMMAND_MODULE, "COMMAND MODULE"),
+    (ROCKET_ENGINE, "Engine"),
+    (FUEL_TANK, "Fuel Tank"),
+    (COMMAND_MODULE, "Command Module"),
 ];
 
-#[derive(Default)]
 struct Screen {
     open: bool,
+    tile: i32,
+    depth: i32,
+    world: Option<WorldHandle>,
     player: Option<PlayerHandle>,
-    pad: LaunchPad,
     /// Some while a test flight is running / finished.
     flight: Option<RocketFlight>,
-    mouse_x: f32,
-    mouse_y: f32,
 }
 
 thread_local! {
-    static S: RefCell<Screen> = RefCell::new(Screen::default());
+    static S: RefCell<Screen> = RefCell::new(Screen {
+        open: false,
+        tile: -1,
+        depth: -1,
+        world: None,
+        player: None,
+        flight: None,
+    });
 }
 
 pub fn init() {
-    S.with(|c| *c.borrow_mut() = Screen::default());
+    S.with(|c| {
+        let s = &mut *c.borrow_mut();
+        s.open = false;
+        s.tile = -1;
+        s.depth = -1;
+        s.world = None;
+        s.player = None;
+        s.flight = None;
+    });
 }
 
 pub fn is_open() -> bool {
@@ -62,16 +69,36 @@ pub fn is_open() -> bool {
 }
 
 pub fn close() {
-    S.with(|c| c.borrow_mut().open = false);
+    S.with(|c| {
+        let s = &mut *c.borrow_mut();
+        s.open = false;
+        s.flight = None;
+    });
 }
 
-pub fn set_player(player: Option<PlayerHandle>) {
-    S.with(|c| c.borrow_mut().player = player);
-}
-
-#[cfg(not(test))]
-fn screen_sizef() -> (f32, f32) {
-    (sapp::widthf(), sapp::heightf())
+/// Open the assembly panel for the launch pad at (tile, depth).
+pub fn open(world: WorldHandle, player: PlayerHandle, tile: i32, depth: i32) {
+    /* Make sure the pad carries assembly state so the mesher + persistence
+     * see it even before the first part is added. */
+    {
+        let mut w = world.borrow_mut();
+        w.block_entities.entry(tile, depth).launch_pad_mut();
+    }
+    S.with(|c| {
+        let s = &mut *c.borrow_mut();
+        s.open = true;
+        s.tile = tile;
+        s.depth = depth;
+        s.world = Some(world);
+        s.player = Some(player);
+        s.flight = None;
+    });
+    /* One survival panel up at a time. */
+    crate::inventory_screen::close();
+    crate::crafting_screen::close();
+    crate::chest_screen::close();
+    crate::furnace_screen::close();
+    release_pointer();
 }
 
 #[cfg(not(test))]
@@ -79,57 +106,22 @@ fn release_pointer() {
     sapp::lock_mouse(false);
     sapp::show_mouse(true);
 }
-
-/* Test stand-ins so the module's logic compiles without a live sokol
- * app (mirrors crafting_screen's test_doubles seam). */
-#[cfg(test)]
-fn screen_sizef() -> (f32, f32) {
-    (1280.0, 720.0)
-}
-
 #[cfg(test)]
 fn release_pointer() {}
 
-fn hit(x: f32, y: f32, w: f32, h: f32, px: f32, py: f32) -> bool {
-    px >= x && px < x + w && py >= y && py < y + h
+/// Esc closes the screen. Returns true if consumed.
+pub fn handle_event(e: &sapp::Event) -> bool {
+    if !is_open() {
+        return false;
+    }
+    if e._type == sapp::EventType::KeyDown && e.key_code == sapp::Keycode::Escape {
+        close();
+        return true;
+    }
+    false
 }
 
-fn panel_rect(sw: f32, sh: f32) -> (f32, f32) {
-    ((sw - PANEL_W) * 0.5, (sh - PANEL_H) * 0.5)
-}
-
-fn close_rect(px: f32, py: f32) -> (f32, f32, f32) {
-    (px + PANEL_W - CLOSE_PX - 8.0, py + 9.0, CLOSE_PX)
-}
-
-/// Add-button rect for part row `i` (0..3).
-fn add_rect(px: f32, py: f32, i: usize) -> (f32, f32, f32, f32) {
-    let y = py + TITLE_H + 10.0 + i as f32 * ROW_H;
-    (px + PANEL_W - BTN_W - 16.0, y, BTN_W, ROW_H - 8.0)
-}
-
-fn remove_rect(px: f32, py: f32) -> (f32, f32, f32, f32) {
-    let y = py + TITLE_H + 10.0 + 3.0 * ROW_H + 6.0;
-    (px + 16.0, y, 120.0, ROW_H - 8.0)
-}
-
-fn launch_rect(px: f32, py: f32) -> (f32, f32, f32, f32) {
-    (px + 16.0, py + PANEL_H - 44.0, 150.0, 32.0)
-}
-
-fn reset_rect(px: f32, py: f32) -> (f32, f32, f32, f32) {
-    (px + PANEL_W - 16.0 - 150.0, py + PANEL_H - 44.0, 150.0, 32.0)
-}
-
-fn part_count(pad: &LaunchPad, role: PartRole) -> usize {
-    pad.parts().iter().filter(|&&id| rocket::part_role(id) == Some(role)).count()
-}
-
-fn role_of(id: ItemId) -> PartRole {
-    rocket::part_role(id).unwrap_or(PartRole::Engine)
-}
-
-/// Step the live test flight (auto full-throttle) while the screen is up.
+/// Advance a running test flight (full throttle until it lands).
 pub fn update(dt: f32) {
     S.with(|c| {
         let s = &mut *c.borrow_mut();
@@ -145,285 +137,294 @@ pub fn update(dt: f32) {
     });
 }
 
-/// Toggle / click handling. Returns true if the event was consumed.
-pub fn handle_event(e: &sapp::Event, player: Option<PlayerHandle>) -> bool {
-    S.with(|c| c.borrow_mut().player = player);
-
-    if e._type == sapp::EventType::KeyDown && e.key_code == sapp::Keycode::G {
-        let now_open = S.with(|c| {
-            let s = &mut *c.borrow_mut();
-            s.open = !s.open;
-            s.open
-        });
-        if now_open {
-            // mutually exclusive with the other survival overlays
-            crate::crafting_screen::close();
-            crate::inventory_screen::close();
-            release_pointer();
-        }
-        return true;
-    }
-
-    if !is_open() {
-        return false;
-    }
-
-    if e._type == sapp::EventType::MouseMove {
-        S.with(|c| {
-            let s = &mut *c.borrow_mut();
-            s.mouse_x = e.mouse_x;
-            s.mouse_y = e.mouse_y;
-        });
-    }
-
-    if e._type == sapp::EventType::KeyDown && e.key_code == sapp::Keycode::Escape {
-        close();
-        return true;
-    }
-
-    if e._type == sapp::EventType::MouseDown && e.mouse_button == sapp::Mousebutton::Left {
-        return handle_click(e.mouse_x, e.mouse_y);
-    }
-    // Swallow everything else while open.
-    true
-}
-
-fn handle_click(px_in: f32, py_in: f32) -> bool {
-    let (sw, sh) = screen_sizef();
-    let (px, py) = panel_rect(sw, sh);
-
-    let (cx, cy, cs) = close_rect(px, py);
-    if hit(cx, cy, cs, cs, px_in, py_in) {
-        close();
-        return true;
-    }
-
-    S.with(|c| {
-        let s = &mut *c.borrow_mut();
-        let Some(player) = s.player.clone() else { return true };
-
-        // RESET (after a flight): clear it back to assembly.
-        if s.flight.is_some() {
-            let (rx, ry, rw, rh) = reset_rect(px, py);
-            if hit(rx, ry, rw, rh, px_in, py_in) {
-                s.flight = None;
-            }
-            return true; // telemetry view swallows other clicks
-        }
-
-        // LAUNCH: board the assembled rocket if valid.
-        let (lx, ly, lw, lh) = launch_rect(px, py);
-        if hit(lx, ly, lw, lh, px_in, py_in) {
-            if let Some(f) = s.pad.board(&rocket::config()) {
-                s.flight = Some(f);
-            }
-            return true;
-        }
-
-        // REMOVE TOP: pop a part back into the bag.
-        let (rx, ry, rw, rh) = remove_rect(px, py);
-        if hit(rx, ry, rw, rh, px_in, py_in) {
-            if let Some(id) = s.pad.remove_top() {
-                player.borrow_mut().bag.add(id, 1);
-            }
-            return true;
-        }
-
-        // ADD buttons: move a part from the bag onto the stack.
-        for (i, (id, _)) in PART_ROWS.iter().enumerate() {
-            let (ax, ay, aw, ah) = add_rect(px, py, i);
-            if hit(ax, ay, aw, ah, px_in, py_in) {
-                let mut p = player.borrow_mut();
-                if p.bag.count_of(*id) > 0 && s.pad.add_part(*id) {
-                    p.bag.take(*id, 1);
-                }
-                return true;
-            }
-        }
-        true
-    })
-}
-
-fn draw_text_at(x: f32, y: f32, scale: f32, r: u8, g: u8, b: u8, text: &str) {
-    let cell_px = 8.0 * scale;
-    let (sw, sh) = screen_sizef();
-    sdtx::canvas(sw / scale, sh / scale);
-    sdtx::font(1);
-    sdtx::origin(x / cell_px, y / cell_px);
-    sdtx::color3b(r, g, b);
-    sdtx::home();
-    sdtx::puts(text);
-    sdtx::font(0);
-}
-
-fn button(x: f32, y: f32, w: f32, h: f32, enabled: bool, hovered: bool, label: &str) {
-    let (r, g, b) = if !enabled {
-        (0.18, 0.18, 0.22)
-    } else if hovered {
-        (0.20, 0.40, 0.26)
-    } else {
-        (0.16, 0.28, 0.20)
-    };
-    mobile_ui::draw_rect(x, y, w, h, r, g, b, 0.95);
-    mobile_ui::draw_rect_outline(x, y, w, h, 1.5, 0.70, 0.85, 0.75, 0.9);
-    let tc = if enabled { 0xff } else { 0x80 };
-    draw_text_at(x + 8.0, y + h * 0.5 - 6.0, 1.25, tc, tc, tc, label);
-}
-
-pub fn draw() {
-    if !is_open() {
+/// SP-only same-frame persistence after an assembly edit (mirrors the chest
+/// panel's gate).
+fn persist(w: &World) {
+    if crate::menu::state() != crate::menu::GameState::InGameSp {
         return;
     }
-    let (sw, sh) = screen_sizef();
-    if sw <= 0.0 || sh <= 0.0 {
+    let name = crate::menu::active_world();
+    if name.is_empty() {
         return;
     }
-    let pip = mobile_ui::alpha_pipeline();
-    if pip.id == 0 {
-        return;
-    }
+    persistence::save_block_entities(&name, w.body.id as u32, &w.block_entities);
+}
 
-    // Bind ortho + alpha pipeline (mobile_ui leaves them, but be safe).
-    sgl::defaults();
-    sgl::matrix_mode_projection();
-    sgl::load_identity();
-    sgl::ortho(0.0, sw, sh, 0.0, -1.0, 1.0);
-    sgl::matrix_mode_modelview();
-    sgl::load_identity();
-    sgl::load_pipeline(pip);
+const SLOT_PX: f32 = 40.0;
 
-    let (px, py) = panel_rect(sw, sh);
-
-    mobile_ui::draw_rect(0.0, 0.0, sw, sh, 0.02, 0.03, 0.07, 0.55);
-    mobile_ui::draw_rect(px, py, PANEL_W, PANEL_H, 0.10, 0.12, 0.18, 0.96);
-    mobile_ui::draw_rect_outline(px, py, PANEL_W, PANEL_H, 2.0, 0.85, 0.90, 1.00, 1.0);
-    mobile_ui::draw_rect(px, py + TITLE_H - 2.0, PANEL_W, 2.0, 0.85, 0.90, 1.00, 0.5);
-
-    let (cx, cy, cs) = close_rect(px, py);
-    let (mx, my) = S.with(|c| {
-        let s = c.borrow();
-        (s.mouse_x, s.mouse_y)
-    });
-    mobile_ui::draw_rect(cx, cy, cs, cs, 0.45, 0.10, 0.12, if hit(cx, cy, cs, cs, mx, my) { 0.85 } else { 0.55 });
-    mobile_ui::draw_rect_outline(cx, cy, cs, cs, 1.5, 1.00, 0.55, 0.55, 0.95);
-    draw_text_at(cx + 7.0, cy + 5.0, 2.0, 0xff, 0xff, 0xff, "X");
-
-    draw_text_at(px + 16.0, py + 12.0, 2.5, 0xff, 0xff, 0xff, "ROCKET");
-
-    S.with(|c| {
-        let s = c.borrow();
-        let cfg = rocket::config();
-
-        if let Some(f) = s.flight.as_ref() {
-            draw_telemetry(px, py, f, mx, my);
-            return;
-        }
-
-        let bag_count = |id: ItemId| s.player.as_ref().map(|p| p.borrow().bag.count_of(id)).unwrap_or(0);
-
-        // Part rows: bag count + in-stack count + ADD button.
-        for (i, (id, name)) in PART_ROWS.iter().enumerate() {
-            let y = py + TITLE_H + 10.0 + i as f32 * ROW_H;
-            let in_bag = bag_count(*id);
-            let on_rocket = part_count(&s.pad, role_of(*id));
-            draw_text_at(
-                px + 16.0,
-                y + 6.0,
-                1.4,
-                0xd0,
-                0xd8,
-                0xff,
-                &format!("{:<14} bag {}  on rocket {}", name, in_bag, on_rocket),
-            );
-            let (ax, ay, aw, ah) = add_rect(px, py, i);
-            button(ax, ay, aw, ah, in_bag > 0, hit(ax, ay, aw, ah, mx, my), "ADD");
-        }
-
-        let (rx, ry, rw, rh) = remove_rect(px, py);
-        button(rx, ry, rw, rh, !s.pad.is_empty(), hit(rx, ry, rw, rh, mx, my), "REMOVE TOP");
-
-        // Status: faults or the ready spec.
-        let faults = s.pad.faults();
-        let status_y = ry + ROW_H + 10.0;
-        if faults.is_empty() {
-            let spec = s.pad.spec(&cfg);
-            draw_text_at(
-                px + 16.0,
-                status_y,
-                1.4,
-                0x66,
-                0xff,
-                0x88,
-                "READY TO LAUNCH",
-            );
-            draw_text_at(
-                px + 16.0,
-                status_y + 18.0,
-                1.25,
-                0xc0,
-                0xe0,
-                0xc0,
-                &format!(
-                    "thrust {:.0} N   fuel {:.0}   TWR {:.1}",
-                    spec.total_thrust_n,
-                    spec.fuel_capacity,
-                    spec.twr(cfg.flight.gravity_mps2)
-                ),
-            );
+/// Draw one part thumbnail (framed cell with the item icon from the
+/// `ui_icons` atlas). `dim` greys it out (e.g. an empty stack placeholder).
+fn part_icon(ui: &mut egui::Ui, item: u16, dim: bool) {
+    let size = egui::vec2(SLOT_PX, SLOT_PX);
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let p = ui.painter();
+    p.rect_filled(rect, 3.0, egui::Color32::from_rgb(0x26, 0x2a, 0x33));
+    p.rect_stroke(
+        rect,
+        3.0,
+        egui::Stroke::new(1.0, egui::Color32::from_rgb(0x4a, 0x50, 0x5e)),
+        egui::StrokeKind::Inside,
+    );
+    if item != 0 {
+        let tint = if dim {
+            egui::Color32::from_rgba_unmultiplied(0xff, 0xff, 0xff, 0x66)
         } else {
-            draw_text_at(px + 16.0, status_y, 1.4, 0xff, 0xc0, 0x60, "NOT READY:");
-            for (k, f) in faults.iter().take(3).enumerate() {
-                draw_text_at(
-                    px + 28.0,
-                    status_y + 18.0 + k as f32 * 14.0,
-                    1.1,
-                    0xff,
-                    0xb0,
-                    0x70,
-                    f.message(),
-                );
-            }
+            egui::Color32::WHITE
+        };
+        if let Some([u0, v0, u1, v1]) = ui_icons::uv(item) {
+            let uv = egui::Rect::from_min_max(egui::pos2(u0, v0), egui::pos2(u1, v1));
+            p.image(egui_layer::ICON_TEX, rect.shrink(4.0), uv, tint);
+        } else {
+            p.rect_filled(rect.shrink(8.0), 2.0, egui::Color32::from_rgb(0x88, 0x88, 0x90));
         }
-
-        let (lx, ly, lw, lh) = launch_rect(px, py);
-        button(lx, ly, lw, lh, s.pad.is_flyable(), hit(lx, ly, lw, lh, mx, my), "LAUNCH");
-    });
+    }
 }
 
-fn draw_telemetry(px: f32, py: f32, f: &RocketFlight, mx: f32, my: f32) {
-    let state = match f.state {
-        FlightState::Grounded => "ON THE PAD",
-        FlightState::Launching => "LAUNCHING",
-        FlightState::InFlight => "IN FLIGHT",
-        FlightState::Landing => "PARACHUTE OUT",
-        FlightState::Landed => {
-            if f.crashed {
-                "CRASHED"
-            } else {
-                "LANDED"
-            }
+/// Draw the assembly / telemetry panel and apply this frame's action.
+pub fn egui_ui(ctx: &egui::Context) {
+    if !is_open() {
+        return;
+    }
+    let (world, player, tile, depth, has_flight) = S.with(|c| {
+        let s = c.borrow();
+        (s.world.clone(), s.player.clone(), s.tile, s.depth, s.flight.is_some())
+    });
+    let (Some(world), Some(player)) = (world, player) else {
+        return;
+    };
+
+    if has_flight {
+        draw_flight_panel(ctx);
+        return;
+    }
+
+    /* Snapshot the stack + capacity + bag counts (read borrows dropped
+     * before any mutation below). */
+    let (parts, capacity): (Vec<u16>, usize) = {
+        let w = world.borrow();
+        match w.block_entities.get(tile, depth).as_ref().and_then(|e| e.launch_pad()) {
+            Some(p) => (p.parts().to_vec(), p.capacity()),
+            None => (Vec::new(), 0),
         }
     };
-    let y = py + TITLE_H + 16.0;
-    let (sr, sg, sb) = if f.state == FlightState::Landed && f.crashed {
-        (0xff, 0x70, 0x70)
-    } else if f.state == FlightState::Landed {
-        (0x66, 0xff, 0x88)
-    } else {
-        (0xc0, 0xd8, 0xff)
-    };
-    draw_text_at(px + 16.0, y, 2.0, sr, sg, sb, state);
-    draw_text_at(px + 16.0, y + 36.0, 1.4, 0xd0, 0xd8, 0xff, &format!("altitude  {:.0} m", f.altitude_m));
-    draw_text_at(px + 16.0, y + 56.0, 1.4, 0xd0, 0xd8, 0xff, &format!("velocity  {:.0} m/s", f.vel_mps));
-    draw_text_at(px + 16.0, y + 76.0, 1.4, 0xd0, 0xd8, 0xff, &format!("fuel      {:.0}", f.fuel));
+    let bag_count = |id: u16| -> u32 { player.borrow().bag.count_of(id) };
 
-    let (rx, ry, rw, rh) = reset_rect(px, py);
-    button(rx, ry, rw, rh, true, hit(rx, ry, rw, rh, mx, my), "BACK");
+    let cfg = rocket::config();
+    let faults = rocket::validate(&parts);
+    let spec = RocketSpec::from_parts(&parts, &cfg);
+
+    let mut add: Option<ItemId> = None;
+    let mut remove = false;
+    let mut launch = false;
+    let mut do_close = false;
+
+    egui::Window::new("Rocket Assembly")
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                /* ---- Parts palette ---- */
+                ui.vertical(|ui| {
+                    ui.label(
+                        egui::RichText::new("Parts")
+                            .color(egui::Color32::from_rgb(0xc8, 0xd0, 0xe0))
+                            .strong(),
+                    );
+                    for (id, name) in PART_ROWS {
+                        ui.horizontal(|ui| {
+                            part_icon(ui, id, false);
+                            ui.vertical(|ui| {
+                                ui.label(name);
+                                ui.label(
+                                    egui::RichText::new(format!("in bag: {}", bag_count(id)))
+                                        .color(egui::Color32::from_rgb(0xa8, 0xc8, 0xa0))
+                                        .small(),
+                                );
+                            });
+                            let can_add = bag_count(id) > 0 && parts.len() < capacity;
+                            if ui.add_enabled(can_add, egui::Button::new("Add")).clicked() {
+                                add = Some(id);
+                            }
+                        });
+                    }
+                });
+
+                ui.separator();
+
+                /* ---- Assembled stack (top -> bottom visually) ---- */
+                ui.vertical(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!("Stack  {}/{}", parts.len(), capacity))
+                            .color(egui::Color32::from_rgb(0xc8, 0xd0, 0xe0))
+                            .strong(),
+                    );
+                    if parts.is_empty() {
+                        part_icon(ui, 0, true);
+                        ui.label(
+                            egui::RichText::new("(empty)")
+                                .color(egui::Color32::from_rgb(0x88, 0x90, 0xa0))
+                                .small(),
+                        );
+                    } else {
+                        for (vi, &id) in parts.iter().rev().enumerate() {
+                            let is_top = vi == 0;
+                            ui.horizontal(|ui| {
+                                part_icon(ui, id, false);
+                                let label = match items::def(id) {
+                                    Some(d) => d.name,
+                                    None => "?",
+                                };
+                                let txt = if is_top {
+                                    egui::RichText::new(format!("{label}  (top)"))
+                                        .color(egui::Color32::from_rgb(0xe0, 0xd0, 0x90))
+                                } else {
+                                    egui::RichText::new(label)
+                                        .color(egui::Color32::from_rgb(0xc0, 0xc6, 0xd2))
+                                };
+                                ui.label(txt);
+                            });
+                        }
+                    }
+                    ui.add_space(4.0);
+                    if ui
+                        .add_enabled(!parts.is_empty(), egui::Button::new("Remove Top"))
+                        .clicked()
+                    {
+                        remove = true;
+                    }
+                });
+            });
+
+            ui.separator();
+
+            /* ---- Validity + flight spec ---- */
+            if faults.is_empty() {
+                ui.label(
+                    egui::RichText::new("READY TO LAUNCH")
+                        .color(egui::Color32::from_rgb(0x6c, 0xd0, 0x7a))
+                        .strong(),
+                );
+                let g = cfg.flight.gravity_mps2;
+                ui.label(format!("Thrust: {:.0} N", spec.total_thrust_n));
+                ui.label(format!("Fuel: {:.0}", spec.fuel_capacity));
+                ui.label(format!("Mass: {:.0} kg (dry {:.0})", spec.wet_mass_kg, spec.dry_mass_kg));
+                ui.label(format!("TWR: {:.2}", spec.twr(g)));
+                ui.add_space(4.0);
+                if ui.button("Launch").clicked() {
+                    launch = true;
+                }
+            } else {
+                for f in &faults {
+                    ui.label(
+                        egui::RichText::new(f.message())
+                            .color(egui::Color32::from_rgb(0xe0, 0x80, 0x70)),
+                    );
+                }
+            }
+            ui.add_space(4.0);
+            if ui.button("Close").clicked() {
+                do_close = true;
+            }
+        });
+
+    /* ---- Apply this frame's action (same-frame persist on edits) ---- */
+    if let Some(id) = add {
+        let mut w = world.borrow_mut();
+        let mut p = player.borrow_mut();
+        if p.bag.count_of(id) > 0 {
+            let pad = w.block_entities.entry(tile, depth).launch_pad_mut();
+            if pad.push(id) {
+                p.bag.take(id, 1);
+            }
+        }
+        persist(&w);
+    } else if remove {
+        let mut w = world.borrow_mut();
+        let mut p = player.borrow_mut();
+        let popped = w.block_entities.entry(tile, depth).launch_pad_mut().pop();
+        if let Some(id) = popped {
+            /* Bag full: keep the part on the pad rather than dropping it. */
+            if p.bag.room_for(id, 1) {
+                p.bag.add(id, 1);
+            } else {
+                w.block_entities.entry(tile, depth).launch_pad_mut().push(id);
+            }
+        }
+        persist(&w);
+    } else if launch && faults.is_empty() {
+        let flight = RocketFlight::new(spec);
+        S.with(|c| c.borrow_mut().flight = Some(flight));
+    }
+
+    if do_close {
+        close();
+    }
+}
+
+/// The live test-flight telemetry view (replaces the assembly panel while a
+/// flight is running / has landed).
+fn draw_flight_panel(ctx: &egui::Context) {
+    let mut back = false;
+    let mut do_close = false;
+    let snap = S.with(|c| c.borrow().flight);
+    let Some(f) = snap else {
+        return;
+    };
+
+    egui::Window::new("Test Flight")
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .show(ctx, |ui| {
+            let (label, color) = match f.state {
+                FlightState::Grounded => ("GROUNDED", egui::Color32::from_rgb(0xc0, 0xc6, 0xd2)),
+                FlightState::Launching => ("LAUNCHING", egui::Color32::from_rgb(0xe0, 0xc0, 0x70)),
+                FlightState::InFlight => ("IN FLIGHT", egui::Color32::from_rgb(0x80, 0xc0, 0xe0)),
+                FlightState::Landing => ("LANDING", egui::Color32::from_rgb(0xe0, 0xc0, 0x70)),
+                FlightState::Landed => {
+                    if f.crashed {
+                        ("CRASHED", egui::Color32::from_rgb(0xe0, 0x70, 0x60))
+                    } else {
+                        ("LANDED", egui::Color32::from_rgb(0x6c, 0xd0, 0x7a))
+                    }
+                }
+            };
+            ui.label(egui::RichText::new(label).color(color).strong());
+            ui.label(format!("Altitude: {:.1} m", f.altitude_m));
+            ui.label(format!("Velocity: {:.1} m/s", f.vel_mps));
+            ui.label(format!("Fuel: {:.0}", f.fuel));
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if ui.button("Back").clicked() {
+                    back = true;
+                }
+                if ui.button("Close").clicked() {
+                    do_close = true;
+                }
+            });
+        });
+
+    if back {
+        S.with(|c| c.borrow_mut().flight = None);
+    }
+    if do_close {
+        close();
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tenebris_core::rocket::PartRole;
+
+    fn role_of(id: ItemId) -> PartRole {
+        rocket::part_role(id).unwrap_or(PartRole::FuelTank)
+    }
+
+    fn part_count(stack: &[ItemId], role: PartRole) -> usize {
+        stack.iter().filter(|&&id| rocket::part_role(id) == Some(role)).count()
+    }
 
     #[test]
     fn part_rows_cover_the_three_part_kinds() {
@@ -435,16 +436,12 @@ mod tests {
 
     #[test]
     fn part_count_tallies_the_stack() {
-        let mut pad = LaunchPad::new();
-        pad.add_part(ROCKET_ENGINE);
-        pad.add_part(FUEL_TANK);
-        pad.add_part(FUEL_TANK);
-        assert_eq!(part_count(&pad, PartRole::Engine), 1);
-        assert_eq!(part_count(&pad, PartRole::FuelTank), 2);
-        assert_eq!(part_count(&pad, PartRole::Capsule), 0);
+        let stack = [ROCKET_ENGINE, FUEL_TANK, FUEL_TANK];
+        assert_eq!(part_count(&stack, PartRole::Engine), 1);
+        assert_eq!(part_count(&stack, PartRole::FuelTank), 2);
+        assert_eq!(part_count(&stack, PartRole::Capsule), 0);
     }
 
-    // item names exist for the part rows (used implicitly in the draw).
     #[test]
     fn part_ids_have_definitions() {
         for (id, _) in PART_ROWS {

@@ -125,6 +125,19 @@ pub fn recipe_nth(idx: usize) -> Option<Recipe> {
     S_RECIPES.lock().unwrap().get(idx).cloned()
 }
 
+/// Clone every installed recipe whose `station` matches `station`. The
+/// hand bench passes `None`; a placed station (furnace, printer, ...)
+/// passes its block/item id, so each surface only offers its own recipes.
+pub fn recipes_for_station(station: Option<ItemId>) -> Vec<Recipe> {
+    S_RECIPES
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|r| r.station == station)
+        .cloned()
+        .collect()
+}
+
 /// Load + parse the recipe table from disk (native). Returns an empty
 /// table if the file is missing, mirroring the `config::load_*` pattern.
 pub fn load_recipes(path: &str) -> Vec<Recipe> {
@@ -343,6 +356,36 @@ in: stick 2
     }
 
     #[test]
+    fn smelting_recipes_gate_on_the_furnace_station() {
+        use crate::blocks::Block;
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/config/recipes.yaml");
+        let rs = parse_recipes(&std::fs::read_to_string(path).unwrap(), path);
+        let furnace = items::from_block(Block::Furnace);
+
+        // The ore-smelt recipes gate on the furnace station (these back the
+        // legacy craft() smelt path; the placed furnace also smelts them
+        // over time via the machine tick).
+        for name in ["copper-ingot", "tin-ingot", "iron-ingot"] {
+            let r = rs.iter().find(|r| r.name == name).unwrap();
+            assert_eq!(r.station, Some(furnace), "{name} gated on furnace");
+        }
+        // The furnace block, the tier-0 staples, and bronze (an alloy, not
+        // a smelt) hand-craft at the bench (None).
+        for name in ["furnace", "planks", "wood-pickaxe", "bronze-ingot"] {
+            let r = rs.iter().find(|r| r.name == name).unwrap();
+            assert_eq!(r.station, None, "{name} is a hand-bench recipe");
+        }
+        // recipes_for_station partitions them cleanly via the registry.
+        set_recipes(rs);
+        let bench = recipes_for_station(None);
+        let smelt = recipes_for_station(Some(furnace));
+        assert!(bench.iter().any(|r| r.name == "furnace"));
+        assert!(!bench.iter().any(|r| r.name == "copper-ingot"));
+        assert!(smelt.iter().all(|r| r.station == Some(furnace)));
+        assert!(smelt.iter().any(|r| r.name == "iron-ingot"));
+    }
+
+    #[test]
     fn smelting_consumes_ore_plus_coal_fuel() {
         use crate::items::{COAL, COPPER, COPPER_INGOT};
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/config/recipes.yaml");
@@ -368,21 +411,19 @@ in: stick 2
 
     #[test]
     fn bronze_alloys_copper_and_tin_ingots() {
-        use crate::items::{BRONZE_INGOT, COAL, COPPER_INGOT, TIN_INGOT};
+        use crate::items::{BRONZE_INGOT, COPPER_INGOT, TIN_INGOT};
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/config/recipes.yaml");
         let rs = load_recipes(path);
         let bronze = rs.iter().find(|r| r.name == "bronze-ingot").cloned().unwrap();
-        // Alloy: copper ingot + tin ingot + coal -> 2 bronze.
+        // Alloy (hand-crafted): copper ingot + tin ingot -> 2 bronze.
         assert_eq!(bronze.output, ItemStack { item: BRONZE_INGOT, count: 2 });
 
         let mut bag = vec![ItemStack::default(); 9];
         bag[0] = ItemStack { item: COPPER_INGOT, count: 1 };
         bag[1] = ItemStack { item: TIN_INGOT, count: 1 };
-        bag[2] = ItemStack { item: COAL, count: 1 };
         assert!(craft(&mut bag, &bronze));
         assert_eq!(have(&bag, COPPER_INGOT), 0);
         assert_eq!(have(&bag, TIN_INGOT), 0);
-        assert_eq!(have(&bag, COAL), 0);
         assert_eq!(have(&bag, BRONZE_INGOT), 2, "alloy yields 2 bars");
     }
 

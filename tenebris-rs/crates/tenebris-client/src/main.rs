@@ -4,9 +4,13 @@
 mod app;
 mod bag;
 mod chat;
+mod chest_screen;
 mod client_kv;
 mod crafting_screen;
+mod furnace_screen;
+mod power_ui;
 mod rocket_screen;
+mod egui_layer;
 mod gfx_math;
 mod hex_mesher;
 mod hotbar_ui;
@@ -30,6 +34,7 @@ mod settings;
 mod shaders;
 mod teleport_menu;
 mod torch;
+mod ui_icons;
 
 fn main() {
     app::run();

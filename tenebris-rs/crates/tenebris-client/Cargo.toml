@@ -28,5 +28,6 @@ futures-util = "0.3"
 # per-chunk build fans out across a rayon work-stealing pool; the main
 # (GL) thread keeps ownership of all sokol_gfx buffer uploads.
 rayon = "1"
+egui = "0.34.3"
 
 [dev-dependencies]

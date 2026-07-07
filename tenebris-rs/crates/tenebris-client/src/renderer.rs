@@ -84,11 +84,12 @@ use std::rc::Rc;
 use tenebris_core::blocks::{self, Block, FaceCap};
 use tenebris_core::config;
 use tenebris_core::math::{
-    dvec3_dot, dvec3_scale, vec3_add, vec3_length, vec3_sub, DVec3, Vec3,
+    dvec3_dot, dvec3_scale, dvec3_to_vec3, vec3_add, vec3_length, vec3_sub, DVec3, Vec3,
 };
 #[cfg(test)]
 use tenebris_core::math::dvec3_normalize;
-use tenebris_core::planet::{BodyConfig, Tileset};
+use tenebris_core::orbit;
+use tenebris_core::planet::{BodyConfig, BodyId, Tileset};
 use tenebris_core::planet_gen;
 use tenebris_core::world::{World, WORLD_MAX_DEPTH};
 use tenebris_core::world_water;
@@ -270,10 +271,86 @@ const ATLAS_PATHS: [Option<&str>; ATLAS_TILES] = [
     Some("assets/textures/grass.png"),                       /* 22 LEAVES */
     Some("assets/textures/rocks.png"),                       /* 23 BEDROCK */
     Some("assets/textures/grass.png"),                       /* 24 SEQ_LEAVES */
-    Some("assets/textures/rocks.png"),                       /* 25 COAL_ORE */
-    Some("assets/textures/rocks.png"),                       /* 26 COPPER_ORE */
-    Some("assets/textures/rocks.png"),                       /* 27 TIN_ORE */
-    Some("assets/textures/rocks.png"),                       /* 28 IRON_ORE */
+    /* Ore-bearing rock: dedicated stone-with-mineral-speck textures
+     * (matches the JS rocks_*.png minerals set) rather than a flat tint
+     * over plain rock - so each ore reads as specks embedded in stone. */
+    Some("assets/textures/minerals/rocks_coal.png"),         /* 25 COAL_ORE */
+    Some("assets/textures/minerals/rocks_copper.png"),       /* 26 COPPER_ORE */
+    Some("assets/textures/minerals/rocks_tin.png"),          /* 27 TIN_ORE */
+    Some("assets/textures/minerals/rocks_iron.png"),         /* 28 IRON_ORE */
+    /* Tech-block tiles (ported JS art). Each placed machine shows its
+     * 16x16 _face on every face - the same icon the JS uses for the
+     * block - so it reads as that machine without a per-face cube net.
+     * face_tile() maps each tech Block to one of these columns. */
+    Some("assets/textures/technology/furnace_face.png"),               /* 29 Furnace */
+    Some("assets/textures/technology/electric_furnace_face.png"),      /* 30 ElectricFurnace */
+    Some("assets/textures/technology/3d_printer_face.png"),            /* 31 Printer3D */
+    Some("assets/textures/technology/computer_face.png"),              /* 32 Computer */
+    Some("assets/textures/technology/electronics_workbench_face.png"), /* 33 Workbench */
+    Some("assets/textures/technology/hydro_generator_face.png"),       /* 34 HydroGenerator */
+    Some("assets/textures/technology/steam_engine_face.png"),          /* 35 SteamEngine */
+    Some("assets/textures/technology/storage_face.png"),               /* 36 StorageChest */
+    Some("assets/textures/technology/launch_pad_face.png"),            /* 37 LaunchPad */
+    Some("assets/textures/technology/launch_tower_face.png"),          /* 38 LaunchTower */
+    Some("assets/textures/technology/cable.png"),                      /* 39 Cable */
+    Some("assets/textures/technology/copper_pipe.png"),                /* 40 CopperPipe */
+    Some("assets/textures/technology/landing_pad_side.png"),           /* 41 landing pad (spare) */
+    /* Tech-block cube cells, sliced from each 48x32 JS net
+     * (front/left/right/back/top/bottom). emit_tech_cube maps these
+     * per cube face; 6 contiguous columns per machine from col 42. */
+    Some("assets/textures/technology/furnace__front.png"), /* 42 furnace front */
+    Some("assets/textures/technology/furnace__left.png"), /* 43 furnace left */
+    Some("assets/textures/technology/furnace__right.png"), /* 44 furnace right */
+    Some("assets/textures/technology/furnace__back.png"), /* 45 furnace back */
+    Some("assets/textures/technology/furnace__top.png"), /* 46 furnace top */
+    Some("assets/textures/technology/furnace__bottom.png"), /* 47 furnace bottom */
+    Some("assets/textures/technology/electric_furnace__front.png"), /* 48 electric_furnace front */
+    Some("assets/textures/technology/electric_furnace__left.png"), /* 49 electric_furnace left */
+    Some("assets/textures/technology/electric_furnace__right.png"), /* 50 electric_furnace right */
+    Some("assets/textures/technology/electric_furnace__back.png"), /* 51 electric_furnace back */
+    Some("assets/textures/technology/electric_furnace__top.png"), /* 52 electric_furnace top */
+    Some("assets/textures/technology/electric_furnace__bottom.png"), /* 53 electric_furnace bottom */
+    Some("assets/textures/technology/3d_printer__front.png"), /* 54 3d_printer front */
+    Some("assets/textures/technology/3d_printer__left.png"), /* 55 3d_printer left */
+    Some("assets/textures/technology/3d_printer__right.png"), /* 56 3d_printer right */
+    Some("assets/textures/technology/3d_printer__back.png"), /* 57 3d_printer back */
+    Some("assets/textures/technology/3d_printer__top.png"), /* 58 3d_printer top */
+    Some("assets/textures/technology/3d_printer__bottom.png"), /* 59 3d_printer bottom */
+    Some("assets/textures/technology/computer__front.png"), /* 60 computer front */
+    Some("assets/textures/technology/computer__left.png"), /* 61 computer left */
+    Some("assets/textures/technology/computer__right.png"), /* 62 computer right */
+    Some("assets/textures/technology/computer__back.png"), /* 63 computer back */
+    Some("assets/textures/technology/computer__top.png"), /* 64 computer top */
+    Some("assets/textures/technology/computer__bottom.png"), /* 65 computer bottom */
+    Some("assets/textures/technology/electronics_workbench__front.png"), /* 66 electronics_workbench front */
+    Some("assets/textures/technology/electronics_workbench__left.png"), /* 67 electronics_workbench left */
+    Some("assets/textures/technology/electronics_workbench__right.png"), /* 68 electronics_workbench right */
+    Some("assets/textures/technology/electronics_workbench__back.png"), /* 69 electronics_workbench back */
+    Some("assets/textures/technology/electronics_workbench__top.png"), /* 70 electronics_workbench top */
+    Some("assets/textures/technology/electronics_workbench__bottom.png"), /* 71 electronics_workbench bottom */
+    Some("assets/textures/technology/hydro_generator__front.png"), /* 72 hydro_generator front */
+    Some("assets/textures/technology/hydro_generator__left.png"), /* 73 hydro_generator left */
+    Some("assets/textures/technology/hydro_generator__right.png"), /* 74 hydro_generator right */
+    Some("assets/textures/technology/hydro_generator__back.png"), /* 75 hydro_generator back */
+    Some("assets/textures/technology/hydro_generator__top.png"), /* 76 hydro_generator top */
+    Some("assets/textures/technology/hydro_generator__bottom.png"), /* 77 hydro_generator bottom */
+    Some("assets/textures/technology/steam_engine__front.png"), /* 78 steam_engine front */
+    Some("assets/textures/technology/steam_engine__left.png"), /* 79 steam_engine left */
+    Some("assets/textures/technology/steam_engine__right.png"), /* 80 steam_engine right */
+    Some("assets/textures/technology/steam_engine__back.png"), /* 81 steam_engine back */
+    Some("assets/textures/technology/steam_engine__top.png"), /* 82 steam_engine top */
+    Some("assets/textures/technology/steam_engine__bottom.png"), /* 83 steam_engine bottom */
+    Some("assets/textures/technology/storage_chest__front.png"), /* 84 storage_chest front */
+    Some("assets/textures/technology/storage_chest__left.png"), /* 85 storage_chest left */
+    Some("assets/textures/technology/storage_chest__right.png"), /* 86 storage_chest right */
+    Some("assets/textures/technology/storage_chest__back.png"), /* 87 storage_chest back */
+    Some("assets/textures/technology/storage_chest__top.png"), /* 88 storage_chest top */
+    Some("assets/textures/technology/storage_chest__bottom.png"), /* 89 storage_chest bottom */
+    /* Rocket parts, rendered as stacked cubes on a launch pad. Each shows
+     * its item icon on every face (downscaled to 16x16 by the loader). */
+    Some("assets/textures/items/rocket_engine.png"),  /* 90 rocket engine */
+    Some("assets/textures/items/fuel_tank.png"),      /* 91 fuel tank */
+    Some("assets/textures/items/command_module.png"), /* 92 command module */
 ];
 
 /// Per-channel multiplier applied to each loaded tile. {1,1,1} =
@@ -304,10 +381,78 @@ const ATLAS_TINTS: [[f32; 3]; ATLAS_TILES] = [
     [0.65, 1.05, 0.50], /* LEAVES   - saturated green    */
     [0.30, 0.30, 0.32], /* BEDROCK  - near-black slate   */
     [1.45, 0.30, 0.30], /* SEQ_LEAVES - Sequoia red foliage */
-    [0.40, 0.40, 0.45], /* COAL_ORE   - dark blue-gray   */
-    [1.35, 0.75, 0.40], /* COPPER_ORE - orange rust      */
-    [0.90, 0.95, 1.00], /* TIN_ORE    - pale silver      */
-    [1.15, 0.85, 0.55], /* IRON_ORE   - tan / buff       */
+    /* Ore tints are neutral: the mineral colour lives in the dedicated
+     * speck textures now, not a multiplier over plain rock. */
+    [1.0, 1.0, 1.0], /* COAL_ORE   */
+    [1.0, 1.0, 1.0], /* COPPER_ORE */
+    [1.0, 1.0, 1.0], /* TIN_ORE    */
+    [1.0, 1.0, 1.0], /* IRON_ORE   */
+    /* Tech tiles 29..89 are pre-coloured pixel art - no tint. */
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    /* 90-92 rocket parts (engine, fuel tank, command module). */
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
 ];
 
 struct AtlasBake {
@@ -2882,6 +3027,22 @@ fn body_unload_detail(body: &mut ChunkedBody) {
 /// drawing chunks as a textured icosphere. Exactly one body is allowed
 /// to draw chunks at a time (the active one within 5 km), so this is
 /// the exact inverse of the terrain pass's condition.
+/// Re-place every registered body for this frame from the on-rails orbit
+/// sim: each body is drawn where it appears in the `active` body's rotating
+/// surface frame at sim-time `t`. The active body maps to its own static
+/// centre (the player never moves), so the call is uniform over all bodies.
+/// Drives the in-sky motion of moons + planets; the sun direction is
+/// computed alongside in app.rs from `orbit::sun_direction`.
+pub fn update_celestial(active: BodyId, t: f64) {
+    R.with(|cell| {
+        let r = &mut *cell.borrow_mut();
+        for b in &mut r.bodies {
+            let id = b.world.borrow().body.id;
+            b.world_pos = dvec3_to_vec3(orbit::apparent_pos(active, id, t));
+        }
+    });
+}
+
 pub fn draw_moons(view: Mat4, proj: Mat4, camera_world: Vec3) {
     R.with(|cell| {
         let mut r = cell.borrow_mut();
