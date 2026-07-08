@@ -423,6 +423,15 @@ fn dev_maybe_place(app: &mut App) {
                 p.yaw = (dot(to_t, p.basis.right)).atan2(dot(to_t, p.basis.fwd)) as f32;
                 p.pitch = dot(look, up).clamp(-1.0, 1.0).asin() as f32;
             }
+            /* Survival + a partly-drained hunger bar + some meat, so the
+             * hunger HUD + eat loop are visible in the shot. */
+            {
+                let mut p = app.player.borrow_mut();
+                p.survival_mode = true;
+                p.hunger = player_ctrl::MAX_HUNGER * 0.48;
+                p.bag.add(tenebris_core::items::COOKED_MEAT, 3);
+                p.bag.add(tenebris_core::items::RAW_MEAT, 2);
+            }
         }
         5 => {
             /* Furnace UI shot: place a furnace on a front tile, stock the
@@ -2018,6 +2027,76 @@ fn draw_mining_bar(app: &App, screen_w: f32, screen_h: f32) {
     /* sdtx flush is centralised at frame end. */
 }
 
+/// Survival hunger meter, top-left. Fill runs green (full) -> red
+/// (empty); an eat hint shows while it's low.
+fn draw_hunger_bar(app: &App, screen_w: f32, screen_h: f32) {
+    let (survival, pct) = {
+        let p = app.player.borrow();
+        (p.survival_mode, (p.hunger / player_ctrl::MAX_HUNGER).clamp(0.0, 1.0))
+    };
+    if !survival {
+        return;
+    }
+
+    let bar_w = 180.0f32;
+    let bar_h = 14.0f32;
+    let pad = 3.0f32;
+    let bx = 18.0f32;
+    let by = 18.0f32;
+    let fill_w = bar_w * pct;
+
+    sgl::defaults();
+    sgl::matrix_mode_projection();
+    sgl::load_identity();
+    sgl::ortho(0.0, screen_w, screen_h, 0.0, -1.0, 1.0);
+    sgl::matrix_mode_modelview();
+    sgl::load_identity();
+    sgl::load_pipeline(ui_alpha_pipeline(&PIP_MINING));
+
+    let quad = |x0: f32, y0: f32, x1: f32, y1: f32| {
+        sgl::v2f(x0, y0);
+        sgl::v2f(x1, y0);
+        sgl::v2f(x1, y1);
+        sgl::v2f(x0, y1);
+    };
+
+    /* Track. */
+    sgl::begin_quads();
+    sgl::c4f(0.04, 0.06, 0.10, 0.85);
+    quad(bx - pad, by - pad, bx + bar_w + pad, by + bar_h + pad);
+    sgl::end();
+
+    /* Fill - lerp green (full) to red (empty). */
+    let fr = 0.90 - 0.50 * pct;
+    let fg = 0.20 + 0.60 * pct;
+    sgl::begin_quads();
+    sgl::c4f(fr, fg, 0.20, 1.0);
+    quad(bx, by, bx + fill_w, by + bar_h);
+    sgl::end();
+
+    /* Label + eat hint. */
+    let buf = if pct <= 0.0 {
+        "STARVING - eat! [R]".to_string()
+    } else if pct < 0.3 {
+        format!("HUNGER {}%  [R] eat", (pct * 100.0) as i32)
+    } else {
+        format!("HUNGER {}%", (pct * 100.0) as i32)
+    };
+    let cell = 8.0f32;
+    sdtx::canvas(screen_w, screen_h);
+    sdtx::font(1);
+    sdtx::origin(bx / cell, (by + bar_h + 4.0) / cell);
+    if pct < 0.3 {
+        sdtx::color3b(0xff, 0x80, 0x60);
+    } else {
+        sdtx::color3b(0xd0, 0xe0, 0xd0);
+    }
+    sdtx::home();
+    sdtx::puts(&buf);
+    sdtx::font(0);
+    sdtx::color3b(0xff, 0xff, 0xff);
+}
+
 /// F1 players panel - overlay listing every connected player (local +
 /// remote) with their lat/long on the body they're standing on.
 fn draw_players_panel(app: &App, screen_w: f32, screen_h: f32) {
@@ -2534,6 +2613,7 @@ fn maybe_prime_mode_for_state(app: &mut App) {
              * still flow in unlimited via inventory_init_empty. */
             let mut p = app.player.borrow_mut();
             p.survival_mode = true;
+            p.hunger = player_ctrl::MAX_HUNGER;
             inventory::init_empty(&mut p.inventory);
             /* Drop any stale pose pending server WELCOME - MP spawn is
              * fully server-authoritative. */
@@ -2550,6 +2630,7 @@ fn maybe_prime_mode_for_state(app: &mut App) {
             let survival = menu::pending_survival();
             let mut p = app.player.borrow_mut();
             p.survival_mode = survival;
+            p.hunger = player_ctrl::MAX_HUNGER;
             if survival {
                 inventory::init_empty(&mut p.inventory);
             } else {
@@ -3072,9 +3153,36 @@ fn frame_inner(app: &mut App) {
         let mut p = app.player.borrow_mut();
         p.survival_mode = !p.survival_mode;
         if p.survival_mode {
+            p.hunger = player_ctrl::MAX_HUNGER;
             inventory::init_empty(&mut p.inventory);
         } else {
             inventory::init_creative(&mut p.inventory);
+        }
+    }
+
+    /* Hunger: drains over time in survival; press R to eat meat from the
+     * bag (cooked restores more than raw). Creative ignores it. */
+    {
+        let mut p = app.player.borrow_mut();
+        if p.survival_mode {
+            p.hunger = (p.hunger - player_ctrl::HUNGER_DRAIN_PER_S * dt).max(0.0);
+            if input::consume_eat() {
+                let restore = if p.bag.count_of(tenebris_core::items::COOKED_MEAT) > 0 {
+                    p.bag.take(tenebris_core::items::COOKED_MEAT, 1);
+                    45.0
+                } else if p.bag.count_of(tenebris_core::items::RAW_MEAT) > 0 {
+                    p.bag.take(tenebris_core::items::RAW_MEAT, 1);
+                    20.0
+                } else {
+                    0.0
+                };
+                if restore > 0.0 {
+                    p.hunger = (p.hunger + restore).min(player_ctrl::MAX_HUNGER);
+                }
+            }
+        } else {
+            /* Drop the edge so it doesn't fire on the next survival frame. */
+            input::consume_eat();
         }
     }
 
@@ -3492,6 +3600,8 @@ fn frame_inner(app: &mut App) {
         hotbar_ui::draw(&app.player.borrow().inventory);
         /* Real (non-ASCII) mining progress bar. */
         draw_mining_bar(app, sapp::widthf(), sapp::heightf());
+        /* Survival hunger meter (top-left). */
+        draw_hunger_bar(app, sapp::widthf(), sapp::heightf());
     }
     /* Sync the hamburger debug-menu + teleport-button visibility with
      * the master F2 toggle every frame. */

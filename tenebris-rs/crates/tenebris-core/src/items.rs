@@ -231,6 +231,8 @@ pub fn smelt_output(id: ItemId) -> Option<(ItemId, u16)> {
         COPPER => Some((COPPER_INGOT, 1)),
         TIN => Some((TIN_INGOT, 1)),
         IRON => Some((IRON_INGOT, 1)),
+        /* Cooking reuses the furnace: raw meat -> cooked meat. */
+        RAW_MEAT => Some((COOKED_MEAT, 1)),
         _ => None,
     }
 }

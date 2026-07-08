@@ -82,6 +82,11 @@ use tenebris_core::world_water;
 
 pub const EYE_HEIGHT: f32 = 1.6;
 
+/// Full hunger. Survival drains from here; food refills toward it.
+pub const MAX_HUNGER: f32 = 100.0;
+/// Hunger lost per second in survival.
+pub const HUNGER_DRAIN_PER_S: f32 = 0.9;
+
 const LOOK_STICK_SENS: f32 = 2.4;
 const WALK_SPEED: f32 = 8.0;
 const SPRINT_SPEED: f32 = 14.0;
@@ -138,6 +143,10 @@ pub struct PlayerCtrl {
      * crafted resources, tools, and tech-tree items live. Empty in
      * creative; filled by crafting (and later by resource drops). */
     pub bag: Bag,
+    /* Survival hunger, 0..MAX_HUNGER. Drains over time in survival;
+     * eating food (cooked meat best) refills it. `Default` zeroes it, so
+     * the spawn / mode-entry path stamps it full - see `refill_hunger`. */
+    pub hunger: f32,
     /* Fractional accumulator for mouse-wheel hotbar cycling. Trackpad
      * scrolls send small per-frame deltas; we only step a slot per
      * unit of accumulated scroll so high-resolution input doesn't

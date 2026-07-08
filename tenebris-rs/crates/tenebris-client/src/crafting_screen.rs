@@ -436,7 +436,7 @@ pub fn hand_craft_panel(ui: &mut egui::Ui, player: &PlayerHandle) {
 mod tests {
     use super::*;
     use crate::inventory::{self, InvSlot};
-    use sapp::{Event, EventType, Keycode, Mousebutton};
+    use sapp::{Event, EventType, Keycode};
     use tenebris_core::blocks::Block;
     use tenebris_core::crafting::parse_recipes;
     use tenebris_core::items::PLANK;
