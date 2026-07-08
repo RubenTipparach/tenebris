@@ -31,6 +31,7 @@ use tenebris_core::world::World;
 use crate::baked_model::{self, Clip, Model};
 use crate::gfx_math::Mat4;
 use crate::player_ctrl::PlayerCtrl;
+use crate::renderer;
 
 /// How many animals to keep alive within range of the player.
 const TARGET_COUNT: usize = 8;
@@ -442,6 +443,10 @@ pub fn draw(view: Mat4, proj: Mat4, time_s: f32) {
         return;
     }
 
+    /* Record into the renderer's world-space sgl context so this
+     * geometry flushes inside the offscreen scene pass and depth-tests
+     * against the terrain (a critter behind a hill stays hidden). */
+    renderer::sgl_world_begin();
     sgl::defaults();
     sgl::matrix_mode_projection();
     sgl::load_matrix(&proj.m[0]);
@@ -507,6 +512,7 @@ pub fn draw(view: Mat4, proj: Mat4, time_s: f32) {
             sgl::pop_matrix();
         }
     }
-    /* No sgl_draw here - the frame's single end-of-frame flush uploads
-     * every queued layer (same rule as torches / remote players). */
+    renderer::sgl_world_end();
+    /* No sgl_draw here - the world context flushes in
+     * compose_to_swapchain, inside the offscreen pass. */
 }

@@ -29,6 +29,7 @@ use tenebris_core::world::{World, WORLD_MAX_DEPTH};
 use crate::gfx_math::Mat4;
 use crate::interact::InteractState;
 use crate::player_ctrl::PlayerCtrl;
+use crate::renderer;
 
 /// Reach (metres) for the plant / harvest pick - matches interact::MAX_DIST.
 const REACH_M: f32 = 8.0;
@@ -347,6 +348,9 @@ pub fn draw(view: Mat4, proj: Mat4) {
         return;
     }
 
+    /* World-space sgl context: flushes inside the offscreen scene pass
+     * so crops depth-test against the terrain (see renderer). */
+    renderer::sgl_world_begin();
     sgl::defaults();
     sgl::matrix_mode_projection();
     sgl::load_matrix(&proj.m[0]);
@@ -372,6 +376,7 @@ pub fn draw(view: Mat4, proj: Mat4) {
         let up = dvec3_normalize(dvec3_sub(crop.pos, center));
         draw_crop(crop.pos, up, crop.growth);
     }
-    /* No sgl_draw here - the single end-of-frame flush uploads every
-     * queued layer (same rule as torches / animals). */
+    renderer::sgl_world_end();
+    /* No sgl_draw here - the world context flushes in
+     * compose_to_swapchain, inside the offscreen pass. */
 }

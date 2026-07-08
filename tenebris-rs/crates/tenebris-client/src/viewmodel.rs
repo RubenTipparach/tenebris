@@ -6,11 +6,13 @@
 //! player's swing would actually use (interact's held-tool pick), so the
 //! viewmodel doubles as feedback that the right tool is in play.
 //!
-//! Drawn in the offscreen opaque pass with modelview = identity: geometry
-//! lands in eye space, so it rides the camera for free. It sits at
-//! z ~ -0.5 - past the 0.3 near plane and inside the 0.4 m camera
-//! collider radius, so terrain almost never occludes it and the normal
-//! depth test stays honest (no depth hacks).
+//! Records into the DEFAULT sgl context (unlike animals / crops, which
+//! use the renderer's world context): it flushes in the swapchain pass
+//! over the already-composited scene, so world geometry can never clip
+//! into the held tool - the classic FPS viewmodel layer. Modelview =
+//! identity puts the geometry in eye space, so it rides the camera for
+//! free; the cleared swapchain depth buffer still self-sorts the tool's
+//! own parts, and the HUD (no depth test) paints over it as usual.
 //!
 //! A gentle idle sway rides the renderer clock and a chop cycle plays
 //! while the mine button is held; both are procedural layers on top of

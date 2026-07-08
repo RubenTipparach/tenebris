@@ -44,6 +44,7 @@
 #![allow(dead_code)] // consumed by the net_client/renderer/main waves of the port
 
 use crate::gfx_math::Mat4;
+use crate::renderer;
 use sokol::debugtext as sdtx;
 use sokol::gfx as sg;
 use sokol::gl as sgl;
@@ -529,6 +530,12 @@ pub fn draw(view: Mat4, proj: Mat4) {
         return;
     }
 
+    /* World-space sgl context: flushes inside the offscreen scene pass
+     * so humanoids really do depth-test against the terrain (see
+     * renderer::sgl_world_begin - the default context flushes in the
+     * swapchain pass, whose cleared depth buffer made this comment's
+     * z-sort claim silently false before). */
+    renderer::sgl_world_begin();
     sgl::defaults();
     sgl::matrix_mode_projection();
     sgl::load_matrix(&proj.m[0]);
@@ -540,11 +547,9 @@ pub fn draw(view: Mat4, proj: Mat4) {
         /* Depth state is explicit: humanoids must z-sort against
          * terrain + each other in the offscreen pass. write_enabled
          * + LESS lets a near figure occlude a far one and lets the
-         * terrain occlude figures behind it. The offscreen pass uses
-         * DEPTH_STENCIL (renderer.c:1407) which sokol-gl inherits
-         * from the default sgl context (zero-init formats match the
-         * swapchain defaults), so the pipeline depth format lines up
-         * without having to specify it here.
+         * terrain occlude figures behind it. Created while the WORLD
+         * sgl context is current, so sokol-gl compiles it against the
+         * offscreen Rgba8 + DEPTH_STENCIL attachment formats.
          *
          * cull_mode=BACK because box() emits CCW-from-outside winding
          * for every face (verified: see the per-face vertex order in
@@ -577,11 +582,11 @@ pub fn draw(view: Mat4, proj: Mat4) {
         draw_humanoid(ip.lx, ip.ly, ip.lz, ip.yaw, ip.swing_rad, ip.ux, ip.uy, ip.uz);
     }
 
-    /* No sgl_draw here. We queue 3D player geometry on layer 0 and
-     * let main_web flush every queued layer at the end of the frame
-     * - calling sgl_draw mid-flow would upload only this layer's
-     * vertices, then later UI quads (queued on layer 1) would
-     * reference un-uploaded GPU memory and render as a void. */
+    renderer::sgl_world_end();
+    /* No sgl_draw here. The world context flushes once inside the
+     * offscreen pass (compose_to_swapchain); calling sgl_draw mid-flow
+     * would upload only this context's vertices so far and starve any
+     * geometry recorded after it. */
 }
 
 /// Port of `mat4_mul_vec4()` (file-local helper). Multiply a 4x4

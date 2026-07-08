@@ -1520,6 +1520,51 @@ thread_local! {
     /* Port of G_OUTLINE_PIP - lazy-created lines pipeline for the
      * block outline + flow-debug overlays. */
     static OUTLINE_PIP: Cell<sgl::Pipeline> = const { Cell::new(sgl::Pipeline { id: 0 }) };
+
+    /* Dedicated sokol_gl context for WORLD-SPACE entity geometry
+     * (animals, crops, remote players). The default sgl context flushes
+     * once at end-of-frame inside the SWAPCHAIN pass, whose depth buffer
+     * is freshly cleared - geometry there never depth-tests against the
+     * terrain, so a critter behind a hill drew on top of it. This
+     * context records the same immediate-mode calls but flushes inside
+     * the OFFSCREEN scene pass (compose_to_swapchain, before end_pass)
+     * where the terrain's depth buffer is still bound - entities get
+     * real occlusion AND ride the composite + water refraction. A
+     * separate context (not just an sgl layer) because each context has
+     * its own vertex buffer: sokol_gl uploads a context's buffer once
+     * per frame at its first draw, so one shared buffer can't flush
+     * mid-frame and keep accepting UI vertices afterwards. */
+    static SGL_WORLD_CTX: Cell<sgl::Context> = const { Cell::new(sgl::Context { id: 0 }) };
+}
+
+/// Lazily create the world-entity sgl context against the offscreen
+/// target formats (Rgba8 + DepthStencil, no MSAA - must match
+/// ensure_offscreen_targets, or the per-context pipelines break).
+fn sgl_world_ctx() -> sgl::Context {
+    SGL_WORLD_CTX.with(|c| {
+        let mut ctx = c.get();
+        if ctx.id == 0 {
+            ctx = sgl::make_context(&sgl::ContextDesc {
+                color_format: sg::PixelFormat::Rgba8,
+                depth_format: sg::PixelFormat::DepthStencil,
+                sample_count: 1,
+                ..Default::default()
+            });
+            c.set(ctx);
+        }
+        ctx
+    })
+}
+
+/// Route subsequent sgl recording (and lazy `sgl::make_pipeline` calls)
+/// into the world-entity context. Pair with [`sgl_world_end`].
+pub fn sgl_world_begin() {
+    sgl::set_context(sgl_world_ctx());
+}
+
+/// Back to the default (UI / swapchain) sgl context.
+pub fn sgl_world_end() {
+    sgl::set_context(sgl::default_context());
 }
 
 /* ----------------------------------------------------------------------- */
@@ -3270,6 +3315,15 @@ pub fn begin_frame(w: i32, h: i32, env: RenderEnv) {
 pub fn compose_to_swapchain(view: Mat4, proj: Mat4) {
     R.with(|cell| {
         let r = cell.borrow();
+        /* Flush the world-space sgl entities (animals / crops / remote
+         * players) into the offscreen scene while its depth buffer is
+         * still bound: terrain occludes them properly and they get the
+         * composite + water refraction. The default sgl context (UI)
+         * keeps its own buffer and flushes at end-of-frame as before. */
+        let world_ctx = SGL_WORLD_CTX.with(|c| c.get());
+        if world_ctx.id != 0 {
+            sgl::context_draw(world_ctx);
+        }
         sg::end_pass();
 
         let mut pass = sg::Pass {
