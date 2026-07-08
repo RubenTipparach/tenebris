@@ -116,7 +116,11 @@ fn look_ray(p: &PlayerCtrl) -> (Vec3, Vec3) {
 /* ---------------------------------------------------------------------- */
 /* Per-frame: grow every crop + refresh the reticle hint.                  */
 
-pub fn update(dt: f32, w: &World, p: &PlayerCtrl) {
+/// `block_limit_m`: distance to the terrain block under the reticle (from
+/// the interact raycast; `f32::MAX` when none). A crop hit FARTHER than
+/// the block is behind a wall - no hint for it (mirrors how the animal
+/// attack pick in interact.rs yields to a nearer block hit).
+pub fn update(dt: f32, w: &World, p: &PlayerCtrl, block_limit_m: f32) {
     let cfg = farming::config();
     let center = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
     let (eye, dir) = look_ray(p);
@@ -126,8 +130,8 @@ pub fn update(dt: f32, w: &World, p: &PlayerCtrl) {
         for crop in &mut s.list {
             farming::grow(crop, dt, &cfg);
         }
-        let (hit, _) = raycast_list(&s.list, center, eye, dir, REACH_M);
-        s.reticle_growth = if hit >= 0 {
+        let (hit, dist) = raycast_list(&s.list, center, eye, dir, REACH_M);
+        s.reticle_growth = if hit >= 0 && dist <= block_limit_m {
             Some(s.list[hit as usize].growth)
         } else {
             None
@@ -180,12 +184,17 @@ pub fn plant_or_harvest(
     let center = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
     let (eye, dir) = look_ray(p);
 
-    // Harvest takes precedence: is a crop under the reticle?
-    let (hit, _) = S.with(|c| {
+    // Harvest takes precedence: is a crop under the reticle? A crop hit
+    // FARTHER than the aimed block is behind a wall - not harvestable
+    // (same block-distance gate the animal attack pick uses).
+    let (hit, crop_dist) = S.with(|c| {
         let s = c.borrow();
         raycast_list(&s.list, center, eye, dir, REACH_M)
     });
-    if hit >= 0 {
+    let crop_blocked = interact.has_target
+        && !interact.is_torch_target
+        && (interact.distance as f32) < crop_dist;
+    if hit >= 0 && !crop_blocked {
         return S.with(|c| {
             let s = &mut *c.borrow_mut();
             let idx = hit as usize;
@@ -229,9 +238,64 @@ pub fn plant_or_harvest(
     })
 }
 
-/// Dev/screenshot aid: plant a short row of crops at staged growth in
-/// front of the player so the farming render is framed immediately.
-pub fn dev_spawn(w: &World, p: &PlayerCtrl) {
+/// Remove any crop planted in world cell (tile, depth) - called when a
+/// block is placed there so the crop doesn't end up embedded in terrain
+/// (its feet sit on the cell's bottom face, so a crop belongs to the
+/// cell its stem grows through). Returns true when something was
+/// removed (caller persists).
+pub fn clear_cell(w: &World, tile: i32, depth: i32) -> bool {
+    let center = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
+    let r_lo = w.depth_to_radius_m(depth);
+    let r_hi = w.depth_to_radius_m(depth + 1);
+    S.with(|c| {
+        let s = &mut *c.borrow_mut();
+        let before = s.list.len();
+        s.list.retain(|crop| {
+            if crop.tile_idx != tile {
+                return true;
+            }
+            let r = dvec3_length(dvec3_sub(crop.pos, center));
+            /* Feet sit ON r_lo (the cell's bottom face) - the small
+             * epsilon keeps float noise from missing the exact-face
+             * case in either direction. */
+            !(r >= r_lo - 0.01 && r < r_hi - 0.01)
+        });
+        s.list.len() != before
+    })
+}
+
+/// SP same-frame persistence of the crop list after a plant / harvest /
+/// clear. Mirrors interact's torch save: gated on GAME_IN_GAME_SP,
+/// filters to crops anchored on this body, rewrites the per-body
+/// snapshot. (MP crop sync is a follow-up, like the animals.)
+pub fn sp_save_after_change(w: &World) {
+    if crate::menu::state() != crate::menu::GameState::InGameSp {
+        return;
+    }
+    let name = crate::menu::active_world();
+    if name.is_empty() {
+        return;
+    }
+    let list = list();
+    let mut buf: Vec<crate::persistence::PersistenceCrop> = Vec::with_capacity(list.len());
+    for c in &list {
+        if c.tile_idx < 0 || c.tile_idx >= w.tile_count {
+            continue;
+        }
+        buf.push(crate::persistence::PersistenceCrop {
+            pos: [c.pos.x as f32, c.pos.y as f32, c.pos.z as f32],
+            up: [c.up.x as f32, c.up.y as f32, c.up.z as f32],
+            tile_idx: c.tile_idx,
+            growth: c.growth,
+        });
+    }
+    crate::persistence::save_crops(&name, w.body.id as u32, &buf);
+}
+
+/// Dev/screenshot aid: plant a short row of crops at staged growth
+/// `ahead` metres in front of the player so the farming render is
+/// framed immediately.
+pub fn dev_spawn(w: &World, p: &PlayerCtrl, ahead: f64) {
     let center = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
     let fwd = p.basis.fwd;
     let right = p.basis.right;
@@ -244,7 +308,7 @@ pub fn dev_spawn(w: &World, p: &PlayerCtrl) {
             let side = (k - 2) as f64 * 1.2;
             let point = dvec3_add(
                 local,
-                dvec3_add(dvec3_scale(fwd, 4.0), dvec3_scale(right, side)),
+                dvec3_add(dvec3_scale(fwd, ahead), dvec3_scale(right, side)),
             );
             let dir = dvec3_normalize(point);
             let tile = w.grid.find_tile(dir, p.last_tile);
@@ -349,7 +413,8 @@ pub fn draw(view: Mat4, proj: Mat4) {
     }
 
     /* World-space sgl context: flushes inside the offscreen scene pass
-     * so crops depth-test against the terrain (see renderer). */
+     * so crops z-sort against terrain depth and sit under the water +
+     * composite post-process (see renderer::sgl_world_begin). */
     renderer::sgl_world_begin();
     sgl::defaults();
     sgl::matrix_mode_projection();

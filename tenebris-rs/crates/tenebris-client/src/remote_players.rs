@@ -531,10 +531,9 @@ pub fn draw(view: Mat4, proj: Mat4) {
     }
 
     /* World-space sgl context: flushes inside the offscreen scene pass
-     * so humanoids really do depth-test against the terrain (see
-     * renderer::sgl_world_begin - the default context flushes in the
-     * swapchain pass, whose cleared depth buffer made this comment's
-     * z-sort claim silently false before). */
+     * so humanoids z-sort against the terrain depth buffer and sit
+     * UNDER the water pass + composite post-process instead of being
+     * painted over them (see renderer::sgl_world_begin). */
     renderer::sgl_world_begin();
     sgl::defaults();
     sgl::matrix_mode_projection();

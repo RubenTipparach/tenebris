@@ -1522,18 +1522,24 @@ thread_local! {
     static OUTLINE_PIP: Cell<sgl::Pipeline> = const { Cell::new(sgl::Pipeline { id: 0 }) };
 
     /* Dedicated sokol_gl context for WORLD-SPACE entity geometry
-     * (animals, crops, remote players). The default sgl context flushes
-     * once at end-of-frame inside the SWAPCHAIN pass, whose depth buffer
-     * is freshly cleared - geometry there never depth-tests against the
-     * terrain, so a critter behind a hill drew on top of it. This
-     * context records the same immediate-mode calls but flushes inside
-     * the OFFSCREEN scene pass (compose_to_swapchain, before end_pass)
-     * where the terrain's depth buffer is still bound - entities get
-     * real occlusion AND ride the composite + water refraction. A
-     * separate context (not just an sgl layer) because each context has
-     * its own vertex buffer: sokol_gl uploads a context's buffer once
-     * per frame at its first draw, so one shared buffer can't flush
-     * mid-frame and keep accepting UI vertices afterwards. */
+     * (animals, crops, remote players). It flushes inside the OFFSCREEN
+     * scene pass (compose_to_swapchain, before end_pass) instead of the
+     * default context's end-of-frame flush in the swapchain pass.
+     *
+     * Why: entities must be part of the SCENE, not painted over the
+     * composite. In the swapchain pass they drew after the water pass,
+     * so a critter under a lake pasted on top of the water surface; and
+     * they were excluded from the underwater fog / distortion
+     * post-process. In the offscreen pass they z-sort against the
+     * terrain's own depth buffer and the water + composite treat them
+     * like any other scene geometry. (Terrain occlusion alone also
+     * worked in the swapchain pass - the composite forwards scene depth
+     * via gl_FragDepth - but the water ordering did not.)
+     *
+     * A separate context (not just an sgl layer) because each context
+     * has its own vertex buffer: sokol_gl uploads a context's buffer
+     * once per frame at its first draw, so one shared buffer can't
+     * flush mid-frame and keep accepting UI vertices afterwards. */
     static SGL_WORLD_CTX: Cell<sgl::Context> = const { Cell::new(sgl::Context { id: 0 }) };
 }
 

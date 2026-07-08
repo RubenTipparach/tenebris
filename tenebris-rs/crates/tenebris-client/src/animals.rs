@@ -444,8 +444,9 @@ pub fn draw(view: Mat4, proj: Mat4, time_s: f32) {
     }
 
     /* Record into the renderer's world-space sgl context so this
-     * geometry flushes inside the offscreen scene pass and depth-tests
-     * against the terrain (a critter behind a hill stays hidden). */
+     * geometry flushes inside the offscreen scene pass: z-sorted
+     * against terrain depth and drawn UNDER the water pass + composite
+     * post-process (see renderer::sgl_world_begin). */
     renderer::sgl_world_begin();
     sgl::defaults();
     sgl::matrix_mode_projection();

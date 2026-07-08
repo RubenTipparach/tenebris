@@ -629,6 +629,13 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
                     }
                 }
                 w.set(s.place_tile, s.place_depth, to_place);
+                /* A crop growing in the target cell is destroyed by the
+                 * block placed over it (otherwise it lingers embedded in
+                 * the terrain and its pick-sphere pokes out of the block
+                 * face). Same-frame persistence, per the world-edit rule. */
+                if crate::crops::clear_cell(w, s.place_tile, s.place_depth) {
+                    crate::crops::sp_save_after_change(w);
+                }
                 /* Tech blocks record which tile edge their front faces so
                  * the cube renders turned toward the player who placed it
                  * (mirrors the JS placement). Recorded right next to the

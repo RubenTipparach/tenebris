@@ -376,6 +376,19 @@ thread_local! {
 /// Dev-only: once in-game and a few frames settled, drop the requested dev
 /// blocks at the tile under the reticle and frame them. Self-disables
 /// after firing.
+/// Dev-screenshot aid: point the camera at a world-space target (yaw +
+/// pitch from the player's carried tangent basis).
+fn dev_aim_at(app: &App, target: DVec3) {
+    let mut p = app.player.borrow_mut();
+    let dot = |a: DVec3, b: DVec3| a.x * b.x + a.y * b.y + a.z * b.z;
+    let eye = dvec3_add(p.position, dvec3_scale(p.basis.up, 1.6));
+    let look = dvec3_normalize(dvec3_sub(target, eye));
+    let up = p.basis.up;
+    let to_t = dvec3_sub(look, dvec3_scale(up, dot(look, up)));
+    p.yaw = (dot(to_t, p.basis.right)).atan2(dot(to_t, p.basis.fwd)) as f32;
+    p.pitch = dot(look, up).clamp(-1.0, 1.0).asin() as f32;
+}
+
 fn dev_maybe_place(app: &mut App) {
     let n = DEV_PLACE_COUNTDOWN.with(|c| c.get());
     if n < 0 || menu::state() != GameState::InGameSp {
@@ -414,17 +427,10 @@ fn dev_maybe_place(app: &mut App) {
             /* Animal showcase: drop a herd near the player, then aim the
              * camera at its centre so the critters are framed. */
             animals::dev_spawn(&app.world.borrow(), &app.player.borrow());
-            crops::dev_spawn(&app.world.borrow(), &app.player.borrow());
+            crops::dev_spawn(&app.world.borrow(), &app.player.borrow(), 4.0);
             println!("[dev] spawned {} animals, {} crops", animals::count(), crops::count());
             if let Some(mid) = animals::herd_center() {
-                let mut p = app.player.borrow_mut();
-                let dot = |a: DVec3, b: DVec3| a.x * b.x + a.y * b.y + a.z * b.z;
-                let eye = dvec3_add(p.position, dvec3_scale(p.basis.up, 1.6));
-                let look = dvec3_normalize(dvec3_sub(mid, eye));
-                let up = p.basis.up;
-                let to_t = dvec3_sub(look, dvec3_scale(up, dot(look, up)));
-                p.yaw = (dot(to_t, p.basis.right)).atan2(dot(to_t, p.basis.fwd)) as f32;
-                p.pitch = dot(look, up).clamp(-1.0, 1.0).asin() as f32;
+                dev_aim_at(app, mid);
             }
             /* Survival + a partly-drained hunger bar + some meat, so the
              * hunger HUD + eat loop are visible in the shot. */
@@ -439,6 +445,65 @@ fn dev_maybe_place(app: &mut App) {
                 p.bag.add(tenebris_core::items::BERRIES, 4);
                 /* A pickaxe so the held-tool viewmodel is in the shot. */
                 p.bag.add(tenebris_core::items::WOOD_PICKAXE, 1);
+            }
+        }
+        15 => {
+            /* Occlusion test (TENEBRIS_DEV_OCCLUDE): raise a dirt column
+             * a few metres ahead with the frozen herd + a crop row
+             * BEHIND it, then aim straight at it. Everything behind the
+             * column must be hidden / cut at its silhouette, and the
+             * crop reticle hint must NOT light up through it - the
+             * regression scene for entity-vs-terrain depth and the
+             * block-distance gates on the entity picks. */
+            animals::dev_spawn(&app.world.borrow(), &app.player.borrow());
+            crops::dev_spawn(&app.world.borrow(), &app.player.borrow(), 7.5);
+            {
+                let (ppos, fwd, right, last_tile) = {
+                    let p = app.player.borrow();
+                    (p.position, p.basis.fwd, p.basis.right, p.last_tile)
+                };
+                let mut w = app.world.borrow_mut();
+                let bc = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
+                let local = dvec3_sub(ppos, bc);
+                /* A single-tile column, four high: hides the critter dead
+                 * ahead while the flanking ones peek around its edges -
+                 * one usually ends up half-cut by the column, the money
+                 * shot for the depth test. */
+                let mut raised = 0;
+                for side in [0.0f64] {
+                    let point = dvec3_add(
+                        local,
+                        dvec3_add(dvec3_scale(fwd, 4.5), dvec3_scale(right, side)),
+                    );
+                    let tile = w.grid.find_tile(dvec3_normalize(point), last_tile);
+                    if tile < 0 {
+                        continue;
+                    }
+                    let mut top = -1;
+                    for d in (0..tenebris_core::world::WORLD_MAX_DEPTH).rev() {
+                        if tenebris_core::blocks::is_solid(w.get(tile, d)) {
+                            top = d;
+                            break;
+                        }
+                    }
+                    if top < 0 {
+                        continue;
+                    }
+                    let cap = tenebris_core::world::WORLD_MAX_DEPTH - 2;
+                    for d in top + 1..=(top + 4).min(cap) {
+                        w.set(tile, d, Block::Dirt);
+                        raised += 1;
+                    }
+                }
+                println!(
+                    "[dev] occlusion wall: {} dirt block(s); {} animals + {} crops behind it",
+                    raised,
+                    animals::count(),
+                    crops::count()
+                );
+            }
+            if let Some(mid) = animals::herd_center() {
+                dev_aim_at(app, mid);
             }
         }
         5 => {
@@ -1506,6 +1571,9 @@ extern "C" fn init() {
     } else if std::env::var("TENEBRIS_DEV_ANIMALS").is_ok() {
         DEV_PLACE_MODE.with(|c| c.set(14));
         DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
+    } else if std::env::var("TENEBRIS_DEV_OCCLUDE").is_ok() {
+        DEV_PLACE_MODE.with(|c| c.set(15));
+        DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
     }
     if std::env::var("TENEBRIS_DEV_KIT").is_ok() {
         let mut p = player.borrow_mut();
@@ -2490,34 +2558,6 @@ fn apply_sp_world_saves(w_rc: &Rc<RefCell<World>>) {
     }
 }
 
-/// SP same-frame persistence of the crop list after a plant / harvest.
-/// Mirrors interact's torch save: gated on GAME_IN_GAME_SP, filters the
-/// global crop list to crops anchored on this body, and rewrites the
-/// per-body snapshot. (MP crop sync is a follow-up, like the animals.)
-fn sp_save_crops_after_change(w: &World) {
-    if menu::state() != GameState::InGameSp {
-        return;
-    }
-    let name = menu::active_world();
-    if name.is_empty() {
-        return;
-    }
-    let list = crops::list();
-    let mut buf: Vec<persistence::PersistenceCrop> = Vec::with_capacity(list.len());
-    for c in &list {
-        if c.tile_idx < 0 || c.tile_idx >= w.tile_count {
-            continue;
-        }
-        buf.push(persistence::PersistenceCrop {
-            pos: [c.pos.x as f32, c.pos.y as f32, c.pos.z as f32],
-            up: [c.up.x as f32, c.up.y as f32, c.up.z as f32],
-            tile_idx: c.tile_idx,
-            growth: c.growth,
-        });
-    }
-    persistence::save_crops(&name, w.body.id as u32, &buf);
-}
-
 fn mark_sp_saves_applied(app: &mut App, w_rc: &Rc<RefCell<World>>) {
     let id = w_rc.borrow().body.id as u32 as usize;
     if id < SP_SAVES_APPLIED_MAX {
@@ -3458,12 +3498,19 @@ fn frame_inner(app: &mut App) {
      * stopped mining / placement); frozen during MP join until READY. */
     if !mp_loading {
         /* Wander + re-seat the animals + grow the crops before interact
-         * runs its raycasts. */
+         * runs its raycasts. The crop reticle hint gates on last frame's
+         * block-hit distance so it doesn't light up through a wall (one
+         * frame of staleness is invisible for a HUD hint). */
         {
             let w = phys_world.borrow();
             let p = app.player.borrow();
             animals::update(dt, &w, &p);
-            crops::update(dt, &w, &p);
+            let block_limit = if app.interact.has_target && !app.interact.is_torch_target {
+                app.interact.distance as f32
+            } else {
+                f32::MAX
+            };
+            crops::update(dt, &w, &p, block_limit);
         }
         interact::update(
             &mut app.interact,
@@ -3485,7 +3532,7 @@ fn frame_inner(app: &mut App) {
             match outcome {
                 crops::Outcome::Planted => {
                     app.player.borrow_mut().bag.take(tenebris_core::items::SEEDS, 1);
-                    sp_save_crops_after_change(&phys_world.borrow());
+                    crops::sp_save_after_change(&phys_world.borrow());
                 }
                 crops::Outcome::Harvested => {
                     let cfg = tenebris_core::farming::config();
@@ -3494,7 +3541,7 @@ fn frame_inner(app: &mut App) {
                         p.bag.add(tenebris_core::items::BERRIES, cfg.produce_count());
                         p.bag.add(tenebris_core::items::SEEDS, cfg.seed_count());
                     }
-                    sp_save_crops_after_change(&phys_world.borrow());
+                    crops::sp_save_after_change(&phys_world.borrow());
                 }
                 crops::Outcome::NotReady | crops::Outcome::None => {}
             }
