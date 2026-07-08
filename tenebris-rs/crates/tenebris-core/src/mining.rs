@@ -46,6 +46,67 @@ pub fn can_harvest(b: Block, tier: u8) -> bool {
     b != Block::Bedrock && tier >= required_tier(b)
 }
 
+/// The kind of tool a block wants (its ideal category). `None` = no tool
+/// applies (a misc block that breaks at plain speed by hand).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToolKind {
+    None,
+    Pick,
+    Axe,
+    Shovel,
+}
+
+/// Which tool category a held item is (or `None`).
+pub fn tool_kind(item: ItemId) -> ToolKind {
+    match item {
+        items::WOOD_PICKAXE => ToolKind::Pick,
+        items::WOOD_AXE => ToolKind::Axe,
+        items::WOOD_SHOVEL => ToolKind::Shovel,
+        _ => ToolKind::None,
+    }
+}
+
+/// The tool a block is best mined with: pickaxe for rock/ore, axe for
+/// wood, shovel for soft ground. Everything else has no ideal tool.
+pub fn block_tool(b: Block) -> ToolKind {
+    match b {
+        Block::Stone
+        | Block::CragRock
+        | Block::FrostIce
+        | Block::AsteroidRock
+        | Block::Moon
+        | Block::Bedrock
+        | Block::CoalOre
+        | Block::CopperOre
+        | Block::TinOre
+        | Block::IronOre => ToolKind::Pick,
+        Block::Wood => ToolKind::Axe,
+        Block::Dirt | Block::Grass | Block::Sand | Block::Snow => ToolKind::Shovel,
+        _ => ToolKind::None,
+    }
+}
+
+/// Seconds to break `b` while holding tool category `held`. Bare-handed (or
+/// wrong-tool) breaking of a block that HAS an ideal tool is slow - that's
+/// what makes crafting the pickaxe / axe / shovel matter; the right tool
+/// speeds it up sharply. Blocks with no ideal tool break at plain speed.
+pub fn break_time(cfg: &MiningConfig, b: Block, held: ToolKind) -> f32 {
+    let ideal = block_tool(b);
+    let base = match ideal {
+        ToolKind::Pick => cfg.rock_break_s,
+        ToolKind::Axe => cfg.wood_break_s,
+        ToolKind::Shovel => cfg.soft_break_s,
+        ToolKind::None => cfg.soft_break_s,
+    };
+    if ideal == ToolKind::None {
+        base
+    } else if held == ideal {
+        base * cfg.tool_speed_mult
+    } else {
+        base * cfg.hand_penalty_mult
+    }
+}
+
 /// Items dropped by breaking `b` with `tier`. Empty when the tool tier is
 /// too low. Ore blocks drop their raw resource (smelted to ingots via the
 /// coal-fuelled recipes in recipes.yaml); everything else drops itself as
@@ -100,6 +161,17 @@ pub struct MiningConfig {
     pub copper_ore_chance: f32,
     pub tin_ore_chance: f32,
     pub iron_ore_chance: f32,
+    /// Base break time (seconds) for soft ground (dirt/sand/grass/snow).
+    pub soft_break_s: f32,
+    /// Base break time for wood.
+    pub wood_break_s: f32,
+    /// Base break time for rock + ore.
+    pub rock_break_s: f32,
+    /// Multiplier applied when the correct tool is held (< 1 = faster).
+    pub tool_speed_mult: f32,
+    /// Multiplier when a tool-wanting block is broken by hand / wrong tool
+    /// (> 1 = slower). Makes bare-handed survival mining deliberately hard.
+    pub hand_penalty_mult: f32,
 }
 
 impl MiningConfig {
@@ -108,6 +180,11 @@ impl MiningConfig {
         copper_ore_chance: 0.022,
         tin_ore_chance: 0.018,
         iron_ore_chance: 0.030,
+        soft_break_s: 0.70,
+        wood_break_s: 0.90,
+        rock_break_s: 1.60,
+        tool_speed_mult: 0.35,
+        hand_penalty_mult: 2.50,
     };
 
     /// All-zero ore chances: worldgen places no ore. Used by the save
@@ -118,6 +195,11 @@ impl MiningConfig {
         copper_ore_chance: 0.0,
         tin_ore_chance: 0.0,
         iron_ore_chance: 0.0,
+        soft_break_s: 0.70,
+        wood_break_s: 0.90,
+        rock_break_s: 1.60,
+        tool_speed_mult: 0.35,
+        hand_penalty_mult: 2.50,
     };
 }
 
@@ -158,6 +240,11 @@ pub fn parse_config(src: &str, _path: &str) -> MiningConfig {
             "copper_ore_chance" => cfg.copper_ore_chance = v,
             "tin_ore_chance" => cfg.tin_ore_chance = v,
             "iron_ore_chance" => cfg.iron_ore_chance = v,
+            "soft_break_s" => cfg.soft_break_s = v,
+            "wood_break_s" => cfg.wood_break_s = v,
+            "rock_break_s" => cfg.rock_break_s = v,
+            "tool_speed_mult" => cfg.tool_speed_mult = v,
+            "hand_penalty_mult" => cfg.hand_penalty_mult = v,
             _ => {}
         }
     }
@@ -179,7 +266,40 @@ pub fn load_config(path: &str) -> MiningConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::items::{COAL, WOOD_PICKAXE};
+    use crate::items::{COAL, WOOD_AXE, WOOD_PICKAXE, WOOD_SHOVEL};
+
+    #[test]
+    fn tool_kinds_and_block_tools_match() {
+        assert_eq!(tool_kind(WOOD_PICKAXE), ToolKind::Pick);
+        assert_eq!(tool_kind(WOOD_AXE), ToolKind::Axe);
+        assert_eq!(tool_kind(WOOD_SHOVEL), ToolKind::Shovel);
+        assert_eq!(tool_kind(COAL), ToolKind::None);
+        assert_eq!(block_tool(Block::Stone), ToolKind::Pick);
+        assert_eq!(block_tool(Block::CoalOre), ToolKind::Pick);
+        assert_eq!(block_tool(Block::Wood), ToolKind::Axe);
+        assert_eq!(block_tool(Block::Dirt), ToolKind::Shovel);
+        assert_eq!(block_tool(Block::Sand), ToolKind::Shovel);
+    }
+
+    #[test]
+    fn break_time_rewards_the_right_tool() {
+        let cfg = MiningConfig::DEFAULT;
+        let hand = break_time(&cfg, Block::Dirt, ToolKind::None);
+        let shovel = break_time(&cfg, Block::Dirt, ToolKind::Shovel);
+        // Right tool is much faster than bare hands.
+        assert!(shovel < hand, "{shovel} !< {hand}");
+        assert!((shovel - cfg.soft_break_s * cfg.tool_speed_mult).abs() < 1e-6);
+        assert!((hand - cfg.soft_break_s * cfg.hand_penalty_mult).abs() < 1e-6);
+        // Wrong tool is no better than hands.
+        assert_eq!(break_time(&cfg, Block::Dirt, ToolKind::Pick), hand);
+        // Wood wants the axe.
+        assert!(
+            break_time(&cfg, Block::Wood, ToolKind::Axe)
+                < break_time(&cfg, Block::Wood, ToolKind::None)
+        );
+        // A block with no ideal tool breaks at plain base speed.
+        assert!((break_time(&cfg, Block::Torch, ToolKind::None) - cfg.soft_break_s).abs() < 1e-6);
+    }
 
     #[test]
     fn tiers_gate_rock_behind_a_pickaxe() {

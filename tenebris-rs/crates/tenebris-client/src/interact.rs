@@ -399,8 +399,19 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
         if !mining::can_harvest(target_block, tier) {
             s.mining_progress_s = 0.0;
         } else if inp.left_held {
+            /* Break time scales with the tool: the block's ideal tool
+             * (pickaxe / axe / shovel) held in the bag mines it fast;
+             * bare hands are slow, so crafting tools pays off. */
+            let ideal = mining::block_tool(target_block);
+            let held = match ideal {
+                mining::ToolKind::Pick if p.bag.count_of(items::WOOD_PICKAXE) > 0 => ideal,
+                mining::ToolKind::Axe if p.bag.count_of(items::WOOD_AXE) > 0 => ideal,
+                mining::ToolKind::Shovel if p.bag.count_of(items::WOOD_SHOVEL) > 0 => ideal,
+                _ => mining::ToolKind::None,
+            };
+            let break_s = mining::break_time(&mining::config(), target_block, held);
             s.mining_progress_s += dt;
-            if s.mining_progress_s >= MINING_TIME_S {
+            if s.mining_progress_s >= break_s {
                 w.set(s.hit_tile, s.hit_depth, Block::Air);
                 net_client::send_edit(
                     proto::PLAYER_CMD_BREAK,
@@ -782,9 +793,10 @@ mod tests {
         assert_eq!(saved_tile_fnv(41), 0xea66e26d5b68c367, "d_save: column fnv");
 
         /* ---- E: survival mining - hold LMB until the break fires.
-         * C pin: e=41,62,3,49 (Dirt broken on frame 49);
-         *        e_save fnv c63f3e5d48ddbe09; pickup stacks Dirt to
-         *        10000 on slot 2, everything else untouched. */
+         * Dirt broken bare-handed: soft_break_s(0.70) * hand_penalty(2.50)
+         * = 1.75s of accumulated dt (tool-gated mining makes bare hands
+         * slow - a shovel would cut this to ~0.25s). Pickup stacks Dirt to
+         * 10000 on slot 2, everything else untouched. */
         p.survival_mode = true;
         left_held(true);
         let mut e_frames = 0;
@@ -803,7 +815,7 @@ mod tests {
             }
         }
         left_held(false);
-        assert_eq!(e_frames, 49, "e: frames to mine (f32 dt accumulation)");
+        assert_eq!(e_frames, 106, "e: frames to mine (f32 dt accumulation)");
         assert_eq!(saved_tile_fnv(41), 0xa2e439a42e765eec, "e_save: column fnv");
         let want_inv: [(Block, i32); 9] = [
             (Block::Torch, 9999),

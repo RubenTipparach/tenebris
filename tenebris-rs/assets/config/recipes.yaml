@@ -42,6 +42,12 @@ out: wood-axe 1
 in: plank 3
 in: stick 2
 
+[wood-shovel]
+tier: 0
+out: wood-shovel 1
+in: plank 1
+in: stick 2
+
 # The furnace: a placeable crafting station built from stone. Interact
 # (E) on it to open the smelting screen. Hand-crafted at the bench.
 

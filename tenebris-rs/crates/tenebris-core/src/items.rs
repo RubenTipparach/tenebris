@@ -60,6 +60,10 @@ pub const MOTHERBOARD: ItemId = ITEM_BASE + 19; // 119
 pub const POWER_SUPPLY: ItemId = ITEM_BASE + 20; // 120
 pub const PRINT_NOZZLE: ItemId = ITEM_BASE + 21; // 121
 
+/// Wood shovel - the third starter tool (pickaxe / axe / shovel). Speeds
+/// digging soft ground (dirt / sand / grass / snow). See core::mining.
+pub const WOOD_SHOVEL: ItemId = ITEM_BASE + 22; // 122
+
 /// What an item *is*, for stacking / placement / tool-gating rules. Grows
 /// as the tech tree lands (Component, Ingot, Ammo, ...).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -115,6 +119,7 @@ const ITEMS: &[ItemDef] = &[
     ItemDef { id: COAL, name: "coal", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: WOOD_PICKAXE, name: "wood-pickaxe", kind: ItemKind::Tool, stack: 1 },
     ItemDef { id: WOOD_AXE, name: "wood-axe", kind: ItemKind::Tool, stack: 1 },
+    ItemDef { id: WOOD_SHOVEL, name: "wood-shovel", kind: ItemKind::Tool, stack: 1 },
     ItemDef { id: COPPER, name: "copper", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: TIN, name: "tin", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: IRON, name: "iron", kind: ItemKind::Resource, stack: 64 },

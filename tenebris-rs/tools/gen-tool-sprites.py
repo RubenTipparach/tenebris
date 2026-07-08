@@ -1,0 +1,131 @@
+#!/usr/bin/env python3
+"""Generate the starter-tool item sprites (wood pickaxe / axe / shovel).
+
+Baked-asset path (see CLAUDE.md "Static game asset guidelines"): this
+writes deterministic 16x16 RGBA PNGs under assets/textures/items/, the
+source of truth for the tool icons the crafting + inventory UI sample via
+ui_icons. Hand-authored pixel bitmaps below; stdlib + zlib only.
+
+Run from tenebris-rs/:  python tools/gen-tool-sprites.py
+"""
+
+import os
+import struct
+import zlib
+
+# Palette. '.' = transparent.
+PAL = {
+    ".": (0, 0, 0, 0),
+    "H": (120, 78, 40, 255),    # handle wood
+    "h": (158, 108, 62, 255),   # handle highlight
+    "d": (86, 56, 30, 255),     # handle shadow
+    "M": (150, 156, 168, 255),  # metal
+    "m": (196, 202, 214, 255),  # metal highlight
+    "D": (96, 101, 112, 255),   # metal shadow
+}
+
+# 16x16 hand-drawn bitmaps.
+PICKAXE = [
+    "....D......D....",
+    "...DMm....mMD...",
+    "...MMm....mMM...",
+    "....MMm..mMM....",
+    ".....MMmmMM.....",
+    "......MhhM......",
+    "......hHh.......",
+    ".....hHhd.......",
+    ".....HHd........",
+    "....hHhd........",
+    "....HHd.........",
+    "...hHhd.........",
+    "...HHd..........",
+    "..hHhd..........",
+    "..HHd...........",
+    "................",
+]
+
+AXE = [
+    "................",
+    "...MMMD.........",
+    "..MMMMMD........",
+    ".MMMMMMMd.......",
+    ".MMMMMMhHh......",
+    ".mMMMMdHHh......",
+    ".DMMMdhHhd......",
+    "..DMd.HHd.......",
+    ".....hHhd.......",
+    ".....HHd........",
+    ".....hHd........",
+    ".....HHd........",
+    ".....hHd........",
+    ".....HHd........",
+    ".....HHd........",
+    "................",
+]
+
+SHOVEL = [
+    ".....hHh........",
+    ".....HHd........",
+    ".....hHd........",
+    ".....HHd........",
+    ".....hHd........",
+    ".....HHd........",
+    ".....hHd........",
+    ".....HHd........",
+    "....MMMMd.......",
+    "...MMMMMMd......",
+    "...mMMMMMd......",
+    "...MMMMMMd......",
+    "...DMMMMMd......",
+    "....DMMMd.......",
+    ".....DMd........",
+    "................",
+]
+
+TOOLS = {
+    "wood_pickaxe": PICKAXE,
+    "wood_axe": AXE,
+    "wood_shovel": SHOVEL,
+}
+
+
+def write_png(path, rows):
+    h = len(rows)
+    w = len(rows[0])
+    raw = bytearray()
+    for r in rows:
+        raw.append(0)  # filter type 0 (none)
+        for ch in r:
+            raw.extend(PAL[ch])
+
+    def chunk(tag, data):
+        return (
+            struct.pack(">I", len(data))
+            + tag
+            + data
+            + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+        )
+
+    ihdr = struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0)  # 8-bit RGBA
+    png = (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", ihdr)
+        + chunk(b"IDAT", zlib.compress(bytes(raw), 9))
+        + chunk(b"IEND", b"")
+    )
+    with open(path, "wb") as f:
+        f.write(png)
+
+
+def main():
+    out_dir = os.path.join("assets", "textures", "items")
+    os.makedirs(out_dir, exist_ok=True)
+    for name, rows in TOOLS.items():
+        assert all(len(r) == 16 for r in rows) and len(rows) == 16, name
+        path = os.path.join(out_dir, name + ".png")
+        write_png(path, rows)
+        print("wrote", path)
+
+
+if __name__ == "__main__":
+    main()

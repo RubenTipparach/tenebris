@@ -9,3 +9,13 @@ coal_ore_chance: 0.040
 copper_ore_chance: 0.022
 tin_ore_chance: 0.018
 iron_ore_chance: 0.030
+
+# Break times (seconds). A tool-wanting block broken by hand takes
+# base * hand_penalty_mult (slow - survival mining is meant to be work);
+# the right tool (pickaxe=rock/ore, axe=wood, shovel=soft ground) takes
+# base * tool_speed_mult (fast). Blocks with no ideal tool break at base.
+soft_break_s: 0.70
+wood_break_s: 0.90
+rock_break_s: 1.60
+tool_speed_mult: 0.35
+hand_penalty_mult: 2.50

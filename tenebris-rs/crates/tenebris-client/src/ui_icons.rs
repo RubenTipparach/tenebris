@@ -49,6 +49,10 @@ const ICONS: &[(u16, &str)] = &[
     (Block::LaunchTower as u16, "assets/textures/technology/launch_tower_face.png"),
     (Block::Cable as u16, "assets/textures/technology/cable.png"),
     (Block::CopperPipe as u16, "assets/textures/technology/copper_pipe.png"),
+    // --- tools ---
+    (items::WOOD_PICKAXE, "assets/textures/items/wood_pickaxe.png"),
+    (items::WOOD_AXE, "assets/textures/items/wood_axe.png"),
+    (items::WOOD_SHOVEL, "assets/textures/items/wood_shovel.png"),
     // --- resource items ---
     (items::PLANK, "assets/textures/wood.png"),
     (items::STICK, "assets/textures/items/sticks.png"),
