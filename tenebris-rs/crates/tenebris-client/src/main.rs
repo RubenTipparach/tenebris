@@ -4,6 +4,7 @@
 mod animals;
 mod app;
 mod bag;
+mod baked_model;
 mod chat;
 mod chest_screen;
 mod client_kv;
@@ -35,6 +36,7 @@ mod renderer;
 mod settings;
 mod shaders;
 mod teleport_menu;
+mod viewmodel;
 mod torch;
 mod ui_icons;
 

@@ -4248,6 +4248,13 @@ pub fn draw_torches(view: Mat4, proj: Mat4) {
 /* ----------------------------------------------------------------------- */
 /* Frame counters + accessors. */
 
+/// The renderer's frame clock (seconds since boot) - the same value the
+/// torch flicker + water waves animate on. Exposed so sibling entity
+/// renderers (animals' idle clip, viewmodel sway) stay in sync with it.
+pub fn time_seconds() -> f32 {
+    R.with(|cell| cell.borrow().time_seconds)
+}
+
 /// Port of `renderer_triangles_drawn_this_frame()`.
 pub fn triangles_drawn_this_frame() -> usize {
     R.with(|cell| cell.borrow().tris)

@@ -2,10 +2,14 @@
 //! raycast for the critters whose sim lives in `core::fauna`.
 //!
 //! Structure mirrors `torch.rs` (a thread-local list + a bounding-sphere
-//! raycast the interact code already knows how to call); rendering follows
-//! `remote_players.rs` (immediate-mode `sokol_gl`, no generated shader) so
-//! a critter is just a handful of shaded boxes drawn through the modelview
-//! stack with the legs swinging on a walk cycle.
+//! raycast the interact code already knows how to call); rendering draws
+//! the baked critter model (`assets/models/critter.obj`, authored by
+//! `tools/gen-critter-model.py`) posed by the baked walk / idle keyframe
+//! clips under `assets/animations/`, via `baked_model` + immediate-mode
+//! `sokol_gl`. A kill leaves a short-lived corpse that plays the baked
+//! death clip (keel over sideways) before despawning. If the model assets
+//! are missing the old procedural box critter draws as a fallback so the
+//! herd never turns invisible.
 //!
 //! The core sim is planet-agnostic; here we own the planet glue: spawn a
 //! few animals on the ground near the player, re-seat each on the walkable
@@ -24,6 +28,7 @@ use tenebris_core::math::{
 use tenebris_core::rng;
 use tenebris_core::world::World;
 
+use crate::baked_model::{self, Clip, Model};
 use crate::gfx_math::Mat4;
 use crate::player_ctrl::PlayerCtrl;
 
@@ -41,9 +46,21 @@ const BODY_HEIGHT_M: f64 = 1.0;
 /// Bounding-sphere radius for the attack raycast + its centre height.
 const HIT_RADIUS_M: f32 = 0.7;
 const HIT_CENTRE_UP_M: f64 = 0.45;
+/// A corpse lingers on the ground this long: the baked death clip
+/// (~0.7 s) plus a beat holding the final on-its-side pose.
+const CORPSE_LINGER_S: f32 = 2.4;
+
+/// A killed critter playing out the baked death clip before despawning.
+#[derive(Clone, Copy, Debug)]
+struct Corpse {
+    pos: DVec3,
+    heading: DVec3,
+    age: f32,
+}
 
 struct State {
     list: Vec<Animal>,
+    corpses: Vec<Corpse>,
     body_center: DVec3,
     next_id: u32,
     spawn_cd: f32,
@@ -52,9 +69,19 @@ struct State {
     frozen: bool,
 }
 
+/// Baked critter model + its animation clips, lazy-loaded on first draw.
+/// `None` after a failed load (assets missing) -> box-critter fallback.
+struct ModelSet {
+    model: Model,
+    walk: Clip,
+    idle: Clip,
+    death: Clip,
+}
+
 thread_local! {
     static S: RefCell<State> = RefCell::new(State {
         list: Vec::new(),
+        corpses: Vec::new(),
         body_center: DVec3::default(),
         next_id: 1,
         spawn_cd: 0.0,
@@ -62,12 +89,39 @@ thread_local! {
         frozen: false,
     });
     static PIP3D: Cell<sgl::Pipeline> = const { Cell::new(sgl::Pipeline { id: 0 }) };
+    /// Outer None = not tried yet; inner None = load failed (logged once).
+    static MODEL: RefCell<Option<Option<std::rc::Rc<ModelSet>>>> = const { RefCell::new(None) };
+}
+
+fn model_set() -> Option<std::rc::Rc<ModelSet>> {
+    MODEL.with(|m| {
+        let mut m = m.borrow_mut();
+        if m.is_none() {
+            let loaded = (|| {
+                Some(std::rc::Rc::new(ModelSet {
+                    model: baked_model::load_model("assets/models/critter.obj")?,
+                    walk: Clip::load("assets/animations/critter_walk.anim.json")?,
+                    idle: Clip::load("assets/animations/critter_idle.anim.json")?,
+                    death: Clip::load("assets/animations/critter_death.anim.json")?,
+                }))
+            })();
+            if loaded.is_none() {
+                println!(
+                    "[animals] baked critter model/clips missing - using the \
+                     procedural box critter fallback"
+                );
+            }
+            *m = Some(loaded);
+        }
+        m.as_ref().unwrap().clone()
+    })
 }
 
 pub fn init() {
     S.with(|c| {
         let s = &mut *c.borrow_mut();
         s.list.clear();
+        s.corpses.clear();
         s.next_id = 1;
         s.spawn_cd = 0.0;
         s.salt = 1;
@@ -84,6 +138,7 @@ pub fn dev_spawn(w: &World, p: &PlayerCtrl) {
     S.with(|c| {
         let s = &mut *c.borrow_mut();
         s.list.clear();
+        s.corpses.clear();
         s.frozen = true;
         let center = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
         s.body_center = center;
@@ -102,6 +157,19 @@ pub fn dev_spawn(w: &World, p: &PlayerCtrl) {
                 let id = s.next_id;
                 s.next_id = s.next_id.wrapping_add(1).max(1);
                 s.list.push(Animal::new(id, pos, dir));
+            }
+        }
+        /* Stage one corpse at the end of the death clip so the shot shows
+         * the keel-over pose (frozen herd -> it never ages out). */
+        {
+            let local = dvec3_sub(p.position, center);
+            let point = dvec3_add(
+                local,
+                dvec3_add(dvec3_scale(fwd, 5.0), dvec3_scale(right, -4.0)),
+            );
+            let dir = dvec3_normalize(point);
+            if let Some(pos) = floor_pos(w, center, dir, dvec3_length(local), p.last_tile) {
+                s.corpses.push(Corpse { pos, heading: fwd, age: 0.7 });
             }
         }
     });
@@ -189,6 +257,12 @@ pub fn update(dt: f32, w: &World, p: &PlayerCtrl) {
             }
         }
 
+        /* Age out the corpses (baked death clip + linger). */
+        for corpse in &mut s.corpses {
+            corpse.age += dt;
+        }
+        s.corpses.retain(|c| c.age < CORPSE_LINGER_S);
+
         /* Cull the dead + the far-off. */
         let ppos = p.position;
         s.list
@@ -256,7 +330,10 @@ pub fn hit(idx: i32, dmg: f32, from: Vec3) -> u16 {
         let from_d = dvec3_make(from.x as f64, from.y as f64, from.z as f64);
         fauna::hit(a, dmg, from_d, up);
         if !a.is_alive() {
+            /* Leave a corpse behind to play the baked death clip. */
+            let corpse = Corpse { pos: a.pos, heading: a.heading, age: 0.0 };
             s.list.swap_remove(idx as usize);
+            s.corpses.push(corpse);
             /* Two to three meat per critter. */
             2 + (rng::hash2(idx.wrapping_mul(31), 5) * 2.0) as u16
         } else {
@@ -353,13 +430,15 @@ fn draw_critter(pos: DVec3, up: DVec3, heading: DVec3, phase: f32, moving: bool)
     sgl::pop_matrix();
 }
 
-/// Draw every animal. Called in the offscreen opaque pass next to torches.
-pub fn draw(view: Mat4, proj: Mat4) {
-    let (list, center) = S.with(|c| {
+/// Draw every animal + lingering corpse. Called in the offscreen opaque
+/// pass next to torches. `time_s` drives the idle clip (the fauna sim
+/// only advances `anim_phase` while moving).
+pub fn draw(view: Mat4, proj: Mat4, time_s: f32) {
+    let (list, corpses, center) = S.with(|c| {
         let s = c.borrow();
-        (s.list.clone(), s.body_center)
+        (s.list.clone(), s.corpses.clone(), s.body_center)
     });
-    if list.is_empty() {
+    if list.is_empty() && corpses.is_empty() {
         return;
     }
 
@@ -387,9 +466,46 @@ pub fn draw(view: Mat4, proj: Mat4) {
     }
     sgl::load_pipeline(pip);
 
+    let set = model_set();
     for a in &list {
         let up = dvec3_normalize(dvec3_sub(a.pos, center));
-        draw_critter(a.pos, up, a.heading, a.anim_phase, a.state != AnimalState::Idle);
+        match &set {
+            Some(set) => {
+                /* Walk/flee sample the baked walk clip on the sim's
+                 * anim_phase (flee accumulates 2x faster -> faster gait);
+                 * idle samples the grazing clip on the wall clock, offset
+                 * per animal so the herd doesn't nod in lockstep. */
+                let (clip, t) = if a.state == AnimalState::Idle {
+                    (&set.idle, time_s + a.id as f32 * 0.73)
+                } else {
+                    (&set.walk, a.anim_phase * (set.walk.duration_s / std::f32::consts::TAU))
+                };
+                let basis = orient_basis(up, a.heading);
+                sgl::push_matrix();
+                sgl::translate(a.pos.x as f32, a.pos.y as f32, a.pos.z as f32);
+                sgl::mult_matrix(&basis[0]);
+                baked_model::draw(&set.model, Some((clip, t)));
+                sgl::pop_matrix();
+            }
+            None => {
+                draw_critter(a.pos, up, a.heading, a.anim_phase, a.state != AnimalState::Idle);
+            }
+        }
+    }
+
+    /* Corpses play the baked death clip, then hold its final frame (the
+     * sampler clamps a non-looping clip past its end). Fallback build:
+     * no clip to play, so corpses simply don't draw. */
+    if let Some(set) = &set {
+        for corpse in &corpses {
+            let up = dvec3_normalize(dvec3_sub(corpse.pos, center));
+            let basis = orient_basis(up, corpse.heading);
+            sgl::push_matrix();
+            sgl::translate(corpse.pos.x as f32, corpse.pos.y as f32, corpse.pos.z as f32);
+            sgl::mult_matrix(&basis[0]);
+            baked_model::draw(&set.model, Some((&set.death, corpse.age)));
+            sgl::pop_matrix();
+        }
     }
     /* No sgl_draw here - the frame's single end-of-frame flush uploads
      * every queued layer (same rule as torches / remote players). */

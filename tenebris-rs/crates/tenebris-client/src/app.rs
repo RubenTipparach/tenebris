@@ -44,6 +44,7 @@ use crate::animals;
 use crate::chat;
 use crate::crafting_screen;
 use crate::crops;
+use crate::viewmodel;
 use crate::gfx_math::{mat4_perspective, Mat4};
 use crate::hotbar_ui;
 use crate::input;
@@ -436,6 +437,8 @@ fn dev_maybe_place(app: &mut App) {
                 /* Some seeds + berries so the farming loop + icons show. */
                 p.bag.add(tenebris_core::items::SEEDS, 6);
                 p.bag.add(tenebris_core::items::BERRIES, 4);
+                /* A pickaxe so the held-tool viewmodel is in the shot. */
+                p.bag.add(tenebris_core::items::WOOD_PICKAXE, 1);
             }
         }
         5 => {
@@ -2105,6 +2108,29 @@ fn draw_hunger_bar(app: &App, screen_w: f32, screen_h: f32) {
     sdtx::color3b(0xff, 0xff, 0xff);
 }
 
+/// The tool the viewmodel should show: the block target's ideal tool when
+/// the player owns it (mirrors interact's held-tool pick, so the render
+/// matches the speed bonus actually applied), else the best tool owned.
+fn held_tool_for_display(app: &App, w: &World) -> Option<tenebris_core::items::ItemId> {
+    use tenebris_core::items::{WOOD_AXE, WOOD_PICKAXE, WOOD_SHOVEL};
+    use tenebris_core::mining::{self, ToolKind};
+    let p = app.player.borrow();
+    let owned = |id: tenebris_core::items::ItemId| p.bag.count_of(id) > 0;
+    if app.interact.has_target && !app.interact.is_torch_target {
+        let target = w.get(app.interact.hit_tile, app.interact.hit_depth);
+        let ideal = match mining::block_tool(target) {
+            ToolKind::Pick => Some(WOOD_PICKAXE),
+            ToolKind::Axe => Some(WOOD_AXE),
+            ToolKind::Shovel => Some(WOOD_SHOVEL),
+            ToolKind::None => None,
+        };
+        if let Some(id) = ideal.filter(|&id| owned(id)) {
+            return Some(id);
+        }
+    }
+    [WOOD_PICKAXE, WOOD_AXE, WOOD_SHOVEL].into_iter().find(|&id| owned(id))
+}
+
 /// Crop reticle hint: when the player is looking at a crop, show whether
 /// it's ready to harvest or still growing (with a percentage), plus the
 /// [T] keybind - the discoverability cue for the farming loop. Text-only
@@ -3647,8 +3673,24 @@ fn frame_inner(app: &mut App) {
     profiler::end("draw-torches");
     /* Animals + crops - same offscreen opaque pass so terrain/torches
      * z-sort correctly against them. */
-    animals::draw(view, proj);
+    animals::draw(view, proj, renderer::time_seconds());
     crops::draw(view, proj);
+
+    /* First-person held tool (survival): the baked wood-tool model the
+     * current swing would use, chopping while the mine button is held. */
+    {
+        let (survival, in_space) = {
+            let p = app.player.borrow();
+            (p.survival_mode, p.is_in_space)
+        };
+        if survival && !in_space && !menu::pause_active() {
+            let tool = held_tool_for_display(app, &phys_world.borrow());
+            let mining = input::state().left_held
+                && app.interact.has_target
+                && !app.interact.is_torch_target;
+            viewmodel::draw(proj, tool, mining, renderer::time_seconds(), dt);
+        }
+    }
 
     /* Remote-player markers - same offscreen pass so they get the
      * depth-sorted composite + water refraction for free. */
