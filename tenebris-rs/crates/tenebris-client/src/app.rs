@@ -29,7 +29,8 @@ use tenebris_core::blocks::Block;
 use tenebris_core::config;
 use tenebris_core::job_system;
 use tenebris_core::math::{
-    dvec3_add, dvec3_length, dvec3_make, dvec3_scale, dvec3_sub, dvec3_to_vec3, vec3_normalize,
+    dvec3_add, dvec3_length, dvec3_make, dvec3_normalize, dvec3_scale, dvec3_sub, dvec3_to_vec3,
+    vec3_normalize,
     DVec3, Vec3,
 };
 use tenebris_core::orbit;
@@ -39,6 +40,7 @@ use tenebris_core::proto::{BODY_ID_IN_SPACE, TENEBRIS_PROTOCOL_VERSION};
 use tenebris_core::world::{World, WORLD_MAX_DEPTH};
 use tenebris_core::world_water;
 
+use crate::animals;
 use crate::chat;
 use crate::crafting_screen;
 use crate::gfx_math::{mat4_perspective, Mat4};
@@ -405,6 +407,22 @@ fn dev_maybe_place(app: &mut App) {
              * a still of the on-rails orbit sim from the surface. */
             let mut p = app.player.borrow_mut();
             p.pitch = 0.95;
+        }
+        14 => {
+            /* Animal showcase: drop a herd near the player, then aim the
+             * camera at its centre so the critters are framed. */
+            animals::dev_spawn(&app.world.borrow(), &app.player.borrow());
+            println!("[dev] spawned {} animals", animals::count());
+            if let Some(mid) = animals::herd_center() {
+                let mut p = app.player.borrow_mut();
+                let dot = |a: DVec3, b: DVec3| a.x * b.x + a.y * b.y + a.z * b.z;
+                let eye = dvec3_add(p.position, dvec3_scale(p.basis.up, 1.6));
+                let look = dvec3_normalize(dvec3_sub(mid, eye));
+                let up = p.basis.up;
+                let to_t = dvec3_sub(look, dvec3_scale(up, dot(look, up)));
+                p.yaw = (dot(to_t, p.basis.right)).atan2(dot(to_t, p.basis.fwd)) as f32;
+                p.pitch = dot(look, up).clamp(-1.0, 1.0).asin() as f32;
+            }
         }
         5 => {
             /* Furnace UI shot: place a furnace on a front tile, stock the
@@ -1244,6 +1262,7 @@ extern "C" fn init() {
     job_system::init(0);
     renderer::init();
     torch::init();
+    animals::init();
     mobile_ui::init();
     hotbar_ui::init();
     teleport_menu::init();
@@ -1463,6 +1482,9 @@ extern "C" fn init() {
         DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
     } else if std::env::var("TENEBRIS_DEV_SKY").is_ok() {
         DEV_PLACE_MODE.with(|c| c.set(13));
+        DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
+    } else if std::env::var("TENEBRIS_DEV_ANIMALS").is_ok() {
+        DEV_PLACE_MODE.with(|c| c.set(14));
         DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
     }
     if std::env::var("TENEBRIS_DEV_KIT").is_ok() {
@@ -3210,6 +3232,13 @@ fn frame_inner(app: &mut App) {
     /* interact keeps running while paused (input zeroing above already
      * stopped mining / placement); frozen during MP join until READY. */
     if !mp_loading {
+        /* Wander + re-seat the animals before interact runs its attack
+         * raycast against them. */
+        {
+            let w = phys_world.borrow();
+            let p = app.player.borrow();
+            animals::update(dt, &w, &p);
+        }
         interact::update(
             &mut app.interact,
             &mut phys_world.borrow_mut(),
@@ -3385,6 +3414,8 @@ fn frame_inner(app: &mut App) {
     profiler::begin("draw-torches");
     renderer::draw_torches(view, proj);
     profiler::end("draw-torches");
+    /* Animals - same offscreen opaque pass so terrain/torches z-sort. */
+    animals::draw(view, proj);
 
     /* Remote-player markers - same offscreen pass so they get the
      * depth-sorted composite + water refraction for free. */

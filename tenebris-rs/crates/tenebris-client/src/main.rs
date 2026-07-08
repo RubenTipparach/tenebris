@@ -1,6 +1,7 @@
 //! Port of `tenebris-c/src/client/main_web.c` + module tree.
 //! See ../../PORTING.md for rules.
 
+mod animals;
 mod app;
 mod bag;
 mod chat;

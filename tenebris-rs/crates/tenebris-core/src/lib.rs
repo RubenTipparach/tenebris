@@ -4,6 +4,7 @@ pub mod block_entity;
 pub mod blocks;
 pub mod config;
 pub mod crafting;
+pub mod fauna;
 pub mod goldberg;
 pub mod items;
 pub mod job_system;

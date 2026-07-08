@@ -1,0 +1,396 @@
+//! Animals (client) - spawning, surface-keeping, rendering, and the hunt
+//! raycast for the critters whose sim lives in `core::fauna`.
+//!
+//! Structure mirrors `torch.rs` (a thread-local list + a bounding-sphere
+//! raycast the interact code already knows how to call); rendering follows
+//! `remote_players.rs` (immediate-mode `sokol_gl`, no generated shader) so
+//! a critter is just a handful of shaded boxes drawn through the modelview
+//! stack with the legs swinging on a walk cycle.
+//!
+//! The core sim is planet-agnostic; here we own the planet glue: spawn a
+//! few animals on the ground near the player, re-seat each on the walkable
+//! floor after it wanders, cull the dead / distant, and top the population
+//! back up.
+
+use std::cell::{Cell, RefCell};
+
+use sokol::gl as sgl;
+
+use tenebris_core::fauna::{self, Animal, AnimalState};
+use tenebris_core::math::{
+    dvec3_add, dvec3_cross, dvec3_length, dvec3_make, dvec3_normalize, dvec3_scale, dvec3_sub,
+    DVec3, Vec3,
+};
+use tenebris_core::rng;
+use tenebris_core::world::World;
+
+use crate::gfx_math::Mat4;
+use crate::player_ctrl::PlayerCtrl;
+
+/// How many animals to keep alive within range of the player.
+const TARGET_COUNT: usize = 8;
+/// Ring (metres from the player) new animals appear in.
+const SPAWN_MIN_M: f64 = 14.0;
+const SPAWN_MAX_M: f64 = 32.0;
+/// Beyond this the animal despawns (out of sight, keeps the list small).
+const DESPAWN_M: f64 = 70.0;
+/// Seconds between spawn attempts while under population.
+const SPAWN_INTERVAL_S: f32 = 1.5;
+/// Body-height headroom passed to the floor query.
+const BODY_HEIGHT_M: f64 = 1.0;
+/// Bounding-sphere radius for the attack raycast + its centre height.
+const HIT_RADIUS_M: f32 = 0.7;
+const HIT_CENTRE_UP_M: f64 = 0.45;
+
+struct State {
+    list: Vec<Animal>,
+    body_center: DVec3,
+    next_id: u32,
+    spawn_cd: f32,
+    salt: u32,
+    /// Dev screenshot aid: freeze the herd (no wander / spawn / cull).
+    frozen: bool,
+}
+
+thread_local! {
+    static S: RefCell<State> = RefCell::new(State {
+        list: Vec::new(),
+        body_center: DVec3::default(),
+        next_id: 1,
+        spawn_cd: 0.0,
+        salt: 1,
+        frozen: false,
+    });
+    static PIP3D: Cell<sgl::Pipeline> = const { Cell::new(sgl::Pipeline { id: 0 }) };
+}
+
+pub fn init() {
+    S.with(|c| {
+        let s = &mut *c.borrow_mut();
+        s.list.clear();
+        s.next_id = 1;
+        s.spawn_cd = 0.0;
+        s.salt = 1;
+    });
+}
+
+pub fn count() -> usize {
+    S.with(|c| c.borrow().list.len())
+}
+
+/// Dev/screenshot aid: drop a small herd on the ground in front of the
+/// player (along their look forward) so they're framed immediately.
+pub fn dev_spawn(w: &World, p: &PlayerCtrl) {
+    S.with(|c| {
+        let s = &mut *c.borrow_mut();
+        s.list.clear();
+        s.frozen = true;
+        let center = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
+        s.body_center = center;
+        let fwd = p.basis.fwd;
+        let right = p.basis.right;
+        for k in 0..6i32 {
+            let ahead = 6.0 + (k / 2) as f64 * 4.0;
+            let side = ((k % 3) - 1) as f64 * 3.0;
+            let local = dvec3_sub(p.position, center);
+            let point = dvec3_add(
+                local,
+                dvec3_add(dvec3_scale(fwd, ahead), dvec3_scale(right, side)),
+            );
+            let dir = dvec3_normalize(point);
+            if let Some(pos) = floor_pos(w, center, dir, dvec3_length(local), p.last_tile) {
+                let id = s.next_id;
+                s.next_id = s.next_id.wrapping_add(1).max(1);
+                s.list.push(Animal::new(id, pos, dir));
+            }
+        }
+    });
+}
+
+/// Average position of the current herd (for the dev camera aim).
+pub fn herd_center() -> Option<DVec3> {
+    S.with(|c| {
+        let s = c.borrow();
+        if s.list.is_empty() {
+            return None;
+        }
+        let mut acc = DVec3::default();
+        for a in &s.list {
+            acc = dvec3_add(acc, a.pos);
+        }
+        Some(dvec3_scale(acc, 1.0 / s.list.len() as f64))
+    })
+}
+
+/// Uniform [0,1) from an integer seed pair.
+fn rand01(a: u32, b: u32) -> f32 {
+    rng::hash2(a as i32, b as i32)
+}
+
+/// Snap a body-local direction onto the walkable floor and return the feet
+/// position in world space, or `None` if the tile has no floor.
+fn floor_pos(w: &World, center: DVec3, dir: DVec3, radius_hint: f64, hint_tile: i32) -> Option<DVec3> {
+    let dir = dvec3_normalize(dir);
+    let tile = w.grid.find_tile(dir, hint_tile);
+    let floor = w.walkable_floor_near(tile, radius_hint, BODY_HEIGHT_M);
+    if floor <= 0.0 {
+        return None;
+    }
+    Some(dvec3_add(center, dvec3_scale(dir, floor)))
+}
+
+/// Try to spawn one animal on the ground in the player's ring.
+fn spawn_one(w: &World, p: &PlayerCtrl, id: u32, salt: u32) -> Option<Animal> {
+    let center = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
+    let local = dvec3_sub(p.position, center);
+    let r = dvec3_length(local);
+    if r < 1.0 {
+        return None;
+    }
+    let dir0 = dvec3_scale(local, 1.0 / r);
+    // A tangent basis around the player's radial, to place off to the side.
+    let reference = if dir0.y.abs() < 0.9 {
+        dvec3_make(0.0, 1.0, 0.0)
+    } else {
+        dvec3_make(1.0, 0.0, 0.0)
+    };
+    let t = dvec3_normalize(dvec3_cross(reference, dir0));
+    let b = dvec3_cross(dir0, t);
+    let ang = rand01(id, salt) as f64 * std::f64::consts::TAU;
+    let dist = SPAWN_MIN_M + rand01(id, salt.wrapping_add(11)) as f64 * (SPAWN_MAX_M - SPAWN_MIN_M);
+    let offset = dvec3_add(dvec3_scale(t, ang.cos() * dist), dvec3_scale(b, ang.sin() * dist));
+    let point = dvec3_add(local, offset);
+    let dir = dvec3_normalize(point);
+    let pos = floor_pos(w, center, dir, r, p.last_tile)?;
+    Some(Animal::new(id, pos, dir))
+}
+
+/// Per-frame: wander + re-seat on the surface, cull, and top up the herd.
+pub fn update(dt: f32, w: &World, p: &PlayerCtrl) {
+    S.with(|c| {
+        let s = &mut *c.borrow_mut();
+        let center = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
+        s.body_center = center;
+        if s.frozen {
+            return;
+        }
+        s.salt = s.salt.wrapping_add(1);
+        let salt = s.salt;
+
+        for a in &mut s.list {
+            let up = dvec3_normalize(dvec3_sub(a.pos, center));
+            fauna::tick(a, up, dt, salt.wrapping_add(a.id));
+            /* Re-seat feet on the (possibly edited) floor at the new
+             * direction so the critter hugs the terrain. */
+            let rel = dvec3_sub(a.pos, center);
+            let r = dvec3_length(rel);
+            if let Some(seated) = floor_pos(w, center, rel, r, -1) {
+                a.pos = seated;
+            }
+        }
+
+        /* Cull the dead + the far-off. */
+        let ppos = p.position;
+        s.list
+            .retain(|a| a.is_alive() && dvec3_length(dvec3_sub(a.pos, ppos)) < DESPAWN_M);
+
+        /* Top the population back up. */
+        s.spawn_cd -= dt;
+        if s.list.len() < TARGET_COUNT && s.spawn_cd <= 0.0 {
+            s.spawn_cd = SPAWN_INTERVAL_S;
+            let id = s.next_id;
+            if let Some(a) = spawn_one(w, p, id, salt) {
+                s.list.push(a);
+                s.next_id = s.next_id.wrapping_add(1).max(1);
+            }
+        }
+    });
+}
+
+/* ---------------------------------------------------------------------- */
+/* Hunt: ray-vs-sphere pick + damage.                                      */
+
+/// Nearest animal the ray (eye + dir) hits within `max_dist`, as
+/// `(index, dist)`; index -1 = miss. Mirrors `torch::raycast`.
+pub fn raycast(eye: Vec3, dir: Vec3, max_dist: f32) -> (i32, f32) {
+    S.with(|c| {
+        let s = c.borrow();
+        let mut best = -1i32;
+        let mut best_t = max_dist;
+        for (i, a) in s.list.iter().enumerate() {
+            let up = dvec3_normalize(dvec3_sub(a.pos, s.body_center));
+            let cen = dvec3_add(a.pos, dvec3_scale(up, HIT_CENTRE_UP_M));
+            let oc = Vec3 {
+                x: eye.x - cen.x as f32,
+                y: eye.y - cen.y as f32,
+                z: eye.z - cen.z as f32,
+            };
+            let b = oc.x * dir.x + oc.y * dir.y + oc.z * dir.z;
+            let cc = oc.x * oc.x + oc.y * oc.y + oc.z * oc.z - HIT_RADIUS_M * HIT_RADIUS_M;
+            let disc = b * b - cc;
+            if disc < 0.0 {
+                continue;
+            }
+            let t = -b - disc.sqrt();
+            if t >= 0.0 && t < best_t {
+                best_t = t;
+                best = i as i32;
+            }
+        }
+        (best, best_t)
+    })
+}
+
+/// Damage the animal at `idx` from world point `from`. Returns the meat
+/// count to award when it dies this hit (0 while it's still alive), and
+/// removes the corpse.
+pub fn hit(idx: i32, dmg: f32, from: Vec3) -> u16 {
+    S.with(|c| {
+        let s = &mut *c.borrow_mut();
+        if idx < 0 || idx as usize >= s.list.len() {
+            return 0;
+        }
+        let center = s.body_center;
+        let a = &mut s.list[idx as usize];
+        let up = dvec3_normalize(dvec3_sub(a.pos, center));
+        let from_d = dvec3_make(from.x as f64, from.y as f64, from.z as f64);
+        fauna::hit(a, dmg, from_d, up);
+        if !a.is_alive() {
+            s.list.swap_remove(idx as usize);
+            /* Two to three meat per critter. */
+            2 + (rng::hash2(idx.wrapping_mul(31), 5) * 2.0) as u16
+        } else {
+            0
+        }
+    })
+}
+
+/* ---------------------------------------------------------------------- */
+/* Rendering (immediate-mode sokol_gl, no shader file).                    */
+
+/// Column-major basis mapping local +Y -> `up` and the model's facing
+/// (local -Z) -> `heading`. Right-handed so back-face culling keeps the
+/// solid faces.
+fn orient_basis(up: DVec3, heading: DVec3) -> [f32; 16] {
+    let up = dvec3_normalize(up);
+    let neg_fwd = dvec3_scale(dvec3_normalize(heading), -1.0); // local +Z
+    let right = dvec3_normalize(dvec3_cross(up, neg_fwd)); // col0 = up x (+Z)
+    [
+        right.x as f32, right.y as f32, right.z as f32, 0.0,
+        up.x as f32, up.y as f32, up.z as f32, 0.0,
+        neg_fwd.x as f32, neg_fwd.y as f32, neg_fwd.z as f32, 0.0,
+        0.0, 0.0, 0.0, 1.0,
+    ]
+}
+
+/// One axis-aligned cuboid, per-face shaded (top brightest, bottom
+/// darkest), CCW-from-outside so back-face culling works.
+fn draw_box(cx: f32, cy: f32, cz: f32, hx: f32, hy: f32, hz: f32, r: f32, g: f32, b: f32) {
+    let (x0, x1) = (cx - hx, cx + hx);
+    let (y0, y1) = (cy - hy, cy + hy);
+    let (z0, z1) = (cz - hz, cz + hz);
+    // (face corners CCW from outside, shade)
+    let faces: [([[f32; 3]; 4], f32); 6] = [
+        // top +Y (brightest)
+        ([[x0, y1, z0], [x0, y1, z1], [x1, y1, z1], [x1, y1, z0]], 1.0),
+        // bottom -Y (darkest)
+        ([[x0, y0, z1], [x0, y0, z0], [x1, y0, z0], [x1, y0, z1]], 0.55),
+        // front -Z
+        ([[x0, y0, z0], [x0, y1, z0], [x1, y1, z0], [x1, y0, z0]], 0.85),
+        // back +Z
+        ([[x1, y0, z1], [x1, y1, z1], [x0, y1, z1], [x0, y0, z1]], 0.7),
+        // right +X
+        ([[x1, y0, z0], [x1, y1, z0], [x1, y1, z1], [x1, y0, z1]], 0.8),
+        // left -X
+        ([[x0, y0, z1], [x0, y1, z1], [x0, y1, z0], [x0, y0, z0]], 0.75),
+    ];
+    sgl::begin_triangles();
+    for (quad, shade) in faces.iter() {
+        sgl::c3f(r * shade, g * shade, b * shade);
+        // two CCW triangles: 0,1,2 and 0,2,3
+        for &i in &[0usize, 1, 2, 0, 2, 3] {
+            let v = quad[i];
+            sgl::v3f(v[0], v[1], v[2]);
+        }
+    }
+    sgl::end();
+}
+
+/// Draw one quadruped critter (origin at feet, +Y up, faces -Z).
+fn draw_critter(pos: DVec3, up: DVec3, heading: DVec3, phase: f32, moving: bool) {
+    let basis = orient_basis(up, heading);
+    let swing = if moving { (phase.sin()) * 0.5 } else { 0.0 };
+
+    sgl::push_matrix();
+    sgl::translate(pos.x as f32, pos.y as f32, pos.z as f32);
+    sgl::mult_matrix(&basis[0]);
+
+    // Body (long along Z), sitting on the legs.
+    let (br, bg, bb) = (0.52, 0.40, 0.28);
+    draw_box(0.0, 0.46, 0.0, 0.16, 0.13, 0.30, br, bg, bb);
+    // Head at the front (-Z).
+    draw_box(0.0, 0.52, -0.36, 0.12, 0.11, 0.11, 0.58, 0.45, 0.31);
+    // Ears.
+    draw_box(-0.07, 0.66, -0.36, 0.03, 0.05, 0.02, 0.42, 0.32, 0.22);
+    draw_box(0.07, 0.66, -0.36, 0.03, 0.05, 0.02, 0.42, 0.32, 0.22);
+    // Tail at the back (+Z).
+    draw_box(0.0, 0.5, 0.34, 0.03, 0.03, 0.08, 0.44, 0.33, 0.24);
+
+    // Four legs. Diagonal gait: FL + BR in phase, FR + BL opposite.
+    let leg = |x: f32, z: f32, sw: f32| {
+        sgl::push_matrix();
+        sgl::translate(x, 0.34, z);
+        sgl::rotate(sw, 1.0, 0.0, 0.0);
+        sgl::translate(0.0, -0.17, 0.0);
+        draw_box(0.0, 0.0, 0.0, 0.05, 0.17, 0.05, 0.40, 0.30, 0.22);
+        sgl::pop_matrix();
+    };
+    leg(-0.11, -0.22, swing); // front-left
+    leg(0.11, 0.22, swing); // back-right
+    leg(0.11, -0.22, -swing); // front-right
+    leg(-0.11, 0.22, -swing); // back-left
+
+    sgl::pop_matrix();
+}
+
+/// Draw every animal. Called in the offscreen opaque pass next to torches.
+pub fn draw(view: Mat4, proj: Mat4) {
+    let (list, center) = S.with(|c| {
+        let s = c.borrow();
+        (s.list.clone(), s.body_center)
+    });
+    if list.is_empty() {
+        return;
+    }
+
+    sgl::defaults();
+    sgl::matrix_mode_projection();
+    sgl::load_matrix(&proj.m[0]);
+    sgl::matrix_mode_modelview();
+    sgl::load_matrix(&view.m[0]);
+
+    let mut pip = PIP3D.with(|p| p.get());
+    if pip.id == 0 {
+        pip = sgl::make_pipeline(&sokol::gfx::PipelineDesc {
+            depth: sokol::gfx::DepthState {
+                write_enabled: true,
+                compare: sokol::gfx::CompareFunc::Less,
+                ..Default::default()
+            },
+            /* No back-face cull: the box winding + per-critter basis
+             * handedness aren't worth fighting for a handful of tiny
+             * quads, and double-sided keeps them visible regardless. */
+            cull_mode: sokol::gfx::CullMode::None,
+            ..Default::default()
+        });
+        PIP3D.with(|p| p.set(pip));
+    }
+    sgl::load_pipeline(pip);
+
+    for a in &list {
+        let up = dvec3_normalize(dvec3_sub(a.pos, center));
+        draw_critter(a.pos, up, a.heading, a.anim_phase, a.state != AnimalState::Idle);
+    }
+    /* No sgl_draw here - the frame's single end-of-frame flush uploads
+     * every queued layer (same rule as torches / remote players). */
+}

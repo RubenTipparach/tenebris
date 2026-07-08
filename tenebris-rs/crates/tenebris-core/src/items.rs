@@ -64,6 +64,11 @@ pub const PRINT_NOZZLE: ItemId = ITEM_BASE + 21; // 121
 /// digging soft ground (dirt / sand / grass / snow). See core::mining.
 pub const WOOD_SHOVEL: ItemId = ITEM_BASE + 22; // 122
 
+/// Raw meat - dropped by hunting animals (core::fauna). Cook it (later
+/// tier) into `COOKED_MEAT` to restore more hunger.
+pub const RAW_MEAT: ItemId = ITEM_BASE + 23; // 123
+pub const COOKED_MEAT: ItemId = ITEM_BASE + 24; // 124
+
 /// What an item *is*, for stacking / placement / tool-gating rules. Grows
 /// as the tech tree lands (Component, Ingot, Ammo, ...).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -120,6 +125,8 @@ const ITEMS: &[ItemDef] = &[
     ItemDef { id: WOOD_PICKAXE, name: "wood-pickaxe", kind: ItemKind::Tool, stack: 1 },
     ItemDef { id: WOOD_AXE, name: "wood-axe", kind: ItemKind::Tool, stack: 1 },
     ItemDef { id: WOOD_SHOVEL, name: "wood-shovel", kind: ItemKind::Tool, stack: 1 },
+    ItemDef { id: RAW_MEAT, name: "raw-meat", kind: ItemKind::Resource, stack: 64 },
+    ItemDef { id: COOKED_MEAT, name: "cooked-meat", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: COPPER, name: "copper", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: TIN, name: "tin", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: IRON, name: "iron", kind: ItemKind::Resource, stack: 64 },

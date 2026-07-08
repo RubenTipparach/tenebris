@@ -44,6 +44,9 @@ pub const MAX_DIST: f64 = 8.0;
 /// Holding LMB on a target for this long breaks it and adds it to
 /// inventory.
 pub const MINING_TIME_S: f32 = 0.8;
+/// Damage per left-click swing when attacking an animal (critter has 12
+/// health, so ~3 hits to kill).
+pub const ATTACK_DAMAGE: f32 = 5.0;
 
 /// Port of `interact_state_t`. The C caller zero-initializes; `Default`
 /// matches that ({0} - all flags false, indices 0, distances 0.0).
@@ -274,6 +277,30 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
     let eye_f = vec3_make(eye.x as f32, eye.y as f32, eye.z as f32);
     let dir_f = vec3_make(dir.x as f32, dir.y as f32, dir.z as f32);
     let (torch_hit, torch_dist_f) = torch::raycast(eye_f, dir_f, MAX_DIST as f32);
+
+    /* Animal attack takes precedence when a critter is the nearest thing
+     * under the reticle. Instant hit on the left-click edge; a kill drops
+     * raw meat into the bag. Short-circuits the block / torch handling. */
+    let (animal_hit, animal_dist_f) = crate::animals::raycast(eye_f, dir_f, MAX_DIST as f32);
+    if animal_hit >= 0
+        && (!block_hit || (animal_dist_f as f64) <= block_dist)
+        && (torch_hit < 0 || animal_dist_f <= torch_dist_f)
+    {
+        s.has_target = true;
+        s.is_torch_target = false;
+        s.distance = animal_dist_f as f64;
+        s.mining_progress_s = 0.0;
+        s.mining_tile = -1;
+        s.mining_depth = -1;
+        if input::state().left_click {
+            let meat = crate::animals::hit(animal_hit, ATTACK_DAMAGE, eye_f);
+            if meat > 0 {
+                p.bag.add(items::RAW_MEAT, meat);
+            }
+        }
+        return;
+    }
+
     let target_torch = torch_hit >= 0 && (!block_hit || torch_dist_f as f64 <= block_dist);
 
     if target_torch {
