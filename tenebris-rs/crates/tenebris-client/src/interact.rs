@@ -460,6 +460,16 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
                         p.bag.add(d.item, d.count);
                     }
                 }
+                /* Farming bootstrap: breaking grass has a config chance to
+                 * drop a seed, so the plant -> grow -> harvest loop has a
+                 * starting point. Deterministic per cell (hash2) so it
+                 * doesn't depend on frame timing. */
+                if target_block == Block::Grass {
+                    let chance = tenebris_core::farming::config().grass_seed_chance;
+                    if tenebris_core::rng::hash2(s.hit_tile, s.hit_depth) < chance {
+                        p.bag.add(items::SEEDS, 1);
+                    }
+                }
                 s.mining_progress_s = 0.0;
             }
         } else {

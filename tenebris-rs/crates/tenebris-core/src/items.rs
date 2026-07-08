@@ -69,6 +69,13 @@ pub const WOOD_SHOVEL: ItemId = ITEM_BASE + 22; // 122
 pub const RAW_MEAT: ItemId = ITEM_BASE + 23; // 123
 pub const COOKED_MEAT: ItemId = ITEM_BASE + 24; // 124
 
+/// Seeds - plant on the ground to grow a crop (see core::farming +
+/// client::crops). Dropped when breaking grass; a harvested crop also
+/// returns seeds, so farming is self-sustaining once you have one.
+pub const SEEDS: ItemId = ITEM_BASE + 25; // 125
+/// Berries - a mature crop's edible produce. Eaten (R) to restore hunger.
+pub const BERRIES: ItemId = ITEM_BASE + 26; // 126
+
 /// What an item *is*, for stacking / placement / tool-gating rules. Grows
 /// as the tech tree lands (Component, Ingot, Ammo, ...).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -127,6 +134,8 @@ const ITEMS: &[ItemDef] = &[
     ItemDef { id: WOOD_SHOVEL, name: "wood-shovel", kind: ItemKind::Tool, stack: 1 },
     ItemDef { id: RAW_MEAT, name: "raw-meat", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: COOKED_MEAT, name: "cooked-meat", kind: ItemKind::Resource, stack: 64 },
+    ItemDef { id: SEEDS, name: "seeds", kind: ItemKind::Resource, stack: 64 },
+    ItemDef { id: BERRIES, name: "berries", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: COPPER, name: "copper", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: TIN, name: "tin", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: IRON, name: "iron", kind: ItemKind::Resource, stack: 64 },

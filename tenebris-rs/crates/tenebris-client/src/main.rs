@@ -8,6 +8,7 @@ mod chat;
 mod chest_screen;
 mod client_kv;
 mod crafting_screen;
+mod crops;
 mod furnace_screen;
 mod power_ui;
 mod rocket_screen;

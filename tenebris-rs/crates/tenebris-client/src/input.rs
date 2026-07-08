@@ -205,6 +205,8 @@ struct State {
     survival_toggle_edge: bool,
     /// One-shot: player pressed the eat key (R) this frame.
     eat_edge: bool,
+    /// One-shot: player pressed the plant/harvest key (T) this frame.
+    plant_edge: bool,
     menu: MenuEvents,
 }
 
@@ -290,6 +292,11 @@ fn set_key(s: &mut State, k: sapp::Keycode, down: bool) {
         Keycode::R => {
             if down {
                 s.eat_edge = true;
+            }
+        }
+        Keycode::T => {
+            if down {
+                s.plant_edge = true;
             }
         }
         Keycode::Q => s.pub_.phys.roll_left = down,
@@ -427,6 +434,16 @@ pub fn consume_eat() -> bool {
         let s = &mut *cell.borrow_mut();
         let v = s.eat_edge;
         s.eat_edge = false;
+        v
+    })
+}
+
+/// One-shot: did the player press the plant/harvest key (T) this frame?
+pub fn consume_plant() -> bool {
+    S.with(|cell| {
+        let s = &mut *cell.borrow_mut();
+        let v = s.plant_edge;
+        s.plant_edge = false;
         v
     })
 }

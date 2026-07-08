@@ -47,6 +47,7 @@ use tenebris_core::block_entity::{
 const KEY_PREFIX: &str = "tenebris-c:world:";
 const KEY_TILE_PREFIX: &str = "tenebris-c:tile:";
 const KEY_TORCH_PREFIX: &str = "tenebris-c:torches:";
+const KEY_CROP_PREFIX: &str = "tenebris-c:crops:";
 const KEY_WATER_PREFIX: &str = "tenebris-c:water:";
 /// Per-placed-block state (tech facing etc.), one CSV line per entity.
 const KEY_BENTITY_PREFIX: &str = "tenebris-c:bentities:";
@@ -82,6 +83,21 @@ pub struct PersistenceTorch {
     pub up: [f32; 3],
     /// Anchor tile in the goldberg grid.
     pub tile_idx: i32,
+}
+
+/// A single planted crop, stored verbatim in the per-body crop list.
+/// Mirrors `PersistenceTorch` plus the crop's growth so a reload resumes
+/// where it left off (see `core::farming::Crop` + `client::crops`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PersistenceCrop {
+    /// World-space feet position.
+    pub pos: [f32; 3],
+    /// Surface normal (unit) at planting.
+    pub up: [f32; 3],
+    /// Anchor tile in the goldberg grid.
+    pub tile_idx: i32,
+    /// Growth 0.0 (planted) .. 1.0 (mature).
+    pub growth: f32,
 }
 
 /* ------------------------------------------------------------------ */
@@ -290,6 +306,10 @@ fn build_torch_key(world: &str, body: u32) -> String {
 
 fn build_bentity_key(world: &str, body: u32) -> String {
     format!("{KEY_BENTITY_PREFIX}{world}:{body}")
+}
+
+fn build_crop_key(world: &str, body: u32) -> String {
+    format!("{KEY_CROP_PREFIX}{world}:{body}")
 }
 
 /// Serialise the whole block-entity store for (world, body). Called on the
@@ -699,12 +719,92 @@ fn strtof_prefix(s: &str) -> Option<f32> {
     None
 }
 
-/// Wipe every per-tile column, water-state column, and per-body torch
-/// list for a world. Used by the delete-world flow alongside `delete`
-/// (which also removes the pose key). Iterates the list returned by
-/// client_kv::list_with_prefix and issues per-key removes; the
-/// prefix-list call is the only way to enumerate localStorage by
-/// shape.
+/* ------------------------------------------------------------------ */
+/* Crop CSV: "tile,px,py,pz,ux,uy,uz,growth" per line. Same shape +
+ * native-backend quirk as the torch list, plus a trailing growth
+ * float. */
+/* ------------------------------------------------------------------ */
+
+/// Replace the crop list snapshot for (world, body). An empty slice
+/// clears it (when the last crop on a body is harvested). Written on the
+/// SAME input frame as the plant / harvest, per the CLAUDE.md world-edit
+/// rule.
+pub fn save_crops(world_name: &str, body_id: u32, crops: &[PersistenceCrop]) -> bool {
+    if !valid_name(world_name) {
+        return false;
+    }
+    let key = build_crop_key(world_name, body_id);
+    if crops.is_empty() {
+        client_kv::remove(&key);
+        return true;
+    }
+    let mut buf = String::with_capacity(crops.len() * 96);
+    for (i, c) in crops.iter().enumerate() {
+        if i > 0 {
+            buf.push('\n');
+        }
+        buf.push_str(&format!(
+            "{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6}",
+            c.tile_idx,
+            c.pos[0] as f64,
+            c.pos[1] as f64,
+            c.pos[2] as f64,
+            c.up[0] as f64,
+            c.up[1] as f64,
+            c.up[2] as f64,
+            c.growth as f64
+        ));
+    }
+    client_kv::set(&key, &buf);
+    true
+}
+
+/// Read the crop snapshot for (world, body). Malformed lines are skipped.
+pub fn load_crops(world_name: &str, body_id: u32) -> Vec<PersistenceCrop> {
+    if !valid_name(world_name) {
+        return Vec::new();
+    }
+    let Some(s) = client_kv::get(&build_crop_key(world_name, body_id)) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for line in s.split('\n') {
+        if let Some(c) = parse_crop_line(line) {
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn parse_crop_line(line: &str) -> Option<PersistenceCrop> {
+    let mut it = line.split(',');
+    let tile_idx = it.next()?.trim_start().parse::<i32>().ok()?;
+    let mut f = [0f32; 7];
+    for (i, v) in f.iter_mut().enumerate() {
+        let field = it.next()?;
+        // The growth field is last, so (like the torch line's sixth
+        // float) tolerate a mangled '_'-joined trailer on the native
+        // backend by taking the longest float prefix.
+        *v = if i == 6 {
+            strtof_prefix(field)?
+        } else {
+            field.trim_start().parse::<f32>().ok()?
+        };
+    }
+    Some(PersistenceCrop {
+        pos: [f[0], f[1], f[2]],
+        up: [f[3], f[4], f[5]],
+        tile_idx,
+        growth: f[6].clamp(0.0, 1.0),
+    })
+}
+
+/// Wipe every per-tile column, water-state column, per-body torch list,
+/// and per-body crop list for a world. Used by the delete-world flow
+/// alongside `delete` (which also removes the pose key). Iterates the
+/// list returned by client_kv::list_with_prefix and issues per-key
+/// removes; the prefix-list call is the only way to enumerate
+/// localStorage by shape.
 pub fn clear_world(world_name: &str) {
     if !valid_name(world_name) {
         return;
@@ -712,6 +812,7 @@ pub fn clear_world(world_name: &str) {
     for prefix in [
         format!("{KEY_TILE_PREFIX}{world_name}:"),
         format!("{KEY_TORCH_PREFIX}{world_name}:"),
+        format!("{KEY_CROP_PREFIX}{world_name}:"),
         format!("{KEY_WATER_PREFIX}{world_name}:"),
     ] {
         let Some(list) = client_kv::list_with_prefix(&prefix) else {
@@ -958,6 +1059,38 @@ mod tests {
             lp.parts(),
             &[ROCKET_ENGINE, FUEL_TANK, FUEL_TANK, COMMAND_MODULE]
         );
+    }
+
+    #[test]
+    fn crop_csv_round_trips_with_growth() {
+        let _g = test_support::begin("persist_crop_csv");
+        let crops = [
+            PersistenceCrop {
+                pos: [1.0, 2.0, 3.0],
+                up: [1.0, 0.0, 0.0],
+                tile_idx: 41,
+                growth: 0.25,
+            },
+            PersistenceCrop {
+                pos: [-4.5, 0.0, 6.25],
+                up: [0.0, 1.0, 0.0],
+                tile_idx: 7,
+                growth: 1.0,
+            },
+        ];
+        // Single crop: no '\n' framing, so it round-trips on both backends.
+        assert!(save_crops("home", 4, &crops[..1]));
+        assert_eq!(load_crops("home", 4), [crops[0]]);
+        assert!(load_crops("home", 9).is_empty());
+        // Empty slice clears the snapshot.
+        assert!(save_crops("home", 4, &[]));
+        assert_eq!(client_kv::get("tenebris-c:crops:home:4"), None);
+        // Growth is clamped into [0,1] on load; a garbage line is skipped.
+        assert_eq!(parse_crop_line("garbage"), None);
+        assert_eq!(parse_crop_line("5,1,2,3,4,5,6"), None); // short (no growth)
+        let c = parse_crop_line("5,1.0,2.0,3.0,0.0,1.0,0.0,2.5").expect("valid");
+        assert_eq!(c.growth, 1.0); // clamped
+        assert_eq!(c.tile_idx, 5);
     }
 
     #[test]

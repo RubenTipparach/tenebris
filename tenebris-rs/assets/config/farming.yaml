@@ -1,0 +1,17 @@
+# Farming tunables - crop growth + yields. Parsed by core/farming.rs
+# (tiny key: value subset; a field set to 0 / omitted keeps the
+# compiled-in default). See crates/tenebris-core/src/farming.rs.
+#
+#   grow_time_s          seconds a planted seed takes to reach maturity
+#   produce_yield        berries dropped when a mature crop is harvested
+#   seed_yield           seeds returned per harvest (>= 1 keeps the loop
+#                        self-sustaining)
+#   grass_seed_chance    probability (0..1) a broken grass block drops a
+#                        seed - the bootstrap for the whole loop
+#   berry_hunger_restore hunger points restored by eating one berry
+farming:
+  grow_time_s: 45.0
+  produce_yield: 3
+  seed_yield: 2
+  grass_seed_chance: 0.5
+  berry_hunger_restore: 15.0

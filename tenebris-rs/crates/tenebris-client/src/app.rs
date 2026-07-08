@@ -43,6 +43,7 @@ use tenebris_core::world_water;
 use crate::animals;
 use crate::chat;
 use crate::crafting_screen;
+use crate::crops;
 use crate::gfx_math::{mat4_perspective, Mat4};
 use crate::hotbar_ui;
 use crate::input;
@@ -412,7 +413,8 @@ fn dev_maybe_place(app: &mut App) {
             /* Animal showcase: drop a herd near the player, then aim the
              * camera at its centre so the critters are framed. */
             animals::dev_spawn(&app.world.borrow(), &app.player.borrow());
-            println!("[dev] spawned {} animals", animals::count());
+            crops::dev_spawn(&app.world.borrow(), &app.player.borrow());
+            println!("[dev] spawned {} animals, {} crops", animals::count(), crops::count());
             if let Some(mid) = animals::herd_center() {
                 let mut p = app.player.borrow_mut();
                 let dot = |a: DVec3, b: DVec3| a.x * b.x + a.y * b.y + a.z * b.z;
@@ -431,6 +433,9 @@ fn dev_maybe_place(app: &mut App) {
                 p.hunger = player_ctrl::MAX_HUNGER * 0.48;
                 p.bag.add(tenebris_core::items::COOKED_MEAT, 3);
                 p.bag.add(tenebris_core::items::RAW_MEAT, 2);
+                /* Some seeds + berries so the farming loop + icons show. */
+                p.bag.add(tenebris_core::items::SEEDS, 6);
+                p.bag.add(tenebris_core::items::BERRIES, 4);
             }
         }
         5 => {
@@ -1272,6 +1277,7 @@ extern "C" fn init() {
     renderer::init();
     torch::init();
     animals::init();
+    crops::init();
     mobile_ui::init();
     hotbar_ui::init();
     teleport_menu::init();
@@ -1327,6 +1333,8 @@ extern "C" fn init() {
     ));
     /* Survival mining + ore-drop tuning. */
     tenebris_core::mining::load_config("assets/config/mining.yaml");
+    /* Crop growth + yield tuning (farming loop). */
+    tenebris_core::farming::load_config("assets/config/farming.yaml");
     /* Rocket part stats + flight constants (consumed by the rocket
      * assembly + flight port). */
     tenebris_core::rocket::set_config(tenebris_core::rocket::load_rocket_config(
@@ -2097,6 +2105,37 @@ fn draw_hunger_bar(app: &App, screen_w: f32, screen_h: f32) {
     sdtx::color3b(0xff, 0xff, 0xff);
 }
 
+/// Crop reticle hint: when the player is looking at a crop, show whether
+/// it's ready to harvest or still growing (with a percentage), plus the
+/// [T] keybind - the discoverability cue for the farming loop. Text-only
+/// (an inherently-textual readout, like the FPS strip), centred just below
+/// the screen middle so it sits under the reticle dot.
+fn draw_crop_hint(screen_w: f32, screen_h: f32) {
+    let Some(growth) = crops::reticle_growth() else {
+        return;
+    };
+    let msg = if growth >= 1.0 {
+        "[T] harvest".to_string()
+    } else {
+        format!("growing {}%  [T]", (growth * 100.0) as i32)
+    };
+    let cell = 8.0f32;
+    let x = (screen_w * 0.5 - (msg.len() as f32 * cell) * 0.5) / cell;
+    let y = (screen_h * 0.5 + 24.0) / cell;
+    sdtx::canvas(screen_w, screen_h);
+    sdtx::font(1);
+    sdtx::origin(x, y);
+    if growth >= 1.0 {
+        sdtx::color3b(0x90, 0xf0, 0x70);
+    } else {
+        sdtx::color3b(0xe0, 0xd0, 0x80);
+    }
+    sdtx::home();
+    sdtx::puts(&msg);
+    sdtx::font(0);
+    sdtx::color3b(0xff, 0xff, 0xff);
+}
+
 /// F1 players panel - overlay listing every connected player (local +
 /// remote) with their lat/long on the body they're standing on.
 fn draw_players_panel(app: &App, screen_w: f32, screen_h: f32) {
@@ -2390,6 +2429,27 @@ fn apply_sp_world_saves(w_rc: &Rc<RefCell<World>>) {
         println!("[sp-saves] body={}: {} torch(es) restored", body_id, placed);
     }
 
+    /* Crop list: reload every planted crop with its saved growth so the
+     * player's farm survives a reload (same per-body snapshot shape as
+     * torches). */
+    let saved_crops = persistence::load_crops(&world_name, body_id);
+    if !saved_crops.is_empty() {
+        let restored: Vec<tenebris_core::farming::Crop> = saved_crops
+            .iter()
+            .map(|c| {
+                tenebris_core::farming::Crop::at(
+                    DVec3 { x: c.pos[0] as f64, y: c.pos[1] as f64, z: c.pos[2] as f64 },
+                    DVec3 { x: c.up[0] as f64, y: c.up[1] as f64, z: c.up[2] as f64 },
+                    c.tile_idx,
+                    c.growth,
+                )
+            })
+            .collect();
+        let n = restored.len();
+        crops::restore(restored);
+        println!("[sp-saves] body={}: {} crop(s) restored", body_id, n);
+    }
+
     /* Per-placed-block state (tech-block facing now; machine state later).
      * The blocks themselves loaded above; this layers their placed state
      * back on so cubes keep their orientation across reload. */
@@ -2402,6 +2462,34 @@ fn apply_sp_world_saves(w_rc: &Rc<RefCell<World>>) {
         }
         println!("[sp-saves] body={}: {} block-entit(ies) restored", body_id, n);
     }
+}
+
+/// SP same-frame persistence of the crop list after a plant / harvest.
+/// Mirrors interact's torch save: gated on GAME_IN_GAME_SP, filters the
+/// global crop list to crops anchored on this body, and rewrites the
+/// per-body snapshot. (MP crop sync is a follow-up, like the animals.)
+fn sp_save_crops_after_change(w: &World) {
+    if menu::state() != GameState::InGameSp {
+        return;
+    }
+    let name = menu::active_world();
+    if name.is_empty() {
+        return;
+    }
+    let list = crops::list();
+    let mut buf: Vec<persistence::PersistenceCrop> = Vec::with_capacity(list.len());
+    for c in &list {
+        if c.tile_idx < 0 || c.tile_idx >= w.tile_count {
+            continue;
+        }
+        buf.push(persistence::PersistenceCrop {
+            pos: [c.pos.x as f32, c.pos.y as f32, c.pos.z as f32],
+            up: [c.up.x as f32, c.up.y as f32, c.up.z as f32],
+            tile_idx: c.tile_idx,
+            growth: c.growth,
+        });
+    }
+    persistence::save_crops(&name, w.body.id as u32, &buf);
 }
 
 fn mark_sp_saves_applied(app: &mut App, w_rc: &Rc<RefCell<World>>) {
@@ -3173,6 +3261,9 @@ fn frame_inner(app: &mut App) {
                 } else if p.bag.count_of(tenebris_core::items::RAW_MEAT) > 0 {
                     p.bag.take(tenebris_core::items::RAW_MEAT, 1);
                     20.0
+                } else if p.bag.count_of(tenebris_core::items::BERRIES) > 0 {
+                    p.bag.take(tenebris_core::items::BERRIES, 1);
+                    tenebris_core::farming::config().berry_hunger_restore
                 } else {
                     0.0
                 };
@@ -3340,12 +3431,13 @@ fn frame_inner(app: &mut App) {
     /* interact keeps running while paused (input zeroing above already
      * stopped mining / placement); frozen during MP join until READY. */
     if !mp_loading {
-        /* Wander + re-seat the animals before interact runs its attack
-         * raycast against them. */
+        /* Wander + re-seat the animals + grow the crops before interact
+         * runs its raycasts. */
         {
             let w = phys_world.borrow();
             let p = app.player.borrow();
             animals::update(dt, &w, &p);
+            crops::update(dt, &w, &p);
         }
         interact::update(
             &mut app.interact,
@@ -3353,6 +3445,37 @@ fn frame_inner(app: &mut App) {
             &mut app.player.borrow_mut(),
             dt,
         );
+        /* Plant / harvest (T): harvest a mature crop under the reticle, or
+         * plant a seed on the block the player is aiming at. The crop list
+         * mutation happens in crops::plant_or_harvest; here we apply the
+         * bag change + persist same-frame (CLAUDE.md world-edit rule). */
+        if input::consume_plant() {
+            let outcome = {
+                let w = phys_world.borrow();
+                let p = app.player.borrow();
+                let has_seeds = p.bag.count_of(tenebris_core::items::SEEDS) > 0;
+                crops::plant_or_harvest(&w, &p, &app.interact, has_seeds)
+            };
+            match outcome {
+                crops::Outcome::Planted => {
+                    app.player.borrow_mut().bag.take(tenebris_core::items::SEEDS, 1);
+                    sp_save_crops_after_change(&phys_world.borrow());
+                }
+                crops::Outcome::Harvested => {
+                    let cfg = tenebris_core::farming::config();
+                    {
+                        let mut p = app.player.borrow_mut();
+                        p.bag.add(tenebris_core::items::BERRIES, cfg.produce_count());
+                        p.bag.add(tenebris_core::items::SEEDS, cfg.seed_count());
+                    }
+                    sp_save_crops_after_change(&phys_world.borrow());
+                }
+                crops::Outcome::NotReady | crops::Outcome::None => {}
+            }
+        }
+    } else {
+        /* Drop the edge while MP is loading so it doesn't fire on join. */
+        input::consume_plant();
     }
     profiler::end("interact");
     input::consume();
@@ -3522,8 +3645,10 @@ fn frame_inner(app: &mut App) {
     profiler::begin("draw-torches");
     renderer::draw_torches(view, proj);
     profiler::end("draw-torches");
-    /* Animals - same offscreen opaque pass so terrain/torches z-sort. */
+    /* Animals + crops - same offscreen opaque pass so terrain/torches
+     * z-sort correctly against them. */
     animals::draw(view, proj);
+    crops::draw(view, proj);
 
     /* Remote-player markers - same offscreen pass so they get the
      * depth-sorted composite + water refraction for free. */
@@ -3602,6 +3727,8 @@ fn frame_inner(app: &mut App) {
         draw_mining_bar(app, sapp::widthf(), sapp::heightf());
         /* Survival hunger meter (top-left). */
         draw_hunger_bar(app, sapp::widthf(), sapp::heightf());
+        /* Crop status hint under the reticle (plant / harvest). */
+        draw_crop_hint(sapp::widthf(), sapp::heightf());
     }
     /* Sync the hamburger debug-menu + teleport-button visibility with
      * the master F2 toggle every frame. */
