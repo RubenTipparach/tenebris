@@ -271,8 +271,9 @@ pub(crate) fn columns(recipes: &[Recipe]) -> Vec<Vec<usize>> {
     }
 
     /* Barycentre pass, left to right: each node moves next to the mean
-     * row of the producers feeding it. One sweep is enough to untangle a
-     * tree this size (classic layered-graph heuristic). */
+     * row of the producers whose edges are actually DRAWN (the ones in
+     * the previous column - see `edges`). One sweep is enough to
+     * untangle a tree this size (classic layered-graph heuristic). */
     let mut rowpos = vec![0.0f32; n];
     for col in &cols {
         for (ri, &rid) in col.iter().enumerate() {
@@ -283,10 +284,13 @@ pub(crate) fn columns(recipes: &[Recipe]) -> Vec<Vec<usize>> {
         let mut keyed: Vec<(f32, usize)> = cols[ci]
             .iter()
             .map(|&rid| {
+                /* Producers in the immediately previous column - the
+                 * gating inputs whose edges get drawn. */
                 let prods: Vec<f32> = recipes[rid]
                     .inputs
                     .iter()
                     .filter_map(|ing| producer_of(recipes, ing.item))
+                    .filter(|&p| depths[p] as usize == ci)
                     .map(|p| rowpos[p])
                     .collect();
                 let key = if prods.is_empty() {
@@ -303,7 +307,65 @@ pub(crate) fn columns(recipes: &[Recipe]) -> Vec<Vec<usize>> {
             rowpos[rid] = ri as f32;
         }
     }
+
+    /* One backward sweep: re-seat each producer at the mean row of the
+     * consumers it feeds in the NEXT column, so a node like "sticks"
+     * (which feeds every tool) sits centred on its fan instead of at the
+     * top with edges sweeping the whole gutter. */
+    for ci in (0..cols.len().saturating_sub(1)).rev() {
+        let mut keyed: Vec<(f32, usize)> = cols[ci]
+            .iter()
+            .map(|&rid| {
+                let out_item = recipes[rid].output.item;
+                let consumers: Vec<f32> = cols[ci + 1]
+                    .iter()
+                    .copied()
+                    .filter(|&c| recipes[c].inputs.iter().any(|ing| ing.item == out_item))
+                    .map(|c| rowpos[c])
+                    .collect();
+                let key = if consumers.is_empty() {
+                    rowpos[rid]
+                } else {
+                    consumers.iter().sum::<f32>() / consumers.len() as f32
+                };
+                (key, rid)
+            })
+            .collect();
+        keyed.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap().then(a.1.cmp(&b.1)));
+        cols[ci] = keyed.into_iter().map(|(_, r)| r).collect();
+        for (ri, &rid) in cols[ci].iter().enumerate() {
+            rowpos[rid] = ri as f32;
+        }
+    }
     cols
+}
+
+/// The dependency edges the chart DRAWS: one per (producer, consumer)
+/// pair where the producer sits in the immediately previous depth column
+/// - i.e. the input that actually gates the recipe's place in the chain.
+/// Commodity ingredients from far-earlier steps (planks, sticks feed
+/// almost everything) are deliberately NOT drawn as lines - they'd cross
+/// the whole panel through other cards and turn the chart into a
+/// hairball. They still show as input icons on each card.
+pub(crate) fn edges(recipes: &[Recipe], cols: &[Vec<usize>]) -> Vec<(usize, usize)> {
+    let mut col_of = vec![0usize; recipes.len()];
+    for (ci, col) in cols.iter().enumerate() {
+        for &rid in col {
+            col_of[rid] = ci;
+        }
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    let mut out = Vec::new();
+    for (rid, r) in recipes.iter().enumerate() {
+        for ing in &r.inputs {
+            if let Some(p) = producer_of(recipes, ing.item) {
+                if p != rid && col_of[p] + 1 == col_of[rid] && seen.insert((p, rid)) {
+                    out.push((p, rid));
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Paint an item thumbnail into `rect`.
@@ -484,23 +546,17 @@ pub fn egui_ui(ctx: &egui::Context) {
                             egui::Color32::from_rgb(0xe0, 0xc8, 0x60),
                         );
                     }
-                    // Edges first (behind the nodes), deduped: a recipe
-                    // taking two different items from one producer still
-                    // draws a single connection.
-                    let mut drawn: std::collections::BTreeSet<(usize, usize)> =
-                        std::collections::BTreeSet::new();
-                    for (rid, r) in recipes.iter().enumerate() {
-                        let Some(crect) = rects[rid] else { continue };
-                        let dim = node_state(r, &disco, &inv, &bag) == NodeState::Locked;
-                        for ing in &r.inputs {
-                            if let Some(pidx) = producer_of(&recipes, ing.item) {
-                                if pidx != rid && drawn.insert((pidx, rid)) {
-                                    if let Some(prect) = rects[pidx] {
-                                        paint_edge(&painter, prect, crect, dim);
-                                    }
-                                }
-                            }
-                        }
+                    // Edges first (behind the nodes). Only the GATING
+                    // edges are drawn - producer in the previous column
+                    // (see `edges`) - so every line lives inside one
+                    // column gutter and never crosses cards.
+                    for (pidx, rid) in edges(&recipes, &cols) {
+                        let (Some(prect), Some(crect)) = (rects[pidx], rects[rid]) else {
+                            continue;
+                        };
+                        let dim =
+                            node_state(&recipes[rid], &disco, &inv, &bag) == NodeState::Locked;
+                        paint_edge(&painter, prect, crect, dim);
                     }
                     // Nodes on top.
                     for (rid, r) in recipes.iter().enumerate() {
@@ -611,6 +667,47 @@ in: stick 2
         assert_eq!(name_at(0), "planks");
         assert_eq!(name_at(1), "sticks");
         assert_eq!(name_at(2), "wood-pickaxe");
+    }
+
+    #[test]
+    fn edges_draw_only_the_gating_link() {
+        // planks(1) -> sticks(2) -> pickaxe(3). The pickaxe ALSO takes
+        // planks, but that edge would span two columns through the
+        // sticks card - it is omitted (the plank icon on the card
+        // carries that information).
+        let src = "\
+[planks]
+out: plank 4
+in: log 1
+[sticks]
+out: stick 4
+in: plank 2
+[wood-pickaxe]
+out: wood-pickaxe 1
+in: plank 3
+in: stick 2
+";
+        let rs = tenebris_core::crafting::parse_recipes(src, "t");
+        let cols = columns(&rs);
+        let es = edges(&rs, &cols);
+        let name_pair = |&(a, b): &(usize, usize)| (rs[a].name.clone(), rs[b].name.clone());
+        let pairs: Vec<_> = es.iter().map(name_pair).collect();
+        assert!(pairs.contains(&("planks".into(), "sticks".into())));
+        assert!(pairs.contains(&("sticks".into(), "wood-pickaxe".into())));
+        assert!(
+            !pairs.contains(&("planks".into(), "wood-pickaxe".into())),
+            "column-skipping commodity edge must not be drawn"
+        );
+        // Every drawn edge connects adjacent columns.
+        let mut col_of = vec![0usize; rs.len()];
+        for (ci, col) in cols.iter().enumerate() {
+            for &rid in col {
+                col_of[rid] = ci;
+            }
+        }
+        for (a, b) in es {
+            assert_eq!(col_of[a] + 1, col_of[b], "edge spans exactly one gutter");
+        }
     }
 
     #[test]
