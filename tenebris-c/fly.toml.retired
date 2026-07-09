@@ -1,3 +1,10 @@
+# RETIRED - do not deploy. The production app 'tenebris-c' is now
+# served by the Rust server: deploy tenebris-rs/fly.toml instead (or
+# the "Deploy server (Fly)" GitHub workflow). This file is kept only
+# as the emergency rollback path to the C image:
+#
+#   fly deploy tenebris-c --config tenebris-c/fly.toml.retired
+#
 # fly.toml app configuration file generated for tenebris-c on 2026-05-10T22:25:49-05:00
 #
 # See https://fly.io/docs/reference/configuration/ for information about how to use this file.

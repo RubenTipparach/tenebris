@@ -1,0 +1,53 @@
+# Deploy the Rust dedicated server (tenebris-rs/crates/tenebris-server)
+# to the production Fly app 'tenebris-c'. The app keeps its C-era name
+# because the clients' default server URL (wss://tenebris-c.fly.dev/)
+# is an on-wire identifier that must not change; the binary behind it
+# is the Rust port, which reads the existing /data/saves volume in
+# place (byte-compatible save format).
+#
+# ONE-TIME SETUP: add a repo secret FLY_API_TOKEN with a deploy token
+# for the app:  fly tokens create deploy -a tenebris-c
+#
+# Triggers:
+#   - manually from the Actions tab (any branch) - use this for the
+#     first cutover;
+#   - automatically on pushes to main that touch the server, the core
+#     crate it embeds, or the deploy config.
+name: Deploy server (Fly)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'tenebris-rs/crates/tenebris-server/**'
+      - 'tenebris-rs/crates/tenebris-core/**'
+      - 'tenebris-rs/assets/config/**'
+      - 'tenebris-rs/Cargo.lock'
+      - 'tenebris-rs/Dockerfile'
+      - 'tenebris-rs/Dockerfile.dockerignore'
+      - 'tenebris-rs/fly.toml'
+      - '.github/workflows/deploy-server.yml'
+
+# Never run two deploys at once; a later push supersedes a queued one.
+concurrency:
+  group: deploy-server
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tenebris-rs
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Deploy (remote builder)
+        run: flyctl deploy --remote-only --config fly.toml
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

@@ -1,32 +1,35 @@
-# fly.toml app configuration file for tenebris-rs - the Rust port of
-# the tenebris-c dedicated server.
+# fly.toml app configuration for the tenebris dedicated server -
+# served by the RUST implementation (crates/tenebris-server).
 #
 # See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
-# This app deploys SIDE-BY-SIDE with the live C deployment: the app
-# name is 'tenebris-rs', deliberately different from 'tenebris-c', so
-# deploying the port can never clobber the production C server. It
-# needs its own (empty) volume on first deploy:
+# CUTOVER NOTE: this config targets the PRODUCTION app 'tenebris-c'.
+# The app name is an on-wire identifier (the clients' default server
+# URL is wss://tenebris-c.fly.dev/ - see PORTING.md hard rule 1), so
+# it keeps the C-era name even though the binary is the Rust port.
+# Deploying this replaces the old C server's machines in place; the
+# save format is byte-compatible by porting rule, so the Rust binary
+# picks up the existing /data/saves on the app's volume as-is.
 #
-#   fly volumes create tenebris_saves --region ord --app tenebris-rs
+# Deploy (from tenebris-rs/, which is the whole build context):
 #
-# Cutting over later: the save format is byte-compatible by porting
-# rule (PORTING.md #1), so when the Rust server is ready to replace
-# the C one, change `app` below to 'tenebris-c' and deploy - the Rust
-# binary picks up the existing /data/saves on the C app's volume
-# in place. Keep this file's [[mounts]] block intact when doing so.
+#   fly deploy --config fly.toml
 #
-# Build note: the image build context must be the REPO ROOT (the
-# Dockerfile copies the shared config tree from
-# tenebris-c/assets/config). Deploy from the repo root with:
+# or push to main / run the "Deploy server (Fly)" workflow - see
+# .github/workflows/deploy-server.yml.
 #
-#   fly deploy . --config tenebris-rs/fly.toml
+# Emergency rollback to the C server: its retired config still builds
+# the C image against the same app + volume:
+#
+#   fly deploy tenebris-c --config tenebris-c/fly.toml.retired
 
-app = 'tenebris-rs'
+app = 'tenebris-c'
 primary_region = 'ord'
 
 [build]
-  # Resolved relative to this file: tenebris-rs/Dockerfile.
+  # Resolved relative to this file: tenebris-rs/Dockerfile. The build
+  # context is tenebris-rs/ - the image is fully self-contained per the
+  # repo rule (no references into the C or JS trees).
   dockerfile = 'Dockerfile'
 
 [http_service]
@@ -44,6 +47,8 @@ primary_region = 'ord'
   memory_mb = 2048
 
 # Persistent volume so M6 chunk-diff saves survive every fly deploy.
+# This is the SAME volume the C server wrote - the Rust server reads
+# and extends those saves in place (byte-compatible format).
 # IMPORTANT: do NOT re-run `fly launch --copy-config` — it strips this
 # block silently and saves stop persisting on the next redeploy.
 [[mounts]]
