@@ -374,6 +374,10 @@ thread_local! {
     /// showcase ring.
     static DEV_PLACE_COUNTDOWN: std::cell::Cell<i32> = const { std::cell::Cell::new(-1) };
     static DEV_PLACE_MODE: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+    /// Dev: TENEBRIS_DEV_CRACK holds the survival mine button on the block
+    /// under the reticle every frame (camera pitched down) so a screenshot
+    /// catches the block-break crack decal mid-mine. -1 unknown, 0 off, 1 on.
+    static DEV_CRACK: std::cell::Cell<i8> = const { std::cell::Cell::new(-1) };
     /// Dev: freeze the world clock at a fixed time of day (TENEBRIS_DEV_TIME)
     /// so a screenshot captures a chosen sun angle. -1 unknown, 0 run, 1 freeze.
     static DEV_TIME_FROZEN: std::cell::Cell<i8> = const { std::cell::Cell::new(-1) };
@@ -2315,6 +2319,47 @@ fn draw_crop_hint(screen_w: f32, screen_h: f32) {
     sdtx::color3b(0xff, 0xff, 0xff);
 }
 
+/// Survival tool-gate hint: when the player holds the mine button on a
+/// block their current tool can't harvest (rock/ore without a pickaxe),
+/// the block never breaks - which reads as "broken" without a cue. Show
+/// a short prompt under the reticle so the pickaxe requirement is legible.
+fn draw_tool_gate_hint(app: &App, screen_w: f32, screen_h: f32) {
+    if !app.player.borrow().survival_mode {
+        return;
+    }
+    if !app.interact.has_target || app.interact.is_torch_target {
+        return;
+    }
+    if !input::state().left_held {
+        return;
+    }
+    let block = app.world.borrow().get(app.interact.hit_tile, app.interact.hit_depth);
+    if tenebris_core::blocks::is_unbreakable(block) {
+        return;
+    }
+    let tier = if app.player.borrow().bag.count_of(tenebris_core::items::WOOD_PICKAXE) > 0 {
+        1
+    } else {
+        0
+    };
+    if tenebris_core::mining::required_tier(block) <= tier {
+        return; /* harvestable - the crack decal + mining bar show progress */
+    }
+
+    let msg = "Need a pickaxe to mine this";
+    let cell = 8.0f32;
+    let x = (screen_w * 0.5 - (msg.len() as f32 * cell) * 0.5) / cell;
+    let y = (screen_h * 0.5 + 24.0) / cell;
+    sdtx::canvas(screen_w, screen_h);
+    sdtx::font(1);
+    sdtx::origin(x, y);
+    sdtx::color3b(0xf0, 0x90, 0x60);
+    sdtx::home();
+    sdtx::puts(msg);
+    sdtx::font(0);
+    sdtx::color3b(0xff, 0xff, 0xff);
+}
+
 /// F1 players panel - overlay listing every connected player (local +
 /// remote) with their lat/long on the body they're standing on.
 fn draw_players_panel(app: &App, screen_w: f32, screen_h: f32) {
@@ -3405,6 +3450,35 @@ fn frame_inner(app: &mut App) {
         teleport_menu::poll_touches();
     }
 
+    /* Dev screenshot aid: hold the survival mine button on the block
+     * under a downward-pitched reticle so a still captures the crack
+     * decal mid-mine. Cached env read (thread-local), dev-only. */
+    {
+        let on = match DEV_CRACK.with(|c| c.get()) {
+            -1 => {
+                let v = std::env::var("TENEBRIS_DEV_CRACK").is_ok() as i8;
+                DEV_CRACK.with(|c| c.set(v));
+                if v == 1 {
+                    /* A pickaxe once, so stone is harvestable and the
+                     * crack decal actually deepens (bare hands on stone
+                     * are gated - that path shows the tool hint instead). */
+                    app.player.borrow_mut().bag.add(tenebris_core::items::WOOD_PICKAXE, 1);
+                }
+                v == 1
+            }
+            v => v == 1,
+        };
+        /* Survival + camera pitched down at the surface. We do NOT hold
+         * the mine button: the crack decal is forced on at a demo stage in
+         * the render path instead, so the still shows the decal without
+         * actually breaking blocks. */
+        if on {
+            let mut p = app.player.borrow_mut();
+            p.survival_mode = true;
+            p.pitch = -1.30;
+        }
+    }
+
     /* G-key toggles survival mode in SP only (MP is always survival).
      * Consume the edge either way. */
     if input::consume_survival_toggle() && menu::state() == GameState::InGameSp {
@@ -3894,6 +3968,40 @@ fn frame_inner(app: &mut App) {
             1.00,
             0.95,
         );
+        /* Survival block-break crack decal: fracture the targeted face by
+         * mining progress so hitting a block shows visible damage that
+         * deepens toward the break. Only while actively mining THIS cell. */
+        let frac = {
+            let p = app.player.borrow();
+            if p.survival_mode
+                && app.interact.mining_progress_s > 0.0
+                && app.interact.mining_tile == app.interact.hit_tile
+                && app.interact.mining_depth == app.interact.hit_depth
+            {
+                let block = app.world.borrow().get(app.interact.hit_tile, app.interact.hit_depth);
+                let break_s = interact::break_seconds_for(&p, block).max(1e-4);
+                Some((app.interact.mining_progress_s / break_s).clamp(0.0, 1.0))
+            } else {
+                None
+            }
+        };
+        /* Dev screenshot aid: render the decal at a fixed mid-late stage
+         * on the aimed block without mining it, so a still shows the crack
+         * (holding the mine button would break blocks and is only for the
+         * live feel). */
+        let frac = if DEV_CRACK.with(|c| c.get()) == 1 { Some(0.7) } else { frac };
+        if let Some(frac) = frac {
+            renderer::draw_break_overlay(
+                view,
+                proj,
+                &app.world.borrow(),
+                app.interact.hit_tile,
+                app.interact.hit_depth,
+                app.interact.place_tile,
+                app.interact.place_depth,
+                frac,
+            );
+        }
     }
 
     /* Hand off to the swapchain pass. */
@@ -3953,6 +4061,8 @@ fn frame_inner(app: &mut App) {
         draw_hunger_bar(app, sapp::widthf(), sapp::heightf());
         /* Crop status hint under the reticle (plant / harvest). */
         draw_crop_hint(sapp::widthf(), sapp::heightf());
+        /* Survival: prompt when the targeted block needs a better tool. */
+        draw_tool_gate_hint(app, sapp::widthf(), sapp::heightf());
     }
     /* Sync the hamburger debug-menu + teleport-button visibility with
      * the master F2 toggle every frame. */

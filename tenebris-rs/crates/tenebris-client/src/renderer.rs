@@ -84,13 +84,13 @@ use std::rc::Rc;
 use tenebris_core::blocks::{self, Block, FaceCap};
 use tenebris_core::config;
 use tenebris_core::math::{
-    dvec3_dot, dvec3_scale, dvec3_to_vec3, vec3_add, vec3_length, vec3_sub, DVec3, Vec3,
+    dvec3_dot, dvec3_make, dvec3_normalize, dvec3_scale, dvec3_to_vec3, vec3_add, vec3_length,
+    vec3_sub, DVec3, Vec3,
 };
-#[cfg(test)]
-use tenebris_core::math::dvec3_normalize;
 use tenebris_core::orbit;
 use tenebris_core::planet::{BodyConfig, BodyId, Tileset};
 use tenebris_core::planet_gen;
+use tenebris_core::rng;
 use tenebris_core::world::{World, WORLD_MAX_DEPTH};
 use tenebris_core::world_water;
 
@@ -4175,6 +4175,155 @@ pub fn draw_face_outline(
         }
         OutlineFace::None => unreachable!(),
     }
+    sgl::end();
+}
+
+/// Block-break crack decal on the single face of (tile, depth) shared
+/// with (nbr_tile, nbr_depth) - the same face `draw_face_outline`
+/// highlights. `frac` is mining progress in [0, 1]; more cracks appear
+/// and darken as it climbs, so the block visibly fractures the longer the
+/// survival player mines it.
+///
+/// Drawn as dark fracture LINES reusing the outline pipeline (the proven
+/// lines-in-default-context path). A textured-triangle decal double-
+/// updated the shared sgl vertex buffer and tripped the validation layer,
+/// so the decal is procedural geometry instead: a spider crack of jagged
+/// spokes from the face centre out to its corners, deterministic per
+/// (tile, depth) so it's stable frame to frame.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_break_overlay(
+    view: Mat4,
+    proj: Mat4,
+    world: &World,
+    tile_idx: i32,
+    depth: i32,
+    nbr_tile: i32,
+    nbr_depth: i32,
+    frac: f32,
+) {
+    if tile_idx < 0 || tile_idx >= world.tile_count {
+        return;
+    }
+    if depth < 0 || depth >= WORLD_MAX_DEPTH {
+        return;
+    }
+    let Some(t) = world.grid.tile(tile_idx) else { return };
+    let n = t.num_verts as i32;
+    if n <= 0 {
+        return;
+    }
+
+    /* Same face classification as draw_face_outline. */
+    let mut kind = OutlineFace::None;
+    let mut side_edge_k: i32 = -1;
+    if nbr_tile == tile_idx {
+        if nbr_depth == depth + 1 {
+            kind = OutlineFace::TopCap;
+        } else if nbr_depth == depth - 1 {
+            kind = OutlineFace::BottomCap;
+        }
+    } else if nbr_depth == depth {
+        for k in 0..n {
+            if t.edge_neighbours[k as usize] == nbr_tile {
+                side_edge_k = k;
+                break;
+            }
+        }
+        if side_edge_k >= 0 {
+            kind = OutlineFace::Side;
+        }
+    }
+    if kind == OutlineFace::None {
+        return;
+    }
+
+    /* Face centre + the corner points the spokes reach toward. Caps use
+     * every rim vertex; a side face uses its four quad corners. */
+    let (center, corners): (DVec3, Vec<DVec3>) = match kind {
+        OutlineFace::TopCap | OutlineFace::BottomCap => {
+            let ring_r = if kind == OutlineFace::TopCap {
+                world.depth_to_radius_m(depth + 1)
+            } else {
+                world.depth_to_radius_m(depth)
+            };
+            let mut c = dvec3_make(0.0, 0.0, 0.0);
+            for k in 0..n {
+                let p = t.verts[k as usize];
+                c = dvec3_make(c.x + p.x, c.y + p.y, c.z + p.z);
+            }
+            let inv = 1.0 / n as f64;
+            let center = dvec3_scale(dvec3_normalize(dvec3_make(c.x * inv, c.y * inv, c.z * inv)), ring_r);
+            let corners: Vec<DVec3> =
+                (0..n).map(|k| dvec3_scale(t.verts[k as usize], ring_r)).collect();
+            (center, corners)
+        }
+        OutlineFace::Side => {
+            let k_a = side_edge_k;
+            let k_b = (k_a + 1) % n;
+            let r_bot = world.depth_to_radius_m(depth);
+            let r_top = world.depth_to_radius_m(depth + 1);
+            let ia = dvec3_scale(t.verts[k_a as usize], r_bot);
+            let ib = dvec3_scale(t.verts[k_b as usize], r_bot);
+            let oa = dvec3_scale(t.verts[k_a as usize], r_top);
+            let ob = dvec3_scale(t.verts[k_b as usize], r_top);
+            let center = dvec3_scale(
+                dvec3_make(
+                    (ia.x + ib.x + oa.x + ob.x) * 0.25,
+                    (ia.y + ib.y + oa.y + ob.y) * 0.25,
+                    (ia.z + ib.z + oa.z + ob.z) * 0.25,
+                ),
+                1.0,
+            );
+            (center, vec![ia, ib, ob, oa])
+        }
+        OutlineFace::None => unreachable!(),
+    };
+
+    /* Progressive reveal: at least one spoke, all of them by the end.
+     * A deterministic per-cell hash rotates which spokes light first so
+     * adjacent blocks don't crack identically. */
+    let count = corners.len();
+    let frac = frac.clamp(0.0, 1.0);
+    let spokes = ((frac * count as f32).ceil() as usize).clamp(1, count);
+    let rot = (rng::hash2(tile_idx, depth) * count as f32) as usize % count.max(1);
+    let alpha = 0.45 + 0.45 * frac; /* darkens as the block nears breaking */
+
+    let pip = ensure_outline_pip();
+    sgl::defaults();
+    sgl::matrix_mode_projection();
+    sgl::load_matrix(&proj.m[0]);
+    sgl::matrix_mode_modelview();
+    sgl::load_matrix(&view.m[0]);
+    sgl::translate(
+        world.body.pos_x as f32,
+        world.body.pos_y as f32,
+        world.body.pos_z as f32,
+    );
+    sgl::load_pipeline(pip);
+
+    sgl::begin_lines();
+    sgl::c4f(0.05, 0.04, 0.04, alpha); /* near-black fracture lines */
+
+    let emit = |a: DVec3, b: DVec3| {
+        sgl::v3f(a.x as f32, a.y as f32, a.z as f32);
+        sgl::v3f(b.x as f32, b.y as f32, b.z as f32);
+    };
+    /* Each spoke is a two-segment jagged line centre -> midpoint -> corner,
+     * with the midpoint kicked toward the next corner so it isn't a
+     * straight radial. The kick is a fixed fraction, no per-frame noise. */
+    for s in 0..spokes {
+        let i = (rot + s) % count;
+        let corner = corners[i];
+        let nbr = corners[(i + 1) % count];
+        let mid = dvec3_make(
+            (center.x + corner.x) * 0.5 + (nbr.x - corner.x) * 0.12,
+            (center.y + corner.y) * 0.5 + (nbr.y - corner.y) * 0.12,
+            (center.z + corner.z) * 0.5 + (nbr.z - corner.z) * 0.12,
+        );
+        emit(center, mid);
+        emit(mid, corner);
+    }
+
     sgl::end();
 }
 

@@ -73,6 +73,26 @@ pub struct InteractState {
     pub mining_depth: i32,
 }
 
+/// The tool category the player effectively wields against `block`: the
+/// block's ideal tool if a matching one is in the bag, else `None` (bare
+/// hands / wrong tool). Shared by the mining loop and the HUD crack-decal
+/// so the on-screen break progress matches the real break time.
+pub fn held_tool_for(p: &PlayerCtrl, block: Block) -> mining::ToolKind {
+    let ideal = mining::block_tool(block);
+    match ideal {
+        mining::ToolKind::Pick if p.bag.count_of(items::WOOD_PICKAXE) > 0 => ideal,
+        mining::ToolKind::Axe if p.bag.count_of(items::WOOD_AXE) > 0 => ideal,
+        mining::ToolKind::Shovel if p.bag.count_of(items::WOOD_SHOVEL) > 0 => ideal,
+        _ => mining::ToolKind::None,
+    }
+}
+
+/// Seconds to break `block` with the player's current tool - the same
+/// denominator the mining loop counts `mining_progress_s` toward.
+pub fn break_seconds_for(p: &PlayerCtrl, block: Block) -> f32 {
+    mining::break_time(&mining::config(), block, held_tool_for(p, block))
+}
+
 /* ----------------------------------------------------------------- */
 /* SP per-edit persistence helpers. CLAUDE.md mandates that every
  * block place/break and every torch place/remove write to durable
@@ -439,13 +459,7 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
             /* Break time scales with the tool: the block's ideal tool
              * (pickaxe / axe / shovel) held in the bag mines it fast;
              * bare hands are slow, so crafting tools pays off. */
-            let ideal = mining::block_tool(target_block);
-            let held = match ideal {
-                mining::ToolKind::Pick if p.bag.count_of(items::WOOD_PICKAXE) > 0 => ideal,
-                mining::ToolKind::Axe if p.bag.count_of(items::WOOD_AXE) > 0 => ideal,
-                mining::ToolKind::Shovel if p.bag.count_of(items::WOOD_SHOVEL) > 0 => ideal,
-                _ => mining::ToolKind::None,
-            };
+            let held = held_tool_for(p, target_block);
             let break_s = mining::break_time(&mining::config(), target_block, held);
             s.mining_progress_s += dt;
             if s.mining_progress_s >= break_s {
