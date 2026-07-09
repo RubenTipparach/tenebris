@@ -1357,6 +1357,103 @@ pub fn torches_load(room: &str, seed: u64, body_id: u32, out: &mut [Torch]) -> i
     loaded as i32
 }
 
+/* ------------------------------------------------------------------ */
+/* MP-parity state files (Rust-port additions past the C save set).
+ * Simple UTF-8 text blobs written atomically next to the binary
+ * formats:
+ *   body dir: bentities.txt - ';'-joined block-entity records
+ *             crops.txt     - one crop record per line
+ *   room dir: players/<key>.bag.txt - "hunger|item,count;..." grid
+ *   root:     world_time.txt - "sim_seconds wall_unix"
+ * New files, not extensions: the C-era binary formats stay pinned.   */
+/* ------------------------------------------------------------------ */
+
+fn body_state_path(dir: &str, room: &str, seed: u64, body_id: u32, file: &str) -> String {
+    format!(
+        "{}/rooms/{}/world-{:x}/body-{}/{}",
+        dir,
+        room_dir_name(room),
+        seed,
+        body_id,
+        file
+    )
+}
+
+/// Write (or, for empty content, delete) a per-body text state file.
+pub fn body_state_write(room: &str, seed: u64, body_id: u32, file: &str, content: &str) -> bool {
+    let Some(dir_root) = saves_dir() else { return false };
+    let dir = body_dir(&dir_root, room, seed, body_id);
+    let path = body_state_path(&dir_root, room, seed, body_id, file);
+    if content.is_empty() {
+        if let Err(e) = fs::remove_file(&path) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                eprintln!("[saves] body_state_write unlink({}): {}", path, e);
+                return false;
+            }
+        }
+        return true;
+    }
+    if !mkdir_p(&dir) {
+        eprintln!("[saves] body_state_write mkdir_p({}) failed", dir);
+        return false;
+    }
+    write_atomic(&path, content.as_bytes())
+}
+
+/// Read a per-body text state file (None when absent / unreadable).
+pub fn body_state_load(room: &str, seed: u64, body_id: u32, file: &str) -> Option<String> {
+    let dir_root = saves_dir()?;
+    let path = body_state_path(&dir_root, room, seed, body_id, file);
+    fs::read_to_string(&path).ok()
+}
+
+/// Per-player bag + hunger blob, keyed like the pose record (the
+/// C-format pose file itself stays byte-pinned, so this is a sibling
+/// file, not an extension).
+pub fn bag_write(room: &str, name: &str, content: &str) -> bool {
+    let Some(dir_root) = saves_dir() else { return false };
+    let Some(key) = name_to_key(name) else { return false };
+    let dir = format!("{}/rooms/{}/players", dir_root, room_dir_name(room));
+    if !mkdir_p(&dir) {
+        return false;
+    }
+    write_atomic(&format!("{}/{}.bag.txt", dir, key), content.as_bytes())
+}
+
+pub fn bag_load(room: &str, name: &str) -> Option<String> {
+    let dir_root = saves_dir()?;
+    let key = name_to_key(name)?;
+    fs::read_to_string(format!(
+        "{}/rooms/{}/players/{}.bag.txt",
+        dir_root,
+        room_dir_name(room),
+        key
+    ))
+    .ok()
+}
+
+/// Persist the authoritative sim clock: "sim_seconds wall_unix".
+pub fn world_time_write(sim_seconds: f64, wall_unix: i64) -> bool {
+    let Some(dir_root) = saves_dir() else { return false };
+    if !mkdir_p(&dir_root) {
+        return false;
+    }
+    write_atomic(
+        &format!("{}/world_time.txt", dir_root),
+        format!("{:.3} {}", sim_seconds, wall_unix).as_bytes(),
+    )
+}
+
+/// Load the persisted sim clock as `(sim_seconds, wall_unix)`.
+pub fn world_time_load() -> Option<(f64, i64)> {
+    let dir_root = saves_dir()?;
+    let s = fs::read_to_string(format!("{}/world_time.txt", dir_root)).ok()?;
+    let mut it = s.split_whitespace();
+    let sim = it.next()?.parse::<f64>().ok()?;
+    let wall = it.next()?.parse::<i64>().ok()?;
+    Some((sim, wall))
+}
+
 /// Port of `saves_flush_world()`. Walks the dirty bitset and persists
 /// every dirty tile. The server no longer calls it (immediate save
 /// covers chunk edits) but the API is kept for an eventual edit-only

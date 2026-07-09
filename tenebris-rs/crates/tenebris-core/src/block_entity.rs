@@ -532,6 +532,163 @@ pub fn furnace_tick(f: &mut FurnaceState, dt: f32) -> bool {
     false
 }
 
+/* ------------------------------------------------------------------ */
+/* ASCII record codec - the single serialization every consumer of a
+ * placed entity shares: the client's localStorage save
+ * (persistence::save_block_entities), the server's per-room saves, and
+ * the MP BENTITY_DIFF wire message. Format (':'-separated fields, ','
+ * lists - safe on both kv backends and inside the CSV wire framing):
+ *   `tile:depth:facing`                        - plain block
+ *   `tile:depth:facing:c:idx,item,count,...`   - chest (non-empty slots)
+ *   `tile:depth:facing:f:in,inc,fl,flc,o,oc,fr`- furnace (progress is
+ *                                                transient, not carried)
+ *   `:s:` steam engine, `:e:` electric furnace, `:k:` computer,
+ *   `:p:` printer, `:l:` launch pad (segments, part ids bottom->top).
+ * Changing this format breaks existing saves - extend, don't rework. */
+
+/// Serialise one placed entity to its record string.
+pub fn record_write(tile: i32, depth: i32, e: &BlockEntity) -> String {
+    let mut rec = format!("{tile}:{depth}:{}", e.facing);
+    match &e.state {
+        MachineState::None => {}
+        MachineState::Chest(chest) => {
+            rec.push_str(":c:");
+            let mut first = true;
+            for (i, s) in chest.iter().enumerate() {
+                if s.count > 0 {
+                    if !first {
+                        rec.push(',');
+                    }
+                    rec.push_str(&format!("{i},{},{}", s.item, s.count));
+                    first = false;
+                }
+            }
+        }
+        MachineState::Furnace(f) => {
+            rec.push_str(&format!(
+                ":f:{},{},{},{},{},{},{}",
+                f.input.item,
+                f.input.count,
+                f.fuel.item,
+                f.fuel.count,
+                f.output.item,
+                f.output.count,
+                f.fuel_remaining
+            ));
+        }
+        MachineState::SteamEngine(s) => {
+            rec.push_str(&format!(":s:{},{}", s.fuel.item, s.fuel.count));
+        }
+        MachineState::ElectricFurnace(e) => {
+            rec.push_str(&format!(
+                ":e:{},{},{},{}",
+                e.input.item, e.input.count, e.output.item, e.output.count
+            ));
+        }
+        MachineState::Computer(_) => {
+            rec.push_str(":k:");
+        }
+        MachineState::Printer(pr) => {
+            rec.push_str(&format!(
+                ":p:{},{},{},{},{}",
+                pr.out_item,
+                pr.out_qty,
+                pr.total as u32,
+                pr.output.item,
+                pr.output.count
+            ));
+        }
+        MachineState::LaunchPad(l) => {
+            /* segments, then the bottom -> top part ids. */
+            rec.push_str(&format!(":l:{}", l.segments));
+            for &id in l.parts() {
+                rec.push_str(&format!(",{id}"));
+            }
+        }
+    }
+    rec
+}
+
+/// Parse one record back into `(tile, depth, entity)`. Malformed
+/// records return `None` (callers skip them, keeping the rest).
+pub fn record_parse(rec: &str) -> Option<(i32, i32, BlockEntity)> {
+    let nums = |s: &str| -> Vec<u32> {
+        s.split(',').filter_map(|x| x.trim().parse::<u32>().ok()).collect()
+    };
+    let parts: Vec<&str> = rec.split(':').collect();
+    if parts.len() < 3 {
+        return None;
+    }
+    let (Ok(tile), Ok(depth), Ok(facing)) = (
+        parts[0].trim().parse::<i32>(),
+        parts[1].trim().parse::<i32>(),
+        parts[2].trim().parse::<u8>(),
+    ) else {
+        return None;
+    };
+    let mut e = BlockEntity::with_facing(facing);
+    match parts.get(3).copied() {
+        Some("c") => {
+            let chest = e.chest_mut();
+            for triple in nums(parts.get(4).copied().unwrap_or("")).chunks_exact(3) {
+                let idx = triple[0] as usize;
+                if idx < CHEST_SLOTS {
+                    chest[idx] = ChestSlot { item: triple[1] as u16, count: triple[2] as u16 };
+                }
+            }
+        }
+        Some("f") => {
+            let v = nums(parts.get(4).copied().unwrap_or(""));
+            if v.len() >= 7 {
+                let f = e.furnace_mut();
+                f.input = ChestSlot { item: v[0] as u16, count: v[1] as u16 };
+                f.fuel = ChestSlot { item: v[2] as u16, count: v[3] as u16 };
+                f.output = ChestSlot { item: v[4] as u16, count: v[5] as u16 };
+                f.fuel_remaining = v[6] as u16;
+            }
+        }
+        Some("s") => {
+            let v = nums(parts.get(4).copied().unwrap_or(""));
+            if v.len() >= 2 {
+                e.steam_engine_mut().fuel = ChestSlot { item: v[0] as u16, count: v[1] as u16 };
+            }
+        }
+        Some("e") => {
+            let v = nums(parts.get(4).copied().unwrap_or(""));
+            if v.len() >= 4 {
+                let ef = e.electric_furnace_mut();
+                ef.input = ChestSlot { item: v[0] as u16, count: v[1] as u16 };
+                ef.output = ChestSlot { item: v[2] as u16, count: v[3] as u16 };
+            }
+        }
+        Some("k") => {
+            e.computer_mut();
+        }
+        Some("p") => {
+            let v = nums(parts.get(4).copied().unwrap_or(""));
+            if v.len() >= 5 {
+                let pr = e.printer_mut();
+                pr.out_item = v[0] as u16;
+                pr.out_qty = v[1] as u16;
+                pr.total = v[2] as f32;
+                pr.output = ChestSlot { item: v[3] as u16, count: v[4] as u16 };
+            }
+        }
+        Some("l") => {
+            /* segments, then the part ids bottom -> top. */
+            let v = nums(parts.get(4).copied().unwrap_or(""));
+            let pad = e.launch_pad_mut();
+            if let Some(&seg) = v.first() {
+                pad.segments = (seg as u8).clamp(1, ROCKET_STACK_MAX as u8);
+            }
+            let ids: Vec<u16> = v.iter().skip(1).map(|&n| n as u16).collect();
+            pad.set_parts(&ids);
+        }
+        _ => {}
+    }
+    Some((tile, depth, e))
+}
+
 /// Add `count` of `item` to a chest, topping up matching stacks first then
 /// filling empty slots. Returns the leftover that didn't fit.
 pub fn chest_add(inv: &mut ChestInv, item: u16, count: u16, stack_max: u16) -> u16 {
@@ -809,5 +966,60 @@ mod tests {
         s.set(7, 2, BlockEntity::with_facing(3));
         let v: Vec<_> = s.iter().collect();
         assert_eq!(v, vec![(7, 2, BlockEntity::with_facing(3))]);
+    }
+
+    #[test]
+    fn record_codec_round_trips_every_machine() {
+        use crate::items::{COAL, COPPER, COPPER_INGOT, FUEL_TANK, ROCKET_ENGINE};
+        /* Plain facing-only entity: shortest record form. */
+        let plain = BlockEntity::with_facing(4);
+        assert_eq!(record_write(9, 70, &plain), "9:70:4");
+        assert_eq!(record_parse("9:70:4"), Some((9, 70, plain)));
+
+        /* Furnace mid-burn (progress deliberately not carried). */
+        let mut fe = BlockEntity::with_facing(1);
+        {
+            let f = fe.furnace_mut();
+            f.input = ChestSlot { item: COPPER, count: 3 };
+            f.fuel = ChestSlot { item: COAL, count: 2 };
+            f.output = ChestSlot { item: COPPER_INGOT, count: 5 };
+            f.fuel_remaining = 6;
+            f.progress = 0.75; /* transient - must NOT round-trip */
+        }
+        let rec = record_write(41, 64, &fe);
+        let (t, d, back) = record_parse(&rec).unwrap();
+        assert_eq!((t, d), (41, 64));
+        let f = back.furnace().unwrap();
+        assert_eq!(f.input, ChestSlot { item: COPPER, count: 3 });
+        assert_eq!(f.fuel_remaining, 6);
+        assert_eq!(f.progress, 0.0);
+
+        /* Chest with sparse slots. */
+        let mut ch = BlockEntity::with_facing(0);
+        ch.chest_mut()[4] = ChestSlot { item: COAL, count: 12 };
+        ch.chest_mut()[26] = ChestSlot { item: COPPER, count: 1 };
+        let (_, _, back) = record_parse(&record_write(5, 66, &ch)).unwrap();
+        let c = back.chest().unwrap();
+        assert_eq!(c[4], ChestSlot { item: COAL, count: 12 });
+        assert_eq!(c[26], ChestSlot { item: COPPER, count: 1 });
+        assert_eq!(c[0].count, 0);
+
+        /* Launch pad stack survives in order. */
+        let mut lp = BlockEntity::with_facing(2);
+        {
+            let pad = lp.launch_pad_mut();
+            pad.segments = 4;
+            pad.push(ROCKET_ENGINE);
+            pad.push(FUEL_TANK);
+        }
+        let (_, _, back) = record_parse(&record_write(3, 65, &lp)).unwrap();
+        let pad = back.launch_pad().unwrap();
+        assert_eq!(pad.segments, 4);
+        assert_eq!(pad.parts(), &[ROCKET_ENGINE, FUEL_TANK]);
+
+        /* Garbage rejects cleanly. */
+        assert_eq!(record_parse(""), None);
+        assert_eq!(record_parse("1:2"), None);
+        assert_eq!(record_parse("a:b:c"), None);
     }
 }

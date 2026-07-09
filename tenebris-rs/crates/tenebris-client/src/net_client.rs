@@ -69,11 +69,15 @@ use crate::remote_players::{self, RemotePose, MAX_PLAYERS as REMOTE_PLAYERS_MAX}
 use crate::torch;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use tenebris_core::block_entity;
 use tenebris_core::blocks::Block;
+use tenebris_core::farming;
 use tenebris_core::math::{dvec3_make, vec3_make, DVec3};
 use tenebris_core::proto::{self, MsgKind};
 use tenebris_core::world::{World, WORLD_MAX_DEPTH};
 use tenebris_core::world_water;
+
+use std::collections::{HashMap, HashSet};
 
 const NET_NAME_MAX: usize = 32;
 const NET_NAME_CACHE_SIZE: usize = 32;
@@ -283,6 +287,23 @@ struct Client {
     /* Server-driven sync coordination - see the C comment block. */
     pending_sync_seq: u32,
     pending_sync_active: bool,
+    /* ---- MP-parity extension state (kinds 29..34). ---- */
+    /* Bag + hunger replay pending from the server (applied by app). */
+    bag_pending: bool,
+    bag_items: [u16; proto::MSG_BAG_SLOTS],
+    bag_counts: [u16; proto::MSG_BAG_SLOTS],
+    bag_hunger: f32,
+    /* Kill credit banked until the app adds the meat to the bag. */
+    meat_pending: u16,
+    /* Outbound block-entity shadow: last record sent OR received per
+     * (body, tile, depth); sync_block_entities diffs against it. */
+    bent_shadow: HashMap<(u32, i32, i32), String>,
+    /* Server crop / animal state per body; `dirty` marks bodies whose
+     * lists changed since the app last took them. */
+    crops_by_body: HashMap<u32, Vec<farming::Crop>>,
+    crops_dirty: HashSet<u32>,
+    animals_by_body: HashMap<u32, Vec<(u32, u8, DVec3, DVec3)>>,
+    animals_dirty: HashSet<u32>,
 }
 
 impl Default for Client {
@@ -318,6 +339,16 @@ impl Default for Client {
             body_fetch: Vec::new(),
             pending_sync_seq: 0,
             pending_sync_active: false,
+            bag_pending: false,
+            bag_items: [0; proto::MSG_BAG_SLOTS],
+            bag_counts: [0; proto::MSG_BAG_SLOTS],
+            bag_hunger: 0.0,
+            meat_pending: 0,
+            bent_shadow: HashMap::new(),
+            crops_by_body: HashMap::new(),
+            crops_dirty: HashSet::new(),
+            animals_by_body: HashMap::new(),
+            animals_dirty: HashSet::new(),
         }
     }
 }
@@ -1164,6 +1195,109 @@ fn on_msg(c: &mut Client, data: &[u8]) {
              * commented-out diagnostic log; with the log silenced the
              * counter has no observable effect, so it drops out. */
         }
+
+        /* ---- MP-parity extensions (kinds 29..34). ---- */
+        MsgKind::SimTime => {
+            if hdr.version != proto::MSG_SIM_TIME_VERSION {
+                return;
+            }
+            let Some(m) = proto::read_sim_time(payload) else { return };
+            /* Snap the local clock to the server's - drives day/night +
+             * orbits so every peer sees the same sun. 5 s cadence, so
+             * corrections are tiny (local drift is frame jitter only). */
+            tenebris_core::world_time::set_seconds(m.sim_seconds);
+        }
+        MsgKind::BagState => {
+            if hdr.version != proto::MSG_BAG_STATE_VERSION {
+                return;
+            }
+            let Some(m) = proto::read_bag_state(payload) else { return };
+            c.bag_pending = true;
+            c.bag_items = m.items;
+            c.bag_counts = m.counts;
+            c.bag_hunger = m.hunger;
+        }
+        MsgKind::BentityDiff => {
+            if hdr.version != proto::MSG_BENTITY_DIFF_VERSION {
+                return;
+            }
+            let Some(m) = proto::read_bentity_diff(payload) else { return };
+            let Some(wrc) = world_for_body(m.body_id) else { return };
+            let mut w = wrc.borrow_mut();
+            for rec in &m.records {
+                let Some((tile, depth, e)) = block_entity::record_parse(rec) else { continue };
+                if tile < 0 || tile >= w.tile_count || depth < 0 || depth >= WORLD_MAX_DEPTH {
+                    continue;
+                }
+                w.block_entities.set(tile, depth, e);
+                /* Mirror into the outbound shadow so the 4 Hz local
+                 * sync doesn't echo the server's own update back. */
+                c.bent_shadow.insert((m.body_id, tile, depth), rec.clone());
+            }
+        }
+        MsgKind::CropDiff => {
+            if hdr.version != proto::MSG_CROP_DIFF_VERSION {
+                return;
+            }
+            let Some(m) = proto::read_crop_diff(payload) else { return };
+            let list = c.crops_by_body.entry(m.body_id).or_default();
+            const DUP_EPS2: f32 = 0.09;
+            for e in &m.entries[..m.entry_count as usize] {
+                let d2 = |cr: &farming::Crop| {
+                    let dx = cr.pos.x as f32 - e.pos_x;
+                    let dy = cr.pos.y as f32 - e.pos_y;
+                    let dz = cr.pos.z as f32 - e.pos_z;
+                    dx * dx + dy * dy + dz * dz
+                };
+                if e.op == proto::CROP_OP_PLANT {
+                    if list.iter().any(|cr| d2(cr) <= DUP_EPS2) {
+                        continue;
+                    }
+                    list.push(farming::Crop::at(
+                        dvec3_make(e.pos_x as f64, e.pos_y as f64, e.pos_z as f64),
+                        dvec3_make(e.up_x as f64, e.up_y as f64, e.up_z as f64),
+                        e.tile_idx as i32,
+                        e.growth,
+                    ));
+                } else if e.op == proto::CROP_OP_REMOVE {
+                    let mut best = -1i32;
+                    let mut best_d2 = 1.0f32;
+                    for (j, cr) in list.iter().enumerate() {
+                        let d = d2(cr);
+                        if d < best_d2 {
+                            best_d2 = d;
+                            best = j as i32;
+                        }
+                    }
+                    if best >= 0 {
+                        list.swap_remove(best as usize);
+                    }
+                }
+            }
+            c.crops_dirty.insert(m.body_id);
+        }
+        MsgKind::AnimalState => {
+            if hdr.version != proto::MSG_ANIMAL_STATE_VERSION {
+                return;
+            }
+            let Some(m) = proto::read_animal_state(payload) else { return };
+            if m.killed_by != 0 && m.killed_by == c.welcome.player_id {
+                c.meat_pending = c.meat_pending.saturating_add(m.meat_award);
+            }
+            let list: Vec<(u32, u8, DVec3, DVec3)> = m.entries[..m.entry_count as usize]
+                .iter()
+                .map(|e| {
+                    (
+                        e.id,
+                        e.state,
+                        dvec3_make(e.pos_x as f64, e.pos_y as f64, e.pos_z as f64),
+                        dvec3_make(e.heading_x as f64, e.heading_y as f64, e.heading_z as f64),
+                    )
+                })
+                .collect();
+            c.animals_by_body.insert(m.body_id, list);
+            c.animals_dirty.insert(m.body_id);
+        }
         _ => {
             /* Ignore kinds the client never receives (HELLO, INPUT,
              * PLAYER_CMD, ...) - the C `default:` arm. */
@@ -1534,6 +1668,161 @@ pub fn send_player_state(
         }
         send_raw(c, NetChannel::Unreliable, &buf[..n]);
     });
+}
+
+/* ------------------------------------------------------------------ */
+/* MP-parity extension surface (kinds 29..34).                          */
+/* ------------------------------------------------------------------ */
+
+/// Upload the bag grid + hunger (called by app when either changes).
+pub fn send_bag_state(
+    items: &[u16; proto::MSG_BAG_SLOTS],
+    counts: &[u16; proto::MSG_BAG_SLOTS],
+    hunger: f32,
+) {
+    C.with(|cell| {
+        let c = &mut *cell.borrow_mut();
+        if c.state != NetClientState::Ready || c.conn.is_none() {
+            return;
+        }
+        let m = proto::MsgBagState {
+            hunger,
+            slot_count: proto::MSG_BAG_SLOTS as u16,
+            items: *items,
+            counts: *counts,
+        };
+        let mut buf = [0u8; proto::MSG_HEADER_SIZE + proto::MSG_BAG_STATE_WIRE_SIZE];
+        let n = proto::write_bag_state(&mut buf, &m);
+        if n > 0 {
+            send_raw(c, NetChannel::Reliable, &buf[..n]);
+        }
+    });
+}
+
+/// Server bag replay, if one arrived: `(items, counts, hunger)`.
+pub fn take_pending_bag() -> Option<([u16; proto::MSG_BAG_SLOTS], [u16; proto::MSG_BAG_SLOTS], f32)>
+{
+    C.with(|cell| {
+        let c = &mut *cell.borrow_mut();
+        if !c.bag_pending {
+            return None;
+        }
+        c.bag_pending = false;
+        Some((c.bag_items, c.bag_counts, c.bag_hunger))
+    })
+}
+
+/// Meat banked from server kill credits since the last take.
+pub fn take_meat_award() -> u16 {
+    C.with(|cell| {
+        let c = &mut *cell.borrow_mut();
+        std::mem::take(&mut c.meat_pending)
+    })
+}
+
+/// Diff the active world's block-entity store against the outbound
+/// shadow and send changed records (machine UI ops, placement inits).
+/// Called by app at a few Hz in MP; the shadow is also fed by incoming
+/// diffs, so server updates never echo back.
+pub fn sync_block_entities(body_id: u32, w: &World) {
+    C.with(|cell| {
+        let c = &mut *cell.borrow_mut();
+        if c.state != NetClientState::Ready || c.conn.is_none() {
+            return;
+        }
+        let mut changed: Vec<String> = Vec::new();
+        for (tile, depth, e) in w.block_entities.iter() {
+            let rec = block_entity::record_write(tile, depth, &e);
+            let key = (body_id, tile, depth);
+            if c.bent_shadow.get(&key) != Some(&rec) {
+                c.bent_shadow.insert(key, rec.clone());
+                changed.push(rec);
+            }
+        }
+        /* Cells whose entity vanished (block mined): the CHUNK_DIFF
+         * path already tells the server; just drop the shadow entry. */
+        c.bent_shadow
+            .retain(|k, _| k.0 != body_id || w.block_entities.get(k.1, k.2).is_some());
+        for chunk in changed.chunks(proto::BENTITY_DIFF_MAX_ENTRIES) {
+            let m = proto::MsgBentityDiff { body_id, records: chunk.to_vec() };
+            let cap = proto::MSG_HEADER_SIZE
+                + proto::MSG_BENTITY_DIFF_HEADER
+                + chunk.iter().map(|r| 4 + r.len()).sum::<usize>();
+            let mut buf = vec![0u8; cap];
+            let n = proto::write_bentity_diff(&mut buf, &m);
+            if n > 0 {
+                send_raw(c, NetChannel::Reliable, &buf[..n]);
+            }
+        }
+    });
+}
+
+/// Send one crop op (plant / remove) for the active body.
+pub fn send_crop_op(body_id: u32, op: u8, tile_idx: i32, pos: DVec3, up: DVec3, growth: f32) {
+    C.with(|cell| {
+        let c = &mut *cell.borrow_mut();
+        if c.state != NetClientState::Ready || c.conn.is_none() {
+            return;
+        }
+        let mut m = proto::MsgCropDiff::default();
+        m.body_id = body_id;
+        m.entry_count = 1;
+        m.entries[0] = proto::MsgCropEntry {
+            op,
+            tile_idx: tile_idx as u32,
+            pos_x: pos.x as f32,
+            pos_y: pos.y as f32,
+            pos_z: pos.z as f32,
+            up_x: up.x as f32,
+            up_y: up.y as f32,
+            up_z: up.z as f32,
+            growth,
+        };
+        let mut buf =
+            [0u8; proto::MSG_HEADER_SIZE + proto::MSG_CROP_DIFF_HEADER + proto::MSG_CROP_ENTRY_SIZE];
+        let n = proto::write_crop_diff(&mut buf, &m);
+        if n > 0 {
+            send_raw(c, NetChannel::Reliable, &buf[..n]);
+        }
+    });
+}
+
+/// Send a melee swing landing on animal `animal_id`.
+pub fn send_animal_hit(body_id: u32, animal_id: u32, dmg: f32) {
+    C.with(|cell| {
+        let c = &mut *cell.borrow_mut();
+        if c.state != NetClientState::Ready || c.conn.is_none() {
+            return;
+        }
+        let m = proto::MsgAnimalHit { body_id, animal_id, dmg };
+        let mut buf = [0u8; proto::MSG_HEADER_SIZE + proto::MSG_ANIMAL_HIT_WIRE_SIZE];
+        let n = proto::write_animal_hit(&mut buf, &m);
+        if n > 0 {
+            send_raw(c, NetChannel::Reliable, &buf[..n]);
+        }
+    });
+}
+
+/// The server's crop list for `body_id`, if it changed since last take.
+pub fn take_crops_if_dirty(body_id: u32) -> Option<Vec<farming::Crop>> {
+    C.with(|cell| {
+        let c = &mut *cell.borrow_mut();
+        if !c.crops_dirty.remove(&body_id) {
+            return None;
+        }
+        Some(c.crops_by_body.get(&body_id).cloned().unwrap_or_default())
+    })
+}
+
+/// The server's herd for `body_id`, if it changed since last take.
+pub fn take_animals_if_dirty(body_id: u32) -> Option<Vec<(u32, u8, DVec3, DVec3)>> {
+    C.with(|cell| {
+        let c = &mut *cell.borrow_mut();
+        if !c.animals_dirty.remove(&body_id) {
+            return None;
+        }
+        Some(c.animals_by_body.get(&body_id).cloned().unwrap_or_default())
+    })
 }
 
 fn on_close(c: &mut Client, reason: NetCloseReason) {

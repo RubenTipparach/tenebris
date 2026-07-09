@@ -212,6 +212,13 @@ struct App {
     inv_last_count: [i16; 9],
     inv_last_sel: i32,
     inv_init: bool,
+    /* MP-parity sync caches: last bag upload (change detection, hunger
+     * quantised to whole points) + the block-entity sync countdown. */
+    bag_last_items: [u16; tenebris_core::proto::MSG_BAG_SLOTS],
+    bag_last_counts: [u16; tenebris_core::proto::MSG_BAG_SLOTS],
+    bag_last_hunger_i: i32,
+    bag_sync_init: bool,
+    bent_sync_cd: f32,
 
     /* DOM-overlay visibility caches (emscripten frame block). Kept
      * unconditionally so App has one shape on every target. */
@@ -1648,6 +1655,11 @@ extern "C" fn init() {
             inv_last_count: [0; 9],
             inv_last_sel: -1,
             inv_init: false,
+            bag_last_items: [0; tenebris_core::proto::MSG_BAG_SLOTS],
+            bag_last_counts: [0; tenebris_core::proto::MSG_BAG_SLOTS],
+            bag_last_hunger_i: -1,
+            bag_sync_init: false,
+            bent_sync_cd: 0.0,
             last_pause_btn: -1,
             last_inventory_btn: -1,
             last_mobile: -1,
@@ -2174,6 +2186,82 @@ fn draw_hunger_bar(app: &App, screen_w: f32, screen_h: f32) {
     sdtx::puts(&buf);
     sdtx::font(0);
     sdtx::color3b(0xff, 0xff, 0xff);
+}
+
+/// Per-frame MP-parity sync with the server: apply the bag/hunger
+/// replay + kill-credit meat, mirror the server's crop lists + herds
+/// for the active body, upload local bag changes (event-driven), and
+/// diff-sync block-entity records a few times a second.
+fn mp_parity_sync(app: &mut App, phys_world: &Rc<RefCell<World>>, dt: f32) {
+    use tenebris_core::proto::MSG_BAG_SLOTS;
+    let body_id = phys_world.borrow().body.id as u32;
+
+    /* Server bag replay (rejoin): overwrite the local bag + hunger. */
+    if let Some((items, counts, hunger)) = net_client::take_pending_bag() {
+        let mut p = app.player.borrow_mut();
+        for i in 0..MSG_BAG_SLOTS.min(p.bag.slots.len()) {
+            p.bag.slots[i] =
+                tenebris_core::items::ItemStack { item: items[i], count: counts[i] };
+        }
+        p.hunger = hunger.clamp(0.0, player_ctrl::MAX_HUNGER);
+        /* Prime the change detector so the replay isn't echoed back. */
+        app.bag_last_items = items;
+        app.bag_last_counts = counts;
+        app.bag_last_hunger_i = p.hunger as i32;
+        app.bag_sync_init = true;
+    }
+
+    /* Kill credit: the server confirmed our killing blow. */
+    let meat = net_client::take_meat_award();
+    if meat > 0 {
+        app.player.borrow_mut().bag.add(tenebris_core::items::RAW_MEAT, meat);
+    }
+
+    /* Upload the bag when a slot changes or hunger crosses a whole
+     * point (~1 Hz while draining; instant on eat / pickup). */
+    {
+        let p = app.player.borrow();
+        let mut items = [0u16; MSG_BAG_SLOTS];
+        let mut counts = [0u16; MSG_BAG_SLOTS];
+        for i in 0..MSG_BAG_SLOTS.min(p.bag.slots.len()) {
+            items[i] = p.bag.slots[i].item;
+            counts[i] = p.bag.slots[i].count;
+        }
+        let hunger_i = p.hunger as i32;
+        if !app.bag_sync_init
+            || items != app.bag_last_items
+            || counts != app.bag_last_counts
+            || hunger_i != app.bag_last_hunger_i
+        {
+            net_client::send_bag_state(&items, &counts, p.hunger);
+            app.bag_last_items = items;
+            app.bag_last_counts = counts;
+            app.bag_last_hunger_i = hunger_i;
+            app.bag_sync_init = true;
+        }
+    }
+
+    /* Server crops / herds for the active body (join replays, other
+     * players' actions, kills). */
+    if let Some(list) = net_client::take_crops_if_dirty(body_id) {
+        crops::restore(list);
+    }
+    if let Some(list) = net_client::take_animals_if_dirty(body_id) {
+        let c = {
+            let w = phys_world.borrow();
+            dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z)
+        };
+        animals::apply_remote(c, &list);
+    }
+
+    /* Block-entity diff sync at ~4 Hz: pushes local machine-UI ops +
+     * placement inits; the shadow (fed by incoming diffs too) keeps
+     * server updates from echoing back. */
+    app.bent_sync_cd -= dt;
+    if app.bent_sync_cd <= 0.0 {
+        app.bent_sync_cd = 0.25;
+        net_client::sync_block_entities(body_id, &phys_world.borrow());
+    }
 }
 
 /// The tool the viewmodel should show: the block target's ideal tool when
@@ -3497,6 +3585,13 @@ fn frame_inner(app: &mut App) {
     /* interact keeps running while paused (input zeroing above already
      * stopped mining / placement); frozen during MP join until READY. */
     if !mp_loading {
+        let mp = menu::state() == GameState::InGameMp;
+        /* MP: the server owns the herds; mirror its broadcasts. SP: local
+         * sim. set_remote only clears state on an actual mode change. */
+        animals::set_remote(mp);
+        if mp {
+            mp_parity_sync(app, &phys_world, dt);
+        }
         /* Wander + re-seat the animals + grow the crops before interact
          * runs its raycasts. The crop reticle hint gates on last frame's
          * block-hit distance so it doesn't light up through a wall (one
@@ -3521,7 +3616,8 @@ fn frame_inner(app: &mut App) {
         /* Plant / harvest (T): harvest a mature crop under the reticle, or
          * plant a seed on the block the player is aiming at. The crop list
          * mutation happens in crops::plant_or_harvest; here we apply the
-         * bag change + persist same-frame (CLAUDE.md world-edit rule). */
+         * bag change + persist same-frame (CLAUDE.md world-edit rule) or,
+         * in MP, tell the server (it persists + relays to the room). */
         if input::consume_plant() {
             let outcome = {
                 let w = phys_world.borrow();
@@ -3530,18 +3626,42 @@ fn frame_inner(app: &mut App) {
                 crops::plant_or_harvest(&w, &p, &app.interact, has_seeds)
             };
             match outcome {
-                crops::Outcome::Planted => {
+                crops::Outcome::Planted(crop) => {
                     app.player.borrow_mut().bag.take(tenebris_core::items::SEEDS, 1);
-                    crops::sp_save_after_change(&phys_world.borrow());
+                    if mp {
+                        let body_id = phys_world.borrow().body.id as u32;
+                        net_client::send_crop_op(
+                            body_id,
+                            tenebris_core::proto::CROP_OP_PLANT,
+                            crop.tile_idx,
+                            crop.pos,
+                            crop.up,
+                            crop.growth,
+                        );
+                    } else {
+                        crops::sp_save_after_change(&phys_world.borrow());
+                    }
                 }
-                crops::Outcome::Harvested => {
+                crops::Outcome::Harvested(crop) => {
                     let cfg = tenebris_core::farming::config();
                     {
                         let mut p = app.player.borrow_mut();
                         p.bag.add(tenebris_core::items::BERRIES, cfg.produce_count());
                         p.bag.add(tenebris_core::items::SEEDS, cfg.seed_count());
                     }
-                    crops::sp_save_after_change(&phys_world.borrow());
+                    if mp {
+                        let body_id = phys_world.borrow().body.id as u32;
+                        net_client::send_crop_op(
+                            body_id,
+                            tenebris_core::proto::CROP_OP_REMOVE,
+                            crop.tile_idx,
+                            crop.pos,
+                            crop.up,
+                            crop.growth,
+                        );
+                    } else {
+                        crops::sp_save_after_change(&phys_world.borrow());
+                    }
                 }
                 crops::Outcome::NotReady | crops::Outcome::None => {}
             }
@@ -3583,13 +3703,16 @@ fn frame_inner(app: &mut App) {
                 }
                 worlds.push(m.clone());
             }
+            let mp_active = menu::state() == GameState::InGameMp;
             for w_rc in &worlds {
                 let mut w = w_rc.borrow_mut();
                 world_water::step(&mut w, budget);
                 /* Placed-machine behavior (furnace smelt, later generators
                  * / printer). Persist same-frame in SP when a smelt
-                 * completes (a durable output change). */
-                let machines_changed = w.tick_machines(dt);
+                 * completes (a durable output change). In MP the SERVER
+                 * ticks machines and broadcasts progress (BentityDiff);
+                 * ticking locally too would fight those updates. */
+                let machines_changed = if mp_active { false } else { w.tick_machines(dt) };
                 if machines_changed && !sp_world.is_empty() {
                     persistence::save_block_entities(&sp_world, w.body.id as u32, &w.block_entities);
                 }

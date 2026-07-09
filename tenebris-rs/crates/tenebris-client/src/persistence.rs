@@ -41,7 +41,7 @@
 
 use crate::client_kv;
 use tenebris_core::block_entity::{
-    BlockEntity, BlockEntityStore, ChestSlot, CHEST_SLOTS, ROCKET_STACK_MAX,
+    BlockEntity, BlockEntityStore,
 };
 
 const KEY_PREFIX: &str = "tenebris-c:world:";
@@ -328,7 +328,6 @@ pub fn save_block_entities(
     body_id: u32,
     store: &BlockEntityStore,
 ) -> bool {
-    use tenebris_core::block_entity::MachineState;
     if !valid_name(world_name) {
         return false;
     }
@@ -337,68 +336,12 @@ pub fn save_block_entities(
         client_kv::remove(&key);
         return true;
     }
-    let mut recs: Vec<String> = Vec::new();
-    for (tile, depth, e) in store.iter() {
-        let mut rec = format!("{tile}:{depth}:{}", e.facing);
-        match &e.state {
-            MachineState::None => {}
-            MachineState::Chest(chest) => {
-                rec.push_str(":c:");
-                let mut first = true;
-                for (i, s) in chest.iter().enumerate() {
-                    if s.count > 0 {
-                        if !first {
-                            rec.push(',');
-                        }
-                        rec.push_str(&format!("{i},{},{}", s.item, s.count));
-                        first = false;
-                    }
-                }
-            }
-            MachineState::Furnace(f) => {
-                rec.push_str(&format!(
-                    ":f:{},{},{},{},{},{},{}",
-                    f.input.item,
-                    f.input.count,
-                    f.fuel.item,
-                    f.fuel.count,
-                    f.output.item,
-                    f.output.count,
-                    f.fuel_remaining
-                ));
-            }
-            MachineState::SteamEngine(s) => {
-                rec.push_str(&format!(":s:{},{}", s.fuel.item, s.fuel.count));
-            }
-            MachineState::ElectricFurnace(e) => {
-                rec.push_str(&format!(
-                    ":e:{},{},{},{}",
-                    e.input.item, e.input.count, e.output.item, e.output.count
-                ));
-            }
-            MachineState::Computer(_) => {
-                rec.push_str(":k:");
-            }
-            MachineState::Printer(pr) => {
-                rec.push_str(&format!(
-                    ":p:{},{},{},{},{}",
-                    pr.out_item,
-                    pr.out_qty,
-                    pr.total as u32,
-                    pr.output.item,
-                    pr.output.count
-                ));
-            }
-            MachineState::LaunchPad(l) => {
-                /* segments, then the bottom -> top part ids. */
-                rec.push_str(&format!(":l:{}", l.segments));
-                for &id in l.parts() {
-                    rec.push_str(&format!(",{id}"));
-                }
-            }
-        }
-        recs.push(rec);
-    }
+    /* Record serialization lives in core (block_entity::record_write) -
+     * the same codec the MP wire + server saves use. */
+    let recs: Vec<String> = store
+        .iter()
+        .map(|(tile, depth, e)| tenebris_core::block_entity::record_write(tile, depth, &e))
+        .collect();
     client_kv::set(&key, &recs.join(";"));
     true
 }
@@ -412,85 +355,9 @@ pub fn load_block_entities(world_name: &str, body_id: u32) -> Vec<(i32, i32, Blo
     let Some(s) = client_kv::get(&build_bentity_key(world_name, body_id)) else {
         return Vec::new();
     };
-    let nums = |s: &str| -> Vec<u32> {
-        s.split(',').filter_map(|x| x.trim().parse::<u32>().ok()).collect()
-    };
-    let mut out = Vec::new();
-    for rec in s.split(';') {
-        let parts: Vec<&str> = rec.split(':').collect();
-        if parts.len() < 3 {
-            continue;
-        }
-        let (Ok(tile), Ok(depth), Ok(facing)) = (
-            parts[0].trim().parse::<i32>(),
-            parts[1].trim().parse::<i32>(),
-            parts[2].trim().parse::<u8>(),
-        ) else {
-            continue;
-        };
-        let mut e = BlockEntity::with_facing(facing);
-        match parts.get(3).copied() {
-            Some("c") => {
-                let chest = e.chest_mut();
-                for triple in nums(parts.get(4).copied().unwrap_or("")).chunks_exact(3) {
-                    let idx = triple[0] as usize;
-                    if idx < CHEST_SLOTS {
-                        chest[idx] = ChestSlot { item: triple[1] as u16, count: triple[2] as u16 };
-                    }
-                }
-            }
-            Some("f") => {
-                let v = nums(parts.get(4).copied().unwrap_or(""));
-                if v.len() >= 7 {
-                    let f = e.furnace_mut();
-                    f.input = ChestSlot { item: v[0] as u16, count: v[1] as u16 };
-                    f.fuel = ChestSlot { item: v[2] as u16, count: v[3] as u16 };
-                    f.output = ChestSlot { item: v[4] as u16, count: v[5] as u16 };
-                    f.fuel_remaining = v[6] as u16;
-                }
-            }
-            Some("s") => {
-                let v = nums(parts.get(4).copied().unwrap_or(""));
-                if v.len() >= 2 {
-                    e.steam_engine_mut().fuel = ChestSlot { item: v[0] as u16, count: v[1] as u16 };
-                }
-            }
-            Some("e") => {
-                let v = nums(parts.get(4).copied().unwrap_or(""));
-                if v.len() >= 4 {
-                    let ef = e.electric_furnace_mut();
-                    ef.input = ChestSlot { item: v[0] as u16, count: v[1] as u16 };
-                    ef.output = ChestSlot { item: v[2] as u16, count: v[3] as u16 };
-                }
-            }
-            Some("k") => {
-                e.computer_mut();
-            }
-            Some("p") => {
-                let v = nums(parts.get(4).copied().unwrap_or(""));
-                if v.len() >= 5 {
-                    let pr = e.printer_mut();
-                    pr.out_item = v[0] as u16;
-                    pr.out_qty = v[1] as u16;
-                    pr.total = v[2] as f32;
-                    pr.output = ChestSlot { item: v[3] as u16, count: v[4] as u16 };
-                }
-            }
-            Some("l") => {
-                /* segments, then the part ids bottom -> top. */
-                let v = nums(parts.get(4).copied().unwrap_or(""));
-                let pad = e.launch_pad_mut();
-                if let Some(&seg) = v.first() {
-                    pad.segments = (seg as u8).clamp(1, ROCKET_STACK_MAX as u8);
-                }
-                let ids: Vec<u16> = v.iter().skip(1).map(|&n| n as u16).collect();
-                pad.set_parts(&ids);
-            }
-            _ => {}
-        }
-        out.push((tile, depth, e));
-    }
-    out
+    s.split(';')
+        .filter_map(tenebris_core::block_entity::record_parse)
+        .collect()
 }
 
 /// Write the given column under tenebris-c:tile:<world>:<body>:<tile>.
@@ -828,6 +695,7 @@ pub fn clear_world(world_name: &str) {
 mod tests {
     use super::*;
     use crate::client_kv::test_support;
+    use tenebris_core::block_entity::{ChestSlot, CHEST_SLOTS, ROCKET_STACK_MAX};
 
     /// 128-byte fixture column: column[i] = (i*7+3) & 0xFF.
     fn fixture_column() -> [u8; COLUMN_BYTES] {

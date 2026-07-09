@@ -4,16 +4,18 @@
 //! `Animal`'s position + health + a tiny wander/flee state machine. It is
 //! deliberately planet-agnostic - movement happens in the tangent plane of
 //! a surface `up` vector the caller passes in, so `tick` never needs to
-//! know about spheres or terrain. The client owns the rest: spawning
-//! animals on the surface near the player, snapping each `pos` back to the
-//! ground after `tick`, drawing the mesh, and the attack raycast that calls
-//! `hit`. (MP authority + the `world_time` catch-up for populations layer
-//! on here later.)
+//! know about spheres or terrain. The surface glue that DOES need the
+//! world - ring-spawning near a player and re-seating feet on the
+//! walkable floor - lives here too ([`spawn_near`] / [`reseat`]) so the
+//! SP client and the MP server drive the exact same herd behaviour.
+//! The client keeps the rendering + the attack raycast that calls
+//! `hit`; the server owns MP authority (see server.rs animal_sim).
 
 use crate::math::{
     dvec3_add, dvec3_cross, dvec3_dot, dvec3_length, dvec3_normalize, dvec3_scale, dvec3_sub, DVec3,
 };
 use crate::rng;
+use crate::world::World;
 use std::f64::consts::TAU;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -195,6 +197,69 @@ pub fn hit(a: &mut Animal, dmg: f32, from: DVec3, up: DVec3) {
     a.heading = reproject_tangent(away, up);
     a.state = AnimalState::Flee;
     a.timer = FLEE_TIME;
+}
+
+/* ------------------------------------------------------------------ */
+/* Surface glue - shared by the SP client (animals.rs) and the MP
+ * server so both drive identical herds.                               */
+
+/// Body-height headroom passed to the walkable-floor query.
+pub const BODY_HEIGHT_M: f64 = 1.0;
+/// Ring (metres from the anchor player) new animals appear in.
+pub const SPAWN_MIN_M: f64 = 14.0;
+pub const SPAWN_MAX_M: f64 = 32.0;
+
+/// Snap a body-local direction onto the walkable floor and return the
+/// feet position in world space, or `None` if the tile has no floor.
+pub fn floor_pos(w: &World, dir: DVec3, radius_hint: f64, hint_tile: i32) -> Option<DVec3> {
+    let center = DVec3 { x: w.body.pos_x, y: w.body.pos_y, z: w.body.pos_z };
+    let dir = dvec3_normalize(dir);
+    let tile = w.grid.find_tile(dir, hint_tile);
+    let floor = w.walkable_floor_near(tile, radius_hint, BODY_HEIGHT_M);
+    if floor <= 0.0 {
+        return None;
+    }
+    Some(dvec3_add(center, dvec3_scale(dir, floor)))
+}
+
+/// Try to spawn one animal on the ground in the ring around
+/// `anchor_world` (a player position on `w`'s body). Deterministic in
+/// `(id, salt)`.
+pub fn spawn_near(w: &World, anchor_world: DVec3, id: u32, salt: u32) -> Option<Animal> {
+    let center = DVec3 { x: w.body.pos_x, y: w.body.pos_y, z: w.body.pos_z };
+    let local = dvec3_sub(anchor_world, center);
+    let r = dvec3_length(local);
+    if r < 1.0 {
+        return None;
+    }
+    let dir0 = dvec3_scale(local, 1.0 / r);
+    /* A tangent basis around the anchor's radial, to place off to the
+     * side. */
+    let reference = if dir0.y.abs() < 0.9 {
+        DVec3 { x: 0.0, y: 1.0, z: 0.0 }
+    } else {
+        DVec3 { x: 1.0, y: 0.0, z: 0.0 }
+    };
+    let t = dvec3_normalize(dvec3_cross(reference, dir0));
+    let b = dvec3_cross(dir0, t);
+    let ang = rand01(id, salt) as f64 * TAU;
+    let dist = SPAWN_MIN_M + rand01(id, salt.wrapping_add(11)) as f64 * (SPAWN_MAX_M - SPAWN_MIN_M);
+    let offset = dvec3_add(dvec3_scale(t, ang.cos() * dist), dvec3_scale(b, ang.sin() * dist));
+    let point = dvec3_add(local, offset);
+    let dir = dvec3_normalize(point);
+    let pos = floor_pos(w, dir, r, -1)?;
+    Some(Animal::new(id, pos, dir))
+}
+
+/// Re-seat the animal's feet on the (possibly edited) floor after a
+/// wander step so it hugs the terrain.
+pub fn reseat(w: &World, a: &mut Animal) {
+    let center = DVec3 { x: w.body.pos_x, y: w.body.pos_y, z: w.body.pos_z };
+    let rel = dvec3_sub(a.pos, center);
+    let r = dvec3_length(rel);
+    if let Some(seated) = floor_pos(w, rel, r, -1) {
+        a.pos = seated;
+    }
 }
 
 #[cfg(test)]

@@ -293,8 +293,18 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
         s.mining_tile = -1;
         s.mining_depth = -1;
         if input::state().left_click {
+            /* MP: the server owns the herd - send the swing, and let its
+             * kill credit (AnimalState.killed_by) award the meat. The
+             * local hit still runs for the instant flee reaction; its
+             * meat return is ignored so kills aren't double-counted. */
+            let mp = menu::state() == menu::GameState::InGameMp;
+            let animal_id = crate::animals::id_at(animal_hit);
             let meat = crate::animals::hit(animal_hit, ATTACK_DAMAGE, eye_f);
-            if meat > 0 {
+            if mp {
+                if let Some(id) = animal_id {
+                    net_client::send_animal_hit(w.body.id as u32, id, ATTACK_DAMAGE);
+                }
+            } else if meat > 0 {
                 p.bag.add(items::RAW_MEAT, meat);
             }
         }

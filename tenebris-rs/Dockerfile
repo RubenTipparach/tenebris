@@ -45,10 +45,9 @@ COPY --from=build /src/target/release/tenebris-server /app/tenebris-server
 # The Rust port's own YAML config tree. Config paths follow the repo
 # convention of cwd-relative "assets/config/*.yaml" (see the
 # config::load_* call sites), so WORKDIR /app + /app/assets/config
-# makes them resolvable. Note the server currently boots on
-# compiled-in defaults - the YAML loaders are only invoked client-side
-# today - but the tree ships anyway so a future server-side config
-# load lands without an image change.
+# makes them resolvable. The server reads time.yaml (authoritative
+# day/night clock) and farming.yaml (crop growth) at boot; missing
+# files fall back to compiled-in defaults.
 COPY assets/config /app/assets/config
 
 # Fly's internal port. Matches fly.toml. The server reads --port at

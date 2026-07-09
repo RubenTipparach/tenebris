@@ -35,15 +35,10 @@ use crate::renderer;
 
 /// How many animals to keep alive within range of the player.
 const TARGET_COUNT: usize = 8;
-/// Ring (metres from the player) new animals appear in.
-const SPAWN_MIN_M: f64 = 14.0;
-const SPAWN_MAX_M: f64 = 32.0;
 /// Beyond this the animal despawns (out of sight, keeps the list small).
 const DESPAWN_M: f64 = 70.0;
 /// Seconds between spawn attempts while under population.
 const SPAWN_INTERVAL_S: f32 = 1.5;
-/// Body-height headroom passed to the floor query.
-const BODY_HEIGHT_M: f64 = 1.0;
 /// Bounding-sphere radius for the attack raycast + its centre height.
 const HIT_RADIUS_M: f32 = 0.7;
 const HIT_CENTRE_UP_M: f64 = 0.45;
@@ -68,6 +63,10 @@ struct State {
     salt: u32,
     /// Dev screenshot aid: freeze the herd (no wander / spawn / cull).
     frozen: bool,
+    /// MP: the herd mirrors the server's AnimalState broadcasts - no
+    /// local wander / spawn / cull; positions come off the wire and the
+    /// local sim only advances anim phases + corpse ages.
+    remote: bool,
 }
 
 /// Baked critter model + its animation clips, lazy-loaded on first draw.
@@ -88,6 +87,7 @@ thread_local! {
         spawn_cd: 0.0,
         salt: 1,
         frozen: false,
+        remote: false,
     });
     static PIP3D: Cell<sgl::Pipeline> = const { Cell::new(sgl::Pipeline { id: 0 }) };
     /// Outer None = not tried yet; inner None = load failed (logged once).
@@ -126,11 +126,79 @@ pub fn init() {
         s.next_id = 1;
         s.spawn_cd = 0.0;
         s.salt = 1;
+        s.remote = false;
+    });
+}
+
+/// MP: hand the herd to (or take it back from) the server. Entering
+/// remote mode clears the locally-simulated herd; leaving it clears the
+/// mirrored one so SP respawns fresh.
+pub fn set_remote(remote: bool) {
+    S.with(|c| {
+        let s = &mut *c.borrow_mut();
+        if s.remote != remote {
+            s.list.clear();
+            s.corpses.clear();
+        }
+        s.remote = remote;
+    });
+}
+
+/// MP: apply a replace-all AnimalState broadcast for the active body.
+/// Animals are matched by id so walk phases persist across updates; a
+/// previously-known animal missing from the list died or despawned -
+/// dead ones leave a corpse playing the baked death clip.
+pub fn apply_remote(
+    body_center: DVec3,
+    entries: &[(u32, u8, DVec3, DVec3)], /* (id, state, pos, heading) */
+) {
+    use tenebris_core::proto::{ANIMAL_STATE_DEAD, ANIMAL_STATE_FLEE, ANIMAL_STATE_IDLE};
+    S.with(|c| {
+        let s = &mut *c.borrow_mut();
+        s.remote = true;
+        s.body_center = body_center;
+        let mut next: Vec<Animal> = Vec::with_capacity(entries.len());
+        for &(id, st, pos, heading) in entries {
+            if st == ANIMAL_STATE_DEAD {
+                s.corpses.push(Corpse { pos, heading, age: 0.0 });
+                continue;
+            }
+            let mut a = match s.list.iter().find(|a| a.id == id) {
+                Some(prev) => *prev,
+                None => Animal::new(id, pos, dvec3_normalize(dvec3_sub(pos, body_center))),
+            };
+            a.pos = pos;
+            if dvec3_length(heading) > 1e-6 {
+                a.heading = heading;
+            }
+            a.state = match st {
+                x if x == ANIMAL_STATE_IDLE => AnimalState::Idle,
+                x if x == ANIMAL_STATE_FLEE => AnimalState::Flee,
+                _ => AnimalState::Walk,
+            };
+            next.push(a);
+        }
+        /* Known animals absent from the broadcast (killed by another
+         * player, or despawned): give kills a corpse so the death clip
+         * plays for everyone nearby. Despawns are far away - a corpse
+         * there is invisible anyway, so no need to tell them apart. */
+        for old in &s.list {
+            if !next.iter().any(|a| a.id == old.id) {
+                s.corpses.push(Corpse { pos: old.pos, heading: old.heading, age: 0.0 });
+            }
+        }
+        s.list = next;
     });
 }
 
 pub fn count() -> usize {
     S.with(|c| c.borrow().list.len())
+}
+
+/// Stable id of the animal at raycast index `idx` (for the MP hit
+/// message - `hit` swap-removes on kill, so read the id first).
+pub fn id_at(idx: i32) -> Option<u32> {
+    S.with(|c| c.borrow().list.get(idx as usize).map(|a| a.id))
 }
 
 /// Dev/screenshot aid: drop a small herd on the ground in front of the
@@ -154,7 +222,7 @@ pub fn dev_spawn(w: &World, p: &PlayerCtrl) {
                 dvec3_add(dvec3_scale(fwd, ahead), dvec3_scale(right, side)),
             );
             let dir = dvec3_normalize(point);
-            if let Some(pos) = floor_pos(w, center, dir, dvec3_length(local), p.last_tile) {
+            if let Some(pos) = fauna::floor_pos(w, dir, dvec3_length(local), p.last_tile) {
                 let id = s.next_id;
                 s.next_id = s.next_id.wrapping_add(1).max(1);
                 s.list.push(Animal::new(id, pos, dir));
@@ -169,7 +237,7 @@ pub fn dev_spawn(w: &World, p: &PlayerCtrl) {
                 dvec3_add(dvec3_scale(fwd, 5.0), dvec3_scale(right, -4.0)),
             );
             let dir = dvec3_normalize(point);
-            if let Some(pos) = floor_pos(w, center, dir, dvec3_length(local), p.last_tile) {
+            if let Some(pos) = fauna::floor_pos(w, dir, dvec3_length(local), p.last_tile) {
                 s.corpses.push(Corpse { pos, heading: fwd, age: 0.7 });
             }
         }
@@ -191,48 +259,9 @@ pub fn herd_center() -> Option<DVec3> {
     })
 }
 
-/// Uniform [0,1) from an integer seed pair.
-fn rand01(a: u32, b: u32) -> f32 {
-    rng::hash2(a as i32, b as i32)
-}
-
-/// Snap a body-local direction onto the walkable floor and return the feet
-/// position in world space, or `None` if the tile has no floor.
-fn floor_pos(w: &World, center: DVec3, dir: DVec3, radius_hint: f64, hint_tile: i32) -> Option<DVec3> {
-    let dir = dvec3_normalize(dir);
-    let tile = w.grid.find_tile(dir, hint_tile);
-    let floor = w.walkable_floor_near(tile, radius_hint, BODY_HEIGHT_M);
-    if floor <= 0.0 {
-        return None;
-    }
-    Some(dvec3_add(center, dvec3_scale(dir, floor)))
-}
-
-/// Try to spawn one animal on the ground in the player's ring.
-fn spawn_one(w: &World, p: &PlayerCtrl, id: u32, salt: u32) -> Option<Animal> {
-    let center = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
-    let local = dvec3_sub(p.position, center);
-    let r = dvec3_length(local);
-    if r < 1.0 {
-        return None;
-    }
-    let dir0 = dvec3_scale(local, 1.0 / r);
-    // A tangent basis around the player's radial, to place off to the side.
-    let reference = if dir0.y.abs() < 0.9 {
-        dvec3_make(0.0, 1.0, 0.0)
-    } else {
-        dvec3_make(1.0, 0.0, 0.0)
-    };
-    let t = dvec3_normalize(dvec3_cross(reference, dir0));
-    let b = dvec3_cross(dir0, t);
-    let ang = rand01(id, salt) as f64 * std::f64::consts::TAU;
-    let dist = SPAWN_MIN_M + rand01(id, salt.wrapping_add(11)) as f64 * (SPAWN_MAX_M - SPAWN_MIN_M);
-    let offset = dvec3_add(dvec3_scale(t, ang.cos() * dist), dvec3_scale(b, ang.sin() * dist));
-    let point = dvec3_add(local, offset);
-    let dir = dvec3_normalize(point);
-    let pos = floor_pos(w, center, dir, r, p.last_tile)?;
-    Some(Animal::new(id, pos, dir))
-}
+/* Ring-spawning + floor-seating live in core::fauna (spawn_near /
+ * floor_pos / reseat) - the MP server drives its herds through the
+ * same helpers, so SP and MP animals behave identically. */
 
 /// Per-frame: wander + re-seat on the surface, cull, and top up the herd.
 pub fn update(dt: f32, w: &World, p: &PlayerCtrl) {
@@ -243,6 +272,21 @@ pub fn update(dt: f32, w: &World, p: &PlayerCtrl) {
         if s.frozen {
             return;
         }
+        if s.remote {
+            /* Server owns movement; locally just swing the legs and age
+             * the corpses so the render stays alive between broadcasts. */
+            for a in &mut s.list {
+                if a.is_moving() {
+                    a.anim_phase +=
+                        dt * if a.state == AnimalState::Flee { 16.0 } else { 8.0 };
+                }
+            }
+            for corpse in &mut s.corpses {
+                corpse.age += dt;
+            }
+            s.corpses.retain(|c| c.age < CORPSE_LINGER_S);
+            return;
+        }
         s.salt = s.salt.wrapping_add(1);
         let salt = s.salt;
 
@@ -251,11 +295,7 @@ pub fn update(dt: f32, w: &World, p: &PlayerCtrl) {
             fauna::tick(a, up, dt, salt.wrapping_add(a.id));
             /* Re-seat feet on the (possibly edited) floor at the new
              * direction so the critter hugs the terrain. */
-            let rel = dvec3_sub(a.pos, center);
-            let r = dvec3_length(rel);
-            if let Some(seated) = floor_pos(w, center, rel, r, -1) {
-                a.pos = seated;
-            }
+            fauna::reseat(w, a);
         }
 
         /* Age out the corpses (baked death clip + linger). */
@@ -274,7 +314,7 @@ pub fn update(dt: f32, w: &World, p: &PlayerCtrl) {
         if s.list.len() < TARGET_COUNT && s.spawn_cd <= 0.0 {
             s.spawn_cd = SPAWN_INTERVAL_S;
             let id = s.next_id;
-            if let Some(a) = spawn_one(w, p, id, salt) {
+            if let Some(a) = fauna::spawn_near(w, p.position, id, salt) {
                 s.list.push(a);
                 s.next_id = s.next_id.wrapping_add(1).max(1);
             }

@@ -39,14 +39,15 @@ const MIN_SPACING_M: f64 = 0.6;
 const HIT_RADIUS_M: f32 = 0.5;
 const HIT_CENTRE_UP_M: f64 = 0.35;
 
-/// What a plant/harvest attempt did, so the caller can update the bag +
-/// persist the change.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// What a plant/harvest attempt did, so the caller can update the bag,
+/// persist the change, and (in MP) tell the server. The payload is the
+/// crop that was planted / removed.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Outcome {
-    /// A seed was consumed and a crop planted.
-    Planted,
-    /// A mature crop was harvested and removed.
-    Harvested,
+    /// A seed was consumed and this crop planted.
+    Planted(Crop),
+    /// This mature crop was harvested and removed.
+    Harvested(Crop),
     /// A crop is under the reticle but not ripe yet.
     NotReady,
     /// Nothing actionable (no ground target / no seeds / out of reach).
@@ -202,8 +203,8 @@ pub fn plant_or_harvest(
                 return Outcome::None;
             }
             if s.list[idx].is_mature() {
-                s.list.swap_remove(idx);
-                Outcome::Harvested
+                let crop = s.list.swap_remove(idx);
+                Outcome::Harvested(crop)
             } else {
                 Outcome::NotReady
             }
@@ -233,8 +234,9 @@ pub fn plant_or_harvest(
                 return Outcome::None;
             }
         }
-        s.list.push(Crop::new(pos, dir_up, interact.hit_tile));
-        Outcome::Planted
+        let crop = Crop::new(pos, dir_up, interact.hit_tile);
+        s.list.push(crop);
+        Outcome::Planted(crop)
     })
 }
 

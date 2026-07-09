@@ -92,6 +92,26 @@ pub enum MsgKind {
     SyncAck = 27,
     /// S->C: flow-origin list for every active water cell in one tile.
     WaterOriginsDiff = 28,
+
+    /* ---- MP-parity extensions (Rust port only, appended past the C
+     * set). Both the C and Rust clients ignore unknown kinds, so these
+     * are safe on the shared wire: an old C web client in the same room
+     * simply skips them. Append-only, never renumber. */
+    /// S->C: authoritative simulation clock (drives day/night + orbits
+    /// + crop growth so every peer sees the same sun).
+    SimTime = 29,
+    /// C->S upload on change; S->C replay on rejoin. Bag slots + hunger.
+    BagState = 30,
+    /// Both ways: block-entity (machine state) records. Single entry
+    /// C->S after a local machine op, broadcast S->C, bulk on join.
+    BentityDiff = 31,
+    /// Both ways: crop plant / remove. Single entry C->S, broadcast
+    /// S->C, bulk on join.
+    CropDiff = 32,
+    /// S->C: replace-all herd state for one body (+ kill credit).
+    AnimalState = 33,
+    /// C->S: melee swing damage on one animal.
+    AnimalHit = 34,
 }
 
 impl MsgKind {
@@ -117,6 +137,12 @@ impl MsgKind {
             26 => MsgKind::SyncTick,
             27 => MsgKind::SyncAck,
             28 => MsgKind::WaterOriginsDiff,
+            29 => MsgKind::SimTime,
+            30 => MsgKind::BagState,
+            31 => MsgKind::BentityDiff,
+            32 => MsgKind::CropDiff,
+            33 => MsgKind::AnimalState,
+            34 => MsgKind::AnimalHit,
             _ => return None,
         })
     }
@@ -145,6 +171,12 @@ pub const MSG_SYNC_ACK_VERSION: u16 = 1;
 pub const MSG_SYNC_TICK_WIRE_SIZE: usize = 4;
 pub const MSG_SYNC_ACK_WIRE_SIZE: usize = 4;
 pub const MSG_WATER_ORIGINS_DIFF_VERSION: u16 = 1;
+pub const MSG_SIM_TIME_VERSION: u16 = 1;
+pub const MSG_BAG_STATE_VERSION: u16 = 1;
+pub const MSG_BENTITY_DIFF_VERSION: u16 = 1;
+pub const MSG_CROP_DIFF_VERSION: u16 = 1;
+pub const MSG_ANIMAL_STATE_VERSION: u16 = 1;
+pub const MSG_ANIMAL_HIT_VERSION: u16 = 1;
 
 /* Header + body layout for MSG_WATER_ORIGINS_DIFF:
  *   uint32  body_id
@@ -576,6 +608,157 @@ impl Default for MsgWaterOriginsDiff {
             entries: [MsgWaterOriginsDiffEntry::default(); MSG_WATER_ORIGINS_DIFF_MAX_ENTRIES],
         }
     }
+}
+
+/* ------------------------------------------------------------------
+ * MP-parity extensions (kinds 29..34). Rust-port-only messages; the C
+ * client ignores unknown kinds, so these ride the shared wire safely.
+ * ------------------------------------------------------------------ */
+
+/// SimTime (S->C): the server's authoritative simulation clock.
+/// `day_length_s` travels too so a client with a divergent time.yaml
+/// still renders the same sun angle as everyone else.
+pub const MSG_SIM_TIME_WIRE_SIZE: usize = 16; /* f64 + f32 + reserved(4) */
+
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct MsgSimTime {
+    pub sim_seconds: f64,
+    pub day_length_s: f32,
+}
+
+/// BagState (C->S upload on change; S->C replay on rejoin): the whole
+/// bag grid + hunger. Fixed slot count on the wire; the reader accepts
+/// any count <= MSG_BAG_SLOTS_MAX so the grid can grow with a version
+/// bump later.
+pub const MSG_BAG_SLOTS: usize = 18; /* must match client bag::BAG_SLOTS */
+pub const MSG_BAG_SLOTS_MAX: usize = 64;
+pub const MSG_BAG_STATE_HEADER: usize = 8; /* hunger f32 + count u16 + reserved u16 */
+pub const MSG_BAG_STATE_WIRE_SIZE: usize = MSG_BAG_STATE_HEADER + MSG_BAG_SLOTS * 4;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MsgBagState {
+    pub hunger: f32,
+    pub slot_count: u16,
+    pub items: [u16; MSG_BAG_SLOTS],
+    pub counts: [u16; MSG_BAG_SLOTS],
+}
+
+impl Default for MsgBagState {
+    fn default() -> Self {
+        MsgBagState {
+            hunger: 0.0,
+            slot_count: MSG_BAG_SLOTS as u16,
+            items: [0; MSG_BAG_SLOTS],
+            counts: [0; MSG_BAG_SLOTS],
+        }
+    }
+}
+
+/// BentityDiff (both ways): block-entity (machine-state) records as the
+/// length-prefixed ASCII record strings from
+/// `block_entity::record_write` ("tile:depth:facing[:c...|:f...]").
+/// Entity REMOVAL never travels here - mining the block already drops
+/// the entity on every peer via the CHUNK_DIFF / World::set path.
+pub const BENTITY_DIFF_MAX_ENTRIES: usize = 16;
+pub const BENTITY_RECORD_MAX: usize = 1024;
+pub const MSG_BENTITY_DIFF_HEADER: usize = 8; /* body(4) + count(2) + reserved(2) */
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct MsgBentityDiff {
+    pub body_id: u32,
+    pub records: Vec<String>,
+}
+
+/// CropDiff (both ways): crop plant / remove ops. Mirrors TorchDiff:
+/// single entry C->S per player action, broadcast S->C, bulk on join.
+pub const CROP_OP_PLANT: u8 = 0;
+pub const CROP_OP_REMOVE: u8 = 1;
+pub const CROP_DIFF_MAX_ENTRIES: usize = 32;
+pub const MSG_CROP_ENTRY_SIZE: usize = 36; /* op(4) + tile(4) + pos(12) + up(12) + growth(4) */
+pub const MSG_CROP_DIFF_HEADER: usize = 8; /* body(4) + count(2) + reserved(2) */
+
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct MsgCropEntry {
+    pub op: u8,
+    pub tile_idx: u32,
+    pub pos_x: f32,
+    pub pos_y: f32,
+    pub pos_z: f32,
+    pub up_x: f32,
+    pub up_y: f32,
+    pub up_z: f32,
+    pub growth: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MsgCropDiff {
+    pub body_id: u32,
+    pub entry_count: u16,
+    pub entries: [MsgCropEntry; CROP_DIFF_MAX_ENTRIES],
+}
+
+impl Default for MsgCropDiff {
+    fn default() -> Self {
+        MsgCropDiff {
+            body_id: 0,
+            entry_count: 0,
+            entries: [MsgCropEntry::default(); CROP_DIFF_MAX_ENTRIES],
+        }
+    }
+}
+
+/// AnimalState (S->C): replace-all herd snapshot for one body, plus a
+/// kill credit: when `killed_by` is non-zero, that player just landed
+/// a killing blow and banks `meat_award` raw meat client-side.
+pub const ANIMAL_STATE_IDLE: u8 = 0;
+pub const ANIMAL_STATE_WALK: u8 = 1;
+pub const ANIMAL_STATE_FLEE: u8 = 2;
+pub const ANIMAL_STATE_DEAD: u8 = 3;
+pub const ANIMAL_STATE_MAX_ENTRIES: usize = 32;
+pub const MSG_ANIMAL_ENTRY_SIZE: usize = 32; /* id(4) + state(4) + pos(12) + heading(12) */
+pub const MSG_ANIMAL_STATE_HEADER: usize = 16; /* body(4)+count(2)+res(2)+killed_by(4)+meat(2)+res(2) */
+
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct MsgAnimalEntry {
+    pub id: u32,
+    pub state: u8,
+    pub pos_x: f32,
+    pub pos_y: f32,
+    pub pos_z: f32,
+    pub heading_x: f32,
+    pub heading_y: f32,
+    pub heading_z: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MsgAnimalState {
+    pub body_id: u32,
+    pub entry_count: u16,
+    pub killed_by: u32,
+    pub meat_award: u16,
+    pub entries: [MsgAnimalEntry; ANIMAL_STATE_MAX_ENTRIES],
+}
+
+impl Default for MsgAnimalState {
+    fn default() -> Self {
+        MsgAnimalState {
+            body_id: 0,
+            entry_count: 0,
+            killed_by: 0,
+            meat_award: 0,
+            entries: [MsgAnimalEntry::default(); ANIMAL_STATE_MAX_ENTRIES],
+        }
+    }
+}
+
+/// AnimalHit (C->S): one melee swing landing on an animal.
+pub const MSG_ANIMAL_HIT_WIRE_SIZE: usize = 12;
+
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct MsgAnimalHit {
+    pub body_id: u32,
+    pub animal_id: u32,
+    pub dmg: f32,
 }
 
 /* Server-driven sync coordination. The server periodically tells each
@@ -1461,6 +1644,273 @@ pub fn read_water_origins_diff(payload: &[u8]) -> Option<MsgWaterOriginsDiff> {
         off += MSG_WATER_ORIGINS_DIFF_ENTRY_SIZE;
     }
     Some(out)
+}
+
+/* ------------------------------------------------------------------
+ * MP-parity extension codecs (kinds 29..34).
+ * ------------------------------------------------------------------ */
+
+pub fn write_sim_time(buf: &mut [u8], m: &MsgSimTime) -> usize {
+    let total = MSG_HEADER_SIZE + MSG_SIM_TIME_WIRE_SIZE;
+    if buf.len() < total {
+        return 0;
+    }
+    write_header(buf, MsgKind::SimTime, MSG_SIM_TIME_VERSION, MSG_SIM_TIME_WIRE_SIZE as u32);
+    let p = &mut buf[MSG_HEADER_SIZE..];
+    put_f64_le(p, 0, m.sim_seconds);
+    put_f32_le(p, 8, m.day_length_s);
+    put_u32_le(p, 12, 0);
+    total
+}
+
+pub fn read_sim_time(payload: &[u8]) -> Option<MsgSimTime> {
+    if payload.len() < MSG_SIM_TIME_WIRE_SIZE {
+        return None;
+    }
+    Some(MsgSimTime {
+        sim_seconds: get_f64_le(payload, 0),
+        day_length_s: get_f32_le(payload, 8),
+    })
+}
+
+pub fn write_bag_state(buf: &mut [u8], m: &MsgBagState) -> usize {
+    let total = MSG_HEADER_SIZE + MSG_BAG_STATE_WIRE_SIZE;
+    if buf.len() < total {
+        return 0;
+    }
+    write_header(buf, MsgKind::BagState, MSG_BAG_STATE_VERSION, MSG_BAG_STATE_WIRE_SIZE as u32);
+    let p = &mut buf[MSG_HEADER_SIZE..];
+    put_f32_le(p, 0, m.hunger);
+    put_u16_le(p, 4, MSG_BAG_SLOTS as u16);
+    put_u16_le(p, 6, 0);
+    let mut off = MSG_BAG_STATE_HEADER;
+    for i in 0..MSG_BAG_SLOTS {
+        put_u16_le(p, off, m.items[i]);
+        put_u16_le(p, off + 2, m.counts[i]);
+        off += 4;
+    }
+    total
+}
+
+pub fn read_bag_state(payload: &[u8]) -> Option<MsgBagState> {
+    if payload.len() < MSG_BAG_STATE_HEADER {
+        return None;
+    }
+    let mut out = MsgBagState::default();
+    out.hunger = get_f32_le(payload, 0);
+    let n = get_u16_le(payload, 4) as usize;
+    if n > MSG_BAG_SLOTS_MAX || payload.len() < MSG_BAG_STATE_HEADER + n * 4 {
+        return None;
+    }
+    /* Slots past MSG_BAG_SLOTS (a future larger grid) are ignored;
+     * slots missing (a future smaller writer) stay empty. */
+    out.slot_count = n.min(MSG_BAG_SLOTS) as u16;
+    let mut off = MSG_BAG_STATE_HEADER;
+    for i in 0..n {
+        if i < MSG_BAG_SLOTS {
+            out.items[i] = get_u16_le(payload, off);
+            out.counts[i] = get_u16_le(payload, off + 2);
+        }
+        off += 4;
+    }
+    Some(out)
+}
+
+/// Records longer than BENTITY_RECORD_MAX or past the entry cap are
+/// dropped (never truncated - a half record would corrupt a machine).
+pub fn write_bentity_diff(buf: &mut [u8], m: &MsgBentityDiff) -> usize {
+    let recs: Vec<&String> = m
+        .records
+        .iter()
+        .filter(|r| !r.is_empty() && r.len() <= BENTITY_RECORD_MAX)
+        .take(BENTITY_DIFF_MAX_ENTRIES)
+        .collect();
+    let payload_len: usize =
+        MSG_BENTITY_DIFF_HEADER + recs.iter().map(|r| 4 + r.len()).sum::<usize>();
+    let total = MSG_HEADER_SIZE + payload_len;
+    if buf.len() < total {
+        return 0;
+    }
+    write_header(buf, MsgKind::BentityDiff, MSG_BENTITY_DIFF_VERSION, payload_len as u32);
+    let p = &mut buf[MSG_HEADER_SIZE..];
+    put_u32_le(p, 0, m.body_id);
+    put_u16_le(p, 4, recs.len() as u16);
+    put_u16_le(p, 6, 0);
+    let mut off = MSG_BENTITY_DIFF_HEADER;
+    for r in recs {
+        put_u16_le(p, off, r.len() as u16);
+        put_u16_le(p, off + 2, 0);
+        p[off + 4..off + 4 + r.len()].copy_from_slice(r.as_bytes());
+        off += 4 + r.len();
+    }
+    total
+}
+
+pub fn read_bentity_diff(payload: &[u8]) -> Option<MsgBentityDiff> {
+    if payload.len() < MSG_BENTITY_DIFF_HEADER {
+        return None;
+    }
+    let mut out = MsgBentityDiff::default();
+    out.body_id = get_u32_le(payload, 0);
+    let n = get_u16_le(payload, 4) as usize;
+    if n > BENTITY_DIFF_MAX_ENTRIES {
+        return None;
+    }
+    let mut off = MSG_BENTITY_DIFF_HEADER;
+    for _ in 0..n {
+        if payload.len() < off + 4 {
+            return None;
+        }
+        let len = get_u16_le(payload, off) as usize;
+        if len > BENTITY_RECORD_MAX || payload.len() < off + 4 + len {
+            return None;
+        }
+        let rec = std::str::from_utf8(&payload[off + 4..off + 4 + len]).ok()?;
+        out.records.push(rec.to_string());
+        off += 4 + len;
+    }
+    Some(out)
+}
+
+pub fn write_crop_diff(buf: &mut [u8], m: &MsgCropDiff) -> usize {
+    let n = (m.entry_count as usize).min(CROP_DIFF_MAX_ENTRIES);
+    let payload_len = MSG_CROP_DIFF_HEADER + n * MSG_CROP_ENTRY_SIZE;
+    let total = MSG_HEADER_SIZE + payload_len;
+    if buf.len() < total {
+        return 0;
+    }
+    write_header(buf, MsgKind::CropDiff, MSG_CROP_DIFF_VERSION, payload_len as u32);
+    let p = &mut buf[MSG_HEADER_SIZE..];
+    put_u32_le(p, 0, m.body_id);
+    put_u16_le(p, 4, n as u16);
+    put_u16_le(p, 6, 0);
+    let mut off = MSG_CROP_DIFF_HEADER;
+    for e in &m.entries[..n] {
+        put_u32_le(p, off, e.op as u32);
+        put_u32_le(p, off + 4, e.tile_idx);
+        put_f32_le(p, off + 8, e.pos_x);
+        put_f32_le(p, off + 12, e.pos_y);
+        put_f32_le(p, off + 16, e.pos_z);
+        put_f32_le(p, off + 20, e.up_x);
+        put_f32_le(p, off + 24, e.up_y);
+        put_f32_le(p, off + 28, e.up_z);
+        put_f32_le(p, off + 32, e.growth);
+        off += MSG_CROP_ENTRY_SIZE;
+    }
+    total
+}
+
+pub fn read_crop_diff(payload: &[u8]) -> Option<MsgCropDiff> {
+    if payload.len() < MSG_CROP_DIFF_HEADER {
+        return None;
+    }
+    let mut out = MsgCropDiff::default();
+    out.body_id = get_u32_le(payload, 0);
+    let n = get_u16_le(payload, 4) as usize;
+    if n > CROP_DIFF_MAX_ENTRIES
+        || payload.len() < MSG_CROP_DIFF_HEADER + n * MSG_CROP_ENTRY_SIZE
+    {
+        return None;
+    }
+    out.entry_count = n as u16;
+    let mut off = MSG_CROP_DIFF_HEADER;
+    for e in &mut out.entries[..n] {
+        e.op = (get_u32_le(payload, off) & 0xFF) as u8;
+        e.tile_idx = get_u32_le(payload, off + 4);
+        e.pos_x = get_f32_le(payload, off + 8);
+        e.pos_y = get_f32_le(payload, off + 12);
+        e.pos_z = get_f32_le(payload, off + 16);
+        e.up_x = get_f32_le(payload, off + 20);
+        e.up_y = get_f32_le(payload, off + 24);
+        e.up_z = get_f32_le(payload, off + 28);
+        e.growth = get_f32_le(payload, off + 32);
+        off += MSG_CROP_ENTRY_SIZE;
+    }
+    Some(out)
+}
+
+pub fn write_animal_state(buf: &mut [u8], m: &MsgAnimalState) -> usize {
+    let n = (m.entry_count as usize).min(ANIMAL_STATE_MAX_ENTRIES);
+    let payload_len = MSG_ANIMAL_STATE_HEADER + n * MSG_ANIMAL_ENTRY_SIZE;
+    let total = MSG_HEADER_SIZE + payload_len;
+    if buf.len() < total {
+        return 0;
+    }
+    write_header(buf, MsgKind::AnimalState, MSG_ANIMAL_STATE_VERSION, payload_len as u32);
+    let p = &mut buf[MSG_HEADER_SIZE..];
+    put_u32_le(p, 0, m.body_id);
+    put_u16_le(p, 4, n as u16);
+    put_u16_le(p, 6, 0);
+    put_u32_le(p, 8, m.killed_by);
+    put_u16_le(p, 12, m.meat_award);
+    put_u16_le(p, 14, 0);
+    let mut off = MSG_ANIMAL_STATE_HEADER;
+    for e in &m.entries[..n] {
+        put_u32_le(p, off, e.id);
+        put_u32_le(p, off + 4, e.state as u32);
+        put_f32_le(p, off + 8, e.pos_x);
+        put_f32_le(p, off + 12, e.pos_y);
+        put_f32_le(p, off + 16, e.pos_z);
+        put_f32_le(p, off + 20, e.heading_x);
+        put_f32_le(p, off + 24, e.heading_y);
+        put_f32_le(p, off + 28, e.heading_z);
+        off += MSG_ANIMAL_ENTRY_SIZE;
+    }
+    total
+}
+
+pub fn read_animal_state(payload: &[u8]) -> Option<MsgAnimalState> {
+    if payload.len() < MSG_ANIMAL_STATE_HEADER {
+        return None;
+    }
+    let mut out = MsgAnimalState::default();
+    out.body_id = get_u32_le(payload, 0);
+    let n = get_u16_le(payload, 4) as usize;
+    out.killed_by = get_u32_le(payload, 8);
+    out.meat_award = get_u16_le(payload, 12);
+    if n > ANIMAL_STATE_MAX_ENTRIES
+        || payload.len() < MSG_ANIMAL_STATE_HEADER + n * MSG_ANIMAL_ENTRY_SIZE
+    {
+        return None;
+    }
+    out.entry_count = n as u16;
+    let mut off = MSG_ANIMAL_STATE_HEADER;
+    for e in &mut out.entries[..n] {
+        e.id = get_u32_le(payload, off);
+        e.state = (get_u32_le(payload, off + 4) & 0xFF) as u8;
+        e.pos_x = get_f32_le(payload, off + 8);
+        e.pos_y = get_f32_le(payload, off + 12);
+        e.pos_z = get_f32_le(payload, off + 16);
+        e.heading_x = get_f32_le(payload, off + 20);
+        e.heading_y = get_f32_le(payload, off + 24);
+        e.heading_z = get_f32_le(payload, off + 28);
+        off += MSG_ANIMAL_ENTRY_SIZE;
+    }
+    Some(out)
+}
+
+pub fn write_animal_hit(buf: &mut [u8], m: &MsgAnimalHit) -> usize {
+    let total = MSG_HEADER_SIZE + MSG_ANIMAL_HIT_WIRE_SIZE;
+    if buf.len() < total {
+        return 0;
+    }
+    write_header(buf, MsgKind::AnimalHit, MSG_ANIMAL_HIT_VERSION, MSG_ANIMAL_HIT_WIRE_SIZE as u32);
+    let p = &mut buf[MSG_HEADER_SIZE..];
+    put_u32_le(p, 0, m.body_id);
+    put_u32_le(p, 4, m.animal_id);
+    put_f32_le(p, 8, m.dmg);
+    total
+}
+
+pub fn read_animal_hit(payload: &[u8]) -> Option<MsgAnimalHit> {
+    if payload.len() < MSG_ANIMAL_HIT_WIRE_SIZE {
+        return None;
+    }
+    Some(MsgAnimalHit {
+        body_id: get_u32_le(payload, 0),
+        animal_id: get_u32_le(payload, 4),
+        dmg: get_f32_le(payload, 8),
+    })
 }
 
 /* ------------------------------------------------------------------ */
@@ -2405,13 +2855,19 @@ mod tests {
             (MsgKind::SyncTick, 26),
             (MsgKind::SyncAck, 27),
             (MsgKind::WaterOriginsDiff, 28),
+            (MsgKind::SimTime, 29),
+            (MsgKind::BagState, 30),
+            (MsgKind::BentityDiff, 31),
+            (MsgKind::CropDiff, 32),
+            (MsgKind::AnimalState, 33),
+            (MsgKind::AnimalHit, 34),
         ];
         for (k, v) in all {
             assert_eq!(k as u16, v);
             assert_eq!(MsgKind::from_u16(v), Some(k));
         }
         assert_eq!(MsgKind::from_u16(6), None);
-        assert_eq!(MsgKind::from_u16(29), None);
+        assert_eq!(MsgKind::from_u16(35), None);
         assert_eq!(MsgKind::from_u16(0xFFFF), None);
     }
 
@@ -2427,5 +2883,120 @@ mod tests {
         assert_eq!(MSG_KICK_WIRE_SIZE, 4 + 64 + 4);
         assert_eq!(MSG_DESYNC_WIRE_SIZE, 4 + 4 + 24 + 4);
         assert_eq!(MSG_WATER_ORIGINS_DIFF_MAX_SIZE, 12 + 20 * 128);
+        assert_eq!(MSG_SIM_TIME_WIRE_SIZE, 8 + 4 + 4);
+        assert_eq!(MSG_BAG_STATE_WIRE_SIZE, 8 + 18 * 4);
+        assert_eq!(MSG_CROP_ENTRY_SIZE, 4 + 4 + 12 + 12 + 4);
+        assert_eq!(MSG_ANIMAL_ENTRY_SIZE, 4 + 4 + 12 + 12);
+        assert_eq!(MSG_ANIMAL_HIT_WIRE_SIZE, 4 + 4 + 4);
+    }
+
+    /* ---- MP-parity extension roundtrips (kinds 29..34). ---- */
+
+    fn payload_of(buf: &[u8]) -> &[u8] {
+        &buf[MSG_HEADER_SIZE..]
+    }
+
+    #[test]
+    fn sim_time_round_trips() {
+        let m = MsgSimTime { sim_seconds: 12345.678, day_length_s: 600.0 };
+        let b = encode(|b| write_sim_time(b, &m));
+        let hdr = read_header(&b).unwrap();
+        assert_eq!(hdr.kind, MsgKind::SimTime as u16);
+        assert_eq!(read_sim_time(payload_of(&b)), Some(m));
+        assert_eq!(read_sim_time(&[0u8; 4]), None);
+    }
+
+    #[test]
+    fn bag_state_round_trips() {
+        let mut m = MsgBagState::default();
+        m.hunger = 61.5;
+        m.items[0] = 123; /* RAW_MEAT */
+        m.counts[0] = 4;
+        m.items[17] = 103;
+        m.counts[17] = 1;
+        let b = encode(|b| write_bag_state(b, &m));
+        let out = read_bag_state(payload_of(&b)).unwrap();
+        assert_eq!(out.hunger, 61.5);
+        assert_eq!(out.items, m.items);
+        assert_eq!(out.counts, m.counts);
+        assert_eq!(out.slot_count as usize, MSG_BAG_SLOTS);
+        assert_eq!(read_bag_state(&[0u8; 4]), None);
+    }
+
+    #[test]
+    fn bentity_diff_round_trips_and_filters() {
+        let mut m = MsgBentityDiff::default();
+        m.body_id = 3;
+        m.records.push("41:64:2:f:105,3,102,1,0,0,0".to_string());
+        m.records.push("7:70:255".to_string());
+        m.records.push(String::new()); /* dropped: empty */
+        m.records.push("x".repeat(BENTITY_RECORD_MAX + 1)); /* dropped: oversize */
+        let b = encode(|b| write_bentity_diff(b, &m));
+        let out = read_bentity_diff(payload_of(&b)).unwrap();
+        assert_eq!(out.body_id, 3);
+        assert_eq!(out.records.len(), 2);
+        assert_eq!(out.records[0], "41:64:2:f:105,3,102,1,0,0,0");
+        assert_eq!(out.records[1], "7:70:255");
+        /* Truncated payload rejects cleanly. */
+        assert_eq!(read_bentity_diff(&b[MSG_HEADER_SIZE..b.len() - 3]), None);
+    }
+
+    #[test]
+    fn crop_diff_round_trips() {
+        let mut m = MsgCropDiff::default();
+        m.body_id = 0;
+        m.entry_count = 2;
+        m.entries[0] = MsgCropEntry {
+            op: CROP_OP_PLANT,
+            tile_idx: 41,
+            pos_x: 304.0,
+            pos_y: 1.5,
+            pos_z: -2.0,
+            up_x: 1.0,
+            up_y: 0.0,
+            up_z: 0.0,
+            growth: 0.0,
+        };
+        m.entries[1] = MsgCropEntry { op: CROP_OP_REMOVE, tile_idx: 7, ..Default::default() };
+        let b = encode(|b| write_crop_diff(b, &m));
+        let out = read_crop_diff(payload_of(&b)).unwrap();
+        assert_eq!(out.body_id, 0);
+        assert_eq!(out.entry_count, 2);
+        assert_eq!(out.entries[..2], m.entries[..2]);
+        assert_eq!(read_crop_diff(&[0u8; 4]), None);
+    }
+
+    #[test]
+    fn animal_state_round_trips_with_kill_credit() {
+        let mut m = MsgAnimalState::default();
+        m.body_id = 1;
+        m.entry_count = 2;
+        m.killed_by = 77;
+        m.meat_award = 3;
+        m.entries[0] = MsgAnimalEntry {
+            id: 9,
+            state: ANIMAL_STATE_FLEE,
+            pos_x: 100.0,
+            pos_y: 2.0,
+            pos_z: 3.0,
+            heading_x: 0.0,
+            heading_y: 0.0,
+            heading_z: 1.0,
+        };
+        m.entries[1] = MsgAnimalEntry { id: 10, state: ANIMAL_STATE_IDLE, ..Default::default() };
+        let b = encode(|b| write_animal_state(b, &m));
+        let out = read_animal_state(payload_of(&b)).unwrap();
+        assert_eq!(out.body_id, 1);
+        assert_eq!(out.killed_by, 77);
+        assert_eq!(out.meat_award, 3);
+        assert_eq!(out.entries[..2], m.entries[..2]);
+    }
+
+    #[test]
+    fn animal_hit_round_trips() {
+        let m = MsgAnimalHit { body_id: 2, animal_id: 14, dmg: 5.0 };
+        let b = encode(|b| write_animal_hit(b, &m));
+        assert_eq!(read_animal_hit(payload_of(&b)), Some(m));
+        assert_eq!(read_animal_hit(&[0u8; 8]), None);
     }
 }

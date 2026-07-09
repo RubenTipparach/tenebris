@@ -31,15 +31,21 @@
 //!   exactly like the C "(void)send_chunk_replay" no-call (the boot
 //!   replay moved to the /saves/body HTTP fetch).
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
+use tenebris_core::block_entity;
 use tenebris_core::blocks::Block;
 use tenebris_core::config;
+use tenebris_core::farming;
+use tenebris_core::fauna::{self, Animal};
 use tenebris_core::job_system;
+use tenebris_core::math::{dvec3_length, dvec3_make, dvec3_normalize, dvec3_sub, DVec3};
 use tenebris_core::planet::{self, BodyId, BODY_COUNT};
 use tenebris_core::proto::{self, *};
+use tenebris_core::rng;
 use tenebris_core::world::{World, WORLD_MAX_DEPTH, WORLD_SEA_LEVEL_DEPTH};
 use tenebris_core::world_water;
 
@@ -179,11 +185,63 @@ struct TorchBody {
     list: Vec<Torch>,
 }
 
+/// Per-body block-entity (machine) sync bookkeeping for one room. The
+/// authoritative store itself is the room World's own
+/// `block_entities` (so `World::set` dropping a mined machine works
+/// server-side exactly like it does client-side); this tracks whether
+/// the persisted file has been loaded into it and what each cell's
+/// most recently BROADCAST record was (the 1 Hz progress diff).
+#[derive(Default)]
+struct BentBody {
+    in_use: bool,
+    body_id: u32,
+    loaded: bool,
+    bcast: HashMap<(i32, i32), String>,
+}
+
+/// One server-side crop. `growth` is as-of `updated_sim_s`; current
+/// growth derives from the sim clock (see `crop_growth_at`), which is
+/// also what makes the sleep/catch-up free.
+#[derive(Clone, Copy, Debug)]
+struct ServerCrop {
+    tile_idx: i32,
+    pos: [f32; 3],
+    up: [f32; 3],
+    growth: f32,
+    updated_sim_s: f64,
+}
+
+#[derive(Default)]
+struct CropBody {
+    in_use: bool,
+    body_id: u32,
+    loaded: bool,
+    list: Vec<ServerCrop>,
+}
+
+/// One room+body herd, simulated server-side through the same
+/// `core::fauna` helpers the SP client uses.
+#[derive(Default)]
+struct AnimalBody {
+    in_use: bool,
+    body_id: u32,
+    list: Vec<Animal>,
+    next_id: u32,
+    spawn_cd: f32,
+    salt: u32,
+    /// Kill credit riding the next AnimalState broadcast:
+    /// (killer player_id, meat award).
+    pending_kill: Option<(u32, u16)>,
+}
+
 /// `server_room_t`.
 struct Room {
     code: String,
     worlds: Vec<World>,
     torches: Vec<TorchBody>,
+    bents: Vec<BentBody>,
+    crops: Vec<CropBody>,
+    animals: Vec<AnimalBody>,
     ref_count: i32,
     in_use: bool,
     last_empty_time_s: f64,
@@ -195,6 +253,9 @@ impl Default for Room {
             code: String::new(),
             worlds: Vec::new(),
             torches: (0..SERVER_MAX_BODIES).map(|_| TorchBody::default()).collect(),
+            bents: (0..SERVER_MAX_BODIES).map(|_| BentBody::default()).collect(),
+            crops: (0..SERVER_MAX_BODIES).map(|_| CropBody::default()).collect(),
+            animals: (0..SERVER_MAX_BODIES).map(|_| AnimalBody::default()).collect(),
             ref_count: 0,
             in_use: false,
             last_empty_time_s: 0.0,
@@ -241,6 +302,12 @@ struct Client {
     inv_slot_type: [u16; 9],
     inv_slot_count: [i16; 9],
     inv_selected: u8,
+    /* MP-parity: bag grid + hunger, uploaded by the client on change
+     * and replayed on rejoin (persisted per (room, name)). */
+    bag_known: bool,
+    bag_hunger: f32,
+    bag_items: [u16; MSG_BAG_SLOTS],
+    bag_counts: [u16; MSG_BAG_SLOTS],
     last_msg_unix_s: i64,
     timed_out_logged: bool,
     sync_next_send_s: f64,
@@ -290,6 +357,12 @@ pub struct Server {
     cpu_last_cpu_s: f64,
     cpu_cached_percent: f64,
     start_wall_s: f64,
+    /* MP-parity: authoritative sim clock (drives day/night, orbits,
+     * crop growth). Persisted to world_time.txt; on boot the wall-time
+     * gap since the last save is applied capped, per the CLAUDE.md
+     * server-resume time-compression note. */
+    sim_time_s: f64,
+    day_length_s: f32,
 }
 
 /* ------------------------------------------------------------------ */
@@ -367,6 +440,217 @@ fn room_free_worlds(room: &mut Room) {
         t.body_id = 0;
         t.list.clear();
     }
+    for b in room.bents.iter_mut() {
+        *b = BentBody::default();
+    }
+    for c in room.crops.iter_mut() {
+        *c = CropBody::default();
+    }
+    for a in room.animals.iter_mut() {
+        *a = AnimalBody::default();
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* MP-parity room state: block entities, crops, animals.               */
+/* ------------------------------------------------------------------ */
+
+/// If machines ran while the server slept, fast-forward them. Chunked
+/// 1 s ticks; bails once the store has been quiet for a minute of sim
+/// time (steady state - out of fuel / input / output space).
+const MACHINE_CATCHUP_MAX_S: f64 = 3600.0;
+
+fn machines_catch_up(store: &mut block_entity::BlockEntityStore, dt_s: f64) {
+    let mut remaining = dt_s.clamp(0.0, MACHINE_CATCHUP_MAX_S);
+    let mut idle = 0u32;
+    while remaining > 0.0 && idle < 60 {
+        let step = remaining.min(1.0);
+        if store.tick(step as f32) {
+            idle = 0;
+        } else {
+            idle += 1;
+        }
+        remaining -= step;
+    }
+}
+
+/// Serialise a room-world's block-entity store to the persisted blob:
+/// "T:<sim>\n" then the ';'-joined records (core codec).
+fn bents_serialize(store: &block_entity::BlockEntityStore, sim_now: f64) -> String {
+    if store.is_empty() {
+        return String::new();
+    }
+    let recs: Vec<String> = store
+        .iter()
+        .map(|(tile, depth, e)| block_entity::record_write(tile, depth, &e))
+        .collect();
+    format!("T:{:.3}\n{}", sim_now, recs.join(";"))
+}
+
+/// Bookkeeping slot for (room, body) machine sync; loads the persisted
+/// store into the room World's `block_entities` on first touch (with
+/// the sleep catch-up applied).
+fn room_bents_get_or_load(
+    room: &mut Room,
+    seed: u64,
+    body_id: u32,
+    wi: usize,
+    sim_now: f64,
+) -> Option<usize> {
+    for i in 0..SERVER_MAX_BODIES {
+        if room.bents[i].in_use && room.bents[i].body_id == body_id {
+            return Some(i);
+        }
+    }
+    let slot = (0..SERVER_MAX_BODIES).find(|&i| !room.bents[i].in_use)?;
+    room.bents[slot].in_use = true;
+    room.bents[slot].body_id = body_id;
+    room.bents[slot].loaded = true;
+    room.bents[slot].bcast.clear();
+    if let Some(blob) = saves::body_state_load(&room.code, seed, body_id, "bentities.txt") {
+        let (saved_sim, recs) = match blob.split_once('\n') {
+            Some((head, rest)) => (
+                head.strip_prefix("T:").and_then(|t| t.parse::<f64>().ok()).unwrap_or(sim_now),
+                rest,
+            ),
+            None => (sim_now, blob.as_str()),
+        };
+        let store = &mut room.worlds[wi].block_entities;
+        let mut n = 0;
+        for rec in recs.split(';') {
+            if let Some((tile, depth, e)) = block_entity::record_parse(rec) {
+                store.set(tile, depth, e);
+                n += 1;
+            }
+        }
+        machines_catch_up(store, sim_now - saved_sim);
+        if n > 0 {
+            println!(
+                "[server] room '{}' body={}: {} machine(s) loaded (catch-up {:.0}s)",
+                room_log_name(&room.code),
+                body_id,
+                n,
+                (sim_now - saved_sim).clamp(0.0, MACHINE_CATCHUP_MAX_S)
+            );
+        }
+    }
+    Some(slot)
+}
+
+/// Current growth of a server crop, derived from the sim clock.
+fn crop_growth_at(c: &ServerCrop, sim_now: f64) -> f32 {
+    let grow_time = farming::config().grow_time_s.max(0.001) as f64;
+    (c.growth as f64 + ((sim_now - c.updated_sim_s).max(0.0) / grow_time)).min(1.0) as f32
+}
+
+/// Persisted crop blob: one "tile:px:py:pz:ux:uy:uz:growth" per line,
+/// growth refreshed to `sim_now` at write.
+fn crops_serialize(list: &[ServerCrop], sim_now: f64) -> String {
+    list.iter()
+        .map(|c| {
+            format!(
+                "{}:{:.3}:{:.3}:{:.3}:{:.4}:{:.4}:{:.4}:{:.4}",
+                c.tile_idx,
+                c.pos[0],
+                c.pos[1],
+                c.pos[2],
+                c.up[0],
+                c.up[1],
+                c.up[2],
+                crop_growth_at(c, sim_now)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn room_crops_get_or_load(room: &mut Room, seed: u64, body_id: u32, sim_now: f64) -> Option<usize> {
+    for i in 0..SERVER_MAX_BODIES {
+        if room.crops[i].in_use && room.crops[i].body_id == body_id {
+            return Some(i);
+        }
+    }
+    let slot = (0..SERVER_MAX_BODIES).find(|&i| !room.crops[i].in_use)?;
+    room.crops[slot].in_use = true;
+    room.crops[slot].body_id = body_id;
+    room.crops[slot].loaded = true;
+    room.crops[slot].list.clear();
+    if let Some(blob) = saves::body_state_load(&room.code, seed, body_id, "crops.txt") {
+        for line in blob.lines() {
+            let f: Vec<&str> = line.split(':').collect();
+            if f.len() < 8 {
+                continue;
+            }
+            let p = |i: usize| f[i].trim().parse::<f32>().ok();
+            let (Ok(tile), Some(px), Some(py), Some(pz), Some(ux), Some(uy), Some(uz), Some(g)) = (
+                f[0].trim().parse::<i32>(),
+                p(1),
+                p(2),
+                p(3),
+                p(4),
+                p(5),
+                p(6),
+                p(7),
+            ) else {
+                continue;
+            };
+            room.crops[slot].list.push(ServerCrop {
+                tile_idx: tile,
+                pos: [px, py, pz],
+                up: [ux, uy, uz],
+                growth: g.clamp(0.0, 1.0),
+                updated_sim_s: sim_now,
+            });
+        }
+        if !room.crops[slot].list.is_empty() {
+            println!(
+                "[server] room '{}' body={}: {} crop(s) loaded",
+                room_log_name(&room.code),
+                body_id,
+                room.crops[slot].list.len()
+            );
+        }
+    }
+    Some(slot)
+}
+
+fn room_animals_get(room: &mut Room, body_id: u32) -> Option<usize> {
+    for i in 0..SERVER_MAX_BODIES {
+        if room.animals[i].in_use && room.animals[i].body_id == body_id {
+            return Some(i);
+        }
+    }
+    let slot = (0..SERVER_MAX_BODIES).find(|&i| !room.animals[i].in_use)?;
+    room.animals[slot] = AnimalBody {
+        in_use: true,
+        body_id,
+        list: Vec::new(),
+        next_id: 0,
+        spawn_cd: 0.0,
+        salt: 1,
+        pending_kill: None,
+    };
+    Some(slot)
+}
+
+/// Bag blob: "hunger|item,count;item,count;..." (one pair per slot).
+fn bag_serialize(hunger: f32, items: &[u16; MSG_BAG_SLOTS], counts: &[u16; MSG_BAG_SLOTS]) -> String {
+    let slots: Vec<String> =
+        (0..MSG_BAG_SLOTS).map(|i| format!("{},{}", items[i], counts[i])).collect();
+    format!("{:.2}|{}", hunger, slots.join(";"))
+}
+
+fn bag_parse(blob: &str) -> Option<(f32, [u16; MSG_BAG_SLOTS], [u16; MSG_BAG_SLOTS])> {
+    let (h, rest) = blob.split_once('|')?;
+    let hunger = h.trim().parse::<f32>().ok()?;
+    let mut items = [0u16; MSG_BAG_SLOTS];
+    let mut counts = [0u16; MSG_BAG_SLOTS];
+    for (i, pair) in rest.split(';').enumerate().take(MSG_BAG_SLOTS) {
+        let (a, b) = pair.split_once(',')?;
+        items[i] = a.trim().parse().ok()?;
+        counts[i] = b.trim().parse().ok()?;
+    }
+    Some((hunger, items, counts))
 }
 
 fn room_torches_get_or_load(room: &mut Room, seed: u64, body_id: u32) -> Option<usize> {
@@ -436,6 +720,8 @@ impl Server {
             cpu_last_cpu_s: 0.0,
             cpu_cached_percent: 0.0,
             start_wall_s: 0.0,
+            sim_time_s: 0.0,
+            day_length_s: 0.0,
         };
         if s.cfg.tick_hz <= 0.0 {
             s.cfg.tick_hz = 20.0;
@@ -448,6 +734,32 @@ impl Server {
 
         if !s.cfg.saves_dir.is_empty() {
             saves::init(&s.cfg.saves_dir);
+        }
+
+        /* MP-parity configs: the day/night clock + crop growth tuning.
+         * Same cwd-relative paths as the client; missing files fall
+         * back to compiled-in defaults. */
+        config::load_time("assets/config/time.yaml");
+        farming::load_config("assets/config/farming.yaml");
+        {
+            let tc = config::time();
+            s.day_length_s = tc.day_length_s;
+            /* Resume the persisted sim clock, fast-forwarded by the
+             * wall-clock gap since the last save (capped at a year of
+             * sim days so a months-dead server settles instead of
+             * exploding) - the CLAUDE.md time-compression rule. */
+            let cap = 365.0 * tc.day_length_s.max(1.0) as f64;
+            s.sim_time_s = match saves::world_time_load() {
+                Some((sim, wall)) => {
+                    let gap = ((unix_now_i64() - wall).max(0) as f64).min(cap);
+                    println!(
+                        "[server] sim clock resumed: {:.0}s (+{:.0}s sleep catch-up)",
+                        sim, gap
+                    );
+                    sim + gap
+                }
+                None => (tc.start_day_fraction as f64) * tc.day_length_s as f64,
+            };
         }
 
         let main_body = planet::get(BodyId::Tenebris);
@@ -842,7 +1154,33 @@ impl Server {
                 self.send_conn(conn, NetChannel::Reliable, &ibuf);
             }
         }
+        /* MP-parity join replays: the authoritative clock first (so
+         * day/night is right before anything renders), then the bag +
+         * hunger, machines, and crops. */
+        self.send_sim_time_to(conn);
+        if let Some(blob) = saves::bag_load(&room, &name) {
+            if let Some((hunger, items, counts)) = bag_parse(&blob) {
+                let cl = &mut self.clients[ci];
+                cl.bag_known = true;
+                cl.bag_hunger = hunger;
+                cl.bag_items = items;
+                cl.bag_counts = counts;
+                let m = MsgBagState {
+                    hunger,
+                    slot_count: MSG_BAG_SLOTS as u16,
+                    items,
+                    counts,
+                };
+                if let Some(bbuf) = encode(MSG_HEADER_SIZE + MSG_BAG_STATE_WIRE_SIZE, |b| {
+                    proto::write_bag_state(b, &m)
+                }) {
+                    self.send_conn(conn, NetChannel::Reliable, &bbuf);
+                }
+            }
+        }
         self.send_torch_replay(ci);
+        self.send_bentity_replay(ci);
+        self.send_crop_replay(ci);
     }
 
     /// Port of `handle_hello()`.
@@ -1078,6 +1416,10 @@ impl Server {
             }
             Some(MsgKind::PlayerState) => self.handle_player_state(ci, conn, &payload, hdr.version),
             Some(MsgKind::SyncAck) => self.handle_sync_ack(ci, &payload, hdr.version),
+            Some(MsgKind::BagState) => self.handle_bag_state(ci, &payload, hdr.version),
+            Some(MsgKind::BentityDiff) => self.handle_bentity_diff(ci, &payload, hdr.version),
+            Some(MsgKind::CropDiff) => self.handle_crop_diff(ci, &payload, hdr.version),
+            Some(MsgKind::AnimalHit) => self.handle_animal_hit(ci, &payload, hdr.version),
             _ => {
                 println!(
                     "[server] ignoring kind={} from player_id={}",
@@ -1136,6 +1478,91 @@ impl Server {
              * frame (CLAUDE.md hard rule; do not regress). */
             saves::write_tile(w, &room_code, self.cfg.seed, cmd.tile_idx as i32)
         };
+        /* A BREAK dropped any machine entity in the cell (World::set);
+         * a PLACE may have buried a crop. Persist the side effects on
+         * the same frame and tell the room about the crop. */
+        {
+            let sim_now = self.sim_time_s;
+            if self.rooms[ri].bents.iter().any(|b| b.in_use && b.body_id == cmd.body_id) {
+                let blob = bents_serialize(&self.rooms[ri].worlds[wi].block_entities, sim_now);
+                saves::body_state_write(&room_code, self.cfg.seed, cmd.body_id, "bentities.txt", &blob);
+                if let Some(bi) = self.rooms[ri]
+                    .bents
+                    .iter()
+                    .position(|b| b.in_use && b.body_id == cmd.body_id)
+                {
+                    self.rooms[ri].bents[bi]
+                        .bcast
+                        .remove(&(cmd.tile_idx as i32, cmd.depth as i32));
+                }
+            }
+            if cmd.cmd_kind == PLAYER_CMD_PLACE {
+                if let Some(si) =
+                    room_crops_get_or_load(&mut self.rooms[ri], self.cfg.seed, cmd.body_id, sim_now)
+                {
+                    let (r_lo, r_hi, center) = {
+                        let w = &self.rooms[ri].worlds[wi];
+                        (
+                            w.depth_to_radius_m(cmd.depth as i32),
+                            w.depth_to_radius_m(cmd.depth as i32 + 1),
+                            dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z),
+                        )
+                    };
+                    let mut removed: Vec<ServerCrop> = Vec::new();
+                    self.rooms[ri].crops[si].list.retain(|c| {
+                        if c.tile_idx != cmd.tile_idx as i32 {
+                            return true;
+                        }
+                        let d = dvec3_length(dvec3_sub(
+                            dvec3_make(c.pos[0] as f64, c.pos[1] as f64, c.pos[2] as f64),
+                            center,
+                        ));
+                        let buried = d >= r_lo - 0.01 && d < r_hi - 0.01;
+                        if buried {
+                            removed.push(*c);
+                        }
+                        !buried
+                    });
+                    if !removed.is_empty() {
+                        let blob = crops_serialize(&self.rooms[ri].crops[si].list, sim_now);
+                        saves::body_state_write(
+                            &room_code,
+                            self.cfg.seed,
+                            cmd.body_id,
+                            "crops.txt",
+                            &blob,
+                        );
+                        let mut m = MsgCropDiff::default();
+                        m.body_id = cmd.body_id;
+                        m.entry_count = removed.len().min(CROP_DIFF_MAX_ENTRIES) as u16;
+                        for (i, c) in removed.iter().take(CROP_DIFF_MAX_ENTRIES).enumerate() {
+                            m.entries[i] = MsgCropEntry {
+                                op: CROP_OP_REMOVE,
+                                tile_idx: c.tile_idx as u32,
+                                pos_x: c.pos[0],
+                                pos_y: c.pos[1],
+                                pos_z: c.pos[2],
+                                ..Default::default()
+                            };
+                        }
+                        if let Some(buf) = encode(
+                            MSG_HEADER_SIZE
+                                + MSG_CROP_DIFF_HEADER
+                                + CROP_DIFF_MAX_ENTRIES * MSG_CROP_ENTRY_SIZE,
+                            |b| proto::write_crop_diff(b, &m),
+                        ) {
+                            broadcast_room(
+                                &self.listener,
+                                &self.clients,
+                                &room_code,
+                                NetChannel::Reliable,
+                                &buf,
+                            );
+                        }
+                    }
+                }
+            }
+        }
         println!(
             "[server] EDIT player_id={} room='{}' {} body={} tile={} depth={} block={} save={}",
             player_id,
@@ -1159,6 +1586,490 @@ impl Server {
             |b| proto::write_chunk_diff(b, &diff),
         ) {
             broadcast_room(&self.listener, &self.clients, &room_code, NetChannel::Reliable, &buf);
+        }
+    }
+
+    /* -------------------------------------------------------------- */
+    /* MP-parity systems: sim clock, machines, crops, animals, bag.    */
+    /* -------------------------------------------------------------- */
+
+    /// One global clock for every room: broadcast to all handshaked
+    /// clients (5 s cadence + once on join).
+    fn broadcast_sim_time(&self) {
+        let m = MsgSimTime { sim_seconds: self.sim_time_s, day_length_s: self.day_length_s };
+        let Some(buf) = encode(MSG_HEADER_SIZE + MSG_SIM_TIME_WIRE_SIZE, |b| {
+            proto::write_sim_time(b, &m)
+        }) else {
+            return;
+        };
+        for cl in &self.clients {
+            if let Some(conn) = cl.conn {
+                if cl.handshaked {
+                    self.send_conn(conn, NetChannel::Reliable, &buf);
+                }
+            }
+        }
+    }
+
+    fn send_sim_time_to(&self, conn: ConnId) {
+        let m = MsgSimTime { sim_seconds: self.sim_time_s, day_length_s: self.day_length_s };
+        if let Some(buf) = encode(MSG_HEADER_SIZE + MSG_SIM_TIME_WIRE_SIZE, |b| {
+            proto::write_sim_time(b, &m)
+        }) {
+            self.send_conn(conn, NetChannel::Reliable, &buf);
+        }
+    }
+
+    /// Advance every loaded room-world's machines at the tick rate;
+    /// persist on durable change; once a second broadcast the records
+    /// that changed since the last broadcast (smelt progress etc.).
+    fn machine_sim(&mut self) {
+        let dt = (1.0 / self.cfg.tick_hz) as f32;
+        let hz = self.cfg.tick_hz as u64;
+        let do_bcast = hz > 0 && (self.tick % hz) == 0;
+        let sim_now = self.sim_time_s;
+        for ri in 0..self.rooms.len() {
+            if !self.rooms[ri].in_use {
+                continue;
+            }
+            let room_code = self.rooms[ri].code.clone();
+            for wi in 0..self.rooms[ri].worlds.len() {
+                let body_id = self.rooms[ri].worlds[wi].body.id as u32;
+                let changed = self.rooms[ri].worlds[wi].block_entities.tick(dt);
+                if changed {
+                    let blob = bents_serialize(&self.rooms[ri].worlds[wi].block_entities, sim_now);
+                    saves::body_state_write(&room_code, self.cfg.seed, body_id, "bentities.txt", &blob);
+                }
+                if !do_bcast {
+                    continue;
+                }
+                /* Ensure the bookkeeping slot exists so bcast diffs work
+                 * even for stores populated purely by client writes. */
+                let Some(bi) =
+                    room_bents_get_or_load(&mut self.rooms[ri], self.cfg.seed, body_id, wi, sim_now)
+                else {
+                    continue;
+                };
+                let mut recs: Vec<String> = Vec::new();
+                {
+                    let room = &mut self.rooms[ri];
+                    let store = &room.worlds[wi].block_entities;
+                    let bb = &mut room.bents[bi];
+                    for (tile, depth, e) in store.iter() {
+                        let rec = block_entity::record_write(tile, depth, &e);
+                        if bb.bcast.get(&(tile, depth)) != Some(&rec) {
+                            bb.bcast.insert((tile, depth), rec.clone());
+                            recs.push(rec);
+                        }
+                    }
+                    bb.bcast.retain(|k, _| store.get(k.0, k.1).is_some());
+                }
+                for chunk in recs.chunks(BENTITY_DIFF_MAX_ENTRIES) {
+                    let m = MsgBentityDiff { body_id, records: chunk.to_vec() };
+                    let cap = MSG_HEADER_SIZE
+                        + MSG_BENTITY_DIFF_HEADER
+                        + chunk.iter().map(|r| 4 + r.len()).sum::<usize>();
+                    if let Some(buf) = encode(cap, |b| proto::write_bentity_diff(b, &m)) {
+                        broadcast_room(
+                            &self.listener,
+                            &self.clients,
+                            &room_code,
+                            NetChannel::Reliable,
+                            &buf,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Server-authoritative herds: for every body a room's players are
+    /// standing on, wander / re-seat / cull / respawn through the same
+    /// core::fauna helpers the SP client uses, and broadcast a
+    /// replace-all AnimalState at the snapshot cadence.
+    fn animal_sim(&mut self) {
+        const ANIMALS_PER_BODY: usize = 8;
+        const SPAWN_INTERVAL_S: f32 = 1.5;
+        const DESPAWN_M: f64 = 70.0;
+        let dt = (1.0 / self.cfg.tick_hz) as f32;
+        let do_bcast = (self.tick % 3) == 0;
+
+        for ri in 0..self.rooms.len() {
+            if !self.rooms[ri].in_use {
+                continue;
+            }
+            let room_code = self.rooms[ri].code.clone();
+            /* Player anchors on each body in this room. */
+            let mut anchors: Vec<(u32, DVec3)> = Vec::new();
+            for cl in &self.clients {
+                if cl.conn.is_none() || !cl.handshaked || !cl.has_state {
+                    continue;
+                }
+                if cl.room != room_code || cl.body_id == BODY_ID_IN_SPACE {
+                    continue;
+                }
+                anchors.push((cl.body_id, dvec3_make(cl.pos_x, cl.pos_y, cl.pos_z)));
+            }
+            let mut body_ids: Vec<u32> = anchors.iter().map(|a| a.0).collect();
+            body_ids.sort_unstable();
+            body_ids.dedup();
+
+            for &body_id in &body_ids {
+                let Some(wi) = room_ensure_world_for_body(
+                    &self.worlds,
+                    &mut self.rooms[ri],
+                    self.cfg.seed,
+                    body_id,
+                ) else {
+                    continue;
+                };
+                let Some(ai) = room_animals_get(&mut self.rooms[ri], body_id) else { continue };
+                let anchor = anchors.iter().find(|a| a.0 == body_id).unwrap().1;
+                {
+                    let room = &mut self.rooms[ri];
+                    /* worlds / animals are distinct Room fields, so the
+                     * shared + mutable borrows below don't collide. */
+                    let w = &room.worlds[wi];
+                    let ab = &mut room.animals[ai];
+                    ab.salt = ab.salt.wrapping_add(1);
+                    let salt = ab.salt;
+                    let center = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
+                    for a in ab.list.iter_mut() {
+                        let up = dvec3_normalize(dvec3_sub(a.pos, center));
+                        fauna::tick(a, up, dt, salt.wrapping_add(a.id));
+                        fauna::reseat(w, a);
+                    }
+                    ab.list.retain(|a| {
+                        a.is_alive()
+                            && anchors.iter().any(|(b, p)| {
+                                *b == body_id && dvec3_length(dvec3_sub(a.pos, *p)) < DESPAWN_M
+                            })
+                    });
+                    ab.spawn_cd -= dt;
+                    if ab.list.len() < ANIMALS_PER_BODY && ab.spawn_cd <= 0.0 {
+                        ab.spawn_cd = SPAWN_INTERVAL_S;
+                        ab.next_id = ab.next_id.wrapping_add(1).max(1);
+                        if let Some(a) = fauna::spawn_near(w, anchor, ab.next_id, salt) {
+                            ab.list.push(a);
+                        }
+                    }
+                }
+                if do_bcast {
+                    let m = {
+                        let ab = &mut self.rooms[ri].animals[ai];
+                        let mut m = MsgAnimalState::default();
+                        m.body_id = body_id;
+                        if let Some((pid, meat)) = ab.pending_kill.take() {
+                            m.killed_by = pid;
+                            m.meat_award = meat;
+                        }
+                        let n = ab.list.len().min(ANIMAL_STATE_MAX_ENTRIES);
+                        m.entry_count = n as u16;
+                        for (i, a) in ab.list.iter().take(n).enumerate() {
+                            let e = &mut m.entries[i];
+                            e.id = a.id;
+                            e.state = match a.state {
+                                fauna::AnimalState::Idle => ANIMAL_STATE_IDLE,
+                                fauna::AnimalState::Walk => ANIMAL_STATE_WALK,
+                                fauna::AnimalState::Flee => ANIMAL_STATE_FLEE,
+                                fauna::AnimalState::Dead => ANIMAL_STATE_DEAD,
+                            };
+                            e.pos_x = a.pos.x as f32;
+                            e.pos_y = a.pos.y as f32;
+                            e.pos_z = a.pos.z as f32;
+                            e.heading_x = a.heading.x as f32;
+                            e.heading_y = a.heading.y as f32;
+                            e.heading_z = a.heading.z as f32;
+                        }
+                        m
+                    };
+                    let cap = MSG_HEADER_SIZE
+                        + MSG_ANIMAL_STATE_HEADER
+                        + ANIMAL_STATE_MAX_ENTRIES * MSG_ANIMAL_ENTRY_SIZE;
+                    if let Some(buf) = encode(cap, |b| proto::write_animal_state(b, &m)) {
+                        broadcast_room(
+                            &self.listener,
+                            &self.clients,
+                            &room_code,
+                            NetChannel::Reliable,
+                            &buf,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    fn handle_bag_state(&mut self, ci: usize, payload: &[u8], version: u16) {
+        if version != MSG_BAG_STATE_VERSION {
+            return;
+        }
+        let Some(m) = proto::read_bag_state(payload) else { return };
+        let cl = &mut self.clients[ci];
+        cl.bag_known = true;
+        cl.bag_hunger = m.hunger;
+        cl.bag_items = m.items;
+        cl.bag_counts = m.counts;
+        let (room, name) = (cl.room.clone(), cl.name.clone());
+        if !name.is_empty() {
+            /* Same-frame persistence, like the pose + hotbar records. */
+            saves::bag_write(&room, &name, &bag_serialize(m.hunger, &m.items, &m.counts));
+        }
+    }
+
+    fn handle_bentity_diff(&mut self, ci: usize, payload: &[u8], version: u16) {
+        if version != MSG_BENTITY_DIFF_VERSION {
+            return;
+        }
+        let Some(m) = proto::read_bentity_diff(payload) else { return };
+        if self.clients[ci].room_idx < 0 {
+            return;
+        }
+        let ri = self.clients[ci].room_idx as usize;
+        let room_code = self.clients[ci].room.clone();
+        let sim_now = self.sim_time_s;
+        let Some(wi) = room_ensure_world_for_body(
+            &self.worlds,
+            &mut self.rooms[ri],
+            self.cfg.seed,
+            m.body_id,
+        ) else {
+            return;
+        };
+        let Some(bi) =
+            room_bents_get_or_load(&mut self.rooms[ri], self.cfg.seed, m.body_id, wi, sim_now)
+        else {
+            return;
+        };
+        let mut applied = 0;
+        {
+            let room = &mut self.rooms[ri];
+            let tile_count = room.worlds[wi].tile_count;
+            for rec in &m.records {
+                let Some((tile, depth, e)) = block_entity::record_parse(rec) else { continue };
+                if tile < 0 || tile >= tile_count || depth < 0 || depth >= WORLD_MAX_DEPTH {
+                    continue;
+                }
+                room.worlds[wi].block_entities.set(tile, depth, e);
+                /* Mirror into the broadcast shadow so the 1 Hz machine
+                 * diff doesn't immediately re-send what the writer and
+                 * everyone else just received. */
+                room.bents[bi].bcast.insert((tile, depth), rec.clone());
+                applied += 1;
+            }
+        }
+        if applied > 0 {
+            let blob = bents_serialize(&self.rooms[ri].worlds[wi].block_entities, sim_now);
+            saves::body_state_write(&room_code, self.cfg.seed, m.body_id, "bentities.txt", &blob);
+            /* Relay to the room (echo included - appliers are
+             * idempotent on the sender). */
+            let cap = MSG_HEADER_SIZE
+                + MSG_BENTITY_DIFF_HEADER
+                + m.records.iter().map(|r| 4 + r.len()).sum::<usize>();
+            if let Some(buf) = encode(cap, |b| proto::write_bentity_diff(b, &m)) {
+                broadcast_room(&self.listener, &self.clients, &room_code, NetChannel::Reliable, &buf);
+            }
+        }
+    }
+
+    fn handle_crop_diff(&mut self, ci: usize, payload: &[u8], version: u16) {
+        if version != MSG_CROP_DIFF_VERSION {
+            return;
+        }
+        let Some(m) = proto::read_crop_diff(payload) else { return };
+        if self.clients[ci].room_idx < 0 {
+            return;
+        }
+        let ri = self.clients[ci].room_idx as usize;
+        let room_code = self.clients[ci].room.clone();
+        let sim_now = self.sim_time_s;
+        let Some(si) = room_crops_get_or_load(&mut self.rooms[ri], self.cfg.seed, m.body_id, sim_now)
+        else {
+            return;
+        };
+        const DUP_EPS2: f32 = 0.09; /* 0.3 m - matches the client's crop spacing floor */
+        const REMOVE_RANGE2: f32 = 1.0;
+        let mut planted = 0;
+        let mut removed = 0;
+        {
+            let list = &mut self.rooms[ri].crops[si].list;
+            for e in &m.entries[..m.entry_count as usize] {
+                let d2 = |c: &ServerCrop| {
+                    let dx = c.pos[0] - e.pos_x;
+                    let dy = c.pos[1] - e.pos_y;
+                    let dz = c.pos[2] - e.pos_z;
+                    dx * dx + dy * dy + dz * dz
+                };
+                if e.op == CROP_OP_PLANT {
+                    if list.iter().any(|c| d2(c) <= DUP_EPS2) {
+                        continue;
+                    }
+                    list.push(ServerCrop {
+                        tile_idx: e.tile_idx as i32,
+                        pos: [e.pos_x, e.pos_y, e.pos_z],
+                        up: [e.up_x, e.up_y, e.up_z],
+                        growth: e.growth.clamp(0.0, 1.0),
+                        updated_sim_s: sim_now,
+                    });
+                    planted += 1;
+                } else if e.op == CROP_OP_REMOVE {
+                    let mut best = -1i32;
+                    let mut best_d2 = REMOVE_RANGE2;
+                    for (j, c) in list.iter().enumerate() {
+                        let d = d2(c);
+                        if d < best_d2 {
+                            best_d2 = d;
+                            best = j as i32;
+                        }
+                    }
+                    if best >= 0 {
+                        list.swap_remove(best as usize);
+                        removed += 1;
+                    }
+                }
+            }
+        }
+        if planted > 0 || removed > 0 {
+            let blob = crops_serialize(&self.rooms[ri].crops[si].list, sim_now);
+            saves::body_state_write(&room_code, self.cfg.seed, m.body_id, "crops.txt", &blob);
+            if let Some(buf) = encode(
+                MSG_HEADER_SIZE + MSG_CROP_DIFF_HEADER + CROP_DIFF_MAX_ENTRIES * MSG_CROP_ENTRY_SIZE,
+                |b| proto::write_crop_diff(b, &m),
+            ) {
+                broadcast_room(&self.listener, &self.clients, &room_code, NetChannel::Reliable, &buf);
+            }
+        }
+    }
+
+    fn handle_animal_hit(&mut self, ci: usize, payload: &[u8], version: u16) {
+        if version != MSG_ANIMAL_HIT_VERSION {
+            return;
+        }
+        let Some(m) = proto::read_animal_hit(payload) else { return };
+        if self.clients[ci].room_idx < 0 {
+            return;
+        }
+        let ri = self.clients[ci].room_idx as usize;
+        let player_id = self.clients[ci].player_id;
+        let from = dvec3_make(
+            self.clients[ci].pos_x,
+            self.clients[ci].pos_y,
+            self.clients[ci].pos_z,
+        );
+        let Some(ai) = room_animals_get(&mut self.rooms[ri], m.body_id) else { return };
+        let Some(body) = planet::get_by_index(m.body_id as i32) else { return };
+        let center = dvec3_make(body.pos_x, body.pos_y, body.pos_z);
+        let ab = &mut self.rooms[ri].animals[ai];
+        let Some(idx) = ab.list.iter().position(|a| a.id == m.animal_id) else { return };
+        /* Sanity-cap the damage; the client's swing is ATTACK_DAMAGE=5. */
+        let dmg = m.dmg.clamp(0.0, 20.0);
+        let up = dvec3_normalize(dvec3_sub(ab.list[idx].pos, center));
+        fauna::hit(&mut ab.list[idx], dmg, from, up);
+        if !ab.list[idx].is_alive() {
+            /* Same meat roll the SP client uses. */
+            let meat = 2 + (rng::hash2(idx as i32 * 31, 5) * 2.0) as u16;
+            ab.list.swap_remove(idx);
+            ab.pending_kill = Some((player_id, meat));
+        }
+    }
+
+    /// Join replay: every loaded machine record for every body (the
+    /// join-side mirror of the torch replay).
+    fn send_bentity_replay(&mut self, ci: usize) {
+        let ri = self.clients[ci].room_idx;
+        if ri < 0 {
+            return;
+        }
+        let ri = ri as usize;
+        let Some(conn) = self.clients[ci].conn else { return };
+        let sim_now = self.sim_time_s;
+        let body_ids: Vec<u32> = self.worlds.iter().map(|w| w.body.id as u32).collect();
+        for body_id in body_ids {
+            /* Only replay bodies that HAVE persisted machine state -
+             * probing the file avoids lazy-cloning every world. */
+            if saves::body_state_load(&self.rooms[ri].code, self.cfg.seed, body_id, "bentities.txt")
+                .is_none()
+                && !self.rooms[ri].bents.iter().any(|b| b.in_use && b.body_id == body_id)
+            {
+                continue;
+            }
+            let Some(wi) = room_ensure_world_for_body(
+                &self.worlds,
+                &mut self.rooms[ri],
+                self.cfg.seed,
+                body_id,
+            ) else {
+                continue;
+            };
+            if room_bents_get_or_load(&mut self.rooms[ri], self.cfg.seed, body_id, wi, sim_now)
+                .is_none()
+            {
+                continue;
+            }
+            let recs: Vec<String> = self.rooms[ri].worlds[wi]
+                .block_entities
+                .iter()
+                .map(|(t, d, e)| block_entity::record_write(t, d, &e))
+                .collect();
+            for chunk in recs.chunks(BENTITY_DIFF_MAX_ENTRIES) {
+                let m = MsgBentityDiff { body_id, records: chunk.to_vec() };
+                let cap = MSG_HEADER_SIZE
+                    + MSG_BENTITY_DIFF_HEADER
+                    + chunk.iter().map(|r| 4 + r.len()).sum::<usize>();
+                if let Some(buf) = encode(cap, |b| proto::write_bentity_diff(b, &m)) {
+                    self.send_conn(conn, NetChannel::Reliable, &buf);
+                }
+            }
+        }
+    }
+
+    /// Join replay: every crop for every body, growth refreshed to now.
+    fn send_crop_replay(&mut self, ci: usize) {
+        let ri = self.clients[ci].room_idx;
+        if ri < 0 {
+            return;
+        }
+        let ri = ri as usize;
+        let Some(conn) = self.clients[ci].conn else { return };
+        let sim_now = self.sim_time_s;
+        let body_ids: Vec<u32> = self.worlds.iter().map(|w| w.body.id as u32).collect();
+        for body_id in body_ids {
+            if saves::body_state_load(&self.rooms[ri].code, self.cfg.seed, body_id, "crops.txt")
+                .is_none()
+                && !self.rooms[ri].crops.iter().any(|c| c.in_use && c.body_id == body_id)
+            {
+                continue;
+            }
+            let Some(si) =
+                room_crops_get_or_load(&mut self.rooms[ri], self.cfg.seed, body_id, sim_now)
+            else {
+                continue;
+            };
+            let list = self.rooms[ri].crops[si].list.clone();
+            for chunk in list.chunks(CROP_DIFF_MAX_ENTRIES) {
+                let mut m = MsgCropDiff::default();
+                m.body_id = body_id;
+                m.entry_count = chunk.len() as u16;
+                for (i, c) in chunk.iter().enumerate() {
+                    m.entries[i] = MsgCropEntry {
+                        op: CROP_OP_PLANT,
+                        tile_idx: c.tile_idx as u32,
+                        pos_x: c.pos[0],
+                        pos_y: c.pos[1],
+                        pos_z: c.pos[2],
+                        up_x: c.up[0],
+                        up_y: c.up[1],
+                        up_z: c.up[2],
+                        growth: crop_growth_at(c, sim_now),
+                    };
+                }
+                let cap = MSG_HEADER_SIZE
+                    + MSG_CROP_DIFF_HEADER
+                    + CROP_DIFF_MAX_ENTRIES * MSG_CROP_ENTRY_SIZE;
+                if let Some(buf) = encode(cap, |b| proto::write_crop_diff(b, &m)) {
+                    self.send_conn(conn, NetChannel::Reliable, &buf);
+                }
+            }
         }
     }
 
@@ -1900,6 +2811,18 @@ impl Server {
 
         self.water_sim();
 
+        /* MP-parity systems: the authoritative sim clock, machine
+         * ticking, and the animal herds. */
+        self.sim_time_s += 1.0 / self.cfg.tick_hz;
+        if hz > 0 && (self.tick % (hz * 5)) == 0 {
+            self.broadcast_sim_time();
+        }
+        if hz > 0 && (self.tick % (hz * 30)) == 0 {
+            saves::world_time_write(self.sim_time_s, unix_now_i64());
+        }
+        self.machine_sim();
+        self.animal_sim();
+
         let log_n = self.cfg.log_every_n as u64;
         if log_n > 0 && (self.tick % log_n) == 0 {
             let connected = self.clients.iter().filter(|c| c.conn.is_some()).count();
@@ -1910,6 +2833,9 @@ impl Server {
     /// Port of `server_shutdown()`.
     pub fn shutdown(&mut self) {
         println!("[server] shutdown after {} ticks", self.tick);
+        /* Final sim-clock save so the next boot's catch-up gap starts
+         * from the real stop time. */
+        saves::world_time_write(self.sim_time_s, unix_now_i64());
         let mut final_poses = 0;
         for cl in &self.clients {
             if cl.conn.is_none() || !cl.has_state || cl.token.is_empty() || cl.name.is_empty() {
@@ -3415,6 +4341,206 @@ mod tests {
         assert!(text.starts_with("HTTP/1.1 404"), "{}", text);
 
         s.shutdown();
+        let _ = std::fs::remove_dir_all(&saves_dir);
+    }
+
+    /* -------------------------------------------------------------- */
+    /* MP-parity end-to-end: sim clock, bag replay, server machines,   */
+    /* crops, animals - all through the real transport.                */
+    /* -------------------------------------------------------------- */
+
+    fn bag_state_bytes(hunger: f32, item0: u16, count0: u16) -> Vec<u8> {
+        let mut m = MsgBagState::default();
+        m.hunger = hunger;
+        m.items[0] = item0;
+        m.counts[0] = count0;
+        let mut buf = vec![0u8; MSG_HEADER_SIZE + MSG_BAG_STATE_WIRE_SIZE];
+        let n = proto::write_bag_state(&mut buf, &m);
+        assert_eq!(n, buf.len());
+        buf
+    }
+
+    fn bentity_bytes(body_id: u32, rec: &str) -> Vec<u8> {
+        let m = MsgBentityDiff { body_id, records: vec![rec.to_string()] };
+        let cap = MSG_HEADER_SIZE + MSG_BENTITY_DIFF_HEADER + 4 + rec.len();
+        let mut buf = vec![0u8; cap];
+        let n = proto::write_bentity_diff(&mut buf, &m);
+        assert_eq!(n, cap);
+        buf
+    }
+
+    fn crop_bytes(body_id: u32, op: u8, tile: i32, pos: [f32; 3], growth: f32) -> Vec<u8> {
+        let mut m = MsgCropDiff::default();
+        m.body_id = body_id;
+        m.entry_count = 1;
+        m.entries[0] = MsgCropEntry {
+            op,
+            tile_idx: tile as u32,
+            pos_x: pos[0],
+            pos_y: pos[1],
+            pos_z: pos[2],
+            up_x: 1.0,
+            up_y: 0.0,
+            up_z: 0.0,
+            growth,
+        };
+        let mut buf =
+            vec![0u8; MSG_HEADER_SIZE + MSG_CROP_DIFF_HEADER + MSG_CROP_ENTRY_SIZE];
+        let n = proto::write_crop_diff(&mut buf, &m);
+        assert_eq!(n, buf.len());
+        buf
+    }
+
+    fn animal_hit_bytes(body_id: u32, animal_id: u32, dmg: f32) -> Vec<u8> {
+        let m = MsgAnimalHit { body_id, animal_id, dmg };
+        let mut buf = vec![0u8; MSG_HEADER_SIZE + MSG_ANIMAL_HIT_WIRE_SIZE];
+        let n = proto::write_animal_hit(&mut buf, &m);
+        assert_eq!(n, buf.len());
+        buf
+    }
+
+    #[test]
+    fn mp_parity_full_flow() {
+        let _g = saves::test_lock();
+        let saves_dir = temp_saves_dir("parity");
+        let rt = Runtime::new().unwrap();
+        let mut s = boot(&saves_dir, 7);
+        let port = s.port();
+
+        /* ---- Join: the sim clock arrives right after WELCOME. ---- */
+        let mut ws_a = ws_connect(&rt, port);
+        ws_send(&rt, &mut ws_a, hello_bytes(TENEBRIS_PROTOCOL_VERSION, "alice", "", "tokA00000000000000000000000000"));
+        let wb = recv_kind(&rt, &mut s, &mut ws_a, MsgKind::Welcome);
+        let welcome = proto::read_welcome(&wb[MSG_HEADER_SIZE..]).unwrap();
+        let tb = recv_kind(&rt, &mut s, &mut ws_a, MsgKind::SimTime);
+        let t0 = proto::read_sim_time(&tb[MSG_HEADER_SIZE..]).unwrap();
+        assert!(t0.sim_seconds > 0.0, "sim clock runs");
+        assert!(t0.day_length_s > 0.0, "day length travels");
+
+        /* ---- Bag upload -> rejoin replay. ---- */
+        ws_send(&rt, &mut ws_a, bag_state_bytes(55.5, 123 /* raw meat */, 4));
+        tick_until(&mut s, |s| s.clients.iter().any(|c| c.bag_known), "bag stored");
+        rt.block_on(ws_a.close(None)).ok();
+        tick_until(&mut s, |s| used_slots(s) == 0, "disconnect seen");
+        let mut ws_a = ws_connect(&rt, port);
+        ws_send(&rt, &mut ws_a, hello_bytes(TENEBRIS_PROTOCOL_VERSION, "alice", "", "tokA00000000000000000000000000"));
+        let wb = recv_kind(&rt, &mut s, &mut ws_a, MsgKind::Welcome);
+        let welcome = proto::read_welcome(&wb[MSG_HEADER_SIZE..]).unwrap();
+        let bb = recv_kind(&rt, &mut s, &mut ws_a, MsgKind::BagState);
+        let bag = proto::read_bag_state(&bb[MSG_HEADER_SIZE..]).unwrap();
+        assert!((bag.hunger - 55.5).abs() < 0.01, "hunger replayed");
+        assert_eq!(bag.items[0], 123, "bag item replayed");
+        assert_eq!(bag.counts[0], 4, "bag count replayed");
+
+        /* ---- Machines: write a stocked furnace; the SERVER smelts it
+         * and broadcasts progress (fuel lit, then an ingot out). ---- */
+        ws_send(&rt, &mut ws_a, bentity_bytes(0, "41:64:2:f:105,3,102,2,0,0,0"));
+        let deadline = Instant::now() + Duration::from_millis(TEST_TIMEOUT_MS);
+        let mut lit = false;
+        let mut smelted = false;
+        while !smelted {
+            assert!(Instant::now() < deadline, "furnace never smelted");
+            let b = recv_kind(&rt, &mut s, &mut ws_a, MsgKind::BentityDiff);
+            let m = proto::read_bentity_diff(&b[MSG_HEADER_SIZE..]).unwrap();
+            for rec in &m.records {
+                if rec.contains(":f:") && rec.contains("102,1") {
+                    lit = true; /* one coal consumed into the burn */
+                }
+                if rec.contains("108,1") {
+                    smelted = true; /* one copper ingot in the output */
+                }
+            }
+        }
+        assert!(lit, "fuel lit on the server");
+
+        /* ---- Crops: plant, then verify a fresh join gets the replay
+         * (server-persisted, growth server-derived). ---- */
+        ws_send(&rt, &mut ws_a, crop_bytes(0, CROP_OP_PLANT, 41, [304.0, 0.0, 0.0], 0.25));
+        /* Echo comes back to the sender. */
+        let cb = recv_kind(&rt, &mut s, &mut ws_a, MsgKind::CropDiff);
+        let cm = proto::read_crop_diff(&cb[MSG_HEADER_SIZE..]).unwrap();
+        assert_eq!(cm.entry_count, 1);
+        assert_eq!(cm.entries[0].op, CROP_OP_PLANT);
+
+        let mut ws_b = ws_connect(&rt, port);
+        ws_send(&rt, &mut ws_b, hello_bytes(TENEBRIS_PROTOCOL_VERSION, "bob", "", "tokB00000000000000000000000000"));
+        recv_kind(&rt, &mut s, &mut ws_b, MsgKind::Welcome);
+        /* Join replays: machines + crops both arrive. */
+        let rb = recv_kind(&rt, &mut s, &mut ws_b, MsgKind::BentityDiff);
+        let rm = proto::read_bentity_diff(&rb[MSG_HEADER_SIZE..]).unwrap();
+        assert!(rm.records.iter().any(|r| r.starts_with("41:64:")), "machine replay");
+        let rb = recv_kind(&rt, &mut s, &mut ws_b, MsgKind::CropDiff);
+        let rm = proto::read_crop_diff(&rb[MSG_HEADER_SIZE..]).unwrap();
+        assert_eq!(rm.entries[0].tile_idx, 41, "crop replay");
+        assert!(rm.entries[0].growth >= 0.25, "growth only moves forward");
+
+        /* ---- Burying a crop: a PLACE into its cell removes it and
+         * broadcasts the removal. Crop feet at r=304 sit in the depth-68
+         * cell (r = body_r - (SEA_LEVEL - d) => d = 68). ---- */
+        ws_send(
+            &rt,
+            &mut ws_a,
+            player_cmd_bytes(PLAYER_CMD_PLACE, 0, 41, 68, Block::Stone),
+        );
+        let deadline = Instant::now() + Duration::from_millis(TEST_TIMEOUT_MS);
+        loop {
+            assert!(Instant::now() < deadline, "crop bury removal never arrived");
+            let b = recv_kind(&rt, &mut s, &mut ws_a, MsgKind::CropDiff);
+            let m = proto::read_crop_diff(&b[MSG_HEADER_SIZE..]).unwrap();
+            if (0..m.entry_count as usize).any(|i| m.entries[i].op == CROP_OP_REMOVE) {
+                break;
+            }
+        }
+
+        /* ---- Animals: a grounded pose makes the server spawn a herd
+         * near it; three swings kill one and credit the meat. ---- */
+        let spawn = (welcome.spawn_x, welcome.spawn_y, welcome.spawn_z);
+        ws_send(&rt, &mut ws_a, player_state_bytes(1, 0, spawn, true));
+        let my_id = welcome.player_id;
+        let deadline = Instant::now() + Duration::from_millis(TEST_TIMEOUT_MS);
+        let target = loop {
+            assert!(Instant::now() < deadline, "no animals spawned");
+            /* Keep the pose fresh so the anchor stays valid. */
+            ws_send(&rt, &mut ws_a, player_state_bytes(2, 0, spawn, true));
+            let b = recv_kind(&rt, &mut s, &mut ws_a, MsgKind::AnimalState);
+            let m = proto::read_animal_state(&b[MSG_HEADER_SIZE..]).unwrap();
+            if m.entry_count > 0 {
+                break m.entries[0].id;
+            }
+        };
+        for _ in 0..3 {
+            ws_send(&rt, &mut ws_a, animal_hit_bytes(0, target, 5.0));
+            s.tick();
+        }
+        let deadline = Instant::now() + Duration::from_millis(TEST_TIMEOUT_MS);
+        loop {
+            assert!(Instant::now() < deadline, "kill credit never arrived");
+            let b = recv_kind(&rt, &mut s, &mut ws_a, MsgKind::AnimalState);
+            let m = proto::read_animal_state(&b[MSG_HEADER_SIZE..]).unwrap();
+            if m.killed_by == my_id {
+                assert!(m.meat_award >= 2, "meat award");
+                assert!(
+                    !(0..m.entry_count as usize).any(|i| m.entries[i].id == target),
+                    "dead animal left the herd"
+                );
+                break;
+            }
+        }
+
+        /* ---- Sim clock persists across a restart, moving forward. ---- */
+        let t_before = s.sim_time_s;
+        s.shutdown();
+        drop(ws_a);
+        drop(ws_b);
+        let s2 = boot(&saves_dir, 7);
+        assert!(
+            /* world_time.txt stores %.3f - allow that rounding. */
+            s2.sim_time_s >= t_before - 0.01,
+            "clock resumed >= shutdown time ({} vs {})",
+            s2.sim_time_s,
+            t_before
+        );
+
         let _ = std::fs::remove_dir_all(&saves_dir);
     }
 }
