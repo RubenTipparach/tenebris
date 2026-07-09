@@ -630,7 +630,7 @@ pub struct MsgSimTime {
 /// bag grid + hunger. Fixed slot count on the wire; the reader accepts
 /// any count <= MSG_BAG_SLOTS_MAX so the grid can grow with a version
 /// bump later.
-pub const MSG_BAG_SLOTS: usize = 18; /* must match client bag::BAG_SLOTS */
+pub const MSG_BAG_SLOTS: usize = 27; /* must match client bag::BAG_SLOTS */
 pub const MSG_BAG_SLOTS_MAX: usize = 64;
 pub const MSG_BAG_STATE_HEADER: usize = 8; /* hunger f32 + count u16 + reserved u16 */
 pub const MSG_BAG_STATE_WIRE_SIZE: usize = MSG_BAG_STATE_HEADER + MSG_BAG_SLOTS * 4;
@@ -2884,7 +2884,7 @@ mod tests {
         assert_eq!(MSG_DESYNC_WIRE_SIZE, 4 + 4 + 24 + 4);
         assert_eq!(MSG_WATER_ORIGINS_DIFF_MAX_SIZE, 12 + 20 * 128);
         assert_eq!(MSG_SIM_TIME_WIRE_SIZE, 8 + 4 + 4);
-        assert_eq!(MSG_BAG_STATE_WIRE_SIZE, 8 + 18 * 4);
+        assert_eq!(MSG_BAG_STATE_WIRE_SIZE, 8 + 27 * 4);
         assert_eq!(MSG_CROP_ENTRY_SIZE, 4 + 4 + 12 + 12 + 4);
         assert_eq!(MSG_ANIMAL_ENTRY_SIZE, 4 + 4 + 12 + 12);
         assert_eq!(MSG_ANIMAL_HIT_WIRE_SIZE, 4 + 4 + 4);

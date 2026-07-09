@@ -181,7 +181,7 @@ pub fn set_player(p: Option<PlayerHandle>) {
 }
 
 const EGUI_SLOT_PX: f32 = 42.0;
-/* Bag rows line up with the 9-slot hotbar below them (18 slots = 2
+/* Bag rows line up with the 9-slot hotbar below them (27 slots = 3
  * clean rows), so the two grids read as one column-aligned bag. */
 const BAG_COLS: usize = INV_HOTBAR_SLOTS;
 const PALETTE_COLS: usize = 7;

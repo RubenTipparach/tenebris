@@ -18,9 +18,12 @@ use tenebris_core::blocks::Block;
 use tenebris_core::crafting::{self, Recipe};
 use tenebris_core::items::{self, ItemId, ItemStack};
 
-/// Bag capacity. Larger than the hotbar so survival can outgrow it; a
-/// fixed array keeps `Bag` (and thus `PlayerCtrl`) `Copy`.
-pub const BAG_SLOTS: usize = 18;
+/// Bag capacity: 3 rows of 9, matching the hotbar's 9 columns so the
+/// inventory screen reads as one aligned grid. A fixed array keeps
+/// `Bag` (and thus `PlayerCtrl`) `Copy`. Growing this is save- and
+/// wire-compatible: `parse` fills what the blob has, and the BagState
+/// message carries an explicit slot count both ends tolerate.
+pub const BAG_SLOTS: usize = 27;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Bag {
