@@ -99,14 +99,22 @@ jobs:
       # for the whole pipeline. Cold-cache depot builds can take 5-8 min;
       # --wait-timeout 900 (15 min) leaves headroom without giving up
       # early. --verbose makes failures self-diagnose in the run log.
+      #
+      # The server behind the 'tenebris-c' Fly app is the RUST
+      # implementation (tenebris-rs/crates/tenebris-server) - the C
+      # server is retired (its config lives on as
+      # tenebris-c/fly.toml.retired, the emergency rollback path). The
+      # app keeps the C-era name because wss://tenebris-c.fly.dev/ is
+      # an on-wire identifier baked into every client. Saves carry
+      # over: the volume + format are byte-compatible by porting rule.
       # ---------------------------------------------------------------
       - name: Set up flyctl
         uses: superfly/flyctl-actions/setup-flyctl@master
 
-      - name: Deploy server to Fly.io
+      - name: Deploy server to Fly.io (Rust)
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-        working-directory: tenebris-c
+        working-directory: tenebris-rs
         run: |
           if [ -z "$FLY_API_TOKEN" ]; then
             echo "::error::FLY_API_TOKEN repo secret is not set."

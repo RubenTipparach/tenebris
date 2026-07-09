@@ -15,8 +15,8 @@
 #
 #   fly deploy --config fly.toml
 #
-# or push to main / run the "Deploy server (Fly)" workflow - see
-# .github/workflows/deploy-server.yml.
+# or just push: the static.yml build job deploys the server on every
+# push (the repo's single-pipeline convention).
 #
 # Emergency rollback to the C server: its retired config still builds
 # the C image against the same app + volume:
