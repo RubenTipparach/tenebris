@@ -56,6 +56,7 @@ use crate::power_ui;
 use crate::ui_icons;
 use crate::inventory::{self, INV_HOTBAR_SLOTS};
 use crate::inventory_screen;
+use crate::tech_tree;
 use crate::menu::{self, GameState};
 use crate::mobile_ui;
 use crate::net_client::{self, NetClientState, NetDesyncKind};
@@ -2970,6 +2971,10 @@ fn maybe_prime_mode_for_state(app: &mut App) {
                     p.hunger = player_ctrl::MAX_HUNGER;
                 }
             }
+            /* Tech-tree discovery persists per world alongside the bag. */
+            p.discovered = persistence::load_tech(&world)
+                .and_then(|blob| crate::tech_tree::Discovered::parse(&blob))
+                .unwrap_or_default();
         }
         None => {
             if s == app.inv_primed_for_state {
@@ -3090,6 +3095,8 @@ fn maybe_autosave_sp(app: &mut App, dt: f64) {
     /* Bag + hunger ride the same cadence (tools/meat must survive a
      * re-entry; pose is cheap to re-derive, the bag is not). */
     persistence::save_bag(&world, p.hunger, &p.bag.serialize());
+    /* Tech-tree discovery rides the same autosave cadence. */
+    persistence::save_tech(&world, &p.discovered.serialize());
 }
 
 /* --------------------------------------------------------------------- */
@@ -3390,6 +3397,8 @@ fn egui_ui(app: &mut App, ctx: &egui::Context) {
     crafting_screen::egui_ui(ctx);
     inventory_screen::set_player(Some(app.player.clone()));
     inventory_screen::egui_ui(ctx);
+    tech_tree::set_player(Some(app.player.clone()));
+    tech_tree::egui_ui(ctx);
     chest_screen::egui_ui(ctx);
     furnace_screen::egui_ui(ctx);
     power_ui::egui_ui(ctx);
@@ -3418,7 +3427,8 @@ fn frame_inner(app: &mut App) {
          * inventory unlocks the mouse and must NOT trip the pause panel.
          * On native, the direct Esc handler in event_inner is the real
          * opener; this stays for the web Esc path. */
-        let overlay_open = inventory_screen::is_open() || crafting_screen::is_open();
+        let overlay_open =
+            inventory_screen::is_open() || crafting_screen::is_open() || tech_tree::is_open();
         if in_gameplay
             && app.was_mouse_locked
             && !now_locked
@@ -3457,6 +3467,16 @@ fn frame_inner(app: &mut App) {
     }
     dt = clamped;
     app.tick = app.tick.wrapping_add(1);
+
+    /* Tech-tree discovery: mark everything currently held as discovered so
+     * the progression guide unlocks nodes as materials are gathered /
+     * crafted. Cheap bitset sweep; runs in both SP and MP. */
+    {
+        let mut p = app.player.borrow_mut();
+        let inv = p.inventory;
+        let bag = p.bag;
+        tech_tree::discover_held(&mut p.discovered, &inv, &bag);
+    }
 
     /* Advance the world clock (drives the on-rails orbit + day/night sim).
      * Frozen when a dev time-of-day is pinned for screenshots. */
@@ -4448,6 +4468,20 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
          * key. Count the tap so a sustained run of unmodified Es
          * surfaces the Shift+E hint toast. */
         inventory_screen::note_e_tap_in_space();
+    }
+    /* K: toggle the tech-tree / progression guide overlay. */
+    if e._type == sapp::EventType::KeyDown && e.key_code == sapp::Keycode::K {
+        tech_tree::toggle();
+        if tech_tree::is_open() {
+            inventory_screen::close();
+            crafting_screen::close();
+            rocket_screen::close();
+        }
+        return;
+    }
+    if tech_tree::event(e) {
+        pixel_ui::event(e);
+        return;
     }
     if inventory_screen::event(e) {
         /* Still pump pixel_ui for mouse movement / clicks so the

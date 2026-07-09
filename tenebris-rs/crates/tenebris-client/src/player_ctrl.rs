@@ -143,6 +143,10 @@ pub struct PlayerCtrl {
      * crafted resources, tools, and tech-tree items live. Empty in
      * creative; filled by crafting (and later by resource drops). */
     pub bag: Bag,
+    /* Tech-tree discovery: a bitset of item ids the player has ever held,
+     * driving the in-game progression guide (client::tech_tree). Swept
+     * from the bag + hotbar each frame; persisted per world. */
+    pub discovered: crate::tech_tree::Discovered,
     /* Survival hunger, 0..MAX_HUNGER. Drains over time in survival;
      * eating food (cooked meat best) refills it. `Default` zeroes it, so
      * the spawn / mode-entry path stamps it full - see `refill_hunger`. */

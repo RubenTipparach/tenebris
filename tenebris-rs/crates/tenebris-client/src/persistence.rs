@@ -47,6 +47,8 @@ use tenebris_core::block_entity::{
 const KEY_PREFIX: &str = "tenebris-c:world:";
 /// Per-world survival bag + hunger (Rust-port extension key).
 const KEY_BAG_PREFIX: &str = "tenebris-c:bag:";
+/// Per-world tech-tree discovery bitset (Rust-port extension key).
+const KEY_TECH_PREFIX: &str = "tenebris-c:tech:";
 const KEY_TILE_PREFIX: &str = "tenebris-c:tile:";
 const KEY_TORCH_PREFIX: &str = "tenebris-c:torches:";
 const KEY_CROP_PREFIX: &str = "tenebris-c:crops:";
@@ -288,12 +290,31 @@ pub fn load_bag(world_name: &str) -> Option<(f32, String)> {
     Some((h.trim().parse::<f32>().ok()?, rest.to_string()))
 }
 
+/// Save a world's tech-tree discovery bitset (client::tech_tree). Rides
+/// the same autosave cadence as the bag.
+pub fn save_tech(world_name: &str, tech_blob: &str) -> bool {
+    if !valid_name(world_name) {
+        return false;
+    }
+    client_kv::set(&format!("{KEY_TECH_PREFIX}{world_name}"), tech_blob);
+    true
+}
+
+/// Load a world's tech-tree discovery blob.
+pub fn load_tech(world_name: &str) -> Option<String> {
+    if !valid_name(world_name) {
+        return None;
+    }
+    client_kv::get(&format!("{KEY_TECH_PREFIX}{world_name}"))
+}
+
 pub fn delete(world_name: &str) {
     if !valid_name(world_name) {
         return;
     }
     client_kv::remove(&build_key(world_name));
     client_kv::remove(&format!("{KEY_BAG_PREFIX}{world_name}"));
+    client_kv::remove(&format!("{KEY_TECH_PREFIX}{world_name}"));
     // Also wipe every per-tile column and per-body torch list, so
     // deleting a world is a full reset rather than leaving orphaned
     // edits that would attach to a freshly-recreated world of the

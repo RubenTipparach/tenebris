@@ -34,6 +34,7 @@ mod remote_players;
 mod renderer;
 mod settings;
 mod shaders;
+mod tech_tree;
 mod teleport_menu;
 mod viewmodel;
 mod torch;
