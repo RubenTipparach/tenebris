@@ -98,6 +98,18 @@ const PITCH_LIMIT: f32 = 1.55334;
 
 /* ----------------------------------------------------------------------- */
 
+/// One in-progress timed craft. Crafting isn't instant: the recipe's
+/// inputs are consumed when it starts and the output is deposited when
+/// `elapsed_s` reaches `total_s`. One at a time per player (the foundation
+/// the future crafting-automation machines will drive instead of the UI).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ActiveCraft {
+    pub output: tenebris_core::items::ItemId,
+    pub count: u16,
+    pub total_s: f32,
+    pub elapsed_s: f32,
+}
+
 /// Port of `player_ctrl_t`. Field names / widths unchanged except the
 /// body pointers (see module docs). `Default` mirrors the C pattern of
 /// a zeroed static `player_ctrl_t` before `init` runs.
@@ -147,6 +159,9 @@ pub struct PlayerCtrl {
      * driving the in-game progression guide (client::tech_tree). Swept
      * from the bag + hotbar each frame; persisted per world. */
     pub discovered: crate::tech_tree::Discovered,
+    /* Timed craft in progress (crafting takes time). `None` = idle. Ticked
+     * every frame by app; the craft UI starts it and shows its progress. */
+    pub crafting: Option<ActiveCraft>,
     /* Survival hunger, 0..MAX_HUNGER. Drains over time in survival;
      * eating food (cooked meat best) refills it. `Default` zeroes it, so
      * the spawn / mode-entry path stamps it full - see `refill_hunger`. */

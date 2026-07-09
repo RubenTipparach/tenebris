@@ -15,7 +15,7 @@ use sokol::app as sapp;
 
 use crate::bag;
 use crate::egui_layer;
-use crate::player_ctrl::PlayerCtrl;
+use crate::player_ctrl::{ActiveCraft, PlayerCtrl};
 use crate::ui_icons;
 use std::rc::Rc;
 use tenebris_core::crafting::{self, Recipe};
@@ -131,17 +131,77 @@ fn affordable_flags() -> Vec<bool> {
 }
 
 /// Craft recipe `idx` (within the current station's filtered list) for the
-/// bound player. Returns true if it happened.
+/// bound player. Returns true if a timed craft was started.
 fn craft_row(idx: usize) -> bool {
     let player = S.with(|c| c.borrow().player.clone());
     let Some(player) = player else { return false };
     let recipes = cur_recipes();
     let Some(recipe) = recipes.get(idx) else { return false };
+    start_craft(&player, recipe)
+}
+
+/// Begin a timed craft: consume the recipe's inputs now and queue its
+/// output for delivery when the timer finishes (`tick_craft`). No-op if a
+/// craft is already running or the inputs aren't on hand. Returns true if
+/// the craft started.
+pub fn start_craft(player: &PlayerHandle, r: &Recipe) -> bool {
     let mut p = player.borrow_mut();
+    if p.crafting.is_some() {
+        return false; /* one craft at a time */
+    }
     let p = &mut *p;
-    bag::try_craft(&mut p.inventory, &mut p.bag, recipe)
-    /* NOTE: bag persistence (same-frame save) lands with the SP/MP bag
-     * sync wave - the hotbar follows the existing inventory path. */
+    if !bag::consume_inputs(&mut p.inventory, &mut p.bag, r) {
+        return false;
+    }
+    p.crafting = Some(ActiveCraft {
+        output: r.output.item,
+        count: r.output.count,
+        total_s: r.time_s.max(0.01),
+        elapsed_s: 0.0,
+    });
+    true
+}
+
+/// Advance the player's in-progress craft; deposit the output into the bag
+/// when it finishes. Called every frame from app (so a craft keeps running
+/// even after the panel is closed - groundwork for automated crafters).
+pub fn tick_craft(player: &PlayerHandle, dt: f32) {
+    let mut p = player.borrow_mut();
+    let Some(mut ac) = p.crafting else { return };
+    ac.elapsed_s += dt;
+    if ac.elapsed_s >= ac.total_s {
+        let (item, count) = (ac.output, ac.count);
+        p.crafting = None;
+        p.bag.add(item, count);
+    } else {
+        p.crafting = Some(ac);
+    }
+}
+
+/// Draw the active-craft progress bar (output icon + filling bar) at the
+/// top of a craft panel. No-op when nothing is crafting.
+fn craft_progress_row(ui: &mut egui::Ui, player: &PlayerHandle) {
+    let ac = player.borrow().crafting;
+    let Some(ac) = ac else { return };
+    let frac = (ac.elapsed_s / ac.total_s).clamp(0.0, 1.0);
+    ui.horizontal(|ui| {
+        let (irect, _) = ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::hover());
+        draw_icon(ui.painter(), ac.output, ac.count, irect);
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(220.0, 16.0), egui::Sense::hover());
+        let p = ui.painter();
+        p.rect_filled(rect, 3.0, egui::Color32::from_rgb(0x1a, 0x1d, 0x24));
+        let mut fill = rect;
+        fill.set_width(rect.width() * frac);
+        p.rect_filled(fill, 3.0, egui::Color32::from_rgb(0xd8, 0x9a, 0x38));
+        p.text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            format!("crafting {}%", (frac * 100.0) as i32),
+            egui::FontId::proportional(11.0),
+            egui::Color32::WHITE,
+        );
+    });
+    ui.add_space(4.0);
 }
 
 
@@ -279,6 +339,9 @@ pub fn egui_ui(ctx: &egui::Context) {
                     .color(egui::Color32::from_rgb(0xa0, 0xa8, 0xc0)),
             );
             ui.add_space(4.0);
+            if let Some(player) = S.with(|c| c.borrow().player.clone()) {
+                craft_progress_row(ui, &player);
+            }
             for (i, r) in recipes.iter().enumerate() {
                 let ready = flags.get(i).copied().unwrap_or(false);
                 let (rect, resp) =
@@ -367,6 +430,7 @@ pub fn hand_craft_panel(ui: &mut egui::Ui, player: &PlayerHandle) {
             .color(egui::Color32::from_rgb(0xa0, 0xa8, 0xc0)),
     );
     ui.add_space(4.0);
+    craft_progress_row(ui, player);
     egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
         for (i, r) in recipes.iter().enumerate() {
             let ready = flags.get(i).copied().unwrap_or(false);
@@ -425,10 +489,7 @@ pub fn hand_craft_panel(ui: &mut egui::Ui, player: &PlayerHandle) {
     });
 
     if let Some(i) = craft_idx {
-        let r = recipes[i].clone();
-        let mut pc = player.borrow_mut();
-        let p = &mut *pc;
-        bag::try_craft(&mut p.inventory, &mut p.bag, &r);
+        start_craft(player, &recipes[i]);
     }
 }
 
@@ -479,24 +540,34 @@ in: plank 2
     }
 
     #[test]
-    fn enter_crafts_selected_recipe() {
+    fn enter_starts_a_timed_craft() {
         setup();
         let p = player_with_logs(3);
         handle_event(&key(EventType::KeyDown, Keycode::B), Some(p.clone()));
-        // row 0 = planks; Enter crafts it
+        // row 0 = planks; Enter STARTS the craft: inputs consumed now,
+        // output pending until the timer finishes.
         assert!(handle_event(&key(EventType::KeyDown, Keycode::Enter), Some(p.clone())));
+        assert_eq!(p.borrow().inventory.slots[1].count, 2, "one log spent up front");
+        assert_eq!(p.borrow().bag.count_of(PLANK), 0, "output not delivered yet");
+        assert!(p.borrow().crafting.is_some(), "a craft is running");
+        // Tick past the craft time -> the planks land in the bag.
+        tick_craft(&p, 999.0);
         assert_eq!(p.borrow().bag.count_of(PLANK), 4);
-        assert_eq!(p.borrow().inventory.slots[1].count, 2); // one log spent
+        assert!(p.borrow().crafting.is_none());
     }
 
     #[test]
-    fn craft_row_crafts_the_recipe() {
-        // egui owns clicks now; a row click calls craft_row(idx). Pin that
-        // path directly (the row->recipe mapping + the bag bridge).
+    fn craft_row_starts_then_tick_completes() {
+        // egui owns clicks now; a row click calls craft_row(idx). Pin the
+        // start-then-finish path (the row->recipe mapping + timed bridge).
         setup();
         let p = player_with_logs(1);
         set_player(Some(p.clone()));
-        assert!(craft_row(0)); // row 0 = planks
+        assert!(craft_row(0)); // row 0 = planks -> starts the craft
+        assert_eq!(p.borrow().bag.count_of(PLANK), 0, "not instant");
+        // A second craft can't start while one is running.
+        assert!(!craft_row(0));
+        tick_craft(&p, 999.0);
         assert_eq!(p.borrow().bag.count_of(PLANK), 4);
     }
 

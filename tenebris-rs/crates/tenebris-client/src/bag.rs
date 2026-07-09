@@ -197,6 +197,27 @@ pub fn try_craft(inv: &mut Inventory, bag: &mut Bag, r: &Recipe) -> bool {
     true
 }
 
+/// Consume a recipe's inputs WITHOUT producing the output - the start of
+/// a timed craft (the output is deposited later, when the timer finishes,
+/// via [`Bag::add`]). Atomic: returns false and mutates nothing if the
+/// inputs aren't all on hand. Drains the bag first, then the hotbar.
+pub fn consume_inputs(inv: &mut Inventory, bag: &mut Bag, r: &Recipe) -> bool {
+    /* Only require the inputs (not output room) - the output lands when
+     * the craft completes, and the bag can free up meanwhile. */
+    let have = r.inputs.iter().all(|ing| available(inv, bag, ing.item) >= ing.count as u32);
+    if !have {
+        return false;
+    }
+    for ing in &r.inputs {
+        let from_bag = bag.take(ing.item, ing.count as u32);
+        if from_bag > 0 {
+            let rem = hotbar_take(inv, ing.item, from_bag);
+            debug_assert_eq!(rem, 0, "availability check lied");
+        }
+    }
+    true
+}
+
 /// Craft the nth installed recipe (see `core::crafting`). Returns false
 /// if the index is out of range or the craft can't proceed.
 pub fn try_craft_nth(inv: &mut Inventory, bag: &mut Bag, idx: usize) -> bool {

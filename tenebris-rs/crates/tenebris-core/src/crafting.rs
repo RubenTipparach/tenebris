@@ -20,7 +20,7 @@
 use crate::items::{self, ItemId, ItemStack};
 use std::sync::Mutex;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Recipe {
     pub name: String,
     pub inputs: Vec<ItemStack>,
@@ -28,6 +28,17 @@ pub struct Recipe {
     pub tier: u8,
     /// Station item id that must be present to craft (`None` = hand-craft).
     pub station: Option<ItemId>,
+    /// Seconds this craft takes (crafting isn't instant). Set from the
+    /// `time:` recipe key; when omitted it defaults to [`default_time`] of
+    /// the tier, so higher-tier items take longer to build.
+    pub time_s: f32,
+}
+
+/// Default craft duration (seconds) for a recipe of `tier` with no
+/// explicit `time:` - scales up the tree so tier-3 gear is a real
+/// investment. Tier 0 = 1.5 s, +1 s per tier.
+pub fn default_time(tier: u8) -> f32 {
+    1.5 + tier as f32
 }
 
 fn parse_item_count(val: &str) -> Option<ItemStack> {
@@ -45,7 +56,10 @@ pub fn parse_recipes(src: &str, path: &str) -> Vec<Recipe> {
     let mut cur: Option<Recipe> = None;
 
     let flush = |cur: &mut Option<Recipe>, out: &mut Vec<Recipe>| {
-        if let Some(r) = cur.take() {
+        if let Some(mut r) = cur.take() {
+            if r.time_s <= 0.0 {
+                r.time_s = default_time(r.tier);
+            }
             if r.output.count > 0 && !r.inputs.is_empty() {
                 out.push(r);
             }
@@ -69,6 +83,8 @@ pub fn parse_recipes(src: &str, path: &str) -> Vec<Recipe> {
                 output: ItemStack::default(),
                 tier: 0,
                 station: None,
+                /* 0.0 = "use the tier default"; resolved at flush. */
+                time_s: 0.0,
             });
             continue;
         }
@@ -89,6 +105,7 @@ pub fn parse_recipes(src: &str, path: &str) -> Vec<Recipe> {
                 None => eprintln!("[recipes] {}:{}: bad input '{}'", path, lineno + 1, val),
             },
             "tier" => r.tier = val.parse().unwrap_or(0),
+            "time" => r.time_s = val.parse().unwrap_or(0.0),
             "station" => {
                 r.station = if val == "none" { None } else { items::id_by_name(val) };
             }

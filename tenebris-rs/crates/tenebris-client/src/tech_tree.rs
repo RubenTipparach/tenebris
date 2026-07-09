@@ -32,9 +32,6 @@ use crate::inventory::Inventory;
 use crate::player_ctrl::PlayerCtrl;
 use tenebris_core::blocks::Block;
 
-/// Highest tier column shown (recipes are tagged tier 0..3 today).
-const MAX_TIER: u8 = 3;
-
 /* ---------------------------------------------------------------------- */
 /* Discovery set - a Copy bitset of item ids the player has ever held.     */
 
@@ -197,8 +194,6 @@ pub fn event(e: &sapp::Event) -> bool {
     })
 }
 
-const SLOT_PX: f32 = 34.0;
-
 fn state_border(state: NodeState) -> egui::Color32 {
     match state {
         NodeState::Ready => egui::Color32::from_rgb(0x7a, 0xc8, 0x66),
@@ -207,69 +202,165 @@ fn state_border(state: NodeState) -> egui::Color32 {
     }
 }
 
-/// One item thumbnail at `size`, dimmed when `locked`.
-fn item_icon(ui: &mut egui::Ui, item: ItemId, count: u16, size: f32, locked: bool) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
-    let p = ui.painter();
-    p.rect_filled(rect, 2.0, egui::Color32::from_rgb(0x22, 0x25, 0x2d));
-    let tint = if locked { egui::Color32::from_gray(0x55) } else { egui::Color32::WHITE };
+/* ---------------------------------------------------------------------- */
+/* Layout by crafting DEPTH (chain distance from raw materials), so every  */
+/* dependency edge flows strictly left -> right and never loops within a   */
+/* column.                                                                 */
+
+const CARD_W: f32 = 208.0;
+const CARD_H: f32 = 46.0;
+const COL_PITCH: f32 = 236.0;
+const ROW_PITCH: f32 = 54.0;
+const HEADER_H: f32 = 20.0;
+
+/// The recipe (index) whose output is `item`, or `None` if `item` is a raw
+/// material (mined / gathered, not crafted).
+fn producer_of(recipes: &[Recipe], item: ItemId) -> Option<usize> {
+    recipes.iter().position(|r| r.output.item == item)
+}
+
+/// Craft depth of recipe `idx`: 1 + the deepest crafted input (raw inputs
+/// count as depth 0). Memoised; the `visiting` guard keeps a malformed
+/// cyclic recipe set from recursing forever.
+fn depth_of(
+    recipes: &[Recipe],
+    idx: usize,
+    memo: &mut [Option<u32>],
+    visiting: &mut [bool],
+) -> u32 {
+    if let Some(d) = memo[idx] {
+        return d;
+    }
+    if visiting[idx] {
+        return 1;
+    }
+    visiting[idx] = true;
+    let mut deepest = 0;
+    for ing in &recipes[idx].inputs {
+        if let Some(p) = producer_of(recipes, ing.item) {
+            if p != idx {
+                deepest = deepest.max(depth_of(recipes, p, memo, visiting));
+            }
+        }
+    }
+    visiting[idx] = false;
+    let d = deepest + 1;
+    memo[idx] = Some(d);
+    d
+}
+
+/// Group recipe indices into columns by craft depth (column 0 = depth 1).
+pub(crate) fn columns(recipes: &[Recipe]) -> Vec<Vec<usize>> {
+    let n = recipes.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let mut memo = vec![None; n];
+    let mut visiting = vec![false; n];
+    let depths: Vec<u32> =
+        (0..n).map(|i| depth_of(recipes, i, &mut memo, &mut visiting)).collect();
+    let maxd = depths.iter().copied().max().unwrap_or(1);
+    let mut cols = vec![Vec::new(); maxd as usize];
+    for (i, &d) in depths.iter().enumerate() {
+        cols[(d - 1) as usize].push(i);
+    }
+    cols
+}
+
+/// Paint an item thumbnail into `rect`.
+fn paint_icon(p: &egui::Painter, item: ItemId, rect: egui::Rect, tint: egui::Color32) {
     match crate::ui_icons::uv(item) {
         Some([u0, v0, u1, v1]) => {
             let uv = egui::Rect::from_min_max(egui::pos2(u0, v0), egui::pos2(u1, v1));
-            p.image(crate::egui_layer::ICON_TEX, rect.shrink(3.0), uv, tint);
+            p.image(crate::egui_layer::ICON_TEX, rect, uv, tint);
         }
         None => {
-            p.rect_filled(rect.shrink(6.0), 2.0, egui::Color32::from_gray(if locked { 0x44 } else { 0x80 }));
+            p.rect_filled(rect, 2.0, egui::Color32::from_gray(0x60));
         }
     }
-    if count > 1 {
+}
+
+/// One recipe node drawn straight to the painter at `rect`.
+fn paint_node(p: &egui::Painter, rect: egui::Rect, r: &Recipe, state: NodeState) {
+    let locked = state == NodeState::Locked;
+    let tint = if locked { egui::Color32::from_gray(0x55) } else { egui::Color32::WHITE };
+    p.rect_filled(rect, 4.0, egui::Color32::from_rgb(0x1c, 0x1f, 0x26));
+    p.rect_stroke(
+        rect,
+        4.0,
+        egui::Stroke::new(if state == NodeState::Ready { 2.0 } else { 1.0 }, state_border(state)),
+        egui::StrokeKind::Inside,
+    );
+    // Output icon (left).
+    let icon = egui::Rect::from_min_size(rect.min + egui::vec2(6.0, 7.0), egui::vec2(32.0, 32.0));
+    paint_icon(p, r.output.item, icon, tint);
+    if r.output.count > 1 {
         p.text(
-            rect.max - egui::vec2(2.0, 1.0),
+            icon.max,
             egui::Align2::RIGHT_BOTTOM,
-            count.to_string(),
+            r.output.count.to_string(),
             egui::FontId::proportional(11.0),
             tint,
         );
     }
+    // Name.
+    let name = if locked { "???".to_string() } else { pretty_name(r.output.item) };
+    let name_col = match state {
+        NodeState::Ready => egui::Color32::from_rgb(0xd8, 0xf0, 0xc8),
+        NodeState::Known => egui::Color32::from_rgb(0xc8, 0xd0, 0xe0),
+        NodeState::Locked => egui::Color32::from_gray(0x66),
+    };
+    p.text(
+        egui::pos2(rect.min.x + 44.0, rect.min.y + 6.0),
+        egui::Align2::LEFT_TOP,
+        name,
+        egui::FontId::proportional(13.0),
+        name_col,
+    );
+    // Input icons (small row under the name).
+    let mut ix = rect.min.x + 44.0;
+    for ing in &r.inputs {
+        let ir = egui::Rect::from_min_size(egui::pos2(ix, rect.min.y + 24.0), egui::vec2(16.0, 16.0));
+        paint_icon(p, ing.item, ir, tint);
+        if ing.count > 1 {
+            p.text(
+                ir.max + egui::vec2(1.0, 0.0),
+                egui::Align2::LEFT_BOTTOM,
+                ing.count.to_string(),
+                egui::FontId::proportional(9.0),
+                tint,
+            );
+        }
+        ix += 22.0;
+    }
+    // Station requirement.
+    if let Some(st) = r.station {
+        p.text(
+            egui::pos2(rect.max.x - 5.0, rect.max.y - 3.0),
+            egui::Align2::RIGHT_BOTTOM,
+            format!("@{}", pretty_name(st)),
+            egui::FontId::proportional(9.0),
+            egui::Color32::from_gray(0x80),
+        );
+    }
 }
 
-/// One recipe node: output + its inputs, framed by state colour.
-fn recipe_card(ui: &mut egui::Ui, r: &Recipe, state: NodeState) {
-    let locked = state == NodeState::Locked;
-    let frame = egui::Frame::none()
-        .fill(egui::Color32::from_rgb(0x1c, 0x1f, 0x26))
-        .stroke(egui::Stroke::new(if state == NodeState::Ready { 2.0 } else { 1.0 }, state_border(state)))
-        .inner_margin(egui::Margin::same(5))
-        .rounding(4.0);
-    frame.show(ui, |ui| {
-        ui.set_width(210.0);
-        ui.horizontal(|ui| {
-            item_icon(ui, r.output.item, r.output.count, SLOT_PX, locked);
-            ui.add_space(4.0);
-            ui.vertical(|ui| {
-                let name = if locked { "???".to_string() } else { pretty_name(r.output.item) };
-                let name_col = match state {
-                    NodeState::Ready => egui::Color32::from_rgb(0xd8, 0xf0, 0xc8),
-                    NodeState::Known => egui::Color32::from_rgb(0xc8, 0xd0, 0xe0),
-                    NodeState::Locked => egui::Color32::from_gray(0x66),
-                };
-                ui.label(egui::RichText::new(name).strong().color(name_col));
-                ui.horizontal(|ui| {
-                    for ing in &r.inputs {
-                        item_icon(ui, ing.item, ing.count, 20.0, locked);
-                    }
-                    if let Some(st) = r.station {
-                        ui.label(
-                            egui::RichText::new(format!("@{}", pretty_name(st)))
-                                .small()
-                                .color(egui::Color32::from_gray(0x88)),
-                        );
-                    }
-                });
-            });
-        });
-    });
-    ui.add_space(4.0);
+/// A dependency edge from a producer node to a consumer node.
+fn paint_edge(p: &egui::Painter, from: egui::Rect, to: egui::Rect, dim: bool) {
+    let a = from.right_center();
+    let b = to.left_center();
+    let col = if dim {
+        egui::Color32::from_rgba_unmultiplied(0x4c, 0x54, 0x64, 110)
+    } else {
+        egui::Color32::from_rgba_unmultiplied(0x86, 0x90, 0xa6, 170)
+    };
+    // Elbow: out to the mid-x, across, then in - reads cleaner than a
+    // diagonal when many edges fan between two columns.
+    let midx = (a.x + b.x) * 0.5;
+    let stroke = egui::Stroke::new(1.5, col);
+    p.line_segment([a, egui::pos2(midx, a.y)], stroke);
+    p.line_segment([egui::pos2(midx, a.y), egui::pos2(midx, b.y)], stroke);
+    p.line_segment([egui::pos2(midx, b.y), b], stroke);
 }
 
 /// Draw the tech-tree overlay. No-op when closed.
@@ -285,51 +376,77 @@ pub fn egui_ui(ctx: &egui::Context) {
         let p = player.borrow();
         (p.inventory, p.bag, p.discovered)
     };
+    let cols = columns(&recipes);
+    let ncol = cols.len().max(1);
+    let max_rows = cols.iter().map(|c| c.len()).max().unwrap_or(0);
+    let total = egui::vec2(
+        ncol as f32 * COL_PITCH,
+        HEADER_H + max_rows as f32 * ROW_PITCH + 8.0,
+    );
 
     let mut do_close = false;
     egui::Window::new("Tech Tree")
         .collapsible(false)
         .resizable(false)
-        .default_width(960.0)
+        .default_width(1120.0)
         .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
         .show(ctx, |ui| {
             ui.label(
                 egui::RichText::new(
-                    "Craft progression - unlocks as you gather + build. \
-                     Green = ready, grey = known, dim = undiscovered.",
+                    "Craft progression - each node needs the ones linked into it. \
+                     Unlocks as you gather + build: green = ready, grey = known, \
+                     dim = undiscovered.",
                 )
                 .small()
                 .color(egui::Color32::from_rgb(0x90, 0x98, 0xa8)),
             );
             ui.add_space(6.0);
 
-            egui::ScrollArea::vertical().max_height(560.0).show(ui, |ui| {
-                ui.horizontal_top(|ui| {
-                    for tier in 0..=MAX_TIER {
-                        ui.vertical(|ui| {
-                            ui.set_width(224.0);
-                            ui.label(
-                                egui::RichText::new(format!("Tier {tier}"))
-                                    .strong()
-                                    .color(egui::Color32::from_rgb(0xe0, 0xc8, 0x60)),
-                            );
-                            ui.add_space(4.0);
-                            let mut any = false;
-                            for r in recipes.iter().filter(|r| r.tier == tier) {
-                                let st = node_state(r, &disco, &inv, &bag);
-                                recipe_card(ui, r, st);
-                                any = true;
-                            }
-                            if !any {
-                                ui.label(
-                                    egui::RichText::new("-")
-                                        .color(egui::Color32::from_gray(0x55)),
-                                );
-                            }
-                        });
-                        ui.add_space(8.0);
+            egui::ScrollArea::both().max_height(580.0).show(ui, |ui| {
+                let (region, _) = ui.allocate_exact_size(total, egui::Sense::hover());
+                let o = region.min;
+
+                // Rect per recipe index (depth column, row within column).
+                let mut rects: Vec<Option<egui::Rect>> = vec![None; recipes.len()];
+                for (ci, col) in cols.iter().enumerate() {
+                    for (ri, &rid) in col.iter().enumerate() {
+                        let x = o.x + ci as f32 * COL_PITCH;
+                        let y = o.y + HEADER_H + ri as f32 * ROW_PITCH;
+                        rects[rid] =
+                            Some(egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(CARD_W, CARD_H)));
                     }
-                });
+                }
+
+                let painter = ui.painter_at(region);
+                // Column headers.
+                for ci in 0..ncol {
+                    painter.text(
+                        egui::pos2(o.x + ci as f32 * COL_PITCH, o.y),
+                        egui::Align2::LEFT_TOP,
+                        format!("Step {}", ci + 1),
+                        egui::FontId::proportional(12.0),
+                        egui::Color32::from_rgb(0xe0, 0xc8, 0x60),
+                    );
+                }
+                // Edges first (behind the nodes).
+                for (rid, r) in recipes.iter().enumerate() {
+                    let Some(crect) = rects[rid] else { continue };
+                    let dim = node_state(r, &disco, &inv, &bag) == NodeState::Locked;
+                    for ing in &r.inputs {
+                        if let Some(pidx) = producer_of(&recipes, ing.item) {
+                            if let Some(prect) = rects[pidx] {
+                                paint_edge(&painter, prect, crect, dim);
+                            }
+                        }
+                    }
+                }
+                // Nodes on top.
+                for (rid, r) in recipes.iter().enumerate() {
+                    if let Some(crect) = rects[rid] {
+                        let st = node_state(r, &disco, &inv, &bag);
+                        paint_node(&painter, crect, r, st);
+                    }
+                }
             });
 
             ui.add_space(6.0);
@@ -362,6 +479,31 @@ mod tests {
     }
 
     #[test]
+    fn depth_columns_order_the_craft_chain() {
+        // log -> plank(1) -> stick(2) -> pickaxe(3): three depth columns.
+        let src = "\
+[planks]
+out: plank 4
+in: log 1
+[sticks]
+out: stick 4
+in: plank 2
+[wood-pickaxe]
+out: wood-pickaxe 1
+in: plank 3
+in: stick 2
+";
+        let rs = tenebris_core::crafting::parse_recipes(src, "t");
+        let cols = columns(&rs);
+        assert_eq!(cols.len(), 3, "three craft-depth columns");
+        // planks are depth 1, sticks depth 2, pickaxe depth 3.
+        let name_at = |ci: usize| rs[cols[ci][0]].name.clone();
+        assert_eq!(name_at(0), "planks");
+        assert_eq!(name_at(1), "sticks");
+        assert_eq!(name_at(2), "wood-pickaxe");
+    }
+
+    #[test]
     fn node_state_locks_until_inputs_discovered() {
         // A plank recipe: log -> plank. Locked until a log is discovered.
         let recipe = Recipe {
@@ -373,6 +515,7 @@ mod tests {
             output: tenebris_core::items::ItemStack { item: PLANK, count: 4 },
             tier: 0,
             station: None,
+            time_s: 1.5,
         };
         let mut inv = Inventory::default();
         crate::inventory::init_empty(&mut inv);

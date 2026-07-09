@@ -3477,6 +3477,9 @@ fn frame_inner(app: &mut App) {
         let bag = p.bag;
         tech_tree::discover_held(&mut p.discovered, &inv, &bag);
     }
+    /* Advance any in-progress timed craft (runs even with the panel
+     * closed). */
+    crafting_screen::tick_craft(&app.player, dt);
 
     /* Advance the world clock (drives the on-rails orbit + day/night sim).
      * Frozen when a dev time-of-day is pinned for screenshots. */
