@@ -4,8 +4,7 @@
 //! placeable block gets a 32x32 thumbnail. A single horizontal strip
 //! texture, built once at boot from per-item PNGs, sampled by the egui
 //! layer (bound as a user texture). Separate from the terrain atlas (which
-//! the mesher owns) and from the legacy `item_atlas` (which keys the old
-//! `inventory::ItemId` enum, not the core resource ids).
+//! the mesher owns).
 //!
 //! When a new item or block is added it MUST get a row here - per the
 //! CLAUDE.md rule that item visuals are a priority and UIs show thumbnails,
@@ -32,6 +31,14 @@ const ICONS: &[(u16, &str)] = &[
     (Block::Snow as u16, "assets/textures/snow.png"),
     (Block::Wood as u16, "assets/textures/wood.png"),
     (Block::Bedrock as u16, "assets/textures/rocks.png"),
+    (Block::Torch as u16, "assets/textures/torch.png"),
+    (Block::Water as u16, "assets/textures/water.png"),
+    (Block::Ice as u16, "assets/textures/ice.png"),
+    /* Leaves have no source PNG (the terrain atlas tints them
+     * procedurally); the grass texture is the closest green stand-in. */
+    (Block::Leaves as u16, "assets/textures/grass.png"),
+    (Block::DirtGrass as u16, "assets/textures/dirt_grass.png"),
+    (Block::DirtSnow as u16, "assets/textures/dirt_snow.png"),
     (Block::CoalOre as u16, "assets/textures/minerals/rocks_coal.png"),
     (Block::CopperOre as u16, "assets/textures/minerals/rocks_copper.png"),
     (Block::TinOre as u16, "assets/textures/minerals/rocks_tin.png"),

@@ -567,7 +567,11 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
                             base_dir.y,
                             base_dir.z,
                         );
-                        inventory::consume(&mut p.inventory);
+                        /* Creative placement is free - only survival
+                         * spends the stack (count-less palette). */
+                        if p.survival_mode {
+                            inventory::consume(&mut p.inventory);
+                        }
                     }
                 }
             } else {
@@ -667,7 +671,11 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
                     to_place as i32,
                 );
                 sp_save_tile_after_edit(w, s.place_tile);
-                inventory::consume(&mut p.inventory);
+                /* Creative placement is free - only survival spends the
+                 * stack (count-less palette). */
+                if p.survival_mode {
+                    inventory::consume(&mut p.inventory);
+                }
             }
         }
     }
@@ -724,6 +732,14 @@ mod tests {
         p.basis_ready = true;
         p.last_tile = -1;
         inventory::init_creative(&mut p.inventory);
+        /* Harness parity: the C creative preset stocked every slot at
+         * 9999 and its consume decremented through it. Rust creative is
+         * now a count-less palette (count 1, no consume), so re-stock
+         * the C counts explicitly - the suite's count pins (E..J) all
+         * run in survival mode, where consume/add still apply. */
+        for s in p.inventory.slots.iter_mut() {
+            s.count = 9999;
+        }
         p
     }
 

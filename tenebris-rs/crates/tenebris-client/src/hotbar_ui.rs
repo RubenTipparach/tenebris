@@ -200,10 +200,11 @@ pub(crate) fn icon_uv(col: i32) -> (f32, f32) {
 }
 
 /// Count badge gate + digit string. None for empty slots (nothing to
-/// caption) and for CREATIVE_COUNT (>9000) - the "infinite" sentinel; a
-/// giant number on every slot is just noise.
+/// caption), for single items / creative "assigned" slots (count 1 - a
+/// "1" on every slot is noise), and for legacy >9000 sentinel stacks
+/// (old saves may still carry the retired 9999 creative counts).
 pub(crate) fn count_badge_text(block_type: Block, count: i32) -> Option<String> {
-    if block_type == Block::Air || count <= 0 {
+    if block_type == Block::Air || count <= 1 {
         return None;
     }
     if count > 9000 {
@@ -539,13 +540,15 @@ mod tests {
     }
 
     #[test]
-    fn count_badge_gates_match_c() {
+    fn count_badge_gates() {
         assert_eq!(count_badge_text(Block::Stone, 7), Some("7".to_string()));
         assert_eq!(count_badge_text(Block::Stone, 123), Some("123".to_string()));
         assert_eq!(count_badge_text(Block::Stone, 9000), Some("9000".to_string()));
-        /* CREATIVE_COUNT sentinel: strictly > 9000 skips */
+        /* legacy creative sentinel: strictly > 9000 skips */
         assert_eq!(count_badge_text(Block::Stone, 9001), None);
         assert_eq!(count_badge_text(Block::Stone, 9999), None);
+        /* single item / creative "assigned" slot: no "1" noise */
+        assert_eq!(count_badge_text(Block::Stone, 1), None);
         /* empty slots */
         assert_eq!(count_badge_text(Block::Air, 5), None);
         assert_eq!(count_badge_text(Block::Stone, 0), None);

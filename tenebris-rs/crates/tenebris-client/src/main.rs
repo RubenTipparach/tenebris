@@ -21,7 +21,6 @@ mod input;
 mod interact;
 mod inventory;
 mod inventory_screen;
-mod item_atlas;
 mod menu;
 mod mobile_ui;
 mod net_client;

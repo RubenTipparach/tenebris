@@ -192,7 +192,7 @@ pub(crate) struct LoadedImage {
     pub(crate) rgba: Vec<u8>,
 }
 
-/// pub(crate): pixel_ui + item_atlas reuse this as their stb_image
+/// pub(crate): pixel_ui + ui_icons reuse this as their stb_image
 /// stand-in (same RGBA8 output as `stbi_load(path, .., 4)`).
 pub(crate) fn load_png_rgba(path: &str, flip_vertical: bool) -> Option<LoadedImage> {
     let file = std::fs::File::open(path).ok()?;

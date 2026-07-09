@@ -56,7 +56,6 @@ use crate::power_ui;
 use crate::ui_icons;
 use crate::inventory::{self, INV_HOTBAR_SLOTS};
 use crate::inventory_screen;
-use crate::item_atlas;
 use crate::menu::{self, GameState};
 use crate::mobile_ui;
 use crate::net_client::{self, NetClientState, NetDesyncKind};
@@ -1422,9 +1421,7 @@ extern "C" fn init() {
      * that points at a non-default PNG would be ignored on first
      * boot. */
     pixel_ui::init();
-    item_atlas::init();
     ui_icons::init();
-    inventory_screen::init();
     /* One-shot dump of Tenebris's effective atmosphere values so we
      * can sanity-check that the YAML actually landed. */
     {
@@ -1603,8 +1600,8 @@ extern "C" fn init() {
         crafting_screen::open(Some(player.clone()));
     }
     if std::env::var("TENEBRIS_DEV_INV").is_ok() {
-        /* Stock the inventory + bag so the grid shows real thumbnails and
-         * recipes light up, then open the egui inventory overlay. */
+        /* Stock the bag so the grid shows real thumbnails and recipes
+         * light up, then open the egui inventory overlay. */
         use tenebris_core::items;
         {
             let mut p = player.borrow_mut();
@@ -1614,8 +1611,8 @@ extern "C" fn init() {
                 Block::Furnace, Block::StorageChest, Block::SteamEngine, Block::Cable,
                 Block::LaunchPad,
             ];
-            for (i, b) in blocks.iter().enumerate() {
-                p.inventory.main[i] = crate::inventory::InvSlot::block(*b, 32);
+            for b in blocks.iter() {
+                p.bag.add(items::from_block(*b), 32);
             }
             p.bag.add(items::COPPER_INGOT, 8);
             p.bag.add(items::TIN_INGOT, 8);
@@ -3570,10 +3567,6 @@ fn frame_inner(app: &mut App) {
             if pend_sel >= 0 && (pend_sel as usize) < INV_HOTBAR_SLOTS {
                 p.inventory.selected = pend_sel;
             }
-            /* Re-stamp the reserved torch + water slots after any
-             * restore. */
-            inventory::ensure_reserved_torch(&mut p.inventory);
-            inventory::ensure_reserved_water(&mut p.inventory);
         }
         let p = app.player.borrow();
         let mut cur_type = [0u16; 9];
@@ -3581,8 +3574,8 @@ fn frame_inner(app: &mut App) {
         for i in 0..9 {
             if i < INV_HOTBAR_SLOTS {
                 cur_type[i] = p.inventory.slots[i].block_type.raw() as u16;
-                /* Clamp the creative "essentially infinite" count to
-                 * i16::MAX so the wire round-trips cleanly. */
+                /* Clamp so the wire's i16 counts round-trip cleanly
+                 * (legacy saves may still carry the old 9999 stacks). */
                 cur_count[i] = p.inventory.slots[i].count.clamp(0, i16::MAX as i32) as i16;
             }
         }
