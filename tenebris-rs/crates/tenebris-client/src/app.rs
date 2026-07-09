@@ -2269,23 +2269,22 @@ fn mp_parity_sync(app: &mut App, phys_world: &Rc<RefCell<World>>, dt: f32) {
 /// the player owns it (mirrors interact's held-tool pick, so the render
 /// matches the speed bonus actually applied), else the best tool owned.
 fn held_tool_for_display(app: &App, w: &World) -> Option<tenebris_core::items::ItemId> {
-    use tenebris_core::items::{WOOD_AXE, WOOD_PICKAXE, WOOD_SHOVEL};
-    use tenebris_core::mining::{self, ToolKind};
+    use tenebris_core::items::{IRON_PICKAXE, STONE_PICKAXE, WOOD_AXE, WOOD_PICKAXE, WOOD_SHOVEL};
+    use tenebris_core::mining;
     let p = app.player.borrow();
     let owned = |id: tenebris_core::items::ItemId| p.bag.count_of(id) > 0;
+    /* Aiming at a block whose ideal tool the player holds -> show the best
+     * such tool (fastest pickaxe of the category). */
     if app.interact.has_target && !app.interact.is_torch_target {
         let target = w.get(app.interact.hit_tile, app.interact.hit_depth);
-        let ideal = match mining::block_tool(target) {
-            ToolKind::Pick => Some(WOOD_PICKAXE),
-            ToolKind::Axe => Some(WOOD_AXE),
-            ToolKind::Shovel => Some(WOOD_SHOVEL),
-            ToolKind::None => None,
-        };
-        if let Some(id) = ideal.filter(|&id| owned(id)) {
+        if let Some(id) = mining::best_tool(target, owned) {
             return Some(id);
         }
     }
-    [WOOD_PICKAXE, WOOD_AXE, WOOD_SHOVEL].into_iter().find(|&id| owned(id))
+    /* Otherwise show whatever mining tool is on hand, best pickaxe first. */
+    [IRON_PICKAXE, STONE_PICKAXE, WOOD_PICKAXE, WOOD_AXE, WOOD_SHOVEL]
+        .into_iter()
+        .find(|&id| owned(id))
 }
 
 /// Crop reticle hint: when the player is looking at a crop, show whether
@@ -2319,6 +2318,43 @@ fn draw_crop_hint(screen_w: f32, screen_h: f32) {
     sdtx::color3b(0xff, 0xff, 0xff);
 }
 
+/// Farming ground hint: with a hoe on hand, dirt/grass under the reticle
+/// prompts "[T] till soil"; tilled farmland with seeds prompts
+/// "[T] plant seed". Makes the till-before-plant flow discoverable (it's
+/// not obvious you must work the ground first). Yields to the crop hint.
+fn draw_farming_hint(app: &App, screen_w: f32, screen_h: f32) {
+    if crops::reticle_growth().is_some() {
+        return; /* the crop hint owns this line when aiming at a crop */
+    }
+    if !app.interact.has_target || app.interact.is_torch_target {
+        return;
+    }
+    let ground = app.world.borrow().get(app.interact.hit_tile, app.interact.hit_depth);
+    let p = app.player.borrow();
+    let msg = if ground == Block::Farmland && p.bag.count_of(tenebris_core::items::SEEDS) > 0 {
+        "[T] plant seed"
+    } else if (ground == Block::Dirt || ground == Block::Grass)
+        && p.bag.count_of(tenebris_core::items::HOE) > 0
+    {
+        "[T] till soil"
+    } else {
+        return;
+    };
+    drop(p);
+
+    let cell = 8.0f32;
+    let x = (screen_w * 0.5 - (msg.len() as f32 * cell) * 0.5) / cell;
+    let y = (screen_h * 0.5 + 24.0) / cell;
+    sdtx::canvas(screen_w, screen_h);
+    sdtx::font(1);
+    sdtx::origin(x, y);
+    sdtx::color3b(0x90, 0xe0, 0x80);
+    sdtx::home();
+    sdtx::puts(msg);
+    sdtx::font(0);
+    sdtx::color3b(0xff, 0xff, 0xff);
+}
+
 /// Survival tool-gate hint: when the player holds the mine button on a
 /// block their current tool can't harvest (rock/ore without a pickaxe),
 /// the block never breaks - which reads as "broken" without a cue. Show
@@ -2337,10 +2373,11 @@ fn draw_tool_gate_hint(app: &App, screen_w: f32, screen_h: f32) {
     if tenebris_core::blocks::is_unbreakable(block) {
         return;
     }
-    let tier = if app.player.borrow().bag.count_of(tenebris_core::items::WOOD_PICKAXE) > 0 {
-        1
-    } else {
-        0
+    let tier = {
+        let p = app.player.borrow();
+        tenebris_core::mining::tool_tier(tenebris_core::mining::best_tool(block, |id| {
+            p.bag.count_of(id) > 0
+        }))
     };
     if tenebris_core::mining::required_tier(block) <= tier {
         return; /* harvestable - the crack decal + mining bar show progress */
@@ -3102,6 +3139,7 @@ fn block_name(b: Block) -> &'static str {
         Block::LaunchTower => "LAUNCH_TOWER",
         Block::Cable => "CABLE",
         Block::CopperPipe => "COPPER_PIPE",
+        Block::Farmland => "FARMLAND",
     }
 }
 
@@ -3118,6 +3156,7 @@ fn block_glyph(b: Block) -> char {
         Block::Ice | Block::FrostIce => 'i',
         Block::Snow | Block::SeqSnow => 's',
         Block::DirtGrass | Block::DirtSnow | Block::SeqDirtGrass | Block::SeqDirtSnow => 'D',
+        Block::Farmland => 'f',
         Block::Torch => 'T',
         Block::Moon => 'm',
         Block::Wood => 'W',
@@ -3709,7 +3748,8 @@ fn frame_inner(app: &mut App) {
                 let w = phys_world.borrow();
                 let p = app.player.borrow();
                 let has_seeds = p.bag.count_of(tenebris_core::items::SEEDS) > 0;
-                crops::plant_or_harvest(&w, &p, &app.interact, has_seeds)
+                let has_hoe = p.bag.count_of(tenebris_core::items::HOE) > 0;
+                crops::plant_or_harvest(&w, &p, &app.interact, has_seeds, has_hoe)
             };
             match outcome {
                 crops::Outcome::Planted(crop) => {
@@ -3747,6 +3787,27 @@ fn frame_inner(app: &mut App) {
                         );
                     } else {
                         crops::sp_save_after_change(&phys_world.borrow());
+                    }
+                }
+                crops::Outcome::Tilled(tile, depth) => {
+                    /* Tilling is a normal world block edit: dirt/grass ->
+                     * farmland, persisted same-frame (SP) or relayed to the
+                     * server (MP), same as a place. */
+                    {
+                        let mut w = phys_world.borrow_mut();
+                        w.set(tile, depth, Block::Farmland);
+                    }
+                    if mp {
+                        let body_id = phys_world.borrow().body.id as u32;
+                        net_client::send_edit(
+                            tenebris_core::proto::PLAYER_CMD_PLACE,
+                            body_id,
+                            tile,
+                            depth,
+                            Block::Farmland as i32,
+                        );
+                    } else {
+                        interact::sp_save_tile_after_edit(&phys_world.borrow(), tile);
                     }
                 }
                 crops::Outcome::NotReady | crops::Outcome::None => {}
@@ -4061,6 +4122,8 @@ fn frame_inner(app: &mut App) {
         draw_hunger_bar(app, sapp::widthf(), sapp::heightf());
         /* Crop status hint under the reticle (plant / harvest). */
         draw_crop_hint(sapp::widthf(), sapp::heightf());
+        /* Farming ground hint: till soil / plant seed. */
+        draw_farming_hint(app, sapp::widthf(), sapp::heightf());
         /* Survival: prompt when the targeted block needs a better tool. */
         draw_tool_gate_hint(app, sapp::widthf(), sapp::heightf());
     }

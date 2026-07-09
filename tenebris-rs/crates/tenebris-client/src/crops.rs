@@ -19,6 +19,7 @@ use std::cell::{Cell, RefCell};
 
 use sokol::gl as sgl;
 
+use tenebris_core::blocks::Block;
 use tenebris_core::farming::{self, Crop};
 use tenebris_core::math::{
     dvec3_add, dvec3_cross, dvec3_length, dvec3_make, dvec3_normalize, dvec3_scale, dvec3_sub,
@@ -48,6 +49,10 @@ pub enum Outcome {
     Planted(Crop),
     /// This mature crop was harvested and removed.
     Harvested(Crop),
+    /// Dirt / grass at (tile, depth) was tilled into farmland with a hoe.
+    /// The caller applies the world edit (set the cell to `Farmland`),
+    /// persists, and in MP relays it - a normal block edit.
+    Tilled(i32, i32),
     /// A crop is under the reticle but not ripe yet.
     NotReady,
     /// Nothing actionable (no ground target / no seeds / out of reach).
@@ -181,6 +186,7 @@ pub fn plant_or_harvest(
     p: &PlayerCtrl,
     interact: &InteractState,
     has_seeds: bool,
+    has_hoe: bool,
 ) -> Outcome {
     let center = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
     let (eye, dir) = look_ray(p);
@@ -211,11 +217,23 @@ pub fn plant_or_harvest(
         });
     }
 
-    // No crop hit -> plant a seed on the aimed ground block, if any.
-    if !has_seeds || !interact.has_target || interact.is_torch_target {
+    // No crop hit -> till the ground, or plant a seed on tilled soil.
+    if !interact.has_target || interact.is_torch_target {
         return Outcome::None;
     }
     if interact.hit_depth < 0 || interact.hit_depth + 1 >= WORLD_MAX_DEPTH {
+        return Outcome::None;
+    }
+    let ground = w.get(interact.hit_tile, interact.hit_depth);
+    // Seeds go on tilled soil only (till it first with a hoe). If the aimed
+    // ground is plain dirt / grass and a hoe is on hand, till it instead.
+    if ground != Block::Farmland {
+        if has_hoe && (ground == Block::Dirt || ground == Block::Grass) {
+            return Outcome::Tilled(interact.hit_tile, interact.hit_depth);
+        }
+        return Outcome::None;
+    }
+    if !has_seeds {
         return Outcome::None;
     }
     let Some(tt) = w.grid.tile(interact.hit_tile) else {

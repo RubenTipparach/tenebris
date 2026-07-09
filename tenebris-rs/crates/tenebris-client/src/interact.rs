@@ -73,24 +73,17 @@ pub struct InteractState {
     pub mining_depth: i32,
 }
 
-/// The tool category the player effectively wields against `block`: the
-/// block's ideal tool if a matching one is in the bag, else `None` (bare
-/// hands / wrong tool). Shared by the mining loop and the HUD crack-decal
-/// so the on-screen break progress matches the real break time.
-pub fn held_tool_for(p: &PlayerCtrl, block: Block) -> mining::ToolKind {
-    let ideal = mining::block_tool(block);
-    match ideal {
-        mining::ToolKind::Pick if p.bag.count_of(items::WOOD_PICKAXE) > 0 => ideal,
-        mining::ToolKind::Axe if p.bag.count_of(items::WOOD_AXE) > 0 => ideal,
-        mining::ToolKind::Shovel if p.bag.count_of(items::WOOD_SHOVEL) > 0 => ideal,
-        _ => mining::ToolKind::None,
-    }
+/// The best tool the player holds for mining `block` (fastest pickaxe of
+/// the ideal category in the bag, or `None` for bare hands). Shared by the
+/// mining loop, the tier gate, and the HUD crack-decal so they all agree.
+pub fn best_tool_for(p: &PlayerCtrl, block: Block) -> Option<items::ItemId> {
+    mining::best_tool(block, |id| p.bag.count_of(id) > 0)
 }
 
 /// Seconds to break `block` with the player's current tool - the same
 /// denominator the mining loop counts `mining_progress_s` toward.
 pub fn break_seconds_for(p: &PlayerCtrl, block: Block) -> f32 {
-    mining::break_time(&mining::config(), block, held_tool_for(p, block))
+    mining::break_time(&mining::config(), block, best_tool_for(p, block))
 }
 
 /* ----------------------------------------------------------------- */
@@ -114,8 +107,10 @@ fn sp_active_for_world(_w: &World) -> Option<String> {
     Some(menu::active_world()).filter(|name| !name.is_empty())
 }
 
-/// Port of `sp_save_tile_after_edit()`.
-fn sp_save_tile_after_edit(w: &World, tile_idx: i32) {
+/// Port of `sp_save_tile_after_edit()`. Public so other world-edit paths
+/// (e.g. the crops till action in `app`) persist the changed column on the
+/// same frame, per the CLAUDE.md world-edit rule.
+pub fn sp_save_tile_after_edit(w: &World, tile_idx: i32) {
     let Some(name) = sp_active_for_world(w) else {
         return;
     };
@@ -445,22 +440,18 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
         s.mining_progress_s = 0.0;
     } else if p.survival_mode {
         /* Tool-gating: rock (stone + tinted variants) needs a pickaxe.
-         * Best pickaxe in the bag sets the mining tier; a block whose
+         * The best pickaxe in the bag sets the mining tier; a block whose
          * required tier exceeds it can't be mined at all - that's what
-         * makes the wood -> pickaxe -> stone progression matter. */
-        let tier = if p.bag.count_of(items::WOOD_PICKAXE) > 0 {
-            mining::tool_tier(Some(items::WOOD_PICKAXE))
-        } else {
-            0
-        };
+         * makes the wood -> stone -> iron progression matter. */
+        let best = best_tool_for(p, target_block);
+        let tier = mining::tool_tier(best);
         if !mining::can_harvest(target_block, tier) {
             s.mining_progress_s = 0.0;
         } else if inp.left_held {
             /* Break time scales with the tool: the block's ideal tool
-             * (pickaxe / axe / shovel) held in the bag mines it fast;
-             * bare hands are slow, so crafting tools pays off. */
-            let held = held_tool_for(p, target_block);
-            let break_s = mining::break_time(&mining::config(), target_block, held);
+             * (pickaxe / axe / shovel) held in the bag mines it fast, and
+             * a better pickaxe faster still, so crafting tools pays off. */
+            let break_s = mining::break_time(&mining::config(), target_block, best);
             s.mining_progress_s += dt;
             if s.mining_progress_s >= break_s {
                 w.set(s.hit_tile, s.hit_depth, Block::Air);
@@ -877,9 +868,9 @@ mod tests {
         assert_eq!(saved_tile_fnv(41), 0xea66e26d5b68c367, "d_save: column fnv");
 
         /* ---- E: survival mining - hold LMB until the break fires.
-         * Dirt broken bare-handed: soft_break_s(0.70) * hand_penalty(2.50)
-         * = 1.75s of accumulated dt (tool-gated mining makes bare hands
-         * slow - a shovel would cut this to ~0.25s). Pickup stacks Dirt to
+         * Dirt broken bare-handed: soft_break_s(2.50) * hand_penalty(2.0)
+         * = 5.0s of accumulated dt (tool-gated mining makes bare hands
+         * slow - a shovel would cut this to 2.5s). Pickup stacks Dirt to
          * 10000 on slot 2, everything else untouched. */
         p.survival_mode = true;
         left_held(true);
@@ -894,12 +885,12 @@ mod tests {
                 assert_eq!((e_tile, e_depth), (41, 62), "e: target");
                 assert_eq!(w.get(e_tile, e_depth), Block::Dirt, "e: block");
             }
-            if w.get(e_tile, e_depth) == Block::Air || e_frames > 300 {
+            if w.get(e_tile, e_depth) == Block::Air || e_frames > 600 {
                 break;
             }
         }
         left_held(false);
-        assert_eq!(e_frames, 106, "e: frames to mine (f32 dt accumulation)");
+        assert_eq!(e_frames, 300, "e: frames to mine (5.0s / (1/60) f32 accum)");
         assert_eq!(saved_tile_fnv(41), 0xa2e439a42e765eec, "e_save: column fnv");
         let want_inv: [(Block, i32); 9] = [
             (Block::Torch, 9999),

@@ -76,6 +76,14 @@ pub const SEEDS: ItemId = ITEM_BASE + 25; // 125
 /// Berries - a mature crop's edible produce. Eaten (R) to restore hunger.
 pub const BERRIES: ItemId = ITEM_BASE + 26; // 126
 
+/// Higher pickaxe tiers. Same access gate as the wood pickaxe (they can
+/// mine all rock/ore) but mine faster - see core::mining break times.
+pub const STONE_PICKAXE: ItemId = ITEM_BASE + 27; // 127
+pub const IRON_PICKAXE: ItemId = ITEM_BASE + 28; // 128
+/// Hoe - tills dirt / grass into farmland so seeds can be planted (see
+/// client::crops). Not a mining tool; it gates the farming loop.
+pub const HOE: ItemId = ITEM_BASE + 29; // 129
+
 /// What an item *is*, for stacking / placement / tool-gating rules. Grows
 /// as the tech tree lands (Component, Ingot, Ammo, ...).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -132,6 +140,9 @@ const ITEMS: &[ItemDef] = &[
     ItemDef { id: WOOD_PICKAXE, name: "wood-pickaxe", kind: ItemKind::Tool, stack: 1 },
     ItemDef { id: WOOD_AXE, name: "wood-axe", kind: ItemKind::Tool, stack: 1 },
     ItemDef { id: WOOD_SHOVEL, name: "wood-shovel", kind: ItemKind::Tool, stack: 1 },
+    ItemDef { id: STONE_PICKAXE, name: "stone-pickaxe", kind: ItemKind::Tool, stack: 1 },
+    ItemDef { id: IRON_PICKAXE, name: "iron-pickaxe", kind: ItemKind::Tool, stack: 1 },
+    ItemDef { id: HOE, name: "hoe", kind: ItemKind::Tool, stack: 1 },
     ItemDef { id: RAW_MEAT, name: "raw-meat", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: COOKED_MEAT, name: "cooked-meat", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: SEEDS, name: "seeds", kind: ItemKind::Resource, stack: 64 },

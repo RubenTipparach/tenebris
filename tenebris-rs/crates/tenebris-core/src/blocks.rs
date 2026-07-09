@@ -110,13 +110,19 @@ pub enum Block {
     /// Power-network link blocks (thin placeable connectors).
     Cable = 39,
     CopperPipe = 40,
+
+    /// Tilled soil. Dirt / grass worked with a hoe (client::crops) so a
+    /// seed can be planted on it; renders as darkened, furrowed dirt.
+    /// Rust-port-only, past the C palette. Behaves like dirt (solid,
+    /// shovel-dug); planting is gated on this block being present.
+    Farmland = 41,
 }
 
 /// Mirrors C's `BLOCK_COUNT` (the implicit trailing enum member). The
 /// Rust port adds the tech blocks (LaunchPad 29 .. CopperPipe 40) past the
 /// C palette - the native port is the canonical target now, so the palette
 /// can grow here.
-pub const BLOCK_COUNT: u8 = 41;
+pub const BLOCK_COUNT: u8 = 42;
 
 impl Block {
     /// Fallible conversion from the raw byte stored in voxel arrays /
@@ -216,6 +222,14 @@ pub fn face_tile(b: Block, cap: FaceCap) -> u8 {
             FaceCap::Top => Block::Snow as u8,
             FaceCap::Bottom => Block::Dirt as u8,
             FaceCap::Side => Block::DirtSnow as u8,
+        };
+    }
+    /* Farmland: the tilled top tile (its own atlas column), plain dirt on
+     * the sides and bottom - same top/side/bottom split grass uses. */
+    if b == Block::Farmland {
+        return match cap {
+            FaceCap::Top => Block::Farmland as u8,
+            FaceCap::Bottom | FaceCap::Side => Block::Dirt as u8,
         };
     }
     /* Sequoia tileset: uses distinct atlas columns so Sequoia's grass /
@@ -320,7 +334,8 @@ mod tests {
         assert_eq!(Block::LaunchTower as u8, 38);
         assert_eq!(Block::Cable as u8, 39);
         assert_eq!(Block::CopperPipe as u8, 40);
-        assert_eq!(BLOCK_COUNT, 41);
+        assert_eq!(Block::Farmland as u8, 41);
+        assert_eq!(BLOCK_COUNT, 42);
     }
 
     #[test]
@@ -408,6 +423,10 @@ mod tests {
         assert_eq!(face_tile(Block::SeqSnow, FaceCap::Top), 16);
         assert_eq!(face_tile(Block::SeqSnow, FaceCap::Bottom), 13);
         assert_eq!(face_tile(Block::SeqSnow, FaceCap::Side), 17);
+        // Farmland: tilled top (own column 41), dirt on the sides + bottom.
+        assert_eq!(face_tile(Block::Farmland, FaceCap::Top), 41);
+        assert_eq!(face_tile(Block::Farmland, FaceCap::Bottom), 3);
+        assert_eq!(face_tile(Block::Farmland, FaceCap::Side), 3);
         // Everything else returns its own id for every cap.
         for b in [
             Block::Stone,

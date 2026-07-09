@@ -31,11 +31,15 @@ pub fn required_tier(b: Block) -> u8 {
     }
 }
 
-/// Mining tier a held tool provides. Hand = 0; the wooden pickaxe is the
-/// first tier-1 tool. (Higher tiers slot in here as their tools land.)
+/// Mining tier a held tool provides. Hand = 0; the pickaxes are the
+/// tier-1+ tools that unlock rock. Stone / iron are higher tiers so they
+/// stay valid for any future tier-gated block, but all three already mine
+/// today's rock (required_tier 1) - the difference is speed, not access.
 pub fn tool_tier(tool: Option<ItemId>) -> u8 {
     match tool {
         Some(items::WOOD_PICKAXE) => 1,
+        Some(items::STONE_PICKAXE) => 2,
+        Some(items::IRON_PICKAXE) => 3,
         _ => 0,
     }
 }
@@ -59,7 +63,7 @@ pub enum ToolKind {
 /// Which tool category a held item is (or `None`).
 pub fn tool_kind(item: ItemId) -> ToolKind {
     match item {
-        items::WOOD_PICKAXE => ToolKind::Pick,
+        items::WOOD_PICKAXE | items::STONE_PICKAXE | items::IRON_PICKAXE => ToolKind::Pick,
         items::WOOD_AXE => ToolKind::Axe,
         items::WOOD_SHOVEL => ToolKind::Shovel,
         _ => ToolKind::None,
@@ -81,16 +85,47 @@ pub fn block_tool(b: Block) -> ToolKind {
         | Block::TinOre
         | Block::IronOre => ToolKind::Pick,
         Block::Wood => ToolKind::Axe,
-        Block::Dirt | Block::Grass | Block::Sand | Block::Snow => ToolKind::Shovel,
+        Block::Dirt | Block::Grass | Block::Sand | Block::Snow | Block::Farmland => {
+            ToolKind::Shovel
+        }
         _ => ToolKind::None,
     }
 }
 
-/// Seconds to break `b` while holding tool category `held`. Bare-handed (or
-/// wrong-tool) breaking of a block that HAS an ideal tool is slow - that's
-/// what makes crafting the pickaxe / axe / shovel matter; the right tool
-/// speeds it up sharply. Blocks with no ideal tool break at plain speed.
-pub fn break_time(cfg: &MiningConfig, b: Block, held: ToolKind) -> f32 {
+/// The best (fastest) tool of `block`'s ideal category the player holds,
+/// or `None` for bare hands / no matching tool. `has` reports whether a
+/// given item id is in the player's bag. Pickaxes prefer iron > stone >
+/// wood so a full toolkit always mines at its best speed; axe / shovel /
+/// hoe have a single tier today.
+pub fn best_tool(block: Block, has: impl Fn(ItemId) -> bool) -> Option<ItemId> {
+    match block_tool(block) {
+        ToolKind::Pick => [items::IRON_PICKAXE, items::STONE_PICKAXE, items::WOOD_PICKAXE]
+            .into_iter()
+            .find(|&id| has(id)),
+        ToolKind::Axe => has(items::WOOD_AXE).then_some(items::WOOD_AXE),
+        ToolKind::Shovel => has(items::WOOD_SHOVEL).then_some(items::WOOD_SHOVEL),
+        ToolKind::None => None,
+    }
+}
+
+/// Per-tool speed multiplier applied to the base break time when the
+/// correct tool category is held. Wood-tier tools (and axe / shovel) mine
+/// at the base rate (1.0); the higher pickaxe tiers are faster.
+fn material_mult(cfg: &MiningConfig, tool: ItemId) -> f32 {
+    match tool {
+        items::STONE_PICKAXE => cfg.stone_tool_mult,
+        items::IRON_PICKAXE => cfg.iron_tool_mult,
+        _ => 1.0,
+    }
+}
+
+/// Seconds to break `b` while holding tool `held` (the specific item, so
+/// pickaxe tiers get their own speed). The base times are the *ideal-tool*
+/// times (shovel on soft ground, wood pickaxe on rock); a better pickaxe
+/// scales that down, and bare-handed / wrong-tool breaking of a
+/// tool-wanting block is slow (`hand_penalty_mult`). Blocks with no ideal
+/// tool break at plain base speed.
+pub fn break_time(cfg: &MiningConfig, b: Block, held: Option<ItemId>) -> f32 {
     let ideal = block_tool(b);
     let base = match ideal {
         ToolKind::Pick => cfg.rock_break_s,
@@ -99,11 +134,11 @@ pub fn break_time(cfg: &MiningConfig, b: Block, held: ToolKind) -> f32 {
         ToolKind::None => cfg.soft_break_s,
     };
     if ideal == ToolKind::None {
-        base
-    } else if held == ideal {
-        base * cfg.tool_speed_mult
-    } else {
-        base * cfg.hand_penalty_mult
+        return base;
+    }
+    match held {
+        Some(tool) if tool_kind(tool) == ideal => base * material_mult(cfg, tool),
+        _ => base * cfg.hand_penalty_mult,
     }
 }
 
@@ -120,6 +155,8 @@ pub fn drops(b: Block, tier: u8) -> Vec<ItemStack> {
         Block::CopperOre => items::COPPER,
         Block::TinOre => items::TIN,
         Block::IronOre => items::IRON,
+        /* Tilled soil digs back into plain dirt, not a "farmland" item. */
+        Block::Farmland => items::from_block(Block::Dirt),
         _ => items::from_block(b),
     };
     vec![ItemStack { item, count: 1 }]
@@ -161,17 +198,20 @@ pub struct MiningConfig {
     pub copper_ore_chance: f32,
     pub tin_ore_chance: f32,
     pub iron_ore_chance: f32,
-    /// Base break time (seconds) for soft ground (dirt/sand/grass/snow).
+    /// Ideal-tool break time (seconds) for soft ground
+    /// (dirt/sand/grass/snow/farmland) - i.e. with a shovel.
     pub soft_break_s: f32,
-    /// Base break time for wood.
+    /// Ideal-tool (axe) break time for wood.
     pub wood_break_s: f32,
-    /// Base break time for rock + ore.
+    /// Base (wood-pickaxe) break time for rock + ore.
     pub rock_break_s: f32,
-    /// Multiplier applied when the correct tool is held (< 1 = faster).
-    pub tool_speed_mult: f32,
     /// Multiplier when a tool-wanting block is broken by hand / wrong tool
     /// (> 1 = slower). Makes bare-handed survival mining deliberately hard.
     pub hand_penalty_mult: f32,
+    /// Rock break-time multiplier for the stone pickaxe (< 1 = faster).
+    pub stone_tool_mult: f32,
+    /// Rock break-time multiplier for the iron pickaxe (< 1 = faster).
+    pub iron_tool_mult: f32,
 }
 
 impl MiningConfig {
@@ -180,11 +220,16 @@ impl MiningConfig {
         copper_ore_chance: 0.022,
         tin_ore_chance: 0.018,
         iron_ore_chance: 0.030,
-        soft_break_s: 0.70,
-        wood_break_s: 0.90,
-        rock_break_s: 1.60,
-        tool_speed_mult: 0.35,
-        hand_penalty_mult: 2.50,
+        /* Soft ground: 2.5 s with a shovel, 5.0 s bare-handed (x2). */
+        soft_break_s: 2.50,
+        /* Wood: 1.5 s with an axe, 3.0 s by hand. */
+        wood_break_s: 1.50,
+        /* Rock: 10 s with a wood pickaxe; 7 s stone (x0.7); 4 s iron
+         * (x0.4). Bare hands can't mine rock (tier-gated). */
+        rock_break_s: 10.0,
+        hand_penalty_mult: 2.0,
+        stone_tool_mult: 0.70,
+        iron_tool_mult: 0.40,
     };
 
     /// All-zero ore chances: worldgen places no ore. Used by the save
@@ -195,11 +240,12 @@ impl MiningConfig {
         copper_ore_chance: 0.0,
         tin_ore_chance: 0.0,
         iron_ore_chance: 0.0,
-        soft_break_s: 0.70,
-        wood_break_s: 0.90,
-        rock_break_s: 1.60,
-        tool_speed_mult: 0.35,
-        hand_penalty_mult: 2.50,
+        soft_break_s: 2.50,
+        wood_break_s: 1.50,
+        rock_break_s: 10.0,
+        hand_penalty_mult: 2.0,
+        stone_tool_mult: 0.70,
+        iron_tool_mult: 0.40,
     };
 }
 
@@ -243,8 +289,9 @@ pub fn parse_config(src: &str, _path: &str) -> MiningConfig {
             "soft_break_s" => cfg.soft_break_s = v,
             "wood_break_s" => cfg.wood_break_s = v,
             "rock_break_s" => cfg.rock_break_s = v,
-            "tool_speed_mult" => cfg.tool_speed_mult = v,
             "hand_penalty_mult" => cfg.hand_penalty_mult = v,
+            "stone_tool_mult" => cfg.stone_tool_mult = v,
+            "iron_tool_mult" => cfg.iron_tool_mult = v,
             _ => {}
         }
     }
@@ -282,34 +329,62 @@ mod tests {
     }
 
     #[test]
-    fn break_time_rewards_the_right_tool() {
+    fn break_time_targets_the_tuned_times() {
+        use crate::items::{IRON_PICKAXE, STONE_PICKAXE};
         let cfg = MiningConfig::DEFAULT;
-        let hand = break_time(&cfg, Block::Dirt, ToolKind::None);
-        let shovel = break_time(&cfg, Block::Dirt, ToolKind::Shovel);
-        // Right tool is much faster than bare hands.
-        assert!(shovel < hand, "{shovel} !< {hand}");
-        assert!((shovel - cfg.soft_break_s * cfg.tool_speed_mult).abs() < 1e-6);
-        assert!((hand - cfg.soft_break_s * cfg.hand_penalty_mult).abs() < 1e-6);
-        // Wrong tool is no better than hands.
-        assert_eq!(break_time(&cfg, Block::Dirt, ToolKind::Pick), hand);
-        // Wood wants the axe.
-        assert!(
-            break_time(&cfg, Block::Wood, ToolKind::Axe)
-                < break_time(&cfg, Block::Wood, ToolKind::None)
+        // Soft ground: 5 s by hand, 2.5 s with a shovel.
+        assert!((break_time(&cfg, Block::Dirt, None) - 5.0).abs() < 1e-4);
+        assert!((break_time(&cfg, Block::Sand, Some(WOOD_SHOVEL)) - 2.5).abs() < 1e-4);
+        // Rock: 10 s wood pickaxe, 7 s stone, 4 s iron.
+        assert!((break_time(&cfg, Block::Stone, Some(WOOD_PICKAXE)) - 10.0).abs() < 1e-4);
+        assert!((break_time(&cfg, Block::Stone, Some(STONE_PICKAXE)) - 7.0).abs() < 1e-4);
+        assert!((break_time(&cfg, Block::Stone, Some(IRON_PICKAXE)) - 4.0).abs() < 1e-4);
+        // Wrong tool (a shovel on rock) is no better than bare hands.
+        assert_eq!(
+            break_time(&cfg, Block::Stone, Some(WOOD_SHOVEL)),
+            break_time(&cfg, Block::Stone, None)
         );
-        // A block with no ideal tool breaks at plain base speed.
-        assert!((break_time(&cfg, Block::Torch, ToolKind::None) - cfg.soft_break_s).abs() < 1e-6);
+        // Wood wants the axe; a block with no ideal tool breaks at base.
+        assert!(
+            break_time(&cfg, Block::Wood, Some(WOOD_AXE))
+                < break_time(&cfg, Block::Wood, None)
+        );
+        assert!((break_time(&cfg, Block::Torch, None) - cfg.soft_break_s).abs() < 1e-6);
+    }
+
+    #[test]
+    fn best_tool_picks_the_fastest_pickaxe_held() {
+        use crate::items::{IRON_PICKAXE, STONE_PICKAXE};
+        fn have(set: &'static [ItemId]) -> impl Fn(ItemId) -> bool {
+            move |id| set.contains(&id)
+        }
+        // Only wood -> wood; add stone -> stone; add iron -> iron.
+        assert_eq!(best_tool(Block::Stone, have(&[WOOD_PICKAXE])), Some(WOOD_PICKAXE));
+        assert_eq!(
+            best_tool(Block::Stone, have(&[WOOD_PICKAXE, STONE_PICKAXE])),
+            Some(STONE_PICKAXE)
+        );
+        assert_eq!(
+            best_tool(Block::Stone, have(&[WOOD_PICKAXE, STONE_PICKAXE, IRON_PICKAXE])),
+            Some(IRON_PICKAXE)
+        );
+        // Soft ground wants the shovel; a pickaxe doesn't count.
+        assert_eq!(best_tool(Block::Dirt, have(&[WOOD_PICKAXE])), None);
+        assert_eq!(best_tool(Block::Dirt, have(&[WOOD_SHOVEL])), Some(WOOD_SHOVEL));
     }
 
     #[test]
     fn tiers_gate_rock_behind_a_pickaxe() {
+        use crate::items::{IRON_PICKAXE, STONE_PICKAXE};
         assert_eq!(required_tier(Block::Stone), 1);
         assert_eq!(required_tier(Block::Dirt), 0);
         assert_eq!(required_tier(Block::Wood), 0);
         assert_eq!(tool_tier(None), 0);
         assert_eq!(tool_tier(Some(WOOD_PICKAXE)), 1);
+        assert_eq!(tool_tier(Some(STONE_PICKAXE)), 2);
+        assert_eq!(tool_tier(Some(IRON_PICKAXE)), 3);
         assert!(!can_harvest(Block::Stone, 0)); // bare hands can't
-        assert!(can_harvest(Block::Stone, 1)); // pickaxe can
+        assert!(can_harvest(Block::Stone, 1)); // any pickaxe can
         assert!(can_harvest(Block::Dirt, 0)); // hand-breakable
         assert!(!can_harvest(Block::Bedrock, 1)); // never
     }

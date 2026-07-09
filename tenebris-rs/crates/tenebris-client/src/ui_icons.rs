@@ -39,6 +39,7 @@ const ICONS: &[(u16, &str)] = &[
     (Block::Leaves as u16, "assets/textures/grass.png"),
     (Block::DirtGrass as u16, "assets/textures/dirt_grass.png"),
     (Block::DirtSnow as u16, "assets/textures/dirt_snow.png"),
+    (Block::Farmland as u16, "assets/textures/farmland.png"),
     (Block::CoalOre as u16, "assets/textures/minerals/rocks_coal.png"),
     (Block::CopperOre as u16, "assets/textures/minerals/rocks_copper.png"),
     (Block::TinOre as u16, "assets/textures/minerals/rocks_tin.png"),
@@ -60,6 +61,9 @@ const ICONS: &[(u16, &str)] = &[
     (items::WOOD_PICKAXE, "assets/textures/items/wood_pickaxe.png"),
     (items::WOOD_AXE, "assets/textures/items/wood_axe.png"),
     (items::WOOD_SHOVEL, "assets/textures/items/wood_shovel.png"),
+    (items::STONE_PICKAXE, "assets/textures/items/stone_pickaxe.png"),
+    (items::IRON_PICKAXE, "assets/textures/items/iron_pickaxe.png"),
+    (items::HOE, "assets/textures/items/hoe.png"),
     // --- food ---
     (items::RAW_MEAT, "assets/textures/items/raw_meat.png"),
     (items::COOKED_MEAT, "assets/textures/items/cooked_meat.png"),

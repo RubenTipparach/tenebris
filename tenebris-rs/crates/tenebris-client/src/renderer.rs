@@ -299,7 +299,7 @@ const ATLAS_PATHS: [Option<&str>; ATLAS_TILES] = [
     Some("assets/textures/technology/launch_tower_face.png"),          /* 38 LaunchTower */
     Some("assets/textures/technology/cable.png"),                      /* 39 Cable */
     Some("assets/textures/technology/copper_pipe.png"),                /* 40 CopperPipe */
-    Some("assets/textures/technology/landing_pad_side.png"),           /* 41 landing pad (spare) */
+    Some("assets/textures/farmland.png"),                              /* 41 Farmland (tilled soil) */
     /* Tech-block cube cells, sliced from each 48x32 JS net
      * (front/left/right/back/top/bottom). emit_tech_cube maps these
      * per cube face; 6 contiguous columns per machine from col 42. */

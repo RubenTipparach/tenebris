@@ -19,9 +19,17 @@ PAL = {
     "H": (120, 78, 40, 255),    # handle wood
     "h": (158, 108, 62, 255),   # handle highlight
     "d": (86, 56, 30, 255),     # handle shadow
-    "M": (150, 156, 168, 255),  # metal
+    "M": (150, 156, 168, 255),  # metal (wood-tier head = dull grey)
     "m": (196, 202, 214, 255),  # metal highlight
     "D": (96, 101, 112, 255),   # metal shadow
+    # stone-tier head (bluish grey rock)
+    "S": (116, 118, 126, 255),
+    "s": (150, 152, 160, 255),
+    "T": (84, 86, 94, 255),
+    # iron-tier head (bright steel)
+    "I": (200, 204, 214, 255),
+    "i": (232, 236, 244, 255),
+    "J": (150, 154, 166, 255),
 }
 
 # 16x16 hand-drawn bitmaps.
@@ -82,10 +90,44 @@ SHOVEL = [
     "................",
 ]
 
+# Hoe: a flat blade set perpendicular at the head of a diagonal handle.
+HOE = [
+    "...MMMM.........",
+    "..MmmmMD........",
+    "..MMMMMD........",
+    "....DDHh........",
+    ".....hHd........",
+    ".....HHd........",
+    "....hHhd........",
+    "....HHd.........",
+    "...hHhd.........",
+    "...HHd..........",
+    "..hHhd..........",
+    "..HHd...........",
+    ".hHhd...........",
+    ".HHd............",
+    "hHd.............",
+    "................",
+]
+
+
+def recolor(rows, mapping):
+    """Re-skin a bitmap's head metal to a different tier palette."""
+    return ["".join(mapping.get(ch, ch) for ch in r) for r in rows]
+
+
+# Higher tool tiers reuse the wood-pickaxe silhouette with a re-skinned
+# head so the three pickaxes read as one family at a glance.
+STONE_PICKAXE = recolor(PICKAXE, {"M": "S", "m": "s", "D": "T"})
+IRON_PICKAXE = recolor(PICKAXE, {"M": "I", "m": "i", "D": "J"})
+
 TOOLS = {
     "wood_pickaxe": PICKAXE,
     "wood_axe": AXE,
     "wood_shovel": SHOVEL,
+    "stone_pickaxe": STONE_PICKAXE,
+    "iron_pickaxe": IRON_PICKAXE,
+    "hoe": HOE,
 }
 
 

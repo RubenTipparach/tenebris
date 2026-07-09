@@ -48,6 +48,29 @@ out: wood-shovel 1
 in: plank 1
 in: stick 2
 
+# Hoe: tills dirt / grass into farmland so seeds can be planted (T on the
+# ground with a hoe in the bag). Wood-tier so farming stays an early loop.
+[hoe]
+tier: 0
+out: hoe 1
+in: plank 2
+in: stick 2
+
+# Higher pickaxe tiers - same rock access as the wood pickaxe but faster
+# (10 s -> 7 s -> 4 s on stone). Stone is the mined block; iron needs a
+# smelted ingot, so the iron pickaxe sits behind the furnace.
+[stone-pickaxe]
+tier: 1
+out: stone-pickaxe 1
+in: stone 3
+in: stick 2
+
+[iron-pickaxe]
+tier: 1
+out: iron-pickaxe 1
+in: iron-ingot 3
+in: stick 2
+
 # The furnace: a placeable crafting station built from stone. Interact
 # (E) on it to open the smelting screen. Hand-crafted at the bench.
 
