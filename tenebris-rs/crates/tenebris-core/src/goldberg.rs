@@ -357,9 +357,21 @@ impl Goldberg {
              * per frame. */
             hint = 0;
         }
-        /* Greedy walk along neighbors toward the nearest tile. */
+        /* Greedy walk along neighbors toward the nearest tile. The walk
+         * strictly decreases distance every hop, so it terminates at the
+         * true nearest tile; the iteration cap is only a cycle guard for
+         * float-tie pathologies and MUST exceed the sphere's graph
+         * diameter (~O(sqrt N) tiles). The C tree capped this at 64,
+         * which SILENTLY RETURNED A WRONG TILE whenever the walk had to
+         * cross more than 64 tiles - on the 163k-tile production world a
+         * -1 (bootstrap-from-0) or stale hint landed ~64 tiles from the
+         * pole, which is what teleported players to the north pole via
+         * the voxel-containment resolve and seated animals on wrong-tile
+         * floors ("walking in the air"). Deliberate departure from the C
+         * (the fix ports Rust-side per repo rules). */
+        let max_hops = self.tiles.len() + 8;
         let mut cur = hint;
-        for _ in 0..64 {
+        for _ in 0..max_hops {
             let cd = dvec3_sub(self.tiles[cur as usize].center, p);
             let cur_d2 = dvec3_dot(cd, cd);
             let mut best = cur;
@@ -706,6 +718,42 @@ mod tests {
                 }
             }
             assert_eq!(g.find_tile(d, -1), best);
+        }
+    }
+
+    /// Regression: the greedy walk must converge on grids whose graph
+    /// diameter exceeds the old 64-hop cap (production Tenebris is
+    /// 163k tiles). With the cap, a -1 hint bootstraps from tile 0 and
+    /// silently returned a tile ~64 hops out - the root cause of the
+    /// "teleported to the north pole" containment jumps and animals
+    /// seated on wrong-tile floors ("walking in the air").
+    #[test]
+    fn find_tile_converges_across_large_grids() {
+        let g = create(6); /* 40k+ tiles, diameter >> 64 hops */
+        assert!(g.tile_count() > 40_000);
+        /* The hardest case: the antipode of the bootstrap tile 0, plus
+         * a spread of far directions. Verify against brute force. */
+        let t0 = g.tile(0).unwrap().center;
+        let dirs = [
+            dvec3_normalize(dvec3_make(-t0.x, -t0.y, -t0.z)),
+            dvec3_normalize(dvec3_make(0.7, -0.7, 0.14)),
+            dvec3_normalize(dvec3_make(-0.9, 0.1, 0.4)),
+        ];
+        for d in dirs {
+            let mut best = 0;
+            let mut best_d2 = f64::MAX;
+            for i in 0..g.tile_count() {
+                let cd = dvec3_sub(g.tile(i).unwrap().center, d);
+                let d2 = dvec3_dot(cd, cd);
+                if d2 < best_d2 {
+                    best_d2 = d2;
+                    best = i;
+                }
+            }
+            assert_eq!(g.find_tile(d, -1), best, "bootstrap walk converges");
+            /* A far stale hint must converge too (the containment /
+             * reseat paths carry hints across long moves). */
+            assert_eq!(g.find_tile(d, 0), best, "stale-hint walk converges");
         }
     }
 }

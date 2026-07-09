@@ -952,7 +952,13 @@ pub fn egui_ui(ctx: &egui::Context) {
                     .color(egui::Color32::from_rgb(0x90, 0x98, 0xa8)),
                 );
             });
-            ui.separator();
+            /* NOT ui.separator(): inside an auto-sized window a bare
+             * separator expands to the max available rect on the first
+             * layout pass and the window then sizes to include it -
+             * that pinned this panel at full screen width + height,
+             * covering the HUD hotbar. Fixed spacing keeps the window
+             * content-sized. */
+            ui.add_space(8.0);
             ui.horizontal_top(|ui| {
                 /* ---- Left: inventory grid + hotbar ---- */
                 ui.vertical(|ui| {
@@ -994,7 +1000,7 @@ pub fn egui_ui(ctx: &egui::Context) {
                     );
                 });
 
-                ui.separator();
+                ui.add_space(14.0); /* see the separator note above */
 
                 /* ---- Right: crafting (reused from crafting_screen) ---- */
                 ui.vertical(|ui| {

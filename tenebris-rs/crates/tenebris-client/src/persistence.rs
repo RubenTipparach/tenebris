@@ -45,6 +45,8 @@ use tenebris_core::block_entity::{
 };
 
 const KEY_PREFIX: &str = "tenebris-c:world:";
+/// Per-world survival bag + hunger (Rust-port extension key).
+const KEY_BAG_PREFIX: &str = "tenebris-c:bag:";
 const KEY_TILE_PREFIX: &str = "tenebris-c:tile:";
 const KEY_TORCH_PREFIX: &str = "tenebris-c:torches:";
 const KEY_CROP_PREFIX: &str = "tenebris-c:crops:";
@@ -70,6 +72,9 @@ pub struct PersistenceSave {
     pub pitch: f32,
     pub roll: f32,
     pub body_id: u32,
+    /// World mode: true = survival. Rust-port extension carried as an
+    /// optional 8th CSV field; pre-extension saves parse as creative.
+    pub survival: bool,
 }
 
 /// A single torch placement, stored verbatim in the per-body torch
@@ -199,16 +204,19 @@ pub fn save(world_name: &str, s: &PersistenceSave) -> bool {
         return false;
     }
     // C: snprintf "%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%u" with the f32
-    // angles promoted to double.
+    // angles promoted to double. The Rust port appends the world-mode
+    // flag as an 8th field; the C reader's final %u ignores trailing
+    // text, so the extension is backward-safe.
     let buf = format!(
-        "{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{}",
+        "{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{},{}",
         s.pos_x,
         s.pos_y,
         s.pos_z,
         s.yaw as f64,
         s.pitch as f64,
         s.roll as f64,
-        s.body_id
+        s.body_id,
+        if s.survival { 1 } else { 0 }
     );
     client_kv::set(&build_key(world_name), &buf);
     true
@@ -236,6 +244,13 @@ pub fn load(world_name: &str) -> Option<PersistenceSave> {
     if !(0..=u32::MAX as i64).contains(&body) {
         return None;
     }
+    /* Optional 8th field: world mode (Rust-port extension). Missing /
+     * malformed -> creative, which is what pre-extension saves were. */
+    let survival = it
+        .next()
+        .and_then(|f| strtol_prefix(f))
+        .map(|v| v != 0)
+        .unwrap_or(false);
     Some(PersistenceSave {
         pos_x: x,
         pos_y: y,
@@ -244,7 +259,33 @@ pub fn load(world_name: &str) -> Option<PersistenceSave> {
         pitch: pitch as f32,
         roll: roll as f32,
         body_id: body as u32,
+        survival,
     })
+}
+
+/// Save the survival bag + hunger for a world:
+/// "hunger|item,count;item,count;..." - written on the same 5 s cadence
+/// as the pose autosave (bag contents also persist per-craft via the
+/// interact/craft paths that call this).
+pub fn save_bag(world_name: &str, hunger: f32, bag_blob: &str) -> bool {
+    if !valid_name(world_name) {
+        return false;
+    }
+    client_kv::set(
+        &format!("{KEY_BAG_PREFIX}{world_name}"),
+        &format!("{:.2}|{}", hunger, bag_blob),
+    );
+    true
+}
+
+/// Load a world's bag + hunger as `(hunger, bag_blob)`.
+pub fn load_bag(world_name: &str) -> Option<(f32, String)> {
+    if !valid_name(world_name) {
+        return None;
+    }
+    let s = client_kv::get(&format!("{KEY_BAG_PREFIX}{world_name}"))?;
+    let (h, rest) = s.split_once('|')?;
+    Some((h.trim().parse::<f32>().ok()?, rest.to_string()))
 }
 
 pub fn delete(world_name: &str) {
@@ -252,6 +293,7 @@ pub fn delete(world_name: &str) {
         return;
     }
     client_kv::remove(&build_key(world_name));
+    client_kv::remove(&format!("{KEY_BAG_PREFIX}{world_name}"));
     // Also wipe every per-tile column and per-body torch list, so
     // deleting a world is a full reset rather than leaving orphaned
     // edits that would attach to a freshly-recreated world of the
@@ -735,12 +777,16 @@ mod tests {
             pitch: -0.25,
             roll: 3.14159265,
             body_id: 2,
+        
+            survival: false,
         };
         assert!(save("home", &s));
         // Pinned against the C build's snprintf output.
         assert_eq!(
             client_kv::get("tenebris-c:world:home").as_deref(),
-            Some("12.500000,-3.250000,1000.125000,0.500000,-0.250000,3.141593,2")
+            /* Rust-port extension: ",<survival>" rides as an 8th field
+             * (the C reader's final %u ignores the trailer). */
+            Some("12.500000,-3.250000,1000.125000,0.500000,-0.250000,3.141593,2,0")
         );
         // Round trip: %.6f is lossy for roll (3.14159265 -> 3.141593),
         // exactly as in the C build; everything else is exact.
@@ -761,11 +807,13 @@ mod tests {
             pitch: 1.7,
             roll: -2.3,
             body_id: 4294967295,
+        
+            survival: false,
         };
         assert!(save("home", &s2));
         assert_eq!(
             client_kv::get("tenebris-c:world:home").as_deref(),
-            Some("0.100000,123456.789012,-0.000001,0.100000,1.700000,-2.300000,4294967295")
+            Some("0.100000,123456.789012,-0.000001,0.100000,1.700000,-2.300000,4294967295,0")
         );
     }
 
@@ -788,6 +836,8 @@ mod tests {
                 pitch: -0.125,
                 roll: 1.5,
                 body_id: 7,
+            
+                survival: false,
             }
         );
         // Malformed: too few fields -> sscanf n != 7 -> reject.
@@ -1023,6 +1073,8 @@ mod tests {
             pitch: 0.0,
             roll: 0.0,
             body_id: 0,
+        
+            survival: false,
         };
         assert!(save("doomed", &pose));
         assert!(save_tile("doomed", 0, 1, &col));
@@ -1057,6 +1109,8 @@ mod tests {
             pitch: 0.0,
             roll: 0.0,
             body_id: 0,
+        
+            survival: false,
         };
         save("beta", &pose);
         save("alpha", &pose);

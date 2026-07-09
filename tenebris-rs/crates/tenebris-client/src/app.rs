@@ -2867,16 +2867,29 @@ fn maybe_prime_mode_for_state(app: &mut App) {
             );
         }
         Some(PrimeAction::EnterSp) => {
-            /* Mode chosen on the New World screen (default creative);
-             * G still toggles in-game. */
+            /* Mode comes from the world's save when resuming, or the
+             * New World picker (default survival); G still toggles
+             * in-game. The bag gets the world's persisted contents, or
+             * a clean slate - the in-memory bag must never leak between
+             * worlds ("new world, why is my inventory not cleared?"). */
             let survival = menu::pending_survival();
+            let world = menu::active_world();
             let mut p = app.player.borrow_mut();
             p.survival_mode = survival;
-            p.hunger = player_ctrl::MAX_HUNGER;
             if survival {
                 inventory::init_empty(&mut p.inventory);
             } else {
                 inventory::init_creative(&mut p.inventory);
+            }
+            match persistence::load_bag(&world) {
+                Some((hunger, blob)) => {
+                    p.bag = crate::bag::Bag::parse(&blob).unwrap_or_default();
+                    p.hunger = hunger.clamp(0.0, player_ctrl::MAX_HUNGER);
+                }
+                None => {
+                    p.bag = crate::bag::Bag::default();
+                    p.hunger = player_ctrl::MAX_HUNGER;
+                }
             }
         }
         None => {
@@ -2990,8 +3003,14 @@ fn maybe_autosave_sp(app: &mut App, dt: f64) {
         pitch: p.pitch,
         roll: 0.0,
         body_id: 0,
+        /* World mode rides the pose autosave so re-entering the world
+         * restores survival/creative instead of silently reverting. */
+        survival: p.survival_mode,
     };
     persistence::save(&world, &s);
+    /* Bag + hunger ride the same cadence (tools/meat must survive a
+     * re-entry; pose is cheap to re-derive, the bag is not). */
+    persistence::save_bag(&world, p.hunger, &p.bag.serialize());
 }
 
 /* --------------------------------------------------------------------- */

@@ -27,6 +27,32 @@ pub struct Bag {
     pub slots: [ItemStack; BAG_SLOTS],
 }
 
+impl Bag {
+    /// Serialise for the per-world SP save: "item,count;item,count;..."
+    /// (one pair per slot, fixed order). Same shape the MP server's bag
+    /// blob uses, minus the hunger prefix (SP stores hunger alongside).
+    pub fn serialize(&self) -> String {
+        self.slots
+            .iter()
+            .map(|s| format!("{},{}", s.item, s.count))
+            .collect::<Vec<_>>()
+            .join(";")
+    }
+
+    /// Parse [`serialize`]'s output; `None` on malformed input.
+    pub fn parse(blob: &str) -> Option<Bag> {
+        let mut bag = Bag::default();
+        for (i, pair) in blob.split(';').enumerate().take(BAG_SLOTS) {
+            let (a, b) = pair.split_once(',')?;
+            bag.slots[i] = ItemStack {
+                item: a.trim().parse().ok()?,
+                count: b.trim().parse().ok()?,
+            };
+        }
+        Some(bag)
+    }
+}
+
 impl Default for Bag {
     fn default() -> Self {
         Bag { slots: [ItemStack::default(); BAG_SLOTS] }

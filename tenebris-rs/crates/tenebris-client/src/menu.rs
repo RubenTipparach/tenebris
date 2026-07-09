@@ -1765,13 +1765,26 @@ fn start_sp_for_world(m: &mut Menu, world_name: &str) {
     m.active_world = trunc(world_name, persistence::NAME_MAX);
     if let Some(s) = persistence::load(world_name) {
         println!(
-            "[menu] SP load '{}' at ({:.1}, {:.1}, {:.1})",
-            world_name, s.pos_x, s.pos_y, s.pos_z
+            "[menu] SP load '{}' at ({:.1}, {:.1}, {:.1}) mode={}",
+            world_name,
+            s.pos_x,
+            s.pos_y,
+            s.pos_z,
+            if s.survival { "survival" } else { "creative" }
         );
+        /* The world's persisted mode wins over the new-world picker -
+         * re-entering a survival world must come back survival (this
+         * reverting to creative was the "why is there 9999 of stuff /
+         * instant mine in my survival world" bug). */
+        m.new_world_survival = s.survival;
         m.resume = Some(s);
     } else {
         m.resume = None;
-        println!("[menu] SP new '{}' (no save yet)", world_name);
+        println!(
+            "[menu] SP new '{}' (no save yet, mode={})",
+            world_name,
+            if m.new_world_survival { "survival" } else { "creative" }
+        );
     }
     m.state = GameState::InGameSp;
 }
@@ -1783,6 +1796,9 @@ fn start_sp_for_world(m: &mut Menu, world_name: &str) {
 fn start_sp_new_world(m: &mut Menu) {
     m.input_buf.clear();
     m.input_cursor_blink_start = now_s();
+    /* New worlds default to SURVIVAL - the game's real mode; sandbox
+     * is the opt-in (and G still toggles in-game). */
+    m.new_world_survival = true;
     m.state = GameState::SpNewWorldInput;
     js::focus_text_input();
 }
@@ -3402,6 +3418,8 @@ mod tests {
             pitch: -0.25,
             roll: 0.0,
             body_id: 2,
+        
+            survival: false,
         }
     }
 

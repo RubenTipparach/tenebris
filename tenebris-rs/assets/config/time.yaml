@@ -19,6 +19,8 @@
 
 time:
   time_scale: 1.0
-  day_length_s: 480.0
-  year_length_s: 9600.0
+  # 1920 = another 4x slower per playtest ('getting nauseous') - a
+  # full day/night now takes 32 real minutes.
+  day_length_s: 1920.0
+  year_length_s: 38400.0
   start_day_fraction: 0.46
