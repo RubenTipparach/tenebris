@@ -4130,13 +4130,19 @@ fn frame_inner(app: &mut App) {
     remote_players::draw_nameplates(view, proj, sapp::widthf(), sapp::heightf(), &|id| {
         net_client::name_for_id(id)
     });
-    /* Gameplay HUD - hidden while the pause panel is up (its sdtx text
-     * flushes on top of ALL sgl geometry and would bleed over the modal).
-     * The inventory overlay now anchors to the top of the screen, so the
-     * live HUD hotbar (toolbar) stays visible along the bottom while it's
-     * open - the player can see what they have equipped while managing
-     * items above. */
-    if !menu::pause_active() && !rocket_screen::is_open() {
+    /* Gameplay HUD - hidden while the pause panel or a full-screen
+     * overlay (tech tree, chest, furnace, machine panels) is up: the
+     * hotbar's sdtx slot digits flush on top of ALL geometry including
+     * egui, so the bar - numbers and all - must vanish together instead
+     * of the digits bleeding through the panel. The inventory overlay
+     * anchors to the top of the screen, so the live HUD hotbar stays
+     * visible along the bottom while it's open. */
+    let center_overlay_open = tech_tree::is_open()
+        || chest_screen::is_open()
+        || furnace_screen::is_open()
+        || power_ui::is_open()
+        || crafting_screen::is_open();
+    if !menu::pause_active() && !rocket_screen::is_open() && !center_overlay_open {
         /* No sdtx_draw here - single flush at the end of the UI block. */
         hotbar_ui::draw(&app.player.borrow().inventory);
         /* Real (non-ASCII) mining progress bar. */

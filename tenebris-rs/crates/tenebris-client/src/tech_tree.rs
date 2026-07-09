@@ -209,8 +209,10 @@ fn state_border(state: NodeState) -> egui::Color32 {
 
 const CARD_W: f32 = 208.0;
 const CARD_H: f32 = 46.0;
-const COL_PITCH: f32 = 236.0;
-const ROW_PITCH: f32 = 54.0;
+/* Wide gutter between columns so the dependency curves have room to
+ * breathe instead of hugging the cards. */
+const COL_PITCH: f32 = 320.0;
+const ROW_PITCH: f32 = 58.0;
 const HEADER_H: f32 = 20.0;
 
 /// The recipe (index) whose output is `item`, or `None` if `item` is a raw
@@ -249,7 +251,10 @@ fn depth_of(
     d
 }
 
-/// Group recipe indices into columns by craft depth (column 0 = depth 1).
+/// Group recipe indices into columns by craft depth (column 0 = depth 1),
+/// then order each column by the barycentre of its producers' rows so
+/// dependency edges stay short and mostly horizontal instead of criss-
+/// crossing the panel.
 pub(crate) fn columns(recipes: &[Recipe]) -> Vec<Vec<usize>> {
     let n = recipes.len();
     if n == 0 {
@@ -263,6 +268,40 @@ pub(crate) fn columns(recipes: &[Recipe]) -> Vec<Vec<usize>> {
     let mut cols = vec![Vec::new(); maxd as usize];
     for (i, &d) in depths.iter().enumerate() {
         cols[(d - 1) as usize].push(i);
+    }
+
+    /* Barycentre pass, left to right: each node moves next to the mean
+     * row of the producers feeding it. One sweep is enough to untangle a
+     * tree this size (classic layered-graph heuristic). */
+    let mut rowpos = vec![0.0f32; n];
+    for col in &cols {
+        for (ri, &rid) in col.iter().enumerate() {
+            rowpos[rid] = ri as f32;
+        }
+    }
+    for ci in 1..cols.len() {
+        let mut keyed: Vec<(f32, usize)> = cols[ci]
+            .iter()
+            .map(|&rid| {
+                let prods: Vec<f32> = recipes[rid]
+                    .inputs
+                    .iter()
+                    .filter_map(|ing| producer_of(recipes, ing.item))
+                    .map(|p| rowpos[p])
+                    .collect();
+                let key = if prods.is_empty() {
+                    rowpos[rid]
+                } else {
+                    prods.iter().sum::<f32>() / prods.len() as f32
+                };
+                (key, rid)
+            })
+            .collect();
+        keyed.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap().then(a.1.cmp(&b.1)));
+        cols[ci] = keyed.into_iter().map(|(_, r)| r).collect();
+        for (ri, &rid) in cols[ci].iter().enumerate() {
+            rowpos[rid] = ri as f32;
+        }
     }
     cols
 }
@@ -345,22 +384,28 @@ fn paint_node(p: &egui::Painter, rect: egui::Rect, r: &Recipe, state: NodeState)
     }
 }
 
-/// A dependency edge from a producer node to a consumer node.
+/// A dependency edge from a producer node to a consumer node: one smooth
+/// horizontal-tangent bezier (much less visual noise than an elbow when
+/// many edges fan between two columns), with a small socket dot at each
+/// end so the attachment points read clearly.
 fn paint_edge(p: &egui::Painter, from: egui::Rect, to: egui::Rect, dim: bool) {
     let a = from.right_center();
     let b = to.left_center();
     let col = if dim {
-        egui::Color32::from_rgba_unmultiplied(0x4c, 0x54, 0x64, 110)
+        egui::Color32::from_rgba_unmultiplied(0x48, 0x50, 0x60, 90)
     } else {
-        egui::Color32::from_rgba_unmultiplied(0x86, 0x90, 0xa6, 170)
+        egui::Color32::from_rgba_unmultiplied(0x8a, 0x96, 0xac, 180)
     };
-    // Elbow: out to the mid-x, across, then in - reads cleaner than a
-    // diagonal when many edges fan between two columns.
-    let midx = (a.x + b.x) * 0.5;
-    let stroke = egui::Stroke::new(1.5, col);
-    p.line_segment([a, egui::pos2(midx, a.y)], stroke);
-    p.line_segment([egui::pos2(midx, a.y), egui::pos2(midx, b.y)], stroke);
-    p.line_segment([egui::pos2(midx, b.y), b], stroke);
+    let reach = ((b.x - a.x).abs() * 0.5).max(24.0);
+    let shape = egui::epaint::CubicBezierShape::from_points_stroke(
+        [a, egui::pos2(a.x + reach, a.y), egui::pos2(b.x - reach, b.y), b],
+        false,
+        egui::Color32::TRANSPARENT,
+        egui::Stroke::new(1.4, col),
+    );
+    p.add(shape);
+    p.circle_filled(a, 2.2, col);
+    p.circle_filled(b, 2.2, col);
 }
 
 /// Draw the tech-tree overlay. No-op when closed.
@@ -394,7 +439,7 @@ pub fn egui_ui(ctx: &egui::Context) {
             ui.label(
                 egui::RichText::new(
                     "Craft progression - each node needs the ones linked into it. \
-                     Unlocks as you gather + build: green = ready, grey = known, \
+                     Drag the panel to pan. Green = ready, grey = known, \
                      dim = undiscovered.",
                 )
                 .small()
@@ -402,52 +447,117 @@ pub fn egui_ui(ctx: &egui::Context) {
             );
             ui.add_space(6.0);
 
-            egui::ScrollArea::both().max_height(580.0).show(ui, |ui| {
-                let (region, _) = ui.allocate_exact_size(total, egui::Sense::hover());
-                let o = region.min;
+            let out = egui::ScrollArea::both()
+                .max_height(560.0)
+                .auto_shrink([false, false])
+                /* Click-drag anywhere on the chart pans it (the nodes are
+                 * read-only, so nothing competes for the drag). */
+                .scroll_source(egui::containers::scroll_area::ScrollSource {
+                    drag: true,
+                    ..Default::default()
+                })
+                .show(ui, |ui| {
+                    let (region, _) = ui.allocate_exact_size(total, egui::Sense::hover());
+                    let o = region.min;
 
-                // Rect per recipe index (depth column, row within column).
-                let mut rects: Vec<Option<egui::Rect>> = vec![None; recipes.len()];
-                for (ci, col) in cols.iter().enumerate() {
-                    for (ri, &rid) in col.iter().enumerate() {
-                        let x = o.x + ci as f32 * COL_PITCH;
-                        let y = o.y + HEADER_H + ri as f32 * ROW_PITCH;
-                        rects[rid] =
-                            Some(egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(CARD_W, CARD_H)));
+                    // Rect per recipe index (depth column, row within column).
+                    let mut rects: Vec<Option<egui::Rect>> = vec![None; recipes.len()];
+                    for (ci, col) in cols.iter().enumerate() {
+                        for (ri, &rid) in col.iter().enumerate() {
+                            let x = o.x + ci as f32 * COL_PITCH;
+                            let y = o.y + HEADER_H + ri as f32 * ROW_PITCH;
+                            rects[rid] = Some(egui::Rect::from_min_size(
+                                egui::pos2(x, y),
+                                egui::vec2(CARD_W, CARD_H),
+                            ));
+                        }
                     }
-                }
 
-                let painter = ui.painter_at(region);
-                // Column headers.
-                for ci in 0..ncol {
-                    painter.text(
-                        egui::pos2(o.x + ci as f32 * COL_PITCH, o.y),
-                        egui::Align2::LEFT_TOP,
-                        format!("Step {}", ci + 1),
-                        egui::FontId::proportional(12.0),
-                        egui::Color32::from_rgb(0xe0, 0xc8, 0x60),
-                    );
-                }
-                // Edges first (behind the nodes).
-                for (rid, r) in recipes.iter().enumerate() {
-                    let Some(crect) = rects[rid] else { continue };
-                    let dim = node_state(r, &disco, &inv, &bag) == NodeState::Locked;
-                    for ing in &r.inputs {
-                        if let Some(pidx) = producer_of(&recipes, ing.item) {
-                            if let Some(prect) = rects[pidx] {
-                                paint_edge(&painter, prect, crect, dim);
+                    let painter = ui.painter_at(region);
+                    // Column headers.
+                    for ci in 0..ncol {
+                        painter.text(
+                            egui::pos2(o.x + ci as f32 * COL_PITCH, o.y),
+                            egui::Align2::LEFT_TOP,
+                            format!("Step {}", ci + 1),
+                            egui::FontId::proportional(12.0),
+                            egui::Color32::from_rgb(0xe0, 0xc8, 0x60),
+                        );
+                    }
+                    // Edges first (behind the nodes), deduped: a recipe
+                    // taking two different items from one producer still
+                    // draws a single connection.
+                    let mut drawn: std::collections::BTreeSet<(usize, usize)> =
+                        std::collections::BTreeSet::new();
+                    for (rid, r) in recipes.iter().enumerate() {
+                        let Some(crect) = rects[rid] else { continue };
+                        let dim = node_state(r, &disco, &inv, &bag) == NodeState::Locked;
+                        for ing in &r.inputs {
+                            if let Some(pidx) = producer_of(&recipes, ing.item) {
+                                if pidx != rid && drawn.insert((pidx, rid)) {
+                                    if let Some(prect) = rects[pidx] {
+                                        paint_edge(&painter, prect, crect, dim);
+                                    }
+                                }
                             }
                         }
                     }
-                }
-                // Nodes on top.
-                for (rid, r) in recipes.iter().enumerate() {
-                    if let Some(crect) = rects[rid] {
-                        let st = node_state(r, &disco, &inv, &bag);
-                        paint_node(&painter, crect, r, st);
+                    // Nodes on top.
+                    for (rid, r) in recipes.iter().enumerate() {
+                        if let Some(crect) = rects[rid] {
+                            let st = node_state(r, &disco, &inv, &bag);
+                            paint_node(&painter, crect, r, st);
+                        }
                     }
+                });
+
+            /* Edge carets: a subtle chevron on each side of the viewport
+             * that still has content beyond it, so the player knows the
+             * chart pans that way. */
+            {
+                let vp = out.inner_rect;
+                let off = out.state.offset;
+                let content = out.content_size;
+                let p = ui.painter();
+                let col = egui::Color32::from_rgba_unmultiplied(0xe0, 0xc8, 0x60, 200);
+                let font = egui::FontId::proportional(20.0);
+                if off.x > 1.0 {
+                    p.text(
+                        egui::pos2(vp.min.x + 8.0, vp.center().y),
+                        egui::Align2::CENTER_CENTER,
+                        "<",
+                        font.clone(),
+                        col,
+                    );
                 }
-            });
+                if off.x + vp.width() < content.x - 1.0 {
+                    p.text(
+                        egui::pos2(vp.max.x - 8.0, vp.center().y),
+                        egui::Align2::CENTER_CENTER,
+                        ">",
+                        font.clone(),
+                        col,
+                    );
+                }
+                if off.y > 1.0 {
+                    p.text(
+                        egui::pos2(vp.center().x, vp.min.y + 8.0),
+                        egui::Align2::CENTER_CENTER,
+                        "^",
+                        font.clone(),
+                        col,
+                    );
+                }
+                if off.y + vp.height() < content.y - 1.0 {
+                    p.text(
+                        egui::pos2(vp.center().x, vp.max.y - 8.0),
+                        egui::Align2::CENTER_CENTER,
+                        "v",
+                        font,
+                        col,
+                    );
+                }
+            }
 
             ui.add_space(6.0);
             if ui.button("Close (K)").clicked() {
