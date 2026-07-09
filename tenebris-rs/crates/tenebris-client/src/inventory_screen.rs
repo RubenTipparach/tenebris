@@ -181,7 +181,9 @@ pub fn set_player(p: Option<PlayerHandle>) {
 }
 
 const EGUI_SLOT_PX: f32 = 42.0;
-const BAG_COLS: usize = 6;
+/* Bag rows line up with the 9-slot hotbar below them (18 slots = 2
+ * clean rows), so the two grids read as one column-aligned bag. */
+const BAG_COLS: usize = INV_HOTBAR_SLOTS;
 const PALETTE_COLS: usize = 7;
 
 /// The creative palette: every placeable block, in build-menu order.
