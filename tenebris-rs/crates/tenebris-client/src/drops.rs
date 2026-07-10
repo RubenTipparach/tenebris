@@ -105,7 +105,7 @@ fn visual_block(item: ItemId) -> Block {
         items::COPPER => Block::CopperOre,
         items::TIN => Block::TinOre,
         items::IRON => Block::IronOre,
-        items::SEEDS => Block::Grass,
+        items::SEEDS | items::WHEAT_SEEDS | items::CARROT => Block::Grass,
         items::PLANK | items::STICK => Block::Wood,
         _ => Block::Dirt,
     }

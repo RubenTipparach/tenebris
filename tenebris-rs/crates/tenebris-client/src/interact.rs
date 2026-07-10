@@ -475,11 +475,22 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
                 /* Farming bootstrap: breaking grass has a config chance to
                  * drop a seed, so the plant -> grow -> harvest loop has a
                  * starting point. Deterministic per cell (hash2) so it
-                 * doesn't depend on frame timing. */
+                 * doesn't depend on frame timing. The [0,1) roll is cut
+                 * into stacked bands - berry seeds, then wheat seeds,
+                 * then a wild carrot - so one hash decides which (if
+                 * any) seed kind this cell yields. */
                 if target_block == Block::Grass {
-                    let chance = tenebris_core::farming::config().grass_seed_chance;
-                    if tenebris_core::rng::hash2(s.hit_tile, s.hit_depth) < chance {
+                    let cfg = tenebris_core::farming::config();
+                    let roll = tenebris_core::rng::hash2(s.hit_tile, s.hit_depth);
+                    let berry_top = cfg.grass_seed_chance;
+                    let wheat_top = berry_top + cfg.wheat_seed_chance;
+                    let carrot_top = wheat_top + cfg.carrot_chance;
+                    if roll < berry_top {
                         crate::drops::spawn(w, s.hit_tile, s.hit_depth, items::SEEDS, 1);
+                    } else if roll < wheat_top {
+                        crate::drops::spawn(w, s.hit_tile, s.hit_depth, items::WHEAT_SEEDS, 1);
+                    } else if roll < carrot_top {
+                        crate::drops::spawn(w, s.hit_tile, s.hit_depth, items::CARROT, 1);
                     }
                 }
                 s.mining_progress_s = 0.0;

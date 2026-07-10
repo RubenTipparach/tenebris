@@ -84,6 +84,14 @@ pub const IRON_PICKAXE: ItemId = ITEM_BASE + 28; // 128
 /// client::crops). Not a mining tool; it gates the farming loop.
 pub const HOE: ItemId = ITEM_BASE + 29; // 129
 
+/* Farming kinds beyond berries (core::farming::CropKind). Wheat is the
+ * slow crop that bakes into bread; the carrot root is food AND its own
+ * seed, so it has no separate seed item. */
+pub const WHEAT_SEEDS: ItemId = ITEM_BASE + 30; // 130
+pub const WHEAT: ItemId = ITEM_BASE + 31; // 131
+pub const BREAD: ItemId = ITEM_BASE + 32; // 132
+pub const CARROT: ItemId = ITEM_BASE + 33; // 133
+
 /// What an item *is*, for stacking / placement / tool-gating rules. Grows
 /// as the tech tree lands (Component, Ingot, Ammo, ...).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -147,6 +155,10 @@ const ITEMS: &[ItemDef] = &[
     ItemDef { id: COOKED_MEAT, name: "cooked-meat", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: SEEDS, name: "seeds", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: BERRIES, name: "berries", kind: ItemKind::Resource, stack: 64 },
+    ItemDef { id: WHEAT_SEEDS, name: "wheat-seeds", kind: ItemKind::Resource, stack: 64 },
+    ItemDef { id: WHEAT, name: "wheat", kind: ItemKind::Resource, stack: 64 },
+    ItemDef { id: BREAD, name: "bread", kind: ItemKind::Resource, stack: 64 },
+    ItemDef { id: CARROT, name: "carrot", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: COPPER, name: "copper", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: TIN, name: "tin", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: IRON, name: "iron", kind: ItemKind::Resource, stack: 64 },

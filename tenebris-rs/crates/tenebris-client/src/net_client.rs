@@ -1258,6 +1258,7 @@ fn on_msg(c: &mut Client, data: &[u8]) {
                         dvec3_make(e.up_x as f64, e.up_y as f64, e.up_z as f64),
                         e.tile_idx as i32,
                         e.growth,
+                        farming::CropKind::from_u8(e.kind),
                     ));
                 } else if e.op == proto::CROP_OP_REMOVE {
                     let mut best = -1i32;
@@ -1757,8 +1758,17 @@ pub fn sync_block_entities(body_id: u32, w: &World) {
     });
 }
 
-/// Send one crop op (plant / remove) for the active body.
-pub fn send_crop_op(body_id: u32, op: u8, tile_idx: i32, pos: DVec3, up: DVec3, growth: f32) {
+/// Send one crop op (plant / remove) for the active body. `kind` is the
+/// farming::CropKind byte (only meaningful on PLANT).
+pub fn send_crop_op(
+    body_id: u32,
+    op: u8,
+    tile_idx: i32,
+    pos: DVec3,
+    up: DVec3,
+    growth: f32,
+    kind: u8,
+) {
     C.with(|cell| {
         let c = &mut *cell.borrow_mut();
         if c.state != NetClientState::Ready || c.conn.is_none() {
@@ -1769,6 +1779,7 @@ pub fn send_crop_op(body_id: u32, op: u8, tile_idx: i32, pos: DVec3, up: DVec3, 
         m.entry_count = 1;
         m.entries[0] = proto::MsgCropEntry {
             op,
+            kind,
             tile_idx: tile_idx as u32,
             pos_x: pos.x as f32,
             pos_y: pos.y as f32,
