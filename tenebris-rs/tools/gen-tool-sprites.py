@@ -33,14 +33,15 @@ PAL = {
 }
 
 # 16x16 hand-drawn bitmaps.
+# Pickaxe head arches OVER the handle with the tips pointing DOWN (it
+# was drawn V-up originally, which read as an upside-down pick).
 PICKAXE = [
-    "....D......D....",
-    "...DMm....mMD...",
-    "...MMm....mMM...",
-    "....MMm..mMM....",
-    ".....MMmmMM.....",
-    "......MhhM......",
-    "......hHh.......",
+    "....mMMMMMM.....",
+    "..MMm......MM...",
+    ".DMm........mM..",
+    ".DM..........M..",
+    ".D....hHh.....D.",
+    "......hHhd......",
     ".....hHhd.......",
     ".....HHd........",
     "....hHhd........",
@@ -49,6 +50,7 @@ PICKAXE = [
     "...HHd..........",
     "..hHhd..........",
     "..HHd...........",
+    "................",
     "................",
 ]
 

@@ -47,6 +47,11 @@ pub struct Animal {
     pub state: AnimalState,
     pub timer: f32,
     pub anim_phase: f32,
+    /* Cosmetic hop when climbing a terrain step (see `reseat`): `pos`
+     * snaps to the new floor immediately (authoritative, wire-stable);
+     * these two animate a jump arc the renderer offsets by. */
+    pub hop_t: f32,
+    pub hop_from: f32,
 }
 
 /// Full health of a fresh critter.
@@ -61,6 +66,11 @@ const IDLE_TIME: f32 = 1.8;
 const WALK_TIME: f32 = 2.4;
 const FLEE_TIME: f32 = 4.0;
 const TURN_JITTER: f64 = 0.9;
+/// Duration of the climb-hop arc + its apex height above the step line.
+const HOP_S: f32 = 0.4;
+const HOP_ARC_M: f64 = 0.28;
+/// Floor rises taller than this are teleports/spawns, not climbable steps.
+const HOP_MAX_STEP_M: f64 = 2.5;
 
 impl Animal {
     pub fn new(id: u32, pos: DVec3, up: DVec3) -> Self {
@@ -74,6 +84,8 @@ impl Animal {
             state: AnimalState::Walk,
             timer: WALK_TIME,
             anim_phase: 0.0,
+            hop_t: 0.0,
+            hop_from: 0.0,
         }
     }
 
@@ -147,6 +159,9 @@ pub fn tick(a: &mut Animal, up: DVec3, dt: f32, tick_salt: u32) {
     let up = dvec3_normalize(up);
     a.heading = reproject_tangent(a.heading, up);
     a.timer -= dt;
+    if a.hop_t > 0.0 {
+        a.hop_t = (a.hop_t - dt).max(0.0);
+    }
 
     match a.state {
         AnimalState::Idle => {
@@ -252,14 +267,34 @@ pub fn spawn_near(w: &World, anchor_world: DVec3, id: u32, salt: u32) -> Option<
 }
 
 /// Re-seat the animal's feet on the (possibly edited) floor after a
-/// wander step so it hugs the terrain.
+/// wander step so it hugs the terrain. A floor STEP UP starts a cosmetic
+/// hop arc (the critter jumps onto the ledge instead of sliding up it) -
+/// `pos` still snaps immediately, so sim + wire stay exact.
 pub fn reseat(w: &World, a: &mut Animal) {
     let center = DVec3 { x: w.body.pos_x, y: w.body.pos_y, z: w.body.pos_z };
     let rel = dvec3_sub(a.pos, center);
     let r = dvec3_length(rel);
     if let Some(seated) = floor_pos(w, rel, r, -1) {
+        let new_r = dvec3_length(dvec3_sub(seated, center));
+        let dr = new_r - r;
+        if dr > 0.25 && dr < HOP_MAX_STEP_M && a.hop_t <= 0.0 && a.is_moving() {
+            a.hop_t = HOP_S;
+            a.hop_from = -(dr as f32);
+        }
         a.pos = seated;
     }
+}
+
+/// Renderer offset (metres along local up) for the climb-hop arc: starts
+/// at the old floor height (`hop_from`, negative), arcs over the step,
+/// and lands at 0 when `hop_t` runs out. 0.0 when not hopping.
+pub fn hop_offset(a: &Animal) -> f64 {
+    if a.hop_t <= 0.0 {
+        return 0.0;
+    }
+    let t = 1.0 - (a.hop_t / HOP_S).clamp(0.0, 1.0);
+    a.hop_from as f64 * (1.0 - t as f64)
+        + (std::f32::consts::PI * t).sin() as f64 * HOP_ARC_M
 }
 
 #[cfg(test)]

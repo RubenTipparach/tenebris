@@ -84,13 +84,13 @@ use std::rc::Rc;
 use tenebris_core::blocks::{self, Block, FaceCap};
 use tenebris_core::config;
 use tenebris_core::math::{
-    dvec3_dot, dvec3_make, dvec3_normalize, dvec3_scale, dvec3_to_vec3, vec3_add, vec3_length,
-    vec3_sub, DVec3, Vec3,
+    dvec3_dot, dvec3_scale, dvec3_to_vec3, vec3_add, vec3_length, vec3_sub, DVec3, Vec3,
 };
+#[cfg(test)]
+use tenebris_core::math::{dvec3_make, dvec3_normalize};
 use tenebris_core::orbit;
 use tenebris_core::planet::{BodyConfig, BodyId, Tileset};
 use tenebris_core::planet_gen;
-use tenebris_core::rng;
 use tenebris_core::world::{World, WORLD_MAX_DEPTH};
 use tenebris_core::world_water;
 
@@ -1520,6 +1520,13 @@ thread_local! {
     /* Port of G_OUTLINE_PIP - lazy-created lines pipeline for the
      * block outline + flow-debug overlays. */
     static OUTLINE_PIP: Cell<sgl::Pipeline> = const { Cell::new(sgl::Pipeline { id: 0 }) };
+    /* Lazy triangles pipeline + boot-loaded crack-stage atlas for the
+     * block-break decal. CRACK_STATE: 0 untried, 1 loaded, -1 failed. */
+    static BREAK_PIP: Cell<sgl::Pipeline> = const { Cell::new(sgl::Pipeline { id: 0 }) };
+    static CRACK_VIEW: Cell<u32> = const { Cell::new(0) };
+    static CRACK_SMP: Cell<u32> = const { Cell::new(0) };
+    static CRACK_STAGES: Cell<i32> = const { Cell::new(0) };
+    static CRACK_STATE: Cell<i8> = const { Cell::new(0) };
 
     /* Dedicated sokol_gl context for WORLD-SPACE entity geometry
      * (animals, crops, remote players). It flushes inside the OFFSCREEN
@@ -1571,6 +1578,28 @@ pub fn sgl_world_begin() {
 /// Back to the default (UI / swapchain) sgl context.
 pub fn sgl_world_end() {
     sgl::set_context(sgl::default_context());
+}
+
+/// Day/night brightness for the sgl entity renderers (critters / crops /
+/// item drops): the terrain's sun-terminator curve reduced to a single
+/// scalar - 1.0 in daylight, easing down to a 0.16 night floor so
+/// entities darken with the world instead of glowing fullbright at night.
+pub fn entity_sun_brightness(world_pos: DVec3) -> f32 {
+    R.with(|cell| {
+        let r = cell.borrow();
+        let c = r.env.atmo_planet_center;
+        let px = world_pos.x as f32 - c.x;
+        let py = world_pos.y as f32 - c.y;
+        let pz = world_pos.z as f32 - c.z;
+        let len = (px * px + py * py + pz * pz).sqrt();
+        if len < 1e-3 {
+            return 1.0;
+        }
+        let d = (px * r.env.sun_dir.x + py * r.env.sun_dir.y + pz * r.env.sun_dir.z) / len;
+        /* Soft terminator band (~sunset) instead of a hard cut. */
+        let t = ((d + 0.10) / 0.22).clamp(0.0, 1.0);
+        0.16 + 0.84 * t
+    })
 }
 
 /* ----------------------------------------------------------------------- */
@@ -4178,27 +4207,21 @@ pub fn draw_face_outline(
     sgl::end();
 }
 
-/// Block-break crack decal on the single face of (tile, depth) shared
-/// with (nbr_tile, nbr_depth) - the same face `draw_face_outline`
-/// highlights. `frac` is mining progress in [0, 1]; more cracks appear
-/// and darken as it climbs, so the block visibly fractures the longer the
-/// survival player mines it.
-///
-/// Drawn as dark fracture LINES reusing the outline pipeline (the proven
-/// lines-in-default-context path). A textured-triangle decal double-
-/// updated the shared sgl vertex buffer and tripped the validation layer,
-/// so the decal is procedural geometry instead: a spider crack of jagged
-/// spokes from the face centre out to its corners, deterministic per
-/// (tile, depth) so it's stable frame to frame.
+/// Block-break crack decal: the mined block's own prism geometry,
+/// re-drawn slightly inflated with a transparent crack-stage texture
+/// alpha-blended over the block's real texture (the Minecraft
+/// destroy-stage pattern). Because it re-uses the mesher's width factor,
+/// the overlay hugs full hexes, skinny tree trunks, and variable-width
+/// leaves alike. `frac` is mining progress in [0, 1] and selects the
+/// crack stage; the block shatters harder the closer it is to breaking.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_break_overlay(
     view: Mat4,
     proj: Mat4,
     world: &World,
+    block: Block,
     tile_idx: i32,
     depth: i32,
-    nbr_tile: i32,
-    nbr_depth: i32,
     frac: f32,
 ) {
     if tile_idx < 0 || tile_idx >= world.tile_count {
@@ -4212,83 +4235,32 @@ pub fn draw_break_overlay(
     if n <= 0 {
         return;
     }
-
-    /* Same face classification as draw_face_outline. */
-    let mut kind = OutlineFace::None;
-    let mut side_edge_k: i32 = -1;
-    if nbr_tile == tile_idx {
-        if nbr_depth == depth + 1 {
-            kind = OutlineFace::TopCap;
-        } else if nbr_depth == depth - 1 {
-            kind = OutlineFace::BottomCap;
-        }
-    } else if nbr_depth == depth {
-        for k in 0..n {
-            if t.edge_neighbours[k as usize] == nbr_tile {
-                side_edge_k = k;
-                break;
-            }
-        }
-        if side_edge_k >= 0 {
-            kind = OutlineFace::Side;
-        }
-    }
-    if kind == OutlineFace::None {
+    let Some((crack_view, crack_smp, stages)) = ensure_crack_atlas() else {
         return;
-    }
-
-    /* Face centre + the corner points the spokes reach toward. Caps use
-     * every rim vertex; a side face uses its four quad corners. */
-    let (center, corners): (DVec3, Vec<DVec3>) = match kind {
-        OutlineFace::TopCap | OutlineFace::BottomCap => {
-            let ring_r = if kind == OutlineFace::TopCap {
-                world.depth_to_radius_m(depth + 1)
-            } else {
-                world.depth_to_radius_m(depth)
-            };
-            let mut c = dvec3_make(0.0, 0.0, 0.0);
-            for k in 0..n {
-                let p = t.verts[k as usize];
-                c = dvec3_make(c.x + p.x, c.y + p.y, c.z + p.z);
-            }
-            let inv = 1.0 / n as f64;
-            let center = dvec3_scale(dvec3_normalize(dvec3_make(c.x * inv, c.y * inv, c.z * inv)), ring_r);
-            let corners: Vec<DVec3> =
-                (0..n).map(|k| dvec3_scale(t.verts[k as usize], ring_r)).collect();
-            (center, corners)
-        }
-        OutlineFace::Side => {
-            let k_a = side_edge_k;
-            let k_b = (k_a + 1) % n;
-            let r_bot = world.depth_to_radius_m(depth);
-            let r_top = world.depth_to_radius_m(depth + 1);
-            let ia = dvec3_scale(t.verts[k_a as usize], r_bot);
-            let ib = dvec3_scale(t.verts[k_b as usize], r_bot);
-            let oa = dvec3_scale(t.verts[k_a as usize], r_top);
-            let ob = dvec3_scale(t.verts[k_b as usize], r_top);
-            let center = dvec3_scale(
-                dvec3_make(
-                    (ia.x + ib.x + oa.x + ob.x) * 0.25,
-                    (ia.y + ib.y + oa.y + ob.y) * 0.25,
-                    (ia.z + ib.z + oa.z + ob.z) * 0.25,
-                ),
-                1.0,
-            );
-            (center, vec![ia, ib, ob, oa])
-        }
-        OutlineFace::None => unreachable!(),
     };
 
-    /* Progressive reveal: at least one spoke, all of them by the end.
-     * A deterministic per-cell hash rotates which spokes light first so
-     * adjacent blocks don't crack identically. */
-    let count = corners.len();
+    /* Stage sub-rect of the atlas strip. */
     let frac = frac.clamp(0.0, 1.0);
-    let spokes = ((frac * count as f32).ceil() as usize).clamp(1, count);
-    let rot = (rng::hash2(tile_idx, depth) * count as f32) as usize % count.max(1);
-    let alpha = 0.45 + 0.45 * frac; /* darkens as the block nears breaking */
+    let stage = ((frac * stages as f32) as i32).clamp(0, stages - 1);
+    let su0 = stage as f32 / stages as f32;
+    let su1 = (stage + 1) as f32 / stages as f32;
 
-    let pip = ensure_outline_pip();
+    /* The block's own footprint (mesher width factor: 1.0 terrain hex,
+     * 0.20 trunk, hash 0.65..1.0 leaves), inflated ~2% + a radial pad so
+     * the overlay sits just above the block's surface instead of
+     * z-fighting it. */
+    let w = (hex_mesher::block_hex_width(block, tile_idx, depth) * 1.02).min(1.0);
+    let pad = 0.012;
+    let r0 = world.depth_to_radius_m(depth) - pad;
+    let r1 = world.depth_to_radius_m(depth + 1) + pad;
+    let corners: Vec<DVec3> = (0..n)
+        .map(|k| {
+            let c = hex_mesher::shrink_corner(t, k, w);
+            dvec3_scale(c, 1.0 + pad / r1.max(1.0))
+        })
+        .collect();
+
+    let pip = ensure_break_pip();
     sgl::defaults();
     sgl::matrix_mode_projection();
     sgl::load_matrix(&proj.m[0]);
@@ -4300,31 +4272,145 @@ pub fn draw_break_overlay(
         world.body.pos_z as f32,
     );
     sgl::load_pipeline(pip);
+    sgl::enable_texture();
+    sgl::texture(sg::View { id: crack_view }, sg::Sampler { id: crack_smp });
 
-    sgl::begin_lines();
-    sgl::c4f(0.05, 0.04, 0.04, alpha); /* near-black fracture lines */
+    sgl::begin_triangles();
+    sgl::c4f(1.0, 1.0, 1.0, 0.9); /* the crack texture's alpha does the work */
 
-    let emit = |a: DVec3, b: DVec3| {
-        sgl::v3f(a.x as f32, a.y as f32, a.z as f32);
-        sgl::v3f(b.x as f32, b.y as f32, b.z as f32);
+    let vtx = |p: DVec3, u: f32, v: f32| {
+        sgl::v3f_t2f(p.x as f32, p.y as f32, p.z as f32, u, v);
     };
-    /* Each spoke is a two-segment jagged line centre -> midpoint -> corner,
-     * with the midpoint kicked toward the next corner so it isn't a
-     * straight radial. The kick is a fixed fraction, no per-frame noise. */
-    for s in 0..spokes {
-        let i = (rot + s) % count;
-        let corner = corners[i];
-        let nbr = corners[(i + 1) % count];
-        let mid = dvec3_make(
-            (center.x + corner.x) * 0.5 + (nbr.x - corner.x) * 0.12,
-            (center.y + corner.y) * 0.5 + (nbr.y - corner.y) * 0.12,
-            (center.z + corner.z) * 0.5 + (nbr.z - corner.z) * 0.12,
-        );
-        emit(center, mid);
-        emit(mid, corner);
-    }
 
+    /* Top + bottom caps: triangle fan from the cap centre, UVs mapping
+     * the n-gon radially onto the stage sub-rect. */
+    let umid = (su0 + su1) * 0.5;
+    let uhal = (su1 - su0) * 0.5;
+    for (ring_r, flip) in [(r1, false), (r0, true)] {
+        let centre = dvec3_scale(t.center, ring_r);
+        for k in 0..n as usize {
+            let next = (k + 1) % n as usize;
+            let (ka, kb) = if flip { (next, k) } else { (k, next) };
+            let a = dvec3_scale(corners[ka], ring_r);
+            let b = dvec3_scale(corners[kb], ring_r);
+            let ang_a = ka as f32 / n as f32 * std::f32::consts::TAU;
+            let ang_b = kb as f32 / n as f32 * std::f32::consts::TAU;
+            vtx(centre, umid, 0.5);
+            vtx(a, umid + uhal * ang_a.cos(), 0.5 + 0.5 * ang_a.sin());
+            vtx(b, umid + uhal * ang_b.cos(), 0.5 + 0.5 * ang_b.sin());
+        }
+    }
+    /* Side quads: one full stage sub-rect per face. */
+    for k in 0..n as usize {
+        let next = (k + 1) % n as usize;
+        let ia = dvec3_scale(corners[k], r0);
+        let ib = dvec3_scale(corners[next], r0);
+        let oa = dvec3_scale(corners[k], r1);
+        let ob = dvec3_scale(corners[next], r1);
+        vtx(ia, su0, 1.0);
+        vtx(ib, su1, 1.0);
+        vtx(ob, su1, 0.0);
+        vtx(ia, su0, 1.0);
+        vtx(ob, su1, 0.0);
+        vtx(oa, su0, 0.0);
+    }
     sgl::end();
+    sgl::disable_texture();
+}
+
+/// Load the crack-stage atlas once, at boot (see `preload_break_atlas`).
+/// Returns `(view, sampler, stages)`; `None` if the PNG is missing (the
+/// decal then silently no-ops - polish, not a hard dependency).
+fn ensure_crack_atlas() -> Option<(u32, u32, i32)> {
+    match CRACK_STATE.with(|c| c.get()) {
+        1 => {
+            return Some((
+                CRACK_VIEW.with(|c| c.get()),
+                CRACK_SMP.with(|c| c.get()),
+                CRACK_STAGES.with(|c| c.get()),
+            ));
+        }
+        -1 => return None,
+        _ => {}
+    }
+    let path = "assets/textures/break_stages.png";
+    let Some(img) = load_png_rgba(path, false) else {
+        println!("[break] {} missing; crack decal disabled", path);
+        CRACK_STATE.with(|c| c.set(-1));
+        return None;
+    };
+    /* Horizontal strip of square stages: count = width / height. */
+    let stages = if img.h > 0 { img.w / img.h } else { 0 };
+    if stages <= 0 {
+        CRACK_STATE.with(|c| c.set(-1));
+        return None;
+    }
+    let mut desc = sg::ImageDesc {
+        width: img.w,
+        height: img.h,
+        pixel_format: sg::PixelFormat::Rgba8,
+        label: c"break-atlas".as_ptr(),
+        ..Default::default()
+    };
+    desc.data.mip_levels[0] = sg::slice_as_range(&img.rgba);
+    let image = sg::make_image(&desc);
+    let view = sg::make_view(&sg::ViewDesc {
+        texture: sg::TextureViewDesc { image, ..Default::default() },
+        label: c"break-view".as_ptr(),
+        ..Default::default()
+    });
+    let smp = sg::make_sampler(&sg::SamplerDesc {
+        min_filter: sg::Filter::Nearest,
+        mag_filter: sg::Filter::Nearest,
+        wrap_u: sg::Wrap::ClampToEdge,
+        wrap_v: sg::Wrap::ClampToEdge,
+        label: c"break-sampler".as_ptr(),
+        ..Default::default()
+    });
+    CRACK_VIEW.with(|c| c.set(view.id));
+    CRACK_SMP.with(|c| c.set(smp.id));
+    CRACK_STAGES.with(|c| c.set(stages));
+    CRACK_STATE.with(|c| c.set(1));
+    println!("[break] crack atlas loaded: {} stages ({}x{})", stages, img.w, img.h);
+    Some((view.id, smp.id, stages))
+}
+
+/// Preload the crack atlas at boot, OUTSIDE any render pass, so the
+/// first mining frame never creates GPU resources mid-pass. Called from
+/// app init after `ui_icons::init`.
+pub fn preload_break_atlas() {
+    let _ = ensure_crack_atlas();
+}
+
+/// Lazy triangles pipeline for the crack decal: depth-tested (no write)
+/// + alpha blend, created in the current sgl context like the outline
+/// pipeline.
+fn ensure_break_pip() -> sgl::Pipeline {
+    let existing = BREAK_PIP.with(|c| c.get());
+    if existing.id != 0 {
+        return existing;
+    }
+    let mut desc = sg::PipelineDesc {
+        primitive_type: sg::PrimitiveType::Triangles,
+        depth: sg::DepthState {
+            compare: sg::CompareFunc::LessEqual,
+            write_enabled: false,
+            ..Default::default()
+        },
+        cull_mode: sg::CullMode::None,
+        ..Default::default()
+    };
+    desc.colors[0].blend = sg::BlendState {
+        enabled: true,
+        src_factor_rgb: sg::BlendFactor::SrcAlpha,
+        dst_factor_rgb: sg::BlendFactor::OneMinusSrcAlpha,
+        src_factor_alpha: sg::BlendFactor::One,
+        dst_factor_alpha: sg::BlendFactor::One,
+        ..Default::default()
+    };
+    let pip = sgl::make_pipeline(&desc);
+    BREAK_PIP.with(|c| c.set(pip));
+    pip
 }
 
 /// Per-cell arrow emission for the F5 overlay - port of

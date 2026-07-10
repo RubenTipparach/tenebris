@@ -403,7 +403,8 @@ fn orient_basis(up: DVec3, heading: DVec3) -> [f32; 16] {
 
 /// One axis-aligned cuboid, per-face shaded (top brightest, bottom
 /// darkest), CCW-from-outside so back-face culling works.
-fn draw_box(cx: f32, cy: f32, cz: f32, hx: f32, hy: f32, hz: f32, r: f32, g: f32, b: f32) {
+#[allow(clippy::too_many_arguments)]
+fn draw_box(cx: f32, cy: f32, cz: f32, hx: f32, hy: f32, hz: f32, r: f32, g: f32, b: f32, lit: f32) {
     let (x0, x1) = (cx - hx, cx + hx);
     let (y0, y1) = (cy - hy, cy + hy);
     let (z0, z1) = (cz - hz, cz + hz);
@@ -424,7 +425,7 @@ fn draw_box(cx: f32, cy: f32, cz: f32, hx: f32, hy: f32, hz: f32, r: f32, g: f32
     ];
     sgl::begin_triangles();
     for (quad, shade) in faces.iter() {
-        sgl::c3f(r * shade, g * shade, b * shade);
+        sgl::c3f(r * shade * lit, g * shade * lit, b * shade * lit);
         // two CCW triangles: 0,1,2 and 0,2,3
         for &i in &[0usize, 1, 2, 0, 2, 3] {
             let v = quad[i];
@@ -435,7 +436,7 @@ fn draw_box(cx: f32, cy: f32, cz: f32, hx: f32, hy: f32, hz: f32, r: f32, g: f32
 }
 
 /// Draw one quadruped critter (origin at feet, +Y up, faces -Z).
-fn draw_critter(pos: DVec3, up: DVec3, heading: DVec3, phase: f32, moving: bool) {
+fn draw_critter(pos: DVec3, up: DVec3, heading: DVec3, phase: f32, moving: bool, lit: f32) {
     let basis = orient_basis(up, heading);
     let swing = if moving { (phase.sin()) * 0.5 } else { 0.0 };
 
@@ -445,14 +446,14 @@ fn draw_critter(pos: DVec3, up: DVec3, heading: DVec3, phase: f32, moving: bool)
 
     // Body (long along Z), sitting on the legs.
     let (br, bg, bb) = (0.52, 0.40, 0.28);
-    draw_box(0.0, 0.46, 0.0, 0.16, 0.13, 0.30, br, bg, bb);
+    draw_box(0.0, 0.46, 0.0, 0.16, 0.13, 0.30, br, bg, bb, lit);
     // Head at the front (-Z).
-    draw_box(0.0, 0.52, -0.36, 0.12, 0.11, 0.11, 0.58, 0.45, 0.31);
+    draw_box(0.0, 0.52, -0.36, 0.12, 0.11, 0.11, 0.58, 0.45, 0.31, lit);
     // Ears.
-    draw_box(-0.07, 0.66, -0.36, 0.03, 0.05, 0.02, 0.42, 0.32, 0.22);
-    draw_box(0.07, 0.66, -0.36, 0.03, 0.05, 0.02, 0.42, 0.32, 0.22);
+    draw_box(-0.07, 0.66, -0.36, 0.03, 0.05, 0.02, 0.42, 0.32, 0.22, lit);
+    draw_box(0.07, 0.66, -0.36, 0.03, 0.05, 0.02, 0.42, 0.32, 0.22, lit);
     // Tail at the back (+Z).
-    draw_box(0.0, 0.5, 0.34, 0.03, 0.03, 0.08, 0.44, 0.33, 0.24);
+    draw_box(0.0, 0.5, 0.34, 0.03, 0.03, 0.08, 0.44, 0.33, 0.24, lit);
 
     // Four legs. Diagonal gait: FL + BR in phase, FR + BL opposite.
     let leg = |x: f32, z: f32, sw: f32| {
@@ -460,7 +461,7 @@ fn draw_critter(pos: DVec3, up: DVec3, heading: DVec3, phase: f32, moving: bool)
         sgl::translate(x, 0.34, z);
         sgl::rotate(sw, 1.0, 0.0, 0.0);
         sgl::translate(0.0, -0.17, 0.0);
-        draw_box(0.0, 0.0, 0.0, 0.05, 0.17, 0.05, 0.40, 0.30, 0.22);
+        draw_box(0.0, 0.0, 0.0, 0.05, 0.17, 0.05, 0.40, 0.30, 0.22, lit);
         sgl::pop_matrix();
     };
     leg(-0.11, -0.22, swing); // front-left
@@ -515,6 +516,12 @@ pub fn draw(view: Mat4, proj: Mat4, time_s: f32) {
     let set = model_set();
     for a in &list {
         let up = dvec3_normalize(dvec3_sub(a.pos, center));
+        /* Day/night: critters darken with the world (task: animals were
+         * fullbright at night). */
+        let lit = renderer::entity_sun_brightness(a.pos);
+        /* Climb-hop arc: the sim pos snaps to the new floor; the render
+         * pos plays the jump (see fauna::hop_offset). */
+        let draw_pos = dvec3_add(a.pos, dvec3_scale(up, fauna::hop_offset(a)));
         match &set {
             Some(set) => {
                 /* Walk/flee sample the baked walk clip on the sim's
@@ -528,13 +535,13 @@ pub fn draw(view: Mat4, proj: Mat4, time_s: f32) {
                 };
                 let basis = orient_basis(up, a.heading);
                 sgl::push_matrix();
-                sgl::translate(a.pos.x as f32, a.pos.y as f32, a.pos.z as f32);
+                sgl::translate(draw_pos.x as f32, draw_pos.y as f32, draw_pos.z as f32);
                 sgl::mult_matrix(&basis[0]);
-                baked_model::draw(&set.model, Some((clip, t)));
+                baked_model::draw(&set.model, Some((clip, t)), lit);
                 sgl::pop_matrix();
             }
             None => {
-                draw_critter(a.pos, up, a.heading, a.anim_phase, a.state != AnimalState::Idle);
+                draw_critter(draw_pos, up, a.heading, a.anim_phase, a.state != AnimalState::Idle, lit);
             }
         }
     }
@@ -545,11 +552,12 @@ pub fn draw(view: Mat4, proj: Mat4, time_s: f32) {
     if let Some(set) = &set {
         for corpse in &corpses {
             let up = dvec3_normalize(dvec3_sub(corpse.pos, center));
+            let lit = renderer::entity_sun_brightness(corpse.pos);
             let basis = orient_basis(up, corpse.heading);
             sgl::push_matrix();
             sgl::translate(corpse.pos.x as f32, corpse.pos.y as f32, corpse.pos.z as f32);
             sgl::mult_matrix(&basis[0]);
-            baked_model::draw(&set.model, Some((&set.death, corpse.age)));
+            baked_model::draw(&set.model, Some((&set.death, corpse.age)), lit);
             sgl::pop_matrix();
         }
     }

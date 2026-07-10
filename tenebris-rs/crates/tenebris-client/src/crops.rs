@@ -368,7 +368,8 @@ fn orient_basis(up: DVec3) -> [f32; 16] {
 /// One axis-aligned cuboid, per-face shaded (top brightest). Copied from
 /// animals::draw_box - kept local so the two entity renderers stay
 /// independent.
-fn draw_box(cx: f32, cy: f32, cz: f32, hx: f32, hy: f32, hz: f32, r: f32, g: f32, b: f32) {
+#[allow(clippy::too_many_arguments)]
+fn draw_box(cx: f32, cy: f32, cz: f32, hx: f32, hy: f32, hz: f32, r: f32, g: f32, b: f32, lit: f32) {
     let (x0, x1) = (cx - hx, cx + hx);
     let (y0, y1) = (cy - hy, cy + hy);
     let (z0, z1) = (cz - hz, cz + hz);
@@ -382,7 +383,7 @@ fn draw_box(cx: f32, cy: f32, cz: f32, hx: f32, hy: f32, hz: f32, r: f32, g: f32
     ];
     sgl::begin_triangles();
     for (quad, shade) in faces.iter() {
-        sgl::c3f(r * shade, g * shade, b * shade);
+        sgl::c3f(r * shade * lit, g * shade * lit, b * shade * lit);
         for &i in &[0usize, 1, 2, 0, 2, 3] {
             let v = quad[i];
             sgl::v3f(v[0], v[1], v[2]);
@@ -393,7 +394,7 @@ fn draw_box(cx: f32, cy: f32, cz: f32, hx: f32, hy: f32, hz: f32, r: f32, g: f32
 
 /// Draw one crop: a stem that grows taller with `growth`, a leaf pair, and
 /// red berries once mature. Origin at the feet, +Y up.
-fn draw_crop(pos: DVec3, up: DVec3, growth: f32) {
+fn draw_crop(pos: DVec3, up: DVec3, growth: f32, lit: f32) {
     let basis = orient_basis(up);
     let g = growth.clamp(0.05, 1.0);
 
@@ -404,19 +405,19 @@ fn draw_crop(pos: DVec3, up: DVec3, growth: f32) {
     // Stem - young sprouts are a lighter, yellower green; ripe ones darker.
     let stem_h = 0.12 + 0.42 * g;
     let (sr, sg, sb) = (0.30 + 0.10 * (1.0 - g), 0.55 + 0.15 * g, 0.20);
-    draw_box(0.0, stem_h * 0.5, 0.0, 0.035, stem_h * 0.5, 0.035, sr, sg, sb);
+    draw_box(0.0, stem_h * 0.5, 0.0, 0.035, stem_h * 0.5, 0.035, sr, sg, sb, lit);
 
     // Leaf pair fanning out near the top, scaled by growth.
     let leaf = 0.06 + 0.12 * g;
     let ly = stem_h * 0.72;
-    draw_box(leaf * 0.9, ly, 0.0, leaf, 0.02, leaf * 0.6, 0.28, 0.62, 0.24);
-    draw_box(-leaf * 0.9, ly, 0.0, leaf, 0.02, leaf * 0.6, 0.28, 0.62, 0.24);
+    draw_box(leaf * 0.9, ly, 0.0, leaf, 0.02, leaf * 0.6, 0.28, 0.62, 0.24, lit);
+    draw_box(-leaf * 0.9, ly, 0.0, leaf, 0.02, leaf * 0.6, 0.28, 0.62, 0.24, lit);
 
     // Berries only on a mature crop - the visual "harvest me" cue.
     if growth >= 1.0 {
-        draw_box(0.05, stem_h + 0.03, 0.03, 0.03, 0.03, 0.03, 0.85, 0.15, 0.20);
-        draw_box(-0.04, stem_h + 0.06, -0.03, 0.03, 0.03, 0.03, 0.90, 0.20, 0.25);
-        draw_box(0.0, stem_h + 0.10, 0.0, 0.03, 0.03, 0.03, 0.80, 0.12, 0.18);
+        draw_box(0.05, stem_h + 0.03, 0.03, 0.03, 0.03, 0.03, 0.85, 0.15, 0.20, lit);
+        draw_box(-0.04, stem_h + 0.06, -0.03, 0.03, 0.03, 0.03, 0.90, 0.20, 0.25, lit);
+        draw_box(0.0, stem_h + 0.10, 0.0, 0.03, 0.03, 0.03, 0.80, 0.12, 0.18, lit);
     }
 
     sgl::pop_matrix();
@@ -459,7 +460,8 @@ pub fn draw(view: Mat4, proj: Mat4) {
 
     for crop in &list {
         let up = dvec3_normalize(dvec3_sub(crop.pos, center));
-        draw_crop(crop.pos, up, crop.growth);
+        let lit = renderer::entity_sun_brightness(crop.pos);
+        draw_crop(crop.pos, up, crop.growth, lit);
     }
     renderer::sgl_world_end();
     /* No sgl_draw here - the world context flushes in

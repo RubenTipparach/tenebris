@@ -44,11 +44,12 @@ use crate::animals;
 use crate::chat;
 use crate::crafting_screen;
 use crate::crops;
+use crate::drops;
 use crate::viewmodel;
 use crate::gfx_math::{mat4_perspective, Mat4};
 use crate::hotbar_ui;
 use crate::input;
-use crate::interact::{self, InteractState, MINING_TIME_S};
+use crate::interact::{self, InteractState};
 use crate::chest_screen;
 use crate::egui_layer;
 use crate::furnace_screen;
@@ -379,6 +380,9 @@ thread_local! {
     /// under the reticle every frame (camera pitched down) so a screenshot
     /// catches the block-break crack decal mid-mine. -1 unknown, 0 off, 1 on.
     static DEV_CRACK: std::cell::Cell<i8> = const { std::cell::Cell::new(-1) };
+    /// Dev: TENEBRIS_DEV_DROPS spawns a row of floating item drops ahead of
+    /// the player once worldgen settles. -1 unknown, 1 armed, 0 done/off.
+    static DEV_DROPS: std::cell::Cell<i8> = const { std::cell::Cell::new(-1) };
     /// Dev: freeze the world clock at a fixed time of day (TENEBRIS_DEV_TIME)
     /// so a screenshot captures a chosen sun angle. -1 unknown, 0 run, 1 freeze.
     static DEV_TIME_FROZEN: std::cell::Cell<i8> = const { std::cell::Cell::new(-1) };
@@ -1357,6 +1361,7 @@ extern "C" fn init() {
     torch::init();
     animals::init();
     crops::init();
+    drops::init();
     mobile_ui::init();
     hotbar_ui::init();
     teleport_menu::init();
@@ -1427,6 +1432,9 @@ extern "C" fn init() {
      * boot. */
     pixel_ui::init();
     ui_icons::init();
+    /* Crack-stage atlas for the mining decal - loaded at boot, outside
+     * any render pass. */
+    renderer::preload_break_atlas();
     /* One-shot dump of Tenebris's effective atmosphere values so we
      * can sanity-check that the YAML actually landed. */
     {
@@ -2037,12 +2045,22 @@ fn draw_mining_bar(app: &App, screen_w: f32, screen_h: f32) {
     if !app.player.borrow().survival_mode {
         return;
     }
-    if app.interact.mining_progress_s <= 0.0 {
+    if app.interact.mining_progress_s <= 0.0
+        || app.interact.mining_tile < 0
+        || app.interact.mining_depth < 0
+    {
         return;
     }
 
-    let mut pct = app.interact.mining_progress_s / MINING_TIME_S;
-    pct = pct.clamp(0.0, 1.0);
+    /* Normalised to the REAL break time of the block being mined (tool-
+     * dependent, 2.5s..10s): the bar hits 100% exactly when the block
+     * breaks. */
+    let pct = {
+        let p = app.player.borrow();
+        let block = app.world.borrow().get(app.interact.mining_tile, app.interact.mining_depth);
+        let break_s = interact::break_seconds_for(&p, block).max(1e-4);
+        (app.interact.mining_progress_s / break_s).clamp(0.0, 1.0)
+    };
 
     let bar_w = 280.0f32;
     let bar_h = 14.0f32;
@@ -3480,6 +3498,11 @@ fn frame_inner(app: &mut App) {
     /* Advance any in-progress timed craft (runs even with the panel
      * closed). */
     crafting_screen::tick_craft(&app.player, dt);
+    /* Floating item drops: bob, magnet toward the player, collect. */
+    {
+        let mut p = app.player.borrow_mut();
+        drops::update(dt, &mut p);
+    }
 
     /* Advance the world clock (drives the on-rails orbit + day/night sim).
      * Frozen when a dev time-of-day is pinned for screenshots. */
@@ -3512,6 +3535,33 @@ fn frame_inner(app: &mut App) {
         teleport_menu::poll_touches();
     }
 
+    /* Dev screenshot aid: a row of floating drops ahead of the player
+     * (TENEBRIS_DEV_DROPS), spawned once when worldgen settles. */
+    {
+        let fire = DEV_DROPS.with(|c| {
+            match c.get() {
+                -1 => {
+                    let v = std::env::var("TENEBRIS_DEV_DROPS").is_ok() as i8;
+                    c.set(v);
+                    false
+                }
+                1 => {
+                    if app.world.borrow().gen_complete() {
+                        c.set(0);
+                        true
+                    } else {
+                        false
+                    }
+                }
+                _ => false,
+            }
+        });
+        if fire {
+            drops::dev_spawn(&app.world.borrow(), &app.player.borrow());
+            println!("[dev] spawned {} drops", drops::count());
+        }
+    }
+
     /* Dev screenshot aid: hold the survival mine button on the block
      * under a downward-pitched reticle so a still captures the crack
      * decal mid-mine. Cached env read (thread-local), dev-only. */
@@ -3537,7 +3587,9 @@ fn frame_inner(app: &mut App) {
         if on {
             let mut p = app.player.borrow_mut();
             p.survival_mode = true;
-            p.pitch = -1.30;
+            /* Aim a few metres ahead so the decal shot reads at gameplay
+             * distance instead of point-blank at the feet block. */
+            p.pitch = -0.55;
         }
     }
 
@@ -4015,6 +4067,7 @@ fn frame_inner(app: &mut App) {
      * z-sort correctly against them. */
     animals::draw(view, proj, renderer::time_seconds());
     crops::draw(view, proj);
+    drops::draw(view, proj, renderer::time_seconds());
 
     /* First-person held tool (survival): the baked wood-tool model the
      * current swing would use, chopping while the mine button is held. */
@@ -4052,9 +4105,11 @@ fn frame_inner(app: &mut App) {
             1.00,
             0.95,
         );
-        /* Survival block-break crack decal: fracture the targeted face by
-         * mining progress so hitting a block shows visible damage that
-         * deepens toward the break. Only while actively mining THIS cell. */
+        /* Survival block-break crack decal: overlay the crack-stage
+         * texture on the mined block's own prism so hitting a block shows
+         * visible damage that deepens toward the break. Only while
+         * actively mining THIS cell. */
+        let block = app.world.borrow().get(app.interact.hit_tile, app.interact.hit_depth);
         let frac = {
             let p = app.player.borrow();
             if p.survival_mode
@@ -4062,7 +4117,6 @@ fn frame_inner(app: &mut App) {
                 && app.interact.mining_tile == app.interact.hit_tile
                 && app.interact.mining_depth == app.interact.hit_depth
             {
-                let block = app.world.borrow().get(app.interact.hit_tile, app.interact.hit_depth);
                 let break_s = interact::break_seconds_for(&p, block).max(1e-4);
                 Some((app.interact.mining_progress_s / break_s).clamp(0.0, 1.0))
             } else {
@@ -4079,10 +4133,9 @@ fn frame_inner(app: &mut App) {
                 view,
                 proj,
                 &app.world.borrow(),
+                block,
                 app.interact.hit_tile,
                 app.interact.hit_depth,
-                app.interact.place_tile,
-                app.interact.place_depth,
                 frac,
             );
         }
@@ -4130,14 +4183,13 @@ fn frame_inner(app: &mut App) {
     remote_players::draw_nameplates(view, proj, sapp::widthf(), sapp::heightf(), &|id| {
         net_client::name_for_id(id)
     });
-    /* Gameplay HUD - hidden while the pause panel or a full-screen
-     * overlay (tech tree, chest, furnace, machine panels) is up: the
+    /* Gameplay HUD - hidden while the pause panel or a centred overlay
+     * (inventory, tech tree, chest, furnace, machine panels) is up: the
      * hotbar's sdtx slot digits flush on top of ALL geometry including
      * egui, so the bar - numbers and all - must vanish together instead
-     * of the digits bleeding through the panel. The inventory overlay
-     * anchors to the top of the screen, so the live HUD hotbar stays
-     * visible along the bottom while it's open. */
+     * of the digits bleeding through the panel. */
     let center_overlay_open = tech_tree::is_open()
+        || inventory_screen::is_open()
         || chest_screen::is_open()
         || furnace_screen::is_open()
         || power_ui::is_open()

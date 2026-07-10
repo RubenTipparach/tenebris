@@ -111,15 +111,15 @@ pub fn toggle() {
         let mut g = cell.borrow_mut();
         g.open = !g.open;
         /* Release pointer lock + show the cursor so the player can
-         * actually click slots. Both the E key path and the mobile DOM
-         * button reach this function, so the mouse-release lives here
-         * once instead of being duplicated at every caller. We never
-         * auto-re-lock on close - the browser requires a user gesture
-         * for sapp_lock_mouse(true) anyway, and the natural "click the
-         * canvas to re-engage" gesture handles it. */
+         * actually click slots; closing re-locks so E-out drops the
+         * player straight back into FPS mouse-look (the toggle runs
+         * inside a key event, which counts as the user gesture the
+         * browser needs for a pointer-lock request). */
         if g.open {
             sapp::lock_mouse(false);
             sapp::show_mouse(true);
+        } else {
+            sapp::lock_mouse(true);
         }
     });
 }
@@ -147,9 +147,10 @@ pub fn event(e: &sapp::Event) -> bool {
             return false;
         }
 
-        /* Escape closes the overlay. */
+        /* Escape closes the overlay and returns to FPS mouse-look. */
         if e._type == sapp::EventType::KeyDown && e.key_code == sapp::Keycode::Escape {
             g.open = false;
+            sapp::lock_mouse(true);
             return true;
         }
 
@@ -305,9 +306,9 @@ pub fn egui_ui(ctx: &egui::Context) {
     egui::Window::new("Inventory")
         .collapsible(false)
         .resizable(false)
-        /* Anchor near the top so the panel never covers the HUD hotbar
-         * (toolbar) along the bottom edge of the screen. */
-        .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 24.0))
+        /* Centred like the other panels; the HUD hotbar hides while a
+         * centre overlay is up (see app's HUD gate), so nothing bleeds. */
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
         .show(ctx, |ui| {
             /* ---- Mode line: Creative/Sandbox <-> Survival ---- */
             ui.horizontal(|ui| {

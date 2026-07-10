@@ -160,8 +160,9 @@ pub fn close() {
     G.with(|c| c.borrow_mut().open = false);
 }
 
-/// Toggle the overlay (wired to K in app). Releases pointer lock on open so
-/// the cursor can scroll / close, mirroring the inventory screen.
+/// Toggle the overlay (wired to K in app). Releases pointer lock on open
+/// so the cursor can pan / close; re-locks on close so the player drops
+/// straight back into FPS mouse-look, mirroring the inventory screen.
 pub fn toggle() {
     G.with(|c| {
         let mut g = c.borrow_mut();
@@ -169,6 +170,8 @@ pub fn toggle() {
         if g.open {
             sapp::lock_mouse(false);
             sapp::show_mouse(true);
+        } else {
+            sapp::lock_mouse(true);
         }
     });
 }
@@ -189,6 +192,7 @@ pub fn event(e: &sapp::Event) -> bool {
             && (e.key_code == sapp::Keycode::Escape || e.key_code == sapp::Keycode::K)
         {
             g.open = false;
+            sapp::lock_mouse(true);
         }
         true
     })

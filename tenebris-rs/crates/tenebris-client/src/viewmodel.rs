@@ -133,7 +133,8 @@ pub fn draw(proj: Mat4, tool: Option<ItemId>, mining: bool, time_s: f32, dt: f32
     sgl::rotate(-0.35 - chop * 0.85, 1.0, 0.0, 0.0); /* pitch + chop arc */
     sgl::rotate(0.55, 0.0, 1.0, 0.0); /* head turned toward the view */
     sgl::scale(SCALE, SCALE, SCALE);
-    baked_model::draw(&model, None);
+    /* First-person tool stays readable at night (no sun tint). */
+    baked_model::draw(&model, None, 1.0);
     sgl::pop_matrix();
     /* No sgl_draw - single end-of-frame flush, same as the other sgl
      * entity layers. */

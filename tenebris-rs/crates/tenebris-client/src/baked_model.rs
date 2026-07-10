@@ -428,7 +428,9 @@ fn apply_rot(rot: [f32; 3]) {
 /// Draw a model into the caller's current sgl matrix stack, optionally
 /// posed by `clip` sampled at `time`. The `root` pseudo-track (if the
 /// clip has one) transforms the whole model about the origin first.
-pub fn draw(model: &Model, clip: Option<(&Clip, f32)>) {
+/// `light` scales every vertex colour (1.0 = fullbright day, lower at
+/// night - see renderer::entity_sun_brightness).
+pub fn draw(model: &Model, clip: Option<(&Clip, f32)>, light: f32) {
     sgl::push_matrix();
     if let Some((c, t)) = clip {
         if let Some(root) = c.sample("root", t) {
@@ -449,7 +451,8 @@ pub fn draw(model: &Model, clip: Option<(&Clip, f32)>) {
         }
         sgl::begin_triangles();
         for tri in &part.tris {
-            sgl::c3f(tri.color[0] * tri.shade, tri.color[1] * tri.shade, tri.color[2] * tri.shade);
+            let s = tri.shade * light;
+            sgl::c3f(tri.color[0] * s, tri.color[1] * s, tri.color[2] * s);
             for v in &tri.v {
                 sgl::v3f(v[0], v[1], v[2]);
             }

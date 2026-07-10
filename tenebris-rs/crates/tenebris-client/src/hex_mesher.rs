@@ -414,7 +414,7 @@ fn smooth_corner_sample(
  * tile; smaller shrinks the hex inward toward its center (radial extent
  * unchanged). Wood trunks come out skinny; leaf voxels get a stable
  * hash-driven variable width so the canopy isn't perfectly stamped. */
-fn block_hex_width(b: Block, tile_idx: i32, depth: i32) -> f32 {
+pub(crate) fn block_hex_width(b: Block, tile_idx: i32, depth: i32) -> f32 {
     if b == Block::Wood {
         return 0.20;
     }
@@ -432,7 +432,7 @@ fn block_hex_width(b: Block, tile_idx: i32, depth: i32) -> f32 {
 /* Linearly interpolate corner k toward t->center by `width`. At our
  * planet scale the curvature inside a 3 m tile is sub-millimetre, so
  * we don't bother re-projecting onto the unit sphere. */
-fn shrink_corner(t: &Tile, k: i32, width: f32) -> DVec3 {
+pub(crate) fn shrink_corner(t: &Tile, k: i32, width: f32) -> DVec3 {
     let offset = dvec3_sub(t.verts[k as usize], t.center);
     dvec3_add(t.center, dvec3_scale(offset, width as f64))
 }

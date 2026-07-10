@@ -10,7 +10,6 @@
 //! - `interact_state_t`   -> `interact::InteractState`
 //! - `interact_update()`  -> `interact::update()`
 //! - `INTERACT_MAX_DIST`  -> `interact::MAX_DIST`
-//! - `MINING_TIME_S`      -> `interact::MINING_TIME_S` (unchanged)
 //! - `world_to_tile_depth()` keeps its name; the C out-params become
 //!   the return tuple `(resolved_tile, Option<depth>)`. Like the C,
 //!   the resolved tile is returned EVEN WHEN the depth check fails so
@@ -40,10 +39,8 @@ use tenebris_core::world_water;
 
 /// Port of `INTERACT_MAX_DIST`.
 pub const MAX_DIST: f64 = 8.0;
-/// Port of `MINING_TIME_S`. Survival mining time per block, seconds.
-/// Holding LMB on a target for this long breaks it and adds it to
-/// inventory.
-pub const MINING_TIME_S: f32 = 0.8;
+/* The C-era fixed MINING_TIME_S is gone: break time is per-block and
+ * per-tool now (core::mining::break_time via break_seconds_for). */
 /// Damage per left-click swing when attacking an animal (critter has 12
 /// health, so ~3 hits to kill).
 pub const ATTACK_DAMAGE: f32 = 5.0;
@@ -66,7 +63,7 @@ pub struct InteractState {
     pub distance: f64,
 
     /// Mining progress (survival only). Starts at 0, fills to
-    /// `MINING_TIME_S` while LMB is held on the same target. Resets to
+    /// the block's break time while LMB is held on the same target. Resets to
     /// 0 when the target changes or the button releases.
     pub mining_progress_s: f32,
     pub mining_tile: i32,
@@ -433,7 +430,7 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
     /* ---- Block target click handling (unchanged from before) ---- */
     let target_block = w.get(s.hit_tile, s.hit_depth);
 
-    /* SURVIVAL: hold LMB on a block to mine it over MINING_TIME_S. The
+    /* SURVIVAL: hold LMB on a block to mine it over its break time. The
      * mouse-held flag keeps the timer running across frames; releasing
      * resets progress so partial breaks don't carry to the next swing. */
     if blocks::is_unbreakable(target_block) {
@@ -463,17 +460,11 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
                     Block::Air as i32,
                 );
                 sp_save_tile_after_edit(w, s.hit_tile);
-                /* Route drops: placeable blocks -> hotbar, resources
-                 * (coal / raw ore) -> bag. Ores are already distinct
-                 * blocks in the world, so the drop is deterministic. */
+                /* The block's loot spawns as a floating pickup at the
+                 * break site (Minecraft style) - walking near vacuums it
+                 * into the hotbar / bag (see client::drops). */
                 for d in mining::drops(target_block, tier) {
-                    if let Some(b) = items::to_block(d.item) {
-                        for _ in 0..d.count {
-                            inventory::add(&mut p.inventory, b);
-                        }
-                    } else {
-                        p.bag.add(d.item, d.count);
-                    }
+                    crate::drops::spawn(w, s.hit_tile, s.hit_depth, d.item, d.count);
                 }
                 /* Farming bootstrap: breaking grass has a config chance to
                  * drop a seed, so the plant -> grow -> harvest loop has a
@@ -482,7 +473,7 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
                 if target_block == Block::Grass {
                     let chance = tenebris_core::farming::config().grass_seed_chance;
                     if tenebris_core::rng::hash2(s.hit_tile, s.hit_depth) < chance {
-                        p.bag.add(items::SEEDS, 1);
+                        crate::drops::spawn(w, s.hit_tile, s.hit_depth, items::SEEDS, 1);
                     }
                 }
                 s.mining_progress_s = 0.0;
@@ -828,6 +819,7 @@ mod tests {
         let _g = test_support::begin("interact_suite");
         input::init();
         torch::shutdown();
+        crate::drops::init();
         enter_sp_world("pinhome");
 
         let mut w = gen_world(BodyId::Tenebris);
@@ -892,6 +884,23 @@ mod tests {
         left_held(false);
         assert_eq!(e_frames, 300, "e: frames to mine (5.0s / (1/60) f32 accum)");
         assert_eq!(saved_tile_fnv(41), 0xa2e439a42e765eec, "e_save: column fnv");
+        /* The dirt now drops as a floating pickup at the break site
+         * (cell 62 mid sits ~4 m below the eye - outside magnet range,
+         * as designed: you walk over loot to collect). Step the player
+         * onto the hole, tick the drops system until the magnet +
+         * pickup fire, then restore the pose so the placement pins
+         * below run from the original spot. */
+        assert_eq!(crate::drops::count(), 1, "e: one drop spawned");
+        let e_saved_pos = p.position;
+        p.position = dvec3_make(299.6, 0.0, 0.0);
+        for _ in 0..600 {
+            crate::drops::update(DT, &mut p);
+            if crate::drops::count() == 0 {
+                break;
+            }
+        }
+        p.position = e_saved_pos;
+        assert_eq!(crate::drops::count(), 0, "e: drop collected");
         let want_inv: [(Block, i32); 9] = [
             (Block::Torch, 9999),
             (Block::Stone, 9999),
