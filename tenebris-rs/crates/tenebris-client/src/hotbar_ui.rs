@@ -203,8 +203,8 @@ pub(crate) fn icon_uv(col: i32) -> (f32, f32) {
 /// caption), for single items / creative "assigned" slots (count 1 - a
 /// "1" on every slot is noise), and for legacy >9000 sentinel stacks
 /// (old saves may still carry the retired 9999 creative counts).
-pub(crate) fn count_badge_text(block_type: Block, count: i32) -> Option<String> {
-    if block_type == Block::Air || count <= 1 {
+pub(crate) fn count_badge_text(item: tenebris_core::items::ItemId, count: i32) -> Option<String> {
+    if item == Block::Air as u16 || count <= 1 {
         return None;
     }
     if count > 9000 {
@@ -314,11 +314,11 @@ pub fn draw(inv: &Inventory) {
 
     for i in 0..slots {
         let s = &inv.slots[i];
-        if s.block_type == Block::Air || s.count <= 0 {
+        if s.count <= 0 || s.block_type() == Block::Air {
             continue;
         }
 
-        let col = face_tile(s.block_type, FaceCap::Top) as i32;
+        let col = face_tile(s.block_type(), FaceCap::Top) as i32;
         let (u0, u1) = icon_uv(col);
 
         let ix = x0 + i as f32 * (slot_size + slot_gap) + ICON_PAD;
@@ -331,6 +331,31 @@ pub fn draw(inv: &Inventory) {
         sgl::v2f_t2f(ix + iw, iy, u1, 0.0);
         sgl::v2f_t2f(ix + iw, iy + iw, u1, 1.0);
         sgl::v2f_t2f(ix, iy + iw, u0, 1.0);
+        sgl::end();
+    }
+
+    /* ---- pass 2b: non-block items (tools in the hotbar) sample the
+     * ui_icons strip instead of the terrain atlas. Second texture bind,
+     * same pipeline. */
+    sgl::texture(
+        sg::View { id: crate::ui_icons::view_id() },
+        sg::Sampler { id: crate::ui_icons::sampler_id() },
+    );
+    for i in 0..slots {
+        let s = &inv.slots[i];
+        if s.count <= 0 || s.item == Block::Air as u16 || s.block_type() != Block::Air {
+            continue;
+        }
+        let Some([u0, v0, u1, v1]) = crate::ui_icons::uv(s.item) else { continue };
+        let ix = x0 + i as f32 * (slot_size + slot_gap) + ICON_PAD;
+        let iy = y0 + ICON_PAD;
+        let iw = slot_size - ICON_PAD * 2.0;
+        sgl::begin_quads();
+        sgl::c4f(1.0, 1.0, 1.0, 1.0);
+        sgl::v2f_t2f(ix, iy, u0, v0);
+        sgl::v2f_t2f(ix + iw, iy, u1, v0);
+        sgl::v2f_t2f(ix + iw, iy + iw, u1, v1);
+        sgl::v2f_t2f(ix, iy + iw, u0, v1);
         sgl::end();
     }
     sgl::disable_texture();
@@ -363,7 +388,7 @@ pub fn draw(inv: &Inventory) {
         /* Count badge (bottom-right). Only for finite-count slots;
          * empty slots have nothing to caption and CREATIVE_COUNT
          * (>9000) is the "infinite" sentinel. */
-        let Some(digits) = count_badge_text(s.block_type, s.count) else {
+        let Some(digits) = count_badge_text(s.item, s.count) else {
             continue;
         };
         let r = count_badge_rect(x, y, slot_size, digits.len());
@@ -402,7 +427,7 @@ pub fn draw(inv: &Inventory) {
          * "effectively infinite" sentinel inventory sets - skip the
          * badge there because a giant number on every slot is just
          * noise. */
-        let Some(buf) = count_badge_text(s.block_type, s.count) else {
+        let Some(buf) = count_badge_text(s.item, s.count) else {
             continue;
         };
         sdtx::color3b(0xff, 0xff, 0xff);
@@ -541,18 +566,19 @@ mod tests {
 
     #[test]
     fn count_badge_gates() {
-        assert_eq!(count_badge_text(Block::Stone, 7), Some("7".to_string()));
-        assert_eq!(count_badge_text(Block::Stone, 123), Some("123".to_string()));
-        assert_eq!(count_badge_text(Block::Stone, 9000), Some("9000".to_string()));
+        let stone = Block::Stone as u16;
+        assert_eq!(count_badge_text(stone, 7), Some("7".to_string()));
+        assert_eq!(count_badge_text(stone, 123), Some("123".to_string()));
+        assert_eq!(count_badge_text(stone, 9000), Some("9000".to_string()));
         /* legacy creative sentinel: strictly > 9000 skips */
-        assert_eq!(count_badge_text(Block::Stone, 9001), None);
-        assert_eq!(count_badge_text(Block::Stone, 9999), None);
+        assert_eq!(count_badge_text(stone, 9001), None);
+        assert_eq!(count_badge_text(stone, 9999), None);
         /* single item / creative "assigned" slot: no "1" noise */
-        assert_eq!(count_badge_text(Block::Stone, 1), None);
+        assert_eq!(count_badge_text(stone, 1), None);
         /* empty slots */
-        assert_eq!(count_badge_text(Block::Air, 5), None);
-        assert_eq!(count_badge_text(Block::Stone, 0), None);
-        assert_eq!(count_badge_text(Block::Stone, -1), None);
+        assert_eq!(count_badge_text(Block::Air as u16, 5), None);
+        assert_eq!(count_badge_text(stone, 0), None);
+        assert_eq!(count_badge_text(stone, -1), None);
     }
 
     #[test]

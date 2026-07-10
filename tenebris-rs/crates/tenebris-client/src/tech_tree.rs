@@ -82,8 +82,8 @@ impl Discovered {
 /// its tree node and the recipes it feeds.
 pub fn discover_held(d: &mut Discovered, inv: &Inventory, bag: &Bag) {
     for s in &inv.slots {
-        if s.block_type != Block::Air && s.count > 0 {
-            d.set(items::from_block(s.block_type));
+        if s.item != Block::Air as u16 && s.count > 0 {
+            d.set(s.item);
         }
     }
     for s in &bag.slots {

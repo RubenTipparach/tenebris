@@ -2287,23 +2287,14 @@ fn mp_parity_sync(app: &mut App, phys_world: &Rc<RefCell<World>>, dt: f32) {
 /// The tool the viewmodel should show: the block target's ideal tool when
 /// the player owns it (mirrors interact's held-tool pick, so the render
 /// matches the speed bonus actually applied), else the best tool owned.
-fn held_tool_for_display(app: &App, w: &World) -> Option<tenebris_core::items::ItemId> {
-    use tenebris_core::items::{IRON_PICKAXE, STONE_PICKAXE, WOOD_AXE, WOOD_PICKAXE, WOOD_SHOVEL};
-    use tenebris_core::mining;
+fn held_tool_for_display(app: &App, _w: &World) -> Option<tenebris_core::items::ItemId> {
+    use tenebris_core::mining::{self, ToolKind};
+    /* EQUIP rule: the viewmodel shows exactly what's in the SELECTED
+     * hotbar slot, and only if it's a tool - matching the mining logic
+     * (interact::best_tool_for). */
     let p = app.player.borrow();
-    let owned = |id: tenebris_core::items::ItemId| p.bag.count_of(id) > 0;
-    /* Aiming at a block whose ideal tool the player holds -> show the best
-     * such tool (fastest pickaxe of the category). */
-    if app.interact.has_target && !app.interact.is_torch_target {
-        let target = w.get(app.interact.hit_tile, app.interact.hit_depth);
-        if let Some(id) = mining::best_tool(target, owned) {
-            return Some(id);
-        }
-    }
-    /* Otherwise show whatever mining tool is on hand, best pickaxe first. */
-    [IRON_PICKAXE, STONE_PICKAXE, WOOD_PICKAXE, WOOD_AXE, WOOD_SHOVEL]
-        .into_iter()
-        .find(|&id| owned(id))
+    inventory::selected_item(&p.inventory)
+        .filter(|&id| mining::tool_kind(id) != ToolKind::None || id == tenebris_core::items::HOE)
 }
 
 /// Crop reticle hint: when the player is looking at a crop, show whether
@@ -2353,7 +2344,7 @@ fn draw_farming_hint(app: &App, screen_w: f32, screen_h: f32) {
     let msg = if ground == Block::Farmland && p.bag.count_of(tenebris_core::items::SEEDS) > 0 {
         "[T] plant seed"
     } else if (ground == Block::Dirt || ground == Block::Grass)
-        && p.bag.count_of(tenebris_core::items::HOE) > 0
+        && inventory::selected_item(&p.inventory) == Some(tenebris_core::items::HOE)
     {
         "[T] till soil"
     } else {
@@ -2394,9 +2385,7 @@ fn draw_tool_gate_hint(app: &App, screen_w: f32, screen_h: f32) {
     }
     let tier = {
         let p = app.player.borrow();
-        tenebris_core::mining::tool_tier(tenebris_core::mining::best_tool(block, |id| {
-            p.bag.count_of(id) > 0
-        }))
+        tenebris_core::mining::tool_tier(interact::best_tool_for(&p, block))
     };
     if tenebris_core::mining::required_tier(block) <= tier {
         return; /* harvestable - the crack decal + mining bar show progress */
@@ -3571,10 +3560,13 @@ fn frame_inner(app: &mut App) {
                 let v = std::env::var("TENEBRIS_DEV_CRACK").is_ok() as i8;
                 DEV_CRACK.with(|c| c.set(v));
                 if v == 1 {
-                    /* A pickaxe once, so stone is harvestable and the
-                     * crack decal actually deepens (bare hands on stone
-                     * are gated - that path shows the tool hint instead). */
-                    app.player.borrow_mut().bag.add(tenebris_core::items::WOOD_PICKAXE, 1);
+                    /* Equip a pickaxe (hotbar slot 1, selected) so stone
+                     * is harvestable and the crack decal deepens - and so
+                     * the shot exercises the hotbar's item-icon path. */
+                    let mut p = app.player.borrow_mut();
+                    p.inventory.slots[1] =
+                        crate::inventory::InvSlot::of(tenebris_core::items::WOOD_PICKAXE, 1);
+                    p.inventory.selected = 1;
                 }
                 v == 1
             }
@@ -3748,8 +3740,11 @@ fn frame_inner(app: &mut App) {
         if let Some((pend_type, pend_count, pend_sel)) = net_client::take_pending_inventory() {
             let mut p = app.player.borrow_mut();
             for i in 0..INV_HOTBAR_SLOTS.min(9) {
-                p.inventory.slots[i].block_type =
-                    Block::from_raw(pend_type[i] as u8).unwrap_or(Block::Air);
+                /* The wire "type" field carries the full item id now
+                 * (blocks are ids < BLOCK_COUNT, tools 100+); legacy
+                 * saves only ever stored block ids, which parse the
+                 * same. */
+                p.inventory.slots[i].item = pend_type[i];
                 p.inventory.slots[i].count = pend_count[i] as i32;
             }
             if pend_sel >= 0 && (pend_sel as usize) < INV_HOTBAR_SLOTS {
@@ -3761,7 +3756,7 @@ fn frame_inner(app: &mut App) {
         let mut cur_count = [0i16; 9];
         for i in 0..9 {
             if i < INV_HOTBAR_SLOTS {
-                cur_type[i] = p.inventory.slots[i].block_type.raw() as u16;
+                cur_type[i] = p.inventory.slots[i].item;
                 /* Clamp so the wire's i16 counts round-trip cleanly
                  * (legacy saves may still carry the old 9999 stacks). */
                 cur_count[i] = p.inventory.slots[i].count.clamp(0, i16::MAX as i32) as i16;
@@ -3823,7 +3818,9 @@ fn frame_inner(app: &mut App) {
                 let w = phys_world.borrow();
                 let p = app.player.borrow();
                 let has_seeds = p.bag.count_of(tenebris_core::items::SEEDS) > 0;
-                let has_hoe = p.bag.count_of(tenebris_core::items::HOE) > 0;
+                /* Equip rule: the hoe only tills while selected. */
+                let has_hoe =
+                    inventory::selected_item(&p.inventory) == Some(tenebris_core::items::HOE);
                 crops::plant_or_harvest(&w, &p, &app.interact, has_seeds, has_hoe)
             };
             match outcome {

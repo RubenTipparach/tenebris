@@ -7,9 +7,10 @@
 //!
 //! Crafting reads inputs from the hotbar + bag combined (a "log" is a
 //! `Block::Wood` sitting in the hotbar) and deposits outputs into the
-//! bag, so the hotbar keeps its "blocks only" invariant. The
-//! authoritative recipe semantics live in `core::crafting`; this module
-//! only adapts the client's split storage to them.
+//! bag. Hotbar slots are generalised item slots now (tools equip by
+//! being SELECTED there), so both stores are keyed by core item ids.
+//! The authoritative recipe semantics live in `core::crafting`; this
+//! module only adapts the client's split storage to them.
 
 #![allow(dead_code)] // UI + drop wiring land in the next wave
 
@@ -137,30 +138,28 @@ impl Bag {
     }
 }
 
-/// Count of a block-kind `item` held across the hotbar.
+/// Count of `item` held across the hotbar (blocks AND tools - hotbar
+/// slots are generalised item slots now).
 fn hotbar_count(inv: &Inventory, item: ItemId) -> u32 {
-    let Some(b) = items::to_block(item) else { return 0 };
     inv.slots
         .iter()
-        .filter(|s| s.block_type == b && s.count > 0)
+        .filter(|s| s.item == item && s.count > 0)
         .map(|s| s.count.max(0) as u32)
         .sum()
 }
 
-/// Remove up to `n` of a block-kind `item` from the hotbar. Returns the
-/// shortfall. (Non-block items are never in the hotbar -> no-op.)
+/// Remove up to `n` of `item` from the hotbar. Returns the shortfall.
 fn hotbar_take(inv: &mut Inventory, item: ItemId, mut n: u32) -> u32 {
-    let Some(b) = items::to_block(item) else { return n };
     for s in inv.slots.iter_mut() {
         if n == 0 {
             break;
         }
-        if s.block_type == b && s.count > 0 {
+        if s.item == item && s.count > 0 {
             let used = n.min(s.count.max(0) as u32) as i32;
             s.count -= used;
             n -= used as u32;
             if s.count == 0 {
-                s.block_type = Block::Air;
+                s.item = Block::Air as u16;
             }
         }
     }

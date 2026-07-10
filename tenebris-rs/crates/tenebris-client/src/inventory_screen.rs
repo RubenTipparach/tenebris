@@ -241,25 +241,114 @@ fn egui_slot(ui: &mut egui::Ui, s: &InvSlot, selected: bool, show_count: bool) -
         (1.0, egui::Color32::from_rgb(0x4a, 0x50, 0x5e))
     };
     p.rect_stroke(rect, 3.0, egui::Stroke::new(bw, bc), egui::StrokeKind::Inside);
-    if s.block_type != Block::Air && s.count > 0 {
+    if s.item != Block::Air as u16 && s.count > 0 {
         let shown = if show_count { s.count.clamp(0, u16::MAX as i32) as u16 } else { 1 };
-        crate::ui_icons::draw_icon(p, s.block_type as u16, shown, rect.shrink(4.0));
+        crate::ui_icons::draw_icon(p, s.item, shown, rect.shrink(4.0));
     }
     resp
 }
 
+/* ---------------------------------------------------------------------- */
+/* Drag & drop between the bag grid and the hotbar (survival).             */
+
+/// Address of a draggable slot in the survival inventory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SlotAddr {
+    Bag(usize),
+    Hot(usize),
+}
+
+fn slot_get(p: &crate::player_ctrl::PlayerCtrl, a: SlotAddr) -> (u16, i32) {
+    match a {
+        SlotAddr::Bag(i) => (p.bag.slots[i].item, p.bag.slots[i].count as i32),
+        SlotAddr::Hot(i) => (p.inventory.slots[i].item, p.inventory.slots[i].count),
+    }
+}
+
+fn slot_set(p: &mut crate::player_ctrl::PlayerCtrl, a: SlotAddr, item: u16, count: i32) {
+    let (item, count) = if count <= 0 { (Block::Air as u16, 0) } else { (item, count) };
+    match a {
+        SlotAddr::Bag(i) => {
+            p.bag.slots[i] = items::ItemStack {
+                item,
+                count: count.clamp(0, u16::MAX as i32) as u16,
+            };
+        }
+        SlotAddr::Hot(i) => {
+            p.inventory.slots[i] = InvSlot::of(item, count);
+        }
+    }
+}
+
+/// Swap (or merge same-item stacks) between two slot addresses.
+fn slot_swap(p: &mut crate::player_ctrl::PlayerCtrl, from: SlotAddr, to: SlotAddr) {
+    if from == to {
+        return;
+    }
+    let (fi, fc) = slot_get(p, from);
+    let (ti, tc) = slot_get(p, to);
+    if fc <= 0 {
+        return;
+    }
+    if fi == ti && tc > 0 {
+        /* Same item: merge the dragged stack onto the target. */
+        slot_set(p, to, ti, tc + fc);
+        slot_set(p, from, Block::Air as u16, 0);
+    } else {
+        slot_set(p, to, fi, fc);
+        slot_set(p, from, ti, tc);
+    }
+}
+
+/// Wire a slot's response into the drag-and-drop flow: dragging it
+/// carries its address; releasing another dragged slot over it requests
+/// a swap (returned to the caller to apply after the UI pass).
+fn dnd_slot(resp: &egui::Response, addr: SlotAddr, pending: &mut Option<(SlotAddr, SlotAddr)>) {
+    let resp = resp.clone().interact(egui::Sense::click_and_drag());
+    resp.dnd_set_drag_payload(addr);
+    if let Some(src) = resp.dnd_release_payload::<SlotAddr>() {
+        pending.get_or_insert((*src, addr));
+    }
+}
+
+/// While a drag is live, ghost the dragged item's icon at the pointer.
+fn dnd_ghost(ctx: &egui::Context, p: &crate::player_ctrl::PlayerCtrl) {
+    let Some(src) = egui::DragAndDrop::payload::<SlotAddr>(ctx) else {
+        return;
+    };
+    let (item, count) = slot_get(p, *src);
+    if count <= 0 {
+        return;
+    }
+    let Some(pos) = ctx.pointer_interact_pos() else { return };
+    let painter = ctx.layer_painter(egui::LayerId::new(
+        egui::Order::Tooltip,
+        egui::Id::new("inv-drag-ghost"),
+    ));
+    let rect = egui::Rect::from_center_size(pos, egui::vec2(30.0, 30.0));
+    crate::ui_icons::draw_icon(&painter, item, count.clamp(0, u16::MAX as i32) as u16, rect);
+}
+
 /// The 9-slot hotbar row; returns the slot clicked this frame (if any).
+/// `dnd`: when drawing the survival screen, drag-and-drop wiring records
+/// a requested swap here.
 fn hotbar_row(
     ui: &mut egui::Ui,
     hotbar: &[InvSlot; INV_HOTBAR_SLOTS],
     selected: i32,
     show_counts: bool,
+    dnd: Option<&mut Option<(SlotAddr, SlotAddr)>>,
 ) -> Option<usize> {
     let mut clicked = None;
+    let mut dnd = dnd;
     egui::Grid::new("inv_hotbar").spacing(egui::vec2(3.0, 3.0)).show(ui, |ui| {
         for (i, s) in hotbar.iter().enumerate() {
-            if egui_slot(ui, s, i as i32 == selected, show_counts).clicked() {
+            let resp = egui_slot(ui, s, i as i32 == selected, show_counts);
+            if resp.clicked() {
                 clicked = Some(i);
+            }
+            if let Some(pending) = dnd.as_deref_mut() {
+                dnd_slot(&resp, SlotAddr::Hot(i), pending);
             }
         }
     });
@@ -295,9 +384,9 @@ pub fn egui_ui(ctx: &egui::Context) {
         (p.inventory.slots, p.inventory.selected, p.survival_mode, bag)
     };
 
-    let mut click_bag: Option<usize> = None;
     let mut click_palette: Option<Block> = None;
     let mut click_hotbar: Option<usize> = None;
+    let mut dnd_swap: Option<(SlotAddr, SlotAddr)> = None;
     let mut toggle_mode = false;
     let mut do_close = false;
     /* Mode switching is an SP concern - MP is always survival. */
@@ -356,9 +445,7 @@ pub fn egui_ui(ctx: &egui::Context) {
                                     EGUI_SLOT_PX,
                                     None,
                                 );
-                                if resp.clicked() && count > 0 {
-                                    click_bag = Some(i);
-                                }
+                                dnd_slot(&resp, SlotAddr::Bag(i), &mut dnd_swap);
                                 if (i + 1) % BAG_COLS == 0 {
                                     ui.end_row();
                                 }
@@ -366,12 +453,13 @@ pub fn egui_ui(ctx: &egui::Context) {
                         });
                         ui.add_space(8.0);
                         heading(ui, "Hotbar", (0xa8, 0xc8, 0xa0));
-                        click_hotbar = hotbar_row(ui, &hotbar, selected, true);
+                        click_hotbar =
+                            hotbar_row(ui, &hotbar, selected, true, Some(&mut dnd_swap));
                         ui.add_space(4.0);
                         hint_label(
                             ui,
-                            "Click a block stack in the bag to equip it into the \
-                             selected hotbar slot. R eats food.",
+                            "Drag items between the bag and hotbar. A tool only \
+                             works while its hotbar slot is SELECTED. R eats food.",
                         );
                     });
 
@@ -388,7 +476,7 @@ pub fn egui_ui(ctx: &egui::Context) {
                 egui::Grid::new("inv_palette").spacing(egui::vec2(3.0, 3.0)).show(ui, |ui| {
                     for (i, &b) in CREATIVE_PALETTE.iter().enumerate() {
                         let cell = InvSlot::block(b, 1);
-                        let assigned = hotbar[selected.clamp(0, 8) as usize].block_type == b;
+                        let assigned = hotbar[selected.clamp(0, 8) as usize].block_type() == b;
                         if egui_slot(ui, &cell, assigned, false).clicked() {
                             click_palette = Some(b);
                         }
@@ -399,7 +487,7 @@ pub fn egui_ui(ctx: &egui::Context) {
                 });
                 ui.add_space(8.0);
                 heading(ui, "Hotbar", (0xa8, 0xc8, 0xa0));
-                click_hotbar = hotbar_row(ui, &hotbar, selected, false);
+                click_hotbar = hotbar_row(ui, &hotbar, selected, false, None);
                 ui.add_space(4.0);
                 hint_label(
                     ui,
@@ -429,28 +517,13 @@ pub fn egui_ui(ctx: &egui::Context) {
         return;
     }
 
-    if let Some(i) = click_bag {
-        /* Survival equip: a bag stack that holds a placeable block swaps
-         * with the selected hotbar slot; whatever was in the hotbar slot
-         * goes back into that bag slot (as its item id). Non-block items
-         * (tools, food) live in the bag - clicking them is a no-op. */
-        let mut p = player.borrow_mut();
-        let sel = p.inventory.selected.clamp(0, INV_HOTBAR_SLOTS as i32 - 1) as usize;
-        let stack = p.bag.slots[i];
-        if let Some(b) = items::to_block(stack.item) {
-            if stack.count > 0 {
-                let old = p.inventory.slots[sel];
-                p.inventory.slots[sel] = InvSlot::block(b, stack.count as i32);
-                p.bag.slots[i] = if old.block_type != Block::Air && old.count > 0 {
-                    items::ItemStack {
-                        item: items::from_block(old.block_type),
-                        count: old.count.clamp(0, u16::MAX as i32) as u16,
-                    }
-                } else {
-                    items::ItemStack::default()
-                };
-            }
-        }
+    /* Ghost the dragged icon at the pointer while a drag is live. */
+    {
+        let p = player.borrow();
+        dnd_ghost(ctx, &p);
+    }
+    if let Some((from, to)) = dnd_swap {
+        slot_swap(&mut player.borrow_mut(), from, to);
     } else if let Some(b) = click_palette {
         /* Creative assign: the palette block takes over the selected
          * hotbar slot. Count 1 = "assigned"; placement never consumes. */
@@ -572,6 +645,42 @@ mod tests {
         assert_eq!(h.e_tap_count, 1);
     }
 
+    /* -- drag & drop swap ------------------------------------------------- */
+
+    #[test]
+    fn slot_swap_swaps_and_merges() {
+        use tenebris_core::items::{ItemStack, WOOD_PICKAXE};
+        let mut p = crate::player_ctrl::PlayerCtrl::default();
+        crate::inventory::init_empty(&mut p.inventory);
+        p.bag.slots[0] = ItemStack { item: WOOD_PICKAXE, count: 1 };
+        p.bag.slots[1] = ItemStack { item: items::PLANK, count: 10 };
+        p.inventory.slots[2] = InvSlot::block(Block::Stone, 5);
+
+        /* Drag the pickaxe from the bag onto hotbar slot 0: tools can
+         * live in the hotbar now (equip = select that slot). */
+        slot_swap(&mut p, SlotAddr::Bag(0), SlotAddr::Hot(0));
+        assert_eq!(p.inventory.slots[0].item, WOOD_PICKAXE);
+        assert_eq!(p.bag.slots[0].count, 0, "bag slot vacated");
+
+        /* Drag hotbar stone into an occupied bag slot: swap. */
+        slot_swap(&mut p, SlotAddr::Hot(2), SlotAddr::Bag(1));
+        assert_eq!(p.bag.slots[1].item, Block::Stone as u16);
+        assert_eq!(p.bag.slots[1].count, 5);
+        assert_eq!(p.inventory.slots[2].item, items::PLANK);
+        assert_eq!(p.inventory.slots[2].count, 10);
+
+        /* Same item on both ends: merge instead of swap. */
+        p.bag.slots[3] = ItemStack { item: items::PLANK, count: 4 };
+        slot_swap(&mut p, SlotAddr::Bag(3), SlotAddr::Hot(2));
+        assert_eq!(p.inventory.slots[2].count, 14, "stacks merged");
+        assert_eq!(p.bag.slots[3].count, 0);
+
+        /* Dragging an empty slot is a no-op. */
+        let before = p.inventory.slots[2];
+        slot_swap(&mut p, SlotAddr::Bag(9), SlotAddr::Hot(2));
+        assert_eq!(p.inventory.slots[2], before);
+    }
+
     /* -- creative palette -------------------------------------------------- */
 
     #[test]
@@ -588,9 +697,9 @@ mod tests {
         crate::inventory::init_creative(&mut inv);
         for s in &inv.slots {
             assert!(
-                CREATIVE_PALETTE.contains(&s.block_type),
+                CREATIVE_PALETTE.contains(&s.block_type()),
                 "{:?} missing from palette",
-                s.block_type
+                s.block_type()
             );
         }
     }

@@ -34,22 +34,36 @@
 #![allow(dead_code)] // consumed by the interact/persistence waves of the port
 
 use tenebris_core::blocks::Block;
+use tenebris_core::items;
 
 /// Port of `INV_HOTBAR_SLOTS`.
 pub const INV_HOTBAR_SLOTS: usize = 9;
 
-/// Port of `inv_slot_t`: the placeable block assigned to a hotbar key
-/// plus its stack count (real in survival; 1 = "assigned" in creative).
+/// One hotbar slot: any inventory item (block OR tool) plus its stack
+/// count (real in survival; 1 = "assigned" in creative). Generalised
+/// from the C's block-only slot so tools can be equipped by selecting
+/// them on the hotbar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InvSlot {
-    pub block_type: Block,
+    pub item: items::ItemId,
     pub count: i32,
 }
 
 impl InvSlot {
     /// Stand-in for the C positional initialiser `{ type, count }`.
     pub const fn block(block_type: Block, count: i32) -> Self {
-        InvSlot { block_type, count }
+        InvSlot { item: block_type as u16, count }
+    }
+
+    /// A slot holding any item id (tool, resource, block).
+    pub const fn of(item: items::ItemId, count: i32) -> Self {
+        InvSlot { item, count }
+    }
+
+    /// The placeable block this slot holds, or `Block::Air` for empty
+    /// slots and non-block items (tools).
+    pub fn block_type(&self) -> Block {
+        items::to_block(self.item).unwrap_or(Block::Air)
     }
 }
 
@@ -112,17 +126,18 @@ pub fn add(inv: &mut Inventory, block_type: Block) -> bool {
     if block_type == Block::Air {
         return false;
     }
+    let item = items::from_block(block_type);
     /* Stack on first matching slot. */
     for i in 0..INV_HOTBAR_SLOTS {
-        if inv.slots[i].block_type == block_type && inv.slots[i].count > 0 {
+        if inv.slots[i].item == item && inv.slots[i].count > 0 {
             inv.slots[i].count += 1;
             return true;
         }
     }
     /* Otherwise drop into first empty slot. */
     for i in 0..INV_HOTBAR_SLOTS {
-        if inv.slots[i].block_type == Block::Air || inv.slots[i].count == 0 {
-            inv.slots[i].block_type = block_type;
+        if inv.slots[i].item == Block::Air as u16 || inv.slots[i].count == 0 {
+            inv.slots[i].item = item;
             inv.slots[i].count = 1;
             return true;
         }
@@ -131,10 +146,18 @@ pub fn add(inv: &mut Inventory, block_type: Block) -> bool {
 }
 
 /// True if the currently-selected slot can place a block:
-/// type != AIR && count > 0. (A creative slot's count is always 1.)
+/// a non-air BLOCK with count > 0. (Tools in the hotbar aren't
+/// placeable; a creative slot's count is always 1.)
 pub fn can_place(inv: &Inventory) -> bool {
     let s = &inv.slots[inv.selected as usize];
-    s.block_type != Block::Air && s.count > 0
+    s.block_type() != Block::Air && s.count > 0
+}
+
+/// Item in the currently-selected slot (`None` when empty). The tool
+/// EQUIP rule reads this: a tool only works while its slot is selected.
+pub fn selected_item(inv: &Inventory) -> Option<items::ItemId> {
+    let s = &inv.slots[inv.selected as usize];
+    (s.count > 0 && s.item != Block::Air as u16).then_some(s.item)
 }
 
 /// Block type the player will place on right-click. Returns
@@ -143,7 +166,7 @@ pub fn selected(inv: &Inventory) -> Block {
     if !can_place(inv) {
         return Block::Air;
     }
-    inv.slots[inv.selected as usize].block_type
+    inv.slots[inv.selected as usize].block_type()
 }
 
 /// Take one off the selected slot. Empties the slot when count drops
@@ -156,7 +179,7 @@ pub fn consume(inv: &mut Inventory) {
     }
     s.count -= 1;
     if s.count == 0 {
-        s.block_type = Block::Air;
+        s.item = Block::Air as u16;
     }
 }
 
@@ -193,7 +216,7 @@ mod tests {
             Block::Water,
         ];
         for (i, b) in want.iter().enumerate() {
-            assert_eq!(inv.slots[i].block_type, *b, "slot {}", i);
+            assert_eq!(inv.slots[i].block_type(), *b, "slot {}", i);
             /* Count 1 = "assigned"; no 9999 sentinel stacks anymore. */
             assert_eq!(inv.slots[i].count, 1, "slot {}", i);
         }

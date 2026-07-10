@@ -70,11 +70,17 @@ pub struct InteractState {
     pub mining_depth: i32,
 }
 
-/// The best tool the player holds for mining `block` (fastest pickaxe of
-/// the ideal category in the bag, or `None` for bare hands). Shared by the
-/// mining loop, the tier gate, and the HUD crack-decal so they all agree.
+/// The tool the player is USING against `block`: the item in the
+/// SELECTED hotbar slot, if it's the right tool category (a pickaxe on
+/// rock, an axe on wood, ...). Tools in the bag or in unselected slots
+/// do nothing - equipping means selecting. Shared by the mining loop,
+/// the tier gate, the viewmodel, and the HUD crack-decal so they all
+/// agree.
 pub fn best_tool_for(p: &PlayerCtrl, block: Block) -> Option<items::ItemId> {
-    mining::best_tool(block, |id| p.bag.count_of(id) > 0)
+    let sel = inventory::selected_item(&p.inventory)?;
+    (mining::tool_kind(sel) == mining::block_tool(block)
+        && mining::tool_kind(sel) != mining::ToolKind::None)
+        .then_some(sel)
 }
 
 /// Seconds to break `block` with the player's current tool - the same
@@ -913,7 +919,7 @@ mod tests {
             (Block::Water, 9999),
         ];
         for (i, (ty, n)) in want_inv.iter().enumerate() {
-            assert_eq!(p.inventory.slots[i].block_type, *ty, "e_inv{i}: type");
+            assert_eq!(p.inventory.slots[i].block_type(), *ty, "e_inv{i}: type");
             assert_eq!(p.inventory.slots[i].count, *n, "e_inv{i}: count");
         }
 
