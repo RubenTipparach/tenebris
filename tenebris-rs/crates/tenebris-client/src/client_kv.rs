@@ -44,16 +44,22 @@
  * Native backend - in-process map with write-through to a single file.
  * Loaded lazily on first access; rewritten in full on every mutation.
  *
- * The map is fixed-capacity so it doesn't grow unboundedly; for the
- * profile + SP-world usage that's a hard ceiling of well under 100
- * entries even on a busy install. */
+ * The map is fixed-capacity so it doesn't grow unboundedly. Sized for
+ * per-edit tile persistence (one key per edited column) on top of the
+ * profile + world-pose + seed keys - see KV_MAX_ENTRIES. */
 
 mod backend {
     use std::fs;
     use std::path::PathBuf;
     use std::sync::Mutex;
 
-    pub(super) const KV_MAX_ENTRIES: usize = 256;
+    /* The C port's 256 assumed "profiles + a few world poses". Per-edit
+     * tile persistence stores one key per edited column, so a single
+     * mined-out hillside blows past 256 and every LATER key - new
+     * world poses, seeds, bags - was silently dropped (the "create
+     * world does nothing" bug). 8192 tile columns x ~300 B/line stays
+     * comfortably under load_file's 4 MB read guard. */
+    pub(super) const KV_MAX_ENTRIES: usize = 8192;
     pub(super) const KV_KEY_MAX: usize = 127;
     pub(super) const KV_VAL_MAX: usize = 1023;
 
@@ -236,6 +242,11 @@ mod backend {
             Some(i) => i,
             None => {
                 if store.entries.len() >= KV_MAX_ENTRIES {
+                    /* Loud, not silent: a dropped write here is lost
+                     * player data (world pose / seed / tile column). */
+                    println!(
+                        "[kv] ERROR store full ({KV_MAX_ENTRIES} entries) - dropping key '{key}'"
+                    );
                     return;
                 }
                 store.entries.push(KvEntry {
@@ -424,9 +435,9 @@ mod tests {
     }
 
     #[test]
-    fn capacity_caps_at_256_entries() {
-        let _g = test_support::begin("capacity_caps_at_256");
-        for i in 0..256 {
+    fn capacity_caps_at_max_entries() {
+        let _g = test_support::begin("capacity_caps_at_max");
+        for i in 0..backend::KV_MAX_ENTRIES {
             set(&format!("cap:{i}"), "x");
         }
         set("cap:overflow", "x");

@@ -245,6 +245,13 @@ struct Menu {
      * boots (false = creative/sandbox, true = survival). */
     new_world_survival: bool,
 
+    /* Terrain seed of the world being entered, resolved by
+     * start_sp_for_world: the world's persisted seed, a fresh roll for
+     * a brand-new world, or the compiled-in default for pre-seed-
+     * feature saves. app.rs reads it on the SP transition and rebuilds
+     * the planet when it differs from the loaded terrain. */
+    pending_world_seed: u64,
+
     mouse_x: f32,
     mouse_y: f32,
 
@@ -1763,6 +1770,7 @@ fn enter_world_list(m: &mut Menu) {
 /// Port of `start_sp_for_world()`.
 fn start_sp_for_world(m: &mut Menu, world_name: &str) {
     m.active_world = trunc(world_name, persistence::NAME_MAX);
+    resolve_world_seed(m, world_name);
     if let Some(s) = persistence::load(world_name) {
         println!(
             "[menu] SP load '{}' at ({:.1}, {:.1}, {:.1}) mode={}",
@@ -1787,6 +1795,54 @@ fn start_sp_for_world(m: &mut Menu, world_name: &str) {
         );
     }
     m.state = GameState::InGameSp;
+}
+
+/// Resolve the terrain seed for the world being entered and stash it
+/// in `pending_world_seed` for app.rs to consume on the SP transition.
+///
+/// - A stored seed wins (the world was created after the seed feature).
+/// - No stored seed but a saved pose = a pre-seed-feature world; its
+///   edits were made against the compiled-in default terrain, so it
+///   keeps the default seed. Persisted now so the mapping is explicit.
+/// - Neither = a brand-new world: roll a fresh random seed and persist
+///   it on this same input frame (per-edit persistence rule).
+fn resolve_world_seed(m: &mut Menu, world_name: &str) {
+    let default = tenebris_core::planet::default_seed(tenebris_core::planet::BodyId::Tenebris);
+    let seed = match persistence::load_seed(world_name) {
+        Some(s) => s,
+        None => {
+            let s = if persistence::exists(world_name) {
+                default
+            } else {
+                let mut b = [0u8; 8];
+                profile::random_bytes(&mut b);
+                u64::from_le_bytes(b)
+            };
+            persistence::save_seed(world_name, s);
+            s
+        }
+    };
+    m.pending_world_seed = seed;
+    println!(
+        "[menu] world '{}' seed=0x{:016x}{}",
+        world_name,
+        seed,
+        if seed == default { " (default)" } else { "" }
+    );
+}
+
+/// The terrain seed of the SP world being entered / played, resolved
+/// by start_sp_for_world. app.rs compares it against the loaded
+/// planet's seed on the SP transition and regenerates the terrain
+/// when they differ. 0 = nothing resolved yet (boot); callers map
+/// that to the compiled-in default.
+pub fn pending_world_seed() -> u64 {
+    let s = with_menu(|m| m.pending_world_seed);
+    if s == 0 {
+        tenebris_core::planet::default_seed(tenebris_core::planet::BodyId::Tenebris)
+    } else {
+        s
+    }
 }
 
 /// Port of `start_sp_new_world()`. Drops to the in-game text-input

@@ -614,6 +614,23 @@ pub fn subdivisions_for_radius(radius_m: f64) -> i32 {
     subdiv
 }
 
+/// Rust-port extension: override a body's worldgen seed at runtime.
+/// SP worlds each carry their own seed (persisted per world by the
+/// client); the app patches the spawn body here before regenerating
+/// its `World` so every `planet_gen` / `tile_hash` consumer sees the
+/// same value. Same Mutex-patch pattern as `set_atmosphere`.
+pub fn set_seed(id: BodyId, seed: u64) {
+    BODIES.lock().unwrap()[id as usize].seed = seed;
+}
+
+/// The compiled-in default seed for a body, unaffected by any
+/// `set_seed` patch. Pre-seed-feature SP saves and MP terrain assume
+/// this value - both map "no stored seed" to the default so existing
+/// worlds keep their terrain.
+pub fn default_seed(id: BodyId) -> u64 {
+    BODIES_INIT[id as usize].seed
+}
+
 /// Port of `planet_set_atmosphere()`. Apply a YAML-loaded atmosphere
 /// patch on top of a body's compiled-in defaults. Each field is only
 /// assigned when the patch's value is non-zero, so an empty patch is a

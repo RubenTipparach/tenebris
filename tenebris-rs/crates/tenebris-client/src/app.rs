@@ -197,6 +197,14 @@ struct App {
     mp_spawn_applied: bool,
     sp_save_accum: f64,
 
+    /* Which session's edits the in-memory spawn-planet terrain holds:
+     * "" = pristine boot procgen, "sp:<world>" = that SP world's
+     * edits, "mp" = an MP session's server diffs. Together with the
+     * World's seed this decides whether entering a session can reuse
+     * the loaded terrain or must regenerate it (per-world seeds +
+     * no cross-world edit leaks). */
+    terrain_tag: String,
+
     /* Position-relay diagnostics (G_last_sent_*). */
     last_sent_pos: DVec3,
     last_sent_body: u32,
@@ -1518,15 +1526,7 @@ extern "C" fn init() {
 
     /* Spawn above the surface at (1, 0, 0). Surface altitude sampled
      * directly so we don't depend on any tile being generated yet. */
-    {
-        let dir = dvec3_make(1.0, 0.0, 0.0);
-        let mut surface_m = planet_gen::surface_altitude(&body, dir);
-        if surface_m < 0.5 {
-            surface_m = 0.5;
-        }
-        player.borrow_mut().position =
-            dvec3_scale(dir, body.radius_m + surface_m as f64 + 8.0);
-    }
+    player.borrow_mut().position = default_spawn_pos(&body);
 
     /* Show the main menu after worldgen finishes. SP / MP buttons
      * drive the transition into gameplay. */
@@ -1652,6 +1652,7 @@ extern "C" fn init() {
             sp_saves_applied: [false; SP_SAVES_APPLIED_MAX],
             mp_spawn_applied: false,
             sp_save_accum: 0.0,
+            terrain_tag: String::new(),
             last_sent_pos: DVec3::default(),
             last_sent_body: 0,
             last_sent_yaw: 0.0,
@@ -2740,6 +2741,68 @@ fn mark_sp_saves_applied(app: &mut App, w_rc: &Rc<RefCell<World>>) {
     }
 }
 
+/// Default spawn: above the surface at (1, 0, 0) on `body`. Surface
+/// altitude sampled analytically so no tile needs to be generated.
+/// Shared by boot and by new-world SP entry (a fresh seed means fresh
+/// surface heights, so a stale pose can't be kept).
+fn default_spawn_pos(body: &BodyConfig) -> DVec3 {
+    let dir = dvec3_make(1.0, 0.0, 0.0);
+    let mut surface_m = planet_gen::surface_altitude(body, dir);
+    if surface_m < 0.5 {
+        surface_m = 0.5;
+    }
+    dvec3_add(
+        dvec3_make(body.pos_x, body.pos_y, body.pos_z),
+        dvec3_scale(dir, body.radius_m + surface_m as f64 + 8.0),
+    )
+}
+
+/// Regenerate the spawn planet in place with `seed`: patch the global
+/// body table, rebuild the World (synchronous full procgen, same as
+/// boot), drop client state anchored to the old terrain, and request a
+/// renderer full remesh. The remesh itself runs inside draw_world
+/// later this same frame, so persisted edits the caller replays after
+/// this call are included in the rebuilt meshes.
+fn regen_active_world(app: &mut App, seed: u64) {
+    planet::set_seed(BodyId::Tenebris, seed);
+    let body = planet::get(BodyId::Tenebris);
+    app.body = body;
+    {
+        let mut w = app.world.borrow_mut();
+        *w = World::create(&body, planet::subdivisions_for_radius(body.radius_m));
+        while !w.gen_complete() {
+            let n = w.tile_count;
+            w.stream_gen(n);
+        }
+    }
+    /* World-scoped client state from the previous terrain. The
+     * incoming session's torches / crops replay from persistence
+     * right after (apply_sp_world_saves); the herd respawns near the
+     * player through the normal spawn logic. */
+    torch::clear();
+    crops::restore(Vec::new());
+    drops::init();
+    animals::init();
+    let id = body.id as usize;
+    if id < SP_SAVES_APPLIED_MAX {
+        app.sp_saves_applied[id] = false;
+    }
+    /* The player's cached body copy still carries the old seed. */
+    {
+        let mut p = app.player.borrow_mut();
+        if p.body.map(|b| b.id) == Some(body.id) {
+            player_ctrl::set_body(&mut p, &body);
+        }
+        p.last_tile = -1;
+    }
+    renderer::remesh_body(body.id as u32);
+    println!(
+        "[main] spawn planet regenerated: seed=0x{:016x} ({} tiles)",
+        seed,
+        app.world.borrow().tile_count
+    );
+}
+
 /// One-shot apply of a resume pose when SP transitions in.
 fn maybe_apply_sp_resume(app: &mut App) {
     /* Reset the latch the moment we leave SP, so re-entry replays the
@@ -2755,6 +2818,25 @@ fn maybe_apply_sp_resume(app: &mut App) {
     /* Wipe any chat history left over from a prior MP session. */
     chat::clear();
 
+    /* Per-world terrain: regenerate the planet when the incoming
+     * world's seed differs from the loaded terrain's, or when the
+     * loaded terrain carries another session's edits (world A's
+     * mining must not appear in world B). Pristine boot terrain with
+     * a matching seed is reused as-is. */
+    let target_tag = format!("sp:{}", menu::active_world());
+    let target_seed = menu::pending_world_seed();
+    if app.terrain_tag != target_tag {
+        /* New session: let each moon's persisted columns replay again
+         * (the lazy loader is once per body per session). Moon terrain
+         * itself keeps the compiled seed. */
+        app.sp_saves_applied = [false; SP_SAVES_APPLIED_MAX];
+    }
+    let seed_matches = app.world.borrow().body.seed == target_seed;
+    if !seed_matches || (app.terrain_tag != target_tag && !app.terrain_tag.is_empty()) {
+        regen_active_world(app, target_seed);
+    }
+    app.terrain_tag = target_tag;
+
     /* Apply persisted column + torch data for the SPAWN body only.
      * Other bodies' saves are flushed lazily by apply_sp_saves_lazy
      * the first time each body is detail-meshed. */
@@ -2763,6 +2845,23 @@ fn maybe_apply_sp_resume(app: &mut App) {
     mark_sp_saves_applied(app, &spawn_world);
 
     let Some(s) = menu::take_sp_resume() else {
+        /* Brand-new world (no saved pose): snap to the default spawn.
+         * The player's old pose came from different terrain - menu
+         * fly-around or another world - and a fresh seed means fresh
+         * surface heights. */
+        let spawn = default_spawn_pos(&app.body);
+        let mut p = app.player.borrow_mut();
+        p.position = spawn;
+        p.velocity = dvec3_make(0.0, 0.0, 0.0);
+        p.basis_ready = false;
+        p.last_tile = -1;
+        p.transition_timer_s = 0.0;
+        player_ctrl::rebuild_basis(&mut p);
+        /* Seed the bedrock-fall rescue anchor with the spawn pose so
+         * a rescue can't teleport into the previous world's terrain. */
+        p.last_good_position = spawn;
+        p.last_good_body = Some(app.body.id);
+        drop(p);
         app.sp_resume_applied = true;
         return;
     };
@@ -2938,6 +3037,18 @@ fn maybe_prime_mode_for_state(app: &mut App) {
     let s = menu::state() as i32;
     match mode_prime_action(s, app.inv_primed_for_state) {
         Some(PrimeAction::EnterMp) => {
+            /* MP terrain is the compiled-in default seed (interop
+             * with the server's worldgen); an SP world may have
+             * reseeded the planet, and SP edits must not leak into
+             * the MP view. Server-persisted columns re-fetch after
+             * WELCOME either way. */
+            let mp_seed = planet::default_seed(BodyId::Tenebris);
+            let seed_matches = app.world.borrow().body.seed == mp_seed;
+            if !seed_matches || (app.terrain_tag != "mp" && !app.terrain_tag.is_empty()) {
+                regen_active_world(app, mp_seed);
+            }
+            app.terrain_tag = "mp".to_string();
+
             /* MP defaults to survival: blocks have quantity. Torches
              * still flow in unlimited via inventory_init_empty. */
             let mut p = app.player.borrow_mut();
@@ -3368,6 +3479,18 @@ extern "C" fn frame() {
     /* In the main menu, draw the menu overlay and skip the entire game
      * update path. */
     if menu::is_overlay() {
+        /* Re-arm the one-shot gameplay-entry latches while any menu
+         * screen is up. frame_inner is the code that resets them on
+         * "not in SP/MP any more" - but frame_inner doesn't run during
+         * this short-circuit, so without this a menu -> world-B entry
+         * after playing world A skipped the whole EnterSp priming
+         * (mode picker ignored, inventory / bag / resume pose carried
+         * over from the previous session). */
+        with_app(|app| {
+            app.sp_resume_applied = false;
+            app.mp_spawn_applied = false;
+            app.inv_primed_for_state = -1;
+        });
         let mut pass = sg::Pass {
             swapchain: sokol::glue::swapchain(),
             ..Default::default()

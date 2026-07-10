@@ -357,6 +357,14 @@ pub fn shutdown() {
     T.with(|t| t.borrow_mut().count = 0);
 }
 
+/// Rust-port extension: drop every placed torch. Called when the SP
+/// terrain regenerates for a different world / seed - the incoming
+/// world's persisted torch list replays right after via
+/// apply_sp_world_saves, so nothing from the previous world leaks.
+pub fn clear() {
+    T.with(|t| t.borrow_mut().count = 0);
+}
+
 /* ----------------------------------------------------------------------- */
 
 /// Port of `torch_place()`. Place a torch at body-local world position

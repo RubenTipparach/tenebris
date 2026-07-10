@@ -68,12 +68,15 @@ pub struct Profile {
  * lowercase 32-char hex string. */
 /* ------------------------------------------------------------------ */
 
-fn new_token() -> Option<String> {
+/// Fill `bytes` with non-cryptographic randomness: /dev/urandom when
+/// available, the time + pid LCG fallback otherwise. Shared by the
+/// profile-token generator and the per-world terrain-seed roll
+/// (menu::start_sp_for_world).
+pub(crate) fn random_bytes(bytes: &mut [u8]) {
     use std::io::Read;
 
-    let mut bytes = [0u8; 16];
     let got = std::fs::File::open("/dev/urandom")
-        .and_then(|mut f| f.read_exact(&mut bytes))
+        .and_then(|mut f| f.read_exact(bytes))
         .is_ok();
     if !got {
         // Fallback: time + pid, splatted across the buffer. Not
@@ -109,6 +112,11 @@ fn new_token() -> Option<String> {
             *b = (mix >> 56) as u8;
         }
     }
+}
+
+fn new_token() -> Option<String> {
+    let mut bytes = [0u8; 16];
+    random_bytes(&mut bytes);
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(PROFILE_TOKEN_LEN);
     for b in bytes {

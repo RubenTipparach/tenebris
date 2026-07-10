@@ -49,6 +49,10 @@ const KEY_PREFIX: &str = "tenebris-c:world:";
 const KEY_BAG_PREFIX: &str = "tenebris-c:bag:";
 /// Per-world tech-tree discovery bitset (Rust-port extension key).
 const KEY_TECH_PREFIX: &str = "tenebris-c:tech:";
+/// Per-world terrain seed (Rust-port extension key). Written once at
+/// world creation; a world with no seed key predates the feature and
+/// maps to the body's compiled-in default seed.
+const KEY_SEED_PREFIX: &str = "tenebris-c:seed:";
 const KEY_TILE_PREFIX: &str = "tenebris-c:tile:";
 const KEY_TORCH_PREFIX: &str = "tenebris-c:torches:";
 const KEY_CROP_PREFIX: &str = "tenebris-c:crops:";
@@ -308,6 +312,30 @@ pub fn load_tech(world_name: &str) -> Option<String> {
     client_kv::get(&format!("{KEY_TECH_PREFIX}{world_name}"))
 }
 
+/// Save a world's terrain seed. Written once when the world is
+/// created (per-edit persistence rule: on the same input frame as the
+/// creation click, not deferred to the first autosave).
+pub fn save_seed(world_name: &str, seed: u64) -> bool {
+    if !valid_name(world_name) {
+        return false;
+    }
+    client_kv::set(
+        &format!("{KEY_SEED_PREFIX}{world_name}"),
+        &format!("{seed:016x}"),
+    );
+    true
+}
+
+/// Load a world's terrain seed. None = no seed stored (pre-feature
+/// world) - the caller maps that to the body's compiled-in default.
+pub fn load_seed(world_name: &str) -> Option<u64> {
+    if !valid_name(world_name) {
+        return None;
+    }
+    let s = client_kv::get(&format!("{KEY_SEED_PREFIX}{world_name}"))?;
+    u64::from_str_radix(s.trim(), 16).ok()
+}
+
 pub fn delete(world_name: &str) {
     if !valid_name(world_name) {
         return;
@@ -315,6 +343,7 @@ pub fn delete(world_name: &str) {
     client_kv::remove(&build_key(world_name));
     client_kv::remove(&format!("{KEY_BAG_PREFIX}{world_name}"));
     client_kv::remove(&format!("{KEY_TECH_PREFIX}{world_name}"));
+    client_kv::remove(&format!("{KEY_SEED_PREFIX}{world_name}"));
     // Also wipe every per-tile column and per-body torch list, so
     // deleting a world is a full reset rather than leaving orphaned
     // edits that would attach to a freshly-recreated world of the
