@@ -431,6 +431,13 @@ fn apply_rot(rot: [f32; 3]) {
 /// `light` scales every vertex colour (1.0 = fullbright day, lower at
 /// night - see renderer::entity_sun_brightness).
 pub fn draw(model: &Model, clip: Option<(&Clip, f32)>, light: f32) {
+    draw_tinted(model, clip, light, [1.0, 1.0, 1.0]);
+}
+
+/// [`draw`] with a per-channel colour multiplier on top of `light`.
+/// Used for the red hit-flash blink and the stalkers' shadow palette;
+/// channels above 1.0 push toward that colour (sgl clamps).
+pub fn draw_tinted(model: &Model, clip: Option<(&Clip, f32)>, light: f32, tint: [f32; 3]) {
     sgl::push_matrix();
     if let Some((c, t)) = clip {
         if let Some(root) = c.sample("root", t) {
@@ -452,7 +459,11 @@ pub fn draw(model: &Model, clip: Option<(&Clip, f32)>, light: f32) {
         sgl::begin_triangles();
         for tri in &part.tris {
             let s = tri.shade * light;
-            sgl::c3f(tri.color[0] * s, tri.color[1] * s, tri.color[2] * s);
+            sgl::c3f(
+                (tri.color[0] * s * tint[0]).min(1.0),
+                (tri.color[1] * s * tint[1]).min(1.0),
+                (tri.color[2] * s * tint[2]).min(1.0),
+            );
             for v in &tri.v {
                 sgl::v3f(v[0], v[1], v[2]);
             }

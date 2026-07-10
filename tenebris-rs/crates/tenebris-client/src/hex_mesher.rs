@@ -2196,10 +2196,12 @@ pub fn build_scatter(out: &mut HexMesh, w: &World, tile_idx: i32) {
     let torch = torch_light_at(dvec3_to_vec3(dvec3_scale(t.center, r_surf)));
 
     if grassy {
-        /* Grass tufts: a clump of tapered triangle blades. */
+        /* Grass: Minecraft-scale coverage - wide blades spread across
+         * the whole tile so a covered tile reads about half grass, each
+         * blade about half a block tall. */
         if hash2(tile_idx, SALT_KIND) < cfg.grass_chance {
             let max_b = cfg.grass_blades.max(3.0);
-            let blades = 3 + (hash2(tile_idx, SALT_COUNT) * (max_b - 3.0 + 0.99)) as i32;
+            let blades = ((0.6 + 0.4 * hash2(tile_idx, SALT_COUNT)) * max_b) as i32;
             let grass_uv = tile_uv(ground, FaceCap::Top);
             for j in 0..blades {
                 let base = place(
@@ -2210,7 +2212,19 @@ pub fn build_scatter(out: &mut HexMesh, w: &World, tile_idx: i32) {
                 let h = cfg.grass_height_m as f64
                     * (0.7 + 0.6 * hash2(tile_idx, SALT_SIZE + j) as f64);
                 let lean = dvec3_scale(rot(ang + 0.9), h * 0.18);
-                push_blade(out, base, up, rot(ang), lean, h, 0.055, grass_uv, sky, torch, wet);
+                push_blade(
+                    out,
+                    base,
+                    up,
+                    rot(ang),
+                    lean,
+                    h,
+                    cfg.grass_blade_w_m as f64,
+                    grass_uv,
+                    sky,
+                    torch,
+                    wet,
+                );
             }
         }
 

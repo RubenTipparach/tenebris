@@ -20,7 +20,7 @@ use std::cell::{Cell, RefCell};
 
 use sokol::gl as sgl;
 
-use tenebris_core::fauna::{self, Animal, AnimalState};
+use tenebris_core::fauna::{self, Animal, AnimalKind, AnimalState};
 use tenebris_core::math::{
     dvec3_add, dvec3_cross, dvec3_length, dvec3_make, dvec3_normalize, dvec3_scale, dvec3_sub,
     DVec3, Vec3,
@@ -35,6 +35,14 @@ use crate::renderer;
 
 /// How many animals to keep alive within range of the player.
 const TARGET_COUNT: usize = 8;
+/// How many night stalkers to keep prowling while it's dark.
+const STALKER_COUNT: usize = 4;
+/// Seconds between stalker spawn attempts at night.
+const STALKER_SPAWN_INTERVAL_S: f32 = 4.0;
+/// Shadow palette for the stalker (multiplies the critter model).
+const STALKER_TINT: [f32; 3] = [0.30, 0.24, 0.40];
+/// Red-flash palette while `hurt_t` blinks on.
+const HURT_TINT: [f32; 3] = [2.2, 0.25, 0.25];
 /// Beyond this the animal despawns (out of sight, keeps the list small).
 const DESPAWN_M: f64 = 70.0;
 /// Seconds between spawn attempts while under population.
@@ -60,6 +68,7 @@ struct State {
     body_center: DVec3,
     next_id: u32,
     spawn_cd: f32,
+    stalker_cd: f32,
     salt: u32,
     /// Dev screenshot aid: freeze the herd (no wander / spawn / cull).
     frozen: bool,
@@ -85,6 +94,7 @@ thread_local! {
         body_center: DVec3::default(),
         next_id: 1,
         spawn_cd: 0.0,
+        stalker_cd: 0.0,
         salt: 1,
         frozen: false,
         remote: false,
@@ -125,6 +135,7 @@ pub fn init() {
         s.corpses.clear();
         s.next_id = 1;
         s.spawn_cd = 0.0;
+        s.stalker_cd = 0.0;
         s.salt = 1;
         s.remote = false;
     });
@@ -150,15 +161,17 @@ pub fn set_remote(remote: bool) {
 /// dead ones leave a corpse playing the baked death clip.
 pub fn apply_remote(
     body_center: DVec3,
-    entries: &[(u32, u8, DVec3, DVec3)], /* (id, state, pos, heading) */
+    entries: &[(u32, u8, u8, DVec3, DVec3)], /* (id, state, kind, pos, heading) */
 ) {
-    use tenebris_core::proto::{ANIMAL_STATE_DEAD, ANIMAL_STATE_FLEE, ANIMAL_STATE_IDLE};
+    use tenebris_core::proto::{
+        ANIMAL_STATE_CHASE, ANIMAL_STATE_DEAD, ANIMAL_STATE_FLEE, ANIMAL_STATE_IDLE,
+    };
     S.with(|c| {
         let s = &mut *c.borrow_mut();
         s.remote = true;
         s.body_center = body_center;
         let mut next: Vec<Animal> = Vec::with_capacity(entries.len());
-        for &(id, st, pos, heading) in entries {
+        for &(id, st, kind, pos, heading) in entries {
             if st == ANIMAL_STATE_DEAD {
                 s.corpses.push(Corpse { pos, heading, age: 0.0 });
                 continue;
@@ -167,15 +180,24 @@ pub fn apply_remote(
                 Some(prev) => *prev,
                 None => Animal::new(id, pos, dvec3_normalize(dvec3_sub(pos, body_center))),
             };
+            a.kind = AnimalKind::from_u8(kind);
             a.pos = pos;
             if dvec3_length(heading) > 1e-6 {
                 a.heading = heading;
             }
-            a.state = match st {
+            let new_state = match st {
                 x if x == ANIMAL_STATE_IDLE => AnimalState::Idle,
                 x if x == ANIMAL_STATE_FLEE => AnimalState::Flee,
+                x if x == ANIMAL_STATE_CHASE => AnimalState::Chase,
                 _ => AnimalState::Walk,
             };
+            /* A wander->flee transition means someone just hit it: play
+             * the red flash for everyone nearby (the wire doesn't carry
+             * hurt_t; the local hitter flashed immediately via hit()). */
+            if new_state == AnimalState::Flee && a.state != AnimalState::Flee {
+                a.hurt_t = fauna::HURT_FLASH_S;
+            }
+            a.state = new_state;
             next.push(a);
         }
         /* Known animals absent from the broadcast (killed by another
@@ -225,7 +247,16 @@ pub fn dev_spawn(w: &World, p: &PlayerCtrl) {
             if let Some(pos) = fauna::floor_pos(w, dir, dvec3_length(local), p.last_tile) {
                 let id = s.next_id;
                 s.next_id = s.next_id.wrapping_add(1).max(1);
-                s.list.push(Animal::new(id, pos, dir));
+                let mut a = Animal::new(id, pos, dir);
+                /* Stage the new visuals for the shot: one stalker in the
+                 * shadow palette, one critter mid hit-flash. */
+                if k == 2 {
+                    a.kind = fauna::AnimalKind::Stalker;
+                }
+                if k == 3 {
+                    a.hurt_t = 0.3; /* lands on a red blink-on interval */
+                }
+                s.list.push(a);
             }
         }
         /* Stage one corpse at the end of the death clip so the shot shows
@@ -263,8 +294,41 @@ pub fn herd_center() -> Option<DVec3> {
  * floor_pos / reseat) - the MP server drives its herds through the
  * same helpers, so SP and MP animals behave identically. */
 
-/// Per-frame: wander + re-seat on the surface, cull, and top up the herd.
-pub fn update(dt: f32, w: &World, p: &PlayerCtrl) {
+/// Stalker lunge check against the LOCAL player - shared by the SP sim
+/// and the MP mirror (positions come off the wire, but my knockback +
+/// hunger are mine to apply). Returns without touching creative players.
+fn stalker_contact(list: &mut [Animal], p: &mut PlayerCtrl, center: DVec3) {
+    for a in list.iter_mut() {
+        if a.kind != AnimalKind::Stalker || !a.is_alive() || a.attack_cd > 0.0 {
+            continue;
+        }
+        let to_player = dvec3_sub(p.position, a.pos);
+        if dvec3_length(to_player) > fauna::CONTACT_M {
+            continue;
+        }
+        a.attack_cd = fauna::ATTACK_CD_S;
+        /* Shove: away from the stalker, with a little pop upward. */
+        let up = dvec3_normalize(dvec3_sub(p.position, center));
+        let away = dvec3_normalize(dvec3_sub(
+            to_player,
+            dvec3_scale(up, tenebris_core::math::dvec3_dot(to_player, up)),
+        ));
+        p.velocity = dvec3_add(
+            p.velocity,
+            dvec3_add(
+                dvec3_scale(away, fauna::STALKER_KNOCKBACK_MPS),
+                dvec3_scale(up, fauna::STALKER_KNOCKBACK_MPS * 0.4),
+            ),
+        );
+        if p.survival_mode {
+            p.hunger = (p.hunger - fauna::STALKER_HIT_HUNGER).max(0.0);
+        }
+    }
+}
+
+/// Per-frame: wander/chase + resolve steps and falls, cull, top up the
+/// herd, and prowl in the night stalkers.
+pub fn update(dt: f32, w: &World, p: &mut PlayerCtrl) {
     S.with(|c| {
         let s = &mut *c.borrow_mut();
         let center = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
@@ -273,14 +337,23 @@ pub fn update(dt: f32, w: &World, p: &PlayerCtrl) {
             return;
         }
         if s.remote {
-            /* Server owns movement; locally just swing the legs and age
-             * the corpses so the render stays alive between broadcasts. */
+            /* Server owns movement; locally just swing the legs, decay
+             * the flash/lunge timers, age the corpses, and let mirrored
+             * stalkers lunge at MY player (my knockback + hunger are
+             * client-side). */
             for a in &mut s.list {
                 if a.is_moving() {
                     a.anim_phase +=
-                        dt * if a.state == AnimalState::Flee { 16.0 } else { 8.0 };
+                        dt * if a.state == AnimalState::Walk { 8.0 } else { 16.0 };
+                }
+                if a.hurt_t > 0.0 {
+                    a.hurt_t = (a.hurt_t - dt).max(0.0);
+                }
+                if a.attack_cd > 0.0 {
+                    a.attack_cd = (a.attack_cd - dt).max(0.0);
                 }
             }
+            stalker_contact(&mut s.list, p, center);
             for corpse in &mut s.corpses {
                 corpse.age += dt;
             }
@@ -289,14 +362,18 @@ pub fn update(dt: f32, w: &World, p: &PlayerCtrl) {
         }
         s.salt = s.salt.wrapping_add(1);
         let salt = s.salt;
+        let night = fauna::is_night(w, p.position, tenebris_core::world_time::seconds());
 
         for a in &mut s.list {
             let up = dvec3_normalize(dvec3_sub(a.pos, center));
-            fauna::tick(a, up, dt, salt.wrapping_add(a.id));
-            /* Re-seat feet on the (possibly edited) floor at the new
-             * direction so the critter hugs the terrain. */
-            fauna::reseat(w, a);
+            let target = (a.kind == AnimalKind::Stalker).then_some(p.position);
+            fauna::tick_with_target(a, up, dt, salt.wrapping_add(a.id), target);
+            /* Resolve the move against the real floor: a rise ahead
+             * blocks + arms the stop-then-jump, a drop starts a
+             * gravity fall (see fauna::reseat). */
+            fauna::reseat(w, a, dt);
         }
+        stalker_contact(&mut s.list, p, center);
 
         /* Age out the corpses (baked death clip + linger). */
         for corpse in &mut s.corpses {
@@ -304,17 +381,38 @@ pub fn update(dt: f32, w: &World, p: &PlayerCtrl) {
         }
         s.corpses.retain(|c| c.age < CORPSE_LINGER_S);
 
-        /* Cull the dead + the far-off. */
+        /* Cull the dead + the far-off; dawn burns the stalkers off. */
         let ppos = p.position;
-        s.list
-            .retain(|a| a.is_alive() && dvec3_length(dvec3_sub(a.pos, ppos)) < DESPAWN_M);
+        s.list.retain(|a| {
+            a.is_alive()
+                && dvec3_length(dvec3_sub(a.pos, ppos)) < DESPAWN_M
+                && (a.kind != AnimalKind::Stalker || night)
+        });
 
         /* Top the population back up. */
         s.spawn_cd -= dt;
-        if s.list.len() < TARGET_COUNT && s.spawn_cd <= 0.0 {
+        if s.list.iter().filter(|a| a.kind == AnimalKind::Critter).count() < TARGET_COUNT
+            && s.spawn_cd <= 0.0
+        {
             s.spawn_cd = SPAWN_INTERVAL_S;
             let id = s.next_id;
             if let Some(a) = fauna::spawn_near(w, p.position, id, salt) {
+                s.list.push(a);
+                s.next_id = s.next_id.wrapping_add(1).max(1);
+            }
+        }
+
+        /* Night: stalkers prowl in on their own cadence. */
+        s.stalker_cd -= dt;
+        if night
+            && s.list.iter().filter(|a| a.kind == AnimalKind::Stalker).count() < STALKER_COUNT
+            && s.stalker_cd <= 0.0
+        {
+            s.stalker_cd = STALKER_SPAWN_INTERVAL_S;
+            let id = s.next_id;
+            if let Some(a) =
+                fauna::spawn_near_kind(w, p.position, id, salt.wrapping_add(97), AnimalKind::Stalker)
+            {
                 s.list.push(a);
                 s.next_id = s.next_id.wrapping_add(1).max(1);
             }
@@ -519,12 +617,22 @@ pub fn draw(view: Mat4, proj: Mat4, time_s: f32) {
         /* Day/night: critters darken with the world (task: animals were
          * fullbright at night). */
         let lit = renderer::entity_sun_brightness(a.pos);
-        /* Climb-hop arc: the sim pos snaps to the new floor; the render
-         * pos plays the jump (see fauna::hop_offset). */
-        let draw_pos = dvec3_add(a.pos, dvec3_scale(up, fauna::hop_offset(a)));
+        /* Steps and falls are real movement now (fauna::reseat), so the
+         * sim pos IS the render pos - jumps and drops just play out. */
+        let draw_pos = a.pos;
+        /* Tint: stalkers wear the shadow palette; a fresh hit blinks
+         * the model red (alternating so it reads as a flash). */
+        let blink_on = a.hurt_t > 0.0 && ((a.hurt_t * 8.0) as i32) % 2 == 0;
+        let tint = if blink_on {
+            HURT_TINT
+        } else if a.kind == AnimalKind::Stalker {
+            STALKER_TINT
+        } else {
+            [1.0, 1.0, 1.0]
+        };
         match &set {
             Some(set) => {
-                /* Walk/flee sample the baked walk clip on the sim's
+                /* Walk/flee/chase sample the baked walk clip on the sim's
                  * anim_phase (flee accumulates 2x faster -> faster gait);
                  * idle samples the grazing clip on the wall clock, offset
                  * per animal so the herd doesn't nod in lockstep. */
@@ -537,11 +645,11 @@ pub fn draw(view: Mat4, proj: Mat4, time_s: f32) {
                 sgl::push_matrix();
                 sgl::translate(draw_pos.x as f32, draw_pos.y as f32, draw_pos.z as f32);
                 sgl::mult_matrix(&basis[0]);
-                baked_model::draw(&set.model, Some((clip, t)), lit);
+                baked_model::draw_tinted(&set.model, Some((clip, t)), lit, tint);
                 sgl::pop_matrix();
             }
             None => {
-                draw_critter(draw_pos, up, a.heading, a.anim_phase, a.state != AnimalState::Idle, lit);
+                draw_critter(draw_pos, up, a.heading, a.anim_phase, a.state != AnimalState::Idle, lit * tint[1].min(1.0));
             }
         }
     }
@@ -564,4 +672,63 @@ pub fn draw(view: Mat4, proj: Mat4, time_s: f32) {
     renderer::sgl_world_end();
     /* No sgl_draw here - the world context flushes in
      * compose_to_swapchain, inside the offscreen pass. */
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tenebris_core::planet::{self, BodyId};
+    use tenebris_core::world_time;
+
+    fn stalker_count() -> usize {
+        S.with(|c| {
+            c.borrow().list.iter().filter(|a| a.kind == AnimalKind::Stalker).count()
+        })
+    }
+
+    #[test]
+    fn stalkers_spawn_at_night_and_burn_off_at_dawn() {
+        let body = planet::get(BodyId::Tenebris);
+        let mut w = World::create(&body, 3);
+        while !w.gen_complete() {
+            w.stream_gen(4096);
+        }
+        let pos = fauna::floor_pos(&w, dvec3_make(1.0, 0.0, 0.0), 300.0, -1)
+            .expect("surface under the test player");
+        let mut p = PlayerCtrl::default();
+        p.position = pos;
+        p.basis.up = dvec3_make(1.0, 0.0, 0.0);
+
+        /* Find one night and one day sim-time at this longitude (the
+         * sun swings with the body's spin, so scan forward). */
+        let mut t_night = None;
+        let mut t_day = None;
+        let mut t = 0.0f64;
+        while (t_night.is_none() || t_day.is_none()) && t < 1.0e6 {
+            if fauna::is_night(&w, pos, t) {
+                t_night.get_or_insert(t);
+            } else {
+                t_day.get_or_insert(t);
+            }
+            t += 7.0;
+        }
+        let (tn, td) = (t_night.expect("night exists"), t_day.expect("day exists"));
+
+        init();
+        world_time::set_seconds(tn);
+        /* ~60 s of night at 2 Hz ticks: the prowl cadence (one attempt
+         * per 4 s) has plenty of room to seat a few stalkers. */
+        for _ in 0..120 {
+            update(0.5, &w, &mut p);
+        }
+        assert!(stalker_count() > 0, "night spawned stalkers");
+
+        /* Dawn: the cull retains no stalkers on the first update. */
+        world_time::set_seconds(td);
+        update(0.5, &w, &mut p);
+        assert_eq!(stalker_count(), 0, "dawn burns the stalkers off");
+
+        init();
+        world_time::set_seconds(0.0);
+    }
 }

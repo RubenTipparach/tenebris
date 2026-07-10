@@ -13,13 +13,17 @@ use std::sync::Mutex;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ScatterConfig {
-    /* Grass tufts - triangle-blade clumps on grass surface tiles. */
+    /* Grass tufts - triangle-blade clumps on grass surface tiles.
+     * Minecraft-scale defaults: blades stand ~half a block tall and a
+     * covered tile reads ~half full of grass. */
     /// Probability (0..1) a grass surface tile grows a tuft clump.
     pub grass_chance: f32,
-    /// Blades per tuft (upper bound; per-tuft hash picks 3..=this).
+    /// Blades per covered tile (upper bound; hash picks ~60%..100%).
     pub grass_blades: f32,
     /// Blade height (metres); per-blade hash varies +-30%.
     pub grass_height_m: f32,
+    /// Blade half-width at the base (metres).
+    pub grass_blade_w_m: f32,
 
     /* Flowers - a stem blade with a bright diamond head. */
     /// Probability (0..1) a grass surface tile gets a flower.
@@ -56,9 +60,10 @@ pub struct ScatterConfig {
 
 impl ScatterConfig {
     pub const DEFAULT: ScatterConfig = ScatterConfig {
-        grass_chance: 0.55,
-        grass_blades: 5.0,
-        grass_height_m: 0.38,
+        grass_chance: 0.8,
+        grass_blades: 16.0,
+        grass_height_m: 0.55,
+        grass_blade_w_m: 0.16,
         flower_chance: 0.12,
         flower_height_m: 0.32,
         rock_chance: 0.10,
@@ -110,6 +115,7 @@ pub fn parse_config(src: &str, _path: &str) -> ScatterConfig {
             "grass_chance" => cfg.grass_chance = c,
             "grass_blades" => cfg.grass_blades = c,
             "grass_height_m" => cfg.grass_height_m = c,
+            "grass_blade_w_m" => cfg.grass_blade_w_m = c,
             "flower_chance" => cfg.flower_chance = c,
             "flower_height_m" => cfg.flower_height_m = c,
             "rock_chance" => cfg.rock_chance = c,

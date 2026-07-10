@@ -1698,6 +1698,7 @@ impl Server {
     /// replace-all AnimalState at the snapshot cadence.
     fn animal_sim(&mut self) {
         const ANIMALS_PER_BODY: usize = 8;
+        const STALKERS_PER_BODY: usize = 4;
         const SPAWN_INTERVAL_S: f32 = 1.5;
         const DESPAWN_M: f64 = 70.0;
         let dt = (1.0 / self.cfg.tick_hz) as f32;
@@ -1743,23 +1744,57 @@ impl Server {
                     ab.salt = ab.salt.wrapping_add(1);
                     let salt = ab.salt;
                     let center = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
+                    /* Night at the anchor gates the stalker population -
+                     * the same orbital sun every client renders. */
+                    let night = fauna::is_night(w, anchor, self.sim_time_s);
                     for a in ab.list.iter_mut() {
                         let up = dvec3_normalize(dvec3_sub(a.pos, center));
-                        fauna::tick(a, up, dt, salt.wrapping_add(a.id));
-                        fauna::reseat(w, a);
+                        /* Stalkers chase the nearest player on the body. */
+                        let target = (a.kind == fauna::AnimalKind::Stalker)
+                            .then(|| {
+                                anchors
+                                    .iter()
+                                    .filter(|(b, _)| *b == body_id)
+                                    .map(|(_, p)| *p)
+                                    .min_by(|x, y| {
+                                        dvec3_length(dvec3_sub(*x, a.pos))
+                                            .total_cmp(&dvec3_length(dvec3_sub(*y, a.pos)))
+                                    })
+                            })
+                            .flatten();
+                        fauna::tick_with_target(a, up, dt, salt.wrapping_add(a.id), target);
+                        fauna::reseat(w, a, dt);
                     }
                     ab.list.retain(|a| {
                         a.is_alive()
+                            && (a.kind != fauna::AnimalKind::Stalker || night)
                             && anchors.iter().any(|(b, p)| {
                                 *b == body_id && dvec3_length(dvec3_sub(a.pos, *p)) < DESPAWN_M
                             })
                     });
                     ab.spawn_cd -= dt;
-                    if ab.list.len() < ANIMALS_PER_BODY && ab.spawn_cd <= 0.0 {
+                    let critters =
+                        ab.list.iter().filter(|a| a.kind == fauna::AnimalKind::Critter).count();
+                    let stalkers = ab.list.len() - critters;
+                    if ab.spawn_cd <= 0.0 {
                         ab.spawn_cd = SPAWN_INTERVAL_S;
-                        ab.next_id = ab.next_id.wrapping_add(1).max(1);
-                        if let Some(a) = fauna::spawn_near(w, anchor, ab.next_id, salt) {
-                            ab.list.push(a);
+                        if critters < ANIMALS_PER_BODY {
+                            ab.next_id = ab.next_id.wrapping_add(1).max(1);
+                            if let Some(a) = fauna::spawn_near(w, anchor, ab.next_id, salt) {
+                                ab.list.push(a);
+                            }
+                        }
+                        if night && stalkers < STALKERS_PER_BODY {
+                            ab.next_id = ab.next_id.wrapping_add(1).max(1);
+                            if let Some(a) = fauna::spawn_near_kind(
+                                w,
+                                anchor,
+                                ab.next_id,
+                                salt.wrapping_add(97),
+                                fauna::AnimalKind::Stalker,
+                            ) {
+                                ab.list.push(a);
+                            }
                         }
                     }
                 }
@@ -1782,7 +1817,9 @@ impl Server {
                                 fauna::AnimalState::Walk => ANIMAL_STATE_WALK,
                                 fauna::AnimalState::Flee => ANIMAL_STATE_FLEE,
                                 fauna::AnimalState::Dead => ANIMAL_STATE_DEAD,
+                                fauna::AnimalState::Chase => proto::ANIMAL_STATE_CHASE,
                             };
+                            e.kind = a.kind.to_u8();
                             e.pos_x = a.pos.x as f32;
                             e.pos_y = a.pos.y as f32;
                             e.pos_z = a.pos.z as f32;

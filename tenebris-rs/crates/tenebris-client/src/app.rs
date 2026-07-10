@@ -3955,8 +3955,10 @@ fn frame_inner(app: &mut App) {
          * frame of staleness is invisible for a HUD hint). */
         {
             let w = phys_world.borrow();
-            let p = app.player.borrow();
-            animals::update(dt, &w, &p);
+            /* Mutable: night stalkers lunge - knockback + hunger land on
+             * the player inside animals::update. */
+            let mut p = app.player.borrow_mut();
+            animals::update(dt, &w, &mut p);
             let block_limit = if app.interact.has_target && !app.interact.is_torch_target {
                 app.interact.distance as f32
             } else {

@@ -302,7 +302,7 @@ struct Client {
      * lists changed since the app last took them. */
     crops_by_body: HashMap<u32, Vec<farming::Crop>>,
     crops_dirty: HashSet<u32>,
-    animals_by_body: HashMap<u32, Vec<(u32, u8, DVec3, DVec3)>>,
+    animals_by_body: HashMap<u32, Vec<(u32, u8, u8, DVec3, DVec3)>>,
     animals_dirty: HashSet<u32>,
 }
 
@@ -1285,12 +1285,13 @@ fn on_msg(c: &mut Client, data: &[u8]) {
             if m.killed_by != 0 && m.killed_by == c.welcome.player_id {
                 c.meat_pending = c.meat_pending.saturating_add(m.meat_award);
             }
-            let list: Vec<(u32, u8, DVec3, DVec3)> = m.entries[..m.entry_count as usize]
+            let list: Vec<(u32, u8, u8, DVec3, DVec3)> = m.entries[..m.entry_count as usize]
                 .iter()
                 .map(|e| {
                     (
                         e.id,
                         e.state,
+                        e.kind,
                         dvec3_make(e.pos_x as f64, e.pos_y as f64, e.pos_z as f64),
                         dvec3_make(e.heading_x as f64, e.heading_y as f64, e.heading_z as f64),
                     )
@@ -1826,7 +1827,7 @@ pub fn take_crops_if_dirty(body_id: u32) -> Option<Vec<farming::Crop>> {
 }
 
 /// The server's herd for `body_id`, if it changed since last take.
-pub fn take_animals_if_dirty(body_id: u32) -> Option<Vec<(u32, u8, DVec3, DVec3)>> {
+pub fn take_animals_if_dirty(body_id: u32) -> Option<Vec<(u32, u8, u8, DVec3, DVec3)>> {
     C.with(|cell| {
         let c = &mut *cell.borrow_mut();
         if !c.animals_dirty.remove(&body_id) {

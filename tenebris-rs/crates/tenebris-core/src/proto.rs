@@ -718,6 +718,8 @@ pub const ANIMAL_STATE_IDLE: u8 = 0;
 pub const ANIMAL_STATE_WALK: u8 = 1;
 pub const ANIMAL_STATE_FLEE: u8 = 2;
 pub const ANIMAL_STATE_DEAD: u8 = 3;
+/// Stalker sprinting toward a player (fauna::AnimalState::Chase).
+pub const ANIMAL_STATE_CHASE: u8 = 4;
 pub const ANIMAL_STATE_MAX_ENTRIES: usize = 32;
 pub const MSG_ANIMAL_ENTRY_SIZE: usize = 32; /* id(4) + state(4) + pos(12) + heading(12) */
 pub const MSG_ANIMAL_STATE_HEADER: usize = 16; /* body(4)+count(2)+res(2)+killed_by(4)+meat(2)+res(2) */
@@ -726,6 +728,11 @@ pub const MSG_ANIMAL_STATE_HEADER: usize = 16; /* body(4)+count(2)+res(2)+killed
 pub struct MsgAnimalEntry {
     pub id: u32,
     pub state: u8,
+    /// AnimalKind byte (fauna::AnimalKind::to_u8). Packed into bits
+    /// 4..8 of the state word on the wire - entry size / version stay
+    /// unchanged, and pre-kind peers (which masked the low byte) read
+    /// kind 0 = critter.
+    pub kind: u8,
     pub pos_x: f32,
     pub pos_y: f32,
     pub pos_z: f32,
@@ -1853,7 +1860,7 @@ pub fn write_animal_state(buf: &mut [u8], m: &MsgAnimalState) -> usize {
     let mut off = MSG_ANIMAL_STATE_HEADER;
     for e in &m.entries[..n] {
         put_u32_le(p, off, e.id);
-        put_u32_le(p, off + 4, e.state as u32);
+        put_u32_le(p, off + 4, (e.state & 0x0F) as u32 | (((e.kind & 0x0F) as u32) << 4));
         put_f32_le(p, off + 8, e.pos_x);
         put_f32_le(p, off + 12, e.pos_y);
         put_f32_le(p, off + 16, e.pos_z);
@@ -1883,7 +1890,9 @@ pub fn read_animal_state(payload: &[u8]) -> Option<MsgAnimalState> {
     let mut off = MSG_ANIMAL_STATE_HEADER;
     for e in &mut out.entries[..n] {
         e.id = get_u32_le(payload, off);
-        e.state = (get_u32_le(payload, off + 4) & 0xFF) as u8;
+        let sw = get_u32_le(payload, off + 4);
+        e.state = (sw & 0x0F) as u8;
+        e.kind = ((sw >> 4) & 0x0F) as u8;
         e.pos_x = get_f32_le(payload, off + 8);
         e.pos_y = get_f32_le(payload, off + 12);
         e.pos_z = get_f32_le(payload, off + 16);
@@ -2983,6 +2992,7 @@ mod tests {
         m.entries[0] = MsgAnimalEntry {
             id: 9,
             state: ANIMAL_STATE_FLEE,
+            kind: 1, /* stalker - rides bits 4..8 of the state word */
             pos_x: 100.0,
             pos_y: 2.0,
             pos_z: 3.0,
