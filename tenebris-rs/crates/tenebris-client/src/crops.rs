@@ -20,7 +20,7 @@ use std::cell::{Cell, RefCell};
 use sokol::gl as sgl;
 
 use tenebris_core::blocks::Block;
-use tenebris_core::farming::{self, Crop};
+use tenebris_core::farming::{self, Crop, CropKind};
 use tenebris_core::math::{
     dvec3_add, dvec3_cross, dvec3_length, dvec3_make, dvec3_normalize, dvec3_scale, dvec3_sub,
     DVec3, Vec3,
@@ -185,7 +185,7 @@ pub fn plant_or_harvest(
     w: &World,
     p: &PlayerCtrl,
     interact: &InteractState,
-    has_seeds: bool,
+    seed_kind: Option<CropKind>,
     has_hoe: bool,
 ) -> Outcome {
     let center = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
@@ -233,9 +233,9 @@ pub fn plant_or_harvest(
         }
         return Outcome::None;
     }
-    if !has_seeds {
+    let Some(kind) = seed_kind else {
         return Outcome::None;
-    }
+    };
     let Some(tt) = w.grid.tile(interact.hit_tile) else {
         return Outcome::None;
     };
@@ -252,7 +252,7 @@ pub fn plant_or_harvest(
                 return Outcome::None;
             }
         }
-        let crop = Crop::new(pos, dir_up, interact.hit_tile);
+        let crop = Crop::new(pos, dir_up, interact.hit_tile, kind);
         s.list.push(crop);
         Outcome::Planted(crop)
     })
@@ -307,6 +307,7 @@ pub fn sp_save_after_change(w: &World) {
             up: [c.up.x as f32, c.up.y as f32, c.up.z as f32],
             tile_idx: c.tile_idx,
             growth: c.growth,
+            kind: c.kind as u8,
         });
     }
     crate::persistence::save_crops(&name, w.body.id as u32, &buf);
@@ -337,9 +338,11 @@ pub fn dev_spawn(w: &World, p: &PlayerCtrl, ahead: f64) {
                 continue;
             }
             let pos = dvec3_add(center, dvec3_scale(dir, floor));
-            // Growth staged 0.2, 0.4, 0.6, 0.8, 1.0 across the row.
+            // Growth staged 0.2, 0.4, 0.6, 0.8, 1.0 across the row,
+            // cycling berry / wheat / carrot so all visuals frame at once.
             let g = 0.2 + 0.2 * k as f32;
-            s.list.push(Crop::at(pos, dir, tile, g));
+            let kind = CropKind::from_u8((k % 3) as u8);
+            s.list.push(Crop::at(pos, dir, tile, g, kind));
         }
     });
 }
@@ -392,9 +395,14 @@ fn draw_box(cx: f32, cy: f32, cz: f32, hx: f32, hy: f32, hz: f32, r: f32, g: f32
     sgl::end();
 }
 
-/// Draw one crop: a stem that grows taller with `growth`, a leaf pair, and
-/// red berries once mature. Origin at the feet, +Y up.
-fn draw_crop(pos: DVec3, up: DVec3, growth: f32, lit: f32) {
+/// Draw one crop, per kind. Origin at the feet, +Y up. All three share
+/// the grow-taller-with-`growth` silhouette so ripeness reads at a
+/// glance; kind changes the shape + palette:
+/// - Berry: single stem, leaf pair, red berries when mature.
+/// - Wheat: a clump of thin stalks that turn golden, seed heads on top.
+/// - Carrot: low frond fan; the orange root crowns out of the soil
+///   when mature (the "harvest me" cue).
+fn draw_crop(pos: DVec3, up: DVec3, growth: f32, kind: CropKind, lit: f32) {
     let basis = orient_basis(up);
     let g = growth.clamp(0.05, 1.0);
 
@@ -402,22 +410,62 @@ fn draw_crop(pos: DVec3, up: DVec3, growth: f32, lit: f32) {
     sgl::translate(pos.x as f32, pos.y as f32, pos.z as f32);
     sgl::mult_matrix(&basis[0]);
 
-    // Stem - young sprouts are a lighter, yellower green; ripe ones darker.
-    let stem_h = 0.12 + 0.42 * g;
-    let (sr, sg, sb) = (0.30 + 0.10 * (1.0 - g), 0.55 + 0.15 * g, 0.20);
-    draw_box(0.0, stem_h * 0.5, 0.0, 0.035, stem_h * 0.5, 0.035, sr, sg, sb, lit);
+    match kind {
+        CropKind::Berry => {
+            // Stem - young sprouts lighter / yellower green; ripe darker.
+            let stem_h = 0.12 + 0.42 * g;
+            let (sr, sg, sb) = (0.30 + 0.10 * (1.0 - g), 0.55 + 0.15 * g, 0.20);
+            draw_box(0.0, stem_h * 0.5, 0.0, 0.035, stem_h * 0.5, 0.035, sr, sg, sb, lit);
 
-    // Leaf pair fanning out near the top, scaled by growth.
-    let leaf = 0.06 + 0.12 * g;
-    let ly = stem_h * 0.72;
-    draw_box(leaf * 0.9, ly, 0.0, leaf, 0.02, leaf * 0.6, 0.28, 0.62, 0.24, lit);
-    draw_box(-leaf * 0.9, ly, 0.0, leaf, 0.02, leaf * 0.6, 0.28, 0.62, 0.24, lit);
+            // Leaf pair fanning out near the top, scaled by growth.
+            let leaf = 0.06 + 0.12 * g;
+            let ly = stem_h * 0.72;
+            draw_box(leaf * 0.9, ly, 0.0, leaf, 0.02, leaf * 0.6, 0.28, 0.62, 0.24, lit);
+            draw_box(-leaf * 0.9, ly, 0.0, leaf, 0.02, leaf * 0.6, 0.28, 0.62, 0.24, lit);
 
-    // Berries only on a mature crop - the visual "harvest me" cue.
-    if growth >= 1.0 {
-        draw_box(0.05, stem_h + 0.03, 0.03, 0.03, 0.03, 0.03, 0.85, 0.15, 0.20, lit);
-        draw_box(-0.04, stem_h + 0.06, -0.03, 0.03, 0.03, 0.03, 0.90, 0.20, 0.25, lit);
-        draw_box(0.0, stem_h + 0.10, 0.0, 0.03, 0.03, 0.03, 0.80, 0.12, 0.18, lit);
+            // Berries only on a mature crop - the visual "harvest me" cue.
+            if growth >= 1.0 {
+                draw_box(0.05, stem_h + 0.03, 0.03, 0.03, 0.03, 0.03, 0.85, 0.15, 0.20, lit);
+                draw_box(-0.04, stem_h + 0.06, -0.03, 0.03, 0.03, 0.03, 0.90, 0.20, 0.25, lit);
+                draw_box(0.0, stem_h + 0.10, 0.0, 0.03, 0.03, 0.03, 0.80, 0.12, 0.18, lit);
+            }
+        }
+        CropKind::Wheat => {
+            // Green -> golden as it ripens; taller than the berry bush.
+            let stalk_h = 0.10 + 0.55 * g;
+            let (sr, sg, sb) = (
+                0.30 + 0.45 * g, // toward wheat gold
+                0.55 + 0.15 * g,
+                0.18 + 0.04 * (1.0 - g),
+            );
+            // A clump of 5 thin stalks around the planting point.
+            const STALKS: [(f32, f32); 5] =
+                [(0.0, 0.0), (0.07, 0.04), (-0.06, 0.05), (0.05, -0.06), (-0.05, -0.05)];
+            for (i, (ox, oz)) in STALKS.iter().enumerate() {
+                let h = stalk_h * (0.85 + 0.05 * (i % 3) as f32);
+                draw_box(*ox, h * 0.5, *oz, 0.016, h * 0.5, 0.016, sr, sg, sb, lit);
+                // Seed head: a slightly fatter knob on each ripe stalk.
+                if growth >= 1.0 {
+                    draw_box(*ox, h + 0.035, *oz, 0.028, 0.045, 0.028, 0.82, 0.68, 0.28, lit);
+                }
+            }
+        }
+        CropKind::Carrot => {
+            // Low, bushy frond fan - carrots stay short.
+            let frond_h = 0.08 + 0.16 * g;
+            let spread = 0.05 + 0.09 * g;
+            let (fr, fg, fb) = (0.18, 0.50 + 0.12 * g, 0.16);
+            draw_box(0.0, frond_h * 0.5, 0.0, 0.025, frond_h * 0.5, 0.025, fr, fg, fb, lit);
+            draw_box(spread, frond_h * 0.42, 0.0, 0.02, frond_h * 0.42, 0.02, fr, fg * 0.92, fb, lit);
+            draw_box(-spread, frond_h * 0.42, 0.0, 0.02, frond_h * 0.42, 0.02, fr, fg * 0.92, fb, lit);
+            draw_box(0.0, frond_h * 0.42, spread, 0.02, frond_h * 0.42, 0.02, fr, fg * 0.96, fb, lit);
+            draw_box(0.0, frond_h * 0.42, -spread, 0.02, frond_h * 0.42, 0.02, fr, fg * 0.96, fb, lit);
+
+            // The root crowns out of the soil when mature.
+            if growth >= 1.0 {
+                draw_box(0.0, 0.035, 0.0, 0.045, 0.035, 0.045, 0.88, 0.42, 0.10, lit);
+            }
+        }
     }
 
     sgl::pop_matrix();
@@ -461,7 +509,7 @@ pub fn draw(view: Mat4, proj: Mat4) {
     for crop in &list {
         let up = dvec3_normalize(dvec3_sub(crop.pos, center));
         let lit = renderer::entity_sun_brightness(crop.pos);
-        draw_crop(crop.pos, up, crop.growth, lit);
+        draw_crop(crop.pos, up, crop.growth, crop.kind, lit);
     }
     renderer::sgl_world_end();
     /* No sgl_draw here - the world context flushes in

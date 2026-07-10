@@ -56,6 +56,13 @@ out: hoe 1
 in: plank 2
 in: stick 2
 
+# Bread: bake 3 harvested wheat into the best plant food (hunger restore
+# tuned in farming.yaml as bread_hunger_restore).
+[bread]
+tier: 0
+out: bread 1
+in: wheat 3
+
 # Higher pickaxe tiers - same rock access as the wood pickaxe but faster
 # (10 s -> 7 s -> 4 s on stone). Stone is the mined block; iron needs a
 # smelted ingot, so the iron pickaxe sits behind the furnace.

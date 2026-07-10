@@ -105,6 +105,9 @@ pub struct PersistenceCrop {
     pub tile_idx: i32,
     /// Growth 0.0 (planted) .. 1.0 (mature).
     pub growth: f32,
+    /// CropKind byte (farming::CropKind as u8). Optional trailing CSV
+    /// field so pre-kind saves load as Berry (kind 0).
+    pub kind: u8,
 }
 
 /* ------------------------------------------------------------------ */
@@ -674,7 +677,7 @@ pub fn save_crops(world_name: &str, body_id: u32, crops: &[PersistenceCrop]) -> 
             buf.push('\n');
         }
         buf.push_str(&format!(
-            "{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6}",
+            "{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{}",
             c.tile_idx,
             c.pos[0] as f64,
             c.pos[1] as f64,
@@ -682,7 +685,8 @@ pub fn save_crops(world_name: &str, body_id: u32, crops: &[PersistenceCrop]) -> 
             c.up[0] as f64,
             c.up[1] as f64,
             c.up[2] as f64,
-            c.growth as f64
+            c.growth as f64,
+            c.kind
         ));
     }
     client_kv::set(&key, &buf);
@@ -712,20 +716,29 @@ fn parse_crop_line(line: &str) -> Option<PersistenceCrop> {
     let mut f = [0f32; 7];
     for (i, v) in f.iter_mut().enumerate() {
         let field = it.next()?;
-        // The growth field is last, so (like the torch line's sixth
-        // float) tolerate a mangled '_'-joined trailer on the native
-        // backend by taking the longest float prefix.
+        // Growth may be the last field (pre-kind saves), so (like the
+        // torch line's sixth float) tolerate a mangled '_'-joined
+        // trailer on the native backend by taking the longest float
+        // prefix.
         *v = if i == 6 {
             strtof_prefix(field)?
         } else {
             field.trim_start().parse::<f32>().ok()?
         };
     }
+    // Optional trailing kind byte: absent (pre-kind save) or garbled
+    // reads as 0 = Berry, the original crop.
+    let kind = it
+        .next()
+        .and_then(|s| strtof_prefix(s))
+        .map(|v| v.clamp(0.0, 255.0) as u8)
+        .unwrap_or(0);
     Some(PersistenceCrop {
         pos: [f[0], f[1], f[2]],
         up: [f[3], f[4], f[5]],
         tile_idx,
         growth: f[6].clamp(0.0, 1.0),
+        kind,
     })
 }
 
@@ -1009,12 +1022,14 @@ mod tests {
                 up: [1.0, 0.0, 0.0],
                 tile_idx: 41,
                 growth: 0.25,
+                kind: 1, // wheat
             },
             PersistenceCrop {
                 pos: [-4.5, 0.0, 6.25],
                 up: [0.0, 1.0, 0.0],
                 tile_idx: 7,
                 growth: 1.0,
+                kind: 0,
             },
         ];
         // Single crop: no '\n' framing, so it round-trips on both backends.
@@ -1030,6 +1045,9 @@ mod tests {
         let c = parse_crop_line("5,1.0,2.0,3.0,0.0,1.0,0.0,2.5").expect("valid");
         assert_eq!(c.growth, 1.0); // clamped
         assert_eq!(c.tile_idx, 5);
+        assert_eq!(c.kind, 0, "pre-kind save line loads as Berry");
+        let k = parse_crop_line("5,1.0,2.0,3.0,0.0,1.0,0.0,0.5,2").expect("valid");
+        assert_eq!(k.kind, 2, "trailing kind field round-trips");
     }
 
     #[test]

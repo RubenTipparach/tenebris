@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate farming item sprites (seeds + berries).
+"""Generate farming item sprites (seeds, berries, wheat, bread, carrot).
 
 Baked-asset path (CLAUDE.md static-asset guidelines): deterministic 16x16
 RGBA PNGs under assets/textures/items/, sampled by ui_icons. stdlib+zlib.
@@ -24,6 +24,18 @@ PAL = {
     "g": (46, 120, 44, 255),    # leaf
     "G": (72, 158, 66, 255),    # leaf highlight
     "m": (96, 66, 34, 255),     # stem
+    # wheat - golden stalks + grain heads
+    "w": (188, 142, 52, 255),   # stalk
+    "W": (228, 186, 84, 255),   # grain head
+    "y": (246, 214, 128, 255),  # grain highlight
+    # bread - baked loaf
+    "k": (150, 96, 44, 255),    # crust
+    "K": (198, 138, 70, 255),   # crust top
+    "c": (238, 204, 148, 255),  # crumb / score marks
+    # carrot - orange root
+    "o": (206, 96, 20, 255),    # root body
+    "O": (240, 138, 48, 255),   # root highlight
+    "r": (160, 66, 12, 255),    # root shadow
 }
 
 
@@ -68,7 +80,98 @@ BERRIES = [
     "..bb............",
 ]
 
-SPRITES = {"seeds": SEEDS, "berries": BERRIES}
+# Wheat seeds: the berry-seed scatter recoloured golden reads as "wheat"
+# at 16px - same pip shapes, wheat palette.
+WHEAT_SEEDS = [
+    "................",
+    "................",
+    "....wy..........",
+    "...wyW..........",
+    "...wWW..........",
+    "....w.....wy....",
+    ".........wyW....",
+    ".........wWW....",
+    "..wy......w.....",
+    ".wyW............",
+    ".wWW.....wy.....",
+    "..w.....wyW.....",
+    "........wWW.....",
+    ".........w......",
+    "................",
+    "................",
+]
+
+
+# Wheat: three golden stalks with grain heads, tied at the base.
+WHEAT = [
+    "................",
+    "...y....y...y...",
+    "..yWy..yWy.yWy..",
+    "..yWy..yWy.yWy..",
+    "..WWW..WWW.WWW..",
+    "..WWW..WWW.WWW..",
+    "..yWy..yWy.yWy..",
+    "...W....W...W...",
+    "...w....w...w...",
+    "...w...w....w...",
+    "....w..w...w....",
+    "....w..w...w....",
+    ".....w.w..w.....",
+    ".....www.w......",
+    "......mmm.......",
+    "................",
+]
+
+
+# Bread: a scored loaf in three-quarter view.
+BREAD = [
+    "................",
+    "................",
+    "................",
+    "................",
+    ".....KKKKKK.....",
+    "...KKKKKKKKKK...",
+    "..KKcKKcKKcKKk..",
+    "..KKKcKKcKKKKk..",
+    ".kKKKKKKKKKKKKk.",
+    ".kKKKKKKKKKKKKk.",
+    ".kkKKKKKKKKKKkk.",
+    "..kkkkkkkkkkkk..",
+    "...kkkkkkkkkk...",
+    "................",
+    "................",
+    "................",
+]
+
+
+# Carrot: tapered orange root with a leafy top.
+CARROT = [
+    "................",
+    "..........gG....",
+    ".........gGG....",
+    ".........gGg....",
+    "........OGg.....",
+    ".......OOo......",
+    "......OOor......",
+    "......Ooor......",
+    ".....OOor.......",
+    "....OOoor.......",
+    "....Ooor........",
+    "...Ooor.........",
+    "...oor..........",
+    "..oor...........",
+    "..rr............",
+    "................",
+]
+
+SPRITES = {
+    "seeds": SEEDS,
+    "berries": BERRIES,
+    "wheat_seeds": WHEAT_SEEDS,
+    "wheat": WHEAT,
+    "bread": BREAD,
+    "carrot": CARROT,
+}
 
 
 def write_png(path, rows):

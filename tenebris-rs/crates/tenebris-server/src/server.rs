@@ -209,6 +209,8 @@ struct ServerCrop {
     up: [f32; 3],
     growth: f32,
     updated_sim_s: f64,
+    /// farming::CropKind byte (0 berry / 1 wheat / 2 carrot).
+    kind: u8,
 }
 
 #[derive(Default)]
@@ -537,19 +539,22 @@ fn room_bents_get_or_load(
     Some(slot)
 }
 
-/// Current growth of a server crop, derived from the sim clock.
+/// Current growth of a server crop, derived from the sim clock and the
+/// crop kind's own grow time.
 fn crop_growth_at(c: &ServerCrop, sim_now: f64) -> f32 {
-    let grow_time = farming::config().grow_time_s.max(0.001) as f64;
+    let kind = farming::CropKind::from_u8(c.kind);
+    let grow_time = farming::config().grow_time(kind).max(0.001) as f64;
     (c.growth as f64 + ((sim_now - c.updated_sim_s).max(0.0) / grow_time)).min(1.0) as f32
 }
 
-/// Persisted crop blob: one "tile:px:py:pz:ux:uy:uz:growth" per line,
-/// growth refreshed to `sim_now` at write.
+/// Persisted crop blob: one "tile:px:py:pz:ux:uy:uz:growth:kind" per
+/// line, growth refreshed to `sim_now` at write. The trailing kind field
+/// is optional on load (pre-kind saves read as berry).
 fn crops_serialize(list: &[ServerCrop], sim_now: f64) -> String {
     list.iter()
         .map(|c| {
             format!(
-                "{}:{:.3}:{:.3}:{:.3}:{:.4}:{:.4}:{:.4}:{:.4}",
+                "{}:{:.3}:{:.3}:{:.3}:{:.4}:{:.4}:{:.4}:{:.4}:{}",
                 c.tile_idx,
                 c.pos[0],
                 c.pos[1],
@@ -557,7 +562,8 @@ fn crops_serialize(list: &[ServerCrop], sim_now: f64) -> String {
                 c.up[0],
                 c.up[1],
                 c.up[2],
-                crop_growth_at(c, sim_now)
+                crop_growth_at(c, sim_now),
+                c.kind
             )
         })
         .collect::<Vec<_>>()
@@ -594,12 +600,15 @@ fn room_crops_get_or_load(room: &mut Room, seed: u64, body_id: u32, sim_now: f64
             ) else {
                 continue;
             };
+            /* Optional trailing kind field; absent (pre-kind save) = berry. */
+            let kind = f.get(8).and_then(|s| s.trim().parse::<u8>().ok()).unwrap_or(0);
             room.crops[slot].list.push(ServerCrop {
                 tile_idx: tile,
                 pos: [px, py, pz],
                 up: [ux, uy, uz],
                 growth: g.clamp(0.0, 1.0),
                 updated_sim_s: sim_now,
+                kind,
             });
         }
         if !room.crops[slot].list.is_empty() {
@@ -1910,6 +1919,7 @@ impl Server {
                         up: [e.up_x, e.up_y, e.up_z],
                         growth: e.growth.clamp(0.0, 1.0),
                         updated_sim_s: sim_now,
+                        kind: e.kind,
                     });
                     planted += 1;
                 } else if e.op == CROP_OP_REMOVE {
@@ -2053,6 +2063,7 @@ impl Server {
                 for (i, c) in chunk.iter().enumerate() {
                     m.entries[i] = MsgCropEntry {
                         op: CROP_OP_PLANT,
+                        kind: c.kind,
                         tile_idx: c.tile_idx as u32,
                         pos_x: c.pos[0],
                         pos_y: c.pos[1],
@@ -4375,6 +4386,7 @@ mod tests {
         m.entry_count = 1;
         m.entries[0] = MsgCropEntry {
             op,
+            kind: 1, /* wheat - proves the kind byte survives the trip */
             tile_idx: tile as u32,
             pos_x: pos[0],
             pos_y: pos[1],

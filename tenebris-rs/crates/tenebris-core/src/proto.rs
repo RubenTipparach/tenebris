@@ -680,6 +680,10 @@ pub const MSG_CROP_DIFF_HEADER: usize = 8; /* body(4) + count(2) + reserved(2) *
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct MsgCropEntry {
     pub op: u8,
+    /// CropKind byte (farming::CropKind as u8). Packed into byte 1 of the
+    /// op word on the wire, so the entry size / version stay unchanged
+    /// and old peers (which mask the low byte) still interop.
+    pub kind: u8,
     pub tile_idx: u32,
     pub pos_x: f32,
     pub pos_y: f32,
@@ -1786,7 +1790,7 @@ pub fn write_crop_diff(buf: &mut [u8], m: &MsgCropDiff) -> usize {
     put_u16_le(p, 6, 0);
     let mut off = MSG_CROP_DIFF_HEADER;
     for e in &m.entries[..n] {
-        put_u32_le(p, off, e.op as u32);
+        put_u32_le(p, off, e.op as u32 | ((e.kind as u32) << 8));
         put_u32_le(p, off + 4, e.tile_idx);
         put_f32_le(p, off + 8, e.pos_x);
         put_f32_le(p, off + 12, e.pos_y);
@@ -1815,7 +1819,9 @@ pub fn read_crop_diff(payload: &[u8]) -> Option<MsgCropDiff> {
     out.entry_count = n as u16;
     let mut off = MSG_CROP_DIFF_HEADER;
     for e in &mut out.entries[..n] {
-        e.op = (get_u32_le(payload, off) & 0xFF) as u8;
+        let word = get_u32_le(payload, off);
+        e.op = (word & 0xFF) as u8;
+        e.kind = ((word >> 8) & 0xFF) as u8;
         e.tile_idx = get_u32_le(payload, off + 4);
         e.pos_x = get_f32_le(payload, off + 8);
         e.pos_y = get_f32_le(payload, off + 12);
@@ -2948,6 +2954,7 @@ mod tests {
         m.entry_count = 2;
         m.entries[0] = MsgCropEntry {
             op: CROP_OP_PLANT,
+            kind: 2, /* Carrot - rides byte 1 of the op word */
             tile_idx: 41,
             pos_x: 304.0,
             pos_y: 1.5,

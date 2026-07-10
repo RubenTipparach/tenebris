@@ -2328,6 +2328,25 @@ fn draw_crop_hint(screen_w: f32, screen_h: f32) {
     sdtx::color3b(0xff, 0xff, 0xff);
 }
 
+/// Which crop kind a plant press would sow, or `None` without seeds.
+/// The SELECTED hotbar item wins when it's a seed (deliberate choice of
+/// what to plant); otherwise the bag is scanned berry -> wheat -> carrot
+/// so bare "T on farmland" still plants something sensible.
+fn plantable_seed_kind(p: &crate::player_ctrl::PlayerCtrl) -> Option<tenebris_core::farming::CropKind> {
+    use tenebris_core::farming::{kind_for_seed, CropKind};
+    if let Some(sel) = inventory::selected_item(&p.inventory) {
+        if let Some(k) = kind_for_seed(sel) {
+            return Some(k);
+        }
+    }
+    for k in [CropKind::Berry, CropKind::Wheat, CropKind::Carrot] {
+        if p.bag.count_of(tenebris_core::farming::seed_item(k)) > 0 {
+            return Some(k);
+        }
+    }
+    None
+}
+
 /// Farming ground hint: with a hoe on hand, dirt/grass under the reticle
 /// prompts "[T] till soil"; tilled farmland with seeds prompts
 /// "[T] plant seed". Makes the till-before-plant flow discoverable (it's
@@ -2341,7 +2360,7 @@ fn draw_farming_hint(app: &App, screen_w: f32, screen_h: f32) {
     }
     let ground = app.world.borrow().get(app.interact.hit_tile, app.interact.hit_depth);
     let p = app.player.borrow();
-    let msg = if ground == Block::Farmland && p.bag.count_of(tenebris_core::items::SEEDS) > 0 {
+    let msg = if ground == Block::Farmland && plantable_seed_kind(&p).is_some() {
         "[T] plant seed"
     } else if (ground == Block::Dirt || ground == Block::Grass)
         && inventory::selected_item(&p.inventory) == Some(tenebris_core::items::HOE)
@@ -2711,6 +2730,7 @@ fn apply_sp_world_saves(w_rc: &Rc<RefCell<World>>) {
                     DVec3 { x: c.up[0] as f64, y: c.up[1] as f64, z: c.up[2] as f64 },
                     c.tile_idx,
                     c.growth,
+                    tenebris_core::farming::CropKind::from_u8(c.kind),
                 )
             })
             .collect();
@@ -3605,15 +3625,24 @@ fn frame_inner(app: &mut App) {
         if p.survival_mode {
             p.hunger = (p.hunger - player_ctrl::HUNGER_DRAIN_PER_S * dt).max(0.0);
             if input::consume_eat() {
+                /* Best food first: cooked meat > bread > raw meat >
+                 * berries > carrot (restore order). */
+                let fcfg = tenebris_core::farming::config();
                 let restore = if p.bag.count_of(tenebris_core::items::COOKED_MEAT) > 0 {
                     p.bag.take(tenebris_core::items::COOKED_MEAT, 1);
                     45.0
+                } else if p.bag.count_of(tenebris_core::items::BREAD) > 0 {
+                    p.bag.take(tenebris_core::items::BREAD, 1);
+                    fcfg.bread_hunger_restore
                 } else if p.bag.count_of(tenebris_core::items::RAW_MEAT) > 0 {
                     p.bag.take(tenebris_core::items::RAW_MEAT, 1);
                     20.0
                 } else if p.bag.count_of(tenebris_core::items::BERRIES) > 0 {
                     p.bag.take(tenebris_core::items::BERRIES, 1);
-                    tenebris_core::farming::config().berry_hunger_restore
+                    fcfg.berry_hunger_restore
+                } else if p.bag.count_of(tenebris_core::items::CARROT) > 0 {
+                    p.bag.take(tenebris_core::items::CARROT, 1);
+                    fcfg.carrot_hunger_restore
                 } else {
                     0.0
                 };
@@ -3817,15 +3846,29 @@ fn frame_inner(app: &mut App) {
             let outcome = {
                 let w = phys_world.borrow();
                 let p = app.player.borrow();
-                let has_seeds = p.bag.count_of(tenebris_core::items::SEEDS) > 0;
+                let seed_kind = plantable_seed_kind(&p);
                 /* Equip rule: the hoe only tills while selected. */
                 let has_hoe =
                     inventory::selected_item(&p.inventory) == Some(tenebris_core::items::HOE);
-                crops::plant_or_harvest(&w, &p, &app.interact, has_seeds, has_hoe)
+                crops::plant_or_harvest(&w, &p, &app.interact, seed_kind, has_hoe)
             };
             match outcome {
                 crops::Outcome::Planted(crop) => {
-                    app.player.borrow_mut().bag.take(tenebris_core::items::SEEDS, 1);
+                    let seed = tenebris_core::farming::seed_item(crop.kind);
+                    {
+                        let mut p = app.player.borrow_mut();
+                        if p.bag.take(seed, 1) > 0 {
+                            /* Seed lived in the hotbar, not the bag. */
+                            let sel = p.inventory.selected as usize;
+                            let s = &mut p.inventory.slots[sel];
+                            if s.item == seed && s.count > 0 {
+                                s.count -= 1;
+                                if s.count == 0 {
+                                    s.item = Block::Air as u16;
+                                }
+                            }
+                        }
+                    }
                     if mp {
                         let body_id = phys_world.borrow().body.id as u32;
                         net_client::send_crop_op(
@@ -3835,6 +3878,7 @@ fn frame_inner(app: &mut App) {
                             crop.pos,
                             crop.up,
                             crop.growth,
+                            crop.kind as u8,
                         );
                     } else {
                         crops::sp_save_after_change(&phys_world.borrow());
@@ -3844,8 +3888,12 @@ fn frame_inner(app: &mut App) {
                     let cfg = tenebris_core::farming::config();
                     {
                         let mut p = app.player.borrow_mut();
-                        p.bag.add(tenebris_core::items::BERRIES, cfg.produce_count());
-                        p.bag.add(tenebris_core::items::SEEDS, cfg.seed_count());
+                        let produce = tenebris_core::farming::produce_item(crop.kind);
+                        p.bag.add(produce, cfg.produce_count_of(crop.kind));
+                        let seeds = cfg.seed_count_of(crop.kind);
+                        if seeds > 0 {
+                            p.bag.add(tenebris_core::farming::seed_item(crop.kind), seeds);
+                        }
                     }
                     if mp {
                         let body_id = phys_world.borrow().body.id as u32;
@@ -3856,6 +3904,7 @@ fn frame_inner(app: &mut App) {
                             crop.pos,
                             crop.up,
                             crop.growth,
+                            crop.kind as u8,
                         );
                     } else {
                         crops::sp_save_after_change(&phys_world.borrow());
