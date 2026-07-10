@@ -18,6 +18,7 @@ pub mod planet_gen;
 pub mod proto;
 pub mod rng;
 pub mod rocket;
+pub mod scatter;
 pub mod world;
 pub mod world_light;
 pub mod world_time;

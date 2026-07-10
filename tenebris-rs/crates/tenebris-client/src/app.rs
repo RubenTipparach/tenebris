@@ -1427,6 +1427,8 @@ extern "C" fn init() {
     tenebris_core::mining::load_config("assets/config/mining.yaml");
     /* Crop growth + yield tuning (farming loop). */
     tenebris_core::farming::load_config("assets/config/farming.yaml");
+    /* Decorative surface scatter densities (grass / rocks / kelp...). */
+    tenebris_core::scatter::load_config("assets/config/scatter.yaml");
     /* Rocket part stats + flight constants (consumed by the rocket
      * assembly + flight port). */
     tenebris_core::rocket::set_config(tenebris_core::rocket::load_rocket_config(
@@ -3725,6 +3727,14 @@ fn frame_inner(app: &mut App) {
             /* Aim a few metres ahead so the decal shot reads at gameplay
              * distance instead of point-blank at the feet block. */
             p.pitch = -0.55;
+        }
+    }
+
+    /* Dev screenshot aid: pin the camera pitch (radians) so headless
+     * stills can frame the ground / horizon without mouse input. */
+    if let Ok(v) = std::env::var("TENEBRIS_DEV_PITCH") {
+        if let Ok(rad) = v.parse::<f32>() {
+            app.player.borrow_mut().pitch = rad;
         }
     }
 

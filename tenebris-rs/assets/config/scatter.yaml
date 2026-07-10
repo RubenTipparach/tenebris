@@ -1,0 +1,39 @@
+# Decorative surface scatter - grass tufts, flowers, rocks, bushes on
+# land; kelp + seaweed on the sea floor. Parsed by core/scatter.rs
+# (tiny key: value subset). All placement is a deterministic per-tile
+# hash and the geometry is baked straight into each terrain chunk's
+# mesh, so thousands of pieces render inside the existing chunk draw
+# calls at zero per-instance cost.
+#
+# A field set to 0 / omitted keeps the compiled-in default; set a
+# *_chance to a negative value to switch that scatter kind off.
+#
+#   grass_chance     probability a grass surface tile grows a tuft clump
+#   grass_blades     blades per tuft (upper bound, hash picks 3..=N)
+#   grass_height_m   blade height in metres (+-30% per-blade hash)
+#   flower_chance    probability a grass surface tile gets a flower
+#   flower_height_m  flower stem height in metres
+#   rock_chance      probability a bare (dirt/sand/stone) tile gets a rock
+#   rock_size_m      rock footprint radius in metres
+#   bush_chance      probability a grass/dirt tile gets a leafy bush
+#   bush_size_m      bush footprint radius in metres
+#   kelp_chance      probability an underwater tile grows a kelp stalk
+#   kelp_seg_m       height of one kelp ribbon segment in metres
+#   kelp_max_segs    max segments per stalk (water depth also caps it)
+#   weed_chance      probability an underwater tile grows seaweed
+#   weed_height_m    seaweed blade height in metres
+scatter:
+  grass_chance: 0.55
+  grass_blades: 5
+  grass_height_m: 0.38
+  flower_chance: 0.12
+  flower_height_m: 0.32
+  rock_chance: 0.1
+  rock_size_m: 0.16
+  bush_chance: 0.05
+  bush_size_m: 0.34
+  kelp_chance: 0.2
+  kelp_seg_m: 0.65
+  kelp_max_segs: 6
+  weed_chance: 0.35
+  weed_height_m: 0.3

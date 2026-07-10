@@ -2852,6 +2852,7 @@ fn build_chunk_mesh(c: &mut MeshChunk, w: &World, tiles: &[i32], has_water: bool
     if tiles.len() < PARALLEL_MIN_TILES || nthreads < 2 {
         for &i in tiles {
             hex_mesher::build_tile(&mut c.mesh, w, i);
+            hex_mesher::build_scatter(&mut c.mesh, w, i);
             hex_mesher::build_water(&mut c.water_mesh, w, i);
             if has_water {
                 hex_mesher::build_water_voxels(&mut c.water_mesh, w, i);
@@ -2868,6 +2869,7 @@ fn build_chunk_mesh(c: &mut MeshChunk, w: &World, tiles: &[i32], has_water: bool
             let mut water = HexMesh::new();
             for &i in range {
                 hex_mesher::build_tile(&mut mesh, w, i);
+                hex_mesher::build_scatter(&mut mesh, w, i);
                 hex_mesher::build_water(&mut water, w, i);
                 if has_water {
                     hex_mesher::build_water_voxels(&mut water, w, i);
@@ -3056,6 +3058,7 @@ fn body_full_mesh(r: &mut Renderer, bi: usize) {
                 c.water_mesh.reset();
                 for i in tiles {
                     hex_mesher::build_tile(&mut c.mesh, w_ref, i);
+                    hex_mesher::build_scatter(&mut c.mesh, w_ref, i);
                     if has_water {
                         hex_mesher::build_water(&mut c.water_mesh, w_ref, i);
                         hex_mesher::build_water_voxels(&mut c.water_mesh, w_ref, i);

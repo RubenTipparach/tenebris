@@ -1878,6 +1878,432 @@ pub fn relight_if_needed(w: &mut World) {
 }
 
 /* ----------------------------------------------------------------------- */
+/* Decorative surface scatter - grass tufts, flowers, rocks, bushes on
+ * land, kelp + seaweed underwater. Baked into the chunk's opaque mesh
+ * right next to build_tile, so thousands of pieces ride the existing
+ * chunk draw calls (one bind + draw per chunk - "instanced" in effect
+ * without a per-instance pipeline). Placement is a deterministic
+ * per-tile hash, so parallel partial builds stitch byte-identically
+ * and a chunk rebuild after mining regrows the exact same scatter on
+ * the surviving surface. Tuning lives in assets/config/scatter.yaml
+ * (core::scatter). Kept OUT of build_tile so the C-pinned mesh hashes
+ * above stay valid - the renderer calls it alongside build_tile. */
+
+use tenebris_core::rng::hash2;
+use tenebris_core::scatter as scatter_cfg;
+
+/* Hash salts - arbitrary distinct streams per decision, not tunables. */
+const SALT_KIND: i32 = 0x51;
+const SALT_COUNT: i32 = 0x52;
+const SALT_POS_A: i32 = 0x53;
+const SALT_POS_B: i32 = 0x54;
+const SALT_SIZE: i32 = 0x55;
+const SALT_ANGLE: i32 = 0x56;
+const SALT_VARIANT: i32 = 0x57;
+
+/// Interior UV rect of an atlas column, inset so linear filtering never
+/// bleeds the neighbouring column: (u_lo, u_hi, v_lo, v_hi).
+fn tile_uv(block: Block, cap: FaceCap) -> (f32, f32, f32, f32) {
+    let u0 = blocks::face_tile(block, cap) as f32 * HEX_ATLAS_U_STEP;
+    (
+        u0 + HEX_ATLAS_U_STEP * 0.2,
+        u0 + HEX_ATLAS_U_STEP * 0.8,
+        0.2,
+        0.8,
+    )
+}
+
+/// One triangle, visible from both sides (3 shared verts, both index
+/// windings - the hex pipeline back-face culls). Normal is the surface
+/// up so scatter shades like the ground it stands on (no lighting pop
+/// against the cap it sits on).
+#[allow(clippy::too_many_arguments)]
+fn push_tri_2side(
+    out: &mut HexMesh,
+    p: [DVec3; 3],
+    uv: [(f32, f32); 3],
+    up: DVec3,
+    sky: f32,
+    torch: f32,
+    wet: f32,
+) {
+    let base = out.vertices.len() as u32;
+    reserve(out, 3, 6);
+    for i in 0..3 {
+        push_vertex(out, p[i], up, uv[i].0, uv[i].1, sky, torch, wet);
+    }
+    out.indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 1]);
+}
+
+/// One quad (two triangles), visible from both sides.
+#[allow(clippy::too_many_arguments)]
+fn push_quad_2side(
+    out: &mut HexMesh,
+    p: [DVec3; 4],
+    uv: [(f32, f32); 4],
+    up: DVec3,
+    sky: f32,
+    torch: f32,
+    wet: f32,
+) {
+    let base = out.vertices.len() as u32;
+    reserve(out, 4, 12);
+    for i in 0..4 {
+        push_vertex(out, p[i], up, uv[i].0, uv[i].1, sky, torch, wet);
+    }
+    out.indices.extend_from_slice(&[
+        base, base + 1, base + 2, base, base + 2, base + 3, /* front */
+        base, base + 2, base + 1, base, base + 3, base + 2, /* back */
+    ]);
+}
+
+/// A tapered blade: triangle from a base segment up to a leaning tip.
+#[allow(clippy::too_many_arguments)]
+fn push_blade(
+    out: &mut HexMesh,
+    base: DVec3,
+    up: DVec3,
+    side: DVec3,
+    lean: DVec3,
+    h: f64,
+    half_w: f64,
+    uvr: (f32, f32, f32, f32),
+    sky: f32,
+    torch: f32,
+    wet: f32,
+) {
+    let a = dvec3_sub(base, dvec3_scale(side, half_w));
+    let b = dvec3_add(base, dvec3_scale(side, half_w));
+    let tip = dvec3_add(dvec3_add(base, dvec3_scale(up, h)), lean);
+    let (u_lo, u_hi, v_lo, v_hi) = uvr;
+    let uc = (u_lo + u_hi) * 0.5;
+    push_tri_2side(
+        out,
+        [a, b, tip],
+        [(u_lo, v_hi), (u_hi, v_hi), (uc, v_lo)],
+        up,
+        sky,
+        torch,
+        wet,
+    );
+}
+
+/// A small solid hex prism (rock / bush lump): 6 side quads wound
+/// outward + a top cap fan. Single-sided - it's convex.
+#[allow(clippy::too_many_arguments)]
+fn push_prism(
+    out: &mut HexMesh,
+    base: DVec3,
+    up: DVec3,
+    t1: DVec3,
+    t2: DVec3,
+    radius: f64,
+    h: f64,
+    phase: f64,
+    uvr: (f32, f32, f32, f32),
+    sky: f32,
+    torch: f32,
+    wet: f32,
+) {
+    let (u_lo, u_hi, v_lo, v_hi) = uvr;
+    let top_c = dvec3_add(base, dvec3_scale(up, h));
+    let mut rim_bot = [DVec3::default(); 6];
+    let mut rim_top = [DVec3::default(); 6];
+    for (j, (rb, rt)) in rim_bot.iter_mut().zip(rim_top.iter_mut()).enumerate() {
+        let ang = phase + j as f64 / 6.0 * std::f64::consts::TAU;
+        let dirt = dvec3_add(dvec3_scale(t1, ang.cos()), dvec3_scale(t2, ang.sin()));
+        *rb = dvec3_add(base, dvec3_scale(dirt, radius));
+        *rt = dvec3_add(top_c, dvec3_scale(dirt, radius * 0.8));
+    }
+    /* Sides: CCW rim order + radial-out quads. */
+    for j in 0..6 {
+        let k = (j + 1) % 6;
+        let basev = out.vertices.len() as u32;
+        reserve(out, 4, 6);
+        push_vertex(out, rim_bot[j], up, u_lo, v_hi, sky, torch, wet);
+        push_vertex(out, rim_bot[k], up, u_hi, v_hi, sky, torch, wet);
+        push_vertex(out, rim_top[k], up, u_hi, v_lo, sky, torch, wet);
+        push_vertex(out, rim_top[j], up, u_lo, v_lo, sky, torch, wet);
+        out.indices.extend_from_slice(&[basev, basev + 1, basev + 2, basev, basev + 2, basev + 3]);
+    }
+    /* Top cap fan. */
+    let cap_c = out.vertices.len() as u32;
+    reserve(out, 7, 18);
+    let uc = (u_lo + u_hi) * 0.5;
+    let vc = (v_lo + v_hi) * 0.5;
+    push_vertex(out, top_c, up, uc, vc, sky, torch, wet);
+    for rt in rim_top.iter() {
+        push_vertex(out, *rt, up, uc, v_lo, sky, torch, wet);
+    }
+    for j in 0..6u32 {
+        let k = (j + 1) % 6;
+        out.indices.extend_from_slice(&[cap_c, cap_c + 1 + k, cap_c + 1 + j]);
+    }
+}
+
+/// Build the decorative scatter for one tile into the chunk's opaque
+/// mesh. Call alongside [`build_tile`]; safe to skip entirely (it only
+/// adds geometry). See the module comment above for the design.
+pub fn build_scatter(out: &mut HexMesh, w: &World, tile_idx: i32) {
+    let cfg = scatter_cfg::config();
+    let t = match w.grid.tile(tile_idx) {
+        Some(t) => t,
+        None => return,
+    };
+
+    /* Topmost solid voxel = the surface this tile presents to the sky
+     * (or to the ocean above it). Leaves / wood surfaces get nothing -
+     * no grass growing on a canopy. */
+    let col_base = (tile_idx * WORLD_MAX_DEPTH) as usize;
+    let mut surf = -1i32;
+    for d in (0..WORLD_MAX_DEPTH - 1).rev() {
+        if is_solid_raw(w.blocks[col_base + d as usize]) {
+            surf = d;
+            break;
+        }
+    }
+    if surf < 0 || surf + 1 >= WORLD_MAX_DEPTH {
+        return;
+    }
+    let ground = Block::from_raw(w.blocks[col_base + surf as usize]).unwrap_or(Block::Air);
+    let above = Block::from_raw(w.blocks[col_base + (surf + 1) as usize]).unwrap_or(Block::Air);
+
+    let grassy = matches!(ground, Block::Grass | Block::SeqGrass);
+    let dirty = matches!(ground, Block::Dirt | Block::SeqDirt);
+    let bare = matches!(
+        ground,
+        Block::Dirt
+            | Block::Sand
+            | Block::Stone
+            | Block::Snow
+            | Block::SeqDirt
+            | Block::SeqSand
+            | Block::SeqSnow
+            | Block::CragRock
+            | Block::AsteroidRock
+            | Block::Moon
+    );
+    let sea_floor = matches!(
+        ground,
+        Block::Sand | Block::Dirt | Block::Stone | Block::Grass | Block::SeqSand | Block::SeqDirt
+    );
+    let underwater = above == Block::Water;
+    if !underwater && above != Block::Air {
+        return; /* torch / tech block / partial occupies the cell */
+    }
+    if ground == Block::Farmland {
+        return; /* crops own tilled ground */
+    }
+
+    /* Per-vertex lighting inputs, sampled once at the surface - scatter
+     * is small enough that one sample per piece reads fine. */
+    let sky = if use_voxel_engine() {
+        sky_light_voxel(w, tile_idx, surf + 1)
+    } else {
+        sky_light_at(w, tile_idx, surf + 1)
+    };
+    let wet = if underwater { 1.0f32 } else { 0.0f32 };
+
+    let n = t.num_verts as i32;
+    let r_surf = w.depth_to_radius_m(surf + 1);
+    let up = t.center; /* unit already */
+    let t1 = dvec3_normalize(dvec3_sub(t.verts[0], t.center));
+    let t2 = dvec3_normalize(dvec3_cross(up, t1));
+
+    /* Hashed point on the surface cap: lerp from centre toward a hashed
+     * corner - same plane emit_cap builds, so pieces sit flush. */
+    let place = |ha: f32, hb: f32| -> DVec3 {
+        let k = ((ha * n as f32) as i32).clamp(0, n - 1);
+        let f = (0.15 + 0.60 * hb) as f64;
+        let dir = dvec3_add(
+            dvec3_scale(t.center, 1.0 - f),
+            dvec3_scale(t.verts[k as usize], f),
+        );
+        dvec3_scale(dir, r_surf)
+    };
+    let rot = |ang: f64| -> DVec3 {
+        dvec3_add(dvec3_scale(t1, ang.cos()), dvec3_scale(t2, ang.sin()))
+    };
+
+    if underwater {
+        if !sea_floor || !w.body.has_water {
+            return;
+        }
+        let torch = 0.0f32; /* no torches under the sea */
+        let leaves_uv = tile_uv(Block::Leaves, FaceCap::Top);
+
+        /* Kelp: a stalk of stacked crossed ribbons zig-zagging upward,
+         * capped by how much water is actually above the floor. */
+        if hash2(tile_idx, SALT_KIND) < cfg.kelp_chance {
+            let water_cells = (SEA_LEVEL_DEPTH - (surf + 1)).max(0);
+            let layer_h = w.depth_to_radius_m(surf + 2) - r_surf;
+            let max_h = (water_cells as f64 * layer_h - 0.3).max(0.0);
+            let segs = (2.0 + hash2(tile_idx, SALT_COUNT) * (cfg.kelp_max_segs - 2.0).max(0.0))
+                .round() as i32;
+            let seg_h = cfg.kelp_seg_m as f64;
+            let segs = segs.min((max_h / seg_h.max(0.01)) as i32);
+            if segs >= 1 {
+                let base = place(hash2(tile_idx, SALT_POS_A), hash2(tile_idx, SALT_POS_B));
+                let ang = hash2(tile_idx, SALT_ANGLE) as f64 * std::f64::consts::TAU;
+                let half_w = 0.10 + 0.06 * hash2(tile_idx, SALT_SIZE) as f64;
+                for s in 0..segs {
+                    let sway = ((s as f64 * 1.7 + ang).sin()) * 0.10;
+                    let o_bot = dvec3_scale(rot(ang), (s as f64 * 0.9 + ang).sin() * 0.08);
+                    let o_top = dvec3_scale(rot(ang), ((s + 1) as f64 * 0.9 + ang).sin() * 0.08 + sway);
+                    let b0 = dvec3_add(dvec3_add(base, dvec3_scale(up, s as f64 * seg_h)), o_bot);
+                    let b1 = dvec3_add(dvec3_add(base, dvec3_scale(up, (s + 1) as f64 * seg_h)), o_top);
+                    let taper = 1.0 - 0.5 * (s as f64 / segs.max(1) as f64);
+                    for fin in 0..2 {
+                        let side = rot(ang + fin as f64 * std::f64::consts::FRAC_PI_2);
+                        let (u_lo, u_hi, v_lo, v_hi) = leaves_uv;
+                        push_quad_2side(
+                            out,
+                            [
+                                dvec3_sub(b0, dvec3_scale(side, half_w * taper)),
+                                dvec3_add(b0, dvec3_scale(side, half_w * taper)),
+                                dvec3_add(b1, dvec3_scale(side, half_w * taper * 0.8)),
+                                dvec3_sub(b1, dvec3_scale(side, half_w * taper * 0.8)),
+                            ],
+                            [(u_lo, v_hi), (u_hi, v_hi), (u_hi, v_lo), (u_lo, v_lo)],
+                            up,
+                            sky,
+                            torch,
+                            wet,
+                        );
+                    }
+                }
+            }
+        }
+
+        /* Seaweed: short leafy blade tufts on the floor. */
+        if hash2(tile_idx, SALT_VARIANT) < cfg.weed_chance {
+            let blades = 3 + (hash2(tile_idx, SALT_COUNT + 7) * 2.0) as i32;
+            for j in 0..blades {
+                let base = place(
+                    hash2(tile_idx, SALT_POS_A + 11 + j),
+                    hash2(tile_idx, SALT_POS_B + 11 + j),
+                );
+                let ang = hash2(tile_idx, SALT_ANGLE + j) as f64 * std::f64::consts::TAU;
+                let h = cfg.weed_height_m as f64 * (0.7 + 0.6 * hash2(tile_idx, SALT_SIZE + j) as f64);
+                let lean = dvec3_scale(rot(ang + 1.3), h * 0.25);
+                push_blade(out, base, up, rot(ang), lean, h, 0.05, leaves_uv, sky, torch, wet);
+            }
+        }
+        return;
+    }
+
+    /* ------------------------------ land ------------------------------ */
+    let torch = torch_light_at(dvec3_to_vec3(dvec3_scale(t.center, r_surf)));
+
+    if grassy {
+        /* Grass tufts: a clump of tapered triangle blades. */
+        if hash2(tile_idx, SALT_KIND) < cfg.grass_chance {
+            let max_b = cfg.grass_blades.max(3.0);
+            let blades = 3 + (hash2(tile_idx, SALT_COUNT) * (max_b - 3.0 + 0.99)) as i32;
+            let grass_uv = tile_uv(ground, FaceCap::Top);
+            for j in 0..blades {
+                let base = place(
+                    hash2(tile_idx, SALT_POS_A + j),
+                    hash2(tile_idx, SALT_POS_B + j),
+                );
+                let ang = hash2(tile_idx, SALT_ANGLE + j) as f64 * std::f64::consts::TAU;
+                let h = cfg.grass_height_m as f64
+                    * (0.7 + 0.6 * hash2(tile_idx, SALT_SIZE + j) as f64);
+                let lean = dvec3_scale(rot(ang + 0.9), h * 0.18);
+                push_blade(out, base, up, rot(ang), lean, h, 0.055, grass_uv, sky, torch, wet);
+            }
+        }
+
+        /* Flowers: a stem blade with a bright diamond head. Head colour
+         * alternates white (snow tile) / red-orange (crag tile) by hash. */
+        if hash2(tile_idx, SALT_KIND + 1) < cfg.flower_chance {
+            let base = place(
+                hash2(tile_idx, SALT_POS_A + 40),
+                hash2(tile_idx, SALT_POS_B + 40),
+            );
+            let ang = hash2(tile_idx, SALT_ANGLE + 40) as f64 * std::f64::consts::TAU;
+            let h = cfg.flower_height_m as f64;
+            let stem_uv = tile_uv(ground, FaceCap::Top);
+            push_blade(out, base, up, rot(ang), DVec3::default(), h, 0.03, stem_uv, sky, torch, wet);
+            let head_block = if hash2(tile_idx, SALT_VARIANT) < 0.5 {
+                Block::Snow
+            } else {
+                Block::CragRock
+            };
+            let head_uv = tile_uv(head_block, FaceCap::Top);
+            let (u_lo, u_hi, v_lo, v_hi) = head_uv;
+            let c = dvec3_add(base, dvec3_scale(up, h));
+            let hw = 0.07f64;
+            /* Diamond: 4 points around the stem tip, slightly domed. */
+            let pts = [
+                dvec3_add(c, dvec3_scale(rot(ang), hw)),
+                dvec3_add(c, dvec3_scale(rot(ang + std::f64::consts::FRAC_PI_2), hw)),
+                dvec3_add(c, dvec3_scale(rot(ang + std::f64::consts::PI), hw)),
+                dvec3_add(c, dvec3_scale(rot(ang + 3.0 * std::f64::consts::FRAC_PI_2), hw)),
+            ];
+            let top = dvec3_add(c, dvec3_scale(up, 0.03));
+            let uc = (u_lo + u_hi) * 0.5;
+            let vc = (v_lo + v_hi) * 0.5;
+            for j in 0..4 {
+                let k = (j + 1) % 4;
+                push_tri_2side(
+                    out,
+                    [pts[j], pts[k], top],
+                    [(u_lo, v_hi), (u_hi, v_hi), (uc, vc)],
+                    up,
+                    sky,
+                    torch,
+                    wet,
+                );
+            }
+        }
+    }
+
+    /* Bushes: two leafy prism lumps, on grass or dirt. */
+    if (grassy || dirty) && hash2(tile_idx, SALT_KIND + 2) < cfg.bush_chance {
+        let leaves_uv = tile_uv(Block::Leaves, FaceCap::Side);
+        let base = place(
+            hash2(tile_idx, SALT_POS_A + 60),
+            hash2(tile_idx, SALT_POS_B + 60),
+        );
+        let s = cfg.bush_size_m as f64 * (0.8 + 0.4 * hash2(tile_idx, SALT_SIZE + 60) as f64);
+        let phase = hash2(tile_idx, SALT_ANGLE + 60) as f64 * std::f64::consts::TAU;
+        push_prism(out, base, up, t1, t2, s, s * 0.9, phase, leaves_uv, sky, torch, wet);
+        let base2 = dvec3_add(base, dvec3_scale(rot(phase), s * 1.1));
+        push_prism(
+            out, base2, up, t1, t2, s * 0.6, s * 0.55, phase + 0.7, leaves_uv, sky, torch, wet,
+        );
+    }
+
+    /* Rocks: a small stone prism on bare ground (and sparse on grass). */
+    let rock_roll = hash2(tile_idx, SALT_KIND + 3);
+    let rock_chance = if bare { cfg.rock_chance } else { cfg.rock_chance * 0.3 };
+    if (bare || grassy) && rock_roll < rock_chance {
+        let stone_uv = tile_uv(Block::Stone, FaceCap::Side);
+        let base = place(
+            hash2(tile_idx, SALT_POS_A + 80),
+            hash2(tile_idx, SALT_POS_B + 80),
+        );
+        let s = cfg.rock_size_m as f64 * (0.6 + 0.8 * hash2(tile_idx, SALT_SIZE + 80) as f64);
+        let phase = hash2(tile_idx, SALT_ANGLE + 80) as f64 * std::f64::consts::TAU;
+        push_prism(
+            out,
+            base,
+            up,
+            t1,
+            t2,
+            s,
+            s * (0.4 + 0.5 * hash2(tile_idx, SALT_VARIANT + 80) as f64),
+            phase,
+            stone_uv,
+            sky,
+            torch,
+            wet,
+        );
+    }
+}
+
+/* ----------------------------------------------------------------------- */
 
 #[cfg(test)]
 mod tests {
@@ -2017,6 +2443,88 @@ mod tests {
         assert_eq!(seq.indices, par.indices, "terrain indices diverge");
         assert_eq!(seq_w.vertices, par_w.vertices, "water vertices diverge");
         assert_eq!(seq_w.indices, par_w.indices, "water indices diverge");
+    }
+
+    #[test]
+    fn scatter_is_deterministic_and_surface_aware() {
+        let _g = test_support::begin("scatter_build");
+        config::parse_lighting("engine: column\n", "scatter-test");
+        tenebris_core::scatter::set_config(tenebris_core::scatter::ScatterConfig {
+            /* Force every land kind on so one grass tile exercises the
+             * full emit path deterministically. */
+            grass_chance: 1.1,
+            flower_chance: 1.1,
+            rock_chance: 1.1,
+            bush_chance: 1.1,
+            kelp_chance: 1.1,
+            weed_chance: 1.1,
+            ..tenebris_core::scatter::ScatterConfig::DEFAULT
+        });
+        let body = planet::get(BodyId::Tenebris);
+        let mut w = World::create(&body, 3);
+        while !w.gen_complete() {
+            w.stream_gen(4096);
+        }
+
+        /* Find one grass-surface tile and one underwater tile. */
+        let surface_of = |w: &World, i: i32| -> (i32, Block, Block) {
+            for d in (0..WORLD_MAX_DEPTH - 1).rev() {
+                let b = w.get(i, d);
+                if b != Block::Air && b != Block::Water {
+                    return (d, b, w.get(i, d + 1));
+                }
+            }
+            (-1, Block::Air, Block::Air)
+        };
+        let mut grass_tile = -1;
+        let mut sea_tile = -1;
+        for i in 0..w.tile_count {
+            let (_, g, a) = surface_of(&w, i);
+            if grass_tile < 0 && g == Block::Grass && a == Block::Air {
+                grass_tile = i;
+            }
+            if sea_tile < 0 && a == Block::Water && matches!(g, Block::Sand | Block::Dirt | Block::Stone) {
+                sea_tile = i;
+            }
+            if grass_tile >= 0 && sea_tile >= 0 {
+                break;
+            }
+        }
+        assert!(grass_tile >= 0 && sea_tile >= 0, "world has both surfaces");
+
+        /* Grass tile emits land scatter; two builds are byte-identical
+         * (the parallel chunk stitch depends on this). */
+        let mut a = HexMesh::new();
+        build_scatter(&mut a, &w, grass_tile);
+        assert!(!a.vertices.is_empty(), "grass tile grew scatter");
+        assert!(a.vertices.iter().all(|v| v.wet == 0.0), "land scatter is dry");
+        let mut b = HexMesh::new();
+        build_scatter(&mut b, &w, grass_tile);
+        assert_eq!(a.vertices, b.vertices);
+        assert_eq!(a.indices, b.indices);
+
+        /* Underwater tile emits wet scatter (kelp/weed), flagged wet so
+         * the shader's underwater dimming applies. */
+        let mut u = HexMesh::new();
+        build_scatter(&mut u, &w, sea_tile);
+        assert!(!u.vertices.is_empty(), "sea floor grew kelp/weeds");
+        assert!(u.vertices.iter().all(|v| v.wet == 1.0), "sea scatter is wet");
+
+        /* Chances at zero -> no geometry at all. */
+        tenebris_core::scatter::set_config(tenebris_core::scatter::ScatterConfig {
+            grass_chance: 0.0,
+            flower_chance: 0.0,
+            rock_chance: 0.0,
+            bush_chance: 0.0,
+            kelp_chance: 0.0,
+            weed_chance: 0.0,
+            ..tenebris_core::scatter::ScatterConfig::DEFAULT
+        });
+        let mut z = HexMesh::new();
+        build_scatter(&mut z, &w, grass_tile);
+        build_scatter(&mut z, &w, sea_tile);
+        assert!(z.vertices.is_empty(), "zero chances emit nothing");
+        tenebris_core::scatter::set_config(tenebris_core::scatter::ScatterConfig::DEFAULT);
     }
 
     #[test]
