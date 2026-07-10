@@ -8,6 +8,7 @@ mod baked_model;
 mod chat;
 mod chest_screen;
 mod client_kv;
+mod clouds;
 mod crafting_screen;
 mod crops;
 mod drops;

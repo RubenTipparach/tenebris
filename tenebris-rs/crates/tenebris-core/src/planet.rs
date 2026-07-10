@@ -187,6 +187,17 @@ pub struct BodyConfig {
     /// horizon-band tint, 0 -> (0.8, 0.4, 0.15)
     pub atmo_sunset_horizon: Vec3,
 
+    /* ---- Atmospheric distance fog (composite pass). Terrain fades
+     * toward fog_color with 1-exp(-dist * density); zero density =
+     * no fog (airless bodies stay crisp to the horizon). */
+    /// daytime fog colour (night dims it with the sun)
+    pub atmo_fog_color: Vec3,
+    /// fog density per metre of view distance, 0 -> off
+    pub atmo_fog_density: f32,
+    /// camera altitude (m above sea level) where fog fades out - climb
+    /// above the weather and the vista clears. 0 -> 60.
+    pub atmo_fog_height_m: f32,
+
     /* ---- Gravity field. Per-body overrides for the lod.yaml-level
      * defaults (gravity_full_mult / gravity_falloff_mult). Below
      * radius * full_mult the player feels 100 % of this body's
@@ -218,6 +229,9 @@ pub struct BodyAtmo {
     pub sunset_tint: Vec3,
     pub sunset_glow: Vec3,
     pub sunset_horizon: Vec3,
+    pub fog_color: Vec3,
+    pub fog_density: f32,
+    pub fog_height_m: f32,
 }
 
 impl BodyAtmo {
@@ -235,6 +249,9 @@ impl BodyAtmo {
         sunset_tint: VEC3_ZERO,
         sunset_glow: VEC3_ZERO,
         sunset_horizon: VEC3_ZERO,
+        fog_color: VEC3_ZERO,
+        fog_density: 0.0,
+        fog_height_m: 0.0,
     };
 }
 
@@ -270,6 +287,9 @@ const ZERO_BODY: BodyConfig = BodyConfig {
     atmo_sunset_tint: VEC3_ZERO,
     atmo_sunset_glow: VEC3_ZERO,
     atmo_sunset_horizon: VEC3_ZERO,
+    atmo_fog_color: VEC3_ZERO,
+    atmo_fog_density: 0.0,
+    atmo_fog_height_m: 0.0,
     gravity_full_mult: 0.0,
     gravity_falloff_mult: 0.0,
 };
@@ -674,6 +694,15 @@ pub fn set_atmosphere(id: BodyId, p: &BodyAtmo) {
     }
     if p.sunset_horizon.x + p.sunset_horizon.y + p.sunset_horizon.z > 0.0 {
         b.atmo_sunset_horizon = p.sunset_horizon;
+    }
+    if p.fog_color.x + p.fog_color.y + p.fog_color.z > 0.0 {
+        b.atmo_fog_color = p.fog_color;
+    }
+    if p.fog_density > 0.0 {
+        b.atmo_fog_density = p.fog_density;
+    }
+    if p.fog_height_m > 0.0 {
+        b.atmo_fog_height_m = p.fog_height_m;
     }
 }
 
