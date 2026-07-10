@@ -3504,10 +3504,36 @@ pub fn compose_to_swapchain(view: Mat4, proj: Mat4) {
         let mut body_center = Vec3::default();
         let mut sea_radius = 0.0f32;
         let cam_under = cam_under_shared;
+        /* Atmospheric distance fog: the active body's atmosphere.yaml
+         * knobs, dimmed by the local daylight (night fog goes dark, not
+         * milky) and faded out with camera altitude - climb above the
+         * weather and the vista clears. Density 0 = fog off. */
+        let mut fog = [0.0f32; 4];
         if r.active_body_idx >= 0 {
             let ab = &r.bodies[r.active_body_idx as usize];
             body_center = ab.world_pos;
             sea_radius = ab.radius_m + w.height_offset_m - w.depth_offset_m;
+
+            let bc = tenebris_core::planet::get(ab.world.borrow().body.id);
+            if bc.atmo_fog_density > 0.0 {
+                let cam = vec3_sub(r.env.camera_world, body_center);
+                let cam_r = (cam.x * cam.x + cam.y * cam.y + cam.z * cam.z).sqrt().max(1e-3);
+                let d = (cam.x * r.env.sun_dir.x
+                    + cam.y * r.env.sun_dir.y
+                    + cam.z * r.env.sun_dir.z)
+                    / cam_r;
+                /* Same terminator band entity_sun_brightness uses. */
+                let daylight = 0.16 + 0.84 * ((d + 0.10) / 0.22).clamp(0.0, 1.0);
+                let height = if bc.atmo_fog_height_m > 0.0 { bc.atmo_fog_height_m } else { 60.0 };
+                let alt = (cam_r - sea_radius).max(0.0);
+                let k = (1.0 - alt / height).clamp(0.0, 1.0);
+                fog = [
+                    bc.atmo_fog_color.x * daylight,
+                    bc.atmo_fog_color.y * daylight,
+                    bc.atmo_fog_color.z * daylight,
+                    bc.atmo_fog_density * k,
+                ];
+            }
         }
 
         let fs = shaders::composite::CompositeFsParams {
@@ -3522,6 +3548,7 @@ pub fn compose_to_swapchain(view: Mat4, proj: Mat4) {
                 if cam_under { 1.0 } else { 0.0 },
                 0.0,
             ],
+            fog_params: fog,
         };
         sg::apply_uniforms(shaders::composite::UB_COMPOSITE_FS_PARAMS, &sg::value_as_range(&fs));
 
@@ -5273,7 +5300,8 @@ mod tests {
         assert_eq!(size_of::<shaders::atmosphere::AtmosphereVsParams>(), 64);
         assert_eq!(size_of::<shaders::atmosphere::AtmosphereFsParams>(), 48);
         assert_eq!(size_of::<shaders::composite::CompositeVsParams>(), 64);
-        assert_eq!(size_of::<shaders::composite::CompositeFsParams>(), 80);
+        /* 6 vec4s since the hand-added fog block (fog_params). */
+        assert_eq!(size_of::<shaders::composite::CompositeFsParams>(), 96);
         assert_eq!(size_of::<shaders::composite_mobile::CompositeMobileFsParams>(), 48);
         assert_eq!(size_of::<shaders::distant::DistantVsParams>(), 64);
         assert_eq!(size_of::<shaders::distant::DistantFsParams>(), 80);

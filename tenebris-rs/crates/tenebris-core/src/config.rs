@@ -1516,6 +1516,15 @@ pub fn parse_atmosphere_with(
                 "sunset_tint" => vec3_or_err(val, &mut patch.sunset_tint),
                 "sunset_glow" => vec3_or_err(val, &mut patch.sunset_glow),
                 "sunset_horizon" => vec3_or_err(val, &mut patch.sunset_horizon),
+                "fog_color" => vec3_or_err(val, &mut patch.fog_color),
+                "fog_density" => {
+                    patch.fog_density = fval(val);
+                    0
+                }
+                "fog_height_m" => {
+                    patch.fog_height_m = fval(val);
+                    0
+                }
                 _ => {
                     println!("[config] {}:{}: unknown key '{}'", path, line_no, key);
                     0

@@ -2,6 +2,7 @@
 
 pub mod block_entity;
 pub mod blocks;
+pub mod clouds;
 pub mod config;
 pub mod crafting;
 pub mod farming;

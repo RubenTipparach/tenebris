@@ -41,6 +41,7 @@ use tenebris_core::world::{World, WORLD_MAX_DEPTH};
 use tenebris_core::world_water;
 
 use crate::animals;
+use crate::clouds;
 use crate::chat;
 use crate::crafting_screen;
 use crate::crops;
@@ -1429,6 +1430,8 @@ extern "C" fn init() {
     tenebris_core::farming::load_config("assets/config/farming.yaml");
     /* Decorative surface scatter densities (grass / rocks / kelp...). */
     tenebris_core::scatter::load_config("assets/config/scatter.yaml");
+    /* Cloud layer densities / drift (see client clouds.rs). */
+    tenebris_core::clouds::load_config("assets/config/clouds.yaml");
     /* Rocket part stats + flight constants (consumed by the rocket
      * assembly + flight port). */
     tenebris_core::rocket::set_config(tenebris_core::rocket::load_rocket_config(
@@ -4249,6 +4252,13 @@ fn frame_inner(app: &mut App) {
     animals::draw(view, proj, renderer::time_seconds());
     crops::draw(view, proj);
     drops::draw(view, proj, renderer::time_seconds());
+    /* Cloud layer above the surface - same pass, drifts with sim time
+     * so every peer's sky agrees. */
+    {
+        let w = phys_world.borrow();
+        let p = app.player.borrow();
+        clouds::draw(view, proj, &w, &p, sim_t);
+    }
 
     /* First-person held tool (survival): the baked wood-tool model the
      * current swing would use, chopping while the mine button is held. */
