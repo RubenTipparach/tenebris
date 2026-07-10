@@ -1,6 +1,7 @@
 //! Floating item drops (client) - the Minecraft-style pickup loop:
-//! breaking a block spawns a small spinning textured cube at the break
-//! site; walking near vacuums it into the hotbar / bag.
+//! breaking a block spawns a small spinning textured HEX PRISM (the
+//! world's block shape in miniature) at the break site; walking near
+//! vacuums it into the hotbar / bag.
 //!
 //! Drops are transient entities, not world state: they despawn after
 //! [`DESPAWN_S`] like their Minecraft counterparts, so they are NOT
@@ -28,8 +29,10 @@ use crate::inventory;
 use crate::player_ctrl::PlayerCtrl;
 use crate::renderer;
 
-/// Half-extent of the floating mini cube (metres).
-const CUBE_HALF_M: f32 = 0.14;
+/// Footprint radius + half-height of the floating mini hex prism
+/// (metres). Blocks are hex prisms, so their drops are too.
+const HEX_RADIUS_M: f64 = 0.16;
+const HEX_HALF_H_M: f64 = 0.10;
 /// Bob amplitude + rate, spin rate.
 const BOB_AMPL_M: f64 = 0.05;
 const BOB_RATE: f32 = 2.2;
@@ -156,8 +159,8 @@ fn try_collect(p: &mut PlayerCtrl, item: ItemId, count: u16) -> bool {
 }
 
 /* ---------------------------------------------------------------------- */
-/* Rendering: one mini textured cube per drop, bobbing + spinning, in the  */
-/* offscreen world sgl context (same pass as animals / crops).             */
+/* Rendering: one mini textured hex prism per drop, bobbing + spinning,    */
+/* in the offscreen world sgl context (same pass as animals / crops).      */
 
 /// Draw all drops. `time_s` drives bob + spin.
 pub fn draw(view: Mat4, proj: Mat4, time_s: f32) {
@@ -198,15 +201,18 @@ pub fn draw(view: Mat4, proj: Mat4, time_s: f32) {
         let pos = dvec3_add(d.pos, dvec3_scale(d.up, bob));
         let spin = time_s * SPIN_RATE + d.phase;
         let lit = renderer::entity_sun_brightness(d.pos);
-        draw_cube(pos, d.up, spin, visual_block(d.item), lit);
+        draw_hex(pos, d.up, spin, visual_block(d.item), lit);
     }
 
     sgl::disable_texture();
     renderer::sgl_world_end();
 }
 
-/// One textured mini cube at `pos`, spun `angle` about `up`.
-fn draw_cube(pos: DVec3, up: DVec3, angle: f32, block: Block, lit: f32) {
+/// One textured mini hex prism at `pos`, spun `angle` about `up` -
+/// the same silhouette as a world block, in miniature. Caps sample the
+/// block's top/bottom tiles (hex inscribed in the tile column's square);
+/// the six side quads sample the side tile.
+fn draw_hex(pos: DVec3, up: DVec3, angle: f32, block: Block, lit: f32) {
     let up = dvec3_normalize(up);
     let reference = if up.y.abs() < 0.9 {
         dvec3_make(0.0, 1.0, 0.0)
@@ -218,20 +224,25 @@ fn draw_cube(pos: DVec3, up: DVec3, angle: f32, block: Block, lit: f32) {
     let (ca, sa) = (angle.cos() as f64, angle.sin() as f64);
     let right = dvec3_add(dvec3_scale(r0, ca), dvec3_scale(f0, sa));
     let fwd = dvec3_sub(dvec3_scale(f0, ca), dvec3_scale(r0, sa));
+    let uy = dvec3_scale(up, HEX_HALF_H_M);
 
-    let h = CUBE_HALF_M as f64;
-    let rx = dvec3_scale(right, h);
-    let uy = dvec3_scale(up, h);
-    let fz = dvec3_scale(fwd, h);
-    /* 8 corners: pos +- rx +- uy +- fz. */
-    let corner = |sx: f64, sy: f64, sz: f64| {
-        dvec3_add(
-            pos,
-            dvec3_add(
-                dvec3_scale(rx, sx),
-                dvec3_add(dvec3_scale(uy, sy), dvec3_scale(fz, sz)),
-            ),
-        )
+    /* Six rim directions (unit, in the prism's spun tangent plane) and
+     * the cap-UV trig that maps the hexagon onto the square tile. */
+    let mut rim = [DVec3::default(); 6];
+    let mut trig = [(0.0f32, 0.0f32); 6];
+    for (k, (rimk, trigk)) in rim.iter_mut().zip(trig.iter_mut()).enumerate() {
+        let ang = k as f64 / 6.0 * std::f64::consts::TAU;
+        *rimk = dvec3_add(dvec3_scale(right, ang.cos()), dvec3_scale(fwd, ang.sin()));
+        *trigk = (ang.cos() as f32, ang.sin() as f32);
+    }
+    let corner = |k: usize, top: bool| {
+        let radial = dvec3_scale(rim[k % 6], HEX_RADIUS_M);
+        let v = dvec3_add(pos, radial);
+        if top {
+            dvec3_add(v, uy)
+        } else {
+            dvec3_sub(v, uy)
+        }
     };
 
     let col_u = |cap: FaceCap| {
@@ -242,25 +253,44 @@ fn draw_cube(pos: DVec3, up: DVec3, angle: f32, block: Block, lit: f32) {
     let (bu0, bu1) = col_u(FaceCap::Bottom);
     let (su0, su1) = col_u(FaceCap::Side);
 
+    let vtx = |p: DVec3, u: f32, v: f32| {
+        sgl::v3f_t2f(p.x as f32, p.y as f32, p.z as f32, u, v);
+    };
+
     sgl::begin_triangles();
-    /* (corner signs, uv col, shade) per face; quads split into 2 tris. */
-    let face = |a: DVec3, b: DVec3, c: DVec3, d: DVec3, u0: f32, u1: f32, shade: f32| {
+    /* Top + bottom caps: fans from the cap centre, hex inscribed in the
+     * tile's UV square. */
+    for (u0, u1, top, shade) in [(tu0, tu1, true, 1.0f32), (bu0, bu1, false, 0.55)] {
         let s = shade * lit;
         sgl::c3f(s, s, s);
-        let quad = [(a, u0, 1.0f32), (b, u1, 1.0), (c, u1, 0.0), (d, u0, 0.0)];
+        let umid = (u0 + u1) * 0.5;
+        let uhal = (u1 - u0) * 0.5;
+        let centre = if top { dvec3_add(pos, uy) } else { dvec3_sub(pos, uy) };
+        for k in 0..6 {
+            let n = (k + 1) % 6;
+            let (ka, kb) = if top { (k, n) } else { (n, k) };
+            vtx(centre, umid, 0.5);
+            vtx(corner(ka, top), umid + uhal * trig[ka].0, 0.5 + 0.5 * trig[ka].1);
+            vtx(corner(kb, top), umid + uhal * trig[kb].0, 0.5 + 0.5 * trig[kb].1);
+        }
+    }
+    /* Six side quads, shade cycling for depth. */
+    for k in 0..6 {
+        let n = (k + 1) % 6;
+        let shade = [0.85f32, 0.75, 0.7, 0.75, 0.8, 0.72][k];
+        let s = shade * lit;
+        sgl::c3f(s, s, s);
+        let quad = [
+            (corner(k, false), su0, 1.0f32),
+            (corner(n, false), su1, 1.0),
+            (corner(n, true), su1, 0.0),
+            (corner(k, true), su0, 0.0),
+        ];
         for &i in &[0usize, 1, 2, 0, 2, 3] {
             let (p, u, v) = quad[i];
-            sgl::v3f_t2f(p.x as f32, p.y as f32, p.z as f32, u, v);
+            vtx(p, u, v);
         }
-    };
-    // top / bottom
-    face(corner(-1.0, 1.0, -1.0), corner(1.0, 1.0, -1.0), corner(1.0, 1.0, 1.0), corner(-1.0, 1.0, 1.0), tu0, tu1, 1.0);
-    face(corner(-1.0, -1.0, 1.0), corner(1.0, -1.0, 1.0), corner(1.0, -1.0, -1.0), corner(-1.0, -1.0, -1.0), bu0, bu1, 0.55);
-    // four sides
-    face(corner(-1.0, -1.0, -1.0), corner(1.0, -1.0, -1.0), corner(1.0, 1.0, -1.0), corner(-1.0, 1.0, -1.0), su0, su1, 0.85);
-    face(corner(1.0, -1.0, 1.0), corner(-1.0, -1.0, 1.0), corner(-1.0, 1.0, 1.0), corner(1.0, 1.0, 1.0), su0, su1, 0.7);
-    face(corner(1.0, -1.0, -1.0), corner(1.0, -1.0, 1.0), corner(1.0, 1.0, 1.0), corner(1.0, 1.0, -1.0), su0, su1, 0.8);
-    face(corner(-1.0, -1.0, 1.0), corner(-1.0, -1.0, -1.0), corner(-1.0, 1.0, -1.0), corner(-1.0, 1.0, 1.0), su0, su1, 0.75);
+    }
     sgl::end();
 }
 
