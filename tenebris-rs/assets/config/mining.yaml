@@ -25,3 +25,7 @@ rock_break_s: 10.0
 hand_penalty_mult: 2.0
 stone_tool_mult: 0.7
 iron_tool_mult: 0.4
+
+# Blend strength (0..1) of the crack-stage texture painted over the
+# block being mined (hex shader crack channel).
+crack_alpha: 0.9

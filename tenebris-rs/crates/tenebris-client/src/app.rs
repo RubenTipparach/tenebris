@@ -3077,6 +3077,9 @@ fn maybe_prime_mode_for_state(app: &mut App) {
             p.survival_mode = true;
             p.hunger = player_ctrl::MAX_HUNGER;
             inventory::init_empty(&mut p.inventory);
+            /* In-flight craft + queue are session-scoped. */
+            p.crafting = None;
+            crafting_screen::clear_queue();
             /* Drop any stale pose pending server WELCOME - MP spawn is
              * fully server-authoritative. */
             p.position = DVec3::default();
@@ -3115,6 +3118,10 @@ fn maybe_prime_mode_for_state(app: &mut App) {
             p.discovered = persistence::load_tech(&world)
                 .and_then(|blob| crate::tech_tree::Discovered::parse(&blob))
                 .unwrap_or_default();
+            /* In-flight craft + queue are session-scoped - a craft from
+             * world A must not deliver into world B's bag. */
+            p.crafting = None;
+            crafting_screen::clear_queue();
         }
         None => {
             if s == app.inv_primed_for_state {
@@ -4230,6 +4237,40 @@ fn frame_inner(app: &mut App) {
     profiler::begin("draw-sun");
     renderer::draw_sun(view, proj);
     profiler::end("draw-sun");
+    /* Publish this frame's mining state so the terrain pass paints the
+     * crack channel on the mined cell in-shader (replaced the old
+     * inflated prism decal, which z-fought the terrain at planet-scale
+     * depth precision). */
+    {
+        let w = phys_world.borrow();
+        let block = w.get(app.interact.hit_tile, app.interact.hit_depth);
+        let frac = {
+            let p = app.player.borrow();
+            if p.survival_mode
+                && app.interact.has_target
+                && app.interact.mining_progress_s > 0.0
+                && app.interact.mining_tile == app.interact.hit_tile
+                && app.interact.mining_depth == app.interact.hit_depth
+            {
+                let break_s = interact::break_seconds_for(&p, block).max(1e-4);
+                Some((app.interact.mining_progress_s / break_s).clamp(0.0, 1.0))
+            } else {
+                None
+            }
+        };
+        /* Dev screenshot aid: paint a fixed mid-late stage on the aimed
+         * block without mining it (TENEBRIS_DEV_CRACK). */
+        let frac = if DEV_CRACK.with(|c| c.get()) == 1 { Some(0.7) } else { frac };
+        if let Some(frac) = frac {
+            renderer::set_break_overlay(
+                &w,
+                block,
+                app.interact.hit_tile,
+                app.interact.hit_depth,
+                frac,
+            );
+        }
+    }
     profiler::begin("draw-world");
     /* Pass the active body's world, not G.world - hardcoding G.world
      * reverted active to Tenebris every frame (LOD flap on Crag). */
@@ -4286,40 +4327,8 @@ fn frame_inner(app: &mut App) {
             1.00,
             0.95,
         );
-        /* Survival block-break crack decal: overlay the crack-stage
-         * texture on the mined block's own prism so hitting a block shows
-         * visible damage that deepens toward the break. Only while
-         * actively mining THIS cell. */
-        let block = app.world.borrow().get(app.interact.hit_tile, app.interact.hit_depth);
-        let frac = {
-            let p = app.player.borrow();
-            if p.survival_mode
-                && app.interact.mining_progress_s > 0.0
-                && app.interact.mining_tile == app.interact.hit_tile
-                && app.interact.mining_depth == app.interact.hit_depth
-            {
-                let break_s = interact::break_seconds_for(&p, block).max(1e-4);
-                Some((app.interact.mining_progress_s / break_s).clamp(0.0, 1.0))
-            } else {
-                None
-            }
-        };
-        /* Dev screenshot aid: render the decal at a fixed mid-late stage
-         * on the aimed block without mining it, so a still shows the crack
-         * (holding the mine button would break blocks and is only for the
-         * live feel). */
-        let frac = if DEV_CRACK.with(|c| c.get()) == 1 { Some(0.7) } else { frac };
-        if let Some(frac) = frac {
-            renderer::draw_break_overlay(
-                view,
-                proj,
-                &app.world.borrow(),
-                block,
-                app.interact.hit_tile,
-                app.interact.hit_depth,
-                frac,
-            );
-        }
+        /* The block-break crack renders inside the terrain pass now
+         * (renderer::set_break_overlay, published before draw_world). */
     }
 
     /* Hand off to the swapchain pass. */

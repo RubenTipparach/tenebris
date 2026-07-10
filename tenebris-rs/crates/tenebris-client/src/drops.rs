@@ -1,7 +1,10 @@
 //! Floating item drops (client) - the Minecraft-style pickup loop:
-//! breaking a block spawns a small spinning textured HEX PRISM (the
-//! world's block shape in miniature) at the break site; walking near
-//! vacuums it into the hotbar / bag.
+//! breaking a block spawns a pickup at the break site; walking near
+//! vacuums it into the hotbar / bag. Placeable blocks float as small
+//! spinning textured HEX PRISMS (the world's block shape in
+//! miniature); non-block items (seeds, ore chunks, tools) float as
+//! camera-facing icon billboards so they can't be mistaken for a
+//! second block.
 //!
 //! Drops are transient entities, not world state: they despawn after
 //! [`DESPAWN_S`] like their Minecraft counterparts, so they are NOT
@@ -33,6 +36,14 @@ use crate::renderer;
 /// (metres). Blocks are hex prisms, so their drops are too.
 const HEX_RADIUS_M: f64 = 0.16;
 const HEX_HALF_H_M: f64 = 0.10;
+/// Half-size of the camera-facing icon quad used for NON-block items
+/// (seeds, ore chunks, tools). Rendering those as mini block prisms
+/// was the "I broke one block and two blocks popped out" confusion -
+/// a seed drop looked exactly like a second grass block.
+const ICON_HALF_M: f64 = 0.14;
+/// Tangential scatter of the spawn point so several drops from one
+/// break (block + bonus seed) separate instead of stacking in place.
+const SCATTER_RADIUS_M: f64 = 0.22;
 /// Bob amplitude + rate, spin rate.
 const BOB_AMPL_M: f64 = 0.05;
 const BOB_RATE: f32 = 2.2;
@@ -60,6 +71,9 @@ struct Drop {
 thread_local! {
     static S: RefCell<Vec<Drop>> = const { RefCell::new(Vec::new()) };
     static PIP: Cell<sgl::Pipeline> = const { Cell::new(sgl::Pipeline { id: 0 }) };
+    /* Alpha-blended variant for the icon billboards (item icons have
+     * transparent backgrounds; the prism pipeline is opaque). */
+    static ICON_PIP: Cell<sgl::Pipeline> = const { Cell::new(sgl::Pipeline { id: 0 }) };
 }
 
 /// Clear all drops (world enter / leave).
@@ -80,7 +94,9 @@ pub fn spawn(w: &World, tile: i32, depth: i32, item: ItemId, count: u16) {
     spawn_at(pos, dvec3_normalize(t.center), item, count);
 }
 
-/// Spawn a drop at an explicit world position.
+/// Spawn a drop at an explicit world position. The spawn point gets a
+/// small deterministic tangential scatter (keyed off the same counter
+/// as the bob phase) so multiple drops from one break spread apart.
 pub fn spawn_at(pos: DVec3, up: DVec3, item: ItemId, count: u16) {
     if count == 0 {
         return;
@@ -88,18 +104,39 @@ pub fn spawn_at(pos: DVec3, up: DVec3, item: ItemId, count: u16) {
     S.with(|c| {
         let list = &mut *c.borrow_mut();
         let phase = (list.len() as f32 * 1.7) % std::f32::consts::TAU;
+        let upn = dvec3_normalize(up);
+        let reference = if upn.y.abs() < 0.9 {
+            dvec3_make(0.0, 1.0, 0.0)
+        } else {
+            dvec3_make(1.0, 0.0, 0.0)
+        };
+        let t1 = dvec3_normalize(dvec3_cross(reference, upn));
+        let t2 = dvec3_cross(upn, t1);
+        let (c_p, s_p) = ((phase as f64).cos(), (phase as f64).sin());
+        let scatter = dvec3_scale(
+            dvec3_add(dvec3_scale(t1, c_p), dvec3_scale(t2, s_p)),
+            SCATTER_RADIUS_M,
+        );
+        let pos = dvec3_add(pos, scatter);
         list.push(Drop { pos, up, item, count, age_s: 0.0, phase });
     });
 }
 
-/// The block whose texture the drop cube shows. Non-block resources map
-/// to the block they visually came from (coal chunk -> coal ore cube).
-fn visual_block(item: ItemId) -> Block {
-    if let Some(b) = items::to_block(item) {
-        if b != Block::Air {
-            return b;
-        }
+/// The block a PLACEABLE drop renders as (mini prism). Non-block items
+/// render as their item-icon billboard instead - a seed drawn as a
+/// full grass cube read as "breaking one block dropped two blocks".
+/// Returns None for items that should billboard.
+fn prism_block(item: ItemId) -> Option<Block> {
+    match items::to_block(item) {
+        Some(b) if b != Block::Air => Some(b),
+        _ => None,
     }
+}
+
+/// Fallback prism texture for a non-block item with no icon in the
+/// ui_icons atlas (should not happen - per CLAUDE.md every item ships
+/// with an icon - but a visible wrong-ish cube beats an invisible drop).
+fn fallback_block(item: ItemId) -> Block {
     match item {
         items::COAL => Block::CoalOre,
         items::COPPER => Block::CopperOre,
@@ -162,7 +199,11 @@ fn try_collect(p: &mut PlayerCtrl, item: ItemId, count: u16) -> bool {
 /* Rendering: one mini textured hex prism per drop, bobbing + spinning,    */
 /* in the offscreen world sgl context (same pass as animals / crops).      */
 
-/// Draw all drops. `time_s` drives bob + spin.
+/// Draw all drops. `time_s` drives bob + spin. Placeable blocks render
+/// as mini hex prisms off the terrain atlas; item drops (seeds, ore
+/// chunks, tools) render as camera-facing icon billboards off the
+/// ui_icons atlas, so a bonus seed no longer masquerades as a second
+/// block.
 pub fn draw(view: Mat4, proj: Mat4, time_s: f32) {
     let list = S.with(|c| c.borrow().clone());
     if list.is_empty() {
@@ -189,20 +230,93 @@ pub fn draw(view: Mat4, proj: Mat4, time_s: f32) {
         });
         PIP.with(|p| p.set(pip));
     }
+
+    /* Camera basis in world space (rows of the rigid view matrix) for
+     * the icon billboards. */
+    let cam_right = dvec3_normalize(dvec3_make(
+        view.m[0] as f64,
+        view.m[4] as f64,
+        view.m[8] as f64,
+    ));
+    let cam_up = dvec3_normalize(dvec3_make(
+        view.m[1] as f64,
+        view.m[5] as f64,
+        view.m[9] as f64,
+    ));
+
+    /* Pass 1: placeable blocks as mini prisms (terrain atlas). */
     sgl::load_pipeline(pip);
     sgl::enable_texture();
     sgl::texture(
         sokol::gfx::View { id: renderer::atlas_view_id() },
         sokol::gfx::Sampler { id: renderer::atlas_sampler_id() },
     );
-
     for d in &list {
+        let block = match prism_block(d.item) {
+            Some(b) => b,
+            None if crate::ui_icons::uv(d.item).is_some() => continue, /* pass 2 */
+            None => fallback_block(d.item),
+        };
         let bob = (time_s * BOB_RATE + d.phase).sin() as f64 * BOB_AMPL_M;
         let pos = dvec3_add(d.pos, dvec3_scale(d.up, bob));
         let spin = time_s * SPIN_RATE + d.phase;
         let lit = renderer::entity_sun_brightness(d.pos);
-        draw_hex(pos, d.up, spin, visual_block(d.item), lit);
+        draw_hex(pos, d.up, spin, block, lit);
     }
+
+    /* Pass 2: non-block items as camera-facing icon quads (icon atlas,
+     * alpha-blended - icons have transparent backgrounds). */
+    let mut ipip = ICON_PIP.with(|p| p.get());
+    if ipip.id == 0 {
+        let mut desc = sokol::gfx::PipelineDesc {
+            depth: sokol::gfx::DepthState {
+                write_enabled: true,
+                compare: sokol::gfx::CompareFunc::Less,
+                ..Default::default()
+            },
+            cull_mode: sokol::gfx::CullMode::None,
+            ..Default::default()
+        };
+        desc.colors[0].blend = sokol::gfx::BlendState {
+            enabled: true,
+            src_factor_rgb: sokol::gfx::BlendFactor::SrcAlpha,
+            dst_factor_rgb: sokol::gfx::BlendFactor::OneMinusSrcAlpha,
+            src_factor_alpha: sokol::gfx::BlendFactor::One,
+            dst_factor_alpha: sokol::gfx::BlendFactor::One,
+            ..Default::default()
+        };
+        ipip = sgl::make_pipeline(&desc);
+        ICON_PIP.with(|p| p.set(ipip));
+    }
+    sgl::load_pipeline(ipip);
+    sgl::texture(
+        sokol::gfx::View { id: crate::ui_icons::view_id() },
+        sokol::gfx::Sampler { id: crate::ui_icons::sampler_id() },
+    );
+    sgl::begin_triangles();
+    for d in &list {
+        if prism_block(d.item).is_some() {
+            continue;
+        }
+        let Some([u0, v0, u1, v1]) = crate::ui_icons::uv(d.item) else { continue };
+        let bob = (time_s * BOB_RATE + d.phase).sin() as f64 * BOB_AMPL_M;
+        let pos = dvec3_add(d.pos, dvec3_scale(d.up, bob));
+        let lit = renderer::entity_sun_brightness(d.pos);
+        sgl::c4f(lit, lit, lit, 1.0);
+        let r = dvec3_scale(cam_right, ICON_HALF_M);
+        let u = dvec3_scale(cam_up, ICON_HALF_M);
+        let quad = [
+            (dvec3_sub(dvec3_sub(pos, r), u), u0, v1),
+            (dvec3_sub(dvec3_add(pos, r), u), u1, v1),
+            (dvec3_add(dvec3_add(pos, r), u), u1, v0),
+            (dvec3_add(dvec3_sub(pos, r), u), u0, v0),
+        ];
+        for &i in &[0usize, 1, 2, 0, 2, 3] {
+            let (p, tu, tv) = quad[i];
+            sgl::v3f_t2f(p.x as f32, p.y as f32, p.z as f32, tu, tv);
+        }
+    }
+    sgl::end();
 
     sgl::disable_texture();
     renderer::sgl_world_end();

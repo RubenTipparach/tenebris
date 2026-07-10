@@ -84,10 +84,11 @@ use std::rc::Rc;
 use tenebris_core::blocks::{self, Block, FaceCap};
 use tenebris_core::config;
 use tenebris_core::math::{
-    dvec3_dot, dvec3_scale, dvec3_to_vec3, vec3_add, vec3_length, vec3_sub, DVec3, Vec3,
+    dvec3_cross, dvec3_dot, dvec3_length, dvec3_normalize, dvec3_scale, dvec3_sub, dvec3_to_vec3,
+    vec3_add, vec3_length, vec3_sub, DVec3, Vec3,
 };
 #[cfg(test)]
-use tenebris_core::math::{dvec3_make, dvec3_normalize};
+use tenebris_core::math::dvec3_make;
 use tenebris_core::orbit;
 use tenebris_core::planet::{BodyConfig, BodyId, Tileset};
 use tenebris_core::planet_gen;
@@ -1533,7 +1534,6 @@ thread_local! {
     static OUTLINE_PIP: Cell<sgl::Pipeline> = const { Cell::new(sgl::Pipeline { id: 0 }) };
     /* Lazy triangles pipeline + boot-loaded crack-stage atlas for the
      * block-break decal. CRACK_STATE: 0 untried, 1 loaded, -1 failed. */
-    static BREAK_PIP: Cell<sgl::Pipeline> = const { Cell::new(sgl::Pipeline { id: 0 }) };
     static CRACK_VIEW: Cell<u32> = const { Cell::new(0) };
     static CRACK_SMP: Cell<u32> = const { Cell::new(0) };
     static CRACK_STAGES: Cell<i32> = const { Cell::new(0) };
@@ -3547,12 +3547,16 @@ pub fn end_frame() {
 /// Port of `body_draw_chunks()`. Caller has already applied pip_hex +
 /// the lighting uniform blocks; this sets the per-body model + planet
 /// block and issues the chunk draws. Returns triangles drawn.
+#[allow(clippy::too_many_arguments)]
 fn body_draw_chunks(
     body: &ChunkedBody,
     vp: Mat4,
     camera_world: Vec3,
     atlas_view: sg::View,
     atlas_smp: sg::Sampler,
+    crack_view: sg::View,
+    crack_smp: sg::Sampler,
+    crack: &shaders::hex::HexFsCrack,
 ) -> usize {
     let model = mat4_translate(body.world_pos);
     let mvp = mat4_mul(vp, model);
@@ -3566,6 +3570,9 @@ fn body_draw_chunks(
         u_planet: [0.0, 0.0, 0.0, if body.has_water { sea_radius } else { 0.0 }],
     };
     sg::apply_uniforms(shaders::hex::UB_HEX_VS_PARAMS, &sg::value_as_range(&hvp));
+    /* Block-break crack channel: real cell data when this body owns
+     * the mined block, all-zero (disabled) otherwise. */
+    sg::apply_uniforms(shaders::hex::UB_HEX_FS_CRACK, &sg::value_as_range(crack));
     let cc = compute_chunk_cull(body.world_pos, body.radius_m, camera_world);
     let mut tris = 0usize;
     for (ci, c) in body.chunks[..chunk_n()].iter().enumerate() {
@@ -3580,6 +3587,8 @@ fn body_draw_chunks(
         bind.index_buffer = c.ibuf;
         bind.views[shaders::hex::VIEW_HEX_ATLAS] = atlas_view;
         bind.samplers[shaders::hex::SMP_HEX_ATLAS_SMP] = atlas_smp;
+        bind.views[shaders::hex::VIEW_CRACK_TEX] = crack_view;
+        bind.samplers[shaders::hex::SMP_CRACK_SMP] = crack_smp;
         sg::apply_bindings(&bind);
         sg::draw(0, c.last_uploaded_index_count as usize, 1);
         tris += (c.last_uploaded_index_count / 3) as usize;
@@ -4025,6 +4034,13 @@ pub fn draw_world(
             }
 
             let frustum = extract_frustum(vp);
+            /* This frame's mining state (one-shot; app re-publishes
+             * every frame it's actively mining). */
+            let break_req = BREAK_REQ.with(|c| c.take());
+            let (crack_view_id, crack_smp_id, crack_stages) = ensure_crack_atlas();
+            let crack_view = sg::View { id: crack_view_id };
+            let crack_smp = sg::Sampler { id: crack_smp_id };
+            let crack_alpha = tenebris_core::mining::config().crack_alpha;
             for bi in 0..r.bodies.len() {
                 let is_active = bi as i32 == r.active_body_idx;
                 /* No frustum cull on the active body - its bounding
@@ -4060,12 +4076,28 @@ pub fn draw_world(
                 if !r.bodies[bi].meshed {
                     body_load_detail(r, bi);
                 }
+                let crack_ub = match &break_req {
+                    Some(req)
+                        if r.bodies[bi].world.borrow().body.id as u32 == req.body_id =>
+                    {
+                        build_crack_ub(
+                            &r.bodies[bi].world.borrow(),
+                            req,
+                            crack_stages,
+                            crack_alpha,
+                        )
+                    }
+                    _ => crack_ub_off(),
+                };
                 let tris = body_draw_chunks(
                     &r.bodies[bi],
                     vp,
                     r.env.camera_world,
                     r.atlas_view,
                     r.atlas_smp,
+                    crack_view,
+                    crack_smp,
+                    &crack_ub,
                 );
                 r.tris += tris;
             }
@@ -4280,152 +4312,161 @@ pub fn draw_face_outline(
     sgl::end();
 }
 
-/// Block-break crack decal: the mined block's own prism geometry,
-/// re-drawn slightly inflated with a transparent crack-stage texture
-/// alpha-blended over the block's real texture (the Minecraft
-/// destroy-stage pattern). Because it re-uses the mesher's width factor,
-/// the overlay hugs full hexes, skinny tree trunks, and variable-width
-/// leaves alike. `frac` is mining progress in [0, 1] and selects the
-/// crack stage; the block shatters harder the closer it is to breaking.
-#[allow(clippy::too_many_arguments)]
-pub fn draw_break_overlay(
-    view: Mat4,
-    proj: Mat4,
-    world: &World,
-    block: Block,
-    tile_idx: i32,
+/// Block-break crack request for one frame: the mined cell + progress,
+/// stashed by app BEFORE draw_world and consumed by the next terrain
+/// pass, which paints the crack INSIDE the hex shader (see the crack
+/// channel in tenebris-rs/shaders/hex.glsl). Same geometry + depth as
+/// the terrain itself, so the old inflated-prism decal's z-fighting is
+/// impossible by construction.
+#[derive(Clone, Copy)]
+struct BreakReq {
+    body_id: u32,
+    tile: i32,
     depth: i32,
+    block: Block,
     frac: f32,
-) {
-    if tile_idx < 0 || tile_idx >= world.tile_count {
-        return;
-    }
-    if depth < 0 || depth >= WORLD_MAX_DEPTH {
-        return;
-    }
-    let Some(t) = world.grid.tile(tile_idx) else { return };
-    let n = t.num_verts as i32;
-    if n <= 0 {
-        return;
-    }
-    let Some((crack_view, crack_smp, stages)) = ensure_crack_atlas() else {
-        return;
-    };
+}
 
-    /* Stage sub-rect of the atlas strip. */
-    let frac = frac.clamp(0.0, 1.0);
+thread_local! {
+    static BREAK_REQ: Cell<Option<BreakReq>> = const { Cell::new(None) };
+}
+
+/// Publish this frame's mining state. Call BEFORE draw_world; the
+/// request is consumed (and cleared) by the next terrain pass, so an
+/// idle frame simply doesn't publish. `frac` is mining progress in
+/// [0, 1] and selects the crack stage; the block shatters harder the
+/// closer it is to breaking.
+pub fn set_break_overlay(world: &World, block: Block, tile_idx: i32, depth: i32, frac: f32) {
+    if tile_idx < 0 || tile_idx >= world.tile_count || depth < 0 || depth >= WORLD_MAX_DEPTH {
+        return;
+    }
+    BREAK_REQ.with(|c| {
+        c.set(Some(BreakReq {
+            body_id: world.body.id as u32,
+            tile: tile_idx,
+            depth,
+            block,
+            frac,
+        }))
+    });
+}
+
+/// The all-zero crack uniform block: alpha 0 disables the channel for
+/// this draw.
+fn crack_ub_off() -> shaders::hex::HexFsCrack {
+    shaders::hex::HexFsCrack {
+        u_crack_axis: [0.0; 4],
+        u_crack_band: [0.0; 4],
+        u_crack_t1: [0.0; 4],
+        u_crack_t2: [0.0; 4],
+        u_crack_planes: [[0.0; 4]; 6],
+    }
+}
+
+/// Build the hex pass's crack uniform block for the mined cell. The
+/// cell prism reuses the mesher's width factor (1.0 terrain hex, 0.20
+/// trunk, hashed 0.65..1.0 leaves) so cracks hug skinny trunks and
+/// variable-width leaves exactly like the block's own geometry. Side
+/// planes pass through the body origin because the mesher builds side
+/// walls radially - the fragment test in the shader relies on that.
+fn build_crack_ub(w: &World, req: &BreakReq, stages: i32, alpha: f32) -> shaders::hex::HexFsCrack {
+    let mut ub = crack_ub_off();
+    let Some(t) = w.grid.tile(req.tile) else { return ub };
+    let n = (t.num_verts as usize).min(6);
+    if n < 3 || stages <= 0 {
+        return ub;
+    }
+
+    /* Stage sub-rect of the horizontal atlas strip. */
+    let frac = req.frac.clamp(0.0, 1.0);
     let stage = ((frac * stages as f32) as i32).clamp(0, stages - 1);
     let su0 = stage as f32 / stages as f32;
     let su1 = (stage + 1) as f32 / stages as f32;
 
-    /* The block's own footprint (mesher width factor: 1.0 terrain hex,
-     * 0.20 trunk, hash 0.65..1.0 leaves), inflated ~2% + a radial pad so
-     * the overlay sits just above the block's surface instead of
-     * z-fighting it. */
-    let w = (hex_mesher::block_hex_width(block, tile_idx, depth) * 1.02).min(1.0);
-    let pad = 0.012;
-    let r0 = world.depth_to_radius_m(depth) - pad;
-    let r1 = world.depth_to_radius_m(depth + 1) + pad;
-    let corners: Vec<DVec3> = (0..n)
-        .map(|k| {
-            let c = hex_mesher::shrink_corner(t, k, w);
-            dvec3_scale(c, 1.0 + pad / r1.max(1.0))
-        })
-        .collect();
+    let width = hex_mesher::block_hex_width(req.block, req.tile, req.depth).min(1.0);
+    let corners: Vec<DVec3> =
+        (0..n).map(|k| hex_mesher::shrink_corner(t, k as i32, width)).collect();
 
-    let pip = ensure_break_pip();
-    sgl::defaults();
-    sgl::matrix_mode_projection();
-    sgl::load_matrix(&proj.m[0]);
-    sgl::matrix_mode_modelview();
-    sgl::load_matrix(&view.m[0]);
-    sgl::translate(
-        world.body.pos_x as f32,
-        world.body.pos_y as f32,
-        world.body.pos_z as f32,
-    );
-    sgl::load_pipeline(pip);
-    sgl::enable_texture();
-    sgl::texture(sg::View { id: crack_view }, sg::Sampler { id: crack_smp });
+    let axis = dvec3_normalize(t.center);
+    /* Tangent basis anchored at corner 0 - the shader's angle origin,
+     * so the side-face wrap starts at a real corner. */
+    let c0 = corners[0];
+    let mut t1 = dvec3_sub(c0, dvec3_scale(axis, dvec3_dot(c0, axis)));
+    let t1_len = dvec3_length(t1);
+    if t1_len < 1e-9 {
+        return ub;
+    }
+    t1 = dvec3_scale(t1, 1.0 / t1_len);
+    let t2 = dvec3_cross(axis, t1);
 
-    sgl::begin_triangles();
-    sgl::c4f(1.0, 1.0, 1.0, 0.9); /* the crack texture's alpha does the work */
+    /* Corner angular radius (sin of the centre->corner angle) - the
+     * cap fan's radial normalisation, mirroring length(perp) of a unit
+     * fragment direction in the shader. */
+    let mut rho_max = 0.0f64;
+    for c in &corners {
+        let cd = dvec3_normalize(*c);
+        let perp = dvec3_sub(cd, dvec3_scale(axis, dvec3_dot(cd, axis)));
+        rho_max = rho_max.max(dvec3_length(perp));
+    }
 
-    let vtx = |p: DVec3, u: f32, v: f32| {
-        sgl::v3f_t2f(p.x as f32, p.y as f32, p.z as f32, u, v);
-    };
-
-    /* Top + bottom caps: triangle fan from the cap centre, UVs mapping
-     * the n-gon radially onto the stage sub-rect. */
-    let umid = (su0 + su1) * 0.5;
-    let uhal = (su1 - su0) * 0.5;
-    for (ring_r, flip) in [(r1, false), (r0, true)] {
-        let centre = dvec3_scale(t.center, ring_r);
-        for k in 0..n as usize {
-            let next = (k + 1) % n as usize;
-            let (ka, kb) = if flip { (next, k) } else { (k, next) };
-            let a = dvec3_scale(corners[ka], ring_r);
-            let b = dvec3_scale(corners[kb], ring_r);
-            let ang_a = ka as f32 / n as f32 * std::f32::consts::TAU;
-            let ang_b = kb as f32 / n as f32 * std::f32::consts::TAU;
-            vtx(centre, umid, 0.5);
-            vtx(a, umid + uhal * ang_a.cos(), 0.5 + 0.5 * ang_a.sin());
-            vtx(b, umid + uhal * ang_b.cos(), 0.5 + 0.5 * ang_b.sin());
+    ub.u_crack_axis = [axis.x as f32, axis.y as f32, axis.z as f32, alpha];
+    ub.u_crack_band = [
+        w.depth_to_radius_m(req.depth) as f32,
+        w.depth_to_radius_m(req.depth + 1) as f32,
+        su0,
+        su1,
+    ];
+    ub.u_crack_t1 = [t1.x as f32, t1.y as f32, t1.z as f32, rho_max as f32];
+    ub.u_crack_t2 = [t2.x as f32, t2.y as f32, t2.z as f32, n as f32];
+    for k in 0..n {
+        let a = corners[k];
+        let b = corners[(k + 1) % n];
+        let mut pn = dvec3_cross(a, b);
+        let l = dvec3_length(pn);
+        if l < 1e-12 {
+            continue;
         }
+        pn = dvec3_scale(pn, 1.0 / l);
+        /* Orient outward - the cell axis points into the interior. */
+        if dvec3_dot(pn, axis) > 0.0 {
+            pn = dvec3_scale(pn, -1.0);
+        }
+        ub.u_crack_planes[k] = [pn.x as f32, pn.y as f32, pn.z as f32, 0.0];
     }
-    /* Side quads: one full stage sub-rect per face. */
-    for k in 0..n as usize {
-        let next = (k + 1) % n as usize;
-        let ia = dvec3_scale(corners[k], r0);
-        let ib = dvec3_scale(corners[next], r0);
-        let oa = dvec3_scale(corners[k], r1);
-        let ob = dvec3_scale(corners[next], r1);
-        vtx(ia, su0, 1.0);
-        vtx(ib, su1, 1.0);
-        vtx(ob, su1, 0.0);
-        vtx(ia, su0, 1.0);
-        vtx(ob, su1, 0.0);
-        vtx(oa, su0, 0.0);
-    }
-    sgl::end();
-    sgl::disable_texture();
+    ub
 }
 
 /// Load the crack-stage atlas once, at boot (see `preload_break_atlas`).
-/// Returns `(view, sampler, stages)`; `None` if the PNG is missing (the
-/// decal then silently no-ops - polish, not a hard dependency).
-fn ensure_crack_atlas() -> Option<(u32, u32, i32)> {
-    match CRACK_STATE.with(|c| c.get()) {
-        1 => {
-            return Some((
-                CRACK_VIEW.with(|c| c.get()),
-                CRACK_SMP.with(|c| c.get()),
-                CRACK_STAGES.with(|c| c.get()),
-            ));
-        }
-        -1 => return None,
-        _ => {}
+/// Returns `(view, sampler, stages)`. The hex pipeline binds this view
+/// on EVERY terrain draw (the crack channel is a shader branch, not a
+/// separate pass), so a missing PNG falls back to a 1x1 transparent
+/// atlas instead of disabling - the binding must always be valid.
+fn ensure_crack_atlas() -> (u32, u32, i32) {
+    if CRACK_STATE.with(|c| c.get()) == 1 {
+        return (
+            CRACK_VIEW.with(|c| c.get()),
+            CRACK_SMP.with(|c| c.get()),
+            CRACK_STAGES.with(|c| c.get()),
+        );
     }
     let path = "assets/textures/break_stages.png";
-    let Some(img) = load_png_rgba(path, false) else {
-        println!("[break] {} missing; crack decal disabled", path);
-        CRACK_STATE.with(|c| c.set(-1));
-        return None;
+    let (w, h, rgba) = match load_png_rgba(path, false) {
+        Some(img) if img.h > 0 && img.w / img.h > 0 => (img.w, img.h, img.rgba),
+        _ => {
+            println!("[break] {} missing; crack channel gets a blank 1x1 atlas", path);
+            (1, 1, vec![0u8; 4])
+        }
     };
     /* Horizontal strip of square stages: count = width / height. */
-    let stages = if img.h > 0 { img.w / img.h } else { 0 };
-    if stages <= 0 {
-        CRACK_STATE.with(|c| c.set(-1));
-        return None;
-    }
+    let stages = w / h;
     let mut desc = sg::ImageDesc {
-        width: img.w,
-        height: img.h,
+        width: w,
+        height: h,
         pixel_format: sg::PixelFormat::Rgba8,
         label: c"break-atlas".as_ptr(),
         ..Default::default()
     };
-    desc.data.mip_levels[0] = sg::slice_as_range(&img.rgba);
+    desc.data.mip_levels[0] = sg::slice_as_range(&rgba);
     let image = sg::make_image(&desc);
     let view = sg::make_view(&sg::ViewDesc {
         texture: sg::TextureViewDesc { image, ..Default::default() },
@@ -4444,8 +4485,8 @@ fn ensure_crack_atlas() -> Option<(u32, u32, i32)> {
     CRACK_SMP.with(|c| c.set(smp.id));
     CRACK_STAGES.with(|c| c.set(stages));
     CRACK_STATE.with(|c| c.set(1));
-    println!("[break] crack atlas loaded: {} stages ({}x{})", stages, img.w, img.h);
-    Some((view.id, smp.id, stages))
+    println!("[break] crack atlas loaded: {} stages ({}x{})", stages, w, h);
+    (view.id, smp.id, stages)
 }
 
 /// Preload the crack atlas at boot, OUTSIDE any render pass, so the
@@ -4453,37 +4494,6 @@ fn ensure_crack_atlas() -> Option<(u32, u32, i32)> {
 /// app init after `ui_icons::init`.
 pub fn preload_break_atlas() {
     let _ = ensure_crack_atlas();
-}
-
-/// Lazy triangles pipeline for the crack decal: depth-tested (no write)
-/// + alpha blend, created in the current sgl context like the outline
-/// pipeline.
-fn ensure_break_pip() -> sgl::Pipeline {
-    let existing = BREAK_PIP.with(|c| c.get());
-    if existing.id != 0 {
-        return existing;
-    }
-    let mut desc = sg::PipelineDesc {
-        primitive_type: sg::PrimitiveType::Triangles,
-        depth: sg::DepthState {
-            compare: sg::CompareFunc::LessEqual,
-            write_enabled: false,
-            ..Default::default()
-        },
-        cull_mode: sg::CullMode::None,
-        ..Default::default()
-    };
-    desc.colors[0].blend = sg::BlendState {
-        enabled: true,
-        src_factor_rgb: sg::BlendFactor::SrcAlpha,
-        dst_factor_rgb: sg::BlendFactor::OneMinusSrcAlpha,
-        src_factor_alpha: sg::BlendFactor::One,
-        dst_factor_alpha: sg::BlendFactor::One,
-        ..Default::default()
-    };
-    let pip = sgl::make_pipeline(&desc);
-    BREAK_PIP.with(|c| c.set(pip));
-    pip
 }
 
 /// Per-cell arrow emission for the F5 overlay - port of

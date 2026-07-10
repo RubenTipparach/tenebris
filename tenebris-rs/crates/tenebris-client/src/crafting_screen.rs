@@ -26,6 +26,9 @@ pub type PlayerHandle = Rc<RefCell<PlayerCtrl>>;
 /// Hard cap on rows drawn (no scroll yet; Tier 0 has a handful).
 const MAX_ROWS: usize = 16;
 
+/// Most recipes that can wait in the craft queue behind the active one.
+const QUEUE_MAX: usize = 8;
+
 #[derive(Clone, Debug, Default)]
 struct Screen {
     open: bool,
@@ -35,6 +38,11 @@ struct Screen {
     /// `Some(block_item_id)` = a placed station (furnace, ...). Only
     /// recipes whose `station` matches are listed / craftable.
     station: Option<items::ItemId>,
+    /// Recipes waiting behind the active craft, in click order. Inputs
+    /// are consumed when an entry's turn comes (tick_craft), so you can
+    /// queue sticks behind the planks they need; an entry that can't
+    /// pay at its turn is dropped. Transient - cleared on world switch.
+    queue: Vec<Recipe>,
 }
 
 thread_local! {
@@ -140,15 +148,23 @@ fn craft_row(idx: usize) -> bool {
     start_craft(&player, recipe)
 }
 
-/// Begin a timed craft: consume the recipe's inputs now and queue its
-/// output for delivery when the timer finishes (`tick_craft`). No-op if a
-/// craft is already running or the inputs aren't on hand. Returns true if
-/// the craft started.
+/// Begin a timed craft: consume the recipe's inputs now and deliver its
+/// output when the timer finishes (`tick_craft`). If a craft is already
+/// running, the recipe joins the queue instead - inputs are checked when
+/// its turn comes, so a stick craft can wait behind the planks it needs.
+/// Returns true if the craft started or was queued.
 pub fn start_craft(player: &PlayerHandle, r: &Recipe) -> bool {
-    let mut p = player.borrow_mut();
-    if p.crafting.is_some() {
-        return false; /* one craft at a time */
+    if player.borrow().crafting.is_some() {
+        return S.with(|c| {
+            let s = &mut *c.borrow_mut();
+            if s.queue.len() >= QUEUE_MAX {
+                return false;
+            }
+            s.queue.push(r.clone());
+            true
+        });
     }
+    let mut p = player.borrow_mut();
     let p = &mut *p;
     if !bag::consume_inputs(&mut p.inventory, &mut p.bag, r) {
         return false;
@@ -163,45 +179,140 @@ pub fn start_craft(player: &PlayerHandle, r: &Recipe) -> bool {
 }
 
 /// Advance the player's in-progress craft; deposit the output into the bag
-/// when it finishes. Called every frame from app (so a craft keeps running
-/// even after the panel is closed - groundwork for automated crafters).
+/// when it finishes, then pull the next queued recipe. Called every frame
+/// from app (so a craft keeps running even after the panel is closed -
+/// groundwork for automated crafters).
 pub fn tick_craft(player: &PlayerHandle, dt: f32) {
-    let mut p = player.borrow_mut();
-    let Some(mut ac) = p.crafting else { return };
-    ac.elapsed_s += dt;
-    if ac.elapsed_s >= ac.total_s {
-        let (item, count) = (ac.output, ac.count);
-        p.crafting = None;
-        p.bag.add(item, count);
-    } else {
-        p.crafting = Some(ac);
+    {
+        let mut p = player.borrow_mut();
+        if let Some(mut ac) = p.crafting {
+            ac.elapsed_s += dt;
+            if ac.elapsed_s < ac.total_s {
+                p.crafting = Some(ac);
+                return;
+            }
+            let (item, count) = (ac.output, ac.count);
+            p.crafting = None;
+            p.bag.add(item, count);
+        }
+    }
+    /* Idle: start the next queued recipe that can pay its inputs NOW.
+     * Entries that can't afford their turn are dropped (the queue shows
+     * intent, not a reservation). */
+    while player.borrow().crafting.is_none() {
+        let next = S.with(|c| {
+            let s = &mut *c.borrow_mut();
+            if s.queue.is_empty() {
+                None
+            } else {
+                Some(s.queue.remove(0))
+            }
+        });
+        let Some(r) = next else { break };
+        let mut p = player.borrow_mut();
+        let p = &mut *p;
+        if bag::consume_inputs(&mut p.inventory, &mut p.bag, &r) {
+            p.crafting = Some(ActiveCraft {
+                output: r.output.item,
+                count: r.output.count,
+                total_s: r.time_s.max(0.01),
+                elapsed_s: 0.0,
+            });
+        }
     }
 }
 
-/// Draw the active-craft progress bar (output icon + filling bar) at the
-/// top of a craft panel. No-op when nothing is crafting.
-fn craft_progress_row(ui: &mut egui::Ui, player: &PlayerHandle) {
+/// Drop every queued recipe. Called on world / session switches - the
+/// queue is transient intent, never persisted. (The ACTIVE craft lives
+/// on PlayerCtrl; the mode-priming path clears that separately.)
+pub fn clear_queue() {
+    S.with(|c| c.borrow_mut().queue.clear());
+}
+
+/// True when a craft is running or queued - clicking a recipe then
+/// enqueues rather than starts, and dim rows become queueable (their
+/// inputs may exist by the time their turn comes).
+fn craft_busy(player: &PlayerHandle) -> bool {
+    player.borrow().crafting.is_some() || S.with(|c| !c.borrow().queue.is_empty())
+}
+
+/// Fixed-size "Crafting" status box drawn ABOVE the recipe list: always
+/// present, so a craft starting / finishing never reflows the recipes
+/// under it. Shows the active craft's icon + progress bar and the
+/// queued outputs; reads "idle" when nothing is running.
+fn craft_progress_box(ui: &mut egui::Ui, player: &PlayerHandle) {
     let ac = player.borrow().crafting;
-    let Some(ac) = ac else { return };
-    let frac = (ac.elapsed_s / ac.total_s).clamp(0.0, 1.0);
-    ui.horizontal(|ui| {
-        let (irect, _) = ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::hover());
-        draw_icon(ui.painter(), ac.output, ac.count, irect);
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(220.0, 16.0), egui::Sense::hover());
-        let p = ui.painter();
-        p.rect_filled(rect, 3.0, egui::Color32::from_rgb(0x1a, 0x1d, 0x24));
-        let mut fill = rect;
-        fill.set_width(rect.width() * frac);
-        p.rect_filled(fill, 3.0, egui::Color32::from_rgb(0xd8, 0x9a, 0x38));
-        p.text(
-            rect.center(),
-            egui::Align2::CENTER_CENTER,
-            format!("crafting {}%", (frac * 100.0) as i32),
-            egui::FontId::proportional(11.0),
-            egui::Color32::WHITE,
-        );
+    let queued: Vec<(u16, u16)> = S.with(|c| {
+        c.borrow().queue.iter().map(|r| (r.output.item, r.output.count)).collect()
     });
-    ui.add_space(4.0);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(RECIPE_W, 36.0), egui::Sense::hover());
+    let p = ui.painter();
+    p.rect_filled(rect, 4.0, egui::Color32::from_rgb(0x14, 0x16, 0x1c));
+    p.rect_stroke(
+        rect,
+        4.0,
+        egui::Stroke::new(1.0, egui::Color32::from_rgb(0x30, 0x34, 0x40)),
+        egui::StrokeKind::Inside,
+    );
+    let cy = rect.center().y;
+    p.text(
+        egui::pos2(rect.min.x + 10.0, cy),
+        egui::Align2::LEFT_CENTER,
+        "Crafting",
+        egui::FontId::proportional(12.0),
+        egui::Color32::from_rgb(0xa0, 0xa8, 0xc0),
+    );
+    match ac {
+        Some(ac) => {
+            let frac = (ac.elapsed_s / ac.total_s).clamp(0.0, 1.0);
+            let ix = rect.min.x + 76.0;
+            draw_icon(
+                p,
+                ac.output,
+                ac.count,
+                egui::Rect::from_center_size(egui::pos2(ix + 12.0, cy), egui::vec2(24.0, 24.0)),
+            );
+            let bar = egui::Rect::from_min_max(
+                egui::pos2(ix + 32.0, cy - 8.0),
+                egui::pos2(ix + 182.0, cy + 8.0),
+            );
+            p.rect_filled(bar, 3.0, egui::Color32::from_rgb(0x1a, 0x1d, 0x24));
+            let mut fill = bar;
+            fill.set_width(bar.width() * frac);
+            p.rect_filled(fill, 3.0, egui::Color32::from_rgb(0xd8, 0x9a, 0x38));
+            p.text(
+                bar.center(),
+                egui::Align2::CENTER_CENTER,
+                format!("{}%", (frac * 100.0) as i32),
+                egui::FontId::proportional(11.0),
+                egui::Color32::WHITE,
+            );
+            /* Queued outputs, small icons trailing the bar. */
+            let mut qx = bar.max.x + 10.0;
+            for (item, count) in &queued {
+                if qx + 18.0 > rect.max.x - 6.0 {
+                    break;
+                }
+                draw_icon(
+                    p,
+                    *item,
+                    *count,
+                    egui::Rect::from_center_size(egui::pos2(qx + 9.0, cy), egui::vec2(18.0, 18.0)),
+                );
+                qx += 22.0;
+            }
+        }
+        None => {
+            p.text(
+                egui::pos2(rect.min.x + 76.0, cy),
+                egui::Align2::LEFT_CENTER,
+                "idle",
+                egui::FontId::proportional(11.0),
+                egui::Color32::from_rgb(0x60, 0x66, 0x74),
+            );
+        }
+    }
+    ui.add_space(6.0);
 }
 
 
@@ -308,10 +419,63 @@ fn draw_icon(p: &egui::Painter, item: u16, count: u16, rect: egui::Rect) {
     }
 }
 
-/// Draw the craft / smelt panel in egui. Each recipe is a clickable row:
-/// the output icon, an arrow, and the input icons (a craftable row is lit
-/// with a green border; a non-affordable one stays dim). Per the CLAUDE.md
-/// rule, recipes are shown as item thumbnails, not text.
+/// One clickable recipe row: the input icons on the left, then an
+/// arrow, and the RESULT icon pinned to the right edge of the row.
+/// A craftable row is lit with a green border; a non-affordable one
+/// stays dim. Returns the row's click response.
+fn recipe_row(ui: &mut egui::Ui, r: &Recipe, ready: bool) -> egui::Response {
+    let (rect, resp) =
+        ui.allocate_exact_size(egui::vec2(RECIPE_W, RECIPE_H), egui::Sense::click());
+    let bg = match (ready, resp.hovered()) {
+        (true, true) => egui::Color32::from_rgb(0x26, 0x3c, 0x2a),
+        (true, false) => egui::Color32::from_rgb(0x1d, 0x2e, 0x20),
+        (false, true) => egui::Color32::from_rgb(0x2c, 0x2e, 0x36),
+        (false, false) => egui::Color32::from_rgb(0x20, 0x22, 0x29),
+    };
+    let p = ui.painter();
+    p.rect_filled(rect, 4.0, bg);
+    if ready {
+        p.rect_stroke(
+            rect,
+            4.0,
+            egui::Stroke::new(1.5, egui::Color32::from_rgb(0x5a, 0xc8, 0x6e)),
+            egui::StrokeKind::Inside,
+        );
+    }
+    let cy = rect.center().y;
+    let cell = egui::vec2(RECIPE_ICON, RECIPE_ICON);
+    /* Inputs, left-aligned. */
+    let mut x = rect.min.x + 8.0;
+    for inp in &r.inputs {
+        draw_icon(
+            p,
+            inp.item,
+            inp.count,
+            egui::Rect::from_center_size(egui::pos2(x + RECIPE_ICON * 0.5, cy), cell),
+        );
+        x += RECIPE_ICON + 6.0;
+    }
+    /* Result on the right: arrow, then the output icon at the edge. */
+    let ox = rect.max.x - 8.0 - RECIPE_ICON;
+    p.text(
+        egui::pos2(ox - 10.0, cy),
+        egui::Align2::RIGHT_CENTER,
+        "->",
+        egui::FontId::proportional(16.0),
+        egui::Color32::from_rgb(0xc0, 0xc6, 0xd2),
+    );
+    draw_icon(
+        p,
+        r.output.item,
+        r.output.count,
+        egui::Rect::from_min_size(egui::pos2(ox, cy - RECIPE_ICON * 0.5), cell),
+    );
+    resp
+}
+
+/// Draw the craft / smelt panel in egui. Each recipe is a clickable row
+/// (see `recipe_row`). Per the CLAUDE.md rule, recipes are shown as item
+/// thumbnails, not text.
 pub fn egui_ui(ctx: &egui::Context) {
     if !is_open() {
         return;
@@ -328,6 +492,8 @@ pub fn egui_ui(ctx: &egui::Context) {
     };
     let mut craft_idx: Option<usize> = None;
     let mut do_close = false;
+    let player = S.with(|c| c.borrow().player.clone());
+    let busy = player.as_ref().map(craft_busy).unwrap_or(false);
 
     egui::Window::new(title)
         .collapsible(false)
@@ -339,62 +505,16 @@ pub fn egui_ui(ctx: &egui::Context) {
                     .color(egui::Color32::from_rgb(0xa0, 0xa8, 0xc0)),
             );
             ui.add_space(4.0);
-            if let Some(player) = S.with(|c| c.borrow().player.clone()) {
-                craft_progress_row(ui, &player);
+            if let Some(player) = &player {
+                craft_progress_box(ui, player);
             }
             for (i, r) in recipes.iter().enumerate() {
                 let ready = flags.get(i).copied().unwrap_or(false);
-                let (rect, resp) =
-                    ui.allocate_exact_size(egui::vec2(RECIPE_W, RECIPE_H), egui::Sense::click());
-                let bg = match (ready, resp.hovered()) {
-                    (true, true) => egui::Color32::from_rgb(0x26, 0x3c, 0x2a),
-                    (true, false) => egui::Color32::from_rgb(0x1d, 0x2e, 0x20),
-                    (false, true) => egui::Color32::from_rgb(0x2c, 0x2e, 0x36),
-                    (false, false) => egui::Color32::from_rgb(0x20, 0x22, 0x29),
-                };
-                {
-                    let p = ui.painter();
-                    p.rect_filled(rect, 4.0, bg);
-                    if ready {
-                        p.rect_stroke(
-                            rect,
-                            4.0,
-                            egui::Stroke::new(1.5, egui::Color32::from_rgb(0x5a, 0xc8, 0x6e)),
-                            egui::StrokeKind::Inside,
-                        );
-                    }
-                    let cy = rect.center().y;
-                    let mut x = rect.min.x + 8.0;
-                    let cell = egui::vec2(RECIPE_ICON, RECIPE_ICON);
-                    draw_icon(
-                        p,
-                        r.output.item,
-                        r.output.count,
-                        egui::Rect::from_center_size(egui::pos2(x + RECIPE_ICON * 0.5, cy), cell),
-                    );
-                    x += RECIPE_ICON + 12.0;
-                    p.text(
-                        egui::pos2(x, cy),
-                        egui::Align2::LEFT_CENTER,
-                        "<-",
-                        egui::FontId::proportional(16.0),
-                        egui::Color32::from_rgb(0xc0, 0xc6, 0xd2),
-                    );
-                    x += 26.0;
-                    for inp in &r.inputs {
-                        draw_icon(
-                            p,
-                            inp.item,
-                            inp.count,
-                            egui::Rect::from_center_size(
-                                egui::pos2(x + RECIPE_ICON * 0.5, cy),
-                                cell,
-                            ),
-                        );
-                        x += RECIPE_ICON + 6.0;
-                    }
-                }
-                if resp.clicked() && ready {
+                let resp = recipe_row(ui, r, ready);
+                /* Ready rows craft / enqueue; while something is
+                 * already running, dim rows enqueue too (their inputs
+                 * may exist by the time their turn comes). */
+                if resp.clicked() && (ready || busy) {
                     craft_idx = Some(i);
                 }
                 ui.add_space(3.0);
@@ -424,64 +544,19 @@ pub fn hand_craft_panel(ui: &mut egui::Ui, player: &PlayerHandle) {
         recipes.iter().map(|r| bag::can_craft(&p.inventory, &p.bag, r)).collect()
     };
     let mut craft_idx: Option<usize> = None;
+    let busy = craft_busy(player);
 
     ui.label(
         egui::RichText::new("Click a recipe to craft - lit rows are ready")
             .color(egui::Color32::from_rgb(0xa0, 0xa8, 0xc0)),
     );
     ui.add_space(4.0);
-    craft_progress_row(ui, player);
+    craft_progress_box(ui, player);
     egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
         for (i, r) in recipes.iter().enumerate() {
             let ready = flags.get(i).copied().unwrap_or(false);
-            let (rect, resp) =
-                ui.allocate_exact_size(egui::vec2(RECIPE_W, RECIPE_H), egui::Sense::click());
-            let bg = match (ready, resp.hovered()) {
-                (true, true) => egui::Color32::from_rgb(0x26, 0x3c, 0x2a),
-                (true, false) => egui::Color32::from_rgb(0x1d, 0x2e, 0x20),
-                (false, true) => egui::Color32::from_rgb(0x2c, 0x2e, 0x36),
-                (false, false) => egui::Color32::from_rgb(0x20, 0x22, 0x29),
-            };
-            {
-                let p = ui.painter();
-                p.rect_filled(rect, 4.0, bg);
-                if ready {
-                    p.rect_stroke(
-                        rect,
-                        4.0,
-                        egui::Stroke::new(1.5, egui::Color32::from_rgb(0x5a, 0xc8, 0x6e)),
-                        egui::StrokeKind::Inside,
-                    );
-                }
-                let cy = rect.center().y;
-                let mut x = rect.min.x + 8.0;
-                let cell = egui::vec2(RECIPE_ICON, RECIPE_ICON);
-                draw_icon(
-                    p,
-                    r.output.item,
-                    r.output.count,
-                    egui::Rect::from_center_size(egui::pos2(x + RECIPE_ICON * 0.5, cy), cell),
-                );
-                x += RECIPE_ICON + 12.0;
-                p.text(
-                    egui::pos2(x, cy),
-                    egui::Align2::LEFT_CENTER,
-                    "<-",
-                    egui::FontId::proportional(16.0),
-                    egui::Color32::from_rgb(0xc0, 0xc6, 0xd2),
-                );
-                x += 26.0;
-                for inp in &r.inputs {
-                    draw_icon(
-                        p,
-                        inp.item,
-                        inp.count,
-                        egui::Rect::from_center_size(egui::pos2(x + RECIPE_ICON * 0.5, cy), cell),
-                    );
-                    x += RECIPE_ICON + 6.0;
-                }
-            }
-            if resp.clicked() && ready {
+            let resp = recipe_row(ui, r, ready);
+            if resp.clicked() && (ready || busy) {
                 craft_idx = Some(i);
             }
             ui.add_space(3.0);
@@ -565,10 +640,32 @@ in: plank 2
         set_player(Some(p.clone()));
         assert!(craft_row(0)); // row 0 = planks -> starts the craft
         assert_eq!(p.borrow().bag.count_of(PLANK), 0, "not instant");
-        // A second craft can't start while one is running.
-        assert!(!craft_row(0));
+        // A second click while one is running QUEUES (returns true)...
+        assert!(craft_row(0));
         tick_craft(&p, 999.0);
         assert_eq!(p.borrow().bag.count_of(PLANK), 4);
+        // ...but with no logs left, its turn can't pay -> dropped, idle.
+        assert!(p.borrow().crafting.is_none());
+    }
+
+    #[test]
+    fn queued_crafts_run_back_to_back() {
+        setup();
+        let p = player_with_logs(2);
+        set_player(Some(p.clone()));
+        assert!(craft_row(0)); // starts (consumes log 1)
+        assert!(craft_row(0)); // queues
+        // First finishes; the queued one starts immediately, paying its
+        // inputs at its turn (consumes log 2).
+        tick_craft(&p, 999.0);
+        assert_eq!(p.borrow().bag.count_of(PLANK), 4);
+        assert!(p.borrow().crafting.is_some(), "queued craft now running");
+        assert_eq!(p.borrow().inventory.slots[1].count, 0, "second log spent");
+        tick_craft(&p, 999.0);
+        assert_eq!(p.borrow().bag.count_of(PLANK), 8);
+        assert!(p.borrow().crafting.is_none());
+        // Queue is transient: nothing left behind.
+        clear_queue();
     }
 
     #[test]

@@ -2,16 +2,20 @@
 //! `<name>.glsl.h` headers (see `tenebris-c/cmake/sokol-shdc.cmake`).
 //!
 //! Each module is the output of sokol-shdc's `sokol_rust` backend run
-//! over the matching annotated-GLSL source under
-//! `tenebris-c/src/shaders/`. The files are deterministic build
+//! over the matching annotated-GLSL source. Most sources still live
+//! under `tenebris-c/src/shaders/`; shaders the Rust port has diverged
+//! from the C build (currently `hex.glsl`, which grew the block-break
+//! crack channel) live in the port's own `tenebris-rs/shaders/` per the
+//! self-contained-port rule. The files are deterministic build
 //! artifacts checked in as-is (don't edit by hand - regenerate).
 //!
-//! Generation command (run from `tenebris-c/`):
+//! Generation command (run from `tenebris-rs/`; swap the input dir to
+//! `../tenebris-c/src/shaders/` for the not-yet-diverged shaders):
 //!
 //! ```text
-//! third_party/sokol-tools-bin/sokol-shdc.exe \
-//!     --input  src/shaders/<name>.glsl \
-//!     --output <this dir>/<name>.rs \
+//! ..\tenebris-c\third_party\sokol-tools-bin\sokol-shdc.exe \
+//!     --input  shaders/<name>.glsl \
+//!     --output crates/tenebris-client/src/shaders/<name>.rs \
 //!     --slang  glsl410:glsl300es \
 //!     --format sokol_rust
 //! ```

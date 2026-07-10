@@ -212,6 +212,9 @@ pub struct MiningConfig {
     pub stone_tool_mult: f32,
     /// Rock break-time multiplier for the iron pickaxe (< 1 = faster).
     pub iron_tool_mult: f32,
+    /// Blend strength of the crack-stage texture painted over a block
+    /// being mined (0..1; the hex shader's crack channel).
+    pub crack_alpha: f32,
 }
 
 impl MiningConfig {
@@ -230,6 +233,7 @@ impl MiningConfig {
         hand_penalty_mult: 2.0,
         stone_tool_mult: 0.70,
         iron_tool_mult: 0.40,
+        crack_alpha: 0.90,
     };
 
     /// All-zero ore chances: worldgen places no ore. Used by the save
@@ -246,6 +250,7 @@ impl MiningConfig {
         hand_penalty_mult: 2.0,
         stone_tool_mult: 0.70,
         iron_tool_mult: 0.40,
+        crack_alpha: 0.90,
     };
 }
 
@@ -292,6 +297,7 @@ pub fn parse_config(src: &str, _path: &str) -> MiningConfig {
             "hand_penalty_mult" => cfg.hand_penalty_mult = v,
             "stone_tool_mult" => cfg.stone_tool_mult = v,
             "iron_tool_mult" => cfg.iron_tool_mult = v,
+            "crack_alpha" => cfg.crack_alpha = v,
             _ => {}
         }
     }
