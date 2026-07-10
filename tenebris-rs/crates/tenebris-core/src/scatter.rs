@@ -61,9 +61,9 @@ pub struct ScatterConfig {
 impl ScatterConfig {
     pub const DEFAULT: ScatterConfig = ScatterConfig {
         grass_chance: 0.8,
-        grass_blades: 16.0,
+        grass_blades: 18.0,
         grass_height_m: 0.55,
-        grass_blade_w_m: 0.16,
+        grass_blade_w_m: 0.085,
         flower_chance: 0.12,
         flower_height_m: 0.32,
         rock_chance: 0.10,

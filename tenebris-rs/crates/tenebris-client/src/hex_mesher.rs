@@ -1913,6 +1913,16 @@ fn tile_uv(block: Block, cap: FaceCap) -> (f32, f32, f32, f32) {
     )
 }
 
+/// A narrow vertical slice of an atlas column, positioned by `t` in
+/// [0,1). Each grass strip samples its own slice so neighbouring blades
+/// pick up different pixels of the source texture - free per-blade
+/// shade variation from art that already exists.
+fn tile_uv_slice(block: Block, cap: FaceCap, t: f32) -> (f32, f32, f32, f32) {
+    let u0 = blocks::face_tile(block, cap) as f32 * HEX_ATLAS_U_STEP;
+    let lo = u0 + HEX_ATLAS_U_STEP * (0.15 + 0.45 * t.clamp(0.0, 1.0));
+    (lo, lo + HEX_ATLAS_U_STEP * 0.22, 0.15 + 0.5 * t, 0.85)
+}
+
 /// One triangle, visible from both sides (3 shared verts, both index
 /// windings - the hex pipeline back-face culls). Normal is the surface
 /// up so scatter shades like the ground it stands on (no lighting pop
@@ -2196,13 +2206,17 @@ pub fn build_scatter(out: &mut HexMesh, w: &World, tile_idx: i32) {
     let torch = torch_light_at(dvec3_to_vec3(dvec3_scale(t.center, r_surf)));
 
     if grassy {
-        /* Grass: Minecraft-scale coverage - wide blades spread across
-         * the whole tile so a covered tile reads about half grass, each
-         * blade about half a block tall. */
+        /* Grass: Minecraft-scale coverage - thin rectangular strips
+         * spread across the whole tile, each about half a block tall.
+         * Blades deliberately DON'T sample the ground's own texture:
+         * they draw from the tree-leaf greens (plus the sister-planet
+         * grass as an accent), each strip cropping its own slice of
+         * the source art - the slightly-off shades are what make the
+         * blades pop out of the cap they stand on instead of melting
+         * into it. */
         if hash2(tile_idx, SALT_KIND) < cfg.grass_chance {
             let max_b = cfg.grass_blades.max(3.0);
             let blades = ((0.6 + 0.4 * hash2(tile_idx, SALT_COUNT)) * max_b) as i32;
-            let grass_uv = tile_uv(ground, FaceCap::Top);
             for j in 0..blades {
                 let base = place(
                     hash2(tile_idx, SALT_POS_A + j),
@@ -2210,17 +2224,33 @@ pub fn build_scatter(out: &mut HexMesh, w: &World, tile_idx: i32) {
                 );
                 let ang = hash2(tile_idx, SALT_ANGLE + j) as f64 * std::f64::consts::TAU;
                 let h = cfg.grass_height_m as f64
-                    * (0.7 + 0.6 * hash2(tile_idx, SALT_SIZE + j) as f64);
-                let lean = dvec3_scale(rot(ang + 0.9), h * 0.18);
-                push_blade(
+                    * (0.65 + 0.7 * hash2(tile_idx, SALT_SIZE + j) as f64);
+                /* Off-colour palette: mostly the darker tree-leaf green
+                 * (the same shade that makes the canopies pop), with an
+                 * occasional blade of the ground's own tint blended in.
+                 * On the sister planet the local leaf green swaps in so
+                 * biomes keep their identity. */
+                let leaf = if ground == Block::SeqGrass { Block::SeqLeaves } else { Block::Leaves };
+                let pal = hash2(tile_idx, SALT_VARIANT + j);
+                let src = if pal < 0.7 { leaf } else { ground };
+                let uvr = tile_uv_slice(src, FaceCap::Top, hash2(tile_idx, SALT_SIZE + 31 + j));
+                let (u_lo, u_hi, v_lo, v_hi) = uvr;
+                let side = rot(ang);
+                let lean = dvec3_scale(rot(ang + 0.9), h * 0.15);
+                let hw = cfg.grass_blade_w_m as f64
+                    * (0.7 + 0.6 * hash2(tile_idx, SALT_COUNT + 17 + j) as f64);
+                let top = dvec3_add(dvec3_add(base, dvec3_scale(up, h)), lean);
+                /* Thin rectangular strip, slightly narrower at the top. */
+                push_quad_2side(
                     out,
-                    base,
+                    [
+                        dvec3_sub(base, dvec3_scale(side, hw)),
+                        dvec3_add(base, dvec3_scale(side, hw)),
+                        dvec3_add(top, dvec3_scale(side, hw * 0.8)),
+                        dvec3_sub(top, dvec3_scale(side, hw * 0.8)),
+                    ],
+                    [(u_lo, v_hi), (u_hi, v_hi), (u_hi, v_lo), (u_lo, v_lo)],
                     up,
-                    rot(ang),
-                    lean,
-                    h,
-                    cfg.grass_blade_w_m as f64,
-                    grass_uv,
                     sky,
                     torch,
                     wet,
