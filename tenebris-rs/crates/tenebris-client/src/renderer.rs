@@ -3524,13 +3524,26 @@ pub fn compose_to_swapchain(view: Mat4, proj: Mat4) {
                     / cam_r;
                 /* Same terminator band entity_sun_brightness uses. */
                 let daylight = 0.16 + 0.84 * ((d + 0.10) / 0.22).clamp(0.0, 1.0);
+                /* Caelum-style sunset carry-over: as the sun crosses
+                 * the terminator the sky warms via the atmo sunset
+                 * tints, so the fog picks up the same horizon colour
+                 * instead of staying steel blue at dawn/dusk. */
+                let warm = (1.0 - (d - 0.02).abs() / 0.18).clamp(0.0, 1.0) * 0.6;
+                let sh = bc.atmo_sunset_horizon;
+                let sunset = if sh.x + sh.y + sh.z > 0.0 {
+                    sh
+                } else {
+                    /* Renderer default sunset_horizon (see BodyConfig). */
+                    tenebris_core::math::Vec3 { x: 0.8, y: 0.4, z: 0.15 }
+                };
+                let mixc = |a: f32, b: f32| a + (b - a) * warm;
                 let height = if bc.atmo_fog_height_m > 0.0 { bc.atmo_fog_height_m } else { 60.0 };
                 let alt = (cam_r - sea_radius).max(0.0);
                 let k = (1.0 - alt / height).clamp(0.0, 1.0);
                 fog = [
-                    bc.atmo_fog_color.x * daylight,
-                    bc.atmo_fog_color.y * daylight,
-                    bc.atmo_fog_color.z * daylight,
+                    mixc(bc.atmo_fog_color.x, sunset.x) * daylight,
+                    mixc(bc.atmo_fog_color.y, sunset.y) * daylight,
+                    mixc(bc.atmo_fog_color.z, sunset.z) * daylight,
                     bc.atmo_fog_density * k,
                 ];
             }

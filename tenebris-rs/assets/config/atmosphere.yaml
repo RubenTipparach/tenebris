@@ -71,8 +71,8 @@ tenebris:
   # Gentle blue-grey haze: ~25% fog at 100 m, ~60% at 300 m, gone by
   # the time you fly 90 m above sea level.
   fog_color: [0.62, 0.72, 0.85]
-  fog_density: 0.003
-  fog_height_m: 90.0
+  fog_density: 0.012
+  fog_height_m: 130.0
 
 # Sequoia — sister Earth-like, slightly greener tint.
 sequoia:
@@ -82,8 +82,8 @@ sequoia:
   sunset_glow: [0.9, 1.0, 0.45]
   # Warmer, slightly green-cast haze to match its sky.
   fog_color: [0.68, 0.78, 0.72]
-  fog_density: 0.003
-  fog_height_m: 90.0
+  fog_density: 0.012
+  fog_height_m: 130.0
 
 # Add other has_water=true bodies here. Bodies without atmosphere
 # (moons, asteroids, icy planets) ignore this file entirely.
