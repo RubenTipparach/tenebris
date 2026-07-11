@@ -183,6 +183,102 @@ pub fn surface_altitude(body: &BodyConfig, unit_dir: DVec3) -> f32 {
 }
 
 /* ----------------------------------------------------------------------- */
+/* Biomes - a moisture field layered over the existing elevation +
+ * latitude bands. DELIBERATE Rust-port extension past the C worldgen:
+ * deserts, jungles, swamps, rockier mountains. Classification is pure
+ * (seeded noise over the unit sphere), so scatter, fauna tables, and
+ * the terrain fill all agree on where a biome is. */
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Biome {
+    Ocean,
+    Beach,
+    /// Temperate grass - the classic look.
+    Fields,
+    /// Dry: sand ground, cactus scatter, no trees.
+    Desert,
+    /// Wet + warm: dense tall trees, lush scatter.
+    Jungle,
+    /// Wet lowland: groves, dark swamp grass, frogs.
+    Swamp,
+    /// High rock above the tree line.
+    Mountains,
+    /// Cold high-latitude band (snowy surface).
+    Tundra,
+}
+
+/// Moisture scale relative to the continent noise (bigger regions
+/// than hills, smaller than continents).
+const MOISTURE_SCALE: f32 = 1.6;
+/// Seed stir so moisture doesn't correlate with elevation octaves.
+const MOISTURE_SEED_SALT: u64 = 0xB10E_5EED;
+/// Classification thresholds.
+const DESERT_BELOW: f32 = 0.36;
+const WET_ABOVE: f32 = 0.64;
+const SWAMP_MAX_ELEV_M: f32 = 5.0;
+const MOUNTAIN_ELEV_M: f32 = 24.0;
+
+/// Moisture in [0, 1] at a unit direction (0 = bone dry).
+pub fn moisture(body: &BodyConfig, unit_dir: DVec3) -> f32 {
+    let m = fractal3d(
+        body.seed ^ MOISTURE_SEED_SALT,
+        unit_dir.x as f32,
+        unit_dir.y as f32,
+        unit_dir.z as f32,
+        MOISTURE_SCALE,
+        4,
+        0.5,
+        2.0,
+    );
+    (m * 0.5 + 0.5).clamp(0.0, 1.0)
+}
+
+/// True when the moisture-biome layer is active for this body. Biomes
+/// arrived WITH the per-world random seeds: a body still running its
+/// compiled-in default seed generates byte-exact legacy terrain (that
+/// keeps every C-parity worldgen pin - and every pre-seed world -
+/// untouched); any custom-seeded world gets the full biome treatment.
+pub fn biomes_active(body: &BodyConfig) -> bool {
+    body.seed != crate::planet::default_seed(body.id)
+}
+
+/// Classify a surface point. Elevation + latitude bands take priority
+/// (ocean / beach / mountain / tundra), then the moisture field splits
+/// the temperate middle into desert / fields / jungle / swamp.
+pub fn biome(body: &BodyConfig, unit_dir: DVec3) -> Biome {
+    if !biomes_active(body) {
+        /* Legacy terrain: Fields everywhere the old top-block logic
+         * ran - every biome hook is a no-op for Fields. */
+        return Biome::Fields;
+    }
+    if body.barren || body.icy {
+        return Biome::Tundra; /* no temperate biomes off-Earthlikes */
+    }
+    let surface = surface_altitude(body, unit_dir);
+    if surface < -1.0 {
+        return Biome::Ocean;
+    }
+    if surface < SEA_LEVEL + BEACH_BAND {
+        return Biome::Beach;
+    }
+    let latitude = unit_dir.y.abs() as f32;
+    if latitude > COLD_LATITUDE {
+        return Biome::Tundra;
+    }
+    if surface > MOUNTAIN_ELEV_M {
+        return Biome::Mountains;
+    }
+    let m = moisture(body, unit_dir);
+    if m < DESERT_BELOW {
+        return Biome::Desert;
+    }
+    if m > WET_ABOVE {
+        return if surface < SWAMP_MAX_ELEV_M { Biome::Swamp } else { Biome::Jungle };
+    }
+    Biome::Fields
+}
+
+/* ----------------------------------------------------------------------- */
 
 /// Port of `column_profile_t`. Precomputed per-column biome info.
 /// Build once per column in the fill loop, then call
@@ -206,6 +302,8 @@ pub struct ColumnProfile {
     pub frost: bool,
     /// emit ASTEROID_ROCK for barren fills
     pub asteroid: bool,
+    /// Moisture-band biome (Rust-port extension; see [`biome`]).
+    pub biome: Biome,
 }
 
 /// Port of `planet_profile()`.
@@ -232,6 +330,7 @@ pub fn profile(body: &BodyConfig, unit_dir: DVec3) -> ColumnProfile {
         crag: body.tileset == Tileset::Crag,
         frost: body.tileset == Tileset::Frost,
         asteroid: body.tileset == Tileset::Asteroid,
+        biome: biome(body, unit_dir),
     }
 }
 
@@ -296,10 +395,32 @@ pub fn sample_with_profile(prof: &ColumnProfile, altitude_m: f32) -> Block {
         if surface > prof.snow_line || prof.polar {
             return if prof.sequoia { Block::SeqSnow } else { Block::Snow };
         }
+        /* Moisture biomes re-skin the temperate top (Rust extension):
+         * deserts run on sand, mountains turn rocky above the tree
+         * line, swamps get muddy dirt breaks in the sod. */
+        match prof.biome {
+            Biome::Desert => {
+                return if prof.sequoia { Block::SeqSand } else { Block::Sand };
+            }
+            Biome::Mountains => return Block::Stone,
+            Biome::Swamp => {
+                /* Mud patches: reuse the moisture fraction as a cheap
+                 * stable dither so ~1/3 of swamp tops read as wet dirt. */
+                if (prof.latitude * 977.0).fract() < 0.35 {
+                    return if prof.sequoia { Block::SeqDirt } else { Block::Dirt };
+                }
+                return if prof.sequoia { Block::SeqGrass } else { Block::Grass };
+            }
+            _ => {}
+        }
         return if prof.sequoia { Block::SeqGrass } else { Block::Grass };
     }
 
     if altitude_m > surface - 4.0 {
+        if prof.biome == Biome::Desert {
+            /* Sand runs deep under a desert. */
+            return if prof.sequoia { Block::SeqSand } else { Block::Sand };
+        }
         return if prof.sequoia { Block::SeqDirt } else { Block::Dirt };
     }
     Block::Stone
@@ -314,6 +435,36 @@ pub fn sample(body: &BodyConfig, unit_dir: DVec3, altitude_m: f32) -> Block {
 }
 
 /* ----------------------------------------------------------------------- */
+
+#[cfg(test)]
+mod biome_tests {
+    use super::*;
+    use crate::goldberg;
+    use crate::planet::{self, BodyId};
+
+    #[test]
+    fn default_seed_stays_legacy_and_custom_seeds_grow_biomes() {
+        let legacy = planet::get(BodyId::Tenebris);
+        let g = goldberg::create(3);
+        /* Default seed: every tile classifies Fields (all biome hooks
+         * no-op) - the C-parity worldgen pins depend on this. */
+        assert!(!biomes_active(&legacy));
+        for i in (0..g.tile_count()).step_by(37) {
+            assert_eq!(biome(&legacy, g.tile(i).unwrap().center), Biome::Fields);
+        }
+        /* A seeded world diversifies: multiple biomes appear across the
+         * sphere, including at least one dry and one wet kind. */
+        let mut seeded = legacy;
+        seeded.seed = 0xC0FFEE_D00D;
+        assert!(biomes_active(&seeded));
+        let mut kinds = std::collections::HashSet::new();
+        for i in 0..g.tile_count() {
+            kinds.insert(format!("{:?}", biome(&seeded, g.tile(i).unwrap().center)));
+        }
+        assert!(kinds.len() >= 5, "seeded world has variety: {kinds:?}");
+        assert!(kinds.contains("Desert") || kinds.contains("Swamp") || kinds.contains("Jungle"));
+    }
+}
 
 #[cfg(test)]
 mod tests {

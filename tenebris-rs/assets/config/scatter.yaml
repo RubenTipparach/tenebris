@@ -21,6 +21,9 @@
 #   kelp_chance      probability an underwater tile grows a kelp stalk
 #   kelp_seg_m       height of one kelp ribbon segment in metres
 #   kelp_max_segs    max segments per stalk (water depth also caps it)
+#   cactus_chance    probability a DESERT sand tile grows a cactus
+#   cactus_height_m  cactus trunk height (m)
+#   cactus_radius_m  cactus trunk radius (m)
 #   weed_chance      probability an underwater tile grows seaweed
 #   weed_height_m    seaweed blade height in metres
 scatter:
@@ -37,5 +40,8 @@ scatter:
   kelp_chance: 0.2
   kelp_seg_m: 0.65
   kelp_max_segs: 6
+  cactus_chance: 0.16
+  cactus_height_m: 2.2
+  cactus_radius_m: 0.22
   weed_chance: 0.35
   weed_height_m: 0.3

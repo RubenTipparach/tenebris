@@ -529,8 +529,15 @@ pub fn spawn_near_auto(w: &World, anchor_world: DVec3, id: u32, salt: u32) -> Op
         a.pos = dvec3_add(center, dvec3_scale(dvec3_normalize(rel), r + FISH_PAD_M + 0.3));
         AnimalKind::Fish
     } else {
+        /* The biome sets the table: swamps croak with frogs, jungles
+         * flutter with birds, everywhere else runs the grazer mix. */
+        use crate::planet_gen::Biome;
+        let biome = crate::planet_gen::biome(&w.body, dvec3_normalize(rel));
         let roll = rand01(id, salt.wrapping_add(41));
-        if roll < 0.12 {
+        let bird_chance = if biome == Biome::Jungle { 0.35 } else { 0.12 };
+        if biome == Biome::Swamp && roll < 0.55 {
+            AnimalKind::Frog
+        } else if roll < bird_chance {
             AnimalKind::Bird
         } else {
             const GRAZERS: [AnimalKind; 5] = [

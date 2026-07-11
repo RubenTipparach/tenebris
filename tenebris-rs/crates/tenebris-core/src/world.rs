@@ -262,10 +262,22 @@ fn gen_column(body: &BodyConfig, grid: &Goldberg, tile_idx: i32, col: &mut [u8])
         let is_grass = top == Block::Grass.raw() || is_sequoia_grass;
         if is_grass {
             let h = tile_hash(body.seed, tile_idx, 0xA1B2C3D4);
-            /* ~5% of qualifying tiles get a tree. */
-            if (h & 0xFF) < 13 {
-                /* Vary trunk height 3..5 by a separate hash bit. */
-                let trunk = 3 + ((h >> 8) & 1) as i32;
+            /* Per-biome density (of 256): jungles pack in dense tall
+             * canopy, swamps grow scattered groves, fields keep the
+             * classic ~5%, deserts and mountain rock get none (their
+             * tops aren't grass anyway - this is belt + braces). */
+            use crate::planet_gen::Biome;
+            let (density, extra_trunk) = match prof.biome {
+                Biome::Jungle => (115u32, 2i32),
+                Biome::Swamp => (30, 0),
+                Biome::Fields | Biome::Beach => (13, 0),
+                Biome::Desert | Biome::Mountains => (0, 0),
+                _ => (13, 0),
+            };
+            if (h & 0xFF) < density {
+                /* Vary trunk height by a separate hash bit; jungle
+                 * trunks run taller so the canopy closes overhead. */
+                let trunk = 3 + ((h >> 8) & 1) as i32 + extra_trunk;
                 let trunk_top = surface_idx + trunk;
                 let leaf_lo = trunk_top - 1;
                 let mut leaf_hi = trunk_top + 2;

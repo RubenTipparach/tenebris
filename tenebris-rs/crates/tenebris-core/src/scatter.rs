@@ -51,6 +51,14 @@ pub struct ScatterConfig {
     /// Max ribbon segments per stalk (water depth also caps it).
     pub kelp_max_segs: f32,
 
+    /* Cactus - desert sand columns (biome-gated; see client scatter). */
+    /// Probability (0..1) a desert sand tile grows a cactus.
+    pub cactus_chance: f32,
+    /// Trunk height, metres (hash varies +-30%).
+    pub cactus_height_m: f32,
+    /// Trunk radius, metres.
+    pub cactus_radius_m: f32,
+
     /* Seaweed - short leafy tufts on the sea floor. */
     /// Probability (0..1) an underwater surface tile grows seaweed.
     pub weed_chance: f32,
@@ -73,6 +81,9 @@ impl ScatterConfig {
         kelp_chance: 0.20,
         kelp_seg_m: 0.65,
         kelp_max_segs: 6.0,
+        cactus_chance: 0.16,
+        cactus_height_m: 2.2,
+        cactus_radius_m: 0.22,
         weed_chance: 0.35,
         weed_height_m: 0.30,
     };
@@ -125,6 +136,9 @@ pub fn parse_config(src: &str, _path: &str) -> ScatterConfig {
             "kelp_chance" => cfg.kelp_chance = c,
             "kelp_seg_m" => cfg.kelp_seg_m = c,
             "kelp_max_segs" => cfg.kelp_max_segs = c,
+            "cactus_chance" => cfg.cactus_chance = c,
+            "cactus_height_m" => cfg.cactus_height_m = c,
+            "cactus_radius_m" => cfg.cactus_radius_m = c,
             "weed_chance" => cfg.weed_chance = c,
             "weed_height_m" => cfg.weed_height_m = c,
             _ => {}

@@ -2087,6 +2087,10 @@ pub fn build_scatter(out: &mut HexMesh, w: &World, tile_idx: i32) {
         None => return,
     };
     tile_lights_begin(w, t);
+    /* Moisture biome steers the palette: cactus in deserts, tall dark
+     * swamp grass, denser jungle underbrush (Fields = classic look). */
+    let biome = tenebris_core::planet_gen::biome(&w.body, t.center);
+    use tenebris_core::planet_gen::Biome;
 
     /* Topmost solid voxel = the surface this tile presents to the sky
      * (or to the ocean above it). Leaves / wood surfaces get nothing -
@@ -2241,8 +2245,15 @@ pub fn build_scatter(out: &mut HexMesh, w: &World, tile_idx: i32) {
          * the source art - the slightly-off shades are what make the
          * blades pop out of the cap they stand on instead of melting
          * into it. */
-        if hash2(tile_idx, SALT_KIND) < cfg.grass_chance {
-            let max_b = cfg.grass_blades.max(3.0);
+        /* Swamps: near-total coverage of taller, darker blades.
+         * Jungles: thicker underbrush than fields. */
+        let (chance_mul, blade_mul, height_mul) = match biome {
+            Biome::Swamp => (1.25f32, 1.3f32, 1.7f32),
+            Biome::Jungle => (1.1, 1.25, 1.2),
+            _ => (1.0, 1.0, 1.0),
+        };
+        if hash2(tile_idx, SALT_KIND) < cfg.grass_chance * chance_mul {
+            let max_b = cfg.grass_blades.max(3.0) * blade_mul;
             let blades = ((0.6 + 0.4 * hash2(tile_idx, SALT_COUNT)) * max_b) as i32;
             for j in 0..blades {
                 let base = place(
@@ -2251,15 +2262,17 @@ pub fn build_scatter(out: &mut HexMesh, w: &World, tile_idx: i32) {
                 );
                 let ang = hash2(tile_idx, SALT_ANGLE + j) as f64 * std::f64::consts::TAU;
                 let h = cfg.grass_height_m as f64
+                    * height_mul as f64
                     * (0.65 + 0.7 * hash2(tile_idx, SALT_SIZE + j) as f64);
                 /* Off-colour palette: mostly the darker tree-leaf green
                  * (the same shade that makes the canopies pop), with an
                  * occasional blade of the ground's own tint blended in.
-                 * On the sister planet the local leaf green swaps in so
-                 * biomes keep their identity. */
+                 * Swamps go all-in on the dark leaf shade; the sister
+                 * planet swaps in its local leaf green. */
                 let leaf = if ground == Block::SeqGrass { Block::SeqLeaves } else { Block::Leaves };
                 let pal = hash2(tile_idx, SALT_VARIANT + j);
-                let src = if pal < 0.7 { leaf } else { ground };
+                let dark_frac = if biome == Biome::Swamp { 0.95 } else { 0.7 };
+                let src = if pal < dark_frac { leaf } else { ground };
                 let uvr = tile_uv_slice(src, FaceCap::Top, hash2(tile_idx, SALT_SIZE + 31 + j));
                 let (u_lo, u_hi, v_lo, v_hi) = uvr;
                 let side = rot(ang);
@@ -2330,8 +2343,52 @@ pub fn build_scatter(out: &mut HexMesh, w: &World, tile_idx: i32) {
         }
     }
 
-    /* Bushes: two leafy prism lumps, on grass or dirt. */
-    if (grassy || dirty) && hash2(tile_idx, SALT_KIND + 2) < cfg.bush_chance {
+    /* Cactus: desert sand grows tall green columns - a fat central
+     * prism of stacked segments with two stubby arms. Uses the leaf
+     * texture for the green; reads saguaro against the sand. */
+    if biome == Biome::Desert
+        && matches!(ground, Block::Sand | Block::SeqSand)
+        && hash2(tile_idx, SALT_KIND + 4) < cfg.cactus_chance
+    {
+        let leaves_uv = tile_uv(Block::Leaves, FaceCap::Side);
+        let base = place(
+            hash2(tile_idx, SALT_POS_A + 90),
+            hash2(tile_idx, SALT_POS_B + 90),
+        );
+        let h = cfg.cactus_height_m as f64
+            * (0.7 + 0.6 * hash2(tile_idx, SALT_SIZE + 90) as f64);
+        let rad = cfg.cactus_radius_m as f64;
+        let phase = hash2(tile_idx, SALT_ANGLE + 90) as f64 * std::f64::consts::TAU;
+        /* Trunk: one tall prism. */
+        push_prism(out, base, up, t1, t2, rad, h, phase, leaves_uv, sky, torch, wet);
+        /* Two arms: short prisms budding off at ~55% height. */
+        for k in 0..2 {
+            let aa = phase + std::f64::consts::PI * (0.5 + k as f64);
+            let off = dvec3_add(
+                dvec3_scale(rot(aa), rad * 1.9),
+                dvec3_scale(up, h * 0.55),
+            );
+            push_prism(
+                out,
+                dvec3_add(base, off),
+                up,
+                t1,
+                t2,
+                rad * 0.6,
+                h * 0.35,
+                phase + 0.4,
+                leaves_uv,
+                sky,
+                torch,
+                wet,
+            );
+        }
+    }
+
+    /* Bushes: two leafy prism lumps, on grass or dirt (jungle packs
+     * more of them in). */
+    let bush_chance = if biome == Biome::Jungle { cfg.bush_chance * 3.0 } else { cfg.bush_chance };
+    if (grassy || dirty) && hash2(tile_idx, SALT_KIND + 2) < bush_chance {
         let leaves_uv = tile_uv(Block::Leaves, FaceCap::Side);
         let base = place(
             hash2(tile_idx, SALT_POS_A + 60),
