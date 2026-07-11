@@ -42,6 +42,7 @@ use tenebris_core::world_water;
 
 use crate::animals;
 use crate::clouds;
+use crate::weather_fx;
 use crate::chat;
 use crate::crafting_screen;
 use crate::crops;
@@ -1579,6 +1580,7 @@ extern "C" fn init() {
     config::load_water("assets/config/water.yaml");
     config::load_lighting("assets/config/lighting.yaml");
     config::load_bonfire("assets/config/bonfire.yaml");
+    tenebris_core::weather::load_config("assets/config/weather.yaml");
     config::load_time("assets/config/time.yaml");
     /* Start the world clock in daylight (start_day_fraction of a day),
      * unless a dev override pins the time of day. */
@@ -4837,6 +4839,8 @@ fn frame_inner(app: &mut App) {
         let w = phys_world.borrow();
         let p = app.player.borrow();
         clouds::draw(view, proj, &w, &p, sim_t);
+        /* Rain / snow around the player when their column is precipitating. */
+        weather_fx::draw(view, proj, &w, &p, sim_t);
     }
 
     /* First-person held tool (survival): the baked wood-tool model the

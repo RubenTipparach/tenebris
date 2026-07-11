@@ -1,0 +1,47 @@
+# weather.yaml - planetary weather field (core/weather.rs).
+#
+# Weather is a DETERMINISTIC field of (seed, surface direction, time): a
+# drifting simplex "solar saturation" field warms the atmosphere, and where
+# that warmth meets the biome moisture map, clouds condense. The cloud
+# lifecycle you see - a small transparent puff growing into a big opaque
+# mass and dissipating - emerges from the field drifting over the world.
+# Big (high-density) clouds rain; snow falls over the cold biomes.
+#
+# A field left out or set to 0 keeps the compiled-in default.
+
+# --- Solar-energy saturation (the drifting simplex field) ---
+#   solar_scale   spatial frequency on the unit sphere (higher = smaller,
+#                 more numerous warm pockets).
+#   solar_drift   how fast the field evolves / drifts over time.
+#   solar_floor   minimum warmth even in low-solar areas, so moist regions
+#                 still cloud (0..1).
+solar_scale: 2.2
+solar_drift: 0.015
+solar_floor: 0.55
+
+# --- Aridity ---
+#   arid_gamma    > 1 clears the dry end (deserts) harder while leaving wet
+#                 regions cloudy, so clouds avoid arid ground and rain there
+#                 only rarely.
+arid_gamma: 1.35
+
+# --- Cloud coverage / opacity ramp ---
+#   cloud_min     density below this -> clear sky (cloud despawned).
+#   cloud_full    density above this -> a full, opaque cloud mass.
+#   min_alpha     opacity of the smallest just-forming puff (grows to 1).
+cloud_min: 0.22
+cloud_full: 0.52
+min_alpha: 0.32
+
+# --- Precipitation ---
+#   rain_threshold  density above which a cloud becomes a rain/snow cloud.
+rain_threshold: 0.55
+
+# --- Motion ---
+#   small_extra_drift  extra drift speed (m/s) for the smallest clouds, so
+#                      wisps scud faster than heavy masses.
+small_extra_drift: 6.0
+
+# --- Legacy (default-seed) worlds have no biome moisture map; use this
+#     flat moisture so the sky still weathers over time. ---
+default_moisture: 0.66
