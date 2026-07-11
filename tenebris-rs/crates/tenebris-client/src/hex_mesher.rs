@@ -1178,6 +1178,30 @@ fn bake_water_flow_uv(
 
 const SEA_LEVEL_DEPTH: i32 = 64; /* must match world.rs's SEA_LEVEL_IDX */
 
+/// The row the planet-wide ocean cap owns for this column: the TOP
+/// water voxel within the sea band, scanning down from the highest row
+/// this body's worldgen can fill (legacy sea row + sea_raise_m voxels)
+/// to the legacy sea row. None = no sea-band water, no ocean cap.
+///
+/// Derived from planet_gen::sea_raise_m rather than hardcoded rows so
+/// future water-gen tweaks (bigger raises, lowered seas) keep the cap
+/// glued to the actual surface, and shared by build_water AND
+/// build_water_voxels so the two passes can't drift apart. (The
+/// raised-sea bug this replaces: build_water still gated on water at
+/// SEA_LEVEL_DEPTH - 1, so seeded shallow shelves - seabed at 63,
+/// their only water voxel at 64 - got NO cap at all, and the voxel
+/// pass deferred row 64's top face to that missing cap: whole regions
+/// of ocean surface vanished.) On legacy worlds sea_raise_m is 0 and
+/// this degenerates to the pinned "water at SEA_LEVEL_DEPTH - 1"
+/// gate, byte-exact with the C.
+pub(crate) fn water_cap_row(w: &World, tile_idx: i32) -> Option<i32> {
+    let raise = tenebris_core::planet_gen::sea_raise_m(&w.body).round() as i32;
+    let top = (SEA_LEVEL_DEPTH - 1 + raise).min(WORLD_MAX_DEPTH - 1);
+    (SEA_LEVEL_DEPTH - 1..=top)
+        .rev()
+        .find(|&d| w.get(tile_idx, d) == Block::Water)
+}
+
 /// Port of `hex_mesh_build_water()`. Emit ONE hex/pent water cap at
 /// sea level if the tile has a water column (surface below sea). The
 /// water shader animates this cap with sin-based waves and
@@ -1187,9 +1211,11 @@ pub fn build_water(out: &mut HexMesh, w: &World, tile_idx: i32) {
         Some(t) => t,
         None => return,
     };
-    if w.get(tile_idx, SEA_LEVEL_DEPTH - 1) != Block::Water {
+    /* Gate + cap row come from the shared sea-band scan; a column
+     * with no water in the band has no ocean cap. */
+    let Some(cap_depth) = water_cap_row(w, tile_idx) else {
         return;
-    }
+    };
 
     /* Drop the water cap below the un-offset sea-level radius so the
      * vertex shader's wave swell can't push crests above neighbour
@@ -1217,15 +1243,6 @@ pub fn build_water(out: &mut HexMesh, w: &World, tile_idx: i32) {
      * a special path. Torch-light is the user-facing reason: a torch
      * placed on a pier or shoreline now spills its warm circle onto
      * the water beside it, exactly like it spills onto the land. */
-    /* Seeded worlds fill one more voxel of ocean (their sea rides one
-     * block higher) - the cap follows the ACTUAL top water voxel. On
-     * legacy worlds voxel SEA_LEVEL_DEPTH is never water, so this is
-     * byte-identical to the pinned C behaviour. */
-    let cap_depth = if w.get(tile_idx, SEA_LEVEL_DEPTH) == Block::Water {
-        SEA_LEVEL_DEPTH
-    } else {
-        SEA_LEVEL_DEPTH - 1
-    };
     let v_before = out.vertices.len() as u32;
     emit_cap(
         out,
@@ -1435,15 +1452,11 @@ pub fn build_water_voxels(out: &mut HexMesh, w: &World, tile_idx: i32) {
 
     let n = t.num_verts as i32;
 
-    /* Which row the planet-wide ocean cap owns: the top sea-level
-     * water voxel. Seeded worlds fill one voxel higher; legacy worlds
-     * never have water at SEA_LEVEL_DEPTH, so this stays the pinned
-     * SEA_LEVEL_DEPTH - 1. Must match build_water's cap_depth. */
-    let cap_row = if w.blocks[col_base + SEA_LEVEL_DEPTH as usize] == Block::Water.raw() {
-        SEA_LEVEL_DEPTH
-    } else {
-        SEA_LEVEL_DEPTH - 1
-    };
+    /* Which row the planet-wide ocean cap owns: the shared sea-band
+     * scan build_water also uses (the two passes MUST agree - a row
+     * this loop defers to a cap that doesn't exist renders nothing,
+     * the raised-sea missing-ocean bug). -1 = no cap owns any row. */
+    let cap_row = water_cap_row(w, tile_idx).unwrap_or(-1);
 
     for d in 0..WORLD_MAX_DEPTH {
         if w.blocks[col_base + d as usize] != Block::Water.raw() {
@@ -2623,6 +2636,54 @@ mod tests {
             h = h.wrapping_mul(1099511628211);
         }
         h
+    }
+
+    /// Regression guard for the raised-sea family of bugs: every
+    /// column with sea-band water gets an ocean cap at its top water
+    /// voxel - on legacy AND seeded worlds - and the cap row really is
+    /// the surface (no water above it). If a future water-gen tweak
+    /// raises or lowers the sea without updating sea_raise_m / the
+    /// water_cap_row helper, this fails loudly instead of shipping
+    /// invisible ocean regions (the "large areas of water surface are
+    /// missing" screenshot: seeded shallow shelves, seabed at row 63
+    /// with their only water voxel at 64, matched neither the old cap
+    /// gate nor the voxel pass and rendered nothing).
+    #[test]
+    fn ocean_cap_covers_every_sea_column() {
+        for (label, seed) in [("legacy", None), ("seeded", Some(0xC0FFEEu64))] {
+            let mut body = planet::get(BodyId::Tenebris);
+            if let Some(s) = seed {
+                body.seed = s;
+            }
+            let mut w = World::create(&body, 4);
+            while !w.gen_complete() {
+                w.stream_gen(10000);
+            }
+            let raise = tenebris_core::planet_gen::sea_raise_m(&body).round() as i32;
+            let band_top = SEA_LEVEL_DEPTH - 1 + raise;
+            let mut caps = 0;
+            for t in 0..w.tile_count {
+                let has_sea_water =
+                    (SEA_LEVEL_DEPTH - 1..=band_top).any(|d| w.get(t, d) == Block::Water);
+                let mut mesh = HexMesh::new();
+                build_water(&mut mesh, &w, t);
+                assert_eq!(
+                    !mesh.vertices.is_empty(),
+                    has_sea_water,
+                    "{label}: tile {t} cap presence vs sea-band water"
+                );
+                if let Some(row) = water_cap_row(&w, t) {
+                    caps += 1;
+                    assert_ne!(
+                        w.get(t, row + 1),
+                        Block::Water,
+                        "{label}: tile {t} cap row {row} is not the top water voxel - \
+                         worldgen fills higher than sea_raise_m reports"
+                    );
+                }
+            }
+            assert!(caps > 0, "{label}: world has no ocean at all - bad probe seed/subdiv");
+        }
     }
 
     fn vertex_bytes(m: &HexMesh) -> Vec<u8> {

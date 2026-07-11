@@ -541,13 +541,17 @@ pub fn spawn_near_auto(w: &World, anchor_world: DVec3, id: u32, salt: u32) -> Op
         && w.block_at_pos(Vec3 { x: lp.x as f32, y: lp.y as f32, z: lp.z as f32 }, -1)
             == Block::Water;
     a.kind = if in_water {
-        /* Lift the spawn into the swimmable column; reseat clamps. */
         let r = dvec3_length(rel);
-        /* Lift into the swimmable band, but never through the surface -
-         * shallow columns spawn the fish just under the waterline and
-         * the first reseat refuses if even that is too tight. */
         let sea_r = w.depth_to_radius_m(crate::world::WORLD_SEA_LEVEL_DEPTH)
             + crate::planet_gen::sea_raise_m(&w.body) as f64;
+        /* A column that can't hold a fish inside its swim band (floor
+         * pad + surface margin) never spawns one - a fish born on a
+         * one-block shallow shelf had nowhere legal to swim and spun
+         * in place. The ring roll just fails this attempt. */
+        if r + FISH_PAD_M > sea_r - FISH_SURFACE_PAD_M {
+            return None;
+        }
+        /* Lift the spawn into the swimmable band; reseat clamps. */
         let lift = (r + FISH_PAD_M + 0.3).min(sea_r - FISH_SURFACE_PAD_M).max(r);
         a.pos = dvec3_add(center, dvec3_scale(dvec3_normalize(rel), lift));
         AnimalKind::Fish
@@ -717,15 +721,43 @@ pub fn reseat(w: &World, a: &mut Animal, dt: f32) {
              * surface; seeded worlds add their raised-sea offset. */
             let sea_r = w.depth_to_radius_m(WORLD_SEA_LEVEL_DEPTH)
                 + crate::planet_gen::sea_raise_m(&w.body) as f64;
+            let swim_band = |floor_r: f64| -> Option<(f64, f64)> {
+                let lo = floor_r + FISH_PAD_M;
+                let hi = sea_r - FISH_SURFACE_PAD_M;
+                (floor_r > 0.0 && lo <= hi).then_some((lo, hi))
+            };
             let floor_r = floor_pos(w, dir, r, -1)
                 .map(|p| dvec3_length(dvec3_sub(p, center)))
                 .unwrap_or(0.0);
-            let lo = floor_r + FISH_PAD_M;
-            let hi = sea_r - FISH_SURFACE_PAD_M;
-            if floor_r <= 0.0 || lo > hi {
-                refuse(a);
+            let Some((lo, hi)) = swim_band(floor_r) else {
+                /* This column can't hold a fish. If it just swam in
+                 * from a swimmable column, bounce back (undo + turn) -
+                 * the normal beach refusal. But if the PREVIOUS spot
+                 * was unswimmable too (spawned on a shallow shelf,
+                 * terrain edited under it), bouncing would flip it in
+                 * place every frame - the "fish spinning forever"
+                 * bug. Instead keep the heading and swim on at mid
+                 * water-column until a swimmable column turns up. */
+                let prev = dvec3_sub(a.pos, dvec3_scale(a.heading, state_speed(a) * dt as f64));
+                let prev_rel = dvec3_sub(prev, center);
+                let prev_r = dvec3_length(prev_rel);
+                let prev_ok = prev_r > 1e-6
+                    && floor_pos(w, dvec3_scale(prev_rel, 1.0 / prev_r), prev_r, -1)
+                        .map(|p| dvec3_length(dvec3_sub(p, center)))
+                        .is_some_and(|fr| swim_band(fr).is_some());
+                if !prev_ok && floor_r > 0.0 && floor_r < sea_r {
+                    /* Stuck escape: hug the middle of whatever water
+                     * is here and keep going. (The dorsal fin may
+                     * graze the surface while crossing a one-block
+                     * shelf - transient, and far better than a fish
+                     * pirouetting on the spot.) */
+                    let mid = ((floor_r + sea_r) * 0.5).max(floor_r + 0.1);
+                    a.pos = dvec3_add(center, dvec3_scale(dir, mid));
+                } else {
+                    refuse(a);
+                }
                 return;
-            }
+            };
             let bob = (a.anim_phase as f64 * 0.35).sin() * FLY_BOB_M * 0.5;
             let swim_r = (r + bob * 0.0).clamp(lo, hi); /* keep depth, clamp */
             let swim_pos = dvec3_add(center, dvec3_scale(dir, swim_r + bob));
@@ -954,5 +986,50 @@ mod tests {
         assert_eq!(AnimalKind::Bird.habitat(), Habitat::Air);
         assert_eq!(AnimalKind::Cow.habitat(), Habitat::Land);
         assert!(AnimalKind::Cow.meat() > AnimalKind::Chicken.meat());
+    }
+
+    /// Regression: a fish stranded on a raised-sea shallow shelf (one
+    /// water voxel - too shallow for the swim band) must swim OUT, not
+    /// bounce its heading 180 degrees every frame and pirouette in
+    /// place forever (the "fish are stuck swimming in place, turning
+    /// around a bunch" bug). Deterministic: fixed seed, fixed id.
+    #[test]
+    fn shallow_shelf_fish_escapes_instead_of_spinning() {
+        use crate::blocks::Block;
+        use crate::planet::{self, BodyId};
+        use crate::world::World;
+
+        let mut body = planet::get(BodyId::Tenebris);
+        body.seed = 0xC0FFEE; /* biomes_active -> raised sea, shallow shelves */
+        let mut w = World::create(&body, 4);
+        while !w.gen_complete() {
+            w.stream_gen(10000);
+        }
+        let center = DVec3 { x: body.pos_x, y: body.pos_y, z: body.pos_z };
+        /* A shelf column: its only water voxel at the raised-sea row. */
+        let tile = (0..w.tile_count)
+            .find(|&t| {
+                w.get(t, crate::world::WORLD_SEA_LEVEL_DEPTH) == Block::Water
+                    && w.get(t, crate::world::WORLD_SEA_LEVEL_DEPTH - 1) != Block::Water
+            })
+            .expect("seeded world has a one-voxel shallow shelf");
+        let t = w.grid.tile(tile).expect("tile");
+        let dir = dvec3_normalize(t.center);
+        let r = w.depth_to_radius_m(crate::world::WORLD_SEA_LEVEL_DEPTH) + 0.5;
+        let mut a = Animal::new_kind(1, dvec3_add(center, dvec3_scale(dir, r)), dir, AnimalKind::Fish);
+        a.state = AnimalState::Walk;
+        a.timer = 1.0e9; /* keep walking - isolate the reseat behaviour */
+
+        let start = a.pos;
+        for i in 0..600 {
+            let up = dvec3_normalize(dvec3_sub(a.pos, center));
+            tick(&mut a, up, 0.05, i);
+            reseat(&w, &mut a, 0.05);
+        }
+        let moved = dvec3_length(dvec3_sub(a.pos, start));
+        assert!(
+            moved > 3.0,
+            "fish should escape the shallow shelf, moved only {moved:.2} m"
+        );
     }
 }

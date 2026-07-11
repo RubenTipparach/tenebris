@@ -791,6 +791,12 @@ fn close_orphan_sessions_at_startup(dir: &str) {
 /// Port of `saves_init()`. Boot-time setup; `saves_dir` is copied.
 pub fn init(saves_dir: &str) -> bool {
     if saves_dir.is_empty() {
+        /* A failed (re)init leaves the module DISABLED, exactly like
+         * the other failure arms below - writes must not silently keep
+         * flowing to a previously-configured dir. (Also what makes the
+         * bad-dir unit test order-independent: a prior test that
+         * skipped shutdown() can't leak its dir into this assert.) */
+        set_saves_dir(None);
         return false;
     }
     set_saves_dir(Some(saves_dir.to_string()));
