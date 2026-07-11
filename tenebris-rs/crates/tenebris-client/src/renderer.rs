@@ -1521,16 +1521,6 @@ struct ChunkedBody {
     has_water: bool,
     chunks_allocated: bool, /* GPU buffers exist              */
     meshed: bool,           /* chunks have content + uploaded */
-    /* Countdown to a whole-body rebuild after its World was
-     * regenerated in place (SP per-world terrain seed). Armed at 2 by
-     * remesh_body; draw_world's edit-handling loop decrements it,
-     * fires the rebuild when it hits 0, and skips the incremental
-     * dirty-chunk path while pending - so each GPU buffer sees at
-     * most one sg_update_buffer per sokol frame. The one-frame delay
-     * matters for the TENEBRIS_DEV_SP fast-path, where world entry
-     * happens on the first frame, INSIDE the same sokol frame as
-     * init's register_world uploads. */
-    full_remesh_cd: i8,
     world_pos: Vec3,        /* model-translate origin (body centre) */
     radius_m: f32,
     distant_color: Vec3,
@@ -1558,7 +1548,6 @@ impl ChunkedBody {
             has_water: false,
             chunks_allocated: false,
             meshed: false,
-            full_remesh_cd: 0,
             world_pos: Vec3::default(),
             radius_m: 0.0,
             distant_color: Vec3::default(),
@@ -2720,18 +2709,16 @@ pub fn register_moon(w: &Rc<RefCell<World>>) {
     register_world(w);
 }
 
-/// Rust-port extension: request a whole-body remesh after its World
-/// was regenerated in place (SP per-world terrain seed). The far-LOD
-/// textures rebuild immediately (make_image creates fresh GPU objects,
-/// exempt from the once-per-frame update rule); the chunk meshes
-/// rebuild inside draw_world's edit-handling loop on the NEXT frame
-/// via `full_remesh_cd`, which replaces the incremental dirty-chunk
-/// path while pending so no buffer is sg_update_buffer'd twice in one
-/// sokol frame (the entry frame can share a sokol frame with init's
-/// register_world uploads on the TENEBRIS_DEV_SP fast-path).
-pub fn remesh_body(body_id: u32) {
+/// Rust-port extension: immediate whole-body rebuild after its World
+/// was regenerated in place (per-world terrain seed): far-LOD textures,
+/// full relight + chunk remesh (rayon), GPU upload. Called by the app's
+/// staged loader BETWEEN presented frames (right after the loading
+/// screen's commit), so the uploads land in a fresh sokol frame and
+/// can't collide with the per-frame dirty sweep's once-per-buffer rule.
+pub fn remesh_body_now(body_id: u32) {
     R.with(|cell| {
         let mut r = cell.borrow_mut();
+        let r = &mut *r;
         let Some(bi) = (0..r.bodies.len())
             .find(|&i| r.bodies[i].world.borrow().body.id as u32 == body_id)
         else {
@@ -2739,12 +2726,30 @@ pub fn remesh_body(body_id: u32) {
         };
         let col_avg = r.atlas_col_avg;
         build_distant_textures_for_body(&mut r.bodies[bi], &col_avg);
-        if r.bodies[bi].meshed && !r.bodies[bi].tile_to_chunk.is_empty() {
-            r.bodies[bi].full_remesh_cd = 2;
+        if !r.bodies[bi].meshed || r.bodies[bi].tile_to_chunk.is_empty() {
+            /* Never detail-meshed: nothing chunked on the GPU to
+             * refresh - body_load_detail meshes the regenerated world
+             * when the body next crosses the LOD cutoff. */
+            return;
         }
-        /* Never detail-meshed: nothing chunked on the GPU to refresh -
-         * body_load_detail meshes the regenerated world when the body
-         * next crosses the LOD cutoff. */
+        let t0 = now_ticks();
+        /* body_full_mesh drains the whole dirty queue; the full rebuild
+         * subsumes any rolled-over per-chunk dirty flags too. */
+        body_full_mesh(r, bi);
+        for ci in 0..chunk_n() {
+            r.bodies[bi].chunks[ci].dirty = false;
+            chunk_upload(&mut r.bodies[bi].chunks[ci]);
+        }
+        let (name, tile_count) = {
+            let w = r.bodies[bi].world.borrow();
+            (w.body.name, w.tile_count)
+        };
+        println!(
+            "[renderer] full remesh of {} ({} tiles) after world regen in {:.1} ms",
+            name,
+            tile_count,
+            ticks_ms(ticks_diff(now_ticks(), t0))
+        );
     });
 }
 
@@ -4092,37 +4097,6 @@ pub fn draw_world(
         let nchunks = chunk_n();
         for bi in 0..r.bodies.len() {
             if !r.bodies[bi].meshed || r.bodies[bi].tile_to_chunk.is_empty() {
-                continue;
-            }
-            if r.bodies[bi].full_remesh_cd > 0 {
-                /* The body's World was regenerated in place (SP world
-                 * seed change). Wait one frame (the request can land
-                 * inside the same sokol frame as init's uploads on
-                 * the dev fast-path), then rebuild everything -
-                 * body_full_mesh drains the whole dirty queue and the
-                 * full rebuild subsumes any rolled-over per-chunk
-                 * dirty flags. The incremental path is skipped while
-                 * pending, so each GPU buffer sees at most one
-                 * sg_update_buffer per sokol frame. */
-                r.bodies[bi].full_remesh_cd -= 1;
-                if r.bodies[bi].full_remesh_cd == 0 {
-                    let t0 = now_ticks();
-                    body_full_mesh(r, bi);
-                    for ci in 0..nchunks {
-                        r.bodies[bi].chunks[ci].dirty = false;
-                        chunk_upload(&mut r.bodies[bi].chunks[ci]);
-                    }
-                    let (name, tile_count) = {
-                        let w = r.bodies[bi].world.borrow();
-                        (w.body.name, w.tile_count)
-                    };
-                    println!(
-                        "[renderer] full remesh of {} ({} tiles) after world regen in {:.1} ms",
-                        name,
-                        tile_count,
-                        ticks_ms(ticks_diff(now_ticks(), t0))
-                    );
-                }
                 continue;
             }
             let world_rc = r.bodies[bi].world.clone();

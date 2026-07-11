@@ -786,6 +786,7 @@ pub fn clear_world(world_name: &str) {
         format!("{KEY_TORCH_PREFIX}{world_name}:"),
         format!("{KEY_CROP_PREFIX}{world_name}:"),
         format!("{KEY_WATER_PREFIX}{world_name}:"),
+        format!("{KEY_BENTITY_PREFIX}{world_name}:"),
     ] {
         let Some(list) = client_kv::list_with_prefix(&prefix) else {
             continue;

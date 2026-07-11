@@ -259,6 +259,11 @@ struct Menu {
      * C: bool pending_sp_resume + persistence_save_t resume. */
     resume: Option<PersistenceSave>,
 
+    /* World-picker delete flow: the world awaiting its two-button
+     * confirm dialog (a real in-panel dialog per CLAUDE.md - never
+     * window.confirm). None = normal list. */
+    delete_confirm: Option<String>,
+
     /* Cached world directory. Refreshed on entering SP world list. */
     worlds: Vec<String>,
 
@@ -488,6 +493,45 @@ pub fn egui_ui(ctx: &egui::Context) {
                     );
                     ui.add_space(20.0);
                     with_menu(|m| {
+                        /* Two-button delete confirm replaces the list
+                         * while pending (real in-panel dialog - never
+                         * window.confirm, per CLAUDE.md). */
+                        if let Some(doomed) = m.delete_confirm.clone() {
+                            ui.label(
+                                egui::RichText::new(format!("Delete world '{}'?", doomed))
+                                    .size(20.0)
+                                    .color(egui::Color32::from_rgb(0xe8, 0xb0, 0xb0)),
+                            );
+                            ui.add_space(4.0);
+                            ui.label(
+                                egui::RichText::new(
+                                    "All its blocks, bag and progress are erased forever.",
+                                )
+                                .color(egui::Color32::from_rgb(0x90, 0x98, 0xa8)),
+                            );
+                            ui.add_space(16.0);
+                            if ui
+                                .add_sized(
+                                    [280.0, 42.0],
+                                    egui::Button::new(
+                                        egui::RichText::new("Delete forever")
+                                            .size(20.0)
+                                            .color(egui::Color32::from_rgb(0xff, 0xd0, 0xd0)),
+                                    ),
+                                )
+                                .clicked()
+                            {
+                                persistence::delete(&doomed);
+                                m.worlds = persistence::list_worlds();
+                                m.delete_confirm = None;
+                                println!("[menu] deleted world '{}'", doomed);
+                            }
+                            ui.add_space(8.0);
+                            if menu_button(ui, "Cancel").clicked() {
+                                m.delete_confirm = None;
+                            }
+                            return;
+                        }
                         let worlds = m.worlds.clone();
                         if worlds.is_empty() {
                             ui.label(
@@ -498,9 +542,34 @@ pub fn egui_ui(ctx: &egui::Context) {
                         }
                         egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
                             for w in &worlds {
-                                if menu_button(ui, w).clicked() {
-                                    start_sp_for_world(m, w);
-                                }
+                                ui.horizontal(|ui| {
+                                    if ui
+                                        .add_sized(
+                                            [244.0, 42.0],
+                                            egui::Button::new(
+                                                egui::RichText::new(w).size(20.0),
+                                            ),
+                                        )
+                                        .clicked()
+                                    {
+                                        start_sp_for_world(m, w);
+                                    }
+                                    let del = ui
+                                        .add_sized(
+                                            [32.0, 42.0],
+                                            egui::Button::new(
+                                                egui::RichText::new("X")
+                                                    .size(16.0)
+                                                    .color(egui::Color32::from_rgb(
+                                                        0xd0, 0x70, 0x70,
+                                                    )),
+                                            ),
+                                        )
+                                        .on_hover_text("Delete this world");
+                                    if del.clicked() {
+                                        m.delete_confirm = Some(w.clone());
+                                    }
+                                });
                                 ui.add_space(4.0);
                             }
                         });
@@ -1764,6 +1833,7 @@ fn draw_inner(m: &mut Menu, screen_w: i32, screen_h: i32) {
 fn enter_world_list(m: &mut Menu) {
     m.worlds = persistence::list_worlds();
     m.state = GameState::SpWorldList;
+    m.delete_confirm = None;
     println!("[menu] SP world list: {} saved world(s)", m.worlds.len());
 }
 

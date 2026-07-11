@@ -206,6 +206,13 @@ struct App {
      * no cross-world edit leaks). */
     terrain_tag: String,
 
+    /* Staged loader (boot worldgen / SP-MP terrain regen). While Some,
+     * frame() presents a loading screen (progress bar + status) and
+     * runs one budgeted slice of work per frame instead of the game -
+     * the fix for the "white screen while booting / loading a level"
+     * feedback hole. */
+    loader: Option<Loader>,
+
     /* Position-relay diagnostics (G_last_sent_*). */
     last_sent_pos: DVec3,
     last_sent_body: u32,
@@ -1546,41 +1553,20 @@ extern "C" fn init() {
     teleport_menu::set_player(Some(player.clone()));
     crafting_screen::set_player(Some(player.clone()));
 
-    /* Drain Tenebris gen synchronously at init so the spawn tile has
-     * terrain the moment the first frame lands. */
-    {
-        let mut w = world.borrow_mut();
-        while !w.gen_complete() {
-            let n = w.tile_count;
-            w.stream_gen(n);
-        }
-    }
-    /* Register Tenebris first so it becomes the active body - gets
-     * streaming + edit handling. Anything registered after will be
-     * one-shot meshed at register time (non-active moons/asteroids). */
-    renderer::register_world(&world);
-
-    /* Build and register every non-main body - moons, neighbouring
-     * planets, the asteroid belt. Fully generated + chunked at boot so
-     * block edits on any of them go through the same dirty-rebuild
-     * path the active body uses. */
+    /* Worldgen, lighting, meshing and registration are staged across
+     * frames by the boot loader (frame() -> loader_frame) so the
+     * player watches a progress bar instead of a white window. Only
+     * the cheap World allocations happen here; Tenebris registers
+     * first when its mesh stage runs (making it the active body), and
+     * every moon / asteroid gens + registers after it. */
     let mut moons: Vec<Rc<RefCell<World>>> = Vec::new();
     for id in (BodyId::Luna as i32)..(BODY_COUNT as i32) {
         let Some(b) = planet::get_by_index(id) else { continue };
-        let body_world = Rc::new(RefCell::new(World::create(
-            &b,
-            planet::subdivisions_for_radius(b.radius_m),
-        )));
-        {
-            let mut w = body_world.borrow_mut();
-            while !w.gen_complete() {
-                let n = w.tile_count;
-                w.stream_gen(n);
-            }
-        }
-        renderer::register_world(&body_world);
         if moons.len() < 32 {
-            moons.push(body_world);
+            moons.push(Rc::new(RefCell::new(World::create(
+                &b,
+                planet::subdivisions_for_radius(b.radius_m),
+            ))));
         }
     }
 
@@ -1716,6 +1702,9 @@ extern "C" fn init() {
             mp_spawn_applied: false,
             sp_save_accum: 0.0,
             terrain_tag: String::new(),
+            /* Nothing loads at boot - the menu needs no terrain. The
+             * first world entry (SP pick / MP join) starts the loader. */
+            loader: None,
             last_sent_pos: DVec3::default(),
             last_sent_body: 0,
             last_sent_yaw: 0.0,
@@ -2859,28 +2848,22 @@ fn default_spawn_pos(body: &BodyConfig) -> DVec3 {
     )
 }
 
-/// Regenerate the spawn planet in place with `seed`: patch the global
-/// body table, rebuild the World (synchronous full procgen, same as
-/// boot), drop client state anchored to the old terrain, and request a
-/// renderer full remesh. The remesh itself runs inside draw_world
-/// later this same frame, so persisted edits the caller replays after
-/// this call are included in the rebuilt meshes.
-fn regen_active_world(app: &mut App, seed: u64) {
+/// Start regenerating the spawn planet in place with `seed`: patch the
+/// global body table, swap in a fresh (ungenerated) World, drop client
+/// state anchored to the old terrain, and hand the heavy work - gen,
+/// relight, remesh - to the staged loader, which presents a progress
+/// bar while it runs. The caller's flow (saves replay, resume pose)
+/// re-runs after the loader finishes; frame_inner is skipped while a
+/// loader is active, so gameplay never touches the half-built world.
+fn start_world_regen(app: &mut App, seed: u64) {
     planet::set_seed(BodyId::Tenebris, seed);
     let body = planet::get(BodyId::Tenebris);
     app.body = body;
-    {
-        let mut w = app.world.borrow_mut();
-        *w = World::create(&body, planet::subdivisions_for_radius(body.radius_m));
-        while !w.gen_complete() {
-            let n = w.tile_count;
-            w.stream_gen(n);
-        }
-    }
+    *app.world.borrow_mut() = World::create(&body, planet::subdivisions_for_radius(body.radius_m));
     /* World-scoped client state from the previous terrain. The
-     * incoming session's torches / crops replay from persistence
-     * right after (apply_sp_world_saves); the herd respawns near the
-     * player through the normal spawn logic. */
+     * incoming session's torches / crops replay from persistence when
+     * the session entry flow resumes (apply_sp_world_saves); the herd
+     * respawns near the player through the normal spawn logic. */
     torch::clear();
     crops::restore(Vec::new());
     drops::init();
@@ -2897,9 +2880,9 @@ fn regen_active_world(app: &mut App, seed: u64) {
         }
         p.last_tile = -1;
     }
-    renderer::remesh_body(body.id as u32);
+    app.loader = Some(Loader { stage: LoadStage::Gen, light_slices: 0 });
     println!(
-        "[main] spawn planet regenerated: seed=0x{:016x} ({} tiles)",
+        "[main] spawn planet regen started: seed=0x{:016x} ({} tiles)",
         seed,
         app.world.borrow().tile_count
     );
@@ -2933,9 +2916,21 @@ fn maybe_apply_sp_resume(app: &mut App) {
          * itself keeps the compiled seed. */
         app.sp_saves_applied = [false; SP_SAVES_APPLIED_MAX];
     }
-    let seed_matches = app.world.borrow().body.seed == target_seed;
-    if !seed_matches || (app.terrain_tag != target_tag && !app.terrain_tag.is_empty()) {
-        regen_active_world(app, target_seed);
+    let (seed_matches, generated) = {
+        let w = app.world.borrow();
+        (w.body.seed == target_seed, w.gen_complete())
+    };
+    if !seed_matches
+        || !generated
+        || (app.terrain_tag != target_tag && !app.terrain_tag.is_empty())
+    {
+        /* Hand the heavy build to the staged loader and bail; the
+         * latch stays unset, so this whole entry flow re-runs once the
+         * loader finishes (seed matches + generated then, no second
+         * pass). `!generated` covers the very first entry - boot no
+         * longer loads any terrain, because the menu doesn't need it. */
+        start_world_regen(app, target_seed);
+        return;
     }
     app.terrain_tag = target_tag;
 
@@ -3143,11 +3138,19 @@ fn maybe_prime_mode_for_state(app: &mut App) {
              * with the server's worldgen); an SP world may have
              * reseeded the planet, and SP edits must not leak into
              * the MP view. Server-persisted columns re-fetch after
-             * WELCOME either way. */
+             * WELCOME either way. The staged loader shows a progress
+             * bar while the rebuild runs (frame_inner checks
+             * app.loader right after this fn). */
             let mp_seed = planet::default_seed(BodyId::Tenebris);
-            let seed_matches = app.world.borrow().body.seed == mp_seed;
-            if !seed_matches || (app.terrain_tag != "mp" && !app.terrain_tag.is_empty()) {
-                regen_active_world(app, mp_seed);
+            let (seed_matches, generated) = {
+                let w = app.world.borrow();
+                (w.body.seed == mp_seed, w.gen_complete())
+            };
+            if !seed_matches
+                || !generated
+                || (app.terrain_tag != "mp" && !app.terrain_tag.is_empty())
+            {
+                start_world_regen(app, mp_seed);
             }
             app.terrain_tag = "mp".to_string();
 
@@ -3575,17 +3578,285 @@ fn print_block_snapshot(app: &App) {
 }
 
 /* --------------------------------------------------------------------- */
+/* Staged loader - boot worldgen + SP/MP terrain regen with a real        */
+/* loading screen instead of a frozen white window.                        */
+/* --------------------------------------------------------------------- */
+
+/// The loader's current stage. Each stage runs in ~[`LOADER_BUDGET_MS`]
+/// slices, one per presented frame, so the bar animates while the work
+/// happens. Nothing loads at boot - the menu needs no terrain - so the
+/// whole sequence runs on the FIRST world entry (SP pick / MP join),
+/// and later entries skip the stages that are already resident (moons
+/// persist across worlds; only the reseeded spawn planet redoes
+/// Gen/Light/Mesh).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LoadStage {
+    /// Streaming worldgen for the spawn planet.
+    Gen,
+    /// Slicing the spawn planet's global light BFS to convergence (the
+    /// single most expensive part of a full mesh, pulled forward so the
+    /// mesh stage's stall stays short).
+    Light,
+    /// One-shot full mesh: register_world on the first load (becoming
+    /// the active body), remesh_body_now on a regen. Blocks for a
+    /// couple of seconds - the loading screen presented just before
+    /// this slice says so.
+    Mesh,
+    /// Per-moon streaming gen + (deferred) registration. Already-
+    /// resident moons skip instantly, so this only costs on the first
+    /// load of a session.
+    Moons { idx: usize },
+}
+
+struct Loader {
+    stage: LoadStage,
+    /// Total relight slices run, capping the Light stage the same way
+    /// body_full_mesh's safety counter does.
+    light_slices: i32,
+}
+
+/// Wall-clock budget per loader frame. Keeps the loading screen
+/// animating at interactive rates while still chewing through work.
+const LOADER_BUDGET_MS: f64 = 30.0;
+/// Tiles per stream_gen call inside a loader slice (the budget loop
+/// checks the clock between calls).
+const LOADER_SLICE_TILES: i32 = 4096;
+/// Global cap on relight slices (mirrors body_full_mesh's safety cap).
+const LOADER_LIGHT_MAX_SLICES: i32 = 400;
+
+/// One loading-screen frame: present the CURRENT status first, then run
+/// a budgeted slice of work - so even a monolithic slice (the mesh
+/// build) stalls behind an honest just-presented message. Returns true
+/// while the loader owns the frame.
+fn loader_frame(app: &mut App) -> bool {
+    let Some(loader) = app.loader.take() else { return false };
+    let (status, frac) = loader_status(app, &loader);
+    draw_loading_frame(&status, frac);
+    app.loader = loader_step(app, loader);
+    if app.loader.is_none() {
+        println!("[loader] done");
+    }
+    true
+}
+
+/// Status line + progress fraction for the loading screen. The bar
+/// tracks the CURRENT stage's own progress (per-stage reset, with the
+/// text explaining which stage is running).
+fn loader_status(app: &App, l: &Loader) -> (String, f32) {
+    let world_name = app.world.borrow().body.name;
+    match l.stage {
+        LoadStage::Gen => {
+            let w = app.world.borrow();
+            let frac = if w.tile_count > 0 {
+                (w.gen_cursor as f32 / w.tile_count as f32).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            (format!("generating {}", world_name), frac)
+        }
+        LoadStage::Light => (format!("lighting {}", world_name), 1.0),
+        LoadStage::Mesh => ("building terrain mesh".to_string(), 1.0),
+        LoadStage::Moons { idx } => {
+            let mut done = 0i64;
+            let mut total = 0i64;
+            for m in &app.moons {
+                let w = m.borrow();
+                done += w.gen_cursor.min(w.tile_count) as i64;
+                total += w.tile_count as i64;
+            }
+            let frac = if total > 0 { (done as f32 / total as f32).clamp(0.0, 1.0) } else { 1.0 };
+            let name = app
+                .moons
+                .get(idx)
+                .map(|m| m.borrow().body.name)
+                .unwrap_or("moons");
+            (format!("preparing {} ({}/{})", name, idx + 1, app.moons.len()), frac)
+        }
+    }
+}
+
+/// Advance the loader by one budgeted slice. Returns the next state,
+/// or None when everything is loaded.
+fn loader_step(app: &mut App, mut l: Loader) -> Option<Loader> {
+    let t0 = stm::now();
+    let in_budget = |t0: u64| stm::sec(stm::since(t0)) * 1000.0 < LOADER_BUDGET_MS;
+    match l.stage {
+        LoadStage::Gen => {
+            let mut w = app.world.borrow_mut();
+            while !w.gen_complete() && in_budget(t0) {
+                w.stream_gen(LOADER_SLICE_TILES);
+            }
+            if w.gen_complete() {
+                println!("[loader] {} generated ({} tiles)", w.body.name, w.tile_count);
+                l.stage = LoadStage::Light;
+            }
+        }
+        LoadStage::Light => {
+            let mut w = app.world.borrow_mut();
+            while w.light.is_dirty() && l.light_slices < LOADER_LIGHT_MAX_SLICES && in_budget(t0)
+            {
+                crate::hex_mesher::relight_if_needed(&mut w);
+                l.light_slices += 1;
+            }
+            if !w.light.is_dirty() || l.light_slices >= LOADER_LIGHT_MAX_SLICES {
+                println!("[loader] {} lit in {} slice(s)", w.body.name, l.light_slices);
+                l.stage = LoadStage::Mesh;
+            }
+        }
+        LoadStage::Mesh => {
+            /* Bind the id BEFORE any renderer call: holding the world
+             * borrow across it would collide with body_full_mesh's own
+             * borrow_mut. */
+            let body_id = app.world.borrow().body.id as u32;
+            if renderer::world_for_body(body_id).is_none() {
+                /* First load this session: first registration = active
+                 * body, full mesh + upload (light already converged
+                 * above, so this is the rayon mesh build only). */
+                renderer::register_world(&app.world);
+            } else {
+                renderer::remesh_body_now(body_id);
+            }
+            l.stage = LoadStage::Moons { idx: 0 };
+        }
+        LoadStage::Moons { idx } => {
+            /* Already-resident moons (generated + registered) skip in
+             * one pass, so a spawn-planet regen doesn't pay the moon
+             * walk again. */
+            let mut idx = idx;
+            while idx < app.moons.len() {
+                let w_rc = app.moons[idx].clone();
+                let body_id = w_rc.borrow().body.id as u32;
+                if w_rc.borrow().gen_complete() && renderer::world_for_body(body_id).is_some() {
+                    idx += 1;
+                    continue;
+                }
+                let complete = {
+                    let mut w = w_rc.borrow_mut();
+                    while !w.gen_complete() && in_budget(t0) {
+                        w.stream_gen(LOADER_SLICE_TILES);
+                    }
+                    w.gen_complete()
+                };
+                if complete && renderer::world_for_body(body_id).is_none() {
+                    /* Deferred registration: far-LOD assets now, chunked
+                     * mesh on approach (body_load_detail). */
+                    renderer::register_world(&w_rc);
+                    idx += 1;
+                    continue;
+                }
+                break; /* budget spent mid-gen */
+            }
+            if idx >= app.moons.len() {
+                return None;
+            }
+            l.stage = LoadStage::Moons { idx };
+        }
+    }
+    Some(l)
+}
+
+thread_local! {
+    static PIP_LOADING: std::cell::Cell<sgl::Pipeline> = const { std::cell::Cell::new(sgl::Pipeline { id: 0 }) };
+}
+
+/// Present one loading-screen frame: dark clear, title, status line and
+/// a real progress bar (sokol_gl geometry + sdtx labels per the repo UI
+/// rules - no ASCII art, no DOM).
+fn draw_loading_frame(status: &str, frac: f32) {
+    let sw = sapp::widthf();
+    let sh = sapp::heightf();
+    let mut pass = sg::Pass {
+        swapchain: sokol::glue::swapchain(),
+        ..Default::default()
+    };
+    pass.action.colors[0] = sg::ColorAttachmentAction {
+        load_action: sg::LoadAction::Clear,
+        clear_value: sg::Color { r: 0.02, g: 0.03, b: 0.05, a: 1.0 },
+        ..Default::default()
+    };
+    sg::begin_pass(&pass);
+
+    /* Progress bar: track, fill, thin border. */
+    let bar_w = (sw * 0.4).clamp(280.0, 560.0);
+    let bar_h = 16.0f32;
+    let bx = (sw - bar_w) * 0.5;
+    let by = sh * 0.56;
+    sgl::defaults();
+    sgl::matrix_mode_projection();
+    sgl::load_identity();
+    sgl::ortho(0.0, sw, sh, 0.0, -1.0, 1.0);
+    sgl::matrix_mode_modelview();
+    sgl::load_identity();
+    sgl::load_pipeline(ui_alpha_pipeline(&PIP_LOADING));
+    let quad = |x0: f32, y0: f32, x1: f32, y1: f32| {
+        sgl::v2f(x0, y0);
+        sgl::v2f(x1, y0);
+        sgl::v2f(x1, y1);
+        sgl::v2f(x0, y1);
+    };
+    sgl::begin_quads();
+    /* Track. */
+    sgl::c4f(0.08, 0.10, 0.14, 1.0);
+    quad(bx, by, bx + bar_w, by + bar_h);
+    /* Fill - warm gold, matching the menu title. */
+    sgl::c4f(0.90, 0.78, 0.42, 1.0);
+    quad(bx + 2.0, by + 2.0, bx + 2.0 + (bar_w - 4.0) * frac.clamp(0.0, 1.0), by + bar_h - 2.0);
+    /* Border. */
+    sgl::c4f(0.35, 0.38, 0.48, 1.0);
+    quad(bx - 1.0, by - 1.0, bx + bar_w + 1.0, by);
+    quad(bx - 1.0, by + bar_h, bx + bar_w + 1.0, by + bar_h + 1.0);
+    quad(bx - 1.0, by, bx, by + bar_h);
+    quad(bx + bar_w, by, bx + bar_w + 1.0, by + bar_h);
+    sgl::end();
+    sgl::draw();
+
+    /* Labels via sdtx, scaled-canvas trick (same as the desync popup). */
+    {
+        let title = "TENEBRIS";
+        let scale = 4.0f32;
+        let cell = 8.0 * scale;
+        sdtx::canvas(sw / scale, sh / scale);
+        sdtx::origin((sw * 0.5 - cell * title.len() as f32 * 0.5) / cell, (sh * 0.40) / cell);
+        sdtx::color3b(0xe6, 0xcf, 0x73);
+        sdtx::home();
+        sdtx::puts(title);
+    }
+    {
+        let line = format!("{}  {}%", status, (frac.clamp(0.0, 1.0) * 100.0) as i32);
+        let scale = 1.5f32;
+        let cell = 8.0 * scale;
+        sdtx::canvas(sw / scale, sh / scale);
+        sdtx::origin((sw * 0.5 - cell * line.len() as f32 * 0.5) / cell, (by + bar_h + 14.0) / cell);
+        sdtx::color3b(0xa8, 0xb0, 0xc4);
+        sdtx::home();
+        sdtx::puts(&line);
+    }
+    sdtx::canvas(sw, sh);
+    sdtx::draw();
+    sg::end_pass();
+    sg::commit();
+}
+
+/* --------------------------------------------------------------------- */
 /* frame                                                                   */
 /* --------------------------------------------------------------------- */
 
 extern "C" fn frame() {
     /* Pump the network state machine first so any handshake progress
-     * is reflected in this frame's HUD. */
+     * is reflected in this frame's HUD - and so an MP socket stays
+     * alive while the terrain loader runs below. */
     net_client::tick();
     /* Let the menu observe the net state and promote a dropped MP
      * socket to the modal error popup BEFORE the overlay short-circuit
      * below. */
     menu::tick();
+
+    /* Staged terrain loader (first world entry / seed regen): present
+     * the loading screen and run one budgeted work slice instead of
+     * the game. */
+    if with_app(loader_frame).unwrap_or(false) {
+        return;
+    }
 
     /* In the main menu, draw the menu overlay and skip the entire game
      * update path. */
@@ -3653,6 +3924,13 @@ fn frame_inner(app: &mut App) {
     apply_sp_saves_lazy(app);
     maybe_apply_mp_spawn(app);
     maybe_prime_mode_for_state(app);
+    if app.loader.is_some() {
+        /* A terrain regen just started (SP world entry / MP entry
+         * above): present the loading screen instead of running a
+         * gameplay frame against the still-empty regenerated world. */
+        loader_frame(app);
+        return;
+    }
 
     /* Pointer-lock-loss -> open pause menu. The browser eats the first
      * Escape press to release pointer lock; detecting the lock-state
@@ -4634,6 +4912,11 @@ fn frame_inner(app: &mut App) {
 
 extern "C" fn event(e: *const sapp::Event) {
     let e = unsafe { &*e };
+    /* Input is dead while the staged loader owns the screen - nothing
+     * behind the loading bar should react to clicks or keys. */
+    if with_app(|a| a.loader.is_some()).unwrap_or(false) {
+        return;
+    }
     /* The main menu owns input while it's up. The egui-rendered SP
      * screens route through the egui layer; the rest use the sokol
      * menu's own hit-testing. */
