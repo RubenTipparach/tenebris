@@ -63,6 +63,17 @@ lighting:
 
   torch_color:         [1.00, 0.70, 0.30]
   torch_intensity:     2.50
+  # Emissive glow billboards at every light - the far-LOD stand-in for
+  # the baked torch light, so bases read as warm dots from orbit and
+  # from other bodies. min_size is the close-range halo half-size (m);
+  # size_per_m grows the dot with camera distance so it never shrinks
+  # below a couple of pixels; day/night alphas fade it with the sun
+  # (night dominant - that's the city-lights look).
+  glow_color:          [1.00, 0.72, 0.35]
+  glow_min_size_m:     0.35
+  glow_size_per_m:     0.004
+  glow_alpha_day:      0.10
+  glow_alpha_night:    0.85
 
   engine:               voxel
   voxel_sky_max:        15

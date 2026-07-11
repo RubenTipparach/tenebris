@@ -1099,19 +1099,20 @@ mod tests {
     }
 
     #[test]
-    fn torch_multi_line_native_quirk_matches_c() {
+    fn torch_multi_line_saves_round_trip_on_native() {
         let _g = test_support::begin("persist_torch_native_quirk");
         let torches = torch_fixtures();
         assert!(save_torches("home", 2, &torches));
-        // C-native parity: the kv framing scrub turns the '\n' between
-        // lines into '_' on disk...
+        /* DELIBERATE deviation from the C native build: its kv framing
+         * scrub turned the '\n' between lines into '_', silently
+         * dropping every torch past the first on reload (the web
+         * localStorage backend never had the problem). The Rust kv
+         * escapes values losslessly instead - N torches in, N out. */
         assert_eq!(
             client_kv::get("tenebris-c:torches:home:2"),
-            Some(format!("{C_TORCH_LINE}_{C_TORCH_LINE2}"))
+            Some(format!("{C_TORCH_LINE}\n{C_TORCH_LINE2}"))
         );
-        // ...and sscanf's trailing-garbage-tolerant final %f still
-        // recovers the first torch from the mangled single line.
-        assert_eq!(load_torches("home", 2), [torches[0]]);
+        assert_eq!(load_torches("home", 2), torches);
     }
 
     #[test]

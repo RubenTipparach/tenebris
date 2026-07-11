@@ -37,6 +37,7 @@ pub mod atmosphere;
 pub mod composite;
 pub mod composite_mobile;
 pub mod distant;
+pub mod glow;
 pub mod hex;
 pub mod starfield;
 pub mod sun;

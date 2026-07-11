@@ -4851,6 +4851,243 @@ pub fn draw_torches(view: Mat4, proj: Mat4) {
 }
 
 /* ----------------------------------------------------------------------- */
+/* Light glow - the far-LOD stand-in for the baked per-vertex torch
+ * light. One emissive billboard per light, distance-scaled so a base
+ * reads as a warm dot from orbit (past the 5 km chunk cutoff, where
+ * the baked light's terrain mesh no longer draws) and on REMOTE
+ * bodies whose lights came from the SP save (set_remote_lights). The
+ * quad buffer only rebuilds when the light set changes (torch
+ * generation counter / remote list update) - drawing is one bind +
+ * one draw per lit body. */
+
+struct GlowState {
+    pip: sg::Pipeline,
+    shd_made: bool,
+    buf: sg::Buffer,
+    cap_verts: usize,
+    /* (body_id, first_vertex, vertex_count) into the shared buffer. */
+    segments: Vec<(u32, i32, i32)>,
+    last_gen: u64,
+    remote_dirty: bool,
+    /* body_id -> flame positions (body-local) from the SP save, for
+     * bodies OTHER than the active one (whose live list wins). */
+    remote: std::collections::HashMap<u32, Vec<Vec3>>,
+}
+
+thread_local! {
+    static GLOW: RefCell<GlowState> = RefCell::new(GlowState {
+        pip: sg::Pipeline::new(),
+        shd_made: false,
+        buf: sg::Buffer::new(),
+        cap_verts: 0,
+        segments: Vec::new(),
+        last_gen: u64::MAX,
+        remote_dirty: false,
+        remote: std::collections::HashMap::new(),
+    });
+}
+
+/// Install (or clear, with an empty list) the glow points for a body
+/// the player is NOT currently on - SP loads these from the per-body
+/// persisted torch lists so your bases still shine from another world.
+pub fn set_remote_lights(body_id: u32, flames: Vec<Vec3>) {
+    GLOW.with(|g| {
+        let g = &mut *g.borrow_mut();
+        if flames.is_empty() {
+            g.remote.remove(&body_id);
+        } else {
+            g.remote.insert(body_id, flames);
+        }
+        g.remote_dirty = true;
+    });
+}
+
+/// Drop every remote glow list (world exit / MP join).
+pub fn clear_remote_lights() {
+    GLOW.with(|g| {
+        let g = &mut *g.borrow_mut();
+        g.remote.clear();
+        g.remote_dirty = true;
+    });
+}
+
+/// One glow quad = 6 vertices of (center xyz, corner xy, size).
+const GLOW_VERT_FLOATS: usize = 6;
+
+fn glow_push_quad(verts: &mut Vec<f32>, c: Vec3, size: f32) {
+    const CORNERS: [(f32, f32); 6] =
+        [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)];
+    for (cx, cy) in CORNERS {
+        verts.extend_from_slice(&[c.x, c.y, c.z, cx, cy, size]);
+    }
+}
+
+/// Draw the emissive glow points. Runs inside the offscreen scene pass
+/// (after the opaque terrain), additive with depth-test so the planet
+/// occludes lights beyond the horizon.
+pub fn draw_light_glow(view: Mat4, proj: Mat4) {
+    let l = config::lighting();
+    if l.glow_alpha_day <= 0.0 && l.glow_alpha_night <= 0.0 {
+        return;
+    }
+    R.with(|cell| {
+        let r = &mut *cell.borrow_mut();
+        if r.active_body_idx < 0 {
+            return;
+        }
+        let active_body_id = {
+            let ab = &r.bodies[r.active_body_idx as usize];
+            ab.world.borrow().body.id as u32
+        };
+        GLOW.with(|g| {
+            let g = &mut *g.borrow_mut();
+
+            /* Rebuild the quad buffer only when the light set moved. */
+            let gen = torch::lights_generation();
+            if gen != g.last_gen || g.remote_dirty {
+                g.last_gen = gen;
+                g.remote_dirty = false;
+                let mut verts: Vec<f32> = Vec::new();
+                g.segments.clear();
+                {
+                    let first = 0i32;
+                    torch::with_lights(|list| {
+                        for t in list {
+                            glow_push_quad(&mut verts, torch::flame_pos(t), 0.0);
+                        }
+                    });
+                    let count = (verts.len() / GLOW_VERT_FLOATS) as i32;
+                    if count > 0 {
+                        g.segments.push((active_body_id, first, count));
+                    }
+                }
+                for (&body_id, flames) in g.remote.iter() {
+                    if body_id == active_body_id {
+                        continue; /* live list already covers it */
+                    }
+                    let first = (verts.len() / GLOW_VERT_FLOATS) as i32;
+                    for f in flames {
+                        glow_push_quad(&mut verts, *f, 0.0);
+                    }
+                    let count = (verts.len() / GLOW_VERT_FLOATS) as i32 - first;
+                    if count > 0 {
+                        g.segments.push((body_id, first, count));
+                    }
+                }
+                let need = verts.len();
+                if need > 0 {
+                    if need > g.cap_verts {
+                        if g.buf.id != sg::Buffer::new().id {
+                            sg::destroy_buffer(g.buf);
+                        }
+                        g.cap_verts = need * 2;
+                        g.buf = sg::make_buffer(&sg::BufferDesc {
+                            size: g.cap_verts * std::mem::size_of::<f32>(),
+                            usage: sg::BufferUsage {
+                                stream_update: true,
+                                ..Default::default()
+                            },
+                            label: c"glow-quads".as_ptr(),
+                            ..Default::default()
+                        });
+                    }
+                    sg::update_buffer(g.buf, &sg::slice_as_range(&verts));
+                }
+            }
+            if g.segments.is_empty() {
+                return;
+            }
+
+            /* Lazy pipeline against the offscreen formats: additive,
+             * depth-tested, no depth write. */
+            if !g.shd_made {
+                g.shd_made = true;
+                let shd =
+                    sg::make_shader(&shaders::glow::glow_shader_desc(sg::query_backend()));
+                let mut desc = sg::PipelineDesc {
+                    shader: shd,
+                    index_type: sg::IndexType::None,
+                    depth: sg::DepthState {
+                        pixel_format: sg::PixelFormat::DepthStencil,
+                        compare: sg::CompareFunc::LessEqual,
+                        write_enabled: false,
+                        ..Default::default()
+                    },
+                    cull_mode: sg::CullMode::None,
+                    sample_count: 1,
+                    label: c"glow-pipeline".as_ptr(),
+                    ..Default::default()
+                };
+                desc.colors[0].pixel_format = sg::PixelFormat::Rgba8;
+                desc.colors[0].blend = sg::BlendState {
+                    enabled: true,
+                    src_factor_rgb: sg::BlendFactor::One,
+                    dst_factor_rgb: sg::BlendFactor::One,
+                    src_factor_alpha: sg::BlendFactor::One,
+                    dst_factor_alpha: sg::BlendFactor::One,
+                    ..Default::default()
+                };
+                desc.layout.attrs[shaders::glow::ATTR_GLOW_A_CENTER].format =
+                    sg::VertexFormat::Float3;
+                desc.layout.attrs[shaders::glow::ATTR_GLOW_A_CORNER].format =
+                    sg::VertexFormat::Float2;
+                desc.layout.attrs[shaders::glow::ATTR_GLOW_A_SIZE].format =
+                    sg::VertexFormat::Float;
+                g.pip = sg::make_pipeline(&desc);
+            }
+
+            let basis = camera_basis(view, proj);
+            let vp = mat4_mul(proj, view);
+            sg::apply_pipeline(g.pip);
+            let mut bind = sg::Bindings::new();
+            bind.vertex_buffers[0] = g.buf;
+            sg::apply_bindings(&bind);
+            let fsp = shaders::glow::GlowFsParams {
+                u_color: [l.glow_color.x, l.glow_color.y, l.glow_color.z, 0.0],
+            };
+
+            for &(body_id, first, count) in &g.segments {
+                /* Body world position: lights are stored body-local. */
+                let Some(bi) = r
+                    .bodies
+                    .iter()
+                    .position(|b| b.world.borrow().body.id as u32 == body_id)
+                else {
+                    continue;
+                };
+                let body_pos = r.bodies[bi].world_pos;
+                let model = mat4_translate(body_pos);
+                let mvp = mat4_mul(vp, model);
+                let cam_local = vec3_sub(r.env.camera_world, body_pos);
+                let vsp = shaders::glow::GlowVsParams {
+                    u_mvp: mvp.m,
+                    u_right_min: [
+                        basis.right[0],
+                        basis.right[1],
+                        basis.right[2],
+                        l.glow_min_size_m,
+                    ],
+                    u_up_scale: [basis.up[0], basis.up[1], basis.up[2], l.glow_size_per_m],
+                    u_cam_day: [cam_local.x, cam_local.y, cam_local.z, l.glow_alpha_day],
+                    u_sun_night: [
+                        r.env.sun_dir.x,
+                        r.env.sun_dir.y,
+                        r.env.sun_dir.z,
+                        l.glow_alpha_night,
+                    ],
+                };
+                sg::apply_uniforms(
+                    shaders::glow::UB_GLOW_VS_PARAMS,
+                    &sg::value_as_range(&vsp),
+                );
+                sg::apply_uniforms(shaders::glow::UB_GLOW_FS_PARAMS, &sg::value_as_range(&fsp));
+                sg::draw(first as usize, count as usize, 1);
+            }
+        });
+    });
+}
+
+/* ----------------------------------------------------------------------- */
 /* Frame counters + accessors. */
 
 /// The renderer's frame clock (seconds since boot) - the same value the

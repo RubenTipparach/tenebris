@@ -1270,6 +1270,21 @@ pub struct LightingConfig {
     pub voxel_sky_lateral_loss: i32,
     /* Per-frame cap on BFS pop operations in world_light_rebuild. */
     pub voxel_rebuild_ops_per_frame: i32,
+
+    /* Emissive glow billboards drawn at every light - the far-LOD
+     * stand-in for the baked per-vertex torch light, so bases read as
+     * warm dots from orbit (past the 5 km chunk cutoff and on remote
+     * bodies). */
+    /* Billboard half-size floor, metres (close-range halo). */
+    pub glow_min_size_m: f32,
+    /* Extra half-size per metre of camera distance - keeps the dot a
+     * few pixels wide no matter how far away it is. */
+    pub glow_size_per_m: f32,
+    /* Glow strength in daylight / at night (night wins the look). */
+    pub glow_alpha_day: f32,
+    pub glow_alpha_night: f32,
+    /* Emissive tint. */
+    pub glow_color: Vec3,
 }
 
 pub const LIGHTING_DEFAULTS: LightingConfig = LightingConfig {
@@ -1290,6 +1305,11 @@ pub const LIGHTING_DEFAULTS: LightingConfig = LightingConfig {
      * the wasm target; smaller values stretch the rebuild over more
      * frames at the cost of stale lighting for longer. */
     voxel_rebuild_ops_per_frame: 50000,
+    glow_min_size_m: 0.35,
+    glow_size_per_m: 0.004,
+    glow_alpha_day: 0.10,
+    glow_alpha_night: 0.85,
+    glow_color: v3(1.00, 0.72, 0.35),
 };
 
 impl Default for LightingConfig {
@@ -1338,6 +1358,23 @@ pub fn parse_lighting(src: &str, path: &str) -> i32 {
                 0
             }
             "torch_color" => vec3_or_err(val, &mut cfg.torch_color),
+            "glow_color" => vec3_or_err(val, &mut cfg.glow_color),
+            "glow_min_size_m" => {
+                cfg.glow_min_size_m = fval(val);
+                0
+            }
+            "glow_size_per_m" => {
+                cfg.glow_size_per_m = fval(val);
+                0
+            }
+            "glow_alpha_day" => {
+                cfg.glow_alpha_day = fval(val);
+                0
+            }
+            "glow_alpha_night" => {
+                cfg.glow_alpha_night = fval(val);
+                0
+            }
             "torch_intensity" => {
                 cfg.torch_intensity = fval(val);
                 0

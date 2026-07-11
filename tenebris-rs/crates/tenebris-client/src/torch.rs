@@ -65,7 +65,8 @@ const FLAME_BASE_Y: f32 = HANDLE_HEIGHT + HEAD_HEIGHT; /* = 0.50 */
  * count stays trivial (~96 verts merged across the three pieces). */
 const N_SEG: usize = 8;
 
-/// Port of `TORCH_MAX_COUNT`.
+/// The C's `TORCH_MAX_COUNT`. No longer a placement cap (the Rust list
+/// grows unbounded); kept as a sizing hint for pre-allocations.
 pub const MAX_COUNT: usize = 256;
 
 /* Light range + decay used both by the in-shader flicker and the
@@ -120,14 +121,17 @@ struct TorchVsParams {
     _pad_72: [u8; 8],
 }
 
-/// Port of the C file's module-static `T`.
+/// Port of the C file's module-static `T`. The C capped the list at a
+/// fixed 256-slot array; the port grows it unbounded - light count is
+/// a content decision, not a memory one (the per-vertex bake reads
+/// lights through the spatial grid below, so bake cost tracks LOCAL
+/// light density, not the planet-wide total).
 struct State {
     vbuf: sg::Buffer,
     ibuf: sg::Buffer,
     pip: sg::Pipeline,
     index_count: i32,
-    list: [Torch; MAX_COUNT],
-    count: i32,
+    list: Vec<Torch>,
 }
 
 impl Default for State {
@@ -137,8 +141,7 @@ impl Default for State {
             ibuf: sg::Buffer::new(),
             pip: sg::Pipeline::new(),
             index_count: 0,
-            list: [Torch::default(); MAX_COUNT],
-            count: 0,
+            list: Vec::new(),
         }
     }
 }
@@ -164,22 +167,117 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 static LIGHTS_GEN: AtomicU64 = AtomicU64::new(0);
-static LIGHTS: Mutex<Vec<Torch>> = Mutex::new(Vec::new());
+
+/// Cross-thread snapshot: the list plus a 3D spatial grid over torch
+/// positions ([`GRID_CELL_M`] cells), so the mesher gathers only the
+/// lights that can actually reach the tile being built - bake cost
+/// tracks local light density, not the planet-wide count.
+pub struct LightsShared {
+    pub list: Vec<Torch>,
+    grid: std::collections::HashMap<(i32, i32, i32), Vec<u32>>,
+}
+
+/// Spatial-grid cell edge, metres. Must be >= LIGHT_RANGE_M so a +-1
+/// cell neighbourhood around a query point covers the light range.
+const GRID_CELL_M: f32 = 16.0;
+
+fn grid_key(p: Vec3) -> (i32, i32, i32) {
+    (
+        (p.x / GRID_CELL_M).floor() as i32,
+        (p.y / GRID_CELL_M).floor() as i32,
+        (p.z / GRID_CELL_M).floor() as i32,
+    )
+}
+
+static LIGHTS: Mutex<Option<std::sync::Arc<LightsShared>>> = Mutex::new(None);
+
+fn lights_shared() -> std::sync::Arc<LightsShared> {
+    LIGHTS
+        .lock()
+        .unwrap()
+        .clone()
+        .unwrap_or_else(|| {
+            std::sync::Arc::new(LightsShared {
+                list: Vec::new(),
+                grid: std::collections::HashMap::new(),
+            })
+        })
+}
 
 thread_local! {
-    /* (generation, snapshot) - u64::MAX forces the first refresh. */
-    static LIGHTS_CACHE: RefCell<(u64, Vec<Torch>)> =
-        const { RefCell::new((u64::MAX, Vec::new())) };
+    /* (generation, snapshot) - u64::MAX forces the first refresh. The
+     * Arc swap makes a refresh O(1) no matter how many lights exist. */
+    static LIGHTS_CACHE: RefCell<(u64, std::sync::Arc<LightsShared>)> = RefCell::new((
+        u64::MAX,
+        std::sync::Arc::new(LightsShared {
+            list: Vec::new(),
+            grid: std::collections::HashMap::new(),
+        }),
+    ));
+}
+
+/// Monotonic mutation counter - cheap "did the lights change?" check
+/// for consumers that cache derived data (the LOD glow buffer).
+pub fn lights_generation() -> u64 {
+    LIGHTS_GEN.load(Ordering::Acquire)
+}
+
+/// Gather every light that could touch a terrain COLUMN: the tile's
+/// radial axis from `r_min` to `r_max` metres, padded by the tile's
+/// horizontal radius. Walks the spatial grid cells along the axis
+/// (O(column length / cell) lookups), so a planet with 100k lights
+/// costs a tile build exactly what its LOCAL lights cost.
+pub fn lights_along_column(dir: Vec3, r_min: f32, r_max: f32, pad_m: f32) -> Vec<Torch> {
+    let shared = LIGHTS_CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        let gen = LIGHTS_GEN.load(Ordering::Acquire);
+        if c.0 != gen {
+            c.1 = lights_shared();
+            c.0 = gen;
+        }
+        c.1.clone()
+    });
+    if shared.list.is_empty() {
+        return Vec::new();
+    }
+    /* +-n cell neighbourhood: enough to cover light range + tile pad. */
+    let n = (((LIGHT_RANGE_M + pad_m) / GRID_CELL_M).ceil() as i32).max(1);
+    let mut out: Vec<Torch> = Vec::new();
+    let mut seen: Vec<u32> = Vec::new();
+    let steps = (((r_max - r_min) / GRID_CELL_M).ceil() as i32).max(1);
+    for s in 0..=steps {
+        let r = r_min + (r_max - r_min) * (s as f32 / steps as f32);
+        let p = vec3_scale(dir, r);
+        let (kx, ky, kz) = grid_key(p);
+        for dx in -n..=n {
+            for dy in -n..=n {
+                for dz in -n..=n {
+                    let Some(cell) = shared.grid.get(&(kx + dx, ky + dy, kz + dz)) else {
+                        continue;
+                    };
+                    for &i in cell {
+                        if !seen.contains(&i) {
+                            seen.push(i);
+                            out.push(shared.list[i as usize]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Republish the live list into the cross-thread mirror. Every mutator
 /// (place / remove / clear / shutdown) must call this.
 fn lights_publish() {
-    let snap = T.with(|t| {
-        let t = t.borrow();
-        t.list[..t.count as usize].to_vec()
-    });
-    *LIGHTS.lock().unwrap() = snap;
+    let snap = T.with(|t| t.borrow().list.clone());
+    let mut grid: std::collections::HashMap<(i32, i32, i32), Vec<u32>> =
+        std::collections::HashMap::new();
+    for (i, t) in snap.iter().enumerate() {
+        grid.entry(grid_key(t.position)).or_default().push(i as u32);
+    }
+    *LIGHTS.lock().unwrap() = Some(std::sync::Arc::new(LightsShared { list: snap, grid }));
     LIGHTS_GEN.fetch_add(1, Ordering::Release);
 }
 
@@ -190,10 +288,10 @@ pub fn with_lights<R>(f: impl FnOnce(&[Torch]) -> R) -> R {
         let mut c = c.borrow_mut();
         let gen = LIGHTS_GEN.load(Ordering::Acquire);
         if c.0 != gen {
-            c.1 = LIGHTS.lock().unwrap().clone();
+            c.1 = lights_shared();
             c.0 = gen;
         }
-        f(&c.1)
+        f(&c.1.list)
     })
 }
 
@@ -397,14 +495,15 @@ pub fn init() {
     let pip = sg::make_pipeline(&desc);
     T.with(|t| t.borrow_mut().pip = pip);
     build_geometry();
-    T.with(|t| t.borrow_mut().count = 0);
+    T.with(|t| t.borrow_mut().list.clear());
+    lights_publish();
 }
 
 /// Port of `torch_shutdown()`.
 pub fn shutdown() {
     /* Pipeline + buffers are destroyed by sg_shutdown at program
      * exit; nothing per-module to free. */
-    T.with(|t| t.borrow_mut().count = 0);
+    T.with(|t| t.borrow_mut().list.clear());
     lights_publish();
 }
 
@@ -413,7 +512,7 @@ pub fn shutdown() {
 /// world's persisted torch list replays right after via
 /// apply_sp_world_saves, so nothing from the previous world leaks.
 pub fn clear() {
-    T.with(|t| t.borrow_mut().count = 0);
+    T.with(|t| t.borrow_mut().list.clear());
     lights_publish();
 }
 
@@ -424,31 +523,23 @@ pub fn clear() {
 /// removal can find it later by the tile its base sits on. Returns
 /// `true` on success, `false` if the torch list is full.
 pub fn place(position: Vec3, up: Vec3, tile_idx: i32) -> bool {
-    let placed = T.with(|t| {
+    T.with(|t| {
         let mut t = t.borrow_mut();
-        if t.count as usize >= MAX_COUNT {
-            return false;
-        }
-        let slot = t.count as usize;
-        t.count += 1;
         /* Random-ish phase from the slot index - adjacent torches end
          * up with offset phases so they don't pulse together. The
          * "true" random would need an RNG; this is good enough for
-         * visual decorrelation. (Matches the C exactly: the phase is
-         * computed from the count AFTER the `T.count++`.) */
-        let phase = (t.count as f32) * 0.7193f32;
-        t.list[slot] = Torch {
+         * visual decorrelation. (Same formula as the C; the fixed
+         * 256 cap is gone - the list grows with the build.) */
+        let phase = ((t.list.len() + 1) as f32) * 0.7193f32;
+        t.list.push(Torch {
             position,
             up: vec3_normalize(up),
             flicker_phase: phase,
             tile_idx,
-        };
-        true
+        });
     });
-    if placed {
-        lights_publish();
-    }
-    placed
+    lights_publish();
+    true
 }
 
 /// Port of `torch_remove_near()`. Remove the nearest torch within
@@ -458,8 +549,8 @@ pub fn remove_near(world_pos: Vec3, radius_m: f32) -> bool {
         let mut t = t.borrow_mut();
         let mut best: i32 = -1;
         let mut best_d2 = radius_m * radius_m;
-        for i in 0..t.count as usize {
-            let d = vec3_sub(t.list[i].position, world_pos);
+        for (i, torch) in t.list.iter().enumerate() {
+            let d = vec3_sub(torch.position, world_pos);
             let d2 = d.x * d.x + d.y * d.y + d.z * d.z;
             if d2 < best_d2 {
                 best_d2 = d2;
@@ -469,10 +560,7 @@ pub fn remove_near(world_pos: Vec3, radius_m: f32) -> bool {
         if best < 0 {
             return false;
         }
-        /* Swap-remove. */
-        let last = (t.count - 1) as usize;
-        t.list[best as usize] = t.list[last];
-        t.count -= 1;
+        t.list.swap_remove(best as usize);
         true
     });
     if removed {
@@ -489,16 +577,13 @@ pub fn flame_pos(t: &Torch) -> Vec3 {
 
 /// Port of `torch_count()`.
 pub fn count() -> i32 {
-    T.with(|t| t.borrow().count)
+    T.with(|t| t.borrow().list.len() as i32)
 }
 
 /// Port of `torch_list()`. Returns a snapshot copy of the live list
 /// (see module docs); stable until the next place / remove.
 pub fn list() -> Vec<Torch> {
-    T.with(|t| {
-        let t = t.borrow();
-        t.list[..t.count as usize].to_vec()
-    })
+    T.with(|t| t.borrow().list.clone())
 }
 
 /// Port of `torch_position_at()`. Returns (0,0,0) for an out-of-range
@@ -506,10 +591,10 @@ pub fn list() -> Vec<Torch> {
 pub fn position_at(idx: i32) -> Vec3 {
     T.with(|t| {
         let t = t.borrow();
-        if idx < 0 || idx >= t.count {
-            return Vec3 { x: 0.0, y: 0.0, z: 0.0 };
+        match t.list.get(idx.max(0) as usize) {
+            Some(torch) if idx >= 0 => torch.position,
+            _ => Vec3 { x: 0.0, y: 0.0, z: 0.0 },
         }
-        t.list[idx as usize].position
     })
 }
 
@@ -520,12 +605,10 @@ pub fn position_at(idx: i32) -> Vec3 {
 pub fn remove(idx: i32) {
     T.with(|t| {
         let mut t = t.borrow_mut();
-        if idx < 0 || idx >= t.count {
+        if idx < 0 || idx as usize >= t.list.len() {
             return;
         }
-        let last = (t.count - 1) as usize;
-        t.list[idx as usize] = t.list[last];
-        t.count -= 1;
+        t.list.swap_remove(idx as usize);
     });
     lights_publish();
 }
@@ -549,7 +632,7 @@ pub fn raycast(eye: Vec3, dir: Vec3, max_dist: f32) -> (i32, f32) {
         let st = st.borrow();
         let mut hit: i32 = -1;
         let mut best = max_dist;
-        for i in 0..st.count as usize {
+        for i in 0..st.list.len() {
             let centre = vec3_add(st.list[i].position, vec3_scale(st.list[i].up, CENTRE_OFFSET));
             let oc = vec3_sub(eye, centre);
             let b = vec3_dot(oc, dir);
@@ -618,11 +701,11 @@ fn model_matrix(t: &Torch) -> Mat4 {
 /// Port of `torch_draw()`. Draw all placed torches in one pipeline
 /// pass against the supplied vp + global clock.
 pub fn draw(vp: Mat4, time_seconds: f32) {
-    let (pip, vbuf, ibuf, index_count, count, torches) = T.with(|t| {
+    let (pip, vbuf, ibuf, index_count, torches) = T.with(|t| {
         let t = t.borrow();
-        (t.pip, t.vbuf, t.ibuf, t.index_count, t.count, t.list)
+        (t.pip, t.vbuf, t.ibuf, t.index_count, t.list.clone())
     });
-    if count == 0 {
+    if torches.is_empty() {
         return;
     }
 
@@ -632,7 +715,7 @@ pub fn draw(vp: Mat4, time_seconds: f32) {
     bind.index_buffer = ibuf;
     sg::apply_bindings(&bind);
 
-    for t in torches.iter().take(count as usize) {
+    for t in torches.iter() {
         let model = model_matrix(t);
         let mvp = mat4_mul(vp, model);
 
@@ -748,6 +831,7 @@ mod tests {
 
     #[test]
     fn place_count_list_semantics() {
+        let _g = crate::client_kv::test_support::begin("torch_place_count_list_semantics");
         shutdown();
         assert_eq!(count(), 0);
         assert!(place(vec3_make(1.0, 2.0, 3.0), vec3_make(0.0, 2.0, 0.0), 7));
@@ -775,22 +859,33 @@ mod tests {
     }
 
     #[test]
-    fn place_caps_at_max_count() {
+    fn place_is_uncapped_and_grid_gathers_locally() {
+        let _g = crate::client_kv::test_support::begin("torch_place_is_uncapped_and_grid_gathers_locally");
         shutdown();
-        for i in 0..MAX_COUNT {
+        /* The C's 256 cap is gone: place well past it. */
+        for i in 0..(MAX_COUNT + 64) {
             assert!(place(
-                vec3_make(i as f32, 0.0, 0.0),
+                vec3_make(i as f32 * 40.0, 300.0, 0.0),
                 vec3_make(0.0, 1.0, 0.0),
                 i as i32
             ));
         }
-        assert_eq!(count(), MAX_COUNT as i32);
-        assert!(!place(vec3_make(999.0, 0.0, 0.0), vec3_make(0.0, 1.0, 0.0), 999));
-        assert_eq!(count(), MAX_COUNT as i32);
+        assert_eq!(count(), (MAX_COUNT + 64) as i32);
+        /* Column gather sees only the lights near its axis - torch 0
+         * sits at (0, 300, 0): a column along +Y finds it, a column
+         * 400 m away along +X..+Y doesn't (grid, not linear scan). */
+        let near = lights_along_column(vec3_make(0.0, 1.0, 0.0), 280.0, 320.0, 4.0);
+        assert_eq!(near.len(), 1, "one light near the +Y column");
+        let far_dir = vec3_normalize(vec3_make(0.5, 1.0, 0.5));
+        let far = lights_along_column(far_dir, 280.0, 320.0, 4.0);
+        assert!(far.is_empty(), "distant column gathers nothing");
+        shutdown();
+        assert!(lights_along_column(vec3_make(0.0, 1.0, 0.0), 280.0, 320.0, 4.0).is_empty());
     }
 
     #[test]
     fn remove_near_swap_removes_nearest() {
+        let _g = crate::client_kv::test_support::begin("torch_remove_near_swap_removes_nearest");
         shutdown();
         place(vec3_make(0.0, 0.0, 0.0), vec3_make(0.0, 1.0, 0.0), 0);
         place(vec3_make(10.0, 0.0, 0.0), vec3_make(0.0, 1.0, 0.0), 1);
@@ -820,6 +915,7 @@ mod tests {
 
     #[test]
     fn raycast_pinned() {
+        let _g = crate::client_kv::test_support::begin("torch_raycast_pinned");
         shutdown();
         place(vec3_make(0.0, 0.0, 0.0), vec3_make(0.0, 1.0, 0.0), 0);
         // Eye level with the bounding-sphere centre (0,0.32,0), aiming

@@ -40,12 +40,13 @@
 #![allow(dead_code)] // consumed by the renderer wave of the port
 
 use crate::torch;
+use std::cell::RefCell;
 use tenebris_core::blocks::{self, Block, FaceCap};
 use tenebris_core::config;
 use tenebris_core::goldberg::Tile;
 use tenebris_core::math::{
-    dvec3_add, dvec3_cross, dvec3_make, dvec3_normalize, dvec3_scale, dvec3_sub, dvec3_to_vec3,
-    vec3_sub, DVec3, Vec3,
+    dvec3_add, dvec3_cross, dvec3_length, dvec3_make, dvec3_normalize, dvec3_scale, dvec3_sub,
+    dvec3_to_vec3, vec3_sub, DVec3, Vec3,
 };
 use tenebris_core::world::{World, WORLD_MAX_DEPTH};
 use tenebris_core::world_water;
@@ -239,13 +240,35 @@ fn sky_light_at(w: &World, tile: i32, depth_at_top: i32) -> f32 {
  * O(N_torches) per vertex - fine for the small placement counts the
  * game uses (tens, not thousands). For a heavy-build scene we'd want
  * a spatial grid; that's a later optimisation. */
+/* Per-tile light gather. Before meshing a tile, [`tile_lights_begin`]
+ * pulls the lights that can reach that tile's COLUMN out of the torch
+ * module's spatial grid (cross-thread safe - the rayon mesh workers
+ * see the same lights as the main thread). torch_light_at then scans
+ * only that tiny local list per vertex, so the per-vertex bake cost
+ * tracks local light density: a planet with 100k torches meshes a
+ * dark tile exactly as fast as an empty planet does. */
+thread_local! {
+    static TILE_LIGHTS: RefCell<Vec<crate::torch::Torch>> = const { RefCell::new(Vec::new()) };
+}
+
+fn tile_lights_begin(w: &World, t: &Tile) {
+    /* Horizontal pad: the tile's corner reach (unit-sphere chord times
+     * body radius) so corner vertices still see their nearest lights. */
+    let pad = (dvec3_length(dvec3_sub(t.verts[0], t.center)) * w.body.radius_m) as f32;
+    let dir = Vec3 {
+        x: t.center.x as f32,
+        y: t.center.y as f32,
+        z: t.center.z as f32,
+    };
+    let r_min = w.depth_to_radius_m(0) as f32;
+    let r_max = w.depth_to_radius_m(WORLD_MAX_DEPTH) as f32;
+    let lights = torch::lights_along_column(dir, r_min, r_max, pad);
+    TILE_LIGHTS.with(|c| *c.borrow_mut() = lights);
+}
+
 fn torch_light_at(world_pos: Vec3) -> f32 {
-    /* Sample through the cross-thread mirror, NOT torch::list(): chunk
-     * builds fan out across the rayon pool, and the torch module's
-     * primary state is thread-local - a worker reading it directly
-     * sees an empty list and bakes darkness (the "torches don't light
-     * the ground" bug on multithreaded builds). */
-    torch::with_lights(|list| {
+    TILE_LIGHTS.with(|c| {
+        let list = c.borrow();
         if list.is_empty() {
             return 0.0;
         }
@@ -1664,6 +1687,7 @@ pub fn build_tile(out: &mut HexMesh, w: &World, tile_idx: i32) {
         Some(t) => t,
         None => return,
     };
+    tile_lights_begin(w, t);
 
     let n = t.num_verts as i32;
     let col_base = (tile_idx * WORLD_MAX_DEPTH) as usize;
@@ -2062,6 +2086,7 @@ pub fn build_scatter(out: &mut HexMesh, w: &World, tile_idx: i32) {
         Some(t) => t,
         None => return,
     };
+    tile_lights_begin(w, t);
 
     /* Topmost solid voxel = the surface this tile presents to the sky
      * (or to the ocean above it). Leaves / wood surfaces get nothing -

@@ -133,21 +133,17 @@ pub fn sp_save_tile_after_edit(w: &World, tile_idx: i32) {
     persistence::save_block_entities(&name, w.body.id as u32, &w.block_entities);
 }
 
-/// Port of `sp_save_torches_after_change()`.
-fn sp_save_torches_after_change(w: &World) {
+/// Port of `sp_save_torches_after_change()`. (pub(crate): the dev
+/// torch-village hook persists through the same path.)
+pub(crate) fn sp_save_torches_after_change(w: &World) {
     let Some(name) = sp_active_for_world(w) else {
         return;
     };
-    /* Snapshot every torch anchored on THIS body. The torch list is
-     * one global array; filter by tile_idx range under the body's
-     * goldberg grid using the position projection torch_position_at
-     * already exposes. Cheap (~256 entries max). */
+    /* Snapshot every torch anchored on THIS body (the list is
+     * uncapped now - every placed light persists). */
     let list = torch::list();
-    let mut buf: Vec<PersistenceTorch> = Vec::with_capacity(torch::MAX_COUNT);
+    let mut buf: Vec<PersistenceTorch> = Vec::with_capacity(list.len());
     for t in &list {
-        if buf.len() >= torch::MAX_COUNT {
-            break;
-        }
         if t.tile_idx < 0 || t.tile_idx >= w.tile_count {
             continue;
         }

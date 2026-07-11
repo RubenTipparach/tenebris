@@ -61,7 +61,12 @@ mod backend {
      * comfortably under load_file's 4 MB read guard. */
     pub(super) const KV_MAX_ENTRIES: usize = 8192;
     pub(super) const KV_KEY_MAX: usize = 127;
-    pub(super) const KV_VAL_MAX: usize = 1023;
+    /* The C capped values at 1023 bytes, which silently truncated any
+     * torch / crop / bentity snapshot past ~17 entries - an unlimited
+     * light build needs the whole blob. 256 KB comfortably holds tens
+     * of thousands of CSV lines while keeping a runaway value from
+     * bloating the file unbounded. */
+    pub(super) const KV_VAL_MAX: usize = 256 * 1024;
 
     pub(super) struct KvEntry {
         pub(super) k: String,
@@ -100,15 +105,74 @@ mod backend {
         &s[..end]
     }
 
-    /// Strip framing characters (= and newline) from a string. The
-    /// file format can't represent them and the keys / values we
-    /// actually store (tokens, world names, CSV blobs) never
-    /// legitimately contain them, so a soft scrub here keeps load/save
-    /// round-tripping.
+    /// Strip framing characters (= and newline) from a KEY. Keys are
+    /// short identifiers that never legitimately contain them, so a
+    /// soft scrub keeps the file format parseable.
     fn strip_framing(s: &str) -> String {
         s.chars()
             .map(|c| if c == '=' || c == '\n' || c == '\r' { '_' } else { c })
             .collect()
+    }
+
+    /// Escape a VALUE so the one-line-per-entry file format can carry
+    /// it losslessly. Values are real payloads - the torch / crop /
+    /// block-entity snapshots are multi-LINE CSV blobs, and the old
+    /// strip-to-'_' scrub silently collapsed every multi-entry save to
+    /// its first line on native builds (web localStorage never goes
+    /// through this file). Percent-encodes just the framing chars.
+    fn escape_value(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        for c in s.chars() {
+            match c {
+                '%' => out.push_str("%25"),
+                '\n' => out.push_str("%0A"),
+                '\r' => out.push_str("%0D"),
+                _ => out.push(c),
+            }
+        }
+        out
+    }
+
+    /// Reverse [`escape_value`]. Tolerant: a bare '%' that doesn't
+    /// start a known escape (values written before the escaping
+    /// existed) passes through unchanged.
+    fn unescape_value(s: &str) -> String {
+        let b = s.as_bytes();
+        let mut out = String::with_capacity(s.len());
+        let mut i = 0;
+        while i < b.len() {
+            if b[i] == b'%' && i + 2 < b.len() + 1 && i + 3 <= b.len() {
+                match &b[i + 1..i + 3] {
+                    b"25" => {
+                        out.push('%');
+                        i += 3;
+                        continue;
+                    }
+                    b"0A" => {
+                        out.push('\n');
+                        i += 3;
+                        continue;
+                    }
+                    b"0D" => {
+                        out.push('\r');
+                        i += 3;
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
+            /* Multi-byte chars: copy the full char. */
+            let ch_len = {
+                let mut l = 1;
+                while i + l < b.len() && (b[i + l] & 0xC0) == 0x80 {
+                    l += 1;
+                }
+                l
+            };
+            out.push_str(&s[i..i + ch_len]);
+            i += ch_len;
+        }
+        out
     }
 
     /// Resolve the cross-platform user data directory and stash the
@@ -256,7 +320,7 @@ mod backend {
                 store.entries.len() - 1
             }
         };
-        store.entries[idx].v = strip_framing(truncate_bytes(val, KV_VAL_MAX));
+        store.entries[idx].v = escape_value(truncate_bytes(val, KV_VAL_MAX));
         save_file(&store);
     }
 
@@ -267,7 +331,7 @@ mod backend {
         let mut store = lock();
         load_file(&mut store);
         let idx = find(&store, key)?;
-        Some(store.entries[idx].v.clone())
+        Some(unescape_value(&store.entries[idx].v))
     }
 
     pub fn remove(key: &str) {
@@ -411,27 +475,44 @@ mod tests {
     }
 
     #[test]
-    fn framing_chars_are_scrubbed_to_underscore() {
+    fn keys_scrub_but_values_round_trip_losslessly() {
         let _g = test_support::begin("framing_chars_scrubbed");
-        set("k=ey\n", "va=lue\r\n!");
-        // Key and value both scrubbed; lookups use the scrubbed key.
-        assert_eq!(get("k_ey_").as_deref(), Some("va_lue__!"));
+        /* Keys still scrub framing chars to '_' (short identifiers).
+         * VALUES escape instead: the torch / crop / bentity snapshots
+         * are multi-line CSV blobs, and the old value scrub silently
+         * collapsed them to one line on native builds. */
+        set("k=ey\n", "va=lue\r\n!with %25 literal");
+        assert_eq!(get("k_ey_").as_deref(), Some("va=lue\r\n!with %25 literal"));
         test_support::reload_from_disk();
-        assert_eq!(get("k_ey_").as_deref(), Some("va_lue__!"));
+        assert_eq!(get("k_ey_").as_deref(), Some("va=lue\r\n!with %25 literal"));
+        /* The multi-entry shape that used to break: N lines in, N out. */
+        let blob = "1,2,3\n4,5,6\n7,8,9";
+        set("tenebris-c:torches:t:0", blob);
+        test_support::reload_from_disk();
+        assert_eq!(get("tenebris-c:torches:t:0").as_deref(), Some(blob));
     }
 
     #[test]
-    fn key_and_value_byte_caps_match_c() {
+    fn key_cap_matches_c_but_values_hold_big_blobs() {
         let _g = test_support::begin("key_and_value_byte_caps");
         let long_key = "k".repeat(200);
+        /* DELIBERATE deviation from C: its 1023-byte value cap silently
+         * truncated torch / crop snapshots past ~17 entries. The Rust
+         * cap holds whole big-base blobs; only truly runaway values
+         * (>KV_VAL_MAX) still clamp. */
         let long_val = "v".repeat(2000);
         set(&long_key, &long_val);
-        // Key truncated to 127 bytes, value to 1023 - same caps as the
-        // C KV_KEY_MAX / KV_VAL_MAX snprintf buffers.
         let stored = get(&"k".repeat(127)).expect("truncated key present");
-        assert_eq!(stored.len(), 1023);
+        assert_eq!(stored.len(), 2000, "2 KB value survives intact");
         test_support::reload_from_disk();
-        assert_eq!(get(&"k".repeat(127)).map(|v| v.len()), Some(1023));
+        assert_eq!(get(&"k".repeat(127)).map(|v| v.len()), Some(2000));
+        /* The cap still exists for runaway values. */
+        let runaway = "w".repeat(backend::KV_VAL_MAX + 10);
+        set("tenebris-c:runaway", &runaway);
+        assert_eq!(
+            get("tenebris-c:runaway").map(|v| v.len()),
+            Some(backend::KV_VAL_MAX)
+        );
     }
 
     #[test]

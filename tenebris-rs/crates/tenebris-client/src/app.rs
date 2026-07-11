@@ -448,12 +448,17 @@ fn dev_maybe_place(app: &mut App) {
             p.pitch = 0.95;
         }
         16 => {
-            /* Torch-light showcase (TENEBRIS_DEV_TORCH): plant a short
-             * row of torches on the ground ahead so a night still shows
-             * the warm baked pool on the terrain + the flame sprites.
-             * Same call pattern as the SP reload path: torch::place +
-             * dirty_in_range so nearby chunks re-bake their per-vertex
-             * torch light. */
+            /* Torch-light showcase (TENEBRIS_DEV_TORCH[=N]): plant N
+             * torches (default 3) scattered ahead like a small village,
+             * so a night still shows the warm baked pools and - from
+             * altitude - the emissive glow points. Same call pattern as
+             * the SP reload path: torch::place + dirty_in_range so
+             * nearby chunks re-bake their per-vertex torch light. */
+            let n: usize = std::env::var("TENEBRIS_DEV_TORCH")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .filter(|v| *v > 1)
+                .unwrap_or(3);
             let (ppos, fwd, right, last_tile) = {
                 let p = app.player.borrow();
                 (p.position, p.basis.fwd, p.basis.right, p.last_tile)
@@ -462,7 +467,12 @@ fn dev_maybe_place(app: &mut App) {
             let bc = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
             let local = dvec3_sub(ppos, bc);
             let mut placed = 0;
-            for (ahead, side) in [(4.0f64, -1.5f64), (6.5, 1.5), (9.0, 0.0)] {
+            for k in 0..n {
+                /* Hash-scattered cluster: 4..~40 m ahead, +-25 m wide. */
+                let ha = tenebris_core::rng::hash2(k as i32, 3) as f64;
+                let hb = tenebris_core::rng::hash2(k as i32, 7) as f64;
+                let ahead = 4.0 + ha * (4.0 + n as f64 * 1.5).min(60.0);
+                let side = (hb - 0.5) * (6.0 + n as f64).min(50.0);
                 let point = dvec3_add(
                     local,
                     dvec3_add(dvec3_scale(fwd, ahead), dvec3_scale(right, side)),
@@ -483,7 +493,11 @@ fn dev_maybe_place(app: &mut App) {
             if placed > 0 {
                 let mut w = app.world.borrow_mut();
                 let plocal = tenebris_core::math::dvec3_to_vec3(local);
-                w.dirty_in_range(plocal, torch::LIGHT_RANGE_M + 12.0);
+                w.dirty_in_range(plocal, torch::LIGHT_RANGE_M + 70.0);
+                /* Persist like a real placement so a later run of the
+                 * same world reloads the village (exercises the glow's
+                 * save-restore path too). */
+                interact::sp_save_torches_after_change(&w);
             }
             println!("[dev] placed {} torches ahead", placed);
             app.player.borrow_mut().pitch = -0.25;
@@ -2767,6 +2781,23 @@ fn apply_sp_world_saves(w_rc: &Rc<RefCell<World>>) {
         println!("[sp-saves] body={}: {} torch(es) restored", body_id, placed);
     }
 
+    /* Refresh the renderer's remote glow lists from EVERY body's saved
+     * torches so lit bases on other worlds show as warm dots across
+     * space. Idempotent + cheap (a handful of localStorage reads); the
+     * active body is skipped at draw time in favour of its live list. */
+    for id in 0..tenebris_core::planet::BODY_COUNT as u32 {
+        let saved = persistence::load_torches(&world_name, id);
+        let flames: Vec<tenebris_core::math::Vec3> = saved
+            .iter()
+            .map(|t| tenebris_core::math::Vec3 {
+                x: t.pos[0] + t.up[0] * torch::FLAME_HEIGHT_M,
+                y: t.pos[1] + t.up[1] * torch::FLAME_HEIGHT_M,
+                z: t.pos[2] + t.up[2] * torch::FLAME_HEIGHT_M,
+            })
+            .collect();
+        renderer::set_remote_lights(id, flames);
+    }
+
     /* Crop list: reload every planted crop with its saved growth so the
      * player's farm survives a reload (same per-body snapshot shape as
      * torches). */
@@ -3791,6 +3822,23 @@ fn frame_inner(app: &mut App) {
             app.player.borrow_mut().pitch = rad;
         }
     }
+    /* Dev screenshot aid: hold the player at a fixed altitude above the
+     * body surface (metres above spawn radius) - the "from orbit" shot. */
+    if let Ok(v) = std::env::var("TENEBRIS_DEV_HOVER") {
+        if let Ok(alt) = v.parse::<f64>() {
+            let (bc, r) = {
+                let w = app.world.borrow();
+                (
+                    dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z),
+                    w.body.radius_m + alt,
+                )
+            };
+            let mut p = app.player.borrow_mut();
+            let dir = dvec3_normalize(dvec3_sub(p.position, bc));
+            p.position = dvec3_add(bc, dvec3_scale(dir, r));
+            p.velocity = tenebris_core::math::DVec3::default();
+        }
+    }
 
     /* G-key toggles survival mode in SP only (MP is always survival).
      * Consume the edge either way. */
@@ -4331,6 +4379,9 @@ fn frame_inner(app: &mut App) {
     profiler::end("draw-moons");
     profiler::begin("draw-torches");
     renderer::draw_torches(view, proj);
+    /* Emissive glow points: the far-LOD stand-in for baked torch
+     * light, so bases shine from orbit + remote bodies. */
+    renderer::draw_light_glow(view, proj);
     profiler::end("draw-torches");
     /* Animals + crops - same offscreen opaque pass so terrain/torches
      * z-sort correctly against them. */
