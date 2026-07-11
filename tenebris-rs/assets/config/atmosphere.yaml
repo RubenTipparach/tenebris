@@ -45,11 +45,11 @@
 #                            the weather and the vista clears
 
 tenebris:
-  # Thin shell: ~8 % of the planet radius (playtest ask - the old
-  # 1.6x column read as a gas giant's halo from orbit). The march
-  # normalises optical depth by shell thickness, so sky brightness
-  # survives the change; the orbital halo hugs the limb now.
-  radius_mult: 1.08
+  # Thin shell topping out at the OLD cloud deck height (72 m on the
+  # 300 m planet - clouds now ride at 36 m, half that, so the deck
+  # sits inside the atmosphere): playtest-tuned after 1.6 read like a
+  # gas giant and 1.08 pinched the halo too tight.
+  radius_mult: 1.24
   # Sink the planet-clip sphere slightly below the actual ground so
   # the atmosphere ray-march continues a bit past the visible horizon
   # — softens the harsh dark band where atmosphere meets the planet

@@ -26,7 +26,7 @@
 #                negative = uniform sky (patchiness off)
 #   patch_soft   edge softness of a system (coverage-field units)
 clouds:
-  altitude_m: 72
+  altitude_m: 36
   cell_m: 30
   density: 0.38
   range_m: 230
