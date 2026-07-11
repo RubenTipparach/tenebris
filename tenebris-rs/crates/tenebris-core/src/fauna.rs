@@ -53,6 +53,14 @@ pub enum AnimalKind {
     Lizard,
     /// Tundra waddler - upright on the snow.
     Penguin,
+    /// Big deep-bodied reef fish, best fishing prize.
+    LargeFish,
+    /// Eel - long, thin, undulating.
+    LongFish,
+    /// Ray - wide flat wings gliding over the sea floor.
+    FlatFish,
+    /// Sea turtle - domed shell, flippers.
+    Turtle,
 }
 
 /// Where an animal is allowed to be (drives the reseat rules).
@@ -82,6 +90,10 @@ impl AnimalKind {
             AnimalKind::Frog => 8,
             AnimalKind::Lizard => 9,
             AnimalKind::Penguin => 10,
+            AnimalKind::LargeFish => 11,
+            AnimalKind::LongFish => 12,
+            AnimalKind::FlatFish => 13,
+            AnimalKind::Turtle => 14,
         }
     }
 
@@ -97,6 +109,10 @@ impl AnimalKind {
             8 => AnimalKind::Frog,
             9 => AnimalKind::Lizard,
             10 => AnimalKind::Penguin,
+            11 => AnimalKind::LargeFish,
+            12 => AnimalKind::LongFish,
+            13 => AnimalKind::FlatFish,
+            14 => AnimalKind::Turtle,
             _ => AnimalKind::Critter,
         }
     }
@@ -104,7 +120,11 @@ impl AnimalKind {
     pub fn habitat(self) -> Habitat {
         match self {
             AnimalKind::Bird => Habitat::Air,
-            AnimalKind::Fish => Habitat::Water,
+            AnimalKind::Fish
+            | AnimalKind::LargeFish
+            | AnimalKind::LongFish
+            | AnimalKind::FlatFish
+            | AnimalKind::Turtle => Habitat::Water,
             _ => Habitat::Land,
         }
     }
@@ -123,22 +143,33 @@ impl AnimalKind {
             AnimalKind::Frog => 1.0,
             AnimalKind::Lizard => 2.2,
             AnimalKind::Penguin => 0.7,
+            AnimalKind::LargeFish => 1.2,
+            AnimalKind::LongFish => 1.9,
+            AnimalKind::FlatFish => 1.0,
+            AnimalKind::Turtle => 0.6,
         }
     }
 
-    /// Visual scale relative to the base critter body.
+    /// Visual scale relative to the base critter body. Land + air
+    /// animals render at 2x their original size (playtest feedback -
+    /// they read too small in the open terrain); the water family
+    /// keeps its scale so fish stay believable next to the player.
     pub fn scale(self) -> f32 {
         match self {
-            AnimalKind::Critter | AnimalKind::Stalker => 1.0,
-            AnimalKind::Cat => 0.55,
-            AnimalKind::Sheep => 1.05,
-            AnimalKind::Chicken => 0.42,
-            AnimalKind::Cow => 1.45,
-            AnimalKind::Bird => 0.30,
+            AnimalKind::Critter | AnimalKind::Stalker => 2.0,
+            AnimalKind::Cat => 1.1,
+            AnimalKind::Sheep => 2.1,
+            AnimalKind::Chicken => 0.84,
+            AnimalKind::Cow => 2.9,
+            AnimalKind::Bird => 0.60,
+            AnimalKind::Frog => 0.70,
+            AnimalKind::Lizard => 0.80,
+            AnimalKind::Penguin => 1.2,
             AnimalKind::Fish => 0.55,
-            AnimalKind::Frog => 0.35,
-            AnimalKind::Lizard => 0.40,
-            AnimalKind::Penguin => 0.60,
+            AnimalKind::LargeFish => 1.1,
+            AnimalKind::LongFish => 0.8,
+            AnimalKind::FlatFish => 0.75,
+            AnimalKind::Turtle => 0.9,
         }
     }
 
@@ -153,6 +184,7 @@ impl AnimalKind {
             AnimalKind::Frog => 1,
             AnimalKind::Cat => 1,
             AnimalKind::Lizard => 1,
+            AnimalKind::LargeFish => 3,
             _ => 2,
         }
     }
@@ -550,7 +582,21 @@ pub fn spawn_near_auto(w: &World, anchor_world: DVec3, id: u32, salt: u32) -> Op
             + crate::planet_gen::sea_raise_m(&w.body) as f64;
         let lift = (r + FISH_PAD_M + 0.3).min(sea_r - FISH_SURFACE_PAD_M).max(r);
         a.pos = dvec3_add(center, dvec3_scale(dvec3_normalize(rel), lift));
-        AnimalKind::Fish
+        /* The sea has an ecosystem, not one species: schools of small
+         * fish most common, then the big reef fish, eels, rays, and
+         * the occasional turtle. */
+        let wroll = rand01(id, salt.wrapping_add(47));
+        if wroll < 0.40 {
+            AnimalKind::Fish
+        } else if wroll < 0.60 {
+            AnimalKind::LargeFish
+        } else if wroll < 0.75 {
+            AnimalKind::LongFish
+        } else if wroll < 0.88 {
+            AnimalKind::FlatFish
+        } else {
+            AnimalKind::Turtle
+        }
     } else {
         /* Each biome runs its own roster: swamps croak with frogs,
          * jungles flutter with birds and prowl with cats, deserts dart
@@ -926,6 +972,10 @@ mod tests {
             AnimalKind::Frog,
             AnimalKind::Lizard,
             AnimalKind::Penguin,
+            AnimalKind::LargeFish,
+            AnimalKind::LongFish,
+            AnimalKind::FlatFish,
+            AnimalKind::Turtle,
         ] {
             assert_eq!(AnimalKind::from_u8(k.to_u8()), k);
             assert!(k.to_u8() <= 0x0F, "kind must fit the wire nibble");
