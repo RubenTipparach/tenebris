@@ -510,6 +510,16 @@ fn dev_maybe_place(app: &mut App) {
             println!("[dev] placed {} torches ahead", placed);
             app.player.borrow_mut().pitch = -0.25;
         }
+        17 => {
+            /* Fish showcase (TENEBRIS_DEV_FISH): the five water species
+             * lined up broadside ahead of the player, frozen, so a shot
+             * frames the minnow / ray / eel / reef fish / turtle. */
+            animals::dev_spawn_fish(&app.world.borrow(), &app.player.borrow());
+            println!("[dev] spawned {} fish", animals::count());
+            if let Some(mid) = animals::herd_center() {
+                dev_aim_at(app, mid);
+            }
+        }
         14 => {
             /* Animal showcase: drop a herd near the player, then aim the
              * camera at its centre so the critters are framed. */
@@ -1636,6 +1646,9 @@ extern "C" fn init() {
         DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
     } else if std::env::var("TENEBRIS_DEV_ANIMALS").is_ok() {
         DEV_PLACE_MODE.with(|c| c.set(14));
+        DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
+    } else if std::env::var("TENEBRIS_DEV_FISH").is_ok() {
+        DEV_PLACE_MODE.with(|c| c.set(17));
         DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
     } else if std::env::var("TENEBRIS_DEV_OCCLUDE").is_ok() {
         DEV_PLACE_MODE.with(|c| c.set(15));

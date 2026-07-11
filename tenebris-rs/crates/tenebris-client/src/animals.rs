@@ -291,6 +291,47 @@ pub fn dev_spawn(w: &World, p: &PlayerCtrl) {
     });
 }
 
+/// Dev screenshot: line up the five water species (minnow, reef fish,
+/// eel, ray, turtle) floating in a row ahead of the player, frozen so
+/// they hold their pose. Lifted a couple of metres off the floor so
+/// each body reads clearly. TENEBRIS_DEV_FISH=1.
+pub fn dev_spawn_fish(w: &World, p: &PlayerCtrl) {
+    S.with(|c| {
+        let s = &mut *c.borrow_mut();
+        s.list.clear();
+        s.corpses.clear();
+        s.frozen = true;
+        let center = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
+        s.body_center = center;
+        let fwd = p.basis.fwd;
+        let right = p.basis.right;
+        let up = p.basis.up;
+        const FISH: [fauna::AnimalKind; 5] = [
+            fauna::AnimalKind::Fish,
+            fauna::AnimalKind::FlatFish,
+            fauna::AnimalKind::LongFish,
+            fauna::AnimalKind::LargeFish,
+            fauna::AnimalKind::Turtle,
+        ];
+        for (k, kind) in FISH.iter().enumerate() {
+            let side = (k as f64 - 2.0) * 1.9;
+            let base = dvec3_add(
+                p.position,
+                dvec3_add(dvec3_scale(fwd, 4.5), dvec3_scale(right, side)),
+            );
+            /* Float at eye height so the row is framed cleanly. */
+            let pos = dvec3_add(base, dvec3_scale(up, 1.7));
+            let dir = dvec3_normalize(dvec3_sub(pos, center));
+            let id = s.next_id;
+            s.next_id = s.next_id.wrapping_add(1).max(1);
+            let mut a = Animal::new(id, pos, dir);
+            a.kind = *kind;
+            a.heading = right; /* broadside to the camera */
+            s.list.push(a);
+        }
+    });
+}
+
 /// Average position of the current herd (for the dev camera aim).
 pub fn herd_center() -> Option<DVec3> {
     S.with(|c| {
