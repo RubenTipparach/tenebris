@@ -474,8 +474,10 @@ fn dev_maybe_place(app: &mut App) {
             if let Some(fpos) =
                 tenebris_core::fauna::floor_pos(&w, dir, dvec3_length(local), tile)
             {
-                let floor_depth = w.radius_to_depth(dvec3_length(dvec3_sub(fpos, bc)));
-                let depth = floor_depth + 1;
+                /* radius_to_depth of the surface top already lands on the
+                 * first AIR cell above the ground, so no +1 (that floated
+                 * the fire one voxel up). */
+                let depth = w.radius_to_depth(dvec3_length(dvec3_sub(fpos, bc)));
                 w.set(tile, depth, Block::Bonfire);
                 let e = w.block_entities.entry(tile, depth);
                 let b = e.bonfire_mut();
