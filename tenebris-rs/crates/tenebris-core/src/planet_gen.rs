@@ -173,13 +173,35 @@ pub fn surface_altitude(body: &BodyConfig, unit_dir: DVec3) -> f32 {
 
     /* Convert normalized height in [-1, +1] to meters. Use a power curve
      * on the ocean side so sea floors get naturally deeper offshore. */
-    if height >= 0.0 {
+    let base = if height >= 0.0 {
         height * MAX_LAND_HEIGHT
     } else {
         /* C: (float)pow((double)fabs(height), (double)OCEAN_DEPTH_POWER) */
         let ocean_factor = (height as f64).abs().powf(OCEAN_DEPTH_POWER as f64) as f32;
         -ocean_factor * MAX_OCEAN_DEPTH
+    };
+
+    /* Rocky highlands (Rust extension, custom-seed worlds only - the
+     * biomes_active gate keeps every default-seed C-parity pin byte-
+     * exact): a low-frequency rockiness field lifts whole land regions
+     * into real mountain country, so the Mountains biome has actual
+     * peaks rather than just recoloured hills. Shorelines are left
+     * alone so beaches / sea level stay coherent. */
+    if base > SEA_LEVEL + BEACH_BAND && biomes_active(body) {
+        let r = rockiness(body, unit_dir);
+        if r > ROCKY_ABOVE {
+            let t = ((r - ROCKY_ABOVE) / (1.0 - ROCKY_ABOVE)).clamp(0.0, 1.0);
+            let t = t * t * (3.0 - 2.0 * t); /* smoothstep foothill edge */
+            return base + t * ROCKY_UPLIFT_M;
+        }
     }
+    base
+}
+
+/// Rockiness in [0, 1] at a unit direction - the region field that
+/// drives mountain uplift and the Mountains biome.
+pub fn rockiness(body: &BodyConfig, unit_dir: DVec3) -> f32 {
+    noise01(body.seed ^ ROCKY_SEED_SALT, unit_dir, ROCKY_SCALE, 3)
 }
 
 /* ----------------------------------------------------------------------- */
@@ -220,6 +242,15 @@ const MOUNTAIN_ELEV_M: f32 = 24.0;
 /// Fraction of desert tops that break into red rocky outcrops
 /// (CragRock), same latitude-dither idiom as the swamp mud patches.
 const DESERT_ROCK_FRAC: f32 = 0.14;
+/// Rocky-highland region field: scale, activation threshold, and how
+/// far a fully rocky region is lifted. Seed stir keeps it decorrelated
+/// from moisture and elevation octaves.
+const ROCKY_SEED_SALT: u64 = 0x0C0C_5EED;
+const ROCKY_SCALE: f32 = 2.0;
+const ROCKY_ABOVE: f32 = 0.72;
+const ROCKY_UPLIFT_M: f32 = 22.0;
+/// Above this altitude a Mountains-biome top wears a snow cap.
+const MOUNTAIN_SNOWCAP_ELEV_M: f32 = 40.0;
 
 /// Fractal noise remapped to [0, 1] at a unit direction. Shared field
 /// generator: the biome moisture map and the client's cloud-coverage
@@ -405,6 +436,18 @@ pub fn sample_with_profile(prof: &ColumnProfile, altitude_m: f32) -> Block {
             }
             return Block::Stone;
         }
+        /* Rocky mountain country (seeded worlds only - biome() returns
+         * Mountains only when the biome layer is live): bare stone
+         * slopes all the way up, snow saved for the actual peaks.
+         * Checked BEFORE the legacy elevation bands so the uplifted
+         * ranges read rock, not the snow the 22 m line would paint. */
+        if prof.biome == Biome::Mountains {
+            return if surface > MOUNTAIN_SNOWCAP_ELEV_M {
+                if prof.sequoia { Block::SeqSnow } else { Block::Snow }
+            } else {
+                Block::Stone
+            };
+        }
         if surface > STONE_ELEV {
             return Block::Stone;
         }
@@ -492,6 +535,8 @@ mod biome_tests {
         }
         assert!(kinds.len() >= 5, "seeded world has variety: {kinds:?}");
         assert!(kinds.contains("Desert") || kinds.contains("Swamp") || kinds.contains("Jungle"));
+        /* The rocky-uplift field must produce actual mountain country. */
+        assert!(kinds.contains("Mountains"), "no rocky ranges: {kinds:?}");
     }
 
     #[test]

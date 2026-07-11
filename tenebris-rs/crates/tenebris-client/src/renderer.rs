@@ -244,9 +244,9 @@ pub(crate) fn load_png_rgba(path: &str, flip_vertical: bool) -> Option<LoadedIma
 /* Atlas bake - pure half. */
 
 const ATLAS_TILE_PX: i32 = 16;
-/* Physical column count: 93 legacy UV-addressed columns + the biome-sod
- * extension tiles at 93..96 (baked at u > 1.0; the hex FS rescales u by
- * 93/97 - see hex_mesher::HEX_ATLAS_TILES_PHYS). */
+/* Physical column count: 93 legacy UV-addressed columns + the extension
+ * tiles at 93..99 (baked at u > 1.0; the hex FS rescales u by 93/100 -
+ * see hex_mesher::HEX_ATLAS_TILES_PHYS). */
 const ATLAS_TILES: usize = hex_mesher::HEX_ATLAS_TILES_PHYS as usize;
 const ATLAS_W: i32 = ATLAS_TILE_PX * hex_mesher::HEX_ATLAS_TILES_PHYS;
 const ATLAS_H: i32 = ATLAS_TILE_PX;
@@ -369,6 +369,9 @@ const ATLAS_PATHS: [Option<&str>; ATLAS_TILES] = [
     Some("assets/textures/jungle_dirt_grass.png"), /* 94 JUNGLE_GRASS side */
     Some("assets/textures/dry_grass.png"),         /* 95 DRY_GRASS top */
     Some("assets/textures/dry_dirt_grass.png"),    /* 96 DRY_GRASS side */
+    Some("assets/textures/cactus.png"),            /* 97 CACTUS (scatter) */
+    None,                                          /* 98 reserved */
+    None,                                          /* 99 reserved */
 ];
 
 /// Per-channel multiplier applied to each loaded tile. {1,1,1} =
@@ -471,11 +474,14 @@ const ATLAS_TINTS: [[f32; 3]; ATLAS_TILES] = [
     [1.0, 1.0, 1.0],
     [1.0, 1.0, 1.0],
     [1.0, 1.0, 1.0],
-    /* 93-96 biome sods: pre-baked PNGs (gen-biome-grass.py), no tint. */
+    /* 93-97 extension tiles: pre-baked PNGs, no tint; 98-99 reserved. */
     [1.0, 1.0, 1.0], /* JUNGLE_GRASS top  */
     [1.0, 1.0, 1.0], /* JUNGLE_GRASS side */
     [1.0, 1.0, 1.0], /* DRY_GRASS top     */
     [1.0, 1.0, 1.0], /* DRY_GRASS side    */
+    [1.0, 1.0, 1.0], /* CACTUS            */
+    [1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
 ];
 
 struct AtlasBake {
@@ -1373,6 +1379,14 @@ fn horizon_sky_color(env: &RenderEnv, cam_fwd: [f32; 3]) -> [f32; 3] {
         let sunset = {
             /* smoothstep(0.3, -0.05, sun_height) */
             let t = ((sun_height - 0.3) / (-0.05 - 0.3)).clamp(0.0, 1.0);
+            t * t * (3.0 - 2.0 * t)
+        } * {
+            /* Night fade - smoothstep(-0.35, -0.08, sun_height). The
+             * raw sunset ramp SATURATES once the sun sets, which kept
+             * the fog (and sky) warm orange all night; this second
+             * ramp closes the warmth out as the sun drops away, so
+             * midnight fog fades to genuine black. */
+            let t = ((sun_height + 0.35) / (-0.08 + 0.35)).clamp(0.0, 1.0);
             t * t * (3.0 - 2.0 * t)
         };
         let view_sun = cos_theta.max(0.0);
@@ -2358,7 +2372,10 @@ pub fn init() {
             r.uvsphere_index_count = si.len() as i32;
         }
 
-        /* Sun pipeline - emissive front-face sphere, depth-write. */
+        /* Sun pipeline - emissive front-face sphere. Depth-TESTED so
+         * terrain still occludes it, but NOT depth-written: the sun's
+         * pixels keep the far-plane depth, so the composite pass reads
+         * them as sky and the distance fog never dims the disc. */
         {
             use shaders::sun::*;
             let shd = sg::make_shader(&sun_shader_desc(sg::query_backend()));
@@ -2366,7 +2383,7 @@ pub fn init() {
                 shader: shd,
                 index_type: sg::IndexType::Uint32,
                 depth: sg::DepthState {
-                    write_enabled: true,
+                    write_enabled: false,
                     compare: sg::CompareFunc::LessEqual,
                     ..Default::default()
                 },

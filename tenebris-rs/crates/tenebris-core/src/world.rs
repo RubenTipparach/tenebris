@@ -272,15 +272,18 @@ fn gen_column(body: &BodyConfig, grid: &Goldberg, tile_idx: i32, col: &mut [u8])
         if is_grass || is_pine {
             let h = tile_hash(body.seed, tile_idx, 0xA1B2C3D4);
             /* Per-biome density (of 256): jungles pack in dense tall
-             * canopy, swamps grow scattered groves, fields keep the
-             * classic ~5%, tundra scatters pines, deserts and mountain
-             * rock get none (their tops aren't grass anyway - this is
-             * belt + braces). */
+             * canopy, swamps grow scattered groves of TALL gnarled
+             * trees (long bare trunk, crown way overhead), fields keep
+             * the classic ~5%, tundra scatters pines, deserts and
+             * mountain rock get none (their tops aren't grass anyway -
+             * this is belt + braces). */
             let (density, extra_trunk) = match prof.biome {
                 Biome::Jungle => (115u32, 2i32),
-                Biome::Swamp => (30, 0),
+                Biome::Swamp => (34, 3),
                 Biome::Fields | Biome::Beach => (13, 0),
-                Biome::Tundra => (18, 1),
+                /* Pines stand alone on the snow - sparse landmarks,
+                 * not a forest - but tall enough to read as conifers. */
+                Biome::Tundra => (2, 3),
                 Biome::Desert | Biome::Mountains => (0, 0),
                 _ => (13, 0),
             };
@@ -1710,6 +1713,42 @@ mod tests {
         assert_eq!(fnv1a64(&c.dirty), 5412308683477963487);
         assert!(!c.tile_dirty(7));
         assert!(c.saved.is_none());
+    }
+
+    #[test]
+    fn tundra_pines_and_swamp_groves_generate() {
+        /* Seeded world (same seed the planet_gen biome tests use):
+         * high latitudes must grow pines out of the snow (wood block
+         * directly on a snow top) and swamps must grow TALL groves
+         * (trunk runs of 6+ wood). Legacy default-seed worlds grow
+         * neither - the biome layer is seed-gated. */
+        let mut body = planet::get(BodyId::Tenebris);
+        body.seed = 0xC0FFEE_D00D;
+        let mut w = World::create(&body, 3);
+        while !w.gen_complete() {
+            w.stream_gen(4096);
+        }
+        let mut pine = false;
+        let mut grove = false;
+        for i in 0..w.tile_count {
+            let mut wood_run = 0;
+            for d in 1..WORLD_MAX_DEPTH {
+                let b = w.get(i, d);
+                if b == Block::Wood {
+                    if wood_run == 0 && w.get(i, d - 1) == Block::Snow {
+                        pine = true;
+                    }
+                    wood_run += 1;
+                } else {
+                    if wood_run >= 6 {
+                        grove = true;
+                    }
+                    wood_run = 0;
+                }
+            }
+        }
+        assert!(pine, "seeded world grew no snow pines");
+        assert!(grove, "seeded world grew no tall swamp groves");
     }
 
     #[test]

@@ -58,11 +58,12 @@ pub const HEX_ATLAS_TILES: i32 = 93;
 pub const HEX_ATLAS_U_STEP: f32 = 1.0 / HEX_ATLAS_TILES as f32;
 /* Physical atlas column count: the 93 UV-addressed legacy columns
  * above (pinned - baked vertex u encodes tile/93, C-parity hashes
- * depend on it) plus the biome-sod extension tiles (jungle / dry
- * grass tops + sides) whose faces bake u > 1.0. The hex fragment
+ * depend on it) plus the extension tiles (biome sods, cactus, two
+ * reserved spares) whose faces bake u > 1.0. The hex fragment
  * shader rescales every u by HEX_ATLAS_TILES / HEX_ATLAS_TILES_PHYS
- * so legacy tiles sample exactly where they always did. */
-pub const HEX_ATLAS_TILES_PHYS: i32 = 97;
+ * so legacy tiles sample exactly where they always did. Changing
+ * this count means re-patching the baked ratio in shaders/hex.rs. */
+pub const HEX_ATLAS_TILES_PHYS: i32 = 100;
 
 /*
  * Vertex layout: 44 bytes (pos + normal + uv + sky_light + torch_light + wet).
@@ -1757,6 +1758,34 @@ pub fn build_tile(out: &mut HexMesh, w: &World, tile_idx: i32) {
      * should read dry). Per-face fixes that. */
     let _ = near_water;
 
+    /* Tundra pine taper: a leaf run stacked over a snow-grounded
+     * trunk (only tundra pines grow that way) shrinks linearly from
+     * a wide skirt to a pointy tip instead of the hashed canopy
+     * widths. Legacy worlds never put wood on snow, so the C-parity
+     * pins never see this path. */
+    let mut pine_lo = -1i32;
+    let mut pine_hi = -1i32;
+    for d in 1..WORLD_MAX_DEPTH {
+        let b = w.blocks[col_base + d as usize];
+        let below = w.blocks[col_base + (d - 1) as usize];
+        if b == Block::Wood.raw()
+            && (below == Block::Snow.raw() || below == Block::SeqSnow.raw())
+        {
+            let mut top = d;
+            while top + 1 < WORLD_MAX_DEPTH
+                && (w.blocks[col_base + (top + 1) as usize] == Block::Leaves.raw()
+                    || w.blocks[col_base + (top + 1) as usize] == Block::SeqLeaves.raw())
+            {
+                top += 1;
+            }
+            if top > d {
+                pine_lo = d + 1;
+                pine_hi = top;
+            }
+            break;
+        }
+    }
+
     for d in 0..WORLD_MAX_DEPTH {
         let braw = w.blocks[col_base + d as usize];
         if !is_solid_raw(braw) {
@@ -1798,7 +1827,16 @@ pub fn build_tile(out: &mut HexMesh, w: &World, tile_idx: i32) {
             }
         }
 
-        let width = block_hex_width(b, tile_idx, d);
+        let mut width = block_hex_width(b, tile_idx, d);
+        if pine_lo >= 0
+            && d >= pine_lo
+            && d <= pine_hi
+            && (b == Block::Leaves || b == Block::SeqLeaves)
+        {
+            let span = (pine_hi - pine_lo).max(1) as f32;
+            let f = (d - pine_lo) as f32 / span;
+            width = 0.95 - 0.80 * f; /* wide skirt -> pointy tip */
+        }
 
         let above = if d + 1 < WORLD_MAX_DEPTH {
             w.blocks[col_base + (d + 1) as usize]
@@ -1946,6 +1984,19 @@ fn tile_uv(block: Block, cap: FaceCap) -> (f32, f32, f32, f32) {
     )
 }
 
+/// [`tile_uv`] for a raw extension atlas column (93..PHYS) that has no
+/// Block of its own - e.g. the cactus tile. Encodes u past 1.0 like
+/// the biome sods; the hex FS rescale puts it on the physical column.
+fn tile_uv_col(col: u8) -> (f32, f32, f32, f32) {
+    let u0 = col as f32 * HEX_ATLAS_U_STEP;
+    (
+        u0 + HEX_ATLAS_U_STEP * 0.2,
+        u0 + HEX_ATLAS_U_STEP * 0.8,
+        0.2,
+        0.8,
+    )
+}
+
 /// A narrow vertical slice of an atlas column, positioned by `t` in
 /// [0,1). Each grass strip samples its own slice so neighbouring blades
 /// pick up different pixels of the source texture - free per-blade
@@ -2080,7 +2131,10 @@ fn push_prism(
     }
     for j in 0..6u32 {
         let k = (j + 1) % 6;
-        out.indices.extend_from_slice(&[cap_c, cap_c + 1 + k, cap_c + 1 + j]);
+        /* Rim angles run CCW seen from above (t2 = up x t1), so the
+         * outward-facing cap triangle is (centre, j, k) - the reversed
+         * order was back-face culled, leaving cacti / rocks open. */
+        out.indices.extend_from_slice(&[cap_c, cap_c + 1 + j, cap_c + 1 + k]);
     }
 }
 
@@ -2411,14 +2465,15 @@ pub fn build_scatter(out: &mut HexMesh, w: &World, tile_idx: i32) {
         }
     }
 
-    /* Cactus: desert sand grows tall green columns - a fat central
-     * prism of stacked segments with two stubby arms. Uses the leaf
-     * texture for the green; reads saguaro against the sand. */
+    /* Cactus: desert sand grows tall lime columns - a fat central
+     * prism of stacked segments with two stubby arms. Samples the
+     * dedicated ribbed cactus tile (gen-cactus-texture.py) so the
+     * saguaros read bright lime against the sand, not tree-green. */
     if biome == Biome::Desert
         && matches!(ground, Block::Sand | Block::SeqSand)
         && hash2(tile_idx, SALT_KIND + 4) < cfg.cactus_chance
     {
-        let leaves_uv = tile_uv(Block::Leaves, FaceCap::Side);
+        let leaves_uv = tile_uv_col(blocks::ATLAS_CACTUS);
         let base = place(
             hash2(tile_idx, SALT_POS_A + 90),
             hash2(tile_idx, SALT_POS_B + 90),
