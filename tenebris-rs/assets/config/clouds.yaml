@@ -11,7 +11,8 @@
 #
 #   altitude_m   shell height above the planet surface (m)
 #   cell_m       placement grid cell size (m); one puff max per cell
-#   density      probability (0..1) a cell holds a puff
+#   density      probability (0..1) a cell holds a puff (inside a
+#                weather system; the patch field gates it elsewhere)
 #   range_m      detail range (m): puffs inside get their full lump
 #                cluster, farther ones LOD to a single slab
 #   drift_mps    layer drift speed (m/s) about the spin axis
@@ -19,13 +20,21 @@
 #   puff_h_m     base puff half-height / thickness (m)
 #   color        daytime cloud albedo [r, g, b]
 #   night_min    brightness floor on the night side (moonlit clouds)
+#   patch_scale  weather-system noise frequency on the shell (higher =
+#                smaller, more numerous systems)
+#   patch_clear  fraction (0..1) of the coverage field held cloud-free;
+#                negative = uniform sky (patchiness off)
+#   patch_soft   edge softness of a system (coverage-field units)
 clouds:
   altitude_m: 72
   cell_m: 30
-  density: 0.32
+  density: 0.38
   range_m: 230
   drift_mps: 1.6
   puff_w_m: 9
   puff_h_m: 2.6
   color: [0.98, 0.98, 1.0]
   night_min: 0.32
+  patch_scale: 4
+  patch_clear: 0.45
+  patch_soft: 0.18

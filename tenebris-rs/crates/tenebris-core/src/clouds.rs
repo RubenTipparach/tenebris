@@ -15,7 +15,9 @@ pub struct CloudsConfig {
     pub altitude_m: f32,
     /// Cell size of the placement grid, metres (one puff max per cell).
     pub cell_m: f32,
-    /// Probability (0..1) a cell holds a puff. <= 0 disables clouds.
+    /// Probability (0..1) a cell holds a puff, inside a weather
+    /// system (the patch field gates it elsewhere). <= 0 disables
+    /// clouds entirely.
     pub density: f32,
     /// Detail range, metres from the player: puffs inside draw their
     /// full lump cluster, puffs beyond LOD down to a single slab. The
@@ -33,19 +35,34 @@ pub struct CloudsConfig {
     /// Floor on the night-side brightness so moonlit clouds stay
     /// faintly visible instead of going pitch black.
     pub night_min: f32,
+
+    /* Weather systems - a low-frequency coverage field clumps the
+     * puffs into patches with clear sky between, instead of an even
+     * sprinkle over the whole shell. */
+    /// Noise frequency of the coverage field on the unit shell
+    /// (higher = smaller, more numerous systems).
+    pub patch_scale: f32,
+    /// Fraction (0..1) of the coverage field held cloud-free. Set
+    /// negative in the yaml for a uniform sky (patchiness off).
+    pub patch_clear: f32,
+    /// Edge softness of a system, in coverage-field units.
+    pub patch_soft: f32,
 }
 
 impl CloudsConfig {
     pub const DEFAULT: CloudsConfig = CloudsConfig {
         altitude_m: 72.0,
         cell_m: 30.0,
-        density: 0.32,
+        density: 0.38,
         range_m: 230.0,
         drift_mps: 1.6,
         puff_w_m: 9.0,
         puff_h_m: 2.6,
         color: [0.98, 0.98, 1.0],
         night_min: 0.32,
+        patch_scale: 4.0,
+        patch_clear: 0.45,
+        patch_soft: 0.18,
     };
 }
 
@@ -98,6 +115,9 @@ pub fn parse_config(src: &str, _path: &str) -> CloudsConfig {
             "puff_w_m" => cfg.puff_w_m = c,
             "puff_h_m" => cfg.puff_h_m = c,
             "night_min" => cfg.night_min = c,
+            "patch_scale" => cfg.patch_scale = c,
+            "patch_clear" => cfg.patch_clear = c, /* negative -> 0 = uniform */
+            "patch_soft" => cfg.patch_soft = c,
             _ => {}
         }
     }
@@ -128,6 +148,10 @@ mod tests {
         assert_eq!(c.cell_m, CloudsConfig::DEFAULT.cell_m);
         let d = parse_config("density: -1\n", "t");
         assert_eq!(d.density, 0.0, "negative density = clouds off");
+        let p = parse_config("patch_scale: 6\npatch_clear: -1\n", "t");
+        assert_eq!(p.patch_scale, 6.0);
+        assert_eq!(p.patch_clear, 0.0, "negative patch_clear = uniform sky");
+        assert_eq!(p.patch_soft, CloudsConfig::DEFAULT.patch_soft);
         set_config(CloudsConfig::DEFAULT);
     }
 }

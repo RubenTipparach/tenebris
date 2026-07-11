@@ -218,19 +218,26 @@ const WET_ABOVE: f32 = 0.64;
 const SWAMP_MAX_ELEV_M: f32 = 5.0;
 const MOUNTAIN_ELEV_M: f32 = 24.0;
 
-/// Moisture in [0, 1] at a unit direction (0 = bone dry).
-pub fn moisture(body: &BodyConfig, unit_dir: DVec3) -> f32 {
+/// Fractal noise remapped to [0, 1] at a unit direction. Shared field
+/// generator: the biome moisture map and the client's cloud-coverage
+/// (weather system) map both sample this with their own seed + scale.
+pub fn noise01(seed: u64, unit_dir: DVec3, scale: f32, octaves: i32) -> f32 {
     let m = fractal3d(
-        body.seed ^ MOISTURE_SEED_SALT,
+        seed,
         unit_dir.x as f32,
         unit_dir.y as f32,
         unit_dir.z as f32,
-        MOISTURE_SCALE,
-        4,
+        scale,
+        octaves,
         0.5,
         2.0,
     );
     (m * 0.5 + 0.5).clamp(0.0, 1.0)
+}
+
+/// Moisture in [0, 1] at a unit direction (0 = bone dry).
+pub fn moisture(body: &BodyConfig, unit_dir: DVec3) -> f32 {
+    noise01(body.seed ^ MOISTURE_SEED_SALT, unit_dir, MOISTURE_SCALE, 4)
 }
 
 /// True when the moisture-biome layer is active for this body. Biomes

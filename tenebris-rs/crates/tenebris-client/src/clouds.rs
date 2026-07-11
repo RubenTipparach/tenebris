@@ -26,6 +26,7 @@ use tenebris_core::math::{
     dvec3_add, dvec3_cross, dvec3_length, dvec3_make, dvec3_normalize, dvec3_scale, dvec3_sub,
     DVec3,
 };
+use tenebris_core::planet_gen;
 use tenebris_core::rng::hash3;
 use tenebris_core::world::World;
 
@@ -43,6 +44,9 @@ const SALT_SIZE: i32 = 0x72;
 const SALT_JITTER_A: i32 = 0x73;
 const SALT_JITTER_B: i32 = 0x74;
 const SALT_LUMPS: i32 = 0x75;
+/// Seed stir for the weather-system coverage field, so cloud patches
+/// don't correlate with the biome moisture map on the same seed.
+const COVER_SEED_SALT: u64 = 0xC10D_5EED;
 
 /// Rotate `v` about the +Y planet spin axis (matches orbit::SPIN_AXIS).
 fn rotate_y(v: DVec3, ang: f64) -> DVec3 {
@@ -166,6 +170,12 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, p: &PlayerCtrl, time_s: f64) {
     sgl::begin_triangles();
 
     let detail2 = (cfg.range_m as f64) * (cfg.range_m as f64);
+    /* Weather systems: a low-frequency coverage field over the shell
+     * gates the per-cell density, clumping puffs into patches with
+     * clear sky between. Sampled in cloud space, so whole systems
+     * drift with the layer. patch_clear <= 0 = uniform sky. */
+    let cover_seed = w.body.seed ^ COVER_SEED_SALT;
+    let patchy = cfg.patch_clear > 0.0;
     for ti in 0..n_rows {
         let theta_c = (ti as f64 + 0.5) * cell_ang;
         if theta_c >= std::f64::consts::PI {
@@ -183,9 +193,22 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, p: &PlayerCtrl, time_s: f64) {
         let sin_t = theta_c.sin().max(0.05);
         let dphi = cell_ang / sin_t;
         let row_cells = (std::f64::consts::TAU / dphi).ceil() as i32;
+        let (st_row, ct_row) = theta_c.sin_cos();
         for pj in 0..row_cells {
-            if hash3(ti, pj, SALT_EXIST) >= cfg.density {
+            let roll = hash3(ti, pj, SALT_EXIST);
+            if roll >= cfg.density {
                 continue;
+            }
+            if patchy {
+                let (sp0, cp0) = ((pj as f64 + 0.5) * dphi).sin_cos();
+                let cdir = dvec3_make(st_row * cp0, ct_row, st_row * sp0);
+                let cover = planet_gen::noise01(cover_seed, cdir, cfg.patch_scale, 3);
+                let t = ((cover - cfg.patch_clear) as f64 / cfg.patch_soft.max(1e-4) as f64)
+                    .clamp(0.0, 1.0);
+                let weight = t * t * (3.0 - 2.0 * t); /* smoothstep edge */
+                if (roll as f64) >= cfg.density as f64 * weight {
+                    continue;
+                }
             }
             /* Puff centre: cell centre + hashed jitter, rotated back
              * out of cloud space onto the world shell. */
