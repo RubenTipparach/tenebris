@@ -2317,9 +2317,58 @@ pub fn build_scatter(out: &mut HexMesh, w: &World, tile_idx: i32) {
             }
         }
 
+        /* Ferns: a rosette of wide fronds arching outward from one
+         * point - the jungle floor's signature plant. */
+        if biome == Biome::Jungle && hash2(tile_idx, SALT_KIND + 5) < cfg.fern_chance {
+            let fern_uv = tile_uv_slice(Block::Leaves, FaceCap::Top, hash2(tile_idx, SALT_SIZE + 100));
+            let base = place(
+                hash2(tile_idx, SALT_POS_A + 100),
+                hash2(tile_idx, SALT_POS_B + 100),
+            );
+            let phase = hash2(tile_idx, SALT_ANGLE + 100) as f64 * std::f64::consts::TAU;
+            let fronds = 5 + (hash2(tile_idx, SALT_COUNT + 100) * 3.0) as i32;
+            for k in 0..fronds {
+                let ang = phase + k as f64 * std::f64::consts::TAU / fronds as f64;
+                let h = cfg.fern_height_m as f64
+                    * (0.7 + 0.5 * hash2(tile_idx, SALT_SIZE + 100 + k) as f64);
+                /* Strong outward lean = the arched frond. */
+                let lean = dvec3_scale(rot(ang), h * 0.75);
+                push_blade(out, base, up, rot(ang + 1.57), lean, h, 0.09, fern_uv, sky, torch, wet);
+            }
+        }
+
+        /* Reeds: tall cattail stalks capped with a dark seed head -
+         * swamp sod only. */
+        if biome == Biome::Swamp && hash2(tile_idx, SALT_KIND + 6) < cfg.reed_chance {
+            let stalk_uv = tile_uv_slice(Block::Leaves, FaceCap::Top, hash2(tile_idx, SALT_SIZE + 110));
+            let head_uv = tile_uv(Block::Wood, FaceCap::Side);
+            let stalks = 2 + (hash2(tile_idx, SALT_COUNT + 110) * 2.0) as i32;
+            for k in 0..stalks {
+                let base = place(
+                    hash2(tile_idx, SALT_POS_A + 110 + k),
+                    hash2(tile_idx, SALT_POS_B + 110 + k),
+                );
+                let ang = hash2(tile_idx, SALT_ANGLE + 110 + k) as f64 * std::f64::consts::TAU;
+                let h = cfg.reed_height_m as f64
+                    * (0.75 + 0.5 * hash2(tile_idx, SALT_SIZE + 110 + k) as f64);
+                push_blade(out, base, up, rot(ang), DVec3::default(), h, 0.03, stalk_uv, sky, torch, wet);
+                /* The cattail: a small dark prism riding the stalk tip. */
+                let head = dvec3_add(base, dvec3_scale(up, h));
+                push_prism(out, head, up, t1, t2, 0.045, 0.20, ang, head_uv, sky, torch, wet);
+            }
+        }
+
         /* Flowers: a stem blade with a bright diamond head. Head colour
-         * alternates white (snow tile) / red-orange (crag tile) by hash. */
-        if hash2(tile_idx, SALT_KIND + 1) < cfg.flower_chance {
+         * alternates white (snow tile) / red-orange (crag tile) by hash.
+         * Pastures bloom richest; the dark wet biomes barely flower. */
+        let flower_mul = if biome == Biome::Jungle || biome == Biome::Swamp {
+            0.4
+        } else if biome == Biome::Fields && tenebris_core::planet_gen::biomes_active(&w.body) {
+            1.6
+        } else {
+            1.0
+        };
+        if hash2(tile_idx, SALT_KIND + 1) < cfg.flower_chance * flower_mul {
             let base = place(
                 hash2(tile_idx, SALT_POS_A + 40),
                 hash2(tile_idx, SALT_POS_B + 40),
@@ -2401,6 +2450,28 @@ pub fn build_scatter(out: &mut HexMesh, w: &World, tile_idx: i32) {
                 torch,
                 wet,
             );
+        }
+    }
+
+    /* Dead shrubs: a splay of dry twigs - the only flora on desert
+     * sand between the cacti, and on tundra snow between the pines. */
+    let shrub_ground = (biome == Biome::Desert && matches!(ground, Block::Sand | Block::SeqSand))
+        || (biome == Biome::Tundra && matches!(ground, Block::Snow | Block::SeqSnow));
+    if shrub_ground && hash2(tile_idx, SALT_KIND + 7) < cfg.shrub_chance {
+        let twig_uv = tile_uv(Block::Wood, FaceCap::Side);
+        let base = place(
+            hash2(tile_idx, SALT_POS_A + 120),
+            hash2(tile_idx, SALT_POS_B + 120),
+        );
+        let phase = hash2(tile_idx, SALT_ANGLE + 120) as f64 * std::f64::consts::TAU;
+        let twigs = 4 + (hash2(tile_idx, SALT_COUNT + 120) * 3.0) as i32;
+        for k in 0..twigs {
+            let ang = phase + k as f64 * std::f64::consts::TAU / twigs as f64
+                + hash2(tile_idx, SALT_VARIANT + 120 + k) as f64 * 0.5;
+            let h = cfg.shrub_size_m as f64
+                * (0.6 + 0.7 * hash2(tile_idx, SALT_SIZE + 120 + k) as f64);
+            let lean = dvec3_scale(rot(ang), h * 0.6);
+            push_blade(out, base, up, rot(ang + 1.57), lean, h, 0.02, twig_uv, sky, torch, wet);
         }
     }
 

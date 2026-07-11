@@ -26,6 +26,13 @@
 #   cactus_radius_m  cactus trunk radius (m)
 #   weed_chance      probability an underwater tile grows seaweed
 #   weed_height_m    seaweed blade height in metres
+#   fern_chance      probability a JUNGLE grass tile grows a fern rosette
+#   fern_height_m    fern frond length in metres
+#   reed_chance      probability a SWAMP grass/dirt tile grows reeds
+#   reed_height_m    reed (cattail) stalk height in metres
+#   shrub_chance     probability a DESERT sand / TUNDRA snow tile grows
+#                    a dead shrub
+#   shrub_size_m     dead-shrub twig length in metres
 scatter:
   grass_chance: 0.8
   grass_blades: 18
@@ -45,3 +52,9 @@ scatter:
   cactus_radius_m: 0.22
   weed_chance: 0.35
   weed_height_m: 0.3
+  fern_chance: 0.45
+  fern_height_m: 0.75
+  reed_chance: 0.5
+  reed_height_m: 1.1
+  shrub_chance: 0.14
+  shrub_size_m: 0.38

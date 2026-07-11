@@ -49,6 +49,10 @@ pub enum AnimalKind {
     Fish,
     /// Swamp hopper - moves in little jumps even on flat ground.
     Frog,
+    /// Desert darter - low, quick, sand-green.
+    Lizard,
+    /// Tundra waddler - upright on the snow.
+    Penguin,
 }
 
 /// Where an animal is allowed to be (drives the reseat rules).
@@ -76,6 +80,8 @@ impl AnimalKind {
             AnimalKind::Bird => 6,
             AnimalKind::Fish => 7,
             AnimalKind::Frog => 8,
+            AnimalKind::Lizard => 9,
+            AnimalKind::Penguin => 10,
         }
     }
 
@@ -89,6 +95,8 @@ impl AnimalKind {
             6 => AnimalKind::Bird,
             7 => AnimalKind::Fish,
             8 => AnimalKind::Frog,
+            9 => AnimalKind::Lizard,
+            10 => AnimalKind::Penguin,
             _ => AnimalKind::Critter,
         }
     }
@@ -113,6 +121,8 @@ impl AnimalKind {
             AnimalKind::Bird => 2.6,
             AnimalKind::Fish => 1.6,
             AnimalKind::Frog => 1.0,
+            AnimalKind::Lizard => 2.2,
+            AnimalKind::Penguin => 0.7,
         }
     }
 
@@ -127,6 +137,8 @@ impl AnimalKind {
             AnimalKind::Bird => 0.30,
             AnimalKind::Fish => 0.55,
             AnimalKind::Frog => 0.35,
+            AnimalKind::Lizard => 0.40,
+            AnimalKind::Penguin => 0.60,
         }
     }
 
@@ -140,6 +152,7 @@ impl AnimalKind {
             AnimalKind::Fish => 1,
             AnimalKind::Frog => 1,
             AnimalKind::Cat => 1,
+            AnimalKind::Lizard => 1,
             _ => 2,
         }
     }
@@ -529,26 +542,68 @@ pub fn spawn_near_auto(w: &World, anchor_world: DVec3, id: u32, salt: u32) -> Op
         a.pos = dvec3_add(center, dvec3_scale(dvec3_normalize(rel), r + FISH_PAD_M + 0.3));
         AnimalKind::Fish
     } else {
-        /* The biome sets the table: swamps croak with frogs, jungles
-         * flutter with birds, everywhere else runs the grazer mix. */
+        /* Each biome runs its own roster: swamps croak with frogs,
+         * jungles flutter with birds and prowl with cats, deserts dart
+         * with lizards, tundra waddles with penguins, mountains keep
+         * hardy sheep under circling birds, and the temperate fields
+         * graze the classic barnyard mix. Legacy (default-seed) worlds
+         * classify Fields everywhere, so their mix is unchanged. */
         use crate::planet_gen::Biome;
         let biome = crate::planet_gen::biome(&w.body, dvec3_normalize(rel));
         let roll = rand01(id, salt.wrapping_add(41));
-        let bird_chance = if biome == Biome::Jungle { 0.35 } else { 0.12 };
-        if biome == Biome::Swamp && roll < 0.55 {
-            AnimalKind::Frog
-        } else if roll < bird_chance {
-            AnimalKind::Bird
-        } else {
-            const GRAZERS: [AnimalKind; 5] = [
-                AnimalKind::Critter,
-                AnimalKind::Cat,
-                AnimalKind::Sheep,
-                AnimalKind::Chicken,
-                AnimalKind::Cow,
-            ];
-            GRAZERS[(rand01(id, salt.wrapping_add(43)) * GRAZERS.len() as f32) as usize
-                % GRAZERS.len()]
+        let table_roll = rand01(id, salt.wrapping_add(43));
+        let pick = |arr: &[AnimalKind]| -> AnimalKind {
+            arr[(table_roll * arr.len() as f32) as usize % arr.len()]
+        };
+        match biome {
+            Biome::Swamp => {
+                if roll < 0.55 {
+                    AnimalKind::Frog
+                } else {
+                    pick(&[AnimalKind::Bird, AnimalKind::Critter])
+                }
+            }
+            Biome::Jungle => {
+                if roll < 0.35 {
+                    AnimalKind::Bird
+                } else {
+                    pick(&[AnimalKind::Cat, AnimalKind::Critter, AnimalKind::Bird])
+                }
+            }
+            Biome::Desert => {
+                if roll < 0.75 {
+                    AnimalKind::Lizard
+                } else {
+                    AnimalKind::Critter
+                }
+            }
+            Biome::Tundra => {
+                if roll < 0.70 {
+                    AnimalKind::Penguin
+                } else {
+                    AnimalKind::Critter
+                }
+            }
+            Biome::Mountains => {
+                if roll < 0.30 {
+                    AnimalKind::Bird
+                } else {
+                    AnimalKind::Sheep
+                }
+            }
+            _ => {
+                if roll < 0.12 {
+                    AnimalKind::Bird
+                } else {
+                    pick(&[
+                        AnimalKind::Critter,
+                        AnimalKind::Cat,
+                        AnimalKind::Sheep,
+                        AnimalKind::Chicken,
+                        AnimalKind::Cow,
+                    ])
+                }
+            }
         }
     };
     Some(a)
@@ -855,6 +910,8 @@ mod tests {
             AnimalKind::Bird,
             AnimalKind::Fish,
             AnimalKind::Frog,
+            AnimalKind::Lizard,
+            AnimalKind::Penguin,
         ] {
             assert_eq!(AnimalKind::from_u8(k.to_u8()), k);
             assert!(k.to_u8() <= 0x0F, "kind must fit the wire nibble");

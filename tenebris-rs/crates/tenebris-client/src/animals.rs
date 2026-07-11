@@ -235,7 +235,7 @@ pub fn dev_spawn(w: &World, p: &PlayerCtrl) {
         s.body_center = center;
         let fwd = p.basis.fwd;
         let right = p.basis.right;
-        for k in 0..6i32 {
+        for k in 0..8i32 {
             let ahead = 6.0 + (k / 2) as f64 * 4.0;
             let side = ((k % 3) - 1) as f64 * 3.0;
             let local = dvec3_sub(p.position, center);
@@ -250,11 +250,13 @@ pub fn dev_spawn(w: &World, p: &PlayerCtrl) {
                 let mut a = Animal::new(id, pos, dir);
                 /* Zoo lineup: one of each new kind so a shot frames the
                  * whole menagerie; slot 3 also mid hit-flash. */
-                const ZOO: [fauna::AnimalKind; 6] = [
+                const ZOO: [fauna::AnimalKind; 8] = [
+                    fauna::AnimalKind::Lizard,
+                    fauna::AnimalKind::Penguin,
                     fauna::AnimalKind::Cat,
+                    fauna::AnimalKind::Cow,
                     fauna::AnimalKind::Sheep,
                     fauna::AnimalKind::Chicken,
-                    fauna::AnimalKind::Cow,
                     fauna::AnimalKind::Bird,
                     fauna::AnimalKind::Frog,
                 ];
@@ -665,6 +667,43 @@ fn draw_kind(
             b(0.08, 0.48, -0.12, 0.045, 0.05, 0.045, 0.85, 0.85, 0.30);
             b(-0.16, 0.18, 0.10, 0.06, 0.09, 0.10, 0.20, 0.46, 0.16); /* haunches */
             b(0.16, 0.18, 0.10, 0.06, 0.09, 0.10, 0.20, 0.46, 0.16);
+        }
+        AnimalKind::Lizard => {
+            /* Low sand-green darter: flat body hugging the ground, long
+             * tapering tail that whips side to side on the run. */
+            b(0.0, 0.16, 0.0, 0.11, 0.07, 0.24, 0.55, 0.55, 0.28);
+            b(0.0, 0.18, -0.30, 0.07, 0.05, 0.09, 0.60, 0.60, 0.32); /* head */
+            b(-0.05, 0.24, -0.30, 0.02, 0.02, 0.02, 0.10, 0.10, 0.08); /* eye */
+            b(0.05, 0.24, -0.30, 0.02, 0.02, 0.02, 0.10, 0.10, 0.08);
+            sgl::push_matrix();
+            sgl::translate(0.0, 0.14, 0.24);
+            sgl::rotate(if moving { (phase * 1.8).sin() * 0.5 } else { 0.0 }, 0.0, 1.0, 0.0);
+            draw_box(0.0, 0.0, 0.16, 0.035, 0.035, 0.18, 0.48 * tint[0], 0.48 * tint[1], 0.24 * tint[2], lit);
+            sgl::pop_matrix();
+            for (x, z, sw) in
+                [(-0.12, -0.14, swing), (0.12, 0.14, swing), (0.12, -0.14, -swing), (-0.12, 0.14, -swing)]
+            {
+                leg4(x, z, sw, 0.06, 0.50, 0.50, 0.26);
+            }
+        }
+        AnimalKind::Penguin => {
+            /* Upright black back / white belly, stubby flippers, orange
+             * beak + feet; the whole body rocks as it waddles. */
+            let waddle = if moving { (phase * 1.3).sin() * 0.18 } else { 0.0 };
+            sgl::rotate(waddle, 0.0, 0.0, 1.0);
+            b(0.0, 0.55, 0.02, 0.17, 0.42, 0.15, 0.12, 0.12, 0.15); /* body */
+            b(0.0, 0.50, -0.12, 0.12, 0.30, 0.05, 0.93, 0.92, 0.90); /* belly */
+            b(0.0, 1.02, 0.0, 0.11, 0.10, 0.11, 0.12, 0.12, 0.15); /* head */
+            b(0.0, 1.00, -0.14, 0.03, 0.025, 0.06, 0.95, 0.55, 0.10); /* beak */
+            for side in [-1.0f32, 1.0] {
+                sgl::push_matrix();
+                sgl::translate(side * 0.19, 0.72, 0.02);
+                sgl::rotate(side * (0.25 + waddle), 0.0, 0.0, 1.0);
+                draw_box(0.0, -0.14, 0.0, 0.03, 0.16, 0.10, 0.12 * tint[0], 0.12 * tint[1], 0.15 * tint[2], lit);
+                sgl::pop_matrix();
+            }
+            b(-0.07, 0.06, -0.04, 0.06, 0.06, 0.10, 0.95, 0.55, 0.10); /* feet */
+            b(0.07, 0.06, -0.04, 0.06, 0.06, 0.10, 0.95, 0.55, 0.10);
         }
         _ => {
             /* Critter / stalker fall back to the classic dog shape. */

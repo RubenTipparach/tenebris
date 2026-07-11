@@ -64,6 +64,24 @@ pub struct ScatterConfig {
     pub weed_chance: f32,
     /// Seaweed blade height (metres).
     pub weed_height_m: f32,
+
+    /* Ferns - wide arched frond rosettes (JUNGLE floor only). */
+    /// Probability (0..1) a jungle grass tile grows a fern.
+    pub fern_chance: f32,
+    /// Fern frond length (metres).
+    pub fern_height_m: f32,
+
+    /* Reeds - tall cattail stalks with a dark seed head (SWAMP only). */
+    /// Probability (0..1) a swamp grass/dirt tile grows reeds.
+    pub reed_chance: f32,
+    /// Reed stalk height (metres).
+    pub reed_height_m: f32,
+
+    /* Dead shrubs - dry twig splays (DESERT sand + TUNDRA snow). */
+    /// Probability (0..1) a desert/tundra tile grows a dead shrub.
+    pub shrub_chance: f32,
+    /// Shrub twig length (metres).
+    pub shrub_size_m: f32,
 }
 
 impl ScatterConfig {
@@ -86,6 +104,12 @@ impl ScatterConfig {
         cactus_radius_m: 0.22,
         weed_chance: 0.35,
         weed_height_m: 0.30,
+        fern_chance: 0.45,
+        fern_height_m: 0.75,
+        reed_chance: 0.50,
+        reed_height_m: 1.10,
+        shrub_chance: 0.14,
+        shrub_size_m: 0.38,
     };
 }
 
@@ -141,6 +165,12 @@ pub fn parse_config(src: &str, _path: &str) -> ScatterConfig {
             "cactus_radius_m" => cfg.cactus_radius_m = c,
             "weed_chance" => cfg.weed_chance = c,
             "weed_height_m" => cfg.weed_height_m = c,
+            "fern_chance" => cfg.fern_chance = c,
+            "fern_height_m" => cfg.fern_height_m = c,
+            "reed_chance" => cfg.reed_chance = c,
+            "reed_height_m" => cfg.reed_height_m = c,
+            "shrub_chance" => cfg.shrub_chance = c,
+            "shrub_size_m" => cfg.shrub_size_m = c,
             _ => {}
         }
     }
@@ -174,6 +204,12 @@ mod tests {
         /* Negative = explicit off. */
         let e = parse_config("grass_chance: -1\n", "t");
         assert_eq!(e.grass_chance, 0.0);
+        /* Biome flora knobs parse like the rest. */
+        let f = parse_config("fern_chance: 0.7\nreed_height_m: 1.5\nshrub_chance: -1\n", "t");
+        assert_eq!(f.fern_chance, 0.7);
+        assert_eq!(f.reed_height_m, 1.5);
+        assert_eq!(f.shrub_chance, 0.0, "negative = shrubs off");
+        assert_eq!(f.fern_height_m, ScatterConfig::DEFAULT.fern_height_m);
         set_config(ScatterConfig::DEFAULT);
     }
 }
