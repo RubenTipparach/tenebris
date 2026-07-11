@@ -375,6 +375,12 @@ const FROG_HOP_EVERY_S: f32 = 0.9;
 const FROG_HOP_DR_M: f64 = 0.35;
 /// Cruising height of a bird above the walkable floor, metres.
 const BIRD_FLY_M: f64 = 2.6;
+/// Max climb / dive rate chasing that cruise height, m/s (bounded so a
+/// floor jump under the bird becomes a swoop, not a teleport).
+const BIRD_CLIMB_MPS: f64 = 6.0;
+/// Wall look-ahead distance per unit of kind scale: how far in front of
+/// the centre the grounded step check probes for a rise.
+const WALL_PAD_M: f64 = 0.45;
 /// Vertical bob amplitude of a flying bird / swimming fish, metres.
 const FLY_BOB_M: f64 = 0.35;
 /// Water clearance for fish: min above the sea floor.
@@ -750,11 +756,19 @@ pub fn reseat(w: &World, a: &mut Animal, dt: f32) {
     match a.kind.habitat() {
         Habitat::Air => {
             /* Birds cruise above the floor (water included) with a
-             * gentle bob - no step / fall physics at all. */
+             * gentle bob - no step / fall physics at all. The cruise
+             * altitude is CHASED at a bounded climb/dive rate: snapping
+             * straight to floor + BIRD_FLY_M teleported the bird
+             * vertically every time the floor jumped underneath it
+             * (cliff edges, tree canopies) - the "birds hit a border
+             * and teleport" bug. */
             if let Some(seated) = floor_pos(w, dir, r, -1) {
                 let floor_r = dvec3_length(dvec3_sub(seated, center));
                 let bob = (a.anim_phase as f64 * 0.35).sin() * FLY_BOB_M;
-                a.pos = dvec3_add(center, dvec3_scale(dir, floor_r + BIRD_FLY_M + bob));
+                let target_r = floor_r + BIRD_FLY_M + bob;
+                let max_dv = BIRD_CLIMB_MPS * dt as f64;
+                let new_r = r + (target_r - r).clamp(-max_dv, max_dv);
+                a.pos = dvec3_add(center, dvec3_scale(dir, new_r));
             }
             return;
         }
@@ -854,7 +868,17 @@ pub fn reseat(w: &World, a: &mut Animal, dt: f32) {
     let floor_r = dvec3_length(dvec3_sub(seated, center));
     let dr = floor_r - r;
 
-    if dr > STEP_EPS_M {
+    /* Wall look-ahead: also test the floor rise a body-radius ahead of
+     * the centre (scaled per kind - a cow's nose reaches further than a
+     * chicken's), so the animal stops / jumps with clearance instead of
+     * walking its face into the step before reacting. */
+    let ahead = dvec3_add(rel, dvec3_scale(a.heading, WALL_PAD_M * a.kind.scale() as f64));
+    let dr_rise = floor_pos(w, ahead, r, -1)
+        .map(|p| dvec3_length(dvec3_sub(p, center)) - r)
+        .unwrap_or(dr)
+        .max(dr);
+
+    if dr_rise > STEP_EPS_M {
         /* Step (or cliff) ahead: undo this frame's horizontal advance so
          * the collider stays out of the step face... */
         let speed = state_speed(a);
@@ -867,9 +891,9 @@ pub fn reseat(w: &World, a: &mut Animal, dt: f32) {
         };
         /* Climbable? Arm the stop-then-jump (tick launches it). Taller
          * rises stay blocked - the wander machine turns away later. */
-        if dr < STEP_MAX_M && a.jump_pause_t <= 0.0 && a.jump_dr <= 0.0 && a.is_moving() {
+        if dr_rise < STEP_MAX_M && a.jump_pause_t <= 0.0 && a.jump_dr <= 0.0 && a.is_moving() {
             a.jump_pause_t = JUMP_PAUSE_S;
-            a.jump_dr = dr;
+            a.jump_dr = dr_rise;
         }
     } else if dr < -STEP_EPS_M {
         /* Walked off an edge: fall from rest, keep the forward carry. */

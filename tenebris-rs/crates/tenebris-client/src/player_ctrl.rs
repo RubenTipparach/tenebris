@@ -735,6 +735,16 @@ fn camera_collider_push(w: &World, p: &mut PlayerCtrl, cur_tile: i32) {
         if !blocks::is_solid(nb_block) {
             continue;
         }
+        /* Tree voxels don't own their whole hex (the walk path already
+         * exempts them): without this, the eye collider still pushed
+         * at the hex EDGE whenever a trunk/canopy voxel sat at eye
+         * depth, so trees blocked like full-hex walls despite the thin
+         * drawn trunk. Skip the wall push while the eye keeps clear of
+         * that neighbour's trunk cylinder - the cylinder check in the
+         * walk path takes over inside it. */
+        if is_tree_raw(nb_block.raw()) && trunk_axis_dist(w, nb, eye_local) > TRUNK_CLEAR_M {
+            continue;
+        }
 
         let Some(tn) = w.grid.tile(nb) else {
             continue;
