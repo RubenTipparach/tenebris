@@ -82,6 +82,17 @@ pub struct ScatterConfig {
     pub shrub_chance: f32,
     /// Shrub twig length (metres).
     pub shrub_size_m: f32,
+
+    /* Wind sway - the hex shader nudges marked scatter tips
+     * side-to-side (see hex_mesher's sway-mark channel). */
+    /// Land sway rate, radians/second of the sine phase.
+    pub sway_speed: f32,
+    /// Land sway amplitude at the blade tip, metres.
+    pub sway_amp_m: f32,
+    /// Underwater sway rate (kelp/seaweed drift slower).
+    pub underwater_sway_speed: f32,
+    /// Underwater sway amplitude, metres.
+    pub underwater_sway_amp_m: f32,
 }
 
 impl ScatterConfig {
@@ -110,6 +121,10 @@ impl ScatterConfig {
         reed_height_m: 1.10,
         shrub_chance: 0.14,
         shrub_size_m: 0.38,
+        sway_speed: 1.8,
+        sway_amp_m: 0.05,
+        underwater_sway_speed: 0.7,
+        underwater_sway_amp_m: 0.09,
     };
 }
 
@@ -171,6 +186,10 @@ pub fn parse_config(src: &str, _path: &str) -> ScatterConfig {
             "reed_height_m" => cfg.reed_height_m = c,
             "shrub_chance" => cfg.shrub_chance = c,
             "shrub_size_m" => cfg.shrub_size_m = c,
+            "sway_speed" => cfg.sway_speed = c,
+            "sway_amp_m" => cfg.sway_amp_m = c,
+            "underwater_sway_speed" => cfg.underwater_sway_speed = c,
+            "underwater_sway_amp_m" => cfg.underwater_sway_amp_m = c,
             _ => {}
         }
     }

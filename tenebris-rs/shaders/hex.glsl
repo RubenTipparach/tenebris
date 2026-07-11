@@ -30,10 +30,12 @@ layout(binding=0) uniform hex_vs_params {
 
 // Per-frame block, vs side. Carries the sun direction + terminator
 // smoothstep range needed to compute v_sun_brightness up-front so the
-// fs only needs ambient + sun-vector for its Lambert.
+// fs only needs ambient + sun-vector for its Lambert, plus the wind
+// sway params for the scatter tips (u_terminator.w carries time).
 layout(binding=1) uniform hex_vs_light {
     vec3 u_sun_dir;
-    vec4 u_terminator;      // x=night_floor (unused here), y=lo, z=hi, w=unused
+    vec4 u_terminator;      // x=night_floor (unused here), y=lo, z=hi, w=time seconds
+    vec4 u_sway;            // x=land speed rad/s, y=land amp m, z=underwater speed, w=underwater amp
 };
 
 in vec3  a_pos;
@@ -53,7 +55,26 @@ out float v_wet;             // 1.0 if face borders a water voxel, 0.0 if dry
 out vec3  v_local;           // body-local position (crack-channel cell test)
 
 void main() {
-    gl_Position = u_vp * vec4(a_pos, 1.0);
+    // Wind sway: scatter tips carry a shortened normal as a marker
+    // channel (length < ~0.9; see hex_mesher SWAY_MARK). Nudge them
+    // side-to-side in the tangent plane - a_wet picks the underwater
+    // params (kelp drifts slower and wider than land grass). Normals
+    // renormalize below, so lighting never sees the marker.
+    vec3 pos = a_pos;
+    if (dot(a_normal, a_normal) < 0.81) {
+        float spd = (a_wet > 0.5) ? u_sway.z : u_sway.x;
+        float amp = (a_wet > 0.5) ? u_sway.w : u_sway.y;
+        vec3 up_dir = normalize(a_pos - u_planet.xyz);
+        vec3 east = cross(up_dir, vec3(0.0, 1.0, 0.0));
+        if (dot(east, east) < 1e-4) {
+            east = cross(up_dir, vec3(1.0, 0.0, 0.0));
+        }
+        east = normalize(east);
+        // Per-position phase so neighbouring blades ripple, not march.
+        float ph = dot(a_pos, vec3(1.7, 2.3, 1.1));
+        pos += east * (sin(u_terminator.w * spd + ph) * amp);
+    }
+    gl_Position = u_vp * vec4(pos, 1.0);
     v_normal = normalize(a_normal);
     v_uv = a_uv;
     v_sky_light   = a_sky_light;

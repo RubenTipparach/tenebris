@@ -1914,7 +1914,25 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
             && (gr <= -1e8 || gr - r > config::lod().step_height_m as f64)
         {
             if let Some(tg) = tree_ground_floor(w, cur_tile, r) {
-                gr = tg;
+                /* Only accept an under-tree floor BELOW the feet when
+                 * nothing solid is directly underfoot. Straddling a
+                 * tree tile's edge flip-flops cur_tile per frame, and
+                 * briefly adopting the (lower) under-tree ground while
+                 * standing on real support let gravity drag the player
+                 * through it - the "clip through the ground next to a
+                 * tree" bug. */
+                let under = {
+                    let probe = dvec3_scale(local, (r - 0.15).max(0.1) / r);
+                    w.block_at_pos(
+                        tenebris_core::math::Vec3 { x: probe.x as f32, y: probe.y as f32, z: probe.z as f32 },
+                        cur_tile,
+                    )
+                };
+                let supported =
+                    blocks::is_solid(under) && !is_tree_raw(under.raw());
+                if tg >= r - 0.01 || !supported {
+                    gr = tg;
+                }
             }
         }
         /* Safety net: if the walkable-floor query finds nothing in

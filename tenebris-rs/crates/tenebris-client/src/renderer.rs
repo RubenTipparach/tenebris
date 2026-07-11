@@ -4283,10 +4283,23 @@ pub fn draw_world(
              * (fs), day/night terminator. */
             let l = config::lighting();
             {
+                let sc = tenebris_core::scatter::config();
                 let hex_vs_light = shaders::hex::HexVsLight {
                     u_sun_dir: [r.env.sun_dir.x, r.env.sun_dir.y, r.env.sun_dir.z],
                     _pad_12: [0; 4],
-                    u_terminator: [l.night_ambient_floor, l.terminator_lo, l.terminator_hi, 0.0],
+                    /* w carries the clock for the scatter wind sway. */
+                    u_terminator: [
+                        l.night_ambient_floor,
+                        l.terminator_lo,
+                        l.terminator_hi,
+                        r.time_seconds as f32,
+                    ],
+                    u_sway: [
+                        sc.sway_speed,
+                        sc.sway_amp_m,
+                        sc.underwater_sway_speed,
+                        sc.underwater_sway_amp_m,
+                    ],
                 };
                 sg::apply_uniforms(
                     shaders::hex::UB_HEX_VS_LIGHT,
@@ -5817,7 +5830,7 @@ mod tests {
          * sg_apply_uniforms validates the range length against the
          * shader's declared block size. */
         assert_eq!(size_of::<shaders::hex::HexVsParams>(), 80);
-        assert_eq!(size_of::<shaders::hex::HexVsLight>(), 32);
+        assert_eq!(size_of::<shaders::hex::HexVsLight>(), 48); /* +u_sway (scatter wind) */
         assert_eq!(size_of::<shaders::hex::HexFsLight>(), 48);
         assert_eq!(size_of::<shaders::hex::HexFsWater>(), 32);
         assert_eq!(size_of::<shaders::hex::HexFsTorch>(), 16);

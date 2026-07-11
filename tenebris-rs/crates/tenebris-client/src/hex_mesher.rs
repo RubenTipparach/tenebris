@@ -274,7 +274,7 @@ fn tile_lights_begin(w: &World, t: &Tile) {
     TILE_LIGHTS.with(|c| *c.borrow_mut() = lights);
 }
 
-fn torch_light_at(world_pos: Vec3) -> f32 {
+pub(crate) fn torch_light_at(world_pos: Vec3) -> f32 {
     TILE_LIGHTS.with(|c| {
         let list = c.borrow();
         if list.is_empty() {
@@ -2083,7 +2083,26 @@ fn push_quad_2side(
     ]);
 }
 
+/// Wind-sway channel: marked vertices carry a SHORTENED normal (the hex
+/// VS reads length(a_normal) < ~0.9 as "this vertex sways" and
+/// renormalizes before lighting, so shading is untouched). The per-
+/// vertex `a_wet` flag then picks land vs underwater sway speed/amp in
+/// the shader. Pure channel encoding, not a tunable.
+const SWAY_MARK: f32 = 0.5;
+
+/// Shorten the normals of every vertex emitted since `start` whose
+/// uv.v equals `tip_v` - the blade-tip / segment-top rows.
+fn mark_sway_tips(out: &mut HexMesh, start: usize, tip_v: f32) {
+    for v in &mut out.vertices[start..] {
+        if v.uv[1] == tip_v {
+            v.normal =
+                [v.normal[0] * SWAY_MARK, v.normal[1] * SWAY_MARK, v.normal[2] * SWAY_MARK];
+        }
+    }
+}
+
 /// A tapered blade: triangle from a base segment up to a leaning tip.
+/// The tip is sway-marked so the shader ripples it in the wind.
 #[allow(clippy::too_many_arguments)]
 fn push_blade(
     out: &mut HexMesh,
@@ -2103,6 +2122,7 @@ fn push_blade(
     let tip = dvec3_add(dvec3_add(base, dvec3_scale(up, h)), lean);
     let (u_lo, u_hi, v_lo, v_hi) = uvr;
     let uc = (u_lo + u_hi) * 0.5;
+    let start = out.vertices.len();
     push_tri_2side(
         out,
         [a, b, tip],
@@ -2112,6 +2132,7 @@ fn push_blade(
         torch,
         wet,
     );
+    mark_sway_tips(out, start, v_lo);
 }
 
 /// A small solid hex prism (rock / bush lump): 6 side quads wound
@@ -2293,6 +2314,7 @@ pub fn build_scatter(out: &mut HexMesh, w: &World, tile_idx: i32) {
                     for fin in 0..2 {
                         let side = rot(ang + fin as f64 * std::f64::consts::FRAC_PI_2);
                         let (u_lo, u_hi, v_lo, v_hi) = leaves_uv;
+                        let qstart = out.vertices.len();
                         push_quad_2side(
                             out,
                             [
@@ -2307,6 +2329,16 @@ pub fn build_scatter(out: &mut HexMesh, w: &World, tile_idx: i32) {
                             torch,
                             wet,
                         );
+                        /* Sway: mark the top row of every segment; from
+                         * the second segment up mark the bottom row too
+                         * (it coincides with the previous top - same
+                         * position => same shader phase, so the stalk
+                         * stays glued at the joints and only the rooted
+                         * base row holds still). */
+                        if s > 0 {
+                            mark_sway_tips(out, qstart, v_hi);
+                        }
+                        mark_sway_tips(out, qstart, v_lo);
                     }
                 }
             }

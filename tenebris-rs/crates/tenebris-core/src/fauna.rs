@@ -471,7 +471,12 @@ pub fn tick_with_target(
         }
         AnimalState::Walk | AnimalState::Flee | AnimalState::Chase => {
             if a.state == AnimalState::Walk && a.timer <= 0.0 {
-                if rand01(a.id, tick_salt.wrapping_add(7)) < 0.4 {
+                /* Birds never take the grazing pause - a bird frozen
+                 * mid-air reads as a bug, so they pick a new heading
+                 * and keep flying instead. */
+                if a.kind.habitat() != Habitat::Air
+                    && rand01(a.id, tick_salt.wrapping_add(7)) < 0.4
+                {
                     a.state = AnimalState::Idle;
                     a.timer = IDLE_TIME + rand01(a.id, tick_salt) * 2.0;
                 } else {

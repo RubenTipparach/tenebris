@@ -60,6 +60,9 @@ struct Corpse {
     pos: DVec3,
     heading: DVec3,
     age: f32,
+    /* Corpses kept the default critter scale after death - carry the
+     * kind so the death clip renders at the animal's living size. */
+    kind: fauna::AnimalKind,
 }
 
 struct State {
@@ -173,7 +176,7 @@ pub fn apply_remote(
         let mut next: Vec<Animal> = Vec::with_capacity(entries.len());
         for &(id, st, kind, pos, heading) in entries {
             if st == ANIMAL_STATE_DEAD {
-                s.corpses.push(Corpse { pos, heading, age: 0.0 });
+                s.corpses.push(Corpse { pos, heading, age: 0.0, kind: AnimalKind::from_u8(kind) });
                 continue;
             }
             let mut a = match s.list.iter().find(|a| a.id == id) {
@@ -206,7 +209,7 @@ pub fn apply_remote(
          * there is invisible anyway, so no need to tell them apart. */
         for old in &s.list {
             if !next.iter().any(|a| a.id == old.id) {
-                s.corpses.push(Corpse { pos: old.pos, heading: old.heading, age: 0.0 });
+                s.corpses.push(Corpse { pos: old.pos, heading: old.heading, age: 0.0, kind: old.kind });
             }
         }
         s.list = next;
@@ -282,7 +285,7 @@ pub fn dev_spawn(w: &World, p: &PlayerCtrl) {
             );
             let dir = dvec3_normalize(point);
             if let Some(pos) = fauna::floor_pos(w, dir, dvec3_length(local), p.last_tile) {
-                s.corpses.push(Corpse { pos, heading: fwd, age: 0.7 });
+                s.corpses.push(Corpse { pos, heading: fwd, age: 0.7, kind: fauna::AnimalKind::Critter });
             }
         }
     });
@@ -484,7 +487,7 @@ pub fn hit(idx: i32, dmg: f32, from: Vec3) -> u16 {
         fauna::hit(a, dmg, from_d, up);
         if !a.is_alive() {
             /* Leave a corpse behind to play the baked death clip. */
-            let corpse = Corpse { pos: a.pos, heading: a.heading, age: 0.0 };
+            let corpse = Corpse { pos: a.pos, heading: a.heading, age: 0.0, kind: a.kind };
             s.list.swap_remove(idx as usize);
             s.corpses.push(corpse);
             /* Per-kind base meat (cows best) + a 0..2 roll. */
@@ -895,6 +898,16 @@ fn draw_kind(
 /// Draw every animal + lingering corpse. Called in the offscreen opaque
 /// pass next to torches. `time_s` drives the idle clip (the fauna sim
 /// only advances `anim_phase` while moving).
+/// Entity light level: day/night sun brightness lifted by the baked
+/// torch grid (animals were unlit by torches; same knob as terrain -
+/// lighting.yaml torch_intensity - so they warm up together).
+fn entity_lit(pos: DVec3) -> f32 {
+    let sun = renderer::entity_sun_brightness(pos);
+    let torch = crate::hex_mesher::torch_light_at(tenebris_core::math::dvec3_to_vec3(pos));
+    let l = tenebris_core::config::lighting();
+    (sun + torch * l.torch_intensity).min(1.5)
+}
+
 pub fn draw(view: Mat4, proj: Mat4, _time_s: f32) {
     let (list, corpses, center) = S.with(|c| {
         let s = c.borrow();
@@ -946,7 +959,7 @@ pub fn draw(view: Mat4, proj: Mat4, _time_s: f32) {
         let up = dvec3_normalize(dvec3_sub(a.pos, center));
         /* Day/night: critters darken with the world (task: animals were
          * fullbright at night). */
-        let lit = renderer::entity_sun_brightness(a.pos);
+        let lit = entity_lit(a.pos);
         /* Steps and falls are real movement now (fauna::reseat), so the
          * sim pos IS the render pos - jumps and drops just play out. */
         let draw_pos = a.pos;
@@ -974,11 +987,13 @@ pub fn draw(view: Mat4, proj: Mat4, _time_s: f32) {
     if let Some(set) = &set {
         for corpse in &corpses {
             let up = dvec3_normalize(dvec3_sub(corpse.pos, center));
-            let lit = renderer::entity_sun_brightness(corpse.pos);
+            let lit = entity_lit(corpse.pos);
             let basis = orient_basis(up, corpse.heading);
             sgl::push_matrix();
             sgl::translate(corpse.pos.x as f32, corpse.pos.y as f32, corpse.pos.z as f32);
             sgl::mult_matrix(&basis[0]);
+            let sc = corpse.kind.scale();
+            sgl::scale(sc, sc, sc);
             baked_model::draw(&set.model, Some((&set.death, corpse.age)), lit);
             sgl::pop_matrix();
         }

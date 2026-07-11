@@ -58,3 +58,10 @@ scatter:
   reed_height_m: 1.1
   shrub_chance: 0.14
   shrub_size_m: 0.38
+
+# Wind sway (hex shader, marked scatter tips only). Land grass ripples
+# quickly with a small amplitude; kelp / seaweed drift slower and wider.
+sway_speed: 1.8
+sway_amp_m: 0.05
+underwater_sway_speed: 0.7
+underwater_sway_amp_m: 0.09
