@@ -1,0 +1,306 @@
+//! Fishing minigame (client). With the fishing rod selected, a left
+//! click casts a bobber; it arcs into the water and floats. After a
+//! hash-random wait the bobber DIPS - that's the bite window: click
+//! while it's down to hook the fish, and the reel-in flies the bobber
+//! back to the rod and lands the catch (raw fish into the bag).
+//! Clicking while it floats calmly just reels the line back empty.
+//!
+//! Pure client feature (same code path in SP and MP - the catch is a
+//! bag item, exactly like crop harvests). Timing knobs live in
+//! assets/config/fishing.yaml (core::fishing).
+
+use std::cell::RefCell;
+
+use sokol::gl as sgl;
+
+use tenebris_core::fishing as cfg;
+use tenebris_core::items;
+use tenebris_core::math::{
+    dvec3_add, dvec3_make, dvec3_normalize, dvec3_scale, dvec3_sub, DVec3, Vec3,
+};
+use tenebris_core::rng::hash2;
+use tenebris_core::world::{World, WORLD_SEA_LEVEL_DEPTH};
+
+use crate::gfx_math::Mat4;
+use crate::player_ctrl::PlayerCtrl;
+use crate::renderer;
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Phase {
+    /// Cast bobber arcing through the air.
+    Flying,
+    /// Floating on the water, waiting for a bite.
+    Floating,
+    /// Bobber dipped - click NOW to hook.
+    Bite,
+    /// Line coming back in; `hooked` decides whether it lands a fish.
+    Reeling { hooked: bool },
+}
+
+struct State {
+    phase: Phase,
+    pos: DVec3,
+    vel: DVec3,
+    /// Where the reel-in flies back to (updated to the live rod tip).
+    home: DVec3,
+    t: f32,
+    wait_s: f32,
+    /// Water surface radius the float rides (body-local).
+    surface_r: f64,
+    seed: u32,
+}
+
+thread_local! {
+    static S: RefCell<Option<State>> = const { RefCell::new(None) };
+    static PIP3D: std::cell::Cell<sgl::Pipeline> =
+        const { std::cell::Cell::new(sgl::Pipeline { id: 0 }) };
+    /// Catch counter - the HUD flashes "+1 raw fish" briefly.
+    static CAUGHT_FLASH_T: std::cell::Cell<f32> = const { std::cell::Cell::new(0.0) };
+}
+
+/// Rod-tip anchor: just right of the camera, slightly forward + down.
+fn rod_tip(p: &PlayerCtrl) -> DVec3 {
+    let eye = dvec3_add(p.position, dvec3_scale(p.basis.up, 1.6));
+    dvec3_add(
+        dvec3_add(eye, dvec3_scale(p.basis.right, 0.35)),
+        dvec3_add(dvec3_scale(p.basis.fwd, 0.4), dvec3_scale(p.basis.up, -0.15)),
+    )
+}
+
+/// True while a line is out (drives the HUD hint + click routing).
+pub fn is_active() -> bool {
+    S.with(|s| s.borrow().is_some())
+}
+
+/// HUD hint for the reticle line, if the rod has a line out.
+pub fn hint() -> Option<&'static str> {
+    if CAUGHT_FLASH_T.with(|c| c.get()) > 0.0 {
+        return Some("caught a fish!");
+    }
+    S.with(|s| {
+        s.borrow().as_ref().map(|st| match st.phase {
+            Phase::Flying => "casting...",
+            Phase::Floating => "waiting for a bite...",
+            Phase::Bite => "!!! bite - click to hook !!!",
+            Phase::Reeling { hooked: true } => "reeling it in!",
+            Phase::Reeling { hooked: false } => "reeling in...",
+        })
+    })
+}
+
+/// Left click with the rod selected. Cast when idle, hook during a
+/// bite, otherwise reel back empty.
+pub fn on_click(w: &World, p: &PlayerCtrl) {
+    let _ = w;
+    S.with(|cell| {
+        let mut s = cell.borrow_mut();
+        match s.as_mut() {
+            None => {
+                let c = cfg::config();
+                let look = crate::interact::player_look_dir(p);
+                let tip = rod_tip(p);
+                let vel = dvec3_add(
+                    dvec3_scale(look, c.cast_speed_mps as f64),
+                    dvec3_scale(p.basis.up, c.cast_lift_mps as f64),
+                );
+                *s = Some(State {
+                    phase: Phase::Flying,
+                    pos: tip,
+                    vel,
+                    home: tip,
+                    t: 0.0,
+                    wait_s: 0.0,
+                    surface_r: 0.0,
+                    seed: (p.position.x.to_bits() as u32) ^ (p.position.z.to_bits() as u32),
+                });
+            }
+            Some(st) => match st.phase {
+                Phase::Bite => {
+                    st.phase = Phase::Reeling { hooked: true };
+                    st.t = 0.0;
+                }
+                Phase::Floating | Phase::Flying => {
+                    st.phase = Phase::Reeling { hooked: false };
+                    st.t = 0.0;
+                }
+                Phase::Reeling { .. } => {}
+            },
+        }
+    });
+}
+
+/// Advance the line. Needs the player mutable for the catch award.
+pub fn update(w: &World, p: &mut PlayerCtrl, dt: f32) {
+    CAUGHT_FLASH_T.with(|c| c.set((c.get() - dt).max(0.0)));
+
+    /* Putting the rod away (or opening a menu) winds the line in. */
+    if crate::inventory::selected_item(&p.inventory) != Some(items::FISHING_ROD) {
+        S.with(|s| *s.borrow_mut() = None);
+        return;
+    }
+
+    let c = cfg::config();
+    let center = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
+    let mut done = false;
+    let mut caught = false;
+
+    S.with(|cell| {
+        let mut sref = cell.borrow_mut();
+        let Some(st) = sref.as_mut() else { return };
+        st.t += dt;
+        st.home = rod_tip(p);
+
+        match st.phase {
+            Phase::Flying => {
+                let up = dvec3_normalize(dvec3_sub(st.pos, center));
+                st.vel = dvec3_sub(st.vel, dvec3_scale(up, (c.cast_gravity_mps2 * dt) as f64));
+                st.pos = dvec3_add(st.pos, dvec3_scale(st.vel, dt as f64));
+                let lp = dvec3_sub(st.pos, center);
+                let here = Vec3 { x: lp.x as f32, y: lp.y as f32, z: lp.z as f32 };
+                let blk = w.block_at_pos(here, p.last_tile);
+                if blk == tenebris_core::blocks::Block::Water {
+                    /* Splash down: ride the actual sea surface. */
+                    st.surface_r = w.depth_to_radius_m(WORLD_SEA_LEVEL_DEPTH)
+                        + tenebris_core::planet_gen::sea_raise_m(&w.body) as f64;
+                    st.phase = Phase::Floating;
+                    st.t = 0.0;
+                    st.wait_s = c.bite_wait_min_s
+                        + hash2(st.seed as i32, 0x51) * (c.bite_wait_max_s - c.bite_wait_min_s);
+                } else if tenebris_core::blocks::is_solid(blk) || st.t > 5.0 {
+                    /* Hit land / timed out - wind it back. */
+                    st.phase = Phase::Reeling { hooked: false };
+                    st.t = 0.0;
+                }
+            }
+            Phase::Floating | Phase::Bite => {
+                let dir = dvec3_normalize(dvec3_sub(st.pos, center));
+                let bob = (st.t * 2.2).sin() as f64 * 0.05;
+                let dip = if st.phase == Phase::Bite { 0.28 } else { 0.0 };
+                st.pos = dvec3_add(center, dvec3_scale(dir, st.surface_r + bob - dip - 0.05));
+                if st.phase == Phase::Floating && st.t >= st.wait_s {
+                    st.phase = Phase::Bite;
+                    st.t = 0.0;
+                    st.seed = st.seed.wrapping_mul(0x9E37_79B9).wrapping_add(1);
+                } else if st.phase == Phase::Bite && st.t > c.bite_window_s {
+                    /* Missed it - the fish lets go, the float pops up. */
+                    st.phase = Phase::Floating;
+                    st.t = 0.0;
+                    st.wait_s = c.bite_wait_min_s
+                        + hash2(st.seed as i32, 0x52) * (c.bite_wait_max_s - c.bite_wait_min_s);
+                }
+            }
+            Phase::Reeling { hooked } => {
+                let f = (st.t / c.reel_time_s).min(1.0) as f64;
+                /* Ease toward the rod tip with a little upward arc. */
+                let up = dvec3_normalize(dvec3_sub(st.home, center));
+                let lift = (f * std::f64::consts::PI).sin() * if hooked { 1.2 } else { 0.4 };
+                let along = dvec3_add(
+                    dvec3_scale(st.pos, 1.0 - f),
+                    dvec3_scale(st.home, f),
+                );
+                st.pos = dvec3_add(along, dvec3_scale(up, lift));
+                if st.t >= c.reel_time_s {
+                    done = true;
+                    caught = hooked;
+                }
+            }
+        }
+    });
+
+    if done {
+        S.with(|s| *s.borrow_mut() = None);
+        if caught {
+            let mut n = 1u16;
+            let roll = hash2(p.last_tile, 0x53);
+            if roll < cfg::config().bonus_catch_chance {
+                n += 1;
+            }
+            p.bag.add(items::RAW_FISH, n);
+            CAUGHT_FLASH_T.with(|c| c.set(1.6));
+        }
+    }
+}
+
+/// Tiny colored box centred at `c` (bobber halves).
+fn bob_box(c: DVec3, h: f64, r: f32, g: f32, b: f32, lit: f32) {
+    let (x0, x1) = ((c.x - h) as f32, (c.x + h) as f32);
+    let (y0, y1) = ((c.y - h) as f32, (c.y + h) as f32);
+    let (z0, z1) = ((c.z - h) as f32, (c.z + h) as f32);
+    sgl::c3f(r * lit, g * lit, b * lit);
+    let quads: [[[f32; 3]; 4]; 6] = [
+        [[x0, y1, z0], [x0, y1, z1], [x1, y1, z1], [x1, y1, z0]],
+        [[x0, y0, z1], [x0, y0, z0], [x1, y0, z0], [x1, y0, z1]],
+        [[x0, y0, z0], [x0, y1, z0], [x1, y1, z0], [x1, y0, z0]],
+        [[x1, y0, z1], [x1, y1, z1], [x0, y1, z1], [x0, y0, z1]],
+        [[x1, y0, z0], [x1, y1, z0], [x1, y1, z1], [x1, y0, z1]],
+        [[x0, y0, z1], [x0, y1, z1], [x0, y1, z0], [x0, y0, z0]],
+    ];
+    for q in quads.iter() {
+        for &i in &[0usize, 1, 2, 0, 2, 3] {
+            sgl::v3f(q[i][0], q[i][1], q[i][2]);
+        }
+    }
+}
+
+/// Draw the line + bobber into the offscreen world pass.
+pub fn draw(view: Mat4, proj: Mat4, p: &PlayerCtrl) {
+    let Some((pos, phase)) = S.with(|s| s.borrow().as_ref().map(|st| (st.pos, st.phase))) else {
+        return;
+    };
+    renderer::sgl_world_begin();
+    sgl::defaults();
+    sgl::matrix_mode_projection();
+    sgl::load_matrix(&proj.m[0]);
+    sgl::matrix_mode_modelview();
+    sgl::load_matrix(&view.m[0]);
+
+    let mut pip = PIP3D.with(|c| c.get());
+    if pip.id == 0 {
+        pip = sgl::make_pipeline(&sokol::gfx::PipelineDesc {
+            depth: sokol::gfx::DepthState {
+                write_enabled: true,
+                compare: sokol::gfx::CompareFunc::Less,
+                ..Default::default()
+            },
+            cull_mode: sokol::gfx::CullMode::None,
+            ..Default::default()
+        });
+        PIP3D.with(|c| c.set(pip));
+    }
+    sgl::load_pipeline(pip);
+
+    let lit = renderer::entity_sun_brightness(pos).max(0.35);
+    let tip = rod_tip(p);
+
+    /* The line. */
+    sgl::begin_lines();
+    sgl::c3f(0.9 * lit, 0.9 * lit, 0.88 * lit);
+    sgl::v3f(tip.x as f32, tip.y as f32, tip.z as f32);
+    sgl::v3f(pos.x as f32, pos.y as f32, pos.z as f32);
+    sgl::end();
+
+    /* The bobber: red cap over a white base (offset along the player's
+     * up - close enough to the bobber's own radial); flush red during
+     * a bite so the dip reads instantly. */
+    sgl::begin_triangles();
+    let bite = phase == Phase::Bite;
+    let up = p.basis.up;
+    bob_box(dvec3_add(pos, dvec3_scale(up, 0.05)), 0.055, 0.95, if bite { 0.1 } else { 0.2 }, 0.12, lit);
+    bob_box(dvec3_add(pos, dvec3_scale(up, -0.05)), 0.05, 0.95, 0.94, 0.9, lit);
+    sgl::end();
+
+    renderer::sgl_world_end();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hint_is_none_without_a_line() {
+        S.with(|s| *s.borrow_mut() = None);
+        CAUGHT_FLASH_T.with(|c| c.set(0.0));
+        assert!(hint().is_none());
+        assert!(!is_active());
+    }
+}

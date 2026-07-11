@@ -46,6 +46,7 @@ use crate::chat;
 use crate::crafting_screen;
 use crate::crops;
 use crate::drops;
+use crate::fishing;
 use crate::viewmodel;
 use crate::gfx_math::{mat4_perspective, Mat4};
 use crate::hotbar_ui;
@@ -1494,6 +1495,7 @@ extern "C" fn init() {
     tenebris_core::scatter::load_config("assets/config/scatter.yaml");
     /* Cloud layer densities / drift (see client clouds.rs). */
     tenebris_core::clouds::load_config("assets/config/clouds.yaml");
+    tenebris_core::fishing::load_config("assets/config/fishing.yaml");
     /* Rocket part stats + flight constants (consumed by the rocket
      * assembly + flight port). */
     tenebris_core::rocket::set_config(tenebris_core::rocket::load_rocket_config(
@@ -2405,6 +2407,18 @@ fn plantable_seed_kind(p: &crate::player_ctrl::PlayerCtrl) -> Option<tenebris_co
 /// "[T] plant seed". Makes the till-before-plant flow discoverable (it's
 /// not obvious you must work the ground first). Yields to the crop hint.
 fn draw_farming_hint(app: &App, screen_w: f32, screen_h: f32) {
+    /* Fishing owns the reticle line while a line is out (or the rod is
+     * selected): cast state / bite alarm / catch flash. */
+    if let Some(msg) = fishing::hint() {
+        let cell = 8.0f32;
+        let x = (screen_w * 0.5 - (msg.len() as f32 * cell) * 0.5) / cell;
+        let y = (screen_h * 0.5 + 24.0) / cell;
+        sdtx::canvas(screen_w, screen_h);
+        sdtx::pos(x, y);
+        sdtx::color3f(1.0, 0.95, 0.6);
+        sdtx::puts(msg);
+        return;
+    }
     if crops::reticle_growth().is_some() {
         return; /* the crop hint owns this line when aiming at a crop */
     }
@@ -4151,9 +4165,15 @@ fn frame_inner(app: &mut App) {
                 } else if p.bag.count_of(tenebris_core::items::BREAD) > 0 {
                     p.bag.take(tenebris_core::items::BREAD, 1);
                     fcfg.bread_hunger_restore
+                } else if p.bag.count_of(tenebris_core::items::COOKED_FISH) > 0 {
+                    p.bag.take(tenebris_core::items::COOKED_FISH, 1);
+                    35.0
                 } else if p.bag.count_of(tenebris_core::items::RAW_MEAT) > 0 {
                     p.bag.take(tenebris_core::items::RAW_MEAT, 1);
                     20.0
+                } else if p.bag.count_of(tenebris_core::items::RAW_FISH) > 0 {
+                    p.bag.take(tenebris_core::items::RAW_FISH, 1);
+                    12.0
                 } else if p.bag.count_of(tenebris_core::items::BERRIES) > 0 {
                     p.bag.take(tenebris_core::items::BERRIES, 1);
                     fcfg.berry_hunger_restore
@@ -4350,6 +4370,7 @@ fn frame_inner(app: &mut App) {
             };
             crops::update(dt, &w, &p, block_limit);
         }
+        fishing::update(&phys_world.borrow(), &mut app.player.borrow_mut(), dt);
         interact::update(
             &mut app.interact,
             &mut phys_world.borrow_mut(),
@@ -4668,6 +4689,7 @@ fn frame_inner(app: &mut App) {
     /* Animals + crops - same offscreen opaque pass so terrain/torches
      * z-sort correctly against them. */
     animals::draw(view, proj, renderer::time_seconds());
+    fishing::draw(view, proj, &app.player.borrow());
     crops::draw(view, proj);
     drops::draw(view, proj, renderer::time_seconds());
     /* Cloud layer above the surface - same pass, drifts with sim time

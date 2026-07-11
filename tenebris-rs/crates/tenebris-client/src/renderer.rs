@@ -1377,19 +1377,16 @@ fn horizon_sky_color(env: &RenderEnv, cam_fwd: [f32; 3]) -> [f32; 3] {
     {
         let sun_height = dot(sun, up);
         let sunset = {
-            /* smoothstep(0.12, -0.03, sun_height) - tight ramp so the
-             * warm band only exists right around the sun crossing the
-             * horizon, giving day/night a crisp boundary. */
-            let t = ((sun_height - 0.12) / (-0.03 - 0.12)).clamp(0.0, 1.0);
+            /* smoothstep(0.18, 0.0, sun_height) - warmth builds as the
+             * sun approaches the horizon... */
+            let t = ((sun_height - 0.18) / (0.0 - 0.18)).clamp(0.0, 1.0);
             t * t * (3.0 - 2.0 * t)
         } * {
-            /* Night fade - smoothstep(-0.14, -0.03, sun_height). The
-             * raw sunset ramp SATURATES once the sun sets, which kept
-             * the fog (and sky) warm orange all night; this second
-             * ramp closes the warmth out as the sun drops away, so
-             * midnight fog fades to genuine black. Kept tight to match
-             * the sharpened day/night transition. */
-            let t = ((sun_height + 0.14) / (-0.03 + 0.14)).clamp(0.0, 1.0);
+            /* ...peaks through dusk / dawn (sun just below the horizon
+             * - the scattering integral alone goes BLUE there, which
+             * read wrong), and smoothstep(-0.28, -0.12) closes it out
+             * to genuine dark once the sun is well down. */
+            let t = ((sun_height + 0.28) / (-0.12 + 0.28)).clamp(0.0, 1.0);
             t * t * (3.0 - 2.0 * t)
         };
         let view_sun = cos_theta.max(0.0);
@@ -1399,11 +1396,13 @@ fn horizon_sky_color(env: &RenderEnv, cam_fwd: [f32; 3]) -> [f32; 3] {
         }
         let glow = view_sun.powi(3) * sunset;
         let glow_c = [1.0f32, 0.65, 0.25];
-        /* Horizon-band term: rd is tangent, so 1-|dot(rd,up)| = 1. */
+        /* Horizon-band term: rd is tangent, so 1-|dot(rd,up)| = 1.
+         * Strengths match the atmosphere shader (0.16 / 0.07 - boosted
+         * so dusk / dawn reads orange-red, not residual blue). */
         let horizon_c = [0.8f32, 0.4, 0.15];
         for k in 0..3 {
-            color[k] += glow_c[k] * glow * env.atmo_sun_intensity * 0.12
-                + horizon_c[k] * sunset * env.atmo_sun_intensity * 0.04;
+            color[k] += glow_c[k] * glow * env.atmo_sun_intensity * 0.16
+                + horizon_c[k] * sunset * env.atmo_sun_intensity * 0.07;
         }
     }
 

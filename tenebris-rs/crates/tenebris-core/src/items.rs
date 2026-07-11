@@ -92,6 +92,14 @@ pub const WHEAT: ItemId = ITEM_BASE + 31; // 131
 pub const BREAD: ItemId = ITEM_BASE + 32; // 132
 pub const CARROT: ItemId = ITEM_BASE + 33; // 133
 
+/// Fishing rod - casts a bobber onto water; hook a bite and reel it in
+/// to land a fish (see client::fishing). Crafted from planks + sticks.
+pub const FISHING_ROD: ItemId = ITEM_BASE + 34; // 134
+/// Raw fish - the fishing minigame's catch. Eat as-is (R) for a small
+/// restore, or cook it into COOKED_FISH for a proper meal.
+pub const RAW_FISH: ItemId = ITEM_BASE + 35; // 135
+pub const COOKED_FISH: ItemId = ITEM_BASE + 36; // 136
+
 /// What an item *is*, for stacking / placement / tool-gating rules. Grows
 /// as the tech tree lands (Component, Ingot, Ammo, ...).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -159,6 +167,9 @@ const ITEMS: &[ItemDef] = &[
     ItemDef { id: WHEAT, name: "wheat", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: BREAD, name: "bread", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: CARROT, name: "carrot", kind: ItemKind::Resource, stack: 64 },
+    ItemDef { id: FISHING_ROD, name: "fishing-rod", kind: ItemKind::Tool, stack: 1 },
+    ItemDef { id: RAW_FISH, name: "raw-fish", kind: ItemKind::Resource, stack: 64 },
+    ItemDef { id: COOKED_FISH, name: "cooked-fish", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: COPPER, name: "copper", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: TIN, name: "tin", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: IRON, name: "iron", kind: ItemKind::Resource, stack: 64 },
@@ -265,6 +276,7 @@ pub fn smelt_output(id: ItemId) -> Option<(ItemId, u16)> {
         IRON => Some((IRON_INGOT, 1)),
         /* Cooking reuses the furnace: raw meat -> cooked meat. */
         RAW_MEAT => Some((COOKED_MEAT, 1)),
+        RAW_FISH => Some((COOKED_FISH, 1)),
         _ => None,
     }
 }

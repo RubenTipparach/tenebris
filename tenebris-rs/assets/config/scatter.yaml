@@ -33,6 +33,8 @@
 #   shrub_chance     probability a DESERT sand / TUNDRA snow tile grows
 #                    a dead shrub
 #   shrub_size_m     dead-shrub twig length in metres
+#   vine_chance      probability a SWAMP grove canopy tile drips vines
+#   vine_length_m    vine strand length in metres
 scatter:
   grass_chance: 0.8
   grass_blades: 18
@@ -65,3 +67,5 @@ sway_speed: 1.8
 sway_amp_m: 0.05
 underwater_sway_speed: 0.7
 underwater_sway_amp_m: 0.09
+  vine_chance: 0.8
+  vine_length_m: 2.2

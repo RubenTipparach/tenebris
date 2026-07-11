@@ -64,6 +64,14 @@ out: hoe 1
 in: plank 2
 in: stick 2
 
+# Fishing rod: casts a bobber onto water (LMB with the rod selected).
+# Hook the bite, reel in, eat or cook the catch.
+[fishing-rod]
+tier: 0
+out: fishing-rod 1
+in: plank 1
+in: stick 3
+
 # Bread: bake 3 harvested wheat into the best plant food (hunger restore
 # tuned in farming.yaml as bread_hunger_restore).
 [bread]

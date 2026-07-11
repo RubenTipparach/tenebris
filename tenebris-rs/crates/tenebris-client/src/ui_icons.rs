@@ -70,6 +70,9 @@ const ICONS: &[(u16, &str)] = &[
     (items::BERRIES, "assets/textures/items/berries.png"),
     (items::BREAD, "assets/textures/items/bread.png"),
     (items::CARROT, "assets/textures/items/carrot.png"),
+    (items::FISHING_ROD, "assets/textures/items/fishing_rod.png"),
+    (items::RAW_FISH, "assets/textures/items/raw_fish.png"),
+    (items::COOKED_FISH, "assets/textures/items/cooked_fish.png"),
     // --- farming ---
     (items::SEEDS, "assets/textures/items/seeds.png"),
     (items::WHEAT_SEEDS, "assets/textures/items/wheat_seeds.png"),

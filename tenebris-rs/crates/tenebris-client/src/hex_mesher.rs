@@ -2191,6 +2191,73 @@ fn push_prism(
     }
 }
 
+/// Hanging vine strands off a swamp grove canopy: thin two-sided
+/// strips dropping from the canopy underside with a slight sway, so
+/// the tall grove trees read draped instead of bare.
+fn build_vines(out: &mut HexMesh, w: &World, tile_idx: i32, t: &Tile, canopy_top: i32) {
+    let cfg = scatter_cfg::config();
+    let col_base = (tile_idx * WORLD_MAX_DEPTH) as usize;
+    /* Canopy underside: walk down through the leaf run. */
+    let mut lo = canopy_top;
+    while lo > 1 {
+        let b = w.blocks[col_base + (lo - 1) as usize];
+        if b == Block::Leaves.raw() || b == Block::SeqLeaves.raw() {
+            lo -= 1;
+        } else {
+            break;
+        }
+    }
+    let hang_r = w.depth_to_radius_m(lo);
+    let sky = if use_voxel_engine() {
+        sky_light_voxel(w, tile_idx, (lo - 1).max(0))
+    } else {
+        sky_light_at(w, tile_idx, (lo - 1).max(0))
+    };
+    let up = t.center;
+    let torch = torch_light_at(dvec3_to_vec3(dvec3_scale(up, hang_r)));
+    let reference = if up.y.abs() < 0.9 {
+        dvec3_make(0.0, 1.0, 0.0)
+    } else {
+        dvec3_make(1.0, 0.0, 0.0)
+    };
+    let t1 = dvec3_normalize(dvec3_cross(reference, up));
+    let t2 = dvec3_cross(up, t1);
+    let n = t.num_verts as i32;
+    let strands = 3 + (hash2(tile_idx, SALT_COUNT + 130) * 3.0) as i32;
+    for k in 0..strands {
+        let ha = hash2(tile_idx, SALT_POS_A + 130 + k);
+        let hb = hash2(tile_idx, SALT_POS_B + 130 + k);
+        let j = ((ha * n as f32) as i32).clamp(0, n - 1);
+        let f = (0.35 + 0.55 * hb) as f64;
+        let dir = dvec3_add(dvec3_scale(t.center, 1.0 - f), dvec3_scale(t.verts[j as usize], f));
+        let top = dvec3_scale(dir, hang_r);
+        let len =
+            cfg.vine_length_m as f64 * (0.6 + 0.8 * hash2(tile_idx, SALT_SIZE + 131 + k) as f64);
+        let ang = hash2(tile_idx, SALT_ANGLE + 130 + k) as f64 * std::f64::consts::TAU;
+        let side = dvec3_add(dvec3_scale(t1, ang.cos()), dvec3_scale(t2, ang.sin()));
+        let bot = dvec3_add(dvec3_sub(top, dvec3_scale(up, len)), dvec3_scale(side, 0.15));
+        let wdir = dvec3_normalize(dvec3_cross(up, side));
+        let hw = 0.05f64;
+        let uvr =
+            tile_uv_slice(Block::Leaves, FaceCap::Top, hash2(tile_idx, SALT_SIZE + 130 + k));
+        let (u_lo, u_hi, v_lo, v_hi) = uvr;
+        push_quad_2side(
+            out,
+            [
+                dvec3_sub(top, dvec3_scale(wdir, hw)),
+                dvec3_add(top, dvec3_scale(wdir, hw)),
+                dvec3_add(bot, dvec3_scale(wdir, hw * 0.6)),
+                dvec3_sub(bot, dvec3_scale(wdir, hw * 0.6)),
+            ],
+            [(u_lo, v_lo), (u_hi, v_lo), (u_hi, v_hi), (u_lo, v_hi)],
+            up,
+            sky,
+            torch,
+            0.0,
+        );
+    }
+}
+
 /// Build the decorative scatter for one tile into the chunk's opaque
 /// mesh. Call alongside [`build_tile`]; safe to skip entirely (it only
 /// adds geometry). See the module comment above for the design.
@@ -2246,6 +2313,17 @@ pub fn build_scatter(out: &mut HexMesh, w: &World, tile_idx: i32) {
         Block::Sand | Block::Dirt | Block::Stone | Block::Grass | Block::SeqSand | Block::SeqDirt
     );
     let underwater = above == Block::Water;
+
+    /* Vines: swamp grove canopies drip hanging strands. The canopy IS
+     * this tile's surface (topmost solid = leaves), which every other
+     * scatter kind skips - so emit before the surface gates below. */
+    if matches!(ground, Block::Leaves | Block::SeqLeaves)
+        && tenebris_core::planet_gen::biome(&w.body, t.center) == tenebris_core::planet_gen::Biome::Swamp
+        && hash2(tile_idx, SALT_KIND + 8) < scatter_cfg::config().vine_chance
+    {
+        build_vines(out, w, tile_idx, t, surf);
+    }
+
     if !underwater && above != Block::Air {
         return; /* torch / tech block / partial occupies the cell */
     }
@@ -2401,16 +2479,21 @@ pub fn build_scatter(out: &mut HexMesh, w: &World, tile_idx: i32) {
                 let pal = hash2(tile_idx, SALT_VARIANT + j);
                 /* Pasture flips the ratio: blades mostly sample the
                  * yellow-green sod so the field reads dry, with leaf-
-                 * green accents instead of the other way round. */
-                let dark_frac = if biome == Biome::Swamp {
-                    0.95
-                } else if ground == Block::DryGrass {
-                    0.35
+                 * green accents instead of the other way round.
+                 * Swamps go BROWN: most blades sample the bark tile so
+                 * the marsh reads as dead dry grass, with a few dark
+                 * green survivors mixed in. */
+                let (src, src_cap) = if biome == Biome::Swamp {
+                    if pal < 0.75 {
+                        (Block::Wood, FaceCap::Side)
+                    } else {
+                        (leaf, FaceCap::Top)
+                    }
                 } else {
-                    0.7
+                    let dark_frac = if ground == Block::DryGrass { 0.35 } else { 0.7 };
+                    if pal < dark_frac { (leaf, FaceCap::Top) } else { (ground, FaceCap::Top) }
                 };
-                let src = if pal < dark_frac { leaf } else { ground };
-                let uvr = tile_uv_slice(src, FaceCap::Top, hash2(tile_idx, SALT_SIZE + 31 + j));
+                let uvr = tile_uv_slice(src, src_cap, hash2(tile_idx, SALT_SIZE + 31 + j));
                 let (u_lo, u_hi, v_lo, v_hi) = uvr;
                 let side = rot(ang);
                 let lean = dvec3_scale(rot(ang + 0.9), h * 0.15);

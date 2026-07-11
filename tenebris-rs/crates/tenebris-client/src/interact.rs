@@ -163,7 +163,7 @@ pub(crate) fn sp_save_torches_after_change(w: &World) {
 /// The latter has a discontinuity near |up.y| = 0.9 that was jerking
 /// the raycast and crosshair in the same pattern that made the camera
 /// flip.
-fn player_look_dir(p: &PlayerCtrl) -> DVec3 {
+pub(crate) fn player_look_dir(p: &PlayerCtrl) -> DVec3 {
     let b = &p.basis;
     let (cy, sy) = ((p.yaw as f64).cos(), (p.yaw as f64).sin());
     let (cp, sp) = ((p.pitch as f64).cos(), (p.pitch as f64).sin());
@@ -233,6 +233,18 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
      * with an out-of-range result, but the goldberg lookup still
      * ran on every iteration). */
     if p.is_in_space {
+        return;
+    }
+
+    /* Fishing rod: while the rod is the selected hotbar item, the left
+     * click drives the cast / hook / reel state machine instead of
+     * mining or attacking, and the reticle stays target-free. */
+    if crate::inventory::selected_item(&p.inventory)
+        == Some(tenebris_core::items::FISHING_ROD)
+    {
+        if input::state().left_click {
+            crate::fishing::on_click(w, p);
+        }
         return;
     }
 

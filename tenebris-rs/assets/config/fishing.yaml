@@ -1,0 +1,22 @@
+# Fishing minigame tuning - parsed by core/fishing.rs (tiny key: value
+# subset). A field set to 0 / omitted keeps the compiled-in default;
+# negative bonus_catch_chance switches the bonus roll off.
+#
+#   cast_speed_mps       forward speed of a cast bobber (m/s)
+#   cast_lift_mps        upward kick of a cast (m/s)
+#   cast_gravity_mps2    gravity on the flying bobber (m/s^2)
+#   bite_wait_min_s      min seconds before a fish bites
+#   bite_wait_max_s      max seconds before a fish bites
+#   bite_window_s        how long the bobber stays dipped - the
+#                        click-to-hook window
+#   reel_time_s          seconds the reel-in takes
+#   bonus_catch_chance   chance a catch lands a second fish
+fishing:
+  cast_speed_mps: 11.0
+  cast_lift_mps: 3.5
+  cast_gravity_mps2: 16.0
+  bite_wait_min_s: 2.0
+  bite_wait_max_s: 6.0
+  bite_window_s: 0.9
+  reel_time_s: 0.9
+  bonus_catch_chance: 0.15

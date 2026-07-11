@@ -509,10 +509,17 @@ pub fn sample_with_profile(prof: &ColumnProfile, altitude_m: f32) -> Block {
             }
             Biome::Mountains => return Block::Stone,
             Biome::Swamp => {
-                /* Mud patches: reuse the moisture fraction as a cheap
-                 * stable dither so ~1/3 of swamp tops read as wet dirt. */
-                if (prof.latitude * 977.0).fract() < 0.35 {
+                /* Swampland is a broken mix: ~1/3 wet mud, ~1/5
+                 * stagnant water pools sunk into the sod (the voxel
+                 * below stays dirt, so the pool has a muddy bed), the
+                 * rest marsh grass. Same cheap latitude dither idiom
+                 * as the desert rocks. */
+                let f = (prof.latitude * 977.0).fract();
+                if f < 0.35 {
                     return if prof.sequoia { Block::SeqDirt } else { Block::Dirt };
+                }
+                if f > 0.80 {
+                    return Block::Water;
                 }
                 return if prof.sequoia { Block::SeqGrass } else { Block::Grass };
             }

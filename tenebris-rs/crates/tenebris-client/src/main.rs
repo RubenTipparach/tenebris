@@ -2,6 +2,7 @@
 //! See ../../PORTING.md for rules.
 
 mod animals;
+mod fishing;
 mod app;
 mod bag;
 mod baked_model;

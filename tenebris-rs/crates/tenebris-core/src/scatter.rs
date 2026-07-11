@@ -93,6 +93,11 @@ pub struct ScatterConfig {
     pub underwater_sway_speed: f32,
     /// Underwater sway amplitude, metres.
     pub underwater_sway_amp_m: f32,
+    /* Vines - strands hanging off SWAMP grove canopies. */
+    /// Probability (0..1) a swamp canopy tile drips vines.
+    pub vine_chance: f32,
+    /// Vine strand length (metres, +-40% per strand).
+    pub vine_length_m: f32,
 }
 
 impl ScatterConfig {
@@ -125,6 +130,8 @@ impl ScatterConfig {
         sway_amp_m: 0.05,
         underwater_sway_speed: 0.7,
         underwater_sway_amp_m: 0.09,
+        vine_chance: 0.8,
+        vine_length_m: 2.2,
     };
 }
 
@@ -190,6 +197,8 @@ pub fn parse_config(src: &str, _path: &str) -> ScatterConfig {
             "sway_amp_m" => cfg.sway_amp_m = c,
             "underwater_sway_speed" => cfg.underwater_sway_speed = c,
             "underwater_sway_amp_m" => cfg.underwater_sway_amp_m = c,
+            "vine_chance" => cfg.vine_chance = c,
+            "vine_length_m" => cfg.vine_length_m = c,
             _ => {}
         }
     }
