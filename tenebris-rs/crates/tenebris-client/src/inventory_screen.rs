@@ -244,6 +244,10 @@ fn egui_slot(ui: &mut egui::Ui, s: &InvSlot, selected: bool, show_count: bool) -
     if s.item != Block::Air as u16 && s.count > 0 {
         let shown = if show_count { s.count.clamp(0, u16::MAX as i32) as u16 } else { 1 };
         crate::ui_icons::draw_icon(p, s.item, shown, rect.shrink(4.0));
+        /* Hover tooltip: the item's name. */
+        if let Some(name) = tenebris_core::items::display_name(s.item) {
+            return resp.on_hover_text(name);
+        }
     }
     resp
 }
@@ -389,6 +393,7 @@ pub fn egui_ui(ctx: &egui::Context) {
     let mut dnd_swap: Option<(SlotAddr, SlotAddr)> = None;
     let mut toggle_mode = false;
     let mut do_close = false;
+    let mut open_tech = false;
     /* Mode switching is an SP concern - MP is always survival. */
     let can_toggle_mode = crate::menu::state() == crate::menu::GameState::InGameSp;
 
@@ -497,9 +502,16 @@ pub fn egui_ui(ctx: &egui::Context) {
             }
 
             ui.add_space(4.0);
-            if ui.button("Close").clicked() {
-                do_close = true;
-            }
+            ui.horizontal(|ui| {
+                if ui.button("Close").clicked() {
+                    do_close = true;
+                }
+                /* Discoverability: the tech tree was K-only; give it a
+                 * button where players already look for progression. */
+                if ui.button("Tech Tree (K)").clicked() {
+                    open_tech = true;
+                }
+            });
         });
 
     /* Mode toggle: flip survival/creative and re-stock the hotbar to
@@ -534,6 +546,13 @@ pub fn egui_ui(ctx: &egui::Context) {
         player.borrow_mut().inventory.selected = i as i32;
     }
 
+    if open_tech {
+        /* Panels are mutually exclusive, same as the K key path. */
+        close();
+        if !crate::tech_tree::is_open() {
+            crate::tech_tree::toggle();
+        }
+    }
     if do_close {
         close();
     }

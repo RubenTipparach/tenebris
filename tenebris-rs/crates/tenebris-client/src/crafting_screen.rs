@@ -419,6 +419,21 @@ fn draw_icon(p: &egui::Painter, item: u16, count: u16, rect: egui::Rect) {
     }
 }
 
+/// Hover tooltip for a recipe row: the recipe in words ("3 Stick +
+/// 1 Coal -> 4 Torch, 2s") so the icons never need guessing.
+fn recipe_tooltip(r: &Recipe) -> String {
+    let name = |s: &tenebris_core::items::ItemStack| {
+        let n = items::display_name(s.item).unwrap_or_else(|| "?".to_string());
+        if s.count > 1 {
+            format!("{} {}", s.count, n)
+        } else {
+            n
+        }
+    };
+    let ins: Vec<String> = r.inputs.iter().map(name).collect();
+    format!("{} -> {}  ({:.0}s)", ins.join(" + "), name(&r.output), r.time_s)
+}
+
 /// One clickable recipe row: the input icons on the left, then an
 /// arrow, and the RESULT icon pinned to the right edge of the row.
 /// A craftable row is lit with a green border; a non-affordable one
@@ -426,6 +441,7 @@ fn draw_icon(p: &egui::Painter, item: u16, count: u16, rect: egui::Rect) {
 fn recipe_row(ui: &mut egui::Ui, r: &Recipe, ready: bool) -> egui::Response {
     let (rect, resp) =
         ui.allocate_exact_size(egui::vec2(RECIPE_W, RECIPE_H), egui::Sense::click());
+    let resp = resp.on_hover_text(recipe_tooltip(r));
     let bg = match (ready, resp.hovered()) {
         (true, true) => egui::Color32::from_rgb(0x26, 0x3c, 0x2a),
         (true, false) => egui::Color32::from_rgb(0x1d, 0x2e, 0x20),
@@ -508,17 +524,22 @@ pub fn egui_ui(ctx: &egui::Context) {
             if let Some(player) = &player {
                 craft_progress_box(ui, player);
             }
-            for (i, r) in recipes.iter().enumerate() {
-                let ready = flags.get(i).copied().unwrap_or(false);
-                let resp = recipe_row(ui, r, ready);
-                /* Ready rows craft / enqueue; while something is
-                 * already running, dim rows enqueue too (their inputs
-                 * may exist by the time their turn comes). */
-                if resp.clicked() && (ready || busy) {
-                    craft_idx = Some(i);
+            /* Scrollable so long station rosters ride the mouse wheel
+             * (the wheel is swallowed from hotbar cycling while a
+             * panel is open - see event_inner). */
+            egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                for (i, r) in recipes.iter().enumerate() {
+                    let ready = flags.get(i).copied().unwrap_or(false);
+                    let resp = recipe_row(ui, r, ready);
+                    /* Ready rows craft / enqueue; while something is
+                     * already running, dim rows enqueue too (their
+                     * inputs may exist by the time their turn comes). */
+                    if resp.clicked() && (ready || busy) {
+                        craft_idx = Some(i);
+                    }
+                    ui.add_space(3.0);
                 }
-                ui.add_space(3.0);
-            }
+            });
             ui.add_space(4.0);
             if ui.button("Close").clicked() {
                 do_close = true;

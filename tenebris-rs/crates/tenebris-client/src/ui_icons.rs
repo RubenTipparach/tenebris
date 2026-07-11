@@ -220,6 +220,12 @@ pub fn slot(
     p.rect_stroke(rect, 3.0, egui::Stroke::new(1.0, border), egui::StrokeKind::Inside);
     if count > 0 {
         draw_icon(p, item, count, rect.shrink(5.0));
+        /* Hover tooltip: the item's name. Every grid UI (chest /
+         * crafting / furnace / inventory) shares this slot helper, so
+         * one hook covers them all. */
+        if let Some(name) = items::display_name(item) {
+            return resp.on_hover_text(name);
+        }
     }
     resp
 }

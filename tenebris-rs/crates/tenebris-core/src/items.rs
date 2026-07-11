@@ -261,6 +261,79 @@ pub fn id_by_name(name: &str) -> Option<ItemId> {
     ITEMS.iter().find(|d| d.name == name).map(|d| d.id)
 }
 
+/// Human-readable name for any item / block id, for hover tooltips.
+/// Blocks get a hand-tuned title-case name (the terse recipe name -
+/// "log", "3d-printer" - or the `block_name` "block" fallback both read
+/// badly on a tooltip); non-block items title-case their def name.
+/// `None` for an id with no icon / definition.
+pub fn display_name(id: ItemId) -> Option<String> {
+    if let Some(b) = to_block(id) {
+        return Some(block_display(b).to_string());
+    }
+    def(id).map(|d| title_case(d.name))
+}
+
+/// Title-case a kebab / snake item name ("wood-pickaxe" -> "Wood
+/// Pickaxe"). Leaves already-capitalised words alone.
+fn title_case(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for (i, word) in name.split(['-', '_']).enumerate() {
+        if i > 0 {
+            out.push(' ');
+        }
+        let mut chars = word.chars();
+        if let Some(first) = chars.next() {
+            out.extend(first.to_uppercase());
+            out.push_str(chars.as_str());
+        }
+    }
+    out
+}
+
+/// Display name for a placeable block. Complete coverage (unlike
+/// `block_name`, whose terse recipe names + "block" fallback are for
+/// parsing, not the player).
+fn block_display(b: Block) -> &'static str {
+    match b {
+        Block::Air => "Air",
+        Block::Water => "Water",
+        Block::Sand | Block::SeqSand => "Sand",
+        Block::Dirt | Block::SeqDirt => "Dirt",
+        Block::Grass | Block::SeqGrass | Block::JungleGrass => "Grass",
+        Block::DryGrass => "Dry Grass",
+        Block::Stone => "Stone",
+        Block::Ice => "Ice",
+        Block::Snow | Block::SeqSnow => "Snow",
+        Block::DirtGrass | Block::SeqDirtGrass => "Grassy Dirt",
+        Block::DirtSnow | Block::SeqDirtSnow => "Snowy Dirt",
+        Block::Torch => "Torch",
+        Block::Moon => "Moon Rock",
+        Block::CragRock => "Craggy Rock",
+        Block::FrostIce => "Frost Ice",
+        Block::AsteroidRock => "Asteroid Rock",
+        Block::Wood => "Wood Log",
+        Block::Leaves | Block::SeqLeaves => "Leaves",
+        Block::Bedrock => "Bedrock",
+        Block::CoalOre => "Coal Ore",
+        Block::CopperOre => "Copper Ore",
+        Block::TinOre => "Tin Ore",
+        Block::IronOre => "Iron Ore",
+        Block::LaunchPad => "Launch Pad",
+        Block::Furnace => "Furnace",
+        Block::ElectricFurnace => "Electric Furnace",
+        Block::Printer3D => "3D Printer",
+        Block::Computer => "Computer",
+        Block::ElectronicsWorkbench => "Electronics Workbench",
+        Block::HydroGenerator => "Hydro Generator",
+        Block::SteamEngine => "Steam Engine",
+        Block::StorageChest => "Storage Chest",
+        Block::LaunchTower => "Launch Tower",
+        Block::Cable => "Cable",
+        Block::CopperPipe => "Copper Pipe",
+        Block::Farmland => "Farmland",
+    }
+}
+
 /// Max stack for an item (1 for tools, 64 default).
 pub fn stack_size(id: ItemId) -> u16 {
     def(id).map(|d| d.stack).unwrap_or(64)

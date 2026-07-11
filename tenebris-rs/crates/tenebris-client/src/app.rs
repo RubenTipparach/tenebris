@@ -4958,6 +4958,21 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
      * (Swallowing from gameplay is added per-screen as each ports over.) */
     egui_layer::handle_event(e);
 
+    /* The mouse wheel belongs to whichever egui panel is open (recipe
+     * lists + grids scroll) - without this the same scroll ALSO cycled
+     * the hotbar underneath the crafting screen. */
+    if e._type == sapp::EventType::MouseScroll
+        && (crafting_screen::is_open()
+            || inventory_screen::is_open()
+            || chest_screen::is_open()
+            || furnace_screen::is_open()
+            || power_ui::is_open()
+            || rocket_screen::is_open()
+            || tech_tree::is_open())
+    {
+        return;
+    }
+
     /* In-game pause overlay: swallow every event it owns. */
     if menu::pause_active() && menu::pause_event(e) {
         return;
