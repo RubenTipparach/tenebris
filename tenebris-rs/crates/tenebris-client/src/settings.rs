@@ -30,6 +30,7 @@ use std::sync::Mutex;
 const KV_KEY_MOUSE_SENS: &str = "tenebris-c:settings:mouse-sens";
 const KV_KEY_CHAT_FADE: &str = "tenebris-c:settings:chat-fade-s";
 const KV_KEY_LITE_GRAPHICS: &str = "tenebris-c:settings:lite-graphics";
+const KV_KEY_ENEMY_MOBS: &str = "tenebris-c:settings:enemy-mobs";
 
 /// Min/max bounds for the mouse sensitivity slider. The UI maps the
 /// slider's normalised [0..1] position to a sensitivity value in
@@ -51,12 +52,14 @@ struct State {
     mouse_sens: f32,
     chat_fade_s: f32,
     lite_graphics: bool,
+    enemy_mobs: bool,
 }
 
 static S: Mutex<State> = Mutex::new(State {
     mouse_sens: MOUSE_SENS_DEFAULT,
     chat_fade_s: CHAT_FADE_DEFAULT_S,
     lite_graphics: false,
+    enemy_mobs: true,
 });
 
 fn lock() -> std::sync::MutexGuard<'static, State> {
@@ -102,6 +105,10 @@ pub fn init() {
         // Stored as "1" or "0" - any other value falls back to the
         // compiled default.
         s.lite_graphics = v == "1";
+    }
+    if let Some(v) = client_kv::get(KV_KEY_ENEMY_MOBS) {
+        // "0" = peaceful; anything else keeps the default (on).
+        s.enemy_mobs = v != "0";
     }
 }
 
@@ -156,6 +163,22 @@ pub fn set_lite_graphics(enabled: bool) {
     client_kv::set(KV_KEY_LITE_GRAPHICS, if enabled { "1" } else { "0" });
 }
 
+/// Hostile night mobs (stalkers). Player-facing Settings toggle;
+/// gates SP stalker spawns (see client::animals). Persistent across
+/// reloads. Off = peaceful nights.
+pub fn enemy_mobs() -> bool {
+    lock().enemy_mobs
+}
+
+pub fn set_enemy_mobs(enabled: bool) {
+    let mut s = lock();
+    if s.enemy_mobs == enabled {
+        return;
+    }
+    s.enemy_mobs = enabled;
+    client_kv::set(KV_KEY_ENEMY_MOBS, if enabled { "1" } else { "0" });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,6 +192,7 @@ mod tests {
         s.mouse_sens = MOUSE_SENS_DEFAULT;
         s.chat_fade_s = CHAT_FADE_DEFAULT_S;
         s.lite_graphics = false;
+        s.enemy_mobs = true;
     }
 
     #[test]
@@ -179,6 +203,18 @@ mod tests {
         assert_eq!(mouse_sensitivity(), MOUSE_SENS_DEFAULT);
         assert_eq!(chat_fade_s(), CHAT_FADE_DEFAULT_S);
         assert!(!lite_graphics());
+        assert!(enemy_mobs(), "enemy mobs on by default");
+    }
+
+    #[test]
+    fn enemy_mobs_toggle_persists() {
+        let _g = test_support::begin("settings_enemy_mobs");
+        reset_state();
+        set_enemy_mobs(false);
+        assert_eq!(client_kv::get(KV_KEY_ENEMY_MOBS).as_deref(), Some("0"));
+        reset_state();
+        init();
+        assert!(!enemy_mobs(), "peaceful choice survives a reload");
     }
 
     #[test]

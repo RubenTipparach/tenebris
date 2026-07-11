@@ -188,6 +188,89 @@ impl AnimalKind {
             _ => 2,
         }
     }
+
+    /// True for the catchable water species (the fishing table). The
+    /// swimming turtle rides the water habitat but is NOT a fish - it
+    /// isn't on the hook.
+    pub fn is_fish(self) -> bool {
+        matches!(
+            self,
+            AnimalKind::Fish | AnimalKind::LargeFish | AnimalKind::LongFish | AnimalKind::FlatFish
+        )
+    }
+
+    /// Fishing strength, 1..5. Drives the whole fishing minigame:
+    /// stronger fish are RARER on the line, give you a SHORTER window
+    /// to react to the bite, and reward MORE raw fish when landed.
+    /// 0 for anything that isn't a catchable fish.
+    pub fn fish_strength(self) -> u8 {
+        match self {
+            AnimalKind::Fish => 1,      // minnow - common, easy, 1 fish
+            AnimalKind::FlatFish => 2,  // ray
+            AnimalKind::LongFish => 3,  // eel
+            AnimalKind::Turtle => 4,    // NOT hooked; rated for reference
+            AnimalKind::LargeFish => 5, // reef fish - rare, twitchy, 5 fish
+            _ => 0,
+        }
+    }
+
+    /// Relative chance this species is the one that bites (weights,
+    /// not probabilities - normalised by the caller). Stronger fish
+    /// are rarer. 0 = never on the hook.
+    pub fn fishing_weight(self) -> u32 {
+        match self {
+            AnimalKind::Fish => 50,
+            AnimalKind::FlatFish => 24,
+            AnimalKind::LongFish => 16,
+            AnimalKind::LargeFish => 10,
+            _ => 0,
+        }
+    }
+
+    /// Human-readable name (player-facing HUD / menus). ASCII only.
+    pub fn display_name(self) -> &'static str {
+        match self {
+            AnimalKind::Critter => "critter",
+            AnimalKind::Stalker => "stalker",
+            AnimalKind::Cat => "cat",
+            AnimalKind::Sheep => "sheep",
+            AnimalKind::Chicken => "chicken",
+            AnimalKind::Cow => "cow",
+            AnimalKind::Bird => "bird",
+            AnimalKind::Fish => "minnow",
+            AnimalKind::Frog => "frog",
+            AnimalKind::Lizard => "lizard",
+            AnimalKind::Penguin => "penguin",
+            AnimalKind::LargeFish => "reef fish",
+            AnimalKind::LongFish => "eel",
+            AnimalKind::FlatFish => "ray",
+            AnimalKind::Turtle => "turtle",
+        }
+    }
+
+    /// The catchable fish species, ordered weakest to strongest -
+    /// the fishing roll iterates this table.
+    pub const FISHING_TABLE: [AnimalKind; 4] = [
+        AnimalKind::Fish,
+        AnimalKind::FlatFish,
+        AnimalKind::LongFish,
+        AnimalKind::LargeFish,
+    ];
+
+    /// Pick which fish bites, weighted by [`fishing_weight`]. `roll` is
+    /// a uniform [0, 1). Deterministic, so SP and MP agree.
+    pub fn roll_fishing_species(roll: f32) -> AnimalKind {
+        let total: u32 = Self::FISHING_TABLE.iter().map(|k| k.fishing_weight()).sum();
+        let mut acc = 0u32;
+        let target = (roll.clamp(0.0, 0.9999) * total as f32) as u32;
+        for k in Self::FISHING_TABLE {
+            acc += k.fishing_weight();
+            if target < acc {
+                return k;
+            }
+        }
+        AnimalKind::Fish
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1042,6 +1125,26 @@ mod tests {
             assert!(k.to_u8() <= 0x0F, "kind must fit the wire nibble");
         }
         assert_eq!(AnimalKind::from_u8(15), AnimalKind::Critter, "unknown -> critter");
+    }
+
+    #[test]
+    fn fishing_table_is_ordered_and_weighted() {
+        /* Every table entry is a fish with a strength + weight; the
+         * turtle rides the water but is NOT catchable. */
+        for k in AnimalKind::FISHING_TABLE {
+            assert!(k.is_fish(), "{k:?} must be a fish");
+            assert!(k.fish_strength() >= 1 && k.fish_strength() <= 5);
+            assert!(k.fishing_weight() > 0);
+        }
+        assert!(!AnimalKind::Turtle.is_fish());
+        assert_eq!(AnimalKind::Turtle.fishing_weight(), 0);
+        /* Strength strictly increases across the table (weakest first). */
+        let s: Vec<u8> = AnimalKind::FISHING_TABLE.iter().map(|k| k.fish_strength()).collect();
+        assert!(s.windows(2).all(|w| w[0] < w[1]), "strength ascends: {s:?}");
+        /* Weighted roll: the low end lands the common minnow, the top
+         * of the range lands the rare reef fish. */
+        assert_eq!(AnimalKind::roll_fishing_species(0.0), AnimalKind::Fish);
+        assert_eq!(AnimalKind::roll_fishing_species(0.999), AnimalKind::LargeFish);
     }
 
     #[test]

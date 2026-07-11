@@ -13,6 +13,7 @@ use std::cell::RefCell;
 
 use sokol::gl as sgl;
 
+use tenebris_core::fauna::AnimalKind;
 use tenebris_core::fishing as cfg;
 use tenebris_core::items;
 use tenebris_core::math::{
@@ -48,14 +49,31 @@ struct State {
     /// Water surface radius the float rides (body-local).
     surface_r: f64,
     seed: u32,
+    /// The species currently on / approaching the hook. Rolled when
+    /// the bite starts; its strength drives the reaction window and
+    /// the reward.
+    species: AnimalKind,
 }
 
 thread_local! {
     static S: RefCell<Option<State>> = const { RefCell::new(None) };
     static PIP3D: std::cell::Cell<sgl::Pipeline> =
         const { std::cell::Cell::new(sgl::Pipeline { id: 0 }) };
-    /// Catch counter - the HUD flashes "+1 raw fish" briefly.
+    /// Catch counter - the HUD flashes the landed catch briefly.
     static CAUGHT_FLASH_T: std::cell::Cell<f32> = const { std::cell::Cell::new(0.0) };
+    /// Rolling HUD line built each frame (species names / counts need
+    /// an owned string, unlike the static phase hints).
+    static HUD_LINE: RefCell<String> = const { RefCell::new(String::new()) };
+}
+
+/// Strength rendered as filled/empty pips, e.g. "***--" for 3/5.
+fn strength_pips(strength: u8) -> String {
+    let s = strength.min(5) as usize;
+    let mut out = String::with_capacity(5);
+    for i in 0..5 {
+        out.push(if i < s { '*' } else { '-' });
+    }
+    out
 }
 
 /// Rod-tip anchor: just right of the camera, slightly forward + down.
@@ -72,18 +90,28 @@ pub fn is_active() -> bool {
     S.with(|s| s.borrow().is_some())
 }
 
-/// HUD hint for the reticle line, if the rod has a line out.
-pub fn hint() -> Option<&'static str> {
+/// HUD hint for the reticle line, if the rod has a line out. Returns
+/// an owned String (species names / catch counts are dynamic). The
+/// caller reads it for the frame; the buffer lives in HUD_LINE so the
+/// borrow stays valid.
+pub fn hint() -> Option<String> {
+    /* Catch flash wins while it's up (set on a landed fish). */
     if CAUGHT_FLASH_T.with(|c| c.get()) > 0.0 {
-        return Some("caught a fish!");
+        return Some(HUD_LINE.with(|l| l.borrow().clone()));
     }
     S.with(|s| {
         s.borrow().as_ref().map(|st| match st.phase {
-            Phase::Flying => "casting...",
-            Phase::Floating => "waiting for a bite...",
-            Phase::Bite => "!!! bite - click to hook !!!",
-            Phase::Reeling { hooked: true } => "reeling it in!",
-            Phase::Reeling { hooked: false } => "reeling in...",
+            Phase::Flying => "casting...".to_string(),
+            Phase::Floating => "waiting for a bite...".to_string(),
+            /* The bite names the fish + its strength so the player
+             * learns to expect a twitchier hook on the big ones. */
+            Phase::Bite => format!(
+                "!!! {} [{}] - CLICK !!!",
+                st.species.display_name(),
+                strength_pips(st.species.fish_strength())
+            ),
+            Phase::Reeling { hooked: true } => "reeling it in!".to_string(),
+            Phase::Reeling { hooked: false } => "reeling in...".to_string(),
         })
     })
 }
@@ -112,6 +140,7 @@ pub fn on_click(w: &World, p: &PlayerCtrl) {
                     wait_s: 0.0,
                     surface_r: 0.0,
                     seed: (p.position.x.to_bits() as u32) ^ (p.position.z.to_bits() as u32),
+                    species: AnimalKind::Fish, /* rolled at the bite */
                 });
             }
             Some(st) => match st.phase {
@@ -143,6 +172,7 @@ pub fn update(w: &World, p: &mut PlayerCtrl, dt: f32) {
     let center = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
     let mut done = false;
     let mut caught = false;
+    let mut caught_species = AnimalKind::Fish;
 
     S.with(|cell| {
         let mut sref = cell.borrow_mut();
@@ -181,7 +211,10 @@ pub fn update(w: &World, p: &mut PlayerCtrl, dt: f32) {
                     st.phase = Phase::Bite;
                     st.t = 0.0;
                     st.seed = st.seed.wrapping_mul(0x9E37_79B9).wrapping_add(1);
-                } else if st.phase == Phase::Bite && st.t > c.bite_window_s {
+                    /* Roll which fish is on the line - strength drives
+                     * everything from here (window + reward). */
+                    st.species = AnimalKind::roll_fishing_species(hash2(st.seed as i32, 0x55));
+                } else if st.phase == Phase::Bite && st.t > bite_window_for(&c, st.species) {
                     /* Missed it - the fish lets go, the float pops up. */
                     st.phase = Phase::Floating;
                     st.t = 0.0;
@@ -202,6 +235,7 @@ pub fn update(w: &World, p: &mut PlayerCtrl, dt: f32) {
                 if st.t >= c.reel_time_s {
                     done = true;
                     caught = hooked;
+                    caught_species = st.species;
                 }
             }
         }
@@ -210,15 +244,33 @@ pub fn update(w: &World, p: &mut PlayerCtrl, dt: f32) {
     if done {
         S.with(|s| *s.borrow_mut() = None);
         if caught {
-            let mut n = 1u16;
+            /* Reward scales with the fish's strength: a strength-1
+             * minnow lands 1 raw fish, the strength-5 reef fish lands
+             * 5, plus the bonus-catch roll. */
+            let strength = caught_species.fish_strength().max(1) as u16;
+            let mut n = strength;
             let roll = hash2(p.last_tile, 0x53);
             if roll < cfg::config().bonus_catch_chance {
                 n += 1;
             }
             p.bag.add(items::RAW_FISH, n);
-            CAUGHT_FLASH_T.with(|c| c.set(1.6));
+            HUD_LINE.with(|l| {
+                *l.borrow_mut() =
+                    format!("landed {} - {} raw fish!", caught_species.display_name(), n);
+            });
+            CAUGHT_FLASH_T.with(|c| c.set(1.8));
         }
     }
+}
+
+/// The reaction window (seconds) for a bite of `species`: the base
+/// window from config, shrunk by strength so the twitchy reef fish
+/// gives you barely half the time a minnow does.
+fn bite_window_for(c: &cfg::FishingConfig, species: AnimalKind) -> f32 {
+    let strength = species.fish_strength().max(1) as f32;
+    /* strength 1 -> x1.0, strength 5 -> x0.48. */
+    let factor = 1.0 - (strength - 1.0) * 0.13;
+    (c.bite_window_s * factor).max(0.25)
 }
 
 /// Tiny colored box centred at `c` (bobber halves).

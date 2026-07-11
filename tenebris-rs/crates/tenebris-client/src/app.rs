@@ -2417,7 +2417,7 @@ fn draw_farming_hint(app: &App, screen_w: f32, screen_h: f32) {
         sdtx::canvas(screen_w, screen_h);
         sdtx::pos(x, y);
         sdtx::color3f(1.0, 0.95, 0.6);
-        sdtx::puts(msg);
+        sdtx::puts(&msg);
         return;
     }
     if crops::reticle_growth().is_some() {
