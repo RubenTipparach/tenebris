@@ -205,9 +205,6 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, p: &PlayerCtrl, time_s: f64) {
         let row_cells = (std::f64::consts::TAU / dphi).ceil() as i32;
         for pj in 0..row_cells {
             let roll = hash3(ti, pj, SALT_EXIST);
-            if roll >= cfg.density {
-                continue;
-            }
             /* Puff centre: cell centre + hashed jitter, rotated back
              * out of cloud space onto the world shell. */
             let jt = (hash3(ti, pj, SALT_JITTER_A) as f64 - 0.5) * 0.8;
@@ -237,9 +234,18 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, p: &PlayerCtrl, time_s: f64) {
             if cell.cover <= 0.03 {
                 continue; /* clear sky here */
             }
-            /* Fewer, sparser puffs where coverage is low (forming edge),
-             * full population where it's high (a solid overcast mass). */
-            if roll >= cfg.density * (0.2 + 0.8 * cell.cover) {
+            /* Coverage-driven cell population: sparse scattered puffs where
+             * coverage is low (a few forming clouds), rising to a SOLID
+             * deck (every cell filled) at full overcast - so a rain cloud
+             * always covers the ground it rains on, with no gaps for the
+             * precipitation to fall through. */
+            let cov = cell.cover as f64;
+            let sc = {
+                let t = ((cov - 0.4) / 0.6).clamp(0.0, 1.0);
+                t * t * (3.0 - 2.0 * t)
+            };
+            let eff = cfg.density as f64 + (1.0 - cfg.density as f64) * sc;
+            if (roll as f64) >= eff {
                 continue;
             }
             /* Smaller (lower-coverage) clouds scud faster: add extra spin

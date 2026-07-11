@@ -52,10 +52,10 @@ small_extra_drift: 6.0
 #                     goes flat + grey under thick cloud.
 #   overcast_amb_dim  how much full overcast dims the ambient fill (0..1).
 rain_cloud_scale: 1.7
-rain_fog_mult: 3.2
-cloud_fog_add: 0.7
-overcast_sun_dim: 0.55
-overcast_amb_dim: 0.30
+rain_fog_mult: 3.6
+cloud_fog_add: 0.8
+overcast_sun_dim: 0.72
+overcast_amb_dim: 0.48
 
 # --- Legacy (default-seed) worlds have no biome moisture map; use this
 #     flat moisture so the sky still weathers over time. ---

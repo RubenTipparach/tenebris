@@ -167,10 +167,10 @@ impl WeatherConfig {
         small_extra_drift: 6.0,
         default_moisture: 0.66,
         rain_cloud_scale: 1.7,
-        rain_fog_mult: 3.2,
-        cloud_fog_add: 0.7,
-        overcast_sun_dim: 0.55,
-        overcast_amb_dim: 0.30,
+        rain_fog_mult: 3.6,
+        cloud_fog_add: 0.8,
+        overcast_sun_dim: 0.72,
+        overcast_amb_dim: 0.48,
     };
 }
 

@@ -30,11 +30,13 @@ thread_local! {
 }
 
 /// Radius of the shower cylinder around the player, metres.
-const DISK_R_M: f64 = 16.0;
-/// Height the marks fall through above the player, metres.
-const COLUMN_H_M: f64 = 22.0;
+const DISK_R_M: f64 = 18.0;
+/// Height the marks fall through above the player, metres. Reaches up
+/// toward the cloud deck (clouds.yaml altitude ~60 m) so the shower
+/// connects to the cloud it falls from instead of floating in a band.
+const COLUMN_H_M: f64 = 46.0;
 /// Max marks at full intensity.
-const MAX_MARKS: usize = 1100;
+const MAX_MARKS: usize = 1700;
 
 /// Dev screenshot override: TENEBRIS_DEV_WEATHER=rain|snow forces a
 /// shower around the player. Read once and cached.
