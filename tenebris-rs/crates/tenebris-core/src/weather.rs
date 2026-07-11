@@ -138,6 +138,20 @@ pub struct WeatherConfig {
     /// Moisture source used on legacy (default-seed) worlds, which have
     /// no biome moisture map - a flat, still-weathering sky.
     pub default_moisture: f32,
+    /// Size multiplier applied to a rain/snow cloud so storm clouds tower
+    /// into big dark masses.
+    pub rain_cloud_scale: f32,
+    /// Distance-fog density multiplier while precipitating (thicker,
+    /// closer fog in the rain/snow).
+    pub rain_fog_mult: f32,
+    /// Extra fog density per unit of overcast coverage (cloudy = hazier
+    /// even without rain).
+    pub cloud_fog_add: f32,
+    /// How much full overcast dims the SUN term (0..1) - the region goes
+    /// flat and grey under thick cloud.
+    pub overcast_sun_dim: f32,
+    /// How much full overcast dims the AMBIENT fill (0..1).
+    pub overcast_amb_dim: f32,
 }
 
 impl WeatherConfig {
@@ -152,6 +166,11 @@ impl WeatherConfig {
         min_alpha: 0.32,
         small_extra_drift: 6.0,
         default_moisture: 0.66,
+        rain_cloud_scale: 1.7,
+        rain_fog_mult: 3.2,
+        cloud_fog_add: 0.7,
+        overcast_sun_dim: 0.55,
+        overcast_amb_dim: 0.30,
     };
 }
 
@@ -192,6 +211,11 @@ pub fn parse_config(src: &str, _path: &str) -> WeatherConfig {
             "min_alpha" => cfg.min_alpha = v,
             "small_extra_drift" => cfg.small_extra_drift = v,
             "default_moisture" => cfg.default_moisture = v,
+            "rain_cloud_scale" => cfg.rain_cloud_scale = v,
+            "rain_fog_mult" => cfg.rain_fog_mult = v,
+            "cloud_fog_add" => cfg.cloud_fog_add = v,
+            "overcast_sun_dim" => cfg.overcast_sun_dim = v,
+            "overcast_amb_dim" => cfg.overcast_amb_dim = v,
             _ => {}
         }
     }

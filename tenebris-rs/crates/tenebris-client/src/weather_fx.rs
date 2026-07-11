@@ -38,7 +38,7 @@ const MAX_MARKS: usize = 1100;
 
 /// Dev screenshot override: TENEBRIS_DEV_WEATHER=rain|snow forces a
 /// shower around the player. Read once and cached.
-fn forced_precip() -> Option<Precip> {
+pub fn forced_precip() -> Option<Precip> {
     thread_local! { static F: Cell<i8> = const { Cell::new(-2) }; }
     F.with(|c| {
         if c.get() == -2 {

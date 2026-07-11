@@ -226,7 +226,14 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, p: &PlayerCtrl, time_s: f64) {
              * is here at all + how big/opaque it is; the field drifting
              * over the world IS the spawn/grow/dissipate lifecycle. */
             let dir_w_base = rotate_y(dir_c, -drift_ang);
-            let cell = weather::cloud_cell(&w.body, dir_w_base, time_s);
+            let mut cell = weather::cloud_cell(&w.body, dir_w_base, time_s);
+            /* Dev override (TENEBRIS_DEV_WEATHER): force a dark storm deck
+             * overhead so the forced shower has clouds to fall from. */
+            if crate::weather_fx::forced_precip().is_some() {
+                cell.cover = 1.0;
+                cell.alpha = 1.0;
+                cell.raining = true;
+            }
             if cell.cover <= 0.03 {
                 continue; /* clear sky here */
             }
@@ -263,10 +270,13 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, p: &PlayerCtrl, time_s: f64) {
             let alpha = cell.alpha.clamp(0.0, 1.0);
 
             /* Size grows with coverage: a small forming cloud is a little
-             * cube, a mature mass is a wide cumulus. */
-            let sz = (0.35 + 1.1 * cell.cover as f64) * (0.65 + 0.5 * hash3(ti, pj, SALT_SIZE) as f64);
+             * cube, a mature mass is a wide cumulus. Rain/snow clouds tower
+             * into big, tall dark masses. */
+            let storm = if cell.raining { wcfg.rain_cloud_scale as f64 } else { 1.0 };
+            let sz =
+                (0.35 + 1.1 * cell.cover as f64) * (0.65 + 0.5 * hash3(ti, pj, SALT_SIZE) as f64) * storm;
             let hw = cfg.puff_w_m as f64 * sz;
-            let hh = cfg.puff_h_m as f64 * sz;
+            let hh = cfg.puff_h_m as f64 * sz * if cell.raining { 1.7 } else { 1.0 };
             if d2 > detail2 {
                 push_puff_box(pos, up, t1, t2, hw, hh * 1.4, hw * 0.8, col, alpha);
                 continue;

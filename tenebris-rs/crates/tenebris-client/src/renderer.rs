@@ -1773,6 +1773,27 @@ thread_local! {
     /// altitude fade). Stashed so the water pass - which draws AFTER
     /// the composite - can apply the same fog to the sea surface.
     static FRAME_FOG: Cell<[f32; 4]> = const { Cell::new([0.0; 4]) };
+    /// Overcast coverage at the camera this frame (0 = clear, 1 = solid
+    /// cloud). Dims + flattens the terrain lighting so a cloudy region
+    /// visibly darkens. Set in the composite/fog block, read at the
+    /// terrain uniform sites (a frame of lag on the early ones is
+    /// invisible since coverage drifts slowly).
+    static FRAME_OVERCAST: Cell<f32> = const { Cell::new(0.0) };
+}
+
+/// Overcast-dimmed ambient fill for a terrain uniform.
+fn overcast_ambient(base: Vec3) -> [f32; 3] {
+    let oc = FRAME_OVERCAST.with(|c| c.get());
+    let dim = 1.0 - oc * tenebris_core::weather::config().overcast_amb_dim;
+    [base.x * dim, base.y * dim, base.z * dim]
+}
+
+/// Overcast-dimmed sun tint for a terrain uniform (the sun is blocked more
+/// than the sky fill, so the region flattens as well as darkens).
+fn overcast_sun_tint(tint: Vec3) -> [f32; 3] {
+    let oc = FRAME_OVERCAST.with(|c| c.get());
+    let dim = 1.0 - oc * tenebris_core::weather::config().overcast_sun_dim;
+    [tint.x * dim, tint.y * dim, tint.z * dim]
 }
 
 /// Lazily create the world-entity sgl context against the offscreen
@@ -3525,7 +3546,7 @@ pub fn draw_moons(view: Mat4, proj: Mat4, camera_world: Vec3) {
             let dfp = shaders::distant::DistantFsParams {
                 u_sun_dir: [r.env.sun_dir.x, r.env.sun_dir.y, r.env.sun_dir.z],
                 u_pad0: 0.0,
-                u_ambient: [r.env.ambient.x, r.env.ambient.y, r.env.ambient.z],
+                u_ambient: overcast_ambient(r.env.ambient),
                 u_pad1: 0.0,
                 u_camera_pos: [camera_world.x, camera_world.y, camera_world.z],
                 u_normal_strength: 0.6,
@@ -3799,6 +3820,31 @@ pub fn compose_to_swapchain(view: Mat4, proj: Mat4) {
                 + w.height_offset_m
                 - w.depth_offset_m;
 
+            /* Weather at the camera: overcast coverage + whether it's
+             * precipitating here. Overcast dims the terrain lighting;
+             * precipitation + cloud thicken the fog. Sampled every frame
+             * (independent of the fog-density gate). */
+            let (wx_overcast, wx_precip) = {
+                let world = ab.world.borrow();
+                let cam = vec3_sub(r.env.camera_world, body_center);
+                let cr = (cam.x * cam.x + cam.y * cam.y + cam.z * cam.z).sqrt().max(1e-3);
+                let dir = tenebris_core::math::dvec3_make(
+                    (cam.x / cr) as f64,
+                    (cam.y / cr) as f64,
+                    (cam.z / cr) as f64,
+                );
+                let t = tenebris_core::world_time::seconds();
+                let cell = tenebris_core::weather::cloud_cell(&world.body, dir, t);
+                /* Dev override forces a full overcast storm here too, so the
+                 * fog + lighting change matches the forced precipitation. */
+                if crate::weather_fx::forced_precip().is_some() {
+                    (1.0, true)
+                } else {
+                    (cell.cover, cell.raining)
+                }
+            };
+            FRAME_OVERCAST.with(|c| c.set(wx_overcast));
+
             let bc = tenebris_core::planet::get(ab.world.borrow().body.id);
             if bc.atmo_fog_density > 0.0 {
                 let cam = vec3_sub(r.env.camera_world, body_center);
@@ -3840,11 +3886,22 @@ pub fn compose_to_swapchain(view: Mat4, proj: Mat4) {
                     let t = (1.0 - alt / height).clamp(0.0, 1.0);
                     t * t
                 };
+                /* Weather thickens the fog: a base bump per unit overcast,
+                 * and a bigger multiplier while it's actually raining /
+                 * snowing (a wall of grey close in). The colour greys +
+                 * dims toward overcast so it reads as storm haze, not the
+                 * bright clear-sky horizon. */
+                let wcfg = tenebris_core::weather::config();
+                let precip_mult = if wx_precip { wcfg.rain_fog_mult } else { 1.0 };
+                let cloud_mult = 1.0 + wx_overcast * wcfg.cloud_fog_add;
+                let grey_t = wx_overcast * 0.5;
+                let lum = (base[0] * 0.3 + base[1] * 0.59 + base[2] * 0.11) * 0.85;
+                let g = |c: f32| (c * (1.0 - grey_t) + lum * grey_t) * (1.0 - 0.2 * wx_overcast);
                 fog = [
-                    base[0] * tint[0],
-                    base[1] * tint[1],
-                    base[2] * tint[2],
-                    bc.atmo_fog_density * k,
+                    g(base[0]) * tint[0],
+                    g(base[1]) * tint[1],
+                    g(base[2]) * tint[2],
+                    bc.atmo_fog_density * k * precip_mult * cloud_mult,
                 ];
             }
         }
@@ -4013,7 +4070,7 @@ fn body_draw_water(r: &Renderer, bi: usize, vp: Mat4, camera_world: Vec3) -> usi
             u_spec_intensity: w.specular_intensity,
             u_spec_power: w.specular_power,
             _pad_52: [0; 12],
-            u_sun_tint: [w.sun_tint.x, w.sun_tint.y, w.sun_tint.z],
+            u_sun_tint: overcast_sun_tint(w.sun_tint),
             _pad_76: [0; 4],
             u_sky_horizon: [w.sky_horizon_color.x, w.sky_horizon_color.y, w.sky_horizon_color.z],
             _pad_92: [0; 4],
@@ -4087,7 +4144,7 @@ fn body_draw_water(r: &Renderer, bi: usize, vp: Mat4, camera_world: Vec3) -> usi
         u_spec_intensity: w.specular_intensity,
         u_spec_power: w.specular_power,
         _pad_84: [0; 12],
-        u_sun_tint: [w.sun_tint.x, w.sun_tint.y, w.sun_tint.z],
+        u_sun_tint: overcast_sun_tint(w.sun_tint),
         _pad_108: [0; 4],
         /* Foam scalars packed into vec4s; crest.w doubles as the mix
          * intensity, slope.w unused (kept aligned). */
@@ -4322,7 +4379,7 @@ pub fn draw_world(
                 let hex_fs_light = shaders::hex::HexFsLight {
                     u_sun_dir: [r.env.sun_dir.x, r.env.sun_dir.y, r.env.sun_dir.z],
                     _pad_12: [0; 4],
-                    u_ambient: [r.env.ambient.x, r.env.ambient.y, r.env.ambient.z],
+                    u_ambient: overcast_ambient(r.env.ambient),
                     _pad_28: [0; 4],
                     u_terminator: [l.night_ambient_floor, l.terminator_lo, l.terminator_hi, 0.0],
                 };

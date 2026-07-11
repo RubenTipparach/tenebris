@@ -42,6 +42,21 @@ rain_threshold: 0.55
 #                      wisps scud faster than heavy masses.
 small_extra_drift: 6.0
 
+# --- Storm intensity ---
+#   rain_cloud_scale  size multiplier for a rain/snow cloud - storm clouds
+#                     tower into big dark masses.
+#   rain_fog_mult     distance-fog density multiplier while precipitating
+#                     (thicker, closer fog in rain/snow).
+#   cloud_fog_add     extra fog density per unit overcast (hazy when cloudy).
+#   overcast_sun_dim  how much full overcast dims the sun (0..1) - the region
+#                     goes flat + grey under thick cloud.
+#   overcast_amb_dim  how much full overcast dims the ambient fill (0..1).
+rain_cloud_scale: 1.7
+rain_fog_mult: 3.2
+cloud_fog_add: 0.7
+overcast_sun_dim: 0.55
+overcast_amb_dim: 0.30
+
 # --- Legacy (default-seed) worlds have no biome moisture map; use this
 #     flat moisture so the sky still weathers over time. ---
 default_moisture: 0.66
