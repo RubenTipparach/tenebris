@@ -191,16 +191,19 @@ impl AnimalKind {
 
     /// How far below the sea surface a water animal's ORIGIN must stay
     /// so its drawn body (dorsal fin / shell / beating wings included)
-    /// never breaks the surface. Sized per species from the rendered
-    /// height x scale - the deep-bodied reef fish needs much more
-    /// headroom than a minnow. Non-water kinds return 0.
+    /// never breaks the surface. Sized per species as
+    /// `rendered_top_extent x scale` PLUS the swell trough depth (the
+    /// vertex swell drops the cap mesh ~0.18 m below mean sea level in a
+    /// wave trough, so a fish clamped to mean level would poke through
+    /// the dip) PLUS a small buffer. The deep-bodied reef fish needs
+    /// much more headroom than a minnow. Non-water kinds return 0.
     pub fn water_top_clearance(self) -> f64 {
         match self {
-            AnimalKind::Fish => 0.55,
-            AnimalKind::LargeFish => 1.25,
-            AnimalKind::LongFish => 0.6,
-            AnimalKind::FlatFish => 0.55,
-            AnimalKind::Turtle => 0.7,
+            AnimalKind::Fish => 0.72,       // top 0.42 + trough 0.18 + buffer
+            AnimalKind::LargeFish => 1.40,  // tall dorsal 1.08 + trough + buffer
+            AnimalKind::LongFish => 0.80,   // eel head 0.48 + trough + buffer
+            AnimalKind::FlatFish => 0.73,   // ray eyes 0.43 + trough + buffer
+            AnimalKind::Turtle => 0.85,     // shell dome 0.54 + trough + buffer
             _ => 0.0,
         }
     }
