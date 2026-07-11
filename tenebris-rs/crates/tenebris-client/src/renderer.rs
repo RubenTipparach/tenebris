@@ -1625,6 +1625,12 @@ struct Renderer {
     flow_arrow_smp: sg::Sampler,
     flow_arrow_pip: sgl::Pipeline,
 
+    /* Animal texture atlas (assets/textures/animals.png) - one 32x32
+     * unwrap tile per AnimalKind, sampled by client::animals. */
+    animal_tex_img: sg::Image,
+    animal_tex_view: sg::View,
+    animal_tex_smp: sg::Sampler,
+
     distant_lod_smp: sg::Sampler,
 
     /* Offscreen colour + depth render targets (Phase A scaffolding -
@@ -1694,6 +1700,9 @@ impl Default for Renderer {
             flow_arrow_view: sg::View::new(),
             flow_arrow_smp: sg::Sampler::new(),
             flow_arrow_pip: sgl::Pipeline { id: 0 },
+            animal_tex_img: sg::Image::new(),
+            animal_tex_view: sg::View::new(),
+            animal_tex_smp: sg::Sampler::new(),
             distant_lod_smp: sg::Sampler::new(),
             offscreen_color: sg::Image::new(),
             offscreen_depth: sg::Image::new(),
@@ -1960,6 +1969,54 @@ fn load_water_normal(r: &mut Renderer) {
         label: c"distant-lod-sampler".as_ptr(),
         ..Default::default()
     });
+}
+
+/// Animal texture atlas - one 32x32 unwrap tile per AnimalKind
+/// (tools/gen-animal-textures.py). NEAREST so the pixel-art fur /
+/// scales stay crisp on the box bodies.
+fn load_animal_textures(r: &mut Renderer) {
+    const FALLBACK: [u8; 4] = [200, 160, 120, 255];
+    let loaded = load_png_rgba("assets/textures/animals.png", false);
+    let (w, h, pixels): (i32, i32, &[u8]) = match &loaded {
+        Some(img) => (img.w, img.h, &img.rgba),
+        None => {
+            println!(
+                "[renderer] WARNING: assets/textures/animals.png missing; \
+                 animals will render flat-tinted"
+            );
+            (1, 1, &FALLBACK)
+        }
+    };
+    let mut desc = sg::ImageDesc {
+        width: w,
+        height: h,
+        pixel_format: sg::PixelFormat::Rgba8,
+        label: c"animal-atlas".as_ptr(),
+        ..Default::default()
+    };
+    desc.data.mip_levels[0] = sg::slice_as_range(pixels);
+    r.animal_tex_img = sg::make_image(&desc);
+    r.animal_tex_view = sg::make_view(&sg::ViewDesc {
+        texture: sg::TextureViewDesc { image: r.animal_tex_img, ..Default::default() },
+        label: c"animal-atlas-view".as_ptr(),
+        ..Default::default()
+    });
+    r.animal_tex_smp = sg::make_sampler(&sg::SamplerDesc {
+        min_filter: sg::Filter::Nearest,
+        mag_filter: sg::Filter::Nearest,
+        wrap_u: sg::Wrap::ClampToEdge,
+        wrap_v: sg::Wrap::ClampToEdge,
+        label: c"animal-atlas-sampler".as_ptr(),
+        ..Default::default()
+    });
+}
+
+/// Raw view / sampler ids for the animal atlas (client::animals).
+pub fn animal_view_id() -> u32 {
+    R.with(|cell| cell.borrow().animal_tex_view.id)
+}
+pub fn animal_sampler_id() -> u32 {
+    R.with(|cell| cell.borrow().animal_tex_smp.id)
 }
 
 /// Port of `load_flow_arrow()` - F5 overlay texture; NEAREST so the
@@ -2395,6 +2452,7 @@ pub fn init() {
         bake_atlas(&mut r);
         load_water_normal(&mut r);
         load_flow_arrow(&mut r);
+        load_animal_textures(&mut r);
         /* Per-chunk meshes are allocated lazily once a body registers. */
     });
 }
