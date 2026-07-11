@@ -17,7 +17,9 @@ pub struct CloudsConfig {
     pub cell_m: f32,
     /// Probability (0..1) a cell holds a puff. <= 0 disables clouds.
     pub density: f32,
-    /// Draw distance for puffs, metres from the player.
+    /// Detail range, metres from the player: puffs inside draw their
+    /// full lump cluster, puffs beyond LOD down to a single slab. The
+    /// layer itself always covers the whole shell (horizon-culled).
     pub range_m: f32,
     /// Drift speed of the layer, metres/second (rotates about the spin
     /// axis, so clouds cross the sky like weather, not a skybox).

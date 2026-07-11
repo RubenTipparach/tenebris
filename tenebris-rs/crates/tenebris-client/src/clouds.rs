@@ -6,11 +6,16 @@
 //! whole sampling frame rotated about the planet's spin axis by
 //! `time * drift / shell_radius` - the pattern rotating IS the drift,
 //! so clouds cross the sky like weather without any per-cloud storage,
-//! and every client on a body sees the same sky. Rendering goes through
-//! the renderer's world-space sokol_gl context (like `animals.rs`) so
-//! puffs z-sort against terrain and sit under the composite
-//! post-process. Tuning lives in `assets/config/clouds.yaml`
-//! (core::clouds).
+//! and every client on a body sees the same sky. The layer covers the
+//! WHOLE shell: every cell whose puff clears the planet's horizon is
+//! drawn (each puff's box frame is spanned by its own surface normal,
+//! so the layer visibly curves around the globe and stays a coherent
+//! sphere of weather when seen from space). Puffs beyond `range_m`
+//! drop their lump cluster and draw as a single slab - an LOD, not a
+//! cutoff. Rendering goes through the renderer's world-space sokol_gl
+//! context (like `animals.rs`) so puffs z-sort against terrain and sit
+//! under the composite post-process. Tuning lives in
+//! `assets/config/clouds.yaml` (core::clouds).
 
 use std::cell::Cell;
 
@@ -108,10 +113,6 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, p: &PlayerCtrl, time_s: f64) {
         return;
     }
     let shell_r = w.body.radius_m as f64 + cfg.altitude_m as f64;
-    /* No clouds once you fly well above the layer's neighbourhood. */
-    if r > shell_r + cfg.range_m as f64 {
-        return;
-    }
 
     /* Sample frame: rotate the player direction INTO cloud space (the
      * pattern is fixed there; the inverse rotation on the way out is
@@ -121,11 +122,25 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, p: &PlayerCtrl, time_s: f64) {
     let dir = rotate_y(dir_world, drift_ang);
 
     let theta_p = dir.y.clamp(-1.0, 1.0).acos(); /* 0..pi from +Y */
-    let phi_p = dir.z.atan2(dir.x); /* -pi..pi */
 
     let cell_ang = (cfg.cell_m as f64 / shell_r).max(1e-5);
-    let n = (cfg.range_m as f64 / cfg.cell_m as f64).ceil() as i32 + 1;
-    let ti_p = (theta_p / cell_ang).floor() as i32;
+    let n_rows = (std::f64::consts::PI / cell_ang).ceil() as i32;
+
+    /* Horizon cull: a shell point is (conservatively) visible when the
+     * angle between it and the player, both seen from the planet
+     * centre, is under the sum of the two tangent-horizon angles -
+     * acos(R/r) for the player, acos(R/shell) for the puff - plus a
+     * puff-width margin so clouds peeking over the horizon still draw.
+     * On the surface this collapses to the shell's own horizon cap;
+     * from space it opens up to the full facing hemisphere. dot() is
+     * rotation-invariant, so the test runs in cloud space before any
+     * rotate-back. */
+    let planet_r = w.body.radius_m as f64;
+    let horizon_player = (planet_r / r.max(planet_r)).clamp(-1.0, 1.0).acos();
+    let horizon_puff = (planet_r / shell_r).clamp(-1.0, 1.0).acos();
+    let margin_ang = 2.0 * cfg.puff_w_m as f64 / shell_r;
+    let view_ang = horizon_player + horizon_puff + margin_ang;
+    let cos_view = view_ang.min(std::f64::consts::PI).cos();
 
     renderer::sgl_world_begin();
     sgl::defaults();
@@ -150,11 +165,15 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, p: &PlayerCtrl, time_s: f64) {
     sgl::load_pipeline(pip);
     sgl::begin_triangles();
 
-    let range2 = (cfg.range_m as f64) * (cfg.range_m as f64);
-    for di in -n..=n {
-        let ti = ti_p + di;
+    let detail2 = (cfg.range_m as f64) * (cfg.range_m as f64);
+    for ti in 0..n_rows {
         let theta_c = (ti as f64 + 0.5) * cell_ang;
-        if theta_c <= 0.0 || theta_c >= std::f64::consts::PI {
+        if theta_c >= std::f64::consts::PI {
+            continue;
+        }
+        /* Row cull: co-latitude difference lower-bounds the great-
+         * circle distance to every cell in the row. */
+        if (theta_c - theta_p).abs() > view_ang + cell_ang {
             continue;
         }
         /* Row-local longitude step: cells stay ~cell_m wide as the
@@ -163,9 +182,8 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, p: &PlayerCtrl, time_s: f64) {
          * per row). */
         let sin_t = theta_c.sin().max(0.05);
         let dphi = cell_ang / sin_t;
-        let pj_p = (phi_p / dphi).floor() as i32;
-        for dj in -n..=n {
-            let pj = pj_p + dj;
+        let row_cells = (std::f64::consts::TAU / dphi).ceil() as i32;
+        for pj in 0..row_cells {
             if hash3(ti, pj, SALT_EXIST) >= cfg.density {
                 continue;
             }
@@ -178,15 +196,16 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, p: &PlayerCtrl, time_s: f64) {
             let (st, ct) = theta.sin_cos();
             let (sp, cp) = phi.sin_cos();
             let dir_c = dvec3_make(st * cp, ct, st * sp);
+            /* Behind the planet's horizon - skip before rotate-back. */
+            if dir_c.x * dir.x + dir_c.y * dir.y + dir_c.z * dir.z < cos_view {
+                continue;
+            }
             let dir_w = rotate_y(dir_c, -drift_ang);
             let pos = dvec3_add(center, dvec3_scale(dir_w, shell_r));
             let d2 = {
                 let d = dvec3_sub(pos, p.position);
                 d.x * d.x + d.y * d.y + d.z * d.z
             };
-            if d2 > range2 {
-                continue;
-            }
 
             /* Local frame + day/night lit colour (moonlit floor). */
             let up = dir_w;
@@ -202,10 +221,17 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, p: &PlayerCtrl, time_s: f64) {
 
             /* The puff: a wide flat slab plus a few smaller lumps on
              * top / to the side - reads as cumulus from below and from
-             * the side without any texture. */
+             * the side without any texture. Beyond the detail range
+             * the lump cluster is subpixel noise, so the puff LODs
+             * down to just the slab (slightly thickened to keep the
+             * silhouette mass). */
             let sz = 0.7 + 0.8 * hash3(ti, pj, SALT_SIZE) as f64;
             let hw = cfg.puff_w_m as f64 * sz;
             let hh = cfg.puff_h_m as f64 * sz;
+            if d2 > detail2 {
+                push_puff_box(pos, up, t1, t2, hw, hh * 1.4, hw * 0.8, col);
+                continue;
+            }
             push_puff_box(pos, up, t1, t2, hw, hh, hw * 0.8, col);
             let lumps = 2 + (hash3(ti, pj, SALT_LUMPS) * 3.0) as i32;
             for l in 0..lumps {
