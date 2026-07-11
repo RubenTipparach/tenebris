@@ -248,11 +248,17 @@ pub fn dev_spawn(w: &World, p: &PlayerCtrl) {
                 let id = s.next_id;
                 s.next_id = s.next_id.wrapping_add(1).max(1);
                 let mut a = Animal::new(id, pos, dir);
-                /* Stage the new visuals for the shot: one stalker in the
-                 * shadow palette, one critter mid hit-flash. */
-                if k == 2 {
-                    a.kind = fauna::AnimalKind::Stalker;
-                }
+                /* Zoo lineup: one of each new kind so a shot frames the
+                 * whole menagerie; slot 3 also mid hit-flash. */
+                const ZOO: [fauna::AnimalKind; 6] = [
+                    fauna::AnimalKind::Cat,
+                    fauna::AnimalKind::Sheep,
+                    fauna::AnimalKind::Chicken,
+                    fauna::AnimalKind::Cow,
+                    fauna::AnimalKind::Bird,
+                    fauna::AnimalKind::Frog,
+                ];
+                a.kind = ZOO[k as usize % ZOO.len()];
                 if k == 3 {
                     a.hurt_t = 0.3; /* lands on a red blink-on interval */
                 }
@@ -396,7 +402,7 @@ pub fn update(dt: f32, w: &World, p: &mut PlayerCtrl) {
         {
             s.spawn_cd = SPAWN_INTERVAL_S;
             let id = s.next_id;
-            if let Some(a) = fauna::spawn_near(w, p.position, id, salt) {
+            if let Some(a) = fauna::spawn_near_auto(w, p.position, id, salt) {
                 s.list.push(a);
                 s.next_id = s.next_id.wrapping_add(1).max(1);
             }
@@ -465,6 +471,7 @@ pub fn hit(idx: i32, dmg: f32, from: Vec3) -> u16 {
         }
         let center = s.body_center;
         let a = &mut s.list[idx as usize];
+        let corpse_kind_meat = a.kind.meat();
         let up = dvec3_normalize(dvec3_sub(a.pos, center));
         let from_d = dvec3_make(from.x as f64, from.y as f64, from.z as f64);
         fauna::hit(a, dmg, from_d, up);
@@ -473,8 +480,8 @@ pub fn hit(idx: i32, dmg: f32, from: Vec3) -> u16 {
             let corpse = Corpse { pos: a.pos, heading: a.heading, age: 0.0 };
             s.list.swap_remove(idx as usize);
             s.corpses.push(corpse);
-            /* Two to three meat per critter. */
-            2 + (rng::hash2(idx.wrapping_mul(31), 5) * 2.0) as u16
+            /* Per-kind base meat (cows best) + a 0..2 roll. */
+            corpse_kind_meat + (rng::hash2(idx.wrapping_mul(31), 5) * 2.0) as u16
         } else {
             0
         }
@@ -531,6 +538,143 @@ fn draw_box(cx: f32, cy: f32, cz: f32, hx: f32, hy: f32, hz: f32, r: f32, g: f32
         }
     }
     sgl::end();
+}
+
+/// Draw one animal of any procedural kind (origin at feet, +Y up,
+/// faces -Z; sizes scale with kind.scale()). The dog-like base critter
+/// keeps the baked model path; the menagerie below is drawn from boxes
+/// with per-kind silhouettes and palettes so each species reads at a
+/// glance: puffy white sheep, tiny pecking chicken, patched cow, slim
+/// grey cat, flapping bird, finned fish, squat green frog.
+fn draw_kind(
+    kind: AnimalKind,
+    pos: DVec3,
+    up: DVec3,
+    heading: DVec3,
+    phase: f32,
+    moving: bool,
+    lit: f32,
+    tint: [f32; 3],
+) {
+    let basis = orient_basis(up, heading);
+    let swing = if moving { phase.sin() * 0.5 } else { 0.0 };
+    let sc = kind.scale();
+
+    sgl::push_matrix();
+    sgl::translate(pos.x as f32, pos.y as f32, pos.z as f32);
+    sgl::mult_matrix(&basis[0]);
+    sgl::scale(sc, sc, sc);
+
+    let b = |cx: f32, cy: f32, cz: f32, hx: f32, hy: f32, hz: f32, r: f32, g: f32, bl: f32| {
+        draw_box(cx, cy, cz, hx, hy, hz, r * tint[0], g * tint[1], bl * tint[2], lit);
+    };
+    let leg4 = |x: f32, z: f32, sw: f32, len: f32, r: f32, g: f32, bl: f32| {
+        sgl::push_matrix();
+        sgl::translate(x, len * 2.0, z);
+        sgl::rotate(sw, 1.0, 0.0, 0.0);
+        sgl::translate(0.0, -len, 0.0);
+        draw_box(0.0, 0.0, 0.0, 0.05, len, 0.05, r * tint[0], g * tint[1], bl * tint[2], lit);
+        sgl::pop_matrix();
+    };
+
+    match kind {
+        AnimalKind::Cat => {
+            /* Slim grey body, tail carried high, pointy ears. */
+            b(0.0, 0.42, 0.0, 0.11, 0.10, 0.28, 0.38, 0.36, 0.40);
+            b(0.0, 0.50, -0.34, 0.10, 0.09, 0.09, 0.44, 0.42, 0.46);
+            b(-0.06, 0.62, -0.34, 0.025, 0.05, 0.02, 0.30, 0.28, 0.32);
+            b(0.06, 0.62, -0.34, 0.025, 0.05, 0.02, 0.30, 0.28, 0.32);
+            /* Raised tail: two segments angling up. */
+            b(0.0, 0.52, 0.32, 0.025, 0.025, 0.10, 0.34, 0.32, 0.36);
+            b(0.0, 0.64, 0.40, 0.025, 0.09, 0.025, 0.34, 0.32, 0.36);
+            for (x, z, sw) in
+                [(-0.08, -0.20, swing), (0.08, 0.20, swing), (0.08, -0.20, -swing), (-0.08, 0.20, -swing)]
+            {
+                leg4(x, z, sw, 0.16, 0.32, 0.30, 0.34);
+            }
+        }
+        AnimalKind::Sheep => {
+            /* Puffy wool slab over dark legs + face. */
+            b(0.0, 0.52, 0.0, 0.20, 0.17, 0.30, 0.92, 0.90, 0.86);
+            b(0.0, 0.58, -0.36, 0.10, 0.10, 0.10, 0.28, 0.26, 0.24);
+            b(0.0, 0.68, -0.30, 0.14, 0.06, 0.10, 0.92, 0.90, 0.86); /* wool cap */
+            for (x, z, sw) in
+                [(-0.11, -0.20, swing), (0.11, 0.20, swing), (0.11, -0.20, -swing), (-0.11, 0.20, -swing)]
+            {
+                leg4(x, z, sw, 0.17, 0.24, 0.22, 0.20);
+            }
+        }
+        AnimalKind::Chicken => {
+            /* Tiny white body, red comb, orange beak, two legs. */
+            b(0.0, 0.55, 0.0, 0.16, 0.15, 0.20, 0.95, 0.93, 0.90);
+            b(0.0, 0.80, -0.16, 0.09, 0.11, 0.09, 0.95, 0.93, 0.90);
+            b(0.0, 0.94, -0.16, 0.03, 0.04, 0.06, 0.85, 0.15, 0.12); /* comb */
+            b(0.0, 0.78, -0.27, 0.03, 0.03, 0.04, 0.95, 0.55, 0.10); /* beak */
+            for (x, sw) in [(-0.06, swing), (0.06, -swing)] {
+                sgl::push_matrix();
+                sgl::translate(x, 0.40, 0.0);
+                sgl::rotate(sw, 1.0, 0.0, 0.0);
+                sgl::translate(0.0, -0.20, 0.0);
+                draw_box(0.0, 0.0, 0.0, 0.03, 0.20, 0.03, 0.9 * tint[0], 0.6 * tint[1], 0.15 * tint[2], lit);
+                sgl::pop_matrix();
+            }
+        }
+        AnimalKind::Cow => {
+            /* Big brown body with white patches, short horns, low head. */
+            b(0.0, 0.50, 0.0, 0.19, 0.15, 0.32, 0.42, 0.28, 0.20);
+            b(0.06, 0.56, -0.05, 0.14, 0.10, 0.14, 0.90, 0.88, 0.84); /* patch */
+            b(-0.09, 0.47, 0.16, 0.11, 0.10, 0.12, 0.90, 0.88, 0.84); /* patch */
+            b(0.0, 0.48, -0.40, 0.11, 0.11, 0.10, 0.38, 0.25, 0.18);
+            b(-0.10, 0.60, -0.40, 0.035, 0.035, 0.03, 0.88, 0.86, 0.80); /* horn */
+            b(0.10, 0.60, -0.40, 0.035, 0.035, 0.03, 0.88, 0.86, 0.80);
+            for (x, z, sw) in
+                [(-0.12, -0.22, swing), (0.12, 0.22, swing), (0.12, -0.22, -swing), (-0.12, 0.22, -swing)]
+            {
+                leg4(x, z, sw, 0.17, 0.32, 0.22, 0.16);
+            }
+        }
+        AnimalKind::Bird => {
+            /* Small dark-blue body; wings flap fast while moving. */
+            b(0.0, 0.50, 0.0, 0.10, 0.09, 0.18, 0.25, 0.32, 0.58);
+            b(0.0, 0.60, -0.20, 0.06, 0.06, 0.07, 0.28, 0.36, 0.62);
+            b(0.0, 0.58, -0.29, 0.02, 0.02, 0.04, 0.95, 0.65, 0.15); /* beak */
+            let flap = if moving { (phase * 2.2).sin() * 0.9 } else { 0.25 };
+            for side in [-1.0f32, 1.0] {
+                sgl::push_matrix();
+                sgl::translate(side * 0.10, 0.55, 0.0);
+                sgl::rotate(side * flap, 0.0, 0.0, 1.0);
+                sgl::translate(side * 0.14, 0.0, 0.0);
+                draw_box(0.0, 0.0, 0.0, 0.14, 0.02, 0.12, 0.20 * tint[0], 0.26 * tint[1], 0.50 * tint[2], lit);
+                sgl::pop_matrix();
+            }
+        }
+        AnimalKind::Fish => {
+            /* Horizontal body at swim height, tail sculling. */
+            b(0.0, 0.50, 0.0, 0.09, 0.13, 0.26, 0.35, 0.45, 0.60);
+            b(0.0, 0.68, 0.02, 0.02, 0.08, 0.10, 0.30, 0.40, 0.55); /* dorsal */
+            sgl::push_matrix();
+            sgl::translate(0.0, 0.50, 0.28);
+            sgl::rotate((phase * 1.6).sin() * 0.6, 0.0, 1.0, 0.0);
+            draw_box(0.0, 0.0, 0.10, 0.02, 0.11, 0.10, 0.30 * tint[0], 0.40 * tint[1], 0.55 * tint[2], lit);
+            sgl::pop_matrix();
+        }
+        AnimalKind::Frog => {
+            /* Squat green body, bulging eyes, folded legs. */
+            b(0.0, 0.30, 0.0, 0.16, 0.13, 0.18, 0.24, 0.55, 0.20);
+            b(-0.08, 0.48, -0.12, 0.045, 0.05, 0.045, 0.85, 0.85, 0.30); /* eye */
+            b(0.08, 0.48, -0.12, 0.045, 0.05, 0.045, 0.85, 0.85, 0.30);
+            b(-0.16, 0.18, 0.10, 0.06, 0.09, 0.10, 0.20, 0.46, 0.16); /* haunches */
+            b(0.16, 0.18, 0.10, 0.06, 0.09, 0.10, 0.20, 0.46, 0.16);
+        }
+        _ => {
+            /* Critter / stalker fall back to the classic dog shape. */
+            sgl::pop_matrix();
+            draw_critter(pos, up, heading, phase, moving, lit);
+            return;
+        }
+    }
+
+    sgl::pop_matrix();
 }
 
 /// Draw one quadruped critter (origin at feet, +Y up, faces -Z).
@@ -630,8 +774,10 @@ pub fn draw(view: Mat4, proj: Mat4, time_s: f32) {
         } else {
             [1.0, 1.0, 1.0]
         };
+        let baked_kind =
+            matches!(a.kind, AnimalKind::Critter | AnimalKind::Stalker);
         match &set {
-            Some(set) => {
+            Some(set) if baked_kind => {
                 /* Walk/flee/chase sample the baked walk clip on the sim's
                  * anim_phase (flee accumulates 2x faster -> faster gait);
                  * idle samples the grazing clip on the wall clock, offset
@@ -648,8 +794,19 @@ pub fn draw(view: Mat4, proj: Mat4, time_s: f32) {
                 baked_model::draw_tinted(&set.model, Some((clip, t)), lit, tint);
                 sgl::pop_matrix();
             }
-            None => {
-                draw_critter(draw_pos, up, a.heading, a.anim_phase, a.state != AnimalState::Idle, lit * tint[1].min(1.0));
+            _ => {
+                /* The menagerie (and the no-assets fallback) draws the
+                 * per-kind procedural body. */
+                draw_kind(
+                    a.kind,
+                    draw_pos,
+                    up,
+                    a.heading,
+                    a.anim_phase,
+                    a.state != AnimalState::Idle,
+                    lit,
+                    tint,
+                );
             }
         }
     }

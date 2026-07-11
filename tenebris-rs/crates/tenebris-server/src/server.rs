@@ -1780,7 +1780,7 @@ impl Server {
                         ab.spawn_cd = SPAWN_INTERVAL_S;
                         if critters < ANIMALS_PER_BODY {
                             ab.next_id = ab.next_id.wrapping_add(1).max(1);
-                            if let Some(a) = fauna::spawn_near(w, anchor, ab.next_id, salt) {
+                            if let Some(a) = fauna::spawn_near_auto(w, anchor, ab.next_id, salt) {
                                 ab.list.push(a);
                             }
                         }
@@ -2010,11 +2010,12 @@ impl Server {
         let Some(idx) = ab.list.iter().position(|a| a.id == m.animal_id) else { return };
         /* Sanity-cap the damage; the client's swing is ATTACK_DAMAGE=5. */
         let dmg = m.dmg.clamp(0.0, 20.0);
+        let kind_meat = ab.list[idx].kind.meat();
         let up = dvec3_normalize(dvec3_sub(ab.list[idx].pos, center));
         fauna::hit(&mut ab.list[idx], dmg, from, up);
         if !ab.list[idx].is_alive() {
-            /* Same meat roll the SP client uses. */
-            let meat = 2 + (rng::hash2(idx as i32 * 31, 5) * 2.0) as u16;
+            /* Same per-kind meat roll the SP client uses. */
+            let meat = kind_meat + (rng::hash2(idx as i32 * 31, 5) * 2.0) as u16;
             ab.list.swap_remove(idx);
             ab.pending_kill = Some((player_id, meat));
         }

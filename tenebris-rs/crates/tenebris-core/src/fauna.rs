@@ -22,33 +22,125 @@
 use crate::math::{
     dvec3_add, dvec3_cross, dvec3_dot, dvec3_length, dvec3_normalize, dvec3_scale, dvec3_sub, DVec3,
 };
+use crate::blocks::Block;
+use crate::math::Vec3;
 use crate::rng;
-use crate::world::World;
+use crate::world::{World, WORLD_SEA_LEVEL_DEPTH};
 use std::f64::consts::TAU;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AnimalKind {
-    /// Passive quadruped, hunted for meat.
+    /// Passive quadruped (the dog-like original), hunted for meat.
     Critter,
     /// Night-spawned hostile: chases players, lunges on contact, gone
     /// by day.
     Stalker,
+    /// Small, quick, skittish.
+    Cat,
+    /// Slow woolly grazer.
+    Sheep,
+    /// Tiny two-legged pecker.
+    Chicken,
+    /// Big slow grazer, best meat.
+    Cow,
+    /// Flies a couple of metres above the ground, crosses water.
+    Bird,
+    /// Water-only: swims below the surface, beaches nowhere.
+    Fish,
+    /// Swamp hopper - moves in little jumps even on flat ground.
+    Frog,
+}
+
+/// Where an animal is allowed to be (drives the reseat rules).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Habitat {
+    /// Walks the ground, REFUSES to enter water (turns away at shores).
+    Land,
+    /// Lives in the water column; refuses to leave it.
+    Water,
+    /// Flies above the floor; terrain and water both pass underneath.
+    Air,
 }
 
 impl AnimalKind {
     /// Stable wire byte (packed into the AnimalState entry's state
-    /// byte's high nibble - append only, never renumber).
+    /// byte's high nibble, 0..15 - append only, never renumber).
     pub fn to_u8(self) -> u8 {
         match self {
             AnimalKind::Critter => 0,
             AnimalKind::Stalker => 1,
+            AnimalKind::Cat => 2,
+            AnimalKind::Sheep => 3,
+            AnimalKind::Chicken => 4,
+            AnimalKind::Cow => 5,
+            AnimalKind::Bird => 6,
+            AnimalKind::Fish => 7,
+            AnimalKind::Frog => 8,
         }
     }
 
     pub fn from_u8(v: u8) -> AnimalKind {
         match v {
             1 => AnimalKind::Stalker,
+            2 => AnimalKind::Cat,
+            3 => AnimalKind::Sheep,
+            4 => AnimalKind::Chicken,
+            5 => AnimalKind::Cow,
+            6 => AnimalKind::Bird,
+            7 => AnimalKind::Fish,
+            8 => AnimalKind::Frog,
             _ => AnimalKind::Critter,
+        }
+    }
+
+    pub fn habitat(self) -> Habitat {
+        match self {
+            AnimalKind::Bird => Habitat::Air,
+            AnimalKind::Fish => Habitat::Water,
+            _ => Habitat::Land,
+        }
+    }
+
+    /// Ambling speed, m/s (flee is a multiple of this).
+    pub fn walk_speed(self) -> f64 {
+        match self {
+            AnimalKind::Critter => 1.4,
+            AnimalKind::Stalker => 1.4,
+            AnimalKind::Cat => 1.8,
+            AnimalKind::Sheep => 0.9,
+            AnimalKind::Chicken => 1.1,
+            AnimalKind::Cow => 0.8,
+            AnimalKind::Bird => 2.6,
+            AnimalKind::Fish => 1.6,
+            AnimalKind::Frog => 1.0,
+        }
+    }
+
+    /// Visual scale relative to the base critter body.
+    pub fn scale(self) -> f32 {
+        match self {
+            AnimalKind::Critter | AnimalKind::Stalker => 1.0,
+            AnimalKind::Cat => 0.55,
+            AnimalKind::Sheep => 1.05,
+            AnimalKind::Chicken => 0.42,
+            AnimalKind::Cow => 1.45,
+            AnimalKind::Bird => 0.30,
+            AnimalKind::Fish => 0.55,
+            AnimalKind::Frog => 0.35,
+        }
+    }
+
+    /// Base meat awarded on a kill (before the +0..2 roll).
+    pub fn meat(self) -> u16 {
+        match self {
+            AnimalKind::Cow => 4,
+            AnimalKind::Sheep => 3,
+            AnimalKind::Chicken => 1,
+            AnimalKind::Bird => 1,
+            AnimalKind::Fish => 1,
+            AnimalKind::Frog => 1,
+            AnimalKind::Cat => 1,
+            _ => 2,
         }
     }
 }
@@ -219,15 +311,29 @@ fn jitter_heading(h: DVec3, up: DVec3, id: u32, salt: u32) -> DVec3 {
     rotate_about_up(h, up, a)
 }
 
-/// Ground speed for the current state, m/s.
+/// Ground speed for the current state, m/s (per-kind base speed;
+/// fleeing and chasing scale it the way the original constants did).
 fn state_speed(a: &Animal) -> f64 {
+    let base = a.kind.walk_speed();
     match a.state {
-        AnimalState::Walk => WALK_SPEED,
-        AnimalState::Flee => FLEE_SPEED,
+        AnimalState::Walk => base,
+        AnimalState::Flee => base * (FLEE_SPEED / WALK_SPEED),
         AnimalState::Chase => CHASE_SPEED,
         _ => 0.0,
     }
 }
+
+/// Frogs travel in little hops: the grounded "sit" between jumps, and
+/// the virtual step height that sets the hop's launch speed (via the
+/// same sqrt(2g(dr+clear)) the step-jump uses).
+const FROG_HOP_EVERY_S: f32 = 0.9;
+const FROG_HOP_DR_M: f64 = 0.35;
+/// Cruising height of a bird above the walkable floor, metres.
+const BIRD_FLY_M: f64 = 2.6;
+/// Vertical bob amplitude of a flying bird / swimming fish, metres.
+const FLY_BOB_M: f64 = 0.35;
+/// Water clearance for fish: min above the sea floor / below the surface.
+const FISH_PAD_M: f64 = 0.4;
 
 /// Advance one animal by `dt`. `up` is the surface normal at its position;
 /// `tick_salt` varies the wander RNG over time. Moves `pos` along the
@@ -274,6 +380,19 @@ pub fn tick_with_target(
                 }
             }
         }
+    }
+
+    /* Frogs travel in hops: whenever one is grounded and wants to
+     * move, arm the same stop-then-jump machinery the step logic uses
+     * (the pause is the "sit" between hops). */
+    if a.kind == AnimalKind::Frog
+        && !a.airborne
+        && a.is_moving()
+        && a.jump_pause_t <= 0.0
+        && a.jump_dr <= 0.0
+    {
+        a.jump_pause_t = FROG_HOP_EVERY_S * (0.7 + 0.6 * rand01(a.id, tick_salt));
+        a.jump_dr = FROG_HOP_DR_M;
     }
 
     /* The "stop before you jump" beat: stand still, then launch. */
@@ -391,6 +510,43 @@ pub fn spawn_near(w: &World, anchor_world: DVec3, id: u32, salt: u32) -> Option<
     spawn_near_kind(w, anchor_world, id, salt, AnimalKind::Critter)
 }
 
+/// Ring-spawn with an AUTO kind: the ring point decides - water tiles
+/// spawn fish (lifted into the water column), dry land rolls the
+/// grazer table with an occasional bird. Client + server both spawn
+/// through this so SP and MP fauna mixes match.
+pub fn spawn_near_auto(w: &World, anchor_world: DVec3, id: u32, salt: u32) -> Option<Animal> {
+    let mut a = spawn_near(w, anchor_world, id, salt)?;
+    let center = DVec3 { x: w.body.pos_x, y: w.body.pos_y, z: w.body.pos_z };
+    let rel = dvec3_sub(a.pos, center);
+    let probe = dvec3_add(a.pos, dvec3_scale(dvec3_normalize(rel), 0.4));
+    let lp = dvec3_sub(probe, center);
+    let in_water = w.body.has_water
+        && w.block_at_pos(Vec3 { x: lp.x as f32, y: lp.y as f32, z: lp.z as f32 }, -1)
+            == Block::Water;
+    a.kind = if in_water {
+        /* Lift the spawn into the swimmable column; reseat clamps. */
+        let r = dvec3_length(rel);
+        a.pos = dvec3_add(center, dvec3_scale(dvec3_normalize(rel), r + FISH_PAD_M + 0.3));
+        AnimalKind::Fish
+    } else {
+        let roll = rand01(id, salt.wrapping_add(41));
+        if roll < 0.12 {
+            AnimalKind::Bird
+        } else {
+            const GRAZERS: [AnimalKind; 5] = [
+                AnimalKind::Critter,
+                AnimalKind::Cat,
+                AnimalKind::Sheep,
+                AnimalKind::Chicken,
+                AnimalKind::Cow,
+            ];
+            GRAZERS[(rand01(id, salt.wrapping_add(43)) * GRAZERS.len() as f32) as usize
+                % GRAZERS.len()]
+        }
+    };
+    Some(a)
+}
+
 /// [`spawn_near`] with an explicit kind (stalkers use the same ring).
 pub fn spawn_near_kind(
     w: &World,
@@ -447,6 +603,78 @@ pub fn reseat(w: &World, a: &mut Animal, dt: f32) {
         return;
     }
     let dir = dvec3_scale(rel, 1.0 / r);
+
+    /* Body-local block probe (world_pos here is already body-local
+     * plus centre; block_at_pos wants the body-local part). */
+    let block_at = |p: DVec3| -> Block {
+        let lp = dvec3_sub(p, center);
+        w.block_at_pos(Vec3 { x: lp.x as f32, y: lp.y as f32, z: lp.z as f32 }, -1)
+    };
+    /* Refuse a move: undo this frame's horizontal advance and turn the
+     * animal around (with a per-id jitter so shorelines don't ping-pong
+     * it on a perfect back-and-forth line). */
+    let refuse = |a: &mut Animal| {
+        let speed = state_speed(a);
+        a.pos = dvec3_sub(a.pos, dvec3_scale(a.heading, speed * dt as f64));
+        let up = dvec3_normalize(dvec3_sub(a.pos, center));
+        let flipped = dvec3_scale(a.heading, -1.0);
+        a.heading = rotate_about_up(
+            reproject_tangent(flipped, up),
+            up,
+            (rand01(a.id, a.anim_phase as u32) as f64 - 0.5) * TURN_JITTER,
+        );
+    };
+
+    match a.kind.habitat() {
+        Habitat::Air => {
+            /* Birds cruise above the floor (water included) with a
+             * gentle bob - no step / fall physics at all. */
+            if let Some(seated) = floor_pos(w, dir, r, -1) {
+                let floor_r = dvec3_length(dvec3_sub(seated, center));
+                let bob = (a.anim_phase as f64 * 0.35).sin() * FLY_BOB_M;
+                a.pos = dvec3_add(center, dvec3_scale(dir, floor_r + BIRD_FLY_M + bob));
+            }
+            return;
+        }
+        Habitat::Water => {
+            /* Fish stay inside the water column: clamp between the sea
+             * floor and the surface, and refuse to swim anywhere the
+             * column is too shallow / dry (that's the beach). */
+            let sea_r = w.depth_to_radius_m(WORLD_SEA_LEVEL_DEPTH);
+            let floor_r = floor_pos(w, dir, r, -1)
+                .map(|p| dvec3_length(dvec3_sub(p, center)))
+                .unwrap_or(0.0);
+            let lo = floor_r + FISH_PAD_M;
+            let hi = sea_r - FISH_PAD_M;
+            if floor_r <= 0.0 || lo > hi {
+                refuse(a);
+                return;
+            }
+            let bob = (a.anim_phase as f64 * 0.35).sin() * FLY_BOB_M * 0.5;
+            let swim_r = (r + bob * 0.0).clamp(lo, hi); /* keep depth, clamp */
+            let swim_pos = dvec3_add(center, dvec3_scale(dir, swim_r + bob));
+            if block_at(swim_pos) != Block::Water {
+                refuse(a);
+                return;
+            }
+            a.pos = dvec3_add(center, dvec3_scale(dir, (swim_r + bob).clamp(lo, hi)));
+            return;
+        }
+        Habitat::Land => {
+            /* Land animals REFUSE water: if this frame's move put the
+             * feet in (or under) a water column, undo it and turn
+             * around. Grounded only - a mid-hop frog clears puddles. */
+            if !a.airborne {
+                if let Some(seated) = floor_pos(w, dir, r, -1) {
+                    let probe = dvec3_add(seated, dvec3_scale(dir, 0.3));
+                    if block_at(probe) == Block::Water {
+                        refuse(a);
+                        return;
+                    }
+                }
+            }
+        }
+    }
 
     if a.airborne {
         a.radial_v -= GRAVITY_MPS2 * dt as f64;
@@ -610,9 +838,43 @@ mod tests {
 
     #[test]
     fn kind_bytes_round_trip() {
-        for k in [AnimalKind::Critter, AnimalKind::Stalker] {
+        for k in [
+            AnimalKind::Critter,
+            AnimalKind::Stalker,
+            AnimalKind::Cat,
+            AnimalKind::Sheep,
+            AnimalKind::Chicken,
+            AnimalKind::Cow,
+            AnimalKind::Bird,
+            AnimalKind::Fish,
+            AnimalKind::Frog,
+        ] {
             assert_eq!(AnimalKind::from_u8(k.to_u8()), k);
+            assert!(k.to_u8() <= 0x0F, "kind must fit the wire nibble");
         }
-        assert_eq!(AnimalKind::from_u8(9), AnimalKind::Critter, "unknown -> critter");
+        assert_eq!(AnimalKind::from_u8(15), AnimalKind::Critter, "unknown -> critter");
+    }
+
+    #[test]
+    fn frogs_hop_and_habitats_are_sane() {
+        /* Frog: grounded + moving arms the sit-then-hop cycle. */
+        let mut f = Animal::new_kind(5, DVec3::default(), up(), AnimalKind::Frog);
+        f.state = AnimalState::Walk;
+        f.timer = 30.0;
+        tick(&mut f, up(), 0.01, 0);
+        assert!(f.jump_pause_t > 0.0 && f.jump_dr > 0.0, "hop armed");
+        /* Sit out the pause -> airborne launch. */
+        let mut spins = 0;
+        while !f.airborne {
+            tick(&mut f, up(), 0.1, 1);
+            spins += 1;
+            assert!(spins < 100, "hop must launch");
+        }
+        assert!(f.radial_v > 0.0);
+
+        assert_eq!(AnimalKind::Fish.habitat(), Habitat::Water);
+        assert_eq!(AnimalKind::Bird.habitat(), Habitat::Air);
+        assert_eq!(AnimalKind::Cow.habitat(), Habitat::Land);
+        assert!(AnimalKind::Cow.meat() > AnimalKind::Chicken.meat());
     }
 }
