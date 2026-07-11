@@ -38,30 +38,34 @@ tier: 0
 out: torch 2
 in: stick 3
 
-[wood-pickaxe]
+# Flint tools - the tier-1 toolkit. Knapped from flint (foraged off rocky
+# ground / chipped from mined stone) lashed to a stick. This is the old
+# "wood tier"; the item ids are unchanged for save compatibility, but the
+# material is now flint.
+[flint-pickaxe]
 tier: 0
-out: wood-pickaxe 1
-in: plank 3
+out: flint-pickaxe 1
+in: flint 2
 in: stick 2
 
-[wood-axe]
+[flint-axe]
 tier: 0
-out: wood-axe 1
-in: plank 3
+out: flint-axe 1
+in: flint 2
 in: stick 2
 
-[wood-shovel]
+[flint-shovel]
 tier: 0
-out: wood-shovel 1
-in: plank 1
+out: flint-shovel 1
+in: flint 1
 in: stick 2
 
 # Hoe: tills dirt / grass into farmland so seeds can be planted (T on the
-# ground with a hoe in the bag). Wood-tier so farming stays an early loop.
+# ground with a hoe in the bag). Flint-tier so farming stays an early loop.
 [hoe]
 tier: 0
 out: hoe 1
-in: plank 2
+in: flint 2
 in: stick 2
 
 # Fishing rod: casts a bobber onto water (LMB with the rod selected).

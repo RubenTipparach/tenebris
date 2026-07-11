@@ -271,8 +271,8 @@ out: torch 4
 in: stick 1
 in: coal 1
 
-[wood-pickaxe]
-out: wood-pickaxe 1
+[flint-pickaxe]
+out: flint-pickaxe 1
 in: plank 3
 in: stick 2
 ";
@@ -300,7 +300,7 @@ in: stick 2
 
     #[test]
     fn craftable_checks_every_input() {
-        let planks = find(&recipes(), "wood-pickaxe");
+        let planks = find(&recipes(), "flint-pickaxe");
         let mut bag = vec![ItemStack::default(); 9];
         bag[0] = ItemStack { item: PLANK, count: 3 };
         assert!(!craftable(&bag, &planks)); // missing sticks
@@ -322,7 +322,7 @@ in: stick 2
 
     #[test]
     fn craft_fails_atomically_without_inputs() {
-        let pick = find(&recipes(), "wood-pickaxe");
+        let pick = find(&recipes(), "flint-pickaxe");
         let mut bag = vec![ItemStack::default(); 9];
         bag[0] = ItemStack { item: PLANK, count: 3 }; // no sticks
         let before = bag.clone();
@@ -388,7 +388,7 @@ in: stick 2
         }
         // The furnace block, the tier-0 staples, and bronze (an alloy, not
         // a smelt) hand-craft at the bench (None).
-        for name in ["furnace", "planks", "wood-pickaxe", "bronze-ingot"] {
+        for name in ["furnace", "planks", "flint-pickaxe", "bronze-ingot"] {
             let r = rs.iter().find(|r| r.name == name).unwrap();
             assert_eq!(r.station, None, "{name} is a hand-bench recipe");
         }

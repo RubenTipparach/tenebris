@@ -501,6 +501,20 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
                         crate::drops::spawn(w, s.hit_tile, s.hit_depth, items::CARROT, 1);
                     }
                 }
+                /* Flint bootstrap: mining plain rock has a config chance to
+                 * chip off a flint - the tier-1 tool material - so the
+                 * gather -> knap flint tools loop has a source. Ore rock is
+                 * excluded (it already drops its resource). Deterministic
+                 * per cell (salted hash) so it's frame-timing independent. */
+                if matches!(
+                    target_block,
+                    Block::Stone | Block::CragRock | Block::FrostIce | Block::AsteroidRock | Block::Moon
+                ) {
+                    let roll = tenebris_core::rng::hash2(s.hit_tile ^ 0x5f3a, s.hit_depth);
+                    if roll < mining::config().flint_from_stone_chance {
+                        crate::drops::spawn(w, s.hit_tile, s.hit_depth, items::FLINT, 1);
+                    }
+                }
                 s.mining_progress_s = 0.0;
             }
         } else {
@@ -523,6 +537,19 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
     }
 
     if inp.right_click {
+        /* Forage first: an empty (non-placeable) hand right-clicking a
+         * grassy / rocky / leafy surface gathers loose grass / flint /
+         * sticks off the ground without disturbing the terrain. Only in
+         * survival (creative has nothing to gather); torch targets are
+         * handled earlier and skipped here. */
+        if p.survival_mode
+            && s.has_target
+            && !s.is_torch_target
+            && !inventory::can_place(&p.inventory)
+            && forage_surface(s, w)
+        {
+            return;
+        }
         /* The topmost cell (depth = WORLD_MAX_DEPTH - 1) is reserved
          * as the planet's build cap - the layer above it is the
          * implicit-air sky boundary the floor / ceiling helpers
@@ -700,6 +727,36 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
             }
         }
     }
+}
+
+/// Forage the exposed surface of the targeted block: gather loose grass,
+/// flint, or sticks off the ground as a floating pickup WITHOUT breaking
+/// the terrain. This is the bare-hands survival gather (right-click a
+/// surface with an empty hand) that seeds the flint-tool loop. The
+/// decorative scatter you see (tufts, pebbles) is pure mesh decoration, so
+/// this reads the underlying surface block instead. Returns true if the
+/// click found something to forage (so the caller can treat it as handled).
+fn forage_surface(s: &InteractState, w: &World) -> bool {
+    let top = w.get(s.hit_tile, s.hit_depth);
+    let item = match top {
+        /* Grassy sods of every biome collapse to one grass item, matching
+         * the mining drop rule. */
+        Block::Grass
+        | Block::SeqGrass
+        | Block::JungleGrass
+        | Block::DryGrass
+        | Block::DirtGrass
+        | Block::SeqDirtGrass => items::from_block(Block::Grass),
+        /* Loose rock chips off the surface as flint. */
+        Block::Stone | Block::CragRock | Block::FrostIce | Block::AsteroidRock | Block::Moon => {
+            items::FLINT
+        }
+        /* Snap sticks off low foliage. */
+        Block::Leaves | Block::SeqLeaves => items::STICK,
+        _ => return false,
+    };
+    crate::drops::spawn(w, s.hit_tile, s.hit_depth, item, 1);
+    true
 }
 
 #[cfg(test)]

@@ -57,7 +57,7 @@ const ICONS: &[(u16, &str)] = &[
     (Block::LaunchTower as u16, "assets/textures/technology/launch_tower_face.png"),
     (Block::Cable as u16, "assets/textures/technology/cable.png"),
     (Block::CopperPipe as u16, "assets/textures/technology/copper_pipe.png"),
-    // --- tools ---
+    // --- tools (tier-1 heads re-skinned to flint; ids are legacy) ---
     (items::WOOD_PICKAXE, "assets/textures/items/wood_pickaxe.png"),
     (items::WOOD_AXE, "assets/textures/items/wood_axe.png"),
     (items::WOOD_SHOVEL, "assets/textures/items/wood_shovel.png"),
@@ -81,6 +81,8 @@ const ICONS: &[(u16, &str)] = &[
     (items::PLANK, "assets/textures/wood.png"),
     (items::STICK, "assets/textures/items/sticks.png"),
     (items::COAL, "assets/textures/items/coal.png"),
+    (items::FLINT, "assets/textures/items/flint.png"),
+    (items::CHARCOAL, "assets/textures/items/charcoal.png"),
     (items::COPPER, "assets/textures/minerals/rocks_copper.png"),
     (items::TIN, "assets/textures/minerals/rocks_tin.png"),
     (items::IRON, "assets/textures/minerals/rocks_iron.png"),

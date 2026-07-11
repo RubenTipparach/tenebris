@@ -25,6 +25,9 @@ pub const ITEM_BASE: u16 = 100;
 pub const PLANK: ItemId = ITEM_BASE; // 100
 pub const STICK: ItemId = ITEM_BASE + 1; // 101
 pub const COAL: ItemId = ITEM_BASE + 2; // 102
+/// Starter (tier-1) pickaxe. Knapped from flint + a stick - the id is
+/// legacy (`WOOD_PICKAXE`) and stays fixed so old saves/bags keep loading,
+/// but the tool is now flint-based (name "flint-pickaxe", flint recipe).
 pub const WOOD_PICKAXE: ItemId = ITEM_BASE + 3; // 103
 pub const WOOD_AXE: ItemId = ITEM_BASE + 4; // 104
 /* Raw ore chunks dropped by the ore blocks; smelted into ingots. */
@@ -100,6 +103,14 @@ pub const FISHING_ROD: ItemId = ITEM_BASE + 34; // 134
 pub const RAW_FISH: ItemId = ITEM_BASE + 35; // 135
 pub const COOKED_FISH: ItemId = ITEM_BASE + 36; // 136
 
+/// Flint - knapped stone chips foraged off rocky ground and dropped when
+/// mining stone. The tier-1 tool material (flint pickaxe / axe / shovel /
+/// hoe) and the spark that lights a bonfire.
+pub const FLINT: ItemId = ITEM_BASE + 37; // 137
+/// Charcoal - made by cooking logs down in a bonfire or furnace. A clean
+/// fuel (burns like coal) and the successor to the removed wood torch.
+pub const CHARCOAL: ItemId = ITEM_BASE + 38; // 138
+
 /// What an item *is*, for stacking / placement / tool-gating rules. Grows
 /// as the tech tree lands (Component, Ingot, Ammo, ...).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -153,9 +164,9 @@ const ITEMS: &[ItemDef] = &[
     ItemDef { id: PLANK, name: "plank", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: STICK, name: "stick", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: COAL, name: "coal", kind: ItemKind::Resource, stack: 64 },
-    ItemDef { id: WOOD_PICKAXE, name: "wood-pickaxe", kind: ItemKind::Tool, stack: 1 },
-    ItemDef { id: WOOD_AXE, name: "wood-axe", kind: ItemKind::Tool, stack: 1 },
-    ItemDef { id: WOOD_SHOVEL, name: "wood-shovel", kind: ItemKind::Tool, stack: 1 },
+    ItemDef { id: WOOD_PICKAXE, name: "flint-pickaxe", kind: ItemKind::Tool, stack: 1 },
+    ItemDef { id: WOOD_AXE, name: "flint-axe", kind: ItemKind::Tool, stack: 1 },
+    ItemDef { id: WOOD_SHOVEL, name: "flint-shovel", kind: ItemKind::Tool, stack: 1 },
     ItemDef { id: STONE_PICKAXE, name: "stone-pickaxe", kind: ItemKind::Tool, stack: 1 },
     ItemDef { id: IRON_PICKAXE, name: "iron-pickaxe", kind: ItemKind::Tool, stack: 1 },
     ItemDef { id: HOE, name: "hoe", kind: ItemKind::Tool, stack: 1 },
@@ -170,6 +181,8 @@ const ITEMS: &[ItemDef] = &[
     ItemDef { id: FISHING_ROD, name: "fishing-rod", kind: ItemKind::Tool, stack: 1 },
     ItemDef { id: RAW_FISH, name: "raw-fish", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: COOKED_FISH, name: "cooked-fish", kind: ItemKind::Resource, stack: 64 },
+    ItemDef { id: FLINT, name: "flint", kind: ItemKind::Resource, stack: 64 },
+    ItemDef { id: CHARCOAL, name: "charcoal", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: COPPER, name: "copper", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: TIN, name: "tin", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: IRON, name: "iron", kind: ItemKind::Resource, stack: 64 },
@@ -350,14 +363,17 @@ pub fn smelt_output(id: ItemId) -> Option<(ItemId, u16)> {
         /* Cooking reuses the furnace: raw meat -> cooked meat. */
         RAW_MEAT => Some((COOKED_MEAT, 1)),
         RAW_FISH => Some((COOKED_FISH, 1)),
+        /* Charring: a wood log cooked in a fire becomes charcoal. Works
+         * in the furnace and the bonfire (same smelt map). */
+        _ if id == from_block(Block::Wood) => Some((CHARCOAL, 1)),
         _ => None,
     }
 }
 
-/// True if `id` can fuel a furnace (coal). One coal = 8 smelts (JS
-/// `FUEL_PER_COAL`).
+/// True if `id` can fuel a furnace (coal or charcoal). One unit = 8
+/// smelts (JS `FUEL_PER_COAL`); charcoal burns the same as coal.
 pub fn is_fuel(id: ItemId) -> bool {
-    id == COAL
+    id == COAL || id == CHARCOAL
 }
 
 /// A 3D-printer recipe: timed print of `output` x `qty` from `inputs`.
@@ -434,7 +450,9 @@ mod tests {
         assert_eq!(id_by_name("log"), Some(from_block(Block::Wood)));
         assert_eq!(id_by_name("plank"), Some(PLANK));
         assert_eq!(id_by_name("stick"), Some(STICK));
-        assert_eq!(id_by_name("wood-pickaxe"), Some(WOOD_PICKAXE));
+        assert_eq!(id_by_name("flint-pickaxe"), Some(WOOD_PICKAXE));
+        assert_eq!(id_by_name("flint"), Some(FLINT));
+        assert_eq!(id_by_name("charcoal"), Some(CHARCOAL));
         assert_eq!(id_by_name("nonsense"), None);
     }
 
