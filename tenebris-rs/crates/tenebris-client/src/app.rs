@@ -447,6 +447,47 @@ fn dev_maybe_place(app: &mut App) {
             let mut p = app.player.borrow_mut();
             p.pitch = 0.95;
         }
+        16 => {
+            /* Torch-light showcase (TENEBRIS_DEV_TORCH): plant a short
+             * row of torches on the ground ahead so a night still shows
+             * the warm baked pool on the terrain + the flame sprites.
+             * Same call pattern as the SP reload path: torch::place +
+             * dirty_in_range so nearby chunks re-bake their per-vertex
+             * torch light. */
+            let (ppos, fwd, right, last_tile) = {
+                let p = app.player.borrow();
+                (p.position, p.basis.fwd, p.basis.right, p.last_tile)
+            };
+            let w = app.world.borrow();
+            let bc = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
+            let local = dvec3_sub(ppos, bc);
+            let mut placed = 0;
+            for (ahead, side) in [(4.0f64, -1.5f64), (6.5, 1.5), (9.0, 0.0)] {
+                let point = dvec3_add(
+                    local,
+                    dvec3_add(dvec3_scale(fwd, ahead), dvec3_scale(right, side)),
+                );
+                let dir = dvec3_normalize(point);
+                let tile = w.grid.find_tile(dir, last_tile);
+                let Some(pos) = tenebris_core::fauna::floor_pos(&w, dir, dvec3_length(local), tile)
+                else {
+                    continue;
+                };
+                let base = tenebris_core::math::dvec3_to_vec3(dvec3_sub(pos, bc));
+                let up_f = tenebris_core::math::dvec3_to_vec3(dir);
+                if torch::place(base, up_f, tile) {
+                    placed += 1;
+                }
+            }
+            drop(w);
+            if placed > 0 {
+                let mut w = app.world.borrow_mut();
+                let plocal = tenebris_core::math::dvec3_to_vec3(local);
+                w.dirty_in_range(plocal, torch::LIGHT_RANGE_M + 12.0);
+            }
+            println!("[dev] placed {} torches ahead", placed);
+            app.player.borrow_mut().pitch = -0.25;
+        }
         14 => {
             /* Animal showcase: drop a herd near the player, then aim the
              * camera at its centre so the critters are framed. */
@@ -1595,6 +1636,9 @@ extern "C" fn init() {
         DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
     } else if std::env::var("TENEBRIS_DEV_OCCLUDE").is_ok() {
         DEV_PLACE_MODE.with(|c| c.set(15));
+        DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
+    } else if std::env::var("TENEBRIS_DEV_TORCH").is_ok() {
+        DEV_PLACE_MODE.with(|c| c.set(16));
         DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
     }
     if std::env::var("TENEBRIS_DEV_KIT").is_ok() {

@@ -1202,6 +1202,183 @@ fn build_atmosphere_params(
 }
 
 /* ----------------------------------------------------------------------- */
+/* CPU Caelum sample - one-ray port of the atmosphere shader's
+ * GPU Gems 2 scattering march, used to colour the distance fog with
+ * the ACTUAL sky at the horizon (same params, same sunset warmth,
+ * same tone map), so fog and sky can never disagree. One 8x4-sample
+ * march per frame is noise on the CPU budget. */
+
+fn horizon_sky_color(env: &RenderEnv, cam_fwd: [f32; 3]) -> [f32; 3] {
+    const NUM_SAMPLES: usize = 8;
+    const NUM_LIGHT_SAMPLES: usize = 4;
+    const WAVELENGTHS_INV4: [f32; 3] = [5.602, 9.473, 19.644];
+
+    type V3 = [f32; 3];
+    fn dot(a: V3, b: V3) -> f32 {
+        a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+    }
+    fn add(a: V3, b: V3) -> V3 {
+        [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+    }
+    fn scale(a: V3, s: f32) -> V3 {
+        [a[0] * s, a[1] * s, a[2] * s]
+    }
+    fn norm(a: V3) -> V3 {
+        let l = dot(a, a).sqrt().max(1e-6);
+        scale(a, 1.0 / l)
+    }
+    /* raySphereIntersect, planet at origin. */
+    fn hit(ro: V3, rd: V3, radius: f32) -> (f32, f32) {
+        let b = dot(ro, rd);
+        let c = dot(ro, ro) - radius * radius;
+        let disc = b * b - c;
+        if disc < 0.0 {
+            return (-1.0, -1.0);
+        }
+        let s = disc.sqrt();
+        (-b - s, -b + s)
+    }
+
+    let p_radius = env.atmo_planet_radius;
+    let a_radius = env.atmo_radius;
+    let scale_h = if env.atmo_scale_height > 0.0 { env.atmo_scale_height } else { 0.25 };
+    let thickness = (a_radius - p_radius).max(1e-3);
+    let density = |alt: f32| (-(alt.clamp(0.0, 1.0)) / scale_h).exp();
+    let optical_depth = |ro: V3, rd: V3, len: f32| -> f32 {
+        let step = len / NUM_LIGHT_SAMPLES as f32;
+        let nstep = step / thickness;
+        let mut d = 0.0;
+        for i in 0..NUM_LIGHT_SAMPLES {
+            let sp = add(ro, scale(rd, step * (i as f32 + 0.5)));
+            let alt = (dot(sp, sp).sqrt() - p_radius) / thickness;
+            d += density(alt) * nstep;
+        }
+        d
+    };
+
+    let cam = vec3_sub(env.camera_world, env.atmo_planet_center);
+    let ro: V3 = [cam.x, cam.y, cam.z];
+    let up = norm(ro);
+    /* Horizon ray along the camera's forward azimuth: the fog matches
+     * the slice of sky it actually fades into (warm toward the sun,
+     * cool away from it), tracking as the player turns. */
+    let fwd_flat = add(cam_fwd, scale(up, -dot(cam_fwd, up)));
+    let rd = if dot(fwd_flat, fwd_flat) > 1e-6 {
+        norm(fwd_flat)
+    } else {
+        /* Looking straight up/down: any tangent will do. */
+        let r = if up[1].abs() < 0.9 { [0.0, 1.0, 0.0] } else { [1.0, 0.0, 0.0] };
+        norm([
+            up[1] * r[2] - up[2] * r[1],
+            up[2] * r[0] - up[0] * r[2],
+            up[0] * r[1] - up[1] * r[0],
+        ])
+    };
+    let sun: V3 = [env.sun_dir.x, env.sun_dir.y, env.sun_dir.z];
+
+    let (a0, a1) = hit(ro, rd, a_radius);
+    if a1 < 0.0 {
+        return [0.0, 0.0, 0.0];
+    }
+    let ray_start = a0.max(0.0);
+    let mut ray_end = a1;
+    let (p0, _) = hit(ro, rd, p_radius);
+    if p0 > 0.0 {
+        ray_end = ray_end.min(p0);
+    }
+    if ray_start >= ray_end {
+        return [0.0, 0.0, 0.0];
+    }
+
+    let step = (ray_end - ray_start) / NUM_SAMPLES as f32;
+    let nstep = step / thickness;
+    let mut rayleigh_sum: V3 = [0.0; 3];
+    let mut mie_sum: V3 = [0.0; 3];
+    let mut opt_r = 0.0f32;
+    let mut opt_m = 0.0f32;
+    for i in 0..NUM_SAMPLES {
+        /* Shader dithers in [0, 0.5); the fixed midpoint matches its
+         * average and keeps the fog colour temporally stable. */
+        let sp = add(ro, scale(rd, ray_start + step * (i as f32 + 0.25)));
+        let h = dot(sp, sp).sqrt();
+        if h < p_radius {
+            continue;
+        }
+        let local_density = density((h - p_radius) / thickness);
+        let seg = local_density * nstep;
+        opt_r += seg;
+        opt_m += seg;
+        let (sp0, _) = hit(sp, sun, p_radius);
+        if sp0 > 0.0 {
+            continue; /* in the planet's shadow */
+        }
+        let (_, sa1) = hit(sp, sun, a_radius);
+        let sun_depth = optical_depth(sp, sun, sa1.max(0.0));
+        let att = [
+            (-(env.atmo_rayleigh_scale * WAVELENGTHS_INV4[0] * (opt_r + sun_depth)
+                + env.atmo_mie_scale * (opt_m + sun_depth)))
+                .exp(),
+            (-(env.atmo_rayleigh_scale * WAVELENGTHS_INV4[1] * (opt_r + sun_depth)
+                + env.atmo_mie_scale * (opt_m + sun_depth)))
+                .exp(),
+            (-(env.atmo_rayleigh_scale * WAVELENGTHS_INV4[2] * (opt_r + sun_depth)
+                + env.atmo_mie_scale * (opt_m + sun_depth)))
+                .exp(),
+        ];
+        rayleigh_sum = add(rayleigh_sum, scale(att, local_density * nstep));
+        mie_sum = add(mie_sum, scale(att, local_density * nstep));
+    }
+    rayleigh_sum = [
+        rayleigh_sum[0] * env.atmo_rayleigh_scale * WAVELENGTHS_INV4[0],
+        rayleigh_sum[1] * env.atmo_rayleigh_scale * WAVELENGTHS_INV4[1],
+        rayleigh_sum[2] * env.atmo_rayleigh_scale * WAVELENGTHS_INV4[2],
+    ];
+    mie_sum = scale(mie_sum, env.atmo_mie_scale);
+
+    let cos_theta = dot(rd, sun);
+    let phase_r = 0.75 * (1.0 + cos_theta * cos_theta);
+    let g = env.atmo_mie_g;
+    let g2 = g * g;
+    let phase_m =
+        (1.0 - g2) / (4.0 * std::f32::consts::PI * (1.0 + g2 - 2.0 * g * cos_theta).max(1e-4).powf(1.5));
+
+    let mut color = [
+        env.atmo_sun_intensity * (rayleigh_sum[0] * phase_r + mie_sum[0] * phase_m),
+        env.atmo_sun_intensity * (rayleigh_sum[1] * phase_r + mie_sum[1] * phase_m),
+        env.atmo_sun_intensity * (rayleigh_sum[2] * phase_r + mie_sum[2] * phase_m),
+    ];
+
+    /* Analytic sunset warmth - same block as the shader. */
+    {
+        let sun_height = dot(sun, up);
+        let sunset = {
+            /* smoothstep(0.3, -0.05, sun_height) */
+            let t = ((sun_height - 0.3) / (-0.05 - 0.3)).clamp(0.0, 1.0);
+            t * t * (3.0 - 2.0 * t)
+        };
+        let view_sun = cos_theta.max(0.0);
+        let tint = [1.3f32, 1.0, 0.6];
+        for k in 0..3 {
+            color[k] *= 1.0 + (tint[k] - 1.0) * sunset * 0.5;
+        }
+        let glow = view_sun.powi(3) * sunset;
+        let glow_c = [1.0f32, 0.65, 0.25];
+        /* Horizon-band term: rd is tangent, so 1-|dot(rd,up)| = 1. */
+        let horizon_c = [0.8f32, 0.4, 0.15];
+        for k in 0..3 {
+            color[k] += glow_c[k] * glow * env.atmo_sun_intensity * 0.12
+                + horizon_c[k] * sunset * env.atmo_sun_intensity * 0.04;
+        }
+    }
+
+    [
+        1.0 - (-color[0]).exp(),
+        1.0 - (-color[1]).exp(),
+        1.0 - (-color[2]).exp(),
+    ]
+}
+
+/* ----------------------------------------------------------------------- */
 /* Scheduling decisions (pure). */
 
 /// The chunked-vs-LOD rule shared by renderer_draw_world (direct) and
@@ -3518,32 +3695,42 @@ pub fn compose_to_swapchain(view: Mat4, proj: Mat4) {
             if bc.atmo_fog_density > 0.0 {
                 let cam = vec3_sub(r.env.camera_world, body_center);
                 let cam_r = (cam.x * cam.x + cam.y * cam.y + cam.z * cam.z).sqrt().max(1e-3);
-                let d = (cam.x * r.env.sun_dir.x
-                    + cam.y * r.env.sun_dir.y
-                    + cam.z * r.env.sun_dir.z)
-                    / cam_r;
-                /* Same terminator band entity_sun_brightness uses. */
-                let daylight = 0.16 + 0.84 * ((d + 0.10) / 0.22).clamp(0.0, 1.0);
-                /* Caelum-style sunset carry-over: as the sun crosses
-                 * the terminator the sky warms via the atmo sunset
-                 * tints, so the fog picks up the same horizon colour
-                 * instead of staying steel blue at dawn/dusk. */
-                let warm = (1.0 - (d - 0.02).abs() / 0.18).clamp(0.0, 1.0) * 0.6;
-                let sh = bc.atmo_sunset_horizon;
-                let sunset = if sh.x + sh.y + sh.z > 0.0 {
-                    sh
+                /* Fog colour = the ACTUAL Caelum sky at the horizon
+                 * (one CPU march per frame with the same params as the
+                 * atmosphere pass), so far terrain always melts into
+                 * the sky it stands against - day, night, and the
+                 * sunset warmth all come out of the same integral. An
+                 * optional per-body fog_color acts as a tint on top. */
+                let base = if r.env.atmo_strength > 0.001 {
+                    horizon_sky_color(&r.env, basis.fwd)
                 } else {
-                    /* Renderer default sunset_horizon (see BodyConfig). */
-                    tenebris_core::math::Vec3 { x: 0.8, y: 0.4, z: 0.15 }
+                    /* Airless body with fog forced on: flat colour
+                     * dimmed by local daylight (terminator band). */
+                    let d = (cam.x * r.env.sun_dir.x
+                        + cam.y * r.env.sun_dir.y
+                        + cam.z * r.env.sun_dir.z)
+                        / cam_r;
+                    let daylight = 0.16 + 0.84 * ((d + 0.10) / 0.22).clamp(0.0, 1.0);
+                    [
+                        bc.atmo_fog_color.x * daylight,
+                        bc.atmo_fog_color.y * daylight,
+                        bc.atmo_fog_color.z * daylight,
+                    ]
                 };
-                let mixc = |a: f32, b: f32| a + (b - a) * warm;
+                let tint = if bc.atmo_fog_color.x + bc.atmo_fog_color.y + bc.atmo_fog_color.z > 0.0
+                    && r.env.atmo_strength > 0.001
+                {
+                    [bc.atmo_fog_color.x, bc.atmo_fog_color.y, bc.atmo_fog_color.z]
+                } else {
+                    [1.0, 1.0, 1.0]
+                };
                 let height = if bc.atmo_fog_height_m > 0.0 { bc.atmo_fog_height_m } else { 60.0 };
                 let alt = (cam_r - sea_radius).max(0.0);
                 let k = (1.0 - alt / height).clamp(0.0, 1.0);
                 fog = [
-                    mixc(bc.atmo_fog_color.x, sunset.x) * daylight,
-                    mixc(bc.atmo_fog_color.y, sunset.y) * daylight,
-                    mixc(bc.atmo_fog_color.z, sunset.z) * daylight,
+                    base[0] * tint[0],
+                    base[1] * tint[1],
+                    base[2] * tint[2],
                     bc.atmo_fog_density * k,
                 ];
             }

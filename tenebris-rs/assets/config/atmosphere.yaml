@@ -28,9 +28,15 @@
 #   sunset_tint       vec3   sky multiplier near horizon
 #   sunset_glow       vec3   sun-direction glow at sunset
 #   sunset_horizon    vec3   horizon-band tint at sunset
-#   fog_color         vec3   daytime distance-fog colour (night dims it
-#                            with the sun; tune toward the horizon sky
-#                            so far terrain melts into the sky line)
+#   fog_color         vec3   TINT multiplier over the fog's base colour.
+#                            The base is sampled from the Caelum sky at
+#                            the horizon every frame (same scattering
+#                            march as the atmosphere pass), so fog
+#                            matches the sky by construction - day,
+#                            night, and sunset included. Omit for the
+#                            untinted sky match; on airless bodies with
+#                            fog forced on this becomes the flat fog
+#                            colour itself.
 #   fog_density       float  fog per metre of view distance (composite
 #                            pass, 1 - exp(-dist * density)); omit or 0
 #                            for a crisp airless look
@@ -68,9 +74,8 @@ tenebris:
   sunset_tint: [1.3, 1.0, 0.6]
   sunset_glow: [1.0, 0.65, 0.25]
   sunset_horizon: [0.8, 0.4, 0.15]
-  # Gentle blue-grey haze: ~25% fog at 100 m, ~60% at 300 m, gone by
-  # the time you fly 90 m above sea level.
-  fog_color: [0.62, 0.72, 0.85]
+  # Distance haze, ~45% at 50 m / ~70% at 100 m; the colour is sampled
+  # from this body's own Caelum sky at the horizon (no fog_color tint).
   fog_density: 0.012
   fog_height_m: 130.0
 
@@ -80,8 +85,8 @@ sequoia:
   rayleigh_scale: 0.8
   sunset_tint: [1.1, 1.3, 0.7]
   sunset_glow: [0.9, 1.0, 0.45]
-  # Warmer, slightly green-cast haze to match its sky.
-  fog_color: [0.68, 0.78, 0.72]
+  # Sky-matched haze (Sequoia's greener sky comes out of its own
+  # scattering params - no tint needed).
   fog_density: 0.012
   fog_height_m: 130.0
 

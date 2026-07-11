@@ -147,6 +147,56 @@ thread_local! {
     static T: RefCell<State> = RefCell::new(State::default());
 }
 
+/* ------------------------------------------------------------------ */
+/* Cross-thread light mirror. The torch state above is thread-local
+ * (module-static port; mutated + rendered on the main thread), but the
+ * chunk mesher fans build_tile across the rayon pool - worker threads
+ * baking per-vertex torch light MUST see the same list, or every
+ * parallel rebuild bakes darkness (the bug this fixes: torches lit
+ * nothing once chunk builds went multithreaded, because each worker
+ * saw an empty thread-local list). Every mutation republishes the
+ * list into a process-global mirror and bumps a generation counter;
+ * [`with_lights`] refreshes a per-thread cache only when the
+ * generation moved, so the per-vertex hot path costs one relaxed
+ * atomic load, no locking. */
+
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
+
+static LIGHTS_GEN: AtomicU64 = AtomicU64::new(0);
+static LIGHTS: Mutex<Vec<Torch>> = Mutex::new(Vec::new());
+
+thread_local! {
+    /* (generation, snapshot) - u64::MAX forces the first refresh. */
+    static LIGHTS_CACHE: RefCell<(u64, Vec<Torch>)> =
+        const { RefCell::new((u64::MAX, Vec::new())) };
+}
+
+/// Republish the live list into the cross-thread mirror. Every mutator
+/// (place / remove / clear / shutdown) must call this.
+fn lights_publish() {
+    let snap = T.with(|t| {
+        let t = t.borrow();
+        t.list[..t.count as usize].to_vec()
+    });
+    *LIGHTS.lock().unwrap() = snap;
+    LIGHTS_GEN.fetch_add(1, Ordering::Release);
+}
+
+/// Run `f` over the current torch-list snapshot - safe on ANY thread
+/// (the rayon mesh workers included).
+pub fn with_lights<R>(f: impl FnOnce(&[Torch]) -> R) -> R {
+    LIGHTS_CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        let gen = LIGHTS_GEN.load(Ordering::Acquire);
+        if c.0 != gen {
+            c.1 = LIGHTS.lock().unwrap().clone();
+            c.0 = gen;
+        }
+        f(&c.1)
+    })
+}
+
 /* ----------------------------------------------------------------------- */
 
 /// Port of `push_vertex()`. Appends instead of writing through an
@@ -355,6 +405,7 @@ pub fn shutdown() {
     /* Pipeline + buffers are destroyed by sg_shutdown at program
      * exit; nothing per-module to free. */
     T.with(|t| t.borrow_mut().count = 0);
+    lights_publish();
 }
 
 /// Rust-port extension: drop every placed torch. Called when the SP
@@ -363,6 +414,7 @@ pub fn shutdown() {
 /// apply_sp_world_saves, so nothing from the previous world leaks.
 pub fn clear() {
     T.with(|t| t.borrow_mut().count = 0);
+    lights_publish();
 }
 
 /* ----------------------------------------------------------------------- */
@@ -372,7 +424,7 @@ pub fn clear() {
 /// removal can find it later by the tile its base sits on. Returns
 /// `true` on success, `false` if the torch list is full.
 pub fn place(position: Vec3, up: Vec3, tile_idx: i32) -> bool {
-    T.with(|t| {
+    let placed = T.with(|t| {
         let mut t = t.borrow_mut();
         if t.count as usize >= MAX_COUNT {
             return false;
@@ -392,13 +444,17 @@ pub fn place(position: Vec3, up: Vec3, tile_idx: i32) -> bool {
             tile_idx,
         };
         true
-    })
+    });
+    if placed {
+        lights_publish();
+    }
+    placed
 }
 
 /// Port of `torch_remove_near()`. Remove the nearest torch within
 /// `radius_m` of `world_pos`. Returns `true` if one was removed.
 pub fn remove_near(world_pos: Vec3, radius_m: f32) -> bool {
-    T.with(|t| {
+    let removed = T.with(|t| {
         let mut t = t.borrow_mut();
         let mut best: i32 = -1;
         let mut best_d2 = radius_m * radius_m;
@@ -418,7 +474,11 @@ pub fn remove_near(world_pos: Vec3, radius_m: f32) -> bool {
         t.list[best as usize] = t.list[last];
         t.count -= 1;
         true
-    })
+    });
+    if removed {
+        lights_publish();
+    }
+    removed
 }
 
 /// Port of `torch_flame_pos()`. Flame-tip world position for a placed
@@ -467,6 +527,7 @@ pub fn remove(idx: i32) {
         t.list[idx as usize] = t.list[last];
         t.count -= 1;
     });
+    lights_publish();
 }
 
 /// Port of `torch_raycast()`. Ray-vs-bounding-sphere test against

@@ -240,33 +240,35 @@ fn sky_light_at(w: &World, tile: i32, depth_at_top: i32) -> f32 {
  * game uses (tens, not thousands). For a heavy-build scene we'd want
  * a spatial grid; that's a later optimisation. */
 fn torch_light_at(world_pos: Vec3) -> f32 {
-    let count = torch::count();
-    if count == 0 {
-        return 0.0;
-    }
-    let list = torch::list();
-    let range = torch::LIGHT_RANGE_M;
-    let range2 = range * range;
-    let decay = torch::LIGHT_DECAY;
-
-    let mut total = 0.0f32;
-    for t in list.iter() {
-        let flame = torch::flame_pos(t);
-        let d = vec3_sub(flame, world_pos);
-        let d2 = d.x * d.x + d.y * d.y + d.z * d.z;
-        if d2 > range2 {
-            continue;
+    /* Sample through the cross-thread mirror, NOT torch::list(): chunk
+     * builds fan out across the rayon pool, and the torch module's
+     * primary state is thread-local - a worker reading it directly
+     * sees an empty list and bakes darkness (the "torches don't light
+     * the ground" bug on multithreaded builds). */
+    torch::with_lights(|list| {
+        if list.is_empty() {
+            return 0.0;
         }
-        /* Matches the JS reference's getTorchLightAt formula:
-         * 1 / (1 + decay * d^2 / range^2) - smooth inverse-square
-         * shape, normalised so contribution = 1 at d = 0. */
-        let a = 1.0f32 / (1.0f32 + decay * d2 / range2);
-        total += a;
-    }
-    if total > 3.0 {
-        total = 3.0;
-    }
-    total
+        let range = torch::LIGHT_RANGE_M;
+        let range2 = range * range;
+        let decay = torch::LIGHT_DECAY;
+
+        let mut total = 0.0f32;
+        for t in list.iter() {
+            let flame = torch::flame_pos(t);
+            let d = vec3_sub(flame, world_pos);
+            let d2 = d.x * d.x + d.y * d.y + d.z * d.z;
+            if d2 > range2 {
+                continue;
+            }
+            /* Matches the JS reference's getTorchLightAt formula:
+             * 1 / (1 + decay * d^2 / range^2) - smooth inverse-square
+             * shape, normalised so contribution = 1 at d = 0. */
+            let a = 1.0f32 / (1.0f32 + decay * d2 / range2);
+            total += a;
+        }
+        total.min(3.0)
+    })
 }
 
 /* C dvec3_to_vec3f: identical float casts; math.rs already ports it
@@ -2569,6 +2571,65 @@ mod tests {
         build_scatter(&mut z, &w, sea_tile);
         assert!(z.vertices.is_empty(), "zero chances emit nothing");
         tenebris_core::scatter::set_config(tenebris_core::scatter::ScatterConfig::DEFAULT);
+    }
+
+    #[test]
+    fn torch_light_bakes_on_worker_threads() {
+        /* Chunk meshing fans out across rayon workers; the torch list
+         * is thread-local on the main thread. This pins the fix (the
+         * cross-thread mirror in torch.rs): a tile built on a WORKER
+         * thread must bake the same torch light as one built on the
+         * placing thread - the regression was silent darkness. */
+        let _g = test_support::begin("torch_worker_bake");
+        config::parse_lighting("engine: column\n", "torch-worker");
+        torch::shutdown();
+        let body = planet::get(BodyId::Tenebris);
+        let mut w = World::create(&body, 3);
+        while !w.gen_complete() {
+            w.stream_gen(4096);
+        }
+        let t41 = *w.grid.tile(41).unwrap();
+        let mut surf = -1;
+        for d in (0..WORLD_MAX_DEPTH).rev() {
+            let b = w.get(41, d);
+            if b != Block::Air && b != Block::Water {
+                surf = d;
+                break;
+            }
+        }
+        let r_top = w.depth_to_radius_m(surf + 1);
+        let up = vec3_make(t41.center.x as f32, t41.center.y as f32, t41.center.z as f32);
+        let base = vec3_make(
+            (t41.center.x * r_top) as f32,
+            (t41.center.y * r_top) as f32,
+            (t41.center.z * r_top) as f32,
+        );
+        assert!(torch::place(base, up, 41));
+
+        let max_torch = |m: &HexMesh| {
+            m.vertices.iter().map(|v| v.torch_light).fold(0.0f32, f32::max)
+        };
+        let mut main_m = HexMesh::new();
+        build_tile(&mut main_m, &w, 41);
+        let main_max = max_torch(&main_m);
+        assert!(main_max > 0.5, "main-thread bake sees the torch");
+
+        let worker_max = std::thread::scope(|s| {
+            s.spawn(|| {
+                let mut m = HexMesh::new();
+                build_tile(&mut m, &w, 41);
+                max_torch(&m)
+            })
+            .join()
+            .unwrap()
+        });
+        assert!(
+            (worker_max - main_max).abs() < 1e-6 && worker_max > 0.5,
+            "worker-thread bake must match ({} vs {})",
+            worker_max,
+            main_max
+        );
+        torch::shutdown();
     }
 
     #[test]

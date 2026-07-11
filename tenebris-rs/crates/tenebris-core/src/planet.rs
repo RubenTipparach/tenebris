@@ -188,9 +188,11 @@ pub struct BodyConfig {
     pub atmo_sunset_horizon: Vec3,
 
     /* ---- Atmospheric distance fog (composite pass). Terrain fades
-     * toward fog_color with 1-exp(-dist * density); zero density =
-     * no fog (airless bodies stay crisp to the horizon). */
-    /// daytime fog colour (night dims it with the sun)
+     * toward the sky-at-horizon colour (sampled from the Caelum march
+     * each frame) with 1-exp(-dist * density); zero density = no fog
+     * (airless bodies stay crisp to the horizon). */
+    /// tint multiplier over the sky-matched fog base (zero = untinted);
+    /// on airless bodies with fog forced on, the flat fog colour itself
     pub atmo_fog_color: Vec3,
     /// fog density per metre of view distance, 0 -> off
     pub atmo_fog_density: f32,
