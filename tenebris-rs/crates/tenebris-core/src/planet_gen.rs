@@ -178,7 +178,9 @@ pub fn surface_altitude(body: &BodyConfig, unit_dir: DVec3) -> f32 {
     } else {
         /* C: (float)pow((double)fabs(height), (double)OCEAN_DEPTH_POWER) */
         let ocean_factor = (height as f64).abs().powf(OCEAN_DEPTH_POWER as f64) as f32;
-        -ocean_factor * MAX_OCEAN_DEPTH
+        /* Seeded worlds get deeper basins (gated like the uplift). */
+        let deepen = if biomes_active(body) { SEEDED_OCEAN_DEEPEN } else { 1.0 };
+        -ocean_factor * MAX_OCEAN_DEPTH * deepen
     };
 
     /* Rocky highlands (Rust extension, custom-seed worlds only - the
@@ -251,6 +253,12 @@ const ROCKY_ABOVE: f32 = 0.72;
 const ROCKY_UPLIFT_M: f32 = 22.0;
 /// Above this altitude a Mountains-biome top wears a snow cap.
 const MOUNTAIN_SNOWCAP_ELEV_M: f32 = 40.0;
+/// Custom-seed worlds carry their sea one block higher (water laps
+/// onto the old shoreline instead of sitting sunken below it) and
+/// their ocean floors run deeper. Both are biomes_active-gated so
+/// default-seed output stays byte-exact for the C-parity pins.
+const SEEDED_SEA_RAISE_M: f32 = 1.0;
+const SEEDED_OCEAN_DEEPEN: f32 = 1.6;
 
 /// Fractal noise remapped to [0, 1] at a unit direction. Shared field
 /// generator: the biome moisture map and the client's cloud-coverage
@@ -283,6 +291,14 @@ pub fn biomes_active(body: &BodyConfig) -> bool {
     body.seed != crate::planet::default_seed(body.id)
 }
 
+/// How far this body's sea sits above the legacy sea level (metres).
+/// 0 on legacy worlds; custom-seed worlds raise it one block. Client
+/// water-cap / fog / fauna surface math must add this to the legacy
+/// sea radius.
+pub fn sea_raise_m(body: &BodyConfig) -> f32 {
+    if biomes_active(body) { SEEDED_SEA_RAISE_M } else { 0.0 }
+}
+
 /// Classify a surface point. Elevation + latitude bands take priority
 /// (ocean / beach / mountain / tundra), then the moisture field splits
 /// the temperate middle into desert / fields / jungle / swamp.
@@ -296,10 +312,12 @@ pub fn biome(body: &BodyConfig, unit_dir: DVec3) -> Biome {
         return Biome::Tundra; /* no temperate biomes off-Earthlikes */
     }
     let surface = surface_altitude(body, unit_dir);
-    if surface < -1.0 {
+    /* Seeded worlds carry a raised sea - classify against it. */
+    let sea = SEA_LEVEL + SEEDED_SEA_RAISE_M;
+    if surface < sea - 1.0 {
         return Biome::Ocean;
     }
-    if surface < SEA_LEVEL + BEACH_BAND {
+    if surface < sea + BEACH_BAND {
         return Biome::Beach;
     }
     let latitude = unit_dir.y.abs() as f32;
@@ -416,9 +434,13 @@ pub fn sample_with_profile(prof: &ColumnProfile, altitude_m: f32) -> Block {
         };
     }
 
+    /* Seeded worlds carry their sea one block higher; legacy worlds
+     * keep the exact C sea level (pins). */
+    let sea = if prof.biomes_on { SEA_LEVEL + SEEDED_SEA_RAISE_M } else { SEA_LEVEL };
+
     /* Air/water above the ground. */
     if altitude_m > surface {
-        if altitude_m < SEA_LEVEL {
+        if altitude_m < sea {
             return if prof.polar { Block::Ice } else { Block::Water };
         }
         return Block::Air;
@@ -427,11 +449,11 @@ pub fn sample_with_profile(prof: &ColumnProfile, altitude_m: f32) -> Block {
     /* Top voxel - biome decision layer. Tileset::Sequoia bodies emit
      * the SEQ_* variants so they pick different atlas columns. */
     if altitude_m > surface - 1.0 {
-        if surface > SEA_LEVEL - BEACH_BAND && surface < SEA_LEVEL + BEACH_BAND {
+        if surface > sea - BEACH_BAND && surface < sea + BEACH_BAND {
             return if prof.sequoia { Block::SeqSand } else { Block::Sand };
         }
-        if surface < SEA_LEVEL {
-            if surface > SEA_LEVEL - 4.0 {
+        if surface < sea {
+            if surface > sea - 4.0 {
                 return if prof.sequoia { Block::SeqSand } else { Block::Sand };
             }
             return Block::Stone;
@@ -448,11 +470,29 @@ pub fn sample_with_profile(prof: &ColumnProfile, altitude_m: f32) -> Block {
                 Block::Stone
             };
         }
-        if surface > STONE_ELEV {
-            return Block::Stone;
-        }
-        if surface > prof.snow_line || prof.polar {
-            return if prof.sequoia { Block::SeqSnow } else { Block::Snow };
+        if prof.biomes_on {
+            /* Seeded worlds order the elevation bands naturally: a
+             * rocky tree-line band first, snow ON TOP of it - the
+             * legacy order painted snow at 22 m with bare stone above
+             * 32 m, which read as snow BELOW the peaks. */
+            if surface > STONE_ELEV {
+                return if prof.sequoia { Block::SeqSnow } else { Block::Snow };
+            }
+            /* Tundra stays snowy at every elevation - only temperate
+             * hills get the rocky tree-line band. */
+            if surface > prof.snow_line && prof.biome != Biome::Tundra {
+                return Block::Stone;
+            }
+            if prof.polar || (prof.biome == Biome::Tundra && surface > prof.snow_line) {
+                return if prof.sequoia { Block::SeqSnow } else { Block::Snow };
+            }
+        } else {
+            if surface > STONE_ELEV {
+                return Block::Stone;
+            }
+            if surface > prof.snow_line || prof.polar {
+                return if prof.sequoia { Block::SeqSnow } else { Block::Snow };
+            }
         }
         /* Moisture biomes re-skin the temperate top (Rust extension):
          * deserts run on sand broken by red rocky outcrops, mountains
@@ -537,6 +577,30 @@ mod biome_tests {
         assert!(kinds.contains("Desert") || kinds.contains("Swamp") || kinds.contains("Jungle"));
         /* The rocky-uplift field must produce actual mountain country. */
         assert!(kinds.contains("Mountains"), "no rocky ranges: {kinds:?}");
+    }
+
+    #[test]
+    fn seeded_sea_rides_one_block_higher() {
+        use crate::blocks::Block;
+        let legacy = crate::planet::get(crate::planet::BodyId::Tenebris);
+        let mut seeded = legacy;
+        seeded.seed = 0xC0FFEE_D00D;
+        /* Same deep-ocean column on both worlds (profile constructed,
+         * not scanned): the voxel band just above legacy sea level is
+         * air on legacy and water on the seeded world (sea +1 m). */
+        let dir = crate::math::dvec3_normalize(crate::math::dvec3_make(1.0, 0.1, 0.3));
+        let mut lp = profile(&legacy, dir);
+        lp.surface_m = -8.0;
+        lp.polar = false;
+        let mut sp = profile(&seeded, dir);
+        sp.surface_m = -8.0;
+        sp.polar = false;
+        assert!(!lp.biomes_on && sp.biomes_on);
+        assert_eq!(sample_with_profile(&lp, 0.5), Block::Air);
+        assert_eq!(sample_with_profile(&sp, 0.5), Block::Water);
+        /* Below legacy sea level both are water. */
+        assert_eq!(sample_with_profile(&lp, -0.5), Block::Water);
+        assert_eq!(sample_with_profile(&sp, -0.5), Block::Water);
     }
 
     #[test]

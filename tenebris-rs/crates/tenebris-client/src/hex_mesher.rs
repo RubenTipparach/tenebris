@@ -1217,13 +1217,22 @@ pub fn build_water(out: &mut HexMesh, w: &World, tile_idx: i32) {
      * a special path. Torch-light is the user-facing reason: a torch
      * placed on a pier or shoreline now spills its warm circle onto
      * the water beside it, exactly like it spills onto the land. */
+    /* Seeded worlds fill one more voxel of ocean (their sea rides one
+     * block higher) - the cap follows the ACTUAL top water voxel. On
+     * legacy worlds voxel SEA_LEVEL_DEPTH is never water, so this is
+     * byte-identical to the pinned C behaviour. */
+    let cap_depth = if w.get(tile_idx, SEA_LEVEL_DEPTH) == Block::Water {
+        SEA_LEVEL_DEPTH
+    } else {
+        SEA_LEVEL_DEPTH - 1
+    };
     let v_before = out.vertices.len() as u32;
     emit_cap(
         out,
         t,
         w,
         tile_idx,
-        SEA_LEVEL_DEPTH - 1,
+        cap_depth,
         Block::Water,
         true,
         1.0,
@@ -1246,7 +1255,7 @@ pub fn build_water(out: &mut HexMesh, w: &World, tile_idx: i32) {
      * off a hill and landed at sea level) get a real direction baked
      * and pan correctly. */
     let v_end = out.vertices.len() as u32;
-    bake_water_flow_uv(out, t, w, tile_idx, SEA_LEVEL_DEPTH - 1, v_before, v_end);
+    bake_water_flow_uv(out, t, w, tile_idx, cap_depth, v_before, v_end);
 }
 
 /* ----------------------------------------------------------------------- */
@@ -1426,6 +1435,16 @@ pub fn build_water_voxels(out: &mut HexMesh, w: &World, tile_idx: i32) {
 
     let n = t.num_verts as i32;
 
+    /* Which row the planet-wide ocean cap owns: the top sea-level
+     * water voxel. Seeded worlds fill one voxel higher; legacy worlds
+     * never have water at SEA_LEVEL_DEPTH, so this stays the pinned
+     * SEA_LEVEL_DEPTH - 1. Must match build_water's cap_depth. */
+    let cap_row = if w.blocks[col_base + SEA_LEVEL_DEPTH as usize] == Block::Water.raw() {
+        SEA_LEVEL_DEPTH
+    } else {
+        SEA_LEVEL_DEPTH - 1
+    };
+
     for d in 0..WORLD_MAX_DEPTH {
         if w.blocks[col_base + d as usize] != Block::Water.raw() {
             continue;
@@ -1449,7 +1468,7 @@ pub fn build_water_voxels(out: &mut HexMesh, w: &World, tile_idx: i32) {
          * cell here matches the ocean cap automatically; only flowing
          * cells at this depth need the override so a flowing strip
          * meeting the ocean doesn't pinch below the cap. */
-        let is_sea_level_row = d == SEA_LEVEL_DEPTH - 1;
+        let is_sea_level_row = d == cap_row;
         if is_sea_level_row {
             cap_offset = surface_off;
         }

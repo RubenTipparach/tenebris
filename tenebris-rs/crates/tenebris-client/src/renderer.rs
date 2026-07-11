@@ -1377,16 +1377,19 @@ fn horizon_sky_color(env: &RenderEnv, cam_fwd: [f32; 3]) -> [f32; 3] {
     {
         let sun_height = dot(sun, up);
         let sunset = {
-            /* smoothstep(0.3, -0.05, sun_height) */
-            let t = ((sun_height - 0.3) / (-0.05 - 0.3)).clamp(0.0, 1.0);
+            /* smoothstep(0.12, -0.03, sun_height) - tight ramp so the
+             * warm band only exists right around the sun crossing the
+             * horizon, giving day/night a crisp boundary. */
+            let t = ((sun_height - 0.12) / (-0.03 - 0.12)).clamp(0.0, 1.0);
             t * t * (3.0 - 2.0 * t)
         } * {
-            /* Night fade - smoothstep(-0.35, -0.08, sun_height). The
+            /* Night fade - smoothstep(-0.14, -0.03, sun_height). The
              * raw sunset ramp SATURATES once the sun sets, which kept
              * the fog (and sky) warm orange all night; this second
              * ramp closes the warmth out as the sun drops away, so
-             * midnight fog fades to genuine black. */
-            let t = ((sun_height + 0.35) / (-0.08 + 0.35)).clamp(0.0, 1.0);
+             * midnight fog fades to genuine black. Kept tight to match
+             * the sharpened day/night transition. */
+            let t = ((sun_height + 0.14) / (-0.03 + 0.14)).clamp(0.0, 1.0);
             t * t * (3.0 - 2.0 * t)
         };
         let view_sun = cos_theta.max(0.0);
@@ -3730,7 +3733,10 @@ pub fn compose_to_swapchain(view: Mat4, proj: Mat4) {
         if r.active_body_idx >= 0 {
             let ab = &r.bodies[r.active_body_idx as usize];
             body_center = ab.world_pos;
-            sea_radius = ab.radius_m + w.height_offset_m - w.depth_offset_m;
+            sea_radius = ab.radius_m
+                + tenebris_core::planet_gen::sea_raise_m(&ab.world.borrow().body)
+                + w.height_offset_m
+                - w.depth_offset_m;
 
             let bc = tenebris_core::planet::get(ab.world.borrow().body.id);
             if bc.atmo_fog_density > 0.0 {
@@ -3830,9 +3836,13 @@ fn body_draw_chunks(
     let mvp = mat4_mul(vp, model);
 
     /* Planet centre is body-local origin (pre-translate); sea-level
-     * radius matches where the cap mesh actually sits. */
+     * radius matches where the cap mesh actually sits (seeded worlds
+     * carry their sea one block higher). */
     let w = config::water();
-    let sea_radius = body.radius_m + w.height_offset_m - w.depth_offset_m;
+    let sea_radius = body.radius_m
+        + tenebris_core::planet_gen::sea_raise_m(&body.world.borrow().body)
+        + w.height_offset_m
+        - w.depth_offset_m;
     let hvp = shaders::hex::HexVsParams {
         u_vp: mvp.m,
         u_planet: [0.0, 0.0, 0.0, if body.has_water { sea_radius } else { 0.0 }],

@@ -345,8 +345,12 @@ const FROG_HOP_DR_M: f64 = 0.35;
 const BIRD_FLY_M: f64 = 2.6;
 /// Vertical bob amplitude of a flying bird / swimming fish, metres.
 const FLY_BOB_M: f64 = 0.35;
-/// Water clearance for fish: min above the sea floor / below the surface.
+/// Water clearance for fish: min above the sea floor.
 const FISH_PAD_M: f64 = 0.4;
+/// Surface clearance for fish: the animal ORIGIN stays this far under
+/// the sea surface, covering the drawn body + dorsal fin + bob so no
+/// part of a fish ever pokes out of the water.
+const FISH_SURFACE_PAD_M: f64 = 1.0;
 
 /// Advance one animal by `dt`. `up` is the surface normal at its position;
 /// `tick_salt` varies the wander RNG over time. Moves `pos` along the
@@ -539,7 +543,13 @@ pub fn spawn_near_auto(w: &World, anchor_world: DVec3, id: u32, salt: u32) -> Op
     a.kind = if in_water {
         /* Lift the spawn into the swimmable column; reseat clamps. */
         let r = dvec3_length(rel);
-        a.pos = dvec3_add(center, dvec3_scale(dvec3_normalize(rel), r + FISH_PAD_M + 0.3));
+        /* Lift into the swimmable band, but never through the surface -
+         * shallow columns spawn the fish just under the waterline and
+         * the first reseat refuses if even that is too tight. */
+        let sea_r = w.depth_to_radius_m(crate::world::WORLD_SEA_LEVEL_DEPTH)
+            + crate::planet_gen::sea_raise_m(&w.body) as f64;
+        let lift = (r + FISH_PAD_M + 0.3).min(sea_r - FISH_SURFACE_PAD_M).max(r);
+        a.pos = dvec3_add(center, dvec3_scale(dvec3_normalize(rel), lift));
         AnimalKind::Fish
     } else {
         /* Each biome runs its own roster: swamps croak with frogs,
@@ -701,13 +711,17 @@ pub fn reseat(w: &World, a: &mut Animal, dt: f32) {
         Habitat::Water => {
             /* Fish stay inside the water column: clamp between the sea
              * floor and the surface, and refuse to swim anywhere the
-             * column is too shallow / dry (that's the beach). */
-            let sea_r = w.depth_to_radius_m(WORLD_SEA_LEVEL_DEPTH);
+             * column is too shallow / dry (that's the beach). The
+             * surface margin covers the drawn BODY (dorsal fin included)
+             * plus the bob, so no part of a fish ever breaks the
+             * surface; seeded worlds add their raised-sea offset. */
+            let sea_r = w.depth_to_radius_m(WORLD_SEA_LEVEL_DEPTH)
+                + crate::planet_gen::sea_raise_m(&w.body) as f64;
             let floor_r = floor_pos(w, dir, r, -1)
                 .map(|p| dvec3_length(dvec3_sub(p, center)))
                 .unwrap_or(0.0);
             let lo = floor_r + FISH_PAD_M;
-            let hi = sea_r - FISH_PAD_M;
+            let hi = sea_r - FISH_SURFACE_PAD_M;
             if floor_r <= 0.0 || lo > hi {
                 refuse(a);
                 return;

@@ -577,9 +577,101 @@ fn try_horizontal_step(
     }
     let step_h = config::lod().step_height_m as f64;
     if cand_gr - feet_r > step_h {
+        /* Tree trunks don't own their whole hex: when the blockage is
+         * tree voxels and the destination keeps clear of the thin
+         * trunk cylinder, walk onto the real ground beneath the tree
+         * instead of hitting an invisible full-hex wall. */
+        if trunk_axis_dist(w, cand_tile, cand_loc) > TRUNK_CLEAR_M {
+            if let Some(ground) = tree_ground_floor(w, cand_tile, feet_r) {
+                if ground - feet_r <= step_h {
+                    return candidate;
+                }
+            }
+        }
         return pos; /* wall - slide */
     }
     candidate
+}
+
+/* --------------------------------------------------------------------- */
+/* Tree-aware collision. A trunk renders at ~1/5 of the tile width
+ * (hex_mesher::block_hex_width: Wood = 0.20) but its voxels used to
+ * block the ENTIRE hex column. These helpers make tree voxels (wood +
+ * leaf canopy) transparent to walking whenever the player keeps clear
+ * of a thin trunk cylinder around the tile centre - brush past trunks
+ * and duck under canopies instead of colliding with the whole hex. */
+
+/// Tangent clearance from the trunk axis (the tile-centre radial line)
+/// inside which tree voxels still collide. Tile corner radius is
+/// ~1.7 m and the trunk renders at 20% of it (~0.35 m); the rest is
+/// the player's own collider width.
+const TRUNK_CLEAR_M: f64 = 0.75;
+
+fn is_tree_raw(b: u8) -> bool {
+    use tenebris_core::blocks::Block;
+    b == Block::Wood.raw() || b == Block::Leaves.raw() || b == Block::SeqLeaves.raw()
+}
+
+fn passable_raw(b: u8) -> bool {
+    use tenebris_core::blocks::Block;
+    b == Block::Air.raw() || b == Block::Water.raw()
+}
+
+/// Ground floor of `tile` with tree voxels treated as air - Some only
+/// when the walk space is genuinely blocked BY a tree (a real wall or
+/// an empty column returns None so normal collision handles it).
+fn tree_ground_floor(w: &World, tile: i32, feet_r: f64) -> Option<f64> {
+    if tile < 0 || tile >= w.tile_count || tile >= w.gen_cursor {
+        return None;
+    }
+    let col_base = (tile * WORLD_MAX_DEPTH) as usize;
+    let col = &w.blocks[col_base..col_base + WORLD_MAX_DEPTH as usize];
+    let feet_d = w.radius_to_depth(feet_r).clamp(1, WORLD_MAX_DEPTH - 1);
+    let mut d = (feet_d + 1).min(WORLD_MAX_DEPTH - 1);
+    let mut saw_tree = false;
+    while d >= 1 {
+        let b = col[d as usize];
+        if is_tree_raw(b) {
+            saw_tree = true;
+            d -= 1;
+            continue;
+        }
+        if passable_raw(b) {
+            d -= 1;
+            continue;
+        }
+        /* First non-tree solid = the true ground. Report it only when
+         * trees are what's in the way: headroom above the ground must
+         * be clear once trees are ignored, and a tree voxel must
+         * actually sit in the walk space. */
+        let head_ok = (1..=2).all(|k| {
+            let dd = d + k;
+            dd >= WORLD_MAX_DEPTH
+                || passable_raw(col[dd as usize])
+                || is_tree_raw(col[dd as usize])
+        });
+        let tree_above = saw_tree
+            || (1..=4).any(|k| {
+                let dd = d + k;
+                dd < WORLD_MAX_DEPTH && is_tree_raw(col[dd as usize])
+            });
+        if head_ok && tree_above {
+            return Some(w.depth_to_radius_m(d + 1));
+        }
+        return None;
+    }
+    None
+}
+
+/// Perpendicular (tangent) distance from a body-local position to the
+/// tile-centre radial line - how far the player stands from the trunk
+/// axis of a tree planted on that tile.
+fn trunk_axis_dist(w: &World, tile: i32, local: DVec3) -> f64 {
+    let Some(t) = w.grid.tile(tile) else {
+        return 1e9;
+    };
+    let proj = dvec3_scale(t.center, dvec3_dot(local, t.center));
+    dvec3_length(dvec3_sub(local, proj))
 }
 
 /* ----------------------------------------------------------------------- */
@@ -1802,6 +1894,19 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
          *      top-of-wall bug; let the player keep falling so
          *      gravity carries them clear of the wall column. */
         let mut gr = w.walkable_floor_near(cur_tile, r, 0.0);
+        /* Tree tile, clear of the trunk cylinder: the walkable-floor
+         * scan returns the canopy/trunk top (the grass beneath is
+         * "roofed" by the trunk voxel), which would snap the player
+         * up the tree. Use the true ground under the tree instead.
+         * Standing ON the canopy stays fine - that gr is within step
+         * height of the feet, so the override doesn't fire. */
+        if trunk_axis_dist(w, cur_tile, local) > TRUNK_CLEAR_M
+            && (gr <= -1e8 || gr - r > config::lod().step_height_m as f64)
+        {
+            if let Some(tg) = tree_ground_floor(w, cur_tile, r) {
+                gr = tg;
+            }
+        }
         /* Safety net: if the walkable-floor query finds nothing in
          * the current column (every solid voxel got rejected by the
          * "passable cell above" rule - rare worldgen patterns, dug
