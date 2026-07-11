@@ -1496,6 +1496,7 @@ extern "C" fn init() {
     /* Cloud layer densities / drift (see client clouds.rs). */
     tenebris_core::clouds::load_config("assets/config/clouds.yaml");
     tenebris_core::fishing::load_config("assets/config/fishing.yaml");
+    tenebris_core::gameplay::load_config("assets/config/gameplay.yaml");
     /* Rocket part stats + flight constants (consumed by the rocket
      * assembly + flight port). */
     tenebris_core::rocket::set_config(tenebris_core::rocket::load_rocket_config(

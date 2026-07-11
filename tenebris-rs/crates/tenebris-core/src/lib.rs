@@ -8,6 +8,7 @@ pub mod crafting;
 pub mod farming;
 pub mod fauna;
 pub mod fishing;
+pub mod gameplay;
 pub mod goldberg;
 pub mod items;
 pub mod job_system;

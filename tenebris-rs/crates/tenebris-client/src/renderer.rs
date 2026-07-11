@@ -1386,23 +1386,23 @@ fn horizon_sky_color(env: &RenderEnv, cam_fwd: [f32; 3]) -> [f32; 3] {
              * - the scattering integral alone goes BLUE there, which
              * read wrong), and smoothstep(-0.28, -0.12) closes it out
              * to genuine dark once the sun is well down. */
-            let t = ((sun_height + 0.28) / (-0.12 + 0.28)).clamp(0.0, 1.0);
+            let t = ((sun_height + 0.32) / (-0.10 + 0.32)).clamp(0.0, 1.0);
             t * t * (3.0 - 2.0 * t)
         };
         let view_sun = cos_theta.max(0.0);
         let tint = [1.3f32, 1.0, 0.6];
         for k in 0..3 {
-            color[k] *= 1.0 + (tint[k] - 1.0) * sunset * 0.5;
+            color[k] *= 1.0 + (tint[k] - 1.0) * sunset * 0.85;
         }
         let glow = view_sun.powi(3) * sunset;
         let glow_c = [1.0f32, 0.65, 0.25];
         /* Horizon-band term: rd is tangent, so 1-|dot(rd,up)| = 1.
-         * Strengths match the atmosphere shader (0.16 / 0.07 - boosted
+         * Strengths match the atmosphere shader (0.22 / 0.11 - boosted
          * so dusk / dawn reads orange-red, not residual blue). */
         let horizon_c = [0.8f32, 0.4, 0.15];
         for k in 0..3 {
-            color[k] += glow_c[k] * glow * env.atmo_sun_intensity * 0.16
-                + horizon_c[k] * sunset * env.atmo_sun_intensity * 0.07;
+            color[k] += glow_c[k] * glow * env.atmo_sun_intensity * 0.22
+                + horizon_c[k] * sunset * env.atmo_sun_intensity * 0.11;
         }
     }
 
@@ -1769,6 +1769,10 @@ thread_local! {
      * once per frame at its first draw, so one shared buffer can't
      * flush mid-frame and keep accepting UI vertices afterwards. */
     static SGL_WORLD_CTX: Cell<sgl::Context> = const { Cell::new(sgl::Context { id: 0 }) };
+    /// This frame's composite fog (xyz colour, w density incl. the
+    /// altitude fade). Stashed so the water pass - which draws AFTER
+    /// the composite - can apply the same fog to the sea surface.
+    static FRAME_FOG: Cell<[f32; 4]> = const { Cell::new([0.0; 4]) };
 }
 
 /// Lazily create the world-entity sgl context against the offscreen
@@ -3830,7 +3834,12 @@ pub fn compose_to_swapchain(view: Mat4, proj: Mat4) {
                 };
                 let height = if bc.atmo_fog_height_m > 0.0 { bc.atmo_fog_height_m } else { 60.0 };
                 let alt = (cam_r - sea_radius).max(0.0);
-                let k = (1.0 - alt / height).clamp(0.0, 1.0);
+                /* Quadratic fade: the fog thins out noticeably as the
+                 * player climbs, clearing well before fog_height_m. */
+                let k = {
+                    let t = (1.0 - alt / height).clamp(0.0, 1.0);
+                    t * t
+                };
                 fog = [
                     base[0] * tint[0],
                     base[1] * tint[1],
@@ -3840,6 +3849,7 @@ pub fn compose_to_swapchain(view: Mat4, proj: Mat4) {
             }
         }
 
+        FRAME_FOG.with(|f| f.set(fog));
         let fs = shaders::composite::CompositeFsParams {
             deep_color: [comp_deep.x, comp_deep.y, comp_deep.z, 0.0],
             absorption: [comp_absorb.x, comp_absorb.y, comp_absorb.z, 0.0],
@@ -4096,6 +4106,9 @@ fn body_draw_water(r: &Renderer, bi: usize, vp: Mat4, camera_world: Vec3) -> usi
         u_torch_color: [l.torch_color.x, l.torch_color.y, l.torch_color.z, l.torch_intensity],
         u_flow_speed_falling: config::water_flow().uv_speed_falling,
         _pad_228: [0; 12],
+        /* Same sky-matched fog the composite used this frame - the
+         * water pass draws after the post-process, so it fogs itself. */
+        u_fog: FRAME_FOG.with(|f| f.get()),
     };
     sg::apply_uniforms(shaders::water::UB_FS_PARAMS, &sg::value_as_range(&fs_params));
 
@@ -5845,7 +5858,8 @@ mod tests {
         assert_eq!(size_of::<shaders::sun::SunVsParams>(), 64);
         assert_eq!(size_of::<shaders::sun::SunFsParams>(), 16);
         assert_eq!(size_of::<shaders::water::VsParams>(), 128);
-        assert_eq!(size_of::<shaders::water::FsParams>(), 240);
+        /* 16 vec4s since the hand-added distance-fog uniform (u_fog). */
+        assert_eq!(size_of::<shaders::water::FsParams>(), 256);
         assert_eq!(size_of::<shaders::water_mobile::VsParamsMobile>(), 112);
         assert_eq!(size_of::<shaders::water_mobile::FsParamsMobile>(), 160);
         assert_eq!(size_of::<shaders::torch::TorchVsParams>(), 80);

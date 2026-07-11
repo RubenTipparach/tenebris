@@ -750,6 +750,7 @@ impl Server {
          * back to compiled-in defaults. */
         config::load_time("assets/config/time.yaml");
         farming::load_config("assets/config/farming.yaml");
+        tenebris_core::gameplay::load_config("assets/config/gameplay.yaml");
         {
             let tc = config::time();
             s.day_length_s = tc.day_length_s;
@@ -1784,7 +1785,10 @@ impl Server {
                                 ab.list.push(a);
                             }
                         }
-                        if night && stalkers < STALKERS_PER_BODY {
+                        if night
+                            && tenebris_core::gameplay::config().enemy_mobs
+                            && stalkers < STALKERS_PER_BODY
+                        {
                             ab.next_id = ab.next_id.wrapping_add(1).max(1);
                             if let Some(a) = fauna::spawn_near_kind(
                                 w,

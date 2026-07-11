@@ -418,9 +418,11 @@ pub fn update(dt: f32, w: &World, p: &mut PlayerCtrl) {
             }
         }
 
-        /* Night: stalkers prowl in on their own cadence. */
+        /* Night: stalkers prowl in on their own cadence (unless the
+         * peaceful toggle switched enemy mobs off - gameplay.yaml). */
         s.stalker_cd -= dt;
         if night
+            && tenebris_core::gameplay::config().enemy_mobs
             && s.list.iter().filter(|a| a.kind == AnimalKind::Stalker).count() < STALKER_COUNT
             && s.stalker_cd <= 0.0
         {

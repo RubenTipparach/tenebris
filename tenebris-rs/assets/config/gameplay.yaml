@@ -1,0 +1,8 @@
+# Gameplay toggles - parsed by core/gameplay.rs (tiny key: value
+# subset). Omitted / 0 keeps the compiled-in default; positive = on,
+# negative = off.
+#
+#   enemy_mobs   hostile night mobs (stalkers). Set to -1 for
+#                peaceful nights - no stalker spawns in SP or MP.
+gameplay:
+  enemy_mobs: 1
