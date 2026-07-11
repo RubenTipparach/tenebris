@@ -157,14 +157,18 @@ impl Block {
     }
 }
 
-/* Atlas columns for the biome-sod tiles - physically past the 93
+/* Atlas columns for the extension tiles - physically past the 93
  * legacy columns (HEX_ATLAS_TILES stays 93; the client's physical
- * atlas is HEX_ATLAS_TILES_PHYS = 97 wide and the hex FS rescales
- * u by 93/97). Order matches the renderer's ATLAS_PATHS tail. */
+ * atlas is HEX_ATLAS_TILES_PHYS = 100 wide and the hex FS rescales
+ * u by 93/100). Order matches the renderer's ATLAS_PATHS tail;
+ * 98..99 are reserved spares so the next tile doesn't need another
+ * shader-ratio patch. */
 pub const ATLAS_JUNGLE_GRASS: u8 = 93;
 pub const ATLAS_JUNGLE_SIDE: u8 = 94;
 pub const ATLAS_DRY_GRASS: u8 = 95;
 pub const ATLAS_DRY_SIDE: u8 = 96;
+/// Lime-green cactus flesh (desert scatter prisms, not a block).
+pub const ATLAS_CACTUS: u8 = 97;
 
 /// Face classification for atlas tile selection.
 #[repr(u8)]
@@ -272,7 +276,7 @@ pub fn face_tile(b: Block, cap: FaceCap) -> u8 {
     /* Biome sods: tinted-grass tiles in the atlas columns PAST the 93
      * legacy UV-addressed ones. The mesher still encodes u = tile/93,
      * so these tiles land at u > 1.0 and the hex FS rescales every u
-     * by 93/97 - which leaves all pinned legacy UVs sampling exactly
+     * by 93/100 - which leaves all pinned legacy UVs sampling exactly
      * where they always did. Bottoms are plain dirt like Grass. */
     if b == Block::JungleGrass {
         return match cap {
