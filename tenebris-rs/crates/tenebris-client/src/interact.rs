@@ -475,7 +475,7 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
                  * into stacked bands - berry seeds, then wheat seeds,
                  * then a wild carrot - so one hash decides which (if
                  * any) seed kind this cell yields. */
-                if target_block == Block::Grass {
+                if matches!(target_block, Block::Grass | Block::JungleGrass | Block::DryGrass) {
                     let cfg = tenebris_core::farming::config();
                     let roll = tenebris_core::rng::hash2(s.hit_tile, s.hit_depth);
                     let berry_top = cfg.grass_seed_chance;

@@ -259,18 +259,28 @@ fn gen_column(body: &BodyConfig, grid: &Goldberg, tile_idx: i32, col: &mut [u8])
     if !prof.barren && !prof.icy && prof.surface_m > 1.0 && prof.surface_m < 22.0 {
         let top = col[surface_idx as usize];
         let is_sequoia_grass = top == Block::SeqGrass.raw();
-        let is_grass = top == Block::Grass.raw() || is_sequoia_grass;
-        if is_grass {
+        let is_grass = top == Block::Grass.raw()
+            || top == Block::JungleGrass.raw()
+            || top == Block::DryGrass.raw()
+            || is_sequoia_grass;
+        use crate::planet_gen::Biome;
+        /* Tundra grows pines straight out of the snow - the only tree
+         * on a non-grass top. Snow tops classify Tundra only on
+         * custom-seeded worlds, so legacy terrain never grows these. */
+        let is_pine = prof.biome == Biome::Tundra
+            && (top == Block::Snow.raw() || top == Block::SeqSnow.raw());
+        if is_grass || is_pine {
             let h = tile_hash(body.seed, tile_idx, 0xA1B2C3D4);
             /* Per-biome density (of 256): jungles pack in dense tall
              * canopy, swamps grow scattered groves, fields keep the
-             * classic ~5%, deserts and mountain rock get none (their
-             * tops aren't grass anyway - this is belt + braces). */
-            use crate::planet_gen::Biome;
+             * classic ~5%, tundra scatters pines, deserts and mountain
+             * rock get none (their tops aren't grass anyway - this is
+             * belt + braces). */
             let (density, extra_trunk) = match prof.biome {
                 Biome::Jungle => (115u32, 2i32),
                 Biome::Swamp => (30, 0),
                 Biome::Fields | Biome::Beach => (13, 0),
+                Biome::Tundra => (18, 1),
                 Biome::Desert | Biome::Mountains => (0, 0),
                 _ => (13, 0),
             };
@@ -279,14 +289,21 @@ fn gen_column(body: &BodyConfig, grid: &Goldberg, tile_idx: i32, col: &mut [u8])
                  * trunks run taller so the canopy closes overhead. */
                 let trunk = 3 + ((h >> 8) & 1) as i32 + extra_trunk;
                 let trunk_top = surface_idx + trunk;
-                let leaf_lo = trunk_top - 1;
-                let mut leaf_hi = trunk_top + 2;
+                /* Pines wear a tall narrow leaf sleeve down most of the
+                 * trunk (conifer silhouette); broadleaf trees keep the
+                 * crown blob over the top. */
+                let leaf_lo = if is_pine { surface_idx + 2 } else { trunk_top - 1 };
+                let mut leaf_hi = if is_pine { trunk_top + 3 } else { trunk_top + 2 };
                 if leaf_hi >= WORLD_MAX_DEPTH {
                     leaf_hi = WORLD_MAX_DEPTH - 1;
                 }
-                /* Trunk: stack BLOCK_WOOD above the grass top. */
+                /* Trunk: stack BLOCK_WOOD above the grass top. Pines
+                 * expose a single trunk block - the rest of the column
+                 * is the leaf sleeve (voxels are single-column, so wood
+                 * and leaves can't share a cell). */
+                let trunk_wood_top = if is_pine { surface_idx + 1 } else { trunk_top };
                 let mut d = surface_idx + 1;
-                while d <= trunk_top && d < WORLD_MAX_DEPTH {
+                while d <= trunk_wood_top && d < WORLD_MAX_DEPTH {
                     col[d as usize] = Block::Wood.raw();
                     d += 1;
                 }

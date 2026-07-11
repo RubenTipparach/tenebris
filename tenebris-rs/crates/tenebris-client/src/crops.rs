@@ -228,7 +228,12 @@ pub fn plant_or_harvest(
     // Seeds go on tilled soil only (till it first with a hoe). If the aimed
     // ground is plain dirt / grass and a hoe is on hand, till it instead.
     if ground != Block::Farmland {
-        if has_hoe && (ground == Block::Dirt || ground == Block::Grass) {
+        if has_hoe
+            && matches!(
+                ground,
+                Block::Dirt | Block::Grass | Block::JungleGrass | Block::DryGrass
+            )
+        {
             return Outcome::Tilled(interact.hit_tile, interact.hit_depth);
         }
         return Outcome::None;

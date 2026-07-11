@@ -2426,8 +2426,10 @@ fn draw_farming_hint(app: &App, screen_w: f32, screen_h: f32) {
     let p = app.player.borrow();
     let msg = if ground == Block::Farmland && plantable_seed_kind(&p).is_some() {
         "[T] plant seed"
-    } else if (ground == Block::Dirt || ground == Block::Grass)
-        && inventory::selected_item(&p.inventory) == Some(tenebris_core::items::HOE)
+    } else if matches!(
+        ground,
+        Block::Dirt | Block::Grass | Block::JungleGrass | Block::DryGrass
+    ) && inventory::selected_item(&p.inventory) == Some(tenebris_core::items::HOE)
     {
         "[T] till soil"
     } else {
@@ -3372,6 +3374,8 @@ fn block_name(b: Block) -> &'static str {
         Block::Cable => "CABLE",
         Block::CopperPipe => "COPPER_PIPE",
         Block::Farmland => "FARMLAND",
+        Block::JungleGrass => "JUNGLE_GRASS",
+        Block::DryGrass => "DRY_GRASS",
     }
 }
 
@@ -3383,7 +3387,7 @@ fn block_glyph(b: Block) -> char {
         Block::Water => 'w',
         Block::Sand | Block::SeqSand => 'S',
         Block::Dirt | Block::SeqDirt => 'd',
-        Block::Grass | Block::SeqGrass => 'g',
+        Block::Grass | Block::SeqGrass | Block::JungleGrass | Block::DryGrass => 'g',
         Block::Stone | Block::CragRock | Block::AsteroidRock => '#',
         Block::Ice | Block::FrostIce => 'i',
         Block::Snow | Block::SeqSnow => 's',

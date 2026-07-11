@@ -217,6 +217,9 @@ const DESERT_BELOW: f32 = 0.36;
 const WET_ABOVE: f32 = 0.64;
 const SWAMP_MAX_ELEV_M: f32 = 5.0;
 const MOUNTAIN_ELEV_M: f32 = 24.0;
+/// Fraction of desert tops that break into red rocky outcrops
+/// (CragRock), same latitude-dither idiom as the swamp mud patches.
+const DESERT_ROCK_FRAC: f32 = 0.14;
 
 /// Fractal noise remapped to [0, 1] at a unit direction. Shared field
 /// generator: the biome moisture map and the client's cloud-coverage
@@ -311,6 +314,11 @@ pub struct ColumnProfile {
     pub asteroid: bool,
     /// Moisture-band biome (Rust-port extension; see [`biome`]).
     pub biome: Biome,
+    /// Whether the biome layer is live for this body (custom seed).
+    /// Gates the Fields -> DryGrass pasture re-skin: legacy worlds
+    /// classify Fields everywhere and must keep emitting the classic
+    /// Grass block byte-exactly (C-parity worldgen pins).
+    pub biomes_on: bool,
 }
 
 /// Port of `planet_profile()`.
@@ -338,6 +346,7 @@ pub fn profile(body: &BodyConfig, unit_dir: DVec3) -> ColumnProfile {
         frost: body.tileset == Tileset::Frost,
         asteroid: body.tileset == Tileset::Asteroid,
         biome: biome(body, unit_dir),
+        biomes_on: biomes_active(body),
     }
 }
 
@@ -403,10 +412,16 @@ pub fn sample_with_profile(prof: &ColumnProfile, altitude_m: f32) -> Block {
             return if prof.sequoia { Block::SeqSnow } else { Block::Snow };
         }
         /* Moisture biomes re-skin the temperate top (Rust extension):
-         * deserts run on sand, mountains turn rocky above the tree
-         * line, swamps get muddy dirt breaks in the sod. */
+         * deserts run on sand broken by red rocky outcrops, mountains
+         * turn rocky above the tree line, swamps get muddy dirt breaks
+         * in the sod, jungles go deep green, pasture goes yellow-green,
+         * and the low cold band turns snowy - so each biome reads at a
+         * glance from orbit, not just underfoot. */
         match prof.biome {
             Biome::Desert => {
+                if (prof.latitude * 977.0).fract() < DESERT_ROCK_FRAC {
+                    return Block::CragRock;
+                }
                 return if prof.sequoia { Block::SeqSand } else { Block::Sand };
             }
             Biome::Mountains => return Block::Stone,
@@ -418,6 +433,13 @@ pub fn sample_with_profile(prof: &ColumnProfile, altitude_m: f32) -> Block {
                 }
                 return if prof.sequoia { Block::SeqGrass } else { Block::Grass };
             }
+            Biome::Jungle => return Block::JungleGrass,
+            Biome::Tundra => {
+                /* Low-elevation cold band: snowy ground (the snow-line
+                 * branch above already whitened everything higher). */
+                return if prof.sequoia { Block::SeqSnow } else { Block::Snow };
+            }
+            Biome::Fields if prof.biomes_on => return Block::DryGrass,
             _ => {}
         }
         return if prof.sequoia { Block::SeqGrass } else { Block::Grass };
@@ -470,6 +492,53 @@ mod biome_tests {
         }
         assert!(kinds.len() >= 5, "seeded world has variety: {kinds:?}");
         assert!(kinds.contains("Desert") || kinds.contains("Swamp") || kinds.contains("Jungle"));
+    }
+
+    #[test]
+    fn biome_sods_only_grow_on_seeded_worlds() {
+        use crate::blocks::Block;
+        let g = goldberg::create(3);
+        let legacy = crate::planet::get(crate::planet::BodyId::Tenebris);
+        let mut seeded = legacy;
+        seeded.seed = 0xC0FFEE_D00D;
+
+        let tops = |body: &crate::planet::BodyConfig| {
+            let mut set = std::collections::HashSet::new();
+            for i in 0..g.tile_count() {
+                let dir = g.tile(i).unwrap().center;
+                let prof = profile(body, dir);
+                if prof.surface_m > 0.0 {
+                    set.insert(sample_with_profile(&prof, prof.surface_m - 0.5));
+                }
+            }
+            set
+        };
+
+        /* Legacy terrain never emits the new sods (C-parity worldgen
+         * pins depend on this - the biome layer is seed-gated). */
+        let legacy_tops = tops(&legacy);
+        assert!(!legacy_tops.contains(&Block::JungleGrass));
+        assert!(!legacy_tops.contains(&Block::DryGrass));
+        assert!(!legacy_tops.contains(&Block::CragRock));
+
+        /* A seeded world grows the orbit-visible surfaces: yellow-green
+         * pasture and deep-green jungle. */
+        let seeded_tops = tops(&seeded);
+        assert!(seeded_tops.contains(&Block::DryGrass), "{seeded_tops:?}");
+        assert!(seeded_tops.contains(&Block::JungleGrass), "{seeded_tops:?}");
+
+        /* Desert red-rock outcrops: too sparse to guarantee at this
+         * subdivision, so pin the arm directly - a desert top whose
+         * latitude dither lands under DESERT_ROCK_FRAC turns CragRock,
+         * one above stays sand. */
+        let dir = crate::math::dvec3_normalize(crate::math::dvec3_make(1.0, 0.05, 0.2));
+        let mut prof = profile(&seeded, dir);
+        prof.biome = Biome::Desert;
+        prof.surface_m = 10.0;
+        prof.latitude = 0.05 / 977.0; /* fract(lat*977) = 0.05 < frac */
+        assert_eq!(sample_with_profile(&prof, 9.6), Block::CragRock);
+        prof.latitude = 0.90 / 977.0; /* fract = 0.90: stays sand */
+        assert_eq!(sample_with_profile(&prof, 9.6), Block::Sand);
     }
 }
 

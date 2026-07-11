@@ -85,9 +85,13 @@ pub fn block_tool(b: Block) -> ToolKind {
         | Block::TinOre
         | Block::IronOre => ToolKind::Pick,
         Block::Wood => ToolKind::Axe,
-        Block::Dirt | Block::Grass | Block::Sand | Block::Snow | Block::Farmland => {
-            ToolKind::Shovel
-        }
+        Block::Dirt
+        | Block::Grass
+        | Block::JungleGrass
+        | Block::DryGrass
+        | Block::Sand
+        | Block::Snow
+        | Block::Farmland => ToolKind::Shovel,
         _ => ToolKind::None,
     }
 }
@@ -157,6 +161,10 @@ pub fn drops(b: Block, tier: u8) -> Vec<ItemStack> {
         Block::IronOre => items::IRON,
         /* Tilled soil digs back into plain dirt, not a "farmland" item. */
         Block::Farmland => items::from_block(Block::Dirt),
+        /* Biome sods yield the ordinary grass block - one grass item in
+         * the bag regardless of which biome it was cut from (same
+         * one-way collapse the Farmland -> Dirt drop uses). */
+        Block::JungleGrass | Block::DryGrass => items::from_block(Block::Grass),
         _ => items::from_block(b),
     };
     vec![ItemStack { item, count: 1 }]

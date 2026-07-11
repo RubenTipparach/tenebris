@@ -116,13 +116,25 @@ pub enum Block {
     /// Rust-port-only, past the C palette. Behaves like dirt (solid,
     /// shovel-dug); planting is gated on this block being present.
     Farmland = 41,
+
+    /* Biome surface variants (Rust-port-only, custom-seed worlds).
+     * Runtime-tinted grass so the moisture biomes read from orbit:
+     * jungles go deep green, temperate pasture goes yellow-green.
+     * Their atlas tiles live PAST the 93 UV-addressed legacy columns
+     * (see face_tile) - the hex FS rescales u so the pinned vertex
+     * encoding (u = tile/93) stays byte-exact for legacy worlds. */
+    /// deep-green jungle sod
+    JungleGrass = 42,
+    /// yellow-green temperate pasture sod
+    DryGrass = 43,
 }
 
 /// Mirrors C's `BLOCK_COUNT` (the implicit trailing enum member). The
-/// Rust port adds the tech blocks (LaunchPad 29 .. CopperPipe 40) past the
-/// C palette - the native port is the canonical target now, so the palette
-/// can grow here.
-pub const BLOCK_COUNT: u8 = 42;
+/// Rust port adds the tech blocks (LaunchPad 29 .. CopperPipe 40) and
+/// the biome sods (JungleGrass / DryGrass) past the C palette - the
+/// native port is the canonical target now, so the palette can grow
+/// here.
+pub const BLOCK_COUNT: u8 = 44;
 
 impl Block {
     /// Fallible conversion from the raw byte stored in voxel arrays /
@@ -144,6 +156,15 @@ impl Block {
         self as u8
     }
 }
+
+/* Atlas columns for the biome-sod tiles - physically past the 93
+ * legacy columns (HEX_ATLAS_TILES stays 93; the client's physical
+ * atlas is HEX_ATLAS_TILES_PHYS = 97 wide and the hex FS rescales
+ * u by 93/97). Order matches the renderer's ATLAS_PATHS tail. */
+pub const ATLAS_JUNGLE_GRASS: u8 = 93;
+pub const ATLAS_JUNGLE_SIDE: u8 = 94;
+pub const ATLAS_DRY_GRASS: u8 = 95;
+pub const ATLAS_DRY_SIDE: u8 = 96;
 
 /// Face classification for atlas tile selection.
 #[repr(u8)]
@@ -248,6 +269,25 @@ pub fn face_tile(b: Block, cap: FaceCap) -> u8 {
             FaceCap::Side => Block::SeqDirtSnow as u8,
         };
     }
+    /* Biome sods: tinted-grass tiles in the atlas columns PAST the 93
+     * legacy UV-addressed ones. The mesher still encodes u = tile/93,
+     * so these tiles land at u > 1.0 and the hex FS rescales every u
+     * by 93/97 - which leaves all pinned legacy UVs sampling exactly
+     * where they always did. Bottoms are plain dirt like Grass. */
+    if b == Block::JungleGrass {
+        return match cap {
+            FaceCap::Top => ATLAS_JUNGLE_GRASS,
+            FaceCap::Bottom => Block::Dirt as u8,
+            FaceCap::Side => ATLAS_JUNGLE_SIDE,
+        };
+    }
+    if b == Block::DryGrass {
+        return match cap {
+            FaceCap::Top => ATLAS_DRY_GRASS,
+            FaceCap::Bottom => Block::Dirt as u8,
+            FaceCap::Side => ATLAS_DRY_SIDE,
+        };
+    }
     /* Tech blocks render their dedicated JS art (ported into the atlas at
      * columns 29..41 - see renderer::ATLAS_PATHS). Each shows its 16x16
      * _face tile on every face: the same icon the JS uses for the block,
@@ -335,7 +375,21 @@ mod tests {
         assert_eq!(Block::Cable as u8, 39);
         assert_eq!(Block::CopperPipe as u8, 40);
         assert_eq!(Block::Farmland as u8, 41);
-        assert_eq!(BLOCK_COUNT, 42);
+        assert_eq!(Block::JungleGrass as u8, 42);
+        assert_eq!(Block::DryGrass as u8, 43);
+        assert_eq!(BLOCK_COUNT, 44);
+    }
+
+    #[test]
+    fn biome_sods_map_to_extension_atlas_columns() {
+        assert_eq!(face_tile(Block::JungleGrass, FaceCap::Top), 93);
+        assert_eq!(face_tile(Block::JungleGrass, FaceCap::Side), 94);
+        assert_eq!(face_tile(Block::JungleGrass, FaceCap::Bottom), 3);
+        assert_eq!(face_tile(Block::DryGrass, FaceCap::Top), 95);
+        assert_eq!(face_tile(Block::DryGrass, FaceCap::Side), 96);
+        assert_eq!(face_tile(Block::DryGrass, FaceCap::Bottom), 3);
+        assert!(covers_face(Block::JungleGrass) && covers_face(Block::DryGrass));
+        assert!(is_solid(Block::JungleGrass) && !is_transparent(Block::DryGrass));
     }
 
     #[test]

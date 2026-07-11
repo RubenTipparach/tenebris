@@ -71,7 +71,7 @@
 #![allow(dead_code)] // wired up by the main_web wave of the port
 
 use crate::gfx_math::{mat4_identity, mat4_mul, mat4_translate, Mat4};
-use crate::hex_mesher::{self, HexMesh, HexVertex, HEX_ATLAS_TILES};
+use crate::hex_mesher::{self, HexMesh, HexVertex};
 use crate::net_client;
 use crate::profiler;
 use crate::shaders;
@@ -244,8 +244,11 @@ pub(crate) fn load_png_rgba(path: &str, flip_vertical: bool) -> Option<LoadedIma
 /* Atlas bake - pure half. */
 
 const ATLAS_TILE_PX: i32 = 16;
-const ATLAS_TILES: usize = HEX_ATLAS_TILES as usize;
-const ATLAS_W: i32 = ATLAS_TILE_PX * HEX_ATLAS_TILES;
+/* Physical column count: 93 legacy UV-addressed columns + the biome-sod
+ * extension tiles at 93..96 (baked at u > 1.0; the hex FS rescales u by
+ * 93/97 - see hex_mesher::HEX_ATLAS_TILES_PHYS). */
+const ATLAS_TILES: usize = hex_mesher::HEX_ATLAS_TILES_PHYS as usize;
+const ATLAS_W: i32 = ATLAS_TILE_PX * hex_mesher::HEX_ATLAS_TILES_PHYS;
 const ATLAS_H: i32 = ATLAS_TILE_PX;
 
 /// Source image per atlas column (None = column stays transparent).
@@ -357,6 +360,15 @@ const ATLAS_PATHS: [Option<&str>; ATLAS_TILES] = [
     Some("assets/textures/items/rocket_engine.png"),  /* 90 rocket engine */
     Some("assets/textures/items/fuel_tank.png"),      /* 91 fuel tank */
     Some("assets/textures/items/command_module.png"), /* 92 command module */
+    /* Biome-sod extension tiles (past HEX_ATLAS_TILES; sampled at
+     * u > 1.0 via the hex FS 93/97 rescale). Baked from the stock
+     * grass art by tools/gen-biome-grass.py - a multiply tint can't
+     * yellow a texture whose red channel is mostly zero, so pasture
+     * is a channel-mixed PNG instead of an ATLAS_TINTS entry. */
+    Some("assets/textures/jungle_grass.png"),      /* 93 JUNGLE_GRASS top */
+    Some("assets/textures/jungle_dirt_grass.png"), /* 94 JUNGLE_GRASS side */
+    Some("assets/textures/dry_grass.png"),         /* 95 DRY_GRASS top */
+    Some("assets/textures/dry_dirt_grass.png"),    /* 96 DRY_GRASS side */
 ];
 
 /// Per-channel multiplier applied to each loaded tile. {1,1,1} =
@@ -459,6 +471,11 @@ const ATLAS_TINTS: [[f32; 3]; ATLAS_TILES] = [
     [1.0, 1.0, 1.0],
     [1.0, 1.0, 1.0],
     [1.0, 1.0, 1.0],
+    /* 93-96 biome sods: pre-baked PNGs (gen-biome-grass.py), no tint. */
+    [1.0, 1.0, 1.0], /* JUNGLE_GRASS top  */
+    [1.0, 1.0, 1.0], /* JUNGLE_GRASS side */
+    [1.0, 1.0, 1.0], /* DRY_GRASS top     */
+    [1.0, 1.0, 1.0], /* DRY_GRASS side    */
 ];
 
 struct AtlasBake {
@@ -625,7 +642,9 @@ fn sample_planet_lod_color(
         return (fallback, 0.0);
     }
     let col = blocks::face_tile(top, FaceCap::Top) as i32;
-    let mut base = if (0..HEX_ATLAS_TILES).contains(&col) {
+    /* Physical column range - includes the biome-sod extension tiles,
+     * so jungle / pasture / desert-rock read from deep space too. */
+    let mut base = if (0..ATLAS_TILES as i32).contains(&col) {
         col_avg[col as usize]
     } else {
         fallback

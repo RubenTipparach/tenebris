@@ -56,6 +56,13 @@ use tenebris_core::world_water;
  * + seq-leaves = 25, + 4 ore tints (coal/copper/tin/iron) = 29 total. */
 pub const HEX_ATLAS_TILES: i32 = 93;
 pub const HEX_ATLAS_U_STEP: f32 = 1.0 / HEX_ATLAS_TILES as f32;
+/* Physical atlas column count: the 93 UV-addressed legacy columns
+ * above (pinned - baked vertex u encodes tile/93, C-parity hashes
+ * depend on it) plus the biome-sod extension tiles (jungle / dry
+ * grass tops + sides) whose faces bake u > 1.0. The hex fragment
+ * shader rescales every u by HEX_ATLAS_TILES / HEX_ATLAS_TILES_PHYS
+ * so legacy tiles sample exactly where they always did. */
+pub const HEX_ATLAS_TILES_PHYS: i32 = 97;
 
 /*
  * Vertex layout: 44 bytes (pos + normal + uv + sky_light + torch_light + wet).
@@ -2109,7 +2116,10 @@ pub fn build_scatter(out: &mut HexMesh, w: &World, tile_idx: i32) {
     let ground = Block::from_raw(w.blocks[col_base + surf as usize]).unwrap_or(Block::Air);
     let above = Block::from_raw(w.blocks[col_base + (surf + 1) as usize]).unwrap_or(Block::Air);
 
-    let grassy = matches!(ground, Block::Grass | Block::SeqGrass);
+    let grassy = matches!(
+        ground,
+        Block::Grass | Block::SeqGrass | Block::JungleGrass | Block::DryGrass
+    );
     let dirty = matches!(ground, Block::Dirt | Block::SeqDirt);
     let bare = matches!(
         ground,
@@ -2271,7 +2281,16 @@ pub fn build_scatter(out: &mut HexMesh, w: &World, tile_idx: i32) {
                  * planet swaps in its local leaf green. */
                 let leaf = if ground == Block::SeqGrass { Block::SeqLeaves } else { Block::Leaves };
                 let pal = hash2(tile_idx, SALT_VARIANT + j);
-                let dark_frac = if biome == Biome::Swamp { 0.95 } else { 0.7 };
+                /* Pasture flips the ratio: blades mostly sample the
+                 * yellow-green sod so the field reads dry, with leaf-
+                 * green accents instead of the other way round. */
+                let dark_frac = if biome == Biome::Swamp {
+                    0.95
+                } else if ground == Block::DryGrass {
+                    0.35
+                } else {
+                    0.7
+                };
                 let src = if pal < dark_frac { leaf } else { ground };
                 let uvr = tile_uv_slice(src, FaceCap::Top, hash2(tile_idx, SALT_SIZE + 31 + j));
                 let (u_lo, u_hi, v_lo, v_hi) = uvr;

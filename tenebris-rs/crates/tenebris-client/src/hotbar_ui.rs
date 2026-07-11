@@ -39,9 +39,7 @@
 // client wave); exercised by unit tests.
 #![allow(dead_code)]
 
-#[cfg(test)]
-use crate::hex_mesher::HEX_ATLAS_TILES;
-use crate::hex_mesher::HEX_ATLAS_U_STEP;
+use crate::hex_mesher::HEX_ATLAS_TILES_PHYS;
 use crate::input;
 use crate::inventory::{Inventory, INV_HOTBAR_SLOTS};
 use crate::renderer;
@@ -194,9 +192,12 @@ pub(crate) fn frame_strips(x: f32, y: f32, w: f32, h: f32, thick: f32) -> [[f32;
     ]
 }
 
-/// Atlas column -> horizontal texcoord span (u0, u1).
+/// Atlas column -> horizontal texcoord span (u0, u1). The UI samples
+/// the PHYSICAL atlas texture directly (no hex-FS u rescale), so the
+/// step is 1 / HEX_ATLAS_TILES_PHYS, not the mesher's pinned 1/93.
 pub(crate) fn icon_uv(col: i32) -> (f32, f32) {
-    (col as f32 * HEX_ATLAS_U_STEP, (col + 1) as f32 * HEX_ATLAS_U_STEP)
+    let step = 1.0 / HEX_ATLAS_TILES_PHYS as f32;
+    (col as f32 * step, (col + 1) as f32 * step)
 }
 
 /// Count badge gate + digit string. None for empty slots (nothing to
@@ -557,10 +558,10 @@ mod tests {
         let col = face_tile(Block::Grass, FaceCap::Top) as i32;
         assert_eq!(col, 4);
         let (u0, u1) = icon_uv(col);
-        assert!((u0 - 4.0 / 93.0).abs() < 1e-7);
-        assert!((u1 - 5.0 / 93.0).abs() < 1e-7);
-        /* last column ends exactly at 1.0 */
-        let (_, u1) = icon_uv(HEX_ATLAS_TILES - 1);
+        assert!((u0 - 4.0 / 97.0).abs() < 1e-7);
+        assert!((u1 - 5.0 / 97.0).abs() < 1e-7);
+        /* last PHYSICAL column ends exactly at 1.0 */
+        let (_, u1) = icon_uv(HEX_ATLAS_TILES_PHYS - 1);
         assert!((u1 - 1.0).abs() < 1e-6);
     }
 
