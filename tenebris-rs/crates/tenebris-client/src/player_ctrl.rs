@@ -1932,6 +1932,23 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
                     blocks::is_solid(under) && !is_tree_raw(under.raw());
                 if tg >= r - 0.01 || !supported {
                     gr = tg;
+                } else {
+                    /* Supported straddle: the feet probe found real
+                     * ground (the neighbour tile's floor corner, or a
+                     * higher step of this tile) while the under-tree
+                     * ground sits lower. Stand on the SUPPORT: leaving
+                     * gr at the canopy-top value made the snap read
+                     * "no reachable floor", cleared grounded, and
+                     * gravity dragged the player through the visible
+                     * corner - the "fall through the floor next to a
+                     * tree" bug. The support's top face is the top of
+                     * the voxel the probe hit. */
+                    let d = w.radius_to_depth(r - 0.15);
+                    if d >= 0 && d + 1 < WORLD_MAX_DEPTH {
+                        gr = w.depth_to_radius_m(d + 1);
+                    } else {
+                        gr = tg;
+                    }
                 }
             }
         }
