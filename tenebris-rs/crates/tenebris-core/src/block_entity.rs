@@ -61,6 +61,36 @@ pub struct FurnaceState {
     pub fuel_remaining: u16,
 }
 
+/// A bonfire: the flint-tier campfire. Like a furnace it has fuel / input /
+/// output stacks and a cook progress, but it differs in two ways that make
+/// it a fire rather than a smelter:
+///   1. It burns fuel *continuously* to stay lit (a light source), not only
+///      while there is something to cook - so `burn_s` counts seconds of
+///      fuel left and drains every tick.
+///   2. Its fuel is wood-family (sticks / logs / charcoal / coal), fed
+///      through [`bonfire_fuel_seconds`], so you keep it alive by adding
+///      logs and sticks.
+/// While lit it cooks raw meat / fish into cooked, and chars logs into
+/// charcoal (the shared `smelt_output` map). It emits 2x a torch's light
+/// (wired in the client light bake).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BonfireState {
+    pub input: ChestSlot,
+    pub fuel: ChestSlot,
+    pub output: ChestSlot,
+    /// 0..1 progress of the current cook.
+    pub cook_progress: f32,
+    /// Seconds of fuel left in the current burn; > 0 == lit.
+    pub burn_s: f32,
+}
+
+impl BonfireState {
+    /// Lit == actively burning fuel (emits light + can cook).
+    pub fn lit(&self) -> bool {
+        self.burn_s > 0.0
+    }
+}
+
 /// A steam engine: burns coal AND needs water piped in from an active
 /// hydro generator (the JS `hasFuel && fuelAmount > 0 && waterInput > 0`).
 /// While running it powers the cable network it touches. `has_water` is
@@ -196,6 +226,8 @@ pub enum MachineState {
     Chest(ChestInv),
     /// Furnace input/fuel/output + smelt progress.
     Furnace(FurnaceState),
+    /// Bonfire: burns wood-family fuel for light + cooks / chars.
+    Bonfire(BonfireState),
     /// Steam engine generator (burns coal + needs water -> powers cables).
     SteamEngine(SteamEngineState),
     /// Electric furnace consumer (smelts while powered).
@@ -274,6 +306,26 @@ impl BlockEntity {
         }
         match &mut self.state {
             MachineState::Furnace(f) => f,
+            _ => unreachable!(),
+        }
+    }
+
+    /// Borrow the bonfire state if this entity is a bonfire.
+    pub fn bonfire(&self) -> Option<&BonfireState> {
+        match &self.state {
+            MachineState::Bonfire(b) => Some(b),
+            _ => None,
+        }
+    }
+
+    /// Promote this entity to a bonfire (if it isn't already) and return
+    /// its state for mutation.
+    pub fn bonfire_mut(&mut self) -> &mut BonfireState {
+        if !matches!(self.state, MachineState::Bonfire(_)) {
+            self.state = MachineState::Bonfire(BonfireState::default());
+        }
+        match &mut self.state {
+            MachineState::Bonfire(b) => b,
             _ => unreachable!(),
         }
     }
@@ -397,6 +449,9 @@ pub fn init_machine_state(e: &mut BlockEntity, b: crate::blocks::Block) {
     match b {
         Block::Furnace => {
             e.furnace_mut();
+        }
+        Block::Bonfire => {
+            e.bonfire_mut();
         }
         Block::SteamEngine => {
             e.steam_engine_mut();
@@ -532,6 +587,101 @@ pub fn furnace_tick(f: &mut FurnaceState, dt: f32) -> bool {
     false
 }
 
+/// Seconds of burn one unit of a bonfire fuel provides, or 0 if the item
+/// isn't bonfire fuel. Sticks are the cheap starter fuel; logs burn longer;
+/// charcoal / coal are the dense long-burn fuels. Tuned in bonfire.yaml.
+pub fn bonfire_fuel_seconds(item: u16) -> f32 {
+    use crate::blocks::Block;
+    use crate::items;
+    let c = crate::config::bonfire();
+    if item == items::STICK {
+        c.stick_burn_s
+    } else if item == items::from_block(Block::Wood) {
+        c.log_burn_s
+    } else if item == items::CHARCOAL {
+        c.charcoal_burn_s
+    } else if item == items::COAL {
+        c.coal_burn_s
+    } else {
+        0.0
+    }
+}
+
+/// True if `item` can fuel a bonfire (any wood-family fuel).
+pub fn is_bonfire_fuel(item: u16) -> bool {
+    bonfire_fuel_seconds(item) > 0.0
+}
+
+/// Advance one bonfire by `dt`. Unlike the furnace it burns fuel
+/// *continuously* to stay lit: `burn_s` drains every tick, and when it
+/// runs out a fresh unit of fuel is lit from the fuel slot (keeping the
+/// fire alive as long as you feed it logs / sticks). While lit it cooks the
+/// input slot (raw meat / fish -> cooked, log -> charcoal) via the shared
+/// `smelt_output` map. Returns true on a durable change (fuel lit, smelt
+/// completed, or the fire going out) so the caller persists.
+pub fn bonfire_tick(b: &mut BonfireState, dt: f32) -> bool {
+    use crate::items;
+    let mut changed = false;
+    /* Light fresh fuel when the current burn is spent. */
+    if b.burn_s <= 0.0 {
+        if b.fuel.count > 0 && is_bonfire_fuel(b.fuel.item) {
+            let secs = bonfire_fuel_seconds(b.fuel.item);
+            b.fuel.count -= 1;
+            if b.fuel.count == 0 {
+                b.fuel.item = 0;
+            }
+            b.burn_s = secs;
+            changed = true;
+        } else {
+            /* Out of fuel: dark + cold. Reset cook so it restarts fresh
+             * when relit. */
+            if b.cook_progress != 0.0 {
+                b.cook_progress = 0.0;
+                changed = true;
+            }
+            return changed;
+        }
+    }
+    /* Burn down (for light). */
+    let was_lit = b.burn_s > 0.0;
+    b.burn_s -= dt;
+    if b.burn_s <= 0.0 {
+        b.burn_s = 0.0;
+        if was_lit {
+            changed = true; /* just went out - persist the dark state */
+        }
+    }
+    /* Cook whatever is loaded, if the fire is (still) lit and the output
+     * has room. */
+    if b.burn_s > 0.0 {
+        if let Some((out_item, out_qty)) = items::smelt_output(b.input.item) {
+            let out_ok = b.output.count == 0
+                || (b.output.item == out_item && b.output.count < items::stack_size(out_item));
+            if b.input.count > 0 && out_ok {
+                let cook_time = crate::config::bonfire().cook_time_s.max(0.01);
+                b.cook_progress += dt / cook_time;
+                if b.cook_progress >= 1.0 {
+                    b.cook_progress = 0.0;
+                    b.input.count -= 1;
+                    if b.input.count == 0 {
+                        b.input.item = 0;
+                    }
+                    if b.output.count == 0 {
+                        b.output.item = out_item;
+                    }
+                    b.output.count = b.output.count.saturating_add(out_qty);
+                    changed = true;
+                }
+            } else {
+                b.cook_progress = 0.0;
+            }
+        } else {
+            b.cook_progress = 0.0;
+        }
+    }
+    changed
+}
+
 /* ------------------------------------------------------------------ */
 /* ASCII record codec - the single serialization every consumer of a
  * placed entity shares: the client's localStorage save
@@ -574,6 +724,20 @@ pub fn record_write(tile: i32, depth: i32, e: &BlockEntity) -> String {
                 f.output.item,
                 f.output.count,
                 f.fuel_remaining
+            ));
+        }
+        MachineState::Bonfire(b) => {
+            /* input, fuel, output stacks + whole seconds of burn left
+             * (cook_progress is transient, like the furnace progress). */
+            rec.push_str(&format!(
+                ":b:{},{},{},{},{},{},{}",
+                b.input.item,
+                b.input.count,
+                b.fuel.item,
+                b.fuel.count,
+                b.output.item,
+                b.output.count,
+                b.burn_s.max(0.0) as u32
             ));
         }
         MachineState::SteamEngine(s) => {
@@ -645,6 +809,16 @@ pub fn record_parse(rec: &str) -> Option<(i32, i32, BlockEntity)> {
                 f.fuel = ChestSlot { item: v[2] as u16, count: v[3] as u16 };
                 f.output = ChestSlot { item: v[4] as u16, count: v[5] as u16 };
                 f.fuel_remaining = v[6] as u16;
+            }
+        }
+        Some("b") => {
+            let v = nums(parts.get(4).copied().unwrap_or(""));
+            if v.len() >= 7 {
+                let b = e.bonfire_mut();
+                b.input = ChestSlot { item: v[0] as u16, count: v[1] as u16 };
+                b.fuel = ChestSlot { item: v[2] as u16, count: v[3] as u16 };
+                b.output = ChestSlot { item: v[4] as u16, count: v[5] as u16 };
+                b.burn_s = v[6] as f32;
             }
         }
         Some("s") => {
@@ -791,6 +965,7 @@ impl BlockEntityStore {
         for e in self.map.values_mut() {
             match &mut e.state {
                 MachineState::Furnace(f) => changed |= furnace_tick(f, dt),
+                MachineState::Bonfire(b) => changed |= bonfire_tick(b, dt),
                 MachineState::SteamEngine(s) => changed |= steam_engine_tick(s, dt),
                 MachineState::ElectricFurnace(ef) => changed |= electric_furnace_tick(ef, dt),
                 MachineState::Printer(p) => changed |= printer_tick(p, dt),

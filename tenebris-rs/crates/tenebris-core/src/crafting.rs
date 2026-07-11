@@ -365,7 +365,10 @@ in: stick 2
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/config/recipes.yaml");
         let rs = load_recipes(path);
         assert!(rs.iter().any(|r| r.name == "planks"), "planks recipe present");
-        assert!(rs.iter().any(|r| r.name == "torch"), "torch recipe present");
+        /* Wood torches were removed in favour of the bonfire (charcoal is
+         * the new fire path); the bonfire is now the early light source. */
+        assert!(rs.iter().any(|r| r.name == "bonfire"), "bonfire recipe present");
+        assert!(!rs.iter().any(|r| r.name == "torch"), "wood torch recipe removed");
         // Every parsed recipe resolved a real output item + >=1 input.
         for r in &rs {
             assert!(r.output.count > 0 && !r.inputs.is_empty(), "recipe {} malformed", r.name);

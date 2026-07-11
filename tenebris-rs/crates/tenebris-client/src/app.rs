@@ -53,6 +53,8 @@ use crate::hotbar_ui;
 use crate::input;
 use crate::interact::{self, InteractState};
 use crate::chest_screen;
+use crate::bonfire_fx;
+use crate::bonfire_screen;
 use crate::egui_layer;
 use crate::furnace_screen;
 use crate::power_ui;
@@ -452,6 +454,56 @@ fn dev_maybe_place(app: &mut App) {
     }
 
     match DEV_PLACE_MODE.with(|c| c.get()) {
+        18 => {
+            /* Bonfire showcase (TENEBRIS_DEV_BONFIRE): place a lit bonfire
+             * a few metres ahead, pre-loaded with fuel + raw meat cooking,
+             * so a night still shows its 2x-torch glow and the cook panel
+             * has content. */
+            let (ppos, fwd, last_tile) = {
+                let p = app.player.borrow();
+                (p.position, p.basis.fwd, p.last_tile)
+            };
+            let mut aim: Option<DVec3> = None;
+            {
+            let mut w = app.world.borrow_mut();
+            let bc = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
+            let local = dvec3_sub(ppos, bc);
+            let point = dvec3_add(local, dvec3_scale(fwd, 5.0));
+            let dir = dvec3_normalize(point);
+            let tile = w.grid.find_tile(dir, last_tile);
+            if let Some(fpos) =
+                tenebris_core::fauna::floor_pos(&w, dir, dvec3_length(local), tile)
+            {
+                let floor_depth = w.radius_to_depth(dvec3_length(dvec3_sub(fpos, bc)));
+                let depth = floor_depth + 1;
+                w.set(tile, depth, Block::Bonfire);
+                let e = w.block_entities.entry(tile, depth);
+                let b = e.bonfire_mut();
+                b.fuel = tenebris_core::block_entity::ChestSlot {
+                    item: tenebris_core::items::CHARCOAL,
+                    count: 4,
+                };
+                b.input = tenebris_core::block_entity::ChestSlot {
+                    item: tenebris_core::items::RAW_MEAT,
+                    count: 3,
+                };
+                b.burn_s = tenebris_core::config::bonfire().charcoal_burn_s;
+                let flame = tenebris_core::math::dvec3_to_vec3(
+                    dvec3_add(dvec3_scale(dir, w.depth_to_radius_m(depth)), dvec3_scale(dir, 0.5)),
+                );
+                w.dirty_in_range(flame, torch::LIGHT_RANGE_M * 2.5);
+                println!("[dev] placed lit bonfire at tile {tile} depth {depth}");
+                /* Aim the camera at the fire so the still frames it + its
+                 * glow pool. */
+                aim = Some(dvec3_add(bc, dvec3_scale(dir, w.depth_to_radius_m(depth) + 0.5)));
+            }
+            }
+            if let Some(a) = aim {
+                dev_aim_at(app, a);
+            } else {
+                app.player.borrow_mut().pitch = -0.20;
+            }
+        }
         13 => {
             /* Sky view: pitch the camera up so the sun (and any moons /
              * planets that are above the horizon) frame against the sky -
@@ -1524,6 +1576,7 @@ extern "C" fn init() {
     config::load_lod("assets/config/lod.yaml");
     config::load_water("assets/config/water.yaml");
     config::load_lighting("assets/config/lighting.yaml");
+    config::load_bonfire("assets/config/bonfire.yaml");
     config::load_time("assets/config/time.yaml");
     /* Start the world clock in daylight (start_day_fraction of a day),
      * unless a dev override pins the time of day. */
@@ -1692,6 +1745,9 @@ extern "C" fn init() {
         DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
     } else if std::env::var("TENEBRIS_DEV_FISH").is_ok() {
         DEV_PLACE_MODE.with(|c| c.set(17));
+        DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
+    } else if std::env::var("TENEBRIS_DEV_BONFIRE").is_ok() {
+        DEV_PLACE_MODE.with(|c| c.set(18));
         DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
     } else if std::env::var("TENEBRIS_DEV_OCCLUDE").is_ok() {
         DEV_PLACE_MODE.with(|c| c.set(15));
@@ -3450,6 +3506,7 @@ fn block_name(b: Block) -> &'static str {
         Block::Farmland => "FARMLAND",
         Block::JungleGrass => "JUNGLE_GRASS",
         Block::DryGrass => "DRY_GRASS",
+        Block::Bonfire => "BONFIRE",
     }
 }
 
@@ -3489,6 +3546,7 @@ fn block_glyph(b: Block) -> char {
         | Block::LaunchTower
         | Block::Cable
         | Block::CopperPipe => 'E',
+        Block::Bonfire => 'B',
     }
 }
 
@@ -3984,6 +4042,7 @@ fn egui_ui(app: &mut App, ctx: &egui::Context) {
     tech_tree::egui_ui(ctx);
     chest_screen::egui_ui(ctx);
     furnace_screen::egui_ui(ctx);
+    bonfire_screen::egui_ui(ctx);
     power_ui::egui_ui(ctx);
     rocket_screen::egui_ui(ctx);
     menu::pause_egui_ui(ctx);
@@ -4074,6 +4133,13 @@ fn frame_inner(app: &mut App) {
     {
         let mut p = app.player.borrow_mut();
         drops::update(dt, &mut p);
+    }
+    /* Bonfire lighting: publish lit-bonfire flames into the torch light
+     * mirror (2x a torch) and relight the terrain around them when the lit
+     * set changes. */
+    {
+        let mut w = app.world.borrow_mut();
+        bonfire_fx::sync_lights(&mut w);
     }
 
     /* Advance the world clock (drives the on-rails orbit + day/night sim).
@@ -4759,6 +4825,10 @@ fn frame_inner(app: &mut App) {
     fishing::draw(view, proj, &app.player.borrow());
     crops::draw(view, proj);
     drops::draw(view, proj, renderer::time_seconds());
+    {
+        let w = app.world.borrow();
+        bonfire_fx::draw(&w, view, proj, renderer::time_seconds());
+    }
     /* Cloud layer above the surface - same pass, drifts with sim time
      * so every peer's sky agrees. */
     {
@@ -4858,6 +4928,7 @@ fn frame_inner(app: &mut App) {
         || inventory_screen::is_open()
         || chest_screen::is_open()
         || furnace_screen::is_open()
+        || bonfire_screen::is_open()
         || power_ui::is_open()
         || crafting_screen::is_open();
     if !menu::pause_active() && !rocket_screen::is_open() && !center_overlay_open {
@@ -5033,6 +5104,7 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
             || inventory_screen::is_open()
             || chest_screen::is_open()
             || furnace_screen::is_open()
+        || bonfire_screen::is_open()
             || power_ui::is_open()
             || rocket_screen::is_open()
             || tech_tree::is_open())
@@ -5047,6 +5119,9 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
     /* Storage chest + furnace panels: while open they own Esc (their
      * slots are egui widgets, handled in the egui layer). */
     if chest_screen::handle_event(e) {
+        return;
+    }
+    if bonfire_screen::handle_event(e) {
         return;
     }
     if furnace_screen::handle_event(e) {
@@ -5104,6 +5179,17 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
             }
             Block::Furnace => {
                 furnace_screen::open(
+                    app.world.clone(),
+                    app.player.clone(),
+                    app.interact.hit_tile,
+                    app.interact.hit_depth,
+                );
+                return;
+            }
+            /* A placed bonfire opens its cook + fuel panel (feed it wood
+             * to keep it lit; cook meat / char logs). */
+            Block::Bonfire => {
+                bonfire_screen::open(
                     app.world.clone(),
                     app.player.clone(),
                     app.interact.hit_tile,

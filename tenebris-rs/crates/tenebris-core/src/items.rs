@@ -211,6 +211,7 @@ fn block_id_by_name(name: &str) -> Option<ItemId> {
     let b = match name {
         "log" | "wood" => Block::Wood,
         "torch" => Block::Torch,
+        "bonfire" => Block::Bonfire,
         "stone" => Block::Stone,
         "dirt" => Block::Dirt,
         "sand" => Block::Sand,
@@ -237,6 +238,7 @@ fn block_name(b: Block) -> &'static str {
     match b {
         Block::Wood => "log",
         Block::Torch => "torch",
+        Block::Bonfire => "bonfire",
         Block::Stone => "stone",
         Block::Dirt => "dirt",
         Block::Sand => "sand",
@@ -320,6 +322,7 @@ fn block_display(b: Block) -> &'static str {
         Block::DirtGrass | Block::SeqDirtGrass => "Grassy Dirt",
         Block::DirtSnow | Block::SeqDirtSnow => "Snowy Dirt",
         Block::Torch => "Torch",
+        Block::Bonfire => "Bonfire",
         Block::Moon => "Moon Rock",
         Block::CragRock => "Craggy Rock",
         Block::FrostIce => "Frost Ice",

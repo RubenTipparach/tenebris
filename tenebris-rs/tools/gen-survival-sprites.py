@@ -25,6 +25,12 @@ PAL = {
     "c": (72, 70, 74, 255),     # charcoal highlight
     "k": (24, 22, 24, 255),     # charcoal shadow
     "r": (120, 60, 30, 255),    # faint ember tint on an edge
+    # bonfire icon - logs + flame
+    "L": (120, 78, 42, 255),    # log brown
+    "l": (86, 56, 30, 255),     # log shadow
+    "O": (240, 120, 30, 255),   # flame orange
+    "Y": (255, 210, 70, 255),   # flame yellow
+    "W": (255, 245, 200, 255),  # flame core
 }
 
 # Flint: an angular knapped shard, sharp point upper-right.
@@ -67,9 +73,30 @@ CHARCOAL = [
     "................",
 ]
 
+# Bonfire: crossed logs under a rising flame.
+BONFIRE = [
+    "................",
+    "................",
+    ".......W........",
+    "......WYW.......",
+    "......YOY.......",
+    ".....YOOOY......",
+    ".....OOWOO......",
+    "....OOOYOOO.....",
+    "....OOOOOOO.....",
+    "...lLlOOlLl.....",
+    "..LLLLLLLLLL....",
+    "..lLLllllLLl....",
+    "...lLl..lLl.....",
+    "................",
+    "................",
+    "................",
+]
+
 SPRITES = {
     "flint": FLINT,
     "charcoal": CHARCOAL,
+    "bonfire": BONFIRE,
 }
 
 

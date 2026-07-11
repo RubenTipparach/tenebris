@@ -1,0 +1,22 @@
+# bonfire.yaml - the flint-tier campfire (light + cook + fuel burn).
+# Parsed by core/config.rs (config::load_bonfire). A field left out, or
+# set to zero / negative, keeps the compiled-in default.
+#
+# The bonfire is a placed block-entity: feed it wood-family fuel to keep it
+# lit (a light source) and it cooks the food / logs you load into it.
+
+bonfire:
+  # Seconds of burn one unit of each fuel provides. Sticks are the cheap
+  # starter fuel; logs last longer; charcoal / coal are the dense fuels.
+  stick_burn_s: 12.0
+  log_burn_s: 45.0
+  charcoal_burn_s: 90.0
+  coal_burn_s: 90.0
+
+  # Seconds to cook one input (raw meat / fish -> cooked; a log -> charcoal).
+  cook_time_s: 8.0
+
+  # Light vs a torch. 2.0 = twice the reach and twice the brightness (the
+  # bake uses one multiplier for both).
+  light_radius_scale: 2.0
+  light_intensity_scale: 2.0

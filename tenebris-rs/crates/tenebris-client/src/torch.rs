@@ -100,6 +100,11 @@ pub struct Torch {
     pub flicker_phase: f32,
     /// tile this torch is anchored to (for despawn)
     pub tile_idx: i32,
+    /// Per-source light multiplier: scales BOTH the reach (range *= scale)
+    /// and the brightness (contribution *= scale) in the per-vertex bake.
+    /// 1.0 for a plain torch; a bonfire publishes its flame here at 2.0.
+    /// Treated as 1.0 when <= 0 (so a Default-constructed torch still lights).
+    pub scale: f32,
 }
 
 /* ----------------------------------------------------------------------- */
@@ -268,10 +273,29 @@ pub fn lights_along_column(dir: Vec3, r_min: f32, r_max: f32, pad_m: f32) -> Vec
     out
 }
 
-/// Republish the live list into the cross-thread mirror. Every mutator
-/// (place / remove / clear / shutdown) must call this.
+/* Extra, non-torch light sources merged into the same bake: lit bonfires
+ * publish their flames here (scale 2.0) so the terrain mesher lights them
+ * through the exact same spatial-grid path as torches, WITHOUT them
+ * entering the persisted torch list (which would save a bonfire as a
+ * torch). The app refreshes this whenever the set of lit bonfires
+ * changes, then calls `lights_publish`. */
+static EXTRA_LIGHTS: Mutex<Vec<Torch>> = Mutex::new(Vec::new());
+
+/// Replace the extra (non-torch) light set - lit bonfire flames - and
+/// republish the merged mirror. Each entry is a `Torch` record whose
+/// `position` is the flame point, `up` is +radial, and `scale` is the
+/// per-source multiplier (2.0 for a bonfire).
+pub fn set_extra_lights(lights: Vec<Torch>) {
+    *EXTRA_LIGHTS.lock().unwrap() = lights;
+    lights_publish();
+}
+
+/// Republish the live list (torches + extra bonfire lights) into the
+/// cross-thread mirror. Every mutator (place / remove / clear / shutdown /
+/// set_extra_lights) must call this.
 fn lights_publish() {
-    let snap = T.with(|t| t.borrow().list.clone());
+    let mut snap = T.with(|t| t.borrow().list.clone());
+    snap.extend(EXTRA_LIGHTS.lock().unwrap().iter().copied());
     let mut grid: std::collections::HashMap<(i32, i32, i32), Vec<u32>> =
         std::collections::HashMap::new();
     for (i, t) in snap.iter().enumerate() {
@@ -536,6 +560,7 @@ pub fn place(position: Vec3, up: Vec3, tile_idx: i32) -> bool {
             up: vec3_normalize(up),
             flicker_phase: phase,
             tile_idx,
+            scale: 1.0,
         });
     });
     lights_publish();
@@ -949,6 +974,7 @@ mod tests {
             up: vec3_make(0.0, 1.0, 0.0),
             flicker_phase: 0.0,
             tile_idx: 0,
+            scale: 1.0,
         };
         let m = model_matrix(&t);
         let want: [f32; 16] = [
@@ -967,6 +993,7 @@ mod tests {
             up: vec3_make(1.0, 0.0, 0.0),
             flicker_phase: 0.0,
             tile_idx: 0,
+            scale: 1.0,
         };
         let m = model_matrix(&t);
         assert!((m.m[0] - 0.0).abs() <= EPS);

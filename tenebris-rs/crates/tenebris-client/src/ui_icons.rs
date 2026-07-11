@@ -32,6 +32,7 @@ const ICONS: &[(u16, &str)] = &[
     (Block::Wood as u16, "assets/textures/wood.png"),
     (Block::Bedrock as u16, "assets/textures/rocks.png"),
     (Block::Torch as u16, "assets/textures/torch.png"),
+    (Block::Bonfire as u16, "assets/textures/items/bonfire.png"),
     (Block::Water as u16, "assets/textures/water.png"),
     (Block::Ice as u16, "assets/textures/ice.png"),
     /* Leaves have no source PNG (the terrain atlas tints them

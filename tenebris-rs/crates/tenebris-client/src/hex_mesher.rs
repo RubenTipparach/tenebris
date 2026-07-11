@@ -280,12 +280,26 @@ pub(crate) fn torch_light_at(world_pos: Vec3) -> f32 {
         if list.is_empty() {
             return 0.0;
         }
-        let range = torch::LIGHT_RANGE_M;
-        let range2 = range * range;
         let decay = torch::LIGHT_DECAY;
 
         let mut total = 0.0f32;
         for t in list.iter() {
+            /* Per-source scale: `scale` is the reach multiplier (range *=
+             * scale). A torch is 1.0; a bonfire 2.0 (twice the reach). <= 0
+             * means a Default-constructed torch, treated as 1.0. Peak
+             * brightness rises more gently than the range (0.5 + 0.5*scale)
+             * so a bonfire reads as a bigger, warmer fire without blowing
+             * the near-field out to solid colour - and a torch (scale 1)
+             * keeps its exact previous look (intensity 1.0, range R). */
+            let s = if t.scale > 0.0 { t.scale } else { 1.0 };
+            /* `scale` is the reach multiplier (a torch = 1.0, a bonfire =
+             * 2.0 -> twice the range). Peak brightness rises more gently
+             * (0.4 + 0.6*scale) than the range: a torch stays exactly 1.0
+             * (no regression), a bonfire lands ~1.6x - noticeably brighter
+             * and far wider, without the literal-2x near-field blow-out. */
+            let inten = 0.4 + 0.6 * s;
+            let range = torch::LIGHT_RANGE_M * s;
+            let range2 = range * range;
             let flame = torch::flame_pos(t);
             let d = vec3_sub(flame, world_pos);
             let d2 = d.x * d.x + d.y * d.y + d.z * d.z;
@@ -293,9 +307,9 @@ pub(crate) fn torch_light_at(world_pos: Vec3) -> f32 {
                 continue;
             }
             /* Matches the JS reference's getTorchLightAt formula:
-             * 1 / (1 + decay * d^2 / range^2) - smooth inverse-square
-             * shape, normalised so contribution = 1 at d = 0. */
-            let a = 1.0f32 / (1.0f32 + decay * d2 / range2);
+             * inten / (1 + decay * d^2 / range^2) - smooth inverse-square
+             * shape, = inten at d = 0. */
+            let a = inten / (1.0f32 + decay * d2 / range2);
             total += a;
         }
         total.min(3.0)
@@ -1832,6 +1846,13 @@ pub fn build_tile(out: &mut HexMesh, w: &World, tile_idx: i32) {
          * (the JS placed separate BoxGeometry meshes), not hex prisms. */
         if let Some(cols) = tech_cube_cols(b) {
             emit_tech_cube(out, t, w, tile_idx, d, cols, true);
+            continue;
+        }
+
+        /* The bonfire is drawn by a dedicated emissive campfire pass
+         * (client::bonfire_fx) so its flame glows at night - skip it in
+         * the lit terrain mesh entirely. */
+        if b == Block::Bonfire {
             continue;
         }
 
