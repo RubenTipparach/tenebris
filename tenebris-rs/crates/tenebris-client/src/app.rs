@@ -29,7 +29,7 @@ use tenebris_core::blocks::Block;
 use tenebris_core::config;
 use tenebris_core::job_system;
 use tenebris_core::math::{
-    dvec3_add, dvec3_length, dvec3_make, dvec3_normalize, dvec3_scale, dvec3_sub, dvec3_to_vec3,
+    dvec3_add, dvec3_dot, dvec3_length, dvec3_make, dvec3_normalize, dvec3_scale, dvec3_sub, dvec3_to_vec3,
     vec3_normalize,
     DVec3, Vec3,
 };
@@ -393,6 +393,10 @@ thread_local! {
     /// showcase ring.
     static DEV_PLACE_COUNTDOWN: std::cell::Cell<i32> = const { std::cell::Cell::new(-1) };
     static DEV_PLACE_MODE: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+    /// Dev: pinned camera world-position for the underwater fish shot
+    /// (TENEBRIS_DEV_FISH=under). Held each frame so gravity doesn't
+    /// drop the camera off its perch above the school.
+    static DEV_FISH_CAM: std::cell::Cell<Option<DVec3>> = const { std::cell::Cell::new(None) };
     /// Dev: TENEBRIS_DEV_CRACK holds the survival mine button on the block
     /// under the reticle every frame (camera pitched down) so a screenshot
     /// catches the block-break crack decal mid-mine. -1 unknown, 0 off, 1 on.
@@ -513,10 +517,49 @@ fn dev_maybe_place(app: &mut App) {
         17 => {
             /* Fish showcase (TENEBRIS_DEV_FISH): the five water species
              * lined up broadside ahead of the player, frozen, so a shot
-             * frames the minnow / ray / eel / reef fish / turtle. */
-            animals::dev_spawn_fish(&app.world.borrow(), &app.player.borrow());
-            println!("[dev] spawned {} fish", animals::count());
-            if let Some(mid) = animals::herd_center() {
+             * frames the minnow / ray / eel / reef fish / turtle. =under
+             * drops them just below the nearest ocean surface. */
+            let under = std::env::var("TENEBRIS_DEV_FISH")
+                .map(|v| v == "under")
+                .unwrap_or(false);
+            let anchor = animals::dev_spawn_fish(&app.world.borrow(), &app.player.borrow(), under);
+            println!("[dev] spawned {} fish (underwater={under})", animals::count());
+            if let Some(adir) = anchor {
+                /* Underwater shot: dip the camera just below the sea
+                 * surface (shallow enough to stay clear of the seabed)
+                 * and pull it back horizontally from the school so we
+                 * look at the fish broadside - their bug eyes face the
+                 * lens. */
+                let (center, sea_r) = {
+                    let w = app.world.borrow();
+                    let c = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
+                    let sr = w.depth_to_radius_m(tenebris_core::world::WORLD_SEA_LEVEL_DEPTH)
+                        + tenebris_core::planet_gen::sea_raise_m(&w.body) as f64;
+                    (c, sr)
+                };
+                if let Some(mid) = animals::herd_center() {
+                    /* Horizontal forward: the player's facing flattened
+                     * onto the local tangent plane (radial component of
+                     * adir removed), so the pull-back slides sideways,
+                     * not up into the air or down into the floor. */
+                    let fwd = app.player.borrow().basis.fwd;
+                    let radial = dvec3_dot(fwd, adir);
+                    let mut hf = dvec3_sub(fwd, dvec3_scale(adir, radial));
+                    if dvec3_length(hf) < 1e-4 {
+                        hf = app.player.borrow().basis.right;
+                    }
+                    let hf = dvec3_normalize(hf);
+                    let back = dvec3_sub(mid, dvec3_scale(hf, 4.5));
+                    let cam = dvec3_add(center, dvec3_scale(dvec3_normalize(dvec3_sub(back, center)), sea_r - 0.55));
+                    {
+                        let mut p = app.player.borrow_mut();
+                        p.position = cam;
+                        p.velocity = tenebris_core::math::DVec3::default();
+                    }
+                    DEV_FISH_CAM.with(|c| c.set(Some(cam)));
+                    dev_aim_at(app, mid);
+                }
+            } else if let Some(mid) = animals::herd_center() {
                 dev_aim_at(app, mid);
             }
         }
@@ -4149,6 +4192,16 @@ fn frame_inner(app: &mut App) {
             p.velocity = tenebris_core::math::DVec3::default();
         }
     }
+
+    /* Dev screenshot aid: hold the camera on its underwater-fish perch
+     * each frame so gravity can't drop it off. */
+    DEV_FISH_CAM.with(|c| {
+        if let Some(cam) = c.get() {
+            let mut p = app.player.borrow_mut();
+            p.position = cam;
+            p.velocity = tenebris_core::math::DVec3::default();
+        }
+    });
 
     /* G-key toggles survival mode in SP only (MP is always survival).
      * Consume the edge either way. */
