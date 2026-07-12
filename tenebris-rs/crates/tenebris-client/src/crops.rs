@@ -34,6 +34,9 @@ use crate::renderer;
 
 /// Reach (metres) for the plant / harvest pick - matches interact::MAX_DIST.
 const REACH_M: f32 = 8.0;
+/// Seconds of holding the mine button to break one plant. Snappy foraging
+/// per the design ("1 second per thing"); mass-harvest tooling comes later.
+pub const CROP_BREAK_S: f32 = 1.0;
 /// Bounding-sphere radius + centre height for the harvest raycast.
 const HIT_RADIUS_M: f32 = 0.5;
 const HIT_CENTRE_UP_M: f64 = 0.35;
@@ -292,63 +295,76 @@ fn raycast_list(list: &[Crop], center: DVec3, eye: Vec3, dir: Vec3, max_dist: f3
 }
 
 /* ---------------------------------------------------------------------- */
-/* Plant / harvest.                                                        */
+/* Break (harvest) / plant.                                                */
 
-/// Resolve one plant-or-harvest attempt. Harvest wins when a mature crop
-/// is under the reticle; otherwise a seed plants on top of the block the
-/// player is aiming at (the `interact` target). Mutates the crop list;
+/// Distance (m) to the nearest crop under the reticle, or `f32::MAX` if
+/// none within reach. Used by `interact` to give a crop target precedence
+/// over the block behind it, so aiming at a plant breaks the PLANT (not
+/// the ground it grows on).
+pub fn reticle_distance(w: &World, p: &PlayerCtrl) -> f32 {
+    let center = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
+    let (eye, dir) = look_ray(p);
+    S.with(|c| {
+        let s = c.borrow();
+        let (h1, d1) = raycast_list(&s.list, center, eye, dir, REACH_M);
+        let (h2, d2) = raycast_list(&s.wild, center, eye, dir, REACH_M);
+        let mut best = f32::MAX;
+        if h1 >= 0 {
+            best = best.min(d1);
+        }
+        if h2 >= 0 {
+            best = best.min(d2);
+        }
+        best
+    })
+}
+
+/// Break the nearest crop under the reticle (plants are mined like blocks,
+/// not "harvested" via a prompt). Removes it and returns the removed crop
+/// so the caller drops its produce/seeds + persists. Wild plants are
+/// always ripe; a planted crop yields per its growth (the caller checks
+/// `is_mature`). Returns `None` if nothing is under the reticle.
+pub fn break_under_reticle(w: &World, p: &PlayerCtrl) -> Option<Crop> {
+    let center = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
+    let (eye, dir) = look_ray(p);
+    S.with(|c| {
+        let s = &mut *c.borrow_mut();
+        let (hit, crop_dist) = raycast_list(&s.list, center, eye, dir, REACH_M);
+        let (hit_wild, wild_dist) = raycast_list(&s.wild, center, eye, dir, REACH_M);
+        if hit < 0 && hit_wild < 0 {
+            return None;
+        }
+        /* Wild plant nearer (or the only) hit: always ripe. Remember its
+         * tile so it doesn't respawn under the player immediately. */
+        if hit_wild >= 0 && (hit < 0 || wild_dist <= crop_dist) {
+            let idx = hit_wild as usize;
+            if idx >= s.wild.len() {
+                return None;
+            }
+            let crop = s.wild.swap_remove(idx);
+            s.wild_harvested.insert(crop.tile_idx);
+            return Some(crop);
+        }
+        let idx = hit as usize;
+        if idx >= s.list.len() {
+            return None;
+        }
+        Some(s.list.swap_remove(idx))
+    })
+}
+
+/// Resolve one plant/till attempt (T): plant a seed on tilled soil, or
+/// till dirt/grass with a hoe. Harvesting is no longer here - crops are
+/// broken like blocks (see `break_under_reticle`). Mutates the crop list;
 /// the caller applies the bag change + persistence.
 pub fn plant_or_harvest(
     w: &World,
-    p: &PlayerCtrl,
+    _p: &PlayerCtrl,
     interact: &InteractState,
     seed_kind: Option<CropKind>,
     has_hoe: bool,
 ) -> Outcome {
     let center = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
-    let (eye, dir) = look_ray(p);
-
-    // Harvest takes precedence: is a crop under the reticle? Check both the
-    // planted list and the wild plants; whichever is nearer wins. A crop
-    // hit FARTHER than the aimed block is behind a wall - not harvestable
-    // (same block-distance gate the animal attack pick uses).
-    let (hit, crop_dist, hit_wild, wild_dist) = S.with(|c| {
-        let s = c.borrow();
-        let (h, d) = raycast_list(&s.list, center, eye, dir, REACH_M);
-        let (hw, dw) = raycast_list(&s.wild, center, eye, dir, REACH_M);
-        (h, d, hw, dw)
-    });
-    let nearest = crop_dist.min(wild_dist);
-    let crop_blocked = interact.has_target
-        && !interact.is_torch_target
-        && (interact.distance as f32) < nearest;
-    if (hit >= 0 || hit_wild >= 0) && !crop_blocked {
-        return S.with(|c| {
-            let s = &mut *c.borrow_mut();
-            /* Wild plant nearer (or the only) hit: it's always ripe -
-             * harvest it, and remember the tile so it doesn't respawn
-             * under the player immediately. */
-            if hit_wild >= 0 && wild_dist <= crop_dist {
-                let idx = hit_wild as usize;
-                if idx >= s.wild.len() {
-                    return Outcome::None;
-                }
-                let crop = s.wild.swap_remove(idx);
-                s.wild_harvested.insert(crop.tile_idx);
-                return Outcome::Harvested(crop);
-            }
-            let idx = hit as usize;
-            if idx >= s.list.len() {
-                return Outcome::None;
-            }
-            if s.list[idx].is_mature() {
-                let crop = s.list.swap_remove(idx);
-                Outcome::Harvested(crop)
-            } else {
-                Outcome::NotReady
-            }
-        });
-    }
 
     // No crop hit -> till the ground, or plant a seed on tilled soil.
     if !interact.has_target || interact.is_torch_target {

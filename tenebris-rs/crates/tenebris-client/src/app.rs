@@ -2311,24 +2311,23 @@ thread_local! {
 /// Centred mining progress bar drawn via sokol_gl. Visible only while
 /// a survival mine is in progress; positioned just above the hotbar.
 fn draw_mining_bar(app: &App, screen_w: f32, screen_h: f32) {
-    if !app.player.borrow().survival_mode {
-        return;
-    }
-    if app.interact.mining_progress_s <= 0.0
-        || app.interact.mining_tile < 0
-        || app.interact.mining_depth < 0
+    /* Progress for whatever is being broken this frame: a plant (any mode,
+     * ~1 s) takes precedence, else a block being mined in survival. */
+    let pct = if app.interact.is_crop_target && app.interact.crop_break_s > 0.0 {
+        (app.interact.crop_break_s / crops::CROP_BREAK_S).clamp(0.0, 1.0)
+    } else if app.player.borrow().survival_mode
+        && app.interact.mining_progress_s > 0.0
+        && app.interact.mining_tile >= 0
+        && app.interact.mining_depth >= 0
     {
-        return;
-    }
-
-    /* Normalised to the REAL break time of the block being mined (tool-
-     * dependent, 2.5s..10s): the bar hits 100% exactly when the block
-     * breaks. */
-    let pct = {
+        /* Normalised to the REAL break time of the block being mined (tool-
+         * dependent, 2.5s..10s): the bar hits 100% exactly when it breaks. */
         let p = app.player.borrow();
         let block = app.world.borrow().get(app.interact.mining_tile, app.interact.mining_depth);
         let break_s = interact::break_seconds_for(&p, block).max(1e-4);
         (app.interact.mining_progress_s / break_s).clamp(0.0, 1.0)
+    } else {
+        return;
     };
 
     let bar_w = 280.0f32;
@@ -2564,37 +2563,6 @@ fn held_tool_for_display(app: &App, _w: &World) -> Option<tenebris_core::items::
     let p = app.player.borrow();
     inventory::selected_item(&p.inventory)
         .filter(|&id| mining::tool_kind(id) != ToolKind::None || id == tenebris_core::items::HOE)
-}
-
-/// Crop reticle hint: when the player is looking at a crop, show whether
-/// it's ready to harvest or still growing (with a percentage), plus the
-/// [T] keybind - the discoverability cue for the farming loop. Text-only
-/// (an inherently-textual readout, like the FPS strip), centred just below
-/// the screen middle so it sits under the reticle dot.
-fn draw_crop_hint(screen_w: f32, screen_h: f32) {
-    let Some(growth) = crops::reticle_growth() else {
-        return;
-    };
-    let msg = if growth >= 1.0 {
-        "[T] harvest".to_string()
-    } else {
-        format!("growing {}%  [T]", (growth * 100.0) as i32)
-    };
-    let cell = 8.0f32;
-    let x = (screen_w * 0.5 - (msg.len() as f32 * cell) * 0.5) / cell;
-    let y = (screen_h * 0.5 + 24.0) / cell;
-    sdtx::canvas(screen_w, screen_h);
-    sdtx::font(1);
-    sdtx::origin(x, y);
-    if growth >= 1.0 {
-        sdtx::color3b(0x90, 0xf0, 0x70);
-    } else {
-        sdtx::color3b(0xe0, 0xd0, 0x80);
-    }
-    sdtx::home();
-    sdtx::puts(&msg);
-    sdtx::font(0);
-    sdtx::color3b(0xff, 0xff, 0xff);
 }
 
 /// Which crop kind a plant press would sow, or `None` without seeds.
@@ -4654,8 +4622,53 @@ fn frame_inner(app: &mut App) {
             &mut app.player.borrow_mut(),
             dt,
         );
-        /* Plant / harvest (T): harvest a mature crop under the reticle, or
-         * plant a seed on the block the player is aiming at. The crop list
+        /* Break a plant like a block: holding the mine button on a crop
+         * fills interact.crop_break_s; when it reaches CROP_BREAK_S (~1 s)
+         * the plant pops and drops its produce/seeds into the bag. Mature
+         * crops yield full produce + seeds; uprooting an unripe one returns
+         * just its seed. Same-frame persist (SP) / relay (MP). */
+        if app.interact.is_crop_target && app.interact.crop_break_s >= crops::CROP_BREAK_S {
+            app.interact.crop_break_s = 0.0;
+            let broken = {
+                let w = phys_world.borrow();
+                let p = app.player.borrow();
+                crops::break_under_reticle(&w, &p)
+            };
+            if let Some(crop) = broken {
+                let cfg = tenebris_core::farming::config();
+                {
+                    let mut p = app.player.borrow_mut();
+                    let seed = tenebris_core::farming::seed_item(crop.kind);
+                    if crop.is_mature() {
+                        let produce = tenebris_core::farming::produce_item(crop.kind);
+                        p.bag.add(produce, cfg.produce_count_of(crop.kind));
+                        let seeds = cfg.seed_count_of(crop.kind);
+                        if seeds > 0 {
+                            p.bag.add(seed, seeds);
+                        }
+                    } else {
+                        p.bag.add(seed, 1); /* uproot -> seed back */
+                    }
+                }
+                if mp {
+                    let body_id = phys_world.borrow().body.id as u32;
+                    net_client::send_crop_op(
+                        body_id,
+                        tenebris_core::proto::CROP_OP_REMOVE,
+                        crop.tile_idx,
+                        crop.pos,
+                        crop.up,
+                        crop.growth,
+                        crop.kind as u8,
+                    );
+                } else {
+                    crops::sp_save_after_change(&phys_world.borrow());
+                }
+            }
+        }
+        /* Plant (T): plant a seed on tilled soil, or till dirt/grass with a
+         * hoe. (Harvesting is no longer here - plants are broken above.)
+         * The crop list
          * mutation happens in crops::plant_or_harvest; here we apply the
          * bag change + persist same-frame (CLAUDE.md world-edit rule) or,
          * in MP, tell the server (it persists + relays to the room). */
@@ -4752,32 +4765,6 @@ fn frame_inner(app: &mut App) {
                         crops::sp_save_after_change(&phys_world.borrow());
                     }
                 }
-                crops::Outcome::Harvested(crop) => {
-                    let cfg = tenebris_core::farming::config();
-                    {
-                        let mut p = app.player.borrow_mut();
-                        let produce = tenebris_core::farming::produce_item(crop.kind);
-                        p.bag.add(produce, cfg.produce_count_of(crop.kind));
-                        let seeds = cfg.seed_count_of(crop.kind);
-                        if seeds > 0 {
-                            p.bag.add(tenebris_core::farming::seed_item(crop.kind), seeds);
-                        }
-                    }
-                    if mp {
-                        let body_id = phys_world.borrow().body.id as u32;
-                        net_client::send_crop_op(
-                            body_id,
-                            tenebris_core::proto::CROP_OP_REMOVE,
-                            crop.tile_idx,
-                            crop.pos,
-                            crop.up,
-                            crop.growth,
-                            crop.kind as u8,
-                        );
-                    } else {
-                        crops::sp_save_after_change(&phys_world.borrow());
-                    }
-                }
                 crops::Outcome::Tilled(tile, depth) => {
                     /* Tilling is a normal world block edit: dirt/grass ->
                      * farmland, persisted same-frame (SP) or relayed to the
@@ -4799,7 +4786,9 @@ fn frame_inner(app: &mut App) {
                         interact::sp_save_tile_after_edit(&phys_world.borrow(), tile);
                     }
                 }
-                crops::Outcome::NotReady | crops::Outcome::None => {}
+                crops::Outcome::Harvested(_)
+                | crops::Outcome::NotReady
+                | crops::Outcome::None => {}
             }
         }
     } else {
@@ -5135,9 +5124,8 @@ fn frame_inner(app: &mut App) {
         draw_mining_bar(app, sapp::widthf(), sapp::heightf());
         /* Survival hunger meter (top-left). */
         draw_hunger_bar(app, sapp::widthf(), sapp::heightf());
-        /* Crop status hint under the reticle (plant / harvest). */
-        draw_crop_hint(sapp::widthf(), sapp::heightf());
-        /* Farming ground hint: till soil / plant seed. */
+        /* Farming ground hint: till soil / plant seed. (Plants no longer
+         * show a harvest prompt - they're broken like blocks.) */
         draw_farming_hint(app, sapp::widthf(), sapp::heightf());
         /* Survival: prompt when the targeted block needs a better tool. */
         draw_tool_gate_hint(app, sapp::widthf(), sapp::heightf());
