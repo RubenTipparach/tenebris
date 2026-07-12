@@ -34,8 +34,6 @@ use crate::renderer;
 
 /// Reach (metres) for the plant / harvest pick - matches interact::MAX_DIST.
 const REACH_M: f32 = 8.0;
-/// A new crop must be at least this far from an existing one (no stacking).
-const MIN_SPACING_M: f64 = 0.6;
 /// Bounding-sphere radius + centre height for the harvest raycast.
 const HIT_RADIUS_M: f32 = 0.5;
 const HIT_CENTRE_UP_M: f64 = 0.35;
@@ -386,11 +384,10 @@ pub fn plant_or_harvest(
 
     S.with(|c| {
         let s = &mut *c.borrow_mut();
-        // Reject if it would overlap an existing crop (no stacking).
-        for crop in &s.list {
-            if dvec3_length(dvec3_sub(crop.pos, pos)) < MIN_SPACING_M {
-                return Outcome::None;
-            }
+        // One plant per hex: the crop is centred on the tile, so a tile that
+        // already grows something (planted or a wild forage plant) is full.
+        if s.list.iter().chain(s.wild.iter()).any(|cr| cr.tile_idx == interact.hit_tile) {
+            return Outcome::None;
         }
         let crop = Crop::new(pos, dir_up, interact.hit_tile, kind);
         s.list.push(crop);
@@ -553,33 +550,36 @@ pub const DEV_GROWTH_PHASES: [f32; 5] = [0.1, 0.32, 0.55, 0.8, 1.0];
 pub fn dev_growth_row(w: &World, p: &PlayerCtrl, kind: CropKind, ahead: f64) -> (Vec<i32>, DVec3) {
     let center = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
     let fwd = p.basis.fwd;
-    let right = p.basis.right;
     let local = dvec3_sub(p.position, center);
     let r = dvec3_length(local);
-    let n = DEV_GROWTH_PHASES.len() as f64;
     let mut tiles = Vec::new();
+    let mut ripe_pos = dvec3_add(center, dvec3_scale(dvec3_normalize(dvec3_add(local, dvec3_scale(fwd, ahead))), r));
     S.with(|c| {
         let s = &mut *c.borrow_mut();
         s.body_center = center;
+        /* Lay the stages out receding away from the camera along the view
+         * line - ripe nearest (front + centre + biggest), youngest furthest.
+         * Each sits on its own hex (one plant per hex) on the real floor, so
+         * a raised tile never embeds or hides the all-important ripe plant. */
         for (i, &g) in DEV_GROWTH_PHASES.iter().enumerate() {
-            let side = (i as f64 - (n - 1.0) * 0.5) * 0.9;
-            let point = dvec3_add(
-                local,
-                dvec3_add(dvec3_scale(fwd, ahead), dvec3_scale(right, side)),
-            );
+            let step = ahead + (DEV_GROWTH_PHASES.len() - 1 - i) as f64 * 1.5;
+            let point = dvec3_add(local, dvec3_scale(fwd, step));
             let dir = dvec3_normalize(point);
             let tile = w.grid.find_tile(dir, p.last_tile);
-            /* Fixed radius (the player's) keeps the five stages colinear
-             * and level regardless of the terrain height under each. */
-            let pos = dvec3_add(center, dvec3_scale(dir, r));
+            if tile < 0 || tiles.contains(&tile) {
+                continue;
+            }
+            let floor = w.walkable_floor_near(tile, r, 1.0);
+            let rr = if floor > 0.0 { floor } else { r };
+            let pos = dvec3_add(center, dvec3_scale(dir, rr));
             s.list.push(Crop::at(pos, dir, tile, g, kind));
-            if tile >= 0 {
-                tiles.push(tile);
+            tiles.push(tile);
+            if (g - 1.0).abs() < 1e-3 {
+                ripe_pos = pos; /* aim the camera here */
             }
         }
     });
-    let point = dvec3_add(local, dvec3_scale(fwd, ahead));
-    (tiles, dvec3_add(center, dvec3_scale(dvec3_normalize(point), r)))
+    (tiles, ripe_pos)
 }
 
 /* ---------------------------------------------------------------------- */
@@ -660,9 +660,9 @@ fn draw_crop(pos: DVec3, up: DVec3, growth: f32, kind: CropKind, lit: f32) {
 
             // Berries only on a mature crop - the visual "harvest me" cue.
             if growth >= 1.0 {
-                draw_box(0.05, stem_h + 0.03, 0.03, 0.03, 0.03, 0.03, 0.85, 0.15, 0.20, lit);
-                draw_box(-0.04, stem_h + 0.06, -0.03, 0.03, 0.03, 0.03, 0.90, 0.20, 0.25, lit);
-                draw_box(0.0, stem_h + 0.10, 0.0, 0.03, 0.03, 0.03, 0.80, 0.12, 0.18, lit);
+                draw_box(0.06, stem_h + 0.02, 0.04, 0.045, 0.045, 0.045, 0.85, 0.15, 0.20, lit);
+                draw_box(-0.05, stem_h + 0.07, -0.04, 0.045, 0.045, 0.045, 0.90, 0.20, 0.25, lit);
+                draw_box(0.0, stem_h + 0.12, 0.0, 0.045, 0.045, 0.045, 0.80, 0.12, 0.18, lit);
             }
         }
         CropKind::Wheat => {
@@ -710,10 +710,14 @@ fn draw_crop(pos: DVec3, up: DVec3, growth: f32, kind: CropKind, lit: f32) {
                 draw_box(dx, 0.03, dz, 0.06, 0.02, 0.045, 0.22, 0.54, 0.20, lit);
             }
             if growth >= 1.0 {
-                // Dark-green striped rind + a lighter stripe cap.
-                draw_box(0.09, 0.10, 0.06, 0.11, 0.10, 0.11, 0.12, 0.40, 0.15, lit);
-                draw_box(0.09, 0.185, 0.06, 0.045, 0.02, 0.11, 0.32, 0.62, 0.24, lit);
-                draw_box(0.09, 0.10, 0.06, 0.115, 0.055, 0.03, 0.30, 0.58, 0.22, lit);
+                // A big striped melon resting on the soil - the unmistakable
+                // ripe cue. Dark-green oblong rind with lighter stripes
+                // running over the crown.
+                let mx = 0.08;
+                draw_box(mx, 0.12, 0.0, 0.15, 0.12, 0.13, 0.10, 0.38, 0.14, lit);
+                for sz in [-0.08f32, 0.0, 0.08] {
+                    draw_box(mx, 0.235, sz, 0.15, 0.02, 0.022, 0.34, 0.66, 0.26, lit);
+                }
             }
         }
         CropKind::Kiwi => {
@@ -727,8 +731,10 @@ fn draw_crop(pos: DVec3, up: DVec3, growth: f32, kind: CropKind, lit: f32) {
                 draw_box(dx, h * 0.82, dz, 0.07, 0.025, 0.06, lr, lg, lb, lit);
             }
             if growth >= 1.0 {
-                for (dx, dz) in [(s * 0.6, s * 0.4), (-s * 0.5, -s * 0.3)] {
-                    draw_box(dx, h * 0.55, dz, 0.03, 0.045, 0.03, 0.42, 0.30, 0.16, lit);
+                // A cluster of plump fuzzy-brown kiwifruit hanging under the
+                // leaves - big enough to read as the ripe crop.
+                for (dx, dz) in [(s * 0.7, s * 0.3), (-s * 0.6, -s * 0.35), (s * 0.1, -s * 0.7), (-s * 0.2, s * 0.65)] {
+                    draw_box(dx, h * 0.5, dz, 0.05, 0.06, 0.05, 0.42, 0.30, 0.16, lit);
                 }
             }
         }
@@ -751,8 +757,18 @@ fn draw_crop(pos: DVec3, up: DVec3, growth: f32, kind: CropKind, lit: f32) {
                 } else {
                     (0.98, 0.56, 0.10) // orange
                 };
-                for (dx, dz) in [(cr * 0.6, cr * 0.3), (-cr * 0.55, -cr * 0.4), (cr * 0.15, -cr * 0.62)] {
-                    draw_box(dx, trunk_h + cr * 0.45, dz, 0.038, 0.038, 0.038, fr, fg, fb, lit);
+                // Several plump fruit studding the OUTSIDE of the canopy
+                // (radius just past the leaf box so they aren't hidden
+                // inside it) - big + bright so a ripe tree reads at a glance.
+                let rad = cr * 1.05;
+                for (ux, uz, dy) in [
+                    (1.0f32, 0.15, 0.55f32),
+                    (0.2, -1.0, 0.75),
+                    (-0.85, -0.55, 0.6),
+                    (-0.7, 0.7, 0.9),
+                    (0.6, 0.8, 1.05),
+                ] {
+                    draw_box(ux * rad, trunk_h + cr * dy, uz * rad, 0.06, 0.062, 0.06, fr, fg, fb, lit);
                 }
             }
         }

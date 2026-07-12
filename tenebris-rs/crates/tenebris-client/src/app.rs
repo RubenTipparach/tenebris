@@ -713,10 +713,12 @@ fn dev_maybe_place(app: &mut App) {
             let (cam, aim) = {
                 let p = app.player.borrow();
                 let cam = dvec3_add(
-                    dvec3_add(p.position, dvec3_scale(p.basis.fwd, -2.6)),
-                    dvec3_scale(p.basis.up, 1.0),
+                    dvec3_add(p.position, dvec3_scale(p.basis.fwd, -2.4)),
+                    dvec3_scale(p.basis.up, 1.1),
                 );
-                let aim = dvec3_add(target, dvec3_scale(p.basis.up, 0.3));
+                /* Aim at the plants' mid-height so the ripe fruit sits centred
+                 * and readable, not tipped off the top of the frame. */
+                let aim = dvec3_add(target, dvec3_scale(p.basis.up, 0.35));
                 (cam, aim)
             };
             app.player.borrow_mut().position = cam;
