@@ -642,6 +642,37 @@ fn dev_maybe_place(app: &mut App) {
                 p.bag.add(tenebris_core::items::WOOD_PICKAXE, 1);
             }
         }
+        19 => {
+            /* Farming showcase (TENEBRIS_DEV_FARM): a row of all crop kinds
+             * (berry, wheat, carrot, then the four orchard fruits) planted
+             * flat ahead and framed at a shallow down-angle so each plant's
+             * silhouette reads. Stock a bucket + fruit seeds so the hotbar
+             * icons show too. */
+            let ahead = 2.2;
+            crops::dev_spawn(&app.world.borrow(), &app.player.borrow(), ahead);
+            let target = {
+                let p = app.player.borrow();
+                /* Aim at the crops' mid-height (~0.4 m up the plant) so the
+                 * shot looks along the row nearly level instead of steeply
+                 * down into the soil. */
+                dvec3_add(
+                    dvec3_add(p.position, dvec3_scale(p.basis.fwd, ahead)),
+                    dvec3_scale(p.basis.up, 0.9),
+                )
+            };
+            dev_aim_at(app, target);
+            {
+                let mut p = app.player.borrow_mut();
+                p.survival_mode = true;
+                p.bag.add(tenebris_core::items::BUCKET, 1);
+                p.bag.add(tenebris_core::items::WATER_BUCKET, 1);
+                p.bag.add(tenebris_core::items::APPLE, 2);
+                p.bag.add(tenebris_core::items::WATERMELON, 1);
+                p.bag.add(tenebris_core::items::APPLE_SEEDS, 3);
+                p.bag.add(tenebris_core::items::KIWI_SEEDS, 3);
+            }
+            println!("[dev] farm showcase: {} crops", crops::count());
+        }
         15 => {
             /* Occlusion test (TENEBRIS_DEV_OCCLUDE): raise a dirt column
              * a few metres ahead with the frozen herd + a crop row
@@ -1753,6 +1784,9 @@ extern "C" fn init() {
     } else if std::env::var("TENEBRIS_DEV_BONFIRE").is_ok() {
         DEV_PLACE_MODE.with(|c| c.set(18));
         DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
+    } else if std::env::var("TENEBRIS_DEV_FARM").is_ok() {
+        DEV_PLACE_MODE.with(|c| c.set(19));
+        DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
     } else if std::env::var("TENEBRIS_DEV_OCCLUDE").is_ok() {
         DEV_PLACE_MODE.with(|c| c.set(15));
         DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
@@ -2517,6 +2551,24 @@ fn plantable_seed_kind(p: &crate::player_ctrl::PlayerCtrl) -> Option<tenebris_co
         }
     }
     None
+}
+
+/// Convert the selected hotbar item in place (`from` -> `to`), one unit.
+/// Used by the bucket fill / pour swap (both are stack-1 tools, so this
+/// just re-skins the slot). No-op if the selected slot doesn't hold `from`.
+fn swap_selected_item(
+    p: &mut crate::player_ctrl::PlayerCtrl,
+    from: tenebris_core::items::ItemId,
+    to: tenebris_core::items::ItemId,
+) {
+    let sel = p.inventory.selected as usize;
+    if sel >= p.inventory.slots.len() {
+        return;
+    }
+    let s = &mut p.inventory.slots[sel];
+    if s.item == from && s.count > 0 {
+        s.item = to;
+    }
 }
 
 /// Farming ground hint: with a hoe on hand, dirt/grass under the reticle
@@ -4317,6 +4369,21 @@ fn frame_inner(app: &mut App) {
                 } else if p.bag.count_of(tenebris_core::items::CARROT) > 0 {
                     p.bag.take(tenebris_core::items::CARROT, 1);
                     fcfg.carrot_hunger_restore
+                } else if let Some((fruit, seed)) = [
+                    (tenebris_core::items::APPLE, tenebris_core::items::APPLE_SEEDS),
+                    (tenebris_core::items::ORANGE, tenebris_core::items::ORANGE_SEEDS),
+                    (tenebris_core::items::WATERMELON, tenebris_core::items::WATERMELON_SEEDS),
+                    (tenebris_core::items::KIWI, tenebris_core::items::KIWI_SEEDS),
+                ]
+                .into_iter()
+                .find(|&(f, _)| p.bag.count_of(f) > 0)
+                {
+                    /* Orchard fruit: restores hunger and yields a seed of
+                     * its kind, so eating what you forage also lets you
+                     * start planting it. */
+                    p.bag.take(fruit, 1);
+                    p.bag.add(seed, 1);
+                    fcfg.fruit_hunger_restore
                 } else {
                     0.0
                 };
@@ -4506,6 +4573,9 @@ fn frame_inner(app: &mut App) {
                 f32::MAX
             };
             crops::update(dt, &w, &p, block_limit);
+            /* Scatter wild fruit plants in the fields / jungle around the
+             * player to forage (deterministic, not persisted). */
+            crops::spawn_wild_near(&w, &p);
         }
         fishing::update(&phys_world.borrow(), &mut app.player.borrow_mut(), dt);
         interact::update(
@@ -4520,7 +4590,58 @@ fn frame_inner(app: &mut App) {
          * bag change + persist same-frame (CLAUDE.md world-edit rule) or,
          * in MP, tell the server (it persists + relays to the room). */
         if input::consume_plant() {
-            let outcome = {
+            /* A bucket in hand repurposes the farm key: an empty bucket
+             * scoops water it's aimed at; a full one waters the crop under
+             * the reticle. Handled before plant/harvest so the same key
+             * covers the whole "or just let it rain" watering loop. */
+            let held_bucket = {
+                let p = app.player.borrow();
+                match inventory::selected_item(&p.inventory) {
+                    Some(tenebris_core::items::BUCKET) => Some(false),
+                    Some(tenebris_core::items::WATER_BUCKET) => Some(true),
+                    _ => None,
+                }
+            };
+            let bucket_used = if let Some(has_water) = held_bucket {
+                let out = {
+                    let w = phys_world.borrow();
+                    let p = app.player.borrow();
+                    crops::use_bucket(&w, &p, has_water)
+                };
+                match out {
+                    crops::BucketOutcome::Scooped => {
+                        let mut p = app.player.borrow_mut();
+                        swap_selected_item(
+                            &mut p,
+                            tenebris_core::items::BUCKET,
+                            tenebris_core::items::WATER_BUCKET,
+                        );
+                        true
+                    }
+                    crops::BucketOutcome::Watered(tile) => {
+                        {
+                            let mut p = app.player.borrow_mut();
+                            swap_selected_item(
+                                &mut p,
+                                tenebris_core::items::WATER_BUCKET,
+                                tenebris_core::items::BUCKET,
+                            );
+                        }
+                        /* watered_s is transient client state; the crop's
+                         * persisted growth updates on its own each frame, so
+                         * no extra save needed here. In MP the boost is a
+                         * local nicety (rain drives growth authoritatively). */
+                        let _ = tile;
+                        true
+                    }
+                    crops::BucketOutcome::None => false,
+                }
+            } else {
+                false
+            };
+            let outcome = if bucket_used {
+                crops::Outcome::None
+            } else {
                 let w = phys_world.borrow();
                 let p = app.player.borrow();
                 let seed_kind = plantable_seed_kind(&p);

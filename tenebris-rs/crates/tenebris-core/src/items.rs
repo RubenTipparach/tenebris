@@ -111,6 +111,25 @@ pub const FLINT: ItemId = ITEM_BASE + 37; // 137
 /// fuel (burns like coal) and the successor to the removed wood torch.
 pub const CHARCOAL: ItemId = ITEM_BASE + 38; // 138
 
+/* Orchard fruits + their seeds. The fruit is food (eat with R); its seed
+ * plants a crop on tilled farmland (see core::farming::CropKind). Wild
+ * plants of each grow in fields / jungle - harvest one for the fruit +
+ * seeds to start your own orchard. */
+pub const APPLE: ItemId = ITEM_BASE + 39; // 139
+pub const ORANGE: ItemId = ITEM_BASE + 40; // 140
+pub const WATERMELON: ItemId = ITEM_BASE + 41; // 141
+pub const KIWI: ItemId = ITEM_BASE + 42; // 142
+pub const APPLE_SEEDS: ItemId = ITEM_BASE + 43; // 143
+pub const ORANGE_SEEDS: ItemId = ITEM_BASE + 44; // 144
+pub const WATERMELON_SEEDS: ItemId = ITEM_BASE + 45; // 145
+pub const KIWI_SEEDS: ItemId = ITEM_BASE + 46; // 146
+
+/// Empty bucket - crafted from iron. Use on water to scoop it up
+/// (-> WATER_BUCKET); use a water bucket on a crop to water it and speed
+/// its growth (or just let it rain).
+pub const BUCKET: ItemId = ITEM_BASE + 47; // 147
+pub const WATER_BUCKET: ItemId = ITEM_BASE + 48; // 148
+
 /// What an item *is*, for stacking / placement / tool-gating rules. Grows
 /// as the tech tree lands (Component, Ingot, Ammo, ...).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -183,6 +202,16 @@ const ITEMS: &[ItemDef] = &[
     ItemDef { id: COOKED_FISH, name: "cooked-fish", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: FLINT, name: "flint", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: CHARCOAL, name: "charcoal", kind: ItemKind::Resource, stack: 64 },
+    ItemDef { id: APPLE, name: "apple", kind: ItemKind::Resource, stack: 64 },
+    ItemDef { id: ORANGE, name: "orange", kind: ItemKind::Resource, stack: 64 },
+    ItemDef { id: WATERMELON, name: "watermelon", kind: ItemKind::Resource, stack: 64 },
+    ItemDef { id: KIWI, name: "kiwi", kind: ItemKind::Resource, stack: 64 },
+    ItemDef { id: APPLE_SEEDS, name: "apple-seeds", kind: ItemKind::Resource, stack: 64 },
+    ItemDef { id: ORANGE_SEEDS, name: "orange-seeds", kind: ItemKind::Resource, stack: 64 },
+    ItemDef { id: WATERMELON_SEEDS, name: "watermelon-seeds", kind: ItemKind::Resource, stack: 64 },
+    ItemDef { id: KIWI_SEEDS, name: "kiwi-seeds", kind: ItemKind::Resource, stack: 64 },
+    ItemDef { id: BUCKET, name: "bucket", kind: ItemKind::Tool, stack: 1 },
+    ItemDef { id: WATER_BUCKET, name: "water-bucket", kind: ItemKind::Tool, stack: 1 },
     ItemDef { id: COPPER, name: "copper", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: TIN, name: "tin", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: IRON, name: "iron", kind: ItemKind::Resource, stack: 64 },

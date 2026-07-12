@@ -29,6 +29,13 @@ pub enum CropKind {
     Berry = 0,
     Wheat = 1,
     Carrot = 2,
+    /* Orchard fruits. Watermelon + kiwi grow as ground/vine plants; apple
+     * + orange grow as small fruit trees. Wild ones scatter in fields /
+     * jungle (see client::crops). */
+    Watermelon = 3,
+    Orange = 4,
+    Apple = 5,
+    Kiwi = 6,
 }
 
 impl CropKind {
@@ -36,8 +43,25 @@ impl CropKind {
         match v {
             1 => CropKind::Wheat,
             2 => CropKind::Carrot,
+            3 => CropKind::Watermelon,
+            4 => CropKind::Orange,
+            5 => CropKind::Apple,
+            6 => CropKind::Kiwi,
             _ => CropKind::Berry,
         }
+    }
+
+    /// The orchard fruits (trees + vines), for wild-spawn + render gating.
+    pub fn is_fruit(self) -> bool {
+        matches!(
+            self,
+            CropKind::Watermelon | CropKind::Orange | CropKind::Apple | CropKind::Kiwi
+        )
+    }
+
+    /// Apple / orange grow as small trees (taller render, slower growth).
+    pub fn is_tree(self) -> bool {
+        matches!(self, CropKind::Apple | CropKind::Orange)
     }
 }
 
@@ -47,6 +71,10 @@ pub fn seed_item(kind: CropKind) -> ItemId {
         CropKind::Berry => items::SEEDS,
         CropKind::Wheat => items::WHEAT_SEEDS,
         CropKind::Carrot => items::CARROT,
+        CropKind::Watermelon => items::WATERMELON_SEEDS,
+        CropKind::Orange => items::ORANGE_SEEDS,
+        CropKind::Apple => items::APPLE_SEEDS,
+        CropKind::Kiwi => items::KIWI_SEEDS,
     }
 }
 
@@ -56,6 +84,10 @@ pub fn produce_item(kind: CropKind) -> ItemId {
         CropKind::Berry => items::BERRIES,
         CropKind::Wheat => items::WHEAT,
         CropKind::Carrot => items::CARROT,
+        CropKind::Watermelon => items::WATERMELON,
+        CropKind::Orange => items::ORANGE,
+        CropKind::Apple => items::APPLE,
+        CropKind::Kiwi => items::KIWI,
     }
 }
 
@@ -65,6 +97,10 @@ pub fn kind_for_seed(item: ItemId) -> Option<CropKind> {
         items::SEEDS => Some(CropKind::Berry),
         items::WHEAT_SEEDS => Some(CropKind::Wheat),
         items::CARROT => Some(CropKind::Carrot),
+        items::WATERMELON_SEEDS => Some(CropKind::Watermelon),
+        items::ORANGE_SEEDS => Some(CropKind::Orange),
+        items::APPLE_SEEDS => Some(CropKind::Apple),
+        items::KIWI_SEEDS => Some(CropKind::Kiwi),
         _ => None,
     }
 }
@@ -81,33 +117,57 @@ pub struct Crop {
     pub tile_idx: i32,
     pub growth: f32,
     pub kind: CropKind,
+    /// Seconds of "watered" boost remaining from a bucket pour. Transient
+    /// (not persisted): rain re-derives from the weather field, and a
+    /// bucket pour is cheap to re-apply, so it clears on reload.
+    pub watered_s: f32,
 }
 
 impl Crop {
     pub fn new(pos: DVec3, up: DVec3, tile_idx: i32, kind: CropKind) -> Self {
-        Self { pos, up, tile_idx, growth: 0.0, kind }
+        Self { pos, up, tile_idx, growth: 0.0, kind, watered_s: 0.0 }
     }
 
     /// Restore a crop at a known growth (used on world load).
     pub fn at(pos: DVec3, up: DVec3, tile_idx: i32, growth: f32, kind: CropKind) -> Self {
-        Self { pos, up, tile_idx, growth: growth.clamp(0.0, 1.0), kind }
+        Self { pos, up, tile_idx, growth: growth.clamp(0.0, 1.0), kind, watered_s: 0.0 }
     }
 
     /// Fully grown and ready to harvest.
     pub fn is_mature(&self) -> bool {
         self.growth >= 1.0
     }
+
+    /// True while a bucket pour is still speeding this crop up.
+    pub fn is_watered(&self) -> bool {
+        self.watered_s > 0.0
+    }
 }
 
 /// Advance a crop's growth by `dt` seconds toward maturity. Clamps at 1.0
 /// so a long absence (or a big world-time catch-up delta) just settles to
-/// "mature", never overshoots.
-pub fn grow(c: &mut Crop, dt: f32, cfg: &FarmingConfig) {
+/// "mature", never overshoots. When `rained` (a cloud is precipitating over
+/// the crop) or a bucket pour is still active, growth runs at
+/// `rain_growth_mult` - "or just let it rain".
+pub fn grow(c: &mut Crop, dt: f32, rained: bool, cfg: &FarmingConfig) {
+    let dt = dt.max(0.0);
+    // A bucket pour keeps the crop watered for a while; count it down.
+    let watered = c.watered_s > 0.0;
+    if watered {
+        c.watered_s = (c.watered_s - dt).max(0.0);
+    }
     if c.growth >= 1.0 {
         return;
     }
+    let mult = if rained || watered { cfg.rain_growth_mult.max(1.0) } else { 1.0 };
     let per_s = 1.0 / cfg.grow_time(c.kind).max(0.001);
-    c.growth = (c.growth + dt.max(0.0) * per_s).min(1.0);
+    c.growth = (c.growth + dt * mult * per_s).min(1.0);
+}
+
+/// Apply a bucket pour: give this crop `water_boost_s` of accelerated
+/// growth (does not stack past a single pour's worth).
+pub fn water(c: &mut Crop, cfg: &FarmingConfig) {
+    c.watered_s = c.watered_s.max(cfg.water_boost_s.max(0.0));
 }
 
 /* --------------------------- config ----------------------------------- */
@@ -141,6 +201,20 @@ pub struct FarmingConfig {
     /// Grass-break chance band for a wild carrot (stacked after wheat's).
     pub carrot_chance: f32,
     pub carrot_hunger_restore: f32,
+
+    /* Orchard fruits. Vines (watermelon / kiwi) grow quicker than trees
+     * (apple / orange). Shared yield + hunger restore across the four. */
+    pub fruit_vine_grow_time_s: f32,
+    pub fruit_tree_grow_time_s: f32,
+    pub fruit_yield: f32,
+    pub fruit_seed_yield: f32,
+    pub fruit_hunger_restore: f32,
+    /// Growth-rate multiplier while a crop is being rained on (or watered).
+    pub rain_growth_mult: f32,
+    /// Seconds of accelerated growth one bucket pour grants a crop.
+    pub water_boost_s: f32,
+    /// Per-tile chance a wild fruit plant grows on a fields/jungle surface.
+    pub wild_fruit_chance: f32,
 }
 
 impl FarmingConfig {
@@ -161,6 +235,15 @@ impl FarmingConfig {
         carrot_yield: 3.0,
         carrot_chance: 0.08,
         carrot_hunger_restore: 10.0,
+
+        fruit_vine_grow_time_s: 80.0,
+        fruit_tree_grow_time_s: 130.0,
+        fruit_yield: 2.0,
+        fruit_seed_yield: 2.0,
+        fruit_hunger_restore: 22.0,
+        rain_growth_mult: 2.2,
+        water_boost_s: 60.0,
+        wild_fruit_chance: 0.06,
     };
 
     /// Grow time (seconds) for a crop kind.
@@ -169,6 +252,8 @@ impl FarmingConfig {
             CropKind::Berry => self.grow_time_s,
             CropKind::Wheat => self.wheat_grow_time_s,
             CropKind::Carrot => self.carrot_grow_time_s,
+            CropKind::Apple | CropKind::Orange => self.fruit_tree_grow_time_s,
+            CropKind::Watermelon | CropKind::Kiwi => self.fruit_vine_grow_time_s,
         }
     }
 
@@ -178,6 +263,8 @@ impl FarmingConfig {
             CropKind::Berry => self.produce_yield,
             CropKind::Wheat => self.wheat_yield,
             CropKind::Carrot => self.carrot_yield,
+            _ if kind.is_fruit() => self.fruit_yield,
+            _ => 1.0,
         };
         y.max(0.0).round() as u16
     }
@@ -189,6 +276,8 @@ impl FarmingConfig {
             CropKind::Berry => self.seed_yield,
             CropKind::Wheat => self.wheat_seed_yield,
             CropKind::Carrot => 0.0,
+            _ if kind.is_fruit() => self.fruit_seed_yield,
+            _ => 0.0,
         };
         y.max(0.0).round() as u16
     }
@@ -250,6 +339,14 @@ pub fn parse_config(src: &str, _path: &str) -> FarmingConfig {
             "carrot_yield" => cfg.carrot_yield = v,
             "carrot_chance" => cfg.carrot_chance = v,
             "carrot_hunger_restore" => cfg.carrot_hunger_restore = v,
+            "fruit_vine_grow_time_s" => cfg.fruit_vine_grow_time_s = v,
+            "fruit_tree_grow_time_s" => cfg.fruit_tree_grow_time_s = v,
+            "fruit_yield" => cfg.fruit_yield = v,
+            "fruit_seed_yield" => cfg.fruit_seed_yield = v,
+            "fruit_hunger_restore" => cfg.fruit_hunger_restore = v,
+            "rain_growth_mult" => cfg.rain_growth_mult = v,
+            "water_boost_s" => cfg.water_boost_s = v,
+            "wild_fruit_chance" => cfg.wild_fruit_chance = v,
             _ => {}
         }
     }
@@ -281,7 +378,7 @@ mod tests {
     fn kinds_have_their_own_growth_and_yields() {
         let cfg = FarmingConfig::DEFAULT;
         let mut w = Crop::new(dvec3_make(1.0, 0.0, 0.0), dvec3_make(1.0, 0.0, 0.0), 7, CropKind::Wheat);
-        grow(&mut w, cfg.wheat_grow_time_s * 0.5, &cfg);
+        grow(&mut w, cfg.wheat_grow_time_s * 0.5, false, &cfg);
         assert!((w.growth - 0.5).abs() < 1e-4, "wheat uses its own clock");
         assert_eq!(cfg.produce_count_of(CropKind::Carrot), 3);
         assert_eq!(cfg.seed_count_of(CropKind::Carrot), 0, "carrot IS its seed");
@@ -299,11 +396,11 @@ mod tests {
         let mut c = crop();
         assert!(!c.is_mature());
         // Half the grow time -> ~50% grown, still not harvestable.
-        grow(&mut c, cfg.grow_time_s * 0.5, &cfg);
+        grow(&mut c, cfg.grow_time_s * 0.5, false, &cfg);
         assert!((c.growth - 0.5).abs() < 1e-4, "growth = {}", c.growth);
         assert!(!c.is_mature());
         // Finish it (and then some) -> clamped mature.
-        grow(&mut c, cfg.grow_time_s * 2.0, &cfg);
+        grow(&mut c, cfg.grow_time_s * 2.0, false, &cfg);
         assert_eq!(c.growth, 1.0);
         assert!(c.is_mature());
     }
@@ -313,12 +410,34 @@ mod tests {
         let mut c = crop();
         // A silly zero grow_time must not divide-by-zero / NaN out.
         let cfg = FarmingConfig { grow_time_s: 0.0, ..FarmingConfig::DEFAULT };
-        grow(&mut c, 1.0, &cfg);
+        grow(&mut c, 1.0, false, &cfg);
         assert_eq!(c.growth, 1.0);
         // Negative dt clamps to no-op.
         let mut d = crop();
-        grow(&mut d, -5.0, &FarmingConfig::DEFAULT);
+        grow(&mut d, -5.0, false, &FarmingConfig::DEFAULT);
         assert_eq!(d.growth, 0.0);
+    }
+
+    #[test]
+    fn rain_and_bucket_water_speed_growth() {
+        let cfg = FarmingConfig::DEFAULT;
+        // Rained-on crop grows rain_growth_mult faster than a dry one.
+        let mut dry = crop();
+        let mut wet = crop();
+        grow(&mut dry, 5.0, false, &cfg);
+        grow(&mut wet, 5.0, true, &cfg);
+        assert!(wet.growth > dry.growth * 1.5, "rain should accelerate growth");
+        // A bucket pour keeps a crop watered (boosted) for a while, then
+        // the boost runs out.
+        let mut b = crop();
+        water(&mut b, &cfg);
+        assert!(b.is_watered());
+        grow(&mut b, 5.0, false, &cfg);
+        let boosted = b.growth;
+        // Drain the pour fully; further growth is back to the dry rate.
+        grow(&mut b, cfg.water_boost_s, false, &cfg);
+        assert!(!b.is_watered(), "pour drains after water_boost_s");
+        assert!(boosted > 0.0);
     }
 
     #[test]

@@ -95,6 +95,14 @@ out: iron-pickaxe 1
 in: iron-ingot 3
 in: stick 2
 
+# Bucket: scoop water (use an empty bucket aimed at water) then pour it on
+# a crop to speed its growth ("water plants"). Iron-tier so it comes online
+# once smelting is up; rain waters crops for free before then.
+[bucket]
+tier: 1
+out: bucket 1
+in: iron-ingot 3
+
 # The furnace: a placeable crafting station built from stone. Interact
 # (E) on it to open the smelting screen. Hand-crafted at the bench.
 
