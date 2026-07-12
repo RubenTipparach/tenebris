@@ -1222,13 +1222,23 @@ mod tests {
             w.stream_gen(10000);
         }
         let center = DVec3 { x: body.pos_x, y: body.pos_y, z: body.pos_z };
-        /* A shelf column: its only water voxel at the raised-sea row. */
+        /* The SHALLOWEST ocean column (fewest water voxels below sea level).
+         * Seeded worlds now have steep shores + deep basins, so a literal
+         * one-voxel shelf may not exist; the shallowest shelf still
+         * exercises the "fish near the floor escapes instead of spinning"
+         * reseat behaviour this test guards. */
+        let sea = crate::world::WORLD_SEA_LEVEL_DEPTH;
+        let water_depth = |t: i32| -> i32 {
+            let mut d = sea;
+            while d > 0 && w.get(t, d - 1) == Block::Water {
+                d -= 1;
+            }
+            sea - d
+        };
         let tile = (0..w.tile_count)
-            .find(|&t| {
-                w.get(t, crate::world::WORLD_SEA_LEVEL_DEPTH) == Block::Water
-                    && w.get(t, crate::world::WORLD_SEA_LEVEL_DEPTH - 1) != Block::Water
-            })
-            .expect("seeded world has a one-voxel shallow shelf");
+            .filter(|&t| w.get(t, sea) == Block::Water)
+            .min_by_key(|&t| water_depth(t))
+            .expect("seeded world has ocean water");
         let t = w.grid.tile(tile).expect("tile");
         let dir = dvec3_normalize(t.center);
         let r = w.depth_to_radius_m(crate::world::WORLD_SEA_LEVEL_DEPTH) + 0.5;

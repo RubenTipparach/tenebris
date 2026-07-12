@@ -733,6 +733,65 @@ fn dev_maybe_place(app: &mut App) {
                 kind, cam.x, cam.y, cam.z
             );
         }
+        21 => {
+            /* Dive showcase (TENEBRIS_DEV_DIVE): scan the WHOLE planet for
+             * the deepest ocean tile (most negative surface height), then
+             * drop the camera into that water looking horizontally, so a
+             * headless shot frames the underwater murk + fish regardless of
+             * where the player spawned on land. */
+            let dive = {
+                let w = app.world.borrow();
+                let center = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
+                let sea_r = w.depth_to_radius_m(tenebris_core::world::WORLD_SEA_LEVEL_DEPTH)
+                    + tenebris_core::planet_gen::sea_raise_m(&w.body) as f64;
+                let mut best = -1i32;
+                let mut best_s = 0.0f32;
+                for i in 0..w.tile_count {
+                    if let Some(t) = w.grid.tile(i) {
+                        let s = tenebris_core::planet_gen::profile(&w.body, t.center).surface_m;
+                        if s < best_s {
+                            best_s = s;
+                            best = i;
+                        }
+                    }
+                }
+                if best >= 0 {
+                    let dir = dvec3_normalize(w.grid.tile(best).unwrap().center);
+                    Some((best, dir, sea_r, center, best_s))
+                } else {
+                    None
+                }
+            };
+            if let Some((tile, dir, sea_r, center, depth_m)) = dive {
+                /* Camera ~4 m below the surface (well inside the deep column,
+                 * clear of the far-below seabed) so cam_under trips + the
+                 * underwater fog applies. */
+                let cam = dvec3_add(center, dvec3_scale(dir, sea_r - 4.0));
+                {
+                    let mut p = app.player.borrow_mut();
+                    p.position = cam;
+                    p.velocity = tenebris_core::math::DVec3::default();
+                    p.last_tile = tile;
+                }
+                animals::dev_spawn_fish(&app.world.borrow(), &app.player.borrow(), true);
+                /* Look horizontally along a tangent so we see into the murk;
+                 * prefer the fish school if one is nearby. */
+                let target = animals::herd_center().unwrap_or_else(|| {
+                    let reference = if dir.y.abs() < 0.9 {
+                        dvec3_make(0.0, 1.0, 0.0)
+                    } else {
+                        dvec3_make(1.0, 0.0, 0.0)
+                    };
+                    let t1 = dvec3_normalize(tenebris_core::math::dvec3_cross(reference, dir));
+                    dvec3_add(cam, dvec3_scale(t1, 6.0))
+                });
+                dev_aim_at(app, target);
+                DEV_FISH_CAM.with(|c| c.set(Some(cam)));
+                println!("[dev] dive: deepest tile {} ({:.1} m below sea)", tile, -depth_m);
+            } else {
+                println!("[dev] dive: no ocean found on this planet");
+            }
+        }
         15 => {
             /* Occlusion test (TENEBRIS_DEV_OCCLUDE): raise a dirt column
              * a few metres ahead with the frozen herd + a crop row
@@ -1840,6 +1899,9 @@ extern "C" fn init() {
         DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
     } else if std::env::var("TENEBRIS_DEV_FISH").is_ok() {
         DEV_PLACE_MODE.with(|c| c.set(17));
+        DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
+    } else if std::env::var("TENEBRIS_DEV_DIVE").is_ok() {
+        DEV_PLACE_MODE.with(|c| c.set(21));
         DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
     } else if std::env::var("TENEBRIS_DEV_BONFIRE").is_ok() {
         DEV_PLACE_MODE.with(|c| c.set(18));

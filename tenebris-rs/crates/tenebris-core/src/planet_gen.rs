@@ -176,10 +176,18 @@ pub fn surface_altitude(body: &BodyConfig, unit_dir: DVec3) -> f32 {
     let base = if height >= 0.0 {
         height * MAX_LAND_HEIGHT
     } else {
-        /* C: (float)pow((double)fabs(height), (double)OCEAN_DEPTH_POWER) */
-        let ocean_factor = (height as f64).abs().powf(OCEAN_DEPTH_POWER as f64) as f32;
-        /* Seeded worlds get deeper basins (gated like the uplift). */
-        let deepen = if biomes_active(body) { SEEDED_OCEAN_DEEPEN } else { 1.0 };
+        /* C: (float)pow((double)fabs(height), (double)OCEAN_DEPTH_POWER)
+         * A smaller power makes the sea floor drop away FAST just past the
+         * beach (a sub-1 exponent lifts the near-shore |height| values), so
+         * seeded worlds get a steep shore + little shallow water. Deepen
+         * scales the whole basin. Both are seeded-only (biomes_active) so
+         * default-seed output stays byte-exact for the C-parity pins. */
+        let (power, deepen) = if biomes_active(body) {
+            (SEEDED_OCEAN_POWER, SEEDED_OCEAN_DEEPEN)
+        } else {
+            (OCEAN_DEPTH_POWER, 1.0)
+        };
+        let ocean_factor = (height as f64).abs().powf(power as f64) as f32;
         -ocean_factor * MAX_OCEAN_DEPTH * deepen
     };
 
@@ -263,6 +271,10 @@ const SEEDED_SEA_RAISE_M: f32 = 1.0;
  * bedrock), so open water is a real dive, not a shallow pool. Seeded
  * worlds only - the biomes_active gate keeps default output byte-exact. */
 const SEEDED_OCEAN_DEEPEN: f32 = 2.6;
+/// Ocean depth exponent for seeded worlds. Below the default 1.3 so the
+/// shore falls off steeply (deep water starts just past the beach, only a
+/// thin shallow band) instead of a long gentle shelf.
+const SEEDED_OCEAN_POWER: f32 = 0.62;
 
 /// Fractal noise remapped to [0, 1] at a unit direction. Shared field
 /// generator: the biome moisture map and the client's cloud-coverage
