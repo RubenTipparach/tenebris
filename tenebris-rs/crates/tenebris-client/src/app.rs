@@ -4390,6 +4390,13 @@ fn frame_inner(app: &mut App) {
 
     /* G-key toggles survival mode in SP only (MP is always survival).
      * Consume the edge either way. */
+    /* K cycles a manual storm (off -> rain -> snow): forces a full
+     * overcast + shower everywhere so weather can be triggered on demand.
+     * The change is immediately visible (deck + shower), so a console line
+     * is enough feedback without a toast system. */
+    if input::consume_storm_toggle() {
+        println!("[weather] {}", weather_fx::cycle_storm());
+    }
     if input::consume_survival_toggle() && menu::state() == GameState::InGameSp {
         let mut p = app.player.borrow_mut();
         p.survival_mode = !p.survival_mode;

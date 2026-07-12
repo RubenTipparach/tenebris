@@ -38,11 +38,38 @@ const COLUMN_H_M: f64 = 46.0;
 /// Max marks at full intensity.
 const MAX_MARKS: usize = 1700;
 
-/// Dev screenshot override: TENEBRIS_DEV_WEATHER=rain|snow forces a
-/// shower around the player. Read once and cached.
+thread_local! {
+    /// Runtime storm override, cycled by the player (P key): 0 off,
+    /// 1 rain, 2 snow. Forces a full overcast + shower everywhere so a
+    /// storm can be triggered on demand ("toggle atmosphere moisture").
+    static STORM: Cell<i8> = const { Cell::new(0) };
+}
+
+/// Cycle the manual storm override: off -> rain -> snow -> off. Returns
+/// the new state's label for a HUD toast.
+pub fn cycle_storm() -> &'static str {
+    STORM.with(|c| {
+        let n = (c.get() + 1) % 3;
+        c.set(n);
+        match n {
+            1 => "storm: RAIN",
+            2 => "storm: SNOW",
+            _ => "storm: OFF",
+        }
+    })
+}
+
+/// True while a manual storm is forced on.
+pub fn storm_active() -> bool {
+    STORM.with(|c| c.get() != 0)
+}
+
+/// Forced precipitation, if any - from the runtime storm toggle (P key)
+/// or the TENEBRIS_DEV_WEATHER=rain|snow screenshot override. The toggle
+/// wins so it can be flipped live; the env value seeds the default.
 pub fn forced_precip() -> Option<Precip> {
     thread_local! { static F: Cell<i8> = const { Cell::new(-2) }; }
-    F.with(|c| {
+    let env = F.with(|c| {
         if c.get() == -2 {
             let v = std::env::var("TENEBRIS_DEV_WEATHER").unwrap_or_default();
             c.set(match v.as_str() {
@@ -51,12 +78,14 @@ pub fn forced_precip() -> Option<Precip> {
                 _ => 0,
             });
         }
-        match c.get() {
-            1 => Some(Precip::Rain),
-            2 => Some(Precip::Snow),
-            _ => None,
-        }
-    })
+        c.get()
+    });
+    let s = STORM.with(|c| c.get());
+    match if s != 0 { s } else { env } {
+        1 => Some(Precip::Rain),
+        2 => Some(Precip::Snow),
+        _ => None,
+    }
 }
 
 fn hashf(i: u32, salt: u32) -> f64 {

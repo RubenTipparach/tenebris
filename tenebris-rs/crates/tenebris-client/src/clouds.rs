@@ -51,6 +51,12 @@ fn rotate_y(v: DVec3, ang: f64) -> DVec3 {
     dvec3_make(v.x * c + v.z * s, v.y, -v.x * s + v.z * c)
 }
 
+/// Hermite smoothstep 0..1 across [e0, e1].
+fn smoothstep(e0: f64, e1: f64, x: f64) -> f64 {
+    let t = ((x - e0) / (e1 - e0).max(1e-6)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
 /// One axis-aligned-in-frame cuboid centred at `c`, spanned by the
 /// local (t1, t2, up) frame, per-face shaded like the entity boxes.
 #[allow(clippy::too_many_arguments)]
@@ -222,22 +228,28 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, p: &PlayerCtrl, time_s: f64) {
                 cell.alpha = 1.0;
                 cell.raining = true;
             }
-            if cell.cover <= 0.03 {
-                continue; /* clear sky here */
-            }
             /* Coverage-driven cell population: sparse scattered puffs where
              * coverage is low (a few forming clouds), rising to a SOLID
              * deck (every cell filled) at full overcast - so a rain cloud
              * always covers the ground it rains on, with no gaps for the
              * precipitation to fall through. */
             let cov = cell.cover as f64;
-            let sc = {
-                let t = ((cov - 0.4) / 0.6).clamp(0.0, 1.0);
-                t * t * (3.0 - 2.0 * t)
-            };
+            let sc = smoothstep(0.4, 1.0, cov);
             let eff = cfg.density as f64 + (1.0 - cfg.density as f64) * sc;
-            if (roll as f64) >= eff {
-                continue;
+            /* Smooth spawn/despawn: instead of popping a cell on/off when
+             * `eff` crosses its fixed `roll`, ramp a PRESENCE factor over a
+             * band and scale the whole puff by it. As the weather field
+             * drifts in, `eff` rises past `roll` and the cloud grows in
+             * from nothing; as it drifts out it shrinks away - no sudden
+             * appear/disappear. Coverage near zero also fades the size to
+             * 0 rather than hard-cutting at a threshold. This is the
+             * "scale up/down over a lifetime" the design calls for; the
+             * field drifts slowly so the visual growth stays gradual. */
+            const SPAWN_BAND: f64 = 0.22;
+            let presence = smoothstep(roll as f64, roll as f64 + SPAWN_BAND, eff)
+                * smoothstep(0.0, 0.12, cov);
+            if presence <= 0.02 {
+                continue; /* effectively clear / not yet born here */
             }
             /* Every cloud drifts at the single layer speed (cfg.drift_mps) -
              * that's the hard max, so nothing zips past the base rate. */
@@ -266,8 +278,12 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, p: &PlayerCtrl, time_s: f64) {
              * cube, a mature mass is a wide cumulus. Rain/snow clouds tower
              * into big, tall dark masses. */
             let storm = if cell.raining { wcfg.rain_cloud_scale as f64 } else { 1.0 };
-            let sz =
-                (0.35 + 1.1 * cell.cover as f64) * (0.65 + 0.5 * hash3(ti, pj, SALT_SIZE) as f64) * storm;
+            /* `presence` scales the puff so it grows in / shrinks out
+             * smoothly over its lifetime instead of popping. */
+            let sz = (0.35 + 1.1 * cell.cover as f64)
+                * (0.65 + 0.5 * hash3(ti, pj, SALT_SIZE) as f64)
+                * storm
+                * presence;
             let hw = cfg.puff_w_m as f64 * sz;
             let hh = cfg.puff_h_m as f64 * sz * if cell.raining { 1.7 } else { 1.0 };
             if d2 > detail2 {

@@ -258,7 +258,11 @@ const MOUNTAIN_SNOWCAP_ELEV_M: f32 = 40.0;
 /// their ocean floors run deeper. Both are biomes_active-gated so
 /// default-seed output stays byte-exact for the C-parity pins.
 const SEEDED_SEA_RAISE_M: f32 = 1.0;
-const SEEDED_OCEAN_DEEPEN: f32 = 1.6;
+/* Deep oceans: seeded basins run ~2.6x the base ocean depth (up to the
+ * ~62 m the 64-layer sub-sea budget allows before the floor clamps onto
+ * bedrock), so open water is a real dive, not a shallow pool. Seeded
+ * worlds only - the biomes_active gate keeps default output byte-exact. */
+const SEEDED_OCEAN_DEEPEN: f32 = 2.6;
 
 /// Fractal noise remapped to [0, 1] at a unit direction. Shared field
 /// generator: the biome moisture map and the client's cloud-coverage
