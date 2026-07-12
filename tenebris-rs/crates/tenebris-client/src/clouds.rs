@@ -288,21 +288,32 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, p: &PlayerCtrl, time_s: f64) {
                 continue;
             }
             push_puff_box(pos, up, t1, t2, hw, hh, hw * 0.8, col, alpha);
-            /* Only mature clouds (high coverage) grow the lump cluster;
-             * small forming puffs stay a simple cube. */
-            if cell.cover > 0.55 {
-                let lumps = 2 + (hash3(ti, pj, SALT_LUMPS) * 3.0) as i32;
+            /* Mature clouds grow a cluster of lumps AROUND the slab - not
+             * just stacked on top - so the underside is bumpy cumulus when
+             * you look straight up, instead of a flat floating plate. Each
+             * lump gets a hashed radial offset in the tangent plane plus a
+             * vertical offset that ranges from below the slab to above it,
+             * making the puff a rounded blob from every angle. */
+            if cell.cover > 0.4 {
+                let lumps = 3 + (hash3(ti, pj, SALT_LUMPS) * 3.0) as i32;
                 for l in 0..lumps {
                     let la = hash3(ti, pj.wrapping_add(31 * (l + 1)), SALT_LUMPS) as f64
                         * std::f64::consts::TAU;
-                    let ld = hw * (0.45 + 0.4 * hash3(ti.wrapping_add(l), pj, SALT_SIZE) as f64);
+                    let ld = hw * (0.25 + 0.55 * hash3(ti.wrapping_add(l), pj, SALT_SIZE) as f64);
+                    /* Vertical spread: -0.5h (hanging below) .. +1.0h (piled
+                     * on top), so lumps wrap the slab top AND bottom. */
+                    let vh = hash3(ti.wrapping_add(l * 13), pj, SALT_JITTER_A) as f64;
+                    let voff = (vh - 0.35) * hh * 1.5;
                     let off = dvec3_add(
-                        dvec3_scale(t1, la.cos() * ld),
-                        dvec3_scale(t2, la.sin() * ld),
+                        dvec3_add(
+                            dvec3_scale(t1, la.cos() * ld),
+                            dvec3_scale(t2, la.sin() * ld),
+                        ),
+                        dvec3_scale(up, voff),
                     );
-                    let lc = dvec3_add(dvec3_add(pos, off), dvec3_scale(up, hh * 0.6));
-                    let ls = 0.35 + 0.3 * hash3(ti, pj.wrapping_add(7 * l), SALT_SIZE) as f64;
-                    push_puff_box(lc, up, t1, t2, hw * ls, hh * ls * 1.4, hw * ls * 0.9, col, alpha);
+                    let lc = dvec3_add(pos, off);
+                    let ls = 0.4 + 0.35 * hash3(ti, pj.wrapping_add(7 * l), SALT_SIZE) as f64;
+                    push_puff_box(lc, up, t1, t2, hw * ls, hh * ls * 1.3, hw * ls * 0.95, col, alpha);
                 }
             }
         }
