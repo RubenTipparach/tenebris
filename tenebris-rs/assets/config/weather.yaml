@@ -44,6 +44,22 @@ rain_threshold: 0.55
 #                      by unrealistically fast, so it was removed.
 small_extra_drift: 0.0
 
+# --- Wind (drives grass sway) ---
+#   base_wind       calm-day baseline wind 0..1 (grass always breathes)
+#   gust_amp        gust strength added from a drifting noise field
+#   gust_scale      spatial frequency of the gust field over the sphere
+#   gust_drift      how fast gusts roll across the land (x seconds)
+#   overcast_wind   extra wind per unit of overcast coverage
+#   storm_wind      extra wind while a cell is precipitating (storms whip)
+#   wind_max        hard cap on the wind factor
+base_wind: 0.35
+gust_amp: 0.55
+gust_scale: 3.0
+gust_drift: 0.08
+overcast_wind: 0.4
+storm_wind: 1.1
+wind_max: 2.2
+
 # --- Storm intensity ---
 #   rain_cloud_scale  size multiplier for a rain/snow cloud - storm clouds
 #                     tower into big dark masses.

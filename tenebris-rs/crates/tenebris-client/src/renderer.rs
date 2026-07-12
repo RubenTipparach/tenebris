@@ -4412,6 +4412,37 @@ pub fn draw_world(
             let l = config::lighting();
             {
                 let sc = tenebris_core::scatter::config();
+                /* Wind-driven grass sway: sample the atmospheric wind field
+                 * at the camera's cell and scale the sway speed + amplitude
+                 * by it, so grass merely breathes on a calm day and whips in
+                 * a storm. A forced storm (K toggle / DEV_WEATHER) pins the
+                 * wind high too. Regional (one sample/frame) - the VS's own
+                 * per-position phase keeps the blades from moving in lockstep. */
+                let wind = if r.active_body_idx >= 0 {
+                    let active = &r.bodies[r.active_body_idx as usize];
+                    let world = active.world.borrow();
+                    let bcen = Vec3 {
+                        x: world.body.pos_x as f32,
+                        y: world.body.pos_y as f32,
+                        z: world.body.pos_z as f32,
+                    };
+                    let cam = vec3_sub(camera_world, bcen);
+                    let cr = vec3_length(cam).max(1e-3);
+                    let dir = tenebris_core::math::dvec3_make(
+                        (cam.x / cr) as f64,
+                        (cam.y / cr) as f64,
+                        (cam.z / cr) as f64,
+                    );
+                    let mut w = tenebris_core::weather::wind01(&world.body, dir, r.time_seconds as f64);
+                    if crate::weather_fx::forced_precip().is_some() {
+                        w = w.max(tenebris_core::weather::config().wind_max * 0.85);
+                    }
+                    w
+                } else {
+                    0.0
+                };
+                let amp_k = 1.0 + wind * 1.5; /* wind grows the sway reach */
+                let spd_k = 1.0 + wind * 0.6; /* and quickens it a little */
                 let hex_vs_light = shaders::hex::HexVsLight {
                     u_sun_dir: [r.env.sun_dir.x, r.env.sun_dir.y, r.env.sun_dir.z],
                     _pad_12: [0; 4],
@@ -4423,8 +4454,8 @@ pub fn draw_world(
                         r.time_seconds as f32,
                     ],
                     u_sway: [
-                        sc.sway_speed,
-                        sc.sway_amp_m,
+                        sc.sway_speed * spd_k,
+                        sc.sway_amp_m * amp_k,
                         sc.underwater_sway_speed,
                         sc.underwater_sway_amp_m,
                     ],

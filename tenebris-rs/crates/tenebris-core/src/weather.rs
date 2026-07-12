@@ -152,6 +152,22 @@ pub struct WeatherConfig {
     pub overcast_sun_dim: f32,
     /// How much full overcast dims the AMBIENT fill (0..1).
     pub overcast_amb_dim: f32,
+
+    /* --- Wind (drives grass sway; see client scatter sway) --- */
+    /// Calm-day baseline wind (0..1) - grass always breathes a little.
+    pub base_wind: f32,
+    /// Gust strength added on top of the base, from a drifting noise.
+    pub gust_amp: f32,
+    /// Spatial frequency of the gust field over the sphere.
+    pub gust_scale: f32,
+    /// How fast the gust field drifts (multiplied by seconds).
+    pub gust_drift: f32,
+    /// Extra wind per unit of overcast coverage (cloudy = breezier).
+    pub overcast_wind: f32,
+    /// Extra wind while a cell is precipitating (storms pick up).
+    pub storm_wind: f32,
+    /// Hard cap on the wind factor.
+    pub wind_max: f32,
 }
 
 impl WeatherConfig {
@@ -171,6 +187,14 @@ impl WeatherConfig {
         cloud_fog_add: 0.8,
         overcast_sun_dim: 0.72,
         overcast_amb_dim: 0.48,
+
+        base_wind: 0.35,
+        gust_amp: 0.55,
+        gust_scale: 3.0,
+        gust_drift: 0.08,
+        overcast_wind: 0.4,
+        storm_wind: 1.1,
+        wind_max: 2.2,
     };
 }
 
@@ -216,6 +240,13 @@ pub fn parse_config(src: &str, _path: &str) -> WeatherConfig {
             "cloud_fog_add" => cfg.cloud_fog_add = v,
             "overcast_sun_dim" => cfg.overcast_sun_dim = v,
             "overcast_amb_dim" => cfg.overcast_amb_dim = v,
+            "base_wind" => cfg.base_wind = v,
+            "gust_amp" => cfg.gust_amp = v,
+            "gust_scale" => cfg.gust_scale = v,
+            "gust_drift" => cfg.gust_drift = v,
+            "overcast_wind" => cfg.overcast_wind = v,
+            "storm_wind" => cfg.storm_wind = v,
+            "wind_max" => cfg.wind_max = v,
             _ => {}
         }
     }
@@ -320,6 +351,36 @@ pub fn cloud_cell(body: &BodyConfig, dir: DVec3, t_s: f64) -> CloudCell {
     let raining = d >= cfg.rain_threshold;
     let precip = if raining { precip_kind(body, dir) } else { Precip::None };
     CloudCell { cover, alpha, raining, precip }
+}
+
+/// Wind strength at a surface cell, driven by the atmospheric sim: a
+/// calm baseline + drifting gust field, with overcast and (especially)
+/// rain picking it up. Returns a 0..`wind_max` factor the client scales
+/// grass-sway speed + amplitude by, so grass breathes on a clear day and
+/// whips in a storm. Deterministic (seed + position + time), so every
+/// client on a body agrees without syncing.
+pub fn wind01(body: &BodyConfig, dir: DVec3, t_s: f64) -> f32 {
+    let cfg = config();
+    /* Drifting gust field: low-frequency simplex over the sphere, scrolled
+     * in time so gusts roll across the land. */
+    let s = cfg.gust_scale;
+    let dt = (t_s * cfg.gust_drift as f64) as f32;
+    let g = simplex3(
+        body.seed ^ 0x5741_4E44,
+        dir.x as f32 * s + dt,
+        dir.y as f32 * s,
+        dir.z as f32 * s - dt * 0.5,
+    ); /* -1..1 */
+    let gust = 0.5 + 0.5 * g; /* 0..1 */
+    let mut w = cfg.base_wind + gust * cfg.gust_amp;
+    /* Weather picks the wind up: overcast is breezier, a storm whips. */
+    let d = cloud_density(body, dir, t_s);
+    if d >= cfg.rain_threshold {
+        w += cfg.storm_wind;
+    } else {
+        w += smoothstep(cfg.cloud_min, cfg.cloud_full, d) * cfg.overcast_wind;
+    }
+    w.clamp(0.0, cfg.wind_max)
 }
 
 #[cfg(test)]
