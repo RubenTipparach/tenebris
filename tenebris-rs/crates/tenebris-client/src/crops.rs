@@ -540,6 +540,48 @@ pub fn dev_spawn(w: &World, p: &PlayerCtrl, ahead: f64) {
     });
 }
 
+/// Growth-phase constants for [`dev_growth_row`] - young sprout -> mature.
+pub const DEV_GROWTH_PHASES: [f32; 5] = [0.1, 0.32, 0.55, 0.8, 1.0];
+
+/// Dev/screenshot aid: plant a single fruit `kind` as a left-to-right row
+/// at the five [`DEV_GROWTH_PHASES`], so one shot shows that fruit through
+/// its whole growth arc (sprout to ripe). Places every stage at the
+/// player's own radius so the row is a clean straight line (not scattered
+/// over bumpy floors) that the caller can till + frame. Returns the tile
+/// indices touched (so the caller tills exactly the row) and the row's
+/// centre point (world space) for the camera aim.
+pub fn dev_growth_row(w: &World, p: &PlayerCtrl, kind: CropKind, ahead: f64) -> (Vec<i32>, DVec3) {
+    let center = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
+    let fwd = p.basis.fwd;
+    let right = p.basis.right;
+    let local = dvec3_sub(p.position, center);
+    let r = dvec3_length(local);
+    let n = DEV_GROWTH_PHASES.len() as f64;
+    let mut tiles = Vec::new();
+    S.with(|c| {
+        let s = &mut *c.borrow_mut();
+        s.body_center = center;
+        for (i, &g) in DEV_GROWTH_PHASES.iter().enumerate() {
+            let side = (i as f64 - (n - 1.0) * 0.5) * 0.9;
+            let point = dvec3_add(
+                local,
+                dvec3_add(dvec3_scale(fwd, ahead), dvec3_scale(right, side)),
+            );
+            let dir = dvec3_normalize(point);
+            let tile = w.grid.find_tile(dir, p.last_tile);
+            /* Fixed radius (the player's) keeps the five stages colinear
+             * and level regardless of the terrain height under each. */
+            let pos = dvec3_add(center, dvec3_scale(dir, r));
+            s.list.push(Crop::at(pos, dir, tile, g, kind));
+            if tile >= 0 {
+                tiles.push(tile);
+            }
+        }
+    });
+    let point = dvec3_add(local, dvec3_scale(fwd, ahead));
+    (tiles, dvec3_add(center, dvec3_scale(dvec3_normalize(point), r)))
+}
+
 /* ---------------------------------------------------------------------- */
 /* Rendering (immediate-mode sokol_gl, no shader file).                    */
 

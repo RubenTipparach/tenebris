@@ -682,6 +682,55 @@ fn dev_maybe_place(app: &mut App) {
             }
             println!("[dev] farm showcase: {} crops", crops::count());
         }
+        20 => {
+            /* Growth-phase row (TENEBRIS_DEV_GROW=watermelon|orange|apple|
+             * kiwi): one fruit planted as a row through its five growth
+             * stages (sprout -> ripe) on a tilled strip, framed head-on so
+             * the whole arc is visible in one shot. */
+            use tenebris_core::farming::CropKind;
+            let kind = match std::env::var("TENEBRIS_DEV_GROW").unwrap_or_default().as_str() {
+                "orange" => CropKind::Orange,
+                "apple" => CropKind::Apple,
+                "kiwi" => CropKind::Kiwi,
+                _ => CropKind::Watermelon,
+            };
+            let (row_tiles, target) =
+                crops::dev_growth_row(&app.world.borrow(), &app.player.borrow(), kind, 1.7);
+            /* Till exactly the tiles the row sits on (plus the player's own
+             * tile + ring) into farmland, so each stage stands on tilled
+             * soil regardless of the terrain shape. */
+            dev_set_surface(&app.world, center, Block::Farmland);
+            dev_for_each_neighbor(&app.world, center, |w, _, n| {
+                dev_set_surface_w(w, n, Block::Farmland);
+            });
+            for t in row_tiles {
+                dev_set_surface(&app.world, t, Block::Farmland);
+            }
+            /* Pull the camera back + up and pin it (reusing the fish-cam
+             * perch so gravity can't drop it) for a 3/4 view that frames the
+             * whole row - the plants are small, so a fixed vantage beats the
+             * player's ground-level eye. */
+            let (cam, aim) = {
+                let p = app.player.borrow();
+                let cam = dvec3_add(
+                    dvec3_add(p.position, dvec3_scale(p.basis.fwd, -2.6)),
+                    dvec3_scale(p.basis.up, 1.0),
+                );
+                let aim = dvec3_add(target, dvec3_scale(p.basis.up, 0.3));
+                (cam, aim)
+            };
+            app.player.borrow_mut().position = cam;
+            dev_aim_at(app, aim);
+            DEV_FISH_CAM.with(|c| c.set(Some(cam)));
+            {
+                let mut p = app.player.borrow_mut();
+                p.survival_mode = true;
+            }
+            println!(
+                "[dev] growth row: {:?} x5 phases, cam=({:.1},{:.1},{:.1})",
+                kind, cam.x, cam.y, cam.z
+            );
+        }
         15 => {
             /* Occlusion test (TENEBRIS_DEV_OCCLUDE): raise a dirt column
              * a few metres ahead with the frozen herd + a crop row
@@ -1795,6 +1844,9 @@ extern "C" fn init() {
         DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
     } else if std::env::var("TENEBRIS_DEV_FARM").is_ok() {
         DEV_PLACE_MODE.with(|c| c.set(19));
+        DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
+    } else if std::env::var("TENEBRIS_DEV_GROW").is_ok() {
+        DEV_PLACE_MODE.with(|c| c.set(20));
         DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
     } else if std::env::var("TENEBRIS_DEV_OCCLUDE").is_ok() {
         DEV_PLACE_MODE.with(|c| c.set(15));
