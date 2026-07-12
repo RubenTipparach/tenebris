@@ -648,6 +648,15 @@ fn dev_maybe_place(app: &mut App) {
              * flat ahead and framed at a shallow down-angle so each plant's
              * silhouette reads. Stock a bucket + fruit seeds so the hotbar
              * icons show too. */
+            /* Till the patch under + around the player into farmland so the
+             * tilled-soil texture is in frame beneath the crop row. */
+            dev_set_surface(&app.world, center, Block::Farmland);
+            dev_for_each_neighbor(&app.world, center, |w, _, n| {
+                dev_set_surface_w(w, n, Block::Farmland);
+                for m in w.grid.tile(n).map(|t| t.neighbors).unwrap_or([-1; 6]) {
+                    dev_set_surface_w(w, m, Block::Farmland);
+                }
+            });
             let ahead = 2.2;
             crops::dev_spawn(&app.world.borrow(), &app.player.borrow(), ahead);
             let target = {

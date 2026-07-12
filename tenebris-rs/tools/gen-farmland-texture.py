@@ -28,25 +28,35 @@ def rnd():
 
 def main():
     px = bytearray(S * S * 4)
-    # Base damp-earth brown, a touch darker than dirt.png.
-    base = (92, 62, 38)
-    furrow = (66, 43, 26)   # the recessed grooves between ridges
-    ridge = (110, 76, 48)   # the raised, lit crest of each ridge
+    # Four bold tilled rows across the 16 px tile - a 4 px period of
+    # groove -> shadow -> crest -> mid so the ploughed ridges read at a
+    # glance and farmland never gets mistaken for plain dirt. High
+    # contrast between the dark grooves and the lit crests is what makes
+    # it look "stripy"; the per-pixel grain stays low so the stripes
+    # stay crisp.
+    base = (94, 63, 39)     # mid soil (the ridge's shaded flank)
+    groove = (52, 34, 20)   # deep recessed furrow bottom (darkest)
+    shadow = (70, 46, 28)   # groove wall climbing back up
+    crest = (128, 92, 60)   # raised, sunlit ridge top (brightest)
+    band_color = [groove, shadow, crest, base]
     for y in range(S):
-        # Four furrow rows: every 4th pixel row is a dark groove, the row
-        # above it a lit ridge crest, the rest base soil.
-        band = y % 4
+        c = band_color[y % 4]
+        crest_row = (y % 4) == 2
+        groove_row = (y % 4) == 0
         for x in range(S):
-            if band == 0:
-                c = furrow
-            elif band == 1:
-                c = ridge
-            else:
-                c = base
-            n = int((rnd() - 0.5) * 22)  # per-pixel grain
-            r = min(max(c[0] + n, 0), 255)
-            g = min(max(c[1] + n, 0), 255)
-            b = min(max(c[2] + n, 0), 255)
+            # A little horizontal wobble so the furrows read hand-worked
+            # rather than machine-perfect: nudge a few columns between the
+            # crest and its neighbour bands.
+            wob = int((rnd() - 0.5) * 2)
+            cc = c
+            if crest_row and rnd() < 0.18:
+                cc = base   # a broken clod interrupting the ridge top
+            elif groove_row and rnd() < 0.18:
+                cc = shadow  # a bit of crumbled soil in the furrow
+            n = int((rnd() - 0.5) * 12) + wob  # low grain keeps stripes crisp
+            r = min(max(cc[0] + n, 0), 255)
+            g = min(max(cc[1] + n, 0), 255)
+            b = min(max(cc[2] + n, 0), 255)
             i = (y * S + x) * 4
             px[i], px[i + 1], px[i + 2], px[i + 3] = r, g, b, 255
 
