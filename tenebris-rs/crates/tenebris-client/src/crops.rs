@@ -564,11 +564,13 @@ pub fn dev_growth_row(w: &World, p: &PlayerCtrl, kind: CropKind, ahead: f64) -> 
         for (i, &g) in DEV_GROWTH_PHASES.iter().enumerate() {
             let step = ahead + (DEV_GROWTH_PHASES.len() - 1 - i) as f64 * 1.5;
             let point = dvec3_add(local, dvec3_scale(fwd, step));
-            let dir = dvec3_normalize(point);
-            let tile = w.grid.find_tile(dir, p.last_tile);
+            let tile = w.grid.find_tile(dvec3_normalize(point), p.last_tile);
             if tile < 0 || tiles.contains(&tile) {
                 continue;
             }
+            /* Snap to the hex CENTRE (as real planting does) so the plant
+             * sits dead-centre on its tile, not wherever the ray grazed it. */
+            let dir = dvec3_normalize(w.grid.tile(tile).map(|t| t.center).unwrap_or(point));
             let floor = w.walkable_floor_near(tile, r, 1.0);
             let rr = if floor > 0.0 { floor } else { r };
             let pos = dvec3_add(center, dvec3_scale(dir, rr));
@@ -603,14 +605,41 @@ fn orient_basis(up: DVec3) -> [f32; 16] {
     ]
 }
 
-/// One axis-aligned cuboid, per-face shaded (top brightest). Copied from
-/// animals::draw_box - kept local so the two entity renderers stay
-/// independent.
-#[allow(clippy::too_many_arguments)]
-fn draw_box(cx: f32, cy: f32, cz: f32, hx: f32, hy: f32, hz: f32, r: f32, g: f32, b: f32, lit: f32) {
+/* Crop material atlas columns (assets/textures/crops.png,
+ * tools/gen-crop-textures.py). One 32x32 tile per material. */
+const CROP_ATLAS_COLS: f32 = 13.0;
+const MAT_BARK: u8 = 0;
+const MAT_APPLE_LEAF: u8 = 1;
+const MAT_ORANGE_LEAF: u8 = 2;
+const MAT_MELON: u8 = 3;
+const MAT_APPLE_FRUIT: u8 = 4;
+const MAT_ORANGE_FRUIT: u8 = 5;
+const MAT_KIWI_FRUIT: u8 = 6;
+const MAT_VINE_LEAF: u8 = 7;
+const MAT_BERRY: u8 = 8;
+const MAT_WHEAT: u8 = 9;
+const MAT_CARROT_FROND: u8 = 10;
+const MAT_CARROT_ROOT: u8 = 11;
+const MAT_STEM: u8 = 12;
+
+/// UV rect (u0, u1, v0, v1) of a material column, inset a texel to keep
+/// neighbouring tiles from bleeding at the seams.
+fn mat_uv(col: u8) -> (f32, f32, f32, f32) {
+    let inset = 1.0 / (CROP_ATLAS_COLS * 32.0);
+    let u0 = col as f32 / CROP_ATLAS_COLS + inset;
+    let u1 = (col as f32 + 1.0) / CROP_ATLAS_COLS - inset;
+    (u0, u1, inset, 1.0 - inset)
+}
+
+/// One axis-aligned cuboid, textured from crop-atlas material `mat` and
+/// per-face shaded (top brightest). `lit` is the day/night factor; a
+/// white tint lets the texture's own colour show. Mirrors
+/// animals::draw_box (textured box entity renderer).
+fn draw_box(cx: f32, cy: f32, cz: f32, hx: f32, hy: f32, hz: f32, mat: u8, lit: f32) {
     let (x0, x1) = (cx - hx, cx + hx);
     let (y0, y1) = (cy - hy, cy + hy);
     let (z0, z1) = (cz - hz, cz + hz);
+    let (u0, u1, v0, v1) = mat_uv(mat);
     let faces: [([[f32; 3]; 4], f32); 6] = [
         ([[x0, y1, z0], [x0, y1, z1], [x1, y1, z1], [x1, y1, z0]], 1.0),
         ([[x0, y0, z1], [x0, y0, z0], [x1, y0, z0], [x1, y0, z1]], 0.55),
@@ -619,12 +648,14 @@ fn draw_box(cx: f32, cy: f32, cz: f32, hx: f32, hy: f32, hz: f32, r: f32, g: f32
         ([[x1, y0, z0], [x1, y1, z0], [x1, y1, z1], [x1, y0, z1]], 0.8),
         ([[x0, y0, z1], [x0, y1, z1], [x0, y1, z0], [x0, y0, z0]], 0.75),
     ];
+    let uv = [(u0, v1), (u0, v0), (u1, v0), (u1, v1)];
     sgl::begin_triangles();
     for (quad, shade) in faces.iter() {
-        sgl::c3f(r * shade * lit, g * shade * lit, b * shade * lit);
+        let c = shade * lit;
+        sgl::c3f(c, c, c);
         for &i in &[0usize, 1, 2, 0, 2, 3] {
             let v = quad[i];
-            sgl::v3f(v[0], v[1], v[2]);
+            sgl::v3f_t2f(v[0], v[1], v[2], uv[i].0, uv[i].1);
         }
     }
     sgl::end();
@@ -647,121 +678,84 @@ fn draw_crop(pos: DVec3, up: DVec3, growth: f32, kind: CropKind, lit: f32) {
 
     match kind {
         CropKind::Berry => {
-            // Stem - young sprouts lighter / yellower green; ripe darker.
+            // Stem + a leaf pair; red berries on a mature bush.
             let stem_h = 0.12 + 0.42 * g;
-            let (sr, sg, sb) = (0.30 + 0.10 * (1.0 - g), 0.55 + 0.15 * g, 0.20);
-            draw_box(0.0, stem_h * 0.5, 0.0, 0.035, stem_h * 0.5, 0.035, sr, sg, sb, lit);
-
-            // Leaf pair fanning out near the top, scaled by growth.
+            draw_box(0.0, stem_h * 0.5, 0.0, 0.035, stem_h * 0.5, 0.035, MAT_STEM, lit);
             let leaf = 0.06 + 0.12 * g;
             let ly = stem_h * 0.72;
-            draw_box(leaf * 0.9, ly, 0.0, leaf, 0.02, leaf * 0.6, 0.28, 0.62, 0.24, lit);
-            draw_box(-leaf * 0.9, ly, 0.0, leaf, 0.02, leaf * 0.6, 0.28, 0.62, 0.24, lit);
-
-            // Berries only on a mature crop - the visual "harvest me" cue.
+            draw_box(leaf * 0.9, ly, 0.0, leaf, 0.02, leaf * 0.6, MAT_VINE_LEAF, lit);
+            draw_box(-leaf * 0.9, ly, 0.0, leaf, 0.02, leaf * 0.6, MAT_VINE_LEAF, lit);
             if growth >= 1.0 {
-                draw_box(0.06, stem_h + 0.02, 0.04, 0.045, 0.045, 0.045, 0.85, 0.15, 0.20, lit);
-                draw_box(-0.05, stem_h + 0.07, -0.04, 0.045, 0.045, 0.045, 0.90, 0.20, 0.25, lit);
-                draw_box(0.0, stem_h + 0.12, 0.0, 0.045, 0.045, 0.045, 0.80, 0.12, 0.18, lit);
+                draw_box(0.06, stem_h + 0.02, 0.04, 0.045, 0.045, 0.045, MAT_BERRY, lit);
+                draw_box(-0.05, stem_h + 0.07, -0.04, 0.045, 0.045, 0.045, MAT_BERRY, lit);
+                draw_box(0.0, stem_h + 0.12, 0.0, 0.045, 0.045, 0.045, MAT_BERRY, lit);
             }
         }
         CropKind::Wheat => {
-            // Green -> golden as it ripens; taller than the berry bush.
+            // A clump of thin golden stalks with seed heads when ripe.
             let stalk_h = 0.10 + 0.55 * g;
-            let (sr, sg, sb) = (
-                0.30 + 0.45 * g, // toward wheat gold
-                0.55 + 0.15 * g,
-                0.18 + 0.04 * (1.0 - g),
-            );
-            // A clump of 5 thin stalks around the planting point.
             const STALKS: [(f32, f32); 5] =
                 [(0.0, 0.0), (0.07, 0.04), (-0.06, 0.05), (0.05, -0.06), (-0.05, -0.05)];
             for (i, (ox, oz)) in STALKS.iter().enumerate() {
                 let h = stalk_h * (0.85 + 0.05 * (i % 3) as f32);
-                draw_box(*ox, h * 0.5, *oz, 0.016, h * 0.5, 0.016, sr, sg, sb, lit);
-                // Seed head: a slightly fatter knob on each ripe stalk.
+                let mat = if growth >= 1.0 { MAT_WHEAT } else { MAT_STEM };
+                draw_box(*ox, h * 0.5, *oz, 0.016, h * 0.5, 0.016, mat, lit);
                 if growth >= 1.0 {
-                    draw_box(*ox, h + 0.035, *oz, 0.028, 0.045, 0.028, 0.82, 0.68, 0.28, lit);
+                    draw_box(*ox, h + 0.035, *oz, 0.028, 0.045, 0.028, MAT_WHEAT, lit);
                 }
             }
         }
         CropKind::Carrot => {
-            // Low, bushy frond fan - carrots stay short.
+            // Low frond fan; the orange root crowns out when mature.
             let frond_h = 0.08 + 0.16 * g;
             let spread = 0.05 + 0.09 * g;
-            let (fr, fg, fb) = (0.18, 0.50 + 0.12 * g, 0.16);
-            draw_box(0.0, frond_h * 0.5, 0.0, 0.025, frond_h * 0.5, 0.025, fr, fg, fb, lit);
-            draw_box(spread, frond_h * 0.42, 0.0, 0.02, frond_h * 0.42, 0.02, fr, fg * 0.92, fb, lit);
-            draw_box(-spread, frond_h * 0.42, 0.0, 0.02, frond_h * 0.42, 0.02, fr, fg * 0.92, fb, lit);
-            draw_box(0.0, frond_h * 0.42, spread, 0.02, frond_h * 0.42, 0.02, fr, fg * 0.96, fb, lit);
-            draw_box(0.0, frond_h * 0.42, -spread, 0.02, frond_h * 0.42, 0.02, fr, fg * 0.96, fb, lit);
-
-            // The root crowns out of the soil when mature.
+            draw_box(0.0, frond_h * 0.5, 0.0, 0.025, frond_h * 0.5, 0.025, MAT_CARROT_FROND, lit);
+            for (dx, dz) in [(spread, 0.0), (-spread, 0.0), (0.0, spread), (0.0, -spread)] {
+                draw_box(dx, frond_h * 0.42, dz, 0.02, frond_h * 0.42, 0.02, MAT_CARROT_FROND, lit);
+            }
             if growth >= 1.0 {
-                draw_box(0.0, 0.035, 0.0, 0.045, 0.035, 0.045, 0.88, 0.42, 0.10, lit);
+                draw_box(0.0, 0.035, 0.0, 0.045, 0.035, 0.045, MAT_CARROT_ROOT, lit);
             }
         }
         CropKind::Watermelon => {
-            // Sprawling ground vine: a low leafy centre with leaves fanned
-            // out, and a striped melon resting on the soil when ripe.
+            // Sprawling ground vine; a big striped melon centred on the hex
+            // when ripe, ringed by the vine leaves.
             let spread = 0.09 + 0.16 * g;
-            draw_box(0.0, 0.05, 0.0, 0.03, 0.05, 0.03, 0.20, 0.50, 0.18, lit);
+            draw_box(0.0, 0.05, 0.0, 0.03, 0.05, 0.03, MAT_STEM, lit);
             for (dx, dz) in [(spread, 0.0), (-spread, 0.0), (0.0, spread), (0.0, -spread)] {
-                draw_box(dx, 0.03, dz, 0.06, 0.02, 0.045, 0.22, 0.54, 0.20, lit);
+                draw_box(dx, 0.03, dz, 0.06, 0.02, 0.045, MAT_VINE_LEAF, lit);
             }
             if growth >= 1.0 {
-                // A big watermelon sitting dead-centre on the hex - the vine
-                // leaves ring it. Dark-green oblong rind (~4x the old melon)
-                // with lighter stripes running over the crown.
-                draw_box(0.0, 0.26, 0.0, 0.30, 0.26, 0.26, 0.10, 0.38, 0.14, lit);
-                for sz in [-0.17f32, 0.0, 0.17] {
-                    draw_box(0.0, 0.52, sz, 0.30, 0.035, 0.05, 0.34, 0.66, 0.26, lit);
-                }
+                draw_box(0.0, 0.26, 0.0, 0.30, 0.26, 0.26, MAT_MELON, lit);
             }
         }
         CropKind::Kiwi => {
-            // Bushy climbing vine: a clump of broad leaves; fuzzy brown
-            // kiwifruit hanging under it when ripe.
+            // Bushy climbing vine; fuzzy brown kiwifruit under it when ripe.
             let h = 0.10 + 0.30 * g;
-            let (lr, lg, lb) = (0.16, 0.44 + 0.14 * g, 0.16);
-            draw_box(0.0, h * 0.5, 0.0, 0.04, h * 0.5, 0.04, 0.35, 0.26, 0.14, lit);
+            draw_box(0.0, h * 0.5, 0.0, 0.04, h * 0.5, 0.04, MAT_BARK, lit);
             let s = 0.07 + 0.10 * g;
             for (dx, dz) in [(s, s), (-s, s), (s, -s), (-s, -s), (0.0, 0.0)] {
-                draw_box(dx, h * 0.82, dz, 0.07, 0.025, 0.06, lr, lg, lb, lit);
+                draw_box(dx, h * 0.82, dz, 0.07, 0.025, 0.06, MAT_VINE_LEAF, lit);
             }
             if growth >= 1.0 {
-                // A cluster of plump fuzzy-brown kiwifruit hanging under the
-                // leaves - big enough to read as the ripe crop.
                 for (dx, dz) in [(s * 0.7, s * 0.3), (-s * 0.6, -s * 0.35), (s * 0.1, -s * 0.7), (-s * 0.2, s * 0.65)] {
-                    draw_box(dx, h * 0.5, dz, 0.05, 0.06, 0.05, 0.42, 0.30, 0.16, lit);
+                    draw_box(dx, h * 0.5, dz, 0.05, 0.06, 0.05, MAT_KIWI_FRUIT, lit);
                 }
             }
         }
         CropKind::Apple | CropKind::Orange => {
-            // Fruit tree: a proper trunk under a full rounded canopy, with
-            // red apples / orange globes studding it when ripe. Grows to a
-            // real tree height so the ripe fruit hangs on a full-size tree.
+            // Full-size fruit tree: bark trunk, a three-box leaf crown, and
+            // fruit studding the canopy surface when ripe.
+            let leaf_mat = if kind == CropKind::Apple { MAT_APPLE_LEAF } else { MAT_ORANGE_LEAF };
+            let fruit_mat = if kind == CropKind::Apple { MAT_APPLE_FRUIT } else { MAT_ORANGE_FRUIT };
             let trunk_h = 0.22 + 1.00 * g;
             let trunk_w = 0.05 + 0.03 * g;
-            draw_box(0.0, trunk_h * 0.5, 0.0, trunk_w, trunk_h * 0.5, trunk_w, 0.46, 0.29, 0.15, lit);
+            draw_box(0.0, trunk_h * 0.5, 0.0, trunk_w, trunk_h * 0.5, trunk_w, MAT_BARK, lit);
             let cr = 0.16 + 0.26 * g;
-            let (canr, cang, canb) = if kind == CropKind::Apple {
-                (0.14, 0.42, 0.16)
-            } else {
-                (0.18, 0.46, 0.18)
-            };
-            // Three stacked leaf boxes make a fuller, rounder crown.
-            draw_box(0.0, trunk_h + cr * 0.15, 0.0, cr * 0.9, cr * 0.5, cr * 0.9, canr, cang, canb, lit);
-            draw_box(0.0, trunk_h + cr * 0.7, 0.0, cr, cr * 0.85, cr, canr, cang, canb, lit);
-            draw_box(0.0, trunk_h + cr * 1.35, 0.0, cr * 0.68, cr * 0.5, cr * 0.68, canr, cang, canb, lit);
+            draw_box(0.0, trunk_h + cr * 0.15, 0.0, cr * 0.9, cr * 0.5, cr * 0.9, leaf_mat, lit);
+            draw_box(0.0, trunk_h + cr * 0.7, 0.0, cr, cr * 0.85, cr, leaf_mat, lit);
+            draw_box(0.0, trunk_h + cr * 1.35, 0.0, cr * 0.68, cr * 0.5, cr * 0.68, leaf_mat, lit);
             if growth >= 1.0 {
-                let (fr, fg, fb) = if kind == CropKind::Apple {
-                    (0.88, 0.16, 0.16) // red apple
-                } else {
-                    (0.98, 0.56, 0.10) // orange
-                };
-                // Plump fruit studding the OUTSIDE of the full-size canopy
-                // (radius just past the leaf box so none hide inside it).
                 let rad = cr * 1.05;
                 for (ux, uz, dy) in [
                     (1.0f32, 0.15, 0.5f32),
@@ -771,7 +765,7 @@ fn draw_crop(pos: DVec3, up: DVec3, growth: f32, kind: CropKind, lit: f32) {
                     (0.65, 0.8, 1.2),
                     (0.1, 0.95, 0.45),
                 ] {
-                    draw_box(ux * rad, trunk_h + cr * dy, uz * rad, 0.07, 0.072, 0.07, fr, fg, fb, lit);
+                    draw_box(ux * rad, trunk_h + cr * dy, uz * rad, 0.07, 0.072, 0.07, fruit_mat, lit);
                 }
             }
         }
@@ -818,11 +812,20 @@ pub fn draw(view: Mat4, proj: Mat4) {
     }
     sgl::load_pipeline(pip);
 
+    /* Bind the crop material atlas - box faces carry real UVs so the
+     * procedural plants are textured (bark / leaves / rind / fruit),
+     * matching the textured-animal path. */
+    sgl::enable_texture();
+    sgl::texture(
+        sokol::gfx::View { id: renderer::crop_view_id() },
+        sokol::gfx::Sampler { id: renderer::crop_sampler_id() },
+    );
     for crop in &list {
         let up = dvec3_normalize(dvec3_sub(crop.pos, center));
         let lit = renderer::entity_sun_brightness(crop.pos);
         draw_crop(crop.pos, up, crop.growth, crop.kind, lit);
     }
+    sgl::disable_texture();
     renderer::sgl_world_end();
     /* No sgl_draw here - the world context flushes in
      * compose_to_swapchain, inside the offscreen pass. */

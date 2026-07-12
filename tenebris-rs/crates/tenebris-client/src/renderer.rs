@@ -1630,6 +1630,13 @@ struct Renderer {
     animal_tex_view: sg::View,
     animal_tex_smp: sg::Sampler,
 
+    /* Crop texture atlas (assets/textures/crops.png) - one 32x32 material
+     * tile per column (bark / leaves / melon rind / fruit / ...), sampled
+     * by client::crops so plant boxes are textured, not flat. */
+    crop_tex_img: sg::Image,
+    crop_tex_view: sg::View,
+    crop_tex_smp: sg::Sampler,
+
     distant_lod_smp: sg::Sampler,
 
     /* Offscreen colour + depth render targets (Phase A scaffolding -
@@ -1702,6 +1709,9 @@ impl Default for Renderer {
             animal_tex_img: sg::Image::new(),
             animal_tex_view: sg::View::new(),
             animal_tex_smp: sg::Sampler::new(),
+            crop_tex_img: sg::Image::new(),
+            crop_tex_view: sg::View::new(),
+            crop_tex_smp: sg::Sampler::new(),
             distant_lod_smp: sg::Sampler::new(),
             offscreen_color: sg::Image::new(),
             offscreen_depth: sg::Image::new(),
@@ -2041,6 +2051,54 @@ pub fn animal_view_id() -> u32 {
 }
 pub fn animal_sampler_id() -> u32 {
     R.with(|cell| cell.borrow().animal_tex_smp.id)
+}
+
+/// Crop material atlas - one 32x32 tile per column, sampled by
+/// client::crops so the procedural plant boxes are textured. NEAREST so
+/// the pixel-art bark / leaves / rind stay crisp.
+fn load_crop_textures(r: &mut Renderer) {
+    const FALLBACK: [u8; 4] = [90, 150, 60, 255];
+    let loaded = load_png_rgba("assets/textures/crops.png", false);
+    let (w, h, pixels): (i32, i32, &[u8]) = match &loaded {
+        Some(img) => (img.w, img.h, &img.rgba),
+        None => {
+            println!(
+                "[renderer] WARNING: assets/textures/crops.png missing; \
+                 crops will render flat-tinted"
+            );
+            (1, 1, &FALLBACK)
+        }
+    };
+    let mut desc = sg::ImageDesc {
+        width: w,
+        height: h,
+        pixel_format: sg::PixelFormat::Rgba8,
+        label: c"crop-atlas".as_ptr(),
+        ..Default::default()
+    };
+    desc.data.mip_levels[0] = sg::slice_as_range(pixels);
+    r.crop_tex_img = sg::make_image(&desc);
+    r.crop_tex_view = sg::make_view(&sg::ViewDesc {
+        texture: sg::TextureViewDesc { image: r.crop_tex_img, ..Default::default() },
+        label: c"crop-atlas-view".as_ptr(),
+        ..Default::default()
+    });
+    r.crop_tex_smp = sg::make_sampler(&sg::SamplerDesc {
+        min_filter: sg::Filter::Nearest,
+        mag_filter: sg::Filter::Nearest,
+        wrap_u: sg::Wrap::ClampToEdge,
+        wrap_v: sg::Wrap::ClampToEdge,
+        label: c"crop-atlas-sampler".as_ptr(),
+        ..Default::default()
+    });
+}
+
+/// Raw view / sampler ids for the crop atlas (client::crops).
+pub fn crop_view_id() -> u32 {
+    R.with(|cell| cell.borrow().crop_tex_view.id)
+}
+pub fn crop_sampler_id() -> u32 {
+    R.with(|cell| cell.borrow().crop_tex_smp.id)
 }
 
 /// Port of `load_flow_arrow()` - F5 overlay texture; NEAREST so the
@@ -2477,6 +2535,7 @@ pub fn init() {
         load_water_normal(&mut r);
         load_flow_arrow(&mut r);
         load_animal_textures(&mut r);
+        load_crop_textures(&mut r);
         /* Per-chunk meshes are allocated lazily once a body registers. */
     });
 }
