@@ -38,9 +38,11 @@ min_alpha: 0.32
 rain_threshold: 0.55
 
 # --- Motion ---
-#   small_extra_drift  extra drift speed (m/s) for the smallest clouds, so
-#                      wisps scud faster than heavy masses.
-small_extra_drift: 6.0
+#   small_extra_drift  DEPRECATED / ignored. Clouds now all drift at the
+#                      single layer speed (clouds.yaml drift_mps), which is
+#                      the hard max - per-cloud extra drift made wisps zip
+#                      by unrealistically fast, so it was removed.
+small_extra_drift: 0.0
 
 # --- Storm intensity ---
 #   rain_cloud_scale  size multiplier for a rain/snow cloud - storm clouds

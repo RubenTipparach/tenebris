@@ -63,7 +63,6 @@ fn push_puff_box(
     hy: f64,
     hz: f64,
     col: [f32; 3],
-    alpha: f32,
 ) {
     /* 8 corners: (sx, sy, sz) in {-1, 1}. */
     let corner = |sx: f64, sy: f64, sz: f64| {
@@ -93,7 +92,7 @@ fn push_puff_box(
         ([3, 7, 4, 0], 0.78),
     ];
     for (q, shade) in faces.iter() {
-        sgl::c4f(col[0] * shade, col[1] * shade, col[2] * shade, alpha);
+        sgl::c3f(col[0] * shade, col[1] * shade, col[2] * shade);
         for &i in &[0usize, 1, 2, 0, 2, 3] {
             let v = p[q[i]];
             sgl::v3f(v.x as f32, v.y as f32, v.z as f32);
@@ -153,25 +152,17 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, p: &PlayerCtrl, time_s: f64) {
 
     let mut pip = PIP3D.with(|c| c.get());
     if pip.id == 0 {
-        /* Alpha-blended: small/forming clouds are translucent, big masses
-         * opaque (per-puff alpha from the weather field). Depth TEST on so
-         * terrain occludes clouds; depth WRITE off so translucent puffs
-         * don't hard-occlude each other in the thin shell. */
-        let mut desc = sokol::gfx::PipelineDesc {
+        /* Fully OPAQUE clouds: no blending (translucent cloud faces had
+         * order-dependent sorting artefacts in the thin shell). Depth TEST
+         * + WRITE on so puffs occlude each other and the terrain correctly,
+         * and read as solid masses. */
+        let desc = sokol::gfx::PipelineDesc {
             depth: sokol::gfx::DepthState {
-                write_enabled: false,
+                write_enabled: true,
                 compare: sokol::gfx::CompareFunc::Less,
                 ..Default::default()
             },
             cull_mode: sokol::gfx::CullMode::None,
-            ..Default::default()
-        };
-        desc.colors[0].blend = sokol::gfx::BlendState {
-            enabled: true,
-            src_factor_rgb: sokol::gfx::BlendFactor::SrcAlpha,
-            dst_factor_rgb: sokol::gfx::BlendFactor::OneMinusSrcAlpha,
-            src_factor_alpha: sokol::gfx::BlendFactor::One,
-            dst_factor_alpha: sokol::gfx::BlendFactor::One,
             ..Default::default()
         };
         pip = sgl::make_pipeline(&desc);
@@ -248,12 +239,9 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, p: &PlayerCtrl, time_s: f64) {
             if (roll as f64) >= eff {
                 continue;
             }
-            /* Smaller (lower-coverage) clouds scud faster: add extra spin
-             * scaled by (1 - cover). Sampled position stays the base one;
-             * only the DRAWN position leads ahead. */
-            let extra_ang =
-                (1.0 - cell.cover) as f64 * wcfg.small_extra_drift as f64 * time_s / shell_r;
-            let dir_w = rotate_y(dir_c, -(drift_ang + extra_ang));
+            /* Every cloud drifts at the single layer speed (cfg.drift_mps) -
+             * that's the hard max, so nothing zips past the base rate. */
+            let dir_w = rotate_y(dir_c, -drift_ang);
             let pos = dvec3_add(center, dvec3_scale(dir_w, shell_r));
             let d2 = {
                 let d = dvec3_sub(pos, p.position);
@@ -273,7 +261,6 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, p: &PlayerCtrl, time_s: f64) {
             let lit = renderer::entity_sun_brightness(pos).max(cfg.night_min);
             let grey = if cell.raining { 0.72 } else { 1.0 };
             let col = [cfg.color[0] * lit * grey, cfg.color[1] * lit * grey, cfg.color[2] * lit * grey];
-            let alpha = cell.alpha.clamp(0.0, 1.0);
 
             /* Size grows with coverage: a small forming cloud is a little
              * cube, a mature mass is a wide cumulus. Rain/snow clouds tower
@@ -284,10 +271,10 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, p: &PlayerCtrl, time_s: f64) {
             let hw = cfg.puff_w_m as f64 * sz;
             let hh = cfg.puff_h_m as f64 * sz * if cell.raining { 1.7 } else { 1.0 };
             if d2 > detail2 {
-                push_puff_box(pos, up, t1, t2, hw, hh * 1.4, hw * 0.8, col, alpha);
+                push_puff_box(pos, up, t1, t2, hw, hh * 1.4, hw * 0.8, col);
                 continue;
             }
-            push_puff_box(pos, up, t1, t2, hw, hh, hw * 0.8, col, alpha);
+            push_puff_box(pos, up, t1, t2, hw, hh, hw * 0.8, col);
             /* Mature clouds grow a cluster of lumps AROUND the slab - not
              * just stacked on top - so the underside is bumpy cumulus when
              * you look straight up, instead of a flat floating plate. Each
@@ -313,7 +300,7 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, p: &PlayerCtrl, time_s: f64) {
                     );
                     let lc = dvec3_add(pos, off);
                     let ls = 0.4 + 0.35 * hash3(ti, pj.wrapping_add(7 * l), SALT_SIZE) as f64;
-                    push_puff_box(lc, up, t1, t2, hw * ls, hh * ls * 1.3, hw * ls * 0.95, col, alpha);
+                    push_puff_box(lc, up, t1, t2, hw * ls, hh * ls * 1.3, hw * ls * 0.95, col);
                 }
             }
         }
