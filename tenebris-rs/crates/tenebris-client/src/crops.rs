@@ -710,13 +710,12 @@ fn draw_crop(pos: DVec3, up: DVec3, growth: f32, kind: CropKind, lit: f32) {
                 draw_box(dx, 0.03, dz, 0.06, 0.02, 0.045, 0.22, 0.54, 0.20, lit);
             }
             if growth >= 1.0 {
-                // A big striped melon resting on the soil - the unmistakable
-                // ripe cue. Dark-green oblong rind with lighter stripes
-                // running over the crown.
-                let mx = 0.08;
-                draw_box(mx, 0.12, 0.0, 0.15, 0.12, 0.13, 0.10, 0.38, 0.14, lit);
-                for sz in [-0.08f32, 0.0, 0.08] {
-                    draw_box(mx, 0.235, sz, 0.15, 0.02, 0.022, 0.34, 0.66, 0.26, lit);
+                // A big watermelon sitting dead-centre on the hex - the vine
+                // leaves ring it. Dark-green oblong rind (~4x the old melon)
+                // with lighter stripes running over the crown.
+                draw_box(0.0, 0.26, 0.0, 0.30, 0.26, 0.26, 0.10, 0.38, 0.14, lit);
+                for sz in [-0.17f32, 0.0, 0.17] {
+                    draw_box(0.0, 0.52, sz, 0.30, 0.035, 0.05, 0.34, 0.66, 0.26, lit);
                 }
             }
         }
@@ -739,36 +738,40 @@ fn draw_crop(pos: DVec3, up: DVec3, growth: f32, kind: CropKind, lit: f32) {
             }
         }
         CropKind::Apple | CropKind::Orange => {
-            // Small fruit tree: a trunk under a rounded canopy, with red
-            // apples / orange globes hanging in it when ripe.
-            let trunk_h = 0.14 + 0.62 * g;
-            draw_box(0.0, trunk_h * 0.5, 0.0, 0.045, trunk_h * 0.5, 0.045, 0.46, 0.29, 0.15, lit);
-            let cr = 0.11 + 0.16 * g;
+            // Fruit tree: a proper trunk under a full rounded canopy, with
+            // red apples / orange globes studding it when ripe. Grows to a
+            // real tree height so the ripe fruit hangs on a full-size tree.
+            let trunk_h = 0.22 + 1.00 * g;
+            let trunk_w = 0.05 + 0.03 * g;
+            draw_box(0.0, trunk_h * 0.5, 0.0, trunk_w, trunk_h * 0.5, trunk_w, 0.46, 0.29, 0.15, lit);
+            let cr = 0.16 + 0.26 * g;
             let (canr, cang, canb) = if kind == CropKind::Apple {
                 (0.14, 0.42, 0.16)
             } else {
                 (0.18, 0.46, 0.18)
             };
-            draw_box(0.0, trunk_h + cr * 0.55, 0.0, cr, cr * 0.85, cr, canr, cang, canb, lit);
-            draw_box(0.0, trunk_h + cr * 1.15, 0.0, cr * 0.7, cr * 0.5, cr * 0.7, canr, cang, canb, lit);
+            // Three stacked leaf boxes make a fuller, rounder crown.
+            draw_box(0.0, trunk_h + cr * 0.15, 0.0, cr * 0.9, cr * 0.5, cr * 0.9, canr, cang, canb, lit);
+            draw_box(0.0, trunk_h + cr * 0.7, 0.0, cr, cr * 0.85, cr, canr, cang, canb, lit);
+            draw_box(0.0, trunk_h + cr * 1.35, 0.0, cr * 0.68, cr * 0.5, cr * 0.68, canr, cang, canb, lit);
             if growth >= 1.0 {
                 let (fr, fg, fb) = if kind == CropKind::Apple {
                     (0.88, 0.16, 0.16) // red apple
                 } else {
                     (0.98, 0.56, 0.10) // orange
                 };
-                // Several plump fruit studding the OUTSIDE of the canopy
-                // (radius just past the leaf box so they aren't hidden
-                // inside it) - big + bright so a ripe tree reads at a glance.
+                // Plump fruit studding the OUTSIDE of the full-size canopy
+                // (radius just past the leaf box so none hide inside it).
                 let rad = cr * 1.05;
                 for (ux, uz, dy) in [
-                    (1.0f32, 0.15, 0.55f32),
-                    (0.2, -1.0, 0.75),
-                    (-0.85, -0.55, 0.6),
-                    (-0.7, 0.7, 0.9),
-                    (0.6, 0.8, 1.05),
+                    (1.0f32, 0.15, 0.5f32),
+                    (0.2, -1.0, 0.8),
+                    (-0.9, -0.5, 0.65),
+                    (-0.6, 0.75, 1.0),
+                    (0.65, 0.8, 1.2),
+                    (0.1, 0.95, 0.45),
                 ] {
-                    draw_box(ux * rad, trunk_h + cr * dy, uz * rad, 0.06, 0.062, 0.06, fr, fg, fb, lit);
+                    draw_box(ux * rad, trunk_h + cr * dy, uz * rad, 0.07, 0.072, 0.07, fr, fg, fb, lit);
                 }
             }
         }
