@@ -163,12 +163,15 @@ water:
   #                               background softens. 0 = off, ~0.22 subtle,
   #                               was an un-tunable 0.6 (too strong).
   wet_blur:                0.02
-  # partial_probe_m        float  how far below the eye (m) to probe for
-  #                               water when deciding the camera is partially
-  #                               submerged (straddling the surface). Keeps
-  #                               the lens wet with drips above the waterline
-  #                               while the eye bobs at the surface.
-  partial_probe_m:         0.9
+  # partial_band_m         float  half-height (m) of the band around the
+  #                               mean sea surface within which the camera
+  #                               counts as partially submerged (straddling).
+  #                               The eye must be within +/- this of the
+  #                               water surface AND water present at the eye,
+  #                               so the lens stays wet with drips above the
+  #                               waterline while straddling but dry when
+  #                               walking a metre above the shoreline.
+  partial_band_m:          0.8
 
   # Mobile-only horizon haze. The mobile water shader can't sample the
   # offscreen scene (no FBO on phones), so it can't reproduce the

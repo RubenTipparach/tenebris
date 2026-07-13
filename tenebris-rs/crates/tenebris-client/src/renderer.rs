@@ -3831,10 +3831,13 @@ pub fn compose_to_swapchain(view: Mat4, proj: Mat4) {
          * camera's containing block is actually BLOCK_WATER (caves dug
          * below sea level stay crisp). */
         let mut cam_under_shared = false;
-        /* Partially submerged: the eye voxel is air but a point just below it
-         * is water, i.e. the camera straddles the surface. Used to keep the
-         * lens wet (drips above the waterline) even when we're not fully
-         * under and haven't just "emerged". */
+        /* Partially submerged: the camera is straddling the water surface, so
+         * the lens should be wet with drips ABOVE the waterline only. This is
+         * NOT "a water voxel sits somewhere below me" (that is true all along a
+         * shoreline while walking dry): it is a wave-height test at the eye -
+         * water must be present here AND the eye must sit within a thin band of
+         * the actual sea surface. Walking along the water with the eye a metre
+         * above the surface stays dry. */
         let mut cam_partial_shared = false;
         if r.active_body_idx >= 0 {
             let ab = &r.bodies[r.active_body_idx as usize];
@@ -3842,21 +3845,38 @@ pub fn compose_to_swapchain(view: Mat4, proj: Mat4) {
             let world = ab.world.borrow();
             let cam_blk = world.block_at_pos(cam_local, -1);
             cam_under_shared = cam_blk == Block::Water;
-            if !cam_under_shared {
-                /* Probe ~0.9 m below the eye along local up. */
-                let up_len =
-                    (cam_local.x * cam_local.x + cam_local.y * cam_local.y + cam_local.z * cam_local.z)
-                        .sqrt()
-                        .max(1e-3);
-                let probe = config::water().partial_probe_m;
+            let cam_r = (cam_local.x * cam_local.x
+                + cam_local.y * cam_local.y
+                + cam_local.z * cam_local.z)
+                .sqrt()
+                .max(1e-3);
+            /* Mean sea surface radius - the SAME reference the composite's
+             * per-pixel waterline mask uses (planet_params.w), so CPU "am I
+             * straddling" and GPU "is this pixel above water" agree. */
+            let sea_surf_r = ab.radius_m
+                + tenebris_core::planet_gen::sea_raise_m(&world.body)
+                + w_cu.height_offset_m
+                - w_cu.depth_offset_m;
+            /* Water present at the eye: the eye voxel, or the voxel just below
+             * it, is water (so a dry beach at sea-level altitude never arms). */
+            let water_here = cam_under_shared || {
+                let probe = config::water().partial_band_m;
                 let below = Vec3 {
-                    x: cam_local.x - cam_local.x / up_len * probe,
-                    y: cam_local.y - cam_local.y / up_len * probe,
-                    z: cam_local.z - cam_local.z / up_len * probe,
+                    x: cam_local.x - cam_local.x / cam_r * probe,
+                    y: cam_local.y - cam_local.y / cam_r * probe,
+                    z: cam_local.z - cam_local.z / cam_r * probe,
                 };
-                cam_partial_shared = world.block_at_pos(below, -1) == Block::Water;
-            }
+                world.block_at_pos(below, -1) == Block::Water
+            };
+            let eye_above = cam_r - sea_surf_r; /* >0 above surface, <0 below */
+            let band = config::water().partial_band_m;
+            cam_partial_shared = water_here && eye_above > -band && eye_above < band;
         }
+        /* Fully-submerged flag for the lens FX: the eye is in water AND not
+         * merely straddling the surface. When straddling we clear it so the
+         * composite still runs the drops (masked to the above-water half);
+         * when truly under it stays set so all lens FX are skipped. */
+        let cam_under_fx = cam_under_shared && !cam_partial_shared;
 
         /* Perf mode: blit + forward depth, then screen-wide
          * Beer-Lambert fog when the camera is in a water voxel. */
@@ -3903,7 +3923,7 @@ pub fn compose_to_swapchain(view: Mat4, proj: Mat4) {
         let w = &w_cu;
         let mut body_center = Vec3::default();
         let mut sea_radius = 0.0f32;
-        let cam_under = cam_under_shared;
+        let cam_under = cam_under_fx;
         /* Emerge-from-water drips: on the underwater -> surface edge, arm a
          * dry-off window; the drips overlay runs while it counts down. */
         {

@@ -940,10 +940,14 @@ pub struct WaterConfig {
     /// much the DISTANT background softens. 0 = off, ~0.25 = subtle.
     /// (The composite reads this as the blur blend amount.)
     pub wet_blur: f32,
-    /// How far below the eye (m, along local up) to probe for water when
-    /// deciding the camera is "partially submerged" (straddling the surface),
-    /// which keeps the lens wet with drips above the waterline.
-    pub partial_probe_m: f32,
+    /// Half-height (m) of the band around the mean sea surface within which
+    /// the camera counts as "partially submerged" (straddling the surface):
+    /// the eye must be within +/- this of the water surface AND water must be
+    /// present at the eye. Keeps the lens wet with drips above the waterline
+    /// while straddling, but dry when merely walking along a shoreline a metre
+    /// above the water. Also the depth of the water-presence probe below the
+    /// eye.
+    pub partial_band_m: f32,
 }
 
 pub const WATER_DEFAULTS: WaterConfig = WaterConfig {
@@ -977,7 +981,7 @@ pub const WATER_DEFAULTS: WaterConfig = WaterConfig {
     underwater_distortion: 0.006,
     wet_fade_band_m: 0.5,
     wet_blur: 0.22,
-    partial_probe_m: 0.9,
+    partial_band_m: 0.8,
     horizon_fade_m: 600.0,
     horizon_fade_strength: 0.55,
 };
@@ -1181,8 +1185,8 @@ pub fn parse_water(src: &str, path: &str) -> i32 {
                 cfg.wet_fade_band_m = fval(val);
                 0
             }
-            "partial_probe_m" => {
-                cfg.partial_probe_m = fval(val);
+            "partial_band_m" => {
+                cfg.partial_band_m = fval(val);
                 0
             }
             "horizon_fade_m" => {
