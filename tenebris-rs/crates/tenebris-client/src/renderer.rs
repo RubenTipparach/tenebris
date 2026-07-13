@@ -4061,7 +4061,9 @@ pub fn compose_to_swapchain(view: Mat4, proj: Mat4) {
             /* deep_color.w = camera aspect (w/h) so rain-on-glass drops stay
              * round. */
             deep_color: [comp_deep.x, comp_deep.y, comp_deep.z, FRAME_ASPECT.with(|c| c.get())],
-            absorption: [comp_absorb.x, comp_absorb.y, comp_absorb.z, 0.0],
+            /* absorption.w = wet-FX depth-blur strength (water.yaml wet_blur);
+             * the composite reads it as the blur blend amount. */
+            absorption: [comp_absorb.x, comp_absorb.y, comp_absorb.z, config::water().wet_blur],
             /* near_far.z = wet-fade altitude window (m); .w = emerge-from-
              * water drip intensity (running drops + mild depth blur that dry
              * off after surfacing). */

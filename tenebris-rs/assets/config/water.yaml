@@ -158,6 +158,11 @@ water:
   #                               distortion shimmer.
   underwater_distortion:   0.0015
   wet_fade_band_m:         0.5
+  # wet_blur               float  depth-blur strength for the wet FX (rain
+  #                               + just-surfaced): how much the DISTANT
+  #                               background softens. 0 = off, ~0.22 subtle,
+  #                               was an un-tunable 0.6 (too strong).
+  wet_blur:                0.22
 
   # Mobile-only horizon haze. The mobile water shader can't sample the
   # offscreen scene (no FBO on phones), so it can't reproduce the

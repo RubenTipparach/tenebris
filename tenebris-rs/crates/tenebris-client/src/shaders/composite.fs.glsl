@@ -181,7 +181,9 @@ void main()
     if ((dz_amt > 0.001) && (composite_fs_params[4].z < 0.5)) {{
         highp float dz = smoothstep(28.0, 190.0, view_dist) * clamp(dz_amt, 0.0, 1.0);
         if (dz > 0.002) {{
-            color = mix(color, rd_blur(scene_color_scene_smp, v_uv, dz * 3.5), dz * 0.6);
+            // Blur blend = dz x wet_blur (absorption.w, water.yaml). Radius
+            // (dz x 2.5) kept modest so it softens, not smears.
+            color = mix(color, rd_blur(scene_color_scene_smp, v_uv, dz * 2.5), dz * composite_fs_params[1].w);
         }}
     }}
     // Rain-on-glass (Heartfelt drops), refraction only - NO lens fog: sample

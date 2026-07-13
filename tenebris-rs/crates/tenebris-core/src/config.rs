@@ -936,6 +936,10 @@ pub struct WaterConfig {
     /* Underwater post-process. */
     pub underwater_distortion: f32,
     pub wet_fade_band_m: f32,
+    /// Depth-blur strength for the wet FX (rain + just-surfaced): how
+    /// much the DISTANT background softens. 0 = off, ~0.25 = subtle.
+    /// (The composite reads this as the blur blend amount.)
+    pub wet_blur: f32,
 }
 
 pub const WATER_DEFAULTS: WaterConfig = WaterConfig {
@@ -968,6 +972,7 @@ pub const WATER_DEFAULTS: WaterConfig = WaterConfig {
     wave_steepness: 0.65,
     underwater_distortion: 0.006,
     wet_fade_band_m: 0.5,
+    wet_blur: 0.22,
     horizon_fade_m: 600.0,
     horizon_fade_strength: 0.55,
 };
@@ -1161,6 +1166,10 @@ pub fn parse_water(src: &str, path: &str) -> i32 {
             }
             "underwater_distortion" => {
                 cfg.underwater_distortion = fval(val);
+                0
+            }
+            "wet_blur" => {
+                cfg.wet_blur = fval(val);
                 0
             }
             "wet_fade_band_m" => {
