@@ -344,7 +344,8 @@ const SEEDED_OCEAN_POWER: f32 = 1.1;
 /// More ocean: seeded worlds trim this much off the continent mask bias so
 /// more of the surface falls below sea level (a wetter planet with real
 /// coastlines). Also lowers near-coast land, helping the gentle shore.
-const SEEDED_LAND_BIAS_TRIM: f32 = 0.10;
+/// Tuned so ocean covers ~half the surface (roughly 50/50 sea/land).
+const SEEDED_LAND_BIAS_TRIM: f32 = 0.16;
 
 /// Coastal flatten: within this many metres either side of the waterline
 /// the terrain slope is compressed toward sea, so beaches shelve in
@@ -739,10 +740,16 @@ mod biome_tests {
                 islands += 1;
             }
         }
-        /* Seeded worlds carry meaningfully more water than legacy. */
+        /* Seeded worlds carry meaningfully more water than legacy, tuned to
+         * a roughly even sea/land split (~50% ocean coverage). */
+        let seeded_frac = seeded_ocean as f64 / n as f64;
         assert!(
             seeded_ocean > legacy_ocean,
             "seeded should be wetter: seeded={seeded_ocean} legacy={legacy_ocean}"
+        );
+        assert!(
+            (0.44..=0.58).contains(&seeded_frac),
+            "seeded ocean coverage should sit near 50/50, got {seeded_frac:.3}"
         );
         /* Rivers and islands both actually materialise across the globe. */
         assert!(rivers > 0, "no river channels carved below the waterline");
