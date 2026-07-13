@@ -1793,6 +1793,13 @@ thread_local! {
     /// (darken + ripple sheen in the hex shader). Set in the composite/fog
     /// block from the camera's precipitation, read at the hex fs uniform.
     static FRAME_WET: Cell<f32> = const { Cell::new(0.0) };
+    /// Emerge-from-water dry-off intensity 0..1: 1.0 the instant the camera
+    /// leaves the water, decaying to 0 as it "dries" - drives the running
+    /// water-drips composite overlay. Paired with the prev-under edge latch
+    /// and the dry-off end time below.
+    static FRAME_EMERGE: Cell<f32> = const { Cell::new(0.0) };
+    static PREV_UNDER: Cell<bool> = const { Cell::new(false) };
+    static EMERGE_END_S: Cell<f64> = const { Cell::new(0.0) };
 }
 
 /// Overcast-dimmed ambient fill for a terrain uniform.
@@ -3870,6 +3877,24 @@ pub fn compose_to_swapchain(view: Mat4, proj: Mat4) {
         let mut body_center = Vec3::default();
         let mut sea_radius = 0.0f32;
         let cam_under = cam_under_shared;
+        /* Emerge-from-water drips: on the underwater -> surface edge, arm a
+         * dry-off window; the drips overlay runs while it counts down. */
+        {
+            const DRY_SECONDS: f64 = 2.6;
+            let now = r.time_seconds as f64;
+            let was_under = PREV_UNDER.with(|c| c.get());
+            if was_under && !cam_under {
+                EMERGE_END_S.with(|c| c.set(now + DRY_SECONDS));
+            }
+            PREV_UNDER.with(|c| c.set(cam_under));
+            let emerge = if cam_under {
+                0.0 /* still submerged - no drips yet */
+            } else {
+                let end = EMERGE_END_S.with(|c| c.get());
+                (((end - now) / DRY_SECONDS).clamp(0.0, 1.0)) as f32
+            };
+            FRAME_EMERGE.with(|c| c.set(emerge));
+        }
         /* Atmospheric distance fog: the active body's atmosphere.yaml
          * knobs, dimmed by the local daylight (night fog goes dark, not
          * milky) and faded out with camera altitude - climb above the
@@ -4021,8 +4046,9 @@ pub fn compose_to_swapchain(view: Mat4, proj: Mat4) {
         let fs = shaders::composite::CompositeFsParams {
             deep_color: [comp_deep.x, comp_deep.y, comp_deep.z, 0.0],
             absorption: [comp_absorb.x, comp_absorb.y, comp_absorb.z, 0.0],
-            /* near_far.z = wet-fade altitude window (m). */
-            near_far: [0.3, 20000.0, w.wet_fade_band_m, 0.0],
+            /* near_far.z = wet-fade altitude window (m); .w = emerge-from-
+             * water drip intensity (running drops drying off the lens). */
+            near_far: [0.3, 20000.0, w.wet_fade_band_m, FRAME_EMERGE.with(|c| c.get())],
             planet_params: [body_center.x, body_center.y, body_center.z, sea_radius],
             fx_params: [
                 w.underwater_distortion,
