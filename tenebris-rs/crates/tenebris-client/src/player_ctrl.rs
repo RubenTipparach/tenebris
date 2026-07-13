@@ -1966,6 +1966,49 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
                 }
             }
         }
+        /* Tree-on-a-higher-block rescue. A tree planted one block up can
+         * flip cur_tile onto the raised tree tile while the player still
+         * stands at the LOWER level beside it: at world subdivisions the
+         * tile is barely wider than the trunk cylinder, so find_tile snaps
+         * to the nearer centre at the boundary. walkable_floor_near then
+         * returns the unreachable canopy, and tree_ground_floor finds
+         * nothing (the tree's own grass surface roofs the space just above
+         * the feet), so gr stays sky-high, no rescue fires, and the player
+         * drops to the bedrock line - the reported "walk up to a tree on a
+         * higher block, jump, fall through" bug. If the current floor is
+         * still out of reach, borrow the highest REACHABLE floor from the
+         * edge-neighbours the player straddles (the lower tile they're
+         * actually over) so they land on it instead of the void. Only ever
+         * ADDS a reachable floor; if no neighbour has one either, gr is
+         * unchanged and the existing safety nets below handle it. */
+        {
+            let step_h = config::lod().step_height_m as f64;
+            if gr <= -1e8 || gr - r > step_h {
+                if let Some(t) = w.grid.tile(cur_tile) {
+                    let mut reach = f64::MIN;
+                    for k in 0..t.num_neighbors as usize {
+                        let nb = t.edge_neighbours[k];
+                        if nb < 0 || nb >= w.tile_count {
+                            continue;
+                        }
+                        let ng = w.walkable_floor_near(nb, r, 0.0);
+                        /* Only a neighbour floor AT the player's own level
+                         * (within a step above or below the feet) - the
+                         * straddle. A floor far below would be the case where
+                         * the player stands ON a tree canopy and a transient
+                         * tree_ground_floor miss left gr sky-high; borrowing
+                         * the low surrounding terrain there would wrongly drag
+                         * them off the canopy. */
+                        if ng > -1e8 && (ng - r).abs() <= step_h && ng > reach {
+                            reach = ng;
+                        }
+                    }
+                    if reach > f64::MIN {
+                        gr = reach;
+                    }
+                }
+            }
+        }
         /* Safety net: if the walkable-floor query finds nothing in
          * the current column (every solid voxel got rejected by the
          * "passable cell above" rule - rare worldgen patterns, dug
@@ -2091,7 +2134,12 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
             let vy_now = dvec3_dot(p.velocity, p.basis.up);
             if let (true, Some(gd)) = (has_tree, ground_d) {
                 let ground_top_r = w.depth_to_radius_m(gd + 1);
-                if r < ground_top_r - 0.1 && vy_now < 0.0 {
+                /* Fire at the ONSET (no reachable floor while descending on a
+                 * tree column) as well as after sinking, so the capture
+                 * happens before cur_tile flips off the tree tile. */
+                let step_h = config::lod().step_height_m as f64;
+                let unreachable = gr <= -1e8 || gr - r > step_h;
+                if vy_now < -0.3 && (r < ground_top_r - 0.1 || unreachable) {
                     let n = S_TREE_FALLTHROUGH_LOGGED.with(|c| c.get());
                     if n < 40 {
                         S_TREE_FALLTHROUGH_LOGGED.with(|c| c.set(n + 1));
