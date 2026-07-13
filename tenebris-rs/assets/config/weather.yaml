@@ -97,6 +97,8 @@ default_moisture: 0.66
 #   rain_fall_mps      how fast the visible rain streaks fall (m/s).
 #   rain_width_m       streak half-width (m) - smaller = thinner drops.
 #   rain_density_mult  multiplier on streaks drawn per storm cell.
-rain_fall_mps: 50.0
-rain_width_m: 0.014
-rain_density_mult: 1.8
+#   rain_streak_m      streak length (m) - shorter = drops, not long curtains.
+rain_fall_mps: 70.0
+rain_width_m: 0.012
+rain_density_mult: 3.5
+rain_streak_m: 3.0

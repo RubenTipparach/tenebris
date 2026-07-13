@@ -173,6 +173,8 @@ pub struct WeatherConfig {
     pub rain_width_m: f32,
     /// Density multiplier on the streaks drawn per storm cell.
     pub rain_density_mult: f32,
+    /// Rain streak length, metres (shorter = drops, not long curtains).
+    pub rain_streak_m: f32,
 
     /* --- Wind (drives grass sway; see client scatter sway) --- */
     /// Calm-day baseline wind (0..1) - grass always breathes a little.
@@ -216,7 +218,8 @@ impl WeatherConfig {
         overcast_amb_dim: 0.48,
         rain_fall_mps: 50.0,
         rain_width_m: 0.014,
-        rain_density_mult: 1.8,
+        rain_density_mult: 3.5,
+        rain_streak_m: 3.5,
 
         base_wind: 0.35,
         gust_amp: 0.55,
@@ -274,6 +277,7 @@ pub fn parse_config(src: &str, _path: &str) -> WeatherConfig {
             "rain_fall_mps" => cfg.rain_fall_mps = v,
             "rain_width_m" => cfg.rain_width_m = v,
             "rain_density_mult" => cfg.rain_density_mult = v,
+            "rain_streak_m" => cfg.rain_streak_m = v,
             "overcast_sun_dim" => cfg.overcast_sun_dim = v,
             "overcast_amb_dim" => cfg.overcast_amb_dim = v,
             "base_wind" => cfg.base_wind = v,

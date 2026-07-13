@@ -470,10 +470,12 @@ fn draw_distant_shafts(
 
             let snow_capable = precip == Precip::Snow;
             let col_h = top_r - base_r; /* full column height */
-            /* Density knob (weather.yaml): more streaks per cell = heavier
-             * looking rain, capped by MAX_SHAFT_STREAKS. */
-            let n_streaks =
-                ((SHAFT_STREAKS as f32) * weather::config().rain_density_mult).round() as i32;
+            /* Rain feel knobs (weather.yaml): density = streaks per cell,
+             * fall speed = how fast each streak drops (m/s), streak length =
+             * mark length. Shorter + faster reads as drops, not curtains.
+             * Streak count is capped by MAX_SHAFT_STREAKS. */
+            let wcfg = weather::config();
+            let n_streaks = ((SHAFT_STREAKS as f32) * wcfg.rain_density_mult).round() as i32;
             for s in 0..n_streaks {
                 if drawn >= MAX_SHAFT_STREAKS {
                     break;
@@ -489,9 +491,10 @@ fn draw_distant_shafts(
                     dvec3_scale(t2, (jb - 0.5) * cell_w),
                 );
                 let phase = hash3(ti.wrapping_add(7 * s), pj, 0x53) as f64;
-                /* A long streak segment falling down the column. */
-                let seg = col_h * 0.45;
-                let fall = (time_s * 0.18 + phase).rem_euclid(1.0);
+                /* Streak length + fall speed from config: a short mark
+                 * dropping at rain_fall_mps down the column. */
+                let seg = (wcfg.rain_streak_m as f64).min(col_h);
+                let fall = (time_s * wcfg.rain_fall_mps as f64 / col_h + phase).rem_euclid(1.0);
                 let top_h = col_h - fall * col_h;
                 let mark_alt = base_alt + top_h;
                 let snow = snow_capable && mark_alt > SNOW_LINE_ALT_M;
