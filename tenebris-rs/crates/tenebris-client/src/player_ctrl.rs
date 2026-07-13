@@ -1904,15 +1904,23 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
          *      top-of-wall bug; let the player keep falling so
          *      gravity carries them clear of the wall column. */
         let mut gr = w.walkable_floor_near(cur_tile, r, 0.0);
-        /* Tree tile, clear of the trunk cylinder: the walkable-floor
-         * scan returns the canopy/trunk top (the grass beneath is
-         * "roofed" by the trunk voxel), which would snap the player
-         * up the tree. Use the true ground under the tree instead.
-         * Standing ON the canopy stays fine - that gr is within step
-         * height of the feet, so the override doesn't fire. */
-        if trunk_axis_dist(w, cur_tile, local) > TRUNK_CLEAR_M
-            && (gr <= -1e8 || gr - r > config::lod().step_height_m as f64)
-        {
+        /* Tree tile: the walkable-floor scan returns the canopy/trunk top
+         * (the grass beneath is "roofed" by the trunk voxel), which would
+         * leave the player standing on nothing they can reach. Substitute
+         * the true ground under the tree.
+         *
+         * This is deliberately NOT gated on trunk proximity. The trunk
+         * cylinder (TRUNK_CLEAR_M) is a HORIZONTAL wall handled in
+         * try_horizontal_step; it must not gate which floor is under the
+         * feet. Gating it here was the fall-through bug: a player whose
+         * centre lands INSIDE the cylinder (dropping in from above the
+         * canopy, the cur_tile edge flip-flop, or a camera-collider push)
+         * skipped the override, kept the unreachable canopy floor, failed
+         * every rescue gate, and sank through the grass + trunk. The
+         * `supported` probe below still stops the "clip through the ground
+         * next to a tree" straddle case, and standing ON the canopy still
+         * no-ops (gr - r is within step height, so the `if` is false). */
+        if gr <= -1e8 || gr - r > config::lod().step_height_m as f64 {
             if let Some(tg) = tree_ground_floor(w, cur_tile, r) {
                 /* Only accept an under-tree floor BELOW the feet when
                  * nothing solid is directly underfoot. Straddling a
@@ -2338,6 +2346,72 @@ mod tests {
         for _ in 0..n {
             update(p, w, DT);
         }
+    }
+
+    /// Regression: standing at a tree's trunk axis (centre inside the
+    /// TRUNK_CLEAR cylinder) must NOT fall through the ground. The vertical
+    /// floor override used to be gated on `trunk_axis_dist > TRUNK_CLEAR_M`,
+    /// so a player whose centre landed inside the cylinder kept the
+    /// unreachable canopy floor, failed every rescue gate, and sank through
+    /// the grass + trunk.
+    #[test]
+    fn no_fall_through_at_tree_trunk() {
+        clear_input();
+        let (body, w) = tenebris_world();
+        /* Find a tree tile: a column with Wood, plus the first solid
+         * non-tree voxel below the trunk (the real ground). */
+        let (mut tree_tile, mut ground_d) = (-1i32, -1i32);
+        'scan: for t in 0..w.tile_count {
+            let base = (t * WORLD_MAX_DEPTH) as usize;
+            let mut top = -1i32;
+            for depth in (0..WORLD_MAX_DEPTH).rev() {
+                let b = w.blocks[base + depth as usize];
+                if b != Block::Air.raw() && b != Block::Water.raw() {
+                    top = depth;
+                    break;
+                }
+            }
+            if top < 2 {
+                continue;
+            }
+            let has_wood =
+                (1..=top).any(|depth| w.blocks[base + depth as usize] == Block::Wood.raw());
+            if !has_wood {
+                continue;
+            }
+            for depth in (1..=top).rev() {
+                let b = w.blocks[base + depth as usize];
+                if b != Block::Air.raw() && b != Block::Water.raw() && !is_tree_raw(b) {
+                    tree_tile = t;
+                    ground_d = depth;
+                    break 'scan;
+                }
+            }
+        }
+        assert!(tree_tile >= 0, "worldgen produced no tree to test against");
+        let ground_r = w.depth_to_radius_m(ground_d + 1); /* top face of the ground */
+        let center = w.grid.tile(tree_tile).unwrap().center;
+
+        let mut p = PlayerCtrl::default();
+        init(&mut p, &body);
+        /* Drop the player onto the trunk axis (tile centre = inside the
+         * cylinder), feet 0.5 m above the ground, NOT warped (last_tile set)
+         * so the warp-rescue can't mask a real fall-through. */
+        p.position = dvec3_scale(center, ground_r + 0.5);
+        p.velocity = DVec3::default();
+        p.last_tile = tree_tile;
+        p.grounded = false;
+
+        steps(&mut p, Some(&w), 90);
+
+        let final_r = dvec3_length(dvec3_sub(
+            p.position,
+            dvec3_make(body.pos_x, body.pos_y, body.pos_z),
+        ));
+        assert!(
+            final_r >= ground_r - 0.3,
+            "fell through under a tree: final_r={final_r:.2} ground_r={ground_r:.2} (tile {tree_tile})"
+        );
     }
 
     /* -- A: spawn -> gravity fall -> land --------------------------------- */
