@@ -162,7 +162,7 @@ water:
   #                               + just-surfaced): how much the DISTANT
   #                               background softens. 0 = off, ~0.22 subtle,
   #                               was an un-tunable 0.6 (too strong).
-  wet_blur:                0.22
+  wet_blur:                0.02
   # partial_probe_m        float  how far below the eye (m) to probe for
   #                               water when deciding the camera is partially
   #                               submerged (straddling the surface). Keeps

@@ -112,6 +112,6 @@ rain_streak_m: 1.5
 rain_color_r: 0.40
 rain_color_g: 0.58
 rain_color_b: 1.0
-rain_alpha_near: 0.38
+rain_alpha_near: 0.58
 rain_alpha_far: 0.10
 wet_fade_tau_s: 1.6
