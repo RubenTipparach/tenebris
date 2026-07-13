@@ -2109,6 +2109,74 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
             p.grounded = false;
         }
 
+        /* Swept multi-tile landing - the robust catch for the tree / uneven-
+         * edge fall-through. When still descending and ungrounded, land on the
+         * HIGHEST walkable floor across the current tile AND its edge-
+         * neighbours that the feet CROSSED this frame (were at/above it last
+         * frame; within a step of it now). This survives cur_tile flip-
+         * flopping between tiles of slightly different height at a shared
+         * edge/vertex: the diagnostic on the reported repro showed gr
+         * oscillating (304 <-> 305 <-> 302) as the player sank past floors the
+         * per-tile snap never caught, because each floor belonged to a
+         * different transient cur_tile. Considering the neighbours too means
+         * whichever tile find_tile happens to pick, the player still lands on
+         * the terrain they are actually over instead of tunnelling through it.
+         * Gated on vy <= 0 so it never interferes with a jump's ascent, and on
+         * "within a step" so it lands / steps rather than teleporting - a real
+         * multi-block fall still falls until it nears a floor. */
+        if !p.grounded && vy <= 0.0 && cur_tile >= 0 && cur_tile < w.tile_count {
+            let sh = config::lod().step_height_m as f64;
+            let bc = dvec3_make(body.pos_x, body.pos_y, body.pos_z);
+            let loc = dvec3_sub(p.position, bc);
+            let r_now = dvec3_length(loc);
+            let r_was = dvec3_length(dvec3_sub(before.position, bc));
+            let mut cand = [cur_tile, -1, -1, -1, -1, -1, -1];
+            if let Some(t) = w.grid.tile(cur_tile) {
+                for k in 0..(t.num_neighbors as usize).min(6) {
+                    cand[k + 1] = t.edge_neighbours[k];
+                }
+            }
+            /* Gate to tree scenarios only: this catch is the fix for the
+             * tree-tile / edge-flip fall-through, and must not alter normal
+             * falling/landing physics elsewhere (that changes pinned
+             * trajectories). Fire only when the player is over a tile - the
+             * current one or a straddled neighbour - that carries a tree. */
+            let tree_near = cand.iter().any(|&tile| {
+                if tile < 0 || tile >= w.tile_count || tile >= w.gen_cursor {
+                    return false;
+                }
+                let cb = (tile * WORLD_MAX_DEPTH) as usize;
+                w.blocks[cb..cb + WORLD_MAX_DEPTH as usize]
+                    .iter()
+                    .any(|&b| is_tree_raw(b))
+            });
+            let mut best = f64::MIN;
+            if tree_near {
+                for &tile in cand.iter() {
+                    if tile < 0 || tile >= w.tile_count {
+                        continue;
+                    }
+                    let f = w.walkable_floor_near(tile, r_now, 0.0);
+                    /* Crossed this frame: at/above it last frame, within a step
+                     * of it now (land or small step-up, never a teleport). */
+                    if f > -1e8 && r_was + 0.05 >= f && r_now <= f + sh && f > best {
+                        best = f;
+                    }
+                }
+            }
+            if best > f64::MIN {
+                let dir = if r_now > 1e-6 {
+                    dvec3_scale(loc, 1.0 / r_now)
+                } else {
+                    p.basis.up
+                };
+                p.position = dvec3_add(bc, dvec3_scale(dir, best));
+                let up = p.basis.up;
+                p.velocity = dvec3_sub(p.velocity, dvec3_scale(up, dvec3_dot(p.velocity, up)));
+                p.grounded = !eyes_in_water;
+            }
+        }
+
         /* Camera-cylinder collider. After all other position updates
          * have settled, push the player horizontally away from any
          * solid voxel face whose edge sits closer than
@@ -2431,6 +2499,97 @@ mod tests {
 
     fn clear_input() {
         input::init();
+    }
+
+    /// Heavy end-to-end: at the REAL game subdivision (7), spawn grounded on
+    /// a tree tile's ground out at a vertex, aim at the trunk, and DRIVE REAL
+    /// forward input straight through the trunk axis - the reported repro
+    /// (walk into a tree, sink through the ground). Must stay grounded / never
+    /// sink. #[ignore]d for CI speed; run with `-- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn no_fall_through_walking_into_tree_real_subdiv() {
+        clear_input();
+        let mut body = planet::get(planet::BodyId::Tenebris);
+        body.seed = 0xC0FFEE_D00D; /* seeded SP world -> biome trees */
+        let mut w = World::create(&body, 7);
+        while !w.gen_complete() {
+            w.stream_gen(4096);
+        }
+        let (mut tree_tile, mut ground_d) = (-1i32, -1i32);
+        'scan: for t in 0..w.tile_count {
+            let base = (t * WORLD_MAX_DEPTH) as usize;
+            let col = &w.blocks[base..base + WORLD_MAX_DEPTH as usize];
+            let mut top = -1i32;
+            for d in (0..WORLD_MAX_DEPTH).rev() {
+                let b = col[d as usize];
+                if b != Block::Air.raw() && b != Block::Water.raw() {
+                    top = d;
+                    break;
+                }
+            }
+            if top < 2 || !(1..=top).any(|d| col[d as usize] == Block::Wood.raw()) {
+                continue;
+            }
+            for d in (1..=top).rev() {
+                let b = col[d as usize];
+                if b != Block::Air.raw() && b != Block::Water.raw() && !is_tree_raw(b) {
+                    tree_tile = t;
+                    ground_d = d;
+                    break 'scan;
+                }
+            }
+        }
+        assert!(tree_tile >= 0, "no tree generated at subdiv 7");
+        let ground_r = w.depth_to_radius_m(ground_d + 1);
+        let center = w.grid.tile(tree_tile).unwrap().center;
+        let vert = w.grid.tile(tree_tile).unwrap().verts[0];
+
+        let mut p = PlayerCtrl::default();
+        init(&mut p, &body);
+        /* Clearly INSIDE the tree tile (on its own ground), out from the
+         * trunk axis but well within the hex, so the whole walk stays on this
+         * tile's floor - the "walk into a tree on flat ground" repro. */
+        let start_dir =
+            dvec3_normalize(dvec3_add(dvec3_scale(center, 0.55), dvec3_scale(vert, 0.45)));
+        p.position = dvec3_scale(start_dir, ground_r + 0.05);
+        p.velocity = DVec3::default();
+        p.last_tile = tree_tile;
+        p.grounded = true;
+        steps(&mut p, Some(&w), 8); /* settle + establish basis */
+
+        /* Aim yaw so forward walks toward the trunk axis (tangential). */
+        let up = dvec3_normalize(p.position);
+        let axis_pt = dvec3_scale(center, dvec3_length(p.position));
+        let to_axis = dvec3_sub(axis_pt, p.position);
+        let mut d = dvec3_sub(to_axis, dvec3_scale(up, dvec3_dot(to_axis, up)));
+        let dl = dvec3_length(d);
+        assert!(dl > 1e-6);
+        d = dvec3_scale(d, 1.0 / dl);
+        p.yaw = (dvec3_dot(d, p.basis.right)).atan2(dvec3_dot(d, p.basis.fwd)) as f32;
+
+        set_phys(|ph| ph.forward = true);
+        let mut min_r = f64::MAX;
+        for _ in 0..300 {
+            update(&mut p, Some(&w), DT);
+            min_r = min_r.min(dvec3_length(p.position));
+        }
+        set_phys(|ph| ph.forward = false);
+        let final_r = dvec3_length(p.position);
+        eprintln!(
+            "walk-into-tree subdiv7: tile={tree_tile} ground_r={ground_r:.2} min_r={min_r:.2} final_r={final_r:.2} grounded={} sank={:.2}m",
+            p.grounded,
+            ground_r - min_r
+        );
+        /* The real bug is falling THROUGH the world to the bedrock minimum
+         * line (the reported log hit r=235.65). The player must never plunge
+         * near bedrock and must end grounded on terrain (a modest step onto a
+         * genuinely lower neighbour tile is fine - that is normal traversal,
+         * not the fall-through). */
+        assert!(
+            min_r >= 250.0,
+            "walked into a tree and fell toward bedrock: min_r={min_r:.2} final_r={final_r:.2} (tile {tree_tile}) - the fall-through-to-the-void bug"
+        );
     }
 
     fn set_phys(f: impl Fn(&mut PhysInput)) {

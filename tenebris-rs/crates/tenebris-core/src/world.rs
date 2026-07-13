@@ -1599,6 +1599,71 @@ mod tests {
         assert_eq!(w.get(0, 0), Block::Bedrock);
     }
 
+    /// Heavy: generate a world at the REAL game subdivision (7) and verify
+    /// the walkable floor under every sampled tree is the terrain ground,
+    /// never the canopy - the exact condition the in-game fall-through
+    /// depended on (the reported log showed gr=canopy while ground was
+    /// metres below). #[ignore]d so CI stays fast; run with
+    /// `cargo test -p tenebris-core --lib tree_floor_real_subdiv -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn tree_floor_real_subdiv() {
+        let mut body = planet::get(BodyId::Tenebris);
+        body.seed = 0xC0FFEE_D00D; /* seeded = a real SP world (biomes/trees) */
+        let mut w = World::create(&body, 7);
+        while !w.gen_complete() {
+            w.stream_gen(4000);
+        }
+        let r = w.body.radius_m;
+        let mut checked = 0;
+        let mut bad = 0;
+        for t in 0..w.tile_count {
+            let base = (t * WORLD_MAX_DEPTH) as usize;
+            let col = &w.blocks[base..base + WORLD_MAX_DEPTH as usize];
+            let mut top = -1i32;
+            for d in (0..WORLD_MAX_DEPTH).rev() {
+                if col[d as usize] != Block::Air.raw() && col[d as usize] != Block::Water.raw() {
+                    top = d;
+                    break;
+                }
+            }
+            if top < 2 {
+                continue;
+            }
+            if !(1..=top).any(|d| col[d as usize] == Block::Wood.raw()) {
+                continue; /* not a tree tile */
+            }
+            let gd = (1..=top)
+                .rev()
+                .find(|&d| {
+                    let b = col[d as usize];
+                    b != Block::Air.raw() && b != Block::Water.raw() && !is_tree_raw(b)
+                })
+                .unwrap();
+            let ground = w.depth_to_radius_m(gd + 1);
+            let canopy = w.depth_to_radius_m(top + 1);
+            let gr = w.walkable_floor_near(t, r + 40.0, 1.8);
+            checked += 1;
+            /* The floor must be the terrain ground under the tree, and must
+             * be strictly below the canopy top (the old bug returned the
+             * canopy, tens of dm above the ground). */
+            if (gr - ground).abs() > 1e-6 || (canopy > ground + 0.5 && gr >= canopy) {
+                bad += 1;
+                if bad <= 5 {
+                    eprintln!(
+                        "BAD tree tile {t}: floor gr={gr:.2} ground={ground:.2} canopy={canopy:.2}"
+                    );
+                }
+            }
+            if checked >= 200 {
+                break;
+            }
+        }
+        eprintln!("tree_floor_real_subdiv: checked={checked} bad={bad}");
+        assert!(checked > 0, "no trees generated at subdiv 7");
+        assert_eq!(bad, 0, "{bad}/{checked} tree tiles had the floor above ground (canopy bug)");
+    }
+
     #[test]
     fn tree_is_transparent_to_floor() {
         /* Regression for the "sink through the ground next to / under a
