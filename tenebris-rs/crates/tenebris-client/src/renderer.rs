@@ -4447,7 +4447,7 @@ pub fn draw_world(
                     (0.0, [1.0f32, 0.0, 0.0])
                 };
                 let amp_k = 1.0 + wind * 1.4; /* wind grows the sway reach */
-                let spd_k = 1.0 + wind * 0.6; /* and quickens it a little */
+                let spd_k = 1.0 + wind * 0.9; /* and rolls the gust downwind faster */
                 /* Pack the wind flow for the VS: xyz = unit downwind scaled by
                  * the steady lean bias (length recovers the bias), w = gust
                  * wave spatial frequency (radians/metre). */

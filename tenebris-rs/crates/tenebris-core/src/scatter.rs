@@ -142,7 +142,7 @@ impl ScatterConfig {
         sway_amp_m: 0.07,
         underwater_sway_speed: 0.7,
         underwater_sway_amp_m: 0.09,
-        sway_gust_wavelength_m: 14.0,
+        sway_gust_wavelength_m: 40.0,
         sway_lean_bias: 0.6,
         vine_chance: 0.8,
         vine_length_m: 2.2,

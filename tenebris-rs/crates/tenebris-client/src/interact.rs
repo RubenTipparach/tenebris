@@ -362,7 +362,11 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
         s.mining_progress_s = 0.0;
         s.mining_tile = -1;
         s.mining_depth = -1;
-        if input::state().left_click {
+        /* Hold the mine button to break the plant, same as a block. Use
+         * left_HELD (the continuous flag), not left_click (the one-frame
+         * press edge) - the edge only ever added a single dt, so the timer
+         * never reached CROP_BREAK_S and crops couldn't be harvested. */
+        if input::state().left_held {
             s.crop_break_s += dt;
         } else {
             s.crop_break_s = 0.0;

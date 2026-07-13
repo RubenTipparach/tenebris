@@ -79,10 +79,14 @@ underwater_sway_amp_m: 0.09
 # Wind DIRECTION: grass leans + ripples downwind (the weather sim's wind
 # direction, which follows the clouds and bends from high to low pressure -
 # see weather.yaml wind_dir_pressure), instead of a random per-blade wobble.
-#   sway_gust_wavelength_m  metres between gust crests rolling downwind
-#                           (low = tight ripples, high = long slow swells)
+#   sway_gust_wavelength_m  metres between gust crests rolling downwind.
+#                           The crest travels at speed ~ sway_speed*lambda/2pi,
+#                           so a LONGER wavelength makes the swell roll faster
+#                           than the player walks (wind leads, not your motion)
+#                           and reads as a broad field-breathing swell rather
+#                           than a tight ripple you cross on foot.
 #   sway_lean_bias          0..1 steady downwind lean; gusts add the rest
-sway_gust_wavelength_m: 14.0
+sway_gust_wavelength_m: 40.0
 sway_lean_bias: 0.6
   vine_chance: 0.8
   vine_length_m: 2.2
