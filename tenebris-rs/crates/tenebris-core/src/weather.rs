@@ -166,6 +166,14 @@ pub struct WeatherConfig {
     /// How much full overcast dims the AMBIENT fill (0..1).
     pub overcast_amb_dim: f32,
 
+    /* --- Rain streak feel (client weather_fx distant shafts) --- */
+    /// Rain fall speed, metres/second (the visible streaks fall this fast).
+    pub rain_fall_mps: f32,
+    /// Rain streak half-width, metres (smaller = thinner drops).
+    pub rain_width_m: f32,
+    /// Density multiplier on the streaks drawn per storm cell.
+    pub rain_density_mult: f32,
+
     /* --- Wind (drives grass sway; see client scatter sway) --- */
     /// Calm-day baseline wind (0..1) - grass always breathes a little.
     pub base_wind: f32,
@@ -206,6 +214,9 @@ impl WeatherConfig {
         cloud_fog_add: 0.8,
         overcast_sun_dim: 0.72,
         overcast_amb_dim: 0.48,
+        rain_fall_mps: 50.0,
+        rain_width_m: 0.014,
+        rain_density_mult: 1.8,
 
         base_wind: 0.35,
         gust_amp: 0.55,
@@ -260,6 +271,9 @@ pub fn parse_config(src: &str, _path: &str) -> WeatherConfig {
             "rain_cloud_scale" => cfg.rain_cloud_scale = v,
             "rain_fog_mult" => cfg.rain_fog_mult = v,
             "cloud_fog_add" => cfg.cloud_fog_add = v,
+            "rain_fall_mps" => cfg.rain_fall_mps = v,
+            "rain_width_m" => cfg.rain_width_m = v,
+            "rain_density_mult" => cfg.rain_density_mult = v,
             "overcast_sun_dim" => cfg.overcast_sun_dim = v,
             "overcast_amb_dim" => cfg.overcast_amb_dim = v,
             "base_wind" => cfg.base_wind = v,

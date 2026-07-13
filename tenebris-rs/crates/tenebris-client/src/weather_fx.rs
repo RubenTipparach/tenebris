@@ -143,7 +143,10 @@ fn style(snow: bool) -> (f64, f64, f64, [f32; 3], f32) {
     if snow {
         (2.2, 0.11, 0.055, [0.97, 0.98, 1.0], 0.92)
     } else {
-        (24.0, 1.3, 0.028, [0.78, 0.85, 0.95], 0.55)
+        /* Rain fall speed + streak width are weather.yaml knobs (faster,
+         * thinner drops than the old fixed 24 m/s / 0.028 m). */
+        let c = weather::config();
+        (c.rain_fall_mps as f64, 1.0, c.rain_width_m as f64, [0.78, 0.85, 0.95], 0.55)
     }
 }
 
@@ -226,7 +229,11 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, p: &PlayerCtrl, time_s: f64) {
     sgl::load_pipeline(pip);
     sgl::begin_triangles();
 
-    draw_near_shower(view, w, p, up, cam_right, forced, time_s);
+    /* Near-shower DISABLED: those 3D streaks spawned in a disk around the
+     * player and fell "in camera space" right on top of the view, which
+     * read as rain stuck to the screen. Precipitation is now the distant
+     * shafts (world-anchored curtains) plus the composite lens droplets.
+     * The fn is kept (allow(dead_code)) for an easy re-enable. */
     draw_distant_shafts(w, p, up, r, planet_r, shell_r, cam_right, forced, time_s);
 
     sgl::end();
@@ -237,6 +244,7 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, p: &PlayerCtrl, time_s: f64) {
 /// player's own column is precipitating. Voxel-aware (streaks land on the
 /// surface / water top, suppressed underwater or in a cave) and split into
 /// snow above the snow line and rain below it.
+#[allow(dead_code)] // disabled in draw(); kept for easy re-enable
 fn draw_near_shower(
     view: Mat4,
     w: &World,
@@ -462,7 +470,11 @@ fn draw_distant_shafts(
 
             let snow_capable = precip == Precip::Snow;
             let col_h = top_r - base_r; /* full column height */
-            for s in 0..SHAFT_STREAKS {
+            /* Density knob (weather.yaml): more streaks per cell = heavier
+             * looking rain, capped by MAX_SHAFT_STREAKS. */
+            let n_streaks =
+                ((SHAFT_STREAKS as f32) * weather::config().rain_density_mult).round() as i32;
+            for s in 0..n_streaks {
                 if drawn >= MAX_SHAFT_STREAKS {
                     break;
                 }

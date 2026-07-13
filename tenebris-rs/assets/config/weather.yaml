@@ -35,7 +35,16 @@ min_alpha: 0.32
 
 # --- Precipitation ---
 #   rain_threshold  density above which a cloud becomes a rain/snow cloud.
+#   rain_cover_min  cloud COVER (0..1, the opacity ramp) a column needs
+#                   before it rains - so only a solid overhead cloud
+#                   precipitates, not a thin wisp.
+#   rain_min_s      how long rain trails a cloud after it has drifted off
+#                   (a column that was cloudy this many seconds ago still
+#                   counts as raining). Kept short so rain doesn't fall
+#                   from a now-clear sky a full minute later.
 rain_threshold: 0.55
+rain_cover_min: 0.62
+rain_min_s: 10.0
 
 # --- Motion ---
 #   small_extra_drift  DEPRECATED / ignored. Clouds now all drift at the
@@ -75,11 +84,19 @@ wind_dir_pressure: 8.0
 #                     goes flat + grey under thick cloud.
 #   overcast_amb_dim  how much full overcast dims the ambient fill (0..1).
 rain_cloud_scale: 1.7
-rain_fog_mult: 3.6
-cloud_fog_add: 0.8
+rain_fog_mult: 1.6
+cloud_fog_add: 0.35
 overcast_sun_dim: 0.72
 overcast_amb_dim: 0.48
 
 # --- Legacy (default-seed) worlds have no biome moisture map; use this
 #     flat moisture so the sky still weathers over time. ---
 default_moisture: 0.66
+
+# --- Rain streak feel (client weather_fx distant shafts) ---
+#   rain_fall_mps      how fast the visible rain streaks fall (m/s).
+#   rain_width_m       streak half-width (m) - smaller = thinner drops.
+#   rain_density_mult  multiplier on streaks drawn per storm cell.
+rain_fall_mps: 50.0
+rain_width_m: 0.014
+rain_density_mult: 1.8

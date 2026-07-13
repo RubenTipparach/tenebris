@@ -1,6 +1,14 @@
 precision mediump float;
 precision highp int;
 
+// --- Tunables (edit + rebuild) --------------------------------------------
+// Droplet refraction / normal strength: how far a rain / emerge drop's
+// surface normal (rd_n / em_n = screen-space gradient of the drop height
+// field) bends the UV when sampling the scene behind it. Higher = stronger
+// lensing / more distortion through each drop; lower = flatter, subtler drops.
+#define DROP_REFRACT 1.7
+// --------------------------------------------------------------------------
+
 uniform highp vec4 composite_fs_params[6];
 uniform highp sampler2D scene_depth_scene_depth_smp;
 uniform highp sampler2D scene_color_scene_smp;
@@ -155,6 +163,11 @@ void main()
     highp vec3 _276 = color;
     highp vec3 _283 = mix(_276, mix(composite_fs_params[0].xyz, _276, exp(composite_fs_params[1].xyz * (-_259))), vec3(wet));
     color = _283;
+    // Distance fog: fades far terrain (and far water) into the sky colour so
+    // the horizon has no hard seam. fog_params.w = density/metre (built on
+    // the CPU from atmo_fog_density x altitude fade x weather; storm
+    // multipliers are tuned in weather.yaml so rain hazes but never whites
+    // out). fog_params.xyz = the sky-matched fog colour.
     if ((!_107) && (composite_fs_params[5].w > 0.0))
     {
         highp float fog_f = 1.0 - exp(-view_dist * composite_fs_params[5].w);
@@ -186,7 +199,7 @@ void main()
         highp float rd_cx = rd_Drops(rd_uv + rd_e, rd_t, rd_s, rd_l1, rd_l2).x;
         highp float rd_cy = rd_Drops(rd_uv + rd_e.yx, rd_t, rd_s, rd_l1, rd_l2).x;
         highp vec2 rd_n = vec2(rd_cx - rd_c.x, rd_cy - rd_c.x);
-        highp vec3 rd_refr = texture(scene_color_scene_smp, clamp(v_uv - (rd_n * 1.7), vec2(0.0), vec2(1.0))).xyz;
+        highp vec3 rd_refr = texture(scene_color_scene_smp, clamp(v_uv - (rd_n * DROP_REFRACT), vec2(0.0), vec2(1.0))).xyz;
         color = mix(color, rd_refr, clamp(rd_c.x, 0.0, 1.0) * rd_rain);
     }}
     // Emerge-from-water: same drops running down + drying off, refraction only
@@ -200,7 +213,7 @@ void main()
         highp float em_cx = rd_Drops(em_uv + em_e, em_t, 0.0, 1.0, 0.6).x;
         highp float em_cy = rd_Drops(em_uv + em_e.yx, em_t, 0.0, 1.0, 0.6).x;
         highp vec2 em_n = vec2(em_cx - em_c.x, em_cy - em_c.x);
-        highp vec3 em_refr = texture(scene_color_scene_smp, clamp(v_uv - (em_n * 1.7), vec2(0.0), vec2(1.0))).xyz;
+        highp vec3 em_refr = texture(scene_color_scene_smp, clamp(v_uv - (em_n * DROP_REFRACT), vec2(0.0), vec2(1.0))).xyz;
         color = mix(color, em_refr, clamp(em_c.x, 0.0, 1.0) * em);
     }}
     frag_color = vec4(color, 1.0);
