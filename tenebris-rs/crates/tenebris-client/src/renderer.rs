@@ -4390,7 +4390,10 @@ fn body_draw_water(r: &Renderer, bi: usize, vp: Mat4, camera_world: Vec3) -> usi
         _pad_204: [0; 4],
         u_torch_color: [l.torch_color.x, l.torch_color.y, l.torch_color.z, l.torch_intensity],
         u_flow_speed_falling: config::water_flow().uv_speed_falling,
-        _pad_228: [0; 12],
+        /* Rain intensity for the surface rain ripples (same eased wetness
+         * the composite rain-on-glass lens uses). */
+        u_rain: FRAME_WET.with(|c| c.get()),
+        _pad_232: [0; 8],
         /* Same sky-matched fog the composite used this frame - the
          * water pass draws after the post-process, so it fogs itself. */
         u_fog: FRAME_FOG.with(|f| f.get()),
