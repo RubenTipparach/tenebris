@@ -130,8 +130,19 @@ pub struct WeatherConfig {
     /// above `cloud_full` a full opaque mass; between, it grows.
     pub cloud_min: f32,
     pub cloud_full: f32,
-    /// Density above which a cloud is a rain/snow cloud.
+    /// Density above which a cloud is a rain/snow cloud. (Legacy knob;
+    /// `rain_cover_min` now gates precipitation off the visible cloud size
+    /// so rain always matches the clouds overhead - this is kept only for
+    /// the shower-intensity ramp.)
     pub rain_threshold: f32,
+    /// Cloud COVER (0..1 visible size) at/above which the column rains, so
+    /// precipitation falls under any cloud big enough to see - not off a
+    /// separate density threshold that let visible clouds sit rainless.
+    pub rain_cover_min: f32,
+    /// Once a column starts raining it keeps raining for at least this many
+    /// seconds after the cloud thins (a coarse persistence tail sampled from
+    /// the field's recent past), so showers last instead of flickering.
+    pub rain_min_s: f32,
     /// Alpha of the smallest (just-forming) cloud; full clouds reach 1.
     pub min_alpha: f32,
     /// Extra drift speed (m/s) given to the SMALLEST clouds so wisps
@@ -185,6 +196,8 @@ impl WeatherConfig {
         cloud_min: 0.22,
         cloud_full: 0.52,
         rain_threshold: 0.55,
+        rain_cover_min: 0.5,
+        rain_min_s: 60.0,
         min_alpha: 0.32,
         small_extra_drift: 6.0,
         default_moisture: 0.66,
@@ -239,6 +252,8 @@ pub fn parse_config(src: &str, _path: &str) -> WeatherConfig {
             "cloud_min" => cfg.cloud_min = v,
             "cloud_full" => cfg.cloud_full = v,
             "rain_threshold" => cfg.rain_threshold = v,
+            "rain_cover_min" => cfg.rain_cover_min = v,
+            "rain_min_s" => cfg.rain_min_s = v,
             "min_alpha" => cfg.min_alpha = v,
             "small_extra_drift" => cfg.small_extra_drift = v,
             "default_moisture" => cfg.default_moisture = v,
@@ -378,7 +393,19 @@ pub fn cloud_cell(body: &BodyConfig, dir: DVec3, t_s: f64) -> CloudCell {
     let d = cloud_density(body, dir, t_s);
     let cover = smoothstep(cfg.cloud_min, cfg.cloud_full, d);
     let alpha = cfg.min_alpha + (1.0 - cfg.min_alpha) * cover;
-    let raining = d >= cfg.rain_threshold;
+    /* Rain under any cloud big enough to see (cover >= rain_cover_min), and
+     * keep raining for at least rain_min_s after it thins: if the column was
+     * that cloudy rain_min_s ago it still counts as raining now. Both samples
+     * come from the same deterministic field, so it stays stateless and every
+     * client agrees. */
+    let raining = if cover >= cfg.rain_cover_min {
+        true
+    } else if cfg.rain_min_s > 0.0 {
+        let past = cloud_density(body, dir, t_s - cfg.rain_min_s as f64);
+        smoothstep(cfg.cloud_min, cfg.cloud_full, past) >= cfg.rain_cover_min
+    } else {
+        false
+    };
     let precip = if raining { precip_kind(body, dir) } else { Precip::None };
     CloudCell { cover, alpha, raining, precip }
 }

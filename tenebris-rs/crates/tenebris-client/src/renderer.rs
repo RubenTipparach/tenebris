@@ -3936,10 +3936,20 @@ pub fn compose_to_swapchain(view: Mat4, proj: Mat4) {
                 }
             };
             FRAME_OVERCAST.with(|c| c.set(wx_overcast));
+            /* Camera altitude above the surface + the cloud-deck height: the
+             * rain-on-glass lens FX only makes sense when the camera is down
+             * in the weather (below the clouds), never from orbit. */
+            let cam_alt = {
+                let c = vec3_sub(r.env.camera_world, body_center);
+                (c.x * c.x + c.y * c.y + c.z * c.z).sqrt() - ab.radius_m
+            };
+            let cloud_deck = tenebris_core::clouds::config().altitude_m;
+            let in_weather_layer = cam_alt < cloud_deck;
             /* Wet terrain while it's raining at the camera: a strong base
              * wetness the moment precipitation starts, deepening a touch
-             * under heavier overcast. Dry (0) otherwise. */
-            let wet_now = if wx_precip {
+             * under heavier overcast. Dry (0) otherwise, and never on the
+             * lens from above the cloud deck / in space. */
+            let wet_now = if wx_precip && in_weather_layer {
                 (0.55 + 0.45 * wx_overcast).min(1.0)
             } else {
                 0.0
