@@ -143,10 +143,11 @@ fn style(snow: bool) -> (f64, f64, f64, [f32; 3], f32) {
     if snow {
         (2.2, 0.11, 0.055, [0.97, 0.98, 1.0], 0.92)
     } else {
-        /* Rain fall speed + streak width are weather.yaml knobs (faster,
-         * thinner drops than the old fixed 24 m/s / 0.028 m). */
+        /* Rain fall speed, streak width + tint are weather.yaml knobs
+         * (faster, thinner, bluer drops than the old fixed values). */
         let c = weather::config();
-        (c.rain_fall_mps as f64, 1.0, c.rain_width_m as f64, [0.78, 0.85, 0.95], 0.55)
+        let col = [c.rain_color_r, c.rain_color_g, c.rain_color_b];
+        (c.rain_fall_mps as f64, 1.0, c.rain_width_m as f64, col, 0.55)
     }
 }
 

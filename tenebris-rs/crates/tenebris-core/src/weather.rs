@@ -175,6 +175,12 @@ pub struct WeatherConfig {
     pub rain_density_mult: f32,
     /// Rain streak length, metres (shorter = drops, not long curtains).
     pub rain_streak_m: f32,
+    /// Rain streak RGB tint (0..1). Lower r/g + high b = bluer, moodier
+    /// rain. Each channel follows the "0 keeps default" rule, so use a
+    /// tiny value (e.g. 0.02) rather than exactly 0 for a near-zero channel.
+    pub rain_color_r: f32,
+    pub rain_color_g: f32,
+    pub rain_color_b: f32,
 
     /* --- Wind (drives grass sway; see client scatter sway) --- */
     /// Calm-day baseline wind (0..1) - grass always breathes a little.
@@ -220,6 +226,9 @@ impl WeatherConfig {
         rain_width_m: 0.014,
         rain_density_mult: 3.5,
         rain_streak_m: 3.5,
+        rain_color_r: 0.45,
+        rain_color_g: 0.62,
+        rain_color_b: 1.0,
 
         base_wind: 0.35,
         gust_amp: 0.55,
@@ -278,6 +287,9 @@ pub fn parse_config(src: &str, _path: &str) -> WeatherConfig {
             "rain_width_m" => cfg.rain_width_m = v,
             "rain_density_mult" => cfg.rain_density_mult = v,
             "rain_streak_m" => cfg.rain_streak_m = v,
+            "rain_color_r" => cfg.rain_color_r = v,
+            "rain_color_g" => cfg.rain_color_g = v,
+            "rain_color_b" => cfg.rain_color_b = v,
             "overcast_sun_dim" => cfg.overcast_sun_dim = v,
             "overcast_amb_dim" => cfg.overcast_amb_dim = v,
             "base_wind" => cfg.base_wind = v,
