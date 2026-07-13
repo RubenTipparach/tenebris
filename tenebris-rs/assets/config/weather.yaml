@@ -98,6 +98,10 @@ default_moisture: 0.66
 #   rain_width_m       streak half-width (m) - smaller = thinner drops.
 #   rain_density_mult  multiplier on streaks drawn per storm cell.
 #   rain_streak_m      streak length (m) - shorter = drops, not long curtains.
+#   --- Snow emitter (separate so flakes drift slowly, not rain-fast) ---
+#   snow_fall_mps      snow fall speed (m/s) - much slower than rain.
+#   snow_streak_m      flake length (m) - short flakes, not streaks.
+#   snow_density_mult  multiplier on flakes drawn per snow cell.
 #   rain_color_r/g/b   streak tint (0..1) - lower r/g + high b = bluer rain.
 #                      (0 keeps the default, so use e.g. 0.02 for near-zero.)
 #   rain_alpha_near    streak opacity for the closest shafts (0..1).
@@ -115,6 +119,9 @@ rain_fall_mps: 70.0
 rain_width_m: 0.012
 rain_density_mult: 10.5
 rain_streak_m: 1.5
+snow_fall_mps: 3.0
+snow_streak_m: 0.4
+snow_density_mult: 2.0
 rain_color_r: 0.40
 rain_color_g: 0.58
 rain_color_b: 1.0

@@ -478,11 +478,17 @@ fn draw_distant_shafts(
 
             let snow_capable = precip == Precip::Snow;
             let col_h = top_r - base_r; /* full column height */
-            /* Rain feel knobs (weather.yaml): density = streaks per cell,
-             * fall speed = how fast each streak drops (m/s), streak length =
-             * mark length. Shorter + faster reads as drops, not curtains.
-             * Streak count is capped by MAX_SHAFT_STREAKS. */
-            let n_streaks = ((SHAFT_STREAKS as f32) * wcfg.rain_density_mult).round() as i32;
+            /* Rain and snow use SEPARATE emitter configs (weather.yaml):
+             * density = streaks per cell, fall speed = m/s each streak drops,
+             * streak length = mark length. Snow drifts slowly with short
+             * flakes; rain falls fast with longer streaks. Count is capped by
+             * MAX_SHAFT_STREAKS. */
+            let (fall_mps, streak_cfg, density_mult) = if snow_capable {
+                (wcfg.snow_fall_mps as f64, wcfg.snow_streak_m as f64, wcfg.snow_density_mult)
+            } else {
+                (wcfg.rain_fall_mps as f64, wcfg.rain_streak_m as f64, wcfg.rain_density_mult)
+            };
+            let n_streaks = ((SHAFT_STREAKS as f32) * density_mult).round() as i32;
             for s in 0..n_streaks {
                 if drawn >= MAX_SHAFT_STREAKS {
                     break;
@@ -509,8 +515,7 @@ fn draw_distant_shafts(
                  * makes `fall` strictly linear in time, so every drop descends
                  * at a constant v and loops back to the cloud, forever. */
                 let cloud_alt = shell_r - planet_r;
-                let fall =
-                    (time_s * wcfg.rain_fall_mps as f64 / cloud_alt + phase).rem_euclid(1.0);
+                let fall = (time_s * fall_mps / cloud_alt + phase).rem_euclid(1.0);
                 let drop_alt = cloud_alt * (1.0 - fall); /* altitude above surface datum */
                 let top_h = drop_alt - base_alt; /* height above the actual ground */
                 if top_h <= 0.0 {
@@ -529,7 +534,7 @@ fn draw_distant_shafts(
                 let life = ((cloud_alt - drop_alt) / fade_m)
                     .clamp(0.0, 1.0)
                     .min((top_h / fade_m).clamp(0.0, 1.0));
-                let seg = (wcfg.rain_streak_m as f64).min(col_h);
+                let seg = streak_cfg.min(col_h);
                 let top = dvec3_add(dvec3_add(base_pt, off), dvec3_scale(up, top_h));
                 sgl::c4f(wcol[0], wcol[1], wcol[2], alpha * life as f32);
                 push_streak(top, up, right, seg.min(top_h).max(0.0), wwidth);

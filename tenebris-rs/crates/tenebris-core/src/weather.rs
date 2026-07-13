@@ -175,6 +175,13 @@ pub struct WeatherConfig {
     pub rain_density_mult: f32,
     /// Rain streak length, metres (shorter = drops, not long curtains).
     pub rain_streak_m: f32,
+    /* --- Snow emitter (separate from rain so flakes drift slowly) --- */
+    /// Snow fall speed, metres/second (much slower than rain - flakes drift).
+    pub snow_fall_mps: f32,
+    /// Snow flake length, metres (short - flakes, not streaks).
+    pub snow_streak_m: f32,
+    /// Density multiplier on the flakes drawn per snow cell.
+    pub snow_density_mult: f32,
     /// Rain streak RGB tint (0..1). Lower r/g + high b = bluer, moodier
     /// rain. Each channel follows the "0 keeps default" rule, so use a
     /// tiny value (e.g. 0.02) rather than exactly 0 for a near-zero channel.
@@ -248,6 +255,9 @@ impl WeatherConfig {
         rain_width_m: 0.014,
         rain_density_mult: 3.5,
         rain_streak_m: 3.5,
+        snow_fall_mps: 3.0,
+        snow_streak_m: 0.4,
+        snow_density_mult: 2.0,
         rain_color_r: 0.45,
         rain_color_g: 0.62,
         rain_color_b: 1.0,
@@ -315,6 +325,9 @@ pub fn parse_config(src: &str, _path: &str) -> WeatherConfig {
             "rain_width_m" => cfg.rain_width_m = v,
             "rain_density_mult" => cfg.rain_density_mult = v,
             "rain_streak_m" => cfg.rain_streak_m = v,
+            "snow_fall_mps" => cfg.snow_fall_mps = v,
+            "snow_streak_m" => cfg.snow_streak_m = v,
+            "snow_density_mult" => cfg.snow_density_mult = v,
             "rain_color_r" => cfg.rain_color_r = v,
             "rain_color_g" => cfg.rain_color_g = v,
             "rain_color_b" => cfg.rain_color_b = v,
