@@ -3915,7 +3915,46 @@ pub fn compose_to_swapchain(view: Mat4, proj: Mat4) {
                  * sunset warmth all come out of the same integral. An
                  * optional per-body fog_color acts as a tint on top. */
                 let base = if r.env.atmo_strength > 0.001 {
-                    horizon_sky_color(&r.env, basis.fwd)
+                    /* Average the horizon sky colour around the WHOLE compass
+                     * (radial up, view-independent) instead of sampling only
+                     * the look direction. The fog then stays one stable colour
+                     * as the player turns - it swung obviously warm/cool at
+                     * dusk before, since the sunward horizon is orange and the
+                     * opposite is blue. Still shifts with position + time of
+                     * day, just not with head-turn. Reads more like a
+                     * volumetric haze than a directional tint. */
+                    let cc = r.env.atmo_planet_center;
+                    let camv = vec3_sub(r.env.camera_world, cc);
+                    let ul = (camv.x * camv.x + camv.y * camv.y + camv.z * camv.z).sqrt().max(1e-3);
+                    let up = [camv.x / ul, camv.y / ul, camv.z / ul];
+                    let refv = if up[1].abs() < 0.9 { [0.0f32, 1.0, 0.0] } else { [1.0f32, 0.0, 0.0] };
+                    let mut t1 = [
+                        up[1] * refv[2] - up[2] * refv[1],
+                        up[2] * refv[0] - up[0] * refv[2],
+                        up[0] * refv[1] - up[1] * refv[0],
+                    ];
+                    let t1l = (t1[0] * t1[0] + t1[1] * t1[1] + t1[2] * t1[2]).sqrt().max(1e-6);
+                    t1 = [t1[0] / t1l, t1[1] / t1l, t1[2] / t1l];
+                    let t2 = [
+                        up[1] * t1[2] - up[2] * t1[1],
+                        up[2] * t1[0] - up[0] * t1[2],
+                        up[0] * t1[1] - up[1] * t1[0],
+                    ];
+                    const FOG_DIRS: usize = 6;
+                    let mut acc = [0.0f32; 3];
+                    for k in 0..FOG_DIRS {
+                        let a = (k as f32) / (FOG_DIRS as f32) * std::f32::consts::TAU;
+                        let (cs, sn) = (a.cos(), a.sin());
+                        let dir = [
+                            t1[0] * cs + t2[0] * sn,
+                            t1[1] * cs + t2[1] * sn,
+                            t1[2] * cs + t2[2] * sn,
+                        ];
+                        let col = horizon_sky_color(&r.env, dir);
+                        acc = [acc[0] + col[0], acc[1] + col[1], acc[2] + col[2]];
+                    }
+                    let inv = 1.0 / FOG_DIRS as f32;
+                    [acc[0] * inv, acc[1] * inv, acc[2] * inv]
                 } else {
                     /* Airless body with fog forced on: flat colour
                      * dimmed by local daylight (terminator band). */

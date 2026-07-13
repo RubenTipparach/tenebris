@@ -125,7 +125,7 @@ impl ScatterConfig {
         grass_height_m: 0.55,
         grass_blade_w_m: 0.085,
         grass_segments: 2.0,
-        grass_wind: 0.0,
+        grass_wind: 1.0,
         grass_base_shade: 0.55,
         flower_chance: 0.12,
         flower_height_m: 0.32,

@@ -2559,9 +2559,6 @@ pub fn build_scatter(out: &mut HexMesh, w: &World, tile_idx: i32) {
         if hash2(tile_idx, SALT_KIND) < cfg.grass_chance {
             let max_b = cfg.grass_blades.max(3.0);
             let blades = ((0.6 + 0.4 * hash2(tile_idx, SALT_COUNT)) * max_b) as i32;
-            /* Sister planet keeps its own leaf green; everyone else shares
-             * the one grass tile - uniform colour is the whole point. */
-            let leaf = if ground == Block::SeqGrass { Block::SeqLeaves } else { Block::Leaves };
             for j in 0..blades {
                 let base = place(
                     hash2(tile_idx, SALT_POS_A + j),
@@ -2572,7 +2569,10 @@ pub fn build_scatter(out: &mut HexMesh, w: &World, tile_idx: i32) {
                  * spiky. */
                 let h = cfg.grass_height_m as f64
                     * (0.8 + 0.4 * hash2(tile_idx, SALT_SIZE + j) as f64);
-                let uvr = tile_uv_slice(leaf, FaceCap::Top, hash2(tile_idx, SALT_SIZE + 31 + j));
+                /* Blades sample the SAME grass tile they grow on so they
+                 * match the ground (each biome's sod tints its own grass),
+                 * with the base->tip gradient for depth. */
+                let uvr = tile_uv_slice(ground, FaceCap::Top, hash2(tile_idx, SALT_SIZE + 31 + j));
                 let side = rot(ang);
                 let lean = dvec3_scale(rot(ang + 0.9), h * 0.15);
                 let hw = cfg.grass_blade_w_m as f64
