@@ -3962,7 +3962,7 @@ pub fn compose_to_swapchain(view: Mat4, proj: Mat4) {
              * precipitating here. Overcast dims the terrain lighting;
              * precipitation + cloud thicken the fog. Sampled every frame
              * (independent of the fog-density gate). */
-            let (wx_overcast, wx_precip) = {
+            let (wx_overcast, wx_precip, wx_is_rain) = {
                 let world = ab.world.borrow();
                 let cam = vec3_sub(r.env.camera_world, body_center);
                 let cr = (cam.x * cam.x + cam.y * cam.y + cam.z * cam.z).sqrt().max(1e-3);
@@ -3974,11 +3974,18 @@ pub fn compose_to_swapchain(view: Mat4, proj: Mat4) {
                 let t = tenebris_core::world_time::seconds();
                 let cell = tenebris_core::weather::cloud_cell(&world.body, dir, t);
                 /* Dev override forces a full overcast storm here too, so the
-                 * fog + lighting change matches the forced precipitation. */
-                if crate::weather_fx::forced_precip().is_some() {
-                    (1.0, true)
-                } else {
-                    (cell.cover, cell.raining)
+                 * fog + lighting change matches the forced precipitation.
+                 * Snow counts as precipitation (fog + overcast) but is NOT
+                 * liquid, so it must not wet surfaces - only RAIN drives the
+                 * ripple / wet-sheen / lens-droplet shaders. */
+                use tenebris_core::weather::Precip;
+                match crate::weather_fx::forced_precip() {
+                    Some(k) => (1.0, true, k == Precip::Rain),
+                    None => (
+                        cell.cover,
+                        cell.raining,
+                        cell.raining && cell.precip == Precip::Rain,
+                    ),
                 }
             };
             FRAME_OVERCAST.with(|c| c.set(wx_overcast));
@@ -3995,7 +4002,7 @@ pub fn compose_to_swapchain(view: Mat4, proj: Mat4) {
              * wetness the moment precipitation starts, deepening a touch
              * under heavier overcast. Dry (0) otherwise, and never on the
              * lens from above the cloud deck / in space. */
-            let wet_target = if wx_precip && in_weather_layer {
+            let wet_target = if wx_precip && wx_is_rain && in_weather_layer {
                 (0.55 + 0.45 * wx_overcast).min(1.0)
             } else {
                 0.0
