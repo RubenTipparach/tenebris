@@ -166,7 +166,8 @@ pub struct HexFsWater {
             vec3 _91 = east;
             vec3 _92 = normalize(_91);
             east = _92;
-            pos += (_92 * (sin((hex_vs_light[1].w * _29) + dot(a_pos, vec3(1.7000000476837158203125, 2.2999999523162841796875, 1.10000002384185791015625))) * _51));
+            float sway_w = clamp(2.0 * (1.0 - length(a_normal)), 0.0, 1.0);
+            pos += (_92 * (sin((hex_vs_light[1].w * _29) + dot(a_pos, vec3(1.7000000476837158203125, 2.2999999523162841796875, 1.10000002384185791015625))) * _51 * sway_w));
         }
         gl_Position = mat4(hex_vs_params[0], hex_vs_params[1], hex_vs_params[2], hex_vs_params[3]) * vec4(pos, 1.0);
         v_normal = normalize(a_normal);
@@ -764,7 +765,8 @@ pub const HEX_FS_SOURCE_GLSL410: [u8; 4181] = [
             vec3 _91 = east;
             vec3 _92 = normalize(_91);
             east = _92;
-            pos += (_92 * (sin((hex_vs_light[1].w * _29) + dot(a_pos, vec3(1.7000000476837158203125, 2.2999999523162841796875, 1.10000002384185791015625))) * _51));
+            float sway_w = clamp(2.0 * (1.0 - length(a_normal)), 0.0, 1.0);
+            pos += (_92 * (sin((hex_vs_light[1].w * _29) + dot(a_pos, vec3(1.7000000476837158203125, 2.2999999523162841796875, 1.10000002384185791015625))) * _51 * sway_w));
         }
         gl_Position = mat4(hex_vs_params[0], hex_vs_params[1], hex_vs_params[2], hex_vs_params[3]) * vec4(pos, 1.0);
         v_normal = normalize(a_normal);

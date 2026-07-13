@@ -2122,6 +2122,74 @@ fn mark_sway_tips(out: &mut HexMesh, start: usize, tip_v: f32) {
     }
 }
 
+/// Encode a continuous sway weight (0..1) as the normal-length scale the
+/// hex VS recovers via `weight = clamp(2*(1 - length(normal)), 0, 1)`:
+/// `w = 1` -> scale 0.5 (matches the legacy binary tip mark = full sway)
+/// and `w = 0` -> scale 1.0 (unmarked, no sway). Lets a multi-segment
+/// blade sway MORE the higher up it goes, so it bends along its length
+/// instead of shearing as one rigid quad.
+#[inline]
+fn sway_scale(w: f32) -> f32 {
+    1.0 - 0.5 * w.clamp(0.0, 1.0)
+}
+
+/// A tall grass blade built from `segs` stacked quads that curve, taper,
+/// and sway progressively toward the tip. The bottom row is pinned
+/// (weight 0) and each row up the blade carries a rising sway weight, so
+/// the wind bends the whole blade in an arc rather than shearing a single
+/// quad. `lean` is the total horizontal sweep applied at the tip.
+#[allow(clippy::too_many_arguments)]
+fn push_grass_blade(
+    out: &mut HexMesh,
+    base: DVec3,
+    up: DVec3,
+    side: DVec3,
+    lean: DVec3,
+    h: f64,
+    hw: f64,
+    uvr: (f32, f32, f32, f32),
+    sky: f32,
+    torch: f32,
+    wet: f32,
+    segs: i32,
+) {
+    let (u_lo, u_hi, v_lo, v_hi) = uvr;
+    let n = segs.max(1);
+    /* One blade cross-section at height fraction f: left/right rim points,
+     * the UV v-row, and the sway weight (rises up the blade). */
+    let row = |f: f64| -> (DVec3, DVec3, f32, f32) {
+        let c = dvec3_add(dvec3_add(base, dvec3_scale(up, h * f)), dvec3_scale(lean, f * f));
+        let w_f = hw * (1.0 - 0.55 * f); /* taper narrower toward the tip */
+        let l = dvec3_sub(c, dvec3_scale(side, w_f));
+        let r = dvec3_add(c, dvec3_scale(side, w_f));
+        let v = v_hi + (v_lo - v_hi) * f as f32;
+        let sway_w = (f as f32).powf(1.3);
+        (l, r, v, sway_w)
+    };
+    for i in 0..n {
+        let (l0, r0, v0, w0) = row(i as f64 / n as f64);
+        let (l1, r1, v1, w1) = row((i + 1) as f64 / n as f64);
+        let s = out.vertices.len();
+        push_quad_2side(
+            out,
+            [l0, r0, r1, l1],
+            [(u_lo, v0), (u_hi, v0), (u_hi, v1), (u_lo, v1)],
+            up,
+            sky,
+            torch,
+            wet,
+        );
+        /* push_quad_2side emits verts [l0, r0, r1, l1]: rows 0,1 are the
+         * bottom edge (weight w0), 2,3 the top edge (weight w1). Scale the
+         * per-vertex normal to write each row's sway weight. */
+        for (k, w) in [(s, w0), (s + 1, w0), (s + 2, w1), (s + 3, w1)] {
+            let sc = sway_scale(w);
+            let nrm = &mut out.vertices[k].normal;
+            *nrm = [nrm[0] * sc, nrm[1] * sc, nrm[2] * sc];
+        }
+    }
+}
+
 /// A tapered blade: triangle from a base segment up to a leaning tip.
 /// The tip is sway-marked so the shader ripples it in the wind.
 #[allow(clippy::too_many_arguments)]
@@ -2515,32 +2583,18 @@ pub fn build_scatter(out: &mut HexMesh, w: &World, tile_idx: i32) {
                     if pal < dark_frac { (leaf, FaceCap::Top) } else { (ground, FaceCap::Top) }
                 };
                 let uvr = tile_uv_slice(src, src_cap, hash2(tile_idx, SALT_SIZE + 31 + j));
-                let (u_lo, u_hi, v_lo, v_hi) = uvr;
                 let side = rot(ang);
                 let lean = dvec3_scale(rot(ang + 0.9), h * 0.15);
                 let hw = cfg.grass_blade_w_m as f64
                     * (0.7 + 0.6 * hash2(tile_idx, SALT_COUNT + 17 + j) as f64);
-                let top = dvec3_add(dvec3_add(base, dvec3_scale(up, h)), lean);
-                /* Thin rectangular strip, slightly narrower at the top. */
-                let qstart = out.vertices.len();
-                push_quad_2side(
-                    out,
-                    [
-                        dvec3_sub(base, dvec3_scale(side, hw)),
-                        dvec3_add(base, dvec3_scale(side, hw)),
-                        dvec3_add(top, dvec3_scale(side, hw * 0.8)),
-                        dvec3_sub(top, dvec3_scale(side, hw * 0.8)),
-                    ],
-                    [(u_lo, v_hi), (u_hi, v_hi), (u_hi, v_lo), (u_lo, v_lo)],
-                    up,
-                    sky,
-                    torch,
-                    wet,
+                /* A curved, tapered blade made of a few stacked quads that
+                 * sway progressively toward the tip (config knob), instead
+                 * of one rigid strip - the main grass tuft otherwise reads
+                 * stiff. Taller blades earn an extra segment. */
+                let segs = (cfg.grass_segments.max(1.0) as i32) + if h > 0.7 { 1 } else { 0 };
+                push_grass_blade(
+                    out, base, up, side, lean, h, hw, uvr, sky, torch, wet, segs,
                 );
-                /* Sway-mark the TOP edge so the wind ripples these blades
-                 * too - the main grass tuft was the one plant left static
-                 * (push_blade marks its own tips; this quad path didn't). */
-                mark_sway_tips(out, qstart, v_lo);
             }
         }
 

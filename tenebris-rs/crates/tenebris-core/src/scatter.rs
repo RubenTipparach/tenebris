@@ -24,6 +24,9 @@ pub struct ScatterConfig {
     pub grass_height_m: f32,
     /// Blade half-width at the base (metres).
     pub grass_blade_w_m: f32,
+    /// Quads stacked up each blade (2-3 gives a curved, bendy blade
+    /// instead of one rigid strip; taller blades earn +1 automatically).
+    pub grass_segments: f32,
 
     /* Flowers - a stem blade with a bright diamond head. */
     /// Probability (0..1) a grass surface tile gets a flower.
@@ -106,6 +109,7 @@ impl ScatterConfig {
         grass_blades: 18.0,
         grass_height_m: 0.55,
         grass_blade_w_m: 0.085,
+        grass_segments: 2.0,
         flower_chance: 0.12,
         flower_height_m: 0.32,
         rock_chance: 0.10,
@@ -173,6 +177,7 @@ pub fn parse_config(src: &str, _path: &str) -> ScatterConfig {
             "grass_blades" => cfg.grass_blades = c,
             "grass_height_m" => cfg.grass_height_m = c,
             "grass_blade_w_m" => cfg.grass_blade_w_m = c,
+            "grass_segments" => cfg.grass_segments = c,
             "flower_chance" => cfg.flower_chance = c,
             "flower_height_m" => cfg.flower_height_m = c,
             "rock_chance" => cfg.rock_chance = c,

@@ -12,6 +12,8 @@
 #   grass_blades     blades per covered tile (upper bound, hash ~60-100%)
 #   grass_height_m   blade height in metres (+-30% per-blade hash)
 #   grass_blade_w_m  blade half-width at the base in metres
+#   grass_segments   quads stacked up each blade (2-3 = curved/bendy;
+#                    taller blades auto-gain +1 segment)
 #   flower_chance    probability a grass surface tile gets a flower
 #   flower_height_m  flower stem height in metres
 #   rock_chance      probability a bare (dirt/sand/stone) tile gets a rock
@@ -40,6 +42,7 @@ scatter:
   grass_blades: 18
   grass_height_m: 0.55
   grass_blade_w_m: 0.085
+  grass_segments: 2
   flower_chance: 0.12
   flower_height_m: 0.32
   rock_chance: 0.1
