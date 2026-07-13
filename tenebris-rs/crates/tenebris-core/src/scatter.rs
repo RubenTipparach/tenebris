@@ -27,6 +27,13 @@ pub struct ScatterConfig {
     /// Quads stacked up each blade (2-3 gives a curved, bendy blade
     /// instead of one rigid strip; taller blades earn +1 automatically).
     pub grass_segments: f32,
+    /// Wind sway master switch: > 0.5 enables the wind-driven sway, <= 0.5
+    /// leaves the grass static. Off by default (uniform still grass).
+    pub grass_wind: f32,
+    /// Base darkening for the reference-style base->tip gradient: the blade
+    /// root is shaded to this fraction of full light and eases to 1.0 at the
+    /// tip, so blades read as lush (dark roots, bright tips) not flat.
+    pub grass_base_shade: f32,
 
     /* Flowers - a stem blade with a bright diamond head. */
     /// Probability (0..1) a grass surface tile gets a flower.
@@ -118,6 +125,8 @@ impl ScatterConfig {
         grass_height_m: 0.55,
         grass_blade_w_m: 0.085,
         grass_segments: 2.0,
+        grass_wind: 0.0,
+        grass_base_shade: 0.55,
         flower_chance: 0.12,
         flower_height_m: 0.32,
         rock_chance: 0.10,
@@ -188,6 +197,8 @@ pub fn parse_config(src: &str, _path: &str) -> ScatterConfig {
             "grass_height_m" => cfg.grass_height_m = c,
             "grass_blade_w_m" => cfg.grass_blade_w_m = c,
             "grass_segments" => cfg.grass_segments = c,
+            "grass_wind" => cfg.grass_wind = c,
+            "grass_base_shade" => cfg.grass_base_shade = c,
             "flower_chance" => cfg.flower_chance = c,
             "flower_height_m" => cfg.flower_height_m = c,
             "rock_chance" => cfg.rock_chance = c,

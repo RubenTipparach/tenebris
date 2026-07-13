@@ -4446,7 +4446,11 @@ pub fn draw_world(
                 } else {
                     (0.0, [1.0f32, 0.0, 0.0])
                 };
-                let amp_k = 1.0 + wind * 1.4; /* wind grows the sway reach */
+                /* Wind sway master switch (scatter.yaml grass_wind). Off by
+                 * default now - the grass stands still and uniform. When off,
+                 * zero the amplitude so no vertex sways regardless of speed. */
+                let wind_on = sc.grass_wind > 0.5;
+                let amp_k = if wind_on { 1.0 + wind * 1.4 } else { 0.0 };
                 let spd_k = 1.0 + wind * 0.9; /* and rolls the gust downwind faster */
                 /* Pack the wind flow for the VS: xyz = unit downwind scaled by
                  * the steady lean bias (length recovers the bias), w = gust

@@ -14,6 +14,11 @@
 #   grass_blade_w_m  blade half-width at the base in metres
 #   grass_segments   quads stacked up each blade (2-3 = curved/bendy;
 #                    taller blades auto-gain +1 segment)
+#   grass_wind       wind-sway master switch: >0.5 on, <=0.5 off (default
+#                    OFF - grass stands still + uniform)
+#   grass_base_shade base darkening for the base->tip gradient (0..1); the
+#                    blade root sits at this fraction of full light and eases
+#                    to 1.0 at the tip so blades read lush, not flat
 #   flower_chance    probability a grass surface tile gets a flower
 #   flower_height_m  flower stem height in metres
 #   rock_chance      probability a bare (dirt/sand/stone) tile gets a rock
@@ -43,6 +48,8 @@ scatter:
   grass_height_m: 0.55
   grass_blade_w_m: 0.085
   grass_segments: 2
+  grass_wind: 0
+  grass_base_shade: 0.55
   flower_chance: 0.12
   flower_height_m: 0.32
   rock_chance: 0.1

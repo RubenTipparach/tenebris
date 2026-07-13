@@ -2152,6 +2152,7 @@ fn push_grass_blade(
     torch: f32,
     wet: f32,
     segs: i32,
+    base_shade: f32,
 ) {
     let (u_lo, u_hi, v_lo, v_hi) = uvr;
     let n = segs.max(1);
@@ -2166,9 +2167,15 @@ fn push_grass_blade(
         let sway_w = (f as f32).powf(1.3);
         (l, r, v, sway_w)
     };
+    /* Reference-style base->tip gradient: darken the root, brighten to full
+     * at the tip so blades read lush instead of flat. */
+    let shade = |f: f64| base_shade + (1.0 - base_shade) * f as f32;
     for i in 0..n {
-        let (l0, r0, v0, w0) = row(i as f64 / n as f64);
-        let (l1, r1, v1, w1) = row((i + 1) as f64 / n as f64);
+        let f0 = i as f64 / n as f64;
+        let f1 = (i + 1) as f64 / n as f64;
+        let (l0, r0, v0, w0) = row(f0);
+        let (l1, r1, v1, w1) = row(f1);
+        let (sh0, sh1) = (shade(f0), shade(f1));
         let s = out.vertices.len();
         push_quad_2side(
             out,
@@ -2180,12 +2187,14 @@ fn push_grass_blade(
             wet,
         );
         /* push_quad_2side emits verts [l0, r0, r1, l1]: rows 0,1 are the
-         * bottom edge (weight w0), 2,3 the top edge (weight w1). Scale the
-         * per-vertex normal to write each row's sway weight. */
-        for (k, w) in [(s, w0), (s + 1, w0), (s + 2, w1), (s + 3, w1)] {
+         * bottom edge (weight w0), 2,3 the top edge (weight w1). Scale each
+         * vertex's normal to write its sway weight and its sky light to
+         * write the base->tip gradient. */
+        for (k, w, sh) in [(s, w0, sh0), (s + 1, w0, sh0), (s + 2, w1, sh1), (s + 3, w1, sh1)] {
             let sc = sway_scale(w);
-            let nrm = &mut out.vertices[k].normal;
-            *nrm = [nrm[0] * sc, nrm[1] * sc, nrm[2] * sc];
+            let vtx = &mut out.vertices[k];
+            vtx.normal = [vtx.normal[0] * sc, vtx.normal[1] * sc, vtx.normal[2] * sc];
+            vtx.sky_light *= sh;
         }
     }
 }
@@ -2540,60 +2549,41 @@ pub fn build_scatter(out: &mut HexMesh, w: &World, tile_idx: i32) {
          * the source art - the slightly-off shades are what make the
          * blades pop out of the cap they stand on instead of melting
          * into it. */
-        /* Swamps: near-total coverage of taller, darker blades.
-         * Jungles: thicker underbrush than fields. */
-        let (chance_mul, blade_mul, height_mul) = match biome {
-            Biome::Swamp => (1.25f32, 1.3f32, 1.7f32),
-            Biome::Jungle => (1.1, 1.25, 1.2),
-            _ => (1.0, 1.0, 1.0),
-        };
-        if hash2(tile_idx, SALT_KIND) < cfg.grass_chance * chance_mul {
-            let max_b = cfg.grass_blades.max(3.0) * blade_mul;
+        /* Homogenized grass: one uniform lush green blade EVERYWHERE - no
+         * per-biome density/height multipliers, no off-colour palette
+         * (leaf/ground/bark mix). Every blade samples the same leaf-green
+         * tile with a base->tip gradient, so the sward reads consistent
+         * across the planet (the reference three.js grass demos). Biome
+         * character now comes from the ground tile, trees, and the
+         * biome-specific plants (ferns/reeds/etc) below, not the grass. */
+        if hash2(tile_idx, SALT_KIND) < cfg.grass_chance {
+            let max_b = cfg.grass_blades.max(3.0);
             let blades = ((0.6 + 0.4 * hash2(tile_idx, SALT_COUNT)) * max_b) as i32;
+            /* Sister planet keeps its own leaf green; everyone else shares
+             * the one grass tile - uniform colour is the whole point. */
+            let leaf = if ground == Block::SeqGrass { Block::SeqLeaves } else { Block::Leaves };
             for j in 0..blades {
                 let base = place(
                     hash2(tile_idx, SALT_POS_A + j),
                     hash2(tile_idx, SALT_POS_B + j),
                 );
                 let ang = hash2(tile_idx, SALT_ANGLE + j) as f64 * std::f64::consts::TAU;
+                /* Tight height spread (+-20%) so the field looks even, not
+                 * spiky. */
                 let h = cfg.grass_height_m as f64
-                    * height_mul as f64
-                    * (0.65 + 0.7 * hash2(tile_idx, SALT_SIZE + j) as f64);
-                /* Off-colour palette: mostly the darker tree-leaf green
-                 * (the same shade that makes the canopies pop), with an
-                 * occasional blade of the ground's own tint blended in.
-                 * Swamps go all-in on the dark leaf shade; the sister
-                 * planet swaps in its local leaf green. */
-                let leaf = if ground == Block::SeqGrass { Block::SeqLeaves } else { Block::Leaves };
-                let pal = hash2(tile_idx, SALT_VARIANT + j);
-                /* Pasture flips the ratio: blades mostly sample the
-                 * yellow-green sod so the field reads dry, with leaf-
-                 * green accents instead of the other way round.
-                 * Swamps go BROWN: most blades sample the bark tile so
-                 * the marsh reads as dead dry grass, with a few dark
-                 * green survivors mixed in. */
-                let (src, src_cap) = if biome == Biome::Swamp {
-                    if pal < 0.75 {
-                        (Block::Wood, FaceCap::Side)
-                    } else {
-                        (leaf, FaceCap::Top)
-                    }
-                } else {
-                    let dark_frac = if ground == Block::DryGrass { 0.35 } else { 0.7 };
-                    if pal < dark_frac { (leaf, FaceCap::Top) } else { (ground, FaceCap::Top) }
-                };
-                let uvr = tile_uv_slice(src, src_cap, hash2(tile_idx, SALT_SIZE + 31 + j));
+                    * (0.8 + 0.4 * hash2(tile_idx, SALT_SIZE + j) as f64);
+                let uvr = tile_uv_slice(leaf, FaceCap::Top, hash2(tile_idx, SALT_SIZE + 31 + j));
                 let side = rot(ang);
                 let lean = dvec3_scale(rot(ang + 0.9), h * 0.15);
                 let hw = cfg.grass_blade_w_m as f64
                     * (0.7 + 0.6 * hash2(tile_idx, SALT_COUNT + 17 + j) as f64);
-                /* A curved, tapered blade made of a few stacked quads that
-                 * sway progressively toward the tip (config knob), instead
-                 * of one rigid strip - the main grass tuft otherwise reads
-                 * stiff. Taller blades earn an extra segment. */
+                /* Curved, tapered, multi-segment blade with a base->tip
+                 * light gradient (grass_base_shade). Taller blades earn an
+                 * extra segment. */
                 let segs = (cfg.grass_segments.max(1.0) as i32) + if h > 0.7 { 1 } else { 0 };
                 push_grass_blade(
                     out, base, up, side, lean, h, hw, uvr, sky, torch, wet, segs,
+                    cfg.grass_base_shade,
                 );
             }
         }
