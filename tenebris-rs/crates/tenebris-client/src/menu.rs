@@ -312,6 +312,11 @@ struct Menu {
      * settings_event swallows every event and gets first crack ahead
      * of the regular menu / pause routes. */
     settings_visible: bool,
+    /* Weather panel (pause menu). Sim-driven storm control: a moisture
+     * slider that raises weather::moisture_boost so clouds thicken and
+     * storm everywhere as it climbs. Own visibility flag like settings so
+     * the pause panel hides behind it while it's open. */
+    weather_visible: bool,
     btn_settings_back: MenuButton,
     /* Mouse-sensitivity slider geometry + drag state. Recomputed
      * every frame in settings_layout; sens_dragging persists across
@@ -2879,7 +2884,7 @@ pub fn pause_draw(screen_w: i32, screen_h: i32) {
 pub fn pause_egui_ui(ctx: &egui::Context) {
     let (show, is_mp, reconnecting) = with_menu(|m| {
         (
-            m.pause_visible && !m.settings_visible,
+            m.pause_visible && !m.settings_visible && !m.weather_visible,
             m.state == GameState::InGameMp,
             m.reconnect_deadline_t > 0.0,
         )
@@ -2890,6 +2895,7 @@ pub fn pause_egui_ui(ctx: &egui::Context) {
 
     let mut do_resume = false;
     let mut do_settings = false;
+    let mut do_weather = false;
     let mut do_invite = false;
     let mut do_quit = false;
 
@@ -2933,6 +2939,10 @@ pub fn pause_egui_ui(ctx: &egui::Context) {
                 if menu_button(ui, "Settings").clicked() {
                     do_settings = true;
                 }
+                ui.add_space(8.0);
+                if menu_button(ui, "Weather").clicked() {
+                    do_weather = true;
+                }
                 if is_mp {
                     ui.add_space(8.0);
                     if menu_button(ui, "Invite Players").clicked() {
@@ -2951,6 +2961,8 @@ pub fn pause_egui_ui(ctx: &egui::Context) {
             pause_apply(m, PauseAction::Resume);
         } else if do_settings {
             pause_apply(m, PauseAction::Settings);
+        } else if do_weather {
+            pause_apply(m, PauseAction::Weather);
         } else if do_invite {
             pause_apply(m, PauseAction::Invite);
         } else if do_quit {
@@ -2964,6 +2976,7 @@ pub fn pause_egui_ui(ctx: &egui::Context) {
 enum PauseAction {
     Resume,
     Settings,
+    Weather,
     Invite,
     Quit,
 }
@@ -2973,9 +2986,13 @@ fn pause_apply(m: &mut Menu, action: PauseAction) {
         PauseAction::Resume => {
             set_pause_visible(m, false, "resume");
             m.pause_auto_disconnect = false;
+            m.weather_visible = false;
         }
         PauseAction::Settings => {
             m.settings_visible = true;
+        }
+        PauseAction::Weather => {
+            m.weather_visible = true;
         }
         PauseAction::Invite => {
             let room = m.room_code.clone();
@@ -2990,8 +3007,85 @@ fn pause_apply(m: &mut Menu, action: PauseAction) {
             }
             m.active_world.clear();
             set_pause_visible(m, false, "quit");
+            m.weather_visible = false;
             m.state = GameState::MainMenu;
         }
+    }
+}
+
+/// Weather panel (pause menu): a sim-driven storm control. The moisture
+/// slider raises `weather::moisture_boost`, which thickens clouds across the
+/// whole planet and, as it nears the top, pushes every cell past the rain
+/// threshold into a storm - one deterministic code path, no forced-storm
+/// fork. Self-gates on the pause menu being open with this panel selected;
+/// added to the in-game egui dispatch in app.rs next to `pause_egui_ui`.
+pub fn weather_egui_ui(ctx: &egui::Context) {
+    let show = with_menu(|m| m.pause_visible && m.weather_visible && !m.settings_visible);
+    if !show {
+        return;
+    }
+    let rain_thr = tenebris_core::weather::config().rain_threshold;
+    let mut boost = tenebris_core::weather::moisture_boost();
+    let mut do_back = false;
+    let mut do_clear = false;
+
+    egui::Window::new("tenebris-weather")
+        .title_bar(false)
+        .resizable(false)
+        .collapsible(false)
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .show(ctx, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new("WEATHER")
+                        .size(32.0)
+                        .strong()
+                        .color(egui::Color32::from_rgb(0xd6, 0xe4, 0xff)),
+                );
+                ui.add_space(6.0);
+                /* Status readout driven by the boost vs the rain threshold. */
+                let (status, col) = if boost >= rain_thr {
+                    ("STORMING", egui::Color32::from_rgb(0x8f, 0xb0, 0xff))
+                } else if boost > 0.02 {
+                    ("clouding over", egui::Color32::from_rgb(0xc0, 0xc8, 0xd8))
+                } else {
+                    ("clear - natural weather", egui::Color32::from_rgb(0x9a, 0xa2, 0xb2))
+                };
+                ui.label(egui::RichText::new(status).size(17.0).color(col));
+                ui.add_space(14.0);
+
+                let mut pct = boost * 100.0;
+                ui.add(
+                    egui::Slider::new(&mut pct, 0.0..=100.0)
+                        .suffix("%")
+                        .text("moisture")
+                        .clamping(egui::SliderClamping::Always),
+                );
+                boost = (pct / 100.0).clamp(0.0, 1.0);
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new("drag to max to storm the whole planet")
+                        .size(13.0)
+                        .color(egui::Color32::from_rgb(0x9a, 0xa2, 0xb2)),
+                );
+                ui.add_space(16.0);
+                if menu_button(ui, "Clear Skies").clicked() {
+                    do_clear = true;
+                }
+                ui.add_space(8.0);
+                if menu_button(ui, "Back").clicked() {
+                    do_back = true;
+                }
+            });
+        });
+
+    if do_clear {
+        boost = 0.0;
+    }
+    tenebris_core::weather::set_moisture_boost(boost);
+    if do_back {
+        with_menu(|m| m.weather_visible = false);
     }
 }
 

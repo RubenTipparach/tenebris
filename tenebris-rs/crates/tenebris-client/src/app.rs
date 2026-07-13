@@ -4337,6 +4337,7 @@ fn egui_ui(app: &mut App, ctx: &egui::Context) {
     power_ui::egui_ui(ctx);
     rocket_screen::egui_ui(ctx);
     menu::pause_egui_ui(ctx);
+    menu::weather_egui_ui(ctx);
 }
 
 fn frame_inner(app: &mut App) {

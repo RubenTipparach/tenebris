@@ -315,14 +315,36 @@ pub fn moisture_source(body: &BodyConfig, dir: DVec3) -> f32 {
     }
 }
 
+/// Global moisture boost (0..1) - the weather menu's "push moisture to max"
+/// knob. It lerps every cell's cloud density toward full saturation, so
+/// raising it thickens clouds everywhere and, at 1.0, pushes the whole
+/// planet past the rain threshold into a storm. 0 = the natural field.
+/// Runtime-only (not a config default); the field stays deterministic per
+/// seed+pos+time so a given boost value looks the same on every client.
+static S_MOISTURE_BOOST: Mutex<f32> = Mutex::new(0.0);
+
+/// Current global moisture boost (0..1).
+pub fn moisture_boost() -> f32 {
+    *S_MOISTURE_BOOST.lock().unwrap()
+}
+
+/// Set the global moisture boost (0..1); clamped. Drives storm formation
+/// from the weather menu without forking a second force-storm path.
+pub fn set_moisture_boost(v: f32) {
+    *S_MOISTURE_BOOST.lock().unwrap() = v.clamp(0.0, 1.0);
+}
+
 /// Cloud density in [0, 1]: warmth (solar) condensing the moisture source,
 /// with the dry end cleared by the aridity gamma so deserts rarely cloud.
+/// The global [`moisture_boost`] then lerps the result toward full cover.
 pub fn cloud_density(body: &BodyConfig, dir: DVec3, t_s: f64) -> f32 {
     let cfg = config();
     let base = moisture_source(body, dir);
     let heat = cfg.solar_floor + (1.0 - cfg.solar_floor) * solar(body, dir, t_s);
     let d = (base * heat).clamp(0.0, 1.0);
-    d.powf(cfg.arid_gamma).clamp(0.0, 1.0)
+    let d = d.powf(cfg.arid_gamma).clamp(0.0, 1.0);
+    let boost = moisture_boost();
+    (d + boost * (1.0 - d)).clamp(0.0, 1.0)
 }
 
 /// Precipitation kind under a raining cell: snow over the cold biomes
