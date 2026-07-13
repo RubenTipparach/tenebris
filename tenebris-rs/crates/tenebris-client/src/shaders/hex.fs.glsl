@@ -26,14 +26,18 @@ layout(location = 0) out vec4 frag_color;
 // identity and stay inline like a hash function's magic numbers.
 #define RAIN_MAX_RADIUS 1        // ripple cell reach (1 = 3x3 kernel, cheaper)
 #define RAIN_RIPPLE_SCALE 2.6    // ripple cells per metre on up-faces
-#define RAIN_RIPPLE_STRENGTH 0.5 // normal push from ripples
+#define RAIN_RIPPLE_STRENGTH 2.0 // normal push from ripples
 #define RAIN_FLOW_ACROSS 3.0     // trickle columns per metre across a side
 #define RAIN_FLOW_DOWN 0.7       // trickle stretch along the fall direction
 #define RAIN_FLOW_SPEED 1.3      // downward trickle scroll speed
-#define RAIN_FLOW_STRENGTH 0.7   // normal push from trickles
+#define RAIN_FLOW_STRENGTH 3.0   // normal push from trickles (sides need more)
 #define RAIN_WET_DARKEN 0.72     // wet surfaces darken toward this factor
-#define RAIN_RIPPLE_SHADE 0.30   // soft diffuse shimmer from ripples (NO
-                                 // specular glint - that strobed and looked bad)
+#define RAIN_RIPPLE_SHADE 0.5    // broad diffuse shimmer from ripples
+#define RAIN_GLINT_POWER 24.0    // wet-glint tightness off the ripple normal
+#define RAIN_GLINT_STRENGTH 0.5  // wet-glint brightness (0 = off). This is a
+                                 // SMOOTH cellular normal, not the old aliased
+                                 // world-space wobble, so it glistens like the
+                                 // water surface rather than strobing.
 
 float rr_hash12(vec2 p) {
     vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -199,12 +203,18 @@ void main()
 
         float wet = wet_amt * max(top_w, side_w);
         vec3 wet_n = normalize(nrm + pert);
+        vec3 sun_d = normalize(hex_fs_light[0].xyz);
+        float d_flat = max(dot(nrm, sun_d), 0.0);
+        float d_wet = max(dot(wet_n, sun_d), 0.0);
         lit *= mix(1.0, RAIN_WET_DARKEN, wet);      // wet surfaces darken
-        // Soft diffuse shimmer: brighten/darken gently where the ripple tilts
-        // toward/away from the sun. Broad (diffuse), so it never strobes.
-        float d_flat = max(dot(nrm, normalize(hex_fs_light[0].xyz)), 0.0);
-        float d_wet = max(dot(wet_n, normalize(hex_fs_light[0].xyz)), 0.0);
+        // Broad diffuse shimmer where the ripple tilts toward/away from the sun.
         lit *= 1.0 + (d_wet - d_flat) * (RAIN_RIPPLE_SHADE * wet * v_sun_brightness);
+        // Wet glint off the ripple/trickle normal - the sparkle that makes the
+        // drops read like the water surface. Sun-facing (the hex FS has no
+        // camera uniform for a view-dependent highlight); the smooth cellular
+        // normal keeps it glistening, not strobing.
+        float glint = pow(d_wet, RAIN_GLINT_POWER);
+        lit += vec3(RAIN_GLINT_STRENGTH) * (glint * wet * v_sun_brightness);
     }
     frag_color = vec4(lit, v_wet);
 }
