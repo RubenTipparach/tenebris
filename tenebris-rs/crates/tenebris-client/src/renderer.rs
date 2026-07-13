@@ -1095,6 +1095,7 @@ fn camera_basis(view: Mat4, proj: Mat4) -> CameraBasis {
     let inv_tan_half = proj.m[5];
     let tan_half = if inv_tan_half != 0.0 { 1.0 / inv_tan_half } else { 1.0 };
     let aspect = if proj.m[0] != 0.0 { inv_tan_half / proj.m[0] } else { 1.0 };
+    FRAME_ASPECT.with(|c| c.set(aspect as f32));
     CameraBasis {
         right: [view.m[0], view.m[4], view.m[8]],
         up: [view.m[1], view.m[5], view.m[9]],
@@ -1800,6 +1801,9 @@ thread_local! {
     static FRAME_EMERGE: Cell<f32> = const { Cell::new(0.0) };
     static PREV_UNDER: Cell<bool> = const { Cell::new(false) };
     static EMERGE_END_S: Cell<f64> = const { Cell::new(0.0) };
+    /// Camera aspect (width / height) for this frame, so the composite
+    /// rain-on-glass droplets stay round. Set in camera_basis.
+    static FRAME_ASPECT: Cell<f32> = const { Cell::new(1.777) };
 }
 
 /// Overcast-dimmed ambient fill for a terrain uniform.
@@ -4044,18 +4048,27 @@ pub fn compose_to_swapchain(view: Mat4, proj: Mat4) {
 
         FRAME_FOG.with(|f| f.set(fog));
         let fs = shaders::composite::CompositeFsParams {
-            deep_color: [comp_deep.x, comp_deep.y, comp_deep.z, 0.0],
+            /* deep_color.w = camera aspect (w/h) so rain-on-glass drops stay
+             * round. */
+            deep_color: [comp_deep.x, comp_deep.y, comp_deep.z, FRAME_ASPECT.with(|c| c.get())],
             absorption: [comp_absorb.x, comp_absorb.y, comp_absorb.z, 0.0],
             /* near_far.z = wet-fade altitude window (m); .w = emerge-from-
-             * water drip intensity (running drops drying off the lens). */
-            near_far: [0.3, 20000.0, w.wet_fade_band_m, FRAME_EMERGE.with(|c| c.get())],
+             * water drip intensity (running drops + mild depth blur that dry
+             * off after surfacing). */
+            near_far: [
+                0.3,
+                20000.0,
+                w.wet_fade_band_m,
+                FRAME_EMERGE.with(|c| c.get()),
+            ],
             planet_params: [body_center.x, body_center.y, body_center.z, sea_radius],
             fx_params: [
                 w.underwater_distortion,
                 r.time_seconds,
                 if cam_under { 1.0 } else { 0.0 },
-                /* .w = rain-on-glass overlay intensity: droplets refract the
-                 * lens while it's raining at the camera (dry = 0 = no-op). */
+                /* .w = rain-on-glass intensity: droplets refract the lens
+                 * (no lens fog) + a mild depth blur softens the distant
+                 * background while it rains. dry = 0 = no-op. */
                 FRAME_WET.with(|c| c.get()),
             ],
             fog_params: fog,
