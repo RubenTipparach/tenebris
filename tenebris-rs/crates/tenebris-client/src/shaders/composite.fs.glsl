@@ -170,6 +170,11 @@ void main()
             color = mix(color, rd_blur(scene_color_scene_smp, v_uv, dz * 3.5), dz * 0.6);
         }}
     }}
+    // Above-waterline mask: 1 where this pixel's scene content sits at/above
+    // sea level (or is sky), 0 where it is below the water surface. Lets the
+    // lens droplets render only on the ABOVE-water part of the screen when the
+    // camera straddles the surface - no drops over the submerged region.
+    float above_water = _107 ? 1.0 : smoothstep(-_68, _68, pixel_alt);
     // Rain-on-glass (Heartfelt drops), refraction only - NO lens fog: sample
     // the scene sharply through each drop's normal, applied only where drops
     // are so distance fog between drops is preserved.
@@ -186,7 +191,7 @@ void main()
         float rd_cy = rd_Drops(rd_uv + rd_e.yx, rd_t, rd_s, rd_l1, rd_l2).x;
         vec2 rd_n = vec2(rd_cx - rd_c.x, rd_cy - rd_c.x);
         vec3 rd_refr = texture(scene_color_scene_smp, clamp(v_uv - (rd_n * 1.7), vec2(0.0), vec2(1.0))).xyz;
-        color = mix(color, rd_refr, clamp(rd_c.x, 0.0, 1.0) * rd_rain);
+        color = mix(color, rd_refr, clamp(rd_c.x, 0.0, 1.0) * rd_rain * above_water);
     }}
     // Emerge-from-water: same drops running down + drying off, refraction only
     // (no fog). near_far.w = intensity 1->0. Skipped while submerged.
@@ -200,7 +205,7 @@ void main()
         float em_cy = rd_Drops(em_uv + em_e.yx, em_t, 0.0, 1.0, 0.6).x;
         vec2 em_n = vec2(em_cx - em_c.x, em_cy - em_c.x);
         vec3 em_refr = texture(scene_color_scene_smp, clamp(v_uv - (em_n * 1.7), vec2(0.0), vec2(1.0))).xyz;
-        color = mix(color, em_refr, clamp(em_c.x, 0.0, 1.0) * em);
+        color = mix(color, em_refr, clamp(em_c.x, 0.0, 1.0) * em * above_water);
     }}
     frag_color = vec4(color, 1.0);
     gl_FragDepth = _101;

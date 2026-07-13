@@ -187,6 +187,11 @@ pub struct WeatherConfig {
     pub rain_alpha_near: f32,
     /// Rain streak opacity at the far cull range (0..1).
     pub rain_alpha_far: f32,
+    /// Fade time-constant (seconds) for camera wet FX (rain-on-glass lens,
+    /// terrain wetness sheen, near shower). The wet level eases toward its
+    /// target over ~this long instead of snapping when the camera crosses
+    /// into / out of a rainy region. 0 = instant (old sharp behaviour).
+    pub wet_fade_tau_s: f32,
 
     /* --- Wind (drives grass sway; see client scatter sway) --- */
     /// Calm-day baseline wind (0..1) - grass always breathes a little.
@@ -237,6 +242,7 @@ impl WeatherConfig {
         rain_color_b: 1.0,
         rain_alpha_near: 0.38,
         rain_alpha_far: 0.10,
+        wet_fade_tau_s: 1.6,
 
         base_wind: 0.35,
         gust_amp: 0.55,
@@ -300,6 +306,7 @@ pub fn parse_config(src: &str, _path: &str) -> WeatherConfig {
             "rain_color_b" => cfg.rain_color_b = v,
             "rain_alpha_near" => cfg.rain_alpha_near = v,
             "rain_alpha_far" => cfg.rain_alpha_far = v,
+            "wet_fade_tau_s" => cfg.wet_fade_tau_s = v,
             "overcast_sun_dim" => cfg.overcast_sun_dim = v,
             "overcast_amb_dim" => cfg.overcast_amb_dim = v,
             "base_wind" => cfg.base_wind = v,

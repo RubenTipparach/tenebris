@@ -163,6 +163,12 @@ water:
   #                               background softens. 0 = off, ~0.22 subtle,
   #                               was an un-tunable 0.6 (too strong).
   wet_blur:                0.22
+  # partial_probe_m        float  how far below the eye (m) to probe for
+  #                               water when deciding the camera is partially
+  #                               submerged (straddling the surface). Keeps
+  #                               the lens wet with drips above the waterline
+  #                               while the eye bobs at the surface.
+  partial_probe_m:         0.9
 
   # Mobile-only horizon haze. The mobile water shader can't sample the
   # offscreen scene (no FBO on phones), so it can't reproduce the

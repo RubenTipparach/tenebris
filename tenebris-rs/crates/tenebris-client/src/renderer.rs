@@ -1794,6 +1794,9 @@ thread_local! {
     /// (darken + ripple sheen in the hex shader). Set in the composite/fog
     /// block from the camera's precipitation, read at the hex fs uniform.
     static FRAME_WET: Cell<f32> = const { Cell::new(0.0) };
+    /// Monotonic frame time (s) of the last wet-level smoothing step, so the
+    /// fade uses a real dt. -1 = uninitialised (first frame snaps).
+    static WET_PREV_T: Cell<f32> = const { Cell::new(-1.0) };
     /// Emerge-from-water dry-off intensity 0..1: 1.0 the instant the camera
     /// leaves the water, decaying to 0 as it "dries" - drives the running
     /// water-drips composite overlay. Paired with the prev-under edge latch
@@ -3828,11 +3831,31 @@ pub fn compose_to_swapchain(view: Mat4, proj: Mat4) {
          * camera's containing block is actually BLOCK_WATER (caves dug
          * below sea level stay crisp). */
         let mut cam_under_shared = false;
+        /* Partially submerged: the eye voxel is air but a point just below it
+         * is water, i.e. the camera straddles the surface. Used to keep the
+         * lens wet (drips above the waterline) even when we're not fully
+         * under and haven't just "emerged". */
+        let mut cam_partial_shared = false;
         if r.active_body_idx >= 0 {
             let ab = &r.bodies[r.active_body_idx as usize];
             let cam_local = vec3_sub(r.env.camera_world, ab.world_pos);
-            let cam_blk = ab.world.borrow().block_at_pos(cam_local, -1);
+            let world = ab.world.borrow();
+            let cam_blk = world.block_at_pos(cam_local, -1);
             cam_under_shared = cam_blk == Block::Water;
+            if !cam_under_shared {
+                /* Probe ~0.9 m below the eye along local up. */
+                let up_len =
+                    (cam_local.x * cam_local.x + cam_local.y * cam_local.y + cam_local.z * cam_local.z)
+                        .sqrt()
+                        .max(1e-3);
+                let probe = config::water().partial_probe_m;
+                let below = Vec3 {
+                    x: cam_local.x - cam_local.x / up_len * probe,
+                    y: cam_local.y - cam_local.y / up_len * probe,
+                    z: cam_local.z - cam_local.z / up_len * probe,
+                };
+                cam_partial_shared = world.block_at_pos(below, -1) == Block::Water;
+            }
         }
 
         /* Perf mode: blit + forward depth, then screen-wide
@@ -3887,7 +3910,10 @@ pub fn compose_to_swapchain(view: Mat4, proj: Mat4) {
             const DRY_SECONDS: f64 = 2.6;
             let now = r.time_seconds as f64;
             let was_under = PREV_UNDER.with(|c| c.get());
-            if was_under && !cam_under {
+            /* Arm the dry-off window when we leave the water AND keep it topped
+             * up every frame while partially submerged, so the lens stays wet
+             * (drips above the waterline) until we fully clear the surface. */
+            if (was_under && !cam_under) || cam_partial_shared {
                 EMERGE_END_S.with(|c| c.set(now + DRY_SECONDS));
             }
             PREV_UNDER.with(|c| c.set(cam_under));
@@ -3949,11 +3975,23 @@ pub fn compose_to_swapchain(view: Mat4, proj: Mat4) {
              * wetness the moment precipitation starts, deepening a touch
              * under heavier overcast. Dry (0) otherwise, and never on the
              * lens from above the cloud deck / in space. */
-            let wet_now = if wx_precip && in_weather_layer {
+            let wet_target = if wx_precip && in_weather_layer {
                 (0.55 + 0.45 * wx_overcast).min(1.0)
             } else {
                 0.0
             };
+            /* Ease the wet level toward its target instead of snapping, so the
+             * rain-on-glass lens + terrain sheen fade in when the camera enters
+             * a rainy region and fade out when it leaves. Exponential smoothing
+             * with a config time-constant; dt from the monotonic frame clock. */
+            let tau = tenebris_core::weather::config().wet_fade_tau_s;
+            let now_t = r.time_seconds;
+            let prev_t = WET_PREV_T.with(|c| c.get());
+            let dt = if prev_t < 0.0 { 0.0 } else { (now_t - prev_t).clamp(0.0, 0.25) };
+            WET_PREV_T.with(|c| c.set(now_t));
+            let k = if tau > 1e-4 { 1.0 - (-dt / tau).exp() } else { 1.0 };
+            let prev_wet = FRAME_WET.with(|c| c.get());
+            let wet_now = prev_wet + (wet_target - prev_wet) * k;
             FRAME_WET.with(|c| c.set(wet_now));
 
             let bc = tenebris_core::planet::get(ab.world.borrow().body.id);
