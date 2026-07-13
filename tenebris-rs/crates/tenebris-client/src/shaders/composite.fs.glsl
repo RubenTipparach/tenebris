@@ -1,6 +1,8 @@
 #version 410
 
-uniform vec4 composite_fs_params[6];
+// composite_fs_params[6] = camera rain-on-glass lens droplet knobs
+// (weather.yaml): .x = density, .y = refraction strength, .z = anim speed.
+uniform vec4 composite_fs_params[7];
 uniform sampler2D scene_depth_scene_depth_smp;
 uniform sampler2D scene_color_scene_smp;
 
@@ -31,7 +33,8 @@ vec2 rd_DropLayer2(vec2 uv, float t){{
     vec2 UV = uv;
     uv.y += t * 0.75;
     vec2 a = vec2(6.0, 1.0);
-    vec2 grid = a * 2.0;
+    vec2 grid = a * 2.0 * composite_fs_params[6].x; // .x = lens droplet density
+
     vec2 id = floor(uv * grid);
     float colShift = rd_N(id.x);
     uv.y += colShift;
@@ -63,7 +66,8 @@ vec2 rd_DropLayer2(vec2 uv, float t){{
     return vec2(m, trail);
 }}
 float rd_StaticDrops(vec2 uv, float t){{
-    uv *= 40.0;
+    uv *= 40.0 * composite_fs_params[6].x; // .x = lens droplet density
+
     vec2 id = floor(uv);
     uv = fract(uv) - 0.5;
     vec3 n = rd_N13(id.x * 107.45 + id.y * 3543.654);
@@ -167,7 +171,9 @@ void main()
     if ((dz_amt > 0.001) && (composite_fs_params[4].z < 0.5)) {{
         float dz = smoothstep(28.0, 190.0, view_dist) * clamp(dz_amt, 0.0, 1.0);
         if (dz > 0.002) {{
-            color = mix(color, rd_blur(scene_color_scene_smp, v_uv, dz * 3.5), dz * 0.6);
+            // Blur blend strength = water.yaml wet_blur (composite_fs_params[1].w),
+            // was an un-tunable 0.6. Keeps foreground crisp, softens distance.
+            color = mix(color, rd_blur(scene_color_scene_smp, v_uv, dz * 3.5), dz * composite_fs_params[1].w);
         }}
     }}
     // Above-waterline mask: 1 where this pixel's scene content sits at/above
@@ -180,7 +186,7 @@ void main()
     // are so distance fog between drops is preserved.
     if ((composite_fs_params[4].w > 0.001) && (composite_fs_params[4].z < 0.5)) {{
         float rd_rain = clamp(composite_fs_params[4].w, 0.0, 1.0);
-        float rd_t = composite_fs_params[4].y * 0.2;
+        float rd_t = composite_fs_params[4].y * 0.2 * composite_fs_params[6].z; // .z = anim speed
         vec2 rd_uv = (v_uv - 0.5); rd_uv.x *= max(composite_fs_params[0].w, 0.1);
         float rd_s = smoothstep(-0.5, 1.0, rd_rain) * 2.0;
         float rd_l1 = smoothstep(0.25, 0.75, rd_rain);
@@ -190,21 +196,21 @@ void main()
         float rd_cx = rd_Drops(rd_uv + rd_e, rd_t, rd_s, rd_l1, rd_l2).x;
         float rd_cy = rd_Drops(rd_uv + rd_e.yx, rd_t, rd_s, rd_l1, rd_l2).x;
         vec2 rd_n = vec2(rd_cx - rd_c.x, rd_cy - rd_c.x);
-        vec3 rd_refr = texture(scene_color_scene_smp, clamp(v_uv - (rd_n * 1.7), vec2(0.0), vec2(1.0))).xyz;
+        vec3 rd_refr = texture(scene_color_scene_smp, clamp(v_uv - (rd_n * composite_fs_params[6].y), vec2(0.0), vec2(1.0))).xyz;
         color = mix(color, rd_refr, clamp(rd_c.x, 0.0, 1.0) * rd_rain * above_water);
     }}
     // Emerge-from-water: same drops running down + drying off, refraction only
     // (no fog). near_far.w = intensity 1->0. Skipped while submerged.
     if ((composite_fs_params[2].w > 0.001) && (composite_fs_params[4].z < 0.5)) {{
         float em = clamp(composite_fs_params[2].w, 0.0, 1.0);
-        float em_t = composite_fs_params[4].y * 0.2;
+        float em_t = composite_fs_params[4].y * 0.2 * composite_fs_params[6].z; // .z = anim speed
         vec2 em_uv = (v_uv - 0.5); em_uv.x *= max(composite_fs_params[0].w, 0.1);
         vec2 em_c = rd_Drops(em_uv, em_t, 0.0, 1.0, 0.6);
         vec2 em_e = vec2(0.001, 0.0);
         float em_cx = rd_Drops(em_uv + em_e, em_t, 0.0, 1.0, 0.6).x;
         float em_cy = rd_Drops(em_uv + em_e.yx, em_t, 0.0, 1.0, 0.6).x;
         vec2 em_n = vec2(em_cx - em_c.x, em_cy - em_c.x);
-        vec3 em_refr = texture(scene_color_scene_smp, clamp(v_uv - (em_n * 1.7), vec2(0.0), vec2(1.0))).xyz;
+        vec3 em_refr = texture(scene_color_scene_smp, clamp(v_uv - (em_n * composite_fs_params[6].y), vec2(0.0), vec2(1.0))).xyz;
         color = mix(color, em_refr, clamp(em_c.x, 0.0, 1.0) * em * above_water);
     }}
     frag_color = vec4(color, 1.0);

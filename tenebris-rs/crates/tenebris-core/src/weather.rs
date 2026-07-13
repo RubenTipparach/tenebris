@@ -193,6 +193,17 @@ pub struct WeatherConfig {
     /// into / out of a rainy region. 0 = instant (old sharp behaviour).
     pub wet_fade_tau_s: f32,
 
+    /* --- Camera rain-on-glass lens droplets (composite FS Heartfelt FX) --- */
+    /// Droplet density on the lens: multiplies the drop grid, so higher =
+    /// more, smaller drops; lower = fewer, larger drops. 1.0 = stock look.
+    pub rain_lens_density: f32,
+    /// Refraction strength of each lens droplet: how far the scene is bent
+    /// through a drop. Higher = stronger fisheye per drop. Stock was 1.7.
+    pub rain_lens_refract: f32,
+    /// Animation speed of the lens droplets (trickle / spawn rate). 1.0 =
+    /// stock; higher = faster running drops.
+    pub rain_lens_speed: f32,
+
     /* --- Wind (drives grass sway; see client scatter sway) --- */
     /// Calm-day baseline wind (0..1) - grass always breathes a little.
     pub base_wind: f32,
@@ -243,6 +254,9 @@ impl WeatherConfig {
         rain_alpha_near: 0.38,
         rain_alpha_far: 0.10,
         wet_fade_tau_s: 1.6,
+        rain_lens_density: 1.0,
+        rain_lens_refract: 1.7,
+        rain_lens_speed: 1.0,
 
         base_wind: 0.35,
         gust_amp: 0.55,
@@ -307,6 +321,9 @@ pub fn parse_config(src: &str, _path: &str) -> WeatherConfig {
             "rain_alpha_near" => cfg.rain_alpha_near = v,
             "rain_alpha_far" => cfg.rain_alpha_far = v,
             "wet_fade_tau_s" => cfg.wet_fade_tau_s = v,
+            "rain_lens_density" => cfg.rain_lens_density = v,
+            "rain_lens_refract" => cfg.rain_lens_refract = v,
+            "rain_lens_speed" => cfg.rain_lens_speed = v,
             "overcast_sun_dim" => cfg.overcast_sun_dim = v,
             "overcast_amb_dim" => cfg.overcast_amb_dim = v,
             "base_wind" => cfg.base_wind = v,

@@ -4142,6 +4142,12 @@ pub fn compose_to_swapchain(view: Mat4, proj: Mat4) {
                 FRAME_WET.with(|c| c.get()),
             ],
             fog_params: fog,
+            /* Camera rain-on-glass lens droplets (weather.yaml): density,
+             * refraction strength, animation speed. */
+            rain_lens: {
+                let wx = tenebris_core::weather::config();
+                [wx.rain_lens_density, wx.rain_lens_refract, wx.rain_lens_speed, 0.0]
+            },
         };
         sg::apply_uniforms(shaders::composite::UB_COMPOSITE_FS_PARAMS, &sg::value_as_range(&fs));
 
@@ -6169,7 +6175,7 @@ mod tests {
         assert_eq!(size_of::<shaders::atmosphere::AtmosphereFsParams>(), 48);
         assert_eq!(size_of::<shaders::composite::CompositeVsParams>(), 64);
         /* 6 vec4s since the hand-added fog block (fog_params). */
-        assert_eq!(size_of::<shaders::composite::CompositeFsParams>(), 96);
+        assert_eq!(size_of::<shaders::composite::CompositeFsParams>(), 112);
         assert_eq!(size_of::<shaders::composite_mobile::CompositeMobileFsParams>(), 48);
         assert_eq!(size_of::<shaders::distant::DistantVsParams>(), 64);
         assert_eq!(size_of::<shaders::distant::DistantFsParams>(), 80);

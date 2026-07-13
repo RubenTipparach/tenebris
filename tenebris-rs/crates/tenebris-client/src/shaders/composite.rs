@@ -65,6 +65,10 @@ pub struct CompositeFsParams {
     /// (no .glsl source in-repo to re-run shdc on): xyz = fog colour,
     /// w = density per metre (0 = fog off).
     pub fog_params: [f32; 4],
+    /// Camera rain-on-glass lens droplet knobs (weather.yaml, hand-added):
+    /// x = droplet density, y = refraction strength, z = animation speed,
+    /// w = spare.
+    pub rain_lens: [f32; 4],
 }
 /*
     #version 410
@@ -289,9 +293,9 @@ pub fn composite_shader_desc(backend: sg::Backend) -> sg::ShaderDesc {
             desc.uniform_blocks[0].glsl_uniforms[0].glsl_name = c"composite_vs_params".as_ptr();
             desc.uniform_blocks[1].stage = sg::ShaderStage::Fragment;
             desc.uniform_blocks[1].layout = sg::UniformLayout::Std140;
-            desc.uniform_blocks[1].size = 96;
+            desc.uniform_blocks[1].size = 112;
             desc.uniform_blocks[1].glsl_uniforms[0]._type = sg::UniformType::Float4;
-            desc.uniform_blocks[1].glsl_uniforms[0].array_count = 6;
+            desc.uniform_blocks[1].glsl_uniforms[0].array_count = 7;
             desc.uniform_blocks[1].glsl_uniforms[0].glsl_name = c"composite_fs_params".as_ptr();
             desc.views[0].texture.stage = sg::ShaderStage::Fragment;
             desc.views[0].texture.multisampled = false;

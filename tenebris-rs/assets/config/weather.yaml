@@ -105,6 +105,12 @@ default_moisture: 0.66
 #                      near->far with distance so a storm reads as depth.
 #   wet_fade_tau_s     fade time-constant (s) for camera wet FX easing in/
 #                      out when entering/leaving rain. 0 = instant snap.
+#
+#   --- Camera rain-on-glass lens droplets (the drops on the "lens" when it
+#   rains / after surfacing; composite FS Heartfelt FX). ---
+#   rain_lens_density  droplet count: higher = more, smaller drops. 1.0 stock.
+#   rain_lens_refract  how far the scene bends through each drop. 1.7 stock.
+#   rain_lens_speed    droplet trickle / spawn speed. 1.0 stock.
 rain_fall_mps: 70.0
 rain_width_m: 0.012
 rain_density_mult: 10.5
@@ -112,6 +118,9 @@ rain_streak_m: 1.5
 rain_color_r: 0.40
 rain_color_g: 0.58
 rain_color_b: 1.0
-rain_alpha_near: 0.58
+rain_alpha_near: 0.78
 rain_alpha_far: 0.10
 wet_fade_tau_s: 1.6
+rain_lens_density: 1.0
+rain_lens_refract: 1.7
+rain_lens_speed: 1.0
