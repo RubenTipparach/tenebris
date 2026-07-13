@@ -862,7 +862,10 @@ fn dev_maybe_place(app: &mut App) {
                     p.velocity = tenebris_core::math::DVec3::default();
                     p.last_tile = tile;
                     p.yaw = 0.0;
-                    p.pitch = -0.42; /* look down at the grass in front */
+                    /* Look nearly ACROSS the sward (slightly down) so the
+                     * side-to-side blade lean of the wind sway is visible -
+                     * a top-down view foreshortens it into nothing. */
+                    p.pitch = -0.16;
                 }
                 DEV_FISH_CAM.with(|c| c.set(Some(cam)));
                 println!("[dev] grass: Fields tile {}", tile);
