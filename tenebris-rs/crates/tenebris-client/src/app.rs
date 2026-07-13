@@ -873,6 +873,61 @@ fn dev_maybe_place(app: &mut App) {
                 println!("[dev] grass: no Fields grass tile found");
             }
         }
+        23 => {
+            /* Orbit showcase (TENEBRIS_DEV_ORBIT): park the camera far out in
+             * space on a line PERPENDICULAR to the sun, looking straight at the
+             * planet centre. That puts the day/night terminator down the middle
+             * of the disk so the reddish-orange sunset band along the shadow
+             * edge can be inspected. TENEBRIS_DEV_TIME still sets the sun angle. */
+            let (center, radius, sun_dir) = {
+                let w = app.world.borrow();
+                let sim_t = tenebris_core::world_time::seconds();
+                let sd = dvec3_normalize(tenebris_core::orbit::sun_direction(w.body.id, sim_t));
+                (
+                    dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z),
+                    w.body.radius_m,
+                    sd,
+                )
+            };
+            /* View direction perpendicular to the sun (so the terminator
+             * bisects the visible disk); fall back if the cross degenerates. */
+            let reference = if sun_dir.y.abs() < 0.9 {
+                dvec3_make(0.0, 1.0, 0.0)
+            } else {
+                dvec3_make(1.0, 0.0, 0.0)
+            };
+            let view_dir = dvec3_normalize(tenebris_core::math::dvec3_cross(sun_dir, reference));
+            let dist = radius * 2.2;
+            let cam = dvec3_add(center, dvec3_scale(view_dir, dist));
+            {
+                let mut p = app.player.borrow_mut();
+                p.position = cam;
+                p.velocity = tenebris_core::math::DVec3::default();
+                p.last_tile = -1;
+                /* Keep is_in_space FALSE so the camera basis stays radial and
+                 * the planet renders as full terrain (not the distant LOD
+                 * impostor). DEV_FISH_CAM re-pins the position after physics
+                 * each frame, so gravity can't pull the camera down. At the
+                 * camera, radial "up" == view_dir, so looking straight down
+                 * (-pi/2, nudged off the singularity) points at the planet
+                 * centre and frames the full disk. */
+                p.yaw = 0.0;
+                p.pitch = -1.552;
+            }
+            DEV_FISH_CAM.with(|c| c.set(Some(cam)));
+            /* The surface chunks were meshed around the SPAWN tile, not the
+             * orbit vantage - force a full-planet remesh so the whole disk
+             * renders as terrain from out here. (Grab the id into a local
+             * first: remesh_body_now borrows the world internally, so an
+             * outstanding app.world.borrow() here would double-borrow.) */
+            let body_id = app.world.borrow().body.id as u32;
+            renderer::remesh_body_now(body_id);
+            println!(
+                "[dev] orbit: cam at {:.0} m ({:.1}x radius), view perpendicular to sun",
+                dist,
+                dist / radius
+            );
+        }
         15 => {
             /* Occlusion test (TENEBRIS_DEV_OCCLUDE): raise a dirt column
              * a few metres ahead with the frozen herd + a crop row
@@ -1986,6 +2041,9 @@ extern "C" fn init() {
         DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
     } else if std::env::var("TENEBRIS_DEV_GRASS").is_ok() {
         DEV_PLACE_MODE.with(|c| c.set(22));
+        DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
+    } else if std::env::var("TENEBRIS_DEV_ORBIT").is_ok() {
+        DEV_PLACE_MODE.with(|c| c.set(23));
         DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
     } else if std::env::var("TENEBRIS_DEV_BONFIRE").is_ok() {
         DEV_PLACE_MODE.with(|c| c.set(18));
