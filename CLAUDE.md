@@ -1,5 +1,38 @@
 # Repo rules
 
+## ONGOING UNRESOLVED BUG: falling through the world at trees
+
+**Status: OPEN. Do not assume this is fixed.** The player clips/sinks
+through the ground when colliding with a tree. Two reproductions, both
+easy and both still happening as of the last user report:
+
+1. Walk into a block that has a tree on top raised one block higher, then
+   press jump -> fall through the world.
+2. Just walk into a tree at ground level -> clip through the ground.
+
+This has been "fixed" multiple times (PR #50 trunk-gate removal, PR #51
+neighbour-floor borrow) and STILL reproduces. Treat every prior fix as
+insufficient until the user confirms otherwise.
+
+**Rules for Claude on this bug (engrained, standing instructions):**
+
+- This is a physics/collision bug in `tenebris-rs` core/client
+  (`player_ctrl.rs` + `world.rs` walkable-floor). It lives in Core (shared
+  SP/MP world-state) - fix it there so SP and MP share the path.
+- **Claude cannot verify this fix alone.** The failing case only
+  reproduces at real world subdivisions in the running game; the headless
+  tests have historically passed while the bug persisted. So after ANY
+  change here, Claude MUST ask the user to revisit, test, and confirm
+  whether it still happens - and must keep asking on every subsequent
+  session/turn that touches this area until the user explicitly says it is
+  fixed.
+- Do not silently mark it resolved, do not remove this section, and do not
+  stop following up, until the user confirms the specific repros above no
+  longer happen.
+- When working it, add/keep the strongest possible regression tests AND
+  the runtime diagnostic logging, but never treat green tests as proof -
+  only the user's in-game confirmation counts.
+
 ## Terminology
 
 When the user describes work in terms of these labels, treat them as

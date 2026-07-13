@@ -1226,11 +1226,11 @@ impl World {
             } else {
                 Block::Air.raw()
             };
-            if block_is_passable(cur) {
-                continue; /* not solid */
+            if block_is_passable(cur) || is_tree_raw(cur) {
+                continue; /* not solid (or a tree, which is never a floor) */
             }
-            if !block_is_passable(up) {
-                continue; /* roofed by solid */
+            if !block_is_passable(up) && !is_tree_raw(up) {
+                continue; /* roofed by solid (a tree above does NOT roof) */
             }
             let floor_r = self.depth_to_radius_m(d + 1);
 
@@ -1246,7 +1246,8 @@ impl World {
                 }
                 let mut clear = true;
                 for e in (d + 1)..=top_depth {
-                    if !block_is_passable(col[e as usize]) {
+                    /* Trees don't block headroom - you stand under a canopy. */
+                    if !block_is_passable(col[e as usize]) && !is_tree_raw(col[e as usize]) {
                         clear = false;
                         break;
                     }
@@ -1312,7 +1313,11 @@ impl World {
          * (walkable_floor_near) is the one that should reject
          * unwalkable columns, this is the bare safety net. */
         for d in (0..WORLD_MAX_DEPTH).rev() {
-            if block_is_passable(self.blocks[col_base + d as usize]) {
+            let b = self.blocks[col_base + d as usize];
+            /* Trees are transparent to floor detection (see is_tree_raw):
+             * skip trunk/canopy so this safety-net floor is the terrain
+             * under the tree, never the canopy top. */
+            if block_is_passable(b) || is_tree_raw(b) {
                 continue;
             }
             return self.depth_to_radius_m(d + 1);
@@ -1452,6 +1457,20 @@ fn block_is_passable(b: u8) -> bool {
     b == Block::Air.raw() || b == Block::Water.raw()
 }
 
+/// A tree voxel (trunk or canopy). Trees are stored as solid voxels in
+/// the same column as the terrain, but for FLOOR detection they must be
+/// transparent: a trunk is never a floor to stand on and never a roof
+/// over the ground beneath it (that ground is the real walkable surface),
+/// and the canopy is not a floor either. The trunk is a HORIZONTAL
+/// obstacle only, handled by the client's trunk-cylinder collider. Making
+/// the floor scans ignore trees is what stops the player sinking through
+/// the ground next to / under a tree - the grass beneath a trunk used to
+/// read as "roofed" (by the trunk) and get rejected as a floor, leaving
+/// only the unreachable canopy top, so the player was never grounded.
+fn is_tree_raw(b: u8) -> bool {
+    b == Block::Wood.raw() || b == Block::Leaves.raw() || b == Block::SeqLeaves.raw()
+}
+
 /* Vertical tolerance for "step me up onto a floor that's slightly
  * above where I asked". Sourced from lod.yaml's step_height_m - the
  * same knob player_ctrl reads, so the two stay in lock-step without
@@ -1581,6 +1600,65 @@ mod tests {
     }
 
     #[test]
+    fn tree_is_transparent_to_floor() {
+        /* Regression for the "sink through the ground next to / under a
+         * tree" bug: trees must never form the walkable floor and never
+         * roof the ground beneath them. The floor under a tree is the
+         * terrain surface; the trunk is a horizontal obstacle only. */
+        let mut w = tenebris_world();
+        let r = w.body.radius_m;
+
+        /* --- Case 2: tree at ground level (walk into a trunk). --- */
+        let t = 100;
+        for d in 1..WORLD_MAX_DEPTH {
+            w.set(t, d, Block::Air);
+        }
+        w.set(t, 69, Block::Dirt);
+        w.set(t, 70, Block::Grass); /* surface: top face = radius(71) */
+        w.set(t, 71, Block::Wood); /* trunk sits on the grass */
+        w.set(t, 72, Block::Wood);
+        w.set(t, 73, Block::Wood);
+        w.set(t, 74, Block::Leaves);
+        w.set(t, 75, Block::Leaves); /* canopy: top face = radius(76) */
+        let ground = w.depth_to_radius_m(71);
+        let canopy = w.depth_to_radius_m(76);
+        assert_eq!(
+            w.walkable_floor_near(t, r + 10.0, 1.8),
+            ground,
+            "floor under a tree must be the terrain grass, not the canopy"
+        );
+        assert_eq!(w.walkable_floor_near(t, r + 10.0, 0.0), ground);
+        assert_ne!(w.walkable_floor_near(t, r + 10.0, 1.8), canopy);
+        assert!(
+            w.walkable_floor_near(t, r + 10.0, 1.8) > -1e8,
+            "must find a floor, never the void (the fall-through)"
+        );
+        assert_eq!(w.topmost_solid_floor(t), ground);
+        /* Standing on the grass under the trunk: the floor is right at the
+         * feet (grounded), not tens of metres up in the leaves. */
+        assert!((w.walkable_floor_near(t, ground, 0.0) - ground).abs() < 1e-6);
+
+        /* --- Case 1: tree on a block raised one higher. --- */
+        let t2 = 101;
+        for d in 1..WORLD_MAX_DEPTH {
+            w.set(t2, d, Block::Air);
+        }
+        w.set(t2, 69, Block::Dirt);
+        w.set(t2, 70, Block::Grass); /* lower terrain */
+        w.set(t2, 71, Block::Dirt); /* the raised block, one higher */
+        w.set(t2, 72, Block::Wood); /* tree planted on the raised block */
+        w.set(t2, 73, Block::Wood);
+        w.set(t2, 74, Block::Leaves);
+        let raised_top = w.depth_to_radius_m(72);
+        assert_eq!(
+            w.walkable_floor_near(t2, r + 10.0, 1.8),
+            raised_top,
+            "floor on a raised block with a tree is the block top, not the canopy"
+        );
+        assert!(w.walkable_floor_near(t2, r + 10.0, 1.8) > -1e8);
+    }
+
+    #[test]
     fn pin_floors_ceilings_water() {
         let w = tenebris_world();
         let r = w.body.radius_m;
@@ -1588,12 +1666,12 @@ mod tests {
          * marked edited by worldgen -> voxel scan. */
         assert_eq!(w.walkable_floor_near(100, r + 5.0, 1.8), 300.0);
         assert_eq!(w.walkable_floor_near(100, r + 5.0, 0.0), 300.0);
-        assert_eq!(w.walkable_floor_near(TREE_TILE, r + 5.0, 1.8), 313.0);
-        assert_eq!(w.walkable_floor_near(TREE_TILE, r + 20.0, 0.0), 313.0);
+        assert_eq!(w.walkable_floor_near(TREE_TILE, r + 5.0, 1.8), 308.0);
+        assert_eq!(w.walkable_floor_near(TREE_TILE, r + 20.0, 0.0), 308.0);
         assert_eq!(w.walkable_floor_near(WATER_TILE, r, 1.8), 297.0);
         assert_eq!(w.walkable_floor_near(-1, r, 1.8), -1e9);
         assert_eq!(w.topmost_solid_floor(100), 300.0);
-        assert_eq!(w.topmost_solid_floor(TREE_TILE), 313.0);
+        assert_eq!(w.topmost_solid_floor(TREE_TILE), 308.0);
         assert_eq!(w.topmost_solid_floor(WATER_TILE), 297.0);
         assert_eq!(w.topmost_solid_floor(-1), -1e9);
         assert_eq!(w.ceiling_above(100, r - 10.0), 290.0);
