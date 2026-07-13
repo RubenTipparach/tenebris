@@ -17,6 +17,58 @@ layout(location = 6) in float v_wet;
 layout(location = 3) in float v_water_depth;
 layout(location = 0) out vec4 frag_color;
 
+// ---- Rain wetness detail: raindrop ripples on up-faces + water trickling
+// down side-faces (and tree trunks, same shader). The ripple kernel is the
+// Zavie / Ctrl-Alt-Test "H - Immersion" rain-drop effect, adapted to return a
+// surface gradient (normal perturbation). Tunables grouped here; promote to
+// YAML uniforms once the look is dialled in. The kernel's inner constants
+// (31.0, the smoothstep bands, 0.3 spawn rate, hash scales) are the effect's
+// identity and stay inline like a hash function's magic numbers.
+#define RAIN_MAX_RADIUS 1        // ripple cell reach (1 = 3x3 kernel, cheaper)
+#define RAIN_RIPPLE_SCALE 2.6    // ripple cells per metre on up-faces
+#define RAIN_RIPPLE_STRENGTH 0.5 // normal push from ripples
+#define RAIN_FLOW_ACROSS 3.0     // trickle columns per metre across a side
+#define RAIN_FLOW_DOWN 0.7       // trickle stretch along the fall direction
+#define RAIN_FLOW_SPEED 1.3      // downward trickle scroll speed
+#define RAIN_FLOW_STRENGTH 0.7   // normal push from trickles
+#define RAIN_WET_DARKEN 0.72     // wet surfaces darken toward this factor
+#define RAIN_RIPPLE_SHADE 0.30   // soft diffuse shimmer from ripples (NO
+                                 // specular glint - that strobed and looked bad)
+
+float rr_hash12(vec2 p) {
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 19.19);
+    return fract((p3.x + p3.y) * p3.z);
+}
+vec2 rr_hash22(vec2 p) {
+    vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));
+    p3 += dot(p3, p3.yzx + 19.19);
+    return fract((p3.xx + p3.yz) * p3.zy);
+}
+// Zavie rain-drop ripples -> 2D surface gradient (normal perturbation).
+vec2 rain_ripple_grad(vec2 uv, float t) {
+    vec2 p0 = floor(uv);
+    vec2 circles = vec2(0.0);
+    for (int j = -RAIN_MAX_RADIUS; j <= RAIN_MAX_RADIUS; ++j) {
+        for (int i = -RAIN_MAX_RADIUS; i <= RAIN_MAX_RADIUS; ++i) {
+            vec2 pi = p0 + vec2(float(i), float(j));
+            vec2 p = pi + rr_hash22(pi);
+            float tt = fract(0.3 * t + rr_hash12(pi));
+            vec2 v = p - uv;
+            float len = length(v) + 1e-6;
+            float d = len - (float(RAIN_MAX_RADIUS) + 1.0) * tt;
+            float h = 1e-3;
+            float d1 = d - h;
+            float d2 = d + h;
+            float q1 = sin(31.0 * d1) * smoothstep(-0.6, -0.3, d1) * smoothstep(0.0, -0.3, d1);
+            float q2 = sin(31.0 * d2) * smoothstep(-0.6, -0.3, d2) * smoothstep(0.0, -0.3, d2);
+            circles += 0.5 * (v / len) * ((q2 - q1) / (2.0 * h) * (1.0 - tt) * (1.0 - tt));
+        }
+    }
+    circles /= float((RAIN_MAX_RADIUS * 2 + 1) * (RAIN_MAX_RADIUS * 2 + 1));
+    return circles;
+}
+
 void main()
 {
     vec4 tex = texture(hex_atlas_hex_atlas_smp, vec2(v_uv.x * (93.0 / 100.0), v_uv.y));
@@ -106,27 +158,53 @@ void main()
         lit = mix(lit * _352, hex_fs_water[1].xyz * _352, vec3((1.0 - dot(_352, vec3(0.3333333432674407958984375))) * 0.5));
     }
     // Rain wetness (hex_fs_light[2].y = wetness 0..1, .z = time seconds).
-    // Sky-gated so caves stay dry; up-facing surfaces collect the rain.
-    // Darkens the wet ground and adds an animated raindrop-ripple sun sheen.
+    // Sky-gated so caves stay dry. Up-faces collect raindrop RIPPLES; side
+    // faces (and tree trunks - same shader) get water TRICKLING down. The wet
+    // cue is darkening + a SOFT diffuse shimmer off the perturbed normal - no
+    // tight specular glint (that strobed and looked bad).
     float wet_amt = clamp(hex_fs_light[2].y, 0.0, 1.0) * v_sky_light;
     if (wet_amt > 0.001) {
         vec3 wet_up = normalize(v_local);
-        float wet_face = clamp(dot(v_normal, wet_up), 0.0, 1.0);
-        float wet = wet_amt * wet_face;
+        vec3 nrm = normalize(v_normal);
+        float face = dot(nrm, wet_up);              // 1 = up-face, 0 = side-face
+        float top_w = smoothstep(0.35, 0.85, face);
+        float side_w = 1.0 - smoothstep(0.1, 0.5, face);
         float wet_t = hex_fs_light[2].z;
-        vec3 wet_ta = cross(wet_up, vec3(0.0, 1.0, 0.0));
-        if (dot(wet_ta, wet_ta) < 1e-4) { wet_ta = cross(wet_up, vec3(1.0, 0.0, 0.0)); }
-        wet_ta = normalize(wet_ta);
-        vec3 wet_tb = cross(wet_up, wet_ta);
-        vec2 wet_rc = vec2(dot(v_local, wet_ta), dot(v_local, wet_tb)) * 2.6;
-        float wet_pa = 6.2831853 * wet_rc.x + wet_t * 4.0;
-        float wet_pb = 6.2831853 * wet_rc.y + wet_t * 3.3;
-        float wet_gx = cos(wet_pa) * sin(wet_pb);
-        float wet_gy = sin(wet_pa) * cos(wet_pb);
-        vec3 wet_n = normalize(v_normal + (wet_ta * wet_gx + wet_tb * wet_gy) * (0.35 * wet));
-        lit *= mix(1.0, 0.72, wet);
-        float wet_sheen = pow(max(dot(wet_n, normalize(hex_fs_light[0].xyz)), 0.0), 40.0);
-        lit += vec3(0.6) * (wet_sheen * wet * v_sun_brightness);
+
+        // Up-face tangent frame for the ripple UV.
+        vec3 t_a = cross(wet_up, vec3(0.0, 1.0, 0.0));
+        if (dot(t_a, t_a) < 1e-4) { t_a = cross(wet_up, vec3(1.0, 0.0, 0.0)); }
+        t_a = normalize(t_a);
+        vec3 t_b = cross(wet_up, t_a);
+
+        vec3 pert = vec3(0.0);
+        // Raindrop ripples on up-facing surfaces.
+        if (top_w > 0.001) {
+            vec2 ruv = vec2(dot(v_local, t_a), dot(v_local, t_b)) * RAIN_RIPPLE_SCALE;
+            vec2 g = rain_ripple_grad(ruv, wet_t) * (RAIN_RIPPLE_STRENGTH * top_w);
+            pert += t_a * g.x + t_b * g.y;
+        }
+        // Water trickling straight down the side faces: the same ripple kernel
+        // with a tall, thin, downward-scrolled UV reads as flowing streaks.
+        if (side_w > 0.001) {
+            vec3 down_face = -wet_up - nrm * dot(-wet_up, nrm);
+            float dl = length(down_face);
+            down_face = (dl > 1e-4) ? (down_face / dl) : t_a;
+            vec3 across = cross(nrm, down_face);
+            float sc = dot(v_local, across) * RAIN_FLOW_ACROSS;
+            float dc = dot(v_local, down_face) * RAIN_FLOW_DOWN - wet_t * RAIN_FLOW_SPEED;
+            vec2 g = rain_ripple_grad(vec2(sc, dc), wet_t * 0.5) * (RAIN_FLOW_STRENGTH * side_w);
+            pert += across * g.x + down_face * g.y;
+        }
+
+        float wet = wet_amt * max(top_w, side_w);
+        vec3 wet_n = normalize(nrm + pert);
+        lit *= mix(1.0, RAIN_WET_DARKEN, wet);      // wet surfaces darken
+        // Soft diffuse shimmer: brighten/darken gently where the ripple tilts
+        // toward/away from the sun. Broad (diffuse), so it never strobes.
+        float d_flat = max(dot(nrm, normalize(hex_fs_light[0].xyz)), 0.0);
+        float d_wet = max(dot(wet_n, normalize(hex_fs_light[0].xyz)), 0.0);
+        lit *= 1.0 + (d_wet - d_flat) * (RAIN_RIPPLE_SHADE * wet * v_sun_brightness);
     }
     frag_color = vec4(lit, v_wet);
 }
