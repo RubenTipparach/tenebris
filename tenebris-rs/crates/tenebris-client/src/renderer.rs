@@ -6077,9 +6077,10 @@ mod tests {
             ("water_mobile", shaders::water_mobile::water_mobile_shader_desc),
         ];
         for (name, f) in descs {
-            /* Both slangs the build generates (glsl410 native +
-             * glsl300es web). Desc building is pure - no GPU context. */
-            for backend in [sg::Backend::Glcore, sg::Backend::Gles3] {
+            /* Desktop OpenGL (glcore / GL 4.1) ONLY - the Rust port does not
+             * support GLSL ES / WebGL (see CLAUDE.md), so we only validate
+             * the glcore desc. Desc building is pure - no GPU context. */
+            for backend in [sg::Backend::Glcore] {
                 let d = f(backend);
                 assert!(!d.label.is_null(), "{name} ({backend:?}) label");
                 assert!(

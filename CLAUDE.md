@@ -33,6 +33,38 @@ insufficient until the user confirms otherwise.
   the runtime diagnostic logging, but never treat green tests as proof -
   only the user's in-game confirmation counts.
 
+## Rust port targets DESKTOP OpenGL (GL 4.1 core) ONLY - no GLSL ES / WebGL
+
+`tenebris-rs` is a high-performance **desktop** target. It runs on the
+sokol `glcore` backend (OpenGL 4.1 core, `#version 410`). **We do NOT
+support GLSL ES / WebGL2 for the Rust port** - do not add, maintain, or
+"keep in sync" a `GLSL300ES` shader variant, and do not gate features on
+ES compatibility.
+
+Concretely:
+
+- **One shader source per shader: GLSL 410.** New shaders are written in
+  `#version 410` with explicit `layout(location=N)` on every vs-out /
+  fs-in varying (desktop core needs them and they must match between
+  stages). Prefer a plain `.glsl` text file loaded via `include_str!`
+  over checked-in byte arrays.
+- **Do not feed one shared body to two backends.** A hard-won bug: a
+  single composite FS body was reused for both `glcore` and `gles3`.
+  GLSL ES 3.0 forbids `layout(location)` on varyings, so the shared body
+  dropped them; linked against the 410 vertex shader (whose outputs keep
+  explicit, differently-ordered locations) the varyings got crossed and
+  the whole screen rendered black. ES and desktop cannot share a body -
+  and since we are desktop-only, the ES body simply should not exist.
+- **Validate shaders by LINKING vs+fs**, not just compiling each stage -
+  a per-stage compile passes while a varying-location mismatch still
+  breaks the program at link time. Validate against a **core** profile
+  context, not a compatibility profile (compat is too lenient).
+- The `Gles3` arms in `*_shader_desc` and any `*_SOURCE_GLSL300ES`
+  constants are legacy; new work drops them. When you touch a shader,
+  collapse it to the 410-only path.
+
+This rule stays in force until the user says otherwise.
+
 ## Terminology
 
 When the user describes work in terms of these labels, treat them as
