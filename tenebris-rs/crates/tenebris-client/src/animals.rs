@@ -729,24 +729,47 @@ fn draw_kind(
     let acc_b = |cx: f32, cy: f32, cz: f32, hx: f32, hy: f32, hz: f32, r: f32, g: f32, bl: f32| {
         draw_box(cx, cy, cz, hx, hy, hz, acc, acc, r * tint[0], g * tint[1], bl * tint[2], lit);
     };
-    /* Big cartoon bug-eye: a bulging white sclera cube poked out from
-     * the head with a fat dark pupil nudged forward (-Z is "ahead")
-     * and outward, so fish read wide-eyed and adorable. `s` is the
-     * eyeball half-size; `cx`'s sign is the side it bulges toward. */
-    let bug_eye = |cx: f32, cy: f32, cz: f32, s: f32| {
-        acc_b(cx, cy, cz, s, s, s, 0.97, 0.97, 1.0); /* white sclera */
+    /* Low-poly sphere primitive (accent tile, vertex-tinted, round top-lit
+     * shading). Curved, so no face is ever coplanar with the flat body box
+     * or with a second sphere - the source of the old eye z-fighting. */
+    let sphere = |cx: f32, cy: f32, cz: f32, rad: f32, r: f32, g: f32, bl: f32| {
+        use std::f32::consts::PI;
+        const STACKS: usize = 4;
+        const SLICES: usize = 7;
+        let (u0, u1, v0, v1) = acc;
+        let (uu, vv) = ((u0 + u1) * 0.5, (v0 + v1) * 0.5);
+        let pt = |phi: f32, th: f32| {
+            let sp = phi.sin();
+            [cx + rad * sp * th.cos(), cy + rad * phi.cos(), cz + rad * sp * th.sin()]
+        };
+        sgl::begin_triangles();
+        for i in 0..STACKS {
+            let phi0 = PI * (i as f32) / STACKS as f32;
+            let phi1 = PI * (i as f32 + 1.0) / STACKS as f32;
+            for j in 0..SLICES {
+                let th0 = 2.0 * PI * (j as f32) / SLICES as f32;
+                let th1 = 2.0 * PI * (j as f32 + 1.0) / SLICES as f32;
+                let quad = [pt(phi0, th0), pt(phi1, th0), pt(phi1, th1), pt(phi0, th1)];
+                for &k in &[0usize, 1, 2, 0, 2, 3] {
+                    let p = quad[k];
+                    let sh = 0.7 + 0.3 * (0.5 + 0.5 * ((p[1] - cy) / rad.max(1e-4)));
+                    sgl::c3f(r * tint[0] * sh * lit, g * tint[1] * sh * lit, bl * tint[2] * sh * lit);
+                    sgl::v3f_t2f(p[0], p[1], p[2], uu, vv);
+                }
+            }
+        }
+        sgl::end();
+    };
+    /* Googly eye: a proud spherical white eyeball with a dark pupil sphere
+     * riding its front-outer face. Contiguous curved meshes, so there is
+     * nothing coplanar to z-fight (the old stacked sclera/pupil CUBES
+     * flickered against each other and the body). Every species wears a
+     * pair for personality. `s` is the eyeball radius; `cx`'s sign is the
+     * side it bulges toward, `-z` is "ahead". */
+    let googly_eye = |cx: f32, cy: f32, cz: f32, s: f32| {
+        sphere(cx, cy, cz, s, 0.97, 0.97, 1.0); /* white sclera, bulging proud */
         let side = if cx >= 0.0 { 1.0 } else { -1.0 };
-        acc_b(
-            cx + side * s * 0.45,
-            cy,
-            cz - s * 0.7,
-            s * 0.55,
-            s * 0.62,
-            s * 0.55,
-            0.05,
-            0.05,
-            0.08,
-        ); /* dark pupil */
+        sphere(cx + side * s * 0.28, cy + s * 0.05, cz - s * 0.72, s * 0.5, 0.05, 0.05, 0.08); /* pupil */
     };
     let leg4 = |x: f32, z: f32, sw: f32, len: f32, m: f32| {
         sgl::push_matrix();
@@ -765,6 +788,8 @@ fn draw_kind(
             /* Slim tabby body, tail carried high, pointy ears. */
             b(Part::Body, 0.0, 0.42, 0.0, 0.11, 0.10, 0.28, 1.0);
             b(Part::Head, 0.0, 0.50, -0.34, 0.10, 0.09, 0.09, 1.05);
+            googly_eye(-0.05, 0.54, -0.42, 0.045);
+            googly_eye(0.05, 0.54, -0.42, 0.045);
             acc_b(-0.06, 0.62, -0.34, 0.025, 0.05, 0.02, 0.30, 0.28, 0.32); /* ears */
             acc_b(0.06, 0.62, -0.34, 0.025, 0.05, 0.02, 0.30, 0.28, 0.32);
             /* Raised tail: two segments angling up. */
@@ -780,6 +805,8 @@ fn draw_kind(
             /* Puffy wool slab over dark legs + face. */
             b(Part::Body, 0.0, 0.52, 0.0, 0.20, 0.17, 0.30, 1.0);
             b(Part::Head, 0.0, 0.58, -0.36, 0.10, 0.10, 0.10, 0.45); /* dark face */
+            googly_eye(-0.055, 0.60, -0.45, 0.045);
+            googly_eye(0.055, 0.60, -0.45, 0.045);
             b(Part::Body, 0.0, 0.68, -0.30, 0.14, 0.06, 0.10, 1.02); /* wool cap */
             for (x, z, sw) in
                 [(-0.11, -0.20, swing), (0.11, 0.20, swing), (0.11, -0.20, -swing), (-0.11, 0.20, -swing)]
@@ -791,6 +818,8 @@ fn draw_kind(
             /* Small white body, red comb, orange beak, two legs. */
             b(Part::Body, 0.0, 0.55, 0.0, 0.16, 0.15, 0.20, 1.0);
             b(Part::Head, 0.0, 0.80, -0.16, 0.09, 0.11, 0.09, 1.0);
+            googly_eye(-0.045, 0.84, -0.24, 0.038);
+            googly_eye(0.045, 0.84, -0.24, 0.038);
             acc_b(0.0, 0.94, -0.16, 0.03, 0.04, 0.06, 0.85, 0.15, 0.12); /* comb */
             acc_b(0.0, 0.78, -0.27, 0.03, 0.03, 0.04, 0.95, 0.55, 0.10); /* beak */
             for (x, sw) in [(-0.06, swing), (0.06, -swing)] {
@@ -810,6 +839,8 @@ fn draw_kind(
              * patches live in the texture now). */
             b(Part::Body, 0.0, 0.50, 0.0, 0.19, 0.15, 0.32, 1.0);
             b(Part::Head, 0.0, 0.48, -0.40, 0.11, 0.11, 0.10, 0.95);
+            googly_eye(-0.06, 0.53, -0.49, 0.045);
+            googly_eye(0.06, 0.53, -0.49, 0.045);
             acc_b(-0.10, 0.60, -0.40, 0.035, 0.035, 0.03, 0.88, 0.86, 0.80); /* horn */
             acc_b(0.10, 0.60, -0.40, 0.035, 0.035, 0.03, 0.88, 0.86, 0.80);
             for (x, z, sw) in
@@ -822,6 +853,8 @@ fn draw_kind(
             /* Small feathered body; wings flap fast while moving. */
             b(Part::Body, 0.0, 0.50, 0.0, 0.10, 0.09, 0.18, 1.0);
             b(Part::Head, 0.0, 0.60, -0.20, 0.06, 0.06, 0.07, 1.05);
+            googly_eye(-0.032, 0.63, -0.26, 0.03);
+            googly_eye(0.032, 0.63, -0.26, 0.03);
             acc_b(0.0, 0.58, -0.29, 0.02, 0.02, 0.04, 0.95, 0.65, 0.15); /* beak */
             let flap = if moving { (phase * 2.2).sin() * 0.9 } else { 0.25 };
             for side in [-1.0f32, 1.0] {
@@ -840,8 +873,8 @@ fn draw_kind(
             /* Small scaled body at swim height, tail sculling. */
             b(Part::Body, 0.0, 0.50, 0.0, 0.09, 0.13, 0.26, 1.0);
             b(Part::Limb, 0.0, 0.68, 0.02, 0.02, 0.08, 0.10, 1.0); /* dorsal */
-            bug_eye(-0.09, 0.55, -0.16, 0.07);
-            bug_eye(0.09, 0.55, -0.16, 0.07);
+            googly_eye(-0.09, 0.55, -0.16, 0.07);
+            googly_eye(0.09, 0.55, -0.16, 0.07);
             sgl::push_matrix();
             sgl::translate(0.0, 0.50, 0.28);
             sgl::rotate((phase * 1.6).sin() * 0.6, 0.0, 1.0, 0.0);
@@ -859,8 +892,8 @@ fn draw_kind(
             b(Part::Limb, 0.0, 0.86, 0.04, 0.025, 0.12, 0.16, 1.0); /* dorsal */
             acc_b(-0.14, 0.50, -0.14, 0.06, 0.02, 0.09, 0.35, 0.55, 0.55); /* pectorals */
             acc_b(0.14, 0.50, -0.14, 0.06, 0.02, 0.09, 0.35, 0.55, 0.55);
-            bug_eye(-0.11, 0.62, -0.36, 0.09);
-            bug_eye(0.11, 0.62, -0.36, 0.09);
+            googly_eye(-0.11, 0.62, -0.36, 0.09);
+            googly_eye(0.11, 0.62, -0.36, 0.09);
             sgl::push_matrix();
             sgl::translate(0.0, 0.55, 0.40);
             sgl::rotate((phase * 1.2).sin() * 0.5, 0.0, 1.0, 0.0);
@@ -877,8 +910,8 @@ fn draw_kind(
                 if moving { (phase * 2.0 + k).sin() * 0.10 } else { (k * 1.7).sin() * 0.03 }
             };
             b(Part::Head, s(0.0), 0.50, -0.42, 0.05, 0.07, 0.12, 1.05);
-            bug_eye(s(0.0) - 0.06, 0.55, -0.46, 0.055);
-            bug_eye(s(0.0) + 0.06, 0.55, -0.46, 0.055);
+            googly_eye(s(0.0) - 0.06, 0.55, -0.46, 0.055);
+            googly_eye(s(0.0) + 0.06, 0.55, -0.46, 0.055);
             b(Part::Body, s(1.2), 0.50, -0.14, 0.055, 0.08, 0.18, 1.0);
             b(Part::Body, s(2.4), 0.50, 0.20, 0.05, 0.07, 0.18, 0.95);
             b(Part::Limb, s(3.6), 0.50, 0.48, 0.035, 0.06, 0.14, 0.9); /* tail */
@@ -889,8 +922,8 @@ fn draw_kind(
             b(Part::Body, 0.0, 0.45, 0.0, 0.15, 0.05, 0.28, 1.0);
             b(Part::Head, 0.0, 0.46, -0.30, 0.08, 0.04, 0.06, 1.0);
             /* Rays wear their eyes on TOP of the head - bulge upward. */
-            bug_eye(-0.05, 0.52, -0.26, 0.05);
-            bug_eye(0.05, 0.52, -0.26, 0.05);
+            googly_eye(-0.05, 0.52, -0.26, 0.05);
+            googly_eye(0.05, 0.52, -0.26, 0.05);
             let beat = (phase * 0.9).sin() * 0.35;
             for side in [-1.0f32, 1.0] {
                 sgl::push_matrix();
@@ -911,8 +944,8 @@ fn draw_kind(
             b(Part::Body, 0.0, 0.42, 0.02, 0.20, 0.09, 0.24, 1.0); /* shell base */
             b(Part::Body, 0.0, 0.54, 0.02, 0.14, 0.06, 0.17, 1.05); /* shell dome */
             b(Part::Head, 0.0, 0.40, -0.32, 0.06, 0.05, 0.08, 1.0);
-            bug_eye(-0.05, 0.44, -0.37, 0.05);
-            bug_eye(0.05, 0.44, -0.37, 0.05);
+            googly_eye(-0.05, 0.44, -0.37, 0.05);
+            googly_eye(0.05, 0.44, -0.37, 0.05);
             let paddle = (phase * 0.9).sin() * 0.5;
             for (side, z, sw) in [
                 (-1.0f32, -0.16, paddle),
@@ -935,8 +968,8 @@ fn draw_kind(
         AnimalKind::Frog => {
             /* Squat mottled body, bulging eyes, folded legs. */
             b(Part::Body, 0.0, 0.30, 0.0, 0.16, 0.13, 0.18, 1.0);
-            acc_b(-0.08, 0.48, -0.12, 0.045, 0.05, 0.045, 0.85, 0.85, 0.30); /* eye */
-            acc_b(0.08, 0.48, -0.12, 0.045, 0.05, 0.045, 0.85, 0.85, 0.30);
+            googly_eye(-0.08, 0.50, -0.12, 0.055); /* bulging frog eyes */
+            googly_eye(0.08, 0.50, -0.12, 0.055);
             b(Part::Limb, -0.16, 0.18, 0.10, 0.06, 0.09, 0.10, 1.0); /* haunches */
             b(Part::Limb, 0.16, 0.18, 0.10, 0.06, 0.09, 0.10, 1.0);
         }
@@ -945,8 +978,8 @@ fn draw_kind(
              * tapering tail that whips side to side on the run. */
             b(Part::Body, 0.0, 0.16, 0.0, 0.11, 0.07, 0.24, 1.0);
             b(Part::Head, 0.0, 0.18, -0.30, 0.07, 0.05, 0.09, 1.05);
-            acc_b(-0.05, 0.24, -0.30, 0.02, 0.02, 0.02, 0.10, 0.10, 0.08); /* eye */
-            acc_b(0.05, 0.24, -0.30, 0.02, 0.02, 0.02, 0.10, 0.10, 0.08);
+            googly_eye(-0.05, 0.24, -0.34, 0.032); /* lizard eyes */
+            googly_eye(0.05, 0.24, -0.34, 0.032);
             sgl::push_matrix();
             sgl::translate(0.0, 0.14, 0.24);
             sgl::rotate(if moving { (phase * 1.8).sin() * 0.5 } else { 0.0 }, 0.0, 1.0, 0.0);
@@ -969,6 +1002,8 @@ fn draw_kind(
             b(Part::Body, 0.0, 0.55, 0.02, 0.17, 0.42, 0.15, 1.0); /* body */
             acc_b(0.0, 0.50, -0.12, 0.12, 0.30, 0.05, 0.93, 0.92, 0.90); /* belly */
             b(Part::Head, 0.0, 1.02, 0.0, 0.11, 0.10, 0.11, 1.0);
+            googly_eye(-0.05, 1.05, -0.10, 0.038);
+            googly_eye(0.05, 1.05, -0.10, 0.038);
             acc_b(0.0, 1.00, -0.14, 0.03, 0.025, 0.06, 0.95, 0.55, 0.10); /* beak */
             for side in [-1.0f32, 1.0] {
                 sgl::push_matrix();
@@ -989,6 +1024,8 @@ fn draw_kind(
              * column - no more flat tint). */
             b(Part::Body, 0.0, 0.46, 0.0, 0.16, 0.13, 0.30, 1.0);
             b(Part::Head, 0.0, 0.52, -0.36, 0.12, 0.11, 0.11, 1.05);
+            googly_eye(-0.06, 0.56, -0.46, 0.045);
+            googly_eye(0.06, 0.56, -0.46, 0.045);
             b(Part::Limb, -0.07, 0.66, -0.36, 0.03, 0.05, 0.02, 1.0); /* ears */
             b(Part::Limb, 0.07, 0.66, -0.36, 0.03, 0.05, 0.02, 1.0);
             b(Part::Limb, 0.0, 0.5, 0.34, 0.03, 0.03, 0.08, 1.0); /* tail */
