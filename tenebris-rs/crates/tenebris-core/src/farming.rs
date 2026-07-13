@@ -215,6 +215,10 @@ pub struct FarmingConfig {
     pub water_boost_s: f32,
     /// Per-tile chance a wild fruit plant grows on a fields/jungle surface.
     pub wild_fruit_chance: f32,
+    /// Clear radius (m) around the player inside which no wild fruit plant
+    /// sprouts - keeps a tree from spawning right in the player's face on
+    /// world load / when standing still.
+    pub wild_fruit_clear_m: f32,
 }
 
 impl FarmingConfig {
@@ -244,6 +248,7 @@ impl FarmingConfig {
         rain_growth_mult: 2.2,
         water_boost_s: 60.0,
         wild_fruit_chance: 0.06,
+        wild_fruit_clear_m: 8.0,
     };
 
     /// Grow time (seconds) for a crop kind.
@@ -347,6 +352,7 @@ pub fn parse_config(src: &str, _path: &str) -> FarmingConfig {
             "rain_growth_mult" => cfg.rain_growth_mult = v,
             "water_boost_s" => cfg.water_boost_s = v,
             "wild_fruit_chance" => cfg.wild_fruit_chance = v,
+            "wild_fruit_clear_m" => cfg.wild_fruit_clear_m = v,
             _ => {}
         }
     }

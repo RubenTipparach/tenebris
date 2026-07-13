@@ -41,6 +41,8 @@
 #                           pour grants a crop
 #   wild_fruit_chance       per-tile chance (0..1) a wild fruit plant
 #                           spawns on an eligible biome floor
+#   wild_fruit_clear_m      clear radius (m) around the player where no
+#                           wild fruit plant spawns (no tree in your face)
 farming:
   grow_time_s: 45.0
   produce_yield: 3
@@ -64,3 +66,4 @@ farming:
   rain_growth_mult: 2.2
   water_boost_s: 60.0
   wild_fruit_chance: 0.06
+  wild_fruit_clear_m: 8.0

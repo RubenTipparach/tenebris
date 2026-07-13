@@ -245,6 +245,14 @@ pub fn spawn_wild_near(w: &World, p: &PlayerCtrl) {
                 }
                 let dir_up = dvec3_normalize(w.grid.tile(tile).map(|t| t.center).unwrap_or(dir));
                 let pos = dvec3_add(center, dvec3_scale(dir_up, floor));
+                /* Never sprout a wild plant right on top of the player - a
+                 * tree spawning in your face on world load is jarring. Keep a
+                 * small clear radius around wherever the player stands. */
+                if cfg.wild_fruit_clear_m > 0.0
+                    && dvec3_length(dvec3_sub(pos, p.position)) < cfg.wild_fruit_clear_m as f64
+                {
+                    continue;
+                }
                 s.wild.push(Crop::at(pos, dir_up, tile, 1.0, kind));
             }
         }
