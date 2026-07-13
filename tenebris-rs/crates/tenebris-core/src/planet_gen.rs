@@ -153,6 +153,12 @@ pub fn surface_altitude(body: &BodyConfig, unit_dir: DVec3) -> f32 {
      * toward the extremes so the land/ocean mask has crisp boundaries. */
     let mut continent = fractal3d(body.seed, x, y, z, CONTINENT_SCALE, 6, 0.5, 2.0);
     continent += LAND_BIAS;
+    /* Seeded worlds run wetter: trim the land bias so more of the surface
+     * falls below sea level (more ocean, real coastlines). biomes_active
+     * gate keeps default-seed output byte-exact for the C-parity pins. */
+    if biomes_active(body) {
+        continent -= SEEDED_LAND_BIAS_TRIM;
+    }
     /* C: (float)pow((double)fabs(continent), 0.8) */
     let continent_value = (if continent >= 0.0 { 1.0f32 } else { -1.0f32 })
         * ((continent as f64).abs().powf(0.8) as f32);
@@ -177,7 +183,7 @@ pub fn surface_altitude(body: &BodyConfig, unit_dir: DVec3) -> f32 {
 
     /* Convert normalized height in [-1, +1] to meters. Use a power curve
      * on the ocean side so sea floors get naturally deeper offshore. */
-    let base = if height >= 0.0 {
+    let mut base = if height >= 0.0 {
         height * MAX_LAND_HEIGHT
     } else {
         /* C: (float)pow((double)fabs(height), (double)OCEAN_DEPTH_POWER)
@@ -194,6 +200,53 @@ pub fn surface_altitude(body: &BodyConfig, unit_dir: DVec3) -> f32 {
         let ocean_factor = (height as f64).abs().powf(power as f64) as f32;
         -ocean_factor * MAX_OCEAN_DEPTH * deepen
     };
+
+    /* Seeded-world coast shaping (Rust extension; biomes_active gate keeps
+     * default-seed C-parity pins byte-exact). Islands rise out of shallow
+     * seas, rivers carve winding lowland channels, and the coastal band is
+     * compressed toward the waterline so beaches shelve in gently. */
+    if biomes_active(body) {
+        let sea = SEA_LEVEL + SEEDED_SEA_RAISE_M;
+
+        /* Islands: a low-frequency field lifts scattered land out of the
+         * shallow seas so open water gets an archipelago, not a bare plain.
+         * Only the ocean side is eligible; deep basins stay open water. */
+        if base < sea {
+            let isl = noise01(body.seed ^ ISLAND_SEED_SALT, unit_dir, ISLAND_SCALE, 3);
+            if isl > ISLAND_THRESHOLD {
+                let t = (isl - ISLAND_THRESHOLD) / (1.0 - ISLAND_THRESHOLD);
+                let t = t * t * (3.0 - 2.0 * t); /* smoothstep island edge */
+                base += t * ISLAND_HEIGHT_M;
+            }
+        }
+
+        /* Rivers: a ridged iso-line of a mid-frequency field (the channel
+         * peaks where the raw noise sits mid-range) is pulled down to a bed
+         * just below the waterline so it floods into a winding river. Only
+         * lowland below RIVER_MAX_ELEV_M is eligible, so channels don't
+         * climb the peaks. */
+        if base > sea && base < sea + RIVER_MAX_ELEV_M {
+            let n = noise01(body.seed ^ RIVER_SEED_SALT, unit_dir, RIVER_SCALE, 4);
+            let channel = 1.0 - (2.0 * n - 1.0).abs();
+            if channel > RIVER_THRESHOLD {
+                let t = (channel - RIVER_THRESHOLD) / (1.0 - RIVER_THRESHOLD);
+                let t = t * t * (3.0 - 2.0 * t); /* smoothstep river banks */
+                let bed = sea - RIVER_DEPTH_M;
+                base += (bed - base) * t; /* pull the channel toward the bed */
+            }
+        }
+
+        /* Gentle shorelines: within a band either side of the waterline the
+         * slope is compressed toward sea, so beaches wade in instead of
+         * dropping off a cliff. At the waterline the slope is cut by
+         * SHORE_FLATTEN; it eases back to full height at the band edge. */
+        let d = base - sea;
+        if d.abs() < SHORE_BAND_M {
+            let t = (d.abs() / SHORE_BAND_M).clamp(0.0, 1.0);
+            let keep = 1.0 - SHORE_FLATTEN * (1.0 - t);
+            base = sea + d * keep;
+        }
+    }
 
     /* Rocky highlands (Rust extension, custom-seed worlds only - the
      * biomes_active gate keeps every default-seed C-parity pin byte-
@@ -270,15 +323,52 @@ const MOUNTAIN_SNOWCAP_ELEV_M: f32 = 40.0;
 /// their ocean floors run deeper. Both are biomes_active-gated so
 /// default-seed output stays byte-exact for the C-parity pins.
 const SEEDED_SEA_RAISE_M: f32 = 1.0;
-/* Deep oceans: seeded basins run ~2.6x the base ocean depth (up to the
- * ~62 m the 64-layer sub-sea budget allows before the floor clamps onto
- * bedrock), so open water is a real dive, not a shallow pool. Seeded
- * worlds only - the biomes_active gate keeps default output byte-exact. */
-const SEEDED_OCEAN_DEEPEN: f32 = 2.6;
-/// Ocean depth exponent for seeded worlds. Below the default 1.3 so the
-/// shore falls off steeply (deep water starts just past the beach, only a
-/// thin shallow band) instead of a long gentle shelf.
-const SEEDED_OCEAN_POWER: f32 = 0.62;
+/* Deep oceans: seeded basins run this multiple of the base ocean depth
+ * (up to the ~62 m the 64-layer sub-sea budget allows before the floor
+ * clamps onto bedrock), so open water is a real dive, not a shallow pool.
+ * Seeded worlds only - the biomes_active gate keeps default output
+ * byte-exact. Softened from 2.6 -> 2.0 so the shore drop is less abrupt
+ * (paired with the gentler SEEDED_OCEAN_POWER below and the SHORE_* band
+ * flatten) while the open ocean still dives deep. */
+const SEEDED_OCEAN_DEEPEN: f32 = 2.0;
+/// Ocean depth exponent for seeded worlds. Raised from a steep 0.62 to a
+/// gentle 1.1 (past the neutral 1.0) so the sea floor shelves away slowly
+/// from the beach - a broad shallow band and wading-in shore instead of a
+/// cliff that plunges to deep water one block past the sand. This is the
+/// primary "reduce shore steepness ~50%" lever.
+const SEEDED_OCEAN_POWER: f32 = 1.1;
+
+/* --- Seeded-world coast / river / island shaping (Rust extension). All
+ * biomes_active-gated so default-seed C-parity pins stay byte-exact. --- */
+
+/// More ocean: seeded worlds trim this much off the continent mask bias so
+/// more of the surface falls below sea level (a wetter planet with real
+/// coastlines). Also lowers near-coast land, helping the gentle shore.
+const SEEDED_LAND_BIAS_TRIM: f32 = 0.10;
+
+/// Coastal flatten: within this many metres either side of the waterline
+/// the terrain slope is compressed toward sea, so beaches shelve in
+/// gently. SHORE_FLATTEN is the fraction of slope removed AT the waterline
+/// (0.5 = half as steep), easing back to full height at the band edge.
+const SHORE_BAND_M: f32 = 6.0;
+const SHORE_FLATTEN: f32 = 0.5;
+
+/// Rivers: a mid-frequency ridged iso-line (the channel field peaks where
+/// the raw noise sits mid-range) is carved down to a bed just below the
+/// waterline so it floods into a winding river. Only lowland below
+/// RIVER_MAX_ELEV_M is eligible, so channels don't climb into the peaks.
+const RIVER_SEED_SALT: u64 = 0x217E_5EED;
+const RIVER_SCALE: f32 = 1.3;
+const RIVER_THRESHOLD: f32 = 0.86;
+const RIVER_DEPTH_M: f32 = 3.0;
+const RIVER_MAX_ELEV_M: f32 = 14.0;
+
+/// Islands: a low-frequency field lifts scattered land out of the shallow
+/// seas so open water gets an archipelago instead of a featureless plain.
+const ISLAND_SEED_SALT: u64 = 0x151A_D5ED;
+const ISLAND_SCALE: f32 = 4.0;
+const ISLAND_THRESHOLD: f32 = 0.68;
+const ISLAND_HEIGHT_M: f32 = 10.0;
 
 /// Fractal noise remapped to [0, 1] at a unit direction. Shared field
 /// generator: the biome moisture map and the client's cloud-coverage
@@ -604,6 +694,59 @@ mod biome_tests {
         assert!(kinds.contains("Desert") || kinds.contains("Swamp") || kinds.contains("Jungle"));
         /* The rocky-uplift field must produce actual mountain country. */
         assert!(kinds.contains("Mountains"), "no rocky ranges: {kinds:?}");
+    }
+
+    #[test]
+    fn seeded_worlds_are_wetter_with_rivers_and_islands() {
+        /* Dense direction grid over the sphere (Fibonacci points), so the
+         * stats are stable regardless of the goldberg subdivision. */
+        let legacy = planet::get(BodyId::Tenebris);
+        let mut seeded = legacy;
+        seeded.seed = 0xC0FFEE_D00D;
+        assert!(biomes_active(&seeded) && !biomes_active(&legacy));
+
+        let n = 20000usize;
+        let ga = std::f64::consts::PI * (3.0 - 5.0_f64.sqrt()); /* golden angle */
+        let sea = SEA_LEVEL + SEEDED_SEA_RAISE_M;
+        let mut legacy_ocean = 0usize;
+        let mut seeded_ocean = 0usize;
+        let mut rivers = 0usize;
+        let mut islands = 0usize;
+        for i in 0..n {
+            let yy = 1.0 - (i as f64 + 0.5) / n as f64 * 2.0;
+            let r = (1.0 - yy * yy).max(0.0).sqrt();
+            let th = ga * i as f64;
+            let dir = crate::math::dvec3_make(th.cos() * r, yy, th.sin() * r);
+
+            if surface_altitude(&legacy, dir) < SEA_LEVEL {
+                legacy_ocean += 1;
+            }
+            let s = surface_altitude(&seeded, dir);
+            if s < sea {
+                seeded_ocean += 1;
+            }
+            /* A river tile: a lowland channel carved below the waterline
+             * where the ridged channel field is near its crest. */
+            let ch = 1.0 - (2.0 * noise01(seeded.seed ^ RIVER_SEED_SALT, dir, RIVER_SCALE, 4) - 1.0).abs();
+            if ch > RIVER_THRESHOLD && s < sea {
+                rivers += 1;
+            }
+            /* An island tile: land standing above the waterline where the
+             * island field is high (i.e. terrain that would be ocean
+             * without the island lift). */
+            let isl = noise01(seeded.seed ^ ISLAND_SEED_SALT, dir, ISLAND_SCALE, 3);
+            if isl > ISLAND_THRESHOLD && s > sea {
+                islands += 1;
+            }
+        }
+        /* Seeded worlds carry meaningfully more water than legacy. */
+        assert!(
+            seeded_ocean > legacy_ocean,
+            "seeded should be wetter: seeded={seeded_ocean} legacy={legacy_ocean}"
+        );
+        /* Rivers and islands both actually materialise across the globe. */
+        assert!(rivers > 0, "no river channels carved below the waterline");
+        assert!(islands > 0, "no islands lifted above the waterline");
     }
 
     #[test]
