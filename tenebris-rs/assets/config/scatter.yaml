@@ -61,8 +61,14 @@ scatter:
   shrub_chance: 0.14
   shrub_size_m: 0.38
 
-# Wind sway (hex shader, marked scatter tips only). Land grass ripples
-# quickly with a small amplitude; kelp / seaweed drift slower and wider.
+# Wind sway (hex shader, marked scatter tips). Applies to EVERY plant -
+# grass tufts, flowers, ferns, reeds, shrubs, kelp, seaweed - so tune it
+# here to taste. sway_amp_m is the tip travel in metres and the atmospheric
+# wind sim scales it up in gusts/storms (see weather.yaml wind_*). Land
+# grass ripples quickly + narrow; kelp / seaweed drift slower + wider.
+#   - raise/lower sway_amp_m + sway_speed to taste
+#   - set sway_amp_m to a NEGATIVE value to turn sway OFF (0 keeps the
+#     compiled default, per the parser's zero-means-default rule)
 sway_speed: 1.8
 sway_amp_m: 0.14
 underwater_sway_speed: 0.7

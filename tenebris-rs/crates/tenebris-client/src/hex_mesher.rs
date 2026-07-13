@@ -2522,6 +2522,7 @@ pub fn build_scatter(out: &mut HexMesh, w: &World, tile_idx: i32) {
                     * (0.7 + 0.6 * hash2(tile_idx, SALT_COUNT + 17 + j) as f64);
                 let top = dvec3_add(dvec3_add(base, dvec3_scale(up, h)), lean);
                 /* Thin rectangular strip, slightly narrower at the top. */
+                let qstart = out.vertices.len();
                 push_quad_2side(
                     out,
                     [
@@ -2536,6 +2537,10 @@ pub fn build_scatter(out: &mut HexMesh, w: &World, tile_idx: i32) {
                     torch,
                     wet,
                 );
+                /* Sway-mark the TOP edge so the wind ripples these blades
+                 * too - the main grass tuft was the one plant left static
+                 * (push_blade marks its own tips; this quad path didn't). */
+                mark_sway_tips(out, qstart, v_lo);
             }
         }
 
