@@ -334,6 +334,12 @@ thread_local! {
     /* C: function-local `static int s_fallback_logged` in the
      * walkable-floor fallback inside player_update. */
     static S_FALLBACK_LOGGED: Cell<i32> = const { Cell::new(0) };
+
+    /* Diagnostic counter for the "walk into a tree trunk, fall through the
+     * world" bug. Logs the full collision state the first N times the
+     * player is caught sinking through a tree tile's ground, so the bug
+     * can be captured in the wild (it doesn't reproduce headless). */
+    static S_TREE_FALLTHROUGH_LOGGED: Cell<i32> = const { Cell::new(0) };
 }
 
 /// Re-align the player's persistent tangent basis to the planet
@@ -2067,6 +2073,47 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
          * the perspective near plane (0.3 m) from clipping through
          * walls when the player squeezes up against a column. */
         camera_collider_push(w, p, cur_tile);
+
+        /* --- Tree fall-through diagnostic ---
+         * Catch the "walk into a tree on a raised block, jump, fall through
+         * the world" bug in the wild (it doesn't reproduce in the headless
+         * tests). Fires when the player is NOT grounded, descending, on a
+         * column that contains a tree, and has already sunk below that
+         * column's real (non-tree) ground top - i.e. they're passing
+         * through the floor they should be standing on. Rate-limited. */
+        if !p.grounded && cur_tile >= 0 && cur_tile < w.tile_count && cur_tile < w.gen_cursor {
+            let col_base = (cur_tile * WORLD_MAX_DEPTH) as usize;
+            let col = &w.blocks[col_base..col_base + WORLD_MAX_DEPTH as usize];
+            let has_tree = col.iter().any(|&b| is_tree_raw(b));
+            let ground_d = (1..WORLD_MAX_DEPTH)
+                .rev()
+                .find(|&d| !passable_raw(col[d as usize]) && !is_tree_raw(col[d as usize]));
+            let vy_now = dvec3_dot(p.velocity, p.basis.up);
+            if let (true, Some(gd)) = (has_tree, ground_d) {
+                let ground_top_r = w.depth_to_radius_m(gd + 1);
+                if r < ground_top_r - 0.1 && vy_now < 0.0 {
+                    let n = S_TREE_FALLTHROUGH_LOGGED.with(|c| c.get());
+                    if n < 40 {
+                        S_TREE_FALLTHROUGH_LOGGED.with(|c| c.set(n + 1));
+                        /* edited bit decides walkable_floor_near's fast path:
+                         * 0 = returns the analytic surface (below the tree ->
+                         * fall-through), 1 = voxel-scans. A gen tree column
+                         * should be 1. */
+                        let edited =
+                            (w.edited[(cur_tile >> 3) as usize] >> (cur_tile & 7)) & 1;
+                        eprintln!(
+                            "[player] TREE FALL-THROUGH tile={cur_tile} last_tile={prev_tile} \
+                             edited={edited} trunk_dist={:.2} r={r:.2} ground_top={ground_top_r:.2} \
+                             (sunk {:.2} m) gr={gr:.2} vy={vy_now:.2} grounded={} (event {}/40)",
+                            trunk_axis_dist(w, cur_tile, local),
+                            ground_top_r - r,
+                            p.grounded,
+                            n + 1,
+                        );
+                    }
+                }
+            }
+        }
     } else {
         p.grounded = false;
     }
@@ -2449,6 +2496,115 @@ mod tests {
         assert!(
             min_r >= ground_r - 0.4,
             "fell through while walking into a tree: min_r={min_r:.2} ground_r={ground_r:.2}"
+        );
+    }
+
+    /// Regression for the REPORTED repro: a tree planted on a block one
+    /// higher than the player, who walks into the side of that step and
+    /// jumps. Stepping/jumping up onto a tree tile whose ground sits a block
+    /// above must not drop the player through the world.
+    #[test]
+    fn no_fall_through_jumping_at_tree_on_a_step() {
+        clear_input();
+        let (body, mut w) = tenebris_world();
+        let surf_d = |w: &World, t: i32| -> i32 {
+            let base = (t * WORLD_MAX_DEPTH) as usize;
+            (0..WORLD_MAX_DEPTH)
+                .rev()
+                .find(|&d| {
+                    let b = w.blocks[base + d as usize];
+                    b != Block::Air.raw() && b != Block::Water.raw()
+                })
+                .unwrap_or(-1)
+        };
+        let is_grass = |w: &World, t: i32, d: i32| {
+            matches!(
+                Block::from_raw(w.blocks[(t * WORLD_MAX_DEPTH + d) as usize]),
+                Some(Block::Grass)
+                    | Some(Block::DirtGrass)
+                    | Some(Block::DryGrass)
+                    | Some(Block::JungleGrass)
+            )
+        };
+        /* A flat grass tile P with an edge-neighbour N at the same surface
+         * level, so I can raise N by one block and plant a tree on it. */
+        let (mut pt, mut nt) = (-1i32, -1i32);
+        'find: for t in 0..w.tile_count {
+            let sd = surf_d(&w, t);
+            if sd < 8 || sd + 9 >= WORLD_MAX_DEPTH || !is_grass(&w, t, sd) {
+                continue;
+            }
+            let tile = *w.grid.tile(t).unwrap();
+            for k in 0..tile.num_neighbors as usize {
+                let n = tile.edge_neighbours[k];
+                if n < 0 || n >= w.tile_count {
+                    continue;
+                }
+                if surf_d(&w, n) == sd && is_grass(&w, n, sd) {
+                    pt = t;
+                    nt = n;
+                    break 'find;
+                }
+            }
+        }
+        assert!(pt >= 0, "no flat grass pair to build a stepped tree on");
+        let p_surf = surf_d(&w, pt);
+        /* Raise N one block (new grass surface at p_surf+1) and plant a small
+         * tree: trunk p_surf+2..+5, canopy above. The new N ground is now one
+         * block higher than P's, and roofed by the trunk - the reported case. */
+        w.set(nt, p_surf + 1, Block::Grass);
+        for depth in (p_surf + 2)..=(p_surf + 5) {
+            w.set(nt, depth, Block::Wood);
+        }
+        for depth in (p_surf + 6)..=(p_surf + 8) {
+            w.set(nt, depth, Block::Leaves);
+        }
+
+        let p_center = w.grid.tile(pt).unwrap().center;
+        let n_center = w.grid.tile(nt).unwrap().center;
+        let ground_r = w.depth_to_radius_m(p_surf + 1);
+
+        let mut p = PlayerCtrl::default();
+        init(&mut p, &body);
+        p.position = dvec3_scale(p_center, ground_r);
+        p.velocity = DVec3::default();
+        p.last_tile = pt;
+        p.grounded = true;
+        /* up radial, fwd tangent toward N so holding W walks into the step. */
+        let up = dvec3_normalize(p_center);
+        let to_n = dvec3_sub(n_center, p_center);
+        let fwd = dvec3_normalize(dvec3_sub(to_n, dvec3_scale(up, dvec3_dot(to_n, up))));
+        p.basis = TangentBasis {
+            up,
+            fwd,
+            right: dvec3_normalize(dvec3_cross(fwd, up)),
+        };
+        p.basis_ready = true;
+        p.yaw = 0.0;
+        p.pitch = 0.0;
+        steps(&mut p, Some(&w), 3);
+
+        /* Hold W into the step; jump partway (frames 25..30). */
+        set_phys(|ph| ph.forward = true);
+        let mut min_r = f64::MAX;
+        for i in 0..120 {
+            if i == 25 {
+                set_phys(|ph| ph.jump = true);
+            }
+            if i == 30 {
+                set_phys(|ph| ph.jump = false);
+            }
+            update(&mut p, Some(&w), DT);
+            let r = dvec3_length(dvec3_sub(
+                p.position,
+                dvec3_make(body.pos_x, body.pos_y, body.pos_z),
+            ));
+            min_r = min_r.min(r);
+        }
+        set_phys(|ph| ph.forward = false);
+        assert!(
+            min_r >= ground_r - 0.6,
+            "fell through jumping at a tree on a step: min_r={min_r:.2} ground_r={ground_r:.2} (P={pt} N={nt})"
         );
     }
 
