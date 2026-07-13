@@ -792,6 +792,84 @@ fn dev_maybe_place(app: &mut App) {
                 println!("[dev] dive: no ocean found on this planet");
             }
         }
+        22 => {
+            /* Grass showcase (TENEBRIS_DEV_GRASS): scan for a flat Fields
+             * tile with a grass top and drop the camera just above it,
+             * looking across the sward at a shallow down-angle so the wind
+             * sway of the scatter grass is framed (reliable, like the dive
+             * cam - the land spawn is often desert/rock). */
+            use tenebris_core::blocks::{is_solid, Block};
+            let w0 = app.world.borrow();
+            let surf_of = |i: i32| -> i32 {
+                let mut s = -1i32;
+                for d in (0..tenebris_core::world::WORLD_MAX_DEPTH).rev() {
+                    if is_solid(w0.get(i, d)) {
+                        s = d;
+                        break;
+                    }
+                }
+                s
+            };
+            let spot = {
+                let center = dvec3_make(w0.body.pos_x, w0.body.pos_y, w0.body.pos_z);
+                let mut found: Option<(i32, DVec3, f64, DVec3)> = None;
+                for i in 0..w0.tile_count {
+                    let Some(t) = w0.grid.tile(i) else { continue };
+                    if tenebris_core::planet_gen::biome(&w0.body, t.center)
+                        != tenebris_core::planet_gen::Biome::Fields
+                    {
+                        continue;
+                    }
+                    let surf = surf_of(i);
+                    if surf < 0 {
+                        continue;
+                    }
+                    let top = w0.get(i, surf);
+                    if !matches!(top, Block::Grass | Block::DryGrass | Block::JungleGrass) {
+                        continue;
+                    }
+                    /* Flat neighbourhood: every neighbour's surface within 1
+                     * voxel, so the camera isn't walled in by raised tiles. */
+                    let flat = t.neighbors.iter().all(|&n| {
+                        n < 0 || (surf_of(n) - surf).abs() <= 1
+                    });
+                    if flat {
+                        let dir = dvec3_normalize(t.center);
+                        let r_surf = w0.depth_to_radius_m(surf + 1);
+                        /* Only a SUNLIT tile - many flat grass tiles sit on
+                         * the planet's night side and would shoot black. */
+                        let pos = dvec3_add(center, dvec3_scale(dir, r_surf));
+                        if renderer::entity_sun_brightness(pos) > 0.6 {
+                            found = Some((i, dir, r_surf, center));
+                            break;
+                        }
+                    }
+                }
+                found
+            };
+            drop(w0);
+            if let Some((tile, dir, r_surf, center)) = spot {
+                /* Feet just above the sward (renderer adds its own 1.6 m eye
+                 * height). Pin the position, then set pitch DIRECTLY to look
+                 * down at the near grass - the basis recomputes from the
+                 * pinned position each frame, so a fixed pitch is reliable
+                 * (aiming via a world target used the stale spawn basis and
+                 * pointed at the sky). */
+                let cam = dvec3_add(center, dvec3_scale(dir, r_surf + 0.05));
+                {
+                    let mut p = app.player.borrow_mut();
+                    p.position = cam;
+                    p.velocity = tenebris_core::math::DVec3::default();
+                    p.last_tile = tile;
+                    p.yaw = 0.0;
+                    p.pitch = -0.42; /* look down at the grass in front */
+                }
+                DEV_FISH_CAM.with(|c| c.set(Some(cam)));
+                println!("[dev] grass: Fields tile {}", tile);
+            } else {
+                println!("[dev] grass: no Fields grass tile found");
+            }
+        }
         15 => {
             /* Occlusion test (TENEBRIS_DEV_OCCLUDE): raise a dirt column
              * a few metres ahead with the frozen herd + a crop row
@@ -1902,6 +1980,9 @@ extern "C" fn init() {
         DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
     } else if std::env::var("TENEBRIS_DEV_DIVE").is_ok() {
         DEV_PLACE_MODE.with(|c| c.set(21));
+        DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
+    } else if std::env::var("TENEBRIS_DEV_GRASS").is_ok() {
+        DEV_PLACE_MODE.with(|c| c.set(22));
         DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
     } else if std::env::var("TENEBRIS_DEV_BONFIRE").is_ok() {
         DEV_PLACE_MODE.with(|c| c.set(18));
