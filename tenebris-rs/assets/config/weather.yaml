@@ -1,0 +1,85 @@
+# weather.yaml - planetary weather field (core/weather.rs).
+#
+# Weather is a DETERMINISTIC field of (seed, surface direction, time): a
+# drifting simplex "solar saturation" field warms the atmosphere, and where
+# that warmth meets the biome moisture map, clouds condense. The cloud
+# lifecycle you see - a small transparent puff growing into a big opaque
+# mass and dissipating - emerges from the field drifting over the world.
+# Big (high-density) clouds rain; snow falls over the cold biomes.
+#
+# A field left out or set to 0 keeps the compiled-in default.
+
+# --- Solar-energy saturation (the drifting simplex field) ---
+#   solar_scale   spatial frequency on the unit sphere (higher = smaller,
+#                 more numerous warm pockets).
+#   solar_drift   how fast the field evolves / drifts over time.
+#   solar_floor   minimum warmth even in low-solar areas, so moist regions
+#                 still cloud (0..1).
+solar_scale: 2.2
+solar_drift: 0.015
+solar_floor: 0.55
+
+# --- Aridity ---
+#   arid_gamma    > 1 clears the dry end (deserts) harder while leaving wet
+#                 regions cloudy, so clouds avoid arid ground and rain there
+#                 only rarely.
+arid_gamma: 1.35
+
+# --- Cloud coverage / opacity ramp ---
+#   cloud_min     density below this -> clear sky (cloud despawned).
+#   cloud_full    density above this -> a full, opaque cloud mass.
+#   min_alpha     opacity of the smallest just-forming puff (grows to 1).
+cloud_min: 0.22
+cloud_full: 0.52
+min_alpha: 0.32
+
+# --- Precipitation ---
+#   rain_threshold  density above which a cloud becomes a rain/snow cloud.
+rain_threshold: 0.55
+
+# --- Motion ---
+#   small_extra_drift  DEPRECATED / ignored. Clouds now all drift at the
+#                      single layer speed (clouds.yaml drift_mps), which is
+#                      the hard max - per-cloud extra drift made wisps zip
+#                      by unrealistically fast, so it was removed.
+small_extra_drift: 0.0
+
+# --- Wind (drives grass sway) ---
+#   base_wind       calm-day baseline wind 0..1 (grass always breathes)
+#   gust_amp        gust strength added from a drifting noise field
+#   gust_scale      spatial frequency of the gust field over the sphere
+#   gust_drift      how fast gusts roll across the land (x seconds)
+#   overcast_wind   extra wind per unit of overcast coverage
+#   storm_wind      extra wind while a cell is precipitating (storms whip)
+#   wind_max        hard cap on the wind factor
+#   wind_dir_pressure  how hard the pressure gradient bends the wind
+#                      DIRECTION off the base cloud-drift flow (0 = wind
+#                      just follows the drift; higher steers it toward
+#                      low-pressure / cloudy cells so gusts blow toward storms)
+base_wind: 0.35
+gust_amp: 0.55
+gust_scale: 3.0
+gust_drift: 0.08
+overcast_wind: 0.4
+storm_wind: 1.1
+wind_max: 2.2
+wind_dir_pressure: 8.0
+
+# --- Storm intensity ---
+#   rain_cloud_scale  size multiplier for a rain/snow cloud - storm clouds
+#                     tower into big dark masses.
+#   rain_fog_mult     distance-fog density multiplier while precipitating
+#                     (thicker, closer fog in rain/snow).
+#   cloud_fog_add     extra fog density per unit overcast (hazy when cloudy).
+#   overcast_sun_dim  how much full overcast dims the sun (0..1) - the region
+#                     goes flat + grey under thick cloud.
+#   overcast_amb_dim  how much full overcast dims the ambient fill (0..1).
+rain_cloud_scale: 1.7
+rain_fog_mult: 3.6
+cloud_fog_add: 0.8
+overcast_sun_dim: 0.72
+overcast_amb_dim: 0.48
+
+# --- Legacy (default-seed) worlds have no biome moisture map; use this
+#     flat moisture so the sky still weathers over time. ---
+default_moisture: 0.66

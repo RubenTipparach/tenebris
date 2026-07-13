@@ -183,7 +183,9 @@ const MP_RECONNECT_TOTAL_S: f64 = 300.0;
 const MP_RECONNECT_INTERVAL_S: f64 = 5.0;
 
 const SETTINGS_PANEL_W: f32 = 440.0;
-const SETTINGS_PANEL_H: f32 = 460.0;
+/* Grew by one 80 px toggle row (mouse-sens / chat-fade sliders, then
+ * the lite-graphics + enemy-mobs toggles). */
+const SETTINGS_PANEL_H: f32 = 540.0;
 const SETTINGS_TRACK_H: f32 = 12.0;
 
 /* ------------------------------------------------------------------ */
@@ -310,6 +312,11 @@ struct Menu {
      * settings_event swallows every event and gets first crack ahead
      * of the regular menu / pause routes. */
     settings_visible: bool,
+    /* Weather panel (pause menu). Sim-driven storm control: a moisture
+     * slider that raises weather::moisture_boost so clouds thicken and
+     * storm everywhere as it climbs. Own visibility flag like settings so
+     * the pause panel hides behind it while it's open. */
+    weather_visible: bool,
     btn_settings_back: MenuButton,
     /* Mouse-sensitivity slider geometry + drag state. Recomputed
      * every frame in settings_layout; sens_dragging persists across
@@ -334,6 +341,11 @@ struct Menu {
      * but only takes visual effect on the next reload (perf mode is
      * set before renderer init). Drawn below the chat-fade slider. */
     btn_lite_graphics: MenuButton,
+    /* Enemy-mobs toggle button. A click flips
+     * settings::set_enemy_mobs; persists immediately and takes effect
+     * live (gates SP stalker spawns). Drawn below the lite-graphics
+     * toggle. */
+    btn_enemy_mobs: MenuButton,
     /* Toast under the INVITE FRIENDS button after a successful share.
      * pause_share_msg_until is a sokol_time stamp; the label fades
      * once now_s() passes it. share_result is 1=shared via Web Share
@@ -400,6 +412,12 @@ pub fn dev_show_menu(which: &str) {
     with_menu(|m| match which {
         "worlds" => enter_world_list(m),
         "new" => start_sp_new_world(m),
+        /* Dev screenshot: open the modal Settings overlay over a
+         * sokol-drawn (non-egui) state so it actually renders. */
+        "settings" => {
+            m.state = GameState::ProfileSelect;
+            m.settings_visible = true;
+        }
         _ => m.state = GameState::MainMenu,
     });
 }
@@ -1478,6 +1496,15 @@ fn lite_graphics_label(on: bool) -> &'static str {
         "LITE GRAPHICS: ON"
     } else {
         "LITE GRAPHICS: OFF"
+    }
+}
+
+/// Enemy-mobs toggle label. Off = peaceful nights (no stalkers).
+fn enemy_mobs_label(on: bool) -> &'static str {
+    if on {
+        "ENEMY MOBS: ON"
+    } else {
+        "ENEMY MOBS: OFF"
     }
 }
 
@@ -2857,7 +2884,7 @@ pub fn pause_draw(screen_w: i32, screen_h: i32) {
 pub fn pause_egui_ui(ctx: &egui::Context) {
     let (show, is_mp, reconnecting) = with_menu(|m| {
         (
-            m.pause_visible && !m.settings_visible,
+            m.pause_visible && !m.settings_visible && !m.weather_visible,
             m.state == GameState::InGameMp,
             m.reconnect_deadline_t > 0.0,
         )
@@ -2868,6 +2895,7 @@ pub fn pause_egui_ui(ctx: &egui::Context) {
 
     let mut do_resume = false;
     let mut do_settings = false;
+    let mut do_weather = false;
     let mut do_invite = false;
     let mut do_quit = false;
 
@@ -2911,6 +2939,10 @@ pub fn pause_egui_ui(ctx: &egui::Context) {
                 if menu_button(ui, "Settings").clicked() {
                     do_settings = true;
                 }
+                ui.add_space(8.0);
+                if menu_button(ui, "Weather").clicked() {
+                    do_weather = true;
+                }
                 if is_mp {
                     ui.add_space(8.0);
                     if menu_button(ui, "Invite Players").clicked() {
@@ -2929,6 +2961,8 @@ pub fn pause_egui_ui(ctx: &egui::Context) {
             pause_apply(m, PauseAction::Resume);
         } else if do_settings {
             pause_apply(m, PauseAction::Settings);
+        } else if do_weather {
+            pause_apply(m, PauseAction::Weather);
         } else if do_invite {
             pause_apply(m, PauseAction::Invite);
         } else if do_quit {
@@ -2942,6 +2976,7 @@ pub fn pause_egui_ui(ctx: &egui::Context) {
 enum PauseAction {
     Resume,
     Settings,
+    Weather,
     Invite,
     Quit,
 }
@@ -2951,9 +2986,13 @@ fn pause_apply(m: &mut Menu, action: PauseAction) {
         PauseAction::Resume => {
             set_pause_visible(m, false, "resume");
             m.pause_auto_disconnect = false;
+            m.weather_visible = false;
         }
         PauseAction::Settings => {
             m.settings_visible = true;
+        }
+        PauseAction::Weather => {
+            m.weather_visible = true;
         }
         PauseAction::Invite => {
             let room = m.room_code.clone();
@@ -2968,8 +3007,85 @@ fn pause_apply(m: &mut Menu, action: PauseAction) {
             }
             m.active_world.clear();
             set_pause_visible(m, false, "quit");
+            m.weather_visible = false;
             m.state = GameState::MainMenu;
         }
+    }
+}
+
+/// Weather panel (pause menu): a sim-driven storm control. The moisture
+/// slider raises `weather::moisture_boost`, which thickens clouds across the
+/// whole planet and, as it nears the top, pushes every cell past the rain
+/// threshold into a storm - one deterministic code path, no forced-storm
+/// fork. Self-gates on the pause menu being open with this panel selected;
+/// added to the in-game egui dispatch in app.rs next to `pause_egui_ui`.
+pub fn weather_egui_ui(ctx: &egui::Context) {
+    let show = with_menu(|m| m.pause_visible && m.weather_visible && !m.settings_visible);
+    if !show {
+        return;
+    }
+    let rain_thr = tenebris_core::weather::config().rain_threshold;
+    let mut boost = tenebris_core::weather::moisture_boost();
+    let mut do_back = false;
+    let mut do_clear = false;
+
+    egui::Window::new("tenebris-weather")
+        .title_bar(false)
+        .resizable(false)
+        .collapsible(false)
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .show(ctx, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new("WEATHER")
+                        .size(32.0)
+                        .strong()
+                        .color(egui::Color32::from_rgb(0xd6, 0xe4, 0xff)),
+                );
+                ui.add_space(6.0);
+                /* Status readout driven by the boost vs the rain threshold. */
+                let (status, col) = if boost >= rain_thr {
+                    ("STORMING", egui::Color32::from_rgb(0x8f, 0xb0, 0xff))
+                } else if boost > 0.02 {
+                    ("clouding over", egui::Color32::from_rgb(0xc0, 0xc8, 0xd8))
+                } else {
+                    ("clear - natural weather", egui::Color32::from_rgb(0x9a, 0xa2, 0xb2))
+                };
+                ui.label(egui::RichText::new(status).size(17.0).color(col));
+                ui.add_space(14.0);
+
+                let mut pct = boost * 100.0;
+                ui.add(
+                    egui::Slider::new(&mut pct, 0.0..=100.0)
+                        .suffix("%")
+                        .text("moisture")
+                        .clamping(egui::SliderClamping::Always),
+                );
+                boost = (pct / 100.0).clamp(0.0, 1.0);
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new("drag to max to storm the whole planet")
+                        .size(13.0)
+                        .color(egui::Color32::from_rgb(0x9a, 0xa2, 0xb2)),
+                );
+                ui.add_space(16.0);
+                if menu_button(ui, "Clear Skies").clicked() {
+                    do_clear = true;
+                }
+                ui.add_space(8.0);
+                if menu_button(ui, "Back").clicked() {
+                    do_back = true;
+                }
+            });
+        });
+
+    if do_clear {
+        boost = 0.0;
+    }
+    tenebris_core::weather::set_moisture_boost(boost);
+    if do_back {
+        with_menu(|m| m.weather_visible = false);
     }
 }
 
@@ -3131,7 +3247,7 @@ fn settings_layout(m: &mut Menu, w: f32, h: f32) {
     m.chat_track_w = SETTINGS_PANEL_W - 80.0;
     m.chat_track_h = SETTINGS_TRACK_H;
     /* Lite-graphics toggle - same width as the slider tracks so the
-     * three rows visually line up; label drawn just above. */
+     * rows visually line up; label drawn just above. */
     set_button(
         &mut m.btn_lite_graphics,
         px + 40.0,
@@ -3139,6 +3255,17 @@ fn settings_layout(m: &mut Menu, w: f32, h: f32) {
         SETTINGS_PANEL_W - 80.0,
         40.0,
         lite_graphics_label(settings::lite_graphics()),
+        mx,
+        my,
+    );
+    /* Enemy-mobs toggle - one row below lite-graphics. */
+    set_button(
+        &mut m.btn_enemy_mobs,
+        px + 40.0,
+        py + 390.0,
+        SETTINGS_PANEL_W - 80.0,
+        40.0,
+        enemy_mobs_label(settings::enemy_mobs()),
         mx,
         my,
     );
@@ -3281,6 +3408,22 @@ fn settings_draw(m: &mut Menu, w: f32, h: f32) {
         mobile_ui::draw_rect_outline(m.btn_lite_graphics.x, m.btn_lite_graphics.y, m.btn_lite_graphics.w, m.btn_lite_graphics.h, 2.0, 0.85, 0.90, 1.00, 1.0);
     }
 
+    /* Enemy-mobs toggle. Green when ON (mobs prowl), grey when OFF
+     * (peaceful) - same colour language as the lite-graphics row. */
+    {
+        let em_hover = hit(&m.btn_enemy_mobs, m.mouse_x, m.mouse_y);
+        let em_on = settings::enemy_mobs();
+        let (r, g, b) = if em_on {
+            if em_hover { (0.28, 0.46, 0.28) } else { (0.18, 0.36, 0.20) }
+        } else if em_hover {
+            (0.22, 0.30, 0.42)
+        } else {
+            (0.12, 0.14, 0.19)
+        };
+        mobile_ui::draw_rect(m.btn_enemy_mobs.x, m.btn_enemy_mobs.y, m.btn_enemy_mobs.w, m.btn_enemy_mobs.h, r, g, b, 0.98);
+        mobile_ui::draw_rect_outline(m.btn_enemy_mobs.x, m.btn_enemy_mobs.y, m.btn_enemy_mobs.w, m.btn_enemy_mobs.h, 2.0, 0.85, 0.90, 1.00, 1.0);
+    }
+
     /* BACK button - re-use the menu button visuals. */
     let back_hover = hit(&m.btn_settings_back, m.mouse_x, m.mouse_y);
     if back_hover {
@@ -3316,6 +3459,16 @@ fn settings_draw(m: &mut Menu, w: f32, h: f32) {
         0xff,
     );
     draw_text_centered(TXT_RELOAD_TO_APPLY, cx, py + 356.0, 1.0, 0x90, 0x98, 0xa8);
+    /* Enemy-mobs toggle button text. Takes effect live (no reload). */
+    draw_text_centered(
+        &m.btn_enemy_mobs.label,
+        m.btn_enemy_mobs.x + m.btn_enemy_mobs.w * 0.5,
+        m.btn_enemy_mobs.y + (m.btn_enemy_mobs.h - 8.0 * 1.6) * 0.5,
+        1.6,
+        0xff,
+        0xff,
+        0xff,
+    );
     /* BACK button label. */
     draw_text_centered(
         &m.btn_settings_back.label,
@@ -3410,6 +3563,12 @@ fn settings_event(m: &mut Menu, e: &sapp::Event) -> bool {
              * settings_layout() call (next draw). Doesn't rebuild
              * pipelines - the player has to reload. */
             settings::set_lite_graphics(!settings::lite_graphics());
+            return true;
+        }
+        if hit(&m.btn_enemy_mobs, cx, cy) {
+            /* Flips live: the SP stalker spawner reads this every
+             * frame (client::animals). */
+            settings::set_enemy_mobs(!settings::enemy_mobs());
             return true;
         }
         /* Press elsewhere inside the modal does nothing but is still
@@ -4240,13 +4399,14 @@ mod tests {
         let _g = setup("menu_layout_settings");
         with_menu(|m| settings_layout(m, W, H));
         snap(|m| {
+            /* Panel grew to 540 tall, so the whole stack shifts up 40. */
             assert_eq!(
                 (m.sens_track_x, m.sens_track_y, m.sens_track_w, m.sens_track_h),
-                (460.0, 260.0, 360.0, 12.0)
+                (460.0, 220.0, 360.0, 12.0)
             );
             assert_eq!(
                 (m.chat_track_x, m.chat_track_y, m.chat_track_w, m.chat_track_h),
-                (460.0, 360.0, 360.0, 12.0)
+                (460.0, 320.0, 360.0, 12.0)
             );
             assert_eq!(
                 (
@@ -4255,7 +4415,16 @@ mod tests {
                     m.btn_lite_graphics.w,
                     m.btn_lite_graphics.h
                 ),
-                (460.0, 440.0, 360.0, 40.0)
+                (460.0, 400.0, 360.0, 40.0)
+            );
+            assert_eq!(
+                (
+                    m.btn_enemy_mobs.x,
+                    m.btn_enemy_mobs.y,
+                    m.btn_enemy_mobs.w,
+                    m.btn_enemy_mobs.h
+                ),
+                (460.0, 480.0, 360.0, 40.0)
             );
             assert_eq!(
                 (
@@ -4264,7 +4433,7 @@ mod tests {
                     m.btn_settings_back.w,
                     m.btn_settings_back.h
                 ),
-                (540.0, 520.0, 200.0, 48.0)
+                (540.0, 560.0, 200.0, 48.0)
             );
             assert_eq!(m.btn_settings_back.label, "BACK");
         });
@@ -4376,8 +4545,8 @@ mod tests {
         run_layout();
         assert!(handle_event(&click(20.0, 20.0))); /* SETTINGS chip */
         assert!(snap(|m| m.settings_visible));
-        /* Modal swallows everything; BACK at (540, 520, 200, 48). */
-        assert!(handle_event(&click(640.0, 540.0)));
+        /* Modal swallows everything; BACK at (540, 560, 200, 48). */
+        assert!(handle_event(&click(640.0, 580.0)));
         assert!(!snap(|m| m.settings_visible));
         assert_eq!(state(), GameState::MainMenu);
     }
@@ -4389,8 +4558,8 @@ mod tests {
         settings::set_mouse_sensitivity(settings::MOUSE_SENS_DEFAULT);
         force_state(GameState::MainMenu);
         with_menu(|m| m.settings_visible = true);
-        /* Press at the right end of the track (820, 260) -> MAX. */
-        assert!(handle_event(&click(820.0, 262.0)));
+        /* Press at the right end of the track (820, 220) -> MAX. */
+        assert!(handle_event(&click(820.0, 222.0)));
         assert!(snap(|m| m.sens_dragging));
         assert_eq!(settings::mouse_sensitivity(), settings::MOUSE_SENS_MAX);
         /* Drag to the middle -> midpoint value; drags keep tracking
@@ -4407,10 +4576,10 @@ mod tests {
         };
         assert!(handle_event(&up));
         assert!(!snap(|m| m.sens_dragging));
-        handle_event(&mouse_move(460.0, 262.0));
+        handle_event(&mouse_move(460.0, 222.0));
         assert!((settings::mouse_sensitivity() - mid).abs() < 1e-6);
         /* Press left of center under the track -> clamps to MIN. */
-        assert!(handle_event(&click(460.0, 262.0)));
+        assert!(handle_event(&click(460.0, 222.0)));
         assert_eq!(settings::mouse_sensitivity(), settings::MOUSE_SENS_MIN);
         settings::set_mouse_sensitivity(settings::MOUSE_SENS_DEFAULT);
     }
@@ -4422,13 +4591,13 @@ mod tests {
         settings::set_chat_fade_s(settings::CHAT_FADE_DEFAULT_S);
         force_state(GameState::MainMenu);
         with_menu(|m| m.settings_visible = true);
-        /* Chat track at (460, 360, 360, 12): press at the right end. */
-        assert!(handle_event(&click(820.0, 362.0)));
+        /* Chat track at (460, 320, 360, 12): press at the right end. */
+        assert!(handle_event(&click(820.0, 322.0)));
         assert!(snap(|m| m.chat_dragging));
         assert_eq!(settings::chat_fade_s(), settings::CHAT_FADE_MAX_S);
-        assert!(handle_event(&touch(EventType::TouchesMoved, 460.0, 362.0)));
+        assert!(handle_event(&touch(EventType::TouchesMoved, 460.0, 322.0)));
         assert_eq!(settings::chat_fade_s(), settings::CHAT_FADE_MIN_S);
-        assert!(handle_event(&touch(EventType::TouchesEnded, 460.0, 362.0)));
+        assert!(handle_event(&touch(EventType::TouchesEnded, 460.0, 322.0)));
         assert!(!snap(|m| m.chat_dragging));
         settings::set_chat_fade_s(settings::CHAT_FADE_DEFAULT_S);
     }
@@ -4440,13 +4609,29 @@ mod tests {
         settings::set_lite_graphics(false);
         force_state(GameState::MainMenu);
         with_menu(|m| m.settings_visible = true);
-        /* Toggle at (460, 440, 360, 40). */
-        assert!(handle_event(&click(640.0, 460.0)));
+        /* Toggle at (460, 400, 360, 40). */
+        assert!(handle_event(&click(640.0, 420.0)));
         assert!(settings::lite_graphics());
-        assert!(handle_event(&click(640.0, 460.0)));
+        assert!(handle_event(&click(640.0, 420.0)));
         assert!(!settings::lite_graphics());
         assert_eq!(lite_graphics_label(true), "LITE GRAPHICS: ON");
         assert_eq!(lite_graphics_label(false), "LITE GRAPHICS: OFF");
+    }
+
+    #[test]
+    fn enemy_mobs_toggle_flips_live() {
+        let _g = setup("menu_enemy_mobs_toggle");
+        with_profile("Ann");
+        settings::set_enemy_mobs(true);
+        force_state(GameState::MainMenu);
+        with_menu(|m| m.settings_visible = true);
+        /* Toggle at (460, 480, 360, 40) - one row below lite graphics. */
+        assert!(handle_event(&click(640.0, 500.0)));
+        assert!(!settings::enemy_mobs(), "click switches to peaceful");
+        assert!(handle_event(&click(640.0, 500.0)));
+        assert!(settings::enemy_mobs());
+        assert_eq!(enemy_mobs_label(true), "ENEMY MOBS: ON");
+        assert_eq!(enemy_mobs_label(false), "ENEMY MOBS: OFF");
     }
 
     #[test]

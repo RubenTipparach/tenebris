@@ -19,9 +19,12 @@ PAL = {
     "H": (120, 78, 40, 255),    # handle wood
     "h": (158, 108, 62, 255),   # handle highlight
     "d": (86, 56, 30, 255),     # handle shadow
-    "M": (150, 156, 168, 255),  # metal (wood-tier head = dull grey)
-    "m": (196, 202, 214, 255),  # metal highlight
-    "D": (96, 101, 112, 255),   # metal shadow
+    # Tier-1 head = knapped flint (chipped grey-tan stone, not metal). The
+    # base pickaxe/axe/shovel/hoe use these; stone/iron pickaxes remap the
+    # M/m/D chars to their own palettes below, so they're unaffected.
+    "M": (112, 106, 94, 255),   # flint main
+    "m": (152, 146, 130, 255),  # flint highlight (chipped facet)
+    "D": (70, 66, 58, 255),     # flint shadow
     # stone-tier head (bluish grey rock)
     "S": (116, 118, 126, 255),
     "s": (150, 152, 160, 255),

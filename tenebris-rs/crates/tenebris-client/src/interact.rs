@@ -55,6 +55,13 @@ pub struct InteractState {
     /// etc.) are unused in this case. The HUD reads this to label the
     /// target and the click path branches off it.
     pub is_torch_target: bool,
+    /// When true, the target is a crop entity (plant) under the reticle,
+    /// broken like a block by holding the mine button. Block fields are
+    /// unused; the crop-break timer lives in `crop_break_s`.
+    pub is_crop_target: bool,
+    /// Seconds the mine button has been held on the current crop target.
+    /// Fills to the crop break time, then the crop breaks + drops.
+    pub crop_break_s: f32,
     pub torch_idx: i32,
     pub hit_tile: i32,
     pub hit_depth: i32,
@@ -221,6 +228,7 @@ fn world_to_tile_depth(w: &World, pos: DVec3, hint: i32) -> (i32, Option<i32>) {
 pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32) {
     s.has_target = false;
     s.is_torch_target = false;
+    s.is_crop_target = false;
     s.torch_idx = -1;
 
     /* In space mode there are no blocks within reach - no point
@@ -336,6 +344,38 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
         }
         return;
     }
+
+    /* Crop precedence: a plant under the reticle is BROKEN like a block
+     * (no "harvest" prompt) - hold the mine button ~1 s and it pops,
+     * dropping its produce/seeds. Wins when the crop is the nearest thing
+     * under the reticle, so you break the plant, not the ground it grows
+     * on. The break itself (bag drop + persist + MP relay) is applied by
+     * the caller when `crop_break_s` fills; here we only run the timer. */
+    let crop_dist = crate::crops::reticle_distance(w, p);
+    if crop_dist < f32::MAX
+        && (!block_hit || (crop_dist as f64) <= block_dist)
+        && (torch_hit < 0 || crop_dist <= torch_dist_f)
+    {
+        s.has_target = true;
+        s.is_crop_target = true;
+        s.distance = crop_dist as f64;
+        s.mining_progress_s = 0.0;
+        s.mining_tile = -1;
+        s.mining_depth = -1;
+        /* Hold the mine button to break the plant, same as a block. Use
+         * left_HELD (the continuous flag), not left_click (the one-frame
+         * press edge) - the edge only ever added a single dt, so the timer
+         * never reached CROP_BREAK_S and crops couldn't be harvested. */
+        if input::state().left_held {
+            s.crop_break_s += dt;
+        } else {
+            s.crop_break_s = 0.0;
+        }
+        return;
+    }
+    /* Not aiming at a crop - reset the break timer so a half-broken plant
+     * doesn't finish when the reticle drifts back onto it later. */
+    s.crop_break_s = 0.0;
 
     let target_torch = torch_hit >= 0 && (!block_hit || torch_dist_f as f64 <= block_dist);
 
@@ -501,6 +541,20 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
                         crate::drops::spawn(w, s.hit_tile, s.hit_depth, items::CARROT, 1);
                     }
                 }
+                /* Flint bootstrap: mining plain rock has a config chance to
+                 * chip off a flint - the tier-1 tool material - so the
+                 * gather -> knap flint tools loop has a source. Ore rock is
+                 * excluded (it already drops its resource). Deterministic
+                 * per cell (salted hash) so it's frame-timing independent. */
+                if matches!(
+                    target_block,
+                    Block::Stone | Block::CragRock | Block::FrostIce | Block::AsteroidRock | Block::Moon
+                ) {
+                    let roll = tenebris_core::rng::hash2(s.hit_tile ^ 0x5f3a, s.hit_depth);
+                    if roll < mining::config().flint_from_stone_chance {
+                        crate::drops::spawn(w, s.hit_tile, s.hit_depth, items::FLINT, 1);
+                    }
+                }
                 s.mining_progress_s = 0.0;
             }
         } else {
@@ -523,6 +577,19 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
     }
 
     if inp.right_click {
+        /* Forage first: an empty (non-placeable) hand right-clicking a
+         * grassy / rocky / leafy surface gathers loose grass / flint /
+         * sticks off the ground without disturbing the terrain. Only in
+         * survival (creative has nothing to gather); torch targets are
+         * handled earlier and skipped here. */
+        if p.survival_mode
+            && s.has_target
+            && !s.is_torch_target
+            && !inventory::can_place(&p.inventory)
+            && forage_surface(s, w)
+        {
+            return;
+        }
         /* The topmost cell (depth = WORLD_MAX_DEPTH - 1) is reserved
          * as the planet's build cap - the layer above it is the
          * implicit-air sky boundary the floor / ceiling helpers
@@ -675,13 +742,14 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
                  * the cube renders turned toward the player who placed it
                  * (mirrors the JS placement). Recorded right next to the
                  * world_set, same frame as the tile save. */
-                if tenebris_core::blocks::is_tech_block(to_place) {
+                if tenebris_core::blocks::is_tech_block(to_place) || to_place == Block::Bonfire {
                     let facing = w.facing_toward(s.place_tile, s.place_depth, p.position);
                     let e = w.block_entities.entry(s.place_tile, s.place_depth);
                     e.facing = facing;
                     /* Give machines their state up front so the machine
                      * tick + power graph see them (computers/printers must
-                     * exist for the power gating). */
+                     * exist for the power gating). The bonfire needs its
+                     * cook/burn state created here too. */
                     tenebris_core::block_entity::init_machine_state(e, to_place);
                 }
                 net_client::send_edit(
@@ -700,6 +768,36 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
             }
         }
     }
+}
+
+/// Forage the exposed surface of the targeted block: gather loose grass,
+/// flint, or sticks off the ground as a floating pickup WITHOUT breaking
+/// the terrain. This is the bare-hands survival gather (right-click a
+/// surface with an empty hand) that seeds the flint-tool loop. The
+/// decorative scatter you see (tufts, pebbles) is pure mesh decoration, so
+/// this reads the underlying surface block instead. Returns true if the
+/// click found something to forage (so the caller can treat it as handled).
+fn forage_surface(s: &InteractState, w: &World) -> bool {
+    let top = w.get(s.hit_tile, s.hit_depth);
+    let item = match top {
+        /* Grassy sods of every biome collapse to one grass item, matching
+         * the mining drop rule. */
+        Block::Grass
+        | Block::SeqGrass
+        | Block::JungleGrass
+        | Block::DryGrass
+        | Block::DirtGrass
+        | Block::SeqDirtGrass => items::from_block(Block::Grass),
+        /* Loose rock chips off the surface as flint. */
+        Block::Stone | Block::CragRock | Block::FrostIce | Block::AsteroidRock | Block::Moon => {
+            items::FLINT
+        }
+        /* Snap sticks off low foliage. */
+        Block::Leaves | Block::SeqLeaves => items::STICK,
+        _ => return false,
+    };
+    crate::drops::spawn(w, s.hit_tile, s.hit_depth, item, 1);
+    true
 }
 
 #[cfg(test)]

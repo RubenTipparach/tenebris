@@ -24,6 +24,16 @@ pub struct ScatterConfig {
     pub grass_height_m: f32,
     /// Blade half-width at the base (metres).
     pub grass_blade_w_m: f32,
+    /// Quads stacked up each blade (2-3 gives a curved, bendy blade
+    /// instead of one rigid strip; taller blades earn +1 automatically).
+    pub grass_segments: f32,
+    /// Wind sway master switch: > 0.5 enables the wind-driven sway, <= 0.5
+    /// leaves the grass static. Off by default (uniform still grass).
+    pub grass_wind: f32,
+    /// Base darkening for the reference-style base->tip gradient: the blade
+    /// root is shaded to this fraction of full light and eases to 1.0 at the
+    /// tip, so blades read as lush (dark roots, bright tips) not flat.
+    pub grass_base_shade: f32,
 
     /* Flowers - a stem blade with a bright diamond head. */
     /// Probability (0..1) a grass surface tile gets a flower.
@@ -93,6 +103,14 @@ pub struct ScatterConfig {
     pub underwater_sway_speed: f32,
     /// Underwater sway amplitude, metres.
     pub underwater_sway_amp_m: f32,
+    /// Wavelength (metres) of the gust wave that rolls downwind through the
+    /// grass - low frequency so nearby blades move together in a coherent
+    /// gust instead of each blade at a random phase.
+    pub sway_gust_wavelength_m: f32,
+    /// Steady downwind lean as a fraction (0..1) of the full sway reach:
+    /// grass stays at least this bent into the wind, and gusts push it the
+    /// rest of the way. 0 = pure back-and-forth, 1 = a fixed lean.
+    pub sway_lean_bias: f32,
     /* Vines - strands hanging off SWAMP grove canopies. */
     /// Probability (0..1) a swamp canopy tile drips vines.
     pub vine_chance: f32,
@@ -106,6 +124,9 @@ impl ScatterConfig {
         grass_blades: 18.0,
         grass_height_m: 0.55,
         grass_blade_w_m: 0.085,
+        grass_segments: 2.0,
+        grass_wind: 1.0,
+        grass_base_shade: 0.55,
         flower_chance: 0.12,
         flower_height_m: 0.32,
         rock_chance: 0.10,
@@ -127,9 +148,11 @@ impl ScatterConfig {
         shrub_chance: 0.14,
         shrub_size_m: 0.38,
         sway_speed: 1.8,
-        sway_amp_m: 0.05,
+        sway_amp_m: 0.07,
         underwater_sway_speed: 0.7,
         underwater_sway_amp_m: 0.09,
+        sway_gust_wavelength_m: 40.0,
+        sway_lean_bias: 0.6,
         vine_chance: 0.8,
         vine_length_m: 2.2,
     };
@@ -173,6 +196,9 @@ pub fn parse_config(src: &str, _path: &str) -> ScatterConfig {
             "grass_blades" => cfg.grass_blades = c,
             "grass_height_m" => cfg.grass_height_m = c,
             "grass_blade_w_m" => cfg.grass_blade_w_m = c,
+            "grass_segments" => cfg.grass_segments = c,
+            "grass_wind" => cfg.grass_wind = c,
+            "grass_base_shade" => cfg.grass_base_shade = c,
             "flower_chance" => cfg.flower_chance = c,
             "flower_height_m" => cfg.flower_height_m = c,
             "rock_chance" => cfg.rock_chance = c,
@@ -197,6 +223,8 @@ pub fn parse_config(src: &str, _path: &str) -> ScatterConfig {
             "sway_amp_m" => cfg.sway_amp_m = c,
             "underwater_sway_speed" => cfg.underwater_sway_speed = c,
             "underwater_sway_amp_m" => cfg.underwater_sway_amp_m = c,
+            "sway_gust_wavelength_m" => cfg.sway_gust_wavelength_m = c,
+            "sway_lean_bias" => cfg.sway_lean_bias = c,
             "vine_chance" => cfg.vine_chance = c,
             "vine_length_m" => cfg.vine_length_m = c,
             _ => {}

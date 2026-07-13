@@ -1386,23 +1386,23 @@ fn horizon_sky_color(env: &RenderEnv, cam_fwd: [f32; 3]) -> [f32; 3] {
              * - the scattering integral alone goes BLUE there, which
              * read wrong), and smoothstep(-0.28, -0.12) closes it out
              * to genuine dark once the sun is well down. */
-            let t = ((sun_height + 0.28) / (-0.12 + 0.28)).clamp(0.0, 1.0);
+            let t = ((sun_height + 0.32) / (-0.10 + 0.32)).clamp(0.0, 1.0);
             t * t * (3.0 - 2.0 * t)
         };
         let view_sun = cos_theta.max(0.0);
         let tint = [1.3f32, 1.0, 0.6];
         for k in 0..3 {
-            color[k] *= 1.0 + (tint[k] - 1.0) * sunset * 0.5;
+            color[k] *= 1.0 + (tint[k] - 1.0) * sunset * 0.85;
         }
         let glow = view_sun.powi(3) * sunset;
         let glow_c = [1.0f32, 0.65, 0.25];
         /* Horizon-band term: rd is tangent, so 1-|dot(rd,up)| = 1.
-         * Strengths match the atmosphere shader (0.16 / 0.07 - boosted
+         * Strengths match the atmosphere shader (0.22 / 0.11 - boosted
          * so dusk / dawn reads orange-red, not residual blue). */
         let horizon_c = [0.8f32, 0.4, 0.15];
         for k in 0..3 {
-            color[k] += glow_c[k] * glow * env.atmo_sun_intensity * 0.16
-                + horizon_c[k] * sunset * env.atmo_sun_intensity * 0.07;
+            color[k] += glow_c[k] * glow * env.atmo_sun_intensity * 0.22
+                + horizon_c[k] * sunset * env.atmo_sun_intensity * 0.11;
         }
     }
 
@@ -1630,6 +1630,13 @@ struct Renderer {
     animal_tex_view: sg::View,
     animal_tex_smp: sg::Sampler,
 
+    /* Crop texture atlas (assets/textures/crops.png) - one 32x32 material
+     * tile per column (bark / leaves / melon rind / fruit / ...), sampled
+     * by client::crops so plant boxes are textured, not flat. */
+    crop_tex_img: sg::Image,
+    crop_tex_view: sg::View,
+    crop_tex_smp: sg::Sampler,
+
     distant_lod_smp: sg::Sampler,
 
     /* Offscreen colour + depth render targets (Phase A scaffolding -
@@ -1702,6 +1709,9 @@ impl Default for Renderer {
             animal_tex_img: sg::Image::new(),
             animal_tex_view: sg::View::new(),
             animal_tex_smp: sg::Sampler::new(),
+            crop_tex_img: sg::Image::new(),
+            crop_tex_view: sg::View::new(),
+            crop_tex_smp: sg::Sampler::new(),
             distant_lod_smp: sg::Sampler::new(),
             offscreen_color: sg::Image::new(),
             offscreen_depth: sg::Image::new(),
@@ -1769,6 +1779,31 @@ thread_local! {
      * once per frame at its first draw, so one shared buffer can't
      * flush mid-frame and keep accepting UI vertices afterwards. */
     static SGL_WORLD_CTX: Cell<sgl::Context> = const { Cell::new(sgl::Context { id: 0 }) };
+    /// This frame's composite fog (xyz colour, w density incl. the
+    /// altitude fade). Stashed so the water pass - which draws AFTER
+    /// the composite - can apply the same fog to the sea surface.
+    static FRAME_FOG: Cell<[f32; 4]> = const { Cell::new([0.0; 4]) };
+    /// Overcast coverage at the camera this frame (0 = clear, 1 = solid
+    /// cloud). Dims + flattens the terrain lighting so a cloudy region
+    /// visibly darkens. Set in the composite/fog block, read at the
+    /// terrain uniform sites (a frame of lag on the early ones is
+    /// invisible since coverage drifts slowly).
+    static FRAME_OVERCAST: Cell<f32> = const { Cell::new(0.0) };
+}
+
+/// Overcast-dimmed ambient fill for a terrain uniform.
+fn overcast_ambient(base: Vec3) -> [f32; 3] {
+    let oc = FRAME_OVERCAST.with(|c| c.get());
+    let dim = 1.0 - oc * tenebris_core::weather::config().overcast_amb_dim;
+    [base.x * dim, base.y * dim, base.z * dim]
+}
+
+/// Overcast-dimmed sun tint for a terrain uniform (the sun is blocked more
+/// than the sky fill, so the region flattens as well as darkens).
+fn overcast_sun_tint(tint: Vec3) -> [f32; 3] {
+    let oc = FRAME_OVERCAST.with(|c| c.get());
+    let dim = 1.0 - oc * tenebris_core::weather::config().overcast_sun_dim;
+    [tint.x * dim, tint.y * dim, tint.z * dim]
 }
 
 /// Lazily create the world-entity sgl context against the offscreen
@@ -2016,6 +2051,54 @@ pub fn animal_view_id() -> u32 {
 }
 pub fn animal_sampler_id() -> u32 {
     R.with(|cell| cell.borrow().animal_tex_smp.id)
+}
+
+/// Crop material atlas - one 32x32 tile per column, sampled by
+/// client::crops so the procedural plant boxes are textured. NEAREST so
+/// the pixel-art bark / leaves / rind stay crisp.
+fn load_crop_textures(r: &mut Renderer) {
+    const FALLBACK: [u8; 4] = [90, 150, 60, 255];
+    let loaded = load_png_rgba("assets/textures/crops.png", false);
+    let (w, h, pixels): (i32, i32, &[u8]) = match &loaded {
+        Some(img) => (img.w, img.h, &img.rgba),
+        None => {
+            println!(
+                "[renderer] WARNING: assets/textures/crops.png missing; \
+                 crops will render flat-tinted"
+            );
+            (1, 1, &FALLBACK)
+        }
+    };
+    let mut desc = sg::ImageDesc {
+        width: w,
+        height: h,
+        pixel_format: sg::PixelFormat::Rgba8,
+        label: c"crop-atlas".as_ptr(),
+        ..Default::default()
+    };
+    desc.data.mip_levels[0] = sg::slice_as_range(pixels);
+    r.crop_tex_img = sg::make_image(&desc);
+    r.crop_tex_view = sg::make_view(&sg::ViewDesc {
+        texture: sg::TextureViewDesc { image: r.crop_tex_img, ..Default::default() },
+        label: c"crop-atlas-view".as_ptr(),
+        ..Default::default()
+    });
+    r.crop_tex_smp = sg::make_sampler(&sg::SamplerDesc {
+        min_filter: sg::Filter::Nearest,
+        mag_filter: sg::Filter::Nearest,
+        wrap_u: sg::Wrap::ClampToEdge,
+        wrap_v: sg::Wrap::ClampToEdge,
+        label: c"crop-atlas-sampler".as_ptr(),
+        ..Default::default()
+    });
+}
+
+/// Raw view / sampler ids for the crop atlas (client::crops).
+pub fn crop_view_id() -> u32 {
+    R.with(|cell| cell.borrow().crop_tex_view.id)
+}
+pub fn crop_sampler_id() -> u32 {
+    R.with(|cell| cell.borrow().crop_tex_smp.id)
 }
 
 /// Port of `load_flow_arrow()` - F5 overlay texture; NEAREST so the
@@ -2452,6 +2535,7 @@ pub fn init() {
         load_water_normal(&mut r);
         load_flow_arrow(&mut r);
         load_animal_textures(&mut r);
+        load_crop_textures(&mut r);
         /* Per-chunk meshes are allocated lazily once a body registers. */
     });
 }
@@ -3521,7 +3605,7 @@ pub fn draw_moons(view: Mat4, proj: Mat4, camera_world: Vec3) {
             let dfp = shaders::distant::DistantFsParams {
                 u_sun_dir: [r.env.sun_dir.x, r.env.sun_dir.y, r.env.sun_dir.z],
                 u_pad0: 0.0,
-                u_ambient: [r.env.ambient.x, r.env.ambient.y, r.env.ambient.z],
+                u_ambient: overcast_ambient(r.env.ambient),
                 u_pad1: 0.0,
                 u_camera_pos: [camera_world.x, camera_world.y, camera_world.z],
                 u_normal_strength: 0.6,
@@ -3795,6 +3879,31 @@ pub fn compose_to_swapchain(view: Mat4, proj: Mat4) {
                 + w.height_offset_m
                 - w.depth_offset_m;
 
+            /* Weather at the camera: overcast coverage + whether it's
+             * precipitating here. Overcast dims the terrain lighting;
+             * precipitation + cloud thicken the fog. Sampled every frame
+             * (independent of the fog-density gate). */
+            let (wx_overcast, wx_precip) = {
+                let world = ab.world.borrow();
+                let cam = vec3_sub(r.env.camera_world, body_center);
+                let cr = (cam.x * cam.x + cam.y * cam.y + cam.z * cam.z).sqrt().max(1e-3);
+                let dir = tenebris_core::math::dvec3_make(
+                    (cam.x / cr) as f64,
+                    (cam.y / cr) as f64,
+                    (cam.z / cr) as f64,
+                );
+                let t = tenebris_core::world_time::seconds();
+                let cell = tenebris_core::weather::cloud_cell(&world.body, dir, t);
+                /* Dev override forces a full overcast storm here too, so the
+                 * fog + lighting change matches the forced precipitation. */
+                if crate::weather_fx::forced_precip().is_some() {
+                    (1.0, true)
+                } else {
+                    (cell.cover, cell.raining)
+                }
+            };
+            FRAME_OVERCAST.with(|c| c.set(wx_overcast));
+
             let bc = tenebris_core::planet::get(ab.world.borrow().body.id);
             if bc.atmo_fog_density > 0.0 {
                 let cam = vec3_sub(r.env.camera_world, body_center);
@@ -3806,7 +3915,46 @@ pub fn compose_to_swapchain(view: Mat4, proj: Mat4) {
                  * sunset warmth all come out of the same integral. An
                  * optional per-body fog_color acts as a tint on top. */
                 let base = if r.env.atmo_strength > 0.001 {
-                    horizon_sky_color(&r.env, basis.fwd)
+                    /* Average the horizon sky colour around the WHOLE compass
+                     * (radial up, view-independent) instead of sampling only
+                     * the look direction. The fog then stays one stable colour
+                     * as the player turns - it swung obviously warm/cool at
+                     * dusk before, since the sunward horizon is orange and the
+                     * opposite is blue. Still shifts with position + time of
+                     * day, just not with head-turn. Reads more like a
+                     * volumetric haze than a directional tint. */
+                    let cc = r.env.atmo_planet_center;
+                    let camv = vec3_sub(r.env.camera_world, cc);
+                    let ul = (camv.x * camv.x + camv.y * camv.y + camv.z * camv.z).sqrt().max(1e-3);
+                    let up = [camv.x / ul, camv.y / ul, camv.z / ul];
+                    let refv = if up[1].abs() < 0.9 { [0.0f32, 1.0, 0.0] } else { [1.0f32, 0.0, 0.0] };
+                    let mut t1 = [
+                        up[1] * refv[2] - up[2] * refv[1],
+                        up[2] * refv[0] - up[0] * refv[2],
+                        up[0] * refv[1] - up[1] * refv[0],
+                    ];
+                    let t1l = (t1[0] * t1[0] + t1[1] * t1[1] + t1[2] * t1[2]).sqrt().max(1e-6);
+                    t1 = [t1[0] / t1l, t1[1] / t1l, t1[2] / t1l];
+                    let t2 = [
+                        up[1] * t1[2] - up[2] * t1[1],
+                        up[2] * t1[0] - up[0] * t1[2],
+                        up[0] * t1[1] - up[1] * t1[0],
+                    ];
+                    const FOG_DIRS: usize = 6;
+                    let mut acc = [0.0f32; 3];
+                    for k in 0..FOG_DIRS {
+                        let a = (k as f32) / (FOG_DIRS as f32) * std::f32::consts::TAU;
+                        let (cs, sn) = (a.cos(), a.sin());
+                        let dir = [
+                            t1[0] * cs + t2[0] * sn,
+                            t1[1] * cs + t2[1] * sn,
+                            t1[2] * cs + t2[2] * sn,
+                        ];
+                        let col = horizon_sky_color(&r.env, dir);
+                        acc = [acc[0] + col[0], acc[1] + col[1], acc[2] + col[2]];
+                    }
+                    let inv = 1.0 / FOG_DIRS as f32;
+                    [acc[0] * inv, acc[1] * inv, acc[2] * inv]
                 } else {
                     /* Airless body with fog forced on: flat colour
                      * dimmed by local daylight (terminator band). */
@@ -3830,16 +3978,33 @@ pub fn compose_to_swapchain(view: Mat4, proj: Mat4) {
                 };
                 let height = if bc.atmo_fog_height_m > 0.0 { bc.atmo_fog_height_m } else { 60.0 };
                 let alt = (cam_r - sea_radius).max(0.0);
-                let k = (1.0 - alt / height).clamp(0.0, 1.0);
+                /* Quadratic fade: the fog thins out noticeably as the
+                 * player climbs, clearing well before fog_height_m. */
+                let k = {
+                    let t = (1.0 - alt / height).clamp(0.0, 1.0);
+                    t * t
+                };
+                /* Weather thickens the fog: a base bump per unit overcast,
+                 * and a bigger multiplier while it's actually raining /
+                 * snowing (a wall of grey close in). The colour greys +
+                 * dims toward overcast so it reads as storm haze, not the
+                 * bright clear-sky horizon. */
+                let wcfg = tenebris_core::weather::config();
+                let precip_mult = if wx_precip { wcfg.rain_fog_mult } else { 1.0 };
+                let cloud_mult = 1.0 + wx_overcast * wcfg.cloud_fog_add;
+                let grey_t = wx_overcast * 0.5;
+                let lum = (base[0] * 0.3 + base[1] * 0.59 + base[2] * 0.11) * 0.85;
+                let g = |c: f32| (c * (1.0 - grey_t) + lum * grey_t) * (1.0 - 0.2 * wx_overcast);
                 fog = [
-                    base[0] * tint[0],
-                    base[1] * tint[1],
-                    base[2] * tint[2],
-                    bc.atmo_fog_density * k,
+                    g(base[0]) * tint[0],
+                    g(base[1]) * tint[1],
+                    g(base[2]) * tint[2],
+                    bc.atmo_fog_density * k * precip_mult * cloud_mult,
                 ];
             }
         }
 
+        FRAME_FOG.with(|f| f.set(fog));
         let fs = shaders::composite::CompositeFsParams {
             deep_color: [comp_deep.x, comp_deep.y, comp_deep.z, 0.0],
             absorption: [comp_absorb.x, comp_absorb.y, comp_absorb.z, 0.0],
@@ -4003,7 +4168,7 @@ fn body_draw_water(r: &Renderer, bi: usize, vp: Mat4, camera_world: Vec3) -> usi
             u_spec_intensity: w.specular_intensity,
             u_spec_power: w.specular_power,
             _pad_52: [0; 12],
-            u_sun_tint: [w.sun_tint.x, w.sun_tint.y, w.sun_tint.z],
+            u_sun_tint: overcast_sun_tint(w.sun_tint),
             _pad_76: [0; 4],
             u_sky_horizon: [w.sky_horizon_color.x, w.sky_horizon_color.y, w.sky_horizon_color.z],
             _pad_92: [0; 4],
@@ -4077,7 +4242,7 @@ fn body_draw_water(r: &Renderer, bi: usize, vp: Mat4, camera_world: Vec3) -> usi
         u_spec_intensity: w.specular_intensity,
         u_spec_power: w.specular_power,
         _pad_84: [0; 12],
-        u_sun_tint: [w.sun_tint.x, w.sun_tint.y, w.sun_tint.z],
+        u_sun_tint: overcast_sun_tint(w.sun_tint),
         _pad_108: [0; 4],
         /* Foam scalars packed into vec4s; crest.w doubles as the mix
          * intensity, slope.w unused (kept aligned). */
@@ -4096,6 +4261,9 @@ fn body_draw_water(r: &Renderer, bi: usize, vp: Mat4, camera_world: Vec3) -> usi
         u_torch_color: [l.torch_color.x, l.torch_color.y, l.torch_color.z, l.torch_intensity],
         u_flow_speed_falling: config::water_flow().uv_speed_falling,
         _pad_228: [0; 12],
+        /* Same sky-matched fog the composite used this frame - the
+         * water pass draws after the post-process, so it fogs itself. */
+        u_fog: FRAME_FOG.with(|f| f.get()),
     };
     sg::apply_uniforms(shaders::water::UB_FS_PARAMS, &sg::value_as_range(&fs_params));
 
@@ -4283,6 +4451,30 @@ pub fn draw_world(
             let l = config::lighting();
             {
                 let sc = tenebris_core::scatter::config();
+                /* Simple, believable grass wind - deliberately NOT the
+                 * atmospheric weather sim (its per-cell direction shifted as
+                 * the player moved and read as random). A single fixed
+                 * prevailing wind direction the VS projects onto each blade's
+                 * tangent plane, plus a slow global gust envelope, so the
+                 * whole sward leans + ripples the same way and breathes
+                 * together - a coherent low-frequency wave rolling downwind,
+                 * like the reference grass demos. */
+                let wind_on = sc.grass_wind > 0.5;
+                /* Global gust: the reach eases ~70%..100% over a few seconds -
+                 * one shared breath, not per-blade jitter. */
+                let gust = 0.85 + 0.15 * (r.time_seconds * 0.55).sin();
+                let amp = if wind_on { sc.sway_amp_m * gust } else { 0.0 };
+                let lean = sc.sway_lean_bias.clamp(0.0, 1.0);
+                let gust_k = std::f32::consts::TAU / sc.sway_gust_wavelength_m.max(0.5);
+                /* Fixed world-space prevailing wind; the VS re-projects it
+                 * onto each vertex's tangent plane so the visible field agrees
+                 * everywhere. xyz = unit dir * lean bias (length recovers the
+                 * bias), w = gust-wave spatial frequency (rad/m). */
+                let wind_dir_w = {
+                    let v = [1.0f32, 0.0, 0.35];
+                    let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+                    [v[0] / l, v[1] / l, v[2] / l]
+                };
                 let hex_vs_light = shaders::hex::HexVsLight {
                     u_sun_dir: [r.env.sun_dir.x, r.env.sun_dir.y, r.env.sun_dir.z],
                     _pad_12: [0; 4],
@@ -4295,9 +4487,15 @@ pub fn draw_world(
                     ],
                     u_sway: [
                         sc.sway_speed,
-                        sc.sway_amp_m,
+                        amp,
                         sc.underwater_sway_speed,
                         sc.underwater_sway_amp_m,
+                    ],
+                    u_wind_dir: [
+                        wind_dir_w[0] * lean,
+                        wind_dir_w[1] * lean,
+                        wind_dir_w[2] * lean,
+                        gust_k,
                     ],
                 };
                 sg::apply_uniforms(
@@ -4309,7 +4507,7 @@ pub fn draw_world(
                 let hex_fs_light = shaders::hex::HexFsLight {
                     u_sun_dir: [r.env.sun_dir.x, r.env.sun_dir.y, r.env.sun_dir.z],
                     _pad_12: [0; 4],
-                    u_ambient: [r.env.ambient.x, r.env.ambient.y, r.env.ambient.z],
+                    u_ambient: overcast_ambient(r.env.ambient),
                     _pad_28: [0; 4],
                     u_terminator: [l.night_ambient_floor, l.terminator_lo, l.terminator_hi, 0.0],
                 };
@@ -5829,7 +6027,7 @@ mod tests {
          * sg_apply_uniforms validates the range length against the
          * shader's declared block size. */
         assert_eq!(size_of::<shaders::hex::HexVsParams>(), 80);
-        assert_eq!(size_of::<shaders::hex::HexVsLight>(), 48); /* +u_sway (scatter wind) */
+        assert_eq!(size_of::<shaders::hex::HexVsLight>(), 64); /* +u_sway +u_wind_dir (scatter wind) */
         assert_eq!(size_of::<shaders::hex::HexFsLight>(), 48);
         assert_eq!(size_of::<shaders::hex::HexFsWater>(), 32);
         assert_eq!(size_of::<shaders::hex::HexFsTorch>(), 16);
@@ -5845,7 +6043,8 @@ mod tests {
         assert_eq!(size_of::<shaders::sun::SunVsParams>(), 64);
         assert_eq!(size_of::<shaders::sun::SunFsParams>(), 16);
         assert_eq!(size_of::<shaders::water::VsParams>(), 128);
-        assert_eq!(size_of::<shaders::water::FsParams>(), 240);
+        /* 16 vec4s since the hand-added distance-fog uniform (u_fog). */
+        assert_eq!(size_of::<shaders::water::FsParams>(), 256);
         assert_eq!(size_of::<shaders::water_mobile::VsParamsMobile>(), 112);
         assert_eq!(size_of::<shaders::water_mobile::FsParamsMobile>(), 160);
         assert_eq!(size_of::<shaders::torch::TorchVsParams>(), 80);

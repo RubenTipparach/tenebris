@@ -25,6 +25,22 @@
 #   carrot_chance         grass-break chance band for a wild carrot
 #                         (stacked after wheat_seed_chance)
 #   carrot_hunger_restore hunger restored by eating one carrot
+#
+# Orchard fruit (watermelon / kiwi vines, apple / orange trees). Found
+# growing wild in fields + jungle; eating one yields seeds to replant:
+#   fruit_vine_grow_time_s  seconds to maturity for ground vines
+#                           (watermelon, kiwi)
+#   fruit_tree_grow_time_s  seconds to maturity for fruit trees
+#                           (apple, orange)
+#   fruit_yield             fruit dropped per harvest
+#   fruit_seed_yield        seeds returned per harvest
+#   fruit_hunger_restore    hunger restored by eating one fruit
+#   rain_growth_mult        growth-rate multiplier while rain (or a
+#                           water bucket) keeps a crop watered
+#   water_boost_s           seconds of accelerated growth one bucket
+#                           pour grants a crop
+#   wild_fruit_chance       per-tile chance (0..1) a wild fruit plant
+#                           spawns on an eligible biome floor
 farming:
   grow_time_s: 45.0
   produce_yield: 3
@@ -40,3 +56,11 @@ farming:
   carrot_yield: 3
   carrot_chance: 0.08
   carrot_hunger_restore: 10.0
+  fruit_vine_grow_time_s: 80.0
+  fruit_tree_grow_time_s: 130.0
+  fruit_yield: 2
+  fruit_seed_yield: 2
+  fruit_hunger_restore: 22.0
+  rain_growth_mult: 2.2
+  water_boost_s: 60.0
+  wild_fruit_chance: 0.06

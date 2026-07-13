@@ -119,7 +119,7 @@ pub fn node_state(r: &Recipe, d: &Discovered, inv: &Inventory, bag: &Bag) -> Nod
     }
 }
 
-/// Pretty display name for an item id: "wood-pickaxe" -> "Wood Pickaxe".
+/// Pretty display name for an item id: "flint-pickaxe" -> "Flint Pickaxe".
 fn pretty_name(id: ItemId) -> String {
     let raw = items::def(id).map(|dfn| dfn.name).unwrap_or("item");
     let mut out = String::with_capacity(raw.len());
@@ -658,8 +658,8 @@ in: log 1
 [sticks]
 out: stick 4
 in: plank 2
-[wood-pickaxe]
-out: wood-pickaxe 1
+[flint-pickaxe]
+out: flint-pickaxe 1
 in: plank 3
 in: stick 2
 ";
@@ -670,7 +670,7 @@ in: stick 2
         let name_at = |ci: usize| rs[cols[ci][0]].name.clone();
         assert_eq!(name_at(0), "planks");
         assert_eq!(name_at(1), "sticks");
-        assert_eq!(name_at(2), "wood-pickaxe");
+        assert_eq!(name_at(2), "flint-pickaxe");
     }
 
     #[test]
@@ -686,8 +686,8 @@ in: log 1
 [sticks]
 out: stick 4
 in: plank 2
-[wood-pickaxe]
-out: wood-pickaxe 1
+[flint-pickaxe]
+out: flint-pickaxe 1
 in: plank 3
 in: stick 2
 ";
@@ -697,9 +697,9 @@ in: stick 2
         let name_pair = |&(a, b): &(usize, usize)| (rs[a].name.clone(), rs[b].name.clone());
         let pairs: Vec<_> = es.iter().map(name_pair).collect();
         assert!(pairs.contains(&("planks".into(), "sticks".into())));
-        assert!(pairs.contains(&("sticks".into(), "wood-pickaxe".into())));
+        assert!(pairs.contains(&("sticks".into(), "flint-pickaxe".into())));
         assert!(
-            !pairs.contains(&("planks".into(), "wood-pickaxe".into())),
+            !pairs.contains(&("planks".into(), "flint-pickaxe".into())),
             "column-skipping commodity edge must not be drawn"
         );
         // Every drawn edge connects adjacent columns.

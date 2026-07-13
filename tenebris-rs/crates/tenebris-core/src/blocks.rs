@@ -127,6 +127,13 @@ pub enum Block {
     JungleGrass = 42,
     /// yellow-green temperate pasture sod
     DryGrass = 43,
+
+    /// Bonfire - the flint-tier campfire. A palette/placeable id like the
+    /// tech blocks: it carries a block-entity (cook + fuel + burn state)
+    /// and is drawn by a dedicated campfire pass (logs + flame), NOT as a
+    /// hex prism, so it needs no atlas tile. Emits 2x a torch's light while
+    /// lit. Rust-port-only, appended past the palette.
+    Bonfire = 44,
 }
 
 /// Mirrors C's `BLOCK_COUNT` (the implicit trailing enum member). The
@@ -134,7 +141,7 @@ pub enum Block {
 /// the biome sods (JungleGrass / DryGrass) past the C palette - the
 /// native port is the canonical target now, so the palette can grow
 /// here.
-pub const BLOCK_COUNT: u8 = 44;
+pub const BLOCK_COUNT: u8 = 45;
 
 impl Block {
     /// Fallible conversion from the raw byte stored in voxel arrays /
@@ -221,8 +228,10 @@ pub fn covers_face(b: Block) -> bool {
     /* Tech blocks render as a cube (or thin connector) sitting in the
      * voxel, not a full hex prism, so they must NOT occlude the faces of
      * the terrain below / beside them - otherwise the ground under a
-     * placed machine gets culled and leaves a hole around the cube. */
-    if is_tech_block(b) {
+     * placed machine gets culled and leaves a hole around the cube. The
+     * bonfire is the same: a dedicated campfire pass draws it, not the
+     * hex mesher. */
+    if is_tech_block(b) || b == Block::Bonfire {
         return false;
     }
     true
@@ -381,7 +390,8 @@ mod tests {
         assert_eq!(Block::Farmland as u8, 41);
         assert_eq!(Block::JungleGrass as u8, 42);
         assert_eq!(Block::DryGrass as u8, 43);
-        assert_eq!(BLOCK_COUNT, 44);
+        assert_eq!(Block::Bonfire as u8, 44);
+        assert_eq!(BLOCK_COUNT, 45);
     }
 
     #[test]

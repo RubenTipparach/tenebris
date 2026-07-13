@@ -24,44 +24,45 @@ tier: 0
 out: stick 4
 in: plank 2
 
-[torch]
+# Bonfire: a pile of sticks sparked with flint. The flint-tier light + cook
+# station - interact (E) to feed it wood (sticks / logs / charcoal) and cook
+# meat or char logs into charcoal. It replaces the old wood torch as the
+# early-game light source (2x a torch's glow). Wood torches are removed now
+# that charcoal exists.
+[bonfire]
 tier: 0
-out: torch 4
-in: stick 1
-in: coal 1
+out: bonfire 1
+in: stick 8
+in: flint 1
 
-# Coal-free torch for the very start of a world: burns plain wood, so it
-# costs a lot more of it (3 sticks for 2 torches vs 1 stick + 1 coal for
-# 4). Same output item - the cheap coal path takes over once you mine.
-[wood-torch]
+# Flint tools - the tier-1 toolkit. Knapped from flint (foraged off rocky
+# ground / chipped from mined stone) lashed to a stick. This is the old
+# "wood tier"; the item ids are unchanged for save compatibility, but the
+# material is now flint.
+[flint-pickaxe]
 tier: 0
-out: torch 2
-in: stick 3
-
-[wood-pickaxe]
-tier: 0
-out: wood-pickaxe 1
-in: plank 3
+out: flint-pickaxe 1
+in: flint 2
 in: stick 2
 
-[wood-axe]
+[flint-axe]
 tier: 0
-out: wood-axe 1
-in: plank 3
+out: flint-axe 1
+in: flint 2
 in: stick 2
 
-[wood-shovel]
+[flint-shovel]
 tier: 0
-out: wood-shovel 1
-in: plank 1
+out: flint-shovel 1
+in: flint 1
 in: stick 2
 
 # Hoe: tills dirt / grass into farmland so seeds can be planted (T on the
-# ground with a hoe in the bag). Wood-tier so farming stays an early loop.
+# ground with a hoe in the bag). Flint-tier so farming stays an early loop.
 [hoe]
 tier: 0
 out: hoe 1
-in: plank 2
+in: flint 2
 in: stick 2
 
 # Fishing rod: casts a bobber onto water (LMB with the rod selected).
@@ -93,6 +94,14 @@ tier: 1
 out: iron-pickaxe 1
 in: iron-ingot 3
 in: stick 2
+
+# Bucket: scoop water (use an empty bucket aimed at water) then pour it on
+# a crop to speed its growth ("water plants"). Iron-tier so it comes online
+# once smelting is up; rain waters crops for free before then.
+[bucket]
+tier: 1
+out: bucket 1
+in: iron-ingot 3
 
 # The furnace: a placeable crafting station built from stone. Interact
 # (E) on it to open the smelting screen. Hand-crafted at the bench.

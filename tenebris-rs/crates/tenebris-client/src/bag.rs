@@ -240,8 +240,8 @@ in: log 1
 [sticks]
 out: stick 4
 in: plank 2
-[wood-pickaxe]
-out: wood-pickaxe 1
+[flint-pickaxe]
+out: flint-pickaxe 1
 in: plank 3
 in: stick 2
 ";
@@ -299,7 +299,7 @@ in: stick 2
         assert_eq!(bag.count_of(PLANK), 6);
         assert_eq!(bag.count_of(STICK), 4);
         // pickaxe: 3 planks + 2 sticks -> 1 tool
-        assert!(try_craft(&mut inv, &mut bag, &recipe("wood-pickaxe")));
+        assert!(try_craft(&mut inv, &mut bag, &recipe("flint-pickaxe")));
         assert_eq!(bag.count_of(PLANK), 3);
         assert_eq!(bag.count_of(STICK), 2);
         assert_eq!(bag.count_of(WOOD_PICKAXE), 1);
@@ -313,7 +313,7 @@ in: stick 2
         bag.add(PLANK, 3); // have planks but no sticks
         let inv_before = inv;
         let bag_before = bag;
-        assert!(!try_craft(&mut inv, &mut bag, &recipe("wood-pickaxe")));
+        assert!(!try_craft(&mut inv, &mut bag, &recipe("flint-pickaxe")));
         assert_eq!(inv, inv_before);
         assert_eq!(bag, bag_before);
     }

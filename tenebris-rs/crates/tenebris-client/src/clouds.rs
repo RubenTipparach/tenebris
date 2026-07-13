@@ -26,8 +26,8 @@ use tenebris_core::math::{
     dvec3_add, dvec3_cross, dvec3_length, dvec3_make, dvec3_normalize, dvec3_scale, dvec3_sub,
     DVec3,
 };
-use tenebris_core::planet_gen;
 use tenebris_core::rng::hash3;
+use tenebris_core::weather;
 use tenebris_core::world::World;
 
 use crate::gfx_math::Mat4;
@@ -44,14 +44,17 @@ const SALT_SIZE: i32 = 0x72;
 const SALT_JITTER_A: i32 = 0x73;
 const SALT_JITTER_B: i32 = 0x74;
 const SALT_LUMPS: i32 = 0x75;
-/// Seed stir for the weather-system coverage field, so cloud patches
-/// don't correlate with the biome moisture map on the same seed.
-const COVER_SEED_SALT: u64 = 0xC10D_5EED;
 
 /// Rotate `v` about the +Y planet spin axis (matches orbit::SPIN_AXIS).
 fn rotate_y(v: DVec3, ang: f64) -> DVec3 {
     let (s, c) = ang.sin_cos();
     dvec3_make(v.x * c + v.z * s, v.y, -v.x * s + v.z * c)
+}
+
+/// Hermite smoothstep 0..1 across [e0, e1].
+fn smoothstep(e0: f64, e1: f64, x: f64) -> f64 {
+    let t = ((x - e0) / (e1 - e0).max(1e-6)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 /// One axis-aligned-in-frame cuboid centred at `c`, spanned by the
@@ -155,7 +158,11 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, p: &PlayerCtrl, time_s: f64) {
 
     let mut pip = PIP3D.with(|c| c.get());
     if pip.id == 0 {
-        pip = sgl::make_pipeline(&sokol::gfx::PipelineDesc {
+        /* Fully OPAQUE clouds: no blending (translucent cloud faces had
+         * order-dependent sorting artefacts in the thin shell). Depth TEST
+         * + WRITE on so puffs occlude each other and the terrain correctly,
+         * and read as solid masses. */
+        let desc = sokol::gfx::PipelineDesc {
             depth: sokol::gfx::DepthState {
                 write_enabled: true,
                 compare: sokol::gfx::CompareFunc::Less,
@@ -163,19 +170,19 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, p: &PlayerCtrl, time_s: f64) {
             },
             cull_mode: sokol::gfx::CullMode::None,
             ..Default::default()
-        });
+        };
+        pip = sgl::make_pipeline(&desc);
         PIP3D.with(|c| c.set(pip));
     }
     sgl::load_pipeline(pip);
     sgl::begin_triangles();
 
     let detail2 = (cfg.range_m as f64) * (cfg.range_m as f64);
-    /* Weather systems: a low-frequency coverage field over the shell
-     * gates the per-cell density, clumping puffs into patches with
-     * clear sky between. Sampled in cloud space, so whole systems
-     * drift with the layer. patch_clear <= 0 = uniform sky. */
-    let cover_seed = w.body.seed ^ COVER_SEED_SALT;
-    let patchy = cfg.patch_clear > 0.0;
+    /* Weather: the moisture/solar field (core::weather) gates each cell's
+     * coverage - clouds condense where solar warmth meets biome moisture,
+     * clear over arid ground. The field drifts over the world with the
+     * layer, so cells grow and dissipate as it passes. */
+    let wcfg = weather::config();
     for ti in 0..n_rows {
         let theta_c = (ti as f64 + 0.5) * cell_ang;
         if theta_c >= std::f64::consts::PI {
@@ -193,23 +200,8 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, p: &PlayerCtrl, time_s: f64) {
         let sin_t = theta_c.sin().max(0.05);
         let dphi = cell_ang / sin_t;
         let row_cells = (std::f64::consts::TAU / dphi).ceil() as i32;
-        let (st_row, ct_row) = theta_c.sin_cos();
         for pj in 0..row_cells {
             let roll = hash3(ti, pj, SALT_EXIST);
-            if roll >= cfg.density {
-                continue;
-            }
-            if patchy {
-                let (sp0, cp0) = ((pj as f64 + 0.5) * dphi).sin_cos();
-                let cdir = dvec3_make(st_row * cp0, ct_row, st_row * sp0);
-                let cover = planet_gen::noise01(cover_seed, cdir, cfg.patch_scale, 3);
-                let t = ((cover - cfg.patch_clear) as f64 / cfg.patch_soft.max(1e-4) as f64)
-                    .clamp(0.0, 1.0);
-                let weight = t * t * (3.0 - 2.0 * t); /* smoothstep edge */
-                if (roll as f64) >= cfg.density as f64 * weight {
-                    continue;
-                }
-            }
             /* Puff centre: cell centre + hashed jitter, rotated back
              * out of cloud space onto the world shell. */
             let jt = (hash3(ti, pj, SALT_JITTER_A) as f64 - 0.5) * 0.8;
@@ -223,6 +215,44 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, p: &PlayerCtrl, time_s: f64) {
             if dir_c.x * dir.x + dir_c.y * dir.y + dir_c.z * dir.z < cos_view {
                 continue;
             }
+            /* Weather: sample the cloud field at this cell's WORLD position
+             * (drifted into world space). Coverage drives whether a cloud
+             * is here at all + how big/opaque it is; the field drifting
+             * over the world IS the spawn/grow/dissipate lifecycle. */
+            let dir_w_base = rotate_y(dir_c, -drift_ang);
+            let mut cell = weather::cloud_cell(&w.body, dir_w_base, time_s);
+            /* Dev override (TENEBRIS_DEV_WEATHER): force a dark storm deck
+             * overhead so the forced shower has clouds to fall from. */
+            if crate::weather_fx::forced_precip().is_some() {
+                cell.cover = 1.0;
+                cell.alpha = 1.0;
+                cell.raining = true;
+            }
+            /* Coverage-driven cell population: sparse scattered puffs where
+             * coverage is low (a few forming clouds), rising to a SOLID
+             * deck (every cell filled) at full overcast - so a rain cloud
+             * always covers the ground it rains on, with no gaps for the
+             * precipitation to fall through. */
+            let cov = cell.cover as f64;
+            let sc = smoothstep(0.4, 1.0, cov);
+            let eff = cfg.density as f64 + (1.0 - cfg.density as f64) * sc;
+            /* Smooth spawn/despawn: instead of popping a cell on/off when
+             * `eff` crosses its fixed `roll`, ramp a PRESENCE factor over a
+             * band and scale the whole puff by it. As the weather field
+             * drifts in, `eff` rises past `roll` and the cloud grows in
+             * from nothing; as it drifts out it shrinks away - no sudden
+             * appear/disappear. Coverage near zero also fades the size to
+             * 0 rather than hard-cutting at a threshold. This is the
+             * "scale up/down over a lifetime" the design calls for; the
+             * field drifts slowly so the visual growth stays gradual. */
+            const SPAWN_BAND: f64 = 0.22;
+            let presence = smoothstep(roll as f64, roll as f64 + SPAWN_BAND, eff)
+                * smoothstep(0.0, 0.12, cov);
+            if presence <= 0.02 {
+                continue; /* effectively clear / not yet born here */
+            }
+            /* Every cloud drifts at the single layer speed (cfg.drift_mps) -
+             * that's the hard max, so nothing zips past the base rate. */
             let dir_w = rotate_y(dir_c, -drift_ang);
             let pos = dvec3_add(center, dvec3_scale(dir_w, shell_r));
             let d2 = {
@@ -230,7 +260,8 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, p: &PlayerCtrl, time_s: f64) {
                 d.x * d.x + d.y * d.y + d.z * d.z
             };
 
-            /* Local frame + day/night lit colour (moonlit floor). */
+            /* Local frame + day/night lit colour (moonlit floor). Rain
+             * clouds darken their base a touch. */
             let up = dir_w;
             let reference = if up.y.abs() < 0.9 {
                 dvec3_make(0.0, 1.0, 0.0)
@@ -240,34 +271,53 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, p: &PlayerCtrl, time_s: f64) {
             let t1 = dvec3_normalize(dvec3_cross(reference, up));
             let t2 = dvec3_cross(up, t1);
             let lit = renderer::entity_sun_brightness(pos).max(cfg.night_min);
-            let col = [cfg.color[0] * lit, cfg.color[1] * lit, cfg.color[2] * lit];
+            let grey = if cell.raining { 0.72 } else { 1.0 };
+            let col = [cfg.color[0] * lit * grey, cfg.color[1] * lit * grey, cfg.color[2] * lit * grey];
 
-            /* The puff: a wide flat slab plus a few smaller lumps on
-             * top / to the side - reads as cumulus from below and from
-             * the side without any texture. Beyond the detail range
-             * the lump cluster is subpixel noise, so the puff LODs
-             * down to just the slab (slightly thickened to keep the
-             * silhouette mass). */
-            let sz = 0.7 + 0.8 * hash3(ti, pj, SALT_SIZE) as f64;
+            /* Size grows with coverage: a small forming cloud is a little
+             * cube, a mature mass is a wide cumulus. Rain/snow clouds tower
+             * into big, tall dark masses. */
+            let storm = if cell.raining { wcfg.rain_cloud_scale as f64 } else { 1.0 };
+            /* `presence` scales the puff so it grows in / shrinks out
+             * smoothly over its lifetime instead of popping. */
+            let sz = (0.35 + 1.1 * cell.cover as f64)
+                * (0.65 + 0.5 * hash3(ti, pj, SALT_SIZE) as f64)
+                * storm
+                * presence;
             let hw = cfg.puff_w_m as f64 * sz;
-            let hh = cfg.puff_h_m as f64 * sz;
+            let hh = cfg.puff_h_m as f64 * sz * if cell.raining { 1.7 } else { 1.0 };
             if d2 > detail2 {
                 push_puff_box(pos, up, t1, t2, hw, hh * 1.4, hw * 0.8, col);
                 continue;
             }
             push_puff_box(pos, up, t1, t2, hw, hh, hw * 0.8, col);
-            let lumps = 2 + (hash3(ti, pj, SALT_LUMPS) * 3.0) as i32;
-            for l in 0..lumps {
-                let la = hash3(ti, pj.wrapping_add(31 * (l + 1)), SALT_LUMPS) as f64
-                    * std::f64::consts::TAU;
-                let ld = hw * (0.45 + 0.4 * hash3(ti.wrapping_add(l), pj, SALT_SIZE) as f64);
-                let off = dvec3_add(
-                    dvec3_scale(t1, la.cos() * ld),
-                    dvec3_scale(t2, la.sin() * ld),
-                );
-                let lc = dvec3_add(dvec3_add(pos, off), dvec3_scale(up, hh * 0.6));
-                let ls = 0.35 + 0.3 * hash3(ti, pj.wrapping_add(7 * l), SALT_SIZE) as f64;
-                push_puff_box(lc, up, t1, t2, hw * ls, hh * ls * 1.4, hw * ls * 0.9, col);
+            /* Mature clouds grow a cluster of lumps AROUND the slab - not
+             * just stacked on top - so the underside is bumpy cumulus when
+             * you look straight up, instead of a flat floating plate. Each
+             * lump gets a hashed radial offset in the tangent plane plus a
+             * vertical offset that ranges from below the slab to above it,
+             * making the puff a rounded blob from every angle. */
+            if cell.cover > 0.4 {
+                let lumps = 3 + (hash3(ti, pj, SALT_LUMPS) * 3.0) as i32;
+                for l in 0..lumps {
+                    let la = hash3(ti, pj.wrapping_add(31 * (l + 1)), SALT_LUMPS) as f64
+                        * std::f64::consts::TAU;
+                    let ld = hw * (0.25 + 0.55 * hash3(ti.wrapping_add(l), pj, SALT_SIZE) as f64);
+                    /* Vertical spread: -0.5h (hanging below) .. +1.0h (piled
+                     * on top), so lumps wrap the slab top AND bottom. */
+                    let vh = hash3(ti.wrapping_add(l * 13), pj, SALT_JITTER_A) as f64;
+                    let voff = (vh - 0.35) * hh * 1.5;
+                    let off = dvec3_add(
+                        dvec3_add(
+                            dvec3_scale(t1, la.cos() * ld),
+                            dvec3_scale(t2, la.sin() * ld),
+                        ),
+                        dvec3_scale(up, voff),
+                    );
+                    let lc = dvec3_add(pos, off);
+                    let ls = 0.4 + 0.35 * hash3(ti, pj.wrapping_add(7 * l), SALT_SIZE) as f64;
+                    push_puff_box(lc, up, t1, t2, hw * ls, hh * ls * 1.3, hw * ls * 0.95, col);
+                }
             }
         }
     }

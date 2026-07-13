@@ -29,3 +29,8 @@ iron_tool_mult: 0.4
 # Blend strength (0..1) of the crack-stage texture painted over the
 # block being mined (hex shader crack channel).
 crack_alpha: 0.9
+
+# Chance (0..1) that mining a rock/stone block also chips off a flint -
+# the tier-1 tool material. (Flint is also foraged by right-clicking
+# rocky ground with an empty hand.)
+flint_from_stone_chance: 0.25

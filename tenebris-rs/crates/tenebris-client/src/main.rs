@@ -6,6 +6,8 @@ mod fishing;
 mod app;
 mod bag;
 mod baked_model;
+mod bonfire_fx;
+mod bonfire_screen;
 mod chat;
 mod chest_screen;
 mod client_kv;
@@ -40,6 +42,7 @@ mod shaders;
 mod tech_tree;
 mod teleport_menu;
 mod viewmodel;
+mod weather_fx;
 mod torch;
 mod ui_icons;
 

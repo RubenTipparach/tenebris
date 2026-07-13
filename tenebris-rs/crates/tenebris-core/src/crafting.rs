@@ -271,8 +271,8 @@ out: torch 4
 in: stick 1
 in: coal 1
 
-[wood-pickaxe]
-out: wood-pickaxe 1
+[flint-pickaxe]
+out: flint-pickaxe 1
 in: plank 3
 in: stick 2
 ";
@@ -300,7 +300,7 @@ in: stick 2
 
     #[test]
     fn craftable_checks_every_input() {
-        let planks = find(&recipes(), "wood-pickaxe");
+        let planks = find(&recipes(), "flint-pickaxe");
         let mut bag = vec![ItemStack::default(); 9];
         bag[0] = ItemStack { item: PLANK, count: 3 };
         assert!(!craftable(&bag, &planks)); // missing sticks
@@ -322,7 +322,7 @@ in: stick 2
 
     #[test]
     fn craft_fails_atomically_without_inputs() {
-        let pick = find(&recipes(), "wood-pickaxe");
+        let pick = find(&recipes(), "flint-pickaxe");
         let mut bag = vec![ItemStack::default(); 9];
         bag[0] = ItemStack { item: PLANK, count: 3 }; // no sticks
         let before = bag.clone();
@@ -365,7 +365,10 @@ in: stick 2
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/config/recipes.yaml");
         let rs = load_recipes(path);
         assert!(rs.iter().any(|r| r.name == "planks"), "planks recipe present");
-        assert!(rs.iter().any(|r| r.name == "torch"), "torch recipe present");
+        /* Wood torches were removed in favour of the bonfire (charcoal is
+         * the new fire path); the bonfire is now the early light source. */
+        assert!(rs.iter().any(|r| r.name == "bonfire"), "bonfire recipe present");
+        assert!(!rs.iter().any(|r| r.name == "torch"), "wood torch recipe removed");
         // Every parsed recipe resolved a real output item + >=1 input.
         for r in &rs {
             assert!(r.output.count > 0 && !r.inputs.is_empty(), "recipe {} malformed", r.name);
@@ -388,7 +391,7 @@ in: stick 2
         }
         // The furnace block, the tier-0 staples, and bronze (an alloy, not
         // a smelt) hand-craft at the bench (None).
-        for name in ["furnace", "planks", "wood-pickaxe", "bronze-ingot"] {
+        for name in ["furnace", "planks", "flint-pickaxe", "bronze-ingot"] {
             let r = rs.iter().find(|r| r.name == name).unwrap();
             assert_eq!(r.station, None, "{name} is a hand-bench recipe");
         }

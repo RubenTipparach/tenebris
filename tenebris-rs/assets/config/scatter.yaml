@@ -12,6 +12,13 @@
 #   grass_blades     blades per covered tile (upper bound, hash ~60-100%)
 #   grass_height_m   blade height in metres (+-30% per-blade hash)
 #   grass_blade_w_m  blade half-width at the base in metres
+#   grass_segments   quads stacked up each blade (2-3 = curved/bendy;
+#                    taller blades auto-gain +1 segment)
+#   grass_wind       wind-sway master switch: >0.5 on, <=0.5 off (default
+#                    OFF - grass stands still + uniform)
+#   grass_base_shade base darkening for the base->tip gradient (0..1); the
+#                    blade root sits at this fraction of full light and eases
+#                    to 1.0 at the tip so blades read lush, not flat
 #   flower_chance    probability a grass surface tile gets a flower
 #   flower_height_m  flower stem height in metres
 #   rock_chance      probability a bare (dirt/sand/stone) tile gets a rock
@@ -40,6 +47,9 @@ scatter:
   grass_blades: 18
   grass_height_m: 0.55
   grass_blade_w_m: 0.085
+  grass_segments: 2
+  grass_wind: 1
+  grass_base_shade: 0.55
   flower_chance: 0.12
   flower_height_m: 0.32
   rock_chance: 0.1
@@ -61,11 +71,29 @@ scatter:
   shrub_chance: 0.14
   shrub_size_m: 0.38
 
-# Wind sway (hex shader, marked scatter tips only). Land grass ripples
-# quickly with a small amplitude; kelp / seaweed drift slower and wider.
+# Wind sway (hex shader, marked scatter tips). Applies to EVERY plant -
+# grass tufts, flowers, ferns, reeds, shrubs, kelp, seaweed - so tune it
+# here to taste. sway_amp_m is the tip travel in metres and the atmospheric
+# wind sim scales it up in gusts/storms (see weather.yaml wind_*). Land
+# grass ripples quickly + narrow; kelp / seaweed drift slower + wider.
+#   - raise/lower sway_amp_m + sway_speed to taste
+#   - set sway_amp_m to a NEGATIVE value to turn sway OFF (0 keeps the
+#     compiled default, per the parser's zero-means-default rule)
 sway_speed: 1.8
-sway_amp_m: 0.05
+sway_amp_m: 0.07
 underwater_sway_speed: 0.7
 underwater_sway_amp_m: 0.09
+# Wind DIRECTION: grass leans + ripples downwind (the weather sim's wind
+# direction, which follows the clouds and bends from high to low pressure -
+# see weather.yaml wind_dir_pressure), instead of a random per-blade wobble.
+#   sway_gust_wavelength_m  metres between gust crests rolling downwind.
+#                           The crest travels at speed ~ sway_speed*lambda/2pi,
+#                           so a LONGER wavelength makes the swell roll faster
+#                           than the player walks (wind leads, not your motion)
+#                           and reads as a broad field-breathing swell rather
+#                           than a tight ripple you cross on foot.
+#   sway_lean_bias          0..1 steady downwind lean; gusts add the rest
+sway_gust_wavelength_m: 40.0
+sway_lean_bias: 0.6
   vine_chance: 0.8
   vine_length_m: 2.2

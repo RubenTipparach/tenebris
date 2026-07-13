@@ -223,6 +223,10 @@ pub struct MiningConfig {
     /// Blend strength of the crack-stage texture painted over a block
     /// being mined (0..1; the hex shader's crack channel).
     pub crack_alpha: f32,
+    /// Chance (0..1) that mining a rock/stone block also drops a piece of
+    /// flint - the tier-1 tool material. Deterministic per cell, so it
+    /// doesn't depend on frame timing.
+    pub flint_from_stone_chance: f32,
 }
 
 impl MiningConfig {
@@ -242,6 +246,8 @@ impl MiningConfig {
         stone_tool_mult: 0.70,
         iron_tool_mult: 0.40,
         crack_alpha: 0.90,
+        /* ~1 in 4 mined rocks yields a flint chip. */
+        flint_from_stone_chance: 0.25,
     };
 
     /// All-zero ore chances: worldgen places no ore. Used by the save
@@ -259,6 +265,7 @@ impl MiningConfig {
         stone_tool_mult: 0.70,
         iron_tool_mult: 0.40,
         crack_alpha: 0.90,
+        flint_from_stone_chance: 0.25,
     };
 }
 
@@ -306,6 +313,7 @@ pub fn parse_config(src: &str, _path: &str) -> MiningConfig {
             "stone_tool_mult" => cfg.stone_tool_mult = v,
             "iron_tool_mult" => cfg.iron_tool_mult = v,
             "crack_alpha" => cfg.crack_alpha = v,
+            "flint_from_stone_chance" => cfg.flint_from_stone_chance = v,
             _ => {}
         }
     }

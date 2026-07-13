@@ -29,7 +29,7 @@ use tenebris_core::blocks::Block;
 use tenebris_core::config;
 use tenebris_core::job_system;
 use tenebris_core::math::{
-    dvec3_add, dvec3_length, dvec3_make, dvec3_normalize, dvec3_scale, dvec3_sub, dvec3_to_vec3,
+    dvec3_add, dvec3_dot, dvec3_length, dvec3_make, dvec3_normalize, dvec3_scale, dvec3_sub, dvec3_to_vec3,
     vec3_normalize,
     DVec3, Vec3,
 };
@@ -42,6 +42,7 @@ use tenebris_core::world_water;
 
 use crate::animals;
 use crate::clouds;
+use crate::weather_fx;
 use crate::chat;
 use crate::crafting_screen;
 use crate::crops;
@@ -53,6 +54,8 @@ use crate::hotbar_ui;
 use crate::input;
 use crate::interact::{self, InteractState};
 use crate::chest_screen;
+use crate::bonfire_fx;
+use crate::bonfire_screen;
 use crate::egui_layer;
 use crate::furnace_screen;
 use crate::power_ui;
@@ -393,6 +396,10 @@ thread_local! {
     /// showcase ring.
     static DEV_PLACE_COUNTDOWN: std::cell::Cell<i32> = const { std::cell::Cell::new(-1) };
     static DEV_PLACE_MODE: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+    /// Dev: pinned camera world-position for the underwater fish shot
+    /// (TENEBRIS_DEV_FISH=under). Held each frame so gravity doesn't
+    /// drop the camera off its perch above the school.
+    static DEV_FISH_CAM: std::cell::Cell<Option<DVec3>> = const { std::cell::Cell::new(None) };
     /// Dev: TENEBRIS_DEV_CRACK holds the survival mine button on the block
     /// under the reticle every frame (camera pitched down) so a screenshot
     /// catches the block-break crack decal mid-mine. -1 unknown, 0 off, 1 on.
@@ -448,6 +455,58 @@ fn dev_maybe_place(app: &mut App) {
     }
 
     match DEV_PLACE_MODE.with(|c| c.get()) {
+        18 => {
+            /* Bonfire showcase (TENEBRIS_DEV_BONFIRE): place a lit bonfire
+             * a few metres ahead, pre-loaded with fuel + raw meat cooking,
+             * so a night still shows its 2x-torch glow and the cook panel
+             * has content. */
+            let (ppos, fwd, last_tile) = {
+                let p = app.player.borrow();
+                (p.position, p.basis.fwd, p.last_tile)
+            };
+            let mut aim: Option<DVec3> = None;
+            {
+            let mut w = app.world.borrow_mut();
+            let bc = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
+            let local = dvec3_sub(ppos, bc);
+            let point = dvec3_add(local, dvec3_scale(fwd, 5.0));
+            let dir = dvec3_normalize(point);
+            let tile = w.grid.find_tile(dir, last_tile);
+            if let Some(fpos) =
+                tenebris_core::fauna::floor_pos(&w, dir, dvec3_length(local), tile)
+            {
+                /* radius_to_depth of the surface top already lands on the
+                 * first AIR cell above the ground, so no +1 (that floated
+                 * the fire one voxel up). */
+                let depth = w.radius_to_depth(dvec3_length(dvec3_sub(fpos, bc)));
+                w.set(tile, depth, Block::Bonfire);
+                let e = w.block_entities.entry(tile, depth);
+                let b = e.bonfire_mut();
+                b.fuel = tenebris_core::block_entity::ChestSlot {
+                    item: tenebris_core::items::CHARCOAL,
+                    count: 4,
+                };
+                b.input = tenebris_core::block_entity::ChestSlot {
+                    item: tenebris_core::items::RAW_MEAT,
+                    count: 3,
+                };
+                b.burn_s = tenebris_core::config::bonfire().charcoal_burn_s;
+                let flame = tenebris_core::math::dvec3_to_vec3(
+                    dvec3_add(dvec3_scale(dir, w.depth_to_radius_m(depth)), dvec3_scale(dir, 0.5)),
+                );
+                w.dirty_in_range(flame, torch::LIGHT_RANGE_M * 2.5);
+                println!("[dev] placed lit bonfire at tile {tile} depth {depth}");
+                /* Aim the camera at the fire so the still frames it + its
+                 * glow pool. */
+                aim = Some(dvec3_add(bc, dvec3_scale(dir, w.depth_to_radius_m(depth) + 0.5)));
+            }
+            }
+            if let Some(a) = aim {
+                dev_aim_at(app, a);
+            } else {
+                app.player.borrow_mut().pitch = -0.20;
+            }
+        }
         13 => {
             /* Sky view: pitch the camera up so the sun (and any moons /
              * planets that are above the horizon) frame against the sky -
@@ -510,6 +569,55 @@ fn dev_maybe_place(app: &mut App) {
             println!("[dev] placed {} torches ahead", placed);
             app.player.borrow_mut().pitch = -0.25;
         }
+        17 => {
+            /* Fish showcase (TENEBRIS_DEV_FISH): the five water species
+             * lined up broadside ahead of the player, frozen, so a shot
+             * frames the minnow / ray / eel / reef fish / turtle. =under
+             * drops them just below the nearest ocean surface. */
+            let under = std::env::var("TENEBRIS_DEV_FISH")
+                .map(|v| v == "under")
+                .unwrap_or(false);
+            let anchor = animals::dev_spawn_fish(&app.world.borrow(), &app.player.borrow(), under);
+            println!("[dev] spawned {} fish (underwater={under})", animals::count());
+            if let Some(adir) = anchor {
+                /* Underwater shot: dip the camera just below the sea
+                 * surface (shallow enough to stay clear of the seabed)
+                 * and pull it back horizontally from the school so we
+                 * look at the fish broadside - their bug eyes face the
+                 * lens. */
+                let (center, sea_r) = {
+                    let w = app.world.borrow();
+                    let c = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
+                    let sr = w.depth_to_radius_m(tenebris_core::world::WORLD_SEA_LEVEL_DEPTH)
+                        + tenebris_core::planet_gen::sea_raise_m(&w.body) as f64;
+                    (c, sr)
+                };
+                if let Some(mid) = animals::herd_center() {
+                    /* Horizontal forward: the player's facing flattened
+                     * onto the local tangent plane (radial component of
+                     * adir removed), so the pull-back slides sideways,
+                     * not up into the air or down into the floor. */
+                    let fwd = app.player.borrow().basis.fwd;
+                    let radial = dvec3_dot(fwd, adir);
+                    let mut hf = dvec3_sub(fwd, dvec3_scale(adir, radial));
+                    if dvec3_length(hf) < 1e-4 {
+                        hf = app.player.borrow().basis.right;
+                    }
+                    let hf = dvec3_normalize(hf);
+                    let back = dvec3_sub(mid, dvec3_scale(hf, 4.5));
+                    let cam = dvec3_add(center, dvec3_scale(dvec3_normalize(dvec3_sub(back, center)), sea_r - 0.55));
+                    {
+                        let mut p = app.player.borrow_mut();
+                        p.position = cam;
+                        p.velocity = tenebris_core::math::DVec3::default();
+                    }
+                    DEV_FISH_CAM.with(|c| c.set(Some(cam)));
+                    dev_aim_at(app, mid);
+                }
+            } else if let Some(mid) = animals::herd_center() {
+                dev_aim_at(app, mid);
+            }
+        }
         14 => {
             /* Animal showcase: drop a herd near the player, then aim the
              * camera at its centre so the critters are framed. */
@@ -533,6 +641,292 @@ fn dev_maybe_place(app: &mut App) {
                 /* A pickaxe so the held-tool viewmodel is in the shot. */
                 p.bag.add(tenebris_core::items::WOOD_PICKAXE, 1);
             }
+        }
+        19 => {
+            /* Farming showcase (TENEBRIS_DEV_FARM): a row of all crop kinds
+             * (berry, wheat, carrot, then the four orchard fruits) planted
+             * flat ahead and framed at a shallow down-angle so each plant's
+             * silhouette reads. Stock a bucket + fruit seeds so the hotbar
+             * icons show too. */
+            /* Till the patch under + around the player into farmland so the
+             * tilled-soil texture is in frame beneath the crop row. */
+            dev_set_surface(&app.world, center, Block::Farmland);
+            dev_for_each_neighbor(&app.world, center, |w, _, n| {
+                dev_set_surface_w(w, n, Block::Farmland);
+                for m in w.grid.tile(n).map(|t| t.neighbors).unwrap_or([-1; 6]) {
+                    dev_set_surface_w(w, m, Block::Farmland);
+                }
+            });
+            let ahead = 2.2;
+            crops::dev_spawn(&app.world.borrow(), &app.player.borrow(), ahead);
+            let target = {
+                let p = app.player.borrow();
+                /* Aim at the crops' mid-height (~0.4 m up the plant) so the
+                 * shot looks along the row nearly level instead of steeply
+                 * down into the soil. */
+                dvec3_add(
+                    dvec3_add(p.position, dvec3_scale(p.basis.fwd, ahead)),
+                    dvec3_scale(p.basis.up, 0.9),
+                )
+            };
+            dev_aim_at(app, target);
+            {
+                let mut p = app.player.borrow_mut();
+                p.survival_mode = true;
+                p.bag.add(tenebris_core::items::BUCKET, 1);
+                p.bag.add(tenebris_core::items::WATER_BUCKET, 1);
+                p.bag.add(tenebris_core::items::APPLE, 2);
+                p.bag.add(tenebris_core::items::WATERMELON, 1);
+                p.bag.add(tenebris_core::items::APPLE_SEEDS, 3);
+                p.bag.add(tenebris_core::items::KIWI_SEEDS, 3);
+            }
+            println!("[dev] farm showcase: {} crops", crops::count());
+        }
+        20 => {
+            /* Growth-phase row (TENEBRIS_DEV_GROW=watermelon|orange|apple|
+             * kiwi): one fruit planted as a row through its five growth
+             * stages (sprout -> ripe) on a tilled strip, framed head-on so
+             * the whole arc is visible in one shot. */
+            use tenebris_core::farming::CropKind;
+            let kind = match std::env::var("TENEBRIS_DEV_GROW").unwrap_or_default().as_str() {
+                "orange" => CropKind::Orange,
+                "apple" => CropKind::Apple,
+                "kiwi" => CropKind::Kiwi,
+                _ => CropKind::Watermelon,
+            };
+            let (row_tiles, target) =
+                crops::dev_growth_row(&app.world.borrow(), &app.player.borrow(), kind, 1.7);
+            /* Till exactly the tiles the row sits on (plus the player's own
+             * tile + ring) into farmland, so each stage stands on tilled
+             * soil regardless of the terrain shape. */
+            dev_set_surface(&app.world, center, Block::Farmland);
+            dev_for_each_neighbor(&app.world, center, |w, _, n| {
+                dev_set_surface_w(w, n, Block::Farmland);
+            });
+            for t in row_tiles {
+                dev_set_surface(&app.world, t, Block::Farmland);
+            }
+            /* Pull the camera back + up and pin it (reusing the fish-cam
+             * perch so gravity can't drop it) for a 3/4 view that frames the
+             * whole row - the plants are small, so a fixed vantage beats the
+             * player's ground-level eye. */
+            let (cam, aim) = {
+                let p = app.player.borrow();
+                let cam = dvec3_add(
+                    dvec3_add(p.position, dvec3_scale(p.basis.fwd, -2.4)),
+                    dvec3_scale(p.basis.up, 1.1),
+                );
+                /* Aim at the plants' mid-height so the ripe fruit sits centred
+                 * and readable, not tipped off the top of the frame. */
+                let aim = dvec3_add(target, dvec3_scale(p.basis.up, 0.35));
+                (cam, aim)
+            };
+            app.player.borrow_mut().position = cam;
+            dev_aim_at(app, aim);
+            DEV_FISH_CAM.with(|c| c.set(Some(cam)));
+            {
+                let mut p = app.player.borrow_mut();
+                p.survival_mode = true;
+            }
+            println!(
+                "[dev] growth row: {:?} x5 phases, cam=({:.1},{:.1},{:.1})",
+                kind, cam.x, cam.y, cam.z
+            );
+        }
+        21 => {
+            /* Dive showcase (TENEBRIS_DEV_DIVE): scan the WHOLE planet for
+             * the deepest ocean tile (most negative surface height), then
+             * drop the camera into that water looking horizontally, so a
+             * headless shot frames the underwater murk + fish regardless of
+             * where the player spawned on land. */
+            let dive = {
+                let w = app.world.borrow();
+                let center = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
+                let sea_r = w.depth_to_radius_m(tenebris_core::world::WORLD_SEA_LEVEL_DEPTH)
+                    + tenebris_core::planet_gen::sea_raise_m(&w.body) as f64;
+                let mut best = -1i32;
+                let mut best_s = 0.0f32;
+                for i in 0..w.tile_count {
+                    if let Some(t) = w.grid.tile(i) {
+                        let s = tenebris_core::planet_gen::profile(&w.body, t.center).surface_m;
+                        if s < best_s {
+                            best_s = s;
+                            best = i;
+                        }
+                    }
+                }
+                if best >= 0 {
+                    let dir = dvec3_normalize(w.grid.tile(best).unwrap().center);
+                    Some((best, dir, sea_r, center, best_s))
+                } else {
+                    None
+                }
+            };
+            if let Some((tile, dir, sea_r, center, depth_m)) = dive {
+                /* Camera ~4 m below the surface (well inside the deep column,
+                 * clear of the far-below seabed) so cam_under trips + the
+                 * underwater fog applies. */
+                let cam = dvec3_add(center, dvec3_scale(dir, sea_r - 4.0));
+                {
+                    let mut p = app.player.borrow_mut();
+                    p.position = cam;
+                    p.velocity = tenebris_core::math::DVec3::default();
+                    p.last_tile = tile;
+                }
+                animals::dev_spawn_fish(&app.world.borrow(), &app.player.borrow(), true);
+                /* Look horizontally along a tangent so we see into the murk;
+                 * prefer the fish school if one is nearby. */
+                let target = animals::herd_center().unwrap_or_else(|| {
+                    let reference = if dir.y.abs() < 0.9 {
+                        dvec3_make(0.0, 1.0, 0.0)
+                    } else {
+                        dvec3_make(1.0, 0.0, 0.0)
+                    };
+                    let t1 = dvec3_normalize(tenebris_core::math::dvec3_cross(reference, dir));
+                    dvec3_add(cam, dvec3_scale(t1, 6.0))
+                });
+                dev_aim_at(app, target);
+                DEV_FISH_CAM.with(|c| c.set(Some(cam)));
+                println!("[dev] dive: deepest tile {} ({:.1} m below sea)", tile, -depth_m);
+            } else {
+                println!("[dev] dive: no ocean found on this planet");
+            }
+        }
+        22 => {
+            /* Grass showcase (TENEBRIS_DEV_GRASS): scan for a flat Fields
+             * tile with a grass top and drop the camera just above it,
+             * looking across the sward at a shallow down-angle so the wind
+             * sway of the scatter grass is framed (reliable, like the dive
+             * cam - the land spawn is often desert/rock). */
+            use tenebris_core::blocks::{is_solid, Block};
+            let w0 = app.world.borrow();
+            let surf_of = |i: i32| -> i32 {
+                let mut s = -1i32;
+                for d in (0..tenebris_core::world::WORLD_MAX_DEPTH).rev() {
+                    if is_solid(w0.get(i, d)) {
+                        s = d;
+                        break;
+                    }
+                }
+                s
+            };
+            let spot = {
+                let center = dvec3_make(w0.body.pos_x, w0.body.pos_y, w0.body.pos_z);
+                let mut found: Option<(i32, DVec3, f64, DVec3)> = None;
+                for i in 0..w0.tile_count {
+                    let Some(t) = w0.grid.tile(i) else { continue };
+                    if tenebris_core::planet_gen::biome(&w0.body, t.center)
+                        != tenebris_core::planet_gen::Biome::Fields
+                    {
+                        continue;
+                    }
+                    let surf = surf_of(i);
+                    if surf < 0 {
+                        continue;
+                    }
+                    let top = w0.get(i, surf);
+                    if !matches!(top, Block::Grass | Block::DryGrass | Block::JungleGrass) {
+                        continue;
+                    }
+                    /* Flat neighbourhood: every neighbour's surface within 1
+                     * voxel, so the camera isn't walled in by raised tiles. */
+                    let flat = t.neighbors.iter().all(|&n| {
+                        n < 0 || (surf_of(n) - surf).abs() <= 1
+                    });
+                    if flat {
+                        let dir = dvec3_normalize(t.center);
+                        let r_surf = w0.depth_to_radius_m(surf + 1);
+                        /* Only a SUNLIT tile - many flat grass tiles sit on
+                         * the planet's night side and would shoot black. */
+                        let pos = dvec3_add(center, dvec3_scale(dir, r_surf));
+                        if renderer::entity_sun_brightness(pos) > 0.6 {
+                            found = Some((i, dir, r_surf, center));
+                            break;
+                        }
+                    }
+                }
+                found
+            };
+            drop(w0);
+            if let Some((tile, dir, r_surf, center)) = spot {
+                /* Feet just above the sward (renderer adds its own 1.6 m eye
+                 * height). Pin the position, then set pitch DIRECTLY to look
+                 * down at the near grass - the basis recomputes from the
+                 * pinned position each frame, so a fixed pitch is reliable
+                 * (aiming via a world target used the stale spawn basis and
+                 * pointed at the sky). */
+                let cam = dvec3_add(center, dvec3_scale(dir, r_surf + 0.05));
+                {
+                    let mut p = app.player.borrow_mut();
+                    p.position = cam;
+                    p.velocity = tenebris_core::math::DVec3::default();
+                    p.last_tile = tile;
+                    p.yaw = 0.0;
+                    /* Look nearly ACROSS the sward (slightly down) so the
+                     * side-to-side blade lean of the wind sway is visible -
+                     * a top-down view foreshortens it into nothing. */
+                    p.pitch = -0.16;
+                }
+                DEV_FISH_CAM.with(|c| c.set(Some(cam)));
+                println!("[dev] grass: Fields tile {}", tile);
+            } else {
+                println!("[dev] grass: no Fields grass tile found");
+            }
+        }
+        23 => {
+            /* Orbit showcase (TENEBRIS_DEV_ORBIT): park the camera far out in
+             * space on a line PERPENDICULAR to the sun, looking straight at the
+             * planet centre. That puts the day/night terminator down the middle
+             * of the disk so the reddish-orange sunset band along the shadow
+             * edge can be inspected. TENEBRIS_DEV_TIME still sets the sun angle. */
+            let (center, radius, sun_dir) = {
+                let w = app.world.borrow();
+                let sim_t = tenebris_core::world_time::seconds();
+                let sd = dvec3_normalize(tenebris_core::orbit::sun_direction(w.body.id, sim_t));
+                (
+                    dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z),
+                    w.body.radius_m,
+                    sd,
+                )
+            };
+            /* View direction perpendicular to the sun (so the terminator
+             * bisects the visible disk); fall back if the cross degenerates. */
+            let reference = if sun_dir.y.abs() < 0.9 {
+                dvec3_make(0.0, 1.0, 0.0)
+            } else {
+                dvec3_make(1.0, 0.0, 0.0)
+            };
+            let view_dir = dvec3_normalize(tenebris_core::math::dvec3_cross(sun_dir, reference));
+            let dist = radius * 2.2;
+            let cam = dvec3_add(center, dvec3_scale(view_dir, dist));
+            {
+                let mut p = app.player.borrow_mut();
+                p.position = cam;
+                p.velocity = tenebris_core::math::DVec3::default();
+                p.last_tile = -1;
+                /* Keep is_in_space FALSE so the camera basis stays radial and
+                 * the planet renders as full terrain (not the distant LOD
+                 * impostor). DEV_FISH_CAM re-pins the position after physics
+                 * each frame, so gravity can't pull the camera down. At the
+                 * camera, radial "up" == view_dir, so looking straight down
+                 * (-pi/2, nudged off the singularity) points at the planet
+                 * centre and frames the full disk. */
+                p.yaw = 0.0;
+                p.pitch = -1.552;
+            }
+            DEV_FISH_CAM.with(|c| c.set(Some(cam)));
+            /* The surface chunks were meshed around the SPAWN tile, not the
+             * orbit vantage - force a full-planet remesh so the whole disk
+             * renders as terrain from out here. (Grab the id into a local
+             * first: remesh_body_now borrows the world internally, so an
+             * outstanding app.world.borrow() here would double-borrow.) */
+            let body_id = app.world.borrow().body.id as u32;
+            renderer::remesh_body_now(body_id);
+            println!(
+                "[dev] orbit: cam at {:.0} m ({:.1}x radius), view perpendicular to sun",
+                dist,
+                dist / radius
+            );
         }
         15 => {
             /* Occlusion test (TENEBRIS_DEV_OCCLUDE): raise a dirt column
@@ -1471,6 +1865,8 @@ extern "C" fn init() {
     config::load_lod("assets/config/lod.yaml");
     config::load_water("assets/config/water.yaml");
     config::load_lighting("assets/config/lighting.yaml");
+    config::load_bonfire("assets/config/bonfire.yaml");
+    tenebris_core::weather::load_config("assets/config/weather.yaml");
     config::load_time("assets/config/time.yaml");
     /* Start the world clock in daylight (start_day_fraction of a day),
      * unless a dev override pins the time of day. */
@@ -1496,6 +1892,7 @@ extern "C" fn init() {
     /* Cloud layer densities / drift (see client clouds.rs). */
     tenebris_core::clouds::load_config("assets/config/clouds.yaml");
     tenebris_core::fishing::load_config("assets/config/fishing.yaml");
+    tenebris_core::gameplay::load_config("assets/config/gameplay.yaml");
     /* Rocket part stats + flight constants (consumed by the rocket
      * assembly + flight port). */
     tenebris_core::rocket::set_config(tenebris_core::rocket::load_rocket_config(
@@ -1635,6 +2032,27 @@ extern "C" fn init() {
         DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
     } else if std::env::var("TENEBRIS_DEV_ANIMALS").is_ok() {
         DEV_PLACE_MODE.with(|c| c.set(14));
+        DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
+    } else if std::env::var("TENEBRIS_DEV_FISH").is_ok() {
+        DEV_PLACE_MODE.with(|c| c.set(17));
+        DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
+    } else if std::env::var("TENEBRIS_DEV_DIVE").is_ok() {
+        DEV_PLACE_MODE.with(|c| c.set(21));
+        DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
+    } else if std::env::var("TENEBRIS_DEV_GRASS").is_ok() {
+        DEV_PLACE_MODE.with(|c| c.set(22));
+        DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
+    } else if std::env::var("TENEBRIS_DEV_ORBIT").is_ok() {
+        DEV_PLACE_MODE.with(|c| c.set(23));
+        DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
+    } else if std::env::var("TENEBRIS_DEV_BONFIRE").is_ok() {
+        DEV_PLACE_MODE.with(|c| c.set(18));
+        DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
+    } else if std::env::var("TENEBRIS_DEV_FARM").is_ok() {
+        DEV_PLACE_MODE.with(|c| c.set(19));
+        DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
+    } else if std::env::var("TENEBRIS_DEV_GROW").is_ok() {
+        DEV_PLACE_MODE.with(|c| c.set(20));
         DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
     } else if std::env::var("TENEBRIS_DEV_OCCLUDE").is_ok() {
         DEV_PLACE_MODE.with(|c| c.set(15));
@@ -2097,24 +2515,23 @@ thread_local! {
 /// Centred mining progress bar drawn via sokol_gl. Visible only while
 /// a survival mine is in progress; positioned just above the hotbar.
 fn draw_mining_bar(app: &App, screen_w: f32, screen_h: f32) {
-    if !app.player.borrow().survival_mode {
-        return;
-    }
-    if app.interact.mining_progress_s <= 0.0
-        || app.interact.mining_tile < 0
-        || app.interact.mining_depth < 0
+    /* Progress for whatever is being broken this frame: a plant (any mode,
+     * ~1 s) takes precedence, else a block being mined in survival. */
+    let pct = if app.interact.is_crop_target && app.interact.crop_break_s > 0.0 {
+        (app.interact.crop_break_s / crops::CROP_BREAK_S).clamp(0.0, 1.0)
+    } else if app.player.borrow().survival_mode
+        && app.interact.mining_progress_s > 0.0
+        && app.interact.mining_tile >= 0
+        && app.interact.mining_depth >= 0
     {
-        return;
-    }
-
-    /* Normalised to the REAL break time of the block being mined (tool-
-     * dependent, 2.5s..10s): the bar hits 100% exactly when the block
-     * breaks. */
-    let pct = {
+        /* Normalised to the REAL break time of the block being mined (tool-
+         * dependent, 2.5s..10s): the bar hits 100% exactly when it breaks. */
         let p = app.player.borrow();
         let block = app.world.borrow().get(app.interact.mining_tile, app.interact.mining_depth);
         let break_s = interact::break_seconds_for(&p, block).max(1e-4);
         (app.interact.mining_progress_s / break_s).clamp(0.0, 1.0)
+    } else {
+        return;
     };
 
     let bar_w = 280.0f32;
@@ -2352,37 +2769,6 @@ fn held_tool_for_display(app: &App, _w: &World) -> Option<tenebris_core::items::
         .filter(|&id| mining::tool_kind(id) != ToolKind::None || id == tenebris_core::items::HOE)
 }
 
-/// Crop reticle hint: when the player is looking at a crop, show whether
-/// it's ready to harvest or still growing (with a percentage), plus the
-/// [T] keybind - the discoverability cue for the farming loop. Text-only
-/// (an inherently-textual readout, like the FPS strip), centred just below
-/// the screen middle so it sits under the reticle dot.
-fn draw_crop_hint(screen_w: f32, screen_h: f32) {
-    let Some(growth) = crops::reticle_growth() else {
-        return;
-    };
-    let msg = if growth >= 1.0 {
-        "[T] harvest".to_string()
-    } else {
-        format!("growing {}%  [T]", (growth * 100.0) as i32)
-    };
-    let cell = 8.0f32;
-    let x = (screen_w * 0.5 - (msg.len() as f32 * cell) * 0.5) / cell;
-    let y = (screen_h * 0.5 + 24.0) / cell;
-    sdtx::canvas(screen_w, screen_h);
-    sdtx::font(1);
-    sdtx::origin(x, y);
-    if growth >= 1.0 {
-        sdtx::color3b(0x90, 0xf0, 0x70);
-    } else {
-        sdtx::color3b(0xe0, 0xd0, 0x80);
-    }
-    sdtx::home();
-    sdtx::puts(&msg);
-    sdtx::font(0);
-    sdtx::color3b(0xff, 0xff, 0xff);
-}
-
 /// Which crop kind a plant press would sow, or `None` without seeds.
 /// The SELECTED hotbar item wins when it's a seed (deliberate choice of
 /// what to plant); otherwise the bag is scanned berry -> wheat -> carrot
@@ -2402,6 +2788,24 @@ fn plantable_seed_kind(p: &crate::player_ctrl::PlayerCtrl) -> Option<tenebris_co
     None
 }
 
+/// Convert the selected hotbar item in place (`from` -> `to`), one unit.
+/// Used by the bucket fill / pour swap (both are stack-1 tools, so this
+/// just re-skins the slot). No-op if the selected slot doesn't hold `from`.
+fn swap_selected_item(
+    p: &mut crate::player_ctrl::PlayerCtrl,
+    from: tenebris_core::items::ItemId,
+    to: tenebris_core::items::ItemId,
+) {
+    let sel = p.inventory.selected as usize;
+    if sel >= p.inventory.slots.len() {
+        return;
+    }
+    let s = &mut p.inventory.slots[sel];
+    if s.item == from && s.count > 0 {
+        s.item = to;
+    }
+}
+
 /// Farming ground hint: with a hoe on hand, dirt/grass under the reticle
 /// prompts "[T] till soil"; tilled farmland with seeds prompts
 /// "[T] plant seed". Makes the till-before-plant flow discoverable (it's
@@ -2416,7 +2820,7 @@ fn draw_farming_hint(app: &App, screen_w: f32, screen_h: f32) {
         sdtx::canvas(screen_w, screen_h);
         sdtx::pos(x, y);
         sdtx::color3f(1.0, 0.95, 0.6);
-        sdtx::puts(msg);
+        sdtx::puts(&msg);
         return;
     }
     if crops::reticle_growth().is_some() {
@@ -3393,6 +3797,7 @@ fn block_name(b: Block) -> &'static str {
         Block::Farmland => "FARMLAND",
         Block::JungleGrass => "JUNGLE_GRASS",
         Block::DryGrass => "DRY_GRASS",
+        Block::Bonfire => "BONFIRE",
     }
 }
 
@@ -3432,6 +3837,7 @@ fn block_glyph(b: Block) -> char {
         | Block::LaunchTower
         | Block::Cable
         | Block::CopperPipe => 'E',
+        Block::Bonfire => 'B',
     }
 }
 
@@ -3927,9 +4333,11 @@ fn egui_ui(app: &mut App, ctx: &egui::Context) {
     tech_tree::egui_ui(ctx);
     chest_screen::egui_ui(ctx);
     furnace_screen::egui_ui(ctx);
+    bonfire_screen::egui_ui(ctx);
     power_ui::egui_ui(ctx);
     rocket_screen::egui_ui(ctx);
     menu::pause_egui_ui(ctx);
+    menu::weather_egui_ui(ctx);
 }
 
 fn frame_inner(app: &mut App) {
@@ -4017,6 +4425,13 @@ fn frame_inner(app: &mut App) {
     {
         let mut p = app.player.borrow_mut();
         drops::update(dt, &mut p);
+    }
+    /* Bonfire lighting: publish lit-bonfire flames into the torch light
+     * mirror (2x a torch) and relight the terrain around them when the lit
+     * set changes. */
+    {
+        let mut w = app.world.borrow_mut();
+        bonfire_fx::sync_lights(&mut w);
     }
 
     /* Advance the world clock (drives the on-rails orbit + day/night sim).
@@ -4136,8 +4551,25 @@ fn frame_inner(app: &mut App) {
         }
     }
 
+    /* Dev screenshot aid: hold the camera on its underwater-fish perch
+     * each frame so gravity can't drop it off. */
+    DEV_FISH_CAM.with(|c| {
+        if let Some(cam) = c.get() {
+            let mut p = app.player.borrow_mut();
+            p.position = cam;
+            p.velocity = tenebris_core::math::DVec3::default();
+        }
+    });
+
     /* G-key toggles survival mode in SP only (MP is always survival).
      * Consume the edge either way. */
+    /* K cycles a manual storm (off -> rain -> snow): forces a full
+     * overcast + shower everywhere so weather can be triggered on demand.
+     * The change is immediately visible (deck + shower), so a console line
+     * is enough feedback without a toast system. */
+    if input::consume_storm_toggle() {
+        println!("[weather] {}", weather_fx::cycle_storm());
+    }
     if input::consume_survival_toggle() && menu::state() == GameState::InGameSp {
         let mut p = app.player.borrow_mut();
         p.survival_mode = !p.survival_mode;
@@ -4180,6 +4612,21 @@ fn frame_inner(app: &mut App) {
                 } else if p.bag.count_of(tenebris_core::items::CARROT) > 0 {
                     p.bag.take(tenebris_core::items::CARROT, 1);
                     fcfg.carrot_hunger_restore
+                } else if let Some((fruit, seed)) = [
+                    (tenebris_core::items::APPLE, tenebris_core::items::APPLE_SEEDS),
+                    (tenebris_core::items::ORANGE, tenebris_core::items::ORANGE_SEEDS),
+                    (tenebris_core::items::WATERMELON, tenebris_core::items::WATERMELON_SEEDS),
+                    (tenebris_core::items::KIWI, tenebris_core::items::KIWI_SEEDS),
+                ]
+                .into_iter()
+                .find(|&(f, _)| p.bag.count_of(f) > 0)
+                {
+                    /* Orchard fruit: restores hunger and yields a seed of
+                     * its kind, so eating what you forage also lets you
+                     * start planting it. */
+                    p.bag.take(fruit, 1);
+                    p.bag.add(seed, 1);
+                    fcfg.fruit_hunger_restore
                 } else {
                     0.0
                 };
@@ -4369,6 +4816,9 @@ fn frame_inner(app: &mut App) {
                 f32::MAX
             };
             crops::update(dt, &w, &p, block_limit);
+            /* Scatter wild fruit plants in the fields / jungle around the
+             * player to forage (deterministic, not persisted). */
+            crops::spawn_wild_near(&w, &p);
         }
         fishing::update(&phys_world.borrow(), &mut app.player.borrow_mut(), dt);
         interact::update(
@@ -4377,13 +4827,109 @@ fn frame_inner(app: &mut App) {
             &mut app.player.borrow_mut(),
             dt,
         );
-        /* Plant / harvest (T): harvest a mature crop under the reticle, or
-         * plant a seed on the block the player is aiming at. The crop list
+        /* Break a plant like a block: holding the mine button on a crop
+         * fills interact.crop_break_s; when it reaches CROP_BREAK_S (~1 s)
+         * the plant pops and drops its produce/seeds into the bag. Mature
+         * crops yield full produce + seeds; uprooting an unripe one returns
+         * just its seed. Same-frame persist (SP) / relay (MP). */
+        if app.interact.is_crop_target && app.interact.crop_break_s >= crops::CROP_BREAK_S {
+            app.interact.crop_break_s = 0.0;
+            let broken = {
+                let w = phys_world.borrow();
+                let p = app.player.borrow();
+                crops::break_under_reticle(&w, &p)
+            };
+            if let Some(crop) = broken {
+                let cfg = tenebris_core::farming::config();
+                {
+                    let mut p = app.player.borrow_mut();
+                    let seed = tenebris_core::farming::seed_item(crop.kind);
+                    if crop.is_mature() {
+                        let produce = tenebris_core::farming::produce_item(crop.kind);
+                        p.bag.add(produce, cfg.produce_count_of(crop.kind));
+                        let seeds = cfg.seed_count_of(crop.kind);
+                        if seeds > 0 {
+                            p.bag.add(seed, seeds);
+                        }
+                    } else {
+                        p.bag.add(seed, 1); /* uproot -> seed back */
+                    }
+                }
+                if mp {
+                    let body_id = phys_world.borrow().body.id as u32;
+                    net_client::send_crop_op(
+                        body_id,
+                        tenebris_core::proto::CROP_OP_REMOVE,
+                        crop.tile_idx,
+                        crop.pos,
+                        crop.up,
+                        crop.growth,
+                        crop.kind as u8,
+                    );
+                } else {
+                    crops::sp_save_after_change(&phys_world.borrow());
+                }
+            }
+        }
+        /* Plant (T): plant a seed on tilled soil, or till dirt/grass with a
+         * hoe. (Harvesting is no longer here - plants are broken above.)
+         * The crop list
          * mutation happens in crops::plant_or_harvest; here we apply the
          * bag change + persist same-frame (CLAUDE.md world-edit rule) or,
          * in MP, tell the server (it persists + relays to the room). */
         if input::consume_plant() {
-            let outcome = {
+            /* A bucket in hand repurposes the farm key: an empty bucket
+             * scoops water it's aimed at; a full one waters the crop under
+             * the reticle. Handled before plant/harvest so the same key
+             * covers the whole "or just let it rain" watering loop. */
+            let held_bucket = {
+                let p = app.player.borrow();
+                match inventory::selected_item(&p.inventory) {
+                    Some(tenebris_core::items::BUCKET) => Some(false),
+                    Some(tenebris_core::items::WATER_BUCKET) => Some(true),
+                    _ => None,
+                }
+            };
+            let bucket_used = if let Some(has_water) = held_bucket {
+                let out = {
+                    let w = phys_world.borrow();
+                    let p = app.player.borrow();
+                    crops::use_bucket(&w, &p, has_water)
+                };
+                match out {
+                    crops::BucketOutcome::Scooped => {
+                        let mut p = app.player.borrow_mut();
+                        swap_selected_item(
+                            &mut p,
+                            tenebris_core::items::BUCKET,
+                            tenebris_core::items::WATER_BUCKET,
+                        );
+                        true
+                    }
+                    crops::BucketOutcome::Watered(tile) => {
+                        {
+                            let mut p = app.player.borrow_mut();
+                            swap_selected_item(
+                                &mut p,
+                                tenebris_core::items::WATER_BUCKET,
+                                tenebris_core::items::BUCKET,
+                            );
+                        }
+                        /* watered_s is transient client state; the crop's
+                         * persisted growth updates on its own each frame, so
+                         * no extra save needed here. In MP the boost is a
+                         * local nicety (rain drives growth authoritatively). */
+                        let _ = tile;
+                        true
+                    }
+                    crops::BucketOutcome::None => false,
+                }
+            } else {
+                false
+            };
+            let outcome = if bucket_used {
+                crops::Outcome::None
+            } else {
                 let w = phys_world.borrow();
                 let p = app.player.borrow();
                 let seed_kind = plantable_seed_kind(&p);
@@ -4424,32 +4970,6 @@ fn frame_inner(app: &mut App) {
                         crops::sp_save_after_change(&phys_world.borrow());
                     }
                 }
-                crops::Outcome::Harvested(crop) => {
-                    let cfg = tenebris_core::farming::config();
-                    {
-                        let mut p = app.player.borrow_mut();
-                        let produce = tenebris_core::farming::produce_item(crop.kind);
-                        p.bag.add(produce, cfg.produce_count_of(crop.kind));
-                        let seeds = cfg.seed_count_of(crop.kind);
-                        if seeds > 0 {
-                            p.bag.add(tenebris_core::farming::seed_item(crop.kind), seeds);
-                        }
-                    }
-                    if mp {
-                        let body_id = phys_world.borrow().body.id as u32;
-                        net_client::send_crop_op(
-                            body_id,
-                            tenebris_core::proto::CROP_OP_REMOVE,
-                            crop.tile_idx,
-                            crop.pos,
-                            crop.up,
-                            crop.growth,
-                            crop.kind as u8,
-                        );
-                    } else {
-                        crops::sp_save_after_change(&phys_world.borrow());
-                    }
-                }
                 crops::Outcome::Tilled(tile, depth) => {
                     /* Tilling is a normal world block edit: dirt/grass ->
                      * farmland, persisted same-frame (SP) or relayed to the
@@ -4471,7 +4991,9 @@ fn frame_inner(app: &mut App) {
                         interact::sp_save_tile_after_edit(&phys_world.borrow(), tile);
                     }
                 }
-                crops::Outcome::NotReady | crops::Outcome::None => {}
+                crops::Outcome::Harvested(_)
+                | crops::Outcome::NotReady
+                | crops::Outcome::None => {}
             }
         }
     } else {
@@ -4692,12 +5214,18 @@ fn frame_inner(app: &mut App) {
     fishing::draw(view, proj, &app.player.borrow());
     crops::draw(view, proj);
     drops::draw(view, proj, renderer::time_seconds());
+    {
+        let w = app.world.borrow();
+        bonfire_fx::draw(&w, view, proj, renderer::time_seconds());
+    }
     /* Cloud layer above the surface - same pass, drifts with sim time
      * so every peer's sky agrees. */
     {
         let w = phys_world.borrow();
         let p = app.player.borrow();
         clouds::draw(view, proj, &w, &p, sim_t);
+        /* Rain / snow around the player when their column is precipitating. */
+        weather_fx::draw(view, proj, &w, &p, sim_t);
     }
 
     /* First-person held tool (survival): the baked wood-tool model the
@@ -4791,6 +5319,7 @@ fn frame_inner(app: &mut App) {
         || inventory_screen::is_open()
         || chest_screen::is_open()
         || furnace_screen::is_open()
+        || bonfire_screen::is_open()
         || power_ui::is_open()
         || crafting_screen::is_open();
     if !menu::pause_active() && !rocket_screen::is_open() && !center_overlay_open {
@@ -4800,9 +5329,8 @@ fn frame_inner(app: &mut App) {
         draw_mining_bar(app, sapp::widthf(), sapp::heightf());
         /* Survival hunger meter (top-left). */
         draw_hunger_bar(app, sapp::widthf(), sapp::heightf());
-        /* Crop status hint under the reticle (plant / harvest). */
-        draw_crop_hint(sapp::widthf(), sapp::heightf());
-        /* Farming ground hint: till soil / plant seed. */
+        /* Farming ground hint: till soil / plant seed. (Plants no longer
+         * show a harvest prompt - they're broken like blocks.) */
         draw_farming_hint(app, sapp::widthf(), sapp::heightf());
         /* Survival: prompt when the targeted block needs a better tool. */
         draw_tool_gate_hint(app, sapp::widthf(), sapp::heightf());
@@ -4966,6 +5494,7 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
             || inventory_screen::is_open()
             || chest_screen::is_open()
             || furnace_screen::is_open()
+        || bonfire_screen::is_open()
             || power_ui::is_open()
             || rocket_screen::is_open()
             || tech_tree::is_open())
@@ -4980,6 +5509,9 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
     /* Storage chest + furnace panels: while open they own Esc (their
      * slots are egui widgets, handled in the egui layer). */
     if chest_screen::handle_event(e) {
+        return;
+    }
+    if bonfire_screen::handle_event(e) {
         return;
     }
     if furnace_screen::handle_event(e) {
@@ -5037,6 +5569,17 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
             }
             Block::Furnace => {
                 furnace_screen::open(
+                    app.world.clone(),
+                    app.player.clone(),
+                    app.interact.hit_tile,
+                    app.interact.hit_depth,
+                );
+                return;
+            }
+            /* A placed bonfire opens its cook + fuel panel (feed it wood
+             * to keep it lit; cook meat / char logs). */
+            Block::Bonfire => {
+                bonfire_screen::open(
                     app.world.clone(),
                     app.player.clone(),
                     app.interact.hit_tile,

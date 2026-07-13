@@ -65,7 +65,11 @@ const STONE_ELEV: f32 = 32.0;
  * (cap area = 2*pi*(1 - sin(lat)), so going from 0.10 to 0.05
  * is the requested "50% smaller ice cap"). */
 const POLAR_LATITUDE: f32 = 0.95;
-const COLD_LATITUDE: f32 = 0.75;
+/* Latitude (|unit_dir.y|) above which the surface goes cold/Tundra - the
+ * big white ice cap seen from orbit. A spherical cap's area is
+ * 2*pi*(1 - threshold), so raising this from 0.75 to 0.875 takes the cap
+ * area from 0.25 to 0.125 of the hemisphere - a 50% smaller ice cap. */
+const COLD_LATITUDE: f32 = 0.875;
 
 /* ----------------------------------------------------------------------- */
 /* fBm and ridge noise. Octave structure is the same as the JS reference
@@ -176,10 +180,18 @@ pub fn surface_altitude(body: &BodyConfig, unit_dir: DVec3) -> f32 {
     let base = if height >= 0.0 {
         height * MAX_LAND_HEIGHT
     } else {
-        /* C: (float)pow((double)fabs(height), (double)OCEAN_DEPTH_POWER) */
-        let ocean_factor = (height as f64).abs().powf(OCEAN_DEPTH_POWER as f64) as f32;
-        /* Seeded worlds get deeper basins (gated like the uplift). */
-        let deepen = if biomes_active(body) { SEEDED_OCEAN_DEEPEN } else { 1.0 };
+        /* C: (float)pow((double)fabs(height), (double)OCEAN_DEPTH_POWER)
+         * A smaller power makes the sea floor drop away FAST just past the
+         * beach (a sub-1 exponent lifts the near-shore |height| values), so
+         * seeded worlds get a steep shore + little shallow water. Deepen
+         * scales the whole basin. Both are seeded-only (biomes_active) so
+         * default-seed output stays byte-exact for the C-parity pins. */
+        let (power, deepen) = if biomes_active(body) {
+            (SEEDED_OCEAN_POWER, SEEDED_OCEAN_DEEPEN)
+        } else {
+            (OCEAN_DEPTH_POWER, 1.0)
+        };
+        let ocean_factor = (height as f64).abs().powf(power as f64) as f32;
         -ocean_factor * MAX_OCEAN_DEPTH * deepen
     };
 
@@ -258,7 +270,15 @@ const MOUNTAIN_SNOWCAP_ELEV_M: f32 = 40.0;
 /// their ocean floors run deeper. Both are biomes_active-gated so
 /// default-seed output stays byte-exact for the C-parity pins.
 const SEEDED_SEA_RAISE_M: f32 = 1.0;
-const SEEDED_OCEAN_DEEPEN: f32 = 1.6;
+/* Deep oceans: seeded basins run ~2.6x the base ocean depth (up to the
+ * ~62 m the 64-layer sub-sea budget allows before the floor clamps onto
+ * bedrock), so open water is a real dive, not a shallow pool. Seeded
+ * worlds only - the biomes_active gate keeps default output byte-exact. */
+const SEEDED_OCEAN_DEEPEN: f32 = 2.6;
+/// Ocean depth exponent for seeded worlds. Below the default 1.3 so the
+/// shore falls off steeply (deep water starts just past the beach, only a
+/// thin shallow band) instead of a long gentle shelf.
+const SEEDED_OCEAN_POWER: f32 = 0.62;
 
 /// Fractal noise remapped to [0, 1] at a unit direction. Shared field
 /// generator: the biome moisture map and the client's cloud-coverage
@@ -725,7 +745,7 @@ mod tests {
     // sequoia<<3 | crag<<4 | frost<<5 | asteroid<<6.
     const PROFILE_PINS: [(u32, u32, u32, u32); 6] = [
         (0xbfb9bf39, 0x3f08d677, 0x41b00000, 0),
-        (0x4187ce13, 0x3f57e0cf, 0x41300000, 8),
+        (0x4187ce13, 0x3f57e0cf, 0x41b00000, 8),
         (0x406c700b, 0x3f7fe5cd, 0x41300000, 3),
         (0x40af3c31, 0x3f6f5780, 0x41300000, 18),
         (0x40c4e7f9, 0x3f13cd3a, 0x41b00000, 36),
@@ -769,7 +789,7 @@ mod tests {
 
     // block ids for altitude_m = -32..=47 at the given tile center
     const COLUMN_PINS: [[u8; 80]; 7] = [
-        [5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 3, 3, 3, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 3, 3, 3, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
         [5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 3, 3, 3, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
         [5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 3, 3, 3, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
         [5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 13, 13, 13, 12, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],

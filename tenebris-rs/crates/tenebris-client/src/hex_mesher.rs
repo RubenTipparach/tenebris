@@ -280,12 +280,26 @@ pub(crate) fn torch_light_at(world_pos: Vec3) -> f32 {
         if list.is_empty() {
             return 0.0;
         }
-        let range = torch::LIGHT_RANGE_M;
-        let range2 = range * range;
         let decay = torch::LIGHT_DECAY;
 
         let mut total = 0.0f32;
         for t in list.iter() {
+            /* Per-source scale: `scale` is the reach multiplier (range *=
+             * scale). A torch is 1.0; a bonfire 2.0 (twice the reach). <= 0
+             * means a Default-constructed torch, treated as 1.0. Peak
+             * brightness rises more gently than the range (0.5 + 0.5*scale)
+             * so a bonfire reads as a bigger, warmer fire without blowing
+             * the near-field out to solid colour - and a torch (scale 1)
+             * keeps its exact previous look (intensity 1.0, range R). */
+            let s = if t.scale > 0.0 { t.scale } else { 1.0 };
+            /* `scale` is the reach multiplier (a torch = 1.0, a bonfire =
+             * 2.0 -> twice the range). Peak brightness rises more gently
+             * (0.4 + 0.6*scale) than the range: a torch stays exactly 1.0
+             * (no regression), a bonfire lands ~1.6x - noticeably brighter
+             * and far wider, without the literal-2x near-field blow-out. */
+            let inten = 0.4 + 0.6 * s;
+            let range = torch::LIGHT_RANGE_M * s;
+            let range2 = range * range;
             let flame = torch::flame_pos(t);
             let d = vec3_sub(flame, world_pos);
             let d2 = d.x * d.x + d.y * d.y + d.z * d.z;
@@ -293,9 +307,9 @@ pub(crate) fn torch_light_at(world_pos: Vec3) -> f32 {
                 continue;
             }
             /* Matches the JS reference's getTorchLightAt formula:
-             * 1 / (1 + decay * d^2 / range^2) - smooth inverse-square
-             * shape, normalised so contribution = 1 at d = 0. */
-            let a = 1.0f32 / (1.0f32 + decay * d2 / range2);
+             * inten / (1 + decay * d^2 / range^2) - smooth inverse-square
+             * shape, = inten at d = 0. */
+            let a = inten / (1.0f32 + decay * d2 / range2);
             total += a;
         }
         total.min(3.0)
@@ -1835,6 +1849,13 @@ pub fn build_tile(out: &mut HexMesh, w: &World, tile_idx: i32) {
             continue;
         }
 
+        /* The bonfire is drawn by a dedicated emissive campfire pass
+         * (client::bonfire_fx) so its flame glows at night - skip it in
+         * the lit terrain mesh entirely. */
+        if b == Block::Bonfire {
+            continue;
+        }
+
         /* Cables / copper pipes are the modular wiring network: render as a
          * thin node + connector arms toward each linked cell, not a hex
          * prism. Cable is the slimmer of the two; copper pipe is fatter. */
@@ -2097,6 +2118,83 @@ fn mark_sway_tips(out: &mut HexMesh, start: usize, tip_v: f32) {
         if v.uv[1] == tip_v {
             v.normal =
                 [v.normal[0] * SWAY_MARK, v.normal[1] * SWAY_MARK, v.normal[2] * SWAY_MARK];
+        }
+    }
+}
+
+/// Encode a continuous sway weight (0..1) as the normal-length scale the
+/// hex VS recovers via `weight = clamp(2*(1 - length(normal)), 0, 1)`:
+/// `w = 1` -> scale 0.5 (matches the legacy binary tip mark = full sway)
+/// and `w = 0` -> scale 1.0 (unmarked, no sway). Lets a multi-segment
+/// blade sway MORE the higher up it goes, so it bends along its length
+/// instead of shearing as one rigid quad.
+#[inline]
+fn sway_scale(w: f32) -> f32 {
+    1.0 - 0.5 * w.clamp(0.0, 1.0)
+}
+
+/// A tall grass blade built from `segs` stacked quads that curve, taper,
+/// and sway progressively toward the tip. The bottom row is pinned
+/// (weight 0) and each row up the blade carries a rising sway weight, so
+/// the wind bends the whole blade in an arc rather than shearing a single
+/// quad. `lean` is the total horizontal sweep applied at the tip.
+#[allow(clippy::too_many_arguments)]
+fn push_grass_blade(
+    out: &mut HexMesh,
+    base: DVec3,
+    up: DVec3,
+    side: DVec3,
+    lean: DVec3,
+    h: f64,
+    hw: f64,
+    uvr: (f32, f32, f32, f32),
+    sky: f32,
+    torch: f32,
+    wet: f32,
+    segs: i32,
+    base_shade: f32,
+) {
+    let (u_lo, u_hi, v_lo, v_hi) = uvr;
+    let n = segs.max(1);
+    /* One blade cross-section at height fraction f: left/right rim points,
+     * the UV v-row, and the sway weight (rises up the blade). */
+    let row = |f: f64| -> (DVec3, DVec3, f32, f32) {
+        let c = dvec3_add(dvec3_add(base, dvec3_scale(up, h * f)), dvec3_scale(lean, f * f));
+        let w_f = hw * (1.0 - 0.55 * f); /* taper narrower toward the tip */
+        let l = dvec3_sub(c, dvec3_scale(side, w_f));
+        let r = dvec3_add(c, dvec3_scale(side, w_f));
+        let v = v_hi + (v_lo - v_hi) * f as f32;
+        let sway_w = (f as f32).powf(1.3);
+        (l, r, v, sway_w)
+    };
+    /* Reference-style base->tip gradient: darken the root, brighten to full
+     * at the tip so blades read lush instead of flat. */
+    let shade = |f: f64| base_shade + (1.0 - base_shade) * f as f32;
+    for i in 0..n {
+        let f0 = i as f64 / n as f64;
+        let f1 = (i + 1) as f64 / n as f64;
+        let (l0, r0, v0, w0) = row(f0);
+        let (l1, r1, v1, w1) = row(f1);
+        let (sh0, sh1) = (shade(f0), shade(f1));
+        let s = out.vertices.len();
+        push_quad_2side(
+            out,
+            [l0, r0, r1, l1],
+            [(u_lo, v0), (u_hi, v0), (u_hi, v1), (u_lo, v1)],
+            up,
+            sky,
+            torch,
+            wet,
+        );
+        /* push_quad_2side emits verts [l0, r0, r1, l1]: rows 0,1 are the
+         * bottom edge (weight w0), 2,3 the top edge (weight w1). Scale each
+         * vertex's normal to write its sway weight and its sky light to
+         * write the base->tip gradient. */
+        for (k, w, sh) in [(s, w0, sh0), (s + 1, w0, sh0), (s + 2, w1, sh1), (s + 3, w1, sh1)] {
+            let sc = sway_scale(w);
+            let vtx = &mut out.vertices[k];
+            vtx.normal = [vtx.normal[0] * sc, vtx.normal[1] * sc, vtx.normal[2] * sc];
+            vtx.sky_light *= sh;
         }
     }
 }
@@ -2451,15 +2549,15 @@ pub fn build_scatter(out: &mut HexMesh, w: &World, tile_idx: i32) {
          * the source art - the slightly-off shades are what make the
          * blades pop out of the cap they stand on instead of melting
          * into it. */
-        /* Swamps: near-total coverage of taller, darker blades.
-         * Jungles: thicker underbrush than fields. */
-        let (chance_mul, blade_mul, height_mul) = match biome {
-            Biome::Swamp => (1.25f32, 1.3f32, 1.7f32),
-            Biome::Jungle => (1.1, 1.25, 1.2),
-            _ => (1.0, 1.0, 1.0),
-        };
-        if hash2(tile_idx, SALT_KIND) < cfg.grass_chance * chance_mul {
-            let max_b = cfg.grass_blades.max(3.0) * blade_mul;
+        /* Homogenized grass: one uniform lush green blade EVERYWHERE - no
+         * per-biome density/height multipliers, no off-colour palette
+         * (leaf/ground/bark mix). Every blade samples the same leaf-green
+         * tile with a base->tip gradient, so the sward reads consistent
+         * across the planet (the reference three.js grass demos). Biome
+         * character now comes from the ground tile, trees, and the
+         * biome-specific plants (ferns/reeds/etc) below, not the grass. */
+        if hash2(tile_idx, SALT_KIND) < cfg.grass_chance {
+            let max_b = cfg.grass_blades.max(3.0);
             let blades = ((0.6 + 0.4 * hash2(tile_idx, SALT_COUNT)) * max_b) as i32;
             for j in 0..blades {
                 let base = place(
@@ -2467,53 +2565,25 @@ pub fn build_scatter(out: &mut HexMesh, w: &World, tile_idx: i32) {
                     hash2(tile_idx, SALT_POS_B + j),
                 );
                 let ang = hash2(tile_idx, SALT_ANGLE + j) as f64 * std::f64::consts::TAU;
+                /* Tight height spread (+-20%) so the field looks even, not
+                 * spiky. */
                 let h = cfg.grass_height_m as f64
-                    * height_mul as f64
-                    * (0.65 + 0.7 * hash2(tile_idx, SALT_SIZE + j) as f64);
-                /* Off-colour palette: mostly the darker tree-leaf green
-                 * (the same shade that makes the canopies pop), with an
-                 * occasional blade of the ground's own tint blended in.
-                 * Swamps go all-in on the dark leaf shade; the sister
-                 * planet swaps in its local leaf green. */
-                let leaf = if ground == Block::SeqGrass { Block::SeqLeaves } else { Block::Leaves };
-                let pal = hash2(tile_idx, SALT_VARIANT + j);
-                /* Pasture flips the ratio: blades mostly sample the
-                 * yellow-green sod so the field reads dry, with leaf-
-                 * green accents instead of the other way round.
-                 * Swamps go BROWN: most blades sample the bark tile so
-                 * the marsh reads as dead dry grass, with a few dark
-                 * green survivors mixed in. */
-                let (src, src_cap) = if biome == Biome::Swamp {
-                    if pal < 0.75 {
-                        (Block::Wood, FaceCap::Side)
-                    } else {
-                        (leaf, FaceCap::Top)
-                    }
-                } else {
-                    let dark_frac = if ground == Block::DryGrass { 0.35 } else { 0.7 };
-                    if pal < dark_frac { (leaf, FaceCap::Top) } else { (ground, FaceCap::Top) }
-                };
-                let uvr = tile_uv_slice(src, src_cap, hash2(tile_idx, SALT_SIZE + 31 + j));
-                let (u_lo, u_hi, v_lo, v_hi) = uvr;
+                    * (0.8 + 0.4 * hash2(tile_idx, SALT_SIZE + j) as f64);
+                /* Blades sample the SAME grass tile they grow on so they
+                 * match the ground (each biome's sod tints its own grass),
+                 * with the base->tip gradient for depth. */
+                let uvr = tile_uv_slice(ground, FaceCap::Top, hash2(tile_idx, SALT_SIZE + 31 + j));
                 let side = rot(ang);
                 let lean = dvec3_scale(rot(ang + 0.9), h * 0.15);
                 let hw = cfg.grass_blade_w_m as f64
                     * (0.7 + 0.6 * hash2(tile_idx, SALT_COUNT + 17 + j) as f64);
-                let top = dvec3_add(dvec3_add(base, dvec3_scale(up, h)), lean);
-                /* Thin rectangular strip, slightly narrower at the top. */
-                push_quad_2side(
-                    out,
-                    [
-                        dvec3_sub(base, dvec3_scale(side, hw)),
-                        dvec3_add(base, dvec3_scale(side, hw)),
-                        dvec3_add(top, dvec3_scale(side, hw * 0.8)),
-                        dvec3_sub(top, dvec3_scale(side, hw * 0.8)),
-                    ],
-                    [(u_lo, v_hi), (u_hi, v_hi), (u_hi, v_lo), (u_lo, v_lo)],
-                    up,
-                    sky,
-                    torch,
-                    wet,
+                /* Curved, tapered, multi-segment blade with a base->tip
+                 * light gradient (grass_base_shade). Taller blades earn an
+                 * extra segment. */
+                let segs = (cfg.grass_segments.max(1.0) as i32) + if h > 0.7 { 1 } else { 0 };
+                push_grass_blade(
+                    out, base, up, side, lean, h, hw, uvr, sky, torch, wet, segs,
+                    cfg.grass_base_shade,
                 );
             }
         }
@@ -2742,7 +2812,13 @@ mod tests {
      * config defaults), same edits, same build order. Vertex/index
      * buffers are pinned as FNV-1a64 hashes over the exact byte
      * layout the C hashed (11 f32 LE per vertex / u32 LE per index)
-     * plus several exact vertices as f32 bit patterns. */
+     * plus several exact vertices as f32 bit patterns.
+     *
+     * NOTE: Rust is the leading platform now (the C/JS trees are archive
+     * only), so these are Rust GOLDEN pins - they no longer track the C
+     * build. S3_VH / S9B_VH (both pentagon tile 0) were re-pinned when
+     * COLD_LATITUDE shrank the ice cap 0.75 -> 0.875; the topology (counts
+     * + index hash) is unchanged, only the polar cap's top-face material. */
 
     fn fnv1a64(bytes: &[u8]) -> u64 {
         let mut h: u64 = 14695981039346656037;
@@ -3249,7 +3325,7 @@ mod tests {
 
     const S3_VC: usize = 66;
     const S3_IC: usize = 105;
-        const S3_VH: u64 = 0xeb2d268065c66ffc;
+        const S3_VH: u64 = 0x91e953dc22f88b5e;
     const S3_IH: u64 = 0xf8c0595555ef4e63;
         const S3_V0: [u32; 11] = [0xc337636b, 0x437c69ed, 0x00000000, 0xbf27b753, 0xbef3b458, 0x3f16329a, 0x3d042108, 0x00000000, 0x3eaa6e14, 0x00000000, 0x00000000];
 
@@ -3303,7 +3379,7 @@ mod tests {
         const S9A_VMID: [u32; 11] = [0x4394f1fa, 0xc154f826, 0xc1b033a5, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3d042108, 0x3f800000, 0x00000000, 0x00000000, 0x00000000];
     const S9B_VC: usize = 66;
     const S9B_IC: usize = 105;
-        const S9B_VH: u64 = 0xd1d3f02632a578d9;
+        const S9B_VH: u64 = 0x527d0767955f66ef;
     const S9B_IH: u64 = 0xf8c0595555ef4e63;
     const S9C_VC: usize = 38;
     const S9C_IC: usize = 72;

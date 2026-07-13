@@ -34,8 +34,9 @@ use crate::renderer;
 
 /// Reach (metres) for the plant / harvest pick - matches interact::MAX_DIST.
 const REACH_M: f32 = 8.0;
-/// A new crop must be at least this far from an existing one (no stacking).
-const MIN_SPACING_M: f64 = 0.6;
+/// Seconds of holding the mine button to break one plant. Snappy foraging
+/// per the design ("1 second per thing"); mass-harvest tooling comes later.
+pub const CROP_BREAK_S: f32 = 1.0;
 /// Bounding-sphere radius + centre height for the harvest raycast.
 const HIT_RADIUS_M: f32 = 0.5;
 const HIT_CENTRE_UP_M: f64 = 0.35;
@@ -61,6 +62,14 @@ pub enum Outcome {
 
 struct State {
     list: Vec<Crop>,
+    /// WILD fruit plants scattered in fields / jungle. Deterministic per
+    /// tile (not player-planted), always ripe, kept only near the player -
+    /// so they are NOT persisted (they re-derive on approach). Harvest one
+    /// for the fruit + seeds that bootstrap an orchard.
+    wild: Vec<Crop>,
+    /// Tiles whose wild plant was harvested this session, so it doesn't
+    /// instantly respawn while the player lingers (clears on reload).
+    wild_harvested: std::collections::HashSet<i32>,
     body_center: DVec3,
     /// Growth (0..1) of the crop under the reticle this frame, for the HUD
     /// hint. `None` when the player isn't looking at a crop.
@@ -70,6 +79,8 @@ struct State {
 thread_local! {
     static S: RefCell<State> = RefCell::new(State {
         list: Vec::new(),
+        wild: Vec::new(),
+        wild_harvested: std::collections::HashSet::new(),
         body_center: DVec3::default(),
         reticle_growth: None,
     });
@@ -80,6 +91,8 @@ pub fn init() {
     S.with(|c| {
         let s = &mut *c.borrow_mut();
         s.list.clear();
+        s.wild.clear();
+        s.wild_harvested.clear();
         s.reticle_growth = None;
     });
 }
@@ -130,19 +143,126 @@ pub fn update(dt: f32, w: &World, p: &PlayerCtrl, block_limit_m: f32) {
     let cfg = farming::config();
     let center = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
     let (eye, dir) = look_ray(p);
+    let time_s = tenebris_core::world_time::seconds();
+    /* Dev weather override forces a shower everywhere for screenshots -
+     * treat every crop as rained-on so watering reads in a grab. */
+    let forced_rain = crate::weather_fx::forced_precip().is_some();
     S.with(|c| {
         let s = &mut *c.borrow_mut();
         s.body_center = center;
         for crop in &mut s.list {
-            farming::grow(crop, dt, &cfg);
+            /* "Or just let it rain": a crop under a precipitating cloud
+             * grows at the boosted rate, same as a bucket pour. */
+            let rained = forced_rain || {
+                let up = dvec3_normalize(dvec3_sub(crop.pos, center));
+                tenebris_core::weather::cloud_cell(&w.body, up, time_s).raining
+            };
+            farming::grow(crop, dt, rained, &cfg);
         }
+        /* Reticle hint from whichever crop (planted or wild) is nearer. */
         let (hit, dist) = raycast_list(&s.list, center, eye, dir, REACH_M);
-        s.reticle_growth = if hit >= 0 && dist <= block_limit_m {
+        let (hw, dw) = raycast_list(&s.wild, center, eye, dir, REACH_M);
+        s.reticle_growth = if hw >= 0 && dw <= dist && dw <= block_limit_m {
+            Some(1.0) /* wild plants are always ripe */
+        } else if hit >= 0 && dist <= block_limit_m {
             Some(s.list[hit as usize].growth)
         } else {
             None
         };
     });
+}
+
+/// Deterministically populate the WILD fruit plants near the player -
+/// scattered ripe fruit trees / vines in fields + jungle to forage. Called
+/// each frame (cheap): drops wild plants that drift out of range, then
+/// walks a grid of tangent sample points around the player, resolving each
+/// to a tile and giving that tile a wild plant iff a per-tile hash passes
+/// `wild_fruit_chance` and its biome is a field / jungle. Never persisted -
+/// re-derives on approach - so it costs nothing on disk and stays coherent
+/// (a given tile always grows the same plant).
+pub fn spawn_wild_near(w: &World, p: &PlayerCtrl) {
+    let cfg = farming::config();
+    if cfg.wild_fruit_chance <= 0.0 {
+        return;
+    }
+    let center = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
+    let local = dvec3_sub(p.position, center);
+    let r = dvec3_length(local);
+    if r < 1.0 {
+        return;
+    }
+    let up = dvec3_scale(local, 1.0 / r);
+    let reference = if up.y.abs() < 0.9 {
+        dvec3_make(0.0, 1.0, 0.0)
+    } else {
+        dvec3_make(1.0, 0.0, 0.0)
+    };
+    let t1 = dvec3_normalize(dvec3_cross(reference, up));
+    let t2 = dvec3_cross(up, t1);
+
+    const RADIUS_M: f64 = 40.0;
+    const STEP_M: f64 = 5.0;
+    const KEEP_M: f64 = 55.0; /* drop wild plants past this from the player */
+
+    S.with(|c| {
+        let s = &mut *c.borrow_mut();
+        /* Forget wild plants (and their harvested marks) that drift away, so
+         * the lists stay small and re-derive fresh when the player returns. */
+        let ppos = p.position;
+        s.wild.retain(|cr| dvec3_length(dvec3_sub(cr.pos, ppos)) < KEEP_M);
+        s.wild_harvested.retain(|&tile| {
+            w.grid.tile(tile).is_some_and(|tt| {
+                let d = dvec3_add(center, dvec3_scale(dvec3_normalize(tt.center), r));
+                dvec3_length(dvec3_sub(d, ppos)) < KEEP_M
+            })
+        });
+        let present: std::collections::HashSet<i32> = s.wild.iter().map(|cr| cr.tile_idx).collect();
+
+        let mut done: std::collections::HashSet<i32> = std::collections::HashSet::new();
+        let n = (RADIUS_M / STEP_M) as i32;
+        for iy in -n..=n {
+            for ix in -n..=n {
+                let (ox, oy) = (ix as f64 * STEP_M, iy as f64 * STEP_M);
+                if ox * ox + oy * oy > RADIUS_M * RADIUS_M {
+                    continue;
+                }
+                let point = dvec3_add(local, dvec3_add(dvec3_scale(t1, ox), dvec3_scale(t2, oy)));
+                let dir = dvec3_normalize(point);
+                let tile = w.grid.find_tile(dir, p.last_tile);
+                if tile < 0 || !done.insert(tile) {
+                    continue;
+                }
+                if present.contains(&tile) || s.wild_harvested.contains(&tile) {
+                    continue;
+                }
+                if tenebris_core::rng::hash2(tile, 0x5D_1E) >= cfg.wild_fruit_chance {
+                    continue;
+                }
+                let Some(kind) = wild_kind_for(w, dir, tile) else { continue };
+                let floor = w.walkable_floor_near(tile, r, 1.0);
+                if floor <= 0.0 {
+                    continue;
+                }
+                let dir_up = dvec3_normalize(w.grid.tile(tile).map(|t| t.center).unwrap_or(dir));
+                let pos = dvec3_add(center, dvec3_scale(dir_up, floor));
+                s.wild.push(Crop::at(pos, dir_up, tile, 1.0, kind));
+            }
+        }
+    });
+}
+
+/// Which wild fruit (if any) grows on this tile: fields grow apples /
+/// watermelons, jungle grows oranges / kiwi. A second hash picks between
+/// the two so a region isn't a monoculture. Non-field/jungle biomes (and
+/// legacy default-seed worlds, which are all Fields) grow nothing extra.
+fn wild_kind_for(w: &World, dir: DVec3, tile: i32) -> Option<CropKind> {
+    use tenebris_core::planet_gen::Biome;
+    let pick = tenebris_core::rng::hash2(tile, 0x0F_17) < 0.5;
+    match tenebris_core::planet_gen::biome(&w.body, dir) {
+        Biome::Fields => Some(if pick { CropKind::Apple } else { CropKind::Watermelon }),
+        Biome::Jungle => Some(if pick { CropKind::Orange } else { CropKind::Kiwi }),
+        _ => None,
+    }
 }
 
 /* ---------------------------------------------------------------------- */
@@ -175,47 +295,76 @@ fn raycast_list(list: &[Crop], center: DVec3, eye: Vec3, dir: Vec3, max_dist: f3
 }
 
 /* ---------------------------------------------------------------------- */
-/* Plant / harvest.                                                        */
+/* Break (harvest) / plant.                                                */
 
-/// Resolve one plant-or-harvest attempt. Harvest wins when a mature crop
-/// is under the reticle; otherwise a seed plants on top of the block the
-/// player is aiming at (the `interact` target). Mutates the crop list;
+/// Distance (m) to the nearest crop under the reticle, or `f32::MAX` if
+/// none within reach. Used by `interact` to give a crop target precedence
+/// over the block behind it, so aiming at a plant breaks the PLANT (not
+/// the ground it grows on).
+pub fn reticle_distance(w: &World, p: &PlayerCtrl) -> f32 {
+    let center = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
+    let (eye, dir) = look_ray(p);
+    S.with(|c| {
+        let s = c.borrow();
+        let (h1, d1) = raycast_list(&s.list, center, eye, dir, REACH_M);
+        let (h2, d2) = raycast_list(&s.wild, center, eye, dir, REACH_M);
+        let mut best = f32::MAX;
+        if h1 >= 0 {
+            best = best.min(d1);
+        }
+        if h2 >= 0 {
+            best = best.min(d2);
+        }
+        best
+    })
+}
+
+/// Break the nearest crop under the reticle (plants are mined like blocks,
+/// not "harvested" via a prompt). Removes it and returns the removed crop
+/// so the caller drops its produce/seeds + persists. Wild plants are
+/// always ripe; a planted crop yields per its growth (the caller checks
+/// `is_mature`). Returns `None` if nothing is under the reticle.
+pub fn break_under_reticle(w: &World, p: &PlayerCtrl) -> Option<Crop> {
+    let center = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
+    let (eye, dir) = look_ray(p);
+    S.with(|c| {
+        let s = &mut *c.borrow_mut();
+        let (hit, crop_dist) = raycast_list(&s.list, center, eye, dir, REACH_M);
+        let (hit_wild, wild_dist) = raycast_list(&s.wild, center, eye, dir, REACH_M);
+        if hit < 0 && hit_wild < 0 {
+            return None;
+        }
+        /* Wild plant nearer (or the only) hit: always ripe. Remember its
+         * tile so it doesn't respawn under the player immediately. */
+        if hit_wild >= 0 && (hit < 0 || wild_dist <= crop_dist) {
+            let idx = hit_wild as usize;
+            if idx >= s.wild.len() {
+                return None;
+            }
+            let crop = s.wild.swap_remove(idx);
+            s.wild_harvested.insert(crop.tile_idx);
+            return Some(crop);
+        }
+        let idx = hit as usize;
+        if idx >= s.list.len() {
+            return None;
+        }
+        Some(s.list.swap_remove(idx))
+    })
+}
+
+/// Resolve one plant/till attempt (T): plant a seed on tilled soil, or
+/// till dirt/grass with a hoe. Harvesting is no longer here - crops are
+/// broken like blocks (see `break_under_reticle`). Mutates the crop list;
 /// the caller applies the bag change + persistence.
 pub fn plant_or_harvest(
     w: &World,
-    p: &PlayerCtrl,
+    _p: &PlayerCtrl,
     interact: &InteractState,
     seed_kind: Option<CropKind>,
     has_hoe: bool,
 ) -> Outcome {
     let center = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
-    let (eye, dir) = look_ray(p);
-
-    // Harvest takes precedence: is a crop under the reticle? A crop hit
-    // FARTHER than the aimed block is behind a wall - not harvestable
-    // (same block-distance gate the animal attack pick uses).
-    let (hit, crop_dist) = S.with(|c| {
-        let s = c.borrow();
-        raycast_list(&s.list, center, eye, dir, REACH_M)
-    });
-    let crop_blocked = interact.has_target
-        && !interact.is_torch_target
-        && (interact.distance as f32) < crop_dist;
-    if hit >= 0 && !crop_blocked {
-        return S.with(|c| {
-            let s = &mut *c.borrow_mut();
-            let idx = hit as usize;
-            if idx >= s.list.len() {
-                return Outcome::None;
-            }
-            if s.list[idx].is_mature() {
-                let crop = s.list.swap_remove(idx);
-                Outcome::Harvested(crop)
-            } else {
-                Outcome::NotReady
-            }
-        });
-    }
 
     // No crop hit -> till the ground, or plant a seed on tilled soil.
     if !interact.has_target || interact.is_torch_target {
@@ -251,16 +400,69 @@ pub fn plant_or_harvest(
 
     S.with(|c| {
         let s = &mut *c.borrow_mut();
-        // Reject if it would overlap an existing crop (no stacking).
-        for crop in &s.list {
-            if dvec3_length(dvec3_sub(crop.pos, pos)) < MIN_SPACING_M {
-                return Outcome::None;
-            }
+        // One plant per hex: the crop is centred on the tile, so a tile that
+        // already grows something (planted or a wild forage plant) is full.
+        if s.list.iter().chain(s.wild.iter()).any(|cr| cr.tile_idx == interact.hit_tile) {
+            return Outcome::None;
         }
         let crop = Crop::new(pos, dir_up, interact.hit_tile, kind);
         s.list.push(crop);
         Outcome::Planted(crop)
     })
+}
+
+/// What a bucket use did, so the caller can swap the held bucket item and
+/// persist / relay any watered crop.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum BucketOutcome {
+    /// An empty bucket dipped into water -> fill it (empty -> water bucket).
+    Scooped,
+    /// A water bucket poured on the crop under the reticle -> empty it. The
+    /// payload is the watered crop's anchor tile (for MP relay if needed).
+    Watered(i32),
+    /// Nothing in reach to act on.
+    None,
+}
+
+/// Use a bucket on whatever the player is aiming at. An EMPTY bucket
+/// (`has_water = false`) dips into a water cell along the look ray to fill
+/// it; a WATER bucket pours on the planted crop under the reticle to speed
+/// its growth ("water plants"). Wild plants are always ripe, so watering
+/// only targets the player's own crops.
+pub fn use_bucket(w: &World, p: &PlayerCtrl, has_water: bool) -> BucketOutcome {
+    let center = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
+    let (eye, dir) = look_ray(p);
+
+    if has_water {
+        // Pour on the crop under the reticle.
+        let cfg = farming::config();
+        return S.with(|c| {
+            let s = &mut *c.borrow_mut();
+            let (hit, _d) = raycast_list(&s.list, center, eye, dir, REACH_M);
+            if hit < 0 {
+                return BucketOutcome::None;
+            }
+            let idx = hit as usize;
+            farming::water(&mut s.list[idx], &cfg);
+            BucketOutcome::Watered(s.list[idx].tile_idx)
+        });
+    }
+
+    // Empty bucket: march the look ray for a water cell within reach.
+    const STEP_M: f32 = 0.25;
+    let mut t = 0.0f32;
+    while t <= REACH_M {
+        let here = Vec3 {
+            x: eye.x + dir.x * t,
+            y: eye.y + dir.y * t,
+            z: eye.z + dir.z * t,
+        };
+        if w.block_at_pos(here, p.last_tile) == Block::Water {
+            return BucketOutcome::Scooped;
+        }
+        t += STEP_M;
+    }
+    BucketOutcome::None
 }
 
 /// Remove any crop planted in world cell (tile, depth) - called when a
@@ -330,8 +532,10 @@ pub fn dev_spawn(w: &World, p: &PlayerCtrl, ahead: f64) {
     S.with(|c| {
         let s = &mut *c.borrow_mut();
         s.body_center = center;
-        for k in 0..5i32 {
-            let side = (k - 2) as f64 * 1.2;
+        /* One ripe crop of every kind in a row, so a shot frames them all
+         * (berry, wheat, carrot, then the four orchard fruits). */
+        for k in 0..7i32 {
+            let side = (k - 3) as f64 * 1.4;
             let point = dvec3_add(
                 local,
                 dvec3_add(dvec3_scale(fwd, ahead), dvec3_scale(right, side)),
@@ -343,13 +547,57 @@ pub fn dev_spawn(w: &World, p: &PlayerCtrl, ahead: f64) {
                 continue;
             }
             let pos = dvec3_add(center, dvec3_scale(dir, floor));
-            // Growth staged 0.2, 0.4, 0.6, 0.8, 1.0 across the row,
-            // cycling berry / wheat / carrot so all visuals frame at once.
-            let g = 0.2 + 0.2 * k as f32;
-            let kind = CropKind::from_u8((k % 3) as u8);
-            s.list.push(Crop::at(pos, dir, tile, g, kind));
+            let kind = CropKind::from_u8(k as u8);
+            s.list.push(Crop::at(pos, dir, tile, 1.0, kind));
         }
     });
+}
+
+/// Growth-phase constants for [`dev_growth_row`] - young sprout -> mature.
+pub const DEV_GROWTH_PHASES: [f32; 5] = [0.1, 0.32, 0.55, 0.8, 1.0];
+
+/// Dev/screenshot aid: plant a single fruit `kind` as a left-to-right row
+/// at the five [`DEV_GROWTH_PHASES`], so one shot shows that fruit through
+/// its whole growth arc (sprout to ripe). Places every stage at the
+/// player's own radius so the row is a clean straight line (not scattered
+/// over bumpy floors) that the caller can till + frame. Returns the tile
+/// indices touched (so the caller tills exactly the row) and the row's
+/// centre point (world space) for the camera aim.
+pub fn dev_growth_row(w: &World, p: &PlayerCtrl, kind: CropKind, ahead: f64) -> (Vec<i32>, DVec3) {
+    let center = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
+    let fwd = p.basis.fwd;
+    let local = dvec3_sub(p.position, center);
+    let r = dvec3_length(local);
+    let mut tiles = Vec::new();
+    let mut ripe_pos = dvec3_add(center, dvec3_scale(dvec3_normalize(dvec3_add(local, dvec3_scale(fwd, ahead))), r));
+    S.with(|c| {
+        let s = &mut *c.borrow_mut();
+        s.body_center = center;
+        /* Lay the stages out receding away from the camera along the view
+         * line - ripe nearest (front + centre + biggest), youngest furthest.
+         * Each sits on its own hex (one plant per hex) on the real floor, so
+         * a raised tile never embeds or hides the all-important ripe plant. */
+        for (i, &g) in DEV_GROWTH_PHASES.iter().enumerate() {
+            let step = ahead + (DEV_GROWTH_PHASES.len() - 1 - i) as f64 * 1.5;
+            let point = dvec3_add(local, dvec3_scale(fwd, step));
+            let tile = w.grid.find_tile(dvec3_normalize(point), p.last_tile);
+            if tile < 0 || tiles.contains(&tile) {
+                continue;
+            }
+            /* Snap to the hex CENTRE (as real planting does) so the plant
+             * sits dead-centre on its tile, not wherever the ray grazed it. */
+            let dir = dvec3_normalize(w.grid.tile(tile).map(|t| t.center).unwrap_or(point));
+            let floor = w.walkable_floor_near(tile, r, 1.0);
+            let rr = if floor > 0.0 { floor } else { r };
+            let pos = dvec3_add(center, dvec3_scale(dir, rr));
+            s.list.push(Crop::at(pos, dir, tile, g, kind));
+            tiles.push(tile);
+            if (g - 1.0).abs() < 1e-3 {
+                ripe_pos = pos; /* aim the camera here */
+            }
+        }
+    });
+    (tiles, ripe_pos)
 }
 
 /* ---------------------------------------------------------------------- */
@@ -373,14 +621,41 @@ fn orient_basis(up: DVec3) -> [f32; 16] {
     ]
 }
 
-/// One axis-aligned cuboid, per-face shaded (top brightest). Copied from
-/// animals::draw_box - kept local so the two entity renderers stay
-/// independent.
-#[allow(clippy::too_many_arguments)]
-fn draw_box(cx: f32, cy: f32, cz: f32, hx: f32, hy: f32, hz: f32, r: f32, g: f32, b: f32, lit: f32) {
+/* Crop material atlas columns (assets/textures/crops.png,
+ * tools/gen-crop-textures.py). One 32x32 tile per material. */
+const CROP_ATLAS_COLS: f32 = 13.0;
+const MAT_BARK: u8 = 0;
+const MAT_APPLE_LEAF: u8 = 1;
+const MAT_ORANGE_LEAF: u8 = 2;
+const MAT_MELON: u8 = 3;
+const MAT_APPLE_FRUIT: u8 = 4;
+const MAT_ORANGE_FRUIT: u8 = 5;
+const MAT_KIWI_FRUIT: u8 = 6;
+const MAT_VINE_LEAF: u8 = 7;
+const MAT_BERRY: u8 = 8;
+const MAT_WHEAT: u8 = 9;
+const MAT_CARROT_FROND: u8 = 10;
+const MAT_CARROT_ROOT: u8 = 11;
+const MAT_STEM: u8 = 12;
+
+/// UV rect (u0, u1, v0, v1) of a material column, inset a texel to keep
+/// neighbouring tiles from bleeding at the seams.
+fn mat_uv(col: u8) -> (f32, f32, f32, f32) {
+    let inset = 1.0 / (CROP_ATLAS_COLS * 32.0);
+    let u0 = col as f32 / CROP_ATLAS_COLS + inset;
+    let u1 = (col as f32 + 1.0) / CROP_ATLAS_COLS - inset;
+    (u0, u1, inset, 1.0 - inset)
+}
+
+/// One axis-aligned cuboid, textured from crop-atlas material `mat` and
+/// per-face shaded (top brightest). `lit` is the day/night factor; a
+/// white tint lets the texture's own colour show. Mirrors
+/// animals::draw_box (textured box entity renderer).
+fn draw_box(cx: f32, cy: f32, cz: f32, hx: f32, hy: f32, hz: f32, mat: u8, lit: f32) {
     let (x0, x1) = (cx - hx, cx + hx);
     let (y0, y1) = (cy - hy, cy + hy);
     let (z0, z1) = (cz - hz, cz + hz);
+    let (u0, u1, v0, v1) = mat_uv(mat);
     let faces: [([[f32; 3]; 4], f32); 6] = [
         ([[x0, y1, z0], [x0, y1, z1], [x1, y1, z1], [x1, y1, z0]], 1.0),
         ([[x0, y0, z1], [x0, y0, z0], [x1, y0, z0], [x1, y0, z1]], 0.55),
@@ -389,12 +664,14 @@ fn draw_box(cx: f32, cy: f32, cz: f32, hx: f32, hy: f32, hz: f32, r: f32, g: f32
         ([[x1, y0, z0], [x1, y1, z0], [x1, y1, z1], [x1, y0, z1]], 0.8),
         ([[x0, y0, z1], [x0, y1, z1], [x0, y1, z0], [x0, y0, z0]], 0.75),
     ];
+    let uv = [(u0, v1), (u0, v0), (u1, v0), (u1, v1)];
     sgl::begin_triangles();
     for (quad, shade) in faces.iter() {
-        sgl::c3f(r * shade * lit, g * shade * lit, b * shade * lit);
+        let c = shade * lit;
+        sgl::c3f(c, c, c);
         for &i in &[0usize, 1, 2, 0, 2, 3] {
             let v = quad[i];
-            sgl::v3f(v[0], v[1], v[2]);
+            sgl::v3f_t2f(v[0], v[1], v[2], uv[i].0, uv[i].1);
         }
     }
     sgl::end();
@@ -417,58 +694,95 @@ fn draw_crop(pos: DVec3, up: DVec3, growth: f32, kind: CropKind, lit: f32) {
 
     match kind {
         CropKind::Berry => {
-            // Stem - young sprouts lighter / yellower green; ripe darker.
+            // Stem + a leaf pair; red berries on a mature bush.
             let stem_h = 0.12 + 0.42 * g;
-            let (sr, sg, sb) = (0.30 + 0.10 * (1.0 - g), 0.55 + 0.15 * g, 0.20);
-            draw_box(0.0, stem_h * 0.5, 0.0, 0.035, stem_h * 0.5, 0.035, sr, sg, sb, lit);
-
-            // Leaf pair fanning out near the top, scaled by growth.
+            draw_box(0.0, stem_h * 0.5, 0.0, 0.035, stem_h * 0.5, 0.035, MAT_STEM, lit);
             let leaf = 0.06 + 0.12 * g;
             let ly = stem_h * 0.72;
-            draw_box(leaf * 0.9, ly, 0.0, leaf, 0.02, leaf * 0.6, 0.28, 0.62, 0.24, lit);
-            draw_box(-leaf * 0.9, ly, 0.0, leaf, 0.02, leaf * 0.6, 0.28, 0.62, 0.24, lit);
-
-            // Berries only on a mature crop - the visual "harvest me" cue.
+            draw_box(leaf * 0.9, ly, 0.0, leaf, 0.02, leaf * 0.6, MAT_VINE_LEAF, lit);
+            draw_box(-leaf * 0.9, ly, 0.0, leaf, 0.02, leaf * 0.6, MAT_VINE_LEAF, lit);
             if growth >= 1.0 {
-                draw_box(0.05, stem_h + 0.03, 0.03, 0.03, 0.03, 0.03, 0.85, 0.15, 0.20, lit);
-                draw_box(-0.04, stem_h + 0.06, -0.03, 0.03, 0.03, 0.03, 0.90, 0.20, 0.25, lit);
-                draw_box(0.0, stem_h + 0.10, 0.0, 0.03, 0.03, 0.03, 0.80, 0.12, 0.18, lit);
+                draw_box(0.06, stem_h + 0.02, 0.04, 0.045, 0.045, 0.045, MAT_BERRY, lit);
+                draw_box(-0.05, stem_h + 0.07, -0.04, 0.045, 0.045, 0.045, MAT_BERRY, lit);
+                draw_box(0.0, stem_h + 0.12, 0.0, 0.045, 0.045, 0.045, MAT_BERRY, lit);
             }
         }
         CropKind::Wheat => {
-            // Green -> golden as it ripens; taller than the berry bush.
+            // A clump of thin golden stalks with seed heads when ripe.
             let stalk_h = 0.10 + 0.55 * g;
-            let (sr, sg, sb) = (
-                0.30 + 0.45 * g, // toward wheat gold
-                0.55 + 0.15 * g,
-                0.18 + 0.04 * (1.0 - g),
-            );
-            // A clump of 5 thin stalks around the planting point.
             const STALKS: [(f32, f32); 5] =
                 [(0.0, 0.0), (0.07, 0.04), (-0.06, 0.05), (0.05, -0.06), (-0.05, -0.05)];
             for (i, (ox, oz)) in STALKS.iter().enumerate() {
                 let h = stalk_h * (0.85 + 0.05 * (i % 3) as f32);
-                draw_box(*ox, h * 0.5, *oz, 0.016, h * 0.5, 0.016, sr, sg, sb, lit);
-                // Seed head: a slightly fatter knob on each ripe stalk.
+                let mat = if growth >= 1.0 { MAT_WHEAT } else { MAT_STEM };
+                draw_box(*ox, h * 0.5, *oz, 0.016, h * 0.5, 0.016, mat, lit);
                 if growth >= 1.0 {
-                    draw_box(*ox, h + 0.035, *oz, 0.028, 0.045, 0.028, 0.82, 0.68, 0.28, lit);
+                    draw_box(*ox, h + 0.035, *oz, 0.028, 0.045, 0.028, MAT_WHEAT, lit);
                 }
             }
         }
         CropKind::Carrot => {
-            // Low, bushy frond fan - carrots stay short.
+            // Low frond fan; the orange root crowns out when mature.
             let frond_h = 0.08 + 0.16 * g;
             let spread = 0.05 + 0.09 * g;
-            let (fr, fg, fb) = (0.18, 0.50 + 0.12 * g, 0.16);
-            draw_box(0.0, frond_h * 0.5, 0.0, 0.025, frond_h * 0.5, 0.025, fr, fg, fb, lit);
-            draw_box(spread, frond_h * 0.42, 0.0, 0.02, frond_h * 0.42, 0.02, fr, fg * 0.92, fb, lit);
-            draw_box(-spread, frond_h * 0.42, 0.0, 0.02, frond_h * 0.42, 0.02, fr, fg * 0.92, fb, lit);
-            draw_box(0.0, frond_h * 0.42, spread, 0.02, frond_h * 0.42, 0.02, fr, fg * 0.96, fb, lit);
-            draw_box(0.0, frond_h * 0.42, -spread, 0.02, frond_h * 0.42, 0.02, fr, fg * 0.96, fb, lit);
-
-            // The root crowns out of the soil when mature.
+            draw_box(0.0, frond_h * 0.5, 0.0, 0.025, frond_h * 0.5, 0.025, MAT_CARROT_FROND, lit);
+            for (dx, dz) in [(spread, 0.0), (-spread, 0.0), (0.0, spread), (0.0, -spread)] {
+                draw_box(dx, frond_h * 0.42, dz, 0.02, frond_h * 0.42, 0.02, MAT_CARROT_FROND, lit);
+            }
             if growth >= 1.0 {
-                draw_box(0.0, 0.035, 0.0, 0.045, 0.035, 0.045, 0.88, 0.42, 0.10, lit);
+                draw_box(0.0, 0.035, 0.0, 0.045, 0.035, 0.045, MAT_CARROT_ROOT, lit);
+            }
+        }
+        CropKind::Watermelon => {
+            // Sprawling ground vine; a big striped melon centred on the hex
+            // when ripe, ringed by the vine leaves.
+            let spread = 0.09 + 0.16 * g;
+            draw_box(0.0, 0.05, 0.0, 0.03, 0.05, 0.03, MAT_STEM, lit);
+            for (dx, dz) in [(spread, 0.0), (-spread, 0.0), (0.0, spread), (0.0, -spread)] {
+                draw_box(dx, 0.03, dz, 0.06, 0.02, 0.045, MAT_VINE_LEAF, lit);
+            }
+            if growth >= 1.0 {
+                draw_box(0.0, 0.26, 0.0, 0.30, 0.26, 0.26, MAT_MELON, lit);
+            }
+        }
+        CropKind::Kiwi => {
+            // Bushy climbing vine; fuzzy brown kiwifruit under it when ripe.
+            let h = 0.10 + 0.30 * g;
+            draw_box(0.0, h * 0.5, 0.0, 0.04, h * 0.5, 0.04, MAT_BARK, lit);
+            let s = 0.07 + 0.10 * g;
+            for (dx, dz) in [(s, s), (-s, s), (s, -s), (-s, -s), (0.0, 0.0)] {
+                draw_box(dx, h * 0.82, dz, 0.07, 0.025, 0.06, MAT_VINE_LEAF, lit);
+            }
+            if growth >= 1.0 {
+                for (dx, dz) in [(s * 0.7, s * 0.3), (-s * 0.6, -s * 0.35), (s * 0.1, -s * 0.7), (-s * 0.2, s * 0.65)] {
+                    draw_box(dx, h * 0.5, dz, 0.05, 0.06, 0.05, MAT_KIWI_FRUIT, lit);
+                }
+            }
+        }
+        CropKind::Apple | CropKind::Orange => {
+            // Full-size fruit tree: bark trunk, a three-box leaf crown, and
+            // fruit studding the canopy surface when ripe.
+            let leaf_mat = if kind == CropKind::Apple { MAT_APPLE_LEAF } else { MAT_ORANGE_LEAF };
+            let fruit_mat = if kind == CropKind::Apple { MAT_APPLE_FRUIT } else { MAT_ORANGE_FRUIT };
+            let trunk_h = 0.22 + 1.00 * g;
+            let trunk_w = 0.05 + 0.03 * g;
+            draw_box(0.0, trunk_h * 0.5, 0.0, trunk_w, trunk_h * 0.5, trunk_w, MAT_BARK, lit);
+            let cr = 0.16 + 0.26 * g;
+            draw_box(0.0, trunk_h + cr * 0.15, 0.0, cr * 0.9, cr * 0.5, cr * 0.9, leaf_mat, lit);
+            draw_box(0.0, trunk_h + cr * 0.7, 0.0, cr, cr * 0.85, cr, leaf_mat, lit);
+            draw_box(0.0, trunk_h + cr * 1.35, 0.0, cr * 0.68, cr * 0.5, cr * 0.68, leaf_mat, lit);
+            if growth >= 1.0 {
+                let rad = cr * 1.05;
+                for (ux, uz, dy) in [
+                    (1.0f32, 0.15, 0.5f32),
+                    (0.2, -1.0, 0.8),
+                    (-0.9, -0.5, 0.65),
+                    (-0.6, 0.75, 1.0),
+                    (0.65, 0.8, 1.2),
+                    (0.1, 0.95, 0.45),
+                ] {
+                    draw_box(ux * rad, trunk_h + cr * dy, uz * rad, 0.07, 0.072, 0.07, fruit_mat, lit);
+                }
             }
         }
     }
@@ -476,11 +790,14 @@ fn draw_crop(pos: DVec3, up: DVec3, growth: f32, kind: CropKind, lit: f32) {
     sgl::pop_matrix();
 }
 
-/// Draw every crop. Called in the offscreen opaque pass next to animals.
+/// Draw every crop (planted + wild). Called in the offscreen opaque pass
+/// next to animals.
 pub fn draw(view: Mat4, proj: Mat4) {
     let (list, center) = S.with(|c| {
         let s = c.borrow();
-        (s.list.clone(), s.body_center)
+        let mut all = s.list.clone();
+        all.extend_from_slice(&s.wild);
+        (all, s.body_center)
     });
     if list.is_empty() {
         return;
@@ -511,11 +828,20 @@ pub fn draw(view: Mat4, proj: Mat4) {
     }
     sgl::load_pipeline(pip);
 
+    /* Bind the crop material atlas - box faces carry real UVs so the
+     * procedural plants are textured (bark / leaves / rind / fruit),
+     * matching the textured-animal path. */
+    sgl::enable_texture();
+    sgl::texture(
+        sokol::gfx::View { id: renderer::crop_view_id() },
+        sokol::gfx::Sampler { id: renderer::crop_sampler_id() },
+    );
     for crop in &list {
         let up = dvec3_normalize(dvec3_sub(crop.pos, center));
         let lit = renderer::entity_sun_brightness(crop.pos);
         draw_crop(crop.pos, up, crop.growth, crop.kind, lit);
     }
+    sgl::disable_texture();
     renderer::sgl_world_end();
     /* No sgl_draw here - the world context flushes in
      * compose_to_swapchain, inside the offscreen pass. */

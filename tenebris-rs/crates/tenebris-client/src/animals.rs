@@ -291,6 +291,82 @@ pub fn dev_spawn(w: &World, p: &PlayerCtrl) {
     });
 }
 
+/// Dev screenshot: line up the five water species (minnow, reef fish,
+/// eel, ray, turtle) frozen so they hold their pose. TENEBRIS_DEV_FISH=1
+/// floats them at eye height for a clean model lineup; =under drops
+/// them just below the nearest ocean surface for an underwater shot.
+/// Returns the water-anchor direction when the underwater school was
+/// placed (so the caller can move the camera above it), else None.
+pub fn dev_spawn_fish(w: &World, p: &PlayerCtrl, underwater: bool) -> Option<DVec3> {
+    S.with(|c| {
+        let s = &mut *c.borrow_mut();
+        s.list.clear();
+        s.corpses.clear();
+        s.frozen = true;
+        let center = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
+        s.body_center = center;
+        let fwd = p.basis.fwd;
+        let right = p.basis.right;
+        let up = p.basis.up;
+        const FISH: [fauna::AnimalKind; 5] = [
+            fauna::AnimalKind::Fish,
+            fauna::AnimalKind::FlatFish,
+            fauna::AnimalKind::LongFish,
+            fauna::AnimalKind::LargeFish,
+            fauna::AnimalKind::Turtle,
+        ];
+
+        /* Underwater mode: find an ocean-surface anchor ahead by
+         * marching forward until a column reads water at sea level,
+         * then place the school a fixed depth below that surface. */
+        let sea_r = w.depth_to_radius_m(tenebris_core::world::WORLD_SEA_LEVEL_DEPTH)
+            + tenebris_core::planet_gen::sea_raise_m(&w.body) as f64;
+        let water_anchor = if underwater {
+            let mut found = None;
+            for step in 1..=60 {
+                let ahead = dvec3_add(p.position, dvec3_scale(fwd, step as f64 * 1.5));
+                let dir = dvec3_normalize(dvec3_sub(ahead, center));
+                let probe = dvec3_add(center, dvec3_scale(dir, sea_r - 0.5));
+                let pf = tenebris_core::math::dvec3_to_vec3(dvec3_sub(probe, center));
+                if w.block_at_pos(pf, p.last_tile) == tenebris_core::blocks::Block::Water {
+                    found = Some(dir);
+                    break;
+                }
+            }
+            found
+        } else {
+            None
+        };
+
+        for (k, kind) in FISH.iter().enumerate() {
+            let side = (k as f64 - 2.0) * 1.9;
+            let (pos, heading) = if let Some(adir) = water_anchor {
+                /* Submerged row: spread sideways along the surface,
+                 * dropped below it by the species clearance so the
+                 * whole body sits under the waterline. */
+                let t = dvec3_normalize(dvec3_cross(adir, up));
+                let depth_r = sea_r - kind.water_top_clearance() - 0.15;
+                let surf = dvec3_add(center, dvec3_scale(adir, depth_r));
+                (dvec3_add(surf, dvec3_scale(t, side)), t)
+            } else {
+                let base = dvec3_add(
+                    p.position,
+                    dvec3_add(dvec3_scale(fwd, 4.5), dvec3_scale(right, side)),
+                );
+                (dvec3_add(base, dvec3_scale(up, 1.7)), right)
+            };
+            let dir = dvec3_normalize(dvec3_sub(pos, center));
+            let id = s.next_id;
+            s.next_id = s.next_id.wrapping_add(1).max(1);
+            let mut a = Animal::new(id, pos, dir);
+            a.kind = *kind;
+            a.heading = heading; /* broadside to the camera */
+            s.list.push(a);
+        }
+        water_anchor
+    })
+}
+
 /// Average position of the current herd (for the dev camera aim).
 pub fn herd_center() -> Option<DVec3> {
     S.with(|c| {
@@ -418,9 +494,11 @@ pub fn update(dt: f32, w: &World, p: &mut PlayerCtrl) {
             }
         }
 
-        /* Night: stalkers prowl in on their own cadence. */
+        /* Night: stalkers prowl in on their own cadence (unless the
+         * player switched enemy mobs off in Settings). */
         s.stalker_cd -= dt;
         if night
+            && crate::settings::enemy_mobs()
             && s.list.iter().filter(|a| a.kind == AnimalKind::Stalker).count() < STALKER_COUNT
             && s.stalker_cd <= 0.0
         {
@@ -651,6 +729,25 @@ fn draw_kind(
     let acc_b = |cx: f32, cy: f32, cz: f32, hx: f32, hy: f32, hz: f32, r: f32, g: f32, bl: f32| {
         draw_box(cx, cy, cz, hx, hy, hz, acc, acc, r * tint[0], g * tint[1], bl * tint[2], lit);
     };
+    /* Big cartoon bug-eye: a bulging white sclera cube poked out from
+     * the head with a fat dark pupil nudged forward (-Z is "ahead")
+     * and outward, so fish read wide-eyed and adorable. `s` is the
+     * eyeball half-size; `cx`'s sign is the side it bulges toward. */
+    let bug_eye = |cx: f32, cy: f32, cz: f32, s: f32| {
+        acc_b(cx, cy, cz, s, s, s, 0.97, 0.97, 1.0); /* white sclera */
+        let side = if cx >= 0.0 { 1.0 } else { -1.0 };
+        acc_b(
+            cx + side * s * 0.45,
+            cy,
+            cz - s * 0.7,
+            s * 0.55,
+            s * 0.62,
+            s * 0.55,
+            0.05,
+            0.05,
+            0.08,
+        ); /* dark pupil */
+    };
     let leg4 = |x: f32, z: f32, sw: f32, len: f32, m: f32| {
         sgl::push_matrix();
         sgl::translate(x, len * 2.0, z);
@@ -743,6 +840,8 @@ fn draw_kind(
             /* Small scaled body at swim height, tail sculling. */
             b(Part::Body, 0.0, 0.50, 0.0, 0.09, 0.13, 0.26, 1.0);
             b(Part::Limb, 0.0, 0.68, 0.02, 0.02, 0.08, 0.10, 1.0); /* dorsal */
+            bug_eye(-0.09, 0.55, -0.16, 0.07);
+            bug_eye(0.09, 0.55, -0.16, 0.07);
             sgl::push_matrix();
             sgl::translate(0.0, 0.50, 0.28);
             sgl::rotate((phase * 1.6).sin() * 0.6, 0.0, 1.0, 0.0);
@@ -760,6 +859,8 @@ fn draw_kind(
             b(Part::Limb, 0.0, 0.86, 0.04, 0.025, 0.12, 0.16, 1.0); /* dorsal */
             acc_b(-0.14, 0.50, -0.14, 0.06, 0.02, 0.09, 0.35, 0.55, 0.55); /* pectorals */
             acc_b(0.14, 0.50, -0.14, 0.06, 0.02, 0.09, 0.35, 0.55, 0.55);
+            bug_eye(-0.11, 0.62, -0.36, 0.09);
+            bug_eye(0.11, 0.62, -0.36, 0.09);
             sgl::push_matrix();
             sgl::translate(0.0, 0.55, 0.40);
             sgl::rotate((phase * 1.2).sin() * 0.5, 0.0, 1.0, 0.0);
@@ -776,6 +877,8 @@ fn draw_kind(
                 if moving { (phase * 2.0 + k).sin() * 0.10 } else { (k * 1.7).sin() * 0.03 }
             };
             b(Part::Head, s(0.0), 0.50, -0.42, 0.05, 0.07, 0.12, 1.05);
+            bug_eye(s(0.0) - 0.06, 0.55, -0.46, 0.055);
+            bug_eye(s(0.0) + 0.06, 0.55, -0.46, 0.055);
             b(Part::Body, s(1.2), 0.50, -0.14, 0.055, 0.08, 0.18, 1.0);
             b(Part::Body, s(2.4), 0.50, 0.20, 0.05, 0.07, 0.18, 0.95);
             b(Part::Limb, s(3.6), 0.50, 0.48, 0.035, 0.06, 0.14, 0.9); /* tail */
@@ -785,6 +888,9 @@ fn draw_kind(
              * whip tail. */
             b(Part::Body, 0.0, 0.45, 0.0, 0.15, 0.05, 0.28, 1.0);
             b(Part::Head, 0.0, 0.46, -0.30, 0.08, 0.04, 0.06, 1.0);
+            /* Rays wear their eyes on TOP of the head - bulge upward. */
+            bug_eye(-0.05, 0.52, -0.26, 0.05);
+            bug_eye(0.05, 0.52, -0.26, 0.05);
             let beat = (phase * 0.9).sin() * 0.35;
             for side in [-1.0f32, 1.0] {
                 sgl::push_matrix();
@@ -805,6 +911,8 @@ fn draw_kind(
             b(Part::Body, 0.0, 0.42, 0.02, 0.20, 0.09, 0.24, 1.0); /* shell base */
             b(Part::Body, 0.0, 0.54, 0.02, 0.14, 0.06, 0.17, 1.05); /* shell dome */
             b(Part::Head, 0.0, 0.40, -0.32, 0.06, 0.05, 0.08, 1.0);
+            bug_eye(-0.05, 0.44, -0.37, 0.05);
+            bug_eye(0.05, 0.44, -0.37, 0.05);
             let paddle = (phase * 0.9).sin() * 0.5;
             for (side, z, sw) in [
                 (-1.0f32, -0.16, paddle),

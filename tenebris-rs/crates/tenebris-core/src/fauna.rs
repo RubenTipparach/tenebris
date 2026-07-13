@@ -188,6 +188,108 @@ impl AnimalKind {
             _ => 2,
         }
     }
+
+    /// How far below the sea surface a water animal's ORIGIN must stay
+    /// so its drawn body (dorsal fin / shell / beating wings included)
+    /// never breaks the surface. Sized per species as
+    /// `rendered_top_extent x scale` PLUS the swell trough depth (the
+    /// vertex swell drops the cap mesh ~0.18 m below mean sea level in a
+    /// wave trough, so a fish clamped to mean level would poke through
+    /// the dip) PLUS a small buffer. The deep-bodied reef fish needs
+    /// much more headroom than a minnow. Non-water kinds return 0.
+    pub fn water_top_clearance(self) -> f64 {
+        match self {
+            AnimalKind::Fish => 0.72,       // top 0.42 + trough 0.18 + buffer
+            AnimalKind::LargeFish => 1.40,  // tall dorsal 1.08 + trough + buffer
+            AnimalKind::LongFish => 0.80,   // eel head 0.48 + trough + buffer
+            AnimalKind::FlatFish => 0.73,   // ray eyes 0.43 + trough + buffer
+            AnimalKind::Turtle => 0.85,     // shell dome 0.54 + trough + buffer
+            _ => 0.0,
+        }
+    }
+
+    /// True for the catchable water species (the fishing table). The
+    /// swimming turtle rides the water habitat but is NOT a fish - it
+    /// isn't on the hook.
+    pub fn is_fish(self) -> bool {
+        matches!(
+            self,
+            AnimalKind::Fish | AnimalKind::LargeFish | AnimalKind::LongFish | AnimalKind::FlatFish
+        )
+    }
+
+    /// Fishing strength, 1..5. Drives the whole fishing minigame:
+    /// stronger fish are RARER on the line, give you a SHORTER window
+    /// to react to the bite, and reward MORE raw fish when landed.
+    /// 0 for anything that isn't a catchable fish.
+    pub fn fish_strength(self) -> u8 {
+        match self {
+            AnimalKind::Fish => 1,      // minnow - common, easy, 1 fish
+            AnimalKind::FlatFish => 2,  // ray
+            AnimalKind::LongFish => 3,  // eel
+            AnimalKind::Turtle => 4,    // NOT hooked; rated for reference
+            AnimalKind::LargeFish => 5, // reef fish - rare, twitchy, 5 fish
+            _ => 0,
+        }
+    }
+
+    /// Relative chance this species is the one that bites (weights,
+    /// not probabilities - normalised by the caller). Stronger fish
+    /// are rarer. 0 = never on the hook.
+    pub fn fishing_weight(self) -> u32 {
+        match self {
+            AnimalKind::Fish => 50,
+            AnimalKind::FlatFish => 24,
+            AnimalKind::LongFish => 16,
+            AnimalKind::LargeFish => 10,
+            _ => 0,
+        }
+    }
+
+    /// Human-readable name (player-facing HUD / menus). ASCII only.
+    pub fn display_name(self) -> &'static str {
+        match self {
+            AnimalKind::Critter => "critter",
+            AnimalKind::Stalker => "stalker",
+            AnimalKind::Cat => "cat",
+            AnimalKind::Sheep => "sheep",
+            AnimalKind::Chicken => "chicken",
+            AnimalKind::Cow => "cow",
+            AnimalKind::Bird => "bird",
+            AnimalKind::Fish => "minnow",
+            AnimalKind::Frog => "frog",
+            AnimalKind::Lizard => "lizard",
+            AnimalKind::Penguin => "penguin",
+            AnimalKind::LargeFish => "reef fish",
+            AnimalKind::LongFish => "eel",
+            AnimalKind::FlatFish => "ray",
+            AnimalKind::Turtle => "turtle",
+        }
+    }
+
+    /// The catchable fish species, ordered weakest to strongest -
+    /// the fishing roll iterates this table.
+    pub const FISHING_TABLE: [AnimalKind; 4] = [
+        AnimalKind::Fish,
+        AnimalKind::FlatFish,
+        AnimalKind::LongFish,
+        AnimalKind::LargeFish,
+    ];
+
+    /// Pick which fish bites, weighted by [`fishing_weight`]. `roll` is
+    /// a uniform [0, 1). Deterministic, so SP and MP agree.
+    pub fn roll_fishing_species(roll: f32) -> AnimalKind {
+        let total: u32 = Self::FISHING_TABLE.iter().map(|k| k.fishing_weight()).sum();
+        let mut acc = 0u32;
+        let target = (roll.clamp(0.0, 0.9999) * total as f32) as u32;
+        for k in Self::FISHING_TABLE {
+            acc += k.fishing_weight();
+            if target < acc {
+                return k;
+            }
+        }
+        AnimalKind::Fish
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -385,10 +487,14 @@ const WALL_PAD_M: f64 = 0.45;
 const FLY_BOB_M: f64 = 0.35;
 /// Water clearance for fish: min above the sea floor.
 const FISH_PAD_M: f64 = 0.4;
-/// Surface clearance for fish: the animal ORIGIN stays this far under
-/// the sea surface, covering the drawn body + dorsal fin + bob so no
-/// part of a fish ever pokes out of the water.
-const FISH_SURFACE_PAD_M: f64 = 1.0;
+/// Max rise / dive rate for a fish easing toward its target depth,
+/// m/s. Bounded (like the bird's climb rate) so vertical motion is a
+/// graceful glide, not a snap to the clamp.
+const FISH_CLIMB_MPS: f64 = 1.1;
+/// How fast a fish's target depth wanders across the water column
+/// (radians of the anim-phase sine). Small = long slow rise/dive
+/// cycles that read like real cruising.
+const FISH_DEPTH_RATE: f64 = 0.11;
 
 /// Advance one animal by `dt`. `up` is the surface normal at its position;
 /// `tick_salt` varies the wander RNG over time. Moves `pos` along the
@@ -587,21 +693,13 @@ pub fn spawn_near_auto(w: &World, anchor_world: DVec3, id: u32, salt: u32) -> Op
         let r = dvec3_length(rel);
         let sea_r = w.depth_to_radius_m(crate::world::WORLD_SEA_LEVEL_DEPTH)
             + crate::planet_gen::sea_raise_m(&w.body) as f64;
-        /* A column that can't hold a fish inside its swim band (floor
-         * pad + surface margin) never spawns one - a fish born on a
-         * one-block shallow shelf had nowhere legal to swim and spun
-         * in place. The ring roll just fails this attempt. */
-        if r + FISH_PAD_M > sea_r - FISH_SURFACE_PAD_M {
-            return None;
-        }
-        /* Lift the spawn into the swimmable band; reseat clamps. */
-        let lift = (r + FISH_PAD_M + 0.3).min(sea_r - FISH_SURFACE_PAD_M).max(r);
-        a.pos = dvec3_add(center, dvec3_scale(dvec3_normalize(rel), lift));
         /* The sea has an ecosystem, not one species: schools of small
          * fish most common, then the big reef fish, eels, rays, and
-         * the occasional turtle. */
+         * the occasional turtle. Pick the species FIRST so the swim-
+         * band check uses ITS surface clearance (the deep reef fish
+         * needs far more headroom than a minnow). */
         let wroll = rand01(id, salt.wrapping_add(47));
-        if wroll < 0.40 {
+        let species = if wroll < 0.40 {
             AnimalKind::Fish
         } else if wroll < 0.60 {
             AnimalKind::LargeFish
@@ -611,7 +709,19 @@ pub fn spawn_near_auto(w: &World, anchor_world: DVec3, id: u32, salt: u32) -> Op
             AnimalKind::FlatFish
         } else {
             AnimalKind::Turtle
+        };
+        /* A column that can't hold THIS species inside its swim band
+         * (floor pad + its surface margin) never spawns it - a fish
+         * born on a one-block shelf had nowhere legal to swim and spun
+         * in place. The ring roll just fails this attempt. */
+        let top_clear = species.water_top_clearance();
+        if r + FISH_PAD_M > sea_r - top_clear {
+            return None;
         }
+        /* Lift the spawn into the swimmable band; reseat eases depth. */
+        let lift = (r + FISH_PAD_M + 0.3).min(sea_r - top_clear).max(r);
+        a.pos = dvec3_add(center, dvec3_scale(dvec3_normalize(rel), lift));
+        species
     } else {
         /* Each biome runs its own roster: swamps croak with frogs,
          * jungles flutter with birds and prowl with cats, deserts dart
@@ -778,31 +888,32 @@ pub fn reseat(w: &World, a: &mut Animal, dt: f32) {
             return;
         }
         Habitat::Water => {
-            /* Fish stay inside the water column: clamp between the sea
-             * floor and the surface, and refuse to swim anywhere the
-             * column is too shallow / dry (that's the beach). The
-             * surface margin covers the drawn BODY (dorsal fin included)
-             * plus the bob, so no part of a fish ever breaks the
-             * surface; seeded worlds add their raised-sea offset. */
+            /* Fish/turtles stay inside the water column between the sea
+             * floor and a per-species surface margin (covers the drawn
+             * body so nothing pokes above the water), and refuse the
+             * beach (shallow / dry columns). Seeded worlds add their
+             * raised-sea offset. */
             let sea_r = w.depth_to_radius_m(WORLD_SEA_LEVEL_DEPTH)
                 + crate::planet_gen::sea_raise_m(&w.body) as f64;
+            let top_clear = a.kind.water_top_clearance();
             let swim_band = |floor_r: f64| -> Option<(f64, f64)> {
                 let lo = floor_r + FISH_PAD_M;
-                let hi = sea_r - FISH_SURFACE_PAD_M;
+                let hi = sea_r - top_clear;
                 (floor_r > 0.0 && lo <= hi).then_some((lo, hi))
             };
             let floor_r = floor_pos(w, dir, r, -1)
                 .map(|p| dvec3_length(dvec3_sub(p, center)))
                 .unwrap_or(0.0);
             let Some((lo, hi)) = swim_band(floor_r) else {
-                /* This column can't hold a fish. If it just swam in
+                /* This column can't hold this fish. If it just swam in
                  * from a swimmable column, bounce back (undo + turn) -
                  * the normal beach refusal. But if the PREVIOUS spot
                  * was unswimmable too (spawned on a shallow shelf,
                  * terrain edited under it), bouncing would flip it in
                  * place every frame - the "fish spinning forever"
-                 * bug. Instead keep the heading and swim on at mid
-                 * water-column until a swimmable column turns up. */
+                 * bug. Instead keep the heading and swim on, clamped
+                 * SAFELY below the surface, until a swimmable column
+                 * turns up. */
                 let prev = dvec3_sub(a.pos, dvec3_scale(a.heading, state_speed(a) * dt as f64));
                 let prev_rel = dvec3_sub(prev, center);
                 let prev_r = dvec3_length(prev_rel);
@@ -811,26 +922,32 @@ pub fn reseat(w: &World, a: &mut Animal, dt: f32) {
                         .map(|p| dvec3_length(dvec3_sub(p, center)))
                         .is_some_and(|fr| swim_band(fr).is_some());
                 if !prev_ok && floor_r > 0.0 && floor_r < sea_r {
-                    /* Stuck escape: hug the middle of whatever water
-                     * is here and keep going. (The dorsal fin may
-                     * graze the surface while crossing a one-block
-                     * shelf - transient, and far better than a fish
-                     * pirouetting on the spot.) */
-                    let mid = ((floor_r + sea_r) * 0.5).max(floor_r + 0.1);
+                    /* Stuck escape: hug mid-water and keep going, but
+                     * never above the surface margin (no popping). */
+                    let safe_hi = sea_r - top_clear;
+                    let mid = ((floor_r + sea_r) * 0.5).clamp(floor_r + 0.1, safe_hi.max(floor_r + 0.1));
                     a.pos = dvec3_add(center, dvec3_scale(dir, mid));
                 } else {
                     refuse(a);
                 }
                 return;
             };
-            let bob = (a.anim_phase as f64 * 0.35).sin() * FLY_BOB_M * 0.5;
-            let swim_r = (r + bob * 0.0).clamp(lo, hi); /* keep depth, clamp */
-            let swim_pos = dvec3_add(center, dvec3_scale(dir, swim_r + bob));
+            /* Graceful vertical motion (like the bird's swoop): chase a
+             * slowly-wandering target depth at a bounded rate instead
+             * of snapping the radius to the clamp. The target eases up
+             * and down the water column on a long anim-phase sine, so
+             * fish rise and dive smoothly. */
+            let mid = (lo + hi) * 0.5;
+            let amp = (hi - lo) * 0.4;
+            let target = (mid + amp * (a.anim_phase as f64 * FISH_DEPTH_RATE).sin()).clamp(lo, hi);
+            let max_dv = FISH_CLIMB_MPS * dt as f64;
+            let new_r = (r + (target - r).clamp(-max_dv, max_dv)).clamp(lo, hi);
+            let swim_pos = dvec3_add(center, dvec3_scale(dir, new_r));
             if block_at(swim_pos) != Block::Water {
                 refuse(a);
                 return;
             }
-            a.pos = dvec3_add(center, dvec3_scale(dir, (swim_r + bob).clamp(lo, hi)));
+            a.pos = dvec3_add(center, dvec3_scale(dir, new_r));
             return;
         }
         Habitat::Land => {
@@ -1045,6 +1162,26 @@ mod tests {
     }
 
     #[test]
+    fn fishing_table_is_ordered_and_weighted() {
+        /* Every table entry is a fish with a strength + weight; the
+         * turtle rides the water but is NOT catchable. */
+        for k in AnimalKind::FISHING_TABLE {
+            assert!(k.is_fish(), "{k:?} must be a fish");
+            assert!(k.fish_strength() >= 1 && k.fish_strength() <= 5);
+            assert!(k.fishing_weight() > 0);
+        }
+        assert!(!AnimalKind::Turtle.is_fish());
+        assert_eq!(AnimalKind::Turtle.fishing_weight(), 0);
+        /* Strength strictly increases across the table (weakest first). */
+        let s: Vec<u8> = AnimalKind::FISHING_TABLE.iter().map(|k| k.fish_strength()).collect();
+        assert!(s.windows(2).all(|w| w[0] < w[1]), "strength ascends: {s:?}");
+        /* Weighted roll: the low end lands the common minnow, the top
+         * of the range lands the rare reef fish. */
+        assert_eq!(AnimalKind::roll_fishing_species(0.0), AnimalKind::Fish);
+        assert_eq!(AnimalKind::roll_fishing_species(0.999), AnimalKind::LargeFish);
+    }
+
+    #[test]
     fn frogs_hop_and_habitats_are_sane() {
         /* Frog: grounded + moving arms the sit-then-hop cycle. */
         let mut f = Animal::new_kind(5, DVec3::default(), up(), AnimalKind::Frog);
@@ -1085,13 +1222,23 @@ mod tests {
             w.stream_gen(10000);
         }
         let center = DVec3 { x: body.pos_x, y: body.pos_y, z: body.pos_z };
-        /* A shelf column: its only water voxel at the raised-sea row. */
+        /* The SHALLOWEST ocean column (fewest water voxels below sea level).
+         * Seeded worlds now have steep shores + deep basins, so a literal
+         * one-voxel shelf may not exist; the shallowest shelf still
+         * exercises the "fish near the floor escapes instead of spinning"
+         * reseat behaviour this test guards. */
+        let sea = crate::world::WORLD_SEA_LEVEL_DEPTH;
+        let water_depth = |t: i32| -> i32 {
+            let mut d = sea;
+            while d > 0 && w.get(t, d - 1) == Block::Water {
+                d -= 1;
+            }
+            sea - d
+        };
         let tile = (0..w.tile_count)
-            .find(|&t| {
-                w.get(t, crate::world::WORLD_SEA_LEVEL_DEPTH) == Block::Water
-                    && w.get(t, crate::world::WORLD_SEA_LEVEL_DEPTH - 1) != Block::Water
-            })
-            .expect("seeded world has a one-voxel shallow shelf");
+            .filter(|&t| w.get(t, sea) == Block::Water)
+            .min_by_key(|&t| water_depth(t))
+            .expect("seeded world has ocean water");
         let t = w.grid.tile(tile).expect("tile");
         let dir = dvec3_normalize(t.center);
         let r = w.depth_to_radius_m(crate::world::WORLD_SEA_LEVEL_DEPTH) + 0.5;

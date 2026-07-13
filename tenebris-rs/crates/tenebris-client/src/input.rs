@@ -203,6 +203,8 @@ struct State {
     /// module either; kept for 1:1 parity.
     jump_edge: bool,
     survival_toggle_edge: bool,
+    /// One-shot: player pressed the storm-toggle key (K) this frame.
+    storm_toggle_edge: bool,
     /// One-shot: player pressed the eat key (R) this frame.
     eat_edge: bool,
     /// One-shot: player pressed the plant/harvest key (T) this frame.
@@ -287,6 +289,11 @@ fn set_key(s: &mut State, k: sapp::Keycode, down: bool) {
         Keycode::G => {
             if down {
                 s.survival_toggle_edge = true;
+            }
+        }
+        Keycode::K => {
+            if down {
+                s.storm_toggle_edge = true;
             }
         }
         Keycode::R => {
@@ -424,6 +431,16 @@ pub fn consume_survival_toggle() -> bool {
         let s = &mut *cell.borrow_mut();
         let v = s.survival_toggle_edge;
         s.survival_toggle_edge = false;
+        v
+    })
+}
+
+/// K-key edge: cycle the manual storm override (off -> rain -> snow).
+pub fn consume_storm_toggle() -> bool {
+    S.with(|cell| {
+        let s = &mut *cell.borrow_mut();
+        let v = s.storm_toggle_edge;
+        s.storm_toggle_edge = false;
         v
     })
 }

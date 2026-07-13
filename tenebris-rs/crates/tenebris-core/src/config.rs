@@ -1455,6 +1455,91 @@ pub fn parse_lighting(src: &str, path: &str) -> i32 {
 }
 
 /* ------------------------------------------------------------------------ */
+/* Bonfire config - the flint-tier campfire (light + cook + fuel burn). */
+
+/// Tunables for the bonfire block-entity (see core::block_entity). Burn
+/// times set how long each wood-family fuel keeps the fire lit; the light
+/// scales give the bonfire its "2x a torch" glow (radius + intensity)
+/// through the client light bake.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BonfireConfig {
+    /// Seconds of burn per unit of each fuel.
+    pub stick_burn_s: f32,
+    pub log_burn_s: f32,
+    pub charcoal_burn_s: f32,
+    pub coal_burn_s: f32,
+    /// Seconds to cook one input (raw meat / fish -> cooked, log -> charcoal).
+    pub cook_time_s: f32,
+    /// Light radius multiplier vs a torch (2.0 = twice the reach).
+    pub light_radius_scale: f32,
+    /// Light intensity multiplier vs a torch (2.0 = twice as bright).
+    pub light_intensity_scale: f32,
+}
+
+pub const BONFIRE_DEFAULTS: BonfireConfig = BonfireConfig {
+    stick_burn_s: 12.0,
+    log_burn_s: 45.0,
+    charcoal_burn_s: 90.0,
+    coal_burn_s: 90.0,
+    cook_time_s: 8.0,
+    light_radius_scale: 2.0,
+    light_intensity_scale: 2.0,
+};
+
+impl Default for BonfireConfig {
+    fn default() -> Self {
+        BONFIRE_DEFAULTS
+    }
+}
+
+static S_BONFIRE: Mutex<BonfireConfig> = Mutex::new(BONFIRE_DEFAULTS);
+
+/// Current bonfire tuning (compiled-in defaults until `load_bonfire`).
+pub fn bonfire() -> BonfireConfig {
+    *S_BONFIRE.lock().unwrap()
+}
+
+/// Load + install bonfire.yaml. Fields left at / set to their zero value
+/// keep the compiled-in default, matching the other config parsers.
+pub fn load_bonfire(path: &str) -> i32 {
+    match slurp_file(path) {
+        None => {
+            println!("[config] {} not found, using compiled-in bonfire defaults", path);
+            -1
+        }
+        Some(src) => parse_bonfire(&src, path),
+    }
+}
+
+pub fn parse_bonfire(src: &str, path: &str) -> i32 {
+    let mut cfg = S_BONFIRE.lock().unwrap();
+    let parse_errors = scan(src, path, |line_no, key, val| {
+        if val.is_empty() {
+            return 0; /* section wrapper */
+        }
+        let v = fval(val);
+        if v <= 0.0 {
+            return 0; /* zero / negative keeps the compiled-in default */
+        }
+        match key {
+            "stick_burn_s" => cfg.stick_burn_s = v,
+            "log_burn_s" => cfg.log_burn_s = v,
+            "charcoal_burn_s" => cfg.charcoal_burn_s = v,
+            "coal_burn_s" => cfg.coal_burn_s = v,
+            "cook_time_s" => cfg.cook_time_s = v,
+            "light_radius_scale" => cfg.light_radius_scale = v,
+            "light_intensity_scale" => cfg.light_intensity_scale = v,
+            _ => {
+                println!("[config] {}:{}: unknown key '{}'", path, line_no, key);
+            }
+        }
+        0
+    });
+    drop(cfg);
+    finish(path, parse_errors)
+}
+
+/* ------------------------------------------------------------------------ */
 /* Atmosphere config - per-body patches applied to the planet table. */
 
 /// Port of `body_atmo_t` (planet.h) - owned by `planet.rs` (the module
