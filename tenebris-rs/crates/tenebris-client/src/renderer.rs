@@ -4028,7 +4028,9 @@ pub fn compose_to_swapchain(view: Mat4, proj: Mat4) {
                 w.underwater_distortion,
                 r.time_seconds,
                 if cam_under { 1.0 } else { 0.0 },
-                0.0,
+                /* .w = rain-on-glass overlay intensity: droplets refract the
+                 * lens while it's raining at the camera (dry = 0 = no-op). */
+                FRAME_WET.with(|c| c.get()),
             ],
             fog_params: fog,
         };
