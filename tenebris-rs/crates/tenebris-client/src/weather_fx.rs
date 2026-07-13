@@ -372,6 +372,7 @@ fn draw_distant_shafts(
     if ccfg.density <= 0.0 {
         return;
     }
+    let wcfg = weather::config();
     let center = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
 
     /* Same drifting sample frame as the clouds so shafts sit under the puffs
@@ -457,10 +458,11 @@ fn draw_distant_shafts(
                 continue; /* handled by near shower, or too far */
             }
 
-            /* Distance fade so far shafts stay faint (visible, not a wall). */
+            /* Distance fade so far shafts stay faint (visible, not a wall).
+             * Opacity ramps rain_alpha_far -> rain_alpha_near (weather.yaml). */
             let d = d2.sqrt();
-            let fade = (1.0 - (d / SHAFT_RANGE_M)).clamp(0.0, 1.0);
-            let alpha = (0.10 + 0.28 * fade) as f32;
+            let fade = (1.0 - (d / SHAFT_RANGE_M)).clamp(0.0, 1.0) as f32;
+            let alpha = wcfg.rain_alpha_far + (wcfg.rain_alpha_near - wcfg.rain_alpha_far) * fade;
 
             let up = dir_w;
             let mut right = dvec3_sub(right_ref, dvec3_scale(up, dvec3_dot(right_ref, up)));
@@ -475,7 +477,6 @@ fn draw_distant_shafts(
              * fall speed = how fast each streak drops (m/s), streak length =
              * mark length. Shorter + faster reads as drops, not curtains.
              * Streak count is capped by MAX_SHAFT_STREAKS. */
-            let wcfg = weather::config();
             let n_streaks = ((SHAFT_STREAKS as f32) * wcfg.rain_density_mult).round() as i32;
             for s in 0..n_streaks {
                 if drawn >= MAX_SHAFT_STREAKS {

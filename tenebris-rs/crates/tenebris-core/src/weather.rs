@@ -181,6 +181,12 @@ pub struct WeatherConfig {
     pub rain_color_r: f32,
     pub rain_color_g: f32,
     pub rain_color_b: f32,
+    /// Rain streak opacity for the NEAREST shafts (0..1). Far shafts fade
+    /// toward `rain_alpha_far` with distance so a storm reads as depth,
+    /// not a flat wall.
+    pub rain_alpha_near: f32,
+    /// Rain streak opacity at the far cull range (0..1).
+    pub rain_alpha_far: f32,
 
     /* --- Wind (drives grass sway; see client scatter sway) --- */
     /// Calm-day baseline wind (0..1) - grass always breathes a little.
@@ -229,6 +235,8 @@ impl WeatherConfig {
         rain_color_r: 0.45,
         rain_color_g: 0.62,
         rain_color_b: 1.0,
+        rain_alpha_near: 0.38,
+        rain_alpha_far: 0.10,
 
         base_wind: 0.35,
         gust_amp: 0.55,
@@ -290,6 +298,8 @@ pub fn parse_config(src: &str, _path: &str) -> WeatherConfig {
             "rain_color_r" => cfg.rain_color_r = v,
             "rain_color_g" => cfg.rain_color_g = v,
             "rain_color_b" => cfg.rain_color_b = v,
+            "rain_alpha_near" => cfg.rain_alpha_near = v,
+            "rain_alpha_far" => cfg.rain_alpha_far = v,
             "overcast_sun_dim" => cfg.overcast_sun_dim = v,
             "overcast_amb_dim" => cfg.overcast_amb_dim = v,
             "base_wind" => cfg.base_wind = v,

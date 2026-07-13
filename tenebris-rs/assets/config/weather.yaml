@@ -100,10 +100,15 @@ default_moisture: 0.66
 #   rain_streak_m      streak length (m) - shorter = drops, not long curtains.
 #   rain_color_r/g/b   streak tint (0..1) - lower r/g + high b = bluer rain.
 #                      (0 keeps the default, so use e.g. 0.02 for near-zero.)
-rain_fall_mps: 150.0
+#   rain_alpha_near    streak opacity for the closest shafts (0..1).
+#   rain_alpha_far     streak opacity at the far cull range - shafts fade
+#                      near->far with distance so a storm reads as depth.
+rain_fall_mps: 70.0
 rain_width_m: 0.012
 rain_density_mult: 10.5
-rain_streak_m: 0.5
+rain_streak_m: 1.5
 rain_color_r: 0.40
 rain_color_g: 0.58
 rain_color_b: 1.0
+rain_alpha_near: 0.38
+rain_alpha_far: 0.10
