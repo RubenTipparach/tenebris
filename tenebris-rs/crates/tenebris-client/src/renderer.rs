@@ -4451,51 +4451,30 @@ pub fn draw_world(
             let l = config::lighting();
             {
                 let sc = tenebris_core::scatter::config();
-                /* Wind-driven grass sway: sample the atmospheric wind field
-                 * at the camera's cell and scale the sway speed + amplitude
-                 * by it, so grass merely breathes on a calm day and whips in
-                 * a storm. A forced storm (K toggle / DEV_WEATHER) pins the
-                 * wind high too. Regional (one sample/frame) - the VS's own
-                 * per-position phase keeps the blades from moving in lockstep. */
-                /* Wind strength AND flow direction, both sampled at the
-                 * camera cell. The direction (from the weather sim: follows
-                 * the cloud drift, bent down the pressure gradient) makes the
-                 * grass lean + ripple downwind instead of wobbling randomly. */
-                let (wind, wind_dir_w) = if r.active_body_idx >= 0 {
-                    let active = &r.bodies[r.active_body_idx as usize];
-                    let world = active.world.borrow();
-                    let bcen = Vec3 {
-                        x: world.body.pos_x as f32,
-                        y: world.body.pos_y as f32,
-                        z: world.body.pos_z as f32,
-                    };
-                    let cam = vec3_sub(camera_world, bcen);
-                    let cr = vec3_length(cam).max(1e-3);
-                    let dir = tenebris_core::math::dvec3_make(
-                        (cam.x / cr) as f64,
-                        (cam.y / cr) as f64,
-                        (cam.z / cr) as f64,
-                    );
-                    let mut w = tenebris_core::weather::wind01(&world.body, dir, r.time_seconds as f64);
-                    if crate::weather_fx::forced_precip().is_some() {
-                        w = w.max(tenebris_core::weather::config().wind_max * 0.85);
-                    }
-                    let wd = tenebris_core::weather::wind_dir(&world.body, dir, r.time_seconds as f64);
-                    (w, [wd.x as f32, wd.y as f32, wd.z as f32])
-                } else {
-                    (0.0, [1.0f32, 0.0, 0.0])
-                };
-                /* Wind sway master switch (scatter.yaml grass_wind). Off by
-                 * default now - the grass stands still and uniform. When off,
-                 * zero the amplitude so no vertex sways regardless of speed. */
+                /* Simple, believable grass wind - deliberately NOT the
+                 * atmospheric weather sim (its per-cell direction shifted as
+                 * the player moved and read as random). A single fixed
+                 * prevailing wind direction the VS projects onto each blade's
+                 * tangent plane, plus a slow global gust envelope, so the
+                 * whole sward leans + ripples the same way and breathes
+                 * together - a coherent low-frequency wave rolling downwind,
+                 * like the reference grass demos. */
                 let wind_on = sc.grass_wind > 0.5;
-                let amp_k = if wind_on { 1.0 + wind * 1.4 } else { 0.0 };
-                let spd_k = 1.0 + wind * 0.9; /* and rolls the gust downwind faster */
-                /* Pack the wind flow for the VS: xyz = unit downwind scaled by
-                 * the steady lean bias (length recovers the bias), w = gust
-                 * wave spatial frequency (radians/metre). */
+                /* Global gust: the reach eases ~70%..100% over a few seconds -
+                 * one shared breath, not per-blade jitter. */
+                let gust = 0.85 + 0.15 * (r.time_seconds * 0.55).sin();
+                let amp = if wind_on { sc.sway_amp_m * gust } else { 0.0 };
                 let lean = sc.sway_lean_bias.clamp(0.0, 1.0);
                 let gust_k = std::f32::consts::TAU / sc.sway_gust_wavelength_m.max(0.5);
+                /* Fixed world-space prevailing wind; the VS re-projects it
+                 * onto each vertex's tangent plane so the visible field agrees
+                 * everywhere. xyz = unit dir * lean bias (length recovers the
+                 * bias), w = gust-wave spatial frequency (rad/m). */
+                let wind_dir_w = {
+                    let v = [1.0f32, 0.0, 0.35];
+                    let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+                    [v[0] / l, v[1] / l, v[2] / l]
+                };
                 let hex_vs_light = shaders::hex::HexVsLight {
                     u_sun_dir: [r.env.sun_dir.x, r.env.sun_dir.y, r.env.sun_dir.z],
                     _pad_12: [0; 4],
@@ -4507,8 +4486,8 @@ pub fn draw_world(
                         r.time_seconds as f32,
                     ],
                     u_sway: [
-                        sc.sway_speed * spd_k,
-                        sc.sway_amp_m * amp_k,
+                        sc.sway_speed,
+                        amp,
                         sc.underwater_sway_speed,
                         sc.underwater_sway_amp_m,
                     ],

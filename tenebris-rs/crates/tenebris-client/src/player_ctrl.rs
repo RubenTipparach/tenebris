@@ -2412,6 +2412,44 @@ mod tests {
             final_r >= ground_r - 0.3,
             "fell through under a tree: final_r={final_r:.2} ground_r={ground_r:.2} (tile {tree_tile})"
         );
+
+        /* Walking case: start grounded on the tree tile's ground OUT at a
+         * vertex (clear of the trunk), then step tangentially straight
+         * through the trunk axis. The player must stay grounded the whole
+         * way - the fall used to trigger the moment their centre crossed
+         * into the trunk cylinder. */
+        let vert = w.grid.tile(tree_tile).unwrap().verts[0];
+        /* A point ~70% of the way from centre to the vertex: on the ground,
+         * clear of the 0.75 m trunk cylinder. */
+        let start_dir = dvec3_normalize(dvec3_add(
+            dvec3_scale(center, 0.3),
+            dvec3_scale(vert, 0.7),
+        ));
+        p.position = dvec3_scale(start_dir, ground_r);
+        p.velocity = DVec3::default();
+        p.last_tile = tree_tile;
+        p.grounded = true;
+        steps(&mut p, Some(&w), 5); /* settle */
+        let mut min_r = f64::MAX;
+        for _ in 0..40 {
+            /* Nudge ~8 cm tangentially toward the trunk axis, then tick the
+             * real collision/ground-snap on the moved position. */
+            let loc = p.position; /* body is at origin (Tenebris) */
+            let up = dvec3_normalize(loc);
+            let to_center = dvec3_sub(center, up); /* roughly toward the axis */
+            let mut tang = dvec3_sub(to_center, dvec3_scale(up, dvec3_dot(to_center, up)));
+            let tl = dvec3_length(tang);
+            if tl > 1e-6 {
+                tang = dvec3_scale(tang, 0.08 / tl);
+                p.position = dvec3_add(p.position, tang);
+            }
+            update(&mut p, Some(&w), DT);
+            min_r = min_r.min(dvec3_length(p.position));
+        }
+        assert!(
+            min_r >= ground_r - 0.4,
+            "fell through while walking into a tree: min_r={min_r:.2} ground_r={ground_r:.2}"
+        );
     }
 
     /* -- A: spawn -> gravity fall -> land --------------------------------- */
