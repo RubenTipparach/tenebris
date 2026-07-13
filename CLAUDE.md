@@ -88,6 +88,33 @@ at the same point in the call graph as `world_set` is wired today.
 A new mutator without a same-frame save is a bug, not a feature
 request.
 
+## The Rust port (`tenebris-rs/`) is the leading platform — C and JS are archive-only
+
+`tenebris-rs/` is now the primary, leading development target. All new
+work, features, and fixes happen there. **The C tree (`tenebris-c/`) and
+the JS tree (`src/`, `public/`, ...) are kept only for archival /
+historical reference — their implementations no longer matter.**
+
+Concretely:
+
+- **Do not chase parity with C or JS.** When Rust behaviour diverges from
+  the C/JS implementation, that is fine — Rust leads. Do not "fix" Rust to
+  match C/JS, and do not hold back a Rust change because it would break a
+  C-parity guarantee.
+- **Golden tests are Rust-golden.** Pinned mesh / worldgen / sim hashes in
+  `tenebris-rs/` are snapshots of the *intended Rust output*, not a C-parity
+  contract. When an intentional gameplay/visual change moves them, re-pin to
+  the new Rust values (verify the change is the one you meant, then update
+  the constant) and note why. Older "generated from the C build" comments
+  are historical.
+- **Reading C/JS to learn how a feature worked is still fine** and often
+  useful. But treat them as documentation of the past, not a spec to honour.
+- **Never edit C or JS to keep them in sync with Rust.** They are frozen
+  archives; do not touch them (the older "all development happens in
+  `tenebris-c/`" note below is superseded by this section).
+
+This rule stays in force until the user says otherwise.
+
 ## DO NOT MODIFY THE TENEBRIS JS SOURCE — IT IS DEPRECATED
 
 The original Three.js / TypeScript implementation lives at the repo root

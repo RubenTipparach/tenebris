@@ -50,11 +50,13 @@ tenebris:
   # sits inside the atmosphere): playtest-tuned after 1.6 read like a
   # gas giant and 1.08 pinched the halo too tight.
   radius_mult: 1.24
-  # Sink the planet-clip sphere slightly below the actual ground so
-  # the atmosphere ray-march continues a bit past the visible horizon
-  # — softens the harsh dark band where atmosphere meets the planet
-  # silhouette in orbital views. Kept proportional to the thin shell.
-  lower_radius_mult: 0.97
+  # Clip the atmosphere ray-march right at the ground (1.0). Sinking it
+  # below the surface (the old 0.97) let the march keep sampling past the
+  # night-side horizon, where sun-shadowed air still scattered - so the
+  # dark hemisphere's limb glowed too bright and read opaque from orbit.
+  # At 1.0 the shadow/clip test culls those samples, so the night side
+  # goes properly dark. Costs a slightly harsher day-silhouette band.
+  lower_radius_mult: 1.0
   # Aligned with Caelum's stated 'Tenebris default (scale-independent
   # with normalized steps)' values from src/atmosphere.c. Our shader
   # is now a faithful Caelum port (atmosphere.glsl), so the same

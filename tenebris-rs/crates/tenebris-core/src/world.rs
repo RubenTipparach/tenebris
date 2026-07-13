@@ -1504,7 +1504,7 @@ mod tests {
     const TREE_TILE: i32 = 73;
     const WATER_TILE: i32 = 2;
 
-        const COL_0: [u8; 128] = [23, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 27, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 28, 5, 5, 5, 5, 5, 5, 28, 5, 5, 5, 5, 5, 5, 5, 5, 5, 25, 5, 26, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 3, 3, 3, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        const COL_0: [u8; 128] = [23, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 27, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 28, 5, 5, 5, 5, 5, 5, 28, 5, 5, 5, 5, 5, 5, 5, 5, 5, 25, 5, 26, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 3, 3, 3, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
         const COL_100: [u8; 128] = [23, 5, 28, 5, 5, 5, 25, 27, 25, 5, 5, 5, 26, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 27, 5, 5, 5, 5, 5, 5, 26, 5, 5, 5, 5, 5, 5, 5, 5, 25, 5, 5, 5, 5, 5, 5, 5, 3, 3, 3, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
         const COL_333: [u8; 128] = [23, 5, 25, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 28, 5, 5, 5, 5, 26, 5, 5, 5, 5, 5, 26, 5, 5, 28, 5, 25, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 3, 3, 3, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
         const COL_641: [u8; 128] = [23, 5, 5, 25, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 28, 5, 5, 5, 5, 5, 26, 5, 5, 5, 5, 5, 28, 5, 25, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 27, 5, 5, 5, 5, 5, 3, 3, 3, 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
@@ -1523,14 +1523,14 @@ mod tests {
         w.stream_gen(100);
         assert_eq!(w.gen_progress_pct(), 15);
         assert!(!w.gen_complete());
-        assert_eq!(fnv1a64(&w.blocks), 18417547801711035607);
+        assert_eq!(fnv1a64(&w.blocks), 4884556097185618959);
         while !w.gen_complete() {
             w.stream_gen(100);
         }
         assert_eq!(w.gen_progress_pct(), 100);
-        assert_eq!(fnv1a64(&w.blocks), 11860692157470117177);
+        assert_eq!(fnv1a64(&w.blocks), 11545374911774499490);
         assert_eq!(fnv1a64(&w.dirty), 13535398748077020770);
-        assert_eq!(fnv1a64(&w.edited), 2765778263781656134);
+        assert_eq!(fnv1a64(&w.edited), 17202780500993738236);
 
         /* First tree / water columns land where the C put them. */
         let mut tree_tile = -1;
@@ -1646,8 +1646,8 @@ mod tests {
         assert!(w.tile_dirty(100));
         assert_eq!(w.get(100, top100 + 3), Block::Stone);
         assert_eq!(w.get(100, top100), Block::Air);
-        assert_eq!(fnv1a64(&w.blocks), 3353865708915105722);
-        assert_eq!(fnv1a64(&w.edited), 12021992615667686486);
+        assert_eq!(fnv1a64(&w.blocks), 9303898390399885589);
+        assert_eq!(fnv1a64(&w.edited), 9693716676437662316);
 
         /* Tile 100 is edited now -> voxel-scan floor path. */
         assert_eq!(w.walkable_floor_near(100, r + 5.0, 1.8), 303.0);
@@ -1724,7 +1724,12 @@ mod tests {
          * neither - the biome layer is seed-gated. */
         let mut body = planet::get(BodyId::Tenebris);
         body.seed = 0xC0FFEE_D00D;
-        let mut w = World::create(&body, 3);
+        /* Subdiv 4 (not 3): after the ice cap shrank (COLD_LATITUDE 0.75 ->
+         * 0.875) the Tundra band is narrow, so a coarse subdiv-3 grid can
+         * miss every snow-topped tree tile in it. The finer grid samples
+         * the smaller band densely enough to catch a pine - the feature is
+         * unchanged, only the area it covers. */
+        let mut w = World::create(&body, 4);
         while !w.gen_complete() {
             w.stream_gen(4096);
         }

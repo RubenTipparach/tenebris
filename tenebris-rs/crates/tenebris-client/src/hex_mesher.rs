@@ -2822,7 +2822,13 @@ mod tests {
      * config defaults), same edits, same build order. Vertex/index
      * buffers are pinned as FNV-1a64 hashes over the exact byte
      * layout the C hashed (11 f32 LE per vertex / u32 LE per index)
-     * plus several exact vertices as f32 bit patterns. */
+     * plus several exact vertices as f32 bit patterns.
+     *
+     * NOTE: Rust is the leading platform now (the C/JS trees are archive
+     * only), so these are Rust GOLDEN pins - they no longer track the C
+     * build. S3_VH / S9B_VH (both pentagon tile 0) were re-pinned when
+     * COLD_LATITUDE shrank the ice cap 0.75 -> 0.875; the topology (counts
+     * + index hash) is unchanged, only the polar cap's top-face material. */
 
     fn fnv1a64(bytes: &[u8]) -> u64 {
         let mut h: u64 = 14695981039346656037;
@@ -3329,7 +3335,7 @@ mod tests {
 
     const S3_VC: usize = 66;
     const S3_IC: usize = 105;
-        const S3_VH: u64 = 0xeb2d268065c66ffc;
+        const S3_VH: u64 = 0x91e953dc22f88b5e;
     const S3_IH: u64 = 0xf8c0595555ef4e63;
         const S3_V0: [u32; 11] = [0xc337636b, 0x437c69ed, 0x00000000, 0xbf27b753, 0xbef3b458, 0x3f16329a, 0x3d042108, 0x00000000, 0x3eaa6e14, 0x00000000, 0x00000000];
 
@@ -3383,7 +3389,7 @@ mod tests {
         const S9A_VMID: [u32; 11] = [0x4394f1fa, 0xc154f826, 0xc1b033a5, 0xbd9702eb, 0x00000000, 0xbf7f4d99, 0x3d042108, 0x3f800000, 0x00000000, 0x00000000, 0x00000000];
     const S9B_VC: usize = 66;
     const S9B_IC: usize = 105;
-        const S9B_VH: u64 = 0xd1d3f02632a578d9;
+        const S9B_VH: u64 = 0x527d0767955f66ef;
     const S9B_IH: u64 = 0xf8c0595555ef4e63;
     const S9C_VC: usize = 38;
     const S9C_IC: usize = 72;
