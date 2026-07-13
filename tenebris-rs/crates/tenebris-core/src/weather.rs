@@ -26,7 +26,9 @@
 
 use std::sync::Mutex;
 
-use crate::math::DVec3;
+use crate::math::{
+    dvec3_add, dvec3_cross, dvec3_dot, dvec3_normalize, dvec3_scale, dvec3_sub, DVec3,
+};
 use crate::planet::BodyConfig;
 use crate::planet_gen;
 
@@ -168,6 +170,10 @@ pub struct WeatherConfig {
     pub storm_wind: f32,
     /// Hard cap on the wind factor.
     pub wind_max: f32,
+    /// How hard the pressure gradient steers the wind DIRECTION away from
+    /// the base cloud-drift flow. 0 = wind just follows the global drift;
+    /// higher bends it toward low-pressure (cloudy) cells.
+    pub wind_dir_pressure: f32,
 }
 
 impl WeatherConfig {
@@ -195,6 +201,7 @@ impl WeatherConfig {
         overcast_wind: 0.4,
         storm_wind: 1.1,
         wind_max: 2.2,
+        wind_dir_pressure: 8.0,
     };
 }
 
@@ -247,6 +254,7 @@ pub fn parse_config(src: &str, _path: &str) -> WeatherConfig {
             "overcast_wind" => cfg.overcast_wind = v,
             "storm_wind" => cfg.storm_wind = v,
             "wind_max" => cfg.wind_max = v,
+            "wind_dir_pressure" => cfg.wind_dir_pressure = v,
             _ => {}
         }
     }
@@ -383,6 +391,47 @@ pub fn wind01(body: &BodyConfig, dir: DVec3, t_s: f64) -> f32 {
     w.clamp(0.0, cfg.wind_max)
 }
 
+/// Wind FLOW direction at a surface cell, as a unit world-space vector
+/// tangent to the sphere. Composes two pieces of the user's model:
+/// - **Follows the clouds**: clouds advect by a rigid spin about the body
+///   Y axis, so the base flow runs "east" - the direction surface points
+///   travel under that spin.
+/// - **High -> low pressure**: treating cloud masses as lows (rising, moist
+///   air) and clear sky as highs, wind flows down the pressure gradient,
+///   i.e. toward rising cloud density. We sample the density gradient on
+///   the tangent plane and steer the base flow along it (`wind_dir_pressure`).
+///
+/// Deterministic (seed + position + time), so every client agrees without
+/// syncing. Pair with [`wind01`] for the matching wind STRENGTH.
+pub fn wind_dir(body: &BodyConfig, dir: DVec3, t_s: f64) -> DVec3 {
+    let cfg = config();
+    let n = dvec3_normalize(dir);
+    let y = DVec3 { x: 0.0, y: 1.0, z: 0.0 };
+    /* East tangent = travel direction under the cloud-drift Y spin;
+     * degenerate at the poles, so fall back to the X axis there. */
+    let mut east = dvec3_cross(n, y);
+    if dvec3_dot(east, east) < 1e-6 {
+        east = dvec3_cross(n, DVec3 { x: 1.0, y: 0.0, z: 0.0 });
+    }
+    let east = dvec3_normalize(east);
+    let north = dvec3_cross(east, n); /* completes the tangent basis */
+    /* Central-difference the cloud-density (pressure proxy) gradient on the
+     * tangent plane; wind flows toward higher density (toward the low). */
+    let eps = 0.03f64;
+    let cd = |d: DVec3| cloud_density(body, dvec3_normalize(d), t_s) as f64;
+    let ge = cd(dvec3_add(n, dvec3_scale(east, eps))) - cd(dvec3_sub(n, dvec3_scale(east, eps)));
+    let gn = cd(dvec3_add(n, dvec3_scale(north, eps))) - cd(dvec3_sub(n, dvec3_scale(north, eps)));
+    let grad = dvec3_add(dvec3_scale(east, ge), dvec3_scale(north, gn));
+    let mut flow = dvec3_add(east, dvec3_scale(grad, cfg.wind_dir_pressure as f64));
+    /* Re-project onto the tangent plane (kill any radial component). */
+    flow = dvec3_sub(flow, dvec3_scale(n, dvec3_dot(flow, n)));
+    if dvec3_dot(flow, flow) < 1e-9 {
+        east
+    } else {
+        dvec3_normalize(flow)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -427,6 +476,20 @@ mod tests {
         assert_eq!(c.rain_threshold, 0.8);
         assert_eq!(c.cloud_min, WeatherConfig::DEFAULT.cloud_min);
         set_config(WeatherConfig::DEFAULT);
+    }
+
+    #[test]
+    fn wind_dir_is_unit_and_tangent() {
+        set_config(WeatherConfig::DEFAULT);
+        let body = crate::planet::get(crate::planet::BodyId::Tenebris);
+        for (x, y, z) in [(1.0, 0.2, 0.3), (-0.4, 0.9, 0.1), (0.1, -0.3, 0.95)] {
+            let d = dvec3_normalize(DVec3 { x, y, z });
+            let w = wind_dir(&body, d, 1234.0);
+            let len = dvec3_dot(w, w).sqrt();
+            assert!((len - 1.0).abs() < 1e-5, "wind dir must be unit, got {}", len);
+            /* Perpendicular to the surface normal (tangent to the sphere). */
+            assert!(dvec3_dot(w, d).abs() < 1e-4, "wind dir must be tangent");
+        }
     }
 
     #[test]

@@ -4418,7 +4418,11 @@ pub fn draw_world(
                  * a storm. A forced storm (K toggle / DEV_WEATHER) pins the
                  * wind high too. Regional (one sample/frame) - the VS's own
                  * per-position phase keeps the blades from moving in lockstep. */
-                let wind = if r.active_body_idx >= 0 {
+                /* Wind strength AND flow direction, both sampled at the
+                 * camera cell. The direction (from the weather sim: follows
+                 * the cloud drift, bent down the pressure gradient) makes the
+                 * grass lean + ripple downwind instead of wobbling randomly. */
+                let (wind, wind_dir_w) = if r.active_body_idx >= 0 {
                     let active = &r.bodies[r.active_body_idx as usize];
                     let world = active.world.borrow();
                     let bcen = Vec3 {
@@ -4437,12 +4441,18 @@ pub fn draw_world(
                     if crate::weather_fx::forced_precip().is_some() {
                         w = w.max(tenebris_core::weather::config().wind_max * 0.85);
                     }
-                    w
+                    let wd = tenebris_core::weather::wind_dir(&world.body, dir, r.time_seconds as f64);
+                    (w, [wd.x as f32, wd.y as f32, wd.z as f32])
                 } else {
-                    0.0
+                    (0.0, [1.0f32, 0.0, 0.0])
                 };
                 let amp_k = 1.0 + wind * 1.4; /* wind grows the sway reach */
                 let spd_k = 1.0 + wind * 0.6; /* and quickens it a little */
+                /* Pack the wind flow for the VS: xyz = unit downwind scaled by
+                 * the steady lean bias (length recovers the bias), w = gust
+                 * wave spatial frequency (radians/metre). */
+                let lean = sc.sway_lean_bias.clamp(0.0, 1.0);
+                let gust_k = std::f32::consts::TAU / sc.sway_gust_wavelength_m.max(0.5);
                 let hex_vs_light = shaders::hex::HexVsLight {
                     u_sun_dir: [r.env.sun_dir.x, r.env.sun_dir.y, r.env.sun_dir.z],
                     _pad_12: [0; 4],
@@ -4458,6 +4468,12 @@ pub fn draw_world(
                         sc.sway_amp_m * amp_k,
                         sc.underwater_sway_speed,
                         sc.underwater_sway_amp_m,
+                    ],
+                    u_wind_dir: [
+                        wind_dir_w[0] * lean,
+                        wind_dir_w[1] * lean,
+                        wind_dir_w[2] * lean,
+                        gust_k,
                     ],
                 };
                 sg::apply_uniforms(
@@ -5989,7 +6005,7 @@ mod tests {
          * sg_apply_uniforms validates the range length against the
          * shader's declared block size. */
         assert_eq!(size_of::<shaders::hex::HexVsParams>(), 80);
-        assert_eq!(size_of::<shaders::hex::HexVsLight>(), 48); /* +u_sway (scatter wind) */
+        assert_eq!(size_of::<shaders::hex::HexVsLight>(), 64); /* +u_sway +u_wind_dir (scatter wind) */
         assert_eq!(size_of::<shaders::hex::HexFsLight>(), 48);
         assert_eq!(size_of::<shaders::hex::HexFsWater>(), 32);
         assert_eq!(size_of::<shaders::hex::HexFsTorch>(), 16);

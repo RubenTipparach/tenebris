@@ -52,6 +52,10 @@ small_extra_drift: 0.0
 #   overcast_wind   extra wind per unit of overcast coverage
 #   storm_wind      extra wind while a cell is precipitating (storms whip)
 #   wind_max        hard cap on the wind factor
+#   wind_dir_pressure  how hard the pressure gradient bends the wind
+#                      DIRECTION off the base cloud-drift flow (0 = wind
+#                      just follows the drift; higher steers it toward
+#                      low-pressure / cloudy cells so gusts blow toward storms)
 base_wind: 0.35
 gust_amp: 0.55
 gust_scale: 3.0
@@ -59,6 +63,7 @@ gust_drift: 0.08
 overcast_wind: 0.4
 storm_wind: 1.1
 wind_max: 2.2
+wind_dir_pressure: 8.0
 
 # --- Storm intensity ---
 #   rain_cloud_scale  size multiplier for a rain/snow cloud - storm clouds

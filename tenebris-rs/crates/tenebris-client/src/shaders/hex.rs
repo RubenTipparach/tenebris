@@ -79,6 +79,10 @@ pub struct HexVsLight {
     pub _pad_12: [u8; 4],
     pub u_terminator: [f32; 4],
     pub u_sway: [f32; 4],
+    /// Grass-sway wind: xyz = wind flow direction scaled by the steady
+    /// lean bias (its length encodes the bias, 0..1); w = gust wave spatial
+    /// frequency (radians/metre). See renderer + the VS sway block.
+    pub u_wind_dir: [f32; 4],
 }
 #[repr(C, align(16))]
 pub struct HexVsParams {
@@ -115,7 +119,7 @@ pub struct HexFsWater {
 /*
     #version 410
 
-    uniform vec4 hex_vs_light[3];
+    uniform vec4 hex_vs_light[4];
     uniform vec4 hex_vs_params[5];
     layout(location = 0) in vec3 a_pos;
     layout(location = 1) in vec3 a_normal;
@@ -137,37 +141,29 @@ pub struct HexFsWater {
         vec3 pos = a_pos;
         if (dot(a_normal, a_normal) < 0.810000002384185791015625)
         {
-            bool _28 = a_wet > 0.5;
-            float _29;
-            if (_28)
-            {
-                _29 = hex_vs_light[2].z;
-            }
-            else
-            {
-                _29 = hex_vs_light[2].x;
-            }
-            float _51;
-            if (_28)
-            {
-                _51 = hex_vs_light[2].w;
-            }
-            else
-            {
-                _51 = hex_vs_light[2].y;
-            }
-            vec3 _74 = normalize(a_pos - hex_vs_params[4].xyz);
-            vec3 _80 = cross(_74, vec3(0.0, 1.0, 0.0));
-            vec3 east = _80;
-            if (dot(_80, _80) < 9.9999997473787516355514526367188e-05)
-            {
-                east = cross(_74, vec3(1.0, 0.0, 0.0));
-            }
-            vec3 _91 = east;
-            vec3 _92 = normalize(_91);
-            east = _92;
+            bool _wet = a_wet > 0.5;
+            float _spd = _wet ? hex_vs_light[2].z : hex_vs_light[2].x;
+            float _amp = _wet ? hex_vs_light[2].w : hex_vs_light[2].y;
+            vec3 _up = normalize(a_pos - hex_vs_params[4].xyz);
+            /* Wind flow direction (from the weather sim, one sample/frame):
+             * xyz = unit downwind * steady lean bias, so its length recovers
+             * the bias; w = gust wave spatial frequency. Re-project the wind
+             * onto THIS vertex's tangent plane so it stays flat to the ground. */
+            vec3 _wraw = hex_vs_light[3].xyz;
+            float _lean = length(_wraw);
+            vec3 _wdir = (_lean > 9.9999997473787516355514526367188e-05) ? (_wraw / _lean) : cross(_up, vec3(0.0, 1.0, 0.0));
+            _wdir = _wdir - (_up * dot(_wdir, _up));
+            float _wl = length(_wdir);
+            vec3 _wt = (_wl > 9.9999997473787516355514526367188e-05) ? (_wdir / _wl) : normalize(cross(_up, vec3(1.0, 0.0, 0.0)));
             float sway_w = clamp(2.0 * (1.0 - length(a_normal)), 0.0, 1.0);
-            pos += (_92 * (sin((hex_vs_light[1].w * _29) + dot(a_pos, vec3(1.7000000476837158203125, 2.2999999523162841796875, 1.10000002384185791015625))) * _51 * sway_w));
+            /* A coherent gust wave rolling downwind (low spatial frequency so
+             * neighbours move together), and the blade always bent at least
+             * `_lean` into the wind - gusts push it the rest of the way. No
+             * upwind travel, so it reads as wind, not a random wobble. */
+            float _phase = (hex_vs_light[1].w * _spd) - (dot(a_pos, _wt) * hex_vs_light[3].w);
+            float _gust = 0.5 * (1.0 + sin(_phase));
+            float _factor = _lean + ((1.0 - _lean) * _gust);
+            pos += (_wt * (_amp * _factor * sway_w));
         }
         gl_Position = mat4(hex_vs_params[0], hex_vs_params[1], hex_vs_params[2], hex_vs_params[3]) * vec4(pos, 1.0);
         v_normal = normalize(a_normal);
@@ -714,7 +710,7 @@ pub const HEX_FS_SOURCE_GLSL410: [u8; 4181] = [
 /*
     #version 300 es
 
-    uniform vec4 hex_vs_light[3];
+    uniform vec4 hex_vs_light[4];
     uniform vec4 hex_vs_params[5];
     layout(location = 0) in vec3 a_pos;
     layout(location = 1) in vec3 a_normal;
@@ -736,37 +732,29 @@ pub const HEX_FS_SOURCE_GLSL410: [u8; 4181] = [
         vec3 pos = a_pos;
         if (dot(a_normal, a_normal) < 0.810000002384185791015625)
         {
-            bool _28 = a_wet > 0.5;
-            float _29;
-            if (_28)
-            {
-                _29 = hex_vs_light[2].z;
-            }
-            else
-            {
-                _29 = hex_vs_light[2].x;
-            }
-            float _51;
-            if (_28)
-            {
-                _51 = hex_vs_light[2].w;
-            }
-            else
-            {
-                _51 = hex_vs_light[2].y;
-            }
-            vec3 _74 = normalize(a_pos - hex_vs_params[4].xyz);
-            vec3 _80 = cross(_74, vec3(0.0, 1.0, 0.0));
-            vec3 east = _80;
-            if (dot(_80, _80) < 9.9999997473787516355514526367188e-05)
-            {
-                east = cross(_74, vec3(1.0, 0.0, 0.0));
-            }
-            vec3 _91 = east;
-            vec3 _92 = normalize(_91);
-            east = _92;
+            bool _wet = a_wet > 0.5;
+            float _spd = _wet ? hex_vs_light[2].z : hex_vs_light[2].x;
+            float _amp = _wet ? hex_vs_light[2].w : hex_vs_light[2].y;
+            vec3 _up = normalize(a_pos - hex_vs_params[4].xyz);
+            /* Wind flow direction (from the weather sim, one sample/frame):
+             * xyz = unit downwind * steady lean bias, so its length recovers
+             * the bias; w = gust wave spatial frequency. Re-project the wind
+             * onto THIS vertex's tangent plane so it stays flat to the ground. */
+            vec3 _wraw = hex_vs_light[3].xyz;
+            float _lean = length(_wraw);
+            vec3 _wdir = (_lean > 9.9999997473787516355514526367188e-05) ? (_wraw / _lean) : cross(_up, vec3(0.0, 1.0, 0.0));
+            _wdir = _wdir - (_up * dot(_wdir, _up));
+            float _wl = length(_wdir);
+            vec3 _wt = (_wl > 9.9999997473787516355514526367188e-05) ? (_wdir / _wl) : normalize(cross(_up, vec3(1.0, 0.0, 0.0)));
             float sway_w = clamp(2.0 * (1.0 - length(a_normal)), 0.0, 1.0);
-            pos += (_92 * (sin((hex_vs_light[1].w * _29) + dot(a_pos, vec3(1.7000000476837158203125, 2.2999999523162841796875, 1.10000002384185791015625))) * _51 * sway_w));
+            /* A coherent gust wave rolling downwind (low spatial frequency so
+             * neighbours move together), and the blade always bent at least
+             * `_lean` into the wind - gusts push it the rest of the way. No
+             * upwind travel, so it reads as wind, not a random wobble. */
+            float _phase = (hex_vs_light[1].w * _spd) - (dot(a_pos, _wt) * hex_vs_light[3].w);
+            float _gust = 0.5 * (1.0 + sin(_phase));
+            float _factor = _lean + ((1.0 - _lean) * _gust);
+            pos += (_wt * (_amp * _factor * sway_w));
         }
         gl_Position = mat4(hex_vs_params[0], hex_vs_params[1], hex_vs_params[2], hex_vs_params[3]) * vec4(pos, 1.0);
         v_normal = normalize(a_normal);
@@ -1334,9 +1322,9 @@ pub fn hex_shader_desc(backend: sg::Backend) -> sg::ShaderDesc {
             desc.uniform_blocks[0].glsl_uniforms[0].glsl_name = c"hex_vs_params".as_ptr();
             desc.uniform_blocks[1].stage = sg::ShaderStage::Vertex;
             desc.uniform_blocks[1].layout = sg::UniformLayout::Std140;
-            desc.uniform_blocks[1].size = 48;
+            desc.uniform_blocks[1].size = 64;
             desc.uniform_blocks[1].glsl_uniforms[0]._type = sg::UniformType::Float4;
-            desc.uniform_blocks[1].glsl_uniforms[0].array_count = 3;
+            desc.uniform_blocks[1].glsl_uniforms[0].array_count = 4;
             desc.uniform_blocks[1].glsl_uniforms[0].glsl_name = c"hex_vs_light".as_ptr();
             desc.uniform_blocks[2].stage = sg::ShaderStage::Fragment;
             desc.uniform_blocks[2].layout = sg::UniformLayout::Std140;
@@ -1408,9 +1396,9 @@ pub fn hex_shader_desc(backend: sg::Backend) -> sg::ShaderDesc {
             desc.uniform_blocks[0].glsl_uniforms[0].glsl_name = c"hex_vs_params".as_ptr();
             desc.uniform_blocks[1].stage = sg::ShaderStage::Vertex;
             desc.uniform_blocks[1].layout = sg::UniformLayout::Std140;
-            desc.uniform_blocks[1].size = 48;
+            desc.uniform_blocks[1].size = 64;
             desc.uniform_blocks[1].glsl_uniforms[0]._type = sg::UniformType::Float4;
-            desc.uniform_blocks[1].glsl_uniforms[0].array_count = 3;
+            desc.uniform_blocks[1].glsl_uniforms[0].array_count = 4;
             desc.uniform_blocks[1].glsl_uniforms[0].glsl_name = c"hex_vs_light".as_ptr();
             desc.uniform_blocks[2].stage = sg::ShaderStage::Fragment;
             desc.uniform_blocks[2].layout = sg::UniformLayout::Std140;

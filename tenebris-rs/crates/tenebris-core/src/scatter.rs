@@ -96,6 +96,14 @@ pub struct ScatterConfig {
     pub underwater_sway_speed: f32,
     /// Underwater sway amplitude, metres.
     pub underwater_sway_amp_m: f32,
+    /// Wavelength (metres) of the gust wave that rolls downwind through the
+    /// grass - low frequency so nearby blades move together in a coherent
+    /// gust instead of each blade at a random phase.
+    pub sway_gust_wavelength_m: f32,
+    /// Steady downwind lean as a fraction (0..1) of the full sway reach:
+    /// grass stays at least this bent into the wind, and gusts push it the
+    /// rest of the way. 0 = pure back-and-forth, 1 = a fixed lean.
+    pub sway_lean_bias: f32,
     /* Vines - strands hanging off SWAMP grove canopies. */
     /// Probability (0..1) a swamp canopy tile drips vines.
     pub vine_chance: f32,
@@ -134,6 +142,8 @@ impl ScatterConfig {
         sway_amp_m: 0.07,
         underwater_sway_speed: 0.7,
         underwater_sway_amp_m: 0.09,
+        sway_gust_wavelength_m: 14.0,
+        sway_lean_bias: 0.6,
         vine_chance: 0.8,
         vine_length_m: 2.2,
     };
@@ -202,6 +212,8 @@ pub fn parse_config(src: &str, _path: &str) -> ScatterConfig {
             "sway_amp_m" => cfg.sway_amp_m = c,
             "underwater_sway_speed" => cfg.underwater_sway_speed = c,
             "underwater_sway_amp_m" => cfg.underwater_sway_amp_m = c,
+            "sway_gust_wavelength_m" => cfg.sway_gust_wavelength_m = c,
+            "sway_lean_bias" => cfg.sway_lean_bias = c,
             "vine_chance" => cfg.vine_chance = c,
             "vine_length_m" => cfg.vine_length_m = c,
             _ => {}

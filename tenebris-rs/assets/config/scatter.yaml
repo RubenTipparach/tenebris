@@ -76,5 +76,13 @@ sway_speed: 1.8
 sway_amp_m: 0.07
 underwater_sway_speed: 0.7
 underwater_sway_amp_m: 0.09
+# Wind DIRECTION: grass leans + ripples downwind (the weather sim's wind
+# direction, which follows the clouds and bends from high to low pressure -
+# see weather.yaml wind_dir_pressure), instead of a random per-blade wobble.
+#   sway_gust_wavelength_m  metres between gust crests rolling downwind
+#                           (low = tight ripples, high = long slow swells)
+#   sway_lean_bias          0..1 steady downwind lean; gusts add the rest
+sway_gust_wavelength_m: 14.0
+sway_lean_bias: 0.6
   vine_chance: 0.8
   vine_length_m: 2.2
