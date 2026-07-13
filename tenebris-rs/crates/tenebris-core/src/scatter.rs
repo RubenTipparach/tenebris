@@ -127,7 +127,7 @@ impl ScatterConfig {
         shrub_chance: 0.14,
         shrub_size_m: 0.38,
         sway_speed: 1.8,
-        sway_amp_m: 0.14,
+        sway_amp_m: 0.07,
         underwater_sway_speed: 0.7,
         underwater_sway_amp_m: 0.09,
         vine_chance: 0.8,

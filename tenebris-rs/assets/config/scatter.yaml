@@ -70,7 +70,7 @@ scatter:
 #   - set sway_amp_m to a NEGATIVE value to turn sway OFF (0 keeps the
 #     compiled default, per the parser's zero-means-default rule)
 sway_speed: 1.8
-sway_amp_m: 0.14
+sway_amp_m: 0.07
 underwater_sway_speed: 0.7
 underwater_sway_amp_m: 0.09
   vine_chance: 0.8

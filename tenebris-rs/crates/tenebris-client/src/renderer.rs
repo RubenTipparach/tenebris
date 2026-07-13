@@ -4441,7 +4441,7 @@ pub fn draw_world(
                 } else {
                     0.0
                 };
-                let amp_k = 1.0 + wind * 2.4; /* wind grows the sway reach */
+                let amp_k = 1.0 + wind * 1.4; /* wind grows the sway reach */
                 let spd_k = 1.0 + wind * 0.6; /* and quickens it a little */
                 let hex_vs_light = shaders::hex::HexVsLight {
                     u_sun_dir: [r.env.sun_dir.x, r.env.sun_dir.y, r.env.sun_dir.z],
