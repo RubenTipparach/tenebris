@@ -69,10 +69,10 @@ const SHAFT_RANGE_M: f64 = 1400.0;
 const SHAFT_STREAKS: i32 = 5;
 /// Hard cap on distant shaft streaks per frame (perf backstop from orbit).
 const MAX_SHAFT_STREAKS: usize = 9000;
-/// Fraction of each drop's fall spent fading in at the cloud and out at the
-/// surface. The drop moves at constant speed the whole way and loops back to
-/// the top instantly; this fade hides the loop seam so the reset never reads
-/// as the drop flicking upward, without any speed change.
+/// Fade band, as a fraction of the cloud altitude, over which each drop fades
+/// in just below the cloud and out at the surface. The drop falls at constant
+/// speed and loops back to the cloud instantly; this fade hides the loop seam
+/// and the surface cull so neither reads as a pop or an upward flick.
 const STREAK_FADE_FRAC: f64 = 0.15;
 
 thread_local! {
@@ -498,29 +498,38 @@ fn draw_distant_shafts(
                     dvec3_scale(t2, (jb - 0.5) * cell_w),
                 );
                 let phase = hash3(ti.wrapping_add(7 * s), pj, 0x53) as f64;
-                /* Constant speed + constant length: the drop falls straight
-                 * down the column at rain_fall_mps and loops back to the cloud
-                 * instantly (linear sawtooth, no reversal). The old code
-                 * collapsed the streak into the ground as it landed and had no
-                 * fade at the wrap, which read as the rain slowing down and
-                 * flicking back upward - a rubberband. Instead we keep the
-                 * length fixed and hide the loop seam with a short alpha fade
-                 * in at the cloud and out at the surface (STREAK_FADE_FRAC).
-                 * Length is still clamped to the surface so nothing draws
-                 * below the ground / waterline (that tail sits in the faded
-                 * zone, so the clamp is never visible). */
-                let seg = (wcfg.rain_streak_m as f64).min(col_h);
-                let fall = (time_s * wcfg.rain_fall_mps as f64 / col_h + phase).rem_euclid(1.0);
-                let top_h = col_h * (1.0 - fall);
-                let mark_alt = base_alt + top_h;
-                let snow = snow_capable && mark_alt > SNOW_LINE_ALT_M;
+                /* Fall phase keyed to the CONSTANT cloud altitude, never the
+                 * per-cell ground clearance. The cell drifts across the
+                 * terrain with the clouds, so its clearance (col_h) changes
+                 * every frame; the old `time_s * v / col_h` therefore carried a
+                 * time_s-scaled wobble in its rate, and once time_s*col_h' grew
+                 * past col_h (~30 s in) the rate went negative and drops ran
+                 * BACKWARD - rain visibly falling up, worse the longer the
+                 * session ran. Keying the rate to the fixed cloud altitude
+                 * makes `fall` strictly linear in time, so every drop descends
+                 * at a constant v and loops back to the cloud, forever. */
+                let cloud_alt = shell_r - planet_r;
+                let fall =
+                    (time_s * wcfg.rain_fall_mps as f64 / cloud_alt + phase).rem_euclid(1.0);
+                let drop_alt = cloud_alt * (1.0 - fall); /* altitude above surface datum */
+                let top_h = drop_alt - base_alt; /* height above the actual ground */
+                if top_h <= 0.0 {
+                    continue; /* drop has reached the surface this frame */
+                }
+                let snow = snow_capable && drop_alt > SNOW_LINE_ALT_M;
                 let (wcol, wwidth) = if snow {
                     (snow_col, snow_w * 6.0)
                 } else {
                     (rain_col, rain_w * 6.0)
                 };
-                let life = (fall / STREAK_FADE_FRAC).min(1.0)
-                    * ((1.0 - fall) / STREAK_FADE_FRAC).min(1.0);
+                /* Fade in just below the cloud, out at the ground (a metres
+                 * band), so the loop seam and the surface cull are both
+                 * invisible - no pop, no rubberband. */
+                let fade_m = STREAK_FADE_FRAC * cloud_alt;
+                let life = ((cloud_alt - drop_alt) / fade_m)
+                    .clamp(0.0, 1.0)
+                    .min((top_h / fade_m).clamp(0.0, 1.0));
+                let seg = (wcfg.rain_streak_m as f64).min(col_h);
                 let top = dvec3_add(dvec3_add(base_pt, off), dvec3_scale(up, top_h));
                 sgl::c4f(wcol[0], wcol[1], wcol[2], alpha * life as f32);
                 push_streak(top, up, right, seg.min(top_h).max(0.0), wwidth);
