@@ -1789,6 +1789,10 @@ thread_local! {
     /// terrain uniform sites (a frame of lag on the early ones is
     /// invisible since coverage drifts slowly).
     static FRAME_OVERCAST: Cell<f32> = const { Cell::new(0.0) };
+    /// Rain wetness 0..1 for this frame: how wet the terrain / trees look
+    /// (darken + ripple sheen in the hex shader). Set in the composite/fog
+    /// block from the camera's precipitation, read at the hex fs uniform.
+    static FRAME_WET: Cell<f32> = const { Cell::new(0.0) };
 }
 
 /// Overcast-dimmed ambient fill for a terrain uniform.
@@ -3903,6 +3907,15 @@ pub fn compose_to_swapchain(view: Mat4, proj: Mat4) {
                 }
             };
             FRAME_OVERCAST.with(|c| c.set(wx_overcast));
+            /* Wet terrain while it's raining at the camera: a strong base
+             * wetness the moment precipitation starts, deepening a touch
+             * under heavier overcast. Dry (0) otherwise. */
+            let wet_now = if wx_precip {
+                (0.55 + 0.45 * wx_overcast).min(1.0)
+            } else {
+                0.0
+            };
+            FRAME_WET.with(|c| c.set(wet_now));
 
             let bc = tenebris_core::planet::get(ab.world.borrow().body.id);
             if bc.atmo_fog_density > 0.0 {
@@ -4509,7 +4522,15 @@ pub fn draw_world(
                     _pad_12: [0; 4],
                     u_ambient: overcast_ambient(r.env.ambient),
                     _pad_28: [0; 4],
-                    u_terminator: [l.night_ambient_floor, l.terminator_lo, l.terminator_hi, 0.0],
+                    /* fs repurposes .y = rain wetness, .z = time seconds
+                     * for the wet-terrain look (the vs-side smoothstep
+                     * range lo/hi is not needed in the fs). */
+                    u_terminator: [
+                        l.night_ambient_floor,
+                        FRAME_WET.with(|c| c.get()),
+                        r.time_seconds as f32,
+                        0.0,
+                    ],
                 };
                 sg::apply_uniforms(
                     shaders::hex::UB_HEX_FS_LIGHT,

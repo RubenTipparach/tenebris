@@ -105,8 +105,10 @@ void main() {
 // Per-frame block, fs side. Distinct name + binding from the vs block
 // because sokol-shdc requires shared-name UBs to be byte-identical
 // across stages — separating them keeps each stage's needs explicit.
-// u_terminator.x carries the night-side ambient floor; .yz are unused
-// here (consumed by the vs only).
+// u_terminator.x carries the night-side ambient floor; the vs-side
+// smoothstep range (.yz there) is not needed in the fs, so this stage
+// repurposes .y = rain wetness (0..1) and .z = time seconds for the wet
+// look below. .w is unused.
 layout(binding=2) uniform hex_fs_light {
     vec3 u_sun_dir;
     vec3 u_ambient;
@@ -256,6 +258,36 @@ void main() {
         lit *= dim;
         float tint_w = (1.0 - dot(dim, vec3(1.0/3.0))) * 0.5;
         lit = mix(lit, u_deep_color * dim, tint_w);
+    }
+
+    // Rain wetness. u_terminator.y carries the rain wetness (0..1) and
+    // .z carries time seconds (both unused by the vs-side terminator, so
+    // the fs block repurposes them without a new uniform). Sky-gated by
+    // v_sky_light so caves stay dry, and applied to up-facing surfaces
+    // (which collect the rain): the wet ground reads darker, with an
+    // animated raindrop-ripple sun sheen shimmering across it. Trees ride
+    // this same pipeline, so wet trunks/leaves come for free.
+    float wet_amt = clamp(u_terminator.y, 0.0, 1.0) * v_sky_light;
+    if (wet_amt > 0.001) {
+        vec3 wet_up = normalize(v_local);
+        float wet_face = clamp(dot(v_normal, wet_up), 0.0, 1.0);
+        float wet = wet_amt * wet_face;
+        float wet_t = u_terminator.z;
+        // Tangent frame on the surface for the ripple coordinates.
+        vec3 wet_ta = cross(wet_up, vec3(0.0, 1.0, 0.0));
+        if (dot(wet_ta, wet_ta) < 1e-4) { wet_ta = cross(wet_up, vec3(1.0, 0.0, 0.0)); }
+        wet_ta = normalize(wet_ta);
+        vec3 wet_tb = cross(wet_up, wet_ta);
+        vec2 wet_rc = vec2(dot(v_local, wet_ta), dot(v_local, wet_tb)) * 2.6;
+        // Animated ripples -> normal perturbation (moving glints).
+        float wet_pa = 6.2831853 * wet_rc.x + wet_t * 4.0;
+        float wet_pb = 6.2831853 * wet_rc.y + wet_t * 3.3;
+        float wet_gx = cos(wet_pa) * sin(wet_pb);
+        float wet_gy = sin(wet_pa) * cos(wet_pb);
+        vec3 wet_n = normalize(v_normal + (wet_ta * wet_gx + wet_tb * wet_gy) * (0.35 * wet));
+        lit *= mix(1.0, 0.72, wet);            // wet ground is darker
+        float wet_sheen = pow(max(dot(wet_n, normalize(u_sun_dir)), 0.0), 40.0);
+        lit += vec3(0.6) * (wet_sheen * wet * v_sun_brightness);
     }
 
     // Alpha channel is repurposed as the per-pixel "wet" mask the
