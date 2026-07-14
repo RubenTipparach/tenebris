@@ -770,10 +770,12 @@ fn dev_maybe_place(app: &mut App) {
                     if let Some(t) = w.grid.tile(i) {
                         let s = tenebris_core::planet_gen::profile(&w.body, t.center).surface_m;
                         if wade {
-                            /* Seabed one block below sea level: surface_m nearest
-                             * -1 m, and it must be underwater (s < 0). */
+                            /* Seabed ~2 blocks below sea level: surface_m nearest
+                             * -2 m, underwater (s < 0). Feet there put the eye
+                             * (feet + EYE_HEIGHT 1.6 m) ~0.4 m BELOW the surface -
+                             * the near plane mostly in water, waterline at eye. */
                             if s < -0.2 {
-                                let score = -(s + 1.0).abs();
+                                let score = -(s + 2.0).abs();
                                 if best < 0 || score > best_s {
                                     best_s = score;
                                     best = i;
@@ -799,9 +801,9 @@ fn dev_maybe_place(app: &mut App) {
             if let Some((tile, dir, sea_r, center, surf_m)) = dive {
                 /* position is the FEET; the rendered eye sits EYE_HEIGHT above it
                  * along `up`. Wading: feet on the shoal seabed (sea_r + surf_m,
-                 * ~1 m below sea level) -> eye ~0.6 m above the surface = partial.
-                 * Diving: feet dive_depth below the surface -> eye deep enough that
-                 * even + EYE_HEIGHT stays fully underwater. */
+                 * ~2 m below sea level) -> eye ~0.4 m BELOW the surface, so the
+                 * waterline crosses the near plane. Diving: feet dive_depth below
+                 * the surface -> eye deep enough to stay fully underwater. */
                 let feet_r = if wade { sea_r + surf_m } else { sea_r - dive_depth };
                 let cam = dvec3_add(center, dvec3_scale(dir, feet_r));
                 {
