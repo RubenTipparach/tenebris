@@ -151,6 +151,11 @@ pub struct PlayerCtrl {
      * pickups + costs time, or is instantaneous + free (creative). */
     pub inventory: Inventory,
     pub survival_mode: bool,
+    /// Space-exploration world: survival rules, but the world was created
+    /// with a prepared launch complex + fueled rocket. Kept alongside
+    /// `survival_mode` (which is also true) so the HUD names the mode and
+    /// the save round-trips it; does NOT change any gameplay gate.
+    pub space_mode: bool,
     /* Survival item bag: the general store behind the hotbar where
      * crafted resources, tools, and tech-tree items live. Empty in
      * creative; filled by crafting (and later by resource drops). */

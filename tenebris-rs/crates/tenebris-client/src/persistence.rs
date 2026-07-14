@@ -81,6 +81,10 @@ pub struct PersistenceSave {
     /// World mode: true = survival. Rust-port extension carried as an
     /// optional 8th CSV field; pre-extension saves parse as creative.
     pub survival: bool,
+    /// Space-exploration world: survival rules plus a prepared launch
+    /// complex built at creation. Optional 9th CSV field; older saves
+    /// parse as false (a normal survival/creative world).
+    pub space: bool,
 }
 
 /// A single torch placement, stored verbatim in the per-body torch
@@ -217,7 +221,7 @@ pub fn save(world_name: &str, s: &PersistenceSave) -> bool {
     // flag as an 8th field; the C reader's final %u ignores trailing
     // text, so the extension is backward-safe.
     let buf = format!(
-        "{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{},{}",
+        "{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{},{},{}",
         s.pos_x,
         s.pos_y,
         s.pos_z,
@@ -225,7 +229,8 @@ pub fn save(world_name: &str, s: &PersistenceSave) -> bool {
         s.pitch as f64,
         s.roll as f64,
         s.body_id,
-        if s.survival { 1 } else { 0 }
+        if s.survival { 1 } else { 0 },
+        if s.space { 1 } else { 0 }
     );
     client_kv::set(&build_key(world_name), &buf);
     true
@@ -260,6 +265,12 @@ pub fn load(world_name: &str) -> Option<PersistenceSave> {
         .and_then(|f| strtol_prefix(f))
         .map(|v| v != 0)
         .unwrap_or(false);
+    /* Optional 9th field: space-exploration world (Rust-port extension). */
+    let space = it
+        .next()
+        .and_then(|f| strtol_prefix(f))
+        .map(|v| v != 0)
+        .unwrap_or(false);
     Some(PersistenceSave {
         pos_x: x,
         pos_y: y,
@@ -269,6 +280,7 @@ pub fn load(world_name: &str) -> Option<PersistenceSave> {
         roll: roll as f32,
         body_id: body as u32,
         survival,
+        space,
     })
 }
 
@@ -843,14 +855,15 @@ mod tests {
             body_id: 2,
         
             survival: false,
+            space: false,
         };
         assert!(save("home", &s));
         // Pinned against the C build's snprintf output.
         assert_eq!(
             client_kv::get("tenebris-c:world:home").as_deref(),
-            /* Rust-port extension: ",<survival>" rides as an 8th field
-             * (the C reader's final %u ignores the trailer). */
-            Some("12.500000,-3.250000,1000.125000,0.500000,-0.250000,3.141593,2,0")
+            /* Rust-port extension: ",<survival>,<space>" ride as 8th + 9th
+             * fields (the C reader's final %u ignores the trailer). */
+            Some("12.500000,-3.250000,1000.125000,0.500000,-0.250000,3.141593,2,0,0")
         );
         // Round trip: %.6f is lossy for roll (3.14159265 -> 3.141593),
         // exactly as in the C build; everything else is exact.
@@ -873,11 +886,12 @@ mod tests {
             body_id: 4294967295,
         
             survival: false,
+            space: false,
         };
         assert!(save("home", &s2));
         assert_eq!(
             client_kv::get("tenebris-c:world:home").as_deref(),
-            Some("0.100000,123456.789012,-0.000001,0.100000,1.700000,-2.300000,4294967295,0")
+            Some("0.100000,123456.789012,-0.000001,0.100000,1.700000,-2.300000,4294967295,0,0")
         );
     }
 
@@ -902,6 +916,7 @@ mod tests {
                 body_id: 7,
             
                 survival: false,
+                space: false,
             }
         );
         // Malformed: too few fields -> sscanf n != 7 -> reject.
@@ -1145,6 +1160,7 @@ mod tests {
             body_id: 0,
         
             survival: false,
+            space: false,
         };
         assert!(save("doomed", &pose));
         assert!(save_tile("doomed", 0, 1, &col));
@@ -1181,6 +1197,7 @@ mod tests {
             body_id: 0,
         
             survival: false,
+            space: false,
         };
         save("beta", &pose);
         save("alpha", &pose);

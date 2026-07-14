@@ -396,6 +396,10 @@ thread_local! {
     /// showcase ring.
     static DEV_PLACE_COUNTDOWN: std::cell::Cell<i32> = const { std::cell::Cell::new(-1) };
     static DEV_PLACE_MODE: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+    /// Space-exploration mode: frames to wait after entering a fresh space
+    /// world before building the launch complex (lets terrain gen finish +
+    /// the player ground so the tile under them is valid). -1 = idle.
+    static SPACE_BUILD_COUNTDOWN: std::cell::Cell<i32> = const { std::cell::Cell::new(-1) };
     /// Dev: pinned camera world-position for the underwater fish shot
     /// (TENEBRIS_DEV_FISH=under). Held each frame so gravity doesn't
     /// drop the camera off its perch above the school.
@@ -1786,6 +1790,189 @@ fn dev_set_surface_w(w: &mut World, tile: i32, b: Block) {
     }
 }
 
+/// Space-exploration mode: build the prepared launch complex once, a few
+/// frames after entering a FRESH space world (armed by EnterSp). Waits for
+/// the terrain + a valid ground tile under the player, then lays a stone
+/// apron, a fueled+assembled rocket on a launch pad, a supply chest, a 3D
+/// printer, and a furnace on the ring around spawn. Every edit persists on
+/// the same frame (CLAUDE.md rule), so the complex survives a reload and is
+/// never rebuilt (the reloaded world isn't "new").
+fn space_complex_maybe_build(app: &mut App) {
+    let n = SPACE_BUILD_COUNTDOWN.with(|c| c.get());
+    if n < 0 || menu::state() != GameState::InGameSp {
+        return;
+    }
+    use tenebris_core::block_entity::chest_add;
+    use tenebris_core::items;
+    use tenebris_core::math::{dvec3_add, dvec3_make, dvec3_normalize, dvec3_scale, dvec3_sub, DVec3};
+    use tenebris_core::world::WORLD_MAX_DEPTH;
+
+    /* Spawn tile: the player's own tile if grounded, else the tile under
+     * their radial direction (a fresh world can spawn them above / in
+     * space before gravity settles). -1 = the grid isn't ready yet. */
+    let center = {
+        let p = app.player.borrow();
+        if p.last_tile >= 0 {
+            p.last_tile
+        } else {
+            let w = app.world.borrow();
+            let bc = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
+            let dir = dvec3_normalize(dvec3_sub(p.position, bc));
+            w.grid.find_tile(dir, 0)
+        }
+    };
+    if center < 0 {
+        return; /* grid not ready - keep waiting (countdown not spent) */
+    }
+    if n > 0 {
+        SPACE_BUILD_COUNTDOWN.with(|c| c.set(n - 1));
+        return;
+    }
+    SPACE_BUILD_COUNTDOWN.with(|c| c.set(-1));
+
+    /* Plant the player on the apron centre so the complex builds around
+     * them and they don't drift off in space. */
+    {
+        let w = app.world.borrow();
+        let bc = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
+        if let Some(t) = w.grid.tile(center) {
+            let tdir = dvec3_normalize(t.center);
+            let mut top = -1;
+            for d in (0..WORLD_MAX_DEPTH).rev() {
+                if tenebris_core::blocks::is_solid(w.get(center, d)) {
+                    top = d;
+                    break;
+                }
+            }
+            let stand_r = w.depth_to_radius_m((top + 1).max(1)) + 0.1;
+            let mut p = app.player.borrow_mut();
+            p.position = dvec3_add(bc, dvec3_scale(tdir, stand_r));
+            p.velocity = DVec3::default();
+            p.last_tile = center;
+            p.is_in_space = false;
+        }
+    }
+    let player_pos = app.player.borrow().position;
+
+    /* Topmost air voxel (one above the surface) of a tile, or -1 if the
+     * column has no room. */
+    fn top_air(w: &World, tile: i32) -> i32 {
+        let mut top = -1;
+        for d in (0..WORLD_MAX_DEPTH).rev() {
+            if tenebris_core::blocks::is_solid(w.get(tile, d)) {
+                top = d;
+                break;
+            }
+        }
+        if top < 0 || top + 1 >= WORLD_MAX_DEPTH {
+            -1
+        } else {
+            top + 1
+        }
+    }
+
+    let ring: Vec<i32> = {
+        let w = app.world.borrow();
+        match w.grid.tile(center) {
+            Some(t) => t.neighbors.iter().copied().filter(|&x| x >= 0).collect(),
+            None => Vec::new(),
+        }
+    };
+    let mut edited: Vec<i32> = vec![center];
+    {
+        let mut w = app.world.borrow_mut();
+        /* Stone apron under the whole complex (center + ring). */
+        dev_set_surface_w(&mut w, center, Block::Stone);
+        for &r in &ring {
+            dev_set_surface_w(&mut w, r, Block::Stone);
+            edited.push(r);
+        }
+        /* Fueled, assembled rocket on a launch pad (ring[0]). */
+        if let Some(&pad_tile) = ring.first() {
+            let d = top_air(&w, pad_tile);
+            if d >= 0 {
+                w.set(pad_tile, d, Block::LaunchPad);
+                let pad = w.block_entities.entry(pad_tile, d).launch_pad_mut();
+                pad.push(items::ROCKET_ENGINE);
+                pad.push(items::FUEL_TANK);
+                pad.push(items::FUEL_TANK);
+                pad.push(items::COMMAND_MODULE);
+            }
+        }
+        /* Supply chest (ring[1]): spare rocket parts, metals, food. */
+        if let Some(&ct) = ring.get(1) {
+            let d = top_air(&w, ct);
+            if d >= 0 {
+                w.set(ct, d, Block::StorageChest);
+                let f = w.facing_toward(ct, d, player_pos);
+                let e = w.block_entities.entry(ct, d);
+                e.facing = f;
+                let chest = e.chest_mut();
+                chest_add(chest, items::ROCKET_ENGINE, 2, 64);
+                chest_add(chest, items::FUEL_TANK, 4, 64);
+                chest_add(chest, items::COMMAND_MODULE, 2, 64);
+                chest_add(chest, items::IRON_INGOT, 32, 64);
+                chest_add(chest, items::BRONZE_INGOT, 16, 64);
+                chest_add(chest, items::COOKED_MEAT, 8, 64);
+            }
+        }
+        /* A 3D printer + furnace so the base can make more parts. */
+        for (idx, blk) in [(2usize, Block::Printer3D), (3usize, Block::Furnace)] {
+            if let Some(&t) = ring.get(idx) {
+                let d = top_air(&w, t);
+                if d >= 0 {
+                    w.set(t, d, blk);
+                    let f = w.facing_toward(t, d, player_pos);
+                    w.block_entities.entry(t, d).facing = f;
+                }
+            }
+        }
+    }
+    /* Same-frame persistence for every edited column + its block entities. */
+    {
+        let w = app.world.borrow();
+        for &t in &edited {
+            crate::interact::sp_save_tile_after_edit(&w, t);
+        }
+    }
+    /* Survival head-start kit in the bag; persisted immediately. */
+    let world = menu::active_world();
+    {
+        let mut p = app.player.borrow_mut();
+        p.bag.add(items::IRON_INGOT, 16);
+        p.bag.add(items::BRONZE_INGOT, 8);
+        p.bag.add(items::COAL, 8);
+        p.bag.add(items::PLANK, 16);
+        p.bag.add(items::COOKED_MEAT, 4);
+        persistence::save_bag(&world, p.hunger, &p.bag.serialize());
+    }
+    /* Face the assembled rocket so it greets the player on world load. */
+    if let Some(&pad_tile) = ring.first() {
+        let (tdir, r_mid) = {
+            let w = app.world.borrow();
+            let top = (0..WORLD_MAX_DEPTH)
+                .rev()
+                .find(|&d| tenebris_core::blocks::is_solid(w.get(pad_tile, d)))
+                .unwrap_or(0);
+            (w.grid.tile(pad_tile).map(|t| t.center), w.depth_to_radius_m(top + 2) + 1.5)
+        };
+        if let Some(tc) = tdir {
+            let tlen = dvec3_length(tc);
+            let mid = if tlen > 1e-9 { dvec3_scale(tc, r_mid / tlen) } else { tc };
+            let mut p = app.player.borrow_mut();
+            let to = dvec3_sub(mid, p.position);
+            let to_len = dvec3_length(to).max(1e-9);
+            let look = dvec3_scale(to, 1.0 / to_len);
+            let (up, fwd, right) = (p.basis.up, p.basis.fwd, p.basis.right);
+            let dot = |a: DVec3, b: DVec3| a.x * b.x + a.y * b.y + a.z * b.z;
+            let to_t = dvec3_sub(look, dvec3_scale(up, dot(look, up)));
+            p.yaw = (dot(to_t, right)).atan2(dot(to_t, fwd)) as f32;
+            p.pitch = dot(look, up).clamp(-1.0, 1.0).asin() as f32;
+        }
+    }
+    println!("[space] launch complex built around tile {center}");
+}
+
 extern "C" fn init() {
     /* Bump sokol's buffer pool way above the default 128 (see the long
      * rationale in the C file: 4 buffers per chunk x 32 chunks x ~20
@@ -2072,6 +2259,11 @@ extern "C" fn init() {
     }
     if let Ok(v) = std::env::var("TENEBRIS_DEV_SP") {
         let name = if v.is_empty() { "devworld" } else { v.as_str() };
+        /* TENEBRIS_DEV_SPACE=1 boots the world in Space-Exploration mode
+         * (prepared launch complex) without going through the egui picker. */
+        if std::env::var("TENEBRIS_DEV_SPACE").is_ok() {
+            menu::dev_set_space_mode();
+        }
         menu::dev_start_sp(name);
     }
     if std::env::var("TENEBRIS_DEV_PAUSE").is_ok() {
@@ -2460,7 +2652,13 @@ fn update_overlay(app: &mut App, dt: f32) {
     }
     sdtx::puts(&format!(
         "MODE: {}   [G to toggle]\n",
-        if p.survival_mode { "SURVIVAL" } else { "CREATIVE" }
+        if p.space_mode {
+            "SPACE EXPLORATION"
+        } else if p.survival_mode {
+            "SURVIVAL"
+        } else {
+            "CREATIVE"
+        }
     ));
     sdtx::color3b(0xff, 0xff, 0xff);
     drop(p);
@@ -3596,14 +3794,24 @@ fn maybe_prime_mode_for_state(app: &mut App) {
              * in-game. The bag gets the world's persisted contents, or
              * a clean slate - the in-memory bag must never leak between
              * worlds ("new world, why is my inventory not cleared?"). */
-            let survival = menu::pending_survival();
+            let space = menu::pending_space();
+            let survival = menu::pending_survival() || space;
             let world = menu::active_world();
             let mut p = app.player.borrow_mut();
             p.survival_mode = survival;
+            p.space_mode = space;
             if survival {
                 inventory::init_empty(&mut p.inventory);
             } else {
                 inventory::init_creative(&mut p.inventory);
+            }
+            /* Space Exploration: on a FRESH world, build the prepared launch
+             * complex + fueled rocket + starter kit once the terrain is ready
+             * and the player has grounded (deferred, like dev placement).
+             * Re-entering an existing space world skips this - the complex
+             * loaded from persistence. */
+            if space && menu::pending_is_new_world() {
+                SPACE_BUILD_COUNTDOWN.with(|c| c.set(20));
             }
             match persistence::load_bag(&world) {
                 Some((hunger, blob)) => {
@@ -3738,6 +3946,7 @@ fn maybe_autosave_sp(app: &mut App, dt: f64) {
         /* World mode rides the pose autosave so re-entering the world
          * restores survival/creative instead of silently reverting. */
         survival: p.survival_mode,
+        space: p.space_mode,
     };
     persistence::save(&world, &s);
     /* Bag + hunger ride the same cadence (tools/meat must survive a
@@ -4343,6 +4552,7 @@ fn egui_ui(app: &mut App, ctx: &egui::Context) {
 fn frame_inner(app: &mut App) {
     maybe_apply_sp_resume(app);
     dev_maybe_place(app);
+    space_complex_maybe_build(app);
     apply_sp_saves_lazy(app);
     maybe_apply_mp_spawn(app);
     maybe_prime_mode_for_state(app);
@@ -4573,6 +4783,9 @@ fn frame_inner(app: &mut App) {
     if input::consume_survival_toggle() && menu::state() == GameState::InGameSp {
         let mut p = app.player.borrow_mut();
         p.survival_mode = !p.survival_mode;
+        /* Manually toggling the base mode drops the space-exploration label -
+         * it becomes a plain survival/creative world from here on. */
+        p.space_mode = false;
         if p.survival_mode {
             p.hunger = player_ctrl::MAX_HUNGER;
             inventory::init_empty(&mut p.inventory);

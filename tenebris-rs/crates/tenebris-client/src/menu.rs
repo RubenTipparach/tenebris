@@ -246,6 +246,10 @@ struct Menu {
     /* Mode chosen on the New World screen, consumed when the SP world
      * boots (false = creative/sandbox, true = survival). */
     new_world_survival: bool,
+    /* Space-exploration variant of the survival mode: when true, the new
+     * world boots with a prepared launch complex + fueled rocket. Implies
+     * new_world_survival (space plays by survival rules). */
+    new_world_space: bool,
 
     /* Terrain seed of the world being entered, resolved by
      * start_sp_for_world: the world's persisted seed, a fresh roll for
@@ -444,6 +448,30 @@ pub fn pending_survival() -> bool {
     with_menu(|m| m.new_world_survival)
 }
 
+/// Whether the next SP world is a Space-Exploration world (survival rules
+/// plus a prepared launch complex built at creation). Read by the SP-entry
+/// priming in app.rs.
+pub fn pending_space() -> bool {
+    with_menu(|m| m.new_world_space)
+}
+
+/// Dev/boot hook: force the next SP world into Space-Exploration mode
+/// (survival + a prepared launch complex). Used by the TENEBRIS_DEV_SPACE
+/// boot path so the mode can be exercised without the egui picker.
+pub fn dev_set_space_mode() {
+    with_menu(|m| {
+        m.new_world_survival = true;
+        m.new_world_space = true;
+    });
+}
+
+/// True when the SP world being entered has NO existing save yet - i.e. it
+/// is being created fresh this session (resume is None). Used to build the
+/// space-exploration launch complex exactly once, at creation.
+pub fn pending_is_new_world() -> bool {
+    with_menu(|m| m.resume.is_none())
+}
+
 /// A consistent full-width menu button.
 fn menu_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
     ui.add_sized(
@@ -635,12 +663,23 @@ pub fn egui_ui(ctx: &egui::Context) {
                         ui.add_space(16.0);
                         ui.label("Mode");
                         ui.horizontal(|ui| {
-                            ui.selectable_value(
-                                &mut m.new_world_survival,
-                                false,
-                                "Creative / Sandbox",
-                            );
-                            ui.selectable_value(&mut m.new_world_survival, true, "Survival");
+                            /* Three mutually-exclusive modes backed by two
+                             * bools: space implies survival. */
+                            let is_creative = !m.new_world_survival;
+                            let is_survival = m.new_world_survival && !m.new_world_space;
+                            let is_space = m.new_world_space;
+                            if ui.selectable_label(is_creative, "Creative / Sandbox").clicked() {
+                                m.new_world_survival = false;
+                                m.new_world_space = false;
+                            }
+                            if ui.selectable_label(is_survival, "Survival").clicked() {
+                                m.new_world_survival = true;
+                                m.new_world_space = false;
+                            }
+                            if ui.selectable_label(is_space, "Space Exploration").clicked() {
+                                m.new_world_survival = true;
+                                m.new_world_space = true;
+                            }
                         });
                         ui.add_space(20.0);
 
@@ -1882,6 +1921,7 @@ fn start_sp_for_world(m: &mut Menu, world_name: &str) {
          * reverting to creative was the "why is there 9999 of stuff /
          * instant mine in my survival world" bug). */
         m.new_world_survival = s.survival;
+        m.new_world_space = s.space;
         m.resume = Some(s);
     } else {
         m.resume = None;
@@ -3705,6 +3745,7 @@ mod tests {
             body_id: 2,
         
             survival: false,
+            space: false,
         }
     }
 

@@ -520,6 +520,7 @@ pub fn egui_ui(ctx: &egui::Context) {
     if toggle_mode {
         let mut p = player.borrow_mut();
         p.survival_mode = !p.survival_mode;
+        p.space_mode = false; /* manual toggle -> plain survival/creative */
         if p.survival_mode {
             p.hunger = crate::player_ctrl::MAX_HUNGER;
             crate::inventory::init_empty(&mut p.inventory);
