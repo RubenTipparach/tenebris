@@ -282,29 +282,27 @@ void main()
         vec3 pert = ax_a * pg.x + ax_b * pg.y;
         // Water STREAKING down the side faces: the Heartfelt drop layer (same as
         // the camera lens droplets) - blobs with downward trails - mapped in the
-        // block's own TEXTURE UV (v_uv), so it is correctly mapped, bounded and
-        // precise (no world-scale float noise). A tangent frame is recovered from
-        // screen-space derivatives of v_local vs v_uv, then oriented so +uv.y (the
-        // Heartfelt fall axis) points DOWN, so the drops run downward and the
-        // gradient of the drop mask distorts the normal like the lens refraction.
+        // block's own TEXTURE UV (v_uv), so the drops line up with the face and
+        // the coordinate is bounded + precise (no world-scale float noise). The
+        // perturbation frame is built GEOMETRICALLY (down = radially inward in the
+        // face, across = perpendicular) rather than from dFdx(v_local): v_local is
+        // planet-scale, so its screen derivative cancels to noise and skewed the
+        // normals. For an upright side texture v_uv.x = across, v_uv.y = vertical.
         if (side_w > 0.001) {
-            vec3 dpx = dFdx(v_local);
-            vec3 dpy = dFdy(v_local);
-            vec2 dux = dFdx(v_uv);
-            vec2 duy = dFdy(v_uv);
-            float rdet = 1.0 / ((dux.x * duy.y - dux.y * duy.x) + 1e-8);
-            vec3 tan_u = normalize((dpx * duy.y - dpy * dux.y) * rdet); // +v_uv.x
-            vec3 tan_v = normalize((dpy * dux.x - dpx * duy.x) * rdet); // +v_uv.y
-            float sgn = (dot(tan_v, wet_up) > 0.0) ? -1.0 : 1.0;        // make +v down
-            vec3 tan_dn = tan_v * sgn;
-            vec2 duv = vec2(v_uv.x, v_uv.y * sgn * k_flow_down) * k_flow_across;
+            vec3 down_dir = -wet_up - nrm * dot(-wet_up, nrm);
+            float ddl = length(down_dir);
+            down_dir = (ddl > 1e-4) ? (down_dir / ddl) : ax_a;
+            vec3 across_dir = normalize(cross(nrm, down_dir));
+            // +v_uv.y scroll is the Heartfelt fall axis; k_flow_down stretches it
+            // (smaller = longer streaks), k_flow_across = drop size.
+            vec2 duv = vec2(v_uv.x, v_uv.y * k_flow_down) * k_flow_across;
             float dt = wet_t * k_flow_speed;
             float dm = rd_DropLayer2(duv, dt).x;
             vec2 de = vec2(0.01, 0.0);
             float dmx = rd_DropLayer2(duv + de, dt).x;
             float dmy = rd_DropLayer2(duv + de.yx, dt).x;
             vec2 dn = vec2(dmx - dm, dmy - dm);
-            pert += (tan_u * dn.x + tan_dn * dn.y) * (k_flow_strength * side_w);
+            pert += (across_dir * dn.x + down_dir * dn.y) * (k_flow_strength * side_w);
         }
         float wet = wet_amt * max(top_w, side_w);
         vec3 wet_n = normalize(nrm + pert);
