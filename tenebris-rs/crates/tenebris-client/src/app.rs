@@ -454,11 +454,16 @@ fn dev_maybe_place(app: &mut App) {
      * is directly under the downward-looking camera, so the blocks land
      * in frame. */
     let center = app.player.borrow().last_tile;
-    if center < 0 {
+    let dev_mode = DEV_PLACE_MODE.with(|c| c.get());
+    /* Most showcases build on the tile under the player, so they need a valid
+     * last_tile. The dive showcase (21) instead scans the whole planet for the
+     * deepest ocean and repositions the camera itself, so it must run even when
+     * the player spawns in orbit (last_tile == -1). */
+    if center < 0 && dev_mode != 21 {
         return;
     }
 
-    match DEV_PLACE_MODE.with(|c| c.get()) {
+    match dev_mode {
         18 => {
             /* Bonfire showcase (TENEBRIS_DEV_BONFIRE): place a lit bonfire
              * a few metres ahead, pre-loaded with fuel + raw meat cooking,
@@ -767,10 +772,19 @@ fn dev_maybe_place(app: &mut App) {
                 }
             };
             if let Some((tile, dir, sea_r, center, depth_m)) = dive {
-                /* Camera ~4 m below the surface (well inside the deep column,
-                 * clear of the far-below seabed) so cam_under trips + the
-                 * underwater fog applies. */
-                let cam = dvec3_add(center, dvec3_scale(dir, sea_r - 4.0));
+                /* Camera depth below the surface. Default ~4 m (well inside the
+                 * deep column, clear of the far-below seabed) so cam_under trips
+                 * + the full underwater fog applies. TENEBRIS_DEV_DIVE=<metres>
+                 * overrides it: a small value like 0.3 parks the eye just under
+                 * the surface, inside the partial-submersion band, to frame the
+                 * near-plane waterline fog. (A non-numeric value like =1 keeps
+                 * the default.) */
+                let dive_depth = std::env::var("TENEBRIS_DEV_DIVE")
+                    .ok()
+                    .and_then(|v| v.trim().parse::<f64>().ok())
+                    .filter(|d| *d > 0.0)
+                    .unwrap_or(4.0);
+                let cam = dvec3_add(center, dvec3_scale(dir, sea_r - dive_depth));
                 {
                     let mut p = app.player.borrow_mut();
                     p.position = cam;
