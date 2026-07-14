@@ -811,17 +811,27 @@ fn dev_maybe_place(app: &mut App) {
                     p.last_tile = tile;
                 }
                 animals::dev_spawn_fish(&app.world.borrow(), &app.player.borrow(), true);
-                /* Look horizontally along a tangent so we see into the murk;
-                 * prefer the fish school if one is nearby. */
-                let target = animals::herd_center().unwrap_or_else(|| {
-                    let reference = if dir.y.abs() < 0.9 {
-                        dvec3_make(0.0, 1.0, 0.0)
-                    } else {
-                        dvec3_make(1.0, 0.0, 0.0)
-                    };
-                    let t1 = dvec3_normalize(tenebris_core::math::dvec3_cross(reference, dir));
-                    dvec3_add(cam, dvec3_scale(t1, 6.0))
-                });
+                /* Aim direction. A tangent target (perpendicular to the planet
+                 * normal `dir`) built at EYE height makes the look vector level,
+                 * so `dev_aim_at` resolves to pitch ~0 and the waterline sits
+                 * horizontal across the frame. */
+                let reference = if dir.y.abs() < 0.9 {
+                    dvec3_make(0.0, 1.0, 0.0)
+                } else {
+                    dvec3_make(1.0, 0.0, 0.0)
+                };
+                let tangent = dvec3_normalize(tenebris_core::math::dvec3_cross(reference, dir));
+                let eye = dvec3_add(cam, dvec3_scale(dir, crate::player_ctrl::EYE_HEIGHT as f64));
+                let level_fwd = dvec3_add(eye, dvec3_scale(tangent, 6.0));
+                /* Wading: look straight forward along the surface so the
+                 * above-water / below-waterline split frames level - do NOT chase
+                 * the fish school (it sits underwater and tilts the view down).
+                 * Diving fully under: prefer the fish school for the murk shot. */
+                let target = if wade {
+                    level_fwd
+                } else {
+                    animals::herd_center().unwrap_or(level_fwd)
+                };
                 dev_aim_at(app, target);
                 DEV_FISH_CAM.with(|c| c.set(Some(cam)));
                 println!(
