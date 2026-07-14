@@ -2384,6 +2384,10 @@ extern "C" fn init() {
         /* Screenshot aid: open the pause overlay at spawn. */
         menu::pause_toggle();
     }
+    if std::env::var("TENEBRIS_DEV_INPUTS").is_ok() {
+        /* Screenshot aid: open the pause + Inputs (key bindings) overlay. */
+        menu::dev_open_inputs();
+    }
     if std::env::var("TENEBRIS_DEV_CRAFT").is_ok() {
         crafting_screen::open(Some(player.clone()));
     }
@@ -4711,6 +4715,7 @@ fn egui_ui(app: &mut App, ctx: &egui::Context) {
     rocket_screen::egui_ui(ctx);
     menu::pause_egui_ui(ctx);
     menu::weather_egui_ui(ctx);
+    menu::inputs_egui_ui(ctx);
 }
 
 fn frame_inner(app: &mut App) {
@@ -5920,7 +5925,9 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
      * ui.yaml. Wired here, not inside the debug_ui_visible block,
      * because the inventory / crafting screens that ride on this
      * module aren't debug features. */
-    if e._type == sapp::EventType::KeyDown && e.key_code == sapp::Keycode::F8 {
+    if e._type == sapp::EventType::KeyDown
+        && crate::controls::action_for_key(e.key_code) == Some(crate::controls::Action::PixelUiDemo)
+    {
         pixel_ui::demo_toggle();
         return;
     }
@@ -6052,7 +6059,9 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
         return;
     }
     /* K: toggle the tech-tree / progression guide overlay. */
-    if e._type == sapp::EventType::KeyDown && e.key_code == sapp::Keycode::K {
+    if e._type == sapp::EventType::KeyDown
+        && crate::controls::action_for_key(e.key_code) == Some(crate::controls::Action::OpenTechTree)
+    {
         tech_tree::toggle();
         if tech_tree::is_open() {
             inventory_screen::close();
@@ -6097,7 +6106,9 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
      * on Esc, so reaching here means none are open - bring up pause as a
      * modal, defensively closing any HUD overlay first so nothing draws
      * over it. */
-    if e._type == sapp::EventType::KeyDown && e.key_code == sapp::Keycode::Escape {
+    if e._type == sapp::EventType::KeyDown
+        && crate::controls::action_for_key(e.key_code) == Some(crate::controls::Action::Pause)
+    {
         let st = menu::state();
         if (st == GameState::InGameSp || st == GameState::InGameMp) && !menu::pause_active() {
             crafting_screen::close();
@@ -6122,22 +6133,30 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
         return;
     }
     /* F2 toggles the master debug-UI visibility; stays live always. */
-    if e._type == sapp::EventType::KeyDown && e.key_code == sapp::Keycode::F2 {
+    if e._type == sapp::EventType::KeyDown
+        && crate::controls::action_for_key(e.key_code) == Some(crate::controls::Action::ToggleDebugUi)
+    {
         app.debug_ui_visible = !app.debug_ui_visible;
         return;
     }
-    /* F1 stays available regardless of F2 - the roster is gameplay-
-     * facing. */
-    if e._type == sapp::EventType::KeyDown && e.key_code == sapp::Keycode::F1 {
+    /* Players roster stays available regardless of the debug master - it is
+     * gameplay-facing. */
+    if e._type == sapp::EventType::KeyDown
+        && crate::controls::action_for_key(e.key_code) == Some(crate::controls::Action::PlayersPanel)
+    {
         app.players_panel_visible = !app.players_panel_visible;
         return;
     }
-    if e._type == sapp::EventType::KeyDown && e.key_code == sapp::Keycode::F4 {
-        /* Block snapshot to the console. Not gated on F2. */
+    if e._type == sapp::EventType::KeyDown
+        && crate::controls::action_for_key(e.key_code) == Some(crate::controls::Action::BlockSnapshot)
+    {
+        /* Block snapshot to the console. Not gated on the debug master. */
         print_block_snapshot(app);
         return;
     }
-    if e._type == sapp::EventType::KeyDown && e.key_code == sapp::Keycode::F5 {
+    if e._type == sapp::EventType::KeyDown
+        && crate::controls::action_for_key(e.key_code) == Some(crate::controls::Action::FlowDebug)
+    {
         /* Water-flow debug arrows + console confirmation. */
         let on = !renderer::flow_debug();
         renderer::set_flow_debug(on);
@@ -6164,7 +6183,8 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
             return;
         }
         if e._type == sapp::EventType::KeyDown
-            && (e.key_code == sapp::Keycode::F3 || e.key_code == sapp::Keycode::P)
+            && crate::controls::action_for_key(e.key_code)
+                == Some(crate::controls::Action::ToggleProfiler)
         {
             profiler::toggle_visible();
             return;

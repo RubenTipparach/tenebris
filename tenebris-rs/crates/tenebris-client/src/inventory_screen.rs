@@ -506,9 +506,12 @@ pub fn egui_ui(ctx: &egui::Context) {
                 if ui.button("Close").clicked() {
                     do_close = true;
                 }
-                /* Discoverability: the tech tree was K-only; give it a
-                 * button where players already look for progression. */
-                if ui.button("Tech Tree (K)").clicked() {
+                /* Discoverability: the tech tree was key-only; give it a
+                 * button where players already look for progression. The key
+                 * hint tracks the actual binding (controls.yaml). */
+                let tech_key =
+                    crate::controls::action_label(crate::controls::Action::OpenTechTree);
+                if ui.button(format!("Tech Tree ({})", tech_key)).clicked() {
                     open_tech = true;
                 }
             });

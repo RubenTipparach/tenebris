@@ -21,7 +21,14 @@
 #   eat             - eat the selected food
 #   plant           - plant a seed / till soil under the reticle
 #   survival_toggle - toggle survival / creative
-#   storm_toggle    - toggle the storm (debug)
+#   pause           - open / close the pause menu
+#   tech_tree       - open / close the tech-tree progression screen
+#   debug_ui        - master toggle for the debug UI
+#   players_panel   - toggle the multiplayer players roster
+#   profiler        - toggle the frame profiler overlay
+#   pixel_ui_demo   - toggle the pixel-art UI demo panel
+#   block_snapshot  - dump the aimed column to the console (debug)
+#   flow_debug      - toggle the water-flow debug overlay (debug)
 #   hotbar_1 .. hotbar_10 - select a hotbar slot
 
 move_forward:    W
@@ -33,7 +40,16 @@ sprint:          LeftShift, RightShift
 fly_down:        LeftControl, RightControl, C
 toggle_fly:      F
 survival_toggle: G
-storm_toggle:    K
+
+# Menus + debug toggles.
+pause:           Escape
+tech_tree:       K
+debug_ui:        F2
+players_panel:   F1
+profiler:        F3
+pixel_ui_demo:   F8
+block_snapshot:  F4
+flow_debug:      F5
 
 # Space flight: roll the view with Q / R (E is free for interact).
 roll_left:       Q

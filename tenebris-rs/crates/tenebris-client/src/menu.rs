@@ -321,6 +321,8 @@ struct Menu {
      * storm everywhere as it climbs. Own visibility flag like settings so
      * the pause panel hides behind it while it's open. */
     weather_visible: bool,
+    /// Inputs / key-bindings viewer overlay (opened from the pause menu).
+    inputs_visible: bool,
     btn_settings_back: MenuButton,
     /* Mouse-sensitivity slider geometry + drag state. Recomputed
      * every frame in settings_layout; sens_dragging persists across
@@ -412,6 +414,15 @@ pub fn dev_start_sp(world_name: &str) {
 /// Dev-only: jump straight to one of the egui menu screens (skipping the
 /// sokol profile picker) for screenshots / iteration. `which` is "main"
 /// (default), "worlds", or "new".
+/// Dev screenshot aid: force the pause + Inputs overlay open in-game so the
+/// key-bindings panel renders headlessly (TENEBRIS_DEV_INPUTS).
+pub fn dev_open_inputs() {
+    with_menu(|m| {
+        m.pause_visible = true;
+        m.inputs_visible = true;
+    });
+}
+
 pub fn dev_show_menu(which: &str) {
     with_menu(|m| match which {
         "worlds" => enter_world_list(m),
@@ -2924,7 +2935,7 @@ pub fn pause_draw(screen_w: i32, screen_h: i32) {
 pub fn pause_egui_ui(ctx: &egui::Context) {
     let (show, is_mp, reconnecting) = with_menu(|m| {
         (
-            m.pause_visible && !m.settings_visible && !m.weather_visible,
+            m.pause_visible && !m.settings_visible && !m.weather_visible && !m.inputs_visible,
             m.state == GameState::InGameMp,
             m.reconnect_deadline_t > 0.0,
         )
@@ -2936,6 +2947,7 @@ pub fn pause_egui_ui(ctx: &egui::Context) {
     let mut do_resume = false;
     let mut do_settings = false;
     let mut do_weather = false;
+    let mut do_inputs = false;
     let mut do_invite = false;
     let mut do_quit = false;
 
@@ -2983,6 +2995,10 @@ pub fn pause_egui_ui(ctx: &egui::Context) {
                 if menu_button(ui, "Weather").clicked() {
                     do_weather = true;
                 }
+                ui.add_space(8.0);
+                if menu_button(ui, "Inputs").clicked() {
+                    do_inputs = true;
+                }
                 if is_mp {
                     ui.add_space(8.0);
                     if menu_button(ui, "Invite Players").clicked() {
@@ -3003,6 +3019,8 @@ pub fn pause_egui_ui(ctx: &egui::Context) {
             pause_apply(m, PauseAction::Settings);
         } else if do_weather {
             pause_apply(m, PauseAction::Weather);
+        } else if do_inputs {
+            pause_apply(m, PauseAction::Inputs);
         } else if do_invite {
             pause_apply(m, PauseAction::Invite);
         } else if do_quit {
@@ -3017,6 +3035,7 @@ enum PauseAction {
     Resume,
     Settings,
     Weather,
+    Inputs,
     Invite,
     Quit,
 }
@@ -3033,6 +3052,9 @@ fn pause_apply(m: &mut Menu, action: PauseAction) {
         }
         PauseAction::Weather => {
             m.weather_visible = true;
+        }
+        PauseAction::Inputs => {
+            m.inputs_visible = true;
         }
         PauseAction::Invite => {
             let room = m.room_code.clone();
@@ -3126,6 +3148,87 @@ pub fn weather_egui_ui(ctx: &egui::Context) {
     tenebris_core::weather::set_moisture_boost(boost);
     if do_back {
         with_menu(|m| m.weather_visible = false);
+    }
+}
+
+/// Inputs / key-bindings viewer, opened from the pause menu. A read-only list
+/// of every action and the key currently bound to it (from controls.yaml via
+/// [`crate::controls`]), grouped by category. Remapping is done by editing
+/// controls.yaml for now; this panel is the "what does what" reference.
+pub fn inputs_egui_ui(ctx: &egui::Context) {
+    let show = with_menu(|m| m.pause_visible && m.inputs_visible && !m.settings_visible);
+    if !show {
+        return;
+    }
+    let mut do_back = false;
+
+    egui::Window::new("tenebris-inputs")
+        .title_bar(false)
+        .resizable(false)
+        .collapsible(false)
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .show(ctx, |ui| {
+            ui.set_min_width(340.0);
+            ui.vertical_centered(|ui| {
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new("INPUTS")
+                        .size(32.0)
+                        .strong()
+                        .color(egui::Color32::from_rgb(0xd6, 0xe4, 0xff)),
+                );
+                ui.label(
+                    egui::RichText::new("edit assets/config/controls.yaml to remap")
+                        .size(13.0)
+                        .color(egui::Color32::from_rgb(0x9a, 0xa2, 0xb2)),
+                );
+            });
+            ui.add_space(10.0);
+            egui::ScrollArea::vertical()
+                .max_height(360.0)
+                .show(ui, |ui| {
+                    let mut last_group = "";
+                    egui::Grid::new("inputs-grid")
+                        .num_columns(2)
+                        .spacing([24.0, 6.0])
+                        .striped(true)
+                        .show(ui, |ui| {
+                            for (group, name, action) in crate::controls::BINDING_ROWS {
+                                if *group != last_group {
+                                    last_group = group;
+                                    ui.label(
+                                        egui::RichText::new(*group)
+                                            .size(15.0)
+                                            .strong()
+                                            .color(egui::Color32::from_rgb(0x8f, 0xb0, 0xff)),
+                                    );
+                                    ui.label("");
+                                    ui.end_row();
+                                }
+                                ui.label(
+                                    egui::RichText::new(*name)
+                                        .color(egui::Color32::from_rgb(0xd0, 0xd6, 0xe2)),
+                                );
+                                let key = crate::controls::action_label(*action);
+                                ui.label(
+                                    egui::RichText::new(key)
+                                        .strong()
+                                        .color(egui::Color32::from_rgb(0xf0, 0xe0, 0x90)),
+                                );
+                                ui.end_row();
+                            }
+                        });
+                });
+            ui.add_space(12.0);
+            ui.vertical_centered(|ui| {
+                if menu_button(ui, "Back").clicked() {
+                    do_back = true;
+                }
+            });
+        });
+
+    if do_back {
+        with_menu(|m| m.inputs_visible = false);
     }
 }
 
@@ -3250,6 +3353,10 @@ fn pause_event_inner(m: &mut Menu, e: &sapp::Event) -> bool {
         if m.reconnect_deadline_t <= 0.0 {
             set_pause_visible(m, false, "esc-resume");
             m.pause_auto_disconnect = false;
+            /* Clear the sub-panels so re-opening pause shows the pause
+             * buttons, not a stale Weather / Inputs overlay. */
+            m.weather_visible = false;
+            m.inputs_visible = false;
             show_mouse(true);
         }
         return true;

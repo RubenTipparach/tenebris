@@ -297,11 +297,6 @@ fn set_key(s: &mut State, k: sapp::Keycode, down: bool) {
                 s.survival_toggle_edge = true;
             }
         }
-        Action::StormToggle => {
-            if down {
-                s.storm_toggle_edge = true;
-            }
-        }
         Action::Eat => {
             if down {
                 s.eat_edge = true;
@@ -314,7 +309,18 @@ fn set_key(s: &mut State, k: sapp::Keycode, down: bool) {
         }
         Action::RollLeft => s.pub_.phys.roll_left = down,
         Action::RollRight => s.pub_.phys.roll_right = down,
-        Action::Interact => { /* high-level, handled in app.rs */ }
+        /* High-level actions (menus / debug toggles / interact) are resolved in
+         * app.rs::event_inner before events reach this per-frame physics layer,
+         * so they do nothing here. */
+        Action::Interact
+        | Action::Pause
+        | Action::OpenTechTree
+        | Action::ToggleDebugUi
+        | Action::PlayersPanel
+        | Action::ToggleProfiler
+        | Action::PixelUiDemo
+        | Action::BlockSnapshot
+        | Action::FlowDebug => {}
         Action::Hotbar(slot) => {
             if down {
                 if let Some(cell) = s.pub_.hotbar.get_mut(slot as usize) {

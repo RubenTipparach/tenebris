@@ -35,10 +35,54 @@ pub enum Action {
     Eat,
     Plant,
     SurvivalToggle,
-    StormToggle,
+    /// Open / close the pause menu.
+    Pause,
+    /// Open / close the tech-tree progression screen.
+    OpenTechTree,
+    /// Master toggle for the debug UI (hamburger menu, teleport button).
+    ToggleDebugUi,
+    /// Toggle the multiplayer players roster panel.
+    PlayersPanel,
+    /// Toggle the frame profiler overlay.
+    ToggleProfiler,
+    /// Toggle the pixel-art UI demo panel.
+    PixelUiDemo,
+    /// Print a block snapshot of the aimed column to the console (debug).
+    BlockSnapshot,
+    /// Toggle the water-flow debug overlay (debug).
+    FlowDebug,
     /// Select hotbar slot 0..=9 (the "1".."0" keys).
     Hotbar(u8),
 }
+
+/// Ordered, grouped list of the bindable actions for the Inputs settings
+/// panel: (group, display name, action). Hotbar slots are summarised as one
+/// row rather than ten. This is the single source of truth for what the
+/// panel shows and in what order.
+pub const BINDING_ROWS: &[(&str, &str, Action)] = &[
+    ("Movement", "Move forward", Action::MoveForward),
+    ("Movement", "Move back", Action::MoveBack),
+    ("Movement", "Move left", Action::MoveLeft),
+    ("Movement", "Move right", Action::MoveRight),
+    ("Movement", "Jump / up", Action::Jump),
+    ("Movement", "Sprint", Action::Sprint),
+    ("Movement", "Fly down", Action::FlyDown),
+    ("Movement", "Toggle fly", Action::ToggleFly),
+    ("Camera", "Roll left", Action::RollLeft),
+    ("Camera", "Roll right", Action::RollRight),
+    ("Interact", "Interact / inventory", Action::Interact),
+    ("Interact", "Eat", Action::Eat),
+    ("Interact", "Plant / till", Action::Plant),
+    ("Menus", "Pause menu", Action::Pause),
+    ("Menus", "Tech tree", Action::OpenTechTree),
+    ("Toggles", "Survival / creative", Action::SurvivalToggle),
+    ("Debug", "Debug UI", Action::ToggleDebugUi),
+    ("Debug", "Players panel", Action::PlayersPanel),
+    ("Debug", "Profiler", Action::ToggleProfiler),
+    ("Debug", "Pixel UI demo", Action::PixelUiDemo),
+    ("Debug", "Block snapshot", Action::BlockSnapshot),
+    ("Debug", "Flow debug", Action::FlowDebug),
+];
 
 /// (config key name, action). Hotbar slots use their own name form
 /// (`hotbar_1`..`hotbar_10`) handled in [`action_from_name`].
@@ -58,7 +102,14 @@ fn action_from_name(name: &str) -> Option<Action> {
         "eat" => Action::Eat,
         "plant" => Action::Plant,
         "survival_toggle" => Action::SurvivalToggle,
-        "storm_toggle" => Action::StormToggle,
+        "pause" => Action::Pause,
+        "tech_tree" => Action::OpenTechTree,
+        "debug_ui" => Action::ToggleDebugUi,
+        "players_panel" => Action::PlayersPanel,
+        "profiler" => Action::ToggleProfiler,
+        "pixel_ui_demo" => Action::PixelUiDemo,
+        "block_snapshot" => Action::BlockSnapshot,
+        "flow_debug" => Action::FlowDebug,
         _ => {
             if let Some(n) = name.strip_prefix("hotbar_") {
                 let slot: u8 = n.parse().ok()?;
@@ -87,7 +138,10 @@ fn keycode_from_name(name: &str) -> Option<Keycode> {
         "Space" => Space,
         "LeftShift" => LeftShift, "RightShift" => RightShift,
         "LeftControl" => LeftControl, "RightControl" => RightControl,
-        "Tab" => Tab, "Enter" => Enter,
+        "Tab" => Tab, "Enter" => Enter, "Escape" => Escape,
+        "F1" => F1, "F2" => F2, "F3" => F3, "F4" => F4, "F5" => F5,
+        "F6" => F6, "F7" => F7, "F8" => F8, "F9" => F9, "F10" => F10,
+        "F11" => F11, "F12" => F12,
         _ => return None,
     })
 }
@@ -106,7 +160,10 @@ pub fn key_label(k: Keycode) -> &'static str {
         Space => "Space",
         LeftShift | RightShift => "Shift",
         LeftControl | RightControl => "Ctrl",
-        Tab => "Tab", Enter => "Enter",
+        Tab => "Tab", Enter => "Enter", Escape => "Esc",
+        F1 => "F1", F2 => "F2", F3 => "F3", F4 => "F4", F5 => "F5",
+        F6 => "F6", F7 => "F7", F8 => "F8", F9 => "F9", F10 => "F10",
+        F11 => "F11", F12 => "F12",
         _ => "?",
     }
 }
@@ -129,12 +186,20 @@ fn default_bindings() -> Vec<(Keycode, Action)> {
         (C, Action::FlyDown),
         (F, Action::ToggleFly),
         (G, Action::SurvivalToggle),
-        (K, Action::StormToggle),
         (V, Action::Eat),
         (T, Action::Plant),
         (Q, Action::RollLeft),
         (R, Action::RollRight),
         (E, Action::Interact),
+        /* Menus + debug. */
+        (Escape, Action::Pause),
+        (K, Action::OpenTechTree),
+        (F2, Action::ToggleDebugUi),
+        (F1, Action::PlayersPanel),
+        (F3, Action::ToggleProfiler),
+        (F8, Action::PixelUiDemo),
+        (F4, Action::BlockSnapshot),
+        (F5, Action::FlowDebug),
     ];
     let nums = [Num1, Num2, Num3, Num4, Num5, Num6, Num7, Num8, Num9, Num0];
     for (i, k) in nums.into_iter().enumerate() {
