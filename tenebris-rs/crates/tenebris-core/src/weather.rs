@@ -218,9 +218,11 @@ pub struct WeatherConfig {
     pub rain_ripple_scale: f32,
     /// Normal push from the impact rings.
     pub rain_ripple_strength: f32,
-    /// Trickle columns per metre across a side face.
+    /// Side drop UV scale U (horizontal, in texture-UV units): drop width /
+    /// count across a block side.
     pub rain_flow_across: f32,
-    /// Trickle stretch along the fall (down) direction.
+    /// Side drop UV scale V (vertical, in texture-UV units): RAISE to shorten
+    /// the vertical streak / make the side drops rounder.
     pub rain_flow_down: f32,
     /// Downward trickle scroll speed.
     pub rain_flow_speed: f32,
@@ -299,8 +301,8 @@ impl WeatherConfig {
         rain_lens_speed: 1.0,
         rain_ripple_scale: 5.0,
         rain_ripple_strength: 2.0,
-        rain_flow_across: 3.0,
-        rain_flow_down: 0.7,
+        rain_flow_across: 4.0,
+        rain_flow_down: 16.0,
         rain_flow_speed: 1.3,
         rain_flow_strength: 3.0,
         rain_wave_scale: 7.0,

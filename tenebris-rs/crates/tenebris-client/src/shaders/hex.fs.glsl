@@ -293,9 +293,11 @@ void main()
             float ddl = length(down_dir);
             down_dir = (ddl > 1e-4) ? (down_dir / ddl) : ax_a;
             vec3 across_dir = normalize(cross(nrm, down_dir));
-            // +v_uv.y scroll is the Heartfelt fall axis; k_flow_down stretches it
-            // (smaller = longer streaks), k_flow_across = drop size.
-            vec2 duv = vec2(v_uv.x, v_uv.y * k_flow_down) * k_flow_across;
+            // Independent U/V scale on the texture UV so the drop aspect is
+            // tunable: k_flow_across = U scale (horizontal), k_flow_down = V
+            // scale (vertical - RAISE it to shorten the vertical streak). +v_uv.y
+            // is the Heartfelt fall axis.
+            vec2 duv = vec2(v_uv.x * k_flow_across, v_uv.y * k_flow_down);
             float dt = wet_t * k_flow_speed;
             float dm = rd_DropLayer2(duv, dt).x;
             vec2 de = vec2(0.01, 0.0);
