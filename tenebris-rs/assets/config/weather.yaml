@@ -111,10 +111,16 @@ default_moisture: 0.66
 #                      out when entering/leaving rain. 0 = instant snap.
 #
 #   --- Camera rain-on-glass lens droplets (the drops on the "lens" when it
-#   rains / after surfacing; composite FS Heartfelt FX). ---
-#   rain_lens_density  droplet count: higher = more, smaller drops. 1.0 stock.
+#   rains / after surfacing; composite FS Heartfelt FX). Count and SIZE are
+#   independent now - raise density for MORE drops (same size), raise size to
+#   make each drop SMALLER. ---
+#   rain_lens_density  droplet COUNT / coverage. 1.0 = every cell has a drop
+#                      (stock). Below 1.0 = fewer drops (same size). Above 1.0
+#                      stacks extra same-size layers = more drops, not smaller.
 #   rain_lens_refract  how far the scene bends through each drop. 1.7 stock.
-#   rain_lens_speed    droplet trickle / spawn speed. 1.0 stock.
+#   rain_lens_speed    droplet trickle / fall speed. 1.0 stock.
+#   rain_lens_size     droplet SIZE (drop-grid frequency). 1.0 = stock size.
+#                      Higher = smaller, tighter drops; lower = bigger drops.
 #
 #   --- Wet-surface rain ripples (hex terrain shader). Up-faces get raindrop
 #   impact RINGS + a continuous rippled wet SHEET; side faces / tree trunks get
@@ -150,13 +156,14 @@ rain_color_b: 1.0
 rain_alpha_near: 0.78
 rain_alpha_far: 0.10
 wet_fade_tau_s: 1.6
-rain_lens_density: 0.7
+rain_lens_density: 1.4
 rain_lens_refract: 1.7
 rain_lens_speed: 1.0
+rain_lens_size: 0.7
 rain_ripple_scale: 5.0
 rain_ripple_strength: 2.0
-rain_flow_across: 4.0
-rain_flow_down: 16.0
+rain_flow_across: 128.0
+rain_flow_down: 4.0
 rain_flow_speed: 1.3
 rain_flow_strength: 3.0
 rain_wave_scale: 7.0

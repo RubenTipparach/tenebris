@@ -66,8 +66,8 @@ pub struct CompositeFsParams {
     /// w = density per metre (0 = fog off).
     pub fog_params: [f32; 4],
     /// Camera rain-on-glass lens droplet knobs (weather.yaml, hand-added):
-    /// x = droplet density, y = refraction strength, z = animation speed,
-    /// w = spare.
+    /// x = droplet count / coverage, y = refraction strength, z = animation
+    /// speed, w = drop size (grid frequency). Count and size are independent.
     pub rain_lens: [f32; 4],
 }
 /*

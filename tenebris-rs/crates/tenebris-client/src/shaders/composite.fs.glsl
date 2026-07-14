@@ -1,7 +1,10 @@
 #version 410
 
 // composite_fs_params[6] = camera rain-on-glass lens droplet knobs
-// (weather.yaml): .x = density, .y = refraction strength, .z = anim speed.
+// (weather.yaml): .x = count / coverage (per-cell cull below 1, extra stacked
+// layers above 1), .y = refraction strength, .z = anim speed, .w = drop size
+// (grid frequency - higher = smaller drops). Count (.x) and size (.w) are
+// independent: raising .x adds drops at the SAME size, .w changes the size.
 uniform vec4 composite_fs_params[7];
 uniform sampler2D scene_depth_scene_depth_smp;
 uniform sampler2D scene_color_scene_smp;
@@ -33,13 +36,17 @@ vec2 rd_DropLayer2(vec2 uv, float t){{
     vec2 UV = uv;
     uv.y += t * 0.75;
     vec2 a = vec2(6.0, 1.0);
-    vec2 grid = a * 2.0 * composite_fs_params[6].x; // .x = lens droplet density
+    vec2 grid = a * 2.0 * max(composite_fs_params[6].w, 0.05); // .w = drop size (grid freq)
 
     vec2 id = floor(uv * grid);
     float colShift = rd_N(id.x);
     uv.y += colShift;
     id = floor(uv * grid);
     vec3 n = rd_N13(id.x * 35.2 + id.y * 2376.1);
+    // Coverage cull: .x (count) below 1 leaves a fraction of cells empty so the
+    // SAME-size drops just get sparser. At 1.0 every cell keeps its drop.
+    float rd_keep = step(1.0 - clamp(composite_fs_params[6].x, 0.0, 1.0),
+                         fract(n.x * 3.17 + n.y * 6.91 + n.z));
     vec2 st = fract(uv * grid) - vec2(0.5, 0.0);
     float x = n.x - 0.5;
     float y = UV.y * 20.0;
@@ -47,7 +54,11 @@ vec2 rd_DropLayer2(vec2 uv, float t){{
     x += wiggle * (0.5 - abs(x)) * (n.z - 0.5);
     x *= 0.7;
     float ti = fract(t + n.z);
-    y = (rd_Saw(0.85, ti) - 0.5) * 0.9 + 0.5;
+    // Drop FALLS: travel from the top of the cell down to the bottom (screen
+    // v_uv is y-up, so smaller y = lower on screen). The trail below is drawn
+    // ABOVE the drop, so the drop must move DOWN for streak and drop to agree -
+    // the old "+0.5" made the drop drift UP against its own trail.
+    y = 0.5 - (rd_Saw(0.85, ti) - 0.5) * 0.9;
     vec2 p = vec2(x, y);
     float d = length((st - p) * a.yx);
     float mainDrop = smoothstep(0.4, 0.0, d);
@@ -63,24 +74,35 @@ vec2 rd_DropLayer2(vec2 uv, float t){{
     float dd = length(st - vec2(x, y));
     droplets = smoothstep(0.3, 0.0, dd);
     float m = mainDrop + droplets * r * trailFront;
-    return vec2(m, trail);
+    return vec2(m, trail) * rd_keep;
 }}
 float rd_StaticDrops(vec2 uv, float t){{
-    uv *= 40.0 * composite_fs_params[6].x; // .x = lens droplet density
+    uv *= 40.0 * max(composite_fs_params[6].w, 0.05); // .w = drop size (grid freq)
 
     vec2 id = floor(uv);
     uv = fract(uv) - 0.5;
     vec3 n = rd_N13(id.x * 107.45 + id.y * 3543.654);
+    float rd_keep = step(1.0 - clamp(composite_fs_params[6].x, 0.0, 1.0),
+                         fract(n.x * 3.17 + n.y * 6.91 + n.z)); // .x = count / coverage
     vec2 p = (n.xy - 0.5) * 0.7;
     float d = length(uv - p);
     float fade = rd_Saw(0.025, fract(t + n.z));
-    return smoothstep(0.3, 0.0, d) * fract(n.z * 10.0) * fade;
+    return smoothstep(0.3, 0.0, d) * fract(n.z * 10.0) * fade * rd_keep;
 }}
 vec2 rd_Drops(vec2 uv, float t, float l0, float l1, float l2){{
     float s = rd_StaticDrops(uv, t) * l0;
     vec2 m1 = rd_DropLayer2(uv, t) * l1;
     vec2 m2 = rd_DropLayer2(uv * 1.85, t) * l2;
     float c = s + m1.x + m2.x;
+    // Count (.x) above 1 stacks extra same-size drop layers (offset copies) so
+    // more drops appear WITHOUT shrinking; below 1 the per-cell cull inside the
+    // layers thins them. extra ramps in one full extra layer per +1.0 of count.
+    float extra = clamp(composite_fs_params[6].x - 1.0, 0.0, 2.0);
+    if (extra > 0.001) {{
+        vec2 m3 = rd_DropLayer2(uv + vec2(0.50, 0.37), t);
+        vec2 m4 = rd_DropLayer2(uv * 1.85 + vec2(0.27, 0.61), t);
+        c += (m3.x * l1 + m4.x * l2) * min(extra, 1.0);
+    }}
     c = smoothstep(0.3, 1.0, c);
     return vec2(c, max(m1.y * l0, m2.y * l1));
 }}

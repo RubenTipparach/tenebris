@@ -4213,11 +4213,17 @@ pub fn compose_to_swapchain(view: Mat4, proj: Mat4) {
                 FRAME_WET.with(|c| c.get()),
             ],
             fog_params: fog,
-            /* Camera rain-on-glass lens droplets (weather.yaml): density,
-             * refraction strength, animation speed. */
+            /* Camera rain-on-glass lens droplets (weather.yaml): x = count /
+             * coverage, y = refraction strength, z = animation speed, w = drop
+             * size (grid frequency). Count and size are independent knobs. */
             rain_lens: {
                 let wx = tenebris_core::weather::config();
-                [wx.rain_lens_density, wx.rain_lens_refract, wx.rain_lens_speed, 0.0]
+                [
+                    wx.rain_lens_density,
+                    wx.rain_lens_refract,
+                    wx.rain_lens_speed,
+                    wx.rain_lens_size,
+                ]
             },
         };
         sg::apply_uniforms(shaders::composite::UB_COMPOSITE_FS_PARAMS, &sg::value_as_range(&fs));

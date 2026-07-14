@@ -201,8 +201,11 @@ pub struct WeatherConfig {
     pub wet_fade_tau_s: f32,
 
     /* --- Camera rain-on-glass lens droplets (composite FS Heartfelt FX) --- */
-    /// Droplet density on the lens: multiplies the drop grid, so higher =
-    /// more, smaller drops; lower = fewer, larger drops. 1.0 = stock look.
+    /// Droplet COUNT / coverage on the lens - independent of drop size (that
+    /// is `rain_lens_size`). 1.0 = every grid cell has a drop (stock). Below
+    /// 1.0 leaves a fraction of cells empty so the SAME-size drops just get
+    /// sparser. Above 1.0 stacks extra same-size drop layers so the count
+    /// rises without the drops shrinking. Raise this for "more drops".
     pub rain_lens_density: f32,
     /// Refraction strength of each lens droplet: how far the scene is bent
     /// through a drop. Higher = stronger fisheye per drop. Stock was 1.7.
@@ -210,6 +213,11 @@ pub struct WeatherConfig {
     /// Animation speed of the lens droplets (trickle / spawn rate). 1.0 =
     /// stock; higher = faster running drops.
     pub rain_lens_speed: f32,
+    /// Droplet SIZE on the lens: the drop-grid frequency. 1.0 = stock size.
+    /// Higher = smaller, tighter drops; lower = bigger, coarser drops. This
+    /// is the knob that used to be tangled into `rain_lens_density` (raising
+    /// density only shrank the drops); size and count are now separate.
+    pub rain_lens_size: f32,
 
     /* --- Wet-surface rain ripples (hex terrain FS, hex_fs_rain block).
      * Raindrop rings + a continuous rippled wet sheet on up-faces, and water
@@ -296,9 +304,10 @@ impl WeatherConfig {
         rain_alpha_near: 0.38,
         rain_alpha_far: 0.10,
         wet_fade_tau_s: 1.6,
-        rain_lens_density: 1.8,
+        rain_lens_density: 1.0,
         rain_lens_refract: 1.7,
         rain_lens_speed: 1.0,
+        rain_lens_size: 1.0,
         rain_ripple_scale: 5.0,
         rain_ripple_strength: 2.0,
         rain_flow_across: 4.0,
@@ -382,6 +391,7 @@ pub fn parse_config(src: &str, _path: &str) -> WeatherConfig {
             "rain_lens_density" => cfg.rain_lens_density = v,
             "rain_lens_refract" => cfg.rain_lens_refract = v,
             "rain_lens_speed" => cfg.rain_lens_speed = v,
+            "rain_lens_size" => cfg.rain_lens_size = v,
             "rain_ripple_scale" => cfg.rain_ripple_scale = v,
             "rain_ripple_strength" => cfg.rain_ripple_strength = v,
             "rain_flow_across" => cfg.rain_flow_across = v,
