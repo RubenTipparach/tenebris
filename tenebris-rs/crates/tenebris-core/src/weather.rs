@@ -272,7 +272,7 @@ impl WeatherConfig {
         cloud_full: 0.52,
         rain_threshold: 0.55,
         rain_cover_min: 0.5,
-        rain_min_s: 60.0,
+        rain_min_s: 15.0,
         min_alpha: 0.32,
         small_extra_drift: 6.0,
         default_moisture: 0.66,

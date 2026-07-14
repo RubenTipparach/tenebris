@@ -246,8 +246,17 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, p: &PlayerCtrl, time_s: f64) {
              * "scale up/down over a lifetime" the design calls for; the
              * field drifts slowly so the visual growth stays gradual. */
             const SPAWN_BAND: f64 = 0.22;
-            let presence = smoothstep(roll as f64, roll as f64 + SPAWN_BAND, eff)
+            let mut presence = smoothstep(roll as f64, roll as f64 + SPAWN_BAND, eff)
                 * smoothstep(0.0, 0.12, cov);
+            /* A raining / snowing cell must ALWAYS have a cloud overhead - the
+             * precipitation persists briefly after the visible cloud thins,
+             * and the per-cell spawn roll can otherwise leave a raining cell
+             * cloudless (rain from a clear sky) or gappy in heavy rain. Force
+             * enough presence + coverage that a real puff renders here. */
+            if cell.raining {
+                cell.cover = cell.cover.max(0.7);
+                presence = presence.max(0.7);
+            }
             if presence <= 0.02 {
                 continue; /* effectively clear / not yet born here */
             }

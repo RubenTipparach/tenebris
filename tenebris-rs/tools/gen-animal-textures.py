@@ -89,11 +89,10 @@ def tile_pixels(kid):
                         c = (44, 74, 40)
                 c = jitter(c, 10)
             elif y < 24:
-                # HEAD: base tone, slightly lighter; two eyes.
+                # HEAD: base tone, slightly lighter. No painted eyes - every
+                # species now wears proud 3D googly eyeballs (client::animals),
+                # so the old dark eye pixels just showed as black smudges.
                 c = jitter((clamp(base[0] * 1.12), clamp(base[1] * 1.12), clamp(base[2] * 1.12)), 8)
-                ey = 19
-                if kid != 15 and y in (ey, ey + 1) and (x in (10, 11) or x in (20, 21)):
-                    c = (16, 14, 14)
                 # beak hint for bird/chicken/penguin: warm bar centre
                 if kid in (4, 6, 10) and y in (22, 23) and 14 <= x <= 17:
                     c = (232, 150, 40)

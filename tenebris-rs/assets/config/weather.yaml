@@ -44,7 +44,7 @@ min_alpha: 0.32
 #                   from a now-clear sky a full minute later.
 rain_threshold: 0.55
 rain_cover_min: 0.62
-rain_min_s: 10.0
+rain_min_s: 15.0
 
 # --- Motion ---
 #   small_extra_drift  DEPRECATED / ignored. Clouds now all drift at the

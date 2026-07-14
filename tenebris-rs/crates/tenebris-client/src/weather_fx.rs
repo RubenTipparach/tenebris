@@ -59,9 +59,11 @@ const MAX_MARKS: usize = 1700;
 /// warm columns are rain at every altitude. This is the "snow turns into rain
 /// after a certain point" line, applied to the falling particle by its height.
 const SNOW_LINE_ALT_M: f64 = 16.0;
-/// Cells nearer than this to the camera are covered by the near shower, so
-/// the distant-shaft loop skips them (no double draw over the player).
-const SHAFT_NEAR_M: f64 = 30.0;
+/// Inner cull for the distant shafts. The immersive near shower is disabled,
+/// so the shafts (world-anchored 3D curtains) must reach right up to the
+/// player - otherwise there is a rain-free bubble overhead and "the rain is
+/// gone" where you actually stand. Small, not the old 30 m gap.
+const SHAFT_NEAR_M: f64 = 1.5;
 /// Beyond this range distant shafts are culled entirely (metres). Large so
 /// storms stay visible from a high orbit but not across the whole planet.
 const SHAFT_RANGE_M: f64 = 1400.0;

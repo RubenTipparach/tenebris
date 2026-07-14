@@ -159,7 +159,7 @@ impl AnimalKind {
             AnimalKind::Critter | AnimalKind::Stalker => 2.0,
             AnimalKind::Cat => 1.1,
             AnimalKind::Sheep => 2.1,
-            AnimalKind::Chicken => 0.84,
+            AnimalKind::Chicken => 1.68,
             AnimalKind::Cow => 2.9,
             AnimalKind::Bird => 0.60,
             AnimalKind::Frog => 0.70,
