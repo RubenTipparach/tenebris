@@ -261,7 +261,7 @@ const ATLAS_PATHS: [Option<&str>; ATLAS_TILES] = [
     Some("assets/textures/dirt.png"),
     Some("assets/textures/grass.png"),
     Some("assets/textures/rocks.png"),
-    Some("assets/textures/ice.png"),
+    Some("assets/textures/ice_glass.png"), /* 6 Ice - frosted, alpha-dithered */
     Some("assets/textures/snow.png"),
     Some("assets/textures/dirt_grass.png"),
     Some("assets/textures/dirt_snow.png"),

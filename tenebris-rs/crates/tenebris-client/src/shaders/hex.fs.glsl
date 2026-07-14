@@ -73,9 +73,29 @@ vec2 rain_ripple_grad(vec2 uv, float t) {
     return circles;
 }
 
+// 4x4 Bayer screen-door threshold for the alpha cutout / translucency below.
+float hex_bayer4(vec2 frag)
+{
+    int bx = int(frag.x) & 3;
+    int by = int(frag.y) & 3;
+    int i = by * 4 + bx;
+    float m[16] = float[16](
+        0.0,  8.0,  2.0,  10.0,
+        12.0, 4.0,  14.0, 6.0,
+        3.0,  11.0, 1.0,  9.0,
+        15.0, 7.0,  13.0, 5.0);
+    return (m[i] + 0.5) / 16.0;
+}
+
 void main()
 {
     vec4 tex = texture(hex_atlas_hex_atlas_smp, vec2(v_uv.x * (93.0 / 100.0), v_uv.y));
+    // Screen-door alpha from the block texture: gives a hard CUTOUT where the
+    // atlas alpha is ~0 (the launch-tower truss shows sky through its lattice)
+    // and dithered PARTIAL TRANSPARENCY where it is fractional (frosted ice),
+    // all inside the opaque pass with correct depth - no separate blended
+    // pass. Fully opaque terrain (alpha 1) is never discarded.
+    if (tex.w < hex_bayer4(gl_FragCoord.xy)) { discard; }
     if (hex_fs_crack[0].w > 0.001000000047497451305389404296875)
     {
         float _48 = length(v_local);
