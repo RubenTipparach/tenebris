@@ -211,6 +211,36 @@ pub struct WeatherConfig {
     /// stock; higher = faster running drops.
     pub rain_lens_speed: f32,
 
+    /* --- Wet-surface rain ripples (hex terrain FS, hex_fs_rain block).
+     * Raindrop rings + a continuous rippled wet sheet on up-faces, and water
+     * trickling down side-faces / tree trunks. --- */
+    /// Raindrop impact-ring cells per metre on up-faces (bigger = smaller rings).
+    pub rain_ripple_scale: f32,
+    /// Normal push from the impact rings.
+    pub rain_ripple_strength: f32,
+    /// Trickle columns per metre across a side face.
+    pub rain_flow_across: f32,
+    /// Trickle stretch along the fall (down) direction.
+    pub rain_flow_down: f32,
+    /// Downward trickle scroll speed.
+    pub rain_flow_speed: f32,
+    /// Normal push from the side-face trickles.
+    pub rain_flow_strength: f32,
+    /// Continuous wet-sheet ripple frequency (bigger = finer ripples).
+    pub rain_wave_scale: f32,
+    /// Continuous wet-sheet ripple normal push (the always-wet look).
+    pub rain_wave_strength: f32,
+    /// Continuous wet-sheet ripple animation speed.
+    pub rain_wave_speed: f32,
+    /// Wet surfaces darken toward this factor (0.72 = 28% darker).
+    pub rain_wet_darken: f32,
+    /// Wet sheen from SKY light - visible under the rain's own overcast.
+    pub rain_sky_sheen: f32,
+    /// Direct-sun glint tightness off the wet normal (only when sun is out).
+    pub rain_glint_power: f32,
+    /// Direct-sun glint brightness (0 = no sparkle).
+    pub rain_glint_strength: f32,
+
     /* --- Wind (drives grass sway; see client scatter sway) --- */
     /// Calm-day baseline wind (0..1) - grass always breathes a little.
     pub base_wind: f32,
@@ -267,6 +297,19 @@ impl WeatherConfig {
         rain_lens_density: 1.0,
         rain_lens_refract: 1.7,
         rain_lens_speed: 1.0,
+        rain_ripple_scale: 2.6,
+        rain_ripple_strength: 2.0,
+        rain_flow_across: 3.0,
+        rain_flow_down: 0.7,
+        rain_flow_speed: 1.3,
+        rain_flow_strength: 3.0,
+        rain_wave_scale: 3.5,
+        rain_wave_strength: 0.6,
+        rain_wave_speed: 1.4,
+        rain_wet_darken: 0.72,
+        rain_sky_sheen: 0.8,
+        rain_glint_power: 24.0,
+        rain_glint_strength: 0.5,
 
         base_wind: 0.35,
         gust_amp: 0.55,
@@ -337,6 +380,19 @@ pub fn parse_config(src: &str, _path: &str) -> WeatherConfig {
             "rain_lens_density" => cfg.rain_lens_density = v,
             "rain_lens_refract" => cfg.rain_lens_refract = v,
             "rain_lens_speed" => cfg.rain_lens_speed = v,
+            "rain_ripple_scale" => cfg.rain_ripple_scale = v,
+            "rain_ripple_strength" => cfg.rain_ripple_strength = v,
+            "rain_flow_across" => cfg.rain_flow_across = v,
+            "rain_flow_down" => cfg.rain_flow_down = v,
+            "rain_flow_speed" => cfg.rain_flow_speed = v,
+            "rain_flow_strength" => cfg.rain_flow_strength = v,
+            "rain_wave_scale" => cfg.rain_wave_scale = v,
+            "rain_wave_strength" => cfg.rain_wave_strength = v,
+            "rain_wave_speed" => cfg.rain_wave_speed = v,
+            "rain_wet_darken" => cfg.rain_wet_darken = v,
+            "rain_sky_sheen" => cfg.rain_sky_sheen = v,
+            "rain_glint_power" => cfg.rain_glint_power = v,
+            "rain_glint_strength" => cfg.rain_glint_strength = v,
             "overcast_sun_dim" => cfg.overcast_sun_dim = v,
             "overcast_amb_dim" => cfg.overcast_amb_dim = v,
             "base_wind" => cfg.base_wind = v,

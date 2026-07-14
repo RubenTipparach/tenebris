@@ -4,6 +4,7 @@ uniform vec4 hex_fs_crack[10];
 uniform vec4 hex_fs_light[3];
 uniform vec4 hex_fs_torch[1];
 uniform vec4 hex_fs_water[2];
+uniform vec4 hex_fs_rain[4];
 uniform sampler2D hex_atlas_hex_atlas_smp;
 uniform sampler2D crack_tex_crack_smp;
 
@@ -20,28 +21,17 @@ layout(location = 0) out vec4 frag_color;
 // ---- Rain wetness detail: raindrop ripples on up-faces + water trickling
 // down side-faces (and tree trunks, same shader). The ripple kernel is the
 // Zavie / Ctrl-Alt-Test "H - Immersion" rain-drop effect, adapted to return a
-// surface gradient (normal perturbation). Tunables grouped here; promote to
-// YAML uniforms once the look is dialled in. The kernel's inner constants
-// (31.0, the smoothstep bands, 0.3 spawn rate, hash scales) are the effect's
-// identity and stay inline like a hash function's magic numbers.
+// surface gradient (normal perturbation). The DESIGNER knobs live in
+// weather.yaml (rain_ripple_* / rain_flow_* / rain_wave_* / rain_wet_darken /
+// rain_sky_sheen / rain_glint_*), fed via the hex_fs_rain uniform block; see
+// the alias block in main(). Only the loop bound + the finite-diff step stay
+// compiled in - the first must be a constant, the second is an algorithm
+// constant (like the kernel's 31.0 / smoothstep bands / hash scales, which are
+// the effect's identity and also stay inline).
 #define RAIN_MAX_RADIUS 1        // ripple cell reach (1 = 3x3 kernel, cheaper)
 #define RAIN_GRAD_H 0.012        // finite-diff step for the ripple gradient -
                                  // must exceed planet-scale f32 quantization or
                                  // the derivative degrades to noise/zero
-#define RAIN_RIPPLE_SCALE 2.6    // ripple cells per metre on up-faces
-#define RAIN_RIPPLE_STRENGTH 2.0 // normal push from raindrop impact rings
-#define RAIN_FLOW_ACROSS 3.0     // trickle columns per metre across a side
-#define RAIN_FLOW_DOWN 0.7       // trickle stretch along the fall direction
-#define RAIN_FLOW_SPEED 1.3      // downward trickle scroll speed
-#define RAIN_FLOW_STRENGTH 3.0   // normal push from trickles (sides need more)
-#define RAIN_WAVE_SCALE 3.5      // continuous wet-sheet ripple frequency
-#define RAIN_WAVE_STRENGTH 0.6   // continuous ripple normal push (always wet)
-#define RAIN_WAVE_SPEED 1.4      // wet-sheet ripple animation speed
-#define RAIN_WET_DARKEN 0.72     // wet surfaces darken toward this factor
-#define RAIN_SKY_SHEEN 0.8       // wet sheen from SKY light - stays visible
-                                 // under the rain's own OVERCAST (no sun needed)
-#define RAIN_GLINT_POWER 24.0    // direct-sun glint tightness off the wet normal
-#define RAIN_GLINT_STRENGTH 0.5  // direct-sun sparkle (only when the sun is out)
 
 float rr_hash12(vec2 p) {
     vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -193,6 +183,21 @@ void main()
     // sparkle when the sun is out), on top of a wet darkening.
     float wet_amt = clamp(hex_fs_light[2].y, 0.0, 1.0) * v_sky_light;
     if (wet_amt > 0.001) {
+        // Designer knobs from weather.yaml (hex_fs_rain uniform block).
+        float k_ripple_scale   = hex_fs_rain[0].x;
+        float k_ripple_strength= hex_fs_rain[0].y;
+        float k_flow_across    = hex_fs_rain[0].z;
+        float k_flow_down      = hex_fs_rain[0].w;
+        float k_flow_speed     = hex_fs_rain[1].x;
+        float k_flow_strength  = hex_fs_rain[1].y;
+        float k_wave_scale     = hex_fs_rain[1].z;
+        float k_wave_strength  = hex_fs_rain[1].w;
+        float k_wave_speed     = hex_fs_rain[2].x;
+        float k_wet_darken     = hex_fs_rain[2].y;
+        float k_sky_sheen      = hex_fs_rain[2].z;
+        float k_glint_power    = hex_fs_rain[2].w;
+        float k_glint_strength = hex_fs_rain[3].x;
+
         vec3 wet_up = normalize(v_local);
         vec3 nrm = normalize(v_normal);
         float face = dot(nrm, wet_up);              // 1 = up-face, 0 = side-face
@@ -212,13 +217,13 @@ void main()
             // Continuous rippled wet sheet (a few low-freq waves, precision-safe)
             // so the WHOLE wet face reads as a normal map, not just sparse rings.
             vec2 wg = vec2(
-                cos(wc.x * RAIN_WAVE_SCALE + wet_t * RAIN_WAVE_SPEED)
-                    + 0.7 * cos((wc.x + wc.y) * RAIN_WAVE_SCALE * 0.6 - wet_t * RAIN_WAVE_SPEED * 0.8),
-                cos(wc.y * RAIN_WAVE_SCALE - wet_t * RAIN_WAVE_SPEED * 0.9)
-                    + 0.7 * cos((wc.x - wc.y) * RAIN_WAVE_SCALE * 0.6 + wet_t * RAIN_WAVE_SPEED * 0.7));
-            pert += (t_a * wg.x + t_b * wg.y) * (RAIN_WAVE_STRENGTH * top_w);
+                cos(wc.x * k_wave_scale + wet_t * k_wave_speed)
+                    + 0.7 * cos((wc.x + wc.y) * k_wave_scale * 0.6 - wet_t * k_wave_speed * 0.8),
+                cos(wc.y * k_wave_scale - wet_t * k_wave_speed * 0.9)
+                    + 0.7 * cos((wc.x - wc.y) * k_wave_scale * 0.6 + wet_t * k_wave_speed * 0.7));
+            pert += (t_a * wg.x + t_b * wg.y) * (k_wave_strength * top_w);
             // Raindrop impact rings on top of the sheet.
-            vec2 rg = rain_ripple_grad(wc * RAIN_RIPPLE_SCALE, wet_t) * (RAIN_RIPPLE_STRENGTH * top_w);
+            vec2 rg = rain_ripple_grad(wc * k_ripple_scale, wet_t) * (k_ripple_strength * top_w);
             pert += t_a * rg.x + t_b * rg.y;
         }
         // Water trickling straight down the side faces: the ripple kernel with a
@@ -228,25 +233,25 @@ void main()
             float dl = length(down_face);
             down_face = (dl > 1e-4) ? (down_face / dl) : t_a;
             vec3 across = cross(nrm, down_face);
-            float sc = dot(v_local, across) * RAIN_FLOW_ACROSS;
-            float dc = dot(v_local, down_face) * RAIN_FLOW_DOWN - wet_t * RAIN_FLOW_SPEED;
-            vec2 g = rain_ripple_grad(vec2(sc, dc), wet_t * 0.5) * (RAIN_FLOW_STRENGTH * side_w);
+            float sc = dot(v_local, across) * k_flow_across;
+            float dc = dot(v_local, down_face) * k_flow_down - wet_t * k_flow_speed;
+            vec2 g = rain_ripple_grad(vec2(sc, dc), wet_t * 0.5) * (k_flow_strength * side_w);
             pert += across * g.x + down_face * g.y;
         }
 
         float wet = wet_amt * max(top_w, side_w);
         vec3 wet_n = normalize(nrm + pert);
-        lit *= mix(1.0, RAIN_WET_DARKEN, wet);      // wet surfaces darken
+        lit *= mix(1.0, k_wet_darken, wet);         // wet surfaces darken
         // Sky sheen: wet surfaces reflect the bright (overcast) sky, brighter
         // where the ripple tilts toward the sky and darker in the troughs. Uses
         // ambient/sky light (hex_fs_light[1]) + v_sky_light, so the ripples are
         // visible WHILE it rains, not only in direct sun.
         float sky_tilt = clamp(dot(wet_n, wet_up), 0.0, 1.0) - clamp(dot(nrm, wet_up), 0.0, 1.0);
-        lit += hex_fs_light[1].xyz * (sky_tilt * RAIN_SKY_SHEEN * wet * v_sky_light);
+        lit += hex_fs_light[1].xyz * (sky_tilt * k_sky_sheen * wet * v_sky_light);
         // Direct-sun glint - extra sparkle only when the sun is actually out.
         vec3 sun_d = normalize(hex_fs_light[0].xyz);
-        float glint = pow(max(dot(wet_n, sun_d), 0.0), RAIN_GLINT_POWER);
-        lit += vec3(RAIN_GLINT_STRENGTH) * (glint * wet * v_sun_brightness);
+        float glint = pow(max(dot(wet_n, sun_d), 0.0), k_glint_power);
+        lit += vec3(k_glint_strength) * (glint * wet * v_sun_brightness);
     }
     frag_color = vec4(lit, v_wet);
 }

@@ -4728,6 +4728,36 @@ pub fn draw_world(
                     &sg::value_as_range(&hex_fs_light),
                 );
             }
+            {
+                /* Wet-surface rain-ripple knobs (weather.yaml). Packed to
+                 * match hex_fs_rain[4] in hex.fs.glsl. */
+                let wx = tenebris_core::weather::config();
+                let hex_fs_rain = shaders::hex::HexFsRain {
+                    rain0: [
+                        wx.rain_ripple_scale,
+                        wx.rain_ripple_strength,
+                        wx.rain_flow_across,
+                        wx.rain_flow_down,
+                    ],
+                    rain1: [
+                        wx.rain_flow_speed,
+                        wx.rain_flow_strength,
+                        wx.rain_wave_scale,
+                        wx.rain_wave_strength,
+                    ],
+                    rain2: [
+                        wx.rain_wave_speed,
+                        wx.rain_wet_darken,
+                        wx.rain_sky_sheen,
+                        wx.rain_glint_power,
+                    ],
+                    rain3: [wx.rain_glint_strength, 0.0, 0.0, 0.0],
+                };
+                sg::apply_uniforms(
+                    shaders::hex::UB_HEX_FS_RAIN,
+                    &sg::value_as_range(&hex_fs_rain),
+                );
+            }
             /* Underwater-dim block reuses the cap's absorption +
              * deep_color so submerged terrain tints with the same
              * curve the cap uses. */

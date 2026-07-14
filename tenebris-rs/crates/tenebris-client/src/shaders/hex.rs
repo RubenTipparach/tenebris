@@ -69,6 +69,7 @@ pub const UB_HEX_FS_CRACK: usize = 5;
 pub const UB_HEX_FS_LIGHT: usize = 2;
 pub const UB_HEX_FS_TORCH: usize = 4;
 pub const UB_HEX_FS_WATER: usize = 3;
+pub const UB_HEX_FS_RAIN: usize = 6;
 pub const VIEW_HEX_ATLAS: usize = 0;
 pub const VIEW_CRACK_TEX: usize = 1;
 pub const SMP_HEX_ATLAS_SMP: usize = 0;
@@ -115,6 +116,18 @@ pub struct HexFsWater {
     pub _pad_12: [u8; 4],
     pub u_deep_color: [f32; 3],
     pub _pad_28: [u8; 4],
+}
+/// Rain-wetness ripple knobs (weather.yaml), hand-added. Packed:
+///   [0] = ripple_scale, ripple_strength, flow_across, flow_down
+///   [1] = flow_speed, flow_strength, wave_scale, wave_strength
+///   [2] = wave_speed, wet_darken, sky_sheen, glint_power
+///   [3] = glint_strength, (spare, spare, spare)
+#[repr(C, align(16))]
+pub struct HexFsRain {
+    pub rain0: [f32; 4],
+    pub rain1: [f32; 4],
+    pub rain2: [f32; 4],
+    pub rain3: [f32; 4],
 }
 /*
     #version 410
@@ -358,6 +371,12 @@ pub fn hex_shader_desc(backend: sg::Backend) -> sg::ShaderDesc {
             desc.uniform_blocks[5].glsl_uniforms[0]._type = sg::UniformType::Float4;
             desc.uniform_blocks[5].glsl_uniforms[0].array_count = 10;
             desc.uniform_blocks[5].glsl_uniforms[0].glsl_name = c"hex_fs_crack".as_ptr();
+            desc.uniform_blocks[6].stage = sg::ShaderStage::Fragment;
+            desc.uniform_blocks[6].layout = sg::UniformLayout::Std140;
+            desc.uniform_blocks[6].size = 64;
+            desc.uniform_blocks[6].glsl_uniforms[0]._type = sg::UniformType::Float4;
+            desc.uniform_blocks[6].glsl_uniforms[0].array_count = 4;
+            desc.uniform_blocks[6].glsl_uniforms[0].glsl_name = c"hex_fs_rain".as_ptr();
             desc.views[0].texture.stage = sg::ShaderStage::Fragment;
             desc.views[0].texture.multisampled = false;
             desc.views[0].texture.image_type = sg::ImageType::Dim2;
