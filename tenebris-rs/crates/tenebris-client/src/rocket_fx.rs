@@ -329,10 +329,12 @@ fn push_tower_box(verts: &mut Vec<f32>, base: DVec3, right: DVec3, up: DVec3, fw
             (base.z + right.z * lx as f64 + up.z * ly as f64 + fwd.z as f64 * lz as f64) as f32,
         ]
     };
-    // (4 corners, shade, uv-cell)
-    let faces: [([[f32; 3]; 4], f32, (f32, f32)); 6] = [
+    /* Only the top (+Y) cap, never the bottom: stacked segments share a
+     * boundary plane, so drawing both a segment's top cap AND the next
+     * segment's bottom cap makes them coplanar and z-fight. Keeping just
+     * the top cap leaves exactly one surface per boundary. */
+    let faces: [([[f32; 3]; 4], f32, (f32, f32)); 5] = [
         ([corner(-h, h, -h), corner(-h, h, h), corner(h, h, h), corner(h, h, -h)], 1.0, cap), // +Y
-        ([corner(-h, -h, h), corner(-h, -h, -h), corner(h, -h, -h), corner(h, -h, h)], 0.55, cap), // -Y
         ([corner(-h, -h, -h), corner(-h, h, -h), corner(h, h, -h), corner(h, -h, -h)], 0.85, side), // -Z
         ([corner(h, -h, h), corner(h, h, h), corner(-h, h, h), corner(-h, -h, h)], 0.7, side), // +Z
         ([corner(h, -h, -h), corner(h, h, -h), corner(h, h, h), corner(h, -h, h)], 0.8, side), // +X
