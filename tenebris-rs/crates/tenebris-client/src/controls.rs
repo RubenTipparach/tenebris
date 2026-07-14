@@ -39,6 +39,12 @@ pub enum Action {
     Pause,
     /// Open / close the tech-tree progression screen.
     OpenTechTree,
+    /// Open / close the crafting screen.
+    OpenCrafting,
+    /// Debug: toggle terrain / water / skybox visibility.
+    ToggleTerrain,
+    ToggleWater,
+    ToggleSkybox,
     /// Master toggle for the debug UI (hamburger menu, teleport button).
     ToggleDebugUi,
     /// Toggle the multiplayer players roster panel.
@@ -75,6 +81,7 @@ pub const BINDING_ROWS: &[(&str, &str, Action)] = &[
     ("Interact", "Plant / till", Action::Plant),
     ("Menus", "Pause menu", Action::Pause),
     ("Menus", "Tech tree", Action::OpenTechTree),
+    ("Menus", "Crafting", Action::OpenCrafting),
     ("Toggles", "Survival / creative", Action::SurvivalToggle),
     ("Debug", "Debug UI", Action::ToggleDebugUi),
     ("Debug", "Players panel", Action::PlayersPanel),
@@ -82,6 +89,9 @@ pub const BINDING_ROWS: &[(&str, &str, Action)] = &[
     ("Debug", "Pixel UI demo", Action::PixelUiDemo),
     ("Debug", "Block snapshot", Action::BlockSnapshot),
     ("Debug", "Flow debug", Action::FlowDebug),
+    ("Debug", "Hide terrain", Action::ToggleTerrain),
+    ("Debug", "Hide water", Action::ToggleWater),
+    ("Debug", "Hide skybox", Action::ToggleSkybox),
 ];
 
 /// (config key name, action). Hotbar slots use their own name form
@@ -104,6 +114,10 @@ fn action_from_name(name: &str) -> Option<Action> {
         "survival_toggle" => Action::SurvivalToggle,
         "pause" => Action::Pause,
         "tech_tree" => Action::OpenTechTree,
+        "crafting" => Action::OpenCrafting,
+        "hide_terrain" => Action::ToggleTerrain,
+        "hide_water" => Action::ToggleWater,
+        "hide_skybox" => Action::ToggleSkybox,
         "debug_ui" => Action::ToggleDebugUi,
         "players_panel" => Action::PlayersPanel,
         "profiler" => Action::ToggleProfiler,
@@ -194,12 +208,18 @@ fn default_bindings() -> Vec<(Keycode, Action)> {
         /* Menus + debug. */
         (Escape, Action::Pause),
         (K, Action::OpenTechTree),
+        (B, Action::OpenCrafting),
         (F2, Action::ToggleDebugUi),
         (F1, Action::PlayersPanel),
         (F3, Action::ToggleProfiler),
         (F8, Action::PixelUiDemo),
         (F4, Action::BlockSnapshot),
         (F5, Action::FlowDebug),
+        /* Debug render toggles (only while the debug UI is on). Skybox moved
+         * off K - K opens the tech tree, which used to shadow it dead. */
+        (H, Action::ToggleTerrain),
+        (J, Action::ToggleWater),
+        (Y, Action::ToggleSkybox),
     ];
     let nums = [Num1, Num2, Num3, Num4, Num5, Num6, Num7, Num8, Num9, Num0];
     for (i, k) in nums.into_iter().enumerate() {

@@ -6170,15 +6170,19 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
         return;
     }
     if app.debug_ui_visible {
-        if e._type == sapp::EventType::KeyDown && e.key_code == sapp::Keycode::H {
+        let dbg = |a| {
+            e._type == sapp::EventType::KeyDown
+                && crate::controls::action_for_key(e.key_code) == Some(a)
+        };
+        if dbg(crate::controls::Action::ToggleTerrain) {
             renderer::set_terrain_visible(!renderer::terrain_visible());
             return;
         }
-        if e._type == sapp::EventType::KeyDown && e.key_code == sapp::Keycode::J {
+        if dbg(crate::controls::Action::ToggleWater) {
             renderer::set_water_visible(!renderer::water_visible());
             return;
         }
-        if e._type == sapp::EventType::KeyDown && e.key_code == sapp::Keycode::K {
+        if dbg(crate::controls::Action::ToggleSkybox) {
             renderer::set_skybox_visible(!renderer::skybox_visible());
             return;
         }

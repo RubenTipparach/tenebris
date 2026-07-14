@@ -188,8 +188,14 @@ pub fn event(e: &sapp::Event) -> bool {
         if !g.open {
             return false;
         }
+        /* Close on Escape or on the tech-tree toggle key itself (whatever it
+         * is bound to - defaults to K), so the open/close key stays paired
+         * after a remap. */
+        let toggle_key = e._type == sapp::EventType::KeyDown
+            && crate::controls::action_for_key(e.key_code)
+                == Some(crate::controls::Action::OpenTechTree);
         if e._type == sapp::EventType::KeyDown
-            && (e.key_code == sapp::Keycode::Escape || e.key_code == sapp::Keycode::K)
+            && (e.key_code == sapp::Keycode::Escape || toggle_key)
         {
             g.open = false;
             sapp::lock_mouse(true);

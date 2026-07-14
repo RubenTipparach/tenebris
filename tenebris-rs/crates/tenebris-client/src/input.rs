@@ -315,12 +315,16 @@ fn set_key(s: &mut State, k: sapp::Keycode, down: bool) {
         Action::Interact
         | Action::Pause
         | Action::OpenTechTree
+        | Action::OpenCrafting
         | Action::ToggleDebugUi
         | Action::PlayersPanel
         | Action::ToggleProfiler
         | Action::PixelUiDemo
         | Action::BlockSnapshot
-        | Action::FlowDebug => {}
+        | Action::FlowDebug
+        | Action::ToggleTerrain
+        | Action::ToggleWater
+        | Action::ToggleSkybox => {}
         Action::Hotbar(slot) => {
             if down {
                 if let Some(cell) = s.pub_.hotbar.get_mut(slot as usize) {

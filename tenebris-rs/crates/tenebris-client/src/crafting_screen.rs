@@ -325,23 +325,25 @@ pub fn handle_event(e: &sapp::Event, player: Option<PlayerHandle>) -> bool {
     if e._type != sapp::EventType::KeyDown {
         return false;
     }
-    match e.key_code {
-        sapp::Keycode::B => {
-            let now_open = S.with(|c| {
-                let s = &mut *c.borrow_mut();
-                s.open = !s.open;
-                s.open
-            });
-            if now_open {
-                /* Mutually exclusive with the inventory overlay - only
-                 * one survival panel up at a time so their inputs and
-                 * sdtx text never overlap. */
-                crate::inventory_screen::close();
-                crate::rocket_screen::close();
-                release_pointer();
-            }
-            true
+    /* Open / close on the OpenCrafting action (default B), routed through the
+     * remappable binding layer rather than a hard-coded key. */
+    if crate::controls::action_for_key(e.key_code) == Some(crate::controls::Action::OpenCrafting) {
+        let now_open = S.with(|c| {
+            let s = &mut *c.borrow_mut();
+            s.open = !s.open;
+            s.open
+        });
+        if now_open {
+            /* Mutually exclusive with the inventory overlay - only one
+             * survival panel up at a time so their inputs and sdtx text
+             * never overlap. */
+            crate::inventory_screen::close();
+            crate::rocket_screen::close();
+            release_pointer();
         }
+        return true;
+    }
+    match e.key_code {
         sapp::Keycode::Escape => {
             if is_open() {
                 S.with(|c| c.borrow_mut().open = false);
@@ -622,6 +624,10 @@ in: plank 2
 
     fn setup() {
         init();
+        /* Open-crafting resolves through the binding layer (default B); reset
+         * to defaults so a controls test that rebound B on this pooled thread
+         * can't bleed in. */
+        crate::controls::reset_to_defaults();
         crafting::set_recipes(parse_recipes(SRC, "t"));
     }
 
