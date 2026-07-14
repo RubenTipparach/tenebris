@@ -2347,6 +2347,57 @@ fn build_vines(out: &mut HexMesh, w: &World, tile_idx: i32, t: &Tile, canopy_top
     }
 }
 
+/// True when this tile carries a decorative scatter rock - the small
+/// stone prisms `build_scatter` sprinkles on bare / grassy ground below.
+/// Mirrors that rock's exact surface classification and hash roll so the
+/// pebble the player SEES is the pebble they can forage: right-clicking a
+/// rock hands over flint no matter which ground block it sits on, which is
+/// how a survival player bootstraps the flint-tool tree. Kept in lockstep
+/// with the rock branch of `build_scatter` (SALT_KIND + 3).
+pub fn tile_has_rock(w: &World, tile_idx: i32) -> bool {
+    let cfg = scatter_cfg::config();
+    let col_base = (tile_idx * WORLD_MAX_DEPTH) as usize;
+    let mut surf = -1i32;
+    for d in (0..WORLD_MAX_DEPTH - 1).rev() {
+        if is_solid_raw(w.blocks[col_base + d as usize]) {
+            surf = d;
+            break;
+        }
+    }
+    if surf < 0 || surf + 1 >= WORLD_MAX_DEPTH {
+        return false;
+    }
+    let ground = Block::from_raw(w.blocks[col_base + surf as usize]).unwrap_or(Block::Air);
+    let above = Block::from_raw(w.blocks[col_base + (surf + 1) as usize]).unwrap_or(Block::Air);
+    /* Rocks only sit on an exposed, dry, un-tilled surface - build_scatter
+     * bails on occupied / underwater / farmland tiles before the rock roll. */
+    if above != Block::Air || ground == Block::Farmland {
+        return false;
+    }
+    let grassy = matches!(
+        ground,
+        Block::Grass | Block::SeqGrass | Block::JungleGrass | Block::DryGrass
+    );
+    let bare = matches!(
+        ground,
+        Block::Dirt
+            | Block::Sand
+            | Block::Stone
+            | Block::Snow
+            | Block::SeqDirt
+            | Block::SeqSand
+            | Block::SeqSnow
+            | Block::CragRock
+            | Block::AsteroidRock
+            | Block::Moon
+    );
+    if !(bare || grassy) {
+        return false;
+    }
+    let rock_chance = if bare { cfg.rock_chance } else { cfg.rock_chance * 0.3 };
+    hash2(tile_idx, SALT_KIND + 3) < rock_chance
+}
+
 /// Build the decorative scatter for one tile into the chunk's opaque
 /// mesh. Call alongside [`build_tile`]; safe to skip entirely (it only
 /// adds geometry). See the module comment above for the design.

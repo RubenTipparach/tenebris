@@ -778,6 +778,16 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
 /// this reads the underlying surface block instead. Returns true if the
 /// click found something to forage (so the caller can treat it as handled).
 fn forage_surface(s: &InteractState, w: &World) -> bool {
+    /* A visible scatter pebble is loose flint on the ground: whenever the
+     * targeted tile carries a decorative rock, hand over flint regardless
+     * of the grass / dirt / sand block it rests on. This is the "pick the
+     * rock up off the ground" the player sees, and it seeds the whole
+     * flint-tool loop - so it takes priority over the grass / stick gather
+     * below. */
+    if crate::hex_mesher::tile_has_rock(w, s.hit_tile) {
+        crate::drops::spawn(w, s.hit_tile, s.hit_depth, items::FLINT, 1);
+        return true;
+    }
     let top = w.get(s.hit_tile, s.hit_depth);
     let item = match top {
         /* Grassy sods of every biome collapse to one grass item, matching
@@ -1283,5 +1293,46 @@ mod tests {
         update(&mut s, &mut w, &mut p, DT);
         assert_eq!(s.mining_progress_s, 0.0, "reset on release");
         assert_eq!(w.get(41, 63), Block::Sand);
+    }
+
+    /// Progression-critical: a visible scatter pebble is loose flint. On any
+    /// tile that carries a decorative rock, foraging must hand over FLINT no
+    /// matter which ground block it rests on (grass/dirt/sand), because the
+    /// flint tool tree is otherwise unreachable. Regresses the bug where the
+    /// player could see rocks on the ground but never pick flint off them.
+    #[test]
+    fn forage_picks_flint_off_a_scatter_rock() {
+        let w = gen_world(BodyId::Tenebris);
+        /* Find the first land tile the mesher decorates with a rock, and its
+         * exposed surface depth (topmost solid). tile_has_rock is the exact
+         * predicate build_scatter uses, so this is a real, visible pebble. */
+        let mut rock_tile = -1;
+        let mut rock_depth = -1;
+        'scan: for tile in 0..w.grid.tile_count() {
+            if !crate::hex_mesher::tile_has_rock(&w, tile) {
+                continue;
+            }
+            for d in (0..WORLD_MAX_DEPTH - 1).rev() {
+                if w.get(tile, d) != Block::Air {
+                    rock_tile = tile;
+                    rock_depth = d;
+                    break 'scan;
+                }
+            }
+        }
+        assert!(rock_tile >= 0, "Tenebris subdiv3 should scatter some rocks");
+
+        crate::drops::init();
+        let mut s = InteractState::default();
+        s.has_target = true;
+        s.hit_tile = rock_tile;
+        s.hit_depth = rock_depth;
+        assert!(forage_surface(&s, &w), "a rock tile forages something");
+        assert_eq!(crate::drops::count(), 1, "one drop spawned");
+        assert_eq!(
+            crate::drops::test_items(),
+            vec![items::FLINT],
+            "the pebble yields flint, not grass/nothing"
+        );
     }
 }

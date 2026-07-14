@@ -4206,7 +4206,20 @@ pub fn compose_to_swapchain(view: Mat4, proj: Mat4) {
             fx_params: [
                 w.underwater_distortion,
                 r.time_seconds,
-                if cam_under { 1.0 } else { 0.0 },
+                /* Tri-state submersion for the lens FX:
+                 *   1.0 = eye fully underwater  -> all lens droplets skipped
+                 *   0.5 = eye straddling surface -> droplets run, above-water
+                 *         mask bites (drops only on the above-water half)
+                 *   0.0 = dry above the water    -> droplets run everywhere,
+                 *         including over the ocean the camera looks down on
+                 * (cam_under is already cam_under_shared && !partial). */
+                if cam_under {
+                    1.0
+                } else if cam_partial_shared {
+                    0.5
+                } else {
+                    0.0
+                },
                 /* .w = rain-on-glass intensity: droplets refract the lens
                  * (no lens fog) + a mild depth blur softens the distant
                  * background while it rains. dry = 0 = no-op. */

@@ -67,48 +67,38 @@ vec2 rain_ripple_grad(vec2 uv, float t) {
     return circles;
 }
 
-// ---- Water streaking DOWN block sides: the same "Heartfelt" (BigWings,
-// CC BY-NC-SA) drop layer the camera lens uses - blobs with downward trails.
-// Returns .x = drop mask (its gradient becomes the side normal distortion).
-vec3 rd_N13(float p) {
-    vec3 p3 = fract(vec3(p) * vec3(0.1031, 0.11369, 0.13787));
-    p3 += dot(p3, p3.yzx + 19.19);
-    return fract(vec3((p3.x + p3.y) * p3.z, (p3.x + p3.z) * p3.y, (p3.y + p3.z) * p3.x));
-}
+// ---- Water streaking DOWN block sides as continuous RIVULETS (not the
+// discrete Heartfelt blobs the camera lens uses). A few vertical channels
+// per face - each a smooth band at a hashed horizontal offset - carry
+// brightness ripples that scroll downward over time, so side water reads as
+// unbroken streams trickling down instead of separated dots. Returns .x = wet
+// mask; its screen-space gradient becomes the side-normal distortion at the
+// call site. Same name/signature as the old drop layer so callers are unchanged.
 float rd_N(float t) { return fract(sin(t * 12345.564) * 7658.76); }
-float rd_Saw(float b, float t) { return smoothstep(0.0, b, t) * smoothstep(1.0, b, t); }
 vec2 rd_DropLayer2(vec2 uv, float t) {
-    vec2 UV = uv;
-    uv.y += t * 0.75;
-    vec2 a = vec2(6.0, 1.0);
-    vec2 grid = a * 2.0;
-    vec2 id = floor(uv * grid);
-    float colShift = rd_N(id.x);
-    uv.y += colShift;
-    id = floor(uv * grid);
-    vec3 n = rd_N13(id.x * 35.2 + id.y * 2376.1);
-    vec2 st = fract(uv * grid) - vec2(0.5, 0.0);
-    float x = n.x - 0.5;
-    float y = UV.y * 20.0;
-    float wiggle = sin(y + sin(y));
-    x += wiggle * (0.5 - abs(x)) * (n.z - 0.5);
-    x *= 0.7;
-    float ti = fract(t + n.z);
-    y = (rd_Saw(0.85, ti) - 0.5) * 0.9 + 0.5;
-    vec2 p = vec2(x, y);
-    float d = length((st - p) * a.yx);
-    float mainDrop = smoothstep(0.4, 0.0, d);
-    float r = sqrt(smoothstep(1.0, y, st.y));
-    float cd = abs(st.x - x);
-    float trail = smoothstep(0.23 * r, 0.15 * r * r, cd);
-    float trailFront = smoothstep(-0.02, 0.02, st.y - y);
-    trail *= trailFront * r * r;
-    float trail2 = smoothstep(0.2 * r, 0.0, cd);
-    y = fract(UV.y * 10.0) + (st.y - 0.5);
-    float dd = length(st - vec2(x, y));
-    float droplets = smoothstep(0.3, 0.0, dd);
-    float m = mainDrop + droplets * r * trailFront;
-    return vec2(m, trail);
+    // uv.x = across the face (scaled by k_flow_across -> ~lane count),
+    // uv.y = down the face (scaled by k_flow_down), t already * flow speed.
+    float lane = floor(uv.x);           // which vertical channel
+    float fx = fract(uv.x);             // position across the channel (0..1)
+    float h1 = rd_N(lane);              // per-lane randoms
+    float h2 = rd_N(lane + 41.0);
+    float h3 = rd_N(lane + 91.0);
+    float lane_on = step(0.32, h3);     // leave ~a third of lanes dry -> spaced streams
+    // Rivulet meanders gently down the face so streams aren't ruler-straight;
+    // kept well inside the lane so it never touches the seam.
+    float center = 0.5 + (h1 - 0.5) * 0.3 + 0.06 * sin(uv.y * 1.7 + h2 * 6.2831);
+    float halfw = 0.07 + 0.09 * h2;     // channel half-width
+    float across = smoothstep(halfw, 0.0, abs(fx - center)); // 1 centre -> 0 edge
+    across *= smoothstep(0.0, 0.06, fx) * smoothstep(1.0, 0.94, fx); // kill lane seams
+    // Flow: brightness ripples scrolling DOWN (uv.y + t), continuous with no
+    // per-drop reset, two octaves so the stream shimmers as it runs. Biased up
+    // so the whole rivulet stays wet - the ripples modulate a stream, not gaps.
+    float y = uv.y + t;
+    float flow = 0.62
+               + 0.26 * sin(y * 6.2831 + h1 * 6.2831)
+               + 0.12 * sin(y * 17.0 - h2 * 9.0);
+    float m = lane_on * across * clamp(flow, 0.0, 1.0);
+    return vec2(m, m);
 }
 
 // 4x4 Bayer screen-door threshold for the alpha cutout / translucency below.

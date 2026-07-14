@@ -85,6 +85,13 @@ pub fn count() -> usize {
     S.with(|c| c.borrow().len())
 }
 
+/// Test-only: the item ids of every live drop, spawn order. Lets a test
+/// assert not just that a drop appeared but WHICH item it is.
+#[cfg(test)]
+pub fn test_items() -> Vec<ItemId> {
+    S.with(|c| c.borrow().iter().map(|d| d.item).collect())
+}
+
 /// Spawn a drop at the centre of world cell (tile, depth).
 pub fn spawn(w: &World, tile: i32, depth: i32, item: ItemId, count: u16) {
     let Some(t) = w.grid.tile(tile) else { return };

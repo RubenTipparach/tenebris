@@ -17,9 +17,9 @@
 //! the waterline or buried in terrain, and the near shower is suppressed when
 //! the camera is underwater or roofed inside a cave.
 //!
-//! Snow vs rain is split by ALTITUDE as well as biome: cold columns fall as
-//! snow up high and turn to rain below the snow line (`SNOW_LINE_ALT_M`), as
-//! two distinct particle styles in the same column.
+//! Snow vs rain is chosen per column by BIOME (core `Precip`): a cold column
+//! falls as snow from cloud to ground at every altitude - flakes never melt
+//! into rain partway down (that read as snow turning to water in mid-air).
 
 #![allow(dead_code)]
 
@@ -54,11 +54,6 @@ const DISK_R_M: f64 = 18.0;
 const COLUMN_H_M: f64 = 46.0;
 /// Max marks in the near shower at full intensity.
 const MAX_MARKS: usize = 1700;
-/// Altitude above sea level (metres) above which precipitation falls as snow
-/// and below which it turns to rain. Only cold (snow-capable) columns split;
-/// warm columns are rain at every altitude. This is the "snow turns into rain
-/// after a certain point" line, applied to the falling particle by its height.
-const SNOW_LINE_ALT_M: f64 = 16.0;
 /// Inner cull for the distant shafts. The immersive near shower is disabled,
 /// so the shafts (world-anchored 3D curtains) must reach right up to the
 /// player - otherwise there is a rain-free bubble overhead and "the rain is
@@ -336,8 +331,8 @@ fn draw_near_shower(
 
         /* Height cycles downward through the column, offset per mark. */
         let phase = hashf(i, 3);
-        let mark_alt = base_alt + phase * COLUMN_H_M; /* altitude of this mark */
-        let snow = snow_capable && mark_alt > SNOW_LINE_ALT_M;
+        /* Snow columns are snow at every altitude (no mid-air melt to rain). */
+        let snow = snow_capable;
         let (fall_mps, streak_len, half_w, col, alpha) = if snow {
             (snow_fall, snow_len, snow_w, snow_col, snow_a)
         } else {
@@ -523,7 +518,10 @@ fn draw_distant_shafts(
                 if top_h <= 0.0 {
                     continue; /* drop has reached the surface this frame */
                 }
-                let snow = snow_capable && drop_alt > SNOW_LINE_ALT_M;
+                /* A snow column stays snow the whole way down - flakes never
+                 * turn to rain at low altitude (that read as snow melting into
+                 * water mid-air, which looked wrong). Style follows biome only. */
+                let snow = snow_capable;
                 let (wcol, wwidth) = if snow {
                     (snow_col, snow_w * 6.0)
                 } else {

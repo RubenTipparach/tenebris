@@ -196,7 +196,7 @@ void main()
     // (rain, or just-surfaced), foreground stays crisp. Distance-based (uses
     // view_dist), so it is not a flat lens fog. Reuses rd_blur.
     float dz_amt = max(composite_fs_params[4].w, composite_fs_params[2].w);
-    if ((dz_amt > 0.001) && (composite_fs_params[4].z < 0.5)) {{
+    if ((dz_amt > 0.001) && (composite_fs_params[4].z < 0.75)) {{
         float dz = smoothstep(28.0, 190.0, view_dist) * clamp(dz_amt, 0.0, 1.0);
         if (dz > 0.002) {{
             // Blur blend strength = water.yaml wet_blur (composite_fs_params[1].w),
@@ -204,15 +204,22 @@ void main()
             color = mix(color, rd_blur(scene_color_scene_smp, v_uv, dz * 3.5), dz * composite_fs_params[1].w);
         }}
     }}
-    // Above-waterline mask: 1 where this pixel's scene content sits at/above
-    // sea level (or is sky), 0 where it is below the water surface. Lets the
-    // lens droplets render only on the ABOVE-water part of the screen when the
-    // camera straddles the surface - no drops over the submerged region.
-    float above_water = _107 ? 1.0 : smoothstep(-_68, _68, pixel_alt);
+    // Above-waterline mask: only bites while the camera STRADDLES the surface
+    // (fx_params.z tri-state == 0.5). Then it is 1 where the pixel's scene sits
+    // at/above sea level (or is sky) and 0 below, so drops render only on the
+    // above-water half of a half-submerged view. When the eye is clearly above
+    // the water (z == 0.0), the mask is a flat 1 so raindrops bead over the
+    // whole lens INCLUDING the water surface the camera looks down on - the old
+    // per-pixel test keyed off the submerged seafloor (water is not in the
+    // depth buffer) and wrongly wiped drops off all water from above. (z == 1.0
+    // is fully underwater; the droplet blocks are skipped there regardless.)
+    float above_water = (composite_fs_params[4].z > 0.25)
+        ? (_107 ? 1.0 : smoothstep(-_68, _68, pixel_alt))
+        : 1.0;
     // Rain-on-glass (Heartfelt drops), refraction only - NO lens fog: sample
     // the scene sharply through each drop's normal, applied only where drops
     // are so distance fog between drops is preserved.
-    if ((composite_fs_params[4].w > 0.001) && (composite_fs_params[4].z < 0.5)) {{
+    if ((composite_fs_params[4].w > 0.001) && (composite_fs_params[4].z < 0.75)) {{
         float rd_rain = clamp(composite_fs_params[4].w, 0.0, 1.0);
         float rd_t = composite_fs_params[4].y * 0.2 * composite_fs_params[6].z; // .z = anim speed
         vec2 rd_uv = (v_uv - 0.5); rd_uv.x *= max(composite_fs_params[0].w, 0.1);
@@ -229,7 +236,7 @@ void main()
     }}
     // Emerge-from-water: same drops running down + drying off, refraction only
     // (no fog). near_far.w = intensity 1->0. Skipped while submerged.
-    if ((composite_fs_params[2].w > 0.001) && (composite_fs_params[4].z < 0.5)) {{
+    if ((composite_fs_params[2].w > 0.001) && (composite_fs_params[4].z < 0.75)) {{
         float em = clamp(composite_fs_params[2].w, 0.0, 1.0);
         float em_t = composite_fs_params[4].y * 0.2 * composite_fs_params[6].z; // .z = anim speed
         vec2 em_uv = (v_uv - 0.5); em_uv.x *= max(composite_fs_params[0].w, 0.1);
