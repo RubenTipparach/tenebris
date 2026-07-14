@@ -42,5 +42,6 @@ pub mod hex;
 pub mod starfield;
 pub mod sun;
 pub mod torch;
+pub mod tower;
 pub mod water;
 pub mod water_mobile;

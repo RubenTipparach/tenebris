@@ -5618,6 +5618,91 @@ pub fn draw_light_glow(view: Mat4, proj: Mat4) {
 }
 
 /* ----------------------------------------------------------------------- */
+/* Launch-tower cutout geometry (client::rocket_fx). A raw sg draw (not sgl)
+ * so the fragment shader can DISCARD transparent truss texels - giving a
+ * double-sided (cull none) alpha cutout that writes depth for the beams,
+ * so clouds and its own far faces sort correctly. Verts are world-space
+ * [pos.xyz, uv.xy, shade] (6 floats each); drawn in the offscreen pass. */
+
+struct TowerGeo {
+    buf: sg::Buffer,
+    cap_floats: usize,
+    pip: sg::Pipeline,
+    made: bool,
+}
+
+thread_local! {
+    static TOWER_GEO: std::cell::RefCell<TowerGeo> = const {
+        std::cell::RefCell::new(TowerGeo {
+            buf: sg::Buffer { id: 0 },
+            cap_floats: 0,
+            pip: sg::Pipeline { id: 0 },
+            made: false,
+        })
+    };
+}
+
+const TOWER_VERT_FLOATS: usize = 6;
+
+/// Draw the launch-tower truss geometry with the alpha-cutout shader.
+/// `verts` = world-space [x,y,z,u,v,shade] per vertex; `tex_view`/`tex_smp`
+/// are the launch-tower texture handles.
+pub fn draw_tower_cutout(view: Mat4, proj: Mat4, verts: &[f32], tex_view: u32, tex_smp: u32) {
+    if verts.len() < TOWER_VERT_FLOATS {
+        return;
+    }
+    TOWER_GEO.with(|c| {
+        let g = &mut *c.borrow_mut();
+        if !g.made {
+            g.made = true;
+            let shd = sg::make_shader(&shaders::tower::tower_shader_desc(sg::query_backend()));
+            let mut desc = sg::PipelineDesc {
+                shader: shd,
+                index_type: sg::IndexType::None,
+                depth: sg::DepthState {
+                    pixel_format: sg::PixelFormat::DepthStencil,
+                    compare: sg::CompareFunc::LessEqual,
+                    write_enabled: true,
+                    ..Default::default()
+                },
+                cull_mode: sg::CullMode::None,
+                sample_count: 1,
+                label: c"tower-pipeline".as_ptr(),
+                ..Default::default()
+            };
+            desc.colors[0].pixel_format = sg::PixelFormat::Rgba8;
+            desc.layout.attrs[shaders::tower::ATTR_TOWER_A_POS].format = sg::VertexFormat::Float3;
+            desc.layout.attrs[shaders::tower::ATTR_TOWER_A_UV].format = sg::VertexFormat::Float2;
+            desc.layout.attrs[shaders::tower::ATTR_TOWER_A_SHADE].format = sg::VertexFormat::Float;
+            g.pip = sg::make_pipeline(&desc);
+        }
+        if verts.len() > g.cap_floats {
+            if g.buf.id != 0 {
+                sg::destroy_buffer(g.buf);
+            }
+            g.cap_floats = verts.len() * 2;
+            g.buf = sg::make_buffer(&sg::BufferDesc {
+                size: g.cap_floats * std::mem::size_of::<f32>(),
+                usage: sg::BufferUsage { stream_update: true, ..Default::default() },
+                label: c"tower-verts".as_ptr(),
+                ..Default::default()
+            });
+        }
+        sg::update_buffer(g.buf, &sg::slice_as_range(verts));
+        let vp = mat4_mul(proj, view);
+        sg::apply_pipeline(g.pip);
+        let mut bind = sg::Bindings::new();
+        bind.vertex_buffers[0] = g.buf;
+        bind.views[shaders::tower::VIEW_TOWER_TEX] = sg::View { id: tex_view };
+        bind.samplers[shaders::tower::SMP_TOWER_SMP] = sg::Sampler { id: tex_smp };
+        sg::apply_bindings(&bind);
+        let vsp = shaders::tower::TowerVsParams { u_vp: vp.m };
+        sg::apply_uniforms(shaders::tower::UB_TOWER_VS_PARAMS, &sg::value_as_range(&vsp));
+        sg::draw(0, verts.len() / TOWER_VERT_FLOATS, 1);
+    });
+}
+
+/* ----------------------------------------------------------------------- */
 /* Frame counters + accessors. */
 
 /// The renderer's frame clock (seconds since boot) - the same value the

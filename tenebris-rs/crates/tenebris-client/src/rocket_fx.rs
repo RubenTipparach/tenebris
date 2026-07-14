@@ -188,38 +188,6 @@ fn draw_model(model: &RocketModel, base: DVec3, basis: &[f32; 16], scale: f32, l
     sgl::pop_matrix();
 }
 
-/// A flat-coloured / textured box (launch-tower segment). Corners in the
-/// model's local frame; the whole box is placed by the surrounding matrix.
-/// Side faces sample the tower texture's left cell, caps the right cell.
-fn draw_tower_box(cx: f32, cy: f32, cz: f32, h: f32, lit: f32) {
-    /* launch_tower.png = two 32x32 cells: left (u 0..0.5) sides, right
-     * (0.5..1) top/bottom. */
-    let side = (0.0f32, 0.5f32);
-    let cap = (0.5f32, 1.0f32);
-    let (x0, x1) = (cx - h, cx + h);
-    let (y0, y1) = (cy - h, cy + h);
-    let (z0, z1) = (cz - h, cz + h);
-    // (4 corners CCW-from-outside, shade, uv-cell)
-    let faces: [([[f32; 3]; 4], f32, (f32, f32)); 6] = [
-        ([[x0, y1, z0], [x0, y1, z1], [x1, y1, z1], [x1, y1, z0]], 1.0, cap), // top +Y
-        ([[x0, y0, z1], [x0, y0, z0], [x1, y0, z0], [x1, y0, z1]], 0.55, cap), // bottom -Y
-        ([[x0, y0, z0], [x0, y1, z0], [x1, y1, z0], [x1, y0, z0]], 0.85, side), // front -Z
-        ([[x1, y0, z1], [x1, y1, z1], [x0, y1, z1], [x0, y0, z1]], 0.7, side), // back +Z
-        ([[x1, y0, z0], [x1, y1, z0], [x1, y1, z1], [x1, y0, z1]], 0.8, side), // right +X
-        ([[x0, y0, z1], [x0, y1, z1], [x0, y1, z0], [x0, y0, z0]], 0.75, side), // left -X
-    ];
-    sgl::begin_triangles();
-    for (quad, shade, (u0, u1)) in faces.iter() {
-        let uv = [(*u0, 1.0f32), (*u0, 0.0f32), (*u1, 0.0f32), (*u1, 1.0f32)];
-        let s = shade * lit;
-        sgl::c3f(s, s, s);
-        for &i in &[0usize, 1, 2, 0, 2, 3] {
-            let v = quad[i];
-            sgl::v3f_t2f(v[0], v[1], v[2], uv[i].0, uv[i].1);
-        }
-    }
-    sgl::end();
-}
 
 /// Draw every assembled rocket + its launch-tower gantry for the active
 /// body. Iterates the world's launch-pad block entities.
@@ -259,11 +227,6 @@ pub fn draw(view: Mat4, proj: Mat4, world: &World) {
          * outward, and the parts are solid, so drawing both sides avoids the
          * inverted-face look; nearest face wins the depth test). */
         static PIP_SHIP: std::cell::Cell<sgl::Pipeline> = const { std::cell::Cell::new(sgl::Pipeline { id: 0 }) };
-        /* Tower: DOUBLE-SIDED with an alpha CUTOUT - the launch-tower texture
-         * has a see-through lattice (tRNS), so we alpha-blend it with depth
-         * write OFF (drawn after opaque terrain), which shows the truss from
-         * both sides with the holes open. */
-        static PIP_TOWER: std::cell::Cell<sgl::Pipeline> = const { std::cell::Cell::new(sgl::Pipeline { id: 0 }) };
     }
     let pip_ship = PIP_SHIP.with(|p| {
         if p.get().id == 0 {
@@ -279,32 +242,10 @@ pub fn draw(view: Mat4, proj: Mat4, world: &World) {
         }
         p.get()
     });
-    let pip_tower = PIP_TOWER.with(|p| {
-        if p.get().id == 0 {
-            let mut desc = sokol::gfx::PipelineDesc {
-                depth: sokol::gfx::DepthState {
-                    write_enabled: false,
-                    compare: sokol::gfx::CompareFunc::LessEqual,
-                    ..Default::default()
-                },
-                cull_mode: sokol::gfx::CullMode::None,
-                ..Default::default()
-            };
-            desc.colors[0].blend = sokol::gfx::BlendState {
-                enabled: true,
-                src_factor_rgb: sokol::gfx::BlendFactor::SrcAlpha,
-                dst_factor_rgb: sokol::gfx::BlendFactor::OneMinusSrcAlpha,
-                op_rgb: sokol::gfx::BlendOp::Add,
-                src_factor_alpha: sokol::gfx::BlendFactor::One,
-                dst_factor_alpha: sokol::gfx::BlendFactor::OneMinusSrcAlpha,
-                op_alpha: sokol::gfx::BlendOp::Add,
-                ..Default::default()
-            };
-            p.set(sgl::make_pipeline(&desc));
-        }
-        p.get()
-    });
 
+    /* Tower truss verts accumulate in world space and draw through the raw
+     * alpha-cutout pipeline after the sgl ships (sgl can't discard). */
+    let mut tower_verts: Vec<f32> = Vec::new();
     MODELS.with(|m| {
         let mb = m.borrow();
         let models = match mb.as_ref() {
@@ -341,18 +282,12 @@ pub fn draw(view: Mat4, proj: Mat4, world: &World) {
                 draw_model(&models[midx], base, &basis, ROCKET_SCALE, lit, renderer::rocket_view_id(midx));
             }
 
-            /* Launch-tower gantry beside the rocket: boxes stacked as tall as
-             * the rocket, offset along the tile tangent. Double-sided alpha
-             * cutout so the truss lattice is see-through from both sides. */
-            sgl::load_pipeline(pip_tower);
-            let tower_view = renderer::rocket_view_id(3);
-            sgl::enable_texture();
-            sgl::texture(
-                sokol::gfx::View { id: tower_view },
-                sokol::gfx::Sampler { id: renderer::rocket_sampler_id() },
-            );
-            /* Tangent offset direction (basis local +X = right). */
+            /* Launch-tower gantry beside the rocket: box segments stacked as
+             * tall as the rocket, offset along the tile tangent. Emitted as
+             * world-space truss verts for the alpha-cutout pipeline below. */
             let right = dvec3_make(basis[0] as f64, basis[1] as f64, basis[2] as f64);
+            let up_c = dvec3_make(basis[4] as f64, basis[5] as f64, basis[6] as f64);
+            let fwd = dvec3_make(basis[8] as f64, basis[9] as f64, basis[10] as f64);
             let box_h = ROCKET_SCALE; /* half-size -> 2*scale box, matches part width */
             let seg_count = (parts.len() + 1).max(3);
             for i in 0..seg_count {
@@ -361,14 +296,54 @@ pub fn draw(view: Mat4, proj: Mat4, world: &World) {
                     dvec3_add(center, dvec3_scale(up, r as f64)),
                     dvec3_scale(right, TOWER_OFFSET_M as f64),
                 );
-                sgl::push_matrix();
-                sgl::translate(base.x as f32, base.y as f32, base.z as f32);
-                sgl::mult_matrix(&basis[0]);
-                draw_tower_box(0.0, 0.0, 0.0, box_h, lit);
-                sgl::pop_matrix();
+                push_tower_box(&mut tower_verts, base, right, up_c, fwd, box_h, lit);
             }
         }
     });
 
+    /* Ships are flushed with the sgl world context; the tower truss draws
+     * after through the alpha-cutout pipeline (correct depth + see-through). */
     renderer::sgl_world_end();
+    if !tower_verts.is_empty() {
+        renderer::draw_tower_cutout(
+            view,
+            proj,
+            &tower_verts,
+            renderer::rocket_view_id(3),
+            renderer::rocket_sampler_id(),
+        );
+    }
+}
+
+/// Push one launch-tower box (world-space corners = `base + right*x +
+/// up*y + fwd*z`) into `verts` as [x,y,z,u,v,shade] triangles. Side faces
+/// sample the tower texture's left cell, caps its right cell.
+#[allow(clippy::too_many_arguments)]
+fn push_tower_box(verts: &mut Vec<f32>, base: DVec3, right: DVec3, up: DVec3, fwd: DVec3, h: f32, lit: f32) {
+    let side = (0.02f32, 0.48f32);
+    let cap = (0.52f32, 0.98f32);
+    let corner = |lx: f32, ly: f32, lz: f32| -> [f32; 3] {
+        [
+            (base.x + right.x * lx as f64 + up.x * ly as f64 + fwd.x * lz as f64) as f32,
+            (base.y + right.y * lx as f64 + up.y * ly as f64 + fwd.y * lz as f64) as f32,
+            (base.z + right.z * lx as f64 + up.z * ly as f64 + fwd.z as f64 * lz as f64) as f32,
+        ]
+    };
+    // (4 corners, shade, uv-cell)
+    let faces: [([[f32; 3]; 4], f32, (f32, f32)); 6] = [
+        ([corner(-h, h, -h), corner(-h, h, h), corner(h, h, h), corner(h, h, -h)], 1.0, cap), // +Y
+        ([corner(-h, -h, h), corner(-h, -h, -h), corner(h, -h, -h), corner(h, -h, h)], 0.55, cap), // -Y
+        ([corner(-h, -h, -h), corner(-h, h, -h), corner(h, h, -h), corner(h, -h, -h)], 0.85, side), // -Z
+        ([corner(h, -h, h), corner(h, h, h), corner(-h, h, h), corner(-h, -h, h)], 0.7, side), // +Z
+        ([corner(h, -h, -h), corner(h, h, -h), corner(h, h, h), corner(h, -h, h)], 0.8, side), // +X
+        ([corner(-h, -h, h), corner(-h, h, h), corner(-h, h, -h), corner(-h, -h, -h)], 0.75, side), // -X
+    ];
+    for (quad, shade, (u0, u1)) in faces.iter() {
+        let s = shade * lit;
+        let uv = [(*u0, 1.0f32), (*u0, 0.0f32), (*u1, 0.0f32), (*u1, 1.0f32)];
+        for &i in &[0usize, 1, 2, 0, 2, 3] {
+            let v = quad[i];
+            verts.extend_from_slice(&[v[0], v[1], v[2], uv[i].0, uv[i].1, s]);
+        }
+    }
 }
