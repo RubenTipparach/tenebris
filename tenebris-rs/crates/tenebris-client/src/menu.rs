@@ -3009,6 +3009,8 @@ pub fn pause_egui_ui(ctx: &egui::Context) {
                 if menu_button(ui, "Quit to Menu").clicked() {
                     do_quit = true;
                 }
+                /* Bottom padding so the button doesn't hug the panel edge. */
+                ui.add_space(12.0);
             });
         });
 
@@ -3139,6 +3141,8 @@ pub fn weather_egui_ui(ctx: &egui::Context) {
                 if menu_button(ui, "Back").clicked() {
                     do_back = true;
                 }
+                /* Bottom padding so the button doesn't hug the panel edge. */
+                ui.add_space(12.0);
             });
         });
 
@@ -3226,8 +3230,15 @@ pub fn inputs_egui_ui(ctx: &egui::Context) {
             /* Normal controls on the left, debug tools on the right - two
              * columns so the developer keys are unmistakably separated from the
              * everyday ones. */
+            /* Cap the list height so a small window scrolls, but keep it tall
+             * enough that the full binding list fits on a normal screen (no
+             * cut-off rows). The scrollbar shows only when it is actually
+             * needed. */
             egui::ScrollArea::vertical()
-                .max_height(470.0)
+                .max_height(500.0)
+                .scroll_bar_visibility(
+                    egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded,
+                )
                 .show(ui, |ui| {
                     ui.columns(2, |cols| {
                         cols[0].label(
@@ -3254,12 +3265,14 @@ pub fn inputs_egui_ui(ctx: &egui::Context) {
                         binding_grid(&mut cols[1], "inputs-debug", true);
                     });
                 });
-            ui.add_space(12.0);
+            ui.add_space(14.0);
             ui.vertical_centered(|ui| {
                 if menu_button(ui, "Back").clicked() {
                     do_back = true;
                 }
             });
+            /* Bottom padding so the button doesn't hug the panel edge. */
+            ui.add_space(12.0);
         });
 
     if do_back {
