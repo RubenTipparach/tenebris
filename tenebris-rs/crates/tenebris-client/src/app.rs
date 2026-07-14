@@ -1807,10 +1807,10 @@ fn space_complex_maybe_build(app: &mut App) {
     use tenebris_core::math::{dvec3_add, dvec3_make, dvec3_normalize, dvec3_scale, dvec3_sub, DVec3};
     use tenebris_core::world::WORLD_MAX_DEPTH;
 
-    /* Spawn tile: the player's own tile if grounded, else the tile under
+    /* Seed tile: the player's own tile if grounded, else the tile under
      * their radial direction (a fresh world can spawn them above / in
      * space before gravity settles). -1 = the grid isn't ready yet. */
-    let center = {
+    let seed_tile = {
         let p = app.player.borrow();
         if p.last_tile >= 0 {
             p.last_tile
@@ -1821,7 +1821,7 @@ fn space_complex_maybe_build(app: &mut App) {
             w.grid.find_tile(dir, 0)
         }
     };
-    if center < 0 {
+    if seed_tile < 0 {
         return; /* grid not ready - keep waiting (countdown not spent) */
     }
     if n > 0 {
@@ -1829,6 +1829,46 @@ fn space_complex_maybe_build(app: &mut App) {
         return;
     }
     SPACE_BUILD_COUNTDOWN.with(|c| c.set(-1));
+
+    /* A launch complex belongs on dry LAND, never in the ocean. BFS out
+     * from the seed tile to the nearest tile whose terrain pokes above the
+     * sea surface; fall back to the seed if the search somehow finds none. */
+    let center = {
+        let w = app.world.borrow();
+        let sea = tenebris_core::planet_gen::sea_raise_m(&w.body) + 1.5;
+        let is_land = |tile: i32| -> bool {
+            w.grid.tile(tile).is_some_and(|t| {
+                let dir = dvec3_normalize(t.center);
+                tenebris_core::planet_gen::surface_altitude(&w.body, dir) > sea
+            })
+        };
+        if is_land(seed_tile) {
+            seed_tile
+        } else {
+            let mut visited = std::collections::HashSet::new();
+            let mut queue = std::collections::VecDeque::new();
+            visited.insert(seed_tile);
+            queue.push_back(seed_tile);
+            let mut found = seed_tile;
+            while let Some(cur) = queue.pop_front() {
+                if is_land(cur) {
+                    found = cur;
+                    break;
+                }
+                if visited.len() > 30000 {
+                    break;
+                }
+                if let Some(t) = w.grid.tile(cur) {
+                    for &nb in t.neighbors.iter() {
+                        if nb >= 0 && visited.insert(nb) {
+                            queue.push_back(nb);
+                        }
+                    }
+                }
+            }
+            found
+        }
+    };
 
     /* Plant the player on the apron centre so the complex builds around
      * them and they don't drift off in space. */
@@ -1927,6 +1967,22 @@ fn space_complex_maybe_build(app: &mut App) {
                 }
             }
         }
+        /* Launch-tower gantry beside the rocket: a stack of LaunchTower
+         * blocks (their red/white truss texture) rising next to the pad, so
+         * the site reads as a real launch complex, not a lone stack of
+         * parts. Fill contiguously from the surface up so it's a solid tower. */
+        if let Some(&gt) = ring.get(4) {
+            const TOWER_H: i32 = 6;
+            let base = top_air(&w, gt);
+            if base >= 0 {
+                for h in 0..TOWER_H {
+                    let d = base + h;
+                    if d < WORLD_MAX_DEPTH {
+                        w.set(gt, d, Block::LaunchTower);
+                    }
+                }
+            }
+        }
     }
     /* Same-frame persistence for every edited column + its block entities. */
     {
@@ -1946,24 +2002,41 @@ fn space_complex_maybe_build(app: &mut App) {
         p.bag.add(items::COOKED_MEAT, 4);
         persistence::save_bag(&world, p.hunger, &p.bag.serialize());
     }
-    /* Face the assembled rocket so it greets the player on world load. */
+    /* Stand back from the pad and face the rocket so the whole complex -
+     * gantry + rocket - reads on world load instead of a straight-up stare. */
     if let Some(&pad_tile) = ring.first() {
-        let (tdir, r_mid) = {
+        let (pad_c, center_c, surf_r, rocket_mid_r) = {
             let w = app.world.borrow();
             let top = (0..WORLD_MAX_DEPTH)
                 .rev()
                 .find(|&d| tenebris_core::blocks::is_solid(w.get(pad_tile, d)))
                 .unwrap_or(0);
-            (w.grid.tile(pad_tile).map(|t| t.center), w.depth_to_radius_m(top + 2) + 1.5)
+            (
+                w.grid.tile(pad_tile).map(|t| dvec3_normalize(t.center)),
+                w.grid.tile(center).map(|t| dvec3_normalize(t.center)),
+                w.depth_to_radius_m(top + 1),
+                w.depth_to_radius_m(top + 1) + 4.0, /* aim a few m up the rocket */
+            )
         };
-        if let Some(tc) = tdir {
-            let tlen = dvec3_length(tc);
-            let mid = if tlen > 1e-9 { dvec3_scale(tc, r_mid / tlen) } else { tc };
+        let bc = {
+            let w = app.world.borrow();
+            dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z)
+        };
+        if let (Some(pc), Some(cc)) = (pad_c, center_c) {
+            /* Vantage: on the apron, pushed ~8 m away from the pad along the
+             * surface + lifted to eye height, so the tower fits the frame. */
+            let back = dvec3_normalize(dvec3_sub(cc, pc)); /* pad -> centre dir */
+            let stand_dir = dvec3_normalize(dvec3_add(cc, dvec3_scale(back, 0.035)));
+            let eye = dvec3_add(bc, dvec3_scale(stand_dir, surf_r + 1.6));
+            let target = dvec3_add(bc, dvec3_scale(pc, rocket_mid_r));
             let mut p = app.player.borrow_mut();
-            let to = dvec3_sub(mid, p.position);
+            p.position = eye;
+            p.velocity = DVec3::default();
+            let up = dvec3_normalize(dvec3_sub(eye, bc));
+            let to = dvec3_sub(target, eye);
             let to_len = dvec3_length(to).max(1e-9);
             let look = dvec3_scale(to, 1.0 / to_len);
-            let (up, fwd, right) = (p.basis.up, p.basis.fwd, p.basis.right);
+            let (fwd, right) = (p.basis.fwd, p.basis.right);
             let dot = |a: DVec3, b: DVec3| a.x * b.x + a.y * b.y + a.z * b.z;
             let to_t = dvec3_sub(look, dvec3_scale(up, dot(look, up)));
             p.yaw = (dot(to_t, right)).atan2(dot(to_t, fwd)) as f32;
