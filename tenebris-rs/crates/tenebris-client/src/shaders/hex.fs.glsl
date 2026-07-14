@@ -205,40 +205,50 @@ void main()
         float side_w = 1.0 - smoothstep(0.1, 0.5, face);
         float wet_t = hex_fs_light[2].z;
 
-        // Up-face tangent frame for the ripple UV.
-        vec3 t_a = cross(wet_up, vec3(0.0, 1.0, 0.0));
-        if (dot(t_a, t_a) < 1e-4) { t_a = cross(wet_up, vec3(1.0, 0.0, 0.0)); }
-        t_a = normalize(t_a);
-        vec3 t_b = cross(wet_up, t_a);
+        // Surface UV via TRIPLANAR projection onto fixed WORLD axes. The old
+        // code used dot(v_local, tangent), but v_local is radial and the tangent
+        // is perpendicular to it, so those dots are ~0 + float roundoff -> the
+        // UV was random per-pixel noise (unmapped normals). Using the actual
+        // world-position components gives a structured, smoothly-varying UV.
+        // ax_a/ax_b are those world axes projected into the surface plane so the
+        // gradient can be turned back into a tangential normal push.
+        vec3 an = abs(nrm);
+        vec2 uv;
+        vec3 ax_a;
+        vec3 ax_b;
+        if (an.y >= an.x && an.y >= an.z) { uv = v_local.xz; ax_a = vec3(1.0, 0.0, 0.0); ax_b = vec3(0.0, 0.0, 1.0); }
+        else if (an.x >= an.z)            { uv = v_local.zy; ax_a = vec3(0.0, 0.0, 1.0); ax_b = vec3(0.0, 1.0, 0.0); }
+        else                              { uv = v_local.xy; ax_a = vec3(1.0, 0.0, 0.0); ax_b = vec3(0.0, 1.0, 0.0); }
+        ax_a = normalize(ax_a - nrm * dot(ax_a, nrm));
+        ax_b = normalize(ax_b - nrm * dot(ax_b, nrm));
 
-        vec3 pert = vec3(0.0);
+        vec2 pg = vec2(0.0);   // pattern gradient in the (ax_a, ax_b) basis
         if (top_w > 0.001) {
-            vec2 wc = vec2(dot(v_local, t_a), dot(v_local, t_b));
-            // Continuous rippled wet sheet (a few low-freq waves, precision-safe)
-            // so the WHOLE wet face reads as a normal map, not just sparse rings.
-            vec2 wg = vec2(
-                cos(wc.x * k_wave_scale + wet_t * k_wave_speed)
-                    + 0.7 * cos((wc.x + wc.y) * k_wave_scale * 0.6 - wet_t * k_wave_speed * 0.8),
-                cos(wc.y * k_wave_scale - wet_t * k_wave_speed * 0.9)
-                    + 0.7 * cos((wc.x - wc.y) * k_wave_scale * 0.6 + wet_t * k_wave_speed * 0.7));
-            pert += (t_a * wg.x + t_b * wg.y) * (k_wave_strength * top_w);
+            // Continuous rippled wet sheet (a few low-freq waves) so the WHOLE
+            // wet face reads as a normal map, not just sparse rings.
+            pg += vec2(
+                cos(uv.x * k_wave_scale + wet_t * k_wave_speed)
+                    + 0.7 * cos((uv.x + uv.y) * k_wave_scale * 0.6 - wet_t * k_wave_speed * 0.8),
+                cos(uv.y * k_wave_scale - wet_t * k_wave_speed * 0.9)
+                    + 0.7 * cos((uv.x - uv.y) * k_wave_scale * 0.6 + wet_t * k_wave_speed * 0.7)
+            ) * (k_wave_strength * top_w);
             // Raindrop impact rings on top of the sheet.
-            vec2 rg = rain_ripple_grad(wc * k_ripple_scale, wet_t) * (k_ripple_strength * top_w);
-            pert += t_a * rg.x + t_b * rg.y;
+            pg += rain_ripple_grad(uv * k_ripple_scale, wet_t) * (k_ripple_strength * top_w);
         }
-        // Water trickling straight down the side faces: the ripple kernel with a
-        // tall, thin, downward-scrolled UV reads as flowing streaks.
+        // Water trickling straight down the side faces: down + across expressed
+        // in the (ax_a, ax_b) basis, with the down coordinate scrolling in time.
         if (side_w > 0.001) {
-            vec3 down_face = -wet_up - nrm * dot(-wet_up, nrm);
-            float dl = length(down_face);
-            down_face = (dl > 1e-4) ? (down_face / dl) : t_a;
-            vec3 across = cross(nrm, down_face);
-            float sc = dot(v_local, across) * k_flow_across;
-            float dc = dot(v_local, down_face) * k_flow_down - wet_t * k_flow_speed;
-            vec2 g = rain_ripple_grad(vec2(sc, dc), wet_t * 0.5) * (k_flow_strength * side_w);
-            pert += across * g.x + down_face * g.y;
+            vec2 down2 = vec2(dot(-wet_up, ax_a), dot(-wet_up, ax_b));
+            float dl2 = length(down2);
+            down2 = (dl2 > 1e-4) ? (down2 / dl2) : vec2(0.0, 1.0);
+            vec2 across2 = vec2(-down2.y, down2.x);
+            float a_coord = dot(uv, across2) * k_flow_across;
+            float d_coord = dot(uv, down2) * k_flow_down - wet_t * k_flow_speed;
+            vec2 fg = rain_ripple_grad(vec2(a_coord, d_coord), wet_t * 0.5) * (k_flow_strength * side_w);
+            pg += across2 * fg.x + down2 * fg.y;
         }
 
+        vec3 pert = ax_a * pg.x + ax_b * pg.y;
         float wet = wet_amt * max(top_w, side_w);
         vec3 wet_n = normalize(nrm + pert);
         lit *= mix(1.0, k_wet_darken, wet);         // wet surfaces darken
