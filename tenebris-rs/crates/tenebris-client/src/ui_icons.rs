@@ -102,6 +102,7 @@ const ICONS: &[(u16, &str)] = &[
     (items::IRON_INGOT, "assets/textures/items/ingot_iron.png"),
     (items::BRONZE_INGOT, "assets/textures/items/ingot_bronze.png"),
     (items::ROCKET_ENGINE, "assets/textures/items/rocket_engine.png"),
+    (items::VACUUM_ENGINE, "assets/textures/items/vacuum_engine.png"),
     (items::FUEL_TANK, "assets/textures/items/fuel_tank.png"),
     (items::COMMAND_MODULE, "assets/textures/items/command_module.png"),
     (items::WIRE, "assets/textures/technology/cable.png"),

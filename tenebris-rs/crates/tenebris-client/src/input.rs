@@ -313,6 +313,7 @@ fn set_key(s: &mut State, k: sapp::Keycode, down: bool) {
          * app.rs::event_inner before events reach this per-frame physics layer,
          * so they do nothing here. */
         Action::Interact
+        | Action::Stage
         | Action::Pause
         | Action::OpenTechTree
         | Action::OpenCrafting

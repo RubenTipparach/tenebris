@@ -58,6 +58,9 @@ interact:        E
 eat:             V
 plant:           T
 
+# Jettison the current rocket stage while flying a staged rocket.
+stage:           X
+
 hotbar_1:        Num1
 hotbar_2:        Num2
 hotbar_3:        Num3

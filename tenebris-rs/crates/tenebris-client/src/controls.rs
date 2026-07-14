@@ -32,6 +32,8 @@ pub enum Action {
     RollRight,
     /// Context action: open the machine under the reticle, else the inventory.
     Interact,
+    /// Jettison the current rocket stage (while flying a staged rocket).
+    Stage,
     Eat,
     Plant,
     SurvivalToggle,
@@ -81,6 +83,7 @@ pub const BINDING_ROWS: &[(&str, &str, Action)] = &[
     ("Interact", "Interact / inventory", Action::Interact),
     ("Interact", "Eat", Action::Eat),
     ("Interact", "Plant / till", Action::Plant),
+    ("Rocket", "Stage / jettison", Action::Stage),
     ("Menus", "Pause menu", Action::Pause),
     ("Menus", "Tech tree", Action::OpenTechTree),
     ("Menus", "Crafting", Action::OpenCrafting),
@@ -118,6 +121,7 @@ fn action_from_name(name: &str) -> Option<Action> {
         "roll_left" => Action::RollLeft,
         "roll_right" => Action::RollRight,
         "interact" => Action::Interact,
+        "stage" => Action::Stage,
         "eat" => Action::Eat,
         "plant" => Action::Plant,
         "survival_toggle" => Action::SurvivalToggle,
@@ -215,6 +219,7 @@ fn default_bindings() -> Vec<(Keycode, Action)> {
         (Q, Action::RollLeft),
         (R, Action::RollRight),
         (E, Action::Interact),
+        (X, Action::Stage),
         /* Menus + debug. */
         (Escape, Action::Pause),
         (K, Action::OpenTechTree),

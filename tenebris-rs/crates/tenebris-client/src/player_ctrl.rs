@@ -1472,6 +1472,21 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
             }
             p.velocity = dvec3_add(p.velocity, dvec3_scale(accel, thrust * dt as f64));
         }
+        /* Riding a rocket in space: holding jump fires the active engine (the
+         * vacuum upper stage after you've staged the booster) PROGRADE - along
+         * basis.fwd - so you point where you want and burn to build orbital
+         * speed. Much stronger than the RCS thrust above. Spent -> free-fly. */
+        if crate::rocket_ride::is_riding() {
+            if inp.phys.jump {
+                let m = crate::rocket_ride::mass_kg().max(1.0) as f64;
+                let a = crate::rocket_ride::thrust_n() as f64 / m;
+                p.velocity = dvec3_add(p.velocity, dvec3_scale(p.basis.fwd, a * dt as f64));
+                crate::rocket_ride::burn(dt);
+            }
+            if crate::rocket_ride::is_spent() {
+                crate::rocket_ride::clear();
+            }
+        }
         /* Exponential drag - frame-rate-independent. */
         let damp = (-(l.space_drag as f64) * dt as f64).exp();
         p.velocity = dvec3_scale(p.velocity, damp);
@@ -1688,7 +1703,24 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
      *   2) Grounded, feet in water, eyes above water (wading): the
      *      regular jump impulse fires at full strength.
      *   3) Dry: regular tap-to-jump + hold-for-jetpack as before. */
-    if inp.phys.jump {
+    /* Riding a rocket: the engine replaces the jetpack. Holding jump throttles
+     * the active stage - thrust/mass along up (gravity still opposes, so a
+     * TWR < 1 rocket won't leave the pad). Burns the active stage's fuel; when
+     * the whole rocket is spent, drop back to normal free-fly. */
+    let riding = crate::rocket_ride::is_riding();
+    if riding {
+        if inp.phys.jump {
+            let m = crate::rocket_ride::mass_kg().max(1.0);
+            let a = (crate::rocket_ride::thrust_n() / m) as f64;
+            vy += a * dt as f64;
+            crate::rocket_ride::burn(dt);
+            p.grounded = false;
+        }
+        if crate::rocket_ride::is_spent() {
+            crate::rocket_ride::clear();
+        }
+    }
+    if inp.phys.jump && !riding {
         p.jump_held_s += dt;
         if eyes_in_water {
             /* Swim up - continuous acceleration while held. Cap at

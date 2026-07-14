@@ -17,16 +17,19 @@ use crate::egui_layer;
 use crate::persistence;
 use crate::player_ctrl::PlayerCtrl;
 use crate::ui_icons;
-use tenebris_core::items::{self, ItemId, COMMAND_MODULE, FUEL_TANK, ROCKET_ENGINE};
+use tenebris_core::items::{self, ItemId, COMMAND_MODULE, FUEL_TANK, ROCKET_ENGINE, VACUUM_ENGINE};
 use tenebris_core::rocket::{self, FlightState, RocketFlight, RocketSpec};
 use tenebris_core::world::World;
 
 pub type PlayerHandle = Rc<RefCell<PlayerCtrl>>;
 pub type WorldHandle = Rc<RefCell<World>>;
 
-/// The three buildable parts, in stack order (engine first).
-const PART_ROWS: [(ItemId, &str); 3] = [
-    (ROCKET_ENGINE, "Engine"),
+/// The buildable parts, in typical stack order (engine first). Two engine
+/// types: the atmospheric engine lifts off, the vacuum engine is the efficient
+/// upper stage you stage to in space.
+const PART_ROWS: [(ItemId, &str); 4] = [
+    (ROCKET_ENGINE, "Atmospheric Engine"),
+    (VACUUM_ENGINE, "Vacuum Engine"),
     (FUEL_TANK, "Fuel Tank"),
     (COMMAND_MODULE, "Command Module"),
 ];
@@ -353,8 +356,30 @@ pub fn egui_ui(ctx: &egui::Context) {
         }
         persist(&w);
     } else if launch && faults.is_empty() {
-        let flight = RocketFlight::new(spec);
-        S.with(|c| c.borrow_mut().flight = Some(flight));
+        /* Board: snapshot the assembled stack into a flown rocket, seat the
+         * player at the pad top, and clear the pad (the rocket is now the
+         * player's ride). Hold jump to fire the engine; X to stage. */
+        if let Some(ride) = rocket::RocketRide::from_stack(&parts, &cfg) {
+            let mut w = world.borrow_mut();
+            let mut p = player.borrow_mut();
+            if let Some(t) = w.grid.tile(tile) {
+                let center =
+                    tenebris_core::math::dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
+                let dir = tenebris_core::math::dvec3_normalize(t.center);
+                let r = w.depth_to_radius_m(depth + 1) + 1.0;
+                p.position =
+                    tenebris_core::math::dvec3_add(center, tenebris_core::math::dvec3_scale(dir, r));
+                p.velocity = tenebris_core::math::DVec3::default();
+                p.grounded = false;
+            }
+            let pad = w.block_entities.entry(tile, depth).launch_pad_mut();
+            while pad.pop().is_some() {}
+            persist(&w);
+            drop(w);
+            drop(p);
+            crate::rocket_ride::begin(ride);
+            do_close = true;
+        }
     }
 
     if do_close {

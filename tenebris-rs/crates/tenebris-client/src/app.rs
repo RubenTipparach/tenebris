@@ -1695,8 +1695,13 @@ fn dev_maybe_place(app: &mut App) {
                 let mut w = app.world.borrow_mut();
                 w.set(center, depth, Block::LaunchPad);
                 let pad = w.block_entities.entry(center, depth).launch_pad_mut();
+                /* Two-stage starter: atmospheric booster (engine + 2 tanks) to
+                 * lift off, a vacuum upper stage (engine + tank) to stage to in
+                 * space, capsule on top. */
                 pad.push(items::ROCKET_ENGINE);
                 pad.push(items::FUEL_TANK);
+                pad.push(items::FUEL_TANK);
+                pad.push(items::VACUUM_ENGINE);
                 pad.push(items::FUEL_TANK);
                 pad.push(items::COMMAND_MODULE);
             }
@@ -1762,8 +1767,13 @@ fn dev_maybe_place(app: &mut App) {
                 let mut w = app.world.borrow_mut();
                 w.set(target, depth, Block::LaunchPad);
                 let pad = w.block_entities.entry(target, depth).launch_pad_mut();
+                /* Two-stage starter: atmospheric booster (engine + 2 tanks) to
+                 * lift off, a vacuum upper stage (engine + tank) to stage to in
+                 * space, capsule on top. */
                 pad.push(items::ROCKET_ENGINE);
                 pad.push(items::FUEL_TANK);
+                pad.push(items::FUEL_TANK);
+                pad.push(items::VACUUM_ENGINE);
                 pad.push(items::FUEL_TANK);
                 pad.push(items::COMMAND_MODULE);
             }
@@ -1984,8 +1994,13 @@ fn space_complex_maybe_build(app: &mut App) {
             if d >= 0 {
                 w.set(pad_tile, d, Block::LaunchPad);
                 let pad = w.block_entities.entry(pad_tile, d).launch_pad_mut();
+                /* Two-stage starter: atmospheric booster (engine + 2 tanks) to
+                 * lift off, a vacuum upper stage (engine + tank) to stage to in
+                 * space, capsule on top. */
                 pad.push(items::ROCKET_ENGINE);
                 pad.push(items::FUEL_TANK);
+                pad.push(items::FUEL_TANK);
+                pad.push(items::VACUUM_ENGINE);
                 pad.push(items::FUEL_TANK);
                 pad.push(items::COMMAND_MODULE);
             }
@@ -2000,6 +2015,7 @@ fn space_complex_maybe_build(app: &mut App) {
                 e.facing = f;
                 let chest = e.chest_mut();
                 chest_add(chest, items::ROCKET_ENGINE, 2, 64);
+                chest_add(chest, items::VACUUM_ENGINE, 2, 64);
                 chest_add(chest, items::FUEL_TANK, 4, 64);
                 chest_add(chest, items::COMMAND_MODULE, 2, 64);
                 chest_add(chest, items::IRON_INGOT, 32, 64);
@@ -3172,6 +3188,45 @@ fn draw_machine_hint(app: &App, screen_w: f32, screen_h: f32) {
     sdtx::color3b(0x90, 0xd0, 0xf0);
     sdtx::home();
     sdtx::puts(&msg);
+    sdtx::font(0);
+    sdtx::color3b(0xff, 0xff, 0xff);
+}
+
+/// Rocket flight HUD (top-centre) shown while the player is riding a rocket:
+/// active engine kind, stages left, active-stage fuel %, TWR, and speed, plus
+/// the throttle / stage key hints (which track their bindings).
+fn draw_rocket_hud(app: &App, screen_w: f32, screen_h: f32) {
+    if !crate::rocket_ride::is_riding() {
+        return;
+    }
+    let eng = match crate::rocket_ride::active_engine() {
+        Some(tenebris_core::rocket::EngineKind::Atmospheric) => "ATMOSPHERIC",
+        Some(tenebris_core::rocket::EngineKind::Vacuum) => "VACUUM",
+        None => "-",
+    };
+    let (fuel, cap) = crate::rocket_ride::active_fuel();
+    let pct = if cap > 0.0 { (fuel / cap * 100.0) as i32 } else { 0 };
+    let stages = crate::rocket_ride::stage_count();
+    let g = tenebris_core::rocket::config().flight.gravity_mps2;
+    let twr = crate::rocket_ride::twr(g);
+    let speed = tenebris_core::math::dvec3_length(app.player.borrow().velocity);
+    let throttle_key = crate::controls::action_label(crate::controls::Action::Jump);
+    let stage_key = crate::controls::action_label(crate::controls::Action::Stage);
+    let lines = [
+        format!("ROCKET  stage {}  {} engine", stages, eng),
+        format!("fuel {}%   TWR {:.2}   speed {:.0} m/s", pct, twr, speed),
+        format!("[hold {}] throttle   [{}] stage", throttle_key, stage_key),
+    ];
+    sdtx::canvas(screen_w, screen_h);
+    sdtx::font(1);
+    let cell = 8.0f32;
+    for (i, msg) in lines.iter().enumerate() {
+        let x = (screen_w * 0.5 - (msg.len() as f32 * cell) * 0.5) / cell;
+        let y = (28.0 + i as f32 * 12.0) / cell;
+        sdtx::pos(x, y);
+        sdtx::color3b(0xf0, 0xd0, 0x80);
+        sdtx::puts(msg);
+    }
     sdtx::font(0);
     sdtx::color3b(0xff, 0xff, 0xff);
 }
@@ -5720,6 +5775,8 @@ fn frame_inner(app: &mut App) {
          * blocks are disjoint from the farmland/dirt the farming hint fires on,
          * so the two never print over each other. */
         draw_machine_hint(app, sapp::widthf(), sapp::heightf());
+        /* Rocket flight HUD (top-centre) while riding a rocket. */
+        draw_rocket_hud(app, sapp::widthf(), sapp::heightf());
         /* Survival: prompt when the targeted block needs a better tool. */
         draw_tool_gate_hint(app, sapp::widthf(), sapp::heightf());
     }
@@ -5925,6 +5982,14 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
      * ui.yaml. Wired here, not inside the debug_ui_visible block,
      * because the inventory / crafting screens that ride on this
      * module aren't debug features. */
+    /* Stage (default X): jettison the spent booster while flying a rocket. */
+    if e._type == sapp::EventType::KeyDown
+        && crate::controls::action_for_key(e.key_code) == Some(crate::controls::Action::Stage)
+        && crate::rocket_ride::is_riding()
+    {
+        crate::rocket_ride::stage();
+        return;
+    }
     if e._type == sapp::EventType::KeyDown
         && crate::controls::action_for_key(e.key_code) == Some(crate::controls::Action::PixelUiDemo)
     {
