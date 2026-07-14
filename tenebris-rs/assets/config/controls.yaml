@@ -41,20 +41,10 @@ fly_down:        LeftControl, RightControl, C
 toggle_fly:      F
 survival_toggle: G
 
-# Menus + debug toggles.
+# Menus.
 pause:           Escape
 tech_tree:       K
 crafting:        B
-debug_ui:        F2
-players_panel:   F1
-profiler:        F3
-pixel_ui_demo:   F8
-block_snapshot:  F4
-flow_debug:      F5
-# Debug render toggles (only while the debug UI is on).
-hide_terrain:    H
-hide_water:      J
-hide_skybox:     Y
 
 # Space flight: roll the view with Q / R (E is free for interact).
 roll_left:       Q
@@ -78,3 +68,20 @@ hotbar_7:        Num7
 hotbar_8:        Num8
 hotbar_9:        Num9
 hotbar_10:       Num0
+
+# ===================================================================
+# DEBUG CONTROLS - developer tools. debug_ui is the master toggle; the
+# render toggles + teleport menu only respond while it is on. These are
+# kept separate from the normal controls above (and grouped under
+# "Debug" in the in-game Inputs panel).
+# ===================================================================
+debug_ui:        F2
+players_panel:   F1
+profiler:        F3
+pixel_ui_demo:   F8
+block_snapshot:  F4
+flow_debug:      F5
+hide_terrain:    H
+hide_water:      J
+hide_skybox:     Y
+teleport_menu:   M

@@ -45,6 +45,8 @@ pub enum Action {
     ToggleTerrain,
     ToggleWater,
     ToggleSkybox,
+    /// Debug: open / close the teleport menu.
+    OpenTeleport,
     /// Master toggle for the debug UI (hamburger menu, teleport button).
     ToggleDebugUi,
     /// Toggle the multiplayer players roster panel.
@@ -92,7 +94,14 @@ pub const BINDING_ROWS: &[(&str, &str, Action)] = &[
     ("Debug", "Hide terrain", Action::ToggleTerrain),
     ("Debug", "Hide water", Action::ToggleWater),
     ("Debug", "Hide skybox", Action::ToggleSkybox),
+    ("Debug", "Teleport menu", Action::OpenTeleport),
 ];
+
+/// True for the categories in [`BINDING_ROWS`] that are developer tools, so
+/// the Inputs panel can visually fence them off from the normal controls.
+pub fn is_debug_group(group: &str) -> bool {
+    group == "Debug"
+}
 
 /// (config key name, action). Hotbar slots use their own name form
 /// (`hotbar_1`..`hotbar_10`) handled in [`action_from_name`].
@@ -118,6 +127,7 @@ fn action_from_name(name: &str) -> Option<Action> {
         "hide_terrain" => Action::ToggleTerrain,
         "hide_water" => Action::ToggleWater,
         "hide_skybox" => Action::ToggleSkybox,
+        "teleport_menu" => Action::OpenTeleport,
         "debug_ui" => Action::ToggleDebugUi,
         "players_panel" => Action::PlayersPanel,
         "profiler" => Action::ToggleProfiler,
@@ -220,6 +230,8 @@ fn default_bindings() -> Vec<(Keycode, Action)> {
         (H, Action::ToggleTerrain),
         (J, Action::ToggleWater),
         (Y, Action::ToggleSkybox),
+        /* Teleport menu on M (T is Plant - dropped the old T overload). */
+        (M, Action::OpenTeleport),
     ];
     let nums = [Num1, Num2, Num3, Num4, Num5, Num6, Num7, Num8, Num9, Num0];
     for (i, k) in nums.into_iter().enumerate() {

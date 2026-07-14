@@ -373,14 +373,16 @@ pub fn handle_event(e: &sapp::Event, player: Option<PlayerHandle>) -> bool {
     if e._type != sapp::EventType::KeyDown {
         return false;
     }
+    /* Open / close on the OpenTeleport debug action (default M), routed through
+     * the binding layer. The old T overload is gone - T is Plant. */
+    if crate::controls::action_for_key(e.key_code) == Some(crate::controls::Action::OpenTeleport) {
+        M.with(|cell| {
+            let m = &mut *cell.borrow_mut();
+            m.open = !m.open;
+        });
+        return true;
+    }
     match e.key_code {
-        sapp::Keycode::T | sapp::Keycode::M => {
-            M.with(|cell| {
-                let m = &mut *cell.borrow_mut();
-                m.open = !m.open;
-            });
-            true
-        }
         sapp::Keycode::Escape => {
             if is_open() {
                 M.with(|cell| cell.borrow_mut().open = false);
@@ -786,6 +788,9 @@ mod tests {
     fn setup() {
         init();
         input::init();
+        /* Toggle resolves through the binding layer (OpenTeleport = M); reset
+         * so a controls test that rebound M on this pooled thread can't leak. */
+        crate::controls::reset_to_defaults();
         test_doubles::SCREEN.with(|c| c.set((SCREEN_W, SCREEN_H)));
     }
 
@@ -851,15 +856,15 @@ mod tests {
     }
 
     #[test]
-    fn t_and_m_keys_toggle_and_consume() {
+    fn teleport_key_toggles_and_consumes() {
         setup();
-        assert!(handle_event(&key(Keycode::T), None));
+        /* M is the OpenTeleport debug key (T was dropped - it is Plant now). */
+        assert!(handle_event(&key(Keycode::M), None));
         assert!(is_open());
-        assert!(handle_event(&key(Keycode::T), None));
+        assert!(handle_event(&key(Keycode::M), None));
         assert!(!is_open());
-        assert!(handle_event(&key(Keycode::M), None));
-        assert!(is_open());
-        assert!(handle_event(&key(Keycode::M), None));
+        /* T must NOT toggle the teleport menu anymore. */
+        assert!(!handle_event(&key(Keycode::T), None));
         assert!(!is_open());
     }
 

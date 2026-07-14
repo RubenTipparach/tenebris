@@ -3168,7 +3168,7 @@ pub fn inputs_egui_ui(ctx: &egui::Context) {
         .collapsible(false)
         .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
         .show(ctx, |ui| {
-            ui.set_min_width(340.0);
+            ui.set_min_width(560.0);
             ui.vertical_centered(|ui| {
                 ui.add_space(6.0);
                 ui.label(
@@ -3184,40 +3184,75 @@ pub fn inputs_egui_ui(ctx: &egui::Context) {
                 );
             });
             ui.add_space(10.0);
-            egui::ScrollArea::vertical()
-                .max_height(360.0)
-                .show(ui, |ui| {
-                    let mut last_group = "";
-                    egui::Grid::new("inputs-grid")
-                        .num_columns(2)
-                        .spacing([24.0, 6.0])
-                        .striped(true)
-                        .show(ui, |ui| {
-                            for (group, name, action) in crate::controls::BINDING_ROWS {
-                                if *group != last_group {
-                                    last_group = group;
-                                    ui.label(
-                                        egui::RichText::new(*group)
-                                            .size(15.0)
-                                            .strong()
-                                            .color(egui::Color32::from_rgb(0x8f, 0xb0, 0xff)),
-                                    );
-                                    ui.label("");
-                                    ui.end_row();
-                                }
+            /* A binding grid for a subset of BINDING_ROWS, filtered by whether
+             * the row is a debug tool. Normal + debug are drawn as two separate
+             * grids with a divider between so the developer keys are clearly
+             * fenced off from the everyday controls. */
+            let binding_grid = |ui: &mut egui::Ui, id: &str, debug: bool| {
+                let mut last_group = "";
+                egui::Grid::new(id)
+                    .num_columns(2)
+                    .spacing([24.0, 6.0])
+                    .striped(true)
+                    .show(ui, |ui| {
+                        for (group, name, action) in crate::controls::BINDING_ROWS {
+                            if crate::controls::is_debug_group(group) != debug {
+                                continue;
+                            }
+                            if *group != last_group {
+                                last_group = group;
                                 ui.label(
-                                    egui::RichText::new(*name)
-                                        .color(egui::Color32::from_rgb(0xd0, 0xd6, 0xe2)),
-                                );
-                                let key = crate::controls::action_label(*action);
-                                ui.label(
-                                    egui::RichText::new(key)
+                                    egui::RichText::new(*group)
+                                        .size(15.0)
                                         .strong()
-                                        .color(egui::Color32::from_rgb(0xf0, 0xe0, 0x90)),
+                                        .color(egui::Color32::from_rgb(0x8f, 0xb0, 0xff)),
                                 );
+                                ui.label("");
                                 ui.end_row();
                             }
-                        });
+                            ui.label(
+                                egui::RichText::new(*name)
+                                    .color(egui::Color32::from_rgb(0xd0, 0xd6, 0xe2)),
+                            );
+                            ui.label(
+                                egui::RichText::new(crate::controls::action_label(*action))
+                                    .strong()
+                                    .color(egui::Color32::from_rgb(0xf0, 0xe0, 0x90)),
+                            );
+                            ui.end_row();
+                        }
+                    });
+            };
+            /* Normal controls on the left, debug tools on the right - two
+             * columns so the developer keys are unmistakably separated from the
+             * everyday ones. */
+            egui::ScrollArea::vertical()
+                .max_height(470.0)
+                .show(ui, |ui| {
+                    ui.columns(2, |cols| {
+                        cols[0].label(
+                            egui::RichText::new("CONTROLS")
+                                .size(15.0)
+                                .strong()
+                                .color(egui::Color32::from_rgb(0xc8, 0xd2, 0xe6)),
+                        );
+                        cols[0].add_space(4.0);
+                        binding_grid(&mut cols[0], "inputs-normal", false);
+
+                        cols[1].label(
+                            egui::RichText::new("DEBUG")
+                                .size(15.0)
+                                .strong()
+                                .color(egui::Color32::from_rgb(0xe0, 0xa0, 0x60)),
+                        );
+                        cols[1].label(
+                            egui::RichText::new("developer tools - need the debug UI")
+                                .size(12.0)
+                                .color(egui::Color32::from_rgb(0x9a, 0xa2, 0xb2)),
+                        );
+                        cols[1].add_space(4.0);
+                        binding_grid(&mut cols[1], "inputs-debug", true);
+                    });
                 });
             ui.add_space(12.0);
             ui.vertical_centered(|ui| {

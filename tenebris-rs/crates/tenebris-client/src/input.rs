@@ -324,7 +324,8 @@ fn set_key(s: &mut State, k: sapp::Keycode, down: bool) {
         | Action::FlowDebug
         | Action::ToggleTerrain
         | Action::ToggleWater
-        | Action::ToggleSkybox => {}
+        | Action::ToggleSkybox
+        | Action::OpenTeleport => {}
         Action::Hotbar(slot) => {
             if down {
                 if let Some(cell) = s.pub_.hotbar.get_mut(slot as usize) {
