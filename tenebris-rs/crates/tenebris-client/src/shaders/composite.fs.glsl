@@ -54,11 +54,15 @@ vec2 rd_DropLayer2(vec2 uv, float t){{
     x += wiggle * (0.5 - abs(x)) * (n.z - 0.5);
     x *= 0.7;
     float ti = fract(t + n.z);
-    // Drop FALLS: travel from the top of the cell down to the bottom (screen
-    // v_uv is y-up, so smaller y = lower on screen). The trail below is drawn
-    // ABOVE the drop, so the drop must move DOWN for streak and drop to agree -
-    // the old "+0.5" made the drop drift UP against its own trail.
-    y = 0.5 - (rd_Saw(0.85, ti) - 0.5) * 0.9;
+    // MONOTONIC downward fall: the drop slides from the top of its cell (screen
+    // v_uv is y-up, so high y = high on screen) straight down to the bottom as
+    // ti goes 0 -> 1. There is no mid-cycle position reversal, so the drop never
+    // moves upward. The old rd_Saw bump rose-then-snapped, and the snap read as
+    // an upward flick; here the wrap back to the top (ti 1 -> 0) is instead
+    // hidden by fading the drop's opacity to 0 at both ends of the cycle
+    // (rd_fade), so the reset is never visible - only clean falling.
+    y = 0.92 - ti * 0.88;
+    float rd_fade = smoothstep(0.0, 0.12, ti) * smoothstep(1.0, 0.86, ti);
     vec2 p = vec2(x, y);
     float d = length((st - p) * a.yx);
     float mainDrop = smoothstep(0.4, 0.0, d);
@@ -74,7 +78,9 @@ vec2 rd_DropLayer2(vec2 uv, float t){{
     float dd = length(st - vec2(x, y));
     droplets = smoothstep(0.3, 0.0, dd);
     float m = mainDrop + droplets * r * trailFront;
-    return vec2(m, trail) * rd_keep;
+    // rd_fade hides the ti-wrap (drop + trail vanish before snapping back to
+    // the top); rd_keep is the coverage cull. Both scale the drop AND its trail.
+    return vec2(m, trail) * (rd_keep * rd_fade);
 }}
 float rd_StaticDrops(vec2 uv, float t){{
     uv *= 40.0 * max(composite_fs_params[6].w, 0.05); // .w = drop size (grid freq)
