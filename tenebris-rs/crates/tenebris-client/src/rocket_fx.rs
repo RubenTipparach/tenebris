@@ -255,26 +255,55 @@ pub fn draw(view: Mat4, proj: Mat4, world: &World) {
     sgl::load_matrix(&view.m[0]);
 
     thread_local! {
-        static PIP: std::cell::Cell<sgl::Pipeline> = const { std::cell::Cell::new(sgl::Pipeline { id: 0 }) };
+        /* Ship: opaque, DOUBLE-SIDED (the models' winding isn't reliably
+         * outward, and the parts are solid, so drawing both sides avoids the
+         * inverted-face look; nearest face wins the depth test). */
+        static PIP_SHIP: std::cell::Cell<sgl::Pipeline> = const { std::cell::Cell::new(sgl::Pipeline { id: 0 }) };
+        /* Tower: DOUBLE-SIDED with an alpha CUTOUT - the launch-tower texture
+         * has a see-through lattice (tRNS), so we alpha-blend it with depth
+         * write OFF (drawn after opaque terrain), which shows the truss from
+         * both sides with the holes open. */
+        static PIP_TOWER: std::cell::Cell<sgl::Pipeline> = const { std::cell::Cell::new(sgl::Pipeline { id: 0 }) };
     }
-    let mut pip = PIP.with(|p| p.get());
-    if pip.id == 0 {
-        pip = sgl::make_pipeline(&sokol::gfx::PipelineDesc {
-            depth: sokol::gfx::DepthState {
-                write_enabled: true,
-                compare: sokol::gfx::CompareFunc::Less,
+    let pip_ship = PIP_SHIP.with(|p| {
+        if p.get().id == 0 {
+            p.set(sgl::make_pipeline(&sokol::gfx::PipelineDesc {
+                depth: sokol::gfx::DepthState {
+                    write_enabled: true,
+                    compare: sokol::gfx::CompareFunc::Less,
+                    ..Default::default()
+                },
+                cull_mode: sokol::gfx::CullMode::None,
                 ..Default::default()
-            },
-            /* Back-face cull: the models are closed with outward CCW faces,
-             * so single-sided is correct - this is what stops the tower from
-             * rendering double-sided. */
-            cull_mode: sokol::gfx::CullMode::Back,
-            face_winding: sokol::gfx::FaceWinding::Ccw,
-            ..Default::default()
-        });
-        PIP.with(|p| p.set(pip));
-    }
-    sgl::load_pipeline(pip);
+            }));
+        }
+        p.get()
+    });
+    let pip_tower = PIP_TOWER.with(|p| {
+        if p.get().id == 0 {
+            let mut desc = sokol::gfx::PipelineDesc {
+                depth: sokol::gfx::DepthState {
+                    write_enabled: false,
+                    compare: sokol::gfx::CompareFunc::LessEqual,
+                    ..Default::default()
+                },
+                cull_mode: sokol::gfx::CullMode::None,
+                ..Default::default()
+            };
+            desc.colors[0].blend = sokol::gfx::BlendState {
+                enabled: true,
+                src_factor_rgb: sokol::gfx::BlendFactor::SrcAlpha,
+                dst_factor_rgb: sokol::gfx::BlendFactor::OneMinusSrcAlpha,
+                op_rgb: sokol::gfx::BlendOp::Add,
+                src_factor_alpha: sokol::gfx::BlendFactor::One,
+                dst_factor_alpha: sokol::gfx::BlendFactor::OneMinusSrcAlpha,
+                op_alpha: sokol::gfx::BlendOp::Add,
+                ..Default::default()
+            };
+            p.set(sgl::make_pipeline(&desc));
+        }
+        p.get()
+    });
 
     MODELS.with(|m| {
         let mb = m.borrow();
@@ -299,6 +328,7 @@ pub fn draw(view: Mat4, proj: Mat4, world: &World) {
             let lit = lit.clamp(0.15, 1.5);
 
             /* Rocket stack: engine at the bottom, then up the parts list. */
+            sgl::load_pipeline(pip_ship);
             for (i, &id) in parts.iter().enumerate() {
                 let midx = match part_role(id) {
                     Some(PartRole::Engine) => 0usize,
@@ -312,7 +342,9 @@ pub fn draw(view: Mat4, proj: Mat4, world: &World) {
             }
 
             /* Launch-tower gantry beside the rocket: boxes stacked as tall as
-             * the rocket, offset along the tile tangent. */
+             * the rocket, offset along the tile tangent. Double-sided alpha
+             * cutout so the truss lattice is see-through from both sides. */
+            sgl::load_pipeline(pip_tower);
             let tower_view = renderer::rocket_view_id(3);
             sgl::enable_texture();
             sgl::texture(
