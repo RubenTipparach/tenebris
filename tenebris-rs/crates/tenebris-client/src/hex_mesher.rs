@@ -1866,19 +1866,10 @@ pub fn build_tile(out: &mut HexMesh, w: &World, tile_idx: i32) {
             continue;
         }
 
-        /* A launch pad renders as its normal cell (below); additionally,
-         * any assembled rocket parts stack up as cubes ON TOP of it. */
-        if b == Block::LaunchPad {
-            let stack = w
-                .block_entities
-                .get(tile_idx, d)
-                .and_then(|e| e.launch_pad().map(|p| p.parts().to_vec()));
-            if let Some(parts) = stack {
-                if !parts.is_empty() {
-                    emit_rocket_stack(out, t, w, tile_idx, d, &parts, true);
-                }
-            }
-        }
+        /* A launch pad renders as its normal cell (below); the assembled
+         * rocket parts on top are now drawn as textured OBJ models by
+         * client::rocket_fx (ported from the JS rocket geometry), not as
+         * cubes baked into the terrain mesh here. */
 
         let mut width = block_hex_width(b, tile_idx, d);
         if pine_lo >= 0

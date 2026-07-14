@@ -18,6 +18,7 @@ mod drops;
 mod furnace_screen;
 mod power_ui;
 mod rocket_screen;
+mod rocket_fx;
 mod egui_layer;
 mod gfx_math;
 mod hex_mesher;

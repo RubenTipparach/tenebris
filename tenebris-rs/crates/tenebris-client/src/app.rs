@@ -1967,22 +1967,10 @@ fn space_complex_maybe_build(app: &mut App) {
                 }
             }
         }
-        /* Launch-tower gantry beside the rocket: a stack of LaunchTower
-         * blocks (their red/white truss texture) rising next to the pad, so
-         * the site reads as a real launch complex, not a lone stack of
-         * parts. Fill contiguously from the surface up so it's a solid tower. */
-        if let Some(&gt) = ring.get(4) {
-            const TOWER_H: i32 = 6;
-            let base = top_air(&w, gt);
-            if base >= 0 {
-                for h in 0..TOWER_H {
-                    let d = base + h;
-                    if d < WORLD_MAX_DEPTH {
-                        w.set(gt, d, Block::LaunchTower);
-                    }
-                }
-            }
-        }
+        /* The launch-tower gantry is drawn as textured geometry beside the
+         * rocket by client::rocket_fx (single-sided, ported tower texture) -
+         * no voxel LaunchTower blocks, which read as double-sided see-through
+         * prisms. */
     }
     /* Same-frame persistence for every edited column + its block entities. */
     {
@@ -5497,6 +5485,7 @@ fn frame_inner(app: &mut App) {
     /* Animals + crops - same offscreen opaque pass so terrain/torches
      * z-sort correctly against them. */
     animals::draw(view, proj, renderer::time_seconds());
+    crate::rocket_fx::draw(view, proj, &app.world.borrow());
     fishing::draw(view, proj, &app.player.borrow());
     crops::draw(view, proj);
     drops::draw(view, proj, renderer::time_seconds());

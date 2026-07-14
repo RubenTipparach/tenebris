@@ -1631,6 +1631,13 @@ struct Renderer {
     animal_tex_view: sg::View,
     animal_tex_smp: sg::Sampler,
 
+    /* Rocket-part model textures (assets/textures/rocket_parts + the launch
+     * tower), sampled by client::rocket_fx. Index: 0 engine, 1 fuel tank,
+     * 2 command module, 3 launch tower. */
+    rocket_tex_img: [sg::Image; 4],
+    rocket_tex_view: [sg::View; 4],
+    rocket_tex_smp: sg::Sampler,
+
     /* Crop texture atlas (assets/textures/crops.png) - one 32x32 material
      * tile per column (bark / leaves / melon rind / fruit / ...), sampled
      * by client::crops so plant boxes are textured, not flat. */
@@ -1710,6 +1717,9 @@ impl Default for Renderer {
             animal_tex_img: sg::Image::new(),
             animal_tex_view: sg::View::new(),
             animal_tex_smp: sg::Sampler::new(),
+            rocket_tex_img: [sg::Image::new(); 4],
+            rocket_tex_view: [sg::View::new(); 4],
+            rocket_tex_smp: sg::Sampler::new(),
             crop_tex_img: sg::Image::new(),
             crop_tex_view: sg::View::new(),
             crop_tex_smp: sg::Sampler::new(),
@@ -2069,6 +2079,59 @@ pub fn animal_view_id() -> u32 {
 }
 pub fn animal_sampler_id() -> u32 {
     R.with(|cell| cell.borrow().animal_tex_smp.id)
+}
+
+/// Rocket-part model textures (ported from the JS build's rocket stack):
+/// 0 engine, 1 fuel tank, 2 command module, 3 launch tower. Sampled by
+/// client::rocket_fx. NEAREST to keep the pixel-art crisp.
+fn load_rocket_textures(r: &mut Renderer) {
+    const PATHS: [&str; 4] = [
+        "assets/textures/rocket_parts/medium_engine.png",
+        "assets/textures/rocket_parts/medium_fuel_tank.png",
+        "assets/textures/rocket_parts/command_module.png",
+        "assets/textures/technology/launch_tower.png",
+    ];
+    const FALLBACK: [u8; 4] = [200, 205, 210, 255];
+    r.rocket_tex_smp = sg::make_sampler(&sg::SamplerDesc {
+        min_filter: sg::Filter::Nearest,
+        mag_filter: sg::Filter::Nearest,
+        wrap_u: sg::Wrap::ClampToEdge,
+        wrap_v: sg::Wrap::ClampToEdge,
+        label: c"rocket-tex-sampler".as_ptr(),
+        ..Default::default()
+    });
+    for (i, path) in PATHS.iter().enumerate() {
+        let loaded = load_png_rgba(path, false);
+        let (w, h, pixels): (i32, i32, &[u8]) = match &loaded {
+            Some(img) => (img.w, img.h, &img.rgba),
+            None => {
+                println!("[renderer] WARNING: {path} missing; rocket part flat-tinted");
+                (1, 1, &FALLBACK)
+            }
+        };
+        let mut desc = sg::ImageDesc {
+            width: w,
+            height: h,
+            pixel_format: sg::PixelFormat::Rgba8,
+            label: c"rocket-tex".as_ptr(),
+            ..Default::default()
+        };
+        desc.data.mip_levels[0] = sg::slice_as_range(pixels);
+        r.rocket_tex_img[i] = sg::make_image(&desc);
+        r.rocket_tex_view[i] = sg::make_view(&sg::ViewDesc {
+            texture: sg::TextureViewDesc { image: r.rocket_tex_img[i], ..Default::default() },
+            label: c"rocket-tex-view".as_ptr(),
+            ..Default::default()
+        });
+    }
+}
+
+/// View id for a rocket part texture (0 engine, 1 tank, 2 capsule, 3 tower).
+pub fn rocket_view_id(idx: usize) -> u32 {
+    R.with(|cell| cell.borrow().rocket_tex_view[idx.min(3)].id)
+}
+pub fn rocket_sampler_id() -> u32 {
+    R.with(|cell| cell.borrow().rocket_tex_smp.id)
 }
 
 /// Crop material atlas - one 32x32 tile per column, sampled by
@@ -2553,6 +2616,7 @@ pub fn init() {
         load_water_normal(&mut r);
         load_flow_arrow(&mut r);
         load_animal_textures(&mut r);
+        load_rocket_textures(&mut r);
         load_crop_textures(&mut r);
         /* Per-chunk meshes are allocated lazily once a body registers. */
     });
