@@ -45,9 +45,12 @@ pub const BRONZE_INGOT: ItemId = ITEM_BASE + 11; // 111
  * station will gate these in a later tier (see the JS Printer3D), but
  * for now they hand-craft from ingots so the gather -> smelt -> build
  * chain is playable end to end. */
-pub const ROCKET_ENGINE: ItemId = ITEM_BASE + 12; // 112
+pub const ROCKET_ENGINE: ItemId = ITEM_BASE + 12; // 112 (atmospheric engine)
 pub const FUEL_TANK: ItemId = ITEM_BASE + 13; // 113
 pub const COMMAND_MODULE: ItemId = ITEM_BASE + 14; // 114
+/// Vacuum engine: lower thrust than the atmospheric engine but burns fuel far
+/// more efficiently - the upper-stage engine you stage to for the orbit burn.
+pub const VACUUM_ENGINE: ItemId = ITEM_BASE + 49; // 149
 /* Electronics: the control gear the command module needs. A simplified
  * nod to the JS command-module recipe (RAM / CPU / motherboard / power
  * supply), one component chain for now. */
@@ -225,6 +228,7 @@ const ITEMS: &[ItemDef] = &[
     ItemDef { id: ROCKET_ENGINE, name: "rocket-engine", kind: ItemKind::Resource, stack: 8 },
     ItemDef { id: FUEL_TANK, name: "fuel-tank", kind: ItemKind::Resource, stack: 8 },
     ItemDef { id: COMMAND_MODULE, name: "command-module", kind: ItemKind::Resource, stack: 8 },
+    ItemDef { id: VACUUM_ENGINE, name: "vacuum-engine", kind: ItemKind::Resource, stack: 8 },
     ItemDef { id: WIRE, name: "wire", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: CIRCUIT_BOARD, name: "circuit-board", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: CPU_CHIP, name: "cpu-chip", kind: ItemKind::Resource, stack: 64 },
@@ -518,6 +522,7 @@ mod tests {
             ("rocket-engine", ROCKET_ENGINE),
             ("fuel-tank", FUEL_TANK),
             ("command-module", COMMAND_MODULE),
+            ("vacuum-engine", VACUUM_ENGINE),
         ] {
             assert_eq!(id_by_name(name), Some(id), "name {name} resolves");
             assert!(!is_block(id), "{name} is not a block");

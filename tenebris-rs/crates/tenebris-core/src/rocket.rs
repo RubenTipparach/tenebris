@@ -10,7 +10,7 @@
 //! (thrust / fuel / mass) lands with the flight port and its
 //! `rocket.yaml`; those are tunables, not hard-coded here.
 
-use crate::items::{ItemId, COMMAND_MODULE, FUEL_TANK, ROCKET_ENGINE};
+use crate::items::{ItemId, COMMAND_MODULE, FUEL_TANK, ROCKET_ENGINE, VACUUM_ENGINE};
 use std::sync::Mutex;
 
 /// What a part does in an assembly. Mirrors the JS `RocketPartType`.
@@ -21,9 +21,30 @@ pub enum PartRole {
     Capsule,
 }
 
+/// Which kind of engine a part is. Both count as [`PartRole::Engine`] for the
+/// structural rules; they differ in thrust / efficiency (see [`engine_stats`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EngineKind {
+    /// High thrust, thirsty. Lifts off against gravity - the bottom stage.
+    Atmospheric,
+    /// Low thrust, efficient. The upper stage you fire to reach orbit.
+    Vacuum,
+}
+
+/// The engine kind of an item id, or `None` if it isn't an engine.
+pub fn engine_kind(id: ItemId) -> Option<EngineKind> {
+    if id == ROCKET_ENGINE {
+        Some(EngineKind::Atmospheric)
+    } else if id == VACUUM_ENGINE {
+        Some(EngineKind::Vacuum)
+    } else {
+        None
+    }
+}
+
 /// Role of an item id, or `None` if it isn't a rocket part.
 pub fn part_role(id: ItemId) -> Option<PartRole> {
-    if id == ROCKET_ENGINE {
+    if engine_kind(id).is_some() {
         Some(PartRole::Engine)
     } else if id == FUEL_TANK {
         Some(PartRole::FuelTank)
@@ -148,7 +169,10 @@ pub struct FlightConstants {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RocketConfig {
+    /// Atmospheric engine: high thrust, thirsty (the lift-off stage).
     pub engine: EngineStats,
+    /// Vacuum engine: lower thrust, far more efficient (the orbit stage).
+    pub engine_vacuum: EngineStats,
     pub fuel_tank: FuelTankStats,
     pub command_module: CommandModuleStats,
     pub flight: FlightConstants,
@@ -157,6 +181,10 @@ pub struct RocketConfig {
 /// Compiled-in defaults = the JS RocketConfig (MEDIUM_* parts).
 pub const DEFAULT_ROCKET_CONFIG: RocketConfig = RocketConfig {
     engine: EngineStats { thrust_n: 39000.0, fuel_per_sec: 10.0, mass_kg: 100.0 },
+    /* Vacuum engine: ~55% the thrust but ~30% the fuel burn per second, so its
+     * thrust-per-fuel (efficiency) is ~1.8x the atmospheric engine. Lighter,
+     * too - it carries no atmospheric bell. */
+    engine_vacuum: EngineStats { thrust_n: 21000.0, fuel_per_sec: 3.0, mass_kg: 80.0 },
     fuel_tank: FuelTankStats { capacity: 100.0, wet_mass_kg: 500.0, dry_mass_kg: 50.0 },
     command_module: CommandModuleStats {
         mass_kg: 200.0,
@@ -217,6 +245,9 @@ pub fn parse_rocket_config(src: &str) -> RocketConfig {
             ("engine", "thrust_n") => c.engine.thrust_n = val,
             ("engine", "fuel_per_sec") => c.engine.fuel_per_sec = val,
             ("engine", "mass_kg") => c.engine.mass_kg = val,
+            ("engine_vacuum", "thrust_n") => c.engine_vacuum.thrust_n = val,
+            ("engine_vacuum", "fuel_per_sec") => c.engine_vacuum.fuel_per_sec = val,
+            ("engine_vacuum", "mass_kg") => c.engine_vacuum.mass_kg = val,
             ("fuel_tank", "capacity") => c.fuel_tank.capacity = val,
             ("fuel_tank", "wet_mass_kg") => c.fuel_tank.wet_mass_kg = val,
             ("fuel_tank", "dry_mass_kg") => c.fuel_tank.dry_mass_kg = val,
@@ -265,6 +296,16 @@ pub struct RocketSpec {
     pub wet_mass_kg: f32,
 }
 
+/// The stats for an engine item id (atmospheric or vacuum). Returns the
+/// atmospheric stats for a non-engine id as a harmless fallback; callers gate
+/// on [`engine_kind`] / [`part_role`] first.
+pub fn engine_stats(id: ItemId, cfg: &RocketConfig) -> EngineStats {
+    match engine_kind(id) {
+        Some(EngineKind::Vacuum) => cfg.engine_vacuum,
+        _ => cfg.engine,
+    }
+}
+
 impl RocketSpec {
     /// Sum a bottom -> top part stack into its flight spec. Non-part
     /// entries are ignored (validation rejects them separately).
@@ -273,11 +314,12 @@ impl RocketSpec {
         for &id in stack {
             match part_role(id) {
                 Some(PartRole::Engine) => {
+                    let e = engine_stats(id, cfg);
                     s.engines += 1;
-                    s.total_thrust_n += cfg.engine.thrust_n;
-                    s.fuel_per_sec += cfg.engine.fuel_per_sec;
-                    s.dry_mass_kg += cfg.engine.mass_kg;
-                    s.wet_mass_kg += cfg.engine.mass_kg;
+                    s.total_thrust_n += e.thrust_n;
+                    s.fuel_per_sec += e.fuel_per_sec;
+                    s.dry_mass_kg += e.mass_kg;
+                    s.wet_mass_kg += e.mass_kg;
                 }
                 Some(PartRole::FuelTank) => {
                     s.tanks += 1;
@@ -305,6 +347,198 @@ impl RocketSpec {
         } else {
             0.0
         }
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Staging: the flat part stack read as a sequence of stages, plus a    */
+/* runtime "ride" a player flies - burn the bottom stage, jettison it,   */
+/* ignite the next (the vacuum upper stage) to reach orbit.              */
+
+/// One stage: an engine plus the fuel tanks stacked directly above it (up to
+/// the next engine). The capsule(s) on top are payload, not part of any stage.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StageSpec {
+    pub engine_kind: EngineKind,
+    pub thrust_n: f32,
+    pub fuel_per_sec: f32,
+    pub fuel_capacity: f32,
+    /// This stage's dry mass (engine + tank dry mass) - dropped when jettisoned.
+    pub dry_mass_kg: f32,
+    /// This stage's full-fuel mass (dry + fuel).
+    pub wet_mass_kg: f32,
+    pub tanks: u32,
+}
+
+/// Mass of the payload (all capsules) that every stage has to lift.
+pub fn payload_mass(stack: &[ItemId], cfg: &RocketConfig) -> f32 {
+    stack
+        .iter()
+        .filter(|&&id| part_role(id) == Some(PartRole::Capsule))
+        .count() as f32
+        * cfg.command_module.mass_kg
+}
+
+/// Split a bottom -> top stack into stages, bottom stage first. Each engine
+/// starts a new stage; the fuel tanks above it (until the next engine) join
+/// that stage. Tanks below the first engine (an invalid stack) are ignored.
+pub fn stages(stack: &[ItemId], cfg: &RocketConfig) -> Vec<StageSpec> {
+    let mut out: Vec<StageSpec> = Vec::new();
+    for &id in stack {
+        match part_role(id) {
+            Some(PartRole::Engine) => {
+                let e = engine_stats(id, cfg);
+                out.push(StageSpec {
+                    engine_kind: engine_kind(id).unwrap_or(EngineKind::Atmospheric),
+                    thrust_n: e.thrust_n,
+                    fuel_per_sec: e.fuel_per_sec,
+                    fuel_capacity: 0.0,
+                    dry_mass_kg: e.mass_kg,
+                    wet_mass_kg: e.mass_kg,
+                    tanks: 0,
+                });
+            }
+            Some(PartRole::FuelTank) => {
+                if let Some(st) = out.last_mut() {
+                    st.fuel_capacity += cfg.fuel_tank.capacity;
+                    st.dry_mass_kg += cfg.fuel_tank.dry_mass_kg;
+                    st.wet_mass_kg += cfg.fuel_tank.wet_mass_kg;
+                    st.tanks += 1;
+                }
+            }
+            Some(PartRole::Capsule) | None => {}
+        }
+    }
+    out
+}
+
+/// One stage of a flown rocket, tracking its remaining fuel.
+#[derive(Clone, Copy, Debug)]
+struct StageActive {
+    spec: StageSpec,
+    fuel: f32,
+}
+
+impl StageActive {
+    /// Mass of the fuel still in this stage's tanks.
+    fn fuel_mass(&self) -> f32 {
+        if self.spec.fuel_capacity > 0.0 {
+            let full = self.spec.wet_mass_kg - self.spec.dry_mass_kg;
+            self.fuel / self.spec.fuel_capacity * full
+        } else {
+            0.0
+        }
+    }
+}
+
+/// A rocket a player is flying. The bottom (index 0) stage is the one firing;
+/// staging jettisons it and the next stage up becomes active. Payload mass
+/// (the capsules) rides the whole way. Lives in Core so SP and MP fly by the
+/// same rules; the client controller applies its thrust to the player.
+#[derive(Clone, Debug)]
+pub struct RocketRide {
+    stages: Vec<StageActive>,
+    pub payload_mass_kg: f32,
+}
+
+impl RocketRide {
+    /// Build a ride from an assembled stack with full tanks, or `None` if the
+    /// stack isn't a flyable rocket.
+    pub fn from_stack(stack: &[ItemId], cfg: &RocketConfig) -> Option<RocketRide> {
+        if !is_flyable(stack) {
+            return None;
+        }
+        let stages = stages(stack, cfg)
+            .into_iter()
+            .map(|spec| StageActive { spec, fuel: spec.fuel_capacity })
+            .collect::<Vec<_>>();
+        if stages.is_empty() {
+            return None;
+        }
+        Some(RocketRide {
+            stages,
+            payload_mass_kg: payload_mass(stack, cfg),
+        })
+    }
+
+    /// The active (bottom) stage, if any remain.
+    fn active(&self) -> Option<&StageActive> {
+        self.stages.first()
+    }
+
+    /// The engine kind currently firing (the active stage's engine).
+    pub fn active_engine(&self) -> Option<EngineKind> {
+        self.active().map(|s| s.spec.engine_kind)
+    }
+
+    /// Thrust the rocket produces right now (0 if the active stage is out of
+    /// fuel). Newtons.
+    pub fn thrust_n(&self) -> f32 {
+        match self.active() {
+            Some(s) if s.fuel > 0.0 => s.spec.thrust_n,
+            _ => 0.0,
+        }
+    }
+
+    /// Current total mass: every remaining stage (dry + its fuel) + payload.
+    pub fn mass_kg(&self) -> f32 {
+        let stages: f32 = self
+            .stages
+            .iter()
+            .map(|s| s.spec.dry_mass_kg + s.fuel_mass())
+            .sum();
+        (stages + self.payload_mass_kg).max(1.0)
+    }
+
+    /// Instantaneous thrust-to-weight ratio (>1 lifts off `gravity_mps2`).
+    pub fn twr(&self, gravity_mps2: f32) -> f32 {
+        let w = self.mass_kg() * gravity_mps2;
+        if w > 0.0 {
+            self.thrust_n() / w
+        } else {
+            0.0
+        }
+    }
+
+    /// Burn the active stage's fuel for `dt` seconds (only when it is firing).
+    pub fn burn(&mut self, dt: f32) {
+        if let Some(s) = self.stages.first_mut() {
+            if s.fuel > 0.0 {
+                s.fuel = (s.fuel - s.spec.fuel_per_sec * dt).max(0.0);
+            }
+        }
+    }
+
+    /// Fuel remaining in the active stage (units).
+    pub fn active_fuel(&self) -> f32 {
+        self.active().map(|s| s.fuel).unwrap_or(0.0)
+    }
+
+    /// Active stage's full fuel capacity (units), for a HUD gauge.
+    pub fn active_capacity(&self) -> f32 {
+        self.active().map(|s| s.spec.fuel_capacity).unwrap_or(0.0)
+    }
+
+    /// Number of stages still attached (including the active one).
+    pub fn stage_count(&self) -> usize {
+        self.stages.len()
+    }
+
+    /// Jettison the active (bottom) stage and ignite the next one up. Returns
+    /// true if a stage was dropped. The last stage is never dropped (it carries
+    /// the only remaining engine under the capsule).
+    pub fn stage(&mut self) -> bool {
+        if self.stages.len() > 1 {
+            self.stages.remove(0);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// True once no attached stage has any fuel left (coasting).
+    pub fn is_spent(&self) -> bool {
+        self.stages.iter().all(|s| s.fuel <= 0.0)
     }
 }
 
@@ -640,6 +874,89 @@ gravity_mps2: 3.7
         assert!(spec.twr(cfg.flight.gravity_mps2) > 1.0);
         // An empty spec has no weight and a 0 TWR (no divide-by-zero).
         assert_eq!(RocketSpec::default().twr(9.81), 0.0);
+    }
+
+    #[test]
+    fn vacuum_engine_is_an_engine_but_a_distinct_kind() {
+        assert_eq!(part_role(VACUUM_ENGINE), Some(PartRole::Engine));
+        assert_eq!(engine_kind(VACUUM_ENGINE), Some(EngineKind::Vacuum));
+        assert_eq!(engine_kind(ROCKET_ENGINE), Some(EngineKind::Atmospheric));
+        assert_eq!(engine_kind(FUEL_TANK), None);
+        let cfg = RocketConfig::default();
+        /* Atmospheric out-thrusts the vacuum engine; the vacuum engine is more
+         * efficient (more thrust per unit of fuel burned). */
+        let atmo = engine_stats(ROCKET_ENGINE, &cfg);
+        let vac = engine_stats(VACUUM_ENGINE, &cfg);
+        assert!(atmo.thrust_n > vac.thrust_n);
+        assert!(vac.thrust_n / vac.fuel_per_sec > atmo.thrust_n / atmo.fuel_per_sec);
+    }
+
+    #[test]
+    fn stages_split_at_each_engine() {
+        let cfg = RocketConfig::default();
+        // atmo + 2 tanks (booster) | vacuum + 1 tank (upper) | capsule
+        let stack = [
+            ROCKET_ENGINE,
+            FUEL_TANK,
+            FUEL_TANK,
+            VACUUM_ENGINE,
+            FUEL_TANK,
+            COMMAND_MODULE,
+        ];
+        let s = stages(&stack, &cfg);
+        assert_eq!(s.len(), 2);
+        assert_eq!(s[0].engine_kind, EngineKind::Atmospheric);
+        assert_eq!(s[0].tanks, 2);
+        assert_eq!(s[1].engine_kind, EngineKind::Vacuum);
+        assert_eq!(s[1].tanks, 1);
+        assert_eq!(payload_mass(&stack, &cfg), cfg.command_module.mass_kg);
+    }
+
+    #[test]
+    fn ride_stages_from_booster_to_vacuum_and_burns() {
+        let cfg = RocketConfig::default();
+        let stack = [
+            ROCKET_ENGINE,
+            FUEL_TANK,
+            VACUUM_ENGINE,
+            FUEL_TANK,
+            COMMAND_MODULE,
+        ];
+        let mut ride = RocketRide::from_stack(&stack, &cfg).expect("flyable");
+        assert_eq!(ride.stage_count(), 2);
+        assert_eq!(ride.active_engine(), Some(EngineKind::Atmospheric));
+        let m0 = ride.mass_kg();
+        // Burning the booster reduces fuel and mass.
+        ride.burn(1.0);
+        assert!(ride.active_fuel() < ride.active_capacity());
+        assert!(ride.mass_kg() < m0);
+        // Stage: drop the booster, the vacuum upper stage ignites, mass drops.
+        let m_before = ride.mass_kg();
+        assert!(ride.stage());
+        assert_eq!(ride.stage_count(), 1);
+        assert_eq!(ride.active_engine(), Some(EngineKind::Vacuum));
+        assert!(ride.mass_kg() < m_before);
+        // The last stage can't be jettisoned.
+        assert!(!ride.stage());
+    }
+
+    #[test]
+    fn ride_reports_spent_when_all_fuel_burned() {
+        let cfg = RocketConfig::default();
+        let mut ride = RocketRide::from_stack(&MIN_ROCKET, &cfg).expect("flyable");
+        assert!(!ride.is_spent());
+        for _ in 0..10_000 {
+            ride.burn(1.0);
+        }
+        assert_eq!(ride.active_fuel(), 0.0);
+        assert!(ride.is_spent());
+        assert_eq!(ride.thrust_n(), 0.0);
+    }
+
+    #[test]
+    fn unflyable_stack_has_no_ride() {
+        let cfg = RocketConfig::default();
+        assert!(RocketRide::from_stack(&[FUEL_TANK, COMMAND_MODULE], &cfg).is_none());
     }
 
     #[test]
