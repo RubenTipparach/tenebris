@@ -67,6 +67,50 @@ vec2 rain_ripple_grad(vec2 uv, float t) {
     return circles;
 }
 
+// ---- Water streaking DOWN block sides: the same "Heartfelt" (BigWings,
+// CC BY-NC-SA) drop layer the camera lens uses - blobs with downward trails.
+// Returns .x = drop mask (its gradient becomes the side normal distortion).
+vec3 rd_N13(float p) {
+    vec3 p3 = fract(vec3(p) * vec3(0.1031, 0.11369, 0.13787));
+    p3 += dot(p3, p3.yzx + 19.19);
+    return fract(vec3((p3.x + p3.y) * p3.z, (p3.x + p3.z) * p3.y, (p3.y + p3.z) * p3.x));
+}
+float rd_N(float t) { return fract(sin(t * 12345.564) * 7658.76); }
+float rd_Saw(float b, float t) { return smoothstep(0.0, b, t) * smoothstep(1.0, b, t); }
+vec2 rd_DropLayer2(vec2 uv, float t) {
+    vec2 UV = uv;
+    uv.y += t * 0.75;
+    vec2 a = vec2(6.0, 1.0);
+    vec2 grid = a * 2.0;
+    vec2 id = floor(uv * grid);
+    float colShift = rd_N(id.x);
+    uv.y += colShift;
+    id = floor(uv * grid);
+    vec3 n = rd_N13(id.x * 35.2 + id.y * 2376.1);
+    vec2 st = fract(uv * grid) - vec2(0.5, 0.0);
+    float x = n.x - 0.5;
+    float y = UV.y * 20.0;
+    float wiggle = sin(y + sin(y));
+    x += wiggle * (0.5 - abs(x)) * (n.z - 0.5);
+    x *= 0.7;
+    float ti = fract(t + n.z);
+    y = (rd_Saw(0.85, ti) - 0.5) * 0.9 + 0.5;
+    vec2 p = vec2(x, y);
+    float d = length((st - p) * a.yx);
+    float mainDrop = smoothstep(0.4, 0.0, d);
+    float r = sqrt(smoothstep(1.0, y, st.y));
+    float cd = abs(st.x - x);
+    float trail = smoothstep(0.23 * r, 0.15 * r * r, cd);
+    float trailFront = smoothstep(-0.02, 0.02, st.y - y);
+    trail *= trailFront * r * r;
+    float trail2 = smoothstep(0.2 * r, 0.0, cd);
+    y = fract(UV.y * 10.0) + (st.y - 0.5);
+    float dd = length(st - vec2(x, y));
+    float droplets = smoothstep(0.3, 0.0, dd);
+    float m = mainDrop + droplets * r * trailFront;
+    return vec2(m, trail);
+}
+
 // 4x4 Bayer screen-door threshold for the alpha cutout / translucency below.
 float hex_bayer4(vec2 frag)
 {
@@ -235,17 +279,26 @@ void main()
             // Raindrop impact rings on top of the sheet.
             pg += rain_ripple_grad(uv * k_ripple_scale, wet_t) * (k_ripple_strength * top_w);
         }
-        // Water trickling straight down the side faces: down + across expressed
-        // in the (ax_a, ax_b) basis, with the down coordinate scrolling in time.
+        // Water STREAKING down the side faces: the Heartfelt drop layer (same
+        // as the camera lens droplets) - blobs with downward trails. down/across
+        // in the (ax_a, ax_b) basis; the layer's own +uv.y is the fall
+        // direction, so the drops run downward and the gradient of the drop mask
+        // distorts the surface normal like the lens refraction.
         if (side_w > 0.001) {
             vec2 down2 = vec2(dot(-wet_up, ax_a), dot(-wet_up, ax_b));
             float dl2 = length(down2);
             down2 = (dl2 > 1e-4) ? (down2 / dl2) : vec2(0.0, 1.0);
             vec2 across2 = vec2(-down2.y, down2.x);
-            float a_coord = dot(uv, across2) * k_flow_across;
-            float d_coord = dot(uv, down2) * k_flow_down - wet_t * k_flow_speed;
-            vec2 fg = rain_ripple_grad(vec2(a_coord, d_coord), wet_t * 0.5) * (k_flow_strength * side_w);
-            pg += across2 * fg.x + down2 * fg.y;
+            // (across, down) surface coord; k_flow_across = drop size, k_flow_down
+            // stretches the fall axis (smaller = longer streaks).
+            vec2 duv = vec2(dot(uv, across2), dot(uv, down2) * k_flow_down) * k_flow_across;
+            float dt = wet_t * k_flow_speed;
+            float dm = rd_DropLayer2(duv, dt).x;
+            vec2 de = vec2(0.02, 0.0);
+            float dmx = rd_DropLayer2(duv + de, dt).x;
+            float dmy = rd_DropLayer2(duv + de.yx, dt).x;
+            vec2 dn = vec2(dmx - dm, dmy - dm);
+            pg += (across2 * dn.x + down2 * dn.y) * (k_flow_strength * side_w);
         }
 
         vec3 pert = ax_a * pg.x + ax_b * pg.y;

@@ -164,7 +164,7 @@ float fbm3(vec3 p, float t)
 // refraction and foam. Gated by rain intensity fs_params[14].y. Tunables here;
 // the kernel's inner constants are the effect's identity (stay inline).
 #define WATER_RAIN_MAX_RADIUS 1     // ripple cell reach (1 = 3x3 kernel)
-#define WATER_RAIN_RIPPLE_SCALE 1.5 // ripple cells per metre on the surface
+#define WATER_RAIN_RIPPLE_SCALE 3.0 // ripple cells per metre on the surface
 #define WATER_RAIN_RIPPLE_STRENGTH 6.0 // push into the wave gradient
 
 float rr_hash12(vec2 p) {
