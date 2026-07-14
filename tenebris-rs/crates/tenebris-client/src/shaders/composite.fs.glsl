@@ -185,7 +185,25 @@ void main()
     float _259;
     if (_112)
     {
-        _259 = _107 ? (max(0.0, composite_fs_params[3].w - length(v_camera_pos - composite_fs_params[3].xyz)) / max(dot(normalize(v_view_dir), normalize(v_camera_pos - composite_fs_params[3].xyz)), 0.0500000007450580596923828125)) : view_dist;
+        if (_107)
+        {
+            // Submerged sky/far pixel: the far distance (chunk-culled terrain or
+            // beyond-LOD) seen THROUGH the water. gap = how far the eye sits below
+            // the surface; d_up = how steeply this ray rises toward it. A ray that
+            // does not rise (d_up <= 0) never exits the water, so its whole line of
+            // sight is underwater and the fog must SATURATE to the deep colour -
+            // otherwise near the surface, where gap is tiny, the far underwater
+            // reads as a bright HOLE instead of uniform murk (diving deep only hid
+            // it because gap grew). Genuinely upward rays keep the finite exit
+            // distance so the real sky above the waterline stays clear.
+            float gap = max(0.0, composite_fs_params[3].w - length(v_camera_pos - composite_fs_params[3].xyz));
+            float d_up = dot(normalize(v_view_dir), normalize(v_camera_pos - composite_fs_params[3].xyz));
+            _259 = (d_up > 0.02) ? (gap / d_up) : 100000.0;
+        }
+        else
+        {
+            _259 = view_dist;
+        }
     }
     else
     {
