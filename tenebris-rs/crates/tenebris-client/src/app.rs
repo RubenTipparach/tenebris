@@ -743,22 +743,44 @@ fn dev_maybe_place(app: &mut App) {
             );
         }
         21 => {
-            /* Dive showcase (TENEBRIS_DEV_DIVE): scan the WHOLE planet for
-             * the deepest ocean tile (most negative surface height), then
-             * drop the camera into that water looking horizontally, so a
-             * headless shot frames the underwater murk + fish regardless of
-             * where the player spawned on land. */
+            /* Dive showcase (TENEBRIS_DEV_DIVE): scan the WHOLE planet for two
+             * ocean spots regardless of where the player spawned - the deepest
+             * tile (full-submersion murk + fish) and a shallow SHOAL tile whose
+             * seabed sits ~1 block below sea level (partial-submersion framing).
+             * TENEBRIS_DEV_DIVE=<metres>: >= 2 floats the eye that deep for the
+             * full underwater look; a small value (< 2, e.g. 0.5) instead WADES
+             * the player onto the shoal - feet on the block one lower than the
+             * sea-level block, so the eye (feet + EYE_HEIGHT) rests ~0.6 m above
+             * the surface, inside the 0.8 m partial band with the near plane
+             * dipping into the water. (A non-numeric value keeps the 4 m default.) */
+            let dive_depth = std::env::var("TENEBRIS_DEV_DIVE")
+                .ok()
+                .and_then(|v| v.trim().parse::<f64>().ok())
+                .filter(|d| *d > 0.0)
+                .unwrap_or(4.0);
+            let wade = dive_depth < 2.0;
             let dive = {
                 let w = app.world.borrow();
                 let center = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
                 let sea_r = w.depth_to_radius_m(tenebris_core::world::WORLD_SEA_LEVEL_DEPTH)
                     + tenebris_core::planet_gen::sea_raise_m(&w.body) as f64;
                 let mut best = -1i32;
-                let mut best_s = 0.0f32;
+                let mut best_s = 0.0f32; /* metric for the chosen tile */
                 for i in 0..w.tile_count {
                     if let Some(t) = w.grid.tile(i) {
                         let s = tenebris_core::planet_gen::profile(&w.body, t.center).surface_m;
-                        if s < best_s {
+                        if wade {
+                            /* Seabed one block below sea level: surface_m nearest
+                             * -1 m, and it must be underwater (s < 0). */
+                            if s < -0.2 {
+                                let score = -(s + 1.0).abs();
+                                if best < 0 || score > best_s {
+                                    best_s = score;
+                                    best = i;
+                                }
+                            }
+                        } else if s < best_s {
+                            /* Deepest ocean tile (most negative surface). */
                             best_s = s;
                             best = i;
                         }
@@ -766,25 +788,22 @@ fn dev_maybe_place(app: &mut App) {
                 }
                 if best >= 0 {
                     let dir = dvec3_normalize(w.grid.tile(best).unwrap().center);
-                    Some((best, dir, sea_r, center, best_s))
+                    let surf_m =
+                        tenebris_core::planet_gen::profile(&w.body, w.grid.tile(best).unwrap().center)
+                            .surface_m as f64;
+                    Some((best, dir, sea_r, center, surf_m))
                 } else {
                     None
                 }
             };
-            if let Some((tile, dir, sea_r, center, depth_m)) = dive {
-                /* Camera depth below the surface. Default ~4 m (well inside the
-                 * deep column, clear of the far-below seabed) so cam_under trips
-                 * + the full underwater fog applies. TENEBRIS_DEV_DIVE=<metres>
-                 * overrides it: a small value like 0.3 parks the eye just under
-                 * the surface, inside the partial-submersion band, to frame the
-                 * near-plane waterline fog. (A non-numeric value like =1 keeps
-                 * the default.) */
-                let dive_depth = std::env::var("TENEBRIS_DEV_DIVE")
-                    .ok()
-                    .and_then(|v| v.trim().parse::<f64>().ok())
-                    .filter(|d| *d > 0.0)
-                    .unwrap_or(4.0);
-                let cam = dvec3_add(center, dvec3_scale(dir, sea_r - dive_depth));
+            if let Some((tile, dir, sea_r, center, surf_m)) = dive {
+                /* position is the FEET; the rendered eye sits EYE_HEIGHT above it
+                 * along `up`. Wading: feet on the shoal seabed (sea_r + surf_m,
+                 * ~1 m below sea level) -> eye ~0.6 m above the surface = partial.
+                 * Diving: feet dive_depth below the surface -> eye deep enough that
+                 * even + EYE_HEIGHT stays fully underwater. */
+                let feet_r = if wade { sea_r + surf_m } else { sea_r - dive_depth };
+                let cam = dvec3_add(center, dvec3_scale(dir, feet_r));
                 {
                     let mut p = app.player.borrow_mut();
                     p.position = cam;
@@ -805,7 +824,13 @@ fn dev_maybe_place(app: &mut App) {
                 });
                 dev_aim_at(app, target);
                 DEV_FISH_CAM.with(|c| c.set(Some(cam)));
-                println!("[dev] dive: deepest tile {} ({:.1} m below sea)", tile, -depth_m);
+                println!(
+                    "[dev] dive: {} tile {} (seabed {:.1} m below sea, feet_r={:.1})",
+                    if wade { "wade" } else { "deep" },
+                    tile,
+                    -surf_m,
+                    feet_r
+                );
             } else {
                 println!("[dev] dive: no ocean found on this planet");
             }
