@@ -1,0 +1,59 @@
+# controls.yaml - keyboard bindings (client/controls.rs).
+#
+# Maps a game ACTION to the physical key(s) that trigger it. Remap a
+# control by editing the key on its line; bind several keys to one action
+# with a comma-separated list (e.g. "LeftShift, RightShift"). Any action
+# left out here keeps its compiled-in default, so a partial file is fine.
+#
+# Key names: letters A..Z, number row Num0..Num9, Space, LeftShift /
+# RightShift, LeftControl / RightControl, Tab, Enter. (Controller support
+# will bind the same action names to pad buttons later - the game reads
+# the action, never the raw key.)
+#
+# Actions:
+#   move_forward / move_back / move_left / move_right - walk / fly
+#   jump            - jump (and thrust up while flying / in space)
+#   sprint          - run
+#   fly_down        - descend while flying / in space
+#   toggle_fly      - toggle creative fly mode
+#   roll_left / roll_right - roll the view (space flight only)
+#   interact        - open the machine under the reticle, else the inventory
+#   eat             - eat the selected food
+#   plant           - plant a seed / till soil under the reticle
+#   survival_toggle - toggle survival / creative
+#   storm_toggle    - toggle the storm (debug)
+#   hotbar_1 .. hotbar_10 - select a hotbar slot
+
+move_forward:    W
+move_back:       S
+move_left:       A
+move_right:      D
+jump:            Space
+sprint:          LeftShift, RightShift
+fly_down:        LeftControl, RightControl, C
+toggle_fly:      F
+survival_toggle: G
+storm_toggle:    K
+
+# Space flight: roll the view with Q / R (E is free for interact).
+roll_left:       Q
+roll_right:      R
+
+# Context action: aim at a machine (chest, furnace, 3D printer, power
+# generator, rocket pad, ...) and press this to open it; otherwise it
+# toggles the inventory.
+interact:        E
+
+eat:             V
+plant:           T
+
+hotbar_1:        Num1
+hotbar_2:        Num2
+hotbar_3:        Num3
+hotbar_4:        Num4
+hotbar_5:        Num5
+hotbar_6:        Num6
+hotbar_7:        Num7
+hotbar_8:        Num8
+hotbar_9:        Num9
+hotbar_10:       Num0

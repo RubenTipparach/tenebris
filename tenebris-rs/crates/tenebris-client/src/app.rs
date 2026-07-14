@@ -2167,6 +2167,8 @@ extern "C" fn init() {
     config::load_bonfire("assets/config/bonfire.yaml");
     tenebris_core::weather::load_config("assets/config/weather.yaml");
     config::load_time("assets/config/time.yaml");
+    /* Keyboard bindings (remappable): raw keys -> named actions. */
+    crate::controls::load("assets/config/controls.yaml");
     /* Start the world clock in daylight (start_day_fraction of a day),
      * unless a dev override pins the time of day. */
     {
@@ -3120,6 +3122,56 @@ fn swap_selected_item(
 /// prompts "[T] till soil"; tilled farmland with seeds prompts
 /// "[T] plant seed". Makes the till-before-plant flow discoverable (it's
 /// not obvious you must work the ground first). Yields to the crop hint.
+/// Friendly name for a machine block the player can open with Interact, or
+/// `None` if the block is not an openable machine. Single source of truth for
+/// both the aim prompt ([`draw_machine_hint`]) and the E-open dispatch - keep
+/// this list in sync with the `match targeted` machine arms in `event_inner`.
+/// ASCII only + no underscores (CLAUDE.md in-game-text rule).
+fn machine_label(b: Block) -> Option<&'static str> {
+    Some(match b {
+        Block::LaunchPad => "rocket",
+        Block::Furnace => "furnace",
+        Block::Bonfire => "bonfire",
+        Block::ElectronicsWorkbench => "workbench",
+        Block::StorageChest => "chest",
+        Block::SteamEngine => "steam engine",
+        Block::ElectricFurnace => "electric furnace",
+        Block::HydroGenerator => "generator",
+        Block::Computer => "computer",
+        Block::Printer3D => "3d printer",
+        _ => return None,
+    })
+}
+
+/// Reticle prompt shown when aiming at an openable machine: `"[E] open chest"`.
+/// The key label tracks the Interact binding (controls.yaml), so a remap moves
+/// the prompt with it. Drawn from the HUD block, same slot as the other hints.
+fn draw_machine_hint(app: &App, screen_w: f32, screen_h: f32) {
+    if !app.interact.has_target || app.interact.is_torch_target {
+        return;
+    }
+    let targeted = app
+        .world
+        .borrow()
+        .get(app.interact.hit_tile, app.interact.hit_depth);
+    let Some(name) = machine_label(targeted) else {
+        return;
+    };
+    let key = crate::controls::action_label(crate::controls::Action::Interact);
+    let msg = format!("[{}] open {}", key, name);
+    let cell = 8.0f32;
+    let x = (screen_w * 0.5 - (msg.len() as f32 * cell) * 0.5) / cell;
+    let y = (screen_h * 0.5 + 24.0) / cell;
+    sdtx::canvas(screen_w, screen_h);
+    sdtx::font(1);
+    sdtx::origin(x, y);
+    sdtx::color3b(0x90, 0xd0, 0xf0);
+    sdtx::home();
+    sdtx::puts(&msg);
+    sdtx::font(0);
+    sdtx::color3b(0xff, 0xff, 0xff);
+}
+
 fn draw_farming_hint(app: &App, screen_w: f32, screen_h: f32) {
     /* Fishing owns the reticle line while a line is out (or the rod is
      * selected): cast state / bite alarm / catch flash. */
@@ -5658,6 +5710,11 @@ fn frame_inner(app: &mut App) {
         /* Farming ground hint: till soil / plant seed. (Plants no longer
          * show a harvest prompt - they're broken like blocks.) */
         draw_farming_hint(app, sapp::widthf(), sapp::heightf());
+        /* Machine prompt: "[E] open chest" when aiming at an openable machine
+         * (chest, furnace, 3d printer, generator, rocket pad, ...). Machine
+         * blocks are disjoint from the farmland/dirt the farming hint fires on,
+         * so the two never print over each other. */
+        draw_machine_hint(app, sapp::widthf(), sapp::heightf());
         /* Survival: prompt when the targeted block needs a better tool. */
         draw_tool_gate_hint(app, sapp::widthf(), sapp::heightf());
     }
@@ -5873,12 +5930,9 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
      * -> smelting). Checked before the inventory toggle so the block is
      * the in-world entry point; Shift+E stays the inventory binding, and
      * a non-station target falls through to the normal E behaviour. */
-    if e._type == sapp::EventType::KeyDown
-        && e.key_code == sapp::Keycode::E
-        && (e.modifiers & sapp::MODIFIER_SHIFT) == 0
-        && app.interact.has_target
-        && !app.interact.is_torch_target
-    {
+    let interact_pressed = e._type == sapp::EventType::KeyDown
+        && crate::controls::action_for_key(e.key_code) == Some(crate::controls::Action::Interact);
+    if interact_pressed && app.interact.has_target && !app.interact.is_torch_target {
         let targeted = app
             .world
             .borrow()
@@ -5983,40 +6037,19 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
         }
     }
 
-    /* E: toggle the inventory / crafting overlay.
-     *
-     *   In gravity:        E              -> toggles
-     *   In space:          E              -> roll-right (legacy), and
-     *                                       a few rapid taps fires the
-     *                                       Shift+E hint toast.
-     *   Anywhere:          Shift+E        -> toggles
-     *   While overlay open: any E          -> closes
-     *
-     * The branching here is so the player who came in from a planet
-     * surface, where plain E worked, doesn't lose roll-control the
-     * moment they leave gravity - but also gets a visible nudge that
-     * the binding moved. The toggle path swallows the event; the
-     * roll path falls through to input.rs's existing
-     * Keycode::E -> roll_right wiring. */
-    if e._type == sapp::EventType::KeyDown && e.key_code == sapp::Keycode::E {
-        let shift_held = (e.modifiers & sapp::MODIFIER_SHIFT) != 0;
-        let in_space = app.player.borrow().is_in_space;
-        let inv_open = inventory_screen::is_open();
-        if inv_open || !in_space || shift_held {
-            inventory_screen::toggle();
-            /* Mutually exclusive with the craft panel - only one
-             * survival overlay up at a time so their input + sdtx text
-             * never collide. */
-            if inventory_screen::is_open() {
-                crafting_screen::close();
-                rocket_screen::close();
-            }
-            return;
+    /* Interact (default E) with no machine under the reticle: toggle the
+     * inventory / crafting overlay. Same everywhere now - roll moved to
+     * Q / R (see controls.yaml), so E no longer doubles as roll-right in
+     * space and needs no shift modifier or space special-case. */
+    if interact_pressed {
+        inventory_screen::toggle();
+        /* Mutually exclusive with the craft panel - only one survival
+         * overlay up at a time so their input + sdtx text never collide. */
+        if inventory_screen::is_open() {
+            crafting_screen::close();
+            rocket_screen::close();
         }
-        /* In space, no shift, overlay closed: roll-right wants this
-         * key. Count the tap so a sustained run of unmodified Es
-         * surfaces the Shift+E hint toast. */
-        inventory_screen::note_e_tap_in_space();
+        return;
     }
     /* K: toggle the tech-tree / progression guide overlay. */
     if e._type == sapp::EventType::KeyDown && e.key_code == sapp::Keycode::K {

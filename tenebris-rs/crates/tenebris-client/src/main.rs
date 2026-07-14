@@ -23,6 +23,7 @@ mod egui_layer;
 mod gfx_math;
 mod hex_mesher;
 mod hotbar_ui;
+mod controls;
 mod input;
 mod interact;
 mod inventory;

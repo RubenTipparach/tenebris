@@ -205,7 +205,7 @@ struct State {
     survival_toggle_edge: bool,
     /// One-shot: player pressed the storm-toggle key (K) this frame.
     storm_toggle_edge: bool,
-    /// One-shot: player pressed the eat key (R) this frame.
+    /// One-shot: player pressed the eat action key this frame.
     eat_edge: bool,
     /// One-shot: player pressed the plant/harvest key (T) this frame.
     plant_edge: bool,
@@ -265,68 +265,63 @@ mod test_doubles {
 
 /* ----------------------------------------------------------------------- */
 
-/// Port of `set_key()`.
+/// Apply a raw key event through the configurable binding layer
+/// ([`crate::controls`]): the key resolves to a named [`Action`], and the
+/// action is what drives movement / edges / hotbar. Keys with no binding are
+/// ignored. `Interact` is handled at the high level in `app.rs` (it opens
+/// machines / the inventory before events reach here), so it is a no-op in
+/// this per-frame physics layer.
 fn set_key(s: &mut State, k: sapp::Keycode, down: bool) {
-    use sapp::Keycode;
-    match k {
-        Keycode::W => s.pub_.phys.forward = down,
-        Keycode::S => s.pub_.phys.backward = down,
-        Keycode::A => s.pub_.phys.left = down,
-        Keycode::D => s.pub_.phys.right = down,
-        Keycode::Space => {
+    use crate::controls::Action;
+    let Some(action) = crate::controls::action_for_key(k) else {
+        return;
+    };
+    match action {
+        Action::MoveForward => s.pub_.phys.forward = down,
+        Action::MoveBack => s.pub_.phys.backward = down,
+        Action::MoveLeft => s.pub_.phys.left = down,
+        Action::MoveRight => s.pub_.phys.right = down,
+        Action::Jump => {
             s.pub_.phys.jump = down;
             s.pub_.phys.fly_up = down;
         }
-        Keycode::LeftShift | Keycode::RightShift => s.pub_.phys.sprint = down,
-        Keycode::LeftControl | Keycode::RightControl | Keycode::C => {
-            s.pub_.phys.fly_down = down;
-        }
-        Keycode::F => {
+        Action::Sprint => s.pub_.phys.sprint = down,
+        Action::FlyDown => s.pub_.phys.fly_down = down,
+        Action::ToggleFly => {
             if down {
                 s.pub_.phys.fly_mode = !s.pub_.phys.fly_mode;
             }
         }
-        Keycode::G => {
+        Action::SurvivalToggle => {
             if down {
                 s.survival_toggle_edge = true;
             }
         }
-        Keycode::K => {
+        Action::StormToggle => {
             if down {
                 s.storm_toggle_edge = true;
             }
         }
-        Keycode::R => {
+        Action::Eat => {
             if down {
                 s.eat_edge = true;
             }
         }
-        Keycode::T => {
+        Action::Plant => {
             if down {
                 s.plant_edge = true;
             }
         }
-        Keycode::Q => s.pub_.phys.roll_left = down,
-        Keycode::E => s.pub_.phys.roll_right = down,
-        Keycode::Num1
-        | Keycode::Num2
-        | Keycode::Num3
-        | Keycode::Num4
-        | Keycode::Num5
-        | Keycode::Num6
-        | Keycode::Num7
-        | Keycode::Num8
-        | Keycode::Num9 => {
+        Action::RollLeft => s.pub_.phys.roll_left = down,
+        Action::RollRight => s.pub_.phys.roll_right = down,
+        Action::Interact => { /* high-level, handled in app.rs */ }
+        Action::Hotbar(slot) => {
             if down {
-                s.pub_.hotbar[(k as i32 - Keycode::Num1 as i32) as usize] = true;
+                if let Some(cell) = s.pub_.hotbar.get_mut(slot as usize) {
+                    *cell = true;
+                }
             }
         }
-        Keycode::Num0 => {
-            if down {
-                s.pub_.hotbar[9] = true;
-            }
-        }
-        _ => {}
     }
 }
 
@@ -445,7 +440,7 @@ pub fn consume_storm_toggle() -> bool {
     })
 }
 
-/// One-shot: did the player press the eat key (R) this frame?
+/// One-shot: did the player press the eat action key this frame?
 pub fn consume_eat() -> bool {
     S.with(|cell| {
         let s = &mut *cell.borrow_mut();
@@ -970,6 +965,9 @@ mod tests {
     /// explicit.)
     fn setup() {
         init();
+        /* Isolate from any custom bindings a controls test left in the
+         * shared thread-local (test threads are pooled). */
+        crate::controls::reset_to_defaults();
         test_doubles::MOUSE_LOCK.with(|c| c.set(false));
         test_doubles::SCREEN.with(|c| c.set((800.0, 600.0)));
     }
@@ -1057,9 +1055,16 @@ mod tests {
         assert!(!state().phys.sprint);
         handle_event(&key(EventType::KeyDown, Keycode::C));
         assert!(state().phys.fly_down);
+        /* Roll is Q (left) / R (right) - E is the interact/inventory key now
+         * and no longer rolls (controls.yaml default scheme). */
         handle_event(&key(EventType::KeyDown, Keycode::Q));
-        handle_event(&key(EventType::KeyDown, Keycode::E));
+        handle_event(&key(EventType::KeyDown, Keycode::R));
         assert!(state().phys.roll_left && state().phys.roll_right);
+        /* E maps to Interact, which is handled at the high level, so it must
+         * NOT drive roll here. */
+        handle_event(&key(EventType::KeyUp, Keycode::R));
+        handle_event(&key(EventType::KeyDown, Keycode::E));
+        assert!(!state().phys.roll_right);
     }
 
     #[test]
