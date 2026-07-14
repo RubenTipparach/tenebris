@@ -233,18 +233,24 @@ void main()
             color = mix(color, rd_blur(scene_color_scene_smp, v_uv, dz * 3.5), dz * composite_fs_params[1].w);
         }}
     }}
-    // Above-waterline mask: only bites while the camera STRADDLES the surface
-    // (fx_params.z tri-state == 0.5). Then it is 1 where the pixel's scene sits
-    // at/above sea level (or is sky) and 0 below, so drops render only on the
-    // above-water half of a half-submerged view. When the eye is clearly above
-    // the water (z == 0.0), the mask is a flat 1 so raindrops bead over the
-    // whole lens INCLUDING the water surface the camera looks down on - the old
-    // per-pixel test keyed off the submerged seafloor (water is not in the
-    // depth buffer) and wrongly wiped drops off all water from above. (z == 1.0
-    // is fully underwater; the droplet blocks are skipped there regardless.)
-    float above_water = (composite_fs_params[4].z > 0.25)
-        ? (_107 ? 1.0 : smoothstep(-_68, _68, pixel_alt))
-        : 1.0;
+    // Above-waterline mask for the lens droplets. Only bites while the camera
+    // STRADDLES the surface (fx_params.z == 0.5); when clearly above water
+    // (z == 0.0) it is a flat 1 so drops bead over the whole lens, including the
+    // water the camera looks down on. Straddling, the split is by RAY DIRECTION
+    // (d_up = how far this ray rises toward the surface), NOT per-pixel seabed
+    // altitude: the seabed sits below sea level across ALL water, so the old
+    // altitude test wiped drops off the entire water SURFACE, not just the
+    // submerged murk. d_up puts drops on everything at/above the on-screen
+    // waterline - the water surface AND the sky - and clears them only where the
+    // view looks steeply DOWN into the deep water. (z == 1.0 fully underwater ->
+    // the droplet blocks are skipped anyway.)
+    float above_water;
+    if (composite_fs_params[4].z > 0.25) {
+        float d_up = dot(normalize(v_view_dir), normalize(v_camera_pos - composite_fs_params[3].xyz));
+        above_water = smoothstep(-0.12, -0.02, d_up);
+    } else {
+        above_water = 1.0;
+    }
     // Rain-on-glass (Heartfelt drops), refraction only - NO lens fog: sample
     // the scene sharply through each drop's normal, applied only where drops
     // are so distance fog between drops is preserved.
