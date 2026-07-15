@@ -15,6 +15,14 @@ use std::cell::Cell;
 
 use sokol::gl as sgl;
 
+thread_local! {
+    /* Additive FX pipeline, mining-the-sky style: blend ONE/ONE (black =
+     * transparent, so vertex-colour fades ARE the alpha), depth TESTED so
+     * terrain occludes the plasma but never WRITTEN so overlapping sheath
+     * cards + streaks accumulate light instead of z-fighting. */
+    static PIP_FX: Cell<sgl::Pipeline> = const { Cell::new(sgl::Pipeline { id: 0 }) };
+}
+
 use tenebris_core::math::{
     dvec3_add, dvec3_cross, dvec3_length, dvec3_make, dvec3_normalize, dvec3_scale, DVec3,
 };
@@ -94,8 +102,70 @@ pub fn draw(view: crate::gfx_math::Mat4, proj: crate::gfx_math::Mat4, cam: DVec3
     let side = dvec3_normalize(dvec3_cross(reference, axis));
     let side2 = dvec3_cross(axis, side);
 
+    let mut pip = PIP_FX.with(|p| p.get());
+    if pip.id == 0 {
+        let mut desc = sokol::gfx::PipelineDesc {
+            depth: sokol::gfx::DepthState {
+                write_enabled: false,
+                compare: sokol::gfx::CompareFunc::Less,
+                ..Default::default()
+            },
+            cull_mode: sokol::gfx::CullMode::None,
+            ..Default::default()
+        };
+        desc.colors[0].blend = sokol::gfx::BlendState {
+            enabled: true,
+            src_factor_rgb: sokol::gfx::BlendFactor::One,
+            dst_factor_rgb: sokol::gfx::BlendFactor::One,
+            src_factor_alpha: sokol::gfx::BlendFactor::One,
+            dst_factor_alpha: sokol::gfx::BlendFactor::One,
+            ..Default::default()
+        };
+        pip = sgl::make_pipeline(&desc);
+        PIP_FX.with(|p| p.set(pip));
+    }
+    sgl::load_pipeline(pip);
     sgl::disable_texture();
     sgl::begin_quads();
+
+    /* Plasma sheath: the mining-the-sky flame-card build - a wide orange
+     * BODY card plus a narrower WHITE-HOT core card, camera-facing, tapered
+     * to ~1/5 width at the tip, with the same turbulent two-sine flicker.
+     * Per-vertex colours ramp head -> deep-red tail; under additive blend
+     * the tail fade to black is the transparency. */
+    {
+        let head_at = dvec3_add(cam, dvec3_scale(axis, FIELD_AHEAD_M * 0.7));
+        let view_to = dvec3_normalize(dvec3_add(dvec3_scale(head_at, -1.0), cam));
+        let mut w_axis = dvec3_cross(axis, view_to);
+        if dvec3_length(w_axis) < 1e-4 {
+            w_axis = side;
+        }
+        let w_axis = dvec3_normalize(w_axis);
+        let mut card = |len: f64, half_w: f64, seed: f32, inten: f32, head_c: (f32, f32, f32), tail_c: (f32, f32, f32)| {
+            let fl = 0.72
+                + 0.28
+                    * ((t * 46.0 + seed as f64 * 6.28).sin()
+                        * (t * 27.0 + seed as f64 * 3.14).sin()) as f32;
+            let a = inten * fl * it;
+            let tip = dvec3_add(head_at, dvec3_scale(axis, len));
+            let wn = dvec3_scale(w_axis, half_w);
+            let wt = dvec3_scale(w_axis, half_w * 0.22);
+            sgl::c3f(head_c.0 * a, head_c.1 * a, head_c.2 * a);
+            let h0 = dvec3_add(head_at, wn);
+            let h1 = dvec3_add(head_at, dvec3_scale(wn, -1.0));
+            sgl::v3f(h0.x as f32, h0.y as f32, h0.z as f32);
+            sgl::v3f(h1.x as f32, h1.y as f32, h1.z as f32);
+            sgl::c3f(tail_c.0 * a * 0.25, tail_c.1 * a * 0.25, tail_c.2 * a * 0.25);
+            let t1 = dvec3_add(tip, dvec3_scale(wt, -1.0));
+            let t0 = dvec3_add(tip, wt);
+            sgl::v3f(t1.x as f32, t1.y as f32, t1.z as f32);
+            sgl::v3f(t0.x as f32, t0.y as f32, t0.z as f32);
+        };
+        /* Wide orange body, then the white-hot core (their exact ramp). */
+        card(8.0, 2.4, 0.10, 0.8, (1.0, 0.55, 0.12), (0.85, 0.12, 0.03));
+        card(5.0, 1.1, 0.63, 1.25, (1.3, 1.25, 1.1), (1.0, 0.55, 0.12));
+    }
+
     let n = ((STREAK_COUNT as f32) * it) as usize;
     for i in 0..n.max(1) {
         let ang = hashf(i, 1) * std::f64::consts::TAU;
