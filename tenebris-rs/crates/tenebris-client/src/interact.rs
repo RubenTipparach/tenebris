@@ -779,14 +779,39 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
 /// [`try_pickup_scatter`], so the pebble you can right-click is exactly the
 /// pebble E picks up. Bushes are leafy, so they hand over STICK - the same
 /// rule `forage_surface` applies to a Leaves surface.
-fn scatter_pickup_item(w: &World, tile_idx: i32) -> Option<items::ItemId> {
+/// Returns the item plus the player-facing name of the thing they can SEE
+/// sitting there, so the aim prompt can say "pick up flint" / "pick up mossy
+/// rock" instead of naming what it yields (the leafy mound gives sticks, but
+/// "pick up stick" over a mossy rock reads like a bug). ASCII, no underscores
+/// (CLAUDE.md in-game-text rule).
+fn scatter_pickup_named(w: &World, tile_idx: i32) -> Option<(items::ItemId, &'static str)> {
     if crate::hex_mesher::tile_has_rock(w, tile_idx) {
-        return Some(items::FLINT);
+        return Some((items::FLINT, "flint"));
     }
     if crate::hex_mesher::tile_has_bush(w, tile_idx) {
-        return Some(items::STICK);
+        return Some((items::STICK, "mossy rock"));
     }
     None
+}
+
+fn scatter_pickup_item(w: &World, tile_idx: i32) -> Option<items::ItemId> {
+    scatter_pickup_named(w, tile_idx).map(|(item, _)| item)
+}
+
+/// What the E-key pickup would gather from the tile under the reticle, if
+/// anything - the SINGLE source of truth shared by the aim prompt
+/// (`[E] pick up flint`) and [`try_pickup_scatter`]. Because both ask this one
+/// question, the prompt appears exactly when the pickup will actually fire:
+/// if you can see the prompt, E works, and if you cannot, E was never going to.
+pub fn pickup_target(
+    s: &InteractState,
+    w: &World,
+    p: &PlayerCtrl,
+) -> Option<(items::ItemId, &'static str)> {
+    if !p.survival_mode || !s.has_target || s.is_torch_target {
+        return None;
+    }
+    scatter_pickup_named(w, s.hit_tile)
 }
 
 /// E-key pickup: hover a loose scatter object (a flint pebble, a leafy bush
@@ -800,12 +825,15 @@ fn scatter_pickup_item(w: &World, tile_idx: i32) -> Option<items::ItemId> {
 /// of [`forage_surface`]: grass / stone / leaf surfaces are almost every tile
 /// underfoot, so foraging those on E would swallow the inventory binding.
 pub fn try_pickup_scatter(s: &InteractState, w: &World, p: &PlayerCtrl) -> bool {
-    if !p.survival_mode || !s.has_target || s.is_torch_target {
-        return false;
-    }
-    match scatter_pickup_item(w, s.hit_tile) {
-        Some(item) => {
-            crate::drops::spawn(w, s.hit_tile, s.hit_depth, item, 1);
+    match pickup_target(s, w, p) {
+        Some((item, _)) => {
+            /* Spawn in the AIR cell above the surface, not inside the solid
+             * ground block the ray hit: the drop's magnet pulls from the
+             * player, and a pickup buried half a block under the floor starts
+             * further away than it looks. Mining can spawn at hit_depth
+             * because it has just turned that cell to air; foraging has not. */
+            let air_depth = (s.hit_depth + 1).min(WORLD_MAX_DEPTH - 1);
+            crate::drops::spawn(w, s.hit_tile, air_depth, item, 1);
             true
         }
         None => false,

@@ -3229,6 +3229,35 @@ fn draw_machine_hint(app: &App, screen_w: f32, screen_h: f32) {
     sdtx::color3b(0xff, 0xff, 0xff);
 }
 
+/// Reticle prompt shown when aiming at a loose scatter object you can gather:
+/// `"[E] pick up flint"` over a pebble, `"[E] pick up mossy rock"` over a leafy
+/// mound. Asks `interact::pickup_target` - the same question the E handler asks
+/// - so the prompt is an exact preview of whether E will fire, never a lie.
+/// Machine blocks can't carry scatter, so this never collides with the machine
+/// hint's slot.
+fn draw_pickup_hint(app: &App, screen_w: f32, screen_h: f32) {
+    let Some((_, name)) = ({
+        let w = app.world.borrow();
+        let p = app.player.borrow();
+        crate::interact::pickup_target(&app.interact, &w, &p)
+    }) else {
+        return;
+    };
+    let key = crate::controls::action_label(crate::controls::Action::Interact);
+    let msg = format!("[{}] pick up {}", key, name);
+    let cell = 8.0f32;
+    let x = (screen_w * 0.5 - (msg.len() as f32 * cell) * 0.5) / cell;
+    let y = (screen_h * 0.5 + 24.0) / cell;
+    sdtx::canvas(screen_w, screen_h);
+    sdtx::font(1);
+    sdtx::origin(x, y);
+    sdtx::color3b(0x90, 0xd0, 0xf0);
+    sdtx::home();
+    sdtx::puts(&msg);
+    sdtx::font(0);
+    sdtx::color3b(0xff, 0xff, 0xff);
+}
+
 /// Credits readout (top-right): the space-era wallet. Only shown in survival /
 /// space worlds - creative has no economy.
 fn draw_credits_hud(app: &App, screen_w: f32, screen_h: f32) {
@@ -5843,6 +5872,10 @@ fn frame_inner(app: &mut App) {
          * blocks are disjoint from the farmland/dirt the farming hint fires on,
          * so the two never print over each other. */
         draw_machine_hint(app, sapp::widthf(), sapp::heightf());
+        /* Pickup prompt: "[E] pick up flint" / "[E] pick up mossy rock" when
+         * aiming at a loose scatter object. Scatter only grows on plain ground,
+         * which carries no machine, so this and the machine hint are disjoint. */
+        draw_pickup_hint(app, sapp::widthf(), sapp::heightf());
         /* Rocket flight HUD (top-centre) while riding a rocket. */
         draw_rocket_hud(app, sapp::widthf(), sapp::heightf());
         /* Credits wallet (top-right). */
