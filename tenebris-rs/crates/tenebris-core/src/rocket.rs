@@ -167,6 +167,17 @@ pub struct FlightConstants {
     pub parachute_drag: f32,
 }
 
+/// Reentry-FX thresholds (client visual; `[reentry]` in rocket.yaml).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ReentryConstants {
+    /// Speed where the plasma starts to lick (m/s).
+    pub min_speed_mps: f32,
+    /// Speed of a full plasma sheath (m/s).
+    pub full_speed_mps: f32,
+    /// FX only inside this altitude band above the surface (m).
+    pub max_alt_m: f32,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RocketConfig {
     /// Atmospheric engine: high thrust, thirsty (the lift-off stage).
@@ -176,6 +187,7 @@ pub struct RocketConfig {
     pub fuel_tank: FuelTankStats,
     pub command_module: CommandModuleStats,
     pub flight: FlightConstants,
+    pub reentry: ReentryConstants,
 }
 
 /// Compiled-in defaults = the JS RocketConfig (MEDIUM_* parts).
@@ -199,6 +211,7 @@ pub const DEFAULT_ROCKET_CONFIG: RocketConfig = RocketConfig {
         drag_coef: 0.5,
         parachute_drag: 0.95,
     },
+    reentry: ReentryConstants { min_speed_mps: 45.0, full_speed_mps: 95.0, max_alt_m: 120.0 },
 };
 
 impl Default for RocketConfig {
@@ -257,6 +270,9 @@ pub fn parse_rocket_config(src: &str) -> RocketConfig {
             ("command_module", "parachute_terminal_mps") => {
                 c.command_module.parachute_terminal_mps = val
             }
+            ("reentry", "min_speed_mps") => c.reentry.min_speed_mps = val,
+            ("reentry", "full_speed_mps") => c.reentry.full_speed_mps = val,
+            ("reentry", "max_alt_m") => c.reentry.max_alt_m = val,
             ("flight", "gravity_mps2") => c.flight.gravity_mps2 = val,
             ("flight", "launch_alt_m") => c.flight.launch_alt_m = val,
             ("flight", "safe_landing_mps") => c.flight.safe_landing_mps = val,

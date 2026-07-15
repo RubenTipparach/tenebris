@@ -39,3 +39,10 @@ launch_alt_m: 5         # LAUNCHING -> IN_FLIGHT threshold altitude
 safe_landing_mps: 2
 drag_coef: 0.5
 parachute_drag: 0.95
+
+# Reentry FX (client visual): plasma streaks when falling fast inside the
+# lower atmosphere. Ramps min_speed -> full_speed; only below max_alt_m.
+[reentry]
+min_speed_mps: 45
+full_speed_mps: 95
+max_alt_m: 120

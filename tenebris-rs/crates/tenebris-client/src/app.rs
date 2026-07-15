@@ -5746,6 +5746,19 @@ fn frame_inner(app: &mut App) {
      * z-sort correctly against them. */
     animals::draw(view, proj, renderer::time_seconds());
     crate::rocket_fx::draw(view, proj, &app.world.borrow());
+    /* Reentry plasma: streaks past the camera when falling fast in the
+     * lower atmosphere (rocket.yaml [reentry]; dev-forced by
+     * TENEBRIS_DEV_REENTRY). Same world sgl pass as the rocket. */
+    {
+        let p = app.player.borrow();
+        let center = dvec3_make(app.body.pos_x, app.body.pos_y, app.body.pos_z);
+        let rel = dvec3_sub(p.position, center);
+        let alt = tenebris_core::math::dvec3_length(rel) - app.body.radius_m;
+        let speed = tenebris_core::math::dvec3_length(p.velocity);
+        crate::reentry_fx::update(alt, speed, 1.0 / 60.0);
+        let eye = dvec3_add(p.position, dvec3_scale(p.basis.up, player_ctrl::EYE_HEIGHT as f64));
+        crate::reentry_fx::draw(view, proj, eye, p.velocity, p.basis.fwd, p.basis.up);
+    }
     fishing::draw(view, proj, &app.player.borrow());
     crops::draw(view, proj);
     drops::draw(view, proj, renderer::time_seconds());

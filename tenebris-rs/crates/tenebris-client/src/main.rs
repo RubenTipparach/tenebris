@@ -20,6 +20,7 @@ mod power_ui;
 mod rocket_screen;
 mod rocket_fx;
 mod rocket_ride;
+mod reentry_fx;
 mod station_screen;
 mod egui_layer;
 mod gfx_math;

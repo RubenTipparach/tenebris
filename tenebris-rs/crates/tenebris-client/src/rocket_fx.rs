@@ -55,9 +55,9 @@ const INTERSTAGE_SHADE: f32 = 0.75;
 /// posts, wide at the base and TAPERING toward the top, running the full
 /// interstage height parallel to the rocket axis.
 const STRUT_COUNT: usize = 6;
-/// Column half-width at the base and at the top (m) - the taper.
-const STRUT_HALF_W_B: f32 = 0.18;
-const STRUT_HALF_W_T: f32 = 0.07;
+/// Column half-width (m) - uniform top to bottom (no taper), per feedback.
+const STRUT_HALF_W_B: f32 = 0.09;
+const STRUT_HALF_W_T: f32 = 0.09;
 /// Per-face shades so the post reads as a lit solid, not a flat stripe:
 /// outer face brightest, tangent sides mid, inner darkest.
 const STRUT_SHADE_OUT: f32 = 0.55;
