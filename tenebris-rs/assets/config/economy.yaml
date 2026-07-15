@@ -1,0 +1,14 @@
+# economy.yaml - space-era economy tunables (core/economy.rs).
+#
+# Flat `key: value` numbers, `#` comments. Any omitted field keeps the
+# compiled-in default (DEFAULT_ECONOMY_CONFIG), so partial overrides are
+# fine. Per the repo rules every price / payout / sink knob lives here,
+# never inline in gameplay code.
+#
+#   starting_credits     credits a brand-new world starts with
+#   fuel_price_per_unit  station price of one fuel unit
+#   sell_spread          sell price = buy price * this (0..1 market spread)
+
+starting_credits:    0
+fuel_price_per_unit: 2.0
+sell_spread:         0.6

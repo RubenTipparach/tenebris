@@ -6,6 +6,7 @@ pub mod clouds;
 pub mod weather;
 pub mod config;
 pub mod crafting;
+pub mod economy;
 pub mod farming;
 pub mod fauna;
 pub mod fishing;

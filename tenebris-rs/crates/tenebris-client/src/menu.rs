@@ -3901,6 +3901,7 @@ mod tests {
         
             survival: false,
             space: false,
+            credits: 0,
         }
     }
 

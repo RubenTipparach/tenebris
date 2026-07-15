@@ -2185,6 +2185,8 @@ extern "C" fn init() {
     config::load_time("assets/config/time.yaml");
     /* Keyboard bindings (remappable): raw keys -> named actions. */
     crate::controls::load("assets/config/controls.yaml");
+    /* Space-era economy tunables (credits, prices, spreads). */
+    tenebris_core::economy::load_config("assets/config/economy.yaml");
     /* Start the world clock in daylight (start_day_fraction of a day),
      * unless a dev override pins the time of day. */
     {
@@ -3192,6 +3194,26 @@ fn draw_machine_hint(app: &App, screen_w: f32, screen_h: f32) {
     sdtx::color3b(0xff, 0xff, 0xff);
 }
 
+/// Credits readout (top-right): the space-era wallet. Only shown in survival /
+/// space worlds - creative has no economy.
+fn draw_credits_hud(app: &App, screen_w: f32, screen_h: f32) {
+    let p = app.player.borrow();
+    if !p.survival_mode {
+        return;
+    }
+    let msg = format!("{} cr", p.wallet.credits());
+    drop(p);
+    let cell = 8.0f32;
+    let x = (screen_w - (msg.len() as f32 + 1.5) * cell) / cell;
+    sdtx::canvas(screen_w, screen_h);
+    sdtx::font(1);
+    sdtx::pos(x, 1.0);
+    sdtx::color3b(0xf0, 0xd8, 0x60);
+    sdtx::puts(&msg);
+    sdtx::font(0);
+    sdtx::color3b(0xff, 0xff, 0xff);
+}
+
 /// Rocket flight HUD (top-centre) shown while the player is riding a rocket:
 /// active engine kind, stages left, active-stage fuel %, TWR, and speed, plus
 /// the throttle / stage key hints (which track their bindings).
@@ -3797,6 +3819,10 @@ fn maybe_apply_sp_resume(app: &mut App) {
          * a rescue can't teleport into the previous world's terrain. */
         p.last_good_position = spawn;
         p.last_good_body = Some(app.body.id);
+        /* Fresh world: the configured starting credits (economy.yaml). */
+        p.wallet = tenebris_core::economy::Wallet::new(
+            tenebris_core::economy::config().starting_credits,
+        );
         drop(p);
         app.sp_resume_applied = true;
         return;
@@ -3818,6 +3844,8 @@ fn maybe_apply_sp_resume(app: &mut App) {
      * re-anchoring on the fly). */
     let _ = s.roll;
     let _ = s.body_id;
+    /* Credits wallet rides the pose record (10th field; old saves = 0). */
+    p.wallet = tenebris_core::economy::Wallet::new(s.credits);
     drop(p);
     app.sp_resume_applied = true;
 }
@@ -4170,6 +4198,7 @@ fn maybe_autosave_sp(app: &mut App, dt: f64) {
          * restores survival/creative instead of silently reverting. */
         survival: p.survival_mode,
         space: p.space_mode,
+        credits: p.wallet.credits(),
     };
     persistence::save(&world, &s);
     /* Bag + hunger ride the same cadence (tools/meat must survive a
@@ -5777,6 +5806,8 @@ fn frame_inner(app: &mut App) {
         draw_machine_hint(app, sapp::widthf(), sapp::heightf());
         /* Rocket flight HUD (top-centre) while riding a rocket. */
         draw_rocket_hud(app, sapp::widthf(), sapp::heightf());
+        /* Credits wallet (top-right). */
+        draw_credits_hud(app, sapp::widthf(), sapp::heightf());
         /* Survival: prompt when the targeted block needs a better tool. */
         draw_tool_gate_hint(app, sapp::widthf(), sapp::heightf());
     }

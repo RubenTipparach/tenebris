@@ -156,6 +156,9 @@ pub struct PlayerCtrl {
     /// `survival_mode` (which is also true) so the HUD names the mode and
     /// the save round-trips it; does NOT change any gameplay gate.
     pub space_mode: bool,
+    /// Credits wallet (space-era economy; core::economy rules). Persisted
+    /// with the pose record; every mutation must save same-frame.
+    pub wallet: tenebris_core::economy::Wallet,
     /* Survival item bag: the general store behind the hotbar where
      * crafted resources, tools, and tech-tree items live. Empty in
      * creative; filled by crafting (and later by resource drops). */
