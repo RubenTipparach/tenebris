@@ -45,6 +45,7 @@ mod remote_players;
 mod renderer;
 mod screens;
 mod settings;
+mod slot_dnd;
 mod shaders;
 mod tech_tree;
 mod teleport_menu;

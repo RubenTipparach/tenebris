@@ -97,6 +97,52 @@ enum Action {
     TakeOutput,
 }
 
+/// A draggable slot in this panel. Its own type, so egui's type-keyed drag
+/// payloads can't confuse a bonfire drag with the inventory screen's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Addr {
+    Bag(usize),
+    Input,
+    Fuel,
+    Output,
+}
+
+/// What dragging `from` -> `to` means, or `None` for a move the bonfire
+/// won't make (stone into the cook slot, food into the fuel slot, a drag
+/// onto itself).
+///
+/// The gesture resolves to the SAME [`Action`]s the clicks produce, so
+/// `apply` stays the one place that moves items - drag is a second way to
+/// ask for a move, not a second implementation of one. `bag` reads the bag
+/// row a Bag address points at.
+fn drop_action(from: Addr, to: Addr, bag: impl Fn(usize) -> (u16, u16)) -> Option<Action> {
+    if from == to {
+        return None;
+    }
+    match (from, to) {
+        /* Bag -> a machine slot: same acceptance rules as the click path, so
+         * a drag can't sneak an item in that a click couldn't. */
+        (Addr::Bag(i), Addr::Input) => {
+            let (item, count) = bag(i);
+            (count > 0 && items::smelt_output(item).is_some()).then_some(Action::LoadInput(item))
+        }
+        (Addr::Bag(i), Addr::Fuel) => {
+            let (item, count) = bag(i);
+            (count > 0 && block_entity::is_bonfire_fuel(item))
+                .then_some(Action::LoadFuel(item))
+        }
+        /* A machine slot -> the bag: pull it back out. Any bag slot is a
+         * valid target; `apply` finds the room. */
+        (Addr::Input, Addr::Bag(_)) => Some(Action::TakeInput),
+        (Addr::Fuel, Addr::Bag(_)) => Some(Action::TakeFuel),
+        (Addr::Output, Addr::Bag(_)) => Some(Action::TakeOutput),
+        /* Cooked food straight onto the fire again, or into the fuel slot if
+         * it burns (a charred log is charcoal - real fuel). */
+        (Addr::Output, Addr::Input | Addr::Fuel) => Some(Action::TakeOutput),
+        _ => None,
+    }
+}
+
 const SLOT: f32 = 52.0;
 
 /// Draw the bonfire panel and apply any click this frame.
@@ -128,6 +174,9 @@ pub fn egui_ui(ctx: &egui::Context) {
 
     let cfg = tenebris_core::config::bonfire();
     let mut action: Option<Action> = None;
+    /* One drag resolved per frame; applied after the UI pass (the world is
+     * borrowed for layout until the window closure returns). */
+    let mut dnd: Option<(Addr, Addr)> = None;
     let mut do_close = false;
 
     egui::Window::new("Bonfire")
@@ -151,7 +200,9 @@ pub fn egui_ui(ctx: &egui::Context) {
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
                     ui.label(egui::RichText::new("Cook").weak());
-                    if ui_icons::slot(ui, b.input.item, b.input.count, 0, SLOT, None).clicked() {
+                    let r = ui_icons::slot(ui, b.input.item, b.input.count, 0, SLOT, None);
+                    crate::slot_dnd::wire(&r, Addr::Input, &mut dnd);
+                    if r.clicked() {
                         action = Some(Action::TakeInput);
                     }
                 });
@@ -180,7 +231,9 @@ pub fn egui_ui(ctx: &egui::Context) {
                 ui.add_space(8.0);
                 ui.vertical(|ui| {
                     ui.label(egui::RichText::new("Result").weak());
-                    if ui_icons::slot(ui, b.output.item, b.output.count, 0, SLOT, Some(egui::Color32::from_rgb(0x6e, 0xc0, 0x7a))).clicked() {
+                    let r = ui_icons::slot(ui, b.output.item, b.output.count, 0, SLOT, Some(egui::Color32::from_rgb(0x6e, 0xc0, 0x7a)));
+                    crate::slot_dnd::wire(&r, Addr::Output, &mut dnd);
+                    if r.clicked() {
                         action = Some(Action::TakeOutput);
                     }
                 });
@@ -190,7 +243,9 @@ pub fn egui_ui(ctx: &egui::Context) {
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
                     ui.label(egui::RichText::new("Fuel (sticks/logs/charcoal)").weak());
-                    if ui_icons::slot(ui, b.fuel.item, b.fuel.count, 0, SLOT, Some(egui::Color32::from_rgb(0xe0, 0x80, 0x40))).clicked() {
+                    let r = ui_icons::slot(ui, b.fuel.item, b.fuel.count, 0, SLOT, Some(egui::Color32::from_rgb(0xe0, 0x80, 0x40)));
+                    crate::slot_dnd::wire(&r, Addr::Fuel, &mut dnd);
+                    if r.clicked() {
                         action = Some(Action::TakeFuel);
                     }
                 });
@@ -228,10 +283,15 @@ pub fn egui_ui(ctx: &egui::Context) {
             });
 
             ui.separator();
-            ui.label(egui::RichText::new("Bag - click food to cook, wood to fuel").weak());
+            ui.label(
+                egui::RichText::new("Bag - drag onto a slot, or click: food cooks, wood fuels")
+                    .weak(),
+            );
             egui::Grid::new("bonfire-bag").spacing(egui::vec2(3.0, 3.0)).show(ui, |ui| {
                 for (i, &(item, count)) in bag_rows.iter().enumerate() {
-                    if ui_icons::slot(ui, item, count, 0, 40.0, None).clicked() && count > 0 {
+                    let r = ui_icons::slot(ui, item, count, 0, 40.0, None);
+                    crate::slot_dnd::wire(&r, Addr::Bag(i), &mut dnd);
+                    if r.clicked() && count > 0 {
                         if items::smelt_output(item).is_some() {
                             action = Some(Action::LoadInput(item));
                         } else if block_entity::is_bonfire_fuel(item) {
@@ -249,11 +309,96 @@ pub fn egui_ui(ctx: &egui::Context) {
             }
         });
 
+    /* Ghost the dragged icon under the pointer while the drag is live. */
+    crate::slot_dnd::ghost(ctx, "bonfire-drag-ghost", |a: Addr| match a {
+        Addr::Bag(i) => bag_rows.get(i).copied().filter(|&(_, c)| c > 0),
+        Addr::Input => (b.input.count > 0).then_some((b.input.item, b.input.count)),
+        Addr::Fuel => (b.fuel.count > 0).then_some((b.fuel.item, b.fuel.count)),
+        Addr::Output => (b.output.count > 0).then_some((b.output.item, b.output.count)),
+    });
+
+    /* A completed drag resolves to the same Action a click would, so `apply`
+     * below stays the single place items actually move. */
+    if let Some((from, to)) = dnd {
+        if let Some(a) =
+            drop_action(from, to, |i| bag_rows.get(i).copied().unwrap_or((0, 0)))
+        {
+            action = Some(a);
+        }
+    }
+
     if let Some(act) = action {
         apply(&world, &player, tile, depth, act);
     }
     if do_close {
         close();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const FOOD: u16 = items::RAW_MEAT;
+    const FUEL: u16 = items::STICK;
+
+    fn rock() -> u16 {
+        items::from_block(tenebris_core::blocks::Block::Stone)
+    }
+
+    /// Bag row lookup: slot 0 food, slot 1 fuel, slot 2 rock, slot 3 empty.
+    fn bag(i: usize) -> (u16, u16) {
+        match i {
+            0 => (FOOD, 4),
+            1 => (FUEL, 9),
+            2 => (rock(), 6),
+            _ => (0, 0),
+        }
+    }
+
+    #[test]
+    fn dragging_food_onto_the_cook_slot_loads_it() {
+        assert!(matches!(
+            drop_action(Addr::Bag(0), Addr::Input, bag),
+            Some(Action::LoadInput(FOOD))
+        ));
+    }
+
+    #[test]
+    fn dragging_wood_onto_the_fuel_slot_loads_it() {
+        assert!(matches!(
+            drop_action(Addr::Bag(1), Addr::Fuel, bag),
+            Some(Action::LoadFuel(FUEL))
+        ));
+    }
+
+    /// A drag must not sneak in what a click wouldn't: the bonfire cooks
+    /// food and burns wood, and rock is neither.
+    #[test]
+    fn the_bonfire_refuses_what_it_cannot_use() {
+        assert!(drop_action(Addr::Bag(2), Addr::Input, bag).is_none(), "rock is not cookable");
+        assert!(drop_action(Addr::Bag(2), Addr::Fuel, bag).is_none(), "rock does not burn");
+        assert!(drop_action(Addr::Bag(0), Addr::Fuel, bag).is_none(), "meat is not fuel");
+    }
+
+    #[test]
+    fn dragging_from_an_empty_bag_slot_does_nothing() {
+        assert!(drop_action(Addr::Bag(3), Addr::Input, bag).is_none());
+        assert!(drop_action(Addr::Bag(3), Addr::Fuel, bag).is_none());
+    }
+
+    #[test]
+    fn dragging_a_machine_slot_to_the_bag_takes_it_back() {
+        assert!(matches!(drop_action(Addr::Input, Addr::Bag(5), bag), Some(Action::TakeInput)));
+        assert!(matches!(drop_action(Addr::Fuel, Addr::Bag(5), bag), Some(Action::TakeFuel)));
+        assert!(matches!(drop_action(Addr::Output, Addr::Bag(5), bag), Some(Action::TakeOutput)));
+    }
+
+    #[test]
+    fn dropping_a_slot_on_itself_does_nothing() {
+        for a in [Addr::Bag(0), Addr::Input, Addr::Fuel, Addr::Output] {
+            assert!(drop_action(a, a, bag).is_none(), "{a:?} onto itself");
+        }
     }
 }
 

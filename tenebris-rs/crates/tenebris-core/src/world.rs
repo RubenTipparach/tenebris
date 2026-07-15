@@ -1449,12 +1449,18 @@ impl World {
     }
 }
 
-/* True if a block byte is "passable" from the player's POV (air or
- * water). Walkable floors are solid blocks with a passable cell
- * directly above. */
+/* True if a block byte is "passable" from the player's POV (air, water,
+ * or a walk-through prop like a bonfire). Walkable floors are solid
+ * blocks with a passable cell directly above.
+ *
+ * Props count as passable on BOTH sides of that rule, which is what makes
+ * them behave: the ground under a bonfire stays a walkable floor (the
+ * bonfire doesn't roof it), the bonfire itself is never a floor to stand
+ * on, and it doesn't eat headroom. Core, so SP, MP and the fauna sim
+ * (which floor-snaps through `walkable_floor_near`) all agree. */
 #[inline]
 fn block_is_passable(b: u8) -> bool {
-    b == Block::Air.raw() || b == Block::Water.raw()
+    b == Block::Air.raw() || b == Block::Water.raw() || blocks::is_walk_through_raw(b)
 }
 
 /// A tree voxel (trunk or canopy). Trees are stored as solid voxels in
@@ -1819,6 +1825,70 @@ mod tests {
             assert_eq!(w.block_at_pos(p, 100), expected[i], "hinted off {}", off);
         }
         assert_eq!(w.block_at_pos(vec3_make(0.0, 0.0, 0.0), -1), Block::Air);
+    }
+
+    /* ------------------ walk-through props (bonfire) ------------------ */
+
+    /// A bonfire must not become the floor you stand on, and must not stop
+    /// the ground beneath it from being one. Before this, a placed bonfire
+    /// read as an ordinary solid: it roofed the grass under it (so that
+    /// grass was rejected as a floor) and its own top became the walkable
+    /// surface - i.e. you stood ON the fire and couldn't walk through it.
+    #[test]
+    fn bonfire_does_not_take_over_the_floor() {
+        let mut w = tenebris_world();
+        let top100 = 63; /* pinned: topmost solid depth of tile 100 */
+        let ground_floor_r = w.depth_to_radius_m(top100 + 1);
+
+        /* Bare ground: the floor is the top of the terrain. */
+        let feet = ground_floor_r;
+        assert_eq!(w.walkable_floor_near(100, feet, 1.8), ground_floor_r);
+
+        /* Drop a bonfire on it. The floor must NOT move up onto the fire. */
+        w.set(100, top100 + 1, Block::Bonfire);
+        assert_eq!(
+            w.walkable_floor_near(100, feet, 1.8),
+            ground_floor_r,
+            "bonfire became the floor - the player is standing on the fire"
+        );
+        assert_eq!(
+            w.topmost_solid_floor(100),
+            ground_floor_r,
+            "bonfire became the safety-net floor"
+        );
+    }
+
+    /// The same voxel filled with a real block DOES take over the floor -
+    /// proving the test above is measuring walk-through-ness and not some
+    /// unrelated property of that column.
+    #[test]
+    fn a_solid_block_in_that_same_cell_does_take_over_the_floor() {
+        let mut w = tenebris_world();
+        let top100 = 63;
+        let ground_floor_r = w.depth_to_radius_m(top100 + 1);
+        w.set(100, top100 + 1, Block::Stone);
+        assert_eq!(
+            w.walkable_floor_near(100, ground_floor_r, 1.8),
+            w.depth_to_radius_m(top100 + 2),
+            "a solid block should raise the floor"
+        );
+    }
+
+    /// A bonfire overhead must not eat the headroom that decides whether a
+    /// spot is stand-able - otherwise an animal or player next to one gets
+    /// rejected from a floor they should be able to occupy.
+    #[test]
+    fn bonfire_does_not_block_headroom() {
+        let mut w = tenebris_world();
+        let top100 = 63;
+        let ground_floor_r = w.depth_to_radius_m(top100 + 1);
+        /* Sit a bonfire in the head-height cell above the floor. */
+        w.set(100, top100 + 2, Block::Bonfire);
+        assert_eq!(
+            w.walkable_floor_near(100, ground_floor_r, 1.8),
+            ground_floor_r,
+            "bonfire overhead wrongly rejected the floor below it"
+        );
     }
 
     #[test]

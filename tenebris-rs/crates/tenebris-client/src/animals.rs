@@ -1043,12 +1043,32 @@ fn draw_kind(
 /// Draw every animal + lingering corpse. Called in the offscreen opaque
 /// pass next to torches. `time_s` drives the idle clip (the fauna sim
 /// only advances `anim_phase` while moving).
-/// Entity light level: day/night sun brightness lifted by the baked
-/// torch grid (animals were unlit by torches; same knob as terrain -
-/// lighting.yaml torch_intensity - so they warm up together).
-fn entity_lit(pos: DVec3) -> f32 {
+/// The brightest per-source reach any light can have, as a multiple of
+/// `LIGHT_RANGE_M`. A torch is 1.0; a bonfire publishes 2.0. Used as the
+/// gather radius: past this nothing can reach the entity, so it bounds how
+/// far an animal ever has to look.
+const MAX_LIGHT_REACH_SCALE: f32 = 2.0;
+
+/// Every light that can reach `body_local` - a few blocks around the
+/// entity, never a world-wide scan. Backed by the torch spatial grid, so
+/// the cost tracks LOCAL light density rather than the planet's total.
+fn lights_reaching(body_local: Vec3) -> Vec<crate::torch::Torch> {
+    crate::torch::lights_near(body_local, crate::torch::LIGHT_RANGE_M * MAX_LIGHT_REACH_SCALE)
+}
+
+/// Entity light level: day/night sun brightness lifted by nearby torches
+/// and bonfires, through the same falloff and the same
+/// `lighting.yaml torch_intensity` knob as the terrain - so an animal and
+/// the ground it stands on warm up together.
+///
+/// `pos` is absolute; `center` is the body's centre. Both are needed
+/// because lights are stored BODY-LOCAL (see `torch::Torch::position`) -
+/// comparing an absolute entity position against them only happens to line
+/// up on a body sitting at the world origin.
+fn entity_lit(pos: DVec3, center: DVec3) -> f32 {
     let sun = renderer::entity_sun_brightness(pos);
-    let torch = crate::hex_mesher::torch_light_at(tenebris_core::math::dvec3_to_vec3(pos));
+    let local = tenebris_core::math::dvec3_to_vec3(dvec3_sub(pos, center));
+    let torch = crate::hex_mesher::torch_light_from(&lights_reaching(local), local);
     let l = tenebris_core::config::lighting();
     (sun + torch * l.torch_intensity).min(1.5)
 }
@@ -1103,8 +1123,8 @@ pub fn draw(view: Mat4, proj: Mat4, _time_s: f32) {
     for a in &list {
         let up = dvec3_normalize(dvec3_sub(a.pos, center));
         /* Day/night: critters darken with the world (task: animals were
-         * fullbright at night). */
-        let lit = entity_lit(a.pos);
+         * fullbright at night), and warm back up next to a fire. */
+        let lit = entity_lit(a.pos, center);
         /* Steps and falls are real movement now (fauna::reseat), so the
          * sim pos IS the render pos - jumps and drops just play out. */
         let draw_pos = a.pos;
@@ -1132,7 +1152,7 @@ pub fn draw(view: Mat4, proj: Mat4, _time_s: f32) {
     if let Some(set) = &set {
         for corpse in &corpses {
             let up = dvec3_normalize(dvec3_sub(corpse.pos, center));
-            let lit = entity_lit(corpse.pos);
+            let lit = entity_lit(corpse.pos, center);
             let basis = orient_basis(up, corpse.heading);
             sgl::push_matrix();
             sgl::translate(corpse.pos.x as f32, corpse.pos.y as f32, corpse.pos.z as f32);

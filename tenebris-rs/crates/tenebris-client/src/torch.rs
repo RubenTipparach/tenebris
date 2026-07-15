@@ -273,6 +273,65 @@ pub fn lights_along_column(dir: Vec3, r_min: f32, r_max: f32, pad_m: f32) -> Vec
     out
 }
 
+/// The current lights snapshot, refreshing this thread's cache if the
+/// generation moved. One relaxed atomic load on the hot path.
+fn lights_snapshot() -> std::sync::Arc<LightsShared> {
+    LIGHTS_CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        let gen = LIGHTS_GEN.load(Ordering::Acquire);
+        if c.0 != gen {
+            c.1 = lights_shared();
+            c.0 = gen;
+        }
+        c.1.clone()
+    })
+}
+
+/// Gather every light that could reach the POINT `p` (body-local metres)
+/// within `radius_m`. The moving-entity counterpart to
+/// [`lights_along_column`]: same snapshot, same spatial grid, but a single
+/// cell neighbourhood instead of a whole radial column.
+///
+/// This is what lets an animal ask "is anything lighting me?" without
+/// touching the world's other lights - cost tracks local light density,
+/// not the planet-wide count. Safe on any thread.
+///
+/// Pass the light's own reach as `radius_m` (`LIGHT_RANGE_M` scaled by the
+/// brightest source you care about - a bonfire is 2.0), not the entity's
+/// size: the question is which lights reach `p`, not what's near it.
+pub fn lights_near(p: Vec3, radius_m: f32) -> Vec<Torch> {
+    let shared = lights_snapshot();
+    if shared.list.is_empty() {
+        return Vec::new();
+    }
+    /* +-n cells covers the query radius. Cells are >= LIGHT_RANGE_M, so
+     * this is 27 lookups at the default range. */
+    let n = ((radius_m / GRID_CELL_M).ceil() as i32).max(1);
+    let (kx, ky, kz) = grid_key(p);
+    let r2 = radius_m * radius_m;
+    let mut out: Vec<Torch> = Vec::new();
+    for dx in -n..=n {
+        for dy in -n..=n {
+            for dz in -n..=n {
+                let Some(cell) = shared.grid.get(&(kx + dx, ky + dy, kz + dz)) else {
+                    continue;
+                };
+                for &i in cell {
+                    let t = shared.list[i as usize];
+                    /* Grid cells are coarse - reject on true distance so a
+                     * caller's radius means what it says. Measured from the
+                     * flame, which is what actually emits. */
+                    let d = vec3_sub(flame_pos(&t), p);
+                    if d.x * d.x + d.y * d.y + d.z * d.z <= r2 {
+                        out.push(t);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 /* Extra, non-torch light sources merged into the same bake: lit bonfires
  * publish their flames here (scale 2.0) so the terrain mesher lights them
  * through the exact same spatial-grid path as torches, WITHOUT them

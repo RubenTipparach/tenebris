@@ -331,29 +331,15 @@ fn slot_swap(p: &mut crate::player_ctrl::PlayerCtrl, from: SlotAddr, to: SlotAdd
 /// carries its address; releasing another dragged slot over it requests
 /// a swap (returned to the caller to apply after the UI pass).
 fn dnd_slot(resp: &egui::Response, addr: SlotAddr, pending: &mut Option<(SlotAddr, SlotAddr)>) {
-    let resp = resp.clone().interact(egui::Sense::click_and_drag());
-    resp.dnd_set_drag_payload(addr);
-    if let Some(src) = resp.dnd_release_payload::<SlotAddr>() {
-        pending.get_or_insert((*src, addr));
-    }
+    crate::slot_dnd::wire(resp, addr, pending);
 }
 
 /// While a drag is live, ghost the dragged item's icon at the pointer.
 fn dnd_ghost(ctx: &egui::Context, p: &crate::player_ctrl::PlayerCtrl) {
-    let Some(src) = egui::DragAndDrop::payload::<SlotAddr>(ctx) else {
-        return;
-    };
-    let (item, count, _dur) = slot_get(p, *src);
-    if count <= 0 {
-        return;
-    }
-    let Some(pos) = ctx.pointer_interact_pos() else { return };
-    let painter = ctx.layer_painter(egui::LayerId::new(
-        egui::Order::Tooltip,
-        egui::Id::new("inv-drag-ghost"),
-    ));
-    let rect = egui::Rect::from_center_size(pos, egui::vec2(30.0, 30.0));
-    crate::ui_icons::draw_icon(&painter, item, count.clamp(0, u16::MAX as i32) as u16, rect);
+    crate::slot_dnd::ghost(ctx, "inv-drag-ghost", |a: SlotAddr| {
+        let (item, count, _dur) = slot_get(p, a);
+        (count > 0).then(|| (item, count.clamp(0, u16::MAX as i32) as u16))
+    });
 }
 
 /// The 9-slot hotbar row; returns the slot clicked this frame (if any).

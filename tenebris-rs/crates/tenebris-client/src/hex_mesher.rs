@@ -274,16 +274,25 @@ fn tile_lights_begin(w: &World, t: &Tile) {
     TILE_LIGHTS.with(|c| *c.borrow_mut() = lights);
 }
 
-pub(crate) fn torch_light_at(world_pos: Vec3) -> f32 {
-    TILE_LIGHTS.with(|c| {
-        let list = c.borrow();
-        if list.is_empty() {
-            return 0.0;
-        }
-        let decay = torch::LIGHT_DECAY;
+/// Torch light landing on `world_pos` (body-local metres) from `lights`.
+///
+/// The point-light equation, split out from [`torch_light_at`] so callers
+/// that aren't the terrain bake can share it. The bake passes its
+/// per-tile column gather; a moving entity passes `torch::lights_near`
+/// around itself. Both must use THIS function - an animal lit by a
+/// second, subtly different falloff would drift out of agreement with the
+/// ground it stands on.
+///
+/// `world_pos` and the lights' positions are both body-local. An absolute
+/// position only lines up on a body sitting at the world origin.
+pub(crate) fn torch_light_from(lights: &[torch::Torch], world_pos: Vec3) -> f32 {
+    if lights.is_empty() {
+        return 0.0;
+    }
+    let decay = torch::LIGHT_DECAY;
 
-        let mut total = 0.0f32;
-        for t in list.iter() {
+    let mut total = 0.0f32;
+    for t in lights.iter() {
             /* Per-source scale: `scale` is the reach multiplier (range *=
              * scale). A torch is 1.0; a bonfire 2.0 (twice the reach). <= 0
              * means a Default-constructed torch, treated as 1.0. Peak
@@ -311,9 +320,17 @@ pub(crate) fn torch_light_at(world_pos: Vec3) -> f32 {
              * shape, = inten at d = 0. */
             let a = inten / (1.0f32 + decay * d2 / range2);
             total += a;
-        }
-        total.min(3.0)
-    })
+    }
+    total.min(3.0)
+}
+
+/// Torch light at `world_pos` from the lights gathered for the tile being
+/// baked. Mesher-thread only: `TILE_LIGHTS` is a thread-local filled by
+/// `tile_lights_begin`, so on any other thread this reads empty (0.0) or,
+/// worse, some unrelated tile's lights. Moving entities want
+/// `torch_light_from(&torch::lights_near(..), ..)` instead.
+pub(crate) fn torch_light_at(world_pos: Vec3) -> f32 {
+    TILE_LIGHTS.with(|c| torch_light_from(&c.borrow(), world_pos))
 }
 
 /* C dvec3_to_vec3f: identical float casts; math.rs already ports it

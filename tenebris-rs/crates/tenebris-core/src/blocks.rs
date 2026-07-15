@@ -209,6 +209,32 @@ pub fn is_unbreakable(b: Block) -> bool {
     b == Block::Bedrock
 }
 
+/// Props the player and animals walk THROUGH: blocks that fill a voxel
+/// visually but have no movement collider.
+///
+/// Deliberately NOT folded into [`is_solid`]. Solidity is what the mesher,
+/// the interact raycast and the mining path read - a walk-through block
+/// still draws, still takes an E-interact (you couldn't open a bonfire you
+/// can't aim at), and is still mineable. This predicate answers only "does
+/// it stop movement?", and is read by the floor scans in `world` and the
+/// wall collider in the client's player controller.
+///
+/// It's the same split trees already use (`is_tree_raw`): a solid voxel
+/// that physics treats specially, rather than a hole in `is_solid`.
+///
+/// A bonfire is knee-high and you should be able to step over/through it
+/// (and animals shouldn't path around an invisible wall). It reads as a
+/// trigger volume, not a blocker.
+pub fn is_walk_through(b: Block) -> bool {
+    matches!(b, Block::Bonfire)
+}
+
+/// [`is_walk_through`] for a raw voxel byte, for the column scans that
+/// work on `blocks[]` directly. Same list - do not inline a second copy.
+pub fn is_walk_through_raw(b: u8) -> bool {
+    Block::from_raw(b).is_some_and(is_walk_through)
+}
+
 /// Port of `block_covers_face()`.
 ///
 /// True only when this block fully covers the face of an adjacent
@@ -447,6 +473,39 @@ mod tests {
         assert!(!is_transparent(Block::Wood));
         assert!(!is_transparent(Block::Snow));
         assert!(!is_transparent(Block::FrostIce));
+    }
+
+    /// A walk-through prop must stay SOLID: solidity is what the mesher
+    /// draws with, what the interact raycast hits, and what mining reads.
+    /// Only movement is exempt. Fold this into `is_solid` and the bonfire
+    /// stops rendering and can no longer be aimed at with E.
+    #[test]
+    fn walk_through_props_are_still_solid() {
+        assert!(is_walk_through(Block::Bonfire));
+        assert!(is_solid(Block::Bonfire), "a walk-through prop still draws + raycasts");
+        assert!(!is_unbreakable(Block::Bonfire), "and is still mineable");
+    }
+
+    #[test]
+    fn ordinary_blocks_are_not_walk_through() {
+        for b in [Block::Stone, Block::Dirt, Block::Grass, Block::Wood, Block::Bedrock] {
+            assert!(!is_walk_through(b), "{b:?} must still block movement");
+        }
+    }
+
+    /// The raw-byte variant must agree with the typed one - they're two
+    /// entry points to one list, and a drift between them would mean
+    /// physics and rendering disagreed about what's walk-through.
+    #[test]
+    fn walk_through_raw_matches_typed() {
+        for raw in 0u8..=255 {
+            let expect = Block::from_raw(raw).is_some_and(is_walk_through);
+            assert_eq!(is_walk_through_raw(raw), expect, "raw {raw}");
+        }
+        assert!(is_walk_through_raw(Block::Bonfire.raw()));
+        assert!(!is_walk_through_raw(Block::Stone.raw()));
+        /* A byte outside the palette isn't a prop. */
+        assert!(!is_walk_through_raw(254));
     }
 
     #[test]

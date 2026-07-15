@@ -754,7 +754,11 @@ fn camera_collider_push(w: &World, p: &mut PlayerCtrl, cur_tile: i32) {
             continue;
         }
         let nb_block = w.get(nb, eye_depth);
-        if !blocks::is_solid(nb_block) {
+        /* Walk-through props (bonfire) fill a voxel but have no movement
+         * collider - they must not push the eye like a wall. Core's floor
+         * scans already treat them as passable; this is the same rule on
+         * the horizontal side. */
+        if !blocks::is_solid(nb_block) || blocks::is_walk_through(nb_block) {
             continue;
         }
         /* Tree voxels don't own their whole hex (the walk path already
@@ -1255,7 +1259,11 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
                         let floor_depth = feet_depth - 1;
                         if lg_tile >= 0 && floor_depth >= 0 && floor_depth < WORLD_MAX_DEPTH {
                             let below = ww.get(lg_tile, floor_depth);
-                            last_good_has_floor = blocks::is_solid(below);
+                            /* A walk-through prop is not a floor - don't
+                             * let a bonfire underfoot certify a rescue pose
+                             * as safe. */
+                            last_good_has_floor =
+                                blocks::is_solid(below) && !blocks::is_walk_through(below);
                         }
                     }
                 }
