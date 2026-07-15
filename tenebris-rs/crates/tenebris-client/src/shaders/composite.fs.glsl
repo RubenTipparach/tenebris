@@ -196,9 +196,17 @@ void main()
             // reads as a bright HOLE instead of uniform murk (diving deep only hid
             // it because gap grew). Genuinely upward rays keep the finite exit
             // distance so the real sky above the waterline stays clear.
+            //
+            // gap/d_up already grows smoothly toward infinity as d_up -> 0, so
+            // the water-travel distance ramps up on its own approaching the
+            // waterline - no hard cutoff. The epsilon here only guards the
+            // divide for rays at/below horizontal (d_up <= 0, never surfacing),
+            // which saturate. A larger threshold used to snap finite -> huge and
+            // drew a visible dark LINE at the horizon; keeping it tiny lets the
+            // deep-water band fade into the water instead.
             float gap = max(0.0, composite_fs_params[3].w - length(v_camera_pos - composite_fs_params[3].xyz));
             float d_up = dot(normalize(v_view_dir), normalize(v_camera_pos - composite_fs_params[3].xyz));
-            _259 = (d_up > 0.02) ? (gap / d_up) : 100000.0;
+            _259 = (d_up > 0.0008) ? (gap / d_up) : 100000.0;
         }
         else
         {
