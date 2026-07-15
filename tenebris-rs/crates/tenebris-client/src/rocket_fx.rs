@@ -51,6 +51,13 @@ const VAC_BELL_SCALE: f32 = 0.62;
 const INTERSTAGE_SEGS: usize = 12;
 /// Flat shade of the skirt sides (matches the OBJ side-face look before lit).
 const INTERSTAGE_SHADE: f32 = 0.75;
+/// Vertical stringer struts around the interstage skirt.
+const STRUT_COUNT: usize = 6;
+/// Strut half-width (m) and how proud of the skirt surface they stand (m).
+const STRUT_HALF_W: f32 = 0.045;
+const STRUT_PROUD_M: f32 = 0.05;
+/// Struts draw darker than the skirt so they read as structure.
+const STRUT_SHADE: f32 = 0.45;
 
 struct Vtx {
     pos: [f32; 3],
@@ -239,6 +246,25 @@ fn draw_frustum(
         sgl::v3f_t2f(b1.x as f32, b1.y as f32, b1.z as f32, 1.0, 1.0);
         sgl::v3f_t2f(t1.x as f32, t1.y as f32, t1.z as f32, 1.0, 0.0);
         sgl::v3f_t2f(t0.x as f32, t0.y as f32, t0.z as f32, 0.0, 0.0);
+    }
+    /* Vertical stringer struts: darker thin quads standing proud of the
+     * skirt, evenly spaced, running the full bottom-ring -> top-ring line. */
+    let sd = STRUT_SHADE * lit;
+    sgl::c3f(sd, sd, sd);
+    for j in 0..STRUT_COUNT {
+        let a = (j as f64) / STRUT_COUNT as f64 * std::f64::consts::TAU;
+        let dir = dvec3_add(dvec3_scale(right, a.cos()), dvec3_scale(fwd, a.sin()));
+        /* Tangent around the hull = the width axis of the strut face. */
+        let tan = dvec3_add(dvec3_scale(right, -a.sin()), dvec3_scale(fwd, a.cos()));
+        let hw = dvec3_scale(tan, STRUT_HALF_W as f64);
+        let bb = dvec3_add(base, dvec3_scale(dir, (r_bottom + STRUT_PROUD_M) as f64));
+        let tt = dvec3_add(top_c, dvec3_scale(dir, (r_top + STRUT_PROUD_M) as f64));
+        let (b0, b1) = (dvec3_add(bb, hw), dvec3_add(bb, dvec3_scale(hw, -1.0)));
+        let (t0, t1) = (dvec3_add(tt, hw), dvec3_add(tt, dvec3_scale(hw, -1.0)));
+        sgl::v3f_t2f(b0.x as f32, b0.y as f32, b0.z as f32, 0.05, 0.95);
+        sgl::v3f_t2f(b1.x as f32, b1.y as f32, b1.z as f32, 0.1, 0.95);
+        sgl::v3f_t2f(t1.x as f32, t1.y as f32, t1.z as f32, 0.1, 0.05);
+        sgl::v3f_t2f(t0.x as f32, t0.y as f32, t0.z as f32, 0.05, 0.05);
     }
     sgl::end();
 }

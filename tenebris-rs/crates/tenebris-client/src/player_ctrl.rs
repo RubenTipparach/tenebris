@@ -3111,6 +3111,123 @@ mod tests {
         );
     }
 
+    /* -- E2E test launch: the starter rocket reaches a stable orbit -------- */
+    #[test]
+    fn starter_rocket_test_launch_reaches_orbit() {
+        use tenebris_core::items::{
+            COMMAND_MODULE, FUEL_TANK, ROCKET_ENGINE, VACUUM_ENGINE,
+        };
+        use tenebris_core::rocket::{RocketConfig, RocketRide};
+
+        clear_input();
+        crate::rocket_ride::clear();
+        tenebris_core::rocket::set_config(RocketConfig::default());
+        let (body, w) = tenebris_world();
+        let mut p = PlayerCtrl::default();
+        init(&mut p, &body);
+        p.position = dvec3_make(302.0, 0.0, 0.0); /* on the +x meridian pad */
+        rebuild_basis(&mut p);
+
+        /* Board the space-mode starter: atmo booster + 2 tanks, vacuum
+         * upper + tank, capsule - exactly what space_complex assembles. */
+        let stack =
+            [ROCKET_ENGINE, FUEL_TANK, FUEL_TANK, VACUUM_ENGINE, FUEL_TANK, COMMAND_MODULE];
+        let cfg = tenebris_core::rocket::config();
+        crate::rocket_ride::begin(RocketRide::from_stack(&stack, &cfg).expect("flyable"));
+
+        /* Ascent with a throttle cut: full burn to 80 m/s vertical, then
+         * coast up out of the well (holding full throttle the whole climb
+         * overshoots escape velocity - a real launch staggers the burn). */
+        set_phys(|ph| ph.jump = true);
+        let mut cut = false;
+        let mut frames_to_space = None;
+        for f in 0..60 * 60 {
+            steps(&mut p, Some(&w), 1);
+            let v_up = dvec3_dot(p.velocity, dvec3_normalize(p.position));
+            if !cut && v_up > 80.0 {
+                set_phys(|ph| ph.jump = false);
+                cut = true;
+            }
+            if p.is_in_space {
+                frames_to_space = Some(f);
+                break;
+            }
+        }
+        let climbed = frames_to_space.expect("booster climbs out of the gravity well");
+        assert!(
+            !crate::rocket_ride::is_spent(),
+            "fuel left after ascent ({} frames)",
+            climbed
+        );
+
+        /* Stage: drop the booster, vacuum engine takes over. */
+        assert!(crate::rocket_ride::stage(), "booster jettisons");
+        assert_eq!(
+            crate::rocket_ride::active_engine(),
+            Some(tenebris_core::rocket::EngineKind::Vacuum)
+        );
+
+        /* Orbit insertion, the canonical two-phase way:
+         * 1) coast to APOAPSIS (radial velocity decays to ~0 under
+         *    gravity - the ascent energy sets the apoapsis height), then
+         * 2) circularize: burn at apoapsis toward tangent * v_circ, which
+         *    needs no radial-error chasing and converges in a few seconds.
+         */
+        set_phys(|ph| ph.jump = false);
+        let mut coast_frames = 0;
+        loop {
+            steps(&mut p, Some(&w), 1);
+            coast_frames += 1;
+            let v_rad = dvec3_dot(p.velocity, dvec3_normalize(p.position));
+            if v_rad < 1.0 {
+                break; /* apoapsis */
+            }
+            assert!(coast_frames < 60 * 90, "reaches apoapsis");
+        }
+        set_phys(|ph| ph.jump = true);
+        let mut burn_frames = 0;
+        loop {
+            let up = dvec3_normalize(p.position);
+            let reference = dvec3_make(0.0, 1.0, 0.0);
+            let tangent = dvec3_normalize(dvec3_cross(reference, up));
+            let r = dvec3_length(p.position);
+            let g = tenebris_core::planet::orbital_gravity_at(p.position);
+            let v_circ = (dvec3_length(g) * r).sqrt();
+            let v_target = dvec3_scale(tangent, v_circ * 1.02);
+            let err = dvec3_sub(v_target, p.velocity);
+            if dvec3_length(err) < 2.0 {
+                break;
+            }
+            let fwd = dvec3_normalize(err);
+            p.basis.fwd = fwd;
+            p.basis.up = up;
+            p.basis.right = dvec3_cross(fwd, up);
+            steps(&mut p, Some(&w), 1);
+            burn_frames += 1;
+            assert!(
+                !crate::rocket_ride::is_spent(),
+                "vacuum stage keeps fuel through the circularization burn"
+            );
+            assert!(burn_frames < 60 * 30, "circularization converges");
+        }
+        set_phys(|ph| ph.jump = false);
+
+        /* Cut throttle and coast a full minute: a real orbit holds - never
+         * re-enters the gravity well, never runs away toward Luna. */
+        set_phys(|ph| ph.jump = false);
+        let mut min_r = f64::MAX;
+        let mut max_r: f64 = 0.0;
+        for _ in 0..60 * 60 {
+            steps(&mut p, Some(&w), 1);
+            let r = dvec3_length(p.position);
+            min_r = min_r.min(r);
+            max_r = max_r.max(r);
+            assert!(p.is_in_space, "coast stays in space (perigee above the well)");
+        }
+        assert!(min_r > 545.0, "perigee {min_r:.0} m stays above the gravity well");
+        assert!(max_r < 5000.0, "apogee {max_r:.0} m stays bound to Tenebris");
+    }
+
     /* -- F: teleport arms the roll-slerp ----------------------------------- */
     #[test]
     fn pinned_teleport_suite() {

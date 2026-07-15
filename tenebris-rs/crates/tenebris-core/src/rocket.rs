@@ -180,11 +180,11 @@ pub struct RocketConfig {
 
 /// Compiled-in defaults = the JS RocketConfig (MEDIUM_* parts).
 pub const DEFAULT_ROCKET_CONFIG: RocketConfig = RocketConfig {
-    engine: EngineStats { thrust_n: 39000.0, fuel_per_sec: 10.0, mass_kg: 100.0 },
+    engine: EngineStats { thrust_n: 75000.0, fuel_per_sec: 10.0, mass_kg: 100.0 },
     /* Vacuum engine: ~55% the thrust but ~30% the fuel burn per second, so its
      * thrust-per-fuel (efficiency) is ~1.8x the atmospheric engine. Lighter,
      * too - it carries no atmospheric bell. */
-    engine_vacuum: EngineStats { thrust_n: 21000.0, fuel_per_sec: 3.0, mass_kg: 80.0 },
+    engine_vacuum: EngineStats { thrust_n: 30000.0, fuel_per_sec: 3.0, mass_kg: 80.0 },
     fuel_tank: FuelTankStats { capacity: 100.0, wet_mass_kg: 500.0, dry_mass_kg: 50.0 },
     command_module: CommandModuleStats {
         mass_kg: 200.0,
@@ -193,7 +193,7 @@ pub const DEFAULT_ROCKET_CONFIG: RocketConfig = RocketConfig {
         parachute_terminal_mps: 5.0,
     },
     flight: FlightConstants {
-        gravity_mps2: 9.81,
+        gravity_mps2: 25.0,
         launch_alt_m: 5.0,
         safe_landing_mps: 2.0,
         drag_coef: 0.5,
@@ -867,7 +867,7 @@ gravity_mps2: 3.7
         assert_eq!(spec.engines, 1);
         assert_eq!(spec.tanks, 1);
         assert_eq!(spec.capsules, 1);
-        assert_eq!(spec.total_thrust_n, 39000.0);
+        assert_eq!(spec.total_thrust_n, 75000.0);
         assert_eq!(spec.fuel_capacity, 100.0);
         assert_eq!(spec.fuel_per_sec, 10.0);
         // dry = engine 100 + tank 50 + capsule 200

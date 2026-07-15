@@ -9,7 +9,7 @@
 # Atmospheric engine (item "rocket-engine"): high thrust, thirsty. The
 # lift-off / lower-stage engine - build it at the bottom of the stack.
 [engine]
-thrust_n: 39000        # newtons at full throttle
+thrust_n: 75000        # newtons at full throttle (TWR ~1.6 on the 1880 kg starter at 25 m/s2)
 fuel_per_sec: 10       # fuel units burned per second at full throttle
 mass_kg: 100
 
@@ -18,7 +18,7 @@ mass_kg: 100
 # The upper-stage engine you stage to for the orbit burn once you shed the
 # spent booster in space. Lighter, too (no atmospheric bell).
 [engine_vacuum]
-thrust_n: 21000
+thrust_n: 30000
 fuel_per_sec: 3
 mass_kg: 80
 
@@ -34,7 +34,7 @@ max_impact_mps: 10           # survivable landing speed
 parachute_terminal_mps: 5    # descent speed once the chute is open
 
 [flight]
-gravity_mps2: 9.81
+gravity_mps2: 25       # matches the real surface gravity (planet::SURFACE_GRAVITY_MPS2_PER_G)
 launch_alt_m: 5         # LAUNCHING -> IN_FLIGHT threshold altitude
 safe_landing_mps: 2
 drag_coef: 0.5
