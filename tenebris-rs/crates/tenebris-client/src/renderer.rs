@@ -1664,6 +1664,8 @@ struct Renderer {
     rocket_tex_img: [sg::Image; 4],
     rocket_tex_view: [sg::View; 4],
     rocket_tex_smp: sg::Sampler,
+    station_tex_img: [sg::Image; 5],
+    station_tex_view: [sg::View; 5],
 
     /* Crop texture atlas (assets/textures/crops.png) - one 32x32 material
      * tile per column (bark / leaves / melon rind / fruit / ...), sampled
@@ -1747,6 +1749,8 @@ impl Default for Renderer {
             rocket_tex_img: [sg::Image::new(); 4],
             rocket_tex_view: [sg::View::new(); 4],
             rocket_tex_smp: sg::Sampler::new(),
+            station_tex_img: [sg::Image::new(); 5],
+            station_tex_view: [sg::View::new(); 5],
             crop_tex_img: sg::Image::new(),
             crop_tex_view: sg::View::new(),
             crop_tex_smp: sg::Sampler::new(),
@@ -2151,6 +2155,49 @@ fn load_rocket_textures(r: &mut Renderer) {
             ..Default::default()
         });
     }
+}
+
+/// Orbital-station drum skins (client::station_fx). Index order matches
+/// station_fx::TEX_*: 0 hull, 1 floor, 2 carpet, 3 neon trim, 4 sign.
+/// NEAREST (the shared rocket sampler) keeps the pixel art crisp.
+fn load_station_textures(r: &mut Renderer) {
+    const PATHS: [&str; 5] = [
+        "assets/textures/technology/station_hull.png",
+        "assets/textures/technology/station_floor.png",
+        "assets/textures/technology/casino_carpet.png",
+        "assets/textures/technology/neon_trim.png",
+        "assets/textures/technology/casino_sign.png",
+    ];
+    const FALLBACK: [u8; 4] = [150, 156, 166, 255];
+    for (i, path) in PATHS.iter().enumerate() {
+        let loaded = load_png_rgba(path, false);
+        let (w, h, pixels): (i32, i32, &[u8]) = match &loaded {
+            Some(img) => (img.w, img.h, &img.rgba),
+            None => {
+                println!("[renderer] WARNING: {path} missing; station face flat-tinted");
+                (1, 1, &FALLBACK)
+            }
+        };
+        let mut desc = sg::ImageDesc {
+            width: w,
+            height: h,
+            pixel_format: sg::PixelFormat::Rgba8,
+            label: c"station-tex".as_ptr(),
+            ..Default::default()
+        };
+        desc.data.mip_levels[0] = sg::slice_as_range(pixels);
+        r.station_tex_img[i] = sg::make_image(&desc);
+        r.station_tex_view[i] = sg::make_view(&sg::ViewDesc {
+            texture: sg::TextureViewDesc { image: r.station_tex_img[i], ..Default::default() },
+            label: c"station-tex-view".as_ptr(),
+            ..Default::default()
+        });
+    }
+}
+
+/// View id for a station drum skin (see `load_station_textures` order).
+pub fn station_view_id(idx: usize) -> u32 {
+    R.with(|cell| cell.borrow().station_tex_view[idx.min(4)].id)
 }
 
 /// View id for a rocket part texture (0 engine, 1 tank, 2 capsule, 3 tower).
@@ -2644,6 +2691,7 @@ pub fn init() {
         load_flow_arrow(&mut r);
         load_animal_textures(&mut r);
         load_rocket_textures(&mut r);
+        load_station_textures(&mut r);
         load_crop_textures(&mut r);
         /* Per-chunk meshes are allocated lazily once a body registers. */
     });

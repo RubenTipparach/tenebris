@@ -19,6 +19,7 @@ mod furnace_screen;
 mod power_ui;
 mod rocket_screen;
 mod rocket_fx;
+mod station_fx;
 mod rocket_ride;
 mod station_screen;
 mod egui_layer;

@@ -13,9 +13,258 @@
 //! All knobs live in `assets/config/economy.yaml` ([`crate::economy`] scalars
 //! + the `[prices]` section parsed by [`load_prices`]).
 
+use crate::blocks::Block;
 use crate::economy::{self, Wallet};
 use crate::items::{self, ItemId};
+use crate::math::{dvec3_make, DVec3};
+use crate::planet::{self, BodyId};
 use std::sync::Mutex;
+
+/* ------------------------------------------------------------------ */
+/* Structure + orbit config - assets/config/station.yaml.              */
+
+/// Tunables for the orbital drum + rendezvous (station.yaml). The orbit
+/// SPEED is deliberately absent: it is derived from the gravity field at
+/// the configured altitude (see [`orbit_speed_mps`]), so the station's
+/// rails and a coasting rocket obey the same physics.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StationConfig {
+    /// Deck radius in hex rings (a deck holds `3n(n+1)+1` hexes).
+    pub radius_hexes: u32,
+    /// Prism layers stacked into the drum wall.
+    pub layers: u32,
+    /// Total drum height in metres (prism height = height_m / layers).
+    pub height_m: f32,
+    /// Hex circumradius (centre -> corner) of one prism, metres.
+    pub hex_size_m: f32,
+    /// Orbit altitude above the Tenebris surface, metres.
+    pub altitude_m: f32,
+    /// How close the player must fly to dock.
+    pub dock_radius_m: f32,
+    /// Max relative speed (m/s) the dock accepts - the rendezvous gate.
+    pub dock_max_rel_mps: f32,
+}
+
+impl StationConfig {
+    pub const DEFAULT: StationConfig = StationConfig {
+        radius_hexes: 10,
+        layers: 6,
+        height_m: 15.0,
+        hex_size_m: 2.0,
+        altitude_m: 120.0,
+        dock_radius_m: 40.0,
+        dock_max_rel_mps: 8.0,
+    };
+}
+
+static S_CFG: Mutex<StationConfig> = Mutex::new(StationConfig::DEFAULT);
+
+pub fn config() -> StationConfig {
+    *S_CFG.lock().unwrap()
+}
+
+pub fn set_config(c: StationConfig) {
+    *S_CFG.lock().unwrap() = c;
+}
+
+/// Parse station.yaml (tiny key/value subset, `#` comments, the
+/// `station:` section header is skipped). Unknown keys warn, zero /
+/// missing fields keep the compiled-in default (partial-override rule).
+pub fn parse_config(src: &str, path: &str) -> StationConfig {
+    let mut c = StationConfig::DEFAULT;
+    for raw in src.lines() {
+        let line = raw.split('#').next().unwrap_or("").trim();
+        if line.is_empty() || line.ends_with(':') {
+            continue;
+        }
+        let Some((key, val)) = line.split_once(':') else { continue };
+        let (key, val) = (key.trim(), val.trim());
+        let f = val.parse::<f32>().unwrap_or(0.0);
+        match key {
+            "radius_hexes" => c.radius_hexes = if f > 0.0 { f as u32 } else { c.radius_hexes },
+            "layers" => c.layers = if f > 0.0 { f as u32 } else { c.layers },
+            "height_m" => c.height_m = if f > 0.0 { f } else { c.height_m },
+            "hex_size_m" => c.hex_size_m = if f > 0.0 { f } else { c.hex_size_m },
+            "altitude_m" => c.altitude_m = if f > 0.0 { f } else { c.altitude_m },
+            "dock_radius_m" => c.dock_radius_m = if f > 0.0 { f } else { c.dock_radius_m },
+            "dock_max_rel_mps" => {
+                c.dock_max_rel_mps = if f > 0.0 { f } else { c.dock_max_rel_mps }
+            }
+            _ => println!("[station] {}: unknown key '{}'", path, key),
+        }
+    }
+    c
+}
+
+pub fn load_config(path: &str) {
+    match std::fs::read_to_string(path) {
+        Ok(src) => set_config(parse_config(&src, path)),
+        Err(_) => println!("[station] {} not found, using compiled-in defaults", path),
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Drum shell geometry - a hollow cylinder of hex prisms.              */
+
+/// Structural role of a shell prism - the renderer uses it to cull the
+/// faces that neighbouring prisms hide (interior disk cells never show
+/// their sides; wall cells never show caps except on the rim layers).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrismRole {
+    Floor,
+    Ceiling,
+    Wall,
+}
+
+/// One hex prism of the station structure, in STATION-LOCAL metres:
+/// x/z span the deck plane (pointy-top axial hex grid), y is the drum
+/// axis (0 at the keel). The client orients local +y radially away from
+/// the planet at the orbital anchor.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Prism {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub block: Block,
+    pub role: PrismRole,
+}
+
+/// Centered hexagonal number: hexes in a full deck of radius `n` rings.
+pub fn hexes_per_deck(n: u32) -> u32 {
+    3 * n * (n + 1) + 1
+}
+
+/// Prism count of the hollow drum: two full disks + the wall ring on
+/// every layer between them. Pinned against `shell().len()` in tests
+/// (and against tools/station-math.py).
+pub fn shell_prism_count(n: u32, layers: u32) -> u32 {
+    2 * hexes_per_deck(n) + 6 * n * layers.saturating_sub(2)
+}
+
+/// Which block a wall-ring prism gets: a NeonTrim band runs the whole
+/// equator layer, CasinoSign tiles mark the six ring corners one layer
+/// up (visible beacons on approach), hull everywhere else.
+fn wall_block(q: i32, r: i32, layer: u32, cfg: &StationConfig) -> Block {
+    let band = cfg.layers / 2;
+    if layer == band {
+        return Block::NeonTrim;
+    }
+    let n = cfg.radius_hexes as i32;
+    let corner = (q == n && r == 0)
+        || (q == 0 && r == n)
+        || (q == -n && r == n)
+        || (q == -n && r == 0)
+        || (q == 0 && r == -n)
+        || (q == n && r == -n);
+    if corner && layer == band + 1 {
+        Block::CasinoSign
+    } else {
+        Block::StationHull
+    }
+}
+
+/// Floor-disk block: the casino occupies the inner half of the deck
+/// (carpet), the outer annulus is bare deck plating.
+fn floor_block(dist: u32, cfg: &StationConfig) -> Block {
+    if dist * 2 <= cfg.radius_hexes {
+        Block::CasinoCarpet
+    } else {
+        Block::StationFloor
+    }
+}
+
+/// Generate the hollow drum: floor disk (layer 0), ceiling disk (top
+/// layer), and the outer wall ring on every layer. Pure function of the
+/// config - the client meshes this once and re-poses it per frame.
+pub fn shell(cfg: &StationConfig) -> Vec<Prism> {
+    let n = cfg.radius_hexes as i32;
+    let a = cfg.hex_size_m;
+    let layer_h = cfg.height_m / cfg.layers.max(1) as f32;
+    let sqrt3 = 3.0f32.sqrt();
+    let mut out = Vec::with_capacity(shell_prism_count(cfg.radius_hexes, cfg.layers) as usize);
+    for q in -n..=n {
+        let r_lo = (-n).max(-q - n);
+        let r_hi = n.min(-q + n);
+        for r in r_lo..=r_hi {
+            let dist = ((q.abs() + r.abs() + (q + r).abs()) / 2) as u32;
+            let x = a * sqrt3 * (q as f32 + r as f32 * 0.5);
+            let z = a * 1.5 * r as f32;
+            if dist == cfg.radius_hexes {
+                /* Wall column: every layer. */
+                for layer in 0..cfg.layers {
+                    out.push(Prism {
+                        x,
+                        y: layer as f32 * layer_h,
+                        z,
+                        block: wall_block(q, r, layer, cfg),
+                        role: PrismRole::Wall,
+                    });
+                }
+            } else {
+                /* Interior column: floor + ceiling only (hollow). */
+                out.push(Prism {
+                    x,
+                    y: 0.0,
+                    z,
+                    block: floor_block(dist, cfg),
+                    role: PrismRole::Floor,
+                });
+                out.push(Prism {
+                    x,
+                    y: (cfg.layers - 1) as f32 * layer_h,
+                    z,
+                    block: Block::StationHull,
+                    role: PrismRole::Ceiling,
+                });
+            }
+        }
+    }
+    out
+}
+
+/* ------------------------------------------------------------------ */
+/* On-rails circular orbit - pure functions of world time.             */
+
+/// Orbit radius from the planet centre.
+pub fn orbit_radius_m() -> f64 {
+    planet::get(BodyId::Tenebris).radius_m + config().altitude_m as f64
+}
+
+/// Circular-orbit speed at the configured altitude, derived from the
+/// same inverse-square field the space integrator applies
+/// (`planet::orbital_gravity_at`): `v = sqrt(g_surf * R^2 / r)`. A
+/// rocket coasting a circular orbit here is velocity-matched by
+/// construction - that is the rendezvous mechanic.
+pub fn orbit_speed_mps() -> f64 {
+    let b = planet::get(BodyId::Tenebris);
+    let g = (planet::SURFACE_GRAVITY_MPS2_PER_G * b.gravity_g) as f64;
+    (g * b.radius_m * b.radius_m / orbit_radius_m()).sqrt()
+}
+
+/// Orbital period `T = 2*pi*r / v` (Kepler for our anchored field).
+pub fn orbit_period_s() -> f64 {
+    std::f64::consts::TAU * orbit_radius_m() / orbit_speed_mps()
+}
+
+/// Station anchor position at world-time `t` (seconds): a circular track
+/// in Tenebris's equatorial (XZ) plane, phase 0 on the +x axis - the
+/// same axis the old parked dock point used, so a fresh world's station
+/// starts where it always did and sweeps from there.
+pub fn orbit_pos(t: f64) -> DVec3 {
+    let b = planet::get(BodyId::Tenebris);
+    let r = orbit_radius_m();
+    let ph = (orbit_speed_mps() / r) * t;
+    dvec3_make(b.pos_x + r * ph.cos(), b.pos_y, b.pos_z + r * ph.sin())
+}
+
+/// Station velocity at world-time `t`: the prograde tangent, magnitude
+/// [`orbit_speed_mps`]. This is what the rocket has to match to dock.
+pub fn orbit_vel(t: f64) -> DVec3 {
+    let r = orbit_radius_m();
+    let v = orbit_speed_mps();
+    let ph = (v / r) * t;
+    dvec3_make(-v * ph.sin(), 0.0, v * ph.cos())
+}
 
 /* ------------------------------------------------------------------ */
 /* Base price table - the [prices] section of economy.yaml.            */
@@ -424,6 +673,82 @@ mod tests {
         assert_eq!(w.credits(), 100 - cost);
         let mut broke = Wallet::new(0);
         assert!(s.buy_fuel(&mut broke, 10.0).is_none());
+    }
+
+    #[test]
+    fn shell_matches_centered_hex_formula() {
+        /* The user-specced drum: radius 10 rings, 6 layers, 15 m tall.
+         * Same numbers tools/station-math.py prints. */
+        let cfg = StationConfig::DEFAULT;
+        assert_eq!(hexes_per_deck(10), 331);
+        assert_eq!(shell_prism_count(10, 6), 902);
+        let prisms = shell(&cfg);
+        assert_eq!(prisms.len(), 902);
+        /* Palette split: one 60-hex neon equator band; six sign corner
+         * tiles; carpet only on the floor disk's inner half. */
+        let count = |b: Block| prisms.iter().filter(|p| p.block == b).count();
+        assert_eq!(count(Block::NeonTrim), 60);
+        assert_eq!(count(Block::CasinoSign), 6);
+        let inner = 3 * 5 * 6 + 1; /* hexes_per_deck(5) = 91 carpet cells */
+        assert_eq!(count(Block::CasinoCarpet), inner);
+        /* Everything sits inside the physical drum bounds. */
+        let rad = 3.0f32.sqrt() * cfg.hex_size_m * cfg.radius_hexes as f32 + cfg.hex_size_m;
+        for p in &prisms {
+            assert!((p.x * p.x + p.z * p.z).sqrt() <= rad + 1e-3);
+            assert!(p.y >= 0.0 && p.y <= cfg.height_m);
+        }
+    }
+
+    #[test]
+    fn orbit_speed_and_period_derive_from_gravity() {
+        set_config(StationConfig::DEFAULT);
+        let b = crate::planet::get(BodyId::Tenebris);
+        let r = orbit_radius_m();
+        assert_eq!(r, b.radius_m + 120.0);
+        /* v = sqrt(g R^2 / r): centripetal balance in the inverse-square
+         * field orbital_gravity_at applies. Pinned via station-math.py. */
+        let g = (crate::planet::SURFACE_GRAVITY_MPS2_PER_G * b.gravity_g) as f64;
+        let v = orbit_speed_mps();
+        assert!((v - (g * b.radius_m * b.radius_m / r).sqrt()).abs() < 1e-9);
+        assert!((v - 73.19).abs() < 0.01, "420 m circular speed ~73.19 m/s, got {v}");
+        assert!((orbit_period_s() - 36.05).abs() < 0.05);
+        /* The rails and the field agree: centripetal accel at the track
+         * equals the sampled gravity magnitude there. */
+        let a_field = g * (b.radius_m / r) * (b.radius_m / r);
+        assert!((v * v / r - a_field).abs() < 1e-9);
+    }
+
+    #[test]
+    fn orbit_track_is_circular_and_velocity_is_tangent() {
+        set_config(StationConfig::DEFAULT);
+        let b = crate::planet::get(BodyId::Tenebris);
+        let r = orbit_radius_m();
+        for i in 0..8 {
+            let t = i as f64 * orbit_period_s() / 8.0;
+            let p = orbit_pos(t);
+            let (dx, dy, dz) = (p.x - b.pos_x, p.y - b.pos_y, p.z - b.pos_z);
+            assert!(((dx * dx + dy * dy + dz * dz).sqrt() - r).abs() < 1e-6);
+            let v = orbit_vel(t);
+            /* Tangent: radial . velocity == 0; speed constant. */
+            assert!((dx * v.x + dy * v.y + dz * v.z).abs() < 1e-6);
+            let speed = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt();
+            assert!((speed - orbit_speed_mps()).abs() < 1e-9);
+        }
+        /* Full period returns to the phase-0 anchor on the +x axis. */
+        let p0 = orbit_pos(0.0);
+        let p1 = orbit_pos(orbit_period_s());
+        assert!((p0.x - p1.x).abs() < 1e-6 && (p0.z - p1.z).abs() < 1e-6);
+        assert!((p0.x - (b.pos_x + r)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn station_yaml_parses_with_partial_overrides() {
+        let c = parse_config("station:\n  radius_hexes: 12\n  altitude_m: 200\n", "test");
+        assert_eq!(c.radius_hexes, 12);
+        assert_eq!(c.altitude_m, 200.0);
+        /* Untouched fields keep the compiled-in defaults. */
+        assert_eq!(c.layers, StationConfig::DEFAULT.layers);
+        assert_eq!(c.dock_max_rel_mps, StationConfig::DEFAULT.dock_max_rel_mps);
     }
 
     #[test]

@@ -2252,6 +2252,8 @@ extern "C" fn init() {
      * market's base price table ([prices] section of the same file). */
     tenebris_core::economy::load_config("assets/config/economy.yaml");
     tenebris_core::station::load_prices("assets/config/economy.yaml");
+    /* Orbital station drum geometry + rendezvous tuning. */
+    tenebris_core::station::load_config("assets/config/station.yaml");
     /* Start the world clock in daylight (start_day_fraction of a day),
      * unless a dev override pins the time of day. */
     {
@@ -3238,20 +3240,28 @@ fn machine_label(b: Block) -> Option<&'static str> {
     })
 }
 
-/// Dock prompt: shown while flying in space within dock range of the orbital
-/// trading station. The key label tracks the Interact binding.
+/// Dock prompt: shown while flying within dock range of the orbital
+/// trading station. Docking is a rendezvous - inside the radius but too
+/// fast, the prompt shows the velocity gap the rocket still has to close
+/// instead of the dock key. The key label tracks the Interact binding.
 fn draw_station_hint(app: &App, screen_w: f32, screen_h: f32) {
     let p = app.player.borrow();
-    if !p.is_in_space || crate::station_screen::is_open() {
+    if crate::station_screen::is_open() {
         return;
     }
     let d = crate::station_screen::dock_distance_m(p.position);
+    let rel = crate::station_screen::dock_rel_speed_mps(p.velocity);
+    let matched = crate::station_screen::dock_speed_ok(p.velocity);
     drop(p);
-    if d > crate::station_screen::DOCK_RADIUS_M {
+    if d > crate::station_screen::dock_radius_m() {
         return;
     }
     let key = crate::controls::action_label(crate::controls::Action::Interact);
-    let msg = format!("[{}] dock - trading station", key);
+    let msg = if matched {
+        format!("[{}] dock - trading station", key)
+    } else {
+        format!("match velocity to dock - {:.1} m/s off", rel)
+    };
     let cell = 8.0f32;
     let x = (screen_w * 0.5 - (msg.len() as f32 * cell) * 0.5) / cell;
     let y = (screen_h * 0.5 + 24.0) / cell;
@@ -4955,6 +4965,9 @@ fn egui_ui(app: &mut App, ctx: &egui::Context) {
 fn frame_inner(app: &mut App) {
     maybe_apply_sp_resume(app);
     dev_maybe_place(app);
+    /* Docked at the orbital station: ride its orbit while the hub is
+     * open so undocking leaves the player flying formation. */
+    station_screen::carry_docked_player();
     space_complex_maybe_build(app);
     apply_sp_saves_lazy(app);
     maybe_apply_mp_spawn(app);
@@ -5173,6 +5186,29 @@ fn frame_inner(app: &mut App) {
             p.velocity = tenebris_core::math::DVec3::default();
         }
     });
+
+    /* Dev screenshot aid (TENEBRIS_DEV_STATION_CAM): fly formation with
+     * the orbital station - re-pin the camera in the station's orbit
+     * frame every frame (trailing prograde, above the deck) and aim at
+     * the drum, so stills frame it against the planet as it sweeps. */
+    if std::env::var("TENEBRIS_DEV_STATION_CAM").is_ok() {
+        let t = tenebris_core::world_time::seconds();
+        let anchor = tenebris_core::station::orbit_pos(t);
+        let vel = tenebris_core::station::orbit_vel(t);
+        let b = tenebris_core::planet::get(tenebris_core::planet::BodyId::Tenebris);
+        let up = dvec3_normalize(dvec3_sub(anchor, dvec3_make(b.pos_x, b.pos_y, b.pos_z)));
+        let prograde = dvec3_normalize(vel);
+        let cam = dvec3_add(
+            anchor,
+            dvec3_add(dvec3_scale(prograde, -70.0), dvec3_scale(up, 28.0)),
+        );
+        {
+            let mut p = app.player.borrow_mut();
+            p.position = cam;
+            p.velocity = vel;
+        }
+        dev_aim_at(app, anchor);
+    }
 
     /* G-key toggles survival mode in SP only (MP is always survival).
      * Consume the edge either way. */
@@ -5828,6 +5864,8 @@ fn frame_inner(app: &mut App) {
      * z-sort correctly against them. */
     animals::draw(view, proj, renderer::time_seconds());
     crate::rocket_fx::draw(view, proj, &app.world.borrow());
+    /* Orbital trading station drum, sweeping its on-rails track. */
+    crate::station_fx::draw(view, proj, sim_t);
     fishing::draw(view, proj, &app.player.borrow());
     crops::draw(view, proj);
     drops::draw(view, proj, renderer::time_seconds());
@@ -6195,13 +6233,15 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
      * a non-station target falls through to the normal E behaviour. */
     let interact_pressed = e._type == sapp::EventType::KeyDown
         && crate::controls::action_for_key(e.key_code) == Some(crate::controls::Action::Interact);
-    /* Dock at the orbital trading station: Interact while in space within
-     * dock range opens the station hub (the interact raycast is skipped in
-     * space, so this can't shadow a machine). */
+    /* Dock at the orbital trading station: Interact within dock range
+     * AND with the station's orbital velocity matched (the rendezvous
+     * gate - too fast and the HUD shows the gap instead). The station
+     * flies at 120 m altitude, far above any interact raycast target,
+     * so this can't shadow a machine. */
     if interact_pressed
-        && app.player.borrow().is_in_space
         && station_screen::dock_distance_m(app.player.borrow().position)
-            <= station_screen::DOCK_RADIUS_M
+            <= station_screen::dock_radius_m()
+        && station_screen::dock_speed_ok(app.player.borrow().velocity)
     {
         station_screen::open(app.player.clone());
         return;
