@@ -141,7 +141,7 @@ pub fn draw(view: crate::gfx_math::Mat4, proj: crate::gfx_math::Mat4, cam: DVec3
     if it <= 0.02 {
         return;
     }
-    crate::renderer::sgl_world_begin();
+    crate::renderer::sgl_overlay_begin();
     sgl::defaults();
     sgl::matrix_mode_projection();
     sgl::load_matrix(&proj.m[0]);
@@ -250,7 +250,7 @@ pub fn draw(view: crate::gfx_math::Mat4, proj: crate::gfx_math::Mat4, cam: DVec3
         sgl::v3f(t0.x as f32, t0.y as f32, t0.z as f32);
     }
     sgl::end();
-    crate::renderer::sgl_world_end();
+    crate::renderer::sgl_overlay_end();
 }
 
 /// Get (creating once) the additive FX pipeline shared by the streaks and the
@@ -329,7 +329,7 @@ pub fn draw_shells(view: crate::gfx_math::Mat4, proj: crate::gfx_math::Mat4, cam
     if stages.iter().all(|s| s.heat <= 0.05) {
         return;
     }
-    crate::renderer::sgl_world_begin();
+    crate::renderer::sgl_overlay_begin();
     sgl::defaults();
     sgl::matrix_mode_projection();
     sgl::load_matrix(&proj.m[0]);
@@ -349,7 +349,7 @@ pub fn draw_shells(view: crate::gfx_math::Mat4, proj: crate::gfx_math::Mat4, cam
             sgl::pop_matrix();
         }
     }
-    crate::renderer::sgl_world_end();
+    crate::renderer::sgl_overlay_end();
 }
 
 fn sign(x: f64) -> f64 {

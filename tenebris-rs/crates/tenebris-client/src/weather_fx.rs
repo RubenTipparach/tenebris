@@ -200,7 +200,7 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, p: &PlayerCtrl, time_s: f64) {
     /* Screen-right in world for billboard width (shared by both layers). */
     let cam_right = dvec3_make(view.m[0] as f64, view.m[4] as f64, view.m[8] as f64);
 
-    renderer::sgl_world_begin();
+    renderer::sgl_overlay_begin();
     sgl::defaults();
     sgl::matrix_mode_projection();
     sgl::load_matrix(&proj.m[0]);
@@ -240,7 +240,7 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, p: &PlayerCtrl, time_s: f64) {
     draw_distant_shafts(w, p, up, r, planet_r, shell_r, cam_right, forced, time_s);
 
     sgl::end();
-    renderer::sgl_world_end();
+    renderer::sgl_overlay_end();
 }
 
 /// Dense animated shower in a tangent disk around the player, when the

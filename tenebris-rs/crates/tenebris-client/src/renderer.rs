@@ -1873,6 +1873,27 @@ pub fn sgl_world_end() {
     sgl::set_context(sgl::default_context());
 }
 
+/// Route sgl recording into the DEFAULT (swapchain) context for TRANSPARENT
+/// atmospheric FX (rain, reentry plasma). Unlike [`sgl_world_begin`] - which
+/// records into the offscreen context that flushes BEFORE the water pass - the
+/// default context flushes at the frame's final `sgl::draw()`, AFTER
+/// `draw_water`. That matters because these FX are additive / over-blended with
+/// depth-write OFF: recorded in the offscreen pass they leave no depth for the
+/// later opaque water pass to test against, so water overpaints them wherever
+/// the sea surface is in front of the terrain. Recorded here they composite
+/// after water and depth-test against the scene+water depth the composite
+/// forwarded, so they read correctly in FRONT of the sea. Pipelines created
+/// lazily under this context bind to the swapchain formats. Pair with
+/// [`sgl_overlay_end`].
+pub fn sgl_overlay_begin() {
+    sgl::set_context(sgl::default_context());
+}
+
+/// Leave the overlay context (a no-op restore - already the default context).
+pub fn sgl_overlay_end() {
+    sgl::set_context(sgl::default_context());
+}
+
 /// Day/night brightness for the sgl entity renderers (critters / crops /
 /// item drops): the terrain's sun-terminator curve reduced to a single
 /// scalar - 1.0 in daylight, easing down to a 0.16 night floor so
