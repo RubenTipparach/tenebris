@@ -247,8 +247,12 @@ fn draw_frustum(
         sgl::v3f_t2f(t1.x as f32, t1.y as f32, t1.z as f32, 1.0, 0.0);
         sgl::v3f_t2f(t0.x as f32, t0.y as f32, t0.z as f32, 0.0, 0.0);
     }
-    /* Vertical stringer struts: darker thin quads standing proud of the
-     * skirt, evenly spaced, running the full bottom-ring -> top-ring line. */
+    /* Vertical stringer struts: solid dark quads standing proud of the
+     * skirt, drawn as their own UNTEXTURED batch so nothing about the tank
+     * texture can wash them out. */
+    sgl::end();
+    sgl::disable_texture();
+    sgl::begin_quads();
     let sd = STRUT_SHADE * lit;
     sgl::c3f(sd, sd, sd);
     for j in 0..STRUT_COUNT {
@@ -261,10 +265,10 @@ fn draw_frustum(
         let tt = dvec3_add(top_c, dvec3_scale(dir, (r_top + STRUT_PROUD_M) as f64));
         let (b0, b1) = (dvec3_add(bb, hw), dvec3_add(bb, dvec3_scale(hw, -1.0)));
         let (t0, t1) = (dvec3_add(tt, hw), dvec3_add(tt, dvec3_scale(hw, -1.0)));
-        sgl::v3f_t2f(b0.x as f32, b0.y as f32, b0.z as f32, 0.05, 0.95);
-        sgl::v3f_t2f(b1.x as f32, b1.y as f32, b1.z as f32, 0.1, 0.95);
-        sgl::v3f_t2f(t1.x as f32, t1.y as f32, t1.z as f32, 0.1, 0.05);
-        sgl::v3f_t2f(t0.x as f32, t0.y as f32, t0.z as f32, 0.05, 0.05);
+        sgl::v3f(b0.x as f32, b0.y as f32, b0.z as f32);
+        sgl::v3f(b1.x as f32, b1.y as f32, b1.z as f32);
+        sgl::v3f(t1.x as f32, t1.y as f32, t1.z as f32);
+        sgl::v3f(t0.x as f32, t0.y as f32, t0.z as f32);
     }
     sgl::end();
 }
