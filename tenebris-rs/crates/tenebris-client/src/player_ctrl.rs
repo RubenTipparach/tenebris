@@ -1463,7 +1463,8 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
             accel = dvec3_sub(accel, p.basis.up);
         }
         let al = dvec3_length(accel);
-        if al > 1e-6 {
+        let rcs_active = al > 1e-6;
+        if rcs_active {
             accel = dvec3_scale(accel, 1.0 / al);
             let mut thrust = l.space_thrust as f64;
             /* Jetpack-in-space boost: sprint quadruples thrust so the
@@ -1490,9 +1491,20 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
                 crate::rocket_ride::clear();
             }
         }
-        /* Exponential drag - frame-rate-independent. */
-        let damp = (-(l.space_drag as f64) * dt as f64).exp();
-        p.velocity = dvec3_scale(p.velocity, damp);
+        /* Orbital gravity: every body pulls inverse-square (anchored to its
+         * surface gravity), so an unpowered coast is a real ballistic arc -
+         * burn prograde to raise an orbit, coast to hold it, and a transfer
+         * to a moon costs the fuel the tanks actually carry. */
+        let og = planet::orbital_gravity_at(p.position);
+        p.velocity = dvec3_add(p.velocity, dvec3_scale(og, dt as f64));
+        /* Flight-assist drag ONLY while steering with RCS: it makes small
+         * manual corrections controllable without killing orbits - a
+         * hands-off coast (or a rocket burn) is drag-free Newtonian, so
+         * orbital velocity is never silently bled away. */
+        if rcs_active {
+            let damp = (-(l.space_drag as f64) * dt as f64).exp();
+            p.velocity = dvec3_scale(p.velocity, damp);
+        }
         p.position = dvec3_add(p.position, dvec3_scale(p.velocity, dt as f64));
         p.grounded = false;
         p.last_tile = -1;
@@ -1692,7 +1704,9 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
      * smooth falloff multiplier from planet::gravity_at, and (c) the
      * water gravity multiplier while the body is submerged - so the
      * player sinks slowly underwater instead of free-falling. */
-    let base_gravity: f32 = 25.0 * body.gravity_g;
+    /* Shared with the orbital field (planet::orbital_gravity_at) so surface
+     * and space physics agree at the surface. */
+    let base_gravity: f32 = planet::SURFACE_GRAVITY_MPS2_PER_G * body.gravity_g;
     let mut gravity: f32 = base_gravity * gq.multiplier;
     if body_in_water {
         gravity *= l.water_gravity_mult;
@@ -3041,15 +3055,20 @@ mod tests {
         assert!(p.is_in_space, "D in space");
         assert!(!p.grounded);
         assert_eq!(p.last_tile, -1);
+        /* Re-pinned for orbital gravity (space-era Phase 0): every body now
+         * pulls inverse-square in space, so 60 coasting/thrusting frames at
+         * 12 km pick up a small fall toward Tenebris (and Luna below) - pos.y
+         * dips just under 12000 and vel.y goes slightly negative. Values are
+         * the intended Rust output, per the Rust-golden rule. */
         assert_dvec3(
             p.position,
-            [0x4014a1ac1e82d570, 0x40c7700000000000, 0x3fe672873aed48eb],
+            [0x4014a36304f6d9ab, 0x40c76fff019c9ddf, 0x3fe676ec874af92c],
             1e-8,
             "D1 pos",
         );
         assert_dvec3(
             p.velocity,
-            [0x4020bb35792da6dc, 0x0000000000000000, 0x3ffdb8aa8fe0146b],
+            [0x4020bc9f06f5b1f9, 0xbf8a3439309f4863, 0x3ffdbc49b043261d],
             1e-8,
             "D1 vel",
         );

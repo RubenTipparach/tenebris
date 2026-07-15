@@ -783,6 +783,47 @@ pub fn gravity_at(world_pos: DVec3, full_default: f32, falloff_default: f32) -> 
     q
 }
 
+/// Surface gravity in m/s^2 for a body with `gravity_g == 1.0`. The
+/// planet-mode walker has always used 25 m/s^2 (arcade-scaled to the ~300 m
+/// planets); the orbital field below anchors to the same value so space and
+/// surface physics agree at the surface. One shared constant, not two magic
+/// numbers.
+pub const SURFACE_GRAVITY_MPS2_PER_G: f32 = 25.0;
+
+/// Newtonian orbital gravity: the summed inverse-square acceleration from
+/// EVERY body at `world_pos` (m/s^2, world-space vector pointing at the
+/// masses). Each body's field is anchored to its surface gravity
+/// (`SURFACE_GRAVITY_MPS2_PER_G * gravity_g` at `radius_m`) and falls off as
+/// `(R / dist)^2`, so a prograde burn in space raises a real transfer arc and
+/// an unpowered coast falls toward the nearest mass - this is what makes
+/// orbits (and reaching a moon on a fuel budget) possible.
+///
+/// Complements [`gravity_at`], which picks the single ANCHOR body inside a
+/// falloff band (surface basis, atmosphere, the `is_in_space` flip). This is
+/// the long-range force field the space integrator applies every frame.
+pub fn orbital_gravity_at(world_pos: DVec3) -> DVec3 {
+    let bodies = BODIES.lock().unwrap();
+    let mut acc = DVec3 { x: 0.0, y: 0.0, z: 0.0 };
+    for b in bodies.iter() {
+        let dx = b.pos_x - world_pos.x;
+        let dy = b.pos_y - world_pos.y;
+        let dz = b.pos_z - world_pos.z;
+        let d2 = dx * dx + dy * dy + dz * dz;
+        /* Clamp inside half the radius so a query at/near the exact centre
+         * can't blow the integrator up (space mode never runs there, but the
+         * field function should still be total). */
+        let min_d = b.radius_m * 0.5;
+        let d2 = d2.max(min_d * min_d);
+        let d = d2.sqrt();
+        let g_surface = (SURFACE_GRAVITY_MPS2_PER_G * b.gravity_g) as f64;
+        let a = g_surface * (b.radius_m * b.radius_m) / d2;
+        acc.x += dx / d * a;
+        acc.y += dy / d * a;
+        acc.z += dz / d * a;
+    }
+    acc
+}
+
 /* ------------------------------------------------------------------------ */
 /* Atmosphere YAML glue - the planet half of C's config_load_atmosphere
  * (find_body_by_key + planet_set_atmosphere), wired into the parser
@@ -839,6 +880,39 @@ mod tests {
         let guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         *BODIES.lock().unwrap() = BODIES_INIT;
         guard
+    }
+
+    #[test]
+    fn orbital_gravity_matches_surface_and_falls_off_inverse_square() {
+        let _g = lock_and_reset();
+        /* Tenebris: origin, radius 300, gravity_g 1.0. At the surface the
+         * field magnitude is the shared surface constant (other bodies sit
+         * ~6 km out and contribute only millinewtons). */
+        let a_surf = orbital_gravity_at(dvec3_make(300.0, 0.0, 0.0));
+        let mag_surf = (a_surf.x * a_surf.x + a_surf.y * a_surf.y + a_surf.z * a_surf.z).sqrt();
+        assert!(
+            (mag_surf - SURFACE_GRAVITY_MPS2_PER_G as f64).abs() < 0.1,
+            "surface field ~{} m/s^2, got {}",
+            SURFACE_GRAVITY_MPS2_PER_G,
+            mag_surf
+        );
+        /* Points AT the planet (negative x from +x side). */
+        assert!(a_surf.x < 0.0 && a_surf.x.abs() > mag_surf * 0.99);
+        /* Inverse square: at 2R the pull is ~1/4 the surface value. */
+        let a_2r = orbital_gravity_at(dvec3_make(600.0, 0.0, 0.0));
+        let mag_2r = (a_2r.x * a_2r.x + a_2r.y * a_2r.y + a_2r.z * a_2r.z).sqrt();
+        assert!(
+            (mag_2r - mag_surf / 4.0).abs() < 0.1,
+            "2R field ~{}, got {}",
+            mag_surf / 4.0,
+            mag_2r
+        );
+        /* Total function: the exact centre doesn't blow up. */
+        let a_c = orbital_gravity_at(dvec3_make(0.0, 0.0, 0.0));
+        assert!(a_c.x.is_finite() && a_c.y.is_finite() && a_c.z.is_finite());
+        /* A circular-orbit speed at 2R exists and is finite: v = sqrt(a*r). */
+        let v_orbit = (mag_2r * 600.0).sqrt();
+        assert!(v_orbit > 10.0 && v_orbit < 200.0, "orbit speed {}", v_orbit);
     }
 
     // (radius_bits, seed, subdivisions, gravity_bits, pos_bits[3], flags, tileset)
