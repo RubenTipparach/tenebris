@@ -152,6 +152,15 @@ tabs into Trading / Research / Casino / Warehouse / Zoo / Fuel.
   (a special body or a large block-entity cluster in space). Approaching within a
   dock radius shows an "[E] dock" prompt (reuse `draw_machine_hint` pattern);
   interacting opens the station hub.
+- **Built look = technology hex blocks.** The station (and the casino inside it)
+  is constructed from the **technology block set** (`blocks::is_tech_block`, the
+  machine/panel hexes ids 29-40 with the `technology/*` textures), NOT natural
+  terrain - so it reads as an artificial, built structure. Assemble the station
+  hull/floors/walls from tech hexes (a reusable `build_tech_room()` helper), and
+  gate the casino room's aesthetic on the same palette. If a cleaner "panel"
+  variant is wanted, add tech-hex texture variants under
+  `assets/textures/technology/` (PNG + `ui_icons`/atlas) rather than reusing ore
+  or dirt faces.
 - **Station hub UI (`client/station_screen.rs`, egui):** a tabbed panel
   (Trading, Research, Casino, Warehouse, Zoo, Fuel), styled like the pause/inputs
   panels. Each tab is its own module so they land independently.
@@ -243,6 +252,10 @@ games later.
 - **Tests:** payout tables match config; expected value is house-favorable;
   PRNG is deterministic for a fixed seed; bet can't exceed balance.
 - **UI:** real drawn panels (reels, cards, keno grid) via egui — not ASCII art.
+- **Room build:** the casino is a room made of **technology hex blocks** (see
+  Phase 2 "Built look") — a neon-lit tech interior, distinct from the natural
+  planet surface. The game machines (slots cabinet, tables) can be tech-block
+  clusters / block-entities placed in that room.
 
 ---
 
