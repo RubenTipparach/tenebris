@@ -348,6 +348,14 @@ thread_local! {
      * player is caught sinking through a tree tile's ground, so the bug
      * can be captured in the wild (it doesn't reproduce headless). */
     static S_TREE_FALLTHROUGH_LOGGED: Cell<i32> = const { Cell::new(0) };
+
+    /* Diagnostic counter for the "float above blocks after digging down"
+     * bug. Fires when the anti-float gate below finds the player marked
+     * grounded while the voxel under their feet is actually air - i.e. the
+     * per-tile floor query is still reporting the pre-dig floor. Logs the
+     * tile / floor / feet state so the wild repro (which doesn't reproduce
+     * headless) can be captured. */
+    static S_FLOAT_LOGGED: Cell<i32> = const { Cell::new(0) };
 }
 
 /// Re-align the player's persistent tangent basis to the planet
@@ -2161,6 +2169,50 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
             }
         } else {
             p.grounded = false;
+        }
+
+        /* Anti-float: you cannot be grounded standing in air. This is the
+         * direct fix for "dig the block out from under yourself and hover".
+         * The per-tile floor query (walkable_floor_near above) can keep
+         * reporting the PRE-dig floor for a while: at world subdivisions a
+         * stationary player's feet tile flip-flops to an un-dug neighbour, or
+         * the just-edited column is read before its state settles - either way
+         * gr stays at the old surface, r stays within 0.05 of it, and the
+         * grounded branch above latches grounded=true. Gravity is gated on
+         * !grounded, so the player freezes mid-air.
+         *
+         * Rather than trust the per-tile floor, ask the voxel directly under
+         * the feet whether anything is actually holding the player up. Probe
+         * r - FEET_SUPPORT_PROBE_M so a legitimately-standing player (feet at a
+         * solid block's TOP face) samples INSIDE that block and stays grounded;
+         * a dug-out cell samples air and clears grounded, so next tick's
+         * gravity begins the fall and the existing snap catches the real floor
+         * below. Only ever CLEARS grounded (never moves the player), so it
+         * cannot cause a fall-through on its own - the worst case is one extra
+         * gravity tick that the ground snap immediately resolves. Trees are not
+         * support (you don't stand on a trunk voxel), matching the `supported`
+         * probe used by the tree cases above. */
+        const FEET_SUPPORT_PROBE_M: f64 = 0.15;
+        if p.grounded {
+            let fd = w.radius_to_depth(r - FEET_SUPPORT_PROBE_M);
+            if fd >= 0 && fd < WORLD_MAX_DEPTH {
+                let below = w.get(cur_tile, fd);
+                let supported = blocks::is_solid(below) && !is_tree_raw(below.raw());
+                if !supported {
+                    p.grounded = false;
+                    let logged = S_FLOAT_LOGGED.with(|c| c.get());
+                    if logged < 8 {
+                        S_FLOAT_LOGGED.with(|c| c.set(logged + 1));
+                        eprintln!(
+                            "[player] INFO: anti-float cleared grounded - feet \
+                             voxel is {:?} (not support) while floor query said \
+                             grounded. tile={} feet_r={:.2} gr={:.2} feet_d={} \
+                             (event {}/8)",
+                            below, cur_tile, r, gr, fd, logged + 1
+                        );
+                    }
+                }
+            }
         }
 
         /* Swept multi-tile landing - the robust catch for the tree / uneven-

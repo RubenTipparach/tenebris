@@ -1665,6 +1665,50 @@ mod tests {
     }
 
     #[test]
+    fn digging_down_drops_the_walkable_floor() {
+        /* Regression for "float above blocks after digging down": mining the
+         * surface block must immediately move the walkable floor one block
+         * lower, both through the analytic fast-path (set() marks the column
+         * edited) and the voxel scan. This pins the WORLD data path - if this
+         * passes but the player still floats in-game, the fault is in the
+         * client's per-tile feet resolution, not here. */
+        let mut w = tenebris_world();
+        let r = w.body.radius_m;
+        let t = 100;
+        for d in 1..WORLD_MAX_DEPTH {
+            w.set(t, d, Block::Air);
+        }
+        w.set(t, 68, Block::Dirt);
+        w.set(t, 69, Block::Dirt);
+        w.set(t, 70, Block::Grass); /* surface: top face = radius(71) */
+        let floor0 = w.depth_to_radius_m(71);
+        assert!(
+            (w.walkable_floor_near(t, r + 10.0, 0.0) - floor0).abs() < 1e-6,
+            "floor starts at the grass top"
+        );
+
+        /* Dig the grass block the player stands on. */
+        w.set(t, 70, Block::Air);
+        let floor1 = w.depth_to_radius_m(70); /* dirt at depth 69, top = radius(70) */
+        assert!(
+            (w.walkable_floor_near(t, r + 10.0, 0.0) - floor1).abs() < 1e-6,
+            "floor drops one block after digging the surface"
+        );
+        assert!(
+            floor1 < floor0 - 1e-6,
+            "the new floor must be strictly lower than before"
+        );
+
+        /* Dig again: it keeps dropping, never sticks at the old surface. */
+        w.set(t, 69, Block::Air);
+        let floor2 = w.depth_to_radius_m(69);
+        assert!(
+            (w.walkable_floor_near(t, r + 10.0, 0.0) - floor2).abs() < 1e-6,
+            "floor drops again on the second dig"
+        );
+    }
+
+    #[test]
     fn tree_is_transparent_to_floor() {
         /* Regression for the "sink through the ground next to / under a
          * tree" bug: trees must never form the walkable floor and never
