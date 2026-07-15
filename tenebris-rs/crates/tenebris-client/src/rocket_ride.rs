@@ -81,6 +81,12 @@ pub fn stage() -> bool {
     RIDE.with(|c| c.borrow_mut().as_mut().map(|r| r.stage()).unwrap_or(false))
 }
 
+/// The active (bottom) stage's part ids, for the falling body a jettison
+/// sheds. Read this BEFORE calling [`stage`], which removes that stage.
+pub fn active_stage_parts() -> Vec<tenebris_core::items::ItemId> {
+    with(|r| r.active_stage_parts()).unwrap_or_default()
+}
+
 /// True once the whole rocket is out of fuel (time to drop back to free-fly).
 pub fn is_spent() -> bool {
     with(|r| r.is_spent()).unwrap_or(true)

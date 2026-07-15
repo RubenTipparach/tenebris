@@ -178,6 +178,30 @@ pub struct ReentryConstants {
     pub max_alt_m: f32,
 }
 
+/// Jettisoned-stage salvage physics (`[salvage]` in rocket.yaml). A shed
+/// booster becomes a tumbling ballistic body that heats up on reentry and,
+/// on impact, leaves salvage (metal scraps on land, the intact parts in the
+/// ocean). Air density used by drag + heating reuses `reentry.max_alt_m` as
+/// the atmosphere band: density = 1 at the surface, 0 at the band top.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SalvageConstants {
+    /// Quadratic-drag scaler: fractional speed lost per second is roughly
+    /// `drag_coef * density * speed`, so a fast stage in thick air bleeds off
+    /// energy and the light debris settles to a terminal fall.
+    pub drag_coef: f32,
+    /// Aero-heating reference flux (`sqrt(density) * speed^3`) that reads as a
+    /// full white-hot sheath - the normaliser for the 0..~1.4 glow.
+    pub heat_ref: f32,
+    /// Glow smoothing: fast attack as it plunges in, slow decay as it cools.
+    pub heat_attack: f32,
+    pub heat_decay: f32,
+    /// Tumble rate of a shed stack (rad/s).
+    pub spin_rate: f32,
+    /// Metal scraps recovered from a stage that slams into land.
+    pub scrap_min: f32,
+    pub scrap_max: f32,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RocketConfig {
     /// Atmospheric engine: high thrust, thirsty (the lift-off stage).
@@ -188,6 +212,7 @@ pub struct RocketConfig {
     pub command_module: CommandModuleStats,
     pub flight: FlightConstants,
     pub reentry: ReentryConstants,
+    pub salvage: SalvageConstants,
 }
 
 /// Compiled-in defaults = the JS RocketConfig (MEDIUM_* parts).
@@ -212,6 +237,15 @@ pub const DEFAULT_ROCKET_CONFIG: RocketConfig = RocketConfig {
         parachute_drag: 0.95,
     },
     reentry: ReentryConstants { min_speed_mps: 45.0, full_speed_mps: 95.0, max_alt_m: 120.0 },
+    salvage: SalvageConstants {
+        drag_coef: 0.02,
+        heat_ref: 1.2e6,
+        heat_attack: 6.0,
+        heat_decay: 1.2,
+        spin_rate: 1.4,
+        scrap_min: 2.0,
+        scrap_max: 4.0,
+    },
 };
 
 impl Default for RocketConfig {
@@ -273,6 +307,13 @@ pub fn parse_rocket_config(src: &str) -> RocketConfig {
             ("reentry", "min_speed_mps") => c.reentry.min_speed_mps = val,
             ("reentry", "full_speed_mps") => c.reentry.full_speed_mps = val,
             ("reentry", "max_alt_m") => c.reentry.max_alt_m = val,
+            ("salvage", "drag_coef") => c.salvage.drag_coef = val,
+            ("salvage", "heat_ref") => c.salvage.heat_ref = val,
+            ("salvage", "heat_attack") => c.salvage.heat_attack = val,
+            ("salvage", "heat_decay") => c.salvage.heat_decay = val,
+            ("salvage", "spin_rate") => c.salvage.spin_rate = val,
+            ("salvage", "scrap_min") => c.salvage.scrap_min = val,
+            ("salvage", "scrap_max") => c.salvage.scrap_max = val,
             ("flight", "gravity_mps2") => c.flight.gravity_mps2 = val,
             ("flight", "launch_alt_m") => c.flight.launch_alt_m = val,
             ("flight", "safe_landing_mps") => c.flight.safe_landing_mps = val,
@@ -485,6 +526,21 @@ impl RocketRide {
     /// The engine kind currently firing (the active stage's engine).
     pub fn active_engine(&self) -> Option<EngineKind> {
         self.active().map(|s| s.spec.engine_kind)
+    }
+
+    /// Reconstruct the active (bottom) stage's part stack as item ids, engine
+    /// at index 0 then its tanks - what a jettison sheds into a falling body.
+    pub fn active_stage_parts(&self) -> Vec<ItemId> {
+        let Some(s) = self.active() else { return Vec::new() };
+        let engine = match s.spec.engine_kind {
+            EngineKind::Atmospheric => ROCKET_ENGINE,
+            EngineKind::Vacuum => VACUUM_ENGINE,
+        };
+        let mut parts = vec![engine];
+        for _ in 0..s.spec.tanks {
+            parts.push(FUEL_TANK);
+        }
+        parts
     }
 
     /// Thrust the rocket produces right now (0 if the active stage is out of

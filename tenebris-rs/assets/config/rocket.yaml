@@ -46,3 +46,17 @@ parachute_drag: 0.95
 min_speed_mps: 45
 full_speed_mps: 95
 max_alt_m: 120
+
+# Jettisoned-stage salvage: a staged booster becomes a tumbling ballistic
+# body that heats up on reentry (a hull-hugging plasma shell wraps it) and
+# leaves salvage on impact - metal scraps on land, the intact parts in the
+# ocean. Air density for drag + heating reuses reentry.max_alt_m as the band
+# (density 1 at the surface, 0 at the band top).
+[salvage]
+drag_coef: 0.02        # fractional speed lost/sec ~ drag_coef * density * speed
+heat_ref: 1200000      # sqrt(density)*speed^3 that reads as full white-hot
+heat_attack: 6.0       # glow ramp-up rate as it plunges in
+heat_decay: 1.2        # glow cool-down rate
+spin_rate: 1.4         # tumble of the shed stack (rad/s)
+scrap_min: 2           # metal scraps from a stage that hits land
+scrap_max: 4

@@ -4963,6 +4963,20 @@ fn frame_inner(app: &mut App) {
         let mut p = app.player.borrow_mut();
         drops::update(dt, &mut p);
     }
+    /* Dev: keep one hot booster framed ahead of the camera so the reentry
+     * plasma shell can be screenshotted headless (respawned each frame so it
+     * never falls out of view). */
+    if std::env::var("TENEBRIS_DEV_FALLING").is_ok() {
+        crate::falling_stage::clear();
+        let p = app.player.borrow();
+        crate::falling_stage::dev_spawn(p.position, p.basis.up, p.basis.fwd);
+    }
+    /* Jettisoned falling stages: ballistic reentry + salvage on impact
+     * (metal scraps on land, intact parts in the ocean). */
+    if !crate::falling_stage::is_empty() {
+        let w = app.world.borrow();
+        crate::falling_stage::step(&w, dt);
+    }
     /* Bonfire lighting: publish lit-bonfire flames into the torch light
      * mirror (2x a torch) and relight the terrain around them when the lit
      * set changes. */
@@ -5752,6 +5766,28 @@ fn frame_inner(app: &mut App) {
      * z-sort correctly against them. */
     animals::draw(view, proj, renderer::time_seconds());
     crate::rocket_fx::draw(view, proj, &app.world.borrow());
+    /* Jettisoned falling stages: tumbling part models wrapped in the
+     * hull-hugging reentry plasma shell (the mining-the-sky mesh technique).
+     * Stepped in the frame update; drawn here in the world pass. */
+    {
+        let views = crate::falling_stage::views();
+        if !views.is_empty() {
+            crate::rocket_fx::draw_falling(view, proj, &app.world.borrow(), &views);
+            let p = app.player.borrow();
+            let eye = dvec3_add(p.position, dvec3_scale(p.basis.up, player_ctrl::EYE_HEIGHT as f64));
+            let shells: Vec<crate::reentry_fx::ShellStage> = views
+                .iter()
+                .map(|v| crate::reentry_fx::ShellStage {
+                    center: v.center,
+                    axis: v.axis,
+                    flow: v.flow,
+                    parts: v.parts.clone(),
+                    heat: v.heat,
+                })
+                .collect();
+            crate::reentry_fx::draw_shells(view, proj, eye, &shells);
+        }
+    }
     /* Reentry plasma: streaks past the camera when falling fast in the
      * lower atmosphere (rocket.yaml [reentry]; dev-forced by
      * TENEBRIS_DEV_REENTRY). Same world sgl pass as the rocket. */
@@ -6093,12 +6129,24 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
      * ui.yaml. Wired here, not inside the debug_ui_visible block,
      * because the inventory / crafting screens that ride on this
      * module aren't debug features. */
-    /* Stage (default X): jettison the spent booster while flying a rocket. */
+    /* Stage (default X): jettison the spent booster while flying a rocket.
+     * The shed stack becomes a tumbling falling body (reentry plasma +
+     * salvage) if more than one stage remains. */
     if e._type == sapp::EventType::KeyDown
         && crate::controls::action_for_key(e.key_code) == Some(crate::controls::Action::Stage)
         && crate::rocket_ride::is_riding()
     {
-        crate::rocket_ride::stage();
+        let shed = crate::rocket_ride::active_stage_parts();
+        if crate::rocket_ride::stage() && !shed.is_empty() {
+            let p = app.player.borrow();
+            /* Drop it a stack-length below the player, moving with them plus a
+             * small backward kick so it visibly separates behind the climb. */
+            let along = dvec3_scale(p.basis.up, -(shed.len() as f64) * 1.8);
+            let pos = dvec3_add(p.position, along);
+            let kick = dvec3_scale(p.basis.up, -6.0);
+            let vel = dvec3_add(p.velocity, kick);
+            crate::falling_stage::spawn(shed, pos, vel, p.basis.up);
+        }
         return;
     }
     if e._type == sapp::EventType::KeyDown

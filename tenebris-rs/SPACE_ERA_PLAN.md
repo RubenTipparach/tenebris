@@ -322,20 +322,30 @@ often (matches how this branch has been merging).
 - Real orbital mechanics depth (N-body point gravity is enough; full patched
   conics is overkill for 5 bodies).
 
-## Reentry FX + ditched-stage salvage (user-locked, next up)
+## Reentry FX + ditched-stage salvage (DONE)
 
 Reference: https://github.com/RubenTipparach/mining-the-sky (reentry fx).
 
-- **Reentry FX:** when the rocket (or a jettisoned part) falls fast inside a
-  body's atmosphere shell, draw plasma/heat fx (glow trail + camera shake at
-  the JS reference's feel). Hook: speed + altitude test in the ride/part
-  integrator; fx via the existing sgl world layer.
-- **Ditched stages become tracked falling bodies:** on stage(), spawn a
-  Core-simulated falling part (ballistic + orbital gravity) instead of
-  vanishing.
-  - **Lands on terrain:** explodes (fx) and leaves a few salvageable METAL
-    SCRAP drops (new item + icon) at the impact site.
-  - **Splashes in ocean:** fully recoverable - the intact part floats as a
-    pickup (walk/swim over to collect the actual part back).
-- Persistence: falling/floating parts + scraps persist same-frame; knobs
-  (scrap count, explode threshold) in rocket.yaml.
+Shipped:
+
+- **First-person reentry streaks** (`reentry_fx::draw`): plasma streaks past
+  the camera when the player falls fast in the lower atmosphere. Ramps on the
+  rocket.yaml `[reentry]` speed thresholds, gated by altitude.
+- **Hull-hugging plasma shell** (`reentry_fx::draw_shells`): the full
+  mining-the-sky `plasma_mesh.wgsl` mesh technique - a surface-net glow shell
+  built from the stage's part-stack SDF, smeared into a downstream wake, nested
+  layers, white->orange->red cooling ramp gated by aero-heating, drawn
+  premultiplied-over. Wraps every jettisoned falling stage.
+- **Ditched stages become tracked falling bodies:** on stage(), the shed stack
+  spawns a `core::falling_stage::FallingStage` (ballistic + orbital gravity +
+  `sqrt(density)*v^3` heating), stepped client-side against the world.
+  - **Lands on terrain:** shatters, leaving a few salvageable `IRON` scraps
+    (reused the existing metal item - no icon-less new item) at the impact.
+  - **Splashes in ocean:** fully recoverable - every part drops back as a
+    pickup.
+- Knobs: `[salvage]` in rocket.yaml (drag, heat_ref/attack/decay, spin,
+  scrap_min/max). Air density reuses `reentry.max_alt_m` as the band.
+
+Possible follow-ups (not yet done): a bright impact-flash/explosion particle
+burst on land touchdown (today it's just the scrap drops), and camera shake
+during the player's own reentry.

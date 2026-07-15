@@ -445,6 +445,71 @@ pub fn draw(view: Mat4, proj: Mat4, world: &World) {
     }
 }
 
+/// Draw the tumbling part models of every jettisoned falling stage (space
+/// era salvage). Same textured model path as the pad rockets, but oriented by
+/// each stage's live tumble axis and centred on its world position. The plasma
+/// shell that wraps them is drawn separately by `reentry_fx::draw_shells`.
+pub fn draw_falling(view: Mat4, proj: Mat4, world: &World, stages: &[crate::falling_stage::StageView]) {
+    if stages.is_empty() || !models() {
+        return;
+    }
+    let _ = world;
+
+    renderer::sgl_world_begin();
+    sgl::defaults();
+    sgl::matrix_mode_projection();
+    sgl::load_matrix(&proj.m[0]);
+    sgl::matrix_mode_modelview();
+    sgl::load_matrix(&view.m[0]);
+
+    thread_local! {
+        static PIP_FALL: std::cell::Cell<sgl::Pipeline> = const { std::cell::Cell::new(sgl::Pipeline { id: 0 }) };
+    }
+    let pip = PIP_FALL.with(|p| {
+        if p.get().id == 0 {
+            p.set(sgl::make_pipeline(&sokol::gfx::PipelineDesc {
+                depth: sokol::gfx::DepthState {
+                    write_enabled: true,
+                    compare: sokol::gfx::CompareFunc::Less,
+                    ..Default::default()
+                },
+                cull_mode: sokol::gfx::CullMode::None,
+                ..Default::default()
+            }));
+        }
+        p.get()
+    });
+    sgl::load_pipeline(pip);
+
+    MODELS.with(|m| {
+        let mb = m.borrow();
+        let Some(models) = mb.as_ref() else { return };
+        for s in stages {
+            let axis = dvec3_normalize(s.axis);
+            let basis = basis_up(axis);
+            let seg = PART_HEIGHT * ROCKET_SCALE;
+            let total_h = s.parts.len() as f32 * seg;
+            let lit = renderer::entity_sun_brightness(s.center).clamp(0.15, 1.5);
+            for (i, &id) in s.parts.iter().enumerate() {
+                let midx = match part_role(id) {
+                    Some(PartRole::Engine) => 0usize,
+                    Some(PartRole::FuelTank) => 1,
+                    Some(PartRole::Capsule) => 2,
+                    None => 1,
+                };
+                let vac = tenebris_core::rocket::engine_kind(id)
+                    == Some(tenebris_core::rocket::EngineKind::Vacuum);
+                let scale = if vac { ROCKET_SCALE * VAC_BELL_SCALE } else { ROCKET_SCALE };
+                /* Slot bottom, measured from the stack centre along the axis. */
+                let off = (i as f32) * seg - total_h * 0.5;
+                let base = dvec3_add(s.center, dvec3_scale(axis, off as f64));
+                draw_model(&models[midx], base, &basis, scale, lit, renderer::rocket_view_id(midx));
+            }
+        }
+    });
+    renderer::sgl_world_end();
+}
+
 /// Push one launch-tower box (world-space corners = `base + right*x +
 /// up*y + fwd*z`) into `verts` as [x,y,z,u,v,shade] triangles. Side faces
 /// sample the tower texture's left cell, caps its right cell.

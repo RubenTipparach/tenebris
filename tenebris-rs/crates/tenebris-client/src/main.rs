@@ -15,6 +15,7 @@ mod clouds;
 mod crafting_screen;
 mod crops;
 mod drops;
+mod falling_stage;
 mod furnace_screen;
 mod power_ui;
 mod rocket_screen;

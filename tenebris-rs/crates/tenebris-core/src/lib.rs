@@ -7,6 +7,7 @@ pub mod weather;
 pub mod config;
 pub mod crafting;
 pub mod economy;
+pub mod falling_stage;
 pub mod farming;
 pub mod fauna;
 pub mod fishing;
