@@ -228,6 +228,33 @@ pub(crate) fn number_badge_rect(x: f32, y: f32) -> [f32; 4] {
     [x + 1.0, y + 1.0, cell + 2.0, cell + 2.0]
 }
 
+/// Tool durability-bar track along the bottom of a slot. The coloured fill
+/// is this rect with its width scaled by the remaining fraction.
+pub(crate) fn durability_bar_rect(x: f32, y: f32, slot_size: f32) -> [f32; 4] {
+    let h = 3.0f32;
+    [x + 2.0, y + slot_size - h - 2.0, slot_size - 4.0, h]
+}
+
+/// The durability bar to draw on a hotbar slot: `(fill_fraction, r, g, b)`,
+/// or `None` when the slot shouldn't have one.
+///
+/// A slot gets a bar only when it holds a tool with a use budget that has
+/// actually taken a hit - fresh tools and every non-tool draw nothing, so
+/// the bar's presence alone means "this is wearing out". Green -> red as it
+/// runs down, matching the egui slot grids' bar.
+pub(crate) fn durability_bar_fill(item: tenebris_core::items::ItemId, count: i32, dur: u16)
+    -> Option<(f32, f32, f32, f32)> {
+    if count <= 0 || item == Block::Air as u16 {
+        return None;
+    }
+    let frac = tenebris_core::mining::condition(&tenebris_core::mining::config(), item, dur)?;
+    if frac >= 1.0 {
+        return None; /* fresh - no bar */
+    }
+    let frac = frac.clamp(0.0, 1.0);
+    Some((frac, 1.0 - frac, frac, 0.19))
+}
+
 /* ----------------------------------------------------------------------- */
 /* Untextured primitives. */
 
@@ -384,6 +411,16 @@ pub fn draw(inv: &Inventory) {
         {
             let r = number_badge_rect(x, y);
             filled_quad(r[0], r[1], r[2], r[3], 0.0, 0.0, 0.0, 0.85);
+        }
+
+        /* Tool durability bar (bottom strip). Drawn BEFORE the count-badge
+         * early-out below: tools stack to 1, so they never get a count
+         * badge, and a `continue` above this would skip the bar on exactly
+         * the slots that need it. */
+        if let Some((frac, r, g, b)) = durability_bar_fill(s.item, s.count, s.dur) {
+            let t = durability_bar_rect(x, y, slot_size);
+            filled_quad(t[0], t[1], t[2], t[3], 0.05, 0.05, 0.06, 0.90);
+            filled_quad(t[0], t[1], t[2] * frac, t[3], r, g, b, 0.95);
         }
 
         /* Count badge (bottom-right). Only for finite-count slots;

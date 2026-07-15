@@ -47,17 +47,23 @@ pub const INV_HOTBAR_SLOTS: usize = 9;
 pub struct InvSlot {
     pub item: items::ItemId,
     pub count: i32,
+    /// Uses left on a tool; **0 means fresh / never used**. Same encoding
+    /// and the same reason as [`tenebris_core::items::ItemStack::dur`] -
+    /// read it through `mining::uses_left` / `mining::condition`, never
+    /// raw. This is the copy that actually wears: a tool only mines from
+    /// the SELECTED hotbar slot.
+    pub dur: u16,
 }
 
 impl InvSlot {
     /// Stand-in for the C positional initialiser `{ type, count }`.
     pub const fn block(block_type: Block, count: i32) -> Self {
-        InvSlot { item: block_type as u16, count }
+        InvSlot { item: block_type as u16, count, dur: 0 }
     }
 
-    /// A slot holding any item id (tool, resource, block).
+    /// A slot holding any item id (tool, resource, block), undamaged.
     pub const fn of(item: items::ItemId, count: i32) -> Self {
-        InvSlot { item, count }
+        InvSlot { item, count, dur: 0 }
     }
 
     /// The placeable block this slot holds, or `Block::Air` for empty
@@ -139,6 +145,9 @@ pub fn add(inv: &mut Inventory, block_type: Block) -> bool {
         if inv.slots[i].item == Block::Air as u16 || inv.slots[i].count == 0 {
             inv.slots[i].item = item;
             inv.slots[i].count = 1;
+            /* Fresh - an empty slot may still carry the dur of the tool
+             * that broke in it. */
+            inv.slots[i].dur = 0;
             return true;
         }
     }

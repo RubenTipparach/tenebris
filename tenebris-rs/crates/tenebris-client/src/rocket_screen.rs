@@ -97,20 +97,8 @@ pub fn open(world: WorldHandle, player: PlayerHandle, tile: i32, depth: i32) {
         s.flight = None;
     });
     /* One survival panel up at a time. */
-    crate::inventory_screen::close();
-    crate::crafting_screen::close();
-    crate::chest_screen::close();
-    crate::furnace_screen::close();
-    release_pointer();
+    crate::screens::take_focus(crate::screens::Screen::Rocket);
 }
-
-#[cfg(not(test))]
-fn release_pointer() {
-    sapp::lock_mouse(false);
-    sapp::show_mouse(true);
-}
-#[cfg(test)]
-fn release_pointer() {}
 
 /// Esc closes the screen. Returns true if consumed.
 pub fn handle_event(e: &sapp::Event) -> bool {
@@ -119,6 +107,7 @@ pub fn handle_event(e: &sapp::Event) -> bool {
     }
     if e._type == sapp::EventType::KeyDown && e.key_code == sapp::Keycode::Escape {
         close();
+        crate::screens::grab_pointer();
         return true;
     }
     false

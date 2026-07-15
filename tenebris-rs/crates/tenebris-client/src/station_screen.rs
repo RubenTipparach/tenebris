@@ -73,9 +73,11 @@ pub fn is_open() -> bool {
     S.with(|c| c.borrow().open)
 }
 
+/// Drop the hub. Pure state - the pointer grab lives on the undock paths
+/// (Esc / the Undock button) so `screens::close_all` and a sibling panel
+/// taking focus don't re-capture the cursor out from under them.
 pub fn close() {
     S.with(|c| c.borrow_mut().open = false);
-    sokol::app::lock_mouse(true);
 }
 
 /// Dock: load the persisted station state for this world and open the hub.
@@ -89,8 +91,7 @@ pub fn open(player: PlayerHandle) {
         s.tab = Tab::Trade;
         s.open = true;
     });
-    sokol::app::lock_mouse(false);
-    sokol::app::show_mouse(true);
+    crate::screens::take_focus(crate::screens::Screen::Station);
 }
 
 /// Swallow input while open; Esc closes.
@@ -100,6 +101,7 @@ pub fn event(e: &sokol::app::Event) -> bool {
     }
     if e._type == sokol::app::EventType::KeyDown && e.key_code == sokol::app::Keycode::Escape {
         close();
+        crate::screens::grab_pointer();
     }
     true
 }
@@ -148,7 +150,7 @@ pub fn egui_ui(ctx: &egui::Context) {
                                     for (item, _) in tenebris_core::station::priced_items() {
                                         let have =
                                             p.bag.count_of(item) + s.state.warehouse_count(item);
-                                        ui_icons::slot(ui, item, 1, 26.0, None);
+                                        ui_icons::slot(ui, item, 1, 0, 26.0, None);
                                         ui.label(
                                             items::display_name(item)
                                                 .unwrap_or_else(|| "?".to_string()),
@@ -212,7 +214,7 @@ pub fn egui_ui(ctx: &egui::Context) {
                                     .copied()
                                     .unwrap_or((0, 0));
                                 /* Click a filled slot to move one item to the bag. */
-                                if ui_icons::slot(ui, item, count, 34.0, None).clicked()
+                                if ui_icons::slot(ui, item, count, 0, 34.0, None).clicked()
                                     && count > 0
                                     && p.bag.room_for(item, 1)
                                 {
@@ -303,5 +305,6 @@ pub fn egui_ui(ctx: &egui::Context) {
 
     if do_close {
         close();
+        crate::screens::grab_pointer();
     }
 }

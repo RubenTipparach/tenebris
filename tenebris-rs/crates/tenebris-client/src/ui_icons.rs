@@ -212,13 +212,51 @@ pub fn draw_icon(p: &egui::Painter, item: u16, count: u16, rect: egui::Rect) {
     }
 }
 
-/// A clickable, framed inventory slot showing the item thumbnail + count.
+/// Paint a tool's remaining-uses bar along the bottom of `rect`.
+///
+/// No-op unless `item` is a tool with a durability budget AND it has taken
+/// at least one hit - a pristine tool shows no bar, so an untouched grid
+/// looks exactly as it did before durability existed and the bar reads as
+/// "this one is wearing out". Green -> red as it runs down.
+///
+/// `dur` is the slot's raw stored value; `mining::condition` owns the
+/// 0-means-fresh decoding and the per-material budget.
+pub fn durability_bar(p: &egui::Painter, item: u16, dur: u16, rect: egui::Rect) {
+    let Some(frac) = tenebris_core::mining::condition(&tenebris_core::mining::config(), item, dur)
+    else {
+        return; /* not a tool with a budget */
+    };
+    if frac >= 1.0 {
+        return; /* fresh - no bar */
+    }
+    let h = (rect.height() * 0.09).clamp(2.0, 4.0);
+    let track = egui::Rect::from_min_max(
+        egui::pos2(rect.min.x + 2.0, rect.max.y - h - 1.0),
+        egui::pos2(rect.max.x - 2.0, rect.max.y - 1.0),
+    );
+    p.rect_filled(track, 1.0, egui::Color32::from_rgb(0x18, 0x18, 0x1c));
+    let fill = egui::Rect::from_min_max(
+        track.min,
+        egui::pos2(track.min.x + track.width() * frac.clamp(0.0, 1.0), track.max.y),
+    );
+    /* Hue rides the remaining fraction: green when healthy, red at the end. */
+    let r = (255.0 * (1.0 - frac)).clamp(0.0, 255.0) as u8;
+    let g = (255.0 * frac).clamp(0.0, 255.0) as u8;
+    p.rect_filled(fill, 1.0, egui::Color32::from_rgb(r, g, 0x30));
+}
+
+/// A clickable, framed inventory slot showing the item thumbnail + count,
+/// plus a durability bar when it holds a worn tool.
+///
 /// `accent` tints the border (e.g. fuel/output highlight); pass `None` for
-/// the default. Returns the click Response.
+/// the default. `dur` is the slot's stored durability - pass 0 from stores
+/// that don't track it (chest / furnace / bonfire / power / station slots),
+/// which reads as "fresh" and draws no bar. Returns the click Response.
 pub fn slot(
     ui: &mut egui::Ui,
     item: u16,
     count: u16,
+    dur: u16,
     size: f32,
     accent: Option<egui::Color32>,
 ) -> egui::Response {
@@ -234,11 +272,19 @@ pub fn slot(
     p.rect_stroke(rect, 3.0, egui::Stroke::new(1.0, border), egui::StrokeKind::Inside);
     if count > 0 {
         draw_icon(p, item, count, rect.shrink(5.0));
-        /* Hover tooltip: the item's name. Every grid UI (chest /
-         * crafting / furnace / inventory) shares this slot helper, so
-         * one hook covers them all. */
+        durability_bar(p, item, dur, rect);
+        /* Hover tooltip: the item's name, plus the uses left on a tool.
+         * Every grid UI (chest / crafting / furnace / inventory) shares this
+         * slot helper, so one hook covers them all. */
         if let Some(name) = items::display_name(item) {
-            return resp.on_hover_text(name);
+            let cfg = tenebris_core::mining::config();
+            return match tenebris_core::mining::uses_left(&cfg, item, dur) {
+                Some(left) => {
+                    let max = tenebris_core::mining::tool_max_uses(&cfg, item).unwrap_or(left);
+                    resp.on_hover_text(format!("{name}\n{left} / {max} uses left"))
+                }
+                None => resp.on_hover_text(name),
+            };
         }
     }
     resp

@@ -12,7 +12,6 @@ use std::rc::Rc;
 
 use sokol::app as sapp;
 
-use crate::egui_layer;
 use crate::persistence;
 use crate::player_ctrl::PlayerCtrl;
 use crate::ui_icons;
@@ -60,19 +59,8 @@ pub fn open(world: WorldHandle, player: PlayerHandle, tile: i32, depth: i32) {
         s.player = Some(player);
     });
     /* One survival panel up at a time. */
-    crate::inventory_screen::close();
-    crate::crafting_screen::close();
-    crate::rocket_screen::close();
-    release_pointer();
+    crate::screens::take_focus(crate::screens::Screen::Chest);
 }
-
-#[cfg(not(test))]
-fn release_pointer() {
-    sapp::lock_mouse(false);
-    sapp::show_mouse(true);
-}
-#[cfg(test)]
-fn release_pointer() {}
 
 /// Esc closes the chest. Returns true if consumed.
 pub fn handle_event(e: &sapp::Event) -> bool {
@@ -81,6 +69,7 @@ pub fn handle_event(e: &sapp::Event) -> bool {
     }
     if e._type == sapp::EventType::KeyDown && e.key_code == sapp::Keycode::Escape {
         close();
+        crate::screens::grab_pointer();
         return true;
     }
     false
@@ -102,52 +91,18 @@ fn persist(w: &World) {
 const SLOT_PX: f32 = 44.0;
 const GRID_COLS: usize = 9;
 
-/// Draw one inventory slot: a framed cell with the item thumbnail (from the
-/// `ui_icons` atlas) and a stack-count badge. Returns its click Response.
-fn slot_widget(ui: &mut egui::Ui, item: u16, count: u16) -> egui::Response {
-    let size = egui::vec2(SLOT_PX, SLOT_PX);
-    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
-    let p = ui.painter();
-    let bg = if resp.hovered() {
-        egui::Color32::from_rgb(0x3a, 0x40, 0x4e)
-    } else {
-        egui::Color32::from_rgb(0x26, 0x2a, 0x33)
-    };
-    p.rect_filled(rect, 3.0, bg);
-    p.rect_stroke(
-        rect,
-        3.0,
-        egui::Stroke::new(1.0, egui::Color32::from_rgb(0x4a, 0x50, 0x5e)),
-        egui::StrokeKind::Inside,
-    );
-    if count > 0 {
-        if let Some([u0, v0, u1, v1]) = ui_icons::uv(item) {
-            let uv = egui::Rect::from_min_max(egui::pos2(u0, v0), egui::pos2(u1, v1));
-            p.image(egui_layer::ICON_TEX, rect.shrink(5.0), uv, egui::Color32::WHITE);
-        } else {
-            // No icon yet: a coloured chip so the slot still reads as full.
-            p.rect_filled(rect.shrink(10.0), 2.0, egui::Color32::from_rgb(0x88, 0x88, 0x90));
-        }
-        if count > 1 {
-            p.text(
-                rect.max - egui::vec2(3.0, 1.0),
-                egui::Align2::RIGHT_BOTTOM,
-                count.to_string(),
-                egui::FontId::proportional(13.0),
-                egui::Color32::WHITE,
-            );
-        }
-    }
-    resp
-}
-
 /// Draw `slots` as a grid of thumbnails; returns the index clicked (if any
 /// non-empty slot was clicked this frame).
+///
+/// Slots render through the shared `ui_icons::slot` - this module used to
+/// carry its own byte-identical copy of it, which meant every improvement to
+/// the real one (most recently the tool damage bar) silently skipped chests.
+/// Chest slots carry no durability, so they pass 0 (= fresh, no bar).
 fn slot_grid(ui: &mut egui::Ui, id: &str, slots: &[(u16, u16)]) -> Option<usize> {
     let mut clicked = None;
     egui::Grid::new(id).spacing(egui::vec2(3.0, 3.0)).show(ui, |ui| {
         for (i, &(item, count)) in slots.iter().enumerate() {
-            if slot_widget(ui, item, count).clicked() && count > 0 {
+            if ui_icons::slot(ui, item, count, 0, SLOT_PX, None).clicked() && count > 0 {
                 clicked = Some(i);
             }
             if (i + 1) % GRID_COLS == 0 {

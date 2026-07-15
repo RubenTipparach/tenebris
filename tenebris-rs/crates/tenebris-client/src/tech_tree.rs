@@ -164,16 +164,18 @@ pub fn close() {
 /// so the cursor can pan / close; re-locks on close so the player drops
 /// straight back into FPS mouse-look, mirroring the inventory screen.
 pub fn toggle() {
-    G.with(|c| {
+    /* Drop the borrow before take_focus: it walks the whole screen roster
+     * calling close(), and this screen's own close() would re-borrow G. */
+    let now_open = G.with(|c| {
         let mut g = c.borrow_mut();
         g.open = !g.open;
-        if g.open {
-            sapp::lock_mouse(false);
-            sapp::show_mouse(true);
-        } else {
-            sapp::lock_mouse(true);
-        }
+        g.open
     });
+    if now_open {
+        crate::screens::take_focus(crate::screens::Screen::TechTree);
+    } else {
+        crate::screens::grab_pointer();
+    }
 }
 
 pub fn set_player(p: Option<PlayerHandle>) {
@@ -198,7 +200,7 @@ pub fn event(e: &sapp::Event) -> bool {
             && (e.key_code == sapp::Keycode::Escape || toggle_key)
         {
             g.open = false;
-            sapp::lock_mouse(true);
+            crate::screens::grab_pointer();
         }
         true
     })
@@ -725,11 +727,8 @@ in: stick 2
         // A plank recipe: log -> plank. Locked until a log is discovered.
         let recipe = Recipe {
             name: "planks".into(),
-            inputs: vec![tenebris_core::items::ItemStack {
-                item: items::from_block(Block::Wood),
-                count: 1,
-            }],
-            output: tenebris_core::items::ItemStack { item: PLANK, count: 4 },
+            inputs: vec![tenebris_core::items::ItemStack::new(items::from_block(Block::Wood), 1)],
+            output: tenebris_core::items::ItemStack::new(PLANK, 4),
             tier: 0,
             station: None,
             time_s: 1.5,

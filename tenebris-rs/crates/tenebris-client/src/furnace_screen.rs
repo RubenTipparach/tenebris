@@ -61,20 +61,8 @@ pub fn open(world: WorldHandle, player: PlayerHandle, tile: i32, depth: i32) {
         s.world = Some(world);
         s.player = Some(player);
     });
-    crate::inventory_screen::close();
-    crate::crafting_screen::close();
-    crate::rocket_screen::close();
-    crate::chest_screen::close();
-    release_pointer();
+    crate::screens::take_focus(crate::screens::Screen::Furnace);
 }
-
-#[cfg(not(test))]
-fn release_pointer() {
-    sapp::lock_mouse(false);
-    sapp::show_mouse(true);
-}
-#[cfg(test)]
-fn release_pointer() {}
 
 /// Esc closes the furnace. Returns true if consumed.
 pub fn handle_event(e: &sapp::Event) -> bool {
@@ -83,6 +71,7 @@ pub fn handle_event(e: &sapp::Event) -> bool {
     }
     if e._type == sapp::EventType::KeyDown && e.key_code == sapp::Keycode::Escape {
         close();
+        crate::screens::grab_pointer();
         return true;
     }
     false
@@ -150,7 +139,7 @@ pub fn egui_ui(ctx: &egui::Context) {
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
                     ui.label(egui::RichText::new("Input").weak());
-                    if ui_icons::slot(ui, f.input.item, f.input.count, SLOT, None).clicked() {
+                    if ui_icons::slot(ui, f.input.item, f.input.count, 0, SLOT, None).clicked() {
                         action = Some(Action::TakeInput);
                     }
                 });
@@ -180,7 +169,7 @@ pub fn egui_ui(ctx: &egui::Context) {
                 ui.add_space(8.0);
                 ui.vertical(|ui| {
                     ui.label(egui::RichText::new("Output").weak());
-                    if ui_icons::slot(ui, f.output.item, f.output.count, SLOT, Some(egui::Color32::from_rgb(0x6e, 0xc0, 0x7a))).clicked() {
+                    if ui_icons::slot(ui, f.output.item, f.output.count, 0, SLOT, Some(egui::Color32::from_rgb(0x6e, 0xc0, 0x7a))).clicked() {
                         action = Some(Action::TakeOutput);
                     }
                 });
@@ -190,7 +179,7 @@ pub fn egui_ui(ctx: &egui::Context) {
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
                     ui.label(egui::RichText::new("Fuel (coal)").weak());
-                    if ui_icons::slot(ui, f.fuel.item, f.fuel.count, SLOT, Some(egui::Color32::from_rgb(0xe0, 0x80, 0x40))).clicked() {
+                    if ui_icons::slot(ui, f.fuel.item, f.fuel.count, 0, SLOT, Some(egui::Color32::from_rgb(0xe0, 0x80, 0x40))).clicked() {
                         action = Some(Action::TakeFuel);
                     }
                 });
@@ -235,7 +224,7 @@ pub fn egui_ui(ctx: &egui::Context) {
             ui.label(egui::RichText::new("Bag - click ore to smelt, coal to fuel").weak());
             egui::Grid::new("furnace-bag").spacing(egui::vec2(3.0, 3.0)).show(ui, |ui| {
                 for (i, &(item, count)) in bag_rows.iter().enumerate() {
-                    if ui_icons::slot(ui, item, count, 40.0, None).clicked() && count > 0 {
+                    if ui_icons::slot(ui, item, count, 0, 40.0, None).clicked() && count > 0 {
                         if items::smelt_output(item).is_some() {
                             action = Some(Action::LoadInput(item));
                         } else if items::is_fuel(item) {

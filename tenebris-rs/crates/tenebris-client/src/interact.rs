@@ -96,6 +96,30 @@ pub fn break_seconds_for(p: &PlayerCtrl, block: Block) -> f32 {
     mining::break_time(&mining::config(), block, best_tool_for(p, block))
 }
 
+/// Spend one use of the equipped tool - the wear of a single mined block.
+/// A tool on its last use is destroyed and its slot cleared.
+///
+/// Charges the SELECTED hotbar slot, which is where the EQUIP rule says a
+/// tool has to be to work (see [`best_tool_for`]). Blocks, resources and
+/// the budget-less tools (hoe / bucket / rod) fall out via
+/// `mining::wear_one` returning `NoBudget`, so this is safe to call on
+/// every break without checking what's held.
+pub fn wear_selected_tool(p: &mut PlayerCtrl) {
+    let sel = p.inventory.selected as usize;
+    let Some(slot) = p.inventory.slots.get_mut(sel) else { return };
+    if slot.count <= 0 {
+        return;
+    }
+    match mining::wear_one(&mining::config(), slot.item, slot.dur) {
+        mining::Wear::NoBudget => {}
+        mining::Wear::Worn(dur) => slot.dur = dur,
+        mining::Wear::Broke => {
+            println!("[mining] {} broke", items::def(slot.item).map(|d| d.name).unwrap_or("tool"));
+            *slot = crate::inventory::InvSlot::block(Block::Air, 0);
+        }
+    }
+}
+
 /* ----------------------------------------------------------------- */
 /* SP per-edit persistence helpers. CLAUDE.md mandates that every
  * block place/break and every torch place/remove write to durable
@@ -555,6 +579,12 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
                         crate::drops::spawn(w, s.hit_tile, s.hit_depth, items::FLINT, 1);
                     }
                 }
+                /* One block mined = one use off the equipped tool. Charged
+                 * on the SELECTED hotbar slot rather than on `best` (which
+                 * is None when the tool is the wrong category for the
+                 * block): swinging an iron pickaxe at dirt still wears it,
+                 * so "1 use = 1 block" holds however you mine. */
+                wear_selected_tool(p);
                 s.mining_progress_s = 0.0;
             }
         } else {
@@ -875,6 +905,87 @@ fn forage_surface(s: &InteractState, w: &World) -> bool {
     };
     crate::drops::spawn(w, s.hit_tile, s.hit_depth, item, 1);
     true
+}
+
+#[cfg(test)]
+mod durability_tests {
+    use super::*;
+    use crate::inventory::InvSlot;
+
+    fn player_holding(item: items::ItemId, dur: u16) -> PlayerCtrl {
+        let mut p = PlayerCtrl::default();
+        p.survival_mode = true;
+        inventory::init_empty(&mut p.inventory);
+        p.inventory.slots[0] = InvSlot { item, count: 1, dur };
+        p.inventory.selected = 0;
+        p
+    }
+
+    /// One block mined = one use. The headline rule.
+    #[test]
+    fn mining_a_block_spends_one_use() {
+        let cfg = mining::config();
+        let budget = mining::tool_max_uses(&cfg, items::WOOD_PICKAXE).unwrap();
+        let mut p = player_holding(items::WOOD_PICKAXE, 0); /* fresh */
+        wear_selected_tool(&mut p);
+        assert_eq!(
+            mining::uses_left(&cfg, items::WOOD_PICKAXE, p.inventory.slots[0].dur),
+            Some(budget - 1)
+        );
+        wear_selected_tool(&mut p);
+        assert_eq!(
+            mining::uses_left(&cfg, items::WOOD_PICKAXE, p.inventory.slots[0].dur),
+            Some(budget - 2)
+        );
+    }
+
+    /// The tool is destroyed on its last use and the slot is emptied - it
+    /// must not linger at 0 uses (which reads as "fresh" by the sentinel
+    /// rule and would mine forever).
+    #[test]
+    fn tool_breaks_and_clears_its_slot_on_the_last_use() {
+        let mut p = player_holding(items::WOOD_PICKAXE, 2);
+        wear_selected_tool(&mut p);
+        assert_eq!(p.inventory.slots[0].item, items::WOOD_PICKAXE, "1 use left, still alive");
+        assert_eq!(p.inventory.slots[0].dur, 1);
+
+        wear_selected_tool(&mut p);
+        assert_eq!(p.inventory.slots[0].count, 0, "spent tool should be gone");
+        assert_eq!(p.inventory.slots[0].item, Block::Air as u16);
+        assert_eq!(p.inventory.slots[0].dur, 0, "cleared slot must carry no wear");
+    }
+
+    /// Mining with a block / resource / budget-less tool selected is a
+    /// no-op, so the break site can call this unconditionally.
+    #[test]
+    fn non_tools_are_untouched() {
+        for item in [items::from_block(Block::Stone), items::COAL, items::HOE] {
+            let mut p = player_holding(item, 0);
+            let before = p.inventory.slots[0];
+            wear_selected_tool(&mut p);
+            assert_eq!(p.inventory.slots[0], before, "{item} should not wear");
+        }
+    }
+
+    /// Only the equipped (selected) slot wears - a spare pickaxe sitting in
+    /// another hotbar slot doesn't erode while you mine.
+    #[test]
+    fn only_the_selected_slot_wears() {
+        let mut p = player_holding(items::WOOD_PICKAXE, 50);
+        p.inventory.slots[1] = InvSlot { item: items::IRON_PICKAXE, count: 1, dur: 60 };
+        wear_selected_tool(&mut p);
+        assert_eq!(p.inventory.slots[0].dur, 49, "equipped tool wears");
+        assert_eq!(p.inventory.slots[1].dur, 60, "spare tool must not wear");
+    }
+
+    /// An empty selected slot (bare hands) is a no-op, not a panic.
+    #[test]
+    fn bare_hands_is_a_no_op() {
+        let mut p = PlayerCtrl::default();
+        inventory::init_empty(&mut p.inventory);
+        wear_selected_tool(&mut p);
+        assert_eq!(p.inventory.slots[0].count, 0);
+    }
 }
 
 #[cfg(test)]

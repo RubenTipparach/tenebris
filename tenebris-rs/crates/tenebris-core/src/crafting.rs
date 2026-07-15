@@ -46,7 +46,8 @@ fn parse_item_count(val: &str) -> Option<ItemStack> {
     let name = it.next()?;
     let count: u16 = it.next().unwrap_or("1").parse().ok()?;
     let item = items::id_by_name(name)?;
-    Some(ItemStack { item, count })
+    /* A crafted tool comes off the bench fresh (dur 0 = full budget). */
+    Some(ItemStack::new(item, count))
 }
 
 /// Parse the recipe table. Unknown item names / malformed lines are
@@ -290,21 +291,21 @@ in: stick 2
         let rs = recipes();
         assert_eq!(rs.len(), 4);
         let planks = find(&rs, "planks");
-        assert_eq!(planks.output, ItemStack { item: PLANK, count: 4 });
+        assert_eq!(planks.output, ItemStack::new(PLANK, 4));
         assert_eq!(planks.inputs.len(), 1);
         let torch = find(&rs, "torch");
         assert_eq!(torch.inputs.len(), 2);
-        assert_eq!(torch.inputs[0], ItemStack { item: STICK, count: 1 });
-        assert_eq!(torch.inputs[1], ItemStack { item: COAL, count: 1 });
+        assert_eq!(torch.inputs[0], ItemStack::new(STICK, 1));
+        assert_eq!(torch.inputs[1], ItemStack::new(COAL, 1));
     }
 
     #[test]
     fn craftable_checks_every_input() {
         let planks = find(&recipes(), "flint-pickaxe");
         let mut bag = vec![ItemStack::default(); 9];
-        bag[0] = ItemStack { item: PLANK, count: 3 };
+        bag[0] = ItemStack::new(PLANK, 3);
         assert!(!craftable(&bag, &planks)); // missing sticks
-        bag[1] = ItemStack { item: STICK, count: 2 };
+        bag[1] = ItemStack::new(STICK, 2);
         assert!(craftable(&bag, &planks));
     }
 
@@ -312,10 +313,10 @@ in: stick 2
     fn craft_consumes_inputs_and_adds_output() {
         let planks = find(&recipes(), "planks");
         let mut bag = vec![ItemStack::default(); 9];
-        bag[0] = ItemStack { item: items::from_block(crate::blocks::Block::Wood), count: 5 };
+        bag[0] = ItemStack::new(items::from_block(crate::blocks::Block::Wood), 5);
         assert!(craft(&mut bag, &planks));
         // 1 log consumed, 4 planks produced
-        assert_eq!(bag[0], ItemStack { item: items::from_block(crate::blocks::Block::Wood), count: 4 });
+        assert_eq!(bag[0], ItemStack::new(items::from_block(crate::blocks::Block::Wood), 4));
         let planks_total: u16 = bag.iter().filter(|s| s.item == PLANK).map(|s| s.count).sum();
         assert_eq!(planks_total, 4);
     }
@@ -324,7 +325,7 @@ in: stick 2
     fn craft_fails_atomically_without_inputs() {
         let pick = find(&recipes(), "flint-pickaxe");
         let mut bag = vec![ItemStack::default(); 9];
-        bag[0] = ItemStack { item: PLANK, count: 3 }; // no sticks
+        bag[0] = ItemStack::new(PLANK, 3); // no sticks
         let before = bag.clone();
         assert!(!craft(&mut bag, &pick));
         assert_eq!(bag, before); // untouched
@@ -337,8 +338,8 @@ in: stick 2
         // once the input slot is consumed... actually input frees the
         // slot, so use a bag fully packed with a different full item.
         let mut bag = vec![
-            ItemStack { item: PLANK, count: 2 },
-            ItemStack { item: COAL, count: items::stack_size(COAL) },
+            ItemStack::new(PLANK, 2),
+            ItemStack::new(COAL, items::stack_size(COAL)),
         ];
         // sticks need 2 planks (present); output 4 sticks. After taking
         // the 2 planks, slot 0 frees, so it DOES fit -> crafts.
@@ -351,12 +352,12 @@ in: stick 2
     fn output_stacks_onto_existing_partial_stack() {
         let planks = find(&recipes(), "planks");
         let mut bag = vec![
-            ItemStack { item: items::from_block(crate::blocks::Block::Wood), count: 1 },
-            ItemStack { item: PLANK, count: 10 },
+            ItemStack::new(items::from_block(crate::blocks::Block::Wood), 1),
+            ItemStack::new(PLANK, 10),
         ];
         assert!(craft(&mut bag, &planks));
         // 4 new planks top up the existing stack of 10 -> 14
-        assert_eq!(bag[1], ItemStack { item: PLANK, count: 14 });
+        assert_eq!(bag[1], ItemStack::new(PLANK, 14));
     }
 
     #[test]
@@ -412,11 +413,11 @@ in: stick 2
         let rs = load_recipes(path);
         let smelt = rs.iter().find(|r| r.name == "copper-ingot").cloned().unwrap();
         // 1 raw copper + 1 coal -> 1 copper ingot.
-        assert_eq!(smelt.output, ItemStack { item: COPPER_INGOT, count: 1 });
+        assert_eq!(smelt.output, ItemStack::new(COPPER_INGOT, 1));
 
         let mut bag = vec![ItemStack::default(); 9];
-        bag[0] = ItemStack { item: COPPER, count: 3 };
-        bag[1] = ItemStack { item: COAL, count: 1 };
+        bag[0] = ItemStack::new(COPPER, 3);
+        bag[1] = ItemStack::new(COAL, 1);
         assert!(craft(&mut bag, &smelt));
         // One copper + the coal fuel consumed, one ingot produced.
         assert_eq!(have(&bag, COPPER), 2, "one raw copper smelted");
@@ -436,11 +437,11 @@ in: stick 2
         let rs = load_recipes(path);
         let bronze = rs.iter().find(|r| r.name == "bronze-ingot").cloned().unwrap();
         // Alloy (hand-crafted): copper ingot + tin ingot -> 2 bronze.
-        assert_eq!(bronze.output, ItemStack { item: BRONZE_INGOT, count: 2 });
+        assert_eq!(bronze.output, ItemStack::new(BRONZE_INGOT, 2));
 
         let mut bag = vec![ItemStack::default(); 9];
-        bag[0] = ItemStack { item: COPPER_INGOT, count: 1 };
-        bag[1] = ItemStack { item: TIN_INGOT, count: 1 };
+        bag[0] = ItemStack::new(COPPER_INGOT, 1);
+        bag[1] = ItemStack::new(TIN_INGOT, 1);
         assert!(craft(&mut bag, &bronze));
         assert_eq!(have(&bag, COPPER_INGOT), 0);
         assert_eq!(have(&bag, TIN_INGOT), 0);
@@ -457,9 +458,9 @@ in: stick 2
 
         // Fuel tank: 5 iron ingots -> 1 tank.
         let tank = rs.iter().find(|r| r.name == "fuel-tank").cloned().unwrap();
-        assert_eq!(tank.output, ItemStack { item: FUEL_TANK, count: 1 });
+        assert_eq!(tank.output, ItemStack::new(FUEL_TANK, 1));
         let mut bag = vec![ItemStack::default(); 9];
-        bag[0] = ItemStack { item: IRON_INGOT, count: 5 };
+        bag[0] = ItemStack::new(IRON_INGOT, 5);
         assert!(craft(&mut bag, &tank));
         assert_eq!(have(&bag, FUEL_TANK), 1);
         assert_eq!(have(&bag, IRON_INGOT), 0);
@@ -467,7 +468,7 @@ in: stick 2
         // Engine + command module exist with the right outputs.
         assert!(rs.iter().any(|r| r.name == "rocket-engine" && r.output.item == ROCKET_ENGINE));
         let cmd = rs.iter().find(|r| r.name == "command-module").cloned().unwrap();
-        assert_eq!(cmd.output, ItemStack { item: COMMAND_MODULE, count: 1 });
+        assert_eq!(cmd.output, ItemStack::new(COMMAND_MODULE, 1));
         assert!(cmd.inputs.iter().any(|i| i.item == COPPER_INGOT));
     }
 
@@ -480,15 +481,15 @@ in: stick 2
         // copper ingot -> 2 wire
         let wire = rs.iter().find(|r| r.name == "wire").cloned().unwrap();
         let mut bag = vec![ItemStack::default(); 9];
-        bag[0] = ItemStack { item: COPPER_INGOT, count: 1 };
+        bag[0] = ItemStack::new(COPPER_INGOT, 1);
         assert!(craft(&mut bag, &wire));
         assert_eq!(have(&bag, WIRE), 2);
 
         // 2 wire + 1 iron -> 1 circuit board
         let board = rs.iter().find(|r| r.name == "circuit-board").cloned().unwrap();
         let mut bag = vec![ItemStack::default(); 9];
-        bag[0] = ItemStack { item: WIRE, count: 2 };
-        bag[1] = ItemStack { item: IRON_INGOT, count: 1 };
+        bag[0] = ItemStack::new(WIRE, 2);
+        bag[1] = ItemStack::new(IRON_INGOT, 1);
         assert!(craft(&mut bag, &board));
         assert_eq!(have(&bag, CIRCUIT_BOARD), 1);
 

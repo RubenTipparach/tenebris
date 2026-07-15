@@ -159,6 +159,24 @@ pub struct ItemDef {
 pub struct ItemStack {
     pub item: ItemId,
     pub count: u16,
+    /// Uses left on a tool, where **0 means "fresh / never used"** and
+    /// anything else is the remaining budget. Meaningless (and left 0) for
+    /// blocks and resources.
+    ///
+    /// The 0-is-fresh sentinel exists so `Default`-constructed slots and
+    /// saves written before durability don't all read as broken tools. A
+    /// tool that runs out is destroyed and its slot cleared, so 0 never
+    /// means "0 uses left" on a live tool. Interpret it through
+    /// `mining::uses_left` / `mining::condition` rather than reading it
+    /// raw - only they know the per-material budget.
+    pub dur: u16,
+}
+
+impl ItemStack {
+    /// A fresh (undamaged) stack.
+    pub const fn new(item: ItemId, count: u16) -> Self {
+        ItemStack { item, count, dur: 0 }
+    }
 }
 
 /// Item id for a placeable block (identity: the block's raw byte).

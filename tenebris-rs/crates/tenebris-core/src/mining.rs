@@ -123,6 +123,68 @@ fn material_mult(cfg: &MiningConfig, tool: ItemId) -> f32 {
     }
 }
 
+/* ------------------------- tool durability ---------------------------- */
+
+/// How many blocks a fresh tool of this item can mine before it breaks, or
+/// `None` for an item with no durability budget.
+///
+/// Keyed off the tool's material, like [`material_mult`] and [`tool_tier`]:
+/// the `WOOD_*` ids are the flint tier (legacy name - the items are called
+/// "flint-pickaxe" and are knapped from flint), then stone, then iron.
+///
+/// The hoe / bucket / fishing rod are deliberately budget-less: a use is
+/// defined as one block mined, and none of them mine. Give them a budget
+/// only alongside a wear call at their own use-sites.
+pub fn tool_max_uses(cfg: &MiningConfig, item: ItemId) -> Option<u16> {
+    match item {
+        items::WOOD_PICKAXE | items::WOOD_AXE | items::WOOD_SHOVEL => Some(cfg.flint_tool_uses),
+        items::STONE_PICKAXE => Some(cfg.stone_tool_uses),
+        items::IRON_PICKAXE => Some(cfg.iron_tool_uses),
+        _ => None,
+    }
+}
+
+/// Uses left on a tool, or `None` if it has no durability budget.
+///
+/// `dur` is the value carried in the inventory slot, where **0 means "fresh
+/// / never used"**. That sentinel is load-bearing: slots are `Default`-
+/// constructed and deserialized from saves that predate durability, and
+/// without it every one of those would read as a tool with 0 uses left -
+/// i.e. broken on arrival. A tool that reaches 0 uses is destroyed and its
+/// slot cleared, so a live tool never stores 0.
+pub fn uses_left(cfg: &MiningConfig, item: ItemId, dur: u16) -> Option<u16> {
+    let max = tool_max_uses(cfg, item)?;
+    Some(if dur == 0 { max } else { dur.min(max) })
+}
+
+/// Remaining condition as 0..1 (1.0 = fresh), or `None` for an item with no
+/// durability budget. What the slot damage bars draw.
+pub fn condition(cfg: &MiningConfig, item: ItemId, dur: u16) -> Option<f32> {
+    let max = tool_max_uses(cfg, item)?;
+    let left = uses_left(cfg, item, dur)?;
+    Some(left as f32 / max.max(1) as f32)
+}
+
+/// What one use did to a tool.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Wear {
+    /// Not a tool with a budget - the slot is untouched.
+    NoBudget,
+    /// Survived; store this as the slot's new `dur`.
+    Worn(u16),
+    /// Spent its last use - destroy it and clear the slot.
+    Broke,
+}
+
+/// Spend one use of a tool: the wear a single mined block causes.
+pub fn wear_one(cfg: &MiningConfig, item: ItemId, dur: u16) -> Wear {
+    match uses_left(cfg, item, dur) {
+        None => Wear::NoBudget,
+        Some(left) if left <= 1 => Wear::Broke,
+        Some(left) => Wear::Worn(left - 1),
+    }
+}
+
 /// Seconds to break `b` while holding tool `held` (the specific item, so
 /// pickaxe tiers get their own speed). The base times are the *ideal-tool*
 /// times (shovel on soft ground, wood pickaxe on rock); a better pickaxe
@@ -167,7 +229,7 @@ pub fn drops(b: Block, tier: u8) -> Vec<ItemStack> {
         Block::JungleGrass | Block::DryGrass => items::from_block(Block::Grass),
         _ => items::from_block(b),
     };
-    vec![ItemStack { item, count: 1 }]
+    vec![ItemStack::new(item, 1)]
 }
 
 /// Worldgen hook: given a deterministic per-voxel `roll` in [0,1] for an
@@ -227,6 +289,13 @@ pub struct MiningConfig {
     /// flint - the tier-1 tool material. Deterministic per cell, so it
     /// doesn't depend on frame timing.
     pub flint_from_stone_chance: f32,
+    /// Blocks a fresh flint-tier tool (pickaxe / axe / shovel) mines before
+    /// it breaks. One use = one block mined.
+    pub flint_tool_uses: u16,
+    /// Blocks a fresh stone pickaxe mines before it breaks.
+    pub stone_tool_uses: u16,
+    /// Blocks a fresh iron pickaxe mines before it breaks.
+    pub iron_tool_uses: u16,
 }
 
 impl MiningConfig {
@@ -248,6 +317,11 @@ impl MiningConfig {
         crack_alpha: 0.90,
         /* ~1 in 4 mined rocks yields a flint chip. */
         flint_from_stone_chance: 0.25,
+        /* Tool lifetimes, in blocks mined. Flint is the knap-it-anywhere
+         * starter tier; iron is the payoff for the smelting chain. */
+        flint_tool_uses: 200,
+        stone_tool_uses: 350,
+        iron_tool_uses: 500,
     };
 
     /// All-zero ore chances: worldgen places no ore. Used by the save
@@ -266,6 +340,9 @@ impl MiningConfig {
         iron_tool_mult: 0.40,
         crack_alpha: 0.90,
         flint_from_stone_chance: 0.25,
+        flint_tool_uses: 200,
+        stone_tool_uses: 350,
+        iron_tool_uses: 500,
     };
 }
 
@@ -314,6 +391,12 @@ pub fn parse_config(src: &str, _path: &str) -> MiningConfig {
             "iron_tool_mult" => cfg.iron_tool_mult = v,
             "crack_alpha" => cfg.crack_alpha = v,
             "flint_from_stone_chance" => cfg.flint_from_stone_chance = v,
+            /* Use counts are whole blocks; the shared scanner reads every
+             * value as f32, so round rather than truncate (a yaml 200.0
+             * that floats to 199.9999 must still be 200 uses). */
+            "flint_tool_uses" => cfg.flint_tool_uses = v.round() as u16,
+            "stone_tool_uses" => cfg.stone_tool_uses = v.round() as u16,
+            "iron_tool_uses" => cfg.iron_tool_uses = v.round() as u16,
             _ => {}
         }
     }
@@ -336,6 +419,101 @@ pub fn load_config(path: &str) -> MiningConfig {
 mod tests {
     use super::*;
     use crate::items::{COAL, WOOD_AXE, WOOD_PICKAXE, WOOD_SHOVEL};
+
+    /* ---------------------- tool durability ---------------------------- */
+
+    /// The lifetimes the design asks for: flint 200 blocks, iron 500.
+    #[test]
+    fn tool_budgets_come_from_config() {
+        use crate::items::{IRON_PICKAXE, STONE_PICKAXE};
+        let cfg = MiningConfig::DEFAULT;
+        assert_eq!(tool_max_uses(&cfg, WOOD_PICKAXE), Some(200));
+        assert_eq!(tool_max_uses(&cfg, WOOD_AXE), Some(200));
+        assert_eq!(tool_max_uses(&cfg, WOOD_SHOVEL), Some(200));
+        assert_eq!(tool_max_uses(&cfg, STONE_PICKAXE), Some(350));
+        assert_eq!(tool_max_uses(&cfg, IRON_PICKAXE), Some(500));
+        /* Not tools / no budget: never wear, never draw a bar. */
+        assert_eq!(tool_max_uses(&cfg, COAL), None);
+        assert_eq!(tool_max_uses(&cfg, crate::items::HOE), None);
+        assert_eq!(tool_max_uses(&cfg, crate::items::BUCKET), None);
+        assert_eq!(tool_max_uses(&cfg, items::from_block(Block::Stone)), None);
+    }
+
+    /// dur == 0 means FRESH, not broken. Every `Default`-constructed slot and
+    /// every pre-durability save deserialises to 0, so if this inverts, all
+    /// existing tools shatter on the next swing.
+    #[test]
+    fn zero_dur_reads_as_a_fresh_tool() {
+        let cfg = MiningConfig::DEFAULT;
+        assert_eq!(uses_left(&cfg, WOOD_PICKAXE, 0), Some(200));
+        assert_eq!(condition(&cfg, WOOD_PICKAXE, 0), Some(1.0));
+        assert_eq!(wear_one(&cfg, WOOD_PICKAXE, 0), Wear::Worn(199));
+    }
+
+    #[test]
+    fn non_tools_never_wear() {
+        let cfg = MiningConfig::DEFAULT;
+        assert_eq!(wear_one(&cfg, COAL, 0), Wear::NoBudget);
+        assert_eq!(condition(&cfg, COAL, 0), None);
+        assert_eq!(uses_left(&cfg, COAL, 0), None);
+    }
+
+    /// One use per block mined, all the way to the break - the whole rule.
+    #[test]
+    fn a_flint_tool_lasts_exactly_its_budget() {
+        let cfg = MiningConfig::DEFAULT;
+        let budget = tool_max_uses(&cfg, WOOD_PICKAXE).unwrap();
+        let mut dur = 0; /* fresh */
+        for mined in 1..budget {
+            match wear_one(&cfg, WOOD_PICKAXE, dur) {
+                Wear::Worn(d) => dur = d,
+                other => panic!("broke early after {mined} blocks: {other:?}"),
+            }
+            assert_eq!(uses_left(&cfg, WOOD_PICKAXE, dur), Some(budget - mined));
+        }
+        /* The budget-th block is the last one it can mine. */
+        assert_eq!(uses_left(&cfg, WOOD_PICKAXE, dur), Some(1));
+        assert_eq!(wear_one(&cfg, WOOD_PICKAXE, dur), Wear::Broke);
+    }
+
+    /// Iron outlasts stone outlasts flint - the progression the config sells.
+    #[test]
+    fn better_material_lasts_longer() {
+        use crate::items::{IRON_PICKAXE, STONE_PICKAXE};
+        let cfg = MiningConfig::DEFAULT;
+        let flint = tool_max_uses(&cfg, WOOD_PICKAXE).unwrap();
+        let stone = tool_max_uses(&cfg, STONE_PICKAXE).unwrap();
+        let iron = tool_max_uses(&cfg, IRON_PICKAXE).unwrap();
+        assert!(flint < stone && stone < iron, "{flint} < {stone} < {iron}");
+    }
+
+    #[test]
+    fn condition_tracks_remaining_fraction() {
+        let cfg = MiningConfig::DEFAULT;
+        assert_eq!(condition(&cfg, WOOD_PICKAXE, 100), Some(0.5));
+        assert_eq!(condition(&cfg, WOOD_PICKAXE, 50), Some(0.25));
+    }
+
+    /// A dur above the material's budget (a hand-edited save, or a config
+    /// that shrank under an existing tool) clamps instead of showing a bar
+    /// over 100%.
+    #[test]
+    fn oversized_dur_clamps_to_the_budget() {
+        let cfg = MiningConfig::DEFAULT;
+        assert_eq!(uses_left(&cfg, WOOD_PICKAXE, 9_000), Some(200));
+        assert_eq!(condition(&cfg, WOOD_PICKAXE, 9_000), Some(1.0));
+    }
+
+    #[test]
+    fn yaml_overrides_tool_budgets() {
+        let cfg = parse_config("flint_tool_uses: 5\niron_tool_uses: 12\n", "test");
+        assert_eq!(cfg.flint_tool_uses, 5);
+        assert_eq!(cfg.iron_tool_uses, 12);
+        /* Omitted key keeps the compiled-in default. */
+        assert_eq!(cfg.stone_tool_uses, MiningConfig::DEFAULT.stone_tool_uses);
+        assert_eq!(wear_one(&cfg, WOOD_PICKAXE, 0), Wear::Worn(4));
+        set_config(MiningConfig::DEFAULT); /* don't leak into sibling tests */
+    }
 
     #[test]
     fn tool_kinds_and_block_tools_match() {
@@ -414,7 +592,7 @@ mod tests {
     #[test]
     fn hand_breaks_wood_and_drops_it() {
         let d = drops(Block::Wood, 0);
-        assert_eq!(d, vec![ItemStack { item: items::from_block(Block::Wood), count: 1 }]);
+        assert_eq!(d, vec![ItemStack::new(items::from_block(Block::Wood), 1)]);
     }
 
     #[test]
@@ -427,17 +605,17 @@ mod tests {
     fn stone_with_pickaxe_drops_just_stone() {
         assert_eq!(
             drops(Block::Stone, 1),
-            vec![ItemStack { item: items::from_block(Block::Stone), count: 1 }]
+            vec![ItemStack::new(items::from_block(Block::Stone), 1)]
         );
     }
 
     #[test]
     fn ore_blocks_drop_their_raw_resource() {
         use crate::items::{COPPER, IRON, TIN};
-        assert_eq!(drops(Block::CoalOre, 1), vec![ItemStack { item: COAL, count: 1 }]);
-        assert_eq!(drops(Block::CopperOre, 1), vec![ItemStack { item: COPPER, count: 1 }]);
-        assert_eq!(drops(Block::TinOre, 1), vec![ItemStack { item: TIN, count: 1 }]);
-        assert_eq!(drops(Block::IronOre, 1), vec![ItemStack { item: IRON, count: 1 }]);
+        assert_eq!(drops(Block::CoalOre, 1), vec![ItemStack::new(COAL, 1)]);
+        assert_eq!(drops(Block::CopperOre, 1), vec![ItemStack::new(COPPER, 1)]);
+        assert_eq!(drops(Block::TinOre, 1), vec![ItemStack::new(TIN, 1)]);
+        assert_eq!(drops(Block::IronOre, 1), vec![ItemStack::new(IRON, 1)]);
     }
 
     #[test]

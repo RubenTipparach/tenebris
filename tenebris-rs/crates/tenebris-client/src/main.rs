@@ -42,6 +42,7 @@ mod profile;
 mod profiler;
 mod remote_players;
 mod renderer;
+mod screens;
 mod settings;
 mod shaders;
 mod tech_tree;

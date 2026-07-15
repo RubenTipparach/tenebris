@@ -33,25 +33,47 @@ pub struct Bag {
 
 impl Bag {
     /// Serialise for the per-world SP save: "item,count;item,count;..."
-    /// (one pair per slot, fixed order). Same shape the MP server's bag
-    /// blob uses, minus the hunger prefix (SP stores hunger alongside).
+    /// (one field group per slot, fixed order). Same shape the MP server's
+    /// bag blob uses, minus the hunger prefix (SP stores hunger alongside).
+    ///
+    /// A worn tool emits a third field - "item,count,dur". It's omitted for
+    /// the `dur == 0` (fresh / not-a-tool) case, which is every slot but a
+    /// used tool, so blobs stay byte-identical to the pre-durability format
+    /// unless there's actually something to record.
     pub fn serialize(&self) -> String {
         self.slots
             .iter()
-            .map(|s| format!("{},{}", s.item, s.count))
+            .map(|s| {
+                if s.dur == 0 {
+                    format!("{},{}", s.item, s.count)
+                } else {
+                    format!("{},{},{}", s.item, s.count, s.dur)
+                }
+            })
             .collect::<Vec<_>>()
             .join(";")
     }
 
     /// Parse [`serialize`]'s output; `None` on malformed input.
+    ///
+    /// The third (dur) field is optional: blobs written before tool
+    /// durability have two fields per slot and load as fresh tools.
     pub fn parse(blob: &str) -> Option<Bag> {
         let mut bag = Bag::default();
-        for (i, pair) in blob.split(';').enumerate().take(BAG_SLOTS) {
-            let (a, b) = pair.split_once(',')?;
-            bag.slots[i] = ItemStack {
-                item: a.trim().parse().ok()?,
-                count: b.trim().parse().ok()?,
+        for (i, group) in blob.split(';').enumerate().take(BAG_SLOTS) {
+            let mut f = group.split(',');
+            let item = f.next()?.trim().parse().ok()?;
+            let count = f.next()?.trim().parse().ok()?;
+            /* Absent = fresh. A present-but-garbage dur fails the parse
+             * rather than silently handing back a full-health tool. */
+            let dur = match f.next() {
+                None => 0,
+                Some(d) => d.trim().parse().ok()?,
             };
+            if f.next().is_some() {
+                return None; /* more fields than the format defines */
+            }
+            bag.slots[i] = ItemStack { item, count, dur };
         }
         Some(bag)
     }
@@ -95,6 +117,11 @@ impl Bag {
                 let used = cap.min(n);
                 s.item = item;
                 s.count = used;
+                /* Fresh: never inherit the wear of whatever tool used to
+                 * sit in this slot. `add` takes an item id, not a stack, so
+                 * there is no incoming dur to carry - a tool deposited here
+                 * IS a new tool as far as the bag is concerned. */
+                s.dur = 0;
                 n -= used;
             }
         }
@@ -131,6 +158,7 @@ impl Bag {
                 n -= used as u32;
                 if s.count == 0 {
                     s.item = 0; /* Air */
+                    s.dur = 0; /* empty slot carries no wear */
                 }
             }
         }
@@ -223,6 +251,69 @@ pub fn try_craft_nth(inv: &mut Inventory, bag: &mut Bag, idx: usize) -> bool {
     match crafting::recipe_nth(idx) {
         Some(r) => try_craft(inv, bag, &r),
         None => false,
+    }
+}
+
+#[cfg(test)]
+mod durability_tests {
+    use super::*;
+    use tenebris_core::items::{PLANK, WOOD_PICKAXE};
+
+    /// A worn tool survives the SP save round-trip. Without this the bag
+    /// autosave would quietly repair every tool on world reload.
+    #[test]
+    fn worn_tool_round_trips_through_the_save_blob() {
+        let mut bag = Bag::default();
+        bag.slots[0] = ItemStack { item: WOOD_PICKAXE, count: 1, dur: 137 };
+        bag.slots[1] = ItemStack::new(PLANK, 12);
+        let back = Bag::parse(&bag.serialize()).expect("round-trip parse");
+        assert_eq!(back.slots[0], bag.slots[0], "durability lost in the save blob");
+        assert_eq!(back, bag);
+    }
+
+    /// Blobs written before durability existed have two fields per slot and
+    /// must still load - as FRESH tools, not broken ones.
+    #[test]
+    fn pre_durability_blob_still_parses_as_fresh() {
+        let old: String =
+            std::iter::repeat("0,0").take(BAG_SLOTS).collect::<Vec<_>>().join(";");
+        let old = old.replacen("0,0", &format!("{WOOD_PICKAXE},1"), 1);
+        let bag = Bag::parse(&old).expect("old 2-field blob must still parse");
+        assert_eq!(bag.slots[0].item, WOOD_PICKAXE);
+        assert_eq!(bag.slots[0].count, 1);
+        assert_eq!(bag.slots[0].dur, 0, "absent dur must read as fresh");
+    }
+
+    /// The dur field is only emitted when there's something to say, so a bag
+    /// of plain resources serialises byte-identically to the old format.
+    #[test]
+    fn undamaged_bag_blob_is_unchanged_from_the_old_format() {
+        let mut bag = Bag::default();
+        bag.slots[0] = ItemStack::new(PLANK, 12);
+        assert!(bag.serialize().starts_with(&format!("{PLANK},12;")));
+        assert!(!bag.serialize().contains(",12,"));
+    }
+
+    /// A garbage third field fails the parse rather than silently handing
+    /// back a full-health tool.
+    #[test]
+    fn malformed_dur_rejects_the_blob() {
+        assert!(Bag::parse("103,1,abc").is_none());
+        assert!(Bag::parse("103,1,5,9").is_none());
+    }
+
+    /// Emptying a slot must drop its wear - otherwise the next tool to land
+    /// in it inherits the last one's damage.
+    #[test]
+    fn emptied_slot_forgets_its_wear() {
+        let mut bag = Bag::default();
+        bag.slots[0] = ItemStack { item: WOOD_PICKAXE, count: 1, dur: 3 };
+        assert_eq!(bag.take(WOOD_PICKAXE, 1), 0);
+        assert_eq!(bag.slots[0].dur, 0, "wear survived the slot emptying");
+
+        /* And a fresh tool deposited into that slot is actually fresh. */
+        assert_eq!(bag.add(WOOD_PICKAXE, 1), 0);
+        assert_eq!(bag.slots[0].dur, 0, "new tool inherited the old one's wear");
     }
 }
 

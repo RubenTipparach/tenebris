@@ -34,3 +34,17 @@ crack_alpha: 0.9
 # the tier-1 tool material. (Flint is also foraged by right-clicking
 # rocky ground with an empty hand.)
 flint_from_stone_chance: 0.25
+
+# Tool durability, in BLOCKS MINED before the tool breaks. One use = one
+# block broken with that tool equipped (the selected hotbar slot); the
+# tool is destroyed on its last use. Keyed by the material the tool is
+# crafted from, so the smelting chain buys lifetime as well as speed:
+#
+#   flint  (pickaxe / axe / shovel): 200 blocks
+#   stone  (pickaxe):                350 blocks
+#   iron   (pickaxe):                500 blocks
+#
+# The hoe / bucket / fishing rod have no budget - they don't mine.
+flint_tool_uses: 200
+stone_tool_uses: 350
+iron_tool_uses: 500

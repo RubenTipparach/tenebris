@@ -69,12 +69,7 @@ fn open(kind: Kind, world: WorldHandle, player: PlayerHandle, tile: i32, depth: 
         s.world = Some(world);
         s.player = Some(player);
     });
-    crate::inventory_screen::close();
-    crate::crafting_screen::close();
-    crate::rocket_screen::close();
-    crate::chest_screen::close();
-    crate::furnace_screen::close();
-    release_pointer();
+    crate::screens::take_focus(crate::screens::Screen::Power);
 }
 
 pub fn open_steam(world: WorldHandle, player: PlayerHandle, tile: i32, depth: i32) {
@@ -97,20 +92,13 @@ pub fn open_printer(world: WorldHandle, player: PlayerHandle, tile: i32, depth: 
     open(Kind::Printer, world, player, tile, depth);
 }
 
-#[cfg(not(test))]
-fn release_pointer() {
-    sapp::lock_mouse(false);
-    sapp::show_mouse(true);
-}
-#[cfg(test)]
-fn release_pointer() {}
-
 pub fn handle_event(e: &sapp::Event) -> bool {
     if !is_open() {
         return false;
     }
     if e._type == sapp::EventType::KeyDown && e.key_code == sapp::Keycode::Escape {
         close();
+        crate::screens::grab_pointer();
         return true;
     }
     false
@@ -194,7 +182,7 @@ pub fn egui_ui(ctx: &egui::Context) {
                     ui.horizontal(|ui| {
                         ui.vertical(|ui| {
                             ui.label(egui::RichText::new("Fuel (coal)").weak());
-                            if ui_icons::slot(ui, s.fuel.item, s.fuel.count, SLOT, Some(egui::Color32::from_rgb(0xe0, 0x80, 0x40))).clicked() {
+                            if ui_icons::slot(ui, s.fuel.item, s.fuel.count, 0, SLOT, Some(egui::Color32::from_rgb(0xe0, 0x80, 0x40))).clicked() {
                                 action = Some(Action::TakeFuel);
                             }
                         });
@@ -233,7 +221,7 @@ pub fn egui_ui(ctx: &egui::Context) {
                     ui.horizontal(|ui| {
                         ui.vertical(|ui| {
                             ui.label(egui::RichText::new("Input").weak());
-                            if ui_icons::slot(ui, e.input.item, e.input.count, SLOT, None).clicked() {
+                            if ui_icons::slot(ui, e.input.item, e.input.count, 0, SLOT, None).clicked() {
                                 action = Some(Action::TakeInput);
                             }
                         });
@@ -246,7 +234,7 @@ pub fn egui_ui(ctx: &egui::Context) {
                         ui.add_space(8.0);
                         ui.vertical(|ui| {
                             ui.label(egui::RichText::new("Output").weak());
-                            if ui_icons::slot(ui, e.output.item, e.output.count, SLOT, Some(GREEN)).clicked() {
+                            if ui_icons::slot(ui, e.output.item, e.output.count, 0, SLOT, Some(GREEN)).clicked() {
                                 action = Some(Action::TakeOutput);
                             }
                         });
@@ -329,7 +317,7 @@ pub fn egui_ui(ctx: &egui::Context) {
                         }
                         ui.add_space(10.0);
                         ui.label(egui::RichText::new("Out").weak());
-                        if ui_icons::slot(ui, pr.output.item, pr.output.count, SLOT, Some(GREEN)).clicked() {
+                        if ui_icons::slot(ui, pr.output.item, pr.output.count, 0, SLOT, Some(GREEN)).clicked() {
                             action = Some(Action::TakePrint);
                         }
                     });
@@ -337,11 +325,11 @@ pub fn egui_ui(ctx: &egui::Context) {
                     ui.label(egui::RichText::new("Recipes - click to print (consumes ingredients)").weak());
                     for (i, r) in recipes.iter().enumerate() {
                         ui.horizontal(|ui| {
-                            ui_icons::slot(ui, r.output, r.qty, 40.0, None);
+                            ui_icons::slot(ui, r.output, r.qty, 0, 40.0, None);
                             ui.label(r.name);
                             // inputs
                             for &(item, count) in &r.inputs {
-                                ui_icons::slot(ui, item, count, 30.0, None);
+                                ui_icons::slot(ui, item, count, 0, 30.0, None);
                             }
                             let can = pr.powered && pr.out_item == 0;
                             if ui.add_enabled(can, egui::Button::new("Print")).clicked() {
@@ -370,7 +358,7 @@ pub fn egui_ui(ctx: &egui::Context) {
 fn bag_grid(ui: &mut egui::Ui, rows: &[(u16, u16)], action: &mut Option<Action>, fuel_only: bool) {
     egui::Grid::new("power-bag").spacing(egui::vec2(3.0, 3.0)).show(ui, |ui| {
         for (i, &(item, count)) in rows.iter().enumerate() {
-            if ui_icons::slot(ui, item, count, 40.0, None).clicked() && count > 0 {
+            if ui_icons::slot(ui, item, count, 0, 40.0, None).clicked() && count > 0 {
                 if fuel_only {
                     if items::is_fuel(item) {
                         *action = Some(Action::LoadFuel);

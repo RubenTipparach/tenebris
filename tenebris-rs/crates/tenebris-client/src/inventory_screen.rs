@@ -107,21 +107,22 @@ thread_local! {
 /// Port of `inventory_screen_toggle()`. Wired to the `E` key (and the
 /// mobile DOM button) in app.rs.
 pub fn toggle() {
-    G.with(|cell| {
+    /* Drop the borrow before take_focus: it walks the whole screen roster
+     * calling close(), and this screen's own close() would re-borrow G. */
+    let now_open = G.with(|cell| {
         let mut g = cell.borrow_mut();
         g.open = !g.open;
-        /* Release pointer lock + show the cursor so the player can
-         * actually click slots; closing re-locks so E-out drops the
-         * player straight back into FPS mouse-look (the toggle runs
-         * inside a key event, which counts as the user gesture the
-         * browser needs for a pointer-lock request). */
-        if g.open {
-            sapp::lock_mouse(false);
-            sapp::show_mouse(true);
-        } else {
-            sapp::lock_mouse(true);
-        }
+        g.open
     });
+    /* Release pointer lock + show the cursor so the player can actually
+     * click slots; closing re-locks so E-out drops the player straight back
+     * into FPS mouse-look (the toggle runs inside a key event, which counts
+     * as the user gesture the browser needs for a pointer-lock request). */
+    if now_open {
+        crate::screens::take_focus(crate::screens::Screen::Inventory);
+    } else {
+        crate::screens::grab_pointer();
+    }
 }
 
 /// Port of `inventory_screen_is_open()`.
@@ -150,7 +151,7 @@ pub fn event(e: &sapp::Event) -> bool {
         /* Escape closes the overlay and returns to FPS mouse-look. */
         if e._type == sapp::EventType::KeyDown && e.key_code == sapp::Keycode::Escape {
             g.open = false;
-            sapp::lock_mouse(true);
+            crate::screens::grab_pointer();
             return true;
         }
 
@@ -244,9 +245,20 @@ fn egui_slot(ui: &mut egui::Ui, s: &InvSlot, selected: bool, show_count: bool) -
     if s.item != Block::Air as u16 && s.count > 0 {
         let shown = if show_count { s.count.clamp(0, u16::MAX as i32) as u16 } else { 1 };
         crate::ui_icons::draw_icon(p, s.item, shown, rect.shrink(4.0));
-        /* Hover tooltip: the item's name. */
+        /* This row draws through draw_icon rather than ui_icons::slot (it
+         * has its own selected-slot framing), so the damage bar has to be
+         * asked for explicitly. */
+        crate::ui_icons::durability_bar(p, s.item, s.dur, rect);
+        /* Hover tooltip: the item's name + uses left on a tool. */
         if let Some(name) = tenebris_core::items::display_name(s.item) {
-            return resp.on_hover_text(name);
+            let cfg = tenebris_core::mining::config();
+            return match tenebris_core::mining::uses_left(&cfg, s.item, s.dur) {
+                Some(left) => {
+                    let max = tenebris_core::mining::tool_max_uses(&cfg, s.item).unwrap_or(left);
+                    resp.on_hover_text(format!("{name}\n{left} / {max} uses left"))
+                }
+                None => resp.on_hover_text(name),
+            };
         }
     }
     resp
@@ -262,24 +274,33 @@ enum SlotAddr {
     Hot(usize),
 }
 
-fn slot_get(p: &crate::player_ctrl::PlayerCtrl, a: SlotAddr) -> (u16, i32) {
+/// A slot's contents as (item, count, dur). `dur` rides along through every
+/// move so dragging a half-worn pickaxe between the bag and the hotbar
+/// doesn't hand back a fresh one.
+fn slot_get(p: &crate::player_ctrl::PlayerCtrl, a: SlotAddr) -> (u16, i32, u16) {
     match a {
-        SlotAddr::Bag(i) => (p.bag.slots[i].item, p.bag.slots[i].count as i32),
-        SlotAddr::Hot(i) => (p.inventory.slots[i].item, p.inventory.slots[i].count),
+        SlotAddr::Bag(i) => (p.bag.slots[i].item, p.bag.slots[i].count as i32, p.bag.slots[i].dur),
+        SlotAddr::Hot(i) => {
+            (p.inventory.slots[i].item, p.inventory.slots[i].count, p.inventory.slots[i].dur)
+        }
     }
 }
 
-fn slot_set(p: &mut crate::player_ctrl::PlayerCtrl, a: SlotAddr, item: u16, count: i32) {
-    let (item, count) = if count <= 0 { (Block::Air as u16, 0) } else { (item, count) };
+fn slot_set(p: &mut crate::player_ctrl::PlayerCtrl, a: SlotAddr, item: u16, count: i32, dur: u16) {
+    /* An emptied slot drops its wear with its item - otherwise the next
+     * tool to land here would inherit the last one's damage. */
+    let (item, count, dur) =
+        if count <= 0 { (Block::Air as u16, 0, 0) } else { (item, count, dur) };
     match a {
         SlotAddr::Bag(i) => {
             p.bag.slots[i] = items::ItemStack {
                 item,
                 count: count.clamp(0, u16::MAX as i32) as u16,
+                dur,
             };
         }
         SlotAddr::Hot(i) => {
-            p.inventory.slots[i] = InvSlot::of(item, count);
+            p.inventory.slots[i] = InvSlot { item, count, dur };
         }
     }
 }
@@ -289,18 +310,20 @@ fn slot_swap(p: &mut crate::player_ctrl::PlayerCtrl, from: SlotAddr, to: SlotAdd
     if from == to {
         return;
     }
-    let (fi, fc) = slot_get(p, from);
-    let (ti, tc) = slot_get(p, to);
+    let (fi, fc, fd) = slot_get(p, from);
+    let (ti, tc, td) = slot_get(p, to);
     if fc <= 0 {
         return;
     }
-    if fi == ti && tc > 0 {
-        /* Same item: merge the dragged stack onto the target. */
-        slot_set(p, to, ti, tc + fc);
-        slot_set(p, from, Block::Air as u16, 0);
+    /* Merge only what actually stacks. Tools cap at 1, and merging them
+     * would fuse two tools with different wear into one slot with a single
+     * dur - quietly destroying a tool. Anything unstackable swaps instead. */
+    if fi == ti && tc > 0 && items::stack_size(fi) > 1 {
+        slot_set(p, to, ti, tc + fc, td);
+        slot_set(p, from, Block::Air as u16, 0, 0);
     } else {
-        slot_set(p, to, fi, fc);
-        slot_set(p, from, ti, tc);
+        slot_set(p, to, fi, fc, fd);
+        slot_set(p, from, ti, tc, td);
     }
 }
 
@@ -320,7 +343,7 @@ fn dnd_ghost(ctx: &egui::Context, p: &crate::player_ctrl::PlayerCtrl) {
     let Some(src) = egui::DragAndDrop::payload::<SlotAddr>(ctx) else {
         return;
     };
-    let (item, count) = slot_get(p, *src);
+    let (item, count, _dur) = slot_get(p, *src);
     if count <= 0 {
         return;
     }
@@ -384,7 +407,10 @@ pub fn egui_ui(ctx: &egui::Context) {
 
     let (hotbar, selected, survival, bag_slots) = {
         let p = player.borrow();
-        let bag: Vec<(u16, u16)> = p.bag.slots.iter().map(|s| (s.item, s.count)).collect();
+        /* (item, count, dur) - dur rides along so the bag grid can draw each
+         * tool's damage bar. */
+        let bag: Vec<(u16, u16, u16)> =
+            p.bag.slots.iter().map(|s| (s.item, s.count, s.dur)).collect();
         (p.inventory.slots, p.inventory.selected, p.survival_mode, bag)
     };
 
@@ -442,11 +468,12 @@ pub fn egui_ui(ctx: &egui::Context) {
                     ui.vertical(|ui| {
                         heading(ui, "Bag", (0xc8, 0xd0, 0xe0));
                         egui::Grid::new("inv_bag").spacing(egui::vec2(3.0, 3.0)).show(ui, |ui| {
-                            for (i, &(item, count)) in bag_slots.iter().enumerate() {
+                            for (i, &(item, count, dur)) in bag_slots.iter().enumerate() {
                                 let resp = crate::ui_icons::slot(
                                     ui,
                                     item,
                                     count,
+                                    dur,
                                     EGUI_SLOT_PX,
                                     None,
                                 );
@@ -675,8 +702,8 @@ mod tests {
         use tenebris_core::items::{ItemStack, WOOD_PICKAXE};
         let mut p = crate::player_ctrl::PlayerCtrl::default();
         crate::inventory::init_empty(&mut p.inventory);
-        p.bag.slots[0] = ItemStack { item: WOOD_PICKAXE, count: 1 };
-        p.bag.slots[1] = ItemStack { item: items::PLANK, count: 10 };
+        p.bag.slots[0] = ItemStack::new(WOOD_PICKAXE, 1);
+        p.bag.slots[1] = ItemStack::new(items::PLANK, 10);
         p.inventory.slots[2] = InvSlot::block(Block::Stone, 5);
 
         /* Drag the pickaxe from the bag onto hotbar slot 0: tools can
@@ -693,7 +720,7 @@ mod tests {
         assert_eq!(p.inventory.slots[2].count, 10);
 
         /* Same item on both ends: merge instead of swap. */
-        p.bag.slots[3] = ItemStack { item: items::PLANK, count: 4 };
+        p.bag.slots[3] = ItemStack::new(items::PLANK, 4);
         slot_swap(&mut p, SlotAddr::Bag(3), SlotAddr::Hot(2));
         assert_eq!(p.inventory.slots[2].count, 14, "stacks merged");
         assert_eq!(p.bag.slots[3].count, 0);

@@ -82,9 +82,7 @@ pub fn open_station(player: Option<PlayerHandle>, station: Option<items::ItemId>
         s.station = station;
         s.selected = 0;
     });
-    crate::inventory_screen::close();
-    crate::rocket_screen::close();
-    release_pointer();
+    crate::screens::take_focus(crate::screens::Screen::Crafting);
 }
 
 /// The station the screen is currently scoped to.
@@ -100,17 +98,6 @@ fn cur_recipes() -> Vec<Recipe> {
 pub fn set_player(player: Option<PlayerHandle>) {
     S.with(|c| c.borrow_mut().player = player);
 }
-
-/// Free the pointer + show the cursor when the screen opens so rows are
-/// clickable (gameplay keeps the mouse locked for look). On close, the
-/// next canvas click re-locks via the normal input path.
-#[cfg(not(test))]
-fn release_pointer() {
-    sapp::lock_mouse(false);
-    sapp::show_mouse(true);
-}
-#[cfg(test)]
-fn release_pointer() {}
 
 /// Number of recipe rows that will be drawn.
 fn row_count() -> usize {
@@ -334,12 +321,12 @@ pub fn handle_event(e: &sapp::Event, player: Option<PlayerHandle>) -> bool {
             s.open
         });
         if now_open {
-            /* Mutually exclusive with the inventory overlay - only one
-             * survival panel up at a time so their inputs and sdtx text
-             * never overlap. */
-            crate::inventory_screen::close();
-            crate::rocket_screen::close();
-            release_pointer();
+            /* Mutually exclusive with every other panel - only one survival
+             * panel up at a time so their inputs and sdtx text never
+             * overlap. */
+            crate::screens::take_focus(crate::screens::Screen::Crafting);
+        } else {
+            crate::screens::grab_pointer();
         }
         return true;
     }

@@ -54,6 +54,7 @@ use crate::hotbar_ui;
 use crate::input;
 use crate::interact::{self, InteractState};
 use crate::chest_screen;
+use crate::screens;
 use crate::station_screen;
 use crate::bonfire_fx;
 use crate::bonfire_screen;
@@ -3034,8 +3035,14 @@ fn mp_parity_sync(app: &mut App, phys_world: &Rc<RefCell<World>>, dt: f32) {
     if let Some((items, counts, hunger)) = net_client::take_pending_bag() {
         let mut p = app.player.borrow_mut();
         for i in 0..MSG_BAG_SLOTS.min(p.bag.slots.len()) {
-            p.bag.slots[i] =
-                tenebris_core::items::ItemStack { item: items[i], count: counts[i] };
+            /* Fresh: MSG_BAG_STATE carries 4 bytes per slot (item + count),
+             * so a replayed tool arrives with no durability and reads as
+             * undamaged. KNOWN GAP - an MP relog repairs your tools. Closing
+             * it means widening the slot to 6 bytes and bumping
+             * MSG_BAG_STATE_VERSION, which needs the Fly server redeployed
+             * in lockstep, so it's deliberately not done here. SP persists
+             * durability properly (bag.rs serialize/parse). */
+            p.bag.slots[i] = tenebris_core::items::ItemStack::new(items[i], counts[i]);
         }
         p.hunger = hunger.clamp(0.0, player_ctrl::MAX_HUNGER);
         /* Prime the change detector so the replay isn't echoed back. */
@@ -4894,18 +4901,17 @@ fn frame_inner(app: &mut App) {
         let in_gameplay = st == GameState::InGameSp || st == GameState::InGameMp;
         /* Web pointer-lock-loss fallback: the browser eats the Esc that
          * releases pointer lock, so we synthesize the pause-open from the
-         * lock-state transition. Guard against overlays that legitimately
-         * release the mouse (inventory / crafting) - opening the
-         * inventory unlocks the mouse and must NOT trip the pause panel.
-         * On native, the direct Esc handler in event_inner is the real
-         * opener; this stays for the web Esc path. */
-        let overlay_open =
-            inventory_screen::is_open() || crafting_screen::is_open() || tech_tree::is_open();
+         * lock-state transition. Every modal screen releases the pointer on
+         * open (that's how its slots become clickable), so screens::any_open
+         * has to gate this - otherwise E-ing a bonfire looks exactly like an
+         * eaten Esc and the pause panel opens on top of it. On native, the
+         * direct Esc handler in event_inner is the real opener; this stays
+         * for the web Esc path. */
         if in_gameplay
             && app.was_mouse_locked
             && !now_locked
             && !menu::pause_active()
-            && !overlay_open
+            && !screens::any_open()
         {
             menu::pause_toggle();
             /* Release the pointer lock so the cursor actually appears over
@@ -5858,19 +5864,11 @@ fn frame_inner(app: &mut App) {
     remote_players::draw_nameplates(view, proj, sapp::widthf(), sapp::heightf(), &|id| {
         net_client::name_for_id(id)
     });
-    /* Gameplay HUD - hidden while the pause panel or a centred overlay
-     * (inventory, tech tree, chest, furnace, machine panels) is up: the
-     * hotbar's sdtx slot digits flush on top of ALL geometry including
-     * egui, so the bar - numbers and all - must vanish together instead
-     * of the digits bleeding through the panel. */
-    let center_overlay_open = tech_tree::is_open()
-        || inventory_screen::is_open()
-        || chest_screen::is_open()
-        || furnace_screen::is_open()
-        || bonfire_screen::is_open()
-        || power_ui::is_open()
-        || crafting_screen::is_open();
-    if !menu::pause_active() && !rocket_screen::is_open() && !center_overlay_open {
+    /* Gameplay HUD - hidden while the pause panel or any modal screen is
+     * up: the hotbar's sdtx slot digits flush on top of ALL geometry
+     * including egui, so the bar - numbers and all - must vanish together
+     * instead of the digits bleeding through the panel. */
+    if !menu::pause_active() && !screens::any_open() {
         /* No sdtx_draw here - single flush at the end of the UI block. */
         hotbar_ui::draw(&app.player.borrow().inventory);
         /* Real (non-ASCII) mining progress bar. */
@@ -6052,16 +6050,7 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
     /* The mouse wheel belongs to whichever egui panel is open (recipe
      * lists + grids scroll) - without this the same scroll ALSO cycled
      * the hotbar underneath the crafting screen. */
-    if e._type == sapp::EventType::MouseScroll
-        && (crafting_screen::is_open()
-            || inventory_screen::is_open()
-            || chest_screen::is_open()
-            || furnace_screen::is_open()
-        || bonfire_screen::is_open()
-            || power_ui::is_open()
-            || rocket_screen::is_open()
-            || tech_tree::is_open())
-    {
+    if e._type == sapp::EventType::MouseScroll && screens::any_open() {
         return;
     }
 
@@ -6327,8 +6316,7 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
     {
         let st = menu::state();
         if (st == GameState::InGameSp || st == GameState::InGameMp) && !menu::pause_active() {
-            crafting_screen::close();
-            inventory_screen::close();
+            screens::close_all();
             menu::pause_toggle();
             /* Release the pointer lock so the cursor actually appears over
              * the (egui) pause panel - show_mouse alone can't reveal a
@@ -6428,6 +6416,29 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
         {
             return;
         }
+    }
+    /* A modal screen owns the pointer while it's up, so gameplay input must
+     * not also see this event. egui already got it at the top of
+     * event_inner, and the screen's own handle_event had first refusal on
+     * Esc; anything still here would leak behind the panel.
+     *
+     * This is load-bearing beyond "no camera turn / no block break behind an
+     * open panel": input::handle_event re-locks the pointer on ANY MouseDown
+     * (input.rs:841), so without this gate the first click on a bonfire /
+     * chest / furnace slot would yank the cursor away from the very panel
+     * that just released it. The pause menu used to mask that by eating
+     * these clicks itself - back when opening a machine wrongly opened
+     * pause. It doesn't anymore, so the gate has to be real.
+     *
+     * KeyUp is deliberately still forwarded: it can only ever RELEASE a key.
+     * Dropping it would latch whatever was held when the panel opened - hold
+     * W, press E on a bonfire, release W, and the player would walk off on
+     * close, since nothing clears input state on open. */
+    if screens::any_open() {
+        if e._type == sapp::EventType::KeyUp {
+            input::handle_event(e);
+        }
+        return;
     }
     input::handle_event(e);
 }
