@@ -135,14 +135,23 @@ void main()
     float _101 = _100.x;
     bool _107 = _101 >= 0.999989986419677734375;
     // Underwater-fog activation. fx_params.z is the tri-state submersion flag
-    // (0 dry, 0.5 eye straddling the surface, 1 fully under). Trigger at > 0.25
-    // so the water fog comes on the moment the near plane dips into the water
-    // (partial submersion), not only when fully submerged. It is NOT a screen
-    // toggle: the per-pixel waterline mask (_171, altitude below sea level) and
-    // the Beer-Lambert water-travel distance (_259) still gate WHERE it applies,
-    // so at the surface only the below-waterline pixels fog while the sky and
-    // above-water terrain stay clear (their water-travel distance is ~0).
-    bool _112 = composite_fs_params[4].z > 0.25;
+    // (0 dry, 0.5 eye straddling the surface, 1 fully under). FULL submersion
+    // only (> 0.75) - straddling (0.5) must NOT take this path.
+    //
+    // Why: for a sky/far pixel this path has no geometry to measure against, so
+    // it estimates water travel analytically from the MEAN SEA SPHERE (_259 =
+    // gap / d_up). That sphere is perfectly smooth - it knows nothing about the
+    // waves - so the moment the eye dips below it, every near-horizontal ray
+    // gets the same fake water depth and the result is a dead-flat blue band
+    // ruled across the horizon, cutting straight through the wave silhouette.
+    // Fully under, that is fine (the whole view IS water and there is no visible
+    // waterline to contradict). Straddling, it is exactly the jarring artifact.
+    //
+    // Straddling instead falls through to the dry path below, whose mask comes
+    // from the RENDERED water surface (scene_color.w) gated by the per-pixel
+    // waterline (_171) - real wave-displaced geometry, so the fog stops at the
+    // wave silhouette and conforms to it, which is the whole point.
+    bool _112 = composite_fs_params[4].z > 0.75;
     float view_dist = 0.0;
     float pixel_alt = _68;
     if (!_107)
@@ -223,10 +232,11 @@ void main()
     if ((!_107) && (composite_fs_params[5].w > 0.0))
     {
         float fog_f = 1.0 - exp(-view_dist * composite_fs_params[5].w);
-        // Match the underwater-fog activation threshold (partial submersion):
-        // where the water fog covers a pixel, back off the atmospheric fog so
-        // the two don't stack.
-        float fog_gate = (composite_fs_params[4].z > 0.25) ? (1.0 - wet) : 1.0;
+        // Match the underwater-fog activation threshold (_112, full submersion
+        // only): where the water fog covers a pixel, back off the atmospheric
+        // fog so the two don't stack. Straddling uses the dry path, so its
+        // atmospheric fog stays ungated exactly like the above-water case.
+        float fog_gate = (composite_fs_params[4].z > 0.75) ? (1.0 - wet) : 1.0;
         color = mix(color, composite_fs_params[5].xyz, fog_f * fog_gate);
     }
     // Depth blur: soften the DISTANT background while the wet FX is active
