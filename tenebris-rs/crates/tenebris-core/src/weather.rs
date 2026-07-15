@@ -165,6 +165,19 @@ pub struct WeatherConfig {
     pub overcast_sun_dim: f32,
     /// How much full overcast dims the AMBIENT fill (0..1).
     pub overcast_amb_dim: f32,
+    /// --- Overcast SKY DOME response (atmosphere shader coeffs). Without
+    /// these the terrain darkened under a storm but the sky stayed clear
+    /// blue. Each scales an existing scattering coefficient by overcast, so
+    /// dragging the weather moisture slider up greys + darkens the sky. ---
+    /// How much full overcast cuts the sky's blue (rayleigh) toward neutral
+    /// grey (0..1). 1.0 removes the blue entirely at full storm.
+    pub overcast_sky_blue_cut: f32,
+    /// How much full overcast lifts the white haze (mie) so the sky reads as
+    /// a flat overcast sheet rather than deep blue. Additive gain (0 = none).
+    pub overcast_sky_haze: f32,
+    /// How much full overcast dims the sky's sun-scatter intensity (0..1) so
+    /// the whole dome darkens under the storm, matching the terrain.
+    pub overcast_sky_dim: f32,
 
     /* --- Rain streak feel (client weather_fx distant shafts) --- */
     /// Rain fall speed, metres/second (the visible streaks fall this fast).
@@ -291,6 +304,9 @@ impl WeatherConfig {
         cloud_fog_add: 0.8,
         overcast_sun_dim: 0.72,
         overcast_amb_dim: 0.48,
+        overcast_sky_blue_cut: 0.75,
+        overcast_sky_haze: 0.6,
+        overcast_sky_dim: 0.6,
         rain_fall_mps: 50.0,
         rain_width_m: 0.014,
         rain_density_mult: 3.5,
@@ -407,6 +423,9 @@ pub fn parse_config(src: &str, _path: &str) -> WeatherConfig {
             "rain_glint_strength" => cfg.rain_glint_strength = v,
             "overcast_sun_dim" => cfg.overcast_sun_dim = v,
             "overcast_amb_dim" => cfg.overcast_amb_dim = v,
+            "overcast_sky_blue_cut" => cfg.overcast_sky_blue_cut = v,
+            "overcast_sky_haze" => cfg.overcast_sky_haze = v,
+            "overcast_sky_dim" => cfg.overcast_sky_dim = v,
             "base_wind" => cfg.base_wind = v,
             "gust_amp" => cfg.gust_amp = v,
             "gust_scale" => cfg.gust_scale = v,

@@ -83,11 +83,23 @@ wind_dir_pressure: 8.0
 #   overcast_sun_dim  how much full overcast dims the sun (0..1) - the region
 #                     goes flat + grey under thick cloud.
 #   overcast_amb_dim  how much full overcast dims the ambient fill (0..1).
+#   --- Overcast SKY DOME response (drag the weather moisture slider up to see
+#   it). These grey + darken the SKY to match the dimmed terrain; without them
+#   the ground went stormy while the sky stayed clear blue. ---
+#   overcast_sky_blue_cut  how much full overcast cuts the sky's blue toward
+#                          neutral grey (0..1; 1 = no blue left at full storm).
+#   overcast_sky_haze      how much full overcast lifts the white haze so the
+#                          sky reads as a flat overcast sheet (additive gain).
+#   overcast_sky_dim       how much full overcast darkens the whole sky dome
+#                          (0..1), matching the terrain dimming.
 rain_cloud_scale: 1.7
 rain_fog_mult: 1.6
 cloud_fog_add: 0.35
 overcast_sun_dim: 0.72
 overcast_amb_dim: 0.48
+overcast_sky_blue_cut: 0.75
+overcast_sky_haze: 0.6
+overcast_sky_dim: 0.6
 
 # --- Legacy (default-seed) worlds have no biome moisture map; use this
 #     flat moisture so the sky still weathers over time. ---
@@ -165,7 +177,7 @@ rain_ripple_strength: 2.0
 rain_flow_across: 128.0
 rain_flow_down: 1.0
 rain_flow_speed: 1.3
-rain_flow_strength: 3.0
+rain_flow_strength: -2.0
 rain_wave_scale: 7.0
 rain_wave_strength: 0.6
 rain_wave_speed: 1.4

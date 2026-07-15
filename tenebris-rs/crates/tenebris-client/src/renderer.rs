@@ -1209,6 +1209,20 @@ fn build_atmosphere_params(
         cam_forward: [basis.fwd[0], basis.fwd[1], basis.fwd[2], 0.0],
         camera_pos: [cam_local.x, cam_local.y, cam_local.z, 0.0],
     };
+    /* Overcast greys + darkens the SKY DOME, the same way overcast_ambient /
+     * overcast_sun_tint dim the terrain. Without this the ground darkened
+     * under a storm while the sky stayed clear blue - the "weather slider
+     * doesn't update the sky" bug. No new uniform: modulate the three
+     * scattering coefficients the shader already reads. Cut rayleigh so the
+     * blue fades toward neutral, lift mie so the dome hazes to a flat grey
+     * sheet, and dim the sun-scatter so it darkens. All three amounts are
+     * weather.yaml knobs. Reads the previous frame's overcast (set later in
+     * the frame) - a harmless 1-frame lag on a slowly-changing value. */
+    let oc = FRAME_OVERCAST.with(|c| c.get()).clamp(0.0, 1.0);
+    let wc = tenebris_core::weather::config();
+    let ray = env.atmo_rayleigh_scale * (1.0 - oc * wc.overcast_sky_blue_cut);
+    let mie = env.atmo_mie_scale * (1.0 + oc * wc.overcast_sky_haze);
+    let sun_i = env.atmo_sun_intensity * (1.0 - oc * wc.overcast_sky_dim);
     let afp = shaders::atmosphere::AtmosphereFsParams {
         sun_direction: [env.sun_dir.x, env.sun_dir.y, env.sun_dir.z, 0.0],
         radii: [
@@ -1217,12 +1231,7 @@ fn build_atmosphere_params(
             if env.atmo_scale_height > 0.0 { env.atmo_scale_height } else { 0.25 },
             0.0,
         ],
-        scatter_coeffs: [
-            env.atmo_rayleigh_scale,
-            env.atmo_mie_scale,
-            env.atmo_mie_g,
-            env.atmo_sun_intensity,
-        ],
+        scatter_coeffs: [ray, mie, env.atmo_mie_g, sun_i],
     };
     (avp, afp)
 }
