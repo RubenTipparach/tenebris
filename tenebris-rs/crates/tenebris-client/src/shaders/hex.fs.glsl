@@ -117,7 +117,7 @@ float hex_bayer4(vec2 frag)
 
 void main()
 {
-    vec4 tex = texture(hex_atlas_hex_atlas_smp, vec2(v_uv.x * (93.0 / 100.0), v_uv.y));
+    vec4 tex = texture(hex_atlas_hex_atlas_smp, vec2(v_uv.x * (93.0 / 108.0), v_uv.y));
     // Screen-door alpha from the block texture: gives a hard CUTOUT where the
     // atlas alpha is ~0 (the launch-tower truss shows sky through its lattice)
     // and dithered PARTIAL TRANSPARENCY where it is fractional (frosted ice),

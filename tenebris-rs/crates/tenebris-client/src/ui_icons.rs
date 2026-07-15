@@ -58,6 +58,15 @@ const ICONS: &[(u16, &str)] = &[
     (Block::LaunchTower as u16, "assets/textures/technology/launch_tower_face.png"),
     (Block::Cable as u16, "assets/textures/technology/cable.png"),
     (Block::CopperPipe as u16, "assets/textures/technology/copper_pipe.png"),
+    /* Station / casino structure set (tools/gen-casino-textures.py). */
+    (Block::StationHull as u16, "assets/textures/technology/station_hull.png"),
+    (Block::StationFloor as u16, "assets/textures/technology/station_floor.png"),
+    (Block::CasinoCarpet as u16, "assets/textures/technology/casino_carpet.png"),
+    (Block::CasinoWall as u16, "assets/textures/technology/casino_wall.png"),
+    (Block::NeonTrim as u16, "assets/textures/technology/neon_trim.png"),
+    (Block::CasinoSign as u16, "assets/textures/technology/casino_sign.png"),
+    (Block::SlotMachine as u16, "assets/textures/technology/slot_machine_face.png"),
+    (Block::CardTable as u16, "assets/textures/technology/card_table_face.png"),
     // --- tools (tier-1 heads re-skinned to flint; ids are legacy) ---
     (items::WOOD_PICKAXE, "assets/textures/items/wood_pickaxe.png"),
     (items::WOOD_AXE, "assets/textures/items/wood_axe.png"),

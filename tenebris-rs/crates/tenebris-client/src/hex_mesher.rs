@@ -58,12 +58,13 @@ pub const HEX_ATLAS_TILES: i32 = 93;
 pub const HEX_ATLAS_U_STEP: f32 = 1.0 / HEX_ATLAS_TILES as f32;
 /* Physical atlas column count: the 93 UV-addressed legacy columns
  * above (pinned - baked vertex u encodes tile/93, C-parity hashes
- * depend on it) plus the extension tiles (biome sods, cactus, two
- * reserved spares) whose faces bake u > 1.0. The hex fragment
- * shader rescales every u by HEX_ATLAS_TILES / HEX_ATLAS_TILES_PHYS
- * so legacy tiles sample exactly where they always did. Changing
- * this count means re-patching the baked ratio in shaders/hex.rs. */
-pub const HEX_ATLAS_TILES_PHYS: i32 = 100;
+ * depend on it) plus the extension tiles (biome sods, cactus, the
+ * station / casino set, two reserved spares) whose faces bake
+ * u > 1.0. The hex fragment shader rescales every u by
+ * HEX_ATLAS_TILES / HEX_ATLAS_TILES_PHYS so legacy tiles sample
+ * exactly where they always did. Changing this count means
+ * re-patching the baked ratio in shaders/hex.fs.glsl. */
+pub const HEX_ATLAS_TILES_PHYS: i32 = 108;
 
 /*
  * Vertex layout: 44 bytes (pos + normal + uv + sky_light + torch_light + wet).
@@ -643,6 +644,14 @@ fn emit_cap(
 /// the src/planet machine modules). Each machine gets 6 contiguous atlas
 /// columns starting at 42.
 fn tech_cube_cols(b: Block) -> Option<[u8; 6]> {
+    /* Casino machines have no 6-cell JS net (they never existed in the
+     * JS) - their single extension-atlas face wraps every cube face. */
+    if b == Block::SlotMachine {
+        return Some([blocks::ATLAS_SLOT_MACHINE; 6]);
+    }
+    if b == Block::CardTable {
+        return Some([blocks::ATLAS_CARD_TABLE; 6]);
+    }
     /* Machine order matches the ATLAS_PATHS cube-cell section. */
     let slot = match b {
         Block::Furnace => 0,

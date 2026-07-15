@@ -4326,6 +4326,14 @@ fn block_name(b: Block) -> &'static str {
         Block::JungleGrass => "JUNGLE_GRASS",
         Block::DryGrass => "DRY_GRASS",
         Block::Bonfire => "BONFIRE",
+        Block::StationHull => "STATION_HULL",
+        Block::StationFloor => "STATION_FLOOR",
+        Block::CasinoCarpet => "CASINO_CARPET",
+        Block::CasinoWall => "CASINO_WALL",
+        Block::NeonTrim => "NEON_TRIM",
+        Block::CasinoSign => "CASINO_SIGN",
+        Block::SlotMachine => "SLOT_MACHINE",
+        Block::CardTable => "CARD_TABLE",
     }
 }
 
@@ -4366,6 +4374,15 @@ fn block_glyph(b: Block) -> char {
         | Block::Cable
         | Block::CopperPipe => 'E',
         Block::Bonfire => 'B',
+        /* Station / casino set shares one glyph in the devtools dump. */
+        Block::StationHull
+        | Block::StationFloor
+        | Block::CasinoCarpet
+        | Block::CasinoWall
+        | Block::NeonTrim
+        | Block::CasinoSign
+        | Block::SlotMachine
+        | Block::CardTable => 'C',
     }
 }
 

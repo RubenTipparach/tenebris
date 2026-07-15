@@ -262,6 +262,14 @@ fn block_id_by_name(name: &str) -> Option<ItemId> {
         "launch-tower" => Block::LaunchTower,
         "cable" => Block::Cable,
         "copper-pipe" => Block::CopperPipe,
+        "station-hull" => Block::StationHull,
+        "station-floor" => Block::StationFloor,
+        "casino-carpet" => Block::CasinoCarpet,
+        "casino-wall" => Block::CasinoWall,
+        "neon-trim" => Block::NeonTrim,
+        "casino-sign" => Block::CasinoSign,
+        "slot-machine" => Block::SlotMachine,
+        "card-table" => Block::CardTable,
         _ => return None,
     };
     Some(from_block(b))
@@ -289,6 +297,14 @@ fn block_name(b: Block) -> &'static str {
         Block::LaunchTower => "launch-tower",
         Block::Cable => "cable",
         Block::CopperPipe => "copper-pipe",
+        Block::StationHull => "station-hull",
+        Block::StationFloor => "station-floor",
+        Block::CasinoCarpet => "casino-carpet",
+        Block::CasinoWall => "casino-wall",
+        Block::NeonTrim => "neon-trim",
+        Block::CasinoSign => "casino-sign",
+        Block::SlotMachine => "slot-machine",
+        Block::CardTable => "card-table",
         _ => "block",
     }
 }
@@ -380,6 +396,14 @@ fn block_display(b: Block) -> &'static str {
         Block::Cable => "Cable",
         Block::CopperPipe => "Copper Pipe",
         Block::Farmland => "Farmland",
+        Block::StationHull => "Station Hull",
+        Block::StationFloor => "Station Floor",
+        Block::CasinoCarpet => "Casino Carpet",
+        Block::CasinoWall => "Casino Wall",
+        Block::NeonTrim => "Neon Trim",
+        Block::CasinoSign => "Casino Sign",
+        Block::SlotMachine => "Slot Machine",
+        Block::CardTable => "Card Table",
     }
 }
 
@@ -453,6 +477,31 @@ pub fn print_recipes() -> Vec<PrintRecipe> {
             qty: 1,
             inputs: vec![(IRON_INGOT, 6)],
             time_s: 10.0,
+        },
+        /* Station / casino structure panels (space era Phase 2 "built
+         * look"): printable in batches so hulls are buildable off ingots.
+         * The decorative casino pieces are market-bought instead (see
+         * economy.yaml [prices]). */
+        PrintRecipe {
+            name: "Station Hull x4",
+            output: from_block(Block::StationHull),
+            qty: 4,
+            inputs: vec![(IRON_INGOT, 2)],
+            time_s: 6.0,
+        },
+        PrintRecipe {
+            name: "Station Floor x4",
+            output: from_block(Block::StationFloor),
+            qty: 4,
+            inputs: vec![(IRON_INGOT, 1), (TIN_INGOT, 1)],
+            time_s: 6.0,
+        },
+        PrintRecipe {
+            name: "Neon Trim x2",
+            output: from_block(Block::NeonTrim),
+            qty: 2,
+            inputs: vec![(IRON_INGOT, 1), (WIRE, 2)],
+            time_s: 6.0,
         },
     ]
 }
