@@ -54,10 +54,10 @@ const INTERSTAGE_SHADE: f32 = 0.75;
 /// Vertical stringer struts around the interstage skirt.
 const STRUT_COUNT: usize = 6;
 /// Strut half-width (m) and how proud of the skirt surface they stand (m).
-const STRUT_HALF_W: f32 = 0.045;
-const STRUT_PROUD_M: f32 = 0.05;
+const STRUT_HALF_W: f32 = 0.14;
+const STRUT_PROUD_M: f32 = 0.12;
 /// Struts draw darker than the skirt so they read as structure.
-const STRUT_SHADE: f32 = 0.45;
+const STRUT_SHADE: f32 = 0.28;
 
 struct Vtx {
     pos: [f32; 3],

@@ -321,3 +321,21 @@ often (matches how this branch has been merging).
 - How rare is "rare" for the zoo? (Derive from `fauna.rs` spawn weights.)
 - Real orbital mechanics depth (N-body point gravity is enough; full patched
   conics is overkill for 5 bodies).
+
+## Reentry FX + ditched-stage salvage (user-locked, next up)
+
+Reference: https://github.com/RubenTipparach/mining-the-sky (reentry fx).
+
+- **Reentry FX:** when the rocket (or a jettisoned part) falls fast inside a
+  body's atmosphere shell, draw plasma/heat fx (glow trail + camera shake at
+  the JS reference's feel). Hook: speed + altitude test in the ride/part
+  integrator; fx via the existing sgl world layer.
+- **Ditched stages become tracked falling bodies:** on stage(), spawn a
+  Core-simulated falling part (ballistic + orbital gravity) instead of
+  vanishing.
+  - **Lands on terrain:** explodes (fx) and leaves a few salvageable METAL
+    SCRAP drops (new item + icon) at the impact site.
+  - **Splashes in ocean:** fully recoverable - the intact part floats as a
+    pickup (walk/swim over to collect the actual part back).
+- Persistence: falling/floating parts + scraps persist same-frame; knobs
+  (scrap count, explode threshold) in rocket.yaml.
