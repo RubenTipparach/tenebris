@@ -2998,11 +2998,12 @@ fn draw_hunger_bar(app: &App, screen_w: f32, screen_h: f32) {
     quad(bx, by, bx + fill_w, by + bar_h);
     sgl::end();
 
-    /* Label + eat hint. */
+    /* Label + eat hint (the key label tracks the Eat binding). */
+    let eat_key = crate::controls::action_label(crate::controls::Action::Eat);
     let buf = if pct <= 0.0 {
-        "STARVING - eat! [R]".to_string()
+        format!("STARVING - eat! [{}]", eat_key)
     } else if pct < 0.3 {
-        format!("HUNGER {}%  [R] eat", (pct * 100.0) as i32)
+        format!("HUNGER {}%  [{}] eat", (pct * 100.0) as i32, eat_key)
     } else {
         format!("HUNGER {}%", (pct * 100.0) as i32)
     };

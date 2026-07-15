@@ -39,6 +39,18 @@ const PART_HEIGHT: f32 = 2.0;
 const ROCKET_SCALE: f32 = 0.9;
 /// How far to the side of the rocket the launch-tower gantry stands (m).
 const TOWER_OFFSET_M: f32 = 2.1;
+/// Body radius of the part models (unit-model metres, before ROCKET_SCALE) -
+/// the tank cylinder is ~1 m; the interstage skirt starts at this radius.
+const PART_RADIUS: f32 = 1.0;
+/// Vacuum engines draw at this fraction of the atmospheric engine's size: the
+/// upper-stage bell is smaller (no atmospheric expansion bell), top-aligned so
+/// its housing still meets the tank above.
+const VAC_BELL_SCALE: f32 = 0.62;
+/// Radial segments of the procedural interstage skirt (the tapered connector
+/// between a lower stage's tank and the smaller vacuum engine above it).
+const INTERSTAGE_SEGS: usize = 12;
+/// Flat shade of the skirt sides (matches the OBJ side-face look before lit).
+const INTERSTAGE_SHADE: f32 = 0.75;
 
 struct Vtx {
     pos: [f32; 3],
@@ -189,6 +201,48 @@ fn draw_model(model: &RocketModel, base: DVec3, basis: &[f32; 16], scale: f32, l
 }
 
 
+/// Procedural interstage skirt: a truncated cone from `r_bottom` (at `base`)
+/// tapering to `r_top` over `height` along the basis up axis - the connector
+/// between a lower stage's full-width tank and the smaller vacuum bell above.
+/// Textured with whatever view the caller binds (the fuel-tank skin, so the
+/// skirt reads as part of the airframe).
+fn draw_frustum(
+    base: DVec3,
+    basis: &[f32; 16],
+    r_bottom: f32,
+    r_top: f32,
+    height: f32,
+    lit: f32,
+    tex_view: u32,
+) {
+    let right = dvec3_make(basis[0] as f64, basis[1] as f64, basis[2] as f64);
+    let up = dvec3_make(basis[4] as f64, basis[5] as f64, basis[6] as f64);
+    let fwd = dvec3_make(basis[8] as f64, basis[9] as f64, basis[10] as f64);
+    let top_c = dvec3_add(base, dvec3_scale(up, height as f64));
+    sgl::enable_texture();
+    sgl::texture(
+        sokol::gfx::View { id: tex_view },
+        sokol::gfx::Sampler { id: renderer::rocket_sampler_id() },
+    );
+    sgl::begin_quads();
+    let s = INTERSTAGE_SHADE * lit;
+    sgl::c3f(s, s, s);
+    for i in 0..INTERSTAGE_SEGS {
+        let a0 = (i as f64) / INTERSTAGE_SEGS as f64 * std::f64::consts::TAU;
+        let a1 = ((i + 1) as f64) / INTERSTAGE_SEGS as f64 * std::f64::consts::TAU;
+        let dir = |a: f64| dvec3_add(dvec3_scale(right, a.cos()), dvec3_scale(fwd, a.sin()));
+        let b0 = dvec3_add(base, dvec3_scale(dir(a0), r_bottom as f64));
+        let b1 = dvec3_add(base, dvec3_scale(dir(a1), r_bottom as f64));
+        let t0 = dvec3_add(top_c, dvec3_scale(dir(a0), r_top as f64));
+        let t1 = dvec3_add(top_c, dvec3_scale(dir(a1), r_top as f64));
+        sgl::v3f_t2f(b0.x as f32, b0.y as f32, b0.z as f32, 0.0, 1.0);
+        sgl::v3f_t2f(b1.x as f32, b1.y as f32, b1.z as f32, 1.0, 1.0);
+        sgl::v3f_t2f(t1.x as f32, t1.y as f32, t1.z as f32, 1.0, 0.0);
+        sgl::v3f_t2f(t0.x as f32, t0.y as f32, t0.z as f32, 0.0, 0.0);
+    }
+    sgl::end();
+}
+
 /// Draw every assembled rocket + its launch-tower gantry for the active
 /// body. Iterates the world's launch-pad block entities.
 pub fn draw(view: Mat4, proj: Mat4, world: &World) {
@@ -268,7 +322,11 @@ pub fn draw(view: Mat4, proj: Mat4, world: &World) {
             let lit = renderer::entity_sun_brightness(dvec3_add(center, dvec3_scale(up, surf_r as f64)));
             let lit = lit.clamp(0.15, 1.5);
 
-            /* Rocket stack: engine at the bottom, then up the parts list. */
+            /* Rocket stack: engine at the bottom, then up the parts list.
+             * Vacuum engines draw smaller (VAC_BELL_SCALE), TOP-aligned in
+             * their slot so the housing meets the tank above; the gap left
+             * under the bell is closed by a tapered interstage skirt from the
+             * lower stage's full-width tank up to the bell base. */
             sgl::load_pipeline(pip_ship);
             for (i, &id) in parts.iter().enumerate() {
                 let midx = match part_role(id) {
@@ -277,9 +335,29 @@ pub fn draw(view: Mat4, proj: Mat4, world: &World) {
                     Some(PartRole::Capsule) => 2,
                     None => 1,
                 };
-                let base_r = surf_r + (i as f32) * PART_HEIGHT * ROCKET_SCALE;
+                let vac = tenebris_core::rocket::engine_kind(id)
+                    == Some(tenebris_core::rocket::EngineKind::Vacuum);
+                let scale = if vac { ROCKET_SCALE * VAC_BELL_SCALE } else { ROCKET_SCALE };
+                let slot_r = surf_r + (i as f32) * PART_HEIGHT * ROCKET_SCALE;
+                let gap = PART_HEIGHT * (ROCKET_SCALE - scale);
+                let base_r = if vac { slot_r + gap } else { slot_r };
                 let base = dvec3_add(center, dvec3_scale(up, base_r as f64));
-                draw_model(&models[midx], base, &basis, ROCKET_SCALE, lit, renderer::rocket_view_id(midx));
+                draw_model(&models[midx], base, &basis, scale, lit, renderer::rocket_view_id(midx));
+                if vac && i > 0 {
+                    /* Interstage: from the slot bottom (sitting on the stage
+                     * below, full radius) tapering up to the bell base. Skinned
+                     * with the fuel-tank texture so it reads as airframe. */
+                    let skirt_base = dvec3_add(center, dvec3_scale(up, slot_r as f64));
+                    draw_frustum(
+                        skirt_base,
+                        &basis,
+                        PART_RADIUS * ROCKET_SCALE,
+                        PART_RADIUS * scale,
+                        gap,
+                        lit,
+                        renderer::rocket_view_id(1),
+                    );
+                }
             }
 
             /* Launch-tower gantry beside the rocket: box segments stacked as
