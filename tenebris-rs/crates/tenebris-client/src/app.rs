@@ -1134,6 +1134,68 @@ fn dev_maybe_place(app: &mut App) {
             });
             app.player.borrow_mut().pitch = -0.85;
         }
+        24 => {
+            /* Station-casino showcase (TENEBRIS_DEV_CASINO): the centre
+             * tile becomes deck plating and the ring of neighbours shows
+             * every station / casino prism, with the slot machine + card
+             * table machines standing on the first two - one shot frames
+             * the whole SPACE_ERA_PLAN "built look" set. */
+            let ring = [
+                Block::StationFloor,
+                Block::CasinoCarpet,
+                Block::StationHull,
+                Block::CasinoWall,
+                Block::NeonTrim,
+                Block::CasinoSign,
+            ];
+            dev_set_surface(&app.world, center, Block::StationFloor);
+            let player_pos = app.player.borrow().position;
+            dev_for_each_neighbor(&app.world, center, |w, i, n| {
+                dev_set_surface_w(w, n, ring[i % ring.len()]);
+                /* Machines go in the AIR voxel above the first two ring
+                 * tiles (real-placement style), facing the player. */
+                if i < 2 {
+                    let mut top = -1;
+                    for d in (0..tenebris_core::world::WORLD_MAX_DEPTH).rev() {
+                        if tenebris_core::blocks::is_solid(w.get(n, d)) {
+                            top = d;
+                            break;
+                        }
+                    }
+                    if top >= 0 && top + 1 < tenebris_core::world::WORLD_MAX_DEPTH {
+                        let d = top + 1;
+                        let machine =
+                            if i == 0 { Block::SlotMachine } else { Block::CardTable };
+                        w.set(n, d, machine);
+                        let facing = w.facing_toward(n, d, player_pos);
+                        w.block_entities.set(
+                            n,
+                            d,
+                            tenebris_core::block_entity::BlockEntity::with_facing(facing),
+                        );
+                    }
+                }
+            });
+            /* Curate the hotbar so the shot labels the whole set as icons. */
+            let mut p = app.player.borrow_mut();
+            let kit = [
+                Block::StationHull,
+                Block::StationFloor,
+                Block::CasinoCarpet,
+                Block::CasinoWall,
+                Block::NeonTrim,
+                Block::CasinoSign,
+                Block::SlotMachine,
+                Block::CardTable,
+            ];
+            for (i, b) in kit.iter().enumerate() {
+                if i < crate::inventory::INV_HOTBAR_SLOTS as usize {
+                    p.inventory.slots[i] = crate::inventory::InvSlot::block(*b, 1);
+                }
+            }
+            p.pitch = -0.85;
+            println!("[dev] built station-casino showcase around tile {center}");
+        }
         2 => {
             /* Ore + tech-block showcase: the centre tile becomes the
              * launch pad, the ring of neighbours each becomes a different
@@ -2381,6 +2443,9 @@ extern "C" fn init() {
         DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
     } else if std::env::var("TENEBRIS_DEV_TORCH").is_ok() {
         DEV_PLACE_MODE.with(|c| c.set(16));
+        DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
+    } else if std::env::var("TENEBRIS_DEV_CASINO").is_ok() {
+        DEV_PLACE_MODE.with(|c| c.set(24));
         DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
     }
     if std::env::var("TENEBRIS_DEV_KIT").is_ok() {
