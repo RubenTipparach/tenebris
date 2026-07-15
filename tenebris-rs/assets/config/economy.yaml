@@ -8,7 +8,45 @@
 #   starting_credits     credits a brand-new world starts with
 #   fuel_price_per_unit  station price of one fuel unit
 #   sell_spread          sell price = buy price * this (0..1 market spread)
+#   price_drift_amp      market wobble around the base price (0 = flat)
+#   price_drift_period_s seconds per full market cycle
+#   pressure_per_unit    payout discount added per unit dumped on the market
+#   pressure_tau_s       seconds for that discount to decay by e
+#   pressure_max         payout discount ceiling (0..1)
+#   warehouse_slots_t1/2/3  station warehouse slots per tier (t1 = free)
+#   warehouse_cost_t2/3     credits the tier-2 / tier-3 upgrades cost
 
 starting_credits:    0
 fuel_price_per_unit: 2.0
 sell_spread:         0.6
+price_drift_amp:     0.25
+price_drift_period_s: 600
+pressure_per_unit:   0.01
+pressure_tau_s:      300
+pressure_max:        0.75
+warehouse_slots_t1:  9
+warehouse_slots_t2:  18
+warehouse_slots_t3:  36
+warehouse_cost_t2:   500
+warehouse_cost_t3:   2500
+
+# --- Base market prices (credits per unit). Item names resolve via the
+# core item table; the drifting market wobbles around these, and the
+# station pays sell_spread * price (minus supply pressure) when buying
+# FROM the player. Add a line per new tradable item. ---
+[prices]
+flint:          6
+stick:          2
+log:            4
+plank:          3
+charcoal:       8
+copper-ingot:   14
+tin-ingot:      14
+iron-ingot:     20
+bronze-ingot:   26
+wire:           10
+circuit-board:  40
+rocket-engine:  220
+vacuum-engine:  300
+fuel-tank:      160
+command-module: 400

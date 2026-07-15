@@ -85,3 +85,9 @@ pub fn stage() -> bool {
 pub fn is_spent() -> bool {
     with(|r| r.is_spent()).unwrap_or(true)
 }
+
+/// Station refuel: pour `units` into the active stage (capped at capacity).
+/// Returns the amount accepted.
+pub fn refuel(units: f32) -> f32 {
+    RIDE.with(|c| c.borrow_mut().as_mut().map(|r| r.refuel(units)).unwrap_or(0.0))
+}

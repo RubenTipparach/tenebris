@@ -540,6 +540,16 @@ impl RocketRide {
     pub fn is_spent(&self) -> bool {
         self.stages.iter().all(|s| s.fuel <= 0.0)
     }
+
+    /// Pour `units` of fuel into the ACTIVE stage's tanks (station refuel).
+    /// Returns the amount actually accepted (capped at capacity).
+    pub fn refuel(&mut self, units: f32) -> f32 {
+        let Some(s) = self.stages.first_mut() else { return 0.0 };
+        let room = (s.spec.fuel_capacity - s.fuel).max(0.0);
+        let take = units.clamp(0.0, room);
+        s.fuel += take;
+        take
+    }
 }
 
 /* ------------------------------------------------------------------ */

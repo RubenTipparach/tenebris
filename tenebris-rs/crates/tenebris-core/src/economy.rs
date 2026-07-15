@@ -59,12 +59,33 @@ pub struct EconomyConfig {
     pub fuel_price_per_unit: f32,
     /// Sell price = buy price * this (the market spread, 0..1).
     pub sell_spread: f32,
+    /// Market drift amplitude around 1.0 (0 = flat prices).
+    pub price_drift_amp: f32,
+    /// Seconds per full drift cycle.
+    pub price_drift_period_s: f32,
+    /// Supply pressure added per unit sold (discounts the payout).
+    pub pressure_per_unit: f32,
+    /// Seconds for supply pressure to decay by e.
+    pub pressure_tau_s: f32,
+    /// Pressure ceiling (payout never discounts below 1 - this).
+    pub pressure_max: f32,
+    /// Warehouse slot count per tier (tier 0 is the free starter).
+    pub warehouse_tier_slots: [u32; 3],
+    /// Credits each tier costs to unlock (index 0 unused - starter is free).
+    pub warehouse_tier_costs: [i64; 3],
 }
 
 pub const DEFAULT_ECONOMY_CONFIG: EconomyConfig = EconomyConfig {
     starting_credits: 0,
     fuel_price_per_unit: 2.0,
     sell_spread: 0.6,
+    price_drift_amp: 0.25,
+    price_drift_period_s: 600.0,
+    pressure_per_unit: 0.01,
+    pressure_tau_s: 300.0,
+    pressure_max: 0.75,
+    warehouse_tier_slots: [9, 18, 36],
+    warehouse_tier_costs: [0, 500, 2500],
 };
 
 impl Default for EconomyConfig {
@@ -106,6 +127,43 @@ pub fn parse_config(src: &str) -> EconomyConfig {
             "sell_spread" => {
                 if let Ok(v) = val.parse::<f32>() {
                     c.sell_spread = v.clamp(0.0, 1.0);
+                }
+            }
+            "price_drift_amp" => {
+                if let Ok(v) = val.parse::<f32>() {
+                    c.price_drift_amp = v.clamp(0.0, 0.9);
+                }
+            }
+            "price_drift_period_s" => {
+                if let Ok(v) = val.parse::<f32>() {
+                    c.price_drift_period_s = v.max(1.0);
+                }
+            }
+            "pressure_per_unit" => {
+                if let Ok(v) = val.parse::<f32>() {
+                    c.pressure_per_unit = v.max(0.0);
+                }
+            }
+            "pressure_tau_s" => {
+                if let Ok(v) = val.parse::<f32>() {
+                    c.pressure_tau_s = v.max(0.0);
+                }
+            }
+            "pressure_max" => {
+                if let Ok(v) = val.parse::<f32>() {
+                    c.pressure_max = v.clamp(0.0, 1.0);
+                }
+            }
+            "warehouse_slots_t1" | "warehouse_slots_t2" | "warehouse_slots_t3" => {
+                if let Ok(v) = val.parse::<u32>() {
+                    let i = (key.as_bytes()[key.len() - 1] - b'1') as usize;
+                    c.warehouse_tier_slots[i] = v.max(1);
+                }
+            }
+            "warehouse_cost_t2" | "warehouse_cost_t3" => {
+                if let Ok(v) = val.parse::<i64>() {
+                    let i = (key.as_bytes()[key.len() - 1] - b'1') as usize;
+                    c.warehouse_tier_costs[i] = v.max(0);
                 }
             }
             _ => {}

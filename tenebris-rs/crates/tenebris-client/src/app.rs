@@ -54,6 +54,7 @@ use crate::hotbar_ui;
 use crate::input;
 use crate::interact::{self, InteractState};
 use crate::chest_screen;
+use crate::station_screen;
 use crate::bonfire_fx;
 use crate::bonfire_screen;
 use crate::egui_layer;
@@ -2185,8 +2186,10 @@ extern "C" fn init() {
     config::load_time("assets/config/time.yaml");
     /* Keyboard bindings (remappable): raw keys -> named actions. */
     crate::controls::load("assets/config/controls.yaml");
-    /* Space-era economy tunables (credits, prices, spreads). */
+    /* Space-era economy tunables (credits, prices, spreads) + the station
+     * market's base price table ([prices] section of the same file). */
     tenebris_core::economy::load_config("assets/config/economy.yaml");
+    tenebris_core::station::load_prices("assets/config/economy.yaml");
     /* Start the world clock in daylight (start_day_fraction of a day),
      * unless a dev override pins the time of day. */
     {
@@ -2405,6 +2408,10 @@ extern "C" fn init() {
     if std::env::var("TENEBRIS_DEV_INPUTS").is_ok() {
         /* Screenshot aid: open the pause + Inputs (key bindings) overlay. */
         menu::dev_open_inputs();
+    }
+    if std::env::var("TENEBRIS_DEV_STATION").is_ok() {
+        /* Screenshot aid: open the orbital station hub at spawn. */
+        station_screen::open(player.clone());
     }
     if std::env::var("TENEBRIS_DEV_CRAFT").is_ok() {
         crafting_screen::open(Some(player.clone()));
@@ -3163,6 +3170,33 @@ fn machine_label(b: Block) -> Option<&'static str> {
         Block::Printer3D => "3d printer",
         _ => return None,
     })
+}
+
+/// Dock prompt: shown while flying in space within dock range of the orbital
+/// trading station. The key label tracks the Interact binding.
+fn draw_station_hint(app: &App, screen_w: f32, screen_h: f32) {
+    let p = app.player.borrow();
+    if !p.is_in_space || crate::station_screen::is_open() {
+        return;
+    }
+    let d = crate::station_screen::dock_distance_m(p.position);
+    drop(p);
+    if d > crate::station_screen::DOCK_RADIUS_M {
+        return;
+    }
+    let key = crate::controls::action_label(crate::controls::Action::Interact);
+    let msg = format!("[{}] dock - trading station", key);
+    let cell = 8.0f32;
+    let x = (screen_w * 0.5 - (msg.len() as f32 * cell) * 0.5) / cell;
+    let y = (screen_h * 0.5 + 24.0) / cell;
+    sdtx::canvas(screen_w, screen_h);
+    sdtx::origin(0.0, 0.0);
+    sdtx::font(1);
+    sdtx::pos(x, y);
+    sdtx::color3b(0x90, 0xd0, 0xf0);
+    sdtx::puts(&msg);
+    sdtx::font(0);
+    sdtx::color3b(0xff, 0xff, 0xff);
 }
 
 /// Reticle prompt shown when aiming at an openable machine: `"[E] open chest"`.
@@ -4796,6 +4830,7 @@ fn egui_ui(app: &mut App, ctx: &egui::Context) {
     tech_tree::set_player(Some(app.player.clone()));
     tech_tree::egui_ui(ctx);
     chest_screen::egui_ui(ctx);
+    station_screen::egui_ui(ctx);
     furnace_screen::egui_ui(ctx);
     bonfire_screen::egui_ui(ctx);
     power_ui::egui_ui(ctx);
@@ -5811,6 +5846,8 @@ fn frame_inner(app: &mut App) {
         draw_rocket_hud(app, sapp::widthf(), sapp::heightf());
         /* Credits wallet (top-right). */
         draw_credits_hud(app, sapp::widthf(), sapp::heightf());
+        /* Station dock prompt (in space, within range). */
+        draw_station_hint(app, sapp::widthf(), sapp::heightf());
         /* Survival: prompt when the targeted block needs a better tool. */
         draw_tool_gate_hint(app, sapp::widthf(), sapp::heightf());
     }
@@ -5999,6 +6036,10 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
     if power_ui::handle_event(e) {
         return;
     }
+    /* Orbital trading station hub: swallows input while docked. */
+    if station_screen::event(e) {
+        return;
+    }
     /* Survival craft screen: first crack after pause so B toggles it and,
      * while open, it owns clicks + Esc (closed, it ignores everything and
      * falls through). Always available - not gated on the F2 debug UI. */
@@ -6038,6 +6079,17 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
      * a non-station target falls through to the normal E behaviour. */
     let interact_pressed = e._type == sapp::EventType::KeyDown
         && crate::controls::action_for_key(e.key_code) == Some(crate::controls::Action::Interact);
+    /* Dock at the orbital trading station: Interact while in space within
+     * dock range opens the station hub (the interact raycast is skipped in
+     * space, so this can't shadow a machine). */
+    if interact_pressed
+        && app.player.borrow().is_in_space
+        && station_screen::dock_distance_m(app.player.borrow().position)
+            <= station_screen::DOCK_RADIUS_M
+    {
+        station_screen::open(app.player.clone());
+        return;
+    }
     if interact_pressed && app.interact.has_target && !app.interact.is_torch_target {
         let targeted = app
             .world
