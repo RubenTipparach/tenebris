@@ -6109,6 +6109,24 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
         }
     }
 
+    /* Interact (default E) on a loose scatter object under the reticle:
+     * pick it up. Hovering a flint pebble or a leafy bush mound and
+     * pressing E gathers it, so the thing the player SEES on the ground is
+     * the thing E collects - the same gather the bare-hands right-click
+     * forage does, sharing interact::scatter_pickup_item. Checked before
+     * the inventory toggle (like the station screens above); plain ground
+     * finds nothing and falls through to the normal E behaviour. */
+    if interact_pressed {
+        let picked = {
+            let w = app.world.borrow();
+            let p = app.player.borrow();
+            crate::interact::try_pickup_scatter(&app.interact, &w, &p)
+        };
+        if picked {
+            return;
+        }
+    }
+
     /* Interact (default E) with no machine under the reticle: toggle the
      * inventory / crafting overlay. Same everywhere now - roll moved to
      * Q / R (see controls.yaml), so E no longer doubles as roll-right in

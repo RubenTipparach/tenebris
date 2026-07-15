@@ -770,6 +770,48 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
     }
 }
 
+/// The discrete loose object the player SEES sitting on this tile, if any:
+/// a scatter pebble (loose flint) or a leafy bush lump (snapped for sticks).
+/// The scatter is pure mesh decoration baked from a per-tile hash, so this
+/// re-rolls the same hash the mesher did rather than reading a block.
+///
+/// Shared by the bare-hands right-click [`forage_surface`] and the E-key
+/// [`try_pickup_scatter`], so the pebble you can right-click is exactly the
+/// pebble E picks up. Bushes are leafy, so they hand over STICK - the same
+/// rule `forage_surface` applies to a Leaves surface.
+fn scatter_pickup_item(w: &World, tile_idx: i32) -> Option<items::ItemId> {
+    if crate::hex_mesher::tile_has_rock(w, tile_idx) {
+        return Some(items::FLINT);
+    }
+    if crate::hex_mesher::tile_has_bush(w, tile_idx) {
+        return Some(items::STICK);
+    }
+    None
+}
+
+/// E-key pickup: hover a loose scatter object (a flint pebble, a leafy bush
+/// mound) and press Interact to gather it - no tool, no terrain edit, and no
+/// empty-hand requirement, since E never places a block the way right-click
+/// does. Returns true when something was gathered, so the caller skips the
+/// inventory toggle; a reticle on plain ground returns false and E keeps its
+/// normal meaning.
+///
+/// Deliberately scoped to the discrete scatter OBJECTS rather than the whole
+/// of [`forage_surface`]: grass / stone / leaf surfaces are almost every tile
+/// underfoot, so foraging those on E would swallow the inventory binding.
+pub fn try_pickup_scatter(s: &InteractState, w: &World, p: &PlayerCtrl) -> bool {
+    if !p.survival_mode || !s.has_target || s.is_torch_target {
+        return false;
+    }
+    match scatter_pickup_item(w, s.hit_tile) {
+        Some(item) => {
+            crate::drops::spawn(w, s.hit_tile, s.hit_depth, item, 1);
+            true
+        }
+        None => false,
+    }
+}
+
 /// Forage the exposed surface of the targeted block: gather loose grass,
 /// flint, or sticks off the ground as a floating pickup WITHOUT breaking
 /// the terrain. This is the bare-hands survival gather (right-click a
@@ -778,14 +820,11 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
 /// this reads the underlying surface block instead. Returns true if the
 /// click found something to forage (so the caller can treat it as handled).
 fn forage_surface(s: &InteractState, w: &World) -> bool {
-    /* A visible scatter pebble is loose flint on the ground: whenever the
-     * targeted tile carries a decorative rock, hand over flint regardless
-     * of the grass / dirt / sand block it rests on. This is the "pick the
-     * rock up off the ground" the player sees, and it seeds the whole
-     * flint-tool loop - so it takes priority over the grass / stick gather
-     * below. */
-    if crate::hex_mesher::tile_has_rock(w, s.hit_tile) {
-        crate::drops::spawn(w, s.hit_tile, s.hit_depth, items::FLINT, 1);
+    /* The loose object sitting on the tile wins over the ground it rests
+     * on - see `scatter_pickup_item`. This is the "pick the rock up off
+     * the ground" the player sees, and it seeds the whole flint-tool loop. */
+    if let Some(item) = scatter_pickup_item(w, s.hit_tile) {
+        crate::drops::spawn(w, s.hit_tile, s.hit_depth, item, 1);
         return true;
     }
     let top = w.get(s.hit_tile, s.hit_depth);
@@ -1334,5 +1373,54 @@ mod tests {
             vec![items::FLINT],
             "the pebble yields flint, not grass/nothing"
         );
+    }
+
+    /// E (Interact) on a loose scatter object picks it up: hovering a visible
+    /// pebble and pressing E must hand over flint, with a tool / block in hand
+    /// (E never places, so unlike right-click forage it has no empty-hand
+    /// gate). Regresses "cant pick up flint from the ground with E".
+    #[test]
+    fn e_pickup_takes_flint_off_a_scatter_rock() {
+        let w = gen_world(BodyId::Tenebris);
+        let mut rock_tile = -1;
+        let mut rock_depth = -1;
+        'scan: for tile in 0..w.grid.tile_count() {
+            if !crate::hex_mesher::tile_has_rock(&w, tile) {
+                continue;
+            }
+            for d in (0..WORLD_MAX_DEPTH - 1).rev() {
+                if w.get(tile, d) != Block::Air {
+                    rock_tile = tile;
+                    rock_depth = d;
+                    break 'scan;
+                }
+            }
+        }
+        assert!(rock_tile >= 0, "Tenebris subdiv3 should scatter some rocks");
+
+        crate::drops::init();
+        let mut p = PlayerCtrl::default();
+        p.survival_mode = true;
+        let mut s = InteractState::default();
+        s.has_target = true;
+        s.hit_tile = rock_tile;
+        s.hit_depth = rock_depth;
+        assert!(try_pickup_scatter(&s, &w, &p), "E picks the pebble up");
+        assert_eq!(
+            crate::drops::test_items(),
+            vec![items::FLINT],
+            "E on a pebble yields flint"
+        );
+
+        /* No target under the reticle -> E must fall through so it keeps
+         * toggling the inventory instead of silently eating the keypress. */
+        crate::drops::init();
+        let mut none = InteractState::default();
+        none.has_target = false;
+        assert!(
+            !try_pickup_scatter(&none, &w, &p),
+            "no target: E falls through to the inventory toggle"
+        );
+        assert_eq!(crate::drops::count(), 0, "nothing spawned without a target");
     }
 }

@@ -2398,6 +2398,52 @@ pub fn tile_has_rock(w: &World, tile_idx: i32) -> bool {
     hash2(tile_idx, SALT_KIND + 3) < rock_chance
 }
 
+/// True when this tile carries a decorative leafy bush - the green prism
+/// lumps `build_scatter` sprinkles on grass / dirt below. The same idea as
+/// [`tile_has_rock`]: the bush the player SEES is the bush they can gather,
+/// so this mirrors the bush branch's exact surface classification and hash
+/// roll (SALT_KIND + 2, tripled in jungle). Kept in lockstep with that
+/// branch - change one, change the other.
+pub fn tile_has_bush(w: &World, tile_idx: i32) -> bool {
+    let cfg = scatter_cfg::config();
+    let Some(t) = w.grid.tile(tile_idx) else {
+        return false;
+    };
+    let col_base = (tile_idx * WORLD_MAX_DEPTH) as usize;
+    let mut surf = -1i32;
+    for d in (0..WORLD_MAX_DEPTH - 1).rev() {
+        if is_solid_raw(w.blocks[col_base + d as usize]) {
+            surf = d;
+            break;
+        }
+    }
+    if surf < 0 || surf + 1 >= WORLD_MAX_DEPTH {
+        return false;
+    }
+    let ground = Block::from_raw(w.blocks[col_base + surf as usize]).unwrap_or(Block::Air);
+    let above = Block::from_raw(w.blocks[col_base + (surf + 1) as usize]).unwrap_or(Block::Air);
+    /* Bushes only sit on an exposed, dry, un-tilled surface - build_scatter
+     * bails on occupied / underwater / farmland tiles before the bush roll. */
+    if above != Block::Air || ground == Block::Farmland {
+        return false;
+    }
+    let grassy = matches!(
+        ground,
+        Block::Grass | Block::SeqGrass | Block::JungleGrass | Block::DryGrass
+    );
+    let dirty = matches!(ground, Block::Dirt | Block::SeqDirt);
+    if !(grassy || dirty) {
+        return false;
+    }
+    let biome = tenebris_core::planet_gen::biome(&w.body, t.center);
+    let bush_chance = if biome == tenebris_core::planet_gen::Biome::Jungle {
+        cfg.bush_chance * 3.0
+    } else {
+        cfg.bush_chance
+    };
+    hash2(tile_idx, SALT_KIND + 2) < bush_chance
+}
+
 /// Build the decorative scatter for one tile into the chunk's opaque
 /// mesh. Call alongside [`build_tile`]; safe to skip entirely (it only
 /// adds geometry). See the module comment above for the design.
