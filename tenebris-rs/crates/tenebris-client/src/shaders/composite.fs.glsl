@@ -5,7 +5,7 @@
 // layers above 1), .y = refraction strength, .z = anim speed, .w = drop size
 // (grid frequency - higher = smaller drops). Count (.x) and size (.w) are
 // independent: raising .x adds drops at the SAME size, .w changes the size.
-uniform vec4 composite_fs_params[7];
+uniform vec4 composite_fs_params[8];
 uniform sampler2D scene_depth_scene_depth_smp;
 uniform sampler2D scene_color_scene_smp;
 
@@ -187,7 +187,15 @@ void main()
     float _184 = _183 * _171;
     wet = _184;
     vec3 color = _157.xyz;
-    if ((_184 > 0.0) && (composite_fs_params[4].x > 0.0))
+    // Two-mode composite (composite_fs_params[7].x): x < 0.5 is the COMPOSE
+    // pass (scene fog / blur, NO droplets) into the intermediate target; x >
+    // 0.5 is the LENS pass (sample the post-water intermediate, apply ONLY the
+    // rain-on-glass droplets) into the swapchain, so drops refract the real
+    // water. In the lens pass the base is the plain intermediate sample - fog
+    // and water are already baked into it.
+    bool lens_pass = composite_fs_params[7].x > 0.5;
+    if (lens_pass) { color = texture(scene_color_scene_smp, v_uv).xyz; }
+    if ((!lens_pass) && (_184 > 0.0) && (composite_fs_params[4].x > 0.0))
     {
         color = texture(scene_color_scene_smp, clamp(v_uv + ((vec2(sin((composite_fs_params[4].y * 1.2999999523162841796875) + (v_uv.y * 32.0)) + (0.5 * sin((composite_fs_params[4].y * 0.699999988079071044921875) + (v_uv.x * 47.0))), cos((composite_fs_params[4].y * 0.89999997615814208984375) + (v_uv.x * 28.0)) + (0.5 * cos((composite_fs_params[4].y * 1.60000002384185791015625) + (v_uv.y * 41.0)))) * composite_fs_params[4].x) * wet), vec2(0.0), vec2(1.0))).xyz;
     }
@@ -228,8 +236,8 @@ void main()
     }
     vec3 _276 = color;
     vec3 _283 = mix(_276, mix(composite_fs_params[0].xyz, _276, exp(composite_fs_params[1].xyz * (-_259))), vec3(wet));
-    color = _283;
-    if ((!_107) && (composite_fs_params[5].w > 0.0))
+    if (!lens_pass) { color = _283; }
+    if ((!lens_pass) && (!_107) && (composite_fs_params[5].w > 0.0))
     {
         float fog_f = 1.0 - exp(-view_dist * composite_fs_params[5].w);
         // Match the underwater-fog activation threshold (_112, full submersion
@@ -243,7 +251,7 @@ void main()
     // (rain, or just-surfaced), foreground stays crisp. Distance-based (uses
     // view_dist), so it is not a flat lens fog. Reuses rd_blur.
     float dz_amt = max(composite_fs_params[4].w, composite_fs_params[2].w);
-    if ((dz_amt > 0.001) && (composite_fs_params[4].z < 0.75)) {{
+    if ((!lens_pass) && (dz_amt > 0.001) && (composite_fs_params[4].z < 0.75)) {{
         float dz = smoothstep(28.0, 190.0, view_dist) * clamp(dz_amt, 0.0, 1.0);
         if (dz > 0.002) {{
             // Blur blend strength = water.yaml wet_blur (composite_fs_params[1].w),
@@ -272,7 +280,7 @@ void main()
     // Rain-on-glass (Heartfelt drops), refraction only - NO lens fog: sample
     // the scene sharply through each drop's normal, applied only where drops
     // are so distance fog between drops is preserved.
-    if ((composite_fs_params[4].w > 0.001) && (composite_fs_params[4].z < 0.75)) {{
+    if (lens_pass && (composite_fs_params[4].w > 0.001) && (composite_fs_params[4].z < 0.75)) {{
         float rd_rain = clamp(composite_fs_params[4].w, 0.0, 1.0);
         float rd_t = composite_fs_params[4].y * 0.2 * composite_fs_params[6].z; // .z = anim speed
         vec2 rd_uv = (v_uv - 0.5); rd_uv.x *= max(composite_fs_params[0].w, 0.1);
@@ -289,7 +297,7 @@ void main()
     }}
     // Emerge-from-water: same drops running down + drying off, refraction only
     // (no fog). near_far.w = intensity 1->0. Skipped while submerged.
-    if ((composite_fs_params[2].w > 0.001) && (composite_fs_params[4].z < 0.75)) {{
+    if (lens_pass && (composite_fs_params[2].w > 0.001) && (composite_fs_params[4].z < 0.75)) {{
         float em = clamp(composite_fs_params[2].w, 0.0, 1.0);
         float em_t = composite_fs_params[4].y * 0.2 * composite_fs_params[6].z; // .z = anim speed
         vec2 em_uv = (v_uv - 0.5); em_uv.x *= max(composite_fs_params[0].w, 0.1);

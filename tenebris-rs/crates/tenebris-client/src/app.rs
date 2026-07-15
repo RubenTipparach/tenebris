@@ -5863,13 +5863,20 @@ fn frame_inner(app: &mut App) {
     renderer::compose_to_swapchain(view, proj);
     profiler::end("compose");
 
-    /* Water draws in the swapchain pass on TOP of the composited
-     * scene (samples offscreen colour + depth for refraction). */
+    /* Water draws on TOP of the composited scene (samples offscreen colour +
+     * depth for refraction). On desktop this renders into the intermediate
+     * target; the lens pass below blits it to the swapchain with the camera
+     * rain-on-glass droplets so they refract the real water. */
     profiler::begin("draw-water");
     renderer::draw_water(view, proj, cam_world);
     /* F5 toggle: yellow arrows on every water cell with non-zero flow
      * direction. */
     renderer::draw_water_flow_debug(view, proj);
+    /* Desktop: end the intermediate pass, blit it to the swapchain applying
+     * the lens droplets (perf/mobile already drew straight to the swapchain). */
+    if !renderer::perf_mode_enabled() {
+        renderer::draw_lens_to_swapchain();
+    }
     profiler::end("draw-water");
 
     /* UI overlays go on the swapchain on top of the water. */

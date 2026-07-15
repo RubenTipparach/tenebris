@@ -1665,6 +1665,16 @@ struct Renderer {
     offscreen_depth_att: sg::View,
     offscreen_color_tex: sg::View,
     offscreen_depth_tex: sg::View,
+    /* Intermediate (post-water) colour + depth. The composite (droplets
+     * stripped) and the water pass render here; the final LENS pass samples
+     * this - the real post-water image - so the camera rain-on-glass droplets
+     * refract the water correctly, then blits to the swapchain. */
+    mid_color: sg::Image,
+    mid_depth: sg::Image,
+    mid_color_att: sg::View,
+    mid_depth_att: sg::View,
+    mid_color_tex: sg::View,
+    mid_depth_tex: sg::View,
     offscreen_w: i32,
     offscreen_h: i32,
 
@@ -1739,6 +1749,12 @@ impl Default for Renderer {
             offscreen_depth_att: sg::View::new(),
             offscreen_color_tex: sg::View::new(),
             offscreen_depth_tex: sg::View::new(),
+            mid_color: sg::Image::new(),
+            mid_depth: sg::Image::new(),
+            mid_color_att: sg::View::new(),
+            mid_depth_att: sg::View::new(),
+            mid_color_tex: sg::View::new(),
+            mid_depth_tex: sg::View::new(),
             offscreen_w: 0,
             offscreen_h: 0,
             bodies: Vec::new(),
@@ -3768,6 +3784,17 @@ fn ensure_offscreen_targets(r: &mut Renderer, w: i32, h: i32) {
     if r.offscreen_depth.id != 0 {
         sg::destroy_image(r.offscreen_depth);
     }
+    for v in [r.mid_color_tex, r.mid_depth_tex, r.mid_color_att, r.mid_depth_att] {
+        if v.id != 0 {
+            sg::destroy_view(v);
+        }
+    }
+    if r.mid_color.id != 0 {
+        sg::destroy_image(r.mid_color);
+    }
+    if r.mid_depth.id != 0 {
+        sg::destroy_image(r.mid_depth);
+    }
 
     r.offscreen_color = sg::make_image(&sg::ImageDesc {
         usage: sg::ImageUsage { color_attachment: true, ..Default::default() },
@@ -3808,6 +3835,45 @@ fn ensure_offscreen_targets(r: &mut Renderer, w: i32, h: i32) {
     r.offscreen_depth_tex = sg::make_view(&sg::ViewDesc {
         texture: sg::TextureViewDesc { image: r.offscreen_depth, ..Default::default() },
         label: c"offscreen-depth-tex".as_ptr(),
+        ..Default::default()
+    });
+    /* Intermediate (post-water) targets - same formats as the offscreen. */
+    r.mid_color = sg::make_image(&sg::ImageDesc {
+        usage: sg::ImageUsage { color_attachment: true, ..Default::default() },
+        width: w,
+        height: h,
+        pixel_format: sg::PixelFormat::Rgba8,
+        sample_count: 1,
+        label: c"mid-color".as_ptr(),
+        ..Default::default()
+    });
+    r.mid_depth = sg::make_image(&sg::ImageDesc {
+        usage: sg::ImageUsage { depth_stencil_attachment: true, ..Default::default() },
+        width: w,
+        height: h,
+        pixel_format: sg::PixelFormat::DepthStencil,
+        sample_count: 1,
+        label: c"mid-depth".as_ptr(),
+        ..Default::default()
+    });
+    r.mid_color_att = sg::make_view(&sg::ViewDesc {
+        color_attachment: sg::ImageViewDesc { image: r.mid_color, ..Default::default() },
+        label: c"mid-color-att".as_ptr(),
+        ..Default::default()
+    });
+    r.mid_depth_att = sg::make_view(&sg::ViewDesc {
+        depth_stencil_attachment: sg::ImageViewDesc { image: r.mid_depth, ..Default::default() },
+        label: c"mid-depth-att".as_ptr(),
+        ..Default::default()
+    });
+    r.mid_color_tex = sg::make_view(&sg::ViewDesc {
+        texture: sg::TextureViewDesc { image: r.mid_color, ..Default::default() },
+        label: c"mid-color-tex".as_ptr(),
+        ..Default::default()
+    });
+    r.mid_depth_tex = sg::make_view(&sg::ViewDesc {
+        texture: sg::TextureViewDesc { image: r.mid_depth, ..Default::default() },
+        label: c"mid-depth-tex".as_ptr(),
         ..Default::default()
     });
     r.offscreen_w = w;
@@ -3863,6 +3929,15 @@ pub fn begin_frame(w: i32, h: i32, env: RenderEnv) {
 /// opens the swapchain pass, draws the fullscreen composite (with the
 /// underwater fog + distortion post-process on desktop; a plain
 /// depth-forwarding blit + view-distance fog in perf mode).
+thread_local! {
+    /// Composite params stashed by the desktop compose pass so the final LENS
+    /// pass ([`draw_lens_to_swapchain`]) can reuse them with lens_mode flipped.
+    static FRAME_COMP_FS: std::cell::RefCell<Option<shaders::composite::CompositeFsParams>> =
+        const { std::cell::RefCell::new(None) };
+    static FRAME_COMP_VS: std::cell::RefCell<Option<shaders::composite::CompositeVsParams>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 pub fn compose_to_swapchain(view: Mat4, proj: Mat4) {
     R.with(|cell| {
         let r = cell.borrow();
@@ -3877,13 +3952,20 @@ pub fn compose_to_swapchain(view: Mat4, proj: Mat4) {
         }
         sg::end_pass();
 
-        let mut pass = sg::Pass {
-            label: c"swapchain-composite".as_ptr(),
-            swapchain: sokol::glue::swapchain(),
-            ..Default::default()
-        };
-        /* CLEAR (not DONTCARE) so prior-frame UI can't bleed through
-         * on browsers that preserve the back buffer. */
+        /* Desktop: composite (droplets stripped) renders into the INTERMEDIATE
+         * target, NOT the swapchain - the water pass draws over it and the
+         * final LENS pass (draw_lens_to_swapchain) samples this post-water
+         * image so the camera droplets refract the real water. Perf/mobile
+         * keeps the old direct-to-swapchain path (no lens droplets there). */
+        let mut pass = sg::Pass::default();
+        if perf_mode_enabled() {
+            pass.label = c"swapchain-composite".as_ptr();
+            pass.swapchain = sokol::glue::swapchain();
+        } else {
+            pass.label = c"mid-composite".as_ptr();
+            pass.attachments.colors[0] = r.mid_color_att;
+            pass.attachments.depth_stencil = r.mid_depth_att;
+        }
         pass.action.colors[0] = sg::ColorAttachmentAction {
             load_action: sg::LoadAction::Clear,
             clear_value: sg::Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 },
@@ -4010,6 +4092,7 @@ pub fn compose_to_swapchain(view: Mat4, proj: Mat4) {
             cam_forward: [basis.fwd[0], basis.fwd[1], basis.fwd[2], 0.0],
             camera_pos: [r.env.camera_world.x, r.env.camera_world.y, r.env.camera_world.z, 0.0],
         };
+        FRAME_COMP_VS.with(|c| *c.borrow_mut() = Some(vs));
         sg::apply_uniforms(shaders::composite::UB_COMPOSITE_VS_PARAMS, &sg::value_as_range(&vs));
 
         /* Wet-mask gate body parameters; sea radius derived the same
@@ -4268,12 +4351,70 @@ pub fn compose_to_swapchain(view: Mat4, proj: Mat4) {
                     wx.rain_lens_size,
                 ]
             },
+            /* Compose pass: droplets OFF (they run in the lens pass). */
+            lens_mode: [0.0; 4],
         };
+        /* Stash for the lens pass, which reuses these params with lens_mode
+         * flipped to 1 (droplets on) sampling the post-water intermediate. */
+        FRAME_COMP_FS.with(|c| *c.borrow_mut() = Some(fs));
         sg::apply_uniforms(shaders::composite::UB_COMPOSITE_FS_PARAMS, &sg::value_as_range(&fs));
 
         let mut bind = sg::Bindings::new();
         bind.views[shaders::composite::VIEW_SCENE_COLOR] = r.offscreen_color_tex;
         bind.views[shaders::composite::VIEW_SCENE_DEPTH] = r.offscreen_depth_tex;
+        bind.samplers[shaders::composite::SMP_SCENE_SMP] = r.smp_offscreen;
+        bind.samplers[shaders::composite::SMP_SCENE_DEPTH_SMP] = r.smp_offscreen_depth;
+        sg::apply_bindings(&bind);
+        sg::draw(0, 3, 1);
+    });
+}
+
+/// Final LENS pass: end the intermediate pass, open the swapchain, and blit the
+/// post-water intermediate to it - applying ONLY the camera rain-on-glass
+/// droplets (composite shader in lens mode), so each drop refracts the real
+/// water. Forwards the intermediate depth so the after-water sgl FX (reentry
+/// plasma, rain streaks) still depth-test correctly. Leaves the swapchain pass
+/// OPEN for those FX + the UI. Call right after `draw_water`.
+pub fn draw_lens_to_swapchain() {
+    R.with(|cell| {
+        let r = cell.borrow();
+        sg::end_pass(); // close the intermediate (mid) pass
+
+        let mut pass = sg::Pass {
+            label: c"swapchain-lens".as_ptr(),
+            swapchain: sokol::glue::swapchain(),
+            ..Default::default()
+        };
+        pass.action.colors[0] = sg::ColorAttachmentAction {
+            load_action: sg::LoadAction::Clear,
+            clear_value: sg::Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 },
+            ..Default::default()
+        };
+        pass.action.depth = sg::DepthAttachmentAction {
+            load_action: sg::LoadAction::Clear,
+            clear_value: 1.0,
+            ..Default::default()
+        };
+        sg::begin_pass(&pass);
+
+        sg::apply_pipeline(r.pip_composite);
+        let (Some(vs), Some(mut fs)) = (
+            FRAME_COMP_VS.with(|c| *c.borrow()),
+            FRAME_COMP_FS.with(|c| *c.borrow()),
+        ) else {
+            return;
+        };
+        /* Reuse the compose camera basis (v_view_dir / v_camera_pos drive the
+         * above-waterline droplet mask) and params, flipping to lens mode. */
+        sg::apply_uniforms(shaders::composite::UB_COMPOSITE_VS_PARAMS, &sg::value_as_range(&vs));
+        fs.lens_mode = [1.0, 0.0, 0.0, 0.0]; // lens pass: droplets ON
+        sg::apply_uniforms(shaders::composite::UB_COMPOSITE_FS_PARAMS, &sg::value_as_range(&fs));
+
+        let mut bind = sg::Bindings::new();
+        /* Sample the POST-WATER intermediate for both colour (droplet
+         * refraction base) and depth (forwarded to the swapchain). */
+        bind.views[shaders::composite::VIEW_SCENE_COLOR] = r.mid_color_tex;
+        bind.views[shaders::composite::VIEW_SCENE_DEPTH] = r.mid_depth_tex;
         bind.samplers[shaders::composite::SMP_SCENE_SMP] = r.smp_offscreen;
         bind.samplers[shaders::composite::SMP_SCENE_DEPTH_SMP] = r.smp_offscreen_depth;
         sg::apply_bindings(&bind);
@@ -6412,8 +6553,9 @@ mod tests {
         assert_eq!(size_of::<shaders::atmosphere::AtmosphereVsParams>(), 64);
         assert_eq!(size_of::<shaders::atmosphere::AtmosphereFsParams>(), 48);
         assert_eq!(size_of::<shaders::composite::CompositeVsParams>(), 64);
-        /* 6 vec4s since the hand-added fog block (fog_params). */
-        assert_eq!(size_of::<shaders::composite::CompositeFsParams>(), 112);
+        /* 8 vec4s: hand-added fog_params + rain_lens + the lens_mode flag that
+         * splits compose (droplets off) from the post-water lens pass. */
+        assert_eq!(size_of::<shaders::composite::CompositeFsParams>(), 128);
         assert_eq!(size_of::<shaders::composite_mobile::CompositeMobileFsParams>(), 48);
         assert_eq!(size_of::<shaders::distant::DistantVsParams>(), 64);
         assert_eq!(size_of::<shaders::distant::DistantFsParams>(), 80);

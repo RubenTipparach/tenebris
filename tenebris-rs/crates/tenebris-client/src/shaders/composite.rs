@@ -46,6 +46,7 @@ pub const VIEW_SCENE_COLOR: usize = 0;
 pub const SMP_SCENE_DEPTH_SMP: usize = 1;
 pub const SMP_SCENE_SMP: usize = 0;
 #[repr(C, align(16))]
+#[derive(Copy, Clone)]
 pub struct CompositeVsParams {
     pub cam_right: [f32; 4],
     pub cam_up: [f32; 4],
@@ -53,6 +54,7 @@ pub struct CompositeVsParams {
     pub camera_pos: [f32; 4],
 }
 #[repr(C, align(16))]
+#[derive(Copy, Clone)]
 pub struct CompositeFsParams {
     pub deep_color: [f32; 4],
     pub absorption: [f32; 4],
@@ -69,6 +71,10 @@ pub struct CompositeFsParams {
     /// x = droplet count / coverage, y = refraction strength, z = animation
     /// speed, w = drop size (grid frequency). Count and size are independent.
     pub rain_lens: [f32; 4],
+    /// Two-mode flag (hand-added): x < 0.5 = COMPOSE pass (scene fog/blur, no
+    /// droplets) into the intermediate target; x > 0.5 = LENS pass (sample the
+    /// post-water intermediate, apply only the droplets) into the swapchain.
+    pub lens_mode: [f32; 4],
 }
 /*
     #version 410
@@ -293,9 +299,9 @@ pub fn composite_shader_desc(backend: sg::Backend) -> sg::ShaderDesc {
             desc.uniform_blocks[0].glsl_uniforms[0].glsl_name = c"composite_vs_params".as_ptr();
             desc.uniform_blocks[1].stage = sg::ShaderStage::Fragment;
             desc.uniform_blocks[1].layout = sg::UniformLayout::Std140;
-            desc.uniform_blocks[1].size = 112;
+            desc.uniform_blocks[1].size = 128;
             desc.uniform_blocks[1].glsl_uniforms[0]._type = sg::UniformType::Float4;
-            desc.uniform_blocks[1].glsl_uniforms[0].array_count = 7;
+            desc.uniform_blocks[1].glsl_uniforms[0].array_count = 8;
             desc.uniform_blocks[1].glsl_uniforms[0].glsl_name = c"composite_fs_params".as_ptr();
             desc.views[0].texture.stage = sg::ShaderStage::Fragment;
             desc.views[0].texture.multisampled = false;
