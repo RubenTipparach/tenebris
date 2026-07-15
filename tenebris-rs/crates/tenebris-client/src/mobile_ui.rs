@@ -148,6 +148,10 @@ pub fn init() {
          * for future overlays without re-tripping the silent
          * "pause panel renders as ghost" failure. */
         pipeline_pool_size: 128,
+        /* The orbital station drum (station_fx) draws ~900 textured hex
+         * prisms through sokol_gl on top of everything else; the default
+         * 64k vertex pool overflows and silently drops draws. */
+        max_vertices: 256 * 1024,
         ..Default::default()
     });
 }

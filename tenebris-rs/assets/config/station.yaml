@@ -1,0 +1,30 @@
+# station.yaml - orbital trading station structure + rendezvous tuning.
+#
+# The station is a drum of hexagonal prisms on rails in a circular orbit
+# around Tenebris. Its speed is NOT a knob: it is derived from the same
+# inverse-square gravity field the rocket integrates
+# (v = sqrt(g_surf * R^2 / r), see core/station.rs::orbit_speed_mps and
+# tools/station-math.py), so a rocket in a matching circular orbit is
+# automatically velocity-matched for docking.
+#
+# Geometry (hollow drum shell):
+#   radius_hexes  - deck radius in hex rings; a deck holds 3n(n+1)+1 hexes
+#   layers        - prism layers stacked to make the drum wall
+#   height_m      - total drum height (prism height = height_m / layers)
+#   hex_size_m    - hex circumradius (centre -> corner) of one prism
+#   altitude_m    - orbit altitude above the Tenebris surface
+#
+# Docking:
+#   dock_radius_m     - how close the player must fly to interact
+#   dock_max_rel_mps  - max relative speed for the dock to accept; any
+#                       faster and the prompt shows the velocity gap
+#                       instead ("match velocity")
+
+station:
+  radius_hexes: 10
+  layers: 6
+  height_m: 15.0
+  hex_size_m: 2.0
+  altitude_m: 120.0
+  dock_radius_m: 40.0
+  dock_max_rel_mps: 8.0

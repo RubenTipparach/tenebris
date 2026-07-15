@@ -134,14 +134,39 @@ pub enum Block {
     /// hex prism, so it needs no atlas tile. Emits 2x a torch's light while
     /// lit. Rust-port-only, appended past the palette.
     Bonfire = 44,
+
+    /* Space-station / casino structure set (space era Phase 2 "built
+     * look" + Phase 5 casino room - see tenebris-rs/SPACE_ERA_PLAN.md).
+     * Full hex prisms with dedicated technology PNG art baked by
+     * tools/gen-casino-textures.py, so the orbital station and its
+     * casino read as a *built* structure, not natural terrain.
+     * Rust-port-only, appended past the palette. */
+    /// brushed-steel station wall / ceiling panel
+    StationHull = 45,
+    /// dark diamond-plate deck plating
+    StationFloor = 46,
+    /// purple casino carpet with a gold diamond lattice
+    CasinoCarpet = 47,
+    /// plum art-deco casino wall panel with gold banding
+    CasinoWall = 48,
+    /// graphite panel crossed by a cyan neon tube (casino lighting trim)
+    NeonTrim = 49,
+    /// bulb-bordered marquee tile with a neon lucky 7
+    CasinoSign = 50,
+
+    /* Casino game machines - cube-rendered tech blocks (like the
+     * machines above) showing their _face art on every cube face.
+     * Interaction (the actual games) lands with space era Phase 5. */
+    SlotMachine = 51,
+    CardTable = 52,
 }
 
 /// Mirrors C's `BLOCK_COUNT` (the implicit trailing enum member). The
-/// Rust port adds the tech blocks (LaunchPad 29 .. CopperPipe 40) and
-/// the biome sods (JungleGrass / DryGrass) past the C palette - the
-/// native port is the canonical target now, so the palette can grow
-/// here.
-pub const BLOCK_COUNT: u8 = 45;
+/// Rust port adds the tech blocks (LaunchPad 29 .. CopperPipe 40), the
+/// biome sods (JungleGrass / DryGrass), and the station / casino set
+/// (StationHull 45 .. CardTable 52) past the C palette - the native
+/// port is the canonical target now, so the palette can grow here.
+pub const BLOCK_COUNT: u8 = 53;
 
 impl Block {
     /// Fallible conversion from the raw byte stored in voxel arrays /
@@ -166,9 +191,9 @@ impl Block {
 
 /* Atlas columns for the extension tiles - physically past the 93
  * legacy columns (HEX_ATLAS_TILES stays 93; the client's physical
- * atlas is HEX_ATLAS_TILES_PHYS = 100 wide and the hex FS rescales
- * u by 93/100). Order matches the renderer's ATLAS_PATHS tail;
- * 98..99 are reserved spares so the next tile doesn't need another
+ * atlas is HEX_ATLAS_TILES_PHYS = 108 wide and the hex FS rescales
+ * u by 93/108). Order matches the renderer's ATLAS_PATHS tail;
+ * 106..107 are reserved spares so the next tile doesn't need another
  * shader-ratio patch. */
 pub const ATLAS_JUNGLE_GRASS: u8 = 93;
 pub const ATLAS_JUNGLE_SIDE: u8 = 94;
@@ -176,6 +201,15 @@ pub const ATLAS_DRY_GRASS: u8 = 95;
 pub const ATLAS_DRY_SIDE: u8 = 96;
 /// Lime-green cactus flesh (desert scatter prisms, not a block).
 pub const ATLAS_CACTUS: u8 = 97;
+/* Station / casino set (tools/gen-casino-textures.py art). */
+pub const ATLAS_STATION_HULL: u8 = 98;
+pub const ATLAS_STATION_FLOOR: u8 = 99;
+pub const ATLAS_CASINO_CARPET: u8 = 100;
+pub const ATLAS_CASINO_WALL: u8 = 101;
+pub const ATLAS_NEON_TRIM: u8 = 102;
+pub const ATLAS_CASINO_SIGN: u8 = 103;
+pub const ATLAS_SLOT_MACHINE: u8 = 104;
+pub const ATLAS_CARD_TABLE: u8 = 105;
 
 /// Face classification for atlas tile selection.
 #[repr(u8)]
@@ -311,7 +345,7 @@ pub fn face_tile(b: Block, cap: FaceCap) -> u8 {
     /* Biome sods: tinted-grass tiles in the atlas columns PAST the 93
      * legacy UV-addressed ones. The mesher still encodes u = tile/93,
      * so these tiles land at u > 1.0 and the hex FS rescales every u
-     * by 93/100 - which leaves all pinned legacy UVs sampling exactly
+     * by 93/108 - which leaves all pinned legacy UVs sampling exactly
      * where they always did. Bottoms are plain dirt like Grass. */
     if b == Block::JungleGrass {
         return match cap {
@@ -326,6 +360,12 @@ pub fn face_tile(b: Block, cap: FaceCap) -> u8 {
             FaceCap::Bottom => Block::Dirt as u8,
             FaceCap::Side => ATLAS_DRY_SIDE,
         };
+    }
+    /* Station / casino structure prisms: dedicated extension-atlas art
+     * (tools/gen-casino-textures.py) on every face. Full hex prisms,
+     * unlike the cube-rendered machines below. */
+    if let Some(col) = casino_atlas_column(b) {
+        return col;
     }
     /* Tech blocks render their dedicated JS art (ported into the atlas at
      * columns 29..41 - see renderer::ATLAS_PATHS). Each shows its 16x16
@@ -362,6 +402,24 @@ fn tech_atlas_offset(b: Block) -> Option<u8> {
         Block::LaunchTower => 9,
         Block::Cable => 10,
         Block::CopperPipe => 11,
+        /* Casino machines: extension-atlas _face art, cube-rendered like
+         * the other machines (offset = physical column - base 29). */
+        Block::SlotMachine => ATLAS_SLOT_MACHINE - 29,
+        Block::CardTable => ATLAS_CARD_TABLE - 29,
+        _ => return None,
+    })
+}
+
+/// Extension-atlas column for the station / casino structure prisms
+/// (full hex prisms, same art on every face), or `None` otherwise.
+fn casino_atlas_column(b: Block) -> Option<u8> {
+    Some(match b {
+        Block::StationHull => ATLAS_STATION_HULL,
+        Block::StationFloor => ATLAS_STATION_FLOOR,
+        Block::CasinoCarpet => ATLAS_CASINO_CARPET,
+        Block::CasinoWall => ATLAS_CASINO_WALL,
+        Block::NeonTrim => ATLAS_NEON_TRIM,
+        Block::CasinoSign => ATLAS_CASINO_SIGN,
         _ => return None,
     })
 }
@@ -417,7 +475,43 @@ mod tests {
         assert_eq!(Block::JungleGrass as u8, 42);
         assert_eq!(Block::DryGrass as u8, 43);
         assert_eq!(Block::Bonfire as u8, 44);
-        assert_eq!(BLOCK_COUNT, 45);
+        assert_eq!(Block::StationHull as u8, 45);
+        assert_eq!(Block::StationFloor as u8, 46);
+        assert_eq!(Block::CasinoCarpet as u8, 47);
+        assert_eq!(Block::CasinoWall as u8, 48);
+        assert_eq!(Block::NeonTrim as u8, 49);
+        assert_eq!(Block::CasinoSign as u8, 50);
+        assert_eq!(Block::SlotMachine as u8, 51);
+        assert_eq!(Block::CardTable as u8, 52);
+        assert_eq!(BLOCK_COUNT, 53);
+    }
+
+    #[test]
+    fn casino_set_maps_to_extension_atlas_columns() {
+        /* Structure prisms: one dedicated tile on every face cap. */
+        for (b, col) in [
+            (Block::StationHull, ATLAS_STATION_HULL),
+            (Block::StationFloor, ATLAS_STATION_FLOOR),
+            (Block::CasinoCarpet, ATLAS_CASINO_CARPET),
+            (Block::CasinoWall, ATLAS_CASINO_WALL),
+            (Block::NeonTrim, ATLAS_NEON_TRIM),
+            (Block::CasinoSign, ATLAS_CASINO_SIGN),
+        ] {
+            assert_eq!(face_tile(b, FaceCap::Top), col);
+            assert_eq!(face_tile(b, FaceCap::Side), col);
+            assert_eq!(face_tile(b, FaceCap::Bottom), col);
+            /* Full prisms: they occlude neighbours and are NOT the
+             * cube-rendered machine kind. */
+            assert!(covers_face(b), "{:?} must cover", b);
+            assert!(!is_tech_block(b), "{:?} is a prism, not a machine", b);
+        }
+        /* Machines: cube-rendered tech blocks with extension-atlas faces. */
+        assert_eq!(face_tile(Block::SlotMachine, FaceCap::Side), ATLAS_SLOT_MACHINE);
+        assert_eq!(face_tile(Block::CardTable, FaceCap::Side), ATLAS_CARD_TABLE);
+        assert!(is_tech_block(Block::SlotMachine));
+        assert!(is_tech_block(Block::CardTable));
+        assert!(!covers_face(Block::SlotMachine));
+        assert!(!covers_face(Block::CardTable));
     }
 
     #[test]

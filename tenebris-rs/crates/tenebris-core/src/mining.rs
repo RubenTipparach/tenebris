@@ -84,6 +84,14 @@ pub fn block_tool(b: Block) -> ToolKind {
         | Block::CopperOre
         | Block::TinOre
         | Block::IronOre => ToolKind::Pick,
+        /* Station / casino metal panels pry off fastest with a pick;
+         * carpet and the machines break at plain speed like the other
+         * tech blocks. */
+        Block::StationHull
+        | Block::StationFloor
+        | Block::CasinoWall
+        | Block::NeonTrim
+        | Block::CasinoSign => ToolKind::Pick,
         Block::Wood => ToolKind::Axe,
         Block::Dirt
         | Block::Grass
