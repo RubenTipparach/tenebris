@@ -3206,6 +3206,9 @@ fn draw_credits_hud(app: &App, screen_w: f32, screen_h: f32) {
     let cell = 8.0f32;
     let x = (screen_w - (msg.len() as f32 + 1.5) * cell) / cell;
     sdtx::canvas(screen_w, screen_h);
+    /* Reset the origin - earlier HUD draws (hints) leave it shifted, which
+     * pushed this readout off-canvas. */
+    sdtx::origin(0.0, 0.0);
     sdtx::font(1);
     sdtx::pos(x, 1.0);
     sdtx::color3b(0xf0, 0xd8, 0x60);
