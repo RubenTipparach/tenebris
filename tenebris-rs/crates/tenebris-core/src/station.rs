@@ -566,23 +566,31 @@ pub fn shell(cfg: &StationConfig) -> Vec<Prism> {
     }
 
     /* 6. Function fixtures, placed with 6-fold symmetry (one loop over
-     * the six sectors). Each fixture is a one-hex prism sitting ON the
-     * deck slab (layer `slab`), so it reads as a distinct 6-sided
-     * furniture piece the player walks up to:
-     *   - ring spoke node  (dir*(n_out-1)): trade terminal / research
+     * the six sectors). The gaming floor and the trading / research
+     * stations live INSIDE the casino tower - the client draws them as
+     * real furniture (slot cabinets, felt tables, console desks), not
+     * hex prisms. The OUTSIDE (courtyard + ring) is reserved for the
+     * animal museum and the courtyard lights. Every fixture sits ON the
+     * lobby / courtyard walking surface (layer `slab`, the top of floor
+     * 0's slab), clear of the central spiral (rings 1-2 on-axis).
+     *   - inside, on-axis ring-3 cell (dir*3): trade terminal / research
      *     console, alternating -> the trading + research stations;
-     *   - ring sector node ((dir_i+dir_{i+1})*4): slots / card table,
-     *     alternating -> the casino floor;
-     *   - courtyard sector ((dir_i+dir_{i+1})*3): an animal-museum case
-     *     with a hex lamp hovering two layers above it -> the zoo in
-     *     the lit courtyard. */
+     *   - inside, between-sector ring-2 cell (dir_i+dir_{i+1}): slots /
+     *     card table, alternating -> the casino gaming floor;
+     *   - outside, courtyard sector ((dir_i+dir_{i+1})*3): an animal-
+     *     museum case with a hex lamp hovering two layers above it ->
+     *     the zoo in the lit courtyard. */
     for i in 0..6 {
         let (dq, dr) = HEX_DIRS[i];
         let (eq, er) = HEX_DIRS[(i + 1) % 6];
+        /* Inside the tower: trading / research consoles on the ring-3
+         * cells, gaming tables / slots on the between-sector ring-2
+         * cells. Both clear the ring-1 + on-axis ring-2 spiral cells. */
         let kiosk = if i % 2 == 0 { StationMat::TradeTerminal } else { StationMat::ResearchConsole };
-        push(dq * (n_out - 1), dr * (n_out - 1), slab, kiosk);
+        push(dq * 3, dr * 3, slab, kiosk);
         let game = if i % 2 == 0 { StationMat::Slots } else { StationMat::CardTable };
-        push((dq + eq) * 4, (dr + er) * 4, slab, game);
+        push(dq + eq, dr + er, slab, game);
+        /* Outside in the courtyard: animal-museum case + hovering lamp. */
         let (mq, mr) = ((dq + eq) * 3, (dr + er) * 3);
         push(mq, mr, slab, StationMat::MuseumCase);
         push(mq, mr, slab + 2, StationMat::LightFixture);
@@ -1262,13 +1270,15 @@ mod tests {
         /* Interior slabs: full 37-cell lobby, then 25 cells per slab
          * above it (5 slabs incl. roof) - the central atrium shaft
          * (6-cell core ring + the 6 on-axis dist-2 cells the wide
-         * treads sweep) stays open. */
+         * treads sweep) stays open - PLUS the 12 lobby fixtures (6
+         * trade/research consoles + 6 gaming tables/slots) that sit on
+         * floor 0 inside the tower. */
         let interior = prisms
             .iter()
             .filter(|p| hex_dist(p.q, p.r) < cfg.tower_radius as i32)
             .filter(|p| p.layer >= 1 && p.mat != StationMat::Sign)
             .count();
-        assert_eq!(interior, 37 + 5 * (37 - 12));
+        assert_eq!(interior, 37 + 5 * (37 - 12) + 12);
         /* Light palette: cyan parapet (minus 6 bridge gates) + cyan
          * storey bands; pink alternate bands; warm-gold room lights (5
          * storeys) + 6 pad markers; signs = crown ring + spire + the
@@ -1329,6 +1339,30 @@ mod tests {
         assert_eq!(count(StationMat::CardTable), 3);
         assert_eq!(count(StationMat::MuseumCase), 6);
         assert_eq!(count(StationMat::LightFixture), 6);
+        /* Games + trading/research stations live INSIDE the casino
+         * tower; the outside (courtyard + ring) carries ONLY the animal
+         * museum and the courtyard lights. */
+        let t_rad = cfg.tower_radius as i32;
+        for p in &prisms {
+            match p.mat {
+                StationMat::TradeTerminal
+                | StationMat::ResearchConsole
+                | StationMat::Slots
+                | StationMat::CardTable => assert!(
+                    hex_dist(p.q, p.r) < t_rad,
+                    "{:?} at {:?} must be inside the tower",
+                    p.mat,
+                    (p.q, p.r)
+                ),
+                StationMat::MuseumCase | StationMat::LightFixture => assert!(
+                    hex_dist(p.q, p.r) > t_rad,
+                    "{:?} at {:?} must be outside the tower",
+                    p.mat,
+                    (p.q, p.r)
+                ),
+                _ => {}
+            }
+        }
         /* Every fixture sits on the deck slab (or the lamp two above),
          * and each material's cells are a full 6-fold orbit: rotating a
          * fixture cell by 60 degrees lands on another cell of the same
@@ -1361,9 +1395,10 @@ mod tests {
         let cfg = StationConfig::DEFAULT;
         let lh = layer_h(&cfg);
         let spans = column_spans(&cfg);
-        /* An interior room column: six storey slabs (incl. roof), each
-         * with >= 3 air layers of clearance above its walking surface. */
-        let col = spans.get(&(1, 1)).expect("interior column occupied");
+        /* A plain interior room column - clear of the central spiral AND
+         * of the lobby fixtures - with six storey slabs (incl. roof),
+         * each with >= 3 air layers of clearance above its surface. */
+        let col = spans.get(&(2, 1)).expect("interior column occupied");
         assert_eq!(col.len(), 6, "5 storeys + roof");
         for w in col.windows(2) {
             let clearance = w[1].0 - w[0].1;

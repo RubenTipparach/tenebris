@@ -146,6 +146,71 @@ fn emit_side(x: f32, z: f32, a: f32, k: usize, y0: f32, y1: f32, lit: f32) {
     sgl::v3f_t2f(bx0, y1, bz0, 0.0, 0.0);
 }
 
+/// True for the fixtures the client draws as real furniture (built from
+/// boxes) rather than hex prisms: the casino games and the trading /
+/// research stations, all INSIDE the tower. The museum case + courtyard
+/// lamp stay hex prisms out in the courtyard.
+fn is_furniture(tex: usize) -> bool {
+    matches!(tex, TEX_TRADE | TEX_RESEARCH | TEX_SLOTS | TEX_CARDS)
+}
+
+/// Emit one textured quad (two triangles). Corners wind p0->p1->p2->p3;
+/// uv maps 0..1 across the face (p0 bottom-left). Cull mode is None so
+/// winding doesn't matter - both sides show.
+fn emit_quad(p0: [f32; 3], p1: [f32; 3], p2: [f32; 3], p3: [f32; 3], s: f32) {
+    sgl::c3f(s, s, s);
+    sgl::v3f_t2f(p0[0], p0[1], p0[2], 0.0, 1.0);
+    sgl::v3f_t2f(p1[0], p1[1], p1[2], 1.0, 1.0);
+    sgl::v3f_t2f(p2[0], p2[1], p2[2], 1.0, 0.0);
+    sgl::v3f_t2f(p0[0], p0[1], p0[2], 0.0, 1.0);
+    sgl::v3f_t2f(p2[0], p2[1], p2[2], 1.0, 0.0);
+    sgl::v3f_t2f(p3[0], p3[1], p3[2], 0.0, 0.0);
+}
+
+/// Emit a textured axis-aligned box centred at (cx, cz) with half-extents
+/// (hx, hz), spanning y0..y1. Faces use the same cap/side shading as the
+/// prisms so the furniture reads with the scene light; the bound texture
+/// wraps each face 0..1.
+fn emit_box(cx: f32, cz: f32, hx: f32, hz: f32, y0: f32, y1: f32, lit: f32) {
+    let (x0, x1) = (cx - hx, cx + hx);
+    let (z0, z1) = (cz - hz, cz + hz);
+    /* Top + bottom caps. */
+    emit_quad([x0, y1, z0], [x1, y1, z0], [x1, y1, z1], [x0, y1, z1], SHADE_TOP * lit);
+    emit_quad([x0, y0, z1], [x1, y0, z1], [x1, y0, z0], [x0, y0, z0], SHADE_BOTTOM * lit);
+    /* Four sides (alternating shade so the block's facets read). */
+    emit_quad([x1, y0, z0], [x1, y0, z1], [x1, y1, z1], [x1, y1, z0], SHADE_SIDE_A * lit);
+    emit_quad([x0, y0, z1], [x0, y0, z0], [x0, y1, z0], [x0, y1, z1], SHADE_SIDE_A * lit);
+    emit_quad([x1, y0, z1], [x0, y0, z1], [x0, y1, z1], [x1, y1, z1], SHADE_SIDE_B * lit);
+    emit_quad([x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0], SHADE_SIDE_B * lit);
+}
+
+/// Draw one casino fixture as furniture on the lobby floor at (x, z),
+/// floor surface `y0`. Built from boxes, textured with the bound fixture
+/// skin, sized in metres so it reads human-scale inside the tower:
+///   - Slots: a chunky slot-machine cabinet (stepped base, body, marquee);
+///   - CardTable: a felt table top on a pedestal;
+///   - Trade/Research: a console desk with an upright screen.
+fn emit_furniture(tex: usize, x: f32, z: f32, y0: f32, lit: f32) {
+    match tex {
+        TEX_SLOTS => {
+            emit_box(x, z, 0.58, 0.48, y0, y0 + 0.28, lit); /* stepped base */
+            emit_box(x, z, 0.5, 0.4, y0 + 0.28, y0 + 1.7, lit); /* reel body */
+            emit_box(x, z, 0.6, 0.5, y0 + 1.7, y0 + 2.0, lit); /* lit marquee */
+        }
+        TEX_CARDS => {
+            emit_box(x, z, 0.22, 0.22, y0, y0 + 0.72, lit); /* pedestal */
+            emit_box(x, z, 0.92, 0.92, y0 + 0.72, y0 + 0.9, lit); /* felt top */
+        }
+        _ => {
+            /* Trade / research console: a desk with an upright flat
+             * screen. The thin screen box shows the trade-chart /
+             * holo-console skin on its broad faces from any approach. */
+            emit_box(x, z, 0.74, 0.5, y0, y0 + 0.9, lit); /* desk */
+            emit_box(x, z, 0.62, 0.12, y0 + 0.9, y0 + 1.72, lit); /* screen */
+        }
+    }
+}
+
 fn make_pipeline(blend: bool) -> sgl::Pipeline {
     let mut desc = sokol::gfx::PipelineDesc {
         depth: sokol::gfx::DepthState {
@@ -258,6 +323,12 @@ pub fn draw(view: Mat4, proj: Mat4, sim_t: f64) {
             );
             sgl::begin_triangles();
             for p in prisms {
+                /* The casino games + trading/research stations draw as
+                 * real furniture built from boxes, not hex prisms. */
+                if is_furniture(tex) {
+                    emit_furniture(tex, p.x, p.z, p.y, lit);
+                    continue;
+                }
                 let (y0, y1) = (p.y, p.y + lh);
                 /* Glass never culls against neighbours (a pane next to a
                  * wall still shows); solids cull occupied neighbours. */
