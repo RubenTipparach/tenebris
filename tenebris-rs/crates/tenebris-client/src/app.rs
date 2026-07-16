@@ -5657,6 +5657,36 @@ fn frame_inner(app: &mut App) {
         }
     }
 
+    /* Dev screenshot aid (TENEBRIS_DEV_CASINO_DOOR): park the camera
+     * outside the +x casino facade at deck height, looking straight back
+     * along -x at the entrance arch - frames the door head-on so its
+     * width / symmetry reads. Rides the station frame. */
+    if std::env::var("TENEBRIS_DEV_CASINO_DOOR").is_ok() {
+        let t = tenebris_core::world_time::seconds();
+        let cfg = tenebris_core::station::config();
+        let lh = tenebris_core::station::layer_h(&cfg) as f64;
+        let anchor = tenebris_core::station::orbit_pos(t);
+        let sf = tenebris_core::station::frame_sample(anchor, t);
+        /* Tower apex is on +x; stand off in front of it, one storey up. */
+        let (dx, _dz) = tenebris_core::station::axial_to_local(
+            cfg.tower_radius as i32,
+            0,
+            cfg.hex_size_m,
+        );
+        let eye_h = (cfg.slab_layers as f64 + 1.5) * lh;
+        let eye = sf.local_to_world(dvec3_make(dx as f64 + 26.0, eye_h, 0.0));
+        let look = sf.local_to_world(dvec3_make(dx as f64, eye_h, 0.0));
+        let mut p = app.player.borrow_mut();
+        p.position = eye;
+        p.velocity = sf.station_vel;
+        let fwd = dvec3_normalize(dvec3_sub(look, eye));
+        p.basis.fwd = fwd;
+        p.basis.up = sf.up;
+        p.basis.right = tenebris_core::math::dvec3_cross(fwd, sf.up);
+        p.yaw = 0.0;
+        p.pitch = 0.0;
+    }
+
     /* G-key toggles survival mode in SP only (MP is always survival).
      * Consume the edge either way. */
     /* K cycles a manual storm (off -> rain -> snow): forces a full

@@ -480,12 +480,17 @@ pub fn shell(cfg: &StationConfig) -> Vec<Prism> {
             if d == t_rad {
                 /* Facade. Window band: the middle air layer of each
                  * storey, on alternating cells (glazed). Entrance: a
-                 * DOUBLE-WIDE arch facing the +x spoke - two cells of
-                 * ground-storey air (3 layers = 3.75 m clear, over the
-                 * 3 m arch requirement) crowned by a lucky-7 marquee. */
+                 * TRIPLE-WIDE arch facing the +x spoke - the frontmost
+                 * corner cell (t_rad, 0), sitting dead on +x, plus one
+                 * ring-neighbour down EACH facade edge, (t_rad, -1) and
+                 * (t_rad-1, 1). Those flanks land at z = -/+1.5 m, so the
+                 * doorway is symmetric about the spoke (3 layers = 3.75 m
+                 * clear over the 3 m arch requirement), crowned by a
+                 * lucky-7 marquee. */
                 let (x0, z0) = axial_to_local(q, r, a);
                 let angle_idx = (z0.atan2(x0) / std::f32::consts::TAU * 24.0).round() as i32;
-                let is_door = q == t_rad && (r == 0 || r == -1);
+                let is_door = (q == t_rad && (r == 0 || r == -1))
+                    || (q == t_rad - 1 && r == 1);
                 for l in 0..=roof {
                     if is_door && door_layers.contains(&l) {
                         continue; /* lobby entrance */
@@ -1383,12 +1388,13 @@ mod tests {
         /* Light palette: cyan parapet (minus 6 bridge gates) + cyan
          * storey bands; pink alternate bands; warm gold = the stair
          * core's light bands (every 3rd layer from the first tread) + 6
-         * pad markers; signs = crown ring + spire + the 2-cell entrance
-         * arch marquee. */
+         * pad markers; signs = crown ring + spire + the 3-cell entrance
+         * arch marquee (the wider door turns one more facade cell's crown
+         * layer into a marquee sign, so that cell loses its pink band). */
         assert!(count(StationMat::Neon) >= 54 + 48, "cyan parapet + bands");
-        assert!(count(StationMat::NeonPink) >= 2 * 24 - 2, "pink storey bands");
+        assert!(count(StationMat::NeonPink) >= 2 * 24 - 3, "pink storey bands");
         assert_eq!(count(StationMat::NeonGold), 10 + 6, "core light bands + pad markers");
-        assert_eq!(count(StationMat::Sign), 24 + 2 + 2, "crown + spire + entrance arch");
+        assert_eq!(count(StationMat::Sign), 24 + 2 + 3, "crown + spire + entrance arch");
     }
 
     #[test]
@@ -1636,17 +1642,31 @@ mod tests {
             );
         }
         /* The hotel wall is one merged solid: no mid-wall ledge to stand
-         * on (walls are impassable), while BOTH entrance columns (the
-         * double-wide arch) keep a walkable gap at deck level - at
-         * least 3 m tall per the entrance-arch requirement. */
+         * on (walls are impassable), while ALL THREE entrance columns (the
+         * triple-wide arch - the +x corner (4,0) plus one neighbour down
+         * each facade edge, (4,-1) and (3,1)) keep a walkable gap at deck
+         * level - at least 3 m tall per the entrance-arch requirement. */
         let wall = spans.get(&(0, 4)).expect("facade column");
         assert_eq!(wall.len(), 1, "facade merges into one solid interval");
-        for door_cell in [(4, 0), (4, -1)] {
+        for door_cell in [(4, -1), (4, 0), (3, 1)] {
             let door = spans.get(&door_cell).expect("entrance column");
             assert_eq!(door.len(), 2, "entrance splits the column at {door_cell:?}");
             let gap = door[1].0 - door[0].1;
             assert!(gap >= 3.0, "entrance arch {gap} m must clear 3 m");
             assert!(gap >= 3.0 * lh - 1e-4, "entrance gap {gap} walkable");
+        }
+        /* Symmetric about the +x spoke: the door cells are mirror pairs in
+         * z (the two flanks at z = -/+1.5 m, the corner at z = 0), and the
+         * next cell out along EACH edge - (4,-2) and (2,2) - is solid wall,
+         * so the opening is centred, not lopsided. */
+        let z_of = |q: i32, r: i32| axial_to_local(q, r, cfg.hex_size_m).1;
+        assert!(
+            (z_of(4, -1) + z_of(3, 1)).abs() < 1e-4 && z_of(4, 0).abs() < 1e-4,
+            "door cells straddle the +x spoke symmetrically"
+        );
+        for solid_cell in [(4, -2), (2, 2)] {
+            let flank = spans.get(&solid_cell).expect("facade flank column");
+            assert_eq!(flank.len(), 1, "door flank {solid_cell:?} stays solid wall");
         }
         /* Parapet gates: the six bridge corners are open at deck level
          * so a player can walk in from every landing pad. */
