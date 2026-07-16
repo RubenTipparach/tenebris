@@ -265,17 +265,27 @@ fn action_ok() {
         return;
     }
     if let Some(player) = player {
+        /* Riding = the player IS the ship in flight; teleport carries the
+         * SHIP (keeps them flying in space) instead of dropping a walking
+         * player onto a surface. On foot uses the surface/deck landings. */
+        let riding = crate::rocket_ride::is_riding();
         match dest_at(selected) {
             Some(Dest::Body(i)) => {
                 if let Some(b) = planet::get_by_index(i) {
-                    /* player_teleport_to drops the player ~3 m above the
-                     * destination's surface - comfortably inside its full-
-                     * gravity radius (default 1.4 x body radius), so the
-                     * gravity integrator pulls them straight to the ground
-                     * rather than letting them no-clip through. The roll-
-                     * slerp timer is armed at the same time so the camera
-                     * eases into level rather than popping. */
-                    player_ctrl::teleport_to(&mut player.borrow_mut(), &b);
+                    if riding {
+                        /* Ship hovers in space above the destination, still
+                         * flying (see teleport_ride_to_body). */
+                        player_ctrl::teleport_ride_to_body(&mut player.borrow_mut(), &b);
+                    } else {
+                        /* player_teleport_to drops the player ~3 m above the
+                         * destination's surface - comfortably inside its full-
+                         * gravity radius (default 1.4 x body radius), so the
+                         * gravity integrator pulls them straight to the ground
+                         * rather than letting them no-clip through. The roll-
+                         * slerp timer is armed at the same time so the camera
+                         * eases into level rather than popping. */
+                        player_ctrl::teleport_to(&mut player.borrow_mut(), &b);
+                    }
                     /* Belt-and-suspenders: the per-frame body-sync in
                      * main_web also catches this, but call it here too so
                      * the renderer's chunked / LOD partition flips on the
@@ -288,11 +298,17 @@ fn action_ok() {
                 }
             }
             Some(Dest::Station(_)) => {
-                /* Drops the player onto the casino deck riding the station's
-                 * prograde velocity (see player_ctrl::teleport_to_station).
-                 * The station orbits Tenebris, so make that body the active
+                if riding {
+                    /* Ship arrives beside the station, matched to its
+                     * velocity, ready to dock (see teleport_ride_to_station). */
+                    player_ctrl::teleport_ride_to_station(&mut player.borrow_mut());
+                } else {
+                    /* Drops the player onto the casino deck riding the station's
+                     * prograde velocity (see player_ctrl::teleport_to_station). */
+                    player_ctrl::teleport_to_station(&mut player.borrow_mut());
+                }
+                /* The station orbits Tenebris, so make that body the active
                  * meshed world on the same frame as the bodies path does. */
-                player_ctrl::teleport_to_station(&mut player.borrow_mut());
                 let ten = planet::get(planet::BodyId::Tenebris);
                 if let Some(w) = renderer::world_for_body(ten.id as u32) {
                     renderer::set_active_world(&w);

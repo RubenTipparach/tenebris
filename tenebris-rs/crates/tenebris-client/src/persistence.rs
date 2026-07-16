@@ -502,6 +502,15 @@ pub struct PersistenceRide {
     pub fuels: Vec<f32>,
     /// What is (still) sitting on the origin pad - the respawn source.
     pub pad_stack: Vec<u16>,
+    /// True = the ship is PARKED in the world (player climbed out), not
+    /// being ridden. A parked ship draws at `ship_pos`/`ship_up` and
+    /// re-boards with E; on load it must NOT strap the player in. Absent in
+    /// pre-parked saves (9/12-field head), which read as `false` = riding.
+    pub parked: bool,
+    /// Parked ship's world pose (base + axis). Only meaningful when
+    /// `parked`; while riding the ship's live position rides the pose save.
+    pub ship_pos: [f64; 3],
+    pub ship_up: [f64; 3],
 }
 
 fn build_ride_key(world: &str) -> String {
@@ -523,8 +532,11 @@ pub fn save_ride(world_name: &str, ride: Option<&PersistenceRide>) -> bool {
     };
     let ids = |v: &[u16]| v.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(";");
     let fuels = r.fuels.iter().map(|f| format!("{:.3}", f)).collect::<Vec<_>>().join(";");
+    /* 19-field head: the original 12 (body/tile/depth/pos/up/vel) plus the
+     * parked flag and the parked ship pose (ship_pos/ship_up). Older 9/12
+     * heads still load - they predate parking, so they read parked=false. */
     let head = format!(
-        "{},{},{},{:.3},{:.3},{:.3},{:.6},{:.6},{:.6},{:.4},{:.4},{:.4}",
+        "{},{},{},{:.3},{:.3},{:.3},{:.6},{:.6},{:.6},{:.4},{:.4},{:.4},{},{:.3},{:.3},{:.3},{:.6},{:.6},{:.6}",
         r.body_id,
         r.tile,
         r.depth,
@@ -536,7 +548,14 @@ pub fn save_ride(world_name: &str, ride: Option<&PersistenceRide>) -> bool {
         r.up[2],
         r.vel[0],
         r.vel[1],
-        r.vel[2]
+        r.vel[2],
+        if r.parked { 1 } else { 0 },
+        r.ship_pos[0],
+        r.ship_pos[1],
+        r.ship_pos[2],
+        r.ship_up[0],
+        r.ship_up[1],
+        r.ship_up[2],
     );
     client_kv::set(&key, &format!("{}|{}|{}|{}", head, ids(&r.parts), fuels, ids(&r.pad_stack)));
     true
@@ -551,8 +570,9 @@ pub fn load_ride(world_name: &str) -> Option<PersistenceRide> {
     let mut groups = s.split('|');
     let head: Vec<&str> = groups.next()?.split(',').collect();
     /* 9 fields = the pre-velocity format (reads as vel 0 - the old
-     * behaviour); 12 carries the orbit. */
-    if head.len() != 9 && head.len() != 12 {
+     * behaviour); 12 carries the orbit; 19 adds the parked flag + parked
+     * ship pose. */
+    if head.len() != 9 && head.len() != 12 && head.len() != 19 {
         return None;
     }
     let ids = |g: &str| -> Vec<u16> {
@@ -579,7 +599,7 @@ pub fn load_ride(world_name: &str) -> Option<PersistenceRide> {
             head[7].trim().parse().ok()?,
             head[8].trim().parse().ok()?,
         ],
-        vel: if head.len() == 12 {
+        vel: if head.len() >= 12 {
             [
                 head[9].trim().parse().ok()?,
                 head[10].trim().parse().ok()?,
@@ -591,6 +611,25 @@ pub fn load_ride(world_name: &str) -> Option<PersistenceRide> {
         parts,
         fuels,
         pad_stack,
+        parked: head.len() == 19 && head[12].trim() == "1",
+        ship_pos: if head.len() == 19 {
+            [
+                head[13].trim().parse().ok()?,
+                head[14].trim().parse().ok()?,
+                head[15].trim().parse().ok()?,
+            ]
+        } else {
+            [0.0; 3]
+        },
+        ship_up: if head.len() == 19 {
+            [
+                head[16].trim().parse().ok()?,
+                head[17].trim().parse().ok()?,
+                head[18].trim().parse().ok()?,
+            ]
+        } else {
+            [0.0; 3]
+        },
     })
 }
 
@@ -1231,6 +1270,9 @@ mod tests {
             parts: vec![101, 102, 102, 104],
             fuels: vec![37.5, 100.0],
             pad_stack: vec![101, 102, 102, 104],
+            parked: false,
+            ship_pos: [0.0; 3],
+            ship_up: [0.0; 3],
         };
         assert!(save_ride("home", Some(&r)));
         let back = load_ride("home").expect("ride loads");
@@ -1243,6 +1285,7 @@ mod tests {
         assert_eq!(back.parts, r.parts);
         assert_eq!(back.fuels, r.fuels);
         assert_eq!(back.pad_stack, r.pad_stack);
+        assert!(!back.parked, "a ridden ship is not parked");
         for k in 0..3 {
             assert!((back.pos[k] - r.pos[k]).abs() < 1e-3, "pos[{k}]");
             assert!((back.up[k] - r.up[k]).abs() < 1e-5, "up[{k}]");
@@ -1250,6 +1293,38 @@ mod tests {
         assert!(load_ride("other").is_none(), "other world untouched");
         assert!(save_ride("home", None));
         assert!(load_ride("home").is_none(), "cleared");
+    }
+
+    /// A PARKED ship round-trips: the parked flag and the ship's world pose
+    /// survive so a reload brings the ship back sitting in the world (it
+    /// does NOT re-strap the player). Pre-parked 12-field saves read as
+    /// parked=false.
+    #[test]
+    fn parked_ship_round_trips() {
+        let _g = test_support::begin("persist_ride_parked");
+        let r = PersistenceRide {
+            body_id: 0,
+            tile: 421,
+            depth: 71,
+            pos: [301.5, -2.25, 10.125],
+            up: [0.996195, 0.087156, 0.0],
+            vel: [15.0, -0.25, 3.5],
+            parts: vec![101, 102, 104],
+            fuels: vec![12.0, 88.0],
+            pad_stack: vec![101, 102, 104],
+            parked: true,
+            ship_pos: [1234.5, 6789.0, -42.25],
+            ship_up: [0.0, 1.0, 0.0],
+        };
+        assert!(save_ride("parked", Some(&r)));
+        let back = load_ride("parked").expect("parked ride loads");
+        assert!(back.parked, "the parked flag survives");
+        for k in 0..3 {
+            assert!((back.ship_pos[k] - r.ship_pos[k]).abs() < 1e-3, "ship_pos[{k}]");
+            assert!((back.ship_up[k] - r.ship_up[k]).abs() < 1e-5, "ship_up[{k}]");
+        }
+        assert_eq!(back.parts, r.parts);
+        assert_eq!(back.fuels, r.fuels);
     }
 
     /// Taken-scatter list round-trips: the tiles whose pebble/bush was

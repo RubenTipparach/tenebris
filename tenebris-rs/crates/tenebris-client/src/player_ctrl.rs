@@ -2798,6 +2798,66 @@ pub fn teleport_to_station(p: &mut PlayerCtrl) {
     p.pitch = 0.0;
 }
 
+/// Debug teleport arrival altitude above a body's surface for a ship
+/// (keeps the arrival clearly in space, above the ~200 m space seam).
+const SHIP_ARRIVE_ALT_M: f64 = 300.0;
+/// Debug teleport standoff from the station centre for a ship (just off the
+/// drum so you arrive in formation, ready to dock).
+const SHIP_STATION_STANDOFF_M: f64 = 60.0;
+
+/// Teleport the SHIP the player is riding to hover in space above `body`,
+/// still flying. Companion to [`teleport_to`] for the riding case: the
+/// player IS the ship in flight, so this moves the player pose while KEEPING
+/// them in space and strapped in (it does not drop them onto the surface).
+/// Arrives stationary a few hundred metres above the surface, nose out.
+pub fn teleport_ride_to_body(p: &mut PlayerCtrl, body: &BodyConfig) {
+    let center = dvec3_make(body.pos_x, body.pos_y, body.pos_z);
+    /* Arrive on the +x (prime-meridian) side, out in space, nose radially
+     * out so a burn heads away from the planet. */
+    let dir = dvec3_make(1.0, 0.0, 0.0);
+    p.body = Some(*body);
+    p.position = dvec3_add(center, dvec3_scale(dir, body.radius_m as f64 + SHIP_ARRIVE_ALT_M));
+    p.velocity = dvec3_make(0.0, 0.0, 0.0);
+    p.grounded = false;
+    p.is_in_space = true;
+    p.last_tile = -1;
+    let fwd = dvec3_make(0.0, 0.0, 1.0);
+    p.basis.up = dir;
+    p.basis.fwd = fwd;
+    p.basis.right = dvec3_cross(fwd, dir);
+    p.basis_ready = true;
+    p.transition_timer_s = config::lod().roll_slerp_duration_s;
+    p.yaw = 0.0;
+    p.pitch = 0.0;
+}
+
+/// Teleport the SHIP the player is riding to a standoff beside the orbital
+/// station, still flying and matched to the station's velocity so it holds
+/// formation (ready to dock). The riding companion to [`teleport_to_station`],
+/// which lands the player ON the deck on foot.
+pub fn teleport_ride_to_station(p: &mut PlayerCtrl) {
+    use tenebris_core::station;
+    let t = tenebris_core::world_time::seconds();
+    let anchor = station::orbit_pos(t);
+    let sf = station::frame_sample(anchor, t);
+    /* Stand off along the orbit normal so the drum is beside you, not on
+     * top of you; match its velocity so you don't immediately drift. */
+    p.body = Some(planet::get(BodyId::Tenebris));
+    p.position = dvec3_add(anchor, dvec3_scale(sf.normal, SHIP_STATION_STANDOFF_M));
+    p.velocity = sf.station_vel;
+    p.grounded = false;
+    p.is_in_space = true;
+    p.last_tile = -1;
+    let fwd = sf.prograde;
+    p.basis.up = sf.up;
+    p.basis.fwd = fwd;
+    p.basis.right = dvec3_cross(fwd, sf.up);
+    p.basis_ready = true;
+    p.transition_timer_s = config::lod().roll_slerp_duration_s;
+    p.yaw = 0.0;
+    p.pitch = 0.0;
+}
+
 /// Port of `player_view()`.
 pub fn view(p: &PlayerCtrl) -> Mat4 {
     let (look, up) = compute_look(p);

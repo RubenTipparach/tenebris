@@ -3309,6 +3309,39 @@ fn draw_station_hint(app: &App, screen_w: f32, screen_h: f32) {
     sdtx::color3b(0xff, 0xff, 0xff);
 }
 
+/// Prompt shown when on foot within reach of a ship you climbed out of:
+/// `"[E] board ship"`. The ship stays parked in the world (it does not
+/// despawn); this tells you it's boardable. Key label tracks the Interact
+/// binding.
+fn draw_board_ship_hint(app: &App, screen_w: f32, screen_h: f32) {
+    if rocket_ride::is_riding() {
+        return;
+    }
+    let Some(ship) = crate::rocket_ride::parked_pos() else {
+        return;
+    };
+    let d = {
+        let p = app.player.borrow();
+        dvec3_length(dvec3_sub(p.position, ship))
+    };
+    if d > BOARD_PARKED_RANGE_M {
+        return;
+    }
+    let key = crate::controls::action_label(crate::controls::Action::Interact);
+    let msg = format!("[{}] board ship", key);
+    let cell = 8.0f32;
+    let x = (screen_w * 0.5 - (msg.len() as f32 * cell) * 0.5) / cell;
+    let y = (screen_h * 0.5 + 24.0) / cell;
+    sdtx::canvas(screen_w, screen_h);
+    sdtx::origin(0.0, 0.0);
+    sdtx::font(1);
+    sdtx::pos(x, y);
+    sdtx::color3b(0x90, 0xf0, 0xa0);
+    sdtx::puts(&msg);
+    sdtx::font(0);
+    sdtx::color3b(0xff, 0xff, 0xff);
+}
+
 /// Reticle prompt shown when aiming at an openable machine: `"[E] open chest"`.
 /// The key label tracks the Interact binding (controls.yaml), so a remap moves
 /// the prompt with it. Drawn from the HUD block, same slot as the other hints.
@@ -3935,12 +3968,13 @@ fn apply_sp_world_saves(w_rc: &Rc<RefCell<World>>) {
             if r.body_id == body_id {
                 if crate::rocket_ride::restore_snapshot(&r) {
                     println!(
-                        "[sp-saves] mid-flight rocket restored ({} part(s), {} stage(s))",
+                        "[sp-saves] {} restored ({} part(s), {} stage(s))",
+                        if r.parked { "PARKED ship (not strapped in)" } else { "mid-flight rocket" },
                         r.parts.len(),
                         r.fuels.len()
                     );
                 } else {
-                    println!("[sp-saves] mid-flight rocket snapshot no longer flyable - dropped");
+                    println!("[sp-saves] rocket snapshot no longer flyable - dropped");
                     persistence::save_ride(&world_name, None);
                 }
             }
@@ -6470,6 +6504,36 @@ fn frame_inner(app: &mut App) {
             }
         }
     }
+    /* A ship the player CLIMBED OUT OF stays parked in the world - draw it
+     * exactly like the ridden stack (same StageView -> draw_falling path) so
+     * it stays visible and walk-up boardable. It must NOT despawn on exit
+     * (see the high-priority note in CLAUDE.md). Not drawn while riding
+     * (you can't be parked and flying it at once). */
+    if !rocket_ride::is_riding() {
+        if let Some((base, axis, parts)) = crate::rocket_ride::parked_view() {
+            if !parts.is_empty() {
+                /* ride_center reads the LIVE ride (None while parked), so
+                 * centre the stack by hand: half the parked stack up its
+                 * axis, engine at the base. */
+                let seg = crate::rocket_fx::part_seg_m() as f64;
+                let center =
+                    dvec3_add(base, dvec3_scale(axis, parts.len() as f64 * seg * 0.5));
+                let parked_view = crate::falling_stage::StageView {
+                    center,
+                    axis,
+                    flow: dvec3_make(0.0, 0.0, 0.0),
+                    parts,
+                    heat: 0.0,
+                };
+                crate::rocket_fx::draw_falling(
+                    view,
+                    proj,
+                    &app.world.borrow(),
+                    std::slice::from_ref(&parked_view),
+                );
+            }
+        }
+    }
     /* Jettisoned falling stages: tumbling part models wrapped in the
      * hull-hugging reentry plasma shell (the mining-the-sky mesh technique).
      * Stepped in the frame update; drawn here in the world pass. */
@@ -6680,6 +6744,8 @@ fn frame_inner(app: &mut App) {
         /* Station dock prompt (in space, within range) - the whole point of
          * the flight, so it stays up. */
         draw_station_hint(app, sapp::widthf(), sapp::heightf());
+        /* Board prompt when on foot next to a ship you climbed out of. */
+        draw_board_ship_hint(app, sapp::widthf(), sapp::heightf());
     }
     /* Sync the hamburger debug-menu + teleport-button visibility with
      * the master F2 toggle every frame. */
@@ -6849,16 +6915,74 @@ fn rocket_stage_action(app: &App) {
     }
 }
 
-/// Climb out. The parts stay on the launch pad (board doesn't empty it),
-/// so there's nothing to hand back and nothing to lose - walk back and E
-/// to fly again, or respawn. Allowed at any altitude on purpose: refusing
-/// to let go in space would strand you in the exact situation you're
-/// trying to escape. Re-locks the pointer for FPS mouse-look (flight has
-/// a free cursor for the panel + camera drag).
+/// How far to the side the player is set down when they climb out, so they
+/// float/stand BESIDE the parked hull instead of inside its engine bell.
+const EXIT_STEP_ASIDE_M: f64 = 3.5;
+/// Interact reach for re-boarding a parked ship (walk up + E). Generous so
+/// a big stack is boardable from anywhere alongside it.
+const BOARD_PARKED_RANGE_M: f64 = 14.0;
+
+/// Climb out. The ship does NOT despawn: it is PARKED where you left it
+/// (visible, and re-boardable by walking up and pressing E) - see the
+/// high-priority note in CLAUDE.md. Allowed at any altitude on purpose:
+/// refusing to let go in space would strand you in the exact situation
+/// you're trying to escape. Re-locks the pointer for FPS mouse-look (flight
+/// has a free cursor for the panel + camera drag).
 fn rocket_exit_action(app: &mut App) {
-    crate::rocket_ride::clear();
+    let (pos, up, right, vel) = {
+        let p = app.player.borrow();
+        (p.position, p.basis.up, p.basis.right, p.velocity)
+    };
+    /* Leave the ship sitting in the world at the ride pose. */
+    crate::rocket_ride::park(pos, up, vel);
+    /* Step the player a few metres to the side (still matching the ship's
+     * velocity) so a space exit doesn't leave them embedded in the hull or
+     * drifting away from it. */
+    {
+        let mut p = app.player.borrow_mut();
+        p.position = dvec3_add(pos, dvec3_scale(right, EXIT_STEP_ASIDE_M));
+        p.velocity = vel;
+        p.grounded = false;
+    }
     app.rocket_cam_drag = false;
     sapp::lock_mouse(true);
+}
+
+/// Re-board a ship parked in the world: rebuild the exact ride where it
+/// floats and strap the player back in. No-op (returns false) when nothing
+/// is parked within reach or the saved parts no longer build a rocket.
+fn board_parked_action(app: &mut App) -> bool {
+    let Some(ship) = crate::rocket_ride::parked_pos() else {
+        return false;
+    };
+    let within = {
+        let p = app.player.borrow();
+        dvec3_length(dvec3_sub(p.position, ship)) <= BOARD_PARKED_RANGE_M
+    };
+    if !within {
+        return false;
+    }
+    let Some((pos, up, vel)) = crate::rocket_ride::board_parked() else {
+        return false;
+    };
+    let mut p = app.player.borrow_mut();
+    p.position = pos;
+    p.velocity = vel;
+    /* Level the carried basis to the ship's parked axis so the nose points
+     * along the hull the moment you strap in (the ridden mesh draws along
+     * basis.up); keep the horizontal facing by projecting the old fwd. */
+    let up_n = dvec3_normalize(up);
+    let old_fwd = p.basis.fwd;
+    let mut fwd = dvec3_sub(old_fwd, dvec3_scale(up_n, dvec3_dot(old_fwd, up_n)));
+    if dvec3_length(fwd) < 1e-4 {
+        fwd = p.basis.right; /* looking straight along up - fall back */
+    }
+    let fwd = dvec3_normalize(fwd);
+    p.basis.up = up_n;
+    p.basis.fwd = fwd;
+    p.basis.right = tenebris_core::math::dvec3_cross(fwd, up_n);
+    p.grounded = false;
+    true
 }
 
 /// Reset to a full-fuelled rocket back on the pad it launched from. No
@@ -7108,6 +7232,14 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
      * a non-station target falls through to the normal E behaviour. */
     let interact_pressed = e._type == sapp::EventType::KeyDown
         && crate::controls::action_for_key(e.key_code) == Some(crate::controls::Action::Interact);
+    /* Re-board a ship parked in the world: on foot within reach of a ship
+     * you climbed out of (it did NOT despawn), Interact straps you back in
+     * and flies it from where it floats. Checked before the block-target
+     * interactions so walking up to your own ship and pressing E always
+     * boards it. */
+    if interact_pressed && !rocket_ride::is_riding() && board_parked_action(app) {
+        return;
+    }
     /* Dock at the orbital trading station: Interact within dock range
      * AND with the station's orbital velocity matched (the rendezvous
      * gate - too fast and the HUD shows the gap instead). The station
