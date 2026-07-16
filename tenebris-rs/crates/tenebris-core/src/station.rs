@@ -313,10 +313,13 @@ fn stair_ring(cfg: &StationConfig) -> Vec<(i32, i32)> {
 pub const STAIR_STEPS_PER_FLOOR: i32 = 7;
 
 /// The hotel's central spiral staircase: for each floor,
-/// STAIR_STEPS_PER_FLOOR treads winding around the lit centre column;
-/// the slabs above open a 6-cell atrium shaft (see the interior slab
-/// build) so the floor you are climbing to never blocks the run. The
-/// final run tops out on the roof deck.
+/// STAIR_STEPS_PER_FLOOR treads winding around the lit centre column.
+/// Each tread is TWO hexes deep - its ring-1 cell plus the on-axis
+/// cell one ring further out - both pads at the same height and
+/// snapped to the hex grid, so the stair reads as a wide contiguous
+/// spiral. The slabs above open a matching atrium shaft (see the
+/// interior slab build) so the floor you are climbing to never blocks
+/// the run. The final run tops out on the roof deck.
 pub fn stairs(cfg: &StationConfig) -> Vec<StairStep> {
     let ring = stair_ring(cfg);
     let lh = layer_h(cfg);
@@ -327,8 +330,13 @@ pub fn stairs(cfg: &StationConfig) -> Vec<StairStep> {
         let base_top = (floor_slab_layer(cfg, f) + 1) as f32 * lh;
         for k in 0..STAIR_STEPS_PER_FLOOR {
             let (q, r) = ring[((f * STAIR_STEPS_PER_FLOOR + k) as usize) % ring.len()];
-            let (x, z) = axial_to_local(q, r, a);
-            out.push(StairStep { q, r, x, z, top_m: base_top + (k + 1) as f32 * rise });
+            let top_m = base_top + (k + 1) as f32 * rise;
+            /* Inner pad on the ring-1 cell, outer pad on the aligned
+             * dist-2 cell - a 2-hex-deep tread. */
+            for (pq, pr) in [(q, r), (q * 2, r * 2)] {
+                let (x, z) = axial_to_local(pq, pr, a);
+                out.push(StairStep { q: pq, r: pr, x, z, top_m });
+            }
         }
     }
     out
@@ -336,11 +344,15 @@ pub fn stairs(cfg: &StationConfig) -> Vec<StairStep> {
 
 /// True when slab `f`'s cell (q, r) is part of the central atrium
 /// shaft the spiral climbs through: every slab above the lobby (and
-/// the roof, `f == tower_floors`) opens the 6-cell ring around the
-/// centre column, so no floor blocks the stairs and every tread keeps
-/// its full headroom.
+/// the roof, `f == tower_floors`) opens the ring around the centre
+/// column PLUS the six on-axis dist-2 cells the wide treads sweep, so
+/// no floor blocks the stairs and every tread keeps its full headroom.
 fn stairwell_open(_cfg: &StationConfig, _ring: &[(i32, i32)], f: i32, q: i32, r: i32) -> bool {
-    f >= 1 && hex_dist(q, r) == 1
+    if f < 1 {
+        return false;
+    }
+    let d = hex_dist(q, r);
+    d == 1 || (d == 2 && HEX_DIRS.iter().any(|&(dq, dr)| (q, r) == (dq * 2, dr * 2)))
 }
 
 /// Generate the wheel station. Pure function of the config; the client
@@ -1169,15 +1181,16 @@ mod tests {
             glass_windows >= 5 * 8,
             "every storey carries a glazed window band (got {glass_windows} panes)"
         );
-        /* Interior slabs: full 37-cell lobby, then 31 cells per slab
-         * above it (5 slabs incl. roof) - the 6-cell central atrium
-         * shaft the spiral staircase climbs through stays open. */
+        /* Interior slabs: full 37-cell lobby, then 25 cells per slab
+         * above it (5 slabs incl. roof) - the central atrium shaft
+         * (6-cell core ring + the 6 on-axis dist-2 cells the wide
+         * treads sweep) stays open. */
         let interior = prisms
             .iter()
             .filter(|p| hex_dist(p.q, p.r) < cfg.tower_radius as i32)
             .filter(|p| p.layer >= 1 && p.mat != StationMat::Sign)
             .count();
-        assert_eq!(interior, 37 + 5 * (37 - 6));
+        assert_eq!(interior, 37 + 5 * (37 - 12));
         /* Light palette: cyan parapet (minus 6 bridge gates) + cyan
          * storey bands; pink alternate bands; warm-gold room lights (5
          * storeys) + 6 pad markers; signs = crown ring + spire + the
@@ -1243,17 +1256,22 @@ mod tests {
         }
         /* Ground floor is level with the courtyard deck. */
         assert!((col[0].1 - cfg.slab_layers as f32 * lh).abs() < 1e-4);
-        /* Stairs: a CENTRAL spiral - every tread on the 6-cell ring
-         * around the core column - 7 treads per storey, each rise
-         * within the step-up allowance, consecutive treads on adjacent
-         * cells, topping out exactly on the roof deck. */
+        /* Stairs: a CENTRAL spiral around the core column - 7 treads
+         * per storey, each tread TWO hexes deep (ring-1 pad + aligned
+         * dist-2 pad at the same height), rises within the step-up
+         * allowance, consecutive treads on adjacent cells, topping out
+         * exactly on the roof deck. */
         let steps = stairs(&cfg);
-        assert_eq!(steps.len(), 5 * STAIR_STEPS_PER_FLOOR as usize);
-        for s in &steps {
-            assert_eq!(hex_dist(s.q, s.r), 1, "spiral hugs the centre column");
+        assert_eq!(steps.len(), 5 * STAIR_STEPS_PER_FLOOR as usize * 2);
+        let treads: Vec<_> = steps.chunks(2).collect();
+        for t in &treads {
+            let (inner, outer) = (&t[0], &t[1]);
+            assert_eq!(hex_dist(inner.q, inner.r), 1, "inner pad hugs the core");
+            assert_eq!((outer.q, outer.r), (inner.q * 2, inner.r * 2), "outer pad aligned");
+            assert_eq!(inner.top_m, outer.top_m, "both pads level - one tread");
         }
-        for w in steps.windows(2) {
-            let d = hex_dist(w[0].q - w[1].q, w[0].r - w[1].r);
+        for w in treads.windows(2) {
+            let d = hex_dist(w[0][0].q - w[1][0].q, w[0][0].r - w[1][0].r);
             assert!(d <= 1, "consecutive treads are adjacent cells");
         }
         let rise = floor_pitch(&cfg) as f32 * lh / STAIR_STEPS_PER_FLOOR as f32;

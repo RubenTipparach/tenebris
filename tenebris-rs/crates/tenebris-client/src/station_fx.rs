@@ -265,14 +265,15 @@ pub fn draw(view: Mat4, proj: Mat4, sim_t: f64) {
                 }
             }
             /* The spiral stair treads ride the hull group: thin steel
-             * pads, all faces (they float in room air). */
+             * pads at FULL cell size, so each tread snaps to the hex
+             * grid and neighbouring pads touch edge to edge. */
             if tex == TEX_HULL {
                 for s in &cache.steps {
                     let (y0, y1) = (s.top_m - STAIR_TREAD_M, s.top_m);
-                    emit_cap(s.x, s.z, a * 0.8, y1, SHADE_TOP * lit);
-                    emit_cap(s.x, s.z, a * 0.8, y0, SHADE_BOTTOM * lit);
+                    emit_cap(s.x, s.z, a, y1, SHADE_TOP * lit);
+                    emit_cap(s.x, s.z, a, y0, SHADE_BOTTOM * lit);
                     for k in 0..6 {
-                        emit_side(s.x, s.z, a * 0.8, k, y0, y1, lit);
+                        emit_side(s.x, s.z, a, k, y0, y1, lit);
                     }
                 }
             }
